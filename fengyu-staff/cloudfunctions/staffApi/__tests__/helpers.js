@@ -30,6 +30,8 @@ function createCtx(overrides = {}) {
       effectiveStoreId,
       currentStoreId: effectiveStoreId,
       scopeStoreIds: effectiveStoreId ? [effectiveStoreId] : [],
+      // 管理层路由 fixture 默认模拟已授予 data_center:dashboard；需要测试拒绝时显式传 false。
+      hasDataCenterDashboard: true,
       loginLevel: 'store',
       staffLevel: 'store_manager',
       roleBindings: [{ role: 'manager', scopeId: 'org-node-store-001', scopeType: '门店' }],

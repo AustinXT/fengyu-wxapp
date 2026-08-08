@@ -3285,6 +3285,7 @@ async function createConversion(ctx) {
     remark,
     prepaidCardAmount: inputPrepaidCardAmount,
     isActivity,
+    couponId: inputCouponId,
   } = ctx.event.payload || {}
   const storeId = ctx.auth.effectiveStoreId
   // market_name 在 INSERT 时以门店反查 org 树市场名为权威（子查询），此处仅备开单人快照作 COALESCE 兜底。
@@ -3296,6 +3297,9 @@ async function createConversion(ctx) {
   }
   if (!Array.isArray(convertInItems) || convertInItems.length === 0) {
     throw new Error('INVALID_PARAMS: 请选择至少一个转入项目')
+  }
+  if (Array.isArray(inputCouponId)) {
+    throw new Error('INVALID_PARAMS: MULTIPLE_COUPON_NOT_SUPPORTED: 一张订单仅支持一张优惠券')
   }
   if (!paymentMethod || !['微信', '支付宝', '线下'].includes(paymentMethod)) {
     throw new Error('INVALID_PARAMS: 支付方式仅支持 微信/支付宝/线下')
@@ -3535,12 +3539,131 @@ async function createConversion(ctx) {
     for (const item of inItems) {
       totalIn += Number(item.saleAmount) || Number(item.amount) || 0
     }
+    totalIn = Math.round(totalIn * 100) / 100
 
     const purchaseLimitViolation = findPurchaseLimitViolation(convertInItems, inItems)
     if (purchaseLimitViolation) {
       throw new Error(`INVALID_PARAMS: PURCHASE_LIMIT_EXCEEDED: ${purchaseLimitExceededMessage(purchaseLimitViolation)}`)
     }
 
+    // 转换单优惠券：仅抵扣转入后的正补差额，不能把折抵余款变成储值卡余额。
+    // 先用券前转入额校验券范围/门槛，随后将实际抵扣额按 rawPriceDiff 封顶并分摊回转入行。
+    const rawPriceDiff = Math.round((totalIn - totalOut) * 100) / 100
+    let couponDiscount = 0
+    if (inputCouponId) {
+      if (rawPriceDiff <= 0) {
+        throw new Error('INVALID_STATE: CONVERSION_COUPON_NO_POSITIVE_DIFFERENCE: 转换单无正补差额，不能使用优惠券')
+      }
+
+      const couponResult = await tx.query(
+        `SELECT uc.coupon_id, uc.user_id, uc.expire_at,
+                ct.coupon_type, ct.min_spend, ct.max_discount,
+                ct.applicable_category_ids, ct.applicable_store_ids,
+                ct.applicable_product_ids, ct.applicable_market_ids,
+                COALESCE(uc.face_value_override, ct.discount_value) AS discount_value
+         FROM user_coupons uc
+         JOIN coupon_templates ct ON uc.template_id = ct.template_id
+         WHERE uc.coupon_id = $1 AND uc.user_id = $2
+           AND uc.status = '未使用' AND uc.expire_at > NOW()
+           AND ct.is_active = true`,
+        [inputCouponId, clientUserId]
+      )
+      const couponRows = couponResult.rows
+      if (couponRows.length === 0) {
+        throw new Error('INVALID_PARAMS: 优惠券已失效')
+      }
+      const couponInfo = couponRows[0]
+
+      if (couponInfo.applicable_store_ids && couponInfo.applicable_store_ids.length > 0
+          && !couponInfo.applicable_store_ids.includes(storeId)) {
+        throw new Error('INVALID_PARAMS: 该优惠券不适用于此门店')
+      }
+      if (couponInfo.applicable_market_ids && couponInfo.applicable_market_ids.length > 0) {
+        const marketResult = await tx.query(
+          `SELECT o.parent_id AS market_id
+           FROM stores s
+           JOIN org_nodes o ON s.org_node_id = o.id
+           WHERE s.store_id = $1 AND o.type = '门店'`,
+          [storeId]
+        )
+        const marketId = marketResult.rows[0]?.market_id
+        if (!marketId || !couponInfo.applicable_market_ids.includes(marketId)) {
+          throw new Error('INVALID_PARAMS: 该优惠券不适用于此市场')
+        }
+      }
+
+      const skuInfoResult = await tx.query(
+        `SELECT ps.sku_id, ps.category_id, mps.product_id
+         FROM product_skus ps
+         LEFT JOIN mall_product_skus mps ON ps.sku_id = mps.sku_id
+         WHERE ps.sku_id = ANY($1) AND ps.deleted_at IS NULL`,
+        [inItems.map(item => item.skuId)]
+      )
+      const skuInfoRows = skuInfoResult.rows
+      const categoryBySku = new Map()
+      const productBySku = new Map()
+      for (const skuInfo of skuInfoRows) {
+        categoryBySku.set(skuInfo.sku_id, skuInfo.category_id)
+        productBySku.set(skuInfo.sku_id, skuInfo.product_id)
+      }
+      const hasCategoryRestriction = !!(couponInfo.applicable_category_ids && couponInfo.applicable_category_ids.length > 0)
+      const hasProductRestriction = !!(couponInfo.applicable_product_ids && couponInfo.applicable_product_ids.length > 0)
+      const eligibleItems = (hasCategoryRestriction || hasProductRestriction)
+        ? inItems.filter(item => {
+            const categoryMatch = !hasCategoryRestriction || couponInfo.applicable_category_ids.includes(categoryBySku.get(item.skuId))
+            const productMatch = !hasProductRestriction || couponInfo.applicable_product_ids.includes(productBySku.get(item.skuId))
+            return categoryMatch && productMatch
+          })
+        : inItems
+      if (eligibleItems.length === 0) {
+        throw new Error('INVALID_PARAMS: 该优惠券不适用于当前商品')
+      }
+
+      const eligibleTotal = Math.round(eligibleItems.reduce(
+        (sum, item) => sum + (Number(item.saleAmount) || Number(item.amount) || 0),
+        0,
+      ) * 100) / 100
+      const minSpend = Math.round((Number(couponInfo.min_spend) || 0) * 100) / 100
+      if (eligibleTotal + 0.001 < minSpend) {
+        throw new Error(`INVALID_PARAMS: 未满足使用条件（满${minSpend}可用）`)
+      }
+
+      let calculatedDiscount = 0
+      if (couponInfo.coupon_type === '现金券' || couponInfo.coupon_type === '品项券') {
+        calculatedDiscount = Math.min(Number(couponInfo.discount_value), eligibleTotal)
+      } else if (couponInfo.coupon_type === '折扣券') {
+        calculatedDiscount = eligibleTotal * (1 - Number(couponInfo.discount_value))
+        if (couponInfo.max_discount) {
+          calculatedDiscount = Math.min(calculatedDiscount, Number(couponInfo.max_discount))
+        }
+      }
+      couponDiscount = Math.round(Math.min(
+        Math.max(0, calculatedDiscount),
+        rawPriceDiff,
+      ) * 100) / 100
+      if (couponDiscount <= 0) {
+        throw new Error('INVALID_PARAMS: 该优惠券无法抵扣当前补差额')
+      }
+
+      let distributed = 0
+      for (let i = 0; i < eligibleItems.length; i++) {
+        const item = eligibleItems[i]
+        const beforeCoupon = Math.round((Number(item.saleAmount) || Number(item.amount) || 0) * 100) / 100
+        const share = i === eligibleItems.length - 1
+          ? Math.round((couponDiscount - distributed) * 100) / 100
+          : Math.round(couponDiscount * (beforeCoupon / eligibleTotal) * 100) / 100
+        if (i < eligibleItems.length - 1) distributed += share
+        item.saleAmount = Math.max(0, Math.round((beforeCoupon - share) * 100) / 100)
+        item.amount = item.saleAmount
+        const denom = item.sessionCount != null && item.sessionCount > 0 ? item.sessionCount : item.quantity
+        item.unitRealPrice = denom > 0 ? Math.round((item.saleAmount / denom) * 100) / 100 : item.saleAmount
+      }
+    }
+
+    totalIn = Math.round(inItems.reduce(
+      (sum, item) => sum + (Number(item.saleAmount) || Number(item.amount) || 0),
+      0,
+    ) * 100) / 100
     const priceDiff = Math.round((totalIn - totalOut) * 100) / 100
     const orderTotal = Math.max(0, priceDiff)
 
@@ -3586,9 +3709,9 @@ async function createConversion(ctx) {
         client_user_id, client_phone, customer_name,
         total_amount, payable_amount, prepaid_card_amount, received,
         payment_method, opened_by,
-        preferred_employee_id, allocation_status, remark,
+        preferred_employee_id, coupon_id, coupon_discount, allocation_status, remark,
         paid_at, created_at, updated_at, is_activity
-      ) VALUES ($1, $2, '转换单', $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, '待分配', $17, $18, $6, $6, $19)`,
+      ) VALUES ($1, $2, '转换单', $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, '待分配', $19, $20, $6, $6, $21)`,
       [
         convOrderId, orderStatus, documentType, marketName, storeId, now,
         clientUserId, client.phone || null, client.name || null,
@@ -3596,11 +3719,26 @@ async function createConversion(ctx) {
         (isFullCardCoverage ? card : 0).toFixed(2),
         effectivePaymentMethod, ctx.auth.staffWfId,
         preferredStaffWfId || null,
+        inputCouponId || null, couponDiscount.toFixed(2),
         remark || null,
         orderPaid ? now : null,
         isActivity === true,
       ]
     )
+
+    // 原子核销优惠券必须在订单 INSERT 之后执行：used_sale_order_id 有即时外键约束。
+    if (inputCouponId) {
+      const claimResult = await tx.query(
+        `UPDATE user_coupons
+         SET status = '已使用', used_sale_order_id = $1, used_at = NOW()
+         WHERE coupon_id = $2 AND user_id = $3
+           AND status = '未使用' AND expire_at > NOW()`,
+        [convOrderId, inputCouponId, clientUserId]
+      )
+      if (claimResult.rowCount !== 1) {
+        throw new Error('INVALID_PARAMS: 优惠券已失效')
+      }
+    }
 
     // 5. 生成 sale_item 流水号序列
     const dateStr = shanghaiYMD(now)
@@ -3755,11 +3893,13 @@ async function createConversion(ctx) {
       storeId,
       clientUserId,
       priceDiff,
+      couponId: inputCouponId || null,
+      couponDiscount,
       prepaidCardAmount: card,
       orderStatus,
     })
 
-    return { totalIn, totalOut, priceDiff, orderStatus, prepaidCardCredit, prepaidCardAmount: card }
+    return { totalIn, totalOut, priceDiff, orderStatus, couponDiscount, prepaidCardCredit, prepaidCardAmount: card }
   })
 
   const convRemaining = Math.max(0, Math.round((result.priceDiff - result.prepaidCardAmount) * 100) / 100)
@@ -3769,6 +3909,7 @@ async function createConversion(ctx) {
     totalIn: Math.round(result.totalIn * 100) / 100,
     totalOut: Math.round(result.totalOut * 100) / 100,
     priceDiff: result.priceDiff,
+    couponDiscount: result.couponDiscount,
     prepaidCardCredit: result.prepaidCardCredit,
     prepaidCardAmount: result.prepaidCardAmount,
     message:

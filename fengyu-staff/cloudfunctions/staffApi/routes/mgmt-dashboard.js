@@ -4,7 +4,7 @@
  * mgmtDashboard.scopeOptions — 市场/门店二级筛选器数据源
  *   - 总部 scope：返回所有市场及其下属门店
  *   - 其他账号：仅返回账号全部 scope 覆盖的门店及可完整选择的市场
- *   - 5 分钟内存缓存全量 markets，每次请求按 ctx.auth 过滤后返回
+ *   - 不缓存，确保组织节点启停后范围下拉立即刷新
  *
  * mgmtDashboard.summary — 数据中心首页 8 卡片汇总
  *   一次返回 4 张大卡（业绩/实耗，含月店均）+ 4 张小卡（客流/客量/新会员/项目数）
@@ -1537,9 +1537,4 @@ async function salesData(ctx) {
   }
 }
 
-// 测试辅助：清空 loadAllMarkets 的 5 分钟内存缓存（避免 vitest 跨用例串扰）
-function __resetMarketsCache() {
-  CACHE = { ts: 0, data: null }
-}
-
-module.exports = { scopeOptions, summary, storeRanking, staffRanking, salesData, __resetMarketsCache }
+module.exports = { scopeOptions, summary, storeRanking, staffRanking, salesData }

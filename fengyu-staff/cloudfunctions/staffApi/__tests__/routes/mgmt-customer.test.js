@@ -30,6 +30,7 @@ function makeHqCtx(payload = {}) {
       loginLevel: 'management',
       roleBindings: [{ role: 'admin', scopeId: 'org-hq', scopeType: '总部' }],
       scopeStoreIds: ['store-001', 'store-002'],
+      scopeOrgNodeIds: ['org-hq', 'mkt-A', 'mkt-B'],
     },
   })
 }
@@ -42,6 +43,7 @@ function makeMarketCtx(payload = {}) {
       loginLevel: 'management',
       roleBindings: [{ role: 'manager', scopeId: 'mkt-A', scopeType: '市场' }],
       scopeStoreIds: ['store-001'],
+      scopeOrgNodeIds: ['mkt-A'],
     },
   })
 }
@@ -311,10 +313,52 @@ describe('mgmtCustomer 参数与权限校验', () => {
     await expect(detail(ctx)).rejects.toThrow(/INVALID_PARAMS/)
   })
 
-  test('store_manager 账号被 requireManagementLevel 拦截（search）', async () => {
+  test('没有 data_center:dashboard 的店长不能伪造管理层登录（search）', async () => {
     setupCommonMocks()
-    const ctx = createManagerCtx({ scopeType: 'all' })
-    await expect(search(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+    const ctx = createManagerCtx(
+      { scopeType: 'store', scopeId: 'store-001' },
+      { loginLevel: 'management', hasDataCenterDashboard: false },
+    )
+    await expect(search(ctx)).rejects.toThrow(/PERMISSION_DENIED.*数据中心权限/)
+  })
+
+  test('门店级 finance 获得 data_center:dashboard 后可查看自己 scope 内的完整手机号', async () => {
+    setupCommonMocks({
+      searchRows: [{
+        user_id: 'u-finance-scope',
+        phone: '13800138000',
+        name: '顾客甲',
+        customer_id: 'C-finance-scope',
+        member_level: '普通会员',
+        bound_store_id: 'store-001',
+        store_name: '凤御A店',
+        birthday: null,
+      }],
+    })
+    const ctx = createCtx({
+      payload: { scopeType: 'store', scopeId: 'store-001' },
+      auth: {
+        roles: ['finance'],
+        roleBindings: [{ role: 'finance', scopeId: 'org-node-store-001', scopeType: '门店' }],
+        staffLevel: 'store_staff',
+        loginLevel: 'management',
+        effectiveStoreId: null,
+        currentStoreId: null,
+        scopeStoreIds: ['store-001'],
+        scopeOrgNodeIds: ['org-node-store-001'],
+        hasDataCenterDashboard: true,
+      },
+    })
+
+    await search(ctx)
+
+    expect(ctx.result.customers).toHaveLength(1)
+    expect(ctx.result.customers[0].phone).toBe('13800138000')
+    const mainQuery = pg.query.mock.calls.find((call) =>
+      /SELECT\s+c\.user_id,\s+c\.phone/.test(call[0]) && /LIMIT/.test(call[0]),
+    )
+    expect(mainQuery[0]).toMatch(/c\.bound_store_id\s*=\s*\$1/)
+    expect(mainQuery[1]).toEqual(['store-001', 50, 0])
   })
 
   test('market 账号选 all → PERMISSION_DENIED（search）', async () => {

@@ -8,10 +8,12 @@
 const cloud = globalThis.__mocks__.cloud
 const pg = globalThis.__mocks__.pg
 const authRoutes = require('../../routes/auth')
+const { invalidatePermissionMatrixCache } = require('../../utils/permission-matrix')
 
 describe('auth.login', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    invalidatePermissionMatrixCache()
     cloud.getWXContext.mockReturnValue({ OPENID: 'staff-openid-001' })
   })
 
@@ -135,33 +137,46 @@ describe('auth.login', () => {
     ])
   })
 
-  test('managerStores 仅含 manager 角色绑定门店（manager@A + customer_mgr@B → 只 A）', async () => {
-    pg.query
-      .mockResolvedValueOnce([{ // 员工行
-        employee_id: 'emp-multi-role', phone: '138', name: '多角色店长',
-        position_name: '门店经理', is_resigned: false, skills: [],
-        store_id: 'store-A', store_name: 'A店', market_name: 'M',
-      }])
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // UPDATE last_login_at
-      .mockResolvedValueOnce([ // queryRoleBindings
-        { role: 'manager', scope_id: 'node-A', scope_type: '门店', scope_name: 'A店' },
-        { role: 'customer_mgr', scope_id: 'node-B', scope_type: '门店', scope_name: 'B店' },
-      ])
-      .mockResolvedValueOnce([{ store_id: 'store-A' }, { store_id: 'store-B' }]) // expandScopeStoreIds(全角色) → [A,B]
-      .mockResolvedValueOnce([ // fetchScopedStores(scopeStoreIds=[A,B])
-        { store_id: 'store-A', store_name: 'A店' },
-        { store_id: 'store-B', store_name: 'B店' },
-      ])
-      .mockResolvedValueOnce([{ store_id: 'store-A' }]) // expandScopeStoreIds(managerBindings) → [A]
-      .mockResolvedValueOnce([{ store_id: 'store-A', store_name: 'A店' }]) // fetchScopedStores(managerStoreIds=[A])
+  test('管理层候选按全部 scope 下发，managerStores 仅保留给门店写授权', async () => {
+    pg.query.mockImplementation(async (sql, params = []) => {
+      if (/FROM\s+staff_wechat_users\s+u/.test(sql)) {
+        return [{
+          employee_id: 'emp-multi-role', phone: '138', name: '多角色店长',
+          position_name: '门店经理', is_resigned: false, skills: [],
+          store_id: 'store-A', store_name: 'A店', market_name: 'M',
+        }]
+      }
+      if (/UPDATE staff_wechat_users SET last_login_at/.test(sql)) return []
+      if (/FROM\s+permission_roles\s+pr/.test(sql)) {
+        return [
+          { role: 'manager', scope_id: 'node-A', scope_type: '门店', scope_name: 'A店' },
+          { role: 'customer_mgr', scope_id: 'node-B', scope_type: '门店', scope_name: 'B店' },
+        ]
+      }
+      if (/permission_matrix/.test(sql)) {
+        return [{ value: JSON.stringify({ manager: ['data_center:dashboard'] }) }]
+      }
+      if (/SELECT DISTINCT\s+s\.store_id/.test(sql)) {
+        return (params[0] || []).includes('node-B')
+          ? [{ store_id: 'store-A' }, { store_id: 'store-B' }]
+          : [{ store_id: 'store-A' }]
+      }
+      if (/SELECT\s+store_id,\s+store_name\s+FROM\s+stores/.test(sql)) {
+        return (params[0] || []).map((storeId) => ({
+          store_id: storeId,
+          store_name: storeId === 'store-A' ? 'A店' : 'B店',
+        }))
+      }
+      return []
+    })
 
     const ctx = { event: {}, context: {}, auth: {}, result: null }
     await authRoutes.login(ctx)
 
-    // scopedStores = 全角色并集（A+B）
+    // scopedStores = 全角色并集（A+B），管理层视图以它作为可见门店范围。
     expect(ctx.result.scopedStores.map((s) => s.storeId).sort()).toEqual(['store-A', 'store-B'])
-    // managerStores 仅 manager 绑定（A）—— 前端 computeDefaultScope 据此默认到 A，
-    // 避免按 scopedStores 店名序默认到 B（∉managerStoreIds）触发 validateManagementScope 越权拦
+    expect(ctx.result.availableLoginLevels).toEqual(['store', 'management'])
+    // managerStores 仍仅 manager 绑定（A），仅供门店模式写授权使用。
     expect(ctx.result.managerStores.map((s) => s.storeId)).toEqual(['store-A'])
   })
 })

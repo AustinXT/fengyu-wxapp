@@ -4308,6 +4308,139 @@ describe('order.createConversion', () => {
     return calls
   }
 
+  test('转换单优惠券按正补差额封顶，写入订单并原子核销', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'cu-001',
+      convertOutSaleItemIds: ['item-coupon-old'],
+      convertInItems: [{ skuId: 'sku-coupon-new', quantity: 1 }],
+      paymentMethod: '线下',
+      couponId: 'coupon-001',
+    })
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'cu-001', phone: '138', name: '张三', customer_type: '会员客', bound_store_id: 'store-001',
+    }])
+
+    const calls = []
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const tx = {
+        query: vi.fn(async (sql, params) => {
+          calls.push({ sql, params })
+          if (sql.includes('pg_advisory_xact_lock')) return { rows: [], rowCount: 1 }
+          if (sql.includes('SELECT sale_order_id FROM sale_orders')) return { rows: [], rowCount: 0 }
+          if (sql.includes('FROM sale_items si') && sql.includes('FOR UPDATE OF si')) {
+            return {
+              rows: [{
+                sale_item_id: 'item-coupon-old', sale_order_id: 'order-old', store_id: 'store-001', item_direction: '购买',
+                sku_id: 'sku-old', product_name: '旧项目', product_type: '疗程卡', session_count: 4, remaining_sessions: 4,
+                quantity: 1, picked_up_quantity: 0, unit_price: '100', unit_real_price: '100',
+                sales_category: '自销自耗', service_fee: '0', is_shengmei: false, is_experience: false,
+                client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
+              }],
+              rowCount: 1,
+            }
+          }
+          if (sql.includes('FROM service_items sit')) return { rows: [], rowCount: 0 }
+          if (sql.includes('FROM product_skus s') && sql.includes('WHERE s.sku_id = $1')) {
+            return {
+              rows: [{
+                sku_id: 'sku-coupon-new', category_id: 'cat-new', product_type: '疗程卡', spec_name: '新项目',
+                price: '500', special_price: null, session_count: 1, service_fee: '0', sales_category: '自销自耗',
+                is_shengmei: false, is_experience: false, is_manager_special: false, purchase_limit: null,
+              }],
+              rowCount: 1,
+            }
+          }
+          if (sql.includes('WHERE s.category_id = ANY')) return { rows: [], rowCount: 0 }
+          if (sql.includes('FROM user_coupons uc')) {
+            return {
+              rows: [{
+                coupon_id: 'coupon-001', user_id: 'cu-001', coupon_type: '现金券', discount_value: '300',
+                min_spend: '0', max_discount: null, applicable_category_ids: null, applicable_product_ids: null,
+                applicable_store_ids: null, applicable_market_ids: null,
+              }],
+              rowCount: 1,
+            }
+          }
+          if (sql.includes('FROM product_skus ps') && sql.includes('mall_product_skus')) {
+            return { rows: [{ sku_id: 'sku-coupon-new', category_id: 'cat-new', product_id: 'product-new' }], rowCount: 1 }
+          }
+          if (sql.includes('receipt_positive_total')) {
+            return { rows: [{ receipt_positive_total: '0', order_received: '0' }], rowCount: 1 }
+          }
+          return defaultQueryResult(sql)
+        }),
+      }
+      return cb(tx)
+    })
+
+    await orderRoutes.createConversion(ctx)
+
+    // 券前转入 500，折抵 400，现金券面 300；实际券额只能抵扣正补差 100。
+    expect(ctx.result).toMatchObject({ totalIn: 400, totalOut: 400, priceDiff: 0, couponDiscount: 100, prepaidCardCredit: 0 })
+    const orderInsert = calls.find((call) => call.sql.includes('INSERT INTO sale_orders'))
+    const couponClaim = calls.find((call) => call.sql.includes('UPDATE user_coupons'))
+    const inItemInsert = calls.find((call) => call.sql.includes('INSERT INTO sale_items') && call.sql.includes("'转入'"))
+    expect(orderInsert.params[16]).toBe('coupon-001')
+    expect(orderInsert.params[17]).toBe('100.00')
+    expect(couponClaim.params.slice(1)).toEqual(['coupon-001', 'cu-001'])
+    expect(calls.indexOf(couponClaim)).toBeGreaterThan(calls.indexOf(orderInsert))
+    expect(inItemInsert.params[10]).toBe(400)
+    expect(calls.some((call) => call.sql.includes('INSERT INTO prepaid_cards'))).toBe(false)
+  })
+
+  test('券前补差额为零时拒绝携券请求，且不查询或核销优惠券', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'cu-001',
+      convertOutSaleItemIds: ['item-coupon-equal-old'],
+      convertInItems: [{ skuId: 'sku-coupon-equal-new', quantity: 2 }],
+      paymentMethod: '线下',
+      couponId: 'coupon-001',
+    })
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'cu-001', phone: '138', name: '张三', customer_type: '会员客', bound_store_id: 'store-001',
+    }])
+
+    const calls = []
+    pg.transaction.mockImplementationOnce(async (cb) => cb({
+      query: vi.fn(async (sql, params) => {
+        calls.push({ sql, params })
+        if (sql.includes('pg_advisory_xact_lock')) return { rows: [], rowCount: 1 }
+        if (sql.includes('SELECT sale_order_id FROM sale_orders')) return { rows: [], rowCount: 0 }
+        if (sql.includes('FROM sale_items si') && sql.includes('FOR UPDATE OF si')) {
+          return {
+            rows: [{
+              sale_item_id: 'item-coupon-equal-old', sale_order_id: 'order-old', store_id: 'store-001', item_direction: '购买',
+              sku_id: 'sku-old', product_name: '旧项目', product_type: '疗程卡', session_count: 2, remaining_sessions: 2,
+              quantity: 1, picked_up_quantity: 0, unit_price: '500', unit_real_price: '500',
+              sales_category: '自销自耗', service_fee: '0', is_shengmei: false, is_experience: false,
+              client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
+            }],
+            rowCount: 1,
+          }
+        }
+        if (sql.includes('FROM service_items sit')) return { rows: [], rowCount: 0 }
+        if (sql.includes('FROM product_skus s') && sql.includes('WHERE s.sku_id = $1')) {
+          return {
+            rows: [{
+              sku_id: 'sku-coupon-equal-new', category_id: 'cat-new', product_type: '疗程卡', spec_name: '新项目',
+              price: '500', special_price: null, session_count: 1, service_fee: '0', sales_category: '自销自耗',
+              is_shengmei: false, is_experience: false, is_manager_special: false, purchase_limit: null,
+            }],
+            rowCount: 1,
+          }
+        }
+        if (sql.includes('WHERE s.category_id = ANY')) return { rows: [], rowCount: 0 }
+        return defaultQueryResult(sql)
+      }),
+    }))
+
+    await expect(orderRoutes.createConversion(ctx))
+      .rejects.toThrow(/INVALID_STATE: CONVERSION_COUPON_NO_POSITIVE_DIFFERENCE/)
+
+    expect(calls.some((call) => call.sql.includes('FROM user_coupons uc'))).toBe(false)
+    expect(calls.some((call) => call.sql.includes('INSERT INTO sale_orders'))).toBe(false)
+  })
+
   test('创建转换单成功（差额>0 → 待支付，新 API 入参）', async () => {
     const ctx = createManagerCtx({
       clientUserId: 'cu-001',

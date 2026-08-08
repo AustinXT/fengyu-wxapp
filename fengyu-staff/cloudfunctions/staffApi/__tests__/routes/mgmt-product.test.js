@@ -23,6 +23,7 @@ function makeHqCtx(payload = {}) {
       loginLevel: 'management',
       roleBindings: [{ role: 'admin', scopeId: 'org-hq', scopeType: '总部' }],
       scopeStoreIds: ['store-001', 'store-002'],
+      scopeOrgNodeIds: ['org-hq', 'mkt-A', 'mkt-B'],
     },
   })
 }
@@ -35,6 +36,7 @@ function makeMarketCtx(payload = {}) {
       loginLevel: 'management',
       roleBindings: [{ role: 'manager', scopeId: 'mkt-A', scopeType: '市场' }],
       scopeStoreIds: ['store-001'],
+      scopeOrgNodeIds: ['mkt-A'],
     },
   })
 }
@@ -124,7 +126,7 @@ describe('mgmtProduct.cardHolders 参数与权限校验', () => {
     await expect(cardHolders(ctx)).rejects.toThrow(/INVALID_PARAMS.*scopeId/)
   })
 
-  test('store_manager 账号被 requireManagementLevel 拦截', async () => {
+  test('门店模式调用管理层接口被 requireManagementLevel 拦截', async () => {
     const ctx = createManagerCtx({ scopeType: 'all' })
     await expect(cardHolders(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
   })
@@ -319,7 +321,7 @@ describe('mgmtProduct.cycleStats 参数与权限校验', () => {
     await expect(cycleStats(ctx)).rejects.toThrow(/INVALID_PARAMS.*scopeId/)
   })
 
-  test('store_manager 账号被 requireManagementLevel 拦截', async () => {
+  test('门店模式调用管理层接口被 requireManagementLevel 拦截', async () => {
     const ctx = createManagerCtx({ period: 'month', scopeType: 'all' })
     await expect(cycleStats(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
   })

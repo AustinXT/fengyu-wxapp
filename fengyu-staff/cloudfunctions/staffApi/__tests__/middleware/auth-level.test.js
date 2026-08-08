@@ -12,6 +12,7 @@ const {
   invalidateAuthCache,
   _resolveRuntimeAuth,
 } = require('../../middleware/auth')
+const { invalidatePermissionMatrixCache } = require('../../utils/permission-matrix')
 
 function clearAllCaches() {
   for (const k of [
@@ -26,6 +27,7 @@ function clearAllCaches() {
   ]) {
     invalidateAuthCache(k)
   }
+  invalidatePermissionMatrixCache()
 }
 
 describe('auth 注入 staffLevel / scopeStoreIds / roleBindings', () => {
@@ -70,7 +72,7 @@ describe('auth 注入 staffLevel / scopeStoreIds / roleBindings', () => {
     expect(ctx.auth.loginLevel).toBe('store')
   })
 
-  test('市场 hr 无 store_id → loginLevel fallback=management', async () => {
+  test('市场 hr 无可见门店 → 不开放空的管理层视图', async () => {
     cloud.getWXContext.mockReturnValue({ OPENID: 'openid-market' })
     pg.query
       .mockResolvedValueOnce([{
@@ -96,7 +98,7 @@ describe('auth 注入 staffLevel / scopeStoreIds / roleBindings', () => {
 
     expect(ctx.auth.staffLevel).toBe('market')
     expect(ctx.auth.scopeStoreIds).toEqual([])
-    expect(ctx.auth.loginLevel).toBe('management')
+    expect(ctx.auth.loginLevel).toBeNull()
     expect(ctx.auth.effectiveStoreId).toBeNull()
   })
 
@@ -165,7 +167,7 @@ describe('auth 注入 staffLevel / scopeStoreIds / roleBindings', () => {
     expect(ctx.auth.currentStoreId).toBeNull()
   })
 
-  test('_loginLevel=management 且 staffLevel=store_manager → 通过（店长放开管理层视图）', async () => {
+  test('_loginLevel=management 且 manager 拥有 dashboard 权限 → 通过', async () => {
     cloud.getWXContext.mockReturnValue({ OPENID: 'openid-store-manager' })
     pg.query
       .mockResolvedValueOnce([{
@@ -196,8 +198,50 @@ describe('auth 注入 staffLevel / scopeStoreIds / roleBindings', () => {
 
     expect(ctx.auth.staffLevel).toBe('store_manager')
     expect(ctx.auth.loginLevel).toBe('management')
-    // availableLoginLevels 由 deriveAvailableLoginLevels 派生，store_manager + management 通过
-    // 即隐含含 'management'（否则 resolveRuntimeAuth 会拒），该字段不暴露在 ctx.auth
+    expect(ctx.auth.hasDataCenterDashboard).toBe(true)
+    expect(ctx.auth.effectiveStoreId).toBeNull()
+  })
+
+  test('门店级非 manager 角色拥有 dashboard 权限也可进入管理层', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'openid-store-staff' })
+    pg.query.mockReset().mockImplementation(async (sql) => {
+      if (/FROM\s+staff_wechat_users\s+u/.test(sql)) {
+        return [{
+          employee_id: 'emp-finance',
+          phone: '13800006666',
+          name: '财务',
+          position_name: '门店财务',
+          store_id: 'S1',
+          is_resigned: false,
+          skills: null,
+          store_name: 'S1',
+          market_name: null,
+          department: null,
+        }]
+      }
+      if (/FROM\s+permission_roles\s+pr/.test(sql)) {
+        return [{ role: 'finance', scope_id: 'node-s1', scope_type: '门店' }]
+      }
+      if (/SELECT DISTINCT\s+s\.store_id/.test(sql)) return [{ store_id: 'S1' }]
+      if (/SELECT DISTINCT id FROM descendants/.test(sql)) return [{ id: 'node-s1' }]
+      if (/permission_matrix/.test(sql)) {
+        return [{ value: JSON.stringify({ finance: ['data_center:dashboard'] }) }]
+      }
+      return []
+    })
+
+    const ctx = {
+      event: { payload: { _loginLevel: 'management' } },
+      context: {},
+      auth: {},
+      result: null,
+    }
+    await auth(ctx, async () => {})
+
+    expect(ctx.auth.staffLevel).toBe('store_staff')
+    expect(ctx.auth.hasDataCenterDashboard).toBe(true)
+    expect(ctx.auth.loginLevel).toBe('management')
+    expect(ctx.auth.scopeStoreIds).toEqual(['S1'])
     expect(ctx.auth.effectiveStoreId).toBeNull()
   })
 
@@ -282,6 +326,16 @@ describe('_resolveRuntimeAuth 纯函数边界', () => {
     ).toThrow(/PERMISSION_DENIED/)
   })
 
+  test('非管理职级拥有 dashboard 权限时可显式选择 management', () => {
+    const r = _resolveRuntimeAuth(
+      { staffLevel: 'store_staff', scopeStoreIds: ['S1'], fallbackStoreId: 'S1' },
+      'management',
+      null,
+      true,
+    )
+    expect(r).toEqual({ loginLevel: 'management', currentStoreId: null, effectiveStoreId: null })
+  })
+
   test('fallback fallbackStoreId 命中 scope → 用该值', () => {
     const r = _resolveRuntimeAuth(base, 'store', null)
     expect(r.effectiveStoreId).toBe('S1')
@@ -307,25 +361,40 @@ describe('_resolveRuntimeAuth 纯函数边界', () => {
 })
 
 describe('requireManagementLevel', () => {
-  test('headquarters + management → 通过', async () => {
+  test('拥有 dashboard 权限且 management 登录 → 通过', async () => {
     const ctx = {
-      auth: { staffWfId: 'e1', staffLevel: 'headquarters', loginLevel: 'management' },
+      auth: {
+        staffWfId: 'e1',
+        staffLevel: 'headquarters',
+        hasDataCenterDashboard: true,
+        loginLevel: 'management',
+      },
     }
     let called = false
     await requireManagementLevel()(ctx, async () => { called = true })
     expect(called).toBe(true)
   })
 
-  test('market + management → 通过', async () => {
+  test('market + dashboard + management → 通过', async () => {
     const ctx = {
-      auth: { staffWfId: 'e1', staffLevel: 'market', loginLevel: 'management' },
+      auth: {
+        staffWfId: 'e1',
+        staffLevel: 'market',
+        hasDataCenterDashboard: true,
+        loginLevel: 'management',
+      },
     }
     await requireManagementLevel()(ctx, async () => {})
   })
 
-  test('store_manager + management → 通过（放开管理层视图）', async () => {
+  test('store_staff + dashboard + management → 通过（不按职级白名单）', async () => {
     const ctx = {
-      auth: { staffWfId: 'e1', staffLevel: 'store_manager', loginLevel: 'management' },
+      auth: {
+        staffWfId: 'e1',
+        staffLevel: 'store_staff',
+        hasDataCenterDashboard: true,
+        loginLevel: 'management',
+      },
     }
     let called = false
     await requireManagementLevel()(ctx, async () => { called = true })
@@ -334,16 +403,26 @@ describe('requireManagementLevel', () => {
 
   test('store_manager + loginLevel=store → 拒绝（loginLevel 闸保留）', async () => {
     const ctx = {
-      auth: { staffWfId: 'e1', staffLevel: 'store_manager', loginLevel: 'store' },
+      auth: {
+        staffWfId: 'e1',
+        staffLevel: 'store_manager',
+        hasDataCenterDashboard: true,
+        loginLevel: 'store',
+      },
     }
     await expect(requireManagementLevel()(ctx, async () => {})).rejects.toThrow(
       /管理层身份登录/
     )
   })
 
-  test('store_staff + management → 拒绝（美容师不放开）', async () => {
+  test('缺 dashboard 权限 → 拒绝（职级不构成旁路）', async () => {
     const ctx = {
-      auth: { staffWfId: 'e1', staffLevel: 'store_staff', loginLevel: 'management' },
+      auth: {
+        staffWfId: 'e1',
+        staffLevel: 'headquarters',
+        hasDataCenterDashboard: false,
+        loginLevel: 'management',
+      },
     }
     await expect(requireManagementLevel()(ctx, async () => {})).rejects.toThrow(
       /PERMISSION_DENIED/
@@ -352,7 +431,12 @@ describe('requireManagementLevel', () => {
 
   test('headquarters + loginLevel=store → 拒绝', async () => {
     const ctx = {
-      auth: { staffWfId: 'e1', staffLevel: 'headquarters', loginLevel: 'store' },
+      auth: {
+        staffWfId: 'e1',
+        staffLevel: 'headquarters',
+        hasDataCenterDashboard: true,
+        loginLevel: 'store',
+      },
     }
     await expect(requireManagementLevel()(ctx, async () => {})).rejects.toThrow(
       /管理层身份登录/

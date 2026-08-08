@@ -19,6 +19,7 @@ const {
   deriveAvailableLoginLevels,
   expandScopeStoreIds,
 } = require('../utils/scope')
+const { hasDataCenterDashboard } = require('../utils/permission-matrix')
 
 /**
  * 查询员工权限角色（带 scope 类型）
@@ -63,11 +64,18 @@ async function buildLevelPayload(employeeId) {
   const roleBindings = await queryRoleBindings(employeeId)
   const roles = [...new Set(roleBindings.map((r) => r.role))]
   const staffLevel = deriveStaffLevel(roleBindings)
-  const scopeStoreIds = await expandScopeStoreIds(roleBindings, pg)
-  const availableLoginLevels = deriveAvailableLoginLevels(staffLevel, scopeStoreIds)
+  const [scopeStoreIds, hasDashboardPermission] = await Promise.all([
+    expandScopeStoreIds(roleBindings, pg),
+    hasDataCenterDashboard(roleBindings),
+  ])
+  const availableLoginLevels = deriveAvailableLoginLevels(
+    staffLevel,
+    scopeStoreIds,
+    hasDashboardPermission,
+  )
   const scopedStores = await fetchScopedStores(scopeStoreIds)
-  // managerStores：仅 manager 角色绑定的门店（管理层视图默认 scope 用，区别于 scopedStores 全角色并集；
-  // 防 manager@A + customer_mgr@B 时 scopedStores 按店名排序默认到 B，触发 validateManagementScope 越权拦）
+  // managerStores：仅 manager 角色绑定的门店，保留给门店模式下的店长写操作。
+  // 管理层视图始终使用 scopedStores 对应的全部 scope，不使用此集合收紧范围。
   const managerBindings = roleBindings.filter((r) => r.role === 'manager')
   const managerStoreIds = managerBindings.length > 0 ? await expandScopeStoreIds(managerBindings, pg) : []
   const managerStores = await fetchScopedStores(managerStoreIds)
