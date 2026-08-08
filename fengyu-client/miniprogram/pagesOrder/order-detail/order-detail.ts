@@ -9,6 +9,7 @@ interface OrderDetailItem {
   product_name: string;
   product_type: string;
   session_count: number;
+  unit: string;
   remaining_sessions: number | null;
   paid_sessions: number | null;
   unit_price: number;
@@ -186,6 +187,7 @@ Page({
         const { usedPct, paidUnusedPct, unpaidPct } = calculateTriProgress(total, remaining, paid);
         return {
           ...i,
+          unit: i.unit || (i.product_type === '家居产品' ? '盒' : '次'),
           // expire_date 为原始 pg date（序列化成 UTC 串会偏移日期），格式化为 YYYY-MM-DD
           expire_date: i.expire_date ? formatDate(i.expire_date) : i.expire_date,
           paid_sessions: paid,

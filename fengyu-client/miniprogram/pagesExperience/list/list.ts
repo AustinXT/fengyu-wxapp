@@ -16,6 +16,7 @@ interface ExperienceCardSku {
   /** 划线原价（标价）；null=不划线 */
   strikePrice: number | null;
   session_count: number | null;
+  unit: string;
   sort_order?: number;
 }
 
@@ -60,6 +61,7 @@ Page({
           strikePrice: pv.strike,
           session_count: s.session_count !== null && s.session_count !== undefined
             ? Number(s.session_count) : null,
+          unit: s.unit || '次',
           sort_order: s.sort_order,
         };
       });

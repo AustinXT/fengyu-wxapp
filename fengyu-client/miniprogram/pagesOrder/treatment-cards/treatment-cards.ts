@@ -37,6 +37,7 @@ Page({
           const { usedPct, paidUnusedPct, unpaidPct } = calculateTriProgress(total, remaining, paid);
           cards.push({
             ...item,
+            unit: item.unit || '次',
             paidSessions: paid,
             // NULL 卡（migration 0040 前未回填）：标记用于隐藏「预约」按钮 + 已付显示「—」
             paidSessionsNull: paidRaw == null,

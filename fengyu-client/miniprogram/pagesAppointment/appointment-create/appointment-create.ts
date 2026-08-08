@@ -104,6 +104,7 @@ Page({
             product_name: item.productName,
             remaining_sessions: remaining,
             session_count: total,
+            unit: item.unit || '次',
             paid_sessions: paid,
             used_sessions: used,
             paid_unused_sessions: isNullCard ? 0 : paidUnused,

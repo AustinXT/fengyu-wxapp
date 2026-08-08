@@ -62,7 +62,7 @@ module.exports.strike = function(isMember, special, list) {
         <text class="price-integer">{{price.fmt(price.eff(isMember, selectedSku.special_price, selectedSku.price))}}</text>
         <text wx:if="{{price.strike(isMember, selectedSku.special_price, selectedSku.price)}}" class="price-origin">¥{{price.fmt(price.strike(isMember, selectedSku.special_price, selectedSku.price))}}</text>
       </view>
-      <text class="price-unit" wx:if="{{selectedSku.session_count}}">/ {{selectedSku.session_count}} 次</text>
+      <text class="price-unit">/ {{selectedSku.session_count || 1}} {{selectedSku.unit || '次'}}</text>
     </view>
     <view class="price-row" wx:else>
       <text class="price-hint">请选择规格</text>
@@ -213,7 +213,7 @@ module.exports.strike = function(isMember, special, list) {
                     <text class="bundle-sku-row__name">{{sku.specName}}</text>
                     <view class="bundle-sku-row__meta">
                       <text class="bundle-sku-row__price">套餐价 ¥{{price.fmt(sku.bundlePrice)}}</text>
-                      <text wx:if="{{sku.sessionCount}}" class="bundle-sku-row__sessions">{{sku.sessionCount}}次</text>
+                      <text wx:if="{{sku.sessionCount || sku.unit}}" class="bundle-sku-row__sessions">{{sku.sessionCount || 1}} {{sku.unit || '次'}}</text>
                     </view>
                   </view>
                   <van-stepper
@@ -246,7 +246,7 @@ module.exports.strike = function(isMember, special, list) {
                     <text class="bundle-sku-row__name">{{sku.specName}}</text>
                     <view class="bundle-sku-row__meta">
                       <text class="bundle-sku-row__price">套餐价 ¥{{price.fmt(sku.bundlePrice)}}</text>
-                      <text wx:if="{{sku.sessionCount}}" class="bundle-sku-row__sessions">{{sku.sessionCount}}次</text>
+                      <text wx:if="{{sku.sessionCount || sku.unit}}" class="bundle-sku-row__sessions">{{sku.sessionCount || 1}} {{sku.unit || '次'}}</text>
                     </view>
                   </view>
                 </view>
@@ -269,7 +269,7 @@ module.exports.strike = function(isMember, special, list) {
           >
             <text class="sku-display-name">{{item.spec_name}}</text>
             <text class="sku-price">¥{{price.fmt(item.price)}}</text>
-            <text class="sku-sessions" wx:if="{{item.session_count}}">{{item.session_count}}次</text>
+            <text class="sku-sessions" wx:if="{{item.session_count || item.unit}}">{{item.session_count || 1}} {{item.unit || '次'}}</text>
           </view>
         </view>
 

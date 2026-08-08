@@ -19,6 +19,7 @@ interface ExperienceSku {
   /** 划线原价（标价）；null=不划线 */
   strikePrice: number | null;
   session_count: number | null;
+  unit: string;
 }
 
 Page({
@@ -84,6 +85,7 @@ Page({
         strikePrice: pv.strike,
         session_count: raw.session_count !== null && raw.session_count !== undefined
           ? Number(raw.session_count) : null,
+        unit: raw.unit || '次',
       };
       this.setData({ sku });
       wx.setNavigationBarTitle({ title: sku.product_name || sku.spec_name || '体验卡详情' });

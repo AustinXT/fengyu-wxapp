@@ -25,6 +25,7 @@ interface ServiceRecord {
     session_count: number | null;
     remaining_sessions: number | null;
     paid_sessions: number | null;
+    unit: string;
     sessionText: string;
   }>;
   // 格式化后的字段
@@ -131,13 +132,13 @@ Page({
     // 服务记录为只读卡片，详情信息已在列表中展示
   },
 
-  /** 确认服务完成（待客户确认 → 已完成），确认后才扣减疗程次数 */
+  /** 确认服务完成（待客户确认 → 已完成），确认后才扣减服务额度 */
   async onConfirmCompletion(e: WechatMiniprogram.TouchEvent) {
     const { id } = e.currentTarget.dataset as { id: string };
     if (this.data.confirmingId) return;
     const res = await wx.showModal({
       title: '确认服务完成',
-      content: '确认后本次服务将完成并扣减疗程次数，确认后可对美容师评价。',
+      content: '确认后本次服务将完成并扣减服务额度，确认后可对美容师评价。',
       confirmText: '确认完成',
     });
     if (!res.confirm) return;
@@ -243,10 +244,11 @@ function calcDuration(record: any): string {
 }
 
 function formatServiceItemSessions(item: any): string {
+  const unit = item.unit || (item.product_type === '家居产品' ? '盒' : '次');
   const parts: string[] = [];
   const used = toNumberOrNull(item.session_used);
   if (used !== null && used > 0) {
-    parts.push(`本次核销 ${used} 次`);
+    parts.push(`本次核销 ${used} ${unit}`);
   }
 
   const remaining = toNumberOrNull(item.remaining_sessions);
@@ -255,7 +257,7 @@ function formatServiceItemSessions(item: any): string {
   const metrics: string[] = [];
   if (remaining !== null) metrics.push(`剩余 ${remaining}`);
   if (Object.prototype.hasOwnProperty.call(item, 'paid_sessions')) metrics.push(`已付 ${paid === null ? '—' : paid}`);
-  if (total !== null) metrics.push(`共 ${total} 次`);
+  if (total !== null) metrics.push(`共 ${total} ${unit}`);
   if (metrics.length > 0) parts.push(metrics.join(' / '));
 
   return parts.join(' · ');

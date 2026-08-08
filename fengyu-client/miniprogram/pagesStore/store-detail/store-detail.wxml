@@ -232,10 +232,11 @@
     </van-radio-group>
     <view class="source-promoter">
       <van-field
-        value="{{ promoterName }}"
+        value="{{ promoterEmployeeName }}"
         label="推荐人"
         placeholder="推荐人姓名（选填）"
-        bind:input="onPromoterNameInput"
+        maxlength="50"
+        bind:input="onPromoterEmployeeNameInput"
         border="{{ false }}"
       />
     </view>

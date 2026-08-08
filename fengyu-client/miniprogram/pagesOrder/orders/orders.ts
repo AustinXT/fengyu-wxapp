@@ -94,6 +94,7 @@ Page({
         const paid = Number(i.paid_sessions ?? 0);
         return {
           ...i,
+          unit: i.unit || (i.product_type === '家居产品' ? '盒' : '次'),
           paid_sessions: paid,
           // NULL 卡（0040 前未回填）：wxml 据此把「已付 0」改显「已付 —」
           paid_sessions_null: paidNull,
