@@ -14,19 +14,35 @@
 export interface RecomputeInput {
   totalAmount: number;     // 商品合计（未扣券）
   couponDiscount: number;  // 优惠券抵扣
+  pointsBalance: number;   // 可用积分余额
+  usePoints: boolean;      // 是否启用积分抵扣
+  pointsUsed?: number;     // 指定使用积分；未传时按上限自动计算
+  pointsToYuanRate: number; // 积分折算元比例
+  pointsDeductionMaxRate: number; // 抵扣上限比例
   cardBalance: number;     // 储值卡余额
   useCard: boolean;        // 用户开关
 }
 
 export interface RecomputeResult {
   prepaidCardAmount: number;   // 储值卡抵扣金额（不计入实付）
+  pointsUsed: number;          // 使用积分
+  pointsDiscount: number;      // 积分抵扣金额
+  maxPointsUsable: number;     // 当前订单最多可用积分
   paidAmount: number;          // 实付金额（走支付通道）
   showPayMethodGroup: boolean; // 是否显示支付方式按钮组
-  netBeforeCard: number;       // 应抵扣部分 = totalAmount - couponDiscount，便于 UI 复用
+  netBeforeCard: number;       // 应抵扣部分 = totalAmount - couponDiscount - pointsDiscount，便于 UI 复用
 }
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+function moneyToCents(n: number): number {
+  return Math.max(0, Math.round((Number(n) || 0) * 100));
+}
+
+function pointsToDiscountCents(points: number, rate: number): number {
+  return Math.floor(points * rate * 100 + 1e-6);
 }
 
 /**
@@ -35,10 +51,32 @@ function round2(n: number): number {
 export function recomputeAmounts(input: RecomputeInput): RecomputeResult {
   const total = Number(input.totalAmount) || 0;
   const coupon = Number(input.couponDiscount) || 0;
+  const pointsBalance = Math.max(0, Math.floor(Number(input.pointsBalance) || 0));
+  const pointsRate = Number(input.pointsToYuanRate) || 0.01;
+  const maxRate = Number(input.pointsDeductionMaxRate) || 0;
   const balance = Math.max(0, Number(input.cardBalance) || 0);
 
-  // 应抵扣部分（券后金额，最低 0，避免负数）
-  const netBeforeCard = round2(Math.max(0, total - coupon));
+  const netAfterCoupon = round2(Math.max(0, total - coupon));
+  const pointsCapCents = Math.min(
+    moneyToCents(netAfterCoupon),
+    Math.floor(Math.max(0, total) * maxRate * 100 + 1e-6),
+  );
+  const maxPointsUsable = pointsRate > 0
+    ? Math.max(0, Math.min(pointsBalance, Math.floor(pointsCapCents / (pointsRate * 100))))
+    : 0;
+  const effectiveUsePoints = input.usePoints && pointsBalance > 0 && maxPointsUsable > 0;
+  const rawRequested = input.pointsUsed !== undefined && input.pointsUsed !== null
+    ? Math.floor(Number(input.pointsUsed) || 0)
+    : maxPointsUsable;
+  const pointsUsed = effectiveUsePoints
+    ? Math.max(0, Math.min(rawRequested, maxPointsUsable))
+    : 0;
+  const pointsDiscount = pointsUsed > 0
+    ? round2(Math.min(pointsCapCents, pointsToDiscountCents(pointsUsed, pointsRate)) / 100)
+    : 0;
+
+  // 应抵扣部分（券和积分后金额，最低 0，避免负数）
+  const netBeforeCard = round2(Math.max(0, netAfterCoupon - pointsDiscount));
 
   // 余额 = 0 → useCard 被强制视为 false
   const effectiveUseCard = input.useCard && balance > 0 && netBeforeCard > 0;
@@ -50,6 +88,9 @@ export function recomputeAmounts(input: RecomputeInput): RecomputeResult {
 
   return {
     prepaidCardAmount,
+    pointsUsed,
+    pointsDiscount,
+    maxPointsUsable,
     paidAmount,
     showPayMethodGroup: paidAmount > 0,
     netBeforeCard,

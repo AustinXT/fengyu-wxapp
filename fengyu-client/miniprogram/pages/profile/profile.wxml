@@ -99,7 +99,7 @@
       title="客服热线"
       icon="phone-o"
       is-link
-      value="400-000-0000"
+      value="{{servicePhone || '-'}}"
       bindtap="onCallService"
     />
     <van-cell title="版本" icon="setting-o" value="{{appVersion}}" />

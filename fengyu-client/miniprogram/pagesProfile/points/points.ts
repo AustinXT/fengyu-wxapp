@@ -1,7 +1,7 @@
 // pagesProfile/points/points.ts
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
-import { formatDateTimeShort } from '../../utils/format';
+import { formatDate, formatDateTimeShort } from '../../utils/format';
 import { getMemberLevelBadgeClass } from '../../utils/member-level-badge';
 
 const PAGE_SIZE = 20;
@@ -12,6 +12,8 @@ Page({
     levelName: '',
     levelBadgeClass: 'member-level-badge--default',
     nextLevel: null as { name: string; minPoints: number } | null,
+    expiringSoonPoints: 0,
+    nextExpireDate: '',
     records: [] as any[],
     isLoading: false,
     loadingMore: false,
@@ -48,6 +50,8 @@ Page({
         levelName: data.levelName || '',
         levelBadgeClass: getMemberLevelBadgeClass(data.levelName || ''),
         nextLevel: data.nextLevel || null,
+        expiringSoonPoints: data.expiringSoonPoints || 0,
+        nextExpireDate: data.nextExpireAt ? formatDate(data.nextExpireAt) : '',
       });
     } catch (err: any) {
       Toast.fail(err.message || '加载失败');

@@ -21,6 +21,8 @@ describe('points.balance', () => {
     pg.query.mockResolvedValueOnce([{
       balance: 1200,
       level_name: '银卡会员',
+      expiring_soon_points: 300,
+      next_expire_at: '2026-09-01T00:00:00.000Z',
     }])
 
     const ctx = createBoundCtx({})
@@ -30,6 +32,8 @@ describe('points.balance', () => {
     expect(ctx.result.levelName).toBe('银卡会员')
     expect(ctx.result.levelBenefits).toBeNull()
     expect(ctx.result.nextLevel).toBeNull()
+    expect(ctx.result.expiringSoonPoints).toBe(300)
+    expect(ctx.result.nextExpireAt).toBe('2026-09-01T00:00:00.000Z')
   })
 
   test('无积分记录返回默认值', async () => {
@@ -42,6 +46,8 @@ describe('points.balance', () => {
     expect(ctx.result.levelName).toBeNull()
     expect(ctx.result.levelBenefits).toBeNull()
     expect(ctx.result.nextLevel).toBeNull()
+    expect(ctx.result.expiringSoonPoints).toBe(0)
+    expect(ctx.result.nextExpireAt).toBeNull()
   })
 
   test('已是最高等级时 nextLevel 为 null', async () => {

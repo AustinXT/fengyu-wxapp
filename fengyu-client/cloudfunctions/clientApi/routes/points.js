@@ -6,19 +6,39 @@
  */
 
 const pg = require('../db/pg')
+const { getPointsToYuanRate, getPointsDeductionMaxRate } = require('../utils/config')
 
 /**
  * 查询积分余额及会员等级
- * 积分余额从 client_wechat_users.points_balance 直接读取（已去掉 customer_points 表）
+ * 积分余额从 client_wechat_users.points_balance 直接读取；即将到期积分从 point_batches 计算。
  */
 async function balance(ctx) {
   const { userId } = ctx.auth
+  const [pointsToYuanRate, pointsDeductionMaxRate] = await Promise.all([
+    getPointsToYuanRate(),
+    getPointsDeductionMaxRate(),
+  ])
 
-  // 积分余额直接读 client_wechat_users.points_balance（已去掉 customer_points 表）
+  // 积分余额直接读 client_wechat_users.points_balance，批次到期信息实时按 point_batches 计算。
   const rows = await pg.query(`
     SELECT
       cwu.points_balance AS balance,
-      cwu.member_level AS level_name
+      cwu.member_level AS level_name,
+      COALESCE((
+        SELECT SUM(pb.remaining_amount)
+        FROM point_batches pb
+        WHERE pb.user_id = cwu.user_id
+          AND pb.remaining_amount > 0
+          AND pb.expire_at > NOW()
+          AND pb.expire_at <= NOW() + INTERVAL '60 days'
+      ), 0) AS expiring_soon_points,
+      (
+        SELECT MIN(pb.expire_at)
+        FROM point_batches pb
+        WHERE pb.user_id = cwu.user_id
+          AND pb.remaining_amount > 0
+          AND pb.expire_at > NOW()
+      ) AS next_expire_at
     FROM client_wechat_users cwu
     WHERE cwu.user_id = $1
   `, [userId])
@@ -28,6 +48,10 @@ async function balance(ctx) {
     levelName: rows[0]?.level_name || null,
     levelBenefits: null,
     nextLevel: null,
+    expiringSoonPoints: Number(rows[0]?.expiring_soon_points) || 0,
+    nextExpireAt: rows[0]?.next_expire_at || null,
+    pointsToYuanRate,
+    pointsDeductionMaxRate,
   }
 }
 

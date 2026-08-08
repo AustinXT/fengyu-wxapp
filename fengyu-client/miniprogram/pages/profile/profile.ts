@@ -20,10 +20,14 @@ Page({
     isLoggedOut: false,
     // 临时开关：订单主动查看入口（业务平稳后恢复）。见 utils/feature-flags.ts
     ordersEntryEnabled: ORDERS_ENTRY_ENABLED,
+    // 客服热线（admin 系统配置 → 基础配置下发；空串时 wxml 显示占位「-」并禁用拨号）
+    servicePhone: '',
   },
 
   onLoad() {
     this.refreshData();
+    // 客服热线几乎不变，onLoad 拉一次即可（profile 作为 tab 页 onLoad 全生命周期仅触发一次）
+    this.loadServicePhone();
   },
 
   async onShow() {
@@ -109,6 +113,15 @@ Page({
     }
   },
 
+  async loadServicePhone() {
+    try {
+      const data = await callClientApi<{ phone: string }>('config.serviceHotline', {});
+      this.setData({ servicePhone: data?.phone || '' });
+    } catch (_err) {
+      // 静默失败：保留占位「-」，不阻塞页面
+    }
+  },
+
   onPoints() {
     wx.navigateTo({ url: '/pagesProfile/points/points' });
   },
@@ -126,8 +139,13 @@ Page({
   },
 
   onCallService() {
+    const phone = this.data.servicePhone;
+    if (!phone) {
+      wx.showToast({ title: '客服热线未配置', icon: 'none' });
+      return;
+    }
     wx.makePhoneCall({
-      phoneNumber: '400-000-0000',
+      phoneNumber: phone,
       fail: () => {},
     });
   },
