@@ -364,6 +364,15 @@ async function cascadeRefund(client, params) {
     const received = Number(orderRes.rows[0]?.received || 0)
     const refunded = Number(orderRes.rows[0]?.refunded || 0)
     const target = received > 0 ? Math.round((grantedTotal * refunded) / received) : grantedTotal
+    const reversedRes = await client.query(
+      `SELECT COALESCE(-SUM(amount), 0) AS reversed
+         FROM point_transactions
+        WHERE user_id = $1
+          AND ref_order_id = $2
+          AND type = '消费冲销'`,
+      [pointUserId, saleOrderId],
+    )
+    const reverseDelta = Math.max(0, target - Number(reversedRes.rows[0]?.reversed || 0))
     await client.query(
       `INSERT INTO point_transactions
          (user_id, ref_order_id, type, amount, created_at)
@@ -374,10 +383,47 @@ async function cascadeRefund(client, params) {
       [pointUserId, saleOrderId, -target, now],
     )
     reversedPoints = target
+    if (reverseDelta > 0) {
+      await client.query(
+        `WITH locked_batches AS (
+           SELECT id, ref_order_id, expire_at, remaining_amount
+             FROM point_batches
+            WHERE user_id = $1
+              AND remaining_amount > 0
+              AND expire_at > NOW()
+            ORDER BY CASE WHEN ref_order_id = $3 THEN 0 ELSE 1 END, expire_at, id
+            FOR UPDATE
+         ),
+         prioritized AS (
+           SELECT id,
+                  remaining_amount,
+                  SUM(remaining_amount) OVER (
+                    ORDER BY CASE WHEN ref_order_id = $3 THEN 0 ELSE 1 END, expire_at, id
+                  ) AS running
+             FROM locked_batches
+         ),
+         allocation AS (
+           SELECT id,
+                  LEAST(remaining_amount, GREATEST(0, $2 - (running - remaining_amount))) AS consume_amount
+             FROM prioritized
+            WHERE running - remaining_amount < $2
+         )
+         UPDATE point_batches pb
+            SET remaining_amount = pb.remaining_amount - allocation.consume_amount,
+                updated_at = NOW()
+           FROM allocation
+          WHERE pb.id = allocation.id
+            AND allocation.consume_amount > 0`,
+        [pointUserId, reverseDelta, saleOrderId],
+      )
+    }
     await client.query(
       `UPDATE client_wechat_users
           SET points_balance = COALESCE((
-                SELECT SUM(amount) FROM point_transactions WHERE user_id = $1
+                SELECT SUM(remaining_amount)
+                  FROM point_batches
+                 WHERE user_id = $1
+                   AND expire_at > NOW()
               ), 0),
               points_updated_at = $2,
               updated_at = $2

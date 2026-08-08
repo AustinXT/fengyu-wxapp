@@ -41,6 +41,8 @@ interface RawOrder {
   market_name?: string;
   coupon_discount?: string;
   coupon_name?: string;
+  points_used?: number | string;
+  points_discount?: string;
   allocation_status?: string;
   legacy_source?: string;
   offline_confirmed_by_name?: string;
@@ -187,6 +189,8 @@ interface DisplayOrder {
   marketName: string;
   couponName: string;
   couponDiscount: string;
+  pointsUsed: string;
+  pointsDiscount: string;
   allocationStatus: string;
   isLegacy: boolean;
   isActivity: boolean;
@@ -462,6 +466,8 @@ Page({
           marketName: o.market_name || '',
           couponName: o.coupon_name || '',
           couponDiscount: Number(o.coupon_discount || 0) > 0 ? Number(o.coupon_discount).toFixed(2) : '',
+          pointsUsed: Number(o.points_used || 0) > 0 ? String(Number(o.points_used || 0)) : '',
+          pointsDiscount: Number(o.points_discount || 0) > 0 ? Number(o.points_discount).toFixed(2) : '',
           allocationStatus: o.allocation_status || '',
           isLegacy: o.legacy_source === 'workfine',
           isActivity: !!o.is_activity,
