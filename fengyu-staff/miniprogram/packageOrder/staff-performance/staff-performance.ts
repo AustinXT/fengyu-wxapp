@@ -32,6 +32,7 @@ interface PerformanceItem {
   commissionRate?: number;  // 提成比例（0.12 = 12%）
   servicePrice?: number | string;  // 单次划卡价（消耗业绩口径，仅展示用）
   sessionUsed?: number;
+  unit?: string;
   customerName: string;
   clientPhone?: string;
   orderId?: string;

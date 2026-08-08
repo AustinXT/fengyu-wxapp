@@ -127,15 +127,27 @@
       <van-tab title="疗程卡">
         <view class="tab-content">
           <view class="tab-hint">仅显示顾客在本店购买的卡（跨店卡需在购买门店使用）</view>
+          <view wx:if="{{cardsLoaded}}" class="card-filter-bar">
+            <view class="card-filter-selectors">
+              <picker mode="selector" range="{{cardProductKindOptions}}" range-key="label" bindchange="onCardProductKindChange">
+                <view class="card-filter-picker">{{cardProductKindLabel}}</view>
+              </picker>
+              <picker mode="selector" range="{{cardCategoryOptions}}" range-key="label" disabled="{{!cardProductKind}}" bindchange="onCardCategoryChange">
+                <view class="card-filter-picker">{{cardCategoryLabel}}</view>
+              </picker>
+            </view>
+            <van-search value="{{cardNameQuery}}" placeholder="搜索疗程卡名称" bind:change="onCardNameChange" />
+          </view>
           <view wx:if="{{!cardsLoaded}}" class="loading-wrap">
             <van-loading type="spinner" color="#C0322A" />
           </view>
+          <van-empty wx:elif="{{treatmentCards.length === 0 && hasTreatmentCardFilter}}" description="未找到匹配的疗程卡" />
           <van-empty wx:elif="{{treatmentCards.length === 0}}" description="顾客在本店暂无可核销疗程" />
           <view wx:else class="card-list">
             <view
               wx:for="{{treatmentCards}}" wx:key="saleItemId"
               class="treatment-card {{item.selected ? 'treatment-card--selected' : ''}} {{item.disabled ? 'treatment-card--disabled' : ''}}"
-              bindtap="onToggleCard" data-index="{{index}}"
+              bindtap="onToggleCard" data-sale-item-id="{{item.saleItemId}}"
             >
               <view class="tc-row">
                 <van-icon
@@ -158,7 +170,7 @@
                   <view class="tc-meta">
                     <text class="tc-order">{{item.saleOrderId}}</text>
                   </view>
-                  <text class="tc-sessions">剩余 {{item.paidUnusedSessions}} / 已付 {{item.paidSessions == null ? '—' : item.paidSessions}} / 共 {{item.totalSessions}} 次{{item.unitRealPrice ? ' · 单次实付 ¥' + item.unitRealPrice : ''}}{{item.disabledReason ? ' · ' + item.disabledReason : ''}}</text>
+                  <text class="tc-sessions">剩余 {{item.paidUnusedSessions}} / 已付 {{item.paidSessions == null ? '—' : item.paidSessions}} / 共 {{item.totalSessions}} {{item.unit || '次'}}{{item.unitRealPrice ? ' · 单' + (item.unit || '次') + '实付 ¥' + item.unitRealPrice : ''}}{{item.disabledReason ? ' · ' + item.disabledReason : ''}}</text>
                   <view class="session-bar">
                     <view class="session-bar__seg session-bar__seg--used" style="width:{{item.usedPct}}%"></view>
                     <view class="session-bar__seg session-bar__seg--paid-unused" style="width:{{item.paidUnusedPct}}%"></view>
@@ -171,9 +183,9 @@
                 <van-stepper
                   value="{{item.sessionCount}}" min="{{1}}" max="{{item.consumableSessions}}"
                   input-width="60rpx" button-size="48rpx"
-                  bind:change="onStepperChange" data-index="{{index}}"
+                  bind:change="onStepperChange" data-sale-item-id="{{item.saleItemId}}"
                 />
-                <text class="tc-stepper-unit">次</text>
+                <text class="tc-stepper-unit">{{item.unit || '次'}}</text>
               </view>
             </view>
           </view>

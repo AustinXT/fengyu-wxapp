@@ -224,6 +224,37 @@
 /* ===== 持卡汇总（管理层只读） ===== */
 .card-list { padding: 0 var(--spacing-card) var(--spacing-card); }
 
+.card-filter-bar {
+  padding: 0 var(--spacing-card) var(--spacing-tight);
+  background: var(--color-bg-page);
+}
+
+.card-filter-selectors {
+  display: flex;
+  gap: var(--spacing-tight);
+  margin-bottom: var(--spacing-tight);
+}
+
+.card-filter-selectors picker {
+  flex: 1;
+  min-width: 0;
+}
+
+.card-filter-picker {
+  min-height: 64rpx;
+  padding: 0 20rpx;
+  display: flex;
+  align-items: center;
+  border: 1rpx solid var(--color-border);
+  border-radius: 8rpx;
+  background: var(--color-bg-card);
+  color: var(--color-text-secondary);
+  font-size: 24rpx;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .treatment-card {
   background: var(--color-bg-card);
   border-radius: var(--radius-lg);

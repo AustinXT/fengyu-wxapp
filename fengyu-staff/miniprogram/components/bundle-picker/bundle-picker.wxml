@@ -79,7 +79,7 @@
             >
               <view class="bundle-sku-info">
                 <text class="bundle-sku-name">{{sku.specName}}</text>
-                <text class="bundle-sku-meta" wx:if="{{sku.sessionCount}}">{{sku.sessionCount}} 次</text>
+                <text class="bundle-sku-meta" wx:if="{{sku.sessionCount || sku.unit}}">{{sku.sessionCount || 1}} {{sku.unit || '次'}}</text>
               </view>
               <van-stepper
                 value="{{sku.qty}}"
@@ -112,7 +112,7 @@
               </view>
               <view class="bundle-sku-info">
                 <text class="bundle-sku-name">{{sku.specName}}</text>
-                <text class="bundle-sku-meta" wx:if="{{sku.sessionCount}}">{{sku.sessionCount}} 次</text>
+                <text class="bundle-sku-meta" wx:if="{{sku.sessionCount || sku.unit}}">{{sku.sessionCount || 1}} {{sku.unit || '次'}}</text>
               </view>
             </view>
           </block>

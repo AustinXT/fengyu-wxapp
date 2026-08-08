@@ -252,6 +252,37 @@
 
 .card-list { padding: 0 24rpx 24rpx; }
 
+.card-filter-bar {
+  padding: 0 24rpx 16rpx;
+  background: var(--color-bg-page);
+}
+
+.card-filter-selectors {
+  display: flex;
+  gap: 12rpx;
+  margin-bottom: 12rpx;
+}
+
+.card-filter-selectors picker {
+  flex: 1;
+  min-width: 0;
+}
+
+.card-filter-picker {
+  min-height: 64rpx;
+  padding: 0 20rpx;
+  display: flex;
+  align-items: center;
+  border: 1rpx solid var(--color-border);
+  border-radius: 8rpx;
+  background: #FFFFFF;
+  color: var(--color-text-secondary);
+  font-size: 24rpx;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .treatment-card {
   background: #FFFFFF;
   border-radius: 16rpx;

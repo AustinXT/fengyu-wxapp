@@ -78,6 +78,7 @@ interface PaidOrderItem {
   totalSessions: number;
   paidSessions: number | null;
   productType: string;
+  unit?: string;
   storeId?: string;
   /** 单次优惠后价（unit_real_price，应付口径；全额已付卡下=单次实付） */
   unitRealPrice?: string;
@@ -85,6 +86,12 @@ interface PaidOrderItem {
   category?: string;
   /** 品项标签色（display_color） */
   categoryColor?: string;
+  /** 一级品项（product_categories.product_kind） */
+  productKind?: string;
+  /** 二级品项 ID（历史无分类卡为空） */
+  categoryId?: string;
+  /** 二级品项名称（保留 category 兼容字段） */
+  categoryName?: string;
 }
 
 interface PaidOrder {
@@ -132,6 +139,7 @@ interface TreatmentCard {
   saleOrderId: string;
   paidAt: string;
   storeId?: string;
+  unit: string;
   /** 单次优惠后价（unit_real_price，应付口径；全额已付卡下=单次实付） */
   unitRealPrice?: string;
   /** 品项标签（product_categories.category_name） */
@@ -140,6 +148,14 @@ interface TreatmentCard {
   categoryColor?: string;
   /** 单据类型展示文案（ORDER_TYPE_LABEL 映射后） */
   saleOrderTypeLabel?: string;
+  productKind?: string;
+  categoryId?: string;
+  categoryName?: string;
+}
+
+interface CardFilterOption {
+  value: string;
+  label: string;
 }
 
 // Tab 4: 赠送记录
@@ -149,6 +165,7 @@ interface GiftItem {
   specName?: string;
   quantity: number;
   sessionCount: number;
+  unit: string;
   remainingSessions: number;
   paidSessions: number | null;
   /** 已付未用次数（与持卡汇总同口径）；paidSessions 为 null 时退回物理剩余 */
@@ -169,6 +186,7 @@ interface PromoOrder {
     remainingSessions?: number;
     paidSessions?: number | null;
     paidUnusedSessions?: number;
+    unit?: string;
   }>;
 }
 
@@ -221,6 +239,14 @@ Page({
     // Tab 3: 持卡汇总
     treatmentCards: [] as TreatmentCard[],
     cardsLoaded: false,
+    cardProductKind: '',
+    cardCategoryId: '',
+    cardNameQuery: '',
+    cardProductKindOptions: [] as CardFilterOption[],
+    cardCategoryOptions: [] as CardFilterOption[],
+    cardProductKindLabel: '全部一级品项',
+    cardCategoryLabel: '全部二级品项',
+    hasTreatmentCardFilter: false,
     // Tab 4: 赠送记录
     giftData: null as GiftData | null,
     giftLoaded: false,
@@ -231,6 +257,7 @@ Page({
 
   _clientUserId: '' as string,
   _loaded: false,
+  _allTreatmentCards: [] as TreatmentCard[],
 
   onLoad(options: Record<string, string>) {
     const clientUserId = options.clientUserId || '';
@@ -489,8 +516,12 @@ Page({
               saleOrderId: order.saleOrderId,
               paidAt: order.paidAt,
               unitRealPrice: item.unitRealPrice ? formatAmount(Number(item.unitRealPrice)) : undefined,
+              unit: item.unit || '次',
               category: item.category,
               categoryColor: item.categoryColor,
+              productKind: item.productKind || '',
+              categoryId: item.categoryId || '',
+              categoryName: item.categoryName || item.category || '',
               saleOrderTypeLabel: ORDER_TYPE_LABEL[order.saleOrderType || ''] || order.saleOrderType || '',
             });
           }
@@ -507,8 +538,78 @@ Page({
         }
         return (a.paidAt < b.paidAt) ? 1 : (a.paidAt > b.paidAt) ? -1 : 0;
       });
-      this.setData({ treatmentCards: cards, cardsLoaded: true });
+      this.applyTreatmentCardFilters(cards, {
+        productKind: '',
+        categoryId: '',
+        nameQuery: '',
+      });
+      this.setData({ cardsLoaded: true });
     } catch (_) {}
+  },
+
+  applyTreatmentCardFilters(
+    this: any,
+    cards: TreatmentCard[] = this._allTreatmentCards,
+    filters: { productKind?: string; categoryId?: string; nameQuery?: string } = {},
+  ) {
+    this._allTreatmentCards = cards;
+    const productKind = filters.productKind ?? this.data.cardProductKind;
+    const categoryId = filters.categoryId ?? this.data.cardCategoryId;
+    const nameQuery = filters.nameQuery ?? this.data.cardNameQuery;
+    const productKindOptions: CardFilterOption[] = [
+      { value: '', label: '全部一级品项' },
+      ...Array.from(new Set(cards.map((card) => card.productKind).filter((value): value is string => Boolean(value))))
+        .map((value) => ({ value, label: value })),
+    ];
+    const categoryOptions: CardFilterOption[] = [
+      { value: '', label: productKind ? '全部二级品项' : '请先选择一级品项' },
+      ...Array.from(
+        new Map(
+          cards
+            .filter((card) => card.categoryId && card.categoryName && productKind && card.productKind === productKind)
+            .map((card) => [card.categoryId!, { value: card.categoryId!, label: card.categoryName! }]),
+        ).values(),
+      ),
+    ];
+    const query = nameQuery.trim().toLocaleLowerCase();
+    const treatmentCards = cards.filter((card) => {
+      if (productKind && card.productKind !== productKind) return false;
+      if (categoryId && card.categoryId !== categoryId) return false;
+      return !query || card.itemName.toLocaleLowerCase().includes(query);
+    });
+    this.setData({
+      treatmentCards,
+      cardProductKind: productKind,
+      cardCategoryId: categoryId,
+      cardNameQuery: nameQuery,
+      cardProductKindOptions: productKindOptions,
+      cardCategoryOptions: categoryOptions,
+      cardProductKindLabel: productKind || '全部一级品项',
+      cardCategoryLabel: categoryOptions.find((option) => option.value === categoryId)?.label || categoryOptions[0].label,
+      hasTreatmentCardFilter: Boolean(productKind || categoryId || nameQuery),
+    });
+  },
+
+  onCardProductKindChange(e: WechatMiniprogram.CustomEvent) {
+    const index = Number(e.detail.value);
+    const productKind = this.data.cardProductKindOptions[index]?.value || '';
+    this.applyTreatmentCardFilters(this._allTreatmentCards, {
+      productKind,
+      categoryId: '',
+      nameQuery: this.data.cardNameQuery,
+    });
+  },
+
+  onCardCategoryChange(e: WechatMiniprogram.CustomEvent) {
+    const index = Number(e.detail.value);
+    const categoryId = this.data.cardCategoryOptions[index]?.value || '';
+    this.applyTreatmentCardFilters(this._allTreatmentCards, { categoryId });
+  },
+
+  onCardNameChange(e: WechatMiniprogram.CustomEvent) {
+    const detail = e.detail as unknown as string | { value?: string };
+    const nameQuery = typeof detail === 'string' ? detail : detail?.value || '';
+    this.applyTreatmentCardFilters(this._allTreatmentCards, { nameQuery });
   },
 
   onOrderTap(e: WechatMiniprogram.TouchEvent) {
@@ -533,10 +634,11 @@ Page({
             const gt = Number(gi.sessionCount || 0);
             const grm = Number(gi.remainingSessions || 0);
             const gpr = gi.paidSessions;
-            return {
-              ...gi,
-              specName: normalizeSpecName(gi.productName, gi.specName),
-              paidUnusedSessions: gpr == null ? grm : Math.max(0, Number(gpr) - Math.max(gt - grm, 0)),
+          return {
+            ...gi,
+            specName: normalizeSpecName(gi.productName, gi.specName),
+            unit: gi.unit || '次',
+            paidUnusedSessions: gpr == null ? grm : Math.max(0, Number(gpr) - Math.max(gt - grm, 0)),
             };
           }),
         })),
@@ -547,6 +649,7 @@ Page({
           return {
             ...g,
             specName: normalizeSpecName(g.productName, g.specName),
+            unit: g.unit || '次',
             paidUnusedSessions: fpr == null ? frm : Math.max(0, Number(fpr) - Math.max(ft - frm, 0)),
             createdAt: g.createdAt ? formatDateTime(g.createdAt) : g.createdAt,
           };

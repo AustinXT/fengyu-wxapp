@@ -22,6 +22,7 @@ interface PaidOrderItem {
   /** 可消费次数 = min(remaining, paid - used) = min(remaining, paid - (total - remaining)) */
   consumableSessions: number;
   productType: string;
+  unit?: string;
   storeId?: string;
   /** NULL 卡（paid_sessions 为 null 的历史卡）置 true：灰显不可核销 */
   disabled?: boolean;
@@ -38,6 +39,17 @@ interface PaidOrderItem {
   saleOrderId?: string;
   /** 拍平后回填：支付时间（已格式化） */
   paidAt?: string;
+  /** 一级品项（product_categories.product_kind） */
+  productKind?: string;
+  /** 二级品项 ID（历史无分类卡为空） */
+  categoryId?: string;
+  /** 二级品项名称（保留 category 兼容字段） */
+  categoryName?: string;
+}
+
+interface CardFilterOption {
+  value: string;
+  label: string;
 }
 
 interface PaidOrder {
@@ -89,7 +101,16 @@ Page({
     selectedCustomer: null as null | { id: string; name: string; phone: string; clientUserId?: string },
     // 订单选择
     paidItems: [] as PaidOrderItem[],
-    selectedItems: [] as Array<{ saleItemId: string; itemName: string; spec: string; saleOrderId: string; sessionCount: number }>,
+    paidItemsLoaded: false,
+    paidItemProductKind: '',
+    paidItemCategoryId: '',
+    paidItemNameQuery: '',
+    paidItemProductKindOptions: [] as CardFilterOption[],
+    paidItemCategoryOptions: [] as CardFilterOption[],
+    paidItemProductKindLabel: '全部一级品项',
+    paidItemCategoryLabel: '全部二级品项',
+    hasPaidItemFilter: false,
+    selectedItems: [] as Array<{ saleItemId: string; itemName: string; spec: string; saleOrderId: string; sessionCount: number; unit: string }>,
     selectedFlowNos: {} as Record<string, boolean>, // 预计算的选中 saleItemId 集合，供 WXML 使用
     selectedSessionCounts: {} as Record<string, number>, // 预计算的选中 sessionCount，供 stepper 使用
     // 服务人员
@@ -106,6 +127,8 @@ Page({
     showRemarkPicker: false,
     remarkColumns: ['自定义输入（手动填写）', DEPOSIT_REFUND_REMARK] as string[],
   },
+
+  _allPaidItems: [] as PaidOrderItem[],
 
   onLoad(options) {
     const { staffName, staffWfId } = app.globalData;
@@ -125,6 +148,7 @@ Page({
           spec: i.spec,
           saleOrderId: i.saleOrderId,
           sessionCount: i.sessionCount,
+          unit: i.unit || '次',
         }));
         const flowNos: Record<string, boolean> = {};
         const sessionCounts: Record<string, number> = {};
@@ -238,11 +262,21 @@ Page({
   },
 
   onClearCustomer() {
+    this._allPaidItems = [];
     this.setData({
       selectedCustomer: null,
       customerSearch: '',
       customerResults: [],
       paidItems: [],
+      paidItemsLoaded: false,
+      paidItemProductKind: '',
+      paidItemCategoryId: '',
+      paidItemNameQuery: '',
+      paidItemProductKindOptions: [],
+      paidItemCategoryOptions: [],
+      paidItemProductKindLabel: '全部一级品项',
+      paidItemCategoryLabel: '全部二级品项',
+      hasPaidItemFilter: false,
       selectedItems: [],
       selectedFlowNos: {},
       selectedSessionCounts: {},
@@ -250,6 +284,19 @@ Page({
   },
 
   async loadPaidOrders(clientUserId: string) {
+    this._allPaidItems = [];
+    this.setData({
+      paidItems: [],
+      paidItemsLoaded: false,
+      paidItemProductKind: '',
+      paidItemCategoryId: '',
+      paidItemNameQuery: '',
+      paidItemProductKindOptions: [],
+      paidItemCategoryOptions: [],
+      paidItemProductKindLabel: '全部一级品项',
+      paidItemCategoryLabel: '全部二级品项',
+      hasPaidItemFilter: false,
+    });
     try {
       const orders = await callStaffApi<PaidOrder[]>('customer.paidOrders', { clientUserId });
       // 拍平成一维核销项目（按品项标签排序）：过滤家居产品行 + consumable<=0 的锁死卡（D6=A）
@@ -291,8 +338,80 @@ Page({
         const pb = b.paidAt || '';
         return (pa < pb) ? 1 : (pa > pb) ? -1 : 0;
       });
-      this.setData({ paidItems: items });
-    } catch (_) {}
+      this.applyPaidItemFilters(items, {
+        productKind: '',
+        categoryId: '',
+        nameQuery: '',
+      });
+      this.setData({ paidItemsLoaded: true });
+    } catch (_) {
+      this.setData({ paidItemsLoaded: true });
+    }
+  },
+
+  applyPaidItemFilters(
+    this: any,
+    items: PaidOrderItem[] = this._allPaidItems,
+    filters: { productKind?: string; categoryId?: string; nameQuery?: string } = {},
+  ) {
+    this._allPaidItems = items;
+    const productKind = filters.productKind ?? this.data.paidItemProductKind;
+    const categoryId = filters.categoryId ?? this.data.paidItemCategoryId;
+    const nameQuery = filters.nameQuery ?? this.data.paidItemNameQuery;
+    const productKindOptions: CardFilterOption[] = [
+      { value: '', label: '全部一级品项' },
+      ...Array.from(new Set(items.map((item) => item.productKind).filter((value): value is string => Boolean(value))))
+        .map((value) => ({ value, label: value })),
+    ];
+    const categoryOptions: CardFilterOption[] = [
+      { value: '', label: productKind ? '全部二级品项' : '请先选择一级品项' },
+      ...Array.from(
+        new Map(
+          items
+            .filter((item) => item.categoryId && item.categoryName && productKind && item.productKind === productKind)
+            .map((item) => [item.categoryId!, { value: item.categoryId!, label: item.categoryName! }]),
+        ).values(),
+      ),
+    ];
+    const query = nameQuery.trim().toLocaleLowerCase();
+    const paidItems = items.filter((item) => {
+      if (productKind && item.productKind !== productKind) return false;
+      if (categoryId && item.categoryId !== categoryId) return false;
+      return !query || item.itemName.toLocaleLowerCase().includes(query);
+    });
+    this.setData({
+      paidItems,
+      paidItemProductKind: productKind,
+      paidItemCategoryId: categoryId,
+      paidItemNameQuery: nameQuery,
+      paidItemProductKindOptions: productKindOptions,
+      paidItemCategoryOptions: categoryOptions,
+      paidItemProductKindLabel: productKind || '全部一级品项',
+      paidItemCategoryLabel: categoryOptions.find((option) => option.value === categoryId)?.label || categoryOptions[0].label,
+      hasPaidItemFilter: Boolean(productKind || categoryId || nameQuery),
+    });
+  },
+
+  onPaidItemProductKindChange(e: WechatMiniprogram.CustomEvent) {
+    const index = Number(e.detail.value);
+    const productKind = this.data.paidItemProductKindOptions[index]?.value || '';
+    this.applyPaidItemFilters(this._allPaidItems, {
+      productKind,
+      categoryId: '',
+      nameQuery: this.data.paidItemNameQuery,
+    });
+  },
+
+  onPaidItemCategoryChange(e: WechatMiniprogram.CustomEvent) {
+    const index = Number(e.detail.value);
+    const categoryId = this.data.paidItemCategoryOptions[index]?.value || '';
+    this.applyPaidItemFilters(this._allPaidItems, { categoryId });
+  },
+
+  onPaidItemNameChange(e: WechatMiniprogram.CustomEvent) {
+    const detail = e.detail as unknown as string | { value?: string };
+    const nameQuery = typeof detail === 'string' ? detail : detail?.value || '';
+    this.applyPaidItemFilters(this._allPaidItems, { nameQuery });
   },
 
   onToggleItem(e: WechatMiniprogram.TouchEvent) {
@@ -309,7 +428,8 @@ Page({
     if (idx >= 0) {
       selected.splice(idx, 1);
     } else {
-      selected.push({ saleItemId, itemName, spec, saleOrderId, sessionCount: 1 });
+      const paidItem = this._allPaidItems.find(item => item.saleItemId === saleItemId);
+      selected.push({ saleItemId, itemName, spec, saleOrderId, sessionCount: 1, unit: paidItem?.unit || '次' });
     }
     const flowNos: Record<string, boolean> = {};
     const sessionCounts: Record<string, number> = {};

@@ -21,6 +21,7 @@ interface ServiceItem {
     remainingSessions: number;
     totalSessions: number;
     paidSessions: number | null;
+    unit: string;
   }>;
 }
 
@@ -119,7 +120,7 @@ Page({
     if (this.data.actioningId) return;
     wx.showModal({
       title: '标记完成服务',
-      content: '标记完成后将通知顾客确认，顾客确认后才扣减疗程次数。',
+      content: '标记完成后将通知顾客确认，顾客确认后才扣减服务额度。',
       confirmText: '标记完成',
       success: async (res) => {
         if (!res.confirm) return;
@@ -145,7 +146,7 @@ Page({
     if (this.data.actioningId) return;
     wx.showModal({
       title: '代客户确认',
-      content: '确认后将扣减疗程次数并完成服务单，仅在顾客不便自行确认时使用。',
+      content: '确认后将扣减服务额度并完成服务单，仅在顾客不便自行确认时使用。',
       confirmText: '确认完成',
       success: async (res) => {
         if (!res.confirm) return;

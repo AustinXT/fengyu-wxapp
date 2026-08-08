@@ -199,6 +199,12 @@
 .repay-card-mark { font-size: 32rpx; color: #3D8A5A; line-height: 1; }
 .repay-card-label { font-size: 26rpx; color: #2D2017; }
 .repay-card-balance { margin-left: auto; font-size: 22rpx; color: #3D8A5A; }
+.repay-card-input-row { display: flex; align-items: center; gap: 12rpx; margin: 12rpx 0; padding: 0 4rpx; }
+.repay-card-input-label { font-size: 24rpx; color: var(--color-text-secondary); white-space: nowrap; }
+.repay-card-input-wrap { display: flex; align-items: center; width: 180rpx; padding: 4rpx 12rpx; border: 1rpx solid #BEE3CD; border-radius: 8rpx; background: #FFFFFF; }
+.repay-card-input-prefix { margin-right: 4rpx; font-size: 24rpx; color: var(--color-text-hint); }
+.repay-card-input { flex: 1; min-width: 0; height: 44rpx; font-size: 24rpx; color: var(--color-text-primary); text-align: right; }
+.repay-card-max { margin-left: auto; font-size: 22rpx; color: #3D8A5A; white-space: nowrap; }
 .repay-actions {
   display: flex;
   gap: 24rpx;

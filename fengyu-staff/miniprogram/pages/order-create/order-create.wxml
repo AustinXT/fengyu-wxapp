@@ -50,7 +50,7 @@
           >
             <text class="trial-card-name">{{item.spuName}}</text>
             <view class="trial-card-sub">
-              <text class="trial-card-meta">{{item.sessionCount ? item.sessionCount + '次卡' : '单次'}}</text>
+              <text class="trial-card-meta">{{item.sessionCount ? item.sessionCount + (item.unit || '次') + '卡' : '单' + (item.unit || '次')}}</text>
               <view class="trial-card-right">
                 <view class="price-dual">
                   <block wx:if="{{item.specialPrice != null}}">
@@ -153,7 +153,7 @@
             >
               <text class="trial-card-name">{{item.spuName}}</text>
               <view class="trial-card-sub">
-                <text class="trial-card-meta">{{item.productType === '疗程卡' ? (item.productType + ' · ' + (item.sessionCount ? item.sessionCount + '次' : '单次')) : item.productType}}</text>
+                <text class="trial-card-meta">{{item.productType === '疗程卡' ? (item.productType + ' · ' + (item.sessionCount ? item.sessionCount + (item.unit || '次') : '单' + (item.unit || '次'))) : item.productType}}</text>
                 <view class="trial-card-right">
                   <view class="price-dual">
                     <block wx:if="{{item.specialPrice != null}}">
@@ -208,7 +208,7 @@
         <view class="cart-item" wx:for="{{cart}}" wx:key="skuId">
           <view class="cart-item-info">
             <text class="cart-item-name">{{item.specName}}</text>
-            <text class="cart-item-spec" wx:if="{{item.productType}}">{{item.productType === '疗程卡' ? (item.productType + ' · ' + (item.sessionCount ? item.sessionCount + '次' : '单次')) : item.productType}}</text>
+            <text class="cart-item-spec" wx:if="{{item.productType}}">{{item.productType === '疗程卡' ? (item.productType + ' · ' + (item.sessionCount ? item.sessionCount + (item.unit || '次') : '单' + (item.unit || '次'))) : item.productType}}</text>
             <view class="cart-item-unitprice">
               <block wx:if="{{item.specialPrice != null}}">
                 <text class="price-original">¥{{item.listPrice}}</text>
@@ -372,7 +372,7 @@
         <!-- B5 — 寄存单：不收款，仅展示商品项 + 次数；可录入历史实收（仅记账） -->
         <block wx:elif="{{saleOrderType === '寄存单'}}">
           <view class="deposit-banner">
-            <text>寄存单：不收款，仅初始化剩余次数到小程序，审批通过后可生成服务单核销。历史实收金额仅作账目记录，不计营业额。</text>
+            <text>寄存单：不收款，仅初始化剩余服务额度到小程序，审批通过后可生成服务单核销。历史实收金额仅作账目记录，不计营业额。</text>
           </view>
           <view class="confirm-items">
             <view class="confirm-item-block" wx:for="{{cart}}" wx:key="skuId">
@@ -382,8 +382,8 @@
               </view>
               <!-- 疗程卡规定次数（仅次数卡展示） -->
               <view wx:if="{{item.productType === '疗程卡' && item.sessionCount > 0}}" class="confirm-item-row">
-                <text class="confirm-item-label">规定次数</text>
-                <text class="confirm-item-value">{{item.sessionCount}} 次</text>
+                <text class="confirm-item-label">规定数量</text>
+                <text class="confirm-item-value">{{item.sessionCount}} {{item.unit || '次'}}</text>
               </view>
               <view class="confirm-item-row">
                 <text class="confirm-item-label">数量</text>
@@ -433,8 +433,8 @@
               </view>
               <!-- 疗程卡规定次数（仅次数卡展示） -->
               <view wx:if="{{item.productType === '疗程卡' && item.sessionCount > 0}}" class="confirm-item-row">
-                <text class="confirm-item-label">规定次数</text>
-                <text class="confirm-item-value">{{item.sessionCount}} 次</text>
+                <text class="confirm-item-label">规定数量</text>
+                <text class="confirm-item-value">{{item.sessionCount}} {{item.unit || '次'}}</text>
               </view>
               <view class="confirm-item-row">
                 <text class="confirm-item-label">价格</text>
@@ -532,9 +532,22 @@
                 />
               </view>
             </view>
-            <view wx:if="{{useCard && prepaidCardAmount > 0}}" class="prepaid-card-deduct-row">
-              <text class="prepaid-card-deduct-label">预选抵扣</text>
-              <text class="prepaid-card-deduct-amount">-¥{{prepaidCardAmount}}<text class="prepaid-card-deduct-hint">（不计入实付）</text></text>
+            <view wx:if="{{useCard}}" class="prepaid-card-deduct-row">
+              <text class="prepaid-card-deduct-label">抵扣金额</text>
+              <view class="prepaid-card-amount-input-wrap">
+                <text class="prepaid-card-amount-prefix">¥</text>
+                <input
+                  class="prepaid-card-amount-input"
+                  type="digit"
+                  value="{{prepaidCardAmountInput}}"
+                  bindinput="onPrepaidCardAmountInput"
+                  bindblur="onPrepaidCardAmountChange"
+                />
+              </view>
+            </view>
+            <view wx:if="{{useCard}}" class="prepaid-card-max-hint">
+              <text>最多可抵扣 ¥{{prepaidCardMax}}</text>
+              <text wx:if="{{prepaidCardAmount > 0}}">，实际抵扣 ¥{{prepaidCardAmount}}</text>
             </view>
             <view wx:elif="{{customerCardBalance <= 0}}" class="prepaid-card-empty-hint">
               <text>顾客暂无充值卡余额</text>

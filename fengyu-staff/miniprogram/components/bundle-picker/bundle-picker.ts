@@ -11,6 +11,7 @@ interface BundleGroupSku {
   skuId: string;
   specName: string;
   sessionCount: number | null;
+  unit: string;
   purchaseLimit?: number | null;
   productType: string;
   isShengmei: boolean;
@@ -50,6 +51,7 @@ interface CartItemOut {
   quantity: number;
   discount: number;
   sessionCount: number;
+  unit: string;
   productType: string;
   workfineItemId: string;
   subtotal: string;
@@ -63,6 +65,7 @@ interface DisplaySku {
   skuId: string;
   specName: string;
   sessionCount: number | null;
+  unit: string;
   bundlePrice: number;
   listPrice: number;
   purchaseLimit?: number | null;
@@ -263,6 +266,7 @@ Component({
             quantity: qty,
             discount: 0,
             sessionCount: sku.sessionCount || 0,
+            unit: sku.unit || (sku.productType === '家居产品' ? '盒' : '次'),
             productType: sku.productType || '组合套餐',
             workfineItemId: '',
             subtotal: '',
@@ -326,6 +330,7 @@ Component({
               skuId: s.skuId,
               specName: s.specName,
               sessionCount: s.sessionCount,
+              unit: s.unit || (s.productType === '家居产品' ? '盒' : '次'),
               bundlePrice: s.bundlePrice,
               listPrice: s.listPrice,
               purchaseLimit: s.purchaseLimit ?? null,

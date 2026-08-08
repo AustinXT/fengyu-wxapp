@@ -53,6 +53,7 @@ interface RawOrderItem {
   received?: string;
   refunded_amount?: string;
   session_count?: number;
+  unit?: string;
   remaining_sessions?: number;
   paid_sessions?: number | null;
   unit_price?: string;
@@ -111,6 +112,7 @@ interface DisplayOrderItem {
   isRefunded: boolean;
   repayable: string;
   sessionCount: number | undefined;
+  unit: string;
   remainingSessions: number | undefined;
   paidSessions: number | undefined;
   /** 已用次数 = sessionCount - remainingSessions（0 兜底） */
@@ -196,9 +198,11 @@ Page({
     repayLines: [] as Array<{ saleItemId: string; itemName: string; repayable: string; real: string }>,
     repayMethod: '线下' as '线下' | '微信' | '支付宝',
     repayNote: '',
-    // 储值卡抵扣：独立勾选，勾选后自动抵满 min(余额, 实付合计)
+    // 储值卡抵扣：独立勾选，金额手填，默认 0.00
     repayUseCard: false,
     repayCardBalance: 0,
+    repayCardAmountInput: '0.00',
+    repayCardMax: '0.00',
     // 本次回款意向幂等键（打开弹层生成一次，重试/误点复用，防重复扣卡；服务端据此作扣卡 external_ref）
     repayIdempKey: '',
     repayRealTotal: '0.00',
@@ -248,6 +252,7 @@ Page({
           isRefunded: refunded > 0,
           repayable: repayable.toFixed(2),
           sessionCount: it.session_count,
+          unit: it.unit || '次',
           remainingSessions: it.remaining_sessions,
           paidSessions: it.paid_sessions == null ? undefined : Number(it.paid_sessions),
           usedSessions: used,
@@ -487,7 +492,7 @@ Page({
         label: [
           it.sessionCount == null
             ? it.itemName
-            : `${it.itemName}（${it.paidUnusedSessions > 0 ? `整卡退 ${it.paidUnusedSessions} 次` : '不退次数'}）`,
+            : `${it.itemName}（${it.paidUnusedSessions > 0 ? `整卡退 ${it.paidUnusedSessions} ${it.unit || '次'}` : '不退数量'}）`,
           it.overpayRefundable > 0 ? `含余数 ¥${it.overpayRefundable.toFixed(2)}` : '',
         ].filter(Boolean).join('，'),
         includeOverpay: it.overpayRefundable > 0,
@@ -560,16 +565,18 @@ Page({
   // 且依赖恒不命中的 orderType==='退款单'，属死代码 + 传参错误，已删除（Bug D）。
 
   // ===== Ticket 2026-05-21：按子项发起回款 =====
-  // 合计：实付合计 → 储值卡抵扣（勾选则自动抵满 min(余额, 实付合计)）→ 需支付
+  // 合计：实付合计 → 手填储值卡抵扣（上限 min(余额, 实付合计)）→ 需支付
   _recalcRepayTotals(lines: Array<{ real: string }>) {
     const r2 = (n: number) => Math.round(n * 100) / 100;
     const realTotal = r2(lines.reduce((s, l) => s + (Number(l.real) || 0), 0));
-    const cardDeduct = this.data.repayUseCard
-      ? r2(Math.min(this.data.repayCardBalance, realTotal))
-      : 0;
+    const cardMax = r2(Math.min(Math.max(0, this.data.repayCardBalance), Math.max(0, realTotal)));
+    const requested = Number(this.data.repayCardAmountInput);
+    const requestedAmount = Number.isFinite(requested) ? Math.max(0, requested) : 0;
+    const cardDeduct = this.data.repayUseCard ? r2(Math.min(requestedAmount, cardMax)) : 0;
     const needPay = r2(Math.max(0, realTotal - cardDeduct));
     this.setData({
       repayRealTotal: realTotal.toFixed(2),
+      repayCardMax: cardMax.toFixed(2),
       repayCardDeduct: cardDeduct.toFixed(2),
       repayNeedPay: needPay.toFixed(2),
     });
@@ -582,7 +589,7 @@ Page({
     const lines = (o.items || [])
       .filter((it) => Number(it.repayable) > 0)
       .map((it) => ({ saleItemId: it.saleItemId, itemName: it.itemName, repayable: it.repayable, real: it.repayable }));
-    this.setData({ showRepayPopup: true, repayLines: lines, repayMethod: '线下', repayNote: '', repayUseCard: false, repayIdempKey: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}` });
+    this.setData({ showRepayPopup: true, repayLines: lines, repayMethod: '线下', repayNote: '', repayUseCard: false, repayCardAmountInput: '0.00', repayCardMax: '0.00', repayIdempKey: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}` });
     this._recalcRepayTotals(lines);
   },
 
@@ -608,9 +615,25 @@ Page({
     this._recalcRepayTotals(this.data.repayLines);
   },
 
-  // 切换「使用储值卡抵扣」勾选（勾选后自动抵满 min(余额, 实付合计)）
+  // 切换「使用储值卡抵扣」勾选；每次切换从 0.00 开始填写。
   onToggleUseCard() {
-    this.setData({ repayUseCard: !this.data.repayUseCard });
+    if (this.data.repayCardBalance <= 0) return;
+    this.setData({ repayUseCard: !this.data.repayUseCard, repayCardAmountInput: '0.00' });
+    this._recalcRepayTotals(this.data.repayLines);
+  },
+
+  onRepayCardAmountInput(e: WechatMiniprogram.CustomEvent) {
+    const raw = String((e.detail as unknown as { value?: string })?.value ?? e.detail ?? '');
+    this.setData({ repayCardAmountInput: raw });
+    this._recalcRepayTotals(this.data.repayLines);
+  },
+
+  onRepayCardAmountBlur() {
+    const realTotal = this.data.repayLines.reduce((sum, line) => sum + (Number(line.real) || 0), 0);
+    const maxAmount = Math.min(Math.max(0, this.data.repayCardBalance), Math.max(0, realTotal));
+    const requested = Number(this.data.repayCardAmountInput);
+    const amount = Number.isFinite(requested) ? Math.max(0, Math.min(requested, maxAmount)) : 0;
+    this.setData({ repayCardAmountInput: amount.toFixed(2) });
     this._recalcRepayTotals(this.data.repayLines);
   },
 
@@ -621,7 +644,7 @@ Page({
 
   async onConfirmRepay() {
     if (this.data.submitting) return;
-    const { order, repayLines, repayMethod, repayNote, currentRemainingPayable, repayUseCard, repayCardBalance, repayIdempKey } = this.data;
+    const { order, repayLines, repayMethod, repayNote, currentRemainingPayable, repayUseCard, repayCardBalance, repayCardAmountInput, repayIdempKey } = this.data;
     if (!order || !order.saleOrderId) return;
     const r2 = (n: number) => Math.round(n * 100) / 100;
     const isOnline = repayMethod === '微信' || repayMethod === '支付宝';
@@ -652,8 +675,12 @@ Page({
       }
     }
 
-    // 储值卡抵扣（勾选则自动抵满）+ 按各子项实付比例摊分（末项补差，每项 ≤ 该行实付）
-    const cardDeduct = repayUseCard ? r2(Math.min(repayCardBalance, realTotal)) : 0;
+    // 储值卡抵扣（手填且不超过余额/本次实付）+ 按各子项实付比例摊分（末项补差，每项 ≤ 该行实付）
+    const cardMax = Math.min(Math.max(0, repayCardBalance), realTotal);
+    const requestedCard = Number(repayCardAmountInput);
+    const cardDeduct = repayUseCard && Number.isFinite(requestedCard)
+      ? r2(Math.min(Math.max(0, requestedCard), cardMax))
+      : 0;
     const filled = reals.filter((it) => it.real > 0);
     const cardMap: Record<string, number> = {};
     let acc = 0;

@@ -51,7 +51,7 @@
         <view class="item-price-row">
           <text class="item-price">实收 ¥{{item.totalPrice}}</text>
           <text wx:if="{{item.sessionCount > 1}}" class="item-sessions">
-            已用 {{item.usedSessions}} / 已付 {{item.paidSessions}} / 共 {{item.sessionCount}} 次
+            已用 {{item.usedSessions}} / 已付 {{item.paidSessions}} / 共 {{item.sessionCount}} {{item.unit || '次'}}
           </text>
         </view>
         <!-- 三段进度条：已用（灰）/ 剩余可用（主色）/ 已付未用（浅色）/ 未付（灰条余下） -->
@@ -292,11 +292,25 @@
         </view>
       </view>
 
-      <!-- 储值卡抵扣勾选（仅顾客有余额时可用，勾选后自动抵满） -->
+      <!-- 储值卡抵扣勾选（仅顾客有余额时可用，金额手填） -->
       <view wx:if="{{repayCardBalance > 0}}" class="repay-card-toggle {{repayUseCard ? 'repay-card-toggle--on' : ''}}" bind:tap="onToggleUseCard">
         <text class="repay-card-mark">{{repayUseCard ? '☑' : '☐'}}</text>
         <text class="repay-card-label">使用储值卡抵扣</text>
-        <text class="repay-card-balance">余额 ¥{{repayCardBalance}}{{repayUseCard ? ' · 抵扣 ¥' + repayCardDeduct : ''}}</text>
+        <text class="repay-card-balance">余额 ¥{{repayCardBalance}}</text>
+      </view>
+      <view wx:if="{{repayUseCard}}" class="repay-card-input-row">
+        <text class="repay-card-input-label">抵扣金额</text>
+        <view class="repay-card-input-wrap">
+          <text class="repay-card-input-prefix">¥</text>
+          <input
+            class="repay-card-input"
+            type="digit"
+            value="{{repayCardAmountInput}}"
+            bindinput="onRepayCardAmountInput"
+            bindblur="onRepayCardAmountBlur"
+          />
+        </view>
+        <text class="repay-card-max">最多 ¥{{repayCardMax}}</text>
       </view>
 
       <view wx:if="{{repayMethod === '微信' || repayMethod === '支付宝'}}" class="repay-online-hint">

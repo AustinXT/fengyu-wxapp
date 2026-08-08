@@ -152,9 +152,21 @@
         <van-tab title="持卡汇总">
           <view class="tab-content">
             <view class="tab-hint">仅显示当前数据范围内的疗程</view>
+            <view wx:if="{{cardsLoaded}}" class="card-filter-bar">
+              <view class="card-filter-selectors">
+                <picker mode="selector" range="{{cardProductKindOptions}}" range-key="label" bindchange="onCardProductKindChange">
+                  <view class="card-filter-picker">{{cardProductKindLabel}}</view>
+                </picker>
+                <picker mode="selector" range="{{cardCategoryOptions}}" range-key="label" disabled="{{!cardProductKind}}" bindchange="onCardCategoryChange">
+                  <view class="card-filter-picker">{{cardCategoryLabel}}</view>
+                </picker>
+              </view>
+              <van-search value="{{cardNameQuery}}" placeholder="搜索疗程卡名称" bind:change="onCardNameChange" />
+            </view>
             <view wx:if="{{!cardsLoaded}}" class="loading-wrap">
               <van-loading type="spinner" color="#C0322A" />
             </view>
+            <van-empty wx:elif="{{treatmentCards.length === 0 && hasTreatmentCardFilter}}" description="未找到匹配的疗程卡" />
             <van-empty wx:elif="{{treatmentCards.length === 0}}" description="暂无可核销疗程" />
             <view wx:else class="card-list">
               <view
@@ -171,7 +183,7 @@
                     <view class="tc-meta">
                       <text class="tc-order">{{item.saleOrderId}}</text>
                     </view>
-                    <text class="tc-sessions">剩余 {{item.paidUnusedSessions}} / 已付 {{item.paidSessions == null ? '—' : item.paidSessions}} / 共 {{item.totalSessions}} 次{{item.unitRealPrice ? ' · 单次实付 ¥' + item.unitRealPrice : ''}}</text>
+                    <text class="tc-sessions">剩余 {{item.paidUnusedSessions}} / 已付 {{item.paidSessions == null ? '—' : item.paidSessions}} / 共 {{item.totalSessions}} {{item.unit || '次'}}{{item.unitRealPrice ? ' · 单' + (item.unit || '次') + '实付 ¥' + item.unitRealPrice : ''}}</text>
                     <view class="session-bar">
                       <view class="session-bar__seg session-bar__seg--used" style="width:{{item.usedPct}}%"></view>
                       <view class="session-bar__seg session-bar__seg--paid-unused" style="width:{{item.paidUnusedPct}}%"></view>
@@ -201,7 +213,7 @@
                   <view wx:for="{{item.items}}" wx:for-item="gi" wx:key="productName" class="gift-item-row">
                     <text class="gift-item-name">{{gi.productName}}</text>
                     <text wx:if="{{gi.specName}}" class="gift-item-spec">{{gi.specName}}</text>
-                    <text wx:if="{{gi.remainingSessions != null}}" class="gift-item-sessions">剩余 {{gi.paidUnusedSessions}} / 已付 {{gi.paidSessions}} / 共 {{gi.sessionCount}}</text>
+                    <text wx:if="{{gi.remainingSessions != null}}" class="gift-item-sessions">剩余 {{gi.paidUnusedSessions}} / 已付 {{gi.paidSessions}} / 共 {{gi.sessionCount}} {{gi.unit || '次'}}</text>
                   </view>
                   <text class="gift-card-time">{{item.paidAt}}</text>
                 </view>
@@ -215,7 +227,7 @@
                     <text wx:if="{{item.specName}}" class="gift-item-spec">{{item.specName}}</text>
                   </view>
                   <view wx:if="{{item.sessionCount}}" class="gift-item-row">
-                    <text class="gift-item-sessions">剩余 {{item.paidUnusedSessions}} / 已付 {{item.paidSessions}} / 共 {{item.sessionCount}} 次</text>
+                    <text class="gift-item-sessions">剩余 {{item.paidUnusedSessions}} / 已付 {{item.paidSessions}} / 共 {{item.sessionCount}} {{item.unit || '次'}}</text>
                   </view>
                   <text class="gift-card-time">{{item.createdAt}}</text>
                 </view>

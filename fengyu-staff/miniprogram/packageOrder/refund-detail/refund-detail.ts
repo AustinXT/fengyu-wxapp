@@ -50,6 +50,7 @@ interface RawRefundItem {
   productName: string | null;
   specName: string | null;
   productType: string | null;
+  unit: string;
   quantity: number;
   refundAmount: number;
 }
@@ -59,6 +60,7 @@ interface DisplayRefundItem {
   productName: string;
   specName: string | null;
   quantity: number;
+  unit: string;
   amount_abs: string;
 }
 
@@ -149,6 +151,7 @@ Page({
         productName: it.productName || '商品',
         specName: it.specName,
         quantity: it.quantity,
+        unit: it.unit || (it.productType === '家居产品' ? '盒' : '次'),
         amount_abs: Math.abs(Number(it.refundAmount || 0)).toFixed(2),
       }));
       const origOrder: DisplayOrigOrder | null = res.origOrder ? {
@@ -181,7 +184,7 @@ Page({
       title: '审批通过',
       content: isRecharge
         ? '确认通过此充值卡退款？通过后将扣减卡内余额，退款金额由门店线下处理。'
-        : '确认通过此退款单？通过后将扣减对应次数/库存，退款金额由门店线下处理。',
+        : '确认通过此退款单？通过后将扣减对应服务额度/库存，退款金额由门店线下处理。',
       confirmText: '确认通过',
       confirmColor: '#C0322A',
       success: async (res) => {

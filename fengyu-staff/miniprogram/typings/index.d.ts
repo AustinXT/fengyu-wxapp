@@ -43,7 +43,7 @@ interface IAppOption {
       customer: { id: string; name: string; phone: string; clientUserId?: string };
       items: Array<{
         saleItemId: string; itemName: string; spec: string;
-        saleOrderId: string; sessionCount: number; remainingSessions: number;
+        saleOrderId: string; sessionCount: number; remainingSessions: number; unit?: string;
       }>;
     } | null;
   };
