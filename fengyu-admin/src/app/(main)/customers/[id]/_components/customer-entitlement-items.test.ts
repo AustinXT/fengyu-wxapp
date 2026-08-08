@@ -123,4 +123,29 @@ describe("getCustomerVisibleSaleItems", () => {
 
     expect(result.map((item) => item.saleItemId)).toEqual(["SI-IN"])
   })
+
+  it("合并业务字段相同的疗程卡，并累计展示数值", () => {
+    const first = makeItem({ saleItemId: "SI-1", createdAt: "2026-07-25T09:00:00.000Z" })
+    const second = makeItem({
+      saleItemId: "SI-2",
+      createdAt: "2026-07-26T09:00:00.000Z",
+      updatedAt: "2026-07-26T09:00:00.000Z",
+    })
+
+    const [item] = getCustomerVisibleSaleItems([
+      makeOrder({ items: [first, second] }),
+    ])
+
+    expect(item).toMatchObject({
+      saleItemId: "SI-1",
+      cardCount: 2,
+      quantity: 2,
+      sessionCount: 2,
+      remainingSessions: 2,
+      paidSessions: 2,
+      saleAmount: "422.00",
+      received: "422.00",
+      pendingReceived: "0.00",
+    })
+  })
 })

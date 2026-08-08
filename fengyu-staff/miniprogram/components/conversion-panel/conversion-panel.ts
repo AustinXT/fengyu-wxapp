@@ -13,10 +13,22 @@
 // 不依赖父组件重渲染：props 变化由 observer 触发 loadCards
 
 import { callStaffApi } from '../../utils/cloud'
+import { groupTreatmentCards, selectGroupSourceIds, sumGroupValue } from '../../utils/treatment-card-group'
 
 interface HeldCard {
   saleItemId: string;
   sourceSaleOrderId: string;
+  saleOrderDatetime?: string | null;
+  paidAt?: string | null;
+  orderStatus?: string;
+  saleOrderType?: string;
+  documentType?: string | null;
+  marketName?: string;
+  legacySource?: string | null;
+  storeId?: string;
+  skuId?: string | null;
+  itemDirection?: string;
+  refSaleItemId?: string | null;
   productName: string;
   productType: string;
   unit: string;
@@ -24,6 +36,17 @@ interface HeldCard {
   remainingQuantity: number | null;
   unitRealPrice: string;
   deductibleAmount: string;
+  quantity?: number;
+  sessionCount?: number | null;
+  paidSessions?: number | null;
+  unitPrice?: string | null;
+  saleAmount?: string | null;
+  received?: string | null;
+  pendingReceived?: string | null;
+  expireDate?: string | null;
+  remark?: string | null;
+  salesCategory?: string | null;
+  pickedUpQuantity?: number | null;
   /** 一级品项（product_categories.product_kind） */
   productKind?: string;
   /** 二级品项 ID（历史无分类卡为空） */
@@ -32,6 +55,10 @@ interface HeldCard {
   categoryName?: string;
   /** 渲染用选中标记：WXML {{}} 不支持 selectedIds.indexOf()，选中态必须落到每张卡上 */
   selected?: boolean;
+  selectedQuantity?: number;
+  groupKey?: string;
+  cardCount?: number;
+  sourceItems?: HeldCard[];
 }
 
 interface CardFilterOption {
@@ -182,15 +209,68 @@ Component({
         });
         // 旧回包丢弃（已有更新请求发出）
         if (seq !== this._requestSeq) return;
-        // 重置选中标记（selectedIds 同步清空，二者由构造保持一致）
-        const cards = (data?.cards || []).map((c) => ({ ...c, selected: false }));
+        // 仅把相同业务快照的疗程卡合并为展示行；selectedIds 始终保留原始 saleItemId。
+        const cards = groupTreatmentCards(data?.cards || [], {
+          getId: (card) => card.saleItemId,
+          getQuantity: (card) => card.quantity,
+          getIdentity: (card) => ({
+            sourceSaleOrderId: card.sourceSaleOrderId,
+            saleOrderDatetime: card.saleOrderDatetime,
+            paidAt: card.paidAt,
+            orderStatus: card.orderStatus,
+            saleOrderType: card.saleOrderType,
+            documentType: card.documentType,
+            marketName: card.marketName,
+            legacySource: card.legacySource,
+            storeId: card.storeId,
+            skuId: card.skuId,
+            itemDirection: card.itemDirection,
+            refSaleItemId: card.refSaleItemId,
+            productName: card.productName,
+            productType: card.productType,
+            unit: card.unit,
+            remainingSessions: card.remainingSessions,
+            remainingQuantity: card.remainingQuantity,
+            sessionCount: card.sessionCount,
+            paidSessions: card.paidSessions,
+            unitPrice: card.unitPrice,
+            unitRealPrice: card.unitRealPrice,
+            saleAmount: card.saleAmount,
+            received: card.received,
+            pendingReceived: card.pendingReceived,
+            deductibleAmount: card.deductibleAmount,
+            expireDate: card.expireDate,
+            remark: card.remark,
+            salesCategory: card.salesCategory,
+            pickedUpQuantity: card.pickedUpQuantity,
+            productKind: card.productKind,
+            categoryId: card.categoryId,
+            categoryName: card.categoryName,
+            quantity: card.quantity ?? 1,
+          }),
+        }).map((group) => {
+          const primary = group.primary;
+          return {
+            ...primary,
+            saleItemId: group.groupKey,
+            groupKey: group.groupKey,
+            sourceItems: group.sourceItems,
+            cardCount: group.cardCount,
+            quantity: sumGroupValue(group, (card) => card.quantity ?? 1),
+            remainingSessions: sumGroupValue(group, (card) => card.remainingSessions),
+            remainingQuantity: sumGroupValue(group, (card) => card.remainingQuantity),
+            deductibleAmount: sumGroupValue(group, (card) => Number(card.deductibleAmount)).toFixed(2),
+            selected: false,
+            selectedQuantity: 0,
+          };
+        });
         this.applyCardFilters(cards, {
           productKind: '',
           categoryId: '',
           nameQuery: '',
         });
         this.setData({
-          allCardCount: cards.length,
+          allCardCount: cards.reduce((total, card) => total + (card.cardCount || 1), 0),
           selectedIds: [],
           deductibleSum: 0,
           deductibleSumDisplay: '0.00',
@@ -284,32 +364,61 @@ Component({
     },
 
     onToggleCard(this: any, e: WechatMiniprogram.TouchEvent) {
-      const saleItemId = e.currentTarget.dataset.id as string;
-      const selected = [...this.data.selectedIds];
-      const idx = selected.indexOf(saleItemId);
-      if (idx >= 0) {
-        selected.splice(idx, 1);
-      } else {
-        selected.push(saleItemId);
-      }
-      const sum = this._calcDeductibleSum(selected);
-      // WXML {{}} 不支持 selectedIds.indexOf()（真机不生效），选中态必须落到每张卡 selected 字段上渲染
-      const cards = (this._allCards || []).map((c: HeldCard) => ({
-        ...c,
-        selected: selected.indexOf(c.saleItemId) >= 0,
-      }));
+      const groupId = e.currentTarget.dataset.id as string;
+      const card = (this._allCards || []).find((item: HeldCard) => item.saleItemId === groupId);
+      if (!card) return;
+      const sources = card.sourceItems?.length ? card.sourceItems : [card];
+      const selectedInGroup = sources.filter((source: HeldCard) => this.data.selectedIds.includes(source.saleItemId));
+      this._setGroupSelection(card, selectedInGroup.length > 0 ? 0 : 1);
+    },
+
+    onCardQuantityChange(this: any, e: WechatMiniprogram.CustomEvent) {
+      const groupId = e.currentTarget.dataset.id as string;
+      const card = (this._allCards || []).find((item: HeldCard) => item.saleItemId === groupId);
+      if (!card) return;
+      this._setGroupSelection(card, Number(e.detail) || 0);
+    },
+
+    preventBubble() {},
+
+    _setGroupSelection(this: any, card: HeldCard, count: number) {
+      const sources = card.sourceItems?.length ? card.sourceItems : [card];
+      const sourceIds = new Set(sources.map((source) => source.saleItemId));
+      const otherIds = this.data.selectedIds.filter((id: string) => !sourceIds.has(id));
+      const selectedForGroup = selectGroupSourceIds(
+        {
+          groupKey: card.groupKey || card.saleItemId,
+          primary: card,
+          sourceItems: sources,
+          cardCount: card.cardCount || 1,
+        },
+        count,
+        (source) => source.saleItemId,
+      );
+      const selectedIds = [...otherIds, ...selectedForGroup];
+      const selectedSet = new Set(selectedIds);
+      const cards = (this._allCards || []).map((item: HeldCard) => {
+        const itemSources = item.sourceItems?.length ? item.sourceItems : [item];
+        const selectedQuantity = itemSources.filter((source) => selectedSet.has(source.saleItemId)).length;
+        return { ...item, selected: selectedQuantity > 0, selectedQuantity };
+      });
+      const sum = this._calcDeductibleSum(selectedIds, cards);
       this.applyCardFilters(cards);
       this.setData({
-        selectedIds: selected,
+        selectedIds,
         deductibleSum: sum,
         deductibleSumDisplay: sum.toFixed(2),
       });
       this.recalcDiff(sum);
     },
 
-    _calcDeductibleSum(this: any, selectedIds: string[]): number {
+    _calcDeductibleSum(this: any, selectedIds: string[], cards: HeldCard[] = this._allCards || this.data.cards): number {
       const map = new Map<string, HeldCard>();
-      for (const c of this._allCards || this.data.cards) map.set(c.saleItemId, c);
+      for (const card of cards) {
+        for (const source of card.sourceItems?.length ? card.sourceItems : [card]) {
+          map.set(source.saleItemId, source);
+        }
+      }
       let sum = 0;
       for (const id of selectedIds) {
         const c = map.get(id);

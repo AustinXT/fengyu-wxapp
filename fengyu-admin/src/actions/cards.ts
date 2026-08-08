@@ -656,17 +656,40 @@ export const getCardTransactions = withPermission(
  */
 export interface HeldCardCandidate {
   saleItemId: string
+  saleOrderId: string
+  saleOrderDatetime: string | null
+  paidAt: string | null
+  orderStatus: string
+  saleOrderType: string
+  documentType: string | null
+  marketName: string
+  legacySource: string | null
+  storeId: string
+  skuId: string | null
+  itemDirection: string
+  refSaleItemId: string | null
   productName: string | null
   productType: '疗程卡' | '家居产品'
   /** 当前 SKU 的展示单位；历史 SKU 缺失时按商品类型回退。 */
   unit: string
+  quantity: number
+  sessionCount: number | null
   /** 剩余次数（疗程卡） */
   remainingSessions: number | null
+  paidSessions: number | null
   /** 剩余可提货数量；疗程卡返回 null */
   remainingQty: number | null
+  unitPrice: string
   unitRealPrice: string
+  saleAmount: string
+  received: string
+  pendingReceived: string
   /** 折抵金额 = unitRealPrice × remainingSessions */
   deductibleAmount: string
+  expireDate: string | null
+  remark: string | null
+  salesCategory: string | null
+  pickedUpQuantity: number | null
   /** 一级品项（历史无分类卡为 null） */
   productKind: string | null
   /** 二级品项 ID（历史无分类卡为 null） */
@@ -689,13 +712,34 @@ export const getCustomerHeldCards = withPermission(
   const rows = await db
     .select({
       saleItemId: saleItems.saleItemId,
+      saleOrderId: saleItems.saleOrderId,
+      saleOrderDatetime: saleOrders.saleOrderDatetime,
+      paidAt: saleOrders.paidAt,
+      orderStatus: saleOrders.status,
+      saleOrderType: saleOrders.saleOrderType,
+      documentType: saleOrders.documentType,
+      marketName: saleOrders.marketName,
+      legacySource: saleOrders.legacySource,
+      storeId: saleItems.storeId,
+      skuId: saleItems.skuId,
+      itemDirection: saleItems.itemDirection,
+      refSaleItemId: saleItems.refSaleItemId,
       productName: saleItems.productName,
       productType: saleItems.productType,
       unit: productSkus.unit,
+      sessionCount: saleItems.sessionCount,
       remainingSessions: saleItems.remainingSessions,
+      paidSessions: saleItems.paidSessions,
       quantity: saleItems.quantity,
       pickedUpQuantity: saleItems.pickedUpQuantity,
+      unitPrice: saleItems.unitPrice,
       unitRealPrice: saleItems.unitRealPrice,
+      saleAmount: saleItems.saleAmount,
+      received: saleItems.received,
+      pendingReceived: saleItems.pendingReceived,
+      expireDate: saleItems.expireDate,
+      remark: saleItems.remark,
+      salesCategory: saleItems.salesCategory,
       productKind: productCategories.productKind,
       categoryId: productSkus.categoryId,
       categoryName: productCategories.categoryName,
@@ -726,13 +770,36 @@ export const getCustomerHeldCards = withPermission(
     const remSess = r.remainingSessions ?? 0
     return {
       saleItemId: r.saleItemId,
+      saleOrderId: r.saleOrderId,
+      saleOrderDatetime: r.saleOrderDatetime?.toISOString() ?? null,
+      paidAt: r.paidAt?.toISOString() ?? null,
+      orderStatus: r.orderStatus,
+      saleOrderType: r.saleOrderType,
+      documentType: r.documentType,
+      marketName: r.marketName,
+      legacySource: r.legacySource,
+      storeId: r.storeId,
+      skuId: r.skuId ?? null,
+      itemDirection: r.itemDirection,
+      refSaleItemId: r.refSaleItemId ?? null,
       productName: r.productName,
       productType: '疗程卡' as const,
       unit: r.unit ?? '次',
+      quantity: r.quantity ?? 1,
+      sessionCount: r.sessionCount ?? null,
       remainingSessions: remSess,
+      paidSessions: r.paidSessions ?? null,
       remainingQty: null,
+      unitPrice: r.unitPrice,
       unitRealPrice: r.unitRealPrice,
+      saleAmount: r.saleAmount,
+      received: r.received,
+      pendingReceived: r.pendingReceived,
       deductibleAmount: (unit * remSess).toFixed(2),
+      expireDate: r.expireDate ?? null,
+      remark: r.remark ?? null,
+      salesCategory: r.salesCategory ?? null,
+      pickedUpQuantity: r.pickedUpQuantity ?? null,
       productKind: r.productKind ?? null,
       categoryId: r.categoryId ?? null,
       categoryName: r.categoryName ?? null,

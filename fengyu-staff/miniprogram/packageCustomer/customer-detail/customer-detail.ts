@@ -3,6 +3,7 @@ import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
 import { formatDateTime, formatDate, ORDER_TYPE_LABEL, formatDiscount } from '../../utils/formatters';
 import { MemberLevelBadgeData, withMemberLevelBadgeClass } from '../../utils/member-level-badge';
+import { expandGroupServiceSessions, groupTreatmentCards, sumGroupValue } from '../../utils/treatment-card-group';
 
 const app = getApp<IAppOption>();
 
@@ -91,6 +92,9 @@ interface PaidOrderItem {
   productType: string;
   unit?: string;
   storeId?: string;
+  skuId?: string | null;
+  itemDirection?: string;
+  refSaleItemId?: string | null;
   /** 单次优惠后价（unit_real_price，应付口径；全额已付卡下=单次实付） */
   unitRealPrice?: string;
   /** 品项标签（product_categories.category_name 二级分类名） */
@@ -103,17 +107,30 @@ interface PaidOrderItem {
   categoryId?: string;
   /** 二级品项名称（保留 category 兼容字段） */
   categoryName?: string;
+  quantity?: number;
+  unitPrice?: string;
+  saleAmount?: string;
+  received?: string;
+  pendingReceived?: string;
+  expireDate?: string | null;
+  remark?: string | null;
+  salesCategory?: string | null;
+  pickedUpQuantity?: number | null;
 }
 
 interface PaidOrder {
   saleOrderId: string;
   status: string;
+  saleOrderDatetime?: string | null;
   paidAt: string;
   totalReceived: string;
   storeId?: string;
   storeName?: string;
   /** 单据类型（sale_orders.sale_order_type：销售单/内部单/转换单/寄存单/充值单） */
   saleOrderType?: string;
+  documentType?: string | null;
+  marketName?: string;
+  legacySource?: string | null;
   items: PaidOrderItem[];
   // 消费记录列表（customer.orderHistory）扩展字段
   createdAt?: string;
@@ -157,6 +174,17 @@ interface TreatmentCard {
   sessionCount: number;
   unit: string;
   storeId?: string;
+  orderStoreId?: string;
+  storeName?: string;
+  saleOrderDatetime?: string | null;
+  orderStatus?: string;
+  saleOrderType?: string;
+  documentType?: string | null;
+  marketName?: string;
+  legacySource?: string | null;
+  skuId?: string | null;
+  itemDirection?: string;
+  refSaleItemId?: string | null;
   /** NULL 卡（paid_sessions 为 null 的历史卡）置 true：灰显不可核销 */
   disabled?: boolean;
   disabledReason?: string;
@@ -171,6 +199,18 @@ interface TreatmentCard {
   productKind?: string;
   categoryId?: string;
   categoryName?: string;
+  quantity?: number;
+  unitPrice?: string;
+  saleAmount?: string;
+  received?: string;
+  pendingReceived?: string;
+  expireDate?: string | null;
+  remark?: string | null;
+  salesCategory?: string | null;
+  pickedUpQuantity?: number | null;
+  groupKey?: string;
+  cardCount?: number;
+  sourceItems?: TreatmentCard[];
 }
 
 interface CardFilterOption {
@@ -526,7 +566,28 @@ Page({
             paidUnusedPct: pct(paidUnused),
             unpaidPct: pct(unpaid),
             saleOrderId: order.saleOrderId,
+            saleOrderDatetime: order.saleOrderDatetime,
+            orderStatus: order.status,
             paidAt: order.paidAt,
+            saleOrderType: order.saleOrderType,
+            documentType: order.documentType,
+            marketName: order.marketName,
+            legacySource: order.legacySource,
+            orderStoreId: order.storeId,
+            storeName: order.storeName,
+            storeId: item.storeId,
+            skuId: item.skuId,
+            itemDirection: item.itemDirection,
+            refSaleItemId: item.refSaleItemId,
+            quantity: item.quantity,
+            unitPrice: item.unitPrice,
+            saleAmount: item.saleAmount,
+            received: item.received,
+            pendingReceived: item.pendingReceived,
+            expireDate: item.expireDate,
+            remark: item.remark,
+            salesCategory: item.salesCategory,
+            pickedUpQuantity: item.pickedUpQuantity,
             unitRealPrice: item.unitRealPrice,
             unit: item.unit || '次',
             category: item.category,
@@ -553,7 +614,84 @@ Page({
         }
         return (a.paidAt < b.paidAt) ? 1 : (a.paidAt > b.paidAt) ? -1 : 0;
       });
-      this.applyTreatmentCardFilters(cards, {
+      const groupedCards = groupTreatmentCards(cards, {
+        getId: (card) => card.saleItemId,
+        getQuantity: (card) => card.quantity,
+        getIdentity: (card) => ({
+          saleOrderId: card.saleOrderId,
+          saleOrderDatetime: card.saleOrderDatetime,
+          orderStatus: card.orderStatus,
+          paidAt: card.paidAt,
+          saleOrderType: card.saleOrderType,
+          documentType: card.documentType,
+          marketName: card.marketName,
+          legacySource: card.legacySource,
+          orderStoreId: card.orderStoreId,
+          storeName: card.storeName,
+          itemName: card.itemName,
+          spec: card.spec,
+          storeId: card.storeId,
+          skuId: card.skuId,
+          itemDirection: card.itemDirection,
+          refSaleItemId: card.refSaleItemId,
+          totalSessions: card.totalSessions,
+          remainingSessions: card.remainingSessions,
+          paidSessions: card.paidSessions,
+          consumableSessions: card.consumableSessions,
+          usedSessions: card.usedSessions,
+          paidUnusedSessions: card.paidUnusedSessions,
+          unit: card.unit,
+          unitRealPrice: card.unitRealPrice,
+          unitPrice: card.unitPrice,
+          saleAmount: card.saleAmount,
+          received: card.received,
+          pendingReceived: card.pendingReceived,
+          expireDate: card.expireDate,
+          remark: card.remark,
+          salesCategory: card.salesCategory,
+          pickedUpQuantity: card.pickedUpQuantity,
+          category: card.category,
+          categoryColor: card.categoryColor,
+          productKind: card.productKind,
+          categoryId: card.categoryId,
+          categoryName: card.categoryName,
+          saleOrderTypeLabel: card.saleOrderTypeLabel,
+          disabled: card.disabled,
+          disabledReason: card.disabledReason,
+          quantity: card.quantity ?? 1,
+        }),
+      }).map((group) => {
+        const primary = group.primary;
+        const totalSessions = sumGroupValue(group, (card) => card.totalSessions);
+        const remainingSessions = sumGroupValue(group, (card) => card.remainingSessions);
+        const paidSessions = primary.paidSessions === null
+          ? null
+          : sumGroupValue(group, (card) => card.paidSessions);
+        const usedSessions = sumGroupValue(group, (card) => card.usedSessions);
+        const paidUnusedSessions = sumGroupValue(group, (card) => card.paidUnusedSessions);
+        const unpaidSessions = paidSessions === null ? totalSessions : Math.max(totalSessions - paidSessions, 0);
+        const pct = (value: number) => totalSessions > 0 ? Math.round((value / totalSessions) * 1000) / 10 : 0;
+        return {
+          ...primary,
+          saleItemId: group.groupKey,
+          groupKey: group.groupKey,
+          sourceItems: group.sourceItems,
+          cardCount: group.cardCount,
+          quantity: sumGroupValue(group, (card) => card.quantity ?? 1),
+          totalSessions,
+          remainingSessions,
+          paidSessions,
+          consumableSessions: sumGroupValue(group, (card) => card.consumableSessions),
+          usedSessions,
+          paidUnusedSessions,
+          usedPct: pct(usedSessions),
+          paidUnusedPct: pct(paidUnusedSessions),
+          unpaidPct: pct(unpaidSessions),
+          selected: false,
+          sessionCount: 1,
+        };
+      });
+      this.applyTreatmentCardFilters(groupedCards, {
         productKind: '',
         categoryId: '',
         nameQuery: '',
@@ -648,7 +786,9 @@ Page({
 
   onStepperChange(e: WechatMiniprogram.CustomEvent) {
     const saleItemId = e.currentTarget.dataset.saleItemId as string;
-    const sessionCount = Number(e.detail) || 1;
+    const target = this._allTreatmentCards.find((item) => item.saleItemId === saleItemId);
+    const max = Math.max(1, Number(target?.consumableSessions || 1));
+    const sessionCount = Math.max(1, Math.min(Number(e.detail) || 1, max));
     const cards = this._allTreatmentCards.map((item) =>
       item.saleItemId === saleItemId ? { ...item, sessionCount } : item,
     );
@@ -662,6 +802,33 @@ Page({
     if (!customer) return;
     const selected = this._allTreatmentCards.filter(c => c.selected);
     if (selected.length === 0) return;
+    const preloadItems = selected.flatMap((card) => {
+      const sourceItems = card.sourceItems?.length ? card.sourceItems : [card];
+      const expanded = expandGroupServiceSessions(
+        {
+          groupKey: card.groupKey || card.saleItemId,
+          primary: card,
+          sourceItems,
+          cardCount: card.cardCount || 1,
+        },
+        card.sessionCount,
+        (item) => item.saleItemId,
+        (item) => item.consumableSessions,
+      );
+      return expanded.map((selection) => {
+        const source = sourceItems.find((item) => item.saleItemId === selection.saleItemId) || card;
+        return {
+          saleItemId: selection.saleItemId,
+          itemName: source.itemName,
+          spec: source.spec,
+          saleOrderId: source.saleOrderId,
+          sessionCount: selection.sessionUsed,
+          remainingSessions: source.remainingSessions,
+          unit: source.unit,
+        };
+      });
+    });
+    if (preloadItems.length === 0) return;
     app.globalData._serviceCreatePreload = {
       customer: {
         id: customer.clientUserId || customer.id || '',
@@ -669,15 +836,7 @@ Page({
         phone: customer.phone,
         clientUserId: customer.clientUserId || undefined,
       },
-      items: selected.map(c => ({
-        saleItemId: c.saleItemId,
-        itemName: c.itemName,
-        spec: c.spec,
-        saleOrderId: c.saleOrderId,
-        sessionCount: c.sessionCount,
-        remainingSessions: c.remainingSessions,
-        unit: c.unit,
-      })),
+      items: preloadItems,
     };
     wx.navigateTo({ url: '/packageService/service-create/service-create?preloaded=1' });
   },

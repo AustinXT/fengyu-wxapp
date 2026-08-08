@@ -17,6 +17,7 @@ import { formatPhoneSafe } from "@/lib/format"
 import { shanghaiToday } from "@/lib/datetime"
 import { DEPOSIT_REFUND_REMARK } from "@/lib/service-remark"
 import { actionErrorMessage } from "@/lib/action-error"
+import { expandGroupServiceSessions, groupTreatmentCards, sumGroupValue } from "@/lib/treatment-card-group"
 
 const steps = ["选择顾客", "选择项目", "确认提交"]
 
@@ -47,8 +48,72 @@ function StepIndicator({ current }: { current: number }) {
 }
 
 interface SelectedItem {
-  saleItemId: string
+  groupKey: string
   sessionUsed: number
+}
+
+interface GroupedAvailableSaleItem extends AvailableSaleItem {
+  groupKey: string
+  cardCount: number
+  sourceItems: AvailableSaleItem[]
+}
+
+function groupAvailableSaleItems(items: AvailableSaleItem[]): GroupedAvailableSaleItem[] {
+  return groupTreatmentCards(items, {
+    getId: (item) => item.saleItemId,
+    getQuantity: (item) => item.quantity,
+    getIdentity: (item) => ({
+      saleOrderId: item.saleOrderId,
+      saleOrderDatetime: item.saleOrderDatetime,
+      paidAt: item.paidAt,
+      orderStatus: item.orderStatus,
+      saleOrderType: item.saleOrderType,
+      documentType: item.documentType,
+      marketName: item.marketName,
+      legacySource: item.legacySource,
+      storeId: item.storeId,
+      skuId: item.skuId,
+      itemDirection: item.itemDirection,
+      refSaleItemId: item.refSaleItemId,
+      productName: item.productName,
+      productType: item.productType,
+      unit: item.unit,
+      productKind: item.productKind,
+      categoryId: item.categoryId,
+      categoryName: item.categoryName,
+      sessionCount: item.sessionCount,
+      remainingSessions: item.remainingSessions,
+      paidSessions: item.paidSessions,
+      paidUnusedSessions: item.paidUnusedSessions,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      unitRealPrice: item.unitRealPrice,
+      saleAmount: item.saleAmount,
+      received: item.received,
+      pendingReceived: item.pendingReceived,
+      expireDate: item.expireDate,
+      remark: item.remark,
+      salesCategory: item.salesCategory,
+    }),
+  }).map((group) => {
+    const primary = group.primary
+    return {
+      ...primary,
+      groupKey: group.groupKey,
+      sourceItems: group.sourceItems,
+      cardCount: group.cardCount,
+      quantity: sumGroupValue(group, (item) => item.quantity),
+      sessionCount: sumGroupValue(group, (item) => item.sessionCount),
+      remainingSessions: sumGroupValue(group, (item) => item.remainingSessions),
+      paidSessions: primary.paidSessions === null
+        ? null
+        : sumGroupValue(group, (item) => item.paidSessions),
+      paidUnusedSessions: sumGroupValue(group, (item) => item.paidUnusedSessions),
+      saleAmount: sumGroupValue(group, (item) => item.saleAmount).toFixed(2),
+      received: sumGroupValue(group, (item) => item.received).toFixed(2),
+      pendingReceived: sumGroupValue(group, (item) => item.pendingReceived).toFixed(2),
+    }
+  })
 }
 
 export default function ServiceCreatePageClient({
@@ -67,7 +132,7 @@ export default function ServiceCreatePageClient({
   const [searchDone, setSearchDone] = useState(false)
 
   // Step 2: Items + Config
-  const [availableItems, setAvailableItems] = useState<AvailableSaleItem[]>([])
+  const [availableItems, setAvailableItems] = useState<GroupedAvailableSaleItem[]>([])
   const [loadingItems, setLoadingItems] = useState(false)
   const [selectedItems, setSelectedItems] = useState<SelectedItem[]>([])
   const [itemProductKind, setItemProductKind] = useState("")
@@ -129,7 +194,7 @@ export default function ServiceCreatePageClient({
     setLoadingItems(true)
     try {
       const items = await getAvailableSaleItems(selectedCustomer.userId)
-      setAvailableItems(items)
+      setAvailableItems(groupAvailableSaleItems(items))
       setSelectedItems([])
       setItemProductKind("")
       setItemCategoryId("")
@@ -142,28 +207,28 @@ export default function ServiceCreatePageClient({
     }
   }
 
-  const toggleItem = (saleItemId: string) => {
+  const toggleItem = (groupKey: string) => {
     setSelectedItems(prev => {
-      const exists = prev.find(i => i.saleItemId === saleItemId)
-      if (exists) return prev.filter(i => i.saleItemId !== saleItemId)
-      return [...prev, { saleItemId, sessionUsed: 1 }]
+      const exists = prev.find(i => i.groupKey === groupKey)
+      if (exists) return prev.filter(i => i.groupKey !== groupKey)
+      return [...prev, { groupKey, sessionUsed: 1 }]
     })
   }
 
-  const updateSessionUsed = (saleItemId: string, value: number) => {
-    const item = availableItems.find(i => i.saleItemId === saleItemId)
+  const updateSessionUsed = (groupKey: string, value: number) => {
+    const item = availableItems.find(i => i.groupKey === groupKey)
     const max = item?.paidUnusedSessions ?? 1
     const clamped = Math.max(1, Math.min(value, max))
     setSelectedItems(prev =>
-      prev.map(i => i.saleItemId === saleItemId ? { ...i, sessionUsed: clamped } : i)
+      prev.map(i => i.groupKey === groupKey ? { ...i, sessionUsed: clamped } : i)
     )
   }
 
-  const isItemSelected = (saleItemId: string) =>
-    selectedItems.some(i => i.saleItemId === saleItemId)
+  const isItemSelected = (groupKey: string) =>
+    selectedItems.some(i => i.groupKey === groupKey)
 
-  const getSessionUsed = (saleItemId: string) =>
-    selectedItems.find(i => i.saleItemId === saleItemId)?.sessionUsed ?? 1
+  const getSessionUsed = (groupKey: string) =>
+    selectedItems.find(i => i.groupKey === groupKey)?.sessionUsed ?? 1
 
   const filteredEmployees = employees.filter(
     e => !e.isResigned && (!selectedStoreId || e.storeId === selectedStoreId || e.isOnBusinessTrip) && e.skills?.includes('美容师')
@@ -200,6 +265,25 @@ export default function ServiceCreatePageClient({
     setSubmitting(true)
     try {
       const store = stores.find(s => s.storeId === selectedStoreId)
+      const submittedItems = selectedItems.flatMap((selected) => {
+        const group = availableItems.find((item) => item.groupKey === selected.groupKey)
+        if (!group) return []
+        return expandGroupServiceSessions(
+          {
+            groupKey: group.groupKey,
+            primary: group,
+            sourceItems: group.sourceItems,
+            cardCount: group.cardCount,
+          },
+          selected.sessionUsed,
+          (source) => source.saleItemId,
+          (source) => source.paidUnusedSessions,
+        )
+      })
+      if (submittedItems.length === 0) {
+        toast.error("请选择至少一个可核销项目")
+        return
+      }
       const res = await createServiceOrder({
         storeId: selectedStoreId,
         marketName: store?.marketName || "未知市场",
@@ -207,10 +291,7 @@ export default function ServiceCreatePageClient({
         assignedEmployeeId: selectedEmployeeId,
         serviceDate,
         remark: remarkMode === "deposit-refund" ? DEPOSIT_REFUND_REMARK : (remark.trim() || null),
-        items: selectedItems.map(i => ({
-          saleItemId: i.saleItemId,
-          sessionUsed: i.sessionUsed,
-        })),
+        items: submittedItems,
       })
       if (res.success) {
         toast.success(res.message)
@@ -370,23 +451,28 @@ export default function ServiceCreatePageClient({
                     </thead>
                     <tbody className="divide-y divide-gray-200">
                       {filteredAvailableItems.map((item) => {
-                        const selected = isItemSelected(item.saleItemId)
+                        const selected = isItemSelected(item.groupKey)
                         return (
                           <tr
-                            key={item.saleItemId}
+                            key={item.groupKey}
                             className={`transition-colors cursor-pointer ${selected ? "bg-[#FFF0EE]" : "hover:bg-gray-50"}`}
-                            onClick={() => toggleItem(item.saleItemId)}
+                            onClick={() => toggleItem(item.groupKey)}
                           >
                             <td className="px-4 py-3">
                               <input
                                 type="checkbox"
                                 checked={selected}
-                                onChange={() => toggleItem(item.saleItemId)}
+                                onChange={() => toggleItem(item.groupKey)}
                                 onClick={(e) => e.stopPropagation()}
                                 className="rounded"
                               />
                             </td>
-                            <td className="px-4 py-3">{item.productName || "—"}</td>
+                            <td className="px-4 py-3">
+                              <div className="flex items-center gap-2">
+                                <span>{item.productName || "—"}</span>
+                                {item.cardCount > 1 && <span className="text-xs text-[#999999]">共 {item.cardCount} 张</span>}
+                              </div>
+                            </td>
                             <td className="px-4 py-3">
                               <span className={`inline-block px-2 py-0.5 rounded text-xs ${
                                 item.productType === "疗程卡"
@@ -412,8 +498,8 @@ export default function ServiceCreatePageClient({
                                   type="number"
                                   min={1}
                                   max={item.paidUnusedSessions ?? 1}
-                                  value={getSessionUsed(item.saleItemId)}
-                                  onChange={(e) => updateSessionUsed(item.saleItemId, Number(e.target.value))}
+                                  value={getSessionUsed(item.groupKey)}
+                                  onChange={(e) => updateSessionUsed(item.groupKey, Number(e.target.value))}
                                   className="w-20 text-center mx-auto"
                                 />
                               )}
@@ -517,11 +603,11 @@ export default function ServiceCreatePageClient({
               <h3 className="text-sm font-semibold mb-3">服务项目</h3>
               <div className="space-y-2">
                 {selectedItems.map(si => {
-                  const item = availableItems.find(a => a.saleItemId === si.saleItemId)
+                  const item = availableItems.find(a => a.groupKey === si.groupKey)
                   if (!item) return null
                   return (
-                    <div key={si.saleItemId} className="flex justify-between text-sm bg-[#FAFAFA] rounded px-3 py-2">
-                      <span>{item.productName} - {item.productType}</span>
+                    <div key={si.groupKey} className="flex justify-between text-sm bg-[#FAFAFA] rounded px-3 py-2">
+                      <span>{item.productName} - {item.productType}{item.cardCount > 1 ? `（共 ${item.cardCount} 张）` : ''}</span>
                       <span className="font-medium">划卡 {si.sessionUsed} {item.unit}</span>
                     </div>
                   )

@@ -43,7 +43,7 @@
     <!-- 订单明细 -->
     <view class="card-group items-card">
       <text class="items-title">订单明细</text>
-      <view class="order-item" wx:for="{{order.items}}" wx:key="saleItemId">
+      <view class="order-item" wx:for="{{order.displayItems}}" wx:key="saleItemId">
         <view class="item-name-row">
           <text class="item-name">{{item.itemName || '—'}}</text>
           <text wx:if="{{item.spec}}" class="item-spec">{{item.spec}}</text>
@@ -53,6 +53,7 @@
           <text wx:if="{{item.sessionCount > 1}}" class="item-sessions">
             已用 {{item.usedSessions}} / 已付 {{item.paidSessions}} / 共 {{item.sessionCount}} {{item.unit || '次'}}
           </text>
+          <text wx:if="{{item.isTreatmentCard && item.cardCount > 1}}" class="item-sessions">共 {{item.cardCount}} 张</text>
         </view>
         <!-- 三段进度条：已用（灰）/ 剩余可用（主色）/ 已付未用（浅色）/ 未付（灰条余下） -->
         <view wx:if="{{item.sessionCount > 1}}" class="session-bar">

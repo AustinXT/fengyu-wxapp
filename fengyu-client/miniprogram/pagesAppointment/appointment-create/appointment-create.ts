@@ -2,6 +2,7 @@
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
 import { formatDate } from '../../utils/format';
+import { groupTreatmentCards, sumGroupValue } from '../../utils/treatment-card-group';
 
 const app = getApp<IAppOption>();
 
@@ -24,6 +25,7 @@ Page({
     appointableItems: [] as any[],
     selectedSaleItemId: '',
     selectedSaleOrderId: '',
+    selectedSaleItemGroupKey: '',
 
     // 时间
     appointmentDate: '',
@@ -85,7 +87,7 @@ Page({
         if (filterSaleOrderId && order.saleOrderId !== filterSaleOrderId) continue;
         for (const item of (order.items || [])) {
           // 疗程卡（含原单品=1 次卡）可预约；必须本店可用 + 有已付未用次数
-          const itemStoreId = order.storeId || '';
+          const itemStoreId = item.storeId || order.storeId || '';
           const isCrossStore = !!bookingStoreId && !!itemStoreId && itemStoreId !== bookingStoreId;
           if (isCrossStore) continue;
           const total = Number(item.sessionCount ?? 0);
@@ -110,22 +112,107 @@ Page({
             paid_unused_sessions: isNullCard ? 0 : paidUnused,
             product_type: item.productType,
             sale_order_id: order.saleOrderId,
+            sale_order_datetime: order.saleOrderDatetime,
+            paid_at: order.paidAt,
+            order_status: order.orderStatus,
+            sale_order_type: order.saleOrderType,
+            document_type: order.documentType,
+            legacy_source: order.legacySource,
             store_id: itemStoreId,
             store_name: order.storeName,
+            market_name: order.marketName,
+            sku_id: item.skuId,
+            item_direction: item.itemDirection,
+            ref_sale_item_id: item.refSaleItemId,
+            unit_price: item.unitPrice,
+            unit_real_price: item.unitRealPrice,
+            sale_amount: item.saleAmount,
+            received: item.received,
+            pending_received: item.pendingReceived,
+            expire_date: item.expireDate,
+            remark: item.remark,
+            sales_category: item.salesCategory,
+            picked_up_quantity: item.pickedUpQuantity,
+            product_kind: item.productKind,
+            category_id: item.categoryId,
+            category_name: item.categoryName,
+            quantity: Number(item.quantity ?? 1),
             disabled: isNullCard,
             disabled_reason: isNullCard ? '历史卡未回填,不可核销' : '',
           });
         }
       }
       // 当指定了 saleItemId 时（来自疗程卡页），自动预选对应项目；跨店卡不预选
-      const preselect = preselectItemId
-        ? items.find(i => i.sale_item_id === preselectItemId && !i.disabled)
+      const groupedItems = groupTreatmentCards(items, {
+        getId: (item) => item.sale_item_id,
+        getQuantity: (item) => item.quantity,
+        getIdentity: (item) => ({
+          saleOrderId: item.sale_order_id,
+          saleOrderDatetime: item.sale_order_datetime,
+          paidAt: item.paid_at,
+          orderStatus: item.order_status,
+          saleOrderType: item.sale_order_type,
+          documentType: item.document_type,
+          legacySource: item.legacy_source,
+          storeId: item.store_id,
+          storeName: item.store_name,
+          marketName: item.market_name,
+          skuId: item.sku_id,
+          itemDirection: item.item_direction,
+          refSaleItemId: item.ref_sale_item_id,
+          productName: item.product_name,
+          productType: item.product_type,
+          sessionCount: item.session_count,
+          remainingSessions: item.remaining_sessions,
+          paidSessions: item.disabled ? null : item.paid_sessions,
+          usedSessions: item.used_sessions,
+          paidUnusedSessions: item.paid_unused_sessions,
+          unit: item.unit,
+          unitPrice: item.unit_price,
+          unitRealPrice: item.unit_real_price,
+          saleAmount: item.sale_amount,
+          received: item.received,
+          pendingReceived: item.pending_received,
+          expireDate: item.expire_date,
+          remark: item.remark,
+          salesCategory: item.sales_category,
+          pickedUpQuantity: item.picked_up_quantity,
+          productKind: item.product_kind,
+          categoryId: item.category_id,
+          categoryName: item.category_name,
+          disabled: item.disabled,
+          disabledReason: item.disabled_reason,
+          quantity: item.quantity ?? 1,
+        }),
+      }).map((group) => {
+        const primary = group.primary;
+        const disabled = !!primary.disabled;
+        return {
+          ...primary,
+          group_key: group.groupKey,
+          sale_item_id: primary.sale_item_id,
+          quantity: sumGroupValue(group, (item) => item.quantity ?? 1),
+          card_count: group.cardCount,
+          session_count: sumGroupValue(group, (item) => item.session_count),
+          remaining_sessions: sumGroupValue(group, (item) => item.remaining_sessions),
+          paid_sessions: disabled ? 0 : sumGroupValue(group, (item) => item.paid_sessions),
+          used_sessions: sumGroupValue(group, (item) => item.used_sessions),
+          paid_unused_sessions: disabled ? 0 : sumGroupValue(group, (item) => item.paid_unused_sessions),
+          source_items: group.sourceItems,
+        };
+      });
+      const preselectGroup = preselectItemId
+        ? groupedItems.find((item) => item.source_items.some((source: any) => source.sale_item_id === preselectItemId) && !item.disabled)
+        : null;
+      const preselectSource = preselectGroup && preselectItemId
+        ? preselectGroup.source_items.find((source: any) => source.sale_item_id === preselectItemId)
         : null;
       this.setData({
-        appointableItems: items,
-        ...(preselect ? {
-          selectedSaleItemId: preselect.sale_item_id,
-          selectedSaleOrderId: preselect.sale_order_id,
+        appointableItems: groupedItems,
+        ...(preselectGroup && preselectSource ? {
+          selectedSaleItemId: preselectSource.sale_item_id,
+          selectedSaleOrderId: preselectSource.sale_order_id,
+          selectedSaleItemGroupKey: preselectGroup.group_key,
         } : {}),
       });
     } catch {
@@ -249,19 +336,33 @@ Page({
   },
 
   onSelectItem(e: WechatMiniprogram.TouchEvent) {
-    const item = e.currentTarget.dataset.item as any;
-    if (item.disabled) {
-      Toast(item.disabled_reason || '该卡不可用于当前门店');
+    const {
+      saleItemId,
+      saleOrderId,
+      groupKey,
+      disabled,
+      disabledReason,
+    } = e.currentTarget.dataset as {
+      saleItemId?: string;
+      saleOrderId?: string;
+      groupKey?: string;
+      disabled?: boolean | string;
+      disabledReason?: string;
+    };
+    if (disabled === true || disabled === 'true') {
+      Toast(disabledReason || '该卡不可用于当前门店');
       return;
     }
+    if (!saleItemId || !saleOrderId || !groupKey) return;
     this.setData({
-      selectedSaleItemId: item.sale_item_id,
-      selectedSaleOrderId: item.sale_order_id,
+      selectedSaleItemId: saleItemId,
+      selectedSaleOrderId: saleOrderId,
+      selectedSaleItemGroupKey: groupKey,
     });
   },
 
   onClearItem() {
-    this.setData({ selectedSaleItemId: '', selectedSaleOrderId: '' });
+    this.setData({ selectedSaleItemId: '', selectedSaleOrderId: '', selectedSaleItemGroupKey: '' });
   },
 
   onShowDatePicker() {

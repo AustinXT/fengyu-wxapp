@@ -2,6 +2,7 @@
 import { callStaffApi } from '../../utils/cloud';
 import { isManager, getStaffWfId } from '../../utils/role';
 import { STATUS_CLASS, ORDER_TYPE_LABEL, formatDateTime, formatDate } from '../../utils/formatters';
+import { groupTreatmentCards, sumGroupValue } from '../../utils/treatment-card-group';
 
 const PAY_TYPE_LABEL: Record<string, string> = {
   wechat: '微信支付',
@@ -15,6 +16,8 @@ interface RawOrder {
   sale_order_id: string;
   status: string;
   sale_order_type?: string;
+  sale_order_datetime?: string;
+  store_id?: string;
   store_name?: string;
   payment_method?: string;
   customer_name?: string;
@@ -48,9 +51,15 @@ interface RawOrder {
 
 interface RawOrderItem {
   sale_item_id: string;
+  sale_order_id?: string;
+  sku_id?: string | null;
+  item_direction?: string;
+  ref_sale_item_id?: string | null;
   product_name?: string;
+  product_type?: string;
   sale_amount?: string;
   received?: string;
+  pending_received?: string;
   refunded_amount?: string;
   session_count?: number;
   unit?: string;
@@ -58,8 +67,10 @@ interface RawOrderItem {
   paid_sessions?: number | null;
   unit_price?: string;
   unit_real_price?: string;
+  quantity?: number;
   overpay_refundable?: string | number | null;
   expire_date?: string;
+  remark?: string | null;
   sales_category?: string;
   picked_up_quantity?: number;
 }
@@ -102,6 +113,12 @@ interface OrderDetailResponse {
 
 interface DisplayOrderItem {
   saleItemId: string;
+  saleOrderId: string;
+  skuId: string | null;
+  itemDirection: string;
+  refSaleItemId: string | null;
+  productType: string;
+  isTreatmentCard: boolean;
   itemName: string;
   spec: string;
   totalPrice: string;
@@ -133,6 +150,12 @@ interface DisplayOrderItem {
   unitRealPrice: string;
   unitPrice: string;
   hasDiscount: boolean;
+  /** 行购买数量；疗程卡按张数。 */
+  quantity: number;
+  /** 聚合后的疗程卡张数，仅供展示。 */
+  cardCount: number;
+  pendingReceived: string;
+  remark: string;
 }
 
 interface DisplayOrder {
@@ -168,7 +191,10 @@ interface DisplayOrder {
   isLegacy: boolean;
   isActivity: boolean;
   remark: string;
+  /** 原始逐项列表；退款、回款继续使用它，不能被展示聚合结果替代。 */
   items: DisplayOrderItem[];
+  /** 仅订单明细区域使用的聚合展示列表。 */
+  displayItems: DisplayOrderItem[];
   payments: DisplayPayment[];
   /** 多收余数可退额（0=无）；退款弹层据此展示「多收可退余数」选项 */
   overpayRefundable: string;
@@ -243,6 +269,12 @@ Page({
         const repayable = refunded > 0 ? 0 : Math.max(0, Math.round((saleAmt - recv) * 100) / 100);
         return {
           saleItemId: it.sale_item_id,
+          saleOrderId: it.sale_order_id || o.sale_order_id,
+          skuId: it.sku_id || null,
+          itemDirection: it.item_direction || '',
+          refSaleItemId: it.ref_sale_item_id || null,
+          productType: it.product_type || '',
+          isTreatmentCard: it.product_type === '疗程卡',
           itemName: it.product_name || '—',
           spec: '',
           totalPrice: it.received || '0',
@@ -268,6 +300,98 @@ Page({
           unitRealPrice: Number(it.unit_real_price || 0).toFixed(2),
           unitPrice: Number(it.unit_price || 0).toFixed(2),
           hasDiscount: Number(it.unit_price || 0) > Number(it.unit_real_price || 0),
+          quantity: Number(it.quantity || 1),
+          cardCount: Number(it.quantity || 1),
+          pendingReceived: Number(it.pending_received || 0).toFixed(2),
+          remark: it.remark || '',
+        };
+      });
+
+      // 订单明细仅合并疗程卡。分组键覆盖来源订单、方向、价格、次数、有效期等业务属性，
+      // 因而只会汇总除 saleItemId 外完全相同的卡；退款与回款仍继续读取原始 items。
+      const displayItems = groupTreatmentCards(items, {
+        getId: (item) => item.saleItemId,
+        getQuantity: (item) => item.quantity,
+        preserveNonUnitQuantity: false,
+        getIdentity: (item) => ({
+          sourceId: item.isTreatmentCard ? undefined : item.saleItemId,
+          saleOrderId: item.saleOrderId,
+          orderStatus: o.status,
+          saleOrderType: o.sale_order_type,
+          documentType: o.document_type,
+          legacySource: o.legacy_source,
+          saleOrderDatetime: o.sale_order_datetime,
+          paidAt: o.paid_at,
+          storeId: o.store_id,
+          marketName: o.market_name,
+          skuId: item.skuId,
+          itemDirection: item.itemDirection,
+          refSaleItemId: item.refSaleItemId,
+          productType: item.productType,
+          itemName: item.itemName,
+          spec: item.spec,
+          totalPrice: item.totalPrice,
+          saleAmount: item.saleAmount,
+          received: item.received,
+          refundedAmount: item.refundedAmount,
+          repayable: item.repayable,
+          sessionCount: item.sessionCount,
+          remainingSessions: item.remainingSessions,
+          paidSessions: item.paidSessions ?? null,
+          usedSessions: item.usedSessions,
+          paidUnusedSessions: item.paidUnusedSessions,
+          unit: item.unit,
+          unitPrice: item.unitPrice,
+          unitRealPrice: item.unitRealPrice,
+          pendingReceived: item.pendingReceived,
+          overpayRefundable: item.overpayRefundable,
+          expireDate: item.expireDate,
+          salesCategory: item.salesCategory,
+          pickedUpQuantity: item.pickedUpQuantity,
+          hasDiscount: item.hasDiscount,
+          remark: item.remark,
+          quantity: item.quantity,
+        }),
+      }).map((group) => {
+        const primary = group.primary;
+        if (!primary.isTreatmentCard) {
+          return { ...primary, cardCount: group.cardCount };
+        }
+
+        const sessionCount = sumGroupValue(group, (item) => item.sessionCount);
+        const remainingSessions = sumGroupValue(group, (item) => item.remainingSessions);
+        const paidSessions = primary.paidSessions === undefined
+          ? undefined
+          : sumGroupValue(group, (item) => item.paidSessions);
+        const usedSessions = sumGroupValue(group, (item) => item.usedSessions);
+        const paidUnusedSessions = sumGroupValue(group, (item) => item.paidUnusedSessions);
+        const unpaidSessions = paidSessions === undefined
+          ? sessionCount
+          : Math.max(sessionCount - paidSessions, 0);
+        const pct = (value: number) => sessionCount > 0
+          ? Math.round((value / sessionCount) * 1000) / 10
+          : 0;
+
+        return {
+          ...primary,
+          quantity: sumGroupValue(group, (item) => item.quantity),
+          cardCount: group.cardCount,
+          totalPrice: sumGroupValue(group, (item) => item.totalPrice).toFixed(2),
+          saleAmount: sumGroupValue(group, (item) => item.saleAmount).toFixed(2),
+          received: sumGroupValue(group, (item) => item.received).toFixed(2),
+          refundedAmount: sumGroupValue(group, (item) => item.refundedAmount).toFixed(2),
+          repayable: sumGroupValue(group, (item) => item.repayable).toFixed(2),
+          sessionCount,
+          remainingSessions,
+          paidSessions,
+          usedSessions,
+          paidUnusedSessions,
+          overpayRefundable: sumGroupValue(group, (item) => item.overpayRefundable),
+          remainPct: pct(remainingSessions),
+          paidUnusedPct: pct(paidUnusedSessions),
+          unpaidPct: pct(unpaidSessions),
+          pickedUpQuantity: sumGroupValue(group, (item) => item.pickedUpQuantity),
+          pendingReceived: sumGroupValue(group, (item) => item.pendingReceived).toFixed(2),
         };
       });
 
@@ -343,6 +467,7 @@ Page({
           isActivity: !!o.is_activity,
           remark: o.remark || '',
           items,
+          displayItems,
           payments,
           overpayRefundable: Number(res.overpayRefundable || 0).toFixed(2),
         },

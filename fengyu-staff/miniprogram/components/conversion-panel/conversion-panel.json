@@ -7,6 +7,7 @@
     "van-empty": "@vant/weapp/empty/index",
     "van-loading": "@vant/weapp/loading/index",
     "van-search": "@vant/weapp/search/index",
-    "van-switch": "@vant/weapp/switch/index"
+    "van-switch": "@vant/weapp/switch/index",
+    "van-stepper": "@vant/weapp/stepper/index"
   }
 }

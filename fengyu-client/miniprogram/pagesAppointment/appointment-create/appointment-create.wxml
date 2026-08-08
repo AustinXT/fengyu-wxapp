@@ -28,16 +28,20 @@
         wx:for="{{appointableItems}}"
         wx:key="sale_item_id"
         title="{{item.product_name || '—'}}"
-        label="已用 {{item.used_sessions}} / 已付 {{item.disabled ? '—' : item.paid_sessions}} / 共 {{item.session_count}} {{item.unit || '次'}}{{item.disabled_reason ? ' · ' + item.disabled_reason : ''}}"
+        label="已用 {{item.used_sessions}} / 已付 {{item.disabled ? '—' : item.paid_sessions}} / 共 {{item.session_count}} {{item.unit || '次'}} · 共 {{item.card_count}} 张{{item.disabled_reason ? ' · ' + item.disabled_reason : ''}}"
         clickable
         bind:click="onSelectItem"
-        data-item="{{item}}"
-        class="{{selectedSaleItemId === item.sale_item_id ? 'item-selected' : ''}} {{item.disabled ? 'item-disabled' : ''}}"
+        data-sale-item-id="{{item.sale_item_id}}"
+        data-sale-order-id="{{item.sale_order_id}}"
+        data-group-key="{{item.group_key}}"
+        data-disabled="{{item.disabled}}"
+        data-disabled-reason="{{item.disabled_reason}}"
+        class="{{selectedSaleItemGroupKey === item.group_key ? 'item-selected' : ''}} {{item.disabled ? 'item-disabled' : ''}}"
       >
         <van-icon
           slot="right-icon"
-          name="{{item.disabled ? 'close' : (selectedSaleItemId === item.sale_item_id ? 'success' : 'circle')}}"
-          color="{{item.disabled ? '#CCCCCC' : (selectedSaleItemId === item.sale_item_id ? '#C0322A' : '#DCDCDC')}}"
+          name="{{item.disabled ? 'close' : (selectedSaleItemGroupKey === item.group_key ? 'success' : 'circle')}}"
+          color="{{item.disabled ? '#CCCCCC' : (selectedSaleItemGroupKey === item.group_key ? '#C0322A' : '#DCDCDC')}}"
           size="40rpx"
         />
       </van-cell>

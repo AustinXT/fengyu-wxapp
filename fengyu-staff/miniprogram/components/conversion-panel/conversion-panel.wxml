@@ -99,12 +99,29 @@
           <view class="conv-card-meta">
             <text wx:if="{{item.productType === '疗程卡'}}" class="conv-card-remain">剩余 {{item.remainingSessions}} {{item.unit || '次'}}</text>
             <text wx:else class="conv-card-remain">剩余 {{item.remainingQuantity}} 个</text>
+            <text class="conv-card-remain">· 共 {{item.cardCount || 1}} 张</text>
             <text class="conv-card-unit">· 单{{item.unit || '次'}}价 ¥{{item.unitRealPrice}}</text>
           </view>
         </view>
         <view class="conv-card-amount">
           <text class="conv-card-amount-value">¥{{item.deductibleAmount}}</text>
           <text class="conv-card-amount-label">可折抵</text>
+        </view>
+        <view wx:if="{{item.selected}}" class="conv-card-quantity" catchtap="preventBubble">
+          <block wx:if="{{item.sourceItems.length > 1}}">
+            <text class="conv-card-quantity-label">转换数量</text>
+            <van-stepper
+              value="{{item.selectedQuantity}}"
+              min="{{1}}"
+              max="{{item.sourceItems.length}}"
+              input-width="60rpx"
+              button-size="48rpx"
+              bind:change="onCardQuantityChange"
+              data-id="{{item.saleItemId}}"
+            />
+            <text class="conv-card-quantity-label">张</text>
+          </block>
+          <text wx:else class="conv-card-quantity-label">整行转换</text>
         </view>
       </view>
     </view>

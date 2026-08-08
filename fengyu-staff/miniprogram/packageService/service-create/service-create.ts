@@ -2,6 +2,7 @@
 import { callStaffApi } from '../../utils/cloud';
 import { formatDateTime, ORDER_TYPE_LABEL } from '../../utils/formatters';
 import { isManager } from '../../utils/role';
+import { expandGroupServiceSessions, groupTreatmentCards, sumGroupValue } from '../../utils/treatment-card-group';
 
 // 寄存单退款专用标准化备注（数据契约）。寄存单是上线时导入老系统历史剩余次数的初始化单据，未走收款流程、
 // 无法开正常退款单；退寄存疗程卡次数时走正常服务单扣减次数并在备注选此预设打标，供后续从消耗业绩统计过滤。
@@ -24,6 +25,8 @@ interface PaidOrderItem {
   productType: string;
   unit?: string;
   storeId?: string;
+  orderStoreId?: string;
+  storeName?: string;
   /** NULL 卡（paid_sessions 为 null 的历史卡）置 true：灰显不可核销 */
   disabled?: boolean;
   disabledReason?: string;
@@ -37,14 +40,47 @@ interface PaidOrderItem {
   saleOrderTypeLabel?: string;
   /** 拍平后回填：所属销售单号 */
   saleOrderId?: string;
+  saleOrderDatetime?: string | null;
+  orderStatus?: string;
+  saleOrderType?: string;
+  documentType?: string | null;
+  marketName?: string;
+  legacySource?: string | null;
   /** 拍平后回填：支付时间（已格式化） */
   paidAt?: string;
+  skuId?: string | null;
+  itemDirection?: string;
+  refSaleItemId?: string | null;
   /** 一级品项（product_categories.product_kind） */
   productKind?: string;
   /** 二级品项 ID（历史无分类卡为空） */
   categoryId?: string;
   /** 二级品项名称（保留 category 兼容字段） */
   categoryName?: string;
+  quantity?: number;
+  unitPrice?: string;
+  saleAmount?: string;
+  received?: string;
+  pendingReceived?: string;
+  expireDate?: string | null;
+  remark?: string | null;
+  salesCategory?: string | null;
+  pickedUpQuantity?: number | null;
+  groupKey?: string;
+  cardCount?: number;
+  sourceItems?: PaidOrderItem[];
+}
+
+interface SelectedPaidItem {
+  saleItemId: string;
+  itemName: string;
+  spec: string;
+  saleOrderId: string;
+  sessionCount: number;
+  unit: string;
+  consumableSessions: number;
+  cardCount: number;
+  sourceItems: PaidOrderItem[];
 }
 
 interface CardFilterOption {
@@ -55,11 +91,16 @@ interface CardFilterOption {
 interface PaidOrder {
   orderId: string;
   saleOrderId: string;
+  status: string;
+  saleOrderDatetime?: string | null;
   paidAt: string;
   storeId?: string;
   storeName?: string;
   /** 单据类型（sale_orders.sale_order_type） */
   saleOrderType?: string;
+  documentType?: string | null;
+  marketName?: string;
+  legacySource?: string | null;
   items: PaidOrderItem[];
 }
 
@@ -110,7 +151,7 @@ Page({
     paidItemProductKindLabel: '全部一级品项',
     paidItemCategoryLabel: '全部二级品项',
     hasPaidItemFilter: false,
-    selectedItems: [] as Array<{ saleItemId: string; itemName: string; spec: string; saleOrderId: string; sessionCount: number; unit: string }>,
+    selectedItems: [] as SelectedPaidItem[],
     selectedFlowNos: {} as Record<string, boolean>, // 预计算的选中 saleItemId 集合，供 WXML 使用
     selectedSessionCounts: {} as Record<string, number>, // 预计算的选中 sessionCount，供 stepper 使用
     // 服务人员
@@ -129,6 +170,7 @@ Page({
   },
 
   _allPaidItems: [] as PaidOrderItem[],
+  _pendingPreloadedItems: [] as Array<{ saleItemId: string; sessionCount: number }>,
 
   onLoad(options) {
     const { staffName, staffWfId } = app.globalData;
@@ -142,22 +184,12 @@ Page({
       const preload = app.globalData._serviceCreatePreload;
       app.globalData._serviceCreatePreload = null;
       if (preload) {
-        const selectedItems = preload.items.map(i => ({
-          saleItemId: i.saleItemId,
-          itemName: i.itemName,
-          spec: i.spec,
-          saleOrderId: i.saleOrderId,
-          sessionCount: i.sessionCount,
-          unit: i.unit || '次',
+        this._pendingPreloadedItems = preload.items.map((item) => ({
+          saleItemId: item.saleItemId,
+          sessionCount: item.sessionCount,
         }));
-        const flowNos: Record<string, boolean> = {};
-        const sessionCounts: Record<string, number> = {};
-        selectedItems.forEach(s => { flowNos[s.saleItemId] = true; sessionCounts[s.saleItemId] = s.sessionCount; });
         this.setData({
           selectedCustomer: preload.customer,
-          selectedItems,
-          selectedFlowNos: flowNos,
-          selectedSessionCounts: sessionCounts,
         });
         if (preload.customer.clientUserId || preload.customer.id) {
           this.loadPaidOrders(preload.customer.clientUserId || preload.customer.id);
@@ -263,6 +295,7 @@ Page({
 
   onClearCustomer() {
     this._allPaidItems = [];
+    this._pendingPreloadedItems = [];
     this.setData({
       selectedCustomer: null,
       customerSearch: '',
@@ -317,6 +350,14 @@ Page({
           items.push({
             ...i,
             saleOrderId: o.saleOrderId,
+            saleOrderDatetime: o.saleOrderDatetime,
+            orderStatus: o.status,
+            saleOrderType: o.saleOrderType,
+            documentType: o.documentType,
+            marketName: o.marketName,
+            legacySource: o.legacySource,
+            orderStoreId: o.storeId,
+            storeName: o.storeName,
             paidAt: formatDateTime(o.paidAt),
             consumableSessions: consumable,
             disabled: isNullCard,
@@ -338,11 +379,105 @@ Page({
         const pb = b.paidAt || '';
         return (pa < pb) ? 1 : (pa > pb) ? -1 : 0;
       });
-      this.applyPaidItemFilters(items, {
+      const groupedItems = groupTreatmentCards(items, {
+        getId: (item) => item.saleItemId,
+        getQuantity: (item) => item.quantity,
+        getIdentity: (item) => ({
+          saleOrderId: item.saleOrderId,
+          saleOrderDatetime: item.saleOrderDatetime,
+          paidAt: item.paidAt,
+          orderStatus: item.orderStatus,
+          saleOrderType: item.saleOrderType,
+          documentType: item.documentType,
+          marketName: item.marketName,
+          legacySource: item.legacySource,
+          orderStoreId: item.orderStoreId,
+          storeName: item.storeName,
+          storeId: item.storeId,
+          skuId: item.skuId,
+          itemDirection: item.itemDirection,
+          refSaleItemId: item.refSaleItemId,
+          itemName: item.itemName,
+          spec: item.spec,
+          productType: item.productType,
+          totalSessions: item.totalSessions,
+          remainingSessions: item.remainingSessions,
+          paidSessions: item.paidSessions,
+          consumableSessions: item.consumableSessions,
+          unit: item.unit,
+          unitRealPrice: item.unitRealPrice,
+          unitPrice: item.unitPrice,
+          saleAmount: item.saleAmount,
+          received: item.received,
+          pendingReceived: item.pendingReceived,
+          expireDate: item.expireDate,
+          remark: item.remark,
+          salesCategory: item.salesCategory,
+          pickedUpQuantity: item.pickedUpQuantity,
+          category: item.category,
+          categoryColor: item.categoryColor,
+          productKind: item.productKind,
+          categoryId: item.categoryId,
+          categoryName: item.categoryName,
+          saleOrderTypeLabel: item.saleOrderTypeLabel,
+          disabled: item.disabled,
+          disabledReason: item.disabledReason,
+          quantity: item.quantity ?? 1,
+        }),
+      }).map((group) => {
+        const primary = group.primary;
+        const totalSessions = sumGroupValue(group, (item) => item.totalSessions);
+        const remainingSessions = sumGroupValue(group, (item) => item.remainingSessions);
+        const paidSessions = primary.paidSessions === null
+          ? null
+          : sumGroupValue(group, (item) => item.paidSessions);
+        return {
+          ...primary,
+          saleItemId: group.groupKey,
+          groupKey: group.groupKey,
+          sourceItems: group.sourceItems,
+          cardCount: group.cardCount,
+          quantity: sumGroupValue(group, (item) => item.quantity ?? 1),
+          totalSessions,
+          sessionCount: totalSessions,
+          remainingSessions,
+          paidSessions,
+          consumableSessions: sumGroupValue(group, (item) => item.consumableSessions),
+        };
+      });
+      this.applyPaidItemFilters(groupedItems, {
         productKind: '',
         categoryId: '',
         nameQuery: '',
       });
+      if (this._pendingPreloadedItems.length > 0) {
+        const selectedItems: SelectedPaidItem[] = groupedItems.flatMap((group) => {
+          const matched = this._pendingPreloadedItems.filter((pending) =>
+            (group.sourceItems || [group]).some((source) => source.saleItemId === pending.saleItemId),
+          );
+          if (matched.length === 0) return [];
+          const sessionCount = matched.reduce((total, pending) => total + pending.sessionCount, 0);
+          return [{
+            saleItemId: group.saleItemId,
+            itemName: group.itemName,
+            spec: group.spec,
+            saleOrderId: group.saleOrderId || '',
+            sessionCount: Math.max(1, Math.min(sessionCount, group.consumableSessions)),
+            unit: group.unit || '次',
+            consumableSessions: group.consumableSessions,
+            cardCount: group.cardCount || 1,
+            sourceItems: group.sourceItems || [group],
+          }];
+        });
+        const flowNos: Record<string, boolean> = {};
+        const sessionCounts: Record<string, number> = {};
+        selectedItems.forEach((item) => {
+          flowNos[item.saleItemId] = true;
+          sessionCounts[item.saleItemId] = item.sessionCount;
+        });
+        this.setData({ selectedItems, selectedFlowNos: flowNos, selectedSessionCounts: sessionCounts });
+        this._pendingPreloadedItems = [];
+      }
       this.setData({ paidItemsLoaded: true });
     } catch (_) {
       this.setData({ paidItemsLoaded: true });
@@ -415,8 +550,8 @@ Page({
   },
 
   onToggleItem(e: WechatMiniprogram.TouchEvent) {
-    const { saleItemId, itemName, spec, saleOrderId, disabled } = e.currentTarget.dataset as {
-      saleItemId: string; itemName: string; spec: string; saleOrderId: string; disabled?: boolean | string;
+    const { saleItemId, disabled } = e.currentTarget.dataset as {
+      saleItemId: string; disabled?: boolean | string;
     };
     // NULL 历史卡：disabled 灰显，拦截核销并提示
     if (disabled === true || disabled === 'true') {
@@ -429,7 +564,18 @@ Page({
       selected.splice(idx, 1);
     } else {
       const paidItem = this._allPaidItems.find(item => item.saleItemId === saleItemId);
-      selected.push({ saleItemId, itemName, spec, saleOrderId, sessionCount: 1, unit: paidItem?.unit || '次' });
+      if (!paidItem) return;
+      selected.push({
+        saleItemId,
+        itemName: paidItem.itemName,
+        spec: paidItem.spec,
+        saleOrderId: paidItem.saleOrderId || '',
+        sessionCount: 1,
+        unit: paidItem.unit || '次',
+        consumableSessions: paidItem.consumableSessions,
+        cardCount: paidItem.cardCount || 1,
+        sourceItems: paidItem.sourceItems || [paidItem],
+      });
     }
     const flowNos: Record<string, boolean> = {};
     const sessionCounts: Record<string, number> = {};
@@ -447,8 +593,10 @@ Page({
     const selected = [...this.data.selectedItems];
     const idx = selected.findIndex(s => s.saleItemId === saleItemId);
     if (idx >= 0) {
-      selected[idx] = { ...selected[idx], sessionCount: value };
-      const sessionCounts = { ...this.data.selectedSessionCounts, [saleItemId]: value };
+      const max = Math.max(1, selected[idx].consumableSessions);
+      const sessionCount = Math.max(1, Math.min(Number(value) || 1, max));
+      selected[idx] = { ...selected[idx], sessionCount };
+      const sessionCounts = { ...this.data.selectedSessionCounts, [saleItemId]: sessionCount };
       this.setData({ selectedItems: selected, selectedSessionCounts: sessionCounts });
     }
   },
@@ -494,15 +642,30 @@ Page({
 
     this.setData({ submitting: true });
     try {
+      const expandedItems = selectedItems.flatMap((item) => {
+        const primary = item.sourceItems[0];
+        if (!primary) return [];
+        return expandGroupServiceSessions(
+          {
+            groupKey: item.saleItemId,
+            primary,
+            sourceItems: item.sourceItems,
+            cardCount: item.cardCount,
+          },
+          item.sessionCount,
+          (source) => source.saleItemId,
+          (source) => source.consumableSessions,
+        );
+      });
+      if (expandedItems.length === 0) {
+        throw new Error('请选择可核销的疗程卡');
+      }
       await callStaffApi('service.create', {
         clientUserId: selectedCustomer.clientUserId || selectedCustomer.id,
         clientPhone: selectedCustomer.phone,
         appointmentId: appointmentId || null,
         assignedStaffWfId: this.data.assignedStaffWfId || undefined,
-        items: selectedItems.map(i => ({
-          saleItemId: i.saleItemId,
-          sessionUsed: i.sessionCount,
-        })),
+        items: expandedItems,
         remark,
       });
       wx.showToast({ title: '服务单已创建', icon: 'success' });

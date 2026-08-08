@@ -31,7 +31,7 @@ import { searchEmployees } from "@/actions/employees"
 import PullWorkfineDialog from "@/app/(main)/legacy-orders/_components/pull-workfine-dialog"
 import { DangerZoneDelete } from "@/components/delete-action"
 import { deleteCustomer } from "@/actions/customers"
-import { getCustomerVisibleSaleItems } from "./customer-entitlement-items"
+import { getCustomerVisibleSaleItems, type CustomerVisibleSaleItem } from "./customer-entitlement-items"
 
 interface CustomerDetailPageProps {
   customer: Customer
@@ -389,11 +389,16 @@ export default function CustomerDetailPage({
     },
   ]
 
-  const itemColumns: Column<SaleItem>[] = [
+  const itemColumns: Column<CustomerVisibleSaleItem>[] = [
     {
       key: "productName",
       header: "项目名称",
-      cell: (row) => <span className="font-medium">{row.productName ?? "—"}</span>,
+      cell: (row) => (
+        <div className="flex items-center gap-2">
+          <span className="font-medium">{row.productName ?? "—"}</span>
+          {row.cardCount > 1 && <span className="text-xs text-[#999999]">共 {row.cardCount} 张</span>}
+        </div>
+      ),
     },
     {
       key: "skuName",

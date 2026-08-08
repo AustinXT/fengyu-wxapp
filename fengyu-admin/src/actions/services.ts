@@ -880,6 +880,17 @@ export const getServiceReview = withPermission(
 export interface AvailableSaleItem {
   saleItemId: string
   saleOrderId: string
+  saleOrderDatetime: string | null
+  paidAt: string | null
+  orderStatus: string
+  saleOrderType: string
+  documentType: string | null
+  marketName: string
+  legacySource: string | null
+  storeId: string
+  skuId: string | null
+  itemDirection: string
+  refSaleItemId: string | null
   productName: string | null
   productType: string | null
   /** 当前 SKU 的展示单位；历史 SKU 缺失时按商品类型回退。 */
@@ -893,10 +904,17 @@ export interface AvailableSaleItem {
   sessionCount: number | null
   remainingSessions: number | null
   paidSessions: number | null
+  quantity: number
   /** 可用次数（已付未用）；paidSessions 为 NULL 时退回物理剩余。步进器 max 用此值 */
   paidUnusedSessions: number
+  unitPrice: string
   unitRealPrice: string
+  saleAmount: string
+  received: string
+  pendingReceived: string
   expireDate: string | null
+  remark: string | null
+  salesCategory: string | null
 }
 
 export const getAvailableSaleItems = withPermission(
@@ -906,13 +924,31 @@ export const getAvailableSaleItems = withPermission(
     SELECT
       si.sale_item_id,
       si.sale_order_id,
+      o.sale_order_datetime,
+      o.paid_at,
+      o.status AS order_status,
+      o.sale_order_type,
+      o.document_type,
+      o.market_name,
+      o.legacy_source,
+      si.store_id,
+      si.sku_id,
+      si.item_direction,
+      si.ref_sale_item_id,
       si.product_name,
       si.product_type,
       si.session_count,
       si.remaining_sessions,
       si.paid_sessions,
+      si.quantity,
+      si.unit_price,
       si.unit_real_price,
+      si.sale_amount,
+      si.received,
+      si.pending_received,
       si.expire_date,
+      si.remark,
+      si.sales_category,
       COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
       ps.category_id,
       pc.category_name,
@@ -955,6 +991,19 @@ export const getAvailableSaleItems = withPermission(
     return {
       saleItemId: r.sale_item_id,
       saleOrderId: r.sale_order_id,
+      saleOrderDatetime: r.sale_order_datetime instanceof Date
+        ? r.sale_order_datetime.toISOString()
+        : (r.sale_order_datetime ?? null),
+      paidAt: r.paid_at instanceof Date ? r.paid_at.toISOString() : (r.paid_at ?? null),
+      orderStatus: r.order_status,
+      saleOrderType: r.sale_order_type,
+      documentType: r.document_type ?? null,
+      marketName: r.market_name ?? '',
+      legacySource: r.legacy_source ?? null,
+      storeId: r.store_id,
+      skuId: r.sku_id ?? null,
+      itemDirection: r.item_direction,
+      refSaleItemId: r.ref_sale_item_id ?? null,
       productName: r.product_name,
       productType: r.product_type,
       unit: r.unit ?? (r.product_type === '家居产品' ? '盒' : '次'),
@@ -964,9 +1013,16 @@ export const getAvailableSaleItems = withPermission(
       sessionCount: r.session_count !== null ? Number(r.session_count) : null,
       remainingSessions: r.remaining_sessions !== null ? Number(r.remaining_sessions) : null,
       paidSessions: r.paid_sessions !== null && r.paid_sessions !== undefined ? Number(r.paid_sessions) : null,
+      quantity: Number(r.quantity ?? 1),
       paidUnusedSessions: paid === null ? remain : Math.max(0, paid - used),
+      unitPrice: r.unit_price ?? '0',
       unitRealPrice: r.unit_real_price ?? '0',
+      saleAmount: r.sale_amount ?? '0',
+      received: r.received ?? '0',
+      pendingReceived: r.pending_received ?? '0',
       expireDate: r.expire_date,
+      remark: r.remark ?? null,
+      salesCategory: r.sales_category ?? null,
     }
   })
   },

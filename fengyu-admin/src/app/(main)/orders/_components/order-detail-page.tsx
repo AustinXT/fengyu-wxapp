@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { StatusBadge, Badge } from "@/components/ui/badge";
-import type { SaleOrder, SaleAllocation, OperationLog, SaleOrderPayment } from "@/lib/types";
+import type { SaleOrder, SaleItem, SaleAllocation, OperationLog, SaleOrderPayment } from "@/lib/types";
 import { RecordPaymentDialog } from "./record-payment-dialog";
 import { ConfirmOfflineDialog } from "./confirm-offline-dialog";
 import { RefundForm } from "@/components/orders/refund-form";
@@ -16,6 +16,7 @@ import { maskPhone } from "@/lib/pii";
 import { DangerZoneDelete } from "@/components/delete-action";
 import { actionErrorMessage } from "@/lib/action-error";
 import { approveDepositOrder, deleteOrder, rejectDepositOrder } from "@/actions/orders";
+import { groupTreatmentCards, sumGroupValue } from "@/lib/treatment-card-group";
 
 /** ticket 2026-04-24 PR-3 §3.3 — change_type/status 中文展示，退款金额红色 */
 const paymentChangeTypeLabelMap: Record<string, string> = {
@@ -65,6 +66,74 @@ function formatDateTime(dt: string | null) {
   return fmtDateTime(dt);
 }
 
+type DisplaySaleItem = SaleItem & { cardCount: number };
+
+function getDisplaySaleItems(order: SaleOrder, items: NonNullable<SaleOrder["items"]>): DisplaySaleItem[] {
+  return groupTreatmentCards(items, {
+    getId: (item) => item.saleItemId,
+    getQuantity: (item) => item.quantity,
+    preserveNonUnitQuantity: false,
+    getIdentity: (item) => ({
+      // 非疗程卡保持逐行展示；疗程卡只在其余业务属性完全一致时合并。
+      sourceId: item.sessionCount === null ? item.saleItemId : undefined,
+      saleOrderId: order.saleOrderId,
+      orderStatus: order.status,
+      saleOrderType: order.saleOrderType,
+      documentType: order.documentType,
+      storeId: order.storeId,
+      marketName: order.marketName,
+      saleOrderDatetime: order.saleOrderDatetime,
+      paidAt: order.paidAt,
+      itemDirection: item.itemDirection,
+      refSaleItemId: item.refSaleItemId,
+      skuId: item.skuId,
+      unit: item.unit,
+      sessionCount: item.sessionCount,
+      remainingSessions: item.remainingSessions,
+      paidSessions: item.paidSessions,
+      unitPrice: item.unitPrice,
+      quantity: item.quantity,
+      unitRealPrice: item.unitRealPrice,
+      saleAmount: item.saleAmount,
+      received: item.received,
+      pendingReceived: item.pendingReceived,
+      expireDate: item.expireDate,
+      pickedUpQuantity: item.pickedUpQuantity,
+      remark: item.remark,
+      salesCategory: item.salesCategory,
+      skuName: item.skuName,
+      productName: item.productName,
+      productKind: item.productKind,
+      categoryId: item.categoryId,
+      categoryName: item.categoryName,
+    }),
+  }).map((group) => {
+    const primary = group.primary;
+    if (primary.sessionCount === null) {
+      return { ...primary, cardCount: group.cardCount };
+    }
+
+    const sessionCount = sumGroupValue(group, (item) => item.sessionCount);
+    const remainingSessions = sumGroupValue(group, (item) => item.remainingSessions);
+    const paidSessions = primary.paidSessions === null
+      ? null
+      : sumGroupValue(group, (item) => item.paidSessions);
+
+    return {
+      ...primary,
+      quantity: sumGroupValue(group, (item) => item.quantity),
+      sessionCount,
+      remainingSessions,
+      paidSessions,
+      saleAmount: sumGroupValue(group, (item) => item.saleAmount).toFixed(2),
+      received: sumGroupValue(group, (item) => item.received).toFixed(2),
+      pendingReceived: sumGroupValue(group, (item) => item.pendingReceived).toFixed(2),
+      pickedUpQuantity: sumGroupValue(group, (item) => item.pickedUpQuantity),
+      cardCount: group.cardCount,
+    };
+  });
+}
+
 export default function OrderDetailPageClient({
   order,
   allocations,
@@ -102,6 +171,11 @@ export default function OrderDetailPageClient({
 }) {
   const router = useRouter();
   const items = order.items || [];
+  // 只给商品明细表使用，退款、回款等后续逻辑继续读上面的原始 items。
+  const displayItems = useMemo(
+    () => getDisplaySaleItems(order, items),
+    [items, order],
+  );
   const prepaidCardAmount = Number(order.prepaidCardAmount ?? "0");
   const paidAmount = Number(order.received ?? "0");
   const refundedAmount = Number(order.refundedAmount ?? "0");
@@ -506,7 +580,7 @@ export default function OrderDetailPageClient({
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
-                {items.map((item) => {
+                {displayItems.map((item) => {
                   // ticket 2026-05-19 D10=A：三段次数展示
                   // 已用 = sessionCount - remainingSessions；已付 = paidSessions ?? 0；共 = sessionCount
                   const sessionCell =
@@ -516,7 +590,12 @@ export default function OrderDetailPageClient({
                   return (
                     <tr key={item.saleItemId} className="hover:bg-[#FFF0EE] transition-colors">
                       <td className="px-4 py-3">
-                        <div className="font-medium">{item.skuName || item.productName || "—"}</div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">{item.skuName || item.productName || "—"}</span>
+                          {item.sessionCount !== null && item.cardCount > 1 && (
+                            <span className="text-xs text-[#999999]">共 {item.cardCount} 张</span>
+                          )}
+                        </div>
                         {(item.salesCategory || item.expireDate || (item.pickedUpQuantity ?? 0) > 0) && (
                           <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-[#999999]">
                             {item.salesCategory && <span>{item.salesCategory}</span>}
@@ -541,7 +620,7 @@ export default function OrderDetailPageClient({
                     </tr>
                   );
                 })}
-                {items.length === 0 && (
+                {displayItems.length === 0 && (
                   <tr>
                     <td colSpan={7} className="px-4 py-8 text-center text-[#999999]">
                       暂无明细

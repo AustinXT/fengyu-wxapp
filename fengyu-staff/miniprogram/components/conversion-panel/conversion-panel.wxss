@@ -110,6 +110,7 @@
 .conv-card-item {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 16rpx;
   padding: 20rpx 16rpx;
   background: #FAFAFA;
@@ -170,6 +171,20 @@
 .conv-card-amount-label {
   font-size: 20rpx;
   color: var(--color-text-hint);
+}
+.conv-card-quantity {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12rpx;
+  margin-top: 12rpx;
+  padding-top: 12rpx;
+  border-top: 1rpx solid #F0E8E5;
+}
+.conv-card-quantity-label {
+  font-size: 22rpx;
+  color: var(--color-text-secondary);
 }
 
 /* ===== 底部差额汇总 ===== */
