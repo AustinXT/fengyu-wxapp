@@ -103,9 +103,10 @@ metadata:
 
 5. **【DB assert ②】admin 远程库**：admin 的 `ADMIN_DATABASE_URL` 取自 `$SSH_HOST` 远程 `docker/.env`（被 compose 引用），不是本地。
    ```bash
-   ssh $SSH_HOST "grep ADMIN_DATABASE_URL /root/proj.xt.com/fengyu-wxapp/docker/.env" | sed -E 's#://[^@]+@#://***@#'
+   # prod=/www/wwwroot/fengyu-admin/docker; dev=/root/proj.xt.com/fengyu-wxapp/docker
+   ssh $SSH_HOST "grep ADMIN_DATABASE_URL $REMOTE_DIR/.env" | sed -E 's#://[^@]+@#://***@#'
    ```
-   - 必须含 `$EXPECT_IP`（按 IP 断言）。远程 docker 目录默认 `/root/proj.xt.com/fengyu-wxapp/docker`（同 `deploy-admin.sh` 第 3 参数默认值）；远程路径首跑前确认。
+   - 必须含 `$EXPECT_IP`（按 IP 断言）。`REMOTE_DIR` 默认 prod=`/www/wwwroot/fengyu-admin/docker`、dev=`/root/proj.xt.com/fengyu-wxapp/docker`（与 `deploy-admin.sh` 一致）；远程路径首跑前确认。
 
 6. **环境就绪**：
    ```bash

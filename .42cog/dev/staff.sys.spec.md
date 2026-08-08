@@ -347,18 +347,21 @@ staff.todoList → 6 种待办:
 
 **数据模型**：`prepaid_cards` 一户一账户（`UNIQUE(user_id)`，**无 `store_id` 列**），余额跨店共享。`paymentMethodEnum` 扩展为 4 值：`['微信', '支付宝', '线下', '无']`；`paid_amount = 0` ⇔ `payment_method = '无'`（应用层双向蕴含校验）。
 
-**扣卡契约**（员工端仅在两处扣卡）：
+**扣卡契约**：
 
 | 触发点 | 场景 | 动作 |
 |--------|------|------|
+| `order.create` / `order.createConversion` | 充值卡全额覆盖应付 | 创建事务内 `FOR UPDATE` + 二次校验 + 扣 balance + INSERT `card_transactions(type='扣款')` + 置已支付 |
 | `order.confirmOffline` | 顾客扫码选线下 → 店长确认收款 | 事务内 `FOR UPDATE` + 二次校验 + 扣 balance + INSERT `card_transactions(type='扣款')` + 置已支付 |
 | `order.approveRefund` | 退款审批通过 | 按比例 `refundByCard = floor(prepaid/total × refund, 2)`、`refundByOrigin = refund - refundByCard`；储值卡部分 INSERT `type='充值'` 回冲 balance |
 
 **不扣卡的关键路径**（预选 / 转交客户端扣）：
 
-- `order.create`：仅写入预选值（`prepaid_card_amount` / `paid_amount` / `payment_method`），`balance` 不动
-- `order.createConversion` 正差额补款 / `order.createRepayment`：沿用"店长开单 → 顾客扫码确认"链路，balance 由 clientApi / payNotify / confirmOffline 处理
+- `order.create`：部分抵扣仅写入预选值（`prepaid_card_amount` / `received` / `payment_method`），`balance` 不动
+- `order.createConversion` 正差额部分抵扣 / `order.createRepayment`：沿用"店长开单 → 顾客扫码确认"链路，balance 由 clientApi / payNotify / confirmOffline 处理
 - `order.createConversion` 负差额（多退给客户）：保留现有"充入储值卡"逻辑，UPSERT 维度改为 `ON CONFLICT (user_id)`，INSERT 列集不含 `store_id`
+
+**充值卡金额约束**：普通销售单、内部单和转换单的页面初始值均为 `0.00`。前端输入上限为 `min(应付金额, prepaid_cards.balance)`；普通/内部单对挂账还须不超过本次逐行实付合计。服务端不得信任前端钳制：非负且有限、不得超过应付上限，并在金额大于零时读取实时余额复核；全额抵扣仍由既有 `FOR UPDATE` 扣卡流程二次校验。
 
 **余额查询**：`customer.customerBalance({customerUserId})` — 跨店统一余额；`requireManager()` 权限校验。
 
