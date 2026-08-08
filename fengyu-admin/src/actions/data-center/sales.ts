@@ -21,7 +21,7 @@
  *   - 新增会员（newCustomerRevenue）= customer_type='会员客' AND became_member_at::date >= 区间起
  *     （metrics.md 销售数据页「新增会员」分型），SUM(si.received)
  *   - 员工数 skills && ARRAY['美容师','养生师'] + hired_at/resigned_at 历史化
- *   - 门店数 opening_date/closed_at 历史化
+ *   - 门店数：当前门店节点启用 + opening_date/closed_at 历史化
  *
  * 流量客业绩（trafficCustomerRevenue，2026-05-26 用户拍板）：
  *   trafficCustomerRevenue = SUM(si.received) WHERE customer_type = '流量客'
@@ -162,17 +162,17 @@ export const getSalesBoard = withPermission(
       )
 
     /**
-     * 门店数（历史化）：opening_date <= 区间末 AND (closed_at IS NULL OR closed_at > 区间末)。
-     * scope=store 短路返回 1（对齐 staff queryStoreCount）。store 维度无 scope 过滤需求。
+     * 门店数（当前启用 + 历史化）：opening_date <= 区间末 AND (closed_at IS NULL OR closed_at > 区间末)。
+     * 单店 scope 也走真实查询，停用门店即使通过 URL 直达也返回 0。
      */
     const runStoreCount = async (range: ResolvedRange): Promise<number | null> => {
-      if (scope.type === 'store') return 1
       return scalar(
         await db.execute(sql`
           SELECT COUNT(*)::int AS v
           FROM stores s
           JOIN org_nodes o ON s.org_node_id = o.id
           WHERE o.type = '门店'
+            AND o.is_active = TRUE
             AND ${scopeFilterSql(session, scope, 's.store_id')}
             AND s.opening_date IS NOT NULL
             AND s.opening_date::date <= ${range.end}

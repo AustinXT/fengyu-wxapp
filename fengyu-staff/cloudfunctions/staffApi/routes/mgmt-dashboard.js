@@ -2,8 +2,8 @@
  * 管理层数据中心模块路由（员工端）
  *
  * mgmtDashboard.scopeOptions — 市场/门店二级筛选器数据源
- *   - HQ 账号：返回所有市场及其下属门店
- *   - market 账号：仅返回 roleBindings 中 scopeType='市场' 对应的市场
+ *   - 总部 scope：返回所有市场及其下属门店
+ *   - 其他账号：仅返回账号全部 scope 覆盖的门店及可完整选择的市场
  *   - 5 分钟内存缓存全量 markets，每次请求按 ctx.auth 过滤后返回
  *
  * mgmtDashboard.summary — 数据中心首页 8 卡片汇总
@@ -18,7 +18,11 @@
 
 const pg = require('../db/pg')
 const { requireManagementLevel } = require('../middleware/auth')
-const { validateManagementScope, buildManagementStoreScope } = require('../utils/scope')
+const {
+  validateManagementScope,
+  buildManagementStoreScope,
+  hasHeadquartersScope,
+} = require('../utils/scope')
 const { excludeDepositRefundSql } = require('../utils/consume-filter')
 
 /**
@@ -35,20 +39,14 @@ function lastDayOfMonth(dateStr) {
   return `${yy}-${mm}-${dd}`
 }
 
-// 模块级缓存：存放 HQ 全量 markets 列表（按账号过滤前的视图）
-// 不同账号每次请求基于此缓存按 staffLevel + roleBindings 派生自己的视图
-const CACHE_TTL_MS = 5 * 60 * 1000
-let CACHE = { ts: 0, data: null }
-
 /**
- * 加载 HQ 全量 markets 列表（带 5 分钟内存缓存）
+ * 加载 HQ 全量 markets 列表。
+ *
+ * 组织节点的启停必须立即反映到筛选器，因此这里不缓存；汇总/排行榜也在各自 SQL
+ * 中附加同一启用门店条件，避免用户绕过下拉后看到停用门店的数据。
  * @returns {Promise<Array<{id: string, name: string, stores: Array<{storeId: string, storeName: string}>}>>}
  */
 async function loadAllMarkets() {
-  if (CACHE.data && Date.now() - CACHE.ts < CACHE_TTL_MS) {
-    return CACHE.data
-  }
-
   const rows = await pg.query(`
     WITH RECURSIVE market_descendants(market_id, node_id, path) AS (
       SELECT m.id, m.id, ARRAY[m.id]
@@ -67,7 +65,11 @@ async function loadAllMarkets() {
       s.store_name  AS store_name
     FROM org_nodes m
     LEFT JOIN market_descendants d ON d.market_id = m.id
-    LEFT JOIN stores s ON s.org_node_id = d.node_id AND s.is_closed = false
+    LEFT JOIN org_nodes o_store
+      ON o_store.id = d.node_id
+     AND o_store.type = '门店'
+     AND o_store.is_active = TRUE
+    LEFT JOIN stores s ON s.org_node_id = o_store.id AND s.is_closed = false
     WHERE m.type = '市场'
     ORDER BY m.name ASC, s.store_name ASC
   `)
@@ -90,10 +92,7 @@ async function loadAllMarkets() {
     }
   }
 
-  const markets = Array.from(map.values())
-
-  CACHE = { ts: Date.now(), data: markets }
-  return markets
+  return Array.from(map.values())
 }
 
 /**
@@ -101,7 +100,9 @@ async function loadAllMarkets() {
  * 入参：无（按账号权限自动过滤）
  * 出参：
  *   {
- *     staffLevel: 'headquarters' | 'market',
+ *     staffLevel,
+ *     allowAll: boolean,
+ *     allowedMarketIds: string[],
  *     markets: [{ id, name, stores: [{ storeId, storeName }] }, ...]
  *   }
  */
@@ -109,29 +110,26 @@ async function scopeOptions(ctx) {
   await requireManagementLevel()(ctx, async () => {})
 
   const allMarkets = await loadAllMarkets()
-  const { staffLevel, roleBindings } = ctx.auth
-
-  let visible = allMarkets
-  if (staffLevel === 'market') {
-    const allowedMarketIds = new Set(
-      ctx.auth.scopeOrgNodeIds
-        ?? (roleBindings || [])
-          .filter((rb) => rb && rb.scopeType === '市场')
-          .map((rb) => rb.scopeId),
-    )
-    visible = allMarkets.filter((m) => allowedMarketIds.has(m.id))
-  } else if (staffLevel === 'store_manager') {
-    // 门店店长：按 managerStoreIds 过滤每个市场下的门店，丢弃无管辖门店的空市场。
-    // 用 managerStoreIds（非 scopeStoreIds）与 validateManagementScope 口径一致。
-    const allowed = new Set(ctx.auth.managerStoreIds || [])
-    visible = allMarkets
-      .map((m) => ({ ...m, stores: (m.stores || []).filter((s) => allowed.has(s.storeId)) }))
-      .filter((m) => m.stores.length > 0)
-  }
-  // headquarters 走全量；store_staff 由 requireManagementLevel 拦截，不会走到这里
+  const { staffLevel, roleBindings, scopeStoreIds, scopeOrgNodeIds } = ctx.auth
+  const allowAll = hasHeadquartersScope(roleBindings)
+  const allowedStores = new Set(scopeStoreIds || [])
+  const allowedNodes = new Set(scopeOrgNodeIds || [])
+  const allowedMarketIds = allMarkets
+    .filter((market) => allowAll || allowedNodes.has(market.id))
+    .map((market) => market.id)
+  const visible = allowAll
+    ? allMarkets
+    : allMarkets
+      .map((market) => ({
+        ...market,
+        stores: (market.stores || []).filter((store) => allowedStores.has(store.storeId)),
+      }))
+      .filter((market) => market.stores.length > 0)
 
   ctx.result = {
     staffLevel,
+    allowAll,
+    allowedMarketIds,
     markets: visible,
   }
 }
@@ -140,25 +138,52 @@ async function scopeOptions(ctx) {
 // summary —— 8 卡片汇总
 // =====================================================================
 
+/** 当前启用的门店组织节点对应的 store_id 集合（按当前状态作用于全部历史区间）。 */
+function activeStoreCondition(column) {
+  return `${column} IN (
+    SELECT active_store.store_id
+    FROM stores active_store
+    JOIN org_nodes active_node ON active_store.org_node_id = active_node.id
+    WHERE active_node.type = '门店'
+      AND active_node.is_active = TRUE
+  )`
+}
+
 /**
- * 构造 sale/service 表的 store_id scope 过滤片段
- * @param {string} scopeType
- * @param {string} scopeId
- * @param {string} alias 表别名（默认 'so'）
- * @param {number} startIdx 起始 $n 下标
+ * 在既有权限/UI scope 外叠加经营门店启用条件；不改共享 scope 工具，避免影响其他路由。
  */
+function withActiveStoreCondition(scope, column) {
+  return {
+    sql: `(${scope.sql}) AND ${activeStoreCondition(column)}`,
+    params: scope.params,
+  }
+}
+
+/** 构造 sale/service 表的 active 门店 scope 过滤片段。 */
 function buildSaleScope(scopeType, scopeId, alias, startIdx) {
-  return buildManagementStoreScope(scopeType, scopeId, `${alias}.store_id`, startIdx)
+  const column = `${alias}.store_id`
+  return withActiveStoreCondition(
+    buildManagementStoreScope(scopeType, scopeId, column, startIdx),
+    column,
+  )
 }
 
-/** client_wechat_users.bound_store_id scope */
+/** client_wechat_users.bound_store_id 的 active 门店 scope。 */
 function buildClientScope(scopeType, scopeId, alias, startIdx) {
-  return buildManagementStoreScope(scopeType, scopeId, `${alias}.bound_store_id`, startIdx)
+  const column = `${alias}.bound_store_id`
+  return withActiveStoreCondition(
+    buildManagementStoreScope(scopeType, scopeId, column, startIdx),
+    column,
+  )
 }
 
-/** staff_wechat_users.store_id scope */
+/** staff_wechat_users.store_id 的 active 门店 scope。 */
 function buildStaffScope(scopeType, scopeId, alias, startIdx) {
-  return buildManagementStoreScope(scopeType, scopeId, `${alias}.store_id`, startIdx)
+  const column = `${alias}.store_id`
+  return withActiveStoreCondition(
+    buildManagementStoreScope(scopeType, scopeId, column, startIdx),
+    column,
+  )
 }
 
 /**
@@ -439,33 +464,23 @@ async function queryEmployeeCount(scopeType, scopeId, date) {
  * 口径：「$date 那天在营」 =
  *   COUNT(s.opening_date::date <= $date AND (s.closed_at IS NULL OR s.closed_at::date > $date))
  *
- * 单店模式（scope=store）短路返回 1，不依赖快照。
- * all/market 模式 JOIN stores 表，加 opening_date/closed_at 守卫。
+ * 所有 scope 均查询 stores 表，附加当前 org_nodes.is_active=TRUE；因此停用门店即使
+ * 通过 URL 直达也返回 0。opening_date/closed_at 仍负责历史在营口径。
  */
 async function queryStoreCount(scopeType, scopeId, date) {
-  if (scopeType === 'store') return 1
-  if (scopeType === 'all') {
-    const rows = await pg.query(
-      `SELECT COUNT(*)::int AS cnt
-         FROM stores s
-         JOIN org_nodes o ON s.org_node_id = o.id
-        WHERE o.type = '门店'
-          AND s.opening_date IS NOT NULL
-          AND s.opening_date::date <= $1::date
-          AND (s.closed_at IS NULL OR s.closed_at::date > $1::date)`,
-      [date],
-    )
-    return Number(rows[0]?.cnt || 0)
-  }
-  const storeScope = buildManagementStoreScope('market', scopeId, 's.store_id', 1)
+  // 与 summary 其它查询保持一致：$1 固定为日期，scope 参数从 $2 开始。
+  const storeScope = buildSaleScope(scopeType, scopeId, 's', 2)
   const rows = await pg.query(
     `SELECT COUNT(*)::int AS cnt
        FROM stores s
+       JOIN org_nodes o ON s.org_node_id = o.id
       WHERE ${storeScope.sql}
+        AND o.type = '门店'
+        AND o.is_active = TRUE
         AND s.opening_date IS NOT NULL
-        AND s.opening_date::date <= $2::date
-        AND (s.closed_at IS NULL OR s.closed_at::date > $2::date)`,
-    [...storeScope.params, date],
+        AND s.opening_date::date <= $1::date
+        AND (s.closed_at IS NULL OR s.closed_at::date > $1::date)`,
+    [date, ...storeScope.params],
   )
   return Number(rows[0]?.cnt || 0)
 }
@@ -676,13 +691,10 @@ function getSalesDataPeriod(period) {
 
 /**
  * 当前账号可见门店列表
- * @returns {string[] | null} null 表示不过滤（headquarters）；[] 表示空集（market 但 scopeStoreIds 为空）
+ * @returns {string[] | null} null 表示总部 scope（不过滤）；[] 表示空集
  */
 function getVisibleStoreIds(auth) {
-  if (auth.staffLevel === 'headquarters') return null
-  // store_manager 用 managerStoreIds，与 validateManagementScope 口径一致，
-  // 防 manager@A + customer_mgr@B 在排行榜里漏出 B
-  if (auth.staffLevel === 'store_manager') return auth.managerStoreIds || []
+  if (hasHeadquartersScope(auth.roleBindings)) return null
   return auth.scopeStoreIds || []
 }
 
@@ -693,14 +705,17 @@ function getVisibleStoreIds(auth) {
  * @param {number} startIdx 起始 $n 下标
  */
 function buildStoreFilter(visibleStoreIds, alias, startIdx) {
-  if (!visibleStoreIds) return { sql: 'TRUE', params: [] }
+  const column = `${alias}.store_id`
+  if (!visibleStoreIds) {
+    return withActiveStoreCondition({ sql: 'TRUE', params: [] }, column)
+  }
   if (visibleStoreIds.length === 0) {
     return { sql: 'FALSE', params: [] }
   }
-  return {
-    sql: `${alias}.store_id = ANY($${startIdx}::text[])`,
+  return withActiveStoreCondition({
+    sql: `${column} = ANY($${startIdx}::text[])`,
     params: [visibleStoreIds],
-  }
+  }, column)
 }
 
 /**

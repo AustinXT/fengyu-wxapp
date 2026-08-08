@@ -40,7 +40,12 @@ const ZERO_BUSINESS: Pick<DashboardStats,
 async function getAdminStats() {
   const rows = await db.execute(sql`
     SELECT
-      (SELECT COUNT(*) FROM stores WHERE is_closed = false) AS total_stores,
+      (SELECT COUNT(*)
+         FROM stores s
+         JOIN org_nodes o ON s.org_node_id = o.id
+        WHERE s.is_closed = false
+          AND o.type = '门店'
+          AND o.is_active = true) AS total_stores,
       (SELECT COUNT(*) FROM staff_wechat_users WHERE is_resigned = false) AS total_employees,
       (SELECT COUNT(*) FROM products WHERE deleted_at IS NULL) AS total_products,
       (SELECT COUNT(*) FROM client_wechat_users) AS total_customers
