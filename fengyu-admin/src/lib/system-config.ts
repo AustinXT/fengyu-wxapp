@@ -20,3 +20,30 @@ export async function getPointsToYuanRate(): Promise<number> {
     return 0.01
   }
 }
+
+/**
+ * 积分抵扣上限比例（system_configs.points_deduction_max_rate，默认 0.03 即订单金额的 3%）。
+ *
+ * 口径：积分可抵扣的金额上限 = 使用优惠券和积分「前」的订单金额 × 该比例。
+ * 日常 3%，活动期运营可在系统配置-基础配置临时调至 5%，活动结束后手动改回。
+ * 值域 [0, 1]；DB 无该行 / 解析失败 / 越界（<0 或 >1）一律降级为 0.03。
+ *
+ * 与 points_to_yuan_rate（积分折算汇率，多少积分=1元）是两个独立配置，勿混。
+ *
+ * 内部 PG 工具——给已在 Server Action 中通过 HOF 鉴权的调用方使用；非独立 Server Action
+ * （与 getPointsToYuanRate 同模式，避免内嵌权限冲突）。
+ *
+ * 注：当前无消费方（积分抵扣下单闭环见 #64），本 helper 为积分系列地基先行就绪。
+ */
+export async function getPointsDeductionMaxRate(): Promise<number> {
+  try {
+    const rows = await db.execute<{ value: string }>(sql`
+      SELECT value FROM system_configs WHERE key = 'points_deduction_max_rate' LIMIT 1
+    `)
+    const raw = (rows as any[])[0]?.value
+    const parsed = raw !== undefined ? Number(raw) : NaN
+    return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : 0.03
+  } catch {
+    return 0.03
+  }
+}

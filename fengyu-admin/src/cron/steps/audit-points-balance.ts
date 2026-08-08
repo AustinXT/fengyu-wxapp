@@ -1,7 +1,7 @@
 /**
  * STEP 5 — 积分余额一致性校验（迁自 cronTask/index.js:748-783）
  *
- * 校验 client_wechat_users.points_balance 与 point_transactions 流水合计是否一致。
+ * 校验 client_wechat_users.points_balance 与未过期 point_batches 剩余量合计是否一致。
  *
  * 决策 D7：自动修补会掩盖上游 bug，**只告警不修复**。
  *   - 发现偏差仅 INSERT operation_logs(action='points.balanceMismatch')
@@ -24,16 +24,18 @@ export interface PointsAuditResult {
 export async function auditPointsBalance(db: Db): Promise<PointsAuditResult> {
   const rows = (await db.execute(sql`
     WITH sums AS (
-      SELECT user_id, COALESCE(SUM(amount), 0)::int AS total_from_txns
-      FROM point_transactions
+      SELECT user_id, COALESCE(SUM(remaining_amount), 0)::int AS total_from_batches
+      FROM point_batches
+      WHERE remaining_amount > 0
+        AND expire_at > NOW()
       GROUP BY user_id
     )
     SELECT u.user_id,
            COALESCE(u.points_balance, 0) AS cached_balance,
-           COALESCE(s.total_from_txns, 0) AS expected_balance
+           COALESCE(s.total_from_batches, 0) AS expected_balance
       FROM client_wechat_users u
       LEFT JOIN sums s ON s.user_id = u.user_id
-     WHERE COALESCE(u.points_balance, 0) <> COALESCE(s.total_from_txns, 0)
+     WHERE COALESCE(u.points_balance, 0) <> COALESCE(s.total_from_batches, 0)
   `)) as Array<{
     user_id: string
     cached_balance: number | string

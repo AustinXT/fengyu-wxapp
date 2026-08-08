@@ -63,7 +63,7 @@ import { getCardTransactionsPaginated } from './card-transactions'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { scopeCondition } from '@/lib/permissions'
-import { eq, ilike, gte, lte, inArray } from 'drizzle-orm'
+import { eq, ilike, gte, lte, sql } from 'drizzle-orm'
 
 const adminSession = {
   employeeId: 'ADMIN-001',
@@ -229,51 +229,16 @@ describe('getCardTransactionsPaginated — 服务端分页', () => {
     expect(eq).toHaveBeenCalledWith('bound_store_id', 'store-2')
   })
 
-  it('marketId 筛选 → inArray + 子查询', async () => {
-    // marketId 分支在 buildConditions 内多一次 db.select() 构造子查询（非 await）
-    // 先放一个子查询 mock，再接上三查并发
-    let i = 0
-    ;(db.select as any).mockImplementation(() => {
-      i++
-      if (i === 1) {
-        // 子查询：select({storeId}).from(stores).innerJoin(orgNodes).where(...)
-        const where = vi.fn().mockReturnValue({ __subquery: true })
-        const innerJoin = vi.fn().mockReturnValue({ where })
-        const from = vi.fn().mockReturnValue({ innerJoin })
-        return { from }
-      }
-      if (i === 2) {
-        // COUNT
-        const where = vi.fn().mockResolvedValue([{ count: 0 }])
-        const innerJoin2 = vi.fn().mockReturnValue({ where })
-        const innerJoin1 = vi.fn().mockReturnValue({ innerJoin: innerJoin2 })
-        const from = vi.fn().mockReturnValue({ innerJoin: innerJoin1 })
-        return { from }
-      }
-      if (i === 3) {
-        // DATA
-        const offset = vi.fn().mockResolvedValue([])
-        const limit = vi.fn().mockReturnValue({ offset })
-        const orderBy = vi.fn().mockReturnValue({ limit })
-        const where = vi.fn().mockReturnValue({ orderBy })
-        const innerJoin2 = vi.fn().mockReturnValue({ where })
-        const innerJoin1 = vi.fn().mockReturnValue({ innerJoin: innerJoin2 })
-        const from = vi.fn().mockReturnValue({ innerJoin: innerJoin1 })
-        return { from }
-      }
-      // SUMMARY
-      const where = vi.fn().mockResolvedValue([
-        { totalRecharge: '0', totalDeduct: '0', netChange: '0', txnCount: 0, userCount: 0 },
-      ])
-      const innerJoin2 = vi.fn().mockReturnValue({ where })
-      const innerJoin1 = vi.fn().mockReturnValue({ innerJoin: innerJoin2 })
-      const from = vi.fn().mockReturnValue({ innerJoin: innerJoin1 })
-      return { from }
+  it('marketId 筛选 → 生成参数化组织节点子树条件', async () => {
+    mockThreeQueries({
+      count: 0,
+      rows: [],
+      summary: { totalRecharge: '0', totalDeduct: '0', netChange: '0', txnCount: 0, userCount: 0 },
     })
 
     await getCardTransactionsPaginated({ marketId: 'market-1' })
 
-    expect(inArray).toHaveBeenCalled()
+    expect((sql as any).mock.calls.some((args: unknown[]) => args.includes('market-1'))).toBe(true)
   })
 
   it('search 筛选 → ilike(name) + ilike(phone) + 转义 %/_', async () => {

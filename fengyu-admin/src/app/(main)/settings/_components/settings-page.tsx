@@ -23,6 +23,8 @@ interface SettingsPageProps {
     orderTimeout: string
     bannerImages: string[]
     fengyuguanImage: string
+    serviceHotline: string
+    pointsDeductionMaxRate: string
   }
   rechargeCardConfig: RechargeCardConfigInput
   consumeAgreement: ConsumeAgreementConfig
@@ -39,6 +41,8 @@ export default function SettingsPageClient({ initialSettings, rechargeCardConfig
   const [fengyuguanImage, setFengyuguanImage] = useState(
     initialSettings.fengyuguanImage || `${CDN_BASE}/images/fengyuguan.jpg`
   )
+  const [serviceHotline, setServiceHotline] = useState(initialSettings.serviceHotline)
+  const [pointsDeductionMaxRate, setPointsDeductionMaxRate] = useState(initialSettings.pointsDeductionMaxRate)
 
   const handleSave = async () => {
     setSaving(true)
@@ -48,6 +52,8 @@ export default function SettingsPageClient({ initialSettings, rechargeCardConfig
         orderTimeout,
         bannerImages,
         fengyuguanImage,
+        serviceHotline,
+        pointsDeductionMaxRate,
       })
       if (res.success) {
         setFormDirty(false)
@@ -106,6 +112,34 @@ export default function SettingsPageClient({ initialSettings, rechargeCardConfig
                     placeholder="10"
                   />
                   <p className="text-xs text-[#999999]">待支付订单超过此时间自动关闭</p>
+                </div>
+
+                <Separator />
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-[var(--foreground)]">客服热线</label>
+                  <Input
+                    value={serviceHotline}
+                    onChange={(e) => setServiceHotline(e.target.value)}
+                    placeholder="例如 400-000-0000 或 0791-XXXXXXXX"
+                  />
+                  <p className="text-xs text-[#999999]">展示在顾客端「我的」页，点击可直接拨号</p>
+                </div>
+
+                <Separator />
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-[var(--foreground)]">积分抵扣比例</label>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="1"
+                    value={pointsDeductionMaxRate}
+                    onChange={(e) => setPointsDeductionMaxRate(e.target.value)}
+                    placeholder="0.03"
+                  />
+                  <p className="text-xs text-[#999999]">订单金额最高可用积分抵扣的比例（0.03 = 3%）。日常 3%，活动期可调至 5%，活动结束后改回</p>
                 </div>
               </CardContent>
             </Card>

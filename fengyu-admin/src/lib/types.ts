@@ -92,6 +92,8 @@ export interface Customer {
   /** 临时跨门店标记（需求21）；true 时可被非绑定门店的店长开单（跨店临时消费），每日 03:00 cron 重置 */
   isCrossStoreTemp: boolean
   memberLevel: string | null
+  /** 首次/当前成为会员客时间（ISO 字符串），用于追踪历史会员口径 */
+  becameMemberAt: string | null
   /** 最近一次升级时间（ISO 字符串） */
   memberLevelUpgradedAt: string | null
   /** 保级截止时间（ISO 字符串）；NULL 或 ≤now 表示保级期已过 */
@@ -387,6 +389,8 @@ export interface SaleOrder {
   allocationStatus: AllocationStatus | null
   couponId: string | null
   couponDiscount: string | null
+  pointsUsed?: number
+  pointsDiscount?: string
   remark: string | null
   /** 活动单标记（纯标识，不影响金额/提成口径；admin/staff 开单勾选） */
   isActivity?: boolean

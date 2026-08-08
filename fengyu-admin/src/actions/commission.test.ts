@@ -372,14 +372,13 @@ describe('getRates — 全量提成比例列表', () => {
   })
 
   it('返回序列化的提成比例列表', async () => {
-    const limit = vi.fn().mockResolvedValue([{
+    const orderBy = vi.fn().mockResolvedValue([{
       id: 1, orgId: 'market-1', orderType: '销售单', roleType: '美容师',
       salesCategory: '自销自耗', amountTierMin: '0', amountTierMax: '1000',
       commissionRate: '0.08',
       createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-03-15'),
       orgName: '南昌市场',
     }])
-    const orderBy = vi.fn().mockReturnValue({ limit })
     const leftJoin = vi.fn().mockReturnValue({ orderBy })
     const from = vi.fn().mockReturnValue({ leftJoin })
     ;(db.select as any).mockReturnValue({ from })
@@ -393,8 +392,7 @@ describe('getRates — 全量提成比例列表', () => {
 
   // admin.sys.spec.md §5 默认排序：最近编辑过的规则浮顶
   it('默认 orderBy 首键为 desc(updatedAt)', async () => {
-    const limit = vi.fn().mockResolvedValue([])
-    const orderBy = vi.fn().mockReturnValue({ limit })
+    const orderBy = vi.fn().mockResolvedValue([])
     const leftJoin = vi.fn().mockReturnValue({ orderBy })
     const from = vi.fn().mockReturnValue({ leftJoin })
     ;(db.select as any).mockReturnValue({ from })

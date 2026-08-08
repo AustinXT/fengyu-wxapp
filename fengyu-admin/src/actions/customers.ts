@@ -50,6 +50,7 @@ function serializeCustomer(row: CustomerRow): Customer {
     boundEmployeeId: row.boundEmployeeId,
     isCrossStoreTemp: row.isCrossStoreTemp,
     memberLevel: row.memberLevel,
+    becameMemberAt: row.becameMemberAt ? row.becameMemberAt.toISOString() : null,
     memberLevelUpgradedAt: row.memberLevelUpgradedAt ? row.memberLevelUpgradedAt.toISOString() : null,
     memberLevelLockedUntil: row.memberLevelLockedUntil ? row.memberLevelLockedUntil.toISOString() : null,
     customerSource: row.customerSource,
@@ -1244,7 +1245,7 @@ export const getOrphanProfilesByUserId = withPermission(
  *
  * 事务内：
  *   1. 把孤儿行的档案字段填入活跃行（活跃行已有非空字段**不覆盖**）
- *   2. 重挂 sale_orders / user_coupons / point_transactions / prepaid_cards /
+ *   2. 重挂 sale_orders / user_coupons / point_transactions / point_batches / prepaid_cards /
  *      card_transactions / appointments / messages / service_orders
  *      的 client_user_id = orphan → source
  *   3. DELETE 孤儿行
@@ -1318,7 +1319,7 @@ export const mergeClientProfile = withPermission(
     await db.transaction(async (tx) => {
       const { saleOrders } = await import('@db/order')
       const { userCoupons } = await import('@db/coupon')
-      const { pointTransactions } = await import('@db/points')
+      const { pointBatches, pointTransactions } = await import('@db/points')
       const { prepaidCards } = await import('@db/prepaid-card')
       const { appointments } = await import('@db/appointment')
       const { messages } = await import('@db/message')
@@ -1341,6 +1342,7 @@ export const mergeClientProfile = withPermission(
       ordersReassigned = await reassignCol(saleOrders, saleOrders.clientUserId, { clientUserId: sourceUserId })
       await reassignCol(userCoupons, userCoupons.userId, { userId: sourceUserId })
       await reassignCol(pointTransactions, pointTransactions.userId, { userId: sourceUserId })
+      await reassignCol(pointBatches, pointBatches.userId, { userId: sourceUserId })
       await reassignCol(prepaidCards, prepaidCards.userId, { userId: sourceUserId })
       // card_transactions 通过 card_id → prepaid_cards 间接关联，无需直接迁移
       await reassignCol(appointments, appointments.clientUserId, { clientUserId: sourceUserId })
