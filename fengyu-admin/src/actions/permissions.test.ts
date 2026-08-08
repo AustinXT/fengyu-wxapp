@@ -385,16 +385,27 @@ describe('assignRole — AC-09 & scope constraint', () => {
     expect(db.insert).not.toHaveBeenCalled()
   })
 
-  it('hr 分配到 门店 型 scope → 抛 INVALID_PARAMS (hr 仅允许 总部/市场)', async () => {
-    ;(getSession as any).mockResolvedValue(adminSession)
-    ;(hasRole as any).mockReturnValue(true)
-    ;(db.select as any).mockImplementation(() => mockSelectOnce({ type: '门店' })())
+  it.each(['hr', 'finance', 'product', 'customer_mgr'])(
+    '%s 分配到 门店 型 scope → 成功（非 admin 角色均允许门店 scope）',
+    async (role) => {
+      ;(getSession as any).mockResolvedValue(adminSession)
+      ;(hasRole as any).mockReturnValue(true)
 
-    await expect(
-      assignRole({ employeeId: 'EMP-Z', role: 'hr', scopeId: 'store-1' })
-    ).rejects.toThrow(/INVALID_PARAMS: 角色 hr 不能绑定到 门店 型 scope/)
-    expect(db.insert).not.toHaveBeenCalled()
-  })
+      let callCount = 0
+      ;(db.select as any).mockImplementation(() => {
+        callCount++
+        if (callCount === 1) return mockSelectOnce({ type: '门店' })()
+        return mockSelectOnce(null)()
+      })
+      const values = vi.fn().mockResolvedValue({})
+      ;(db.insert as any).mockReturnValue({ values })
+
+      const result = await assignRole({ employeeId: 'EMP-Z', role, scopeId: 'store-1' })
+
+      expect(result.success).toBe(true)
+      expect(values).toHaveBeenCalledOnce()
+    },
+  )
 
   it('staff 分配到 市场 型 scope → 抛 INVALID_PARAMS (staff 仅允许 门店)', async () => {
     ;(getSession as any).mockResolvedValue(adminSession)

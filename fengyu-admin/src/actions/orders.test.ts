@@ -128,6 +128,7 @@ vi.mock('@db/coupon', () => ({
     userId: 'user_id',
     status: 'status',
     expireAt: 'expire_at',
+    faceValueOverride: 'face_value_override',
     usedSaleOrderId: 'used_sale_order_id',
     usedAt: 'used_at',
   },
@@ -138,6 +139,10 @@ vi.mock('@db/coupon', () => ({
     maxDiscount: 'max_discount',
     minSpend: 'min_spend',
     isActive: 'is_active',
+    applicableStoreIds: 'applicable_store_ids',
+    applicableCategoryIds: 'applicable_category_ids',
+    applicableProductIds: 'applicable_product_ids',
+    applicableMarketIds: 'applicable_market_ids',
   },
 }))
 
@@ -2793,6 +2798,117 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
       quantity: 1,
     }],
   }
+
+  it('优惠券按正补差额封顶，订单落券字段、转入行金额和核销均一致', async () => {
+    const captured: { execute: string[]; inserts: any[]; updates: any[] } = {
+      execute: [],
+      inserts: [],
+      updates: [],
+    }
+    ;(calcCouponDiscount as any).mockReturnValue(300)
+    ;(db.select as any).mockImplementation(mockSelectFound({
+      userId: 'user-1',
+      phone: '13812345678',
+      name: '张小姐',
+      customerType: '会员客',
+      memberLevel: null,
+    }))
+
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      let selectCall = 0
+      const tx = {
+        execute: vi.fn().mockImplementation(async (sqlArg: any) => {
+          const text = sqlArg?.__sqlText ?? ''
+          captured.execute.push(text)
+          if (/FOR\s+UPDATE\s+OF\s+si/i.test(text)) {
+            return [{
+              sale_item_id: 'card-1', sale_order_id: 'old-order', store_id: 'store-1', item_direction: '购买',
+              sku_id: 'sku-old', product_name: '老疗程', product_type: '疗程卡', session_count: 4,
+              remaining_sessions: 4, quantity: 1, picked_up_quantity: 0, unit_price: '100', unit_real_price: '100',
+              sales_category: '自销自耗', service_fee: '0', is_experience: false, is_shengmei: false,
+              client_user_id: 'user-1', order_status: '已支付',
+            }]
+          }
+          if (/pg_advisory_xact_lock/i.test(text)) return [{ id: 'FY-XSD-WX-2608080001' }]
+          return []
+        }),
+        select: vi.fn().mockImplementation(() => {
+          selectCall += 1
+          const rowsByCall: any[][] = [
+            [{
+              skuId: 'sku-new-1', specName: '新项目', price: '500', specialPrice: null,
+              serviceFee: '0', sessionCount: 1, productType: '疗程卡', isExperience: false,
+              isManagerSpecial: false, isShengmei: false, categoryId: 'cat-new',
+              salesCategory: '自销自耗', purchaseLimit: null,
+            }],
+            [{
+              status: '未使用', expireAt: new Date(Date.now() + 86_400_000), userId: 'user-1',
+              couponType: '现金券', discountValue: '300', maxDiscount: null, minSpend: '0', isActive: true,
+              applicableStoreIds: null, applicableCategoryIds: null, applicableProductIds: null, applicableMarketIds: null,
+            }],
+            [{ skuId: 'sku-new-1', categoryId: 'cat-new' }],
+            [{ skuId: 'sku-new-1', productId: 'product-new' }],
+          ]
+          const rows = rowsByCall[selectCall - 1] ?? []
+          const chain: any = {}
+          chain.innerJoin = vi.fn().mockReturnValue(chain)
+          chain.leftJoin = vi.fn().mockReturnValue(chain)
+          chain.where = vi.fn().mockImplementation(() => selectCall === 2 ? chain : Promise.resolve(rows))
+          if (selectCall === 2) chain.limit = vi.fn().mockResolvedValue(rows)
+          return { from: vi.fn().mockReturnValue(chain) }
+        }),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockImplementation((values: any) => {
+            captured.inserts.push(values)
+            return Promise.resolve({})
+          }),
+        }),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockImplementation((values: any) => {
+            captured.updates.push(values)
+            return { where: vi.fn().mockResolvedValue({ count: 1 }) }
+          }),
+        }),
+      }
+      return fn(tx)
+    })
+
+    const result = await createConversionOrder({
+      ...baseConvData,
+      convertInItems: [{ ...baseConvData.convertInItems[0], quantity: 1 }],
+      couponId: 'coupon-001',
+    })
+
+    expect(result).toMatchObject({ success: true, totalIn: 400, totalOut: 400, priceDiff: 0, couponDiscount: 100 })
+    const orderInsert = captured.inserts.find((row) => row.saleOrderType === '转换单')
+    const inItem = captured.inserts.find((row) => row.itemDirection === '转入')
+    expect(orderInsert).toMatchObject({ couponId: 'coupon-001', couponDiscount: '100.00', totalAmount: '0.00' })
+    expect(inItem).toMatchObject({ saleAmount: '400.00', received: '400.00', unitRealPrice: '400.00' })
+    expect(captured.updates).toContainEqual(expect.objectContaining({ status: '已使用', usedSaleOrderId: expect.any(String) }))
+    expect(captured.execute.some((text) => text.includes('INSERT INTO prepaid_cards'))).toBe(false)
+  })
+
+  it('券前补差额为零时拒绝携券请求', async () => {
+    const captured = mockConvTx({
+      heldRows: [{
+        sale_item_id: 'card-1', sale_order_id: 'old-order', store_id: 'store-1', item_direction: '购买',
+        sku_id: 'sku-old-1', product_name: '老疗程', product_type: '疗程卡', session_count: 5, remaining_sessions: 5,
+        quantity: 1, picked_up_quantity: 0, unit_price: '1000.00', unit_real_price: '200.00',
+        sales_category: '自销自耗', service_fee: '0', is_experience: false, is_shengmei: false,
+        client_user_id: 'user-1', order_status: '已支付', product_kind: '护理项目',
+      }],
+      skuRows: [{
+        skuId: 'sku-new-1', price: '1000.00', specialPrice: null, serviceFee: '0', sessionCount: 10,
+        productType: '疗程卡', salesCategory: '自销自耗', isExperience: false, isManagerSpecial: false,
+      }],
+    })
+
+    const result = await createConversionOrder({ ...baseConvData, couponId: 'coupon-001' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('无正补差额')
+    expect(captured.executeSql.some((text) => text.includes('pg_advisory_xact_lock'))).toBe(false)
+  })
 
   it('priceDiff = 0：totalIn=totalOut，订单 total_amount=0，status=已支付', async () => {
     let capturedOrder: any

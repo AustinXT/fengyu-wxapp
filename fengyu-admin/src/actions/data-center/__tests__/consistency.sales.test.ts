@@ -13,7 +13,7 @@
  *   4. 实耗 = unit_real_price * session_used ∩ status='已完成'
  *   5. 分客型：customer_type / became_member_at 分型字面量
  *   6. 员工数 skills && ARRAY['美容师','养生师'] + hired_at/resigned_at 历史化
- *   7. 门店数 opening_date / closed_at 历史化
+ *   7. 门店数当前启用 + opening_date / closed_at 历史化
  *
  * 任一端口径变更必须双端同步，否则数据中心 admin 与员工端 mgmtDashboard 数字对不上。
  */
@@ -159,20 +159,21 @@ describe('数据中心销售板块两端口径一致性守护', () => {
     })
   })
 
-  describe('门店数 — opening_date / closed_at 历史化', () => {
-    it('admin sales.ts 门店数用 opening_date <= 区间末 + closed_at 守卫', () => {
+  describe('门店数 — 当前启用 + opening_date / closed_at 历史化', () => {
+    it('admin sales.ts 门店数用启用节点 + opening_date <= 区间末 + closed_at 守卫', () => {
+      expect(adminBody).toMatch(/o\.is_active\s*=\s*TRUE/i)
       expect(adminBody).toMatch(/opening_date::date\s*<=/i)
       expect(adminBody).toMatch(/closed_at\s+IS\s+NULL\s+OR\s+s\.closed_at::date\s*>/i)
     })
-    it('staff mgmt-dashboard.js 门店数同口径（opening_date / closed_at 历史化）', () => {
+    it('staff mgmt-dashboard.js 门店数同口径（启用节点 + opening_date / closed_at 历史化）', () => {
+      expect(staffBody).toMatch(/active_node\.is_active\s*=\s*TRUE/i)
+      expect(staffBody).toMatch(/o\.is_active\s*=\s*TRUE/i)
       expect(staffBody).toMatch(/opening_date::date\s*<=/i)
       expect(staffBody).toMatch(/closed_at\s+IS\s+NULL\s+OR\s+s\.closed_at::date\s*>/i)
     })
-    it('两端 store 维度门店数短路返回 1', () => {
-      // admin: if (scope.type === 'store') return 1
-      expect(adminSrc).toMatch(/scope\.type\s*===\s*'store'\s*\)\s*return\s+1/)
-      // staff: if (scopeType === 'store') return 1
-      expect(staffSrc).toMatch(/scopeType\s*===\s*'store'\)\s*return\s+1/)
+    it('两端 store 维度不再短路为 1，停用门店可返回 0', () => {
+      expect(adminSrc).not.toMatch(/scope\.type\s*===\s*'store'\s*\)\s*return\s+1/)
+      expect(staffSrc).not.toMatch(/scopeType\s*===\s*'store'\s*\)\s*return\s+1/)
     })
   })
 

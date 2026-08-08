@@ -560,11 +560,8 @@ export default function OrderCreatePageClient({
   // 内部单禁用手工改价（5 折规则后端再计算）；组合套餐允许向下调实付金额
   const suppressOverride = isInternal
 
-  // 订单级优惠券（券按行均摊到「应付金额」，与 staff 同算法）
+  // 当前选中的订单级优惠券。实际抵扣额在转入项目和折抵卡金额都确定后计算。
   const selectedCouponForCalc = availableCoupons.find((c) => c.couponId === selectedCouponId)
-  const couponDiscountTotal = !isInternal && !isConversion && selectedCouponForCalc
-    ? Number(selectedCouponForCalc.discountAmount)
-    : 0
 
   // 店长特别优惠：销售单/转换单 + SKU 标记 + 非套餐行（套餐 sku 带 bundlePrice/bundleGroupId）时
   // 允许店长在 Step3 手动修改应付金额（最低 0，不超过标价）。
@@ -586,6 +583,32 @@ export default function OrderCreatePageClient({
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cart, internalRatio, priceOverrides, isInternal, isConversion, buyerIsMember])
+
+  // 转换单：折抵合计 totalOut（已选卡）。优惠券仅可抵扣券前的正补差额，
+  // 因此这里必须基于 cartPriceLines（含阶梯价和店长特价）而不是券后总额计算上限。
+  const conversionTotalOut = useMemo(() => {
+    if (!isConversion) return 0
+    const set = new Set(selectedHeldCardIds)
+    let sum = 0
+    for (const c of heldCards) {
+      if (set.has(c.saleItemId)) sum += Number(c.deductibleAmount)
+    }
+    return Math.round(sum * 100) / 100
+  }, [isConversion, heldCards, selectedHeldCardIds])
+  const couponBaseTotal = useMemo(
+    () => Math.round(cartPriceLines.reduce((sum, amount) => sum + amount, 0) * 100) / 100,
+    [cartPriceLines],
+  )
+  const conversionCouponCap = isConversion
+    ? Math.max(0, Math.round((couponBaseTotal - conversionTotalOut) * 100) / 100)
+    : 0
+  const rawCouponDiscount = !isInternal && selectedCouponForCalc
+    ? Math.max(0, Number(selectedCouponForCalc.discountAmount) || 0)
+    : 0
+  // 转换单券额以正补差额封顶，杜绝把多余券额转为充值卡余额。
+  const couponDiscountTotal = isConversion
+    ? Math.min(rawCouponDiscount, conversionCouponCap)
+    : rawCouponDiscount
 
   // 各行摊到的券折扣（按 priceLines 比例，末行吸收尾差）
   const couponShares = useMemo(
@@ -638,22 +661,20 @@ export default function OrderCreatePageClient({
     }
   }, [perItemAmounts])
 
-  // 转换单：折抵合计 totalOut（已选卡）与补差额 priceDiff（与 ConversionPanel 同算法）。
-  const conversionTotalOut = useMemo(() => {
-    if (!isConversion) return 0
-    const set = new Set(selectedHeldCardIds)
-    let sum = 0
-    for (const c of heldCards) {
-      if (set.has(c.saleItemId)) sum += Number(c.deductibleAmount)
-    }
-    return Math.round(sum * 100) / 100
-  }, [isConversion, heldCards, selectedHeldCardIds])
+  // 转换单差额采用券后转入金额，和 ConversionPanel 保持一致。
   const conversionPriceDiff = Math.round((totalSaleAmount - conversionTotalOut) * 100) / 100
   // 转换单充值卡抵扣：仅补差额 > 0 时可抵扣，上限 = min(余额, 补差额)
   const conversionCardMax = Math.min(Math.max(0, customerCardBalance), Math.max(0, conversionPriceDiff))
   const conversionCardAmount = isConversion && conversionPriceDiff > 0 && useCard
     ? clampPrepaidAmount(cardAmountInput, conversionCardMax)
     : 0
+
+  // 折抵卡变化后若已没有正补差额，不能保留之前选中的优惠券。
+  useEffect(() => {
+    if (isConversion && conversionCouponCap <= 0 && selectedCouponId) {
+      setSelectedCouponId("")
+    }
+  }, [conversionCouponCap, isConversion, selectedCouponId])
 
   // 销售单/内部单充值卡抵扣：上限 = min(余额, 本次实收合计)；salePayable = 抵扣后应付现金
   const saleCardMax = Math.min(Math.max(0, customerCardBalance), Math.max(0, totalReceived))
@@ -965,7 +986,7 @@ export default function OrderCreatePageClient({
             {/* 组合套餐分支：跳过购物车，选套餐后由 BundlePicker.onBundleAdded 自动进 Step 3；这里不渲染「下一步」 */}
             {productKindChoice !== '组合套餐' && (
               <Button
-                onClick={() => void goToConfirm(catalogTotal)}
+                onClick={() => void goToConfirm(couponBaseTotal)}
                 disabled={cart.length === 0}
               >
                 下一步
@@ -1193,11 +1214,13 @@ export default function OrderCreatePageClient({
                 </div>
               )}
 
-              {/* 优惠券（仅已注册顾客可选 + 非内部单 + 非转换单） */}
-              {selectedCustomer?.userId && !isInternal && !isConversion && (
+              {/* 优惠券：转换单仅在券前存在正补差额时可用。 */}
+              {selectedCustomer?.userId && !isInternal && (
                 <div className="col-span-2 md:col-span-3">
                   <label className="text-sm text-[#999999]">优惠券（可选）</label>
-                  {loadingCoupons ? (
+                  {isConversion && conversionCouponCap <= 0 ? (
+                    <p className="text-sm text-[#999999] mt-1">当前无正补差额，不能使用优惠券</p>
+                  ) : loadingCoupons ? (
                     <p className="text-sm text-[#999999] mt-1">正在加载可用优惠券…</p>
                   ) : availableCoupons.length > 0 ? (
                     <Select
@@ -1206,11 +1229,16 @@ export default function OrderCreatePageClient({
                       onChange={(e) => setSelectedCouponId(e.target.value)}
                     >
                       <option value="">不使用优惠券</option>
-                      {availableCoupons.map((c) => (
-                        <option key={c.couponId} value={c.couponId}>
-                          {c.name} — 优惠¥{c.discountAmount}（到期 {formatDate(c.expireAt) || "—"}）
-                        </option>
-                      ))}
+                      {availableCoupons.map((c) => {
+                        const displayedDiscount = isConversion
+                          ? Math.min(Math.max(0, Number(c.discountAmount) || 0), conversionCouponCap)
+                          : Math.max(0, Number(c.discountAmount) || 0)
+                        return (
+                          <option key={c.couponId} value={c.couponId}>
+                            {c.name} — 优惠¥{displayedDiscount.toFixed(2)}（到期 {formatDate(c.expireAt) || "—"}）
+                          </option>
+                        )
+                      })}
                     </Select>
                   ) : (
                     <p className="text-sm text-[#999999] mt-1">暂无可用优惠券</p>
@@ -1568,6 +1596,7 @@ export default function OrderCreatePageClient({
                         }
                       }),
                       prepaidCardAmount: conversionCardAmount,
+                      couponId: selectedCouponId || undefined,
                     })
                     if (res.success && res.saleOrderId) {
                       toast.success(res.message)

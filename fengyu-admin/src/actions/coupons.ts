@@ -188,7 +188,7 @@ export const getAvailableCoupons = withPermission(
         expireAt: userCoupons.expireAt,
         name: couponTemplates.name,
         couponType: couponTemplates.couponType,
-        discountValue: couponTemplates.discountValue,
+        discountValue: sql<string>`COALESCE(${userCoupons.faceValueOverride}, ${couponTemplates.discountValue})`,
         minSpend: couponTemplates.minSpend,
         maxDiscount: couponTemplates.maxDiscount,
         applicableProductIds: couponTemplates.applicableProductIds,
