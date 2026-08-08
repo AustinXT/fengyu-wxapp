@@ -1265,7 +1265,7 @@ https://img.icons8.com/ios/100/{color}/{icon-name}.png
 
 ### 4.20 管理层视图（6 页综览）
 
-管理层视图（manager / 总部 / 市场 层级账号）独立于门店视图 5 Tab，由 `mgmt-navbar` 提供 4 Tab 底部导航。所有页面共享 §3.9 的扩展规范（10 token + 4 组件 + 三态壳 + sticky 筛选 + pull-down）。
+管理层视图（当前权限矩阵授予 `data_center:dashboard` 且 `scopeStoreIds` 非空的账号）独立于门店视图 5 Tab，由 `mgmt-navbar` 提供 4 Tab 底部导航。所有页面共享 §3.9 的扩展规范（10 token + 4 组件 + 三态壳 + sticky 筛选 + pull-down）。
 
 | 页面 | 路径 | 角色 | 关键组件 |
 |---|---|---|---|
@@ -1278,7 +1278,7 @@ https://img.icons8.com/ios/100/{color}/{icon-name}.png
 
 **数据流**：scope（市场 / 门店）由 hub `mgmt-dashboard` 通过 `mgmt-scope-picker` 选择，路由参数透传到各子页（`scopeType` / `scopeId` / `scopeName`），子页只读不再展示 picker，页面内仅显示 `.mc-scope-bar` 提示条（背景 `var(--color-primary-light)`）。
 
-**身份控制**：每页 `onShow` 调 `canAccessManagement()` 校验，非管理层身份重定向回 `/pages/workbench/workbench`，避免门店店长误入。
+**身份控制**：每页 `onShow` 调 `canAccessManagement()` 校验；其唯一前端依据是服务端下发的 `availableLoginLevels` 是否包含 `management`。服务端以 `data_center:dashboard` 和完整 scope 做最终鉴权，未获权账号重定向回 `/pages/workbench/workbench`。
 
 ---
 

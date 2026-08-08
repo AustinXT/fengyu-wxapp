@@ -63,7 +63,9 @@ staffApi/
   roleBindings,            // [{role, scopeId, scopeType}] 原始绑定
   staffLevel,              // headquarters / market / store_manager / store_staff / null
   scopeStoreIds,           // 当前账号有权见的全部 store_id（全角色并集）
+  scopeOrgNodeIds,         // 当前账号有权见的组织节点（管理层市场范围校验用）
   managerStoreIds,         // 仅 manager 角色绑定展开的 store_id；店长写操作授权用
+  hasDataCenterDashboard,  // 当前权限矩阵是否授予 data_center:dashboard
   loginLevel,              // 'store' | 'management' — 从请求 payload._loginLevel 读（中间件兜底）
   currentStoreId,          // 门店模式下当前选中的门店
   effectiveStoreId,        // **业务 SQL 必须使用此字段作为门店过滤值**；管理层模式 = null
@@ -76,12 +78,15 @@ staffApi/
 - `deriveStaffLevel(roleBindings)` — 归并规则：总部 > 市场 > 门店 manager > 门店其他 > null
 - `expandScopeStoreIds(roleBindings, pg)` — 按 org_nodes.type 反查可见 store_id 列表
 - `buildStoreScopeCondition(auth, column, $n)` — 业务查询 WHERE 构造（门店模式单值 / 管理层模式 ANY(array)）
+- `validateManagementScope(auth, scopeType, scopeId)` — 管理层 `all` / 市场 / 门店选择仅可落在账号完整 scope 内
+
+`utils/permission-matrix.js` 独立读取 `system_configs.permission_matrix`（30 秒缓存），以 `data_center:dashboard` 判断管理层入口；云函数不与 admin 共享实现。
 
 ### 守卫中间件
 
 - `requireStaffBound()` — 必须已绑定手机号 + 关联员工档案
 - `requireManager()` — 必须有 `role='manager'` 绑定（总部/市场/门店任一层级）；门店模式下还要求 `effectiveStoreId ∈ managerStoreIds`（即 manager 角色覆盖的门店），兼容无 roleBindings 的旧缓存
-- `requireManagementLevel()` — 必须 staffLevel ∈ {headquarters, market} 且 loginLevel='management'
+- `requireManagementLevel()` — 必须拥有 `data_center:dashboard` 且 `loginLevel='management'`；管理层路由再按完整 `scopeStoreIds` 校验和过滤数据
 
 ## 关键业务流程
 
