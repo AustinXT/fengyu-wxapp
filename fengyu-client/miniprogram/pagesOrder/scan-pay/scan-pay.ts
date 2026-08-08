@@ -38,6 +38,7 @@ interface ScanOrderItem {
   saleAmount: number;
   // 多次卡疗程数（>1 时用于"×N次"辅助提示）
   sessionCount: number | null;
+  unit: string;
   received: number;
   coverImage: string;
 }

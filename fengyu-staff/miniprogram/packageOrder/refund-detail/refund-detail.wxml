@@ -54,7 +54,7 @@
           <text wx:if="{{item.specName}}" class="item-spec">{{item.specName}}</text>
         </view>
         <view class="item-right">
-          <text class="item-qty">×{{item.quantity}}</text>
+          <text class="item-qty">×{{item.quantity}} {{item.unit}}</text>
           <text class="item-amount">-¥{{item.amount_abs}}</text>
         </view>
       </view>

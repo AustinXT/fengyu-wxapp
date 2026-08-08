@@ -444,6 +444,12 @@
   font-size: 22rpx;
   color: var(--color-text-hint);
 }
+.coupon-popup__item-available {
+  font-size: 22rpx;
+  color: #FA8C16;
+  margin-top: 4rpx;
+  font-weight: 500;
+}
 .coupon-popup__footer {
   display: flex;
   justify-content: center;
@@ -608,6 +614,34 @@
   color: var(--color-text-hint);
   font-weight: 400;
   margin-left: 6rpx;
+}
+.prepaid-card-amount-input-wrap {
+  display: flex;
+  align-items: center;
+  width: 210rpx;
+  padding: 4rpx 12rpx;
+  border: 1rpx solid #F5E0C8;
+  border-radius: 8rpx;
+  background: #FFFFFF;
+}
+.prepaid-card-amount-prefix {
+  font-size: 26rpx;
+  color: var(--color-text-hint);
+  margin-right: 4rpx;
+}
+.prepaid-card-amount-input {
+  flex: 1;
+  min-width: 0;
+  height: 44rpx;
+  font-size: 26rpx;
+  color: var(--color-text-primary);
+  text-align: right;
+}
+.prepaid-card-max-hint {
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  text-align: right;
 }
 .prepaid-card-empty-hint {
   padding-top: 12rpx;

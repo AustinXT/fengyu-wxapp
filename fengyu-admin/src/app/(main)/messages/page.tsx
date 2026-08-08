@@ -1,5 +1,6 @@
 import { Suspense } from 'react'
 import { getMessagesPaginated, getMessageTypes } from '@/actions/messages'
+import { getMarketStoreFilterOptions } from '@/actions/stores'
 import { getSession } from '@/lib/auth'
 import { hasPermission } from '@/lib/permissions'
 import MessagesPageClient from './_components/messages-page'
@@ -22,18 +23,21 @@ export default async function Page({
   const session = await getSession()
   const canSend = !!session && hasPermission(session, 'message:send')
 
-  const [{ data: messages, total }, messageTypes] = await Promise.all([
+  const [{ data: messages, total }, messageTypes, filterOptions] = await Promise.all([
     getMessagesPaginated({
       recipientType,
       messageType: params.type,
       isRead,
       search: params.q,
+      marketId: params.market,
+      storeId: params.store,
       dateFrom: params.from,
       dateTo: params.to,
       page: params.page ? Number(params.page) : undefined,
       pageSize: params.size ? Number(params.size) : undefined,
     }),
     getMessageTypes(),
+    getMarketStoreFilterOptions(),
   ])
 
   return (
@@ -43,6 +47,7 @@ export default async function Page({
         messageTypes={messageTypes}
         total={total}
         canSend={canSend}
+        filterOptions={filterOptions}
       />
     </Suspense>
   )

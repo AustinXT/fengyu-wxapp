@@ -11,15 +11,15 @@ import { withPermission } from '@/lib/with-permission'
 import { isAdminScope, expandVisibleMarketIds, requireAdmin } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
+import type { AuthSession } from '@/lib/types'
 
 /**
  * 商户管理（拉卡拉收款商户档案，独立模块 /merchants）server actions。
  *
- * 商户（lakala_merchants）是「总部级收款配置实体」、无 store_id：门店通过
- * stores.lakala_merchant_id（N:1）反向关联。故本模块**不做门店级 scope 过滤**——
- * 与 cards/customers 等按 store_id 过滤的业务数据不同，凭 merchant:* 权限即见全部商户
- * （admin + finance 持有）。理由：① 商户是集中维护的收款配置；② finance 新建的商户在
- * 绑定门店前是「孤儿」，按门店 scope 过滤会导致「建了却看不到」的悖论。
+ * 商户（lakala_merchants）是无 store_id 的集中收款配置实体，门店通过
+ * stores.lakala_merchant_id（N:1）反向关联。为保证非 admin 的数据隔离，本模块按
+ * market_org_node_id 做市场范围过滤：市场范围外及未分配市场的商户均不可见、不可修改；
+ * 总部 scope 和 admin 保持全开。
  *
  * 收款字段权威仍是本表：clientApi resolveLakalaMerchant 运行时 JOIN 实时读，本页改动
  * （enabled / term_no / merchant_no）立即对收款生效；删除经外键 ON DELETE SET NULL 会
@@ -44,6 +44,8 @@ export interface MerchantFilters {
   enabled?: MerchantEnabledFilter
   /** 市场筛选：org_nodes type='市场' 节点 id */
   marketId?: string
+  /** 门店筛选：stores.store_id（通过 lakala_merchant_id 反向过滤商户）*/
+  storeId?: string
   page?: number
   pageSize?: number
 }
@@ -67,9 +69,39 @@ export interface PaginatedMerchants {
   total: number
 }
 
+interface MerchantMarketScope {
+  condition: SQL | undefined
+  /** null 表示 admin 或总部级非 admin，可访问全部市场。 */
+  visibleMarketIds: string[] | null
+}
+
+/** 非 admin 仅可访问已分配到其可见市场的商户；总部 scope 保持全开。 */
+async function resolveMerchantMarketScope(session: AuthSession): Promise<MerchantMarketScope> {
+  const visibleMarketIds = isAdminScope(session) ? null : await expandVisibleMarketIds(session)
+  if (visibleMarketIds === null) return { condition: undefined, visibleMarketIds }
+  if (visibleMarketIds.length === 0) return { condition: sql`FALSE`, visibleMarketIds }
+  return {
+    condition: inArray(lakalaMerchants.marketOrgNodeId, visibleMarketIds),
+    visibleMarketIds,
+  }
+}
+
+function canAssignMerchantMarket(scope: MerchantMarketScope, marketOrgNodeId: string | null): boolean {
+  return scope.visibleMarketIds === null
+    || (marketOrgNodeId !== null && scope.visibleMarketIds.includes(marketOrgNodeId))
+}
+
 /**
  * 服务端分页商户列表 + 关联门店数。
- * 权限：merchant:list（admin + finance）。无门店 scope 过滤（见文件顶部注释）。
+ * 权限：merchant:list（admin + finance + manager）。
+ *
+ * scope 过滤：
+ * - admin 全开
+ * - 非 admin：仅看 scope 内市场的商户（通过 market_org_node_id）
+ * - 市场为空或 scope 外的商户对非 admin 隐藏
+ *
+ * 门店筛选（前端传入，所有角色）：
+ * - 通过 stores.lakala_merchant_id 反向过滤，只显示该门店关联的商户
  */
 export const getMerchantsPaginated = withPermission(
   'merchant:list',
@@ -93,20 +125,25 @@ export const getMerchantsPaginated = withPermission(
     if (filters.enabled === 'enabled') conditions.push(eq(lakalaMerchants.enabled, true))
     else if (filters.enabled === 'disabled') conditions.push(eq(lakalaMerchants.enabled, false))
 
-    // 严格市场 scope 过滤：非 admin 仅见 scope 内市场的商户；market 为空 / scope 外的
-    // 商户对非 admin 隐藏（NULL 不匹配 inArray 自动排除）。admin 走 isAdminScope 短路全开。
-    if (!isAdminScope(session)) {
-      const visibleMarketIds = await expandVisibleMarketIds(session)
-      if (visibleMarketIds === null) {
-        // 总部级非 admin 角色：可见全部市场，不加过滤
-      } else if (visibleMarketIds.length === 0) {
-        conditions.push(sql`FALSE`)
-      } else {
-        conditions.push(inArray(lakalaMerchants.marketOrgNodeId, visibleMarketIds))
-      }
-    }
+    // 严格市场 scope：非 admin 仅见 scope 内市场，未分配市场同样不可见。
+    const { condition: marketScope } = await resolveMerchantMarketScope(session)
+    if (marketScope !== undefined) conditions.push(marketScope)
     // 市场筛选（所有角色含 admin）
     if (filters.marketId) conditions.push(eq(lakalaMerchants.marketOrgNodeId, filters.marketId))
+
+    // 门店筛选（所有角色含 admin）：通过 stores.lakala_merchant_id 反向过滤
+    if (filters.storeId) {
+      const [store] = await db
+        .select({ lakalaMerchantId: stores.lakalaMerchantId })
+        .from(stores)
+        .where(eq(stores.storeId, filters.storeId))
+        .limit(1)
+      if (!store || !store.lakalaMerchantId) {
+        // 门店不存在或未关联商户，返回空
+        return { data: [], total: 0 }
+      }
+      conditions.push(eq(lakalaMerchants.id, store.lakalaMerchantId))
+    }
 
     const whereClause = conditions.length ? and(...conditions) : undefined
 
@@ -185,8 +222,9 @@ export interface MerchantDetail {
 
 export const getMerchantById = withPermission(
   'merchant:list',
-  async (_session, id: string): Promise<MerchantDetail | null> => {
+  async (session, id: string): Promise<MerchantDetail | null> => {
     if (!id) return null
+    const { condition: marketScope } = await resolveMerchantMarketScope(session)
     const [m] = await db
       .select({
         id: lakalaMerchants.id,
@@ -200,7 +238,7 @@ export const getMerchantById = withPermission(
         updatedAt: lakalaMerchants.updatedAt,
       })
       .from(lakalaMerchants)
-      .where(eq(lakalaMerchants.id, id))
+      .where(and(eq(lakalaMerchants.id, id), marketScope))
       .limit(1)
     if (!m) return null
 
@@ -256,7 +294,8 @@ export interface MerchantOption {
 
 export const getMerchantOptions = withPermission(
   'store:lakala_config',
-  async (_session): Promise<MerchantOption[]> => {
+  async (session): Promise<MerchantOption[]> => {
+    const { condition: marketScope } = await resolveMerchantMarketScope(session)
     const rows = await db
       .select({
         id: lakalaMerchants.id,
@@ -265,6 +304,7 @@ export const getMerchantOptions = withPermission(
         enabled: lakalaMerchants.enabled,
       })
       .from(lakalaMerchants)
+      .where(marketScope)
       .orderBy(asc(lakalaMerchants.merchantName))
     return rows.map((r) => ({
       id: r.id,
@@ -341,6 +381,11 @@ export const createMerchant = withPermission(
     const termNo = data.termNo?.trim() || null
     const marketOrgNodeId = data.marketOrgNodeId || null
 
+    const marketScope = await resolveMerchantMarketScope(session)
+    if (!canAssignMerchantMarket(marketScope, marketOrgNodeId)) {
+      return { success: false, message: '无权将商户分配到该市场' }
+    }
+
     // 商户号唯一校验（应用层；DB partial unique index 兜底）
     if (merchantNo) {
       const dup = await db
@@ -388,9 +433,17 @@ export const updateMerchant = withPermission(
     const merchantNo = data.merchantNo?.trim() || null
     const termNo = data.termNo?.trim() || null
     const marketOrgNodeId = data.marketOrgNodeId || null
+    const marketScope = await resolveMerchantMarketScope(session)
 
-    const [before] = await db.select().from(lakalaMerchants).where(eq(lakalaMerchants.id, id)).limit(1)
+    const [before] = await db
+      .select()
+      .from(lakalaMerchants)
+      .where(and(eq(lakalaMerchants.id, id), marketScope.condition))
+      .limit(1)
     if (!before) return { success: false, message: '商户不存在' }
+    if (!canAssignMerchantMarket(marketScope, marketOrgNodeId)) {
+      return { success: false, message: '无权将商户分配到该市场' }
+    }
 
     // 商户号唯一校验（排除自身）
     if (merchantNo) {
@@ -407,10 +460,10 @@ export const updateMerchant = withPermission(
       ? and(
           eq(lakalaMerchants.id, id),
           sql`date_trunc('milliseconds', ${lakalaMerchants.updatedAt}) = ${expectedUpdatedAt}`,
+          marketScope.condition,
         )
-      : eq(lakalaMerchants.id, id)
+      : and(eq(lakalaMerchants.id, id), marketScope.condition)
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- drizzle update 返回类型宽松，与 stores.ts 一致
     let result: any
     try {
       result = await db

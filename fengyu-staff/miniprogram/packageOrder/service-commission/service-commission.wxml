@@ -42,7 +42,7 @@ module.exports.pct = function(rate) {
         </view>
         <text class="item-amount">¥{{dItem.consumeBase}}</text>
       </view>
-      <view class="item-sub">核销 {{dItem.session_used}} 次 · 单次价基数 ¥{{dItem.consumeBase}}</view>
+      <view class="item-sub">核销 {{dItem.session_used}} {{dItem.unit || '次'}} · 单{{dItem.unit || '次'}}价基数 ¥{{dItem.consumeBase}}</view>
 
       <!-- 分配行：技能标签 → 员工 → 分配比例 -->
       <view

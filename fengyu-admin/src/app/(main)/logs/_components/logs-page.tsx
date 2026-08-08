@@ -8,9 +8,11 @@ import { Select } from "@/components/ui/select"
 import { Pagination } from "@/components/ui/pagination"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { OperationLog } from "@/lib/types"
+import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types"
 import { formatDateTime as fmtDateTime } from "@/lib/utils"
 import { RowDeleteMenu } from "@/components/delete-action"
 import { deleteOperationLog } from "@/actions/logs"
+import MarketStoreFilter from "@/components/market-store-filter"
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100]
 
@@ -123,7 +125,7 @@ const fieldLabels: Record<string, string> = {
   // 商品
   categoryName: "分类名称", productKind: "品项一级分类", salesCategory: "销售分类",
   categoryId: "分类", specName: "规格名称", price: "价格",
-  specialPrice: "特惠价", sessionCount: "次数", serviceFee: "服务费",
+  specialPrice: "特惠价", sessionCount: "次数", unit: "单位", serviceFee: "服务费",
   isShengmei: "是否生美", marketScope: "市场范围", productType: "商品类型",
   detailImages: "详情图", manageScope: "管理范围",
   // 套餐分组
@@ -251,9 +253,10 @@ interface Props {
   total: number
   /** 是否展示行内删除入口（仅系统管理员 operation_log:delete） */
   canDelete?: boolean
+  filterOptions: MarketStoreFilterOptions
 }
 
-export default function LogsPage({ logs, total, canDelete = false }: Props) {
+export default function LogsPage({ logs, total, canDelete = false, filterOptions }: Props) {
   const { get, set, setMany } = useUrlFilters()
 
   /** 筛选变更时重置到第 1 页 */
@@ -274,6 +277,8 @@ export default function LogsPage({ logs, total, canDelete = false }: Props) {
   const operatorSearch = get("q")
   const actionFilter = get("action")
   const targetTypeFilter = get("target")
+  const marketFilter = get("market")
+  const storeFilter = get("store")
   const dateFrom = get("from")
   const dateTo = get("to")
   const currentPage = Math.max(1, Number(get("page", "1")) || 1)
@@ -317,6 +322,17 @@ export default function LogsPage({ logs, total, canDelete = false }: Props) {
                 <option key={t} value={t}>{targetTypeLabels[t] || t}</option>
               ))}
             </Select>
+            <MarketStoreFilter
+              options={filterOptions}
+              marketValue={marketFilter}
+              storeValue={storeFilter}
+              onMarketChange={(value) => {
+                setMany({ market: value, store: '', page: '' })
+              }}
+              onStoreChange={(value) => setFilter("store", value)}
+              marketClassName="w-32"
+              storeClassName="w-40"
+            />
             <div className="flex items-center gap-2">
               <Input
                 type="date"

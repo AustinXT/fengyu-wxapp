@@ -49,4 +49,4 @@ ssh $SSH_HOST "docker exec fengyu-admin sh -c 'echo \$DATABASE_URL'" | sed -E 's
 - **云函数**：`git checkout <上一版>` 对应端代码 → 重新 `scripts/use-env.sh $ENV && scripts/deploy-cloudfunctions.sh`（仍 `code update`，env 不动）。
 - **DB**：本技能不动 DB，无 DB 回滚项。
 
-（`$REMOTE_DIR` 默认 `/root/proj.xt.com/fengyu-wxapp/docker`，远程路径不同时显式传入。）
+（`$REMOTE_DIR` 默认 prod=`/www/wwwroot/fengyu-admin/docker`、dev=`/root/proj.xt.com/fengyu-wxapp/docker`；远程路径不同时显式传入。）

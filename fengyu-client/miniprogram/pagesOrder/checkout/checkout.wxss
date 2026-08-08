@@ -253,6 +253,13 @@
   color: var(--color-text-hint);
 }
 
+.coupon-popup__item-available {
+  font-size: 22rpx;
+  color: #FA8C16;
+  margin-top: 4rpx;
+  font-weight: 500;
+}
+
 .coupon-popup__footer {
   display: flex;
   justify-content: center;

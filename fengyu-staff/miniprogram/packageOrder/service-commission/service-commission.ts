@@ -22,6 +22,7 @@ interface ServiceItem {
   session_count: number | null;
   quantity: number | null;
   product_name: string;
+  unit: string;
 }
 
 interface ExistingCommission {
@@ -83,6 +84,7 @@ interface DisplayItem {
   product_name: string;
   sales_category: string | null;
   session_used: number;
+  unit: string;
   consumeBase: number;  // unit_real_price × session_used（整池基数）
   fixedFeeBase: number; // service_fee × session_used（整池）
   allocLines: CommLine[];
@@ -189,6 +191,7 @@ Page({
           product_name: item.product_name,
           sales_category: item.sales_category,
           session_used: sessionUsed,
+          unit: item.unit || '次',
           consumeBase,
           fixedFeeBase,
           allocLines: lines,

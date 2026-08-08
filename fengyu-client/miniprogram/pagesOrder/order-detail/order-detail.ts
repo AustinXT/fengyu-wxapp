@@ -3,20 +3,32 @@ import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
 import { pollPaymentConfirm, PaymentPoller } from '../utils/payment-poll';
 import { formatDateTimeShort, formatDate, calculateTriProgress } from '../../utils/format';
+import { groupTreatmentCards, sumGroupValue } from '../../utils/treatment-card-group';
 
 interface OrderDetailItem {
   sale_item_id: string;
+  sale_order_id?: string;
+  sku_id?: string | null;
+  item_direction?: string;
+  ref_sale_item_id?: string | null;
   product_name: string;
   product_type: string;
   session_count: number;
+  unit: string;
   remaining_sessions: number | null;
   paid_sessions: number | null;
   unit_price: number;
+  unit_real_price?: number;
+  cover_image?: string | null;
   quantity: number;
   received: number;
+  pending_received?: number;
   sale_amount: number;
   refunded_amount?: number;
   expire_date: string | null;
+  remark?: string | null;
+  sales_category?: string | null;
+  picked_up_quantity?: number | null;
   // 视图字段（前端计算注入）
   used_sessions?: number;
   used_pct?: number;
@@ -24,13 +36,19 @@ interface OrderDetailItem {
   unpaid_pct?: number;
   // NULL 卡（paid_sessions 原始为 null）：wxml 据此把「已付 0」改显「已付 —」
   paid_sessions_null?: boolean;
+  card_count?: number;
 }
 
 interface OrderDetailData {
   sale_order_id: string;
   status: string;
   sale_order_type: string;
+  document_type?: string | null;
+  legacy_source?: string | null;
   sale_order_datetime: string;
+  paid_at?: string | null;
+  store_id?: string | null;
+  market_name?: string | null;
   store_name: string;
   total_amount: number;
   payment_method: string;
@@ -186,6 +204,7 @@ Page({
         const { usedPct, paidUnusedPct, unpaidPct } = calculateTriProgress(total, remaining, paid);
         return {
           ...i,
+          unit: i.unit || (i.product_type === '家居产品' ? '盒' : '次'),
           // expire_date 为原始 pg date（序列化成 UTC 串会偏移日期），格式化为 YYYY-MM-DD
           expire_date: i.expire_date ? formatDate(i.expire_date) : i.expire_date,
           paid_sessions: paid,
@@ -195,6 +214,83 @@ Page({
           used_pct: usedPct,
           paid_unused_pct: paidUnusedPct,
           unpaid_pct: unpaidPct,
+        };
+      });
+
+      // 订单详情只合并疗程卡展示。原始 itemsWithProgress 仍用于金额/预约判断，
+      // 不改变任何后续业务计算或提交参数。
+      const displayItems = groupTreatmentCards(itemsWithProgress, {
+        getId: (item) => item.sale_item_id,
+        getQuantity: (item) => item.quantity,
+        preserveNonUnitQuantity: false,
+        getIdentity: (item) => ({
+          saleOrderId: order.sale_order_id,
+          orderStatus: order.status,
+          saleOrderType: order.sale_order_type,
+          documentType: order.document_type,
+          legacySource: order.legacy_source,
+          saleOrderDatetime: order.sale_order_datetime,
+          paidAt: order.paid_at,
+          storeId: order.store_id,
+          marketName: order.market_name,
+          productName: item.product_name,
+          productType: item.product_type,
+          sourceId: item.product_type === '疗程卡' ? undefined : item.sale_item_id,
+          skuId: item.sku_id,
+          itemDirection: item.item_direction,
+          refSaleItemId: item.ref_sale_item_id,
+          sessionCount: item.session_count,
+          remainingSessions: item.remaining_sessions,
+          paidSessions: item.paid_sessions_null ? null : item.paid_sessions,
+          unit: item.unit,
+          unitPrice: item.unit_price,
+          unitRealPrice: item.unit_real_price,
+          saleAmount: item.sale_amount,
+          received: item.received,
+          pendingReceived: item.pending_received,
+          refundedAmount: item.refunded_amount ?? 0,
+          expireDate: item.expire_date,
+          remark: item.remark,
+          salesCategory: item.sales_category,
+          pickedUpQuantity: item.picked_up_quantity,
+          quantity: item.quantity,
+          coverImage: item.cover_image,
+        }),
+      }).map((group) => {
+        const primary = group.primary;
+        if (primary.product_type !== '疗程卡') return { ...primary, card_count: group.cardCount };
+
+        const sessionCount = sumGroupValue(group, (item) => item.session_count);
+        const remainingSessions = sumGroupValue(group, (item) => item.remaining_sessions);
+        const paidSessionsNull = !!primary.paid_sessions_null;
+        const paidSessions = paidSessionsNull
+          ? 0
+          : sumGroupValue(group, (item) => item.paid_sessions);
+        const usedSessions = sumGroupValue(group, (item) => item.used_sessions);
+        const { usedPct, paidUnusedPct, unpaidPct } = calculateTriProgress(
+          sessionCount,
+          remainingSessions,
+          paidSessions,
+        );
+
+        return {
+          ...primary,
+          sale_item_id: group.groupKey,
+          quantity: sumGroupValue(group, (item) => item.quantity),
+          session_count: sessionCount,
+          remaining_sessions: remainingSessions,
+          paid_sessions: paidSessions,
+          paid_sessions_null: paidSessionsNull,
+          used_sessions: usedSessions,
+          sale_amount: sumGroupValue(group, (item) => item.sale_amount),
+          received: sumGroupValue(group, (item) => item.received),
+          pending_received: sumGroupValue(group, (item) => item.pending_received),
+          refunded_amount: sumGroupValue(group, (item) => item.refunded_amount),
+          picked_up_quantity: sumGroupValue(group, (item) => item.picked_up_quantity),
+          used_pct: usedPct,
+          paid_unused_pct: paidUnusedPct,
+          unpaid_pct: unpaidPct,
+          card_count: group.cardCount,
         };
       });
 
@@ -247,7 +343,7 @@ Page({
       this.setData({
         order: {
           ...order,
-          items: itemsWithProgress,
+          items: displayItems,
           order_time_fmt: formatDateTimeShort(order.sale_order_datetime),
           expire_time_fmt: expireTimeFmt,
           outstanding_fmt: outstanding.toFixed(2),

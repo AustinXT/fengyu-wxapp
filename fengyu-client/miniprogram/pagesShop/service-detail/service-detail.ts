@@ -26,6 +26,7 @@ interface Sku {
   /** 会员价（special_price，可空） */
   special_price: number | null;
   session_count: number | null;
+  unit: string;
   product_type: string;
   /** PR-D：来自 product_categories（DB 驱动 tag 渲染） */
   product_kind?: string;
@@ -40,6 +41,7 @@ interface BundleSku {
   bundle_price: number;       // mall_product_skus.bundle_price (套餐价)
   list_price: number;         // 原价（special_price ?? price）兜底展示
   session_count: number | null;
+  unit: string;
   product_type: string;
   group_id: number | null;
 }
@@ -56,6 +58,7 @@ interface BundleViewSku {
   specName: string;
   bundlePrice: number;
   sessionCount: number | null;
+  unit: string;
   /** 是否已选（qty>0） */
   selected: boolean;
   /** 选 N 项组：当前数量（全选组恒 0/1） */
@@ -162,6 +165,7 @@ Page({
           price: Number(sku.price || 0),
           special_price: sku.special_price != null ? Number(sku.special_price) : null,
           session_count: sku.session_count,
+          unit: sku.unit || (sku.product_type === '家居产品' ? '盒' : '次'),
           product_type: sku.product_type
         }))
       });
@@ -195,6 +199,7 @@ Page({
           ? Number(s.bundle_list_price)
           : Number(s.special_price || s.price || 0),
         session_count: s.session_count,
+        unit: s.unit || (s.product_type === '家居产品' ? '盒' : '次'),
         product_type: s.product_type,
         group_id: s.bundle_group_id != null ? Number(s.bundle_group_id) : null,
       };
@@ -241,6 +246,7 @@ Page({
           specName: sku?.spec_name || skuId,
           bundlePrice: sku?.bundle_price ?? 0,
           sessionCount: sku?.session_count ?? null,
+          unit: sku?.unit || (sku?.product_type === '家居产品' ? '盒' : '次'),
           selected: qty > 0,
           qty,
           // 选 N 项步进器上限 = 当前数量 + 组内剩余可选额度；全选组恒 1

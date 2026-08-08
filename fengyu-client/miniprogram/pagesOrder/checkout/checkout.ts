@@ -3,7 +3,7 @@ import Toast from '@vant/weapp/toast/toast';
 import Dialog from '@vant/weapp/dialog/dialog';
 import { clearCart } from '../../utils/cart';
 import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
-import { formatDate } from '../../utils/format';
+import { buildCouponDisplay, formatDate } from '../../utils/format';
 import { getIsMember, priceView } from '../../utils/member-pricing';
 import { recomputeAmounts, parseAgreement, DEFAULT_AGREEMENT_TEXT } from './checkout-helpers';
 
@@ -463,6 +463,7 @@ Page({
         availableCoupons: (data?.coupons || []).map((c: any) => ({
           ...c,
           expireAtFmt: formatDate(c.expireAt),
+          ...buildCouponDisplay(c),
         })),
       });
     } catch {

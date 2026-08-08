@@ -1,6 +1,6 @@
 {
-  "id": "ec34fefa-6031-4509-8f96-7a9d15041793",
-  "prevId": "aa23889a-87e9-450c-bb61-6557187cb51c",
+  "id": "2e51ff07-2395-484d-95e6-287c39a24230",
+  "prevId": "9de90869-b1ee-4019-8493-5eacfa59f6f6",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -49,14 +49,14 @@
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -165,6 +165,12 @@
           "notNull": true,
           "default": false
         },
+        "closed_at": {
+          "name": "closed_at",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
         "cover_image": {
           "name": "cover_image",
           "type": "text",
@@ -231,16 +237,22 @@
           "primaryKey": false,
           "notNull": false
         },
+        "lakala_merchant_id": {
+          "name": "lakala_merchant_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -252,6 +264,21 @@
           "columns": [
             {
               "expression": "org_node_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_stores_lakala_merchant_id": {
+          "name": "idx_stores_lakala_merchant_id",
+          "columns": [
+            {
+              "expression": "lakala_merchant_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -276,6 +303,19 @@
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
+        },
+        "stores_lakala_merchant_id_lakala_merchants_id_fk": {
+          "name": "stores_lakala_merchant_id_lakala_merchants_id_fk",
+          "tableFrom": "stores",
+          "tableTo": "lakala_merchants",
+          "columnsFrom": [
+            "lakala_merchant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -285,6 +325,13 @@
           "nullsNotDistinct": false,
           "columns": [
             "store_name"
+          ]
+        },
+        "stores_org_node_id_unique": {
+          "name": "stores_org_node_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "org_node_id"
           ]
         }
       },
@@ -320,6 +367,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "unit_list_price": {
+          "name": "unit_list_price",
+          "type": "numeric(10, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "unit_member_price": {
+          "name": "unit_member_price",
+          "type": "numeric(10, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "sort_order": {
           "name": "sort_order",
           "type": "integer",
@@ -329,7 +388,7 @@
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -376,7 +435,20 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "chk_bundle_group_member_le_list": {
+          "name": "chk_bundle_group_member_le_list",
+          "value": "\"mall_bundle_groups\".\"unit_member_price\" IS NULL OR \"mall_bundle_groups\".\"unit_list_price\" IS NULL OR \"mall_bundle_groups\".\"unit_member_price\" <= \"mall_bundle_groups\".\"unit_list_price\""
+        },
+        "chk_bundle_group_list_nonneg": {
+          "name": "chk_bundle_group_list_nonneg",
+          "value": "\"mall_bundle_groups\".\"unit_list_price\" IS NULL OR \"mall_bundle_groups\".\"unit_list_price\" >= 0"
+        },
+        "chk_bundle_group_member_nonneg": {
+          "name": "chk_bundle_group_member_nonneg",
+          "value": "\"mall_bundle_groups\".\"unit_member_price\" IS NULL OR \"mall_bundle_groups\".\"unit_member_price\" >= 0"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.mall_categories": {
@@ -410,14 +482,14 @@
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -465,6 +537,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "bundle_list_price": {
+          "name": "bundle_list_price",
+          "type": "numeric(10, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "sort_order": {
           "name": "sort_order",
           "type": "integer",
@@ -474,7 +552,7 @@
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -583,8 +661,7 @@
         },
         "product_kind": {
           "name": "product_kind",
-          "type": "product_kind",
-          "typeSchema": "public",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
@@ -609,16 +686,22 @@
           "notNull": true,
           "default": true
         },
+        "display_color": {
+          "name": "display_color",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -679,6 +762,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "unit": {
+          "name": "unit",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'次'"
+        },
         "sort_order": {
           "name": "sort_order",
           "type": "integer",
@@ -699,6 +789,32 @@
           "primaryKey": false,
           "notNull": false
         },
+        "is_experience": {
+          "name": "is_experience",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "is_manager_special": {
+          "name": "is_manager_special",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "purchase_limit": {
+          "name": "purchase_limit",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "project_series_id": {
+          "name": "project_series_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
         "market_scope": {
           "name": "market_scope",
           "type": "text",
@@ -714,17 +830,29 @@
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deleted_by": {
+          "name": "deleted_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -742,6 +870,38 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "idx_product_skus_is_experience": {
+          "name": "idx_product_skus_is_experience",
+          "columns": [
+            {
+              "expression": "is_experience",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"product_skus\".\"is_experience\" = true",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_product_skus_active": {
+          "name": "idx_product_skus_active",
+          "columns": [
+            {
+              "expression": "sku_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "deleted_at IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -754,6 +914,19 @@
           ],
           "columnsTo": [
             "category_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "product_skus_project_series_id_project_series_lookup_id_fk": {
+          "name": "product_skus_project_series_id_project_series_lookup_id_fk",
+          "tableFrom": "product_skus",
+          "tableTo": "project_series_lookup",
+          "columnsFrom": [
+            "project_series_id"
+          ],
+          "columnsTo": [
+            "id"
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
@@ -774,6 +947,10 @@
         "chk_sku_session_count": {
           "name": "chk_sku_session_count",
           "value": "\"product_skus\".\"session_count\" IS NULL OR \"product_skus\".\"session_count\" >= 1"
+        },
+        "chk_sku_purchase_limit": {
+          "name": "chk_sku_purchase_limit",
+          "value": "\"product_skus\".\"purchase_limit\" IS NULL OR \"product_skus\".\"purchase_limit\" >= 1"
         }
       },
       "isRLSEnabled": false
@@ -856,13 +1033,6 @@
           "notNull": true,
           "default": 0
         },
-        "is_enabled": {
-          "name": "is_enabled",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
         "is_visible": {
           "name": "is_visible",
           "type": "boolean",
@@ -872,20 +1042,49 @@
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deleted_by": {
+          "name": "deleted_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "idx_products_active": {
+          "name": "idx_products_active",
+          "columns": [
+            {
+              "expression": "product_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "deleted_at IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "products_category_id_mall_categories_category_id_fk": {
           "name": "products_category_id_mall_categories_category_id_fk",
@@ -977,8 +1176,34 @@
           "primaryKey": false,
           "notNull": false
         },
+        "is_cross_store_temp": {
+          "name": "is_cross_store_temp",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "member_level": {
           "name": "member_level",
+          "type": "member_level",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "member_level_locked_until": {
+          "name": "member_level_locked_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "member_level_upgraded_at": {
+          "name": "member_level_upgraded_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "old_member_level": {
+          "name": "old_member_level",
           "type": "member_level",
           "typeSchema": "public",
           "primaryKey": false,
@@ -991,9 +1216,21 @@
           "primaryKey": false,
           "notNull": false
         },
-        "promoter_employee_id": {
-          "name": "promoter_employee_id",
-          "type": "varchar(30)",
+        "promoter_employee_name": {
+          "name": "promoter_employee_name",
+          "type": "varchar(50)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "inviter_user_id": {
+          "name": "inviter_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "invited_at": {
+          "name": "invited_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -1089,33 +1326,33 @@
         },
         "points_balance": {
           "name": "points_balance",
-          "type": "integer",
+          "type": "bigint",
           "primaryKey": false,
           "notNull": true,
           "default": 0
         },
         "points_updated_at": {
           "name": "points_updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
         "last_login_at": {
           "name": "last_login_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -1184,6 +1421,22 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "idx_client_users_inviter": {
+          "name": "idx_client_users_inviter",
+          "columns": [
+            {
+              "expression": "inviter_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "inviter_user_id IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -1200,15 +1453,15 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "client_wechat_users_promoter_employee_id_staff_wechat_users_employee_id_fk": {
-          "name": "client_wechat_users_promoter_employee_id_staff_wechat_users_employee_id_fk",
+        "client_wechat_users_inviter_user_id_client_wechat_users_user_id_fk": {
+          "name": "client_wechat_users_inviter_user_id_client_wechat_users_user_id_fk",
           "tableFrom": "client_wechat_users",
-          "tableTo": "staff_wechat_users",
+          "tableTo": "client_wechat_users",
           "columnsFrom": [
-            "promoter_employee_id"
+            "inviter_user_id"
           ],
           "columnsTo": [
-            "employee_id"
+            "user_id"
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
@@ -1217,7 +1470,16 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "chk_inviter_not_self": {
+          "name": "chk_inviter_not_self",
+          "value": "\"client_wechat_users\".\"inviter_user_id\" IS NULL OR \"client_wechat_users\".\"inviter_user_id\" <> \"client_wechat_users\".\"user_id\""
+        },
+        "chk_cwu_phone_format": {
+          "name": "chk_cwu_phone_format",
+          "value": "\"client_wechat_users\".\"phone\" IS NULL OR \"client_wechat_users\".\"phone\" ~ '^1[3-9][0-9]{9}$'"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.staff_wechat_users": {
@@ -1284,17 +1546,49 @@
           "primaryKey": false,
           "notNull": false
         },
+        "avatar_url": {
+          "name": "avatar_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "birthday": {
           "name": "birthday",
           "type": "date",
           "primaryKey": false,
           "notNull": false
         },
+        "leave_start": {
+          "name": "leave_start",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "leave_end": {
+          "name": "leave_end",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_on_business_trip": {
+          "name": "is_on_business_trip",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "skills": {
           "name": "skills",
           "type": "text[]",
           "primaryKey": false,
           "notNull": false
+        },
+        "social_insurance": {
+          "name": "social_insurance",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "is_resigned": {
           "name": "is_resigned",
@@ -1303,22 +1597,40 @@
           "notNull": true,
           "default": false
         },
+        "hired_at": {
+          "name": "hired_at",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "resigned_at": {
+          "name": "resigned_at",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "resignation_reason": {
+          "name": "resignation_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "last_login_at": {
           "name": "last_login_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -1410,7 +1722,16 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "chk_swu_phone_format": {
+          "name": "chk_swu_phone_format",
+          "value": "\"staff_wechat_users\".\"phone\" IS NULL OR \"staff_wechat_users\".\"phone\" ~ '^1[3-9][0-9]{9}$'"
+        },
+        "chk_swu_leave_range": {
+          "name": "chk_swu_leave_range",
+          "value": "\"staff_wechat_users\".\"leave_start\" IS NULL OR \"staff_wechat_users\".\"leave_end\" IS NULL OR \"staff_wechat_users\".\"leave_end\" > \"staff_wechat_users\".\"leave_start\""
+        }
+      },
       "isRLSEnabled": false
     },
     "public.sale_allocations": {
@@ -1437,7 +1758,7 @@
         },
         "allocation_ratio": {
           "name": "allocation_ratio",
-          "type": "numeric(5, 2)",
+          "type": "numeric(5, 3)",
           "primaryKey": false,
           "notNull": true
         },
@@ -1445,7 +1766,7 @@
           "name": "role_type",
           "type": "varchar(20)",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "department_name": {
           "name": "department_name",
@@ -1459,6 +1780,24 @@
           "primaryKey": false,
           "notNull": true
         },
+        "commission_rate": {
+          "name": "commission_rate",
+          "type": "numeric(5, 4)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "commission_amount": {
+          "name": "commission_amount",
+          "type": "numeric(10, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sale_payment_id": {
+          "name": "sale_payment_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
         "is_void": {
           "name": "is_void",
           "type": "boolean",
@@ -1468,28 +1807,28 @@
         },
         "voided_at": {
           "name": "voided_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         }
       },
       "indexes": {
-        "uq_sale_alloc_item_emp_role": {
-          "name": "uq_sale_alloc_item_emp_role",
+        "uq_sale_alloc_item_emp_role_payment": {
+          "name": "uq_sale_alloc_item_emp_role_payment",
           "columns": [
             {
               "expression": "sale_item_id",
@@ -1508,6 +1847,12 @@
               "isExpression": false,
               "asc": true,
               "nulls": "last"
+            },
+            {
+              "expression": "sale_payment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
             }
           ],
           "isUnique": true,
@@ -1521,6 +1866,21 @@
           "columns": [
             {
               "expression": "employee_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_sale_alloc_payment": {
+          "name": "idx_sale_alloc_payment",
+          "columns": [
+            {
+              "expression": "sale_payment_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -1558,12 +1918,30 @@
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
+        },
+        "sale_allocations_sale_payment_id_sale_order_payments_id_fk": {
+          "name": "sale_allocations_sale_payment_id_sale_order_payments_id_fk",
+          "tableFrom": "sale_allocations",
+          "tableTo": "sale_order_payments",
+          "columnsFrom": [
+            "sale_payment_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "chk_sale_alloc_ratio": {
+          "name": "chk_sale_alloc_ratio",
+          "value": "\"sale_allocations\".\"allocation_ratio\" >= 0 AND \"sale_allocations\".\"allocation_ratio\" <= 1"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.sale_items": {
@@ -1614,12 +1992,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "sku_spec_name": {
-          "name": "sku_spec_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "product_type": {
           "name": "product_type",
           "type": "product_type",
@@ -1635,6 +2007,12 @@
         },
         "remaining_sessions": {
           "name": "remaining_sessions",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "paid_sessions": {
+          "name": "paid_sessions",
           "type": "integer",
           "primaryKey": false,
           "notNull": false
@@ -1670,6 +2048,13 @@
           "primaryKey": false,
           "notNull": true
         },
+        "pending_received": {
+          "name": "pending_received",
+          "type": "numeric(10, 2)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'0'"
+        },
         "expire_date": {
           "name": "expire_date",
           "type": "date",
@@ -1703,16 +2088,36 @@
           "notNull": true,
           "default": "'0'"
         },
+        "is_shengmei": {
+          "name": "is_shengmei",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_experience": {
+          "name": "is_experience",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "is_manager_special": {
+          "name": "is_manager_special",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -1856,6 +2261,10 @@
           "name": "chk_item_remaining",
           "value": "\"sale_items\".\"remaining_sessions\" IS NULL OR \"sale_items\".\"remaining_sessions\" >= 0"
         },
+        "chk_item_paid_sessions": {
+          "name": "chk_item_paid_sessions",
+          "value": "\"sale_items\".\"paid_sessions\" IS NULL OR (\"sale_items\".\"paid_sessions\" >= 0 AND \"sale_items\".\"paid_sessions\" <= \"sale_items\".\"session_count\")"
+        },
         "chk_item_quantity": {
           "name": "chk_item_quantity",
           "value": "\"sale_items\".\"quantity\" > 0"
@@ -1863,6 +2272,326 @@
         "chk_item_service_fee": {
           "name": "chk_item_service_fee",
           "value": "\"sale_items\".\"service_fee\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.sale_order_payments": {
+      "name": "sale_order_payments",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigserial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "sale_order_id": {
+          "name": "sale_order_id",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "change_type": {
+          "name": "change_type",
+          "type": "payment_change_type",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount": {
+          "name": "amount",
+          "type": "numeric(10, 2)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "payment_method": {
+          "name": "payment_method",
+          "type": "payment_method",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "external_txn_id": {
+          "name": "external_txn_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "external_trade_info": {
+          "name": "external_trade_info",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "payment_flow_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_end": {
+          "name": "source_end",
+          "type": "payment_source_end",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "operator_employee_id": {
+          "name": "operator_employee_id",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "note": {
+          "name": "note",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "refund_reason": {
+          "name": "refund_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ref_sale_item_id": {
+          "name": "ref_sale_item_id",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "session_count": {
+          "name": "session_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "audit_employee_id": {
+          "name": "audit_employee_id",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "audit_at": {
+          "name": "audit_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "audit_remark": {
+          "name": "audit_remark",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "paid_at": {
+          "name": "paid_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "allocation_status": {
+          "name": "allocation_status",
+          "type": "allocation_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "idx_sop_order": {
+          "name": "idx_sop_order",
+          "columns": [
+            {
+              "expression": "sale_order_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_sop_alloc_status": {
+          "name": "idx_sop_alloc_status",
+          "columns": [
+            {
+              "expression": "allocation_status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "allocation_status IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_sop_status_created": {
+          "name": "idx_sop_status_created",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_sop_txn": {
+          "name": "uq_sop_txn",
+          "columns": [
+            {
+              "expression": "sale_order_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "payment_method",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "external_txn_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "external_txn_id IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_sop_status_audit": {
+          "name": "uq_sop_status_audit",
+          "columns": [
+            {
+              "expression": "sale_order_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "change_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "change_type = '退款' AND status = '待审批'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_sop_first_payment": {
+          "name": "uq_sop_first_payment",
+          "columns": [
+            {
+              "expression": "sale_order_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "change_type = '首次支付' AND status = '已支付'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "sale_order_payments_sale_order_id_sale_orders_sale_order_id_fk": {
+          "name": "sale_order_payments_sale_order_id_sale_orders_sale_order_id_fk",
+          "tableFrom": "sale_order_payments",
+          "tableTo": "sale_orders",
+          "columnsFrom": [
+            "sale_order_id"
+          ],
+          "columnsTo": [
+            "sale_order_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "sale_order_payments_operator_employee_id_staff_wechat_users_employee_id_fk": {
+          "name": "sale_order_payments_operator_employee_id_staff_wechat_users_employee_id_fk",
+          "tableFrom": "sale_order_payments",
+          "tableTo": "staff_wechat_users",
+          "columnsFrom": [
+            "operator_employee_id"
+          ],
+          "columnsTo": [
+            "employee_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "sale_order_payments_ref_sale_item_id_sale_items_sale_item_id_fk": {
+          "name": "sale_order_payments_ref_sale_item_id_sale_items_sale_item_id_fk",
+          "tableFrom": "sale_order_payments",
+          "tableTo": "sale_items",
+          "columnsFrom": [
+            "ref_sale_item_id"
+          ],
+          "columnsTo": [
+            "sale_item_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "sale_order_payments_audit_employee_id_staff_wechat_users_employee_id_fk": {
+          "name": "sale_order_payments_audit_employee_id_staff_wechat_users_employee_id_fk",
+          "tableFrom": "sale_order_payments",
+          "tableTo": "staff_wechat_users",
+          "columnsFrom": [
+            "audit_employee_id"
+          ],
+          "columnsTo": [
+            "employee_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "chk_sop_amount_sign": {
+          "name": "chk_sop_amount_sign",
+          "value": "(\"sale_order_payments\".\"change_type\" IN ('首次支付','回款','储值卡抵扣') AND \"sale_order_payments\".\"amount\" > 0)\n          OR (\"sale_order_payments\".\"change_type\" = '退款' AND \"sale_order_payments\".\"amount\" <= 0)"
+        },
+        "chk_sop_method_txn": {
+          "name": "chk_sop_method_txn",
+          "value": "\"sale_order_payments\".\"payment_method\" NOT IN ('微信','支付宝') OR \"sale_order_payments\".\"external_txn_id\" IS NOT NULL"
         }
       },
       "isRLSEnabled": false
@@ -1918,9 +2647,15 @@
           "primaryKey": false,
           "notNull": true
         },
+        "store_name": {
+          "name": "store_name",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "sale_order_datetime": {
           "name": "sale_order_datetime",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true
         },
@@ -1955,12 +2690,32 @@
           "notNull": true,
           "default": "'0'"
         },
-        "paid_amount": {
-          "name": "paid_amount",
+        "payable_amount": {
+          "name": "payable_amount",
           "type": "numeric(10, 2)",
           "primaryKey": false,
           "notNull": true,
           "default": "'0'"
+        },
+        "received": {
+          "name": "received",
+          "type": "numeric(10, 2)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'0'"
+        },
+        "refunded_amount": {
+          "name": "refunded_amount",
+          "type": "numeric(10, 2)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'0'"
+        },
+        "first_payment_amount": {
+          "name": "first_payment_amount",
+          "type": "numeric(10, 2)",
+          "primaryKey": false,
+          "notNull": false
         },
         "payment_method": {
           "name": "payment_method",
@@ -1983,19 +2738,7 @@
         },
         "paid_at": {
           "name": "paid_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "wechat_transaction_id": {
-          "name": "wechat_transaction_id",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "alipay_transaction_id": {
-          "name": "alipay_transaction_id",
-          "type": "varchar(64)",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -2007,7 +2750,13 @@
         },
         "offline_confirmed_at": {
           "name": "offline_confirmed_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lakala_out_order_no": {
+          "name": "lakala_out_order_no",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
@@ -2037,46 +2786,60 @@
           "primaryKey": false,
           "notNull": false
         },
-        "refund_reason": {
-          "name": "refund_reason",
+        "is_activity": {
+          "name": "is_activity",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "is_membership_upgrade": {
+          "name": "is_membership_upgrade",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "legacy_source": {
+          "name": "legacy_source",
           "type": "text",
           "primaryKey": false,
           "notNull": false
         },
-        "handling_fee": {
-          "name": "handling_fee",
-          "type": "numeric(10, 2)",
+        "legacy_customer_id": {
+          "name": "legacy_customer_id",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
-        "approved_by": {
-          "name": "approved_by",
+        "legacy_raw_snapshot": {
+          "name": "legacy_raw_snapshot",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "audited_at": {
+          "name": "audited_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "audited_by": {
+          "name": "audited_by",
           "type": "varchar(30)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "approved_at": {
-          "name": "approved_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "rejected_reason": {
-          "name": "rejected_reason",
-          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -2094,7 +2857,7 @@
             }
           ],
           "isUnique": true,
-          "where": "status = '待支付' AND client_user_id IS NOT NULL",
+          "where": "status = '待支付' AND client_user_id IS NOT NULL AND opened_by IS NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -2153,6 +2916,66 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_sale_orders_client_user_id": {
+          "name": "idx_sale_orders_client_user_id",
+          "columns": [
+            {
+              "expression": "client_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "client_user_id IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_legacy_source_phone": {
+          "name": "idx_legacy_source_phone",
+          "columns": [
+            {
+              "expression": "legacy_source",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "client_phone",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "legacy_source IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_legacy_source_status": {
+          "name": "idx_legacy_source_status",
+          "columns": [
+            {
+              "expression": "legacy_source",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "legacy_source IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -2237,12 +3060,12 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "sale_orders_approved_by_staff_wechat_users_employee_id_fk": {
-          "name": "sale_orders_approved_by_staff_wechat_users_employee_id_fk",
+        "sale_orders_audited_by_staff_wechat_users_employee_id_fk": {
+          "name": "sale_orders_audited_by_staff_wechat_users_employee_id_fk",
           "tableFrom": "sale_orders",
           "tableTo": "staff_wechat_users",
           "columnsFrom": [
-            "approved_by"
+            "audited_by"
           ],
           "columnsTo": [
             "employee_id"
@@ -2252,22 +3075,522 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "sale_orders_wechat_transaction_id_unique": {
-          "name": "sale_orders_wechat_transaction_id_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "wechat_transaction_id"
-          ]
-        },
-        "sale_orders_alipay_transaction_id_unique": {
-          "name": "sale_orders_alipay_transaction_id_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "alipay_transaction_id"
-          ]
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "chk_first_payment_amount": {
+          "name": "chk_first_payment_amount",
+          "value": "\"sale_orders\".\"first_payment_amount\" IS NULL OR (\"sale_orders\".\"first_payment_amount\" > 0 AND \"sale_orders\".\"first_payment_amount\" <= \"sale_orders\".\"payable_amount\")"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.sale_payment_allocatable_items": {
+      "name": "sale_payment_allocatable_items",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigserial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "sale_payment_id": {
+          "name": "sale_payment_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sale_order_id": {
+          "name": "sale_order_id",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sale_item_id": {
+          "name": "sale_item_id",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount": {
+          "name": "amount",
+          "type": "numeric(10, 2)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sales_category": {
+          "name": "sales_category",
+          "type": "sales_category",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "uq_spai_payment_item": {
+          "name": "uq_spai_payment_item",
+          "columns": [
+            {
+              "expression": "sale_payment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "sale_item_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_spai_order": {
+          "name": "idx_spai_order",
+          "columns": [
+            {
+              "expression": "sale_order_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_spai_order_item": {
+          "name": "idx_spai_order_item",
+          "columns": [
+            {
+              "expression": "sale_order_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "sale_item_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "sale_payment_allocatable_items_sale_payment_id_sale_order_payments_id_fk": {
+          "name": "sale_payment_allocatable_items_sale_payment_id_sale_order_payments_id_fk",
+          "tableFrom": "sale_payment_allocatable_items",
+          "tableTo": "sale_order_payments",
+          "columnsFrom": [
+            "sale_payment_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "sale_payment_allocatable_items_sale_order_id_sale_orders_sale_order_id_fk": {
+          "name": "sale_payment_allocatable_items_sale_order_id_sale_orders_sale_order_id_fk",
+          "tableFrom": "sale_payment_allocatable_items",
+          "tableTo": "sale_orders",
+          "columnsFrom": [
+            "sale_order_id"
+          ],
+          "columnsTo": [
+            "sale_order_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "sale_payment_allocatable_items_sale_item_id_sale_items_sale_item_id_fk": {
+          "name": "sale_payment_allocatable_items_sale_item_id_sale_items_sale_item_id_fk",
+          "tableFrom": "sale_payment_allocatable_items",
+          "tableTo": "sale_items",
+          "columnsFrom": [
+            "sale_item_id"
+          ],
+          "columnsTo": [
+            "sale_item_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.sale_payment_item_allocations": {
+      "name": "sale_payment_item_allocations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigserial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "sale_payment_item_receipt_id": {
+          "name": "sale_payment_item_receipt_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "employee_id": {
+          "name": "employee_id",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role_type": {
+          "name": "role_type",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "department_name": {
+          "name": "department_name",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "allocation_ratio": {
+          "name": "allocation_ratio",
+          "type": "numeric(5, 3)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "allocated_amount": {
+          "name": "allocated_amount",
+          "type": "numeric(10, 2)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "commission_rate": {
+          "name": "commission_rate",
+          "type": "numeric(5, 4)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "commission_amount": {
+          "name": "commission_amount",
+          "type": "numeric(10, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_void": {
+          "name": "is_void",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "voided_at": {
+          "name": "voided_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "uq_spia_receipt_emp_role": {
+          "name": "uq_spia_receipt_emp_role",
+          "columns": [
+            {
+              "expression": "sale_payment_item_receipt_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "employee_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "role_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "is_void = false",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_spia_receipt": {
+          "name": "idx_spia_receipt",
+          "columns": [
+            {
+              "expression": "sale_payment_item_receipt_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_spia_employee": {
+          "name": "idx_spia_employee",
+          "columns": [
+            {
+              "expression": "employee_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "sale_payment_item_allocations_sale_payment_item_receipt_id_sale_payment_item_receipts_id_fk": {
+          "name": "sale_payment_item_allocations_sale_payment_item_receipt_id_sale_payment_item_receipts_id_fk",
+          "tableFrom": "sale_payment_item_allocations",
+          "tableTo": "sale_payment_item_receipts",
+          "columnsFrom": [
+            "sale_payment_item_receipt_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "sale_payment_item_allocations_employee_id_staff_wechat_users_employee_id_fk": {
+          "name": "sale_payment_item_allocations_employee_id_staff_wechat_users_employee_id_fk",
+          "tableFrom": "sale_payment_item_allocations",
+          "tableTo": "staff_wechat_users",
+          "columnsFrom": [
+            "employee_id"
+          ],
+          "columnsTo": [
+            "employee_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "chk_spia_ratio": {
+          "name": "chk_spia_ratio",
+          "value": "\"sale_payment_item_allocations\".\"allocation_ratio\" > 0 AND \"sale_payment_item_allocations\".\"allocation_ratio\" <= 1"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.sale_payment_item_receipts": {
+      "name": "sale_payment_item_receipts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigserial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "sale_payment_id": {
+          "name": "sale_payment_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sale_order_id": {
+          "name": "sale_order_id",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sale_item_id": {
+          "name": "sale_item_id",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount": {
+          "name": "amount",
+          "type": "numeric(10, 2)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sales_category": {
+          "name": "sales_category",
+          "type": "sales_category",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "uq_spir_payment_item": {
+          "name": "uq_spir_payment_item",
+          "columns": [
+            {
+              "expression": "sale_payment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "sale_item_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_spir_payment": {
+          "name": "idx_spir_payment",
+          "columns": [
+            {
+              "expression": "sale_payment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_spir_order": {
+          "name": "idx_spir_order",
+          "columns": [
+            {
+              "expression": "sale_order_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_spir_order_item": {
+          "name": "idx_spir_order_item",
+          "columns": [
+            {
+              "expression": "sale_order_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "sale_item_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "sale_payment_item_receipts_sale_payment_id_sale_order_payments_id_fk": {
+          "name": "sale_payment_item_receipts_sale_payment_id_sale_order_payments_id_fk",
+          "tableFrom": "sale_payment_item_receipts",
+          "tableTo": "sale_order_payments",
+          "columnsFrom": [
+            "sale_payment_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "sale_payment_item_receipts_sale_order_id_sale_orders_sale_order_id_fk": {
+          "name": "sale_payment_item_receipts_sale_order_id_sale_orders_sale_order_id_fk",
+          "tableFrom": "sale_payment_item_receipts",
+          "tableTo": "sale_orders",
+          "columnsFrom": [
+            "sale_order_id"
+          ],
+          "columnsTo": [
+            "sale_order_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "sale_payment_item_receipts_sale_item_id_sale_items_sale_item_id_fk": {
+          "name": "sale_payment_item_receipts_sale_item_id_sale_items_sale_item_id_fk",
+          "tableFrom": "sale_payment_item_receipts",
+          "tableTo": "sale_items",
+          "columnsFrom": [
+            "sale_item_id"
+          ],
+          "columnsTo": [
+            "sale_item_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -2312,13 +3635,13 @@
           "name": "employee_id",
           "type": "varchar(30)",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "employee_name": {
           "name": "employee_name",
           "type": "varchar(50)",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "sale_item_id": {
           "name": "sale_item_id",
@@ -2328,19 +3651,19 @@
         },
         "appointment_time": {
           "name": "appointment_time",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true
         },
         "confirmed_at": {
           "name": "confirmed_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
         "checkin_at": {
           "name": "checkin_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -2358,14 +3681,14 @@
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -2419,6 +3742,44 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_appt_sale_item_active": {
+          "name": "uq_appt_sale_item_active",
+          "columns": [
+            {
+              "expression": "sale_item_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "sale_item_id IS NOT NULL AND status IN ('待确认','已确认')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_appt_employee_time_active": {
+          "name": "uq_appt_employee_time_active",
+          "columns": [
+            {
+              "expression": "employee_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "appointment_time",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "employee_id IS NOT NULL AND status IN ('待确认','已确认')",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -2506,6 +3867,19 @@
           "primaryKey": false,
           "notNull": false
         },
+        "is_shengmei": {
+          "name": "is_shengmei",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sales_category": {
+          "name": "sales_category",
+          "type": "sales_category",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
         "service_order_id": {
           "name": "service_order_id",
           "type": "varchar(30)",
@@ -2530,16 +3904,22 @@
           "primaryKey": false,
           "notNull": false
         },
+        "reserved_at": {
+          "name": "reserved_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -2557,6 +3937,22 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_svc_items_sale_item_reserved": {
+          "name": "idx_svc_items_sale_item_reserved",
+          "columns": [
+            {
+              "expression": "sale_item_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"service_items\".\"reserved_at\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -2679,13 +4075,19 @@
         },
         "started_at": {
           "name": "started_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "staff_completed_at": {
+          "name": "staff_completed_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
         "completed_at": {
           "name": "completed_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -2698,14 +4100,14 @@
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -2759,6 +4161,65 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_svc_orders_status_updated": {
+          "name": "idx_svc_orders_status_updated",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "first"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "first"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_so_appointment": {
+          "name": "uq_so_appointment",
+          "columns": [
+            {
+              "expression": "appointment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "appointment_id IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_so_client_active": {
+          "name": "uq_so_client_active",
+          "columns": [
+            {
+              "expression": "client_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "status NOT IN ('已完成','已取消')",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -2824,6 +4285,112 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.service_reviews": {
+      "name": "service_reviews",
+      "schema": "",
+      "columns": {
+        "service_order_id": {
+          "name": "service_order_id",
+          "type": "varchar(30)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "employee_id": {
+          "name": "employee_id",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "client_user_id": {
+          "name": "client_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "rating": {
+          "name": "rating",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "comment": {
+          "name": "comment",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_svc_reviews_employee": {
+          "name": "idx_svc_reviews_employee",
+          "columns": [
+            {
+              "expression": "employee_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "service_reviews_service_order_id_service_orders_service_order_id_fk": {
+          "name": "service_reviews_service_order_id_service_orders_service_order_id_fk",
+          "tableFrom": "service_reviews",
+          "tableTo": "service_orders",
+          "columnsFrom": [
+            "service_order_id"
+          ],
+          "columnsTo": [
+            "service_order_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "service_reviews_employee_id_staff_wechat_users_employee_id_fk": {
+          "name": "service_reviews_employee_id_staff_wechat_users_employee_id_fk",
+          "tableFrom": "service_reviews",
+          "tableTo": "staff_wechat_users",
+          "columnsFrom": [
+            "employee_id"
+          ],
+          "columnsTo": [
+            "employee_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "service_reviews_client_user_id_client_wechat_users_user_id_fk": {
+          "name": "service_reviews_client_user_id_client_wechat_users_user_id_fk",
+          "tableFrom": "service_reviews",
+          "tableTo": "client_wechat_users",
+          "columnsFrom": [
+            "client_user_id"
+          ],
+          "columnsTo": [
+            "user_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.permission_roles": {
       "name": "permission_roles",
       "schema": "",
@@ -2866,14 +4433,14 @@
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -2996,14 +4563,14 @@
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -3065,6 +4632,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "to_store_id": {
+          "name": "to_store_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "status": {
           "name": "status",
           "type": "store_unbind_request_status",
@@ -3087,7 +4660,7 @@
         },
         "reviewed_at": {
           "name": "reviewed_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -3099,20 +4672,37 @@
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "uq_store_unbind_pending": {
+          "name": "uq_store_unbind_pending",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "status = '待处理'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "store_unbind_requests_user_id_client_wechat_users_user_id_fk": {
           "name": "store_unbind_requests_user_id_client_wechat_users_user_id_fk",
@@ -3133,6 +4723,19 @@
           "tableTo": "stores",
           "columnsFrom": [
             "from_store_id"
+          ],
+          "columnsTo": [
+            "store_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "store_unbind_requests_to_store_id_stores_store_id_fk": {
+          "name": "store_unbind_requests_to_store_id_stores_store_id_fk",
+          "tableFrom": "store_unbind_requests",
+          "tableTo": "stores",
+          "columnsFrom": [
+            "to_store_id"
           ],
           "columnsTo": [
             "store_id"
@@ -3232,7 +4835,7 @@
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -3421,13 +5024,13 @@
         },
         "valid_from": {
           "name": "valid_from",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
         "valid_to": {
           "name": "valid_to",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -3452,14 +5055,14 @@
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -3505,9 +5108,21 @@
         },
         "expire_at": {
           "name": "expire_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true
+        },
+        "face_value_override": {
+          "name": "face_value_override",
+          "type": "numeric(10, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "external_ref": {
+          "name": "external_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "used_sale_order_id": {
           "name": "used_sale_order_id",
@@ -3517,13 +5132,20 @@
         },
         "used_at": {
           "name": "used_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -3577,6 +5199,22 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_user_coupons_external_ref": {
+          "name": "uq_user_coupons_external_ref",
+          "columns": [
+            {
+              "expression": "external_ref",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "external_ref IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -3660,20 +5298,20 @@
         },
         "last_changed_at": {
           "name": "last_changed_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -3717,6 +5355,74 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.login_attempts": {
+      "name": "login_attempts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigserial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "phone": {
+          "name": "phone",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fail_count": {
+          "name": "fail_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "locked_until": {
+          "name": "locked_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_failed_at": {
+          "name": "last_failed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "uq_login_attempts_phone": {
+          "name": "uq_login_attempts_phone",
+          "columns": [
+            {
+              "expression": "phone",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.point_transactions": {
       "name": "point_transactions",
       "schema": "",
@@ -3742,7 +5448,7 @@
         },
         "amount": {
           "name": "amount",
-          "type": "integer",
+          "type": "bigint",
           "primaryKey": false,
           "notNull": true
         },
@@ -3752,9 +5458,15 @@
           "primaryKey": false,
           "notNull": false
         },
+        "external_ref": {
+          "name": "external_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -3772,6 +5484,50 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_point_txns_external_ref": {
+          "name": "uq_point_txns_external_ref",
+          "columns": [
+            {
+              "expression": "external_ref",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "external_ref IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_point_txn_order_user_type": {
+          "name": "uq_point_txn_order_user_type",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "ref_order_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -3808,7 +5564,12 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "chk_pt_amount_sign": {
+          "name": "chk_pt_amount_sign",
+          "value": "(\"point_transactions\".\"amount\" < 0 AND \"point_transactions\".\"type\" = '消费冲销') OR \"point_transactions\".\"amount\" > 0"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.messages": {
@@ -3871,12 +5632,30 @@
           "primaryKey": false,
           "notNull": false
         },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deleted_by": {
+          "name": "deleted_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -3903,6 +5682,38 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_messages_idempotency_key": {
+          "name": "uq_messages_idempotency_key",
+          "columns": [
+            {
+              "expression": "idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "idempotency_key IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_messages_active": {
+          "name": "idx_messages_active",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "deleted_at IS NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -3950,9 +5761,15 @@
           "primaryKey": false,
           "notNull": false
         },
+        "external_ref": {
+          "name": "external_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -3970,6 +5787,22 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_card_txn_external_ref": {
+          "name": "uq_card_txn_external_ref",
+          "columns": [
+            {
+              "expression": "external_ref",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "external_ref IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -4006,7 +5839,12 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "chk_card_tx_amount_sign": {
+          "name": "chk_card_tx_amount_sign",
+          "value": "(\"card_transactions\".\"type\" = '充值' AND \"card_transactions\".\"amount\" > 0) OR (\"card_transactions\".\"type\" = '扣款' AND \"card_transactions\".\"amount\" < 0)"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.prepaid_cards": {
@@ -4034,14 +5872,14 @@
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -4082,7 +5920,12 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "chk_prepaid_balance_nonneg": {
+          "name": "chk_prepaid_balance_nonneg",
+          "value": "\"prepaid_cards\".\"balance\" >= 0"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.service_commissions": {
@@ -4111,11 +5954,11 @@
           "name": "role_type",
           "type": "varchar(20)",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "allocation_ratio": {
           "name": "allocation_ratio",
-          "type": "numeric(5, 2)",
+          "type": "numeric(5, 3)",
           "primaryKey": false,
           "notNull": false
         },
@@ -4152,16 +5995,28 @@
           "notNull": true,
           "default": false
         },
+        "voided_at": {
+          "name": "voided_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "voided_reason": {
+          "name": "voided_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -4210,6 +6065,22 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "idx_sc_voided_at": {
+          "name": "idx_sc_voided_at",
+          "columns": [
+            {
+              "expression": "voided_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "voided_at IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -4251,6 +6122,18 @@
         "chk_svc_comm_consume_amount": {
           "name": "chk_svc_comm_consume_amount",
           "value": "\"service_commissions\".\"consume_amount\" >= 0"
+        },
+        "chk_svc_comm_commission_amount": {
+          "name": "chk_svc_comm_commission_amount",
+          "value": "\"service_commissions\".\"commission_amount\" >= 0"
+        },
+        "chk_svc_comm_commission_rate": {
+          "name": "chk_svc_comm_commission_rate",
+          "value": "\"service_commissions\".\"commission_rate\" >= 0 AND \"service_commissions\".\"commission_rate\" <= 1"
+        },
+        "chk_svc_comm_alloc_ratio": {
+          "name": "chk_svc_comm_alloc_ratio",
+          "value": "\"service_commissions\".\"allocation_ratio\" IS NULL OR (\"service_commissions\".\"allocation_ratio\" >= 0 AND \"service_commissions\".\"allocation_ratio\" <= 1)"
         }
       },
       "isRLSEnabled": false
@@ -4301,9 +6184,15 @@
           "primaryKey": false,
           "notNull": false
         },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -4336,6 +6225,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_pickup_idempotency": {
+          "name": "uq_pickup_idempotency",
+          "columns": [
+            {
+              "expression": "sale_item_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "idempotency_key IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -4406,6 +6317,2666 @@
       },
       "isRLSEnabled": false
     },
+    "public.inventory_procurement_order_items": {
+      "name": "inventory_procurement_order_items",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigserial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "order_id": {
+          "name": "order_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "product_code": {
+          "name": "product_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "product_name": {
+          "name": "product_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "spec_name": {
+          "name": "spec_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "manufacturer": {
+          "name": "manufacturer",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "product_series": {
+          "name": "product_series",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "batch_no": {
+          "name": "batch_no",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expiry_date": {
+          "name": "expiry_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_gift": {
+          "name": "is_gift",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "quantity": {
+          "name": "quantity",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "stock_on_hand": {
+          "name": "stock_on_hand",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "unit_price": {
+          "name": "unit_price",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "amount": {
+          "name": "amount",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "request_quantity": {
+          "name": "request_quantity",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "remark": {
+          "name": "remark",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_inv_proc_items_order": {
+          "name": "idx_inv_proc_items_order",
+          "columns": [
+            {
+              "expression": "order_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_inv_proc_items_product": {
+          "name": "idx_inv_proc_items_product",
+          "columns": [
+            {
+              "expression": "product_code",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_inv_proc_items_batch": {
+          "name": "idx_inv_proc_items_batch",
+          "columns": [
+            {
+              "expression": "batch_no",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "inventory_procurement_order_items_order_id_inventory_procurement_orders_id_fk": {
+          "name": "inventory_procurement_order_items_order_id_inventory_procurement_orders_id_fk",
+          "tableFrom": "inventory_procurement_order_items",
+          "tableTo": "inventory_procurement_orders",
+          "columnsFrom": [
+            "order_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "chk_inv_proc_items_quantity": {
+          "name": "chk_inv_proc_items_quantity",
+          "value": "\"inventory_procurement_order_items\".\"quantity\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.inventory_procurement_orders": {
+      "name": "inventory_procurement_orders",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "doc_subtype": {
+          "name": "doc_subtype",
+          "type": "inventory_procurement_subtype",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "inventory_doc_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'已完成'"
+        },
+        "store_id": {
+          "name": "store_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "doc_date": {
+          "name": "doc_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "total_quantity": {
+          "name": "total_quantity",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_completed": {
+          "name": "is_completed",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "source_date": {
+          "name": "source_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_quantity": {
+          "name": "source_quantity",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "signature_url": {
+          "name": "signature_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "related_doc_no": {
+          "name": "related_doc_no",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "remark": {
+          "name": "remark",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "confirmed_by": {
+          "name": "confirmed_by",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "confirmed_at": {
+          "name": "confirmed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_inv_proc_store_date": {
+          "name": "idx_inv_proc_store_date",
+          "columns": [
+            {
+              "expression": "store_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "doc_date",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_inv_proc_subtype": {
+          "name": "idx_inv_proc_subtype",
+          "columns": [
+            {
+              "expression": "doc_subtype",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "inventory_procurement_orders_store_id_stores_store_id_fk": {
+          "name": "inventory_procurement_orders_store_id_stores_store_id_fk",
+          "tableFrom": "inventory_procurement_orders",
+          "tableTo": "stores",
+          "columnsFrom": [
+            "store_id"
+          ],
+          "columnsTo": [
+            "store_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "inventory_procurement_orders_created_by_staff_wechat_users_employee_id_fk": {
+          "name": "inventory_procurement_orders_created_by_staff_wechat_users_employee_id_fk",
+          "tableFrom": "inventory_procurement_orders",
+          "tableTo": "staff_wechat_users",
+          "columnsFrom": [
+            "created_by"
+          ],
+          "columnsTo": [
+            "employee_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "inventory_procurement_orders_confirmed_by_staff_wechat_users_employee_id_fk": {
+          "name": "inventory_procurement_orders_confirmed_by_staff_wechat_users_employee_id_fk",
+          "tableFrom": "inventory_procurement_orders",
+          "tableTo": "staff_wechat_users",
+          "columnsFrom": [
+            "confirmed_by"
+          ],
+          "columnsTo": [
+            "employee_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.inventory_sale_order_items": {
+      "name": "inventory_sale_order_items",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigserial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "order_id": {
+          "name": "order_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "product_code": {
+          "name": "product_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "product_name": {
+          "name": "product_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "spec_name": {
+          "name": "spec_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "manufacturer": {
+          "name": "manufacturer",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "product_series": {
+          "name": "product_series",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "batch_no": {
+          "name": "batch_no",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expiry_date": {
+          "name": "expiry_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_gift": {
+          "name": "is_gift",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "quantity": {
+          "name": "quantity",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "stock_on_hand": {
+          "name": "stock_on_hand",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "unit_price": {
+          "name": "unit_price",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "amount": {
+          "name": "amount",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sale_flow_no": {
+          "name": "sale_flow_no",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "customer_remaining": {
+          "name": "customer_remaining",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "verification_name": {
+          "name": "verification_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "verification_code": {
+          "name": "verification_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "remark": {
+          "name": "remark",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_inv_sale_items_order": {
+          "name": "idx_inv_sale_items_order",
+          "columns": [
+            {
+              "expression": "order_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_inv_sale_items_product": {
+          "name": "idx_inv_sale_items_product",
+          "columns": [
+            {
+              "expression": "product_code",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_inv_sale_items_batch": {
+          "name": "idx_inv_sale_items_batch",
+          "columns": [
+            {
+              "expression": "batch_no",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "inventory_sale_order_items_order_id_inventory_sale_orders_id_fk": {
+          "name": "inventory_sale_order_items_order_id_inventory_sale_orders_id_fk",
+          "tableFrom": "inventory_sale_order_items",
+          "tableTo": "inventory_sale_orders",
+          "columnsFrom": [
+            "order_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "chk_inv_sale_items_quantity": {
+          "name": "chk_inv_sale_items_quantity",
+          "value": "\"inventory_sale_order_items\".\"quantity\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.inventory_sale_orders": {
+      "name": "inventory_sale_orders",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "doc_subtype": {
+          "name": "doc_subtype",
+          "type": "inventory_sale_subtype",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "inventory_doc_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'已完成'"
+        },
+        "store_id": {
+          "name": "store_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "doc_date": {
+          "name": "doc_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "total_quantity": {
+          "name": "total_quantity",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "client_user_id": {
+          "name": "client_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "customer_name": {
+          "name": "customer_name",
+          "type": "varchar(50)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "related_sale_order_id": {
+          "name": "related_sale_order_id",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "remark": {
+          "name": "remark",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "confirmed_by": {
+          "name": "confirmed_by",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "confirmed_at": {
+          "name": "confirmed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_inv_sale_store_date": {
+          "name": "idx_inv_sale_store_date",
+          "columns": [
+            {
+              "expression": "store_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "doc_date",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_inv_sale_subtype": {
+          "name": "idx_inv_sale_subtype",
+          "columns": [
+            {
+              "expression": "doc_subtype",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_inv_sale_client": {
+          "name": "idx_inv_sale_client",
+          "columns": [
+            {
+              "expression": "client_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "inventory_sale_orders_store_id_stores_store_id_fk": {
+          "name": "inventory_sale_orders_store_id_stores_store_id_fk",
+          "tableFrom": "inventory_sale_orders",
+          "tableTo": "stores",
+          "columnsFrom": [
+            "store_id"
+          ],
+          "columnsTo": [
+            "store_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "inventory_sale_orders_client_user_id_client_wechat_users_user_id_fk": {
+          "name": "inventory_sale_orders_client_user_id_client_wechat_users_user_id_fk",
+          "tableFrom": "inventory_sale_orders",
+          "tableTo": "client_wechat_users",
+          "columnsFrom": [
+            "client_user_id"
+          ],
+          "columnsTo": [
+            "user_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "inventory_sale_orders_related_sale_order_id_sale_orders_sale_order_id_fk": {
+          "name": "inventory_sale_orders_related_sale_order_id_sale_orders_sale_order_id_fk",
+          "tableFrom": "inventory_sale_orders",
+          "tableTo": "sale_orders",
+          "columnsFrom": [
+            "related_sale_order_id"
+          ],
+          "columnsTo": [
+            "sale_order_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "inventory_sale_orders_created_by_staff_wechat_users_employee_id_fk": {
+          "name": "inventory_sale_orders_created_by_staff_wechat_users_employee_id_fk",
+          "tableFrom": "inventory_sale_orders",
+          "tableTo": "staff_wechat_users",
+          "columnsFrom": [
+            "created_by"
+          ],
+          "columnsTo": [
+            "employee_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "inventory_sale_orders_confirmed_by_staff_wechat_users_employee_id_fk": {
+          "name": "inventory_sale_orders_confirmed_by_staff_wechat_users_employee_id_fk",
+          "tableFrom": "inventory_sale_orders",
+          "tableTo": "staff_wechat_users",
+          "columnsFrom": [
+            "confirmed_by"
+          ],
+          "columnsTo": [
+            "employee_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.inventory_scrap_order_items": {
+      "name": "inventory_scrap_order_items",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigserial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "order_id": {
+          "name": "order_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "product_code": {
+          "name": "product_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "product_name": {
+          "name": "product_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "spec_name": {
+          "name": "spec_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "manufacturer": {
+          "name": "manufacturer",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "product_series": {
+          "name": "product_series",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "batch_no": {
+          "name": "batch_no",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expiry_date": {
+          "name": "expiry_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_gift": {
+          "name": "is_gift",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "quantity": {
+          "name": "quantity",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "stock_on_hand": {
+          "name": "stock_on_hand",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "unit_price": {
+          "name": "unit_price",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "amount": {
+          "name": "amount",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "scrap_reason": {
+          "name": "scrap_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "item_usage": {
+          "name": "item_usage",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "remark": {
+          "name": "remark",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_inv_scrap_items_order": {
+          "name": "idx_inv_scrap_items_order",
+          "columns": [
+            {
+              "expression": "order_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_inv_scrap_items_product": {
+          "name": "idx_inv_scrap_items_product",
+          "columns": [
+            {
+              "expression": "product_code",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_inv_scrap_items_batch": {
+          "name": "idx_inv_scrap_items_batch",
+          "columns": [
+            {
+              "expression": "batch_no",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "inventory_scrap_order_items_order_id_inventory_scrap_orders_id_fk": {
+          "name": "inventory_scrap_order_items_order_id_inventory_scrap_orders_id_fk",
+          "tableFrom": "inventory_scrap_order_items",
+          "tableTo": "inventory_scrap_orders",
+          "columnsFrom": [
+            "order_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "chk_inv_scrap_items_quantity": {
+          "name": "chk_inv_scrap_items_quantity",
+          "value": "\"inventory_scrap_order_items\".\"quantity\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.inventory_scrap_orders": {
+      "name": "inventory_scrap_orders",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "inventory_doc_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'已完成'"
+        },
+        "store_id": {
+          "name": "store_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "doc_date": {
+          "name": "doc_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "total_quantity": {
+          "name": "total_quantity",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "remark": {
+          "name": "remark",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "confirmed_by": {
+          "name": "confirmed_by",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "confirmed_at": {
+          "name": "confirmed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_inv_scrap_store_date": {
+          "name": "idx_inv_scrap_store_date",
+          "columns": [
+            {
+              "expression": "store_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "doc_date",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "inventory_scrap_orders_store_id_stores_store_id_fk": {
+          "name": "inventory_scrap_orders_store_id_stores_store_id_fk",
+          "tableFrom": "inventory_scrap_orders",
+          "tableTo": "stores",
+          "columnsFrom": [
+            "store_id"
+          ],
+          "columnsTo": [
+            "store_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "inventory_scrap_orders_created_by_staff_wechat_users_employee_id_fk": {
+          "name": "inventory_scrap_orders_created_by_staff_wechat_users_employee_id_fk",
+          "tableFrom": "inventory_scrap_orders",
+          "tableTo": "staff_wechat_users",
+          "columnsFrom": [
+            "created_by"
+          ],
+          "columnsTo": [
+            "employee_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "inventory_scrap_orders_confirmed_by_staff_wechat_users_employee_id_fk": {
+          "name": "inventory_scrap_orders_confirmed_by_staff_wechat_users_employee_id_fk",
+          "tableFrom": "inventory_scrap_orders",
+          "tableTo": "staff_wechat_users",
+          "columnsFrom": [
+            "confirmed_by"
+          ],
+          "columnsTo": [
+            "employee_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.inventory_transfer_order_items": {
+      "name": "inventory_transfer_order_items",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigserial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "order_id": {
+          "name": "order_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "product_code": {
+          "name": "product_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "product_name": {
+          "name": "product_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "spec_name": {
+          "name": "spec_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "manufacturer": {
+          "name": "manufacturer",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "product_series": {
+          "name": "product_series",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "batch_no": {
+          "name": "batch_no",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expiry_date": {
+          "name": "expiry_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_gift": {
+          "name": "is_gift",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "quantity": {
+          "name": "quantity",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "stock_on_hand": {
+          "name": "stock_on_hand",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "unit_price": {
+          "name": "unit_price",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "amount": {
+          "name": "amount",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "remark": {
+          "name": "remark",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_inv_transfer_items_order": {
+          "name": "idx_inv_transfer_items_order",
+          "columns": [
+            {
+              "expression": "order_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_inv_transfer_items_product": {
+          "name": "idx_inv_transfer_items_product",
+          "columns": [
+            {
+              "expression": "product_code",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_inv_transfer_items_batch": {
+          "name": "idx_inv_transfer_items_batch",
+          "columns": [
+            {
+              "expression": "batch_no",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "inventory_transfer_order_items_order_id_inventory_transfer_orders_id_fk": {
+          "name": "inventory_transfer_order_items_order_id_inventory_transfer_orders_id_fk",
+          "tableFrom": "inventory_transfer_order_items",
+          "tableTo": "inventory_transfer_orders",
+          "columnsFrom": [
+            "order_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "chk_inv_transfer_items_quantity": {
+          "name": "chk_inv_transfer_items_quantity",
+          "value": "\"inventory_transfer_order_items\".\"quantity\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.inventory_transfer_orders": {
+      "name": "inventory_transfer_orders",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "doc_subtype": {
+          "name": "doc_subtype",
+          "type": "inventory_transfer_subtype",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "inventory_doc_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'已完成'"
+        },
+        "store_id": {
+          "name": "store_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "counterpart_store_id": {
+          "name": "counterpart_store_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "is_dispatcher": {
+          "name": "is_dispatcher",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "doc_date": {
+          "name": "doc_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "total_quantity": {
+          "name": "total_quantity",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "receive_quantity": {
+          "name": "receive_quantity",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "remark": {
+          "name": "remark",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "confirmed_by": {
+          "name": "confirmed_by",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "confirmed_at": {
+          "name": "confirmed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_inv_transfer_store_date": {
+          "name": "idx_inv_transfer_store_date",
+          "columns": [
+            {
+              "expression": "store_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "doc_date",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_inv_transfer_counterpart": {
+          "name": "idx_inv_transfer_counterpart",
+          "columns": [
+            {
+              "expression": "counterpart_store_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_inv_transfer_subtype": {
+          "name": "idx_inv_transfer_subtype",
+          "columns": [
+            {
+              "expression": "doc_subtype",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "inventory_transfer_orders_store_id_stores_store_id_fk": {
+          "name": "inventory_transfer_orders_store_id_stores_store_id_fk",
+          "tableFrom": "inventory_transfer_orders",
+          "tableTo": "stores",
+          "columnsFrom": [
+            "store_id"
+          ],
+          "columnsTo": [
+            "store_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "inventory_transfer_orders_counterpart_store_id_stores_store_id_fk": {
+          "name": "inventory_transfer_orders_counterpart_store_id_stores_store_id_fk",
+          "tableFrom": "inventory_transfer_orders",
+          "tableTo": "stores",
+          "columnsFrom": [
+            "counterpart_store_id"
+          ],
+          "columnsTo": [
+            "store_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "inventory_transfer_orders_created_by_staff_wechat_users_employee_id_fk": {
+          "name": "inventory_transfer_orders_created_by_staff_wechat_users_employee_id_fk",
+          "tableFrom": "inventory_transfer_orders",
+          "tableTo": "staff_wechat_users",
+          "columnsFrom": [
+            "created_by"
+          ],
+          "columnsTo": [
+            "employee_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "inventory_transfer_orders_confirmed_by_staff_wechat_users_employee_id_fk": {
+          "name": "inventory_transfer_orders_confirmed_by_staff_wechat_users_employee_id_fk",
+          "tableFrom": "inventory_transfer_orders",
+          "tableTo": "staff_wechat_users",
+          "columnsFrom": [
+            "confirmed_by"
+          ],
+          "columnsTo": [
+            "employee_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "chk_inv_transfer_different_stores": {
+          "name": "chk_inv_transfer_different_stores",
+          "value": "\"inventory_transfer_orders\".\"store_id\" <> \"inventory_transfer_orders\".\"counterpart_store_id\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.store_inventory_doc_items": {
+      "name": "store_inventory_doc_items",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigserial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "doc_id": {
+          "name": "doc_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "stock_id": {
+          "name": "stock_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sku_id": {
+          "name": "sku_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sale_item_id": {
+          "name": "sale_item_id",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sku_name": {
+          "name": "sku_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "batch_no": {
+          "name": "batch_no",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "expiry_date": {
+          "name": "expiry_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "quantity": {
+          "name": "quantity",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "stock_snapshot": {
+          "name": "stock_snapshot",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "unit_price": {
+          "name": "unit_price",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "amount": {
+          "name": "amount",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "request_quantity": {
+          "name": "request_quantity",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "fulfilled_quantity": {
+          "name": "fulfilled_quantity",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "scrap_reason": {
+          "name": "scrap_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "item_usage": {
+          "name": "item_usage",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "remark": {
+          "name": "remark",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_store_inventory_doc_items_doc": {
+          "name": "idx_store_inventory_doc_items_doc",
+          "columns": [
+            {
+              "expression": "doc_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_store_inventory_doc_items_stock": {
+          "name": "idx_store_inventory_doc_items_stock",
+          "columns": [
+            {
+              "expression": "stock_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_store_inventory_doc_items_sku": {
+          "name": "idx_store_inventory_doc_items_sku",
+          "columns": [
+            {
+              "expression": "sku_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_store_inventory_doc_items_sale_item": {
+          "name": "idx_store_inventory_doc_items_sale_item",
+          "columns": [
+            {
+              "expression": "sale_item_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "store_inventory_doc_items_doc_id_store_inventory_docs_id_fk": {
+          "name": "store_inventory_doc_items_doc_id_store_inventory_docs_id_fk",
+          "tableFrom": "store_inventory_doc_items",
+          "tableTo": "store_inventory_docs",
+          "columnsFrom": [
+            "doc_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "store_inventory_doc_items_stock_id_store_inventory_stocks_id_fk": {
+          "name": "store_inventory_doc_items_stock_id_store_inventory_stocks_id_fk",
+          "tableFrom": "store_inventory_doc_items",
+          "tableTo": "store_inventory_stocks",
+          "columnsFrom": [
+            "stock_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "store_inventory_doc_items_sku_id_product_skus_sku_id_fk": {
+          "name": "store_inventory_doc_items_sku_id_product_skus_sku_id_fk",
+          "tableFrom": "store_inventory_doc_items",
+          "tableTo": "product_skus",
+          "columnsFrom": [
+            "sku_id"
+          ],
+          "columnsTo": [
+            "sku_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "store_inventory_doc_items_sale_item_id_sale_items_sale_item_id_fk": {
+          "name": "store_inventory_doc_items_sale_item_id_sale_items_sale_item_id_fk",
+          "tableFrom": "store_inventory_doc_items",
+          "tableTo": "sale_items",
+          "columnsFrom": [
+            "sale_item_id"
+          ],
+          "columnsTo": [
+            "sale_item_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "chk_store_inventory_doc_items_qty": {
+          "name": "chk_store_inventory_doc_items_qty",
+          "value": "\"store_inventory_doc_items\".\"quantity\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.store_inventory_docs": {
+      "name": "store_inventory_docs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "doc_type": {
+          "name": "doc_type",
+          "type": "store_inventory_doc_type",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "store_inventory_doc_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'草稿'"
+        },
+        "store_id": {
+          "name": "store_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "counterpart_store_id": {
+          "name": "counterpart_store_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "doc_date": {
+          "name": "doc_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "total_quantity": {
+          "name": "total_quantity",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'0'"
+        },
+        "request_doc_id": {
+          "name": "request_doc_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "related_sale_order_id": {
+          "name": "related_sale_order_id",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "client_user_id": {
+          "name": "client_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "customer_name": {
+          "name": "customer_name",
+          "type": "varchar(50)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "receipt_attachment_url": {
+          "name": "receipt_attachment_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "remark": {
+          "name": "remark",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "confirmed_by": {
+          "name": "confirmed_by",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "confirmed_at": {
+          "name": "confirmed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "approved_by": {
+          "name": "approved_by",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "approved_at": {
+          "name": "approved_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "rejected_by": {
+          "name": "rejected_by",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "rejected_at": {
+          "name": "rejected_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "audit_remark": {
+          "name": "audit_remark",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_store_inventory_docs_store_date": {
+          "name": "idx_store_inventory_docs_store_date",
+          "columns": [
+            {
+              "expression": "store_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "doc_date",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_store_inventory_docs_type": {
+          "name": "idx_store_inventory_docs_type",
+          "columns": [
+            {
+              "expression": "doc_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_store_inventory_docs_status": {
+          "name": "idx_store_inventory_docs_status",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_store_inventory_docs_request": {
+          "name": "idx_store_inventory_docs_request",
+          "columns": [
+            {
+              "expression": "request_doc_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_store_inventory_docs_sale_order": {
+          "name": "idx_store_inventory_docs_sale_order",
+          "columns": [
+            {
+              "expression": "related_sale_order_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_store_inventory_docs_client": {
+          "name": "idx_store_inventory_docs_client",
+          "columns": [
+            {
+              "expression": "client_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "store_inventory_docs_store_id_stores_store_id_fk": {
+          "name": "store_inventory_docs_store_id_stores_store_id_fk",
+          "tableFrom": "store_inventory_docs",
+          "tableTo": "stores",
+          "columnsFrom": [
+            "store_id"
+          ],
+          "columnsTo": [
+            "store_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "store_inventory_docs_counterpart_store_id_stores_store_id_fk": {
+          "name": "store_inventory_docs_counterpart_store_id_stores_store_id_fk",
+          "tableFrom": "store_inventory_docs",
+          "tableTo": "stores",
+          "columnsFrom": [
+            "counterpart_store_id"
+          ],
+          "columnsTo": [
+            "store_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "store_inventory_docs_request_doc_id_store_inventory_docs_id_fk": {
+          "name": "store_inventory_docs_request_doc_id_store_inventory_docs_id_fk",
+          "tableFrom": "store_inventory_docs",
+          "tableTo": "store_inventory_docs",
+          "columnsFrom": [
+            "request_doc_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "store_inventory_docs_related_sale_order_id_sale_orders_sale_order_id_fk": {
+          "name": "store_inventory_docs_related_sale_order_id_sale_orders_sale_order_id_fk",
+          "tableFrom": "store_inventory_docs",
+          "tableTo": "sale_orders",
+          "columnsFrom": [
+            "related_sale_order_id"
+          ],
+          "columnsTo": [
+            "sale_order_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "store_inventory_docs_client_user_id_client_wechat_users_user_id_fk": {
+          "name": "store_inventory_docs_client_user_id_client_wechat_users_user_id_fk",
+          "tableFrom": "store_inventory_docs",
+          "tableTo": "client_wechat_users",
+          "columnsFrom": [
+            "client_user_id"
+          ],
+          "columnsTo": [
+            "user_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "store_inventory_docs_created_by_staff_wechat_users_employee_id_fk": {
+          "name": "store_inventory_docs_created_by_staff_wechat_users_employee_id_fk",
+          "tableFrom": "store_inventory_docs",
+          "tableTo": "staff_wechat_users",
+          "columnsFrom": [
+            "created_by"
+          ],
+          "columnsTo": [
+            "employee_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "store_inventory_docs_confirmed_by_staff_wechat_users_employee_id_fk": {
+          "name": "store_inventory_docs_confirmed_by_staff_wechat_users_employee_id_fk",
+          "tableFrom": "store_inventory_docs",
+          "tableTo": "staff_wechat_users",
+          "columnsFrom": [
+            "confirmed_by"
+          ],
+          "columnsTo": [
+            "employee_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "store_inventory_docs_approved_by_staff_wechat_users_employee_id_fk": {
+          "name": "store_inventory_docs_approved_by_staff_wechat_users_employee_id_fk",
+          "tableFrom": "store_inventory_docs",
+          "tableTo": "staff_wechat_users",
+          "columnsFrom": [
+            "approved_by"
+          ],
+          "columnsTo": [
+            "employee_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "store_inventory_docs_rejected_by_staff_wechat_users_employee_id_fk": {
+          "name": "store_inventory_docs_rejected_by_staff_wechat_users_employee_id_fk",
+          "tableFrom": "store_inventory_docs",
+          "tableTo": "staff_wechat_users",
+          "columnsFrom": [
+            "rejected_by"
+          ],
+          "columnsTo": [
+            "employee_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "chk_store_inventory_docs_transfer_store": {
+          "name": "chk_store_inventory_docs_transfer_store",
+          "value": "\"store_inventory_docs\".\"counterpart_store_id\" IS NULL OR \"store_inventory_docs\".\"store_id\" <> \"store_inventory_docs\".\"counterpart_store_id\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.store_inventory_movements": {
+      "name": "store_inventory_movements",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigserial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "movement_key": {
+          "name": "movement_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "stock_id": {
+          "name": "stock_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "store_id": {
+          "name": "store_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sku_id": {
+          "name": "sku_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "doc_id": {
+          "name": "doc_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "doc_item_id": {
+          "name": "doc_item_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sale_order_id": {
+          "name": "sale_order_id",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sale_item_id": {
+          "name": "sale_item_id",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "direction": {
+          "name": "direction",
+          "type": "store_inventory_movement_direction",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "quantity_delta": {
+          "name": "quantity_delta",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "quantity_before": {
+          "name": "quantity_before",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "quantity_after": {
+          "name": "quantity_after",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "remark": {
+          "name": "remark",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "uq_store_inventory_movement_key": {
+          "name": "uq_store_inventory_movement_key",
+          "columns": [
+            {
+              "expression": "movement_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_store_inventory_movements_stock": {
+          "name": "idx_store_inventory_movements_stock",
+          "columns": [
+            {
+              "expression": "stock_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_store_inventory_movements_store_created": {
+          "name": "idx_store_inventory_movements_store_created",
+          "columns": [
+            {
+              "expression": "store_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_store_inventory_movements_doc": {
+          "name": "idx_store_inventory_movements_doc",
+          "columns": [
+            {
+              "expression": "doc_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_store_inventory_movements_sale_item": {
+          "name": "idx_store_inventory_movements_sale_item",
+          "columns": [
+            {
+              "expression": "sale_item_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "store_inventory_movements_stock_id_store_inventory_stocks_id_fk": {
+          "name": "store_inventory_movements_stock_id_store_inventory_stocks_id_fk",
+          "tableFrom": "store_inventory_movements",
+          "tableTo": "store_inventory_stocks",
+          "columnsFrom": [
+            "stock_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "store_inventory_movements_store_id_stores_store_id_fk": {
+          "name": "store_inventory_movements_store_id_stores_store_id_fk",
+          "tableFrom": "store_inventory_movements",
+          "tableTo": "stores",
+          "columnsFrom": [
+            "store_id"
+          ],
+          "columnsTo": [
+            "store_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "store_inventory_movements_sku_id_product_skus_sku_id_fk": {
+          "name": "store_inventory_movements_sku_id_product_skus_sku_id_fk",
+          "tableFrom": "store_inventory_movements",
+          "tableTo": "product_skus",
+          "columnsFrom": [
+            "sku_id"
+          ],
+          "columnsTo": [
+            "sku_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "store_inventory_movements_doc_id_store_inventory_docs_id_fk": {
+          "name": "store_inventory_movements_doc_id_store_inventory_docs_id_fk",
+          "tableFrom": "store_inventory_movements",
+          "tableTo": "store_inventory_docs",
+          "columnsFrom": [
+            "doc_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "store_inventory_movements_doc_item_id_store_inventory_doc_items_id_fk": {
+          "name": "store_inventory_movements_doc_item_id_store_inventory_doc_items_id_fk",
+          "tableFrom": "store_inventory_movements",
+          "tableTo": "store_inventory_doc_items",
+          "columnsFrom": [
+            "doc_item_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "store_inventory_movements_sale_order_id_sale_orders_sale_order_id_fk": {
+          "name": "store_inventory_movements_sale_order_id_sale_orders_sale_order_id_fk",
+          "tableFrom": "store_inventory_movements",
+          "tableTo": "sale_orders",
+          "columnsFrom": [
+            "sale_order_id"
+          ],
+          "columnsTo": [
+            "sale_order_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "store_inventory_movements_sale_item_id_sale_items_sale_item_id_fk": {
+          "name": "store_inventory_movements_sale_item_id_sale_items_sale_item_id_fk",
+          "tableFrom": "store_inventory_movements",
+          "tableTo": "sale_items",
+          "columnsFrom": [
+            "sale_item_id"
+          ],
+          "columnsTo": [
+            "sale_item_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "store_inventory_movements_created_by_staff_wechat_users_employee_id_fk": {
+          "name": "store_inventory_movements_created_by_staff_wechat_users_employee_id_fk",
+          "tableFrom": "store_inventory_movements",
+          "tableTo": "staff_wechat_users",
+          "columnsFrom": [
+            "created_by"
+          ],
+          "columnsTo": [
+            "employee_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "chk_store_inventory_movement_delta": {
+          "name": "chk_store_inventory_movement_delta",
+          "value": "\"store_inventory_movements\".\"quantity_delta\" <> 0"
+        },
+        "chk_store_inventory_movement_after": {
+          "name": "chk_store_inventory_movement_after",
+          "value": "\"store_inventory_movements\".\"quantity_after\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.store_inventory_stocks": {
+      "name": "store_inventory_stocks",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigserial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "store_id": {
+          "name": "store_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sku_id": {
+          "name": "sku_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sku_name": {
+          "name": "sku_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "product_type": {
+          "name": "product_type",
+          "type": "product_type",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'家居产品'"
+        },
+        "batch_no": {
+          "name": "batch_no",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "expiry_date": {
+          "name": "expiry_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expiry_date_key": {
+          "name": "expiry_date_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "quantity_on_hand": {
+          "name": "quantity_on_hand",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'0'"
+        },
+        "last_unit_price": {
+          "name": "last_unit_price",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_amount": {
+          "name": "last_amount",
+          "type": "numeric(12, 2)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "remark": {
+          "name": "remark",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "uq_store_inventory_stock": {
+          "name": "uq_store_inventory_stock",
+          "columns": [
+            {
+              "expression": "store_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "sku_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "batch_no",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "expiry_date_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_store_inventory_stock_store": {
+          "name": "idx_store_inventory_stock_store",
+          "columns": [
+            {
+              "expression": "store_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_store_inventory_stock_sku": {
+          "name": "idx_store_inventory_stock_sku",
+          "columns": [
+            {
+              "expression": "sku_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "store_inventory_stocks_store_id_stores_store_id_fk": {
+          "name": "store_inventory_stocks_store_id_stores_store_id_fk",
+          "tableFrom": "store_inventory_stocks",
+          "tableTo": "stores",
+          "columnsFrom": [
+            "store_id"
+          ],
+          "columnsTo": [
+            "store_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "store_inventory_stocks_sku_id_product_skus_sku_id_fk": {
+          "name": "store_inventory_stocks_sku_id_product_skus_sku_id_fk",
+          "tableFrom": "store_inventory_stocks",
+          "tableTo": "product_skus",
+          "columnsFrom": [
+            "sku_id"
+          ],
+          "columnsTo": [
+            "sku_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "chk_store_inventory_stock_qty": {
+          "name": "chk_store_inventory_stock_qty",
+          "value": "\"store_inventory_stocks\".\"quantity_on_hand\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.system_configs": {
       "name": "system_configs",
       "schema": "",
@@ -4424,7 +8995,7 @@
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -4438,26 +9009,19 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.positions": {
-      "name": "positions",
+    "public.project_series_lookup": {
+      "name": "project_series_lookup",
       "schema": "",
       "columns": {
         "id": {
           "name": "id",
-          "type": "text",
+          "type": "bigserial",
           "primaryKey": true,
           "notNull": true
         },
         "name": {
           "name": "name",
           "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "scope": {
-          "name": "scope",
-          "type": "position_scope",
-          "typeSchema": "public",
           "primaryKey": false,
           "notNull": true
         },
@@ -4477,14 +9041,14 @@
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -4494,12 +9058,11 @@
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "uq_positions_name_scope": {
-          "name": "uq_positions_name_scope",
+        "project_series_lookup_name_unique": {
+          "name": "project_series_lookup_name_unique",
           "nullsNotDistinct": false,
           "columns": [
-            "name",
-            "scope"
+            "name"
           ]
         }
       },
@@ -4539,14 +9102,14 @@
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -4564,6 +9127,116 @@
           ]
         }
       },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.lakala_merchants": {
+      "name": "lakala_merchants",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "merchant_name": {
+          "name": "merchant_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "merchant_no": {
+          "name": "merchant_no",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "term_no": {
+          "name": "term_no",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "market_org_node_id": {
+          "name": "market_org_node_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "uq_lakala_merchants_merchant_no": {
+          "name": "uq_lakala_merchants_merchant_no",
+          "columns": [
+            {
+              "expression": "merchant_no",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"lakala_merchants\".\"merchant_no\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_lakala_merchants_market_org_node_id": {
+          "name": "idx_lakala_merchants_market_org_node_id",
+          "columns": [
+            {
+              "expression": "market_org_node_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "lakala_merchants_market_org_node_id_org_nodes_id_fk": {
+          "name": "lakala_merchants_market_org_node_id_org_nodes_id_fk",
+          "tableFrom": "lakala_merchants",
+          "tableTo": "org_nodes",
+          "columnsFrom": [
+            "market_org_node_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -4637,7 +9310,7 @@
       "values": [
         "保有会员-稳定",
         "保有会员-有效",
-        "预警沉睡",
+        "沉睡",
         "冰冻",
         "休眠"
       ]
@@ -4658,6 +9331,40 @@
       "values": [
         "售前",
         "售后"
+      ]
+    },
+    "public.inventory_doc_status": {
+      "name": "inventory_doc_status",
+      "schema": "public",
+      "values": [
+        "草稿",
+        "已完成",
+        "已取消"
+      ]
+    },
+    "public.inventory_procurement_subtype": {
+      "name": "inventory_procurement_subtype",
+      "schema": "public",
+      "values": [
+        "院报货",
+        "院入库",
+        "退货出库"
+      ]
+    },
+    "public.inventory_sale_subtype": {
+      "name": "inventory_sale_subtype",
+      "schema": "public",
+      "values": [
+        "销售出库",
+        "顾客退货"
+      ]
+    },
+    "public.inventory_transfer_subtype": {
+      "name": "inventory_transfer_subtype",
+      "schema": "public",
+      "values": [
+        "调拨出库",
+        "调拨入库"
       ]
     },
     "public.item_direction": {
@@ -4703,12 +9410,15 @@
       "schema": "public",
       "values": [
         "待支付",
-        "待确认收款",
         "已支付",
         "已完成",
+        "已退款",
         "支付失败",
         "已关闭",
-        "待审批"
+        "待审批",
+        "部分支付",
+        "未审核",
+        "已作废"
       ]
     },
     "public.org_node_type": {
@@ -4721,6 +9431,27 @@
         "部门"
       ]
     },
+    "public.payment_change_type": {
+      "name": "payment_change_type",
+      "schema": "public",
+      "values": [
+        "首次支付",
+        "回款",
+        "退款",
+        "储值卡抵扣"
+      ]
+    },
+    "public.payment_flow_status": {
+      "name": "payment_flow_status",
+      "schema": "public",
+      "values": [
+        "待支付",
+        "待审批",
+        "已支付",
+        "已作废",
+        "已退款"
+      ]
+    },
     "public.payment_method": {
       "name": "payment_method",
       "schema": "public",
@@ -4728,26 +9459,18 @@
         "微信",
         "支付宝",
         "线下",
-        "无"
+        "无",
+        "储值卡"
       ]
     },
-    "public.position_scope": {
-      "name": "position_scope",
+    "public.payment_source_end": {
+      "name": "payment_source_end",
       "schema": "public",
       "values": [
-        "总部",
-        "市场",
-        "门店"
-      ]
-    },
-    "public.product_kind": {
-      "name": "product_kind",
-      "schema": "public",
-      "values": [
-        "护理项目",
-        "家居产品",
-        "充值卡",
-        "体验卡"
+        "client",
+        "staff",
+        "admin",
+        "notify"
       ]
     },
     "public.product_type": {
@@ -4755,8 +9478,7 @@
       "schema": "public",
       "values": [
         "疗程卡",
-        "单品",
-        "院装产品"
+        "家居产品"
       ]
     },
     "public.sale_order_type": {
@@ -4765,16 +9487,16 @@
       "values": [
         "销售单",
         "内部单",
-        "回款单",
         "转换单",
-        "退款单"
+        "寄存单",
+        "充值单"
       ]
     },
     "public.sales_category": {
       "name": "sales_category",
       "schema": "public",
       "values": [
-        "自采自销",
+        "自销自耗",
         "他销自耗",
         "他销他耗",
         "生态合作"
@@ -4786,6 +9508,7 @@
       "values": [
         "待服务",
         "服务中",
+        "待客户确认",
         "已完成",
         "已取消"
       ]
@@ -4808,6 +9531,42 @@
         "1-3W",
         "1990-1W",
         "<1990"
+      ]
+    },
+    "public.store_inventory_doc_status": {
+      "name": "store_inventory_doc_status",
+      "schema": "public",
+      "values": [
+        "草稿",
+        "待审批",
+        "待收货",
+        "已完成",
+        "已驳回",
+        "已取消"
+      ]
+    },
+    "public.store_inventory_doc_type": {
+      "name": "store_inventory_doc_type",
+      "schema": "public",
+      "values": [
+        "院报货",
+        "院入库",
+        "院顾客退货",
+        "院顾客产品出库",
+        "院退货",
+        "院产品报损",
+        "分院调货出库",
+        "分院调货入库",
+        "期初库存"
+      ]
+    },
+    "public.store_inventory_movement_direction": {
+      "name": "store_inventory_movement_direction",
+      "schema": "public",
+      "values": [
+        "入库",
+        "出库",
+        "调整"
       ]
     },
     "public.store_unbind_request_status": {

@@ -63,9 +63,9 @@ module.exports.fmt = function(n) {
         </view>
         <text wx:if="{{item.product_name && item.spec_name}}" class="card-spec">{{item.spec_name}}</text>
 
-        <view wx:if="{{item.session_count}}" class="card-meta">
+        <view wx:if="{{item.session_count || item.unit}}" class="card-meta">
           <van-icon name="balance-list-o" size="22rpx" color="#999" />
-          <text class="card-meta-text">{{item.session_count}} 次</text>
+          <text class="card-meta-text">{{item.session_count || 1}} {{item.unit || '次'}}</text>
         </view>
 
         <view class="card-footer">

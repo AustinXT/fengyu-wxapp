@@ -38,7 +38,11 @@ describe('inventory.createDoc 权限与状态', () => {
       'PERMISSION_DENIED: 无权操作该门店库存',
     )
     expect(pg.transaction).not.toHaveBeenCalled()
-    expect(pg.query.mock.calls[0][1]).toEqual(['store-B', ['node-store-A']])
+    const [scopeSql, scopeParams] = pg.query.mock.calls[0]
+    expect(scopeSql).toContain('WITH RECURSIVE descendants')
+    expect(scopeSql).toContain('child.parent_id = descendants.id')
+    expect(scopeSql).toContain('NOT child.id = ANY(descendants.path)')
+    expect(scopeParams).toEqual([['node-store-A']])
   })
 
   test('只有只读库存角色时不能创建库存单', async () => {
@@ -97,6 +101,10 @@ describe('inventory.createDoc 权限与状态', () => {
       { rows: [{ id: 101 }] },
       { rows: [], rowCount: 1 },
       { rows: [], rowCount: 1 },
+    ])
+    pg.query.mockResolvedValueOnce([
+      { store_id: 'store-A' },
+      { store_id: 'store-B' },
     ])
 
     await inventoryRoutes.createDoc(ctx)
@@ -161,13 +169,14 @@ describe('inventory.approveDoc / rejectDoc 审批一致性', () => {
     })
     const client = mockTransactionClient([
       { rows: [{ store_id: 'store-001', status: '待审批' }] },
+      { rows: [{ store_id: 'store-001' }] },
       { rows: [], rowCount: 1 },
     ])
 
     await inventoryRoutes.rejectDoc(ctx)
 
     expect(client.query.mock.calls[0][0]).toMatch(/FOR UPDATE/)
-    expect(client.query.mock.calls[1][0]).toMatch(/UPDATE store_inventory_docs/)
+    expect(client.query.mock.calls[2][0]).toMatch(/UPDATE store_inventory_docs/)
     expect(ctx.result).toEqual({ message: '已驳回' })
   })
 
@@ -181,11 +190,12 @@ describe('inventory.approveDoc / rejectDoc 审批一致性', () => {
     })
     const client = mockTransactionClient([
       { rows: [{ store_id: 'store-001', status: '已完成' }] },
+      { rows: [{ store_id: 'store-001' }] },
     ])
 
     await expect(inventoryRoutes.rejectDoc(ctx)).rejects.toThrow(
       'INVALID_STATE: 只有待审批单据可以驳回',
     )
-    expect(client.query.mock.calls).toHaveLength(1)
+    expect(client.query.mock.calls).toHaveLength(2)
   })
 })

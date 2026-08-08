@@ -633,6 +633,7 @@ async function performanceDetail(ctx) {
       si.sales_category,
       si.unit_real_price,
       si.received,
+      COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
       o.sale_order_id,
       o.customer_name,
       o.client_phone,
@@ -642,6 +643,7 @@ async function performanceDetail(ctx) {
     JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
     JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+    LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
     LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
     WHERE spia.employee_id = $1
       AND spia.is_void = false
@@ -674,6 +676,7 @@ async function performanceDetail(ctx) {
       sit.unit_real_price AS service_unit_price,
       si.product_name,
       si.sales_category,
+      COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
       so.service_order_id,
       so.service_date,
       so.created_at AS service_created_at,
@@ -684,6 +687,7 @@ async function performanceDetail(ctx) {
     JOIN service_items sit ON sit.service_item_id = sc.service_item_id
     JOIN service_orders so ON so.service_order_id = sit.service_order_id
     JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+    LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
     LEFT JOIN client_wechat_users cu ON cu.user_id = so.client_user_id
     WHERE sc.employee_id = $1
       AND sc.is_void = false
@@ -732,6 +736,7 @@ async function performanceDetail(ctx) {
     orderId: r.sale_order_id,
     date: r.paid_at,
     department: r.department_name,
+    unit: r.unit || '次',
   }))
 
   const serviceItems = svcRows.map(r => ({
@@ -746,6 +751,7 @@ async function performanceDetail(ctx) {
     commissionRate: Number(r.commission_rate || 0),
     sessionUsed: r.session_used,
     servicePrice: Number(r.service_unit_price || 0),
+    unit: r.unit || '次',
     customerName: r.customer_name,
     clientPhone: r.client_phone,
     orderId: r.service_order_id,

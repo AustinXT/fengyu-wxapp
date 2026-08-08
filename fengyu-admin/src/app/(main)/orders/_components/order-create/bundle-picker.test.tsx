@@ -39,6 +39,7 @@ function makeBundle(): OrderPickerBundle {
             specName: '疗程卡A',
             productType: '疗程卡',
             sessionCount: 2,
+            unit: '次',
             purchaseLimit: null,
             price: '100.00',
             bundlePrice: '90.00',
@@ -50,6 +51,7 @@ function makeBundle(): OrderPickerBundle {
             specName: '家居B',
             productType: '家居产品',
             sessionCount: null,
+            unit: '盒',
             purchaseLimit: null,
             price: '100.00',
             bundlePrice: '90.00',
@@ -109,6 +111,7 @@ describe('BundlePicker — 选N项按数量合计', () => {
 
     expect(onBundleAdded).toHaveBeenCalledTimes(1)
     const payload = onBundleAdded.mock.calls[0][0]
+    expect(payload.bundleProductId).toBe('B-01')
     // 每个 SKU 聚合成一项，携带其数量（N 按数量统计，非种类数）
     expect(payload.items).toHaveLength(2)
     const byId = Object.fromEntries(

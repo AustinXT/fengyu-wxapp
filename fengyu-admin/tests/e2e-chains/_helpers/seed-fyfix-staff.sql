@@ -40,7 +40,7 @@ ON CONFLICT (employee_id) DO UPDATE SET
   skills = EXCLUDED.skills, store_id = EXCLUDED.store_id, org_node_id = EXCLUDED.org_node_id,
   position_name = EXCLUDED.position_name, is_resigned = false, updated_at = NOW();
 
--- promoter 员工（link-16 顾客 promoter 重分配；FK client_wechat_users.promoter_employee_id → staff_wechat_users）
+-- promoter 员工（link-16 顾客 promoter 重分配；client_wechat_users 仅保存姓名快照）
 INSERT INTO staff_wechat_users
   (employee_id, name, phone, store_id, org_node_id, gender, position_name, skills, is_resigned, created_at, updated_at)
 VALUES

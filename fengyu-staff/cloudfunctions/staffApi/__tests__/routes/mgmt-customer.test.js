@@ -46,6 +46,14 @@ function makeMarketCtx(payload = {}) {
   })
 }
 
+function expectRecursiveDescendantScope(sql, rootParamIndex) {
+  expect(sql).toMatch(/WITH RECURSIVE descendants\(id, path\) AS/)
+  expect(sql).toMatch(new RegExp(`SELECT \\$${rootParamIndex}::text, ARRAY\\[\\$${rootParamIndex}::text\\]`))
+  expect(sql).toMatch(/JOIN descendants ON child\.parent_id = descendants\.id/)
+  expect(sql).toMatch(/WHERE NOT child\.id = ANY\(descendants\.path\)/)
+  expect(sql).toMatch(/JOIN descendants ON s\.org_node_id = descendants\.id/)
+}
+
 // ---- mock 工具 ----
 
 /**
@@ -90,12 +98,12 @@ function setupCommonMocks(opts = {}) {
     if (/SELECT\s+store_name\s+FROM\s+stores\s+WHERE\s+store_id/.test(sql)) {
       return [{ store_name: storeName }]
     }
-    // assertCustomerInScope: stores JOIN org_nodes WHERE store_id=$1 AND parent_id=$2
+    // assertCustomerInScope：递归组织树内的门店。
     if (
       /FROM\s+stores\s+s/.test(sql) &&
-      /JOIN\s+org_nodes\s+o/.test(sql) &&
       /s\.store_id\s*=\s*\$1/.test(sql) &&
-      /o\.parent_id\s*=\s*\$2/.test(sql)
+      /WITH RECURSIVE descendants\(id, path\) AS/.test(sql) &&
+      /SELECT \$2::text, ARRAY\[\$2::text\]/.test(sql)
     ) {
       return customerInScope ? [{ '?column?': 1 }] : []
     }
@@ -355,7 +363,7 @@ describe('mgmtCustomer.search SQL 形态', () => {
     expect(call[1]).toEqual([50, 0])
   })
 
-  test('默认 scope=market：c.bound_store_id IN (...)，参数 [scopeId, 50, 0]', async () => {
+  test('默认 scope=market：c.bound_store_id 通过递归后代组织树过滤，参数 [scopeId, 50, 0]', async () => {
     setupCommonMocks({ searchRows: [] })
     const ctx = makeHqCtx({ scopeType: 'market', scopeId: 'mkt-A' })
     await search(ctx)
@@ -364,7 +372,7 @@ describe('mgmtCustomer.search SQL 形态', () => {
       /SELECT\s+c\.user_id,\s+c\.phone/.test(c[0]) && /LIMIT/.test(c[0]),
     )
     expect(call[0]).toMatch(/c\.bound_store_id\s+IN\s*\(/)
-    expect(call[0]).toMatch(/o\.parent_id\s*=\s*\$1/)
+    expectRecursiveDescendantScope(call[0], 1)
     expect(call[0]).toMatch(/ORDER BY\s+c\.user_id\s+ASC/)
     expect(call[0]).toMatch(/LIMIT\s+\$2\s+OFFSET\s+\$3/)
     expect(call[1]).toEqual(['mkt-A', 50, 0])
@@ -384,7 +392,7 @@ describe('mgmtCustomer.search SQL 形态', () => {
     expect(call[1]).toEqual(['store-001', 50, 0])
   })
 
-  test('keyword=张 scope=market：LIKE $1 + c.bound_store_id IN $2 + LIMIT $3 OFFSET $4', async () => {
+  test('keyword=张 scope=market：LIKE $1 + 递归 c.bound_store_id 过滤 $2 + LIMIT $3 OFFSET $4', async () => {
     setupCommonMocks({ searchRows: [] })
     const ctx = makeHqCtx({ keyword: '张', scopeType: 'market', scopeId: 'mkt-A' })
     await search(ctx)
@@ -395,7 +403,7 @@ describe('mgmtCustomer.search SQL 形态', () => {
     expect(call).toBeTruthy()
     expect(call[0]).toMatch(/\(c\.phone\s+LIKE\s+\$1\s+OR\s+c\.name\s+LIKE\s+\$1\)/)
     expect(call[0]).toMatch(/c\.bound_store_id\s+IN\s*\(/)
-    expect(call[0]).toMatch(/o\.parent_id\s*=\s*\$2/)
+    expectRecursiveDescendantScope(call[0], 2)
     expect(call[0]).toMatch(/ORDER BY\s+c\.user_id\s+ASC/)
     expect(call[0]).toMatch(/LIMIT\s+\$3\s+OFFSET\s+\$4/)
     expect(call[1]).toEqual(['%张%', 'mkt-A', 50, 0])
@@ -577,7 +585,7 @@ describe('mgmtCustomer.detail 越权防护', () => {
     await expect(detail(ctx)).rejects.toThrow(/PERMISSION_DENIED.*顾客.*scope/)
   })
 
-  test('scope=all：headquarters 直接放行（不查 stores JOIN org_nodes）', async () => {
+  test('scope=all：headquarters 直接放行（不查递归组织树）', async () => {
     setupCommonMocks({
       detailRows: [
         {
@@ -601,14 +609,13 @@ describe('mgmtCustomer.detail 越权防护', () => {
     await detail(ctx)
     expect(ctx.result).toBeTruthy()
     expect(ctx.result.clientUserId).toBe('u1')
-    // 不应执行 stores JOIN org_nodes 校验
+    // 不应执行递归组织树校验
     const sqls = pg.query.mock.calls.map((c) => c[0])
     const scopeCheckSql = sqls.find(
       (s) =>
         /FROM\s+stores\s+s/.test(s) &&
-        /JOIN\s+org_nodes\s+o/.test(s) &&
         /s\.store_id\s*=\s*\$1/.test(s) &&
-        /o\.parent_id\s*=\s*\$2/.test(s),
+        /WITH RECURSIVE descendants\(id, path\) AS/.test(s),
     )
     expect(scopeCheckSql).toBeUndefined()
   })
@@ -619,7 +626,7 @@ describe('mgmtCustomer.detail 越权防护', () => {
 // ===================================================================
 
 describe('mgmtCustomer.detail 出数', () => {
-  test('累计/年消费按 scope 过滤；scope=store 时消费 SQL 含 o.store_id = $3', async () => {
+  test('累计/年消费和实耗按顾客聚合，不追加门店过滤', async () => {
     setupCommonMocks({
       detailRows: [
         {
@@ -638,13 +645,20 @@ describe('mgmtCustomer.detail 出数', () => {
           birthday: null,
         },
       ],
-      detailConsumptionRows: [{ total: 12345.67, year_total: 5000 }],
+      detailConsumptionRows: [{
+        total: 12345.67,
+        year_total: 5000,
+        total_actual_consumption: 6789.12,
+        year_actual_consumption: 2345.67,
+      }],
     })
     const ctx = makeHqCtx({ clientUserId: 'u1', scopeType: 'store', scopeId: 'store-001' })
     await detail(ctx)
 
     expect(ctx.result.totalConsumption).toBe(12345.67)
     expect(ctx.result.yearConsumption).toBe(5000)
+    expect(ctx.result.totalActualConsumption).toBe(6789.12)
+    expect(ctx.result.yearActualConsumption).toBe(2345.67)
 
     const sqls = pg.query.mock.calls.map((c) => c[0])
     const consumptionSql = sqls.find(
@@ -652,8 +666,13 @@ describe('mgmtCustomer.detail 出数', () => {
         /COALESCE\(SUM\(si\.received::numeric\),\s*0\)\s+AS\s+total/.test(s) &&
         /year_total/.test(s),
     )
-    // 交易数据跟顾客走：detail 消费统计不再按门店过滤（顾客可见性由 assertCustomerInScope 守护）
-    expect(consumptionSql).not.toMatch(/o\.store_id/)
+    // 交易数据跟顾客走：详情统计不按门店过滤，顾客可见性由 assertCustomerInScope 守护。
+    expect(consumptionSql).not.toMatch(/(?:o|so)\.store_id/)
+    expect(consumptionSql).toContain('FROM service_orders so')
+    expect(consumptionSql).toContain('JOIN service_items sit ON sit.service_order_id = so.service_order_id')
+    expect(consumptionSql).toContain("so.status = '已完成'")
+    expect(consumptionSql).toContain('so.service_date >= $2::date')
+    expect(consumptionSql).toContain('so.remark IS DISTINCT FROM')
   })
 
   test('visitFrequency 与 topProductName 透传（消费统计不再按 scope 过滤，跟顾客走）', async () => {
@@ -1033,7 +1052,12 @@ describe('mgmtCustomer 出数完整路径', () => {
       staffRows: [{ name: '王美容师' }],
       detailVisitRows: [{ last_date: '2026-04-20', visit_count_90d: 8 }],
       detailTopProductRows: [{ product_name: '深层补水' }],
-      detailConsumptionRows: [{ total: 9999.5, year_total: 3000 }],
+      detailConsumptionRows: [{
+        total: 9999.5,
+        year_total: 3000,
+        total_actual_consumption: 5200,
+        year_actual_consumption: 1800,
+      }],
       customerInScope: true,
     })
     const ctx = makeMarketCtx({
@@ -1058,6 +1082,8 @@ describe('mgmtCustomer 出数完整路径', () => {
     expect(ctx.result.topProductName).toBe('深层补水')
     expect(ctx.result.totalConsumption).toBe(9999.5)
     expect(ctx.result.yearConsumption).toBe(3000)
+    expect(ctx.result.totalActualConsumption).toBe(5200)
+    expect(ctx.result.yearActualConsumption).toBe(1800)
     expect(ctx.result.birthday).toBe('1990-03-15')
     expect(ctx.result.source).toBe('both') // customer_id 非空
     expect(ctx.result.phone).toBe('13700137000') // market 不脱敏
@@ -1126,7 +1152,7 @@ describe('mgmtCustomer 出数完整路径', () => {
         { sale_order_id: 'so-2', status: '已支付', paid_at: '2026-04-21T11:00:00Z', store_id: 'store-001', store_name: 'A 店' },
       ],
       paidOrderItems: [
-        { sale_order_id: 'so-1', sale_item_id: 'si-1', store_id: 'store-001', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', product_name: '深层补水', unit_real_price: '100.00' },
+        { sale_order_id: 'so-1', sale_item_id: 'si-1', store_id: 'store-001', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', product_name: '深层补水', unit_real_price: '100.00', unit: '次', category_id: 'face-care', category_name: '面部护理', product_kind: '护理项目' },
         { sale_order_id: 'so-1', sale_item_id: 'si-2', store_id: 'store-001', session_count: 5, remaining_sessions: 5, sku_id: 'sku-2', product_type: '次卡', product_name: '基础护理', unit_real_price: '60.00' },
         { sale_order_id: 'so-2', sale_item_id: 'si-3', store_id: 'store-001', session_count: 1, remaining_sessions: 1, sku_id: 'sku-3', product_type: '单次', product_name: '面部清洁', unit_real_price: '30.00' },
       ],
@@ -1140,6 +1166,12 @@ describe('mgmtCustomer 出数完整路径', () => {
     expect(so1.items).toHaveLength(2)
     expect(so1.items[0].itemName).toBe('深层补水')
     expect(so1.items[0].unitRealPrice).toBe('100.00')
+    expect(so1.items[0]).toMatchObject({
+      unit: '次',
+      productKind: '护理项目',
+      categoryId: 'face-care',
+      categoryName: '面部护理',
+    })
     const so2 = ctx.result.orders.find((o) => o.saleOrderId === 'so-2')
     expect(so2.items).toHaveLength(1)
     expect(so2.items[0].itemName).toBe('面部清洁')

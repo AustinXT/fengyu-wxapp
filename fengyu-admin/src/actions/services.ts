@@ -225,6 +225,8 @@ export interface ExportServiceOrderItemRow {
   categoryL2: string | null
   productName: string | null
   sessionUsed: number | null
+  /** 当前 SKU 的展示单位；历史 SKU 缺失时按商品类型回退。 */
+  unit: string
   consumeMoney: number | null
   unitRealPrice: number | null
   status: string | null
@@ -278,6 +280,7 @@ async function selectServiceOrderItemExportRows(
       categoryL2: productCategories.categoryName,
       productName: saleItems.productName,
       sessionUsed: serviceItems.sessionUsed,
+      skuUnit: productSkus.unit,
       unitRealPrice: serviceItems.unitRealPrice,
       status: serviceOrders.status,
       salesCategory: serviceItems.salesCategory,
@@ -321,6 +324,7 @@ async function selectServiceOrderItemExportRows(
       categoryL2: r.categoryL2,
       productName: r.productName,
       sessionUsed: sessions,
+      unit: r.skuUnit ?? (r.productType === '家居产品' ? '盒' : '次'),
       consumeMoney,
       unitRealPrice: unit,
       status: r.status,
@@ -357,6 +361,8 @@ export interface ExportAllocationServiceRow {
   categoryL2: string | null
   productName: string | null
   sessionUsed: number | null
+  /** 当前 SKU 的展示单位；历史 SKU 缺失时按商品类型回退。 */
+  unit: string
   consumeMoney: number | null
   unitRealPrice: number | null
   status: string | null
@@ -412,6 +418,7 @@ async function selectServiceCommissionExportRows(
       categoryL2: productCategories.categoryName,
       productName: saleItems.productName,
       sessionUsed: serviceItems.sessionUsed,
+      skuUnit: productSkus.unit,
       unitRealPrice: serviceItems.unitRealPrice,
       status: serviceOrders.status,
       employeeName: staffWechatUsers.name,
@@ -468,6 +475,7 @@ async function selectServiceCommissionExportRows(
       categoryL2: r.categoryL2,
       productName: r.productName,
       sessionUsed: sessions,
+      unit: r.skuUnit ?? (r.productType === '家居产品' ? '盒' : '次'),
       consumeMoney,
       unitRealPrice: unit,
       status: r.status,
@@ -525,6 +533,7 @@ async function selectPendingServiceCommissionExportRows(
       categoryL2: productCategories.categoryName,
       productName: saleItems.productName,
       sessionUsed: serviceItems.sessionUsed,
+      skuUnit: productSkus.unit,
       unitRealPrice: serviceItems.unitRealPrice,
       status: serviceOrders.status,
       salesCategory: serviceItems.salesCategory,
@@ -566,6 +575,7 @@ async function selectPendingServiceCommissionExportRows(
       categoryL2: r.categoryL2,
       productName: r.productName,
       sessionUsed: sessions,
+      unit: r.skuUnit ?? (r.productType === '家居产品' ? '盒' : '次'),
       consumeMoney,
       unitRealPrice: unit,
       status: r.status,
@@ -628,6 +638,7 @@ async function selectMissingAllocatedServiceCommissionExportRows(
       categoryL2: productCategories.categoryName,
       productName: saleItems.productName,
       sessionUsed: serviceItems.sessionUsed,
+      skuUnit: productSkus.unit,
       unitRealPrice: serviceItems.unitRealPrice,
       status: serviceOrders.status,
       employeeName: staffWechatUsers.name,
@@ -676,6 +687,7 @@ async function selectMissingAllocatedServiceCommissionExportRows(
       categoryL2: r.categoryL2,
       productName: r.productName,
       sessionUsed: sessions,
+      unit: r.skuUnit ?? (r.productType === '家居产品' ? '盒' : '次'),
       consumeMoney,
       unitRealPrice: unit,
       status: r.status,
@@ -777,6 +789,8 @@ export interface ServiceItemDetail {
   serviceItemId: string
   saleItemId: string
   sessionUsed: number
+  /** 当前 SKU 的展示单位；历史 SKU 缺失时按商品类型回退。 */
+  unit: string
   unitRealPrice: string | null
   employeeName: string | null
   employeeId: string | null
@@ -801,6 +815,7 @@ export const getServiceItems = withPermission(
       si.employee_id,
       e.name AS employee_name,
       sli.product_name,
+      COALESCE(ps.unit, CASE WHEN sli.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
       NULL::text AS sku_name,
       sli.sales_category,
       sli.remaining_sessions,
@@ -810,6 +825,7 @@ export const getServiceItems = withPermission(
     FROM service_items si
     LEFT JOIN staff_wechat_users e ON e.employee_id = si.employee_id
     LEFT JOIN sale_items sli ON sli.sale_item_id = si.sale_item_id
+    LEFT JOIN product_skus ps ON ps.sku_id = sli.sku_id
     WHERE si.service_order_id = ${serviceOrderId}
   `)
 
@@ -817,6 +833,7 @@ export const getServiceItems = withPermission(
     serviceItemId: r.service_item_id,
     saleItemId: r.sale_item_id,
     sessionUsed: Number(r.session_used),
+    unit: r.unit ?? '次',
     unitRealPrice: r.unit_real_price,
     employeeName: r.employee_name,
     employeeId: r.employee_id,
@@ -863,15 +880,41 @@ export const getServiceReview = withPermission(
 export interface AvailableSaleItem {
   saleItemId: string
   saleOrderId: string
+  saleOrderDatetime: string | null
+  paidAt: string | null
+  orderStatus: string
+  saleOrderType: string
+  documentType: string | null
+  marketName: string
+  legacySource: string | null
+  storeId: string
+  skuId: string | null
+  itemDirection: string
+  refSaleItemId: string | null
   productName: string | null
   productType: string | null
+  /** 当前 SKU 的展示单位；历史 SKU 缺失时按商品类型回退。 */
+  unit: string
+  /** 一级品项（历史无分类卡为 null） */
+  productKind: string | null
+  /** 二级品项 ID（历史无分类卡为 null） */
+  categoryId: string | null
+  /** 二级品项名称（历史无分类卡为 null） */
+  categoryName: string | null
   sessionCount: number | null
   remainingSessions: number | null
   paidSessions: number | null
+  quantity: number
   /** 可用次数（已付未用）；paidSessions 为 NULL 时退回物理剩余。步进器 max 用此值 */
   paidUnusedSessions: number
+  unitPrice: string
   unitRealPrice: string
+  saleAmount: string
+  received: string
+  pendingReceived: string
   expireDate: string | null
+  remark: string | null
+  salesCategory: string | null
 }
 
 export const getAvailableSaleItems = withPermission(
@@ -881,15 +924,39 @@ export const getAvailableSaleItems = withPermission(
     SELECT
       si.sale_item_id,
       si.sale_order_id,
+      o.sale_order_datetime,
+      o.paid_at,
+      o.status AS order_status,
+      o.sale_order_type,
+      o.document_type,
+      o.market_name,
+      o.legacy_source,
+      si.store_id,
+      si.sku_id,
+      si.item_direction,
+      si.ref_sale_item_id,
       si.product_name,
       si.product_type,
       si.session_count,
       si.remaining_sessions,
       si.paid_sessions,
+      si.quantity,
+      si.unit_price,
       si.unit_real_price,
-      si.expire_date
+      si.sale_amount,
+      si.received,
+      si.pending_received,
+      si.expire_date,
+      si.remark,
+      si.sales_category,
+      COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
+      ps.category_id,
+      pc.category_name,
+      pc.product_kind
     FROM sale_items si
     INNER JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+    LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
+    LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
     WHERE o.client_user_id = ${clientUserId}
       AND o.status IN ('已支付', '部分支付', '已完成')
       AND (
@@ -924,14 +991,38 @@ export const getAvailableSaleItems = withPermission(
     return {
       saleItemId: r.sale_item_id,
       saleOrderId: r.sale_order_id,
+      saleOrderDatetime: r.sale_order_datetime instanceof Date
+        ? r.sale_order_datetime.toISOString()
+        : (r.sale_order_datetime ?? null),
+      paidAt: r.paid_at instanceof Date ? r.paid_at.toISOString() : (r.paid_at ?? null),
+      orderStatus: r.order_status,
+      saleOrderType: r.sale_order_type,
+      documentType: r.document_type ?? null,
+      marketName: r.market_name ?? '',
+      legacySource: r.legacy_source ?? null,
+      storeId: r.store_id,
+      skuId: r.sku_id ?? null,
+      itemDirection: r.item_direction,
+      refSaleItemId: r.ref_sale_item_id ?? null,
       productName: r.product_name,
       productType: r.product_type,
+      unit: r.unit ?? (r.product_type === '家居产品' ? '盒' : '次'),
+      productKind: r.product_kind ?? null,
+      categoryId: r.category_id ?? null,
+      categoryName: r.category_name ?? null,
       sessionCount: r.session_count !== null ? Number(r.session_count) : null,
       remainingSessions: r.remaining_sessions !== null ? Number(r.remaining_sessions) : null,
       paidSessions: r.paid_sessions !== null && r.paid_sessions !== undefined ? Number(r.paid_sessions) : null,
+      quantity: Number(r.quantity ?? 1),
       paidUnusedSessions: paid === null ? remain : Math.max(0, paid - used),
+      unitPrice: r.unit_price ?? '0',
       unitRealPrice: r.unit_real_price ?? '0',
+      saleAmount: r.sale_amount ?? '0',
+      received: r.received ?? '0',
+      pendingReceived: r.pending_received ?? '0',
       expireDate: r.expire_date,
+      remark: r.remark ?? null,
+      salesCategory: r.sales_category ?? null,
     }
   })
   },
@@ -955,22 +1046,123 @@ export const startServiceOrder = withPermission(
     .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
     .limit(1)
 
-  let result: any
+  type StartOutcome =
+    | { kind: 'started' }
+    | { kind: 'state_changed' }
+    | { kind: 'insufficient_balance'; message: string }
+
+  let outcome: StartOutcome
   try {
-    result = await db
-      .update(serviceOrders)
-      .set({ status: '服务中', startedAt: nowTs() })
-      .where(and(
-        eq(serviceOrders.serviceOrderId, serviceOrderId),
-        eq(serviceOrders.status, '待服务'),
-        scopeCondition(session, serviceOrders.storeId),
-      ))
+    outcome = await db.transaction(async (tx) => {
+      // 与转换单争用同一批 sale_items 行锁，按 sale_item_id 固定顺序避免多卡服务死锁。
+      // 必须先取得行锁，再单独汇总预扣；把汇总放进同一 SELECT 的标量子查询，
+      // 无法保证子查询一定在 FOR UPDATE 之后求值。
+      const lockRows = await tx.execute(sql`
+        SELECT
+          sit.service_item_id,
+          sit.sale_item_id,
+          sit.session_used,
+          si.remaining_sessions,
+          si.session_count,
+          si.paid_sessions,
+          si.product_type
+        FROM service_items sit
+        INNER JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+        WHERE sit.service_order_id = ${serviceOrderId}
+        ORDER BY si.sale_item_id, sit.service_item_id
+        FOR UPDATE OF si
+      `)
+
+      const lockedRows = Array.from(lockRows as unknown as Iterable<Record<string, unknown>>)
+      const saleItemIds = [...new Set(lockedRows.map((row) => String(row.sale_item_id)))]
+      const reservedRows = saleItemIds.length === 0
+        ? []
+        : await tx.execute(sql`
+            SELECT sale_item_id, COALESCE(SUM(session_used), 0) AS total_reserved
+            FROM service_items
+            WHERE sale_item_id IN (${sql.join(saleItemIds.map((id) => sql`${id}`), sql`, `)})
+              AND reserved_at IS NOT NULL
+              AND service_order_id <> ${serviceOrderId}
+            GROUP BY sale_item_id
+          `)
+      const reservedBySaleItemId = new Map(
+        Array.from(reservedRows as unknown as Iterable<Record<string, unknown>>)
+          .map((row) => [String(row.sale_item_id), Number(row.total_reserved ?? 0)] as const),
+      )
+
+      const cards = new Map<string, {
+        remaining: number
+        sessionCount: number | null
+        paidSessions: number | null
+        productType: string | null
+        totalReserved: number
+        requested: number
+      }>()
+      for (const row of lockedRows) {
+        const saleItemId = String(row.sale_item_id)
+        const existing = cards.get(saleItemId)
+        if (existing) {
+          existing.requested += Number(row.session_used ?? 0)
+          continue
+        }
+        cards.set(saleItemId, {
+          remaining: Number(row.remaining_sessions ?? 0),
+          sessionCount: row.session_count === null ? null : Number(row.session_count),
+          paidSessions: row.paid_sessions === null ? null : Number(row.paid_sessions),
+          productType: (row.product_type as string | null) ?? null,
+          totalReserved: reservedBySaleItemId.get(saleItemId) ?? 0,
+          requested: Number(row.session_used ?? 0),
+        })
+      }
+
+      for (const [saleItemId, card] of cards) {
+        if (card.productType !== '疗程卡') continue
+        const remainingAvailable = card.remaining - card.totalReserved
+        const paidAvailable = card.sessionCount === null
+          ? Number.POSITIVE_INFINITY
+          : (card.paidSessions ?? card.sessionCount)
+            - (card.sessionCount - card.remaining)
+            - card.totalReserved
+        const available = Math.min(remainingAvailable, paidAvailable)
+        if (available < card.requested) {
+          return {
+            kind: 'insufficient_balance' as const,
+            message: `订单行 ${saleItemId} 可用次数不足（剩余 ${card.remaining}，已预留 ${card.totalReserved}，本次需 ${card.requested}）`,
+          }
+        }
+      }
+
+      const startedAt = nowTs()
+      const result = await tx
+        .update(serviceOrders)
+        .set({ status: '服务中', startedAt })
+        .where(and(
+          eq(serviceOrders.serviceOrderId, serviceOrderId),
+          eq(serviceOrders.status, '待服务'),
+          scopeCondition(session, serviceOrders.storeId),
+        ))
+      if ((result as any).count === 0) {
+        return { kind: 'state_changed' as const }
+      }
+
+      // 仅在状态 CAS 成功后写预扣；若状态已被其它端推进，整个事务不会释放/覆盖其预扣。
+      await tx.execute(sql`
+        UPDATE service_items
+        SET reserved_at = ${startedAt}, updated_at = ${startedAt}
+        WHERE service_order_id = ${serviceOrderId}
+          AND reserved_at IS NULL
+      `)
+      return { kind: 'started' as const }
+    })
   } catch {
     return { success: false, message: '开始服务失败，请稍后重试' }
   }
 
-  if ((result as any).count === 0) {
+  if (outcome.kind === 'state_changed') {
     return { success: false, message: '服务单状态已变更，无法开始' }
+  }
+  if (outcome.kind === 'insufficient_balance') {
+    return { success: false, message: outcome.message }
   }
 
   await logTransition(session, 'service.start', 'service_order', serviceOrderId, '待服务', '服务中', {
@@ -1079,9 +1271,20 @@ export const confirmServiceOrder = withPermission(
   // 与 staff service.js:407 一致；paid_sessions NULL 视为 session_count（兼容历史/旧 fixture）。
   // 服务提成写入（settleServiceCommissions）镜像 staff/client finalizeServiceOrder：
   //   三端 confirm/finalize 都应产出 service_commissions + commission_status='已分配'。
-  let outcome: { kind: 'ok' } | { kind: 'status_changed' } | { kind: 'insufficient_paid' }
+  // 预扣在扣减和状态推进全部成功前始终保留；这样转换单拿到 sale_items 锁时只会使用未预扣的次数。
+  let outcome: { kind: 'ok' } | { kind: 'status_changed' }
   try {
     outcome = await db.transaction(async (tx) => {
+      // 按稳定顺序先锁卡行，和 service.start / conversion 共用同一把锁。
+      await tx.execute(sql`
+        SELECT si.sale_item_id
+        FROM sale_items si
+        INNER JOIN service_items sit ON sit.sale_item_id = si.sale_item_id
+        WHERE sit.service_order_id = ${serviceOrderId}
+        ORDER BY si.sale_item_id
+        FOR UPDATE OF si
+      `)
+
       const result = await tx.execute(sql`
         WITH status_check AS (
           UPDATE service_orders
@@ -1089,20 +1292,25 @@ export const confirmServiceOrder = withPermission(
           WHERE service_order_id = ${serviceOrderId} AND status = '待客户确认'
           RETURNING service_order_id
         ),
+        service_totals AS (
+          SELECT sale_item_id, SUM(session_used) AS session_used
+          FROM service_items
+          WHERE service_order_id = ${serviceOrderId}
+          GROUP BY sale_item_id
+        ),
         deduct AS (
           UPDATE sale_items
-          SET remaining_sessions = remaining_sessions - si.session_used,
+          SET remaining_sessions = remaining_sessions - totals.session_used,
               updated_at = NOW()
-          FROM service_items si
-          WHERE sale_items.sale_item_id = si.sale_item_id
-            AND si.service_order_id = ${serviceOrderId}
-            AND sale_items.remaining_sessions >= si.session_used
-            AND (sale_items.session_count - sale_items.remaining_sessions + si.session_used) <= COALESCE(sale_items.paid_sessions, sale_items.session_count)
+          FROM service_totals totals
+          WHERE sale_items.sale_item_id = totals.sale_item_id
+            AND sale_items.remaining_sessions >= totals.session_used
+            AND (sale_items.session_count - sale_items.remaining_sessions + totals.session_used) <= COALESCE(sale_items.paid_sessions, sale_items.session_count)
             AND EXISTS (SELECT 1 FROM status_check)
           RETURNING sale_items.sale_item_id
         ),
         total_items AS (
-          SELECT COUNT(*) AS n FROM service_items WHERE service_order_id = ${serviceOrderId}
+          SELECT COUNT(*) AS n FROM service_totals
         )
         SELECT
           (SELECT COUNT(*) FROM status_check) AS status_updated,
@@ -1115,8 +1323,15 @@ export const confirmServiceOrder = withPermission(
       }
       // 若 status_updated=1 但 items_deducted < items_total，说明某行触发了 paid_sessions 限额
       if (Number(row.items_deducted) < Number(row.items_total)) {
-        return { kind: 'insufficient_paid' as const }
+        // 事务必须回滚状态推进和任何已成功的行扣减，不能留下“已完成但未扣净”的服务单。
+        throw new ApiError('INSUFFICIENT_BALANCE', 'SERVICE_ITEMS_INSUFFICIENT_PAID')
       }
+      // 扣减与状态 CAS 都成功后才释放预扣，避免转换单在两步之间取得本次服务的次数。
+      await tx.execute(sql`
+        UPDATE service_items
+        SET reserved_at = NULL, updated_at = NOW()
+        WHERE service_order_id = ${serviceOrderId}
+      `)
       // 扣减 + 置已完成均成功 → 写服务提成 + commission_status='已分配'（镜像 staff/client finalize）
       await settleServiceCommissions(tx, serviceOrderId, {
         employeeId: session.employeeId,
@@ -1125,17 +1340,16 @@ export const confirmServiceOrder = withPermission(
       })
       return { kind: 'ok' as const }
     })
-  } catch {
+  } catch (err) {
+    if (err instanceof ApiError && err.message.includes('SERVICE_ITEMS_INSUFFICIENT_PAID')) {
+      return { success: false, message: '部分服务行已支付次数不足，请先完成订单付款后再确认服务' }
+    }
     return { success: false, message: '确认服务失败，请稍后重试' }
   }
 
   if (outcome.kind === 'status_changed') {
     return { success: false, message: '服务单状态已变更，无法确认' }
   }
-  if (outcome.kind === 'insufficient_paid') {
-    return { success: false, message: '部分服务行已支付次数不足，请先完成订单付款后再确认服务' }
-  }
-
   await logTransition(session, 'service.confirm', 'service_order', serviceOrderId, '待客户确认', '已完成', {
     employeeName: svcCtx?.employeeName, customerName: svcCtx?.customerName,
   })
@@ -1176,14 +1390,25 @@ export const cancelServiceOrder = withPermission(
 
   let cancelResult: any
   try {
-    cancelResult = await db
-      .update(serviceOrders)
-      .set({ status: '已取消' })
-      .where(and(
-        eq(serviceOrders.serviceOrderId, serviceOrderId),
-        eq(serviceOrders.status, svc.status),
-        scopeCondition(session, serviceOrders.storeId),
-      ))
+    cancelResult = await db.transaction(async (tx) => {
+      const result = await tx
+        .update(serviceOrders)
+        .set({ status: '已取消' })
+        .where(and(
+          eq(serviceOrders.serviceOrderId, serviceOrderId),
+          eq(serviceOrders.status, svc.status),
+          scopeCondition(session, serviceOrders.storeId),
+        ))
+      // 只有状态 CAS 成功的服务单才能释放预扣，避免并发开始服务留下“服务中但无预扣”。
+      if ((result as any).count > 0) {
+        await tx.execute(sql`
+          UPDATE service_items
+          SET reserved_at = NULL, updated_at = NOW()
+          WHERE service_order_id = ${serviceOrderId}
+        `)
+      }
+      return result
+    })
   } catch {
     return { success: false, message: '取消服务失败，请稍后重试' }
   }

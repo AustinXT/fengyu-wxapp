@@ -15,7 +15,7 @@ const { requireStaffBound } = require('../middleware/auth')
 // ===== 公共查询辅助 =====
 
 function marketScopeValues(scopeExpr) {
-  return `string_to_array(replace(${scopeExpr}, ' ', ''), ',')`
+  return `string_to_array(regexp_replace(${scopeExpr}, '[[:space:]]+', '', 'g'), ',')`
 }
 
 /**
@@ -23,11 +23,16 @@ function marketScopeValues(scopeExpr) {
  *
  * admin 保存的是逗号分隔的市场 org_nodes.id；历史数据可能是市场名。
  * staff 门店模式优先使用 effectiveStoreId；管理层模式用 scopeStoreIds 展开的门店集合。
+ *
+ * 语义约定（2026-08-06 修复）：
+ * - NULL = 全部市场可见
+ * - '' (空字符串) = 不可见于任何市场
+ * - 'id1,id2' = 仅指定市场可见
  */
 function buildSkuMarketScopeFilter(auth, params, skuAlias = 'sk') {
   const scopeExpr = `${skuAlias}.market_scope`
   const valuesExpr = marketScopeValues(scopeExpr)
-  const globalExpr = `(${scopeExpr} IS NULL OR btrim(${scopeExpr}) = '')`
+  const globalExpr = `${scopeExpr} IS NULL`
   const storeIds = []
 
   if (auth?.effectiveStoreId) {
@@ -66,6 +71,43 @@ function buildSkuMarketScopeFilter(auth, params, skuAlias = 'sk') {
   }
 
   return `AND ${globalExpr}`
+}
+
+/**
+ * 组合套餐主商品范围过滤（products.market_scope）。
+ *
+ * 开单页套餐必须按工作台当前选中的门店判断，不能在管理层模式回退到 scopeStoreIds；
+ * 没有 current/effective store 时仅保留全市场套餐，避免把受限套餐误展示出来。
+ */
+function buildBundleMarketScopeFilter(auth, params, productAlias = 'p') {
+  const scopeExpr = `${productAlias}.market_scope`
+  const valuesExpr = marketScopeValues(scopeExpr)
+  const globalExpr = `${scopeExpr} IS NULL`
+  const nonBlankExpr = `NULLIF(regexp_replace(${scopeExpr}, '[[:space:]]+', '', 'g'), '') IS NOT NULL`
+  const effectiveStoreId = auth?.effectiveStoreId
+
+  if (!effectiveStoreId) return `AND ${globalExpr}`
+
+  params.push(effectiveStoreId)
+  const storeParam = `$${params.length}`
+  return `AND (
+    ${globalExpr}
+    OR (
+      ${nonBlankExpr}
+      AND EXISTS (
+        SELECT 1
+        FROM stores s
+        JOIN org_nodes sn ON s.org_node_id = sn.id
+        JOIN org_nodes pm ON sn.parent_id = pm.id
+        WHERE s.store_id = ${storeParam}
+          AND pm.type = '市场'
+          AND (
+            pm.id = ANY(${valuesExpr})
+            OR regexp_replace(pm.name, '[[:space:]]+', '', 'g') = ANY(${valuesExpr})
+          )
+      )
+    )
+  )`
 }
 
 /**
@@ -168,22 +210,17 @@ function _formatSkuRow(sk) {
     price: Number(sk.price) || 0,
     specialPrice: sk.special_price ? Number(sk.special_price) : null,
     sessionCount: sk.session_count != null ? Number(sk.session_count) : null,
+    unit: sk.unit,
     purchaseLimit: sk.purchase_limit != null ? Number(sk.purchase_limit) : null,
     productType: sk.product_type,
     serviceFee: Number(sk.service_fee) || 0,
     isShengmei: sk.is_shengmei,
     isExperience: !!sk.is_experience,
     isManagerSpecial: !!sk.is_manager_special,
-    isBundle: !!sk.is_bundle,
   }
 }
 
 /** 查询 SKU 列表并格式化为前端格式（直接查 product_skus JOIN product_categories）
- *
- * isBundle 字段说明：SKU 本身不持有 is_bundle，bundle 信息属于 products 层。
- * 通过 mall_product_skus → products 反查是否有任一关联商品 is_bundle=true，
- * 有则标记该 SKU isBundle=true 供前端 BundlePicker 过滤使用。
- *
  * 卡类 capability 列下发：is_experience 透传给前端，"普通商品"过滤按 SKU capability 判定。
  * 充值卡已剥离 SKU 化（2026-05-20），不再用 is_recharge_card 过滤。
  *
@@ -218,16 +255,10 @@ async function _queryFormattedSkuList(categoryId, productKind, opts = {}) {
 
   const skuRows = await pg.query(`
     SELECT sk.sku_id, sk.category_id, sk.product_type, sk.spec_name,
-           sk.price, sk.special_price, sk.session_count, sk.sort_order,
+           sk.price, sk.special_price, sk.session_count, sk.unit, sk.sort_order,
            sk.service_fee, sk.is_shengmei, sk.purchase_limit,
            sk.is_experience, sk.is_manager_special,
-           pc.category_name, pc.product_kind, pc.sales_category,
-           COALESCE((
-             SELECT bool_or(p.is_bundle)
-             FROM mall_product_skus mps
-             JOIN products p ON mps.product_id = p.product_id
-             WHERE mps.sku_id = sk.sku_id
-           ), false) AS is_bundle
+           pc.category_name, pc.product_kind, pc.sales_category
     FROM product_skus sk
     JOIN product_categories pc ON sk.category_id = pc.category_id
     ${whereClause}
@@ -244,7 +275,7 @@ async function _queryFormattedSkuList(categoryId, productKind, opts = {}) {
  * "分类侧边栏 + SKU"通用容器导致空列表（shopInit 的 NOT is_experience
  * EXISTS 过滤会把仅含体验卡 SKU 的分类整行过滤掉）。
  *
- * 体验卡按业务约定不会出现在 bundle 组合里，is_bundle 直接写 false 避开 mall_product_skus 子查询。
+ * 体验卡按业务约定不会出现在 bundle 组合里。
  */
 async function _queryExperienceSkus(auth) {
   const params = []
@@ -252,11 +283,10 @@ async function _queryExperienceSkus(auth) {
 
   const rows = await pg.query(`
     SELECT sk.sku_id, sk.category_id, sk.product_type, sk.spec_name,
-           sk.price, sk.special_price, sk.session_count, sk.sort_order,
+           sk.price, sk.special_price, sk.session_count, sk.unit, sk.sort_order,
            sk.service_fee, sk.is_shengmei, sk.purchase_limit,
            sk.is_experience, sk.is_manager_special,
-           pc.category_name, pc.product_kind, pc.sales_category,
-           false AS is_bundle
+           pc.category_name, pc.product_kind, pc.sales_category
     FROM product_skus sk
     JOIN product_categories pc ON sk.category_id = pc.category_id
     WHERE sk.is_experience = true
@@ -281,16 +311,19 @@ async function _queryExperienceSkus(auth) {
  * 供前端 BundlePicker 子视图使用（Step 1 选"组合套餐"商品类型时）。
  * 与 client `product.spuDetail`、admin `getProductsByKind('__bundle__')` 数据形态对齐。
  */
-async function _queryMallBundleGroups() {
+async function _queryMallBundleGroups(auth) {
+  const params = []
+  const marketScopeFilter = buildBundleMarketScopeFilter(auth, params)
   const productRows = await pg.query(`
     SELECT p.product_id, p.name, p.cover_image, p.description,
            p.price, p.special_price, p.sort_order
     FROM products p
     WHERE p.is_bundle = true
       AND p.deleted_at IS NULL
+      ${marketScopeFilter}
       -- 开单页无视 is_visible（客户端展示开关只应影响 client 商城，开单端与普通商品/体验卡口径一致）
     ORDER BY p.sort_order ASC
-  `)
+  `, params)
 
   if (productRows.length === 0) return []
 
@@ -305,7 +338,7 @@ async function _queryMallBundleGroups() {
   const skuLinkRows = await pg.query(`
     SELECT mps.product_id, mps.sku_id, mps.bundle_group_id,
            mps.bundle_price, mps.bundle_list_price, mps.sort_order,
-           sk.spec_name, sk.session_count, sk.purchase_limit,
+           sk.spec_name, sk.session_count, sk.unit, sk.purchase_limit,
            sk.product_type, sk.is_shengmei,
            sk.price AS list_price, sk.special_price AS list_special_price
     FROM mall_product_skus mps
@@ -329,6 +362,7 @@ async function _queryMallBundleGroups() {
             skuId: s.sku_id,
             specName: s.spec_name,
             sessionCount: s.session_count,
+            unit: s.unit,
             purchaseLimit: s.purchase_limit != null ? Number(s.purchase_limit) : null,
             productType: s.product_type,
             isShengmei: !!s.is_shengmei,
@@ -418,7 +452,7 @@ async function shopInit(ctx) {
     skuList = await _queryFormattedSkuList(categories[0].id, null, { excludeCards: true })
   }
 
-  const mallBundleGroups = await _queryMallBundleGroups()
+  const mallBundleGroups = await _queryMallBundleGroups(ctx.auth)
 
   // 体验卡 Tab 走扁平 SKU 列表，不依赖分类元数据；
   // 与 admin getProductsByKind('体验卡') 用 SKU 级 capability 判定保持一致。
@@ -467,7 +501,7 @@ async function skuDetail(ctx) {
   const rows = await pg.query(`
     SELECT
       sk.sku_id, sk.product_type, sk.spec_name,
-      sk.price, sk.special_price, sk.session_count, sk.sort_order,
+      sk.price, sk.special_price, sk.session_count, sk.unit, sk.sort_order,
       sk.service_fee, sk.is_shengmei, sk.market_scope, sk.purchase_limit,
       pc.category_id, pc.category_name, pc.product_kind, pc.sales_category
     FROM product_skus sk
@@ -502,5 +536,5 @@ module.exports = { shopInit, categories, skuList, skuDetail, promotionList, prom
 // "路由完整性" 扫描（Object.keys）检出为未注册路由。
 Object.defineProperty(module.exports, '__testables__', {
   enumerable: false,
-  value: { _queryCategoryRows },
+  value: { _queryCategoryRows, _queryMallBundleGroups, buildBundleMarketScopeFilter },
 })

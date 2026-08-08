@@ -4,7 +4,8 @@ import { isManager, getCurrentStoreId } from '../../utils/role';
 import { calcHalfPriceTotal, allocateCouponPerLine, calcTierLineAmount } from '../../utils/cart-calc';
 import { evaluateCouponAfterCartChange } from '../../utils/coupon-evaluator';
 import { computePrepaidDeduction } from '../../utils/prepaid-card-calc';
-import { formatDate } from '../../utils/formatters';
+import { buildCouponDisplay, formatDate } from '../../utils/formatters';
+import { on, EVENT_STORE_CHANGED } from '../../utils/event-bus';
 
 const app = getApp<IAppOption>();
 
@@ -44,6 +45,7 @@ interface CartItem {
   purchaseLimit?: number | null;
   quantity: number;
   sessionCount: number;
+  unit: string;
   productType: string;
   workfineItemId: string;
   /** 预计算：price × quantity（"价格"列） */
@@ -83,6 +85,7 @@ interface SkuItem {
   price: number;
   specialPrice: number | null;
   sessionCount: number | null;
+  unit: string;
   purchaseLimit?: number | null;
   productType: string;
   serviceFee: number;
@@ -91,8 +94,6 @@ interface SkuItem {
   isExperience?: boolean;
   /** 店长特别优惠 capability（product_skus.is_manager_special） */
   isManagerSpecial?: boolean;
-  /** 是否为套餐 SKU（关联任一 products.is_bundle=true 则为 true；用于"普通商品"视图过滤） */
-  isBundle?: boolean;
 }
 
 /** 套餐分组（PR-A 云函数 product.shopInit 返回 mallBundleGroups[]） */
@@ -100,6 +101,7 @@ interface BundleGroupSku {
   skuId: string;
   specName: string;
   sessionCount: number | null;
+  unit: string;
   purchaseLimit?: number | null;
   productType: string;
   isShengmei: boolean;
@@ -141,8 +143,8 @@ interface DisplayItem {
   productKind: string;
   productType: string;
   sessionCount: number | null;
+  unit: string;
   purchaseLimit?: number | null;
-  isBundle?: boolean;
   /** 店长特别优惠 capability（仅普通商品开单时放开应付编辑） */
   isManagerSpecial?: boolean;
   /** 体验卡 capability */
@@ -182,6 +184,15 @@ interface CouponInfo {
   description?: string;
   /** 券有效期（后端返回原始 timestamp，前端格式化为 YYYY-MM-DD 供「有效期至」展示） */
   expireAt?: string;
+  /** 券面值（真实属性，不受订单金额限制） */
+  faceValue?: number;
+  /** 券类型（现金券/折扣券/品项券） */
+  couponType?: string;
+  /** 券配置值：折扣券为折率，金额型券为面值 */
+  discountValue?: number | string;
+  /** 预计算券面值与本单可用金额文案，供 WXML 直接绑定 */
+  discountLabel?: string;
+  availableAmountLabel?: string;
 }
 
 /** 侧边栏分组（"普通商品"模式，按 productKind 聚合） */
@@ -249,8 +260,8 @@ function skuToDisplay(sku: SkuItem, isMember: boolean): DisplayItem {
     productKind: sku.productKind,
     productType: sku.productType,
     sessionCount: sku.sessionCount,
+    unit: sku.unit || (sku.productType === '家居产品' ? '盒' : '次'),
     purchaseLimit: sku.purchaseLimit ?? null,
-    isBundle: !!sku.isBundle,
     isManagerSpecial: !!sku.isManagerSpecial,
     isExperience: !!sku.isExperience,
   }
@@ -324,7 +335,6 @@ function buildTreatmentTierLineMap(cart: CartItem[], skus: SkuItem[], isMember: 
         s.productType === '疗程卡' &&
         !s.isExperience &&
         !s.isManagerSpecial &&
-        !s.isBundle &&
         s.sessionCount != null &&
         Number(s.sessionCount) > 1 &&
         Number(s.sessionCount) <= totalSessions
@@ -442,13 +452,16 @@ Page({
     /**
      * 充值卡抵扣（预选 Wave 3G；DB 字段 prepaid_card_amount 命名保持不变，UI 文案统一为「充值卡」）
      * - customerCardBalance：顾客当前余额（跨店统一），由 customer.customerBalance 加载
-     * - useCard：店长预选开关，默认根据余额自动开（>0 开）
+     * - useCard：店长预选开关，默认关闭
+     * - prepaidCardAmountInput：店长手填金额，默认 0.00；实际抵扣额按上限钳制
      * - prepaidCardAmount / paidAmount：computePrepaidDeduction 计算结果（不影响后端 balance，仅作 payload 与 UI 展示）
      * - showPayMethodGroup：paid > 0 时展示支付方式按钮组；paid = 0 时隐藏
      * - prepaidCardLoaded：避免重复请求；customerBalanceLoading：拉取中态
      */
     customerCardBalance: 0 as number,
     useCard: false as boolean,
+    prepaidCardAmountInput: '0.00' as string,
+    prepaidCardMax: '0.00' as string,
     prepaidCardAmount: 0 as number,
     paidAmount: '0.00' as string,
     showPayMethodGroup: true as boolean,
@@ -497,6 +510,23 @@ Page({
   _spuCache: {} as Record<string, DisplayItem[]>,
   /** 普通商品搜索防抖计时器 */
   _kwTimer: null as ReturnType<typeof setTimeout> | null,
+  /** 商品目录世代；切换门店后使仍在飞行中的旧请求失效。 */
+  _catalogGeneration: 0,
+
+  onLoad() {
+    // 订阅门店切换事件：切换门店时强制刷新商品目录
+    this._unsubscribeStoreChange = on(EVENT_STORE_CHANGED, (storeId: string) => {
+      console.log('[order-create] 门店已切换:', storeId, '→ 清空商品缓存 + 购物车');
+      this.onStoreChanged();
+    });
+  },
+
+  onUnload() {
+    if (this._unsubscribeStoreChange) this._unsubscribeStoreChange();
+    if (this._kwTimer) clearTimeout(this._kwTimer);
+  },
+
+  _unsubscribeStoreChange: null as (() => void) | null,
 
   onShow() {
     if (!app.globalData.staffWfId) {
@@ -522,9 +552,12 @@ Page({
   // ===== 商品目录（三级导航 + 缓存） =====
 
   async loadShopInit() {
+    const catalogGeneration = this._catalogGeneration;
     this.setData({ catalogLoading: true });
     try {
       const data = await callStaffApi<ShopInitResponse>('product.shopInit');
+      if (catalogGeneration !== this._catalogGeneration) return;
+
       const categories: Category[] = data.categories || [];
       const groupedCategories: GroupedCategory[] = data.groupedCategories || [];
       const rawSkus: SkuItem[] = data.skuList || [];
@@ -542,6 +575,8 @@ Page({
       this.setData({ bundleSpus, catalogLoading: false });
       this.applyKindChoice(this.data.productKindChoice);
     } catch (err: unknown) {
+      if (catalogGeneration !== this._catalogGeneration) return;
+
       const msg = err instanceof Error ? err.message : '加载失败';
       wx.showToast({ title: msg, icon: 'none' });
       this.setData({ catalogLoading: false });
@@ -904,6 +939,7 @@ Page({
         purchaseLimit: item.purchaseLimit ?? null,
         quantity: 1,
         sessionCount: item.sessionCount || 0,
+        unit: item.unit || (item.productType === '家居产品' ? '盒' : '次'),
         productType: item.productType,
         workfineItemId: '',
         isManagerSpecial: !!item.isManagerSpecial,
@@ -1075,8 +1111,10 @@ Page({
     const saleOrderType = this.data.saleOrderType;
     const isInternal = saleOrderType === '内部单';
     const isSales = saleOrderType === '销售单';
-    const supportsManagerSpecial = isSales || saleOrderType === '转换单';
-    const tierLineMap = isSales
+    const isConversion = saleOrderType === '转换单';
+    const supportsManagerSpecial = isSales || isConversion;
+    // 销售单 + 转换单均需计算疗程卡梯度累加价（寄存单/内部单不计算）
+    const tierLineMap = (isSales || isConversion)
       ? buildTreatmentTierLineMap(cart, this._allSkus, this.data.buyerIsMember)
       : new Map<string, number>();
     // 店长特别优惠（销售单/转换单 + 普通商品，组合套餐不适用）：pre-coupon 应付基线 = 手填覆盖，
@@ -1178,6 +1216,8 @@ Page({
       // 重置储值卡预选 state（避免上次 customer 残值；进入 Step 2 时再加载）
       customerCardBalance: 0,
       useCard: false,
+      prepaidCardAmountInput: '0.00',
+      prepaidCardMax: '0.00',
       prepaidCardAmount: 0,
       paidAmount: '0.00',
       showPayMethodGroup: true,
@@ -1216,6 +1256,8 @@ Page({
       // 储值卡预选
       customerCardBalance: 0,
       useCard: false,
+      prepaidCardAmountInput: '0.00',
+      prepaidCardMax: '0.00',
       prepaidCardAmount: 0,
       paidAmount: '0.00',
       showPayMethodGroup: true,
@@ -1277,6 +1319,43 @@ Page({
     // 商品类型回到「普通商品」后刷新侧边栏 + spuList；
     // _allCategories 为空时 applyKindChoice 安全设空，随后 loadShopInit 回来会再次填充。
     this.applyKindChoice('普通商品');
+  },
+
+  /**
+   * 门店切换后的清理与刷新（2026-08-06 新增）
+   *
+   * 切换门店时需要完全重置的数据：
+   * 1. 商品目录缓存（不同门店的商品/分类/SKU 不同，必须重新加载）
+   * 2. 购物车（防止跨门店混单，避免下单不属于当前市场的商品）
+   * 3. 已选顾客（顾客可能不属于新门店，需重新搜索确认）
+   * 4. 优惠券（券与顾客/门店绑定，切换后失效）
+   * 5. 结算表单的所有临时状态
+   *
+   * 由 EVENT_STORE_CHANGED 事件触发，确保用户切换门店后不会残留旧门店数据。
+   */
+  onStoreChanged() {
+    // 先失效旧门店的在途 shopInit；其成功/失败回调均不得再触碰当前目录状态。
+    this._catalogGeneration += 1;
+
+    // 1. 清空商品目录缓存（强制重新从云端拉取新门店的商品数据）
+    this._allCategories = [];
+    this._allGroupedCategories = [];
+    this._allSkus = [];
+    this._experienceSkus = [];
+    this._spuCache = {};
+
+    // 2. 完全重置开单状态（购物车 + 结算表单 + 商品类型 Tab）
+    this.resetOrderState();
+
+    // 3. 重新加载新门店的商品目录
+    this.loadShopInit();
+
+    // 4. Toast 提示用户（避免用户困惑为何购物车清空）
+    wx.showToast({
+      title: '已切换门店，购物车已清空',
+      icon: 'none',
+      duration: 2000,
+    });
   },
 
   // Step 0: 选顾客
@@ -1401,7 +1480,7 @@ Page({
   /**
    * 拉取顾客储值卡余额（跨店统一）。
    * - 仅在 Step 2 入场时调用一次（prepaidCardLoaded=true 后直到关闭弹层不再拉）
-   * - 余额 > 0 时 useCard 默认开（决策 #1：能抵多少抵多少）
+   * - 余额加载后仍保持 useCard 关闭、手填金额为 0.00
    * - 失败兜底为 0：UI 退化为"无可用余额"，不阻塞开单
    */
   async loadCustomerBalance() {
@@ -1419,7 +1498,8 @@ Page({
       const balance = Math.max(0, Number(data?.balance) || 0);
       this.setData({
         customerCardBalance: balance,
-        useCard: balance > 0,
+        useCard: false,
+        prepaidCardAmountInput: '0.00',
         prepaidCardLoaded: true,
       });
     } catch (_) {
@@ -1427,6 +1507,7 @@ Page({
       this.setData({
         customerCardBalance: 0,
         useCard: false,
+        prepaidCardAmountInput: '0.00',
         prepaidCardLoaded: true,
       });
     } finally {
@@ -1442,8 +1523,8 @@ Page({
    * - 应付合计已在 updateCart 中算好（payableTotal 字段，含券摊算与内部单半价）
    */
   recomputePrepaidAmounts() {
-    if (this.data.saleOrderType === '转换单') {
-      this.setData({ prepaidCardAmount: 0, paidAmount: '0.00', showPayMethodGroup: true });
+    if (this.data.saleOrderType !== '销售单' && this.data.saleOrderType !== '内部单') {
+      this.setData({ prepaidCardAmount: 0, prepaidCardMax: '0.00', paidAmount: '0.00', showPayMethodGroup: true });
       return;
     }
     // 充值卡从「当下实付」（receivedTotal = Σ行实付 = 客户当下要付的钱，欠款时已逐行下调）里抵，
@@ -1454,8 +1535,10 @@ Page({
       payableAmount: baseForPrepaid,
       customerCardBalance: this.data.customerCardBalance || 0,
       useCard: !!this.data.useCard,
+      prepaidCardAmount: this.data.prepaidCardAmountInput,
     });
     this.setData({
+      prepaidCardMax: result.maxPrepaidCardAmount.toFixed(2),
       prepaidCardAmount: result.prepaidCardAmount,
       paidAmount: result.paidAmount.toFixed(2),
       showPayMethodGroup: result.showPayMethodGroup,
@@ -1471,7 +1554,28 @@ Page({
       // 余额为 0 时禁止开启（UI 已 disabled，防御性再拒）
       return;
     }
-    this.setData({ useCard: next });
+    this.setData({ useCard: next, prepaidCardAmountInput: '0.00' });
+    this.recomputePrepaidAmounts();
+  },
+
+  /** 输入过程中保持受控状态；实际抵扣额会立即按当前上限重新计算。 */
+  onPrepaidCardAmountInput(e: WechatMiniprogram.CustomEvent) {
+    const raw = String((e.detail as unknown as { value?: string })?.value ?? e.detail ?? '');
+    this.setData({ prepaidCardAmountInput: raw });
+    this.recomputePrepaidAmounts();
+  },
+
+  /** 充值卡抵扣金额输入：按当前实付和余额上限钳制，并统一回填两位小数。 */
+  onPrepaidCardAmountChange(e: WechatMiniprogram.CustomEvent) {
+    const raw = String((e.detail as unknown as { value?: string })?.value ?? e.detail ?? '').trim();
+    const requested = Number(raw);
+    const baseForPrepaid = parseFloat(this.data.receivedTotal) || 0;
+    const maxAmount = Math.min(
+      Math.max(0, Number(this.data.customerCardBalance) || 0),
+      Math.max(0, baseForPrepaid),
+    );
+    const amount = Number.isFinite(requested) ? Math.max(0, Math.min(requested, maxAmount)) : 0;
+    this.setData({ prepaidCardAmountInput: amount.toFixed(2) });
     this.recomputePrepaidAmounts();
   },
 
@@ -1495,6 +1599,11 @@ Page({
       return;
     }
     const update: Record<string, any> = { saleOrderType: next };
+    // 每种订单类型的抵扣口径独立，切换后从 0.00 重新填写。
+    update.useCard = false;
+    update.prepaidCardAmountInput = '0.00';
+    update.prepaidCardAmount = 0;
+    update.prepaidCardMax = '0.00';
     if (next !== '销售单' && this.data.selectedCoupon) {
       update.selectedCoupon = null;
       update.couponDiscount = 0;
@@ -1584,7 +1693,11 @@ Page({
         items,
       });
       // expireAt 为原始 timestamp（序列化成 UTC 串），格式化为 YYYY-MM-DD 供「有效期至」展示
-      const coupons = (data?.coupons || []).map(c => ({ ...c, expireAt: c.expireAt ? formatDate(c.expireAt) : c.expireAt }));
+      const coupons = (data?.coupons || []).map(c => ({
+        ...c,
+        expireAt: c.expireAt ? formatDate(c.expireAt) : c.expireAt,
+        ...buildCouponDisplay(c),
+      }));
       this.setData({ availableCoupons: coupons });
     } catch {
       this.setData({ availableCoupons: [] });
@@ -1878,7 +1991,8 @@ Page({
           return item;
         }),
         paymentMethod,
-        prepaidCardAmount: conversionPrepaidCardAmount > 0 ? conversionPrepaidCardAmount : undefined,
+        // 默认值也显式透传，保持转换单与普通开单的充值卡金额契约一致。
+        prepaidCardAmount: conversionPrepaidCardAmount,
         isActivity: this.data.conversionIsActivity,
         preferredStaffWfId: this.data.preferredStaffWfId || undefined,
         remark: remark || undefined,

@@ -39,6 +39,7 @@ vi.mock('@db/user', () => ({
   staffWechatUsers: {
     employeeId: 'employee_id',
     name: 'name',
+    storeId: 'staff_store_id',
   },
 }))
 
@@ -66,6 +67,7 @@ vi.mock('@/lib/auth', () => ({
 
 vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
+  isAdminScope: vi.fn(() => true),
 }))
 
 vi.mock('@/lib/operation-log', () => ({
@@ -100,6 +102,7 @@ vi.mock('drizzle-orm/pg-core', () => ({
 
 import {
   batchSendMessages,
+  getMessagesPaginated,
   getCustomersForBatchMessage,
   getOrgNodesForBatchMessage,
   deleteMessage,
@@ -107,6 +110,8 @@ import {
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { logOperation } from '@/lib/operation-log'
+import { eq } from 'drizzle-orm'
+import { isAdminScope } from '@/lib/permissions'
 
 const mockSession = {
   employeeId: 'ADMIN-001',
@@ -119,6 +124,7 @@ const mockSession = {
  * 按 `queue` 顺序依次返回链式对象，终端（where / limit / orderBy）resolve 成 rows。
  */
 type SelectStep =
+  | { terminal: 'from'; rows: any[] }
   | { terminal: 'where'; rows: any[] }
   | { terminal: 'limit'; rows: any[] }
   | { terminal: 'orderBy'; rows: any[] }
@@ -134,7 +140,7 @@ function enqueueSelect(steps: SelectStep[]) {
     const chain: any = {}
     const terminalFn = vi.fn().mockResolvedValue(step.rows)
 
-    chain.from = vi.fn().mockReturnValue(chain)
+    chain.from = step.terminal === 'from' ? terminalFn : vi.fn().mockReturnValue(chain)
     chain.leftJoin = vi.fn().mockReturnValue(chain)
     chain.innerJoin = vi.fn().mockReturnValue(chain)
     chain.where = step.terminal === 'where' ? terminalFn : vi.fn().mockReturnValue(chain)
@@ -344,13 +350,9 @@ describe('batchSendMessages — 筛选投递 filters', () => {
   })
 
   it('filters orgNodeId=门店 → 解析为单门店 storeId → count → 展开', async () => {
-    // 1) resolveOrgNodeToStoreIds: 查节点类型 → 门店
-    // 2) resolveOrgNodeToStoreIds: 查该节点对应 storeId
-    // 3) count 查询
-    // 4) 展开 userId 列表
     enqueueSelect([
-      { terminal: 'limit', rows: [{ type: '门店', parentId: 'market-1' }] },
-      { terminal: 'limit', rows: [{ storeId: 'S-001' }] },
+      { terminal: 'from', rows: [{ id: 'store-node-1', type: '门店', parentId: 'market-1' }] },
+      { terminal: 'from', rows: [{ storeId: 'S-001', orgNodeId: 'store-node-1' }] },
       { terminal: 'where', rows: [{ count: 1 }] },
       { terminal: 'where', rows: [{ userId: 'U-001' }] },
     ])
@@ -366,11 +368,9 @@ describe('batchSendMessages — 筛选投递 filters', () => {
   })
 
   it('filters orgNodeId=门店节点无对应 store → 拒绝（空筛选）', async () => {
-    // 1) 查节点类型 → 门店
-    // 2) 查 storeId → 返回空
     enqueueSelect([
-      { terminal: 'limit', rows: [{ type: '门店', parentId: 'market-1' }] },
-      { terminal: 'limit', rows: [] },
+      { terminal: 'from', rows: [{ id: 'orphan-store', type: '门店', parentId: 'market-1' }] },
+      { terminal: 'from', rows: [] },
     ])
     const result = await batchSendMessages({
       title: '通知',
@@ -420,12 +420,24 @@ describe('getCustomersForBatchMessage', () => {
     expect(result.data[1].storeName).toBeNull()
   })
 
-  it('orgNodeId=市场 → 展开为多门店 → 正常返回', async () => {
+  it('orgNodeId=市场 → 展开任意层级下属门店 → 正常返回', async () => {
     enqueueSelect([
-      // resolveOrgNodeToStoreIds: 查节点 → 市场类型
-      { terminal: 'limit', rows: [{ type: '市场', parentId: null }] },
-      // resolveOrgNodeToStoreIds: innerJoin 查该市场下 storeIds
-      { terminal: 'where', rows: [{ storeId: 'S-001' }, { storeId: 'S-002' }] },
+      {
+        terminal: 'from',
+        rows: [
+          { id: 'market-1', type: '市场', parentId: null },
+          { id: 'nested-unit', type: '部门', parentId: 'market-1' },
+          { id: 'store-node-1', type: '门店', parentId: 'nested-unit' },
+          { id: 'store-node-2', type: '门店', parentId: 'market-1' },
+        ],
+      },
+      {
+        terminal: 'from',
+        rows: [
+          { storeId: 'S-001', orgNodeId: 'store-node-1' },
+          { storeId: 'S-002', orgNodeId: 'store-node-2' },
+        ],
+      },
       // count
       { terminal: 'where', rows: [{ count: 1 }] },
       // 列表
@@ -450,8 +462,8 @@ describe('getCustomersForBatchMessage', () => {
 
   it('orgNodeId 无效节点 → 当作不过滤继续查询', async () => {
     enqueueSelect([
-      // resolveOrgNodeToStoreIds: 查节点 → 未找到（返回 null 等价于不过滤）
-      { terminal: 'limit', rows: [] },
+      { terminal: 'from', rows: [] },
+      { terminal: 'from', rows: [] },
       // count
       { terminal: 'where', rows: [{ count: 0 }] },
       // 列表
@@ -460,6 +472,32 @@ describe('getCustomersForBatchMessage', () => {
     const result = await getCustomersForBatchMessage({ orgNodeId: 'ghost' })
     expect(result.total).toBe(0)
     expect(result.data).toEqual([])
+  })
+})
+
+// ── getMessagesPaginated — 门店范围 ──────────────────────────────────
+
+describe('getMessagesPaginated — 门店范围', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('使用已展开的 scopeStoreIds，并同时限制客户和员工接收人', async () => {
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      roles: [{ role: 'manager', scopeId: 'market-node-1', scopeType: '市场' }],
+      permissions: { actions: ['message:list'], scopeStoreIds: ['store-allowed'] },
+    })
+    ;(isAdminScope as any).mockReturnValueOnce(false)
+    enqueueSelect([
+      { terminal: 'where', rows: [{ count: 0 }] },
+      { terminal: 'offset', rows: [] },
+    ])
+
+    await getMessagesPaginated({ page: 1 })
+
+    expect(eq).toHaveBeenCalledWith('bound_store_id', 'store-allowed')
+    expect(eq).toHaveBeenCalledWith('staff_store_id', 'store-allowed')
   })
 })
 

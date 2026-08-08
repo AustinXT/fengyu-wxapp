@@ -148,6 +148,7 @@ export default function OrgPage({ orgNodes: allOrgNodes, canDelete }: { orgNodes
   const [formSortOrder, setFormSortOrder] = useState(0)
   const [formIsActive, setFormIsActive] = useState(true)
   const [submitting, setSubmitting] = useState(false)
+  const [parentIdChanged, setParentIdChanged] = useState(false)
 
   const rootNodes = useMemo(
     () =>
@@ -175,6 +176,49 @@ export default function OrgPage({ orgNodes: allOrgNodes, canDelete }: { orgNodes
     [dialogParentId, orgNodes]
   )
 
+  // 获取所有子孙节点 ID（用于排除循环引用）
+  const getDescendantIds = (nodeId: string): Set<string> => {
+    const descendants = new Set<string>()
+    const queue = [nodeId]
+    while (queue.length > 0) {
+      const current = queue.shift()!
+      descendants.add(current)
+      const children = orgNodes.filter((n) => n.parentId === current)
+      children.forEach((child) => queue.push(child.id))
+    }
+    return descendants
+  }
+
+  // 可选的父节点列表（编辑模式下排除自己和自己的子孙）
+  const availableParentNodes = useMemo(() => {
+    if (dialogMode === "create") {
+      return orgNodes
+    }
+    // 编辑模式：排除自己和所有子孙节点
+    if (!editingNode) return orgNodes
+    const excludeIds = getDescendantIds(editingNode.id)
+    return orgNodes.filter((n) => !excludeIds.has(n.id))
+  }, [dialogMode, editingNode, orgNodes])
+
+  // 根据选中的父节点和类型，过滤合法的父节点选项
+  const validParentOptions = useMemo(() => {
+    const nodes = availableParentNodes.filter((n) => {
+      // 总部只能有一个，作为根节点
+      if (formType === "总部") return false
+      // 市场只能在总部下
+      if (formType === "市场") return n.type === "总部"
+      // 门店只能在市场下
+      if (formType === "门店") return n.type === "市场"
+      // 部门可以在总部、市场、门店下，但不能在部门下
+      if (formType === "部门") return n.type !== "部门"
+      return true
+    })
+
+    // 添加"（无）"选项（仅总部可以无父节点，但总部已经在上面被过滤了）
+    // 对于其他类型，不允许无父节点
+    return nodes
+  }, [availableParentNodes, formType])
+
   const openCreateDialog = (parentId: string | null) => {
     setDialogMode("create")
     setDialogParentId(parentId)
@@ -183,6 +227,7 @@ export default function OrgPage({ orgNodes: allOrgNodes, canDelete }: { orgNodes
     setFormType("部门")
     setFormSortOrder(0)
     setFormIsActive(true)
+    setParentIdChanged(false)
     setDialogOpen(true)
   }
 
@@ -194,6 +239,7 @@ export default function OrgPage({ orgNodes: allOrgNodes, canDelete }: { orgNodes
     setFormType(node.type)
     setFormSortOrder(node.sortOrder)
     setFormIsActive(node.isActive)
+    setParentIdChanged(false)
     setDialogOpen(true)
   }
 
@@ -234,12 +280,17 @@ export default function OrgPage({ orgNodes: allOrgNodes, canDelete }: { orgNodes
         }
         setSelectedId(newId)
       } else if (editingNode) {
-        const orgResult = await updateOrgNode(editingNode.id, {
+        const updateData: any = {
           name: formName.trim(),
           type: formType,
           sortOrder: formSortOrder,
           isActive: formIsActive,
-        }, editingNode.updatedAt)
+        }
+        // 只有在 parentId 发生变化时才传递（避免不必要的验证）
+        if (parentIdChanged) {
+          updateData.parentId = dialogParentId
+        }
+        const orgResult = await updateOrgNode(editingNode.id, updateData, editingNode.updatedAt)
         if (!orgResult.success) {
           toast.error(orgResult.message)
           if (orgResult.message.includes("已被其他人修改")) router.refresh()
@@ -428,9 +479,30 @@ export default function OrgPage({ orgNodes: allOrgNodes, canDelete }: { orgNodes
         <div className="space-y-4 mt-4">
           <div>
             <label className="text-sm text-[var(--muted-foreground)]">上级节点</label>
-            <div className="mt-1 text-sm font-medium px-3 py-2 rounded-[var(--radius)] border border-[var(--input)] bg-[var(--muted)] text-[var(--muted-foreground)]">
-              {dialogParentNode ? dialogParentNode.name : "（无）"}
-            </div>
+            {dialogMode === "create" ? (
+              <div className="mt-1 text-sm font-medium px-3 py-2 rounded-[var(--radius)] border border-[var(--input)] bg-[var(--muted)] text-[var(--muted-foreground)]">
+                {dialogParentNode ? dialogParentNode.name : "（无）"}
+              </div>
+            ) : (
+              <Select
+                className="mt-1"
+                value={dialogParentId ?? ""}
+                onChange={(e) => {
+                  const newParentId = e.target.value || null
+                  setDialogParentId(newParentId)
+                  setParentIdChanged(newParentId !== editingNode?.parentId)
+                }}
+              >
+                {formType === "总部" && (
+                  <option value="">（无）</option>
+                )}
+                {validParentOptions.map((node) => (
+                  <option key={node.id} value={node.id}>
+                    {node.name}
+                  </option>
+                ))}
+              </Select>
+            )}
           </div>
           <div>
             <label className="text-sm text-[var(--muted-foreground)]">

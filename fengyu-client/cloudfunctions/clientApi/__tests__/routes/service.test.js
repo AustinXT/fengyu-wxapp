@@ -23,6 +23,7 @@ describe('service.detail', () => {
       service_item_id: 'SVI-001', sale_item_id: 'SI-001',
       session_used: 1, employee_id: 'emp-1',
       product_name: '美白护理',
+      unit: '次',
     }])
 
     const ctx = createBoundCtx({ serviceOrderId: 'SVC-001' })
@@ -31,6 +32,7 @@ describe('service.detail', () => {
     expect(ctx.result.serviceOrder.service_order_id).toBe('SVC-001')
     expect(ctx.result.items).toHaveLength(1)
     expect(ctx.result.items[0].product_name).toBe('美白护理')
+    expect(ctx.result.items[0].unit).toBe('次')
   })
 
   test('缺少 serviceOrderId → INVALID_PARAMS', async () => {
@@ -72,6 +74,7 @@ describe('service.list', () => {
         session_used: 1, service_duration: 90,
         session_count: 10, remaining_sessions: 9, paid_sessions: 10,
         product_name: '深层清洁护理',
+        unit: '次',
       },
     ])
 
@@ -90,6 +93,7 @@ describe('service.list', () => {
       session_count: 10,
       remaining_sessions: 9,
       paid_sessions: 10,
+      unit: '次',
     })
   })
 

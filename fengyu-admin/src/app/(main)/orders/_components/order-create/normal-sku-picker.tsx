@@ -139,7 +139,7 @@ export function NormalSkuPicker({ groups, kindLabel, onAdd, buyerIsMember }: Nor
                     </div>
                     <Separator />
                     <div className="flex items-center justify-between">
-                      <span className="text-xs text-[#999999]">{sku.productType}{sku.sessionCount ? ` · ${sku.sessionCount}次` : ''}</span>
+                      <span className="text-xs text-[#999999]">{sku.productType}{sku.sessionCount ? ` · ${sku.sessionCount}${sku.unit}` : ` · ${sku.unit}`}</span>
                       <Button
                         size="sm"
                         variant="outline"

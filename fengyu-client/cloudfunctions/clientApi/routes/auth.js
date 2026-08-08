@@ -275,11 +275,32 @@ async function generateUserId() {
  */
 async function bindStore(ctx) {
   const { OPENID } = cloud.getWXContext()
-  const { storeId, sourceChannel, promoterEmployeeId } = ctx.event.payload
+  const payload = ctx.event.payload || {}
+  const { storeId, sourceChannel, promoterEmployeeName, promoterEmployeeId } = payload
 
   // 参数校验
   if (!storeId) {
     throw new Error('INVALID_PARAMS: 缺少 storeId 参数')
+  }
+  if (promoterEmployeeName !== undefined && typeof promoterEmployeeName !== 'string') {
+    throw new Error('INVALID_PARAMS: 推荐人姓名格式不正确')
+  }
+  if (promoterEmployeeId !== undefined && typeof promoterEmployeeId !== 'string') {
+    throw new Error('INVALID_PARAMS: 推荐人姓名格式不正确')
+  }
+  const normalizedPromoterEmployeeName = promoterEmployeeName?.trim()
+  const normalizedLegacyPromoterEmployeeName = promoterEmployeeId?.trim()
+  if (
+    normalizedPromoterEmployeeName
+    && normalizedLegacyPromoterEmployeeName
+    && normalizedPromoterEmployeeName !== normalizedLegacyPromoterEmployeeName
+  ) {
+    throw new Error('INVALID_PARAMS: 两个推荐人字段内容不一致')
+  }
+  // 兼容已发布小程序的旧字段；两者都按推荐人姓名处理，待客户端覆盖后移除。
+  const normalizedPromoterName = normalizedPromoterEmployeeName || normalizedLegacyPromoterEmployeeName
+  if (normalizedPromoterName && normalizedPromoterName.length > 50) {
+    throw new Error('INVALID_PARAMS: 推荐人姓名不能超过50个字符')
   }
 
   // 查询当前用户
@@ -312,16 +333,16 @@ async function bindStore(ctx) {
   const marketName = storeCheck[0].market_name || null
   const now = new Date()
 
-  // 更新绑定门店（含可选的来源渠道和推荐人）
+  // 更新绑定门店（含可选的来源渠道和推荐人姓名）
   const setClauses = ['bound_store_id = $1', 'updated_at = $2']
   const params = [storeId, now]
   if (sourceChannel) {
     params.push(sourceChannel)
     setClauses.push(`customer_source = $${params.length}`)
   }
-  if (promoterEmployeeId) {
-    params.push(promoterEmployeeId)
-    setClauses.push(`promoter_employee_id = $${params.length}`)
+  if (normalizedPromoterName) {
+    params.push(normalizedPromoterName)
+    setClauses.push(`promoter_employee_name = $${params.length}`)
   }
   params.push(users[0].user_id)
   await pg.query(

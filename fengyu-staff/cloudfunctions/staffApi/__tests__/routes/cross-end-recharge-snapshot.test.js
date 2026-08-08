@@ -24,6 +24,7 @@ const FILES = {
   staffRecharge: path.resolve(__dirname, '../../utils/recharge.js'),
   clientCard: path.resolve(REPO_ROOT, 'fengyu-client/cloudfunctions/clientApi/routes/card.js'),
   adminRecharge: path.resolve(REPO_ROOT, 'fengyu-admin/src/lib/recharge.ts'),
+  rechargeTierMigrationSql: path.resolve(REPO_ROOT, 'db/migrations/0001_recharge_tier_defaults.sql'),
   // matchTier 纯逻辑（含 INVALID_PARAMS 金额校验）2026-05-21 拆到 recharge-tier.ts，
   // recharge.ts 仅 re-export matchTier + 保留 loadRechargeConfig（INVALID_STATE 配置校验）
   adminRechargeTier: path.resolve(REPO_ROOT, 'fengyu-admin/src/lib/recharge-tier.ts'),
@@ -64,6 +65,16 @@ describe('跨端 recharge config key 引用守护', () => {
   })
 })
 
+describe('充值档位数据迁移守护', () => {
+  test('0001_recharge_tier_defaults.sql 写入三个必需的 recharge.* 默认值', () => {
+    const migration = readFile(FILES.rechargeTierMigrationSql)
+    expect(migration).toContain("('recharge.tiers', '[{\"faceValue\":500,\"payAmount\":495},{\"faceValue\":1000,\"payAmount\":980},{\"faceValue\":5000,\"payAmount\":4750}]')")
+    expect(migration).toContain("('recharge.minAmount', '500')")
+    expect(migration).toContain("('recharge.maxAmount', '100000')")
+    expect(migration).toContain('ON CONFLICT ("key") DO UPDATE')
+  })
+})
+
 describe('跨端 matchTier 错误信息字面一致性', () => {
   test.each(EXPECTED_ERROR_MESSAGES)('staff utils/recharge.js 含 "%s"', (msg) => {
     expect(readFile(FILES.staffRecharge)).toContain(msg)
@@ -93,7 +104,7 @@ describe('跨端 loadRechargeConfig INVALID_STATE 错误前缀一致性', () => 
 })
 
 describe('staff/client 后端 matchTier 算法行为等价（require + 数值断言）', () => {
-  // 三端 system_configs 种子镜像（migration 0043_pretty_shaman.sql）
+  // 三端 system_configs 种子镜像（0001_recharge_tier_defaults.sql）
   const CFG = {
     tiers: [
       { faceValue: 500, payAmount: 495 },

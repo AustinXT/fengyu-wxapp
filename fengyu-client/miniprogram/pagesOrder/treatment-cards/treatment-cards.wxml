@@ -56,8 +56,8 @@
           <view class="progress-seg progress-seg--unpaid" style="width: {{item.unpaidPct}}%"></view>
         </view>
         <view class="progress-info">
-          <text class="progress-used">已用 {{item.usedSessions}} / 已付 {{item.paidSessionsNull ? '—' : item.paidSessions}} / 共 {{item.sessionCount}} 次</text>
-          <text class="progress-remain">剩余 <text class="progress-remain__num {{item.active ? '' : 'progress-remain__num--inactive'}}">{{item.paidUnusedSessions}}</text> 次</text>
+          <text class="progress-used">已用 {{item.usedSessions}} / 已付 {{item.paidSessionsNull ? '—' : item.paidSessions}} / 共 {{item.sessionCount}} {{item.unit || '次'}}</text>
+          <text class="progress-remain">剩余 <text class="progress-remain__num {{item.active ? '' : 'progress-remain__num--inactive'}}">{{item.paidUnusedSessions}}</text> {{item.unit || '次'}}</text>
         </view>
       </view>
 

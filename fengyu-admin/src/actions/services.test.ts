@@ -84,7 +84,7 @@ vi.mock('drizzle-orm', () => ({
   isNotNull: vi.fn((col) => ({ type: 'isNotNull', col })),
   notExists: vi.fn((subq) => ({ type: 'notExists', subq })),
   inArray: vi.fn((a, b) => ({ type: 'inArray', a, b })),
-  sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn() }),
+  sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn(), join: vi.fn(() => ({})) }),
 }))
 
 vi.mock('@/lib/auth', () => ({
@@ -141,6 +141,27 @@ function setupUpdate(count: number) {
   ;(db.update as any).mockReturnValue({ set })
 }
 
+function mockStartTx(count: number, lockRows: any[] = [], reservedRows: any[] = []) {
+  const execute = vi.fn()
+    .mockResolvedValueOnce(lockRows)
+    .mockResolvedValueOnce(reservedRows)
+    .mockResolvedValue([])
+  const where = vi.fn().mockResolvedValue({ count })
+  const set = vi.fn().mockReturnValue({ where })
+  const update = vi.fn().mockReturnValue({ set })
+  ;(db.transaction as any).mockImplementation(async (fn: any) => fn({ execute, update }))
+  return { execute, update }
+}
+
+function mockCancelTx(count: number) {
+  const execute = vi.fn().mockResolvedValue([])
+  const where = vi.fn().mockResolvedValue({ count })
+  const set = vi.fn().mockReturnValue({ where })
+  const update = vi.fn().mockReturnValue({ set })
+  ;(db.transaction as any).mockImplementation(async (fn: any) => fn({ execute, update }))
+  return { execute, update }
+}
+
 /** select chain: .from().leftJoin().innerJoin().where().limit() 或 .from().where()（直接 await） */
 function makeSelectChain(result: any[]) {
   const chain: any = Object.assign(Promise.resolve(result), {
@@ -194,7 +215,7 @@ describe('startServiceOrder — scope + 状态推进', () => {
   })
 
   it('rowCount=0（状态已变更或 scope 不符）→ 失败', async () => {
-    setupUpdate(0)
+    mockStartTx(0)
 
     const result = await startServiceOrder('svc-1')
 
@@ -203,18 +224,35 @@ describe('startServiceOrder — scope + 状态推进', () => {
   })
 
   it('rowCount=1 → 成功', async () => {
-    setupUpdate(1)
+    const tx = mockStartTx(1)
 
     const result = await startServiceOrder('svc-1')
 
     expect(result.success).toBe(true)
     expect(result.message).toContain('服务已开始')
+    expect(tx.execute).toHaveBeenCalledTimes(2)
+  })
+
+  it('已有服务预扣占满次数时拒绝，不推进状态也不写入本单预扣', async () => {
+    const tx = mockStartTx(1, [{
+      sale_item_id: 'item-1',
+      session_used: 1,
+      remaining_sessions: 1,
+      session_count: 1,
+      paid_sessions: 1,
+      product_type: '疗程卡',
+    }], [{ sale_item_id: 'item-1', total_reserved: 1 }])
+
+    const result = await startServiceOrder('svc-1')
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('可用次数不足')
+    expect(tx.update).not.toHaveBeenCalled()
+    expect(tx.execute).toHaveBeenCalledTimes(2)
   })
 
   it('DB 异常 → 返回友好错误', async () => {
-    const where = vi.fn().mockRejectedValue(new Error('connection lost'))
-    const set = vi.fn().mockReturnValue({ where })
-    ;(db.update as any).mockReturnValue({ set })
+    ;(db.transaction as any).mockRejectedValue(new Error('connection lost'))
 
     const result = await startServiceOrder('svc-1')
     expect(result.success).toBe(false)
@@ -232,17 +270,18 @@ describe('cancelServiceOrder — scope + 状态守卫', () => {
   })
 
   it('待服务 → 取消成功', async () => {
-    setupUpdate(1)
+    const tx = mockCancelTx(1)
 
     const result = await cancelServiceOrder('svc-1')
 
     expect(result.success).toBe(true)
     expect(result.message).toContain('服务已取消')
+    expect(tx.execute).toHaveBeenCalledOnce()
   })
 
   it('服务中 → 取消成功（口径对齐 staff 三态）', async () => {
     mockSelectBefore([{ status: '服务中', customerName: '李女士' }])
-    setupUpdate(1)
+    mockCancelTx(1)
 
     const result = await cancelServiceOrder('svc-1')
 
@@ -252,7 +291,7 @@ describe('cancelServiceOrder — scope + 状态守卫', () => {
 
   it('待客户确认 → 取消成功（口径对齐 staff 三态）', async () => {
     mockSelectBefore([{ status: '待客户确认', customerName: '李女士' }])
-    setupUpdate(1)
+    mockCancelTx(1)
 
     const result = await cancelServiceOrder('svc-1')
 
@@ -279,18 +318,17 @@ describe('cancelServiceOrder — scope + 状态守卫', () => {
   })
 
   it('rowCount=0（并发状态变更）→ 失败', async () => {
-    setupUpdate(0)
+    const tx = mockCancelTx(0)
 
     const result = await cancelServiceOrder('svc-1')
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('状态已变更')
+    expect(tx.execute).not.toHaveBeenCalled()
   })
 
   it('DB 异常 → 返回友好错误', async () => {
-    const where = vi.fn().mockRejectedValue(new Error('connection lost'))
-    const set = vi.fn().mockReturnValue({ where })
-    ;(db.update as any).mockReturnValue({ set })
+    ;(db.transaction as any).mockRejectedValue(new Error('connection lost'))
 
     const result = await cancelServiceOrder('svc-1')
     expect(result.success).toBe(false)
@@ -404,7 +442,8 @@ describe('confirmServiceOrder — scope + 扣减 + paid_sessions 限额 + 服务
   function mockConfirmTx(cteRow: { status_updated: number; items_deducted: number; items_total: number }) {
     const spy = { execute: null as any }
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
-      spy.execute = vi.fn().mockResolvedValueOnce([cteRow]).mockResolvedValue([] as any)
+      // 先锁 sale_items，再执行 CTE；成功时第三次调用才释放 reserved_at。
+      spy.execute = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([cteRow]).mockResolvedValue([] as any)
       return fn({ execute: spy.execute })
     })
     return spy
@@ -438,6 +477,18 @@ describe('confirmServiceOrder — scope + 扣减 + paid_sessions 限额 + 服务
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('已支付次数不足')
+  })
+
+  it('同一卡多条服务明细按 sale_item_id 汇总后只扣减一次', () => {
+    const source = readFileSync('src/actions/services.ts', 'utf8')
+    const fnSource = source.slice(source.indexOf('export const confirmServiceOrder'), source.indexOf('/** C4: 取消服务'))
+
+    expect(fnSource).toContain('service_totals AS')
+    expect(fnSource).toContain('SUM(session_used) AS session_used')
+    expect(fnSource).toContain('GROUP BY sale_item_id')
+    expect(fnSource).toContain('FROM service_totals totals')
+    expect(fnSource).toContain('remaining_sessions = remaining_sessions - totals.session_used')
+    expect(fnSource).toContain('SELECT COUNT(*) AS n FROM service_totals')
   })
 
   it('全部行成功扣减（items_deducted = items_total）→ 确认完成 + 事务内写服务提成（M1）', async () => {
@@ -984,7 +1035,7 @@ describe('exportAllocationServiceOrders — 三态导出 + 派生列 + 全量返
     saleOrderType: '销售单', serviceOrderType: '售后',
     customerName: '王女士', customerPhone: null, fallbackPhone: '13151094335',
     productType: '疗程卡', categoryL1: '护理项目', categoryL2: '圣源养心',
-    productName: '【王牌】疼痛管理', sessionUsed: 1, unitRealPrice: '300.00',
+    productName: '【王牌】疼痛管理', sessionUsed: 1, skuUnit: '疗程', unitRealPrice: '300.00',
     status: '已完成',
     employeeName: '王雯馨', positionName: '美容师',
     allocationRatio: '0.30', commissionRate: '0.1500', commissionAmount: '162.00',
@@ -1035,6 +1086,7 @@ describe('exportAllocationServiceOrders — 三态导出 + 派生列 + 全量返
     expect(r.customerPhone).toBe('13151094335') // 回退来源销售单 client_phone
     expect(r.consumeMoney).toBe(300) // 单次价 × 消耗次数
     expect(r.unitRealPrice).toBe(300)
+    expect(r.unit).toBe('疗程')
     expect(r.allocationAmount).toBe(90) // 消耗金额 × 分配占比
     expect(r.commissionAmount).toBe(162)
     expect(r.allocationRatio).toBe('0.30')
@@ -1129,7 +1181,7 @@ describe('exportServiceOrders — 服务单管理页消耗项目主表导出', (
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  it('产出 24 列消耗项目主表行 + 派生列 consumeMoney（无员工提成维度）', async () => {
+  it('产出 25 列消耗项目主表行 + 派生列 consumeMoney（无员工提成维度）', async () => {
     ;(db.select as any).mockImplementation(
       makeSelectChain([
         {
@@ -1146,6 +1198,7 @@ describe('exportServiceOrders — 服务单管理页消耗项目主表导出', (
           categoryL2: '圣源养心',
           productName: '【王牌】疼痛管理',
           sessionUsed: 1,
+          skuUnit: '次',
           unitRealPrice: '300.00',
           status: '已完成',
           rating: 5,
@@ -1168,6 +1221,7 @@ describe('exportServiceOrders — 服务单管理页消耗项目主表导出', (
     expect(r.market).toBe('九江')
     // 派生列：项目消耗金额 = 单次价 × 次数
     expect(r.consumeMoney).toBe(300)
+    expect(r.unit).toBe('次')
     // 主表已移除员工提成维度（提成分配明细改由 exportAllocationServiceOrders 承担）
     expect((r as any).employeeName).toBeUndefined()
     expect((r as any).allocationAmount).toBeUndefined()
@@ -1186,15 +1240,15 @@ describe('exportServiceOrders — 服务单管理页消耗项目主表导出', (
 
   // 回归守护：exportServiceOrders 为消耗项目主表（service_items 主链），不含员工提成维度列。
   // 若有人手贱加回提成列或回滚到 service_commissions 主链，下列断言失败。
-  it('回归守护：24 列消耗项目主表 shape（无员工提成维度，有 consumeMoney）', async () => {
+  it('回归守护：25 列消耗项目主表 shape（无员工提成维度，有 consumeMoney）', async () => {
     ;(db.select as any).mockImplementation(makeSelectChain([]))
     const { rows } = await exportServiceOrders({})
     expect(rows).toEqual([])
-    // 主表级列集合（24 列，与 services-page.tsx 导出列一一对应）
+    // 主表级列集合（25 列，与 services-page.tsx 导出列一一对应）
     const expectedColumns = [
       'market', 'storeName', 'serviceOrderId', 'saleOrderType', 'serviceOrderType',
       'customerName', 'customerPhone', 'productType', 'categoryL1', 'categoryL2',
-      'productName', 'sessionUsed', 'consumeMoney', 'unitRealPrice', 'status',
+      'productName', 'sessionUsed', 'unit', 'consumeMoney', 'unitRealPrice', 'status',
       'salesCategory', 'customerType', 'reviewComment', 'rating',
       'openedByName', 'sourceSaleOrderId', 'serviceDate', 'createdAt', 'remark',
     ]
@@ -1206,7 +1260,7 @@ describe('exportServiceOrders — 服务单管理页消耗项目主表导出', (
           market: null, storeName: null, serviceOrderId: 'SO1', saleOrderType: null, serviceOrderType: null,
           customerName: null, customerPhone: null, fallbackPhone: null,
           productType: null, categoryL1: null, categoryL2: null, productName: null,
-          sessionUsed: null, unitRealPrice: null, status: null,
+          sessionUsed: null, skuUnit: null, unitRealPrice: null, status: null,
           rating: null, reviewComment: null,
           salesCategory: null, customerType: null, openedByName: null,
           sourceSaleOrderId: null, serviceDate: null, createdAt: null, remark: null,

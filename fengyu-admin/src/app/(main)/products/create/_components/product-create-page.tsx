@@ -31,6 +31,8 @@ export default function SkuCreatePageClient({
   const router = useRouter()
   const [saving, setSaving] = useState(false)
   const [categoryId, setCategoryId] = useState("")
+  const [productType, setProductType] = useState<"" | "疗程卡" | "家居产品">("")
+  const [unit, setUnit] = useState("")
   const [formDirty, setFormDirty] = useState(false)
   useUnsavedChanges(formDirty)
 
@@ -48,6 +50,12 @@ export default function SkuCreatePageClient({
     setFormDirty(true)
   }
 
+  const handleProductTypeChange = (value: "疗程卡" | "家居产品") => {
+    setProductType(value)
+    setUnit(value === "家居产品" ? "盒" : "次")
+    setFormDirty(true)
+  }
+
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     const form = e.currentTarget
@@ -56,6 +64,7 @@ export default function SkuCreatePageClient({
     const specName = (fd.get("specName") as string).trim()
     const productType = fd.get("productType") as string
     const price = (fd.get("price") as string).trim()
+    const unit = (fd.get("unit") as string).trim()
 
     if (!specName) {
       toast.error("请输入商品名称")
@@ -71,6 +80,10 @@ export default function SkuCreatePageClient({
     }
     if (!price) {
       toast.error("请输入标价")
+      return
+    }
+    if (!unit) {
+      toast.error("请输入单位")
       return
     }
 
@@ -98,6 +111,7 @@ export default function SkuCreatePageClient({
         price,
         specialPrice,
         sessionCount,
+        unit,
         purchaseLimit,
         sortOrder,
         serviceFee,
@@ -105,7 +119,7 @@ export default function SkuCreatePageClient({
         isExperience,
         isManagerSpecial,
         projectSeriesId,
-        marketScope: allMarkets ? null : (selectedMarketIds.length > 0 ? selectedMarketIds.join(',') : null),
+        marketScope: allMarkets ? null : (selectedMarketIds.length > 0 ? selectedMarketIds.join(',') : ""),
         isEnabled,
       })
       if (!result.success) {
@@ -153,7 +167,11 @@ export default function SkuCreatePageClient({
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">产品类型</label>
-              <Select name="productType" defaultValue="">
+              <Select
+                name="productType"
+                value={productType}
+                onChange={(e) => handleProductTypeChange(e.target.value as "疗程卡" | "家居产品")}
+              >
                 <option value="" disabled>请选择</option>
                 <option value="疗程卡">疗程卡</option>
                 <option value="家居产品">家居产品</option>
@@ -216,16 +234,26 @@ export default function SkuCreatePageClient({
         </CardContent>
       </Card>
 
-      {/* 次数与排序 */}
+      {/* 疗程数量、单位与排序 */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">次数与排序</CardTitle>
+          <CardTitle className="text-base">疗程数量、单位与排序</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium">次数</label>
-              <Input name="sessionCount" type="number" min={1} placeholder="疗程卡不填默认 1 次" />
+              <label className="text-sm font-medium">疗程数量</label>
+              <Input name="sessionCount" type="number" min={1} placeholder={`疗程卡不填默认 1${unit || "次"}`} />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">单位</label>
+              <Input
+                name="unit"
+                value={unit}
+                maxLength={10}
+                placeholder="选择产品类型后自动填写"
+                onChange={(e) => setUnit(e.target.value)}
+              />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">限购次数</label>

@@ -807,161 +807,17 @@ describe('getEmployeesPaginated — 服务端分页', () => {
     expect(result.data[0].marketName).toBeUndefined()
   })
 
-  it('marketId 筛选（市场类型） → 部门候选父节点含市场本身 + 其下门店节点，且直挂市场节点的员工也纳入', async () => {
-    // 修复 M2：市场筛选的部门候选父节点须与 expandScopeDeptNodeIds 市场分支同口径，
-    // 即 [市场, ...该市场下门店节点]，否则门店级部门员工（store_id IS NULL）会凭空消失。
-    // 修复（同源）：or 条件须补 eq(org_node_id, marketId)，覆盖 org_node_id 直接 = 市场节点
-    // 本身的员工（品项公司等无子节点市场 / 市场级岗位，store_id IS NULL），否则 storeSub 与
-    // deptSub 均空时条件永假 → 「品项公司」筛选列表全空。与「部门」分支 eq(orgNodeId, marketId) 对等。
-    // 调用顺序：node 类型 → storeSub 子查询 → storeNodesUnder 实查 → deptSub 子查询 → COUNT → DATA
-    let callIndex = 0
-    ;(db.select as any).mockImplementation(() => {
-      callIndex++
-      if (callIndex === 1) {
-        // 查询节点类型: select → from → where → limit
-        const limit = vi.fn().mockResolvedValue([{ type: '市场' }])
-        const where = vi.fn().mockReturnValue({ limit })
-        const from = vi.fn().mockReturnValue({ where })
-        return { from }
-      }
-      if (callIndex === 2) {
-        // storeSub: 该市场下门店子查询 select → from → innerJoin → where
-        const subWhere = vi.fn().mockReturnValue({ _subquery: true })
-        const innerJoin = vi.fn().mockReturnValue({ where: subWhere })
-        const from = vi.fn().mockReturnValue({ innerJoin })
-        return { from }
-      }
-      if (callIndex === 3) {
-        // storeNodesUnder: 该市场下门店节点实查 select → from → where（无 limit，直接 resolve）
-        const where = vi.fn().mockResolvedValue([{ id: 'store-node-under-market' }])
-        const from = vi.fn().mockReturnValue({ where })
-        return { from }
-      }
-      if (callIndex === 4) {
-        // deptSub: 部门子查询 select → from → where（inArray parentId, candidateParents）
-        const subWhere = vi.fn().mockReturnValue({ _subquery: true })
-        const from = vi.fn().mockReturnValue({ where: subWhere })
-        return { from }
-      }
-      if (callIndex === 5) {
-        // COUNT query
-        const where = vi.fn().mockResolvedValue([{ count: 0 }])
-        const from = vi.fn().mockReturnValue({ where })
-        return { from }
-      }
-      // DATA query: select → from → leftJoin × 4 → where → orderBy → limit → offset
-      const offset = vi.fn().mockResolvedValue([])
-      const limit = vi.fn().mockReturnValue({ offset })
-      const orderBy = vi.fn().mockReturnValue({ limit })
-      const where = vi.fn().mockReturnValue({ orderBy })
-      const leftJoin4 = vi.fn().mockReturnValue({ where })
-      const leftJoin3 = vi.fn().mockReturnValue({ leftJoin: leftJoin4 })
-      const leftJoin2 = vi.fn().mockReturnValue({ leftJoin: leftJoin3 })
-      const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
-      const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
-      return { from }
-    })
+  it('组织筛选覆盖节点自身及任意层级下属员工和门店', async () => {
+    mockPaginatedChain(0, [])
 
     await getEmployeesPaginated({ marketId: 'market-1' })
 
-    // 门店路径（store_id）+ 部门路径（org_node_id）的 inArray 均被调用
-    expect(inArray).toHaveBeenCalledWith('store_id', expect.anything())
-    // M2 核心语义：部门候选父节点 candidateParents 必须含市场本身 + 该市场下门店节点 id，
-    // 使「门店级部门」员工同样命中（旧代码只 eq parentId=marketId 漏掉门店级部门）。
-    expect(inArray).toHaveBeenCalledWith(
-      'parent_id',
-      expect.arrayContaining(['market-1', 'store-node-under-market']),
-    )
-    // 同源修复：直挂市场节点的员工须纳入（eq org_node_id = marketId）。
-    expect(eq).toHaveBeenCalledWith('org_node_id', 'market-1')
-  })
-
-  it('marketId 筛选（门店类型） → 门店员工 + 该门店下部门员工均纳入', async () => {
-    // 修复 M2：门店筛选须补部门维度，否则门店级部门员工（store_id IS NULL）按门店筛选会消失。
-    // 调用顺序：node 类型 → storeRow → deptsUnderStore 实查 → COUNT → DATA
-    let callIndex = 0
-    ;(db.select as any).mockImplementation(() => {
-      callIndex++
-      if (callIndex === 1) {
-        // 查询节点类型 → 门店
-        const limit = vi.fn().mockResolvedValue([{ type: '门店' }])
-        const where = vi.fn().mockReturnValue({ limit })
-        const from = vi.fn().mockReturnValue({ where })
-        return { from }
-      }
-      if (callIndex === 2) {
-        // storeRow: select → from → where → limit
-        const limit = vi.fn().mockResolvedValue([{ storeId: 'store-1' }])
-        const where = vi.fn().mockReturnValue({ limit })
-        const from = vi.fn().mockReturnValue({ where })
-        return { from }
-      }
-      if (callIndex === 3) {
-        // deptsUnderStore: select → from → where（无 limit，直接 resolve）
-        const where = vi.fn().mockResolvedValue([{ id: 'dept-under-store' }])
-        const from = vi.fn().mockReturnValue({ where })
-        return { from }
-      }
-      if (callIndex === 4) {
-        // COUNT
-        const where = vi.fn().mockResolvedValue([{ count: 0 }])
-        const from = vi.fn().mockReturnValue({ where })
-        return { from }
-      }
-      // DATA query
-      const offset = vi.fn().mockResolvedValue([])
-      const limit = vi.fn().mockReturnValue({ offset })
-      const orderBy = vi.fn().mockReturnValue({ limit })
-      const where = vi.fn().mockReturnValue({ orderBy })
-      const leftJoin4 = vi.fn().mockReturnValue({ where })
-      const leftJoin3 = vi.fn().mockReturnValue({ leftJoin: leftJoin4 })
-      const leftJoin2 = vi.fn().mockReturnValue({ leftJoin: leftJoin3 })
-      const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
-      const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
-      return { from }
-    })
-
-    await getEmployeesPaginated({ marketId: 'store-node-1' })
-
-    // 门店员工路径 + 门店下部门员工路径都被纳入
-    expect(eq).toHaveBeenCalledWith('store_id', 'store-1')
-    expect(inArray).toHaveBeenCalledWith('org_node_id', ['dept-under-store'])
-  })
-
-  it('marketId 筛选（部门类型） → eq(orgNodeId) 被调用', async () => {
-    // 先查节点类型返回 department，然后直接按 orgNodeId 过滤
-    let callIndex = 0
-    ;(db.select as any).mockImplementation(() => {
-      callIndex++
-      if (callIndex === 1) {
-        // 查询节点类型: select → from → where → limit
-        const limit = vi.fn().mockResolvedValue([{ type: '部门' }])
-        const where = vi.fn().mockReturnValue({ limit })
-        const from = vi.fn().mockReturnValue({ where })
-        return { from }
-      }
-      if (callIndex === 2) {
-        // COUNT query
-        const where = vi.fn().mockResolvedValue([{ count: 0 }])
-        const from = vi.fn().mockReturnValue({ where })
-        return { from }
-      }
-      // DATA query
-      const offset = vi.fn().mockResolvedValue([])
-      const limit = vi.fn().mockReturnValue({ offset })
-      const orderBy = vi.fn().mockReturnValue({ limit })
-      const where = vi.fn().mockReturnValue({ orderBy })
-      const leftJoin4 = vi.fn().mockReturnValue({ where })
-      const leftJoin3 = vi.fn().mockReturnValue({ leftJoin: leftJoin4 })
-      const leftJoin2 = vi.fn().mockReturnValue({ leftJoin: leftJoin3 })
-      const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
-      const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
-      return { from }
-    })
-
-    await getEmployeesPaginated({ marketId: 'dept-1' })
-
-    expect(eq).toHaveBeenCalledWith('org_node_id', 'dept-1')
+    expect(db.select).toHaveBeenCalledTimes(2)
+    const recursiveSql = (sql as any).mock.calls
+      .map((call: any[]) => Array.from(call[0] as TemplateStringsArray).join(''))
+      .find((text: string) => text.includes('WITH RECURSIVE descendants'))
+    expect(recursiveSql).toContain('child.parent_id = descendants.id')
+    expect(recursiveSql).toContain('NOT child.id = ANY(descendants.path)')
   })
 
   it('skills 筛选（单标签） → sql.join + && ARRAY 模板被调用，标签作为参数化占位传入', async () => {

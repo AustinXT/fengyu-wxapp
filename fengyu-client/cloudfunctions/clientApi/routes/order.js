@@ -521,11 +521,13 @@ async function scanDetail(ctx) {
     SELECT
       si.sale_item_id, si.unit_price, si.quantity, si.received,
       si.sale_amount, si.session_count,
+      COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
       si.product_name,
       (SELECT p.cover_image FROM mall_product_skus mps
        JOIN products p ON mps.product_id = p.product_id
        WHERE mps.sku_id = si.sku_id LIMIT 1) AS cover_image
     FROM sale_items si
+    LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
     WHERE si.sale_order_id = $1
     ORDER BY si.sale_item_id
   `, [targetOrderId])
@@ -571,6 +573,7 @@ async function scanDetail(ctx) {
       // sale_amount = 行应付总额（权威），前端按此展示；unitPrice/sessionCount 仅供"×N次/单价"辅助提示
       saleAmount: i.sale_amount,
       sessionCount: i.session_count,
+      unit: i.unit,
       received: i.received,
       refundedAmount: Number(itemRefundMap.get(i.sale_item_id) || 0),
       coverImage: i.cover_image || ''
@@ -1525,12 +1528,14 @@ async function list(ctx) {
         si.session_count,
         si.remaining_sessions,
         si.paid_sessions,
+        COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
         si.product_name,
         si.product_type,
         (SELECT p.cover_image FROM mall_product_skus mps
          JOIN products p ON mps.product_id = p.product_id
          WHERE mps.sku_id = si.sku_id LIMIT 1) AS cover_image
       FROM sale_items si
+      LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
       WHERE si.sale_order_id = ANY($1)
       ORDER BY si.sale_item_id
     `, [orderIds])
@@ -1601,22 +1606,31 @@ async function detail(ctx) {
   const items = await pg.query(`
     SELECT
       si.sale_item_id,
+      si.sale_order_id,
       si.sku_id,
+      si.item_direction,
+      si.ref_sale_item_id,
       si.product_name,
       si.product_type,
       si.session_count,
       si.remaining_sessions,
       si.paid_sessions,
+      COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
       si.unit_price,
       si.unit_real_price,
       si.quantity,
       si.sale_amount,
       si.received,
+      si.pending_received,
       si.expire_date,
+      si.remark,
+      si.sales_category,
+      si.picked_up_quantity,
       (SELECT p.cover_image FROM mall_product_skus mps
        JOIN products p ON mps.product_id = p.product_id
        WHERE mps.sku_id = si.sku_id LIMIT 1) AS cover_image
     FROM sale_items si
+    LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
     WHERE si.sale_order_id = $1
     ORDER BY si.sale_item_id
   `, [orderNo])
@@ -1824,23 +1838,43 @@ async function appointableItems(ctx) {
     SELECT
       o.sale_order_id,
       o.status AS order_status,
-      o.store_id,
+      o.sale_order_datetime,
+      o.paid_at,
+      o.sale_order_type,
+      o.document_type,
+      o.legacy_source,
+      o.store_id AS order_store_id,
       s.store_name,
       o.market_name,
       o.preferred_employee_id,
       si.sale_item_id,
+      si.store_id AS item_store_id,
       si.sku_id,
+      si.item_direction,
+      si.ref_sale_item_id,
       si.product_name,
       si.product_type,
       si.session_count,
       si.remaining_sessions,
       si.paid_sessions,
+      si.quantity,
+      COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
       si.unit_price,
       si.unit_real_price,
       si.sale_amount,
-      si.expire_date
+      si.received,
+      si.pending_received,
+      si.expire_date,
+      si.remark,
+      si.sales_category,
+      si.picked_up_quantity,
+      ps.category_id,
+      pc.category_name,
+      pc.product_kind
     FROM sale_orders o
     INNER JOIN sale_items si ON o.sale_order_id = si.sale_order_id
+    LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
+    LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
     LEFT JOIN stores s ON o.store_id = s.store_id
     WHERE o.client_user_id = $1
       AND o.status IN ('已支付', '部分支付', '已完成')
@@ -1878,7 +1912,12 @@ async function appointableItems(ctx) {
       orderMap.set(item.sale_order_id, {
         saleOrderId: item.sale_order_id,
         orderStatus: item.order_status,
-        storeId: item.store_id,
+        saleOrderDatetime: item.sale_order_datetime,
+        paidAt: item.paid_at,
+        saleOrderType: item.sale_order_type,
+        documentType: item.document_type,
+        legacySource: item.legacy_source,
+        storeId: item.order_store_id,
         storeName: item.store_name,
         marketName: item.market_name,
         preferredStaffWfId: item.preferred_employee_id,
@@ -1889,16 +1928,29 @@ async function appointableItems(ctx) {
       && (!item.expire_date || new Date(item.expire_date) > new Date())
     orderMap.get(item.sale_order_id).items.push({
       saleItemId: item.sale_item_id,
+      storeId: item.item_store_id,
       skuId: item.sku_id,
+      itemDirection: item.item_direction,
+      refSaleItemId: item.ref_sale_item_id,
       productName: item.product_name,
       productType: item.product_type,
       sessionCount: item.session_count,
+      unit: item.unit,
       remainingSessions: item.remaining_sessions,
       paidSessions: item.paid_sessions,
+      quantity: Number(item.quantity || 1),
       unitPrice: item.unit_price,
       unitRealPrice: item.unit_real_price,
       saleAmount: item.sale_amount,
+      received: item.received,
+      pendingReceived: item.pending_received,
       expireDate: item.expire_date,
+      remark: item.remark,
+      salesCategory: item.sales_category,
+      pickedUpQuantity: item.picked_up_quantity,
+      productKind: item.product_kind,
+      categoryId: item.category_id,
+      categoryName: item.category_name,
       active: isActive
     })
   }

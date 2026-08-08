@@ -8,9 +8,11 @@ import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, lte, or, sq
 import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { withPermission } from '@/lib/with-permission'
+import { isAdminScope } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 import type { OrgNode, BatchMessageCustomer } from '@/lib/types'
 import { nowTs, beijingBoundaryTs } from '@/lib/db-time'
+import { resolveOrgNodeToStoreIds } from '@/lib/org-scope'
 
 export interface AdminMessage {
   id: number
@@ -32,6 +34,8 @@ export interface MessageFilters {
   messageType?: string
   isRead?: 'read' | 'unread'
   search?: string
+  marketId?: string    // 市场 org_node_id
+  storeId?: string     // 门店 store_id
   dateFrom?: string
   dateTo?: string
   page?: number
@@ -46,13 +50,17 @@ export interface PaginatedMessages {
 /**
  * 服务端分页消息列表
  *
- * messages 表无 store_id，不走 scope 过滤；该页面仅 admin 可见（管理员对全局消息做审计/清理）。
+ * 2026-08-05 改：添加市场-门店筛选 + scope 过滤。
+ * - 客户消息：通过 client_wechat_users.bound_store_id 关联门店，按 scope 过滤
+ * - 员工消息：通过 staff_wechat_users → stores.store_id 关联门店，按 scope 过滤
+ * - admin 不受 scope 限制，可查看全部消息
+ *
  * JOIN client_wechat_users / staff_wechat_users 用于展示接收人姓名。
  */
 export const getMessagesPaginated = withPermission(
   'message:list',
   async (
-    _session,
+    session,
     filters: MessageFilters = {},
   ): Promise<PaginatedMessages> => {
   const page = Math.max(1, filters.page || 1)
@@ -90,18 +98,120 @@ export const getMessagesPaginated = withPermission(
     conditions.push(lte(messages.createdAt, beijingBoundaryTs(filters.dateTo, '23:59:59')))
   }
 
-  const whereClause = conditions.length > 0 ? and(...conditions) : undefined
+  // scope 过滤（非 admin）+ 市场/门店筛选（所有角色）
+  // 策略：通过接收人表（client_wechat_users / staff_wechat_users）的 bound_store_id / store_id 过滤
+  let scopeStoreIds: string[] | null = null
+  if (!isAdminScope(session)) {
+    scopeStoreIds = session.permissions.scopeStoreIds
+    if (scopeStoreIds.length === 0) {
+      // 无门店权限，返回空
+      return { data: [], total: 0 }
+    }
+  }
+
+  // 市场筛选：展开为门店 ID 列表
+  let marketStoreIds: string[] | null = null
+  if (filters.marketId) {
+    marketStoreIds = await resolveOrgNodeToStoreIds(filters.marketId)
+    if (marketStoreIds !== null && marketStoreIds.length === 0) {
+      return { data: [], total: 0 }
+    }
+  }
+
+  // 门店筛选
+  const singleStoreId = filters.storeId || null
+
+  // 合并 scope + 市场 + 门店筛选
+  let finalStoreIds: string[] | null = null
+  if (scopeStoreIds) {
+    finalStoreIds = scopeStoreIds
+    if (marketStoreIds) {
+      finalStoreIds = finalStoreIds.filter((id) => marketStoreIds!.includes(id))
+    }
+    if (singleStoreId) {
+      finalStoreIds = finalStoreIds.filter((id) => id === singleStoreId)
+    }
+  } else {
+    if (marketStoreIds) {
+      finalStoreIds = marketStoreIds
+      if (singleStoreId) {
+        finalStoreIds = finalStoreIds.filter((id) => id === singleStoreId)
+      }
+    } else if (singleStoreId) {
+      finalStoreIds = [singleStoreId]
+    }
+  }
+
+  if (finalStoreIds && finalStoreIds.length === 0) {
+    return { data: [], total: 0 }
+  }
 
   // 别名 JOIN：按 recipientType 匹配对应表，避免两表 ID 交叉
   // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
   const clientRecipient = alias(clientWechatUsers, 'client_recipient') as unknown as typeof clientWechatUsers
   const staffRecipient = alias(staffWechatUsers, 'staff_recipient') as unknown as typeof staffWechatUsers
 
+  // 根据门店过滤条件构建 JOIN 条件
+  // 客户消息：通过 client_wechat_users.bound_store_id
+  // 员工消息：直接使用 staff_wechat_users.store_id。
+  let clientJoinCondition: SQL = and(
+    eq(messages.recipientType, '客户'),
+    eq(clientRecipient.userId, messages.recipientId),
+  ) as SQL
+
+  if (finalStoreIds) {
+    if (finalStoreIds.length === 1) {
+      clientJoinCondition = and(
+        clientJoinCondition,
+        eq(clientRecipient.boundStoreId, finalStoreIds[0]),
+      ) as SQL
+    } else {
+      clientJoinCondition = and(
+        clientJoinCondition,
+        inArray(clientRecipient.boundStoreId, finalStoreIds),
+      ) as SQL
+    }
+  }
+
+  let staffJoinCondition: SQL = and(
+    eq(messages.recipientType, '员工'),
+    eq(staffRecipient.employeeId, messages.recipientId),
+  ) as SQL
+
+  if (finalStoreIds) {
+    staffJoinCondition = and(
+      staffJoinCondition,
+      finalStoreIds.length === 1
+        ? eq(staffRecipient.storeId, finalStoreIds[0])
+        : inArray(staffRecipient.storeId, finalStoreIds),
+    ) as SQL
+  }
+
+  const whereClause = conditions.length > 0 ? and(...conditions) : undefined
+
   const [[countRow], rows] = await Promise.all([
     db
       .select({ count: sql<number>`cast(count(*) as int)` })
       .from(messages)
-      .where(whereClause),
+      .leftJoin(
+        clientRecipient,
+        clientJoinCondition,
+      )
+      .leftJoin(
+        staffRecipient,
+        staffJoinCondition,
+      )
+      .where(
+        finalStoreIds
+          ? and(
+              whereClause,
+              or(
+                and(eq(messages.recipientType, '客户'), isNotNull(clientRecipient.userId)),
+                and(eq(messages.recipientType, '员工'), isNotNull(staffRecipient.employeeId)),
+              ),
+            )
+          : whereClause
+      ),
     db
       .select({
         message: messages,
@@ -111,19 +221,23 @@ export const getMessagesPaginated = withPermission(
       .from(messages)
       .leftJoin(
         clientRecipient,
-        and(
-          eq(messages.recipientType, '客户'),
-          eq(clientRecipient.userId, messages.recipientId),
-        ) as SQL,
+        clientJoinCondition,
       )
       .leftJoin(
         staffRecipient,
-        and(
-          eq(messages.recipientType, '员工'),
-          eq(staffRecipient.employeeId, messages.recipientId),
-        ) as SQL,
+        staffJoinCondition,
       )
-      .where(whereClause)
+      .where(
+        finalStoreIds
+          ? and(
+              whereClause,
+              or(
+                and(eq(messages.recipientType, '客户'), isNotNull(clientRecipient.userId)),
+                and(eq(messages.recipientType, '员工'), isNotNull(staffRecipient.employeeId)),
+              ),
+            )
+          : whereClause
+      )
       // 例外：消息流水表无 updatedAt 列
       .orderBy(desc(messages.createdAt))
       .limit(pageSize)
@@ -227,44 +341,6 @@ export const deleteMessage = withPermission(
 
 /** 单次批量发送的最大接收人数 */
 const BATCH_SEND_MAX = 1000
-
-/**
- * 将组织节点 ID 解析为对应的 storeId 列表。
- * 返回 null 表示不过滤（总部 / 未知），空数组表示无匹配门店。
- *
- * 与 actions/coupons.ts 的同名内部函数逻辑一致，因处于不同文件且 admin-coding
- * 规范不鼓励为"小工具"新建 lib 模块，这里就地复制 30 行。
- */
-async function resolveOrgNodeToStoreIds(orgNodeId: string): Promise<string[] | null> {
-  const [node] = await db
-    .select({ type: orgNodes.type, parentId: orgNodes.parentId })
-    .from(orgNodes)
-    .where(eq(orgNodes.id, orgNodeId))
-    .limit(1)
-
-  if (!node) return null
-  if (node.type === '总部') return null
-
-  if (node.type === '门店') {
-    const [store] = await db
-      .select({ storeId: stores.storeId })
-      .from(stores)
-      .where(eq(stores.orgNodeId, orgNodeId))
-      .limit(1)
-    return store ? [store.storeId] : []
-  }
-
-  if (node.type === '市场') {
-    const storeRows = await db
-      .select({ storeId: stores.storeId })
-      .from(stores)
-      .innerJoin(orgNodes, eq(stores.orgNodeId, orgNodes.id))
-      .where(eq(orgNodes.parentId, orgNodeId))
-    return storeRows.map((r) => r.storeId)
-  }
-
-  return null
-}
 
 /**
  * 构造"批量发送消息"场景下的客户筛选 WHERE 条件。

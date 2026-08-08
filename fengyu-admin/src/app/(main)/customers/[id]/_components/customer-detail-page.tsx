@@ -31,7 +31,7 @@ import { searchEmployees } from "@/actions/employees"
 import PullWorkfineDialog from "@/app/(main)/legacy-orders/_components/pull-workfine-dialog"
 import { DangerZoneDelete } from "@/components/delete-action"
 import { deleteCustomer } from "@/actions/customers"
-import { getCustomerVisibleSaleItems } from "./customer-entitlement-items"
+import { getCustomerVisibleSaleItems, type CustomerVisibleSaleItem } from "./customer-entitlement-items"
 
 interface CustomerDetailPageProps {
   customer: Customer
@@ -76,6 +76,9 @@ export default function CustomerDetailPage({
   const [merging, setMerging] = useState<string | null>(null)
   const [pullLegacyOpen, setPullLegacyOpen] = useState(false)
   const [couponStatus, setCouponStatus] = useState<"" | CouponStatus>("")
+  const [cardProductKind, setCardProductKind] = useState("")
+  const [cardCategoryId, setCardCategoryId] = useState("")
+  const [cardNameQuery, setCardNameQuery] = useState("")
 
   // 手机号编辑（独立于"基本档案 编辑/保存"，因为手机号修改影响登录/会员识别，需要单独的二次确认流程）
   const [phoneEditing, setPhoneEditing] = useState(false)
@@ -159,7 +162,7 @@ export default function CustomerDetailPage({
     gender: customer.gender ?? "",
     isCrossStoreTemp: customer.isCrossStoreTemp,
     boundEmployeeId: customer.boundEmployeeId ?? "",
-    promoterEmployeeId: customer.promoterEmployeeId ?? "",
+    promoterEmployeeName: customer.promoterEmployeeName ?? "",
     customerSource: customer.customerSource ?? "",
     birthday: customer.birthday ?? "",
     occupation: customer.occupation ?? "",
@@ -184,8 +187,8 @@ export default function CustomerDetailPage({
   const promoterRef = useRef<HTMLDivElement>(null)
   const promoterTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [selectedPromoter, setSelectedPromoter] = useState<PromoterOption | null>(
-    customer.promoterEmployeeId
-      ? { employeeId: customer.promoterEmployeeId, name: employees.find(e => e.employeeId === customer.promoterEmployeeId)?.name ?? null, phone: null }
+    customer.promoterEmployeeName
+      ? { employeeId: '', name: customer.promoterEmployeeName, phone: null }
       : null
   )
   const doPromoterSearch = useCallback((q: string) => {
@@ -212,7 +215,7 @@ export default function CustomerDetailPage({
       gender: customer.gender ?? "",
       isCrossStoreTemp: customer.isCrossStoreTemp,
       boundEmployeeId: customer.boundEmployeeId ?? "",
-      promoterEmployeeId: customer.promoterEmployeeId ?? "",
+      promoterEmployeeName: customer.promoterEmployeeName ?? "",
       customerSource: customer.customerSource ?? "",
       birthday: customer.birthday ?? "",
       occupation: customer.occupation ?? "",
@@ -223,6 +226,11 @@ export default function CustomerDetailPage({
       wellnessPreference: customer.wellnessPreference ?? "",
       notes: customer.notes ?? "",
     })
+    setSelectedPromoter(
+      customer.promoterEmployeeName
+        ? { employeeId: '', name: customer.promoterEmployeeName, phone: null }
+        : null,
+    )
     setPromoterSearch("")
     setPromoterOpen(false)
     setIsEditing(false)
@@ -236,7 +244,7 @@ export default function CustomerDetailPage({
         gender: form.gender || null,
         isCrossStoreTemp: form.isCrossStoreTemp,
         boundEmployeeId: form.boundEmployeeId || null,
-        promoterEmployeeId: form.promoterEmployeeId || null,
+        promoterEmployeeName: form.promoterEmployeeName || null,
         customerSource: form.customerSource || null,
         birthday: form.birthday || null,
         occupation: form.occupation || null,
@@ -274,6 +282,32 @@ export default function CustomerDetailPage({
   const activeSaleItems = useMemo(() => {
     return getCustomerVisibleSaleItems(orders)
   }, [orders])
+
+  const cardProductKinds = useMemo(
+    () => Array.from(new Set(activeSaleItems.map((item) => item.productKind).filter((value): value is string => Boolean(value)))),
+    [activeSaleItems],
+  )
+  const cardCategories = useMemo(
+    () => Array.from(
+      new Map(
+        activeSaleItems
+          .filter((item) => item.categoryId && item.categoryName && (!cardProductKind || item.productKind === cardProductKind))
+          .map((item) => [item.categoryId!, { id: item.categoryId!, name: item.categoryName! }]),
+      ).values(),
+    ),
+    [activeSaleItems, cardProductKind],
+  )
+  const filteredActiveSaleItems = useMemo(() => {
+    const query = cardNameQuery.trim().toLocaleLowerCase()
+    return activeSaleItems.filter((item) => {
+      if (cardProductKind && item.productKind !== cardProductKind) return false
+      if (cardCategoryId && item.categoryId !== cardCategoryId) return false
+      if (!query) return true
+      const name = `${item.productName ?? ''} ${item.skuName ?? ''}`.toLocaleLowerCase()
+      return name.includes(query)
+    })
+  }, [activeSaleItems, cardCategoryId, cardNameQuery, cardProductKind])
+  const hasCardFilters = Boolean(cardProductKind || cardCategoryId || cardNameQuery.trim())
 
   // 顾客优惠券状态筛选（组件内 state 过滤，与详情页「全量预加载」模式一致）
   const filteredCoupons = useMemo(
@@ -355,11 +389,16 @@ export default function CustomerDetailPage({
     },
   ]
 
-  const itemColumns: Column<SaleItem>[] = [
+  const itemColumns: Column<CustomerVisibleSaleItem>[] = [
     {
       key: "productName",
       header: "项目名称",
-      cell: (row) => <span className="font-medium">{row.productName ?? "—"}</span>,
+      cell: (row) => (
+        <div className="flex items-center gap-2">
+          <span className="font-medium">{row.productName ?? "—"}</span>
+          {row.cardCount > 1 && <span className="text-xs text-[#999999]">共 {row.cardCount} 张</span>}
+        </div>
+      ),
     },
     {
       key: "skuName",
@@ -623,15 +662,15 @@ export default function CustomerDetailPage({
                     <div ref={promoterRef} className="relative">
                       <Input
                         placeholder="输入姓名或手机号搜索"
-                        value={promoterOpen ? promoterSearch : (selectedPromoter ? `${selectedPromoter.name}${selectedPromoter.phone ? ` (${formatPhoneSafe(selectedPromoter.phone)})` : ""}` : "")}
+                        value={promoterOpen ? promoterSearch : (selectedPromoter?.name ?? form.promoterEmployeeName)}
                         onFocus={() => { setPromoterOpen(true); setPromoterSearch("") }}
                         onChange={(e) => { setPromoterSearch(e.target.value); setPromoterOpen(true); doPromoterSearch(e.target.value) }}
                       />
-                      {form.promoterEmployeeId && !promoterOpen && (
+                      {form.promoterEmployeeName && !promoterOpen && (
                         <button
                           type="button"
                           className="absolute right-2 top-1/2 -translate-y-1/2 text-[#999999] hover:text-[#333333] text-sm"
-                          onClick={() => { handleFormChange("promoterEmployeeId", ""); setSelectedPromoter(null); setPromoterSearch("") }}
+                          onClick={() => { handleFormChange("promoterEmployeeName", ""); setSelectedPromoter(null); setPromoterSearch("") }}
                         >
                           ✕
                         </button>
@@ -648,9 +687,9 @@ export default function CustomerDetailPage({
                             promoterResults.map((emp) => (
                               <li
                                 key={emp.employeeId}
-                                className={`cursor-pointer px-3 py-2 text-sm hover:bg-[var(--muted)] ${emp.employeeId === form.promoterEmployeeId ? "bg-[var(--muted)] font-medium" : ""}`}
+                                className={`cursor-pointer px-3 py-2 text-sm hover:bg-[var(--muted)] ${emp.name === form.promoterEmployeeName ? "bg-[var(--muted)] font-medium" : ""}`}
                                 onMouseDown={() => {
-                                  handleFormChange("promoterEmployeeId", emp.employeeId)
+                                  handleFormChange("promoterEmployeeName", emp.name ?? "")
                                   setSelectedPromoter(emp)
                                   setPromoterOpen(false)
                                   setPromoterSearch("")
@@ -664,7 +703,7 @@ export default function CustomerDetailPage({
                       )}
                     </div>
                   ) : (
-                    <Input value={selectedPromoter?.name ?? (customer.promoterEmployeeId || "")} disabled />
+                    <Input value={customer.promoterEmployeeName ?? ""} disabled />
                   )}
                 </div>
                 <div className="space-y-2">
@@ -872,14 +911,43 @@ export default function CustomerDetailPage({
 
         <TabsContent value="sessions">
           <Card>
-            <CardHeader>
+            <CardHeader className="space-y-3">
               <CardTitle className="text-base">疗程卡</CardTitle>
+              <div className="grid gap-2 sm:grid-cols-[10rem_10rem_minmax(14rem,1fr)]">
+                <Select
+                  value={cardProductKind}
+                  onChange={(e) => {
+                    setCardProductKind(e.target.value)
+                    setCardCategoryId("")
+                  }}
+                >
+                  <option value="">全部一级品项</option>
+                  {cardProductKinds.map((productKind) => (
+                    <option key={productKind} value={productKind}>{productKind}</option>
+                  ))}
+                </Select>
+                <Select
+                  value={cardCategoryId}
+                  onChange={(e) => setCardCategoryId(e.target.value)}
+                  disabled={!cardProductKind}
+                >
+                  <option value="">{cardProductKind ? "全部二级品项" : "请先选择一级品项"}</option>
+                  {cardCategories.map((category) => (
+                    <option key={category.id} value={category.id}>{category.name}</option>
+                  ))}
+                </Select>
+                <Input
+                  value={cardNameQuery}
+                  onChange={(e) => setCardNameQuery(e.target.value)}
+                  placeholder="搜索疗程卡名称"
+                />
+              </div>
             </CardHeader>
             <CardContent>
               <DataTable
                 columns={itemColumns}
-                data={activeSaleItems}
-                emptyText="暂无疗程卡"
+                data={filteredActiveSaleItems}
+                emptyText={hasCardFilters ? "未找到匹配的疗程卡" : "暂无疗程卡"}
               />
             </CardContent>
           </Card>

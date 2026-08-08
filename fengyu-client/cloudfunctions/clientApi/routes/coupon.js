@@ -234,6 +234,7 @@ async function available(ctx) {
       expireAt: coupon.expire_at,
       description: coupon.description,
       discount,
+      faceValue: Number(coupon.discount_value), // 券面值（真实属性）
       eligibleItemCount: eligibleItems.length,
     })
   }

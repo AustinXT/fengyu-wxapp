@@ -610,6 +610,35 @@ describe('createSku — 输入校验 + 错误处理', () => {
     expect(result.success).toBe(true)
     expect(result.message).toContain('商品创建成功')
   })
+
+  it('未填写单位时，疗程卡默认使用「次」', async () => {
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+
+    await createSku(baseSkuData)
+
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ unit: '次' }))
+  })
+
+  it('未填写单位时，家居产品默认使用「盒」', async () => {
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+
+    await createSku({
+      ...baseSkuData,
+      skuId: 'SKU-HOME-001',
+      productType: '家居产品',
+      sessionCount: null,
+    })
+
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ unit: '盒' }))
+  })
+
+  it('空白单位 → 拒绝', async () => {
+    const result = await createSku({ ...baseSkuData, unit: '  ' })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('单位不能为空')
+  })
 })
 
 // ── updateSku ─────────────────────────────────────────────────────────────────
@@ -822,8 +851,8 @@ describe('getProducts — 商品列表', () => {
         const from = vi.fn().mockReturnValue({ groupBy })
         return { from }
       }
-      // 主查询: select → from → leftJoin → leftJoin → where → orderBy → limit
-      const limit = vi.fn().mockResolvedValue([{
+      // 主查询: select → from → leftJoin → leftJoin → where → orderBy
+      const orderBy = vi.fn().mockResolvedValue([{
         product: {
           productId: 'prod-1', name: '蜜语面膜', categoryId: 'cat-1',
           description: null, isShengmei: false, isBundle: false,
@@ -835,7 +864,6 @@ describe('getProducts — 商品列表', () => {
         },
         categoryName: '护理项目', productKind: '护理项目', skuCount: 2,
       }])
-      const orderBy = vi.fn().mockReturnValue({ limit })
       const where = vi.fn().mockReturnValue({ orderBy })
       const leftJoin2 = vi.fn().mockReturnValue({ where })
       const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
@@ -953,7 +981,7 @@ describe('getAllSkus — 全量 SKU', () => {
     // （products.ts getAllSkus 有 2 个 leftJoin：productCategories + projectSeriesLookup）。
     const chain: any = {}
     chain.limit = vi.fn().mockResolvedValue([mockRow])
-    chain.orderBy = vi.fn().mockReturnValue(chain)
+    chain.orderBy = vi.fn().mockResolvedValue([mockRow])
     chain.where = vi.fn().mockReturnValue(chain)
     chain.leftJoin = vi.fn().mockReturnValue(chain)
     const from = vi.fn().mockReturnValue(chain)

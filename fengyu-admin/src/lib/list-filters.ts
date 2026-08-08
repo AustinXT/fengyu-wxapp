@@ -133,11 +133,15 @@ export function parsePointFilters(params: Record<string, string | undefined>): P
 export function parseCardFilters(params: Record<string, string | undefined>): CardFilters {
   const type = params.type as CardFilters['type'] | undefined
   const status = params.status as CardFilters['status'] | undefined
+  const productKind = params.productKind || undefined
   return {
     marketId: params.market,
     storeId: params.store,
     type: type === '疗程卡' || type === '单次卡' || type === 'all' ? type : undefined,
     status: status === 'active' || status === 'exhausted' || status === 'expired' ? status : undefined,
+    productKind,
+    // 二级品项必须从属于一级品项，避免手工 URL 留下无法在 UI 中清除的幽灵条件。
+    categoryId: productKind ? params.category || undefined : undefined,
     search: params.q,
     page: params.page ? Number(params.page) : undefined,
     pageSize: params.size ? Number(params.size) : undefined,

@@ -89,7 +89,7 @@
       </view>
       <view wx:if="{{item.type === 'service'}}" class="perf-item-row">
         <text class="perf-item-label">划卡单价</text>
-        <text class="perf-item-value">¥{{item.servicePrice}} × {{item.sessionUsed}}次</text>
+        <text class="perf-item-value">¥{{item.servicePrice}} × {{item.sessionUsed}}{{item.unit || '次'}}</text>
       </view>
       <view wx:if="{{item.type === 'service' && item.roleType}}" class="perf-item-row">
         <text class="perf-item-label">角色</text>

@@ -964,11 +964,11 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
         const skuId = hashId('sku', productId, trim(sku.wf_item_id))
 
         await client.query(`
-          INSERT INTO product_skus (sku_id, product_id, product_type, spec_name, price, session_count, sort_order, service_fee)
-          VALUES ($1, $2, $3, $4, $5, $6, 0, 0)
+          INSERT INTO product_skus (sku_id, product_id, product_type, spec_name, price, session_count, unit, sort_order, service_fee)
+          VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $3 = '家居产品' THEN '盒' ELSE '次' END, 0, 0)
           ON CONFLICT (sku_id) DO UPDATE SET
             product_type = EXCLUDED.product_type, spec_name = EXCLUDED.spec_name,
-            price = EXCLUDED.price, session_count = EXCLUDED.session_count, updated_at = now()
+            price = EXCLUDED.price, session_count = EXCLUDED.session_count, unit = EXCLUDED.unit, updated_at = now()
         `, [skuId, productId, productType, specName, parseFloat(sku.price) || 0, sessionCount])
         skuCount++
       }
@@ -1009,10 +1009,10 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
       const specName = trim(row.spec_name) || '院装'
       const skuId = hashId('sku', productId, trim(row.wf_item_id))
       await client.query(`
-        INSERT INTO product_skus (sku_id, product_id, product_type, spec_name, price, sort_order, service_fee)
-        VALUES ($1, $2, '家居产品', $3, $4, 0, 0)
+        INSERT INTO product_skus (sku_id, product_id, product_type, spec_name, price, unit, sort_order, service_fee)
+        VALUES ($1, $2, '家居产品', $3, $4, '盒', 0, 0)
         ON CONFLICT (sku_id) DO UPDATE SET
-          spec_name = EXCLUDED.spec_name, price = EXCLUDED.price, updated_at = now()
+          spec_name = EXCLUDED.spec_name, price = EXCLUDED.price, unit = EXCLUDED.unit, updated_at = now()
       `, [skuId, productId, specName, parseFloat(row.price) || 0])
       skuCount++
     }
@@ -1069,12 +1069,12 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
         const skuId = hashId('sku', productId, trim(item.wf_item_id))
 
         await client.query(`
-          INSERT INTO product_skus (sku_id, product_id, product_type, spec_name, price, session_count,
+          INSERT INTO product_skus (sku_id, product_id, product_type, spec_name, price, session_count, unit,
             is_bundle_sku, sort_order, service_fee)
-          VALUES ($1, $2, $3, $4, $5, $6, true, 0, 0)
+          VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $3 = '家居产品' THEN '盒' ELSE '次' END, true, 0, 0)
           ON CONFLICT (sku_id) DO UPDATE SET
             spec_name = EXCLUDED.spec_name, price = EXCLUDED.price,
-            session_count = EXCLUDED.session_count, updated_at = now()
+            session_count = EXCLUDED.session_count, unit = EXCLUDED.unit, updated_at = now()
         `, [skuId, productId, productType, specName, itemPrice, sessionCount])
         skuCount++
       }

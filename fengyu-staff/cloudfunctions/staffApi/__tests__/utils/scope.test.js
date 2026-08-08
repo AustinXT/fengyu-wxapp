@@ -10,6 +10,8 @@ const {
   canAccessManagementLevel,
   validateManagementScope,
   expandScopeStoreIds,
+  expandScopeOrgNodeIds,
+  buildManagementStoreScope,
   buildStoreScopeCondition,
   isStoreInScope,
   assertCustomerInScope,
@@ -183,6 +185,7 @@ describe('validateManagementScope', () => {
     staffLevel: 'market',
     roleBindings: [{ role: 'manager', scopeId: 'm1', scopeType: '市场' }],
     scopeStoreIds: ['s1'],
+    scopeOrgNodeIds: ['m1', 'm1-child'],
     managerStoreIds: ['s1'],
   }
   // 边缘：manager@门店A + customer_mgr@门店B → scopeStoreIds=[A,B] 但 managerStoreIds=[A]
@@ -210,6 +213,9 @@ describe('validateManagementScope', () => {
   })
   test('market: 自己 market 通过', () => {
     expect(() => validateManagementScope(marketAuth, 'market', 'm1')).not.toThrow()
+  })
+  test('market: 下属 market 通过', () => {
+    expect(() => validateManagementScope(marketAuth, 'market', 'm1-child')).not.toThrow()
   })
   test('market: 自己 store 通过', () => {
     expect(() => validateManagementScope(marketAuth, 'store', 's1')).not.toThrow()
@@ -296,12 +302,16 @@ describe('expandScopeStoreIds', () => {
     expect(pg.query).toHaveBeenCalledTimes(1) // 总部短路
   })
 
-  test('市场 + 门店 组合 → 并集去重', async () => {
+  test('市场 + 门店组合 → 单次递归查询并集去重', async () => {
     const pg = {
       query: vi
         .fn()
-        .mockResolvedValueOnce([{ store_id: 'S1' }, { store_id: 'S2' }]) // 市场
-        .mockResolvedValueOnce([{ store_id: 'S2' }, { store_id: 'S3' }]), // 门店（含重复）
+        .mockResolvedValueOnce([
+          { store_id: 'S1' },
+          { store_id: 'S2' },
+          { store_id: 'S2' },
+          { store_id: 'S3' },
+        ]),
     }
     const result = await expandScopeStoreIds(
       [
@@ -311,7 +321,10 @@ describe('expandScopeStoreIds', () => {
       pg
     )
     expect(result.sort()).toEqual(['S1', 'S2', 'S3'])
-    expect(pg.query).toHaveBeenCalledTimes(2)
+    expect(pg.query).toHaveBeenCalledTimes(1)
+    expect(pg.query.mock.calls[0][0]).toContain('WITH RECURSIVE descendants')
+    expect(pg.query.mock.calls[0][0]).toContain('unnest($1::text[])')
+    expect(pg.query.mock.calls[0][1]).toEqual([['m1', 'sn3']])
   })
 
   test('部门 scope 忽略，不触发查询', async () => {
@@ -322,6 +335,57 @@ describe('expandScopeStoreIds', () => {
     )
     expect(result).toEqual([])
     expect(pg.query).not.toHaveBeenCalled()
+  })
+})
+
+describe('expandScopeOrgNodeIds', () => {
+  test('市场 scope 展开自身与任意层级下属节点', async () => {
+    const pg = {
+      query: vi.fn().mockResolvedValueOnce([
+        { id: 'market-1' },
+        { id: 'dept-1' },
+        { id: 'store-1' },
+      ]),
+    }
+
+    const result = await expandScopeOrgNodeIds(
+      [{ role: 'hr', scopeId: 'market-1', scopeType: '市场' }],
+      pg,
+    )
+
+    expect(result).toEqual(['market-1', 'dept-1', 'store-1'])
+    expect(pg.query.mock.calls[0][0]).toContain('WITH RECURSIVE descendants')
+    expect(pg.query.mock.calls[0][0]).toContain('child.parent_id = descendants.id')
+    expect(pg.query.mock.calls[0][1]).toEqual([['market-1']])
+  })
+
+  test('总部 scope 返回全部组织节点', async () => {
+    const pg = { query: vi.fn().mockResolvedValueOnce([{ id: 'hq' }, { id: 'market-1' }]) }
+
+    await expect(expandScopeOrgNodeIds(
+      [{ role: 'admin', scopeId: 'hq', scopeType: '总部' }],
+      pg,
+    )).resolves.toEqual(['hq', 'market-1'])
+    expect(pg.query).toHaveBeenCalledWith('SELECT id FROM org_nodes')
+  })
+})
+
+describe('buildManagementStoreScope', () => {
+  test('market 使用递归子树门店条件', () => {
+    const condition = buildManagementStoreScope('market', 'market-1', 'so.store_id', 4)
+
+    expect(condition.params).toEqual(['market-1'])
+    expect(condition.sql).toContain('so.store_id IN')
+    expect(condition.sql).toContain('WITH RECURSIVE descendants')
+    expect(condition.sql).toContain('SELECT $4::text')
+    expect(condition.sql).toContain('child.parent_id = descendants.id')
+  })
+
+  test('all 和 store 保持原有条件与参数位置', () => {
+    expect(buildManagementStoreScope('all', undefined, 'so.store_id', 2))
+      .toEqual({ sql: 'TRUE', params: [] })
+    expect(buildManagementStoreScope('store', 'S1', 'so.store_id', 2))
+      .toEqual({ sql: 'so.store_id = $2', params: ['S1'] })
   })
 })
 

@@ -267,7 +267,7 @@ async function suggestPayment(ctx) {
   // 该回款的可分配项（基数 amount；同时以 received 别名下发，复用前端「实收×比例」算法）
   const items = await pg.query(
     `SELECT a.id AS receipt_id, a.sale_item_id, a.amount::numeric AS amount, a.amount::numeric AS received,
-            a.sales_category, si.product_name, si.product_type
+            a.sales_category, si.sku_id, si.product_name, si.product_type, si.item_direction
        FROM sale_payment_item_receipts a
        JOIN sale_items si ON si.sale_item_id = a.sale_item_id
       WHERE a.sale_payment_id = $1

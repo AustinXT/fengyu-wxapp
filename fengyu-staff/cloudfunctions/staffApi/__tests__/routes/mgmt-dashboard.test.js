@@ -40,6 +40,22 @@ function makeMarketCtx(payload = {}) {
   })
 }
 
+function isStoreCountSql(sql) {
+  return (
+    /COUNT\(\*\)::int\s+AS\s+cnt/.test(sql) &&
+    /FROM stores s\b/.test(sql) &&
+    (/JOIN org_nodes o\b/.test(sql) || /WITH RECURSIVE descendants\(id, path\) AS/.test(sql))
+  )
+}
+
+function expectRecursiveDescendantScope(sql, rootParamIndex) {
+  expect(sql).toMatch(/WITH RECURSIVE descendants\(id, path\) AS/)
+  expect(sql).toMatch(new RegExp(`SELECT \\$${rootParamIndex}::text, ARRAY\\[\\$${rootParamIndex}::text\\]`))
+  expect(sql).toMatch(/JOIN descendants ON child\.parent_id = descendants\.id/)
+  expect(sql).toMatch(/WHERE NOT child\.id = ANY\(descendants\.path\)/)
+  expect(sql).toMatch(/JOIN descendants ON s\.org_node_id = descendants\.id/)
+}
+
 // ---- 默认 mock：根据 SQL 形态返回对应 shape ----
 function setupDefaultMocks({
   metricValue = 100,
@@ -48,8 +64,8 @@ function setupDefaultMocks({
   storeName = '凤御A店',
 } = {}) {
   pg.query.mockReset().mockImplementation(async (sql) => {
-    // T4（2026-04-25）：storeCount SQL 历史化 → FROM stores ... JOIN org_nodes（带 opening_date/closed_at 守卫）
-    if (/COUNT\(\*\)::int\s+AS\s+cnt/.test(sql) && /FROM stores s\b/.test(sql) && /JOIN org_nodes o\b/.test(sql)) {
+    // all 走直属门店查询，market 走递归后代组织树；两者均带历史化日期守卫。
+    if (isStoreCountSql(sql)) {
       return [{ cnt: storeCount }]
     }
     if (/FROM org_nodes\b/.test(sql) && /SELECT name\b/.test(sql)) {
@@ -184,23 +200,22 @@ describe('mgmtDashboard.summary scopeType=all', () => {
 })
 
 describe('mgmtDashboard.summary scopeType=market', () => {
-  test('SQL 含 stores JOIN org_nodes 子查询；storeCount 走 parent_id', async () => {
+  test('SQL 通过递归组织树覆盖市场下任意层级门店', async () => {
     setupDefaultMocks({ metricValue: 50, storeCount: 3, marketName: '华东市场' })
     const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'market', scopeId: 'mkt-A' })
     await summary(ctx)
 
     const sqlList = pg.query.mock.calls.map((c) => c[0])
 
-    // sale/service 表过滤：so.store_id IN (SELECT s.store_id FROM stores s JOIN org_nodes o ...)
+    // sale/service 表过滤：so.store_id IN (递归 descendants ...)
     // 排除 retainedMemberCount（FROM service_orders + JOIN client_wechat_users，scope 走 c.bound_store_id）
     const saleServiceSqls = sqlList.filter(
       (s) => /sale_orders|service_orders/.test(s) && !/became_member_at/.test(s),
     )
     expect(saleServiceSqls.length).toBeGreaterThanOrEqual(12)
     for (const s of saleServiceSqls) {
-      expect(s).toMatch(/store_id\s+IN\s*\(\s*SELECT\s+s\.store_id\s+FROM\s+stores\s+s/)
-      expect(s).toContain("o.parent_id = $2")
-      expect(s).toContain("o.type = '门店'")
+      expect(s).toMatch(/(?:so|o)\.store_id\s+IN\s*\(/)
+      expectRecursiveDescendantScope(s, 2)
     }
 
     // client 表过滤：newMembers(2) + memberCount(1) + retainedMemberCount(1, JOIN) = 4
@@ -208,8 +223,8 @@ describe('mgmtDashboard.summary scopeType=market', () => {
     expect(clientSqls.length).toBe(4)
     for (const s of clientSqls) {
       expect(s).toMatch(/bound_store_id\s+IN\s*\(/)
-      // T2 起 memberCount 也用 $1=date，所有 4 条 client SQL 的 parent_id 都走 $2
-      expect(s).toContain('o.parent_id = $2')
+      // T2 起 memberCount 也用 $1=date，所有 4 条 client SQL 的根节点参数都在 $2。
+      expectRecursiveDescendantScope(s, 2)
     }
 
     // staff 表过滤：T6 起 employeeCount 调用 2 次（day + month）
@@ -217,23 +232,16 @@ describe('mgmtDashboard.summary scopeType=market', () => {
     const staffSqls = sqlList.filter((s) => /staff_wechat_users/.test(s))
     expect(staffSqls.length).toBe(2)
     for (const s of staffSqls) {
-      expect(s).toMatch(/store_id\s+IN\s*\(\s*SELECT\s+s\.store_id\s+FROM\s+stores\s+s/)
-      expect(s).toContain('o.parent_id = $2')
+      expect(s).toMatch(/s\.store_id\s+IN\s*\(/)
+      expectRecursiveDescendantScope(s, 2)
     }
 
-    // storeCount 走 parent_id 过滤；T4 起 FROM stores ... JOIN org_nodes，opening_date/closed_at 守卫
-    // 注：metric SQL 子查询里也有 "FROM stores s JOIN org_nodes o"，需用 COUNT(*)::int AS cnt 区分
+    // storeCount 同样走递归后代组织树，并带 opening_date/closed_at 守卫。
     // T6 起 storeCount 调用 2 次（day + month）
-    const storeCountSqls = sqlList.filter(
-      (s) =>
-        /COUNT\(\*\)::int\s+AS\s+cnt/.test(s) &&
-        /FROM stores s\b/.test(s) &&
-        /JOIN org_nodes o\b/.test(s),
-    )
+    const storeCountSqls = sqlList.filter(isStoreCountSql)
     expect(storeCountSqls.length).toBe(2)
     for (const s of storeCountSqls) {
-      expect(s).toContain("o.type = '门店'")
-      expect(s).toContain('o.parent_id = $1')
+      expectRecursiveDescendantScope(s, 1)
       expect(s).toMatch(/s\.opening_date::date\s*<=\s*\$2::date/)
       expect(s).toMatch(/s\.closed_at\s+IS\s+NULL\s+OR\s+s\.closed_at::date\s*>\s*\$2::date/)
     }
@@ -336,8 +344,7 @@ describe('mgmtDashboard.summary 月店均与防除零', () => {
 
   test('storeCount=0 → monthlyAvgPerStore 返回 0 而非 NaN', async () => {
     pg.query.mockReset().mockImplementation(async (sql) => {
-      // T4 storeCount 历史化：FROM stores ... JOIN org_nodes
-      if (/COUNT\(\*\)::int\s+AS\s+cnt/.test(sql) && /FROM stores s\b/.test(sql) && /JOIN org_nodes o\b/.test(sql)) return [{ cnt: 0 }]
+      if (isStoreCountSql(sql)) return [{ cnt: 0 }]
       if (/FROM org_nodes\b/.test(sql) && /SELECT name\b/.test(sql)) return [{ name: '' }]
       return [{ v: 999 }]
     })
@@ -597,7 +604,7 @@ describe('mgmtDashboard.summary 提成（销售/服务）', () => {
     }
   })
 
-  test('scopeType=market：两类提成 SQL 都走 stores JOIN org_nodes 子查询并占位 $2', async () => {
+  test('scopeType=market：两类提成 SQL 都走递归后代组织树并占位 $2', async () => {
     setupDefaultMocks({ metricValue: 0 })
     const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'market', scopeId: 'mkt-A' })
     await summary(ctx)
@@ -608,8 +615,8 @@ describe('mgmtDashboard.summary 提成（销售/服务）', () => {
     expect(salesSqls.length).toBe(2)
     expect(svcSqls.length).toBe(2)
     for (const s of [...salesSqls, ...svcSqls]) {
-      expect(s).toMatch(/so\.store_id\s+IN\s*\(\s*SELECT\s+s\.store_id\s+FROM\s+stores\s+s/)
-      expect(s).toContain('o.parent_id = $2')
+      expect(s).toMatch(/so\.store_id\s+IN\s*\(/)
+      expectRecursiveDescendantScope(s, 2)
     }
   })
 })
@@ -667,8 +674,8 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     metricValue = 0,
   } = {}) {
     pg.query.mockReset().mockImplementation(async (sql) => {
-      // T4 storeCount 历史化：FROM stores ... JOIN org_nodes（不再是裸 FROM org_nodes）
-      if (/COUNT\(\*\)::int\s+AS\s+cnt/.test(sql) && /FROM stores s\b/.test(sql) && /JOIN org_nodes o\b/.test(sql)) {
+      // all 与 market 的门店数查询都应返回配置的快照值。
+      if (isStoreCountSql(sql)) {
         return [{ cnt: storeCount }]
       }
       if (/FROM org_nodes\b/.test(sql) && /SELECT name\b/.test(sql)) return [{ name: '' }]
@@ -786,7 +793,7 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     expect(ctx.result.retainedMemberCount).toBe(5)
   })
 
-  test('retainedMemberCount scopeType=market：scope 走 c.bound_store_id IN (... parent_id = $2)', async () => {
+  test('retainedMemberCount scopeType=market：scope 走 c.bound_store_id 的递归后代组织树', async () => {
     setupCensusMocks({ retainedCount: 7 })
     const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'market', scopeId: 'mkt-A' })
     await summary(ctx)
@@ -795,8 +802,8 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
       .map((c) => c[0])
       .find((s) => /FROM service_orders/.test(s) && /became_member_at/.test(s))
     expect(retainedSql).toBeDefined()
-    expect(retainedSql).toMatch(/c\.bound_store_id\s+IN\s*\(\s*SELECT\s+s\.store_id\s+FROM\s+stores\s+s/)
-    expect(retainedSql).toContain('o.parent_id = $2')
+    expect(retainedSql).toMatch(/c\.bound_store_id\s+IN\s*\(/)
+    expectRecursiveDescendantScope(retainedSql, 2)
     expect(ctx.result.retainedMemberCount).toBe(7)
   })
 
@@ -892,19 +899,14 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     expect(ctx.result.storeCount).toEqual({ day: 8, month: 8 })
   })
 
-  test('storeCount scopeType=market：SQL 含 o.parent_id = $1 ∩ opening_date/closed_at 走 $2::date', async () => {
+  test('storeCount scopeType=market：递归后代组织树 ∩ opening_date/closed_at 走 $2::date', async () => {
     setupCensusMocks({ storeCount: 3 })
     const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'market', scopeId: 'mkt-A' })
     await summary(ctx)
 
-    const storeCall = pg.query.mock.calls.find(
-      (c) =>
-        /COUNT\(\*\)::int\s+AS\s+cnt/.test(c[0]) &&
-        /FROM stores s\b/.test(c[0]) &&
-        /JOIN org_nodes o\b/.test(c[0]),
-    )
+    const storeCall = pg.query.mock.calls.find((c) => isStoreCountSql(c[0]))
     expect(storeCall).toBeDefined()
-    expect(storeCall[0]).toContain('o.parent_id = $1')
+    expectRecursiveDescendantScope(storeCall[0], 1)
     expect(storeCall[0]).toMatch(/s\.opening_date::date\s*<=\s*\$2::date/)
     expect(storeCall[0]).toMatch(/s\.closed_at\s+IS\s+NULL\s+OR\s+s\.closed_at::date\s*>\s*\$2::date/)
     expect(storeCall[1]).toEqual(['mkt-A', '2026-04-25'])
@@ -918,7 +920,7 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     /c\.became_member_at::date\s*<=\s*\$1::date/.test(s) &&
     !/FROM service_orders/.test(s)
 
-  test('scopeType=market：staff/client 截面 SQL 走 stores JOIN org_nodes 子查询', async () => {
+  test('scopeType=market：staff/client 截面 SQL 走递归后代组织树', async () => {
     setupCensusMocks()
     const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'market', scopeId: 'mkt-A' })
     await summary(ctx)
@@ -926,14 +928,14 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     const sqlList = pg.query.mock.calls.map((c) => c[0])
     const memberSql = sqlList.find(isMemberCountSql)
     expect(memberSql).toBeDefined()
-    expect(memberSql).toMatch(/c\.bound_store_id\s+IN\s*\(\s*SELECT\s+s\.store_id\s+FROM\s+stores\s+s/)
+    expect(memberSql).toMatch(/c\.bound_store_id\s+IN\s*\(/)
     // T2 起 memberCount 用 $1=date + $2=scopeId
-    expect(memberSql).toContain('o.parent_id = $2')
+    expectRecursiveDescendantScope(memberSql, 2)
 
     // T3 起 employeeCount 用 $1=date + $2=scopeId（参数顺序：[date, ...scopeParams]）
     const empSql = sqlList.find((s) => /FROM staff_wechat_users/.test(s))
-    expect(empSql).toMatch(/s\.store_id\s+IN\s*\(\s*SELECT\s+s\.store_id\s+FROM\s+stores\s+s/)
-    expect(empSql).toContain('o.parent_id = $2')
+    expect(empSql).toMatch(/s\.store_id\s+IN\s*\(/)
+    expectRecursiveDescendantScope(empSql, 2)
   })
 
   test('scopeType=store：staff/client 截面 SQL 走单值过滤', async () => {

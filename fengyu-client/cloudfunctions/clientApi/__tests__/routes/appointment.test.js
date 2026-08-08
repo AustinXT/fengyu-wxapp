@@ -154,6 +154,7 @@ describe('appointment.list', () => {
       session_count: 10,
       remaining_sessions: 8,
       paid_sessions: 10,
+      unit: '次',
     }])
 
     const ctx = createBoundCtx({})
@@ -166,6 +167,7 @@ describe('appointment.list', () => {
       session_count: 10,
       remaining_sessions: 8,
       paid_sessions: 10,
+      unit: '次',
     })
 
     // 验证 SQL 包含 LIMIT/OFFSET
@@ -175,6 +177,7 @@ describe('appointment.list', () => {
     expect(sql).toContain('si.session_count')
     expect(sql).toContain('si.remaining_sessions')
     expect(sql).toContain('si.paid_sessions')
+    expect(sql).toContain('ps.unit')
   })
 
   test('hasMore=true 当结果超过 pageSize', async () => {

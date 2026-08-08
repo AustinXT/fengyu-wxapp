@@ -21,6 +21,18 @@ vi.mock('@db/operation-log', () => ({
   },
 }))
 
+vi.mock('@db/org', () => ({
+  stores: {
+    storeId: 'store_id',
+    orgNodeId: 'store_org_node_id',
+  },
+  orgNodes: {
+    id: 'org_node_id',
+    type: 'type',
+    parentId: 'parent_id',
+  },
+}))
+
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((a, b) => ({ type: 'eq', a, b })),
   and: vi.fn((...args) => ({ type: 'and', args })),
@@ -28,6 +40,7 @@ vi.mock('drizzle-orm', () => ({
   gte: vi.fn((a, b) => ({ type: 'gte', a, b })),
   lte: vi.fn((a, b) => ({ type: 'lte', a, b })),
   like: vi.fn((a, b) => ({ type: 'like', a, b })),
+  inArray: vi.fn((a, b) => ({ type: 'inArray', a, b })),
   sql: vi.fn((strings: any, ...vals: any[]) => ({ type: 'sql', strings, vals })),
 }))
 
@@ -46,6 +59,7 @@ vi.mock('next/cache', () => ({
 vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
   requireAdmin: vi.fn(),
+  isAdminScope: vi.fn((session: any) => session.roles.some((role: any) => role.role === 'admin')),
   requireAnyPermission: vi.fn((session: any, actions: string[]) => {
     if (!session) throw new Error('NO_SESSION')
     const has = actions.some((a: string) => session.permissions?.actions?.includes(a))
@@ -57,7 +71,8 @@ import { getLogs, getLogsPaginated, getOrderLogs, deleteOperationLog } from './l
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { logOperation } from '@/lib/operation-log'
-import { eq, like, gte, lte } from 'drizzle-orm'
+import { eq, inArray, like, gte, lte, sql } from 'drizzle-orm'
+import { isAdminScope } from '@/lib/permissions'
 
 const mockSession = {
   employeeId: 'ADMIN-001',
@@ -221,6 +236,60 @@ describe('getLogs — 筛选 + LIKE 转义', () => {
     expect(result.data).toHaveLength(1)
     expect(dataChain.limit).toHaveBeenCalledWith(20)
     expect(dataChain.offset).toHaveBeenCalledWith(40)
+  })
+
+  it('非 admin 使用会话中已展开的组织子树节点', async () => {
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      roles: [{ role: 'manager', scopeId: 'market-node-1', scopeType: '市场' }],
+      permissions: {
+        actions: ['operation_log:list'],
+        scopeStoreIds: ['store-allowed'],
+        scopeOrgNodeIds: ['market-node-1', 'store-node-allowed', 'store-node-deep'],
+      },
+    })
+    ;(isAdminScope as any).mockReturnValueOnce(false)
+    mockLogChain([])
+
+    await getLogs()
+
+    expect(inArray).toHaveBeenCalledWith(
+      'org_node_id',
+      ['market-node-1', 'store-node-allowed', 'store-node-deep'],
+    )
+  })
+
+  it('非 admin 无可见门店时仍保留全部角色的实际 scope 节点', async () => {
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      roles: [
+        { role: 'manager', scopeId: 'market-node-1', scopeType: '市场' },
+        { role: 'finance', scopeId: 'hq-node-1', scopeType: '总部' },
+      ],
+      permissions: {
+        actions: ['operation_log:list'],
+        scopeStoreIds: [],
+        scopeOrgNodeIds: ['market-node-1', 'hq-node-1'],
+      },
+    })
+    ;(isAdminScope as any).mockReturnValueOnce(false)
+    mockLogChain([])
+
+    await getLogs()
+
+    expect(inArray).toHaveBeenCalledWith('org_node_id', ['market-node-1', 'hq-node-1'])
+  })
+
+  it('组织节点筛选使用递归子树条件覆盖任意层级日志', async () => {
+    mockLogChain([])
+
+    await getLogs({ marketId: 'market-node-1' })
+
+    const recursiveSql = (sql as any).mock.calls
+      .map((call: any[]) => Array.from(call[0] as TemplateStringsArray).join(''))
+      .find((text: string) => text.includes('WITH RECURSIVE descendants'))
+    expect(recursiveSql).toContain('child.parent_id = descendants.id')
+    expect(recursiveSql).toContain('NOT child.id = ANY(descendants.path)')
   })
 })
 

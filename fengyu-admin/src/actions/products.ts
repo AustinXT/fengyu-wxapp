@@ -15,6 +15,7 @@ import { expandVisibleMarketIds, requireAdmin } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { computeBundleTotals } from '@/lib/bundle-price'
 import { nowTs } from '@/lib/db-time'
+import { bundleMarketScopeCondition, resolveCustomerBundleMarketScope } from '@/lib/bundle-market-scope'
 
 /**
  * 获取所有市场节点（type='市场'），用于商品可见范围选择。
@@ -498,6 +499,7 @@ export const getAllSkus = withPermission(
       price: r.sku.price,
       specialPrice: r.sku.specialPrice,
       sessionCount: r.sku.sessionCount,
+      unit: r.sku.unit,
       purchaseLimit: r.sku.purchaseLimit,
       sortOrder: r.sku.sortOrder,
       serviceFee: r.sku.serviceFee,
@@ -546,6 +548,7 @@ export const getSkuById = withPermission(
       price: r.sku.price,
       specialPrice: r.sku.specialPrice,
       sessionCount: r.sku.sessionCount,
+      unit: r.sku.unit,
       purchaseLimit: r.sku.purchaseLimit,
       sortOrder: r.sku.sortOrder,
       serviceFee: r.sku.serviceFee,
@@ -593,6 +596,7 @@ export const getSkusByProductId = withPermission(
       price: r.sku.price,
       specialPrice: r.sku.specialPrice,
       sessionCount: r.sku.sessionCount,
+      unit: r.sku.unit,
       purchaseLimit: r.sku.purchaseLimit,
       sortOrder: r.sku.sortOrder,
       serviceFee: r.sku.serviceFee,
@@ -614,6 +618,18 @@ export const getSkusByProductId = withPermission(
 
 const VALID_PRODUCT_TYPES = ['疗程卡', '家居产品'] as const
 
+function defaultSkuUnit(productType: string): string {
+  return productType === '家居产品' ? '盒' : '次'
+}
+
+function normalizeSkuUnit(unit: string | undefined, productType: string): { value?: string; error?: string } {
+  if (unit === undefined) return { value: defaultSkuUnit(productType) }
+  const value = unit.trim()
+  if (!value) return { error: '单位不能为空' }
+  if (value.length > 10) return { error: '单位不能超过 10 个字符' }
+  return { value }
+}
+
 function validatePurchaseLimit(purchaseLimit: number | null | undefined): string | null {
   if (purchaseLimit == null) return null
   if (!Number.isInteger(purchaseLimit) || purchaseLimit < 1) {
@@ -634,6 +650,7 @@ export const createSku = withPermission(
       price: string
       specialPrice?: string | null
       sessionCount?: number | null
+      unit?: string
       purchaseLimit?: number | null
       sortOrder?: number
       serviceFee?: string
@@ -668,6 +685,8 @@ export const createSku = withPermission(
         return { success: false, message: '疗程卡的次数必须 >= 1' }
       }
     }
+    const unitResult = normalizeSkuUnit(data.unit, data.productType)
+    if (unitResult.error) return { success: false, message: unitResult.error }
     const purchaseLimitError = validatePurchaseLimit(data.purchaseLimit)
     if (purchaseLimitError) return { success: false, message: purchaseLimitError }
 
@@ -677,6 +696,7 @@ export const createSku = withPermission(
     try {
       await db.insert(productSkus).values({
         ...data,
+        unit: unitResult.value,
         productType: data.productType as typeof productSkus.$inferInsert['productType'],
       })
     } catch (err: any) {
@@ -703,6 +723,7 @@ export const updateSku = withPermission(
       price: string
       specialPrice: string | null
       sessionCount: number | null
+      unit: string
       purchaseLimit: number | null
       sortOrder: number
       serviceFee: string
@@ -728,6 +749,15 @@ export const updateSku = withPermission(
         return { success: false, message: '疗程卡的次数必须 >= 1' }
       }
     }
+    const finalProductType = data.productType ?? before?.productType
+    let unitForUpdate: string | undefined
+    if (data.unit !== undefined) {
+      const unitResult = normalizeSkuUnit(data.unit, finalProductType ?? '疗程卡')
+      if (unitResult.error) return { success: false, message: unitResult.error }
+      unitForUpdate = unitResult.value
+    } else if (before && data.productType !== undefined && data.productType !== before.productType) {
+      unitForUpdate = defaultSkuUnit(data.productType)
+    }
     const purchaseLimitError = validatePurchaseLimit(data.purchaseLimit)
     if (purchaseLimitError) return { success: false, message: purchaseLimitError }
 
@@ -741,6 +771,7 @@ export const updateSku = withPermission(
       .update(productSkus)
       .set({
         ...data,
+        ...(unitForUpdate !== undefined ? { unit: unitForUpdate } : {}),
         productType: data.productType as typeof productSkus.$inferInsert['productType'],
       })
       .where(whereConditions)
@@ -1748,6 +1779,7 @@ export interface OrderPickerSku {
   price: string
   specialPrice: string | null
   sessionCount: number | null
+  unit: string
   purchaseLimit: number | null
   serviceFee: string
   sortOrder: number
@@ -1771,6 +1803,7 @@ export interface OrderPickerBundleSkuRef {
   productType: '疗程卡' | '家居产品'
   /** 疗程卡次数（非疗程卡为 null），开单时需快照到 sale_items.session_count */
   sessionCount: number | null
+  unit: string
   purchaseLimit: number | null
   price: string
   bundlePrice: string | null
@@ -1838,9 +1871,10 @@ export interface OrderPickerFlatResult {
 
 export const getProductsByKind = withPermission(
   'product:list',
-  async (_session, kind: ProductKindForOrder): Promise<OrderPickerResult> => {
+  async (_session, kind: ProductKindForOrder, clientUserId?: string): Promise<OrderPickerResult> => {
   if (kind === '__bundle__') {
     // 套餐商品：products WHERE is_bundle AND deleted_at IS NULL（开单页无视 is_visible，与普通商品/体验卡口径一致）
+    const customerMarketScope = await resolveCustomerBundleMarketScope(clientUserId)
     const bundleRows = await db
       .select({
         productId: products.productId,
@@ -1851,7 +1885,11 @@ export const getProductsByKind = withPermission(
         sortOrder: products.sortOrder,
       })
       .from(products)
-      .where(and(eq(products.isBundle, true), isNull(products.deletedAt)))
+      .where(and(
+        eq(products.isBundle, true),
+        isNull(products.deletedAt),
+        bundleMarketScopeCondition(products.marketScope, customerMarketScope),
+      ))
       // 例外：sortOrder 手工排序权重
       .orderBy(asc(products.sortOrder))
 
@@ -1901,6 +1939,7 @@ export const getProductsByKind = withPermission(
             specName: m.sku.specName,
             productType: m.sku.productType as OrderPickerBundleSkuRef['productType'],
             sessionCount: m.sku.sessionCount,
+            unit: m.sku.unit,
             purchaseLimit: m.sku.purchaseLimit,
             price: m.bundleListPrice ?? m.sku.price,
             bundlePrice: m.bundlePrice ?? m.bundleListPrice ?? m.sku.price,
@@ -1915,6 +1954,7 @@ export const getProductsByKind = withPermission(
           specName: m.sku.specName,
           productType: m.sku.productType as OrderPickerBundleSkuRef['productType'],
           sessionCount: m.sku.sessionCount,
+          unit: m.sku.unit,
           purchaseLimit: m.sku.purchaseLimit,
           price: m.bundleListPrice ?? m.sku.price,
           bundlePrice: m.bundlePrice ?? m.bundleListPrice ?? m.sku.price,
@@ -2011,6 +2051,7 @@ export const getProductsByKind = withPermission(
         price: r.sku.price,
         specialPrice: r.sku.specialPrice,
         sessionCount: r.sku.sessionCount,
+        unit: r.sku.unit,
         purchaseLimit: r.sku.purchaseLimit,
         serviceFee: r.sku.serviceFee,
         sortOrder: r.sku.sortOrder,
@@ -2072,6 +2113,7 @@ export const getProductsByKind = withPermission(
       price: r.sku.price,
       specialPrice: r.sku.specialPrice,
       sessionCount: r.sku.sessionCount,
+      unit: r.sku.unit,
       purchaseLimit: r.sku.purchaseLimit,
       serviceFee: r.sku.serviceFee,
       sortOrder: r.sku.sortOrder,

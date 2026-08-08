@@ -2,20 +2,25 @@
 
 import { db } from '@/db'
 import { operationLogs } from '@db/operation-log'
-import { desc, eq, and, gte, lte, like, sql } from 'drizzle-orm'
+import { stores, orgNodes } from '@db/org'
+import { desc, eq, and, gte, lte, like, sql, inArray } from 'drizzle-orm'
+import type { SQL } from 'drizzle-orm'
 import { beijingBoundaryTs } from '@/lib/db-time'
-import type { OperationLog } from '@/lib/types'
+import type { OperationLog, AuthSession } from '@/lib/types'
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
-import { requireAdmin } from '@/lib/permissions'
+import { requireAdmin, isAdminScope } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 import { revalidatePath } from 'next/cache'
+import { orgNodeInScopeCondition } from '@/lib/market-store-sql'
 
 export interface LogFilter {
   operatorName?: string
   action?: string
   targetType?: string
-  startDate?: string  // YYYY-MM-DD
-  endDate?: string    // YYYY-MM-DD
+  marketId?: string    // 市场 org_node_id
+  storeId?: string     // 门店 store_id
+  startDate?: string   // YYYY-MM-DD
+  endDate?: string     // YYYY-MM-DD
   page?: number
   pageSize?: number
 }
@@ -37,8 +42,8 @@ function serializeLog(r: typeof operationLogs.$inferSelect): OperationLog {
   }
 }
 
-function buildLogConditions(filter?: LogFilter) {
-  const conditions = []
+async function buildLogConditions(session: AuthSession, filter?: LogFilter): Promise<(SQL | undefined)[]> {
+  const conditions: (SQL | undefined)[] = []
 
   if (filter?.operatorName) {
     // 转义 SQL LIKE 特殊字符
@@ -65,13 +70,48 @@ function buildLogConditions(filter?: LogFilter) {
     conditions.push(lte(operationLogs.createdAt, beijingBoundaryTs(filter.endDate, '23:59:59')))
   }
 
+  // scope 过滤：日志记录的是写入者角色的 org_node_id。新会话已含角色根节点及其全部
+  // 后代，市场级/部门级操作日志不再依赖“直属门店”反查。
+  if (!isAdminScope(session)) {
+    const orgNodeIdList = session.permissions.scopeOrgNodeIds
+      ?? session.permissions.scopeDeptNodeIds
+      ?? session.roles.map((role) => role.scopeId)
+    if (orgNodeIdList.length === 0) {
+      conditions.push(sql`FALSE`)
+    } else if (orgNodeIdList.length === 1) {
+      conditions.push(eq(operationLogs.orgNodeId, orgNodeIdList[0]))
+    } else {
+      conditions.push(inArray(operationLogs.orgNodeId, orgNodeIdList))
+    }
+  }
+
+  // 市场筛选（前端传入的筛选条件，所有角色包括 admin）
+  if (filter?.marketId) {
+    conditions.push(orgNodeInScopeCondition(operationLogs.orgNodeId, filter.marketId))
+  }
+
+  // 门店筛选（前端传入的筛选条件，所有角色包括 admin）
+  if (filter?.storeId) {
+    const [storeOrgNode] = await db
+      .select({ orgNodeId: stores.orgNodeId })
+      .from(stores)
+      .where(eq(stores.storeId, filter.storeId))
+      .limit(1)
+
+    if (!storeOrgNode || !storeOrgNode.orgNodeId) {
+      conditions.push(sql`FALSE`)
+    } else {
+      conditions.push(eq(operationLogs.orgNodeId, storeOrgNode.orgNodeId))
+    }
+  }
+
   return conditions
 }
 
 export const getLogs = withPermission(
   'operation_log:list',
-  async (_session, filter?: LogFilter): Promise<OperationLog[]> => {
-  const conditions = buildLogConditions(filter)
+  async (session, filter?: LogFilter): Promise<OperationLog[]> => {
+  const conditions = await buildLogConditions(session, filter)
 
   const rows = await db
     .select()
@@ -91,11 +131,11 @@ export interface PaginatedLogs {
 
 export const getLogsPaginated = withPermission(
   'operation_log:list',
-  async (_session, filter: LogFilter = {}): Promise<PaginatedLogs> => {
+  async (session, filter: LogFilter = {}): Promise<PaginatedLogs> => {
     const page = Math.max(1, filter.page || 1)
     const pageSize = [20, 50, 100].includes(filter.pageSize ?? 0) ? filter.pageSize! : 20
     const offset = (page - 1) * pageSize
-    const conditions = buildLogConditions(filter)
+    const conditions = await buildLogConditions(session, filter)
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined
 
     const [countRow] = await db

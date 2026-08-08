@@ -26,8 +26,9 @@ vi.mock('@db/org', () => ({
   stores: { storeId: 'store_id', orgNodeId: 'org_node_id' },
 }))
 
-import { computeActions, requirePermission, requireAnyPermission, buildScopeWhere, DEFAULT_PERMISSION_MATRIX, ALL_ACTIONS, PermissionError, expandScopeStoreIds, expandScopeDeptNodeIds, isAdminScope, accessiblePermissionScopeIds, scopeCondition, employeeScopeCondition, isInScope, hasPermission, getPermissionMatrix, invalidatePermissionMatrixCache, canAccessAdmin, isDepositOrderApprover } from './permissions'
+import { computeActions, requirePermission, requireAnyPermission, buildScopeWhere, DEFAULT_PERMISSION_MATRIX, ALL_ACTIONS, PermissionError, expandRoleScope, expandScopeStoreIds, expandScopeOrgNodeIds, isAdminScope, accessiblePermissionScopeIds, scopeCondition, employeeScopeCondition, isInScope, hasPermission, getPermissionMatrix, invalidatePermissionMatrixCache, canAccessAdmin, isDepositOrderApprover } from './permissions'
 import type { AuthSession, RoleType } from './types'
+import { db } from '@/db'
 
 // 构造不同角色的 session 工厂（hasPermission 测试用）
 function makeSession(roles: Array<{ role: RoleType; scopeId: string; scopeType: '总部' | '市场' | '门店' }>, actions: string[] = []): AuthSession {
@@ -501,22 +502,24 @@ describe('accessiblePermissionScopeIds', () => {
     expect(accessiblePermissionScopeIds(session)).toBeNull()
   })
 
-  it('非 admin 返回其精确 scopeId（不展开子树）', () => {
+  it('非 admin 返回会话中已展开的子树节点', () => {
     const session = mockSession({
       roles: [{ role: 'hr', scopeId: 'market-1', scopeType: '市场' }],
+      permissions: { actions: [], scopeStoreIds: [], scopeOrgNodeIds: ['market-1', 'store-1', 'dept-1'] },
     })
-    expect(accessiblePermissionScopeIds(session)).toEqual(['market-1'])
+    expect(accessiblePermissionScopeIds(session)).toEqual(['market-1', 'store-1', 'dept-1'])
   })
 
-  it('非 admin 多角色去重 scopeId', () => {
+  it('非 admin 多角色子树节点去重', () => {
     const session = mockSession({
       roles: [
         { role: 'hr', scopeId: 'market-1', scopeType: '市场' },
         { role: 'finance', scopeId: 'market-1', scopeType: '市场' },
         { role: 'manager', scopeId: 'market-2', scopeType: '市场' },
       ],
+      permissions: { actions: [], scopeStoreIds: [], scopeOrgNodeIds: ['market-1', 'store-1', 'market-2', 'store-1'] },
     })
-    expect(accessiblePermissionScopeIds(session)).toEqual(['market-1', 'market-2'])
+    expect(accessiblePermissionScopeIds(session)).toEqual(['market-1', 'store-1', 'market-2'])
   })
 
   it('空角色返回空数组', () => {
@@ -561,10 +564,10 @@ describe('employeeScopeCondition — 员工双维度 scope（store_id ∪ org_no
     expect(employeeScopeCondition(session, {} as any, {} as any)).toBeUndefined()
   })
 
-  it('非 admin 双列表 → or 条件（store + dept）', () => {
+  it('非 admin 双列表 → or 条件（store + org node）', () => {
     const session = mockSession({
       roles: [{ role: 'manager', scopeId: 'm1', scopeType: '市场' }],
-      permissions: { actions: [], scopeStoreIds: ['S1'], scopeDeptNodeIds: ['D1', 'D2'] },
+      permissions: { actions: [], scopeStoreIds: ['S1'], scopeOrgNodeIds: ['M1', 'D1', 'D2'] },
     })
     expect(employeeScopeCondition(session, {} as any, {} as any)).toBeDefined()
   })
@@ -577,10 +580,10 @@ describe('employeeScopeCondition — 员工双维度 scope（store_id ∪ org_no
     expect(employeeScopeCondition(session, {} as any, {} as any)).toBeDefined()
   })
 
-  it('仅 scopeDeptNodeIds（职能部门员工可见）→ 单 dept 条件', () => {
+  it('仅 scopeOrgNodeIds（职能部门员工可见）→ 单 org node 条件', () => {
     const session = mockSession({
       roles: [{ role: 'manager', scopeId: 's1', scopeType: '门店' }],
-      permissions: { actions: [], scopeStoreIds: [], scopeDeptNodeIds: ['D1'] },
+      permissions: { actions: [], scopeStoreIds: [], scopeOrgNodeIds: ['D1'] },
     })
     expect(employeeScopeCondition(session, {} as any, {} as any)).toBeDefined()
   })
@@ -588,7 +591,7 @@ describe('employeeScopeCondition — 员工双维度 scope（store_id ∪ org_no
   it('双空 → FALSE 条件', () => {
     const session = mockSession({
       roles: [{ role: 'manager', scopeId: 's1', scopeType: '门店' }],
-      permissions: { actions: [], scopeStoreIds: [], scopeDeptNodeIds: [] },
+      permissions: { actions: [], scopeStoreIds: [], scopeOrgNodeIds: [] },
     })
     expect(employeeScopeCondition(session, {} as any, {} as any)).toBeDefined()
   })
@@ -628,7 +631,14 @@ describe('isInScope', () => {
   })
 })
 
-describe('expandScopeStoreIds', () => {
+function mockOrgTree(nodes: Array<{ id: string; parentId: string | null; type: string }>, storeRows: Array<{ storeId: string; orgNodeId: string | null }>) {
+  let call = 0
+  ;(db.select as any).mockImplementation(() => ({
+    from: vi.fn(() => (call++ === 0 ? nodes : storeRows)),
+  }))
+}
+
+describe('expandRoleScope / expandScopeStoreIds', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
@@ -638,124 +648,74 @@ describe('expandScopeStoreIds', () => {
     expect(result).toEqual([])
   })
 
-  it('headquarters scope 查询所有门店', async () => {
-    const { db } = await import('@/db')
-    const mockFrom = vi.fn().mockReturnValue([
-      { storeId: 'S001' },
-      { storeId: 'S002' },
-    ])
-    ;(db.select as any).mockReturnValue({ from: mockFrom })
-
-    const result = await expandScopeStoreIds([
+  it('总部 scope 包含全部节点和历史无组织归属门店', async () => {
+    mockOrgTree(
+      [{ id: 'hq', parentId: null, type: '总部' }, { id: 'market', parentId: 'hq', type: '市场' }],
+      [{ storeId: 'S001', orgNodeId: 'market' }, { storeId: 'legacy', orgNodeId: null }],
+    )
+    const result = await expandRoleScope([
       { role: 'admin', scopeId: 'hq-1', scopeType: '总部' },
     ])
-    expect(result).toContain('S001')
-    expect(result).toContain('S002')
-    expect(result).toHaveLength(2)
+    expect(result.orgNodeIds).toEqual(['hq', 'market'])
+    expect(result.storeIds).toEqual(['S001', 'legacy'])
   })
 
-  it('market scope 查询该市场下门店', async () => {
-    const { db } = await import('@/db')
-    // 第一次 select: org_nodes 子节点
-    // 第二次 select: stores
-    let callCount = 0
-    ;(db.select as any).mockImplementation(() => ({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockImplementation(() => {
-          callCount++
-          if (callCount === 1) {
-            return [{ id: 'store-node-1' }]  // org_nodes 子节点
-          }
-          return [{ storeId: 'S003' }]  // stores
-        }),
-      }),
-    }))
-
-    const result = await expandScopeStoreIds([
+  it('市场 scope 包含任意层级的下属门店与部门节点', async () => {
+    mockOrgTree(
+      [
+        { id: 'market-1', parentId: 'hq', type: '市场' },
+        { id: 'division-1', parentId: 'market-1', type: '部门' },
+        { id: 'store-node-1', parentId: 'division-1', type: '门店' },
+        { id: 'dept-1', parentId: 'store-node-1', type: '部门' },
+        { id: 'outside', parentId: 'hq', type: '市场' },
+      ],
+      [{ storeId: 'S003', orgNodeId: 'store-node-1' }, { storeId: 'S999', orgNodeId: 'outside' }],
+    )
+    const result = await expandRoleScope([
       { role: 'manager', scopeId: 'market-1', scopeType: '市场' },
     ])
-    expect(result).toContain('S003')
+    expect(result.orgNodeIds).toEqual(['market-1', 'division-1', 'store-node-1', 'dept-1'])
+    expect(result.storeIds).toEqual(['S003'])
   })
 
-  it('store scope 查询单个门店', async () => {
-    const { db } = await import('@/db')
-    ;(db.select as any).mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue([{ storeId: 'S005' }]),
-      }),
-    })
-
+  it('多个角色根节点取并集并去重', async () => {
+    mockOrgTree(
+      [
+        { id: 'market-1', parentId: 'hq', type: '市场' },
+        { id: 'store-node-1', parentId: 'market-1', type: '门店' },
+        { id: 'store-node-2', parentId: 'market-1', type: '门店' },
+      ],
+      [{ storeId: 'S005', orgNodeId: 'store-node-1' }, { storeId: 'S006', orgNodeId: 'store-node-2' }],
+    )
     const result = await expandScopeStoreIds([
-      { role: 'manager', scopeId: 'store-node-5', scopeType: '门店' },
+      { role: 'manager', scopeId: 'market-1', scopeType: '市场' },
+      { role: 'manager', scopeId: 'store-node-1', scopeType: '门店' },
     ])
-    expect(result).toContain('S005')
+    expect(result).toEqual(['S005', 'S006'])
   })
 })
 
-describe('expandScopeDeptNodeIds — 员工部门 scope 展开', () => {
+describe('expandScopeOrgNodeIds', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
   it('空角色返回空数组', async () => {
-    const result = await expandScopeDeptNodeIds([])
+    const result = await expandScopeOrgNodeIds([])
     expect(result).toEqual([])
   })
 
-  it('部门 scope 被忽略（与 expandScopeStoreIds 一致）', async () => {
-    const result = await expandScopeDeptNodeIds([
-      { role: 'manager', scopeId: 'dept-1', scopeType: '部门' as any },
-    ])
-    expect(result).toEqual([])
-  })
-
-  it('总部 scope 查询全部部门节点', async () => {
-    const { db } = await import('@/db')
-    ;(db.select as any).mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue([{ id: 'dept-A' }, { id: 'dept-B' }]),
-      }),
-    })
-    const result = await expandScopeDeptNodeIds([
-      { role: 'admin', scopeId: 'hq-1', scopeType: '总部' },
-    ])
-    expect(result).toContain('dept-A')
-    expect(result).toContain('dept-B')
-  })
-
-  it('市场 scope 含市场级 + 门店级部门 + 市场节点本身', async () => {
-    const { db } = await import('@/db')
-    let callCount = 0
-    ;(db.select as any).mockImplementation(() => ({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockImplementation(() => {
-          callCount++
-          if (callCount === 1) return [{ id: 'store-node-1' }] // 该市场下门店节点
-          return [{ id: 'dept-market' }, { id: 'dept-store1' }] // 部门节点（市场级+门店级）
-        }),
-      }),
-    }))
-    const result = await expandScopeDeptNodeIds([
-      { role: 'manager', scopeId: 'market-1', scopeType: '市场' },
-    ])
-    expect(result).toContain('dept-market')
-    expect(result).toContain('dept-store1')
-    // 修复（同源）：市场节点本身也纳入，覆盖 org_node_id 直接 = 市场节点的员工
-    // （品项公司等职能部门 / 市场级岗位，store_id IS NULL），与 buildEmployeeConditions
-    // 市场分支末项 eq(orgNodeId, marketId) 同口径。
-    expect(result).toContain('market-1')
-  })
-
-  it('门店 scope 查询挂该门店的部门', async () => {
-    const { db } = await import('@/db')
-    ;(db.select as any).mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue([{ id: 'dept-store1' }]),
-      }),
-    })
-    const result = await expandScopeDeptNodeIds([
+  it('门店 scope 包含自身与所有下属组织节点', async () => {
+    mockOrgTree(
+      [
+        { id: 'store-node-1', parentId: 'market', type: '门店' },
+        { id: 'dept-store1', parentId: 'store-node-1', type: '部门' },
+      ],
+      [],
+    )
+    const result = await expandScopeOrgNodeIds([
       { role: 'manager', scopeId: 'store-node-1', scopeType: '门店' },
     ])
-    expect(result).toContain('dept-store1')
+    expect(result).toEqual(['store-node-1', 'dept-store1'])
   })
 })

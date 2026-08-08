@@ -11,7 +11,7 @@
  * 注：2026-05-26 起普通商品不再因「SKU 进过套餐」而隐藏（取消 NOT EXISTS bundle 谓词），
  *    SKU 既可单卖也可进套餐，互不影响。
  * 5. '充值卡' 仍返回平铺结构，仅 productKind='充值卡'
- * 6. '__bundle__' 行为不变
+ * 6. '__bundle__' 无匹配套餐时返回空列表
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -40,6 +40,7 @@ vi.mock('@db/product', () => ({
     categoryId: 'category_id',
     isBundle: 'is_bundle',
     isVisible: 'is_visible',
+    marketScope: 'market_scope',
     sortOrder: 'sort_order',
     deletedAt: 'deleted_at',
   },
@@ -324,7 +325,7 @@ describe("getProductsByKind('体验卡') — SKU capability 列过滤", () => {
   })
 })
 
-describe("getProductsByKind('__bundle__') — 行为不变", () => {
+describe("getProductsByKind('__bundle__') — 套餐范围筛选", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)

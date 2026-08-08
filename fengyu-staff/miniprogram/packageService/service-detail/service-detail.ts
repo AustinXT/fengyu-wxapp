@@ -23,6 +23,7 @@ interface ServiceDetail {
     remainingSessions: number;
     totalSessions: number;
     paidSessions: number | null;
+    unit: string;
   }>;
   // 顾客评价（仅店长可见；后端按 manager 角色下发）
   review?: { rating: number; comment: string; createdAt: string } | null;
@@ -88,7 +89,7 @@ Page({
     if (!detail || this.data.submitting) return;
     wx.showModal({
       title: '标记完成服务',
-      content: '标记完成后将通知顾客确认，顾客确认后才扣减疗程次数。',
+      content: '标记完成后将通知顾客确认，顾客确认后才扣减服务额度。',
       confirmText: '标记完成',
       success: async (res) => {
         if (!res.confirm) return;
@@ -114,7 +115,7 @@ Page({
     if (!detail || this.data.submitting) return;
     wx.showModal({
       title: '代客户确认',
-      content: '确认后将扣减疗程次数并完成服务单，仅在顾客不便自行确认时使用。',
+      content: '确认后将扣减服务额度并完成服务单，仅在顾客不便自行确认时使用。',
       confirmText: '确认完成',
       success: async (res) => {
         if (!res.confirm) return;
@@ -139,7 +140,7 @@ Page({
     if (!detail || this.data.submitting) return;
     wx.showModal({
       title: '取消服务单',
-      content: '确认取消该服务单？不会扣减疗程次数。',
+      content: '确认取消该服务单？不会扣减服务额度。',
       confirmText: '确认取消',
       confirmColor: '#E53935',
       success: async (res) => {

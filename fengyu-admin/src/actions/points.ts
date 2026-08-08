@@ -11,6 +11,7 @@ import type { PointTransaction, PointTransactionSummary, AuthSession } from '@/l
 import { scopeCondition } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { parsePointFilters } from '@/lib/list-filters'
+import { storeInMarketCondition } from '@/lib/market-store-sql'
 
 /**
  * 已知的 point_transactions.type 取值（自由文本字段，非 DB 枚举；下拉由 distinctTypes 动态填充）
@@ -75,14 +76,9 @@ function buildConditions(
   const scope = scopeCondition(session, clientWechatUsers.boundStoreId)
   if (scope) conditions.push(scope)
 
-  // 市场二级筛选：市场 → 该市场下所有门店
+  // 市场筛选：市场节点自身及任意层级下属节点关联的所有门店。
   if (filters.marketId) {
-    const sub = db
-      .select({ storeId: stores.storeId })
-      .from(stores)
-      .innerJoin(orgNodes, eq(stores.orgNodeId, orgNodes.id))
-      .where(eq(orgNodes.parentId, filters.marketId))
-    conditions.push(inArray(clientWechatUsers.boundStoreId, sub))
+    conditions.push(storeInMarketCondition(clientWechatUsers.boundStoreId, filters.marketId))
   }
   // 门店筛选
   if (filters.storeId) {

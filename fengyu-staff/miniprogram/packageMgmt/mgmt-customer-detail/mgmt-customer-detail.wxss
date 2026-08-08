@@ -45,16 +45,17 @@
 .profile-phone { font-size: 26rpx; color: var(--color-text-secondary); }
 
 .profile-stats {
-  display: flex;
-  align-items: center;
+  display: block;
   background: var(--color-bg-page);
   border-radius: var(--radius-lg);
   padding: 20rpx;
 }
 
-.stat-item { flex: 1; text-align: center; }
+.profile-stats-row { display: flex; align-items: center; }
+.profile-stats-row + .profile-stats-row { margin-top: 16rpx; padding-top: 16rpx; border-top: 1rpx solid var(--color-border); }
+.stat-item { flex: 1; min-width: 0; text-align: center; }
 .stat-label { display: block; font-size: 22rpx; color: var(--color-text-hint); margin-bottom: 4rpx; }
-.stat-value { font-size: 32rpx; font-weight: 700; color: var(--color-primary); }
+.stat-value { display: block; font-size: 30rpx; font-weight: 700; color: var(--color-primary); white-space: nowrap; }
 .stat-divider { width: 1rpx; height: 48rpx; background: var(--color-border); }
 
 /* Tab 内容区 */
@@ -222,6 +223,37 @@
 
 /* ===== 持卡汇总（管理层只读） ===== */
 .card-list { padding: 0 var(--spacing-card) var(--spacing-card); }
+
+.card-filter-bar {
+  padding: 0 var(--spacing-card) var(--spacing-tight);
+  background: var(--color-bg-page);
+}
+
+.card-filter-selectors {
+  display: flex;
+  gap: var(--spacing-tight);
+  margin-bottom: var(--spacing-tight);
+}
+
+.card-filter-selectors picker {
+  flex: 1;
+  min-width: 0;
+}
+
+.card-filter-picker {
+  min-height: 64rpx;
+  padding: 0 20rpx;
+  display: flex;
+  align-items: center;
+  border: 1rpx solid var(--color-border);
+  border-radius: 8rpx;
+  background: var(--color-bg-card);
+  color: var(--color-text-secondary);
+  font-size: 24rpx;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .treatment-card {
   background: var(--color-bg-card);

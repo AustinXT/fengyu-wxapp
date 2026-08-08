@@ -60,6 +60,7 @@ vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 import {
   getMerchantsPaginated,
   getMerchantById,
+  getMerchantOptions,
   getMerchantMarketOptions,
   createMerchant,
   updateMerchant,
@@ -160,6 +161,23 @@ describe('createMerchant', () => {
     expect(r.id).toMatch(/^lm_/)
     expect(values).toHaveBeenCalled()
   })
+
+  it('非 admin 创建到范围外市场 → 拒绝，不写入商户', async () => {
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(expandVisibleMarketIds as any).mockResolvedValue(['mkt_allowed'])
+
+    const r = await createMerchant({
+      merchantName: '凤仪韵',
+      merchantNo: '8222900',
+      termNo: 'D9261078',
+      enabled: true,
+      marketOrgNodeId: 'mkt_outside',
+    })
+
+    expect(r.success).toBe(false)
+    expect(r.message).toContain('无权')
+    expect(db.insert).not.toHaveBeenCalled()
+  })
 })
 
 describe('updateMerchant', () => {
@@ -188,6 +206,37 @@ describe('updateMerchant', () => {
     const r = await updateMerchant('lm_1', { merchantName: 'M', merchantNo: '8222900', termNo: 'T', enabled: false })
     expect(r.success).toBe(true)
     expect(set).toHaveBeenCalled()
+  })
+
+  it('非 admin 更新范围外商户 → 当作不存在，不执行更新', async () => {
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(expandVisibleMarketIds as any).mockResolvedValue(['mkt_allowed'])
+    mockSelectSequence([])
+
+    const r = await updateMerchant('lm_outside', { merchantName: 'M', merchantNo: null, termNo: null, enabled: false })
+
+    expect(r.success).toBe(false)
+    expect(r.message).toContain('商户不存在')
+    expect(inArray).toHaveBeenCalledWith('market_org_node_id', ['mkt_allowed'])
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('非 admin 不能将可见商户迁移到范围外市场', async () => {
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(expandVisibleMarketIds as any).mockResolvedValue(['mkt_allowed'])
+    mockSelectSequence([{ id: 'lm_1', merchantName: 'old' }])
+
+    const r = await updateMerchant('lm_1', {
+      merchantName: 'M',
+      merchantNo: null,
+      termNo: null,
+      enabled: false,
+      marketOrgNodeId: 'mkt_outside',
+    })
+
+    expect(r.success).toBe(false)
+    expect(r.message).toContain('无权')
+    expect(db.update).not.toHaveBeenCalled()
   })
 })
 
@@ -225,6 +274,31 @@ describe('getMerchantById', () => {
     expect(r?.id).toBe('lm_1')
     expect(r?.linkedStores).toHaveLength(1)
     expect(r?.linkedStores[0].storeName).toBe('莲塘店')
+  })
+
+  it('非 admin 查询范围外商户 → 返回 null，并在详情查询应用市场 scope', async () => {
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(expandVisibleMarketIds as any).mockResolvedValue(['mkt_allowed'])
+    mockSelectSequence([])
+
+    const r = await getMerchantById('lm_outside')
+
+    expect(r).toBeNull()
+    expect(expandVisibleMarketIds).toHaveBeenCalledWith(mockSession)
+    expect(inArray).toHaveBeenCalledWith('market_org_node_id', ['mkt_allowed'])
+  })
+})
+
+describe('getMerchantOptions', () => {
+  it('非 admin 仅返回范围内市场的商户选项', async () => {
+    ;(isAdminScope as any).mockReturnValue(false)
+    ;(expandVisibleMarketIds as any).mockResolvedValue(['mkt_allowed'])
+    mockSelectSequence([{ id: 'lm_1', merchantName: '凤仪韵', merchantNo: '8222900', enabled: true }])
+
+    const result = await getMerchantOptions()
+
+    expect(result).toEqual([{ id: 'lm_1', merchantName: '凤仪韵', merchantNo: '8222900', enabled: true }])
+    expect(inArray).toHaveBeenCalledWith('market_org_node_id', ['mkt_allowed'])
   })
 })
 

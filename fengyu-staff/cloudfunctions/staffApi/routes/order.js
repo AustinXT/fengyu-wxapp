@@ -108,7 +108,8 @@ function treatmentTierGroupKey(row) {
 }
 
 function applyTreatmentTierPricing(rawItems, tierSkuRows, buyerIsMember, saleOrderType) {
-  if (saleOrderType !== '销售单') return
+  // 销售单 + 转换单均需计算疗程卡梯度累加价（寄存单/内部单不计算）
+  if (saleOrderType !== '销售单' && saleOrderType !== '转换单') return
 
   const groups = new Map()
   for (const item of rawItems || []) {
@@ -409,16 +410,55 @@ async function settlePaidByCardAtCreation(client, { saleOrderId, clientUserId, r
  * 开单时所有套餐（含未上架商城的）都应可见可售。client `_loadAndValidateBundle` 仍保留 is_visible 过滤，
  * 此处是有意分叉，勿强行对齐。
  */
-async function _loadAndValidateBundle(bundleProductId, items) {
+/**
+ * 组合套餐主商品范围过滤（products.market_scope）。
+ * 与 product.shopInit 保持同一语义，但 staffApi 路由不共享运行时代码。
+ */
+function buildBundleMarketScopeFilter(auth, params, productAlias = 'p') {
+  const scopeExpr = `${productAlias}.market_scope`
+  const valuesExpr = `string_to_array(regexp_replace(${scopeExpr}, '[[:space:]]+', '', 'g'), ',')`
+  const globalExpr = `${scopeExpr} IS NULL`
+  const nonBlankExpr = `NULLIF(regexp_replace(${scopeExpr}, '[[:space:]]+', '', 'g'), '') IS NOT NULL`
+  const effectiveStoreId = auth?.effectiveStoreId
+
+  if (!effectiveStoreId) return `AND ${globalExpr}`
+
+  params.push(effectiveStoreId)
+  const storeParam = `$${params.length}`
+  return `AND (
+    ${globalExpr}
+    OR (
+      ${nonBlankExpr}
+      AND EXISTS (
+        SELECT 1
+        FROM stores s
+        JOIN org_nodes sn ON s.org_node_id = sn.id
+        JOIN org_nodes pm ON sn.parent_id = pm.id
+        WHERE s.store_id = ${storeParam}
+          AND pm.type = '市场'
+          AND (
+            pm.id = ANY(${valuesExpr})
+            OR regexp_replace(pm.name, '[[:space:]]+', '', 'g') = ANY(${valuesExpr})
+          )
+      )
+    )
+  )`
+}
+
+async function _loadAndValidateBundle(bundleProductId, items, auth) {
   if (!bundleProductId) return null
 
+  const productParams = [bundleProductId]
+  // 独立实现，避免 staffApi 跨模块共享运行时代码；与 product.shopInit 同一 SQL 语义。
+  const marketScopeFilter = buildBundleMarketScopeFilter(auth, productParams)
   const productRows = await pg.query(
-    `SELECT product_id, is_bundle FROM products
-     WHERE product_id = $1 AND deleted_at IS NULL`,
-    [bundleProductId]
+    `SELECT p.product_id, p.is_bundle FROM products p
+     WHERE p.product_id = $1 AND p.deleted_at IS NULL
+       ${marketScopeFilter}`,
+    productParams,
   )
   if (productRows.length === 0 || !productRows[0].is_bundle) {
-    throw new Error('INVALID_PARAMS: BUNDLE_NOT_FOUND: 套餐不存在或已删除')
+    throw new Error('INVALID_PARAMS: BUNDLE_NOT_AVAILABLE: 套餐不存在、已删除或不适用于当前门店')
   }
 
   const groupRows = await pg.query(
@@ -595,7 +635,7 @@ async function create(ctx) {
   if (clientUsers[0].name) clientName = clientUsers[0].name
 
   // 组合套餐：校验子项归属 + 分组配额，并取下沉单价（标价/成交）；非套餐返回 null
-  const bundleSkuPrices = await _loadAndValidateBundle(bundleProductId, items)
+  const bundleSkuPrices = await _loadAndValidateBundle(bundleProductId, items, ctx.auth)
 
   // 获取 SKU 信息 + 价格（product_skus → product_categories 两表 JOIN）
   const rawItemDataList = await Promise.all(
@@ -992,35 +1032,30 @@ async function create(ctx) {
   const sumItemReceived = Math.round(itemDataList.reduce((sum, d) => sum + d.received, 0) * 100) / 100
 
   // ========== 充值卡预选（店长开单 = 预选，不扣卡；DB 字段 prepaid_card_amount 命名保持不变）==========
-  // 查询顾客当前余额（不加 FOR UPDATE，因为不写 balance）；仅店长预选为参考
+  // 仅显式输入抵扣金额时查询余额（不加 FOR UPDATE，因为开单预选不写 balance）。
+  // useCard=true 但未传金额按 0 处理，避免沿用旧版的自动抵满行为。
   let prepaidCardAmount = 0
-  if (useCard) {
-    const balanceRows = await pg.query(
-      'SELECT balance FROM prepaid_cards WHERE user_id = $1',
-      [clientUserId]
-    )
-    const currentBalance = balanceRows.length > 0 ? Number(balanceRows[0].balance) : 0
-
+  if (useCard && inputPrepaidCardAmount !== undefined && inputPrepaidCardAmount !== null) {
     // 预选额上限 = min(应付合计, 当下实付)：充值卡从「当下实付」里抵，欠款单不得抵超过当下实付
     // （无欠款时 sumItemReceived === totalAmount，等价旧口径）。与前端 recompute 基准 receivedTotal 对齐。
     const maxPrepayable = Math.min(totalAmount, sumItemReceived)
-
-    if (inputPrepaidCardAmount !== undefined && inputPrepaidCardAmount !== null) {
-      const inputAmount = Number(inputPrepaidCardAmount)
-      if (!Number.isFinite(inputAmount) || inputAmount < 0) {
-        throw new Error('INVALID_PARAMS: 充值卡抵扣金额必须为非负数')
-      }
-      if (inputAmount > currentBalance) {
+    const inputAmount = Number(inputPrepaidCardAmount)
+    if (!Number.isFinite(inputAmount) || inputAmount < 0) {
+      throw new Error('INVALID_PARAMS: 充值卡抵扣金额必须为非负数')
+    }
+    prepaidCardAmount = Math.round(inputAmount * 100) / 100
+    if (prepaidCardAmount > maxPrepayable + 0.001) {
+      throw new Error('INVALID_PARAMS: 充值卡抵扣金额超过应抵上限')
+    }
+    if (prepaidCardAmount > 0) {
+      const balanceRows = await pg.query(
+        'SELECT balance FROM prepaid_cards WHERE user_id = $1',
+        [clientUserId]
+      )
+      const currentBalance = balanceRows.length > 0 ? Number(balanceRows[0].balance) : 0
+      if (currentBalance + 0.001 < prepaidCardAmount) {
         throw new Error('INSUFFICIENT_BALANCE: 充值卡余额不足')
       }
-      if (inputAmount > maxPrepayable) {
-        throw new Error('INVALID_PARAMS: 充值卡抵扣金额超过应抵上限')
-      }
-      prepaidCardAmount = Math.round(inputAmount * 100) / 100
-    } else {
-      // 未显式传值：默认"能抵多少抵多少"
-      prepaidCardAmount = Math.min(currentBalance, maxPrepayable)
-      prepaidCardAmount = Math.round(prepaidCardAmount * 100) / 100
     }
   }
 
@@ -2105,13 +2140,15 @@ async function detail(ctx) {
 
   const items = await pg.query(`
     SELECT
-      si.sale_item_id, si.sku_id, si.session_count, si.remaining_sessions,
+      si.sale_item_id, si.sale_order_id, si.sku_id, si.session_count, si.remaining_sessions,
       si.paid_sessions,
-      si.unit_price, si.quantity, si.unit_real_price, si.sale_amount, si.received,
-      si.expire_date, si.remark, si.sales_category,
+      si.unit_price, si.quantity, si.unit_real_price, si.sale_amount, si.received, si.pending_received,
+      si.expire_date, si.remark, si.sales_category, si.ref_sale_item_id,
       si.product_name, si.product_type, si.picked_up_quantity,
+      COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
       si.item_direction
     FROM sale_items si
+    LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
     WHERE si.sale_order_id = $1
     ORDER BY si.sale_item_id
   `, [saleOrderId])
@@ -3290,7 +3327,8 @@ async function createConversion(ctx) {
     // 生成 convOrderId（内部独占 advisory_xact_lock(hashtext('sale_order_id_gen'))）
     convOrderId = await generateOrderNo('FY-XSD-WX-', tx)
 
-    // 1. 锁候选卡 FOR UPDATE（跨店守卫 + 状态/方向过滤 + 余量过滤）
+    // 1. 锁候选卡。预扣汇总必须在独立查询中执行：PostgreSQL 不允许同层
+    // GROUP BY/聚合查询使用 FOR UPDATE，也必须先取得此行锁才能与 service.start 串行。
     const heldResult = await tx.query(
       `SELECT si.sale_item_id,
               si.sale_order_id,
@@ -3319,6 +3357,7 @@ async function createConversion(ctx) {
        LEFT JOIN product_categories pc ON ps.category_id = pc.category_id
        LEFT JOIN product_categories pc_parent ON pc_parent.category_name = pc.product_kind AND pc_parent.product_kind IS NULL
        WHERE si.sale_item_id = ANY($1)
+       ORDER BY si.sale_item_id
        FOR UPDATE OF si`,
       [convertOutSaleItemIds]
     )
@@ -3327,8 +3366,7 @@ async function createConversion(ctx) {
       throw new Error('INVALID_PARAMS: 部分卡不属于当前门店或已耗尽')
     }
 
-    let totalOut = 0
-    const outItems = []
+    // 先完成与预扣无关的归属/状态校验，避免无效请求额外扫描 service_items。
     for (const row of held) {
       // 归属校验
       if (row.store_id !== storeId) {
@@ -3345,15 +3383,38 @@ async function createConversion(ctx) {
       }
       // 冻结闭环（Bug I）：源卡所属订单有待审批退款时禁止折抵转换（转换会置 remaining_sessions=0，与在途退款冲突）
       await assertNoPendingRefund(tx, row.sale_order_id)
+    }
 
+    // sale_items 行锁已持有后再汇总预扣。service.start 使用同一把行锁，因而不会在
+    // 此快照之后插入新的预扣；转换扣减与预扣校验构成同一事务临界区。
+    const reservedResult = await tx.query(
+      `SELECT sit.sale_item_id,
+              COALESCE(SUM(sit.session_used) FILTER (WHERE sit.reserved_at IS NOT NULL), 0) AS total_reserved
+         FROM service_items sit
+        WHERE sit.sale_item_id = ANY($1)
+        GROUP BY sit.sale_item_id`,
+      [convertOutSaleItemIds]
+    )
+    const reservedBySaleItemId = new Map(
+      reservedResult.rows.map((row) => [row.sale_item_id, Number(row.total_reserved || 0)])
+    )
+
+    let totalOut = 0
+    const outItems = []
+    for (const row of held) {
       const unit = Number(row.unit_real_price)
       const productType = row.product_type
       // 2026-05-21 单品合并：折抵统一按 remaining_sessions（含原"体验卡单品"=1 次卡）；家居产品不可折抵
+      // 2026-08-06 预扣机制：可折抵数量 = remaining_sessions - 服务预扣（total_reserved）
       let qty = 0
       if (productType === '疗程卡') {
         const rem = Number(row.remaining_sessions || 0)
-        if (rem <= 0) throw new Error('INVALID_PARAMS: 部分卡已耗尽')
-        qty = rem
+        const reserved = reservedBySaleItemId.get(row.sale_item_id) || 0
+        const available = rem - reserved
+        if (available <= 0) {
+          throw new Error('INVALID_PARAMS: 部分卡可用次数不足（存在服务中预留）')
+        }
+        qty = available  // 折抵数量改为可用次数（扣除预扣）
       } else {
         throw new Error('INVALID_PARAMS: 所选行类型不支持折抵')
       }
@@ -3384,14 +3445,13 @@ async function createConversion(ctx) {
     }
 
     // 2. 转入项目 — 按 SKU 查询计价；店长特价 SKU 可沿用销售单的手填应付金额
-    let totalIn = 0
     const inItems = []
     const buyerIsMember = isMember(client.customer_type, client.member_level)
     for (const req of convertInItems) {
       if (!req || !req.skuId) throw new Error('INVALID_PARAMS: 转入项目缺少 skuId')
       const skuRes = await tx.query(
         `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.special_price, s.session_count, s.service_fee,
-                s.is_shengmei, s.is_experience, s.is_manager_special, s.purchase_limit, pc.sales_category
+                s.is_shengmei, s.is_experience, s.is_manager_special, s.purchase_limit, s.category_id, pc.sales_category
          FROM product_skus s
          JOIN product_categories pc ON s.category_id = pc.category_id
          WHERE s.sku_id = $1 AND s.deleted_at IS NULL`,
@@ -3402,7 +3462,9 @@ async function createConversion(ctx) {
       const qty = Number(req.quantity) || 1
       const { listUnit, realUnit: applicableUnit } = resolveUnitPrice(sku, buyerIsMember)
       let amount = Math.round(applicableUnit * qty * 100) / 100
-      if (sku.is_manager_special === true && (req.saleAmount != null || req.unitRealPrice != null)) {
+      // 店长特价手填金额（manualSaleAmountOverride 标记，用于梯度累加过滤）
+      const manualSaleAmountOverride = sku.is_manager_special === true && (req.saleAmount != null || req.unitRealPrice != null)
+      if (manualSaleAmountOverride) {
         const inputAmount = req.saleAmount != null
           ? Number(req.saleAmount)
           : Number(req.unitRealPrice) * qty
@@ -3412,7 +3474,6 @@ async function createConversion(ctx) {
         }
         amount = Math.round(inputAmount * 100) / 100
       }
-      totalIn += amount
       const inServiceFee = Math.round(Number(sku.service_fee || 0) * qty * 100) / 100
       // 同 create：session_count 是"次"维度，需 × qty
       const inSessionCount = sku.session_count != null ? Number(sku.session_count) * qty : null
@@ -3423,6 +3484,7 @@ async function createConversion(ctx) {
       const inRealPerSessionUnit = inDenom > 0 ? Math.round((amount / inDenom) * 100) / 100 : amount
       inItems.push({
         skuId: sku.sku_id,
+        categoryId: sku.category_id,
         productName: sku.spec_name,
         productType: sku.product_type,
         sessionCount: inSessionCount,
@@ -3430,13 +3492,48 @@ async function createConversion(ctx) {
         unitRealPrice: inRealPerSessionUnit,
         quantity: qty,
         amount,
+        saleAmount: amount,
         salesCategory: sku.sales_category,
         serviceFee: inServiceFee,
         isShengmei: sku.is_shengmei ?? null,
         isExperience: sku.is_experience === true,
         isManagerSpecial: sku.is_manager_special === true,
+        manualSaleAmountOverride,
         purchaseLimit: sku.purchase_limit != null ? Number(sku.purchase_limit) : null,
       })
+    }
+
+    // 2.5. 转入项目应用疗程卡梯度累加价（与销售单对齐）
+    // 查询所有可能用于梯度计算的 SKU（同分类+同名称的所有疗程卡规格）
+    const tierSkuIds = new Set()
+    for (const item of inItems) {
+      if (item.productType === '疗程卡' && item.categoryId && !item.isExperience && !item.manualSaleAmountOverride) {
+        tierSkuIds.add(item.categoryId + '::' + item.productName)
+      }
+    }
+    let tierSkuRows = []
+    if (tierSkuIds.size > 0) {
+      const categoryIds = [...new Set(inItems.map(i => i.categoryId).filter(Boolean))]
+      const tierSkuRes = await tx.query(
+        `SELECT s.sku_id, s.category_id, s.spec_name, s.product_type, s.price, s.special_price,
+                s.session_count, s.is_experience, s.is_manager_special
+         FROM product_skus s
+         WHERE s.category_id = ANY($1) AND s.product_type = '疗程卡' AND s.deleted_at IS NULL`,
+        [categoryIds]
+      )
+      tierSkuRows = tierSkuRes.rows
+    }
+    applyTreatmentTierPricing(inItems, tierSkuRows, buyerIsMember, '转换单')
+
+    // 转入明细写库时 amount 会同时落到 sale_amount 和 received，必须同步梯度成交价。
+    for (const item of inItems) {
+      item.amount = item.saleAmount
+    }
+
+    // 重新计算 totalIn（梯度累加可能改变了 amount / saleAmount）
+    let totalIn = 0
+    for (const item of inItems) {
+      totalIn += Number(item.saleAmount) || Number(item.amount) || 0
     }
 
     const purchaseLimitViolation = findPurchaseLimitViolation(convertInItems, inItems)
@@ -3447,13 +3544,27 @@ async function createConversion(ctx) {
     const priceDiff = Math.round((totalIn - totalOut) * 100) / 100
     const orderTotal = Math.max(0, priceDiff)
 
-    // 储值卡抵扣（仅补差额 priceDiff > 0 时有效）：clamp 到 [0, priceDiff]。
+    // 储值卡抵扣（仅补差额 priceDiff > 0 时有效）：显式金额必须在 [0, min(补差额, 余额)] 内。
     // payable = priceDiff - card；全额抵扣（payable==0 且 card>0）则事务内即时扣卡 + 结清。
     let card = 0
-    if (priceDiff > 0 && inputPrepaidCardAmount != null) {
+    if (inputPrepaidCardAmount != null) {
       const v = Number(inputPrepaidCardAmount)
       if (!Number.isFinite(v) || v < 0) throw new Error('INVALID_PARAMS: 储值卡抵扣金额必须为非负数')
-      card = Math.min(Math.round(v * 100) / 100, priceDiff)
+      card = Math.round(v * 100) / 100
+      const maxCard = Math.max(0, priceDiff)
+      if (card > maxCard + 0.001) {
+        throw new Error('INVALID_PARAMS: 充值卡抵扣金额超过补差额')
+      }
+      if (card > 0) {
+        const balanceRes = await tx.query(
+          'SELECT balance FROM prepaid_cards WHERE user_id = $1',
+          [clientUserId]
+        )
+        const currentBalance = balanceRes.rows.length > 0 ? Number(balanceRes.rows[0].balance) : 0
+        if (currentBalance + 0.001 < card) {
+          throw new Error('INSUFFICIENT_BALANCE: 充值卡余额不足')
+        }
+      }
     }
     const payable = Math.max(0, Math.round((orderTotal - card) * 100) / 100)
     const isFullCardCoverage = card > 0 && payable === 0
@@ -3503,7 +3614,8 @@ async function createConversion(ctx) {
       seq = parseInt(maxResult.rows[0].sale_item_id.slice(-4)) + 1
     }
 
-    // 6. 转出行 × N + 原子标记耗尽（疗程卡 remaining_sessions=0；单品已合并入疗程卡）
+    // 6. 转出行 × N + 原子扣减可转换次数。服务中的预扣次数必须留在源卡上，
+    // 后续 confirm 才会从这部分次数扣减。
     for (const d of outItems) {
       const saleItemId = `XSLSH-WX-${dateStr}${String(seq).padStart(4, '0')}`
       seq++
@@ -3526,12 +3638,12 @@ async function createConversion(ctx) {
           d.isExperience === true,
         ]
       )
-      // 原子扣减原卡余量（幂等守卫：余量不足则 rowCount=0）
-      // 单品合并后转出行恒为疗程卡，统一置 remaining_sessions=0
+      // 原子扣减原卡余量（幂等守卫：余量不足则 rowCount=0）。这里不能置 0：
+      // d.quantity 是扣除服务预扣后的可转次数，预扣次数仍需留给服务确认核销。
       if (d.productType === '疗程卡') {
         const upd = await tx.query(
           `UPDATE sale_items
-             SET remaining_sessions = 0, updated_at = $1
+             SET remaining_sessions = remaining_sessions - $4, updated_at = $1
            WHERE sale_item_id = $2
              AND store_id = $3
              AND COALESCE(remaining_sessions, 0) >= $4`,
@@ -3691,11 +3803,37 @@ async function customerHeldCards(ctx) {
   const rows = await pg.query(
     `SELECT si.sale_item_id,
             si.sale_order_id AS source_sale_order_id,
+            so.sale_order_datetime,
+            so.paid_at,
+            so.status AS order_status,
+            so.sale_order_type,
+            so.document_type,
+            so.market_name,
+            so.legacy_source,
+            si.store_id,
+            si.sku_id,
+            si.item_direction,
+            si.ref_sale_item_id,
             si.product_name,
             si.product_type,
+            si.quantity,
+            si.session_count,
             si.remaining_sessions,
+            si.paid_sessions,
+            si.unit_price,
             (si.quantity - COALESCE(si.picked_up_quantity, 0)) AS remaining_quantity,
             si.unit_real_price,
+            si.sale_amount,
+            si.received,
+            si.pending_received,
+            si.expire_date,
+            si.remark,
+            si.sales_category,
+            si.picked_up_quantity,
+            COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
+            ps.category_id,
+            pc.category_name,
+            pc.product_kind,
             CASE
               WHEN si.product_type = '疗程卡'
                 THEN si.unit_real_price * COALESCE(si.remaining_sessions, 0)
@@ -3703,6 +3841,8 @@ async function customerHeldCards(ctx) {
             END AS deductible_amount
      FROM sale_items si
      JOIN sale_orders so ON si.sale_order_id = so.sale_order_id
+     LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
+     LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
      WHERE so.client_user_id = $1
        AND si.store_id = $2
        AND si.item_direction = '购买'
@@ -3733,12 +3873,38 @@ async function customerHeldCards(ctx) {
     cards: rows.map(r => ({
       saleItemId: r.sale_item_id,
       sourceSaleOrderId: r.source_sale_order_id,
+      saleOrderDatetime: r.sale_order_datetime || null,
+      paidAt: r.paid_at || null,
+      orderStatus: r.order_status || '',
+      saleOrderType: r.sale_order_type || '',
+      documentType: r.document_type || null,
+      marketName: r.market_name || '',
+      legacySource: r.legacy_source || null,
+      storeId: r.store_id || '',
+      skuId: r.sku_id || null,
+      itemDirection: r.item_direction || '',
+      refSaleItemId: r.ref_sale_item_id || null,
       productName: r.product_name,
       productType: r.product_type,
+      unit: r.unit || (r.product_type === '家居产品' ? '盒' : '次'),
+      quantity: Number(r.quantity || 1),
+      sessionCount: r.session_count != null ? Number(r.session_count) : null,
       remainingSessions: r.remaining_sessions != null ? Number(r.remaining_sessions) : null,
       remainingQuantity: r.remaining_quantity != null ? Number(r.remaining_quantity) : null,
+      paidSessions: r.paid_sessions != null ? Number(r.paid_sessions) : null,
+      unitPrice: r.unit_price != null ? String(r.unit_price) : null,
       unitRealPrice: String(r.unit_real_price),
+      saleAmount: r.sale_amount != null ? String(r.sale_amount) : null,
+      received: r.received != null ? String(r.received) : null,
+      pendingReceived: r.pending_received != null ? String(r.pending_received) : null,
+      expireDate: r.expire_date || null,
+      remark: r.remark || null,
+      salesCategory: r.sales_category || null,
+      pickedUpQuantity: r.picked_up_quantity != null ? Number(r.picked_up_quantity) : null,
       deductibleAmount: Number(r.deductible_amount).toFixed(2),
+      categoryId: r.category_id || '',
+      categoryName: r.category_name || '',
+      productKind: r.product_kind || '',
     }))
   }
 }
@@ -4313,8 +4479,11 @@ async function refundDetail(ctx) {
   const nameMap = {}
   if (itemIds.length > 0) {
     const siRows = await pg.query(
-      `SELECT sale_item_id, product_name, NULL::text AS spec_name, product_type
-         FROM sale_items WHERE sale_item_id = ANY($1)`,
+      `SELECT si.sale_item_id, si.product_name, NULL::text AS spec_name, si.product_type,
+              ps.unit AS sku_unit
+         FROM sale_items si
+         LEFT JOIN product_skus ps ON si.sku_id = ps.sku_id
+         WHERE si.sale_item_id = ANY($1)`,
       [itemIds]
     )
     for (const si of siRows) {
@@ -4328,6 +4497,7 @@ async function refundDetail(ctx) {
       productName: si.product_name || null,
       specName: si.spec_name || null,
       productType: it.productType || si.product_type || null,
+      unit: si.sku_unit || ((it.productType || si.product_type) === '家居产品' ? '盒' : '次'),
       quantity: it.quantity,
       refundAmount: it.refundAmount,
     }
@@ -4507,46 +4677,42 @@ async function createDeposit(ctx) {
     }
   }))
 
-  // B2：寄存单也必须保持"每张疗程卡一行"。
-  // 历史实收是原购物车行总额，按每张卡 saleAmount 贪心填满，避免 1350/3 均分成 450/450/450。
+  // 寄存单内相同疗程卡按 SKU 合并为一条销售明细，累计张数、次数、标价与历史实收。
+  // 家居产品保持原输入行语义，不参与合并。
   const itemDataList = []
+  const treatmentCardItemIndex = new Map()
   for (const d of rawItemDataList) {
-    if (d.productType === '疗程卡' && d.quantity > 1) {
-      const n = d.quantity
-      const perSession = d.sessionCount != null ? Math.round(d.sessionCount / n) : null
-      const totalSaleCents = Math.round(Number(d.saleAmount || 0) * 100)
-      const perSaleCents = Math.round(totalSaleCents / n)
-      const totalReceivedCents = Math.round(Number(d.received || 0) * 100)
-      let remainingReceivedCents = totalReceivedCents
-
-      for (let i = 0; i < n; i++) {
-        const isLast = i === n - 1
-        const saleCents = isLast
-          ? totalSaleCents - perSaleCents * (n - 1)
-          : perSaleCents
-        let receivedCents = Math.max(0, Math.min(remainingReceivedCents, saleCents))
-        remainingReceivedCents -= receivedCents
-        if (isLast && remainingReceivedCents > 0) {
-          receivedCents += remainingReceivedCents
-          remainingReceivedCents = 0
-        }
-        const saleAmount = Math.round(saleCents) / 100
-        const received = Math.round(receivedCents) / 100
-        const denom = (perSession != null && perSession > 0) ? perSession : 1
-        const unit = denom > 0 ? Math.round((saleAmount / denom) * 100) / 100 : saleAmount
-        itemDataList.push({
-          ...d,
-          sessionCount: perSession,
-          remainingSessions: perSession,
-          quantity: 1,
-          saleAmount,
-          received,
-          unitPrice: unit,
-          unitRealPrice: unit,
-        })
-      }
-    } else {
+    if (d.productType !== '疗程卡') {
       itemDataList.push(d)
+      continue
+    }
+
+    const existingIndex = treatmentCardItemIndex.get(d.skuId)
+    if (existingIndex == null) {
+      treatmentCardItemIndex.set(d.skuId, itemDataList.length)
+      itemDataList.push(d)
+      continue
+    }
+
+    const existing = itemDataList[existingIndex]
+    const quantity = existing.quantity + d.quantity
+    const sessionCount = existing.sessionCount != null && d.sessionCount != null
+      ? existing.sessionCount + d.sessionCount
+      : null
+    const saleAmount = roundMoney(existing.saleAmount + d.saleAmount)
+    const received = roundMoney(existing.received + d.received)
+    const denom = sessionCount != null && sessionCount > 0 ? sessionCount : quantity
+    const unit = denom > 0 ? roundMoney(saleAmount / denom) : saleAmount
+
+    itemDataList[existingIndex] = {
+      ...existing,
+      quantity,
+      sessionCount,
+      remainingSessions: sessionCount,
+      saleAmount,
+      received,
+      unitPrice: unit,
+      unitRealPrice: unit,
     }
   }
 
@@ -4680,3 +4846,9 @@ module.exports = {
   availablePickupItems,
   pickupRecordsList,
 }
+
+// 非枚举测试出口，避免路由完整性检查把内部 helper 误认作公开 action。
+Object.defineProperty(module.exports, '__testables__', {
+  enumerable: false,
+  value: { _loadAndValidateBundle },
+})

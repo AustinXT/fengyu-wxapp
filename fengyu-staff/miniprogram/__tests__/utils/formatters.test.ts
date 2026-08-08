@@ -1,4 +1,17 @@
-import { safeParseDate, formatDate, formatDateTime, formatDateTimeShort, formatTime, getElapsedTime, STATUS_CLASS, ORDER_TYPE_LABEL } from '../../utils/formatters'
+import { safeParseDate, formatDate, formatDateTime, formatDateTimeShort, formatTime, getElapsedTime, STATUS_CLASS, ORDER_TYPE_LABEL, formatDiscount, buildCouponDisplay } from '../../utils/formatters'
+
+describe('优惠券展示格式化', () => {
+  test('折扣券 0.85 显示 8.5 折', () => {
+    expect(formatDiscount({ couponType: '折扣券', discountValue: 0.85 })).toBe('8.5折')
+  })
+
+  test('金额型券截断才显示本单可用金额，折扣券不显示', () => {
+    expect(buildCouponDisplay({ couponType: '现金券', discountValue: 100, faceValue: 100, discount: 35 }))
+      .toEqual({ discountLabel: '¥100', availableAmountLabel: '本单可用 ¥35' })
+    expect(buildCouponDisplay({ couponType: '折扣券', discountValue: 0.85, faceValue: 0.85, discount: 15 }))
+      .toEqual({ discountLabel: '8.5折', availableAmountLabel: '' })
+  })
+})
 
 describe('safeParseDate', () => {
   test('ISO 含 T 串原样解析（回归：旧 replace(/-/g,"/") 逻辑会破坏 T 串变 NaN）', () => {

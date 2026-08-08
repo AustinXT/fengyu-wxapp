@@ -363,7 +363,12 @@ describe('customer.detail', () => {
         gender: '女', notes: '过敏体质', bound_store_id: 'store-001', store_name: '南昌旗舰店',
       }])
       .mockResolvedValueOnce([{ name: '李四' }])  // preferredStaffName
-      .mockResolvedValueOnce([{ total: '5000', year_total: '2000' }])  // getConsumptionStats
+      .mockResolvedValueOnce([{
+        total: '5000',
+        year_total: '2000',
+        total_actual_consumption: '3200',
+        year_actual_consumption: '1200',
+      }])  // getConsumptionStats
       .mockResolvedValueOnce([{ last_date: '2026-03-10', visit_count_90d: '8' }])  // getVisitInfo
       .mockResolvedValueOnce([{ product_name: '蜜语生玑10次卡', cnt: '5' }])  // getTopProduct
     await customerRoutes.detail(ctx)
@@ -382,6 +387,8 @@ describe('customer.detail', () => {
     expect(ctx.result.topProductName).toBe('蜜语生玑10次卡')
     expect(ctx.result.totalConsumption).toBe(5000)
     expect(ctx.result.yearConsumption).toBe(2000)
+    expect(ctx.result.totalActualConsumption).toBe(3200)
+    expect(ctx.result.yearActualConsumption).toBe(1200)
     expect(ctx.result.source).toBe('both')
   })
 
@@ -541,7 +548,7 @@ describe('customer.detail', () => {
       .rejects.toThrow(/INVALID_PARAMS.*顾客不存在/)
   })
 
-  test('getConsumptionStats 使用单次查询（含 CASE WHEN 年度过滤）', async () => {
+  test('getConsumptionStats 使用单次查询，同时计算消费和实耗年度统计', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1' })
     pg.query
       .mockResolvedValueOnce([{
@@ -549,7 +556,12 @@ describe('customer.detail', () => {
         member_level: null, bound_employee_id: null, skin_type: null, improvement_focus: null,
         gender: null, notes: null, bound_store_id: null, store_name: null,
       }])
-      .mockResolvedValueOnce([{ total: '10000', year_total: '4000' }])  // single query
+      .mockResolvedValueOnce([{
+        total: '10000',
+        year_total: '4000',
+        total_actual_consumption: '3200',
+        year_actual_consumption: '1200',
+      }])  // single query
       .mockResolvedValueOnce([{ last_date: '2026-03-01', visit_count_90d: '3' }])  // getVisitInfo
       .mockResolvedValueOnce([{ product_name: '精油SPA', cnt: '3' }])  // getTopProduct
       .mockResolvedValueOnce([{ cnt: 0 }])  // legacy 历史订单待核对数（phone 非空时触发）
@@ -558,11 +570,21 @@ describe('customer.detail', () => {
 
     expect(ctx.result.totalConsumption).toBe(10000)
     expect(ctx.result.yearConsumption).toBe(4000)
+    expect(ctx.result.totalActualConsumption).toBe(3200)
+    expect(ctx.result.yearActualConsumption).toBe(1200)
     expect(ctx.result.visitFrequency).toBe('一月一次')  // 3 visits in 90d
     expect(ctx.result.topProductName).toBe('精油SPA')
-    // 验证 getConsumptionStats 使用 CASE WHEN
+    // 验证单次查询同时覆盖历史订单消费和服务单实耗。
     const consumptionCall = pg.query.mock.calls[1]
-    expect(consumptionCall[0]).toContain('CASE WHEN')
+    const sql = consumptionCall[0]
+    expect(sql).toMatch(/CASE[\s\S]*WHEN/)
+    expect(sql).toContain('EXISTS (SELECT 1 FROM sale_items')
+    expect(sql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
+    expect(sql).toContain('FROM service_orders so')
+    expect(sql).toContain('JOIN service_items sit ON sit.service_order_id = so.service_order_id')
+    expect(sql).toContain("so.status = '已完成'")
+    expect(sql).toContain('so.service_date >= $2::date')
+    expect(sql).toContain('so.remark IS DISTINCT FROM')
     // 5 次 pg.query: detail + consumption + visitInfo + topProduct + legacyCount(phone 非空触发)
     expect(pg.query).toHaveBeenCalledTimes(5)
   })
@@ -668,7 +690,7 @@ describe('customer.paidOrders', () => {
       { sale_order_id: 'SO-002', status: '已支付', paid_at: '2024-06-15T14:00:00Z' },
     ])
     pg.query.mockResolvedValueOnce([
-      { sale_order_id: 'SO-001', sale_item_id: 'item-001', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', product_name: '面部护理', unit_real_price: '100.00' },
+      { sale_order_id: 'SO-001', sale_item_id: 'item-001', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', product_name: '面部护理', unit_real_price: '100.00', unit: '次', category_id: 'face-care', category_name: '面部护理', product_kind: '护理项目' },
       { sale_order_id: 'SO-002', sale_item_id: 'item-002', session_count: 5, remaining_sessions: 5, sku_id: 'sku-2', product_type: '疗程卡', product_name: '身体护理', unit_real_price: '50.00' },
     ])
     await customerRoutes.paidOrders(ctx)
@@ -678,6 +700,12 @@ describe('customer.paidOrders', () => {
     expect(ctx.result[0].items[0].itemName).toBe('面部护理')
     expect(ctx.result[0].items[0].remainingSessions).toBe(8)
     expect(ctx.result[0].items[0].unitRealPrice).toBe('100.00')
+    expect(ctx.result[0].items[0]).toMatchObject({
+      unit: '次',
+      productKind: '护理项目',
+      categoryId: 'face-care',
+      categoryName: '面部护理',
+    })
   })
 
   test('无已支付订单时返回空数组', async () => {

@@ -192,13 +192,14 @@ function buildAppointmentServiceItems(item: any): AppointmentServiceItem[] {
 function formatAppointmentSessions(item: any): string {
   if (!item.sale_item_id) return '';
 
+  const unit = item.unit || (item.product_type === '家居产品' ? '盒' : '次');
   const remaining = toNumberOrNull(item.remaining_sessions);
   const total = toNumberOrNull(item.session_count);
   const paid = toNumberOrNull(item.paid_sessions);
   const metrics: string[] = [];
   if (remaining !== null) metrics.push(`剩余 ${remaining}`);
   if (Object.prototype.hasOwnProperty.call(item, 'paid_sessions')) metrics.push(`已付 ${paid === null ? '—' : paid}`);
-  if (total !== null) metrics.push(`共 ${total} 次`);
+  if (total !== null) metrics.push(`共 ${total} ${unit}`);
   return metrics.join(' / ');
 }
 

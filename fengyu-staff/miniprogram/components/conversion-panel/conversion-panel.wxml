@@ -33,8 +33,8 @@
       </view>
       <!-- 疗程卡规定次数（仅次数卡展示） -->
       <view wx:if="{{item.productType === '疗程卡' && item.sessionCount > 0}}" class="confirm-item-row">
-        <text class="confirm-item-label">规定次数</text>
-        <text class="confirm-item-value">{{item.sessionCount}} 次</text>
+        <text class="confirm-item-label">规定数量</text>
+        <text class="confirm-item-value">{{item.sessionCount}} {{item.unit || '次'}}</text>
       </view>
     </view>
     <view class="confirm-total-row">
@@ -57,37 +57,72 @@
   </view>
 
   <!-- 空态 -->
-  <view wx:elif="{{cards.length === 0}}" class="conv-empty">
+  <view wx:elif="{{allCardCount === 0}}" class="conv-empty">
     <van-empty description="该顾客暂无可折抵卡" />
   </view>
 
   <!-- 卡列表 -->
-  <view wx:else class="conv-card-list">
-    <view
-      wx:for="{{cards}}"
-      wx:key="saleItemId"
-      class="conv-card-item {{item.selected ? 'conv-card-item--active' : ''}}"
-      data-id="{{item.saleItemId}}"
-      bindtap="onToggleCard"
-    >
-      <view class="conv-card-checkbox">
-        <van-icon
-          name="{{item.selected ? 'checked' : 'circle'}}"
-          size="40rpx"
-          color="{{item.selected ? '#C0322A' : '#BBB'}}"
-        />
+  <view wx:else>
+    <view class="conv-card-filter">
+      <view class="conv-card-filter-selectors">
+        <picker mode="selector" range="{{cardProductKindOptions}}" range-key="label" bindchange="onCardProductKindChange">
+          <view class="conv-card-filter-picker">{{cardProductKindLabel}}</view>
+        </picker>
+        <picker mode="selector" range="{{cardCategoryOptions}}" range-key="label" disabled="{{!cardProductKind}}" bindchange="onCardCategoryChange">
+          <view class="conv-card-filter-picker">{{cardCategoryLabel}}</view>
+        </picker>
       </view>
-      <view class="conv-card-info">
-        <text class="conv-card-name">{{item.productName}}</text>
-        <view class="conv-card-meta">
-          <text wx:if="{{item.productType === '疗程卡'}}" class="conv-card-remain">剩余 {{item.remainingSessions}} 次</text>
-          <text wx:else class="conv-card-remain">剩余 {{item.remainingQuantity}} 个</text>
-          <text class="conv-card-unit">· 单次价 ¥{{item.unitRealPrice}}</text>
+      <van-search value="{{cardNameQuery}}" placeholder="搜索疗程卡名称" bind:change="onCardNameChange" />
+    </view>
+
+    <view wx:if="{{cards.length === 0}}" class="conv-empty">
+      <van-empty description="未找到匹配的疗程卡" />
+    </view>
+
+    <view wx:else class="conv-card-list">
+      <view
+        wx:for="{{cards}}"
+        wx:key="saleItemId"
+        class="conv-card-item {{item.selected ? 'conv-card-item--active' : ''}}"
+        data-id="{{item.saleItemId}}"
+        bindtap="onToggleCard"
+      >
+        <view class="conv-card-checkbox">
+          <van-icon
+            name="{{item.selected ? 'checked' : 'circle'}}"
+            size="40rpx"
+            color="{{item.selected ? '#C0322A' : '#BBB'}}"
+          />
         </view>
-      </view>
-      <view class="conv-card-amount">
-        <text class="conv-card-amount-value">¥{{item.deductibleAmount}}</text>
-        <text class="conv-card-amount-label">可折抵</text>
+        <view class="conv-card-info">
+          <text class="conv-card-name">{{item.productName}}</text>
+          <view class="conv-card-meta">
+            <text wx:if="{{item.productType === '疗程卡'}}" class="conv-card-remain">剩余 {{item.remainingSessions}} {{item.unit || '次'}}</text>
+            <text wx:else class="conv-card-remain">剩余 {{item.remainingQuantity}} 个</text>
+            <text class="conv-card-remain">· 共 {{item.cardCount || 1}} 张</text>
+            <text class="conv-card-unit">· 单{{item.unit || '次'}}价 ¥{{item.unitRealPrice}}</text>
+          </view>
+        </view>
+        <view class="conv-card-amount">
+          <text class="conv-card-amount-value">¥{{item.deductibleAmount}}</text>
+          <text class="conv-card-amount-label">可折抵</text>
+        </view>
+        <view wx:if="{{item.selected}}" class="conv-card-quantity" catchtap="preventBubble">
+          <block wx:if="{{item.sourceItems.length > 1}}">
+            <text class="conv-card-quantity-label">转换数量</text>
+            <van-stepper
+              value="{{item.selectedQuantity}}"
+              min="{{1}}"
+              max="{{item.sourceItems.length}}"
+              input-width="60rpx"
+              button-size="48rpx"
+              bind:change="onCardQuantityChange"
+              data-id="{{item.saleItemId}}"
+            />
+            <text class="conv-card-quantity-label">张</text>
+          </block>
+          <text wx:else class="conv-card-quantity-label">整行转换</text>
+        </view>
       </view>
     </view>
   </view>
@@ -132,9 +167,22 @@
         bind:change="onToggleUseCard"
       />
     </view>
-    <view wx:if="{{useCard && cardAmount > 0}}" class="prepaid-card-deduct-row">
-      <text class="prepaid-card-deduct-label">预选抵扣</text>
-      <text class="prepaid-card-deduct-amount">-¥{{cardAmountDisplay}}</text>
+    <view wx:if="{{useCard}}" class="prepaid-card-deduct-row">
+      <text class="prepaid-card-deduct-label">抵扣金额</text>
+      <view class="prepaid-card-amount-input-wrap">
+        <text class="prepaid-card-amount-prefix">¥</text>
+        <input
+          class="prepaid-card-amount-input"
+          type="digit"
+          value="{{cardAmountInput}}"
+          bindinput="onCardAmountInput"
+          bindblur="onCardAmountBlur"
+        />
+      </view>
+    </view>
+    <view wx:if="{{useCard}}" class="prepaid-card-max-hint">
+      <text>最多可抵扣 ¥{{cardMaxDisplay}}</text>
+      <text wx:if="{{cardAmount > 0}}">，实际抵扣 ¥{{cardAmountDisplay}}</text>
     </view>
     <view wx:elif="{{cardBalance <= 0}}" class="prepaid-card-empty-hint">
       <text>顾客暂无充值卡余额</text>

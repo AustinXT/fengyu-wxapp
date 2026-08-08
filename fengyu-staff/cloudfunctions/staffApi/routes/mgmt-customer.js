@@ -21,8 +21,9 @@
 
 const pg = require('../db/pg')
 const { requireManagementLevel } = require('../middleware/auth')
-const { validateManagementScope, canAccessManagementLevel } = require('../utils/scope')
+const { validateManagementScope, canAccessManagementLevel, buildManagementStoreScope } = require('../utils/scope')
 const { maskPhone } = require('../utils/pii')
+const { excludeDepositRefundSql } = require('../utils/consume-filter')
 
 // ====================================================================
 // 共享 helper（buildSaleScope/buildClientScope 为与 mgmt-product.js 一致的本地副本；
@@ -33,34 +34,12 @@ const { maskPhone } = require('../utils/pii')
  * 构造 sale/service 表的 store_id scope 过滤片段
  */
 function buildSaleScope(scopeType, scopeId, alias, startIdx) {
-  if (scopeType === 'all') return { sql: 'TRUE', params: [] }
-  if (scopeType === 'store') {
-    return { sql: `${alias}.store_id = $${startIdx}`, params: [scopeId] }
-  }
-  return {
-    sql:
-      `${alias}.store_id IN (` +
-      `SELECT s.store_id FROM stores s ` +
-      `JOIN org_nodes o ON s.org_node_id = o.id ` +
-      `WHERE o.parent_id = $${startIdx} AND o.type = '门店')`,
-    params: [scopeId],
-  }
+  return buildManagementStoreScope(scopeType, scopeId, `${alias}.store_id`, startIdx)
 }
 
 /** client_wechat_users.bound_store_id scope */
 function buildClientScope(scopeType, scopeId, alias, startIdx) {
-  if (scopeType === 'all') return { sql: 'TRUE', params: [] }
-  if (scopeType === 'store') {
-    return { sql: `${alias}.bound_store_id = $${startIdx}`, params: [scopeId] }
-  }
-  return {
-    sql:
-      `${alias}.bound_store_id IN (` +
-      `SELECT s.store_id FROM stores s ` +
-      `JOIN org_nodes o ON s.org_node_id = o.id ` +
-      `WHERE o.parent_id = $${startIdx} AND o.type = '门店')`,
-    params: [scopeId],
-  }
+  return buildManagementStoreScope(scopeType, scopeId, `${alias}.bound_store_id`, startIdx)
 }
 
 /**
@@ -153,25 +132,51 @@ async function getTopProductScoped(clientUserId, scopeType, scopeId) {
 }
 
 /**
- * 消费统计（scope 过滤后的 累计 + 年度）
+ * 消费和实耗统计（交易数据跟顾客走，累计 + 年度）
  */
 async function getConsumptionStatsScoped(clientUserId, scopeType, scopeId) {
-  if (!clientUserId) return { totalConsumption: 0, yearConsumption: 0 }
+  if (!clientUserId) {
+    return {
+      totalConsumption: 0,
+      yearConsumption: 0,
+      totalActualConsumption: 0,
+      yearActualConsumption: 0,
+    }
+  }
   const yearStart = new Date(new Date().getFullYear(), 0, 1)
   // $1=clientUserId, $2=yearStart。交易数据跟顾客走：消费统计不按门店过滤
   const rows = await pg.query(
-    `SELECT
+    `WITH order_stats AS (
+       SELECT
        COALESCE(SUM(si.received::numeric), 0) AS total,
        COALESCE(SUM(CASE WHEN o.paid_at >= $2 THEN si.received::numeric ELSE 0 END), 0) AS year_total
-     FROM sale_orders o
-     JOIN sale_items si ON o.sale_order_id = si.sale_order_id
-     WHERE o.status = '已支付'
-       AND o.client_user_id = $1`,
+       FROM sale_orders o
+       JOIN sale_items si ON o.sale_order_id = si.sale_order_id
+       WHERE o.status = '已支付'
+         AND o.client_user_id = $1
+     ), actual_stats AS (
+       SELECT
+         COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS total_actual_consumption,
+         COALESCE(SUM(CASE WHEN so.service_date >= $2::date
+           THEN sit.unit_real_price::numeric * sit.session_used ELSE 0 END), 0) AS year_actual_consumption
+       FROM service_orders so
+       JOIN service_items sit ON sit.service_order_id = so.service_order_id
+       WHERE so.client_user_id = $1
+         AND so.status = '已完成'
+         AND ${excludeDepositRefundSql('so')}
+     )
+     SELECT order_stats.total, order_stats.year_total,
+            actual_stats.total_actual_consumption, actual_stats.year_actual_consumption
+       FROM order_stats
+       CROSS JOIN actual_stats`,
     [clientUserId, yearStart],
   )
+  const stats = rows[0] || {}
   return {
-    totalConsumption: Number(rows[0]?.total || 0),
-    yearConsumption: Number(rows[0]?.year_total || 0),
+    totalConsumption: Number(stats.total || 0),
+    yearConsumption: Number(stats.year_total || 0),
+    totalActualConsumption: Number(stats.total_actual_consumption || 0),
+    yearActualConsumption: Number(stats.year_actual_consumption || 0),
   }
 }
 
@@ -192,13 +197,13 @@ async function assertCustomerInScope(boundStoreId, scopeType, scopeId) {
     }
     return
   }
-  // market：用一个 EXISTS 查询验证
+  // market：按递归组织树验证，覆盖任意层级下属门店。
+  const storeScope = buildManagementStoreScope('market', scopeId, 's.store_id', 2)
   const rows = await pg.query(
     `SELECT 1 FROM stores s
-       JOIN org_nodes o ON s.org_node_id = o.id
-      WHERE s.store_id = $1 AND o.parent_id = $2 AND o.type = '门店'
+      WHERE s.store_id = $1 AND ${storeScope.sql}
       LIMIT 1`,
-    [boundStoreId, scopeId],
+    [boundStoreId, ...storeScope.params],
   )
   if (rows.length === 0) {
     throw new Error('PERMISSION_DENIED: 顾客不在当前 scope 范围内')
@@ -463,7 +468,12 @@ async function detail(ctx) {
   }
 
   const clientUserId = pgUser.user_id
-  const { totalConsumption, yearConsumption } = await getConsumptionStatsScoped(
+  const {
+    totalConsumption,
+    yearConsumption,
+    totalActualConsumption,
+    yearActualConsumption,
+  } = await getConsumptionStatsScoped(
     clientUserId,
     scopeType,
     scopeId,
@@ -491,6 +501,8 @@ async function detail(ctx) {
     topProductName: topProduct,
     totalConsumption,
     yearConsumption,
+    totalActualConsumption,
+    yearActualConsumption,
     birthday: pgUser.birthday || null,
     source: pgUser.customer_id ? 'both' : 'miniprogram',
   }
@@ -621,6 +633,8 @@ async function paidOrders(ctx) {
        si.session_count, si.remaining_sessions, si.paid_sessions,
        si.sku_id, si.product_type, si.product_name,
        si.unit_real_price,
+       COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
+       ps.category_id,
        pc.category_name, pc.product_kind,
        COALESCE(pc_parent.display_color, pc.display_color) AS category_color
      FROM sale_items si
@@ -654,7 +668,10 @@ async function paidOrders(ctx) {
       totalSessions: item.session_count,
       paidSessions: item.paid_sessions,
       productType: item.product_type || '',
+      unit: item.unit || (item.product_type === '家居产品' ? '盒' : '次'),
       unitRealPrice: item.unit_real_price != null ? Number(item.unit_real_price).toFixed(2) : '',
+      categoryId: item.category_id || '',
+      categoryName: item.category_name || '',
       category: item.category_name || '',
       categoryColor: item.category_color || '',
       productKind: item.product_kind || '',
@@ -866,9 +883,11 @@ async function giftHistory(ctx) {
   const giftItems = await pg.query(
     `SELECT si.sale_item_id, si.sale_order_id, si.product_name,
             si.quantity, si.session_count, si.remaining_sessions, si.paid_sessions,
-            si.received, o.created_at, o.paid_at
+            si.received, o.created_at, o.paid_at,
+            COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit
        FROM sale_items si
        JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+       LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
       WHERE ${whereClause}
         AND o.status IN ('已支付', '已完成')
         AND o.sale_order_type NOT IN ('内部单', '转换单', '寄存单')
@@ -884,8 +903,11 @@ async function giftHistory(ctx) {
   if (promoOrderIds.length > 0) {
     promoItems = await pg.query(
       `SELECT si.sale_order_id, si.sale_item_id, si.product_name,
-              si.quantity, si.session_count, si.remaining_sessions, si.paid_sessions, si.received
-         FROM sale_items si WHERE si.sale_order_id = ANY($1) ORDER BY si.sale_item_id`,
+              si.quantity, si.session_count, si.remaining_sessions, si.paid_sessions, si.received,
+              COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit
+         FROM sale_items si
+         LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
+        WHERE si.sale_order_id = ANY($1) ORDER BY si.sale_item_id`,
       [promoOrderIds],
     )
   }
@@ -900,6 +922,7 @@ async function giftHistory(ctx) {
       sessionCount: i.session_count,
       remainingSessions: i.remaining_sessions,
       paidSessions: i.paid_sessions,
+      unit: i.unit || '次',
     })
   }
 
@@ -924,6 +947,7 @@ async function giftHistory(ctx) {
       sessionCount: i.session_count,
       remainingSessions: i.remaining_sessions,
       paidSessions: i.paid_sessions,
+      unit: i.unit || '次',
       createdAt: i.created_at,
     })),
   }

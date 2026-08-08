@@ -5,16 +5,30 @@ import { callStaffApi } from '../../utils/cloud';
 import { requireManager } from '../../utils/role';
 import { formatDateTime } from '../../utils/formatters';
 import { lookupRate as _lookupRate, computeSummary as _computeSummary } from '../utils/allocation-calc';
+import {
+  calculateGroupedAmounts,
+  expandGroupedAllocationLines,
+  groupPaymentItems,
+  type AllocationSignatureLine,
+} from '../utils/allocation-group';
 
 const RATIO_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
 const MAX_PER_POOL = 3;
+let allocationLineSequence = 0;
+
+function nextAllocationLineId(groupId: string): string {
+  allocationLineSequence += 1;
+  return `${groupId}:line:${allocationLineSequence}`;
+}
 
 interface OrderItem {
   sale_item_id: string;
-  product_name: string;
+  sku_id: string | null;
+  product_name: string | null;
   received: string;
   sales_category: string | null;
-  product_type: string;
+  product_type: string | null;
+  item_direction: string | null;
 }
 
 interface RateRow {
@@ -46,7 +60,9 @@ interface CandidateEmployee {
 
 /** 每个 item × person 的分配行 */
 interface AllocLine {
-  saleItemId: string;
+  lineId: string;
+  groupId: string;
+  saleItemIds: string[];
   roleType: string;        // 技能标签（''=未选），分池校验键
   staffWfId: string;       // 员工（''=未选）
   staffName: string;
@@ -71,8 +87,14 @@ interface SuggestLine {
 
 /** 展示用：item + 内嵌分配行 */
 interface DisplayItem {
-  sale_item_id: string;
+  groupId: string;
+  saleItemIds: string[];
+  sourceItems: OrderItem[];
+  skuId: string | null;
+  sourceCount: number;
+  item_direction: string;
   product_name: string;
+  product_type: string | null;
   received: string;
   sales_category: string | null;
   allocLines: AllocLine[];
@@ -263,41 +285,65 @@ Page({
     return commissionRate;
   },
 
-  /** 计算单行的分配额/提成额（实收 × 分配比例，再 × 提成比例） */
-  computeLine(line: AllocLine, received: number): AllocLine {
-    const ratio = line.ratioPercent / 100;
-    const allocAmount = received * ratio;
-    const commissionAmount = allocAmount * (line.commissionRate || 0);
+  /** 逐 source item 四舍五入后汇总，保持展示结果与逐 receipt 保存一致。 */
+  computeLine(line: AllocLine, sourceItems: OrderItem[]): AllocLine {
+    const { allocatedAmount, commissionAmount } = calculateGroupedAmounts(
+      sourceItems,
+      line.ratioPercent / 100,
+      line.commissionRate || 0,
+    );
     return {
       ...line,
-      allocAmount: allocAmount.toFixed(2),
-      commissionAmount: commissionAmount.toFixed(2),
+      allocAmount: allocatedAmount,
+      commissionAmount,
     };
   },
 
   /** 用 suggest 预建行初始化（按 roleType+员工 预填，比例默认 100%） */
   buildSuggestedItems(suggestLines: SuggestLine[], items: OrderItem[]) {
-    const displayItems: DisplayItem[] = items.map(item => {
-      const received = Number(item.received) || 0;
-      const salesCat = item.sales_category || '自销自耗';
-      const lines: AllocLine[] = suggestLines
-        .filter(l => l.saleItemId === item.sale_item_id)
-        .map(l => this.computeLine({
-          saleItemId: item.sale_item_id,
-          roleType: l.roleType || '',
-          staffWfId: l.staffWfId || '',
-          staffName: l.staffName || '',
-          salesCategory: salesCat,
-          ratioPercent: Number(((l.allocationRatio || 0) * 100).toFixed(1)),
-          commissionRate: l.commissionRate || 0,
+    const suggestionLinesByItem = new Map<string, SuggestLine[]>();
+    const signaturesByItem = new Map<string, AllocationSignatureLine[]>();
+    for (const line of suggestLines) {
+      const lines = suggestionLinesByItem.get(line.saleItemId) || [];
+      lines.push(line);
+      suggestionLinesByItem.set(line.saleItemId, lines);
+
+      const signatures = signaturesByItem.get(line.saleItemId) || [];
+      signatures.push({
+        employeeId: line.staffWfId,
+        roleType: line.roleType,
+        allocationRatio: line.allocationRatio,
+      });
+      signaturesByItem.set(line.saleItemId, signatures);
+    }
+
+    const displayItems: DisplayItem[] = groupPaymentItems(items, signaturesByItem).map(group => {
+      const lines: AllocLine[] = (suggestionLinesByItem.get(group.saleItemIds[0]) || []).map((line) =>
+        this.computeLine({
+          lineId: nextAllocationLineId(group.groupId),
+          groupId: group.groupId,
+          saleItemIds: group.saleItemIds,
+          roleType: line.roleType || '',
+          staffWfId: line.staffWfId || '',
+          staffName: line.staffName || '',
+          salesCategory: group.salesCategory,
+          ratioPercent: Number(((line.allocationRatio || 0) * 100).toFixed(1)),
+          commissionRate: line.commissionRate || 0,
           allocAmount: '0.00',
           commissionAmount: '0.00',
-        }, received));
+        }, group.sourceItems)
+      );
       return {
-        sale_item_id: item.sale_item_id,
-        product_name: item.product_name,
-        received: item.received,
-        sales_category: item.sales_category,
+        groupId: group.groupId,
+        saleItemIds: group.saleItemIds,
+        sourceItems: group.sourceItems,
+        skuId: group.skuId,
+        sourceCount: group.sourceCount,
+        item_direction: group.itemDirection,
+        product_name: group.productName,
+        product_type: group.productType,
+        received: group.received.toFixed(2),
+        sales_category: group.salesCategory,
         allocLines: lines,
       };
     });
@@ -310,39 +356,62 @@ Page({
     const nameMap = new Map<string, string>();
     this.data.candidateEmployees.forEach(e => nameMap.set(e.staffWfId, e.name));
 
-    const linesMap = new Map<string, AllocLine[]>();
+    const allocationsByItem = new Map<string, AllocationRecord[]>();
+    const signaturesByItem = new Map<string, AllocationSignatureLine[]>();
     for (const alloc of allocations) {
       if (alloc.is_void) continue;
       const saleItemId = alloc.sale_item_id || '';
-      const item = items.find(i => i.sale_item_id === saleItemId);
-      const received = item ? Number(item.received) || 0 : 0;
-      const salesCat = alloc.sales_category || item?.sales_category || '自销自耗';
-      const roleType = alloc.role_type || '';
-      const ratioPercent = Number(((Number(alloc.allocation_ratio) || 0) * 100).toFixed(1));
-      const commissionRate = roleType ? this.lookupRate(roleType, salesCat, received) : 0;
-      const employeeId = alloc.employee_id || '';
-      const line = this.computeLine({
-        saleItemId,
-        roleType,
-        staffWfId: employeeId,
-        staffName: nameMap.get(employeeId) || alloc.employee_name || employeeId,
-        salesCategory: salesCat,
-        ratioPercent,
-        commissionRate,
-        allocAmount: '0.00',
-        commissionAmount: '0.00',
-      }, received);
-      if (!linesMap.has(saleItemId)) linesMap.set(saleItemId, []);
-      linesMap.get(saleItemId)!.push(line);
+      if (!saleItemId) continue;
+      const itemAllocations = allocationsByItem.get(saleItemId) || [];
+      itemAllocations.push(alloc);
+      allocationsByItem.set(saleItemId, itemAllocations);
+
+      const signatures = signaturesByItem.get(saleItemId) || [];
+      signatures.push({
+        employeeId: alloc.employee_id,
+        roleType: alloc.role_type,
+        allocationRatio: alloc.allocation_ratio,
+      });
+      signaturesByItem.set(saleItemId, signatures);
     }
 
-    const displayItems: DisplayItem[] = items.map(item => ({
-      sale_item_id: item.sale_item_id,
-      product_name: item.product_name,
-      received: item.received,
-      sales_category: item.sales_category,
-      allocLines: linesMap.get(item.sale_item_id) || [],
-    }));
+    const displayItems: DisplayItem[] = groupPaymentItems(items, signaturesByItem).map(group => {
+      const groupAllocations = allocationsByItem.get(group.saleItemIds[0]) || [];
+      const lines = groupAllocations.map((alloc) => {
+        const roleType = alloc.role_type || '';
+        const employeeId = alloc.employee_id || '';
+        const ratioPercent = Number(((Number(alloc.allocation_ratio) || 0) * 100).toFixed(1));
+        const commissionRate = roleType
+          ? this.lookupRate(roleType, group.salesCategory, group.received)
+          : 0;
+        return this.computeLine({
+          lineId: nextAllocationLineId(group.groupId),
+          groupId: group.groupId,
+          saleItemIds: group.saleItemIds,
+          roleType,
+          staffWfId: employeeId,
+          staffName: nameMap.get(employeeId) || alloc.employee_name || employeeId,
+          salesCategory: group.salesCategory,
+          ratioPercent,
+          commissionRate,
+          allocAmount: '0.00',
+          commissionAmount: '0.00',
+        }, group.sourceItems);
+      });
+      return {
+        groupId: group.groupId,
+        saleItemIds: group.saleItemIds,
+        sourceItems: group.sourceItems,
+        skuId: group.skuId,
+        sourceCount: group.sourceCount,
+        item_direction: group.itemDirection,
+        product_name: group.productName,
+        product_type: group.productType,
+        received: group.received.toFixed(2),
+        sales_category: group.salesCategory,
+        allocLines: lines,
+      };
+    });
 
     this.setData({ displayItems });
     this.computeSummary();
@@ -354,7 +423,9 @@ Page({
     const di = this.data.displayItems[itemIdx];
     if (!di) return;
     const newLine: AllocLine = {
-      saleItemId: di.sale_item_id,
+      lineId: nextAllocationLineId(di.groupId),
+      groupId: di.groupId,
+      saleItemIds: di.saleItemIds,
       roleType: '',
       staffWfId: '',
       staffName: '',
@@ -390,13 +461,13 @@ Page({
     const { pickerItemIdx: itemIdx, pickerLineIdx: lineIdx, displayItems } = this.data;
     const di = displayItems[itemIdx];
     if (!di) { this.closeSkillSheet(); return; }
-    const received = Number(di.received) || 0;
     const line = di.allocLines[lineIdx];
+    if (!line) { this.closeSkillSheet(); return; }
     // 切换技能：清空已选员工 + 重查提成比例
-    const commissionRate = this.lookupRate(roleType, line.salesCategory, received);
+    const commissionRate = this.lookupRate(roleType, line.salesCategory, Number(di.received) || 0);
     const updated = this.computeLine(
       { ...line, roleType, staffWfId: '', staffName: '', commissionRate },
-      received
+      di.sourceItems
     );
     this.setData({
       [`displayItems[${itemIdx}].allocLines[${lineIdx}]`]: updated,
@@ -446,6 +517,7 @@ Page({
     const di = displayItems[itemIdx];
     if (!di) { this.closeEmpPopup(); return; }
     const line = di.allocLines[lineIdx];
+    if (!line) { this.closeEmpPopup(); return; }
     // 防重复：同 item 同技能标签池内不重复员工
     const dup = di.allocLines.some((l: AllocLine, i: number) =>
       i !== lineIdx && l.roleType === line.roleType && l.staffWfId === staffWfId
@@ -484,8 +556,9 @@ Page({
     const { pickerItemIdx: itemIdx, pickerLineIdx: lineIdx, displayItems } = this.data;
     const di = displayItems[itemIdx];
     if (!di) { this.closeRatioSheet(); return; }
-    const received = Number(di.received) || 0;
-    const updated = this.computeLine({ ...di.allocLines[lineIdx], ratioPercent: percent }, received);
+    const line = di.allocLines[lineIdx];
+    if (!line) { this.closeRatioSheet(); return; }
+    const updated = this.computeLine({ ...line, ratioPercent: percent }, di.sourceItems);
     this.setData({
       [`displayItems[${itemIdx}].allocLines[${lineIdx}]`]: updated,
       ratioSheetVisible: false,
@@ -508,9 +581,10 @@ Page({
     const { pickerItemIdx: itemIdx, pickerLineIdx: lineIdx, displayItems } = this.data;
     const di = displayItems[itemIdx];
     if (!di) { this.setData({ customRatioVisible: false, customRatioInput: '' }); return; }
-    const received = Number(di.received) || 0;
+    const line = di.allocLines[lineIdx];
+    if (!line) { this.setData({ customRatioVisible: false, customRatioInput: '' }); return; }
     const percent = Number(val.toFixed(1));
-    const updated = this.computeLine({ ...di.allocLines[lineIdx], ratioPercent: percent }, received);
+    const updated = this.computeLine({ ...line, ratioPercent: percent }, di.sourceItems);
     this.setData({
       [`displayItems[${itemIdx}].allocLines[${lineIdx}]`]: updated,
       customRatioVisible: false,
@@ -534,6 +608,7 @@ Page({
 
   /** 标记为无需分配 */
   async onSkipAllocation() {
+    if (this.data.submitting) return;
     if (this.data.frozen) {
       wx.showToast({ title: '分配结果已冻结，如需修改请联系管理后台', icon: 'none' });
       return;
@@ -595,10 +670,10 @@ Page({
       return;
     }
 
-    // 前端轻量预校验：同 (saleItemId, roleType) 池 ≤3 人 / 比例合计 ≤100%
+    // 前端轻量预校验：同 SKU 组的技能标签池 ≤3 人 / 比例合计 ≤100%
     const pools = new Map<string, AllocLine[]>();
     for (const l of effectiveLines) {
-      const key = `${l.saleItemId}|${l.roleType}`;
+      const key = `${l.groupId}|${l.roleType}`;
       if (!pools.has(key)) pools.set(key, []);
       pools.get(key)!.push(l);
     }
@@ -615,12 +690,12 @@ Page({
       }
     }
 
-    const allocations = effectiveLines.map(line => ({
+    // 展示层按 SKU 组编辑；提交前展开到每个独立 saleItemId，保持疗程卡实例独立。
+    const allocations = expandGroupedAllocationLines(effectiveLines).map(line => ({
       saleItemId: line.saleItemId,
       employeeId: line.staffWfId,
       roleType: line.roleType,
       allocationRatio: line.ratioPercent / 100,
-      totalAmount: parseFloat(line.allocAmount) || 0,
     }));
 
     this.setData({ submitting: true });

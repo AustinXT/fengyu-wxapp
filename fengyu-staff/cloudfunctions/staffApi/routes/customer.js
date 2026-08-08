@@ -22,6 +22,7 @@ const { maskPhone } = require("../utils/pii");
 const { maskPhoneForAuth } = require("../utils/phone-visibility");
 const { logOperation } = require("../utils/operation-log");
 const { shanghaiDateStr } = require("../utils/datetime");
+const { excludeDepositRefundSql } = require("../utils/consume-filter");
 
 /**
  * 顾客档案子 Tab 可见性闸门（calendar/refundHistory 等）。
@@ -425,7 +426,12 @@ async function detail(ctx) {
     if (staffRows.length > 0) preferredStaffName = staffRows[0].name || null;
   }
 
-  const { totalConsumption, yearConsumption } = await getConsumptionStats(pgUser.user_id);
+  const {
+    totalConsumption,
+    yearConsumption,
+    totalActualConsumption,
+    yearActualConsumption,
+  } = await getConsumptionStats(pgUser.user_id);
 
   // 到店信息（上次到店 + 到店频率 + 常购商品），并行查询
   const clientUserId = pgUser.user_id;
@@ -461,6 +467,8 @@ async function detail(ctx) {
     topProductName: purchaseInfo,
     totalConsumption,
     yearConsumption,
+    totalActualConsumption,
+    yearActualConsumption,
     source: pgUser.customer_id ? "both" : "miniprogram",
     legacyOrderCount,
   };
@@ -515,24 +523,71 @@ async function getTopProduct(clientUserId) {
 }
 
 /**
- * 查询消费统计（单次查询同时计算累计 + 年度）
+ * 查询顾客消费和实耗统计（单次查询同时计算累计 + 年度）
+ *
+ * 兼容历史订单（WorkFine 同步订单无 sale_items 明细）：
+ * - 有明细的订单：汇总 sale_items.received（精确到品项）
+ * - 无明细的历史订单：使用 sale_orders.received（订单级汇总）
+ *
+ * 状态口径：'已支付', '部分支付', '已完成'（与 paidOrders 对齐）
  */
 async function getConsumptionStats(clientUserId) {
-  if (!clientUserId) return { totalConsumption: 0, yearConsumption: 0 };
+  if (!clientUserId) {
+    return {
+      totalConsumption: 0,
+      yearConsumption: 0,
+      totalActualConsumption: 0,
+      yearActualConsumption: 0,
+    };
+  }
 
   const yearStart = new Date(new Date().getFullYear(), 0, 1);
   const rows = await pg.query(
-    `SELECT
-       COALESCE(SUM(si.received::numeric), 0) AS total,
-       COALESCE(SUM(CASE WHEN o.paid_at >= $2 THEN si.received::numeric ELSE 0 END), 0) AS year_total
-     FROM sale_orders o
-     JOIN sale_items si ON o.sale_order_id = si.sale_order_id
-     WHERE o.status = '已支付' AND o.client_user_id = $1`,
+    `WITH order_stats AS (
+       SELECT
+       COALESCE(SUM(
+         CASE
+           WHEN EXISTS (SELECT 1 FROM sale_items si WHERE si.sale_order_id = o.sale_order_id)
+           THEN (SELECT SUM(si2.received::numeric) FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+           ELSE o.received::numeric
+         END
+       ), 0) AS total,
+       COALESCE(SUM(
+         CASE
+           WHEN o.paid_at >= $2 THEN
+             CASE
+               WHEN EXISTS (SELECT 1 FROM sale_items si WHERE si.sale_order_id = o.sale_order_id)
+               THEN (SELECT SUM(si2.received::numeric) FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+               ELSE o.received::numeric
+             END
+           ELSE 0
+         END
+       ), 0) AS year_total
+       FROM sale_orders o
+       WHERE o.status IN ('已支付', '部分支付', '已完成') AND o.client_user_id = $1
+     ), actual_stats AS (
+       SELECT
+         COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS total_actual_consumption,
+         COALESCE(SUM(CASE WHEN so.service_date >= $2::date
+           THEN sit.unit_real_price::numeric * sit.session_used ELSE 0 END), 0) AS year_actual_consumption
+       FROM service_orders so
+       JOIN service_items sit ON sit.service_order_id = so.service_order_id
+       WHERE so.client_user_id = $1
+         AND so.status = '已完成'
+         AND ${excludeDepositRefundSql('so')}
+     )
+     SELECT order_stats.total, order_stats.year_total,
+            actual_stats.total_actual_consumption, actual_stats.year_actual_consumption
+       FROM order_stats
+       CROSS JOIN actual_stats`,
     [clientUserId, yearStart],
   );
+  const stats = rows[0] || {};
   return {
-    totalConsumption: Number(rows[0].total),
-    yearConsumption: Number(rows[0].year_total),
+    totalConsumption: Number(stats.total || 0),
+    yearConsumption: Number(stats.year_total || 0),
+    totalActualConsumption: Number(stats.total_actual_consumption || 0),
+    yearActualConsumption: Number(stats.year_actual_consumption || 0),
   };
 }
 
@@ -580,7 +635,17 @@ async function paidOrders(ctx) {
   }
 
   const orders = await pg.query(
-    `SELECT o.sale_order_id, o.status, o.paid_at, o.store_id, s.store_name, o.sale_order_type
+    `SELECT
+       o.sale_order_id,
+       o.status,
+       o.sale_order_datetime,
+       o.paid_at,
+       o.store_id,
+       s.store_name,
+       o.sale_order_type,
+       o.document_type,
+       o.market_name,
+       o.legacy_source
      FROM sale_orders o
      LEFT JOIN stores s ON s.store_id = o.store_id
      WHERE ${whereClause}
@@ -599,13 +664,26 @@ async function paidOrders(ctx) {
       si.sale_order_id,
       si.sale_item_id,
       si.store_id,
+      si.sku_id,
+      si.item_direction,
+      si.ref_sale_item_id,
       si.session_count,
       si.remaining_sessions,
       si.paid_sessions,
-      si.sku_id,
+      si.quantity,
       si.product_type,
       si.product_name,
+      si.unit_price,
       si.unit_real_price,
+      si.sale_amount,
+      si.received,
+      si.pending_received,
+      si.expire_date,
+      si.remark,
+      si.sales_category,
+      si.picked_up_quantity,
+      COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
+      ps.category_id,
       pc.category_name,
       pc.product_kind,
       COALESCE(pc_parent.display_color, pc.display_color) AS category_color
@@ -642,14 +720,29 @@ async function paidOrders(ctx) {
     itemsByOrder[item.sale_order_id].push({
       saleItemId: item.sale_item_id,
       storeId: item.store_id,
+      skuId: item.sku_id || null,
+      itemDirection: item.item_direction || '',
+      refSaleItemId: item.ref_sale_item_id || null,
       itemName: item.product_name || "",
       spec: "",
       sessionCount: item.session_count,
       remainingSessions: item.remaining_sessions,
       totalSessions: item.session_count,
       paidSessions: item.paid_sessions,
+      quantity: Number(item.quantity || 1),
       productType: item.product_type || "",
+      unit: item.unit || (item.product_type === '家居产品' ? '盒' : '次'),
+      unitPrice: item.unit_price != null ? Number(item.unit_price).toFixed(2) : "",
       unitRealPrice: item.unit_real_price != null ? Number(item.unit_real_price).toFixed(2) : "",
+      saleAmount: item.sale_amount != null ? Number(item.sale_amount).toFixed(2) : "",
+      received: item.received != null ? Number(item.received).toFixed(2) : "",
+      pendingReceived: item.pending_received != null ? Number(item.pending_received).toFixed(2) : "",
+      expireDate: item.expire_date || null,
+      remark: item.remark || null,
+      salesCategory: item.sales_category || null,
+      pickedUpQuantity: item.picked_up_quantity != null ? Number(item.picked_up_quantity) : null,
+      categoryId: item.category_id || "",
+      categoryName: item.category_name || "",
       category: item.category_name || "",
       categoryColor: item.category_color || "",
       productKind: item.product_kind || "",
@@ -660,10 +753,14 @@ async function paidOrders(ctx) {
     orderId: o.sale_order_id,
     saleOrderId: o.sale_order_id,
     status: o.status,
+    saleOrderDatetime: o.sale_order_datetime,
     paidAt: o.paid_at,
     storeId: o.store_id,
     storeName: o.store_name || "",
     saleOrderType: o.sale_order_type || "",
+    documentType: o.document_type || null,
+    marketName: o.market_name || "",
+    legacySource: o.legacy_source || null,
     items: itemsByOrder[o.sale_order_id] || [],
   }));
 }

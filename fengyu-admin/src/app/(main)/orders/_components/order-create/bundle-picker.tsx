@@ -147,7 +147,7 @@ function BundleRow({ bundle, onAdd, onBundleAdded }: BundleRowProps) {
     if (onBundleAdded) {
       // 一次性替换分支：父级负责清空旧 cart + 填入新套餐 + 跳 Step 3
       const items = toAdd.map(({ ref, quantity }) => ({ sku: bundleSkuToProductSku(ref), quantity }))
-      onBundleAdded({ product: fakeProduct, items })
+      onBundleAdded({ bundleProductId: bundle.productId, product: fakeProduct, items })
     } else {
       // 兼容分支：未提供一次性回调时走 addToCart 循环（保留既有单测路径）。
       // page 的 addToCart 按 skuId 累加，故同一 SKU 调 quantity 次等价 quantity=N。

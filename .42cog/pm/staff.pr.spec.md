@@ -116,7 +116,7 @@
 
 **实现状态**: 已实现 | **权限**: 仅店长
 
-**核心语义**: 店长端对储值卡的所有操作都是"**预选**"，**不扣卡**。扣卡仅在 clientApi（顾客端）/ payNotify（微信支付回调）/ staffApi.order.confirmOffline（线下确认）三处发生。
+**核心语义**: 未覆盖全部应付的充值卡金额是"**预选**"，开单时不扣卡；仅当充值卡全额覆盖本单应付时，`order.create` / `order.createConversion` 才在创建事务内锁卡、扣卡并结清。其余扣卡发生在 clientApi（顾客端）/ payNotify（微信支付回调）/ staffApi.order.confirmOffline（线下确认）。
 
 **结算弹层 UI**:
 
@@ -124,18 +124,21 @@
 - 储值卡按钮文案 "**预选抵扣**"（非"使用"），底部固定副文案 "**顾客扫码确认后才真正扣卡**"
 - 支付方式按钮组枚举扩展为 4 值（微信/支付宝/线下/无）：实付 > 0 时展示前三项；实付 = 0 时**隐藏按钮组**并显示 "全额抵扣（payment_method='无'）"
 - 店长可见顾客**跨店统一**余额（`customer.customerBalance`，无门店范围限制；仅店长角色可访问）
+- 普通销售单、内部单和转换单的充值卡抵扣金额均可手填，初始值为 `0.00`；前端按 `min(应付金额, 充值卡余额)` 约束，普通/内部单在存在挂账时再受本次逐行实付合计限制
+- 前端只负责输入钳制；`order.create` / `order.createConversion` 必须以服务端计算的应付额和实时余额复核，超限请求直接拒绝，不得静默改写为上限
 
 **开单行为**:
 
-1. 店长勾选储值卡抵扣 → `staffApi.order.create` 写入 `sale_orders.prepaid_card_amount` + `paid_amount` + `payment_method`（实付=0 落 `'无'`）
-2. `prepaid_cards.balance` 不动，`card_transactions` 不写入；订单 `status='待支付'`，返回二维码
-3. 顾客扫码 → `scan-pay` 页（顾客端）调 `order.scanAdjust` 调整 / 调 `order.confirmPrepaidFull` 确认，客户端承担真实扣卡
-4. 超时未确认 → 订单按现有 TTL 关闭；预选值作废，`balance` 仍未动
+1. 店长启用充值卡抵扣后手填金额（默认 `0.00`）→ `staffApi.order.create` / `order.createConversion` 写入 `sale_orders.prepaid_card_amount`；全额抵扣时支付方式落 `'无'`
+2. 部分抵扣：`prepaid_cards.balance` 不动、`card_transactions` 不写入，订单 `status='待支付'`，继续走二维码或线下确认收款
+3. 全额抵扣：创建事务内以 `FOR UPDATE` 二次校验余额，扣 `balance`、写 `card_transactions(type='扣款')` 和储值卡抵扣流水，订单直接结清
+4. 部分抵扣的顾客扫码 → `scan-pay` 页（顾客端）调整/确认；超时未确认时订单按现有 TTL 关闭，预选值作废且余额仍不变
 
 **扣卡时机（员工端触发）**:
 
 | 场景 | 触发点 | 动作 |
 |------|--------|------|
+| 充值卡全额抵扣 | `order.create` / `order.createConversion` | 创建事务内 `FOR UPDATE` + 二次余额校验 + 扣 balance + INSERT `card_transactions(type='扣款')` + 置已支付 |
 | 顾客扫码后选"线下支付" | `order.confirmOffline` | 事务内 `FOR UPDATE` + 二次余额校验 + 扣 balance + INSERT `card_transactions(type='扣款')` + 置已支付 |
 | 退款 | `order.approveRefund` | 按 §2.5 比例拆分：`refundByCard = floor(prepaid/total × refund, 2)`、`refundByOrigin = refund − refundByCard`；储值卡部分回冲 balance + INSERT `type='充值'` |
 | 转换单负差额（多退给客户） | `order.createConversion` | 保留现有"充入储值卡"逻辑；UPSERT 维度改为 `ON CONFLICT (user_id)`，INSERT 列集不含 `store_id` |

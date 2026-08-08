@@ -216,9 +216,11 @@ async function list(ctx) {
       COALESCE(si.product_name, '到店预约') AS service_name,
       si.session_count,
       si.remaining_sessions,
-      si.paid_sessions
+      si.paid_sessions,
+      COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit
     FROM appointments a
     LEFT JOIN sale_items si ON a.sale_item_id = si.sale_item_id
+    LEFT JOIN product_skus ps ON si.sku_id = ps.sku_id
     LEFT JOIN stores s ON a.store_id = s.store_id
     LEFT JOIN staff_wechat_users sw ON a.employee_id = sw.employee_id
     ${whereClause}

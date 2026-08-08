@@ -203,15 +203,15 @@ function buildRefundDetails(origItems, requestItems) {
 function isZeroCashPaidSessionRefund(refundDetails, handlingFee, totalRefund) {
   const fee = Math.max(0, Number(handlingFee) || 0)
   const total = Math.round((Number(totalRefund) || 0) * 100) / 100
-  if (fee !== 0 || total !== 0) return false
+  if (fee >= 0.001 || total >= 0.001) return false
 
   const itemRefunds = (refundDetails || []).filter((d) => !d.isOverpay && Number(d.quantity || 0) > 0)
   // 允许 0 元退项的场景：
   // 1. 疗程卡：寄存单、优惠券全额抵扣的疗程卡（未消费可退）
-  // 2. 非疗程卡：优惠券全额抵扣的商品（unit_real_price = 0）
+  // 2. 非疗程卡：优惠券全额抵扣的商品（unit_real_price < 0.001）
   return itemRefunds.length > 0 && itemRefunds.every((d) => {
-    // 通用条件：单次价为 0（优惠券全额抵扣）且全退
-    const isUnconsumedZeroPrice = Number(d.unitRealPrice || 0) === 0 && d.isFullItemRefund === true
+    // 通用条件：单次价接近 0（优惠券全额抵扣）且全退
+    const isUnconsumedZeroPrice = Math.abs(Number(d.unitRealPrice || 0)) < 0.001 && d.isFullItemRefund === true
 
     // 疗程卡专属条件：寄存单（sale_amount <= 0）
     const isCourseCardDeposit = d.productType === '疗程卡' &&

@@ -61,6 +61,7 @@ export const getDataCenterScopeOptions = withPermission(
         and(
           eq(stores.isClosed, false),
           eq(orgStore.type, '门店'),
+          eq(orgStore.isActive, true),
           // 总部看全部门店；其他角色仅看 scopeStoreIds（市场账号=其下门店，门店账号=本店）
           seeAll
             ? undefined

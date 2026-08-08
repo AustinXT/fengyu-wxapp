@@ -33,8 +33,13 @@ vi.mock('@db/order', () => ({
 }))
 
 vi.mock('@db/product', () => ({
-  productSkus: { skuId: 'sku_id', categoryId: 'category_id' },
-  productCategories: { categoryId: 'category_id', productKind: 'product_kind' },
+  productSkus: { skuId: 'sku_id', categoryId: 'category_id', unit: 'unit' },
+  productCategories: {
+    categoryId: 'category_id',
+    categoryName: 'category_name',
+    productKind: 'product_kind',
+    sortOrder: 'sort_order',
+  },
 }))
 
 vi.mock('@db/org', () => ({
@@ -76,6 +81,7 @@ vi.mock('drizzle-orm', () => ({
   and: vi.fn((...args) => ({ type: 'and', args: args.filter(Boolean) })),
   or: vi.fn((...args) => ({ type: 'or', args })),
   desc: vi.fn((col) => ({ type: 'desc', col })),
+  asc: vi.fn((col) => ({ type: 'asc', col })),
   gte: vi.fn((a, b) => ({ type: 'gte', a, b })),
   ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
   inArray: vi.fn((col, vals) => ({ type: 'inArray', col, vals })),
@@ -99,10 +105,11 @@ vi.mock('@/lib/permissions', () => ({
   isInScope: vi.fn(),
 }))
 
-import { getCardsPaginated, getCustomerHeldCards, getCardById, getCardTransactions, exportCards } from './cards'
+import { getCardsPaginated, getCardFilterOptions, getCustomerHeldCards, getCardById, getCardTransactions, exportCards } from './cards'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope, scopeCondition } from '@/lib/permissions'
+import { parseCardFilters } from '@/lib/list-filters'
 import { eq, gte, ilike, isNotNull, isNull, inArray } from 'drizzle-orm'
 
 // ============================================================================
@@ -278,13 +285,23 @@ describe('getCardsPaginated — 服务端分页', () => {
     expect(eq).toHaveBeenCalledWith('store_id', 'store-9')
   })
 
-  it('search 筛选 → ilike(name) + ilike(phone)', async () => {
+  it('一级/二级品项筛选 → 分别命中分类表和 SKU 分类 ID', async () => {
+    mockPaginatedChain(0, [])
+
+    await getCardsPaginated({ productKind: '护理项目', categoryId: 'face-care' })
+
+    expect(eq).toHaveBeenCalledWith('product_kind', '护理项目')
+    expect(eq).toHaveBeenCalledWith('category_id', 'face-care')
+  })
+
+  it('search 筛选 → ilike(name) + ilike(phone) + ilike(product_name)', async () => {
     mockPaginatedChain(0, [])
 
     await getCardsPaginated({ search: '李' })
 
     expect(ilike).toHaveBeenCalledWith('name', '%李%')
     expect(ilike).toHaveBeenCalledWith('phone', '%李%')
+    expect(ilike).toHaveBeenCalledWith('product_name', '%李%')
   })
 
   it('search 转义 %/_ 字符（避免通配泄漏）', async () => {
@@ -294,6 +311,7 @@ describe('getCardsPaginated — 服务端分页', () => {
 
     expect(ilike).toHaveBeenCalledWith('name', '%100\\%\\_off%')
     expect(ilike).toHaveBeenCalledWith('phone', '%100\\%\\_off%')
+    expect(ilike).toHaveBeenCalledWith('product_name', '%100\\%\\_off%')
   })
 
   it('search 筛选 → 订单号精准匹配 eq(sale_order_id, search)', async () => {
@@ -357,6 +375,43 @@ describe('getCardsPaginated — 服务端分页', () => {
     const result = await getCardsPaginated()
 
     expect(result.data[0].paidAt).toBeNull()
+  })
+})
+
+describe('getCardFilterOptions', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockCardsPaginatedSession)
+  })
+
+  it('返回一级品项和对应二级品项，供疗程卡筛选栏使用', async () => {
+    const makeChain = (rows: any[]) => {
+      const chain: any = {}
+      chain.from = vi.fn().mockReturnValue(chain)
+      chain.where = vi.fn().mockReturnValue(chain)
+      chain.orderBy = vi.fn().mockResolvedValue(rows)
+      return chain
+    }
+    ;(db.select as any)
+      .mockReturnValueOnce(makeChain([{ categoryName: '护理项目' }]))
+      .mockReturnValueOnce(makeChain([
+        { categoryId: 'face-care', categoryName: '面部护理', productKind: '护理项目' },
+      ]))
+
+    await expect(getCardFilterOptions()).resolves.toEqual({
+      productKinds: ['护理项目'],
+      categories: [{ categoryId: 'face-care', categoryName: '面部护理', productKind: '护理项目' }],
+    })
+  })
+})
+
+describe('parseCardFilters', () => {
+  it('未选一级品项时忽略孤立二级品项，避免 URL 幽灵筛选', () => {
+    expect(parseCardFilters({ category: 'face-care' }).categoryId).toBeUndefined()
+    expect(parseCardFilters({ productKind: '护理项目', category: 'face-care' })).toMatchObject({
+      productKind: '护理项目',
+      categoryId: 'face-care',
+    })
   })
 })
 

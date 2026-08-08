@@ -4,10 +4,10 @@ export type OrgNodeType = '总部' | '市场' | '门店' | '部门'
 
 export const ROLE_SCOPE_TYPES: Record<RoleType, OrgNodeType[]> = {
   admin: ['总部'],
-  hr: ['总部', '市场'],
-  product: ['总部', '市场'],
-  finance: ['总部', '市场'],
-  customer_mgr: ['总部', '市场'],
+  hr: ['总部', '市场', '门店'],
+  product: ['总部', '市场', '门店'],
+  finance: ['总部', '市场', '门店'],
+  customer_mgr: ['总部', '市场', '门店'],
   manager: ['总部', '市场', '门店'],
   staff: ['门店'],
 }

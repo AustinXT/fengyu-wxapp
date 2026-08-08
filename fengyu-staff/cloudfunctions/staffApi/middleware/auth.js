@@ -13,9 +13,10 @@ const { testBypassAllowed } = require('../utils/runtime-guard')
 const {
   deriveStaffLevel,
   deriveAvailableLoginLevels,
-  canAccessManagementLevel,
   expandScopeStoreIds,
+  expandScopeOrgNodeIds,
 } = require('../utils/scope')
+const { hasDataCenterDashboard } = require('../utils/permission-matrix')
 
 // 员工基础信息缓存（不含 loginLevel/currentStoreId 等动态字段）：OPENID → { data, ts }
 const AUTH_CACHE = new Map()
@@ -33,12 +34,16 @@ function readLoginParams(ctx) {
 }
 
 /**
- * 根据 staffLevel + scopeStoreIds + fallback storeId + 请求参数，派生 loginLevel / effectiveStoreId
+ * 根据 staffLevel、scopeStoreIds、数据中心权限和请求参数，派生 loginLevel / effectiveStoreId。
  */
-function resolveRuntimeAuth(base, loginLevelInput, currentStoreIdInput) {
+function resolveRuntimeAuth(base, loginLevelInput, currentStoreIdInput, hasDashboardPermission = false) {
   const { staffLevel, scopeStoreIds, fallbackStoreId } = base
 
-  const available = deriveAvailableLoginLevels(staffLevel, scopeStoreIds)
+  const available = deriveAvailableLoginLevels(
+    staffLevel,
+    scopeStoreIds,
+    hasDashboardPermission,
+  )
 
   // 1. loginLevel
   let loginLevel = loginLevelInput
@@ -90,7 +95,9 @@ function resolveRuntimeAuth(base, loginLevelInput, currentStoreIdInput) {
  *   roleBindings,            // [{role, scopeId, scopeType}]
  *   staffLevel,              // headquarters | market | store_manager | store_staff | null
  *   scopeStoreIds,           // string[] — 有权可见的全部 store_id（全角色并集）
+ *   scopeOrgNodeIds,         // string[] — 角色根节点自身及全部后代组织节点
  *   managerStoreIds,         // string[] — 仅 manager 角色绑定展开的门店；店长写操作授权用
+ *   hasDataCenterDashboard,  // boolean — 当前权限矩阵是否授予 data_center:dashboard
  *   loginLevel,              // store | management | null
  *   currentStoreId,          // 门店模式下的当前门店
  *   effectiveStoreId,        // 业务 SQL 应该使用的门店过滤值；管理层模式 = null
@@ -128,11 +135,23 @@ async function auth(ctx, next) {
     }
   }
 
+  // Permission matrix is intentionally resolved outside the 5-minute auth base
+  // cache, so matrix edits propagate with its own 30-second cache window.
+  const hasDashboardPermission = base.authData.staffWfId
+    ? await hasDataCenterDashboard(base.authData.roleBindings)
+    : false
+
   const { loginLevel: liInput, currentStoreId: csInput } = readLoginParams(ctx)
-  const runtime = resolveRuntimeAuth(base, liInput, csInput)
+  const runtime = resolveRuntimeAuth(
+    base,
+    liInput,
+    csInput,
+    hasDashboardPermission,
+  )
 
   ctx.auth = {
     ...base.authData,
+    hasDataCenterDashboard: hasDashboardPermission,
     loginLevel: runtime.loginLevel,
     currentStoreId: runtime.currentStoreId,
     effectiveStoreId: runtime.effectiveStoreId,
@@ -171,6 +190,7 @@ async function loadAuthBase(effectiveOpenid) {
   let staffLevel = null
   let scopeStoreIds = []
   let managerStoreIds = []
+  let scopeOrgNodeIds = []
 
   if (users.length === 0) {
     // 未注册员工
@@ -184,6 +204,7 @@ async function loadAuthBase(effectiveOpenid) {
       roleBindings: [],
       staffLevel: null,
       scopeStoreIds: [],
+      scopeOrgNodeIds: [],
       managerStoreIds: [],
       position: null,
       storeName: null,
@@ -210,7 +231,12 @@ async function loadAuthBase(effectiveOpenid) {
         scopeName: r.scope_name,
       }))
       staffLevel = deriveStaffLevel(roleBindings)
-      scopeStoreIds = await expandScopeStoreIds(roleBindings, pg)
+      const [allScopeStores, allScopeNodes] = await Promise.all([
+        expandScopeStoreIds(roleBindings, pg),
+        expandScopeOrgNodeIds(roleBindings, pg),
+      ])
+      scopeStoreIds = allScopeStores
+      scopeOrgNodeIds = allScopeNodes
       // 仅展开 manager 角色绑定 → 店长写操作可达的门店集（区别于全角色并集 scopeStoreIds）
       const managerBindings = roleBindings.filter((r) => r.role === 'manager')
       managerStoreIds = managerBindings.length > 0
@@ -230,6 +256,7 @@ async function loadAuthBase(effectiveOpenid) {
       roleBindings,
       staffLevel,
       scopeStoreIds,
+      scopeOrgNodeIds,
       managerStoreIds,
       position: isActive ? user.position_name : null,
       storeName: isActive ? user.store_name : null,
@@ -296,16 +323,16 @@ function requireManager() {
 }
 
 /**
- * 要求以管理层身份登录（总部 / 市场 / 门店店长 store_manager 层级，且当前 loginLevel = management）
- * store_manager 放开管理层视图：数据范围由各 mgmt 路由的 validateManagementScope 收口到 managerStoreIds。
+ * 要求拥有数据中心权限且以管理层身份登录。
+ * 数据范围由各 mgmt 路由的 validateManagementScope 收口到账号全部 scope。
  */
 function requireManagementLevel() {
   return async (ctx, next) => {
     if (!ctx.auth.staffWfId) {
       throw new Error('UNAUTHORIZED: 员工档案未关联')
     }
-    if (!canAccessManagementLevel(ctx.auth.staffLevel)) {
-      throw new Error('PERMISSION_DENIED: 仅管理层可执行此操作')
+    if (!ctx.auth.hasDataCenterDashboard) {
+      throw new Error('PERMISSION_DENIED: 缺少数据中心权限')
     }
     if (ctx.auth.loginLevel !== 'management') {
       throw new Error('PERMISSION_DENIED: 请以管理层身份登录')

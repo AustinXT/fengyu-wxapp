@@ -12,6 +12,8 @@ export interface CartItem {
   sku: ProductSku
   product: Product
   quantity: number
+  /** 组合套餐主商品 ID；普通商品/体验卡不设置。 */
+  bundleProductId?: string
 }
 
 /** Step 3 的逐项手动改价记录 */
@@ -63,6 +65,7 @@ export interface NormalKindPickerProps extends PickerCommonProps {
  * 组合套餐走"一次性替换 cart"分支；普通/体验/充值走 addToCart 循环。
  */
 export interface BundleAddPayload {
+  bundleProductId: string
   product: Product
   items: { sku: ProductSku; quantity: number }[]
 }
@@ -87,6 +90,7 @@ export function pickerSkuToProductSku(sku: OrderPickerSku): ProductSku {
     price: sku.price,
     specialPrice: sku.specialPrice,
     sessionCount: sku.sessionCount,
+    unit: sku.unit,
     purchaseLimit: sku.purchaseLimit,
     sortOrder: sku.sortOrder,
     serviceFee: sku.serviceFee,
@@ -115,6 +119,7 @@ export function bundleSkuToProductSku(args: {
   /** 疗程卡次数：必须透传到 ProductSku → cart → 开单 payload，
    *  否则服务端写 sale_items 时 remaining_sessions 为 null 会导致该卡永远无法核销 */
   sessionCount: number | null
+  unit: string
   purchaseLimit: number | null
   price: string
   bundlePrice: string | null
@@ -129,6 +134,7 @@ export function bundleSkuToProductSku(args: {
     price: args.price,
     specialPrice: args.bundlePrice,
     sessionCount: args.sessionCount,
+    unit: args.unit,
     purchaseLimit: args.purchaseLimit,
     sortOrder: args.sortOrder,
     serviceFee: '0',

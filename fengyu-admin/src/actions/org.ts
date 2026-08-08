@@ -10,10 +10,49 @@ import { revalidatePath } from 'next/cache'
 import type { OrgNode } from '@/lib/types'
 import { isNodeInScope } from '@/lib/node-scope'
 import { withPermission } from '@/lib/with-permission'
-import { requireAdmin } from '@/lib/permissions'
+import { requireAdmin, isAdminScope } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 
 const VALID_NODE_TYPES = ['总部', '市场', '门店', '部门'] as const
+
+function validateParentType(nodeType: OrgNode['type'], parentType: OrgNode['type']): string | null {
+  if (nodeType === '总部') return '总部节点必须作为根节点'
+  if (parentType === '部门') {
+    return nodeType === '部门' ? '部门不可嵌套' : '部门节点下不能创建子节点'
+  }
+  if (parentType === '门店' && nodeType !== '部门') return '门店节点下只能创建部门'
+  if (nodeType === '市场' && parentType !== '总部') return '市场节点只能在总部下'
+  if (nodeType === '门店' && parentType !== '市场') return '门店节点只能在市场下'
+  return null
+}
+
+/**
+ * 检查 targetId 是否是 nodeId 的子孙节点
+ */
+async function checkIsDescendant(nodeId: string, targetId: string): Promise<boolean> {
+  if (nodeId === targetId) return true
+
+  // BFS 查找所有子孙节点
+  const queue = [nodeId]
+  const visited = new Set<string>()
+
+  while (queue.length > 0) {
+    const current = queue.shift()!
+    if (visited.has(current)) continue
+    visited.add(current)
+
+    if (current === targetId) return true
+
+    const children = await db
+      .select({ id: orgNodes.id })
+      .from(orgNodes)
+      .where(eq(orgNodes.parentId, current))
+
+    children.forEach((child) => queue.push(child.id))
+  }
+
+  return false
+}
 
 export const getOrgNodes = withPermission(
   'org:list',
@@ -54,8 +93,11 @@ export const createOrgNode = withPermission(
     return { success: false, message: `无效的节点类型: ${data.type}` }
   }
 
-  // 校验层级约束：department 不可嵌套
-  if (data.parentId) {
+  // 根节点只允许总部，且只有 admin 可创建，避免非 admin 趁无父节点绕过 scope 校验。
+  if (!data.parentId) {
+    if (data.type !== '总部') return { success: false, message: '只有总部节点可以作为根节点' }
+    if (!isAdminScope(session)) return { success: false, message: '无权创建根节点' }
+  } else {
     const [parent] = await db
       .select({ type: orgNodes.type })
       .from(orgNodes)
@@ -64,14 +106,8 @@ export const createOrgNode = withPermission(
     if (!parent) {
       return { success: false, message: '父节点不存在' }
     }
-    // department 下不能再建 department
-    if (parent.type === '部门' && data.type === '部门') {
-      return { success: false, message: '部门不可嵌套' }
-    }
-    // 门店下只能建部门
-    if (parent.type === '门店' && data.type !== '部门') {
-      return { success: false, message: '门店节点下只能创建部门' }
-    }
+    const parentTypeError = validateParentType(data.type, parent.type)
+    if (parentTypeError) return { success: false, message: parentTypeError }
 
     // scope 隔离：非 admin 只能在自己 scope 内的父节点下创建子节点
     if (!(await isNodeInScope(session, data.parentId))) {
@@ -127,6 +163,43 @@ export const updateOrgNode = withPermission(
 
   // 获取旧值用于日志 diff
   const [before] = await db.select().from(orgNodes).where(eq(orgNodes.id, id)).limit(1)
+  if (!before) return { success: false, message: '节点不存在' }
+
+  // 修改父节点或类型时，都需要重新校验完整的层级约束。
+  if (data.parentId !== undefined || data.type !== undefined) {
+    const targetParentId = data.parentId === undefined ? before.parentId : data.parentId
+    const targetType = data.type ?? before.type
+
+    // 不能将节点移动到自己或自己的子孙节点下（防止循环引用）
+    if (targetParentId && targetParentId !== before.parentId) {
+      const isDescendant = await checkIsDescendant(id, targetParentId)
+      if (isDescendant) {
+        return { success: false, message: '不能将节点移动到自己的子节点下' }
+      }
+    }
+
+    if (!targetParentId) {
+      if (targetType !== '总部') return { success: false, message: '只有总部节点可以作为根节点' }
+      if (!isAdminScope(session)) return { success: false, message: '无权将节点移动为根节点' }
+    } else {
+      const [newParent] = await db
+        .select({ type: orgNodes.type })
+        .from(orgNodes)
+        .where(eq(orgNodes.id, targetParentId))
+        .limit(1)
+      if (!newParent) {
+        return { success: false, message: '目标父节点不存在' }
+      }
+
+      const parentTypeError = validateParentType(targetType, newParent.type)
+      if (parentTypeError) return { success: false, message: parentTypeError }
+
+      // scope 隔离：非 admin 只能移动到自己 scope 内的父节点下。
+      if (targetParentId !== before.parentId && !(await isNodeInScope(session, targetParentId))) {
+        return { success: false, message: '无权将节点移动到该位置' }
+      }
+    }
+  }
 
   const whereConditions = expectedUpdatedAt
     ? and(eq(orgNodes.id, id), sql`date_trunc('milliseconds', ${orgNodes.updatedAt}) = ${expectedUpdatedAt}`)

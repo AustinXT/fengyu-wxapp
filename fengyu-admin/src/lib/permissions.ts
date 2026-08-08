@@ -5,6 +5,7 @@ import { eq, and, or, sql, inArray } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import type { PgColumn } from 'drizzle-orm/pg-core'
 import type { AuthSession, RoleType } from './types'
+import { collectDescendantNodeIds, findAncestorNodeIdByType } from './org-scope'
 
 /**
  * DEFAULT_PERMISSION_MATRIX: role → actions[]
@@ -248,105 +249,62 @@ export async function computeActions(roles: Array<{ role: RoleType }>): Promise<
   return Array.from(actionSet)
 }
 
-/**
- * 根据角色的 scope 展开为门店 ID 列表
- *
- * - headquarters scope → 所有门店
- * - market scope → 该市场下所有门店
- * - store scope → 该门店自身（通过 orgNode → store 关联）
- */
-export async function expandScopeStoreIds(
-  roles: AuthSession['roles']
-): Promise<string[]> {
-  const storeIds = new Set<string>()
-
-  for (const r of roles) {
-    if (r.scopeType === '总部') {
-      // 总部权限：返回所有门店
-      const allStores = await db
-        .select({ storeId: stores.storeId })
-        .from(stores)
-      for (const s of allStores) storeIds.add(s.storeId)
-      return Array.from(storeIds) // 总部已包含全部
-    }
-
-    if (r.scopeType === '市场') {
-      // 市场权限：该市场节点下的所有门店节点 → stores
-      const storeNodes = await db
-        .select({ id: orgNodes.id })
-        .from(orgNodes)
-        .where(and(eq(orgNodes.parentId, r.scopeId), eq(orgNodes.type, '门店')))
-      if (storeNodes.length > 0) {
-        const storeNodeIds = storeNodes.map(n => n.id)
-        const marketStores = await db
-          .select({ storeId: stores.storeId })
-          .from(stores)
-          .where(inArray(stores.orgNodeId, storeNodeIds))
-        for (const s of marketStores) storeIds.add(s.storeId)
-      }
-    }
-
-    if (r.scopeType === '门店') {
-      // 门店权限：通过 scopeId（orgNode id）找 store
-      const storeRows = await db
-        .select({ storeId: stores.storeId })
-        .from(stores)
-        .where(eq(stores.orgNodeId, r.scopeId))
-      for (const s of storeRows) storeIds.add(s.storeId)
-    }
-  }
-
-  return Array.from(storeIds)
+export interface ExpandedRoleScope {
+  /** 角色根节点自身及所有后代组织节点。 */
+  orgNodeIds: string[]
+  /** 后代组织节点关联的门店；总部额外覆盖历史无 org_node_id 门店。 */
+  storeIds: string[]
 }
 
 /**
- * 根据角色的 scope 展开为「可见部门节点 id」列表（员工专用 scope 维度）。
+ * 一次加载组织树，按“自身 + 任意层级后代”展开角色范围。
  *
- * 部门节点（org_nodes.type='部门'）可挂 总部/市场/门店 下（不可嵌套，db/schema/org.ts
- * 层级约束）。职能部门员工 store_id IS NULL，靠本列表命中 scope 内部门节点纳入可见范围。
- *
- * - 总部 scope → 全部 type='部门' 节点
- * - 市场 scope → 挂该市场下的部门（市场级）+ 挂该市场下门店的部门（门店级）+ 该市场节点本身
- *   （覆盖 org_node_id 直接 = 市场节点的员工，如「品项公司」职能部门 / 市场级岗位，store_id IS NULL）
- * - 门店 scope → 挂该门店下的部门（scopeId 即门店 org_node id）
- * - 部门 scope → 忽略（与 expandScopeStoreIds 一致；permission_roles 生产无部门级 scope 角色）
- *
- * 仅员工表（staff_wechat_users.org_node_id）用到；orders/customers 等无此维度。
+ * 不能以 `parent_id = scopeId` 代替：市场下可能继续出现组织节点，且部门、市场级岗位
+ * 的员工记录依赖 org_node_id 维度。总部继续保留全部门店（含历史未挂组织节点的门店）语义。
  */
-export async function expandScopeDeptNodeIds(
+export async function expandRoleScope(
   roles: AuthSession['roles'],
-): Promise<string[]> {
-  const deptIds = new Set<string>()
+): Promise<ExpandedRoleScope> {
+  if (roles.length === 0) return { orgNodeIds: [], storeIds: [] }
 
-  for (const r of roles) {
-    if (r.scopeType === '总部') {
-      const all = await db.select({ id: orgNodes.id }).from(orgNodes)
-        .where(eq(orgNodes.type, '部门'))
-      for (const n of all) deptIds.add(n.id)
-      return Array.from(deptIds) // 总部已含全部
-    }
+  const [nodes, storeRows] = await Promise.all([
+    db.select({ id: orgNodes.id, parentId: orgNodes.parentId, type: orgNodes.type }).from(orgNodes),
+    db.select({ storeId: stores.storeId, orgNodeId: stores.orgNodeId }).from(stores),
+  ])
 
-    if (r.scopeType === '市场') {
-      // 该市场下的门店节点 id（覆盖「门店级部门」）
-      const storeNodesUnder = await db.select({ id: orgNodes.id }).from(orgNodes)
-        .where(and(eq(orgNodes.parentId, r.scopeId), eq(orgNodes.type, '门店')))
-      const candidateParents = [r.scopeId, ...storeNodesUnder.map(n => n.id)]
-      const depts = await db.select({ id: orgNodes.id }).from(orgNodes)
-        .where(and(eq(orgNodes.type, '部门'), inArray(orgNodes.parentId, candidateParents)))
-      for (const n of depts) deptIds.add(n.id)
-      // 市场节点本身：org_node_id 直挂该市场的员工（品项公司/市场级岗位）纳入可见。
-      // 与 buildEmployeeConditions 市场分支末项 eq(orgNodeId, marketId) 同口径。
-      deptIds.add(r.scopeId)
-    }
+  const hasHeadquartersScope = roles.some((role) => role.scopeType === '总部')
+  const orgNodeIds = hasHeadquartersScope
+    ? nodes.map((node) => node.id)
+    : collectDescendantNodeIds(nodes, roles.map((role) => role.scopeId))
+  const visibleNodeIds = new Set(orgNodeIds)
+  const storeIds = hasHeadquartersScope
+    ? storeRows.map((store) => store.storeId)
+    : storeRows
+      .filter((store) => store.orgNodeId && visibleNodeIds.has(store.orgNodeId))
+      .map((store) => store.storeId)
 
-    if (r.scopeType === '门店') {
-      const depts = await db.select({ id: orgNodes.id }).from(orgNodes)
-        .where(and(eq(orgNodes.type, '部门'), eq(orgNodes.parentId, r.scopeId)))
-      for (const n of depts) deptIds.add(n.id)
-    }
+  return {
+    orgNodeIds: Array.from(new Set(orgNodeIds)),
+    storeIds: Array.from(new Set(storeIds)),
   }
+}
 
-  return Array.from(deptIds)
+/** 根据角色 scope 展开可见门店，保留既有公开 API。 */
+export async function expandScopeStoreIds(roles: AuthSession['roles']): Promise<string[]> {
+  return (await expandRoleScope(roles)).storeIds
+}
+
+/** 根据角色 scope 展开可见组织节点（包含根节点与所有后代）。 */
+export async function expandScopeOrgNodeIds(roles: AuthSession['roles']): Promise<string[]> {
+  return (await expandRoleScope(roles)).orgNodeIds
+}
+
+/**
+ * 兼容旧调用方。员工范围应使用 expandScopeOrgNodeIds / scopeOrgNodeIds；
+ * 这个别名在下一个兼容窗口结束前保留，返回范围不再只限部门节点。
+ */
+export async function expandScopeDeptNodeIds(roles: AuthSession['roles']): Promise<string[]> {
+  return expandScopeOrgNodeIds(roles)
 }
 
 /**
@@ -366,26 +324,20 @@ export async function expandVisibleMarketIds(
     return null
   }
 
-  const marketIds = new Set<string>()
-  const storeScopeIds: string[] = []
+  const nodes = await db
+    .select({ id: orgNodes.id, parentId: orgNodes.parentId, type: orgNodes.type })
+    .from(orgNodes)
+  const scopeIds = session.permissions.scopeOrgNodeIds
+    ?? collectDescendantNodeIds(nodes, session.roles.map((role) => role.scopeId))
+  const scopeSet = new Set(scopeIds)
+  const marketIds = new Set(
+    nodes.filter((node) => node.type === '市场' && scopeSet.has(node.id)).map((node) => node.id),
+  )
 
-  for (const r of session.roles) {
-    if (r.scopeType === '市场') {
-      marketIds.add(r.scopeId)
-    } else if (r.scopeType === '门店') {
-      storeScopeIds.push(r.scopeId)
-    }
-  }
-
-  if (storeScopeIds.length > 0) {
-    // 门店节点 → parent_id（市场节点）
-    const parentRows = await db
-      .select({ parentId: orgNodes.parentId })
-      .from(orgNodes)
-      .where(and(inArray(orgNodes.id, storeScopeIds), eq(orgNodes.type, '门店')))
-    for (const row of parentRows) {
-      if (row.parentId) marketIds.add(row.parentId)
-    }
+  // 门店级绑定仍需要显示其所属市场；查找不限层级，防止未来树加中间节点后失效。
+  for (const role of session.roles) {
+    const marketId = findAncestorNodeIdByType(nodes, role.scopeId, '市场')
+    if (marketId) marketIds.add(marketId)
   }
 
   return Array.from(marketIds)
@@ -428,15 +380,17 @@ export function canAccessAdmin(roles: Array<{ role: string }>): boolean {
  * 权限管理页操作者可操作的 scope 节点 id 集合
  *
  * - admin → null（全开，不置灰任何节点）
- * - 非 admin → 去重后的 session.roles[].scopeId
+ * - 非 admin → 角色根节点自身及全部后代节点
  *
  * 口径必须与 actions/permissions.ts 各 action 的 `userScopeIds`
  * （getRoles / getRolesByScope / getRoleCountsByScope / assignRole / revokeRole）
- * 完全一致：**精确 scopeId，不展开子树**。前端左侧组织树据此置灰其管辖外节点。
+ * 完全一致。前端左侧组织树据此置灰其管辖外节点。
  */
 export function accessiblePermissionScopeIds(session: AuthSession): string[] | null {
   if (isAdminScope(session)) return null
-  return Array.from(new Set(session.roles.map(r => r.scopeId)))
+  return Array.from(new Set(
+    session.permissions.scopeOrgNodeIds ?? session.roles.map((role) => role.scopeId),
+  ))
 }
 
 /**
@@ -467,12 +421,11 @@ export function scopeCondition(
  * 员工专用 scope 条件（store_id ∪ org_node_id 双维度）。
  *
  * - admin → undefined（不过滤）
- * - 非 admin → or(inArray(store_id, scopeStoreIds), inArray(org_node_id, scopeDeptNodeIds))
+ * - 非 admin → or(inArray(store_id, scopeStoreIds), inArray(org_node_id, scopeOrgNodeIds))
  *
  * 职能部门员工（养生部/推广部/品项公司…）store_id IS NULL，靠 org_node_id 命中 scope
- * 子树内的部门节点纳入；scopeDeptNodeIds 缺失/为空时退化为仅按 store_id 过滤（=旧行为，
- * 保守不暴露部门员工）。严格不越权：仅命中 scope 子树内的部门节点 + 该账号直属市场节点本身
- * （后者覆盖 org_node_id 直接挂市场的员工，见 expandScopeDeptNodeIds 市场分支）。
+ * scopeOrgNodeIds 包含绑定节点自身及其任意层级后代。旧会话的 scopeDeptNodeIds 仅作
+ * 兼容回退；缺失时退化为仅按 store_id 过滤，避免临时会话扩大可见范围。
  *
  * 仅 staff_wechat_users 表用（唯一带 org_node_id 维度的业务表）；
  * orders/customers/services 继续用 scopeCondition(store_id)。
@@ -484,10 +437,12 @@ export function employeeScopeCondition(
 ): SQL | undefined {
   if (isAdminScope(session)) return undefined
   const storeIds = session.permissions.scopeStoreIds
-  const deptIds = session.permissions.scopeDeptNodeIds ?? []
+  const orgNodeIds = session.permissions.scopeOrgNodeIds
+    ?? session.permissions.scopeDeptNodeIds
+    ?? []
   const parts: SQL[] = []
   if (storeIds.length > 0) parts.push(inArray(storeIdColumn, storeIds) as SQL)
-  if (deptIds.length > 0) parts.push(inArray(orgNodeIdColumn, deptIds) as SQL)
+  if (orgNodeIds.length > 0) parts.push(inArray(orgNodeIdColumn, orgNodeIds) as SQL)
   if (parts.length === 0) return sql`FALSE`
   if (parts.length === 1) return parts[0]
   return or(...parts)

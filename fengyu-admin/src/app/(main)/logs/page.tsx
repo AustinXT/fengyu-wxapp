@@ -1,5 +1,6 @@
 import { Suspense } from 'react'
 import { getLogsPaginated } from '@/actions/logs'
+import { getMarketStoreFilterOptions } from '@/actions/stores'
 import { getSession } from '@/lib/auth'
 import { isAdminScope } from '@/lib/permissions'
 import LogsPage from './_components/logs-page'
@@ -12,22 +13,25 @@ export default async function Page({
   searchParams: Promise<Record<string, string | undefined>>
 }) {
   const params = await searchParams
-  const [{ data: logs, total }, session] = await Promise.all([
+  const [{ data: logs, total }, session, filterOptions] = await Promise.all([
     getLogsPaginated({
       operatorName: params.q,
       action: params.action,
       targetType: params.target,
+      marketId: params.market,
+      storeId: params.store,
       startDate: params.from,
       endDate: params.to,
       page: params.page ? Number(params.page) : undefined,
       pageSize: params.size ? Number(params.size) : undefined,
     }),
     getSession(),
+    getMarketStoreFilterOptions(),
   ])
   const canDelete = session ? isAdminScope(session) : false
   return (
     <Suspense>
-      <LogsPage logs={logs} total={total} canDelete={canDelete} />
+      <LogsPage logs={logs} total={total} canDelete={canDelete} filterOptions={filterOptions} />
     </Suspense>
   )
 }

@@ -64,7 +64,7 @@ Page({
     // 来源渠道弹窗
     showSourcePopup: false,
     sourceChannel: '',
-    promoterName: '',
+    promoterEmployeeName: '',
     // 绑手机号弹窗（绑门店前若未授权手机号则弹出）
     showPhoneBind: false,
     sourceGroups: [
@@ -163,7 +163,7 @@ Page({
 
   // 绑定门店 — 先弹出来源渠道选择
   onBindStore() {
-    this.setData({ showSourcePopup: true, sourceChannel: '', promoterName: '' });
+    this.setData({ showSourcePopup: true, sourceChannel: '', promoterEmployeeName: '' });
   },
 
   onSourcePopupClose() {
@@ -174,13 +174,13 @@ Page({
     this.setData({ sourceChannel: String(e.detail) });
   },
 
-  onPromoterNameInput(e: WechatMiniprogram.CustomEvent<{ value: string }>) {
-    this.setData({ promoterName: e.detail.value });
+  onPromoterEmployeeNameInput(e: WechatMiniprogram.CustomEvent<{ value: string }>) {
+    this.setData({ promoterEmployeeName: e.detail.value });
   },
 
   // 确认绑定（含来源渠道 + 分享礼邀请人一次性写入）
   async onConfirmBind() {
-    const { storeId, storeName, sourceChannel, promoterName } = this.data;
+    const { storeId, storeName, sourceChannel, promoterEmployeeName } = this.data;
     if (!sourceChannel) {
       Toast.fail('请选择来源渠道');
       return;
@@ -191,7 +191,7 @@ Page({
       const data = await callClientApi('auth.bindStore', {
         storeId,
         sourceChannel,
-        promoterEmployeeId: promoterName || undefined,
+        promoterEmployeeName: promoterEmployeeName || undefined,
       });
       app.setStore(data?.boundStoreId || storeId, storeName, data?.boundMarketName || '');
       // 一次性消费邀请人，防止二次使用

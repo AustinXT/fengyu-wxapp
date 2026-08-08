@@ -18,7 +18,7 @@
 
 const pg = require('../db/pg')
 const { requireManagementLevel } = require('../middleware/auth')
-const { validateManagementScope } = require('../utils/scope')
+const { validateManagementScope, buildManagementStoreScope } = require('../utils/scope')
 const { getMemberThreshold } = require('../utils/config')
 
 // scope 校验已统一抽取到 utils/scope.js::validateManagementScope（4 路由共用，避免拷贝漂移）
@@ -27,34 +27,12 @@ const { getMemberThreshold } = require('../utils/config')
  * 构造 sale/service 表的 store_id scope 过滤片段
  */
 function buildSaleScope(scopeType, scopeId, alias, startIdx) {
-  if (scopeType === 'all') return { sql: 'TRUE', params: [] }
-  if (scopeType === 'store') {
-    return { sql: `${alias}.store_id = $${startIdx}`, params: [scopeId] }
-  }
-  return {
-    sql:
-      `${alias}.store_id IN (` +
-      `SELECT s.store_id FROM stores s ` +
-      `JOIN org_nodes o ON s.org_node_id = o.id ` +
-      `WHERE o.parent_id = $${startIdx} AND o.type = '门店')`,
-    params: [scopeId],
-  }
+  return buildManagementStoreScope(scopeType, scopeId, `${alias}.store_id`, startIdx)
 }
 
 /** client_wechat_users.bound_store_id scope */
 function buildClientScope(scopeType, scopeId, alias, startIdx) {
-  if (scopeType === 'all') return { sql: 'TRUE', params: [] }
-  if (scopeType === 'store') {
-    return { sql: `${alias}.bound_store_id = $${startIdx}`, params: [scopeId] }
-  }
-  return {
-    sql:
-      `${alias}.bound_store_id IN (` +
-      `SELECT s.store_id FROM stores s ` +
-      `JOIN org_nodes o ON s.org_node_id = o.id ` +
-      `WHERE o.parent_id = $${startIdx} AND o.type = '门店')`,
-    params: [scopeId],
-  }
+  return buildManagementStoreScope(scopeType, scopeId, `${alias}.bound_store_id`, startIdx)
 }
 
 /**

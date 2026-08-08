@@ -19,6 +19,7 @@ import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
 import { shanghaiToday } from '@/lib/datetime'
 import { parseEmployeeFilters, filterValidSkillValues } from '@/lib/list-filters'
 import { getSkillTags } from '@/actions/skill-tags'
+import { orgNodeInScopeCondition, storeInOrgNodeCondition } from '@/lib/market-store-sql'
 
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
 const storeNode = alias(orgNodes, 'store_node') as unknown as typeof orgNodes
@@ -194,7 +195,7 @@ export interface PaginatedEmployees {
 
 /**
  * 构建员工列表 WHERE 条件（列表分页与导出共用）。
- * marketId 分支需查节点类型，故为 async。
+ * 组织筛选统一按节点自身及任意层级后代展开。
  */
 async function buildEmployeeConditions(
   session: Parameters<typeof scopeCondition>[0],
@@ -205,51 +206,10 @@ async function buildEmployeeConditions(
   ]
 
   if (filters.marketId) {
-    // 查询节点类型以决定过滤策略
-    const [node] = await db
-      .select({ type: orgNodes.type })
-      .from(orgNodes)
-      .where(eq(orgNodes.id, filters.marketId))
-      .limit(1)
-    if (node?.type === '市场') {
-      // 市场：该市场下门店的员工（store_id 路径）+ 挂该市场或其门店下的部门员工（org_node_id）
-      //   + org_node_id 直接 = 该市场节点的员工（品项公司等职能部门 / 市场级岗位，store_id IS NULL）。
-      // 部门候选父节点 = 市场本身 + 该市场下门店节点，与 expandScopeDeptNodeIds 市场分支同口径；
-      // 否则「门店级部门」员工（store_id IS NULL、org_node_id 挂在门店节点下）会在按市场筛选时凭空消失。
-      // 末项 eq(orgNodeId, marketId) 与下方「部门」分支对等，覆盖 org_node_id 直挂市场节点本身的员工。
-      const storeSub = db.select({ storeId: stores.storeId }).from(stores)
-        .innerJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
-        .where(eq(storeNode.parentId, filters.marketId))
-      const storeNodesUnder = await db.select({ id: orgNodes.id }).from(orgNodes)
-        .where(and(eq(orgNodes.parentId, filters.marketId), eq(orgNodes.type, '门店')))
-      const candidateParents = [filters.marketId, ...storeNodesUnder.map(n => n.id)]
-      const deptSub = db.select({ id: orgNodes.id }).from(orgNodes)
-        .where(and(eq(orgNodes.type, '部门'), inArray(orgNodes.parentId, candidateParents)))
-      conditions.push(or(
-        inArray(staffWechatUsers.storeId, storeSub),
-        inArray(staffWechatUsers.orgNodeId, deptSub),
-        eq(staffWechatUsers.orgNodeId, filters.marketId),
-      ))
-    } else if (node?.type === '部门') {
-      // 总部部门：筛选 orgNodeId 为该部门的员工
-      conditions.push(eq(staffWechatUsers.orgNodeId, filters.marketId))
-    } else if (node?.type === '门店') {
-      // 门店：门店员工（store_id 路径）+ 挂该门店下的部门员工（org_node_id，store_id IS NULL）
-      // 与 expandScopeDeptNodeIds 门店分支同口径；否则门店级部门员工按门店筛选会消失。
-      const [storeRow] = await db.select({ storeId: stores.storeId }).from(stores)
-        .where(eq(stores.orgNodeId, filters.marketId)).limit(1)
-      const deptsUnderStore = await db.select({ id: orgNodes.id }).from(orgNodes)
-        .where(and(eq(orgNodes.type, '部门'), eq(orgNodes.parentId, filters.marketId)))
-      const conds: (SQL | undefined)[] = []
-      if (storeRow) conds.push(eq(staffWechatUsers.storeId, storeRow.storeId))
-      if (deptsUnderStore.length) {
-        conds.push(inArray(staffWechatUsers.orgNodeId, deptsUnderStore.map(n => n.id)))
-      }
-      if (conds.length) {
-        conditions.push(or(...conds))
-      }
-    }
-    // headquarters：不添加条件，显示全部
+    conditions.push(or(
+      storeInOrgNodeCondition(staffWechatUsers.storeId, filters.marketId),
+      orgNodeInScopeCondition(staffWechatUsers.orgNodeId, filters.marketId),
+    ))
   }
   if (filters.storeId) {
     conditions.push(eq(staffWechatUsers.storeId, filters.storeId))

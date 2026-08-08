@@ -72,7 +72,7 @@ module.exports.unit = function(total, divisor) {
         </view>
         <view class="item-info">
           <text class="item-name">{{item.productName}}</text>
-          <text wx:if="{{item.sessionCount > 1}}" class="item-spec">{{item.sessionCount}}次 · 单次 ¥{{fmt.unit(item.saleAmount, item.sessionCount)}}</text>
+          <text wx:if="{{item.sessionCount > 1}}" class="item-spec">{{item.sessionCount}}{{item.unit || '次'}} · 单{{item.unit || '次'}} ¥{{fmt.unit(item.saleAmount, item.sessionCount)}}</text>
           <text wx:elif="{{item.quantity > 1}}" class="item-spec">×{{item.quantity}} · 单价 ¥{{fmt.unit(item.saleAmount, item.quantity)}}</text>
         </view>
         <text class="item-price">¥{{fmt.price(item.saleAmount)}}</text>

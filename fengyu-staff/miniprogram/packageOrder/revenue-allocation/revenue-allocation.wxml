@@ -54,13 +54,14 @@ module.exports.pct = function(rate) {
       <text class="status-text">该订单已分配，可修改后重新保存</text>
     </view>
 
-    <!-- 按订单项分组 -->
-    <view class="alloc-section" wx:for="{{displayItems}}" wx:for-item="dItem" wx:for-index="itemIdx" wx:key="sale_item_id">
+    <!-- 按 SKU 分组 -->
+    <view class="alloc-section" wx:for="{{displayItems}}" wx:for-item="dItem" wx:for-index="itemIdx" wx:key="groupId">
       <!-- item 标题 -->
       <view class="item-header">
         <view class="item-name-row">
           <text class="item-name">{{dItem.product_name}}</text>
           <van-tag wx:if="{{dItem.sales_category}}" plain color="#666" size="medium">{{dItem.sales_category}}</van-tag>
+          <van-tag wx:if="{{dItem.sourceCount > 1}}" plain color="#3D8A5A" size="medium">已合并 {{dItem.sourceCount}} 条明细</van-tag>
         </view>
         <text class="item-amount">¥{{dItem.received}}</text>
       </view>
@@ -71,7 +72,7 @@ module.exports.pct = function(rate) {
         wx:for="{{dItem.allocLines}}"
         wx:for-item="line"
         wx:for-index="lineIdx"
-        wx:key="lineIdx"
+        wx:key="lineId"
       >
         <view class="line-fields">
           <!-- 技能标签 -->

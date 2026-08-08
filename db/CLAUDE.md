@@ -103,6 +103,10 @@ DATABASE_URL="postgresql://fengyu:fengyu123@118.178.196.26:5433/fengyu_wxapp" np
 现在完全一致（同一 baseline hash + created_at）。drift 历史清单保留在 `db/scripts/follow-up-5433-drift.txt` 文件头加了 RESOLVED 标记。
 全量备份位于 `~/backups/5433-before-drift-fix-20260410.dump`（50MB custom format）。
 
+**2026-08-06 baseline reset**：以 `0000_baseline` 作为新的迁移起点，旧 94 条迁移保存在
+`db/migrations/_archive_pre_baseline_20260806/`；之后的变更从此 baseline 继续追加增量 migration。这是一次性发布操作的例外，不可把它当作普通的已合并 migration 修改：已有业务库必须先按归档 README 执行
+`npm --prefix db run db:baseline:reset`（dry-run 后再加 `-- --yes`），再运行 `db:migrate`；直接先跑 `db:migrate` 会尝试重放完整 baseline。该命令只接受完整的 94 条旧 journal，空库仍直接运行 `db:migrate`。
+
 ## 临时 PG（仅用于 migration 验证）
 
 项目没有常驻本地 PG；所有真实数据库都是远程的（见上节）。当需要做 `db:generate` 后的
