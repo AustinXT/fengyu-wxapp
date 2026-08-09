@@ -5,13 +5,14 @@ import path from 'node:path'
 import { and, eq, inArray, isNotNull, lt, sql } from 'drizzle-orm'
 import { db } from '@/db'
 import { adminExportJobs } from '@db/export-job'
-import { deleteByCloudPaths, getTempFileUrl, uploadFile } from '@/lib/cloudbase'
+import { deleteByCloudPaths, uploadFile } from '@/lib/cloudbase'
 import { parseErrorPrefix } from '@/lib/api-error'
 import { runWithExportSession } from '@/lib/export-session-context'
 import { parseExportPayload, parseExportSession, parseExportType } from '@/lib/export-job-schema'
 import { logOperation } from '@/lib/operation-log'
-import { shanghaiYmd } from '@/lib/datetime'
+import { exportJobLabel } from '@/lib/export-job-types'
 import { createExportContent } from './registry'
+import { exportCloudPath, exportFileName } from './file-name'
 import { writeStreamXlsx } from './xlsx-writer'
 
 const POLL_INTERVAL_MS = 2_000
@@ -100,15 +101,6 @@ async function renewLease(id: number): Promise<void> {
      WHERE id = ${id}
        AND status = 'running'
   `)
-}
-
-function outputFileName(base: string): string {
-  const cleaned = base.replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim() || '导出数据'
-  const timestamp = new Date().toLocaleTimeString('en-GB', {
-    timeZone: 'Asia/Shanghai',
-    hour12: false,
-  }).replace(/:/g, '')
-  return `${cleaned}_${shanghaiYmd()}${timestamp}.xlsx`
 }
 
 function safeFailure(err: unknown): { code: string; message: string } {
@@ -203,7 +195,7 @@ async function processJob(job: ExportJob): Promise<void> {
 
     const output = await runWithExportSession(session, async () => {
       const content = await createExportContent(exportType, payload)
-      const fileName = outputFileName(content.fileNameBase)
+      const fileName = exportFileName(exportJobLabel(exportType, payload))
       const filePath = path.join(tempDir!, fileName)
       let lastProgress = 0
       const writeResult = await writeStreamXlsx({
@@ -243,12 +235,13 @@ async function processJob(job: ExportJob): Promise<void> {
       return
     }
 
-    // 路径按任务固定：上传后、状态写回前若进程中断，下一次重试会覆盖同一对象，
-    // 不会因文件名时间戳变化遗留无法追踪的 CloudBase 文件。
-    cloudPath = `admin/exports/${job.id}/content.xlsx`
-    await uploadFile(createReadStream(output.filePath), cloudPath)
-    // 与下载路由使用同一 API 验证。上传可成功而临时 URL 不可取得时，不能把任务误标为 ready。
-    await getTempFileUrl(cloudPath)
+    // 路径按任务固定：上传后、状态写回前若进程中断，下一次重试会覆盖同一对象。
+    // 对象名与任务名称同步，浏览器跟随临时 URL 下载时才能保留正确文件名。
+    // uploadFile 内部已调用 getTempFileURL 验证上传 + 返回临时 URL（含 CDN_BASE 兜底），
+    // 无需外部二次调用 getTempFileUrl 验证——其失败会把已成功上传的任务误标为 failed。
+    const uploadPath = exportCloudPath(job.id, output.fileName)
+    await uploadFile(createReadStream(output.filePath), uploadPath)
+    cloudPath = uploadPath
     const expiresAt = new Date(Date.now() + RETENTION_MS)
     await db
       .update(adminExportJobs)

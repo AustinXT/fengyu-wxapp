@@ -42,7 +42,6 @@ import {
 import type { WorkerExportColumn, ExportCell } from './xlsx-writer'
 
 export interface ExportContent {
-  fileNameBase: string
   sheetName: string
   columns: WorkerExportColumn<Record<string, unknown>>[]
   rows: AsyncIterable<Record<string, unknown>>
@@ -408,7 +407,6 @@ const rankingMetrics: Record<string, Array<{ key: string; label: string; unit: M
 function breakdownContent(
   view: string,
   rows: BreakdownRow[],
-  timeLabel: string,
 ): ExportContent {
   const definitions = dataCenterMetricColumns[view] ?? []
   const isStore = view.endsWith('-store') || view === 'customer-store-reg' || view === 'customer-store-ops'
@@ -432,7 +430,6 @@ function breakdownContent(
     })
   }
   return {
-    fileNameBase: `${exportJobLabel('data-center', { view: view as DataCenterExportPayload['view'], params: {} })}_${timeLabel}`,
     sheetName: exportJobLabel('data-center', { view: view as DataCenterExportPayload['view'], params: {} }).replace(/.*-/, '').slice(0, 31),
     columns,
     rows: fromRows(rows as unknown as Row[]),
@@ -443,7 +440,6 @@ function rankingContent(
   view: string,
   rows: RankingRow[],
   metric: { key: string; label: string; unit: MetricUnit },
-  timeLabel: string,
 ): ExportContent {
   const columns: WorkerExportColumn<Row>[] = [
     { header: '排名', width: 8, value: (row) => numberOrEmpty(row, 'rank') },
@@ -451,9 +447,7 @@ function rankingContent(
     { header: '所属市场', width: 16, value: (row) => text(row, 'marketName') },
     { header: headerWithUnit(metric.label, metric.unit), value: (row) => metricCell(value(row, 'value') as number | null, metric.unit) },
   ]
-  const label = exportJobLabel('data-center', { view: view as DataCenterExportPayload['view'], params: {}, metric: metric.key })
   return {
-    fileNameBase: `${label}_${metric.label}_${timeLabel}`,
     sheetName: metric.label,
     columns,
     rows: fromRows(rows as unknown as Row[]),
@@ -469,14 +463,14 @@ async function queryDataCenter(
   if (view.startsWith('sales-')) {
     const board = await getSalesBoard(base)
     const rows = view === 'sales-market' ? board.byMarket : board.byStore
-    return breakdownContent(view, rows, board.timeRange.presetLabel)
+    return breakdownContent(view, rows)
   }
   if (view.startsWith('customer-')) {
     const board = await getCustomerBoard(base)
     const rows = view.endsWith('-reg')
       ? (view.startsWith('customer-market') ? board.byMarket : board.byStore)
       : (view.startsWith('customer-market') ? board.byMarket : board.byStore)
-    return breakdownContent(view, rows, board.timeRange.presetLabel)
+    return breakdownContent(view, rows)
   }
   if (view.startsWith('product-')) {
     const board = await getProductBoard({
@@ -485,22 +479,21 @@ async function queryDataCenter(
       categoryName: raw.category || undefined,
     })
     const rows = view === 'product-market' ? board.byMarket : board.byStore
-    return breakdownContent(view, rows, board.timeRange.presetLabel)
+    return breakdownContent(view, rows)
   }
 
   const board = await getEfficiencyBoard(base)
-  if (view === 'efficiency-market') return breakdownContent(view, board.byMarket, board.timeRange.presetLabel)
-  if (view === 'efficiency-staff') return breakdownContent(view, board.byStaff, board.timeRange.presetLabel)
+  if (view === 'efficiency-market') return breakdownContent(view, board.byMarket)
+  if (view === 'efficiency-staff') return breakdownContent(view, board.byStaff)
   const metrics = rankingMetrics[view] ?? []
   const metric = metrics.find((item) => item.key === payload.metric)
   if (!metric) throw new Error('INVALID_PARAMS: 排名指标无效')
   const source = view === 'efficiency-store-ranking' ? board.storeRankings : board.staffRankings
-  return rankingContent(view, source[metric.key] ?? [], metric, board.timeRange.presetLabel)
+  return rankingContent(view, source[metric.key] ?? [], metric)
 }
 
 function queryProducts(payload: Record<string, string>): ExportContent {
   return {
-    fileNameBase: '商品',
     sheetName: '商品',
     columns: mapColumns([
       { header: '商品名称', width: 28, key: 'specName' },
@@ -525,7 +518,6 @@ async function queryCoupons(payload: Record<string, string>): Promise<ExportCont
   const markets = await getMarkets()
   const marketMap = new Map(markets.map((market) => [market.id, market.name]))
   return {
-    fileNameBase: '优惠券',
     sheetName: '优惠券',
     columns: mapColumns([
       { header: '券名称', width: 24, key: 'name' },
@@ -556,35 +548,30 @@ export async function createExportContent(
   switch (exportType) {
     case 'orders':
       return {
-        fileNameBase: '订单',
         sheetName: '订单',
         columns: orderColumns,
         rows: pagedRows((options: ExportBatchOptions<ExportOrdersCursor>) => exportOrders(params, options)),
       }
     case 'allocation-sales':
       return {
-        fileNameBase: '营业额分配-销售提成',
         sheetName: '销售提成',
         columns: allocationSalesColumns,
         rows: pagedRows((options: ExportBatchOptions<ExportAllocationOrdersCursor>) => exportAllocationOrders(params, options)),
       }
     case 'allocation-services':
       return {
-        fileNameBase: '营业额分配-服务提成',
         sheetName: '服务提成',
         columns: serviceCommissionColumns,
         rows: pagedRows((options: ExportBatchOptions<ExportAllocationServiceCursor>) => exportAllocationServiceOrders(params, options)),
       }
     case 'services':
       return {
-        fileNameBase: '服务单-消耗明细',
         sheetName: '服务单消耗',
         columns: serviceColumns,
         rows: pagedRows((options: ExportBatchOptions<number>) => exportServiceOrders(params, options)),
       }
     case 'customers':
       return {
-        fileNameBase: '顾客',
         sheetName: '顾客',
         columns: customerColumns,
         rows: pagedRows((options: ExportBatchOptions<number>) => exportCustomers(params, options)),
@@ -607,18 +594,16 @@ export async function createExportContent(
           yield { ...source, orgPath: path.join(' / ') }
         }
       })()
-      return { fileNameBase: '员工', sheetName: '员工', columns: employeeColumns, rows }
+      return { sheetName: '员工', columns: employeeColumns, rows }
     }
     case 'points':
       return {
-        fileNameBase: '积分流水',
         sheetName: '积分流水',
         columns: pointColumns,
         rows: pagedRows((options: ExportBatchOptions<number>) => exportPointTransactions(params, options)),
       }
     case 'cards':
       return {
-        fileNameBase: '疗程卡',
         sheetName: '疗程卡',
         columns: cardColumns,
         rows: pagedRows((options: ExportBatchOptions<number>) => exportCards(params, options)),
@@ -626,7 +611,6 @@ export async function createExportContent(
     case 'inventory-stocks': {
       const firstPage = await exportInventoryStocks(params, { limit: EXPORT_WORKER_BATCH_SIZE })
       return {
-        fileNameBase: '门店库存',
         sheetName: '门店库存',
         columns: inventoryColumns(firstPage.canViewPrice),
         rows: pagedRows((options: ExportBatchOptions<number>) => exportInventoryStocks(params, options), firstPage),
