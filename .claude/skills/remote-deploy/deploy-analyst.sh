@@ -33,8 +33,8 @@ if [[ "${1:-}" == "--rollback" ]]; then
     exit 1
   fi
 
-  # 查找上一个 fengyu-analyst 镜像
-  PREVIOUS_IMAGE=$(ssh "$SSH_HOST" "docker images --format '{{.ID}}' fengyu-analyst:latest | sed -n '2p'" || echo "")
+  # 查找上一个 fengyu-analyst 镜像（旧镜像失去 latest 标签后变为 dangling）
+  PREVIOUS_IMAGE=$(ssh "$SSH_HOST" "docker images --filter 'dangling=true' --format '{{.ID}}' | head -1" || echo "")
   if [[ -z "$PREVIOUS_IMAGE" ]]; then
     echo "❌ 未找到上一个镜像版本" >&2
     exit 1
