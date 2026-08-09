@@ -1877,7 +1877,8 @@ async function appointableItems(ctx) {
     LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
     LEFT JOIN stores s ON o.store_id = s.store_id
     WHERE o.client_user_id = $1
-      AND o.status IN ('已支付', '部分支付', '已完成')
+      AND o.status IN ('已支付', '部分支付')
+      -- sale_orders.status 从未被置为 '已完成'（'已完成' 仅用于 service_orders），故不在过滤之列
       ${activeFilter}
       AND si.product_type = '疗程卡'
       AND (
