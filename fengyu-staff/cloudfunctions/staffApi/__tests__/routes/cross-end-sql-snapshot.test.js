@@ -1821,3 +1821,63 @@ describe('2026-07-21 per-item-refund 行级退款聚合 SQL 四端一致性', ()
     expect(refundSqls.staff).toContain("status = '已支付'")
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PR #74 meta：cross-end-sql-snapshot 反模式守护（防镜像 bug 字面锁定失效）
+//
+// 背景（测试夹具缺陷）：snapshot 仅做四端字面比对。若四端 SQL 同时被引入同一
+// 同形 bug（如 SUM(amount)::int 截断 bigint / rollup ELSE NULL 覆盖旧值），
+// 字面仍然一致 → snapshot PASS，夹具形同虚设。本块对「已知反模式」做
+// not-to-contain 特征守护：任一端拷贝回退到反模式立即失败（即使四端完全一致）。
+//
+// 已知反模式（PR #74 已修复，防回退）：
+//   1. granted SQL 用 ::int 截断 SUM(amount)（应 ::bigint）— g03
+//   2. 营业额分配 rollup 用 ELSE NULL::allocation_status 覆盖订单旧值
+//      （应 ELSE allocation_status 保留旧值）— g05
+// ─────────────────────────────────────────────────────────────────────────────
+describe('cross-end-sql-snapshot 反模式守护（防镜像 bug 字面锁定失效）', () => {
+  let grantedSqls
+  let allocRollupSqls
+
+  beforeAll(() => {
+    grantedSqls = {
+      staff: normalizeSql(extractBacktickStringContaining(readFile(FILES.staffPointsJs), MARKER_GRANTED)),
+      client: normalizeSql(extractBacktickStringContaining(readFile(FILES.clientPointsJs), MARKER_GRANTED)),
+      payNotify: normalizeSql(extractBacktickStringContaining(readFile(FILES.payNotifyPointsJs), MARKER_GRANTED)),
+      adminTs: normalizeSql(extractBacktickStringContaining(readFile(FILES.adminPointsSettleTs), MARKER_GRANTED)),
+    }
+    allocRollupSqls = {
+      staff: normalizeSql(extractBacktickStringContaining(readFile(FILES.staffPaymentAllocatableJs), 'allocation_status = CASE')),
+      client: normalizeSql(extractBacktickStringContaining(readFile(FILES.clientPaymentAllocatableJs), 'allocation_status = CASE')),
+      payNotify: normalizeSql(extractBacktickStringContaining(readFile(FILES.payNotifyPaymentAllocatableJs), 'allocation_status = CASE')),
+      admin: normalizeSql(extractBacktickStringContaining(readFile(FILES.adminPaymentAllocatableTs), 'allocation_status = CASE')),
+    }
+  })
+
+  // 反模式 1：SUM(amount) 不得被 ::int 截断/溢出（应 ::bigint）
+  test('四端 granted SQL 不得用 ::int 截断 SUM(amount)（应 ::bigint，防 g03 回退）', () => {
+    for (const [end, sql] of Object.entries(grantedSqls)) {
+      expect(sql, `${end} granted SQL 用 ::int 截断 SUM(amount)，应改 ::bigint`).not.toMatch(
+        /SUM\(amount\)[\s\S]*::\s*int\b/i,
+      )
+    }
+  })
+
+  // 反模式 1 正向：granted SQL 必须显式 ::bigint（防省略 cast 或改回 ::int）
+  test('四端 granted SQL 必须用 ::bigint 汇总 SUM(amount)', () => {
+    for (const [end, sql] of Object.entries(grantedSqls)) {
+      expect(sql, `${end} granted SQL 缺少 ::bigint cast`).toMatch(/SUM\(amount\)[\s\S]*::\s*bigint\b/i)
+    }
+  })
+
+  // 反模式 2：订单 rollup 不得用 ELSE NULL 覆盖 allocation_status（应保留旧值）
+  test('四端 rollup 不得用 ELSE NULL::allocation_status 覆盖订单旧值（应 ELSE allocation_status，防 g05 回退）', () => {
+    for (const [end, sql] of Object.entries(allocRollupSqls)) {
+      expect(sql, `${end} rollup 用 ELSE NULL::allocation_status 覆盖订单 allocation_status，应改 ELSE allocation_status`).not.toContain(
+        'ELSE NULL::allocation_status',
+      )
+      expect(sql, `${end} rollup 缺少保留旧值分支 ELSE allocation_status END`).toMatch(/ELSE\s+allocation_status\s+END/)
+    }
+  })
+})
+

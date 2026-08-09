@@ -254,7 +254,7 @@ export async function refreshOrderAllocationRollup(tx: AdminTx, saleOrderId: str
                SELECT 1 FROM sale_order_payments
                 WHERE sale_order_id = ${saleOrderId} AND allocation_status = '已分配'
              ) THEN '已分配'::allocation_status
-             ELSE NULL::allocation_status END,
+             ELSE allocation_status END,
            updated_at = NOW()
      WHERE sale_order_id = ${saleOrderId}
   `)
