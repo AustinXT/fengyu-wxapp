@@ -24,7 +24,7 @@ export interface PointsAuditResult {
 export async function auditPointsBalance(db: Db): Promise<PointsAuditResult> {
   const rows = (await db.execute(sql`
     WITH sums AS (
-      SELECT user_id, COALESCE(SUM(amount), 0)::int AS total_from_txns
+      SELECT user_id, COALESCE(SUM(amount), 0)::bigint AS total_from_txns
       FROM point_transactions
       GROUP BY user_id
     )
