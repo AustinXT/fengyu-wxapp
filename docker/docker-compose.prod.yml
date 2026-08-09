@@ -30,9 +30,28 @@ services:
       # 登录密码 RSA 解密私钥（运行期）。缺失则 login server action fail-fast → 500。
       # 必须与构建期 inline 的 NEXT_PUBLIC_RSA_PUBLIC_KEY 同一对（见 envs/prod.env）。
       RSA_PRIVATE_KEY: ${ADMIN_RSA_PRIVATE_KEY}
+      NEXT_PUBLIC_ANALYST_ORIGIN: ${ANALYST_PUBLIC_ORIGIN:-http://localhost:3001}
       # prod CloudBase 桶（覆盖 base 从远程 docker/.env 注入的 dev 值）
       CLOUDBASE_ENV_ID: fengyu-client-prod-d1cga6909c0ba
       CDN_BASE: https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la
+    depends_on: !reset []
+
+  analyst:
+    environment:
+      DATABASE_URL: ${ADMIN_DATABASE_URL}
+      JWT_SECRET: ${ADMIN_JWT_SECRET}
+      ADMIN_LOGIN_URL: ${ANALYST_ADMIN_LOGIN_URL:-http://localhost:3000/login}
+      NEXT_PUBLIC_ADMIN_ORIGIN: ${ANALYST_ADMIN_ORIGIN:-http://localhost:3000}
+      NEXT_PUBLIC_ANALYST_ORIGIN: ${ANALYST_PUBLIC_ORIGIN:-http://localhost:3001}
+      ANALYST_VIEW_ACTION: ${ANALYST_VIEW_ACTION:-data_center:dashboard}
+      ANALYST_CHAT_ACTION: ${ANALYST_CHAT_ACTION:-data_center:dashboard}
+      ANALYST_EXPORT_ACTION: ${ANALYST_EXPORT_ACTION:-data_center:dashboard}
+      MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
+      MINIMAX_BASE_URL: ${MINIMAX_BASE_URL:-https://api.minimaxi.com/v1}
+      MINIMAX_MODEL: ${MINIMAX_MODEL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
     depends_on: !reset []
 
   cron-worker:
