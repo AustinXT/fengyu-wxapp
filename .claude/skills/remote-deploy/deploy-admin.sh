@@ -157,8 +157,8 @@ echo "  ✓ 已同步 docker-compose.yml + docker-compose.prod.yml"
 
 echo "=== 4/5 远程重启服务（base + override）==="
 # cron-worker 日志挂载卷（容器内 uid=1001 nextjs 才能写入；目录不存在 docker 会以 root 自建并越权）
-ssh "$SSH_HOST" "mkdir -p $REMOTE_DIR/logs/cron-worker && chown 1001:1001 $REMOTE_DIR/logs/cron-worker"
-ssh "$SSH_HOST" "cd $REMOTE_DIR && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d admin cron-worker"
+ssh "$SSH_HOST" "mkdir -p $REMOTE_DIR/logs/cron-worker $REMOTE_DIR/logs/export-worker && chown -R 1001:1001 $REMOTE_DIR/logs/cron-worker $REMOTE_DIR/logs/export-worker"
+ssh "$SSH_HOST" "cd $REMOTE_DIR && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d admin cron-worker export-worker"
 
 echo "=== 5/5 健康检查 + DB 连接验证 ==="
 sleep 5
