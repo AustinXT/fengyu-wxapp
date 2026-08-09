@@ -13,7 +13,7 @@
 
 const pg = require('../db/pg')
 const { requireStaffBound, requireManager } = require('../middleware/auth')
-const { assertOrderInScope, isStoreInScope, restrictToBoundEmployee } = require('../utils/scope')
+const { assertOrderInScope, isStoreInScope, restrictToBoundEmployee, buildBundleMarketScopeFilter, buildNormalSkuMarketScopeFilter } = require('../utils/scope')
 const { generateWxacode, uploadToCloudStorage } = require('../utils/wxacode')
 const { getMemberThreshold } = require('../utils/config')
 // 充值卡剥离 SKU 化（2026-05-20）：充值识别改为 sale_orders.sale_order_type='充值单'，
@@ -410,78 +410,6 @@ async function settlePaidByCardAtCreation(client, { saleOrderId, clientUserId, r
  * 开单时所有套餐（含未上架商城的）都应可见可售。client `_loadAndValidateBundle` 仍保留 is_visible 过滤，
  * 此处是有意分叉，勿强行对齐。
  */
-/**
- * 组合套餐主商品范围过滤（products.market_scope）。
- * 与 product.shopInit 保持同一语义，但 staffApi 路由不共享运行时代码。
- */
-function buildBundleMarketScopeFilter(auth, params, productAlias = 'p') {
-  const scopeExpr = `${productAlias}.market_scope`
-  const valuesExpr = `string_to_array(regexp_replace(${scopeExpr}, '[[:space:]]+', '', 'g'), ',')`
-  const globalExpr = `${scopeExpr} IS NULL`
-  const nonBlankExpr = `NULLIF(regexp_replace(${scopeExpr}, '[[:space:]]+', '', 'g'), '') IS NOT NULL`
-  const effectiveStoreId = auth?.effectiveStoreId
-
-  if (!effectiveStoreId) return `AND ${globalExpr}`
-
-  params.push(effectiveStoreId)
-  const storeParam = `$${params.length}`
-  return `AND (
-    ${globalExpr}
-    OR (
-      ${nonBlankExpr}
-      AND EXISTS (
-        SELECT 1
-        FROM stores s
-        JOIN org_nodes sn ON s.org_node_id = sn.id
-        JOIN org_nodes pm ON sn.parent_id = pm.id
-        WHERE s.store_id = ${storeParam}
-          AND pm.type = '市场'
-          AND (
-            pm.id = ANY(${valuesExpr})
-            OR regexp_replace(pm.name, '[[:space:]]+', '', 'g') = ANY(${valuesExpr})
-          )
-      )
-    )
-  )`
-}
-
-/**
- * 普通 SKU 的开单范围过滤（product_skus.market_scope）。
- *
- * 与套餐主商品保持同一严格口径：只依据当前工作台 effectiveStoreId；管理层未选择
- * 门店时只能使用全市场 SKU，不能回退到 scopeStoreIds、storeId 或 marketName。
- */
-function buildNormalSkuMarketScopeFilter(auth, params, skuAlias = 's') {
-  const scopeExpr = `${skuAlias}.market_scope`
-  const valuesExpr = `string_to_array(regexp_replace(${scopeExpr}, '[[:space:]]+', '', 'g'), ',')`
-  const globalExpr = `${scopeExpr} IS NULL`
-  const nonBlankExpr = `NULLIF(regexp_replace(${scopeExpr}, '[[:space:]]+', '', 'g'), '') IS NOT NULL`
-  const effectiveStoreId = auth?.effectiveStoreId
-
-  if (!effectiveStoreId) return `AND ${globalExpr}`
-
-  params.push(effectiveStoreId)
-  const storeParam = `$${params.length}`
-  return `AND (
-    ${globalExpr}
-    OR (
-      ${nonBlankExpr}
-      AND EXISTS (
-        SELECT 1
-        FROM stores store
-        JOIN org_nodes store_node ON store.org_node_id = store_node.id
-        JOIN org_nodes market_node ON store_node.parent_id = market_node.id
-        WHERE store.store_id = ${storeParam}
-          AND market_node.type = '市场'
-          AND (
-            market_node.id = ANY(${valuesExpr})
-            OR regexp_replace(market_node.name, '[[:space:]]+', '', 'g') = ANY(${valuesExpr})
-          )
-      )
-    )
-  )`
-}
-
 /**
  * 建单提交前复核受限的普通 SKU。体验卡与套餐子 SKU 保持既有路径：前者不受这里影响，
  * 后者由套餐主商品范围和归属校验负责。

@@ -11,12 +11,7 @@
 
 const pg = require('../db/pg')
 const { requireStaffBound } = require('../middleware/auth')
-
-// ===== 公共查询辅助 =====
-
-function marketScopeValues(scopeExpr) {
-  return `string_to_array(regexp_replace(${scopeExpr}, '[[:space:]]+', '', 'g'), ',')`
-}
+const { buildBundleMarketScopeFilter, buildNormalSkuMarketScopeFilter, buildNormalSkuMarketScopeCondition, marketScopeValues } = require('../utils/scope')
 
 /**
  * SKU 可见范围过滤（product_skus.market_scope）。
@@ -71,84 +66,6 @@ function buildSkuMarketScopeFilter(auth, params, skuAlias = 'sk') {
   }
 
   return `AND ${globalExpr}`
-}
-
-/**
- * 组合套餐主商品范围过滤（products.market_scope）。
- *
- * 开单页套餐必须按工作台当前选中的门店判断，不能在管理层模式回退到 scopeStoreIds；
- * 没有 current/effective store 时仅保留全市场套餐，避免把受限套餐误展示出来。
- */
-function buildBundleMarketScopeFilter(auth, params, productAlias = 'p') {
-  const scopeExpr = `${productAlias}.market_scope`
-  const valuesExpr = marketScopeValues(scopeExpr)
-  const globalExpr = `${scopeExpr} IS NULL`
-  const nonBlankExpr = `NULLIF(regexp_replace(${scopeExpr}, '[[:space:]]+', '', 'g'), '') IS NOT NULL`
-  const effectiveStoreId = auth?.effectiveStoreId
-
-  if (!effectiveStoreId) return `AND ${globalExpr}`
-
-  params.push(effectiveStoreId)
-  const storeParam = `$${params.length}`
-  return `AND (
-    ${globalExpr}
-    OR (
-      ${nonBlankExpr}
-      AND EXISTS (
-        SELECT 1
-        FROM stores s
-        JOIN org_nodes sn ON s.org_node_id = sn.id
-        JOIN org_nodes pm ON sn.parent_id = pm.id
-        WHERE s.store_id = ${storeParam}
-          AND pm.type = '市场'
-          AND (
-            pm.id = ANY(${valuesExpr})
-            OR regexp_replace(pm.name, '[[:space:]]+', '', 'g') = ANY(${valuesExpr})
-          )
-      )
-    )
-  )`
-}
-
-/**
- * 普通 SKU 开单范围过滤（product_skus.market_scope）。
- *
- * 与套餐主商品一致，只按当前工作台 effectiveStoreId 判断；管理层没有选择门店时
- * 仅返回全市场 SKU，不能回退到 scopeStoreIds 或员工档案门店。
- */
-function buildNormalSkuMarketScopeCondition(auth, params, skuAlias = 'sk') {
-  const scopeExpr = `${skuAlias}.market_scope`
-  const valuesExpr = marketScopeValues(scopeExpr)
-  const globalExpr = `${scopeExpr} IS NULL`
-  const nonBlankExpr = `NULLIF(regexp_replace(${scopeExpr}, '[[:space:]]+', '', 'g'), '') IS NOT NULL`
-  const effectiveStoreId = auth?.effectiveStoreId
-
-  if (!effectiveStoreId) return globalExpr
-
-  params.push(effectiveStoreId)
-  const storeParam = `$${params.length}`
-  return `(
-    ${globalExpr}
-    OR (
-      ${nonBlankExpr}
-      AND EXISTS (
-        SELECT 1
-        FROM stores s
-        JOIN org_nodes sn ON s.org_node_id = sn.id
-        JOIN org_nodes pm ON sn.parent_id = pm.id
-        WHERE s.store_id = ${storeParam}
-          AND pm.type = '市场'
-          AND (
-            pm.id = ANY(${valuesExpr})
-            OR regexp_replace(pm.name, '[[:space:]]+', '', 'g') = ANY(${valuesExpr})
-          )
-      )
-    )
-  )`
-}
-
-function buildNormalSkuMarketScopeFilter(auth, params, skuAlias = 'sk') {
-  return `AND ${buildNormalSkuMarketScopeCondition(auth, params, skuAlias)}`
 }
 
 /**
