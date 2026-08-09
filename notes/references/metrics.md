@@ -10,12 +10,14 @@
 
 | 指标 | 公式 | 数据源 | 筛选条件 |
 |------|------|--------|----------|
-| 业绩 | `SUM(paid_amount)` | `sale_orders.paid_amount` | `sale_order_type IN ('销售单','转换单')` ∩ `status='已支付'` ∩ `[paid_at]` |
+| 业绩（门店 / 市场 / 总部） | `SUM(sop.amount)` | `sale_order_payments sop` JOIN `sale_orders so` | `sop.status='已支付'` ∩ `sop.change_type IN ('首次支付','回款','退款')` ∩ `so.sale_order_type IN ('销售单','转换单','充值单')` ∩ `so.legacy_source IS DISTINCT FROM 'workfine'` ∩ `[sop.paid_at]` |
 | 生美业绩 | `SUM(received)` | `sale_items.received` | JOIN sale_orders；`sale_order_type IN ('销售单','转换单')` ∩ `status='已支付'` ∩ `is_shengmei=TRUE` ∩ `[paid_at]` |
 | 实耗 | `SUM(unit_real_price * session_used)` | `service_items.unit_real_price` × `service_items.session_used` | JOIN service_orders；`status='已完成'` ∩ `[service_date]` |
 | 生美实耗 | `SUM(unit_real_price * session_used)` | 同上 | 加 `service_items.is_shengmei=TRUE` |
 
-> **门店业绩 vs 生美业绩为何用不同口径**：paid_amount 是订单层（已含转换/回款抵消），不能按 sku 维度过滤生美；生美必须走 sale_items 行级 SUM(received)。
+> **组织层级业绩的现金流规则**：只统计状态为“已支付”的实际资金变动：首次支付、回款和退款；`储值卡抵扣`不属于现金流，必须排除。充值单的首次支付/回款纳入业绩；退款的 `amount` 为负数，按退款流水的 `paid_at` 当日冲减，不回溯原订单支付日。不得用父订单 `status` 过滤，因此部分支付订单已经到账的付款也计入。
+>
+> **组织层级业绩 vs 生美 / 品项 / 员工归属为何不同**：现金流无法可靠拆到 SKU 或员工。生美业绩、品项统计、员工业绩和员工提成继续使用各自既有的订单/分配口径；充值现金只进入组织层级总业绩和分客型业绩，不进入生美或品项分类。
 
 ## 客流 / 客量 / 新会员
 
@@ -38,7 +40,7 @@
 | 服务提成收入（serviceCommissionIncome） | `SUM(commission_amount)` | `service_commissions.commission_amount` | JOIN service_items + service_orders；`role_type IN ('美容师','养生师')` ∩ `is_void=FALSE` ∩ `status='已完成'` ∩ `[service_date]` |
 
 > **为何 role_type 限定美容师/养生师**：管理层观察的是"产能员工"的人均产出；推广师虽享提成但人头不计入「员工数」（`skills && ARRAY['美容师','养生师']`），分子分母口径必须一致。
-> **为何销售提成对齐"业绩"口径**：销售提成是业绩的下游分配，时间窗口与状态过滤一致便于"业绩 → 提成"对照分析；退款单 `total_amount` 为负数自动相互抵销，符合"净销售提成"语义。
+> **销售提成是例外口径**：销售提成按员工分配流水归属，不随组织层级现金流业绩切换；它保留既有的销售单/转换单和分配规则，便于追踪员工应得提成。
 > **为何服务提成对齐"实耗"口径**：服务提成（手工费 + 消耗提成）是实耗的下游分配，同理；`commission_amount` 已是 `fixed_fee + consume_amount` 之和，直接 SUM。
 > **scope 走 JOIN 上游表**：`sale_allocations` / `service_commissions` 不直接持有 store_id，分别 JOIN `sale_items` → `sale_orders` / `service_items` → `service_orders` 拿 store_id 命中 scope 子查询。
 
@@ -75,7 +77,7 @@
 | 会员数（memberCount） | `COUNT(*)` | `client_wechat_users` | `c.became_member_at IS NOT NULL` ∩ `c.became_member_at::date <= $date` ∩ scope（`bound_store_id`）<br>_2026-04-25 T2 完成：从 `customer_type='会员客'`（实时快照）切到 `became_member_at` 时间戳（历史化）_ |
 | 保有会员数（retainedMemberCount） | `COUNT(DISTINCT so.client_user_id)` | `service_orders` JOIN `client_wechat_users` | `so.status='已完成'` ∩ `so.client_user_id IS NOT NULL` ∩ `so.service_date BETWEEN ($date - 90 days) AND $date` ∩ `c.became_member_at IS NOT NULL` ∩ `c.became_member_at::date <= $date` ∩ scope（`c.bound_store_id`） |
 | 员工数（employeeCount） | `COUNT(*)` | `staff_wechat_users` | `s.hired_at IS NOT NULL` ∩ `s.hired_at::date <= $date` ∩ (`s.resigned_at IS NULL` OR `s.resigned_at::date > $date`) ∩ `skills && ARRAY['美容师','养生师']` ∩ scope（`store_id`）<br>_2026-04-25 T3 完成：从 `is_resigned=FALSE`（实时快照）切到 `hired_at`/`resigned_at` 时间戳（历史化）_ |
-| 门店数（storeCount） | `COUNT(*)` | `stores` JOIN `org_nodes` | `o.type='门店'` ∩ `s.opening_date IS NOT NULL` ∩ `s.opening_date::date <= $date` ∩ (`s.closed_at IS NULL` OR `s.closed_at::date > $date`) ∩ scope（`o.parent_id` 限定市场）<br>_2026-04-25 T4 完成：从裸 `org_nodes WHERE type='门店'`（实时快照）切到 `opening_date`/`closed_at` 时间戳（历史化）；`scopeType=store` 短路返回 1_ |
+| 门店数（storeCount） | `COUNT(*)` | `stores` JOIN `org_nodes` | `o.type='门店'` ∩ `o.is_active=TRUE` ∩ `s.opening_date IS NOT NULL` ∩ `s.opening_date::date <= $date` ∩ (`s.closed_at IS NULL` OR `s.closed_at::date > $date`) ∩ scope<br>_当前组织节点启用状态作用于全部历史区间；停用门店即使单店直达也计 0_ |
 
 > **会员数（2026-04-25 T2 起）已切「按 `selectedDate` 历史化」**：
 > - `WHERE c.became_member_at IS NOT NULL AND c.became_member_at::date <= $date`，任意 `$date` 都可还原"那一天的会员数"。
@@ -88,8 +90,8 @@
 > - `is_resigned` 列保留作为冗余的当前态字段，不再参与查询过滤。
 >
 > **门店数（2026-04-25 T4 起）已切「按 `selectedDate` 历史化」**：
-> - `FROM stores s JOIN org_nodes o ON s.org_node_id = o.id WHERE o.type='门店' AND s.opening_date IS NOT NULL AND s.opening_date::date <= $date AND (s.closed_at IS NULL OR s.closed_at::date > $date)`，任意 `$date` 都可还原"那一天在营的门店数"。
-> - `scopeType=store` 短路返回 1（单店视图不依赖快照）；`scopeType=market` 加 `o.parent_id = $scopeId` 过滤。
+> - `FROM stores s JOIN org_nodes o ON s.org_node_id = o.id WHERE o.type='门店' AND o.is_active=TRUE AND s.opening_date IS NOT NULL AND s.opening_date::date <= $date AND (s.closed_at IS NULL OR s.closed_at::date > $date)`，任意 `$date` 都可还原"那一天在营的门店数"。
+> - `org_nodes.is_active` 没有历史时间轴，按当前状态过滤全部历史区间；`scopeType=store` 也执行真实计数，停用门店返回 0；`scopeType=market` 通过市场后代门店集合过滤。
 > - 字段维护：admin 门店管理表单写入 `opening_date` / `closed_at`（migration 0012 已部署 5433 + 5434 双库）；`is_closed` 列保留作为冗余的当前态字段。
 >
 > **保有会员数（2026-04-25 T5 起）已切「方案 B 实时计算」**：基于 `service_orders` 90 天窗口聚合 + `became_member_at` 守卫。
@@ -242,7 +244,7 @@ WHERE c.customer_status IN ('保有会员-稳定','保有会员-有效')
 ### 4. 会员被经营情况（区间维度，仅 `customer_type='会员客'`）
 
 > 6 个消费分桶 × 2 列（人数 / 消费金额）+ 1 项会员客单价。
-> "消费金额"对齐 metrics.md 已有的【业绩】口径（订单层）：
+> "消费金额"是会员被经营情况的订单层历史消费指标，不等同于本页定义的组织层级现金流业绩；本节保留既有订单口径：
 > `paid_amount` ∩ `sale_order_type IN ('销售单','转换单')` ∩ `status='已支付'` ∩ `[paid_at_period]`。
 
 **底层会员消费聚合 CTE**（所有分桶共用）：
@@ -428,7 +430,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 2026-04-25 | customer_status 枚举值 '预警沉睡' → '沉睡'（schema 与 UI 对齐，详见 ticket customer-status-rename-warn） |
 | 2026-04-25 | 「新会员」判定字段从 `old_member_level IS NULL ∧ member_level IS NOT NULL ∩ [member_level_upgraded_at]` 切到 `became_member_at IS NOT NULL ∩ [became_member_at]`。原口径含会员等级内跃迁（初钻→星钻 等），与"首次成为会员客"业务语义偏离；统一改用 `became_member_at`（与 customer_type 跃迁同事务维护）。同步影响：`mgmtDashboard.summary.queryNewMembers`、`mgmtDashboard.storeRanking.rankingNewMember`、staff-ranking ticket、客量数据子页 §5 已对齐 |
 | 2026-04-25 | T3 — 员工数切按 `selectedDate` 历史化：`COUNT(*) WHERE s.hired_at IS NOT NULL AND s.hired_at::date <= $date AND (s.resigned_at IS NULL OR s.resigned_at::date > $date)`，不再依赖 `is_resigned=FALSE` 实时快照。`staff_wechat_users` 新增 `hired_at` / `resigned_at` 列（migration 0012 双库部署），admin 员工管理表单已支持编辑；当前由 `created_at::date` / `updated_at::date` 兜底回填 |
-| 2026-04-25 | T4 — 门店数切按 `selectedDate` 历史化：`COUNT(*) FROM stores s JOIN org_nodes o ON s.org_node_id=o.id WHERE o.type='门店' AND s.opening_date::date <= $date AND (s.closed_at IS NULL OR s.closed_at::date > $date)`，不再裸数 `org_nodes WHERE type='门店'`。`stores` 新增 `closed_at` 列（migration 0012），`opening_date` 已存在；admin 门店管理表单已支持编辑；`scopeType=store` 短路返回 1 |
+| 2026-04-25 | T4 — 门店数切按 `selectedDate` 历史化：`COUNT(*) FROM stores s JOIN org_nodes o ON s.org_node_id=o.id WHERE o.type='门店' AND s.opening_date::date <= $date AND (s.closed_at IS NULL OR s.closed_at::date > $date)`，不再裸数 `org_nodes WHERE type='门店'`。`stores` 新增 `closed_at` 列（migration 0012），`opening_date` 已存在；admin 门店管理表单已支持编辑 |
 | 2026-04-25 | T6 完成：C 类派生指标分母切换为 selectedDate 历史化（日/月双口径），移除阶段 1 过渡角标 |
 | 2026-04-25 | 品项顾客周期子页 13 项指标定义（持卡人数+占比 2 项、体验/新增/复购各 3 项 = 11 项）；qualifying day 达标日 CTE 逻辑；同一天合并规则与"非首日不算复购"规则；5 决策点已全部拍板：持卡=截面快照（疗程卡+单品，remaining_sessions>0）/ 不限 item_direction / 复购业绩=客群全期收入 / entry_date 跨店合并 / 分包 packageMgmt；详见 ticket [`mgmt-product-cycle-page`](../tickets/2026-04-25-mgmt-product-cycle-page.md) |
 | 2026-04-25 | `staff.dashboard.newMembers`（员工端单店数据看板）也切到 `became_member_at` 口径——店长按 `c.bound_store_id`、美容师按 `c.bound_employee_id` 归属。旧口径"首次消费达 system_configs.new_member_threshold"已废弃，原因：与 mgmt 看板/排行榜数字不一致导致店长/美容师困惑。同步移除 `staff.js` 中无用的 `getMemberThreshold` import。新增 `db/scripts/verify-new-member-cutover.sql` 双库验证脚本（出数对比 + 归属覆盖率 + 索引建议） |
@@ -436,19 +438,20 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 2026-04-25 | 复购口径修订：`fugou` CTE 去掉 `purchase_date <> entry_date` 约束。现"复购 = period 内有达标日的（已 entry）顾客"，threshold 与新增共用。三类关系由"新增 ∩ 复购 可有交集"改为"**新增 ⊆ 复购**"；动机见 ticket [`mgmt-product-repurchase-empty`](../tickets/2026-04-25-mgmt-product-repurchase-empty.md) |
 | 2026-04-25 | 跨接口/前后端口径审计补丁：(a) `payNotify` INSERT `sale_allocations` 补 `role_type` + `is_void` 列（按 `staff.skills[1]` 派生，兜底 `'美容师'`），新增 `db/scripts/backfill-allocations-roletype.js` 双库回填存量 NULL 行；(b) `service.js` INSERT `service_commissions` 显式写 `is_void=FALSE`（防 schema drift）；(c) `staffRanking.producer_employees` CTE 由 `is_resigned=FALSE` 切 `hired_at/resigned_at + NOW()` 锚点（`is_resigned` 在 staffApi 查询路径退役）；(d) `mgmt-traffic.regMember` 切 `became_member_at::date <= endDate` 与首页 `memberCount` 对齐；(e) §3 `retainedStable/retainedActive` 与首页 `retainedMemberCount` 等价关系与 24h 滞后明示；(f) §派生指标修订 `monthlyAvgPerStore` 由后端预算的现实；(g) 废弃 `mgmt-customer-detail` 日历"≥1000 → X.Xk"折叠规则；(h) 前端 `retainRate` / 持卡占比统一走 `formatPercent` |
 | 2026-05-26 | admin 数据中心（`/data-center`）上线：新增 §「数据中心（admin）板块专属指标」+ 品项二级（category_name）粒度节。3 项用户拍板口径——流量客业绩=仅 `customer_type='流量客'`；单次客耗=`生美实耗÷服务人次`；店长人数=`在营门店数`（每店一店长，不依赖 position_name）。排名榜/区间指标统一走顶部 TimeRange（today/week/month/year/custom），同比环比仅作用 KPI 标量 |
+| 2026-08-08 | 数据中心经营统计统一仅纳入 `org_nodes.is_active=TRUE` 的门店：门店数、全部区间指标、门店/员工排行榜及范围下拉同步过滤；单店范围不再固定计 1，停用门店返回零数据 |
 
 ---
 
 ## 销售数据页 — 分客型业绩 / 实耗 / 产品出库
 
-> 时间轴：业绩/产品出库 按 `paid_at`；实耗 按 `service_date`。
+> 时间轴：总业绩和分客型业绩按 `sale_order_payments.paid_at`；产品出库按订单 `paid_at`；实耗按 `service_date`。
 > 时间口径：本月/本年截止今天，上月截止上月最后一天（见下方时间窗口补充）。
 
 ### 顾客分型过滤定义
 
 | 分型 | 过滤条件 | JOIN 路径 |
 |------|---------|-----------|
-| 小美客 | `c.customer_type = '小美客'` | `sale_orders so JOIN client_wechat_users c ON c.client_user_id = so.client_user_id` |
+| 小美客 | `c.customer_type = '小美客'` | `sale_orders so JOIN client_wechat_users c ON c.user_id = so.client_user_id` |
 | 新增会员 | `c.customer_type = '会员客' AND c.became_member_at::date >= [period_start]` | 同上（实耗改 `service_orders so JOIN client_wechat_users c`） |
 | 老会员 | `c.customer_type = '会员客' AND c.became_member_at::date < [period_start]` | 同上 |
 
@@ -458,10 +461,10 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 
 | 指标 | 公式 | 数据源 | 筛选条件 |
 |------|------|--------|----------|
-| 小美客业绩 | `SUM(si.received)` | `sale_items si` JOIN `sale_orders so` JOIN `client_wechat_users c ON c.client_user_id = so.client_user_id` | 分型:小美客 ∩ `so.sale_order_type IN ('销售单','转换单')` ∩ `so.status='已支付'` ∩ `[paid_at_period]` |
-| 新增会员业绩 | `SUM(si.received)` | 同上 | 分型:新增会员 ∩ 同上 |
-| 老会员业绩 | `SUM(si.received)` | 同上 | 分型:老会员 ∩ 同上 |
-| 流量客业绩（admin 数据中心销售板块） | `SUM(si.received)` | 同上 | `c.customer_type = '流量客'` ∩ 同上（**仅纯流量客**，不含体验客/小美客；2026-05-26 用户拍板）|
+| 小美客业绩 | `SUM(sop.amount)` | `sale_order_payments sop` JOIN `sale_orders so` JOIN `client_wechat_users c ON c.user_id = so.client_user_id` | 分型:小美客 ∩ `sop.status='已支付'` ∩ `sop.change_type IN ('首次支付','回款','退款')` ∩ `so.sale_order_type IN ('销售单','转换单','充值单')` ∩ `so.legacy_source IS DISTINCT FROM 'workfine'` ∩ `[sop.paid_at_period]` |
+| 新增会员业绩 | `SUM(sop.amount)` | 同上 | 分型:新增会员 ∩ 同上 |
+| 老会员业绩 | `SUM(sop.amount)` | 同上 | 分型:老会员 ∩ 同上 |
+| 流量客业绩（admin 数据中心销售板块） | `SUM(sop.amount)` | 同上 | `c.customer_type = '流量客'` ∩ 同上（**仅纯流量客**，不含体验客/小美客；2026-05-26 用户拍板）|
 
 ### 分客型项目实耗
 
@@ -655,9 +658,9 @@ tiyan AS (                                    -- 体验：期内有购买但全�
 
 | 指标 | 板块 | 公式 | 说明 |
 |------|------|------|------|
-| 流量客业绩 | 销售 | `SUM(si.received)` WHERE `c.customer_type = '流量客'` | 仅纯流量客（不含体验/小美客）；详见上方「分客型业绩」表 |
+| 流量客业绩 | 销售 | `SUM(sop.amount)` WHERE `c.customer_type = '流量客'` | 仅纯流量客（不含体验/小美客）；按组织层级现金流口径，详见上方「分客型业绩」表 |
 | 单次客耗 | 客量 | `生美实耗 ÷ 服务人次` | 分子=`SUM(unit_real_price*session_used) WHERE is_shengmei`（已完成 ∩ service_date 区间）；分母=已完成 service_orders 行数（服务人次）。KPI 与明细表统一此口径（**不用** Excel 原稿"÷频率"，亦不用"÷会员人次"）|
-| 店长人数 | 人效 | `COUNT(在营门店)` | 每店一店长口径：按 `stores` JOIN `org_nodes(type='门店')` 在营计数（`opening_date<=区间末 ∩ (closed_at IS NULL OR closed_at>区间末)`），**不依赖** `position_name`。故 `店长人均X = 每店平均 X`（含 店长人均收入 = 门店全部产能员工提成合计 ÷ 门店数）|
+| 店长人数 | 人效 | `COUNT(在营启用门店)` | 每店一店长口径：按 `stores` JOIN `org_nodes(type='门店', is_active=TRUE)` 在营计数（`opening_date<=区间末 ∩ (closed_at IS NULL OR closed_at>区间末)`），**不依赖** `position_name`。故 `店长人均X = 每店平均 X`（含 店长人均收入 = 门店全部产能员工提成合计 ÷ 门店数）|
 
 > **时间口径**：数据中心排名榜与上述区间指标统一走顶部时间维度 `col::date BETWEEN current.start AND current.end`
 > （TimeRange：今日/本周/本月/今年/自定义），而非 staff 端固定 month/lastMonth/year 锚 NOW()。

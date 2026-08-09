@@ -56,6 +56,10 @@ const FILES = {
   staffOrderJs: path.resolve(__dirname, '../../routes/order.js'),
   payNotifyIndexJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/index.js'),
   adminOrdersTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/orders.ts'),
+  staffPaymentAllocatableJs: path.resolve(__dirname, '../../utils/payment-allocatable.js'),
+  clientPaymentAllocatableJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/payment-allocatable.js'),
+  payNotifyPaymentAllocatableJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/payment-allocatable.js'),
+  adminPaymentAllocatableTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/payment-allocatable.ts'),
 
   // ticket 2026-05-19-sale-items-paid-sessions — paid_sessions 重算 SQL 四端字节同义
   staffPaidSessionsJs: path.resolve(__dirname, '../../utils/paid-sessions.js'),
@@ -1679,6 +1683,57 @@ describe('营业额分配：回款级 allocation_status 置「已分配」守护
 
   test('admin allocations.ts：保存分配后把回款翻「已分配」', () => {
     expect(adminAllocationsSrc).toContain(PAYMENT_ALLOCATED)
+  })
+})
+
+describe('回款分配状态 CAS 守护', () => {
+  const PENDING_TRANSITION_RE = /UPDATE\s+sale_order_payments\s+SET\s+allocation_status\s*=\s*'待分配'(?:\s*::allocation_status)?\s+WHERE\s+id\s*=\s*(?:\$\{salePaymentId\}|\$1)\s+AND\s+\(\s*allocation_status\s+IS\s+NULL\s+OR\s+allocation_status\s*=\s*'待分配'\s*\)/g
+  const REFUND_ALLOCATED_RE = /UPDATE\s+sale_order_payments\s+SET\s+allocation_status\s*=\s*'已分配'(?:\s*::allocation_status)?\s+WHERE\s+id\s*=\s*(?:\$\{refundPaymentId\}|\$1)\s+AND\s+change_type\s*=\s*'退款'\s+AND\s+\(\s*allocation_status\s+IS\s+NULL\s+OR\s+allocation_status\s*=\s*'待分配'\s*\)/
+  const FULL_REFUND_CLEAR_RE = /UPDATE\s+sale_order_payments\s+p\s+SET\s+allocation_status\s*=\s*NULL\s+WHERE\s+p\.sale_order_id\s*=\s*(?:\$\{saleOrderId\}|\$1)\s+AND\s+p\.allocation_status\s+IN\s*\(\s*'待分配'\s*,\s*'已分配'\s*\)\s+AND\s+EXISTS\s*\(SELECT 1 FROM full_refund_zero_net\)/
+  const ORDER_CLOSE_CLEAR_RE = /UPDATE\s+sale_order_payments\s+SET\s+allocation_status\s*=\s*NULL\s+WHERE\s+sale_order_id\s*=\s*(?:\$\{saleOrderId\}|\$1)\s+AND\s+allocation_status\s+IN\s*\(\s*'待分配'\s*,\s*'已分配'\s*\)/
+
+  let paymentAllocatableSources
+  let fullRefundSources
+  let refundCascadeSources
+  let closeOrderSources
+
+  beforeAll(() => {
+    paymentAllocatableSources = {
+      staff: readFile(FILES.staffPaymentAllocatableJs),
+      client: readFile(FILES.clientPaymentAllocatableJs),
+      payNotify: readFile(FILES.payNotifyPaymentAllocatableJs),
+      admin: readFile(FILES.adminPaymentAllocatableTs),
+    }
+    fullRefundSources = { ...paymentAllocatableSources }
+    refundCascadeSources = {
+      staff: readFile(FILES.staffRefundCascadeJs),
+      admin: readFile(FILES.adminRefundCascadeTs),
+    }
+    closeOrderSources = {
+      staff: readFile(FILES.staffOrderJs),
+      admin: readFile(FILES.adminOrdersTs),
+    }
+  })
+
+  test('四端回款初始化的两个分支仅允许 NULL/待分配 → 待分配', () => {
+    for (const [end, src] of Object.entries(paymentAllocatableSources)) {
+      expect([...src.matchAll(PENDING_TRANSITION_RE)], `${end} 必须有两个受 CAS 保护的待分配写入`).toHaveLength(2)
+    }
+  })
+
+  test('四端全退清理和双端关单清理仅清除合法分配状态', () => {
+    for (const [end, src] of Object.entries(fullRefundSources)) {
+      expect(src, `${end} 全退清理缺少合法前置态`).toMatch(FULL_REFUND_CLEAR_RE)
+    }
+    for (const [end, src] of Object.entries(closeOrderSources)) {
+      expect(src, `${end} 关单清理缺少合法前置态`).toMatch(ORDER_CLOSE_CLEAR_RE)
+    }
+  })
+
+  test('退款级联仅允许 NULL/待分配 → 已分配', () => {
+    for (const [end, src] of Object.entries(refundCascadeSources)) {
+      expect(src, `${end} 退款级联缺少 CAS 前置态`).toMatch(REFUND_ALLOCATED_RE)
+    }
   })
 })
 

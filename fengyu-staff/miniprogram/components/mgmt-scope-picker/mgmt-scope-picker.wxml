@@ -16,7 +16,7 @@
       <view class="scope-cols">
         <scroll-view class="scope-col scope-col--left" scroll-y>
           <view
-            wx:if="{{ staffLevel === 'headquarters' }}"
+            wx:if="{{ allowAll }}"
             class="scope-row {{ current.scopeType === 'all' ? 'scope-row--active' : '' }}"
             bindtap="onPickAll"
           >全部市场</view>
@@ -35,7 +35,7 @@
           scroll-y
         >
           <view
-            wx:if="{{ staffLevel !== 'store_manager' }}"
+            wx:if="{{ currentAllowsMarket }}"
             class="scope-row {{ current.scopeType === 'market' ? 'scope-row--active' : '' }}"
             data-store-id=""
             bindtap="onPickStore"

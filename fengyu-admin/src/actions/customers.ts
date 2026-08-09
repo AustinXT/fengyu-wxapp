@@ -7,12 +7,18 @@ import { stores, orgNodes } from '@db/org'
 import { eq, and, or, desc, asc, inArray, sql, ilike, isNotNull, getTableColumns } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import type { Customer, SaleOrder, SaleItem, Appointment, AuthSession, CustomerCoupon, CouponType, CouponStatus } from '@/lib/types'
-import { hasRole } from '@/lib/auth'
 import { scopeCondition, isAdminScope, isInScope, requireAdmin } from '@/lib/permissions'
+import { hasRole } from '@/lib/auth'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
 import { fmtDate } from '@/lib/datetime'
+import {
+  offsetPageResult,
+  resolveExportOffsetPage,
+  type ExportBatchOptions,
+  type ExportBatchResult,
+} from '@/lib/export-pagination'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 
 // 标量子查询 — 替代 3 个 LEFT JOIN（stores → storeNode → marketNode）
@@ -300,16 +306,21 @@ export const exportCustomers = withPermission(
   async (
     session,
     params: Record<string, string | undefined>,
-  ): Promise<{ rows: ExportCustomerRow[]; truncated: boolean }> => {
+    options?: ExportBatchOptions,
+  ): Promise<ExportBatchResult<ExportCustomerRow>> => {
     const filters = parseCustomerFilters(params)
     const whereClause = and(...buildCustomerConditions(session, filters))
+    const page = resolveExportOffsetPage(options)
 
-    const dataRows = await db
+    const query = db
       .select(exportCustomerColumns)
       .from(clientWechatUsers)
       .where(whereClause)
-      // 例外：picker 字母序（与列表一致）
-      .orderBy(asc(clientWechatUsers.name))
+      // 例外：picker 字母序（与列表一致）；userId 让 worker 分页在同名顾客下保持稳定。
+      .orderBy(asc(clientWechatUsers.name), asc(clientWechatUsers.userId))
+    const dataRows = page
+      ? await query.limit(page.limit + 1).offset(page.offset)
+      : await query
 
     const userIds = dataRows.map((r) => r.userId)
 
@@ -345,7 +356,7 @@ export const exportCustomers = withPermission(
       birthday: r.birthday ? fmtDate(r.birthday) : null,
     }))
 
-    return { rows, truncated: false }
+    return offsetPageResult(rows, page)
   },
 )
 

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback, useMemo } from "react"
+import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
@@ -43,6 +43,7 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
   // ===== 商品 picker（固定普通商品） =====
   const [kindData, setKindData] = useState<KindData | null>(null)
   const [prefetching, setPrefetching] = useState(false)
+  const productRequestVersion = useRef(0)
 
   // ===== 购物车 =====
   const [cart, setCart] = useState<CartItem[]>([])
@@ -61,7 +62,12 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
     }
     setSearching(true)
     setSearchDone(false)
+    productRequestVersion.current += 1
     setSelectedCustomer(null)
+    setKindData(null)
+    setPrefetching(false)
+    setCart([])
+    setReceivedMap({})
     setSearchResults([])
     try {
       const results = await searchCustomers(kw)
@@ -78,12 +84,20 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
   }
 
   const selectCustomer = (c: Customer) => {
+    productRequestVersion.current += 1
+    setKindData(null)
+    setPrefetching(false)
+    setCart([])
+    setReceivedMap({})
     setSelectedCustomer(c)
     setSearchResults([])
   }
 
   const clearCustomer = () => {
+    productRequestVersion.current += 1
     setSelectedCustomer(null)
+    setKindData(null)
+    setPrefetching(false)
     setCart([])
     setReceivedMap({})
   }
@@ -100,25 +114,27 @@ export default function DepositOrderCreatePageClient({ stores }: { stores: Store
   )
 
   // ===== picker 数据按需加载（仅普通商品） =====
-  const loadProducts = useCallback(async () => {
-    if (kindData) return
+  const loadProducts = useCallback(async (clientUserId: string) => {
+    const requestVersion = ++productRequestVersion.current
     setPrefetching(true)
     try {
-      const result = await getProductsByKind("__normal__")
+      const result = await getProductsByKind("__normal__", clientUserId)
+      if (requestVersion !== productRequestVersion.current) return
       if ("groups" in result) {
         setKindData({ normalGroups: result.groups })
       }
     } catch (err) {
+      if (requestVersion !== productRequestVersion.current) return
       toast.error(actionErrorMessage(err, "加载商品数据失败"))
     } finally {
-      setPrefetching(false)
+      if (requestVersion === productRequestVersion.current) setPrefetching(false)
     }
-  }, [kindData])
+  }, [])
 
   // 选定顾客后预拉数据
   useEffect(() => {
-    if (selectedCustomer) loadProducts()
-  }, [selectedCustomer, loadProducts])
+    if (selectedCustomer?.userId) void loadProducts(selectedCustomer.userId)
+  }, [selectedCustomer?.userId, loadProducts])
 
   // ===== cart 操作 =====
   const addToCart = (product: Product, sku: ProductSku) => {

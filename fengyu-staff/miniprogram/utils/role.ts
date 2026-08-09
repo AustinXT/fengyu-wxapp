@@ -25,10 +25,7 @@ export function isMarketLevel(): boolean {
 }
 
 export function canAccessManagement(): boolean {
-  const lv = getStaffLevel();
-  // 总部 / 市场 / 门店店长（store_manager）均可进入管理层视图；
-  // 店长的数据范围由后端 validateManagementScope 收口到 managerStoreIds（管辖门店）。
-  return lv === 'headquarters' || lv === 'market' || lv === 'store_manager';
+  return (app().globalData.availableLoginLevels || []).includes('management');
 }
 
 export function canAccessStore(): boolean {
@@ -42,7 +39,8 @@ export function canAccessStore(): boolean {
  * - 总部 / 市场 manager 切到门店模式后等同店长（用 loginLevel==='store' 收口）。
  * store_manager 切到管理层视图（mgmt 导航）后仍保留店长身份，店长写操作（开单/确认收款等）
  * 不受视图影响——门店视图入口在 tabBar 常驻，管理层视图为只读数据中心。
- * 与后端 requireManager 对齐：后端按 managerStoreIds 把高层 manager 精确限定到管辖门店。
+ * 与后端 requireManager 对齐：后端按 managerStoreIds 把店长写操作精确限定到管辖门店；
+ * 管理层视图准入则单独由 data_center:dashboard + availableLoginLevels 决定。
  */
 export function isManager(): boolean {
   if (getStaffLevel() === 'store_manager') return true;

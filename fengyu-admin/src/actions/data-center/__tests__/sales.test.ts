@@ -5,7 +5,7 @@
  *   1. kpis 键齐全（11 项）且单位正确
  *   2. byMarket / byStore 结构正确（groupId/groupName/metrics 键、市场聚合）
  *   3. 店均派生（门店数=0 → null）
- *   4. scope=store 时门店数短路返回 1
+ *   4. scope=store 停用门店返回 0，店均不除以 1
  *
  * Mock 策略（仿 dashboard.test.ts / permissions.test.ts）：
  *   - @/db.execute：按"调用顺序队列"返回（disable comparison 让每个 KPI 只跑一次，顺序确定）
@@ -301,7 +301,7 @@ describe('getSalesBoard — 明细表装配', () => {
   })
 })
 
-describe('getSalesBoard — meta 透传 + scope=store 门店数短路', () => {
+describe('getSalesBoard — meta 透传 + scope=store 门店数', () => {
   it('meta 来自 ctx（scope/timeRange 透传）', async () => {
     setupExecuteQueue({})
     const res = await getSalesBoard(baseParams)
@@ -309,18 +309,16 @@ describe('getSalesBoard — meta 透传 + scope=store 门店数短路', () => {
     expect(res.timeRange).toEqual(mockCtx.meta.timeRange)
   })
 
-  it('scope=store 时 storeCount 短路返回 1（不查 DB）', async () => {
+  it('scope=store 时 storeCount=0（停用门店）→ 店均为 null', async () => {
     ;(prepareBoardContext as any).mockResolvedValue({
       ...mockCtx,
       scope: { type: 'store', id: 'S1' },
       meta: { ...mockCtx.meta, scope: { type: 'store', id: 'S1', name: '门店一' } },
     })
-    // storeCount 是第 7 个 KPI（index 6）；短路则该位不消费队列。
-    // 给前 6 个 KPI 值 + employeeCount，storeCount 槽放一个"会出错的"哨兵不应被取。
-    setupExecuteQueue({ kpis: [1000, 200, 800, 150, 300, 500, /*storeCount 槽*/ 999, 12] })
+    // storeCount 是第 7 个 KPI（index 6）；停用门店的真实 COUNT 应返回 0。
+    setupExecuteQueue({ kpis: [1000, 200, 800, 150, 300, 500, 0, 12] })
     const res = await getSalesBoard({ ...baseParams, scope: { type: 'store', id: 'S1' } })
-    expect(res.kpis.storeCount.value).toBe(1)
-    // 店均 = 业绩 / 1
-    expect(res.kpis.revenuePerStore.value).toBe(1000)
+    expect(res.kpis.storeCount.value).toBe(0)
+    expect(res.kpis.revenuePerStore.value).toBeNull()
   })
 })

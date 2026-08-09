@@ -7,7 +7,6 @@
 const {
   deriveStaffLevel,
   deriveAvailableLoginLevels,
-  canAccessManagementLevel,
   validateManagementScope,
   expandScopeStoreIds,
   expandScopeOrgNodeIds,
@@ -123,72 +122,60 @@ describe('deriveStaffLevel', () => {
 })
 
 describe('deriveAvailableLoginLevels', () => {
-  test('store_manager + 有 scope → [store, management]（放开管理层视图）', () => {
-    expect(deriveAvailableLoginLevels('store_manager', ['s1'])).toEqual([
+  test('任意有门店 scope 的层级 + dashboard 权限 → [store, management]', () => {
+    expect(deriveAvailableLoginLevels('store_staff', ['s1'], true)).toEqual([
       'store',
       'management',
     ])
   })
 
-  test('store_manager + 空 scope → [store]（数据异常兜底，不下发 management）', () => {
-    expect(deriveAvailableLoginLevels('store_manager', [])).toEqual(['store'])
+  test('没有 dashboard 权限时，即使有 scope 也只有门店模式', () => {
+    expect(deriveAvailableLoginLevels('store_manager', ['s1'], false)).toEqual(['store'])
+    expect(deriveAvailableLoginLevels('headquarters', ['s1'], false)).toEqual(['store'])
   })
 
-  test('store_staff → [store]（美容师仍只门店视图）', () => {
-    expect(deriveAvailableLoginLevels('store_staff', ['s1'])).toEqual(['store'])
+  test('store_manager + 空 scope → [store]（无门店不能开放管理层）', () => {
+    expect(deriveAvailableLoginLevels('store_manager', [], true)).toEqual(['store'])
   })
 
-  test('headquarters 有 store → [store, management]', () => {
-    expect(deriveAvailableLoginLevels('headquarters', ['s1', 's2'])).toEqual([
+  test('headquarters 有 store + dashboard → [store, management]', () => {
+    expect(deriveAvailableLoginLevels('headquarters', ['s1', 's2'], true)).toEqual([
       'store',
       'management',
     ])
   })
 
-  test('headquarters 无 store → [management]', () => {
-    expect(deriveAvailableLoginLevels('headquarters', [])).toEqual(['management'])
+  test('headquarters 无 store → []（即使有 dashboard 也不进入空管理视图）', () => {
+    expect(deriveAvailableLoginLevels('headquarters', [], true)).toEqual([])
   })
 
-  test('market 无 store → [management]', () => {
-    expect(deriveAvailableLoginLevels('market', [])).toEqual(['management'])
+  test('market 无 store → []', () => {
+    expect(deriveAvailableLoginLevels('market', [], true)).toEqual([])
   })
 
-  test('market 有 store → [store, management]', () => {
-    expect(deriveAvailableLoginLevels('market', ['s1'])).toEqual(['store', 'management'])
+  test('market 有 store + dashboard → [store, management]', () => {
+    expect(deriveAvailableLoginLevels('market', ['s1'], true)).toEqual(['store', 'management'])
   })
 
   test('null → []', () => {
-    expect(deriveAvailableLoginLevels(null, [])).toEqual([])
-  })
-})
-
-describe('canAccessManagementLevel', () => {
-  test('headquarters / market / store_manager → true', () => {
-    expect(canAccessManagementLevel('headquarters')).toBe(true)
-    expect(canAccessManagementLevel('market')).toBe(true)
-    expect(canAccessManagementLevel('store_manager')).toBe(true)
-  })
-  test('store_staff / null → false', () => {
-    expect(canAccessManagementLevel('store_staff')).toBe(false)
-    expect(canAccessManagementLevel(null)).toBe(false)
+    expect(deriveAvailableLoginLevels(null, [], true)).toEqual([])
   })
 })
 
 describe('validateManagementScope', () => {
   const hqAuth = {
     staffLevel: 'headquarters',
-    roleBindings: [],
-    scopeStoreIds: ['s1'],
-    managerStoreIds: ['s1'],
+    roleBindings: [{ role: 'admin', scopeId: 'hq', scopeType: '总部' }],
+    scopeStoreIds: ['s1', 'sX'],
+    scopeOrgNodeIds: ['mX', 'mY'],
   }
   const marketAuth = {
     staffLevel: 'market',
     roleBindings: [{ role: 'manager', scopeId: 'm1', scopeType: '市场' }],
     scopeStoreIds: ['s1'],
     scopeOrgNodeIds: ['m1', 'm1-child'],
-    managerStoreIds: ['s1'],
   }
-  // 边缘：manager@门店A + customer_mgr@门店B → scopeStoreIds=[A,B] 但 managerStoreIds=[A]
+  // 边缘：manager@门店A + customer_mgr@门店B → 管理层使用全部 scopeStoreIds。
   const storeManagerAuth = {
     staffLevel: 'store_manager',
     roleBindings: [
@@ -196,13 +183,14 @@ describe('validateManagementScope', () => {
       { role: 'customer_mgr', scopeId: 'node-B', scopeType: '门店' },
     ],
     scopeStoreIds: ['A', 'B'],
-    managerStoreIds: ['A'],
+    scopeOrgNodeIds: ['node-A', 'node-B'],
   }
 
-  test('headquarters 放行所有 scopeType', () => {
+  test('总部 scope 可查看全部，并按完整 scope 校验 market/store', () => {
     expect(() => validateManagementScope(hqAuth, 'all', null)).not.toThrow()
     expect(() => validateManagementScope(hqAuth, 'market', 'mX')).not.toThrow()
     expect(() => validateManagementScope(hqAuth, 'store', 'sX')).not.toThrow()
+    expect(() => validateManagementScope(hqAuth, 'market', 'mOther')).toThrow(/PERMISSION_DENIED/)
   })
 
   test('market: all 拒绝', () => {
@@ -224,18 +212,15 @@ describe('validateManagementScope', () => {
     expect(() => validateManagementScope(marketAuth, 'store', 'sOther')).toThrow(/PERMISSION_DENIED/)
   })
 
-  test('store_manager: 自己 managerStoreIds 内门店通过', () => {
+  test('门店级账号：scopeStoreIds 内的全部角色门店均可访问', () => {
     expect(() => validateManagementScope(storeManagerAuth, 'store', 'A')).not.toThrow()
+    expect(() => validateManagementScope(storeManagerAuth, 'store', 'B')).not.toThrow()
   })
-  test('store_manager: all 拒绝', () => {
+  test('无总部 scope 的门店级账号：all 拒绝', () => {
     expect(() => validateManagementScope(storeManagerAuth, 'all', null)).toThrow(/PERMISSION_DENIED/)
   })
-  test('store_manager: market 拒绝', () => {
+  test('没有被授权的 market：拒绝', () => {
     expect(() => validateManagementScope(storeManagerAuth, 'market', 'm1')).toThrow(/PERMISSION_DENIED/)
-  })
-  test('store_manager: scopeStoreIds 含但 managerStoreIds 不含的门店 → 拒绝（防 customer_mgr@B 越权）', () => {
-    // B ∈ scopeStoreIds 但 ∉ managerStoreIds，必须拒绝（证明用 managerStoreIds 而非 scopeStoreIds）
-    expect(() => validateManagementScope(storeManagerAuth, 'store', 'B')).toThrow(/PERMISSION_DENIED/)
   })
 })
 

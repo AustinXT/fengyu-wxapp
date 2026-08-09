@@ -59,29 +59,27 @@ describe('hasRole', () => {
 })
 
 describe('canAccessManagement', () => {
-  function setStaffLevel(staffLevel: string | null | undefined) {
-    const fakeApp = { globalData: { staffLevel } }
+  function setAvailableLoginLevels(availableLoginLevels: string[] | undefined) {
+    const fakeApp = { globalData: { availableLoginLevels } }
     ;(globalThis as any).getApp = () => fakeApp
   }
   afterEach(() => {
     delete (globalThis as any).getApp
   })
 
-  test('headquarters / market / store_manager → true（店长放开管理层视图）', () => {
-    setStaffLevel('headquarters')
+  test('availableLoginLevels 含 management → true（权限矩阵驱动）', () => {
+    setAvailableLoginLevels(['store', 'management'])
     expect(canAccessManagement()).toBe(true)
-    setStaffLevel('market')
-    expect(canAccessManagement()).toBe(true)
-    setStaffLevel('store_manager')
+    setAvailableLoginLevels(['management'])
     expect(canAccessManagement()).toBe(true)
   })
 
-  test('store_staff / null / undefined → false（美容师与未登录不放开）', () => {
-    setStaffLevel('store_staff')
+  test('availableLoginLevels 不含 management → false', () => {
+    setAvailableLoginLevels(['store'])
     expect(canAccessManagement()).toBe(false)
-    setStaffLevel(null)
+    setAvailableLoginLevels([])
     expect(canAccessManagement()).toBe(false)
-    setStaffLevel(undefined)
+    setAvailableLoginLevels(undefined)
     expect(canAccessManagement()).toBe(false)
   })
 })

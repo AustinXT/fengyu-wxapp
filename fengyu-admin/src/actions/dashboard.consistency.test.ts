@@ -1,5 +1,5 @@
 /**
- * dashboard 三端业绩口径一致性守护
+ * dashboard 组织层级现金流业绩口径一致性守护
  *
  * SUMMARY v3 §2 #15 / ticket notes/tickets/2026-05-17-dashboard-three-end-consistency-test.md
  *
@@ -10,10 +10,10 @@
  * 因两端 ORM 不同（Drizzle vs 原生 pg）且 admin 用大 CTE，
  * staff 用按指标拆分的多查询，**完整 SQL snapshot 不可行**。
  * 守护策略改为"关键不变量字面量匹配"：
- *   1. 营业额公式 = SUM(received - refunded_amount)（禁 SUM(paid_amount) / SUM(total_amount)）
- *   2. sale_order_type 过滤集合 = IN ('销售单', '转换单')
- *   3. 状态过滤含 '已支付'
- *   4. 两端的 sale_order_type IN 集合归一化后必须同义（防止一端单独漏改）
+ *   1. 营业额公式 = SUM(sale_order_payments.amount)
+ *   2. 付款类型 = 首次支付 / 回款 / 退款，排除储值卡抵扣
+ *   3. 订单类型 = 销售单 / 转换单 / 充值单
+ *   4. 归期 = 付款流水 paid_at，不依赖父订单状态
  *
  * 任一端公式变更必须双端同步，否则数据中心首页与 admin dashboard 数字对不上。
  */
@@ -42,7 +42,27 @@ function stripComments(src: string): string {
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ') // 行注释（避开 URL 的 //）
 }
 
-describe('audit-17 dashboard 两端公式一致性守护（SUMMARY v3 §2 #15）', () => {
+function between(src: string, start: string, end: string): string {
+  const from = src.indexOf(start)
+  const to = src.indexOf(end, from + start.length)
+  return from === -1 ? '' : src.slice(from, to === -1 ? undefined : to)
+}
+
+function expectCashflowRevenueSql(src: string) {
+  const normalized = normalize(stripComments(src))
+  expect(normalized).toMatch(/FROM\s+sale_order_payments\s+sop/i)
+  expect(normalized).toMatch(/JOIN\s+sale_orders\s+so\s+ON\s+so\.sale_order_id\s*=\s*sop\.sale_order_id/i)
+  expect(normalized).toMatch(/sop\.amount::numeric/i)
+  expect(normalized).toMatch(/sop\.status\s*=\s*'已支付'/)
+  expect(normalized).toMatch(/sop\.change_type\s+IN\s*\(\s*'首次支付'\s*,\s*'回款'\s*,\s*'退款'\s*\)/)
+  expect(normalized).toMatch(/so\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*,\s*'充值单'\s*\)/)
+  expect(normalized).toMatch(/sop\.paid_at/i)
+  expect(normalized).toMatch(/legacy_source\s+IS\s+DISTINCT\s+FROM\s+'workfine'/i)
+  expect(normalized).not.toMatch(/储值卡抵扣/)
+  expect(normalized).not.toMatch(/payment_method/i)
+}
+
+describe('dashboard 组织层级现金流业绩一致性守护', () => {
   let adminSrc: string
   let staffSrc: string
 
@@ -51,80 +71,45 @@ describe('audit-17 dashboard 两端公式一致性守护（SUMMARY v3 §2 #15）
     staffSrc = fs.readFileSync(STAFF_MGMT_DASHBOARD, 'utf-8')
   })
 
-  describe('营业额公式 = SUM(received - refunded_amount)（禁 SUM(paid_amount) / SUM(total_amount)）', () => {
-    it('admin dashboard.ts 必须用 received - refunded_amount', () => {
-      // admin 公式：CASE ... THEN (received::numeric - refunded_amount::numeric)
-      expect(normalize(adminSrc)).toMatch(/received::numeric\s*-\s*refunded_amount::numeric/i)
+  describe('业绩 = 已支付付款流水的有符号合计', () => {
+    it('admin dashboard payment_metrics 使用现金流口径', () => {
+      expectCashflowRevenueSql(between(adminSrc, 'payment_metrics AS (', 'order_metrics AS ('))
     })
 
-    it('admin dashboard.ts 禁用 SUM(paid_amount) / SUM(total_amount)（P0-17-01 防回归）', () => {
-      // 剥离注释后检查（docstring 里 "SUM(total_amount)" 是反例引用，不算违规）
-      const n = normalize(stripComments(adminSrc))
-      expect(n).not.toMatch(/SUM\(\s*paid_amount\s*\)/i)
-      expect(n).not.toMatch(/SUM\(\s*total_amount\s*\)/i)
-    })
-
-    it('staff mgmt-dashboard.js 必须用 received - refunded_amount', () => {
-      // staff 公式：SUM(so.received::numeric - COALESCE(so.refunded_amount, 0)::numeric)
-      expect(normalize(staffSrc)).toMatch(
-        /received::numeric\s*-\s*COALESCE\(\s*so\.refunded_amount,\s*0\s*\)::numeric/i,
+    it('staff summary queryStoreRevenue 使用同一现金流口径', () => {
+      expectCashflowRevenueSql(
+        between(staffSrc, 'async function queryStoreRevenue', 'async function queryShengmeiRevenue'),
       )
     })
 
-    it('staff mgmt-dashboard.js 禁用 SUM(paid_amount) / SUM(total_amount)（P0-17-01 防回归）', () => {
-      const n = normalize(stripComments(staffSrc))
-      expect(n).not.toMatch(/SUM\(\s*paid_amount\s*\)/i)
-      expect(n).not.toMatch(/SUM\(\s*total_amount\s*\)/i)
+    it('付款流水查询不按父订单状态过滤，部分支付订单的已到账款也纳入', () => {
+      const adminPaymentMetrics = normalize(stripComments(
+        between(adminSrc, 'payment_metrics AS (', 'order_metrics AS ('),
+      ))
+      const staffRevenue = normalize(stripComments(
+        between(staffSrc, 'async function queryStoreRevenue', 'async function queryShengmeiRevenue'),
+      ))
+      expect(adminPaymentMetrics).not.toMatch(/so\.status\s*=/)
+      expect(staffRevenue).not.toMatch(/so\.status\s*=/)
     })
   })
 
-  describe('sale_order_type 过滤 — 必须 IN (销售单, 转换单)', () => {
-    it('admin dashboard.ts 必须含 IN (销售单, 转换单)', () => {
-      expect(adminSrc).toMatch(/sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/)
+  describe('工作台金额拆分', () => {
+    it('实付仅统计首次支付和回款，退款金额单独取绝对值', () => {
+      const paymentMetrics = normalize(stripComments(
+        between(adminSrc, 'payment_metrics AS (', 'order_metrics AS ('),
+      ))
+      expect(paymentMetrics).toMatch(/sop\.change_type IN \('首次支付', '回款'\)[\s\S]*?AS today_paid_amount/)
+      expect(paymentMetrics).toMatch(/sop\.change_type = '退款'[\s\S]*?ABS\(sop\.amount::numeric\)[\s\S]*?AS today_refunded_amount/)
     })
 
-    it('staff mgmt-dashboard.js 必须含 IN (销售单, 转换单)', () => {
-      expect(staffSrc).toMatch(/sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/)
-    })
-
-    it('两端枚举集合归一化后必须同义（防一端漏改未来新增枚举值）', () => {
-      const extract = (src: string): Set<string> => {
-        const matches = src.match(/sale_order_type\s+IN\s*\(([^)]+)\)/g) || []
-        return new Set(matches.map((s) => s.replace(/\s+/g, '').toLowerCase()))
-      }
-      const adminEnums = extract(adminSrc)
-      const staffEnums = extract(staffSrc)
-
-      expect(adminEnums.size).toBeGreaterThan(0)
-      expect(staffEnums.size).toBeGreaterThan(0)
-
-      // 两端出现的所有 IN 集合（去重后）必须是同一组
-      // 等价判断：合并后大小 = 任一端大小
-      const union = new Set([...adminEnums, ...staffEnums])
-      expect(union.size).toBe(adminEnums.size)
-      expect(union.size).toBe(staffEnums.size)
-    })
-  })
-
-  describe('status 过滤 — 必须含已支付', () => {
-    it('admin dashboard.ts 营业额查询必须 status IN (已支付, ...)', () => {
-      // admin 用 IN ('已支付', '已完成') 兼容（含已完成是 metrics.md 口径）
-      expect(adminSrc).toMatch(/status\s+IN\s*\(\s*'已支付'/)
-    })
-
-    it('staff mgmt-dashboard.js queryStoreRevenue 必须 so.status = 已支付', () => {
-      // staff 用 = '已支付'（不含已完成，因为 staff 端只统计已支付）
-      expect(staffSrc).toMatch(/so\.status\s*=\s*'已支付'/)
-    })
-  })
-
-  describe('关键注释字面量 — 两端必须保留"2026-04-26 sale-order-domain-refactor"溯源', () => {
-    it('admin dashboard.ts 头部注释必须含公式变更追溯', () => {
-      expect(adminSrc).toMatch(/2026-04-26\s+sale-order-domain-refactor/i)
-    })
-
-    it('staff mgmt-dashboard.js 必须含公式变更追溯（提醒维护者同步）', () => {
-      expect(staffSrc).toMatch(/2026-04-26\s+sale-order-domain-refactor/i)
+    it('订单数量和待办仍在独立的 sale_orders CTE 中统计', () => {
+      const orderMetrics = normalize(stripComments(
+        between(adminSrc, 'order_metrics AS (', ')\n      SELECT'),
+      ))
+      expect(orderMetrics).toMatch(/FROM sale_orders so/)
+      expect(orderMetrics).toMatch(/pending_orders/)
+      expect(orderMetrics).toMatch(/pending_allocations/)
     })
   })
 
@@ -141,11 +126,13 @@ describe('audit-17 dashboard 两端公式一致性守护（SUMMARY v3 §2 #15）
   describe('历史订单隔离 — 营收口径必须排除 legacy workfine（核对补登 received 后防污染）', () => {
     // WorkFine 历史单核对通过会补 received=total_amount（供会员体系重算），
     // 经营营收/业绩口径必须排除它，否则污染 dashboard/排行/数据中心。两端同步守护。
-    it('admin dashboard.ts 营收查询必须排除 legacy_source = workfine', () => {
-      expect(adminSrc).toMatch(/legacy_source\s+IS\s+DISTINCT\s+FROM\s+'workfine'/i)
+    it('admin dashboard.ts 现金流查询必须排除 legacy_source = workfine', () => {
+      expectCashflowRevenueSql(between(adminSrc, 'payment_metrics AS (', 'order_metrics AS ('))
     })
-    it('staff mgmt-dashboard.js 营收查询必须排除 legacy_source = workfine', () => {
-      expect(staffSrc).toMatch(/legacy_source\s+IS\s+DISTINCT\s+FROM\s+'workfine'/i)
+    it('staff mgmt-dashboard.js 现金流查询必须排除 legacy_source = workfine', () => {
+      expectCashflowRevenueSql(
+        between(staffSrc, 'async function queryStoreRevenue', 'async function queryShengmeiRevenue'),
+      )
     })
   })
 })

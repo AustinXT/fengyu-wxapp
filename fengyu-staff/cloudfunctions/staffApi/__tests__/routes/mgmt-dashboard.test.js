@@ -12,8 +12,29 @@
  */
 
 const pg = globalThis.__mocks__.pg
-const { createCtx, createManagerCtx, createManagementCtx } = require('../helpers')
-const { summary, scopeOptions, storeRanking, staffRanking, salesData, __resetMarketsCache } = require('../../routes/mgmt-dashboard')
+const {
+  createCtx: createBaseCtx,
+  createManagerCtx: createBaseManagerCtx,
+  createManagementCtx: createBaseManagementCtx,
+} = require('../helpers')
+const { summary, scopeOptions, storeRanking, staffRanking, salesData } = require('../../routes/mgmt-dashboard')
+
+// 本文件覆盖的全部路由都要求 data_center:dashboard；默认夹具显式带上该权限，
+// 各用例仍可覆盖为 false 来验证权限拦截。
+function createCtx(overrides = {}) {
+  return createBaseCtx({
+    ...overrides,
+    auth: { hasDataCenterDashboard: true, ...(overrides.auth || {}) },
+  })
+}
+
+function createManagerCtx(payload = {}, authOverrides = {}) {
+  return createBaseManagerCtx(payload, { hasDataCenterDashboard: true, ...authOverrides })
+}
+
+function createManagementCtx(payload = {}, authOverrides = {}) {
+  return createBaseManagementCtx(payload, { hasDataCenterDashboard: true, ...authOverrides })
+}
 
 // ---- ctx 构造 ----
 function makeHqCtx(payload = {}) {
@@ -22,8 +43,11 @@ function makeHqCtx(payload = {}) {
     auth: {
       staffLevel: 'headquarters',
       loginLevel: 'management',
+      hasDataCenterDashboard: true,
       roleBindings: [{ role: 'admin', scopeId: 'org-hq', scopeType: '总部' }],
       scopeStoreIds: ['store-001', 'store-002'],
+      // 认证层对总部会展开全部组织节点；本文件的市场用例覆盖 mkt-A/mkt-empty。
+      scopeOrgNodeIds: ['org-hq', 'mkt-A', 'mkt-B', 'mkt-C', 'mkt-empty'],
     },
   })
 }
@@ -34,7 +58,9 @@ function makeMarketCtx(payload = {}) {
     auth: {
       staffLevel: 'market',
       loginLevel: 'management',
+      hasDataCenterDashboard: true,
       roleBindings: [{ role: 'manager', scopeId: 'mkt-A', scopeType: '市场' }],
+      scopeOrgNodeIds: ['mkt-A'],
       scopeStoreIds: ['store-001'],
     },
   })
@@ -156,7 +182,7 @@ describe('mgmtDashboard.summary 参数与权限校验', () => {
 })
 
 describe('mgmtDashboard.summary scopeType=all', () => {
-  test('SQL WHERE 含 TRUE，metric 不含 store_id 过滤；storeCount 来自 stores JOIN org_nodes', async () => {
+  test('SQL 统一叠加启用门店过滤，metric 不带 URL 单店参数；storeCount 来自 stores JOIN org_nodes', async () => {
     setupDefaultMocks({ metricValue: 100, storeCount: 5 })
     const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'all' })
     await summary(ctx)
@@ -170,9 +196,9 @@ describe('mgmtDashboard.summary scopeType=all', () => {
     // = 24
     expect(metricSqls.length).toBe(24)
     for (const s of metricSqls) {
-      expect(s).toMatch(/WHERE\s+TRUE/)
+      expect(s).toMatch(/WHERE\s+\(TRUE\)\s+AND/)
+      expect(s).toMatch(/active_node\.is_active\s*=\s*TRUE/)
       expect(s).not.toMatch(/store_id\s*=\s*\$/)
-      expect(s).not.toMatch(/store_id\s+IN\s*\(/)
       expect(s).not.toMatch(/bound_store_id\s*=\s*\$/)
     }
 
@@ -191,6 +217,7 @@ describe('mgmtDashboard.summary scopeType=all', () => {
       expect(storeCountSql).toMatch(/s\.opening_date::date\s*<=\s*\$1::date/)
       expect(storeCountSql).toMatch(/s\.closed_at\s+IS\s+NULL\s+OR\s+s\.closed_at::date\s*>\s*\$1::date/)
       expect(storeCountSql).toMatch(/o\.type\s*=\s*'门店'/)
+      expect(storeCountSql).toMatch(/o\.is_active\s*=\s*TRUE/)
     }
 
     // T6：storeCount 双口径 { day, month }
@@ -241,9 +268,10 @@ describe('mgmtDashboard.summary scopeType=market', () => {
     const storeCountSqls = sqlList.filter(isStoreCountSql)
     expect(storeCountSqls.length).toBe(2)
     for (const s of storeCountSqls) {
-      expectRecursiveDescendantScope(s, 1)
-      expect(s).toMatch(/s\.opening_date::date\s*<=\s*\$2::date/)
-      expect(s).toMatch(/s\.closed_at\s+IS\s+NULL\s+OR\s+s\.closed_at::date\s*>\s*\$2::date/)
+      expectRecursiveDescendantScope(s, 2)
+      expect(s).toMatch(/s\.opening_date::date\s*<=\s*\$1::date/)
+      expect(s).toMatch(/s\.closed_at\s+IS\s+NULL\s+OR\s+s\.closed_at::date\s*>\s*\$1::date/)
+      expect(s).toMatch(/o\.is_active\s*=\s*TRUE/)
     }
 
     expect(ctx.result.storeCount).toEqual({ day: 3, month: 3 })
@@ -252,8 +280,8 @@ describe('mgmtDashboard.summary scopeType=market', () => {
 })
 
 describe('mgmtDashboard.summary scopeType=store', () => {
-  test('SQL 含 store_id = $2，storeCount 短路返回 1（不查 org_nodes COUNT）', async () => {
-    setupDefaultMocks({ metricValue: 30, storeName: '凤御B店' })
+  test('SQL 含 store_id = $2，storeCount 真实查询启用节点；停用门店返回 0', async () => {
+    setupDefaultMocks({ metricValue: 30, storeCount: 0, storeName: '凤御B店' })
     const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'store', scopeId: 'store-001' })
     await summary(ctx)
 
@@ -265,7 +293,7 @@ describe('mgmtDashboard.summary scopeType=store', () => {
     )
     for (const s of saleServiceSqls) {
       expect(s).toContain('so.store_id = $2')
-      expect(s).not.toMatch(/store_id\s+IN\s*\(/)
+      expect(s).toMatch(/active_node\.is_active\s*=\s*TRUE/)
     }
 
     const clientSqls = sqlList.filter((s) => /client_wechat_users/.test(s))
@@ -273,6 +301,7 @@ describe('mgmtDashboard.summary scopeType=store', () => {
     for (const s of clientSqls) {
       // T2 起 memberCount 也用 $1=date，所有 client 截面/带日期 SQL 都用 c.bound_store_id = $2
       expect(s).toContain('c.bound_store_id = $2')
+      expect(s).toMatch(/active_node\.is_active\s*=\s*TRUE/)
     }
 
     // staff 表过滤：T6 起 employeeCount 调用 2 次（day + month），都走 store 单值
@@ -281,18 +310,21 @@ describe('mgmtDashboard.summary scopeType=store', () => {
     expect(staffSqls.length).toBe(2)
     for (const s of staffSqls) {
       expect(s).toContain('s.store_id = $2')
+      expect(s).toMatch(/active_node\.is_active\s*=\s*TRUE/)
     }
 
-    // storeCount 不调用 pg（store 模式短路返回 1）；既不应有新口径 stores JOIN COUNT(*)::int AS cnt，也不应有旧口径 org_nodes COUNT
-    const storeCountSql = sqlList.find(
-      (s) =>
-        /COUNT\(\*\)::int\s+AS\s+cnt/.test(s) ||
-        /FROM org_nodes WHERE type = '门店'/.test(s),
-    )
-    expect(storeCountSql).toBeUndefined()
+    // 单店同样真实查询两次（日 / 月末），不能把停用门店固定算作 1 家。
+    const storeCountSqls = sqlList.filter(isStoreCountSql)
+    expect(storeCountSqls).toHaveLength(2)
+    for (const s of storeCountSqls) {
+      expect(s).toContain('s.store_id = $2')
+      expect(s).toMatch(/active_node\.is_active\s*=\s*TRUE/)
+      expect(s).toMatch(/o\.is_active\s*=\s*TRUE/)
+      expect(s).toMatch(/s\.opening_date::date\s*<=\s*\$1::date/)
+    }
 
-    // T6：scopeType=store 短路返回 1，day 和 month 都为 1
-    expect(ctx.result.storeCount).toEqual({ day: 1, month: 1 })
+    expect(ctx.result.storeCount).toEqual({ day: 0, month: 0 })
+    expect(ctx.result.storeRevenue.monthlyAvgPerStore).toBe(0)
     expect(ctx.result.scope).toEqual({ type: 'store', id: 'store-001', name: '凤御B店' })
   })
 })
@@ -488,13 +520,17 @@ describe('mgmtDashboard.summary 生美区分', () => {
     expect(shengmeiRevSqls.length).toBe(2) // today + month
 
     const storeRevSqls = sqlList.filter(
-      // 2026-04-26 sale-order-domain-refactor: paid_amount → received - refunded_amount
-      (s) => /FROM sale_orders so\b/.test(s) && /SUM\(so\.received::numeric/.test(s),
+      (s) => /FROM sale_order_payments sop\b/.test(s) && /SUM\(sop\.amount::numeric/.test(s),
     )
     expect(storeRevSqls.length).toBe(2)
     for (const s of storeRevSqls) {
       expect(s).not.toMatch(/is_shengmei/)
       expect(s).not.toMatch(/JOIN sale_items/)
+      expect(s).toMatch(/sop\.status\s*=\s*'已支付'/)
+      expect(s).toMatch(/sop\.change_type\s+IN\s*\('首次支付',\s*'回款',\s*'退款'\)/)
+      expect(s).toMatch(/sale_order_type\s+IN\s*\('销售单',\s*'转换单',\s*'充值单'\)/)
+      expect(s).toMatch(/sop\.paid_at/)
+      expect(s).not.toMatch(/so\.status\s*=/)
     }
 
     const shengmeiConsSqls = sqlList.filter(
@@ -817,7 +853,7 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
       .find((s) => /FROM service_orders/.test(s) && /became_member_at/.test(s))
     expect(retainedSql).toBeDefined()
     expect(retainedSql).toContain('c.bound_store_id = $2')
-    expect(retainedSql).not.toMatch(/c\.bound_store_id\s+IN\s*\(/)
+    expect(retainedSql).toMatch(/active_node\.is_active\s*=\s*TRUE/)
     expect(retainedSql).toMatch(/c\.became_member_at::date\s*<=\s*\$1::date/)
     expect(ctx.result.retainedMemberCount).toBe(3)
   })
@@ -857,7 +893,7 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     expect(ctx.result.employeeCount).toEqual({ day: 6, month: 6 })
   })
 
-  test('storeCount SQL 形态：FROM stores JOIN org_nodes ∩ opening_date::date <= $date ∩ (closed_at IS NULL OR closed_at::date > $date)（T4 历史化口径，2026-04-25）', async () => {
+  test('storeCount SQL 形态：仅启用节点 ∩ opening_date::date <= $date ∩ (closed_at IS NULL OR closed_at::date > $date)', async () => {
     setupCensusMocks({ storeCount: 12 })
     const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'all' })
     await summary(ctx)
@@ -872,6 +908,8 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
       )
     expect(storeSql).toBeDefined()
     expect(storeSql).toContain("o.type = '门店'")
+    expect(storeSql).toMatch(/o\.is_active\s*=\s*TRUE/)
+    expect(storeSql).toMatch(/active_node\.is_active\s*=\s*TRUE/)
     expect(storeSql).toMatch(/s\.opening_date\s+IS\s+NOT\s+NULL/)
     expect(storeSql).toMatch(/s\.opening_date::date\s*<=\s*\$1::date/)
     expect(storeSql).toMatch(/s\.closed_at\s+IS\s+NULL\s+OR\s+s\.closed_at::date\s*>\s*\$1::date/)
@@ -899,17 +937,18 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     expect(ctx.result.storeCount).toEqual({ day: 8, month: 8 })
   })
 
-  test('storeCount scopeType=market：递归后代组织树 ∩ opening_date/closed_at 走 $2::date', async () => {
+  test('storeCount scopeType=market：递归后代组织树 ∩ 启用节点 ∩ opening_date/closed_at', async () => {
     setupCensusMocks({ storeCount: 3 })
     const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'market', scopeId: 'mkt-A' })
     await summary(ctx)
 
     const storeCall = pg.query.mock.calls.find((c) => isStoreCountSql(c[0]))
     expect(storeCall).toBeDefined()
-    expectRecursiveDescendantScope(storeCall[0], 1)
-    expect(storeCall[0]).toMatch(/s\.opening_date::date\s*<=\s*\$2::date/)
-    expect(storeCall[0]).toMatch(/s\.closed_at\s+IS\s+NULL\s+OR\s+s\.closed_at::date\s*>\s*\$2::date/)
-    expect(storeCall[1]).toEqual(['mkt-A', '2026-04-25'])
+    expectRecursiveDescendantScope(storeCall[0], 2)
+    expect(storeCall[0]).toMatch(/active_node\.is_active\s*=\s*TRUE/)
+    expect(storeCall[0]).toMatch(/s\.opening_date::date\s*<=\s*\$1::date/)
+    expect(storeCall[0]).toMatch(/s\.closed_at\s+IS\s+NULL\s+OR\s+s\.closed_at::date\s*>\s*\$1::date/)
+    expect(storeCall[1]).toEqual(['2026-04-25', 'mkt-A'])
     // T6：双口径（market 模式 day=month=3，mock 未区分）
     expect(ctx.result.storeCount).toEqual({ day: 3, month: 3 })
   })
@@ -948,13 +987,13 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     expect(memberSql).toBeDefined()
     // T2 起 memberCount 用 $2=scopeId（$1=date）
     expect(memberSql).toContain('c.bound_store_id = $2')
-    // SQL 内不应有 stores 子查询风格的 IN(SELECT ...)（虽然 became_member_at IS NOT NULL 不算 IN）
-    expect(memberSql).not.toMatch(/bound_store_id\s+IN\s*\(/)
+    // 业务 scope 仍是单值；额外的 IN 子查询用于排除停用门店。
+    expect(memberSql).toMatch(/active_node\.is_active\s*=\s*TRUE/)
 
     // T3 起 employeeCount 用 $1=date + $2=scopeId
     const empSql = sqlList.find((s) => /FROM staff_wechat_users/.test(s))
     expect(empSql).toContain('s.store_id = $2')
-    expect(empSql).not.toMatch(/IN\s*\(/)
+    expect(empSql).toMatch(/active_node\.is_active\s*=\s*TRUE/)
   })
 
   test('T2/T3 后 memberCount 与 employeeCount 都依赖 date（$1::date 出现），且都不走 date_trunc 月份聚合', async () => {
@@ -976,7 +1015,7 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     expect(empSql).not.toMatch(/date_trunc/)
   })
 
-  test('scopeType=all 时 memberCount + employeeCount 走 WHERE TRUE，无 store/parent_id 过滤', async () => {
+  test('scopeType=all 时 memberCount + employeeCount 保留启用门店过滤，无 URL scope 参数', async () => {
     setupCensusMocks()
     const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'all' })
     await summary(ctx)
@@ -986,14 +1025,15 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     const censusSqls = sqlList.filter((s) => isMemberCountSql(s) || /FROM staff_wechat_users/.test(s))
     expect(censusSqls.length).toBe(3)
     for (const s of censusSqls) {
-      expect(s).toMatch(/WHERE\s+TRUE/)
+      expect(s).toMatch(/WHERE\s+\(TRUE\)\s+AND/)
+      expect(s).toMatch(/active_node\.is_active\s*=\s*TRUE/)
       expect(s).not.toMatch(/parent_id/)
       expect(s).not.toMatch(/bound_store_id\s*=\s*\$/)
       expect(s).not.toMatch(/store_id\s*=\s*\$/)
     }
   })
 
-  test('scopeType=all 时 retainedMemberCount SQL 走 WHERE TRUE，但仍带 90 天窗口 + became_member_at 守卫', async () => {
+  test('scopeType=all 时 retainedMemberCount 仅限启用门店，仍带 90 天窗口 + became_member_at 守卫', async () => {
     setupCensusMocks({ retainedCount: 12 })
     const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'all' })
     await summary(ctx)
@@ -1002,7 +1042,8 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
       .map((c) => c[0])
       .find((s) => /FROM service_orders/.test(s) && /became_member_at/.test(s))
     expect(retainedSql).toBeDefined()
-    expect(retainedSql).toMatch(/WHERE\s+TRUE/)
+    expect(retainedSql).toMatch(/WHERE\s+\(TRUE\)\s+AND/)
+    expect(retainedSql).toMatch(/active_node\.is_active\s*=\s*TRUE/)
     expect(retainedSql).not.toMatch(/parent_id/)
     expect(retainedSql).not.toMatch(/bound_store_id\s*=\s*\$/)
     // 仍依赖 date（$1）做 90 天窗口与会员判定
@@ -1026,12 +1067,7 @@ describe('mgmtDashboard.scopeOptions', () => {
     { market_id: 'mkt-C', market_name: '华北市场', store_id: 'store-C2', store_name: '天津A店' },
   ]
 
-  beforeEach(() => {
-    // 清空模块级 markets 缓存，避免跨用例污染
-    __resetMarketsCache()
-  })
-
-  test('HQ 账号返回全部市场及其门店', async () => {
+  test('HQ 账号返回全部市场及其启用门店', async () => {
     pg.query.mockReset().mockResolvedValueOnce(THREE_MARKETS_ROWS)
 
     const ctx = createCtx({
@@ -1044,7 +1080,11 @@ describe('mgmtDashboard.scopeOptions', () => {
 
     await scopeOptions(ctx)
 
+    const scopeSql = pg.query.mock.calls[0][0]
+    expect(scopeSql).toMatch(/o_store\.is_active\s*=\s*TRUE/)
     expect(ctx.result.staffLevel).toBe('headquarters')
+    expect(ctx.result.allowAll).toBe(true)
+    expect(ctx.result.allowedMarketIds).toEqual(['mkt-A', 'mkt-B', 'mkt-C'])
     expect(ctx.result.markets).toHaveLength(3)
     expect(ctx.result.markets.map((m) => m.id).sort()).toEqual(['mkt-A', 'mkt-B', 'mkt-C'])
     for (const m of ctx.result.markets) {
@@ -1054,7 +1094,7 @@ describe('mgmtDashboard.scopeOptions', () => {
     }
   })
 
-  test('market 账号仅返回自己市场（按 roleBindings.scopeType=市场 过滤）', async () => {
+  test('market 账号仅返回自己市场及其完整启用门店', async () => {
     pg.query.mockReset().mockResolvedValueOnce(THREE_MARKETS_ROWS)
 
     const ctx = createCtx({
@@ -1062,12 +1102,16 @@ describe('mgmtDashboard.scopeOptions', () => {
         staffLevel: 'market',
         loginLevel: 'management',
         roleBindings: [{ role: 'manager', scopeId: 'mkt-A', scopeType: '市场' }],
+        scopeOrgNodeIds: ['mkt-A', 'org-A1', 'org-A2'],
+        scopeStoreIds: ['store-A1', 'store-A2'],
       },
     })
 
     await scopeOptions(ctx)
 
     expect(ctx.result.staffLevel).toBe('market')
+    expect(ctx.result.allowAll).toBe(false)
+    expect(ctx.result.allowedMarketIds).toEqual(['mkt-A'])
     expect(ctx.result.markets).toHaveLength(1)
     expect(ctx.result.markets[0].id).toBe('mkt-A')
     expect(ctx.result.markets[0].name).toBe('华东市场')
@@ -1081,7 +1125,7 @@ describe('mgmtDashboard.scopeOptions', () => {
     expect(pg.query).not.toHaveBeenCalled()
   })
 
-  test('store_manager + management → 仅返回 managerStoreIds 覆盖的门店（跨市场也各自保留）', async () => {
+  test('store_manager + management → 返回全部 scopeStoreIds 覆盖的门店（跨市场各自保留）', async () => {
     pg.query.mockReset().mockResolvedValueOnce(THREE_MARKETS_ROWS)
 
     const ctx = createCtx({
@@ -1090,12 +1134,12 @@ describe('mgmtDashboard.scopeOptions', () => {
         loginLevel: 'management',
         effectiveStoreId: null,
         currentStoreId: null,
-        // 跨市场管辖 2 店（mkt-A 的上海A店 + mkt-B 的广州A店）；mkt-C 无管辖门店
-        managerStoreIds: ['store-A1', 'store-B1'],
+        // 管理层读数据使用所有角色 scope：manager@A + customer_mgr@B。
+        managerStoreIds: ['store-A1'],
         scopeStoreIds: ['store-A1', 'store-B1'],
         roleBindings: [
           { role: 'manager', scopeId: 'org-A1', scopeType: '门店' },
-          { role: 'manager', scopeId: 'org-B1', scopeType: '门店' },
+          { role: 'customer_mgr', scopeId: 'org-B1', scopeType: '门店' },
         ],
       },
     })
@@ -1103,7 +1147,7 @@ describe('mgmtDashboard.scopeOptions', () => {
     await scopeOptions(ctx)
 
     expect(ctx.result.staffLevel).toBe('store_manager')
-    // 仅 mkt-A / mkt-B 各保留 1 家管辖门店；mkt-C 无管辖门店被丢弃
+    // mkt-A / mkt-B 各保留 1 家授权门店；mkt-C 无授权门店被丢弃
     expect(ctx.result.markets).toHaveLength(2)
     const a = ctx.result.markets.find((m) => m.id === 'mkt-A')
     const b = ctx.result.markets.find((m) => m.id === 'mkt-B')
@@ -1112,8 +1156,10 @@ describe('mgmtDashboard.scopeOptions', () => {
     expect(ctx.result.markets.find((m) => m.id === 'mkt-C')).toBeUndefined()
   })
 
-  test('连续两次调用命中缓存，pg.query 仅被调用一次', async () => {
-    pg.query.mockReset().mockResolvedValueOnce(THREE_MARKETS_ROWS)
+  test('连续两次调用均重新查询，组织变更立即反映在范围下拉', async () => {
+    pg.query.mockReset()
+      .mockResolvedValueOnce(THREE_MARKETS_ROWS)
+      .mockResolvedValueOnce(THREE_MARKETS_ROWS.filter((row) => row.store_id !== 'store-A2'))
 
     const ctx1 = createCtx({
       auth: {
@@ -1133,9 +1179,13 @@ describe('mgmtDashboard.scopeOptions', () => {
     await scopeOptions(ctx1)
     await scopeOptions(ctx2)
 
-    expect(pg.query).toHaveBeenCalledTimes(1)
+    expect(pg.query).toHaveBeenCalledTimes(2)
     expect(ctx1.result.markets).toHaveLength(3)
     expect(ctx2.result.markets).toHaveLength(3)
+    expect(ctx1.result.markets.find((market) => market.id === 'mkt-A').stores)
+      .toHaveLength(2)
+    expect(ctx2.result.markets.find((market) => market.id === 'mkt-A').stores)
+      .toHaveLength(1)
   })
 })
 
@@ -1185,13 +1235,14 @@ describe('mgmtDashboard.storeRanking', () => {
       await expect(storeRanking(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
     })
 
-    test('headquarters：SQL 不含 store_id 过滤（WHERE TRUE）', async () => {
+    test('headquarters：SQL 不带权限门店参数，但统一排除停用门店', async () => {
       setupDefaultRankingMocks()
       const ctx = makeHqCtx({ period: 'month', metric: 'revenue' })
       await storeRanking(ctx)
 
       const sql = pg.query.mock.calls[0][0]
-      expect(sql).toMatch(/WHERE\s+TRUE/)
+      expect(sql).toMatch(/WHERE\s+\(TRUE\)\s+AND\s+s\.store_id\s+IN/)
+      expect(sql).toMatch(/active_node\.is_active\s*=\s*TRUE/)
       expect(sql).not.toMatch(/store_id\s*=\s*ANY/)
       expect(pg.query.mock.calls[0][1]).toEqual([])
     })
@@ -1206,13 +1257,12 @@ describe('mgmtDashboard.storeRanking', () => {
       const sql = pg.query.mock.calls[0][0]
       const params = pg.query.mock.calls[0][1]
       expect(sql).toMatch(/s\.store_id\s*=\s*ANY\(\$1::text\[\]\)/)
+      expect(sql).toMatch(/active_node\.is_active\s*=\s*TRUE/)
       expect(params).toEqual([['store-001']])
     })
 
-    test('store_manager + management：ANY 参数 = managerStoreIds（非 scopeStoreIds，防 manager@A + customer_mgr@B 漏出 B）', async () => {
-      // getVisibleStoreIds 对 store_manager 返回 managerStoreIds（仅 manager 绑定），区别于 scopeStoreIds（全角色并集）。
-      // storeRanking/staffRanking 直接消费它构造 ANY 数组。此用例守护该分支：
-      // 若有人把 getVisibleStoreIds 改回 scopeStoreIds，B 店会泄漏给 A 店长排行榜，本用例即失败。
+    test('store_manager + management：ANY 参数 = 全部 scopeStoreIds（所有角色授权门店）', async () => {
+      // 管理层数据中心按全部角色 scope 查询；managerStoreIds 仅用于门店模式下的写操作。
       setupDefaultRankingMocks()
       const ctx = createCtx({
         payload: { period: 'month', metric: 'revenue' },
@@ -1221,7 +1271,7 @@ describe('mgmtDashboard.storeRanking', () => {
           loginLevel: 'management',
           effectiveStoreId: null,
           currentStoreId: null,
-          // manager@门店A + customer_mgr@门店B：scopeStoreIds 含 A+B，但 managerStoreIds 仅 A
+          // manager@门店A + customer_mgr@门店B：管理层排行榜可见 A+B。
           managerStoreIds: ['store-001'],
           scopeStoreIds: ['store-001', 'store-002'],
           roleBindings: [
@@ -1236,9 +1286,8 @@ describe('mgmtDashboard.storeRanking', () => {
       const sql = pg.query.mock.calls[0][0]
       const params = pg.query.mock.calls[0][1]
       expect(sql).toMatch(/s\.store_id\s*=\s*ANY\(\$1::text\[\]\)/)
-      // 关键：ANY 数组必须是 managerStoreIds(['store-001'])，绝不能是 scopeStoreIds(['store-001','store-002'])
-      expect(params).toEqual([['store-001']])
-      expect(params[0]).not.toContain('store-002')
+      expect(sql).toMatch(/active_node\.is_active\s*=\s*TRUE/)
+      expect(params).toEqual([['store-001', 'store-002']])
     })
 
     test('market 且 scopeStoreIds 为空：SQL 走 FALSE，rows=[]', async () => {
@@ -1265,7 +1314,7 @@ describe('mgmtDashboard.storeRanking', () => {
   // ---- SQL 形态断言（按 metric） ----
 
   describe('SQL 形态断言：revenue', () => {
-    test('period=month → date_trunc(\'month\', so.paid_at) = date_trunc(\'month\', NOW()::date)；条件含 销售单/转换单/已支付', async () => {
+    test('period=month → date_trunc(\'month\', sop.paid_at) = date_trunc(\'month\', NOW()::date)；条件含销售单/转换单/充值单/付款状态', async () => {
       setupDefaultRankingMocks()
       const ctx = makeHqCtx({ period: 'month', metric: 'revenue' })
       await storeRanking(ctx)
@@ -1273,13 +1322,16 @@ describe('mgmtDashboard.storeRanking', () => {
       const sql = pg.query.mock.calls[0][0]
       expect(sql).toMatch(/FROM stores s/)
       expect(sql).toMatch(/LEFT JOIN sale_orders so\b/)
-      expect(sql).toMatch(/so\.paid_at/)
-      expect(sql).toMatch(/date_trunc\('month',\s*so\.paid_at\)\s*=\s*date_trunc\('month',\s*NOW\(\)::date\)/)
+      expect(sql).toMatch(/LEFT JOIN sale_order_payments sop\b/)
+      expect(sql).toMatch(/sop\.paid_at/)
+      expect(sql).toMatch(/date_trunc\('month',\s*sop\.paid_at\)\s*=\s*date_trunc\('month',\s*NOW\(\)::date\)/)
       expect(sql).toContain('销售单')
       expect(sql).toContain('转换单')
-      expect(sql).toContain("so.status = '已支付'")
-      // 2026-04-26 sale-order-domain-refactor: paid_amount → received - refunded_amount
-      expect(sql).toMatch(/SUM\(so\.received::numeric\s*-\s*COALESCE\(so\.refunded_amount,\s*0\)::numeric\)/)
+      expect(sql).toContain('充值单')
+      expect(sql).toContain("sop.status = '已支付'")
+      expect(sql).toContain("sop.change_type IN ('首次支付', '回款', '退款')")
+      expect(sql).toMatch(/SUM\(sop\.amount::numeric\)/)
+      expect(sql).not.toMatch(/so\.status\s*=/)
       expect(sql).toMatch(/ORDER BY value DESC, s\.store_name ASC/)
     })
 
@@ -1292,13 +1344,13 @@ describe('mgmtDashboard.storeRanking', () => {
       expect(sql).toMatch(/date_trunc\('month',\s*NOW\(\)::date\s*-\s*INTERVAL\s+'1 month'\)/)
     })
 
-    test('period=year → date_trunc(\'year\', so.paid_at) = date_trunc(\'year\', NOW()::date)', async () => {
+    test('period=year → date_trunc(\'year\', sop.paid_at) = date_trunc(\'year\', NOW()::date)', async () => {
       setupDefaultRankingMocks()
       const ctx = makeHqCtx({ period: 'year', metric: 'revenue' })
       await storeRanking(ctx)
 
       const sql = pg.query.mock.calls[0][0]
-      expect(sql).toMatch(/date_trunc\('year',\s*so\.paid_at\)\s*=\s*date_trunc\('year',\s*NOW\(\)::date\)/)
+      expect(sql).toMatch(/date_trunc\('year',\s*sop\.paid_at\)\s*=\s*date_trunc\('year',\s*NOW\(\)::date\)/)
     })
   })
 
@@ -1630,15 +1682,16 @@ describe('mgmtDashboard.staffRanking', () => {
       await expect(staffRanking(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
     })
 
-    test('headquarters：SQL 不含 store_id 过滤（WHERE TRUE）', async () => {
+    test('headquarters：SQL 不带权限门店参数，但统一排除停用门店', async () => {
       setupDefaultStaffMocks()
       const ctx = makeHqCtx({ period: 'month', metric: 'revenue' })
       await staffRanking(ctx)
 
       const sql = pg.query.mock.calls[0][0]
-      // 产能员工 CTE 内 WHERE 末尾应是 TRUE
+      // 产能员工 CTE 保留启用门店条件。
       // 2026-05-20 P0-4 修复：去掉 sw.skills 过滤（漏算 33% 业绩），由 metric SQL 自然过滤
-      expect(sql).toMatch(/resigned_at::date\s*>\s*NOW\(\)::date\)?[\s\S]*?AND\s+TRUE/)
+      expect(sql).toMatch(/resigned_at::date\s*>\s*NOW\(\)::date\)?[\s\S]*?AND\s+\(TRUE\)\s+AND\s+sw\.store_id\s+IN/)
+      expect(sql).toMatch(/active_node\.is_active\s*=\s*TRUE/)
       expect(sql).not.toMatch(/sw\.skills\s*&&\s*ARRAY/)
       expect(sql).not.toMatch(/sw\.store_id\s*=\s*ANY/)
       expect(pg.query.mock.calls[0][1]).toEqual([])
@@ -1654,11 +1707,12 @@ describe('mgmtDashboard.staffRanking', () => {
       const sql = pg.query.mock.calls[0][0]
       const params = pg.query.mock.calls[0][1]
       expect(sql).toMatch(/sw\.store_id\s*=\s*ANY\(\$1::text\[\]\)/)
+      expect(sql).toMatch(/active_node\.is_active\s*=\s*TRUE/)
       expect(params).toEqual([['store-001']])
     })
 
-    test('store_manager + management：ANY 参数 = managerStoreIds（非 scopeStoreIds，防 manager@A + customer_mgr@B 漏出 B）', async () => {
-      // 与 storeRanking 同口径守护：getVisibleStoreIds 对 store_manager 返回 managerStoreIds。
+    test('store_manager + management：ANY 参数 = 全部 scopeStoreIds（所有角色授权门店）', async () => {
+      // 与 storeRanking 同口径：管理层数据按全部角色 scope 查询。
       setupDefaultStaffMocks()
       const ctx = createCtx({
         payload: { period: 'month', metric: 'revenue' },
@@ -1681,8 +1735,8 @@ describe('mgmtDashboard.staffRanking', () => {
       const sql = pg.query.mock.calls[0][0]
       const params = pg.query.mock.calls[0][1]
       expect(sql).toMatch(/sw\.store_id\s*=\s*ANY\(\$1::text\[\]\)/)
-      expect(params).toEqual([['store-001']])
-      expect(params[0]).not.toContain('store-002')
+      expect(sql).toMatch(/active_node\.is_active\s*=\s*TRUE/)
+      expect(params).toEqual([['store-001', 'store-002']])
     })
 
     test('market 且 scopeStoreIds 为空：SQL 走 FALSE，rows=[]', async () => {
@@ -2045,7 +2099,7 @@ describe('mgmtDashboard.salesData 参数与权限校验', () => {
     await expect(salesData(ctx)).rejects.toThrow(/INVALID_PARAMS.*范围类型/)
   })
 
-  test('store_manager 账号被 requireManagementLevel 拦截', async () => {
+  test('门店模式调用管理层接口被 requireManagementLevel 拦截', async () => {
     const ctx = createManagerCtx({ period: 'month', scope: { type: 'all' } })
     await expect(salesData(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
   })
@@ -2066,8 +2120,13 @@ describe('mgmtDashboard.salesData 时间区间口径', () => {
       if (/si\.product_type\s*=\s*'家居产品'/.test(sql)) return [{ xiaomei: 0, new_member: 0, old_member: 0 }]
       if (/FROM service_items sit/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 0, new_member: 0, old_member: 0 }]
       if (/FROM service_items sit/.test(sql)) return [{ v: overrides.consValue || 0 }]
+      if (/FROM sale_order_payments sop/.test(sql) && /JOIN client_wechat_users/.test(sql)) {
+        return [{ xiaomei: 0, new_member: 0, old_member: 0 }]
+      }
       if (/FROM sale_items si/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 0, new_member: 0, old_member: 0 }]
-      if (/FROM sale_orders o/.test(sql) && /SUM\(o\.received::numeric/.test(sql)) return [{ v: overrides.revValue || 0 }]
+      if (/FROM sale_order_payments sop/.test(sql) && /SUM\(sop\.amount::numeric/.test(sql)) {
+        return [{ v: overrides.revValue || 0 }]
+      }
       return [{ v: 0 }]
     })
   }
@@ -2083,7 +2142,7 @@ describe('mgmtDashboard.salesData 时间区间口径', () => {
     const m = String(now.getMonth() + 1).padStart(2, '0')
     const expectedStart = `${y}-${m}-01`
 
-    const totalRevCall = allCalls.find(([sql]) => /SUM\(o\.received::numeric/.test(sql))
+    const totalRevCall = allCalls.find(([sql]) => /FROM sale_order_payments sop/.test(sql) && /AS v/.test(sql))
     expect(totalRevCall).toBeDefined()
     expect(totalRevCall[1][0]).toBe(expectedStart)
   })
@@ -2100,7 +2159,7 @@ describe('mgmtDashboard.salesData 时间区间口径', () => {
     const lastDay = new Date(Date.UTC(lmY, lmM, 0)).getUTCDate()
     const expectedEnd = `${lmY}-${String(lmM).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`
 
-    const totalRevCall = allCalls.find(([sql]) => /SUM\(o\.received::numeric/.test(sql))
+    const totalRevCall = allCalls.find(([sql]) => /FROM sale_order_payments sop/.test(sql) && /AS v/.test(sql))
     expect(totalRevCall[1][1]).toBe(expectedEnd)
     // endDate 不是 today
     const today = new Date()
@@ -2115,7 +2174,7 @@ describe('mgmtDashboard.salesData 时间区间口径', () => {
 
     const allCalls = pg.query.mock.calls
     const expectedStart = `${new Date().getFullYear()}-01-01`
-    const totalRevCall = allCalls.find(([sql]) => /SUM\(o\.received::numeric/.test(sql))
+    const totalRevCall = allCalls.find(([sql]) => /FROM sale_order_payments sop/.test(sql) && /AS v/.test(sql))
     expect(totalRevCall[1][0]).toBe(expectedStart)
   })
 })
@@ -2210,13 +2269,16 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
       if (/si\.product_type\s*=\s*'家居产品'/.test(sql)) return [{ xiaomei: 100, new_member: 200, old_member: 300 }]
       if (/FROM service_items sit/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 50, new_member: 100, old_member: 150 }]
       if (/FROM service_items sit/.test(sql)) return [{ v: 5000 }]
+      if (/FROM sale_order_payments sop/.test(sql) && /JOIN client_wechat_users/.test(sql)) {
+        return [{ xiaomei: 200, new_member: 400, old_member: 600 }]
+      }
       if (/FROM sale_items si/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 200, new_member: 400, old_member: 600 }]
-      if (/FROM sale_orders o/.test(sql) && /SUM\(o\.received::numeric/.test(sql)) return [{ v: 10000 }]
+      if (/FROM sale_order_payments sop/.test(sql) && /SUM\(sop\.amount::numeric/.test(sql)) return [{ v: 10000 }]
       return [{ v: 0 }]
     })
   }
 
-  test('scope=all：主业务 SQL 含 WHERE TRUE，不含 store_id 过滤', async () => {
+  test('scope=all：主业务 SQL 无 URL scope 参数，但统一排除停用门店', async () => {
     setupFullMocks()
     const ctx = makeHqCtx({ period: 'month', scope: { type: 'all' } })
     await salesData(ctx)
@@ -2226,7 +2288,8 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
       /sale_orders|service_orders|sale_items/.test(s) && !/GROUP BY/.test(s)
     )
     for (const s of mainSqls) {
-      expect(s).toMatch(/WHERE\s+TRUE/)
+      expect(s).toMatch(/WHERE\s+\(TRUE\)\s+AND/)
+      expect(s).toMatch(/active_node\.is_active\s*=\s*TRUE/)
       expect(s).not.toMatch(/store_id\s*=\s*\$/)
     }
   })
@@ -2237,14 +2300,16 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
     await salesData(ctx)
 
     const sqls = pg.query.mock.calls.map(([s]) => s)
-    const saleSqls = sqls.filter((s) => /FROM sale_orders o\b/.test(s) || (/FROM sale_items si/.test(s) && !/GROUP BY pc\.category_name/.test(s) && !/GROUP BY pc\.product_kind/.test(s)))
+    const saleSqls = sqls.filter((s) => /FROM sale_orders o\b/.test(s) || /FROM sale_order_payments sop\b/.test(s) || (/FROM sale_items si/.test(s) && !/GROUP BY pc\.category_name/.test(s) && !/GROUP BY pc\.product_kind/.test(s)))
     const svcSqls = sqls.filter((s) => /FROM service_orders so\b/.test(s) || /FROM service_items sit/.test(s))
 
     for (const s of saleSqls) {
       expect(s).toMatch(/o\.store_id\s*=\s*\$3/)
+      expect(s).toMatch(/active_node\.is_active\s*=\s*TRUE/)
     }
     for (const s of svcSqls) {
       expect(s).toMatch(/so\.store_id\s*=\s*\$3/)
+      expect(s).toMatch(/active_node\.is_active\s*=\s*TRUE/)
     }
   })
 
@@ -2254,9 +2319,9 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
     await salesData(ctx)
 
     const sqls = pg.query.mock.calls.map(([s]) => s)
-    // 现在 SQL 2 改成 FROM sale_orders o（订单层），不再 FROM sale_items
+    // SQL 2 与 SQL 1 共用付款流水，充值单也能进入客群分桶
     const custRevSql = sqls.find((s) =>
-      /FROM sale_orders o/.test(s) &&
+      /FROM sale_order_payments sop/.test(s) &&
       /JOIN client_wechat_users c/.test(s) &&
       /FILTER/.test(s) &&
       !/product_type/.test(s)
@@ -2267,8 +2332,11 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
     // NULL 兜底：COALESCE(c.became_member_at, '1970-01-01'::timestamptz)
     expect(custRevSql).toMatch(/COALESCE\(c\.became_member_at,\s*'1970-01-01'::timestamptz\)::date\s*>=/)
     expect(custRevSql).toMatch(/COALESCE\(c\.became_member_at,\s*'1970-01-01'::timestamptz\)::date\s*</)
-    // 守恒：使用 o.received - refunded_amount，与 SQL 1 总额同口径
-    expect(custRevSql).toMatch(/SUM\(o\.received::numeric - COALESCE\(o\.refunded_amount/)
+    // 守恒：使用 sop.amount，与 SQL 1 总额同口径
+    expect(custRevSql).toMatch(/SUM\(sop\.amount::numeric\)/)
+    expect(custRevSql).toMatch(/sop\.change_type IN \('首次支付',\s*'回款',\s*'退款'\)/)
+    expect(custRevSql).toContain('充值单')
+    expect(custRevSql).not.toMatch(/o\.status\s*=/)
   })
 
   test('产品出库 SQL 含 product_type = 家居产品', async () => {
@@ -2381,7 +2449,9 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
 
   test('totalRevenue 从 v 映射，金额为字符串格式 "0.00"', async () => {
     pg.query.mockReset().mockImplementation(async (sql) => {
-      if (/SUM\(o\.received::numeric/.test(sql)) return [{ v: '12345.678' }]
+      if (/FROM sale_order_payments sop/.test(sql) && /SUM\(sop\.amount::numeric/.test(sql)) {
+        return [{ v: '12345.678' }]
+      }
       if (/GROUP BY/.test(sql)) return []
       return [{ v: 0, xiaomei: 0, new_member: 0, old_member: 0 }]
     })

@@ -4,11 +4,13 @@
  * mgmtDashboard.scopeOptions — 市场/门店二级筛选器数据源
  *   - 总部 scope：返回所有市场及其下属门店
  *   - 其他账号：仅返回账号全部 scope 覆盖的门店及可完整选择的市场
- *   - 5 分钟内存缓存全量 markets，每次请求按 ctx.auth 过滤后返回
+ *   - 不缓存，确保组织节点启停后范围下拉立即刷新
  *
  * mgmtDashboard.summary — 数据中心首页 8 卡片汇总
  *   一次返回 4 张大卡（业绩/实耗，含月店均）+ 4 张小卡（客流/客量/新会员/项目数）
  *   口径定义：notes/references/metrics.md
+ *   2026-04-26 sale-order-domain-refactor / 2026-08 现金流修订：组织层级业绩按
+ *   sale_order_payments 的首次支付/回款/退款流水统计，包含充值单，排除储值卡抵扣。
  *
  * **公式 / sale_order_type / status 过滤变更必须同步
  * `fengyu-admin/src/actions/dashboard.ts`
@@ -202,17 +204,19 @@ function timeWindow(col, mode, idx, isDateColumn) {
 /* ----- 7 个指标查询 ----- */
 
 async function queryStoreRevenue(scopeType, scopeId, date, mode) {
-  // 2026-04-26 sale-order-domain-refactor：paid_amount → received - refunded_amount
-  // 与 admin getDashboardStats 对齐（audit-17 P0-17-01）
+  // 组织层级业绩按实际现金流：不计储值卡抵扣，退款按付款流水的发生日冲销。
+  // 与 admin dashboard / data-center sales 的现金流口径保持一致。
   const sc = buildSaleScope(scopeType, scopeId, 'so', 2)
   const rows = await pg.query(
-    `SELECT COALESCE(SUM(so.received::numeric - COALESCE(so.refunded_amount, 0)::numeric), 0) AS v
-       FROM sale_orders so
+    `SELECT COALESCE(SUM(sop.amount::numeric), 0) AS v
+       FROM sale_order_payments sop
+       JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
       WHERE ${sc.sql}
-        AND so.sale_order_type IN ('销售单', '转换单')
-        AND so.status = '已支付'
+        AND sop.status = '已支付'
+        AND sop.change_type IN ('首次支付', '回款', '退款')
+        AND so.sale_order_type IN ('销售单', '转换单', '充值单')
         AND so.legacy_source IS DISTINCT FROM 'workfine'
-        AND ${timeWindow('so.paid_at', mode, 1, false)}`,
+        AND ${timeWindow('sop.paid_at', mode, 1, false)}`,
     [date, ...sc.params],
   )
   return Number(rows[0]?.v || 0)
@@ -744,16 +748,19 @@ async function rankingRevenue(period, storeFilter) {
        s.store_id,
        s.store_name,
        o.name AS market_name,
-       COALESCE(SUM(so.received::numeric - COALESCE(so.refunded_amount, 0)::numeric), 0) AS value
+       COALESCE(SUM(sop.amount::numeric), 0) AS value
      FROM stores s
      JOIN org_nodes o_store ON s.org_node_id = o_store.id
      JOIN org_nodes o ON o_store.parent_id = o.id
      LEFT JOIN sale_orders so
        ON so.store_id = s.store_id
-       AND so.sale_order_type IN ('销售单', '转换单')
-       AND so.status = '已支付'
+       AND so.sale_order_type IN ('销售单', '转换单', '充值单')
        AND so.legacy_source IS DISTINCT FROM 'workfine'
-       AND ${timeWindowPeriod('so.paid_at', period, false)}
+     LEFT JOIN sale_order_payments sop
+       ON sop.sale_order_id = so.sale_order_id
+       AND sop.status = '已支付'
+       AND sop.change_type IN ('首次支付', '回款', '退款')
+       AND ${timeWindowPeriod('sop.paid_at', period, false)}
      WHERE ${storeFilter.sql}
      GROUP BY s.store_id, s.store_name, o.name
      ORDER BY value DESC, s.store_name ASC`,
@@ -1299,41 +1306,44 @@ async function salesData(ctx) {
   const t0 = Date.now()
   const [revRows, custRevRows, consRows, custConsRows, prodOutRows, catRows, kindRows, nameRows, skeletonRows] =
     await Promise.all([
-      // SQL 1: 总业绩（2026-04-26 refactor：paid_amount → received - refunded_amount）
+      // SQL 1: 总业绩（实际现金流；不含储值卡抵扣，退款按退款到账日负向冲销）
       pg.query(
-        `SELECT COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric), 0) AS v
-           FROM sale_orders o
+        `SELECT COALESCE(SUM(sop.amount::numeric), 0) AS v
+           FROM sale_order_payments sop
+           JOIN sale_orders o ON o.sale_order_id = sop.sale_order_id
           WHERE ${scSale.sql}
-            AND o.sale_order_type IN ('销售单', '转换单')
-            AND o.status = '已支付'
+            AND sop.status = '已支付'
+            AND sop.change_type IN ('首次支付', '回款', '退款')
+            AND o.sale_order_type IN ('销售单', '转换单', '充值单')
             AND o.legacy_source IS DISTINCT FROM 'workfine'
-            AND o.paid_at::date BETWEEN $1 AND $2`,
+            AND sop.paid_at::date BETWEEN $1 AND $2`,
         saleP,
       ),
-      // SQL 2: 分客型业绩（2026-05-20 P0-2 修复）
-      //   原口径 SUM(si.received) 在订单有 received 但无 sale_items 行时漏算（如缺明细订单）。
-      //   现改用订单层 SUM(o.received - refunded_amount)，与 SQL 1 总额同口径，保证守恒；
+      // SQL 2: 分客型业绩（按同一笔实际现金流分桶）
+      //   充值单没有 sale_items，故按付款流水关联订单和顾客，避免漏掉充值现金；
       //   并把 became_member_at IS NULL（历史回填缺口）的"会员客"归到"老会员"（COALESCE 兜底）。
       pg.query(
         `SELECT
-            COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric) FILTER (
+            COALESCE(SUM(sop.amount::numeric) FILTER (
               WHERE c.customer_type = '小美客'
             ), 0) AS xiaomei,
-            COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric) FILTER (
+            COALESCE(SUM(sop.amount::numeric) FILTER (
               WHERE c.customer_type = '会员客'
                 AND COALESCE(c.became_member_at, '1970-01-01'::timestamptz)::date >= $1
             ), 0) AS new_member,
-            COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric) FILTER (
+            COALESCE(SUM(sop.amount::numeric) FILTER (
               WHERE c.customer_type = '会员客'
                 AND COALESCE(c.became_member_at, '1970-01-01'::timestamptz)::date < $1
             ), 0) AS old_member
-           FROM sale_orders o
+           FROM sale_order_payments sop
+           JOIN sale_orders o ON o.sale_order_id = sop.sale_order_id
            JOIN client_wechat_users c ON c.user_id = o.client_user_id
           WHERE ${scSale.sql}
-            AND o.sale_order_type IN ('销售单', '转换单')
-            AND o.status = '已支付'
+            AND sop.status = '已支付'
+            AND sop.change_type IN ('首次支付', '回款', '退款')
+            AND o.sale_order_type IN ('销售单', '转换单', '充值单')
             AND o.legacy_source IS DISTINCT FROM 'workfine'
-            AND o.paid_at::date BETWEEN $1 AND $2`,
+            AND sop.paid_at::date BETWEEN $1 AND $2`,
         saleP,
       ),
       // SQL 3: 总实耗
@@ -1537,9 +1547,4 @@ async function salesData(ctx) {
   }
 }
 
-// 测试辅助：清空 loadAllMarkets 的 5 分钟内存缓存（避免 vitest 跨用例串扰）
-function __resetMarketsCache() {
-  CACHE = { ts: 0, data: null }
-}
-
-module.exports = { scopeOptions, summary, storeRanking, staffRanking, salesData, __resetMarketsCache }
+module.exports = { scopeOptions, summary, storeRanking, staffRanking, salesData }

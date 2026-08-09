@@ -644,6 +644,10 @@ describe('getCustomerById — 单顾客查询', () => {
 
   it('admin 纯角色（无 manager/customer_mgr/finance）→ 直接返回 null', async () => {
     ;(isAdminScope as any).mockReturnValue(true)
+    // hasSessionRole 直读 session.roles，mockSession 含 manager 角色会导致 isAdminOnly=false
+    // 需用空 roles 真实模拟纯 admin 场景
+    const adminOnlySession = { ...mockSession, roles: [] }
+    ;(getSession as any).mockResolvedValue(adminOnlySession)
 
     const result = await getCustomerById('FYGK-001')
 

@@ -50,6 +50,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 门店模式：跳转至原生 tabBar（`workbench/order-create/service/customer-list/profile` 5 项）
 - 管理层模式：`wx.reLaunch` 至 `/pages/mgmt-dashboard/mgmt-dashboard`，由 `components/mgmt-navbar` 提供底部导航
   - 管理层 4 页未放入原生 tabBar（小程序 `tabBar.list` 上限 5 项），所以使用独立导航组件
+  - `availableLoginLevels` 由服务端根据运行时 `data_center:dashboard` 权限和非空 `scopeStoreIds` 下发，不以店长、市场或总部职级作为前端判断条件
 - 本 ticket（2026-04-24）管理层 4 页仅搭骨架，业务功能由后续 ticket 逐个补齐（见 `pages/mgmt-*/`）
 
 ## workbench 门店切换
@@ -63,7 +64,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `utils/role.ts`：
   - `isManager()` — 门店店长（staffLevel = 'store_manager'）
   - `isBeautician()` — 门店非店长（store_staff）
-  - `canAccessManagement()` — 总部/市场层级
+  - `canAccessManagement()` — `availableLoginLevels` 包含 `management` 时为真
   - `getCurrentStoreId()` — 当前生效门店（业务组件使用）
 - 权限校验由云函数执行，前端仅做 UI 显隐
 

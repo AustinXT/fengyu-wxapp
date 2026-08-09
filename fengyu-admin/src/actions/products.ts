@@ -6,7 +6,7 @@ import { productCategories, products, productSkus, mallCategories, mallBundleGro
 import { projectSeriesLookup } from '@db/lookup'
 import { orgNodes } from '@db/org'
 import { alias } from 'drizzle-orm/pg-core'
-import { eq, and, asc, sql, inArray, isNotNull, isNull } from 'drizzle-orm'
+import { eq, and, asc, sql, inArray, isNotNull, isNull, ilike } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import crypto from 'crypto'
 import type { ProductCategory, Product, ProductSku, ProjectSeries, MallCategory, MallBundleGroup } from '@/lib/types'
@@ -15,7 +15,13 @@ import { expandVisibleMarketIds, requireAdmin } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { computeBundleTotals } from '@/lib/bundle-price'
 import { nowTs } from '@/lib/db-time'
-import { bundleMarketScopeCondition, resolveCustomerBundleMarketScope } from '@/lib/bundle-market-scope'
+import {
+  offsetPageResult,
+  resolveExportOffsetPage,
+  type ExportBatchOptions,
+  type ExportBatchResult,
+} from '@/lib/export-pagination'
+import { orderMarketScopeCondition, resolveCustomerOrderMarketScope } from '@/lib/order-market-scope'
 
 /**
  * 获取所有市场节点（type='市场'），用于商品可见范围选择。
@@ -516,6 +522,75 @@ export const getAllSkus = withPermission(
       salesCategory: (r.salesCategory as ProductSku['salesCategory']) ?? undefined,
       projectSeriesName: r.projectSeriesName ?? null,
     }))
+  },
+)
+
+/** 导出商品使用数据库筛选与分页，避免 worker 先加载全部 SKU 再在内存筛选。 */
+export const exportProductSkus = withPermission(
+  'product:list',
+  async (
+    _session,
+    params: Record<string, string | undefined>,
+    options?: ExportBatchOptions,
+  ): Promise<ExportBatchResult<ProductSku>> => {
+    const conditions = [isNull(productSkus.deletedAt)]
+    const search = params.q?.trim()
+    if (search) {
+      const escaped = search.replace(/[\\%_]/g, '\\$&')
+      conditions.push(ilike(productSkus.specName, `%${escaped}%`))
+    }
+    if (params.category) conditions.push(eq(productSkus.categoryId, params.category))
+    if (params.kind) conditions.push(eq(productCategories.productKind, params.kind))
+    if (params.status === 'disabled') {
+      conditions.push(eq(productSkus.isEnabled, false))
+    } else if (params.status !== 'all') {
+      conditions.push(eq(productSkus.isEnabled, true))
+    }
+
+    const page = resolveExportOffsetPage(options)
+    const query = db
+      .select({
+        sku: productSkus,
+        categoryName: productCategories.categoryName,
+        productKind: productCategories.productKind,
+        salesCategory: productCategories.salesCategory,
+        projectSeriesName: projectSeriesLookup.name,
+      })
+      .from(productSkus)
+      .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+      .leftJoin(projectSeriesLookup, eq(productSkus.projectSeriesId, projectSeriesLookup.id))
+      .where(and(...conditions))
+      // sortOrder 是商品管理的人工排序权重，SKU ID 保证导出翻页稳定。
+      .orderBy(asc(productSkus.sortOrder), asc(productSkus.skuId))
+    const rows = page
+      ? await query.limit(page.limit + 1).offset(page.offset)
+      : await query
+
+    return offsetPageResult(rows.map((r) => ({
+      skuId: r.sku.skuId,
+      categoryId: r.sku.categoryId,
+      productType: r.sku.productType as ProductSku['productType'],
+      specName: r.sku.specName,
+      price: r.sku.price,
+      specialPrice: r.sku.specialPrice,
+      sessionCount: r.sku.sessionCount,
+      unit: r.sku.unit,
+      purchaseLimit: r.sku.purchaseLimit,
+      sortOrder: r.sku.sortOrder,
+      serviceFee: r.sku.serviceFee,
+      isShengmei: r.sku.isShengmei,
+      isExperience: r.sku.isExperience,
+      isManagerSpecial: r.sku.isManagerSpecial,
+      projectSeriesId: r.sku.projectSeriesId,
+      marketScope: r.sku.marketScope,
+      isEnabled: r.sku.isEnabled,
+      createdAt: r.sku.createdAt.toISOString(),
+      updatedAt: r.sku.updatedAt.toISOString(),
+      categoryName: r.categoryName ?? undefined,
+      productKind: r.productKind ?? undefined,
+      salesCategory: (r.salesCategory as ProductSku['salesCategory']) ?? undefined,
+      projectSeriesName: r.projectSeriesName ?? null,
+    })), page)
   },
 )
 
@@ -1874,7 +1949,7 @@ export const getProductsByKind = withPermission(
   async (_session, kind: ProductKindForOrder, clientUserId?: string): Promise<OrderPickerResult> => {
   if (kind === '__bundle__') {
     // 套餐商品：products WHERE is_bundle AND deleted_at IS NULL（开单页无视 is_visible，与普通商品/体验卡口径一致）
-    const customerMarketScope = await resolveCustomerBundleMarketScope(clientUserId)
+    const customerMarketScope = await resolveCustomerOrderMarketScope(clientUserId)
     const bundleRows = await db
       .select({
         productId: products.productId,
@@ -1888,7 +1963,7 @@ export const getProductsByKind = withPermission(
       .where(and(
         eq(products.isBundle, true),
         isNull(products.deletedAt),
-        bundleMarketScopeCondition(products.marketScope, customerMarketScope),
+        orderMarketScopeCondition(products.marketScope, customerMarketScope),
       ))
       // 例外：sortOrder 手工排序权重
       .orderBy(asc(products.sortOrder))
@@ -1983,6 +2058,9 @@ export const getProductsByKind = withPermission(
     // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
     const parentCat = alias(productCategories, 'parent_cat') as unknown as typeof productCategories
 
+    // 与组合套餐一致：未选顾客时也必须走保守范围（仅全市场 SKU），
+    // 不能因漏传 clientUserId 而展示任意受限商品。
+    const customerMarketScope = await resolveCustomerOrderMarketScope(clientUserId)
     const rows = await db
       .select({
         category: productCategories,
@@ -2008,6 +2086,7 @@ export const getProductsByKind = withPermission(
           eq(productCategories.isValid, true),
           eq(productSkus.isEnabled, true),
           isNull(productSkus.deletedAt),
+          orderMarketScopeCondition(productSkus.marketScope, customerMarketScope),
           // 普通商品列表不再因「SKU 进过套餐」而隐藏：一个 SKU 既可单卖也可进套餐，
           // 套餐通过独立的 __bundle__ picker 选购，互不影响（2026-05-26 决策：彻底取消套餐排除）。
         ),

@@ -12,7 +12,7 @@
  *   mgmtCustomer.refundHistory — 退换记录(scope=sale_orders.store_id)
  *
  * 决策点：
- *   D-mgmt-phone-mask     — 管理层 staffLevel ∈ {headquarters, market} 手机号不脱敏
+ *   D-mgmt-phone-mask     — 拥有数据中心权限的管理层手机号不脱敏
  *   D-customer-scope-source — 顾客主键过滤用 bound_store_id（确定性主键）
  *   D-detail-record-scope — 详情消费/服务/赠送/退换均按 sale_orders.store_id ∈ scope 过滤
  *   D-cross-scope-customer — 顾客 bound 不在 scope → 详情接口 403
@@ -21,7 +21,7 @@
 
 const pg = require('../db/pg')
 const { requireManagementLevel } = require('../middleware/auth')
-const { validateManagementScope, canAccessManagementLevel, buildManagementStoreScope } = require('../utils/scope')
+const { validateManagementScope, buildManagementStoreScope } = require('../utils/scope')
 const { maskPhone } = require('../utils/pii')
 const { excludeDepositRefundSql } = require('../utils/consume-filter')
 
@@ -55,10 +55,9 @@ function validateScopeParams(scopeType, scopeId) {
 }
 
 /** 是否对管理层返回原始手机号（D-mgmt-phone-mask）。
- *  总部 / 市场 / 门店店长均返回全号——店长在管理层视图的数据范围已被 validateManagementScope
- *  锁定在其 managerStoreIds 内（与门店视图同一批顾客），不构成额外隐私降级。 */
+ *  数据中心权限是管理层视图及其 scope 内数据的唯一准入条件。 */
 function isMgmtFullPhone(auth) {
-  return canAccessManagementLevel(auth.staffLevel)
+  return !!auth.hasDataCenterDashboard
 }
 
 /** 解析 scope 名称（与 mgmt-product.js 保持一致） */

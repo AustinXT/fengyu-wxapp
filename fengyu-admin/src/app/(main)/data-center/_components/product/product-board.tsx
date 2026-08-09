@@ -154,6 +154,7 @@ export function ProductBoard() {
             loading={loading}
             exportFilename={`品项明细_按市场_${label}`}
             exportSheetName="品项明细_按市场"
+            exportView="product-market"
           />
         </TabsContent>
         <TabsContent value="store">
@@ -165,6 +166,7 @@ export function ProductBoard() {
             loading={loading}
             exportFilename={`品项明细_按门店_${label}`}
             exportSheetName="品项明细_按门店"
+            exportView="product-store"
           />
         </TabsContent>
       </Tabs>

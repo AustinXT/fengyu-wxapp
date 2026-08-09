@@ -31,6 +31,9 @@ WORKDIR /app
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /db/schema/ /db/schema/
+# Shared schema lives outside /app, so Bun resolves its package imports from
+# /db/node_modules while bundling the standalone workers.
+COPY --from=deps /app/node_modules /db/node_modules
 COPY db/utils/ /db/utils/
 COPY fengyu-admin/ .
 
@@ -52,7 +55,7 @@ ENV JWT_SECRET=build-time-placeholder-not-used-at-runtime
 # 登录密码 RSA 公钥：NEXT_PUBLIC_ 前缀变量由 next build 在「构建期」inline 进客户端
 # bundle（运行期注入无效）。须由 deploy-admin.sh 从 envs/prod.env 读出后 --build-arg 传入，
 # 否则（.dockerignore 已排除 .env.local）公钥为空 → 前端 encryptPassword 抛「缺少公钥」。
-# 运行期对应的私钥 RSA_PRIVATE_KEY 由 docker-compose.prod.yml 注入，两者必须同一对。
+# 运行期对应的私钥 RSA_PRIVATE_KEY 由 docker-compose.remote.yml 注入，两者必须同一对。
 ARG NEXT_PUBLIC_RSA_PUBLIC_KEY=
 ENV NEXT_PUBLIC_RSA_PUBLIC_KEY=$NEXT_PUBLIC_RSA_PUBLIC_KEY
 
@@ -72,6 +75,19 @@ RUN bun build src/cron/index.ts \
       --format=esm \
       --outfile=dist/cron-worker.mjs \
       --external pg-native
+
+# 构建异步导出 worker。与 web / cron 独立进程运行，单任务流式写 XLSX 后再上传 CloudBase。
+# with-permission 在 export session 缺失时才加载 Web auth；独立 worker 不允许该回退，
+# 通过 define 在构建时裁掉整条依赖链，避免 server-only 标记进入启动 bundle。
+RUN bun build src/export-worker/index.ts \
+      --target=node \
+      --format=esm \
+      --outfile=dist/export-worker.mjs \
+      --external pg-native \
+      --external @opentelemetry/api \
+      --define process.env.FENGYU_EXPORT_WORKER='"1"'
+# 实际加载 standalone bundle，提前拦截 server-only / 路径 alias 等启动期错误；--check 不连库、不领取任务。
+RUN node dist/export-worker.mjs --check
 
 # ---- 生产运行 ----
 FROM docker.m.daocloud.io/library/node:18-alpine AS runner
@@ -98,6 +114,8 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 # cron-worker bundle（含所有依赖；compose 启动时通过 command 覆盖入口）
 COPY --from=builder --chown=nextjs:nodejs /app/dist/cron-worker.mjs ./cron-worker.mjs
+# export-worker bundle（同镜像独立进程，compose 启动时通过 command 覆盖入口）
+COPY --from=builder --chown=nextjs:nodejs /app/dist/export-worker.mjs ./export-worker.mjs
 
 USER nextjs
 

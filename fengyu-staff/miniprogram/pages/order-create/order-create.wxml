@@ -359,6 +359,20 @@
 
         <!-- PR-C §C3 — 转换单 Panel（saleOrderType='转换单' 时渲染） -->
         <block wx:if="{{saleOrderType === '转换单'}}">
+          <!-- 转换单仅在券前仍有正补差额时可用券；实际抵扣额会按补差额封顶 -->
+          <block wx:if="{{conversionCouponEnabled}}">
+            <view class="confirm-coupon-row" bindtap="onSelectCoupon">
+              <text class="confirm-item-label">顾客优惠券</text>
+              <view class="confirm-coupon-value">
+                <text wx:if="{{selectedCoupon}}" class="confirm-coupon-discount">-¥{{couponDiscount}}</text>
+                <text wx:else class="confirm-coupon-hint">去选择</text>
+                <van-icon name="arrow" size="28rpx" color="#999" />
+              </view>
+            </view>
+            <view wx:if="{{selectedCoupon}}" class="confirm-coupon-info">
+              <text>{{selectedCoupon.name}}</text>
+            </view>
+          </block>
           <conversion-panel
             clientUserId="{{customerInfo.clientUserId}}"
             convertInAmount="{{payableTotal}}"
@@ -410,7 +424,7 @@
 
         <!-- 销售单 / 内部单：行级明细 -->
         <block wx:else>
-          <!-- 优惠券控件迁到商品清单"上方"（仅销售单可见；内部单云函数侧守卫拒券） -->
+          <!-- 优惠券控件迁到商品清单"上方"（销售单可见；内部单云函数侧守卫拒券） -->
           <block wx:if="{{saleOrderType === '销售单'}}">
             <view class="confirm-coupon-row" bindtap="onSelectCoupon">
               <text class="confirm-item-label">顾客优惠券</text>

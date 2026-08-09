@@ -1,3 +1,9 @@
+import { callStaffApi } from '../../utils/cloud'
+
+vi.mock('../../utils/cloud', () => ({
+  callStaffApi: vi.fn(),
+}))
+
 let pageDefinition: Record<string, any>
 let originalGetApp: unknown
 let originalPage: unknown
@@ -80,5 +86,95 @@ describe('开单疗程卡阶梯价', () => {
     expect(page.data.cart[0]).toMatchObject({ priceLine: '298.00', saleAmount: '298.00', received: '298.00' })
     expect(page.data.cart[1]).toMatchObject({ priceLine: '596.00', saleAmount: '596.00', received: '596.00' })
     expect(page.data.payableTotal).toBe('894.00')
+  })
+
+  test('转换单优惠券按正补差额封顶，折抵抵平时自动清除', () => {
+    const cart = [createCartItem('sku-conversion', 1, 300)]
+    const page = {
+      ...pageDefinition,
+      data: {
+        saleOrderType: '转换单',
+        buyerIsMember: false,
+        selectedCoupon: { couponId: 'coupon-001', name: '满减券', discount: 250 },
+        couponDiscount: 0,
+        conversionDeductibleSum: 200,
+        cartPopupVisible: false,
+      },
+      _allSkus: [],
+      setData(update: Record<string, unknown>) {
+        Object.assign(this.data, update)
+      },
+      revalidateCoupon: vi.fn(),
+      recomputePrepaidAmounts: vi.fn(),
+    }
+
+    page.updateCart(cart)
+
+    expect(page.data.conversionCouponBaseTotal).toBe(300)
+    expect(page.data.conversionCouponEnabled).toBe(true)
+    expect(page.data.couponDiscount).toBe(100)
+    expect(page.data.cart[0]).toMatchObject({ couponShare: '100.00', saleAmount: '200.00' })
+
+    page.data.conversionDeductibleSum = 300
+    page.updateCart(page.data.cart)
+
+    expect(page.data.conversionCouponEnabled).toBe(false)
+    expect(page.data.selectedCoupon).toBeNull()
+    expect(page.data.couponDiscount).toBe(0)
+    expect(page.data.cart[0]).toMatchObject({ couponShare: '0.00', saleAmount: '300.00' })
+  })
+
+  test('转换单提交透传所选优惠券', async () => {
+    const callStaffApiMock = vi.mocked(callStaffApi)
+    callStaffApiMock.mockResolvedValueOnce({
+      saleOrderId: 'FY-XSD-WX-2608080001',
+      priceDiff: 0,
+      prepaidCardCredit: 0,
+      prepaidCardAmount: 0,
+      status: '已支付',
+    })
+    const page = {
+      ...pageDefinition,
+      data: {
+        customerInfo: { clientUserId: 'client-001' },
+        cart: [createCartItem('sku-conversion', 1, 300)],
+        remark: '',
+        submitting: false,
+        conversionSelectedSaleItemIds: ['sale-item-old-001'],
+        conversionPriceDiff: 0,
+        conversionPaymentMethod: null,
+        conversionPrepaidCardAmount: 0,
+        conversionRemaining: 0,
+        conversionIsActivity: false,
+        preferredStaffWfId: '',
+        selectedCoupon: { couponId: 'coupon-001', name: '满减券', discount: 100 },
+      },
+      saveRecentCustomer: vi.fn(),
+      updateCart: vi.fn(),
+      setData(update: Record<string, unknown>) {
+        Object.assign(this.data, update)
+      },
+    }
+    const wxMock = globalThis.wx as any
+    const originalShowToast = wxMock.showToast
+    const originalNavigateTo = wxMock.navigateTo
+    wxMock.showToast = vi.fn()
+    wxMock.navigateTo = vi.fn()
+
+    try {
+      await page._submitConversion()
+    } finally {
+      wxMock.showToast = originalShowToast
+      wxMock.navigateTo = originalNavigateTo
+    }
+
+    expect(callStaffApiMock).toHaveBeenCalledWith(
+      'order.createConversion',
+      expect.objectContaining({
+        clientUserId: 'client-001',
+        couponId: 'coupon-001',
+        convertOutSaleItemIds: ['sale-item-old-001'],
+      }),
+    )
   })
 })

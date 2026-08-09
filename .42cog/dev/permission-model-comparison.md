@@ -1,6 +1,6 @@
 ---
 title: 员工端（staff）vs 管理后台（admin）权限模型对比
-date: 2026-05-27
+date: 2026-08-08
 status: 现状记录（reference）
 scope: fengyu-staff/cloudfunctions/staffApi · fengyu-admin
 ---
@@ -21,13 +21,13 @@ scope: fengyu-staff/cloudfunctions/staffApi · fengyu-admin
 |---|---|---|
 | 身份载体 | 微信 **OPENID**（`cloud.getWXContext()`，`middleware/auth.js:102`） | **JWT** cookie（`fy-admin-token`，手机号+密码登录） |
 | 服务形态 | CloudBase 云函数 action 网关（纯 JS） | Server Actions / RSC（TypeScript） |
-| 多角色处理 | 归并为**单一 staffLevel**（级联制，取最高层级） | 权限**并集**（矩阵制，多角色 actions 摊平合并） |
-| 权限定义位置 | 代码常量（`scope.js` 的 4 个 LEVEL_*） | DB 可配（`system_configs[key='permission_matrix']`，30s 缓存，admin Web 可改） |
+| 多角色处理 | 门店模式归并为**单一 staffLevel**；管理层准入从全部 roleBindings 判断 `data_center:dashboard` | 权限**并集**（矩阵制，多角色 actions 摊平合并） |
+| 权限定义位置 | 门店模式沿用代码级层级规则；管理层 action 独立读取 DB 矩阵（`system_configs[key='permission_matrix']`，30s 缓存） | DB 可配（`system_configs[key='permission_matrix']`，30s 缓存，admin Web 可改） |
 | 设计目标 | 现场操作（开单/服务/顾客），强调"以什么身份登录" | 后台管理（CRUD/对账/审批），强调"能执行什么动作" |
 
 **核心区别一句话**：
 
-- **staff = 级联制**——把一个员工的所有角色绑定先归并成**一个 staffLevel**（总部 > 市场 > 门店店长 > 门店其他），再叠加一个运行时 `loginLevel`（store/management）决定本次以哪个身份操作。它回答的是"**你是谁**"。
+- **staff = 门店层级 + 管理层 action 双轨制**——门店模式仍把角色绑定归并为一个 `staffLevel`（总部 > 市场 > 门店店长 > 门店其他）；但管理层模式只看权限矩阵是否授予任一绑定角色 `data_center:dashboard`，并使用全部 `scopeStoreIds` 过滤数据。它同时回答"**你以什么门店身份操作**"和"**你能否进入数据中心**"。
 - **admin = 矩阵制**——不归并，把账号所有角色在权限矩阵里查到的 `actions` 取**并集**（`computeActions`），逐 action 判定 `hasPermission`。它回答的是"**你能做什么**"。
 
 两端云函数/后台代码**零共享**（项目硬规则：禁止 cloudfunctions-shared），各自保留独立实现，一致性靠 snapshot 测试守护（见 §3）。
@@ -38,17 +38,17 @@ scope: fengyu-staff/cloudfunctions/staffApi · fengyu-admin
 
 | 维度 | staff（级联制） | admin（矩阵制） |
 |---|---|---|
-| **一人多角色处理** | 归并为单一 `staffLevel`：`deriveStaffLevel` 按 `总部 > 市场 > 门店manager > 门店其他 > null` 取最高（`scope.js:25-51`）；部门级 scope 直接忽略（`scope.js:43`） | 权限并集：`computeActions` 遍历每个角色取矩阵 actions 并入 `Set`（`permissions.ts:221-231`） |
+| **一人多角色处理** | 门店模式归并为单一 `staffLevel`；管理层模式对全部 `roleBindings` 查 `data_center:dashboard`，不会因最高职级或 `managerStoreIds` 丢弃其它角色的 scope | 权限并集：`computeActions` 遍历每个角色取矩阵 actions 并入 `Set`（`permissions.ts:221-231`） |
 | **级别 / 角色数** | **4 级**：`LEVEL_HEADQUARTERS` / `LEVEL_MARKET` / `LEVEL_STORE_MANAGER` / `LEVEL_STORE_STAFF`（`scope.js:12-15`） | **6 角色**矩阵 + admin：admin / manager / finance / hr / product / customer_mgr（staff 角色为空数组）（`permissions.ts:23-152`） |
-| **权限定义位置** | 代码常量（LEVEL_* + 守卫中间件硬编码逻辑），不可运行时改 | DB 权威：`system_configs[key='permission_matrix']`，`getPermissionMatrix()` 读 DB 优先、失败回退 `DEFAULT_PERMISSION_MATRIX`，**30s 进程缓存**（`permissions.ts:172-213`），admin Web 可视化编辑 |
-| **scope 展开（store 集合）** | `expandScopeStoreIds(roleBindings, pg)`：总部→全部 stores；市场→`org_nodes.parent_id=marketId AND type='门店'`；门店→`org_node_id=scopeId`；部门忽略（`scope.js:82-127`，**原生 SQL**） | `expandScopeStoreIds(roles)`：同三档规则，但用 **Drizzle ORM**（`permissions.ts:240-282`）。两端**实现独立、规则等价** |
+| **权限定义位置** | 门店行为由 LEVEL_* / 守卫控制；管理层由独立的 `utils/permission-matrix.js` 读取同一 DB 矩阵，失败回退 admin 当前默认角色，**30s 进程缓存** | DB 权威：`system_configs[key='permission_matrix']`，`getPermissionMatrix()` 读 DB 优先、失败回退 `DEFAULT_PERMISSION_MATRIX`，**30s 进程缓存**（`permissions.ts:172-213`），admin Web 可视化编辑 |
+| **scope 展开（store 集合）** | `expandScopeStoreIds(roleBindings, pg)`：总部→全部 stores；市场/门店→绑定组织节点及递归后代的 stores；部门忽略。所有角色绑定取并集，管理层不再只取 manager 绑定 | `expandScopeStoreIds(roles)`：同三档规则，但用 **Drizzle ORM**（`permissions.ts:240-282`）。两端**实现独立、规则等价** |
 | **SQL 门店过滤** | `buildStoreScopeCondition`：管理层模式 `column = ANY($n::text[])`（按 `scopeStoreIds`）；门店模式 `column = $n`（单值 `effectiveStoreId`）；空集合 → `FALSE`（`scope.js:139-159`） | `scopeCondition`：admin 角色 → `undefined`（**完全免过滤**）；其余角色有 scope → `inArray(column, ids)`；无 scope → `sql\`FALSE\``（`permissions.ts:358-370`） |
-| **loginLevel / effectiveStoreId** | **有**。`loginLevel`（store/management）由请求 `payload._loginLevel` 选定，中间件 `resolveRuntimeAuth` 兜底校验（`auth.js:39-82`）；`effectiveStoreId` 管理层模式 = null、门店模式 = 当前选中门店（`auth.js:58-81`） | **无**。admin 无"以哪个身份登录"的运行时切换；统一按 `scopeStoreIds` 并集过滤，admin 角色全局可见 |
+| **loginLevel / effectiveStoreId** | **有**。`loginLevel`（store/management）由请求 `payload._loginLevel` 选定；只有 `hasDataCenterDashboard && scopeStoreIds.length > 0` 才可选 management。管理层 `effectiveStoreId = null`，各路由按完整 `scopeStoreIds` 校验/过滤 | **无**。admin 无"以哪个身份登录"的运行时切换；统一按 `scopeStoreIds` 并集过滤，admin 角色全局可见 |
 | **store_staff 顾客收紧** | **有**。`restrictToBoundEmployee(auth)` 仅对 `LEVEL_STORE_STAFF` 返回 true（`scope.js:214-216`），顾客档案 SQL 额外加 `bound_employee_id = 自己`（`buildProfileScopeCondition` `scope.js:227-235`） | **无员工级收紧**。最细粒度是门店（`scopeStoreIds`），无"只看分配给本人的顾客"概念 |
-| **managerStoreIds 写授权** | **有**。仅展开 `role='manager'` 绑定得到 `managerStoreIds`（`auth.js:216-219`）；`requireManager` 在门店模式下要求 `effectiveStoreId ∈ managerStoreIds`，拦截"manager@A + finance@B 在 B 越权做店长操作"（`auth.js:272-297`） | **无独立写授权集**。写操作同样按 `scopeStoreIds` + `hasPermission(action)` 判定，无 manager 专属门店子集 |
-| **角色 × scope 合法配对** | 隐式：`deriveStaffLevel` / `requireManager` 内联校验（如部门级 manager 被忽略 staffLevel=null，纵深防御） | 显式表：`ROLE_SCOPE_TYPES`（`role-scope-rules.ts:5-13`），manager 三 type 全开、finance/customer_mgr/hr/product 限总部+市场、admin 仅总部、staff 仅门店 |
+| **managerStoreIds 写授权** | **有**。仅展开 `role='manager'` 绑定得到 `managerStoreIds`，`requireManager` 在门店模式下用它防止店长写越权；**管理层数据绝不使用此集合** | **无独立写授权集**。写操作同样按 `scopeStoreIds` + `hasPermission(action)` 判定，无 manager 专属门店子集 |
+| **角色 × scope 合法配对** | 门店层级由 role binding 展开；部门级仍不参与 staff 视图 | 显式表：`ROLE_SCOPE_TYPES`（`role-scope-rules.ts`）：`admin` 仅总部，除 `admin` 外的所有权限角色均允许门店（`staff` 仍仅门店） |
 | **节点 scope 判定** | 纯内存 `isStoreInScope`（不查 DB，`scope.js:171-178`）+ 一组 `assert*InScope`（查 DB 反查 store_id 再判） | `isInScope`（内存判 store，`permissions.ts:377-380`）+ `isNodeInScope`（沿 `parentId` 向上**最多 5 层**遍历命中祖先，`node-scope.ts:16-32`），admin 始终 true |
-| **缓存** | OPENID → 员工基础信息缓存，**TTL 5 分钟**，size>200 时淘汰（`auth.js:22-23,124-129`） | 权限矩阵进程缓存 **TTL 30s**，写矩阵主动 invalidate（`permissions.ts:172-178`） |
+| **缓存** | OPENID → 员工基础信息缓存 **TTL 5 分钟**；`data_center:dashboard` 在基础缓存外独立读取，矩阵缓存 **TTL 30s**，因此矩阵改动最多约 30 秒生效 | 权限矩阵进程缓存 **TTL 30s**，写矩阵主动 invalidate（`permissions.ts:172-178`） |
 
 ---
 

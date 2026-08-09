@@ -5,9 +5,9 @@ import { DataTable, type Column } from "@/components/ui/data-table"
 import { ExportButton } from "@/components/ui/export-button"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { formatByUnit } from "@/lib/data-center/format"
-import { exportToXlsx, type ExportColumn } from "@/lib/export-xlsx"
-import { headerWithUnit, metricCell } from "@/lib/data-center/export"
 import type { RankingRow, MetricUnit } from "@/lib/data-center/types"
+import type { DataCenterExportView } from "@/lib/export-job-types"
+import { useSearchParams } from "next/navigation"
 
 export interface RankingMetric {
   key: string // 对应 rankings 的键
@@ -27,6 +27,7 @@ export function RankingBoard({
   showMarket = true,
   loading = false,
   exportFilenamePrefix,
+  exportView,
 }: {
   title: string
   rankings: Record<string, RankingRow[]>
@@ -34,29 +35,10 @@ export function RankingBoard({
   showMarket?: boolean
   loading?: boolean
   exportFilenamePrefix?: string
+  exportView?: Extract<DataCenterExportView, 'efficiency-store-ranking' | 'efficiency-staff-ranking'>
 }) {
+  const searchParams = useSearchParams()
   if (metrics.length === 0) return null
-
-  async function exportMetric(m: RankingMetric) {
-    if (!exportFilenamePrefix) return
-    const exportColumns: ExportColumn<RankingRow>[] = [
-      { header: "排名", width: 8, accessor: (r) => r.rank },
-      { header: "名称", width: 20, accessor: (r) => r.name },
-      ...(showMarket
-        ? [{ header: "所属市场", width: 16, accessor: (r: RankingRow) => r.marketName ?? "" }]
-        : []),
-      {
-        header: headerWithUnit(m.label, m.unit),
-        accessor: (r: RankingRow) => metricCell(r.value, m.unit),
-      },
-    ]
-    await exportToXlsx({
-      filename: `${exportFilenamePrefix}_${m.label}`,
-      sheetName: m.label,
-      columns: exportColumns,
-      rows: rankings[m.key] ?? [],
-    })
-  }
 
   const columnsFor = (unit: MetricUnit): Column<RankingRow>[] => [
     { key: "rank", header: "排名", className: "w-16", cell: (r) => `#${r.rank}` },
@@ -86,11 +68,18 @@ export function RankingBoard({
         {metrics.map((m) => (
           <TabsContent key={m.key} value={m.key}>
             <div className="flex flex-col gap-2">
-              {exportFilenamePrefix && (
+              {exportFilenamePrefix && exportView && (
                 <div className="flex justify-end">
                   <ExportButton
-                    onExport={() => exportMetric(m)}
-                    disabled={loading || (rankings[m.key]?.length ?? 0) === 0}
+                    disabled={loading}
+                    exportRequest={{
+                      exportType: "data-center",
+                      payload: {
+                        view: exportView,
+                        metric: m.key,
+                        params: Object.fromEntries(searchParams.entries()),
+                      },
+                    }}
                   />
                 </div>
               )}

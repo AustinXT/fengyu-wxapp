@@ -2,14 +2,13 @@
 /**
  * 管理层 mgmt-* 入口准入边界 smoke
  *
- * 覆盖 3 个 case：所有都期望 PERMISSION_DENIED：
+ * 覆盖 3 个 case：2 个越权拒绝 + 1 个矩阵授权成功：
  *   1. manager@门店（staffLevel='store_manager'）调 mgmtDashboard.summary(scopeType='all') 应 403
- *      → store_manager 已放开管理层视图（双视图互切，scope.js canAccessManagementLevel），
+ *      → 是否能进入管理层由 data_center:dashboard 决定；进入后仍不能越过自身门店 scope，
  *        deny 边界移到 validateManagementScope：店长禁止 'all'/'market' 范围，仅可查所辖门店
- *        → utils/scope.js:206 "店长账号仅可查看所辖门店"
- *   2. finance@门店（staffLevel='store_staff'）调 mgmtCustomer.search 应 403
- *      → requireManagementLevel: canAccessManagementLevel(store_staff)=false → "仅管理层可执行此操作"
- *      — 验证"角色虽是 finance 但绑门店仍不能进 mgmt-*"
+ *        → utils/scope.js 的 validateManagementScope
+ *   2. finance@门店（staffLevel='store_staff'）拥有默认矩阵中的 data_center:dashboard，
+ *      调 mgmtCustomer.search 应成功，并且只能查询自己的门店 scope
  *
  * 同时验证：3) staff@门店 调 mgmtDashboard.scopeOptions 应 403（再保险一次）
  */
@@ -20,7 +19,7 @@ import {
 import {
   createTestOrg, createTestStaffWithRoles, cleanupTestData, invalidateStaffAuthCache,
 } from './helpers/fixtures.mjs'
-import { expectFail, runSmoke } from './helpers/rbac-asserts.mjs'
+import { expectFail, expectOk, runSmoke } from './helpers/rbac-asserts.mjs'
 
 async function run() {
   await cleanupTestData(NS)
@@ -64,14 +63,13 @@ async function run() {
     'PERMISSION_DENIED',
     'store-manager.mgmt.summary.scopeAll (设计意图：店长放开 mgmt 视图但禁止 all/market 范围)'))
 
-  // 2) finance@门店 试 mgmtCustomer.search → 403（绑门店的 finance 不能进 mgmt-*）
-  results.push(await expectFail('mgmtCustomer.search',
+  // 2) finance@门店：矩阵授予 data_center:dashboard 后允许进入管理层，scope 仍锁定门店
+  results.push(await expectOk('mgmtCustomer.search',
     {
       _testOpenid: FIN_STORE.oid, _loginLevel: 'management',
       scopeType: 'store', scopeId: S_A1.storeId, keyword: NS,
     },
-    'PERMISSION_DENIED',
-    'store-finance.mgmt.search (设计意图：绑门店角色不会因为 role=finance 就放行 mgmt)'))
+    'store-finance.mgmt.search (data_center:dashboard + 自身门店 scope)'))
 
   // 3) staff@门店 试 mgmtDashboard.scopeOptions → 403
   results.push(await expectFail('mgmtDashboard.scopeOptions',

@@ -36,6 +36,7 @@ vi.mock('@db/coupon', () => ({
     userId: 'user_id',
     status: 'status',
     expireAt: 'expire_at',
+    faceValueOverride: 'face_value_override',
   },
 }))
 
@@ -91,16 +92,18 @@ vi.mock('drizzle-orm', () => ({
   desc: vi.fn((col) => ({ type: 'desc', col })),
   inArray: vi.fn((a, b) => ({ type: 'inArray', a, b })),
   isNotNull: vi.fn((a) => ({ type: 'isNotNull', a })),
+  isNull: vi.fn((a) => ({ type: 'isNull', a })),
   ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
   or: vi.fn((...args) => ({ type: 'or', args })),
   asc: vi.fn((col) => ({ type: 'asc', col })),
+  gt: vi.fn((a, b) => ({ type: 'gt', a, b })),
   sql: Object.assign(
     vi.fn((strings: any, ...vals: any[]) => ({ type: 'sql', strings, vals })),
     { raw: vi.fn(() => ({ type: 'sql_raw' })) },
   ),
 }))
 
-import { getTemplates, createTemplate, updateTemplate, toggleTemplateActive, issueCoupon, getIssuedCoupons, batchIssueCoupons } from './coupons'
+import { getTemplates, getAvailableCoupons, createTemplate, updateTemplate, toggleTemplateActive, issueCoupon, getIssuedCoupons, batchIssueCoupons } from './coupons'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 
@@ -147,8 +150,7 @@ function setupDbSelect(templateRows: any[], countRows: any[]) {
 
     if (currentCall === 1) {
       // First call: getTemplates → couponTemplates
-      const limit = vi.fn().mockResolvedValue(templateRows)
-      const orderBy = vi.fn().mockReturnValue({ limit })
+      const orderBy = vi.fn().mockResolvedValue(templateRows)
       const from = vi.fn().mockReturnValue({ orderBy })
       return { from }
     } else {
@@ -159,6 +161,47 @@ function setupDbSelect(templateRows: any[], countRows: any[]) {
     }
   })
 }
+
+describe('getAvailableCoupons - 动态面值', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue({
+      employeeId: 'ADMIN-001',
+      roles: [{ role: 'admin', scopeId: 'hq-1' }],
+    })
+  })
+
+  it('优先返回顾客券的 faceValueOverride', async () => {
+    const orderBy = vi.fn().mockResolvedValue([{
+      couponId: 'coupon-001',
+      templateId: 'template-001',
+      expireAt: new Date('2099-12-31T23:59:59.000Z'),
+      name: '动态面值券',
+      couponType: '现金券',
+      discountValue: '88.00',
+      minSpend: '0',
+      maxDiscount: null,
+      applicableProductIds: null,
+      applicableCategoryIds: null,
+    }])
+    const where = vi.fn().mockReturnValue({ orderBy })
+    const innerJoin = vi.fn().mockReturnValue({ where })
+    const from = vi.fn().mockReturnValue({ innerJoin })
+    ;(db.select as any).mockImplementationOnce(() => ({ from }))
+
+    const result = await getAvailableCoupons('user-001', 100)
+
+    expect(result).toMatchObject([{
+      couponId: 'coupon-001',
+      discountValue: '88.00',
+      discountAmount: '88.00',
+      faceValue: 88,
+    }])
+    const projection = (db.select as any).mock.calls[0][0]
+    expect(projection.discountValue.strings.join('')).toContain('COALESCE(')
+    expect(projection.discountValue.vals).toContain('face_value_override')
+  })
+})
 
 describe('getTemplates — issuedCount (已发/总量)', () => {
   beforeEach(() => {
@@ -815,8 +858,7 @@ describe('getIssuedCoupons — 查询已发放券', () => {
       },
     ]
 
-    const limit = vi.fn().mockResolvedValue(mockRows)
-    const orderBy = vi.fn().mockReturnValue({ limit })
+    const orderBy = vi.fn().mockResolvedValue(mockRows)
     const where = vi.fn().mockReturnValue({ orderBy })
     const innerJoin = vi.fn().mockReturnValue({ where })
     const from = vi.fn().mockReturnValue({ innerJoin })
@@ -834,8 +876,7 @@ describe('getIssuedCoupons — 查询已发放券', () => {
   })
 
   it('无记录 → 返回空数组', async () => {
-    const limit = vi.fn().mockResolvedValue([])
-    const orderBy = vi.fn().mockReturnValue({ limit })
+    const orderBy = vi.fn().mockResolvedValue([])
     const where = vi.fn().mockReturnValue({ orderBy })
     const innerJoin = vi.fn().mockReturnValue({ where })
     const from = vi.fn().mockReturnValue({ innerJoin })
@@ -856,8 +897,7 @@ describe('getIssuedCoupons — 查询已发放券', () => {
       usedAt: null,
     }]
 
-    const limit = vi.fn().mockResolvedValue(mockRows)
-    const orderBy = vi.fn().mockReturnValue({ limit })
+    const orderBy = vi.fn().mockResolvedValue(mockRows)
     const where = vi.fn().mockReturnValue({ orderBy })
     const innerJoin = vi.fn().mockReturnValue({ where })
     const from = vi.fn().mockReturnValue({ innerJoin })

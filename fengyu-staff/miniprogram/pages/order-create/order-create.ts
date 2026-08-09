@@ -23,7 +23,7 @@ type ProductKindChoice = typeof PRODUCT_KIND_CHOICES[number];
  * 订单类型（PR-C §C1）—— 与 DB 原生枚举 sale_order_type 对齐
  * - 销售单：默认，正常计价（支持订单级 couponId 按行均摊）
  * - 内部单：managerOnly，所有 SKU 半价（后端计算），禁优惠券
- * - 转换单：managerOnly，调 order.createConversion
+ * - 转换单：managerOnly，调 order.createConversion（仅正补差额可用订单级优惠券）
  * - 寄存单：剩余次数初始化
  */
 type SaleOrderType = '销售单' | '内部单' | '转换单' | '寄存单';
@@ -52,6 +52,8 @@ interface CartItem {
   priceLine: string;
   /** 预计算：本行摊到的优惠券折扣（订单级券按行应付比例分摊；元，2 位精度） */
   couponShare: string;
+  /** 券前行应付金额（优惠券可用性/重验的权威前端基数，含阶梯价和店长特价） */
+  couponBaseAmount?: string;
   /** 预计算：行应付金额 = priceLine - couponShare（销售单 / 寄存单口径） */
   saleAmount: string;
   /** 预计算：内部单半价后行应付（price × 0.5 × quantity，再扣摊到的券） */
@@ -436,7 +438,7 @@ Page({
     depositReceivedMap: {} as Record<string, string>,
     /** 内部单半价合计（行原价 × 0.5 之和） */
     halfPriceTotal: '0.00',
-    /** 应付合计：销售单/寄存单 = cartTotal - couponDiscount；内部单 = halfPriceTotal - couponDiscount */
+    /** 应付合计：销售单/转换单/寄存单 = 券前金额 - couponDiscount；内部单 = halfPriceTotal */
     payableTotal: '0.00',
     /** 实付合计：Σ(cart[i].received)；店长可改行实付 → 此处即时更新 */
     receivedTotal: '0.00',
@@ -480,6 +482,10 @@ Page({
     conversionRemaining: 0,
     /** 转换单活动勾选（ConversionPanel 自管，change 事件上报；与销售/内部单 isActivity 独立） */
     conversionIsActivity: false as boolean,
+    /** 转换单券前转入合计，用于按折抵总额判断是否仍有可抵扣的正补差额 */
+    conversionCouponBaseTotal: 0,
+    /** 原始补差额 > 0 时才允许选择优惠券；券后差额为 0 仍保留已选券 */
+    conversionCouponEnabled: false,
     // 优惠券
     selectedCoupon: null as null | { couponId: string; name: string; discount: number },
     couponDiscount: 0,
@@ -1136,7 +1142,7 @@ Page({
       const tierLine = tierLineMap.get(c.skuId);
       c.priceLine = (tierLine != null ? tierLine : c.price * c.quantity).toFixed(2);
     }
-    // 2) 按订单类型确定"摊券基线"：销售单/寄存单 = 店长特价基线 effBase；内部单 = 标价 listPrice × 0.5 × qty（不取会员价，与后端 order.js / admin orders.ts 一致）
+    // 2) 按订单类型确定"摊券基线"：销售单/转换单/寄存单 = 店长特价基线 effBase；内部单 = 标价 listPrice × 0.5 × qty（不取会员价，与后端 order.js / admin orders.ts 一致）
     const baseLines = cart.map((c, i) => {
       if (isInternal) {
         const halfUnit = Math.round((c.listPrice ?? c.price) * 50) / 100;
@@ -1144,11 +1150,29 @@ Page({
       }
       return effBase[i];
     });
-    // 3) 按行应付比例摊订单级优惠券折扣（couponDiscount 已在 onCouponPick 时落到 data）
-    const shares = allocateCouponPerLine(baseLines, this.data.couponDiscount || 0);
+    const couponBaseTotal = Math.round(baseLines.reduce((sum, amount) => sum + amount, 0) * 100) / 100;
+    // 转换单的券只可抵扣正补差额。selectedCoupon.discount 始终保留券按转入项目算出的原始金额，
+    // couponDiscount 则是本次实际抵扣额；这样折抵卡增减后可重新放大/缩小，不会丢失券面计算额。
+    const selectedCouponDiscount = Number(this.data.selectedCoupon?.discount ?? 0);
+    const rawCouponDiscount = Number.isFinite(selectedCouponDiscount)
+      ? Math.max(0, Math.round(selectedCouponDiscount * 100) / 100)
+      : 0;
+    const conversionCouponCap = isConversion
+      ? Math.max(0, Math.round((couponBaseTotal - (Number(this.data.conversionDeductibleSum) || 0)) * 100) / 100)
+      : couponBaseTotal;
+    const effectiveCouponDiscount = !isInternal && this.data.selectedCoupon
+      ? Math.round(Math.min(rawCouponDiscount, conversionCouponCap) * 100) / 100
+      : 0;
+    const shouldClearConversionCoupon = isConversion
+      && !!this.data.selectedCoupon
+      && conversionCouponCap <= 0.005;
+
+    // 3) 按行应付比例摊订单级优惠券折扣。
+    const shares = allocateCouponPerLine(baseLines, effectiveCouponDiscount);
     for (let i = 0; i < cart.length; i++) {
       const c = cart[i];
       const share = shares[i] || 0;
+      c.couponBaseAmount = (baseLines[i] || 0).toFixed(2);
       c.couponShare = share.toFixed(2);
       // 销售单/寄存单的应付金额（不走半价；店长特价行用 effBase 基线）
       const saleAmountNum = Math.max(0, Math.round((effBase[i] - share) * 100) / 100);
@@ -1179,9 +1203,15 @@ Page({
       cart, cartCount: count, cartTotal: total, halfPriceTotal,
       payableTotal: payableSum.toFixed(2),
       receivedTotal: receivedSum.toFixed(2),
+      couponDiscount: effectiveCouponDiscount,
+      couponTotal: effectiveCouponDiscount > 0 ? payableSum.toFixed(2) : '',
+      conversionCouponBaseTotal: isConversion ? couponBaseTotal : 0,
+      conversionCouponEnabled: isConversion && conversionCouponCap > 0.005,
     };
-    if (this.data.couponDiscount > 0) {
-      update.couponTotal = payableSum.toFixed(2);
+    if (shouldClearConversionCoupon) {
+      update.selectedCoupon = null;
+      update.couponDiscount = 0;
+      update.couponTotal = '';
     }
     // 空车时自动关闭已选项目弹层
     if (count === 0 && this.data.cartPopupVisible) {
@@ -1213,6 +1243,8 @@ Page({
       conversionPrepaidCardAmount: 0,
       conversionRemaining: 0,
       conversionIsActivity: false,
+      conversionCouponBaseTotal: 0,
+      conversionCouponEnabled: false,
       // 重置储值卡预选 state（避免上次 customer 残值；进入 Step 2 时再加载）
       customerCardBalance: 0,
       useCard: false,
@@ -1273,6 +1305,8 @@ Page({
       conversionPrepaidCardAmount: 0,
       conversionRemaining: 0,
       conversionIsActivity: false,
+      conversionCouponBaseTotal: 0,
+      conversionCouponEnabled: false,
       // 优惠券
       selectedCoupon: null,
       couponDiscount: 0,
@@ -1588,7 +1622,7 @@ Page({
    * PR-C §C1 / §C5 — 订单类型 4 选 1 切换
    * - 所有员工均可选中任一订单类型；店长权限只在 onSubmitOrder 入口统一校验
    * - 转换单/寄存单守卫：clientUserId 必填（未注册顾客禁用对应 tab）
-   * - 切走销售单/转换单后清空优惠券（内部单/转换单均不允许券）
+   * - 内部单/寄存单不允许券；销售单与转换单均可保留已选券
    * - 切出转换单清空转换 state
    */
   onSelectSaleOrderType(e: WechatMiniprogram.TouchEvent) {
@@ -1604,7 +1638,7 @@ Page({
     update.prepaidCardAmountInput = '0.00';
     update.prepaidCardAmount = 0;
     update.prepaidCardMax = '0.00';
-    if (next !== '销售单' && this.data.selectedCoupon) {
+    if (next !== '销售单' && next !== '转换单' && this.data.selectedCoupon) {
       update.selectedCoupon = null;
       update.couponDiscount = 0;
       update.couponTotal = '';
@@ -1617,6 +1651,8 @@ Page({
       update.conversionPrepaidCardAmount = 0;
       update.conversionRemaining = 0;
       update.conversionIsActivity = false;
+      update.conversionCouponBaseTotal = 0;
+      update.conversionCouponEnabled = false;
     } else {
       // PR-D1：切到转换单时重置销售/内部单的 paymentMethod，避免脏值（转换单走 ConversionPanel 内部 picker）
       update.paymentMethod = '微信';
@@ -1643,15 +1679,22 @@ Page({
       remaining?: number;
       isActivity?: boolean;
     };
+    const previousDeductibleSum = Number(this.data.conversionDeductibleSum) || 0;
+    const nextDeductibleSum = Number(deductibleSum) || 0;
     this.setData({
       conversionSelectedSaleItemIds: selectedSaleItemIds || [],
-      conversionDeductibleSum: Number(deductibleSum) || 0,
+      conversionDeductibleSum: nextDeductibleSum,
       conversionPriceDiff: Number(priceDiff) || 0,
       conversionPaymentMethod: paymentMethod ?? null,
       conversionPrepaidCardAmount: Number(prepaidCardAmount) || 0,
       conversionRemaining: Number(remaining) || 0,
       conversionIsActivity: !!isActivity,
     });
+    // 折抵卡金额改变会收窄/放宽转换单可抵扣的正补差额。
+    // 仅在折抵总额确实变化时重算，避免 convertInAmount observer 的回调循环。
+    if (Math.abs(nextDeductibleSum - previousDeductibleSum) > 0.005) {
+      this.updateCart(this.data.cart);
+    }
   },
 
   /**
@@ -1677,17 +1720,32 @@ Page({
 
   // ===== 优惠券选择 =====
 
+  /**
+   * 券可用性查询必须传券前成交行金额，不能使用已摊券的 saleAmount。
+   * couponBaseAmount 在 updateCart 中按阶梯价/店长特价预算，和转换单服务端定价口径一致。
+   */
+  buildCouponRequestItems(cart: CartItem[]) {
+    return cart.map(c => {
+      const amount = Number(c.couponBaseAmount ?? c.priceLine ?? c.price * c.quantity);
+      return {
+        skuId: c.skuId,
+        quantity: c.quantity,
+        amount: Number.isFinite(amount) ? Math.round(amount * 100) / 100 : 0,
+      };
+    });
+  },
+
   async onSelectCoupon() {
     const { customerInfo, cart } = this.data;
     if (!customerInfo?.phone) return;
+    if (this.data.saleOrderType === '转换单' && !this.data.conversionCouponEnabled) {
+      wx.showToast({ title: '当前无正补差额，不能使用优惠券', icon: 'none' });
+      return;
+    }
 
     this.setData({ showCouponPopup: true, couponsLoading: true });
     try {
-      const items = cart.map(c => ({
-        skuId: c.skuId,
-        quantity: c.quantity,
-        amount: c.price * c.quantity,
-      }));
+      const items = this.buildCouponRequestItems(cart);
       const data = await callStaffApi<CouponAvailableResponse>('coupon.available', {
         clientPhone: customerInfo.phone,
         items,
@@ -1740,11 +1798,7 @@ Page({
     const { selectedCoupon, customerInfo, cart } = this.data;
     if (!selectedCoupon || !customerInfo?.phone) return;
     try {
-      const items = cart.map(c => ({
-        skuId: c.skuId,
-        quantity: c.quantity,
-        amount: Math.round(c.price * c.quantity * 100) / 100,
-      }));
+      const items = this.buildCouponRequestItems(cart);
       const data = await callStaffApi<CouponAvailableResponse>('coupon.available', {
         clientPhone: customerInfo.phone,
         items,
@@ -1945,7 +1999,7 @@ Page({
     const {
       customerInfo, cart, remark, submitting,
       conversionSelectedSaleItemIds, conversionPriceDiff, conversionPaymentMethod,
-      conversionPrepaidCardAmount, conversionRemaining,
+      conversionPrepaidCardAmount, conversionRemaining, selectedCoupon,
     } = this.data;
     if (!customerInfo) {
       wx.showToast({ title: '请先用手机号确认顾客身份', icon: 'none' });
@@ -1991,6 +2045,7 @@ Page({
           return item;
         }),
         paymentMethod,
+        couponId: selectedCoupon?.couponId || undefined,
         // 默认值也显式透传，保持转换单与普通开单的充值卡金额契约一致。
         prepaidCardAmount: conversionPrepaidCardAmount,
         isActivity: this.data.conversionIsActivity,

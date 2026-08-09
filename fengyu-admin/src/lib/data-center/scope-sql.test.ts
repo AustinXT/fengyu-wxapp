@@ -35,10 +35,11 @@ function makeSession(
 const ALL: DataCenterScope = { type: 'all' }
 
 describe('scopeFilterSql — admin 空 scopeStoreIds 陷阱（★必守第一项）', () => {
-  it('admin 角色 + 空 scopeStoreIds + scope=all → TRUE（绝不能是 FALSE）', () => {
+  it('admin 角色 + 空 scopeStoreIds + scope=all → 仅保留启用门店过滤（绝不能是 FALSE）', () => {
     const session = makeSession([{ role: 'admin', scopeType: '总部' }], [])
     const { raw } = render(scopeFilterSql(session, ALL, 'so.store_id'))
-    expect(raw.trim().toUpperCase()).toBe('TRUE')
+    expect(raw.toUpperCase()).toContain('SO.STORE_ID IN')
+    expect(raw.toUpperCase()).toContain('ACTIVE_NODE.IS_ACTIVE = TRUE')
     expect(raw.toUpperCase()).not.toContain('FALSE')
   })
 
@@ -57,9 +58,10 @@ describe('scopeFilterSql — 账号权限范围', () => {
     expect(params).toEqual(['S1', 'S2'])
   })
 
-  it('admin + scope=all 不带任何门店过滤（params 为空）', () => {
+  it('admin + scope=all 不带权限参数，但仍限制为启用门店', () => {
     const session = makeSession([{ role: 'admin', scopeType: '总部' }], [])
-    const { params } = render(scopeFilterSql(session, ALL, 'so.store_id'))
+    const { sql, params } = render(scopeFilterSql(session, ALL, 'so.store_id'))
+    expect(sql).toContain('active_node.is_active = true')
     expect(params).toEqual([])
   })
 })
@@ -106,8 +108,8 @@ describe('scopeStoreSkeletonSql — 关系骨架（store→market）', () => {
     expect(sql).toContain('o_mkt.name as market_name')
     expect(sql).toContain('join org_nodes o_store')
     expect(sql).toContain('join org_nodes o_mkt')
-    // admin scope 短路为 TRUE
-    expect(sql).toContain('true')
+    // 即使 admin 全范围也必须排除停用门店
+    expect(sql).toContain('active_node.is_active = true')
   })
 
   it('非 admin 把 scopeStoreIds 内嵌进骨架 WHERE', () => {

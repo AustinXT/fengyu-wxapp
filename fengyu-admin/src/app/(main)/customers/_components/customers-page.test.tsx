@@ -28,12 +28,9 @@ vi.mock('@/lib/hooks/use-url-filters', () => ({
 const mockCreateCustomer = vi.fn()
 vi.mock('@/actions/customers', () => ({
   createCustomer: (...args: unknown[]) => mockCreateCustomer(...args),
-  exportCustomers: vi.fn(),
 }))
 
-vi.mock('@/lib/export-xlsx', () => ({
-  exportToXlsx: vi.fn(),
-}))
+vi.mock('@/actions/export-jobs', () => ({ createExportJob: vi.fn() }))
 
 vi.mock('sonner', () => ({
   toast: {
