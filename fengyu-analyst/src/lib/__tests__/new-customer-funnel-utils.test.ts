@@ -117,8 +117,6 @@ describe("new customer funnel utils", () => {
       unitLevel: "market",
       tableMode: "months",
       source: "",
-      market: "",
-      store: "",
     }
 
     expect(previousYearRange(filters)).toEqual({ startMonth: "2025-03", endMonth: "2025-05" })
