@@ -5618,6 +5618,7 @@ describe('order.createPickup', () => {
 
   test('取货成功', async () => {
     const ctx = createManagerCtx({ saleItemId: 'item-001', pickupQuantity: 2 })
+    let pickupClient
 
     // createPickup 主体在 pg.transaction(cb) 内，调用 client.query；用 mockImplementation 替换 transaction
     pg.transaction.mockImplementation(async (cb) => {
@@ -5640,18 +5641,26 @@ describe('order.createPickup', () => {
           if (/SELECT si\.sale_order_id/.test(sql)) {
             return { rows: [{ sale_order_id: 'FY-001', client_user_id: 'cu-001', customer_name: '顾客A' }], rowCount: 1 }
           }
-          if (/FROM store_inventory_stocks/.test(sql)) {
-            return { rows: [{ id: 1, store_id: 'store-001', sku_id: 'sku-001', sku_name: '家居产品A', batch_no: 'B1', expiry_date: null, quantity_on_hand: 5 }], rowCount: 1 }
+          if (/FROM inventory_stock_lots/.test(sql)) {
+            return {
+              rows: [{
+                id: 1, location_id: 'store-001', sku_id: 'sku-001', sku_name: '家居产品A',
+                spec_name: null, supplier: null, product_series: null, batch_no: 'B1',
+                expiry_date: null, is_gift: false, quantity_on_hand: 5,
+              }],
+              rowCount: 1,
+            }
           }
-          if (/SELECT id FROM store_inventory_docs/.test(sql)) {
+          if (/SELECT id FROM inventory_docs/.test(sql)) {
             return { rows: [], rowCount: 0 }
           }
-          if (/INSERT INTO store_inventory_doc_items/.test(sql)) {
+          if (/INSERT INTO inventory_doc_items/.test(sql)) {
             return { rows: [{ id: 10 }], rowCount: 1 }
           }
           return { rows: [], rowCount: 1 }
         }),
       }
+      pickupClient = client
       return await cb(client)
     })
 
@@ -5661,6 +5670,15 @@ describe('order.createPickup', () => {
     expect(ctx.result.pickedUp).toBe(2)
     expect(ctx.result.remaining).toBe(3) // 5 - 2
     expect(ctx.result.message).toContain('取货成功')
+    const locationSyncCall = pickupClient.query.mock.calls.find(([sql]) => (
+      /INSERT INTO inventory_locations/.test(sql)
+    ))
+    expect(locationSyncCall[0]).toMatch(/parent_location_id, is_active/)
+    expect(locationSyncCall[0]).toMatch(/COALESCE\(o\.is_active, false\) AND NOT s\.is_closed/)
+    expect(locationSyncCall[0]).toMatch(/is_active = EXCLUDED\.is_active/)
+    expect(pickupClient.query.mock.calls.some(([sql]) => /INSERT INTO inventory_docs/.test(sql))).toBe(true)
+    expect(pickupClient.query.mock.calls.some(([sql]) => /UPDATE inventory_stock_lots/.test(sql))).toBe(true)
+    expect(pickupClient.query.mock.calls.some(([sql]) => /INSERT INTO inventory_movements/.test(sql))).toBe(true)
   })
 
   test('超出可提货数量拒绝', async () => {
