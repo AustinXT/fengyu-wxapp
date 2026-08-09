@@ -445,6 +445,76 @@ function buildBundleMarketScopeFilter(auth, params, productAlias = 'p') {
   )`
 }
 
+/**
+ * 普通 SKU 的开单范围过滤（product_skus.market_scope）。
+ *
+ * 与套餐主商品保持同一严格口径：只依据当前工作台 effectiveStoreId；管理层未选择
+ * 门店时只能使用全市场 SKU，不能回退到 scopeStoreIds、storeId 或 marketName。
+ */
+function buildNormalSkuMarketScopeFilter(auth, params, skuAlias = 's') {
+  const scopeExpr = `${skuAlias}.market_scope`
+  const valuesExpr = `string_to_array(regexp_replace(${scopeExpr}, '[[:space:]]+', '', 'g'), ',')`
+  const globalExpr = `${scopeExpr} IS NULL`
+  const nonBlankExpr = `NULLIF(regexp_replace(${scopeExpr}, '[[:space:]]+', '', 'g'), '') IS NOT NULL`
+  const effectiveStoreId = auth?.effectiveStoreId
+
+  if (!effectiveStoreId) return `AND ${globalExpr}`
+
+  params.push(effectiveStoreId)
+  const storeParam = `$${params.length}`
+  return `AND (
+    ${globalExpr}
+    OR (
+      ${nonBlankExpr}
+      AND EXISTS (
+        SELECT 1
+        FROM stores store
+        JOIN org_nodes store_node ON store.org_node_id = store_node.id
+        JOIN org_nodes market_node ON store_node.parent_id = market_node.id
+        WHERE store.store_id = ${storeParam}
+          AND market_node.type = '市场'
+          AND (
+            market_node.id = ANY(${valuesExpr})
+            OR regexp_replace(market_node.name, '[[:space:]]+', '', 'g') = ANY(${valuesExpr})
+          )
+      )
+    )
+  )`
+}
+
+/**
+ * 建单提交前复核受限的普通 SKU。体验卡与套餐子 SKU 保持既有路径：前者不受这里影响，
+ * 后者由套餐主商品范围和归属校验负责。
+ */
+async function assertNormalSkuMarketScopeForCurrentStore(skuRows, auth, query = (text, params) => pg.query(text, params)) {
+  const restrictedSkuById = new Map()
+  for (const sku of skuRows) {
+    if (sku.isExperience === true || sku.marketScope == null) continue
+    restrictedSkuById.set(sku.skuId, sku)
+  }
+  if (restrictedSkuById.size === 0) return
+
+  const skuIds = [...restrictedSkuById.keys()]
+  const params = [skuIds]
+  const marketScopeFilter = buildNormalSkuMarketScopeFilter(auth, params, 's')
+  const result = await query(
+    `SELECT s.sku_id
+       FROM product_skus s
+      WHERE s.sku_id = ANY($1)
+        AND s.deleted_at IS NULL
+        AND COALESCE(s.is_experience, false) = false
+        ${marketScopeFilter}`,
+    params,
+  )
+  const visibleRows = Array.isArray(result) ? result : (result.rows || [])
+  const visibleSkuIds = new Set(visibleRows.map((row) => row.sku_id))
+  const unavailable = skuIds.find((skuId) => !visibleSkuIds.has(skuId))
+  if (!unavailable) return
+
+  const sku = restrictedSkuById.get(unavailable)
+  throw new Error(`INVALID_PARAMS: 商品 ${sku.specName || sku.productName || sku.skuId} 不适用于当前门店`)
+}
+
 async function _loadAndValidateBundle(bundleProductId, items, auth) {
   if (!bundleProductId) return null
 
@@ -644,7 +714,7 @@ async function create(ctx) {
         `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.special_price, s.session_count,
                 s.category_id,
                 s.service_fee, s.is_shengmei, s.is_experience, s.is_manager_special,
-                s.purchase_limit, pc.sales_category, pc.product_kind
+                s.purchase_limit, s.market_scope, pc.sales_category, pc.product_kind
          FROM product_skus s
          JOIN product_categories pc ON s.category_id = pc.category_id
          WHERE s.sku_id = $1 AND s.deleted_at IS NULL`,
@@ -762,6 +832,7 @@ async function create(ctx) {
         serviceFee,
         isShengmei: sku.is_shengmei ?? null,
         isExperience: sku.is_experience === true,
+        marketScope: sku.market_scope,
         purchaseLimit: sku.purchase_limit != null ? Number(sku.purchase_limit) : null,
         manualSaleAmountOverride: item.manualSaleAmountOverride === true,
         isBundleLine: !!bundlePricing,
@@ -770,6 +841,10 @@ async function create(ctx) {
       }
     })
   )
+
+  if (!bundleSkuPrices) {
+    await assertNormalSkuMarketScopeForCurrentStore(rawItemDataList, ctx.auth)
+  }
 
   const purchaseLimitViolation = findPurchaseLimitViolation(items, rawItemDataList)
   if (purchaseLimitViolation) {
@@ -3455,7 +3530,7 @@ async function createConversion(ctx) {
       if (!req || !req.skuId) throw new Error('INVALID_PARAMS: 转入项目缺少 skuId')
       const skuRes = await tx.query(
         `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.special_price, s.session_count, s.service_fee,
-                s.is_shengmei, s.is_experience, s.is_manager_special, s.purchase_limit, s.category_id, pc.sales_category
+                s.is_shengmei, s.is_experience, s.is_manager_special, s.purchase_limit, s.market_scope, s.category_id, pc.sales_category
          FROM product_skus s
          JOIN product_categories pc ON s.category_id = pc.category_id
          WHERE s.sku_id = $1 AND s.deleted_at IS NULL`,
@@ -3501,11 +3576,23 @@ async function createConversion(ctx) {
         serviceFee: inServiceFee,
         isShengmei: sku.is_shengmei ?? null,
         isExperience: sku.is_experience === true,
+        marketScope: sku.market_scope,
         isManagerSpecial: sku.is_manager_special === true,
         manualSaleAmountOverride,
         purchaseLimit: sku.purchase_limit != null ? Number(sku.purchase_limit) : null,
       })
     }
+
+    await assertNormalSkuMarketScopeForCurrentStore(
+      inItems.map((item) => ({
+        skuId: item.skuId,
+        specName: item.productName,
+        isExperience: item.isExperience,
+        marketScope: item.marketScope,
+      })),
+      ctx.auth,
+      (text, params) => tx.query(text, params),
+    )
 
     // 2.5. 转入项目应用疗程卡梯度累加价（与销售单对齐）
     // 查询所有可能用于梯度计算的 SKU（同分类+同名称的所有疗程卡规格）
@@ -4768,7 +4855,7 @@ async function createDeposit(ctx) {
     }
     const skuRows = await pg.query(
       `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.special_price, s.session_count,
-              s.service_fee, s.is_shengmei, s.is_experience,
+              s.service_fee, s.is_shengmei, s.is_experience, s.market_scope,
               pc.sales_category, pc.product_kind
        FROM product_skus s
        JOIN product_categories pc ON s.category_id = pc.category_id
@@ -4815,8 +4902,11 @@ async function createDeposit(ctx) {
       serviceFee: 0,
       isShengmei: sku.is_shengmei ?? null,
       isExperience: sku.is_experience === true,
+      marketScope: sku.market_scope,
     }
   }))
+
+  await assertNormalSkuMarketScopeForCurrentStore(rawItemDataList, ctx.auth)
 
   // 寄存单内相同疗程卡按 SKU 合并为一条销售明细，累计张数、次数、标价与历史实收。
   // 家居产品保持原输入行语义，不参与合并。
@@ -4991,5 +5081,9 @@ module.exports = {
 // 非枚举测试出口，避免路由完整性检查把内部 helper 误认作公开 action。
 Object.defineProperty(module.exports, '__testables__', {
   enumerable: false,
-  value: { _loadAndValidateBundle },
+  value: {
+    _loadAndValidateBundle,
+    buildNormalSkuMarketScopeFilter,
+    assertNormalSkuMarketScopeForCurrentStore,
+  },
 })

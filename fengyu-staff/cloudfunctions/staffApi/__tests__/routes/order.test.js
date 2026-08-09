@@ -13,7 +13,11 @@
 const pg = globalThis.__mocks__.pg
 const { createManagerCtx, createBeauticianCtx } = require('../helpers')
 const orderRoutes = require('../../routes/order')
-const { _loadAndValidateBundle } = orderRoutes.__testables__
+const {
+  _loadAndValidateBundle,
+  buildNormalSkuMarketScopeFilter,
+  assertNormalSkuMarketScopeForCurrentStore,
+} = orderRoutes.__testables__
 
 /**
  * 共享 helper：assertOrderInScope 在路由内会先 SELECT store_id FROM sale_orders WHERE sale_order_id = $1。
@@ -115,6 +119,32 @@ describe('order.create', () => {
     // PR-2：线下全额现场 → 订单 '待支付'（店长 confirmOffline 再转 '已支付'）；首次支付 payments 流水同事务写入
     expect(ctx.result.status).toBe('待支付')
     expect(ctx.result.message).toBe('开单成功')
+  })
+
+  test('范围外普通 SKU 在提交时拒绝，不能绕过商品目录过滤', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '13800001111',
+      clientName: '测试顾客',
+      items: [{ skuId: 'sku-other-market', quantity: 1 }],
+      paymentMethod: '线下',
+      orderType: 'normal',
+    }, { effectiveStoreId: 'store-current', scopeStoreIds: ['store-other'] })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        user_id: 'cu-001', bound_store_id: 'store-current', customer_type: '会员客', member_level: null,
+      }])
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-other-market', product_type: '疗程卡', spec_name: '仅限其他市场商品',
+        price: '1000.00', special_price: null, session_count: 10, service_fee: '0',
+        is_shengmei: false, is_experience: false, is_manager_special: false,
+        market_scope: 'market-other', product_name: '面部护理', sales_category: '自销自耗', product_kind: '护理项目',
+      }])
+      .mockResolvedValueOnce([])
+
+    await expect(orderRoutes.create(ctx))
+      .rejects.toThrow(/INVALID_PARAMS: 商品 仅限其他市场商品 不适用于当前门店/)
+    expect(pg.transaction).not.toHaveBeenCalled()
   })
 
   test('非店长拒绝开单', async () => {
@@ -1550,6 +1580,37 @@ describe('order._loadAndValidateBundle', () => {
     expect(query).toContain('p.market_scope')
     expect(query).toContain('s.store_id = $2')
     expect(params).toEqual(['bundle-other-market', 'store-current'])
+  })
+})
+
+describe('order 普通 SKU 市场范围 helper', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  test('严格使用 effectiveStoreId，不回退到 scopeStoreIds', async () => {
+    pg.query.mockResolvedValueOnce([])
+
+    await expect(assertNormalSkuMarketScopeForCurrentStore(
+      [{ skuId: 'sku-other-market', specName: '受限商品', isExperience: false, marketScope: 'market-other' }],
+      { effectiveStoreId: 'store-current', scopeStoreIds: ['store-other'], storeId: 'store-profile' },
+    )).rejects.toThrow(/INVALID_PARAMS: 商品 受限商品 不适用于当前门店/)
+
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('s.market_scope')
+    expect(sql).toContain('store.store_id = $2')
+    expect(params).toEqual([['sku-other-market'], 'store-current'])
+  })
+
+  test('无当前门店时只允许全局范围，并跳过体验卡', async () => {
+    const params = []
+    expect(buildNormalSkuMarketScopeFilter({ effectiveStoreId: null, scopeStoreIds: ['store-001'] }, params))
+      .toBe('AND s.market_scope IS NULL')
+    expect(params).toEqual([])
+
+    await assertNormalSkuMarketScopeForCurrentStore(
+      [{ skuId: 'experience-sku', specName: '体验卡', isExperience: true, marketScope: 'market-other' }],
+      { effectiveStoreId: null, scopeStoreIds: ['store-001'] },
+    )
+    expect(pg.query).not.toHaveBeenCalled()
   })
 })
 
@@ -4308,6 +4369,60 @@ describe('order.createConversion', () => {
     return calls
   }
 
+  test('范围外普通转入 SKU 在转换单提交时拒绝', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'cu-001',
+      convertOutSaleItemIds: ['item-old'],
+      convertInItems: [{ skuId: 'sku-other-market', quantity: 1 }],
+      paymentMethod: '线下',
+    }, { effectiveStoreId: 'store-current', scopeStoreIds: ['store-other'] })
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'cu-001', phone: '138', name: '张三', customer_type: '会员客',
+      member_level: null, bound_store_id: 'store-current',
+    }])
+
+    const txCalls = []
+    pg.transaction.mockImplementationOnce(async (cb) => cb({
+      query: vi.fn(async (sql, params) => {
+        txCalls.push({ sql, params })
+        if (sql.includes('pg_advisory_xact_lock') || sql.includes('sale_order_id LIKE')) {
+          return { rows: [], rowCount: 0 }
+        }
+        if (sql.includes('FROM sale_items si') && sql.includes('FOR UPDATE OF si')) {
+          return {
+            rows: [{
+              sale_item_id: 'item-old', sale_order_id: 'order-old', store_id: 'store-current', item_direction: '购买',
+              sku_id: 'sku-old', product_name: '旧项目', product_type: '疗程卡', session_count: 1,
+              remaining_sessions: 1, quantity: 1, picked_up_quantity: 0, unit_price: '100', unit_real_price: '100',
+              sales_category: '自销自耗', service_fee: '0', is_shengmei: false, is_experience: false,
+              client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
+            }],
+            rowCount: 1,
+          }
+        }
+        if (sql.includes('FROM service_items sit')) return { rows: [], rowCount: 0 }
+        if (sql.includes('FROM product_skus s') && sql.includes('WHERE s.sku_id = $1')) {
+          return {
+            rows: [{
+              sku_id: 'sku-other-market', category_id: 'cat-new', product_type: '疗程卡', spec_name: '仅限其他市场商品',
+              price: '500', special_price: null, session_count: 1, service_fee: '0', sales_category: '自销自耗',
+              is_shengmei: false, is_experience: false, is_manager_special: false, purchase_limit: null,
+              market_scope: 'market-other',
+            }],
+            rowCount: 1,
+          }
+        }
+        if (sql.includes('WHERE s.sku_id = ANY($1)')) return { rows: [], rowCount: 0 }
+        return defaultQueryResult(sql)
+      }),
+    }))
+
+    await expect(orderRoutes.createConversion(ctx))
+      .rejects.toThrow(/INVALID_PARAMS: 商品 仅限其他市场商品 不适用于当前门店/)
+    const scopeQuery = txCalls.find((call) => call.sql.includes('WHERE s.sku_id = ANY($1)'))
+    expect(scopeQuery.params).toEqual([['sku-other-market'], 'store-current'])
+  })
+
   test('转换单优惠券按正补差额封顶，写入订单并原子核销', async () => {
     const ctx = createManagerCtx({
       clientUserId: 'cu-001',
@@ -5354,6 +5469,28 @@ describe('order.createDeposit', () => {
     const allSql = txCalls.map(c => c.sql).join('\n')
     expect(allSql).not.toContain('DEPOSIT_REAL_PRICE')
     expect(allSql).not.toMatch(/paid_sessions\s*=/i)
+  })
+
+  test('范围外普通 SKU 在寄存单提交时拒绝', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'cu-001',
+      items: [{ skuId: 'sku-other-market', quantity: 1 }],
+    }, { effectiveStoreId: 'store-current', scopeStoreIds: ['store-other'] })
+    pg.query
+      .mockResolvedValueOnce([{
+        user_id: 'cu-001', phone: '138', name: '顾客甲', customer_type: '会员客', bound_store_id: 'store-current',
+      }])
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-other-market', product_type: '疗程卡', spec_name: '仅限其他市场商品',
+        price: '1000.00', special_price: null, session_count: 10, service_fee: '0',
+        is_shengmei: false, is_experience: false, market_scope: 'market-other',
+        sales_category: '自销自耗', product_kind: '护理项目',
+      }])
+      .mockResolvedValueOnce([])
+
+    await expect(orderRoutes.createDeposit(ctx))
+      .rejects.toThrow(/INVALID_PARAMS: 商品 仅限其他市场商品 不适用于当前门店/)
+    expect(pg.transaction).not.toHaveBeenCalled()
   })
 
   test('寄存单相同 5 次卡合并为 1 行，累计次数和历史实收', async () => {
