@@ -79,10 +79,10 @@ async function capturePaymentAllocatables(client, { salePaymentId, saleOrderId, 
         ORDER BY sale_item_id`,
       [saleOrderId],
     )
-    await client.query(`UPDATE sale_order_payments SET allocation_status = '待分配' WHERE id = $1`, [salePaymentId])
-
     const rows = convRes.rows
     if (rows.length === 0) return []
+
+    await client.query(`UPDATE sale_order_payments SET allocation_status = '待分配' WHERE id = $1 AND (allocation_status IS NULL OR allocation_status = '待分配')`, [salePaymentId])
     const perItem = allocateSignedCents(
       Math.round(evt * 100),
       rows.map((r) => ({ saleItemId: r.sale_item_id, weightCents: Math.round(Number(r.sale_amount) * 100) })),
@@ -171,6 +171,10 @@ async function capturePaymentAllocatables(client, { salePaymentId, saleOrderId, 
     }
   }
 
+  // CAS guard: 若已是 已分配（payNotify 重试/并发），跳过 receipt 写入
+  const guardRes = await client.query(`UPDATE sale_order_payments SET allocation_status = '待分配' WHERE id = $1 AND (allocation_status IS NULL OR allocation_status = '待分配')`, [salePaymentId])
+  if (guardRes.rowCount === 0) return []
+
   const out = []
   for (const d of perItem) {
     const cat = catMap.get(d.saleItemId) || null
@@ -184,7 +188,6 @@ async function capturePaymentAllocatables(client, { salePaymentId, saleOrderId, 
     out.push({ receiptId, saleItemId: d.saleItemId, amount: d.amount, salesCategory: cat })
   }
 
-  await client.query(`UPDATE sale_order_payments SET allocation_status = '待分配' WHERE id = $1`, [salePaymentId])
   return out
 }
 
@@ -198,7 +201,7 @@ async function refreshOrderAllocationRollup(client, saleOrderId) {
               ) THEN '待分配'::allocation_status
               WHEN EXISTS (
                 SELECT 1 FROM sale_order_payments
-                 WHERE sale_order_id = $1 AND allocation_status IS NOT NULL
+                 WHERE sale_order_id = $1 AND allocation_status = '已分配'
               ) THEN '已分配'::allocation_status
               ELSE NULL::allocation_status END,
             updated_at = NOW()
@@ -218,7 +221,7 @@ async function reconcileAllocationStatusAfterRefund(client, saleOrderId) {
      UPDATE sale_order_payments p
         SET allocation_status = NULL
       WHERE p.sale_order_id = $1
-        AND p.allocation_status IS NOT NULL
+        AND p.allocation_status IN ('待分配', '已分配')
         AND EXISTS (SELECT 1 FROM full_refund_zero_net)`,
     [saleOrderId],
   )

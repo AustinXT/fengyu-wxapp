@@ -117,14 +117,16 @@ export async function capturePaymentAllocatables(
          AND item_direction IN ('转出', '转入')
        ORDER BY sale_item_id
     `)
-    await tx.execute(sql`
+    const rows = convRows as unknown as Array<{ sale_item_id: string; sale_amount: string | number; sales_category: string | null }>
+    if (rows.length === 0) return []
+
+    const convGuard = await tx.execute(sql`
       UPDATE sale_order_payments
          SET allocation_status = '待分配'::allocation_status
        WHERE id = ${salePaymentId}
+         AND (allocation_status IS NULL OR allocation_status = '待分配')
     `)
-
-    const rows = convRows as unknown as Array<{ sale_item_id: string; sale_amount: string | number; sales_category: string | null }>
-    if (rows.length === 0) return []
+    if ((convGuard as any).count === 0) return []
     const perItem = allocateSignedCents(
       Math.round(evt * 100),
       rows.map((r) => ({ saleItemId: r.sale_item_id, weightCents: Math.round(Number(r.sale_amount) * 100) })),
@@ -215,6 +217,15 @@ export async function capturePaymentAllocatables(
     }
   }
 
+  // CAS guard: 若已是 已分配（payNotify 重试/并发），跳过 receipt 写入
+  const guardResult = await tx.execute(sql`
+    UPDATE sale_order_payments
+       SET allocation_status = '待分配'::allocation_status
+     WHERE id = ${salePaymentId}
+       AND (allocation_status IS NULL OR allocation_status = '待分配')
+  `)
+  if ((guardResult as any).count === 0) return []
+
   const out: CapturedAllocatable[] = []
   for (const d of perItem) {
     const cat = catMap.get(d.saleItemId) || null
@@ -228,11 +239,6 @@ export async function capturePaymentAllocatables(
     out.push({ receiptId, saleItemId: d.saleItemId, amount: d.amount, salesCategory: cat })
   }
 
-  await tx.execute(sql`
-    UPDATE sale_order_payments
-       SET allocation_status = '待分配'::allocation_status
-     WHERE id = ${salePaymentId}
-  `)
   return out
 }
 
@@ -246,7 +252,7 @@ export async function refreshOrderAllocationRollup(tx: AdminTx, saleOrderId: str
              ) THEN '待分配'::allocation_status
              WHEN EXISTS (
                SELECT 1 FROM sale_order_payments
-                WHERE sale_order_id = ${saleOrderId} AND allocation_status IS NOT NULL
+                WHERE sale_order_id = ${saleOrderId} AND allocation_status = '已分配'
              ) THEN '已分配'::allocation_status
              ELSE NULL::allocation_status END,
            updated_at = NOW()
@@ -265,7 +271,7 @@ export async function reconcileAllocationStatusAfterRefund(tx: AdminTx, saleOrde
     UPDATE sale_order_payments p
        SET allocation_status = NULL
      WHERE p.sale_order_id = ${saleOrderId}
-       AND p.allocation_status IS NOT NULL
+       AND p.allocation_status IN ('待分配', '已分配')
        AND EXISTS (SELECT 1 FROM full_refund_zero_net)
   `)
   await tx.execute(sql`

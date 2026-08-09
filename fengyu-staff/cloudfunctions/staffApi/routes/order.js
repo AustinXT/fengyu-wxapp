@@ -1910,9 +1910,9 @@ async function close(ctx) {
     )
     await client.query(
       `UPDATE sale_order_payments
-          SET allocation_status = NULL
-        WHERE sale_order_id = $1
-          AND allocation_status IS NOT NULL`,
+         SET allocation_status = NULL
+       WHERE sale_order_id = $1
+          AND allocation_status IN ('待分配', '已分配')`,
       [saleOrderId],
     )
     // 释放关联的优惠券

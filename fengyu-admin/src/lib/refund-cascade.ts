@@ -428,10 +428,10 @@ export async function cascadeRefund(
   if (refundAllocatedCents > 0) {
     await tx.execute(sql`
       UPDATE sale_order_payments
-         SET allocation_status = '已分配'::allocation_status
-       WHERE id = ${refundPaymentId}
-         AND change_type = '退款'
-         AND allocation_status IS DISTINCT FROM '已分配'
+       SET allocation_status = '已分配'::allocation_status
+     WHERE id = ${refundPaymentId}
+       AND change_type = '退款'
+        AND (allocation_status IS NULL OR allocation_status = '待分配')
     `)
   }
 
