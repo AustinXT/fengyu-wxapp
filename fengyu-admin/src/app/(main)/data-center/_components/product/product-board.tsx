@@ -13,8 +13,8 @@ import type { ProductBoardParams, ProductBoardResult } from "@/lib/data-center/t
 
 // ── KPI 卡片矩阵（key 对应后端 ProductBoardResult.kpis）────────────────
 const KPI_CARD: KpiGridItem[] = [
-  { key: "cardHolders", label: "持卡人数", hint: "截面快照，不随时间区间变化" },
-  { key: "cardHolderRate", label: "持卡占比", hint: "持卡人数 ÷ 会员数（截面）" },
+  { key: "cardHolders", label: "持卡人数", hint: "以当前时刻未用完疗程卡为准，不随时间区间变化" },
+  { key: "cardHolderRate", label: "持卡占比", hint: "持卡人数 ÷ 会员数（以当前时刻未用完疗程卡为准）" },
 ]
 const KPI_CYCLE: KpiGridItem[] = [
   { key: "trialCount", label: "体验人数", hint: "区间内有购买但全历史未达标" },
