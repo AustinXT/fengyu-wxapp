@@ -23,6 +23,7 @@ const { maskPhoneForAuth } = require("../utils/phone-visibility");
 const { logOperation } = require("../utils/operation-log");
 const { shanghaiDateStr } = require("../utils/datetime");
 const { excludeDepositRefundSql } = require("../utils/consume-filter");
+const { getPointsToYuanRate, getPointsDeductionMaxRate } = require("../utils/config");
 
 /**
  * 顾客档案子 Tab 可见性闸门（calendar/refundHistory 等）。
@@ -529,7 +530,8 @@ async function getTopProduct(clientUserId) {
  * - 有明细的订单：汇总 sale_items.received（精确到品项）
  * - 无明细的历史订单：使用 sale_orders.received（订单级汇总）
  *
- * 状态口径：'已支付', '部分支付', '已完成'（与 paidOrders 对齐）
+ * 状态口径：'已支付', '部分支付', '已完成'（与 paidOrders 对齐）。
+ * WorkFine 历史导入及退款归零后的销售单都可能是 '已完成'，仍须计入有效订单。
  */
 async function getConsumptionStats(clientUserId) {
   if (!clientUserId) {
@@ -1323,9 +1325,9 @@ async function updateNotes(ctx) {
 }
 
 /**
- * 查询顾客储值卡余额（店长专用，跨店共享）
+ * 查询顾客储值卡余额与积分抵扣配置（店长专用，跨店共享）
  * payload: { customerUserId: string }
- * 返回: { cardId: string|null, balance: number }
+ * 返回: { cardId: string|null, balance: number, pointsBalance: number, pointsToYuanRate: number, pointsDeductionMaxRate: number }
  */
 async function customerBalance(ctx) {
   await requireManager()(ctx, async () => {})
@@ -1350,19 +1352,26 @@ async function customerBalance(ctx) {
     throw new Error('PERMISSION_DENIED: 顾客不在当前门店范围内')
   }
 
-  const rows = await pg.query(
-    'SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1',
-    [customerUserId]
-  )
+  const [rows, pointsRows, pointsToYuanRate, pointsDeductionMaxRate] = await Promise.all([
+    pg.query('SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1', [customerUserId]),
+    pg.query('SELECT points_balance FROM client_wechat_users WHERE user_id = $1', [customerUserId]),
+    getPointsToYuanRate(),
+    getPointsDeductionMaxRate(),
+  ])
+
+  const pointsBalance = Number(pointsRows[0]?.points_balance) || 0
 
   if (rows.length === 0) {
-    ctx.result = { cardId: null, balance: 0 }
+    ctx.result = { cardId: null, balance: 0, pointsBalance, pointsToYuanRate, pointsDeductionMaxRate }
     return
   }
 
   ctx.result = {
     cardId: rows[0].card_id,
     balance: Number(rows[0].balance),
+    pointsBalance,
+    pointsToYuanRate,
+    pointsDeductionMaxRate,
   }
 }
 

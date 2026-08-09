@@ -101,10 +101,10 @@ async function recharge(ctx) {
   let saleOrderId
   await pg.transaction(async (client) => {
     // 按顾客串行化开单（advisory lock 持有到 COMMIT）：uq 拆除员工单 DB 兜底后，业务守卫
-    // SELECT-then-INSERT 非原子，并发开单可产生重复员工单。pg_advisory_xact_lock(hashtext($1))
+    // SELECT-then-INSERT 非原子，并发开单可产生重复员工单。pg_advisory_xact_lock(hashtext($1)::bigint)
     // 让同顾客开单串行，existing 守卫在此锁下原子生效。业务守卫查顾客维度全量待支付单（含自助单），
     // advisory lock 串行化并发；DB uq 仅兜底 opened_by IS NULL 自助单。
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [clientUserId])
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', [clientUserId])
     const pendingRows = await client.query(
       `SELECT sale_order_id FROM sale_orders
        WHERE client_user_id = $1 AND status = '待支付' LIMIT 1`,
@@ -115,7 +115,7 @@ async function recharge(ctx) {
       err.data = { pendingOrderNo: pendingRows.rows[0].sale_order_id }
       throw err
     }
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', ['sale_order_id_gen'])
 
     const now = new Date()
     const dateStrOrder = shanghaiYYMMDD(now)
@@ -230,7 +230,7 @@ async function inflow(ctx) {
   await pg.transaction(async (client) => {
     // 顾客级 advisory lock：串行化同顾客的并发转入（双击 / SDK 重试）。键与 'sale_order_id_gen' 互异、
     // 且本路径恒「先顾客锁后订单号锁」，其它路径不持顾客锁，不构成跨锁死锁。
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`card_inflow:${clientUserId}`])
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', [`card_inflow:${clientUserId}`])
 
     // 幂等短路：同一 requestId 已成功转入则复用既有订单，不重复建单 / 不重复 += balance（防重复入账核心）
     // 注：事务内 client.query() 返回原生 node-pg Result（取 .rows），与模块级 pg.query（已解包成数组）不同
@@ -246,7 +246,7 @@ async function inflow(ctx) {
       }
     }
 
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', ['sale_order_id_gen'])
 
     const now = new Date()
     const dateStrOrder = shanghaiYYMMDD(now)
@@ -424,8 +424,12 @@ async function createRefund(ctx) {
       refundPay,
       reason: reason || null,
     })
+  })
 
-    await notifyRefundCreated(client, {
+  // ✅ Bug G12：通知移出事务 —— 避免 CloudBase 消息推送/DB 瞬态抖动时 INSERT messages 失败回滚整笔退款。
+  // 事务已提交，通知失败只记日志，不影响退款主流程。
+  try {
+    await notifyRefundCreated(pg, {
       paymentId,
       saleOrderId,
       storeId: order.store_id,
@@ -433,7 +437,9 @@ async function createRefund(ctx) {
       amount: refundPay,
       customerName: order.customer_name,
     })
-  })
+  } catch (notifyErr) {
+    console.error('[card.createRefund] notifyRefundCreated failed:', notifyErr)
+  }
 
   ctx.result = {
     paymentId,
@@ -493,7 +499,7 @@ async function approveRefund(ctx) {
     if (!(refundFace > 0)) throw new Error('INVALID_STATE: 退款单缺少 refundFace 元数据')
 
     // advisory lock + 校验余额
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`card-balance-${pay.client_user_id}`])
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', [`card-balance-${pay.client_user_id}`])
     const balRows = await client.query(
       `SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1 FOR UPDATE`,
       [pay.client_user_id]

@@ -14,6 +14,7 @@
  */
 import { sql } from 'drizzle-orm'
 import { db } from '@/db'
+import { consumePointBatches, grantPointBatch } from '@/lib/points-batches'
 
 type AdminTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
 
@@ -89,9 +90,10 @@ export async function settlePointsForOrder(
 
   // 4. 已发积分合计（按 ref_order_id 聚合，等级升级/兑换等非本链流水自然排除）
   const grantedRes = await tx.execute(sql`
-    SELECT COALESCE(SUM(amount), 0)::int AS granted
+    SELECT COALESCE(SUM(amount), 0)::bigint AS granted
       FROM point_transactions
      WHERE ref_order_id = ${originalSaleOrderId}
+       AND type IN ('消费赠送','消费冲销')
   `)
   const grantedRows = grantedRes as unknown as Array<{ granted: string | number }>
   const granted = Number(grantedRows[0]?.granted ?? 0)
@@ -106,19 +108,43 @@ export async function settlePointsForOrder(
   // partial unique uq_point_txn_order_user_type (user_id, ref_order_id, type) WHERE ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')
   // 分次回款/退款累加：同 (user,order,type) 已有行时把增量 delta 累加进唯一行（granted=SUM 口径不变），
   // 避免裸 INSERT 撞唯一索引导致整事务回滚。四端字面同义，由 cross-end-sql-snapshot 守护。
-  await tx.execute(sql`
+  const inserted = (await tx.execute(sql`
     INSERT INTO point_transactions (user_id, type, amount, ref_order_id, created_at)
     VALUES (${userId}, ${type}, ${delta}, ${originalSaleOrderId}, NOW())
     ON CONFLICT (user_id, ref_order_id, type)
       WHERE ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')
     DO UPDATE SET amount = point_transactions.amount + EXCLUDED.amount,
                   created_at = NOW()
-  `)
+    RETURNING id
+  `)) as unknown as Array<{ id: number }>
+
+  const pointTransactionId = Number(inserted[0]?.id ?? 0)
+  if (delta > 0 && pointTransactionId) {
+    await grantPointBatch(tx, {
+      userId,
+      pointTransactionId,
+      type,
+      amount: delta,
+      refOrderId: originalSaleOrderId,
+    })
+  } else if (delta < 0) {
+    await consumePointBatches(tx, {
+      userId,
+      amount: delta,
+      refOrderId: originalSaleOrderId,
+    })
+  }
+
   await tx.execute(sql`
-    UPDATE client_wechat_users
-       SET points_balance    = COALESCE(points_balance, 0) + ${delta},
+    UPDATE client_wechat_users c
+       SET points_balance    = COALESCE((
+             SELECT SUM(pb.remaining_amount)
+             FROM point_batches pb
+             WHERE pb.user_id = c.user_id
+               AND pb.expire_at > NOW()
+           ), 0),
            points_updated_at = NOW()
-     WHERE user_id = ${userId}
+     WHERE c.user_id = ${userId}
   `)
 
   return { delta, expected, granted }

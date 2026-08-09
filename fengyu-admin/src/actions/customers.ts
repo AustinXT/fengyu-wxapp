@@ -56,6 +56,7 @@ function serializeCustomer(row: CustomerRow): Customer {
     boundEmployeeId: row.boundEmployeeId,
     isCrossStoreTemp: row.isCrossStoreTemp,
     memberLevel: row.memberLevel,
+    becameMemberAt: row.becameMemberAt ? row.becameMemberAt.toISOString() : null,
     memberLevelUpgradedAt: row.memberLevelUpgradedAt ? row.memberLevelUpgradedAt.toISOString() : null,
     memberLevelLockedUntil: row.memberLevelLockedUntil ? row.memberLevelLockedUntil.toISOString() : null,
     customerSource: row.customerSource,
@@ -1255,7 +1256,7 @@ export const getOrphanProfilesByUserId = withPermission(
  *
  * 事务内：
  *   1. 把孤儿行的档案字段填入活跃行（活跃行已有非空字段**不覆盖**）
- *   2. 重挂 sale_orders / user_coupons / point_transactions / prepaid_cards /
+ *   2. 重挂 sale_orders / user_coupons / point_transactions / point_batches / prepaid_cards /
  *      card_transactions / appointments / messages / service_orders
  *      的 client_user_id = orphan → source
  *   3. DELETE 孤儿行
@@ -1304,9 +1305,9 @@ export const mergeClientProfile = withPermission(
     }
   }
 
-  // 可迁移字段（源行**缺失**才从孤儿行搬）
+  // 可迁移字段（源行**缺失**才从孤儿行搬）；points_balance 是 point_batches 的派生缓存，合并后统一重算。
   const migratable: Array<keyof typeof clientWechatUsers.$inferSelect> = [
-    'customerId', 'memberLevel', 'spendingTier', 'pointsBalance', 'skinType',
+    'customerId', 'memberLevel', 'spendingTier', 'skinType',
     'name', 'gender', 'notes', 'birthday', 'occupation', 'customerSource',
     'customerType', 'improvementFocus', 'skinIssue', 'wellnessPreference',
     'boundStoreId', 'boundEmployeeId', 'boundEmployeeName', 'wechatName', 'isMarried',
@@ -1316,8 +1317,7 @@ export const mergeClientProfile = withPermission(
   for (const field of migratable) {
     const currentVal = (sourceRow as Record<string, unknown>)[field as string]
     const orphanVal = (orphanRow as Record<string, unknown>)[field as string]
-    const currentEmpty = currentVal === null || currentVal === undefined || currentVal === '' ||
-      (field === 'pointsBalance' && currentVal === 0)
+    const currentEmpty = currentVal === null || currentVal === undefined || currentVal === ''
     if (currentEmpty && orphanVal !== null && orphanVal !== undefined && orphanVal !== '') {
       patch[field as string] = orphanVal
       fieldsMigrated.push(field as string)
@@ -1329,7 +1329,7 @@ export const mergeClientProfile = withPermission(
     await db.transaction(async (tx) => {
       const { saleOrders } = await import('@db/order')
       const { userCoupons } = await import('@db/coupon')
-      const { pointTransactions } = await import('@db/points')
+      const { pointBatches, pointTransactions } = await import('@db/points')
       const { prepaidCards } = await import('@db/prepaid-card')
       const { appointments } = await import('@db/appointment')
       const { messages } = await import('@db/message')
@@ -1352,6 +1352,18 @@ export const mergeClientProfile = withPermission(
       ordersReassigned = await reassignCol(saleOrders, saleOrders.clientUserId, { clientUserId: sourceUserId })
       await reassignCol(userCoupons, userCoupons.userId, { userId: sourceUserId })
       await reassignCol(pointTransactions, pointTransactions.userId, { userId: sourceUserId })
+      await reassignCol(pointBatches, pointBatches.userId, { userId: sourceUserId })
+      await tx.update(clientWechatUsers)
+        .set({
+          pointsBalance: sql<number>`COALESCE((
+            SELECT SUM(${pointBatches.remainingAmount})
+            FROM ${pointBatches}
+            WHERE ${pointBatches.userId} = ${sourceUserId}
+              AND ${pointBatches.expireAt} > NOW()
+          ), 0)`,
+          pointsUpdatedAt: sql`NOW()`,
+        })
+        .where(eq(clientWechatUsers.userId, sourceUserId))
       await reassignCol(prepaidCards, prepaidCards.userId, { userId: sourceUserId })
       // card_transactions 通过 card_id → prepaid_cards 间接关联，无需直接迁移
       await reassignCol(appointments, appointments.clientUserId, { clientUserId: sourceUserId })

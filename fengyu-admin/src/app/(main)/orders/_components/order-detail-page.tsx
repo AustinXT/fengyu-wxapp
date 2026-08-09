@@ -180,6 +180,9 @@ export default function OrderDetailPageClient({
   const paidAmount = Number(order.received ?? "0");
   const refundedAmount = Number(order.refundedAmount ?? "0");
   const hasPrepaidDeduction = prepaidCardAmount > 0;
+  const pointsUsed = Number(order.pointsUsed ?? 0);
+  const pointsDiscount = Number(order.pointsDiscount ?? "0");
+  const hasPointsDeduction = pointsUsed > 0 && pointsDiscount > 0;
   // 2026-04-26 sale-order-domain-refactor：refunded_amount > 0 推导"已退款"标签
   const hasRefund = refundedAmount > 0 && order.status !== "已退款";
   const couponDiscount = Number(order.couponDiscount ?? "0");
@@ -529,6 +532,14 @@ export default function OrderDetailPageClient({
               <div>
                 <span className="text-[#999999]">优惠券抵扣</span>
                 <p className="font-bold text-lg mt-1 text-[#C0322A]">-¥{couponDiscount.toLocaleString()}</p>
+              </div>
+            )}
+            {hasPointsDeduction && (
+              <div>
+                <span className="text-[#999999]">积分抵扣</span>
+                <p className="font-bold text-lg mt-1 text-[#C0322A]">
+                  -¥{pointsDiscount.toLocaleString()}（{pointsUsed.toLocaleString()}积分）
+                </p>
               </div>
             )}
             {hasPrepaidDeduction && (

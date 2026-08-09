@@ -23,6 +23,7 @@ import {
   type ExportBatchResult,
 } from '@/lib/export-pagination'
 import { resolveOrgNodeToStoreIds } from '@/lib/org-scope'
+import { clampCouponQuantity } from '@/lib/coupon-quantity'
 
 /**
  * coupon_templates.valid_from / valid_to 写入：入参是 date input 日期串（'YYYY-MM-DD'）。
@@ -628,8 +629,9 @@ export const toggleTemplateActive = withPermission(
 )
 
 /**
- * 向指定顾客发放一张优惠券。
+ * 向指定顾客发放优惠券（支持一次发多张）。
  * 校验：模板启用 + 发放量未超限 + 顾客存在 + 有效期计算。
+ * count 经 clampCouponQuantity 规范到 [1, 99]；默认 1 张（兼容旧调用）。
  */
 export const issueCoupon = withPermission(
   'coupon:create',
@@ -637,7 +639,9 @@ export const issueCoupon = withPermission(
     session,
     templateId: string,
     phone: string,
+    count: number = 1,
   ): Promise<{ success: boolean; message: string }> => {
+    const issueCount = clampCouponQuantity(count)
     // 1. 查模板
     const [tpl] = await db
       .select()
@@ -648,15 +652,18 @@ export const issueCoupon = withPermission(
     if (!tpl) return { success: false, message: '优惠券模板不存在' }
     if (!tpl.isActive) return { success: false, message: '该模板已停用，无法发放' }
 
-    // 2. 校验发放量限制
+    // 2. 校验发放量限制（按"已发 + 本次 issueCount"判，防多张突破 totalCount）
     if (tpl.totalCount !== null) {
-      const [{ count }] = await db
-        .select({ count: sql<number>`COUNT(*)::int` })
+      const [{ existingCount }] = await db
+        .select({ existingCount: sql<number>`COUNT(*)::int` })
         .from(userCoupons)
         .where(eq(userCoupons.templateId, templateId))
 
-      if (count >= tpl.totalCount) {
-        return { success: false, message: `发放数量已达上限（${tpl.totalCount}）` }
+      if (existingCount + issueCount > tpl.totalCount) {
+        return {
+          success: false,
+          message: `发放数量不足：剩余额度 ${tpl.totalCount - existingCount} 张，本次请求 ${issueCount} 张`,
+        }
       }
     }
 
@@ -685,26 +692,31 @@ export const issueCoupon = withPermission(
       return { success: false, message: '优惠券模板有效期配置异常，请联系管理员修复后再发放' }
     }
 
-    // 5. 生成 couponId 并插入
-    const couponId = `cpn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-
-    await db.insert(userCoupons).values({
-      couponId,
+    // 5. 按 issueCount 生成 N 张券（couponId 带序号避免同毫秒 + 4 位 random 碰撞）
+    const now = Date.now()
+    const rand = Math.random().toString(36).slice(2, 6)
+    const rows = Array.from({ length: issueCount }, (_, i) => ({
+      couponId: `cpn-${now}-${rand}-${i}`,
       templateId,
       userId: customer.userId,
-      status: '未使用',
+      status: '未使用' as const,
       expireAt,
-    })
+    }))
+    await db.insert(userCoupons).values(rows)
 
-    await logOperation(session, 'coupon.issue', 'user_coupon', couponId, {
+    await logOperation(session, 'coupon.issue', 'user_coupon', rows[0].couponId, {
       templateId,
       templateName: tpl.name,
       customerPhone: phone,
       customerName: customer.name,
+      count: issueCount,
     })
 
     revalidatePath(`/coupons/${templateId}`)
-    return { success: true, message: `已成功向 ${customer.name || phone} 发放优惠券` }
+    return {
+      success: true,
+      message: `已成功向 ${customer.name || phone} 发放 ${issueCount} 张优惠券`,
+    }
   },
 )
 

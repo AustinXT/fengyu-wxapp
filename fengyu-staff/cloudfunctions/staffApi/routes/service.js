@@ -1212,7 +1212,7 @@ async function generateServiceOrderId(client) {
   const likePattern = `HLD-WX-${dateStr}%`
 
   // 与 admin services.ts:522 对齐：hashtext('service_order_id_gen')
-  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['service_order_id_gen'])
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', ['service_order_id_gen'])
   const rows = await client.query(`
     SELECT service_order_id FROM service_orders
     WHERE service_order_id LIKE $1

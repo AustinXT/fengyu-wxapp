@@ -21,6 +21,7 @@ const { Client } = require('pg')
 const {
   capturePaymentAllocatables,
   refreshOrderAllocationRollup,
+  reconcileAllocationStatusAfterRefund,
 } = require('../../utils/payment-allocatable')
 
 const DEFAULT_CONN = 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
@@ -234,6 +235,34 @@ describe('payment-allocatable capture 链路（real PG 5433, BEGIN...ROLLBACK）
     expect(dupErr).not.toBeNull()
     expect(dupErr.code).toBe('23505')
     expect(String(dupErr.constraint || dupErr.message)).toContain('uq_spia_receipt_emp_role')
+  })
+
+  it('全额退款：子付款分配状态与父订单 allocation_status 同时清空', async () => {
+    await client.query(
+      `UPDATE sale_orders
+          SET received = 1000,
+              refunded_amount = 1000,
+              allocation_status = '待分配'
+        WHERE sale_order_id = $1`,
+      [SALE_ORDER_ID],
+    )
+
+    await reconcileAllocationStatusAfterRefund(client, SALE_ORDER_ID)
+
+    const payments = await client.query(
+      `SELECT allocation_status
+         FROM sale_order_payments
+        WHERE sale_order_id = $1`,
+      [SALE_ORDER_ID],
+    )
+    expect(payments.rows).not.toHaveLength(0)
+    expect(payments.rows.every((row) => row.allocation_status === null)).toBe(true)
+
+    const order = await client.query(
+      `SELECT allocation_status FROM sale_orders WHERE sale_order_id = $1`,
+      [SALE_ORDER_ID],
+    )
+    expect(order.rows[0].allocation_status).toBeNull()
   })
 })
 

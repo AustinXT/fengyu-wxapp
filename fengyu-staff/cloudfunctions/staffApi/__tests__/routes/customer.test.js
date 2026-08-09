@@ -802,6 +802,26 @@ describe('customer.paidOrders', () => {
     expect(ctx.result[0].items[0].remainingSessions).toBe(15)
   })
 
+  test('已完成销售单仍作为有效订单返回', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-completed' })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([{
+        sale_order_id: 'SO-WORKFINE-COMPLETED', status: '已完成', paid_at: '2026-07-01T10:00:00Z',
+      }])
+      .mockResolvedValueOnce([{
+        sale_order_id: 'SO-WORKFINE-COMPLETED', sale_item_id: 'item-completed', store_id: 'store-001',
+        session_count: 10, remaining_sessions: 6, paid_sessions: 10,
+        product_type: '疗程卡', product_name: '历史疗程卡', unit_real_price: '100.00',
+      }])
+
+    await customerRoutes.paidOrders(ctx)
+
+    const orderSql = pg.query.mock.calls[1][0]
+    expect(orderSql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
+    expect(ctx.result).toMatchObject([{ saleOrderId: 'SO-WORKFINE-COMPLETED', status: '已完成' }])
+  })
+
   test('paidOrders SQL 守卫：权益明细包含购买行和转换单转入行，排除转出行', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u-conv' })
     pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
@@ -1485,7 +1505,13 @@ describe('customer.customerBalance', () => {
     pg.query.mockResolvedValueOnce([])
     await customerRoutes.customerBalance(ctx)
 
-    expect(ctx.result).toEqual({ cardId: null, balance: 0 })
+    expect(ctx.result).toMatchObject({
+      cardId: null,
+      balance: 0,
+      pointsBalance: 0,
+      pointsToYuanRate: 0.01,
+      pointsDeductionMaxRate: 0.03,
+    })
   })
 
   test('balance 返回为数字类型（Number 转换）', async () => {

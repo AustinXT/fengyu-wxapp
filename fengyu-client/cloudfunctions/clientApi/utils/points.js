@@ -13,6 +13,60 @@
 // 参与积分发放的订单类型（决策 D1：内部单不发）
 const ORDER_TYPES_EARN_POINTS = new Set(['销售单'])
 
+async function grantPointBatch(client, { userId, pointTransactionId, type, amount, refOrderId }) {
+  if (!pointTransactionId || !amount || amount <= 0) return
+  await client.query(
+    `INSERT INTO point_batches (
+       user_id, source_transaction_id, source_type, ref_order_id,
+       original_amount, remaining_amount, earned_at, expire_at, created_at, updated_at
+     )
+     SELECT $1, $2, $3, $4, $5, $5, pt.created_at,
+            pt.created_at + INTERVAL '365 days', NOW(), NOW()
+       FROM point_transactions pt
+      WHERE pt.id = $2`,
+    [userId, pointTransactionId, type, refOrderId || null, amount],
+  )
+}
+
+async function consumePointBatches(client, { userId, amount, refOrderId }) {
+  const consumeAmount = Math.abs(amount)
+  if (!consumeAmount) return
+  await client.query(
+    `WITH locked_batches AS (
+       SELECT id, ref_order_id, expire_at, remaining_amount
+         FROM point_batches
+        WHERE user_id = $1
+          AND remaining_amount > 0
+          AND expire_at > NOW()
+        ORDER BY CASE WHEN $3::text IS NOT NULL AND ref_order_id = $3 THEN 0 ELSE 1 END,
+                 expire_at, id
+        FOR UPDATE
+     ),
+     prioritized AS (
+       SELECT id,
+              remaining_amount,
+              SUM(remaining_amount) OVER (
+                ORDER BY CASE WHEN $3::text IS NOT NULL AND ref_order_id = $3 THEN 0 ELSE 1 END,
+                         expire_at, id
+              ) AS running
+         FROM locked_batches
+     ),
+     allocation AS (
+       SELECT id,
+              LEAST(remaining_amount, GREATEST(0, $2 - (running - remaining_amount))) AS consume_amount
+         FROM prioritized
+        WHERE running - remaining_amount < $2
+     )
+     UPDATE point_batches pb
+        SET remaining_amount = pb.remaining_amount - allocation.consume_amount,
+            updated_at = NOW()
+       FROM allocation
+      WHERE pb.id = allocation.id
+        AND allocation.consume_amount > 0`,
+    [userId, consumeAmount, refOrderId || null],
+  )
+}
+
 /**
  * 结算某条订单链的积分
  *
@@ -59,9 +113,10 @@ async function settlePointsForOrder(client, originalSaleOrderId) {
   const expected = Math.floor(Math.max(0, netSettled) / 100)
 
   const grantedRes = await client.query(
-    `SELECT COALESCE(SUM(amount), 0)::int AS granted
+    `SELECT COALESCE(SUM(amount), 0)::bigint AS granted
        FROM point_transactions
-      WHERE ref_order_id = $1`,
+      WHERE ref_order_id = $1
+        AND type IN ('消费赠送','消费冲销')`,
     [originalSaleOrderId],
   )
   const granted = Number(grantedRes.rows[0]?.granted || 0)
@@ -75,21 +130,43 @@ async function settlePointsForOrder(client, originalSaleOrderId) {
   // partial unique uq_point_txn_order_user_type (user_id, ref_order_id, type) WHERE ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')
   // 分次回款/退款累加：同 (user,order,type) 已有行时把增量 delta 累加进唯一行（granted=SUM 口径不变），
   // 避免裸 INSERT 撞唯一索引导致整事务回滚。四端字面同义，由 cross-end-sql-snapshot 守护。
-  await client.query(
+  const inserted = await client.query(
     `INSERT INTO point_transactions (user_id, type, amount, ref_order_id, created_at)
      VALUES ($1, $2, $3, $4, NOW())
      ON CONFLICT (user_id, ref_order_id, type)
        WHERE ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')
      DO UPDATE SET amount = point_transactions.amount + EXCLUDED.amount,
-                   created_at = NOW()`,
+                   created_at = NOW()
+     RETURNING id`,
     [userId, type, delta, originalSaleOrderId],
   )
+  const pointTransactionId = Number(inserted.rows?.[0]?.id || 0)
+  if (delta > 0 && pointTransactionId) {
+    await grantPointBatch(client, {
+      userId,
+      pointTransactionId,
+      type,
+      amount: delta,
+      refOrderId: originalSaleOrderId,
+    })
+  } else if (delta < 0) {
+    await consumePointBatches(client, {
+      userId,
+      amount: delta,
+      refOrderId: originalSaleOrderId,
+    })
+  }
   await client.query(
-    `UPDATE client_wechat_users
-        SET points_balance    = COALESCE(points_balance, 0) + $1,
+    `UPDATE client_wechat_users c
+        SET points_balance    = COALESCE((
+              SELECT SUM(pb.remaining_amount)
+                FROM point_batches pb
+               WHERE pb.user_id = c.user_id
+                 AND pb.expire_at > NOW()
+            ), 0),
             points_updated_at = NOW()
-      WHERE user_id = $2`,
-    [delta, userId],
+      WHERE c.user_id = $1`,
+    [userId],
   )
 
   return { delta, expected, granted }
@@ -131,4 +208,6 @@ module.exports = {
   settlePointsForOrder,
   settlePointsSafe,
   ORDER_TYPES_EARN_POINTS,
+  grantPointBatch,
+  consumePointBatches,
 }

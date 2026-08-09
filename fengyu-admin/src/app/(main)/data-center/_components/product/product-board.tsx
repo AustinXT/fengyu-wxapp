@@ -13,18 +13,18 @@ import type { ProductBoardParams, ProductBoardResult } from "@/lib/data-center/t
 
 // ── KPI 卡片矩阵（key 对应后端 ProductBoardResult.kpis）────────────────
 const KPI_CARD: KpiGridItem[] = [
-  { key: "cardHolders", label: "持卡人数", hint: "截面快照，不随时间区间变化" },
-  { key: "cardHolderRate", label: "持卡占比", hint: "持卡人数 ÷ 会员数（截面）" },
+  { key: "cardHolders", label: "持卡人数", hint: "以当前时刻未用完疗程卡为准，不随时间区间变化" },
+  { key: "cardHolderRate", label: "持卡占比", hint: "持卡人数 ÷ 会员数（以当前时刻未用完疗程卡为准）" },
 ]
 const KPI_CYCLE: KpiGridItem[] = [
   { key: "trialCount", label: "体验人数", hint: "区间内有购买但全历史未达标" },
-  { key: "newCount", label: "新增人数", hint: "首次达标日落在区间内" },
-  { key: "newRevenue", label: "新增业绩" },
-  { key: "newAvgTicket", label: "新增客单价" },
-  { key: "repurchaseCount", label: "复购人数", hint: "区间内有达标日" },
+  { key: "newCount", label: "品项进入人数", hint: "首次达标日落在区间内" },
+  { key: "newRevenue", label: "进入业绩" },
+  { key: "newAvgTicket", label: "进入客单价" },
+  { key: "repurchaseCount", label: "复购人数", hint: "进入后的后续达标购买" },
   { key: "repurchaseRevenue", label: "复购业绩" },
   { key: "repurchaseAvgTicket", label: "复购客单价" },
-  { key: "repurchaseRate", label: "复购率", hint: "复购人数 ÷ 持卡人数" },
+  { key: "repurchaseRate", label: "复购率", hint: "复购人数 ÷ 品项进入人数" },
 ]
 
 // ── 明细表列（key 对应 byMarket/byStore[].metrics）────────────────────
@@ -32,9 +32,9 @@ const BREAKDOWN_COLUMNS: BreakdownColumn[] = [
   { key: "cardHolders", label: "持卡人数", unit: "count" },
   { key: "cardHolderRate", label: "持卡占比", unit: "percent" },
   { key: "trialCount", label: "体验人数", unit: "count" },
-  { key: "newCount", label: "新增人数", unit: "count" },
-  { key: "newRevenue", label: "新增业绩", unit: "amount" },
-  { key: "newAvgTicket", label: "新增客单价", unit: "amount" },
+  { key: "newCount", label: "品项进入人数", unit: "count" },
+  { key: "newRevenue", label: "进入业绩", unit: "amount" },
+  { key: "newAvgTicket", label: "进入客单价", unit: "amount" },
   { key: "repurchaseCount", label: "复购人数", unit: "count" },
   { key: "repurchaseRevenue", label: "复购业绩", unit: "amount" },
   { key: "repurchaseRate", label: "复购率", unit: "percent" },
@@ -134,9 +134,9 @@ export function ProductBoard() {
         <KpiGrid items={KPI_CARD} kpis={kpis} columns={2} />
       </section>
 
-      {/* KPI：体验 / 新增 / 复购（区间）*/}
+      {/* KPI：体验 / 进入 / 复购（区间）*/}
       <section className="flex flex-col gap-3">
-        <h2 className="text-sm font-semibold text-[var(--foreground)]">体验 / 新增 / 复购</h2>
+        <h2 className="text-sm font-semibold text-[var(--foreground)]">体验 / 进入 / 复购</h2>
         <KpiGrid items={KPI_CYCLE} kpis={kpis} columns={4} />
       </section>
 

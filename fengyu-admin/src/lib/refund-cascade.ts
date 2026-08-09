@@ -23,6 +23,7 @@
 import { sql } from 'drizzle-orm'
 import type { db } from '@/db'
 import { rowsAffected } from '@/lib/pg-rows'
+import { consumePointBatches } from '@/lib/points-batches'
 
 export type TransactionLike = Parameters<Parameters<typeof db.transaction>[0]>[0]
 
@@ -505,6 +506,15 @@ export async function cascadeRefund(
       const received = Number(orderRow?.received ?? 0)
       const refunded = Number(orderRow?.refunded ?? 0)
       const target = received > 0 ? Math.round((grantedTotal * refunded) / received) : grantedTotal
+      const reversedRes = await tx.execute(sql`
+        SELECT COALESCE(-SUM(amount), 0) AS reversed
+        FROM point_transactions
+        WHERE user_id = ${pointUserId}
+          AND ref_order_id = ${saleOrderId}
+          AND type = '消费冲销'
+      `)
+      const reversedRow = (reversedRes as unknown as Array<{ reversed: unknown }>)[0]
+      const reverseDelta = Math.max(0, target - Number(reversedRow?.reversed ?? 0))
       await tx.execute(sql`
         INSERT INTO point_transactions (
           user_id, ref_order_id, type, amount, created_at
@@ -515,10 +525,20 @@ export async function cascadeRefund(
         DO UPDATE SET amount = EXCLUDED.amount
       `)
       reversedPoints = target
+      if (reverseDelta > 0) {
+        await consumePointBatches(tx, {
+          userId: pointUserId,
+          amount: -reverseDelta,
+          refOrderId: saleOrderId,
+        })
+      }
       await tx.execute(sql`
         UPDATE client_wechat_users c
            SET points_balance = COALESCE((
-                 SELECT SUM(pt.amount) FROM point_transactions pt WHERE pt.user_id = c.user_id
+                 SELECT SUM(pb.remaining_amount)
+                 FROM point_batches pb
+                 WHERE pb.user_id = c.user_id
+                   AND pb.expire_at > NOW()
                ), 0),
                points_updated_at = NOW(),
                updated_at = NOW()

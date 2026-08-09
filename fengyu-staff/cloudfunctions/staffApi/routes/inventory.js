@@ -342,7 +342,7 @@ function isStaffCreateDocType(docType) {
 async function generateDocNo(client, docType) {
   const prefix = DOC_PREFIX[docType]
   const ymd = shanghaiYmd()
-  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', [
     `inventory_docs:${prefix}:${ymd}`,
   ])
   const latestRes = await client.query(

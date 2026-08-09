@@ -13,7 +13,7 @@
  *   - refund 下分后单调下降
  */
 import { describe, it, expect } from 'vitest'
-import { computePaidSessionsForItem } from '@/lib/paid-sessions'
+import { computePaidSessionsForItem, recalcPaidSessionsForOrder } from '@/lib/paid-sessions'
 
 describe('computePaidSessionsForItem 行级', () => {
   it('储值卡全额抵扣订单：item.received 含抵扣 = item.sale_amount → paid_sessions = session_count', () => {
@@ -183,5 +183,78 @@ describe('computePaidSessionsForItem 行级', () => {
         orderRefunded: 60,
       }),
     ).toBe(16)
+  })
+})
+
+function drizzleSqlText(query: unknown): string {
+  return (query as { toQuery: (config: unknown) => { sql: string } }).toQuery({
+    casing: { getColumnCasing: () => '' },
+    escapeName: (name: string) => name,
+    escapeParam: (index: number) => `$${index + 1}`,
+    escapeString: (value: string) => value,
+  }).sql
+}
+
+function makeRecalcFixture(receiptPositiveTotal: number) {
+  const executed: string[] = []
+  const signedReceipts = [100, -40]
+  const state = { received: 100, paidSessions: 10 }
+  const tx = {
+    execute: async (query: unknown) => {
+      const text = drizzleSqlText(query)
+      executed.push(text)
+      if (text.includes('AS receipt_positive_total')) {
+        return [{ receipt_positive_total: String(receiptPositiveTotal), order_received: '100' }]
+      }
+      if (text.includes('FROM sale_payment_item_receipts spir')) {
+        state.received = signedReceipts.reduce((total, amount) => total + amount, 0)
+      }
+      if (text.includes('WITH tg AS')) {
+        state.received = 100
+      }
+      if (text.includes('WITH refund_items AS')) {
+        state.received = Math.max(0, state.received - 40)
+      }
+      if (text.includes('paid_sessions = CASE')) {
+        state.paidSessions = computePaidSessionsForItem({
+          itemReceived: state.received,
+          itemSaleAmount: 100,
+          itemSessionCount: 10,
+          orderTotal: 100,
+          orderRefunded: 0,
+        })!
+      }
+      return []
+    },
+  }
+  return { tx, executed, state }
+}
+
+describe('退款 receipt 覆盖分流', () => {
+  it('+100/-40：正向 receipt 覆盖毛实收时走 Branch A，行净额和已付次数均为 60%', async () => {
+    const fixture = makeRecalcFixture(100)
+
+    await recalcPaidSessionsForOrder(fixture.tx as never, 'order-refund-receipt')
+
+    const coverageSql = fixture.executed.find((text) => text.includes('AS receipt_positive_total'))
+    expect(coverageSql).toContain("sop.change_type IN ('首次支付','回款','储值卡抵扣')")
+    expect(coverageSql).not.toContain("'退款'")
+    expect(fixture.executed.some((text) => text.includes('FROM sale_payment_item_receipts spir'))).toBe(true)
+    expect(fixture.executed.some((text) => text.includes('WITH tg AS'))).toBe(false)
+    expect(fixture.state).toEqual({ received: 60, paidSessions: 6 })
+  })
+
+  it('正向 receipt 不完整时走 Branch B，并在重算前扣减 note.items[].refundAmount', async () => {
+    const fixture = makeRecalcFixture(0)
+
+    await recalcPaidSessionsForOrder(fixture.tx as never, 'order-refund-fallback')
+
+    const allocationIndex = fixture.executed.findIndex((text) => text.includes('WITH tg AS'))
+    const deductIndex = fixture.executed.findIndex((text) => text.includes('WITH refund_items AS'))
+    const recalcIndex = fixture.executed.findIndex((text) => text.includes('paid_sessions = CASE'))
+    expect(allocationIndex).toBeGreaterThan(-1)
+    expect(deductIndex).toBeGreaterThan(allocationIndex)
+    expect(recalcIndex).toBeGreaterThan(deductIndex)
+    expect(fixture.state).toEqual({ received: 60, paidSessions: 6 })
   })
 })

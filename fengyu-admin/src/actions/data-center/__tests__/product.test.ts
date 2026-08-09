@@ -16,10 +16,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
  * mock @/db.execute —— 按 SQL 文本内容路由：
  *   - filterOptions（含 'DISTINCT pc.product_kind' 特征）→ filterRows
  *   - 骨架（含 o_store + market_id，无 group/CTE）→ skeletonRows
- *   - 持卡按店（含 product_type '疗程卡' + GROUP BY so.store_id）→ cardByStoreRows
+ *   - 持卡按店（含 paid_sessions > 0 + GROUP BY so.store_id）→ cardByStoreRows
  *   - 会员按店（含 bound_store_id + GROUP BY）→ memberByStoreRows
  *   - cycle 按店（含 store_ids 并集 + trial_store/new_store/repurchase_store）→ cycleByStoreRows
- *   - 持卡总量（含 product_type '疗程卡'，无 GROUP BY store）→ scalarCard
+ *   - 持卡总量（含 paid_sessions > 0，无 GROUP BY store）→ scalarCard
  *   - 会员总量（含 became_member_at，无 GROUP BY）→ scalarMember
  *   - cycle 标量（含 WITH daily_agg + cohort）→ scalarCycle
  */
@@ -72,8 +72,8 @@ vi.mock('@/db', () => ({
       if (/store_ids/.test(t) && /trial_store/.test(t)) {
         return responder.cycleByStoreRows
       }
-      // 持卡按店（product_type 疗程卡 + GROUP BY store_id）
-      if (/疗程卡/.test(t) && /GROUP BY so\.store_id/.test(t)) {
+      // 持卡按店（paid_sessions > 0 + GROUP BY store_id）
+      if (/paid_sessions/.test(t) && /GROUP BY so\.store_id/.test(t)) {
         return responder.cardByStoreRows
       }
       // 会员按店（bound_store_id + GROUP BY）
@@ -84,8 +84,8 @@ vi.mock('@/db', () => ({
       if (/WITH daily_agg/.test(t) && /cohort/.test(t)) {
         return [responder.scalarCycle]
       }
-      // 持卡总量（疗程卡，无 GROUP BY store）
-      if (/疗程卡/.test(t)) {
+      // 持卡总量（paid_sessions > 0，无 GROUP BY store）
+      if (/paid_sessions/.test(t)) {
         return [responder.scalarCard]
       }
       // 会员总量
@@ -212,8 +212,8 @@ describe('getProductBoard 装配', () => {
 
     // 持卡占比 = 10 / 40 = 0.25
     expect(res.kpis.cardHolderRate.value).toBeCloseTo(0.25, 6)
-    // 复购率 = 复购人数(5) / 持卡(10) = 0.5
-    expect(res.kpis.repurchaseRate.value).toBeCloseTo(0.5, 6)
+    // 复购率 = 复购人数(5) / 品项进入人数(5) = 1
+    expect(res.kpis.repurchaseRate.value).toBeCloseTo(1, 6)
     // 新增客单价 = 50000 / 5 = 10000
     expect(res.kpis.newAvgTicket.value).toBe(10000)
     // 复购客单价 = 50000 / 5 = 10000
@@ -286,8 +286,8 @@ describe('getProductBoard 装配', () => {
     expect(m.metrics.cardHolderRate).toBeCloseTo(0.25, 6)
     // 新增客单价 = 30000 / 3 = 10000
     expect(m.metrics.newAvgTicket).toBe(10000)
-    // 复购率 = 复购(3) / 持卡(6) = 0.5
-    expect(m.metrics.repurchaseRate).toBeCloseTo(0.5, 6)
+    // 复购率 = 复购(3) / 品项进入(3) = 1
+    expect(m.metrics.repurchaseRate).toBeCloseTo(1, 6)
 
     // 门店行带所属市场
     const s = res.byStore[0]
@@ -301,7 +301,7 @@ describe('getProductBoard 装配', () => {
     responder.skeletonRows = [
       { market_id: 'm1', market_name: '市场A', store_id: 's1', store_name: '门店1' },
     ]
-    responder.cardByStoreRows = [{ store_id: 's1', v: 0 }] // 持卡 0 → 复购率 null
+    responder.cardByStoreRows = [{ store_id: 's1', v: 0 }]
     responder.memberByStoreRows = [{ store_id: 's1', v: 0 }] // 会员 0 → 占比 null
     responder.cycleByStoreRows = [
       { store_id: 's1', trial_count: 0, new_count: 0, new_revenue: 0, repurchase_count: 0, repurchase_revenue: 0 },

@@ -71,6 +71,7 @@ describe('cron-worker STEP 2 — refreshMemberLevels', () => {
       mockExecute.mockResolvedValueOnce([]) // INSERT operation_logs
       mockExecute.mockResolvedValueOnce([]) // INSERT messages
       mockExecute.mockResolvedValueOnce([{ id: 1 }]) // INSERT points
+      mockExecute.mockResolvedValueOnce([]) // INSERT point_batches
       mockExecute.mockResolvedValueOnce([]) // UPDATE points_balance
       mockExecute.mockResolvedValueOnce([
         { validity_mode: 'days', valid_days: 30, valid_to: null, is_active: true },
@@ -92,6 +93,7 @@ describe('cron-worker STEP 2 — refreshMemberLevels', () => {
       // 升级幂等键（在 sql 模板的参数列表中）
       const allParams = mockExecute.mock.calls.flatMap((c) => paramsOf(c[0]))
       expect(allParams).toContain('member-upgrade-u1-黑钻')
+      // 默认 qty=1，第 1 张沿用历史无序号 key，保证补跑幂等
       expect(allParams).toContain('cpn-up-u1-黑钻-tpl-1')
       // 150 天保级期写在 SQL 文本里（INTERVAL '150 days'）
       const sqlTexts = mockExecute.mock.calls.map((c) => sqlTextOf(c[0]))
@@ -104,6 +106,7 @@ describe('cron-worker STEP 2 — refreshMemberLevels', () => {
         {
           user_id: 'u1',
           member_level: null,
+          became_member_at: new Date(),
           member_level_locked_until: null,
           spend: '12000',
         },
@@ -115,6 +118,123 @@ describe('cron-worker STEP 2 — refreshMemberLevels', () => {
 
       expect(result.upgradeCount).toBe(1)
       // 仅 transaction 内 2 次 execute（UPDATE + INSERT log）；权益 3 件套不发
+    })
+
+    it('历史会员补齐首个 member_level → 只写等级与日志，不发新会员权益', async () => {
+      const config = {
+        星钻: {
+          messageTitle: '星钻特权',
+          messageBody: '感谢',
+          points: 500,
+          couponTemplateIds: ['tpl-star'],
+        },
+      }
+      mockExecute.mockResolvedValueOnce([{ value: JSON.stringify(config) }])
+      mockExecute.mockResolvedValueOnce([
+        {
+          user_id: 'u-history',
+          member_level: null,
+          old_member_level: null,
+          member_level_locked_until: null,
+          member_level_upgraded_at: null,
+          became_member_at: new Date(Date.now() - 10 * 86400000),
+          spend: '12000',
+        },
+      ])
+      mockExecute.mockResolvedValueOnce([]) // UPDATE level
+      mockExecute.mockResolvedValueOnce([]) // INSERT operation_logs
+
+      const result = await refreshMemberLevels(mockDb as never)
+
+      expect(result.upgradeCount).toBe(1)
+      expect(result.errorCount).toBe(0)
+      expect(mockDb.transaction).toHaveBeenCalledTimes(1)
+
+      const sqlTexts = mockExecute.mock.calls.map((c) => sqlTextOf(c[0]))
+      expect(sqlTexts.some((t) => t.includes('INSERT INTO messages'))).toBe(false)
+      expect(sqlTexts.some((t) => t.includes('INSERT INTO point_transactions'))).toBe(false)
+      expect(sqlTexts.some((t) => t.includes('INSERT INTO user_coupons'))).toBe(false)
+
+      const detailParams = mockExecute.mock.calls
+        .flatMap((c) => paramsOf(c[0]))
+        .filter((p): p is string => typeof p === 'string' && p.startsWith('{'))
+      expect(detailParams.some((d) => d.includes('historical_member_first_upgrade'))).toBe(true)
+    })
+
+    it('新会员补齐首个 member_level → 发放新会员权益', async () => {
+      const config = {
+        星钻: {
+          messageTitle: '星钻特权',
+          messageBody: '感谢',
+          points: 500,
+          couponTemplateIds: ['tpl-star'],
+        },
+      }
+      mockExecute.mockResolvedValueOnce([{ value: JSON.stringify(config) }])
+      mockExecute.mockResolvedValueOnce([
+        {
+          user_id: 'u-new',
+          member_level: null,
+          old_member_level: null,
+          member_level_locked_until: null,
+          member_level_upgraded_at: null,
+          became_member_at: new Date(),
+          spend: '12000',
+        },
+      ])
+      mockExecute.mockResolvedValueOnce([]) // UPDATE level
+      mockExecute.mockResolvedValueOnce([]) // INSERT operation_logs
+      mockExecute.mockResolvedValueOnce([]) // INSERT messages
+      mockExecute.mockResolvedValueOnce([{ id: 1 }]) // INSERT points
+      mockExecute.mockResolvedValueOnce([]) // INSERT point_batches
+      mockExecute.mockResolvedValueOnce([]) // UPDATE points_balance
+      mockExecute.mockResolvedValueOnce([
+        { validity_mode: 'days', valid_days: 30, valid_to: null, is_active: true },
+      ])
+      mockExecute.mockResolvedValueOnce([]) // INSERT user_coupons
+
+      const result = await refreshMemberLevels(mockDb as never)
+
+      expect(result.upgradeCount).toBe(1)
+      const allParams = mockExecute.mock.calls.flatMap((c) => paramsOf(c[0]))
+      expect(allParams).toContain('member-upgrade-u-new-星钻')
+      expect(allParams).toContain('cpn-up-u-new-星钻-tpl-star')
+    })
+
+    it('升级权益 couponQuantities → 按数量发 N 张，第 1 张沿用历史 key，第 2..N 张带序号', async () => {
+      const config = {
+        黑钻: {
+          messageTitle: '黑钻特权',
+          messageBody: '感谢',
+          points: 1000,
+          couponTemplateIds: ['tpl-1'],
+          couponQuantities: { 'tpl-1': 3 },
+        },
+      }
+      mockExecute.mockResolvedValueOnce([{ value: JSON.stringify(config) }])
+      mockExecute.mockResolvedValueOnce([
+        { user_id: 'uQ', member_level: '星钻', member_level_locked_until: null, spend: '120000' },
+      ])
+      mockExecute.mockResolvedValueOnce([]) // UPDATE level
+      mockExecute.mockResolvedValueOnce([]) // INSERT operation_logs
+      mockExecute.mockResolvedValueOnce([]) // INSERT messages
+      mockExecute.mockResolvedValueOnce([{ id: 1 }]) // INSERT points
+      mockExecute.mockResolvedValueOnce([]) // INSERT point_batches
+      mockExecute.mockResolvedValueOnce([]) // UPDATE points_balance
+      mockExecute.mockResolvedValueOnce([
+        { validity_mode: 'days', valid_days: 30, valid_to: null, is_active: true },
+      ])
+      mockExecute.mockResolvedValueOnce([]) // INSERT user_coupons #1
+      mockExecute.mockResolvedValueOnce([]) // INSERT user_coupons #2
+      mockExecute.mockResolvedValueOnce([]) // INSERT user_coupons #3
+
+      const result = await refreshMemberLevels(mockDb as never)
+      expect(result.upgradeCount).toBe(1)
+
+      const allParams = mockExecute.mock.calls.flatMap((c) => paramsOf(c[0]))
+      expect(allParams).toContain('cpn-up-uQ-黑钻-tpl-1')
+      expect(allParams).toContain('cpn-up-uQ-黑钻-tpl-1-2')
+      expect(allParams).toContain('cpn-up-uQ-黑钻-tpl-1-3')
     })
   })
 
@@ -222,6 +342,7 @@ describe('cron-worker STEP 2 — refreshMemberLevels', () => {
         {
           user_id: 'u1',
           member_level: '黑钻',
+          old_member_level: '星钻',
           member_level_locked_until: null,
           member_level_upgraded_at: new Date(), // 刚刚升级
           spend: '120000',
@@ -230,6 +351,7 @@ describe('cron-worker STEP 2 — refreshMemberLevels', () => {
       // 补发事务内仅三件套（无 UPDATE level / operation_logs）
       mockExecute.mockResolvedValueOnce([]) // INSERT messages
       mockExecute.mockResolvedValueOnce([{ id: 1 }]) // INSERT points
+      mockExecute.mockResolvedValueOnce([]) // INSERT point_batches
       mockExecute.mockResolvedValueOnce([]) // UPDATE points_balance
       mockExecute.mockResolvedValueOnce([
         { validity_mode: 'days', valid_days: 30, valid_to: null, is_active: true },
@@ -266,6 +388,28 @@ describe('cron-worker STEP 2 — refreshMemberLevels', () => {
       expect(result.unchangedCount).toBe(1)
       expect(mockDb.transaction).not.toHaveBeenCalled()
     })
+
+    it('历史会员首升补齐产生的 recent upgradedAt → 不补发新会员权益', async () => {
+      mockExecute.mockResolvedValueOnce([{ value: JSON.stringify(BLACK_BENEFITS) }])
+      mockExecute.mockResolvedValueOnce([
+        {
+          user_id: 'u-history',
+          member_level: '黑钻',
+          old_member_level: null,
+          member_level_locked_until: null,
+          member_level_upgraded_at: new Date(),
+          became_member_at: new Date(Date.now() - 10 * 86400000),
+          spend: '120000',
+        },
+      ])
+
+      const result = await refreshMemberLevels(mockDb as never)
+
+      expect(result.unchangedCount).toBe(1)
+      expect(mockDb.transaction).not.toHaveBeenCalled()
+      const allParams = mockExecute.mock.calls.flatMap((c) => paramsOf(c[0]))
+      expect(allParams).not.toContain('member-upgrade-u-history-黑钻')
+    })
   })
 
   describe('F. 单用户失败不影响其他用户', () => {
@@ -295,6 +439,7 @@ describe('cron-worker STEP 2 — refreshMemberLevels', () => {
       mockExecute.mockResolvedValueOnce([])
       mockExecute.mockResolvedValueOnce([])
       mockExecute.mockResolvedValueOnce([{ id: 1 }])
+      mockExecute.mockResolvedValueOnce([])
       mockExecute.mockResolvedValueOnce([])
       mockExecute.mockResolvedValueOnce([
         { validity_mode: 'days', valid_days: 30, valid_to: null, is_active: true },

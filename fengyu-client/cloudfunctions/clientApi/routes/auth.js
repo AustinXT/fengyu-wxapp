@@ -253,7 +253,7 @@ async function generateUserId() {
   const prefix = `FYGK-${yyyy}${mm}${dd}-`
 
   const rows = await pg.transaction(async (client) => {
-    await client.query("SELECT pg_advisory_xact_lock(hashtext('gen_client_user_id'))")
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('gen_client_user_id')::bigint)")
     const { rows } = await client.query(
       "SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1 ORDER BY user_id DESC LIMIT 1",
       [prefix + '%']

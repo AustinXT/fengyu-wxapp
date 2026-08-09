@@ -531,6 +531,28 @@
           <!-- Wave 3G — 抵扣区（预选）：充值卡。与支付方式区明确分离 -->
           <view class="prepaid-card-section">
             <text class="prepaid-card-section-title">抵扣（预选）</text>
+            <view wx:if="{{saleOrderType === '销售单'}}" class="prepaid-card-row">
+              <view class="prepaid-card-info">
+                <text class="prepaid-card-label">积分</text>
+                <text class="prepaid-card-balance">可用 {{customerPointsBalance}} 分</text>
+              </view>
+              <view class="prepaid-card-switch-wrap">
+                <van-switch
+                  checked="{{usePoints}}"
+                  size="40rpx"
+                  active-color="#C0322A"
+                  disabled="{{customerPointsBalance <= 0 || maxPointsUsable <= 0 || customerBalanceLoading}}"
+                  bind:change="onTogglePoints"
+                />
+              </view>
+            </view>
+            <view wx:if="{{saleOrderType === '销售单' && usePoints && pointsDiscount > 0}}" class="prepaid-card-deduct-row">
+              <text class="prepaid-card-deduct-label">积分抵扣</text>
+              <text class="prepaid-card-deduct-amount">-¥{{pointsDiscount}}<text class="prepaid-card-deduct-hint">（{{pointsUsed}}积分）</text></text>
+            </view>
+            <view wx:elif="{{saleOrderType === '销售单' && customerPointsBalance <= 0}}" class="prepaid-card-empty-hint">
+              <text>顾客暂无可抵扣积分</text>
+            </view>
             <view class="prepaid-card-row">
               <view class="prepaid-card-info">
                 <text class="prepaid-card-label">充值卡</text>

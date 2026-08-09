@@ -516,8 +516,8 @@ function buildNormalSkuMarketScopeCondition(auth, params, skuAlias = 'sk') {
       AND EXISTS (
         SELECT 1
         FROM stores scope_store
-        JOIN org_nodes scope_node ON scope_store.org_node_id = scope_node.id
-        JOIN org_nodes scope_market ON scope_node.parent_id = scope_market.id
+        JOIN org_nodes scope_store_node ON scope_store.org_node_id = scope_store_node.id
+        JOIN org_nodes scope_market ON scope_store_node.parent_id = scope_market.id
         WHERE scope_store.store_id = ${storeParam}
           AND scope_market.type = '市场'
           AND (

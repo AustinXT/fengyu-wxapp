@@ -7,7 +7,7 @@ description: |
   "上线 admin"、"服务器更新一下"、"发布到远程"时激活。
 disable-model-invocation: true
 user-invocable: true
-argument-hint: '[admin]'
+argument-hint: '[admin|analyst]'
 metadata:
   title: 远程部署（本地构建）
   description_zh: 本地 docker build → save/load → compose up
@@ -21,16 +21,17 @@ metadata:
 
 ```bash
 ./deploy-admin.sh <dev|prod> [ssh-host] [remote-dir]
+./deploy-analyst.sh <dev|prod> [ssh-host] [remote-dir] [public-host]
 ```
 
 第一个参数 `dev`/`prod` 决定目标环境：SSH host 自动路由（dev→`ali-demo` 测试 / prod→`fengyu-prod` 生产），admin 容器连对应远程 PG（dev→47.113.202.7 / prod→118.178.196.26，均 5433/fengyu_wxapp）。`[ssh-host]`/`[remote-dir]` 可显式覆盖（默认远程目录 dev=`/root/proj.xt.com/fengyu-wxapp/docker`，prod=`/www/wwwroot/fengyu-admin/docker`）。prod 有二次确认 + 生产库迁移预检，dev 无。
 
 ## 部署流程
 
-1. **本地 docker build** — 使用 `docker/Dockerfile.admin` 多阶段构建（bun install → bun build → node:18-alpine runner）
+1. **本地 docker build** — admin 使用 `docker/Dockerfile.admin`；analyst 使用 `docker/Dockerfile.analyst`
 2. **镜像传输** — `docker save | gzip | ssh docker load`（管道传输不落盘）
-3. **远程启动** — `docker compose up -d admin`
-4. **健康检查** — curl localhost:3000
+3. **远程启动** — `docker compose up -d admin` 或 `docker compose up -d analyst`
+4. **健康检查** — admin curl localhost:3000；analyst curl localhost:3001
 
 ## 前置条件
 

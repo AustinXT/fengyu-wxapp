@@ -1,3 +1,19 @@
+CREATE TABLE "inventory_cutover_states" (
+	"cutover_key" text PRIMARY KEY NOT NULL,
+	"status" text DEFAULT '待初始化' NOT NULL,
+	"as_of_date" date,
+	"source_row_count" integer,
+	"source_quantity" numeric(14, 2),
+	"imported_doc_count" integer,
+	"imported_item_count" integer,
+	"initialized_by" varchar(30),
+	"initialized_at" timestamp with time zone,
+	"verified_at" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "chk_inventory_cutover_states_status" CHECK ("inventory_cutover_states"."status" IN ('待初始化','待核验','已初始化'))
+);
+--> statement-breakpoint
 CREATE TABLE "inventory_doc_items" (
 	"id" bigserial PRIMARY KEY NOT NULL,
 	"doc_id" text NOT NULL,
@@ -77,6 +93,9 @@ CREATE TABLE "inventory_docs" (
 	"approved_at" timestamp with time zone,
 	"rejected_by" varchar(30),
 	"rejected_at" timestamp with time zone,
+	"cancellation_request_reason" text,
+	"cancellation_requested_by" varchar(30),
+	"cancellation_requested_at" timestamp with time zone,
 	"cancellation_reason" text,
 	"cancelled_by" varchar(30),
 	"cancelled_at" timestamp with time zone,
@@ -161,11 +180,13 @@ CREATE TABLE "inventory_promotion_plans" (
 	"ends_at" date NOT NULL,
 	"scope_market_id" text,
 	"scope_store_id" text,
+	"rule_type" text DEFAULT '单品阶梯' NOT NULL,
 	"status" text DEFAULT '启用' NOT NULL,
 	"remark" text,
 	"created_by" varchar(30),
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "chk_inventory_promotion_rule_type" CHECK ("inventory_promotion_plans"."rule_type" IN ('单品阶梯','组合')),
 	CONSTRAINT "chk_inventory_promotion_status" CHECK ("inventory_promotion_plans"."status" IN ('启用','停用')),
 	CONSTRAINT "chk_inventory_promotion_date" CHECK ("inventory_promotion_plans"."ends_at" >= "inventory_promotion_plans"."starts_at")
 );
@@ -268,6 +289,7 @@ CREATE TABLE "inventory_suppliers" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+ALTER TABLE "inventory_cutover_states" ADD CONSTRAINT "inventory_cutover_states_initialized_by_staff_wechat_users_employee_id_fk" FOREIGN KEY ("initialized_by") REFERENCES "public"."staff_wechat_users"("employee_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "inventory_doc_items" ADD CONSTRAINT "inventory_doc_items_doc_id_inventory_docs_id_fk" FOREIGN KEY ("doc_id") REFERENCES "public"."inventory_docs"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "inventory_doc_items" ADD CONSTRAINT "inventory_doc_items_lot_id_inventory_stock_lots_id_fk" FOREIGN KEY ("lot_id") REFERENCES "public"."inventory_stock_lots"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "inventory_doc_items" ADD CONSTRAINT "inventory_doc_items_sku_id_inventory_skus_sku_id_fk" FOREIGN KEY ("sku_id") REFERENCES "public"."inventory_skus"("sku_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -287,6 +309,7 @@ ALTER TABLE "inventory_docs" ADD CONSTRAINT "inventory_docs_created_by_staff_wec
 ALTER TABLE "inventory_docs" ADD CONSTRAINT "inventory_docs_confirmed_by_staff_wechat_users_employee_id_fk" FOREIGN KEY ("confirmed_by") REFERENCES "public"."staff_wechat_users"("employee_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "inventory_docs" ADD CONSTRAINT "inventory_docs_approved_by_staff_wechat_users_employee_id_fk" FOREIGN KEY ("approved_by") REFERENCES "public"."staff_wechat_users"("employee_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "inventory_docs" ADD CONSTRAINT "inventory_docs_rejected_by_staff_wechat_users_employee_id_fk" FOREIGN KEY ("rejected_by") REFERENCES "public"."staff_wechat_users"("employee_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inventory_docs" ADD CONSTRAINT "inventory_docs_cancellation_requested_by_staff_wechat_users_employee_id_fk" FOREIGN KEY ("cancellation_requested_by") REFERENCES "public"."staff_wechat_users"("employee_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "inventory_docs" ADD CONSTRAINT "inventory_docs_cancelled_by_staff_wechat_users_employee_id_fk" FOREIGN KEY ("cancelled_by") REFERENCES "public"."staff_wechat_users"("employee_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "inventory_locations" ADD CONSTRAINT "inventory_locations_org_node_id_org_nodes_id_fk" FOREIGN KEY ("org_node_id") REFERENCES "public"."org_nodes"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "inventory_locations" ADD CONSTRAINT "inventory_locations_store_id_stores_store_id_fk" FOREIGN KEY ("store_id") REFERENCES "public"."stores"("store_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -341,6 +364,7 @@ CREATE INDEX "idx_inventory_promotion_items_sku" ON "inventory_promotion_plan_it
 CREATE UNIQUE INDEX "uq_inventory_promotion_plan_no" ON "inventory_promotion_plans" USING btree ("plan_no");--> statement-breakpoint
 CREATE INDEX "idx_inventory_promotion_scope_market" ON "inventory_promotion_plans" USING btree ("scope_market_id");--> statement-breakpoint
 CREATE INDEX "idx_inventory_promotion_scope_store" ON "inventory_promotion_plans" USING btree ("scope_store_id");--> statement-breakpoint
+CREATE INDEX "idx_inventory_promotion_rule_type" ON "inventory_promotion_plans" USING btree ("rule_type");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_inventory_skus_product_code" ON "inventory_skus" USING btree ("product_code");--> statement-breakpoint
 CREATE INDEX "idx_inventory_skus_name" ON "inventory_skus" USING btree ("product_name");--> statement-breakpoint
 CREATE INDEX "idx_inventory_skus_series" ON "inventory_skus" USING btree ("product_series");--> statement-breakpoint
@@ -355,28 +379,4 @@ CREATE INDEX "idx_inventory_stock_reservations_request" ON "inventory_stock_rese
 CREATE INDEX "idx_inventory_stock_reservations_location_sku" ON "inventory_stock_reservations" USING btree ("location_id","sku_id");--> statement-breakpoint
 CREATE INDEX "idx_inventory_stock_reservations_status" ON "inventory_stock_reservations" USING btree ("status");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_inventory_suppliers_name" ON "inventory_suppliers" USING btree ("name");--> statement-breakpoint
-CREATE INDEX "idx_inventory_suppliers_active" ON "inventory_suppliers" USING btree ("is_active");--> statement-breakpoint
-INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, parent_location_id, is_active)
-SELECT id, type, name, id, parent_id, is_active
-  FROM org_nodes
- WHERE type IN ('总部', '市场')
-ON CONFLICT (location_id) DO UPDATE
-  SET location_type = EXCLUDED.location_type,
-      name = EXCLUDED.name,
-      org_node_id = EXCLUDED.org_node_id,
-      parent_location_id = EXCLUDED.parent_location_id,
-      is_active = EXCLUDED.is_active,
-      updated_at = now();--> statement-breakpoint
-INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, store_id, parent_location_id, is_active)
-SELECT s.store_id, '门店', s.store_name, s.org_node_id, s.store_id, o.parent_id,
-       COALESCE(o.is_active, false) AND NOT s.is_closed
-  FROM stores s
-  LEFT JOIN org_nodes o ON o.id = s.org_node_id
-ON CONFLICT (location_id) DO UPDATE
-  SET location_type = EXCLUDED.location_type,
-      name = EXCLUDED.name,
-      org_node_id = EXCLUDED.org_node_id,
-      store_id = EXCLUDED.store_id,
-      parent_location_id = EXCLUDED.parent_location_id,
-      is_active = EXCLUDED.is_active,
-      updated_at = now();
+CREATE INDEX "idx_inventory_suppliers_active" ON "inventory_suppliers" USING btree ("is_active");

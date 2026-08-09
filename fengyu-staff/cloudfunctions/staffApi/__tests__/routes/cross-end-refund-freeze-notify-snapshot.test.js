@@ -113,7 +113,7 @@ describe('充值卡退款旁路守护（scope + 充值单类型 + 线下退款 +
   })
 
   test('card.create/approve/reject 复用退款消息通知', () => {
-    expect(staffCardRoute).toMatch(/notifyRefundCreated\(client/)
+    expect(staffCardRoute).toMatch(/notifyRefundCreated\(pg/)
     expect(staffCardRoute).toMatch(/notifyRefundResult\(client/)
     expect(staffCardRoute).toMatch(/approved: true/)
     expect(staffCardRoute).toMatch(/approved: false/)

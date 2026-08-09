@@ -21,6 +21,7 @@ import {
 } from '@/lib/export-pagination'
 import { paidUnusedSessionsExpr } from '@/lib/paid-sessions'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
+import { getPointsToYuanRate, getPointsDeductionMaxRate } from '@/lib/system-config'
 
 // ============================================================================
 // 管理端卡包列表（/cards 页面）
@@ -889,6 +890,41 @@ export const getCustomerCardBalance = withPermission(
   },
 )
 
+export interface CustomerPointsBalance {
+  pointsBalance: number
+  pointsToYuanRate: number
+  pointsDeductionMaxRate: number
+}
+
+/**
+ * 查询顾客积分余额与抵扣配置（admin 开单页使用）。
+ *
+ * 权限：sale_order:create（开单上下文）
+ */
+export const getCustomerPointsBalance = withPermission(
+  'sale_order:create',
+  async (_session, clientUserId: string): Promise<CustomerPointsBalance> => {
+    const [pointsToYuanRate, pointsDeductionMaxRate] = await Promise.all([
+      getPointsToYuanRate(),
+      getPointsDeductionMaxRate(),
+    ])
+    if (!clientUserId) {
+      return { pointsBalance: 0, pointsToYuanRate, pointsDeductionMaxRate }
+    }
+    const rows = await db
+      .select({ pointsBalance: clientWechatUsers.pointsBalance })
+      .from(clientWechatUsers)
+      .where(eq(clientWechatUsers.userId, clientUserId))
+      .limit(1)
+    const n = Number(rows[0]?.pointsBalance ?? 0)
+    return {
+      pointsBalance: Number.isFinite(n) && n > 0 ? Math.floor(n) : 0,
+      pointsToYuanRate,
+      pointsDeductionMaxRate,
+    }
+  },
+)
+
 /**
  * 拉充值档位配置（含 minAmount/maxAmount）—— 自建充值页表单实时校验用
  *
@@ -1002,7 +1038,7 @@ export const createRechargeOrder = withPermission(
       saleOrderId = await db.transaction(async (tx) => {
         const idRows = await tx.execute(sql`
           WITH lock AS (
-            SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen'))
+            SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen')::bigint)
           )
           SELECT 'FY-XSD-WX-' || to_char(NOW(), 'YYMMDD') ||
             LPAD(
