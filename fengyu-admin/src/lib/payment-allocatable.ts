@@ -129,7 +129,7 @@ export async function capturePaymentAllocatables(
     if ((convGuard as any).count === 0) return []
     const perItem = allocateSignedCents(
       Math.round(evt * 100),
-      rows.map((r) => ({ saleItemId: r.sale_item_id, weightCents: Math.round(Math.abs(Number(r.sale_amount)) * 100) })),
+      rows.map((r) => ({ saleItemId: r.sale_item_id, weightCents: Math.round(Number(r.sale_amount) * 100) })),
     )
 
     const catMap = new Map(rows.map((r) => [r.sale_item_id, r.sales_category]))

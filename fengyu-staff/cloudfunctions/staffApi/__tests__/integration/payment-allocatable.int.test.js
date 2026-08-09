@@ -238,9 +238,9 @@ describe('payment-allocatable capture 链路（real PG 5433, BEGIN...ROLLBACK）
 })
 
 // 转换单（按回款逐笔分配）：明细只有「转出/转入」、无「购买」行 → capture 命中 0 明细。
-// 旧逻辑：items.length===0 早返回，不产 receipt、回款行状态靠回填补；新逻辑：按转出/转入
-//         |sale_amount|（绝对值）权重落 receipt，与销售单一样支持按每笔回款逐笔分配。
-//         转出/转入行 received 不受 recalc STEP1 影响（只看『购买』行）。
+// 旧逻辑：items.length===0 早返回，不产 receipt、回款行状态靠回填补；新逻辑：按转出/转入有符号净额
+//         落 receipt，与销售单一样支持按每笔回款逐笔分配。转出/转入行 received 不受
+//         recalc STEP1 影响（只看『购买』行）。
 describe('capture 转换单（无「购买」明细，业绩转移）', () => {
   const CONV_ORDER = `IT-PA-CONV-${RUN}`
   const CONV_OUT = `IT-PA-CONV-OUT-${RUN}` // 转出（旧卡剩余价值，负数）
@@ -292,16 +292,15 @@ describe('capture 转换单（无「购买」明细，业绩转移）', () => {
       directedItems: null,
     })
 
-    // 转换单 → weightCents 取 sale_amount 绝对值（Bug 7）：转出 211 / 转入 1000 作权重，
-    // evt=789 → 转出 +137.47、转入 +651.53，净额 789（本笔实收）
+    // 转换单 → 转出 -211、转入 +1000，净额 789（本笔实收）
     const retById = Object.fromEntries(out.map((o) => [o.saleItemId, o]))
-    expect(num(retById[CONV_OUT].amount)).toBe(137.47)
-    expect(num(retById[CONV_IN].amount)).toBe(651.53)
+    expect(num(retById[CONV_OUT].amount)).toBe(-211)
+    expect(num(retById[CONV_IN].amount)).toBe(1000)
     expect(num(retById[CONV_OUT].amount) + num(retById[CONV_IN].amount)).toBe(789)
     const m = await allocatableMap(salePaymentId)
     expect(Object.keys(m).length).toBe(2)
-    expect(m[CONV_OUT].amount).toBe(137.47)
-    expect(m[CONV_IN].amount).toBe(651.53)
+    expect(m[CONV_OUT].amount).toBe(-211)
+    expect(m[CONV_IN].amount).toBe(1000)
     expect(m[CONV_IN].salesCategory).toBe('自销自耗')
 
     const ps = await client.query(
@@ -320,7 +319,7 @@ describe('capture 转换单（无「购买」明细，业绩转移）', () => {
     expect(o.rows[0].allocation_status).toBe('待分配')
   })
 
-  it('转换单仅有负 sale_amount 转出行：weightCents 取绝对值 → evt 全落转出行并产 receipt', async () => {
+  it('净权重非正兜底：仅置回款行「待分配」，不产 receipt', async () => {
     const CONV_NOIN = `IT-PA-CONV-NOIN-${RUN}`
     const CONV_NOIN_OUT = `IT-PA-CONV-NOIN-OUT-${RUN}`
     await client.query(
@@ -352,13 +351,10 @@ describe('capture 转换单（无「购买」明细，业绩转移）', () => {
       directedItems: null,
     })
 
-    // 异常转换单（仅负 sale_amount 转出行）：weightCents 取绝对值后净权重 500 > 0 → evt=500 全落转出行
-    expect(out).toHaveLength(1)
-    expect(out[0].saleItemId).toBe(CONV_NOIN_OUT)
-    expect(num(out[0].amount)).toBe(500)
+    // 异常转换单（净权重非正）→ 兜底仅置回款行『待分配』，不产 receipt
+    expect(out).toEqual([])
     const m = await allocatableMap(salePaymentId)
-    expect(Object.keys(m).length).toBe(1)
-    expect(m[CONV_NOIN_OUT].amount).toBe(500)
+    expect(Object.keys(m).length).toBe(0)
     const ps = await client.query(
       `SELECT allocation_status FROM sale_order_payments WHERE id = $1`,
       [salePaymentId],
@@ -367,9 +363,9 @@ describe('capture 转换单（无「购买」明细，业绩转移）', () => {
   })
 })
 
-// 转换单多转入行（异品类）：新码按 |sale_amount|（绝对值）比例摊到全部转出/转入行，
+// 转换单多转入行（异品类）：新码按有符号 sale_amount 比例摊到全部转出/转入行，
 // 各转入行得到对应品类 receipt，下游提成按行品类率归因正确。
-describe('capture 转换单多转入行（异品类按 |sale_amount| 比例摊）', () => {
+describe('capture 转换单多转入行（异品类按 signed sale_amount 比例摊）', () => {
   const CONV_MULTI = `IT-PA-CM-${RUN}` // sale_order_id
   const CONV_MULTI_OUT = `IT-PA-CM-O-${RUN}` // 转出 -100
   const CONV_IN1 = `IT-PA-CM-A-${RUN}` // 转入 自销自耗 sale_amount=300
@@ -397,7 +393,7 @@ describe('capture 转换单多转入行（异品类按 |sale_amount| 比例摊�
     await insDir(CONV_IN2, '转入', '他销自耗', 300, 300, 5)
   })
 
-  it('capture 按 |sale_amount| 比例摊 evt=500 → 转出 71.43 / 自销自耗 214.29 / 他销自耗 214.28', async () => {
+  it('capture 按 signed 比例摊 evt=500 → 转出 -100 / 自销自耗 300 / 他销自耗 300', async () => {
     const pay = await client.query(
       `INSERT INTO sale_order_payments
          (sale_order_id, change_type, amount, payment_method, status, source_end, paid_at)
@@ -415,17 +411,17 @@ describe('capture 转换单多转入行（异品类按 |sale_amount| 比例摊�
     })
 
     const retById = Object.fromEntries(out.map((o) => [o.saleItemId, o]))
-    expect(num(retById[CONV_MULTI_OUT].amount)).toBe(71.43)
-    expect(num(retById[CONV_IN1].amount)).toBe(214.29)
-    expect(num(retById[CONV_IN2].amount)).toBe(214.28)
+    expect(num(retById[CONV_MULTI_OUT].amount)).toBe(-100)
+    expect(num(retById[CONV_IN1].amount)).toBe(300)
+    expect(num(retById[CONV_IN2].amount)).toBe(300)
     expect(retById[CONV_IN1].salesCategory).toBe('自销自耗')
     expect(retById[CONV_IN2].salesCategory).toBe('他销自耗')
     expect(num(retById[CONV_MULTI_OUT].amount) + num(retById[CONV_IN1].amount) + num(retById[CONV_IN2].amount)).toBe(500)
 
     const m = await allocatableMap(salePaymentId)
-    expect(m[CONV_MULTI_OUT].amount).toBe(71.43)
-    expect(m[CONV_IN1].amount).toBe(214.29)
-    expect(m[CONV_IN2].amount).toBe(214.28)
+    expect(m[CONV_MULTI_OUT].amount).toBe(-100)
+    expect(m[CONV_IN1].amount).toBe(300)
+    expect(m[CONV_IN2].amount).toBe(300)
     expect(m[CONV_IN1].salesCategory).toBe('自销自耗')
     expect(m[CONV_IN2].salesCategory).toBe('他销自耗')
   })
