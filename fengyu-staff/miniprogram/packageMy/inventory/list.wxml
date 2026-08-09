@@ -1,5 +1,8 @@
 <!-- packageMy/inventory/list.wxml -->
 <view class="container">
+  <view class="create-bar" wx:if="{{createDocType}}">
+    <button class="create-button" bindtap="onCreateTap">{{createLabel}}</button>
+  </view>
   <view class="filters">
     <view class="filter-row" wx:if="{{subtypes.length > 0}}">
       <view class="filter-chip {{subtypeFilter === '' ? 'active' : ''}}" data-value="" bindtap="onSubtypeTap">全部</view>
@@ -38,17 +41,18 @@
         <text class="item-status status-{{item.statusKey}}">{{item.status}}</text>
       </view>
       <view class="item-meta">
-        <text wx:if="{{item.docSubtype}}" class="meta-tag">{{item.docSubtype}}</text>
+        <text class="meta-tag">{{item.docType}}</text>
         <text class="meta-text">{{item.docDate}}</text>
       </view>
       <view class="item-body">
-        <text class="store">{{item.storeName || item.storeId}}</text>
-        <text wx:if="{{item.counterpartStoreName}}" class="counterpart">→ {{item.counterpartStoreName}}</text>
+        <text class="store">{{item.sourceLocationName || item.sourceLocationId || '—'}}</text>
+        <text wx:if="{{item.targetLocationName || item.targetLocationId}}" class="counterpart">→ {{item.targetLocationName || item.targetLocationId}}</text>
         <text wx:if="{{item.customerName}}" class="customer">{{item.customerName}}</text>
       </view>
       <view class="item-foot">
         <text class="qty">总数量：{{item.totalQuantity || '—'}}</text>
-        <text wx:if="{{item.createdByName}}" class="by">录入：{{item.createdByName}}</text>
+        <text wx:if="{{item.status === '待收货'}}" class="receive-action">进入详情确认收货</text>
+        <text wx:elif="{{item.employeeName}}" class="by">相关员工：{{item.employeeName}}</text>
       </view>
     </view>
 

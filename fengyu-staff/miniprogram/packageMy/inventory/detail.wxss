@@ -31,6 +31,8 @@
 .status-done { color: #3D8A5A; }
 .status-draft { color: #D4820A; }
 .status-cancelled { color: #999; }
+.status-pending { color: #D4820A; }
+.status-rejected { color: #D94040; }
 
 .meta-row {
   display: flex;
@@ -40,7 +42,7 @@
 
 .meta-tag {
   background: #FFF0EE;
-  color: #C0322A;
+  color: var(--color-primary);
   padding: 4rpx 14rpx;
   border-radius: 4rpx;
   font-size: 24rpx;
@@ -101,7 +103,7 @@
 
 .item-qty {
   font-size: 28rpx;
-  color: #C0322A;
+  color: var(--color-primary);
   font-weight: 500;
 }
 
@@ -130,4 +132,16 @@
   text-align: center;
   padding: 60rpx;
   color: #999;
+}
+
+.receive-section {
+  padding: 24rpx;
+}
+
+.receive-button {
+  border-radius: 6rpx;
+  background: var(--color-primary);
+  color: #FFFFFF;
+  font-size: 28rpx;
+  line-height: 80rpx;
 }
