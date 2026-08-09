@@ -108,7 +108,7 @@ export async function auditPaymentInvariants(db: Db): Promise<PaymentInvariantsR
   // 容差严格相等（integer 无浮点误差）。
   const r3 = (await db.execute(sql`
     WITH sums AS (
-      SELECT user_id, COALESCE(SUM(amount), 0)::int AS total_from_txns
+      SELECT user_id, COALESCE(SUM(amount), 0)::bigint AS total_from_txns
       FROM point_transactions
       GROUP BY user_id
     )

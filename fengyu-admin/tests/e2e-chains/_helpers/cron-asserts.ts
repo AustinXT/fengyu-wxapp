@@ -28,7 +28,7 @@ export function countPointTransactionsByRef(externalRef: string): number {
 
 export function sumPointTransactionsByUser(userId: string): number {
   const out = psql(
-    `SELECT COALESCE(SUM(amount), 0)::int FROM point_transactions WHERE user_id = '${esc(userId)}'`,
+    `SELECT COALESCE(SUM(amount), 0)::bigint FROM point_transactions WHERE user_id = '${esc(userId)}'`,
   )
   return Number(out) || 0
 }
