@@ -50,6 +50,8 @@ const qrcodeCache = new Map()
 // 寄存单历史实收流水的 note 标记（change_type='回款' 行）。
 // 编辑寄存单实收时按此标记删重建；与 admin 端 actions/orders.ts 字面量保持一致。
 const DEPOSIT_RECEIPT_NOTE = '寄存单初始化实收'
+const WORKFINE_INVENTORY_CUTOVER_KEY = 'workfine_inventory'
+const WORKFINE_INVENTORY_INITIALIZED_STATUS = '已初始化'
 
 // 寄存单疗程卡「实际单价按实付重算」SQL —— unit_real_price = 实付received / 总次数session_count。
 // 实付=0 的行置 0（如实反映未收款，不再回落标价）；仅 product_type='疗程卡'，家居产品行(session_count NULL)被 WHERE 排除不受影响。
@@ -71,6 +73,24 @@ const DEPOSIT_REAL_PRICE_RECALC_SQL = `UPDATE sale_items
 
 function roundMoney(value) {
   return Math.round((Number(value) || 0) * 100) / 100
+}
+
+/**
+ * 顾客提货会写入库存单据和批次流水，必须等 WorkFine 期初库存核验完成。
+ * 由外层提货事务持有状态行锁，避免切换重置与库存扣减交错。
+ */
+async function assertWorkfineInventoryInitialized(client) {
+  const result = await client.query(
+    `SELECT status
+       FROM inventory_cutover_states
+      WHERE cutover_key = $1
+      FOR KEY SHARE`,
+    [WORKFINE_INVENTORY_CUTOVER_KEY],
+  )
+  const state = result.rows[0]
+  if (!state || state.status !== WORKFINE_INVENTORY_INITIALIZED_STATUS) {
+    throw new Error('INVALID_STATE: WorkFine 库存期初尚未完成核验，暂不允许写入库存')
+  }
 }
 
 function calcTierLineAmount(tierAmount, tierSessions, lineSessions) {
@@ -4118,8 +4138,28 @@ async function createPickupInventoryDoc(client, ctx, updatedItem, clientUserId, 
     [ctx.auth.effectiveStoreId, updatedItem.sku_id],
   )
 
+  const lotIds = lotRows.rows.map((row) => row.id)
+  const reservationRows = lotIds.length === 0
+    ? { rows: [] }
+    : await client.query(
+      `SELECT lot_id,
+              COALESCE(SUM(quantity - fulfilled_quantity - released_quantity), 0) AS quantity
+         FROM inventory_stock_reservations
+        WHERE lot_id = ANY($1::bigint[])
+          AND status = '已预留'
+     GROUP BY lot_id`,
+      [lotIds],
+    )
+  const reservedByLot = new Map(
+    reservationRows.rows.map((row) => [String(row.lot_id), Number(row.quantity)]),
+  )
+  const availableByLot = new Map()
   let available = 0
-  for (const row of lotRows.rows) available += Number(row.quantity_on_hand)
+  for (const row of lotRows.rows) {
+    const lotAvailable = Math.max(0, Number(row.quantity_on_hand) - (reservedByLot.get(String(row.id)) || 0))
+    availableByLot.set(String(row.id), lotAvailable)
+    available += lotAvailable
+  }
   if (available < Number(pickupQuantity)) {
     throw new Error(`INVALID_STATE: 门店库存不足，当前可用 ${available}`)
   }
@@ -4151,7 +4191,8 @@ async function createPickupInventoryDoc(client, ctx, updatedItem, clientUserId, 
   for (const lot of lotRows.rows) {
     if (remaining <= 0) break
     const before = Number(lot.quantity_on_hand)
-    const deduct = Math.min(before, remaining)
+    const deduct = Math.min(availableByLot.get(String(lot.id)) || 0, remaining)
+    if (deduct <= 0) continue
     const after = before - deduct
     const inserted = await client.query(
       `INSERT INTO inventory_doc_items (
@@ -4254,6 +4295,7 @@ async function createPickup(ctx) {
 
   let updated
   await pg.transaction(async (client) => {
+    await assertWorkfineInventoryInitialized(client)
     // 1) 原子累加 picked_up_quantity（强制本店）
     const result = await client.query(
       `UPDATE sale_items

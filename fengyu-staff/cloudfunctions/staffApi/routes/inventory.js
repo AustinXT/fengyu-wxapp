@@ -13,6 +13,8 @@ const cloud = require('wx-server-sdk')
 const INVENTORY_WRITE_ROLES = ['admin', 'manager', 'product']
 const INVENTORY_APPROVER_ROLES = ['admin', 'finance']
 const VALID_STORE_SCOPE_TYPES = new Set(['总部', '市场', '门店'])
+const WORKFINE_INVENTORY_CUTOVER_KEY = 'workfine_inventory'
+const WORKFINE_INVENTORY_INITIALIZED_STATUS = '已初始化'
 
 const CATEGORY_CONFIG = {
   procurement: {
@@ -71,7 +73,9 @@ function isValidCategory(c) {
 const DOC_PREFIX = {
   '门店报货': 'DBH',
   '市场报货': 'MBH',
+  '品项公司报货需求': 'ZBH',
   '采购订单': 'CGD',
+  '供应链采购订单': 'PCG',
   '供应链采购入库': 'GRK',
   '品项公司发货': 'GFH',
   '市场采购入库': 'MRK',
@@ -87,6 +91,8 @@ const DOC_PREFIX = {
   '非凤御市场出库': 'FFY',
   '院顾客退货': 'GTH',
   '市场退货': 'MTH',
+  '市场退货入库': 'MTR',
+  '供应链退货入库': 'GTR',
   '院退货': 'YTH',
   '院顾客产品出库': 'GCK',
   '市场产品报损': 'MBS',
@@ -124,7 +130,7 @@ const STAFF_CREATE_DOC_TYPES = new Set([
 const STAFF_RECEIVE_DOC_TYPES = new Set(['分院配货', '分院调货出库'])
 const STAFF_VISIBLE_DOC_TYPE_LIST = Array.from(STAFF_VISIBLE_DOC_TYPES)
 
-const NO_MOVEMENT_DOC_TYPES = new Set(['门店报货', '市场报货', '采购订单'])
+const NO_MOVEMENT_DOC_TYPES = new Set(['门店报货', '市场报货', '品项公司报货需求', '采购订单', '供应链采购订单'])
 const RECEIVE_REQUIRED_DOC_TYPES = new Set(['品项公司发货', '分院配货', '分院调货出库', '市场间调货出库'])
 const APPROVAL_DOC_TYPES = new Set(['市场退货', '院退货', '市场产品报损', '院产品报损'])
 const INBOUND_DOC_TYPES = new Set([
@@ -135,6 +141,8 @@ const INBOUND_DOC_TYPES = new Set([
   '分院调货入库',
   '市场间调货入库',
   '院顾客退货',
+  '市场退货入库',
+  '供应链退货入库',
   '市场产品盘溢',
   '库存转换入库',
   '期初库存',
@@ -176,6 +184,24 @@ function shanghaiYmd() {
 
 function rowsOf(result) {
   return Array.isArray(result) ? result : result.rows
+}
+
+/**
+ * WorkFine 期初库存必须完成导入和核验后，才允许产生新的库存业务流水。
+ * 在调用方事务内以行锁读取，避免受控重置与库存写入并发交错。
+ */
+async function assertWorkfineInventoryInitialized(client) {
+  const result = await client.query(
+    `SELECT status
+       FROM inventory_cutover_states
+      WHERE cutover_key = $1
+      FOR KEY SHARE`,
+    [WORKFINE_INVENTORY_CUTOVER_KEY],
+  )
+  const state = result.rows[0]
+  if (!state || state.status !== WORKFINE_INVENTORY_INITIALIZED_STATUS) {
+    throw new Error('INVALID_STATE: WorkFine 库存期初尚未完成核验，暂不允许写入库存')
+  }
 }
 
 function normalizeBatchNo(batchNo) {
@@ -613,6 +639,12 @@ async function resolveStaffCreateLocations(ctx, payload) {
     if (!marketId) throw new Error('INVALID_STATE: 门店未归属市场，不能提交报货')
     targetLocationId = marketId
     await ensureInventoryLocation(marketId, '市场')
+  } else if (payload.docType === '院退货') {
+    // 门店退货只能回到所属市场，客户端不能指定或伪造回库主体。
+    marketId = sourceLocation?.parent_location_id || null
+    if (!marketId) throw new Error('INVALID_STATE: 门店未归属市场，不能提交退货')
+    targetLocationId = marketId
+    await ensureInventoryLocation(marketId, '市场')
   } else if (targetLocationId) {
     await ensureStoreLocation(targetLocationId)
   }
@@ -720,12 +752,35 @@ async function inventorySkuSnapshot(client, skuId) {
   }
 }
 
+async function assertSkuAvailableAtLocation(client, sku, locationId) {
+  const sourceType = sku.source_type || '供应链'
+  if (sourceType === '供应链') return
+  const locationRes = await client.query(
+    `SELECT location_id, location_type, parent_location_id
+       FROM inventory_locations
+      WHERE location_id = $1
+      LIMIT 1`,
+    [locationId],
+  )
+  const location = locationRes.rows[0]
+  if (!location) throw new Error('NOT_FOUND: 库存主体不存在')
+  const marketId = location.location_type === '市场'
+    ? location.location_id
+    : location.location_type === '门店'
+      ? location.parent_location_id
+      : null
+  if (!marketId || sku.owner_market_id !== marketId) {
+    throw new Error(`INVALID_STATE: ${sourceType} SKU ${sku.product_name} 仅可在归属市场使用`)
+  }
+}
+
 async function ensureInventoryLotFromSku(client, locationId, item, sourceDocId, priceSnapshot = {}) {
   const skuId = String(item.skuId || '').trim()
   if (!skuId) throw new Error('INVALID_PARAMS: 缺少库存 SKU')
   const skuRes = await client.query(
     `SELECT sku_id, product_name, spec_name, supplier, product_series,
-            supply_chain_purchase_price, market_purchase_price, store_purchase_price
+            source_type, owner_market_id, supply_chain_purchase_price,
+            market_purchase_price, store_purchase_price
        FROM inventory_skus
       WHERE sku_id = $1 AND is_active = true
       LIMIT 1`,
@@ -733,6 +788,7 @@ async function ensureInventoryLotFromSku(client, locationId, item, sourceDocId, 
   )
   const sku = skuRes.rows[0]
   if (!sku) throw new Error('NOT_FOUND: 库存 SKU 不存在或已停用')
+  await assertSkuAvailableAtLocation(client, sku, locationId)
   const batchNo = normalizeBatchNo(item.batchNo)
   const expiryDate = item.expiryDate || null
   const supplyChainUnitCost = moneyOrNull(priceSnapshot.supplyChainUnitCost) ?? moneyOrNull(sku.supply_chain_purchase_price)
@@ -800,6 +856,20 @@ async function applyInventoryMovement(client, params) {
   const before = Number(params.lot.quantityOnHand)
   const delta = params.direction === '出库' ? -params.quantity : params.quantity
   const after = before + delta
+  if (params.direction === '出库') {
+    const reservationRes = await client.query(
+      `SELECT COALESCE(SUM(quantity - fulfilled_quantity - released_quantity), 0) AS quantity
+         FROM inventory_stock_reservations
+        WHERE lot_id = $1
+          AND status = '已预留'`,
+      [params.lot.id],
+    )
+    const reserved = Number(reservationRes.rows[0]?.quantity ?? 0)
+    const available = before - reserved
+    if (params.quantity > available) {
+      throw new Error(`INVALID_STATE: 库存不足：${params.lot.skuName} 可用 ${Math.max(available, 0)}`)
+    }
+  }
   if (after < 0) {
     throw new Error(`INVALID_STATE: 库存不足：${params.lot.skuName} 当前 ${before}`)
   }
@@ -831,6 +901,43 @@ async function applyInventoryMovement(client, params) {
     ],
   )
   params.lot.quantityOnHand = after
+}
+
+async function assertInventoryLotAvailableForReservation(client, lot, quantity) {
+  const reservationRes = await client.query(
+    `SELECT COALESCE(SUM(quantity - fulfilled_quantity - released_quantity), 0) AS quantity
+       FROM inventory_stock_reservations
+      WHERE lot_id = $1
+        AND status = '已预留'`,
+    [lot.id],
+  )
+  const reserved = Number(reservationRes.rows[0]?.quantity ?? 0)
+  const available = Number(lot.quantityOnHand) - reserved
+  if (quantity > available) {
+    throw new Error(`INVALID_STATE: 库存不足：${lot.skuName} 可用 ${Math.max(available, 0)}`)
+  }
+}
+
+async function resolveStoreReturnTargetMarket(client, sourceLocationId, targetLocationId) {
+  const result = await client.query(
+    `SELECT source.parent_location_id AS market_id
+       FROM inventory_locations source
+       JOIN inventory_locations market
+         ON market.location_id = source.parent_location_id
+        AND market.location_type = '市场'
+        AND market.is_active = true
+      WHERE source.location_id = $1
+        AND source.location_type = '门店'
+        AND source.is_active = true
+      FOR UPDATE OF source, market`,
+    [sourceLocationId],
+  )
+  const marketId = result.rows[0]?.market_id || null
+  if (!marketId) throw new Error('INVALID_STATE: 门店未归属有效市场，不能审批退货')
+  if (targetLocationId && targetLocationId !== marketId) {
+    throw new Error('INVALID_STATE: 院退货回库主体与门店所属市场不一致')
+  }
+  return marketId
 }
 
 async function list(ctx) {
@@ -1563,7 +1670,11 @@ async function createDoc(ctx) {
   await syncInventoryLocations()
   const { sourceLocationId, targetLocationId, marketId } = await resolveStaffCreateLocations(ctx, payload)
   const status = defaultDocStatus(docType)
-  const totalQuantity = items.reduce((acc, item) => acc + assertQty(item.quantity), 0)
+  // 同一批次的待审批退货需按稳定顺序锁库存，降低多明细并发提交的死锁概率。
+  const orderedItems = docType === '院退货'
+    ? [...items].sort((left, right) => Number(left.lotId) - Number(right.lotId))
+    : items
+  const totalQuantity = orderedItems.reduce((acc, item) => acc + assertQty(item.quantity), 0)
   const plan = movementPlan(docType, status)
   if (RECEIVE_REQUIRED_DOC_TYPES.has(docType) && !targetLocationId) {
     throw new Error('INVALID_PARAMS: 待收货单据缺少接收主体')
@@ -1573,6 +1684,7 @@ async function createDoc(ctx) {
   let docId
 
   await pg.transaction(async (client) => {
+    await assertWorkfineInventoryInitialized(client)
     docId = await generateDocNo(client, docType)
     await client.query(
       `INSERT INTO inventory_docs (
@@ -1609,7 +1721,7 @@ async function createDoc(ctx) {
         marketId,
       ],
     )
-    for (const item of items) {
+    for (const item of orderedItems) {
       const qty = assertQty(item.quantity)
       let lot = null
       let snapshot
@@ -1674,6 +1786,25 @@ async function createDoc(ctx) {
           item.remark || null,
         ],
       )
+      if (docType === '院退货' && lot) {
+        await assertInventoryLotAvailableForReservation(client, lot, qty)
+        await client.query(
+          `INSERT INTO inventory_stock_reservations (
+             request_doc_id, request_item_id, lot_id, location_id, sku_id, quantity,
+             fulfilled_quantity, released_quantity, status, created_by
+           )
+           VALUES ($1,$2,$3,$4,$5,$6,0,0,'已预留',$7)`,
+          [
+            docId,
+            Number(inserted.rows[0].id),
+            lot.id,
+            sourceLocationId,
+            lot.skuId,
+            qty,
+            ctx.auth.staffWfId,
+          ],
+        )
+      }
       if (plan && lot) {
         await applyInventoryMovement(client, {
           lot,
@@ -1693,6 +1824,215 @@ async function createDoc(ctx) {
   return ctx.result
 }
 
+async function approveStoreReturnForRestock(client, head, ctx, auditRemark) {
+  if (!head.source_location_id) throw new Error('INVALID_STATE: 院退货单缺少门店退货主体')
+  const targetLocationId = await resolveStoreReturnTargetMarket(
+    client,
+    head.source_location_id,
+    head.target_location_id,
+  )
+  if (head.target_location_id !== targetLocationId || head.market_id !== targetLocationId) {
+    await client.query(
+      `UPDATE inventory_docs
+          SET target_location_id = $2,
+              market_id = $2,
+              updated_at = NOW()
+        WHERE id = $1`,
+      [head.id, targetLocationId],
+    )
+  }
+
+  const itemRes = await client.query(
+    `SELECT id, lot_id, sku_id, sale_item_id, sku_name, spec_name, supplier, product_series,
+            batch_no, expiry_date, is_gift, quantity, standard_unit_price, unit_discount,
+            actual_unit_price, amount, supply_chain_unit_cost, market_standard_unit_price,
+            market_unit_discount, market_actual_unit_price, store_standard_unit_price,
+            store_unit_discount, store_actual_unit_price, reason, remark
+       FROM inventory_doc_items
+      WHERE doc_id = $1
+   ORDER BY lot_id, id
+      FOR UPDATE`,
+    [head.id],
+  )
+  if (itemRes.rows.length === 0) throw new Error('INVALID_STATE: 院退货单没有可回库明细')
+
+  const totalQuantity = itemRes.rows.reduce((total, item) => total + assertQty(item.quantity), 0)
+  const inboundDocId = await generateDocNo(client, '市场退货入库')
+  await client.query(
+    `INSERT INTO inventory_docs (
+       id, doc_type, status, source_location_id, target_location_id, market_id,
+       doc_date, total_quantity, related_doc_id, remark, created_by, confirmed_by, confirmed_at
+     )
+     VALUES ($1,'市场退货入库','已完成',$2,$3,$3,$4,$5,$6,$7,$8,$8,NOW())`,
+    [
+      inboundDocId,
+      head.source_location_id,
+      targetLocationId,
+      shanghaiToday(),
+      totalQuantity,
+      head.id,
+      auditRemark || null,
+      ctx.auth.staffWfId,
+    ],
+  )
+
+  for (const item of itemRes.rows) {
+    if (!item.lot_id) throw new Error('INVALID_STATE: 退货明细缺少来源批次')
+    const quantity = assertQty(item.quantity)
+    const sourceLot = await lockInventoryLotById(
+      client,
+      Number(item.lot_id),
+      head.source_location_id,
+    )
+    const reservationRes = await client.query(
+      `SELECT id, quantity, fulfilled_quantity, released_quantity
+         FROM inventory_stock_reservations
+        WHERE request_doc_id = $1
+          AND request_item_id = $2
+          AND lot_id = $3
+          AND status = '已预留'
+        FOR UPDATE`,
+      [head.id, Number(item.id), sourceLot.id],
+    )
+    const reservation = reservationRes.rows[0]
+    if (!reservation) throw new Error('CONFLICT: 退货库存预留已失效，请刷新后重试')
+    const reservedAvailable =
+      Number(reservation.quantity) - Number(reservation.fulfilled_quantity) - Number(reservation.released_quantity)
+    if (quantity > reservedAvailable) throw new Error('CONFLICT: 退货库存预留数量不足')
+
+    // 先完成本单预留，出库校验只会扣除其他未完成预留。
+    const reservationUpdated = await client.query(
+      `UPDATE inventory_stock_reservations
+          SET fulfilled_quantity = $2,
+              status = '已完成',
+              updated_at = NOW()
+        WHERE id = $1
+          AND status = '已预留'`,
+      [Number(reservation.id), quantity],
+    )
+    if (reservationUpdated.rowCount === 0) {
+      throw new Error('CONFLICT: 退货库存预留已被其他操作处理')
+    }
+
+    const priceSnapshot = {
+      supplyChainUnitCost: item.supply_chain_unit_cost ?? sourceLot.supplyChainUnitCost,
+      marketStandardUnitPrice: item.market_standard_unit_price ?? sourceLot.marketStandardUnitPrice,
+      marketUnitDiscount: item.market_unit_discount ?? sourceLot.marketUnitDiscount,
+      marketActualUnitPrice: item.market_actual_unit_price ?? sourceLot.marketActualUnitPrice,
+      storeStandardUnitPrice: item.store_standard_unit_price ?? sourceLot.storeStandardUnitPrice,
+      storeUnitDiscount: item.store_unit_discount ?? sourceLot.storeUnitDiscount,
+      storeActualUnitPrice: item.store_actual_unit_price ?? sourceLot.storeActualUnitPrice,
+    }
+    const targetLot = await ensureInventoryLotFromSku(
+      client,
+      targetLocationId,
+      {
+        skuId: sourceLot.skuId,
+        batchNo: sourceLot.batchNo,
+        expiryDate: sourceLot.expiryDate,
+        isGift: sourceLot.isGift,
+      },
+      inboundDocId,
+      priceSnapshot,
+    )
+    const standardUnitPrice = item.standard_unit_price ?? sourceLot.storeStandardUnitPrice ?? null
+    const unitDiscount = item.unit_discount ?? sourceLot.storeUnitDiscount ?? null
+    const actualUnitPrice = item.actual_unit_price ?? sourceLot.storeActualUnitPrice ?? null
+    const amount = actualUnitPrice == null
+      ? null
+      : Math.round(Number(actualUnitPrice) * quantity * 100) / 100
+    const inboundItemRes = await client.query(
+      `INSERT INTO inventory_doc_items (
+         doc_id, lot_id, sku_id, sale_item_id, sku_name, spec_name, supplier, product_series,
+         batch_no, expiry_date, is_gift, quantity, stock_snapshot,
+         standard_unit_price, unit_discount, actual_unit_price, amount,
+         supply_chain_unit_cost, market_standard_unit_price, market_unit_discount,
+         market_actual_unit_price, store_standard_unit_price, store_unit_discount,
+         store_actual_unit_price, reason, remark
+       )
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+       RETURNING id`,
+      [
+        inboundDocId,
+        targetLot.id,
+        targetLot.skuId,
+        item.sale_item_id || null,
+        targetLot.skuName,
+        targetLot.specName || item.spec_name || null,
+        targetLot.supplier || item.supplier || null,
+        targetLot.productSeries || item.product_series || null,
+        targetLot.batchNo,
+        targetLot.expiryDate,
+        targetLot.isGift,
+        quantity,
+        targetLot.quantityOnHand,
+        standardUnitPrice,
+        unitDiscount,
+        actualUnitPrice,
+        amount,
+        priceSnapshot.supplyChainUnitCost ?? null,
+        priceSnapshot.marketStandardUnitPrice ?? null,
+        priceSnapshot.marketUnitDiscount ?? null,
+        priceSnapshot.marketActualUnitPrice ?? null,
+        priceSnapshot.storeStandardUnitPrice ?? null,
+        priceSnapshot.storeUnitDiscount ?? null,
+        priceSnapshot.storeActualUnitPrice ?? null,
+        item.reason || null,
+        item.remark || null,
+      ],
+    )
+    const inboundItemId = Number(inboundItemRes.rows[0]?.id)
+    if (!Number.isInteger(inboundItemId) || inboundItemId <= 0) {
+      throw new Error('CONFLICT: 市场退货入库明细创建失败')
+    }
+    await applyInventoryMovement(client, {
+      lot: sourceLot,
+      docId: head.id,
+      docItemId: Number(item.id),
+      direction: '出库',
+      quantity,
+      createdBy: ctx.auth.staffWfId,
+      movementKey: `return:${head.id}:item:${item.id}`,
+      remark: auditRemark || null,
+    })
+    await applyInventoryMovement(client, {
+      lot: targetLot,
+      docId: inboundDocId,
+      docItemId: inboundItemId,
+      direction: '入库',
+      quantity,
+      createdBy: ctx.auth.staffWfId,
+      movementKey: `return-receipt:${head.id}:item:${inboundItemId}`,
+      remark: auditRemark || null,
+    })
+    await client.query(
+      `INSERT INTO inventory_doc_links (
+         from_doc_id, to_doc_id, relation_type, from_item_id, to_item_id, quantity
+       ) VALUES ($1,$2,'退货回库',$3,$4,$5)`,
+      [head.id, inboundDocId, Number(item.id), inboundItemId, quantity],
+    )
+    await client.query(
+      `UPDATE inventory_doc_items
+          SET fulfilled_quantity = $2
+        WHERE id = $1`,
+      [Number(item.id), quantity],
+    )
+  }
+
+  await client.query(
+    `UPDATE inventory_docs
+        SET status = '已完成',
+            total_quantity = $2,
+            approved_by = $3,
+            approved_at = NOW(),
+            audit_remark = $4,
+            updated_at = NOW()
+      WHERE id = $1
+        AND status = '待审批'`,
+    [head.id, totalQuantity, ctx.auth.staffWfId, auditRemark || null],
+  )
+}
+
 async function approveDoc(ctx) {
   await requireStaffBound()(ctx, async () => {})
   assertApprover(ctx)
@@ -1700,8 +2040,10 @@ async function approveDoc(ctx) {
   if (!id) throw new Error('INVALID_PARAMS: 缺少单据号')
   await syncInventoryLocations()
   await pg.transaction(async (client) => {
+    await assertWorkfineInventoryInitialized(client)
     const headRes = await client.query(
-      `SELECT id, doc_type, status, source_location_id, target_location_id, related_sale_order_id
+      `SELECT id, doc_type, status, source_location_id, target_location_id, market_id,
+              total_quantity, related_sale_order_id
          FROM inventory_docs
         WHERE id = $1
           AND doc_type = ANY($2::text[])
@@ -1715,6 +2057,10 @@ async function approveDoc(ctx) {
     if (head.status !== '待审批') throw new Error('INVALID_STATE: 只有待审批单据可以审批')
     const direction = approvalMovementDirection(head.doc_type)
     if (!direction) throw new Error('INVALID_STATE: 该单据类型不需要审批')
+    if (head.doc_type === '院退货') {
+      await approveStoreReturnForRestock(client, head, ctx, auditRemark)
+      return
+    }
     const itemRes = await client.query(
       `SELECT id, lot_id, quantity, sale_item_id
          FROM inventory_doc_items
@@ -1758,6 +2104,7 @@ async function rejectDoc(ctx) {
   if (!id) throw new Error('INVALID_PARAMS: 缺少单据号')
   await syncInventoryLocations()
   await pg.transaction(async (client) => {
+    await assertWorkfineInventoryInitialized(client)
     const headRes = await client.query(
       `SELECT doc_type, source_location_id, target_location_id, status
          FROM inventory_docs
@@ -1772,6 +2119,17 @@ async function rejectDoc(ctx) {
     await assertApproverStoreScope(client, ctx.auth, acting)
     if (doc.status !== '待审批') throw new Error('INVALID_STATE: 只有待审批单据可以驳回')
     if (!approvalMovementDirection(doc.doc_type)) throw new Error('INVALID_STATE: 该单据类型不需要审批')
+    if (doc.doc_type === '院退货') {
+      await client.query(
+        `UPDATE inventory_stock_reservations
+            SET released_quantity = quantity,
+                status = '已释放',
+                updated_at = NOW()
+          WHERE request_doc_id = $1
+            AND status = '已预留'`,
+        [id],
+      )
+    }
     const updated = await client.query(
       `UPDATE inventory_docs
           SET status = '已驳回',
@@ -1798,6 +2156,7 @@ async function confirmReceive(ctx) {
   let inboundDocId
   await syncInventoryLocations()
   await pg.transaction(async (client) => {
+    await assertWorkfineInventoryInitialized(client)
     const headRes = await client.query(
       `SELECT id, doc_type, status, source_location_id, target_location_id,
               total_quantity, request_doc_id, related_doc_id, remark
