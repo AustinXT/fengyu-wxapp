@@ -175,8 +175,8 @@ async function queryFunnelEntries(session: AuthSession, scope: AnalystScope): Pr
     WITH first_orders AS (
       SELECT DISTINCT ON (so.client_user_id)
         so.client_user_id,
-        COALESCE(so.paid_at, so.sale_order_datetime, so.created_at) AS order_at,
-        (COALESCE(so.paid_at, so.sale_order_datetime, so.created_at) AT TIME ZONE 'Asia/Shanghai')::date AS order_date,
+        COALESCE(so.sale_order_datetime, so.paid_at, so.created_at) AS order_at,
+        (COALESCE(so.sale_order_datetime, so.paid_at, so.created_at) AT TIME ZONE 'Asia/Shanghai')::date AS order_date,
         so.store_id,
         COALESCE(NULLIF(so.store_name, ''), s.store_name, so.store_id, '未绑定门店') AS store,
         COALESCE(NULLIF(so.market_name, ''), market_node.name, '未归属市场') AS market
@@ -188,7 +188,7 @@ async function queryFunnelEntries(session: AuthSession, scope: AnalystScope): Pr
         AND so.status = '已支付'
         AND so.sale_order_type IN ('销售单', '转换单')
         AND so.client_user_id IS NOT NULL
-        AND COALESCE(so.paid_at, so.sale_order_datetime, so.created_at) IS NOT NULL
+        AND COALESCE(so.sale_order_datetime, so.paid_at, so.created_at) IS NOT NULL
       ORDER BY so.client_user_id, order_at ASC, so.created_at ASC, so.sale_order_id ASC
     ),
     entries AS (
@@ -245,7 +245,7 @@ async function queryFunnelEntries(session: AuthSession, scope: AnalystScope): Pr
         AND e.became_member_at IS NOT NULL
         AND mo.status = '已支付'
         AND mo.sale_order_type IN ('销售单', '转换单')
-        AND COALESCE(mo.paid_at, mo.sale_order_datetime, mo.created_at) <= e.became_member_at
+        AND COALESCE(mo.sale_order_datetime, mo.paid_at, mo.created_at) <= e.became_member_at
       GROUP BY e.customer_id
     ),
     annual_amounts AS (
@@ -258,8 +258,8 @@ async function queryFunnelEntries(session: AuthSession, scope: AnalystScope): Pr
         AND e.became_member_at IS NOT NULL
         AND yo.status = '已支付'
         AND yo.sale_order_type IN ('销售单', '转换单')
-        AND (COALESCE(yo.paid_at, yo.sale_order_datetime, yo.created_at) AT TIME ZONE 'Asia/Shanghai')::date >= date_trunc('year', e.entry_date::timestamp)::date
-        AND (COALESCE(yo.paid_at, yo.sale_order_datetime, yo.created_at) AT TIME ZONE 'Asia/Shanghai')::date < (date_trunc('year', e.entry_date::timestamp)::date + INTERVAL '1 year')
+        AND (COALESCE(yo.sale_order_datetime, yo.paid_at, yo.created_at) AT TIME ZONE 'Asia/Shanghai')::date >= date_trunc('year', e.entry_date::timestamp)::date
+        AND (COALESCE(yo.sale_order_datetime, yo.paid_at, yo.created_at) AT TIME ZONE 'Asia/Shanghai')::date < (date_trunc('year', e.entry_date::timestamp)::date + INTERVAL '1 year')
       GROUP BY e.customer_id
     )
     SELECT

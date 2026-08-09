@@ -163,6 +163,13 @@ export function previousPeriodRange(filters: RequiredNewCustomerFunnelFilters): 
 
 function parseDateOnly(value: string): number {
   const [year, month, day] = value.slice(0, 10).split("-").map(Number)
+  if (
+    Number.isNaN(year) || Number.isNaN(month) || Number.isNaN(day) ||
+    month < 1 || month > 12 ||
+    day < 1 || day > 31
+  ) {
+    return NaN
+  }
   return Date.UTC(year, month - 1, day)
 }
 
@@ -172,7 +179,7 @@ export function resolveServiceBucket(
 ): NewCustomerServiceBucket | null {
   if (!serviceDate) return null
   const days = Math.round((parseDateOnly(serviceDate) - parseDateOnly(entryDate)) / MS_PER_DAY)
-  if (days < 0 || days > 90) return null
+  if (Number.isNaN(days) || days < 0 || days > 90) return null
   if (days <= 30) return "t30"
   if (days <= 60) return "t60"
   return "t90"
