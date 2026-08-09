@@ -912,7 +912,7 @@ describe('mgmtCustomer 细节 SQL：交易数据跟顾客走（不再按门店�
       /SELECT\s+o\.sale_order_id,\s+o\.status,\s+o\.paid_at,\s+o\.store_id/.test(sql) &&
       /FROM\s+sale_orders\s+o/.test(sql)
     )
-    expect(orderSql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
+    expect(orderSql).toContain("o.status IN ('已支付', '部分支付')")
     expect(ctx.result.orders).toHaveLength(1)
     expect(ctx.result.orders[0].status).toBe('部分支付')
     expect(ctx.result.orders[0].items[0].totalSessions).toBe(15)

@@ -579,7 +579,7 @@ describe('customer.detail', () => {
     const sql = consumptionCall[0]
     expect(sql).toMatch(/CASE[\s\S]*WHEN/)
     expect(sql).toContain('EXISTS (SELECT 1 FROM sale_items')
-    expect(sql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
+    expect(sql).toContain("o.status IN ('已支付', '部分支付')")
     expect(sql).toContain('FROM service_orders so')
     expect(sql).toContain('JOIN service_items sit ON sit.service_order_id = so.service_order_id')
     expect(sql).toContain("so.status = '已完成'")
@@ -793,7 +793,7 @@ describe('customer.paidOrders', () => {
     const orderSql = pg.query.mock.calls.map((c) => c[0]).find((sql) =>
       /FROM\s+sale_orders\s+o/.test(sql) && /ORDER BY\s+o\.paid_at\s+DESC/.test(sql)
     )
-    expect(orderSql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
+    expect(orderSql).toContain("o.status IN ('已支付', '部分支付')")
     expect(ctx.result).toHaveLength(1)
     expect(ctx.result[0].saleOrderId).toBe('SO-PARTIAL')
     expect(ctx.result[0].status).toBe('部分支付')

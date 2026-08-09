@@ -1065,7 +1065,8 @@ export const getAvailableSaleItems = withPermission(
     LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
     LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
     WHERE o.client_user_id = ${clientUserId}
-      AND o.status IN ('已支付', '部分支付', '已完成')
+      AND o.status IN ('已支付', '部分支付')
+      -- sale_orders.status 从未被置为 '已完成'（'已完成' 仅用于 service_orders），故不在过滤之列
       AND (
         si.item_direction = '购买'
         OR (o.sale_order_type = '转换单' AND si.item_direction = '转入')
