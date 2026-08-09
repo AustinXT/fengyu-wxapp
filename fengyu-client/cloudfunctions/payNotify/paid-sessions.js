@@ -202,8 +202,8 @@ const FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL = `WITH full_refund_zero_items A
  */
 async function recalcPaidSessionsForOrder(client, saleOrderId) {
   // STEP 1：两路分流
-  //   A. 正向 receipt 覆盖全额 received → received = Σ 有符号 receipt.amount per item（退款为负数）
-  //   B. receipt 不完整或无 → 回退瀑布 SALE_ITEMS_RECEIVED_ALLOC_SQL（保护历史部分支付订单）
+  //   A. 正向 receipt 覆盖订单毛实收 → received = Σ 有符号 receipt.amount per item（退款为负数）
+  //   B. receipt 不完整或无 → 回退瀑布 + note.items[].refundAmount 扣减（保护历史部分支付订单）
   const covRes = await client.query(
     `SELECT COALESCE((
               SELECT SUM(cov_spir.amount::numeric)
@@ -211,7 +211,7 @@ async function recalcPaidSessionsForOrder(client, saleOrderId) {
                 JOIN sale_order_payments sop ON sop.id = cov_spir.sale_payment_id
                WHERE cov_spir.sale_order_id = $1
                  AND sop.status = '已支付'
-                 AND sop.change_type IN ('首次支付','回款','储值卡抵扣','退款')
+                 AND sop.change_type IN ('首次支付','回款','储值卡抵扣')
             ), 0) AS receipt_positive_total,
             (SELECT received::numeric FROM sale_orders WHERE sale_order_id = $1) AS order_received`,
     [saleOrderId],
@@ -219,16 +219,14 @@ async function recalcPaidSessionsForOrder(client, saleOrderId) {
   const covRow = (covRes && covRes.rows && covRes.rows[0]) || {}
   const receiptPositiveTotal = Number(covRow.receipt_positive_total || 0)
   const orderReceived = Number(covRow.order_received || 0)
-  // receipt_positive_total >= order_received（容差 0.01 处理浮点）→ receipt 完整覆盖，Branch A 安全
+  // 仅正向 receipt 总额 >= order_received（容差 0.01 处理浮点）→ receipt 完整覆盖，Branch A 安全
   if (receiptPositiveTotal > 0 && receiptPositiveTotal >= orderReceived - 0.01) {
     await client.query(SALE_ITEMS_RECEIVED_FROM_RECEIPTS_SQL, [saleOrderId])
   } else {
     await client.query(SALE_ITEMS_RECEIVED_ALLOC_SQL, [saleOrderId])
-    // G09 修复（PR #74）：移除 Branch B 的 STEP 1.5 双重扣除。
-    //   Branch A 决策查询已加入 '退款' change_type（net receipt 覆盖比较正确）；完整 receipt 订单走 Branch A
-    //   已含退款负数。若 Branch B 再按 note.items[].refundAmount 扣减，全退后回款场景会双重扣除 → PAID_SESSIONS_UNDERFLOW。
-    //   RECEIVED_REFUNDED_DEDUCT_SQL 常量保留定义供 cross-end-sql-snapshot Block 7c 字节比对，不再执行。
-    // await client.query(RECEIVED_REFUNDED_DEDUCT_SQL, [saleOrderId])
+    // STEP 1.5：回退分支没有完整正向 receipt 覆盖，须按 note.items[].refundAmount 扣减。
+    // 分支 A 已由负数 receipt 得到净额，故不在 A 中执行本扣减。
+    await client.query(RECEIVED_REFUNDED_DEDUCT_SQL, [saleOrderId])
   }
   // STEP 2：行级公式重算 paid_sessions（received 已净额，不再下分订单级退款）
   await client.query(PAID_SESSIONS_RECALC_SQL, [saleOrderId])

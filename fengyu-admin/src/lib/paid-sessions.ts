@@ -117,7 +117,7 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
                JOIN sale_order_payments sop ON sop.id = cov_spir.sale_payment_id
               WHERE cov_spir.sale_order_id = ${saleOrderId}
                 AND sop.status = '已支付'
-                AND sop.change_type IN ('首次支付','回款','储值卡抵扣','退款')
+                AND sop.change_type IN ('首次支付','回款','储值卡抵扣')
            ), 0) AS receipt_positive_total,
            (SELECT received::numeric FROM sale_orders WHERE sale_order_id = ${saleOrderId}) AS order_received
   `)
@@ -126,7 +126,7 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
   const covRows = covRes as unknown as Array<{ receipt_positive_total: string; order_received: string }>
   const receiptPositiveTotal = Number(covRows[0]?.receipt_positive_total || 0)
   const orderReceived = Number(covRows[0]?.order_received || 0)
-  // 正向 receipt 总额 >= order_received（容差 0.01）→ receipt 完整覆盖，Branch A 安全；
+  // 仅正向 receipt 总额 >= order_received（容差 0.01）→ receipt 完整覆盖，Branch A 安全；
   // 否则 receipt 不完整（历史部分支付订单仅新付款有 receipt），Branch B 保护旧 received 不被清零。
   const hasReceipts = receiptPositiveTotal > 0 && receiptPositiveTotal >= orderReceived - 0.01
   if (hasReceipts) {
@@ -186,11 +186,8 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
       WHERE si.sale_item_id = caps.sale_item_id
     `)
 
-    // G09 修复（PR #74）：移除 Branch B 的 STEP 1.5 双重扣除。
-    //   Branch A 决策查询已加入 '退款' change_type（net receipt 覆盖比较正确）；完整 receipt 订单走 Branch A
-    //   已含退款负数。若 Branch B 再按 note.items[].refundAmount 扣减，全退后回款场景会双重扣除 → PAID_SESSIONS_UNDERFLOW。
-    //   原 SQL 保留（注释态）供 cross-end-sql-snapshot Block 7c 字节比对，不再执行。
-    /*
+    // STEP 1.5：回退分支没有完整正向 receipt 覆盖，须按 note.items[].refundAmount 扣减。
+    // 分支 A 已由负数 receipt 得到净额，故不在 A 中执行本扣减。
     await tx.execute(sql`
       WITH refund_items AS (
         SELECT elem ->> 'refSaleItemId' AS sale_item_id,
@@ -216,7 +213,6 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
       LEFT JOIN agg ON agg.sale_item_id = ai.sale_item_id
       WHERE si.sale_item_id = ai.sale_item_id
     `)
-    */
   }
 
   // STEP 2: 按行级公式重算 paid_sessions（received 已净额，不再下分订单级退款；守 cross-end-sql-snapshot）

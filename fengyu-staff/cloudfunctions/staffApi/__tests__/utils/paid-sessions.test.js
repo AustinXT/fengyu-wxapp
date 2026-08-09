@@ -8,11 +8,15 @@
  *   - 全付 / 部分付 / 零付 / 退款扣减 / 免单兜底 / 非次数卡 / 越界保护
  */
 
+const staffPaidSessions = require('../../utils/paid-sessions')
+const clientPaidSessions = require('../../../../../fengyu-client/cloudfunctions/clientApi/utils/paid-sessions')
+const payNotifyPaidSessions = require('../../../../../fengyu-client/cloudfunctions/payNotify/paid-sessions')
+
 const {
   computePaidSessionsForItem,
   PAID_SESSIONS_RECALC_SQL,
   FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL,
-} = require('../../utils/paid-sessions')
+} = staffPaidSessions
 
 describe('computePaidSessionsForItem 公式边界（行级）', () => {
   test('全额支付：paid_sessions = session_count', () => {
@@ -182,5 +186,75 @@ describe('PAID_SESSIONS_RECALC_SQL 模板字面量守护', () => {
     expect(FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL).toMatch(/sale_amount\s*<=\s*0/i)
     expect(FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL).toMatch(/LOWER\(COALESCE\(elem ->> 'isFullItemRefund', 'false'\)\) = 'true'/)
     expect(FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL).toMatch(/SET paid_sessions = 0/i)
+  })
+})
+
+const PAID_SESSION_COPIES = [
+  ['staffApi', staffPaidSessions],
+  ['clientApi', clientPaidSessions],
+  ['payNotify', payNotifyPaidSessions],
+]
+
+function makeRecalcFixture(copy, receiptPositiveTotal) {
+  const calls = []
+  const signedReceipts = [100, -40]
+  const state = { received: 100, paidSessions: 10 }
+  const client = {
+    query: async (query) => {
+      calls.push(query)
+      if (typeof query === 'string' && query.includes('AS receipt_positive_total')) {
+        return { rows: [{ receipt_positive_total: String(receiptPositiveTotal), order_received: '100' }] }
+      }
+      if (query === copy.SALE_ITEMS_RECEIVED_FROM_RECEIPTS_SQL) {
+        state.received = signedReceipts.reduce((total, amount) => total + amount, 0)
+      }
+      if (query === copy.SALE_ITEMS_RECEIVED_ALLOC_SQL) {
+        state.received = 100
+      }
+      if (query === copy.RECEIVED_REFUNDED_DEDUCT_SQL) {
+        state.received = Math.max(0, state.received - 40)
+      }
+      if (query === copy.PAID_SESSIONS_RECALC_SQL) {
+        state.paidSessions = copy.computePaidSessionsForItem({
+          itemReceived: state.received,
+          itemSaleAmount: 100,
+          itemSessionCount: 10,
+          orderTotal: 100,
+          orderRefunded: 0,
+        })
+      }
+      return { rows: [], rowCount: 0 }
+    },
+  }
+  return { client, calls, state }
+}
+
+describe('退款 receipt 覆盖分流', () => {
+  test.each(PAID_SESSION_COPIES)('%s: +100/-40 应走 Branch A 并保留 60% 已付次数', async (_name, copy) => {
+    const fixture = makeRecalcFixture(copy, 100)
+
+    await copy.recalcPaidSessionsForOrder(fixture.client, 'order-refund-receipt')
+
+    expect(fixture.calls[0]).toContain("sop.change_type IN ('首次支付','回款','储值卡抵扣')")
+    expect(fixture.calls[0]).not.toContain("'退款'")
+    expect(copy.SALE_ITEMS_RECEIVED_FROM_RECEIPTS_SQL).toContain("'退款'")
+    expect(fixture.calls).toContain(copy.SALE_ITEMS_RECEIVED_FROM_RECEIPTS_SQL)
+    expect(fixture.calls).not.toContain(copy.SALE_ITEMS_RECEIVED_ALLOC_SQL)
+    expect(fixture.calls).not.toContain(copy.RECEIVED_REFUNDED_DEDUCT_SQL)
+    expect(fixture.state).toEqual({ received: 60, paidSessions: 6 })
+  })
+
+  test.each(PAID_SESSION_COPIES)('%s: 不完整正向 receipt 时 Branch B 必须执行逐项退款扣减', async (_name, copy) => {
+    const fixture = makeRecalcFixture(copy, 0)
+
+    await copy.recalcPaidSessionsForOrder(fixture.client, 'order-refund-fallback')
+
+    const allocationIndex = fixture.calls.indexOf(copy.SALE_ITEMS_RECEIVED_ALLOC_SQL)
+    const deductIndex = fixture.calls.indexOf(copy.RECEIVED_REFUNDED_DEDUCT_SQL)
+    const recalcIndex = fixture.calls.indexOf(copy.PAID_SESSIONS_RECALC_SQL)
+    expect(allocationIndex).toBeGreaterThan(-1)
+    expect(deductIndex).toBeGreaterThan(allocationIndex)
+    expect(recalcIndex).toBeGreaterThan(deductIndex)
+    expect(fixture.state).toEqual({ received: 60, paidSessions: 6 })
   })
 })
