@@ -122,7 +122,7 @@ function assertCanApproveDepositOrder(session: AuthSession): void {
  * 待支付/支付失败转换单被关闭时撤销创建时的即时资产变更。
  * staffApi/routes/order.js 有同义 SQL 副本；修改时保持语义一致。
  */
-async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string, storeId: string): Promise<void> {
+async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string): Promise<void> {
   await tx.execute(sql`
     WITH restore AS (
       SELECT ref_sale_item_id, SUM(quantity)::integer AS restore_sessions
@@ -140,7 +140,6 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
              restore.restore_sessions
         FROM sale_items src
         JOIN restore ON restore.ref_sale_item_id = src.sale_item_id
-       WHERE src.store_id = ${storeId}
        FOR UPDATE OF src
     )
     UPDATE sale_items src
@@ -1890,7 +1889,7 @@ export const closeOrder = withPermission(
       }
 
       if (orderCtx?.saleOrderType === '转换单' && orderCtx.storeId) {
-        await rollbackPendingConversionOnClose(tx, saleOrderId, orderCtx.storeId)
+        await rollbackPendingConversionOnClose(tx, saleOrderId)
       }
 
       // 作废关联的营业额子分配（规范：订单关闭时作废分配）

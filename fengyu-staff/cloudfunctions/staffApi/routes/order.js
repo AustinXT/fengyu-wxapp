@@ -1795,7 +1795,7 @@ async function confirmOffline(ctx) {
  * - 恢复被转出的原卡 remaining_sessions；
  * - 作废本转换单的转入/转出权益计数，避免详情和后续查询继续表现为已转。
  */
-async function rollbackPendingConversionOnClose(client, saleOrderId, storeId, now) {
+async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
   await client.query(
     `WITH restore AS (
         SELECT ref_sale_item_id, SUM(quantity)::integer AS restore_sessions
@@ -1813,7 +1813,6 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, storeId, no
                restore.restore_sessions
           FROM sale_items src
           JOIN restore ON restore.ref_sale_item_id = src.sale_item_id
-         WHERE src.store_id = $2
          FOR UPDATE OF src
       )
       UPDATE sale_items src
@@ -1821,10 +1820,10 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, storeId, no
                COALESCE(src.session_count, src.remaining_sessions, 0),
                COALESCE(src.remaining_sessions, 0) + locked_source.restore_sessions
              ),
-             updated_at = $3
+             updated_at = $2
         FROM locked_source
        WHERE src.sale_item_id = locked_source.sale_item_id`,
-    [saleOrderId, storeId, now],
+    [saleOrderId, now],
   )
 
   await client.query(
@@ -1896,7 +1895,7 @@ async function close(ctx) {
       throw new Error('INVALID_PARAMS: 订单状态已变更，请刷新后重试')
     }
     if (order.sale_order_type === '转换单') {
-      await rollbackPendingConversionOnClose(client, saleOrderId, order.store_id, now)
+      await rollbackPendingConversionOnClose(client, saleOrderId, now)
     }
     // 作废营业额子分配
     await client.query(
