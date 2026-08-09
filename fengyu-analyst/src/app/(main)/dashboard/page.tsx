@@ -1,12 +1,11 @@
 import Link from "next/link"
+import { redirect } from "next/navigation"
 import {
   Activity,
-  AlertTriangle,
   BadgePercent,
   BarChart3,
   Clock3,
   Download,
-  Filter,
   Layers3,
   LineChart,
   Package,
@@ -14,10 +13,22 @@ import {
   TrendingUp,
   Users,
 } from "lucide-react"
+import { AutoSubmitFilterForm } from "@/components/auto-submit-filter-form"
+import { FilterCascader } from "@/components/filter-cascader"
 import { MetricCard } from "@/components/metric-card"
 import { NewCustomerBarChart, NewCustomerFunnelChart } from "@/components/new-customer-funnel-charts"
 import { PenetrationBarChart } from "@/components/penetration-charts"
 import { RankingBarChart, TrendChart } from "@/components/repurchase-charts"
+import { ScopeCascader } from "@/components/scope-cascader"
+import {
+  analystScopeSearchParams,
+  getAnalystScopeOptions,
+  getDefaultAnalystScope,
+  resolveAnalystScopeFromParams,
+  validateAnalystScopeWithOptions,
+  type AnalystScope,
+  type AnalystScopeOptions,
+} from "@/lib/analyst-scope"
 import { getSession } from "@/lib/auth"
 import { getMetric, type AnalystMetric } from "@/lib/metric-catalog"
 import {
@@ -27,14 +38,15 @@ import {
   type NewCustomerFunnelComparisonRow,
 } from "@/lib/new-customer-funnel"
 import {
+  getPenetrationCascadeTree,
   getPenetrationDashboard,
   getPenetrationFilterOptions,
   normalizePenetrationFilters,
-  type PenetrationDataQuality,
   type PenetrationProductOption,
   type PenetrationRankingRow,
 } from "@/lib/penetration"
 import {
+  getRepurchaseCascadeTree,
   getRepurchaseDashboard,
   getRepurchaseFilterOptions,
   normalizeRepurchaseFilters,
@@ -57,10 +69,38 @@ function formatDelta(value: number | null): { text: string; tone: "default" | "p
 
 function formatMoney(value: number): string {
   return value.toLocaleString("zh-CN", {
-    style: "currency",
-    currency: "CNY",
     maximumFractionDigits: 0,
   })
+}
+
+function monthOptionIndex(month: string): number {
+  const [year, monthOfYear] = month.split("-").map(Number)
+  return year * 12 + monthOfYear - 1
+}
+
+function monthOptionFromIndex(index: number): string {
+  const year = Math.floor(index / 12)
+  const month = (index % 12) + 1
+  return `${year}-${String(month).padStart(2, "0")}`
+}
+
+function formatMonthOption(month: string): string {
+  const [year, monthOfYear] = month.split("-")
+  return `${year}年${Number(monthOfYear)}月`
+}
+
+function buildMonthOptions(months: string[], startMonth: string, endMonth: string): string[] {
+  const indexes = Array.from(new Set([...months, startMonth, endMonth]))
+    .map(monthOptionIndex)
+    .filter(Number.isFinite)
+
+  if (indexes.length === 0) {
+    return []
+  }
+
+  const start = Math.min(...indexes)
+  const end = Math.max(...indexes)
+  return Array.from({ length: end - start + 1 }, (_, index) => monthOptionFromIndex(end - index))
 }
 
 function formatDeltaPart(current: number, previous: number, type: "count" | "rate" | "money"): string {
@@ -92,6 +132,30 @@ function queryString(filters: Record<string, string | number | undefined>): stri
     if (value !== undefined && value !== "") params.set(key, String(value))
   }
   return params.toString()
+}
+
+function scopedQueryString(scope: AnalystScope, filters: Record<string, string | number | undefined>): string {
+  return queryString({ ...analystScopeSearchParams(scope), ...filters })
+}
+
+function dashboardHref(metric: string, scope: AnalystScope): string {
+  return `/dashboard?${scopedQueryString(scope, { metric })}`
+}
+
+function normalizedScopeUrl(
+  params: Record<string, string | string[] | undefined>,
+  scope: AnalystScope,
+): string {
+  const next = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (key === "scope" || key === "scopeId" || key === "market" || key === "store") continue
+    const normalized = Array.isArray(value) ? value[0] : value
+    if (normalized !== undefined && normalized !== "") next.set(key, normalized)
+  }
+  const scopeParams = analystScopeSearchParams(scope)
+  next.set("scope", scopeParams.scope)
+  if (scopeParams.scopeId) next.set("scopeId", scopeParams.scopeId)
+  return `/dashboard?${next.toString()}`
 }
 
 function getParam(params: Record<string, string | string[] | undefined>, key: string): string | undefined {
@@ -131,15 +195,6 @@ function PlannedMetricPanel({ metric }: { metric: AnalystMetric }) {
           <div className="mt-2 text-sm text-neutral-500">口径确认后接入查询与图表</div>
         </div>
       </div>
-    </section>
-  )
-}
-
-function PageTitle() {
-  return (
-    <section>
-      <h1 className="text-2xl font-semibold tracking-normal text-neutral-950">经营指标看板</h1>
-      <p className="mt-1 text-sm text-neutral-500">一级看板 / 二级指标目录</p>
     </section>
   )
 }
@@ -212,52 +267,6 @@ function PenetrationRankingTable({
   )
 }
 
-function DataQualityPanel({ quality }: { quality: PenetrationDataQuality }) {
-  const missing = quality.missingProductNameSkus
-  const multiple = quality.multiNameSkus
-  if (missing.length === 0 && multiple.length === 0) return null
-
-  return (
-    <section className="rounded-lg border border-amber-200 bg-amber-50 p-4">
-      <div className="flex items-start gap-3">
-        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600" />
-        <div className="min-w-0">
-          <h2 className="text-sm font-medium text-amber-950">商品名称数据质量提示</h2>
-          <p className="mt-1 text-xs leading-5 text-amber-800">
-            商品普及率按 SKU 合并计算，主商品名使用当前 SKU 名称。以下问题只影响历史名称提示，不影响持卡会员去重。
-          </p>
-          <div className="mt-3 grid gap-3 lg:grid-cols-2">
-            {multiple.length > 0 ? (
-              <div className="rounded-md border border-amber-200 bg-white/70 p-3">
-                <div className="text-xs font-medium text-amber-950">同一 SKU 多个历史名称</div>
-                <div className="mt-2 space-y-1 text-xs text-amber-800">
-                  {multiple.slice(0, 5).map((issue) => (
-                    <div key={issue.skuId} className="truncate">
-                      {issue.skuId}：{issue.productNames.join(" / ")}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-            {missing.length > 0 ? (
-              <div className="rounded-md border border-amber-200 bg-white/70 p-3">
-                <div className="text-xs font-medium text-amber-950">存在空商品名</div>
-                <div className="mt-2 space-y-1 text-xs text-amber-800">
-                  {missing.slice(0, 5).map((issue) => (
-                    <div key={issue.skuId} className="truncate">
-                      {issue.skuId}：{issue.holderCount} 个持卡会员
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-          </div>
-        </div>
-      </div>
-    </section>
-  )
-}
-
 function NewCustomerComparisonTable({
   rows,
   firstColumnLabel,
@@ -321,17 +330,21 @@ function NewCustomerComparisonTable({
 
 async function NewCustomerDashboard({
   session,
+  scope,
+  scopeOptions,
   params,
   selectedMetric,
 }: {
   session: AuthSession
+  scope: AnalystScope
+  scopeOptions: AnalystScopeOptions
   params: Record<string, string | string[] | undefined>
   selectedMetric: AnalystMetric
 }) {
   const filters = normalizeNewCustomerFunnelFilters(params)
   const [data, options] = await Promise.all([
-    getNewCustomerFunnelDashboard(session, filters),
-    getNewCustomerFunnelFilterOptions(session, filters.market),
+    getNewCustomerFunnelDashboard(session, scope, filters),
+    getNewCustomerFunnelFilterOptions(session, scope),
   ])
   const normalized = data.filters
   const newCustomerDelta = formatMetricDelta(
@@ -379,65 +392,47 @@ async function NewCustomerDashboard({
     data.prevPeriodKpi.annualContributionAmount,
     "money",
   )
-  const comparisonLabel =
-    normalized.tableMode === "months" ? "月份" : normalized.unitLevel === "store" ? "门店" : "市场"
-  const comparisonTitle = normalized.tableMode === "months" ? "多月份对比" : "单位对比"
+  const monthOptions = buildMonthOptions(options.months, normalized.startMonth, normalized.endMonth)
+  const unitComparisonLabel = data.unitComparisonLevel === "store" ? "门店" : "市场"
+  const unitComparisonTitle = data.unitComparisonLevel === "store" ? "门店对比" : "市场对比"
 
   return (
     <div className="space-y-5">
-      <PageTitle />
-
       <section className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <div className="text-xs font-medium text-neutral-500">{selectedMetric.group}</div>
           <h2 className="mt-1 text-xl font-semibold tracking-normal text-neutral-950">新客漏斗指标看板</h2>
-          <p className="mt-1 text-sm text-neutral-500">新客来源、T+90 到店、会员成交和年度贡献</p>
         </div>
       </section>
 
-      <form className="grid gap-3 rounded-lg border border-[var(--border)] bg-white p-4 md:grid-cols-3 2xl:grid-cols-8" action="/dashboard">
+      <AutoSubmitFilterForm className="grid gap-3 rounded-lg border border-[var(--border)] bg-white p-4 md:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_1.6fr_auto]" action="/dashboard">
         <input type="hidden" name="metric" value="new-customer-funnel" />
         <label className="space-y-1 text-sm">
           <span className="text-xs font-medium text-neutral-500">起始月份</span>
-          <input
-            type="month"
+          <select
             name="startMonth"
             defaultValue={normalized.startMonth}
             className="h-10 w-full rounded-md border border-[var(--input)] bg-white px-3 text-sm outline-none focus:border-[var(--ring)]"
-          />
-        </label>
-
-        <label className="space-y-1 text-sm">
-          <span className="text-xs font-medium text-neutral-500">结束月份</span>
-          <input
-            type="month"
-            name="endMonth"
-            defaultValue={normalized.endMonth}
-            className="h-10 w-full rounded-md border border-[var(--input)] bg-white px-3 text-sm outline-none focus:border-[var(--ring)]"
-          />
-        </label>
-
-        <label className="space-y-1 text-sm">
-          <span className="text-xs font-medium text-neutral-500">表格视图</span>
-          <select
-            name="tableMode"
-            defaultValue={normalized.tableMode}
-            className="h-10 w-full rounded-md border border-[var(--input)] bg-white px-3 text-sm outline-none focus:border-[var(--ring)]"
           >
-            <option value="months">多月份对比</option>
-            <option value="units">多单位对比</option>
+            {monthOptions.map((month) => (
+              <option key={month} value={month}>
+                {formatMonthOption(month)}
+              </option>
+            ))}
           </select>
         </label>
 
         <label className="space-y-1 text-sm">
-          <span className="text-xs font-medium text-neutral-500">单位层级</span>
+          <span className="text-xs font-medium text-neutral-500">结束月份</span>
           <select
-            name="unitLevel"
-            defaultValue={normalized.unitLevel}
+            name="endMonth"
+            defaultValue={normalized.endMonth}
             className="h-10 w-full rounded-md border border-[var(--input)] bg-white px-3 text-sm outline-none focus:border-[var(--ring)]"
           >
-            <option value="market">市场</option>
-            <option value="store">门店</option>
+            {monthOptions.map((month) => (
+              <option key={month} value={month}>
+                {formatMonthOption(month)}
+              </option>
+            ))}
           </select>
         </label>
 
@@ -457,51 +452,20 @@ async function NewCustomerDashboard({
           </select>
         </label>
 
-        <label className="space-y-1 text-sm">
-          <span className="text-xs font-medium text-neutral-500">市场</span>
-          <select
-            name="market"
-            defaultValue={normalized.market}
-            className="h-10 w-full rounded-md border border-[var(--input)] bg-white px-3 text-sm outline-none focus:border-[var(--ring)]"
-          >
-            <option value="">全部市场</option>
-            {options.markets.map((market) => (
-              <option key={market} value={market}>
-                {market}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="space-y-1 text-sm">
+          <span className="text-xs font-medium text-neutral-500">组织范围</span>
+          <ScopeCascader options={scopeOptions} value={scope} />
+        </div>
 
-        <label className="space-y-1 text-sm">
-          <span className="text-xs font-medium text-neutral-500">门店</span>
-          <select
-            name="store"
-            defaultValue={normalized.store}
-            className="h-10 w-full rounded-md border border-[var(--input)] bg-white px-3 text-sm outline-none focus:border-[var(--ring)]"
-          >
-            <option value="">全部门店</option>
-            {options.stores.map((storeName) => (
-              <option key={storeName} value={storeName}>
-                {storeName}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <div className="flex gap-2 self-end">
-          <button className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-md bg-[var(--primary)] px-4 text-sm font-medium text-white" type="submit">
-            <Filter className="size-4" />
-            筛选
-          </button>
+        <div className="flex self-end">
           <Link
-            href="/dashboard?metric=new-customer-funnel"
-            className="inline-flex h-10 items-center justify-center rounded-md border border-[var(--border)] px-4 text-sm font-medium text-neutral-700 hover:bg-neutral-50"
+            href={dashboardHref("new-customer-funnel", scope)}
+            className="inline-flex h-10 w-full items-center justify-center rounded-md border border-[var(--border)] px-4 text-sm font-medium text-neutral-700 hover:bg-neutral-50"
           >
             重置
           </Link>
         </div>
-      </form>
+      </AutoSubmitFilterForm>
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard icon={Users} label="新客总人数" value={data.kpi.newCustomerCount.toLocaleString("zh-CN")} helper={newCustomerDelta.text} tone={newCustomerDelta.tone} />
@@ -540,13 +504,25 @@ async function NewCustomerDashboard({
 
       <section className="rounded-lg border border-[var(--border)] bg-white p-4">
         <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-          <h2 className="text-base font-medium text-neutral-950">{comparisonTitle}</h2>
+          <h2 className="text-base font-medium text-neutral-950">多月份对比</h2>
           <span className="text-xs text-neutral-500">
-            {normalized.startMonth} 至 {normalized.endMonth}
+            {formatMonthOption(normalized.startMonth)} 至 {formatMonthOption(normalized.endMonth)}
           </span>
         </div>
         <div className="mt-4">
-          <NewCustomerComparisonTable rows={data.comparisonRows} firstColumnLabel={comparisonLabel} emptyLabel="暂无对比数据" />
+          <NewCustomerComparisonTable rows={data.monthComparisonRows} firstColumnLabel="月份" emptyLabel="暂无月份对比数据" />
+        </div>
+      </section>
+
+      <section className="rounded-lg border border-[var(--border)] bg-white p-4">
+        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+          <h2 className="text-base font-medium text-neutral-950">{unitComparisonTitle}</h2>
+          <span className="text-xs text-neutral-500">
+            {formatMonthOption(normalized.startMonth)} 至 {formatMonthOption(normalized.endMonth)}
+          </span>
+        </div>
+        <div className="mt-4">
+          <NewCustomerComparisonTable rows={data.unitComparisonRows} firstColumnLabel={unitComparisonLabel} emptyLabel="暂无组织对比数据" />
         </div>
       </section>
 
@@ -562,37 +538,36 @@ async function NewCustomerDashboard({
 
 async function RepurchaseDashboard({
   session,
+  scope,
+  scopeOptions,
   params,
   selectedMetric,
 }: {
   session: AuthSession
+  scope: AnalystScope
+  scopeOptions: AnalystScopeOptions
   params: Record<string, string | string[] | undefined>
   selectedMetric: AnalystMetric
 }) {
   const filters = normalizeRepurchaseFilters(params)
-  const [data, options] = await Promise.all([
-    getRepurchaseDashboard(session, filters),
-    getRepurchaseFilterOptions(session, filters.market, filters.productKind),
+  const [data, options, cascadeTree] = await Promise.all([
+    getRepurchaseDashboard(session, scope, filters),
+    getRepurchaseFilterOptions(session, scope, filters.productKind),
+    getRepurchaseCascadeTree(session, scope),
   ])
   const normalized = data.filters
   const delta = formatDelta(data.kpi.delta)
-  const exportHref = `/api/analyst/repurchase/export?${queryString({
+  const exportHref = `/api/analyst/repurchase/export?${scopedQueryString(scope, {
     year: normalized.year || undefined,
     productKind: normalized.productKind,
     categoryName: normalized.categoryName,
-    market: normalized.market,
-    store: normalized.store,
   })}`
 
   return (
     <div className="space-y-5">
-      <PageTitle />
-
       <section className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <div className="text-xs font-medium text-neutral-500">{selectedMetric.group}</div>
           <h2 className="mt-1 text-xl font-semibold tracking-normal text-neutral-950">复购率指标看板</h2>
-          <p className="mt-1 text-sm text-neutral-500">复购率、品项、市场和门店表现</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <a
@@ -605,7 +580,7 @@ async function RepurchaseDashboard({
         </div>
       </section>
 
-      <form className="grid gap-3 rounded-lg border border-[var(--border)] bg-white p-4 md:grid-cols-[1fr_1fr_1fr] xl:grid-cols-[1fr_1fr_1fr_1fr_1fr_auto_auto]" action="/dashboard">
+      <AutoSubmitFilterForm className="grid gap-3 rounded-lg border border-[var(--border)] bg-white p-4 md:grid-cols-2 xl:grid-cols-[1fr_1.6fr_1.6fr_auto]" action="/dashboard">
         <input type="hidden" name="metric" value="repurchase" />
         <label className="space-y-1 text-sm">
           <span className="text-xs font-medium text-neutral-500">年份</span>
@@ -623,82 +598,32 @@ async function RepurchaseDashboard({
           </select>
         </label>
 
-        <label className="space-y-1 text-sm">
-          <span className="text-xs font-medium text-neutral-500">一级品项</span>
-          <select
-            name="productKind"
-            defaultValue={normalized.productKind}
-            className="h-10 w-full rounded-md border border-[var(--input)] bg-white px-3 text-sm outline-none focus:border-[var(--ring)]"
-          >
-            <option value="">全部一级</option>
-            {options.productKinds.map((productKind) => (
-              <option key={productKind} value={productKind}>
-                {productKind}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="space-y-1 text-sm">
+          <span className="text-xs font-medium text-neutral-500">品项</span>
+          <FilterCascader
+            options={cascadeTree.productKindTree}
+            level1Name="productKind"
+            level2Name="categoryName"
+            level1Value={normalized.productKind}
+            level2Value={normalized.categoryName}
+            placeholder="全部品项"
+            level1AllLabel="全部一级"
+            level2AllLabel="全部二级"
+          />
+        </div>
 
-        <label className="space-y-1 text-sm">
-          <span className="text-xs font-medium text-neutral-500">二级品项</span>
-          <select
-            name="categoryName"
-            defaultValue={normalized.categoryName}
-            disabled={!normalized.productKind}
-            className="h-10 w-full rounded-md border border-[var(--input)] bg-white px-3 text-sm outline-none focus:border-[var(--ring)] disabled:bg-neutral-50 disabled:text-neutral-400"
-          >
-            <option value="">{normalized.productKind ? "全部二级" : "请先选一级"}</option>
-            {options.categoryNames.map((categoryName) => (
-              <option key={categoryName} value={categoryName}>
-                {categoryName}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="space-y-1 text-sm">
+          <span className="text-xs font-medium text-neutral-500">组织范围</span>
+          <ScopeCascader options={scopeOptions} value={scope} />
+        </div>
 
-        <label className="space-y-1 text-sm">
-          <span className="text-xs font-medium text-neutral-500">市场</span>
-          <select
-            name="market"
-            defaultValue={normalized.market}
-            className="h-10 w-full rounded-md border border-[var(--input)] bg-white px-3 text-sm outline-none focus:border-[var(--ring)]"
-          >
-            <option value="">全部市场</option>
-            {options.markets.map((market) => (
-              <option key={market} value={market}>
-                {market}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label className="space-y-1 text-sm">
-          <span className="text-xs font-medium text-neutral-500">门店</span>
-          <select
-            name="store"
-            defaultValue={normalized.store}
-            className="h-10 w-full rounded-md border border-[var(--input)] bg-white px-3 text-sm outline-none focus:border-[var(--ring)]"
-          >
-            <option value="">全部门店</option>
-            {options.stores.map((storeName) => (
-              <option key={storeName} value={storeName}>
-                {storeName}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <button className="inline-flex h-10 items-center justify-center gap-2 self-end rounded-md bg-[var(--primary)] px-4 text-sm font-medium text-white" type="submit">
-          <Filter className="size-4" />
-          筛选
-        </button>
         <Link
-          href="/dashboard?metric=repurchase"
+          href={dashboardHref("repurchase", scope)}
           className="inline-flex h-10 items-center justify-center self-end rounded-md border border-[var(--border)] px-4 text-sm font-medium text-neutral-700 hover:bg-neutral-50"
         >
           重置
         </Link>
-      </form>
+      </AutoSubmitFilterForm>
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard icon={LineChart} label="复购率" value={formatRate(data.kpi.repurchaseRate)} helper={delta.text} tone={delta.tone} />
@@ -744,7 +669,7 @@ async function RepurchaseDashboard({
         <div className="rounded-lg border border-[var(--border)] bg-white p-4">
           <h2 className="text-base font-medium text-neutral-950">市场复购率对比</h2>
           <div className="mt-4">
-            <RankingBarChart data={normalized.market ? [] : data.marketComparison} emptyLabel={normalized.market ? "已选择市场，取消市场筛选可查看全部市场" : "暂无市场数据"} />
+            <RankingBarChart data={scope.type === "all" ? data.marketComparison : []} emptyLabel={scope.type === "all" ? "暂无市场数据" : "已选择组织范围，切换到全部范围可查看全部市场"} />
           </div>
         </div>
         <div className="rounded-lg border border-[var(--border)] bg-white p-4">
@@ -760,37 +685,36 @@ async function RepurchaseDashboard({
 
 async function PenetrationDashboard({
   session,
+  scope,
+  scopeOptions,
   params,
   selectedMetric,
 }: {
   session: AuthSession
+  scope: AnalystScope
+  scopeOptions: AnalystScopeOptions
   params: Record<string, string | string[] | undefined>
   selectedMetric: AnalystMetric
 }) {
   const filters = normalizePenetrationFilters(params)
-  const [data, options] = await Promise.all([
-    getPenetrationDashboard(session, filters),
-    getPenetrationFilterOptions(session, filters.market, filters.productKind, filters.categoryName, filters.seriesName),
+  const [data, options, cascadeTree] = await Promise.all([
+    getPenetrationDashboard(session, scope, filters),
+    getPenetrationFilterOptions(session, scope, filters.productKind, filters.categoryName, filters.seriesName),
+    getPenetrationCascadeTree(session, scope),
   ])
   const normalized = data.filters
-  const exportHref = `/api/analyst/penetration/export?${queryString({
+  const exportHref = `/api/analyst/penetration/export?${scopedQueryString(scope, {
     productKind: normalized.productKind,
     categoryName: normalized.categoryName,
     seriesName: normalized.seriesName,
     skuId: normalized.skuId,
-    market: normalized.market,
-    store: normalized.store,
   })}`
 
   return (
     <div className="space-y-5">
-      <PageTitle />
-
       <section className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <div className="text-xs font-medium text-neutral-500">{selectedMetric.group}</div>
           <h2 className="mt-1 text-xl font-semibold tracking-normal text-neutral-950">普及率指标看板</h2>
-          <p className="mt-1 text-sm text-neutral-500">当前未用完疗程卡会员覆盖情况</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <a
@@ -803,46 +727,29 @@ async function PenetrationDashboard({
         </div>
       </section>
 
-      <form className="grid gap-3 rounded-lg border border-[var(--border)] bg-white p-4 md:grid-cols-3 2xl:grid-cols-[1fr_1fr_1fr_1fr_1fr_1fr_auto_auto]" action="/dashboard">
+      <AutoSubmitFilterForm className="grid gap-3 rounded-lg border border-[var(--border)] bg-white p-4 md:grid-cols-2 2xl:grid-cols-[1.6fr_1fr_1fr_1.6fr_auto]" action="/dashboard">
         <input type="hidden" name="metric" value="penetration" />
-        <label className="space-y-1 text-sm">
-          <span className="text-xs font-medium text-neutral-500">一级品项</span>
-          <select
-            name="productKind"
-            defaultValue={normalized.productKind}
-            className="h-10 w-full rounded-md border border-[var(--input)] bg-white px-3 text-sm outline-none focus:border-[var(--ring)]"
-          >
-            <option value="">全部一级</option>
-            {options.productKinds.map((productKind) => (
-              <option key={productKind} value={productKind}>
-                {productKind}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label className="space-y-1 text-sm">
-          <span className="text-xs font-medium text-neutral-500">二级品项</span>
-          <select
-            name="categoryName"
-            defaultValue={normalized.categoryName}
-            disabled={!normalized.productKind}
-            className="h-10 w-full rounded-md border border-[var(--input)] bg-white px-3 text-sm outline-none focus:border-[var(--ring)] disabled:bg-neutral-50 disabled:text-neutral-400"
-          >
-            <option value="">{normalized.productKind ? "全部二级" : "请先选一级"}</option>
-            {options.categoryNames.map((categoryName) => (
-              <option key={categoryName} value={categoryName}>
-                {categoryName}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="space-y-1 text-sm">
+          <span className="text-xs font-medium text-neutral-500">品项</span>
+          <FilterCascader
+            options={cascadeTree.productKindTree}
+            level1Name="productKind"
+            level2Name="categoryName"
+            level1Value={normalized.productKind}
+            level2Value={normalized.categoryName}
+            placeholder="全部品项"
+            level1AllLabel="全部一级"
+            level2AllLabel="全部二级"
+            extraResetFields={["skuId"]}
+          />
+        </div>
 
         <label className="space-y-1 text-sm">
           <span className="text-xs font-medium text-neutral-500">系列</span>
           <select
             name="seriesName"
             defaultValue={normalized.seriesName}
+            data-reset-fields="skuId"
             className="h-10 w-full rounded-md border border-[var(--input)] bg-white px-3 text-sm outline-none focus:border-[var(--ring)]"
           >
             <option value="">全部系列</option>
@@ -870,49 +777,18 @@ async function PenetrationDashboard({
           </select>
         </label>
 
-        <label className="space-y-1 text-sm">
-          <span className="text-xs font-medium text-neutral-500">市场</span>
-          <select
-            name="market"
-            defaultValue={normalized.market}
-            className="h-10 w-full rounded-md border border-[var(--input)] bg-white px-3 text-sm outline-none focus:border-[var(--ring)]"
-          >
-            <option value="">全部市场</option>
-            {options.markets.map((market) => (
-              <option key={market} value={market}>
-                {market}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="space-y-1 text-sm">
+          <span className="text-xs font-medium text-neutral-500">组织范围</span>
+          <ScopeCascader options={scopeOptions} value={scope} />
+        </div>
 
-        <label className="space-y-1 text-sm">
-          <span className="text-xs font-medium text-neutral-500">门店</span>
-          <select
-            name="store"
-            defaultValue={normalized.store}
-            className="h-10 w-full rounded-md border border-[var(--input)] bg-white px-3 text-sm outline-none focus:border-[var(--ring)]"
-          >
-            <option value="">全部门店</option>
-            {options.stores.map((storeName) => (
-              <option key={storeName} value={storeName}>
-                {storeName}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <button className="inline-flex h-10 items-center justify-center gap-2 self-end rounded-md bg-[var(--primary)] px-4 text-sm font-medium text-white" type="submit">
-          <Filter className="size-4" />
-          筛选
-        </button>
         <Link
-          href="/dashboard?metric=penetration"
+          href={dashboardHref("penetration", scope)}
           className="inline-flex h-10 items-center justify-center self-end rounded-md border border-[var(--border)] px-4 text-sm font-medium text-neutral-700 hover:bg-neutral-50"
         >
           重置
         </Link>
-      </form>
+      </AutoSubmitFilterForm>
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard icon={BadgePercent} label="普及率" value={formatRate(data.kpi.penetrationRate)} helper="持卡会员 / 总会员" />
@@ -927,8 +803,6 @@ async function PenetrationDashboard({
         </section>
       ) : null}
 
-      <DataQualityPanel quality={data.dataQuality} />
-
       <section className="grid gap-4 2xl:grid-cols-[1fr_1fr]">
         <div className="rounded-lg border border-[var(--border)] bg-white p-4">
           <div className="flex items-center gap-2">
@@ -942,7 +816,7 @@ async function PenetrationDashboard({
         <div className="rounded-lg border border-[var(--border)] bg-white p-4">
           <h2 className="text-base font-medium text-neutral-950">市场普及率对比</h2>
           <div className="mt-4">
-            <PenetrationBarChart data={normalized.market ? [] : data.marketComparison} emptyLabel={normalized.market ? "已选择市场，取消市场筛选可查看全部市场" : "暂无市场数据"} />
+            <PenetrationBarChart data={scope.type === "all" ? data.marketComparison : []} emptyLabel={scope.type === "all" ? "暂无市场数据" : "已选择组织范围，切换到全部范围可查看全部市场"} />
           </div>
         </div>
       </section>
@@ -993,26 +867,55 @@ export default async function DashboardPage({
 }) {
   const params = await searchParams
   const selectedMetric = getMetric(getParam(params, "metric"))
+  const session = await getSession()
+  if (!session) return null
+
+  const scopeOptions = await getAnalystScopeOptions(session)
+  const scope = await resolveAnalystScopeFromParams({
+    scope: getParam(params, "scope"),
+    scopeId: getParam(params, "scopeId"),
+    market: getParam(params, "market"),
+    store: getParam(params, "store"),
+  })
+  const hasLegacyScopeParams = !getParam(params, "scope") && Boolean(getParam(params, "market") || getParam(params, "store"))
+  const needsDefaultScope = scope.type === "all" && scopeOptions.topLevel !== "all"
+
+  if (needsDefaultScope) {
+    const defaultScope = getDefaultAnalystScope(scopeOptions)
+    if (defaultScope) redirect(normalizedScopeUrl(params, defaultScope))
+
+    return (
+      <section className="rounded-lg border border-[var(--border)] bg-white p-6 text-sm text-neutral-600">
+        当前账号暂无可查看的数据范围。
+      </section>
+    )
+  }
+
+  if (hasLegacyScopeParams) {
+    redirect(normalizedScopeUrl(params, scope))
+  }
+
+  try {
+    validateAnalystScopeWithOptions(session, scope, scopeOptions)
+  } catch {
+    redirect("/forbidden")
+  }
 
   if (selectedMetric.status !== "available") {
     return (
       <div className="space-y-5">
-        <PageTitle />
         <PlannedMetricPanel metric={selectedMetric} />
       </div>
     )
   }
 
-  const session = await getSession()
-  if (!session) return null
-
   if (selectedMetric.id === "penetration") {
-    return <PenetrationDashboard session={session} params={params} selectedMetric={selectedMetric} />
+    return <PenetrationDashboard session={session} scope={scope} scopeOptions={scopeOptions} params={params} selectedMetric={selectedMetric} />
   }
 
   if (selectedMetric.id === "new-customer-funnel") {
-    return <NewCustomerDashboard session={session} params={params} selectedMetric={selectedMetric} />
+    return <NewCustomerDashboard session={session} scope={scope} scopeOptions={scopeOptions} params={params} selectedMetric={selectedMetric} />
   }
 
-  return <RepurchaseDashboard session={session} params={params} selectedMetric={selectedMetric} />
+  return <RepurchaseDashboard session={session} scope={scope} scopeOptions={scopeOptions} params={params} selectedMetric={selectedMetric} />
 }

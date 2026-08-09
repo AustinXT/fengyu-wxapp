@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { withAnalystScopeOrDeny } from "@/lib/analyst-scope-helpers"
 import { getSession } from "@/lib/auth"
 import { hasPermission } from "@/lib/permissions"
 import { getRepurchaseCustomerList, normalizeRepurchaseFilters } from "@/lib/repurchase"
@@ -24,15 +25,17 @@ export async function GET(request: Request) {
   }
 
   const { searchParams } = new URL(request.url)
+  const resolved = await withAnalystScopeOrDeny(session, searchParams, "analyst/repurchase/export")
+  if (resolved instanceof NextResponse) return resolved
+
+  const { scope } = resolved
   const filters = normalizeRepurchaseFilters({
     year: searchParams.get("year") ?? undefined,
     category: searchParams.get("category") ?? undefined,
     productKind: searchParams.get("productKind") ?? undefined,
     categoryName: searchParams.get("categoryName") ?? undefined,
-    market: searchParams.get("market") ?? undefined,
-    store: searchParams.get("store") ?? undefined,
   })
-  const rows = await getRepurchaseCustomerList(session, filters, "all", 1000)
+  const rows = await getRepurchaseCustomerList(session, scope, filters, "all", 1000)
   const header = ["顾客编号", "顾客姓名", "一级品项", "二级品项", "是否复购", "首购日期", "市场区域", "门店"]
   const body = rows.map((row) =>
     [

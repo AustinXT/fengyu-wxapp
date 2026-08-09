@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { withAnalystScopeOrDeny } from "@/lib/analyst-scope-helpers"
 import { getSession } from "@/lib/auth"
 import { hasPermission } from "@/lib/permissions"
 import { getPenetrationCustomerList, normalizePenetrationFilters } from "@/lib/penetration"
@@ -24,15 +25,17 @@ export async function GET(request: Request) {
   }
 
   const { searchParams } = new URL(request.url)
+  const resolved = await withAnalystScopeOrDeny(session, searchParams, "analyst/penetration/export")
+  if (resolved instanceof NextResponse) return resolved
+
+  const { scope } = resolved
   const filters = normalizePenetrationFilters({
     productKind: searchParams.get("productKind") ?? undefined,
     categoryName: searchParams.get("categoryName") ?? undefined,
     seriesName: searchParams.get("seriesName") ?? undefined,
     skuId: searchParams.get("skuId") ?? undefined,
-    market: searchParams.get("market") ?? undefined,
-    store: searchParams.get("store") ?? undefined,
   })
-  const rows = await getPenetrationCustomerList(session, filters, 5000)
+  const rows = await getPenetrationCustomerList(session, scope, filters, 5000)
   const header = [
     "顾客编号",
     "顾客姓名",

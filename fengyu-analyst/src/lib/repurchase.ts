@@ -2,9 +2,10 @@ import "server-only"
 
 import { sql, type SQL } from "drizzle-orm"
 import { db } from "@/db"
+import { analystScopeCacheKey, scopeFilterSql, type AnalystScope } from "@/lib/analyst-scope"
 import { getMemberThreshold } from "@/lib/member-threshold"
-import { isAdminScope } from "@/lib/permissions"
 import type { AuthSession } from "@/lib/types"
+import { bucketCascadeOptions, type CascadeOption } from "./cascade-tree"
 
 const REPURCHASE_CACHE_TTL = 10 * 60 * 1000
 const ANOMALY_Z_THRESHOLD = 1.5
@@ -15,8 +16,6 @@ export interface RepurchaseFilters {
   endDate?: string
   productKind?: string
   categoryName?: string
-  market?: string
-  store?: string
 }
 
 export interface RepurchaseKpi {
@@ -58,8 +57,6 @@ export interface RepurchaseFilterOptions {
   productKinds: string[]
   categoryNames: string[]
   categories: string[]
-  markets: string[]
-  stores: string[]
 }
 
 export interface RepurchaseDashboardData {
@@ -158,8 +155,6 @@ export function normalizeRepurchaseFilters(input: {
   const legacyCategory = Array.isArray(input.category) ? input.category[0] : input.category
   const productKind = Array.isArray(input.productKind) ? input.productKind[0] : input.productKind
   const categoryName = Array.isArray(input.categoryName) ? input.categoryName[0] : input.categoryName
-  const market = Array.isArray(input.market) ? input.market[0] : input.market
-  const store = Array.isArray(input.store) ? input.store[0] : input.store
   const [legacyProductKind, legacyCategoryName] = legacyCategory?.includes(" / ")
     ? legacyCategory.split(" / ", 2)
     : [legacyCategory, undefined]
@@ -175,8 +170,6 @@ export function normalizeRepurchaseFilters(input: {
     endDate,
     productKind: normalizeFilterText(productKind) ?? normalizeFilterText(legacyProductKind),
     categoryName: normalizeFilterText(categoryName) ?? normalizeFilterText(legacyCategoryName),
-    market: normalizeFilterText(market),
-    store: normalizeFilterText(store),
   }
 }
 
@@ -187,8 +180,6 @@ function normalizeDashboardFilters(filters: RepurchaseFilters): Required<Repurch
     endDate: filters.endDate ?? "",
     productKind: filters.productKind ?? "",
     categoryName: filters.categoryName ?? "",
-    market: filters.market ?? "",
-    store: filters.store ?? "",
   }
 }
 
@@ -222,28 +213,13 @@ function previousYearFilters(filters: RepurchaseFilters): RepurchaseFilters | nu
   return filters.year ? { ...filters, year: filters.year - 1 } : null
 }
 
-function scopeCacheKey(session: AuthSession): string {
-  if (isAdminScope(session)) return "admin"
-  const ids = [...session.permissions.scopeStoreIds].sort()
-  return ids.length > 0 ? ids.join(",") : "__none__"
-}
-
-function scopeCondition(session: AuthSession): SQL {
-  if (isAdminScope(session)) return sql`TRUE`
-  const ids = session.permissions.scopeStoreIds
-  if (ids.length === 0) return sql`FALSE`
-  return sql`so.store_id = ANY(${ids}::text[])`
-}
-
-function buildBaseConditions(session: AuthSession, filters: RepurchaseFilters): SQL {
+function buildBaseConditions(session: AuthSession, scope: AnalystScope, filters: RepurchaseFilters): SQL {
   const productKindExpr = sql`pc.product_kind`
   const categoryNameExpr = sql`pc.category_name`
-  const marketExpr = sql`COALESCE(NULLIF(so.market_name, ''), market_node.name, '')`
-  const storeExpr = sql`COALESCE(NULLIF(so.store_name, ''), s.store_name, so.store_id)`
   const purchaseAtExpr = sql`COALESCE(so.sale_order_datetime, so.paid_at)`
 
   const conditions: SQL[] = [
-    scopeCondition(session),
+    scopeFilterSql(session, scope, "so.store_id"),
     sql`so.sale_order_type IN ('销售单', '转换单')`,
     sql`so.status NOT IN ('已关闭', '已作废', '未审核', '待审批', '支付失败')`,
     sql`so.client_user_id IS NOT NULL`,
@@ -258,8 +234,6 @@ function buildBaseConditions(session: AuthSession, filters: RepurchaseFilters): 
 
   if (filters.productKind) conditions.push(sql`${productKindExpr} = ${filters.productKind}`)
   if (filters.categoryName) conditions.push(sql`${categoryNameExpr} = ${filters.categoryName}`)
-  if (filters.market) conditions.push(sql`${marketExpr} = ${filters.market}`)
-  if (filters.store) conditions.push(sql`${storeExpr} = ${filters.store}`)
 
   return sql.join(conditions, sql` AND `)
 }
@@ -280,11 +254,12 @@ function mapEntryRows(rows: unknown): RepurchaseEntryRow[] {
 
 async function queryRepurchaseEntries(
   session: AuthSession,
+  scope: AnalystScope,
   filters: RepurchaseFilters,
   threshold: number,
 ): Promise<RepurchaseEntryRow[]> {
   const key = JSON.stringify({
-    scope: scopeCacheKey(session),
+    scope: analystScopeCacheKey(session, scope),
     filters: normalizeDashboardFilters(filters),
     threshold,
   })
@@ -292,7 +267,7 @@ async function queryRepurchaseEntries(
   const now = Date.now()
   if (cached && cached.expiresAt > now) return cached.rows
 
-  const whereSql = buildBaseConditions(session, filters)
+  const whereSql = buildBaseConditions(session, scope, filters)
   const productKindExpr = sql`pc.product_kind`
   const categoryNameExpr = sql`pc.category_name`
   const marketExpr = sql`COALESCE(NULLIF(so.market_name, ''), market_node.name, '')`
@@ -512,20 +487,17 @@ function buildCategoryAnomaly(
 
 export async function getRepurchaseDashboard(
   session: AuthSession,
+  scope: AnalystScope,
   filters: RepurchaseFilters,
 ): Promise<RepurchaseDashboardData> {
   const threshold = await getMemberThreshold()
   const kpiPrevFilters = previousYearFilters(filters)
   const categoryFilters = { ...filters, categoryName: undefined }
-  const marketFilters = { ...filters, market: undefined, store: undefined }
-  const storeFilters = { ...filters, store: undefined }
 
-  const [entries, prevEntries, categoryEntries, marketEntries, storeEntries] = await Promise.all([
-    queryRepurchaseEntries(session, filters, threshold),
-    kpiPrevFilters ? queryRepurchaseEntries(session, kpiPrevFilters, threshold) : Promise.resolve(null),
-    queryRepurchaseEntries(session, categoryFilters, threshold),
-    queryRepurchaseEntries(session, marketFilters, threshold),
-    queryRepurchaseEntries(session, storeFilters, threshold),
+  const [entries, prevEntries, categoryEntries] = await Promise.all([
+    queryRepurchaseEntries(session, scope, filters, threshold),
+    kpiPrevFilters ? queryRepurchaseEntries(session, scope, kpiPrevFilters, threshold) : Promise.resolve(null),
+    queryRepurchaseEntries(session, scope, categoryFilters, threshold),
   ])
 
   const prevYearRate = prevEntries ? aggregateKpi(prevEntries, null).repurchaseRate : null
@@ -535,9 +507,9 @@ export async function getRepurchaseDashboard(
       categoryName: row.categoryName,
     })),
   )
-  const marketComparison = markAnomalies(aggregateSeries(marketEntries, (row) => row.market))
+  const marketComparison = markAnomalies(aggregateSeries(entries, (row) => row.market))
   const storeRanking = markAnomalies(
-    aggregateSeries(storeEntries, (row) => row.store, (row) => ({ market: row.market })),
+    aggregateSeries(entries, (row) => row.store, (row) => ({ market: row.market })),
   )
   const selectedCategory =
     filters.productKind && filters.categoryName
@@ -556,8 +528,13 @@ export async function getRepurchaseDashboard(
   }
 }
 
-async function queryDistinctStrings(session: AuthSession, expression: SQL, extraCondition?: SQL): Promise<string[]> {
-  const whereSql = buildBaseConditions(session, {})
+async function queryDistinctStrings(
+  session: AuthSession,
+  scope: AnalystScope,
+  expression: SQL,
+  extraCondition?: SQL,
+): Promise<string[]> {
+  const whereSql = buildBaseConditions(session, scope, {})
   const rows = await db.execute<{ value: string }>(sql`
     SELECT DISTINCT ${expression} AS value
     FROM sale_items si
@@ -576,8 +553,8 @@ async function queryDistinctStrings(session: AuthSession, expression: SQL, extra
   return (rows as unknown as Array<{ value: unknown }>).map((row) => cleanText(row.value)).filter(Boolean)
 }
 
-async function queryAvailableYears(session: AuthSession): Promise<number[]> {
-  const whereSql = buildBaseConditions(session, {})
+async function queryAvailableYears(session: AuthSession, scope: AnalystScope): Promise<number[]> {
+  const whereSql = buildBaseConditions(session, scope, {})
   const purchaseAtExpr = sql`COALESCE(so.sale_order_datetime, so.paid_at)`
   const rows = await db.execute<{ value: number }>(sql`
     SELECT DISTINCT EXTRACT(YEAR FROM (${purchaseAtExpr} AT TIME ZONE 'Asia/Shanghai'))::int AS value
@@ -598,40 +575,88 @@ async function queryAvailableYears(session: AuthSession): Promise<number[]> {
 
 export async function getRepurchaseFilterOptions(
   session: AuthSession,
-  selectedMarket?: string,
+  scope: AnalystScope,
   selectedProductKind?: string,
 ): Promise<RepurchaseFilterOptions> {
   const productKindExpr = sql`pc.product_kind`
   const categoryNameExpr = sql`pc.category_name`
   const categoryExpr = sql`CONCAT(pc.product_kind, ' / ', pc.category_name)`
-  const marketExpr = sql`COALESCE(NULLIF(so.market_name, ''), market_node.name, '')`
-  const storeExpr = sql`COALESCE(NULLIF(so.store_name, ''), s.store_name, so.store_id)`
 
-  const [years, productKinds, categoryNames, categories, markets, stores] = await Promise.all([
-    queryAvailableYears(session),
-    queryDistinctStrings(session, productKindExpr),
+  const [years, productKinds, categoryNames, categories] = await Promise.all([
+    queryAvailableYears(session, scope),
+    queryDistinctStrings(session, scope, productKindExpr),
     queryDistinctStrings(
       session,
+      scope,
       categoryNameExpr,
       selectedProductKind ? sql`${productKindExpr} = ${selectedProductKind}` : undefined,
     ),
-    queryDistinctStrings(session, categoryExpr),
-    queryDistinctStrings(session, marketExpr),
-    queryDistinctStrings(session, storeExpr, selectedMarket ? sql`${marketExpr} = ${selectedMarket}` : undefined),
+    queryDistinctStrings(session, scope, categoryExpr),
   ])
 
-  return { years, productKinds, categoryNames, categories, markets, stores }
+  return { years, productKinds, categoryNames, categories }
+}
+
+/**
+ * 拉取 (parent → child) 全量配对，用于 Cascader 客户端即时联动。
+ * 与 queryDistinctStrings 同源（同样不缓存、同样走 buildBaseConditions 的 base WHERE），
+ * 仅把单列 DISTINCT 换成双列 GROUP BY。
+ */
+async function queryDistinctPairs(
+  session: AuthSession,
+  scope: AnalystScope,
+  parentExpr: SQL,
+  childExpr: SQL,
+): Promise<Array<{ parent: string; child: string }>> {
+  const whereSql = buildBaseConditions(session, scope, {})
+  const rows = await db.execute<{ parent: unknown; child: unknown }>(sql`
+    SELECT ${parentExpr} AS parent, ${childExpr} AS child
+    FROM sale_items si
+    JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+    JOIN product_skus sk ON sk.sku_id = si.sku_id
+    JOIN product_categories pc ON pc.category_id = sk.category_id
+    LEFT JOIN stores s ON s.store_id = so.store_id
+    LEFT JOIN org_nodes store_node ON store_node.id = s.org_node_id
+    LEFT JOIN org_nodes market_node ON market_node.id = store_node.parent_id
+    WHERE ${whereSql}
+      AND ${parentExpr} IS NOT NULL
+      AND ${parentExpr} <> ''
+      AND ${childExpr} IS NOT NULL
+      AND ${childExpr} <> ''
+    GROUP BY parent, child
+    ORDER BY parent, child
+  `)
+  return (rows as unknown as Array<{ parent: unknown; child: unknown }>)
+    .map((row) => ({ parent: cleanText(row.parent), child: cleanText(row.child) }))
+    .filter((row) => row.parent && row.child)
+}
+
+/**
+ * 复购率看板的 Cascader 全量选项树：一级品项→二级品项、市场→门店。
+ * 与 getRepurchaseFilterOptions 的字段表达式完全一致，确保级联面板选项与原下拉同口径。
+ */
+export async function getRepurchaseCascadeTree(
+  session: AuthSession,
+  scope: AnalystScope,
+): Promise<{ productKindTree: CascadeOption[] }> {
+  const productKindExpr = sql`pc.product_kind`
+  const categoryNameExpr = sql`pc.category_name`
+  const productPairs = await queryDistinctPairs(session, scope, productKindExpr, categoryNameExpr)
+  return {
+    productKindTree: bucketCascadeOptions(productPairs),
+  }
 }
 
 export async function getRepurchaseKpi(
   session: AuthSession,
+  scope: AnalystScope,
   filters: RepurchaseFilters,
 ): Promise<{ threshold: number; kpi: RepurchaseKpi }> {
   const threshold = await getMemberThreshold()
   const prevFilters = previousYearFilters(filters)
   const [entries, prevEntries] = await Promise.all([
-    queryRepurchaseEntries(session, filters, threshold),
-    prevFilters ? queryRepurchaseEntries(session, prevFilters, threshold) : Promise.resolve(null),
+    queryRepurchaseEntries(session, scope, filters, threshold),
+    prevFilters ? queryRepurchaseEntries(session, scope, prevFilters, threshold) : Promise.resolve(null),
   ])
   const prevYearRate = prevEntries ? aggregateKpi(prevEntries, null).repurchaseRate : null
   return { threshold, kpi: aggregateKpi(entries, prevYearRate) }
@@ -639,19 +664,21 @@ export async function getRepurchaseKpi(
 
 export async function getRepurchaseTrend(
   session: AuthSession,
+  scope: AnalystScope,
   filters: RepurchaseFilters,
 ): Promise<RepurchaseSeriesPoint[]> {
   const threshold = await getMemberThreshold()
-  const entries = await queryRepurchaseEntries(session, filters, threshold)
+  const entries = await queryRepurchaseEntries(session, scope, filters, threshold)
   return aggregateTrend(entries)
 }
 
 export async function getCategoryComparison(
   session: AuthSession,
+  scope: AnalystScope,
   filters: Omit<RepurchaseFilters, "categoryName">,
 ): Promise<RepurchaseRankingRow[]> {
   const threshold = await getMemberThreshold()
-  const entries = await queryRepurchaseEntries(session, { ...filters, categoryName: undefined }, threshold)
+  const entries = await queryRepurchaseEntries(session, scope, { ...filters, categoryName: undefined }, threshold)
   return markAnomalies(
     aggregateSeries(entries, (row) => row.category, (row) => ({
       productKind: row.productKind,
@@ -662,32 +689,35 @@ export async function getCategoryComparison(
 
 export async function getMarketComparison(
   session: AuthSession,
+  scope: AnalystScope,
   filters: Pick<RepurchaseFilters, "year" | "startDate" | "endDate" | "productKind" | "categoryName">,
 ): Promise<RepurchaseRankingRow[]> {
   const threshold = await getMemberThreshold()
-  const entries = await queryRepurchaseEntries(session, filters, threshold)
+  const entries = await queryRepurchaseEntries(session, scope, filters, threshold)
   return markAnomalies(aggregateSeries(entries, (row) => row.market))
 }
 
 export async function getStoreRanking(
   session: AuthSession,
-  filters: Omit<RepurchaseFilters, "store">,
+  scope: AnalystScope,
+  filters: RepurchaseFilters,
   limit?: number,
 ): Promise<RepurchaseRankingRow[]> {
   const threshold = await getMemberThreshold()
-  const entries = await queryRepurchaseEntries(session, { ...filters, store: undefined }, threshold)
+  const entries = await queryRepurchaseEntries(session, scope, filters, threshold)
   const rows = markAnomalies(aggregateSeries(entries, (row) => row.store, (row) => ({ market: row.market })))
   return limit && limit > 0 ? rows.slice(0, limit) : rows
 }
 
 export async function getRepurchaseCustomerList(
   session: AuthSession,
+  scope: AnalystScope,
   filters: RepurchaseFilters,
   listType: "all" | "entry_only" | "repurchase" = "all",
   limit = 200,
 ): Promise<RepurchaseCustomerRow[]> {
   const threshold = await getMemberThreshold()
-  const entries = await queryRepurchaseEntries(session, filters, threshold)
+  const entries = await queryRepurchaseEntries(session, scope, filters, threshold)
   return entries
     .filter((row) => {
       if (listType === "entry_only") return !row.repurchased

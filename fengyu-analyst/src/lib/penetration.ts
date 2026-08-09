@@ -2,8 +2,9 @@ import "server-only"
 
 import { sql, type SQL } from "drizzle-orm"
 import { db } from "@/db"
-import { isAdminScope } from "@/lib/permissions"
+import { analystScopeCacheKey, scopeFilterSql, type AnalystScope } from "@/lib/analyst-scope"
 import type { AuthSession } from "@/lib/types"
+import { bucketCascadeOptions, type CascadeOption } from "./cascade-tree"
 import {
   safeRate,
   summarizeProductNames,
@@ -17,8 +18,6 @@ export interface PenetrationFilters {
   categoryName?: string
   seriesName?: string
   skuId?: string
-  market?: string
-  store?: string
 }
 
 export interface PenetrationKpi {
@@ -33,6 +32,7 @@ export interface PenetrationRankingRow extends PenetrationKpi {
   name: string
   productKind?: string
   categoryName?: string
+  seriesId?: string
   seriesName?: string
   skuId?: string
   productName?: string
@@ -53,20 +53,6 @@ export interface PenetrationFilterOptions {
   categoryNames: string[]
   seriesNames: string[]
   products: PenetrationProductOption[]
-  markets: string[]
-  stores: string[]
-}
-
-export interface PenetrationDataQualityIssue {
-  skuId: string
-  productName: string
-  productNames: string[]
-  holderCount: number
-}
-
-export interface PenetrationDataQuality {
-  missingProductNameSkus: PenetrationDataQualityIssue[]
-  multiNameSkus: PenetrationDataQualityIssue[]
 }
 
 export interface PenetrationCustomerRow {
@@ -93,7 +79,6 @@ export interface PenetrationDashboardData {
   productComparison: PenetrationRankingRow[]
   marketComparison: PenetrationRankingRow[]
   storeRanking: PenetrationRankingRow[]
-  dataQuality: PenetrationDataQuality
 }
 
 interface MemberRow {
@@ -107,6 +92,7 @@ interface HolderRow extends MemberRow {
   customerName: string
   productKind: string
   categoryName: string
+  seriesId: string
   seriesName: string
   skuId: string
   productName: string
@@ -127,6 +113,7 @@ interface RawHolderRow extends RawMemberRow {
   customerCode: unknown
   productKind: unknown
   categoryName: unknown
+  seriesId: unknown
   seriesName: unknown
   skuId: unknown
   productName: unknown
@@ -137,6 +124,7 @@ interface RawHolderRow extends RawMemberRow {
 
 const memberCache = new Map<string, { expiresAt: number; rows: MemberRow[] }>()
 const holderCache = new Map<string, { expiresAt: number; rows: HolderRow[] }>()
+const UNSET_SERIES_ID = "__unset_series__"
 
 function cleanText(value: unknown): string {
   return String(value ?? "").trim()
@@ -163,8 +151,6 @@ function normalizeDashboardFilters(filters: PenetrationFilters): Required<Penetr
     categoryName: filters.categoryName ?? "",
     seriesName: filters.seriesName ?? "",
     skuId: filters.skuId ?? "",
-    market: filters.market ?? "",
-    store: filters.store ?? "",
   }
 }
 
@@ -180,42 +166,20 @@ export function normalizePenetrationFilters(input: {
   const categoryName = Array.isArray(input.categoryName) ? input.categoryName[0] : input.categoryName
   const seriesName = Array.isArray(input.seriesName) ? input.seriesName[0] : input.seriesName
   const skuId = Array.isArray(input.skuId) ? input.skuId[0] : input.skuId
-  const market = Array.isArray(input.market) ? input.market[0] : input.market
-  const store = Array.isArray(input.store) ? input.store[0] : input.store
 
   return {
     productKind: normalizeFilterText(productKind),
     categoryName: normalizeFilterText(categoryName),
     seriesName: normalizeFilterText(seriesName),
     skuId: normalizeFilterText(skuId),
-    market: normalizeFilterText(market),
-    store: normalizeFilterText(store),
   }
 }
 
-function scopeCacheKey(session: AuthSession): string {
-  if (isAdminScope(session)) return "admin"
-  const ids = [...session.permissions.scopeStoreIds].sort()
-  return ids.length > 0 ? ids.join(",") : "__none__"
-}
-
-function boundStoreScopeCondition(session: AuthSession): SQL {
-  if (isAdminScope(session)) return sql`TRUE`
-  const ids = session.permissions.scopeStoreIds
-  if (ids.length === 0) return sql`FALSE`
-  return sql`c.bound_store_id = ANY(${ids}::text[])`
-}
-
-function memberConditions(session: AuthSession, filters: Pick<PenetrationFilters, "market" | "store">): SQL {
-  const marketExpr = sql`COALESCE(NULLIF(market_node.name, ''), '未归属市场')`
-  const storeExpr = sql`COALESCE(NULLIF(s.store_name, ''), c.bound_store_id, '未绑定门店')`
+function memberConditions(session: AuthSession, scope: AnalystScope): SQL {
   const conditions: SQL[] = [
-    boundStoreScopeCondition(session),
+    scopeFilterSql(session, scope, "c.bound_store_id"),
     sql`c.became_member_at IS NOT NULL`,
   ]
-
-  if (filters.market) conditions.push(sql`${marketExpr} = ${filters.market}`)
-  if (filters.store) conditions.push(sql`${storeExpr} = ${filters.store}`)
 
   return sql.join(conditions, sql` AND `)
 }
@@ -234,9 +198,9 @@ function productConditions(filters: PenetrationFilters): SQL {
   return sql.join(conditions, sql` AND `)
 }
 
-function cacheKey(session: AuthSession, filters: PenetrationFilters): string {
+function cacheKey(session: AuthSession, scope: AnalystScope, filters: PenetrationFilters): string {
   return JSON.stringify({
-    scope: scopeCacheKey(session),
+    scope: analystScopeCacheKey(session, scope),
     filters: normalizeDashboardFilters(filters),
   })
 }
@@ -258,6 +222,7 @@ function mapHolderRows(rows: unknown): HolderRow[] {
     store: cleanText(row.store),
     productKind: cleanText(row.productKind),
     categoryName: cleanText(row.categoryName),
+    seriesId: cleanText(row.seriesId),
     seriesName: cleanText(row.seriesName),
     skuId: cleanText(row.skuId),
     productName: cleanText(row.productName),
@@ -269,14 +234,14 @@ function mapHolderRows(rows: unknown): HolderRow[] {
 
 async function queryMemberRows(
   session: AuthSession,
-  filters: Pick<PenetrationFilters, "market" | "store">,
+  scope: AnalystScope,
 ): Promise<MemberRow[]> {
-  const key = cacheKey(session, { market: filters.market, store: filters.store })
+  const key = cacheKey(session, scope, {})
   const now = Date.now()
   const cached = memberCache.get(key)
   if (cached && cached.expiresAt > now) return cached.rows
 
-  const whereSql = memberConditions(session, filters)
+  const whereSql = memberConditions(session, scope)
   const rows = await db.execute<RawMemberRow>(sql`
     SELECT
       c.user_id AS "customerId",
@@ -294,13 +259,17 @@ async function queryMemberRows(
   return mapped
 }
 
-async function queryHolderRows(session: AuthSession, filters: PenetrationFilters): Promise<HolderRow[]> {
-  const key = cacheKey(session, filters)
+async function queryHolderRows(
+  session: AuthSession,
+  scope: AnalystScope,
+  filters: PenetrationFilters,
+): Promise<HolderRow[]> {
+  const key = cacheKey(session, scope, filters)
   const now = Date.now()
   const cached = holderCache.get(key)
   if (cached && cached.expiresAt > now) return cached.rows
 
-  const memberWhereSql = memberConditions(session, filters)
+  const memberWhereSql = memberConditions(session, scope)
   const productWhereSql = productConditions(filters)
   const rows = await db.execute<RawHolderRow>(sql`
     SELECT
@@ -311,6 +280,7 @@ async function queryHolderRows(session: AuthSession, filters: PenetrationFilters
       COALESCE(NULLIF(s.store_name, ''), c.bound_store_id, '未绑定门店') AS "store",
       COALESCE(NULLIF(pc.product_kind, ''), '未设置一级品项') AS "productKind",
       COALESCE(NULLIF(pc.category_name, ''), '未设置二级品项') AS "categoryName",
+      COALESCE(sk.project_series_id::text, '') AS "seriesId",
       COALESCE(NULLIF(psl.name, ''), '未设置系列') AS "seriesName",
       si.sku_id AS "skuId",
       COALESCE(si.product_name, '') AS "productName",
@@ -446,6 +416,7 @@ function aggregateProducts(rows: HolderRow[], memberCount: number): PenetrationR
         ...kpi,
         productKind: first.productKind,
         categoryName: first.categoryName,
+        seriesId: first.seriesId || undefined,
         seriesName: first.seriesName,
         skuId,
         productName: summary.productName,
@@ -482,64 +453,26 @@ function buildProductOptions(rows: HolderRow[]): PenetrationProductOption[] {
     .filter((row) => row.skuId)
 }
 
-function buildDataQuality(rows: HolderRow[]): PenetrationDataQuality {
-  const rowsBySku = new Map<string, HolderRow[]>()
-  for (const row of rows) {
-    const current = rowsBySku.get(row.skuId) ?? []
-    current.push(row)
-    rowsBySku.set(row.skuId, current)
-  }
-
-  const missingProductNameSkus: PenetrationDataQualityIssue[] = []
-  const multiNameSkus: PenetrationDataQualityIssue[] = []
-
-  for (const [skuId, skuRows] of rowsBySku) {
-    const summary = productNameSummary(skuRows)
-    const issue = {
-      skuId,
-      productName: summary.productName,
-      productNames: summary.productNames,
-      holderCount: distinctCount(skuRows.map((row) => row.customerId)),
-    }
-    if (summary.missingName) missingProductNameSkus.push(issue)
-    if (summary.hasMultipleNames) multiNameSkus.push(issue)
-  }
-
-  const sortIssues = (issues: PenetrationDataQualityIssue[]) =>
-    issues.sort((a, b) => {
-      if (b.holderCount !== a.holderCount) return b.holderCount - a.holderCount
-      return a.skuId.localeCompare(b.skuId)
-    })
-
-  return {
-    missingProductNameSkus: sortIssues(missingProductNameSkus),
-    multiNameSkus: sortIssues(multiNameSkus),
-  }
-}
-
 function productCategoryName(row: HolderRow): string {
   return `${row.productKind} / ${row.categoryName}`
 }
 
-function productSeriesName(row: HolderRow): string {
-  return `${row.productKind} / ${row.categoryName} / ${row.seriesName}`
+function productSeriesId(row: HolderRow): string {
+  return row.seriesId || UNSET_SERIES_ID
 }
 
 export async function getPenetrationDashboard(
   session: AuthSession,
+  scope: AnalystScope,
   filters: PenetrationFilters,
 ): Promise<PenetrationDashboardData> {
-  const orgFilters = { market: filters.market, store: filters.store }
-  const categoryFilters = { ...filters, categoryName: undefined, seriesName: undefined, skuId: undefined }
+  const productKindFilters = { ...filters, productKind: undefined, categoryName: undefined, skuId: undefined }
+  const categoryFilters = { ...filters, categoryName: undefined, skuId: undefined }
   const seriesFilters = { ...filters, seriesName: undefined, skuId: undefined }
   const productFilters = { ...filters, skuId: undefined }
-  const marketFilters = { ...filters, market: undefined, store: undefined }
-  const storeFilters = { ...filters, store: undefined }
 
   const [
     members,
-    marketMembers,
-    storeMembers,
     rows,
     productKindRows,
     categoryRows,
@@ -548,21 +481,19 @@ export async function getPenetrationDashboard(
     marketRows,
     storeRows,
   ] = await Promise.all([
-    queryMemberRows(session, orgFilters),
-    queryMemberRows(session, {}),
-    queryMemberRows(session, { market: filters.market }),
-    queryHolderRows(session, filters),
-    queryHolderRows(session, { ...filters, productKind: undefined, categoryName: undefined, seriesName: undefined, skuId: undefined }),
-    queryHolderRows(session, categoryFilters),
-    queryHolderRows(session, seriesFilters),
-    queryHolderRows(session, productFilters),
-    queryHolderRows(session, marketFilters),
-    queryHolderRows(session, storeFilters),
+    queryMemberRows(session, scope),
+    queryHolderRows(session, scope, filters),
+    queryHolderRows(session, scope, productKindFilters),
+    queryHolderRows(session, scope, categoryFilters),
+    queryHolderRows(session, scope, seriesFilters),
+    queryHolderRows(session, scope, productFilters),
+    queryHolderRows(session, scope, filters),
+    queryHolderRows(session, scope, filters),
   ])
 
   const memberCount = distinctCount(members.map((row) => row.customerId))
-  const marketMemberCount = countMembersBy(marketMembers, (row) => row.market)
-  const storeMemberCount = countMembersBy(storeMembers, (row) => row.store)
+  const marketMemberCount = countMembersBy(members, (row) => row.market)
+  const storeMemberCount = countMembersBy(members, (row) => row.store)
 
   return {
     filters: normalizeDashboardFilters(filters),
@@ -581,9 +512,9 @@ export async function getPenetrationDashboard(
     ),
     seriesComparison: aggregateRows(
       seriesRows,
-      productSeriesName,
+      productSeriesId,
       () => memberCount,
-      (row) => ({ productKind: row.productKind, categoryName: row.categoryName, seriesName: row.seriesName }),
+      (row) => ({ name: row.seriesName, seriesId: row.seriesId || undefined, seriesName: row.seriesName }),
     ),
     productComparison: aggregateProducts(productRows, memberCount),
     marketComparison: aggregateRows(
@@ -598,25 +529,21 @@ export async function getPenetrationDashboard(
       (store) => storeMemberCount.get(store) ?? 0,
       (row) => ({ market: row.market }),
     ),
-    dataQuality: buildDataQuality(productRows),
   }
 }
 
 export async function getPenetrationFilterOptions(
   session: AuthSession,
-  selectedMarket?: string,
+  scope: AnalystScope,
   selectedProductKind?: string,
   selectedCategoryName?: string,
   selectedSeriesName?: string,
 ): Promise<PenetrationFilterOptions> {
-  const [members, scopedMembers, productKindRows, categoryRows, seriesRows, productRows] = await Promise.all([
-    queryMemberRows(session, {}),
-    queryMemberRows(session, { market: selectedMarket }),
-    queryHolderRows(session, { market: selectedMarket }),
-    queryHolderRows(session, { market: selectedMarket, productKind: selectedProductKind }),
-    queryHolderRows(session, { market: selectedMarket, productKind: selectedProductKind, categoryName: selectedCategoryName }),
-    queryHolderRows(session, {
-      market: selectedMarket,
+  const [productKindRows, categoryRows, seriesRows, productRows] = await Promise.all([
+    queryHolderRows(session, scope, {}),
+    queryHolderRows(session, scope, { productKind: selectedProductKind }),
+    queryHolderRows(session, scope, {}),
+    queryHolderRows(session, scope, {
       productKind: selectedProductKind,
       categoryName: selectedCategoryName,
       seriesName: selectedSeriesName,
@@ -628,40 +555,58 @@ export async function getPenetrationFilterOptions(
     categoryNames: Array.from(new Set(categoryRows.map((row) => row.categoryName))).filter(Boolean).sort((a, b) => a.localeCompare(b, "zh-Hans-CN")),
     seriesNames: Array.from(new Set(seriesRows.map((row) => row.seriesName))).filter(Boolean).sort((a, b) => a.localeCompare(b, "zh-Hans-CN")),
     products: buildProductOptions(productRows),
-    markets: Array.from(new Set(members.map((row) => row.market))).filter(Boolean).sort((a, b) => a.localeCompare(b, "zh-Hans-CN")),
-    stores: Array.from(new Set(scopedMembers.map((row) => row.store))).filter(Boolean).sort((a, b) => a.localeCompare(b, "zh-Hans-CN")),
+  }
+}
+
+/**
+ * 普及率看板的 Cascader 全量选项树：一级品项→二级品项（取自持卡人）、市场→门店（取自会员绑定门店）。
+ * 品项与市场门店是两个正交维度，各自全量；与 getPenetrationFilterOptions 字段口径一致
+ * （含「未设置…」「未归属…」占位）。系列/商品不纳入级联，仍走原下拉。
+ */
+export async function getPenetrationCascadeTree(
+  session: AuthSession,
+  scope: AnalystScope,
+): Promise<{ productKindTree: CascadeOption[] }> {
+  const holders = await queryHolderRows(session, scope, {})
+  return {
+    productKindTree: bucketCascadeOptions(
+      holders.map((holder) => ({ parent: holder.productKind, child: holder.categoryName })),
+    ),
   }
 }
 
 export async function getPenetrationKpi(
   session: AuthSession,
+  scope: AnalystScope,
   filters: PenetrationFilters,
 ): Promise<PenetrationKpi> {
   const [members, rows] = await Promise.all([
-    queryMemberRows(session, { market: filters.market, store: filters.store }),
-    queryHolderRows(session, filters),
+    queryMemberRows(session, scope),
+    queryHolderRows(session, scope, filters),
   ])
   return aggregateKpi(rows, distinctCount(members.map((row) => row.customerId)))
 }
 
 export async function getPenetrationProductComparison(
   session: AuthSession,
+  scope: AnalystScope,
   filters: Omit<PenetrationFilters, "skuId">,
 ): Promise<PenetrationRankingRow[]> {
   const [members, rows] = await Promise.all([
-    queryMemberRows(session, { market: filters.market, store: filters.store }),
-    queryHolderRows(session, { ...filters, skuId: undefined }),
+    queryMemberRows(session, scope),
+    queryHolderRows(session, scope, { ...filters, skuId: undefined }),
   ])
   return aggregateProducts(rows, distinctCount(members.map((row) => row.customerId)))
 }
 
 export async function getPenetrationCategoryComparison(
   session: AuthSession,
-  filters: Omit<PenetrationFilters, "categoryName" | "seriesName" | "skuId">,
+  scope: AnalystScope,
+  filters: Omit<PenetrationFilters, "categoryName" | "skuId">,
 ): Promise<PenetrationRankingRow[]> {
   const [members, rows] = await Promise.all([
-    queryMemberRows(session, { market: filters.market, store: filters.store }),
-    queryHolderRows(session, { ...filters, categoryName: undefined, seriesName: undefined, skuId: undefined }),
+    queryMemberRows(session, scope),
+    queryHolderRows(session, scope, { ...filters, categoryName: undefined, skuId: undefined }),
   ])
   const memberCount = distinctCount(members.map((row) => row.customerId))
   return aggregateRows(rows, productCategoryName, () => memberCount, (row) => ({
@@ -672,11 +617,12 @@ export async function getPenetrationCategoryComparison(
 
 export async function getPenetrationMarketComparison(
   session: AuthSession,
+  scope: AnalystScope,
   filters: Pick<PenetrationFilters, "productKind" | "categoryName" | "seriesName" | "skuId">,
 ): Promise<PenetrationRankingRow[]> {
   const [members, rows] = await Promise.all([
-    queryMemberRows(session, {}),
-    queryHolderRows(session, filters),
+    queryMemberRows(session, scope),
+    queryHolderRows(session, scope, filters),
   ])
   const counts = countMembersBy(members, (row) => row.market)
   return aggregateRows(rows, (row) => row.market, (market) => counts.get(market) ?? 0, (row) => ({
@@ -686,12 +632,13 @@ export async function getPenetrationMarketComparison(
 
 export async function getPenetrationStoreRanking(
   session: AuthSession,
-  filters: Omit<PenetrationFilters, "store">,
+  scope: AnalystScope,
+  filters: PenetrationFilters,
   limit?: number,
 ): Promise<PenetrationRankingRow[]> {
   const [members, rows] = await Promise.all([
-    queryMemberRows(session, { market: filters.market }),
-    queryHolderRows(session, { ...filters, store: undefined }),
+    queryMemberRows(session, scope),
+    queryHolderRows(session, scope, filters),
   ])
   const counts = countMembersBy(members, (row) => row.store)
   const ranking = aggregateRows(rows, (row) => row.store, (store) => counts.get(store) ?? 0, (row) => ({
@@ -702,10 +649,11 @@ export async function getPenetrationStoreRanking(
 
 export async function getPenetrationCustomerList(
   session: AuthSession,
+  scope: AnalystScope,
   filters: PenetrationFilters,
   limit = 1000,
 ): Promise<PenetrationCustomerRow[]> {
-  const rows = await queryHolderRows(session, filters)
+  const rows = await queryHolderRows(session, scope, filters)
   const map = new Map<
     string,
     {

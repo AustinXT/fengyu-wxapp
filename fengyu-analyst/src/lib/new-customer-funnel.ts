@@ -2,7 +2,7 @@ import "server-only"
 
 import { sql, type SQL } from "drizzle-orm"
 import { db } from "@/db"
-import { isAdminScope } from "@/lib/permissions"
+import { analystScopeCacheKey, scopeFilterSql, type AnalystScope } from "@/lib/analyst-scope"
 import type { AuthSession } from "@/lib/types"
 import {
   EMPTY_SOURCE,
@@ -44,8 +44,6 @@ export type {
 export interface NewCustomerFunnelFilterOptions {
   months: string[]
   sources: string[]
-  markets: string[]
-  stores: string[]
 }
 
 export interface NewCustomerFunnelDashboardData {
@@ -54,6 +52,9 @@ export interface NewCustomerFunnelDashboardData {
   prevYearKpi: NewCustomerFunnelKpi
   prevPeriodKpi: NewCustomerFunnelKpi
   sourceBreakdown: NewCustomerFunnelComparisonRow[]
+  monthComparisonRows: NewCustomerFunnelComparisonRow[]
+  unitComparisonRows: NewCustomerFunnelComparisonRow[]
+  unitComparisonLevel: NewCustomerUnitLevel
   comparisonRows: NewCustomerFunnelComparisonRow[]
   funnelRows: Array<{ name: string; value: number }>
 }
@@ -126,8 +127,6 @@ export function normalizeNewCustomerFunnelFilters(input: {
   const unitLevel = normalizeUnitLevel(Array.isArray(input.unitLevel) ? input.unitLevel[0] : input.unitLevel)
   const tableMode = normalizeTableMode(Array.isArray(input.tableMode) ? input.tableMode[0] : input.tableMode, startMonth, endMonth)
   const source = normalizeFilterText(Array.isArray(input.source) ? input.source[0] : input.source)
-  const market = normalizeFilterText(Array.isArray(input.market) ? input.market[0] : input.market)
-  const store = normalizeFilterText(Array.isArray(input.store) ? input.store[0] : input.store)
 
   return {
     startMonth,
@@ -135,22 +134,7 @@ export function normalizeNewCustomerFunnelFilters(input: {
     unitLevel,
     tableMode,
     source: source ?? "",
-    market: market ?? "",
-    store: store ?? "",
   }
-}
-
-function scopeCacheKey(session: AuthSession): string {
-  if (isAdminScope(session)) return "admin"
-  const ids = [...session.permissions.scopeStoreIds].sort()
-  return ids.length > 0 ? ids.join(",") : "__none__"
-}
-
-function storeScopeCondition(session: AuthSession, storeExpr: SQL): SQL {
-  if (isAdminScope(session)) return sql`TRUE`
-  const ids = session.permissions.scopeStoreIds
-  if (ids.length === 0) return sql`FALSE`
-  return sql`${storeExpr} = ANY(${ids}::text[])`
 }
 
 function mapEntryRows(rows: unknown): NewCustomerFunnelEntry[] {
@@ -175,17 +159,17 @@ function mapEntryRows(rows: unknown): NewCustomerFunnelEntry[] {
   })
 }
 
-async function queryFunnelEntries(session: AuthSession): Promise<NewCustomerFunnelEntry[]> {
-  const key = scopeCacheKey(session)
+async function queryFunnelEntries(session: AuthSession, scope: AnalystScope): Promise<NewCustomerFunnelEntry[]> {
+  const key = analystScopeCacheKey(session, scope)
   const cached = entryCache.get(key)
   const now = Date.now()
   if (cached && cached.expiresAt > now) return cached.rows
 
-  const firstOrderScope = storeScopeCondition(session, sql`so.store_id`)
-  const transferScope = storeScopeCondition(session, sql`c.bound_store_id`)
-  const serviceScope = storeScopeCondition(session, sql`svc.store_id`)
-  const memberAmountScope = storeScopeCondition(session, sql`mo.store_id`)
-  const annualAmountScope = storeScopeCondition(session, sql`yo.store_id`)
+  const firstOrderScope = scopeFilterSql(session, scope, "so.store_id")
+  const transferScope = scopeFilterSql(session, scope, "c.bound_store_id")
+  const serviceScope = scopeFilterSql(session, scope, "svc.store_id")
+  const memberAmountScope = scopeFilterSql(session, scope, "mo.store_id")
+  const annualAmountScope = scopeFilterSql(session, scope, "yo.store_id")
 
   const rows = await db.execute<RawFunnelEntryRow>(sql`
     WITH first_orders AS (
@@ -310,8 +294,6 @@ function filterEntries(
   return entries.filter((entry) => {
     if (entry.month < filters.startMonth || entry.month > filters.endMonth) return false
     if (filters.source && entry.source !== filters.source) return false
-    if (filters.market && entry.market !== filters.market) return false
-    if (filters.store && entry.store !== filters.store) return false
     return true
   })
 }
@@ -332,28 +314,40 @@ function sortComparisonRows(rows: NewCustomerFunnelComparisonRow[], tableMode: N
   })
 }
 
-function buildComparisonRows(
-  entries: NewCustomerFunnelEntry[],
-  filters: RequiredNewCustomerFunnelFilters,
-): NewCustomerFunnelComparisonRow[] {
-  if (filters.tableMode === "months") {
-    return sortComparisonRows(
-      aggregateFunnelRows(entries, (entry) => entry.month, (entry) => ({ month: entry.month })),
-      filters.tableMode,
-    )
-  }
+function inferDashboardUnitLevel(scope: AnalystScope): NewCustomerUnitLevel {
+  return scope.type === "all" ? "market" : "store"
+}
 
-  if (filters.unitLevel === "store") {
+function buildMonthComparisonRows(entries: NewCustomerFunnelEntry[]): NewCustomerFunnelComparisonRow[] {
+  return sortComparisonRows(
+    aggregateFunnelRows(entries, (entry) => entry.month, (entry) => ({ month: entry.month })),
+    "months",
+  )
+}
+
+function buildUnitComparisonRows(
+  entries: NewCustomerFunnelEntry[],
+  unitLevel: NewCustomerUnitLevel,
+): NewCustomerFunnelComparisonRow[] {
+  if (unitLevel === "store") {
     return sortComparisonRows(
       aggregateFunnelRows(entries, (entry) => entry.store, (entry) => ({ store: entry.store, market: entry.market })),
-      filters.tableMode,
+      "units",
     )
   }
 
   return sortComparisonRows(
     aggregateFunnelRows(entries, (entry) => entry.market, (entry) => ({ market: entry.market })),
-    filters.tableMode,
+    "units",
   )
+}
+
+function buildComparisonRows(
+  entries: NewCustomerFunnelEntry[],
+  filters: RequiredNewCustomerFunnelFilters,
+): NewCustomerFunnelComparisonRow[] {
+  if (filters.tableMode === "months") return buildMonthComparisonRows(entries)
+  return buildUnitComparisonRows(entries, filters.unitLevel)
 }
 
 function buildFunnelRows(kpi: NewCustomerFunnelKpi): Array<{ name: string; value: number }> {
@@ -366,14 +360,18 @@ function buildFunnelRows(kpi: NewCustomerFunnelKpi): Array<{ name: string; value
 
 export async function getNewCustomerFunnelDashboard(
   session: AuthSession,
+  scope: AnalystScope,
   input: NewCustomerFunnelFilters,
 ): Promise<NewCustomerFunnelDashboardData> {
   const filters = normalizeNewCustomerFunnelFilters(input)
-  const allEntries = await queryFunnelEntries(session)
+  const allEntries = await queryFunnelEntries(session, scope)
   const entries = filterEntries(allEntries, filters)
   const prevYearEntries = filterEntries(allEntries, withMonthRange(filters, previousYearRange(filters)))
   const prevPeriodEntries = filterEntries(allEntries, withMonthRange(filters, previousPeriodRange(filters)))
   const kpi = aggregateFunnelKpi(entries)
+  const unitComparisonLevel = inferDashboardUnitLevel(scope)
+  const monthComparisonRows = buildMonthComparisonRows(entries)
+  const unitComparisonRows = buildUnitComparisonRows(entries, unitComparisonLevel)
 
   return {
     filters,
@@ -381,6 +379,9 @@ export async function getNewCustomerFunnelDashboard(
     prevYearKpi: aggregateFunnelKpi(prevYearEntries),
     prevPeriodKpi: aggregateFunnelKpi(prevPeriodEntries),
     sourceBreakdown: aggregateFunnelBySource(entries),
+    monthComparisonRows,
+    unitComparisonRows,
+    unitComparisonLevel,
     comparisonRows: buildComparisonRows(entries, filters),
     funnelRows: buildFunnelRows(kpi),
   }
@@ -388,65 +389,66 @@ export async function getNewCustomerFunnelDashboard(
 
 export async function getNewCustomerFunnelKpi(
   session: AuthSession,
+  scope: AnalystScope,
   input: NewCustomerFunnelFilters,
 ): Promise<{ filters: RequiredNewCustomerFunnelFilters; kpi: NewCustomerFunnelKpi }> {
   const filters = normalizeNewCustomerFunnelFilters(input)
-  const entries = filterEntries(await queryFunnelEntries(session), filters)
+  const entries = filterEntries(await queryFunnelEntries(session, scope), filters)
   return { filters, kpi: aggregateFunnelKpi(entries) }
 }
 
 export async function getNewCustomerFunnelTrend(
   session: AuthSession,
+  scope: AnalystScope,
   input: NewCustomerFunnelFilters,
 ): Promise<NewCustomerFunnelComparisonRow[]> {
   const filters = normalizeNewCustomerFunnelFilters({ ...input, tableMode: "months" })
-  const entries = filterEntries(await queryFunnelEntries(session), filters)
+  const entries = filterEntries(await queryFunnelEntries(session, scope), filters)
   return buildComparisonRows(entries, filters)
 }
 
 export async function getNewCustomerFunnelUnitComparison(
   session: AuthSession,
+  scope: AnalystScope,
   input: NewCustomerFunnelFilters,
 ): Promise<NewCustomerFunnelComparisonRow[]> {
   const filters = normalizeNewCustomerFunnelFilters({ ...input, tableMode: "units" })
-  const entries = filterEntries(await queryFunnelEntries(session), filters)
+  const entries = filterEntries(await queryFunnelEntries(session, scope), filters)
   return buildComparisonRows(entries, filters)
 }
 
 export async function getNewCustomerFunnelSourceBreakdown(
   session: AuthSession,
+  scope: AnalystScope,
   input: NewCustomerFunnelFilters,
 ): Promise<NewCustomerFunnelComparisonRow[]> {
   const filters = normalizeNewCustomerFunnelFilters(input)
-  const entries = filterEntries(await queryFunnelEntries(session), filters)
+  const entries = filterEntries(await queryFunnelEntries(session, scope), filters)
   return aggregateFunnelBySource(entries)
 }
 
 export async function getNewCustomerFunnelCustomerList(
   session: AuthSession,
+  scope: AnalystScope,
   input: NewCustomerFunnelFilters,
   limit = 200,
   listType: NewCustomerFunnelListType = "all",
 ): Promise<NewCustomerFunnelEntry[]> {
   const filters = normalizeNewCustomerFunnelFilters(input)
-  const entries = filterEntries(await queryFunnelEntries(session), filters)
+  const entries = filterEntries(await queryFunnelEntries(session, scope), filters)
   return filterNewCustomerFunnelListEntries(entries, listType).slice(0, Math.max(1, Math.min(limit, 1000)))
 }
 
 export async function getNewCustomerFunnelFilterOptions(
   session: AuthSession,
-  selectedMarket?: string,
+  scope: AnalystScope,
 ): Promise<NewCustomerFunnelFilterOptions> {
-  const entries = await queryFunnelEntries(session)
+  const entries = await queryFunnelEntries(session, scope)
   const months = Array.from(new Set(entries.map((entry) => normalizeMonth(entry.month)).filter((month): month is string => Boolean(month))))
     .sort()
     .reverse()
   const observedSources = Array.from(new Set(entries.map((entry) => entry.source))).filter(Boolean)
   const sources = Array.from(new Set([...NEW_CUSTOMER_SOURCE_LABELS, ...observedSources]))
-  const markets = Array.from(new Set(entries.map((entry) => entry.market))).filter(Boolean).sort((a, b) => a.localeCompare(b, "zh-Hans-CN"))
-  const stores = Array.from(new Set(entries.filter((entry) => !selectedMarket || entry.market === selectedMarket).map((entry) => entry.store)))
-    .filter(Boolean)
-    .sort((a, b) => a.localeCompare(b, "zh-Hans-CN"))
 
-  return { months, sources, markets, stores }
+  return { months, sources }
 }

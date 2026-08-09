@@ -26,8 +26,6 @@ export interface NewCustomerFunnelFilters {
   unitLevel?: NewCustomerUnitLevel
   tableMode?: NewCustomerTableMode
   source?: string
-  market?: string
-  store?: string
 }
 
 export interface RequiredNewCustomerFunnelFilters {
@@ -36,8 +34,6 @@ export interface RequiredNewCustomerFunnelFilters {
   unitLevel: NewCustomerUnitLevel
   tableMode: NewCustomerTableMode
   source: string
-  market: string
-  store: string
 }
 
 export interface NewCustomerFunnelEntry {
