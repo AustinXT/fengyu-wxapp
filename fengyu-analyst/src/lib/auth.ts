@@ -1,5 +1,5 @@
 import { cookies } from "next/headers"
-import { jwtVerify } from "jose"
+import { jwtVerify, errors } from "jose"
 import { eq } from "drizzle-orm"
 import { db } from "@/db"
 import { JWT_SECRET } from "@/lib/jwt-secret"
@@ -63,8 +63,9 @@ export async function getSession(): Promise<AuthSession | null> {
       roles,
       permissions: { actions, scopeStoreIds },
     }
-  } catch {
-    return null
+  } catch (err) {
+    if (err instanceof errors.JOSEError) return null
+    throw err
   }
 }
 

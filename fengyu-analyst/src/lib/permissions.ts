@@ -34,6 +34,7 @@ async function getPermissionMatrix(): Promise<Record<RoleType, string[]>> {
     matrixCache = { matrix: parsed, expiresAt: now + 30_000 }
     return parsed
   } catch {
+    matrixCache = { matrix: DEFAULT_PERMISSION_MATRIX, expiresAt: Date.now() + 30_000 }
     return DEFAULT_PERMISSION_MATRIX
   }
 }

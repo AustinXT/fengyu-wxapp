@@ -112,7 +112,11 @@ type NewCustomerFilterInput = z.infer<typeof newCustomerFiltersSchema>
 
 function compactDate(value: string | null | undefined): string | undefined {
   const text = value?.trim()
-  return text && /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : undefined
+  if (!text || !/^\d{4}-\d{2}-\d{2}$/.test(text)) return undefined
+  const [y, m, d] = text.split("-").map(Number)
+  const date = new Date(Date.UTC(y, m - 1, d))
+  if (date.getUTCFullYear() !== y || date.getUTCMonth() + 1 !== m || date.getUTCDate() !== d) return undefined
+  return text
 }
 
 function compactFilters(input: AssistantFilterInput): RepurchaseFilters {
@@ -680,7 +684,7 @@ function scopeFromNames(
   const storeText = input.store?.trim()
   if (storeText) {
     for (const market of options.markets) {
-      const store = market.stores.find((item) => item.storeName === storeText || storeText.includes(item.storeName))
+      const store = market.stores.find((item) => item.storeName === storeText || item.storeName.includes(storeText))
       if (store) return { type: "store", id: store.storeId }
     }
   }

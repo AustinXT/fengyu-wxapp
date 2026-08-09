@@ -5,9 +5,11 @@ import {
   answerQuestionWithVisualizations,
   buildAssistantDataContext,
   createAssistantSystemPrompt,
+  createRepurchaseTools,
   normalizeAssistantResponseForDisplay,
   type AssistantDataContext,
 } from "@/lib/assistant-answer"
+import type { AuthSession } from "@/lib/types"
 import {
   normalizeOpenAiSdkEnvironment,
   resolveAiConfig,
@@ -81,6 +83,8 @@ async function generateAiContent(
   aiConfig: AnalystAiConfig,
   messages: IncomingMessage[],
   dataContext: AssistantDataContext,
+  session: AuthSession,
+  question: string,
 ) {
   normalizeOpenAiSdkEnvironment()
   const { createOpenAI } = await import("@ai-sdk/openai")
@@ -106,6 +110,7 @@ async function generateAiContent(
 - 如果某个筛选只适用于其中一个指标，必须明确指出，避免暗示所有指标都套用了同一筛选。`,
     messages: toModelMessages(messages, dataContext),
     temperature: 0.2,
+    tools: createRepurchaseTools(session, question),
   })
 
   return result.text.trim()
@@ -145,7 +150,7 @@ export async function POST(request: Request) {
 
   if (aiConfig) {
     try {
-      const aiContent = await generateAiContent(aiConfig, messages, buildAssistantDataContext(question, localResponse))
+      const aiContent = await generateAiContent(aiConfig, messages, buildAssistantDataContext(question, localResponse), auth, question)
       response = normalizeAssistantResponseForDisplay({
         ...localResponse,
         content: aiContent || localResponse.content,
@@ -160,15 +165,21 @@ export async function POST(request: Request) {
   let turn
   try {
     // The transaction writes the question and final answer together, so a failed request never leaves a half-turn.
+    // Pass expectedMessageCount to detect TOCTOU races — if a concurrent request inserted messages
+    // between the history read (above) and this persist, the transaction rejects with CONFLICT.
     turn = await persistAssistantChatTurn({
       ownerEmployeeId: auth.employeeId,
       sessionId,
       question,
       response,
+      expectedMessageCount: history.length,
     })
   } catch (error) {
     if (error instanceof AssistantChatSessionNotFoundError) {
       return noStoreJson({ error: "NOT_FOUND", message: "聊天会话不存在" }, { status: 404 })
+    }
+    if (error instanceof Error && error.message.startsWith("CONFLICT:")) {
+      return noStoreJson({ error: "CONFLICT", message: error.message }, { status: 409 })
     }
     throw error
   }

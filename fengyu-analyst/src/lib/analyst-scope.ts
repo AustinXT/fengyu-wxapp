@@ -247,11 +247,16 @@ export function validateAnalystScopeWithOptions(
   }
 }
 
+const VALID_COLUMN_NAME = /^[a-zA-Z_][a-zA-Z0-9_.]*$/
+
 export function scopeFilterSql(
   session: AuthSession,
   scope: AnalystScope,
   storeCol = "so.store_id",
 ): SQL {
+  if (!VALID_COLUMN_NAME.test(storeCol)) {
+    throw new Error(`INVALID_PARAMS: invalid storeCol parameter: ${storeCol}`)
+  }
   const col = sql.raw(storeCol)
   const parts: SQL[] = []
 

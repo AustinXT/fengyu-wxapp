@@ -659,9 +659,6 @@ export function AssistantChat() {
           item.id === session.id
             ? {
                 ...item,
-                title: session.title,
-                messageCount: session.messageCount,
-                updatedAt: session.updatedAt,
                 messages: (item.messages ?? []).filter(
                   (message) => message.id !== userMessage.id && message.id !== assistantMessage.id,
                 ),

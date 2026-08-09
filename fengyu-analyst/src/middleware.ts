@@ -4,13 +4,13 @@ import { jwtVerify } from "jose"
 const COOKIE_NAME = "fy-admin-token"
 const DEV_ONLY_FALLBACK = "fengyu-admin-jwt-secret-dev-only"
 
-function jwtSecret(): Uint8Array | null {
+function jwtSecret(): Uint8Array {
   const secret = process.env.JWT_SECRET
   if (secret && secret.length > 0) {
     return new TextEncoder().encode(secret)
   }
   if (process.env.NODE_ENV === "production") {
-    return null
+    throw new Error("JWT_SECRET is required in production")
   }
   return new TextEncoder().encode(DEV_ONLY_FALLBACK)
 }
@@ -30,7 +30,6 @@ function redirectToAdminLogin(request: NextRequest) {
 
 export async function middleware(request: NextRequest) {
   const secret = jwtSecret()
-  if (!secret) return redirectToAdminLogin(request)
 
   const token = request.cookies.get(COOKIE_NAME)?.value
   if (!token) return redirectToAdminLogin(request)

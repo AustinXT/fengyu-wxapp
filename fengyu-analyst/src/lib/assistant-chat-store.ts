@@ -249,11 +249,13 @@ export async function persistAssistantChatTurn({
   sessionId,
   question,
   response,
+  expectedMessageCount,
 }: {
   ownerEmployeeId: string
   sessionId: number
   question: string
   response: AssistantChatResponse
+  expectedMessageCount?: number
 }): Promise<AssistantChatTurnResponse> {
   const now = new Date()
   const generatedTitle = titleFromAssistantQuestion(question)
@@ -275,6 +277,17 @@ export async function persistAssistantChatTurn({
       })
 
     if (!session) throw new AssistantChatSessionNotFoundError()
+
+    // Guard against TOCTOU: verify no concurrent turn was inserted since the caller read history.
+    if (expectedMessageCount !== undefined) {
+      const [countBefore] = await tx
+        .select({ count: sql<number>`cast(count(${analystChatMessages.id}) as int)` })
+        .from(analystChatMessages)
+        .where(eq(analystChatMessages.sessionId, session.id))
+      if ((countBefore?.count ?? 0) !== expectedMessageCount) {
+        throw new Error('CONFLICT: CHAT_SESSION_STALE: 会话状态已变更，请重试')
+      }
+    }
 
     const [userMessage] = await tx
       .insert(analystChatMessages)
