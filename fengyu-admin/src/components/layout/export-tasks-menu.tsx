@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Check, Download, FileDown, LoaderCircle, RotateCw, TriangleAlert } from "lucide-react"
 import { listMyExportJobs, retryMyExportJob } from "@/actions/export-jobs"
-import type { ExportJobListItem } from "@/lib/export-job-types"
+import { EXPORT_JOB_CREATED_EVENT, type ExportJobListItem } from "@/lib/export-job-types"
 import { fmtDateTime } from "@/lib/datetime"
 import { cn } from "@/lib/utils"
 
@@ -52,8 +52,8 @@ export function ExportTasksMenu() {
 
   useEffect(() => {
     const onCreated = () => void refresh()
-    window.addEventListener("export-job-created", onCreated)
-    return () => window.removeEventListener("export-job-created", onCreated)
+    window.addEventListener(EXPORT_JOB_CREATED_EVENT, onCreated)
+    return () => window.removeEventListener(EXPORT_JOB_CREATED_EVENT, onCreated)
   }, [refresh])
 
   useEffect(() => {

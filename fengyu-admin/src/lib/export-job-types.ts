@@ -21,6 +21,9 @@ export const EXPORT_JOB_TYPES = [
 
 export type ExportJobType = (typeof EXPORT_JOB_TYPES)[number]
 
+/** 自定义 window 事件名：export-button 创建新任务时触发，export-tasks-menu 监听刷新。 */
+export const EXPORT_JOB_CREATED_EVENT = 'export-job-created' as const
+
 export const EXPORT_JOB_STATUSES = [
   'queued',
   'running',
