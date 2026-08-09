@@ -1,7 +1,7 @@
 import { db } from '@/db'
 import 'server-only'
 import { ApiError } from '@/lib/api-error'
-import { shanghaiToday, shanghaiYmd } from '@/lib/datetime'
+import { fmtDate, shanghaiToday, shanghaiYmd } from '@/lib/datetime'
 import { logOperation } from '@/lib/operation-log'
 import { hasPermission, isAdminScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
@@ -22,6 +22,7 @@ import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { AuthSession } from '@/lib/types'
+import { assertInventoryBusinessWritable } from './cutover'
 import {
   INVENTORY_DOC_TYPES,
   INVENTORY_GENERIC_DOC_TYPES,
@@ -29,7 +30,9 @@ import {
   type CreateInventoryDocInput,
   type InventoryCoreDocStatus,
   type InventoryDocDetail,
+  type InventoryDocFulfillmentProgress,
   type InventoryDocItemInput,
+  type InventoryDocLineageRow,
   type InventoryDocRow,
   type InventoryDocType,
   type InventoryLocationRow,
@@ -38,6 +41,7 @@ import {
   type InventoryPromotionPlanInput,
   type InventoryPromotionPlanItemInput,
   type InventoryPromotionPlanRow,
+  type InventoryPromotionRuleType,
   type InventorySkuInput,
   type InventorySkuRow,
   type InventorySkuSourceType,
@@ -74,7 +78,9 @@ interface LockedLot {
 const DOC_PREFIX: Record<InventoryDocType, string> = {
   门店报货: 'DBH',
   市场报货: 'MBH',
+  品项公司报货需求: 'ZBH',
   采购订单: 'CGD',
+  供应链采购订单: 'PCG',
   供应链采购入库: 'GRK',
   品项公司发货: 'GFH',
   市场采购入库: 'MRK',
@@ -104,7 +110,13 @@ const DOC_PREFIX: Record<InventoryDocType, string> = {
   期初库存: 'QC',
 }
 
-const NO_MOVEMENT_DOC_TYPES = new Set<InventoryDocType>(['门店报货', '市场报货', '采购订单'])
+const NO_MOVEMENT_DOC_TYPES = new Set<InventoryDocType>([
+  '门店报货',
+  '市场报货',
+  '品项公司报货需求',
+  '采购订单',
+  '供应链采购订单',
+])
 const RECEIVE_REQUIRED_DOC_TYPES = new Set<InventoryDocType>([
   '品项公司发货',
   '分院配货',
@@ -157,7 +169,10 @@ const RECEIVE_INBOUND_TYPE: Partial<Record<InventoryDocType, InventoryDocType>> 
 const SPECIALIZED_DOC_TYPES = new Set<InventoryDocType>([
   '门店报货',
   '市场报货',
+  '品项公司报货需求',
   '采购订单',
+  '供应链采购订单',
+  '供应链采购入库',
   '品项公司发货',
   '市场采购入库',
   '自采产品入库',
@@ -221,6 +236,10 @@ function numString(v: number | null | undefined): string | null {
   return String(n)
 }
 
+function calculateAmount(unitPrice: number | null, quantity: number): number | null {
+  return unitPrice === null ? null : Number((unitPrice * quantity).toFixed(2))
+}
+
 function assertPositiveQuantity(quantity: number): number {
   const n = Number(quantity)
   if (!Number.isFinite(n) || n <= 0) {
@@ -259,6 +278,12 @@ function actingLocationIdForDoc(input: CreateInventoryDocInput): string | null {
 
 function canViewPrice(session: AuthSession): boolean {
   return hasPermission(session, 'inventory:price_view')
+}
+
+function assertPromotionPriceWritable(session: AuthSession): void {
+  if (!canViewPrice(session)) {
+    throw new ApiError('PERMISSION_DENIED', '无权设置市场报货福利价格')
+  }
 }
 
 function stripPriceInput(item: InventoryDocItemInput): InventoryDocItemInput {
@@ -324,7 +349,12 @@ function skuPriceValues(
       throw new ApiError('INVALID_PARAMS', '核算价或市场折扣无效')
     }
     marketPurchasePrice = numString(Math.round(rawAccounting * ratio * 100) / 100)
-  } else if (input.marketPurchasePrice === null) {
+  } else if (
+    input.accountingPrice !== undefined ||
+    input.marketPurchaseDiscount !== undefined ||
+    input.marketPurchasePrice === null
+  ) {
+    // 两个公式字段被清空后，不能继续沿用上一次派生出的市场进货价。
     marketPurchasePrice = null
   } else if (input.marketPurchasePrice !== undefined) {
     throw new ApiError('INVALID_PARAMS', '市场进货价由核算价和市场折扣计算，不能手工填写')
@@ -1010,6 +1040,9 @@ function docRow(row: {
     confirmedAt: doc.confirmedAt?.toISOString() ?? null,
     approvedAt: doc.approvedAt?.toISOString() ?? null,
     rejectedAt: doc.rejectedAt?.toISOString() ?? null,
+    cancellationRequestReason: doc.cancellationRequestReason,
+    cancellationRequestedBy: doc.cancellationRequestedBy,
+    cancellationRequestedAt: doc.cancellationRequestedAt?.toISOString() ?? null,
     cancellationReason: doc.cancellationReason,
     cancelledAt: doc.cancelledAt?.toISOString() ?? null,
     createdAt: doc.createdAt.toISOString(),
@@ -1443,6 +1476,508 @@ export const listInventoryCoreDocs = withPermission(
   },
 )
 
+/**
+ * 详情页的关联单据必须再次经过库存主体范围过滤：当前单据可见不代表所有上下游都可见。
+ * 列名由内部固定调用点提供，scope 值始终由 Drizzle 参数化。
+ */
+function inventoryDocScopeSql(
+  scoped: string[] | null,
+  sourceColumn: SQL,
+  targetColumn: SQL,
+): SQL {
+  if (scoped === null) return sql`TRUE`
+  if (scoped.length === 0) return sql`FALSE`
+  const values = sql.join(scoped.map((locationId) => sql`${locationId}`), sql`, `)
+  return sql`(${sourceColumn} IN (${values}) OR ${targetColumn} IN (${values}))`
+}
+
+function visibleInventoryDocsSql(scoped: string[] | null): SQL {
+  return sql`
+    SELECT visible_doc.id
+      FROM inventory_docs visible_doc
+     WHERE ${inventoryDocScopeSql(
+       scoped,
+       sql`visible_doc.source_location_id`,
+       sql`visible_doc.target_location_id`,
+     )}
+  `
+}
+
+function asDocDate(value: string | Date): string {
+  return fmtDate(value)
+}
+
+async function loadInventoryDocLineage(
+  docId: string,
+  scoped: string[] | null,
+): Promise<InventoryDocLineageRow[]> {
+  const linkedDocVisible = scoped === null
+    ? sql`TRUE`
+    : sql`(
+      (doc_link.from_doc_id = ${docId} AND ${inventoryDocScopeSql(
+        scoped,
+        sql`to_doc.source_location_id`,
+        sql`to_doc.target_location_id`,
+      )})
+      OR
+      (doc_link.to_doc_id = ${docId} AND ${inventoryDocScopeSql(
+        scoped,
+        sql`from_doc.source_location_id`,
+        sql`from_doc.target_location_id`,
+      )})
+    )`
+  const rows = await db.execute(sql`
+    SELECT
+      CASE WHEN doc_link.from_doc_id = ${docId} THEN '下游' ELSE '上游' END AS direction,
+      doc_link.relation_type,
+      CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.id ELSE from_doc.id END AS doc_id,
+      CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.doc_type ELSE from_doc.doc_type END AS doc_type,
+      CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.status ELSE from_doc.status END AS status,
+      CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.doc_date ELSE from_doc.doc_date END AS doc_date,
+      CASE WHEN doc_link.from_doc_id = ${docId} THEN to_doc.total_quantity ELSE from_doc.total_quantity END AS total_quantity,
+      COALESCE(SUM(doc_link.quantity), 0) AS linked_quantity,
+      MAX(doc_link.created_at) AS linked_at
+    FROM inventory_doc_links doc_link
+    JOIN inventory_docs from_doc ON from_doc.id = doc_link.from_doc_id
+    JOIN inventory_docs to_doc ON to_doc.id = doc_link.to_doc_id
+    WHERE (doc_link.from_doc_id = ${docId} OR doc_link.to_doc_id = ${docId})
+      AND ${linkedDocVisible}
+    GROUP BY
+      doc_link.from_doc_id,
+      doc_link.to_doc_id,
+      doc_link.relation_type,
+      from_doc.id,
+      from_doc.doc_type,
+      from_doc.status,
+      from_doc.doc_date,
+      from_doc.total_quantity,
+      to_doc.id,
+      to_doc.doc_type,
+      to_doc.status,
+      to_doc.doc_date,
+      to_doc.total_quantity
+    ORDER BY linked_at DESC, doc_link.relation_type ASC
+  `)
+  return (rows as unknown as Array<{
+    direction: '上游' | '下游'
+    relation_type: string
+    doc_id: string
+    doc_type: string
+    status: string
+    doc_date: string | Date
+    total_quantity: string | number | null
+    linked_quantity: string | number | null
+  }>).map((row) => ({
+    direction: row.direction,
+    relationType: row.relation_type,
+    docId: row.doc_id,
+    docType: row.doc_type as InventoryDocType,
+    status: row.status as InventoryCoreDocStatus,
+    docDate: asDocDate(row.doc_date),
+    totalQuantity: numberOrNull(row.total_quantity) ?? 0,
+    linkedQuantity: numberOrNull(row.linked_quantity) ?? 0,
+  }))
+}
+
+type ReportFulfillmentQueryRow = {
+  item_id: number | string
+  normal_demand_quantity: string | number | null
+  ordered_quantity?: string | number | null
+  normal_fulfilled_quantity: string | number | null
+  gift_fulfilled_quantity: string | number | null
+  normal_received_quantity: string | number | null
+  gift_received_quantity: string | number | null
+}
+
+function reportFulfillmentItem(row: ReportFulfillmentQueryRow, includeOrder: boolean) {
+  return {
+    itemId: Number(row.item_id),
+    normalDemandQuantity: numberOrNull(row.normal_demand_quantity) ?? 0,
+    ...(includeOrder ? { orderedQuantity: numberOrNull(row.ordered_quantity) ?? 0 } : {}),
+    normalFulfilledQuantity: numberOrNull(row.normal_fulfilled_quantity) ?? 0,
+    giftFulfilledQuantity: numberOrNull(row.gift_fulfilled_quantity) ?? 0,
+    normalReceivedQuantity: numberOrNull(row.normal_received_quantity) ?? 0,
+    giftReceivedQuantity: numberOrNull(row.gift_received_quantity) ?? 0,
+  }
+}
+
+async function loadMarketReportFulfillmentProgress(
+  docId: string,
+  scoped: string[] | null,
+): Promise<InventoryDocFulfillmentProgress> {
+  const rows = await db.execute(sql`
+    WITH visible_docs AS (${visibleInventoryDocsSql(scoped)}),
+    root_items AS (
+      SELECT item.id AS item_id, item.quantity
+        FROM inventory_doc_items item
+        JOIN visible_docs root_doc ON root_doc.id = item.doc_id
+       WHERE item.doc_id = ${docId}
+    ),
+    purchase_links AS (
+      SELECT
+        doc_link.from_item_id AS root_item_id,
+        doc_link.to_item_id AS purchase_item_id,
+        COALESCE(doc_link.quantity, 0) AS quantity
+        FROM inventory_doc_links doc_link
+        JOIN root_items root_item ON root_item.item_id = doc_link.from_item_id
+        JOIN inventory_docs purchase_doc ON purchase_doc.id = doc_link.to_doc_id
+        JOIN visible_docs visible_purchase ON visible_purchase.id = purchase_doc.id
+       WHERE doc_link.from_doc_id = ${docId}
+         AND doc_link.relation_type = '市场报货采购订单'
+         AND purchase_doc.status = '已完成'
+    ),
+    purchase_totals AS (
+      SELECT root_item_id, SUM(quantity) AS ordered_quantity
+        FROM purchase_links
+       GROUP BY root_item_id
+    ),
+    shipment_links AS (
+      SELECT
+        purchase_link.root_item_id,
+        doc_link.to_item_id AS shipment_item_id,
+        doc_link.relation_type,
+        COALESCE(doc_link.quantity, 0) AS quantity
+        FROM purchase_links purchase_link
+        JOIN inventory_doc_links doc_link
+          ON doc_link.from_item_id = purchase_link.purchase_item_id
+        JOIN inventory_docs shipment_doc ON shipment_doc.id = doc_link.to_doc_id
+       JOIN visible_docs visible_shipment ON visible_shipment.id = shipment_doc.id
+       WHERE doc_link.relation_type IN ('采购订单发货', '采购订单赠送发货')
+         AND shipment_doc.status IN ('待收货', '已完成')
+    ),
+    shipment_totals AS (
+      SELECT
+        root_item_id,
+        SUM(CASE WHEN relation_type = '采购订单发货' THEN quantity ELSE 0 END) AS normal_fulfilled_quantity,
+        SUM(CASE WHEN relation_type = '采购订单赠送发货' THEN quantity ELSE 0 END) AS gift_fulfilled_quantity
+        FROM shipment_links
+       GROUP BY root_item_id
+    ),
+    receipt_links AS (
+      SELECT
+        shipment_link.root_item_id,
+        shipment_link.relation_type AS shipment_relation_type,
+        COALESCE(doc_link.quantity, 0) AS quantity
+        FROM shipment_links shipment_link
+        JOIN inventory_doc_links doc_link
+          ON doc_link.from_item_id = shipment_link.shipment_item_id
+        JOIN inventory_docs receipt_doc ON receipt_doc.id = doc_link.to_doc_id
+       JOIN visible_docs visible_receipt ON visible_receipt.id = receipt_doc.id
+       WHERE doc_link.relation_type = '发货收货'
+         AND receipt_doc.status = '已完成'
+    ),
+    receipt_totals AS (
+      SELECT
+        root_item_id,
+        SUM(CASE WHEN shipment_relation_type = '采购订单发货' THEN quantity ELSE 0 END) AS normal_received_quantity,
+        SUM(CASE WHEN shipment_relation_type = '采购订单赠送发货' THEN quantity ELSE 0 END) AS gift_received_quantity
+        FROM receipt_links
+       GROUP BY root_item_id
+    )
+    SELECT
+      root_item.item_id,
+      root_item.quantity AS normal_demand_quantity,
+      COALESCE(purchase_total.ordered_quantity, 0) AS ordered_quantity,
+      COALESCE(shipment_total.normal_fulfilled_quantity, 0) AS normal_fulfilled_quantity,
+      COALESCE(shipment_total.gift_fulfilled_quantity, 0) AS gift_fulfilled_quantity,
+      COALESCE(receipt_total.normal_received_quantity, 0) AS normal_received_quantity,
+      COALESCE(receipt_total.gift_received_quantity, 0) AS gift_received_quantity
+      FROM root_items root_item
+      LEFT JOIN purchase_totals purchase_total ON purchase_total.root_item_id = root_item.item_id
+      LEFT JOIN shipment_totals shipment_total ON shipment_total.root_item_id = root_item.item_id
+      LEFT JOIN receipt_totals receipt_total ON receipt_total.root_item_id = root_item.item_id
+     ORDER BY root_item.item_id
+  `)
+  return {
+    kind: '报货履约',
+    items: (rows as unknown as ReportFulfillmentQueryRow[])
+      .map((row) => reportFulfillmentItem(row, true)),
+  }
+}
+
+async function loadStoreReportFulfillmentProgress(
+  docId: string,
+  scoped: string[] | null,
+): Promise<InventoryDocFulfillmentProgress> {
+  const rows = await db.execute(sql`
+    WITH visible_docs AS (${visibleInventoryDocsSql(scoped)}),
+    root_items AS (
+      SELECT item.id AS item_id, item.quantity
+        FROM inventory_doc_items item
+        JOIN visible_docs root_doc ON root_doc.id = item.doc_id
+       WHERE item.doc_id = ${docId}
+    ),
+    allocation_links AS (
+      SELECT
+        doc_link.from_item_id AS root_item_id,
+        doc_link.to_item_id AS allocation_item_id,
+        doc_link.relation_type,
+        COALESCE(doc_link.quantity, 0) AS quantity
+        FROM inventory_doc_links doc_link
+        JOIN root_items root_item ON root_item.item_id = doc_link.from_item_id
+        JOIN inventory_docs allocation_doc ON allocation_doc.id = doc_link.to_doc_id
+        JOIN visible_docs visible_allocation ON visible_allocation.id = allocation_doc.id
+       WHERE doc_link.from_doc_id = ${docId}
+         AND doc_link.relation_type IN ('门店报货配货', '门店报货赠送配货')
+         AND allocation_doc.status IN ('待收货', '已完成')
+    ),
+    allocation_totals AS (
+      SELECT
+        root_item_id,
+        SUM(CASE WHEN relation_type = '门店报货配货' THEN quantity ELSE 0 END) AS normal_fulfilled_quantity,
+        SUM(CASE WHEN relation_type = '门店报货赠送配货' THEN quantity ELSE 0 END) AS gift_fulfilled_quantity
+        FROM allocation_links
+       GROUP BY root_item_id
+    ),
+    receipt_links AS (
+      SELECT
+        allocation_link.root_item_id,
+        allocation_link.relation_type AS allocation_relation_type,
+        COALESCE(doc_link.quantity, 0) AS quantity
+        FROM allocation_links allocation_link
+        JOIN inventory_doc_links doc_link
+          ON doc_link.from_item_id = allocation_link.allocation_item_id
+        JOIN inventory_docs receipt_doc ON receipt_doc.id = doc_link.to_doc_id
+       JOIN visible_docs visible_receipt ON visible_receipt.id = receipt_doc.id
+       WHERE doc_link.relation_type = '发货收货'
+         AND receipt_doc.status = '已完成'
+    ),
+    receipt_totals AS (
+      SELECT
+        root_item_id,
+        SUM(CASE WHEN allocation_relation_type = '门店报货配货' THEN quantity ELSE 0 END) AS normal_received_quantity,
+        SUM(CASE WHEN allocation_relation_type = '门店报货赠送配货' THEN quantity ELSE 0 END) AS gift_received_quantity
+        FROM receipt_links
+       GROUP BY root_item_id
+    )
+    SELECT
+      root_item.item_id,
+      root_item.quantity AS normal_demand_quantity,
+      COALESCE(allocation_total.normal_fulfilled_quantity, 0) AS normal_fulfilled_quantity,
+      COALESCE(allocation_total.gift_fulfilled_quantity, 0) AS gift_fulfilled_quantity,
+      COALESCE(receipt_total.normal_received_quantity, 0) AS normal_received_quantity,
+      COALESCE(receipt_total.gift_received_quantity, 0) AS gift_received_quantity
+      FROM root_items root_item
+      LEFT JOIN allocation_totals allocation_total ON allocation_total.root_item_id = root_item.item_id
+      LEFT JOIN receipt_totals receipt_total ON receipt_total.root_item_id = root_item.item_id
+     ORDER BY root_item.item_id
+  `)
+  return {
+    kind: '报货履约',
+    items: (rows as unknown as ReportFulfillmentQueryRow[])
+      .map((row) => reportFulfillmentItem(row, false)),
+  }
+}
+
+async function loadItemCompanyRequestFulfillmentProgress(
+  docId: string,
+  scoped: string[] | null,
+): Promise<InventoryDocFulfillmentProgress> {
+  const rows = await db.execute(sql`
+    WITH visible_docs AS (${visibleInventoryDocsSql(scoped)}),
+    request_items AS (
+      SELECT item.id AS item_id, item.quantity
+        FROM inventory_doc_items item
+        JOIN visible_docs request_doc ON request_doc.id = item.doc_id
+       WHERE item.doc_id = ${docId}
+    ),
+    purchase_links AS (
+      SELECT
+        doc_link.from_item_id AS request_item_id,
+        doc_link.to_item_id AS purchase_item_id,
+        COALESCE(doc_link.quantity, 0) AS quantity,
+        purchase_doc.status AS purchase_status,
+        COALESCE(purchase_item.fulfilled_quantity, 0) AS received_quantity
+        FROM inventory_doc_links doc_link
+        JOIN request_items request_item ON request_item.item_id = doc_link.from_item_id
+        JOIN inventory_docs purchase_doc ON purchase_doc.id = doc_link.to_doc_id
+        JOIN inventory_doc_items purchase_item ON purchase_item.id = doc_link.to_item_id
+        JOIN visible_docs visible_purchase ON visible_purchase.id = purchase_doc.id
+       WHERE doc_link.from_doc_id = ${docId}
+         AND doc_link.relation_type = '品项公司报货采购订单'
+         AND purchase_doc.status IN ('待收货', '已完成', '已取消')
+    ),
+    purchase_totals AS (
+      SELECT
+        request_item_id,
+        SUM(CASE
+          WHEN purchase_status = '已取消' THEN LEAST(quantity, received_quantity)
+          ELSE quantity
+        END) AS ordered_quantity
+        FROM purchase_links
+       GROUP BY request_item_id
+    ),
+    receipt_totals AS (
+      SELECT
+        purchase_link.request_item_id,
+        SUM(COALESCE(doc_link.quantity, 0)) AS received_quantity
+        FROM purchase_links purchase_link
+        JOIN inventory_doc_links doc_link
+          ON doc_link.from_item_id = purchase_link.purchase_item_id
+        JOIN inventory_docs receipt_doc ON receipt_doc.id = doc_link.to_doc_id
+        JOIN visible_docs visible_receipt ON visible_receipt.id = receipt_doc.id
+       WHERE doc_link.relation_type = '采购订单供应链采购入库'
+         AND receipt_doc.status = '已完成'
+       GROUP BY purchase_link.request_item_id
+    )
+    SELECT
+      request_item.item_id,
+      request_item.quantity AS demand_quantity,
+      COALESCE(purchase_total.ordered_quantity, 0) AS ordered_quantity,
+      COALESCE(receipt_total.received_quantity, 0) AS received_quantity
+      FROM request_items request_item
+      LEFT JOIN purchase_totals purchase_total ON purchase_total.request_item_id = request_item.item_id
+      LEFT JOIN receipt_totals receipt_total ON receipt_total.request_item_id = request_item.item_id
+     ORDER BY request_item.item_id
+  `)
+  return {
+    kind: '品项公司报货履约',
+    items: (rows as unknown as Array<{
+      item_id: number | string
+      demand_quantity: string | number | null
+      ordered_quantity: string | number | null
+      received_quantity: string | number | null
+    }>).map((row) => ({
+      itemId: Number(row.item_id),
+      demandQuantity: numberOrNull(row.demand_quantity) ?? 0,
+      orderedQuantity: numberOrNull(row.ordered_quantity) ?? 0,
+      receivedQuantity: numberOrNull(row.received_quantity) ?? 0,
+    })),
+  }
+}
+
+async function loadSupplyChainPurchaseReceiptProgress(
+  docId: string,
+  scoped: string[] | null,
+): Promise<InventoryDocFulfillmentProgress> {
+  const rows = await db.execute(sql`
+    WITH visible_docs AS (${visibleInventoryDocsSql(scoped)}),
+    purchase_items AS (
+      SELECT item.id AS item_id, item.quantity, purchase_doc.status AS purchase_status
+        FROM inventory_doc_items item
+        JOIN inventory_docs purchase_doc ON purchase_doc.id = item.doc_id
+        JOIN visible_docs visible_purchase ON visible_purchase.id = purchase_doc.id
+       WHERE item.doc_id = ${docId}
+    ),
+    receipt_totals AS (
+      SELECT
+        doc_link.from_item_id AS purchase_item_id,
+        SUM(COALESCE(doc_link.quantity, 0)) AS received_quantity
+        FROM inventory_doc_links doc_link
+        JOIN purchase_items purchase_item ON purchase_item.item_id = doc_link.from_item_id
+        JOIN inventory_docs receipt_doc ON receipt_doc.id = doc_link.to_doc_id
+        JOIN visible_docs visible_receipt ON visible_receipt.id = receipt_doc.id
+       WHERE doc_link.from_doc_id = ${docId}
+         AND doc_link.relation_type = '采购订单供应链采购入库'
+         AND receipt_doc.status = '已完成'
+       GROUP BY doc_link.from_item_id
+    )
+    SELECT
+      purchase_item.item_id,
+      purchase_item.quantity AS purchased_quantity,
+      COALESCE(receipt_total.received_quantity, 0) AS received_quantity,
+      purchase_item.purchase_status
+      FROM purchase_items purchase_item
+      LEFT JOIN receipt_totals receipt_total ON receipt_total.purchase_item_id = purchase_item.item_id
+     ORDER BY purchase_item.item_id
+  `)
+  return {
+    kind: '供应链采购收货',
+    items: (rows as unknown as Array<{
+      item_id: number | string
+      purchased_quantity: string | number | null
+      received_quantity: string | number | null
+      purchase_status: InventoryCoreDocStatus
+    }>).map((row) => {
+      const purchasedQuantity = numberOrNull(row.purchased_quantity) ?? 0
+      const receivedQuantity = numberOrNull(row.received_quantity) ?? 0
+      return {
+        itemId: Number(row.item_id),
+        purchasedQuantity,
+        receivedQuantity,
+        outstandingQuantity: row.purchase_status === '待收货'
+          ? Math.max(0, purchasedQuantity - receivedQuantity)
+          : 0,
+      }
+    }),
+  }
+}
+
+async function loadShipmentReceiptProgress(
+  docId: string,
+  scoped: string[] | null,
+): Promise<InventoryDocFulfillmentProgress> {
+  const rows = await db.execute(sql`
+    WITH visible_docs AS (${visibleInventoryDocsSql(scoped)}),
+    shipment_items AS (
+      SELECT item.id AS item_id, item.quantity, shipment_doc.status AS shipment_status
+        FROM inventory_doc_items item
+        JOIN visible_docs shipment_doc ON shipment_doc.id = item.doc_id
+       WHERE item.doc_id = ${docId}
+    ),
+    receipt_totals AS (
+      SELECT
+        doc_link.from_item_id AS shipment_item_id,
+        SUM(COALESCE(doc_link.quantity, 0)) AS received_quantity
+        FROM inventory_doc_links doc_link
+        JOIN shipment_items shipment_item ON shipment_item.item_id = doc_link.from_item_id
+        JOIN inventory_docs receipt_doc ON receipt_doc.id = doc_link.to_doc_id
+        JOIN visible_docs visible_receipt ON visible_receipt.id = receipt_doc.id
+       WHERE doc_link.from_doc_id = ${docId}
+         AND doc_link.relation_type = '发货收货'
+         AND receipt_doc.status = '已完成'
+       GROUP BY doc_link.from_item_id
+    )
+    SELECT
+      shipment_item.item_id,
+      shipment_item.quantity AS shipped_quantity,
+      COALESCE(receipt_total.received_quantity, 0) AS received_quantity,
+      shipment_item.shipment_status
+      FROM shipment_items shipment_item
+      LEFT JOIN receipt_totals receipt_total ON receipt_total.shipment_item_id = shipment_item.item_id
+     ORDER BY shipment_item.item_id
+  `)
+  return {
+    kind: '发货收货',
+    items: (rows as unknown as Array<{
+      item_id: number | string
+      shipped_quantity: string | number | null
+      received_quantity: string | number | null
+      shipment_status: InventoryCoreDocStatus
+    }>).map((row) => {
+      const shippedQuantity = numberOrNull(row.shipped_quantity) ?? 0
+      const receivedQuantity = numberOrNull(row.received_quantity) ?? 0
+      return {
+        itemId: Number(row.item_id),
+        shippedQuantity,
+        receivedQuantity,
+        outstandingQuantity: row.shipment_status === '待收货'
+          ? Math.max(0, shippedQuantity - receivedQuantity)
+          : 0,
+      }
+    }),
+  }
+}
+
+async function loadInventoryDocFulfillmentProgress(
+  docType: InventoryDocType,
+  docId: string,
+  scoped: string[] | null,
+): Promise<InventoryDocFulfillmentProgress | null> {
+  if (docType === '市场报货') return loadMarketReportFulfillmentProgress(docId, scoped)
+  if (docType === '门店报货') return loadStoreReportFulfillmentProgress(docId, scoped)
+  if (docType === '品项公司报货需求') {
+    return loadItemCompanyRequestFulfillmentProgress(docId, scoped)
+  }
+  if (docType === '供应链采购订单') {
+    return loadSupplyChainPurchaseReceiptProgress(docId, scoped)
+  }
+  if (docType === '品项公司发货' || docType === '分院配货') {
+    return loadShipmentReceiptProgress(docId, scoped)
+  }
+  return null
+}
+
 export const getInventoryCoreDocById = withPermission(
   'inventory:list',
   async (session, id: string): Promise<InventoryDocDetail | null> => {
@@ -1469,11 +2004,15 @@ export const getInventoryCoreDocById = withPermission(
       .limit(1)
     if (!headRow) return null
     const head = docRow({ ...headRow, includePrice: priceVisible })
-    const items = await db
-      .select()
-      .from(inventoryDocItems)
-      .where(eq(inventoryDocItems.docId, id))
-      .orderBy(asc(inventoryDocItems.id))
+    const [items, lineage, fulfillmentProgress] = await Promise.all([
+      db
+        .select()
+        .from(inventoryDocItems)
+        .where(eq(inventoryDocItems.docId, id))
+        .orderBy(asc(inventoryDocItems.id)),
+      loadInventoryDocLineage(id, scoped),
+      loadInventoryDocFulfillmentProgress(head.docType, id, scoped),
+    ])
     return {
       ...head,
       items: items.map((item) => ({
@@ -1504,6 +2043,8 @@ export const getInventoryCoreDocById = withPermission(
         remark: item.remark,
         createdAt: item.createdAt.toISOString(),
       })),
+      lineage,
+      fulfillmentProgress,
     }
   },
 )
@@ -1525,7 +2066,6 @@ export const createInventoryCoreDoc = withPermission(
     if (!Array.isArray(input.items) || input.items.length === 0) {
       throw new ApiError('INVALID_PARAMS', '库存单据至少需要一条明细')
     }
-    const allowPriceInput = canViewPrice(session)
     const sourceLocationId = normalizeText(input.sourceLocationId)
     const targetLocationId = normalizeText(input.targetLocationId)
     if (RECEIVE_REQUIRED_DOC_TYPES.has(input.docType) && !targetLocationId) {
@@ -1548,16 +2088,9 @@ export const createInventoryCoreDoc = withPermission(
     await assertGenericDocLocationRules(input, sourceLocationId, targetLocationId, actingLocationId)
 
     const totalQuantity = input.items.reduce((sum, item) => sum + assertPositiveQuantity(item.quantity), 0)
-    const totalAmount = allowPriceInput
-      ? input.totalAmount ??
-        input.items.reduce((sum, item) => {
-          const qty = Number(item.quantity || 0)
-          const amount = item.amount ?? (item.actualUnitPrice == null ? null : item.actualUnitPrice * qty)
-          return sum + Number(amount ?? 0)
-        }, 0)
-      : null
 
     const id = await db.transaction(async (tx) => {
+      await assertInventoryBusinessWritable(tx)
       const docId = await generateDocNo(tx, input.docType)
       await tx.insert(inventoryDocs).values({
         id: docId,
@@ -1581,16 +2114,19 @@ export const createInventoryCoreDoc = withPermission(
         trackingNo: normalizeText(input.trackingNo),
         receiptAttachmentUrl: normalizeText(input.receiptAttachmentUrl),
         totalQuantity: String(totalQuantity),
-        totalAmount: numString(totalAmount),
+        totalAmount: null,
         remark: normalizeText(input.remark),
         createdBy: session.employeeId,
         confirmedBy: status === '已完成' || status === '待收货' ? session.employeeId : null,
         confirmedAt: status === '已完成' || status === '待收货' ? new Date() : null,
       })
 
+      let calculatedTotalAmount = 0
+      let hasCalculatedAmount = false
       for (const item of input.items) {
         const quantity = assertPositiveQuantity(item.quantity)
-        const pricedItem = allowPriceInput ? item : stripPriceInput(item)
+        // 通用入口只接收库存事实；所有价格与金额从 SKU/锁定批次快照派生。
+        const serverItem = stripPriceInput(item)
         let lot: LockedLot | null = null
         let snapshot: Pick<LockedLot, 'skuId' | 'skuName' | 'specName' | 'supplier' | 'productSeries'> & Partial<LockedLot>
         const shouldCaptureSourceLot =
@@ -1598,72 +2134,72 @@ export const createInventoryCoreDoc = withPermission(
           (status === '待审批' && OUTBOUND_DOC_TYPES.has(input.docType))
 
         if (shouldCaptureSourceLot) {
-          if (!pricedItem.lotId) throw new ApiError('INVALID_PARAMS', '出库类明细必须选择库存批次')
-          lot = await lockLotById(tx, pricedItem.lotId, sourceLocationId)
+          if (!serverItem.lotId) throw new ApiError('INVALID_PARAMS', '出库类明细必须选择库存批次')
+          lot = await lockLotById(tx, serverItem.lotId, sourceLocationId)
           await assertSkuIdAvailableAtLocation(tx, lot.skuId, sourceLocationId!)
           if (input.docType === '市场间调货出库' && targetLocationId) {
             await assertSkuIdAvailableAtLocation(tx, lot.skuId, targetLocationId)
           }
           snapshot = lot
         } else if (plan?.locationRole === 'target') {
-          lot = await ensureLotFromSku(tx, targetLocationId!, pricedItem, docId)
+          lot = await ensureLotFromSku(tx, targetLocationId!, serverItem, docId)
           snapshot = lot
         } else {
-          const skuId = normalizeRequired(pricedItem.skuId, '库存 SKU')
+          const skuId = normalizeRequired(serverItem.skuId, '库存 SKU')
           await assertSkuIdAvailableAtLocation(tx, skuId, actingLocationId)
           snapshot = await skuSnapshot(tx, skuId)
         }
 
         const standardUnitPrice =
-          pricedItem.standardUnitPrice ??
-          pricedItem.marketStandardUnitPrice ??
-          pricedItem.storeStandardUnitPrice ??
           lot?.storeStandardUnitPrice ??
+          lot?.marketStandardUnitPrice ??
+          lot?.supplyChainUnitCost ??
           null
         const unitDiscount =
-          pricedItem.unitDiscount ??
-          pricedItem.marketUnitDiscount ??
-          pricedItem.storeUnitDiscount ??
           lot?.storeUnitDiscount ??
+          lot?.marketUnitDiscount ??
           null
         const actualUnitPrice =
-          pricedItem.actualUnitPrice ??
-          pricedItem.marketActualUnitPrice ??
-          pricedItem.storeActualUnitPrice ??
           lot?.storeActualUnitPrice ??
+          lot?.marketActualUnitPrice ??
+          lot?.supplyChainUnitCost ??
           (standardUnitPrice == null ? null : standardUnitPrice - Number(unitDiscount ?? 0))
-        const amount = pricedItem.amount ?? (actualUnitPrice == null ? null : actualUnitPrice * quantity)
+        const amount = calculateAmount(actualUnitPrice, quantity)
+        if (amount !== null) {
+          calculatedTotalAmount += amount
+          hasCalculatedAmount = true
+        }
         const [createdItem] = await tx
           .insert(inventoryDocItems)
           .values({
             docId,
             lotId: lot?.id ?? null,
             skuId: snapshot.skuId,
-            saleItemId: normalizeText(pricedItem.saleItemId),
+            saleItemId: normalizeText(serverItem.saleItemId),
             skuName: snapshot.skuName,
             specName: snapshot.specName,
             supplier: snapshot.supplier,
             productSeries: snapshot.productSeries,
-            batchNo: lot?.batchNo ?? normalizeText(pricedItem.batchNo) ?? '',
-            expiryDate: lot?.expiryDate ?? normalizeText(pricedItem.expiryDate),
-            isGift: lot?.isGift ?? Boolean(pricedItem.isGift),
+            batchNo: lot?.batchNo ?? normalizeText(serverItem.batchNo) ?? '',
+            expiryDate: lot?.expiryDate ?? normalizeText(serverItem.expiryDate),
+            isGift: lot?.isGift ?? Boolean(serverItem.isGift),
             quantity: String(quantity),
             stockSnapshot: lot ? String(lot.quantityOnHand) : null,
-            requestQuantity: numString(pricedItem.requestQuantity),
-            fulfilledQuantity: numString(pricedItem.fulfilledQuantity),
+            requestQuantity: numString(serverItem.requestQuantity),
+            fulfilledQuantity: numString(serverItem.fulfilledQuantity),
             standardUnitPrice: numString(standardUnitPrice),
             unitDiscount: numString(unitDiscount),
             actualUnitPrice: numString(actualUnitPrice),
             amount: numString(amount),
-            supplyChainUnitCost: numString(pricedItem.supplyChainUnitCost ?? lot?.supplyChainUnitCost ?? null),
-            marketStandardUnitPrice: numString(pricedItem.marketStandardUnitPrice ?? lot?.marketStandardUnitPrice ?? null),
-            marketUnitDiscount: numString(pricedItem.marketUnitDiscount ?? lot?.marketUnitDiscount ?? null),
-            marketActualUnitPrice: numString(pricedItem.marketActualUnitPrice ?? lot?.marketActualUnitPrice ?? null),
-            storeStandardUnitPrice: numString(pricedItem.storeStandardUnitPrice ?? lot?.storeStandardUnitPrice ?? null),
-            storeUnitDiscount: numString(pricedItem.storeUnitDiscount ?? lot?.storeUnitDiscount ?? null),
-            storeActualUnitPrice: numString(pricedItem.storeActualUnitPrice ?? lot?.storeActualUnitPrice ?? null),
-            reason: normalizeText(pricedItem.reason),
-            remark: normalizeText(pricedItem.remark),
+            supplyChainUnitCost: numString(lot?.supplyChainUnitCost ?? null),
+            marketStandardUnitPrice: numString(lot?.marketStandardUnitPrice ?? null),
+            marketUnitDiscount: numString(lot?.marketUnitDiscount ?? null),
+            marketActualUnitPrice: numString(lot?.marketActualUnitPrice ?? null),
+            storeStandardUnitPrice: numString(lot?.storeStandardUnitPrice ?? null),
+            storeUnitDiscount: numString(lot?.storeUnitDiscount ?? null),
+            storeActualUnitPrice: numString(lot?.storeActualUnitPrice ?? null),
+            reason: normalizeText(serverItem.reason),
+            remark: normalizeText(serverItem.remark),
           })
           .returning({ id: inventoryDocItems.id })
 
@@ -1680,6 +2216,14 @@ export const createInventoryCoreDoc = withPermission(
           })
         }
       }
+
+      await tx
+        .update(inventoryDocs)
+        .set({
+          totalAmount: hasCalculatedAmount ? numString(calculatedTotalAmount) : null,
+          updatedAt: new Date(),
+        })
+        .where(eq(inventoryDocs.id, docId))
 
       return docId
     })
@@ -1702,6 +2246,7 @@ export const approveInventoryCoreDoc = withPermission(
   async (session, id: string, auditRemark?: string | null): Promise<{ success: true }> => {
     const docId = normalizeRequired(id, '单据号')
     await db.transaction(async (tx) => {
+      await assertInventoryBusinessWritable(tx)
       const headRows = await tx.execute(sql`
         SELECT id, doc_type, status, source_location_id
           FROM inventory_docs
@@ -1766,6 +2311,7 @@ export const rejectInventoryCoreDoc = withPermission(
   async (session, id: string, auditRemark?: string | null): Promise<{ success: true }> => {
     const docId = normalizeRequired(id, '单据号')
     await db.transaction(async (tx) => {
+      await assertInventoryBusinessWritable(tx)
       const rows = await tx.execute(sql`
         SELECT doc_type, status, source_location_id, target_location_id
           FROM inventory_docs
@@ -1810,6 +2356,7 @@ export const confirmInventoryCoreReceive = withPermission(
     const id = normalizeRequired(outboundDocId, '出库单号')
     let inboundDocId = ''
     await db.transaction(async (tx) => {
+      await assertInventoryBusinessWritable(tx)
       const headRows = await tx.execute(sql`
         SELECT id, doc_type, status, source_location_id, target_location_id,
                total_quantity, request_doc_id, remark
@@ -2106,8 +2653,15 @@ async function lockPromotionPlanScopeForMutation(tx: Tx, id: string): Promise<st
   return row.scope_market_id ?? null
 }
 
+function normalizePromotionRuleType(value: unknown): InventoryPromotionRuleType {
+  if (value === undefined || value === null || value === '') return '单品阶梯'
+  if (value === '单品阶梯' || value === '组合') return value
+  throw new ApiError('INVALID_PARAMS', '福利方案规则类型无效')
+}
+
 function normalizePromotionItems(
   items: InventoryPromotionPlanItemInput[],
+  ruleType: InventoryPromotionRuleType,
 ): Array<{
   skuId: string
   marketUnitDiscount: number
@@ -2148,7 +2702,24 @@ function normalizePromotionItems(
     }
   })
 
-  // 同一产品的数量区间必须互斥，避免市场报货时出现两条同优先级的取价规则。
+  if (ruleType === '组合') {
+    if (normalized.length < 2) {
+      throw new ApiError('INVALID_PARAMS', '组合福利至少需要两条不同产品明细')
+    }
+    const duplicateSkuIds = new Set<string>()
+    for (const item of normalized) {
+      if (duplicateSkuIds.has(item.skuId)) {
+        throw new ApiError('INVALID_PARAMS', '组合福利中同一产品只能出现一次')
+      }
+      duplicateSkuIds.add(item.skuId)
+      if (item.reportMinQuantity === null) {
+        throw new ApiError('INVALID_PARAMS', '组合福利必须填写每个产品的数量下限')
+      }
+    }
+    return normalized
+  }
+
+  // 单品阶梯的同一产品数量区间必须互斥，避免市场报货时出现两条同优先级的取价规则。
   for (let index = 0; index < normalized.length; index += 1) {
     for (let otherIndex = index + 1; otherIndex < normalized.length; otherIndex += 1) {
       const left = normalized[index]
@@ -2229,6 +2800,7 @@ async function promotionPlanRows(
       id: inventoryPromotionPlans.id,
       planNo: inventoryPromotionPlans.planNo,
       name: inventoryPromotionPlans.name,
+      ruleType: inventoryPromotionPlans.ruleType,
       startsAt: inventoryPromotionPlans.startsAt,
       endsAt: inventoryPromotionPlans.endsAt,
       scopeMarketId: inventoryPromotionPlans.scopeMarketId,
@@ -2268,6 +2840,7 @@ async function promotionPlanRows(
     id: plan.id,
     planNo: plan.planNo,
     name: plan.name,
+    ruleType: normalizePromotionRuleType(plan.ruleType),
     startsAt: plan.startsAt,
     endsAt: plan.endsAt,
     scopeMarketId: plan.scopeMarketId,
@@ -2299,16 +2872,18 @@ export const getInventoryPromotionPlanById = withPermission(
 export const createInventoryPromotionPlan = withPermission(
   'inventory:create',
   async (session, input: InventoryPromotionPlanInput): Promise<{ id: string }> => {
+    assertPromotionPriceWritable(session)
     const planNo = normalizeRequired(input.planNo, '方案编号')
     const name = normalizeRequired(input.name, '方案名称')
     const startsAt = normalizeYmd(input.startsAt, '开始日期')
     const endsAt = normalizeYmd(input.endsAt, '结束日期')
+    const ruleType = normalizePromotionRuleType(input.ruleType)
     if (endsAt < startsAt) throw new ApiError('INVALID_PARAMS', '结束日期不能早于开始日期')
     if (input.status && input.status !== '启用' && input.status !== '停用') {
       throw new ApiError('INVALID_PARAMS', '福利方案状态无效')
     }
     const scopeMarketId = await assertPromotionMarketScope(session, input.scopeMarketId)
-    const items = normalizePromotionItems(input.items)
+    const items = normalizePromotionItems(input.items, ruleType)
     await assertPromotionSkus(items)
     const id = `INV-PROMO-${crypto.randomUUID()}`
     await db.transaction(async (tx) => {
@@ -2319,6 +2894,7 @@ export const createInventoryPromotionPlan = withPermission(
         startsAt,
         endsAt,
         scopeMarketId,
+        ruleType,
         status: input.status ?? '启用',
         remark: normalizeText(input.remark),
         createdBy: session.employeeId,
@@ -2335,7 +2911,7 @@ export const createInventoryPromotionPlan = withPermission(
         remark: item.remark,
       })))
     })
-    await logOperation(session, 'inventory.promotion.create', 'inventory_promotion_plans', id, { planNo, scopeMarketId })
+    await logOperation(session, 'inventory.promotion.create', 'inventory_promotion_plans', id, { planNo, scopeMarketId, ruleType })
     revalidatePath('/inventory/promotions')
     return { id }
   },
@@ -2348,11 +2924,13 @@ export const updateInventoryPromotionPlan = withPermission(
     idInput: string,
     input: InventoryPromotionPlanInput,
   ): Promise<{ success: true }> => {
+    assertPromotionPriceWritable(session)
     const id = normalizeRequired(idInput, '福利方案')
     const planNo = normalizeRequired(input.planNo, '方案编号')
     const name = normalizeRequired(input.name, '方案名称')
     const startsAt = normalizeYmd(input.startsAt, '开始日期')
     const endsAt = normalizeYmd(input.endsAt, '结束日期')
+    const ruleType = normalizePromotionRuleType(input.ruleType)
     if (endsAt < startsAt) throw new ApiError('INVALID_PARAMS', '结束日期不能早于开始日期')
     if (input.status && input.status !== '启用' && input.status !== '停用') {
       throw new ApiError('INVALID_PARAMS', '福利方案状态无效')
@@ -2360,7 +2938,7 @@ export const updateInventoryPromotionPlan = withPermission(
     const current = (await promotionPlanRows(session, id))[0]
     if (!current) throw new ApiError('NOT_FOUND', '福利方案不存在或无权查看')
     const scopeMarketId = await assertPromotionMarketScope(session, input.scopeMarketId)
-    const items = normalizePromotionItems(input.items)
+    const items = normalizePromotionItems(input.items, ruleType)
     await db.transaction(async (tx) => {
       const currentScopeMarketId = await lockPromotionPlanScopeForMutation(tx, id)
       await assertPromotionPlanMutableScope(session, currentScopeMarketId)
@@ -2373,6 +2951,7 @@ export const updateInventoryPromotionPlan = withPermission(
           startsAt,
           endsAt,
           scopeMarketId,
+          ruleType,
           status: input.status ?? '启用',
           remark: normalizeText(input.remark),
           updatedAt: new Date(),
@@ -2391,7 +2970,7 @@ export const updateInventoryPromotionPlan = withPermission(
         remark: item.remark,
       })))
     })
-    await logOperation(session, 'inventory.promotion.update', 'inventory_promotion_plans', id, { planNo, scopeMarketId })
+    await logOperation(session, 'inventory.promotion.update', 'inventory_promotion_plans', id, { planNo, scopeMarketId, ruleType })
     revalidatePath('/inventory/promotions')
     return { success: true }
   },

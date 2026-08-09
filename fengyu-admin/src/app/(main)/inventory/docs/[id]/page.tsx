@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { ArrowLeft } from 'lucide-react'
 import { getInventoryCoreDocById } from '@/actions/inventory/docs'
+import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { fmtDateTime } from '@/lib/datetime'
 
@@ -22,7 +23,41 @@ export default async function Page({
   const doc = await getInventoryCoreDocById(id)
   if (!doc) notFound()
 
-  const showPrice = doc.totalAmount !== undefined
+  const showPrice = doc.totalAmount !== undefined && doc.docType !== '品项公司发货'
+  const showStoreAllocationPrice = showPrice && doc.docType === '分院配货'
+  const reportFulfillment = doc.fulfillmentProgress?.kind === '报货履约'
+    ? doc.fulfillmentProgress
+    : null
+  const shipmentFulfillment = doc.fulfillmentProgress?.kind === '发货收货'
+    ? doc.fulfillmentProgress
+    : null
+  const itemCompanyRequestFulfillment = doc.fulfillmentProgress?.kind === '品项公司报货履约'
+    ? doc.fulfillmentProgress
+    : null
+  const supplyChainPurchaseFulfillment = doc.fulfillmentProgress?.kind === '供应链采购收货'
+    ? doc.fulfillmentProgress
+    : null
+  const reportProgressByItemId = new Map(
+    reportFulfillment?.items.map((item) => [item.itemId, item]) ?? [],
+  )
+  const shipmentProgressByItemId = new Map(
+    shipmentFulfillment?.items.map((item) => [item.itemId, item]) ?? [],
+  )
+  const itemCompanyRequestProgressByItemId = new Map(
+    itemCompanyRequestFulfillment?.items.map((item) => [item.itemId, item]) ?? [],
+  )
+  const supplyChainPurchaseProgressByItemId = new Map(
+    supplyChainPurchaseFulfillment?.items.map((item) => [item.itemId, item]) ?? [],
+  )
+  const reportColumnCount = reportFulfillment
+    ? (doc.docType === '市场报货' ? 6 : 5)
+    : 0
+  const shipmentColumnCount = shipmentFulfillment ? 2 : 0
+  const itemCompanyRequestColumnCount = itemCompanyRequestFulfillment ? 3 : 0
+  const supplyChainPurchaseColumnCount = supplyChainPurchaseFulfillment ? 2 : 0
+  const priceColumnCount = showPrice ? (showStoreAllocationPrice ? 4 : 2) : 0
+  const itemColumnCount = 9 + priceColumnCount + reportColumnCount + shipmentColumnCount +
+    itemCompanyRequestColumnCount + supplyChainPurchaseColumnCount
   const fields = [
     ['单据号', doc.id],
     ['类型', doc.docType],
@@ -46,6 +81,9 @@ export default async function Page({
     ['审批时间', doc.approvedAt ? fmtDateTime(doc.approvedAt) : null],
     ['驳回时间', doc.rejectedAt ? fmtDateTime(doc.rejectedAt) : null],
     ['审核备注', doc.auditRemark],
+    ['撤回申请原因', doc.cancellationRequestReason],
+    ['撤回申请人', doc.cancellationRequestedBy],
+    ['撤回申请时间', doc.cancellationRequestedAt ? fmtDateTime(doc.cancellationRequestedAt) : null],
     ['撤回原因', doc.cancellationReason],
     ['备注', doc.remark],
   ] as const
@@ -84,8 +122,53 @@ export default async function Page({
         </CardContent>
       </Card>
 
+      <Card>
+        <CardContent className="p-5">
+          <h2 className="mb-4 text-base font-medium">关联单据血缘</h2>
+          <div className="overflow-x-auto rounded-md border border-[var(--border)]">
+            <table className="w-full min-w-[760px] text-sm">
+              <thead className="bg-[#F8F8F8] text-xs text-[#666666]">
+                <tr>
+                  <th className="px-3 py-2 text-left">方向</th>
+                  <th className="px-3 py-2 text-left">关系</th>
+                  <th className="px-3 py-2 text-left">关联单据</th>
+                  <th className="px-3 py-2 text-left">类型</th>
+                  <th className="px-3 py-2 text-left">状态</th>
+                  <th className="px-3 py-2 text-right">关联数量</th>
+                  <th className="px-3 py-2 text-right">单据总数量</th>
+                  <th className="px-3 py-2 text-left">单据日期</th>
+                </tr>
+              </thead>
+              <tbody>
+                {doc.lineage.map((lineage) => (
+                  <tr key={`${lineage.direction}-${lineage.relationType}-${lineage.docId}`} className="border-t border-[var(--border)]">
+                    <td className="px-3 py-2">{lineage.direction}</td>
+                    <td className="px-3 py-2">{lineage.relationType}</td>
+                    <td className="px-3 py-2 font-mono text-xs">
+                      <Link href={`/inventory/docs/${encodeURIComponent(lineage.docId)}`} className="text-[var(--primary)] hover:underline">
+                        {lineage.docId}
+                      </Link>
+                    </td>
+                    <td className="px-3 py-2">{lineage.docType}</td>
+                    <td className="px-3 py-2">{lineage.status}</td>
+                    <td className="px-3 py-2 text-right">{lineage.linkedQuantity}</td>
+                    <td className="px-3 py-2 text-right">{lineage.totalQuantity}</td>
+                    <td className="px-3 py-2">{fmt(lineage.docDate?.slice(0, 10))}</td>
+                  </tr>
+                ))}
+                {doc.lineage.length === 0 && (
+                  <tr>
+                    <td className="px-3 py-8 text-center text-[#999999]" colSpan={8}>暂无关联单据</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
       <div className="overflow-x-auto rounded-md border border-[var(--border)] bg-white">
-        <table className="w-full text-sm">
+        <table className={`w-full ${showStoreAllocationPrice ? 'min-w-[1180px]' : 'min-w-[960px]'} text-sm`}>
           <thead className="bg-[#F8F8F8] text-xs text-[#666666]">
             <tr>
               <th className="px-3 py-2 text-left">批次ID</th>
@@ -95,29 +178,95 @@ export default async function Page({
               <th className="px-3 py-2 text-left">批号</th>
               <th className="px-3 py-2 text-left">效期</th>
               <th className="px-3 py-2 text-right">数量</th>
-              {showPrice && <th className="px-3 py-2 text-right">实际单价</th>}
-              {showPrice && <th className="px-3 py-2 text-right">金额</th>}
+              <th className="px-3 py-2 text-left">赠送</th>
+              {showStoreAllocationPrice ? <>
+                <th className="px-3 py-2 text-right">门店标准单价</th>
+                <th className="px-3 py-2 text-right">单价优惠</th>
+                <th className="px-3 py-2 text-right">优惠后实际单价</th>
+                <th className="px-3 py-2 text-right">应付货款</th>
+              </> : showPrice && <>
+                <th className="px-3 py-2 text-right">实际单价</th>
+                <th className="px-3 py-2 text-right">金额</th>
+              </>}
+              {reportFulfillment && <>
+                <th className="px-3 py-2 text-right">正常需求</th>
+                {doc.docType === '市场报货' && <th className="px-3 py-2 text-right">已采购</th>}
+                <th className="px-3 py-2 text-right">正常发货/配货</th>
+                <th className="px-3 py-2 text-right">赠送发货/配货</th>
+                <th className="px-3 py-2 text-right">正常已收</th>
+                <th className="px-3 py-2 text-right">赠送已收</th>
+              </>}
+              {shipmentFulfillment && <>
+                <th className="px-3 py-2 text-right">已收</th>
+                <th className="px-3 py-2 text-right">待收</th>
+              </>}
+              {itemCompanyRequestFulfillment && <>
+                <th className="px-3 py-2 text-right">需求</th>
+                <th className="px-3 py-2 text-right">已下单</th>
+                <th className="px-3 py-2 text-right">已入库</th>
+              </>}
+              {supplyChainPurchaseFulfillment && <>
+                <th className="px-3 py-2 text-right">已入库</th>
+                <th className="px-3 py-2 text-right">待入库</th>
+              </>}
               <th className="px-3 py-2 text-left">原因</th>
             </tr>
           </thead>
           <tbody>
-            {doc.items.map((item) => (
-              <tr key={item.id} className="border-t border-[var(--border)]">
-                <td className="px-3 py-2 font-mono text-xs">{fmt(item.lotId)}</td>
-                <td className="px-3 py-2 font-mono text-xs">{item.skuId}</td>
-                <td className="px-3 py-2">{item.skuName}</td>
-                <td className="px-3 py-2">{fmt(item.specName)}</td>
-                <td className="px-3 py-2">{fmt(item.batchNo)}</td>
-                <td className="px-3 py-2">{fmt(item.expiryDate?.slice(0, 10))}</td>
-                <td className="px-3 py-2 text-right font-medium">{item.quantity}</td>
-                {showPrice && <td className="px-3 py-2 text-right">{fmt(item.actualUnitPrice)}</td>}
-                {showPrice && <td className="px-3 py-2 text-right">{fmt(item.amount)}</td>}
-                <td className="px-3 py-2">{fmt(item.reason)}</td>
-              </tr>
-            ))}
+            {doc.items.map((item) => {
+              const reportProgress = reportProgressByItemId.get(item.id)
+              const shipmentProgress = shipmentProgressByItemId.get(item.id)
+              const itemCompanyRequestProgress = itemCompanyRequestProgressByItemId.get(item.id)
+              const supplyChainPurchaseProgress = supplyChainPurchaseProgressByItemId.get(item.id)
+              return (
+                <tr key={item.id} className="border-t border-[var(--border)]">
+                  <td className="px-3 py-2 font-mono text-xs">{fmt(item.lotId)}</td>
+                  <td className="px-3 py-2 font-mono text-xs">{item.skuId}</td>
+                  <td className="px-3 py-2">{item.skuName}</td>
+                  <td className="px-3 py-2">{fmt(item.specName)}</td>
+                  <td className="px-3 py-2">{fmt(item.batchNo)}</td>
+                  <td className="px-3 py-2">{fmt(item.expiryDate?.slice(0, 10))}</td>
+                  <td className="px-3 py-2 text-right font-medium">{item.quantity}</td>
+                  <td className="px-3 py-2">
+                    {item.isGift ? <Badge variant="outline" className="text-[10px]">赠送</Badge> : '—'}
+                  </td>
+                  {showStoreAllocationPrice ? <>
+                    <td className="px-3 py-2 text-right">{fmt(item.standardUnitPrice)}</td>
+                    <td className="px-3 py-2 text-right">{fmt(item.unitDiscount)}</td>
+                    <td className="px-3 py-2 text-right">{fmt(item.actualUnitPrice)}</td>
+                    <td className="px-3 py-2 text-right">{fmt(item.amount)}</td>
+                  </> : showPrice && <>
+                    <td className="px-3 py-2 text-right">{fmt(item.actualUnitPrice)}</td>
+                    <td className="px-3 py-2 text-right">{fmt(item.amount)}</td>
+                  </>}
+                  {reportFulfillment && <>
+                    <td className="px-3 py-2 text-right">{fmt(reportProgress?.normalDemandQuantity)}</td>
+                    {doc.docType === '市场报货' && <td className="px-3 py-2 text-right">{fmt(reportProgress?.orderedQuantity)}</td>}
+                    <td className="px-3 py-2 text-right">{fmt(reportProgress?.normalFulfilledQuantity)}</td>
+                    <td className="px-3 py-2 text-right">{fmt(reportProgress?.giftFulfilledQuantity)}</td>
+                    <td className="px-3 py-2 text-right">{fmt(reportProgress?.normalReceivedQuantity)}</td>
+                    <td className="px-3 py-2 text-right">{fmt(reportProgress?.giftReceivedQuantity)}</td>
+                  </>}
+                  {shipmentFulfillment && <>
+                    <td className="px-3 py-2 text-right">{fmt(shipmentProgress?.receivedQuantity)}</td>
+                    <td className="px-3 py-2 text-right">{fmt(shipmentProgress?.outstandingQuantity)}</td>
+                  </>}
+                  {itemCompanyRequestFulfillment && <>
+                    <td className="px-3 py-2 text-right">{fmt(itemCompanyRequestProgress?.demandQuantity)}</td>
+                    <td className="px-3 py-2 text-right">{fmt(itemCompanyRequestProgress?.orderedQuantity)}</td>
+                    <td className="px-3 py-2 text-right">{fmt(itemCompanyRequestProgress?.receivedQuantity)}</td>
+                  </>}
+                  {supplyChainPurchaseFulfillment && <>
+                    <td className="px-3 py-2 text-right">{fmt(supplyChainPurchaseProgress?.receivedQuantity)}</td>
+                    <td className="px-3 py-2 text-right">{fmt(supplyChainPurchaseProgress?.outstandingQuantity)}</td>
+                  </>}
+                  <td className="px-3 py-2">{fmt(item.reason)}</td>
+                </tr>
+              )
+            })}
             {doc.items.length === 0 && (
               <tr>
-                <td className="px-3 py-8 text-center text-[#999999]" colSpan={showPrice ? 10 : 8}>
+                <td className="px-3 py-8 text-center text-[#999999]" colSpan={itemColumnCount}>
                   无明细
                 </td>
               </tr>

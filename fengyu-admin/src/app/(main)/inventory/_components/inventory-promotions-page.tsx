@@ -44,6 +44,7 @@ interface PromotionDraftItem {
 interface PromotionForm {
   planNo: string
   name: string
+  ruleType: '单品阶梯' | '组合'
   startsAt: string
   endsAt: string
   scopeMarketId: string
@@ -77,6 +78,7 @@ function emptyForm(defaultMarketId = ''): PromotionForm {
   return {
     planNo: '',
     name: '',
+    ruleType: '单品阶梯',
     startsAt: today,
     endsAt: today,
     scopeMarketId: defaultMarketId,
@@ -90,6 +92,7 @@ function toForm(row: InventoryPromotionPlanRow): PromotionForm {
   return {
     planNo: row.planNo,
     name: row.name,
+    ruleType: row.ruleType,
     startsAt: row.startsAt,
     endsAt: row.endsAt,
     scopeMarketId: row.scopeMarketId ?? '',
@@ -239,6 +242,12 @@ export default function InventoryPromotionsPage({
       toast.error('至少需要一条福利产品明细')
       return null
     }
+    if (form.ruleType === '组合' && form.items.length < 2) {
+      toast.error('组合福利至少需要两条不同产品明细')
+      return null
+    }
+
+    const seenSkuIds = new Set<string>()
 
     for (const [index, item] of form.items.entries()) {
       const itemNumber = index + 1
@@ -249,12 +258,21 @@ export default function InventoryPromotionsPage({
         toast.error(`请选择第 ${itemNumber} 条福利产品`)
         return null
       }
+      if (form.ruleType === '组合' && seenSkuIds.has(item.skuId)) {
+        toast.error('组合福利中同一产品只能出现一次')
+        return null
+      }
+      seenSkuIds.add(item.skuId)
       if (discount == null || discount < 0) {
         toast.error(`第 ${itemNumber} 条单价优惠必须是非负数字`)
         return null
       }
       if (minQuantity !== null && minQuantity <= 0) {
         toast.error(`第 ${itemNumber} 条数量下限必须大于 0`)
+        return null
+      }
+      if (form.ruleType === '组合' && minQuantity === null) {
+        toast.error(`请填写第 ${itemNumber} 条组合产品的数量下限`)
         return null
       }
       if (maxQuantity !== null && maxQuantity <= 0) {
@@ -270,6 +288,7 @@ export default function InventoryPromotionsPage({
     return {
       planNo,
       name,
+      ruleType: form.ruleType,
       startsAt: form.startsAt,
       endsAt: form.endsAt,
       scopeMarketId: form.scopeMarketId || null,
@@ -332,6 +351,11 @@ export default function InventoryPromotionsPage({
       key: 'name',
       header: '方案名称',
       cell: (row) => <span className="font-medium">{row.name}</span>,
+    },
+    {
+      key: 'ruleType',
+      header: '规则',
+      cell: (row) => row.ruleType,
     },
     {
       key: 'scopeMarketName',
@@ -459,6 +483,13 @@ export default function InventoryPromotionsPage({
               <Input value={form.name} readOnly={readOnly} disabled={saving} onChange={(event) => setField('name', event.target.value)} />
             </div>
             <div className="space-y-2">
+              <label className="text-sm font-medium">规则类型</label>
+              <Select value={form.ruleType} disabled={readOnly || saving} onChange={(event) => setField('ruleType', event.target.value as PromotionForm['ruleType'])}>
+                <option value="单品阶梯">单品阶梯</option>
+                <option value="组合">组合</option>
+              </Select>
+            </div>
+            <div className="space-y-2">
               <label className="text-sm font-medium">适用市场</label>
               <Select
                 value={form.scopeMarketId}
@@ -529,8 +560,8 @@ export default function InventoryPromotionsPage({
                       </Select>
                     </div>
                     <div className="space-y-2">
-                      <label className="text-sm font-medium">数量下限</label>
-                      <Input type="number" min="0" step="1" placeholder="留空不限" value={item.reportMinQuantity} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { reportMinQuantity: event.target.value })} />
+                      <label className="text-sm font-medium">{form.ruleType === '组合' ? '组合数量下限 *' : '数量下限'}</label>
+                      <Input type="number" min="0" step="1" placeholder={form.ruleType === '组合' ? '必填' : '留空不限'} value={item.reportMinQuantity} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { reportMinQuantity: event.target.value })} />
                     </div>
                     <div className="space-y-2">
                       <label className="text-sm font-medium">数量上限</label>

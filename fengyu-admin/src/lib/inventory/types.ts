@@ -4,10 +4,15 @@ export type InventoryLocationType = (typeof INVENTORY_LOCATION_TYPES)[number]
 export const INVENTORY_SKU_SOURCE_TYPES = ['供应链', '市场自采', '转让店'] as const
 export type InventorySkuSourceType = (typeof INVENTORY_SKU_SOURCE_TYPES)[number]
 
+export const INVENTORY_PROMOTION_RULE_TYPES = ['单品阶梯', '组合'] as const
+export type InventoryPromotionRuleType = (typeof INVENTORY_PROMOTION_RULE_TYPES)[number]
+
 export const INVENTORY_DOC_TYPES = [
   '门店报货',
   '市场报货',
+  '品项公司报货需求',
   '采购订单',
+  '供应链采购订单',
   '供应链采购入库',
   '品项公司发货',
   '市场采购入库',
@@ -44,7 +49,6 @@ export type InventoryDocType = (typeof INVENTORY_DOC_TYPES)[number]
  * 不能从通用建单窗口绕过数量、价格和批次校验。
  */
 export const INVENTORY_GENERIC_DOC_TYPES = [
-  '供应链采购入库',
   '分院调货出库',
   '市场间调货出库',
   '内部领用',
@@ -171,6 +175,8 @@ export interface InventoryPromotionPlanInput {
   startsAt: string
   endsAt: string
   scopeMarketId?: string | null
+  /** 未传入时兼容已有单品阶梯方案。 */
+  ruleType?: InventoryPromotionRuleType
   status?: '启用' | '停用'
   remark?: string | null
   items: InventoryPromotionPlanItemInput[]
@@ -184,6 +190,7 @@ export interface InventoryPromotionPlanRow {
   endsAt: string
   scopeMarketId: string | null
   scopeMarketName: string | null
+  ruleType: InventoryPromotionRuleType
   status: '启用' | '停用'
   remark: string | null
   itemCount: number
@@ -294,6 +301,9 @@ export interface InventoryDocRow {
   confirmedAt: string | null
   approvedAt: string | null
   rejectedAt: string | null
+  cancellationRequestReason: string | null
+  cancellationRequestedBy: string | null
+  cancellationRequestedAt: string | null
   cancellationReason: string | null
   cancelledAt: string | null
   createdAt: string
@@ -329,6 +339,85 @@ export interface InventoryDocItemRow {
   createdAt: string
 }
 
+/**
+ * 单据血缘中的一条聚合关系。相同关系下的多条明细会合并，避免详情页重复显示同一张单据。
+ * linkedQuantity 仅统计当前用户可见的关联单据。
+ */
+export interface InventoryDocLineageRow {
+  direction: '上游' | '下游'
+  relationType: string
+  docId: string
+  docType: InventoryDocType
+  status: InventoryCoreDocStatus
+  docDate: string
+  totalQuantity: number
+  linkedQuantity: number
+}
+
+/** 报货单按明细展示从需求到下游发货、收货的数量快照。 */
+export interface InventoryReportFulfillmentItem {
+  itemId: number
+  normalDemandQuantity: number
+  /** 市场报货的采购订单数量；门店报货没有采购订单阶段。 */
+  orderedQuantity?: number
+  normalFulfilledQuantity: number
+  giftFulfilledQuantity: number
+  normalReceivedQuantity: number
+  giftReceivedQuantity: number
+}
+
+export interface InventoryReportFulfillmentProgress {
+  kind: '报货履约'
+  items: InventoryReportFulfillmentItem[]
+}
+
+/** 发货/配货单按明细展示已收与待收数量。 */
+export interface InventoryShipmentReceiptProgressItem {
+  itemId: number
+  shippedQuantity: number
+  receivedQuantity: number
+  outstandingQuantity: number
+}
+
+export interface InventoryShipmentReceiptProgress {
+  kind: '发货收货'
+  items: InventoryShipmentReceiptProgressItem[]
+}
+
+/** 品项公司报货需求到供应链采购订单、实际入库的明细进度。 */
+export interface InventoryItemCompanyRequestFulfillmentItem {
+  itemId: number
+  demandQuantity: number
+  orderedQuantity: number
+  receivedQuantity: number
+}
+
+export interface InventoryItemCompanyRequestFulfillmentProgress {
+  kind: '品项公司报货履约'
+  items: InventoryItemCompanyRequestFulfillmentItem[]
+}
+
+/** 供应链采购订单按明细展示分批入库的实收与待收入库数量。 */
+export interface InventorySupplyChainPurchaseReceiptProgressItem {
+  itemId: number
+  purchasedQuantity: number
+  receivedQuantity: number
+  outstandingQuantity: number
+}
+
+export interface InventorySupplyChainPurchaseReceiptProgress {
+  kind: '供应链采购收货'
+  items: InventorySupplyChainPurchaseReceiptProgressItem[]
+}
+
+export type InventoryDocFulfillmentProgress =
+  | InventoryReportFulfillmentProgress
+  | InventoryShipmentReceiptProgress
+  | InventoryItemCompanyRequestFulfillmentProgress
+  | InventorySupplyChainPurchaseReceiptProgress
+
 export interface InventoryDocDetail extends InventoryDocRow {
   items: InventoryDocItemRow[]
+  lineage: InventoryDocLineageRow[]
+  fulfillmentProgress: InventoryDocFulfillmentProgress | null
 }

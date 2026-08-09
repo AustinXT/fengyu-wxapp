@@ -1,13 +1,16 @@
 'use server'
 
 import {
+  approveItemCompanyShipmentCancellation as approveItemCompanyShipmentCancellationImpl,
   approveReturnForRestock as approveReturnForRestockImpl,
-  cancelItemCompanyShipment as cancelItemCompanyShipmentImpl,
+  cancelSupplyChainPurchaseOrder as cancelSupplyChainPurchaseOrderImpl,
   createExternalMarketOutbound as createExternalMarketOutboundImpl,
   createItemCompanyShipment as createItemCompanyShipmentImpl,
+  createItemCompanyReplenishment as createItemCompanyReplenishmentImpl,
   createInventoryConversion as createInventoryConversionImpl,
   createMarketReplenishment as createMarketReplenishmentImpl,
   createMarketStaffPurchase as createMarketStaffPurchaseImpl,
+  createPurchaseOrderFromItemCompanyReplenishment as createPurchaseOrderFromItemCompanyReplenishmentImpl,
   createPurchaseOrderFromMarketReplenishment as createPurchaseOrderFromMarketReplenishmentImpl,
   createReturnForRestock as createReturnForRestockImpl,
   createSelfPurchasedReceipt as createSelfPurchasedReceiptImpl,
@@ -16,10 +19,16 @@ import {
   getShipmentReceiptProgress as getShipmentReceiptProgressImpl,
   quoteMarketReplenishmentPrice as quoteMarketReplenishmentPriceImpl,
   receiveItemCompanyShipment as receiveItemCompanyShipmentImpl,
+  receiveSupplyChainPurchaseOrder as receiveSupplyChainPurchaseOrderImpl,
   receiveStoreAllocation as receiveStoreAllocationImpl,
+  rejectItemCompanyShipmentCancellation as rejectItemCompanyShipmentCancellationImpl,
   rejectReturnForRestock as rejectReturnForRestockImpl,
+  requestItemCompanyShipmentCancellation as requestItemCompanyShipmentCancellationImpl,
   summarizeStoreReplenishmentRequests as summarizeStoreReplenishmentRequestsImpl,
   type CreateItemCompanyShipmentInput,
+  type CreateItemCompanyReplenishmentInput,
+  type CreateCompanyPurchaseOrderInput,
+  type CancelSupplyChainPurchaseOrderInput,
   type CreateExternalMarketOutboundInput,
   type CreateInventoryConversionInput,
   type CreateMarketReplenishmentInput,
@@ -30,6 +39,9 @@ import {
   type CreateStoreAllocationInput,
   type CreateStoreReplenishmentInput,
   type ReceiveShipmentInput,
+  type ReceiveSupplyChainPurchaseOrderInput,
+  type RequestItemCompanyShipmentCancellationInput,
+  type ResolveItemCompanyShipmentCancellationInput,
 } from '@/lib/inventory/business'
 import { withPermission } from '@/lib/with-permission'
 
@@ -47,7 +59,13 @@ export const summarizeStoreReplenishmentRequests = withPermission(
 
 export const quoteMarketReplenishmentPrice = withPermission(
   'inventory:price_view',
-  async (session, input: { marketId: string; skuId: string; quantity: number; docDate?: string | null }) =>
+  async (session, input: {
+    marketId: string
+    skuId: string
+    quantity: number
+    docDate?: string | null
+    basketItems?: Array<{ skuId: string; quantity: number }>
+  }) =>
     quoteMarketReplenishmentPriceImpl(session, input),
 )
 
@@ -57,10 +75,22 @@ export const createMarketReplenishment = withPermission(
     createMarketReplenishmentImpl(session, input),
 )
 
+export const createItemCompanyReplenishment = withPermission(
+  'inventory:create_doc',
+  async (session, input: CreateItemCompanyReplenishmentInput) =>
+    createItemCompanyReplenishmentImpl(session, input),
+)
+
 export const createPurchaseOrderFromMarketReplenishment = withPermission(
   'inventory:create_doc',
   async (session, input: CreatePurchaseOrderInput) =>
     createPurchaseOrderFromMarketReplenishmentImpl(session, input),
+)
+
+export const createPurchaseOrderFromItemCompanyReplenishment = withPermission(
+  'inventory:create_doc',
+  async (session, input: CreateCompanyPurchaseOrderInput) =>
+    createPurchaseOrderFromItemCompanyReplenishmentImpl(session, input),
 )
 
 export const createItemCompanyShipment = withPermission(
@@ -73,6 +103,12 @@ export const receiveItemCompanyShipment = withPermission(
   'inventory:create_doc',
   async (session, input: ReceiveShipmentInput) =>
     receiveItemCompanyShipmentImpl(session, input),
+)
+
+export const receiveSupplyChainPurchaseOrder = withPermission(
+  'inventory:create_doc',
+  async (session, input: ReceiveSupplyChainPurchaseOrderInput) =>
+    receiveSupplyChainPurchaseOrderImpl(session, input),
 )
 
 export const createStoreAllocation = withPermission(
@@ -105,10 +141,35 @@ export const rejectReturnForRestock = withPermission(
     rejectReturnForRestockImpl(session, input),
 )
 
-export const cancelItemCompanyShipment = withPermission(
+export const requestItemCompanyShipmentCancellation = withPermission(
+  'inventory:create_doc',
+  async (session, input: RequestItemCompanyShipmentCancellationInput) =>
+    requestItemCompanyShipmentCancellationImpl(session, input),
+)
+
+export const approveItemCompanyShipmentCancellation = withPermission(
   'inventory:approve',
-  async (session, input: { shipmentId: string; cancellationReason: string }) =>
-    cancelItemCompanyShipmentImpl(session, input),
+  async (session, input: ResolveItemCompanyShipmentCancellationInput) =>
+    approveItemCompanyShipmentCancellationImpl(session, input),
+)
+
+export const rejectItemCompanyShipmentCancellation = withPermission(
+  'inventory:approve',
+  async (session, input: ResolveItemCompanyShipmentCancellationInput & { auditRemark: string }) =>
+    rejectItemCompanyShipmentCancellationImpl(session, input),
+)
+
+/** 兼容已打开的旧后台页面；调用后仅提交申请，不会直接撤回。 */
+export const cancelItemCompanyShipment = withPermission(
+  'inventory:create_doc',
+  async (session, input: RequestItemCompanyShipmentCancellationInput) =>
+    requestItemCompanyShipmentCancellationImpl(session, input),
+)
+
+export const cancelSupplyChainPurchaseOrder = withPermission(
+  'inventory:approve',
+  async (session, input: CancelSupplyChainPurchaseOrderInput) =>
+    cancelSupplyChainPurchaseOrderImpl(session, input),
 )
 
 export const getShipmentReceiptProgress = withPermission(

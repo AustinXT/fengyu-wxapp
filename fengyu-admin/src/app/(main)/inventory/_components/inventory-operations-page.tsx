@@ -22,13 +22,16 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import {
+  approveItemCompanyShipmentCancellation,
   approveReturnForRestock,
-  cancelItemCompanyShipment,
+  cancelSupplyChainPurchaseOrder,
   createExternalMarketOutbound,
   createInventoryConversion,
+  createItemCompanyReplenishment,
   createItemCompanyShipment,
   createMarketReplenishment,
   createMarketStaffPurchase,
+  createPurchaseOrderFromItemCompanyReplenishment,
   createPurchaseOrderFromMarketReplenishment,
   createReturnForRestock,
   createSelfPurchasedReceipt,
@@ -37,8 +40,11 @@ import {
   getShipmentReceiptProgress,
   quoteMarketReplenishmentPrice,
   receiveItemCompanyShipment,
+  receiveSupplyChainPurchaseOrder,
   receiveStoreAllocation,
+  rejectItemCompanyShipmentCancellation,
   rejectReturnForRestock,
+  requestItemCompanyShipmentCancellation,
   summarizeStoreReplenishmentRequests,
 } from '@/actions/inventory/business'
 import { getInventoryCoreDocById } from '@/actions/inventory/docs'
@@ -63,9 +69,13 @@ import { Tooltip } from '@/components/ui/tooltip'
 type OperationId =
   | 'store-request'
   | 'market-report'
+  | 'item-company-request'
   | 'purchase-order'
+  | 'supply-chain-purchase-order'
   | 'company-shipment'
   | 'market-receipt'
+  | 'supply-chain-receipt'
+  | 'supply-chain-purchase-cancel'
   | 'store-allocation'
   | 'store-receipt'
   | 'return'
@@ -75,6 +85,7 @@ type OperationId =
   | 'external-outbound'
   | 'conversion'
   | 'shipment-cancel'
+  | 'shipment-cancel-approval'
 
 interface OperationDefinition {
   id: OperationId
@@ -83,19 +94,25 @@ interface OperationDefinition {
   icon: typeof Boxes
   tone: string
   approvalOnly?: boolean
+  shipmentCancellationAccess?: '申请' | '审批'
 }
 
 const OPERATIONS: OperationDefinition[] = [
   { id: 'store-request', title: '门店报货', group: '需求与采购', icon: PackagePlus, tone: 'text-[#C0322A] bg-[#FFF0EE]' },
   { id: 'market-report', title: '市场汇总报货', group: '需求与采购', icon: PackageSearch, tone: 'text-[#5E8BB3] bg-[#F0F5FA]' },
+  { id: 'item-company-request', title: '品项公司报货需求', group: '需求与采购', icon: PackagePlus, tone: 'text-[#7B5E2B] bg-[#FFF8E6]' },
   { id: 'purchase-order', title: '创建采购订单', group: '需求与采购', icon: ShoppingCart, tone: 'text-[#7B5E2B] bg-[#FFF8E6]' },
+  { id: 'supply-chain-purchase-order', title: '供应链采购订单', group: '需求与采购', icon: ShoppingCart, tone: 'text-[#5E8BB3] bg-[#F0F5FA]' },
   { id: 'company-shipment', title: '品项公司发货', group: '发货、收货与退货', icon: Truck, tone: 'text-[#5E8BB3] bg-[#F0F5FA]' },
   { id: 'market-receipt', title: '市场采购入库', group: '发货、收货与退货', icon: PackageCheck, tone: 'text-[#3D8A5A] bg-[#F0F9F2]' },
+  { id: 'supply-chain-receipt', title: '供应链采购入库', group: '发货、收货与退货', icon: PackageCheck, tone: 'text-[#3D8A5A] bg-[#F0F9F2]' },
+  { id: 'supply-chain-purchase-cancel', title: '关闭供应链采购', group: '发货、收货与退货', icon: RefreshCcw, tone: 'text-[#D94040] bg-[#FFF0F0]', approvalOnly: true },
   { id: 'store-allocation', title: '分院配货', group: '发货、收货与退货', icon: Send, tone: 'text-[#8B5A2B] bg-[#FFF5E8]' },
   { id: 'store-receipt', title: '分院收货入库', group: '发货、收货与退货', icon: ClipboardCheck, tone: 'text-[#3D8A5A] bg-[#F0F9F2]' },
   { id: 'return', title: '创建退货申请', group: '发货、收货与退货', icon: Undo2, tone: 'text-[#D4820A] bg-[#FFF8E6]' },
   { id: 'return-approval', title: '退货审批回库', group: '发货、收货与退货', icon: RotateCcw, tone: 'text-[#D4820A] bg-[#FFF8E6]', approvalOnly: true },
-  { id: 'shipment-cancel', title: '撤回品项发货', group: '发货、收货与退货', icon: RefreshCcw, tone: 'text-[#D94040] bg-[#FFF0F0]', approvalOnly: true },
+  { id: 'shipment-cancel', title: '申请撤回品项发货', group: '发货、收货与退货', icon: RefreshCcw, tone: 'text-[#D94040] bg-[#FFF0F0]', shipmentCancellationAccess: '申请' },
+  { id: 'shipment-cancel-approval', title: '审批品项发货撤回', group: '发货、收货与退货', icon: RotateCcw, tone: 'text-[#D94040] bg-[#FFF0F0]', approvalOnly: true, shipmentCancellationAccess: '审批' },
   { id: 'staff-purchase', title: '市场员工购', group: '市场特殊业务', icon: UserRoundCheck, tone: 'text-[#8A4B7A] bg-[#FCF1F9]' },
   { id: 'self-purchase', title: '自采产品入库', group: '市场特殊业务', icon: Warehouse, tone: 'text-[#3D8A5A] bg-[#F0F9F2]' },
   { id: 'external-outbound', title: '非凤御市场出库', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]' },
@@ -134,7 +151,17 @@ function docCandidates(docs: InventoryDocRow[], docType: InventoryDocRow['docTyp
 }
 
 function hasAvailableQuantity(item: InventoryDocDetail['items'][number]) {
-  return item.quantity - (item.fulfilledQuantity ?? 0) > 0.000001
+  return remainingQuantity(item) > 0.000001
+}
+
+function remainingQuantity(item: InventoryDocDetail['items'][number]) {
+  return Math.max(0, item.quantity - (item.fulfilledQuantity ?? 0))
+}
+
+function formatPrice(value: number | null | undefined) {
+  return value === null || value === undefined || !Number.isFinite(value)
+    ? '—'
+    : value.toFixed(2)
 }
 
 function SmallIconButton({
@@ -366,6 +393,8 @@ export default function InventoryOperationsPage({
   workflowDocs,
   canCreate,
   canApprove,
+  canRequestShipmentCancellation,
+  canApproveShipmentCancellation,
   canViewPrice,
 }: {
   locations: InventoryLocationRow[]
@@ -374,6 +403,8 @@ export default function InventoryOperationsPage({
   workflowDocs: InventoryDocRow[]
   canCreate: boolean
   canApprove: boolean
+  canRequestShipmentCancellation: boolean
+  canApproveShipmentCancellation: boolean
   canViewPrice: boolean
 }) {
   const router = useRouter()
@@ -414,7 +445,13 @@ export default function InventoryOperationsPage({
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
               {OPERATIONS.filter((operation) => operation.group === group).map((operation) => {
                 const Icon = operation.icon
-                const enabled = operation.approvalOnly ? canApprove : canCreate
+                const hasShipmentCancellationAccess = operation.shipmentCancellationAccess === '申请'
+                  ? canRequestShipmentCancellation
+                  : operation.shipmentCancellationAccess === '审批'
+                    ? canApproveShipmentCancellation
+                    : true
+                const enabled = (operation.approvalOnly ? canApprove : canCreate)
+                  && hasShipmentCancellationAccess
                 return (
                   <button
                     key={operation.id}
@@ -429,6 +466,8 @@ export default function InventoryOperationsPage({
                     <span className="min-w-0 flex-1">
                       <span className="block text-sm font-medium">{operation.title}</span>
                       {operation.approvalOnly && <Badge variant="outline" className="mt-1 text-[10px]">审批权限</Badge>}
+                      {operation.shipmentCancellationAccess === '申请' && <Badge variant="outline" className="mt-1 text-[10px]">市场财务</Badge>}
+                      {operation.shipmentCancellationAccess === '审批' && <Badge variant="outline" className="mt-1 text-[10px]">供应链财务</Badge>}
                     </span>
                   </button>
                 )
@@ -485,14 +524,19 @@ function OperationWorkspace({
       <OperationHeader title={title} onClose={onClose} />
       {operation === 'store-request' && <StoreRequestForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
       {operation === 'market-report' && <MarketReportForm locations={locations} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
+      {operation === 'item-company-request' && <ItemCompanyReplenishmentForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
       {operation === 'purchase-order' && <PurchaseOrderForm locations={locations} suppliers={suppliers} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
+      {operation === 'supply-chain-purchase-order' && <SupplyChainPurchaseOrderForm locations={locations} suppliers={suppliers} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
       {operation === 'company-shipment' && <CompanyShipmentForm locations={locations} workflowDocs={workflowDocs} onSuccess={onSuccess} />}
       {operation === 'market-receipt' && <ShipmentReceiptForm workflowDocs={workflowDocs} kind="market" onSuccess={onSuccess} />}
-      {operation === 'store-allocation' && <StoreAllocationForm locations={locations} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
+      {operation === 'supply-chain-receipt' && <SupplyChainPurchaseReceiptForm locations={locations} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
+      {operation === 'supply-chain-purchase-cancel' && <SupplyChainPurchaseCancelForm workflowDocs={workflowDocs} onSuccess={onSuccess} />}
+      {operation === 'store-allocation' && <StoreAllocationForm locations={locations} skuOptions={skuOptions} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
       {operation === 'store-receipt' && <ShipmentReceiptForm workflowDocs={workflowDocs} kind="store" onSuccess={onSuccess} />}
       {operation === 'return' && <ReturnForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
       {operation === 'return-approval' && <ReturnApprovalForm workflowDocs={workflowDocs} onSuccess={onSuccess} />}
-      {operation === 'shipment-cancel' && <ShipmentCancelForm workflowDocs={workflowDocs} onSuccess={onSuccess} />}
+      {operation === 'shipment-cancel' && <ShipmentCancellationRequestForm workflowDocs={workflowDocs} onSuccess={onSuccess} />}
+      {operation === 'shipment-cancel-approval' && <ShipmentCancellationApprovalForm workflowDocs={workflowDocs} onSuccess={onSuccess} />}
       {operation === 'staff-purchase' && <MarketStaffPurchaseForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
       {operation === 'self-purchase' && <SelfPurchaseForm locations={locations} skuOptions={skuOptions} suppliers={suppliers} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
       {operation === 'external-outbound' && <ExternalOutboundForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
@@ -621,6 +665,90 @@ function StoreRequestForm({
   )
 }
 
+function ItemCompanyReplenishmentForm({
+  locations,
+  skuOptions,
+  onSuccess,
+}: {
+  locations: InventoryLocationRow[]
+  skuOptions: InventorySkuRow[]
+  onSuccess: (message: string) => void
+}) {
+  const headquarters = locations.filter((location) => location.locationType === '总部' && location.isActive)
+  const supplyChainSkus = skuOptions.filter((sku) => sku.sourceType === '供应链')
+  const [supplyChainLocationId, setSupplyChainLocationId] = useState('')
+  const [docDate, setDocDate] = useState(today)
+  const [remark, setRemark] = useState('')
+  const [lines, setLines] = useState<SimpleSkuLine[]>([{ skuId: '', quantity: '1', remark: '' }])
+  const [saving, setSaving] = useState(false)
+
+  function updateLine(index: number, patch: Partial<SimpleSkuLine>) {
+    setLines((previous) => previous.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line))
+  }
+
+  async function submit() {
+    if (saving) return
+    if (!supplyChainLocationId) {
+      toast.error('请选择供应链库存主体')
+      return
+    }
+    const items = lines.map((line) => ({
+      skuId: line.skuId,
+      quantity: positiveNumber(line.quantity),
+      remark: optionalText(line.remark),
+    }))
+    if (items.some((item) => !item.skuId || item.quantity === null)) {
+      toast.error('请完整填写供应链商品和报货数量')
+      return
+    }
+    setSaving(true)
+    try {
+      const result = await createItemCompanyReplenishment({
+        supplyChainLocationId,
+        docDate: optionalText(docDate),
+        remark: optionalText(remark),
+        items: items.map((item) => ({ ...item, quantity: item.quantity! })),
+      })
+      onSuccess(`品项公司报货需求已创建：${result.id}`)
+      setLines([{ skuId: '', quantity: '1', remark: '' }])
+    } catch (error) {
+      toast.error(actionErrorMessage(error, '创建品项公司报货需求失败'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <FormField label="供应链库存主体">
+          <Select value={supplyChainLocationId} onChange={(event) => setSupplyChainLocationId(event.target.value)}>
+            <option value="">请选择总部</option>
+            {headquarters.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
+          </Select>
+        </FormField>
+        <FormField label="报货日期"><Input type="date" value={docDate} onChange={(event) => setDocDate(event.target.value)} /></FormField>
+      </div>
+      <div className="space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-sm font-medium">报货明细</h3>
+          <Button type="button" variant="outline" size="sm" onClick={() => setLines((previous) => [...previous, { skuId: '', quantity: '1', remark: '' }])}>添加明细</Button>
+        </div>
+        {lines.map((line, index) => (
+          <div key={index} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 md:grid-cols-[minmax(0,1fr)_10rem_minmax(0,1fr)_2.5rem]">
+            <FormField label="供应链商品"><SkuPicker value={line.skuId} onChange={(skuId) => updateLine(index, { skuId })} skus={supplyChainSkus} /></FormField>
+            <FormField label="数量"><Input inputMode="decimal" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
+            <FormField label="明细备注"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></FormField>
+            <div className="flex items-end justify-end"><SmallIconButton label="删除明细" onClick={() => setLines((previous) => previous.length > 1 ? previous.filter((_, lineIndex) => lineIndex !== index) : previous)} disabled={lines.length === 1} /></div>
+          </div>
+        ))}
+      </div>
+      <RemarkField value={remark} onChange={setRemark} />
+      <div className="flex justify-end"><Button type="submit" loading={saving}>创建品项公司报货需求</Button></div>
+    </form>
+  )
+}
+
 interface MarketReportLine {
   skuId: string
   skuName: string
@@ -656,6 +784,7 @@ function MarketReportForm({
   const [saving, setSaving] = useState(false)
 
   function updateLine(index: number, patch: Partial<MarketReportLine>) {
+    if (patch.selected !== undefined || patch.purchaseQuantity !== undefined) setQuotes({})
     setLines((previous) => previous.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line))
   }
 
@@ -680,8 +809,9 @@ function MarketReportForm({
         requestQuantity: item.outstandingQuantity,
         availableQuantity: item.availableQuantity,
         suggestedPurchaseQuantity: item.suggestedPurchaseQuantity,
-        selected: true,
-        purchaseQuantity: String(item.suggestedPurchaseQuantity || item.outstandingQuantity),
+        // 库存已覆盖的行默认不建市场报货；需要补货时由操作人显式勾选并填写数量。
+        selected: item.suggestedPurchaseQuantity > 0,
+        purchaseQuantity: item.suggestedPurchaseQuantity > 0 ? String(item.suggestedPurchaseQuantity) : '',
       })))
       if (summary.items.length === 0) toast.info('当前没有待汇总的门店报货明细')
     } catch (error) {
@@ -698,8 +828,21 @@ function MarketReportForm({
       toast.error('请先填写实际采购数量')
       return
     }
+    const basketItems = lines
+      .filter((candidate) => candidate.selected)
+      .map((candidate) => ({
+        skuId: candidate.skuId,
+        quantity: positiveNumber(candidate.purchaseQuantity),
+      }))
+      .filter((candidate): candidate is { skuId: string; quantity: number } => candidate.quantity !== null)
     try {
-      const result = await quoteMarketReplenishmentPrice({ marketId, skuId: line.skuId, quantity, docDate: optionalText(docDate) })
+      const result = await quoteMarketReplenishmentPrice({
+        marketId,
+        skuId: line.skuId,
+        quantity,
+        docDate: optionalText(docDate),
+        basketItems,
+      })
       setQuotes((previous) => ({
         ...previous,
         [line.skuId]: {
@@ -952,12 +1095,126 @@ function PurchaseOrderForm({
   )
 }
 
+function SupplyChainPurchaseOrderForm({
+  locations,
+  suppliers,
+  workflowDocs,
+  canViewPrice,
+  onSuccess,
+}: {
+  locations: InventoryLocationRow[]
+  suppliers: InventorySupplierRow[]
+  workflowDocs: InventoryDocRow[]
+  canViewPrice: boolean
+  onSuccess: (message: string) => void
+}) {
+  const headquarters = locations.filter((location) => location.locationType === '总部' && location.isActive)
+  const { docId, doc, loading, selectDocument } = useLoadedDocument()
+  const [supplierId, setSupplierId] = useState('')
+  const [supplyChainLocationId, setSupplyChainLocationId] = useState('')
+  const [docDate, setDocDate] = useState(today)
+  const [remark, setRemark] = useState('')
+  const [lines, setLines] = useState<DocumentQuantityLine[]>([])
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (!doc) {
+      setLines([])
+      return
+    }
+    setSupplyChainLocationId(doc.targetLocationId ?? '')
+    setLines(doc.items.filter(hasAvailableQuantity).map((item) => ({
+      sourceItemId: item.id,
+      skuName: item.skuName,
+      specName: item.specName,
+      quantity: String(Math.max(0, item.quantity - (item.fulfilledQuantity ?? 0))),
+    })))
+  }, [doc])
+
+  function updateLine(index: number, patch: Partial<DocumentQuantityLine>) {
+    setLines((previous) => previous.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line))
+  }
+
+  async function submit() {
+    if (saving) return
+    if (!doc || !supplierId || !supplyChainLocationId) {
+      toast.error('请选择品项公司报货需求、供应商和供应链库存主体')
+      return
+    }
+    const items = lines.map((line) => ({
+      companyRequestItemId: line.sourceItemId,
+      quantity: positiveNumber(line.quantity),
+    })).filter((line) => line.quantity !== null)
+    if (items.length === 0) {
+      toast.error('请填写至少一条采购数量')
+      return
+    }
+    setSaving(true)
+    try {
+      const result = await createPurchaseOrderFromItemCompanyReplenishment({
+        companyRequestId: doc.id,
+        supplierId,
+        supplyChainLocationId,
+        docDate: optionalText(docDate),
+        remark: optionalText(remark),
+        items: items.map((item) => ({ ...item, quantity: item.quantity! })),
+      })
+      onSuccess(`供应链采购订单已创建：${result.id}`)
+      setLines([])
+    } catch (error) {
+      toast.error(actionErrorMessage(error, '创建供应链采购订单失败'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const candidates = docCandidates(workflowDocs, '品项公司报货需求')
+  return (
+    <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <DocPicker label="品项公司报货需求" docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
+        <FormField label="供应商">
+          <Select value={supplierId} onChange={(event) => setSupplierId(event.target.value)}>
+            <option value="">请选择供应商</option>
+            {suppliers.map((supplier) => <option key={supplier.supplierId} value={supplier.supplierId}>{supplier.name}</option>)}
+          </Select>
+        </FormField>
+        <FormField label="供应链库存主体">
+          <Select value={supplyChainLocationId} onChange={(event) => setSupplyChainLocationId(event.target.value)}>
+            <option value="">请选择总部</option>
+            {headquarters.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
+          </Select>
+        </FormField>
+        <FormField label="订单日期"><Input type="date" value={docDate} onChange={(event) => setDocDate(event.target.value)} /></FormField>
+      </div>
+      {loading && <div className="text-sm text-[#666666]">正在加载品项公司报货明细</div>}
+      <SourceDocumentItems doc={doc} canViewPrice={canViewPrice} />
+      {lines.length > 0 && (
+        <div className="space-y-3">
+          <h3 className="text-sm font-medium">本次下单数量</h3>
+          <div className="space-y-2">
+            {lines.map((line, index) => (
+              <div key={line.sourceItemId} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 md:grid-cols-[minmax(0,1fr)_10rem]">
+                <div><div className="font-medium text-sm">{line.skuName}</div><div className="text-xs text-[#888888]">{line.specName || `明细 #${line.sourceItemId}`}</div></div>
+                <FormField label="采购数量"><Input inputMode="decimal" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <RemarkField value={remark} onChange={setRemark} />
+      <div className="flex justify-end"><Button type="submit" loading={saving} disabled={!doc || lines.length === 0}>创建供应链采购订单</Button></div>
+    </form>
+  )
+}
+
 interface ShipmentDraftLine {
   purchaseOrderItemId: number
   skuId: string
   skuName: string
   specName: string | null
   lotId: string
+  remainingQuantity: number
   quantity: string
   giftQuantity: string
   remark: string
@@ -988,16 +1245,20 @@ function CompanyShipmentForm({
       return
     }
     setSourceLocationId(doc.targetLocationId ?? '')
-    setLines(doc.items.filter(hasAvailableQuantity).map((item) => ({
-      purchaseOrderItemId: item.id,
-      skuId: item.skuId,
-      skuName: item.skuName,
-      specName: item.specName,
-      lotId: '',
-      quantity: String(Math.max(0, item.quantity - (item.fulfilledQuantity ?? 0))),
-      giftQuantity: '0',
-      remark: '',
-    })))
+    setLines(doc.items.map((item) => {
+      const remaining = remainingQuantity(item)
+      return {
+        purchaseOrderItemId: item.id,
+        skuId: item.skuId,
+        skuName: item.skuName,
+        specName: item.specName,
+        lotId: '',
+        remainingQuantity: remaining,
+        quantity: String(remaining),
+        giftQuantity: '0',
+        remark: '',
+      }
+    }))
   }, [doc])
 
   function updateLine(index: number, patch: Partial<ShipmentDraftLine>) {
@@ -1063,7 +1324,11 @@ function CompanyShipmentForm({
           <h3 className="text-sm font-medium">发货批次与数量</h3>
           {lines.map((line, index) => (
             <div key={line.purchaseOrderItemId} className="grid grid-cols-1 gap-3 rounded-[var(--radius)] border border-[var(--border)] p-3 md:grid-cols-5">
-              <div><div className="text-sm font-medium">{line.skuName}</div><div className="text-xs text-[#888888]">{line.specName || line.skuId}</div></div>
+              <div>
+                <div className="text-sm font-medium">{line.skuName}</div>
+                <div className="text-xs text-[#888888]">{line.specName || line.skuId}</div>
+                {line.remainingQuantity <= 0.000001 && <div className="mt-1 text-xs text-[#888888]">正常已履约，仍可单独填写赠送数量</div>}
+              </div>
               <FormField label="发货批次"><LotPicker locationId={sourceLocationId} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateLine(index, { lotId })} /></FormField>
               <FormField label="正常发货"><Input inputMode="decimal" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
               <FormField label="赠送数量"><Input inputMode="decimal" value={line.giftQuantity} onChange={(event) => updateLine(index, { giftQuantity: event.target.value })} /></FormField>
@@ -1199,25 +1464,213 @@ function ShipmentReceiptForm({
   )
 }
 
-interface StoreAllocationDraftLine {
-  requestItemId: number
-  skuId: string
+interface SupplyChainPurchaseReceiptDraftLine {
+  purchaseOrderItemId: number
   skuName: string
   specName: string | null
-  lotId: string
   quantity: string
-  giftQuantity: string
-  storeUnitDiscount: string
+  batchNo: string
+  expiryDate: string
   remark: string
 }
 
-function StoreAllocationForm({
+function SupplyChainPurchaseReceiptForm({
   locations,
   workflowDocs,
   canViewPrice,
   onSuccess,
 }: {
   locations: InventoryLocationRow[]
+  workflowDocs: InventoryDocRow[]
+  canViewPrice: boolean
+  onSuccess: (message: string) => void
+}) {
+  const headquarters = locations.filter((location) => location.locationType === '总部' && location.isActive)
+  const { docId, doc, loading, selectDocument } = useLoadedDocument()
+  const [supplyChainLocationId, setSupplyChainLocationId] = useState('')
+  const [docDate, setDocDate] = useState(today)
+  const [remark, setRemark] = useState('')
+  const [lines, setLines] = useState<SupplyChainPurchaseReceiptDraftLine[]>([])
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (!doc) {
+      setLines([])
+      return
+    }
+    setSupplyChainLocationId(doc.targetLocationId ?? '')
+    setLines(doc.items.filter(hasAvailableQuantity).map((item) => ({
+      purchaseOrderItemId: item.id,
+      skuName: item.skuName,
+      specName: item.specName,
+      quantity: String(Math.max(0, item.quantity - (item.fulfilledQuantity ?? 0))),
+      batchNo: '',
+      expiryDate: '',
+      remark: '',
+    })))
+  }, [doc])
+
+  function updateLine(index: number, patch: Partial<SupplyChainPurchaseReceiptDraftLine>) {
+    setLines((previous) => previous.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line))
+  }
+
+  async function submit() {
+    if (saving) return
+    if (!doc || !supplyChainLocationId) {
+      toast.error('请选择待收货的供应链采购订单')
+      return
+    }
+    const items = lines.map((line) => ({
+      purchaseOrderItemId: line.purchaseOrderItemId,
+      quantity: positiveNumber(line.quantity),
+      batchNo: optionalText(line.batchNo),
+      expiryDate: optionalText(line.expiryDate),
+      remark: optionalText(line.remark),
+    })).filter((line) => line.quantity !== null)
+    if (items.length === 0) {
+      toast.error('请填写至少一条实收数量')
+      return
+    }
+    setSaving(true)
+    try {
+      const result = await receiveSupplyChainPurchaseOrder({
+        purchaseOrderId: doc.id,
+        supplyChainLocationId,
+        docDate: optionalText(docDate),
+        remark: optionalText(remark),
+        items: items.map((item) => ({ ...item, quantity: item.quantity! })),
+      })
+      onSuccess(`供应链采购入库单已创建：${result.id}`)
+      setLines([])
+    } catch (error) {
+      toast.error(actionErrorMessage(error, '登记供应链采购入库失败'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const candidates = docCandidates(workflowDocs, '供应链采购订单', '待收货')
+  return (
+    <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <DocPicker label="供应链采购订单" docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
+        <FormField label="供应链库存主体">
+          <Select value={supplyChainLocationId} onChange={(event) => setSupplyChainLocationId(event.target.value)} disabled={Boolean(doc)}>
+            <option value="">请选择总部</option>
+            {headquarters.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
+          </Select>
+        </FormField>
+        <FormField label="入库日期"><Input type="date" value={docDate} onChange={(event) => setDocDate(event.target.value)} /></FormField>
+      </div>
+      {loading && <div className="text-sm text-[#666666]">正在加载供应链采购订单明细</div>}
+      <SourceDocumentItems doc={doc} canViewPrice={canViewPrice} />
+      {lines.length > 0 && (
+        <div className="space-y-3">
+          <h3 className="text-sm font-medium">本次实收入库</h3>
+          {lines.map((line, index) => (
+            <div key={line.purchaseOrderItemId} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 md:grid-cols-5">
+              <div><div className="font-medium text-sm">{line.skuName}</div><div className="text-xs text-[#888888]">{line.specName || `明细 #${line.purchaseOrderItemId}`}</div></div>
+              <FormField label="实收数量"><Input inputMode="decimal" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
+              <FormField label="批号"><Input value={line.batchNo} onChange={(event) => updateLine(index, { batchNo: event.target.value })} /></FormField>
+              <FormField label="效期"><Input type="date" value={line.expiryDate} onChange={(event) => updateLine(index, { expiryDate: event.target.value })} /></FormField>
+              <FormField label="明细备注"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></FormField>
+            </div>
+          ))}
+        </div>
+      )}
+      <RemarkField value={remark} onChange={setRemark} />
+      <div className="flex justify-end"><Button type="submit" loading={saving} disabled={!doc || lines.length === 0}>登记供应链采购入库</Button></div>
+    </form>
+  )
+}
+
+function SupplyChainPurchaseCancelForm({
+  workflowDocs,
+  onSuccess,
+}: {
+  workflowDocs: InventoryDocRow[]
+  onSuccess: (message: string) => void
+}) {
+  const { docId, doc, loading, selectDocument } = useLoadedDocument()
+  const [reason, setReason] = useState('')
+  const [saving, setSaving] = useState(false)
+  const candidates = docCandidates(workflowDocs, '供应链采购订单', '待收货')
+
+  async function submit() {
+    if (saving) return
+    if (!doc || !reason.trim()) {
+      toast.error('请选择待收货的供应链采购订单并填写关闭原因')
+      return
+    }
+    setSaving(true)
+    try {
+      await cancelSupplyChainPurchaseOrder({
+        purchaseOrderId: doc.id,
+        cancellationReason: reason.trim(),
+      })
+      onSuccess('供应链采购订单已关闭，未收数量已释放')
+    } catch (error) {
+      toast.error(actionErrorMessage(error, '关闭供应链采购订单失败'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <DocPicker label="待收货供应链采购订单" docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
+      </div>
+      {loading && <div className="text-sm text-[#666666]">正在加载采购订单明细</div>}
+      <SourceDocumentItems doc={doc} canViewPrice={false} />
+      <FormField label="关闭原因"><Textarea value={reason} onChange={(event) => setReason(event.target.value)} /></FormField>
+      <div className="flex justify-end">
+        <Button type="button" variant="destructive" loading={saving} onClick={() => void submit()} disabled={!doc}>关闭供应链采购订单</Button>
+      </div>
+    </div>
+  )
+}
+
+interface StoreAllocationDraftLine {
+  requestItemId: number
+  skuId: string
+  skuName: string
+  specName: string | null
+  lotId: string
+  remainingQuantity: number
+  quantity: string
+  giftQuantity: string
+  storeStandardUnitPrice: number | null
+  sourceActualUnitPrice: number | null
+  storeUnitDiscount: string
+  remark: string
+}
+
+function storeAllocationPricePreview(line: StoreAllocationDraftLine) {
+  const discount = nonnegativeNumber(line.storeUnitDiscount)
+  const actualUnitPrice = line.storeStandardUnitPrice !== null && discount !== null && discount <= line.storeStandardUnitPrice
+    ? Number((line.storeStandardUnitPrice - discount).toFixed(4))
+    : line.storeStandardUnitPrice === null && discount === 0
+      ? line.sourceActualUnitPrice
+      : null
+  const quantity = nonnegativeNumber(line.quantity)
+  return {
+    actualUnitPrice,
+    amount: actualUnitPrice !== null && quantity !== null
+      ? Number((actualUnitPrice * quantity).toFixed(4))
+      : null,
+  }
+}
+
+function StoreAllocationForm({
+  locations,
+  skuOptions,
+  workflowDocs,
+  canViewPrice,
+  onSuccess,
+}: {
+  locations: InventoryLocationRow[]
+  skuOptions: InventorySkuRow[]
   workflowDocs: InventoryDocRow[]
   canViewPrice: boolean
   onSuccess: (message: string) => void
@@ -1229,6 +1682,7 @@ function StoreAllocationForm({
   const [remark, setRemark] = useState('')
   const [lines, setLines] = useState<StoreAllocationDraftLine[]>([])
   const [saving, setSaving] = useState(false)
+  const skuById = useMemo(() => new Map(skuOptions.map((sku) => [sku.skuId, sku])), [skuOptions])
 
   useEffect(() => {
     if (!doc) {
@@ -1236,18 +1690,25 @@ function StoreAllocationForm({
       return
     }
     setSourceMarketId(doc.marketId ?? doc.targetLocationId ?? '')
-    setLines(doc.items.filter(hasAvailableQuantity).map((item) => ({
-      requestItemId: item.id,
-      skuId: item.skuId,
-      skuName: item.skuName,
-      specName: item.specName,
-      lotId: '',
-      quantity: String(Math.max(0, item.quantity - (item.fulfilledQuantity ?? 0))),
-      giftQuantity: '0',
-      storeUnitDiscount: '0',
-      remark: '',
-    })))
-  }, [doc])
+    setLines(doc.items.map((item) => {
+      const sku = skuById.get(item.skuId)
+      const remaining = remainingQuantity(item)
+      return {
+        requestItemId: item.id,
+        skuId: item.skuId,
+        skuName: item.skuName,
+        specName: item.specName,
+        lotId: '',
+        remainingQuantity: remaining,
+        quantity: String(remaining),
+        giftQuantity: '0',
+        storeStandardUnitPrice: sku?.storePurchasePrice ?? item.standardUnitPrice ?? null,
+        sourceActualUnitPrice: item.actualUnitPrice ?? sku?.storePurchasePrice ?? null,
+        storeUnitDiscount: String(item.unitDiscount ?? 0),
+        remark: '',
+      }
+    }))
+  }, [doc, skuById])
 
   function updateLine(index: number, patch: Partial<StoreAllocationDraftLine>) {
     setLines((previous) => previous.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line))
@@ -1312,16 +1773,33 @@ function StoreAllocationForm({
       {lines.length > 0 && (
         <div className="space-y-3">
           <h3 className="text-sm font-medium">配货批次与数量</h3>
-          {lines.map((line, index) => (
-            <div key={line.requestItemId} className={`grid grid-cols-1 gap-3 rounded-[var(--radius)] border border-[var(--border)] p-3 ${canViewPrice ? 'md:grid-cols-6' : 'md:grid-cols-5'}`}>
-              <div><div className="text-sm font-medium">{line.skuName}</div><div className="text-xs text-[#888888]">{line.specName || line.skuId}</div></div>
-              <FormField label="市场批次"><LotPicker locationId={sourceMarketId} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateLine(index, { lotId })} /></FormField>
-              <FormField label="正常配货"><Input inputMode="decimal" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
-              <FormField label="赠送数量"><Input inputMode="decimal" value={line.giftQuantity} onChange={(event) => updateLine(index, { giftQuantity: event.target.value })} /></FormField>
-              {canViewPrice && <FormField label="门店单价优惠"><Input inputMode="decimal" value={line.storeUnitDiscount} onChange={(event) => updateLine(index, { storeUnitDiscount: event.target.value })} /></FormField>}
-              <FormField label="明细备注"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></FormField>
-            </div>
-          ))}
+          {lines.map((line, index) => {
+            const pricePreview = storeAllocationPricePreview(line)
+            return (
+              <div key={line.requestItemId} className="rounded-[var(--radius)] border border-[var(--border)] p-3">
+                <div className={`grid grid-cols-1 gap-3 ${canViewPrice ? 'xl:grid-cols-6' : 'md:grid-cols-5'}`}>
+                  <div>
+                    <div className="text-sm font-medium">{line.skuName}</div>
+                    <div className="text-xs text-[#888888]">{line.specName || line.skuId}</div>
+                    {line.remainingQuantity <= 0.000001 && <div className="mt-1 text-xs text-[#888888]">正常已履约，仍可单独填写赠送数量</div>}
+                  </div>
+                  <FormField label="市场批次"><LotPicker locationId={sourceMarketId} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateLine(index, { lotId })} /></FormField>
+                  <FormField label="正常配货"><Input inputMode="decimal" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
+                  <FormField label="赠送数量"><Input inputMode="decimal" value={line.giftQuantity} onChange={(event) => updateLine(index, { giftQuantity: event.target.value })} /></FormField>
+                  {canViewPrice && <FormField label="门店单价优惠"><Input inputMode="decimal" value={line.storeUnitDiscount} onChange={(event) => updateLine(index, { storeUnitDiscount: event.target.value })} /></FormField>}
+                  <FormField label="明细备注"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></FormField>
+                </div>
+                {canViewPrice && (
+                  <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 border-t border-[var(--border)] pt-3 text-sm md:grid-cols-4">
+                    <div><div className="text-xs text-[#888888]">门店标准单价</div><div className="mt-1 font-medium">{formatPrice(line.storeStandardUnitPrice)}</div></div>
+                    <div><div className="text-xs text-[#888888]">单价优惠</div><div className="mt-1 font-medium">{formatPrice(nonnegativeNumber(line.storeUnitDiscount))}</div></div>
+                    <div><div className="text-xs text-[#888888]">优惠后实际单价</div><div className="mt-1 font-medium">{formatPrice(pricePreview.actualUnitPrice)}</div></div>
+                    <div><div className="text-xs text-[#888888]">本行应付货款</div><div className="mt-1 font-medium">{formatPrice(pricePreview.amount)}</div></div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
         </div>
       )}
       <RemarkField value={remark} onChange={setRemark} />
@@ -1499,7 +1977,7 @@ function ReturnApprovalForm({
   )
 }
 
-function ShipmentCancelForm({
+function ShipmentCancellationRequestForm({
   workflowDocs,
   onSuccess,
 }: {
@@ -1519,10 +1997,10 @@ function ShipmentCancelForm({
     }
     setSaving(true)
     try {
-      await cancelItemCompanyShipment({ shipmentId: doc.id, cancellationReason: reason.trim() })
-      onSuccess('品项公司发货单已撤回')
+      await requestItemCompanyShipmentCancellation({ shipmentId: doc.id, cancellationReason: reason.trim() })
+      onSuccess('品项公司发货撤回申请已提交，等待供应链财务审批')
     } catch (error) {
-      toast.error(actionErrorMessage(error, '撤回品项公司发货失败'))
+      toast.error(actionErrorMessage(error, '提交品项公司发货撤回申请失败'))
     } finally {
       setSaving(false)
     }
@@ -1534,7 +2012,77 @@ function ShipmentCancelForm({
       {loading && <div className="text-sm text-[#666666]">正在加载发货明细</div>}
       <SourceDocumentItems doc={doc} canViewPrice={false} />
       <FormField label="撤回原因"><Textarea value={reason} onChange={(event) => setReason(event.target.value)} /></FormField>
-      <div className="flex justify-end"><Button type="button" variant="destructive" loading={saving} onClick={() => void submit()} disabled={!doc}>撤回品项公司发货</Button></div>
+      <div className="flex justify-end"><Button type="button" variant="destructive" loading={saving} onClick={() => void submit()} disabled={!doc}>提交撤回申请</Button></div>
+    </div>
+  )
+}
+
+function ShipmentCancellationApprovalForm({
+  workflowDocs,
+  onSuccess,
+}: {
+  workflowDocs: InventoryDocRow[]
+  onSuccess: (message: string) => void
+}) {
+  const { docId, doc, loading, selectDocument } = useLoadedDocument()
+  const [auditRemark, setAuditRemark] = useState('')
+  const [saving, setSaving] = useState(false)
+  const candidates = workflowDocs.filter((row) => row.docType === '品项公司发货' && row.status === '待审批')
+
+  async function approve() {
+    if (saving || !doc) {
+      if (!doc) toast.error('请选择待审批的品项公司发货撤回申请')
+      return
+    }
+    setSaving(true)
+    try {
+      await approveItemCompanyShipmentCancellation({
+        shipmentId: doc.id,
+        auditRemark: optionalText(auditRemark),
+      })
+      onSuccess('品项公司发货已撤回，总部库存已恢复')
+    } catch (error) {
+      toast.error(actionErrorMessage(error, '审批品项公司发货撤回失败'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function reject() {
+    if (saving) return
+    if (!doc || !auditRemark.trim()) {
+      toast.error('请选择撤回申请并填写驳回原因')
+      return
+    }
+    setSaving(true)
+    try {
+      await rejectItemCompanyShipmentCancellation({ shipmentId: doc.id, auditRemark: auditRemark.trim() })
+      onSuccess('品项公司发货撤回申请已驳回，单据恢复待收货')
+    } catch (error) {
+      toast.error(actionErrorMessage(error, '驳回品项公司发货撤回申请失败'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <DocPicker label="待审批品项公司发货单" docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
+      </div>
+      {loading && <div className="text-sm text-[#666666]">正在加载撤回申请明细</div>}
+      <SourceDocumentItems doc={doc} canViewPrice={false} />
+      {doc?.cancellationRequestReason && (
+        <div className="rounded-[var(--radius)] border border-[#F2D7D4] bg-[#FFF8F7] p-3 text-sm">
+          <div className="text-xs text-[#888888]">市场撤回原因</div>
+          <div className="mt-1">{doc.cancellationRequestReason}</div>
+        </div>
+      )}
+      <FormField label="审批备注 / 驳回原因"><Textarea value={auditRemark} onChange={(event) => setAuditRemark(event.target.value)} /></FormField>
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button type="button" variant="outline" loading={saving} onClick={() => void reject()} disabled={!doc}>驳回申请</Button>
+        <Button type="button" variant="destructive" loading={saving} onClick={() => void approve()} disabled={!doc}>审批并撤回发货</Button>
+      </div>
     </div>
   )
 }

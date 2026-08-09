@@ -68,9 +68,6 @@ function defaultItem(): DraftItem {
     expiryDate: '',
     isGift: false,
     quantity: '1',
-    actualUnitPrice: '',
-    marketActualUnitPrice: '',
-    storeActualUnitPrice: '',
     reason: '',
     remark: '',
   }
@@ -83,9 +80,6 @@ interface DraftItem {
   expiryDate: string
   isGift: boolean
   quantity: string
-  actualUnitPrice: string
-  marketActualUnitPrice: string
-  storeActualUnitPrice: string
   reason: string
   remark: string
 }
@@ -272,7 +266,6 @@ export default function InventoryDocsPage({
         onOpenChange={setOpen}
         locations={locations}
         skuOptions={skuOptions}
-        canViewPrice={canViewPrice}
         onSuccess={() => startTransition(() => router.refresh())}
       />
     </div>
@@ -284,14 +277,12 @@ function CreateDocDialog({
   onOpenChange,
   locations,
   skuOptions,
-  canViewPrice,
   onSuccess,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   locations: InventoryLocationRow[]
   skuOptions: InventorySkuRow[]
-  canViewPrice: boolean
   onSuccess: () => void
 }) {
   const [submitting, setSubmitting] = useState(false)
@@ -359,9 +350,6 @@ function CreateDocDialog({
           expiryDate: item.expiryDate || null,
           isGift: item.isGift,
           quantity: Number(item.quantity || 0),
-          actualUnitPrice: canViewPrice ? num(item.actualUnitPrice) : null,
-          marketActualUnitPrice: canViewPrice ? num(item.marketActualUnitPrice) : null,
-          storeActualUnitPrice: canViewPrice ? num(item.storeActualUnitPrice) : null,
           reason: item.reason || null,
           remark: item.remark || null,
         })),
@@ -418,9 +406,7 @@ function CreateDocDialog({
           {items.map((item, index) => (
             <div
               key={index}
-              className={`${canViewPrice
-                ? (requiresSourceLot ? 'grid-cols-10' : 'grid-cols-9')
-                : (requiresSourceLot ? 'grid-cols-7' : 'grid-cols-6')} grid gap-2 rounded-md border border-[var(--border)] p-2`}
+              className={`${requiresSourceLot ? 'grid-cols-7' : 'grid-cols-6'} grid gap-2 rounded-md border border-[var(--border)] p-2`}
             >
               {requiresSourceLot && (() => {
                 const key = item.skuId ? `${sourceLocationId}:${item.skuId}` : ''
@@ -463,13 +449,6 @@ function CreateDocDialog({
               <Input placeholder="批号" value={item.batchNo} onChange={(e) => updateItem(index, { batchNo: e.target.value })} />
               <Input type="date" value={item.expiryDate} onChange={(e) => updateItem(index, { expiryDate: e.target.value })} />
               <Input placeholder="数量" value={item.quantity} onChange={(e) => updateItem(index, { quantity: e.target.value })} />
-              {canViewPrice && (
-                <>
-                  <Input placeholder="实际单价" value={item.actualUnitPrice} onChange={(e) => updateItem(index, { actualUnitPrice: e.target.value })} />
-                  <Input placeholder="市场实际价" value={item.marketActualUnitPrice} onChange={(e) => updateItem(index, { marketActualUnitPrice: e.target.value })} />
-                  <Input placeholder="门店实际价" value={item.storeActualUnitPrice} onChange={(e) => updateItem(index, { storeActualUnitPrice: e.target.value })} />
-                </>
-              )}
               <Input placeholder="原因" value={item.reason} onChange={(e) => updateItem(index, { reason: e.target.value })} />
               <Button
                 variant="outline"
