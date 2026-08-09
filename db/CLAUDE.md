@@ -77,7 +77,7 @@ npm run db:studio     # Drizzle Studio 可视化管理
 
 | 角色 | 连接 | 使用方 |
 |------|------|--------|
-| **生产业务库** | `postgresql://fengyu:fengyu123@118.178.196.26:5433/fengyu_wxapp`（fengyu-prod 服务器） | 线上 admin（`docker-compose.prod.yml` 的 `ADMIN_DATABASE_URL`）、prod CloudBase env 的 staffApi / clientApi / payNotify、**trial + release 版小程序** |
+| **生产业务库** | `postgresql://fengyu:fengyu123@118.178.196.26:5433/fengyu_wxapp`（fengyu-prod 服务器） | 线上 admin（`docker-compose.remote.yml` 的 `ADMIN_DATABASE_URL`）、prod CloudBase env 的 staffApi / clientApi / payNotify、**trial + release 版小程序** |
 | **开发/测试库** | `postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp`（ali-demo 服务器） | 本地 admin（`.env.local`）、dev CloudBase env 的云函数、**仅 develop 版小程序**、`db/.env` 的 `DATABASE_URL`（`db:migrate` 默认目标）。**5434/fengyu 已删除，dev 与 test 合并共用此库** |
 
 ⚠ 两个库**均用 5433 端口 + fengyu_wxapp 库名**，仅靠 **IP** 区分（prod=118.178.196.26 / dev·测试=47.113.202.7）。`deploy-cloudfunctions.sh` 与 `dump-prod.sh` 已改为按 IP 校验环境（旧的端口约定 5434=dev/5433=prod 作废）。
