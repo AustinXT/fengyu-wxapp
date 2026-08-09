@@ -1,6 +1,5 @@
 import { Suspense } from 'react'
-import { listInventoryStocks } from '@/actions/inventory-v2'
-import { getMarketStoreFilterOptions } from '@/actions/stores'
+import { listInventoryLots } from '@/actions/inventory/stocks'
 import { getSession } from '@/lib/auth'
 import { hasPermission } from '@/lib/permissions'
 import InventoryStocksPage from '../_components/inventory-stocks-page'
@@ -15,15 +14,15 @@ export default async function Page({
   const params = await searchParams
   const page = params.page ? Number(params.page) : 1
   const pageSize = params.size ? Number(params.size) : 20
-  const [{ data, total, canViewPrice }, filterOptions, session] = await Promise.all([
-    listInventoryStocks({
+  const [{ data, total, canViewPrice }, session] = await Promise.all([
+    listInventoryLots({
       keyword: params.q,
-      marketId: params.market,
-      storeId: params.store,
+      locationId: params.location,
+      locationType: params.type as never,
+      onlyPositive: params.onlyPositive === '1',
       page,
       pageSize,
     }),
-    getMarketStoreFilterOptions(),
     getSession(),
   ])
   const canExport = session ? hasPermission(session, 'inventory:export') : false
@@ -34,7 +33,6 @@ export default async function Page({
         <InventoryStocksPage
           rows={data}
           total={total}
-          filterOptions={filterOptions}
           canViewPrice={canViewPrice}
           canExport={canExport}
         />
