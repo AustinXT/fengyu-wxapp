@@ -355,7 +355,9 @@ function buildTreatmentTierLineMap(cart: CartItem[], skus: SkuItem[], isMember: 
     const tierSessions = Number(tier.sessionCount);
     for (const item of groupedItems) {
       const lineSessions = (Number(item.sessionCount) || 0) * (Number(item.quantity) || 1);
-      result.set(item.skuId, calcTierLineAmount(tierAmount, tierSessions, lineSessions));
+      // 封顶语义：与云函数 order.js applyTreatmentTierPricing 对齐，
+      // 单行金额不得超过所匹配阶梯套餐总价 tierAmount（买多次超阶梯次数时截断）。
+      result.set(item.skuId, Math.min(calcTierLineAmount(tierAmount, tierSessions, lineSessions), tierAmount));
     }
   }
 
