@@ -439,6 +439,104 @@ async function assertEmployeeInScope(client, auth, employeeId) {
   return { storeId }
 }
 
+// ===== 商品市场范围过滤（staffApi 内跨路由复用） =====
+
+/**
+ * 提取 market_scope 列的比较值 SQL 表达式。
+ * market_scope 格式为逗号分隔的 org_nodes.id 或市场名。
+ */
+function marketScopeValues(scopeExpr) {
+  return `string_to_array(regexp_replace(${scopeExpr}, '[[:space:]]+', '', 'g'), ',')`
+}
+
+/**
+ * 组合套餐主商品范围过滤条件（不含 AND 前缀）。
+ * products.market_scope — 仅按当前工作台 effectiveStoreId 判断。
+ * 没有 effectiveStoreId 时返回全市场条件（market_scope IS NULL）。
+ */
+function buildBundleMarketScopeCondition(auth, params, productAlias = 'p') {
+  const scopeExpr = `${productAlias}.market_scope`
+  const valuesExpr = marketScopeValues(scopeExpr)
+  const globalExpr = `${scopeExpr} IS NULL`
+  const nonBlankExpr = `NULLIF(regexp_replace(${scopeExpr}, '[[:space:]]+', '', 'g'), '') IS NOT NULL`
+  const effectiveStoreId = auth?.effectiveStoreId
+
+  if (!effectiveStoreId) return globalExpr
+
+  params.push(effectiveStoreId)
+  const storeParam = `$${params.length}`
+  return `(
+    ${globalExpr}
+    OR (
+      ${nonBlankExpr}
+      AND EXISTS (
+        SELECT 1
+        FROM stores s
+        JOIN org_nodes sn ON s.org_node_id = sn.id
+        JOIN org_nodes pm ON sn.parent_id = pm.id
+        WHERE s.store_id = ${storeParam}
+          AND pm.type = '市场'
+          AND (
+            pm.id = ANY(${valuesExpr})
+            OR regexp_replace(pm.name, '[[:space:]]+', '', 'g') = ANY(${valuesExpr})
+          )
+      )
+    )
+  )`
+}
+
+/**
+ * 组合套餐主商品范围过滤 AND 片段。
+ * 用法: WHERE ... ${buildBundleMarketScopeFilter(auth, params)}
+ */
+function buildBundleMarketScopeFilter(auth, params, productAlias = 'p') {
+  return `AND ${buildBundleMarketScopeCondition(auth, params, productAlias)}`
+}
+
+/**
+ * 普通 SKU 开单范围过滤条件（不含 AND 前缀）。
+ * product_skus.market_scope — 与套餐主商品保持一致，仅按 effectiveStoreId 判断。
+ * 管理层未选门店时仅返回全市场 SKU。
+ */
+function buildNormalSkuMarketScopeCondition(auth, params, skuAlias = 'sk') {
+  const scopeExpr = `${skuAlias}.market_scope`
+  const valuesExpr = marketScopeValues(scopeExpr)
+  const globalExpr = `${scopeExpr} IS NULL`
+  const nonBlankExpr = `NULLIF(regexp_replace(${scopeExpr}, '[[:space:]]+', '', 'g'), '') IS NOT NULL`
+  const effectiveStoreId = auth?.effectiveStoreId
+
+  if (!effectiveStoreId) return globalExpr
+
+  params.push(effectiveStoreId)
+  const storeParam = `$${params.length}`
+  return `(
+    ${globalExpr}
+    OR (
+      ${nonBlankExpr}
+      AND EXISTS (
+        SELECT 1
+        FROM stores scope_store
+        JOIN org_nodes scope_store_node ON scope_store.org_node_id = scope_store_node.id
+        JOIN org_nodes scope_market ON scope_store_node.parent_id = scope_market.id
+        WHERE scope_store.store_id = ${storeParam}
+          AND scope_market.type = '市场'
+          AND (
+            scope_market.id = ANY(${valuesExpr})
+            OR regexp_replace(scope_market.name, '[[:space:]]+', '', 'g') = ANY(${valuesExpr})
+          )
+      )
+    )
+  )`
+}
+
+/**
+ * 普通 SKU 开单范围过滤 AND 片段。
+ * 用法: WHERE ... ${buildNormalSkuMarketScopeFilter(auth, params)}
+ */
+function buildNormalSkuMarketScopeFilter(auth, params, skuAlias = 'sk') {
+  return `AND ${buildNormalSkuMarketScopeCondition(auth, params, skuAlias)}`
+}
+
 module.exports = {
   deriveStaffLevel,
   deriveAvailableLoginLevels,
@@ -455,6 +553,11 @@ module.exports = {
   restrictToBoundEmployee,
   buildProfileScopeCondition,
   assertCustomerProfileVisible,
+  buildBundleMarketScopeCondition,
+  buildBundleMarketScopeFilter,
+  buildNormalSkuMarketScopeCondition,
+  buildNormalSkuMarketScopeFilter,
+  marketScopeValues,
   LEVEL_HEADQUARTERS,
   LEVEL_MARKET,
   LEVEL_STORE_MANAGER,

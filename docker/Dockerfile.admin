@@ -31,6 +31,9 @@ WORKDIR /app
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /db/schema/ /db/schema/
+# Shared schema lives outside /app, so Bun resolves its package imports from
+# /db/node_modules while bundling the standalone workers.
+COPY --from=deps /app/node_modules /db/node_modules
 COPY db/utils/ /db/utils/
 COPY fengyu-admin/ .
 
@@ -73,6 +76,14 @@ RUN bun build src/cron/index.ts \
       --outfile=dist/cron-worker.mjs \
       --external pg-native
 
+# 构建异步导出 worker。与 web / cron 独立进程运行，单任务流式写 XLSX 后再上传 CloudBase。
+RUN bun build src/export-worker/index.ts \
+      --target=node \
+      --format=esm \
+      --outfile=dist/export-worker.mjs \
+      --external pg-native \
+      --external @opentelemetry/api
+
 # ---- 生产运行 ----
 FROM docker.m.daocloud.io/library/node:18-alpine AS runner
 WORKDIR /app
@@ -98,6 +109,8 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 # cron-worker bundle（含所有依赖；compose 启动时通过 command 覆盖入口）
 COPY --from=builder --chown=nextjs:nodejs /app/dist/cron-worker.mjs ./cron-worker.mjs
+# export-worker bundle（同镜像独立进程，compose 启动时通过 command 覆盖入口）
+COPY --from=builder --chown=nextjs:nodejs /app/dist/export-worker.mjs ./export-worker.mjs
 
 USER nextjs
 

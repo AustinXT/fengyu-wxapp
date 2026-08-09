@@ -16,6 +16,12 @@ import { logOperation, logTransition, logUpdate } from '@/lib/operation-log'
 import { calcCouponDiscount } from '@/lib/utils'
 import { beijingTs, nowTs } from '@/lib/db-time'
 import { fmtDate } from '@/lib/datetime'
+import {
+  offsetPageResult,
+  resolveExportOffsetPage,
+  type ExportBatchOptions,
+  type ExportBatchResult,
+} from '@/lib/export-pagination'
 import { resolveOrgNodeToStoreIds } from '@/lib/org-scope'
 import { clampCouponQuantity } from '@/lib/coupon-quantity'
 
@@ -298,6 +304,58 @@ export const getTemplates = withPermission(
     const countMap = new Map(counts.map((c) => [c.templateId, c.issuedCount]))
 
     return rows.map((r) => serializeTemplate(r, countMap.get(r.templateId) ?? 0))
+  },
+)
+
+/** 导出优惠券模板：筛选和已发数量均在数据库分页完成，避免把所有模板载入 worker。 */
+export const exportCouponTemplates = withPermission(
+  'coupon:list',
+  async (
+    _session,
+    params: Record<string, string | undefined>,
+    options?: ExportBatchOptions,
+  ): Promise<ExportBatchResult<CouponTemplate>> => {
+    const conditions: SQL[] = []
+    const search = params.q?.trim()
+    if (search) {
+      const escaped = search.replace(/[\\%_]/g, '\\$&')
+      conditions.push(ilike(couponTemplates.name, `%${escaped}%`))
+    }
+    if (params.market) {
+      conditions.push(sql`${params.market} = ANY(${couponTemplates.applicableMarketIds})`)
+    }
+    if (params.status === 'disabled') {
+      conditions.push(eq(couponTemplates.isActive, false))
+    } else if (params.status !== 'all') {
+      conditions.push(eq(couponTemplates.isActive, true))
+    }
+
+    const page = resolveExportOffsetPage(options)
+    const query = db
+      .select()
+      .from(couponTemplates)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(couponTemplates.updatedAt), desc(couponTemplates.createdAt), asc(couponTemplates.templateId))
+    const templateRows = page
+      ? await query.limit(page.limit + 1).offset(page.offset)
+      : await query
+    const templateIds = templateRows.map((row) => row.templateId)
+    const counts = templateIds.length === 0
+      ? []
+      : await db
+          .select({
+            templateId: userCoupons.templateId,
+            issuedCount: sql<number>`COUNT(*)::int`,
+          })
+          .from(userCoupons)
+          .where(inArray(userCoupons.templateId, templateIds))
+          .groupBy(userCoupons.templateId)
+    const countMap = new Map(counts.map((row) => [row.templateId, row.issuedCount]))
+
+    return offsetPageResult(
+      templateRows.map((row) => serializeTemplate(row, countMap.get(row.templateId) ?? 0)),
+      page,
+    )
   },
 )
 

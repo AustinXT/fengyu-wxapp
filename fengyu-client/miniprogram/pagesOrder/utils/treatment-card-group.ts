@@ -1,4 +1,7 @@
 // 仅供 pagesOrder 分包使用，不能迁回主包 utils，否则会增加主包体积。
+// *** 同步提醒 ***
+// 此文件与 fengyu-client/miniprogram/pagesAppointment/utils/treatment-card-group.ts 内容一致。
+// 任一文件修改时，必须同步更新另一份副本。两份副本的分包隔离是有意为之。
 export interface TreatmentCardGroup<T> {
   groupKey: string
   primary: T

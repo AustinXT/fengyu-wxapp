@@ -11,10 +11,8 @@ import { Pagination } from "@/components/ui/pagination"
 import { Select } from "@/components/ui/select"
 import { CategoryCascader } from "@/components/ui/category-cascader"
 import { ExportButton } from "@/components/ui/export-button"
-import { exportToXlsx } from "@/lib/export-xlsx"
 import { formatCurrency, formatDate } from "@/lib/utils"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
-import { toast } from "sonner"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -93,34 +91,6 @@ export default function ProductsPageClient({
     () => filtered.slice((page - 1) * pageSize, page * pageSize),
     [filtered, page, pageSize]
   )
-
-  /** 导出当前筛选命中的全部商品（客户端已全量加载，filtered 即全部筛选结果） */
-  const handleExport = useCallback(async () => {
-    if (filtered.length === 0) {
-      toast.info("当前筛选无数据可导出")
-      return
-    }
-    await exportToXlsx({
-      filename: "商品",
-      sheetName: "商品",
-      columns: [
-        { header: "商品名称", width: 28, accessor: (r) => r.specName },
-        { header: "品项分类", width: 20, accessor: (r) => [r.productKind, r.categoryName].filter(Boolean).join(" / ") },
-        { header: "产品类型", accessor: (r) => r.productType },
-        { header: "是否生美", accessor: (r) => (r.isShengmei == null ? "" : r.isShengmei ? "是" : "否") },
-        { header: "经营类型", accessor: (r) => r.salesCategory ?? "" },
-        { header: "项目系列", accessor: (r) => r.projectSeriesName ?? "" },
-        { header: "标价", accessor: (r) => (r.price != null ? Number(r.price) : "") },
-        { header: "会员价", accessor: (r) => (r.specialPrice != null ? Number(r.specialPrice) : "") },
-        { header: "数量", accessor: (r) => r.sessionCount == null ? "" : `${r.sessionCount} ${r.unit}` },
-        { header: "单位", accessor: (r) => r.unit },
-        { header: "限购次数", accessor: (r) => r.purchaseLimit ?? "" },
-        { header: "手工费", accessor: (r) => (r.serviceFee != null ? Number(r.serviceFee) : "") },
-        { header: "状态", width: 10, accessor: (r) => (r.isEnabled ? "启用" : "停用") },
-      ],
-      rows: filtered,
-    })
-  }, [filtered])
 
   const columns: Column<ProductSku>[] = [
     {
@@ -247,7 +217,17 @@ export default function ProductsPageClient({
           <option value="disabled">停用</option>
           <option value="all">全部</option>
         </Select>
-        <ExportButton onExport={handleExport} />
+        <ExportButton
+          exportRequest={{
+            exportType: "products",
+            payload: {
+              q: search,
+              category: categoryFilter,
+              kind: kindFilter,
+              status: statusFilter,
+            },
+          }}
+        />
       </div>
 
       <DataTable columns={columns} data={paged} />

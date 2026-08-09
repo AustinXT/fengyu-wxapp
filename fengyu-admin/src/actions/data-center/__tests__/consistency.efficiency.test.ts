@@ -41,6 +41,12 @@ function stripComments(src: string): string {
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ')
 }
 
+function between(src: string, start: string, end: string): string {
+  const from = src.indexOf(start)
+  const to = src.indexOf(end, from + start.length)
+  return from === -1 ? '' : src.slice(from, to === -1 ? undefined : to)
+}
+
 describe('数据中心人效板块两端口径一致性守护', () => {
   let adminSrc: string
   let staffSrc: string
@@ -194,6 +200,30 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       // 守护"移植源"语义不被误改；本板块刻意背离它（改吃区间）。
       expect(staffSrc).toMatch(/timeWindowPeriod/)
       expect(staffBody).toMatch(/date_trunc\(\s*'month'/i)
+    })
+  })
+
+  describe('门店排行榜业绩 = 付款流水现金流（员工榜/提成口径保持独立）', () => {
+    function expectStoreRankCashflow(src: string, start: string, end: string) {
+      const n = normalize(stripComments(between(src, start, end)))
+      expect(n).toMatch(/(?:FROM|LEFT JOIN)\s+sale_order_payments\s+sop/i)
+      expect(n).toMatch(/sop\.sale_order_id\s*=\s*so\.sale_order_id|so\.sale_order_id\s*=\s*sop\.sale_order_id/i)
+      expect(n).toMatch(/SUM\(sop\.amount::numeric\)/i)
+      expect(n).toMatch(/sop\.status\s*=\s*'已支付'/)
+      expect(n).toMatch(/sop\.change_type\s+IN\s*\(\s*'首次支付'\s*,\s*'回款'\s*,\s*'退款'\s*\)/)
+      expect(n).toMatch(/so\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*,\s*'充值单'\s*\)/)
+      expect(n).toMatch(/sop\.paid_at::date\s+BETWEEN|timeWindowPeriod\('sop\.paid_at'|date_trunc\([^)]*sop\.paid_at/i)
+      expect(n).toMatch(/legacy_source\s+IS\s+DISTINCT\s+FROM\s+'workfine'/i)
+      expect(n).not.toMatch(/so\.status\s*=/)
+      expect(n).not.toMatch(/refunded_amount|so\.received/i)
+    }
+
+    it('admin efficiency.ts 门店榜业绩按现金流', () => {
+      expectStoreRankCashflow(adminSrc, 'const qStoreRankRevenue', 'const qStoreRankConsume')
+    })
+
+    it('staff mgmt-dashboard.js 门店榜业绩按现金流', () => {
+      expectStoreRankCashflow(staffSrc, 'async function rankingRevenue', 'async function rankingConsume')
     })
   })
 

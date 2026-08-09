@@ -11,12 +11,7 @@
 
 const pg = require('../db/pg')
 const { requireStaffBound } = require('../middleware/auth')
-
-// ===== 公共查询辅助 =====
-
-function marketScopeValues(scopeExpr) {
-  return `string_to_array(regexp_replace(${scopeExpr}, '[[:space:]]+', '', 'g'), ',')`
-}
+const { buildBundleMarketScopeFilter, buildNormalSkuMarketScopeFilter, buildNormalSkuMarketScopeCondition, marketScopeValues } = require('../utils/scope')
 
 /**
  * SKU 可见范围过滤（product_skus.market_scope）。
@@ -71,43 +66,6 @@ function buildSkuMarketScopeFilter(auth, params, skuAlias = 'sk') {
   }
 
   return `AND ${globalExpr}`
-}
-
-/**
- * 组合套餐主商品范围过滤（products.market_scope）。
- *
- * 开单页套餐必须按工作台当前选中的门店判断，不能在管理层模式回退到 scopeStoreIds；
- * 没有 current/effective store 时仅保留全市场套餐，避免把受限套餐误展示出来。
- */
-function buildBundleMarketScopeFilter(auth, params, productAlias = 'p') {
-  const scopeExpr = `${productAlias}.market_scope`
-  const valuesExpr = marketScopeValues(scopeExpr)
-  const globalExpr = `${scopeExpr} IS NULL`
-  const nonBlankExpr = `NULLIF(regexp_replace(${scopeExpr}, '[[:space:]]+', '', 'g'), '') IS NOT NULL`
-  const effectiveStoreId = auth?.effectiveStoreId
-
-  if (!effectiveStoreId) return `AND ${globalExpr}`
-
-  params.push(effectiveStoreId)
-  const storeParam = `$${params.length}`
-  return `AND (
-    ${globalExpr}
-    OR (
-      ${nonBlankExpr}
-      AND EXISTS (
-        SELECT 1
-        FROM stores s
-        JOIN org_nodes sn ON s.org_node_id = sn.id
-        JOIN org_nodes pm ON sn.parent_id = pm.id
-        WHERE s.store_id = ${storeParam}
-          AND pm.type = '市场'
-          AND (
-            pm.id = ANY(${valuesExpr})
-            OR regexp_replace(pm.name, '[[:space:]]+', '', 'g') = ANY(${valuesExpr})
-          )
-      )
-    )
-  )`
 }
 
 /**
@@ -229,7 +187,7 @@ function _formatSkuRow(sk) {
  * @param {Object} [opts]
  * @param {boolean} [opts.excludeCards=false] true 时 WHERE 排除 is_experience SKU（体验卡）
  */
-async function _queryFormattedSkuList(categoryId, productKind, opts = {}) {
+async function _queryFormattedSkuList(auth, categoryId, productKind, opts = {}) {
   const { excludeCards = false } = opts || {}
   const params = []
   const conditions = [
@@ -249,6 +207,14 @@ async function _queryFormattedSkuList(categoryId, productKind, opts = {}) {
 
   if (excludeCards) {
     conditions.push(`NOT sk.is_experience`)
+    conditions.push(buildNormalSkuMarketScopeCondition(auth, params))
+  } else {
+    // skuList 仍允许老调用方取体验卡；范围仅作用于非体验 SKU，不能改变体验卡既有回退语义。
+    const normalScopeCondition = buildNormalSkuMarketScopeCondition(auth, params)
+    conditions.push(`(
+      sk.is_experience = true
+      OR (COALESCE(sk.is_experience, false) = false AND ${normalScopeCondition})
+    )`)
   }
 
   const whereClause = 'WHERE ' + conditions.join(' AND ')
@@ -415,6 +381,8 @@ async function shopInit(ctx) {
   let catRows = rawRows
   if (rawRows.length > 0) {
     const categoryIds = rawRows.map((r) => r.category_id)
+    const nonEmptyParams = [categoryIds]
+    const marketScopeFilter = buildNormalSkuMarketScopeFilter(ctx.auth, nonEmptyParams)
     const nonEmptyRows = await pg.query(
       `
       SELECT DISTINCT sk.category_id
@@ -423,8 +391,9 @@ async function shopInit(ctx) {
         AND sk.is_enabled = true
         AND sk.deleted_at IS NULL
         AND NOT sk.is_experience
+        ${marketScopeFilter}
       `,
-      [categoryIds]
+      nonEmptyParams
     )
     const nonEmptySet = new Set(nonEmptyRows.map((r) => r.category_id))
     catRows = rawRows.filter((r) => nonEmptySet.has(r.category_id))
@@ -449,7 +418,7 @@ async function shopInit(ctx) {
 
   let skuList = []
   if (categories.length > 0) {
-    skuList = await _queryFormattedSkuList(categories[0].id, null, { excludeCards: true })
+    skuList = await _queryFormattedSkuList(ctx.auth, categories[0].id, null, { excludeCards: true })
   }
 
   const mallBundleGroups = await _queryMallBundleGroups(ctx.auth)
@@ -484,7 +453,7 @@ async function categories(ctx) {
 async function skuList(ctx) {
   await requireStaffBound()(ctx, async () => {})
   const { categoryId, productKind, excludeCards } = ctx.event.payload || {}
-  ctx.result = await _queryFormattedSkuList(categoryId, productKind, { excludeCards: !!excludeCards })
+  ctx.result = await _queryFormattedSkuList(ctx.auth, categoryId, productKind, { excludeCards: !!excludeCards })
 }
 
 /**
@@ -536,5 +505,10 @@ module.exports = { shopInit, categories, skuList, skuDetail, promotionList, prom
 // "路由完整性" 扫描（Object.keys）检出为未注册路由。
 Object.defineProperty(module.exports, '__testables__', {
   enumerable: false,
-  value: { _queryCategoryRows, _queryMallBundleGroups, buildBundleMarketScopeFilter },
+  value: {
+    _queryCategoryRows,
+    _queryMallBundleGroups,
+    buildBundleMarketScopeFilter,
+    buildNormalSkuMarketScopeFilter,
+  },
 })

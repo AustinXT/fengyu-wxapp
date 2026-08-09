@@ -380,16 +380,19 @@ export const getEfficiencyBoard = withPermission(
 
     const qStoreRankRevenue = db.execute(sql`
       SELECT s.store_id, s.store_name, o.name AS market_name,
-        COALESCE(SUM(so.received::numeric - COALESCE(so.refunded_amount, 0)::numeric), 0) AS value
+        COALESCE(SUM(sop.amount::numeric), 0) AS value
       FROM stores s
       JOIN org_nodes o_store ON s.org_node_id = o_store.id
       JOIN org_nodes o ON o_store.parent_id = o.id
       LEFT JOIN sale_orders so
         ON so.store_id = s.store_id
-        AND so.sale_order_type IN ('销售单', '转换单')
-        AND so.status = '已支付'
+        AND so.sale_order_type IN ('销售单', '转换单', '充值单')
         AND so.legacy_source IS DISTINCT FROM 'workfine'
-        AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
+      LEFT JOIN sale_order_payments sop
+        ON sop.sale_order_id = so.sale_order_id
+        AND sop.status = '已支付'
+        AND sop.change_type IN ('首次支付', '回款', '退款')
+        AND sop.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
       WHERE ${scopeFilterSql(session, scope, 's.store_id')}
       GROUP BY s.store_id, s.store_name, o.name
       ORDER BY value DESC, s.store_name ASC

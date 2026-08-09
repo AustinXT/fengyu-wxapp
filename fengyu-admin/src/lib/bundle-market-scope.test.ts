@@ -3,14 +3,20 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('@/db', () => ({ db: { select: vi.fn() } }))
 
 import { PgDialect } from 'drizzle-orm/pg-core'
-import { products } from '@db/product'
+import { products, productSkus } from '@db/product'
 import { db } from '@/db'
 import { bundleMarketScopeCondition, resolveCustomerBundleMarketScope } from './bundle-market-scope'
+import { orderMarketScopeCondition, resolveCustomerOrderMarketScope } from './order-market-scope'
 
 const dialect = new PgDialect()
 
 function render(scope: Parameters<typeof bundleMarketScopeCondition>[1]) {
   const query = dialect.sqlToQuery(bundleMarketScopeCondition(products.marketScope, scope))
+  return { sql: query.sql.toLowerCase(), params: query.params }
+}
+
+function renderSkuScope(scope: Parameters<typeof orderMarketScopeCondition>[1]) {
+  const query = dialect.sqlToQuery(orderMarketScopeCondition(productSkus.marketScope, scope))
   return { sql: query.sql.toLowerCase(), params: query.params }
 }
 
@@ -76,6 +82,28 @@ describe('bundleMarketScopeCondition', () => {
 
     expect(sql).toContain('string_to_array(regexp_replace')
     expect(sql).toContain('= any(')
+    expect(params).toEqual(['market-east', '华东市场'])
+  })
+})
+
+describe('orderMarketScopeCondition', () => {
+  it('普通 SKU 与套餐共用市场 ID / 历史市场名 / 空白范围语义', async () => {
+    mockCustomerScopeRow({ isCrossStoreTemp: false, marketId: 'market-east', marketName: '华 东 市场' })
+
+    await expect(resolveCustomerOrderMarketScope('customer-1')).resolves.toEqual({
+      type: 'market',
+      marketId: 'market-east',
+      marketName: '华 东 市场',
+    })
+
+    const { sql, params } = renderSkuScope({
+      type: 'market',
+      marketId: 'market-east',
+      marketName: '华 东 市场',
+    })
+    expect(sql).toContain('"product_skus"."market_scope" is null')
+    expect(sql).toContain("nullif(regexp_replace")
+    expect(sql).toContain('string_to_array(regexp_replace')
     expect(params).toEqual(['market-east', '华东市场'])
   })
 })

@@ -10,12 +10,14 @@
 
 | 指标 | 公式 | 数据源 | 筛选条件 |
 |------|------|--------|----------|
-| 业绩 | `SUM(paid_amount)` | `sale_orders.paid_amount` | `sale_order_type IN ('销售单','转换单')` ∩ `status='已支付'` ∩ `[paid_at]` |
+| 业绩（门店 / 市场 / 总部） | `SUM(sop.amount)` | `sale_order_payments sop` JOIN `sale_orders so` | `sop.status='已支付'` ∩ `sop.change_type IN ('首次支付','回款','退款')` ∩ `so.sale_order_type IN ('销售单','转换单','充值单')` ∩ `so.legacy_source IS DISTINCT FROM 'workfine'` ∩ `[sop.paid_at]` |
 | 生美业绩 | `SUM(received)` | `sale_items.received` | JOIN sale_orders；`sale_order_type IN ('销售单','转换单')` ∩ `status='已支付'` ∩ `is_shengmei=TRUE` ∩ `[paid_at]` |
 | 实耗 | `SUM(unit_real_price * session_used)` | `service_items.unit_real_price` × `service_items.session_used` | JOIN service_orders；`status='已完成'` ∩ `[service_date]` |
 | 生美实耗 | `SUM(unit_real_price * session_used)` | 同上 | 加 `service_items.is_shengmei=TRUE` |
 
-> **门店业绩 vs 生美业绩为何用不同口径**：paid_amount 是订单层（已含转换/回款抵消），不能按 sku 维度过滤生美；生美必须走 sale_items 行级 SUM(received)。
+> **组织层级业绩的现金流规则**：只统计状态为“已支付”的实际资金变动：首次支付、回款和退款；`储值卡抵扣`不属于现金流，必须排除。充值单的首次支付/回款纳入业绩；退款的 `amount` 为负数，按退款流水的 `paid_at` 当日冲减，不回溯原订单支付日。不得用父订单 `status` 过滤，因此部分支付订单已经到账的付款也计入。
+>
+> **组织层级业绩 vs 生美 / 品项 / 员工归属为何不同**：现金流无法可靠拆到 SKU 或员工。生美业绩、品项统计、员工业绩和员工提成继续使用各自既有的订单/分配口径；充值现金只进入组织层级总业绩和分客型业绩，不进入生美或品项分类。
 
 ## 客流 / 客量 / 新会员
 
@@ -38,7 +40,7 @@
 | 服务提成收入（serviceCommissionIncome） | `SUM(commission_amount)` | `service_commissions.commission_amount` | JOIN service_items + service_orders；`role_type IN ('美容师','养生师')` ∩ `is_void=FALSE` ∩ `status='已完成'` ∩ `[service_date]` |
 
 > **为何 role_type 限定美容师/养生师**：管理层观察的是"产能员工"的人均产出；推广师虽享提成但人头不计入「员工数」（`skills && ARRAY['美容师','养生师']`），分子分母口径必须一致。
-> **为何销售提成对齐"业绩"口径**：销售提成是业绩的下游分配，时间窗口与状态过滤一致便于"业绩 → 提成"对照分析；退款单 `total_amount` 为负数自动相互抵销，符合"净销售提成"语义。
+> **销售提成是例外口径**：销售提成按员工分配流水归属，不随组织层级现金流业绩切换；它保留既有的销售单/转换单和分配规则，便于追踪员工应得提成。
 > **为何服务提成对齐"实耗"口径**：服务提成（手工费 + 消耗提成）是实耗的下游分配，同理；`commission_amount` 已是 `fixed_fee + consume_amount` 之和，直接 SUM。
 > **scope 走 JOIN 上游表**：`sale_allocations` / `service_commissions` 不直接持有 store_id，分别 JOIN `sale_items` → `sale_orders` / `service_items` → `service_orders` 拿 store_id 命中 scope 子查询。
 
@@ -242,7 +244,7 @@ WHERE c.customer_status IN ('保有会员-稳定','保有会员-有效')
 ### 4. 会员被经营情况（区间维度，仅 `customer_type='会员客'`）
 
 > 6 个消费分桶 × 2 列（人数 / 消费金额）+ 1 项会员客单价。
-> "消费金额"对齐 metrics.md 已有的【业绩】口径（订单层）：
+> "消费金额"是会员被经营情况的订单层历史消费指标，不等同于本页定义的组织层级现金流业绩；本节保留既有订单口径：
 > `paid_amount` ∩ `sale_order_type IN ('销售单','转换单')` ∩ `status='已支付'` ∩ `[paid_at_period]`。
 
 **底层会员消费聚合 CTE**（所有分桶共用）：
@@ -442,14 +444,14 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 
 ## 销售数据页 — 分客型业绩 / 实耗 / 产品出库
 
-> 时间轴：业绩/产品出库 按 `paid_at`；实耗 按 `service_date`。
+> 时间轴：总业绩和分客型业绩按 `sale_order_payments.paid_at`；产品出库按订单 `paid_at`；实耗按 `service_date`。
 > 时间口径：本月/本年截止今天，上月截止上月最后一天（见下方时间窗口补充）。
 
 ### 顾客分型过滤定义
 
 | 分型 | 过滤条件 | JOIN 路径 |
 |------|---------|-----------|
-| 小美客 | `c.customer_type = '小美客'` | `sale_orders so JOIN client_wechat_users c ON c.client_user_id = so.client_user_id` |
+| 小美客 | `c.customer_type = '小美客'` | `sale_orders so JOIN client_wechat_users c ON c.user_id = so.client_user_id` |
 | 新增会员 | `c.customer_type = '会员客' AND c.became_member_at::date >= [period_start]` | 同上（实耗改 `service_orders so JOIN client_wechat_users c`） |
 | 老会员 | `c.customer_type = '会员客' AND c.became_member_at::date < [period_start]` | 同上 |
 
@@ -459,10 +461,10 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 
 | 指标 | 公式 | 数据源 | 筛选条件 |
 |------|------|--------|----------|
-| 小美客业绩 | `SUM(si.received)` | `sale_items si` JOIN `sale_orders so` JOIN `client_wechat_users c ON c.client_user_id = so.client_user_id` | 分型:小美客 ∩ `so.sale_order_type IN ('销售单','转换单')` ∩ `so.status='已支付'` ∩ `[paid_at_period]` |
-| 新增会员业绩 | `SUM(si.received)` | 同上 | 分型:新增会员 ∩ 同上 |
-| 老会员业绩 | `SUM(si.received)` | 同上 | 分型:老会员 ∩ 同上 |
-| 流量客业绩（admin 数据中心销售板块） | `SUM(si.received)` | 同上 | `c.customer_type = '流量客'` ∩ 同上（**仅纯流量客**，不含体验客/小美客；2026-05-26 用户拍板）|
+| 小美客业绩 | `SUM(sop.amount)` | `sale_order_payments sop` JOIN `sale_orders so` JOIN `client_wechat_users c ON c.user_id = so.client_user_id` | 分型:小美客 ∩ `sop.status='已支付'` ∩ `sop.change_type IN ('首次支付','回款','退款')` ∩ `so.sale_order_type IN ('销售单','转换单','充值单')` ∩ `so.legacy_source IS DISTINCT FROM 'workfine'` ∩ `[sop.paid_at_period]` |
+| 新增会员业绩 | `SUM(sop.amount)` | 同上 | 分型:新增会员 ∩ 同上 |
+| 老会员业绩 | `SUM(sop.amount)` | 同上 | 分型:老会员 ∩ 同上 |
+| 流量客业绩（admin 数据中心销售板块） | `SUM(sop.amount)` | 同上 | `c.customer_type = '流量客'` ∩ 同上（**仅纯流量客**，不含体验客/小美客；2026-05-26 用户拍板）|
 
 ### 分客型项目实耗
 
@@ -656,7 +658,7 @@ tiyan AS (                                    -- 体验：期内有购买但全�
 
 | 指标 | 板块 | 公式 | 说明 |
 |------|------|------|------|
-| 流量客业绩 | 销售 | `SUM(si.received)` WHERE `c.customer_type = '流量客'` | 仅纯流量客（不含体验/小美客）；详见上方「分客型业绩」表 |
+| 流量客业绩 | 销售 | `SUM(sop.amount)` WHERE `c.customer_type = '流量客'` | 仅纯流量客（不含体验/小美客）；按组织层级现金流口径，详见上方「分客型业绩」表 |
 | 单次客耗 | 客量 | `生美实耗 ÷ 服务人次` | 分子=`SUM(unit_real_price*session_used) WHERE is_shengmei`（已完成 ∩ service_date 区间）；分母=已完成 service_orders 行数（服务人次）。KPI 与明细表统一此口径（**不用** Excel 原稿"÷频率"，亦不用"÷会员人次"）|
 | 店长人数 | 人效 | `COUNT(在营启用门店)` | 每店一店长口径：按 `stores` JOIN `org_nodes(type='门店', is_active=TRUE)` 在营计数（`opening_date<=区间末 ∩ (closed_at IS NULL OR closed_at>区间末)`），**不依赖** `position_name`。故 `店长人均X = 每店平均 X`（含 店长人均收入 = 门店全部产能员工提成合计 ÷ 门店数）|
 

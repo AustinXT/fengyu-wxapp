@@ -19,9 +19,9 @@ import {
   AlertDialogFooter,
 } from "@/components/ui/alert-dialog";
 import { Dialog, DialogHeader, DialogTitle, DialogClose } from "@/components/ui/dialog";
-import { confirmOfflinePayment, closeOrder, resetOrderFailed, generateOrderWxacode, exportOrders } from "@/actions/orders";
+import { confirmOfflinePayment, closeOrder, resetOrderFailed, generateOrderWxacode } from "@/actions/orders";
 import { ExportButton } from "@/components/ui/export-button";
-import { exportToXlsx, fmtDateTime } from "@/lib/export-xlsx";
+import { fmtDateTime } from "@/lib/datetime";
 import { actionErrorMessage } from "@/lib/action-error";
 import { useUrlFilters } from "@/lib/hooks/use-url-filters";
 import type { SaleOrder, OrderStatus, SaleOrderType } from "@/lib/types";
@@ -253,60 +253,6 @@ export default function OrdersPageClient({
   const { get, set, setMany } = useUrlFilters();
   const searchParams = useSearchParams();
 
-  /** 导出当前筛选命中的全部订单（明细级，一行一 sale_items；订单级字段按行重复） */
-  const handleExport = useCallback(async () => {
-    const raw = Object.fromEntries(searchParams.entries());
-    const { rows } = await exportOrders(raw);
-    if (rows.length === 0) {
-      toast.info("当前筛选无数据可导出");
-      return;
-    }
-    await exportToXlsx({
-      filename: "订单",
-      sheetName: "订单",
-      columns: [
-        { header: "市场", width: 12, accessor: (r) => r.marketName },
-        { header: "门店", width: 16, accessor: (r) => r.storeName ?? "" },
-        { header: "订单号", width: 22, accessor: (r) => r.saleOrderId },
-        { header: "类型", width: 10, accessor: (r) => r.saleOrderType },
-        { header: "单据类型", width: 10, accessor: (r) => r.documentType ?? "" },
-        { header: "顾客", width: 12, accessor: (r) => r.customerName ?? "" },
-        { header: "顾客手机", width: 14, accessor: (r) => r.clientPhone ?? "" },
-        { header: "顾客来源", width: 12, accessor: (r) => r.customerSource ?? "" },
-        { header: "推荐人", width: 12, accessor: (r) => r.promoterEmployeeName ?? "" },
-        { header: "商品类型", width: 10, accessor: (r) => r.productType ?? "" },
-        { header: "品质(一级)", width: 14, accessor: (r) => r.categoryL1 ?? "" },
-        { header: "品质(二级)", width: 14, accessor: (r) => r.categoryL2 ?? "" },
-        { header: "商品明细", width: 28, accessor: (r) => r.productName ?? "" },
-        { header: "总数量", width: 8, accessor: (r) => r.sessionCount ?? "—" },
-        { header: "单位", width: 8, accessor: (r) => r.unit ?? "" },
-        { header: "可用数量", width: 10, accessor: (r) => r.paidUnusedSessions ?? "—" },
-        { header: "订单金额", width: 10, accessor: (r) => r.totalAmount },
-        { header: "储值卡抵扣", width: 10, accessor: (r) => r.prepaidCardAmount },
-        { header: "现付", width: 10, accessor: (r) => r.cashAmount },
-        { header: "实付", width: 10, accessor: (r) => r.received },
-        { header: "已退", width: 10, accessor: (r) => r.refundedAmount },
-        { header: "单价", width: 10, accessor: (r) => r.unitRealPrice ?? "" },
-        { header: "状态", width: 10, accessor: (r) => r.status },
-        {
-          header: "支付方式",
-          width: 12,
-          accessor: (r) =>
-            paymentMethodMap[r.paymentMethod ?? ""] ?? r.paymentMethod ?? "",
-        },
-        { header: "是否纳客", width: 8, accessor: (r) => (r.isMembershipUpgrade ? "是" : "否") },
-        { header: "是否活动", width: 8, accessor: (r) => (r.isActivity ? "是" : "否") },
-        { header: "经营类型", width: 10, accessor: (r) => r.salesCategory ?? "" },
-        { header: "顾客类型", width: 10, accessor: (r) => r.customerType ?? "未注册" },
-        { header: "开单人", width: 10, accessor: (r) => r.openedByName ?? "" },
-        { header: "下单时间", width: 20, accessor: (r) => fmtDateTime(r.saleOrderDatetime) },
-        { header: "创建时间", width: 20, accessor: (r) => fmtDateTime(r.createdAt) },
-        { header: "备注", width: 24, accessor: (r) => r.remark ?? "" },
-      ],
-      rows,
-    });
-  }, [searchParams]);
-
   /** 筛选变更时重置到第 1 页 */
   const setFilter = useCallback(
     (key: string, value: string) => {
@@ -425,7 +371,12 @@ export default function OrdersPageClient({
               value={searchInput}
               onChange={(e) => handleSearchChange(e.target.value)}
             />
-            <ExportButton onExport={handleExport} />
+            <ExportButton
+              exportRequest={{
+                exportType: "orders",
+                payload: Object.fromEntries(searchParams.entries()),
+              }}
+            />
           </div>
         </CardContent>
       </Card>

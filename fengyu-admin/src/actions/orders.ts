@@ -37,9 +37,14 @@ import { getPerItemRefundedMap } from '@/lib/per-item-refund'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { shanghaiYmd } from '@/lib/datetime'
 import { nowTs, beijingBoundaryTs } from '@/lib/db-time'
+import {
+  resolveExportBatchLimit,
+  type ExportBatchOptions,
+  type ExportBatchResult,
+} from '@/lib/export-pagination'
 import { parseOrderFilters, parseAllocationOrderFilters } from '@/lib/list-filters'
-import { bundleMarketScopeCondition, resolveCustomerBundleMarketScope } from '@/lib/bundle-market-scope'
 import { getPointsToYuanRate, getPointsDeductionMaxRate } from '@/lib/system-config'
+import { orderMarketScopeCondition, resolveCustomerOrderMarketScope } from '@/lib/order-market-scope'
 
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
 const opener = alias(staffWechatUsers, 'opener') as unknown as typeof staffWechatUsers
@@ -903,15 +908,35 @@ export interface ExportOrderRow {
   remark: string | null
 }
 
+export interface ExportOrdersCursor {
+  itemOffset: number
+  rechargeOffset: number
+}
+
+export interface ExportAllocationOrdersCursor {
+  allocatedOffset: number
+  pendingOffset: number
+}
+
+function nonNegativeOffset(value: unknown): number {
+  return Math.max(0, Math.floor(Number(value) || 0))
+}
+
 /** 导出订单（明细级，一行一 sale_items 行；按筛选条件导出全量）。 */
 export const exportOrders = withPermission(
   'sale_order:list',
   async (
     session,
     params: Record<string, string | undefined>,
-  ): Promise<{ rows: ExportOrderRow[]; truncated: boolean }> => {
+    options?: ExportBatchOptions<ExportOrdersCursor>,
+  ): Promise<ExportBatchResult<ExportOrderRow, ExportOrdersCursor>> => {
     const filters = parseOrderFilters(params)
     const whereClause = and(...buildOrderConditions(session, filters))
+    const limit = resolveExportBatchLimit(options?.limit)
+    const cursor: ExportOrdersCursor = {
+      itemOffset: nonNegativeOffset(options?.cursor?.itemOffset),
+      rechargeOffset: nonNegativeOffset(options?.cursor?.rechargeOffset),
+    }
 
     // 从 sale_items 出发（明细级）；innerJoin sale_orders 保证每行有归属订单
     // leftJoin 客户/员工/门店/商品三级：NULL 安全，缺失分类/skus 历史订单仍可导出
@@ -920,7 +945,7 @@ export const exportOrders = withPermission(
     //   两行一并纳入，完整展示「从哪转出 → 转入什么」。转出负/转入正照实行级口径展示，金额列不留空
     //   （转换单 totalAmount 为真实转换额，非寄存单 total=0 那种特例）。
     //   充值单不写 sale_items，由下方 rechargeOrders 单独查订单级再造一行。
-    const itemRows = await db
+    const itemQuery = db
       .select({
           // 订单级
           marketName: saleOrders.marketName,
@@ -958,6 +983,7 @@ export const exportOrders = withPermission(
           unitRealPrice: saleItems.unitRealPrice,
           categoryL1: productCategories.productKind,
           categoryL2: productCategories.categoryName,
+          sourceId: saleItems.saleItemId,
       })
       .from(saleItems)
       .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
@@ -977,12 +1003,15 @@ export const exportOrders = withPermission(
         ),
       ))
       .orderBy(desc(saleOrders.saleOrderDatetime), saleItems.saleItemId)
+    const itemRows = limit == null
+      ? await itemQuery
+      : await itemQuery.limit(limit + 1).offset(cursor.itemOffset)
 
     const num = (v: string | null) => (v == null ? null : Number(v))
 
     // 充值单不写 sale_items，无法走上面的明细 JOIN；按订单级单独查后造一行纳入导出。
     // 金额取订单级：total_amount=面额、received=实付（反映充值档位）；item 级列留空，productName 标「储值卡充值」。
-    const rechargeOrders = await db
+    const rechargeQuery = db
       .select({
           marketName: saleOrders.marketName,
           storeName: saleOrders.storeName,
@@ -1009,13 +1038,17 @@ export const exportOrders = withPermission(
           saleOrderDatetime: saleOrders.saleOrderDatetime,
           createdAt: saleOrders.createdAt,
           remark: saleOrders.remark,
+          sourceId: saleOrders.saleOrderId,
       })
       .from(saleOrders)
       .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
       .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
       .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
       .where(and(whereClause, eq(saleOrders.saleOrderType, '充值单')))
-      .orderBy(desc(saleOrders.saleOrderDatetime))
+      .orderBy(desc(saleOrders.saleOrderDatetime), saleOrders.saleOrderId)
+    const rechargeOrders = limit == null
+      ? await rechargeQuery
+      : await rechargeQuery.limit(limit + 1).offset(cursor.rechargeOffset)
 
     // 储值卡抵扣、现付均是订单级字段。以已入账流水为权威源，退款按原支付通道作为负数冲减，
     // 这样所有商品明细行的净实付之和可与「储值卡抵扣 + 现付」核对。
@@ -1104,7 +1137,11 @@ export const exportOrders = withPermission(
 
     // 合并 item 行（销售/内部/寄存购买行 + 转换单转出/转入行）与充值单造行；
     // 导出按筛选条件返回全量，合并后仅做整体排序。
-    const combined: ExportOrderRow[] = [
+    const combined: Array<{
+      row: ExportOrderRow
+      source: 'item' | 'recharge'
+      sourceId: string
+    }> = [
       ...itemRows.map((r) => {
         // 寄存单 total_amount 设计为 0、received 为真金实付（「寄存单初始化实收」回款行），
         // 与销售单口径的金额列不兼容（total=0 与 received>0 并存会误导）。导出时这 5 列对寄存单留空；
@@ -1112,6 +1149,9 @@ export const exportOrders = withPermission(
         const isDeposit = r.saleOrderType === '寄存单'
         const settledAmounts = resolveSettledAmounts(r)
         return {
+          source: 'item' as const,
+          sourceId: r.sourceId,
+          row: {
           // 订单级
           marketName: r.marketName,
           storeName: r.storeName,
@@ -1145,12 +1185,16 @@ export const exportOrders = withPermission(
           unit: r.skuUnit ?? (r.productType === '家居产品' ? '盒' : '次'),
           paidUnusedSessions: r.paidUnusedSessions ?? null,
           unitRealPrice: num(r.unitRealPrice),
-          remark: r.remark,
+            remark: r.remark,
+          },
         }
       }),
       ...rechargeOrders.map((r) => {
         const settledAmounts = resolveSettledAmounts(r)
         return {
+          source: 'recharge' as const,
+          sourceId: r.sourceId,
+          row: {
           // 订单级
           marketName: r.marketName,
           storeName: r.storeName,
@@ -1184,14 +1228,47 @@ export const exportOrders = withPermission(
           unit: null,
           paidUnusedSessions: null,
           unitRealPrice: null,
-          remark: r.remark,
+            remark: r.remark,
+          },
         }
       }),
-    ].sort((a, b) =>
-      a.saleOrderDatetime < b.saleOrderDatetime ? 1 : a.saleOrderDatetime > b.saleOrderDatetime ? -1 : 0,
-    )
+    ]
 
-    return { rows: combined, truncated: false }
+    combined.sort((left, right) => {
+      const byTime = left.row.saleOrderDatetime < right.row.saleOrderDatetime
+        ? 1
+        : left.row.saleOrderDatetime > right.row.saleOrderDatetime
+          ? -1
+          : 0
+      if (byTime !== 0 || limit == null) return byTime
+      const bySource = left.source === right.source
+        ? 0
+        : left.source === 'item'
+          ? -1
+          : 1
+      return bySource || left.sourceId.localeCompare(right.sourceId)
+    })
+
+    const selected = limit == null ? combined : combined.slice(0, limit)
+    const rows = selected.map((item) => item.row)
+    if (limit == null) return { rows, truncated: false, hasMore: false }
+
+    const itemCount = selected.filter((item) => item.source === 'item').length
+    const rechargeCount = selected.length - itemCount
+    const hasMore = itemRows.length > itemCount || rechargeOrders.length > rechargeCount
+    return {
+      rows,
+      truncated: false,
+      hasMore,
+      ...(hasMore
+        ? {
+            nextCursor: {
+              itemOffset: cursor.itemOffset + itemCount,
+              rechargeOffset: cursor.rechargeOffset + rechargeCount,
+            },
+          }
+        : {}),
+    }
   },
 )
 
@@ -1260,7 +1337,8 @@ export const exportAllocationOrders = withPermission(
   async (
     session,
     params: Record<string, string | undefined>,
-  ): Promise<{ rows: ExportAllocationOrderRow[]; truncated: boolean }> => {
+    options?: ExportBatchOptions<ExportAllocationOrdersCursor>,
+  ): Promise<ExportBatchResult<ExportAllocationOrderRow, ExportAllocationOrdersCursor>> => {
     // 复用 list-filters 的 URL→filters 映射；覆盖两处：
     // status：不锁「已支付」（部分支付订单的已分配回款也要导出）；
     // allocationStatus：订单级状态不二次过滤，按回款级 allocation_status 在两段查询里各自控制。
@@ -1268,16 +1346,27 @@ export const exportAllocationOrders = withPermission(
     filters.status = undefined
     filters.allocationStatus = undefined
     const allocStatus = params.allocStatus
+    const limit = resolveExportBatchLimit(options?.limit)
+    const cursor: ExportAllocationOrdersCursor = {
+      allocatedOffset: nonNegativeOffset(options?.cursor?.allocatedOffset),
+      pendingOffset: nonNegativeOffset(options?.cursor?.pendingOffset),
+    }
 
     const num = (v: string | null | undefined) => (v == null ? null : Number(v))
     // sale_order_datetime 在 admin 运行时为 Date 对象（timestamptz 默认 parser），统一折成 ms 便于合并排序
     const toMs = (d: unknown) => (d instanceof Date ? d.getTime() : d ? Date.parse(String(d)) : 0)
-    const merged: Array<{ row: ExportAllocationOrderRow; sort: number }> = []
+    const merged: Array<{
+      row: ExportAllocationOrderRow
+      sort: number
+      source: 'allocated' | 'pending'
+    }> = []
+    let allocatedCandidateCount = 0
+    let pendingCandidateCount = 0
 
     // 已分配明细段（一行 = 一条有效 sale_payment_item_allocations，每被分配员工一行）
     if (allocStatus !== '待分配') {
       const whereClause = and(eq(salePaymentItemAllocations.isVoid, false), ...buildOrderConditions(session, filters))
-      const raw = await db
+      const query = db
         .select({
           market: saleOrders.marketName,
           storeName: stores.storeName,
@@ -1320,6 +1409,7 @@ export const exportAllocationOrders = withPermission(
           orderPaidAt: saleOrders.paidAt,
           remark: saleOrders.remark,
           sortDatetime: saleOrders.saleOrderDatetime,
+          sourceId: salePaymentItemAllocations.id,
         })
         .from(salePaymentItemAllocations)
         .innerJoin(
@@ -1337,6 +1427,10 @@ export const exportAllocationOrders = withPermission(
         .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
         .where(whereClause)
         .orderBy(desc(saleOrders.saleOrderDatetime), salePaymentItemAllocations.id)
+      const raw = limit == null
+        ? await query
+        : await query.limit(limit + 1).offset(cursor.allocatedOffset)
+      allocatedCandidateCount = raw.length
 
       for (const r of raw as any[]) {
         merged.push({
@@ -1379,6 +1473,7 @@ export const exportAllocationOrders = withPermission(
             remark: r.remark,
           },
           sort: toMs(r.sortDatetime),
+          source: 'allocated',
         })
       }
     }
@@ -1390,7 +1485,7 @@ export const exportAllocationOrders = withPermission(
         eq(saleOrderPayments.status, '已支付'),
         ...buildOrderConditions(session, filters),
       )
-      const raw = await db
+      const query = db
         .select({
           market: saleOrders.marketName,
           storeName: stores.storeName,
@@ -1427,6 +1522,7 @@ export const exportAllocationOrders = withPermission(
           orderPaidAt: saleOrders.paidAt,
           remark: saleOrders.remark,
           sortDatetime: saleOrders.saleOrderDatetime,
+          sourceId: salePaymentItemReceipts.id,
         })
         .from(saleOrderPayments)
         .innerJoin(
@@ -1441,7 +1537,11 @@ export const exportAllocationOrders = withPermission(
         .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
         .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
         .where(whereClause)
-        .orderBy(desc(saleOrders.saleOrderDatetime), saleOrderPayments.id)
+        .orderBy(desc(saleOrders.saleOrderDatetime), saleOrderPayments.id, salePaymentItemReceipts.id)
+      const raw = limit == null
+        ? await query
+        : await query.limit(limit + 1).offset(cursor.pendingOffset)
+      pendingCandidateCount = raw.length
 
       for (const r of raw as any[]) {
         merged.push({
@@ -1485,14 +1585,38 @@ export const exportAllocationOrders = withPermission(
             remark: r.remark,
           },
           sort: toMs(r.sortDatetime),
+          source: 'pending',
         })
       }
     }
 
-    // 统一按下单时间 desc 排序（与原已分配段排序键一致）
-    merged.sort((a, b) => b.sort - a.sort)
-    const rows = merged.map((m) => m.row)
-    return { rows, truncated: false }
+    // 统一按下单时间 desc 排序（与原已分配段排序键一致）。worker 分页时追加来源
+    // 排序，避免同一时间戳跨来源翻页时重复或漏行。
+    merged.sort((left, right) => {
+      const byTime = right.sort - left.sort
+      if (byTime !== 0 || limit == null) return byTime
+      return left.source === right.source ? 0 : left.source === 'allocated' ? -1 : 1
+    })
+    const selected = limit == null ? merged : merged.slice(0, limit)
+    const rows = selected.map((item) => item.row)
+    if (limit == null) return { rows, truncated: false, hasMore: false }
+
+    const allocatedCount = selected.filter((item) => item.source === 'allocated').length
+    const pendingCount = selected.length - allocatedCount
+    const hasMore = allocatedCandidateCount > allocatedCount || pendingCandidateCount > pendingCount
+    return {
+      rows,
+      truncated: false,
+      hasMore,
+      ...(hasMore
+        ? {
+            nextCursor: {
+              allocatedOffset: cursor.allocatedOffset + allocatedCount,
+              pendingOffset: cursor.pendingOffset + pendingCount,
+            },
+          }
+        : {}),
+    }
   },
 )
 
@@ -2246,6 +2370,53 @@ type BundleOrderItem = {
   isBundle?: boolean
 }
 
+type NormalSkuMarketScopeRow = {
+  skuId: string
+  specName: string | null
+  isExperience: boolean | null
+  marketScope: string | null | undefined
+}
+
+/**
+ * 普通 SKU 的提交兜底：仅检查实际配置了 market_scope 的非体验卡 SKU。
+ *
+ * 全局 SKU 无需额外查询，保留原有的 SKU 不存在/软删除错误口径；套餐子 SKU
+ * 由 validateBundleOrderForCustomer 校验套餐主商品范围，不能在此重复套 SKU 范围。
+ */
+async function findNormalSkuMarketScopeViolation(
+  clientUserId: string,
+  skuRows: NormalSkuMarketScopeRow[],
+): Promise<NormalSkuMarketScopeRow | null> {
+  const restrictedSkuById = new Map<string, NormalSkuMarketScopeRow>()
+  for (const sku of skuRows) {
+    if (sku.isExperience === true || sku.marketScope == null) continue
+    restrictedSkuById.set(sku.skuId, sku)
+  }
+  if (restrictedSkuById.size === 0) return null
+
+  const customerMarketScope = await resolveCustomerOrderMarketScope(clientUserId)
+  const restrictedSkuIds = [...restrictedSkuById.keys()]
+  const visibleRows = await db
+    .select({ skuId: productSkus.skuId })
+    .from(productSkus)
+    .where(and(
+      inArray(productSkus.skuId, restrictedSkuIds),
+      eq(productSkus.isExperience, false),
+      isNull(productSkus.deletedAt),
+      orderMarketScopeCondition(productSkus.marketScope, customerMarketScope),
+    ))
+  const visibleSkuIds = new Set(visibleRows.map((row) => row.skuId))
+
+  for (const skuId of restrictedSkuIds) {
+    if (!visibleSkuIds.has(skuId)) return restrictedSkuById.get(skuId)!
+  }
+  return null
+}
+
+function normalSkuMarketScopeMessage(sku: NormalSkuMarketScopeRow): string {
+  return `商品「${sku.specName || sku.skuId}」不适用于该顾客绑定门店`
+}
+
 /**
  * 管理后台组合套餐提交兜底：重查套餐主商品范围、SKU 归属与分组配额。
  * 列表筛选只改善体验，真正的授权边界必须在提交时再次确认。
@@ -2263,7 +2434,7 @@ async function validateBundleOrderForCustomer(
 
   if (items.length === 0) return '组合套餐商品明细不能为空'
 
-  const customerMarketScope = await resolveCustomerBundleMarketScope(clientUserId)
+  const customerMarketScope = await resolveCustomerOrderMarketScope(clientUserId)
   const [bundle] = await db
     .select({ productId: products.productId })
     .from(products)
@@ -2271,7 +2442,7 @@ async function validateBundleOrderForCustomer(
       eq(products.productId, bundleProductId),
       eq(products.isBundle, true),
       isNull(products.deletedAt),
-      bundleMarketScopeCondition(products.marketScope, customerMarketScope),
+      orderMarketScopeCondition(products.marketScope, customerMarketScope),
     ))
     .limit(1)
 
@@ -2475,8 +2646,9 @@ export const createOrder = withPermission(
   const repriceSkuIds = data.items.map((i) => i.skuId).filter((s): s is string => !!s)
   const skuPricingMap = new Map<string, { price: string; specialPrice: string | null; isExperience: boolean; isManagerSpecial: boolean; purchaseLimit: number | null }>()
   let purchaseLimitRows: SkuPurchaseLimitRow[] = []
+  let pricingRows: NormalSkuMarketScopeRow[] = []
   if (repriceSkuIds.length > 0) {
-    const pricingRows = await db
+    const loadedPricingRows = await db
       .select({
         skuId: productSkus.skuId,
         specName: productSkus.specName,
@@ -2484,12 +2656,14 @@ export const createOrder = withPermission(
         specialPrice: productSkus.specialPrice,
         isExperience: productSkus.isExperience,
         isManagerSpecial: productSkus.isManagerSpecial,
+        marketScope: productSkus.marketScope,
         purchaseLimit: productSkus.purchaseLimit,
       })
       .from(productSkus)
       .where(and(inArray(productSkus.skuId, repriceSkuIds), isNull(productSkus.deletedAt)))
-    purchaseLimitRows = pricingRows
-    for (const r of pricingRows) {
+    pricingRows = loadedPricingRows
+    purchaseLimitRows = loadedPricingRows
+    for (const r of loadedPricingRows) {
       skuPricingMap.set(r.skuId, {
         price: r.price,
         specialPrice: r.specialPrice,
@@ -2497,6 +2671,13 @@ export const createOrder = withPermission(
         isManagerSpecial: r.isManagerSpecial === true,
         purchaseLimit: r.purchaseLimit,
       })
+    }
+  }
+
+  if (!data.bundleProductId) {
+    const marketScopeViolation = await findNormalSkuMarketScopeViolation(data.clientUserId, pricingRows)
+    if (marketScopeViolation) {
+      return { success: false, message: normalSkuMarketScopeMessage(marketScopeViolation) }
     }
   }
 
@@ -3501,6 +3682,7 @@ export const createConversionOrder = withPermission(
           isExperience: productSkus.isExperience,
           isManagerSpecial: productSkus.isManagerSpecial,
           isShengmei: productSkus.isShengmei,
+          marketScope: productSkus.marketScope,
           categoryId: productSkus.categoryId,
           salesCategory: productCategories.salesCategory,
           purchaseLimit: productSkus.purchaseLimit,
@@ -3508,6 +3690,10 @@ export const createConversionOrder = withPermission(
         .from(productSkus)
         .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
         .where(and(inArray(productSkus.skuId, inSkuIds), isNull(productSkus.deletedAt)))
+      const marketScopeViolation = await findNormalSkuMarketScopeViolation(data.clientUserId, skuRows)
+      if (marketScopeViolation) {
+        throw new ApiError('INVALID_PARAMS', normalSkuMarketScopeMessage(marketScopeViolation))
+      }
       const skuMap = new Map(skuRows.map((r) => [r.skuId, r]))
       const purchaseLimitViolation = findPurchaseLimitViolation(data.convertInItems, skuRows)
       if (purchaseLimitViolation) {
@@ -4087,6 +4273,7 @@ export const createDepositOrder = withPermission(
         sessionCount: productSkus.sessionCount,
         isShengmei: productSkus.isShengmei,
         isExperience: productSkus.isExperience,
+        marketScope: productSkus.marketScope,
         salesCategory: productCategories.salesCategory,
         productKind: productCategories.productKind,
       })
@@ -4095,6 +4282,10 @@ export const createDepositOrder = withPermission(
       .where(and(inArray(productSkus.skuId, skuIds), isNull(productSkus.deletedAt)))
     if (skuRows.length !== skuIds.length) {
       return { success: false, message: '部分商品不存在或已下架' }
+    }
+    const marketScopeViolation = await findNormalSkuMarketScopeViolation(data.clientUserId, skuRows)
+    if (marketScopeViolation) {
+      return { success: false, message: normalSkuMarketScopeMessage(marketScopeViolation) }
     }
     const skuMap = new Map(skuRows.map(s => [s.skuId, s]))
 

@@ -147,9 +147,10 @@ async function getPointsDeductionMaxRate() {
     }
   } catch (err) {
     console.warn('[config] getPointsDeductionMaxRate fallback:', err.message)
+    return FALLBACK_POINTS_DEDUCTION_RATE
   }
 
-  // DB 无该 key / 查询失败 → 缓存兜底值 30s 防每次穿透 DB
+  // DB 无该 key → 缓存兜底值 30s 防每次穿透 DB
   _deductRateCachedValue = FALLBACK_POINTS_DEDUCTION_RATE
   _deductRateCachedUpdatedAt = null
   _deductRateLastCheckAt = now

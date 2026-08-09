@@ -3,11 +3,9 @@
 import { useCallback, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { toast } from "sonner";
 import { useUrlFilters } from "@/lib/hooks/use-url-filters";
-import { exportCards, type AdminCard, type CardFilterOptions } from "@/actions/cards";
+import { type AdminCard, type CardFilterOptions } from "@/actions/cards";
 import { ExportButton } from "@/components/ui/export-button";
-import { exportToXlsx, fmtDateTime } from "@/lib/export-xlsx";
 import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types";
 import MarketStoreFilter from "@/components/market-store-filter";
 import { Button } from "@/components/ui/button";
@@ -72,39 +70,6 @@ export default function CardsPage({ cards, filterOptions, cardFilterOptions, tot
 	);
 
 	const searchParams = useSearchParams();
-
-	/** 导出当前筛选命中的全部疗程卡（跨分页） */
-	const handleExport = useCallback(async () => {
-		const raw = Object.fromEntries(searchParams.entries());
-		const { rows } = await exportCards(raw);
-		if (rows.length === 0) {
-			toast.info("当前筛选无数据可导出");
-			return;
-		}
-		await exportToXlsx({
-			filename: "疗程卡",
-			sheetName: "疗程卡",
-			columns: [
-				{ header: "顾客", width: 14, accessor: (r) => r.clientName },
-				{ header: "手机号", width: 14, accessor: (r) => r.clientPhone },
-				{ header: "一级品项", width: 14, accessor: (r) => r.categoryL1 },
-				{ header: "二级品项", width: 14, accessor: (r) => r.categoryL2 },
-				{ header: "商品/规格", width: 28, accessor: (r) => r.productSpec },
-				{ header: "类型", accessor: (r) => r.cardType },
-				{ header: "剩余/总量", width: 12, accessor: (r) => `${r.remaining} / ${r.totalSessions} ${r.unit}` },
-				{ header: "单位标价", accessor: (r) => r.unitPrice },
-				{ header: "单位优惠后价", width: 14, accessor: (r) => r.unitRealPrice },
-				{ header: "行应付总额", width: 12, accessor: (r) => r.saleAmount },
-				{ header: "行实收", accessor: (r) => r.received },
-				{ header: "购买门店", width: 18, accessor: (r) => r.storeDisplay },
-				{ header: "开单时间", width: 20, accessor: (r) => fmtDateTime(r.saleOrderDatetime) },
-				{ header: "订单号", width: 22, accessor: (r) => r.saleOrderId },
-				{ header: "订单状态", accessor: (r) => r.orderStatus },
-				{ header: "付款时间", width: 20, accessor: (r) => fmtDateTime(r.paidAt) },
-			],
-			rows,
-		});
-	}, [searchParams]);
 
 	const columns: Column<AdminCard>[] = [
 		{
@@ -294,7 +259,12 @@ export default function CardsPage({ cards, filterOptions, cardFilterOptions, tot
 							onChange={(e) => handleSearchChange(e.target.value)}
 							className="max-w-xs"
 						/>
-						<ExportButton onExport={handleExport} />
+						<ExportButton
+							exportRequest={{
+								exportType: "cards",
+								payload: Object.fromEntries(searchParams.entries()),
+							}}
+						/>
 					</div>
 				</CardContent>
 			</Card>

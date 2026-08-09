@@ -7,9 +7,9 @@
  *
  * 因两端 ORM 不同（Drizzle sql`` vs 原生 pg）且查询拆分粒度不同，完整 SQL snapshot 不可行。
  * 守护策略 = "关键不变量字面量匹配"（stripComments 后，排除注释里的反例引用）：
- *   1. 营业额 = SUM(received - COALESCE(refunded_amount,0))
- *   2. sale_order_type IN ('销售单', '转换单')
- *   3. 生美 = is_shengmei = TRUE 的行级 SUM(received)
+ *   1. 组织层级业绩 = SUM(sale_order_payments.amount)，按付款流水归期
+ *   2. 付款 change_type = 首次支付 / 回款 / 退款；sale_order_type 另含充值单
+ *   3. 生美 = is_shengmei = TRUE 的行级 SUM(received)（例外口径保持不变）
  *   4. 实耗 = unit_real_price * session_used ∩ status='已完成'
  *   5. 分客型：customer_type / became_member_at 分型字面量
  *   6. 员工数 skills && ARRAY['美容师','养生师'] + hired_at/resigned_at 历史化
@@ -38,6 +38,46 @@ function stripComments(src: string): string {
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ')
 }
 
+function between(src: string, start: string, end: string): string {
+  const from = src.indexOf(start)
+  const to = src.indexOf(end, from + start.length)
+  return from === -1 ? '' : src.slice(from, to === -1 ? undefined : to)
+}
+
+function cashflowFragments(src: string, side: 'admin' | 'staff'): string[] {
+  const ranges = side === 'admin'
+    ? [
+        ['const runStoreRevenue', 'const runShengmeiRevenue'],
+        ['const runNewCustomerRevenue', 'const runTrafficCustomerRevenue'],
+        ['const runTrafficCustomerRevenue', 'const runStoreCount'],
+        ['// 业绩（付款流水现金流）', '// 生美业绩'],
+        ['// 新增会员业绩（付款流水 + 客型）', '// 流量客业绩（付款流水 + 客型）'],
+        ['// 流量客业绩（付款流水 + 客型）', '// 实耗'],
+      ]
+    : [
+        ['async function queryStoreRevenue', 'async function queryShengmeiRevenue'],
+        ['async function rankingRevenue', 'async function rankingConsume'],
+        ['// SQL 1: 总业绩', '// SQL 2: 分客型业绩'],
+        ['// SQL 2: 分客型业绩', '// SQL 3: 总实耗'],
+      ]
+  return ranges.map(([start, end]) => between(src, start, end)).filter(Boolean)
+}
+
+function expectCashflowFragment(src: string) {
+  const n = normalize(stripComments(src))
+  expect(n).toMatch(/(?:FROM|LEFT JOIN)\s+sale_order_payments\s+(?:sop|p)/i)
+  expect(n).toMatch(/(?:JOIN|LEFT JOIN)\s+sale_orders\s+(?:so|o)/i)
+  expect(n).toMatch(/(?:sop|p)\.sale_order_id\s*=\s*(?:so|o)\.sale_order_id|(?:so|o)\.sale_order_id\s*=\s*(?:sop|p)\.sale_order_id/i)
+  expect(n).toMatch(/(?:sop|p)\.amount::numeric/i)
+  expect(n).toMatch(/(?:sop|p)\.status\s*=\s*'已支付'/)
+  expect(n).toMatch(/(?:sop|p)\.change_type\s+IN\s*\(\s*'首次支付'\s*,\s*'回款'\s*,\s*'退款'\s*\)/)
+  expect(n).toMatch(/(?:so|o)\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*,\s*'充值单'\s*\)/)
+  expect(n).toMatch(/(?:sop|p)\.paid_at/i)
+  expect(n).toMatch(/legacy_source\s+IS\s+DISTINCT\s+FROM\s+'workfine'/i)
+  expect(n).not.toMatch(/储值卡抵扣/)
+  expect(n).not.toMatch(/payment_method/i)
+}
+
 describe('数据中心销售板块两端口径一致性守护', () => {
   let adminSrc: string
   let staffSrc: string
@@ -51,56 +91,26 @@ describe('数据中心销售板块两端口径一致性守护', () => {
     staffBody = normalize(stripComments(staffSrc))
   })
 
-  describe('营业额公式 = SUM(received - COALESCE(refunded_amount, 0))', () => {
-    it('admin sales.ts 必须用 received - COALESCE(refunded_amount, 0)', () => {
-      expect(adminBody).toMatch(
-        /received::numeric\s*-\s*COALESCE\(\s*so\.refunded_amount,\s*0\s*\)::numeric/i,
-      )
+  describe('组织层级业绩 = 付款流水有符号合计', () => {
+    it('admin sales.ts 的总额、客群和门店明细均使用现金流片段', () => {
+      const fragments = cashflowFragments(adminSrc, 'admin')
+      expect(fragments).toHaveLength(6)
+      fragments.forEach(expectCashflowFragment)
     })
 
-    it('staff mgmt-dashboard.js 必须用 received - COALESCE(refunded_amount, 0)', () => {
-      expect(staffBody).toMatch(
-        /received::numeric\s*-\s*COALESCE\(\s*so\.refunded_amount,\s*0\s*\)::numeric/i,
-      )
+    it('staff mgmt-dashboard.js 的总额、排行榜和销售数据均使用现金流片段', () => {
+      const fragments = cashflowFragments(staffSrc, 'staff')
+      expect(fragments).toHaveLength(4)
+      fragments.forEach(expectCashflowFragment)
     })
 
-    it('admin sales.ts 禁用 SUM(paid_amount) / SUM(total_amount)（防回归）', () => {
-      expect(adminBody).not.toMatch(/SUM\(\s*paid_amount\s*\)/i)
-      expect(adminBody).not.toMatch(/SUM\(\s*so\.paid_amount\s*\)/i)
-      expect(adminBody).not.toMatch(/SUM\(\s*total_amount\s*\)/i)
-    })
-  })
-
-  describe('sale_order_type 过滤 — 必须 IN (销售单, 转换单)', () => {
-    it('admin sales.ts 必须含 IN (销售单, 转换单)', () => {
-      expect(adminSrc).toMatch(/sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/)
-    })
-
-    it('staff mgmt-dashboard.js 必须含 IN (销售单, 转换单)', () => {
-      expect(staffSrc).toMatch(/sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/)
-    })
-
-    it('两端 sale_order_type IN 集合归一化后同义（防一端漏改未来新增枚举值）', () => {
-      const extract = (src: string): Set<string> => {
-        const matches = src.match(/sale_order_type\s+IN\s*\(([^)]+)\)/g) || []
-        return new Set(matches.map((s) => s.replace(/\s+/g, '').toLowerCase()))
-      }
-      const a = extract(adminSrc)
-      const s = extract(staffSrc)
-      expect(a.size).toBeGreaterThan(0)
-      expect(s.size).toBeGreaterThan(0)
-      const union = new Set([...a, ...s])
-      expect(union.size).toBe(a.size)
-      expect(union.size).toBe(s.size)
-    })
-  })
-
-  describe('status 过滤 — 业绩查询必须 status = 已支付', () => {
-    it('admin sales.ts 含 so.status = 已支付', () => {
-      expect(adminSrc).toMatch(/so\.status\s*=\s*'已支付'/)
-    })
-    it('staff mgmt-dashboard.js 含 so.status = 已支付', () => {
-      expect(staffSrc).toMatch(/so\.status\s*=\s*'已支付'/)
+    it('组织业绩查询禁用订单快照金额，避免储值卡抵扣混入', () => {
+      const adminCashflow = normalize(stripComments(cashflowFragments(adminSrc, 'admin').join('\n')))
+      const staffCashflow = normalize(stripComments(cashflowFragments(staffSrc, 'staff').join('\n')))
+      expect(adminCashflow).not.toMatch(/SUM\(\s*(?:so|o)\.received/i)
+      expect(adminCashflow).not.toMatch(/refunded_amount/i)
+      expect(staffCashflow).not.toMatch(/SUM\(\s*(?:so|o)\.received/i)
+      expect(staffCashflow).not.toMatch(/refunded_amount/i)
     })
   })
 

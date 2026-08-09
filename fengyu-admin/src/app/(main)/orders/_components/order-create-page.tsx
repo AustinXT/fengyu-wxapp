@@ -64,9 +64,11 @@ function resolveBackendKind(choice: ProductKindChoice): ProductKindForOrder {
   return '体验卡'
 }
 
-/** 组合套餐受顾客绑定门店影响，不能与其他商品类型共用缓存项。 */
+/** 组合套餐与普通商品都受顾客绑定门店影响，不能跨顾客共用缓存项。 */
 function kindDataCacheKey(choice: ProductKindChoice, clientUserId?: string): string {
-  return choice === '组合套餐' ? `组合套餐:${clientUserId ?? ''}` : choice
+  return choice === '组合套餐' || choice === '普通商品'
+    ? `${choice}:${clientUserId ?? ''}`
+    : choice
 }
 
 /**
@@ -352,7 +354,7 @@ export default function OrderCreatePageClient({
     try {
       const result = await getProductsByKind(
         resolveBackendKind(choice),
-        choice === '组合套餐' ? clientUserId : undefined,
+        choice === '组合套餐' || choice === '普通商品' ? clientUserId : undefined,
       )
       const data: PrefetchedKindData = {
         choice,

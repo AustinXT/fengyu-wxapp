@@ -4,6 +4,12 @@ import { db } from '@/db'
 import { ApiError } from '@/lib/api-error'
 import { nowTs } from '@/lib/db-time'
 import { shanghaiToday, shanghaiYmd } from '@/lib/datetime'
+import {
+  offsetPageResult,
+  resolveExportOffsetPage,
+  type ExportBatchOptions,
+  type ExportBatchResult,
+} from '@/lib/export-pagination'
 import { logOperation } from '@/lib/operation-log'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { hasPermission, isInScope, scopeCondition } from '@/lib/permissions'
@@ -473,7 +479,8 @@ export const exportInventoryStocks = withPermission(
   async (
     session,
     params: Record<string, string | undefined> = {},
-  ): Promise<{ rows: StoreInventoryStockRow[]; truncated: boolean; canViewPrice: boolean }> => {
+    options?: ExportBatchOptions,
+  ): Promise<ExportBatchResult<StoreInventoryStockRow> & { canViewPrice: boolean }> => {
     const conditions: (SQL | undefined)[] = [
       scopeCondition(session, storeInventoryStocks.storeId),
     ]
@@ -492,7 +499,8 @@ export const exportInventoryStocks = withPermission(
         ),
       )
     }
-    const rows = await db
+    const page = resolveExportOffsetPage(options)
+    const query = db
       .select({
         stock: storeInventoryStocks,
         storeName: stores.storeName,
@@ -501,11 +509,18 @@ export const exportInventoryStocks = withPermission(
       .leftJoin(stores, eq(storeInventoryStocks.storeId, stores.storeId))
       .leftJoin(productSkus, eq(storeInventoryStocks.skuId, productSkus.skuId))
       .where(and(...conditions))
-      .orderBy(asc(stores.storeName), asc(storeInventoryStocks.skuName), asc(storeInventoryStocks.batchNo))
+      .orderBy(
+        asc(stores.storeName),
+        asc(storeInventoryStocks.skuName),
+        asc(storeInventoryStocks.batchNo),
+        asc(storeInventoryStocks.id),
+      )
+    const rows = page
+      ? await query.limit(page.limit + 1).offset(page.offset)
+      : await query
     const priceVisible = canViewPrice(session)
     return {
-      rows: rows.map((row) => rowToStock(row, priceVisible)),
-      truncated: false,
+      ...offsetPageResult(rows.map((row) => rowToStock(row, priceVisible)), page),
       canViewPrice: priceVisible,
     }
   },

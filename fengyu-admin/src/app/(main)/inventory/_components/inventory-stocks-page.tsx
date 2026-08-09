@@ -2,7 +2,7 @@
 
 import { useCallback, useState } from 'react'
 import { Boxes } from 'lucide-react'
-import { exportInventoryStocks, type StoreInventoryStockRow } from '@/actions/inventory-v2'
+import { type StoreInventoryStockRow } from '@/actions/inventory-v2'
 import { Button } from '@/components/ui/button'
 import { DataTable, type Column } from '@/components/ui/data-table'
 import { ExportButton } from '@/components/ui/export-button'
@@ -10,7 +10,6 @@ import { Input } from '@/components/ui/input'
 import { Pagination } from '@/components/ui/pagination'
 import MarketStoreFilter from '@/components/market-store-filter'
 import { useUrlFilters } from '@/lib/hooks/use-url-filters'
-import { exportToXlsx } from '@/lib/export-xlsx'
 import type { MarketStoreFilterOptions } from '@/lib/market-store-filter-types'
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
@@ -48,35 +47,6 @@ export default function InventoryStocksPage({
     if (debounceRef[0]) clearTimeout(debounceRef[0])
     debounceRef[0] = setTimeout(() => setMany({ q: value, page: '' }), 300)
   }, [debounceRef, setMany])
-
-  const handleExport = useCallback(async () => {
-    const { rows: exportRows } = await exportInventoryStocks({
-      keyword: get('q') || undefined,
-      marketId: get('market') || undefined,
-      storeId: get('store') || undefined,
-    })
-    await exportToXlsx({
-      filename: '门店库存',
-      sheetName: '门店库存',
-      rows: exportRows,
-      columns: [
-        { header: '门店', width: 20, accessor: (r) => r.storeName ?? r.storeId },
-        { header: 'SKU', width: 24, accessor: (r) => r.skuId },
-        { header: '产品', width: 36, accessor: (r) => r.skuName },
-        { header: '产品类型', width: 12, accessor: (r) => r.productType },
-        { header: '批号', width: 16, accessor: (r) => r.batchNo },
-        { header: '效期', width: 14, accessor: (r) => r.expiryDate ?? '' },
-        { header: '库存数量', width: 12, accessor: (r) => r.quantityOnHand },
-        ...(canViewPrice
-          ? [
-              { header: '最近单价', width: 12, accessor: (r: StoreInventoryStockRow) => r.lastUnitPrice ?? '' },
-              { header: '最近金额', width: 12, accessor: (r: StoreInventoryStockRow) => r.lastAmount ?? '' },
-            ]
-          : []),
-        { header: '备注', width: 24, accessor: (r) => r.remark ?? '' },
-      ],
-    })
-  }, [canViewPrice, get])
 
   const handleReset = useCallback(() => {
     setSearchInput('')
@@ -157,7 +127,19 @@ export default function InventoryStocksPage({
         </div>
 
         <div className="flex items-center gap-2">
-          {canExport && <ExportButton onExport={handleExport} disabled={total === 0} />}
+          {canExport && (
+            <ExportButton
+              disabled={total === 0}
+              exportRequest={{
+                exportType: 'inventory-stocks',
+                payload: {
+                  keyword: get('q') || '',
+                  marketId: get('market') || '',
+                  storeId: get('store') || '',
+                },
+              }}
+            />
+          )}
           <Button variant="outline" onClick={handleReset}>
             重置
           </Button>

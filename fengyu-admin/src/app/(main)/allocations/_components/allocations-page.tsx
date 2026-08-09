@@ -3,7 +3,6 @@
 import { useCallback, useRef, useState, useTransition } from "react"
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
-import { toast } from "sonner"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -13,9 +12,6 @@ import { Pagination } from "@/components/ui/pagination"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { ExportButton } from "@/components/ui/export-button"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
-import { exportAllocationOrders } from "@/actions/orders"
-import { exportAllocationServiceOrders } from "@/actions/services"
-import { exportToXlsx, fmtDateTime as xlsxDateTime, fmtDate as xlsxDate, fmtPercent } from "@/lib/export-xlsx"
 import type { ServiceOrder } from "@/lib/types"
 import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types"
 import MarketStoreFilter from "@/components/market-store-filter"
@@ -108,105 +104,6 @@ export default function AllocationsPageClient({
   // 导出走当前 URL 全部筛选（跨分页），与列表口径一致
   const searchParams = useSearchParams()
 
-  const handleExportSale = useCallback(async () => {
-    const raw = Object.fromEntries(searchParams.entries())
-    const { rows } = await exportAllocationOrders(raw)
-    if (rows.length === 0) {
-      toast.info("当前筛选无数据可导出")
-      return
-    }
-    await exportToXlsx({
-      filename: "营业额分配-销售提成",
-      sheetName: "销售提成",
-      columns: [
-        { header: "市场", width: 12, accessor: (r) => r.market },
-        { header: "门店", width: 18, accessor: (r) => r.storeName },
-        { header: "订单号", width: 22, accessor: (r) => r.saleOrderId },
-        { header: "销售单类型", width: 12, accessor: (r) => r.saleOrderType },
-        { header: "单据类型", width: 10, accessor: (r) => r.documentType },
-        { header: "顾客", accessor: (r) => r.customerName },
-        { header: "顾客手机", width: 14, accessor: (r) => r.customerPhone },
-        { header: "顾客来源", width: 12, accessor: (r) => r.customerSource },
-        { header: "推荐人", width: 12, accessor: (r) => r.promoterEmployeeName },
-        { header: "商品类型", width: 12, accessor: (r) => r.productType },
-        { header: "一级分类", width: 14, accessor: (r) => r.categoryL1 },
-        { header: "商品大类", width: 12, accessor: (r) => r.categoryL2 },
-        { header: "商品名称", width: 24, accessor: (r) => r.productName },
-        { header: "总数量", width: 8, accessor: (r) => r.sessionCount },
-        { header: "单位", width: 8, accessor: (r) => r.unit },
-        { header: "可用数量", width: 8, accessor: (r) => r.paidUnusedSessions },
-        { header: "订单金额", width: 12, accessor: (r) => r.saleAmount },
-        { header: "储值卡抵扣", width: 12, accessor: (r) => r.prepaidCardAmount },
-        { header: "实收", width: 12, accessor: (r) => r.received },
-        { header: "已退款", width: 10, accessor: (r) => r.refundedAmount },
-        { header: "单价", width: 12, accessor: (r) => r.unitRealPrice },
-        { header: "状态", width: 12, accessor: (r) => r.status },
-        { header: "分配状态", width: 10, accessor: (r) => r.allocationStatus },
-        { header: "员工姓名", accessor: (r) => r.employeeName },
-        { header: "职位", width: 12, accessor: (r) => r.positionName },
-        { header: "分配占比", width: 10, accessor: (r) => fmtPercent(r.allocationRatio) },
-        { header: "分配金额", width: 12, accessor: (r) => r.allocationAmount },
-        { header: "提成比例", width: 10, accessor: (r) => fmtPercent(r.commissionRate) },
-        { header: "提成金额", width: 12, accessor: (r) => r.commissionAmount },
-        { header: "是否活动", width: 10, accessor: (r) => (r.isActivity ? "是" : "否") },
-        { header: "是否纳客", width: 10, accessor: (r) => (r.isMembershipUpgrade ? "是" : "否") },
-        { header: "销售分类", width: 12, accessor: (r) => r.salesCategory },
-        { header: "顾客类型", width: 12, accessor: (r) => r.customerType },
-        { header: "开单人", accessor: (r) => r.openedByName },
-        { header: "支付时间", width: 20, accessor: (r) => xlsxDateTime(r.paidAt) },
-        { header: "备注", width: 20, accessor: (r) => r.remark },
-      ],
-      rows,
-    })
-  }, [searchParams])
-
-  const handleExportService = useCallback(async () => {
-    const raw = Object.fromEntries(searchParams.entries())
-    const { rows } = await exportAllocationServiceOrders(raw)
-    if (rows.length === 0) {
-      toast.info("当前筛选无数据可导出")
-      return
-    }
-    await exportToXlsx({
-      filename: "营业额分配-服务提成",
-      sheetName: "服务提成",
-      columns: [
-        { header: "市场", width: 12, accessor: (r) => r.market },
-        { header: "门店", width: 18, accessor: (r) => r.storeName },
-        { header: "服务单号", width: 22, accessor: (r) => r.serviceOrderId },
-        { header: "订单类型", width: 12, accessor: (r) => r.saleOrderType },
-        { header: "单据类型", width: 12, accessor: (r) => r.serviceOrderType },
-        { header: "顾客", accessor: (r) => r.customerName },
-        { header: "顾客手机", width: 14, accessor: (r) => r.customerPhone },
-        { header: "商品类型", width: 12, accessor: (r) => r.productType },
-        { header: "品项（一级）", width: 14, accessor: (r) => r.categoryL1 },
-        { header: "品项（二级）", width: 12, accessor: (r) => r.categoryL2 },
-        { header: "商品明细", width: 24, accessor: (r) => r.productName },
-        { header: "消耗数量", width: 10, accessor: (r) => r.sessionUsed },
-        { header: "单位", width: 8, accessor: (r) => r.unit },
-        { header: "消耗金额", width: 12, accessor: (r) => r.consumeMoney },
-        { header: "单价", width: 12, accessor: (r) => r.unitRealPrice },
-        { header: "状态", width: 12, accessor: (r) => r.status },
-        { header: "负责美容师", accessor: (r) => r.employeeName },
-        { header: "员工职位", width: 12, accessor: (r) => r.positionName },
-        { header: "分配占比", width: 10, accessor: (r) => fmtPercent(r.allocationRatio) },
-        { header: "分配额", width: 12, accessor: (r) => r.allocationAmount },
-        { header: "提成比例", width: 10, accessor: (r) => fmtPercent(r.commissionRate) },
-        { header: "提成金额", width: 12, accessor: (r) => r.commissionAmount },
-        { header: "顾客评价", width: 24, accessor: (r) => r.reviewComment },
-        { header: "顾客评分", width: 8, accessor: (r) => r.rating },
-        { header: "经营类价", width: 12, accessor: (r) => r.salesCategory },
-        { header: "顾客类型", width: 12, accessor: (r) => r.customerType },
-        { header: "开单人", accessor: (r) => r.openedByName },
-        { header: "来源订单号", width: 22, accessor: (r) => r.sourceSaleOrderId },
-        { header: "服务日期", width: 14, accessor: (r) => xlsxDate(r.serviceDate) },
-        { header: "创建时间", width: 20, accessor: (r) => xlsxDateTime(r.createdAt) },
-        { header: "备注", width: 20, accessor: (r) => r.remark },
-      ],
-      rows,
-    })
-  }, [searchParams])
-
   const handleTabChange = (value: string) => {
     startTransition(() => {
       setMany({ tab: value === 'sale' ? '' : value, page: '', size: '' })
@@ -267,7 +164,12 @@ export default function AllocationsPageClient({
               onChange={(e) => handleSearchChange(e.target.value)}
             />
             <div className="ml-auto">
-              <ExportButton onExport={tab === 'service' ? handleExportService : handleExportSale} />
+              <ExportButton
+                exportRequest={{
+                  exportType: tab === 'service' ? 'allocation-services' : 'allocation-sales',
+                  payload: Object.fromEntries(searchParams.entries()),
+                }}
+              />
             </div>
           </div>
         </CardContent>

@@ -129,6 +129,7 @@ export function EfficiencyBoard() {
             loading={loading}
             exportFilename={`人效明细_按市场_${label}`}
             exportSheetName="人效明细_按市场"
+            exportView="efficiency-market"
           />
         </TabsContent>
         <TabsContent value="staff-detail">
@@ -143,6 +144,7 @@ export function EfficiencyBoard() {
             loading={loading}
             exportFilename={`人效明细_按技师_${label}`}
             exportSheetName="人效明细_按技师"
+            exportView="efficiency-staff"
           />
         </TabsContent>
         <TabsContent value="store-rank">
@@ -153,6 +155,7 @@ export function EfficiencyBoard() {
             showMarket
             loading={loading}
             exportFilenamePrefix={`人效_门店排名榜_${label}`}
+            exportView="efficiency-store-ranking"
           />
         </TabsContent>
         <TabsContent value="staff-rank">
@@ -163,6 +166,7 @@ export function EfficiencyBoard() {
             showMarket
             loading={loading}
             exportFilenamePrefix={`人效_员工排名榜_${label}`}
+            exportView="efficiency-staff-ranking"
           />
         </TabsContent>
       </Tabs>

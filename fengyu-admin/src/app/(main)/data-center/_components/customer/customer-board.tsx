@@ -149,16 +149,16 @@ export function CustomerBoard() {
           <TabsTrigger value="store-ops">门店·消费经营</TabsTrigger>
         </TabsList>
         <TabsContent value="market-reg">
-          <BreakdownTable rows={data?.byMarket ?? []} columns={COLS_REG_ACTIVE} firstColLabel="市场" loading={loading} exportFilename={`客量明细_市场注册客活_${label}`} exportSheetName="市场注册客活" />
+          <BreakdownTable rows={data?.byMarket ?? []} columns={COLS_REG_ACTIVE} firstColLabel="市场" loading={loading} exportFilename={`客量明细_市场注册客活_${label}`} exportSheetName="市场注册客活" exportView="customer-market-reg" />
         </TabsContent>
         <TabsContent value="market-ops">
-          <BreakdownTable rows={data?.byMarket ?? []} columns={COLS_OPS} firstColLabel="市场" loading={loading} exportFilename={`客量明细_市场消费经营_${label}`} exportSheetName="市场消费经营" />
+          <BreakdownTable rows={data?.byMarket ?? []} columns={COLS_OPS} firstColLabel="市场" loading={loading} exportFilename={`客量明细_市场消费经营_${label}`} exportSheetName="市场消费经营" exportView="customer-market-ops" />
         </TabsContent>
         <TabsContent value="store-reg">
-          <BreakdownTable rows={data?.byStore ?? []} columns={COLS_REG_ACTIVE} firstColLabel="门店" showMarket loading={loading} exportFilename={`客量明细_门店注册客活_${label}`} exportSheetName="门店注册客活" />
+          <BreakdownTable rows={data?.byStore ?? []} columns={COLS_REG_ACTIVE} firstColLabel="门店" showMarket loading={loading} exportFilename={`客量明细_门店注册客活_${label}`} exportSheetName="门店注册客活" exportView="customer-store-reg" />
         </TabsContent>
         <TabsContent value="store-ops">
-          <BreakdownTable rows={data?.byStore ?? []} columns={COLS_OPS} firstColLabel="门店" showMarket loading={loading} exportFilename={`客量明细_门店消费经营_${label}`} exportSheetName="门店消费经营" />
+          <BreakdownTable rows={data?.byStore ?? []} columns={COLS_OPS} firstColLabel="门店" showMarket loading={loading} exportFilename={`客量明细_门店消费经营_${label}`} exportSheetName="门店消费经营" exportView="customer-store-ops" />
         </TabsContent>
       </Tabs>
     </div>

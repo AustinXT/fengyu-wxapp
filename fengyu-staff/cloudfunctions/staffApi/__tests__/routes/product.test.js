@@ -8,7 +8,7 @@
 const pg = globalThis.__mocks__.pg
 const { createCtx } = require('../helpers')
 const productRoutes = require('../../routes/product')
-const { _queryCategoryRows } = productRoutes.__testables__
+const { _queryCategoryRows, buildNormalSkuMarketScopeFilter } = productRoutes.__testables__
 
 
 // ============================================================
@@ -149,6 +149,46 @@ describe('product.skuList', () => {
     const sql = pg.query.mock.calls[0][0]
     expect(sql).not.toMatch(/NOT sk\.is_experience/)
   })
+
+  test('普通 SKU 仅按当前工作台门店过滤，不回退到 scopeStoreIds', async () => {
+    const ctx = createCtx({
+      payload: { categoryId: 'cat-1', excludeCards: true },
+      auth: {
+        effectiveStoreId: 'store-current',
+        scopeStoreIds: ['store-other'],
+        marketName: '不应参与普通 SKU 范围判断',
+      },
+    })
+    pg.query.mockResolvedValueOnce([])
+
+    await productRoutes.skuList(ctx)
+
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('sk.market_scope')
+    expect(sql).toContain('scope_store.store_id = $2')
+    expect(sql).toContain("NULLIF(regexp_replace(sk.market_scope, '[[:space:]]+', '', 'g'), '') IS NOT NULL")
+    expect(params).toEqual(['cat-1', 'store-current'])
+  })
+
+  test('管理层未选择当前门店时，普通 SKU 仅保留全局范围', async () => {
+    const ctx = createCtx({
+      payload: { categoryId: 'cat-1', excludeCards: true },
+      auth: {
+        storeId: 'store-profile',
+        effectiveStoreId: null,
+        currentStoreId: null,
+        scopeStoreIds: ['store-001', 'store-002'],
+      },
+    })
+    pg.query.mockResolvedValueOnce([])
+
+    await productRoutes.skuList(ctx)
+
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('sk.market_scope IS NULL')
+    expect(sql).not.toContain('FROM stores s')
+    expect(params).toEqual(['cat-1'])
+  })
 })
 
 // ============================================================
@@ -194,6 +234,39 @@ describe('product.skuDetail', () => {
 // product.shopInit
 // ============================================================
 describe('product.shopInit', () => {
+  test('普通 SKU 空分类判断同样按当前工作台门店范围过滤', async () => {
+    const ctx = createCtx({
+      auth: { effectiveStoreId: 'store-current', scopeStoreIds: ['store-other'] },
+    })
+    pg.query
+      .mockResolvedValueOnce([
+        { category_id: 'cat-1', category_name: '护理', product_kind: '护理项目', sales_category: null, sort_order: 1, kind_name: '护理项目', kind_sort_order: 1 },
+      ])
+      .mockResolvedValueOnce([{ category_id: 'cat-1' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+
+    await productRoutes.shopInit(ctx)
+
+    const [sql, params] = pg.query.mock.calls[1]
+    expect(sql).toContain('sk.market_scope')
+    expect(sql).toContain('scope_store.store_id = $2')
+    expect(params).toEqual([['cat-1'], 'store-current'])
+  })
+
+  test('普通 SKU 严格范围 helper 在无门店时不使用授权门店集合', () => {
+    const params = []
+    const sql = buildNormalSkuMarketScopeFilter({
+      effectiveStoreId: null,
+      scopeStoreIds: ['store-001', 'store-002'],
+      storeId: 'store-profile',
+    }, params)
+
+    expect(sql).toBe('AND sk.market_scope IS NULL')
+    expect(params).toEqual([])
+  })
+
   test('组合套餐按当前工作台 effectiveStoreId 过滤市场范围', async () => {
     pg.query.mockResolvedValueOnce([])
 

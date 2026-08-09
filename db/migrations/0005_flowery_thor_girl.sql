@@ -25,6 +25,8 @@ ALTER TABLE "point_batches" ADD CONSTRAINT "point_batches_ref_order_id_sale_orde
 CREATE INDEX "idx_point_batches_user_expire" ON "point_batches" USING btree ("user_id","expire_at");--> statement-breakpoint
 CREATE INDEX "idx_point_batches_ref_order" ON "point_batches" USING btree ("ref_order_id") WHERE ref_order_id IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "idx_point_batches_source_txn" ON "point_batches" USING btree ("source_transaction_id");--> statement-breakpoint
+ALTER TABLE "sale_orders" ADD CONSTRAINT "chk_sale_order_points_used" CHECK ("sale_orders"."points_used" >= 0);--> statement-breakpoint
+ALTER TABLE "sale_orders" ADD CONSTRAINT "chk_sale_order_points_discount" CHECK ("sale_orders"."points_discount" >= 0);--> statement-breakpoint
 ALTER TABLE "point_transactions" ADD CONSTRAINT "chk_pt_amount_sign" CHECK (("point_transactions"."amount" < 0 AND "point_transactions"."type" IN ('消费冲销','消费抵扣','过期扣减')) OR "point_transactions"."amount" > 0);
 --> statement-breakpoint
 INSERT INTO point_batches (

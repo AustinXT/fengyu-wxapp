@@ -13,18 +13,19 @@
  *     - salesData: 分客型业绩（小美/新增会员/老会员）+ 分客型实耗
  *
  * ★ 口径红线（consistency.sales.test.ts 字面量守护，禁止偏离）：
- *   - 营业额 = SUM(received - COALESCE(refunded_amount,0)) ∩ sale_order_type IN ('销售单','转换单')
- *     ∩ status='已支付' ∩ paid_at（2026-04-26 sale-order-domain-refactor，与 dashboard.ts 同口径）
+ *   - 组织层级业绩 = SUM(sale_order_payments.amount) ∩ payment.status='已支付'
+ *     ∩ change_type IN ('首次支付','回款','退款') ∩ sale_order_type IN ('销售单','转换单','充值单')
+ *     ∩ payment.paid_at；储值卡抵扣不计入，退款按退款发生日负向冲销
  *   - 生美 = sale_items 行级 SUM(received) WHERE is_shengmei=TRUE
  *   - 实耗 = SUM(unit_real_price * session_used) ∩ service_orders.status='已完成' ∩ service_date；
  *     生美实耗加 is_shengmei=TRUE
  *   - 新增会员（newCustomerRevenue）= customer_type='会员客' AND became_member_at::date >= 区间起
- *     （metrics.md 销售数据页「新增会员」分型），SUM(si.received)
+ *     （metrics.md 销售数据页「新增会员」分型），SUM(付款流水 amount)
  *   - 员工数 skills && ARRAY['美容师','养生师'] + hired_at/resigned_at 历史化
  *   - 门店数：当前门店节点启用 + opening_date/closed_at 历史化
  *
  * 流量客业绩（trafficCustomerRevenue，2026-05-26 用户拍板）：
- *   trafficCustomerRevenue = SUM(si.received) WHERE customer_type = '流量客'
+ *   trafficCustomerRevenue = SUM(付款流水 amount) WHERE customer_type = '流量客'
  *   （仅纯流量客，不含体验客/小美客）。已登记 metrics.md §「销售数据页 — 分客型业绩」。
  */
 
@@ -62,17 +63,19 @@ export const getSalesBoard = withPermission(
 
     // ── 区间标量 runner（KPI 用，按区间复算以支持同比/环比）────────────────
 
-    /** 业绩：SUM(received - refunded_amount) ∩ 销售单/转换单 ∩ 已支付 ∩ paid_at */
+    /** 业绩：付款流水净现金流，含充值单，排除储值卡抵扣，按流水 paid_at 归期。 */
     const runStoreRevenue = async (range: ResolvedRange) =>
       scalar(
         await db.execute(sql`
-          SELECT COALESCE(SUM(so.received::numeric - COALESCE(so.refunded_amount, 0)::numeric), 0) AS v
-          FROM sale_orders so
+          SELECT COALESCE(SUM(sop.amount::numeric), 0) AS v
+          FROM sale_order_payments sop
+          JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
           WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
-            AND so.sale_order_type IN ('销售单', '转换单')
-            AND so.status = '已支付'
+            AND sop.status = '已支付'
+            AND sop.change_type IN ('首次支付', '回款', '退款')
+            AND so.sale_order_type IN ('销售单', '转换单', '充值单')
             AND so.legacy_source IS DISTINCT FROM 'workfine'
-            AND so.paid_at::date BETWEEN ${range.start} AND ${range.end}
+            AND sop.paid_at::date BETWEEN ${range.start} AND ${range.end}
         `),
       )
 
@@ -123,41 +126,45 @@ export const getSalesBoard = withPermission(
       )
 
     /**
-     * 新增客业绩（=新增会员业绩）：sale_items SUM(received)，
+     * 新增客业绩（=新增会员业绩）：付款流水 SUM(amount)，
      * 分型 customer_type='会员客' AND became_member_at::date >= 区间起（metrics.md 销售数据页「新增会员」）。
      * NULL became_member_at 不计入新增（与 staff salesData FILTER 中 COALESCE '1970-01-01' < start 归老会员一致）。
      */
     const runNewCustomerRevenue = async (range: ResolvedRange) =>
       scalar(
         await db.execute(sql`
-          SELECT COALESCE(SUM(si.received::numeric), 0) AS v
-          FROM sale_orders so
-          JOIN sale_items si ON si.sale_order_id = so.sale_order_id
+          SELECT COALESCE(SUM(sop.amount::numeric), 0) AS v
+          FROM sale_order_payments sop
+          JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
           JOIN client_wechat_users c ON c.user_id = so.client_user_id
           WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
-            AND so.sale_order_type IN ('销售单', '转换单')
-            AND so.status = '已支付'
+            AND sop.status = '已支付'
+            AND sop.change_type IN ('首次支付', '回款', '退款')
+            AND so.sale_order_type IN ('销售单', '转换单', '充值单')
+            AND so.legacy_source IS DISTINCT FROM 'workfine'
             AND c.customer_type = '会员客'
             AND c.became_member_at::date >= ${range.start}
-            AND so.paid_at::date BETWEEN ${range.start} AND ${range.end}
+            AND sop.paid_at::date BETWEEN ${range.start} AND ${range.end}
         `),
       )
 
     /**
-     * 流量客业绩：sale_items SUM(received)，customer_type = '流量客'（仅纯流量客；说明见文件头）。
+     * 流量客业绩：付款流水 SUM(amount)，customer_type = '流量客'（仅纯流量客；说明见文件头）。
      */
     const runTrafficCustomerRevenue = async (range: ResolvedRange) =>
       scalar(
         await db.execute(sql`
-          SELECT COALESCE(SUM(si.received::numeric), 0) AS v
-          FROM sale_orders so
-          JOIN sale_items si ON si.sale_order_id = so.sale_order_id
+          SELECT COALESCE(SUM(sop.amount::numeric), 0) AS v
+          FROM sale_order_payments sop
+          JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
           JOIN client_wechat_users c ON c.user_id = so.client_user_id
           WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
-            AND so.sale_order_type IN ('销售单', '转换单')
-            AND so.status = '已支付'
+            AND sop.status = '已支付'
+            AND sop.change_type IN ('首次支付', '回款', '退款')
+            AND so.sale_order_type IN ('销售单', '转换单', '充值单')
+            AND so.legacy_source IS DISTINCT FROM 'workfine'
             AND c.customer_type = '流量客'
-            AND so.paid_at::date BETWEEN ${range.start} AND ${range.end}
+            AND sop.paid_at::date BETWEEN ${range.start} AND ${range.end}
         `),
       )
 
@@ -290,15 +297,17 @@ export const getSalesBoard = withPermission(
           AND (s.resigned_at IS NULL OR s.resigned_at::date > ${cur.end})
         GROUP BY s.store_id
       `),
-      // 业绩（订单层）
+      // 业绩（付款流水现金流）
       db.execute(sql`
-        SELECT so.store_id, COALESCE(SUM(so.received::numeric - COALESCE(so.refunded_amount, 0)::numeric), 0) AS v
-        FROM sale_orders so
+        SELECT so.store_id, COALESCE(SUM(sop.amount::numeric), 0) AS v
+        FROM sale_order_payments sop
+        JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
         WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
-          AND so.sale_order_type IN ('销售单', '转换单')
-          AND so.status = '已支付'
+          AND sop.status = '已支付'
+          AND sop.change_type IN ('首次支付', '回款', '退款')
+          AND so.sale_order_type IN ('销售单', '转换单', '充值单')
           AND so.legacy_source IS DISTINCT FROM 'workfine'
-          AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
+          AND sop.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
         GROUP BY so.store_id
       `),
       // 生美业绩（行级）
@@ -313,31 +322,35 @@ export const getSalesBoard = withPermission(
           AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
         GROUP BY so.store_id
       `),
-      // 新增会员业绩（行级 + 客型）
+      // 新增会员业绩（付款流水 + 客型）
       db.execute(sql`
-        SELECT so.store_id, COALESCE(SUM(si.received::numeric), 0) AS v
-        FROM sale_orders so
-        JOIN sale_items si ON si.sale_order_id = so.sale_order_id
+        SELECT so.store_id, COALESCE(SUM(sop.amount::numeric), 0) AS v
+        FROM sale_order_payments sop
+        JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
         JOIN client_wechat_users c ON c.user_id = so.client_user_id
         WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
-          AND so.sale_order_type IN ('销售单', '转换单')
-          AND so.status = '已支付'
+          AND sop.status = '已支付'
+          AND sop.change_type IN ('首次支付', '回款', '退款')
+          AND so.sale_order_type IN ('销售单', '转换单', '充值单')
+          AND so.legacy_source IS DISTINCT FROM 'workfine'
           AND c.customer_type = '会员客'
           AND c.became_member_at::date >= ${cur.start}
-          AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
+          AND sop.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
         GROUP BY so.store_id
       `),
-      // 流量客业绩（行级 + 客型）
+      // 流量客业绩（付款流水 + 客型）
       db.execute(sql`
-        SELECT so.store_id, COALESCE(SUM(si.received::numeric), 0) AS v
-        FROM sale_orders so
-        JOIN sale_items si ON si.sale_order_id = so.sale_order_id
+        SELECT so.store_id, COALESCE(SUM(sop.amount::numeric), 0) AS v
+        FROM sale_order_payments sop
+        JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
         JOIN client_wechat_users c ON c.user_id = so.client_user_id
         WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
-          AND so.sale_order_type IN ('销售单', '转换单')
-          AND so.status = '已支付'
+          AND sop.status = '已支付'
+          AND sop.change_type IN ('首次支付', '回款', '退款')
+          AND so.sale_order_type IN ('销售单', '转换单', '充值单')
+          AND so.legacy_source IS DISTINCT FROM 'workfine'
           AND c.customer_type = '流量客'
-          AND so.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
+          AND sop.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
         GROUP BY so.store_id
       `),
       // 实耗

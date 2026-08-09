@@ -3,7 +3,6 @@
 import { useState, useCallback, useMemo } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { toast } from "sonner";
 import type { Employee, OrgNode, SkillTag } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,8 +17,6 @@ import { formatPhone, buildOrgPath } from "@/lib/utils";
 import { useUrlFilters } from "@/lib/hooks/use-url-filters";
 import { filterValidSkillValues } from "@/lib/list-filters";
 import { ExportButton } from "@/components/ui/export-button";
-import { exportEmployees } from "@/actions/employees";
-import { exportToXlsx, fmtDate, maskIdCard } from "@/lib/export-xlsx";
 import SkillTagManagementDialog from "./skill-tag-management-dialog";
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50];
@@ -52,42 +49,6 @@ export default function EmployeesPage({
     [skillTags],
   );
   const searchParams = useSearchParams();
-
-  /** 导出当前筛选命中的全部员工（跨分页，身份证脱敏） */
-  const handleExport = useCallback(async () => {
-    const raw = Object.fromEntries(searchParams.entries());
-    // 清洗失效标签：exportEmployees 独立解析 URL，须经与列表同源的清洗，防导出幽灵筛选
-    if (raw.skill) {
-      const rawSkills = raw.skill.split(",").map((s) => s.trim()).filter(Boolean);
-      const valid = filterValidSkillValues(rawSkills, validSkillNames);
-      raw.skill = valid?.length ? valid.join(",") : "";
-    }
-    const { rows } = await exportEmployees(raw);
-    if (rows.length === 0) {
-      toast.info("当前筛选无数据可导出");
-      return;
-    }
-    await exportToXlsx({
-      filename: "员工",
-      sheetName: "员工",
-      columns: [
-        { header: "员工编号", width: 16, accessor: (r) => r.employeeId },
-        { header: "姓名", accessor: (r) => r.name },
-        { header: "性别", width: 8, accessor: (r) => r.gender },
-        { header: "手机号", width: 14, accessor: (r) => r.phone },
-        { header: "身份证(后4位)", width: 14, accessor: (r) => maskIdCard(r.idCard) },
-        { header: "所属组织", width: 18, accessor: (r) => buildOrgPath(r.orgNodeId, orgNodes) },
-        { header: "所属门店", width: 18, accessor: (r) => r.storeName },
-        { header: "职位", accessor: (r) => r.positionName },
-        { header: "生日", width: 14, accessor: (r) => fmtDate(r.birthday) },
-        { header: "技能", width: 24, accessor: (r) => r.skills },
-        { header: "社保", width: 8, accessor: (r) => (r.socialInsurance ? "是" : "否") },
-        { header: "在职状态", width: 10, accessor: (r) => (r.isResigned ? "已离职" : "在职") },
-        { header: "离职原因", width: 24, accessor: (r) => r.resignationReason },
-      ],
-      rows,
-    });
-  }, [searchParams, orgNodes, validSkillNames]);
 
   /** 筛选变更时重置到第 1 页 */
   const setFilter = useCallback(
@@ -262,7 +223,12 @@ export default function EmployeesPage({
           onChange={(e) => handleSearchChange(e.target.value)}
           className="max-w-xs"
         />
-        <ExportButton onExport={handleExport} />
+        <ExportButton
+          exportRequest={{
+            exportType: "employees",
+            payload: Object.fromEntries(searchParams.entries()),
+          }}
+        />
       </div>
 
       <DataTable columns={columns} data={employees} />
