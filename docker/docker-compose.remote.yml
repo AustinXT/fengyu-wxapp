@@ -1,4 +1,4 @@
-# docker-compose.remote.yml — 远程 admin 覆盖层（dev / prod 共用）
+# docker-compose.remote.yml — 远程 admin / analyst 覆盖层（dev / prod 共用）
 #
 # 用法由 .claude/skills/remote-deploy/deploy-admin.sh 统一封装：
 # 它会从 envs/<env>.env 生成仅含 DEPLOY_CLOUDBASE_ENV_ID / DEPLOY_CDN_BASE 的
@@ -20,6 +20,24 @@ services:
       # 与目标环境一致：worker 写入、admin 换取临时 URL 必须使用同一个 CloudBase 桶。
       CLOUDBASE_ENV_ID: ${DEPLOY_CLOUDBASE_ENV_ID:?deploy runtime env missing CLOUDBASE_ENV_ID}
       CDN_BASE: ${DEPLOY_CDN_BASE:?deploy runtime env missing CDN_BASE}
+    depends_on: !reset []
+
+  analyst:
+    environment:
+      DATABASE_URL: ${ADMIN_DATABASE_URL}
+      JWT_SECRET: ${ADMIN_JWT_SECRET:?remote .env missing ADMIN_JWT_SECRET}
+      ADMIN_LOGIN_URL: ${ANALYST_ADMIN_LOGIN_URL:-http://localhost:3000/login}
+      NEXT_PUBLIC_ADMIN_ORIGIN: ${ANALYST_ADMIN_ORIGIN:-http://localhost:3000}
+      NEXT_PUBLIC_ANALYST_ORIGIN: ${ANALYST_PUBLIC_ORIGIN:-http://localhost:3001}
+      ANALYST_VIEW_ACTION: ${ANALYST_VIEW_ACTION:-data_center:dashboard}
+      ANALYST_CHAT_ACTION: ${ANALYST_CHAT_ACTION:-data_center:dashboard}
+      ANALYST_EXPORT_ACTION: ${ANALYST_EXPORT_ACTION:-data_center:dashboard}
+      MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
+      MINIMAX_BASE_URL: ${MINIMAX_BASE_URL:-https://api.minimaxi.com/v1}
+      MINIMAX_MODEL: ${MINIMAX_MODEL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
     depends_on: !reset []
 
   cron-worker:

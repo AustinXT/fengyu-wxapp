@@ -43,6 +43,13 @@
       "when": 1786273842145,
       "tag": "0005_flowery_thor_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786296489408,
+      "tag": "0006_analyst_chat_persistence",
+      "breakpoints": true
     }
   ]
 }
