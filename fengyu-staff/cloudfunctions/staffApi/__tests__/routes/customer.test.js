@@ -579,7 +579,7 @@ describe('customer.detail', () => {
     const sql = consumptionCall[0]
     expect(sql).toMatch(/CASE[\s\S]*WHEN/)
     expect(sql).toContain('EXISTS (SELECT 1 FROM sale_items')
-    expect(sql).toContain("o.status IN ('已支付', '部分支付')")
+    expect(sql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
     expect(sql).toContain('FROM service_orders so')
     expect(sql).toContain('JOIN service_items sit ON sit.service_order_id = so.service_order_id')
     expect(sql).toContain("so.status = '已完成'")
@@ -793,13 +793,33 @@ describe('customer.paidOrders', () => {
     const orderSql = pg.query.mock.calls.map((c) => c[0]).find((sql) =>
       /FROM\s+sale_orders\s+o/.test(sql) && /ORDER BY\s+o\.paid_at\s+DESC/.test(sql)
     )
-    expect(orderSql).toContain("o.status IN ('已支付', '部分支付')")
+    expect(orderSql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
     expect(ctx.result).toHaveLength(1)
     expect(ctx.result[0].saleOrderId).toBe('SO-PARTIAL')
     expect(ctx.result[0].status).toBe('部分支付')
     expect(ctx.result[0].items[0].totalSessions).toBe(15)
     expect(ctx.result[0].items[0].paidSessions).toBe(10)
     expect(ctx.result[0].items[0].remainingSessions).toBe(15)
+  })
+
+  test('已完成销售单仍作为有效订单返回', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-completed' })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([{
+        sale_order_id: 'SO-WORKFINE-COMPLETED', status: '已完成', paid_at: '2026-07-01T10:00:00Z',
+      }])
+      .mockResolvedValueOnce([{
+        sale_order_id: 'SO-WORKFINE-COMPLETED', sale_item_id: 'item-completed', store_id: 'store-001',
+        session_count: 10, remaining_sessions: 6, paid_sessions: 10,
+        product_type: '疗程卡', product_name: '历史疗程卡', unit_real_price: '100.00',
+      }])
+
+    await customerRoutes.paidOrders(ctx)
+
+    const orderSql = pg.query.mock.calls[1][0]
+    expect(orderSql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
+    expect(ctx.result).toMatchObject([{ saleOrderId: 'SO-WORKFINE-COMPLETED', status: '已完成' }])
   })
 
   test('paidOrders SQL 守卫：权益明细包含购买行和转换单转入行，排除转出行', async () => {

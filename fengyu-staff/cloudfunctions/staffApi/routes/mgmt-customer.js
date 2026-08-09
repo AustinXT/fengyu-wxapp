@@ -602,11 +602,11 @@ async function paidOrders(ctx) {
   validateManagementScope(ctx.auth, scopeType, scopeId)
 
   // 交易数据跟顾客走：解析顾客 + 越权守卫（bound_store_id ∈ scope），放开门店过滤、按顾客查全量
-  // 状态口径：有效收款订单（已支付 + 部分支付），部分支付疗程卡按 paid_sessions 限额核销。
-  // 注：sale_orders.status 从未被置为 '已完成'（'已完成' 仅用于 service_orders），故不在过滤之列。
+  // 状态口径：有效收款订单（已支付 + 部分支付 + 已完成），部分支付疗程卡按 paid_sessions 限额核销。
+  // WorkFine 历史导入及退款归零后的销售单都可能是 '已完成'，仍须计入有效订单。
   const resolvedUserId = await resolveCustomerInScope(clientUserId, clientPhone, scopeType, scopeId)
   const params = [resolvedUserId]
-  const whereClause = `o.status IN ('已支付', '部分支付') AND o.client_user_id = $1`
+  const whereClause = `o.status IN ('已支付', '部分支付', '已完成') AND o.client_user_id = $1`
 
   const orders = await pg.query(
     `SELECT o.sale_order_id, o.status, o.paid_at, o.store_id, s.store_name, o.sale_order_type

@@ -1239,6 +1239,60 @@ describe("STEP 1 分支 A received=Σreceipt SQL 四端字节同义守护", () =
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Block 7b'': STEP 1 覆盖判断与回退退款扣减四端同义
+//   覆盖判断只能用正向 receipt 对齐 sale_orders.received 毛实收；退款负 receipt 只参与
+//   分支 A 的行级净额重建。否则 +100/-40 会误判 receipt 不完整并回退到退款前次数。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('STEP 1 receipt 覆盖判断与回退退款扣减四端守护', () => {
+  const MARKER_RECEIPT_COVERAGE = 'AS receipt_positive_total'
+  let coverageSqls
+
+  beforeAll(() => {
+    coverageSqls = {
+      staff: normalizeSql(extractBacktickStringContaining(readFile(FILES.staffPaidSessionsJs), MARKER_RECEIPT_COVERAGE)),
+      client: normalizeSql(extractBacktickStringContaining(readFile(FILES.clientPaidSessionsJs), MARKER_RECEIPT_COVERAGE)),
+      payNotify: normalizeSql(extractBacktickStringContaining(readFile(FILES.payNotifyPaidSessionsJs), MARKER_RECEIPT_COVERAGE)),
+      adminTs: normalizeSql(extractBacktickStringContaining(readFile(FILES.adminPaidSessionsTs), MARKER_RECEIPT_COVERAGE)),
+    }
+  })
+
+  test('四端覆盖判断只累计正向首次支付/回款/储值卡抵扣，并与订单毛实收比较', () => {
+    for (const sql of Object.values(coverageSqls)) {
+      expect(sql).toMatch(/sop\.change_type IN\s*\('首次支付','回款','储值卡抵扣'\)/)
+      expect(sql).not.toContain("'退款'")
+      expect(sql).toMatch(/SELECT received::numeric FROM sale_orders WHERE sale_order_id = \?/)
+    }
+  })
+
+  test('覆盖判断 SQL 四端归一化后字面相同', () => {
+    expect(coverageSqls.client).toBe(coverageSqls.staff)
+    expect(coverageSqls.payNotify).toBe(coverageSqls.staff)
+    expect(coverageSqls.adminTs).toBe(coverageSqls.staff)
+  })
+
+  test('三个 pg 副本的 Branch B 都在瀑布后实际执行 note.items[].refundAmount 扣减', () => {
+    for (const source of [
+      readFile(FILES.staffPaidSessionsJs),
+      readFile(FILES.clientPaidSessionsJs),
+      readFile(FILES.payNotifyPaidSessionsJs),
+    ]) {
+      expect(source).toMatch(/^\s*await client\.query\(RECEIVED_REFUNDED_DEDUCT_SQL, \[saleOrderId\]\)$/m)
+    }
+  })
+
+  test('admin 的 Branch B 也在瀑布后实际执行逐项退款扣减', () => {
+    const source = readFile(FILES.adminPaidSessionsTs)
+    const allocationIndex = source.indexOf('WITH tg AS')
+    const refundDeductIndex = source.indexOf('WITH refund_items AS', allocationIndex)
+    const paidRecalcIndex = source.indexOf('paid_sessions = CASE', refundDeductIndex)
+    expect(allocationIndex).toBeGreaterThan(-1)
+    expect(refundDeductIndex).toBeGreaterThan(allocationIndex)
+    expect(paidRecalcIndex).toBeGreaterThan(refundDeductIndex)
+    expect(source.slice(refundDeductIndex - 80, refundDeductIndex)).toMatch(/await tx\.execute\(sql`\s*$/)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Block 7b'': STEP 2.5 0 元 item 全退 paid_sessions 覆盖
 //   0 元赠送/寄存 item 的公式兜底会给满 paid_sessions；退款 note.items[] 明确标记
 //   isFullItemRefund=true 时必须覆盖为 0，避免已退赠送卡继续在卡包出现。
@@ -1826,14 +1880,13 @@ describe('2026-07-21 per-item-refund 行级退款聚合 SQL 四端一致性', ()
 // PR #74 meta：cross-end-sql-snapshot 反模式守护（防镜像 bug 字面锁定失效）
 //
 // 背景（测试夹具缺陷）：snapshot 仅做四端字面比对。若四端 SQL 同时被引入同一
-// 同形 bug（如 SUM(amount)::int 截断 bigint / rollup ELSE NULL 覆盖旧值），
+// 同形 bug（如 SUM(amount)::int 截断 bigint / 全额退款后 rollup 保留旧状态），
 // 字面仍然一致 → snapshot PASS，夹具形同虚设。本块对「已知反模式」做
 // not-to-contain 特征守护：任一端拷贝回退到反模式立即失败（即使四端完全一致）。
 //
 // 已知反模式（PR #74 已修复，防回退）：
 //   1. granted SQL 用 ::int 截断 SUM(amount)（应 ::bigint）— g03
-//   2. 营业额分配 rollup 用 ELSE NULL::allocation_status 覆盖订单旧值
-//      （应 ELSE allocation_status 保留旧值）— g05
+//   2. 全额退款后 rollup 保留订单旧 allocation_status，造成父子状态不一致。
 // ─────────────────────────────────────────────────────────────────────────────
 describe('cross-end-sql-snapshot 反模式守护（防镜像 bug 字面锁定失效）', () => {
   let grantedSqls
@@ -1870,14 +1923,14 @@ describe('cross-end-sql-snapshot 反模式守护（防镜像 bug 字面锁定失
     }
   })
 
-  // 反模式 2：订单 rollup 不得用 ELSE NULL 覆盖 allocation_status（应保留旧值）
-  test('四端 rollup 不得用 ELSE NULL::allocation_status 覆盖订单旧值（应 ELSE allocation_status，防 g05 回退）', () => {
+  // 反模式 2：子付款状态全部清空后，父订单也必须清空。
+  test('四端 rollup 在无待/已分配子付款时必须归 NULL', () => {
     for (const [end, sql] of Object.entries(allocRollupSqls)) {
-      expect(sql, `${end} rollup 用 ELSE NULL::allocation_status 覆盖订单 allocation_status，应改 ELSE allocation_status`).not.toContain(
-        'ELSE NULL::allocation_status',
+      expect(sql, `${end} rollup 缺少无子付款状态时清空父订单的分支`).toMatch(
+        /ELSE\s+NULL::allocation_status\s+END/,
       )
-      expect(sql, `${end} rollup 缺少保留旧值分支 ELSE allocation_status END`).toMatch(/ELSE\s+allocation_status\s+END/)
+      expect(sql, `${end} rollup 不得保留已失效的父订单 allocation_status`).not.toMatch(
+        /ELSE\s+allocation_status\s+END/)
     }
   })
 })
-

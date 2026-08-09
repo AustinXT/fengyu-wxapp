@@ -122,22 +122,15 @@ function hasHeadquartersScope(roleBindings) {
  * 展开所有 scope 到可见门店列表（去重）
  * 规则：
  *  - 总部 scope → 全部 stores
- *  - 市场 scope → 仅直接子门店（stores JOIN org_nodes，父节点 ∈ 市场根且 type='门店'）
- *    —— 不递归展开子树，防止市场角色跨下级市场/门店权限扩张
- *  - 门店 scope → 绑定门店自身（默认递归 CTE 展开；recursive=false 时直接按 org_node_id 反查）
+ *  - 市场/门店 scope → 绑定节点自身及任意层级后代关联的 stores
  *  - 部门 scope → 忽略
  *
  * @param {Array<{role: string, scopeId: string, scopeType: string}>} roleBindings
  * @param {{query: Function}} pg
- * @param {{recursive?: boolean}} [options] - 门店根节点是否按递归子树展开（默认 true）。
- *   市场根节点恒按直接子门店查询，不受该参数影响。
  * @returns {Promise<string[]>}
  */
-async function expandScopeStoreIds(roleBindings, pg, options = {}) {
+async function expandScopeStoreIds(roleBindings, pg) {
   if (!Array.isArray(roleBindings) || roleBindings.length === 0) return []
-
-  // 默认 true：门店根节点按递归 CTE 展开；false 退化为直接按 org_node_id 反查。
-  const recursive = options.recursive !== false
 
   const store = new Set()
   let hqExpanded = false
@@ -154,39 +147,19 @@ async function expandScopeStoreIds(roleBindings, pg, options = {}) {
 
   if (hqExpanded) return Array.from(store)
 
-  const marketIds = []
-  const storeNodeIds = []
+  const rootNodeIds = []
   for (const rb of roleBindings) {
-    if (rb.scopeType === '市场' && rb.scopeId) marketIds.push(rb.scopeId)
-    else if (rb.scopeType === '门店' && rb.scopeId) storeNodeIds.push(rb.scopeId)
+    if ((rb.scopeType === '市场' || rb.scopeType === '门店') && rb.scopeId) {
+      rootNodeIds.push(rb.scopeId)
+    }
   }
 
-  let paramIndex = 1
-
-  // 市场 scope：仅直接子门店，不递归展开子树。
-  if (marketIds.length > 0) {
+  if (rootNodeIds.length > 0) {
     const rows = rowsOf(await pg.query(
       `SELECT DISTINCT s.store_id
        FROM stores s
-       JOIN org_nodes o ON s.org_node_id = o.id
-       WHERE o.parent_id = ANY($${paramIndex}::text[]) AND o.type = '门店'`,
-      [Array.from(new Set(marketIds))],
-    ))
-    for (const r of rows) store.add(r.store_id)
-    paramIndex += 1
-  }
-
-  // 门店 scope：默认递归 CTE（保留 subtree 语义）；recursive=false 时直接按 org_node_id 反查。
-  if (storeNodeIds.length > 0) {
-    const rows = rowsOf(await pg.query(
-      recursive
-        ? `SELECT DISTINCT s.store_id
-           FROM stores s
-           WHERE ${descendantStoresSqlForRoots('s.store_id', paramIndex)}`
-        : `SELECT store_id
-           FROM stores
-           WHERE org_node_id = ANY($${paramIndex}::text[])`,
-      [Array.from(new Set(storeNodeIds))],
+       WHERE ${descendantStoresSqlForRoots('s.store_id', 1)}`,
+      [Array.from(new Set(rootNodeIds))],
     ))
     for (const r of rows) store.add(r.store_id)
   }
@@ -271,34 +244,20 @@ function buildStoreScopeCondition(auth, column, startIndex = 1) {
 }
 
 /**
- * 校验管理层请求 scope（scopeType / scopeId）是否在账号角色绑定的 scope 内。
+ * 校验管理层请求 scope（scopeType / scopeId）是否在账号全部角色绑定的 scope 内。
  *
- * - 门店店长（store_manager）：仅允许 store，且 scopeId ∈ managerStoreIds；
- *   不使用 scopeStoreIds 并集，防止「manager@门店A + 其他角色@门店B」越权访问 B；
  * - all：仅总部 scope 可选；
  * - market：必须是 scopeOrgNodeIds 中的市场节点；
  * - store：必须在 scopeStoreIds 中。
  *
- * 管理层数据不使用 managerStoreIds（该集合只服务门店模式下店长写操作），
- * 但门店店长进入管理层视图时仍按 managerStoreIds 收紧门店范围。
+ * 管理层数据不使用 managerStoreIds。该集合只服务门店模式下的店长写操作，
+ * 以便拥有多个角色绑定的员工按全部 scope 查看数据中心。
  *
- * @param {{staffLevel: string, roleBindings: Array, scopeStoreIds: string[], scopeOrgNodeIds: string[], managerStoreIds: string[]}} auth
+ * @param {{roleBindings: Array, scopeStoreIds: string[], scopeOrgNodeIds: string[]}} auth
  * @param {string} scopeType 'all' | 'market' | 'store'
  * @param {string} [scopeId]
  */
 function validateManagementScope(auth, scopeType, scopeId) {
-  // 门店店长专用分支：仅可查看所辖门店（managerStoreIds），all/market 一律拒绝。
-  if (auth.staffLevel === LEVEL_STORE_MANAGER) {
-    if (scopeType === 'store') {
-      const allowed = auth.managerStoreIds || []
-      if (!allowed.includes(scopeId)) {
-        throw new Error('PERMISSION_DENIED: 越权访问其他门店数据')
-      }
-      return
-    }
-    throw new Error('PERMISSION_DENIED: 店长账号仅可查看所辖门店')
-  }
-
   if (scopeType === 'all') {
     if (!hasHeadquartersScope(auth.roleBindings)) {
       throw new Error('PERMISSION_DENIED: 无权查看全部市场数据')

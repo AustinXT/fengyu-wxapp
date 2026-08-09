@@ -175,7 +175,7 @@ describe('validateManagementScope', () => {
     scopeStoreIds: ['s1'],
     scopeOrgNodeIds: ['m1', 'm1-child'],
   }
-  // 边缘：manager@门店A + customer_mgr@门店B → 管理层门店范围按 managerStoreIds 收紧。
+  // 边缘：manager@门店A + customer_mgr@门店B → 管理层使用全部 scopeStoreIds。
   const storeManagerAuth = {
     staffLevel: 'store_manager',
     roleBindings: [
@@ -213,9 +213,9 @@ describe('validateManagementScope', () => {
     expect(() => validateManagementScope(marketAuth, 'store', 'sOther')).toThrow(/PERMISSION_DENIED/)
   })
 
-  test('门店级账号：仅可查看 managerStoreIds 内所辖门店（不能越权到其他角色门店）', () => {
+  test('门店店长管理层：使用全部角色的 scopeStoreIds，不受 managerStoreIds 收紧', () => {
     expect(() => validateManagementScope(storeManagerAuth, 'store', 'A')).not.toThrow()
-    expect(() => validateManagementScope(storeManagerAuth, 'store', 'B')).toThrow(/PERMISSION_DENIED/)
+    expect(() => validateManagementScope(storeManagerAuth, 'store', 'B')).not.toThrow()
   })
   test('无总部 scope 的门店级账号：all 拒绝', () => {
     expect(() => validateManagementScope(storeManagerAuth, 'all', null)).toThrow(/PERMISSION_DENIED/)
@@ -249,19 +249,22 @@ describe('expandScopeStoreIds', () => {
     expect(pg.query.mock.calls[0][0]).toMatch(/FROM stores/i)
   })
 
-  test('市场 scope → 仅直接子门店（不递归展开子树）', async () => {
+  test('市场 scope → 递归包含嵌套市场下的门店', async () => {
     const pg = {
-      query: vi.fn().mockResolvedValueOnce([{ store_id: 'S1' }, { store_id: 'S2' }]),
+      query: vi.fn().mockResolvedValueOnce([
+        { store_id: 'S-direct' },
+        { store_id: 'S-nested-market' },
+      ]),
     }
     const result = await expandScopeStoreIds(
       [{ role: 'hr', scopeId: 'market-1', scopeType: '市场' }],
       pg
     )
-    expect(result.sort()).toEqual(['S1', 'S2'])
+    expect(result.sort()).toEqual(['S-direct', 'S-nested-market'])
     expect(pg.query).toHaveBeenCalledTimes(1)
-    expect(pg.query.mock.calls[0][0]).toContain('o.parent_id = ANY($1::text[])')
-    expect(pg.query.mock.calls[0][0]).toContain("o.type = '门店'")
-    expect(pg.query.mock.calls[0][0]).not.toContain('WITH RECURSIVE')
+    expect(pg.query.mock.calls[0][0]).toContain('WITH RECURSIVE descendants')
+    expect(pg.query.mock.calls[0][0]).toContain('child.parent_id = descendants.id')
+    expect(pg.query.mock.calls[0][0]).toContain('unnest($1::text[])')
     expect(pg.query.mock.calls[0][1]).toEqual([['market-1']])
   })
 
@@ -274,22 +277,7 @@ describe('expandScopeStoreIds', () => {
       pg
     )
     expect(result).toEqual(['S1'])
-    expect(pg.query.mock.calls[0][1]).toEqual([['org-node-store-1']])
-  })
-
-  test('门店 scope + recursive=false → 直接按 org_node_id 反查（不递归）', async () => {
-    const pg = {
-      query: vi.fn().mockResolvedValueOnce([{ store_id: 'S1' }]),
-    }
-    const result = await expandScopeStoreIds(
-      [{ role: 'manager', scopeId: 'org-node-store-1', scopeType: '门店' }],
-      pg,
-      { recursive: false }
-    )
-    expect(result).toEqual(['S1'])
-    expect(pg.query).toHaveBeenCalledTimes(1)
-    expect(pg.query.mock.calls[0][0]).toContain('WHERE org_node_id = ANY($1::text[])')
-    expect(pg.query.mock.calls[0][0]).not.toContain('WITH RECURSIVE')
+    expect(pg.query.mock.calls[0][0]).toContain('WITH RECURSIVE descendants')
     expect(pg.query.mock.calls[0][1]).toEqual([['org-node-store-1']])
   })
 
@@ -308,7 +296,7 @@ describe('expandScopeStoreIds', () => {
     expect(pg.query).toHaveBeenCalledTimes(1) // 总部短路
   })
 
-  test('市场 + 门店组合 → 市场直接子门店 + 门店递归 两次查询并集去重', async () => {
+  test('市场 + 门店组合 → 单次递归查询并集去重', async () => {
     const pg = {
       query: vi
         .fn()
@@ -316,8 +304,8 @@ describe('expandScopeStoreIds', () => {
           { store_id: 'S1' },
           { store_id: 'S2' },
           { store_id: 'S2' },
-        ]) // 市场直接子门店
-        .mockResolvedValueOnce([{ store_id: 'S3' }]), // 门店递归
+          { store_id: 'S3' },
+        ]),
     }
     const result = await expandScopeStoreIds(
       [
@@ -327,16 +315,11 @@ describe('expandScopeStoreIds', () => {
       pg
     )
     expect(result.sort()).toEqual(['S1', 'S2', 'S3'])
-    expect(pg.query).toHaveBeenCalledTimes(2)
-    // 市场根：直接子门店，无递归
-    expect(pg.query.mock.calls[0][0]).toContain('o.parent_id = ANY($1::text[])')
-    expect(pg.query.mock.calls[0][0]).toContain("o.type = '门店'")
-    expect(pg.query.mock.calls[0][0]).not.toContain('WITH RECURSIVE')
-    expect(pg.query.mock.calls[0][1]).toEqual([['m1']])
-    // 门店根：保留递归
-    expect(pg.query.mock.calls[1][0]).toContain('WITH RECURSIVE descendants')
-    expect(pg.query.mock.calls[1][0]).toContain('unnest($2::text[])')
-    expect(pg.query.mock.calls[1][1]).toEqual([['sn3']])
+    expect(pg.query).toHaveBeenCalledTimes(1)
+    expect(pg.query.mock.calls[0][0]).toContain('WITH RECURSIVE descendants')
+    expect(pg.query.mock.calls[0][0]).toContain('unnest($1::text[])')
+    expect(pg.query.mock.calls[0][0]).not.toContain('unnest($2::text[])')
+    expect(pg.query.mock.calls[0][1]).toEqual([['m1', 'sn3']])
   })
 
   test('部门 scope 忽略，不触发查询', async () => {

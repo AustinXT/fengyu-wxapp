@@ -529,7 +529,8 @@ async function getTopProduct(clientUserId) {
  * - 有明细的订单：汇总 sale_items.received（精确到品项）
  * - 无明细的历史订单：使用 sale_orders.received（订单级汇总）
  *
- * 状态口径：'已支付', '部分支付'（与 paidOrders 对齐；sale_orders.status 从未被置为 '已完成'）
+ * 状态口径：'已支付', '部分支付', '已完成'（与 paidOrders 对齐）。
+ * WorkFine 历史导入及退款归零后的销售单都可能是 '已完成'，仍须计入有效订单。
  */
 async function getConsumptionStats(clientUserId) {
   if (!clientUserId) {
@@ -564,7 +565,7 @@ async function getConsumptionStats(clientUserId) {
          END
        ), 0) AS year_total
        FROM sale_orders o
-       WHERE o.status IN ('已支付', '部分支付') AND o.client_user_id = $1
+       WHERE o.status IN ('已支付', '部分支付', '已完成') AND o.client_user_id = $1
      ), actual_stats AS (
        SELECT
          COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS total_actual_consumption,
@@ -620,18 +621,17 @@ async function paidOrders(ctx) {
   }
 
   // 交易数据跟顾客走：放开订单门店过滤，按顾客查全量（含跨门店订单/卡）
-  // 状态口径：有效收款订单（已支付 + 部分支付）。部分支付疗程卡按 paid_sessions 限额核销（与 service.create 后端、
+  // 状态口径：有效收款订单（已支付 + 部分支付 + 已完成）。部分支付疗程卡按 paid_sessions 限额核销（与 service.create 后端、
   //   admin getAvailableSaleItems 一致）；待支付单 paid_sessions=0，不进入可核销卡数据源。
-  // 注：sale_orders.status 从未被置为 '已完成'（'已完成' 仅用于 service_orders），故不在过滤之列。
   let whereClause, params;
   if (clientUserId) {
-    whereClause = "o.status IN ('已支付', '部分支付') AND o.client_user_id = $1";
+    whereClause = "o.status IN ('已支付', '部分支付', '已完成') AND o.client_user_id = $1";
     params = [clientUserId];
   } else {
     // 极端：手机号无对应顾客（如有 client_phone 无账户的 legacy 单）——无顾客可绑，数据不「跟顾客走」，
     // 退回门店 scope 过滤，否则任意已绑定员工可凭手机号枚举全门店已支付订单（越权）。
     const scope = buildStoreScopeCondition(ctx.auth, "o.store_id", 2);
-    whereClause = `o.status IN ('已支付', '部分支付') AND o.client_phone = $1 AND ${scope.sql}`;
+    whereClause = `o.status IN ('已支付', '部分支付', '已完成') AND o.client_phone = $1 AND ${scope.sql}`;
     params = [clientPhone, ...scope.params];
   }
 

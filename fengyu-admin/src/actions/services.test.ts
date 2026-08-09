@@ -538,11 +538,11 @@ describe('getAvailableSaleItems — 疗程卡权益列表', () => {
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  it('SQL 守卫：有效权益订单仅包含已支付、部分支付，并按已付未用过滤', () => {
+  it('SQL 守卫：有效权益订单包含已支付、部分支付、已完成，并按已付未用过滤', () => {
     const source = readFileSync('src/actions/services.ts', 'utf8')
     const fnSource = source.slice(source.indexOf('export const getAvailableSaleItems'), source.indexOf('/** C4: 开始服务'))
 
-    expect(fnSource).toContain("o.status IN ('已支付', '部分支付')")
+    expect(fnSource).toContain("o.status IN ('已支付', '部分支付', '已完成')")
     expect(fnSource).toContain("si.paid_sessions IS NULL")
     expect(fnSource).toContain("si.paid_sessions > (si.session_count - si.remaining_sessions)")
   })

@@ -1465,7 +1465,7 @@ describe('order.appointableItems', () => {
     await routes.appointableItems(ctx)
 
     const sql = pg.query.mock.calls[0][0]
-    expect(sql).toContain("o.status IN ('已支付', '部分支付')")
+    expect(sql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
     expect(ctx.result.orders[0].orderStatus).toBe('部分支付')
     expect(ctx.result.orders[0].items[0].paidSessions).toBe(2)
   })
@@ -1483,14 +1483,14 @@ describe('order.appointableItems', () => {
     expect(sql).not.toContain("si.item_direction = '转出'")
   })
 
-  test('SQL 守卫：默认可预约查询仅纳入已支付/部分支付订单，并按已付未用次数过滤', async () => {
+  test('SQL 守卫：默认可预约查询纳入已完成销售单，并按已付未用次数过滤', async () => {
     pg.query.mockResolvedValueOnce([])
 
     const ctx = createBoundCtx({})
     await routes.appointableItems(ctx)
 
     const sql = pg.query.mock.calls[0][0]
-    expect(sql).toContain("o.status IN ('已支付', '部分支付')")
+    expect(sql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
     expect(sql).toContain('si.paid_sessions IS NULL')
     expect(sql).toContain('si.paid_sessions > (si.session_count - si.remaining_sessions)')
   })

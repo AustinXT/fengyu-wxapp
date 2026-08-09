@@ -1001,10 +1001,7 @@ describe('order.create', () => {
     expect(ctx.result.totalAmount).toBe(800)  // 会员客使用 special_price（会员价）而非标价 price
   })
 
-  test('疗程卡阶梯价封顶：30次8800购买2份（60次）整组封顶为套餐总价8800', async () => {
-    // 封顶语义（PR #74 g04）：tier 线性分摊丢失封顶。当 lineSessions > tierSessions 时，
-    // 线性外推（8800×60/30=17600）会超出所匹配阶梯套餐总价（tierAmount=8800），须截断为 8800。
-    // 即买多次超阶梯次数时，整组金额按该阶梯套餐总价封顶，不再按次数线性外推。
+  test('疗程卡阶梯价按总价比例计算，30次8800购买2份合计17600', async () => {
     const ctx = createManagerCtx({
       clientPhone: '13800001111',
       clientName: '测试顾客',
@@ -1059,12 +1056,11 @@ describe('order.create', () => {
 
     await orderRoutes.create(ctx)
 
-    expect(ctx.result.totalAmount).toBe(8800)
+    expect(ctx.result.totalAmount).toBe(17600)
     const itemInserts = clientQuery.mock.calls.filter(([sql]) =>
       typeof sql === 'string' && sql.includes('INSERT INTO sale_items')
     )
-    // 整组封顶为 8800，拆 2 行后每行 4400
-    expect(itemInserts.map(([, params]) => Number(params[11]))).toEqual([4400, 4400])
+    expect(itemInserts.map(([, params]) => Number(params[11]))).toEqual([8800, 8800])
   })
 
   // ===== PR-2：paymentMethod 行为 =====
@@ -1600,14 +1596,14 @@ describe('order 普通 SKU 市场范围 helper', () => {
 
     const [sql, params] = pg.query.mock.calls[0]
     expect(sql).toContain('s.market_scope')
-    expect(sql).toContain('store.store_id = $2')
+    expect(sql).toContain('s.store_id = $2')
     expect(params).toEqual([['sku-other-market'], 'store-current'])
   })
 
   test('无当前门店时只允许全局范围，并跳过体验卡', async () => {
     const params = []
     expect(buildNormalSkuMarketScopeFilter({ effectiveStoreId: null, scopeStoreIds: ['store-001'] }, params))
-      .toBe('AND s.market_scope IS NULL')
+      .toBe('AND sk.market_scope IS NULL')
     expect(params).toEqual([])
 
     await assertNormalSkuMarketScopeForCurrentStore(

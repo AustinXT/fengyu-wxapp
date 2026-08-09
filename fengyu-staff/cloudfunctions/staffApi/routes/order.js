@@ -160,10 +160,7 @@ function applyTreatmentTierPricing(rawItems, tierSkuRows, buyerIsMember, saleOrd
     const tierSessions = Number(tier.session_count)
     for (const item of groupedItems) {
       const lineSessions = Number(item.sessionCount) || 0
-      // 封顶语义：单行金额不得超过所匹配阶梯套餐总价（tierAmount）。
-      // 当 lineSessions > tierSessions（如买 10 次、最优阶梯仅 8 次 ¥4000）时，
-      // 线性外推 4000×10/8=5000 会超出套餐总价，须截断为 tierAmount。
-      const lineAmount = Math.min(calcTierLineAmount(tierAmount, tierSessions, lineSessions), tierAmount)
+      const lineAmount = calcTierLineAmount(tierAmount, tierSessions, lineSessions)
       item.unitRealPrice = lineSessions > 0 ? roundMoney(lineAmount / lineSessions) : lineAmount
       item.saleAmount = lineAmount
       item.priceLine = lineAmount
