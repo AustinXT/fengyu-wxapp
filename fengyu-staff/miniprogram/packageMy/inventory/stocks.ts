@@ -3,13 +3,17 @@ import { callStaffApi } from '../../utils/cloud'
 
 interface StockRow {
   id: number
-  storeId: string
-  storeName: string | null
+  locationId: string
+  locationName: string | null
+  locationType: string | null
   skuId: string
   skuName: string
-  productType: string
+  specName: string | null
+  supplier: string | null
+  productSeries: string | null
   batchNo: string
   expiryDate: string | null
+  isGift: boolean
   quantityOnHand: number
   remark: string | null
   updatedAt: string

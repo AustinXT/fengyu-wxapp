@@ -77,7 +77,7 @@ export const MENU_CONFIG: MenuGroup[] = [
       { label: "预约管理", icon: CalendarCheck, href: "/appointments", requiredActions: ["appointment:list"] },
       { label: "提货记录", icon: PackageCheck, href: "/pickup-records", requiredActions: ["pickup_record:list"] },
       { label: "门店解绑", icon: Unlink, href: "/store-unbind", requiredActions: ["store_unbind:list"] },
-      { label: "门店库存", icon: Boxes, href: "/inventory", requiredActions: ["inventory:list"] },
+      { label: "进销存", icon: Boxes, href: "/inventory", requiredActions: ["inventory:list"] },
     ],
   },
   {

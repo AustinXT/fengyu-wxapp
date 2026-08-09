@@ -84,10 +84,12 @@ const routes = {
   'order.availablePickupItems': () => require('./routes/order').availablePickupItems,
   'order.pickupRecordsList':    () => require('./routes/order').pickupRecordsList,
 
-  // 库存（只读）
+  // 库存（门店办理）
   'inventory.list':       () => require('./routes/inventory').list,
   'inventory.detail':     () => require('./routes/inventory').detail,
   'inventory.stockList':  () => require('./routes/inventory').stockList,
+  'inventory.reportableSkuOptions': () => require('./routes/inventory').reportableSkuOptions,
+  'inventory.storeOptions': () => require('./routes/inventory').storeOptions,
   'inventory.docList':    () => require('./routes/inventory').docList,
   'inventory.docDetail':  () => require('./routes/inventory').docDetail,
   'inventory.createDoc':  () => require('./routes/inventory').createDoc,

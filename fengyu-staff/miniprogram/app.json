@@ -61,6 +61,7 @@
         "inventory/stocks",
         "inventory/list",
         "inventory/detail",
+        "inventory/form",
         "pickup/pickup-by-customer",
         "pickup/pickup-list"
       ]

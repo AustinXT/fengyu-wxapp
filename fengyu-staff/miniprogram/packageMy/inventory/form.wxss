@@ -1,0 +1,171 @@
+/* packageMy/inventory/form.wxss */
+.container {
+  min-height: 100vh;
+  padding: 24rpx 24rpx 152rpx;
+  box-sizing: border-box;
+  background: #F5F5F5;
+}
+
+.source-card,
+.section {
+  background: #FFFFFF;
+  border-radius: 8rpx;
+  box-sizing: border-box;
+}
+
+.source-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 24rpx;
+  padding: 24rpx;
+  margin-bottom: 16rpx;
+  font-size: 26rpx;
+}
+
+.source-label {
+  color: #888;
+}
+
+.source-value {
+  color: #222;
+  font-weight: 500;
+  text-align: right;
+}
+
+.section {
+  margin-bottom: 16rpx;
+  padding: 24rpx;
+}
+
+.section-title {
+  margin-bottom: 20rpx;
+  color: #222;
+  font-size: 28rpx;
+  font-weight: 600;
+}
+
+.field {
+  margin-bottom: 20rpx;
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 12rpx;
+  color: #666;
+  font-size: 24rpx;
+}
+
+.selector,
+.input,
+.remark {
+  width: 100%;
+  border: 1rpx solid #E7E7E7;
+  border-radius: 6rpx;
+  box-sizing: border-box;
+  color: #222;
+  font-size: 26rpx;
+}
+
+.selector,
+.input {
+  min-height: 76rpx;
+  padding: 20rpx;
+}
+
+.placeholder {
+  color: #A8A8A8;
+}
+
+.stock-reference {
+  margin-top: 10rpx;
+  color: #777;
+  font-size: 23rpx;
+}
+
+.add-button {
+  margin: 8rpx 0 0;
+  border: 1rpx solid var(--color-primary);
+  border-radius: 6rpx;
+  background: #FFFFFF;
+  color: var(--color-primary);
+  font-size: 26rpx;
+  line-height: 72rpx;
+}
+
+.empty {
+  padding: 28rpx 0;
+  color: #999;
+  font-size: 25rpx;
+  text-align: center;
+}
+
+.item-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 20rpx;
+  padding: 18rpx 0;
+  border-top: 1rpx solid #F0F0F0;
+}
+
+.item-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6rpx;
+}
+
+.item-name {
+  color: #222;
+  font-size: 27rpx;
+  font-weight: 500;
+}
+
+.item-meta,
+.item-reason {
+  color: #888;
+  font-size: 22rpx;
+}
+
+.item-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 12rpx;
+  white-space: nowrap;
+}
+
+.item-quantity {
+  color: var(--color-primary);
+  font-size: 28rpx;
+  font-weight: 600;
+}
+
+.remove {
+  color: #888;
+  font-size: 23rpx;
+}
+
+.remark {
+  min-height: 104rpx;
+  padding: 16rpx 20rpx;
+}
+
+.submit-bar {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  padding: 18rpx 24rpx calc(18rpx + env(safe-area-inset-bottom));
+  background: #FFFFFF;
+  border-top: 1rpx solid #EAEAEA;
+  box-sizing: border-box;
+}
+
+.submit-button {
+  border-radius: 6rpx;
+  background: var(--color-primary);
+  color: #FFFFFF;
+  font-size: 28rpx;
+  line-height: 80rpx;
+}

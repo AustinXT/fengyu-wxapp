@@ -110,7 +110,7 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'dashboard:view',
     'data_center:dashboard',
     'employee:list',
-    'inventory:approve', 'inventory:export', 'inventory:list', 'inventory:price_view', 'inventory:stock_list',
+    'inventory:approve', 'inventory:create', 'inventory:create_doc', 'inventory:export', 'inventory:list', 'inventory:price_view', 'inventory:stock_list', 'inventory:update',
     'legacy_order:approve', 'legacy_order:list', 'legacy_order:pull', 'legacy_order:reject', 'legacy_order:update_amount', 'legacy_order:update_phone',
     'merchant:create', 'merchant:delete', 'merchant:list', 'merchant:update',
     'operation_log:list',

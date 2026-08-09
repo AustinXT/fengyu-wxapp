@@ -113,16 +113,14 @@ const SUBPAGES: Array<{ href: string; parent: string; entryGate?: string; clause
   { href: '/merchants/[id]', parent: '/merchants', clauses: ['merchant:list'] },
   { href: '/merchants/[id]/edit', parent: '/merchants', entryGate: 'merchant:update', clauses: ['merchant:list'] },
   { href: '/merchants/create', parent: '/merchants', entryGate: 'merchant:create', clauses: ['merchant:create', 'merchant:list'] },
-  // 库存四单据（从 /inventory hub 的 Link 直达）+ 单据详情
+  // 库存 v3 入口（从 /inventory hub 的 Link 直达）+ 单据详情
+  { href: '/inventory/skus', parent: '/inventory', clauses: ['inventory:stock_list'] },
   { href: '/inventory/stocks', parent: '/inventory', clauses: ['inventory:stock_list'] },
-  { href: '/inventory/procurement', parent: '/inventory', clauses: ['inventory:list', 'store:list'] },
-  { href: '/inventory/sale', parent: '/inventory', clauses: ['inventory:list', 'store:list'] },
-  { href: '/inventory/transfer', parent: '/inventory', clauses: ['inventory:list', 'store:list'] },
-  { href: '/inventory/scrap', parent: '/inventory', clauses: ['inventory:list', 'store:list'] },
-  { href: '/inventory/procurement/[id]', parent: '/inventory', clauses: ['inventory:list'] },
-  { href: '/inventory/sale/[id]', parent: '/inventory', clauses: ['inventory:list'] },
-  { href: '/inventory/transfer/[id]', parent: '/inventory', clauses: ['inventory:list'] },
-  { href: '/inventory/scrap/[id]', parent: '/inventory', clauses: ['inventory:list'] },
+  { href: '/inventory/docs', parent: '/inventory', clauses: ['inventory:list', 'inventory:stock_list'] },
+  { href: '/inventory/docs/[id]', parent: '/inventory', clauses: ['inventory:list'] },
+  { href: '/inventory/operations', parent: '/inventory', clauses: ['inventory:list', 'inventory:stock_list'] },
+  { href: '/inventory/suppliers', parent: '/inventory', clauses: ['inventory:stock_list'] },
+  { href: '/inventory/promotions', parent: '/inventory', clauses: ['inventory:stock_list'] },
 ]
 
 const ALL_ROLES: RoleType[] = ['admin', 'manager', 'finance', 'hr', 'product', 'customer_mgr']

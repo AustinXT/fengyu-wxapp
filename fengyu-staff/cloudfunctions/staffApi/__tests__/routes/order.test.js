@@ -39,7 +39,16 @@ function mockScopeAllow(storeId = 'store-001') {
  * 默认 client.query 返回结果（识别 RETURNING / bool_and 等需要 rows[0] 的 SQL）。
  * 内联 vi.fn 中 fallthrough 也应使用此函数，否则 .rows[0].id 会 undefined。
  */
+function cutoverQueryResult(sql, status = '已初始化') {
+  if (!String(sql).includes('FROM inventory_cutover_states')) return null
+  return status == null
+    ? { rows: [], rowCount: 0 }
+    : { rows: [{ status }], rowCount: 1 }
+}
+
 function defaultQueryResult(sql) {
+  const cutover = cutoverQueryResult(sql)
+  if (cutover) return cutover
   if (typeof sql === 'string' && /RETURNING\s+id/i.test(sql)) {
     return { rows: [{ id: 1 }], rowCount: 1 }
   }
@@ -5758,11 +5767,14 @@ describe('order.createPickup', () => {
 
   test('取货成功', async () => {
     const ctx = createManagerCtx({ saleItemId: 'item-001', pickupQuantity: 2 })
+    let pickupClient
 
     // createPickup 主体在 pg.transaction(cb) 内，调用 client.query；用 mockImplementation 替换 transaction
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql) => {
+          const cutover = cutoverQueryResult(sql)
+          if (cutover) return cutover
           if (/UPDATE sale_items[\s\S]*RETURNING sale_item_id/.test(sql)) {
             return {
               rows: [{
@@ -5780,18 +5792,26 @@ describe('order.createPickup', () => {
           if (/SELECT si\.sale_order_id/.test(sql)) {
             return { rows: [{ sale_order_id: 'FY-001', client_user_id: 'cu-001', customer_name: '顾客A' }], rowCount: 1 }
           }
-          if (/FROM store_inventory_stocks/.test(sql)) {
-            return { rows: [{ id: 1, store_id: 'store-001', sku_id: 'sku-001', sku_name: '家居产品A', batch_no: 'B1', expiry_date: null, quantity_on_hand: 5 }], rowCount: 1 }
+          if (/FROM inventory_stock_lots/.test(sql)) {
+            return {
+              rows: [{
+                id: 1, location_id: 'store-001', sku_id: 'sku-001', sku_name: '家居产品A',
+                spec_name: null, supplier: null, product_series: null, batch_no: 'B1',
+                expiry_date: null, is_gift: false, quantity_on_hand: 5,
+              }],
+              rowCount: 1,
+            }
           }
-          if (/SELECT id FROM store_inventory_docs/.test(sql)) {
+          if (/SELECT id FROM inventory_docs/.test(sql)) {
             return { rows: [], rowCount: 0 }
           }
-          if (/INSERT INTO store_inventory_doc_items/.test(sql)) {
+          if (/INSERT INTO inventory_doc_items/.test(sql)) {
             return { rows: [{ id: 10 }], rowCount: 1 }
           }
           return { rows: [], rowCount: 1 }
         }),
       }
+      pickupClient = client
       return await cb(client)
     })
 
@@ -5801,6 +5821,163 @@ describe('order.createPickup', () => {
     expect(ctx.result.pickedUp).toBe(2)
     expect(ctx.result.remaining).toBe(3) // 5 - 2
     expect(ctx.result.message).toContain('取货成功')
+    expect(pickupClient.query.mock.calls[0][0]).toMatch(/FROM inventory_cutover_states/)
+    expect(pickupClient.query.mock.calls[0][1]).toEqual(['workfine_inventory'])
+    const locationSyncCall = pickupClient.query.mock.calls.find(([sql]) => (
+      /INSERT INTO inventory_locations/.test(sql)
+    ))
+    expect(locationSyncCall[0]).toMatch(/parent_location_id, is_active/)
+    expect(locationSyncCall[0]).toMatch(/COALESCE\(o\.is_active, false\) AND NOT s\.is_closed/)
+    expect(locationSyncCall[0]).toMatch(/is_active = EXCLUDED\.is_active/)
+    expect(pickupClient.query.mock.calls.some(([sql]) => /INSERT INTO inventory_docs/.test(sql))).toBe(true)
+    expect(pickupClient.query.mock.calls.some(([sql]) => /UPDATE inventory_stock_lots/.test(sql))).toBe(true)
+    expect(pickupClient.query.mock.calls.some(([sql]) => /INSERT INTO inventory_movements/.test(sql))).toBe(true)
+  })
+
+  test.each([
+    ['缺少状态记录', null],
+    ['待初始化', '待初始化'],
+    ['待核验', '待核验'],
+  ])('在%s时拒绝提货且不写销售或库存', async (_label, status) => {
+    const ctx = createManagerCtx({ saleItemId: 'item-001', pickupQuantity: 1 })
+    let pickupClient
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      pickupClient = {
+        query: vi.fn(async (sql) => cutoverQueryResult(sql, status)),
+      }
+      return cb(pickupClient)
+    })
+
+    await expect(orderRoutes.createPickup(ctx)).rejects.toThrow(
+      'INVALID_STATE: WorkFine 库存期初尚未完成核验',
+    )
+    expect(pickupClient.query.mock.calls).toHaveLength(1)
+    expect(pickupClient.query.mock.calls[0][0]).toMatch(/FROM inventory_cutover_states/)
+    expect(pickupClient.query.mock.calls.some(([sql]) => /UPDATE sale_items/.test(sql))).toBe(false)
+    expect(pickupClient.query.mock.calls.some(([sql]) => /inventory_docs|inventory_stock_lots|inventory_movements/.test(sql))).toBe(false)
+  })
+
+  test('已预留的退货库存不能再次用于顾客提货', async () => {
+    const ctx = createManagerCtx({ saleItemId: 'item-001', pickupQuantity: 2 })
+    let pickupClient
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql) => {
+          const text = String(sql)
+          const cutover = cutoverQueryResult(text)
+          if (cutover) return cutover
+          if (/UPDATE sale_items[\s\S]*RETURNING sale_item_id/.test(text)) {
+            return {
+              rows: [{
+                sale_item_id: 'item-001',
+                sale_order_id: 'FY-001',
+                store_id: 'store-001',
+                sku_id: 'sku-001',
+                product_name: '家居产品A',
+                quantity: 5,
+                picked_up_quantity: 2,
+              }],
+              rowCount: 1,
+            }
+          }
+          if (/SELECT si\.sale_order_id/.test(text)) {
+            return { rows: [{ sale_order_id: 'FY-001', client_user_id: 'cu-001', customer_name: '顾客A' }], rowCount: 1 }
+          }
+          if (text.includes('FROM inventory_stock_lots')) {
+            return {
+              rows: [{
+                id: 1, location_id: 'store-001', sku_id: 'sku-001', sku_name: '家居产品A',
+                spec_name: null, supplier: null, product_series: null, batch_no: 'B1',
+                expiry_date: null, is_gift: false, quantity_on_hand: 5,
+              }],
+              rowCount: 1,
+            }
+          }
+          if (text.includes('FROM inventory_stock_reservations')) {
+            return { rows: [{ lot_id: 1, quantity: '4' }], rowCount: 1 }
+          }
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      pickupClient = client
+      return cb(client)
+    })
+
+    await expect(orderRoutes.createPickup(ctx)).rejects.toThrow(
+      'INVALID_STATE: 门店库存不足，当前可用 1',
+    )
+    const reservationCall = pickupClient.query.mock.calls.find(([sql]) => (
+      String(sql).includes('FROM inventory_stock_reservations')
+    ))
+    expect(reservationCall[0]).toMatch(/quantity - fulfilled_quantity - released_quantity/)
+    expect(reservationCall[1]).toEqual([[1]])
+    expect(pickupClient.query.mock.calls.some(([sql]) => /INSERT INTO inventory_docs/.test(sql))).toBe(false)
+  })
+
+  test('提货总量足够时也不占用单个批次的退货预留库存', async () => {
+    const ctx = createManagerCtx({ saleItemId: 'item-001', pickupQuantity: 3 })
+    let pickupClient
+    let itemId = 10
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql) => {
+          const text = String(sql)
+          const cutover = cutoverQueryResult(text)
+          if (cutover) return cutover
+          if (/UPDATE sale_items[\s\S]*RETURNING sale_item_id/.test(text)) {
+            return {
+              rows: [{
+                sale_item_id: 'item-001',
+                sale_order_id: 'FY-001',
+                store_id: 'store-001',
+                sku_id: 'sku-001',
+                product_name: '家居产品A',
+                quantity: 5,
+                picked_up_quantity: 3,
+              }],
+              rowCount: 1,
+            }
+          }
+          if (/SELECT si\.sale_order_id/.test(text)) {
+            return { rows: [{ sale_order_id: 'FY-001', client_user_id: 'cu-001', customer_name: '顾客A' }], rowCount: 1 }
+          }
+          if (text.includes('FROM inventory_stock_lots')) {
+            return {
+              rows: [
+                {
+                  id: 1, location_id: 'store-001', sku_id: 'sku-001', sku_name: '家居产品A',
+                  spec_name: null, supplier: null, product_series: null, batch_no: 'B1',
+                  expiry_date: null, is_gift: false, quantity_on_hand: 5,
+                },
+                {
+                  id: 2, location_id: 'store-001', sku_id: 'sku-001', sku_name: '家居产品A',
+                  spec_name: null, supplier: null, product_series: null, batch_no: 'B2',
+                  expiry_date: null, is_gift: false, quantity_on_hand: 5,
+                },
+              ],
+              rowCount: 2,
+            }
+          }
+          if (text.includes('FROM inventory_stock_reservations')) {
+            return { rows: [{ lot_id: 1, quantity: '4' }], rowCount: 1 }
+          }
+          if (/SELECT id FROM inventory_docs/.test(text)) return { rows: [], rowCount: 0 }
+          if (/INSERT INTO inventory_doc_items/.test(text)) {
+            return { rows: [{ id: itemId++ }], rowCount: 1 }
+          }
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      pickupClient = client
+      return cb(client)
+    })
+
+    await orderRoutes.createPickup(ctx)
+
+    const stockUpdates = pickupClient.query.mock.calls
+      .filter(([sql]) => /UPDATE inventory_stock_lots/.test(sql))
+      .map(([, params]) => params)
+    expect(stockUpdates).toEqual([[4, 1], [3, 2]])
   })
 
   test('超出可提货数量拒绝', async () => {
@@ -5811,7 +5988,13 @@ describe('order.createPickup', () => {
     ]
     let idx = 0
     pg.transaction.mockImplementation(async (cb) => {
-      const client = { query: vi.fn(async () => clientResults[idx++] || { rows: [], rowCount: 0 }) }
+      const client = {
+        query: vi.fn(async (sql) => (
+          cutoverQueryResult(sql)
+          || clientResults[idx++]
+          || { rows: [], rowCount: 0 }
+        )),
+      }
       return await cb(client)
     })
     await expect(orderRoutes.createPickup(ctx)).rejects.toThrow(/INVALID_PARAMS.*超出/)
@@ -5825,7 +6008,13 @@ describe('order.createPickup', () => {
     ]
     let idx = 0
     pg.transaction.mockImplementation(async (cb) => {
-      const client = { query: vi.fn(async () => clientResults[idx++] || { rows: [], rowCount: 0 }) }
+      const client = {
+        query: vi.fn(async (sql) => (
+          cutoverQueryResult(sql)
+          || clientResults[idx++]
+          || { rows: [], rowCount: 0 }
+        )),
+      }
       return await cb(client)
     })
     await expect(orderRoutes.createPickup(ctx)).rejects.toThrow(/仅在 store-999 可提货/)
