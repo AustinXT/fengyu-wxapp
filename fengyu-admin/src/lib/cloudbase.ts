@@ -10,6 +10,24 @@ export const CDN_BASE =
 
 let app: ReturnType<typeof cloudbase.init> | null = null
 
+function cloudFileId(cloudPath: string): string {
+  if (cloudPath.startsWith("cloud://")) return cloudPath
+
+  const envId = process.env.CLOUDBASE_ENV_ID
+  if (!envId) throw new ApiError("INVALID_STATE", "CloudBase 环境未配置")
+
+  let bucket: string
+  try {
+    bucket = new URL(CDN_BASE).hostname.split(".")[0] ?? ""
+  } catch {
+    throw new ApiError("INVALID_STATE", "CloudBase 存储桶配置无效")
+  }
+  if (!bucket) throw new ApiError("INVALID_STATE", "CloudBase 存储桶配置无效")
+
+  const normalizedPath = cloudPath.replace(new RegExp("^/+"), "")
+  return `cloud://${envId}.${bucket}/${normalizedPath}`
+}
+
 function getApp() {
   if (!app) {
     app = cloudbase.init({
@@ -50,10 +68,8 @@ export async function uploadFile(
 /** 获取 CloudBase Storage 文件的短期下载地址。调用方应先完成权限校验。 */
 export async function getTempFileUrl(cloudPath: string): Promise<string> {
   const app = getApp()
-  const envId = process.env.CLOUDBASE_ENV_ID
-  if (!envId) throw new ApiError("INVALID_STATE", "CloudBase 环境未配置")
   const result = await app.getTempFileURL({
-    fileList: [`cloud://${envId}/${cloudPath}`],
+    fileList: [cloudFileId(cloudPath)],
   })
   const item = result.fileList?.[0]
   if (!item?.tempFileURL) {
@@ -88,8 +104,7 @@ export async function deleteByCloudPaths(
 ): Promise<void> {
   if (cloudPaths.length === 0) return
   const app = getApp()
-  const envId = process.env.CLOUDBASE_ENV_ID!
-  const fileList = cloudPaths.map((p) => `cloud://${envId}/${p}`)
+  const fileList = cloudPaths.map(cloudFileId)
   await app.deleteFile({ fileList })
 }
 

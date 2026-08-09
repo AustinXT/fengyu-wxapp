@@ -75,7 +75,8 @@ export async function GET(
       )
     }
     return response
-  } catch {
+  } catch (err) {
+    console.error(`[export-download] temporary URL failed for job ${job.id}:`, err)
     return NextResponse.json({ error: '导出文件暂时不可用，请稍后重试' }, { status: 503 })
   }
 }

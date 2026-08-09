@@ -1905,9 +1905,9 @@ export const closeOrder = withPermission(
 
       await tx.execute(sql`
         UPDATE sale_order_payments
-           SET allocation_status = NULL
-         WHERE sale_order_id = ${saleOrderId}
-           AND allocation_status IS NOT NULL
+         SET allocation_status = NULL
+       WHERE sale_order_id = ${saleOrderId}
+          AND allocation_status IN ('待分配', '已分配')
       `)
 
       // 归还优惠券（订单关闭时释放已核销的券）

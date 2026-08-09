@@ -5,7 +5,7 @@ import path from 'node:path'
 import { and, eq, inArray, isNotNull, lt, sql } from 'drizzle-orm'
 import { db } from '@/db'
 import { adminExportJobs } from '@db/export-job'
-import { deleteByCloudPaths, uploadFile } from '@/lib/cloudbase'
+import { deleteByCloudPaths, getTempFileUrl, uploadFile } from '@/lib/cloudbase'
 import { parseErrorPrefix } from '@/lib/api-error'
 import { runWithExportSession } from '@/lib/export-session-context'
 import { parseExportPayload, parseExportSession, parseExportType } from '@/lib/export-job-schema'
@@ -191,7 +191,6 @@ async function processJob(job: ExportJob): Promise<void> {
 
   let tempDir: string | null = null
   let cloudPath: string | null = null
-  let uploaded = false
   const heartbeat = setInterval(() => {
     void renewLease(job.id).catch((err) => console.error(`[export-worker] lease renew failed for ${job.id}:`, err))
   }, 30_000)
@@ -248,7 +247,8 @@ async function processJob(job: ExportJob): Promise<void> {
     // 不会因文件名时间戳变化遗留无法追踪的 CloudBase 文件。
     cloudPath = `admin/exports/${job.id}/content.xlsx`
     await uploadFile(createReadStream(output.filePath), cloudPath)
-    uploaded = true
+    // 与下载路由使用同一 API 验证。上传可成功而临时 URL 不可取得时，不能把任务误标为 ready。
+    await getTempFileUrl(cloudPath)
     const expiresAt = new Date(Date.now() + RETENTION_MS)
     await db
       .update(adminExportJobs)
@@ -274,7 +274,7 @@ async function processJob(job: ExportJob): Promise<void> {
     console.log(`[export-worker] job ${job.id} ready (${output.writeResult.rowCount} rows)`)
   } catch (err) {
     console.error(`[export-worker] job ${job.id} failed:`, err)
-    if (uploaded && cloudPath) {
+    if (cloudPath) {
       await deleteByCloudPaths([cloudPath]).catch((cleanupError) => {
         console.error(`[export-worker] failed upload cleanup for ${job.id}:`, cleanupError)
       })
@@ -310,7 +310,9 @@ async function run(): Promise<void> {
 process.on('SIGTERM', () => { stopping = true })
 process.on('SIGINT', () => { stopping = true })
 
-if (process.argv.includes('--once')) {
+if (process.argv.includes('--check')) {
+  console.log('[export-worker] bundle verified')
+} else if (process.argv.includes('--once')) {
   runMaintenance()
     .then(claimNextJob)
     .then(async (job) => {

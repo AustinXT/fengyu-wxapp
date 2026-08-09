@@ -1,5 +1,11 @@
-import 'server-only'
 import { constants, privateDecrypt } from 'crypto'
+
+// `server-only` 包会在 Bun standalone worker bundle 的模块初始化阶段直接抛错。
+// 本模块仅由 `actions/auth.ts`（'use server'）引用；额外保留浏览器运行时防护，
+// 避免未来误从 Client Component 导入。Vitest 的 happy-dom 测试需要直接 import 本模块。
+if (typeof window !== 'undefined' && process.env.NODE_ENV !== 'test') {
+  throw new Error('密码解密模块只能在服务端运行')
+}
 
 /**
  * 密码传输层解密（服务端）

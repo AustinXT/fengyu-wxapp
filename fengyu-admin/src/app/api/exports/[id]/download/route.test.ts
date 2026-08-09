@@ -112,4 +112,29 @@ describe('GET /api/exports/[id]/download', () => {
     expect(response.headers.get('location')).toBe('https://download.example/ready.xlsx')
     expect(response.headers.get('content-disposition')).toContain(encodeURIComponent('订单.xlsx'))
   })
+
+  it('returns a generic 503 when CloudBase cannot create a temporary URL', async () => {
+    mocks.limit.mockResolvedValue([{
+      id: 10,
+      status: 'ready',
+      fileCloudPath: 'cloud://ready.xlsx',
+      fileName: '订单.xlsx',
+      expiresAt: new Date(Date.now() + 60_000),
+    }])
+    mocks.getTempFileUrl.mockRejectedValue(new Error('CloudBase request failed'))
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    try {
+      const response = await GET(new Request('http://localhost/api/exports/10/download'), context('10'))
+
+      expect(response.status).toBe(503)
+      await expect(response.json()).resolves.toEqual({ error: '导出文件暂时不可用，请稍后重试' })
+      expect(errorSpy).toHaveBeenCalledWith(
+        '[export-download] temporary URL failed for job 10:',
+        expect.any(Error),
+      )
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
 })

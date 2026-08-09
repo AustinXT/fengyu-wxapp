@@ -28,8 +28,10 @@ function rethrowWithDigest(err: unknown): never {
 async function getActionSession(): Promise<AuthSession | null> {
   const exportSession = getExportSession()
   if (exportSession) return exportSession
-  // Keep auth (and its browser password transit dependencies) out of the
-  // standalone export-worker bundle when a persisted worker session exists.
+  // export-worker 构建时此条件会被 Bun 固化为 true，从 bundle 中裁掉 Web auth 依赖。
+  if (process.env.FENGYU_EXPORT_WORKER === '1') {
+    throw new Error('INVALID_STATE: 导出任务缺少权限上下文')
+  }
   const { getSession } = await import('@/lib/auth')
   return getSession()
 }
