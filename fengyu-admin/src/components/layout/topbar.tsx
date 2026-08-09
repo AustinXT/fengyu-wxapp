@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils"
 import { getRoleLabel } from "@/lib/auth"
 import { logout } from "@/actions/auth"
 import type { AuthSession } from "@/lib/types"
+import { ExportTasksMenu } from "@/components/layout/export-tasks-menu"
 
 interface TopbarProps {
   collapsed: boolean
@@ -65,6 +66,7 @@ export function Topbar({ collapsed, onToggle, session }: TopbarProps) {
 
       {/* Right: notification + avatar */}
       <div className="flex items-center gap-2">
+        <ExportTasksMenu />
         {/* Notification bell */}
         <button
           className="relative flex size-9 items-center justify-center rounded-[var(--radius)] text-[#666666] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)]"

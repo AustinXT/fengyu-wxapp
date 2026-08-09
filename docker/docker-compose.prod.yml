@@ -40,6 +40,14 @@ services:
       DATABASE_URL: ${ADMIN_DATABASE_URL}
     depends_on: !reset []
 
+  export-worker:
+    environment:
+      DATABASE_URL: ${ADMIN_DATABASE_URL}
+      # 与 admin 同桶：导出文件由 worker 写入，下载路由由 admin 读取临时 URL。
+      CLOUDBASE_ENV_ID: fengyu-client-prod-d1cga6909c0ba
+      CDN_BASE: https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la
+    depends_on: !reset []
+
   # prod 不启本地 postgres 容器（远程 5433 是独立运行的服务）
   postgres:
     profiles: ["disabled"]
