@@ -103,8 +103,8 @@ describe('getDashboardStats — business 角色（manager/finance）', () => {
     ;(db.execute as any).mockImplementation(() => {
       callIndex++
       if (callIndex === 1) {
-        // sale_orders 域：业绩 / 实付 / 已退款 / 待办
-        // 2026-04-26 sale-order-domain-refactor：todayRevenue = SUM(received - refunded_amount)
+        // payment_metrics + order_metrics：现金流业绩 / 实付 / 已退款与订单待办
+        // 现金流修订：todayRevenue = SUM(sale_order_payments.amount)
         return Promise.resolve([{
           today_revenue: '8600.00',
           today_paid_amount: '8300.00',
@@ -151,7 +151,7 @@ describe('getDashboardStats — business 角色（manager/finance）', () => {
     expect(db.execute).toHaveBeenCalledTimes(4)
   })
 
-  it('DB 返回 null 字段 → 默认为 0（含 paid_amount 系列字段）', async () => {
+  it('DB 返回 null 字段 → 默认为 0（含现金流金额系列字段）', async () => {
     mockBusinessSession(['store-1'])
 
     ;(db.execute as any).mockResolvedValue([{}])
@@ -166,15 +166,14 @@ describe('getDashboardStats — business 角色（manager/finance）', () => {
     expect(result.totalPaidAmount).toBe(0)
   })
 
-  it('含退款场景：todayRevenue 已扣 refunded_amount，todayPaidAmount 仍为毛实收', async () => {
+  it('含退款场景：todayRevenue 按退款流水净额，todayPaidAmount 仍为正向实收', async () => {
     mockBusinessSession(['store-1'])
 
     let callIndex = 0
     ;(db.execute as any).mockImplementation(() => {
       callIndex++
       if (callIndex === 1) {
-        // 毛实收 1000，已退款 300 → 净业绩 700
-        // 2026-04-26 sale-order-domain-refactor：todayRevenue = SUM(received - refunded_amount)
+        // 首次支付/回款 1000，退款流水 -300 → 净业绩 700
         return Promise.resolve([{
           today_revenue: '700.00',
           today_paid_amount: '1000.00',

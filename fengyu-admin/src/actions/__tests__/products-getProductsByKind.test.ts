@@ -58,6 +58,7 @@ vi.mock('@db/product', () => ({
     isEnabled: 'is_enabled',
     isExperience: 'is_experience',
     isRechargeCard: 'is_recharge_card',
+    marketScope: 'market_scope',
     deletedAt: 'deleted_at',
   },
   mallCategories: {
@@ -79,6 +80,10 @@ vi.mock('@db/product', () => ({
 }))
 
 vi.mock('@db/org', () => ({
+  stores: {
+    storeId: 'store_id',
+    orgNodeId: 'org_node_id',
+  },
   orgNodes: {
     id: 'id',
     name: 'name',
@@ -89,6 +94,14 @@ vi.mock('@db/org', () => ({
   },
 }))
 
+vi.mock('@db/user', () => ({
+  clientWechatUsers: {
+    userId: 'user_id',
+    boundStoreId: 'bound_store_id',
+    isCrossStoreTemp: 'is_cross_store_temp',
+  },
+}))
+
 vi.mock('@db/order', () => ({
   saleItems: { saleItemId: 'sale_item_id', skuId: 'sku_id' },
 }))
@@ -96,6 +109,7 @@ vi.mock('@db/order', () => ({
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((a, b) => ({ type: 'eq', a, b })),
   and: vi.fn((...args) => ({ type: 'and', args })),
+  or: vi.fn((...args) => ({ type: 'or', args })),
   asc: vi.fn((a) => ({ type: 'asc', a })),
   sql: Object.assign(
     vi.fn((...args: unknown[]) => ({ type: 'sql', args })),
@@ -154,6 +168,15 @@ function mockChain(rows: unknown[]) {
   const from = vi.fn().mockReturnValue({ innerJoin: innerJoin1, where, orderBy })
   ;(db.select as any).mockReturnValueOnce({ from })
   return where
+}
+
+function mockCustomerMarketScope(row: unknown) {
+  const limit = vi.fn().mockResolvedValue([row])
+  const where = vi.fn().mockReturnValue({ limit })
+  const chain: Record<string, unknown> = { where }
+  chain.leftJoin = vi.fn().mockReturnValue(chain)
+  const from = vi.fn().mockReturnValue(chain)
+  ;(db.select as any).mockReturnValueOnce({ from })
 }
 
 describe("getProductsByKind('__normal__') — 排除法 + 分组", () => {
@@ -265,6 +288,34 @@ describe("getProductsByKind('__normal__') — 排除法 + 分组", () => {
     const result = await getProductsByKind('__normal__')
     if (!('groups' in result)) throw new Error('expected __normal__ with groups')
     expect(result.groups).toEqual([])
+  })
+
+  it('传入顾客时按绑定门店市场过滤普通 SKU', async () => {
+    mockCustomerMarketScope({
+      isCrossStoreTemp: false,
+      marketId: 'market-east',
+      marketName: '华东市场',
+    })
+    const where = mockChain([])
+
+    await getProductsByKind('__normal__', 'customer-1')
+
+    const whereArg = where.mock.calls[0][0] as { type: string; args: Array<{ type?: string }> }
+    expect(whereArg.type).toBe('and')
+    expect(whereArg.args.some((condition) => condition.type === 'or')).toBe(true)
+  })
+
+  it('未传顾客时保守地只返回全市场普通 SKU', async () => {
+    const where = mockChain([])
+
+    await getProductsByKind('__normal__')
+
+    const whereArg = where.mock.calls[0][0] as {
+      type: string
+      args: Array<{ type?: string; a?: string }>
+    }
+    expect(whereArg.type).toBe('and')
+    expect(whereArg.args).toContainEqual({ type: 'isNull', a: 'market_scope' })
   })
 })
 

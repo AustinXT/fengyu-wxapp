@@ -2,6 +2,7 @@ import { getSession } from '@/lib/auth'
 import { requirePermission, requireAnyPermission } from '@/lib/permissions'
 import { parseErrorPrefix } from '@/lib/api-error'
 import type { AuthSession } from '@/lib/types'
+import { getExportSession } from '@/lib/export-session-context'
 
 /**
  * 给白名单前缀的业务错误补 `digest`，穿透 Next.js 生产构建对 Server Action `error.message`
@@ -48,7 +49,7 @@ export function withPermission<Args extends unknown[], R>(
   fn: (session: AuthSession, ...args: Args) => Promise<R>,
 ): (...args: Args) => Promise<R> {
   return async (...args: Args) => {
-    const session = await getSession()
+    const session = getExportSession() ?? await getSession()
     requirePermission(session, action)
     try {
       return await fn(session, ...args)
@@ -68,7 +69,7 @@ export function withAnyPermission<Args extends unknown[], R>(
   fn: (session: AuthSession, ...args: Args) => Promise<R>,
 ): (...args: Args) => Promise<R> {
   return async (...args: Args) => {
-    const session = await getSession()
+    const session = getExportSession() ?? await getSession()
     requireAnyPermission(session, actions)
     try {
       return await fn(session, ...args)

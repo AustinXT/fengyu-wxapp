@@ -37,7 +37,7 @@ import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { shanghaiYmd } from '@/lib/datetime'
 import { nowTs, beijingBoundaryTs } from '@/lib/db-time'
 import { parseOrderFilters, parseAllocationOrderFilters } from '@/lib/list-filters'
-import { bundleMarketScopeCondition, resolveCustomerBundleMarketScope } from '@/lib/bundle-market-scope'
+import { orderMarketScopeCondition, resolveCustomerOrderMarketScope } from '@/lib/order-market-scope'
 
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
 const opener = alias(staffWechatUsers, 'opener') as unknown as typeof staffWechatUsers
@@ -2032,6 +2032,53 @@ type BundleOrderItem = {
   isBundle?: boolean
 }
 
+type NormalSkuMarketScopeRow = {
+  skuId: string
+  specName: string | null
+  isExperience: boolean | null
+  marketScope: string | null | undefined
+}
+
+/**
+ * 普通 SKU 的提交兜底：仅检查实际配置了 market_scope 的非体验卡 SKU。
+ *
+ * 全局 SKU 无需额外查询，保留原有的 SKU 不存在/软删除错误口径；套餐子 SKU
+ * 由 validateBundleOrderForCustomer 校验套餐主商品范围，不能在此重复套 SKU 范围。
+ */
+async function findNormalSkuMarketScopeViolation(
+  clientUserId: string,
+  skuRows: NormalSkuMarketScopeRow[],
+): Promise<NormalSkuMarketScopeRow | null> {
+  const restrictedSkuById = new Map<string, NormalSkuMarketScopeRow>()
+  for (const sku of skuRows) {
+    if (sku.isExperience === true || sku.marketScope == null) continue
+    restrictedSkuById.set(sku.skuId, sku)
+  }
+  if (restrictedSkuById.size === 0) return null
+
+  const customerMarketScope = await resolveCustomerOrderMarketScope(clientUserId)
+  const restrictedSkuIds = [...restrictedSkuById.keys()]
+  const visibleRows = await db
+    .select({ skuId: productSkus.skuId })
+    .from(productSkus)
+    .where(and(
+      inArray(productSkus.skuId, restrictedSkuIds),
+      eq(productSkus.isExperience, false),
+      isNull(productSkus.deletedAt),
+      orderMarketScopeCondition(productSkus.marketScope, customerMarketScope),
+    ))
+  const visibleSkuIds = new Set(visibleRows.map((row) => row.skuId))
+
+  for (const skuId of restrictedSkuIds) {
+    if (!visibleSkuIds.has(skuId)) return restrictedSkuById.get(skuId)!
+  }
+  return null
+}
+
+function normalSkuMarketScopeMessage(sku: NormalSkuMarketScopeRow): string {
+  return `商品「${sku.specName || sku.skuId}」不适用于该顾客绑定门店`
+}
+
 /**
  * 管理后台组合套餐提交兜底：重查套餐主商品范围、SKU 归属与分组配额。
  * 列表筛选只改善体验，真正的授权边界必须在提交时再次确认。
@@ -2049,7 +2096,7 @@ async function validateBundleOrderForCustomer(
 
   if (items.length === 0) return '组合套餐商品明细不能为空'
 
-  const customerMarketScope = await resolveCustomerBundleMarketScope(clientUserId)
+  const customerMarketScope = await resolveCustomerOrderMarketScope(clientUserId)
   const [bundle] = await db
     .select({ productId: products.productId })
     .from(products)
@@ -2057,7 +2104,7 @@ async function validateBundleOrderForCustomer(
       eq(products.productId, bundleProductId),
       eq(products.isBundle, true),
       isNull(products.deletedAt),
-      bundleMarketScopeCondition(products.marketScope, customerMarketScope),
+      orderMarketScopeCondition(products.marketScope, customerMarketScope),
     ))
     .limit(1)
 
@@ -2254,8 +2301,9 @@ export const createOrder = withPermission(
   const repriceSkuIds = data.items.map((i) => i.skuId).filter((s): s is string => !!s)
   const skuPricingMap = new Map<string, { price: string; specialPrice: string | null; isExperience: boolean; isManagerSpecial: boolean; purchaseLimit: number | null }>()
   let purchaseLimitRows: SkuPurchaseLimitRow[] = []
+  let pricingRows: NormalSkuMarketScopeRow[] = []
   if (repriceSkuIds.length > 0) {
-    const pricingRows = await db
+    const loadedPricingRows = await db
       .select({
         skuId: productSkus.skuId,
         specName: productSkus.specName,
@@ -2263,12 +2311,14 @@ export const createOrder = withPermission(
         specialPrice: productSkus.specialPrice,
         isExperience: productSkus.isExperience,
         isManagerSpecial: productSkus.isManagerSpecial,
+        marketScope: productSkus.marketScope,
         purchaseLimit: productSkus.purchaseLimit,
       })
       .from(productSkus)
       .where(and(inArray(productSkus.skuId, repriceSkuIds), isNull(productSkus.deletedAt)))
-    purchaseLimitRows = pricingRows
-    for (const r of pricingRows) {
+    pricingRows = loadedPricingRows
+    purchaseLimitRows = loadedPricingRows
+    for (const r of loadedPricingRows) {
       skuPricingMap.set(r.skuId, {
         price: r.price,
         specialPrice: r.specialPrice,
@@ -2276,6 +2326,13 @@ export const createOrder = withPermission(
         isManagerSpecial: r.isManagerSpecial === true,
         purchaseLimit: r.purchaseLimit,
       })
+    }
+  }
+
+  if (!data.bundleProductId) {
+    const marketScopeViolation = await findNormalSkuMarketScopeViolation(data.clientUserId, pricingRows)
+    if (marketScopeViolation) {
+      return { success: false, message: normalSkuMarketScopeMessage(marketScopeViolation) }
     }
   }
 
@@ -3228,6 +3285,7 @@ export const createConversionOrder = withPermission(
           isExperience: productSkus.isExperience,
           isManagerSpecial: productSkus.isManagerSpecial,
           isShengmei: productSkus.isShengmei,
+          marketScope: productSkus.marketScope,
           categoryId: productSkus.categoryId,
           salesCategory: productCategories.salesCategory,
           purchaseLimit: productSkus.purchaseLimit,
@@ -3235,6 +3293,10 @@ export const createConversionOrder = withPermission(
         .from(productSkus)
         .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
         .where(and(inArray(productSkus.skuId, inSkuIds), isNull(productSkus.deletedAt)))
+      const marketScopeViolation = await findNormalSkuMarketScopeViolation(data.clientUserId, skuRows)
+      if (marketScopeViolation) {
+        throw new ApiError('INVALID_PARAMS', normalSkuMarketScopeMessage(marketScopeViolation))
+      }
       const skuMap = new Map(skuRows.map((r) => [r.skuId, r]))
       const purchaseLimitViolation = findPurchaseLimitViolation(data.convertInItems, skuRows)
       if (purchaseLimitViolation) {
@@ -3814,6 +3876,7 @@ export const createDepositOrder = withPermission(
         sessionCount: productSkus.sessionCount,
         isShengmei: productSkus.isShengmei,
         isExperience: productSkus.isExperience,
+        marketScope: productSkus.marketScope,
         salesCategory: productCategories.salesCategory,
         productKind: productCategories.productKind,
       })
@@ -3822,6 +3885,10 @@ export const createDepositOrder = withPermission(
       .where(and(inArray(productSkus.skuId, skuIds), isNull(productSkus.deletedAt)))
     if (skuRows.length !== skuIds.length) {
       return { success: false, message: '部分商品不存在或已下架' }
+    }
+    const marketScopeViolation = await findNormalSkuMarketScopeViolation(data.clientUserId, skuRows)
+    if (marketScopeViolation) {
+      return { success: false, message: normalSkuMarketScopeMessage(marketScopeViolation) }
     }
     const skuMap = new Map(skuRows.map(s => [s.skuId, s]))
 

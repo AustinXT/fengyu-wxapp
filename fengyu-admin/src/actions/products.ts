@@ -15,7 +15,7 @@ import { expandVisibleMarketIds, requireAdmin } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { computeBundleTotals } from '@/lib/bundle-price'
 import { nowTs } from '@/lib/db-time'
-import { bundleMarketScopeCondition, resolveCustomerBundleMarketScope } from '@/lib/bundle-market-scope'
+import { orderMarketScopeCondition, resolveCustomerOrderMarketScope } from '@/lib/order-market-scope'
 
 /**
  * 获取所有市场节点（type='市场'），用于商品可见范围选择。
@@ -1874,7 +1874,7 @@ export const getProductsByKind = withPermission(
   async (_session, kind: ProductKindForOrder, clientUserId?: string): Promise<OrderPickerResult> => {
   if (kind === '__bundle__') {
     // 套餐商品：products WHERE is_bundle AND deleted_at IS NULL（开单页无视 is_visible，与普通商品/体验卡口径一致）
-    const customerMarketScope = await resolveCustomerBundleMarketScope(clientUserId)
+    const customerMarketScope = await resolveCustomerOrderMarketScope(clientUserId)
     const bundleRows = await db
       .select({
         productId: products.productId,
@@ -1888,7 +1888,7 @@ export const getProductsByKind = withPermission(
       .where(and(
         eq(products.isBundle, true),
         isNull(products.deletedAt),
-        bundleMarketScopeCondition(products.marketScope, customerMarketScope),
+        orderMarketScopeCondition(products.marketScope, customerMarketScope),
       ))
       // 例外：sortOrder 手工排序权重
       .orderBy(asc(products.sortOrder))
@@ -1983,6 +1983,9 @@ export const getProductsByKind = withPermission(
     // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
     const parentCat = alias(productCategories, 'parent_cat') as unknown as typeof productCategories
 
+    // 与组合套餐一致：未选顾客时也必须走保守范围（仅全市场 SKU），
+    // 不能因漏传 clientUserId 而展示任意受限商品。
+    const customerMarketScope = await resolveCustomerOrderMarketScope(clientUserId)
     const rows = await db
       .select({
         category: productCategories,
@@ -2008,6 +2011,7 @@ export const getProductsByKind = withPermission(
           eq(productCategories.isValid, true),
           eq(productSkus.isEnabled, true),
           isNull(productSkus.deletedAt),
+          orderMarketScopeCondition(productSkus.marketScope, customerMarketScope),
           // 普通商品列表不再因「SKU 进过套餐」而隐藏：一个 SKU 既可单卖也可进套餐，
           // 套餐通过独立的 __bundle__ picker 选购，互不影响（2026-05-26 决策：彻底取消套餐排除）。
         ),

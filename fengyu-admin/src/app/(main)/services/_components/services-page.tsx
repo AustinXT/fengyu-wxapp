@@ -11,9 +11,9 @@ import { Select } from "@/components/ui/select"
 import { StatusBadge, Badge } from "@/components/ui/badge"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { Pagination } from "@/components/ui/pagination"
-import { startServiceOrder, completeServiceOrder, confirmServiceOrder, cancelServiceOrder, exportServiceOrders } from "@/actions/services"
+import { startServiceOrder, completeServiceOrder, confirmServiceOrder, cancelServiceOrder } from "@/actions/services"
+import { createExportJob } from "@/actions/export-jobs"
 import { ExportButton } from "@/components/ui/export-button"
-import { exportToXlsx, fmtDate as xlsxDate, fmtDateTime as xlsxDateTime } from "@/lib/export-xlsx"
 import { actionErrorMessage } from "@/lib/action-error"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { ServiceOrder, ServiceOrderStatus } from "@/lib/types"
@@ -115,7 +115,7 @@ export default function ServicesPageClient({
   const { get, set, setMany } = useUrlFilters()
   const searchParams = useSearchParams()
 
-  /** 导出当前筛选命中的服务单消耗项目主表（每行=服务单×一个消耗项目，跨分页） */
+  /** 仅创建异步任务；worker 在任务开始时重新读取已完成服务单消耗明细。 */
   const handleExport = useCallback(async () => {
     const raw = Object.fromEntries(searchParams.entries())
     // 消耗明细仅含「已完成」服务单（已扣减次数）；若当前按其它状态筛选，导出会因 WHERE
@@ -124,42 +124,8 @@ export default function ServicesPageClient({
       toast.warning(`消耗明细仅包含「已完成」服务单，当前筛选状态为「${raw.status}」，无已实现消耗可导出`)
       return
     }
-    const { rows } = await exportServiceOrders(raw)
-    if (rows.length === 0) {
-      toast.info("当前筛选无数据可导出")
-      return
-    }
-    await exportToXlsx({
-      filename: "服务单-消耗明细",
-      sheetName: "服务单消耗",
-      columns: [
-        { header: "市场", width: 12, accessor: (r) => r.market },
-        { header: "门店", width: 18, accessor: (r) => r.storeName },
-        { header: "服务单号", width: 22, accessor: (r) => r.serviceOrderId },
-        { header: "订单类型", width: 12, accessor: (r) => r.saleOrderType },
-        { header: "单据类型", width: 12, accessor: (r) => r.serviceOrderType },
-        { header: "顾客", accessor: (r) => r.customerName },
-        { header: "顾客手机", width: 14, accessor: (r) => r.customerPhone },
-        { header: "商品类型", width: 12, accessor: (r) => r.productType },
-        { header: "品项（一级）", width: 14, accessor: (r) => r.categoryL1 },
-        { header: "品项（二级）", width: 12, accessor: (r) => r.categoryL2 },
-        { header: "商品明细", width: 24, accessor: (r) => r.productName },
-        { header: "消耗数量", width: 10, accessor: (r) => r.sessionUsed == null ? "" : `${r.sessionUsed} ${r.unit}` },
-        { header: "项目消耗金额", width: 12, accessor: (r) => r.consumeMoney },
-        { header: "单位价", width: 12, accessor: (r) => r.unitRealPrice },
-        { header: "状态", width: 12, accessor: (r) => r.status },
-        { header: "经营类价", width: 12, accessor: (r) => r.salesCategory },
-        { header: "顾客类型", width: 12, accessor: (r) => r.customerType },
-        { header: "顾客评价", width: 24, accessor: (r) => r.reviewComment },
-        { header: "顾客评分", width: 8, accessor: (r) => r.rating },
-        { header: "开单人", accessor: (r) => r.openedByName },
-        { header: "来源订单号", width: 22, accessor: (r) => r.sourceSaleOrderId },
-        { header: "服务日期", width: 14, accessor: (r) => xlsxDate(r.serviceDate) },
-        { header: "创建时间", width: 20, accessor: (r) => xlsxDateTime(r.createdAt) },
-        { header: "备注", width: 20, accessor: (r) => r.remark },
-      ],
-      rows,
-    })
+    const result = await createExportJob({ exportType: "services", payload: raw })
+    toast.success(result.reused ? "相同导出任务正在生成" : "已加入导出任务")
   }, [searchParams])
 
   /** 筛选变更时重置到第 1 页 */
