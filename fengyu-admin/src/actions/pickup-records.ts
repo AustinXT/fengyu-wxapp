@@ -62,7 +62,7 @@ type AnyTx = any
 async function generatePickupInventoryDocNo(tx: AnyTx): Promise<string> {
   const prefix = 'GCK'
   const ymd = shanghaiYmd()
-  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`store_inventory_docs:${prefix}:${ymd}`}))`)
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`store_inventory_docs:${prefix}:${ymd}`})::bigint)`)
   const rows = (await tx.execute(sql`
     SELECT id
       FROM store_inventory_docs

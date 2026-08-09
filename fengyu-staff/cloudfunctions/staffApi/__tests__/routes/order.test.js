@@ -1596,14 +1596,14 @@ describe('order 普通 SKU 市场范围 helper', () => {
 
     const [sql, params] = pg.query.mock.calls[0]
     expect(sql).toContain('s.market_scope')
-    expect(sql).toContain('store.store_id = $2')
+    expect(sql).toContain('s.store_id = $2')
     expect(params).toEqual([['sku-other-market'], 'store-current'])
   })
 
   test('无当前门店时只允许全局范围，并跳过体验卡', async () => {
     const params = []
     expect(buildNormalSkuMarketScopeFilter({ effectiveStoreId: null, scopeStoreIds: ['store-001'] }, params))
-      .toBe('AND s.market_scope IS NULL')
+      .toBe('AND sk.market_scope IS NULL')
     expect(params).toEqual([])
 
     await assertNormalSkuMarketScopeForCurrentStore(
@@ -2234,7 +2234,11 @@ describe('order.close', () => {
       String(sql).includes('restore_sessions'),
     )
     expect(restoreCall).toBeTruthy()
-    expect(restoreCall[1]).toEqual(expect.arrayContaining(['FY-CONV-001', 'store-001']))
+    // 跨店转换单修复（PR #74）：locked_source 不再按 store_id 过滤源卡，
+    // 因此 restore 查询不传 store_id，SQL 也不得再出现 src.store_id 条件。
+    expect(restoreCall[1]).toEqual(expect.arrayContaining(['FY-CONV-001']))
+    expect(restoreCall[1]).not.toEqual(expect.arrayContaining(['store-001']))
+    expect(String(restoreCall[0])).not.toContain('src.store_id')
 
     const voidConversionItemsCall = clientQueryMock.mock.calls.find(([sql]) =>
       String(sql).includes("item_direction IN ('转出', '转入')") &&

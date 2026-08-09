@@ -467,7 +467,7 @@ export const createEmployee = withPermission(
     employeeId = await db.transaction(async (tx) => {
       const idRows = await tx.execute(sql`
         WITH lock AS (
-          SELECT pg_advisory_xact_lock(hashtext('employee_id_gen'))
+          SELECT pg_advisory_xact_lock(hashtext('employee_id_gen')::bigint)
         )
         SELECT 'FY-' || to_char(NOW(), 'YYMMDD') ||
           LPAD(

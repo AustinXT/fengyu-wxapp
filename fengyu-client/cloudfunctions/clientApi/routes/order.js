@@ -944,7 +944,7 @@ async function create(ctx) {
   let zeroPayable = false
   await pg.transaction(async (client) => {
     // 获取 advisory lock 防止并发生成重复序号
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', ['sale_order_id_gen'])
 
     // === 储值卡抵扣计算（事务内、在 INSERT sale_orders 之前） ===
     // 应抵上限 = totalAmount（已扣完优惠券）
@@ -1819,7 +1819,7 @@ async function cancel(ctx) {
 
 /**
  * 获取可预约项目列表
- * 查询已支付/部分支付订单中有剩余次数的项目(疗程卡)
+ * 查询有效订单（已支付/部分支付/已完成）中有剩余次数的项目(疗程卡)
  */
 async function appointableItems(ctx) {
   const { userId } = ctx.auth

@@ -122,7 +122,7 @@ function assertCanApproveDepositOrder(session: AuthSession): void {
  * 待支付/支付失败转换单被关闭时撤销创建时的即时资产变更。
  * staffApi/routes/order.js 有同义 SQL 副本；修改时保持语义一致。
  */
-async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string, storeId: string): Promise<void> {
+async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string): Promise<void> {
   await tx.execute(sql`
     WITH restore AS (
       SELECT ref_sale_item_id, SUM(quantity)::integer AS restore_sessions
@@ -140,7 +140,6 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
              restore.restore_sessions
         FROM sale_items src
         JOIN restore ON restore.ref_sale_item_id = src.sale_item_id
-       WHERE src.store_id = ${storeId}
        FOR UPDATE OF src
     )
     UPDATE sale_items src
@@ -1890,7 +1889,7 @@ export const closeOrder = withPermission(
       }
 
       if (orderCtx?.saleOrderType === '转换单' && orderCtx.storeId) {
-        await rollbackPendingConversionOnClose(tx, saleOrderId, orderCtx.storeId)
+        await rollbackPendingConversionOnClose(tx, saleOrderId)
       }
 
       // 作废关联的营业额子分配（规范：订单关闭时作废分配）
@@ -2907,7 +2906,7 @@ export const createOrder = withPermission(
       // advisory lock 在事务内持有，直到 commit 才释放
       const idRows = await tx.execute(sql`
         WITH lock AS (
-          SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen'))
+          SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen')::bigint)
         )
         SELECT 'FY-XSD-WX-' || to_char(NOW(), 'YYMMDD') ||
           LPAD(
@@ -3612,7 +3611,7 @@ export const createConversionOrder = withPermission(
       // 3. 生成订单号（advisory lock + 当日序号）
       const idRows = await tx.execute(sql`
         WITH lock AS (
-          SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen'))
+          SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen')::bigint)
         )
         SELECT 'FY-XSD-WX-' || to_char(NOW(), 'YYMMDD') ||
           LPAD(
@@ -4068,7 +4067,7 @@ export const createDepositOrder = withPermission(
       saleOrderId = await db.transaction(async (tx) => {
         const idRows = await tx.execute(sql`
           WITH lock AS (
-            SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen'))
+            SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen')::bigint)
           )
           SELECT 'FY-XSD-WX-' || to_char(NOW(), 'YYMMDD') ||
             LPAD(
@@ -4443,7 +4442,7 @@ export const createPrepaidInflow = withPermission(
     try {
       saleOrderId = await db.transaction(async (tx) => {
         // 顾客级 advisory lock：串行化同顾客的并发转入（双击 / 重试），先于订单号锁获取
-        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${'card_inflow:' + data.clientUserId}))`)
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${'card_inflow:' + data.clientUserId})::bigint)`)
         // 幂等短路：同一 requestId 已成功转入则复用既有订单，不重复建单 / 不重复 += balance（防重复入账核心）
         if (inflowRef) {
           const dupRows = (await tx.execute(sql`
@@ -4453,7 +4452,7 @@ export const createPrepaidInflow = withPermission(
         }
         const idRows = await tx.execute(sql`
           WITH lock AS (
-            SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen'))
+            SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen')::bigint)
           )
           SELECT 'FY-XSD-WX-' || to_char(NOW(), 'YYMMDD') ||
             LPAD(
@@ -4814,7 +4813,7 @@ export const recordPayment = withPermission(
       // 4) 生成 FY-HKD 凭证单号（advisory lock + 当日序号，前缀 FY-HKD-WX-YYMMDDNNNN）
       const idRows = await tx.execute(sql`
         WITH lock AS (
-          SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen'))
+          SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen')::bigint)
         )
         SELECT 'FY-HKD-WX-' || to_char(NOW(), 'YYMMDD') ||
           LPAD(

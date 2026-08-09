@@ -529,7 +529,8 @@ async function getTopProduct(clientUserId) {
  * - 有明细的订单：汇总 sale_items.received（精确到品项）
  * - 无明细的历史订单：使用 sale_orders.received（订单级汇总）
  *
- * 状态口径：'已支付', '部分支付', '已完成'（与 paidOrders 对齐）
+ * 状态口径：'已支付', '部分支付', '已完成'（与 paidOrders 对齐）。
+ * WorkFine 历史导入及退款归零后的销售单都可能是 '已完成'，仍须计入有效订单。
  */
 async function getConsumptionStats(clientUserId) {
   if (!clientUserId) {

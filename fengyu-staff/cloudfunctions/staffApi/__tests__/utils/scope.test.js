@@ -184,6 +184,7 @@ describe('validateManagementScope', () => {
     ],
     scopeStoreIds: ['A', 'B'],
     scopeOrgNodeIds: ['node-A', 'node-B'],
+    managerStoreIds: ['A'],
   }
 
   test('总部 scope 可查看全部，并按完整 scope 校验 market/store', () => {
@@ -212,7 +213,7 @@ describe('validateManagementScope', () => {
     expect(() => validateManagementScope(marketAuth, 'store', 'sOther')).toThrow(/PERMISSION_DENIED/)
   })
 
-  test('门店级账号：scopeStoreIds 内的全部角色门店均可访问', () => {
+  test('门店店长管理层：使用全部角色的 scopeStoreIds，不受 managerStoreIds 收紧', () => {
     expect(() => validateManagementScope(storeManagerAuth, 'store', 'A')).not.toThrow()
     expect(() => validateManagementScope(storeManagerAuth, 'store', 'B')).not.toThrow()
   })
@@ -248,15 +249,22 @@ describe('expandScopeStoreIds', () => {
     expect(pg.query.mock.calls[0][0]).toMatch(/FROM stores/i)
   })
 
-  test('市场 scope → 该市场下所有门店', async () => {
+  test('市场 scope → 递归包含嵌套市场下的门店', async () => {
     const pg = {
-      query: vi.fn().mockResolvedValueOnce([{ store_id: 'S1' }, { store_id: 'S2' }]),
+      query: vi.fn().mockResolvedValueOnce([
+        { store_id: 'S-direct' },
+        { store_id: 'S-nested-market' },
+      ]),
     }
     const result = await expandScopeStoreIds(
       [{ role: 'hr', scopeId: 'market-1', scopeType: '市场' }],
       pg
     )
-    expect(result.sort()).toEqual(['S1', 'S2'])
+    expect(result.sort()).toEqual(['S-direct', 'S-nested-market'])
+    expect(pg.query).toHaveBeenCalledTimes(1)
+    expect(pg.query.mock.calls[0][0]).toContain('WITH RECURSIVE descendants')
+    expect(pg.query.mock.calls[0][0]).toContain('child.parent_id = descendants.id')
+    expect(pg.query.mock.calls[0][0]).toContain('unnest($1::text[])')
     expect(pg.query.mock.calls[0][1]).toEqual([['market-1']])
   })
 
@@ -269,6 +277,7 @@ describe('expandScopeStoreIds', () => {
       pg
     )
     expect(result).toEqual(['S1'])
+    expect(pg.query.mock.calls[0][0]).toContain('WITH RECURSIVE descendants')
     expect(pg.query.mock.calls[0][1]).toEqual([['org-node-store-1']])
   })
 
@@ -309,6 +318,7 @@ describe('expandScopeStoreIds', () => {
     expect(pg.query).toHaveBeenCalledTimes(1)
     expect(pg.query.mock.calls[0][0]).toContain('WITH RECURSIVE descendants')
     expect(pg.query.mock.calls[0][0]).toContain('unnest($1::text[])')
+    expect(pg.query.mock.calls[0][0]).not.toContain('unnest($2::text[])')
     expect(pg.query.mock.calls[0][1]).toEqual([['m1', 'sn3']])
   })
 

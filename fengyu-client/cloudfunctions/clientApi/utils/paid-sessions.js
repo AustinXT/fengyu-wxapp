@@ -202,8 +202,8 @@ const FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL = `WITH full_refund_zero_items A
  */
 async function recalcPaidSessionsForOrder(client, saleOrderId) {
   // STEP 1：两路分流
-  //   A. 正向 receipt 覆盖全额 received → received = Σ 有符号 receipt.amount per item（退款为负数）
-  //   B. receipt 不完整或无 → 回退瀑布 SALE_ITEMS_RECEIVED_ALLOC_SQL（保护历史部分支付订单）
+  //   A. 正向 receipt 覆盖订单毛实收 → received = Σ 有符号 receipt.amount per item（退款为负数）
+  //   B. receipt 不完整或无 → 回退瀑布 + note.items[].refundAmount 扣减（保护历史部分支付订单）
   const covRes = await client.query(
     `SELECT COALESCE((
               SELECT SUM(cov_spir.amount::numeric)
@@ -219,12 +219,13 @@ async function recalcPaidSessionsForOrder(client, saleOrderId) {
   const covRow = (covRes && covRes.rows && covRes.rows[0]) || {}
   const receiptPositiveTotal = Number(covRow.receipt_positive_total || 0)
   const orderReceived = Number(covRow.order_received || 0)
-  // receipt_positive_total >= order_received（容差 0.01 处理浮点）→ receipt 完整覆盖，Branch A 安全
+  // 仅正向 receipt 总额 >= order_received（容差 0.01 处理浮点）→ receipt 完整覆盖，Branch A 安全
   if (receiptPositiveTotal > 0 && receiptPositiveTotal >= orderReceived - 0.01) {
     await client.query(SALE_ITEMS_RECEIVED_FROM_RECEIPTS_SQL, [saleOrderId])
   } else {
     await client.query(SALE_ITEMS_RECEIVED_ALLOC_SQL, [saleOrderId])
-    // STEP 1.5：旧数据回退分支才按 note.items[].refundAmount 扣减；新 receipt 分支已含退款负数，不能重复扣。
+    // STEP 1.5：回退分支没有完整正向 receipt 覆盖，须按 note.items[].refundAmount 扣减。
+    // 分支 A 已由负数 receipt 得到净额，故不在 A 中执行本扣减。
     await client.query(RECEIVED_REFUNDED_DEDUCT_SQL, [saleOrderId])
   }
   // STEP 2：行级公式重算 paid_sessions（received 已净额，不再下分订单级退款）

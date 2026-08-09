@@ -126,7 +126,7 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
   const covRows = covRes as unknown as Array<{ receipt_positive_total: string; order_received: string }>
   const receiptPositiveTotal = Number(covRows[0]?.receipt_positive_total || 0)
   const orderReceived = Number(covRows[0]?.order_received || 0)
-  // 正向 receipt 总额 >= order_received（容差 0.01）→ receipt 完整覆盖，Branch A 安全；
+  // 仅正向 receipt 总额 >= order_received（容差 0.01）→ receipt 完整覆盖，Branch A 安全；
   // 否则 receipt 不完整（历史部分支付订单仅新付款有 receipt），Branch B 保护旧 received 不被清零。
   const hasReceipts = receiptPositiveTotal > 0 && receiptPositiveTotal >= orderReceived - 0.01
   if (hasReceipts) {
@@ -186,7 +186,8 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
       WHERE si.sale_item_id = caps.sale_item_id
     `)
 
-    // STEP 1.5: 旧数据回退分支才按 note.items[].refundAmount 扣减；新 receipt 分支已含退款负数，不能重复扣。
+    // STEP 1.5：回退分支没有完整正向 receipt 覆盖，须按 note.items[].refundAmount 扣减。
+    // 分支 A 已由负数 receipt 得到净额，故不在 A 中执行本扣减。
     await tx.execute(sql`
       WITH refund_items AS (
         SELECT elem ->> 'refSaleItemId' AS sale_item_id,

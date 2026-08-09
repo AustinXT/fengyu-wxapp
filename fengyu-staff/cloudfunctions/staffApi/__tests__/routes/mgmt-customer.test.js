@@ -919,6 +919,31 @@ describe('mgmtCustomer 细节 SQL：交易数据跟顾客走（不再按门店�
     expect(ctx.result.orders[0].items[0].paidSessions).toBe(10)
   })
 
+  test('paidOrders：已完成销售单仍作为有效订单返回', async () => {
+    setupCommonMocks({
+      paidOrderRows: [
+        { sale_order_id: 'so-completed', status: '已完成', paid_at: '2026-07-01', store_id: 'store-001', store_name: 'A 店' },
+      ],
+      paidOrderItems: [
+        {
+          sale_order_id: 'so-completed', sale_item_id: 'si-completed', store_id: 'store-001',
+          session_count: 10, remaining_sessions: 6, paid_sessions: 10,
+          product_type: '疗程卡', product_name: '历史疗程卡', unit_real_price: '100.00',
+        },
+      ],
+    })
+    const ctx = makeHqCtx({ clientUserId: 'u1', scopeType: 'store', scopeId: 'store-001' })
+
+    await paidOrders(ctx)
+
+    const orderSql = pg.query.mock.calls.map((c) => c[0]).find((sql) =>
+      /SELECT\s+o\.sale_order_id,\s+o\.status,\s+o\.paid_at,\s+o\.store_id/.test(sql) &&
+      /FROM\s+sale_orders\s+o/.test(sql)
+    )
+    expect(orderSql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
+    expect(ctx.result.orders).toMatchObject([{ saleOrderId: 'so-completed', status: '已完成' }])
+  })
+
   test('paidOrders SQL 守卫：权益明细包含购买行和转换单转入行，排除转出行', async () => {
     setupCommonMocks({
       paidOrderRows: [

@@ -59,7 +59,7 @@ async function settlePointsForOrder(client, originalSaleOrderId) {
   const expected = Math.floor(Math.max(0, netSettled) / 100)
 
   const grantedRes = await client.query(
-    `SELECT COALESCE(SUM(amount), 0)::int AS granted
+    `SELECT COALESCE(SUM(amount), 0)::bigint AS granted
        FROM point_transactions
       WHERE ref_order_id = $1`,
     [originalSaleOrderId],

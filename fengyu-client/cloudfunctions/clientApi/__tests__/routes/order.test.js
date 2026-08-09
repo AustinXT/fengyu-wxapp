@@ -1483,7 +1483,7 @@ describe('order.appointableItems', () => {
     expect(sql).not.toContain("si.item_direction = '转出'")
   })
 
-  test('SQL 守卫：默认可预约查询纳入已完成订单，并按已付未用次数过滤', async () => {
+  test('SQL 守卫：默认可预约查询纳入已完成销售单，并按已付未用次数过滤', async () => {
     pg.query.mockResolvedValueOnce([])
 
     const ctx = createBoundCtx({})

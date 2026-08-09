@@ -1116,10 +1116,10 @@ async function create(ctx) {
 
   await pg.transaction(async (client) => {
     // 按顾客串行化开单（advisory lock 持有到 COMMIT）：uq 拆除员工单 DB 兜底后，业务守卫
-    // SELECT-then-INSERT 非原子，并发开单可产生重复员工单。pg_advisory_xact_lock(hashtext($1))
+    // SELECT-then-INSERT 非原子，并发开单可产生重复员工单。pg_advisory_xact_lock(hashtext($1)::bigint)
     // 让同顾客开单串行，existing 守卫在此锁下原子生效。业务守卫查顾客维度全量待支付单（含自助单），
     // advisory lock 串行化并发；DB uq 仅兜底 opened_by IS NULL 自助单。
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [clientUserId])
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', [clientUserId])
     const existing = await client.query(
       "SELECT sale_order_id FROM sale_orders WHERE client_user_id = $1 AND status = '待支付' LIMIT 1",
       [clientUserId]
@@ -1795,7 +1795,7 @@ async function confirmOffline(ctx) {
  * - 恢复被转出的原卡 remaining_sessions；
  * - 作废本转换单的转入/转出权益计数，避免详情和后续查询继续表现为已转。
  */
-async function rollbackPendingConversionOnClose(client, saleOrderId, storeId, now) {
+async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
   await client.query(
     `WITH restore AS (
         SELECT ref_sale_item_id, SUM(quantity)::integer AS restore_sessions
@@ -1813,7 +1813,6 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, storeId, no
                restore.restore_sessions
           FROM sale_items src
           JOIN restore ON restore.ref_sale_item_id = src.sale_item_id
-         WHERE src.store_id = $2
          FOR UPDATE OF src
       )
       UPDATE sale_items src
@@ -1821,10 +1820,10 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, storeId, no
                COALESCE(src.session_count, src.remaining_sessions, 0),
                COALESCE(src.remaining_sessions, 0) + locked_source.restore_sessions
              ),
-             updated_at = $3
+             updated_at = $2
         FROM locked_source
        WHERE src.sale_item_id = locked_source.sale_item_id`,
-    [saleOrderId, storeId, now],
+    [saleOrderId, now],
   )
 
   await client.query(
@@ -1896,7 +1895,7 @@ async function close(ctx) {
       throw new Error('INVALID_PARAMS: 订单状态已变更，请刷新后重试')
     }
     if (order.sale_order_type === '转换单') {
-      await rollbackPendingConversionOnClose(client, saleOrderId, order.store_id, now)
+      await rollbackPendingConversionOnClose(client, saleOrderId, now)
     }
     // 作废营业额子分配
     await client.query(
@@ -2602,9 +2601,12 @@ async function createRefund(ctx) {
       refundByOrigin,
       handlingFee: fee,
     })
+  })
 
-    // 通知门店店长审批（Bug C）
-    await notifyRefundCreated(client, {
+  // ✅ Bug G12：通知移出事务 —— 避免 CloudBase 消息推送/DB 瞬态抖动时 INSERT messages 失败回滚整笔退款。
+  // 事务已提交，通知失败只记日志，不影响退款主流程。
+  try {
+    await notifyRefundCreated(pg, {
       paymentId,
       saleOrderId: refSaleOrderId,
       storeId: origOrder.store_id,
@@ -2612,7 +2614,9 @@ async function createRefund(ctx) {
       amount: finalRefundAmount,
       customerName: origOrder.customer_name,
     })
-  })
+  } catch (notifyErr) {
+    console.error('[createRefund] notifyRefundCreated failed:', notifyErr)
+  }
   } catch (e) {
     // 修复（Bug T）：in-flight SELECT 与 INSERT 间竞态由 DB uq_sop_status_audit 兜底；
     // 捕获 23505 转 CONFLICT，否则 raw pg 错误无白名单前缀会降级为「服务器内部错误」
@@ -4070,7 +4074,7 @@ async function customerHeldCards(ctx) {
 async function generatePickupInventoryDocNo(client) {
   const prefix = 'GCK'
   const ymd = shanghaiYMD()
-  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', [
     `store_inventory_docs:${prefix}:${ymd}`,
   ])
   const rows = await client.query(
@@ -4510,7 +4514,7 @@ async function generateOrderNo(prefix, client) {
   const likePattern = `${prefix}${dateStr}%`
 
   // 与 admin orders.ts 对齐：hashtext('sale_order_id_gen')
-  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', ['sale_order_id_gen'])
   const rows = await client.query(`
     SELECT sale_order_id FROM sale_orders
     WHERE sale_order_id LIKE $1

@@ -1002,7 +1002,7 @@ export const createRechargeOrder = withPermission(
       saleOrderId = await db.transaction(async (tx) => {
         const idRows = await tx.execute(sql`
           WITH lock AS (
-            SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen'))
+            SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen')::bigint)
           )
           SELECT 'FY-XSD-WX-' || to_char(NOW(), 'YYMMDD') ||
             LPAD(
