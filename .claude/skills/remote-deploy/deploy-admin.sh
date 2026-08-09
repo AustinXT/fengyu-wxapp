@@ -11,7 +11,7 @@
 #   $2 (optional) — SSH host，默认按 env 自动选择（prod=fengyu-prod / dev=ali-demo），可被 SSH_HOST 环境变量覆盖
 #   $3 (optional) — 远程 docker/ 目录绝对路径，默认 dev=/root/proj.xt.com/fengyu-wxapp/docker，prod=/www/wwwroot/fengyu-admin/docker
 
-set -e
+set -eo pipefail
 
 if [[ -z "${1:-}" ]] || [[ ! "$1" =~ ^(dev|prod)$ ]]; then
   echo "Usage: $0 <dev|prod> [ssh-host] [remote-dir]" >&2
@@ -46,7 +46,7 @@ cd "$(dirname "$0")/../../.."
 read_env_value() {
   local key="$1"
   local value
-  value=$(grep -m1 "^${key}=" "envs/$ENV.env" 2>/dev/null | cut -d= -f2- | tr -d '\r')
+  value=$(grep -m1 "^${key}=" "envs/$ENV.env" 2>/dev/null | cut -d= -f2- | tr -d '\r"' )
   if [[ -z "$value" ]]; then
     echo "✗ envs/$ENV.env 缺少 $key，无法部署。" >&2
     exit 1
@@ -60,8 +60,7 @@ DEPLOY_CLOUDBASE_ENV_ID=$(read_env_value CLOUDBASE_ENV_ID)
 DEPLOY_CDN_BASE=$(read_env_value CDN_BASE)
 RUNTIME_ENV_FILE=$(mktemp "${TMPDIR:-/tmp}/fengyu-admin-runtime.XXXXXX")
 trap 'rm -f "$RUNTIME_ENV_FILE"' EXIT
-printf 'CLOUDBASE_ENV_ID=%s\nCDN_BASE=%s\nDEPLOY_CLOUDBASE_ENV_ID=%s\nDEPLOY_CDN_BASE=%s\n' \
-  "$DEPLOY_CLOUDBASE_ENV_ID" "$DEPLOY_CDN_BASE" \
+printf 'DEPLOY_CLOUDBASE_ENV_ID=%s\nDEPLOY_CDN_BASE=%s\n' \
   "$DEPLOY_CLOUDBASE_ENV_ID" "$DEPLOY_CDN_BASE" > "$RUNTIME_ENV_FILE"
 COMPOSE_OVERRIDE="docker-compose.remote.yml"
 
@@ -177,7 +176,7 @@ scp docker/docker-compose.yml "$SSH_HOST:$REMOTE_DIR/docker-compose.yml"
 scp "docker/$COMPOSE_OVERRIDE" "$SSH_HOST:$REMOTE_DIR/$COMPOSE_OVERRIDE"
 scp "$RUNTIME_ENV_FILE" "$SSH_HOST:$REMOTE_DIR/.admin-runtime.env"
 ssh "$SSH_HOST" "chmod 600 '$REMOTE_DIR/.admin-runtime.env'"
-ssh "$SSH_HOST" "cd '$REMOTE_DIR' && docker compose --env-file .env --env-file .admin-runtime.env -f docker-compose.yml -f $COMPOSE_OVERRIDE config --quiet"
+ssh "$SSH_HOST" "cd '$REMOTE_DIR' && docker compose --env-file .env --env-file .admin-runtime.env -f docker-compose.yml -f $COMPOSE_OVERRIDE config --quiet" || { echo "✗ Compose 配置校验失败，请检查 .admin-runtime.env 必填变量"; exit 1; }
 echo "  ✓ 已同步 docker-compose.yml + $COMPOSE_OVERRIDE + .admin-runtime.env"
 
 echo "=== 4/5 远程重启服务（base + override）==="
