@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Separator } from "@/components/ui/separator"
 import type { MemberLevelBenefit, MemberLevelBenefitsMap } from "@/actions/settings"
+import { MAX_COUPON_QUANTITY, clampCouponQuantity } from "@/lib/coupon-quantity"
 
 export const MEMBER_LEVELS = ['初钻', '星钻', '粉钻', '金钻', '黑钻'] as const
 export type MemberLevel = (typeof MEMBER_LEVELS)[number]
@@ -40,10 +41,36 @@ export function MemberLevelBenefitsForm({
 
   const toggleCouponTemplate = (level: MemberLevel, templateId: string) => {
     const current = value[level].couponTemplateIds
-    const next = current.includes(templateId)
-      ? current.filter((id) => id !== templateId)
-      : [...current, templateId]
-    onChange({ ...value, [level]: { ...value[level], couponTemplateIds: next } })
+    const currentQty = value[level].couponQuantities
+    if (current.includes(templateId)) {
+      // 取消勾选：移除模板 + 清理其数量
+      const { [templateId]: _removed, ...restQty } = currentQty
+      onChange({
+        ...value,
+        [level]: { ...value[level], couponTemplateIds: current.filter((id) => id !== templateId), couponQuantities: restQty },
+      })
+    } else {
+      // 勾选：加入模板 + 数量默认 1
+      onChange({
+        ...value,
+        [level]: {
+          ...value[level],
+          couponTemplateIds: [...current, templateId],
+          couponQuantities: { ...currentQty, [templateId]: 1 },
+        },
+      })
+    }
+  }
+
+  const setCouponQuantity = (level: MemberLevel, templateId: string, raw: number) => {
+    const qty = clampCouponQuantity(raw)
+    onChange({
+      ...value,
+      [level]: {
+        ...value[level],
+        couponQuantities: { ...value[level].couponQuantities, [templateId]: qty },
+      },
+    })
   }
 
   return (
@@ -101,28 +128,47 @@ export function MemberLevelBenefitsForm({
                 <label className="text-sm font-medium text-[var(--foreground)]">
                   发放优惠券模板
                   {b.couponTemplateIds.length > 0 && (
-                    <span className="ml-2 text-xs text-[var(--primary)]">已选 {b.couponTemplateIds.length} 张</span>
+                    <span className="ml-2 text-xs text-[var(--primary)]">
+                      已选 {b.couponTemplateIds.length} 种，共{" "}
+                      {b.couponTemplateIds.reduce((s, id) => s + (b.couponQuantities[id] ?? 1), 0)} 张
+                    </span>
                   )}
                 </label>
                 {couponTemplates.length === 0 ? (
                   <p className="text-xs text-[#999999]">暂无可用优惠券模板，请先到 <a href="/coupons" className="text-[var(--primary)] underline">优惠券</a> 页面创建</p>
                 ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-48 overflow-y-auto border border-[var(--border)] rounded-md p-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-60 overflow-y-auto border border-[var(--border)] rounded-md p-3">
                     {couponTemplates.map((tpl) => {
                       const checked = b.couponTemplateIds.includes(tpl.templateId)
                       return (
-                        <label
+                        <div
                           key={tpl.templateId}
-                          className="flex items-center gap-2 text-sm cursor-pointer hover:bg-[var(--accent)] px-2 py-1 rounded"
+                          className="flex items-center gap-2 text-sm hover:bg-[var(--accent)] px-2 py-1 rounded"
                         >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => toggleCouponTemplate(level, tpl.templateId)}
-                            className="h-4 w-4 accent-[var(--primary)]"
-                          />
-                          <span className="truncate" title={tpl.name}>{tpl.name}</span>
-                        </label>
+                          <label className="flex items-center gap-2 cursor-pointer flex-1 min-w-0">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleCouponTemplate(level, tpl.templateId)}
+                              className="h-4 w-4 accent-[var(--primary)]"
+                            />
+                            <span className="truncate" title={tpl.name}>{tpl.name}</span>
+                          </label>
+                          {checked && (
+                            <div className="flex items-center gap-1 shrink-0">
+                              <span className="text-xs text-[#999999]">数量</span>
+                              <Input
+                                type="number"
+                                min={1}
+                                max={MAX_COUPON_QUANTITY}
+                                value={b.couponQuantities[tpl.templateId] ?? 1}
+                                onChange={(e) => setCouponQuantity(level, tpl.templateId, Number(e.target.value))}
+                                className="h-8 w-16"
+                              />
+                              <span className="text-xs text-[#999999]">张</span>
+                            </div>
+                          )}
+                        </div>
                       )
                     })}
                   </div>

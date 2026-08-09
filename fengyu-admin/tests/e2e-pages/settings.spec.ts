@@ -17,6 +17,7 @@ test.describe('系统配置', () => {
     // 标签是普通文字（非 <label>），用 getByText
     await expect(page.getByText(/新会员消费门槛/)).toBeVisible()
     await expect(page.getByText(/订单超时时间/)).toBeVisible()
+    await expect(page.getByText(/积分抵扣比例/)).toBeVisible()
   })
 
   test('保存按钮可见', async ({ page }) => {

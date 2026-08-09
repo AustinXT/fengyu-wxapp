@@ -18,7 +18,7 @@ import {
 } from "@/actions/orders"
 import { getAvailableCoupons } from "@/actions/coupons"
 import { getProductsByKind, type ProductKindForOrder, type OrderPickerResult, type OrderPickerNormalGroup, type OrderPickerCategory } from "@/actions/products"
-import { getCustomerHeldCards, getCustomerCardBalance, createRechargeOrder, type HeldCardCandidate } from "@/actions/cards"
+import { getCustomerHeldCards, getCustomerCardBalance, getCustomerPointsBalance, createRechargeOrder, type HeldCardCandidate } from "@/actions/cards"
 import { formatDate } from "@/lib/utils"
 import { formatPhoneSafe } from "@/lib/format"
 import { actionErrorMessage } from "@/lib/action-error"
@@ -174,6 +174,44 @@ function allocateCouponPerLine(priceLines: number[], couponAmount: number): numb
   return shares
 }
 
+function pointsToDiscountCents(points: number, rate: number): number {
+  return Math.floor(points * rate * 100 + 1e-6)
+}
+
+function computePointsPreview(input: {
+  enabled: boolean
+  pointsInput: string
+  pointsBalance: number
+  rawTotal: number
+  currentAmount: number
+  pointsToYuanRate: number
+  pointsDeductionMaxRate: number
+}) {
+  const balance = Math.max(0, Math.floor(input.pointsBalance))
+  const currentCents = Math.max(0, Math.round(input.currentAmount * 100))
+  const rate = Number(input.pointsToYuanRate) || 0.01
+  const maxRate = Number(input.pointsDeductionMaxRate) || 0
+  const capCents = Math.min(
+    currentCents,
+    Math.floor(Math.max(0, input.rawTotal) * maxRate * 100 + 1e-6),
+  )
+  const maxPoints = rate > 0 ? Math.max(0, Math.min(balance, Math.floor(capCents / (rate * 100)))) : 0
+  if (!input.enabled || balance <= 0 || capCents <= 0 || maxPoints <= 0) {
+    return { pointsUsed: 0, pointsDiscount: 0, maxPoints, maxDiscount: capCents / 100 }
+  }
+
+  const requested = input.pointsInput.trim() === ''
+    ? maxPoints
+    : Math.max(0, Math.min(maxPoints, Math.floor(Number(input.pointsInput) || 0)))
+  const discountCents = Math.min(capCents, pointsToDiscountCents(requested, rate))
+  return {
+    pointsUsed: discountCents > 0 ? requested : 0,
+    pointsDiscount: discountCents / 100,
+    maxPoints,
+    maxDiscount: capCents / 100,
+  }
+}
+
 const steps = ["选择顾客", "选择商品", "确认订单", "完成"]
 
 function StepIndicator({ current }: { current: number }) {
@@ -262,6 +300,11 @@ export default function OrderCreatePageClient({
   const [customerCardBalance, setCustomerCardBalance] = useState<number>(0)
   const [useCard, setUseCard] = useState<boolean>(false)
   const [cardAmountInput, setCardAmountInput] = useState<string>("0.00")
+  const [customerPointsBalance, setCustomerPointsBalance] = useState<number>(0)
+  const [usePoints, setUsePoints] = useState<boolean>(false)
+  const [pointsInput, setPointsInput] = useState<string>("")
+  const [pointsToYuanRate, setPointsToYuanRate] = useState<number>(0.01)
+  const [pointsDeductionMaxRate, setPointsDeductionMaxRate] = useState<number>(0.03)
   // 活动单标记（纯标识，不影响金额/提成口径）
   const [isActivity, setIsActivity] = useState<boolean>(false)
   // 创建订单返回的 status，用于 Step 4 文案分支（部分支付 / 待支付 / 已支付）
@@ -348,24 +391,37 @@ export default function OrderCreatePageClient({
       setSelectedEmployeeId(customer.boundEmployeeId)
     }
     void prefetchKindData(productKindChoice, customer.userId)
-    // 异步加载充值卡余额（开单页随时可用；含充值卡 SKU 时由 UI 锁灰，但状态仍保留以便切换时立即可用）
+    // 异步加载充值卡余额和积分余额（开单页随时可用；含充值卡 SKU 时由 UI 锁灰，但状态仍保留以便切换时立即可用）
     if (customer.userId) {
-      getCustomerCardBalance(customer.userId)
-        .then((bal) => {
+      Promise.all([
+        getCustomerCardBalance(customer.userId),
+        getCustomerPointsBalance(customer.userId),
+      ])
+        .then(([bal, points]) => {
           setCustomerCardBalance(bal)
+          setCustomerPointsBalance(points.pointsBalance)
+          setPointsToYuanRate(points.pointsToYuanRate)
+          setPointsDeductionMaxRate(points.pointsDeductionMaxRate)
           setUseCard(false)
+          setUsePoints(false)
           setCardAmountInput('0.00')
         })
         .catch(() => {
           setCustomerCardBalance(0)
+          setCustomerPointsBalance(0)
           setUseCard(false)
+          setUsePoints(false)
           setCardAmountInput('0.00')
         })
     } else {
       setCustomerCardBalance(0)
+      setCustomerPointsBalance(0)
       setUseCard(false)
+      setUsePoints(false)
       setCardAmountInput('0.00')
     }
+    setCardAmountInput('0.00')
+    setPointsInput("")
   }
 
   /**
@@ -663,7 +719,50 @@ export default function OrderCreatePageClient({
     }
   }, [perItemAmounts])
 
-  // 转换单差额采用券后转入金额，和 ConversionPanel 保持一致。
+  const rawSaleTotalBeforeDeductions = useMemo(
+    () => Math.round(cartPriceLines.reduce((sum, amount) => sum + amount, 0) * 100) / 100,
+    [cartPriceLines],
+  )
+  const pointsEnabledForOrder = !isInternal && !isConversion && !!selectedCustomer?.userId
+  const pointsPreview = useMemo(
+    () => computePointsPreview({
+      enabled: pointsEnabledForOrder && usePoints,
+      pointsInput,
+      pointsBalance: customerPointsBalance,
+      rawTotal: rawSaleTotalBeforeDeductions,
+      currentAmount: totalSaleAmount,
+      pointsToYuanRate,
+      pointsDeductionMaxRate,
+    }),
+    [
+      pointsEnabledForOrder,
+      usePoints,
+      pointsInput,
+      customerPointsBalance,
+      rawSaleTotalBeforeDeductions,
+      totalSaleAmount,
+      pointsToYuanRate,
+      pointsDeductionMaxRate,
+    ],
+  )
+  const pointShares = useMemo(
+    () => allocateCouponPerLine(perItemAmounts.map((a) => a.saleAmount), pointsPreview.pointsDiscount),
+    [perItemAmounts, pointsPreview.pointsDiscount],
+  )
+  const { totalSaleAmountAfterPoints, totalReceivedAfterPoints } = useMemo(() => {
+    let sale = 0
+    let received = 0
+    for (let i = 0; i < perItemAmounts.length; i++) {
+      const rowSale = Math.max(0, Math.round((perItemAmounts[i].saleAmount - (pointShares[i] || 0)) * 100) / 100)
+      sale += rowSale
+      received += Math.min(perItemAmounts[i].received, rowSale)
+    }
+    return {
+      totalSaleAmountAfterPoints: Math.round(sale * 100) / 100,
+      totalReceivedAfterPoints: Math.round(received * 100) / 100,
+    }
+  }, [perItemAmounts, pointShares])
+
   const conversionPriceDiff = Math.round((totalSaleAmount - conversionTotalOut) * 100) / 100
   // 转换单充值卡抵扣：仅补差额 > 0 时可抵扣，上限 = min(余额, 补差额)
   const conversionCardMax = Math.min(Math.max(0, customerCardBalance), Math.max(0, conversionPriceDiff))
@@ -678,13 +777,13 @@ export default function OrderCreatePageClient({
     }
   }, [conversionCouponCap, isConversion, selectedCouponId])
 
-  // 销售单/内部单充值卡抵扣：上限 = min(余额, 本次实收合计)；salePayable = 抵扣后应付现金
-  const saleCardMax = Math.min(Math.max(0, customerCardBalance), Math.max(0, totalReceived))
+  // 销售单/内部单充值卡抵扣：上限 = min(余额, 积分抵扣后的本次实收)；salePayable = 抵扣后应付现金
+  const saleCardMax = Math.min(Math.max(0, customerCardBalance), Math.max(0, totalReceivedAfterPoints))
   const saleCardAmount = !isConversion && useCard
     ? clampPrepaidAmount(cardAmountInput, saleCardMax)
     : 0
-  const salePayable = Math.max(0, Math.round((totalSaleAmount - saleCardAmount) * 100) / 100)
-  const saleCashAmount = calculateSaleCashAmount(totalReceived, saleCardAmount, salePayable)
+  const salePayable = Math.max(0, Math.round((totalSaleAmountAfterPoints - saleCardAmount) * 100) / 100)
+  const saleCashAmount = calculateSaleCashAmount(totalReceivedAfterPoints, saleCardAmount, salePayable)
 
   // 转换单候选按钮可用性（ticket §5 表格最后两行）
   const conversionAllowed = !!selectedCustomer?.userId
@@ -1477,6 +1576,51 @@ export default function OrderCreatePageClient({
                     )
                   })}
                 </div>
+                {pointsEnabledForOrder && (() => {
+                  const maxDiscount = pointsPreview.maxDiscount
+                  return (
+                    <div className="mt-4 border border-[var(--border)] rounded p-3 bg-white">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="text-sm font-medium text-[var(--foreground)]">积分抵扣</div>
+                          <div className="text-xs text-[#999999] mt-0.5">
+                            可用 {customerPointsBalance.toLocaleString()} 积分，最多抵 ¥{maxDiscount.toFixed(2)}
+                          </div>
+                        </div>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={usePoints}
+                            disabled={customerPointsBalance <= 0 || pointsPreview.maxPoints <= 0}
+                            onChange={(e) => setUsePoints(e.target.checked)}
+                            className="h-4 w-4"
+                          />
+                          <span className={`text-xs ${customerPointsBalance <= 0 ? 'text-[#cccccc]' : 'text-[#666666]'}`}>
+                            启用
+                          </span>
+                        </label>
+                      </div>
+                      {usePoints && customerPointsBalance > 0 && pointsPreview.maxPoints > 0 && (
+                        <div className="mt-2 flex items-center gap-2">
+                          <span className="text-xs text-[#999999]">使用积分</span>
+                          <Input
+                            type="number"
+                            min="0"
+                            max={pointsPreview.maxPoints}
+                            step="1"
+                            className="h-8 text-sm w-32"
+                            placeholder={`留空=${pointsPreview.maxPoints}`}
+                            value={pointsInput}
+                            onChange={(e) => setPointsInput(e.target.value)}
+                          />
+                          <span className="text-xs text-[#3D8A5A]">
+                            抵扣 {pointsPreview.pointsUsed.toLocaleString()} 积分 / ¥{pointsPreview.pointsDiscount.toFixed(2)}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()}
                 {/* 充值卡抵扣 UI（admin 新增；商品清单下方） */}
                 {!isConversion && selectedCustomer?.userId && (() => {
                   return (
@@ -1525,7 +1669,7 @@ export default function OrderCreatePageClient({
                     </div>
                   )
                 })()}
-                {/* 金额汇总（应付合计 = Σ saleAmount = Σ priceLine - 券折扣；订单总额 = 应付 - 充值卡抵扣） */}
+                {/* 金额汇总（应付合计 = Σ saleAmount = Σ priceLine - 券折扣 - 积分抵扣；订单总额 = 应付 - 充值卡抵扣） */}
                 {(() => {
                   const finalAmount = salePayable
                   return (
@@ -1538,9 +1682,14 @@ export default function OrderCreatePageClient({
                       <div className="text-sm text-[#999999]">
                         应付合计: ¥{totalSaleAmount.toFixed(2)}
                       </div>
-                      {totalReceived !== totalSaleAmount && (
+                      {pointsPreview.pointsDiscount > 0 && (
+                        <div className="text-sm text-[#3D8A5A]">
+                          积分抵扣: -¥{pointsPreview.pointsDiscount.toFixed(2)}
+                        </div>
+                      )}
+                      {totalReceivedAfterPoints !== totalSaleAmountAfterPoints && (
                         <div className="text-sm text-[#999999]">
-                          实付合计: ¥{totalReceived.toFixed(2)}
+                          实付合计: ¥{totalReceivedAfterPoints.toFixed(2)}
                         </div>
                       )}
                       {saleCardAmount > 0 && (
@@ -1679,6 +1828,8 @@ export default function OrderCreatePageClient({
                     isActivity,
                     couponId: !isInternal ? (selectedCouponId || null) : null,
                     receivedAmount: receivedAmountArg,
+                    usePoints: pointsPreview.pointsUsed > 0,
+                    pointsUsed: pointsPreview.pointsUsed > 0 ? pointsPreview.pointsUsed : undefined,
                     prepaidCardAmount: saleCardAmount,
                     bundleProductId,
                     items: cart.map((item) => {
@@ -1805,7 +1956,11 @@ export default function OrderCreatePageClient({
                       ? `已确认收款 ¥${Number(confirmAmountInput || 0).toFixed(2)}，剩余 ¥${Math.max(0, createdPayable - Number(confirmAmountInput || 0)).toFixed(2)} 待收，请到订单详情「录入回款」补齐`
                       : '订单已确认收款，状态已更新为已支付')
                   : createdStatus === '已支付'
-                    ? `订单已由储值卡全额抵扣 ¥${saleCardAmount.toFixed(2)}，已结清`
+                    ? (saleCardAmount > 0
+                        ? `订单已由储值卡全额抵扣 ¥${saleCardAmount.toFixed(2)}，已结清`
+                        : pointsPreview.pointsDiscount > 0
+                          ? `订单已由积分抵扣 ¥${pointsPreview.pointsDiscount.toFixed(2)}，已结清`
+                          : '订单已结清')
                     : paymentMethod === '线下'
                       ? '线下收款（等同线上扫码）：按商品实付扣除充值卡抵扣后的现金，点「确认收款」入账'
                       : '请将二维码展示给顾客，扫码进入小程序完成支付'}

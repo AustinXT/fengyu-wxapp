@@ -1,5 +1,5 @@
 /**
- * runDailyJobs — 串行执行 13 个 STEP，每个 STEP 独立 try/catch
+ * runDailyJobs — 串行执行 14 个 STEP，每个 STEP 独立 try/catch
  *
  * 与原 cronTask 入口的关键差异：
  *   - 原入口的整体 try 单点：任一 STEP 抛异常 → 后续 STEP 全部跳过
@@ -17,11 +17,12 @@
  *   6. birthday                 — 当日生日权益（依赖 member_level）
  *   7. thanksgiving             — 月度感恩权益（仅 20 号；依赖 member_level）
  *   8. resetCrossStoreFlags     — 重置顾客临时跨店标记（写入清扫；员工出差已改为长期保留，2026-07-13）
- *   9. pointsAudit              — 积分余额一致性校验（只读告警）
- *  10. roleTypeNullsAudit       — sa/sc role_type NULL 监控（只读告警）
- *  11. paymentInvariants        — 5 项资金不变量守护（只读告警；新增 2026-04-26）
- *  12. refundCascadeCoverage    — 退款 5 通道级联巡检（只读告警；新增 2026-05-18）
- *  13. storeUnbindOrphans       — store_unbind_requests 孤儿巡检（只读告警；新增 2026-05-18）
+ *   9. pointsExpiry             — 积分批次过期扣减 + 60/30/7 天到期提醒
+ *  10. pointsAudit              — 积分余额一致性校验（只读告警）
+ *  11. roleTypeNullsAudit       — sa/sc role_type NULL 监控（只读告警）
+ *  12. paymentInvariants        — 5 项资金不变量守护（只读告警；新增 2026-04-26）
+ *  13. refundCascadeCoverage    — 退款 5 通道级联巡检（只读告警；新增 2026-05-18）
+ *  14. storeUnbindOrphans       — store_unbind_requests 孤儿巡检（只读告警；新增 2026-05-18）
  *
  *  客活/消费档位（STEP 3/5）2026-05-26 从 db/scripts/ 游离脚本纳入 cron-worker，根治筛选空。
  */
@@ -34,6 +35,7 @@ import { refreshMemberLevels } from './steps/refresh-member-levels'
 import { refreshSpendingTier } from './steps/refresh-spending-tier'
 import { grantBirthdayBenefits } from './steps/grant-birthday-benefits'
 import { grantThanksgivingBenefits } from './steps/grant-thanksgiving-benefits'
+import { processPointsExpiry } from './steps/process-points-expiry'
 import { auditPointsBalance } from './steps/audit-points-balance'
 import { auditRoleTypeNulls } from './steps/audit-role-type-nulls'
 import { auditPaymentInvariants } from './steps/audit-payment-invariants'
@@ -72,6 +74,8 @@ const STEPS: ReadonlyArray<readonly [string, StepFn]> = [
   ['thanksgiving', grantThanksgivingBenefits],
   // —— 顾客临时跨店标记重置（写入清扫；员工出差已改为长期保留，不感知 ctx）——
   ['resetCrossStoreFlags', resetCrossStoreFlags as StepFn],
+  // —— 积分批次到期处理与顾客提醒 ——
+  ['pointsExpiry', processPointsExpiry],
   // —— 数据完整性审计（只读，放在末尾，不感知 ctx）——
   ['pointsAudit', auditPointsBalance as StepFn],
   ['roleTypeNullsAudit', auditRoleTypeNulls as StepFn],

@@ -18,6 +18,7 @@ import { Pagination } from "@/components/ui/pagination"
 import { formatCurrency, formatDate } from "@/lib/utils"
 import { formatPhoneSafe } from "@/lib/format"
 import { actionErrorMessage } from "@/lib/action-error"
+import { MAX_COUPON_QUANTITY, clampCouponQuantity } from "@/lib/coupon-quantity"
 import { OrgTreeSelect } from "@/components/ui/org-tree-select"
 import { updateTemplate, issueCoupon, batchIssueCoupons, getCustomersForBatchIssue, getOrgNodesForBatchIssue } from "@/actions/coupons"
 import type { CouponTemplate, CouponType, IssuedCoupon, BatchCouponCustomer, OrgNode } from "@/lib/types"
@@ -93,6 +94,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
   const [issueCustomerName, setIssueCustomerName] = useState("")
   const [issueSearched, setIssueSearched] = useState(false)
   const [issueLoading, setIssueLoading] = useState(false)
+  const [issueCount, setIssueCount] = useState(1)
 
   // Batch issue dialog state
   const [batchOpen, setBatchOpen] = useState(false)
@@ -343,7 +345,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
     }
     setIssueLoading(true)
     try {
-      const result = await issueCoupon(template.templateId, issuePhone.trim())
+      const result = await issueCoupon(template.templateId, issuePhone.trim(), issueCount)
       if (!result.success) {
         toast.error(result.message)
         return
@@ -353,6 +355,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
       setIssuePhone("")
       setIssueCustomerName("")
       setIssueSearched(false)
+      setIssueCount(1)
       router.refresh()
     } catch (err) {
       toast.error(actionErrorMessage(err, "发放失败，请重试"))
@@ -792,6 +795,20 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
               <div className="text-sm text-[var(--muted-foreground)]">{issuePhone}</div>
             </div>
           )}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">发放数量</label>
+            <div className="flex items-center gap-2">
+              <Input
+                type="number"
+                min={1}
+                max={MAX_COUPON_QUANTITY}
+                value={issueCount}
+                onChange={(e) => setIssueCount(clampCouponQuantity(Number(e.target.value)))}
+                className="w-24"
+              />
+              <span className="text-sm text-[var(--muted-foreground)]">张（最多 {MAX_COUPON_QUANTITY} 张）</span>
+            </div>
+          </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => setIssueOpen(false)}>

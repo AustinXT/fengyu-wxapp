@@ -15,7 +15,15 @@ const wxacodePath = require.resolve('../utils/wxacode')
 const mockWxacode = { generateWxacode: vi.fn(async () => Buffer.from('fake-qrcode-png')), uploadToCloudStorage: vi.fn(async () => 'cloud://mock-file-id/wxacode.png') }
 require.cache[wxacodePath] = { id: wxacodePath, filename: wxacodePath, loaded: true, exports: mockWxacode }
 const configPath = require.resolve('../utils/config')
-const mockConfig = { getMemberThreshold: vi.fn(async () => 1980), invalidateCache: vi.fn(), FALLBACK_THRESHOLD: 1980 }
+const mockConfig = {
+  getMemberThreshold: vi.fn(async () => 1980),
+  getPointsToYuanRate: vi.fn(async () => 0.01),
+  getPointsDeductionMaxRate: vi.fn(async () => 0.03),
+  invalidateCache: vi.fn(),
+  FALLBACK_THRESHOLD: 1980,
+  FALLBACK_POINTS_TO_YUAN_RATE: 0.01,
+  FALLBACK_POINTS_DEDUCTION_MAX_RATE: 0.03,
+}
 require.cache[configPath] = { id: configPath, filename: configPath, loaded: true, exports: mockConfig }
 globalThis.__mocks__ = { pg: mockPg, cloud: mockCloud, mssql: mockMssql, wxacode: mockWxacode, config: mockConfig }
 beforeEach(() => {
@@ -26,5 +34,7 @@ beforeEach(() => {
   mockCloud.getWXContext.mockReset().mockReturnValue({ OPENID: 'test-openid-001', APPID: 'wxe3f5d9ee6a94d22d', UNIONID: undefined })
   mockMssql.query.mockReset().mockResolvedValue([])
   mockConfig.getMemberThreshold.mockReset().mockResolvedValue(1980)
+  mockConfig.getPointsToYuanRate.mockReset().mockResolvedValue(0.01)
+  mockConfig.getPointsDeductionMaxRate.mockReset().mockResolvedValue(0.03)
   mockConfig.invalidateCache.mockReset()
 })

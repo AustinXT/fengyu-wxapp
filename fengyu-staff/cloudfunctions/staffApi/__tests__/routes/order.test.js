@@ -1596,7 +1596,7 @@ describe('order 普通 SKU 市场范围 helper', () => {
 
     const [sql, params] = pg.query.mock.calls[0]
     expect(sql).toContain('s.market_scope')
-    expect(sql).toContain('s.store_id = $2')
+    expect(sql).toContain('scope_store.store_id = $2')
     expect(params).toEqual([['sku-other-market'], 'store-current'])
   })
 
@@ -2234,8 +2234,7 @@ describe('order.close', () => {
       String(sql).includes('restore_sessions'),
     )
     expect(restoreCall).toBeTruthy()
-    // 跨店转换单修复（PR #74）：locked_source 不再按 store_id 过滤源卡，
-    // 因此 restore 查询不传 store_id，SQL 也不得再出现 src.store_id 条件。
+    // 跨店转换单修复（PR #74）：源卡恢复不再按 store_id 过滤。
     expect(restoreCall[1]).toEqual(expect.arrayContaining(['FY-CONV-001']))
     expect(restoreCall[1]).not.toEqual(expect.arrayContaining(['store-001']))
     expect(String(restoreCall[0])).not.toContain('src.store_id')

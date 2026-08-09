@@ -55,6 +55,14 @@ function buildMockClient({
     }
 
     if (/INSERT\s+INTO\s+point_transactions/i.test(s)) {
+      return { rows: [{ id: 1001 }], rowCount: 1 }
+    }
+
+    if (/INSERT\s+INTO\s+point_batches/i.test(s)) {
+      return { rowCount: 1 }
+    }
+
+    if (/UPDATE\s+point_batches/i.test(s)) {
       return { rowCount: 1 }
     }
 
@@ -117,8 +125,17 @@ describe('settlePointsForOrder — 正向发放', () => {
 
     const upd = findQuery(queries, /UPDATE\s+client_wechat_users/i)
     expect(upd).toBeDefined()
-    expect(upd.params[0]).toBe(2)
-    expect(upd.params[1]).toBe('user-001')
+    expect(upd.params[0]).toBe('user-001')
+
+    const batch = findQuery(queries, /INSERT\s+INTO\s+point_batches/i)
+    expect(batch).toBeDefined()
+    expect(batch.params).toEqual([
+      'user-001',
+      1001,
+      '消费赠送',
+      'FY-XSD-WX-2604240001',
+      2,
+    ])
   })
 
   test('消费 100 元整 → delta=+1', async () => {
@@ -148,7 +165,11 @@ describe('settlePointsForOrder — 退款冲销', () => {
     expect(ins.params[2]).toBe(-1)
 
     const upd = findQuery(queries, /UPDATE\s+client_wechat_users/i)
-    expect(upd.params[0]).toBe(-1)
+    expect(upd.params[0]).toBe('user-001')
+
+    const batchConsume = findQuery(queries, /UPDATE\s+point_batches/i)
+    expect(batchConsume).toBeDefined()
+    expect(batchConsume.params).toEqual(['user-001', 1, 'o1'])
   })
 
   test('二次退款尾差归零：netSettled=140, granted=1 → delta=0 无写入', async () => {

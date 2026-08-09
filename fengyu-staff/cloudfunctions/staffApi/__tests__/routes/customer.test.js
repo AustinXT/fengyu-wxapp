@@ -1505,7 +1505,13 @@ describe('customer.customerBalance', () => {
     pg.query.mockResolvedValueOnce([])
     await customerRoutes.customerBalance(ctx)
 
-    expect(ctx.result).toEqual({ cardId: null, balance: 0 })
+    expect(ctx.result).toMatchObject({
+      cardId: null,
+      balance: 0,
+      pointsBalance: 0,
+      pointsToYuanRate: 0.01,
+      pointsDeductionMaxRate: 0.03,
+    })
   })
 
   test('balance 返回为数字类型（Number 转换）', async () => {

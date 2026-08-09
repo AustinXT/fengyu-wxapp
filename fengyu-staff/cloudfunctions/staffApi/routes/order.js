@@ -15,10 +15,10 @@ const pg = require('../db/pg')
 const { requireStaffBound, requireManager } = require('../middleware/auth')
 const { assertOrderInScope, isStoreInScope, restrictToBoundEmployee, buildBundleMarketScopeFilter, buildNormalSkuMarketScopeFilter } = require('../utils/scope')
 const { generateWxacode, uploadToCloudStorage } = require('../utils/wxacode')
-const { getMemberThreshold } = require('../utils/config')
+const { getMemberThreshold, getPointsToYuanRate, getPointsDeductionMaxRate } = require('../utils/config')
 // 充值卡剥离 SKU 化（2026-05-20）：充值识别改为 sale_orders.sale_order_type='充值单'，
 // 不再依赖虚拟 SKU ID 或 product_name 正则解析面值。
-const { settlePointsSafe } = require('../utils/points')
+const { settlePointsSafe, grantPointBatch, consumePointBatches } = require('../utils/points')
 const { recalcMemberLevel } = require('../utils/member-level')
 const { isMember, resolveUnitPrice } = require('../utils/member-pricing')
 const { recalcPaidSessionsForOrder, computePaidSessionsForItem } = require('../utils/paid-sessions')
@@ -79,6 +79,184 @@ function calcTierLineAmount(tierAmount, tierSessions, lineSessions) {
   const line = Math.max(0, Number(lineSessions) || 0)
   if (amount <= 0 || sessions <= 0 || line <= 0) return 0
   return Math.round((amount * line * 100) / sessions) / 100
+}
+
+function moneyToCents(value) {
+  return Math.max(0, Math.round((Number(value) || 0) * 100))
+}
+
+function pointsToDiscountCents(points, rate) {
+  return Math.floor(points * rate * 100 + 1e-6)
+}
+
+function computePointsDeduction({
+  usePoints,
+  requestedPoints,
+  pointsBalance,
+  rawTotal,
+  currentAmount,
+  pointsToYuanRate,
+  pointsDeductionMaxRate,
+}) {
+  const explicit = requestedPoints !== undefined && requestedPoints !== null
+  const enabled = usePoints === true || (explicit && Number(requestedPoints) > 0)
+  if (!enabled) return { pointsUsed: 0, pointsDiscount: 0 }
+
+  const balance = Math.floor(Number(pointsBalance) || 0)
+  const rate = Number(pointsToYuanRate) || 0
+  const maxRate = Number(pointsDeductionMaxRate) || 0
+  const capCents = Math.min(
+    Math.floor(Math.max(0, Number(rawTotal) || 0) * maxRate * 100 + 1e-6),
+    moneyToCents(currentAmount),
+  )
+  if (balance <= 0 || rate <= 0 || maxRate <= 0 || capCents <= 0) {
+    if (explicit && Number(requestedPoints) > 0) {
+      throw new Error('INSUFFICIENT_BALANCE: 积分余额不足或当前订单不可抵扣')
+    }
+    return { pointsUsed: 0, pointsDiscount: 0 }
+  }
+
+  if (explicit) {
+    const points = Number(requestedPoints)
+    if (!Number.isInteger(points) || points < 0) {
+      throw new Error('INVALID_PARAMS: 积分抵扣数量必须为非负整数')
+    }
+    if (points === 0) return { pointsUsed: 0, pointsDiscount: 0 }
+    if (points > balance) {
+      throw new Error('INSUFFICIENT_BALANCE: 积分余额不足')
+    }
+    const discountCents = pointsToDiscountCents(points, rate)
+    if (discountCents <= 0) {
+      throw new Error('INVALID_PARAMS: 积分抵扣金额过小')
+    }
+    if (discountCents > capCents) {
+      throw new Error('INVALID_PARAMS: 积分抵扣金额超过本单上限')
+    }
+    return { pointsUsed: points, pointsDiscount: discountCents / 100 }
+  }
+
+  const centsPerPoint = rate * 100
+  const maxPointsByCap = Math.floor(capCents / centsPerPoint)
+  const pointsUsed = Math.max(0, Math.min(balance, maxPointsByCap))
+  const discountCents = Math.min(capCents, pointsToDiscountCents(pointsUsed, rate))
+  return discountCents > 0
+    ? { pointsUsed, pointsDiscount: discountCents / 100 }
+    : { pointsUsed: 0, pointsDiscount: 0 }
+}
+
+function applyOrderLevelDiscountToItems(items, discountAmount) {
+  const discountCents = moneyToCents(discountAmount)
+  if (!discountCents || !items.length) return
+
+  const totalCents = items.reduce((sum, item) => sum + moneyToCents(item.saleAmount), 0)
+  if (!totalCents) return
+
+  let distributedCents = 0
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]
+    const baseCents = moneyToCents(item.saleAmount)
+    const shareCents = i === items.length - 1
+      ? discountCents - distributedCents
+      : Math.min(baseCents, Math.round(discountCents * (baseCents / totalCents)))
+    distributedCents += shareCents
+
+    const saleCents = Math.max(0, baseCents - shareCents)
+    item.saleAmount = saleCents / 100
+    item.received = Math.min(moneyToCents(item.received), saleCents) / 100
+
+    const denom = (item.sessionCount != null && item.sessionCount > 0) ? item.sessionCount : (item.quantity || 1)
+    const listBase = Number(item.listUnitPrice != null ? item.listUnitPrice : item.unitPrice || 0)
+    const listTotalRow = roundMoney(listBase * (item.quantity || 1))
+    item.unitRealPrice = denom > 0 ? roundMoney(item.saleAmount / denom) : item.saleAmount
+    item.unitPrice = denom > 0 ? roundMoney(listTotalRow / denom) : listTotalRow
+  }
+}
+
+async function getAvailablePointsBalance(client, userId) {
+  const res = await client.query(
+    `SELECT COALESCE(SUM(remaining_amount), 0)::bigint AS balance
+       FROM (
+         SELECT remaining_amount
+           FROM point_batches
+          WHERE user_id = $1
+            AND remaining_amount > 0
+            AND expire_at > NOW()
+          FOR UPDATE
+       ) locked_batches`,
+    [userId],
+  )
+  return Number(res.rows?.[0]?.balance || 0)
+}
+
+async function recomputePointsBalance(client, userId) {
+  await client.query(
+    `UPDATE client_wechat_users c
+        SET points_balance = COALESCE((
+              SELECT SUM(pb.remaining_amount)
+                FROM point_batches pb
+               WHERE pb.user_id = c.user_id
+                 AND pb.expire_at > NOW()
+            ), 0),
+            points_updated_at = NOW()
+      WHERE c.user_id = $1`,
+    [userId],
+  )
+}
+
+async function deductPointsAtCreation(client, { saleOrderId, userId, pointsUsed }) {
+  if (!pointsUsed || pointsUsed <= 0) return
+  // 积分相关锁序固定为 point_batches -> client_wechat_users，与过期任务一致。
+  const available = await getAvailablePointsBalance(client, userId)
+  if (available < pointsUsed) {
+    throw new Error('INSUFFICIENT_BALANCE: 积分余额不足')
+  }
+  await client.query('SELECT user_id FROM client_wechat_users WHERE user_id = $1 FOR UPDATE', [userId])
+  const inserted = await client.query(
+    `INSERT INTO point_transactions (user_id, type, amount, ref_order_id, external_ref, created_at)
+     VALUES ($1, '消费抵扣', $2, $3, $4, NOW())
+     ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING
+     RETURNING id`,
+    [userId, -pointsUsed, saleOrderId, `points-deduct-${saleOrderId}`],
+  )
+  if (inserted.rows?.[0]?.id) {
+    await consumePointBatches(client, { userId, amount: -pointsUsed, refOrderId: saleOrderId })
+    await recomputePointsBalance(client, userId)
+  }
+}
+
+async function releasePointsDeduction(client, { saleOrderId, userId, pointsUsed = 0 }) {
+  if (!saleOrderId || !userId || Number(pointsUsed || 0) <= 0) return
+  await client.query('SELECT user_id FROM client_wechat_users WHERE user_id = $1 FOR UPDATE', [userId])
+  const rows = await client.query(
+    `SELECT
+       COALESCE(SUM(CASE WHEN type = '消费抵扣' THEN -amount ELSE 0 END), 0)::bigint AS deducted,
+       COALESCE(SUM(CASE WHEN type = '消费抵扣退回' THEN amount ELSE 0 END), 0)::bigint AS returned
+     FROM point_transactions
+     WHERE ref_order_id = $1 AND user_id = $2
+       AND type IN ('消费抵扣','消费抵扣退回')`,
+    [saleOrderId, userId],
+  )
+  const pointsToRelease = Number(rows.rows?.[0]?.deducted || 0) - Number(rows.rows?.[0]?.returned || 0)
+  if (pointsToRelease <= 0) return
+
+  const inserted = await client.query(
+    `INSERT INTO point_transactions (user_id, type, amount, ref_order_id, external_ref, created_at)
+     VALUES ($1, '消费抵扣退回', $2, $3, $4, NOW())
+     ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING
+     RETURNING id`,
+    [userId, pointsToRelease, saleOrderId, `points-deduct-rev-${saleOrderId}`],
+  )
+  const pointTransactionId = Number(inserted.rows?.[0]?.id || 0)
+  if (pointTransactionId) {
+    await grantPointBatch(client, {
+      userId,
+      pointTransactionId,
+      type: '消费抵扣退回',
+      amount: pointsToRelease,
+      refOrderId: saleOrderId,
+    })
+    await recomputePointsBalance(client, userId)
+  }
 }
 
 function findPurchaseLimitViolation(items, skuRows) {
@@ -549,6 +727,8 @@ async function create(ctx) {
     remark: orderRemark,
     useCard,
     prepaidCardAmount: inputPrepaidCardAmount,
+    usePoints,
+    pointsUsed: inputPointsUsed,
     isActivity,
     bundleProductId,
   } = payload
@@ -602,6 +782,9 @@ async function create(ctx) {
   if (saleOrderType === '内部单' && inputCouponId) {
     throw new Error('INVALID_PARAMS: 内部单不允许叠加优惠券')
   }
+  if (saleOrderType !== '销售单' && (usePoints || Number(inputPointsUsed || 0) > 0)) {
+    throw new Error('INVALID_PARAMS: 仅销售单支持积分抵扣')
+  }
 
   // 历史 customPrice/discount 入参已废弃（前端按行不再传），后端不再处理
   // 行级"应付金额"由订单级券摊算得出，不再可手工编辑
@@ -609,7 +792,7 @@ async function create(ctx) {
   // 查询顾客是否已注册客户端小程序并绑定门店
   // 2026-07-08 修复 T1：补 select phone, name —— 下方 let 覆写（line 466-467 客户档案权威覆盖）需要这俩字段
   const clientUsers = await pg.query(
-    'SELECT user_id, bound_store_id, is_cross_store_temp, customer_type, member_level, phone, name FROM client_wechat_users WHERE phone = $1 LIMIT 1',
+    'SELECT user_id, bound_store_id, is_cross_store_temp, customer_type, member_level, phone, name, points_balance FROM client_wechat_users WHERE phone = $1 LIMIT 1',
     [clientPhone]
   )
   if (clientUsers.length === 0 || !clientUsers[0].bound_store_id) {
@@ -855,6 +1038,7 @@ async function create(ctx) {
       itemDataList.push(d)
     }
   }
+  const rawTotalBeforeDeductions = roundMoney(itemDataList.reduce((sum, d) => sum + d.saleAmount, 0))
 
   // ========== 优惠券处理 ==========
   let couponDiscount = 0
@@ -976,6 +1160,29 @@ async function create(ctx) {
       item.saleAmount = Math.max(0, Math.round((item.saleAmount - share) * 100) / 100)
       // unitRealPrice 与 saleAmount 同口径（应付单价）
       item.unitRealPrice = item.quantity > 0 ? Math.round((item.saleAmount / item.quantity) * 100) / 100 : 0
+    }
+  }
+
+  let pointsUsed = 0
+  let pointsDiscount = 0
+  if (usePoints || inputPointsUsed != null) {
+    const [pointsToYuanRate, pointsDeductionMaxRate] = await Promise.all([
+      getPointsToYuanRate(),
+      getPointsDeductionMaxRate(),
+    ])
+    const deduction = computePointsDeduction({
+      usePoints,
+      requestedPoints: inputPointsUsed,
+      pointsBalance: clientUsers[0].points_balance,
+      rawTotal: rawTotalBeforeDeductions,
+      currentAmount: roundMoney(itemDataList.reduce((sum, d) => sum + d.saleAmount, 0)),
+      pointsToYuanRate,
+      pointsDeductionMaxRate,
+    })
+    pointsUsed = deduction.pointsUsed
+    pointsDiscount = deduction.pointsDiscount
+    if (pointsDiscount > 0) {
+      applyOrderLevelDiscountToItems(itemDataList, pointsDiscount)
     }
   }
 
@@ -1171,10 +1378,10 @@ async function create(ctx) {
         sale_order_id, status, sale_order_type, document_type, market_name, store_id, store_name,
         sale_order_datetime, total_amount, client_user_id, client_phone, customer_name,
         payment_method, opened_by,
-        preferred_employee_id, coupon_id, coupon_discount, remark, is_activity, allocation_status,
+        preferred_employee_id, coupon_id, coupon_discount, points_used, points_discount, remark, is_activity, allocation_status,
         prepaid_card_amount, received, payable_amount, paid_at,
         created_at, updated_at
-      ) VALUES ($1, $17, $2, $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $22, '待分配', $18, $19, $20, $21, $6, $6)`,
+      ) VALUES ($1, $17, $2, $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $23, $24, $16, $22, '待分配', $18, $19, $20, $21, $6, $6)`,
       [
         saleOrderId, saleOrderType, documentType, marketName, storeId, now,
         totalAmount, clientUserId, clientPhone, clientName,
@@ -1186,6 +1393,8 @@ async function create(ctx) {
         prepaidCardAmount, receivedColumn, payableAmount,
         paidAtValue,
         isActivity === true,
+        pointsUsed,
+        pointsDiscount,
       ]
     )
 
@@ -1203,6 +1412,10 @@ async function create(ctx) {
       if (claimResult.rowCount !== 1) {
         throw new Error('INVALID_PARAMS: 优惠券已失效')
       }
+    }
+
+    if (pointsUsed > 0) {
+      await deductPointsAtCreation(client, { saleOrderId, userId: clientUserId, pointsUsed })
     }
 
     // ========== 两步式（2026-06-07 修 P0「待支付可消费疗程卡」）：开单不写收款流水 ==========
@@ -1320,6 +1533,8 @@ async function create(ctx) {
     totalAmount,
     payableAmount,
     couponDiscount,
+    pointsUsed,
+    pointsDiscount,
     prepaidCardAmount,
     paidAmount,
     receivedAmount,
@@ -1921,6 +2136,11 @@ async function close(ctx) {
        WHERE used_sale_order_id = $1`,
       [saleOrderId]
     )
+    await releasePointsDeduction(client, {
+      saleOrderId,
+      userId: order.client_user_id,
+      pointsUsed: order.points_used,
+    })
     // 审计日志
     await logTransition(client, ctx, 'order.close', 'sale_order', saleOrderId, order.status, '已关闭')
   })
