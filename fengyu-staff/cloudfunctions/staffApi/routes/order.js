@@ -2602,9 +2602,12 @@ async function createRefund(ctx) {
       refundByOrigin,
       handlingFee: fee,
     })
+  })
 
-    // 通知门店店长审批（Bug C）
-    await notifyRefundCreated(client, {
+  // ✅ Bug G12：通知移出事务 —— 避免 CloudBase 消息推送/DB 瞬态抖动时 INSERT messages 失败回滚整笔退款。
+  // 事务已提交，通知失败只记日志，不影响退款主流程。
+  try {
+    await notifyRefundCreated(pg, {
       paymentId,
       saleOrderId: refSaleOrderId,
       storeId: origOrder.store_id,
@@ -2612,7 +2615,9 @@ async function createRefund(ctx) {
       amount: finalRefundAmount,
       customerName: origOrder.customer_name,
     })
-  })
+  } catch (notifyErr) {
+    console.error('[createRefund] notifyRefundCreated failed:', notifyErr)
+  }
   } catch (e) {
     // 修复（Bug T）：in-flight SELECT 与 INSERT 间竞态由 DB uq_sop_status_audit 兜底；
     // 捕获 23505 转 CONFLICT，否则 raw pg 错误无白名单前缀会降级为「服务器内部错误」
