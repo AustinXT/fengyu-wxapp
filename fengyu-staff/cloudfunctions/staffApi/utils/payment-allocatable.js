@@ -82,7 +82,8 @@ async function capturePaymentAllocatables(client, { salePaymentId, saleOrderId, 
     const rows = convRes.rows
     if (rows.length === 0) return []
 
-    await client.query(`UPDATE sale_order_payments SET allocation_status = '待分配' WHERE id = $1 AND (allocation_status IS NULL OR allocation_status = '待分配')`, [salePaymentId])
+    const convGuard = await client.query(`UPDATE sale_order_payments SET allocation_status = '待分配' WHERE id = $1 AND (allocation_status IS NULL OR allocation_status = '待分配')`, [salePaymentId])
+    if (convGuard.rowCount === 0) return []
     const perItem = allocateSignedCents(
       Math.round(evt * 100),
       rows.map((r) => ({ saleItemId: r.sale_item_id, weightCents: Math.round(Number(r.sale_amount) * 100) })),
