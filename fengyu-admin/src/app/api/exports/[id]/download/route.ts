@@ -3,7 +3,7 @@ import { and, eq } from 'drizzle-orm'
 import { db } from '@/db'
 import { adminExportJobs } from '@db/export-job'
 import { getSession } from '@/lib/auth'
-import { getTempFileUrl } from '@/lib/cloudbase'
+import { deleteByCloudPaths, getTempFileUrl } from '@/lib/cloudbase'
 
 export const dynamic = 'force-dynamic'
 
@@ -46,10 +46,22 @@ export async function GET(
     return NextResponse.json({ error: '导出文件尚未准备好' }, { status: 409 })
   }
   if (job.expiresAt && job.expiresAt.getTime() <= Date.now()) {
+    let removed = false
+    try {
+      await deleteByCloudPaths([job.fileCloudPath])
+      removed = true
+    } catch (err) {
+      // 保留路径给 worker 的后续清理，避免文件删除失败后成为无法追踪的孤儿文件。
+      console.error(`[export-download] expired file cleanup failed for job ${job.id}:`, err)
+    }
     await db
       .update(adminExportJobs)
-      .set({ status: 'expired', fileCloudPath: null, updatedAt: new Date() })
-      .where(eq(adminExportJobs.id, id))
+      .set({
+        status: 'expired',
+        ...(removed ? { fileCloudPath: null } : {}),
+        updatedAt: new Date(),
+      })
+      .where(and(eq(adminExportJobs.id, id), eq(adminExportJobs.status, 'ready')))
     return NextResponse.json({ error: '导出文件已过期，请重新导出' }, { status: 410 })
   }
 

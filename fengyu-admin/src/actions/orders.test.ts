@@ -4558,6 +4558,20 @@ describe('exportAllocationOrders — 销售提成三态导出（已分配明细 
     return chain
   }
 
+  /** worker 分页链：limit(...).offset(...) 后仍可直接 await。 */
+  function makePagedChain(rows: any[]) {
+    const chain: any = Object.assign(Promise.resolve(rows), {
+      from: vi.fn(() => chain),
+      innerJoin: vi.fn(() => chain),
+      leftJoin: vi.fn(() => chain),
+      where: vi.fn(() => chain),
+      orderBy: vi.fn(() => chain),
+      limit: vi.fn(() => chain),
+      offset: vi.fn(() => chain),
+    })
+    return chain
+  }
+
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
@@ -4654,6 +4668,58 @@ describe('exportAllocationOrders — 销售提成三态导出（已分配明细 
     expect(rows[1].employeeName).toBe('熊岚欢')
   })
 
+  it('worker 分页跨两段来源推进独立游标，不重复也不遗漏', async () => {
+    const allocatedNewest = {
+      ...allocatedRaw,
+      saleOrderId: 'ALLOC-NEW',
+      sortDatetime: new Date('2026-07-04T00:00:00.000Z'),
+    }
+    const allocatedOldest = {
+      ...allocatedRaw,
+      saleOrderId: 'ALLOC-OLD',
+      sortDatetime: new Date('2026-07-02T00:00:00.000Z'),
+    }
+    const pendingNewest = {
+      ...pendingRaw,
+      saleOrderId: 'PENDING-NEW',
+      sortDatetime: new Date('2026-07-03T00:00:00.000Z'),
+    }
+    const pendingOldest = {
+      ...pendingRaw,
+      saleOrderId: 'PENDING-OLD',
+      sortDatetime: new Date('2026-07-01T00:00:00.000Z'),
+    }
+    const results = [
+      [allocatedNewest, allocatedOldest], [pendingNewest, pendingOldest],
+      [allocatedOldest], [pendingNewest, pendingOldest],
+      [allocatedOldest], [pendingOldest],
+      [], [pendingOldest],
+    ]
+    let call = 0
+    ;(db.select as any).mockImplementation(() => makePagedChain(results[call++] ?? []))
+
+    const first = await exportAllocationOrders({}, { limit: 1 })
+    const second = await exportAllocationOrders({}, { limit: 1, cursor: first.nextCursor })
+    const third = await exportAllocationOrders({}, { limit: 1, cursor: second.nextCursor })
+    const fourth = await exportAllocationOrders({}, { limit: 1, cursor: third.nextCursor })
+
+    expect(first.nextCursor).toEqual({ allocatedOffset: 1, pendingOffset: 0 })
+    expect(second.nextCursor).toEqual({ allocatedOffset: 1, pendingOffset: 1 })
+    expect(third.nextCursor).toEqual({ allocatedOffset: 2, pendingOffset: 1 })
+    expect(fourth.hasMore).toBe(false)
+    expect([
+      ...first.rows,
+      ...second.rows,
+      ...third.rows,
+      ...fourth.rows,
+    ].map((row) => row.saleOrderId)).toEqual([
+      'ALLOC-NEW',
+      'PENDING-NEW',
+      'ALLOC-OLD',
+      'PENDING-OLD',
+    ])
+  })
+
   it('「已分配」回款级缺失→状态/支付时间回退订单级；顾客回退订单快照；null 提成透传', async () => {
     const rawRow = {
       ...allocatedRaw,
@@ -4717,6 +4783,24 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       where: vi.fn(() => chain),
       orderBy: vi.fn(() => chain),
       limit: vi.fn().mockResolvedValue(rows),
+      offset: vi.fn(() => chain),
+      groupBy: vi.fn(() => chain),
+      having: vi.fn(() => chain),
+    })
+    return chain
+  }
+
+  /** worker 分页链：limit(...).offset(...) 后仍可直接 await。 */
+  function makePagedChain(rows: any[]) {
+    const chain: any = Object.assign(Promise.resolve(rows), {
+      from: vi.fn(() => chain),
+      innerJoin: vi.fn(() => chain),
+      leftJoin: vi.fn(() => chain),
+      rightJoin: vi.fn(() => chain),
+      fullJoin: vi.fn(() => chain),
+      where: vi.fn(() => chain),
+      orderBy: vi.fn(() => chain),
+      limit: vi.fn(() => chain),
       offset: vi.fn(() => chain),
       groupBy: vi.fn(() => chain),
       having: vi.fn(() => chain),
@@ -4965,6 +5049,74 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
 
     expect(truncated).toBe(false)
     expect(rows).toHaveLength(100001)
+  })
+
+  it('worker 分页跨商品行和充值单推进独立游标，不重复也不遗漏', async () => {
+    const makeItem = (saleOrderId: string, sourceId: string, date: string) => ({
+      sourceId,
+      saleOrderId,
+      saleOrderType: '销售单',
+      totalAmount: '100.00',
+      prepaidCardAmount: '0.00',
+      orderReceived: '100.00',
+      received: '100.00',
+      refundedAmount: '0.00',
+      saleOrderDatetime: new Date(date),
+      createdAt: new Date(date),
+      isMembershipUpgrade: false,
+      isActivity: false,
+      productType: '疗程卡',
+      sessionCount: 1,
+      unitRealPrice: '100.00',
+    })
+    const makeRecharge = (saleOrderId: string, date: string) => ({
+      sourceId: saleOrderId,
+      saleOrderId,
+      saleOrderType: '充值单',
+      totalAmount: '100.00',
+      prepaidCardAmount: '0.00',
+      orderReceived: '100.00',
+      received: '100.00',
+      refundedAmount: '0.00',
+      saleOrderDatetime: new Date(date),
+      createdAt: new Date(date),
+      isMembershipUpgrade: false,
+      isActivity: false,
+    })
+    const itemNewest = makeItem('ITEM-NEW', 'item-new', '2026-07-04T00:00:00.000Z')
+    const itemOldest = makeItem('ITEM-OLD', 'item-old', '2026-07-02T00:00:00.000Z')
+    const rechargeNewest = makeRecharge('RECHARGE-NEW', '2026-07-03T00:00:00.000Z')
+    const rechargeOldest = makeRecharge('RECHARGE-OLD', '2026-07-01T00:00:00.000Z')
+    // 每页依次为：商品行查询、充值单查询、已入账款项汇总查询。
+    const results = [
+      [itemNewest, itemOldest], [rechargeNewest, rechargeOldest], [],
+      [itemOldest], [rechargeNewest, rechargeOldest], [],
+      [itemOldest], [rechargeOldest], [],
+      [], [rechargeOldest], [],
+    ]
+    let call = 0
+    ;(db.select as any).mockImplementation(() => makePagedChain(results[call++] ?? []))
+
+    const first = await exportOrders({}, { limit: 1 })
+    const second = await exportOrders({}, { limit: 1, cursor: first.nextCursor })
+    const third = await exportOrders({}, { limit: 1, cursor: second.nextCursor })
+    const fourth = await exportOrders({}, { limit: 1, cursor: third.nextCursor })
+
+    expect(first.nextCursor).toEqual({ itemOffset: 1, rechargeOffset: 0 })
+    expect(second.nextCursor).toEqual({ itemOffset: 1, rechargeOffset: 1 })
+    expect(third.nextCursor).toEqual({ itemOffset: 2, rechargeOffset: 1 })
+    expect(fourth.hasMore).toBe(false)
+    expect([
+      ...first.rows,
+      ...second.rows,
+      ...third.rows,
+      ...fourth.rows,
+    ].map((row) => row.saleOrderId)).toEqual([
+      'ITEM-NEW',
+      'RECHARGE-NEW',
+      'ITEM-OLD',
+      'RECHARGE-OLD',
+    ])
   })
 
   it('费用列（totalAmount/received/refundedAmount）：prepaidCardAmount 等缺失 fallback 0', async () => {

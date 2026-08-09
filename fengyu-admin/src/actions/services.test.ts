@@ -175,6 +175,20 @@ function makeSelectChain(result: any[]) {
   return vi.fn().mockReturnValue(chain)
 }
 
+/** export worker 的分页查询会串联 limit(...).offset(...)。 */
+function makePagedSelectChain(result: any[]) {
+  const chain: any = Object.assign(Promise.resolve(result), {
+    limit: vi.fn(() => chain),
+    offset: vi.fn(() => chain),
+  })
+  chain.from = vi.fn().mockReturnValue(chain)
+  chain.where = vi.fn().mockReturnValue(chain)
+  chain.orderBy = vi.fn().mockReturnValue(chain)
+  chain.leftJoin = vi.fn().mockReturnValue(chain)
+  chain.innerJoin = vi.fn().mockReturnValue(chain)
+  return chain
+}
+
 /** 多次 db.select() 按顺序返回不同结果（最后一个结果用于后续所有调用）。
  *  createServiceOrder 顺序：1) customerRow(becameMemberAt+boundStoreId) 2) pendingAppt 3) saleItem 循环 */
 function makeSelectSequence(...results: any[][]) {
@@ -1146,6 +1160,78 @@ describe('exportAllocationServiceOrders — 三态导出 + 派生列 + 全量返
     expect(rows[0].employeeName).toBeNull()
     expect(rows[1].serviceOrderId).toBe('SO1') // 已分配（06-08）
     expect(rows[1].employeeName).toBe('王雯馨')
+  })
+
+  it('worker 分页跨三段来源推进独立游标，不重复也不遗漏', async () => {
+    const allocatedNewest = {
+      ...allocatedRaw,
+      serviceOrderId: 'ALLOC-NEW',
+      createdAt: new Date('2026-07-06T00:00:00.000Z'),
+    }
+    const allocatedOldest = {
+      ...allocatedRaw,
+      serviceOrderId: 'ALLOC-OLD',
+      createdAt: new Date('2026-07-03T00:00:00.000Z'),
+    }
+    const missingNewest = {
+      ...missingAllocatedRaw,
+      serviceOrderId: 'MISSING-NEW',
+      createdAt: new Date('2026-07-05T00:00:00.000Z'),
+    }
+    const missingOldest = {
+      ...missingAllocatedRaw,
+      serviceOrderId: 'MISSING-OLD',
+      createdAt: new Date('2026-07-02T00:00:00.000Z'),
+    }
+    const pendingNewest = {
+      ...pendingRaw,
+      serviceOrderId: 'PENDING-NEW',
+      createdAt: new Date('2026-07-04T00:00:00.000Z'),
+    }
+    const pendingOldest = {
+      ...pendingRaw,
+      serviceOrderId: 'PENDING-OLD',
+      createdAt: new Date('2026-07-01T00:00:00.000Z'),
+    }
+    const results = [
+      [allocatedNewest, allocatedOldest], [missingNewest, missingOldest], [pendingNewest, pendingOldest],
+      [allocatedOldest], [missingNewest, missingOldest], [pendingNewest, pendingOldest],
+      [allocatedOldest], [missingOldest], [pendingNewest, pendingOldest],
+      [allocatedOldest], [missingOldest], [pendingOldest],
+      [], [missingOldest], [pendingOldest],
+      [], [], [pendingOldest],
+    ]
+    let call = 0
+    ;(db.select as any).mockImplementation(() => makePagedSelectChain(results[call++] ?? []))
+
+    const first = await exportAllocationServiceOrders({}, { limit: 1 })
+    const second = await exportAllocationServiceOrders({}, { limit: 1, cursor: first.nextCursor })
+    const third = await exportAllocationServiceOrders({}, { limit: 1, cursor: second.nextCursor })
+    const fourth = await exportAllocationServiceOrders({}, { limit: 1, cursor: third.nextCursor })
+    const fifth = await exportAllocationServiceOrders({}, { limit: 1, cursor: fourth.nextCursor })
+    const sixth = await exportAllocationServiceOrders({}, { limit: 1, cursor: fifth.nextCursor })
+
+    expect(first.nextCursor).toEqual({ allocatedOffset: 1, missingOffset: 0, pendingOffset: 0 })
+    expect(second.nextCursor).toEqual({ allocatedOffset: 1, missingOffset: 1, pendingOffset: 0 })
+    expect(third.nextCursor).toEqual({ allocatedOffset: 1, missingOffset: 1, pendingOffset: 1 })
+    expect(fourth.nextCursor).toEqual({ allocatedOffset: 2, missingOffset: 1, pendingOffset: 1 })
+    expect(fifth.nextCursor).toEqual({ allocatedOffset: 2, missingOffset: 2, pendingOffset: 1 })
+    expect(sixth.hasMore).toBe(false)
+    expect([
+      ...first.rows,
+      ...second.rows,
+      ...third.rows,
+      ...fourth.rows,
+      ...fifth.rows,
+      ...sixth.rows,
+    ].map((row) => row.serviceOrderId)).toEqual([
+      'ALLOC-NEW',
+      'MISSING-NEW',
+      'PENDING-NEW',
+      'ALLOC-OLD',
+      'MISSING-OLD',
+      'PENDING-OLD',
+    ])
   })
 
   it('超过旧上限也返回全量且不标记截断', async () => {

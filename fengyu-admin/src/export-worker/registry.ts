@@ -1,19 +1,23 @@
 import { db } from '@/db'
 import { orgNodes } from '@db/org'
-import { getAllSkus } from '@/actions/products'
-import { getTemplates, getMarkets } from '@/actions/coupons'
-import { exportOrders, exportAllocationOrders, type ExportOrderRow, type ExportAllocationOrderRow } from '@/actions/orders'
+import { exportProductSkus } from '@/actions/products'
+import { exportCouponTemplates, getMarkets } from '@/actions/coupons'
+import {
+  exportOrders,
+  exportAllocationOrders,
+  type ExportAllocationOrdersCursor,
+  type ExportOrdersCursor,
+} from '@/actions/orders'
 import {
   exportServiceOrders,
   exportAllocationServiceOrders,
-  type ExportServiceOrderItemRow,
-  type ExportAllocationServiceRow,
+  type ExportAllocationServiceCursor,
 } from '@/actions/services'
-import { exportCustomers, type ExportCustomerRow } from '@/actions/customers'
-import { exportEmployees, type ExportEmployeeRow } from '@/actions/employees'
-import { exportPointTransactions, type ExportPointRow } from '@/actions/points'
-import { exportCards, type ExportCardRow } from '@/actions/cards'
-import { exportInventoryStocks, type StoreInventoryStockRow } from '@/actions/inventory-v2'
+import { exportCustomers } from '@/actions/customers'
+import { exportEmployees } from '@/actions/employees'
+import { exportPointTransactions } from '@/actions/points'
+import { exportCards } from '@/actions/cards'
+import { exportInventoryStocks } from '@/actions/inventory-v2'
 import { getSalesBoard } from '@/actions/data-center/sales'
 import { getCustomerBoard } from '@/actions/data-center/customer'
 import { getProductBoard } from '@/actions/data-center/product'
@@ -23,6 +27,12 @@ import { headerWithUnit, metricCell } from '@/lib/data-center/export'
 import type { BreakdownRow, MetricUnit, RankingRow } from '@/lib/data-center/types'
 import { fmtDate, fmtDateTime } from '@/lib/datetime'
 import { formatCurrency } from '@/lib/utils'
+import {
+  EXPORT_WORKER_BATCH_SIZE,
+  iterateExportPages,
+  type ExportBatchOptions,
+  type ExportBatchResult,
+} from '@/lib/export-pagination'
 import {
   exportJobLabel,
   type DataCenterExportPayload,
@@ -90,10 +100,14 @@ function fromRows<T extends Row>(rows: T[]): AsyncIterable<Row> {
   })()
 }
 
-function mapRows<T>(promise: Promise<{ rows: T[] }>): AsyncIterable<Row> {
+function pagedRows<T, Cursor>(
+  fetch: (options: ExportBatchOptions<Cursor>) => Promise<ExportBatchResult<T, Cursor>>,
+  firstPage?: ExportBatchResult<T, Cursor>,
+): AsyncIterable<Row> {
   return (async function* () {
-    const result = await promise
-    for (const row of result.rows) yield row as unknown as Row
+    for await (const row of iterateExportPages(fetch, firstPage)) {
+      yield row as unknown as Row
+    }
   })()
 }
 
@@ -484,18 +498,7 @@ async function queryDataCenter(
   return rankingContent(view, source[metric.key] ?? [], metric, board.timeRange.presetLabel)
 }
 
-async function queryProducts(payload: Record<string, string>): Promise<ExportContent> {
-  const all = await getAllSkus()
-  const status = payload.status || 'enabled'
-  const search = (payload.q || '').trim().toLowerCase()
-  const rows = all.filter((sku) => {
-    if (search && !sku.specName.toLowerCase().includes(search)) return false
-    if (payload.category && sku.categoryId !== payload.category) return false
-    if (payload.kind && sku.productKind !== payload.kind) return false
-    if (status === 'disabled') return !sku.isEnabled
-    if (status !== 'all') return sku.isEnabled
-    return true
-  })
+function queryProducts(payload: Record<string, string>): ExportContent {
   return {
     fileNameBase: '商品',
     sheetName: '商品',
@@ -514,22 +517,13 @@ async function queryProducts(payload: Record<string, string>): Promise<ExportCon
       { header: '手工费', key: 'serviceFee', map: (row) => numberOrEmpty(row, 'serviceFee') },
       { header: '状态', width: 10, key: 'isEnabled', map: (row) => value(row, 'isEnabled') ? '启用' : '停用' },
     ]),
-    rows: fromRows(rows as unknown as Row[]),
+    rows: pagedRows((options: ExportBatchOptions<number>) => exportProductSkus(payload, options)),
   }
 }
 
 async function queryCoupons(payload: Record<string, string>): Promise<ExportContent> {
-  const [templates, markets] = await Promise.all([getTemplates(), getMarkets()])
+  const markets = await getMarkets()
   const marketMap = new Map(markets.map((market) => [market.id, market.name]))
-  const search = (payload.q || '').trim().toLowerCase()
-  const status = payload.status || 'enabled'
-  const rows = templates.filter((template) => {
-    if (search && !template.name.toLowerCase().includes(search)) return false
-    if (payload.market && !template.applicableMarketIds?.includes(payload.market)) return false
-    if (status === 'disabled') return !template.isActive
-    if (status !== 'all') return template.isActive
-    return true
-  })
   return {
     fileNameBase: '优惠券',
     sheetName: '优惠券',
@@ -549,7 +543,7 @@ async function queryCoupons(payload: Record<string, string>): Promise<ExportCont
       { header: '创建时间', width: 20, key: 'createdAt', map: (row) => fmtDateTime(value(row, 'createdAt') as string | Date | null) },
       { header: '描述', width: 30, key: 'description' },
     ]),
-    rows: fromRows(rows as unknown as Row[]),
+    rows: pagedRows((options: ExportBatchOptions<number>) => exportCouponTemplates(payload, options)),
   }
 }
 
@@ -561,41 +555,82 @@ export async function createExportContent(
   const params = payload as Record<string, string>
   switch (exportType) {
     case 'orders':
-      return { fileNameBase: '订单', sheetName: '订单', columns: orderColumns, rows: mapRows(exportOrders(params)) }
+      return {
+        fileNameBase: '订单',
+        sheetName: '订单',
+        columns: orderColumns,
+        rows: pagedRows((options: ExportBatchOptions<ExportOrdersCursor>) => exportOrders(params, options)),
+      }
     case 'allocation-sales':
-      return { fileNameBase: '营业额分配-销售提成', sheetName: '销售提成', columns: allocationSalesColumns, rows: mapRows(exportAllocationOrders(params)) }
+      return {
+        fileNameBase: '营业额分配-销售提成',
+        sheetName: '销售提成',
+        columns: allocationSalesColumns,
+        rows: pagedRows((options: ExportBatchOptions<ExportAllocationOrdersCursor>) => exportAllocationOrders(params, options)),
+      }
     case 'allocation-services':
-      return { fileNameBase: '营业额分配-服务提成', sheetName: '服务提成', columns: serviceCommissionColumns, rows: mapRows(exportAllocationServiceOrders(params)) }
+      return {
+        fileNameBase: '营业额分配-服务提成',
+        sheetName: '服务提成',
+        columns: serviceCommissionColumns,
+        rows: pagedRows((options: ExportBatchOptions<ExportAllocationServiceCursor>) => exportAllocationServiceOrders(params, options)),
+      }
     case 'services':
-      return { fileNameBase: '服务单-消耗明细', sheetName: '服务单消耗', columns: serviceColumns, rows: mapRows(exportServiceOrders(params)) }
+      return {
+        fileNameBase: '服务单-消耗明细',
+        sheetName: '服务单消耗',
+        columns: serviceColumns,
+        rows: pagedRows((options: ExportBatchOptions<number>) => exportServiceOrders(params, options)),
+      }
     case 'customers':
-      return { fileNameBase: '顾客', sheetName: '顾客', columns: customerColumns, rows: mapRows(exportCustomers(params)) }
+      return {
+        fileNameBase: '顾客',
+        sheetName: '顾客',
+        columns: customerColumns,
+        rows: pagedRows((options: ExportBatchOptions<number>) => exportCustomers(params, options)),
+      }
     case 'employees': {
-      const result = await exportEmployees(params)
       const nodes = await db.select().from(orgNodes)
       const nodeMap = new Map(nodes.map((node) => [node.id, node]))
-      const rows = result.rows.map((row) => {
-        const path: string[] = []
-        let current = row.orgNodeId
-        const seen = new Set<string>()
-        while (current && !seen.has(current)) {
-          seen.add(current)
-          const node = nodeMap.get(current)
-          if (!node) break
-          path.unshift(node.name)
-          current = node.parentId
+      const rows = (async function* (): AsyncIterable<Row> {
+        for await (const source of pagedRows((options: ExportBatchOptions<number>) => exportEmployees(params, options))) {
+          const path: string[] = []
+          let current = source.orgNodeId as string | null | undefined
+          const seen = new Set<string>()
+          while (current && !seen.has(current)) {
+            seen.add(current)
+            const node = nodeMap.get(current)
+            if (!node) break
+            path.unshift(node.name)
+            current = node.parentId
+          }
+          yield { ...source, orgPath: path.join(' / ') }
         }
-        return { ...row, orgPath: path.join(' / ') } as unknown as Row
-      })
-      return { fileNameBase: '员工', sheetName: '员工', columns: employeeColumns, rows: fromRows(rows) }
+      })()
+      return { fileNameBase: '员工', sheetName: '员工', columns: employeeColumns, rows }
     }
     case 'points':
-      return { fileNameBase: '积分流水', sheetName: '积分流水', columns: pointColumns, rows: mapRows(exportPointTransactions(params)) }
+      return {
+        fileNameBase: '积分流水',
+        sheetName: '积分流水',
+        columns: pointColumns,
+        rows: pagedRows((options: ExportBatchOptions<number>) => exportPointTransactions(params, options)),
+      }
     case 'cards':
-      return { fileNameBase: '疗程卡', sheetName: '疗程卡', columns: cardColumns, rows: mapRows(exportCards(params)) }
+      return {
+        fileNameBase: '疗程卡',
+        sheetName: '疗程卡',
+        columns: cardColumns,
+        rows: pagedRows((options: ExportBatchOptions<number>) => exportCards(params, options)),
+      }
     case 'inventory-stocks': {
-      const result = await exportInventoryStocks(params)
-      return { fileNameBase: '门店库存', sheetName: '门店库存', columns: inventoryColumns(result.canViewPrice), rows: fromRows(result.rows as unknown as Row[]) }
+      const firstPage = await exportInventoryStocks(params, { limit: EXPORT_WORKER_BATCH_SIZE })
+      return {
+        fileNameBase: '门店库存',
+        sheetName: '门店库存',
+        columns: inventoryColumns(firstPage.canViewPrice),
+        rows: pagedRows((options: ExportBatchOptions<number>) => exportInventoryStocks(params, options), firstPage),
+      }
     }
     case 'products':
       return queryProducts(params)

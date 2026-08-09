@@ -2,7 +2,7 @@ import { createReadStream } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { and, eq, lt, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNotNull, lt, sql } from 'drizzle-orm'
 import { db } from '@/db'
 import { adminExportJobs } from '@db/export-job'
 import { deleteByCloudPaths, uploadFile } from '@/lib/cloudbase'
@@ -38,11 +38,21 @@ function asClaimedId(rows: unknown): number | null {
 async function recoverExpiredLeases(): Promise<void> {
   await db.execute(sql`
     UPDATE admin_export_jobs
-       SET status = 'queued',
+       SET status = CASE
+             WHEN attempt_count >= ${MAX_ATTEMPTS} THEN 'failed'
+             ELSE 'queued'
+           END,
            next_attempt_at = NOW(),
            lease_expires_at = NULL,
            error_code = 'WORKER_LEASE_EXPIRED',
-           error_message = '导出任务执行超时，正在自动重试',
+           error_message = CASE
+             WHEN attempt_count >= ${MAX_ATTEMPTS} THEN '导出任务执行超时，已达到最大重试次数'
+             ELSE '导出任务执行超时，正在自动重试'
+           END,
+           completed_at = CASE
+             WHEN attempt_count >= ${MAX_ATTEMPTS} THEN NOW()
+             ELSE NULL
+           END,
            updated_at = NOW()
      WHERE status = 'running'
        AND lease_expires_at IS NOT NULL
@@ -142,7 +152,8 @@ async function expireFinishedFiles(): Promise<void> {
     .select({ id: adminExportJobs.id, fileCloudPath: adminExportJobs.fileCloudPath })
     .from(adminExportJobs)
     .where(and(
-      eq(adminExportJobs.status, 'ready'),
+      inArray(adminExportJobs.status, ['ready', 'expired']),
+      isNotNull(adminExportJobs.fileCloudPath),
       lt(adminExportJobs.expiresAt, new Date()),
     ))
     .limit(100)
@@ -153,7 +164,10 @@ async function expireFinishedFiles(): Promise<void> {
       await db
         .update(adminExportJobs)
         .set({ status: 'expired', fileCloudPath: null, updatedAt: new Date() })
-        .where(and(eq(adminExportJobs.id, job.id), eq(adminExportJobs.status, 'ready')))
+        .where(and(
+          eq(adminExportJobs.id, job.id),
+          inArray(adminExportJobs.status, ['ready', 'expired']),
+        ))
     } catch (err) {
       console.error(`[export-worker] cleanup failed for job ${job.id}:`, err)
     }
@@ -230,7 +244,9 @@ async function processJob(job: ExportJob): Promise<void> {
       return
     }
 
-    cloudPath = `admin/exports/${job.id}/${output.fileName}`
+    // 路径按任务固定：上传后、状态写回前若进程中断，下一次重试会覆盖同一对象，
+    // 不会因文件名时间戳变化遗留无法追踪的 CloudBase 文件。
+    cloudPath = `admin/exports/${job.id}/content.xlsx`
     await uploadFile(createReadStream(output.filePath), cloudPath)
     uploaded = true
     const expiresAt = new Date(Date.now() + RETENTION_MS)

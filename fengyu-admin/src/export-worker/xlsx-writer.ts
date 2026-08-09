@@ -13,6 +13,8 @@ export interface StreamXlsxOptions<T> {
   sheetName: string
   columns: WorkerExportColumn<T>[]
   rows: AsyncIterable<T>
+  /** Internal override used by tests; production keeps the Excel-safe default. */
+  rowsPerSheet?: number
   onProgress?: (rowCount: number) => Promise<void> | void
 }
 
@@ -43,12 +45,17 @@ export async function writeStreamXlsx<T>(options: StreamXlsxOptions<T>): Promise
   let rowCount = 0
   let sheetCount = 0
   let rowsInSheet = 0
+  const rowsPerSheet = Math.min(
+    XLSX_ROWS_PER_SHEET,
+    Math.max(1, Math.floor(options.rowsPerSheet ?? XLSX_ROWS_PER_SHEET)),
+  )
   const createSheet = (): ExcelJS.Worksheet => {
     sheetCount += 1
     rowsInSheet = 0
-    const worksheet = workbook.addWorksheet(safeSheetName(options.sheetName, sheetCount))
+    const worksheet = workbook.addWorksheet(safeSheetName(options.sheetName, sheetCount), {
+      views: [{ state: 'frozen', ySplit: 1 }],
+    })
     worksheet.columns = options.columns.map((column) => ({ width: column.width ?? 16 }))
-    worksheet.views = [{ state: 'frozen', ySplit: 1 }]
     const header = worksheet.addRow(options.columns.map((column) => column.header))
     header.font = { bold: true }
     header.commit()
@@ -57,7 +64,7 @@ export async function writeStreamXlsx<T>(options: StreamXlsxOptions<T>): Promise
 
   let worksheet = createSheet()
   for await (const sourceRow of options.rows) {
-    if (rowsInSheet >= XLSX_ROWS_PER_SHEET) {
+    if (rowsInSheet >= rowsPerSheet) {
       worksheet.commit()
       worksheet = createSheet()
     }

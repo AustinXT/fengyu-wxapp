@@ -22,6 +22,14 @@ import { pgErrorCode } from '@/lib/pg-error'
 import { hasPendingRefundByServiceOrder } from '@/lib/refund-cascade'
 import { settleServiceCommissions } from '@/lib/service-commission-settle'
 import { parseServiceOrderFilters, parseAllocationServiceFilters } from '@/lib/list-filters'
+import {
+  offsetPageResult,
+  resolveExportBatchLimit,
+  resolveExportOffsetPage,
+  type ExportBatchOptions,
+  type ExportBatchResult,
+  type ExportOffsetPage,
+} from '@/lib/export-pagination'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { nowTs } from '@/lib/db-time'
 
@@ -202,8 +210,13 @@ export const exportServiceOrders = withPermission(
   async (
     session,
     params: Record<string, string | undefined>,
-  ): Promise<{ rows: ExportServiceOrderItemRow[]; truncated: boolean }> => {
-    return selectServiceOrderItemExportRows(session, parseServiceOrderFilters(params))
+    options?: ExportBatchOptions,
+  ): Promise<ExportBatchResult<ExportServiceOrderItemRow>> => {
+    return selectServiceOrderItemExportRows(
+      session,
+      parseServiceOrderFilters(params),
+      resolveExportOffsetPage(options),
+    )
   },
 )
 
@@ -250,7 +263,8 @@ export interface ExportServiceOrderItemRow {
 async function selectServiceOrderItemExportRows(
   session: Parameters<typeof scopeCondition>[0],
   filters: ServiceOrderFilters,
-): Promise<{ rows: ExportServiceOrderItemRow[]; truncated: boolean }> {
+  page: ExportOffsetPage | null = null,
+): Promise<ExportBatchResult<ExportServiceOrderItemRow>> {
   // 导出「消耗明细」强制 status='已完成'：service_items 在服务单创建时即落库、sessionUsed 为
   // 计划值；只有待客户确认→已完成（原子扣次数 + 计提成 + 关预约）后才是已实现消耗。否则
   // consumeMoney（= unitRealPrice × sessionUsed）会把待服务/服务中/待客户确认/已取消单的
@@ -265,7 +279,7 @@ async function selectServiceOrderItemExportRows(
   // 开单人(=sale_orders.opened_by)；本主表不含负责美容师(=service_commissions.employee_id)
   const openedByStaff = alias(staffWechatUsers, 'staff_opened_by') as unknown as typeof staffWechatUsers
 
-  const raw = await db
+  const query = db
     .select({
       market: serviceOrders.marketName,
       storeName: stores.storeName,
@@ -305,6 +319,9 @@ async function selectServiceOrderItemExportRows(
     .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
     .where(whereClause)
     .orderBy(desc(serviceOrders.createdAt), desc(serviceOrders.updatedAt), serviceItems.serviceItemId)
+  const raw = page
+    ? await query.limit(page.limit + 1).offset(page.offset)
+    : await query
 
   const round2 = (n: number) => Math.round(n * 100) / 100
   const rows: ExportServiceOrderItemRow[] = raw.map((r) => {
@@ -340,7 +357,7 @@ async function selectServiceOrderItemExportRows(
     }
   })
 
-  return { rows, truncated: false }
+  return offsetPageResult(rows, page)
 }
 
 /**
@@ -383,6 +400,16 @@ export interface ExportAllocationServiceRow {
   remark: string | null
 }
 
+export interface ExportAllocationServiceCursor {
+  allocatedOffset: number
+  missingOffset: number
+  pendingOffset: number
+}
+
+function exportOffset(value: unknown): number {
+  return Math.max(0, Math.floor(Number(value) || 0))
+}
+
 /**
  * 服务单提成分配明细导出查询（一行 = 一条有效 service_commissions）。
  * 主链 service_commissions → service_items → service_orders，12 表 JOIN。
@@ -392,7 +419,8 @@ export interface ExportAllocationServiceRow {
 async function selectServiceCommissionExportRows(
   session: Parameters<typeof scopeCondition>[0],
   filters: ServiceOrderFilters,
-): Promise<{ rows: ExportAllocationServiceRow[]; truncated: boolean }> {
+  page: ExportOffsetPage | null = null,
+): Promise<ExportBatchResult<ExportAllocationServiceRow>> {
   // service_commissions 软删行不计入；其余筛选基于 serviceOrders 列，JOIN 后仍有效
   const whereClause = and(
     eq(serviceCommissions.isVoid, false),
@@ -403,7 +431,7 @@ async function selectServiceCommissionExportRows(
   // drizzle 0.45 alias() 返回类型与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
   const openedByStaff = alias(staffWechatUsers, 'staff_opened_by') as unknown as typeof staffWechatUsers
 
-  const raw = await db
+  const query = db
     .select({
       market: serviceOrders.marketName,
       storeName: stores.storeName,
@@ -453,6 +481,9 @@ async function selectServiceCommissionExportRows(
     // 段内 orderBy 主键须为 createdAt：exportAllocationServiceOrders 合并层按 createdAt desc 做全量合并排序。
     // 本 helper 与 exportServiceOrders（服务单管理页导出）共用，导出以 createdAt 为自然序同样合理。
     .orderBy(desc(serviceOrders.createdAt), desc(serviceOrders.updatedAt), serviceCommissions.id)
+  const raw = page
+    ? await query.limit(page.limit + 1).offset(page.offset)
+    : await query
 
   const round2 = (n: number) => Math.round(n * 100) / 100
   const rows: ExportAllocationServiceRow[] = raw.map((r) => {
@@ -497,7 +528,7 @@ async function selectServiceCommissionExportRows(
     }
   })
 
-  return { rows, truncated: false }
+  return offsetPageResult(rows, page)
 }
 
 /**
@@ -508,7 +539,8 @@ async function selectServiceCommissionExportRows(
 async function selectPendingServiceCommissionExportRows(
   session: Parameters<typeof scopeCondition>[0],
   filters: ServiceOrderFilters,
-): Promise<{ rows: ExportAllocationServiceRow[]; truncated: boolean }> {
+  page: ExportOffsetPage | null = null,
+): Promise<ExportBatchResult<ExportAllocationServiceRow>> {
   const whereClause = and(
     eq(serviceOrders.commissionStatus, '待分配'),
     eq(serviceOrders.status, '已完成'),
@@ -518,7 +550,7 @@ async function selectPendingServiceCommissionExportRows(
   // staff_wechat_users 两次 JOIN 之一：开单人(=slo.opened_by)；占位段无负责美容师(=sc.employee_id)
   const openedByStaff = alias(staffWechatUsers, 'staff_opened_by') as unknown as typeof staffWechatUsers
 
-  const raw = await db
+  const query = db
     .select({
       market: serviceOrders.marketName,
       storeName: stores.storeName,
@@ -555,7 +587,10 @@ async function selectPendingServiceCommissionExportRows(
     .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
     .where(whereClause)
     // 同 selectServiceCommissionExportRows：主键 createdAt，与 exportAllocationServiceOrders 合并层排序键一致
-    .orderBy(desc(serviceOrders.createdAt), desc(serviceOrders.updatedAt))
+    .orderBy(desc(serviceOrders.createdAt), desc(serviceOrders.updatedAt), serviceItems.serviceItemId)
+  const raw = page
+    ? await query.limit(page.limit + 1).offset(page.offset)
+    : await query
 
   const round2 = (n: number) => Math.round(n * 100) / 100
   const rows: ExportAllocationServiceRow[] = raw.map((r) => {
@@ -598,7 +633,7 @@ async function selectPendingServiceCommissionExportRows(
     }
   })
 
-  return { rows, truncated: false }
+  return offsetPageResult(rows, page)
 }
 
 /**
@@ -608,7 +643,8 @@ async function selectPendingServiceCommissionExportRows(
 async function selectMissingAllocatedServiceCommissionExportRows(
   session: Parameters<typeof scopeCondition>[0],
   filters: ServiceOrderFilters,
-): Promise<{ rows: ExportAllocationServiceRow[]; truncated: boolean }> {
+  page: ExportOffsetPage | null = null,
+): Promise<ExportBatchResult<ExportAllocationServiceRow>> {
   const whereClause = and(
     eq(serviceOrders.commissionStatus, '已分配'),
     eq(serviceOrders.status, '已完成'),
@@ -623,7 +659,7 @@ async function selectMissingAllocatedServiceCommissionExportRows(
 
   const openedByStaff = alias(staffWechatUsers, 'staff_opened_by') as unknown as typeof staffWechatUsers
 
-  const raw = await db
+  const query = db
     .select({
       market: serviceOrders.marketName,
       storeName: stores.storeName,
@@ -666,6 +702,9 @@ async function selectMissingAllocatedServiceCommissionExportRows(
     .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
     .where(whereClause)
     .orderBy(desc(serviceOrders.createdAt), desc(serviceOrders.updatedAt), serviceItems.serviceItemId)
+  const raw = page
+    ? await query.limit(page.limit + 1).offset(page.offset)
+    : await query
 
   const round2 = (n: number) => Math.round(n * 100) / 100
   const rows: ExportAllocationServiceRow[] = raw.map((r) => {
@@ -709,7 +748,7 @@ async function selectMissingAllocatedServiceCommissionExportRows(
     }
   })
 
-  return { rows, truncated: false }
+  return offsetPageResult(rows, page)
 }
 
 /**
@@ -724,37 +763,105 @@ export const exportAllocationServiceOrders = withPermission(
   async (
     session,
     params: Record<string, string | undefined>,
-  ): Promise<{ rows: ExportAllocationServiceRow[]; truncated: boolean }> => {
+    options?: ExportBatchOptions<ExportAllocationServiceCursor>,
+  ): Promise<ExportBatchResult<ExportAllocationServiceRow, ExportAllocationServiceCursor>> => {
     const parsedFilters = parseAllocationServiceFilters(params)
     const commissionStatus = parsedFilters.commissionStatus
     const baseFilters = { ...parsedFilters, commissionStatus: undefined }
-    const merged: Array<{ row: ExportAllocationServiceRow; sort: number }> = []
+    const limit = resolveExportBatchLimit(options?.limit)
+    const cursor: ExportAllocationServiceCursor = {
+      allocatedOffset: exportOffset(options?.cursor?.allocatedOffset),
+      missingOffset: exportOffset(options?.cursor?.missingOffset),
+      pendingOffset: exportOffset(options?.cursor?.pendingOffset),
+    }
+    const pageFor = (offset: number): ExportOffsetPage | null =>
+      limit == null ? null : { limit, offset }
+    const merged: Array<{
+      row: ExportAllocationServiceRow
+      sort: number
+      source: 'allocated' | 'missing' | 'pending'
+    }> = []
+    let allocatedCandidateCount = 0
+    let missingCandidateCount = 0
+    let pendingCandidateCount = 0
+    let allocatedHasMore = false
+    let missingHasMore = false
+    let pendingHasMore = false
 
     if (commissionStatus !== '待分配') {
       const allocatedFilters = {
         ...baseFilters,
         commissionStatus: commissionStatus === '已分配' ? '已分配' : undefined,
       }
-      const result = await selectServiceCommissionExportRows(session, allocatedFilters)
+      const result = await selectServiceCommissionExportRows(
+        session,
+        allocatedFilters,
+        pageFor(cursor.allocatedOffset),
+      )
+      allocatedCandidateCount = result.rows.length
+      allocatedHasMore = result.hasMore
       for (const r of result.rows) {
-        merged.push({ row: r, sort: r.createdAt ? Date.parse(r.createdAt) : 0 })
+        merged.push({ row: r, sort: r.createdAt ? Date.parse(r.createdAt) : 0, source: 'allocated' })
       }
 
-      const missingResult = await selectMissingAllocatedServiceCommissionExportRows(session, baseFilters)
+      const missingResult = await selectMissingAllocatedServiceCommissionExportRows(
+        session,
+        baseFilters,
+        pageFor(cursor.missingOffset),
+      )
+      missingCandidateCount = missingResult.rows.length
+      missingHasMore = missingResult.hasMore
       for (const r of missingResult.rows) {
-        merged.push({ row: r, sort: r.createdAt ? Date.parse(r.createdAt) : 0 })
+        merged.push({ row: r, sort: r.createdAt ? Date.parse(r.createdAt) : 0, source: 'missing' })
       }
     }
     if (commissionStatus !== '已分配') {
-      const result = await selectPendingServiceCommissionExportRows(session, baseFilters)
+      const result = await selectPendingServiceCommissionExportRows(
+        session,
+        baseFilters,
+        pageFor(cursor.pendingOffset),
+      )
+      pendingCandidateCount = result.rows.length
+      pendingHasMore = result.hasMore
       for (const r of result.rows) {
-        merged.push({ row: r, sort: r.createdAt ? Date.parse(r.createdAt) : 0 })
+        merged.push({ row: r, sort: r.createdAt ? Date.parse(r.createdAt) : 0, source: 'pending' })
       }
     }
 
-    merged.sort((a, b) => b.sort - a.sort)
-    const rows = merged.map((m) => m.row)
-    return { rows, truncated: false }
+    const sourceOrder = { allocated: 0, missing: 1, pending: 2 } as const
+    merged.sort((left, right) => {
+      const byTime = right.sort - left.sort
+      if (byTime !== 0 || limit == null) return byTime
+      return sourceOrder[left.source] - sourceOrder[right.source]
+    })
+    const selected = limit == null ? merged : merged.slice(0, limit)
+    const rows = selected.map((item) => item.row)
+    if (limit == null) return { rows, truncated: false, hasMore: false }
+
+    const allocatedCount = selected.filter((item) => item.source === 'allocated').length
+    const missingCount = selected.filter((item) => item.source === 'missing').length
+    const pendingCount = selected.length - allocatedCount - missingCount
+    const hasMore =
+      allocatedCandidateCount > allocatedCount ||
+      missingCandidateCount > missingCount ||
+      pendingCandidateCount > pendingCount ||
+      allocatedHasMore ||
+      missingHasMore ||
+      pendingHasMore
+    return {
+      rows,
+      truncated: false,
+      hasMore,
+      ...(hasMore
+        ? {
+            nextCursor: {
+              allocatedOffset: cursor.allocatedOffset + allocatedCount,
+              missingOffset: cursor.missingOffset + missingCount,
+              pendingOffset: cursor.pendingOffset + pendingCount,
+            },
+          }
+        : {}),
+    }
   },
 )
 

@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import { db } from '@/db'
 import { adminExportJobs } from '@db/export-job'
+import { deleteByCloudPaths } from '@/lib/cloudbase'
 import { logOperation } from '@/lib/operation-log'
 import { requirePermission } from '@/lib/permissions'
 import { withAnyPermission } from '@/lib/with-permission'
@@ -183,10 +184,24 @@ export const retryMyExportJob = withAnyPermission(
       throw new Error('CONFLICT: 已有相同导出任务正在生成')
     }
 
+    // 已过期但尚未被 maintenance 扫到的文件也必须先删除；失败时保留任务和路径，
+    // 让用户稍后重试，避免清空引用后留下不可回收的 CloudBase 文件。
+    if (job.fileCloudPath) {
+      try {
+        await deleteByCloudPaths([job.fileCloudPath])
+      } catch (err) {
+        console.error(`[export-jobs] retry cleanup failed for job ${job.id}:`, err)
+        throw new Error('EXPORT_FAILED: 旧导出文件清理失败，请稍后重试')
+      }
+    }
+
     await db
       .update(adminExportJobs)
       .set({
         status: 'queued',
+        requestedByName: session.name,
+        permissionAction: EXPORT_PERMISSION_BY_TYPE[exportType],
+        scopeSnapshot: snapshotExportSession(session),
         attemptCount: 0,
         nextAttemptAt: new Date(),
         leaseExpiresAt: null,

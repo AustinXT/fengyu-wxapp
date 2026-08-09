@@ -6,7 +6,7 @@ import { productCategories, products, productSkus, mallCategories, mallBundleGro
 import { projectSeriesLookup } from '@db/lookup'
 import { orgNodes } from '@db/org'
 import { alias } from 'drizzle-orm/pg-core'
-import { eq, and, asc, sql, inArray, isNotNull, isNull } from 'drizzle-orm'
+import { eq, and, asc, sql, inArray, isNotNull, isNull, ilike } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import crypto from 'crypto'
 import type { ProductCategory, Product, ProductSku, ProjectSeries, MallCategory, MallBundleGroup } from '@/lib/types'
@@ -15,6 +15,12 @@ import { expandVisibleMarketIds, requireAdmin } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { computeBundleTotals } from '@/lib/bundle-price'
 import { nowTs } from '@/lib/db-time'
+import {
+  offsetPageResult,
+  resolveExportOffsetPage,
+  type ExportBatchOptions,
+  type ExportBatchResult,
+} from '@/lib/export-pagination'
 import { orderMarketScopeCondition, resolveCustomerOrderMarketScope } from '@/lib/order-market-scope'
 
 /**
@@ -516,6 +522,75 @@ export const getAllSkus = withPermission(
       salesCategory: (r.salesCategory as ProductSku['salesCategory']) ?? undefined,
       projectSeriesName: r.projectSeriesName ?? null,
     }))
+  },
+)
+
+/** 导出商品使用数据库筛选与分页，避免 worker 先加载全部 SKU 再在内存筛选。 */
+export const exportProductSkus = withPermission(
+  'product:list',
+  async (
+    _session,
+    params: Record<string, string | undefined>,
+    options?: ExportBatchOptions,
+  ): Promise<ExportBatchResult<ProductSku>> => {
+    const conditions = [isNull(productSkus.deletedAt)]
+    const search = params.q?.trim()
+    if (search) {
+      const escaped = search.replace(/[\\%_]/g, '\\$&')
+      conditions.push(ilike(productSkus.specName, `%${escaped}%`))
+    }
+    if (params.category) conditions.push(eq(productSkus.categoryId, params.category))
+    if (params.kind) conditions.push(eq(productCategories.productKind, params.kind))
+    if (params.status === 'disabled') {
+      conditions.push(eq(productSkus.isEnabled, false))
+    } else if (params.status !== 'all') {
+      conditions.push(eq(productSkus.isEnabled, true))
+    }
+
+    const page = resolveExportOffsetPage(options)
+    const query = db
+      .select({
+        sku: productSkus,
+        categoryName: productCategories.categoryName,
+        productKind: productCategories.productKind,
+        salesCategory: productCategories.salesCategory,
+        projectSeriesName: projectSeriesLookup.name,
+      })
+      .from(productSkus)
+      .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+      .leftJoin(projectSeriesLookup, eq(productSkus.projectSeriesId, projectSeriesLookup.id))
+      .where(and(...conditions))
+      // sortOrder 是商品管理的人工排序权重，SKU ID 保证导出翻页稳定。
+      .orderBy(asc(productSkus.sortOrder), asc(productSkus.skuId))
+    const rows = page
+      ? await query.limit(page.limit + 1).offset(page.offset)
+      : await query
+
+    return offsetPageResult(rows.map((r) => ({
+      skuId: r.sku.skuId,
+      categoryId: r.sku.categoryId,
+      productType: r.sku.productType as ProductSku['productType'],
+      specName: r.sku.specName,
+      price: r.sku.price,
+      specialPrice: r.sku.specialPrice,
+      sessionCount: r.sku.sessionCount,
+      unit: r.sku.unit,
+      purchaseLimit: r.sku.purchaseLimit,
+      sortOrder: r.sku.sortOrder,
+      serviceFee: r.sku.serviceFee,
+      isShengmei: r.sku.isShengmei,
+      isExperience: r.sku.isExperience,
+      isManagerSpecial: r.sku.isManagerSpecial,
+      projectSeriesId: r.sku.projectSeriesId,
+      marketScope: r.sku.marketScope,
+      isEnabled: r.sku.isEnabled,
+      createdAt: r.sku.createdAt.toISOString(),
+      updatedAt: r.sku.updatedAt.toISOString(),
+      categoryName: r.categoryName ?? undefined,
+      productKind: r.productKind ?? undefined,
+      salesCategory: (r.salesCategory as ProductSku['salesCategory']) ?? undefined,
+      projectSeriesName: r.projectSeriesName ?? null,
+    })), page)
   },
 )
 
