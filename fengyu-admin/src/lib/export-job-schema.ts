@@ -1,5 +1,3 @@
-import 'server-only'
-
 import { z } from 'zod'
 import {
   DATA_CENTER_EXPORT_VIEWS,

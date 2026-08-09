@@ -1,4 +1,3 @@
-import { getSession } from '@/lib/auth'
 import { requirePermission, requireAnyPermission } from '@/lib/permissions'
 import { parseErrorPrefix } from '@/lib/api-error'
 import type { AuthSession } from '@/lib/types'
@@ -26,6 +25,15 @@ function rethrowWithDigest(err: unknown): never {
   throw err
 }
 
+async function getActionSession(): Promise<AuthSession | null> {
+  const exportSession = getExportSession()
+  if (exportSession) return exportSession
+  // Keep auth (and its browser password transit dependencies) out of the
+  // standalone export-worker bundle when a persisted worker session exists.
+  const { getSession } = await import('@/lib/auth')
+  return getSession()
+}
+
 /**
  * 包装 Server Action 的统一鉴权 HOF：先 getSession + requirePermission，再调业务函数。
  *
@@ -49,7 +57,7 @@ export function withPermission<Args extends unknown[], R>(
   fn: (session: AuthSession, ...args: Args) => Promise<R>,
 ): (...args: Args) => Promise<R> {
   return async (...args: Args) => {
-    const session = getExportSession() ?? await getSession()
+    const session = await getActionSession()
     requirePermission(session, action)
     try {
       return await fn(session, ...args)
@@ -69,7 +77,7 @@ export function withAnyPermission<Args extends unknown[], R>(
   fn: (session: AuthSession, ...args: Args) => Promise<R>,
 ): (...args: Args) => Promise<R> {
   return async (...args: Args) => {
-    const session = getExportSession() ?? await getSession()
+    const session = await getActionSession()
     requireAnyPermission(session, actions)
     try {
       return await fn(session, ...args)

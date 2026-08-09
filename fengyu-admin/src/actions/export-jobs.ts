@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import { db } from '@/db'
 import { adminExportJobs } from '@db/export-job'
+import { ApiError } from '@/lib/api-error'
 import { deleteByCloudPaths } from '@/lib/cloudbase'
 import { logOperation } from '@/lib/operation-log'
 import { requirePermission } from '@/lib/permissions'
@@ -191,7 +192,7 @@ export const retryMyExportJob = withAnyPermission(
         await deleteByCloudPaths([job.fileCloudPath])
       } catch (err) {
         console.error(`[export-jobs] retry cleanup failed for job ${job.id}:`, err)
-        throw new Error('EXPORT_FAILED: 旧导出文件清理失败，请稍后重试')
+        throw new ApiError('INVALID_STATE', '旧导出文件清理失败，请稍后重试')
       }
     }
 
