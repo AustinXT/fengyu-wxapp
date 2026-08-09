@@ -1,0 +1,2 @@
+ALTER TABLE "inventory_import_refs" ALTER COLUMN "legacy_obyid" DROP DEFAULT;--> statement-breakpoint
+ALTER TABLE "inventory_import_refs" ADD CONSTRAINT "chk_inventory_import_refs_complete_identity" CHECK ("inventory_import_refs"."legacy_obyid" <> '');
