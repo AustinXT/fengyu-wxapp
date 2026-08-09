@@ -49,6 +49,8 @@ export function AnalystShell({
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const activeMetric = searchParams.get("metric") || "repurchase"
+  const activeScope = searchParams.get("scope")
+  const activeScopeId = searchParams.get("scopeId")
   const adminOrigin = process.env.NEXT_PUBLIC_ADMIN_ORIGIN || "http://localhost:3000"
   const dashboardActive = pathname === "/dashboard"
   const resizeState = useRef<{ startX: number; startWidth: number } | null>(null)
@@ -144,6 +146,16 @@ export function AnalystShell({
     "--analyst-sidebar-width": `${sidebarWidth}px`,
   } as CSSProperties
 
+  function withCurrentScope(href: string): string {
+    if (!href.startsWith("/dashboard")) return href
+    const [pathnamePart, queryPart] = href.split("?", 2)
+    const next = new URLSearchParams(queryPart)
+    if (activeScope) next.set("scope", activeScope)
+    if (activeScopeId) next.set("scopeId", activeScopeId)
+    const query = next.toString()
+    return query ? `${pathnamePart}?${query}` : pathnamePart
+  }
+
   return (
     <div className="min-h-screen bg-[var(--background)]" style={shellStyle}>
       {!sidebarHidden ? (
@@ -151,8 +163,8 @@ export function AnalystShell({
           className="fixed inset-y-0 left-0 z-20 hidden border-r border-[var(--border)] bg-white lg:block"
           style={{ width: "var(--analyst-sidebar-width)" }}
         >
-          <div className="flex h-16 items-center justify-between gap-3 border-b border-[var(--border)] px-5">
-            <Link href="/dashboard" className="flex min-w-0 items-center gap-2">
+          <div className="flex h-14 items-center justify-between gap-3 border-b border-[var(--border)] px-5">
+            <Link href={withCurrentScope("/dashboard")} className="flex min-w-0 items-center gap-2">
               <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-[var(--primary)] text-white">
                 <BarChart3 className="size-5" />
               </span>
@@ -188,7 +200,7 @@ export function AnalystShell({
                           : "text-neutral-600 hover:bg-neutral-50 hover:text-neutral-950",
                       )}
                     >
-                      <Link href={item.href} className="flex h-full min-w-0 flex-1 items-center gap-2 px-3">
+                      <Link href={withCurrentScope(item.href)} className="flex h-full min-w-0 flex-1 items-center gap-2 px-3">
                         <item.icon className="size-4 shrink-0" />
                         <span className="truncate">{item.label}</span>
                       </Link>
@@ -217,7 +229,7 @@ export function AnalystShell({
                     </Link>
                   )}
 
-                  {isDashboardItem && dashboardActive && metricListExpanded ? (
+                  {isDashboardItem && metricListExpanded ? (
                     <div className="mt-3 space-y-3 border-l border-[var(--border)] pl-3">
                       {metricGroups.map((group) => {
                         const groupExpanded = expandedGroupIds.includes(group.id)
@@ -239,12 +251,12 @@ export function AnalystShell({
                             </button>
                             {groupExpanded
                               ? group.metrics.map((metric) => {
-                                  const metricActive = activeMetric === metric.id
+                                  const metricActive = dashboardActive && activeMetric === metric.id
 
                                   return (
                                     <Link
                                       key={metric.id}
-                                      href={metric.href}
+                                      href={withCurrentScope(metric.href)}
                                       className={cn(
                                         "flex min-h-8 items-center justify-between gap-2 rounded-md px-2 text-xs",
                                         metricActive
@@ -297,9 +309,8 @@ export function AnalystShell({
       )}
 
       <div className={cn("transition-[padding-left] duration-150", sidebarHidden ? "lg:pl-0" : "lg:pl-[var(--analyst-sidebar-width)]")}>
-        <header className="sticky top-0 z-10 flex h-14 items-center justify-between border-b border-[var(--border)] bg-white/95 px-4 backdrop-blur lg:h-16 lg:px-6">
+        <header className="sticky top-0 z-10 flex h-14 items-center justify-between border-b border-[var(--border)] bg-white/95 px-4 backdrop-blur lg:h-14 lg:px-6">
           <div className="text-sm font-medium text-neutral-950 lg:hidden">凤御经营分析</div>
-          <div className={cn("hidden text-sm text-neutral-500 lg:block", sidebarHidden && "pl-10")}>独立分析站点</div>
           <div className="flex items-center gap-3">
             <span className="text-sm text-neutral-700">{session.name}</span>
             <a

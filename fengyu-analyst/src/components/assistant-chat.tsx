@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import type { Components } from "react-markdown"
 import remarkGfm from "remark-gfm"
+import { toast } from "sonner"
 import {
   Bar,
   BarChart as RechartsBarChart,
@@ -30,33 +31,39 @@ import {
   UserRound,
   X,
 } from "lucide-react"
-import type {
-  AssistantChartRow,
-  AssistantChatResponse,
-  AssistantMessageRole,
-  AssistantVisualization,
+import {
+  DEFAULT_ASSISTANT_CHAT_TITLE,
+  titleFromAssistantQuestion,
+  type AssistantChartRow,
+  type AssistantChatMessage,
+  type AssistantChatSessionDetail,
+  type AssistantChatSessionSummary,
+  type AssistantChatTurnResponse,
+  type AssistantVisualization,
 } from "@/lib/assistant-types"
 import { cn } from "@/lib/utils"
 
-interface ChatMessage {
-  id: string
-  role: AssistantMessageRole
-  content: string
-  visualizations?: AssistantVisualization[]
-  createdAt: string
+interface ChatSession extends AssistantChatSessionSummary {
+  messages?: AssistantChatMessage[]
 }
 
-interface ChatSession {
-  id: string
-  title: string
-  messages: ChatMessage[]
-  createdAt: string
-  updatedAt: string
+interface ChatSessionPageResponse {
+  sessions: AssistantChatSessionSummary[]
+  nextCursor: string | null
 }
 
-const DEFAULT_TITLE = "新对话"
-const STORAGE_KEY = "fengyu-analyst.assistant.sessions.v1"
-const MAX_SESSIONS = 30
+interface ChatSessionResponse {
+  session: AssistantChatSessionDetail
+}
+
+interface ChatSessionSummaryResponse {
+  session: AssistantChatSessionSummary
+}
+
+interface ApiErrorResponse {
+  error?: string
+  message?: string
+}
 
 const suggestions = [
   "今年科颜美复购率是多少？",
@@ -122,32 +129,37 @@ const markdownComponents: Components = {
   hr: ({ node: _node, ...props }) => <hr className="my-4 border-[var(--border)]" {...props} />,
 }
 
-function nextId(prefix: string): string {
-  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`
-}
-
 function nowIso(): string {
   return new Date().toISOString()
 }
 
-function createBlankSession(): ChatSession {
-  const now = nowIso()
-  return {
-    id: nextId("session"),
-    title: DEFAULT_TITLE,
-    messages: [],
-    createdAt: now,
-    updatedAt: now,
-  }
-}
-
-function titleFromQuestion(question: string): string {
-  const compact = question.replace(/\s+/g, " ").trim()
-  return compact.length > 22 ? `${compact.slice(0, 22)}...` : compact || DEFAULT_TITLE
-}
-
 function sortSessions(sessions: ChatSession[]): ChatSession[] {
-  return [...sessions].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, MAX_SESSIONS)
+  return [...sessions].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+}
+
+let nextTemporaryMessageId = -1
+
+function createTemporaryMessageId(): number {
+  return nextTemporaryMessageId--
+}
+
+function mergeSessionSummaries(current: ChatSession[], incoming: AssistantChatSessionSummary[]): ChatSession[] {
+  const sessions = new Map(current.map((session) => [session.id, session]))
+  for (const summary of incoming) {
+    const existing = sessions.get(summary.id)
+    sessions.set(summary.id, existing ? { ...summary, messages: existing.messages } : summary)
+  }
+  return sortSessions(Array.from(sessions.values()))
+}
+
+async function requestJson<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
+  const response = await fetch(input, init)
+  const payload = (await response.json().catch(() => null)) as (T & ApiErrorResponse) | null
+  if (!response.ok) {
+    throw new Error(payload?.message || payload?.error || "请求失败")
+  }
+  if (!payload) throw new Error("服务端未返回数据")
+  return payload
 }
 
 function AssistantMarkdown({ content }: { content: string }) {
@@ -158,61 +170,6 @@ function AssistantMarkdown({ content }: { content: string }) {
       </ReactMarkdown>
     </div>
   )
-}
-
-function normalizeVisualizations(input: unknown): AssistantVisualization[] {
-  if (!Array.isArray(input)) return []
-  return input.filter((item): item is AssistantVisualization => {
-    if (!item || typeof item !== "object") return false
-    const maybe = item as Partial<AssistantVisualization>
-    return typeof maybe.id === "string" && typeof maybe.kind === "string" && typeof maybe.title === "string"
-  })
-}
-
-function normalizeMessage(input: unknown): ChatMessage | null {
-  if (!input || typeof input !== "object") return null
-  const raw = input as Partial<ChatMessage>
-  if (raw.role !== "user" && raw.role !== "assistant") return null
-  if (typeof raw.content !== "string") return null
-  return {
-    id: typeof raw.id === "string" ? raw.id : nextId("message"),
-    role: raw.role,
-    content: raw.content,
-    visualizations: normalizeVisualizations(raw.visualizations),
-    createdAt: typeof raw.createdAt === "string" ? raw.createdAt : nowIso(),
-  }
-}
-
-function normalizeSessions(input: unknown): ChatSession[] {
-  if (!Array.isArray(input)) return []
-  const sessions = input
-    .map((item) => {
-      if (!item || typeof item !== "object") return null
-      const raw = item as Partial<ChatSession>
-      const messages = Array.isArray(raw.messages)
-        ? raw.messages.map(normalizeMessage).filter((message): message is ChatMessage => Boolean(message))
-        : []
-      const createdAt = typeof raw.createdAt === "string" ? raw.createdAt : nowIso()
-      const updatedAt = typeof raw.updatedAt === "string" ? raw.updatedAt : createdAt
-      return {
-        id: typeof raw.id === "string" ? raw.id : nextId("session"),
-        title: typeof raw.title === "string" && raw.title.trim() ? raw.title.trim() : DEFAULT_TITLE,
-        messages,
-        createdAt,
-        updatedAt,
-      } satisfies ChatSession
-    })
-    .filter((session): session is ChatSession => Boolean(session))
-
-  return sortSessions(sessions)
-}
-
-function readStoredSessions(): ChatSession[] {
-  try {
-    return normalizeSessions(JSON.parse(window.localStorage.getItem(STORAGE_KEY) || "[]"))
-  } catch {
-    return []
-  }
 }
 
 function formatDate(value: string): string {
@@ -448,56 +405,150 @@ function AssistantVisualizationPanel({ visualization }: { visualization: Assista
 
 export function AssistantChat() {
   const [sessions, setSessions] = useState<ChatSession[]>([])
-  const [activeSessionId, setActiveSessionId] = useState("")
+  const [activeSessionId, setActiveSessionId] = useState<number | null>(null)
   const [input, setInput] = useState("")
   const [isLoading, setIsLoading] = useState(false)
-  const [hydrated, setHydrated] = useState(false)
-  const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
+  const [isInitialLoading, setIsInitialLoading] = useState(true)
+  const [loadingSessionId, setLoadingSessionId] = useState<number | null>(null)
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
+  const [isLoadingMore, setIsLoadingMore] = useState(false)
+  const [isCreatingSession, setIsCreatingSession] = useState(false)
+  const [deletingSessionId, setDeletingSessionId] = useState<number | null>(null)
+  const [editingSessionId, setEditingSessionId] = useState<number | null>(null)
   const [editingTitle, setEditingTitle] = useState("")
+  const [isSavingTitle, setIsSavingTitle] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
-
-  useEffect(() => {
-    const stored = readStoredSessions()
-    const initial = stored.length > 0 ? stored : [createBlankSession()]
-    setSessions(initial)
-    setActiveSessionId(initial[0]?.id ?? "")
-    setHydrated(true)
-  }, [])
-
-  useEffect(() => {
-    if (!hydrated) return
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(sortSessions(sessions)))
-  }, [hydrated, sessions])
-
-  useEffect(() => {
-    if (!hydrated || sessions.length === 0) return
-    if (!sessions.some((session) => session.id === activeSessionId)) {
-      setActiveSessionId(sessions[0].id)
-    }
-  }, [activeSessionId, hydrated, sessions])
+  const sessionLoadRef = useRef(0)
 
   const activeSession = useMemo(
-    () => sessions.find((session) => session.id === activeSessionId) ?? sessions[0] ?? null,
+    () => sessions.find((session) => session.id === activeSessionId) ?? null,
     [activeSessionId, sessions],
   )
+  const activeMessages = activeSession?.messages ?? []
+  const isActiveSessionLoading = loadingSessionId === activeSession?.id
 
-  function createSession() {
-    const session = createBlankSession()
-    setSessions((current) => sortSessions([session, ...current]))
-    setActiveSessionId(session.id)
-    setInput("")
+  async function loadSession(sessionId: number, silent = false) {
+    const requestId = ++sessionLoadRef.current
+    setLoadingSessionId(sessionId)
+    try {
+      const payload = await requestJson<ChatSessionResponse>(`/api/analyst/chat/sessions/${sessionId}`)
+      if (requestId !== sessionLoadRef.current) return
+      setSessions((current) =>
+        sortSessions(
+          current.map((session) => (session.id === sessionId ? payload.session : session)),
+        ),
+      )
+    } catch (error) {
+      if (!silent && requestId === sessionLoadRef.current) {
+        toast.error((error as Error).message || "加载聊天记录失败")
+      }
+    } finally {
+      if (requestId === sessionLoadRef.current) setLoadingSessionId(null)
+    }
   }
 
-  function deleteSession(sessionId: string) {
-    const next = sessions.filter((session) => session.id !== sessionId)
-    if (next.length === 0) {
-      const session = createBlankSession()
-      setSessions([session])
-      setActiveSessionId(session.id)
-      return
+  useEffect(() => {
+    let mounted = true
+
+    async function initialize() {
+      try {
+        const page = await requestJson<ChatSessionPageResponse>("/api/analyst/chat/sessions")
+        if (!mounted) return
+
+        setNextCursor(page.nextCursor)
+        if (page.sessions.length === 0) {
+          const created = await requestJson<ChatSessionSummaryResponse>("/api/analyst/chat/sessions", {
+            method: "POST",
+          })
+          if (!mounted) return
+          const session: ChatSession = { ...created.session, messages: [] }
+          setSessions([session])
+          setActiveSessionId(session.id)
+          return
+        }
+
+        const initial = page.sessions[0]
+        setSessions(sortSessions(page.sessions))
+        setActiveSessionId(initial.id)
+        void loadSession(initial.id)
+      } catch (error) {
+        if (mounted) toast.error((error as Error).message || "加载聊天记录失败")
+      } finally {
+        if (mounted) setIsInitialLoading(false)
+      }
     }
-    setSessions(sortSessions(next))
-    if (sessionId === activeSessionId) setActiveSessionId(next[0].id)
+
+    void initialize()
+    return () => {
+      mounted = false
+      sessionLoadRef.current += 1
+      abortRef.current?.abort()
+    }
+  }, [])
+
+  async function createSession() {
+    if (isCreatingSession) return
+    setIsCreatingSession(true)
+    try {
+      const payload = await requestJson<ChatSessionSummaryResponse>("/api/analyst/chat/sessions", {
+        method: "POST",
+      })
+      const session: ChatSession = { ...payload.session, messages: [] }
+      setSessions((current) => sortSessions([session, ...current]))
+      setActiveSessionId(session.id)
+      setInput("")
+      return session
+    } catch (error) {
+      toast.error((error as Error).message || "新建对话失败")
+    } finally {
+      setIsCreatingSession(false)
+    }
+  }
+
+  function selectSession(sessionId: number) {
+    const selected = sessions.find((session) => session.id === sessionId)
+    if (sessionId === activeSessionId && selected?.messages) return
+    setActiveSessionId(sessionId)
+    setInput("")
+    void loadSession(sessionId)
+  }
+
+  async function loadMoreSessions() {
+    if (!nextCursor || isLoadingMore) return
+    setIsLoadingMore(true)
+    try {
+      const payload = await requestJson<ChatSessionPageResponse>(
+        `/api/analyst/chat/sessions?cursor=${encodeURIComponent(nextCursor)}`,
+      )
+      setSessions((current) => mergeSessionSummaries(current, payload.sessions))
+      setNextCursor(payload.nextCursor)
+    } catch (error) {
+      toast.error((error as Error).message || "加载更多记录失败")
+    } finally {
+      setIsLoadingMore(false)
+    }
+  }
+
+  async function deleteSession(sessionId: number) {
+    if (isLoading || deletingSessionId !== null) return
+    setDeletingSessionId(sessionId)
+    try {
+      await requestJson<{ success: true }>(`/api/analyst/chat/sessions/${sessionId}`, { method: "DELETE" })
+      const next = sessions.filter((session) => session.id !== sessionId)
+      setSessions(next)
+      if (sessionId !== activeSessionId) return
+
+      if (next.length > 0) {
+        selectSession(next[0].id)
+      } else {
+        setActiveSessionId(null)
+        await createSession()
+      }
+    } catch (error) {
+      toast.error((error as Error).message || "删除对话失败")
+    } finally {
+      setDeletingSessionId(null)
+    }
   }
 
   function startRename(session: ChatSession) {
@@ -505,17 +556,29 @@ export function AssistantChat() {
     setEditingTitle(session.title)
   }
 
-  function commitRename(sessionId: string) {
-    const title = editingTitle.trim() || DEFAULT_TITLE
-    setSessions((current) =>
-      sortSessions(
-        current.map((session) =>
-          session.id === sessionId ? { ...session, title, updatedAt: nowIso() } : session,
+  async function commitRename(sessionId: number) {
+    const title = editingTitle.trim() || DEFAULT_ASSISTANT_CHAT_TITLE
+    setIsSavingTitle(true)
+    try {
+      const payload = await requestJson<ChatSessionSummaryResponse>(`/api/analyst/chat/sessions/${sessionId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      })
+      setSessions((current) =>
+        sortSessions(
+          current.map((session) =>
+            session.id === sessionId ? { ...payload.session, messages: session.messages } : session,
+          ),
         ),
-      ),
-    )
-    setEditingSessionId(null)
-    setEditingTitle("")
+      )
+      setEditingSessionId(null)
+      setEditingTitle("")
+    } catch (error) {
+      toast.error((error as Error).message || "重命名失败")
+    } finally {
+      setIsSavingTitle(false)
+    }
   }
 
   function cancelRename() {
@@ -523,63 +586,46 @@ export function AssistantChat() {
     setEditingTitle("")
   }
 
-  function replaceAssistantMessage(sessionId: string, messageId: string, patch: Partial<ChatMessage>) {
-    setSessions((current) =>
-      sortSessions(
-        current.map((session) =>
-          session.id === sessionId
-            ? {
-                ...session,
-                updatedAt: nowIso(),
-                messages: session.messages.map((message) =>
-                  message.id === messageId ? { ...message, ...patch } : message,
-                ),
-              }
-            : session,
-        ),
-      ),
-    )
-  }
-
   async function send(content: string) {
     const question = content.trim()
-    if (!question || isLoading) return
+    const session = activeSession
+    if (!question || !session || isLoading || isActiveSessionLoading) return
 
-    const session = activeSession ?? createBlankSession()
-    const sessionExists = sessions.some((item) => item.id === session.id)
-    const userMessage: ChatMessage = {
-      id: nextId("message"),
+    const now = nowIso()
+    const userMessage: AssistantChatMessage = {
+      id: createTemporaryMessageId(),
       role: "user",
       content: question,
-      createdAt: nowIso(),
+      visualizations: [],
+      createdAt: now,
     }
-    const assistantId = nextId("message")
-    const assistantMessage: ChatMessage = {
-      id: assistantId,
+    const assistantMessage: AssistantChatMessage = {
+      id: createTemporaryMessageId(),
       role: "assistant",
       content: "",
       visualizations: [],
-      createdAt: nowIso(),
+      createdAt: now,
     }
-    const requestMessages = [...session.messages, userMessage].map(({ role, content }) => ({ role, content }))
-    const nextTitle = session.messages.length === 0 && session.title === DEFAULT_TITLE ? titleFromQuestion(question) : session.title
+    const provisionalTitle =
+      session.messageCount === 0 && session.title === DEFAULT_ASSISTANT_CHAT_TITLE
+        ? titleFromAssistantQuestion(question)
+        : session.title
 
-    setSessions((current) => {
-      const base = sessionExists ? current : [session, ...current]
-      return sortSessions(
-        base.map((item) =>
+    setSessions((current) =>
+      sortSessions(
+        current.map((item) =>
           item.id === session.id
             ? {
                 ...item,
-                title: nextTitle,
-                updatedAt: nowIso(),
-                messages: [...item.messages, userMessage, assistantMessage],
+                title: provisionalTitle,
+                messageCount: item.messageCount + 2,
+                updatedAt: now,
+                messages: [...(item.messages ?? []), userMessage, assistantMessage],
               }
             : item,
         ),
-      )
-    })
-    setActiveSessionId(session.id)
+      ),
+    )
     setInput("")
     setIsLoading(true)
 
@@ -587,32 +633,51 @@ export function AssistantChat() {
     abortRef.current = controller
 
     try {
-      const response = await fetch("/api/analyst/chat", {
+      const turn = await requestJson<AssistantChatTurnResponse>("/api/analyst/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: requestMessages }),
+        body: JSON.stringify({ sessionId: session.id, content: question }),
         signal: controller.signal,
       })
-
-      const payload = (await response.json().catch(() => null)) as
-        | (Partial<AssistantChatResponse> & { error?: string; message?: string })
-        | null
-      if (!response.ok) {
-        throw new Error(payload?.message || payload?.error || payload?.content || "请求失败")
-      }
-
-      replaceAssistantMessage(session.id, assistantId, {
-        content: typeof payload?.content === "string" && payload.content.trim() ? payload.content : "没有生成回答。",
-        visualizations: normalizeVisualizations(payload?.visualizations),
-      })
+      setSessions((current) =>
+        sortSessions(
+          current.map((item) => {
+            if (item.id !== session.id) return item
+            const existingMessages = (item.messages ?? []).filter(
+              (message) => message.id !== userMessage.id && message.id !== assistantMessage.id,
+            )
+            return {
+              ...turn.session,
+              messages: [...existingMessages, turn.userMessage, turn.assistantMessage],
+            }
+          }),
+        ),
+      )
     } catch (error) {
-      replaceAssistantMessage(session.id, assistantId, {
-        content: (error as Error).name === "AbortError" ? "已停止生成。" : `请求失败：${(error as Error).message}`,
-        visualizations: [],
-      })
+      setSessions((current) =>
+        current.map((item) =>
+          item.id === session.id
+            ? {
+                ...item,
+                title: session.title,
+                messageCount: session.messageCount,
+                updatedAt: session.updatedAt,
+                messages: (item.messages ?? []).filter(
+                  (message) => message.id !== userMessage.id && message.id !== assistantMessage.id,
+                ),
+              }
+            : item,
+        ),
+      )
+      toast.error(
+        (error as Error).name === "AbortError"
+          ? "已停止等待服务端回应"
+          : (error as Error).message || "发送失败",
+      )
+      void loadSession(session.id, true)
     } finally {
       setIsLoading(false)
-      abortRef.current = null
+      if (abortRef.current === controller) abortRef.current = null
     }
   }
 
@@ -628,8 +693,9 @@ export function AssistantChat() {
           <div className="text-sm font-semibold text-neutral-950">历史聊天</div>
           <button
             type="button"
-            onClick={createSession}
-            className="inline-flex size-8 items-center justify-center rounded-md border border-[var(--border)] text-neutral-600 hover:bg-neutral-50"
+            onClick={() => void createSession()}
+            disabled={isCreatingSession || isLoading}
+            className="inline-flex size-8 items-center justify-center rounded-md border border-[var(--border)] text-neutral-600 hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-50"
             title="新建对话"
             aria-label="新建对话"
           >
@@ -656,14 +722,15 @@ export function AssistantChat() {
                       autoFocus
                       onChange={(event) => setEditingTitle(event.target.value)}
                       onKeyDown={(event) => {
-                        if (event.key === "Enter") commitRename(session.id)
+                        if (event.key === "Enter") void commitRename(session.id)
                         if (event.key === "Escape") cancelRename()
                       }}
                     />
                     <button
                       type="button"
-                      onClick={() => commitRename(session.id)}
-                      className="inline-flex size-8 items-center justify-center rounded-md text-neutral-500 hover:bg-white"
+                      onClick={() => void commitRename(session.id)}
+                      disabled={isSavingTitle}
+                      className="inline-flex size-8 items-center justify-center rounded-md text-neutral-500 hover:bg-white disabled:opacity-50"
                       title="保存"
                       aria-label="保存"
                     >
@@ -683,7 +750,7 @@ export function AssistantChat() {
                   <div className="grid grid-cols-[1fr_auto] items-center gap-1 p-1.5">
                     <button
                       type="button"
-                      onClick={() => setActiveSessionId(session.id)}
+                      onClick={() => selectSession(session.id)}
                       className="min-w-0 rounded-md px-2 py-1.5 text-left"
                     >
                       <div className="flex min-w-0 items-center gap-2">
@@ -691,7 +758,7 @@ export function AssistantChat() {
                         <span className="truncate text-sm font-medium">{session.title}</span>
                       </div>
                       <div className={cn("mt-0.5 text-xs", active ? "text-red-700/70" : "text-neutral-400")}>
-                        {session.messages.length} 条 · {formatDate(session.updatedAt)}
+                        {session.messageCount} 条 · {formatDate(session.updatedAt)}
                       </div>
                     </button>
                     <div className="flex shrink-0 opacity-100 lg:opacity-0 lg:group-hover:opacity-100">
@@ -706,8 +773,9 @@ export function AssistantChat() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => deleteSession(session.id)}
-                        className="inline-flex size-7 items-center justify-center rounded-md text-neutral-500 hover:bg-white"
+                        onClick={() => void deleteSession(session.id)}
+                        disabled={isLoading || deletingSessionId !== null}
+                        className="inline-flex size-7 items-center justify-center rounded-md text-neutral-500 hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
                         title="删除"
                         aria-label="删除"
                       >
@@ -719,13 +787,25 @@ export function AssistantChat() {
               </div>
             )
           })}
+          {nextCursor ? (
+            <button
+              type="button"
+              onClick={() => void loadMoreSessions()}
+              disabled={isLoadingMore}
+              className="mt-2 w-full rounded-md border border-[var(--border)] px-2 py-2 text-xs text-neutral-500 hover:bg-neutral-50 disabled:opacity-50"
+            >
+              {isLoadingMore ? "加载中..." : "加载更多"}
+            </button>
+          ) : null}
         </div>
       </aside>
 
       <section className="flex min-h-[calc(100vh-8rem)] flex-col rounded-lg border border-[var(--border)] bg-white">
         <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
           <div className="min-w-0">
-            <h1 className="truncate text-lg font-semibold text-neutral-950">{activeSession?.title ?? DEFAULT_TITLE}</h1>
+            <h1 className="truncate text-lg font-semibold text-neutral-950">
+              {activeSession?.title ?? DEFAULT_ASSISTANT_CHAT_TITLE}
+            </h1>
             <p className="mt-0.5 text-xs text-neutral-500">经营分析问答</p>
           </div>
           {isLoading ? (
@@ -740,7 +820,14 @@ export function AssistantChat() {
         </div>
 
         <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
-          {activeSession && activeSession.messages.length === 0 ? (
+          {isInitialLoading || isActiveSessionLoading ? (
+            <div className="flex min-h-32 items-center justify-center text-sm text-neutral-400">
+              <Loader2 className="mr-2 size-4 animate-spin" />
+              加载聊天记录
+            </div>
+          ) : null}
+
+          {!isInitialLoading && !isActiveSessionLoading && activeSession && activeMessages.length === 0 ? (
             <div className="grid gap-2 sm:grid-cols-2">
               {suggestions.map((suggestion) => (
                 <button
@@ -755,7 +842,7 @@ export function AssistantChat() {
             </div>
           ) : null}
 
-          {activeSession?.messages.map((message) => {
+          {!isInitialLoading && !isActiveSessionLoading && activeMessages.map((message) => {
             const isUser = message.role === "user"
             const Icon = isUser ? UserRound : Bot
             return (
@@ -807,6 +894,7 @@ export function AssistantChat() {
             placeholder="输入分析问题"
             value={input}
             rows={1}
+            disabled={isInitialLoading || isActiveSessionLoading || !activeSession}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
@@ -818,7 +906,7 @@ export function AssistantChat() {
           <button
             className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-md bg-[var(--primary)] text-white disabled:cursor-not-allowed disabled:opacity-50"
             type="submit"
-            disabled={isLoading || input.trim().length === 0}
+            disabled={isLoading || isInitialLoading || isActiveSessionLoading || !activeSession || input.trim().length === 0}
             aria-label="发送"
           >
             {isLoading ? <Loader2 className="size-4 animate-spin" /> : <SendHorizonal className="size-4" />}
