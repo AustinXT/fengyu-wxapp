@@ -17,7 +17,14 @@ function jwtSecret(): Uint8Array | null {
 
 function redirectToAdminLogin(request: NextRequest) {
   const loginUrl = new URL(process.env.ADMIN_LOGIN_URL || "http://localhost:3000/login")
-  loginUrl.searchParams.set("returnTo", request.nextUrl.href)
+  const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim()
+  const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim()
+  const host = forwardedHost || request.headers.get("host")
+  const protocol = forwardedProto || request.nextUrl.protocol.replace(":", "") || "http"
+  const returnTo = host
+    ? `${protocol}://${host}${request.nextUrl.pathname}${request.nextUrl.search}`
+    : request.nextUrl.href
+  loginUrl.searchParams.set("returnTo", returnTo)
   return NextResponse.redirect(loginUrl)
 }
 

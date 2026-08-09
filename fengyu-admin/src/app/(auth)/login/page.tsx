@@ -16,8 +16,22 @@ function getSafeReturnTo(): string | null {
   try {
     const target = new URL(raw, window.location.origin)
     const allowedOrigins = new Set([window.location.origin])
-    const analystOrigin = process.env.NEXT_PUBLIC_ANALYST_ORIGIN || "http://localhost:3100"
-    allowedOrigins.add(new URL(analystOrigin).origin)
+
+    // 优先使用显式配置的 analyst origin
+    const analystOrigin = process.env.NEXT_PUBLIC_ANALYST_ORIGIN
+    if (analystOrigin) {
+      try {
+        allowedOrigins.add(new URL(analystOrigin).origin)
+      } catch {
+        console.warn('[login] Invalid NEXT_PUBLIC_ANALYST_ORIGIN:', analystOrigin)
+      }
+    }
+
+    // 仅在开发环境添加动态端口白名单
+    if (process.env.NODE_ENV !== 'production') {
+      allowedOrigins.add(`${window.location.protocol}//${window.location.hostname}:3001`)
+      allowedOrigins.add(`${window.location.protocol}//${window.location.hostname}:3100`)
+    }
 
     if (!allowedOrigins.has(target.origin)) return null
     return target.toString()

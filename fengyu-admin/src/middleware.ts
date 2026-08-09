@@ -17,15 +17,42 @@ function deleteSessionCookie(response: NextResponse) {
   response.cookies.delete(COOKIE_NAME)
 }
 
+function requestOrigin(request: NextRequest): string {
+  const forwardedProto = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim()
+  const forwardedHost = request.headers.get('x-forwarded-host')?.split(',')[0]?.trim()
+  const host = forwardedHost || request.headers.get('host')
+  const protocol = forwardedProto || request.nextUrl.protocol.replace(':', '') || 'http'
+  return host ? `${protocol}://${host}` : request.nextUrl.origin
+}
+
+function addAnalystOrigins(allowedOrigins: Set<string>, baseOrigin: string) {
+  // 优先使用显式配置的 analyst origin
+  const configured = process.env.NEXT_PUBLIC_ANALYST_ORIGIN
+  if (configured) {
+    try {
+      allowedOrigins.add(new URL(configured).origin)
+    } catch {
+      console.warn('[middleware] Invalid NEXT_PUBLIC_ANALYST_ORIGIN:', configured)
+    }
+  }
+
+  // 仅在开发环境添加动态端口白名单
+  if (process.env.NODE_ENV !== 'production') {
+    const base = new URL(baseOrigin)
+    allowedOrigins.add(`${base.protocol}//${base.hostname}:3001`)
+    allowedOrigins.add(`${base.protocol}//${base.hostname}:3100`)
+  }
+}
+
 function safeReturnTo(request: NextRequest): string | null {
   const raw = request.nextUrl.searchParams.get('returnTo')
   if (!raw) return null
 
   try {
-    const target = new URL(raw, request.nextUrl.origin)
-    const allowedOrigins = new Set([request.nextUrl.origin])
-    const analystOrigin = process.env.NEXT_PUBLIC_ANALYST_ORIGIN || 'http://localhost:3100'
-    allowedOrigins.add(new URL(analystOrigin).origin)
+    const origin = requestOrigin(request)
+    const target = new URL(raw, origin)
+    const allowedOrigins = new Set([origin])
+    addAnalystOrigins(allowedOrigins, origin)
 
     if (!allowedOrigins.has(target.origin)) return null
     return target.toString()
