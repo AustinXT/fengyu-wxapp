@@ -424,8 +424,12 @@ async function createRefund(ctx) {
       refundPay,
       reason: reason || null,
     })
+  })
 
-    await notifyRefundCreated(client, {
+  // ✅ Bug G12：通知移出事务 —— 避免 CloudBase 消息推送/DB 瞬态抖动时 INSERT messages 失败回滚整笔退款。
+  // 事务已提交，通知失败只记日志，不影响退款主流程。
+  try {
+    await notifyRefundCreated(pg, {
       paymentId,
       saleOrderId,
       storeId: order.store_id,
@@ -433,7 +437,9 @@ async function createRefund(ctx) {
       amount: refundPay,
       customerName: order.customer_name,
     })
-  })
+  } catch (notifyErr) {
+    console.error('[card.createRefund] notifyRefundCreated failed:', notifyErr)
+  }
 
   ctx.result = {
     paymentId,

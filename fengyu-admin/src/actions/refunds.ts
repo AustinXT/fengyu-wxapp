@@ -931,18 +931,22 @@ export const createRefund = withPermission(
 
       if (!paymentRow) throw new ApiError('INVALID_STATE', 'PAYMENT_INSERT_FAILED: 退款流水写入失败')
 
-      // 通知门店店长审批（Bug C）
-      await notifyRefundCreated(tx, {
-        paymentId: paymentRow.id,
+      return paymentRow.id
+    })
+    // ✅ Bug G12：通知移出事务 —— 避免 CloudBase 消息推送/DB 瞬态抖动时 INSERT messages 失败回滚整笔退款。
+    // 事务已提交，通知失败只记日志，不影响退款主流程。
+    try {
+      await notifyRefundCreated(db, {
+        paymentId: refundPaymentId,
         saleOrderId: refSaleOrderId,
         storeId: origOrder.storeId,
         operatorId: session.employeeId,
         amount: adjustedRefundAmount,
         customerName: origOrder.customerName,
       })
-
-      return paymentRow.id
-    })
+    } catch (notifyErr) {
+      console.error('[createRefund] notifyRefundCreated failed:', notifyErr)
+    }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     // 修复（Bug S）：drizzle 0.45 把 pg 错误码包进 err.cause；用 pgErrorCode/pgErrorConstraint 读取，否则永不命中 → 落 UNKNOWN
