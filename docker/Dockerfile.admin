@@ -31,6 +31,9 @@ WORKDIR /app
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /db/schema/ /db/schema/
+# Shared schema lives outside /app, so Bun resolves its package imports from
+# /db/node_modules while bundling the standalone workers.
+COPY --from=deps /app/node_modules /db/node_modules
 COPY db/utils/ /db/utils/
 COPY fengyu-admin/ .
 
