@@ -8,6 +8,7 @@ import { eq, and, or, desc, asc, inArray, sql, ilike, isNotNull, getTableColumns
 import type { SQL } from 'drizzle-orm'
 import type { Customer, SaleOrder, SaleItem, Appointment, AuthSession, CustomerCoupon, CouponType, CouponStatus } from '@/lib/types'
 import { scopeCondition, isAdminScope, isInScope, requireAdmin } from '@/lib/permissions'
+import { hasRole } from '@/lib/auth'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
@@ -19,10 +20,6 @@ import {
   type ExportBatchResult,
 } from '@/lib/export-pagination'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
-
-function hasSessionRole(session: AuthSession, role: AuthSession['roles'][number]['role']): boolean {
-  return session.roles.some((assigned) => assigned.role === role)
-}
 
 // 标量子查询 — 替代 3 个 LEFT JOIN（stores → storeNode → marketNode）
 const storeName = sql<string | null>`(
@@ -367,7 +364,7 @@ export const getCustomerById = withPermission(
   'customer:list',
   async (session, userId: string): Promise<Customer | null> => {
   // admin 纯角色不碰顾客数据（admin+manager 双角色可访问）
-  const isAdminOnly = isAdminScope(session) && !hasSessionRole(session, 'manager') && !hasSessionRole(session, 'customer_mgr') && !hasSessionRole(session, 'finance')
+  const isAdminOnly = isAdminScope(session) && !hasRole(session, 'manager') && !hasRole(session, 'customer_mgr') && !hasRole(session, 'finance')
   if (isAdminOnly) return null
 
   const rows = await db
@@ -1272,7 +1269,7 @@ export const mergeClientProfile = withPermission(
     orphanUserId: string,
   ): Promise<{ success: boolean; message: string; fieldsMigrated?: string[]; ordersReassigned?: number }> => {
   // 仅店长 / admin 允许合并
-  if (!hasSessionRole(session, 'manager') && !isAdminScope(session)) {
+  if (!hasRole(session, 'manager') && !isAdminScope(session)) {
     return { success: false, message: '仅店长或管理员可执行顾客合并' }
   }
 
