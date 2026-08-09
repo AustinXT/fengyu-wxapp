@@ -151,7 +151,7 @@ async function cascadeRefund(client, params) {
   }
 
   const voidedReason = refundReason
-    ? `退款审批通过：${String(refundReason).slice(0, 200)}`
+    ? `退款审批通过：${String(refundReason).slice(0, 500)}`
     : '退款审批通过'
   const now = new Date()
 
@@ -321,7 +321,7 @@ async function cascadeRefund(client, params) {
   if (wholeOrder) {
     const couponRes = await client.query(
       `UPDATE user_coupons
-          SET status = '未使用', used_at = NULL, used_sale_order_id = NULL
+          SET status = '未使用', used_at = NULL, used_sale_order_id = NULL, updated_at = NOW()
         WHERE used_sale_order_id = $1
           AND status = '已使用'
           AND (expire_at IS NULL OR expire_at > NOW())`,
@@ -391,14 +391,14 @@ async function cascadeRefund(client, params) {
             WHERE user_id = $1
               AND remaining_amount > 0
               AND expire_at > NOW()
-            ORDER BY CASE WHEN ref_order_id = $3 THEN 0 ELSE 1 END, expire_at, id
+            ORDER BY CASE WHEN $3::text IS NOT NULL AND ref_order_id = $3 THEN 0 ELSE 1 END, expire_at, id
             FOR UPDATE
          ),
          prioritized AS (
            SELECT id,
                   remaining_amount,
                   SUM(remaining_amount) OVER (
-                    ORDER BY CASE WHEN ref_order_id = $3 THEN 0 ELSE 1 END, expire_at, id
+                    ORDER BY CASE WHEN $3::text IS NOT NULL AND ref_order_id = $3 THEN 0 ELSE 1 END, expire_at, id
                   ) AS running
              FROM locked_batches
          ),

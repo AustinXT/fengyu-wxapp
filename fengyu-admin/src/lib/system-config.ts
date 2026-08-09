@@ -33,7 +33,7 @@ export async function getPointsToYuanRate(): Promise<number> {
  * 内部 PG 工具——给已在 Server Action 中通过 HOF 鉴权的调用方使用；非独立 Server Action
  * （与 getPointsToYuanRate 同模式，避免内嵌权限冲突）。
  *
- * 注：当前无消费方（积分抵扣下单闭环见 #64），本 helper 为积分系列地基先行就绪。
+ * 消费方：admin createOrder / staff order.create / client checkout 的 computePointsDeduction。
  */
 export async function getPointsDeductionMaxRate(): Promise<number> {
   try {

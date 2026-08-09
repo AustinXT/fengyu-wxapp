@@ -182,6 +182,8 @@ function applyOrderLevelDiscountToItems(
 
     const newSale = Math.max(0, baseCents - shareCents) / 100
     item.saleAmount = newSale.toFixed(2)
+    // 同步重算 unitRealPrice（与 staff 端 applyOrderLevelDiscountToItems 保持一致）
+    item.unitRealPrice = (item.quantity > 0 ? newSale / item.quantity : newSale).toFixed(2)
     const inputReceived = item.received != null ? Number(item.received) : baseCents / 100
     item.received = Math.min(inputReceived, newSale).toFixed(2)
   }
@@ -2003,7 +2005,8 @@ export const closeOrder = withPermission(
     if (!txResult.matched) {
       return { success: false, message: '订单状态已变更，无法关闭' }
     }
-  } catch {
+  } catch (e) {
+    console.error('closeOrder transaction failed:', saleOrderId, e instanceof Error ? e.message : String(e))
     return { success: false, message: '关闭订单失败，请稍后重试' }
   }
 
@@ -2076,6 +2079,7 @@ export const deleteOrder = withPermission(
         customerName: saleOrders.customerName,
         totalAmount: saleOrders.totalAmount,
         saleOrderType: saleOrders.saleOrderType,
+        storeId: saleOrders.storeId,
         // 历史已作废单的删除分支会读这个字段写入 audit snapshot；
         // 同时事务内 DELETE 守卫通过它识别"是否 WorkFine 历史单"以放行。
         legacySource: saleOrders.legacySource,
@@ -2151,6 +2155,11 @@ export const deleteOrder = withPermission(
     // 2. 事务级联删除（仅安全从属表 + 释放券；再删主单并复核可删条件）
     try {
       const txResult = await db.transaction(async (tx) => {
+        // 待支付/支付失败转换单：撤销创建时对源疗程卡 remaining_sessions 的即时扣减
+        if (order.saleOrderType === '转换单' && order.storeId) {
+          await rollbackPendingConversionOnClose(tx, saleOrderId, order.storeId)
+        }
+
         await tx
           .update(userCoupons)
           .set({ status: '未使用', usedSaleOrderId: null, usedAt: null })

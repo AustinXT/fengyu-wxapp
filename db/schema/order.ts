@@ -114,6 +114,8 @@ export const saleOrders = pgTable(
     pointsUsed: bigint("points_used", { mode: "number" }).notNull().default(0),
     /** 积分抵扣金额 */
     pointsDiscount: numeric("points_discount", { precision: 10, scale: 2 }).notNull().default("0"),
+    // comment-only: non-negative invariants for points_used/points_discount are enforced by
+    // chk_sale_order_points_used / chk_sale_order_points_discount below (extra() block).
     /** 订单备注（员工端开单时填写） */
     remark: text("remark"),
     /** 活动单标记（纯标识，不影响金额/提成/营收口径；admin/staff 开单时勾选） */
@@ -164,6 +166,10 @@ export const saleOrders = pgTable(
       "chk_first_payment_amount",
       sql`${table.firstPaymentAmount} IS NULL OR (${table.firstPaymentAmount} > 0 AND ${table.firstPaymentAmount} <= ${table.payableAmount})`,
     ),
+    /** 积分消耗量非负（>= 0） */
+    check("chk_sale_order_points_used", sql`${table.pointsUsed} >= 0`),
+    /** 积分抵扣金额非负（>= 0） */
+    check("chk_sale_order_points_discount", sql`${table.pointsDiscount} >= 0`),
   ],
 );
 

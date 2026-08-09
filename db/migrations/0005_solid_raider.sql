@@ -1,0 +1,2 @@
+ALTER TABLE "sale_orders" ADD CONSTRAINT "chk_sale_order_points_used" CHECK ("sale_orders"."points_used" >= 0);--> statement-breakpoint
+ALTER TABLE "sale_orders" ADD CONSTRAINT "chk_sale_order_points_discount" CHECK ("sale_orders"."points_discount" >= 0);

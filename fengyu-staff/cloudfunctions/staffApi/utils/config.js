@@ -101,9 +101,10 @@ async function getPointsToYuanRate() {
     console.warn('[config] getPointsToYuanRate fallback:', err.message)
   }
 
-  _pointsRateCachedValue = null
+  // DB 无该 key / 查询失败 → 缓存兜底值 30s 防每次穿透 DB
+  _pointsRateCachedValue = FALLBACK_POINTS_TO_YUAN_RATE
   _pointsRateCachedUpdatedAt = null
-  // 查询失败或 DB 无该 key / 无效 value → 兜底但不写缓存（下次重试）
+  _pointsRateLastCheckAt = now
   return FALLBACK_POINTS_TO_YUAN_RATE
 }
 
@@ -148,9 +149,10 @@ async function getPointsDeductionMaxRate() {
     console.warn('[config] getPointsDeductionMaxRate fallback:', err.message)
   }
 
-  _deductRateCachedValue = null
+  // DB 无该 key / 查询失败 → 缓存兜底值 30s 防每次穿透 DB
+  _deductRateCachedValue = FALLBACK_POINTS_DEDUCTION_RATE
   _deductRateCachedUpdatedAt = null
-  // 查询失败或 DB 无该 key / 无效 value → 兜底但不写缓存（下次重试）
+  _deductRateLastCheckAt = now
   return FALLBACK_POINTS_DEDUCTION_RATE
 }
 
