@@ -1766,3 +1766,45 @@ describe('2026-07-21 per-item-refund 行级退款聚合 SQL 四端一致性', ()
     expect(refundSqls.staff).toContain("status = '已支付'")
   })
 })
+
+describe('积分抵扣与过期任务锁序守护', () => {
+  function extractFunctionSection(src, functionName) {
+    const start = src.indexOf(`async function ${functionName}`)
+    expect(start, `未找到 ${functionName}`).toBeGreaterThanOrEqual(0)
+    const next = src.indexOf('\nasync function ', start + functionName.length)
+    return src.slice(start, next === -1 ? src.length : next)
+  }
+
+  const cases = [
+    {
+      name: 'clientApi',
+      file: FILES.clientOrderJs,
+      functionName: 'deductPointsAtCreation',
+      availabilityCall: 'getAvailablePointsBalance',
+    },
+    {
+      name: 'staffApi',
+      file: FILES.staffOrderJs,
+      functionName: 'deductPointsAtCreation',
+      availabilityCall: 'getAvailablePointsBalance',
+    },
+    {
+      name: 'admin',
+      file: FILES.adminOrdersTs,
+      functionName: 'deductPointsAtCreationTx',
+      availabilityCall: 'availablePointsBalanceTx',
+    },
+  ]
+
+  test.each(cases)('$name 先锁积分批次，再锁顾客缓存行', ({ file, functionName, availabilityCall }) => {
+    const src = readFile(file)
+    const body = extractFunctionSection(src, functionName)
+    const availabilityBody = extractFunctionSection(src, availabilityCall)
+    const availabilityIndex = body.indexOf(availabilityCall)
+    const userLockIndex = body.indexOf('SELECT user_id FROM client_wechat_users')
+
+    expect(availabilityIndex).toBeGreaterThanOrEqual(0)
+    expect(userLockIndex).toBeGreaterThan(availabilityIndex)
+    expect(availabilityBody).toMatch(/FROM point_batches[\s\S]*?FOR UPDATE/)
+  })
+})

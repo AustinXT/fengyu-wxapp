@@ -1294,9 +1294,9 @@ export const mergeClientProfile = withPermission(
     }
   }
 
-  // 可迁移字段（源行**缺失**才从孤儿行搬）
+  // 可迁移字段（源行**缺失**才从孤儿行搬）；points_balance 是 point_batches 的派生缓存，合并后统一重算。
   const migratable: Array<keyof typeof clientWechatUsers.$inferSelect> = [
-    'customerId', 'memberLevel', 'spendingTier', 'pointsBalance', 'skinType',
+    'customerId', 'memberLevel', 'spendingTier', 'skinType',
     'name', 'gender', 'notes', 'birthday', 'occupation', 'customerSource',
     'customerType', 'improvementFocus', 'skinIssue', 'wellnessPreference',
     'boundStoreId', 'boundEmployeeId', 'boundEmployeeName', 'wechatName', 'isMarried',
@@ -1306,8 +1306,7 @@ export const mergeClientProfile = withPermission(
   for (const field of migratable) {
     const currentVal = (sourceRow as Record<string, unknown>)[field as string]
     const orphanVal = (orphanRow as Record<string, unknown>)[field as string]
-    const currentEmpty = currentVal === null || currentVal === undefined || currentVal === '' ||
-      (field === 'pointsBalance' && currentVal === 0)
+    const currentEmpty = currentVal === null || currentVal === undefined || currentVal === ''
     if (currentEmpty && orphanVal !== null && orphanVal !== undefined && orphanVal !== '') {
       patch[field as string] = orphanVal
       fieldsMigrated.push(field as string)
@@ -1343,6 +1342,17 @@ export const mergeClientProfile = withPermission(
       await reassignCol(userCoupons, userCoupons.userId, { userId: sourceUserId })
       await reassignCol(pointTransactions, pointTransactions.userId, { userId: sourceUserId })
       await reassignCol(pointBatches, pointBatches.userId, { userId: sourceUserId })
+      await tx.update(clientWechatUsers)
+        .set({
+          pointsBalance: sql<number>`COALESCE((
+            SELECT SUM(${pointBatches.remainingAmount})
+            FROM ${pointBatches}
+            WHERE ${pointBatches.userId} = ${sourceUserId}
+              AND ${pointBatches.expireAt} > NOW()
+          ), 0)`,
+          pointsUpdatedAt: sql`NOW()`,
+        })
+        .where(eq(clientWechatUsers.userId, sourceUserId))
       await reassignCol(prepaidCards, prepaidCards.userId, { userId: sourceUserId })
       // card_transactions 通过 card_id → prepaid_cards 间接关联，无需直接迁移
       await reassignCol(appointments, appointments.clientUserId, { clientUserId: sourceUserId })

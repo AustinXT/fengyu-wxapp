@@ -144,11 +144,12 @@ async function recomputePointsBalance(client, userId) {
 
 async function deductPointsAtCreation(client, { saleOrderId, userId, pointsUsed }) {
   if (!pointsUsed || pointsUsed <= 0) return
-  await client.query('SELECT user_id FROM client_wechat_users WHERE user_id = $1 FOR UPDATE', [userId])
+  // 积分相关锁序固定为 point_batches -> client_wechat_users，与过期任务一致。
   const available = await getAvailablePointsBalance(client, userId)
   if (available < pointsUsed) {
     throw new Error('INSUFFICIENT_BALANCE: 积分余额不足')
   }
+  await client.query('SELECT user_id FROM client_wechat_users WHERE user_id = $1 FOR UPDATE', [userId])
   const inserted = await client.query(
     `INSERT INTO point_transactions (user_id, type, amount, ref_order_id, external_ref, created_at)
      VALUES ($1, '消费抵扣', $2, $3, $4, NOW())

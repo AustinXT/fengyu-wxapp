@@ -221,11 +221,12 @@ async function deductPointsAtCreationTx(
   input: { saleOrderId: string; userId: string; pointsUsed: number },
 ): Promise<void> {
   if (!input.pointsUsed || input.pointsUsed <= 0) return
-  await tx.execute(sql`SELECT user_id FROM client_wechat_users WHERE user_id = ${input.userId} FOR UPDATE`)
+  // 积分相关锁序固定为 point_batches -> client_wechat_users，与过期任务一致。
   const available = await availablePointsBalanceTx(tx, input.userId)
   if (available < input.pointsUsed) {
     throw new ApiError('INSUFFICIENT_BALANCE', '积分余额不足')
   }
+  await tx.execute(sql`SELECT user_id FROM client_wechat_users WHERE user_id = ${input.userId} FOR UPDATE`)
   const inserted = await tx.execute(sql`
     INSERT INTO point_transactions (user_id, type, amount, ref_order_id, external_ref, created_at)
     VALUES (${input.userId}, '消费抵扣', ${-input.pointsUsed}, ${input.saleOrderId}, ${`points-deduct-${input.saleOrderId}`}, NOW())

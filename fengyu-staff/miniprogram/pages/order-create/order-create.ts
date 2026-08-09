@@ -304,6 +304,13 @@ function pointsToDiscountCents(points: number, rate: number): number {
   return Math.floor(points * rate * 100 + 1e-6);
 }
 
+/** 保留 0：它是后台配置的合法值，表示禁用积分抵扣。 */
+function normalizePointsDeductionMaxRate(value: unknown): number {
+  if (value === null || value === undefined || value === '') return 0.03;
+  const rate = Number(value);
+  return Number.isFinite(rate) && rate >= 0 && rate <= 1 ? rate : 0.03;
+}
+
 function computePointsDeduction(input: {
   enabled: boolean;
   pointsBalance: number;
@@ -1593,7 +1600,7 @@ Page({
         customerCardBalance: balance,
         customerPointsBalance: pointsBalance,
         pointsToYuanRate: Number(data?.pointsToYuanRate) || 0.01,
-        pointsDeductionMaxRate: Number(data?.pointsDeductionMaxRate) || 0.03,
+        pointsDeductionMaxRate: normalizePointsDeductionMaxRate(data?.pointsDeductionMaxRate),
         useCard: false,
         usePoints: false,
         prepaidCardAmountInput: '0.00',

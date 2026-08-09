@@ -12,7 +12,11 @@
  *  8. 浮点金额：prepaid+paid = netBeforeCard 精确闭合
  */
 
-import { recomputeAmounts, parseAgreement } from '../../../pagesOrder/checkout/checkout-helpers';
+import {
+  recomputeAmounts,
+  parseAgreement,
+  normalizePointsDeductionMaxRate,
+} from '../../../pagesOrder/checkout/checkout-helpers';
 
 describe('recomputeAmounts — 储值卡抵扣计算', () => {
   test('case 1: 余额充足（balance ≥ netBeforeCard）→ 全额抵扣，paid=0，支付方式区隐藏', () => {
@@ -150,6 +154,25 @@ describe('recomputeAmounts — 储值卡抵扣计算', () => {
     expect(r.pointsUsed).toBe(300);
     expect(r.pointsDiscount).toBe(3);
     expect(r.netBeforeCard).toBe(97.05);
+  });
+
+  test('case 12: 积分抵扣上限为 0 时保留禁用语义', () => {
+    const maxRate = normalizePointsDeductionMaxRate(0);
+    const r = recomputeAmounts({
+      totalAmount: 300,
+      couponDiscount: 0,
+      pointsBalance: 10000,
+      usePoints: true,
+      pointsToYuanRate: 0.01,
+      pointsDeductionMaxRate: maxRate,
+      cardBalance: 0,
+      useCard: false,
+    });
+
+    expect(maxRate).toBe(0);
+    expect(r.maxPointsUsable).toBe(0);
+    expect(r.pointsUsed).toBe(0);
+    expect(r.pointsDiscount).toBe(0);
   });
 });
 

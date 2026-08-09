@@ -5,7 +5,12 @@ import { clearCart } from '../../utils/cart';
 import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
 import { buildCouponDisplay, formatDate } from '../../utils/format';
 import { getIsMember, priceView } from '../../utils/member-pricing';
-import { recomputeAmounts, parseAgreement, DEFAULT_AGREEMENT_TEXT } from './checkout-helpers';
+import {
+  recomputeAmounts,
+  parseAgreement,
+  DEFAULT_AGREEMENT_TEXT,
+  normalizePointsDeductionMaxRate,
+} from './checkout-helpers';
 
 const app = getApp<IAppOption>();
 
@@ -414,7 +419,7 @@ Page({
       this.setData({
         pointsBalance: balance,
         pointsToYuanRate: Number(data?.pointsToYuanRate) || 0.01,
-        pointsDeductionMaxRate: Number(data?.pointsDeductionMaxRate) || 0.03,
+        pointsDeductionMaxRate: normalizePointsDeductionMaxRate(data?.pointsDeductionMaxRate),
         usePoints: isExistingOrder ? this.data.usePoints : (balance > 0 ? this.data.usePoints : false),
       });
       this.recomputeAmounts();
@@ -460,7 +465,7 @@ Page({
       usePoints: this.data.usePoints,
       pointsUsed: undefined,
       pointsToYuanRate: Number(this.data.pointsToYuanRate) || 0.01,
-      pointsDeductionMaxRate: Number(this.data.pointsDeductionMaxRate) || 0.03,
+      pointsDeductionMaxRate: normalizePointsDeductionMaxRate(this.data.pointsDeductionMaxRate),
       cardBalance: Number(this.data.cardBalance) || 0,
       useCard: this.data.useCard,
     });

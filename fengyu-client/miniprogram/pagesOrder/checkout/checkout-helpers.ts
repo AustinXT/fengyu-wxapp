@@ -45,6 +45,13 @@ function pointsToDiscountCents(points: number, rate: number): number {
   return Math.floor(points * rate * 100 + 1e-6);
 }
 
+/** 保留 0：它是后台配置的合法值，表示禁用积分抵扣。 */
+export function normalizePointsDeductionMaxRate(value: unknown): number {
+  if (value === null || value === undefined || value === '') return 0.03;
+  const rate = Number(value);
+  return Number.isFinite(rate) && rate >= 0 && rate <= 1 ? rate : 0.03;
+}
+
 /**
  * 根据订单总额、优惠券、储值卡余额和开关状态计算抵扣明细
  */
