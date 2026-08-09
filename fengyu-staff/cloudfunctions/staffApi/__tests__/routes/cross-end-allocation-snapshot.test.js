@@ -189,7 +189,7 @@ describe('断言2：四端 capturePaymentAllocatables 关键不变片段（含 a
       expect(src, `${end} 缺转换单 item_direction IN ('转出', '转入') 兜底`).toMatch(/item_direction IN \('转出', '转入'\)/)
       expect(src, `${end} 转换单兜底仍残留 LIMIT 1`).not.toMatch(/item_direction IN \('转出', '转入'\)[\s\S]{0,120}LIMIT 1/)
       expect(src, `${end} 缺转换单 SELECT sale_amount（按比例摊需取 sale_amount）`).toMatch(/SELECT sale_item_id, sale_amount::numeric AS sale_amount, sales_category[\s\S]{0,120}item_direction IN \('转出', '转入'\)/)
-      expect(src, `${end} 缺转换单有符号最大余数法`).toMatch(/allocateSignedCents[\s\S]{0,240}weightCents:\s*Math\.round\(Number\(r\.sale_amount\) \* 100\)/)
+      expect(src, `${end} 缺转换单有符号最大余数法（weightCents 取 sale_amount 绝对值）`).toMatch(/allocateSignedCents[\s\S]{0,240}weightCents:\s*Math\.round\(Math\.abs\(Number\(r\.sale_amount\)\) \* 100\)/)
     }
   })
 
@@ -254,7 +254,7 @@ describe('断言5：退款审批后重算 paid_sessions，再收敛营业额分�
       expect(src, `${end} 缺待分配收敛为已分配`).toMatch(/SET allocation_status = '已分配'/)
       expect(src, `${end} 缺全额退款净实收为 0 时清空 payment allocation_status`).toMatch(/full_refund_zero_net[\s\S]{0,420}SET allocation_status = NULL/)
       expect(src, `${end} 缺全额退款净实收判断`).toMatch(/GREATEST\(COALESCE\(so\.received::numeric, 0\) - COALESCE\(so\.refunded_amount::numeric, 0\), 0\) <= 0\.01/)
-      expect(src, `${end} 缺订单 rollup 无回款状态时归 NULL`).toMatch(/ELSE NULL::allocation_status END/)
+      expect(src, `${end} 缺订单 rollup 无回款状态时保留旧值`).toMatch(/ELSE allocation_status END/)
     }
   })
 
