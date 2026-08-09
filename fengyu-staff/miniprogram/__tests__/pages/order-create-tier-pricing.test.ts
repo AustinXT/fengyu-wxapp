@@ -88,6 +88,42 @@ describe('开单疗程卡阶梯价', () => {
     expect(page.data.payableTotal).toBe('894.00')
   })
 
+  test('30 次 8800 套餐购买 2 份，按总次数线性累计为 17600', () => {
+    const cart = [createCartItem('sku-zx-30', 30, 8800)]
+    cart[0].quantity = 2
+    const page = {
+      ...pageDefinition,
+      data: {
+        saleOrderType: '销售单',
+        buyerIsMember: false,
+        couponDiscount: 0,
+        cartPopupVisible: false,
+      },
+      _allSkus: [
+        {
+          skuId: 'sku-zx-30', specName: '年轻态·慕慕霜(轻享套)-ZX', categoryId: 'cat-zx',
+          categoryName: '美在东方(自销)', productKind: '护理项目', salesCategory: '自销自耗',
+          price: 8800, specialPrice: null, sessionCount: 30, productType: '疗程卡',
+          serviceFee: 0, isShengmei: false,
+        },
+      ],
+      setData(update: Record<string, unknown>) {
+        Object.assign(this.data, update)
+      },
+      revalidateCoupon: vi.fn(),
+      recomputePrepaidAmounts: vi.fn(),
+    }
+
+    page.updateCart(cart)
+
+    expect(page.data.cart[0]).toMatchObject({
+      priceLine: '17600.00',
+      saleAmount: '17600.00',
+      received: '17600.00',
+    })
+    expect(page.data.payableTotal).toBe('17600.00')
+  })
+
   test('转换单优惠券按正补差额封顶，折抵抵平时自动清除', () => {
     const cart = [createCartItem('sku-conversion', 1, 300)]
     const page = {
