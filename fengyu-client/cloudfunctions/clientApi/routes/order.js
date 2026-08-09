@@ -944,7 +944,7 @@ async function create(ctx) {
   let zeroPayable = false
   await pg.transaction(async (client) => {
     // 获取 advisory lock 防止并发生成重复序号
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', ['sale_order_id_gen'])
 
     // === 储值卡抵扣计算（事务内、在 INSERT sale_orders 之前） ===
     // 应抵上限 = totalAmount（已扣完优惠券）

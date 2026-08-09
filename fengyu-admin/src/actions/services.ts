@@ -1740,7 +1740,7 @@ export const createServiceOrder = withPermission(
     serviceOrderId = await db.transaction(async (tx) => {
       const idRows = await tx.execute(sql`
         WITH lock AS (
-          SELECT pg_advisory_xact_lock(hashtext('service_order_id_gen'))
+          SELECT pg_advisory_xact_lock(hashtext('service_order_id_gen')::bigint)
         )
         SELECT 'FY-FW-' || to_char(NOW(), 'YYMMDD') ||
           LPAD(

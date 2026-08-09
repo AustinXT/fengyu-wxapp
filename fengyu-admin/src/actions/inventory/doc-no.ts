@@ -37,7 +37,7 @@ export async function generateInventoryDocNo(
 
   const rows = await tx.execute(sql`
     WITH lock AS (
-      SELECT pg_advisory_xact_lock(hashtext(${lockKey}))
+      SELECT pg_advisory_xact_lock(hashtext(${lockKey})::bigint)
     )
     SELECT ${sql.raw(`'${prefix}-'`)} || to_char(NOW(), 'YYMMDD') ||
       LPAD(

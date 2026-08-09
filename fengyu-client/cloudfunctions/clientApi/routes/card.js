@@ -283,7 +283,7 @@ async function recharge(ctx) {
       throw err
     }
 
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', ['sale_order_id_gen'])
 
     const now = new Date()
     const dateStrOrder = shanghaiYYMMDD(now)

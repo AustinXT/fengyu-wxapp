@@ -1116,10 +1116,10 @@ async function create(ctx) {
 
   await pg.transaction(async (client) => {
     // 按顾客串行化开单（advisory lock 持有到 COMMIT）：uq 拆除员工单 DB 兜底后，业务守卫
-    // SELECT-then-INSERT 非原子，并发开单可产生重复员工单。pg_advisory_xact_lock(hashtext($1))
+    // SELECT-then-INSERT 非原子，并发开单可产生重复员工单。pg_advisory_xact_lock(hashtext($1)::bigint)
     // 让同顾客开单串行，existing 守卫在此锁下原子生效。业务守卫查顾客维度全量待支付单（含自助单），
     // advisory lock 串行化并发；DB uq 仅兜底 opened_by IS NULL 自助单。
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [clientUserId])
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', [clientUserId])
     const existing = await client.query(
       "SELECT sale_order_id FROM sale_orders WHERE client_user_id = $1 AND status = '待支付' LIMIT 1",
       [clientUserId]
@@ -4070,7 +4070,7 @@ async function customerHeldCards(ctx) {
 async function generatePickupInventoryDocNo(client) {
   const prefix = 'GCK'
   const ymd = shanghaiYMD()
-  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', [
     `store_inventory_docs:${prefix}:${ymd}`,
   ])
   const rows = await client.query(
@@ -4510,7 +4510,7 @@ async function generateOrderNo(prefix, client) {
   const likePattern = `${prefix}${dateStr}%`
 
   // 与 admin orders.ts 对齐：hashtext('sale_order_id_gen')
-  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', ['sale_order_id_gen'])
   const rows = await client.query(`
     SELECT sale_order_id FROM sale_orders
     WHERE sale_order_id LIKE $1
