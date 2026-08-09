@@ -38,6 +38,13 @@ const IMPORT_REF_TABLE_CANDIDATES = [
   'workfine_inventory_import_refs',
 ]
 
+const WORKFINE_INVENTORY_CUTOVER_KEY = 'workfine_inventory'
+const WORKFINE_INVENTORY_CUTOVER_STATUSES = Object.freeze({
+  PENDING_INITIALIZATION: '待初始化',
+  PENDING_VERIFICATION: '待核验',
+  INITIALIZED: '已初始化',
+})
+
 const FIELD_CANDIDATES = {
   legacyTable: [
     'legacy_table',
@@ -852,6 +859,7 @@ async function assertTargetTables(client) {
     'org_nodes',
     'staff_wechat_users',
     'stores',
+    'inventory_cutover_states',
   ]
   const result = await client.query(
     `SELECT table_name
@@ -862,6 +870,98 @@ async function assertTargetTables(client) {
   const existing = new Set(result.rows.map((row) => row.table_name))
   const missing = required.filter((table) => !existing.has(table))
   if (missing.length > 0) throw new Error(`PostgreSQL 尚未迁移库存 schema：${missing.join(', ')}`)
+}
+
+function normalizeWorkfineInventoryCutoverStatus(state) {
+  const status = text(state && state.status)
+  const knownStatuses = Object.values(WORKFINE_INVENTORY_CUTOVER_STATUSES)
+  if (!knownStatuses.includes(status)) {
+    throw new Error(`WorkFine 库存切换状态非法：${status || '(空)'}`)
+  }
+  return status
+}
+
+async function lockWorkfineInventoryCutover(client) {
+  await client.query(
+    `INSERT INTO inventory_cutover_states (cutover_key, status)
+     VALUES ($1, $2)
+     ON CONFLICT (cutover_key) DO NOTHING`,
+    [WORKFINE_INVENTORY_CUTOVER_KEY, WORKFINE_INVENTORY_CUTOVER_STATUSES.PENDING_INITIALIZATION],
+  )
+  const result = await client.query(
+    `SELECT cutover_key, status
+       FROM inventory_cutover_states
+      WHERE cutover_key = $1
+      FOR UPDATE`,
+    [WORKFINE_INVENTORY_CUTOVER_KEY],
+  )
+  if (result.rows.length !== 1) {
+    throw new Error('无法锁定 WorkFine 库存切换状态')
+  }
+  const state = result.rows[0]
+  normalizeWorkfineInventoryCutoverStatus(state)
+  return state
+}
+
+function assertWorkfineInventoryCutoverCanApply(state, { reset = false } = {}) {
+  const status = normalizeWorkfineInventoryCutoverStatus(state)
+  if (status === WORKFINE_INVENTORY_CUTOVER_STATUSES.INITIALIZED && reset !== true) {
+    throw new Error('WorkFine 库存期初已初始化；为避免重复导入，请在受控切换窗口显式使用 --apply --reset。')
+  }
+  return status
+}
+
+function assertWorkfineInventoryCutoverCanVerify(state) {
+  const status = normalizeWorkfineInventoryCutoverStatus(state)
+  if (status === WORKFINE_INVENTORY_CUTOVER_STATUSES.PENDING_INITIALIZATION) {
+    throw new Error('WorkFine 库存期初尚未导入；请先成功执行 --apply。')
+  }
+  return status
+}
+
+async function markWorkfineInventoryPendingVerification(client, {
+  asOfDate,
+  sourceRowCount,
+  sourceQuantity,
+  importedDocCount,
+  importedItemCount,
+  initializedBy,
+}) {
+  await client.query(
+    `UPDATE inventory_cutover_states
+        SET status = $2,
+            as_of_date = $3,
+            source_row_count = $4,
+            source_quantity = $5,
+            imported_doc_count = $6,
+            imported_item_count = $7,
+            initialized_by = $8,
+            initialized_at = NOW(),
+            verified_at = NULL,
+            updated_at = NOW()
+      WHERE cutover_key = $1`,
+    [
+      WORKFINE_INVENTORY_CUTOVER_KEY,
+      WORKFINE_INVENTORY_CUTOVER_STATUSES.PENDING_VERIFICATION,
+      asOfDate || null,
+      sourceRowCount,
+      sourceQuantity,
+      importedDocCount,
+      importedItemCount,
+      initializedBy,
+    ],
+  )
+}
+
+async function markWorkfineInventoryInitialized(client) {
+  await client.query(
+    `UPDATE inventory_cutover_states
+        SET status = $2,
+            verified_at = NOW(),
+            updated_at = NOW()
+      WHERE cutover_key = $1`,
+    [WORKFINE_INVENTORY_CUTOVER_KEY, WORKFINE_INVENTORY_CUTOVER_STATUSES.INITIALIZED],
+  )
 }
 
 /**
@@ -1183,7 +1283,10 @@ async function upsertInitialDocument(client, group, createdBy) {
   return result.rows[0].id
 }
 
-async function upsertLot(client, row, skuIdValue, docId) {
+async function upsertLot(client, row, skuIdValue, docId, { allowOverwriteQuantity = false } = {}) {
+  const quantityOnHand = allowOverwriteQuantity === true
+    ? 'EXCLUDED.quantity_on_hand'
+    : 'inventory_stock_lots.quantity_on_hand'
   const result = await client.query(
     `INSERT INTO inventory_stock_lots (
        location_id, sku_id, lot_key, sku_name, spec_name, supplier, product_series,
@@ -1202,7 +1305,7 @@ async function upsertLot(client, row, skuIdValue, docId) {
        expiry_date = EXCLUDED.expiry_date,
        expiry_date_key = EXCLUDED.expiry_date_key,
        is_gift = EXCLUDED.is_gift,
-       quantity_on_hand = EXCLUDED.quantity_on_hand,
+       quantity_on_hand = ${quantityOnHand},
        supply_chain_unit_cost = COALESCE(EXCLUDED.supply_chain_unit_cost, inventory_stock_lots.supply_chain_unit_cost),
        market_standard_unit_price = COALESCE(EXCLUDED.market_standard_unit_price, inventory_stock_lots.market_standard_unit_price),
        market_unit_discount = COALESCE(EXCLUDED.market_unit_discount, inventory_stock_lots.market_unit_discount),
@@ -1345,6 +1448,8 @@ module.exports = {
   PRICE_VIEW_DEFINITIONS,
   STOCK_VIEW_DEFINITIONS,
   TEMPLATE_METADATA_TABLES,
+  WORKFINE_INVENTORY_CUTOVER_KEY,
+  WORKFINE_INVENTORY_CUTOVER_STATUSES,
   LocationResolver,
   applyPriceRows,
   assertImportIdentity,
@@ -1355,6 +1460,8 @@ module.exports = {
   assertPhysicalSourceStructures,
   assertTargetTables,
   assertWorkfineBaselineExclusive,
+  assertWorkfineInventoryCutoverCanApply,
+  assertWorkfineInventoryCutoverCanVerify,
   createMssqlConfig,
   createPgConfig,
   deduplicateSnapshotRows,
@@ -1368,10 +1475,13 @@ module.exports = {
   lotKey,
   loadTemplateMetadata,
   movementKey,
+  markWorkfineInventoryInitialized,
+  markWorkfineInventoryPendingVerification,
   normalizePhysicalTableName,
   normalizePriceRow,
   normalizeSnapshotRow,
   normalizeTemplateMetadata,
+  normalizeWorkfineInventoryCutoverStatus,
   parseJsonObject,
   printRowSummary,
   quotePgIdentifier,
@@ -1383,6 +1493,7 @@ module.exports = {
   syncInventoryLocations,
   templateMetadataReport,
   text,
+  lockWorkfineInventoryCutover,
   upsertDocItem,
   upsertImportRef,
   upsertInitialDocument,

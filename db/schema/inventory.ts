@@ -5,6 +5,7 @@ import {
   check,
   date,
   index,
+  integer,
   numeric,
   pgTable,
   text,
@@ -730,6 +731,8 @@ export const inventoryPromotionPlans = pgTable(
     endsAt: date('ends_at').notNull(),
     scopeMarketId: text('scope_market_id').references(() => orgNodes.id),
     scopeStoreId: text('scope_store_id').references(() => stores.storeId),
+    /** 单品阶梯按单 SKU 取价；组合规则要求同一张市场报货同时满足全部产品条件。 */
+    ruleType: text('rule_type').notNull().default('单品阶梯'),
     status: text('status').notNull().default('启用'),
     remark: text('remark'),
     createdBy: varchar('created_by', { length: 30 }).references(
@@ -745,6 +748,8 @@ export const inventoryPromotionPlans = pgTable(
     uniqueIndex('uq_inventory_promotion_plan_no').on(table.planNo),
     index('idx_inventory_promotion_scope_market').on(table.scopeMarketId),
     index('idx_inventory_promotion_scope_store').on(table.scopeStoreId),
+    index('idx_inventory_promotion_rule_type').on(table.ruleType),
+    check('chk_inventory_promotion_rule_type', sql`${table.ruleType} IN ('单品阶梯','组合')`),
     check('chk_inventory_promotion_status', sql`${table.status} IN ('启用','停用')`),
     check('chk_inventory_promotion_date', sql`${table.endsAt} >= ${table.startsAt}`),
   ],
@@ -938,6 +943,12 @@ export const inventoryDocs = pgTable(
       () => staffWechatUsers.employeeId,
     ),
     rejectedAt: timestamp('rejected_at', { withTimezone: true }),
+    /** 市场财务提交的品项公司发货撤回申请；审批后保留作为审计记录。 */
+    cancellationRequestReason: text('cancellation_request_reason'),
+    cancellationRequestedBy: varchar('cancellation_requested_by', { length: 30 }).references(
+      () => staffWechatUsers.employeeId,
+    ),
+    cancellationRequestedAt: timestamp('cancellation_requested_at', { withTimezone: true }),
     cancellationReason: text('cancellation_reason'),
     cancelledBy: varchar('cancelled_by', { length: 30 }).references(
       () => staffWechatUsers.employeeId,
@@ -1146,6 +1157,42 @@ export const inventoryStockReservations = pgTable(
 )
 
 /** WorkFine 期初迁移的幂等与追溯键；运行时业务不会读取旧系统。 */
+/**
+ * 一次性库存切流的持久化门禁。
+ *
+ * WorkFine 期初必须先导入、再核验，全部通过后才能开放常规库存业务写入。
+ * 以 cutoverKey 预留未来其他库存来源的切流，不与 WorkFine 运行时耦合。
+ */
+export const inventoryCutoverStates = pgTable(
+  'inventory_cutover_states',
+  {
+    cutoverKey: text('cutover_key').primaryKey(),
+    status: text('status').notNull().default('待初始化'),
+    asOfDate: date('as_of_date'),
+    sourceRowCount: integer('source_row_count'),
+    sourceQuantity: numeric('source_quantity', { precision: 14, scale: 2 }),
+    importedDocCount: integer('imported_doc_count'),
+    importedItemCount: integer('imported_item_count'),
+    initializedBy: varchar('initialized_by', { length: 30 }).references(
+      () => staffWechatUsers.employeeId,
+    ),
+    initializedAt: timestamp('initialized_at', { withTimezone: true }),
+    verifiedAt: timestamp('verified_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => sql`NOW()`),
+  },
+  (table) => [
+    check(
+      'chk_inventory_cutover_states_status',
+      sql`${table.status} IN ('待初始化','待核验','已初始化')`,
+    ),
+  ],
+)
+
+/** WorkFine 期初迁移的幂等与追溯键；运行时业务不会读取旧系统。 */
 export const inventoryImportRefs = pgTable(
   'inventory_import_refs',
   {
@@ -1240,5 +1287,7 @@ export type InventoryStockReservation = typeof inventoryStockReservations.$infer
 export type NewInventoryStockReservation = typeof inventoryStockReservations.$inferInsert
 export type InventoryImportRef = typeof inventoryImportRefs.$inferSelect
 export type NewInventoryImportRef = typeof inventoryImportRefs.$inferInsert
+export type InventoryCutoverState = typeof inventoryCutoverStates.$inferSelect
+export type NewInventoryCutoverState = typeof inventoryCutoverStates.$inferInsert
 export type InventoryMovement = typeof inventoryMovements.$inferSelect
 export type NewInventoryMovement = typeof inventoryMovements.$inferInsert

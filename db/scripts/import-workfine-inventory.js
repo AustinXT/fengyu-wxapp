@@ -34,6 +34,9 @@ const {
   groupRowsByDocument,
   inspectMssqlObject,
   loadTemplateMetadata,
+  lockWorkfineInventoryCutover,
+  markWorkfineInventoryInitialized,
+  markWorkfineInventoryPendingVerification,
   normalizePriceRow,
   normalizeSnapshotRow,
   parseJsonObject,
@@ -44,6 +47,8 @@ const {
   syncInventoryLocations,
   templateMetadataReport,
   text,
+  assertWorkfineInventoryCutoverCanApply,
+  assertWorkfineInventoryCutoverCanVerify,
   upsertDocItem,
   upsertImportRef,
   upsertInitialDocument,
@@ -71,6 +76,7 @@ WorkFine 三层期初库存迁移（默认不写入）
   --dry-run                 读取并校验 WorkFine 期初库存，不写 PostgreSQL
   --verify                  只读比对 WorkFine 快照与 PostgreSQL 导入引用
   --apply                   显式执行幂等写入；不可与 --dry-run / --verify 同用
+  --reset                   仅与 --apply 同用，受控全量重置并覆盖已有批次在手量
   --export-pending PATH     调用独立导出器，生成在办业务/未领取权益人工重建清单
   --inspect                 列出 UDV 字段，并从模板元数据输出物理表/字段归属
   --as-of YYYY-MM-DD        期初库存日期；--apply 时必填，也可用 WORKFINE_INVENTORY_CUTOVER_DATE
@@ -93,12 +99,13 @@ tb_sys_template_table/tb_sys_template_field 中按物理表 ID + owner_id 核验
 }
 
 function parseArgs(argv) {
-  const args = { dryRun: false, verify: false, apply: false, inspect: false, exportPending: null, asOfDate: null }
+  const args = { dryRun: false, verify: false, apply: false, reset: false, inspect: false, exportPending: null, asOfDate: null }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === '--dry-run') args.dryRun = true
     else if (arg === '--verify') args.verify = true
     else if (arg === '--apply') args.apply = true
+    else if (arg === '--reset') args.reset = true
     else if (arg === '--inspect') args.inspect = true
     else if (arg === '--as-of') {
       const value = argv[index + 1]
@@ -115,6 +122,7 @@ function parseArgs(argv) {
   }
   const modes = [args.dryRun, args.verify, args.apply, args.inspect, Boolean(args.exportPending)].filter(Boolean).length
   if (modes > 1) throw new Error('--dry-run、--verify、--apply、--inspect、--export-pending 只能选择一个')
+  if (args.reset && !args.apply) throw new Error('--reset 只能与 --apply 同用')
   if (args.asOfDate && !isIsoDate(args.asOfDate)) {
     throw new Error('--as-of 必须为 YYYY-MM-DD')
   }
@@ -206,13 +214,18 @@ async function inspect(mssqlPool, metadata, options) {
   }
 }
 
-async function importRows(pgPool, rows, env = process.env) {
+async function importRows(pgPool, rows, env = process.env, { allowOverwriteQuantity = false, asOfDate = null } = {}) {
+  const overwriteQuantity = allowOverwriteQuantity === true
   const client = await pgPool.connect()
+  let transactionOpen = false
   try {
     await client.query('BEGIN')
+    transactionOpen = true
     await assertTargetTables(client)
+    const cutoverState = await lockWorkfineInventoryCutover(client)
+    assertWorkfineInventoryCutoverCanApply(cutoverState, { reset: overwriteQuantity })
     const contract = await resolveImportRefContract(client, env)
-    await assertWorkfineBaselineExclusive(client, contract)
+    if (!overwriteQuantity) await assertWorkfineBaselineExclusive(client, contract)
     const createdBy = await assertImporterEmployee(client, env.WORKFINE_INVENTORY_IMPORTER_EMPLOYEE_ID)
     await syncInventoryLocations(client)
     const resolver = new LocationResolver(client)
@@ -230,7 +243,7 @@ async function importRows(pgPool, rows, env = process.env) {
         await upsertImportRef(client, contract, 'inventory_sku', skuId, row, row.legacyDocNo)
         await upsertImportRef(client, contract, 'inventory_location', row.locationId, row, row.legacyDocNo)
 
-        const lotId = await upsertLot(client, row, skuId, docId)
+        const lotId = await upsertLot(client, row, skuId, docId, { allowOverwriteQuantity: overwriteQuantity })
         await upsertImportRef(client, contract, 'inventory_stock_lot', lotId, row, row.legacyDocNo)
 
         const itemId = await upsertDocItem(client, contract, row, docId, lotId, skuId)
@@ -241,10 +254,20 @@ async function importRows(pgPool, rows, env = process.env) {
         itemCount += 1
       }
     }
+    const sourceQuantity = rows.reduce((total, row) => total + Number(row.quantity), 0).toFixed(2)
+    await markWorkfineInventoryPendingVerification(client, {
+      asOfDate: asOfDate || rows[0]?.snapshotDate || null,
+      sourceRowCount: rows.length,
+      sourceQuantity,
+      importedDocCount: documentCount,
+      importedItemCount: itemCount,
+      initializedBy: createdBy,
+    })
     await client.query('COMMIT')
+    transactionOpen = false
     return { documentCount, itemCount }
   } catch (error) {
-    await client.query('ROLLBACK')
+    if (transactionOpen) await client.query('ROLLBACK')
     throw error
   } finally {
     client.release()
@@ -253,8 +276,13 @@ async function importRows(pgPool, rows, env = process.env) {
 
 async function verifyRows(pgPool, rows, env = process.env) {
   const client = await pgPool.connect()
+  let transactionOpen = false
   try {
+    await client.query('BEGIN')
+    transactionOpen = true
     await assertTargetTables(client)
+    const cutoverState = await lockWorkfineInventoryCutover(client)
+    assertWorkfineInventoryCutoverCanVerify(cutoverState)
     const contract = await resolveImportRefContract(client, env)
     await assertWorkfineBaselineExclusive(client, contract)
     const sourceRows = new Map(rows.map((row) => [sourceKey(row), row]))
@@ -331,7 +359,18 @@ async function verifyRows(pgPool, rows, env = process.env) {
     if (Number(totalResult.rows[0].quantity).toFixed(2) !== sourceTotal) {
       failures.push(`期初数量不一致：WorkFine=${sourceTotal}，PG=${totalResult.rows[0].quantity}`)
     }
+    if (failures.length > 0) {
+      await client.query('ROLLBACK')
+      transactionOpen = false
+      return { failures, sourceTotal, movementTotal: totalResult.rows[0].quantity }
+    }
+    await markWorkfineInventoryInitialized(client)
+    await client.query('COMMIT')
+    transactionOpen = false
     return { failures, sourceTotal, movementTotal: totalResult.rows[0].quantity }
+  } catch (error) {
+    if (transactionOpen) await client.query('ROLLBACK')
+    throw error
   } finally {
     client.release()
   }
@@ -349,6 +388,7 @@ async function main(argv = process.argv.slice(2), env = process.env) {
   }
   const options = loadOptions(args, env)
   if (args.apply && !options.asOfDate) throw new Error('--apply 必须提供 --as-of 或 WORKFINE_INVENTORY_CUTOVER_DATE')
+  if (args.reset) log('WARN: --reset 将覆盖已有批次在手量，仅可用于受控全量重置。')
 
   const mssqlPool = new mssql.ConnectionPool(createMssqlConfig(env))
   await mssqlPool.connect()
@@ -383,7 +423,10 @@ async function main(argv = process.argv.slice(2), env = process.env) {
         log(`VERIFY PASS：${source.rows.length} 条源行，期初数量 ${verified.sourceTotal}`)
         return 0
       }
-      const result = await importRows(pgPool, source.rows, env)
+      const result = await importRows(pgPool, source.rows, env, {
+        allowOverwriteQuantity: args.reset,
+        asOfDate: options.asOfDate,
+      })
       log(`写入完成：${result.documentCount} 张期初单，${result.itemCount} 条库存明细/流水。`)
       return 0
     } finally {
@@ -404,4 +447,4 @@ if (require.main === module) {
   )
 }
 
-module.exports = { loadOptions, main, parseArgs, usage, verifyRows }
+module.exports = { importRows, loadOptions, main, parseArgs, usage, verifyRows }

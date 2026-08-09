@@ -12,6 +12,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const mssql = require('mssql')
 const {
+  assertConfiguredPhysicalFieldMappings,
   assertMetadataField,
   createMssqlConfig,
   getMetadataTable,
@@ -23,24 +24,80 @@ const {
   text,
 } = require('./workfine-inventory-common')
 
+const DETAIL_REQUIRED_FIELDS = ['sku', 'quantity', 'batchNo', 'expiryDate', 'isGift', 'unitPrice']
+const DETAIL_OPTIONAL_FIELDS = ['productName', 'specName', 'manufacturer', 'productSeries', 'amount', 'stockOnHand']
+const DETAIL_FIELD_NAMES = [...DETAIL_REQUIRED_FIELDS, ...DETAIL_OPTIONAL_FIELDS]
+const DETAIL_FIELD_LABELS = {
+  sku: 'SKU',
+  quantity: '数量',
+  batchNo: '批号',
+  expiryDate: '有效期',
+  isGift: '是否赠送',
+  unitPrice: '单价',
+  productName: '产品名称',
+  specName: '规格',
+  manufacturer: '厂家',
+  productSeries: '产品系列',
+  amount: '金额',
+  stockOnHand: '库存参考数量',
+}
+
 const PENDING_SOURCES = [
   {
     code: 'S336',
     table: 'UDT_S_336',
     label: '分院报货单（S336，已核验）',
     defaultRule: { completionField: 'UDF_S_3684', pendingValues: ['否'], completedValues: ['是'] },
+    // 已留存的 WorkFine 元数据确认：报货发生在入库前，M342 没有批次/赠送/单价字段。
+    defaultDetail: {
+      table: 'UDT_M_342',
+      sku: 'UDF_M_1888',
+      productName: 'UDF_M_1889',
+      specName: 'UDF_M_1890',
+      manufacturer: 'UDF_M_1891',
+      productSeries: 'UDF_M_1892',
+      quantity: 'UDF_M_1893',
+      confirmedAbsent: ['batchNo', 'expiryDate', 'isGift', 'unitPrice'],
+    },
   },
   {
     code: 'S548',
     table: 'UDT_S_548',
     label: '分院间调货出库（S548，已核验）',
     defaultRule: { completionField: 'UDF_S_4636', pendingValues: [''], completedValues: ['已完成'] },
+    defaultDetail: {
+      table: 'UDT_M_549',
+      sku: 'UDF_M_1888',
+      productName: 'UDF_M_1889',
+      specName: 'UDF_M_1890',
+      manufacturer: 'UDF_M_1891',
+      productSeries: 'UDF_M_1892',
+      quantity: 'UDF_M_3912',
+      batchNo: 'UDF_M_3878',
+      expiryDate: 'UDF_M_4274',
+      isGift: 'UDF_M_3911',
+      stockOnHand: 'UDF_M_5523',
+      confirmedAbsent: ['unitPrice'],
+    },
   },
   {
     code: 'S612',
     table: 'UDT_S_612',
     label: '分院间调货入库（S612，已核验）',
     defaultRule: { completionField: 'UDF_S_5593', pendingValues: [''], completedValues: ['是'] },
+    defaultDetail: {
+      table: 'UDT_M_613',
+      sku: 'UDF_M_1888',
+      productName: 'UDF_M_1889',
+      specName: 'UDF_M_1890',
+      manufacturer: 'UDF_M_1891',
+      productSeries: 'UDF_M_1892',
+      quantity: 'UDF_M_3912',
+      batchNo: 'UDF_M_3878',
+      expiryDate: 'UDF_M_4274',
+      isGift: 'UDF_M_3911',
+      confirmedAbsent: ['unitPrice'],
+    },
   },
   { code: 'S494', table: 'UDT_S_494', label: '在办来源 S494（须以模板元数据复核）' },
   { code: 'S350', table: 'UDT_S_350', label: '在办来源 S350（须以模板元数据复核）' },
@@ -85,11 +142,14 @@ WorkFine 在办进销存 / 未领取权益人工重建清单
 
   WORKFINE_UNCLAIMED_BENEFITS_VIEW 指向只返回“尚未领取”的 WorkFine 视图。
   WORKFINE_INVENTORY_PENDING_FIELD_MAP 可覆盖 docNo/docDate/marketName/storeName 等字段。
+  WORKFINE_INVENTORY_PENDING_DETAIL_MAP 为未内置来源提供明细表与字段映射。
+  每个在办单据都必须导出明细 SKU、数量、批号、有效期、赠送、单价和明细 RID/OBYID；
+  已确认不存在的字段须显式写入 confirmedAbsent，不能以空值猜测。
   WORKFINE_INVENTORY_PENDING_EXPECTED_COUNTS 可在切换前锁定核验数量，键为
   S336/S494/...、UNCLAIMED、MARKET_TRANSFER_ANOMALIES。
 
   每个 UDT_S 来源都会按 tb_sys_template_table.id 与
-  tb_sys_template_field.owner_id 核验物理表和状态字段；模板显示名不参与匹配。
+  tb_sys_template_field.owner_id 核验物理表、状态字段和 UDT_M 明细字段；模板显示名不参与匹配。
 `
 }
 
@@ -153,6 +213,189 @@ function serializableRaw(row) {
   return output
 }
 
+function sourceMapping(mappings = {}, sourceCode, { allowWildcard = false } = {}) {
+  const keys = [sourceCode, sourceCode.toLowerCase()]
+  if (allowWildcard) keys.push('*')
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(mappings, key)) continue
+    const mapping = mappings[key]
+    if (!mapping || Array.isArray(mapping) || typeof mapping !== 'object') {
+      throw new Error(`${sourceCode} 的字段映射必须是 JSON 对象`)
+    }
+    return mapping
+  }
+  return null
+}
+
+function resolveDetailMapping(source, detailMappings = {}, { required = false } = {}) {
+  const configured = sourceMapping(detailMappings, source.code)
+  if (!source.defaultDetail && !configured) {
+    if (required) {
+      throw new Error(
+        `${source.code} 存在在办单据，但未配置 WORKFINE_INVENTORY_PENDING_DETAIL_MAP.${source.code}；` +
+        '不能在未知 UDT_M 表中猜测明细字段',
+      )
+    }
+    return null
+  }
+
+  const raw = { ...(source.defaultDetail || {}), ...(configured || {}) }
+  const allowedKeys = new Set(['table', 'confirmedAbsent', ...DETAIL_FIELD_NAMES])
+  const unsupported = Object.keys(raw).filter((key) => !allowedKeys.has(key))
+  if (unsupported.length > 0) {
+    throw new Error(`${source.code} 明细映射包含未知字段：${unsupported.join(', ')}`)
+  }
+
+  const table = text(raw.table)
+  if (!table || !/^UDT_M_\d+$/i.test(table)) {
+    throw new Error(`${source.code} 明细表必须是 UDT_M_xxx 物理表`)
+  }
+
+  if (raw.confirmedAbsent !== undefined && !Array.isArray(raw.confirmedAbsent)) {
+    throw new Error(`${source.code}.confirmedAbsent 必须是字段名数组`)
+  }
+  const confirmedAbsent = (raw.confirmedAbsent || []).map((field) => text(field)).filter(Boolean)
+  const unknownAbsent = confirmedAbsent.filter((field) => !DETAIL_REQUIRED_FIELDS.includes(field))
+  if (unknownAbsent.length > 0) {
+    throw new Error(`${source.code}.confirmedAbsent 只能声明以下必需字段：${DETAIL_REQUIRED_FIELDS.join(', ')}`)
+  }
+  if (new Set(confirmedAbsent).size !== confirmedAbsent.length) {
+    throw new Error(`${source.code}.confirmedAbsent 存在重复字段`)
+  }
+  if (confirmedAbsent.includes('sku') || confirmedAbsent.includes('quantity')) {
+    throw new Error(`${source.code} 不能将 SKU 或数量声明为缺失`)
+  }
+
+  const fields = {}
+  for (const name of DETAIL_FIELD_NAMES) {
+    const value = raw[name]
+    if (Array.isArray(value) || (value !== undefined && value !== null && typeof value !== 'string')) {
+      throw new Error(`${source.code}.${name} 必须是单个 UDF_M 字段名`)
+    }
+    const field = text(value)
+    if (field && !/^UDF_M_\d+$/i.test(field)) {
+      throw new Error(`${source.code}.${name} 必须是 UDF_M_xxx 物理字段，不能使用候选字段名猜测`)
+    }
+    if (field && confirmedAbsent.includes(name)) {
+      throw new Error(`${source.code}.${name} 同时配置字段和 confirmedAbsent，无法确定导出依据`)
+    }
+    fields[name] = field || null
+  }
+  for (const name of DETAIL_REQUIRED_FIELDS) {
+    if (!fields[name] && !confirmedAbsent.includes(name)) {
+      throw new Error(`${source.code} 明细缺少 ${DETAIL_FIELD_LABELS[name]} 映射；如已由元数据确认不存在，须写入 confirmedAbsent`)
+    }
+  }
+  return { table: table.toUpperCase(), fields, confirmedAbsent }
+}
+
+function assertDetailMappingMetadata(metadata, source, detailMapping) {
+  if (!detailMapping) return
+  getMetadataTable(metadata, detailMapping.table)
+  for (const [name, field] of Object.entries(detailMapping.fields)) {
+    if (!field) continue
+    assertMetadataField(metadata, detailMapping.table, field, `${source.code} 明细${DETAIL_FIELD_LABELS[name]}`)
+  }
+}
+
+function detailFieldValue(row, detailMapping, name) {
+  const field = detailMapping.fields[name]
+  return field ? getColumn(row, [field]) : null
+}
+
+function normalizePendingDetailRow(row, source, detailMapping) {
+  const legacyRid = text(getColumn(row, ['RID']))
+  const legacyObyid = text(getColumn(row, ['OBYID']))
+  if (!legacyRid || !legacyObyid) {
+    throw new Error(`${source.code}/${detailMapping.table} 明细缺少 RID 或 OBYID，不能输出不可追溯记录`)
+  }
+  const sku = text(detailFieldValue(row, detailMapping, 'sku'))
+  const quantity = text(detailFieldValue(row, detailMapping, 'quantity'))
+  if (!sku || !quantity) {
+    throw new Error(`${source.code}/${detailMapping.table} RID=${legacyRid} OBYID=${legacyObyid} 缺少 SKU 或数量`)
+  }
+  return {
+    sourceTable: detailMapping.table,
+    legacyRid,
+    legacyObyid,
+    sku,
+    productName: text(detailFieldValue(row, detailMapping, 'productName')),
+    specName: text(detailFieldValue(row, detailMapping, 'specName')),
+    manufacturer: text(detailFieldValue(row, detailMapping, 'manufacturer')),
+    productSeries: text(detailFieldValue(row, detailMapping, 'productSeries')),
+    quantity,
+    batchNo: text(detailFieldValue(row, detailMapping, 'batchNo')),
+    expiryDate: normalizedDate(detailFieldValue(row, detailMapping, 'expiryDate')),
+    isGift: text(detailFieldValue(row, detailMapping, 'isGift')),
+    unitPrice: text(detailFieldValue(row, detailMapping, 'unitPrice')),
+    amount: text(detailFieldValue(row, detailMapping, 'amount')),
+    stockOnHand: text(detailFieldValue(row, detailMapping, 'stockOnHand')),
+    raw: serializableRaw(row),
+  }
+}
+
+function compareDetails(left, right) {
+  return left.legacyObyid.localeCompare(right.legacyObyid, 'zh-Hans-CN', { numeric: true })
+}
+
+async function attachPendingDetails(pool, source, records, detailMappings, metadata) {
+  if (records.length === 0) return records
+  const detailMapping = resolveDetailMapping(source, detailMappings, { required: true })
+  assertDetailMappingMetadata(metadata, source, detailMapping)
+  const expectedRids = new Set(records.map((record) => record.legacyRid))
+  const detailRows = await readMssqlObject(pool, mssql, detailMapping.table, 'TABLE')
+  const detailsByRid = new Map()
+  const sourceKeys = new Set()
+  for (const row of detailRows) {
+    const legacyRid = text(getColumn(row, ['RID']))
+    if (!expectedRids.has(legacyRid)) continue
+    const detail = normalizePendingDetailRow(row, source, detailMapping)
+    const key = `${detail.legacyRid}\u001f${detail.legacyObyid}`
+    if (sourceKeys.has(key)) {
+      throw new Error(`${source.code}/${detailMapping.table} RID=${detail.legacyRid} OBYID=${detail.legacyObyid} 存在重复明细来源键`)
+    }
+    sourceKeys.add(key)
+    const details = detailsByRid.get(detail.legacyRid) || []
+    details.push(detail)
+    detailsByRid.set(detail.legacyRid, details)
+  }
+  return records.map((record) => {
+    const details = detailsByRid.get(record.legacyRid)
+    if (!details || details.length === 0) {
+      throw new Error(`${source.code} RID=${record.legacyRid} 未找到 ${detailMapping.table} 已核验明细；拒绝输出不完整在办单据`)
+    }
+    details.sort(compareDetails)
+    return {
+      ...record,
+      detailSource: {
+        table: detailMapping.table,
+        fields: { ...detailMapping.fields },
+        confirmedAbsent: [...detailMapping.confirmedAbsent],
+      },
+      detailCount: details.length,
+      details,
+    }
+  })
+}
+
+function pendingDetailFailures(records) {
+  const failures = []
+  for (const record of records) {
+    if (!Array.isArray(record.details) || record.details.length === 0) {
+      failures.push(`${record.sourceCode} RID=${record.legacyRid || '(缺少 RID)'} 缺少明细`)
+      continue
+    }
+    for (const detail of record.details) {
+      const missing = ['sourceTable', 'legacyRid', 'legacyObyid', 'sku', 'quantity']
+        .filter((field) => !text(detail[field]))
+      if (missing.length > 0) {
+        failures.push(`${record.sourceCode} 明细缺少 ${missing.join(', ')}`)
+      }
+    }
+  }
+  return failures
+}
+
 function resolveRule(source, rules) {
   const configured = rules[source.code] || rules[source.code.toLowerCase()] || null
   const rule = { ...(source.defaultRule || {}), ...(configured || {}) }
@@ -189,7 +432,7 @@ function isPendingRow(row, rule, source) {
 }
 
 function normalizePendingRow(row, source, fieldMap, rule) {
-  const rid = text(getColumn(row, configuredField(fieldMap, source.code, 'rid')))
+  const rid = text(getColumn(row, ['RID']))
   if (!rid) throw new Error(`${source.code} 存在缺少 RID 的在办记录`)
   return {
     category: '在办库存业务',
@@ -197,7 +440,7 @@ function normalizePendingRow(row, source, fieldMap, rule) {
     sourceTable: source.table,
     sourceLabel: source.label,
     legacyRid: rid,
-    legacyObyid: text(getColumn(row, configuredField(fieldMap, source.code, 'obyid'))) || '',
+    legacyObyid: text(getColumn(row, ['OBYID'])) || '',
     legacyDocNo: text(getColumn(row, configuredField(fieldMap, source.code, 'docNo'))),
     docDate: normalizedDate(getColumn(row, configuredField(fieldMap, source.code, 'docDate'))),
     marketName: text(getColumn(row, configuredField(fieldMap, source.code, 'marketName'))),
@@ -211,22 +454,26 @@ function normalizePendingRow(row, source, fieldMap, rule) {
   }
 }
 
-function assertPendingSourceMetadata(metadata, sources, rules) {
+function assertPendingSourceMetadata(metadata, sources, rules, fieldMap = {}, detailMappings = {}) {
   for (const source of sources) {
     getMetadataTable(metadata, source.table)
     const rule = resolveRule(source, rules)
     assertMetadataField(metadata, source.table, rule.completionField, `${source.code} 完成状态字段`)
+    assertConfiguredPhysicalFieldMappings(metadata, source.table, source.code, fieldMap)
+    const detailMapping = resolveDetailMapping(source, detailMappings)
+    assertDetailMappingMetadata(metadata, source, detailMapping)
   }
 }
 
-async function readPendingSources(pool, rules, fieldMap) {
+async function readPendingSources(pool, rules, fieldMap, detailMappings, metadata) {
   const records = []
   for (const source of PENDING_SOURCES) {
     const rule = resolveRule(source, rules)
     const rows = await readMssqlObject(pool, mssql, source.table, 'TABLE')
     const pending = rows.filter((row) => isPendingRow(row, rule, source))
     log(`${source.code}：总计 ${rows.length} 行，在办 ${pending.length} 行`)
-    for (const row of pending) records.push(normalizePendingRow(row, source, fieldMap, rule))
+    const pendingRecords = pending.map((row) => normalizePendingRow(row, source, fieldMap, rule))
+    records.push(...await attachPendingDetails(pool, source, pendingRecords, detailMappings, metadata))
   }
   return records
 }
@@ -324,7 +571,7 @@ function marketTransferAnomalies(records) {
 }
 
 function normalizeMarketTransferRecord(row, source, fieldMap) {
-  const rid = text(getColumn(row, configuredField(fieldMap, source.code, 'rid')))
+  const rid = text(getColumn(row, ['RID']))
   const docNo = text(getColumn(row, configuredField(fieldMap, source.code, 'docNo')))
   if (!rid) throw new Error(`${source.code} 存在缺少 RID 的市场调货记录，不能核对对方入库`)
   if (!docNo) throw new Error(`${source.code} RID=${rid} 缺少单据号，不能核对对方入库`)
@@ -334,7 +581,7 @@ function normalizeMarketTransferRecord(row, source, fieldMap) {
     sourceTable: source.table,
     sourceLabel: source.label,
     legacyRid: rid,
-    legacyObyid: text(getColumn(row, configuredField(fieldMap, source.code, 'obyid'))) || '',
+    legacyObyid: text(getColumn(row, ['OBYID'])) || '',
     legacyDocNo: docNo,
     docDate: normalizedDate(getColumn(row, configuredField(fieldMap, source.code, 'docDate'))),
     marketName: text(getColumn(row, configuredField(fieldMap, source.code, 'marketName'))),
@@ -349,7 +596,7 @@ function normalizeMarketTransferRecord(row, source, fieldMap) {
   }
 }
 
-async function readMarketTransferAnomalies(pool, fieldMap) {
+async function readMarketTransferAnomalies(pool, fieldMap, detailMappings, metadata) {
   const outgoingSource = PENDING_SOURCES.find((source) => source.code === 'S580')
   const incomingSource = PENDING_SOURCES.find((source) => source.code === 'S582')
   const [outgoingRows, incomingRows] = await Promise.all([
@@ -360,7 +607,7 @@ async function readMarketTransferAnomalies(pool, fieldMap) {
   const anomalies = outgoingRows
     .map((row) => normalizeMarketTransferRecord(row, outgoingSource, fieldMap))
     .filter((record) => !incomingDocNos.has(record.legacyDocNo))
-  return anomalies
+  return attachPendingDetails(pool, outgoingSource, anomalies, detailMappings, metadata)
 }
 
 function csvEscape(value) {
@@ -385,12 +632,17 @@ function toCsv(records) {
     'completionField',
     'completionValue',
     'anomaly',
+    'detailSource',
+    'detailCount',
+    'details',
     'rebuildAction',
     'raw',
   ]
   const lines = [columns.join(',')]
   for (const record of records) {
-    lines.push(columns.map((column) => csvEscape(column === 'raw' ? JSON.stringify(record.raw) : record[column])).join(','))
+    lines.push(columns.map((column) => csvEscape(
+      ['raw', 'detailSource', 'details'].includes(column) ? JSON.stringify(record[column]) : record[column],
+    )).join(','))
   }
   return `\uFEFF${lines.join('\n')}\n`
 }
@@ -408,8 +660,17 @@ function writeOutput(outputPath, records, overwrite) {
   return resolved
 }
 
-function printMetadataReport(metadata) {
-  const sourceTables = PENDING_SOURCES.map((source) => source.table)
+function configuredDetailMappings(detailMappings = {}) {
+  return PENDING_SOURCES
+    .map((source) => ({ source, mapping: resolveDetailMapping(source, detailMappings) }))
+    .filter(({ mapping }) => mapping)
+}
+
+function printMetadataReport(metadata, detailMappings) {
+  const sourceTables = [
+    ...PENDING_SOURCES.map((source) => source.table),
+    ...configuredDetailMappings(detailMappings).map(({ mapping }) => mapping.table),
+  ]
   const report = templateMetadataReport(metadata, sourceTables)
   log(`模板元数据：以下字段按 tb_sys_template_field.owner_id -> tb_sys_template_table.id 归属。`)
   for (const table of report) {
@@ -417,11 +678,15 @@ function printMetadataReport(metadata) {
   }
 }
 
-async function inspect(pool, env, metadata) {
-  printMetadataReport(metadata)
+async function inspect(pool, env, metadata, detailMappings) {
+  printMetadataReport(metadata, detailMappings)
   for (const source of PENDING_SOURCES) {
     const result = await inspectMssqlObject(pool, mssql, source.table, 'TABLE')
     log(`${source.code}/${source.table} 字段：${result.columns.join(', ')}`)
+  }
+  for (const { source, mapping } of configuredDetailMappings(detailMappings)) {
+    const result = await inspectMssqlObject(pool, mssql, mapping.table, 'TABLE')
+    log(`${source.code}/${mapping.table} 明细字段：${result.columns.join(', ')}`)
   }
   const view = text(env.WORKFINE_UNCLAIMED_BENEFITS_VIEW)
   if (view) {
@@ -438,19 +703,20 @@ async function main(argv = process.argv.slice(2), env = process.env) {
   }
   const rules = parseJsonObject(env.WORKFINE_INVENTORY_PENDING_RULES, 'WORKFINE_INVENTORY_PENDING_RULES')
   const fieldMap = parseJsonObject(env.WORKFINE_INVENTORY_PENDING_FIELD_MAP, 'WORKFINE_INVENTORY_PENDING_FIELD_MAP')
+  const detailMappings = parseJsonObject(env.WORKFINE_INVENTORY_PENDING_DETAIL_MAP, 'WORKFINE_INVENTORY_PENDING_DETAIL_MAP')
   const expectedCounts = parseExpectedCounts(env)
   const pool = new mssql.ConnectionPool(createMssqlConfig(env))
   await pool.connect()
   try {
     const metadata = await loadTemplateMetadata(pool, mssql)
     if (args.inspect) {
-      await inspect(pool, env, metadata)
+      await inspect(pool, env, metadata, detailMappings)
       return 0
     }
-    assertPendingSourceMetadata(metadata, PENDING_SOURCES, rules)
-    const pending = await readPendingSources(pool, rules, fieldMap)
+    assertPendingSourceMetadata(metadata, PENDING_SOURCES, rules, fieldMap, detailMappings)
+    const pending = await readPendingSources(pool, rules, fieldMap, detailMappings, metadata)
     const unclaimed = await readUnclaimedBenefits(pool, fieldMap, env)
-    const anomalies = await readMarketTransferAnomalies(pool, fieldMap)
+    const anomalies = await readMarketTransferAnomalies(pool, fieldMap, detailMappings, metadata)
     const records = [...pending, ...unclaimed, ...anomalies]
     log(`重建清单：在办 ${pending.length} 条，未领取权益 ${unclaimed.length} 条，市场调货异常 ${anomalies.length} 条。`)
     if (args.dryRun) {
@@ -463,6 +729,11 @@ async function main(argv = process.argv.slice(2), env = process.env) {
         log(`VERIFY FAIL：${invalid.length} 条在办记录缺少 RID`)
         return 1
       }
+      const detailFailures = pendingDetailFailures([...pending, ...anomalies])
+      if (detailFailures.length > 0) {
+        for (const failure of detailFailures) log(`VERIFY FAIL：${failure}`)
+        return 1
+      }
       const countFailures = [
         ...expectedCountCoverageFailures(expectedCounts),
         ...expectedCountFailures(pending, unclaimed, anomalies, expectedCounts),
@@ -471,7 +742,7 @@ async function main(argv = process.argv.slice(2), env = process.env) {
         for (const failure of countFailures) log(`VERIFY FAIL：${failure}`)
         return 1
       }
-      log('VERIFY PASS：所有在办记录均有 RID，状态规则和异常清单已生成。')
+      log('VERIFY PASS：所有在办记录均有已核验明细 RID/OBYID、SKU 与数量，状态规则和异常清单已生成。')
       return 0
     }
     if (!args.output) throw new Error('请提供 --output PATH，或使用 --dry-run / --verify')
@@ -494,15 +765,23 @@ if (require.main === module) {
 }
 
 module.exports = {
+  DETAIL_REQUIRED_FIELDS,
   PENDING_SOURCES,
+  assertDetailMappingMetadata,
+  attachPendingDetails,
+  configuredDetailMappings,
   expectedCountCoverageFailures,
   expectedCountFailures,
   main,
   marketTransferAnomalies,
   normalizeMarketTransferRecord,
+  normalizePendingDetailRow,
   parseExpectedCounts,
   parseArgs,
+  pendingDetailFailures,
   readMarketTransferAnomalies,
+  readPendingSources,
+  resolveDetailMapping,
   resolveRule,
   usage,
 }
