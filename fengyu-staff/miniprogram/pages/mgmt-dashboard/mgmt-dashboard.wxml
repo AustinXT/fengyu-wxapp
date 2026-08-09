@@ -11,7 +11,6 @@
           <van-icon name="arrow-down" size="24rpx" color="#C0322A" />
         </view>
         <mgmt-scope-picker
-          staff-level="{{ staffLevel }}"
           default-scope="{{ defaultScope }}"
           bind:change="onScopeChange"
         />
