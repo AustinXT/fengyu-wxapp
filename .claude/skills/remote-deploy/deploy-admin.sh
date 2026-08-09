@@ -1,7 +1,7 @@
 #!/bin/bash
 # 部署 fengyu-admin 镜像到远程服务器（按 env 自动路由：prod→fengyu-prod / dev→ali-demo）。
-# dev/prod 均走 admin override（docker-compose.prod.yml）连远程 PG 5433；
-# 差异仅在 SSH host + 部署后 DB IP 断言值。
+# dev/prod 均走 admin 远程覆盖层（docker-compose.remote.yml）连远程 PG 5433；
+# CloudBase 桶配置从 envs/<env>.env 注入，避免 dev/prod 复用时串桶。
 #
 # Usage:
 #   .claude/skills/remote-deploy/deploy-admin.sh <dev|prod> [ssh-host] [remote-dir]
@@ -42,6 +42,28 @@ fi
 
 # 切到项目根：后续 envs/、db/、docker/ 等相对路径均基于此
 cd "$(dirname "$0")/../../.."
+
+read_env_value() {
+  local key="$1"
+  local value
+  value=$(grep -m1 "^${key}=" "envs/$ENV.env" 2>/dev/null | cut -d= -f2- | tr -d '\r')
+  if [[ -z "$value" ]]; then
+    echo "✗ envs/$ENV.env 缺少 $key，无法部署。" >&2
+    exit 1
+  fi
+  printf '%s' "$value"
+}
+
+# 远程 .env 保存账号密钥等运行期秘密；这里只传输目标环境的非敏感存储标识，
+# 并用独立变量名覆盖 compose 插值，避免误用远程残留的另一环境值。
+DEPLOY_CLOUDBASE_ENV_ID=$(read_env_value CLOUDBASE_ENV_ID)
+DEPLOY_CDN_BASE=$(read_env_value CDN_BASE)
+RUNTIME_ENV_FILE=$(mktemp "${TMPDIR:-/tmp}/fengyu-admin-runtime.XXXXXX")
+trap 'rm -f "$RUNTIME_ENV_FILE"' EXIT
+printf 'CLOUDBASE_ENV_ID=%s\nCDN_BASE=%s\nDEPLOY_CLOUDBASE_ENV_ID=%s\nDEPLOY_CDN_BASE=%s\n' \
+  "$DEPLOY_CLOUDBASE_ENV_ID" "$DEPLOY_CDN_BASE" \
+  "$DEPLOY_CLOUDBASE_ENV_ID" "$DEPLOY_CDN_BASE" > "$RUNTIME_ENV_FILE"
+COMPOSE_OVERRIDE="docker-compose.remote.yml"
 
 # prod 强制确认（dev 发 ali-demo 无生产副作用，不打断）
 if [[ "$ENV" == "prod" ]]; then
@@ -148,17 +170,20 @@ docker buildx build \
 echo "=== 2/5 传输镜像到 $SSH_HOST ==="
 docker save fengyu-admin:latest | gzip | ssh "$SSH_HOST" "docker load"
 
-echo "=== 3/5 同步 docker-compose 文件（base + admin override，dev/prod 通用）==="
-# admin override（docker-compose.prod.yml）让 admin 连远程 PG 5433、注入 JWT/RSA 私钥、禁用本地 postgres 容器。
-# dev（ali-demo）同样需要此 override：实测 ali-demo admin 连远程测试库 47.113.202.7，base 模式会连本地空库 postgres。
+echo "=== 3/5 同步 docker-compose 文件和环境覆盖（base + remote override）==="
+# remote override 让 admin 连远程 PG 5433、注入 JWT/RSA 私钥、禁用本地 postgres 容器。
+# CloudBase 标识从 envs/$ENV.env 生成 .admin-runtime.env，不能复用远程 .env 的残留值。
 scp docker/docker-compose.yml "$SSH_HOST:$REMOTE_DIR/docker-compose.yml"
-scp docker/docker-compose.prod.yml "$SSH_HOST:$REMOTE_DIR/docker-compose.prod.yml"
-echo "  ✓ 已同步 docker-compose.yml + docker-compose.prod.yml"
+scp "docker/$COMPOSE_OVERRIDE" "$SSH_HOST:$REMOTE_DIR/$COMPOSE_OVERRIDE"
+scp "$RUNTIME_ENV_FILE" "$SSH_HOST:$REMOTE_DIR/.admin-runtime.env"
+ssh "$SSH_HOST" "chmod 600 '$REMOTE_DIR/.admin-runtime.env'"
+ssh "$SSH_HOST" "cd '$REMOTE_DIR' && docker compose --env-file .env --env-file .admin-runtime.env -f docker-compose.yml -f $COMPOSE_OVERRIDE config --quiet"
+echo "  ✓ 已同步 docker-compose.yml + $COMPOSE_OVERRIDE + .admin-runtime.env"
 
 echo "=== 4/5 远程重启服务（base + override）==="
 # cron-worker 日志挂载卷（容器内 uid=1001 nextjs 才能写入；目录不存在 docker 会以 root 自建并越权）
 ssh "$SSH_HOST" "mkdir -p $REMOTE_DIR/logs/cron-worker $REMOTE_DIR/logs/export-worker && chown -R 1001:1001 $REMOTE_DIR/logs/cron-worker $REMOTE_DIR/logs/export-worker"
-ssh "$SSH_HOST" "cd $REMOTE_DIR && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d admin cron-worker export-worker"
+ssh "$SSH_HOST" "cd '$REMOTE_DIR' && docker compose --env-file .env --env-file .admin-runtime.env -f docker-compose.yml -f $COMPOSE_OVERRIDE up -d admin cron-worker export-worker"
 
 echo "=== 5/5 健康检查 + DB 连接验证 ==="
 sleep 5
@@ -190,12 +215,28 @@ else
   exit 1
 fi
 
+verify_cloudbase_runtime() {
+  local container="$1"
+  local actual
+  actual=$(ssh "$SSH_HOST" "docker exec $container sh -c 'printf \"%s|%s\" \"\$CLOUDBASE_ENV_ID\" \"\$CDN_BASE\"'" 2>/dev/null || true)
+  if [[ "$actual" != "$DEPLOY_CLOUDBASE_ENV_ID|$DEPLOY_CDN_BASE" ]]; then
+    echo "✗ $container CloudBase 配置与 $ENV 不一致：$actual" >&2
+    echo "  期望：$DEPLOY_CLOUDBASE_ENV_ID|$DEPLOY_CDN_BASE" >&2
+    exit 1
+  fi
+  echo "  ✓ $container CloudBase 配置与 $ENV 一致"
+}
+
+verify_cloudbase_runtime fengyu-admin
+verify_cloudbase_runtime fengyu-export-worker
+
 echo ""
 echo "部署完成（env=$ENV）。"
 echo ""
 echo "下一步验证（必查）："
 echo "  1. ssh $SSH_HOST 'docker exec fengyu-admin env | grep DATABASE_URL'   # 应为 $EXPECT_PG_HOST:5433"
-echo "  2. ssh $SSH_HOST 'docker logs fengyu-admin --tail 50'                  # 看启动是否正常"
-echo "  3. 浏览器打开 admin 域名 → 用初始账号登录验证（含 RSA 密码解密）"
+echo "  2. ssh $SSH_HOST 'docker exec fengyu-admin env | grep CLOUDBASE_ENV_ID' # 应为 $DEPLOY_CLOUDBASE_ENV_ID"
+echo "  3. ssh $SSH_HOST 'docker logs fengyu-admin --tail 50'                  # 看启动是否正常"
+echo "  4. 浏览器打开 admin 域名 → 用初始账号登录验证（含 RSA 密码解密）"
 echo ""
 echo "回滚：docker tag fengyu-admin:<old-tag> fengyu-admin:latest 后重新部署"
