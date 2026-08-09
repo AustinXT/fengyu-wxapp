@@ -3,7 +3,7 @@
  * clientApi.order.create 并发与序号守卫
  *
  * 路由源：fengyu-client/cloudfunctions/clientApi/routes/order.js
- *   - line 432: pg_advisory_xact_lock(hashtext('sale_order_id_gen')) — 全局序号锁
+ *   - line 432: pg_advisory_xact_lock(hashtext('sale_order_id_gen')::bigint) — 全局序号锁
  *   - line 492-502: SELECT ... LIKE 'FY-XSD-WX-{YYMMDD}%' DESC LIMIT 1 → seq+1 → padStart(4,'0')
  *
  * 关键发现/约束：

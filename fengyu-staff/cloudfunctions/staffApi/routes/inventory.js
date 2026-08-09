@@ -195,7 +195,7 @@ async function assertApproverStoreScope(client, auth, storeId) {
 async function generateDocNo(client, docType) {
   const prefix = DOC_PREFIX[docType]
   const ymd = shanghaiYmd()
-  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', [
     `store_inventory_docs:${prefix}:${ymd}`,
   ])
   const latestRes = await client.query(
