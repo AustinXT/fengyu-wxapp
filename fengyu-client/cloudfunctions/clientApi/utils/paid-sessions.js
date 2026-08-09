@@ -211,7 +211,7 @@ async function recalcPaidSessionsForOrder(client, saleOrderId) {
                 JOIN sale_order_payments sop ON sop.id = cov_spir.sale_payment_id
                WHERE cov_spir.sale_order_id = $1
                  AND sop.status = '已支付'
-                 AND sop.change_type IN ('首次支付','回款','储值卡抵扣')
+                 AND sop.change_type IN ('首次支付','回款','储值卡抵扣','退款')
             ), 0) AS receipt_positive_total,
             (SELECT received::numeric FROM sale_orders WHERE sale_order_id = $1) AS order_received`,
     [saleOrderId],
@@ -224,8 +224,11 @@ async function recalcPaidSessionsForOrder(client, saleOrderId) {
     await client.query(SALE_ITEMS_RECEIVED_FROM_RECEIPTS_SQL, [saleOrderId])
   } else {
     await client.query(SALE_ITEMS_RECEIVED_ALLOC_SQL, [saleOrderId])
-    // STEP 1.5：旧数据回退分支才按 note.items[].refundAmount 扣减；新 receipt 分支已含退款负数，不能重复扣。
-    await client.query(RECEIVED_REFUNDED_DEDUCT_SQL, [saleOrderId])
+    // G09 修复（PR #74）：移除 Branch B 的 STEP 1.5 双重扣除。
+    //   Branch A 决策查询已加入 '退款' change_type（net receipt 覆盖比较正确）；完整 receipt 订单走 Branch A
+    //   已含退款负数。若 Branch B 再按 note.items[].refundAmount 扣减，全退后回款场景会双重扣除 → PAID_SESSIONS_UNDERFLOW。
+    //   RECEIVED_REFUNDED_DEDUCT_SQL 常量保留定义供 cross-end-sql-snapshot Block 7c 字节比对，不再执行。
+    // await client.query(RECEIVED_REFUNDED_DEDUCT_SQL, [saleOrderId])
   }
   // STEP 2：行级公式重算 paid_sessions（received 已净额，不再下分订单级退款）
   await client.query(PAID_SESSIONS_RECALC_SQL, [saleOrderId])
