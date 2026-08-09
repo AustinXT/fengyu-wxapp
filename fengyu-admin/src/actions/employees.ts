@@ -17,6 +17,12 @@ import { ApiError } from '@/lib/api-error'
 import { pgErrorCode, pgErrorConstraint, pgErrorDetail } from '@/lib/pg-error'
 import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
 import { shanghaiToday } from '@/lib/datetime'
+import {
+  offsetPageResult,
+  resolveExportOffsetPage,
+  type ExportBatchOptions,
+  type ExportBatchResult,
+} from '@/lib/export-pagination'
 import { parseEmployeeFilters, filterValidSkillValues } from '@/lib/list-filters'
 import { getSkillTags } from '@/actions/skill-tags'
 import { orgNodeInScopeCondition, storeInOrgNodeCondition } from '@/lib/market-store-sql'
@@ -310,7 +316,8 @@ export const exportEmployees = withPermission(
   async (
     session,
     params: Record<string, string | undefined>,
-  ): Promise<{ rows: ExportEmployeeRow[]; truncated: boolean }> => {
+    options?: ExportBatchOptions,
+  ): Promise<ExportBatchResult<ExportEmployeeRow>> => {
     const parsed = parseEmployeeFilters(params)
     // 服务端兜底：剔除 URL ?skill= 中字典外（已删除）的标签名，防幽灵筛选。
     // 与列表路径 page.tsx 同源；前端 handleExport 已清洗，此处为防御层（即使漏清洗，
@@ -322,8 +329,9 @@ export const exportEmployees = withPermission(
       skills: filterValidSkillValues(parsed.skills, validSkillNames),
     }
     const whereClause = and(...(await buildEmployeeConditions(session, filters)))
+    const page = resolveExportOffsetPage(options)
 
-    const dataRows = await db
+    const query = db
       .select()
       .from(staffWechatUsers)
       // 「所属组织」导出列改用员工 orgNodeId（前端 buildOrgPath 构建完整路径），与列表页一致。
@@ -331,6 +339,9 @@ export const exportEmployees = withPermission(
       .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
       .where(whereClause)
       .orderBy(desc(staffWechatUsers.updatedAt), desc(staffWechatUsers.createdAt), asc(staffWechatUsers.employeeId))
+    const dataRows = page
+      ? await query.limit(page.limit + 1).offset(page.offset)
+      : await query
 
     const rows: ExportEmployeeRow[] = dataRows.map((row) => {
       const e = row.staff_wechat_users
@@ -351,7 +362,7 @@ export const exportEmployees = withPermission(
       }
     })
 
-    return { rows, truncated: false }
+    return offsetPageResult(rows, page)
   },
 )
 

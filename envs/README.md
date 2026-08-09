@@ -43,7 +43,9 @@ cat envs/.active
 
 之后 `scripts/deploy-cloudfunctions.sh` 会按 active env 选 envId + 自动切 tcb 双账号部署。
 
-admin 远程部署用 `docker/docker-compose.prod.yml` override，详见根目录 `deploy-admin.sh`。
+admin 远程部署用 `docker/docker-compose.remote.yml` override。`deploy-admin.sh` 会从
+`envs/<env>.env` 生成仅含 CloudBase envId/CDN 的远程运行时覆盖文件，禁止手工把另一环境的
+存储值写死到 compose。
 
 ## 小程序自适应（不需要渲染）
 
@@ -61,7 +63,7 @@ admin 远程部署用 `docker/docker-compose.prod.yml` override，详见根目�
 1. 同步加入 `dev.env.example` + `prod.env.example`（含说明注释）
 2. 同步加入 `dev.env` + `prod.env`（真实值）
 3. 如果云函数需要：在 `fengyu-{client,staff}/cloudbaserc.example.json` 的 envVariables 加 `"NEW_VAR": "${NEW_VAR}"`
-4. 如果 admin 需要：在 `docker/docker-compose.prod.yml` 的 environment 加 `- NEW_VAR=${NEW_VAR}`
+4. 如果 admin 需要：在 `docker/docker-compose.remote.yml` 的 environment 加 `NEW_VAR`，并决定它应由远程 `.env` 还是部署脚本生成的运行时覆盖文件注入
 5. 远程 `docker/.env` 同步追加（生产 `ssh fengyu-prod` / 测试 `ssh ali-demo` 后手工改）
 
 ## 安全

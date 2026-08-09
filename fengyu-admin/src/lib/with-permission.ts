@@ -1,7 +1,7 @@
-import { getSession } from '@/lib/auth'
 import { requirePermission, requireAnyPermission } from '@/lib/permissions'
 import { parseErrorPrefix } from '@/lib/api-error'
 import type { AuthSession } from '@/lib/types'
+import { getExportSession } from '@/lib/export-session-context'
 
 /**
  * 给白名单前缀的业务错误补 `digest`，穿透 Next.js 生产构建对 Server Action `error.message`
@@ -23,6 +23,17 @@ function rethrowWithDigest(err: unknown): never {
     ;(err as { digest?: string }).digest = err.message
   }
   throw err
+}
+
+async function getActionSession(): Promise<AuthSession | null> {
+  const exportSession = getExportSession()
+  if (exportSession) return exportSession
+  // export-worker 构建时此条件会被 Bun 固化为 true，从 bundle 中裁掉 Web auth 依赖。
+  if (process.env.FENGYU_EXPORT_WORKER === '1') {
+    throw new Error('INVALID_STATE: 导出任务缺少权限上下文')
+  }
+  const { getSession } = await import('@/lib/auth')
+  return getSession()
 }
 
 /**
@@ -48,7 +59,7 @@ export function withPermission<Args extends unknown[], R>(
   fn: (session: AuthSession, ...args: Args) => Promise<R>,
 ): (...args: Args) => Promise<R> {
   return async (...args: Args) => {
-    const session = await getSession()
+    const session = await getActionSession()
     requirePermission(session, action)
     try {
       return await fn(session, ...args)
@@ -68,7 +79,7 @@ export function withAnyPermission<Args extends unknown[], R>(
   fn: (session: AuthSession, ...args: Args) => Promise<R>,
 ): (...args: Args) => Promise<R> {
   return async (...args: Args) => {
-    const session = await getSession()
+    const session = await getActionSession()
     requireAnyPermission(session, actions)
     try {
       return await fn(session, ...args)

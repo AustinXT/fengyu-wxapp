@@ -66,3 +66,6 @@ export * from './lookup'
 
 // 拉卡拉商户入网（主表 + 附件 + 调用日志）
 export * from './lakala'
+
+// 管理后台异步导出任务
+export * from './export-job'

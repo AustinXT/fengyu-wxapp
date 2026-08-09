@@ -9,11 +9,10 @@ import { withPermission } from '@/lib/with-permission'
 /**
  * 业务角色看板（manager/finance）零默认值。
  *
- * 2026-04-26 sale-order-domain-refactor：
- *   - 营业额公式从 `SUM(total_amount) WHERE sale_order_type != '退款单'` 切到
- *     `SUM(received - refunded_amount) WHERE sale_order_type IN ('销售单','转换单') AND status='已支付'`，
- *     与 audit-17 P0-17-01/02/03 + metrics.md 权威口径对齐
- *   - paid_amount 列已 DROP；统一改用 received（实付）+ refunded_amount（已退款）
+ * 2026-04-26 sale-order-domain-refactor（2026-08 现金流口径修订）：
+ *   - 组织层级营业额改为 `SUM(sale_order_payments.amount)`，按 `sop.paid_at` 归期，
+ *     仅纳入首次支付/回款/退款和销售单/转换单/充值单；储值卡抵扣排除
+ *   - `sale_orders.received` / `refunded_amount` 仅作订单快照，不再作为组织层级业绩源
  *   - 客流（visitors）改为 service_orders[已完成]，与 staff mgmt-dashboard 对齐
  *   - 同时保留"开单顾客数"作为辅助指标（todayOpenedCustomers）
  *   - 时区固定 Asia/Shanghai（CC7 跨午夜窗口对齐）
@@ -74,19 +73,11 @@ export const getDashboardStats = withPermission('dashboard:view', async (session
     }
 
     /**
-     * 业绩 / 实付 / 已退款 / 待办（sale_orders 域）
+     * 业绩 / 实付 / 已退款 / 待办。
      *
-     * 关键修复（2026-04-26）：
-     *   - WHERE sale_order_type IN ('销售单','转换单')：排除"内部单"
-     *     （回款单/退款单已 5→3 重构迁出，不在数据源）
-     *   - 营业额（todayRevenue）= SUM(received) - SUM(refunded_amount)
-     *     即"净实收"，已天然冲销退款
-     *   - todayPaidAmount = SUM(received) 保留作"毛实收"（含尚未退款的部分）
-     *   - todayRefundedAmount = SUM(refunded_amount) 单独暴露，前端可独立展示
-     *   - 时区统一 Asia/Shanghai：paid_at/sale_order_datetime 是 timestamp without time zone，
-     *     库存"北京墙钟字面"（DB timezone=Asia/Shanghai，写入对进程 TZ 免疫，见 fix/003），
-     *     故直接 ::date 取北京日期即可；切勿再套 `AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai'`
-     *     ——那会把北京墙钟当 UTC 再 +8h，使晚间/跨午夜营收错算到次日。
+     * 组织层级业绩改按付款流水净现金流：首次支付、回款、退款均按 sop.paid_at 归期，
+     * 包含充值单，排除储值卡抵扣。订单数量和待办保持独立聚合，避免 payment JOIN 放大计数。
+     * 时区统一 Asia/Shanghai：时间戳存的是北京墙钟字面，直接 ::date 取北京日期即可。
      */
     const orderStats = await db.execute(sql`
       WITH tz_today AS (
@@ -94,62 +85,85 @@ export const getDashboardStats = withPermission('dashboard:view', async (session
       ),
       bounds AS (
         SELECT today, today - 1 AS yesterday FROM tz_today
+      ),
+      payment_metrics AS (
+        SELECT
+          COALESCE(SUM(CASE
+            WHEN sop.paid_at::date = (SELECT today FROM bounds)
+              AND sop.status = '已支付'
+              AND sop.change_type IN ('首次支付', '回款', '退款')
+              AND so.sale_order_type IN ('销售单', '转换单', '充值单')
+            THEN sop.amount::numeric
+          END), 0) AS today_revenue,
+          COALESCE(SUM(CASE
+            WHEN sop.paid_at::date = (SELECT today FROM bounds)
+              AND sop.status = '已支付'
+              AND sop.change_type IN ('首次支付', '回款')
+              AND sop.amount::numeric > 0
+              AND so.sale_order_type IN ('销售单', '转换单', '充值单')
+            THEN sop.amount::numeric
+          END), 0) AS today_paid_amount,
+          COALESCE(SUM(CASE
+            WHEN sop.paid_at::date = (SELECT today FROM bounds)
+              AND sop.status = '已支付'
+              AND sop.change_type = '退款'
+              AND so.sale_order_type IN ('销售单', '转换单', '充值单')
+            THEN ABS(sop.amount::numeric)
+          END), 0) AS today_refunded_amount,
+          COALESCE(SUM(CASE
+            WHEN sop.paid_at::date = (SELECT yesterday FROM bounds)
+              AND sop.status = '已支付'
+              AND sop.change_type IN ('首次支付', '回款', '退款')
+              AND so.sale_order_type IN ('销售单', '转换单', '充值单')
+            THEN sop.amount::numeric
+          END), 0) AS yesterday_revenue,
+          COALESCE(SUM(CASE
+            WHEN sop.paid_at::date = (SELECT yesterday FROM bounds)
+              AND sop.status = '已支付'
+              AND sop.change_type IN ('首次支付', '回款')
+              AND sop.amount::numeric > 0
+              AND so.sale_order_type IN ('销售单', '转换单', '充值单')
+            THEN sop.amount::numeric
+          END), 0) AS yesterday_paid_amount,
+          COALESCE(SUM(CASE
+            WHEN sop.status = '已支付'
+              AND sop.change_type IN ('首次支付', '回款')
+              AND sop.amount::numeric > 0
+              AND so.sale_order_type IN ('销售单', '转换单', '充值单')
+            THEN sop.amount::numeric
+          END), 0) AS total_paid_amount
+        FROM sale_order_payments sop
+        JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
+        WHERE so.store_id IN (${sql.join(scopeIds.map(id => sql`${id}`), sql`, `)})
+          -- 历史订单（WorkFine 核对补登）不计入经营营收（仅供会员体系重算）
+          AND so.legacy_source IS DISTINCT FROM 'workfine'
+      ),
+      order_metrics AS (
+        SELECT
+          COUNT(DISTINCT CASE
+            WHEN so.sale_order_datetime::date = (SELECT today FROM bounds)
+              AND so.status NOT IN ('已关闭', '支付失败', '未审核', '已作废')
+              AND so.sale_order_type IN ('销售单', '转换单')
+            THEN so.client_user_id
+          END) AS today_opened_customers,
+          COUNT(CASE
+            WHEN so.status = '待支付'
+            THEN 1
+          END) AS pending_orders,
+          COUNT(CASE
+            WHEN so.status IN ('已支付') AND so.allocation_status = '待分配'
+              AND so.sale_order_type IN ('销售单', '转换单')
+            THEN 1
+          END) AS pending_allocations
+        FROM sale_orders so
+        WHERE so.store_id IN (${sql.join(scopeIds.map(id => sql`${id}`), sql`, `)})
+          AND so.legacy_source IS DISTINCT FROM 'workfine'
       )
       SELECT
-        COALESCE(SUM(CASE
-          WHEN paid_at::date = (SELECT today FROM bounds)
-            AND status IN ('已支付', '已完成')
-            AND sale_order_type IN ('销售单', '转换单')
-          THEN (received::numeric - refunded_amount::numeric)
-        END), 0) AS today_revenue,
-        COALESCE(SUM(CASE
-          WHEN paid_at::date = (SELECT today FROM bounds)
-            AND status IN ('已支付', '已完成')
-            AND sale_order_type IN ('销售单', '转换单')
-          THEN received::numeric
-        END), 0) AS today_paid_amount,
-        COALESCE(SUM(CASE
-          WHEN paid_at::date = (SELECT today FROM bounds)
-            AND status IN ('已支付', '已完成')
-            AND sale_order_type IN ('销售单', '转换单')
-          THEN refunded_amount::numeric
-        END), 0) AS today_refunded_amount,
-        COUNT(DISTINCT CASE
-          WHEN sale_order_datetime::date = (SELECT today FROM bounds)
-            AND status NOT IN ('已关闭', '支付失败', '未审核', '已作废')
-            AND sale_order_type IN ('销售单', '转换单')
-          THEN client_user_id
-        END) AS today_opened_customers,
-        COUNT(CASE
-          WHEN status = '待支付'
-          THEN 1
-        END) AS pending_orders,
-        COUNT(CASE
-          WHEN status IN ('已支付') AND allocation_status = '待分配'
-            AND sale_order_type IN ('销售单', '转换单')
-          THEN 1
-        END) AS pending_allocations,
-        COALESCE(SUM(CASE
-          WHEN paid_at::date = (SELECT yesterday FROM bounds)
-            AND status IN ('已支付', '已完成')
-            AND sale_order_type IN ('销售单', '转换单')
-          THEN (received::numeric - refunded_amount::numeric)
-        END), 0) AS yesterday_revenue,
-        COALESCE(SUM(CASE
-          WHEN paid_at::date = (SELECT yesterday FROM bounds)
-            AND status IN ('已支付', '已完成')
-            AND sale_order_type IN ('销售单', '转换单')
-          THEN received::numeric
-        END), 0) AS yesterday_paid_amount,
-        COALESCE(SUM(CASE
-          WHEN status IN ('已支付', '已完成')
-            AND sale_order_type IN ('销售单', '转换单')
-          THEN received::numeric
-        END), 0) AS total_paid_amount
-      FROM sale_orders
-      WHERE store_id IN (${sql.join(scopeIds.map(id => sql`${id}`), sql`, `)})
-        -- 历史订单（WorkFine 核对补登）不计入经营营收/待分配（仅供会员体系重算）
-        AND legacy_source IS DISTINCT FROM 'workfine'
+        payment_metrics.*,
+        order_metrics.*
+      FROM payment_metrics
+      CROSS JOIN order_metrics
     `)
 
     /**

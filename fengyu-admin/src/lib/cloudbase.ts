@@ -1,4 +1,5 @@
 import cloudbase from "@cloudbase/node-sdk"
+import type fs from "node:fs"
 import { ApiError } from "@/lib/api-error"
 
 // CDN 基址随环境切换（dev/prod 桶前缀不同，建桶时分配，不能从 envId 推算）。
@@ -8,6 +9,24 @@ export const CDN_BASE =
   "https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la"
 
 let app: ReturnType<typeof cloudbase.init> | null = null
+
+function cloudFileId(cloudPath: string): string {
+  if (cloudPath.startsWith("cloud://")) return cloudPath
+
+  const envId = process.env.CLOUDBASE_ENV_ID
+  if (!envId) throw new ApiError("INVALID_STATE", "CloudBase 环境未配置")
+
+  let bucket: string
+  try {
+    bucket = new URL(CDN_BASE).hostname.split(".")[0] ?? ""
+  } catch {
+    throw new ApiError("INVALID_STATE", "CloudBase 存储桶配置无效")
+  }
+  if (!bucket) throw new ApiError("INVALID_STATE", "CloudBase 存储桶配置无效")
+
+  const normalizedPath = cloudPath.replace(new RegExp("^/+"), "")
+  return `cloud://${envId}.${bucket}/${normalizedPath}`
+}
 
 function getApp() {
   if (!app) {
@@ -21,13 +40,13 @@ function getApp() {
 }
 
 export async function uploadFile(
-  buffer: Buffer,
+  fileContent: Buffer | fs.ReadStream,
   cloudPath: string
 ): Promise<string> {
   const app = getApp()
   const result = await app.uploadFile({
     cloudPath,
-    fileContent: buffer,
+    fileContent,
   })
   if (!result.fileID) {
     throw new ApiError("INVALID_STATE", "文件上传失败，请重试")
@@ -44,6 +63,19 @@ export async function uploadFile(
 
   // fallback: 拼接 CDN 基础 URL
   return `${CDN_BASE}/${cloudPath}`
+}
+
+/** 获取 CloudBase Storage 文件的短期下载地址。调用方应先完成权限校验。 */
+export async function getTempFileUrl(cloudPath: string): Promise<string> {
+  const app = getApp()
+  const result = await app.getTempFileURL({
+    fileList: [cloudFileId(cloudPath)],
+  })
+  const item = result.fileList?.[0]
+  if (!item?.tempFileURL) {
+    throw new ApiError("NOT_FOUND", "导出文件不存在或已过期")
+  }
+  return item.tempFileURL
 }
 
 /**
@@ -72,8 +104,7 @@ export async function deleteByCloudPaths(
 ): Promise<void> {
   if (cloudPaths.length === 0) return
   const app = getApp()
-  const envId = process.env.CLOUDBASE_ENV_ID!
-  const fileList = cloudPaths.map((p) => `cloud://${envId}/${p}`)
+  const fileList = cloudPaths.map(cloudFileId)
   await app.deleteFile({ fileList })
 }
 

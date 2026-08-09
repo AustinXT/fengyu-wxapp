@@ -33,7 +33,7 @@ import {
   updateInventorySku,
   updateInventoryPromotionPlan,
 } from './engine'
-import { isAdminScope } from '@/lib/permissions'
+import { hasPermission, isAdminScope } from '@/lib/permissions'
 
 const SESSION = {
   employeeId: 'E001',
@@ -333,6 +333,21 @@ describe('库存 SKU 来源与价格保护', () => {
       }],
     } as never)).rejects.toThrow('福利方案只允许设置单价优惠')
   })
+
+  it('福利方案创建和更新必须具备价格查看权限', async () => {
+    vi.mocked(hasPermission).mockReturnValue(false)
+    const input = {
+      planNo: 'PROMO-1',
+      name: '福利方案',
+      startsAt: '2026-08-01',
+      endsAt: '2026-08-31',
+      items: [{ skuId: 'SKU-1', marketUnitDiscount: 10 }],
+    }
+
+    await expect(createInventoryPromotionPlan(input)).rejects.toThrow('无权设置市场报货福利价格')
+    await expect(updateInventoryPromotionPlan('PROMO-1', input)).rejects.toThrow('无权设置市场报货福利价格')
+    expect(mockDb.select).not.toHaveBeenCalled()
+  })
 })
 
 describe('库存可用量与收货复核', () => {
@@ -437,7 +452,7 @@ describe('库存主体启停同步', () => {
 
   it('初始迁移使用与运行时相同的库存主体启停规则', () => {
     const migration = readFileSync(
-      resolve(process.cwd(), '../db/migrations/0004_blue_meltdown.sql'),
+      resolve(process.cwd(), '../db/migrations/0005_futuristic_mauler.sql'),
       'utf8',
     )
 

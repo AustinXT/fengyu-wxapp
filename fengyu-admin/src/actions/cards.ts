@@ -13,6 +13,12 @@ import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { parseCardFilters } from '@/lib/list-filters'
 import { nowTs } from '@/lib/db-time'
+import {
+  offsetPageResult,
+  resolveExportOffsetPage,
+  type ExportBatchOptions,
+  type ExportBatchResult,
+} from '@/lib/export-pagination'
 import { paidUnusedSessionsExpr } from '@/lib/paid-sessions'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 
@@ -389,9 +395,11 @@ export const exportCards = withPermission(
   async (
     session,
     params: Record<string, string | undefined>,
-  ): Promise<{ rows: ExportCardRow[]; truncated: boolean }> => {
+    options?: ExportBatchOptions,
+  ): Promise<ExportBatchResult<ExportCardRow>> => {
     const filters = parseCardFilters(params)
     const whereClause = and(...buildCardConditions(session, filters))
+    const page = resolveExportOffsetPage(options)
 
     // 市场名 scalar subquery（与列表/详情同范式）
     const marketNameExpr = sql<string | null>`(
@@ -401,7 +409,7 @@ export const exportCards = withPermission(
       WHERE s.store_id = ${saleItems.storeId}
     )`.as('market_name')
 
-    const raw = await db
+    const query = db
       .select({
         productName: saleItems.productName,
         specName: productSkus.specName,
@@ -433,7 +441,10 @@ export const exportCards = withPermission(
       .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
       .where(whereClause)
       // 例外：业务时间优先（支付时间优于"最近编辑"），与列表排序一致
-      .orderBy(desc(saleOrders.paidAt), desc(saleItems.createdAt))
+      .orderBy(desc(saleOrders.paidAt), desc(saleItems.createdAt), asc(saleItems.saleItemId))
+    const raw = page
+      ? await query.limit(page.limit + 1).offset(page.offset)
+      : await query
 
     const rows: ExportCardRow[] = raw.map((r) => {
       const sessionCount = r.sessionCount ?? 0
@@ -460,7 +471,7 @@ export const exportCards = withPermission(
       }
     })
 
-    return { rows, truncated: false }
+    return offsetPageResult(rows, page)
   },
 )
 

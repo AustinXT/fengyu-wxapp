@@ -31,7 +31,6 @@ const DEFAULT_ALL: Scope = { scopeType: 'all', scopeId: null, scopeName: '全部
 
 Component({
   properties: {
-    staffLevel: { type: String, value: '' },
     defaultScope: {
       type: Object,
       value: { scopeType: 'all', scopeId: null, scopeName: '全部市场' } as Scope,

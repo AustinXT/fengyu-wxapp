@@ -155,6 +155,10 @@ function defaultPaymentsRoutes() {
       result: { rows: [{ id: 1 }], rowCount: 1 },
     },
     {
+      match: /UPDATE sale_order_payments SET allocation_status = '待分配'/,
+      result: { rows: [], rowCount: 1 },
+    },
+    {
       match: /UPDATE sale_orders[\s\S]*SET status = \$1::order_status/,
       result: { rows: [], rowCount: 1 },
     },

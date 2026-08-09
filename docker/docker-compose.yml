@@ -84,6 +84,34 @@ services:
         max-size: "10m"
         max-file: "5"
 
+  # export-worker：持久化异步导出队列消费者。全局并发固定为 1，避免大任务抢占 admin web 进程。
+  export-worker:
+    image: fengyu-admin:latest
+    container_name: fengyu-export-worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - TZ=Asia/Shanghai
+      - TENCENTCLOUD_SECRETID=${TENCENTCLOUD_SECRETID}
+      - TENCENTCLOUD_SECRETKEY=${TENCENTCLOUD_SECRETKEY}
+      - CLOUDBASE_ENV_ID=${CLOUDBASE_ENV_ID}
+      - CDN_BASE=${CDN_BASE}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./logs/export-worker:/var/log/app
+    command:
+      - sh
+      - -c
+      - 'node export-worker.mjs 2>&1 | tee -a "/var/log/app/export-worker-$$(date +%Y%m).log"'
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
 volumes:
   postgres_data:
     external: true

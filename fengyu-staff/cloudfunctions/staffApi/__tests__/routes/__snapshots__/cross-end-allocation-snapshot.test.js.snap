@@ -33,10 +33,11 @@ exports[`断言1：staff / clientApi / payNotify 三个 pg 版 capturePaymentAll
         ORDER BY sale_item_id\`,
       [saleOrderId],
     )
-    await client.query(\`UPDATE sale_order_payments SET allocation_status = '待分配' WHERE id = $1\`, [salePaymentId])
-
     const rows = convRes.rows
     if (rows.length === 0) return []
+
+    const convGuard = await client.query(\`UPDATE sale_order_payments SET allocation_status = '待分配' WHERE id = $1 AND (allocation_status IS NULL OR allocation_status = '待分配')\`, [salePaymentId])
+    if (convGuard.rowCount === 0) return []
     const perItem = allocateSignedCents(
       Math.round(evt * 100),
       rows.map((r) => ({ saleItemId: r.sale_item_id, weightCents: Math.round(Number(r.sale_amount) * 100) })),
@@ -125,6 +126,10 @@ exports[`断言1：staff / clientApi / payNotify 三个 pg 版 capturePaymentAll
     }
   }
 
+  // CAS guard: 若已是 已分配（payNotify 重试/并发），跳过 receipt 写入
+  const guardRes = await client.query(\`UPDATE sale_order_payments SET allocation_status = '待分配' WHERE id = $1 AND (allocation_status IS NULL OR allocation_status = '待分配')\`, [salePaymentId])
+  if (guardRes.rowCount === 0) return []
+
   const out = []
   for (const d of perItem) {
     const cat = catMap.get(d.saleItemId) || null
@@ -138,7 +143,6 @@ exports[`断言1：staff / clientApi / payNotify 三个 pg 版 capturePaymentAll
     out.push({ receiptId, saleItemId: d.saleItemId, amount: d.amount, salesCategory: cat })
   }
 
-  await client.query(\`UPDATE sale_order_payments SET allocation_status = '待分配' WHERE id = $1\`, [salePaymentId])
   return out
 }"
 `;

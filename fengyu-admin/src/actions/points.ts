@@ -6,6 +6,12 @@ import { clientWechatUsers } from '@db/user'
 import { stores, orgNodes } from '@db/org'
 import { and, desc, eq, gte, ilike, inArray, lte, or, sql } from 'drizzle-orm'
 import { beijingBoundaryTs } from '@/lib/db-time'
+import {
+  offsetPageResult,
+  resolveExportOffsetPage,
+  type ExportBatchOptions,
+  type ExportBatchResult,
+} from '@/lib/export-pagination'
 import type { SQL } from 'drizzle-orm'
 import type { PointTransaction, PointTransactionSummary, AuthSession } from '@/lib/types'
 import { scopeCondition } from '@/lib/permissions'
@@ -233,16 +239,18 @@ export const exportPointTransactions = withPermission(
   async (
     session,
     params: Record<string, string | undefined>,
-  ): Promise<{ rows: ExportPointRow[]; truncated: boolean }> => {
+    options?: ExportBatchOptions,
+  ): Promise<ExportBatchResult<ExportPointRow>> => {
     const filters = parsePointFilters(params)
     const conditions = buildConditions(session, filters)
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined
+    const page = resolveExportOffsetPage(options)
 
     const storeName = sql<string | null>`(
       SELECT s.store_name FROM stores s WHERE s.store_id = ${clientWechatUsers.boundStoreId}
     )`
 
-    const dataRows = await db
+    const query = db
       .select({
         type: pointTransactions.type,
         amount: pointTransactions.amount,
@@ -256,7 +264,10 @@ export const exportPointTransactions = withPermission(
       .from(pointTransactions)
       .innerJoin(clientWechatUsers, eq(pointTransactions.userId, clientWechatUsers.userId))
       .where(whereClause)
-      .orderBy(desc(pointTransactions.createdAt))
+      .orderBy(desc(pointTransactions.createdAt), desc(pointTransactions.id))
+    const dataRows = page
+      ? await query.limit(page.limit + 1).offset(page.offset)
+      : await query
 
     const rows: ExportPointRow[] = dataRows.map((r) => ({
       createdAt: r.createdAt.toISOString(),
@@ -269,6 +280,6 @@ export const exportPointTransactions = withPermission(
       refOrderId: r.refOrderId,
     }))
 
-    return { rows, truncated: false }
+    return offsetPageResult(rows, page)
   },
 )

@@ -520,13 +520,17 @@ describe('mgmtDashboard.summary 生美区分', () => {
     expect(shengmeiRevSqls.length).toBe(2) // today + month
 
     const storeRevSqls = sqlList.filter(
-      // 2026-04-26 sale-order-domain-refactor: paid_amount → received - refunded_amount
-      (s) => /FROM sale_orders so\b/.test(s) && /SUM\(so\.received::numeric/.test(s),
+      (s) => /FROM sale_order_payments sop\b/.test(s) && /SUM\(sop\.amount::numeric/.test(s),
     )
     expect(storeRevSqls.length).toBe(2)
     for (const s of storeRevSqls) {
       expect(s).not.toMatch(/is_shengmei/)
       expect(s).not.toMatch(/JOIN sale_items/)
+      expect(s).toMatch(/sop\.status\s*=\s*'已支付'/)
+      expect(s).toMatch(/sop\.change_type\s+IN\s*\('首次支付',\s*'回款',\s*'退款'\)/)
+      expect(s).toMatch(/sale_order_type\s+IN\s*\('销售单',\s*'转换单',\s*'充值单'\)/)
+      expect(s).toMatch(/sop\.paid_at/)
+      expect(s).not.toMatch(/so\.status\s*=/)
     }
 
     const shengmeiConsSqls = sqlList.filter(
@@ -1310,7 +1314,7 @@ describe('mgmtDashboard.storeRanking', () => {
   // ---- SQL 形态断言（按 metric） ----
 
   describe('SQL 形态断言：revenue', () => {
-    test('period=month → date_trunc(\'month\', so.paid_at) = date_trunc(\'month\', NOW()::date)；条件含 销售单/转换单/已支付', async () => {
+    test('period=month → date_trunc(\'month\', sop.paid_at) = date_trunc(\'month\', NOW()::date)；条件含销售单/转换单/充值单/付款状态', async () => {
       setupDefaultRankingMocks()
       const ctx = makeHqCtx({ period: 'month', metric: 'revenue' })
       await storeRanking(ctx)
@@ -1318,13 +1322,16 @@ describe('mgmtDashboard.storeRanking', () => {
       const sql = pg.query.mock.calls[0][0]
       expect(sql).toMatch(/FROM stores s/)
       expect(sql).toMatch(/LEFT JOIN sale_orders so\b/)
-      expect(sql).toMatch(/so\.paid_at/)
-      expect(sql).toMatch(/date_trunc\('month',\s*so\.paid_at\)\s*=\s*date_trunc\('month',\s*NOW\(\)::date\)/)
+      expect(sql).toMatch(/LEFT JOIN sale_order_payments sop\b/)
+      expect(sql).toMatch(/sop\.paid_at/)
+      expect(sql).toMatch(/date_trunc\('month',\s*sop\.paid_at\)\s*=\s*date_trunc\('month',\s*NOW\(\)::date\)/)
       expect(sql).toContain('销售单')
       expect(sql).toContain('转换单')
-      expect(sql).toContain("so.status = '已支付'")
-      // 2026-04-26 sale-order-domain-refactor: paid_amount → received - refunded_amount
-      expect(sql).toMatch(/SUM\(so\.received::numeric\s*-\s*COALESCE\(so\.refunded_amount,\s*0\)::numeric\)/)
+      expect(sql).toContain('充值单')
+      expect(sql).toContain("sop.status = '已支付'")
+      expect(sql).toContain("sop.change_type IN ('首次支付', '回款', '退款')")
+      expect(sql).toMatch(/SUM\(sop\.amount::numeric\)/)
+      expect(sql).not.toMatch(/so\.status\s*=/)
       expect(sql).toMatch(/ORDER BY value DESC, s\.store_name ASC/)
     })
 
@@ -1337,13 +1344,13 @@ describe('mgmtDashboard.storeRanking', () => {
       expect(sql).toMatch(/date_trunc\('month',\s*NOW\(\)::date\s*-\s*INTERVAL\s+'1 month'\)/)
     })
 
-    test('period=year → date_trunc(\'year\', so.paid_at) = date_trunc(\'year\', NOW()::date)', async () => {
+    test('period=year → date_trunc(\'year\', sop.paid_at) = date_trunc(\'year\', NOW()::date)', async () => {
       setupDefaultRankingMocks()
       const ctx = makeHqCtx({ period: 'year', metric: 'revenue' })
       await storeRanking(ctx)
 
       const sql = pg.query.mock.calls[0][0]
-      expect(sql).toMatch(/date_trunc\('year',\s*so\.paid_at\)\s*=\s*date_trunc\('year',\s*NOW\(\)::date\)/)
+      expect(sql).toMatch(/date_trunc\('year',\s*sop\.paid_at\)\s*=\s*date_trunc\('year',\s*NOW\(\)::date\)/)
     })
   })
 
@@ -2113,8 +2120,13 @@ describe('mgmtDashboard.salesData 时间区间口径', () => {
       if (/si\.product_type\s*=\s*'家居产品'/.test(sql)) return [{ xiaomei: 0, new_member: 0, old_member: 0 }]
       if (/FROM service_items sit/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 0, new_member: 0, old_member: 0 }]
       if (/FROM service_items sit/.test(sql)) return [{ v: overrides.consValue || 0 }]
+      if (/FROM sale_order_payments sop/.test(sql) && /JOIN client_wechat_users/.test(sql)) {
+        return [{ xiaomei: 0, new_member: 0, old_member: 0 }]
+      }
       if (/FROM sale_items si/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 0, new_member: 0, old_member: 0 }]
-      if (/FROM sale_orders o/.test(sql) && /SUM\(o\.received::numeric/.test(sql)) return [{ v: overrides.revValue || 0 }]
+      if (/FROM sale_order_payments sop/.test(sql) && /SUM\(sop\.amount::numeric/.test(sql)) {
+        return [{ v: overrides.revValue || 0 }]
+      }
       return [{ v: 0 }]
     })
   }
@@ -2130,7 +2142,7 @@ describe('mgmtDashboard.salesData 时间区间口径', () => {
     const m = String(now.getMonth() + 1).padStart(2, '0')
     const expectedStart = `${y}-${m}-01`
 
-    const totalRevCall = allCalls.find(([sql]) => /SUM\(o\.received::numeric/.test(sql))
+    const totalRevCall = allCalls.find(([sql]) => /FROM sale_order_payments sop/.test(sql) && /AS v/.test(sql))
     expect(totalRevCall).toBeDefined()
     expect(totalRevCall[1][0]).toBe(expectedStart)
   })
@@ -2147,7 +2159,7 @@ describe('mgmtDashboard.salesData 时间区间口径', () => {
     const lastDay = new Date(Date.UTC(lmY, lmM, 0)).getUTCDate()
     const expectedEnd = `${lmY}-${String(lmM).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`
 
-    const totalRevCall = allCalls.find(([sql]) => /SUM\(o\.received::numeric/.test(sql))
+    const totalRevCall = allCalls.find(([sql]) => /FROM sale_order_payments sop/.test(sql) && /AS v/.test(sql))
     expect(totalRevCall[1][1]).toBe(expectedEnd)
     // endDate 不是 today
     const today = new Date()
@@ -2162,7 +2174,7 @@ describe('mgmtDashboard.salesData 时间区间口径', () => {
 
     const allCalls = pg.query.mock.calls
     const expectedStart = `${new Date().getFullYear()}-01-01`
-    const totalRevCall = allCalls.find(([sql]) => /SUM\(o\.received::numeric/.test(sql))
+    const totalRevCall = allCalls.find(([sql]) => /FROM sale_order_payments sop/.test(sql) && /AS v/.test(sql))
     expect(totalRevCall[1][0]).toBe(expectedStart)
   })
 })
@@ -2257,8 +2269,11 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
       if (/si\.product_type\s*=\s*'家居产品'/.test(sql)) return [{ xiaomei: 100, new_member: 200, old_member: 300 }]
       if (/FROM service_items sit/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 50, new_member: 100, old_member: 150 }]
       if (/FROM service_items sit/.test(sql)) return [{ v: 5000 }]
+      if (/FROM sale_order_payments sop/.test(sql) && /JOIN client_wechat_users/.test(sql)) {
+        return [{ xiaomei: 200, new_member: 400, old_member: 600 }]
+      }
       if (/FROM sale_items si/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 200, new_member: 400, old_member: 600 }]
-      if (/FROM sale_orders o/.test(sql) && /SUM\(o\.received::numeric/.test(sql)) return [{ v: 10000 }]
+      if (/FROM sale_order_payments sop/.test(sql) && /SUM\(sop\.amount::numeric/.test(sql)) return [{ v: 10000 }]
       return [{ v: 0 }]
     })
   }
@@ -2285,7 +2300,7 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
     await salesData(ctx)
 
     const sqls = pg.query.mock.calls.map(([s]) => s)
-    const saleSqls = sqls.filter((s) => /FROM sale_orders o\b/.test(s) || (/FROM sale_items si/.test(s) && !/GROUP BY pc\.category_name/.test(s) && !/GROUP BY pc\.product_kind/.test(s)))
+    const saleSqls = sqls.filter((s) => /FROM sale_orders o\b/.test(s) || /FROM sale_order_payments sop\b/.test(s) || (/FROM sale_items si/.test(s) && !/GROUP BY pc\.category_name/.test(s) && !/GROUP BY pc\.product_kind/.test(s)))
     const svcSqls = sqls.filter((s) => /FROM service_orders so\b/.test(s) || /FROM service_items sit/.test(s))
 
     for (const s of saleSqls) {
@@ -2304,9 +2319,9 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
     await salesData(ctx)
 
     const sqls = pg.query.mock.calls.map(([s]) => s)
-    // 现在 SQL 2 改成 FROM sale_orders o（订单层），不再 FROM sale_items
+    // SQL 2 与 SQL 1 共用付款流水，充值单也能进入客群分桶
     const custRevSql = sqls.find((s) =>
-      /FROM sale_orders o/.test(s) &&
+      /FROM sale_order_payments sop/.test(s) &&
       /JOIN client_wechat_users c/.test(s) &&
       /FILTER/.test(s) &&
       !/product_type/.test(s)
@@ -2317,8 +2332,11 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
     // NULL 兜底：COALESCE(c.became_member_at, '1970-01-01'::timestamptz)
     expect(custRevSql).toMatch(/COALESCE\(c\.became_member_at,\s*'1970-01-01'::timestamptz\)::date\s*>=/)
     expect(custRevSql).toMatch(/COALESCE\(c\.became_member_at,\s*'1970-01-01'::timestamptz\)::date\s*</)
-    // 守恒：使用 o.received - refunded_amount，与 SQL 1 总额同口径
-    expect(custRevSql).toMatch(/SUM\(o\.received::numeric - COALESCE\(o\.refunded_amount/)
+    // 守恒：使用 sop.amount，与 SQL 1 总额同口径
+    expect(custRevSql).toMatch(/SUM\(sop\.amount::numeric\)/)
+    expect(custRevSql).toMatch(/sop\.change_type IN \('首次支付',\s*'回款',\s*'退款'\)/)
+    expect(custRevSql).toContain('充值单')
+    expect(custRevSql).not.toMatch(/o\.status\s*=/)
   })
 
   test('产品出库 SQL 含 product_type = 家居产品', async () => {
@@ -2431,7 +2449,9 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
 
   test('totalRevenue 从 v 映射，金额为字符串格式 "0.00"', async () => {
     pg.query.mockReset().mockImplementation(async (sql) => {
-      if (/SUM\(o\.received::numeric/.test(sql)) return [{ v: '12345.678' }]
+      if (/FROM sale_order_payments sop/.test(sql) && /SUM\(sop\.amount::numeric/.test(sql)) {
+        return [{ v: '12345.678' }]
+      }
       if (/GROUP BY/.test(sql)) return []
       return [{ v: 0, xiaomei: 0, new_member: 0, old_member: 0 }]
     })

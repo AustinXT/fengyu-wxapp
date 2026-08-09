@@ -292,10 +292,10 @@ async function cascadeRefund(client, params) {
   if (refundAllocatedCents > 0) {
     await client.query(
       `UPDATE sale_order_payments
-          SET allocation_status = '已分配'
-        WHERE id = $1
-          AND change_type = '退款'
-          AND allocation_status IS DISTINCT FROM '已分配'`,
+        SET allocation_status = '已分配'
+      WHERE id = $1
+        AND change_type = '退款'
+          AND (allocation_status IS NULL OR allocation_status = '待分配')`,
       [refundPaymentId],
     )
   }
