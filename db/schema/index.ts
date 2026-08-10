@@ -67,8 +67,11 @@ export * from './system-config'
 // 查找表（职位 + 技能标签）
 export * from './lookup'
 
-// 拉卡拉商户入网（主表 + 附件 + 调用日志）
+// 拉卡拉收款商户配置
 export * from './lakala'
 
 // 管理后台异步导出任务
 export * from './export-job'
+
+// 拉卡拉门店入网（申请 + 私有附件 + 脱敏外部调用记录）
+export * from './lakala-onboarding'

@@ -21,6 +21,7 @@ export default async function Page({
 
   const session = await getSession()
   const canCreate = !!(session && hasPermission(session, "merchant:create"))
+  const canOnboard = !!(session && hasPermission(session, "merchant:list"))
 
   const [{ data, total }, markets, filterOptions] = await Promise.all([
     getMerchantsPaginated({
@@ -42,6 +43,7 @@ export default async function Page({
         total={total}
         markets={markets}
         canCreate={canCreate}
+        canOnboard={canOnboard}
         filterOptions={filterOptions}
       />
     </Suspense>

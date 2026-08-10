@@ -17,7 +17,10 @@
  *   不引入 dotenv 依赖，避免与 Next.js 的 .env 加载机制重复。
  */
 import cron from 'node-cron'
+import { db } from '@/db'
 import { runDailyJobs } from './run'
+import { refreshLakalaContracts } from './steps/refresh-lakala-contracts'
+import { refreshLakalaSubMerchants } from './steps/refresh-lakala-submerchants'
 
 const ONCE = process.argv.includes('--once')
 const ONLY = process.argv
@@ -25,10 +28,51 @@ const ONLY = process.argv
   ?.split('=')[1]
   ?.trim()
 
+export async function runHourlyLakalaJobs() {
+  const [contracts, subMerchants] = await Promise.allSettled([
+    refreshLakalaContracts(db),
+    refreshLakalaSubMerchants(db),
+  ])
+  const failedSteps = [
+    ...(contracts.status === 'rejected' ? ['lakalaContracts'] : []),
+    ...(subMerchants.status === 'rejected' ? ['lakalaSubMerchants'] : []),
+  ]
+  return {
+    contracts: contracts.status === 'fulfilled' ? contracts.value : null,
+    subMerchants: subMerchants.status === 'fulfilled' ? subMerchants.value : null,
+    errorStepCount: failedSteps.length,
+    failedSteps,
+  }
+}
+
+async function runOneHourlyLakalaJob(only: 'lakalaContracts' | 'lakalaSubMerchants') {
+  try {
+    const result = only === 'lakalaContracts'
+      ? await refreshLakalaContracts(db)
+      : await refreshLakalaSubMerchants(db)
+    return {
+      ok: true,
+      errorStepCount: 0,
+      summary: only === 'lakalaContracts'
+        ? { lakalaContracts: result }
+        : { lakalaSubMerchants: result },
+    }
+  } catch {
+    return {
+      ok: false,
+      errorStepCount: 1,
+      summary: { failedSteps: [only] },
+    }
+  }
+}
+
 if (ONCE) {
   // 本地开发 / 部署后冒烟测试：跑一次立即退出
   // 支持 --only=<stepName> 只跑指定 STEP（e2e 测试用，单 STEP 5-30s）
-  runDailyJobs(ONLY ? { only: ONLY } : undefined)
+  const runOnce = ONLY === 'lakalaContracts' || ONLY === 'lakalaSubMerchants'
+    ? () => runOneHourlyLakalaJob(ONLY)
+    : () => runDailyJobs(ONLY ? { only: ONLY } : undefined)
+  runOnce()
     .then((result) => {
       console.log('[cron-worker] one-shot done:', JSON.stringify(result))
       process.exit(result.ok ? 0 : 1)
@@ -47,7 +91,22 @@ if (ONCE) {
     { timezone: 'Asia/Shanghai' },
   )
 
+  // 电子合同和渠道子商户号均采用主动查询，不暴露公网回调入口。
+  cron.schedule(
+    '0 * * * *',
+    () => {
+      runHourlyLakalaJobs()
+        .then((result) => {
+          const level = result.errorStepCount ? console.error : console.log
+          level('[cron-worker] lakala hourly poll:', JSON.stringify(result))
+        })
+        .catch(() => console.error('[cron-worker] lakala hourly poll failed'))
+    },
+    { timezone: 'Asia/Shanghai' },
+  )
+
   console.log('[cron-worker] scheduled at 03:00 Asia/Shanghai (cron: 0 3 * * *)')
+  console.log('[cron-worker] lakala contract and sub-merchant polling at minute 0 every hour')
 
   // SIGTERM 优雅退出（compose down 时）
   process.on('SIGTERM', () => {

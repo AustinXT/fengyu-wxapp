@@ -78,6 +78,13 @@
       "when": 1786320012789,
       "tag": "0010_mute_black_bolt",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1786325489019,
+      "tag": "0011_cooing_stark_industries",
+      "breakpoints": true
     }
   ]
 }
