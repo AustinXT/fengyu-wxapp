@@ -4,6 +4,7 @@ import {
   boolean,
   check,
   date,
+  foreignKey,
   index,
   integer,
   numeric,
@@ -702,7 +703,9 @@ export const inventoryLocations = pgTable(
     name: text('name').notNull(),
     orgNodeId: text('org_node_id').references(() => orgNodes.id),
     storeId: text('store_id').references(() => stores.storeId),
-    parentLocationId: text('parent_location_id'),
+    parentLocationId: text('parent_location_id').references(
+      (): any => inventoryLocations.locationId,
+    ),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true })
@@ -717,6 +720,10 @@ export const inventoryLocations = pgTable(
     check(
       'chk_inventory_locations_type',
       sql`${table.locationType} IN ('总部','市场','门店')`,
+    ),
+    check(
+      'chk_inventory_locations_parent_not_self',
+      sql`${table.parentLocationId} IS NULL OR ${table.parentLocationId} <> ${table.locationId}`,
     ),
   ],
 )
@@ -820,7 +827,8 @@ export const inventorySuppliers = pgTable(
 /**
  * 批次库存余额表。
  *
- * lot_key 由应用层按 SKU、批号、效期、赠送标记和真实单价生成，用于同批不同价格分层管理。
+ * lot_key 由应用层按 SKU、批号、效期、赠送标记、真实单价、供应商和来源单据生成，
+ * 用于同批不同价格或供应来源的分层管理。
  */
 export const inventoryStockLots = pgTable(
   'inventory_stock_lots',
@@ -836,6 +844,7 @@ export const inventoryStockLots = pgTable(
     skuName: text('sku_name').notNull(),
     specName: text('spec_name'),
     supplier: text('supplier'),
+    supplierId: text('supplier_id').references(() => inventorySuppliers.supplierId),
     productSeries: text('product_series'),
     batchNo: text('batch_no').notNull().default(''),
     expiryDate: date('expiry_date'),
@@ -872,7 +881,7 @@ export const inventoryStockLots = pgTable(
       precision: 12,
       scale: 2,
     }),
-    sourceDocId: text('source_doc_id'),
+    sourceDocId: text('source_doc_id').references((): any => inventoryDocs.id),
     remark: text('remark'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true })
@@ -885,6 +894,8 @@ export const inventoryStockLots = pgTable(
     index('idx_inventory_stock_lots_location').on(table.locationId),
     index('idx_inventory_stock_lots_sku').on(table.skuId),
     index('idx_inventory_stock_lots_batch').on(table.batchNo),
+    index('idx_inventory_stock_lots_supplier').on(table.supplierId),
+    index('idx_inventory_stock_lots_source_doc').on(table.sourceDocId),
     check('chk_inventory_stock_lots_qty', sql`${table.quantityOnHand} >= 0`),
   ],
 )
@@ -905,8 +916,6 @@ export const inventoryDocs = pgTable(
     marketId: text('market_id').references(() => orgNodes.id),
     supplierId: text('supplier_id').references(() => inventorySuppliers.supplierId),
     docDate: date('doc_date').notNull(),
-    relatedDocId: text('related_doc_id'),
-    requestDocId: text('request_doc_id'),
     relatedSaleOrderId: varchar('related_sale_order_id', { length: 30 }).references(
       () => saleOrders.saleOrderId,
     ),
@@ -968,10 +977,21 @@ export const inventoryDocs = pgTable(
     index('idx_inventory_docs_target').on(table.targetLocationId),
     index('idx_inventory_docs_market').on(table.marketId),
     index('idx_inventory_docs_supplier').on(table.supplierId),
-    index('idx_inventory_docs_related').on(table.relatedDocId),
     check(
       'chk_inventory_docs_status',
       sql`${table.status} IN ('草稿','待审批','待收货','已完成','已驳回','已取消')`,
+    ),
+    check(
+      'chk_inventory_docs_type',
+      sql`${table.docType} IN (
+        '门店报货','市场报货','品项公司报货需求','采购订单','供应链采购订单',
+        '供应链采购入库','品项公司发货','市场采购入库','自采产品入库','分院配货',
+        '院入库','分院调货出库','分院调货入库','市场间调货出库','市场间调货入库',
+        '员工购出库','内部领用','非凤御市场出库','市场退货','市场退货入库',
+        '供应链退货入库','院退货','院顾客产品出库','院顾客退货','市场产品报损',
+        '院产品报损','市场产品盘溢','市场库存盘点','分院库存盘点','库存转换出库',
+        '库存转换入库','期初库存'
+      )`,
     ),
     check(
       'chk_inventory_docs_location_pair',
@@ -1049,6 +1069,7 @@ export const inventoryDocItems = pgTable(
     index('idx_inventory_doc_items_doc').on(table.docId),
     index('idx_inventory_doc_items_lot').on(table.lotId),
     index('idx_inventory_doc_items_sku').on(table.skuId),
+    uniqueIndex('uq_inventory_doc_items_id_doc').on(table.id, table.docId),
     check('chk_inventory_doc_items_qty', sql`${table.quantity} > 0`),
   ],
 )
@@ -1085,6 +1106,16 @@ export const inventoryDocLinks = pgTable(
     index('idx_inventory_doc_links_from_item').on(table.fromItemId),
     index('idx_inventory_doc_links_to_item').on(table.toItemId),
     index('idx_inventory_doc_links_relation').on(table.relationType),
+    foreignKey({
+      name: 'inventory_doc_links_from_item_doc_fk',
+      columns: [table.fromItemId, table.fromDocId],
+      foreignColumns: [inventoryDocItems.id, inventoryDocItems.docId],
+    }),
+    foreignKey({
+      name: 'inventory_doc_links_to_item_doc_fk',
+      columns: [table.toItemId, table.toDocId],
+      foreignColumns: [inventoryDocItems.id, inventoryDocItems.docId],
+    }),
     check(
       'chk_inventory_doc_links_distinct_docs',
       sql`${table.fromDocId} <> ${table.toDocId}`,
@@ -1092,6 +1123,23 @@ export const inventoryDocLinks = pgTable(
     check(
       'chk_inventory_doc_links_quantity',
       sql`${table.quantity} IS NULL OR ${table.quantity} > 0`,
+    ),
+    check(
+      'chk_inventory_doc_links_item_pair',
+      sql`(${table.fromItemId} IS NULL) = (${table.toItemId} IS NULL)`,
+    ),
+    check(
+      'chk_inventory_doc_links_quantity_shape',
+      sql`(${table.fromItemId} IS NULL AND ${table.quantity} IS NULL)
+        OR (${table.fromItemId} IS NOT NULL AND ${table.quantity} IS NOT NULL)`,
+    ),
+    check(
+      'chk_inventory_doc_links_relation_type',
+      sql`${table.relationType} IN (
+        '门店报货汇总','市场报货采购订单','品项公司报货采购订单',
+        '采购订单发货','采购订单赠送发货','发货收货','采购订单供应链采购入库',
+        '门店报货配货','门店报货赠送配货','退货回库','库存转换','历史关联'
+      )`,
     ),
   ],
 )
@@ -1254,11 +1302,30 @@ export const inventoryMovements = pgTable(
       table.createdAt,
     ),
     index('idx_inventory_movements_doc').on(table.docId),
+    foreignKey({
+      name: 'inventory_movements_doc_item_doc_fk',
+      columns: [table.docItemId, table.docId],
+      foreignColumns: [inventoryDocItems.id, inventoryDocItems.docId],
+    }),
     check(
       'chk_inventory_movements_direction',
       sql`${table.direction} IN ('入库','出库','调整')`,
     ),
     check('chk_inventory_movements_delta', sql`${table.quantityDelta} <> 0`),
+    check(
+      'chk_inventory_movements_direction_delta',
+      sql`(${table.direction} = '入库' AND ${table.quantityDelta} > 0)
+        OR (${table.direction} = '出库' AND ${table.quantityDelta} < 0)
+        OR (${table.direction} = '调整' AND ${table.quantityDelta} <> 0)`,
+    ),
+    check(
+      'chk_inventory_movements_balance',
+      sql`${table.quantityAfter} = ${table.quantityBefore} + ${table.quantityDelta}`,
+    ),
+    check(
+      'chk_inventory_movements_doc_item_pair',
+      sql`(${table.docItemId} IS NULL) = (${table.docId} IS NULL)`,
+    ),
     check('chk_inventory_movements_after', sql`${table.quantityAfter} >= 0`),
   ],
 )

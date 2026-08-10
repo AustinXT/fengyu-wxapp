@@ -654,8 +654,12 @@ function docSourceKey(row) {
   return `${row.legacyTable}\u001f${row.legacyRid}\u001f`
 }
 
-function lotKey(row) {
-  return `workfine-initial:${row.legacyTable}:${row.legacyRid}:${row.legacyObyid}`
+function lotKey(row, sourceDocId) {
+  return [
+    `workfine-initial:${row.legacyTable}:${row.legacyRid}:${row.legacyObyid}`,
+    `supplier:${String(row.supplier || '').trim()}`,
+    `source:${sourceDocId || ''}`,
+  ].join('|')
 }
 
 function movementKey(row) {
@@ -903,10 +907,10 @@ async function lockWorkfineInventoryCutover(client) {
   return state
 }
 
-function assertWorkfineInventoryCutoverCanApply(state, { reset = false } = {}) {
+function assertWorkfineInventoryCutoverCanApply(state) {
   const status = normalizeWorkfineInventoryCutoverStatus(state)
-  if (status === WORKFINE_INVENTORY_CUTOVER_STATUSES.INITIALIZED && reset !== true) {
-    throw new Error('WorkFine 库存期初已初始化；为避免重复导入，请在受控切换窗口显式使用 --apply --reset。')
+  if (status === WORKFINE_INVENTORY_CUTOVER_STATUSES.INITIALIZED) {
+    throw new Error('WorkFine 库存期初已初始化；库存流水不可重写，请通过新的库存单据处理差异。')
   }
   return status
 }
@@ -997,8 +1001,8 @@ async function assertWorkfineBaselineExclusive(client, contract) {
 
 async function syncInventoryLocations(client) {
   await client.query(`
-    INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, parent_location_id)
-    SELECT id, type, name, id, parent_id
+    INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, parent_location_id, is_active)
+    SELECT id, type, name, id, parent_id, is_active
       FROM org_nodes
      WHERE type IN ('总部', '市场')
     ON CONFLICT (location_id) DO UPDATE
@@ -1006,11 +1010,13 @@ async function syncInventoryLocations(client) {
           name = EXCLUDED.name,
           org_node_id = EXCLUDED.org_node_id,
           parent_location_id = EXCLUDED.parent_location_id,
+          is_active = EXCLUDED.is_active,
           updated_at = NOW()
   `)
   await client.query(`
-    INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, store_id, parent_location_id)
-    SELECT s.store_id, '门店', s.store_name, s.org_node_id, s.store_id, o.parent_id
+    INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, store_id, parent_location_id, is_active)
+    SELECT s.store_id, '门店', s.store_name, s.org_node_id, s.store_id, o.parent_id,
+           COALESCE(o.is_active, false) AND NOT s.is_closed
       FROM stores s
       LEFT JOIN org_nodes o ON o.id = s.org_node_id
     ON CONFLICT (location_id) DO UPDATE
@@ -1019,6 +1025,7 @@ async function syncInventoryLocations(client) {
           org_node_id = EXCLUDED.org_node_id,
           store_id = EXCLUDED.store_id,
           parent_location_id = EXCLUDED.parent_location_id,
+          is_active = EXCLUDED.is_active,
           updated_at = NOW()
   `)
 }
@@ -1283,10 +1290,7 @@ async function upsertInitialDocument(client, group, createdBy) {
   return result.rows[0].id
 }
 
-async function upsertLot(client, row, skuIdValue, docId, { allowOverwriteQuantity = false } = {}) {
-  const quantityOnHand = allowOverwriteQuantity === true
-    ? 'EXCLUDED.quantity_on_hand'
-    : 'inventory_stock_lots.quantity_on_hand'
+async function upsertLot(client, row, skuIdValue, docId) {
   const result = await client.query(
     `INSERT INTO inventory_stock_lots (
        location_id, sku_id, lot_key, sku_name, spec_name, supplier, product_series,
@@ -1305,7 +1309,6 @@ async function upsertLot(client, row, skuIdValue, docId, { allowOverwriteQuantit
        expiry_date = EXCLUDED.expiry_date,
        expiry_date_key = EXCLUDED.expiry_date_key,
        is_gift = EXCLUDED.is_gift,
-       quantity_on_hand = ${quantityOnHand},
        supply_chain_unit_cost = COALESCE(EXCLUDED.supply_chain_unit_cost, inventory_stock_lots.supply_chain_unit_cost),
        market_standard_unit_price = COALESCE(EXCLUDED.market_standard_unit_price, inventory_stock_lots.market_standard_unit_price),
        market_unit_discount = COALESCE(EXCLUDED.market_unit_discount, inventory_stock_lots.market_unit_discount),
@@ -1320,7 +1323,7 @@ async function upsertLot(client, row, skuIdValue, docId, { allowOverwriteQuantit
     [
       row.locationId,
       skuIdValue,
-      lotKey(row),
+      lotKey(row, docId),
       row.productName,
       row.specName,
       row.supplier,
@@ -1329,7 +1332,7 @@ async function upsertLot(client, row, skuIdValue, docId, { allowOverwriteQuantit
       row.expiryDate,
       row.expiryDate || '',
       row.isGift,
-      row.quantity,
+      0,
       row.supplyChainUnitCost,
       row.marketStandardUnitPrice,
       row.marketUnitDiscount,
@@ -1409,22 +1412,18 @@ async function upsertMovement(client, row, docId, docItemId, lotId, skuIdValue, 
        movement_key, lot_id, location_id, sku_id, doc_id, doc_item_id,
        direction, quantity_delta, quantity_before, quantity_after, created_by, remark
      ) VALUES ($1,$2,$3,$4,$5,$6,'入库',$7,'0',$7,$8,$9)
-     ON CONFLICT (movement_key) DO UPDATE SET
-       lot_id = EXCLUDED.lot_id,
-       location_id = EXCLUDED.location_id,
-       sku_id = EXCLUDED.sku_id,
-       doc_id = EXCLUDED.doc_id,
-       doc_item_id = EXCLUDED.doc_item_id,
-       direction = '入库',
-       quantity_delta = EXCLUDED.quantity_delta,
-       quantity_before = '0',
-       quantity_after = EXCLUDED.quantity_after,
-       created_by = EXCLUDED.created_by,
-       remark = COALESCE(EXCLUDED.remark, inventory_movements.remark)
+     ON CONFLICT (movement_key) DO NOTHING
      RETURNING id`,
     [movementKey(row), lotId, row.locationId, skuIdValue, docId, docItemId, row.quantity, createdBy, row.remark],
   )
-  return result.rows[0].id
+  if (result.rows[0]) return result.rows[0].id
+  const existing = await client.query(
+    'SELECT id FROM inventory_movements WHERE movement_key = $1',
+    [movementKey(row)],
+  )
+  const id = existing.rows[0]?.id
+  if (id == null) throw new Error(`库存流水幂等记录丢失：${movementKey(row)}`)
+  return id
 }
 
 function printRowSummary(rows, log = console.log) {

@@ -16,6 +16,7 @@ const {
   getMetadataTable,
   groupRowsByDocument,
   LocationResolver,
+  lotKey,
   normalizeSnapshotRow,
   normalizeTemplateMetadata,
   sourceKey,
@@ -128,6 +129,20 @@ test('期初库存行以物理表 + RID + OBYID 形成稳定追溯键', () => {
   })
 })
 
+test('WorkFine 批次键按供应商和来源单据隔离追溯', () => {
+  const row = {
+    legacyTable: 'UDT_M_9000',
+    legacyRid: '100',
+    legacyObyid: '3',
+    supplier: '供应商甲',
+  }
+
+  const key = lotKey(row, 'WF-INIT-DOC-1')
+  assert.match(key, /\|supplier:供应商甲\|source:WF-INIT-DOC-1$/)
+  assert.notEqual(key, lotKey({ ...row, supplier: '供应商乙' }, 'WF-INIT-DOC-1'))
+  assert.notEqual(key, lotKey(row, 'WF-INIT-DOC-2'))
+})
+
 test('WorkFine 期初导入拒绝与未追溯的旧 PG 期初库存混用', async () => {
   const client = {
     query: async (query) => {
@@ -150,7 +165,7 @@ test('WorkFine 期初导入允许空库存域或已完整追溯的重跑', async
 })
 
 test('v3 初始迁移不复制旧 PG 库存，WorkFine 是唯一的期初库存基线', () => {
-  const migration = readFileSync(resolve(__dirname, '../../migrations/0005_futuristic_mauler.sql'), 'utf8')
+  const migration = readFileSync(resolve(__dirname, '../../migrations/0007_moaning_salo.sql'), 'utf8')
   assert.doesNotMatch(migration, /\bFROM\s+store_inventory_/i)
   assert.doesNotMatch(migration, /\bJOIN\s+store_inventory_/i)
 })
@@ -340,25 +355,20 @@ test('批次价格存在冲突候选且库存行缺价时拒绝猜测', () => {
 
 test('迁移模式互斥，避免误把验证跑成写入', () => {
   assert.throws(() => parseImportArgs(['--apply', '--verify']), /只能选择一个/)
-  assert.throws(() => parseImportArgs(['--reset']), /只能与 --apply 同用/)
+  assert.throws(() => parseImportArgs(['--reset']), /已废弃/)
   assert.equal(parseImportArgs(['--dry-run']).dryRun, true)
-  assert.equal(parseImportArgs(['--apply', '--reset']).reset, true)
   assert.equal(parseImportArgs(['--export-pending', '/tmp/rebuild.json']).exportPending, '/tmp/rebuild.json')
 })
 
-test('WorkFine 库存切换状态只允许已初始化后显式 reset 再次导入', () => {
+test('WorkFine 库存切换状态禁止已初始化后重写期初流水', () => {
   assert.equal(
     assertWorkfineInventoryCutoverCanApply({ status: WORKFINE_INVENTORY_CUTOVER_STATUSES.PENDING_INITIALIZATION }),
     '待初始化',
   )
   assert.throws(
     () => assertWorkfineInventoryCutoverCanApply({ status: WORKFINE_INVENTORY_CUTOVER_STATUSES.INITIALIZED }),
-    /已初始化.*--apply --reset/,
+    /已初始化.*不可重写/,
   )
-  assert.doesNotThrow(() => assertWorkfineInventoryCutoverCanApply(
-    { status: WORKFINE_INVENTORY_CUTOVER_STATUSES.INITIALIZED },
-    { reset: true },
-  ))
   assert.throws(
     () => assertWorkfineInventoryCutoverCanVerify({ status: WORKFINE_INVENTORY_CUTOVER_STATUSES.PENDING_INITIALIZATION }),
     /尚未导入/,
@@ -368,37 +378,16 @@ test('WorkFine 库存切换状态只允许已初始化后显式 reset 再次导�
   ))
 })
 
-test('已初始化的普通 apply 会回滚，reset apply 在同一事务改为待核验', async () => {
+test('已初始化的 apply 会回滚且不改写切换状态', async () => {
   const blocked = createCutoverPgPool({ status: '已初始化' })
   await assert.rejects(
     () => importRows(blocked.pgPool, [], { WORKFINE_INVENTORY_IMPORTER_EMPLOYEE_ID: 'employee-1' }),
-    /已初始化.*--apply --reset/,
+    /已初始化.*不可重写/,
   )
   assert.ok(queryIndex(blocked.queries, 'ROLLBACK') >= 0)
   assert.equal(queryIndex(blocked.queries, 'UPDATE inventory_cutover_states'), -1)
   assert.equal(blocked.client.released, true)
 
-  const reset = createCutoverPgPool({ status: '已初始化' })
-  await importRows(
-    reset.pgPool,
-    [],
-    { WORKFINE_INVENTORY_IMPORTER_EMPLOYEE_ID: 'employee-1' },
-    { allowOverwriteQuantity: true, asOfDate: '2026-08-09' },
-  )
-  const update = reset.queries.find(({ sql }) => sql.includes('UPDATE inventory_cutover_states'))
-  assert.deepEqual(update.values, [
-    WORKFINE_INVENTORY_CUTOVER_KEY,
-    '待核验',
-    '2026-08-09',
-    0,
-    '0.00',
-    0,
-    0,
-    'employee-1',
-  ])
-  assert.match(update.sql, /initialized_at = NOW\(\).*verified_at = NULL/s)
-  assert.ok(queryIndex(reset.queries, 'BEGIN') < queryIndex(reset.queries, 'UPDATE inventory_cutover_states'))
-  assert.ok(queryIndex(reset.queries, 'UPDATE inventory_cutover_states') < queryIndex(reset.queries, 'COMMIT'))
 })
 
 test('verify 仅在所有核验通过后于同一事务标记已初始化', async () => {
