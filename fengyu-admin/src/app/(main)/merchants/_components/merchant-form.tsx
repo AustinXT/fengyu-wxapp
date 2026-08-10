@@ -101,8 +101,8 @@ export default function MerchantForm({
         </CardHeader>
         <CardContent>
           <div className="mb-3 text-xs text-muted-foreground">
-            商户名称用于区分各店商户；商户号 / 终端号为拉卡拉线下开通后分配。启用开关关闭时，
-            关联本商户的门店支付走兜底，不会真实调拉卡拉接口。
+            商户名称用于区分各店商户；商户号 / 终端号为拉卡拉线下开通后分配。未启用的商户不能受理拉卡拉支付，
+            请完成入网并核对配置后再人工启用。
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
@@ -173,7 +173,7 @@ export default function MerchantForm({
                   className="h-4 w-4"
                 />
                 <span className="text-sm">
-                  {enabled ? "已启用（调真实拉卡拉接口）" : "未启用（走 mock / 兜底）"}
+                  {enabled ? "已启用（可受理拉卡拉支付）" : "未启用（不受理拉卡拉支付）"}
                 </span>
               </div>
             </div>

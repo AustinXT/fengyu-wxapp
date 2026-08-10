@@ -7,6 +7,11 @@ const COOKIE_NAME = 'fy-admin-token'
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
+  // 发给门店法人的认证指南是公开的；申请、附件与其他商户路由仍须登录。
+  if (pathname.startsWith('/merchants/lakala-guides/') || pathname.startsWith('/lakala-guides/')) {
+    return NextResponse.next()
+  }
+
   // Auth pages: allow without token
   if (pathname.startsWith('/login') || pathname.startsWith('/change-password')) {
     // Session expired: clear stale cookie and stay on login

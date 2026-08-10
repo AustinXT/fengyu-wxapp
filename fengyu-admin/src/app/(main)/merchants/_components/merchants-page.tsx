@@ -3,6 +3,7 @@
 import { useCallback, useRef, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
+import { ClipboardPlus } from "lucide-react"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { AdminMerchant, MerchantMarketOption } from "@/actions/merchants"
 import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types"
@@ -22,12 +23,14 @@ export default function MerchantsPage({
   total,
   markets,
   canCreate,
+  canOnboard = false,
   filterOptions,
 }: {
   merchants: AdminMerchant[]
   total: number
   markets: MerchantMarketOption[]
   canCreate: boolean
+  canOnboard?: boolean
   filterOptions: MarketStoreFilterOptions
 }) {
   const router = useRouter()
@@ -114,9 +117,16 @@ export default function MerchantsPage({
             拉卡拉收款商户档案；门店在「门店编辑」页选择关联本表的商户。
           </p>
         </div>
-        {canCreate && (
-          <Button onClick={() => router.push("/merchants/create")}>新建商户</Button>
-        )}
+        <div className="flex flex-wrap gap-2">
+          {canOnboard && (
+            <Link href="/merchants/onboarding">
+              <Button variant="outline"><ClipboardPlus />门店入网</Button>
+            </Link>
+          )}
+          {canCreate && (
+            <Button onClick={() => router.push("/merchants/create")}>新建商户</Button>
+          )}
+        </div>
       </div>
 
       <div className="flex items-center gap-3">
