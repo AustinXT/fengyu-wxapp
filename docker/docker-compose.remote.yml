@@ -20,11 +20,13 @@ services:
       # 与目标环境一致：worker 写入、admin 换取临时 URL 必须使用同一个 CloudBase 桶。
       CLOUDBASE_ENV_ID: ${DEPLOY_CLOUDBASE_ENV_ID:?deploy runtime env missing CLOUDBASE_ENV_ID}
       CDN_BASE: ${DEPLOY_CDN_BASE:?deploy runtime env missing CDN_BASE}
+      PRIVATE_UPLOAD_DIR: ${PRIVATE_UPLOAD_DIR:-/var/lib/fengyu/private-uploads}
     depends_on: !reset []
 
   cron-worker:
     environment:
       DATABASE_URL: ${ADMIN_DATABASE_URL}
+      PRIVATE_UPLOAD_DIR: ${PRIVATE_UPLOAD_DIR:-/var/lib/fengyu/private-uploads}
     depends_on: !reset []
 
   export-worker:

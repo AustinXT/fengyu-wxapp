@@ -38,6 +38,7 @@ services:
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - COOKIE_SECURE=false
+      - PRIVATE_UPLOAD_DIR=${PRIVATE_UPLOAD_DIR:-/var/lib/fengyu/private-uploads}
       # 锁定东八区（与 cron-worker 对齐）。Dockerfile ENV 已是权威，这里显式声明双保险，
       # 防止 admin 容器跑在 UTC 导致 postgres.js 把北京墙钟时间误读、时间列晚 8 小时。
       - TZ=Asia/Shanghai
@@ -51,6 +52,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    volumes:
+      # 入网资料和已签署合同仅在受保护的后台/cron 之间共享，绝不映射到 public 或 CDN。
+      - ./data/private-uploads:/var/lib/fengyu/private-uploads
 
   # cron-worker：迁自 fengyu-client/cloudfunctions/cronTask 的每日 03:00 定时任务
   # 复用 admin 镜像（含 cron-worker.js bundle），覆盖 entrypoint 切到 cron 入口
@@ -61,6 +65,7 @@ services:
     env_file: .env
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - PRIVATE_UPLOAD_DIR=${PRIVATE_UPLOAD_DIR:-/var/lib/fengyu/private-uploads}
       # node-cron 已带 timezone 参数；TZ 系统时区作双保险，避免日志时间戳混乱
       - TZ=Asia/Shanghai
       # 主动告警通道：企微机器人 webhook，缺失则 STEP 5/6 退化为 console.warn（详见 src/cron/lib/notify.ts）
@@ -73,6 +78,7 @@ services:
     # 注意：$$ 是 compose 变量转义，容器内 sh 实际拿到 $(date +%Y%m)
     volumes:
       - ./logs/cron-worker:/var/log/app
+      - ./data/private-uploads:/var/lib/fengyu/private-uploads
     command:
       - sh
       - -c
