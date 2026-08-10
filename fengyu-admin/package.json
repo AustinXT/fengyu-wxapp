@@ -13,7 +13,7 @@
     "cron": "node dist/cron-worker.mjs",
     "cron:dev": "bun --env-file=.env.local run src/cron/index.ts",
     "cron:once": "bun --env-file=.env.local run src/cron/index.ts --once",
-    "export-worker": "node dist/export-worker.mjs",
+    "export-worker": "node --conditions=react-server dist/export-worker.mjs",
     "export-worker:dev": "bun --env-file=.env.local run src/export-worker/index.ts",
     "export-worker:once": "bun --env-file=.env.local run src/export-worker/index.ts --once",
     "test": "vitest run",
