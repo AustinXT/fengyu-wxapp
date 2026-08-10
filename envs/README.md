@@ -47,6 +47,10 @@ admin 远程部署用 `docker/docker-compose.remote.yml` override。`deploy-admi
 `envs/<env>.env` 生成仅含 CloudBase envId/CDN 的远程运行时覆盖文件，禁止手工把另一环境的
 存储值写死到 compose。
 
+管理后台右上角的「经营分析」入口由 `ANALYST_PUBLIC_ORIGIN` 按环境构建注入：
+`dev.env` 与 `prod.env` 必须分别填写对应 analyst 地址，不能交叉复用。缺少生产配置时入口会隐藏，
+避免误跳到另一环境；本地 admin 开发回退到 `http://localhost:3100`。
+
 ## 小程序自适应（不需要渲染）
 
 小程序代码 `fengyu-{client,staff}/miniprogram/utils/cloud-env.ts` 是 git tracked

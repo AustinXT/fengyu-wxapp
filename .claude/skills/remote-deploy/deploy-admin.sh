@@ -162,12 +162,22 @@ if [[ -z "$RSA_PUB" ]]; then
 fi
 echo "  RSA 公钥来源: $RSA_SRC"
 
+# Analyst 地址是 public env，须和同环境 analyst 镜像构建时使用的地址一致。
+# 未配置时保留空值，生产顶栏会隐藏入口而不会误跳到另一环境。
+ANALYST_ORIGIN=$(grep -m1 '^ANALYST_PUBLIC_ORIGIN=' "envs/$ENV.env" 2>/dev/null | cut -d= -f2- | tr -d '\r"' || true)
+if [[ -z "$ANALYST_ORIGIN" ]]; then
+  echo "  ⚠️ envs/$ENV.env 未配置 ANALYST_PUBLIC_ORIGIN，生产顶栏将隐藏经营分析入口。"
+else
+  echo "  Analyst 地址来源: envs/$ENV.env"
+fi
+
 docker buildx build \
   --platform linux/amd64 \
   --load \
   --build-arg APP_VERSION="$APP_VERSION" \
   --build-arg APP_COMMIT="$APP_COMMIT" \
   --build-arg NEXT_PUBLIC_RSA_PUBLIC_KEY="$RSA_PUB" \
+  --build-arg NEXT_PUBLIC_ANALYST_ORIGIN="$ANALYST_ORIGIN" \
   -f docker/Dockerfile.admin -t fengyu-admin:latest .
 
 echo "=== 2/5 传输镜像到 $SSH_HOST ==="

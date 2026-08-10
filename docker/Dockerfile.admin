@@ -59,6 +59,11 @@ ENV JWT_SECRET=build-time-placeholder-not-used-at-runtime
 ARG NEXT_PUBLIC_RSA_PUBLIC_KEY=
 ENV NEXT_PUBLIC_RSA_PUBLIC_KEY=$NEXT_PUBLIC_RSA_PUBLIC_KEY
 
+# Analyst 入口地址同样由部署环境在构建期注入。生产不提供时顶栏会隐藏入口，
+# 防止 dev/prod 地址串用；本地 docker compose 会提供 localhost:3001 默认值。
+ARG NEXT_PUBLIC_ANALYST_ORIGIN=
+ENV NEXT_PUBLIC_ANALYST_ORIGIN=$NEXT_PUBLIC_ANALYST_ORIGIN
+
 RUN bun run build
 
 # 代码保护(L1)：兜底删除构建产物里的任何 source map。next build 生产模式默认不发

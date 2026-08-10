@@ -30,6 +30,8 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.admin
+      args:
+        NEXT_PUBLIC_ANALYST_ORIGIN: ${ANALYST_PUBLIC_ORIGIN:-http://localhost:3001}
     container_name: fengyu-admin
     restart: unless-stopped
     ports:
