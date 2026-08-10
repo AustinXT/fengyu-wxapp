@@ -1,10 +1,13 @@
 name: Guard main branch
 
-# main 分支守护：私有库 + GitHub 免费版无原生分支保护（API 403），
-# 用 Action 强制「main 只接受来自 dev 的 PR」。
-#   - enforce-dev-source：PR 到 main 且 head≠dev → 自动关闭 + 评论
-#   - detect-direct-push：push 到 main 且该 commit 不属于 dev→main 合并 PR → 开 issue 报警
+# main 分支守护：私有库 + GitHub 免费版无原生分支保护（API 403）。
+# TEMP：当前允许任意来源分支向 main 提 PR；恢复 dev-only 流程时将下方值改回 'false'。
+#   - enforce-dev-source：非 dev 来源仅在开关关闭时自动关闭 + 评论
+#   - detect-direct-push：push 到 main 且该 commit 不属于已合并 PR → 开 issue 报警
 # 免费库无法在物理层阻止直推 main，detect 仅事后报警（默认不自动 revert）。
+
+env:
+  ALLOW_NON_DEV_PR_TO_MAIN: 'true'
 
 on:
   pull_request:
@@ -24,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Reject PR to main not coming from dev
-        if: github.event.pull_request.head.ref != 'dev'
+        if: github.event.pull_request.head.ref != 'dev' && env.ALLOW_NON_DEV_PR_TO_MAIN != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -42,7 +45,7 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
-      - name: Verify push to main came via a dev merged PR
+      - name: Verify push to main came via a merged PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -50,17 +53,17 @@ jobs:
         run: |
           set -e
           SHORT=${AFTER:0:7}
-          # after 是否属于一个 base=main、head=dev 的「已合并」PR
+          # after 是否属于一个 base=main 的「已合并」PR；临时允许任意来源分支。
           COUNT=$(gh api "repos/$REPO/commits/$AFTER/pulls" \
-            --jq '[.[] | select(.base.ref == "main" and .head.ref == "dev" and .merged_at != null)] | length')
+            --jq '[.[] | select(.base.ref == "main" and .merged_at != null)] | length')
           if [ "$COUNT" -gt 0 ]; then
-            echo "OK: $AFTER is a legit dev->main merge."
+            echo "OK: $AFTER is a legit merged PR to main."
             exit 0
           fi
-          echo "WARN: $AFTER not from any dev->main merged PR -- opening issue."
+          echo "WARN: $AFTER not from any merged PR to main -- opening issue."
           gh issue create --repo "$REPO" \
-            --title "main 收到未经 dev PR 的提交 $SHORT" \
-            --body "提交 $AFTER 被直接推送或经非 dev 分支进入 main，未通过 dev -> PR -> main 流程。
+            --title "main 收到未经 PR 的提交 $SHORT" \
+            --body "提交 $AFTER 被直接推送到 main，未通过 PR 流程。
 
           责任人请核查：https://github.com/$REPO/commit/$AFTER
 
