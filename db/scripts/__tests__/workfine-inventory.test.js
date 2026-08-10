@@ -170,6 +170,20 @@ test('v3 初始迁移不复制旧 PG 库存，WorkFine 是唯一的期初库存�
   assert.doesNotMatch(migration, /\bJOIN\s+store_inventory_/i)
 })
 
+test('v3 初始迁移只对已确认的空历史骨架执行 bridge，不改写 Drizzle journal', () => {
+  const migration = readFileSync(resolve(__dirname, '../../migrations/0007_moaning_salo.sql'), 'utf8')
+  const bridge = migration.split('--> statement-breakpoint\nCREATE TABLE "inventory_cutover_states"')[0]
+
+  assert.match(bridge, /e8814b39d735d4e2a4aa7657c9d3131382525037254ad9e74bb73d862f55d81c/)
+  assert.match(bridge, /_inventory_v3_legacy_locations/)
+  assert.match(bridge, /legacy table % contains % rows/)
+  assert.match(bridge, /external foreign-key dependents exist/)
+  assert.match(bridge, /DROP TABLE public\.inventory_movements/)
+  assert.doesNotMatch(bridge, /\bCASCADE\b/i)
+  assert.doesNotMatch(migration, /TRUNCATE\s+drizzle\.__drizzle_migrations/i)
+  assert.doesNotMatch(migration, /INSERT\s+INTO\s+drizzle\.__drizzle_migrations/i)
+})
+
 test('期初库存缺少 OBYID 时拒绝迁移，不能退化为表名加 RID', () => {
   assert.throws(
     () => normalizeSnapshotRow(

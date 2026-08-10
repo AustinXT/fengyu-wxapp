@@ -1,3 +1,133 @@
+-- Bridge a legacy inventory V3 skeleton created by the pre-merge migration
+-- 0004_blue_meltdown. This migration was never recorded in the active journal,
+-- so Drizzle would otherwise replay the overlapping DDL as 0007.
+--
+-- The bridge is deliberately narrow: it only accepts the exact historical
+-- journal record, requires every legacy business table except locations to be
+-- empty, and refuses unknown external FK dependents. The whole migration is
+-- transactional under Drizzle, so a failed subsequent statement restores the
+-- legacy tables and their locations.
+DO $$
+DECLARE
+  legacy_tables text[] := ARRAY[
+    'inventory_doc_items',
+    'inventory_docs',
+    'inventory_locations',
+    'inventory_movements',
+    'inventory_promotion_plan_items',
+    'inventory_promotion_plans',
+    'inventory_skus',
+    'inventory_stock_lots'
+  ];
+  checked_empty_tables text[] := ARRAY[
+    'inventory_doc_items',
+    'inventory_docs',
+    'inventory_movements',
+    'inventory_promotion_plan_items',
+    'inventory_promotion_plans',
+    'inventory_skus',
+    'inventory_stock_lots'
+  ];
+  legacy_hash text := 'e8814b39d735d4e2a4aa7657c9d3131382525037254ad9e74bb73d862f55d81c';
+  legacy_created_at bigint := 1786205843510;
+  present_table_count integer;
+  legacy_table text;
+  legacy_row_count bigint;
+  invalid_location_count integer;
+  external_fk_count integer;
+BEGIN
+  SELECT count(*)
+    INTO present_table_count
+    FROM pg_class relation
+    JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+   WHERE namespace.nspname = 'public'
+     AND relation.relkind IN ('r', 'p')
+     AND relation.relname = ANY(legacy_tables);
+
+  IF present_table_count = 0 THEN
+    RETURN;
+  END IF;
+
+  IF present_table_count <> cardinality(legacy_tables) THEN
+    RAISE EXCEPTION
+      'inventory V3 bridge refused: expected either zero or all % legacy tables, found %',
+      cardinality(legacy_tables),
+      present_table_count;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+      FROM drizzle.__drizzle_migrations
+     WHERE hash = legacy_hash
+       AND created_at = legacy_created_at
+  ) THEN
+    RAISE EXCEPTION
+      'inventory V3 bridge refused: expected legacy migration record is absent';
+  END IF;
+
+  FOREACH legacy_table IN ARRAY checked_empty_tables LOOP
+    EXECUTE format('SELECT count(*) FROM public.%I', legacy_table) INTO legacy_row_count;
+    IF legacy_row_count <> 0 THEN
+      RAISE EXCEPTION
+        'inventory V3 bridge refused: legacy table % contains % rows',
+        legacy_table,
+        legacy_row_count;
+    END IF;
+  END LOOP;
+
+  SELECT count(*)
+    INTO invalid_location_count
+    FROM public.inventory_locations location
+    LEFT JOIN public.inventory_locations parent
+      ON parent.location_id = location.parent_location_id
+   WHERE location.location_type NOT IN ('总部', '市场', '门店')
+      OR (location.location_type = '门店' AND location.store_id IS NULL)
+      OR (location.location_type IN ('总部', '市场') AND location.org_node_id IS NULL)
+      OR (location.parent_location_id IS NOT NULL AND parent.location_id IS NULL);
+
+  IF invalid_location_count <> 0 THEN
+    RAISE EXCEPTION
+      'inventory V3 bridge refused: % legacy inventory_locations rows are invalid',
+      invalid_location_count;
+  END IF;
+
+  SELECT count(*)
+    INTO external_fk_count
+    FROM pg_constraint constraint_row
+    JOIN pg_class parent_relation ON parent_relation.oid = constraint_row.confrelid
+    JOIN pg_namespace parent_namespace ON parent_namespace.oid = parent_relation.relnamespace
+    JOIN pg_class child_relation ON child_relation.oid = constraint_row.conrelid
+    JOIN pg_namespace child_namespace ON child_namespace.oid = child_relation.relnamespace
+   WHERE constraint_row.contype = 'f'
+     AND parent_namespace.nspname = 'public'
+     AND parent_relation.relname = ANY(legacy_tables)
+     AND child_namespace.nspname = 'public'
+     AND NOT child_relation.relname = ANY(legacy_tables);
+
+  IF external_fk_count <> 0 THEN
+    RAISE EXCEPTION
+      'inventory V3 bridge refused: % external foreign-key dependents exist',
+      external_fk_count;
+  END IF;
+
+  EXECUTE '
+    CREATE TEMP TABLE _inventory_v3_legacy_locations ON COMMIT DROP AS
+    SELECT location_id, location_type, name, org_node_id, store_id,
+           parent_location_id, is_active, created_at, updated_at
+      FROM public.inventory_locations
+  ';
+  EXECUTE '
+    DROP TABLE public.inventory_movements,
+               public.inventory_doc_items,
+               public.inventory_promotion_plan_items,
+               public.inventory_stock_lots,
+               public.inventory_docs,
+               public.inventory_promotion_plans,
+               public.inventory_locations,
+               public.inventory_skus
+  ';
+END $$;
+--> statement-breakpoint
 CREATE TABLE "inventory_cutover_states" (
 	"cutover_key" text PRIMARY KEY NOT NULL,
 	"status" text DEFAULT '待初始化' NOT NULL,
@@ -379,4 +509,24 @@ CREATE INDEX "idx_inventory_stock_reservations_request" ON "inventory_stock_rese
 CREATE INDEX "idx_inventory_stock_reservations_location_sku" ON "inventory_stock_reservations" USING btree ("location_id","sku_id");--> statement-breakpoint
 CREATE INDEX "idx_inventory_stock_reservations_status" ON "inventory_stock_reservations" USING btree ("status");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_inventory_suppliers_name" ON "inventory_suppliers" USING btree ("name");--> statement-breakpoint
-CREATE INDEX "idx_inventory_suppliers_active" ON "inventory_suppliers" USING btree ("is_active");
+CREATE INDEX "idx_inventory_suppliers_active" ON "inventory_suppliers" USING btree ("is_active");--> statement-breakpoint
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM pg_class relation
+      JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+     WHERE namespace.oid = pg_my_temp_schema()
+       AND relation.relname = '_inventory_v3_legacy_locations'
+  ) THEN
+    EXECUTE '
+      INSERT INTO public.inventory_locations (
+        location_id, location_type, name, org_node_id, store_id,
+        parent_location_id, is_active, created_at, updated_at
+      )
+      SELECT location_id, location_type, name, org_node_id, store_id,
+             parent_location_id, is_active, created_at, updated_at
+        FROM pg_temp._inventory_v3_legacy_locations
+    ';
+  END IF;
+END $$;
