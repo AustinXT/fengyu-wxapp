@@ -166,7 +166,7 @@ export default function OrderDetailPageClient({
   canListAllocations?: boolean;
   /** 是否展示「危险操作」删除入口（仅系统管理员 sale_order:delete） */
   canDelete?: boolean;
-  /** 是否展示寄存单审批入口（系统管理员 / 总部或市场店长 / 总部或市场财务） */
+  /** 是否展示寄存单审批入口（系统管理员 / 总部、市场或门店店长、财务） */
   canApproveDeposit?: boolean;
 }) {
   const router = useRouter();

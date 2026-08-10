@@ -172,8 +172,10 @@ describe('deposit_approve 寄存单审批硬规则', () => {
     ['总部店长', [{ role: 'manager' as const, scopeId: 'hq', scopeType: '总部' as const }], true],
     ['总部财务', [{ role: 'finance' as const, scopeId: 'hq', scopeType: '总部' as const }], true],
     ['市场店长', [{ role: 'manager' as const, scopeId: 'm1', scopeType: '市场' as const }], true],
-    ['门店店长', [{ role: 'manager' as const, scopeId: 's1', scopeType: '门店' as const }], false],
+    ['门店店长', [{ role: 'manager' as const, scopeId: 's1', scopeType: '门店' as const }], true],
     ['市场财务', [{ role: 'finance' as const, scopeId: 'm1', scopeType: '市场' as const }], true],
+    ['门店财务', [{ role: 'finance' as const, scopeId: 's1', scopeType: '门店' as const }], true],
+    ['部门店长（异常绑定）', [{ role: 'manager' as const, scopeId: 'd1', scopeType: '部门' as never }], false],
   ])('%s', (_label, roles, expected) => {
     const session = makeSession(roles, ['sale_order:deposit_approve'])
     expect(isDepositOrderApprover(session)).toBe(expected)
