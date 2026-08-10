@@ -253,8 +253,6 @@ export interface CreateInventoryDocInput {
   supplierId?: string | null
   docDate?: string | null
   status?: InventoryCoreDocStatus
-  relatedDocId?: string | null
-  requestDocId?: string | null
   relatedSaleOrderId?: string | null
   clientUserId?: string | null
   customerName?: string | null
@@ -283,8 +281,6 @@ export interface InventoryDocRow {
   marketId: string | null
   supplierId: string | null
   docDate: string
-  relatedDocId: string | null
-  requestDocId: string | null
   relatedSaleOrderId: string | null
   customerName: string | null
   employeeName: string | null

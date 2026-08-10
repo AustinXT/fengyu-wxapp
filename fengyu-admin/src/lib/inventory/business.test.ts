@@ -109,8 +109,6 @@ function itemCompanyShipmentRow(input: {
     market_id: 'M1',
     supplier_id: 'SUP-1',
     supplier_name: '供应商',
-    related_doc_id: 'CGD-1',
-    request_doc_id: null,
     cancellation_request_reason: input.cancellationRequestReason ?? null,
     cancellation_requested_by: null,
     cancellation_requested_at: null,
@@ -353,7 +351,7 @@ describe('inventory business action input guards', () => {
     })).resolves.toEqual({ success: true })
 
     const queries = txExecute.mock.calls.map(([query]) => renderSql(query)).join('\n')
-    expect(queries).toContain('UPDATE inventory_stock_lots')
+    expect(queries).not.toContain('UPDATE inventory_stock_lots')
     expect(queries).toContain('INSERT INTO inventory_movements')
     expect(queries).toContain('UPDATE inventory_doc_items purchase_item')
     expect(queries).toContain("SET status = '已取消'")
@@ -462,7 +460,7 @@ describe('inventory business action input guards', () => {
       .mockResolvedValueOnce([{
         id: 'DBH-1', doc_type: '门店报货', status: '已完成',
         source_location_id: 'S1', target_location_id: 'M1', market_id: 'M1',
-        supplier_id: null, supplier_name: null, related_doc_id: null, request_doc_id: null,
+        supplier_id: null, supplier_name: null,
       }])
       .mockResolvedValueOnce([{ quantity: '0' }])
     vi.mocked(db.execute).mockResolvedValue([] as never)
@@ -523,7 +521,7 @@ describe('inventory business action input guards', () => {
     const txExecute = vi.fn().mockResolvedValueOnce([{
       id: 'ZBH-1', doc_type: '品项公司报货需求', status: '草稿',
       source_location_id: null, target_location_id: 'HQ', market_id: null,
-      supplier_id: null, supplier_name: null, related_doc_id: null, request_doc_id: null,
+      supplier_id: null, supplier_name: null,
     }])
     vi.mocked(db.execute).mockResolvedValue([] as never)
     vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
@@ -556,15 +554,16 @@ describe('inventory business action input guards', () => {
       .mockResolvedValueOnce([{
         id: 'PCG-1', doc_type: '供应链采购订单', status: '待收货',
         source_location_id: null, target_location_id: 'HQ', market_id: null,
-        supplier_id: 'SUP-1', supplier_name: '供应商', related_doc_id: 'ZBH-1', request_doc_id: null,
+        supplier_id: 'SUP-1', supplier_name: '供应商',
       }])
       .mockResolvedValueOnce([{
         location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
       }])
+      .mockResolvedValueOnce([{ from_doc_id: 'ZBH-1' }])
       .mockResolvedValueOnce([{
         id: 'ZBH-1', doc_type: '品项公司报货需求', status: '已完成',
         source_location_id: null, target_location_id: 'HQ', market_id: null,
-        supplier_id: null, supplier_name: null, related_doc_id: null, request_doc_id: null,
+        supplier_id: null, supplier_name: null,
       }])
       .mockResolvedValueOnce([purchaseOrderItem])
       .mockResolvedValueOnce([{ from_item_id: 10, to_item_id: 1, quantity: '10' }])
@@ -585,7 +584,7 @@ describe('inventory business action input guards', () => {
     const txExecute = vi.fn().mockResolvedValueOnce([{
       id: 'MBH-1', doc_type: '市场报货', status: '已完成',
       source_location_id: 'M1', target_location_id: 'HQ', market_id: 'M1',
-      supplier_id: null, supplier_name: null, related_doc_id: null, request_doc_id: null,
+      supplier_id: null, supplier_name: null,
     }])
     vi.mocked(db.execute).mockResolvedValue([] as never)
     vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
@@ -602,7 +601,7 @@ describe('inventory business action input guards', () => {
     const shipmentExecutor = vi.fn().mockResolvedValueOnce([{
       id: 'PCG-1', doc_type: '供应链采购订单', status: '待收货',
       source_location_id: null, target_location_id: 'HQ', market_id: null,
-      supplier_id: 'SUP-1', supplier_name: '供应商', related_doc_id: 'ZBH-1', request_doc_id: null,
+      supplier_id: 'SUP-1', supplier_name: '供应商',
     }])
     vi.mocked(db.execute).mockResolvedValue([] as never)
     vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
@@ -616,7 +615,7 @@ describe('inventory business action input guards', () => {
     const receiptExecutor = vi.fn().mockResolvedValueOnce([{
       id: 'CGD-1', doc_type: '采购订单', status: '已完成',
       source_location_id: 'M1', target_location_id: 'HQ', market_id: 'M1',
-      supplier_id: 'SUP-1', supplier_name: '供应商', related_doc_id: 'MBH-1', request_doc_id: null,
+      supplier_id: 'SUP-1', supplier_name: '供应商',
     }])
     vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
       execute: initializedCutoverExecutor(receiptExecutor),
