@@ -143,7 +143,7 @@ services:
     command:
       - sh
       - -c
-      - 'node export-worker.mjs 2>&1 | tee -a "/var/log/app/export-worker-$$(date +%Y%m).log"'
+      - 'node --conditions=react-server export-worker.mjs 2>&1 | tee -a "/var/log/app/export-worker-$$(date +%Y%m).log"'
     logging:
       driver: json-file
       options:

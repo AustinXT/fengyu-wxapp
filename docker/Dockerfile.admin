@@ -83,16 +83,18 @@ RUN bun build src/cron/index.ts \
 
 # 构建异步导出 worker。与 web / cron 独立进程运行，单任务流式写 XLSX 后再上传 CloudBase。
 # with-permission 在 export session 缺失时才加载 Web auth；独立 worker 不允许该回退，
-# 通过 define 在构建时裁掉整条依赖链，避免 server-only 标记进入启动 bundle。
+# 通过 define 在构建时裁掉整条依赖链。保留 server-only 为外部依赖，并让 Node
+# 以 react-server 条件解析它，避免破坏 Web 端的 Client Component 隔离保护。
 RUN bun build src/export-worker/index.ts \
       --target=node \
       --format=esm \
       --outfile=dist/export-worker.mjs \
       --external pg-native \
       --external @opentelemetry/api \
+      --external server-only \
       --define process.env.FENGYU_EXPORT_WORKER='"1"'
 # 实际加载 standalone bundle，提前拦截 server-only / 路径 alias 等启动期错误；--check 不连库、不领取任务。
-RUN node dist/export-worker.mjs --check
+RUN node --conditions=react-server dist/export-worker.mjs --check
 
 # ---- 生产运行 ----
 FROM docker.m.daocloud.io/library/node:18-alpine AS runner
@@ -117,6 +119,9 @@ RUN adduser --system --uid 1001 nextjs
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+# export-worker 将 server-only 保留为外部依赖；该包无传递依赖，Node 以 react-server
+# 条件加载其空模块，Web 的 server-only 标记仍由 Next.js 正常处理。
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/server-only ./node_modules/server-only
 # cron-worker bundle（含所有依赖；compose 启动时通过 command 覆盖入口）
 COPY --from=builder --chown=nextjs:nodejs /app/dist/cron-worker.mjs ./cron-worker.mjs
 # export-worker bundle（同镜像独立进程，compose 启动时通过 command 覆盖入口）
