@@ -1596,7 +1596,9 @@ describe('order 普通 SKU 市场范围 helper', () => {
 
     const [sql, params] = pg.query.mock.calls[0]
     expect(sql).toContain('s.market_scope')
-    expect(sql).toContain('s.store_id = $2')
+    expect(sql).toContain('FROM stores store')
+    expect(sql).toContain('store.store_id = $2')
+    expect(sql).not.toMatch(/FROM stores s\b/)
     expect(params).toEqual([['sku-other-market'], 'store-current'])
   })
 
