@@ -101,6 +101,10 @@ CONFIGURED_ANALYST_PUBLIC_ORIGIN=$(read_env_value ANALYST_PUBLIC_ORIGIN)
 # selected environment prevents a production release from silently falling back
 # to the database IP address.
 ANALYST_PUBLIC_ORIGIN="${ANALYST_PUBLIC_ORIGIN:-$CONFIGURED_ANALYST_PUBLIC_ORIGIN}"
+if ! node -e 'const u = new URL(process.argv[1]); if (!/^https?:$/.test(u.protocol) || u.username || u.password) process.exit(1)' "$ANALYST_PUBLIC_ORIGIN"; then
+  echo "✗ ANALYST_PUBLIC_ORIGIN 必须是无账号密码的 http(s) URL。" >&2
+  exit 1
+fi
 ANALYST_ADMIN_ORIGIN="${ANALYST_ADMIN_ORIGIN:-http://$PUBLIC_HOST:$ADMIN_PORT}"
 ANALYST_ADMIN_LOGIN_URL="${ANALYST_ADMIN_LOGIN_URL:-$ANALYST_ADMIN_ORIGIN/login}"
 RUNTIME_ENV_FILE=$(mktemp "${TMPDIR:-/tmp}/fengyu-analyst-runtime.XXXXXX")
