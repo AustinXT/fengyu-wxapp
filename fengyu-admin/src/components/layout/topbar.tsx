@@ -67,7 +67,7 @@ export function Topbar({ collapsed, onToggle, session }: TopbarProps) {
 
       {/* Right: notification + avatar */}
       <div className="flex items-center gap-2">
-        <ExportTasksMenu />
+        <ExportTasksMenu employeeId={session.employeeId} />
         {analystOrigin && (
           <a
             href={analystOrigin}
