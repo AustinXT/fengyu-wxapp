@@ -134,7 +134,7 @@ metadata:
    ```bash
    docker info >/dev/null 2>&1 && echo 'docker ✓' || echo 'docker 未运行 ✗'
    ssh $SSH_HOST true && echo "$SSH_HOST 可达 ✓"
-   cat envs/.active   # 记录当前 env；发 prod 时 Phase 6 须恢复回此值
+   cat envs/.active   # 记录当前 env；发 prod 时 Phase 7 须恢复回此值
    ```
 
 ---
