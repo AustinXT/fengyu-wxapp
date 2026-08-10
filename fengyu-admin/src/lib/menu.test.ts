@@ -103,7 +103,7 @@ describe("getVisibleMenuGroups（权限点驱动）", () => {
     expect(labels).toContain("商品管理");
     expect(labels).toContain("商城管理");
     expect(labels).toContain("优惠券管理");
-    expect(labels).toContain("门店库存");
+    expect(labels).toContain("进销存");
     expect(labels).toContain("订单管理"); // 生产扩权：product 有 sale_order:list
     expect(labels).not.toContain("员工管理");
     expect(labels).not.toContain("权限管理");
@@ -116,7 +116,7 @@ describe("getVisibleMenuGroups（权限点驱动）", () => {
     expect(labels).toContain("疗程卡管理");
     expect(labels).toContain("预约管理"); // 生产扩权：customer_mgr 有 appointment:list
     expect(labels).toContain("历史订单核对"); // 有 legacy_order:list
-    expect(labels).toContain("门店库存"); // 有 inventory:list
+    expect(labels).toContain("进销存"); // 有 inventory:list
     expect(labels).not.toContain("订单管理"); // 无 sale_order:list
     expect(labels).not.toContain("充值卡流水");
     expect(labels).not.toContain("系统配置");

@@ -9,6 +9,37 @@ import { login } from "@/actions/auth"
 import { encryptPassword } from "@/lib/password-encrypt"
 import logoFull from "../../../../public/logo.png"
 
+function getSafeReturnTo(): string | null {
+  const raw = new URLSearchParams(window.location.search).get("returnTo")
+  if (!raw) return null
+
+  try {
+    const target = new URL(raw, window.location.origin)
+    const allowedOrigins = new Set([window.location.origin])
+
+    // 优先使用显式配置的 analyst origin
+    const analystOrigin = process.env.NEXT_PUBLIC_ANALYST_ORIGIN
+    if (analystOrigin) {
+      try {
+        allowedOrigins.add(new URL(analystOrigin).origin)
+      } catch {
+        console.warn('[login] Invalid NEXT_PUBLIC_ANALYST_ORIGIN:', analystOrigin)
+      }
+    }
+
+    // 仅在开发环境添加动态端口白名单
+    if (process.env.NODE_ENV !== 'production') {
+      allowedOrigins.add(`${window.location.protocol}//${window.location.hostname}:3001`)
+      allowedOrigins.add(`${window.location.protocol}//${window.location.hostname}:3100`)
+    }
+
+    if (!allowedOrigins.has(target.origin)) return null
+    return target.toString()
+  } catch {
+    return null
+  }
+}
+
 export default function LoginPage() {
   const [phone, setPhone] = useState("")
   const [password, setPassword] = useState("")
@@ -47,7 +78,7 @@ export default function LoginPage() {
       if (result.mustChange) {
         window.location.href = "/change-password"
       } else {
-        window.location.href = "/dashboard"
+        window.location.href = getSafeReturnTo() ?? "/dashboard"
       }
     } catch {
       setError("网络异常，请稍后重试")

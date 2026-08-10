@@ -3,16 +3,16 @@
  *
  * 背景：
  *   重构后 sale_orders.received / refunded_amount / prepaid_card_amount 均为
- *   sale_order_payments 的冗余快照；customer_points.points_balance / prepaid_cards.balance
- *   也是流水的冗余快照。任何应用层双写漏写、并发写偏、或人为脱拍都会让冗余值与
- *   流水真值漂移。本 STEP 每日只读校验 5 项不变量，发现偏差仅告警不修复（与 STEP 5
+ *   sale_order_payments 的冗余快照；client_wechat_users.points_balance 是未过期积分批次
+ *   剩余量缓存；prepaid_cards.balance 是流水冗余快照。任何应用层双写漏写、并发写偏、
+ *   或人为脱拍都会让冗余值与真值漂移。本 STEP 每日只读校验 5 项不变量，发现偏差仅告警不修复（与 STEP 5
  *   auditPointsBalance / STEP 6 auditRoleTypeNulls 决策一致 — 自动修补会掩盖上游 bug）。
  *
  * 5 项不变量（详见 ticket §1.2 + audit-CC1 §7）：
  *   I1: sale_orders.received        = Σ sop[已支付, 首次支付/回款/储值卡抵扣].amount
  *       （豁免 legacy_source='workfine'：历史单 received 为旧系统平移值、无支付流水）
  *   I2: sale_orders.refunded_amount = -Σ sop[已支付, 退款].amount
- *   I3: client_wechat_users.points_balance = Σ point_transactions.amount
+ *   I3: client_wechat_users.points_balance = Σ 未过期 point_batches.remaining_amount
  *   I4: prepaid_cards.balance       = Σ card_transactions.amount
  *   I5: sale_orders.payable_amount  = total_amount - prepaid_card_amount
  *
@@ -103,25 +103,27 @@ export async function auditPaymentInvariants(db: Db): Promise<PaymentInvariantsR
     details.push({ invariant: 'refunded_le_received', count: r2b.length, samples: r2b as unknown as Array<Record<string, unknown>> })
   }
 
-  // ── I3: client_wechat_users.points_balance = Σ point_transactions.amount ──
+  // ── I3: client_wechat_users.points_balance = Σ 未过期 point_batches.remaining_amount ──
   // 与 STEP 5 (audit-points-balance) 重叠，但语义独立：本处作为"5 项不变量"统一报表的一项。
   // 容差严格相等（integer 无浮点误差）。
   const r3 = (await db.execute(sql`
     WITH sums AS (
-      SELECT user_id, COALESCE(SUM(amount), 0)::bigint AS total_from_txns
-      FROM point_transactions
+      SELECT user_id, COALESCE(SUM(remaining_amount), 0)::bigint AS total_from_batches
+      FROM point_batches
+      WHERE remaining_amount > 0
+        AND expire_at > NOW()
       GROUP BY user_id
     )
     SELECT u.user_id,
            COALESCE(u.points_balance, 0) AS cached_balance,
-           COALESCE(s.total_from_txns, 0) AS expected_balance
+           COALESCE(s.total_from_batches, 0) AS expected_balance
     FROM client_wechat_users u
     LEFT JOIN sums s ON s.user_id = u.user_id
-    WHERE COALESCE(u.points_balance, 0) <> COALESCE(s.total_from_txns, 0)
+    WHERE COALESCE(u.points_balance, 0) <> COALESCE(s.total_from_batches, 0)
     LIMIT ${SAMPLE_LIMIT}
   `)) as Array<{ user_id: string; cached_balance: number | string; expected_balance: number | string }>
   if (r3.length > 0) {
-    details.push({ invariant: 'points_balance_eq_sum_txns', count: r3.length, samples: r3 as unknown as Array<Record<string, unknown>> })
+    details.push({ invariant: 'points_balance_eq_unexpired_batches', count: r3.length, samples: r3 as unknown as Array<Record<string, unknown>> })
   }
 
   // ── I4: prepaid_cards.balance = Σ card_transactions.amount ──

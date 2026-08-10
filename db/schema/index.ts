@@ -31,6 +31,9 @@ export * from './store-unbind'
 // 操作日志
 export * from './operation-log'
 
+// 分析助手聊天记录
+export * from './analyst-chat'
+
 // 优惠券（券模板 + 用户券实例）
 export * from './coupon'
 

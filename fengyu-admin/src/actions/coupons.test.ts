@@ -67,6 +67,21 @@ vi.mock('@db/org', () => ({
   },
 }))
 
+vi.mock('@db/product', () => ({
+  productCategories: {
+    categoryId: 'category_id',
+    categoryName: 'category_name',
+    productKind: 'product_kind',
+    isValid: 'is_valid',
+    sortOrder: 'sort_order',
+  },
+  productSkus: {
+    skuId: 'sku_id',
+    categoryId: 'category_id',
+    deletedAt: 'deleted_at',
+  },
+}))
+
 vi.mock('@/lib/auth', () => ({
   getSession: vi.fn(),
 }))
@@ -724,7 +739,7 @@ describe('issueCoupon — 发放优惠券', () => {
         return { from }
       } else if (hasTotalCount && currentCall === 2) {
         // 查发放数量（仅 totalCount 非 null 时有此调用）
-        const where = vi.fn().mockResolvedValue([{ count: opts.countResult ?? 0 }])
+        const where = vi.fn().mockResolvedValue([{ existingCount: opts.countResult ?? 0 }])
         const from = vi.fn().mockReturnValue({ where })
         return { from }
       } else {
@@ -759,7 +774,7 @@ describe('issueCoupon — 发放优惠券', () => {
     })
     const result = await issueCoupon('TPL-001', '13800000000')
     expect(result.success).toBe(false)
-    expect(result.message).toContain('已达上限')
+    expect(result.message).toContain('不足')
   })
 
   it('顾客不存在 → 拒绝', async () => {
@@ -824,6 +839,48 @@ describe('issueCoupon — 发放优惠券', () => {
       expect.objectContaining({ templateId: 'TPL-DIRTY' }),
     )
     errSpy.mockRestore()
+  })
+
+  it('count=3 → 循环插入 3 张同模板券，couponId 带序号', async () => {
+    setupIssueMocks({
+      template: makeTemplateRow('TPL-001', { totalCount: null, validityMode: 'days', validDays: 30 }),
+      customer: { userId: 'FYGK-001', name: '李女士' },
+    })
+    const valuesSpy = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values: valuesSpy })
+
+    const result = await issueCoupon('TPL-001', '13800000000', 3)
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('3 张')
+    expect(valuesSpy).toHaveBeenCalledTimes(1)
+    const rows = valuesSpy.mock.calls[0][0] as Array<{ couponId: string }>
+    expect(rows).toHaveLength(3)
+    // couponId 形如 cpn-{now}-{rand}-{i}
+    expect(rows.every((r, i) => r.couponId.endsWith(`-${i}`))).toBe(true)
+  })
+
+  it('existingCount + count > totalCount → 拒绝且不 insert', async () => {
+    setupIssueMocks({
+      template: makeTemplateRow('TPL-001', { totalCount: 10 }),
+      countResult: 8,
+    })
+    const result = await issueCoupon('TPL-001', '13800000000', 5)
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不足')
+    expect(db.insert).not.toHaveBeenCalled()
+  })
+
+  it('count > 99 → clamp 到 99 张', async () => {
+    setupIssueMocks({
+      template: makeTemplateRow('TPL-001', { totalCount: null, validityMode: 'days', validDays: 30 }),
+      customer: { userId: 'FYGK-001', name: '李女士' },
+    })
+    const valuesSpy = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values: valuesSpy })
+
+    const result = await issueCoupon('TPL-001', '13800000000', 999)
+    expect(result.success).toBe(true)
+    expect(valuesSpy.mock.calls[0][0]).toHaveLength(99)
   })
 })
 

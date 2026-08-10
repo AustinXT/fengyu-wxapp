@@ -711,6 +711,13 @@ export default function CustomerDetailPage({
                   <Input value={customer.memberLevel ?? ""} disabled />
                 </div>
                 <div className="space-y-2">
+                  <label className="text-sm font-medium">成为会员</label>
+                  <Input
+                    value={customer.becameMemberAt ? formatDateTime(customer.becameMemberAt) : ""}
+                    disabled
+                  />
+                </div>
+                <div className="space-y-2">
                   <label className="text-sm font-medium">最近升级</label>
                   <Input
                     value={customer.memberLevelUpgradedAt ? formatDateTime(customer.memberLevelUpgradedAt) : ""}

@@ -308,10 +308,14 @@ describe('login — 认证 + 锁定（PG 持久化）', () => {
 // ── logout ────────────────────────────────────────────────────────────────────
 
 describe('logout', () => {
-  it('删除 cookie', async () => {
+  it('以与登录一致的 cookie 选项清除 cookie', async () => {
     await logout()
 
-    expect(mockCookieStore.delete).toHaveBeenCalledWith('fy-admin-token')
+    expect(mockCookieStore.set).toHaveBeenCalledWith(
+      'fy-admin-token',
+      '',
+      expect.objectContaining({ httpOnly: true, sameSite: 'lax', path: '/', maxAge: 0 }),
+    )
   })
 })
 

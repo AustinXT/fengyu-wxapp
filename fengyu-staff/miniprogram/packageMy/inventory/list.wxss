@@ -5,6 +5,18 @@
   padding-bottom: 32rpx;
 }
 
+.create-bar {
+  padding: 16rpx 24rpx 0;
+}
+
+.create-button {
+  border-radius: 6rpx;
+  background: var(--color-primary);
+  color: #FFFFFF;
+  font-size: 27rpx;
+  line-height: 76rpx;
+}
+
 .filters {
   background: #FFFFFF;
   padding: 16rpx 24rpx;
@@ -27,7 +39,7 @@
 }
 
 .filter-chip.active {
-  background: #C0322A;
+  background: var(--color-primary);
   color: #FFFFFF;
 }
 
@@ -85,6 +97,14 @@
   color: #999;
 }
 
+.status-pending {
+  color: #D4820A;
+}
+
+.status-rejected {
+  color: #D94040;
+}
+
 .item-meta {
   display: flex;
   gap: 16rpx;
@@ -94,7 +114,7 @@
 
 .meta-tag {
   background: #FFF0EE;
-  color: #C0322A;
+  color: var(--color-primary);
   padding: 2rpx 12rpx;
   border-radius: 4rpx;
   font-size: 22rpx;
@@ -119,7 +139,7 @@
 }
 
 .customer {
-  color: #C0322A;
+  color: var(--color-primary);
 }
 
 .item-foot {
@@ -127,6 +147,10 @@
   justify-content: space-between;
   font-size: 22rpx;
   color: #999;
+}
+
+.receive-action {
+  color: var(--color-primary);
 }
 
 .empty,

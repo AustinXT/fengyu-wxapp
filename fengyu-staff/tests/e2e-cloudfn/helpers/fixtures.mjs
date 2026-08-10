@@ -1072,7 +1072,89 @@ export async function cleanupTestData(prefix = NS) {
       [like],
     ],
 
-    // ─── 4.4) store_inventory v2（FK → stores/product_skus/sale_orders/sale_items）───
+    // ─── 4.4) inventory v3（FK → stores/org_nodes/product_skus/sale_orders/sale_items）───
+    // 先删流水和明细，随后删除单据、批次、SKU、主体，避免 v3 外键阻塞后续销售单/门店/商品夹具回收。
+    [
+      `DELETE FROM inventory_movements
+        WHERE location_id LIKE $1
+           OR sku_id LIKE $1
+           OR doc_id IN (
+             SELECT id FROM inventory_docs
+              WHERE id LIKE $1
+                 OR source_location_id LIKE $1
+                 OR target_location_id LIKE $1
+                 OR related_sale_order_id LIKE $1
+                 OR client_user_id LIKE $1
+                 OR created_by LIKE $1
+           )
+           OR doc_item_id IN (
+             SELECT id FROM inventory_doc_items
+              WHERE doc_id IN (
+                SELECT id FROM inventory_docs
+                 WHERE id LIKE $1
+                    OR source_location_id LIKE $1
+                    OR target_location_id LIKE $1
+                    OR related_sale_order_id LIKE $1
+                    OR client_user_id LIKE $1
+                    OR created_by LIKE $1
+              )
+           )`,
+      [like],
+    ],
+    [
+      `DELETE FROM inventory_doc_items
+        WHERE sku_id LIKE $1
+           OR sale_item_id LIKE $1
+           OR doc_id IN (
+             SELECT id FROM inventory_docs
+              WHERE id LIKE $1
+                 OR source_location_id LIKE $1
+                 OR target_location_id LIKE $1
+                 OR related_sale_order_id LIKE $1
+                 OR client_user_id LIKE $1
+                 OR created_by LIKE $1
+           )`,
+      [like],
+    ],
+    [
+      `DELETE FROM inventory_docs
+        WHERE id LIKE $1
+           OR source_location_id LIKE $1
+           OR target_location_id LIKE $1
+           OR related_sale_order_id LIKE $1
+           OR client_user_id LIKE $1
+           OR created_by LIKE $1`,
+      [like],
+    ],
+    [`DELETE FROM inventory_stock_lots WHERE location_id LIKE $1 OR sku_id LIKE $1`, [like]],
+    [
+      `DELETE FROM inventory_promotion_plan_items
+        WHERE sku_id LIKE $1
+           OR plan_id IN (
+             SELECT id FROM inventory_promotion_plans
+              WHERE id LIKE $1
+                 OR scope_market_id LIKE $1
+                 OR scope_store_id LIKE $1
+                 OR created_by LIKE $1
+           )`,
+      [like],
+    ],
+    [
+      `DELETE FROM inventory_promotion_plans
+        WHERE id LIKE $1
+           OR scope_market_id LIKE $1
+           OR scope_store_id LIKE $1
+           OR created_by LIKE $1`,
+      [like],
+    ],
+    [`DELETE FROM inventory_skus WHERE sku_id LIKE $1 OR product_code LIKE $1`, [like]],
+    [
+      `DELETE FROM inventory_locations
+        WHERE location_id LIKE $1 OR org_node_id LIKE $1 OR store_id LIKE $1`,
+      [like],
+    ],
+
+    // ─── 4.5) store_inventory v2（旧兼容表，FK → stores/product_skus/sale_orders/sale_items）───
     [
       `DELETE FROM store_inventory_movements
         WHERE store_id LIKE $1

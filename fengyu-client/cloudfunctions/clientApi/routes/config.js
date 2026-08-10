@@ -3,6 +3,7 @@
  * config.banners — 获取首页轮播图数量 + 版本号（无需认证）
  * config.fengyuguan — 获取凤御馆宣传图（无需认证）
  * config.shareGift — 获取分享礼展示规则（脱敏，无需认证）
+ * config.serviceHotline — 获取客服热线电话号（无需认证）
  * config.invalidateConfig — 主动清空 utils/config 内存缓存（admin 保存配置时广播，副作用仅限清一次缓存）
  */
 
@@ -132,6 +133,25 @@ async function consumeAgreement(ctx) {
 }
 
 /**
+ * 获取客服热线电话号 + 缓存版本号（无需认证）。
+ *
+ * 读 system_configs.service_hotline（admin 系统配置「基础配置」Tab 写入，value 为纯文本号码）。
+ * 返回 { phone, v }：phone 为号码字符串（无配置时为空串，由客户端展示占位「-」并禁用拨号）；
+ * v 取 updated_at 毫秒戳，供客户端做缓存版本（与 banners/fengyuguan 同款）。
+ * 无需认证，公开接口。
+ */
+async function serviceHotline(ctx) {
+  const rows = await pg.query(
+    `SELECT value, EXTRACT(EPOCH FROM updated_at) * 1000 AS v
+     FROM system_configs WHERE key = 'service_hotline'`
+  )
+  ctx.result = {
+    phone: rows.length > 0 ? (rows[0].value || '') : '',
+    v: rows.length > 0 ? (Math.floor(Number(rows[0].v)) || 0) : 0,
+  }
+}
+
+/**
  * 主动清空 utils/config 的内存缓存。
  *
  * 调用者：admin saveSettings 在 newMemberThreshold 变化时广播。
@@ -143,4 +163,4 @@ async function invalidateConfig(ctx) {
   ctx.result = { success: true }
 }
 
-module.exports = { banners, fengyuguan, shareGift, consumeAgreement, invalidateConfig }
+module.exports = { banners, fengyuguan, shareGift, consumeAgreement, serviceHotline, invalidateConfig }

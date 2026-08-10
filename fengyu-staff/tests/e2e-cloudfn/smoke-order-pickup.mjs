@@ -9,12 +9,12 @@
  *
  * 业务语义（关键）：
  *   "提货" = 家居产品（product_type='家居产品'）按数量分次自提，不涉及储值卡/次数/服务单，
- *   同时从 store_inventory_stocks 扣减对应 SKU 库存，并写入统一库存单和库存流水。
+ *   同时从 inventory_stock_lots 扣减对应 SKU 库存，并写入 v3 库存单和库存流水。
  *   可提数量 = sale_items.quantity - sale_items.picked_up_quantity；实际提货还必须满足门店库存足量。
  *
  *   前置数据：必须有一张"已支付"销售单，含 1 行 product_type='家居产品' 的购买明细
  *   （item_direction='购买'、store_id=本店、quantity>picked_up_quantity）。
- *   本 smoke 会额外种一条 store_inventory_stocks 库存，验证提货时按购买 SKU 扣减库存。
+ *   本 smoke 会额外种一条 inventory_stock_lots 批次库存，验证提货时按购买 SKU 扣减库存。
  *
  * 验证点：
  *   1. availablePickupItems（提货前）→ 列出该家居明细，remaining=quantity=3
@@ -84,12 +84,47 @@ async function main() {
     isShengmei: null,
   })
   await pgQuery(
-    `INSERT INTO store_inventory_stocks (
-       store_id, sku_id, sku_name, product_type, batch_no, expiry_date_key, quantity_on_hand
+    `INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, store_id, parent_location_id)
+     SELECT s.store_id, '门店', s.store_name, s.org_node_id, s.store_id, o.parent_id
+       FROM stores s
+       LEFT JOIN org_nodes o ON o.id = s.org_node_id
+      WHERE s.store_id = $1
+     ON CONFLICT (location_id) DO UPDATE
+       SET location_type = EXCLUDED.location_type,
+           name = EXCLUDED.name,
+           org_node_id = EXCLUDED.org_node_id,
+           store_id = EXCLUDED.store_id,
+           parent_location_id = EXCLUDED.parent_location_id,
+           updated_at = NOW()`,
+    [TEST_STORE_ID],
+  )
+  await pgQuery(
+    `INSERT INTO inventory_skus (
+       sku_id, product_code, product_name, spec_name, retail_price, is_active
      )
-     VALUES ($1, $2, $3, '家居产品', '', '', 3)
-     ON CONFLICT (store_id, sku_id, batch_no, expiry_date_key)
-     DO UPDATE SET quantity_on_hand = 3, sku_name = EXCLUDED.sku_name, updated_at = NOW()`,
+     VALUES ($1, $1, $2, $2, 200, true)
+     ON CONFLICT (sku_id) DO UPDATE
+       SET product_code = EXCLUDED.product_code,
+           product_name = EXCLUDED.product_name,
+           spec_name = EXCLUDED.spec_name,
+           retail_price = EXCLUDED.retail_price,
+           is_active = true,
+           updated_at = NOW()`,
+    [product.skuId, product.specName],
+  )
+  await pgQuery(
+    `INSERT INTO inventory_stock_lots (
+       location_id, sku_id, lot_key, sku_name, spec_name, batch_no, expiry_date_key,
+       is_gift, quantity_on_hand, store_standard_unit_price, store_actual_unit_price
+     )
+     VALUES ($1, $2, $2 || '|PICKUP||||200', $3, $3, 'PICKUP', '', false, 3, 200, 200)
+     ON CONFLICT (location_id, lot_key)
+     DO UPDATE SET quantity_on_hand = 3,
+                   sku_name = EXCLUDED.sku_name,
+                   spec_name = EXCLUDED.spec_name,
+                   store_standard_unit_price = EXCLUDED.store_standard_unit_price,
+                   store_actual_unit_price = EXCLUDED.store_actual_unit_price,
+                   updated_at = NOW()`,
     [TEST_STORE_ID, product.skuId, product.specName],
   )
 
@@ -172,11 +207,12 @@ async function main() {
   rec(`  ✓ createPickup(提2): picked_up_quantity=${si1[0]?.picked_up_quantity} / 记录=${pr1.length} 行`)
 
   const stock1 = await pgQuery(
-    `SELECT quantity_on_hand FROM store_inventory_stocks WHERE store_id = $1 AND sku_id = $2`,
+    `SELECT COALESCE(SUM(quantity_on_hand), 0) AS quantity_on_hand
+       FROM inventory_stock_lots WHERE location_id = $1 AND sku_id = $2`,
     [TEST_STORE_ID, product.skuId],
   )
   if (Number(stock1[0]?.quantity_on_hand) !== 1) {
-    errors.push(`提2后中心库存应=1，实际=${stock1[0]?.quantity_on_hand}`)
+    errors.push(`提2后 v3 库存应=1，实际=${stock1[0]?.quantity_on_hand}`)
   }
 
   // ─── 3. availablePickupItems（提 2 后仍可见，remaining=1）───
@@ -234,6 +270,24 @@ async function main() {
     [SALE_ITEM_ID, IDEM_KEY]
   )
   if (Number(prIdem[0]?.cnt) !== 1) errors.push(`idempotencyKey 记录应=1 条，实际=${prIdem[0]?.cnt}`)
+  const stock2 = await pgQuery(
+    `SELECT COALESCE(SUM(quantity_on_hand), 0) AS quantity_on_hand
+       FROM inventory_stock_lots WHERE location_id = $1 AND sku_id = $2`,
+    [TEST_STORE_ID, product.skuId],
+  )
+  if (Number(stock2[0]?.quantity_on_hand) !== 0) {
+    errors.push(`提满后 v3 库存应=0，实际=${stock2[0]?.quantity_on_hand}`)
+  }
+  const inventoryRows = await pgQuery(
+    `SELECT COUNT(*)::int AS doc_count
+       FROM inventory_docs
+      WHERE related_sale_order_id = $1
+        AND doc_type = '院顾客产品出库'`,
+    [SALE_ORDER_ID],
+  )
+  if (Number(inventoryRows[0]?.doc_count) !== 2) {
+    errors.push(`提货应生成 2 张 v3 出库单，实际=${inventoryRows[0]?.doc_count}`)
+  }
   rec(`  ✓ createPickup(提满+幂等重放): picked_up_quantity=${si2[0]?.picked_up_quantity} / idem 记录=${prIdem[0]?.cnt}`)
 
   // ─── 6. createPickup（超量再提 → INVALID_PARAMS）───

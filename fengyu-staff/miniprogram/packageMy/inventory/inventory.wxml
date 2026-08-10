@@ -4,6 +4,33 @@
     <text>本门店库存以实时库存表为准，单据用于记录入库、出库、调拨和报损流程。</text>
   </view>
 
+  <view class="section-head">
+    <text class="section-title">办理库存业务</text>
+    <text class="section-link" bindtap="onPendingReceiveTap">待收货</text>
+  </view>
+  <view class="operation-list">
+    <view
+      class="operation"
+      wx:for="{{operations}}"
+      wx:key="docType"
+      data-doc-type="{{item.docType}}"
+      bindtap="onOperationTap"
+    >
+      <view class="operation-icon" style="background-color: {{item.color}}22;">
+        <van-icon name="{{item.icon}}" size="24px" color="{{item.color}}" />
+      </view>
+      <view class="operation-main">
+        <text class="operation-title">{{item.title}}</text>
+        <text class="operation-desc">{{item.desc}}</text>
+      </view>
+      <van-icon name="arrow" size="16px" color="#B8B8B8" />
+    </view>
+  </view>
+
+  <view class="section-head records-head">
+    <text class="section-title">库存记录</text>
+  </view>
+
   <view class="grid">
     <view
       class="card"

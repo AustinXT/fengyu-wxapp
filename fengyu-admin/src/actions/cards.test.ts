@@ -110,7 +110,7 @@ import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope, scopeCondition } from '@/lib/permissions'
 import { parseCardFilters } from '@/lib/list-filters'
-import { eq, gte, ilike, isNotNull, isNull, inArray } from 'drizzle-orm'
+import { eq, gte, ilike, isNotNull, isNull, inArray, sql } from 'drizzle-orm'
 
 // ============================================================================
 // getCardsPaginated tests
@@ -242,39 +242,13 @@ describe('getCardsPaginated — 服务端分页', () => {
     expect(gte).toHaveBeenCalledWith('session_count', 2)
   })
 
-  it('marketId 筛选 → inArray(store_id, subquery)', async () => {
-    // Market subquery 内部会调用 db.select → from → innerJoin → where
-    // 为避免第一次 select 被 subquery 消耗，这里先给 subquery 一个独立链
-    const subChain: any = {}
-    subChain.from = vi.fn().mockReturnValue(subChain)
-    subChain.innerJoin = vi.fn().mockReturnValue(subChain)
-    subChain.where = vi.fn().mockReturnValue(subChain)
-
-    let call = 0
-    ;(db.select as any).mockImplementation(() => {
-      call++
-      if (call === 1) return subChain  // market subquery
-      if (call === 2) {
-        const c: any = {}
-        c.from = vi.fn().mockReturnValue(c)
-        c.leftJoin = vi.fn().mockReturnValue(c)
-        c.where = vi.fn().mockResolvedValue([{ count: 0 }])
-        return c
-      }
-      const c: any = {}
-      c.from = vi.fn().mockReturnValue(c)
-      c.leftJoin = vi.fn().mockReturnValue(c)
-      c.where = vi.fn().mockReturnValue(c)
-      c.orderBy = vi.fn().mockReturnValue(c)
-      c.limit = vi.fn().mockReturnValue(c)
-      c.offset = vi.fn().mockResolvedValue([])
-      return c
-    })
+  it('marketId 筛选 → 生成参数化组织节点子树条件', async () => {
+    // 市场筛选由 market-store-sql 统一生成递归 SQL，不额外发起预查询。
+    mockPaginatedChain(0, [])
 
     await getCardsPaginated({ marketId: 'market-1' })
 
-    expect(eq).toHaveBeenCalledWith('parent_id', 'market-1')
-    expect(inArray).toHaveBeenCalled()
+    expect((sql as any).mock.calls.some((args: unknown[]) => args.includes('market-1'))).toBe(true)
   })
 
   it('storeId 筛选 → eq(store_id, storeId)', async () => {

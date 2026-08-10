@@ -155,6 +155,10 @@ function defaultPaymentsRoutes() {
       result: { rows: [{ id: 1 }], rowCount: 1 },
     },
     {
+      match: /UPDATE sale_order_payments SET allocation_status = '待分配'/,
+      result: { rows: [], rowCount: 1 },
+    },
+    {
       match: /UPDATE sale_orders[\s\S]*SET status = \$1::order_status/,
       result: { rows: [], rowCount: 1 },
     },
@@ -207,6 +211,14 @@ describe('payNotify index.js', () => {
         match: /SELECT sale_order_type, legacy_source FROM sale_orders/,
         result: { rows: [{ sale_order_type: '销售单', legacy_source: null }], rowCount: 1 },
       },
+      // 全额到账路径先读取退款感知的逐项可分配额。
+      {
+        match: /SELECT sale_item_id, sale_amount::numeric AS sale_amount, received::numeric AS received\s+FROM sale_items/,
+        result: {
+          rows: [{ sale_item_id: 'item-001', sale_amount: '300.00', received: '300.00' }],
+          rowCount: 1,
+        },
+      },
       // sale_items 查询（业绩分配）——补齐 capturePaymentAllocatables 所需字段，走正常比例分摊而非兜底
       {
         match: /SELECT sale_item_id, sale_amount::numeric AS sale_amount, pending_received::numeric AS pending_received, sales_category[\s\S]*FROM sale_items/,
@@ -226,6 +238,10 @@ describe('payNotify index.js', () => {
       {
         match: /INSERT INTO sale_payment_item_receipts/,
         result: { rows: [{ id: 11 }], rowCount: 1 },
+      },
+      {
+        match: /UPDATE sale_order_payments SET allocation_status = '待分配'/,
+        result: { rows: [], rowCount: 1 },
       },
       {
         match: /AS receipt_positive_total/,

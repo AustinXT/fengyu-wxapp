@@ -11,6 +11,22 @@
   </view>
 </view>
 
+<view wx:if="{{period === 'custom'}}" class="pc-date-bar">
+  <picker mode="date" value="{{startDate}}" end="{{endDate}}" bindchange="onStartDateChange">
+    <view class="pc-date-field">
+      <text class="pc-date-label">开始</text>
+      <text class="pc-date-value">{{startDate}}</text>
+    </view>
+  </picker>
+  <text class="pc-date-sep">至</text>
+  <picker mode="date" value="{{endDate}}" start="{{startDate}}" bindchange="onEndDateChange">
+    <view class="pc-date-field">
+      <text class="pc-date-label">结束</text>
+      <text class="pc-date-value">{{endDate}}</text>
+    </view>
+  </picker>
+</view>
+
 <view class="pc-page">
 
   <!-- Section 标题 -->
@@ -75,13 +91,13 @@
     </view>
   </view>
 
-  <!-- 新增情况 -->
+  <!-- 进入情况 -->
   <view class="pc-subsection">
-    <view class="pc-subsection-title">新增情况</view>
+    <view class="pc-subsection-title">进入情况</view>
     <view class="pc-table">
       <view class="pc-table-header">
         <view class="pc-col pc-col-name">品项</view>
-        <view class="pc-col pc-col-num">人数</view>
+        <view class="pc-col pc-col-num">进入人数</view>
         <view class="pc-col pc-col-num">业绩</view>
         <view class="pc-col pc-col-num">客单价</view>
       </view>
@@ -107,10 +123,12 @@
   <!-- 复购情况 -->
   <view class="pc-subsection">
     <view class="pc-subsection-title">复购情况</view>
-    <view class="pc-table">
+    <view class="pc-table pc-table--repurchase">
       <view class="pc-table-header">
         <view class="pc-col pc-col-name">品项</view>
-        <view class="pc-col pc-col-num">人数</view>
+        <view class="pc-col pc-col-num">进入</view>
+        <view class="pc-col pc-col-num">复购</view>
+        <view class="pc-col pc-col-num">复购率</view>
         <view class="pc-col pc-col-num">业绩</view>
         <view class="pc-col pc-col-num">客单价</view>
       </view>
@@ -125,7 +143,9 @@
           class="pc-table-row {{index % 2 === 1 ? 'zebra' : ''}}"
         >
           <view class="pc-col pc-col-name">{{item.productKind}}</view>
+          <view class="pc-col pc-col-num">{{item.entryCount}}</view>
           <view class="pc-col pc-col-num">{{item.count}}</view>
+          <view class="pc-col pc-col-num">{{item.repurchaseRate}}</view>
           <view class="pc-col pc-col-num">{{item.revenue}}</view>
           <view class="pc-col pc-col-num">{{item.avgTicket}}</view>
         </view>

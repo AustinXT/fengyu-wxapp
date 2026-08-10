@@ -56,6 +56,36 @@ services:
       # 入网资料和已签署合同仅在受保护的后台/cron 之间共享，绝不映射到 public 或 CDN。
       - ./data/private-uploads:/var/lib/fengyu/private-uploads
 
+  analyst:
+    image: fengyu-analyst:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.analyst
+    container_name: fengyu-analyst
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - JWT_SECRET=${ADMIN_JWT_SECRET:-fengyu-admin-jwt-secret-dev-only}
+      - ADMIN_LOGIN_URL=${ANALYST_ADMIN_LOGIN_URL:-http://localhost:3000/login}
+      - NEXT_PUBLIC_ADMIN_ORIGIN=${ANALYST_ADMIN_ORIGIN:-http://localhost:3000}
+      - NEXT_PUBLIC_ANALYST_ORIGIN=${ANALYST_PUBLIC_ORIGIN:-http://localhost:3001}
+      - ANALYST_VIEW_ACTION=${ANALYST_VIEW_ACTION:-data_center:dashboard}
+      - ANALYST_CHAT_ACTION=${ANALYST_CHAT_ACTION:-data_center:dashboard}
+      - ANALYST_EXPORT_ACTION=${ANALYST_EXPORT_ACTION:-data_center:dashboard}
+      - MINIMAX_API_KEY=${MINIMAX_API_KEY:-}
+      - MINIMAX_BASE_URL=${MINIMAX_BASE_URL:-https://api.minimaxi.com/v1}
+      - MINIMAX_MODEL=${MINIMAX_MODEL:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - OPENAI_MODEL=${OPENAI_MODEL:-}
+      - TZ=Asia/Shanghai
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # cron-worker：迁自 fengyu-client/cloudfunctions/cronTask 的每日 03:00 定时任务
   # 复用 admin 镜像（含 cron-worker.js bundle），覆盖 entrypoint 切到 cron 入口
   cron-worker:

@@ -56,16 +56,15 @@ export interface PaginatedPickupRecords {
   total: number
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyTx = any
 
 async function generatePickupInventoryDocNo(tx: AnyTx): Promise<string> {
   const prefix = 'GCK'
   const ymd = shanghaiYmd()
-  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`store_inventory_docs:${prefix}:${ymd}`})::bigint)`)
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`inventory_docs:${prefix}:${ymd}`})::bigint)`)
   const rows = (await tx.execute(sql`
     SELECT id
-      FROM store_inventory_docs
+      FROM inventory_docs
      WHERE id LIKE ${`${prefix}-${ymd}-%`}
   ORDER BY id DESC
      LIMIT 1
@@ -88,36 +87,60 @@ async function createPickupInventoryDoc(
     customerName: string | null
     pickupQuantity: number
     remark?: string | null
-    idempotencyKey?: string | null
+  idempotencyKey?: string | null
   },
 ): Promise<string> {
-  const stockRows = (await tx.execute(sql`
-    SELECT id, store_id, sku_id, sku_name, batch_no, expiry_date, quantity_on_hand
-      FROM store_inventory_stocks
-     WHERE store_id = ${data.storeId}
-       AND sku_id = ${data.skuId}
-       AND quantity_on_hand > 0
-  ORDER BY expiry_date NULLS LAST, id
+  await tx.execute(sql`
+    INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, store_id, parent_location_id, is_active)
+    SELECT s.store_id, '门店', s.store_name, s.org_node_id, s.store_id, o.parent_id,
+           COALESCE(o.is_active, false) AND NOT s.is_closed
+      FROM stores s
+      LEFT JOIN org_nodes o ON o.id = s.org_node_id
+     WHERE s.store_id = ${data.storeId}
+    ON CONFLICT (location_id) DO UPDATE
+      SET location_type = EXCLUDED.location_type,
+          name = EXCLUDED.name,
+          org_node_id = EXCLUDED.org_node_id,
+          store_id = EXCLUDED.store_id,
+          parent_location_id = EXCLUDED.parent_location_id,
+          is_active = EXCLUDED.is_active,
+          updated_at = NOW()
+  `)
+
+  const lotRows = (await tx.execute(sql`
+    SELECT lot.id, lot.location_id, lot.sku_id, lot.sku_name, lot.spec_name,
+           lot.supplier, lot.product_series, lot.batch_no, lot.expiry_date,
+           lot.is_gift, lot.quantity_on_hand
+      FROM inventory_stock_lots lot
+      JOIN inventory_skus sku ON sku.sku_id = lot.sku_id
+     WHERE lot.location_id = ${data.storeId}
+       AND (lot.sku_id = ${data.skuId} OR sku.product_code = ${data.skuId})
+       AND lot.quantity_on_hand > 0
+  ORDER BY lot.expiry_date NULLS LAST, lot.id
      FOR UPDATE
   `)) as unknown as Array<{
     id: number
-    store_id: string
+    location_id: string
     sku_id: string
     sku_name: string | null
+    spec_name: string | null
+    supplier: string | null
+    product_series: string | null
     batch_no: string | null
     expiry_date: string | null
+    is_gift: boolean
     quantity_on_hand: string | number
   }>
 
-  const available = stockRows.reduce((acc, row) => acc + Number(row.quantity_on_hand), 0)
+  const available = lotRows.reduce((acc, row) => acc + Number(row.quantity_on_hand), 0)
   if (available < data.pickupQuantity) {
     throw new ApiError('INVALID_STATE', `门店库存不足，当前可用 ${available}`)
   }
 
   const docId = await generatePickupInventoryDocNo(tx)
   await tx.execute(sql`
-    INSERT INTO store_inventory_docs (
-      id, doc_type, status, store_id, doc_date, total_quantity,
+    INSERT INTO inventory_docs (
+      id, doc_type, status, source_location_id, doc_date, total_quantity,
       related_sale_order_id, client_user_id, customer_name,
       remark, created_by, confirmed_by, confirmed_at
     )
@@ -130,40 +153,35 @@ async function createPickupInventoryDoc(
 
   let remaining = data.pickupQuantity
   let itemSeq = 0
-  for (const stock of stockRows) {
+  for (const lot of lotRows) {
     if (remaining <= 0) break
-    const before = Number(stock.quantity_on_hand)
+    const before = Number(lot.quantity_on_hand)
     const deduct = Math.min(before, remaining)
     const after = before - deduct
     const inserted = (await tx.execute(sql`
-      INSERT INTO store_inventory_doc_items (
-        doc_id, stock_id, sku_id, sale_item_id, sku_name, batch_no, expiry_date,
-        quantity, stock_snapshot, remark
+      INSERT INTO inventory_doc_items (
+        doc_id, lot_id, sku_id, sale_item_id, sku_name, spec_name, supplier,
+        product_series, batch_no, expiry_date, is_gift, quantity, stock_snapshot, remark
       )
       VALUES (
-        ${docId}, ${stock.id}, ${stock.sku_id}, ${data.saleItemId},
-        ${stock.sku_name || data.productName || data.skuId}, ${stock.batch_no || ''}, ${stock.expiry_date},
+        ${docId}, ${lot.id}, ${lot.sku_id}, ${data.saleItemId},
+        ${lot.sku_name || data.productName || data.skuId}, ${lot.spec_name}, ${lot.supplier},
+        ${lot.product_series}, ${lot.batch_no || ''}, ${lot.expiry_date}, ${Boolean(lot.is_gift)},
         ${deduct}, ${before}, ${data.remark?.trim() || null}
       )
       RETURNING id
     `)) as unknown as Array<{ id: number }>
     const docItemId = inserted[0].id
     await tx.execute(sql`
-      UPDATE store_inventory_stocks
-         SET quantity_on_hand = ${after},
-             updated_at = NOW()
-       WHERE id = ${stock.id}
-    `)
-    await tx.execute(sql`
-      INSERT INTO store_inventory_movements (
-        movement_key, stock_id, store_id, sku_id, doc_id, doc_item_id,
-        sale_order_id, sale_item_id, direction, quantity_delta,
+      INSERT INTO inventory_movements (
+        movement_key, lot_id, location_id, sku_id, doc_id, doc_item_id,
+        direction, quantity_delta,
         quantity_before, quantity_after, created_by, remark
       )
       VALUES (
         ${`pickup:${data.saleItemId}:${data.idempotencyKey || docId}:${itemSeq++}`},
-        ${stock.id}, ${data.storeId}, ${stock.sku_id}, ${docId}, ${docItemId},
-        ${data.saleOrderId}, ${data.saleItemId}, '出库', ${-deduct},
+        ${lot.id}, ${data.storeId}, ${lot.sku_id}, ${docId}, ${docItemId},
+        '出库', ${-deduct},
         ${before}, ${after}, ${session.employeeId}, ${data.remark?.trim() || null}
       )
     `)

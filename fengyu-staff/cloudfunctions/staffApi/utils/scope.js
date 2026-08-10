@@ -515,14 +515,14 @@ function buildNormalSkuMarketScopeCondition(auth, params, skuAlias = 'sk') {
       ${nonBlankExpr}
       AND EXISTS (
         SELECT 1
-        FROM stores s
-        JOIN org_nodes sn ON s.org_node_id = sn.id
-        JOIN org_nodes pm ON sn.parent_id = pm.id
-        WHERE s.store_id = ${storeParam}
-          AND pm.type = '市场'
+        FROM stores scope_store
+        JOIN org_nodes scope_store_node ON scope_store.org_node_id = scope_store_node.id
+        JOIN org_nodes scope_market ON scope_store_node.parent_id = scope_market.id
+        WHERE scope_store.store_id = ${storeParam}
+          AND scope_market.type = '市场'
           AND (
-            pm.id = ANY(${valuesExpr})
-            OR regexp_replace(pm.name, '[[:space:]]+', '', 'g') = ANY(${valuesExpr})
+            scope_market.id = ANY(${valuesExpr})
+            OR regexp_replace(scope_market.name, '[[:space:]]+', '', 'g') = ANY(${valuesExpr})
           )
       )
     )

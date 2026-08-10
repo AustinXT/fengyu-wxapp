@@ -20,11 +20,13 @@
         <text class="stock-qty">{{item.quantityOnHand}}</text>
       </view>
       <view class="item-meta">
-        <text class="meta-tag">{{item.productType}}</text>
+        <text wx:if="{{item.productSeries}}" class="meta-tag">{{item.productSeries}}</text>
+        <text wx:if="{{item.specName}}" class="meta-tag">{{item.specName}}</text>
+        <text wx:if="{{item.isGift}}" class="meta-tag">赠品</text>
         <text class="meta-text">{{item.skuId}}</text>
       </view>
       <view class="item-body">
-        <text class="store">{{item.storeName || item.storeId}}</text>
+        <text class="store">{{item.locationName || item.locationId}}</text>
         <text wx:if="{{item.batchNo}}" class="counterpart">批号：{{item.batchNo}}</text>
         <text wx:if="{{item.expiryDate}}" class="customer">效期：{{item.expiryDate}}</text>
       </view>
