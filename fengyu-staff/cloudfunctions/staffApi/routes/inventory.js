@@ -2,7 +2,7 @@
  * 门店库存路由（员工端）
  *
  * staff 端仅呈现门店层级库存，不暴露市场/总部库存主体，不返回价格/金额字段。
- * 历史 4 类单据 list/detail 保持兼容；v3 单据接口只开放门店相关单据。
+ * 仅提供 v3 单据和库存接口，禁止回退到 store_inventory_* 旧库存域。
  */
 
 const pg = require('../db/pg')
@@ -15,60 +15,6 @@ const INVENTORY_APPROVER_ROLES = ['admin', 'finance']
 const VALID_STORE_SCOPE_TYPES = new Set(['总部', '市场', '门店'])
 const WORKFINE_INVENTORY_CUTOVER_KEY = 'workfine_inventory'
 const WORKFINE_INVENTORY_INITIALIZED_STATUS = '已初始化'
-
-const CATEGORY_CONFIG = {
-  procurement: {
-    master: 'inventory_procurement_orders',
-    items: 'inventory_procurement_order_items',
-    masterCols: [
-      'doc_subtype',
-      'is_completed',
-      'source_date',
-      'source_quantity',
-      'signature_url',
-      'related_doc_no',
-    ],
-    itemExtraCols: ['request_quantity'],
-    hasSubtype: true,
-  },
-  sale: {
-    master: 'inventory_sale_orders',
-    items: 'inventory_sale_order_items',
-    masterCols: ['doc_subtype', 'client_user_id', 'customer_name', 'related_sale_order_id'],
-    itemExtraCols: [
-      'sale_flow_no',
-      'customer_remaining',
-      'verification_name',
-      'verification_code',
-    ],
-    hasSubtype: true,
-  },
-  transfer: {
-    master: 'inventory_transfer_orders',
-    items: 'inventory_transfer_order_items',
-    masterCols: [
-      'doc_subtype',
-      'counterpart_store_id',
-      'is_dispatcher',
-      'receive_quantity',
-    ],
-    itemExtraCols: [],
-    hasSubtype: true,
-    /** 调拨需要 OR(本店是发出方, 本店是接收方) */
-    storeFilterMode: 'transfer',
-  },
-  scrap: {
-    master: 'inventory_scrap_orders',
-    items: 'inventory_scrap_order_items',
-    masterCols: [],
-    itemExtraCols: ['scrap_reason', 'item_usage'],
-    hasSubtype: false,
-  },
-}
-
-function isValidCategory(c) {
-  return Object.prototype.hasOwnProperty.call(CATEGORY_CONFIG, c)
-}
 
 const DOC_PREFIX = {
   '门店报货': 'DBH',
@@ -358,124 +304,6 @@ async function generateDocNo(client, docType) {
   return `${prefix}-${ymd}-${String(seq).padStart(4, '0')}`
 }
 
-async function lockStockById(client, stockId, storeId) {
-  const res = await client.query(
-    `SELECT id, store_id, sku_id, sku_name, product_type, batch_no, expiry_date, quantity_on_hand
-       FROM store_inventory_stocks
-      WHERE id = $1 AND store_id = $2
-      FOR UPDATE`,
-    [stockId, storeId],
-  )
-  const r = res.rows[0]
-  if (!r) throw new Error('NOT_FOUND: 库存记录不存在或不属于当前门店')
-  return {
-    id: Number(r.id),
-    storeId: r.store_id,
-    skuId: r.sku_id,
-    skuName: r.sku_name,
-    productType: r.product_type,
-    batchNo: r.batch_no || '',
-    expiryDate: r.expiry_date || null,
-    quantityOnHand: Number(r.quantity_on_hand),
-  }
-}
-
-async function ensureStockFromSku(client, storeId, item) {
-  if (item.stockId) return lockStockById(client, item.stockId, storeId)
-  const skuId = String(item.skuId || '').trim()
-  if (!skuId) throw new Error('INVALID_PARAMS: 缺少 SKU 或库存记录')
-  const skuRes = await client.query(
-    `SELECT sku_id, spec_name, product_type
-       FROM product_skus
-      WHERE sku_id = $1 AND deleted_at IS NULL
-      LIMIT 1`,
-    [skuId],
-  )
-  const sku = skuRes.rows[0]
-  if (!sku) throw new Error('NOT_FOUND: SKU 不存在或已删除')
-  const batchNo = normalizeBatchNo(item.batchNo)
-  const expiryDate = item.expiryDate || null
-  const expiryDateKey = normalizeDateKey(expiryDate)
-  const inserted = await client.query(
-    `INSERT INTO store_inventory_stocks (
-       store_id, sku_id, sku_name, product_type, batch_no, expiry_date, expiry_date_key, quantity_on_hand
-     )
-     VALUES ($1, $2, $3, $4, $5, $6, $7, 0)
-     ON CONFLICT (store_id, sku_id, batch_no, expiry_date_key)
-     DO UPDATE SET
-       sku_name = EXCLUDED.sku_name,
-       product_type = EXCLUDED.product_type,
-       updated_at = NOW()
-     RETURNING id`,
-    [storeId, sku.sku_id, sku.spec_name, sku.product_type, batchNo, expiryDate, expiryDateKey],
-  )
-  return lockStockById(client, Number(inserted.rows[0].id), storeId)
-}
-
-async function applyMovement(client, params) {
-  const before = Number(params.stock.quantityOnHand)
-  const delta = params.direction === '入库' ? params.quantity : -params.quantity
-  const after = before + delta
-  if (after < 0) {
-    throw new Error(`INVALID_STATE: 库存不足：${params.stock.skuName} 当前 ${before}`)
-  }
-  await client.query(
-    `UPDATE store_inventory_stocks
-        SET quantity_on_hand = $1,
-            last_unit_price = COALESCE($2, last_unit_price),
-            last_amount = COALESCE($3, last_amount),
-            updated_at = NOW()
-      WHERE id = $4`,
-    [after, params.unitPrice ?? null, params.amount ?? null, params.stock.id],
-  )
-  await client.query(
-    `INSERT INTO store_inventory_movements (
-       movement_key, stock_id, store_id, sku_id, doc_id, doc_item_id,
-       sale_order_id, sale_item_id, direction, quantity_delta,
-       quantity_before, quantity_after, created_by, remark
-     )
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-    [
-      params.movementKey,
-      params.stock.id,
-      params.stock.storeId,
-      params.stock.skuId,
-      params.docId,
-      params.docItemId,
-      params.saleOrderId || null,
-      params.saleItemId || null,
-      params.direction,
-      delta,
-      before,
-      after,
-      params.createdBy || null,
-      params.remark || null,
-    ],
-  )
-  params.stock.quantityOnHand = after
-  return { before, after }
-}
-
-function buildStoreFilter(auth, cfg, paramIndexStart) {
-  // 管理层（scopeStoreIds 全 null 或多店）→ ANY(array)；门店模式 → 单店等值或 OR
-  const ids = auth.scopeStoreIds || []
-  if (ids.length === 0) {
-    return { sql: 'FALSE', params: [], nextIdx: paramIndexStart }
-  }
-  if (cfg.storeFilterMode === 'transfer') {
-    return {
-      sql: `(m.store_id = ANY($${paramIndexStart}::text[]) OR m.counterpart_store_id = ANY($${paramIndexStart}::text[]))`,
-      params: [ids],
-      nextIdx: paramIndexStart + 1,
-    }
-  }
-  return {
-    sql: `m.store_id = ANY($${paramIndexStart}::text[])`,
-    params: [ids],
-    nextIdx: paramIndexStart + 1,
-  }
-}
-
 async function syncInventoryLocations() {
   await pg.query(`
     INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, parent_location_id, is_active)
@@ -693,16 +521,18 @@ function lotKey(skuId, item) {
     priceKey(item.supplyChainUnitCost),
     priceKey(item.marketActualUnitPrice),
     priceKey(item.storeActualUnitPrice),
+    `supplier:${item.supplierId || item.supplier || ''}`,
+    `source:${item.sourceDocId || ''}`,
   ].join('|')
 }
 
 async function lockInventoryLotById(client, lotId, locationId) {
   const res = await client.query(
-    `SELECT id, location_id, sku_id, sku_name, spec_name, supplier, product_series,
+    `SELECT id, location_id, sku_id, sku_name, spec_name, supplier, supplier_id, product_series,
             batch_no, expiry_date, is_gift, quantity_on_hand,
             supply_chain_unit_cost, market_standard_unit_price, market_unit_discount,
             market_actual_unit_price, store_standard_unit_price, store_unit_discount,
-            store_actual_unit_price
+            store_actual_unit_price, source_doc_id
        FROM inventory_stock_lots
       WHERE id = $1
         AND ($2::text IS NULL OR location_id = $2)
@@ -718,6 +548,7 @@ async function lockInventoryLotById(client, lotId, locationId) {
     skuName: r.sku_name,
     specName: r.spec_name || null,
     supplier: r.supplier || null,
+    supplierId: r.supplier_id || null,
     productSeries: r.product_series || null,
     batchNo: r.batch_no || '',
     expiryDate: r.expiry_date || null,
@@ -730,6 +561,7 @@ async function lockInventoryLotById(client, lotId, locationId) {
     storeStandardUnitPrice: moneyOrNull(r.store_standard_unit_price),
     storeUnitDiscount: moneyOrNull(r.store_unit_discount),
     storeActualUnitPrice: moneyOrNull(r.store_actual_unit_price),
+    sourceDocId: r.source_doc_id || null,
   }
 }
 
@@ -774,7 +606,7 @@ async function assertSkuAvailableAtLocation(client, sku, locationId) {
   }
 }
 
-async function ensureInventoryLotFromSku(client, locationId, item, sourceDocId, priceSnapshot = {}) {
+async function ensureInventoryLotFromSku(client, locationId, item, trace, priceSnapshot = {}) {
   const skuId = String(item.skuId || '').trim()
   if (!skuId) throw new Error('INVALID_PARAMS: 缺少库存 SKU')
   const skuRes = await client.query(
@@ -802,6 +634,10 @@ async function ensureInventoryLotFromSku(client, locationId, item, sourceDocId, 
   const storeActualUnitPrice = moneyOrNull(priceSnapshot.storeActualUnitPrice) ?? (
     storeStandardUnitPrice == null ? null : storeStandardUnitPrice - Number(storeUnitDiscount || 0)
   )
+  const sourceDocId = String(trace?.sourceDocId || '').trim()
+  if (!sourceDocId) throw new Error('INVALID_PARAMS: 缺少批次来源单据')
+  const supplierId = String(trace?.supplierId || '').trim() || null
+  const supplier = String(trace?.supplier || '').trim() || sku.supplier || null
   const key = lotKey(skuId, {
     ...item,
     batchNo,
@@ -809,21 +645,25 @@ async function ensureInventoryLotFromSku(client, locationId, item, sourceDocId, 
     supplyChainUnitCost,
     marketActualUnitPrice,
     storeActualUnitPrice,
+    supplier,
+    supplierId,
+    sourceDocId,
   })
   const inserted = await client.query(
     `INSERT INTO inventory_stock_lots (
-       location_id, sku_id, lot_key, sku_name, spec_name, supplier, product_series,
+       location_id, sku_id, lot_key, sku_name, spec_name, supplier, supplier_id, product_series,
        batch_no, expiry_date, expiry_date_key, is_gift, quantity_on_hand,
        supply_chain_unit_cost, market_standard_unit_price, market_unit_discount,
        market_actual_unit_price, store_standard_unit_price, store_unit_discount,
        store_actual_unit_price, source_doc_id
      )
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,0,$12,$13,$14,$15,$16,$17,$18,$19)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,0,$12,$13,$14,$15,$16,$17,$18,$19,$20)
      ON CONFLICT (location_id, lot_key)
      DO UPDATE SET
        sku_name = EXCLUDED.sku_name,
        spec_name = EXCLUDED.spec_name,
        supplier = EXCLUDED.supplier,
+       supplier_id = COALESCE(EXCLUDED.supplier_id, inventory_stock_lots.supplier_id),
        product_series = EXCLUDED.product_series,
        updated_at = NOW()
      RETURNING id`,
@@ -833,7 +673,8 @@ async function ensureInventoryLotFromSku(client, locationId, item, sourceDocId, 
       key,
       sku.product_name,
       sku.spec_name,
-      sku.supplier,
+      supplier,
+      supplierId,
       sku.product_series,
       batchNo,
       expiryDate,
@@ -855,7 +696,7 @@ async function ensureInventoryLotFromSku(client, locationId, item, sourceDocId, 
 async function applyInventoryMovement(client, params) {
   const before = Number(params.lot.quantityOnHand)
   const delta = params.direction === '出库' ? -params.quantity : params.quantity
-  const after = before + delta
+  const after = Math.round((before + delta) * 100) / 100
   if (params.direction === '出库') {
     const reservationRes = await client.query(
       `SELECT COALESCE(SUM(quantity - fulfilled_quantity - released_quantity), 0) AS quantity
@@ -873,12 +714,6 @@ async function applyInventoryMovement(client, params) {
   if (after < 0) {
     throw new Error(`INVALID_STATE: 库存不足：${params.lot.skuName} 当前 ${before}`)
   }
-  await client.query(
-    `UPDATE inventory_stock_lots
-        SET quantity_on_hand = $1, updated_at = NOW()
-      WHERE id = $2`,
-    [after, params.lot.id],
-  )
   await client.query(
     `INSERT INTO inventory_movements (
        movement_key, lot_id, location_id, sku_id, doc_id, doc_item_id,
@@ -918,6 +753,46 @@ async function assertInventoryLotAvailableForReservation(client, lot, quantity) 
   }
 }
 
+async function loadInventoryDocLineage(auth, docId) {
+  const upstreamScope = buildInventoryLocationScope(auth, 'from_doc', 2)
+  const downstreamScope = buildInventoryLocationScope(auth, 'to_doc', upstreamScope.nextIdx)
+  const result = await pg.query(
+    `SELECT
+       CASE WHEN link.from_doc_id = $1 THEN '下游' ELSE '上游' END AS direction,
+       link.relation_type,
+       CASE WHEN link.from_doc_id = $1 THEN to_doc.id ELSE from_doc.id END AS doc_id,
+       CASE WHEN link.from_doc_id = $1 THEN to_doc.doc_type ELSE from_doc.doc_type END AS doc_type,
+       CASE WHEN link.from_doc_id = $1 THEN to_doc.status ELSE from_doc.status END AS status,
+       CASE WHEN link.from_doc_id = $1 THEN to_doc.doc_date ELSE from_doc.doc_date END AS doc_date,
+       CASE WHEN link.from_doc_id = $1 THEN to_doc.total_quantity ELSE from_doc.total_quantity END AS total_quantity,
+       COALESCE(SUM(link.quantity), 0) AS linked_quantity,
+       MAX(link.created_at) AS linked_at
+     FROM inventory_doc_links link
+     JOIN inventory_docs from_doc ON from_doc.id = link.from_doc_id
+     JOIN inventory_docs to_doc ON to_doc.id = link.to_doc_id
+    WHERE (
+      (link.from_doc_id = $1 AND ${downstreamScope.sql})
+      OR (link.to_doc_id = $1 AND ${upstreamScope.sql})
+    )
+    GROUP BY
+      link.from_doc_id, link.to_doc_id, link.relation_type,
+      from_doc.id, from_doc.doc_type, from_doc.status, from_doc.doc_date, from_doc.total_quantity,
+      to_doc.id, to_doc.doc_type, to_doc.status, to_doc.doc_date, to_doc.total_quantity
+    ORDER BY linked_at DESC, link.relation_type ASC`,
+    [docId, ...upstreamScope.params, ...downstreamScope.params],
+  )
+  return result.map((row) => ({
+    direction: row.direction,
+    relationType: row.relation_type,
+    docId: row.doc_id,
+    docType: row.doc_type,
+    status: row.status,
+    docDate: row.doc_date,
+    totalQuantity: Number(row.total_quantity || 0),
+    linkedQuantity: Number(row.linked_quantity || 0),
+  }))
+}
+
 async function resolveStoreReturnTargetMarket(client, sourceLocationId, targetLocationId) {
   const result = await client.query(
     `SELECT source.parent_location_id AS market_id
@@ -938,283 +813,6 @@ async function resolveStoreReturnTargetMarket(client, sourceLocationId, targetLo
     throw new Error('INVALID_STATE: 院退货回库主体与门店所属市场不一致')
   }
   return marketId
-}
-
-async function list(ctx) {
-  await requireStaffBound()(ctx, async () => {})
-
-  const {
-    docCategory,
-    page = 1,
-    pageSize = 20,
-    docSubtype,
-    status,
-    storeId,
-    startDate,
-    endDate,
-    keyword,
-  } = ctx.event.payload || {}
-
-  if (!isValidCategory(docCategory)) {
-    throw new Error('INVALID_PARAMS: docCategory 必须是 procurement/sale/transfer/scrap')
-  }
-  const cfg = CATEGORY_CONFIG[docCategory]
-  const limit = Math.max(1, Math.min(50, parseInt(pageSize, 10) || 20))
-  const offset = (Math.max(1, parseInt(page, 10) || 1) - 1) * limit
-
-  const conditions = []
-  const params = []
-  let idx = 1
-
-  // scope 过滤
-  const scope = buildStoreFilter(ctx.auth, cfg, idx)
-  conditions.push(scope.sql)
-  params.push(...scope.params)
-  idx = scope.nextIdx
-
-  if (storeId) {
-    if (cfg.storeFilterMode === 'transfer') {
-      conditions.push(`(m.store_id = $${idx} OR m.counterpart_store_id = $${idx})`)
-    } else {
-      conditions.push(`m.store_id = $${idx}`)
-    }
-    params.push(storeId)
-    idx++
-  }
-  if (cfg.hasSubtype && docSubtype) {
-    conditions.push(`doc_subtype = $${idx}`)
-    params.push(docSubtype)
-    idx++
-  }
-  if (status) {
-    conditions.push(`status = $${idx}`)
-    params.push(status)
-    idx++
-  }
-  if (startDate) {
-    conditions.push(`doc_date >= $${idx}`)
-    params.push(startDate)
-    idx++
-  }
-  if (endDate) {
-    conditions.push(`doc_date <= $${idx}`)
-    params.push(endDate)
-    idx++
-  }
-  if (keyword) {
-    const escaped = String(keyword).replace(/[%_]/g, '\\$&')
-    conditions.push(`(id ILIKE $${idx} OR remark ILIKE $${idx})`)
-    params.push(`%${escaped}%`)
-    idx++
-  }
-
-  const whereSql = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
-  const masterSelectCols = [
-    'id',
-    'status',
-    'store_id',
-    'doc_date',
-    'total_quantity',
-    'remark',
-    'created_by',
-    'confirmed_by',
-    'confirmed_at',
-    'created_at',
-    'updated_at',
-    ...cfg.masterCols,
-  ]
-
-  const dataSql = `
-    SELECT ${masterSelectCols.map((c) => `m.${c}`).join(', ')},
-           s.store_name AS store_name,
-           ${
-             cfg.storeFilterMode === 'transfer'
-               ? `(SELECT store_name FROM stores WHERE store_id = m.counterpart_store_id) AS counterpart_store_name,`
-               : ''
-           }
-           (SELECT name FROM staff_wechat_users WHERE employee_id = m.created_by) AS created_by_name
-      FROM ${cfg.master} m
- LEFT JOIN stores s ON s.store_id = m.store_id
-       ${whereSql}
-  ORDER BY m.doc_date DESC, m.created_at DESC
-     LIMIT ${limit} OFFSET ${offset}
-  `
-  const countSql = `SELECT COUNT(*)::int AS cnt FROM ${cfg.master} m ${whereSql}`
-
-  const [rows, countRow] = await Promise.all([
-    pg.query(dataSql, params),
-    pg.query(countSql, params),
-  ])
-
-  ctx.result = {
-    items: rows.map((r) => ({
-      id: r.id,
-      docSubtype: r.doc_subtype ?? null,
-      status: r.status,
-      storeId: r.store_id,
-      storeName: r.store_name ?? null,
-      docDate: r.doc_date,
-      totalQuantity: r.total_quantity == null ? null : Number(r.total_quantity),
-      remark: r.remark ?? null,
-      createdBy: r.created_by,
-      createdByName: r.created_by_name ?? null,
-      confirmedBy: r.confirmed_by ?? null,
-      confirmedAt: r.confirmed_at,
-      createdAt: r.created_at,
-      updatedAt: r.updated_at,
-      // 类型特有扩展
-      isCompleted: r.is_completed ?? null,
-      sourceDate: r.source_date ?? null,
-      sourceQuantity: r.source_quantity == null ? null : Number(r.source_quantity),
-      signatureUrl: r.signature_url ?? null,
-      relatedDocNo: r.related_doc_no ?? null,
-      clientUserId: r.client_user_id ?? null,
-      customerName: r.customer_name ?? null,
-      relatedSaleOrderId: r.related_sale_order_id ?? null,
-      counterpartStoreId: r.counterpart_store_id ?? null,
-      counterpartStoreName: r.counterpart_store_name ?? null,
-      isDispatcher: r.is_dispatcher ?? null,
-      receiveQuantity: r.receive_quantity == null ? null : Number(r.receive_quantity),
-    })),
-    total: countRow[0]?.cnt ?? 0,
-    page: Math.max(1, parseInt(page, 10) || 1),
-    pageSize: limit,
-  }
-  return ctx.result
-}
-
-async function detail(ctx) {
-  await requireStaffBound()(ctx, async () => {})
-
-  const { docCategory, id } = ctx.event.payload || {}
-  if (!isValidCategory(docCategory)) {
-    throw new Error('INVALID_PARAMS: docCategory 必须是 procurement/sale/transfer/scrap')
-  }
-  if (!id) throw new Error('INVALID_PARAMS: 缺少单据号')
-
-  const cfg = CATEGORY_CONFIG[docCategory]
-  const ids = ctx.auth.scopeStoreIds || []
-  if (ids.length === 0) throw new Error('PERMISSION_DENIED: 当前账号无可见门店')
-
-  let scopeSql, scopeParams
-  if (cfg.storeFilterMode === 'transfer') {
-    scopeSql =
-      '(m.store_id = ANY($2::text[]) OR m.counterpart_store_id = ANY($2::text[]))'
-    scopeParams = [id, ids]
-  } else {
-    scopeSql = 'm.store_id = ANY($2::text[])'
-    scopeParams = [id, ids]
-  }
-
-  const masterCols = [
-    'id',
-    'status',
-    'store_id',
-    'doc_date',
-    'total_quantity',
-    'remark',
-    'created_by',
-    'confirmed_by',
-    'confirmed_at',
-    'created_at',
-    'updated_at',
-    ...cfg.masterCols,
-  ]
-  const headRows = await pg.query(
-    `SELECT ${masterCols.map((c) => `m.${c}`).join(', ')},
-            s.store_name AS store_name,
-            ${
-              cfg.storeFilterMode === 'transfer'
-                ? `(SELECT store_name FROM stores WHERE store_id = m.counterpart_store_id) AS counterpart_store_name,`
-                : ''
-            }
-            (SELECT name FROM staff_wechat_users WHERE employee_id = m.created_by) AS created_by_name,
-            (SELECT name FROM staff_wechat_users WHERE employee_id = m.confirmed_by) AS confirmed_by_name
-       FROM ${cfg.master} m
-  LEFT JOIN stores s ON s.store_id = m.store_id
-      WHERE m.id = $1 AND ${scopeSql}
-      LIMIT 1`,
-    scopeParams,
-  )
-  if (headRows.length === 0) throw new Error('NOT_FOUND: 单据不存在或无权限')
-  const r = headRows[0]
-
-  const itemCols = [
-    'id',
-    'order_id',
-    'product_code',
-    'product_name',
-    'spec_name',
-    'manufacturer',
-    'product_series',
-    'batch_no',
-    'expiry_date',
-    'is_gift',
-    'quantity',
-    'stock_on_hand',
-    'remark',
-    'created_at',
-    ...cfg.itemExtraCols,
-  ]
-  const itemRows = await pg.query(
-    `SELECT ${itemCols.join(', ')} FROM ${cfg.items} WHERE order_id = $1 ORDER BY id`,
-    [id],
-  )
-
-  ctx.result = {
-    id: r.id,
-    docSubtype: r.doc_subtype ?? null,
-    status: r.status,
-    storeId: r.store_id,
-    storeName: r.store_name ?? null,
-    docDate: r.doc_date,
-    totalQuantity: r.total_quantity == null ? null : Number(r.total_quantity),
-    remark: r.remark ?? null,
-    createdBy: r.created_by,
-    createdByName: r.created_by_name ?? null,
-    confirmedBy: r.confirmed_by ?? null,
-    confirmedByName: r.confirmed_by_name ?? null,
-    confirmedAt: r.confirmed_at,
-    createdAt: r.created_at,
-    updatedAt: r.updated_at,
-    isCompleted: r.is_completed ?? null,
-    sourceDate: r.source_date ?? null,
-    sourceQuantity: r.source_quantity == null ? null : Number(r.source_quantity),
-    signatureUrl: r.signature_url ?? null,
-    relatedDocNo: r.related_doc_no ?? null,
-    clientUserId: r.client_user_id ?? null,
-    customerName: r.customer_name ?? null,
-    relatedSaleOrderId: r.related_sale_order_id ?? null,
-    counterpartStoreId: r.counterpart_store_id ?? null,
-    counterpartStoreName: r.counterpart_store_name ?? null,
-    isDispatcher: r.is_dispatcher ?? null,
-    receiveQuantity: r.receive_quantity == null ? null : Number(r.receive_quantity),
-    items: itemRows.map((it) => ({
-      id: it.id,
-      orderId: it.order_id,
-      productCode: it.product_code,
-      productName: it.product_name,
-      specName: it.spec_name ?? null,
-      manufacturer: it.manufacturer ?? null,
-      productSeries: it.product_series ?? null,
-      batchNo: it.batch_no ?? null,
-      expiryDate: it.expiry_date,
-      isGift: it.is_gift,
-      quantity: Number(it.quantity),
-      stockOnHand: it.stock_on_hand == null ? null : Number(it.stock_on_hand),
-      remark: it.remark ?? null,
-      requestQuantity: it.request_quantity == null ? null : Number(it.request_quantity),
-      saleFlowNo: it.sale_flow_no ?? null,
-      customerRemaining:
-        it.customer_remaining == null ? null : Number(it.customer_remaining),
-      verificationName: it.verification_name ?? null,
-      verificationCode: it.verification_code ?? null,
-      scrapReason: it.scrap_reason ?? null,
-      itemUsage: it.item_usage ?? null,
-      createdAt: it.created_at,
-    })),
-  }
-  return ctx.result
 }
 
 async function stockList(ctx) {
@@ -1518,7 +1116,7 @@ async function docList(ctx) {
   const whereSql = `WHERE ${conditions.join(' AND ')}`
   const rows = await pg.query(
     `SELECT d.id, d.doc_type, d.status, d.source_location_id, d.target_location_id,
-            d.doc_date, d.related_doc_id, d.request_doc_id, d.related_sale_order_id,
+            d.doc_date, d.related_sale_order_id,
             d.customer_name, d.employee_name, d.supplier_name, d.logistics_company,
             d.tracking_no, d.total_quantity, d.remark, d.created_at, d.updated_at,
             source_loc.name AS source_location_name, source_loc.location_type AS source_location_type,
@@ -1548,8 +1146,6 @@ async function docList(ctx) {
       targetLocationType: r.target_location_type || null,
       docDate: r.doc_date,
       totalQuantity: Number(r.total_quantity || 0),
-      relatedDocId: r.related_doc_id || null,
-      requestDocId: r.request_doc_id || null,
       relatedSaleOrderId: r.related_sale_order_id || null,
       customerName: r.customer_name || null,
       employeeName: r.employee_name || null,
@@ -1576,7 +1172,7 @@ async function docDetail(ctx) {
   const docTypeParamIndex = scope.nextIdx
   const rows = await pg.query(
     `SELECT d.id, d.doc_type, d.status, d.source_location_id, d.target_location_id,
-            d.doc_date, d.related_doc_id, d.request_doc_id, d.related_sale_order_id,
+            d.doc_date, d.related_sale_order_id,
             d.customer_name, d.employee_name, d.supplier_name, d.logistics_company,
             d.tracking_no, d.total_quantity, d.remark, d.audit_remark,
             d.confirmed_at, d.approved_at, d.rejected_at, d.created_at, d.updated_at,
@@ -1593,7 +1189,8 @@ async function docDetail(ctx) {
   )
   if (rows.length === 0) throw new Error('NOT_FOUND: 单据不存在或无权限')
   const r = rows[0]
-  const items = await pg.query(
+  const [items, lineage] = await Promise.all([
+    pg.query(
     `SELECT id, doc_id, lot_id, sku_id, sale_item_id, sku_name, spec_name,
             supplier, product_series, batch_no, expiry_date, is_gift,
             quantity, stock_snapshot, request_quantity, fulfilled_quantity,
@@ -1601,8 +1198,10 @@ async function docDetail(ctx) {
        FROM inventory_doc_items
       WHERE doc_id = $1
    ORDER BY id`,
-    [id],
-  )
+      [id],
+    ),
+    loadInventoryDocLineage(ctx.auth, id),
+  ])
   ctx.result = {
     id: r.id,
     docType: r.doc_type,
@@ -1615,8 +1214,6 @@ async function docDetail(ctx) {
     targetLocationType: r.target_location_type || null,
     docDate: r.doc_date,
     totalQuantity: Number(r.total_quantity || 0),
-    relatedDocId: r.related_doc_id || null,
-    requestDocId: r.request_doc_id || null,
     relatedSaleOrderId: r.related_sale_order_id || null,
     customerName: r.customer_name || null,
     employeeName: r.employee_name || null,
@@ -1630,6 +1227,7 @@ async function docDetail(ctx) {
     rejectedAt: r.rejected_at || null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    lineage,
     items: items.map((it) => ({
       id: Number(it.id),
       docId: it.doc_id,
@@ -1689,12 +1287,12 @@ async function createDoc(ctx) {
     await client.query(
       `INSERT INTO inventory_docs (
          id, doc_type, status, source_location_id, target_location_id, doc_date, total_quantity,
-         related_doc_id, request_doc_id, related_sale_order_id, client_user_id, customer_name,
+         related_sale_order_id, client_user_id, customer_name,
          employee_id, employee_name, supplier_name, logistics_company, tracking_no,
          receipt_attachment_url, remark, created_by, confirmed_by, confirmed_at, market_id
        )
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
-               CASE WHEN $22::boolean THEN NOW() ELSE NULL END,$23)`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
+               CASE WHEN $20::boolean THEN NOW() ELSE NULL END,$21)`,
       [
         docId,
         docType,
@@ -1703,8 +1301,6 @@ async function createDoc(ctx) {
         targetLocationId,
         payload.docDate || shanghaiToday(),
         totalQuantity,
-        payload.relatedDocId || null,
-        payload.requestDocId || null,
         payload.relatedSaleOrderId || null,
         payload.clientUserId || null,
         payload.customerName || null,
@@ -1734,7 +1330,11 @@ async function createDoc(ctx) {
         lot = await lockInventoryLotById(client, Number(item.lotId), sourceLocationId)
         snapshot = lot
       } else if (plan?.role === 'target') {
-        lot = await ensureInventoryLotFromSku(client, targetLocationId, item, docId)
+        lot = await ensureInventoryLotFromSku(client, targetLocationId, item, {
+          sourceDocId: docId,
+          supplierId: item.supplierId || payload.supplierId || null,
+          supplier: item.supplier || payload.supplierName || null,
+        })
         snapshot = lot
       } else {
         if (!item.skuId) throw new Error('INVALID_PARAMS: 明细缺少库存 SKU')
@@ -1859,18 +1459,17 @@ async function approveStoreReturnForRestock(client, head, ctx, auditRemark) {
   const totalQuantity = itemRes.rows.reduce((total, item) => total + assertQty(item.quantity), 0)
   const inboundDocId = await generateDocNo(client, '市场退货入库')
   await client.query(
-    `INSERT INTO inventory_docs (
+      `INSERT INTO inventory_docs (
        id, doc_type, status, source_location_id, target_location_id, market_id,
-       doc_date, total_quantity, related_doc_id, remark, created_by, confirmed_by, confirmed_at
+       doc_date, total_quantity, remark, created_by, confirmed_by, confirmed_at
      )
-     VALUES ($1,'市场退货入库','已完成',$2,$3,$3,$4,$5,$6,$7,$8,$8,NOW())`,
+     VALUES ($1,'市场退货入库','已完成',$2,$3,$3,$4,$5,$6,$7,$7,NOW())`,
     [
       inboundDocId,
       head.source_location_id,
       targetLocationId,
       shanghaiToday(),
       totalQuantity,
-      head.id,
       auditRemark || null,
       ctx.auth.staffWfId,
     ],
@@ -1932,7 +1531,12 @@ async function approveStoreReturnForRestock(client, head, ctx, auditRemark) {
         expiryDate: sourceLot.expiryDate,
         isGift: sourceLot.isGift,
       },
-      inboundDocId,
+      {
+        // 回库批次沿用来源批次的供应商和最初来源，避免同批号跨供应商合并。
+        sourceDocId: sourceLot.sourceDocId || inboundDocId,
+        supplierId: sourceLot.supplierId,
+        supplier: sourceLot.supplier,
+      },
       priceSnapshot,
     )
     const standardUnitPrice = item.standard_unit_price ?? sourceLot.storeStandardUnitPrice ?? null
@@ -2159,7 +1763,7 @@ async function confirmReceive(ctx) {
     await assertWorkfineInventoryInitialized(client)
     const headRes = await client.query(
       `SELECT id, doc_type, status, source_location_id, target_location_id,
-              total_quantity, request_doc_id, related_doc_id, remark
+              supplier_id, supplier_name, total_quantity, remark
          FROM inventory_docs
         WHERE id = $1
           AND doc_type = ANY($2::text[])
@@ -2178,9 +1782,9 @@ async function confirmReceive(ctx) {
     await client.query(
       `INSERT INTO inventory_docs (
          id, doc_type, status, source_location_id, target_location_id, doc_date, total_quantity,
-         related_doc_id, request_doc_id, remark, created_by, confirmed_by, confirmed_at
+         remark, created_by, confirmed_by, confirmed_at
        )
-       VALUES ($1,$2,'已完成',$3,$4,$5,$6,$7,$8,$9,$10,$10,NOW())`,
+       VALUES ($1,$2,'已完成',$3,$4,$5,$6,$7,$8,$8,NOW())`,
       [
         inboundDocId,
         inboundType,
@@ -2188,14 +1792,12 @@ async function confirmReceive(ctx) {
         head.target_location_id,
         shanghaiToday(),
         head.total_quantity,
-        id,
-        head.request_doc_id || null,
         remark || head.remark || null,
         ctx.auth.staffWfId,
       ],
     )
     const itemRes = await client.query(
-      `SELECT sku_id, sale_item_id, sku_name, spec_name, supplier, product_series,
+      `SELECT id AS source_item_id, lot_id, sku_id, sale_item_id, sku_name, spec_name, supplier, product_series,
               batch_no, expiry_date, is_gift, quantity, request_quantity,
               fulfilled_quantity, standard_unit_price, unit_discount, actual_unit_price,
               amount, supply_chain_unit_cost, market_standard_unit_price,
@@ -2207,13 +1809,21 @@ async function confirmReceive(ctx) {
       [id],
     )
     for (const item of itemRes.rows) {
+      const sourceLot = item.lot_id == null
+        ? null
+        : await lockInventoryLotById(client, Number(item.lot_id), head.source_location_id)
       const lot = await ensureInventoryLotFromSku(client, head.target_location_id, {
         skuId: item.sku_id,
         batchNo: item.batch_no,
         expiryDate: item.expiry_date,
         isGift: item.is_gift,
         quantity: item.quantity,
-      }, inboundDocId, {
+      }, {
+        // 有来源批次时保留其真实供应链路；采购订单首入库以订单为来源。
+        sourceDocId: sourceLot?.sourceDocId || id,
+        supplierId: sourceLot?.supplierId || head.supplier_id || null,
+        supplier: sourceLot?.supplier || head.supplier_name || item.supplier || null,
+      }, {
         supplyChainUnitCost: item.supply_chain_unit_cost,
         marketStandardUnitPrice: item.market_standard_unit_price,
         marketUnitDiscount: item.market_unit_discount,
@@ -2274,6 +1884,12 @@ async function confirmReceive(ctx) {
         movementKey: `receive:${id}:item:${inserted.rows[0].id}:入库`,
         remark: remark || null,
       })
+      await client.query(
+        `INSERT INTO inventory_doc_links (
+           from_doc_id, to_doc_id, relation_type, from_item_id, to_item_id, quantity
+         ) VALUES ($1,$2,'发货收货',$3,$4,$5)`,
+        [id, inboundDocId, Number(item.source_item_id), Number(inserted.rows[0].id), Number(item.quantity)],
+      )
     }
     const completed = await client.query(
       `UPDATE inventory_docs
@@ -2328,8 +1944,6 @@ async function uploadReceipt(ctx) {
 }
 
 module.exports = {
-  list,
-  detail,
   stockList,
   reportableSkuOptions,
   storeOptions,

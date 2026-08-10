@@ -184,8 +184,8 @@ describe('inventory.createDoc 权限与状态', () => {
     expect(insertDocCall[1][2]).toBe('待收货')
     expect(insertDocCall[1][3]).toBe('store-A')
     expect(insertDocCall[1][4]).toBe('store-B')
-    expect(insertDocCall[1][20]).toBe('emp-001')
-    expect(insertDocCall[1][21]).toBe(true)
+    expect(insertDocCall[1][17]).toBe('emp-001')
+    expect(insertDocCall[1][19]).toBe(true)
 
     const movementCall = client.query.mock.calls.find(([sql]) => (
       /INSERT INTO inventory_movements/.test(sql)
@@ -337,7 +337,7 @@ describe('inventory.createDoc 权限与状态', () => {
     expect(insertDocCall[1][2]).toBe('待审批')
     expect(insertDocCall[1][3]).toBe('store-A')
     expect(insertDocCall[1][4]).toBe('market-A')
-    expect(insertDocCall[1][22]).toBe('market-A')
+    expect(insertDocCall[1][20]).toBe('market-A')
     const reservationCall = client.query.mock.calls.find(([sql]) => (
       /INSERT INTO inventory_stock_reservations/.test(sql)
     ))
@@ -467,7 +467,7 @@ describe('inventory.createDoc 权限与状态', () => {
     expect(insertDocCall[1][1]).toBe('门店报货')
     expect(insertDocCall[1][3]).toBe('store-001')
     expect(insertDocCall[1][4]).toBe('market-A')
-    expect(insertDocCall[1][22]).toBe('market-A')
+    expect(insertDocCall[1][20]).toBe('market-A')
   })
 
   test('待收货类型缺少接收主体时拒绝创建', async () => {
@@ -853,13 +853,12 @@ describe('inventory.approveDoc / rejectDoc 审批一致性', () => {
     expect(inboundDocCall[0]).toMatch(/'市场退货入库'/)
     expect(inboundDocCall[1][1]).toBe('store-A')
     expect(inboundDocCall[1][2]).toBe('market-A')
-    expect(inboundDocCall[1][6]).toBe('同意回库')
+    expect(inboundDocCall[1][5]).toBe('同意回库')
     const reservationUpdate = client.query.mock.calls.find(([sql]) => (
       /UPDATE inventory_stock_reservations/.test(sql) && /fulfilled_quantity/.test(sql)
     ))
     expect(reservationUpdate[1]).toEqual([77, 2])
-    const stockUpdates = client.query.mock.calls.filter(([sql]) => /UPDATE inventory_stock_lots/.test(sql))
-    expect(stockUpdates.map(([, params]) => params)).toEqual([[3, 10], [5, 20]])
+    expect(client.query.mock.calls.some(([sql]) => /UPDATE inventory_stock_lots/.test(sql))).toBe(false)
     const movements = client.query.mock.calls.filter(([sql]) => /INSERT INTO inventory_movements/.test(sql))
     expect(movements).toHaveLength(2)
     expect(movements[0][1].slice(4, 8)).toEqual(['YTH-001', 101, '出库', -2])
@@ -956,8 +955,6 @@ describe('inventory.confirmReceive v3 收货', () => {
           source_location_id: 'store-A',
           target_location_id: 'store-B',
           total_quantity: '2',
-          request_doc_id: 'REQ-001',
-          related_doc_id: null,
           remark: '原单备注',
         }],
       },
@@ -975,8 +972,9 @@ describe('inventory.confirmReceive v3 收货', () => {
       /INSERT INTO inventory_docs/.test(sql)
     ))
     expect(insertDocCall[1][1]).toBe('院入库')
-    expect(insertDocCall[1][7]).toBe('REQ-001')
-    expect(insertDocCall[1][8]).toBe('确认收货')
+    expect(insertDocCall[0]).not.toMatch(/related_doc_id|request_doc_id/)
+    expect(insertDocCall[1][6]).toBe('确认收货')
+    expect(insertDocCall[1][7]).toBe('emp-001')
     expect(ctx.result.inboundDocId).toMatch(/^YRK-/)
   })
 })
@@ -995,8 +993,7 @@ describe('inventory.docList / docDetail v3 契约', () => {
           id: 'DBH-260809-0001', doc_type: '门店报货', status: '草稿',
           source_location_id: 'store-001', source_location_name: '测试店', source_location_type: '门店',
           target_location_id: null, target_location_name: null, target_location_type: null,
-          doc_date: '2026-08-09', total_quantity: '2', related_doc_id: null,
-          request_doc_id: null, related_sale_order_id: null, customer_name: null,
+          doc_date: '2026-08-09', total_quantity: '2', related_sale_order_id: null, customer_name: null,
           employee_name: null, supplier_name: null, logistics_company: null,
           tracking_no: null, remark: null, created_at: '2026-08-09T00:00:00Z', updated_at: '2026-08-09T00:00:00Z',
         }]
@@ -1033,8 +1030,7 @@ describe('inventory.docList / docDetail v3 契约', () => {
           id: 'DOC-004', doc_type: '院顾客产品出库', status: '已完成',
           source_location_id: 'store-001', source_location_name: '测试店', source_location_type: '门店',
           target_location_id: null, target_location_name: null, target_location_type: null,
-          doc_date: '2026-08-09', related_doc_id: null, request_doc_id: null,
-          related_sale_order_id: 'FY-001', customer_name: '顾客A', employee_name: null,
+          doc_date: '2026-08-09', related_sale_order_id: 'FY-001', customer_name: '顾客A', employee_name: null,
           supplier_name: null, logistics_company: null, tracking_no: null, total_quantity: '2',
           remark: null, audit_remark: null, confirmed_at: null, approved_at: null,
           rejected_at: null, created_at: '2026-08-09T00:00:00Z', updated_at: '2026-08-09T00:00:00Z',

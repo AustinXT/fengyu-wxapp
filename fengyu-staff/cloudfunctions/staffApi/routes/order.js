@@ -4444,13 +4444,6 @@ async function createPickupInventoryDoc(client, ctx, updatedItem, clientUserId, 
     )
     const docItemId = inserted.rows[0].id
     await client.query(
-      `UPDATE inventory_stock_lots
-          SET quantity_on_hand = $1,
-              updated_at = NOW()
-        WHERE id = $2`,
-      [after, lot.id],
-    )
-    await client.query(
       `INSERT INTO inventory_movements (
          movement_key, lot_id, location_id, sku_id, doc_id, doc_item_id,
          direction, quantity_delta,

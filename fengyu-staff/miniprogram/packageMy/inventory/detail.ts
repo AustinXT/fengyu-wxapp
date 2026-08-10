@@ -21,6 +21,17 @@ interface ItemRow {
   reason?: string | null
 }
 
+interface LineageRow {
+  direction: string
+  relationType: string
+  docId: string
+  docType: string
+  status: string
+  docDate: string
+  totalQuantity: number
+  linkedQuantity: number
+}
+
 interface InventoryDetail {
   id: string
   docType: string
@@ -38,10 +49,9 @@ interface InventoryDetail {
   employeeName: string | null
   supplierName: string | null
   trackingNo: string | null
-  requestDocId: string | null
-  relatedDocId: string | null
   relatedSaleOrderId: string | null
   auditRemark: string | null
+  lineage: LineageRow[]
   items: ItemRow[]
 }
 
@@ -72,6 +82,7 @@ Page({
             ...detail,
             confirmedAt: detail.confirmedAt ? formatDateTime(detail.confirmedAt) : detail.confirmedAt,
             statusKey: STATUS_KEY_MAP[detail.status] || 'unknown',
+            lineage: detail.lineage || [],
           }
         : detail
       const canReceive = Boolean(

@@ -17,8 +17,6 @@
     <view class="field" wx:if="{{detail.targetLocationName || detail.targetLocationId}}"><text class="label">入库/接收主体</text><text class="value">{{detail.targetLocationName || detail.targetLocationId}}</text></view>
     <view class="field" wx:if="{{detail.customerName}}"><text class="label">顾客</text><text class="value">{{detail.customerName}}</text></view>
     <view class="field"><text class="label">总数量</text><text class="value">{{detail.totalQuantity || '—'}}</text></view>
-    <view class="field" wx:if="{{detail.requestDocId}}"><text class="label">报货单号</text><text class="value">{{detail.requestDocId}}</text></view>
-    <view class="field" wx:if="{{detail.relatedDocId}}"><text class="label">关联单号</text><text class="value">{{detail.relatedDocId}}</text></view>
     <view class="field" wx:if="{{detail.relatedSaleOrderId}}"><text class="label">销售单号</text><text class="value">{{detail.relatedSaleOrderId}}</text></view>
     <view class="field" wx:if="{{detail.employeeName}}"><text class="label">相关员工</text><text class="value">{{detail.employeeName}}</text></view>
     <view class="field" wx:if="{{detail.supplierName}}"><text class="label">供货方</text><text class="value">{{detail.supplierName}}</text></view>
@@ -26,6 +24,14 @@
     <view class="field" wx:if="{{detail.confirmedAt}}"><text class="label">确认时间</text><text class="value">{{detail.confirmedAt}}</text></view>
     <view class="field" wx:if="{{detail.auditRemark}}"><text class="label">审批备注</text><text class="value">{{detail.auditRemark}}</text></view>
     <view class="field" wx:if="{{detail.remark}}"><text class="label">备注</text><text class="value">{{detail.remark}}</text></view>
+  </view>
+
+  <view class="section" wx:if="{{detail.lineage.length}}">
+    <view class="section-title">单据血缘</view>
+    <view class="field" wx:for="{{detail.lineage}}" wx:key="docId">
+      <text class="label">{{item.direction}} · {{item.relationType}}</text>
+      <text class="value">{{item.docType}} {{item.docId}}</text>
+    </view>
   </view>
 
   <view class="section">

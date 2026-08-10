@@ -5830,7 +5830,7 @@ describe('order.createPickup', () => {
     expect(locationSyncCall[0]).toMatch(/COALESCE\(o\.is_active, false\) AND NOT s\.is_closed/)
     expect(locationSyncCall[0]).toMatch(/is_active = EXCLUDED\.is_active/)
     expect(pickupClient.query.mock.calls.some(([sql]) => /INSERT INTO inventory_docs/.test(sql))).toBe(true)
-    expect(pickupClient.query.mock.calls.some(([sql]) => /UPDATE inventory_stock_lots/.test(sql))).toBe(true)
+    expect(pickupClient.query.mock.calls.some(([sql]) => /UPDATE inventory_stock_lots/.test(sql))).toBe(false)
     expect(pickupClient.query.mock.calls.some(([sql]) => /INSERT INTO inventory_movements/.test(sql))).toBe(true)
   })
 
@@ -5974,10 +5974,14 @@ describe('order.createPickup', () => {
 
     await orderRoutes.createPickup(ctx)
 
-    const stockUpdates = pickupClient.query.mock.calls
-      .filter(([sql]) => /UPDATE inventory_stock_lots/.test(sql))
+    expect(pickupClient.query.mock.calls.some(([sql]) => /UPDATE inventory_stock_lots/.test(sql))).toBe(false)
+    const movements = pickupClient.query.mock.calls
+      .filter(([sql]) => /INSERT INTO inventory_movements/.test(sql))
       .map(([, params]) => params)
-    expect(stockUpdates).toEqual([[4, 1], [3, 2]])
+    expect(movements.map((params) => [params[1], params[6], params[7], params[8]])).toEqual([
+      [1, -1, 5, 4],
+      [2, -2, 5, 3],
+    ])
   })
 
   test('超出可提货数量拒绝', async () => {
