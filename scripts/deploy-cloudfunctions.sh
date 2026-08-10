@@ -58,6 +58,51 @@ if [[ -z "$STAFF_ENV_ID" || -z "$CLIENT_ENV_ID" ]]; then
   exit 1
 fi
 
+# `fn code update` uploads local code verbatim and these functions set
+# installDependency=false. Refuse to deploy a package with unresolved runtime deps.
+assert_function_dependencies() {  # $1=relative function directory  $2=function name
+  local function_dir="$ROOT/$1"
+  local function_name="$2"
+
+  if [[ ! -d "$function_dir/node_modules" ]]; then
+    echo "ERROR: $function_name/node_modules missing. Run 'npm ci' in $1 before deploying." >&2
+    exit 1
+  fi
+
+  if ! (
+    cd "$function_dir"
+    node -e '
+      const path = require("path")
+      const pkg = require("./package.json")
+      const nodeModules = path.resolve("node_modules") + path.sep
+      const missing = []
+      for (const name of Object.keys(pkg.dependencies || {})) {
+        try {
+          const resolved = require.resolve(name)
+          if (!resolved.startsWith(nodeModules)) missing.push(name)
+        } catch {
+          missing.push(name)
+        }
+      }
+      if (missing.length > 0) {
+        console.error(`Unresolved runtime dependencies: ${missing.join(", ")}`)
+        process.exit(1)
+      }
+    '
+  ); then
+    echo "ERROR: $function_name runtime dependencies are incomplete. Run 'npm ci' in $1 before deploying." >&2
+    exit 1
+  fi
+
+  echo "  ✓ $function_name runtime dependencies ready"
+}
+
+[[ "$DO_STAFF" == "1" ]] && assert_function_dependencies fengyu-staff/cloudfunctions/staffApi staffApi
+if [[ "$DO_CLIENT" == "1" ]]; then
+  assert_function_dependencies fengyu-client/cloudfunctions/clientApi clientApi
+  assert_function_dependencies fengyu-client/cloudfunctions/payNotify payNotify
+fi
+
 # 防呆：prod 强制 confirm（仅列出本次实际部署的目标）
 if [[ "$ACTIVE" == "prod" && "$ASSUME_YES" != "1" ]]; then
   echo "⚠️  About to deploy to PROD (target=$TARGET):"
