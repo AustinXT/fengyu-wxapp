@@ -145,7 +145,11 @@ echo "目标环境: $ENV（admin DB→$EXPECT_PG_HOST:5433）"
 # 优先读 envs/$ENV.env；缺失则 fallback envs/prod.env（RSA 密钥对 env 无关，dev/prod 可共用同一对公钥；
 # 远程 ADMIN_RSA_PRIVATE_KEY 须与本公钥配对，首跑后用 admin 登录验证）。
 # 任一端都缺 RSA_PUB → fail-fast（否则前端 encryptPassword 抛「缺少公钥」，登录不可用）。
-extract_pub() { grep '^NEXT_PUBLIC_RSA_PUBLIC_KEY=' "$1" 2>/dev/null | head -1 | cut -d= -f2-; }
+extract_pub() {
+  local line
+  line=$(grep -m1 '^NEXT_PUBLIC_RSA_PUBLIC_KEY=' "$1" 2>/dev/null || true)
+  printf '%s' "${line#*=}"
+}
 RSA_PUB=$(extract_pub "envs/$ENV.env")
 RSA_SRC="envs/$ENV.env"
 if [[ -z "$RSA_PUB" ]]; then

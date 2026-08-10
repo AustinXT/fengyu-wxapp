@@ -1,6 +1,6 @@
 # 发版验证清单（dev/prod）
 
-配合 `SKILL.md` 的 Phase 0（预检）与 Phase 4（部署后验证）使用。所有「线上值」以 `getFunctionConfig` / `tcb fn detail` / `docker exec` 实测为准 —— 因为 `tcb fn code update` **不改 env 变量**，env 由首次 provisioning 决定。**按本次 ENV（dev/prod）核对对应期望列**。
+配合 `SKILL.md` 的 Phase 0（预检）与 Phase 5（部署后验证）使用。所有「线上值」以 `getFunctionConfig` / `tcb fn detail` / `docker exec` 实测为准 —— 因为 `tcb fn code update` **不改 env 变量**，env 由首次 provisioning 决定。**按本次 ENV（dev/prod）核对对应期望列**。
 
 ## 环境变量安全表（防 dev 值误入 prod / prod 值误入 dev）
 
@@ -47,6 +47,6 @@ ssh $SSH_HOST "docker exec fengyu-admin sh -c 'echo \$DATABASE_URL'" | sed -E 's
 
 - **admin**：上一版镜像仍在远程 → `ssh $SSH_HOST "docker images fengyu-admin"`，把旧 image tag 重打成 `:latest`，再 `ssh $SSH_HOST "cd $REMOTE_DIR && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d admin cron-worker"`。或本地 `git checkout <上一版>` 后重跑 `deploy-admin.sh $ENV`。
 - **云函数**：`git checkout <上一版>` 对应端代码 → 重新 `scripts/use-env.sh $ENV && scripts/deploy-cloudfunctions.sh`（仍 `code update`，env 不动）。
-- **DB**：本技能不动 DB，无 DB 回滚项。
+- **DB**：本技能会在代码上线前执行 `db:migrate`。迁移失败时不得继续部署；已成功应用的 migration 不自动回滚，须按 `db/CLAUDE.md` 新建向前修复 migration。仅在已批准的灾难恢复流程中使用已验证备份，禁止 `db:push`、手工改 journal 或回改已应用 migration。
 
 （`$REMOTE_DIR` 默认 prod=`/www/wwwroot/fengyu-admin/docker`、dev=`/root/proj.xt.com/fengyu-wxapp/docker`；远程路径不同时显式传入。）
