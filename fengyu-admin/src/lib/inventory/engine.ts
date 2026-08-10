@@ -6,7 +6,14 @@ import { logOperation } from '@/lib/operation-log'
 import { hasPermission, isAdminScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import {
+  offsetPageResult,
+  resolveExportOffsetPage,
+  type ExportBatchOptions,
+  type ExportBatchResult,
+} from '@/lib/export-pagination'
+import {
   inventoryDocItems,
+  inventoryDocLinks,
   inventoryDocs,
   inventoryLocations,
   inventoryMovements,
@@ -61,6 +68,7 @@ interface LockedLot {
   skuName: string
   specName: string | null
   supplier: string | null
+  supplierId: string | null
   productSeries: string | null
   batchNo: string
   expiryDate: string | null
@@ -73,6 +81,7 @@ interface LockedLot {
   storeStandardUnitPrice: number | null
   storeUnitDiscount: number | null
   storeActualUnitPrice: number | null
+  sourceDocId: string | null
 }
 
 const DOC_PREFIX: Record<InventoryDocType, string> = {
@@ -382,6 +391,9 @@ function makeLotKey(
     supplyChainUnitCost?: number | null
     marketActualUnitPrice?: number | null
     storeActualUnitPrice?: number | null
+    supplier?: string | null
+    supplierId?: string | null
+    sourceDocId?: string | null
   },
 ): string {
   const priceKey = (v: number | null | undefined) =>
@@ -396,6 +408,8 @@ function makeLotKey(
     priceKey(item.supplyChainUnitCost),
     priceKey(item.marketActualUnitPrice),
     priceKey(item.storeActualUnitPrice),
+    `supplier:${normalizeText(item.supplierId) ?? normalizeText(item.supplier) ?? ''}`,
+    `source:${normalizeText(item.sourceDocId) ?? ''}`,
   ].join('|')
 }
 
@@ -677,11 +691,11 @@ async function lockLotById(
   locationId?: string | null,
 ): Promise<LockedLot> {
   const rows = await tx.execute(sql`
-    SELECT id, location_id, sku_id, sku_name, spec_name, supplier, product_series,
+    SELECT id, location_id, sku_id, sku_name, spec_name, supplier, supplier_id, product_series,
            batch_no, expiry_date, is_gift, quantity_on_hand,
            supply_chain_unit_cost, market_standard_unit_price, market_unit_discount,
            market_actual_unit_price, store_standard_unit_price, store_unit_discount,
-           store_actual_unit_price
+           store_actual_unit_price, source_doc_id
       FROM inventory_stock_lots
      WHERE id = ${lotId}
        AND (${locationId ?? null}::text IS NULL OR location_id = ${locationId ?? null})
@@ -694,6 +708,7 @@ async function lockLotById(
     sku_name: string
     spec_name: string | null
     supplier: string | null
+    supplier_id: string | null
     product_series: string | null
     batch_no: string | null
     expiry_date: string | null
@@ -706,6 +721,7 @@ async function lockLotById(
     store_standard_unit_price: string | number | null
     store_unit_discount: string | number | null
     store_actual_unit_price: string | number | null
+    source_doc_id: string | null
   }>)[0]
   if (!row) throw new ApiError('NOT_FOUND', '库存批次不存在或不属于当前库存主体')
   return {
@@ -715,6 +731,7 @@ async function lockLotById(
     skuName: row.sku_name,
     specName: row.spec_name,
     supplier: row.supplier,
+    supplierId: row.supplier_id,
     productSeries: row.product_series,
     batchNo: row.batch_no ?? '',
     expiryDate: row.expiry_date,
@@ -727,6 +744,7 @@ async function lockLotById(
     storeStandardUnitPrice: numberOrNull(row.store_standard_unit_price),
     storeUnitDiscount: numberOrNull(row.store_unit_discount),
     storeActualUnitPrice: numberOrNull(row.store_actual_unit_price),
+    sourceDocId: row.source_doc_id,
   }
 }
 
@@ -790,7 +808,11 @@ async function ensureLotFromSku(
   tx: Tx,
   locationId: string,
   item: InventoryDocItemInput,
-  sourceDocId: string,
+  trace: {
+    sourceDocId: string
+    supplierId?: string | null
+    supplier?: string | null
+  },
 ): Promise<LockedLot> {
   const skuId = normalizeRequired(item.skuId, '库存 SKU')
   const skuRows = await tx.execute(sql`
@@ -842,6 +864,9 @@ async function ensureLotFromSku(
     (storeStandardUnitPrice == null
       ? null
       : storeStandardUnitPrice - Number(storeUnitDiscount ?? 0))
+  const supplierId = normalizeText(trace.supplierId)
+  const supplier = normalizeText(trace.supplier) ?? sku.supplier
+  const sourceDocId = normalizeRequired(trace.sourceDocId, '批次来源单据')
   const lotKey = makeLotKey(skuId, {
     batchNo,
     expiryDate,
@@ -849,11 +874,14 @@ async function ensureLotFromSku(
     supplyChainUnitCost,
     marketActualUnitPrice,
     storeActualUnitPrice,
+    supplier,
+    supplierId,
+    sourceDocId,
   })
 
   const rows = await tx.execute(sql`
     INSERT INTO inventory_stock_lots (
-      location_id, sku_id, lot_key, sku_name, spec_name, supplier, product_series,
+      location_id, sku_id, lot_key, sku_name, spec_name, supplier, supplier_id, product_series,
       batch_no, expiry_date, expiry_date_key, is_gift, quantity_on_hand,
       supply_chain_unit_cost, market_standard_unit_price, market_unit_discount,
       market_actual_unit_price, store_standard_unit_price, store_unit_discount,
@@ -861,7 +889,7 @@ async function ensureLotFromSku(
     )
     VALUES (
       ${locationId}, ${sku.sku_id}, ${lotKey}, ${sku.product_name}, ${sku.spec_name},
-      ${sku.supplier}, ${sku.product_series}, ${batchNo}, ${expiryDate}, ${expiryDate ?? ''},
+      ${supplier}, ${supplierId}, ${sku.product_series}, ${batchNo}, ${expiryDate}, ${expiryDate ?? ''},
       ${isGift}, 0, ${numString(supplyChainUnitCost)}, ${numString(marketStandardUnitPrice)},
       ${numString(marketUnitDiscount)}, ${numString(marketActualUnitPrice)},
       ${numString(storeStandardUnitPrice)}, ${numString(storeUnitDiscount)},
@@ -872,6 +900,7 @@ async function ensureLotFromSku(
       sku_name = EXCLUDED.sku_name,
       spec_name = EXCLUDED.spec_name,
       supplier = EXCLUDED.supplier,
+      supplier_id = COALESCE(EXCLUDED.supplier_id, inventory_stock_lots.supplier_id),
       product_series = EXCLUDED.product_series,
       updated_at = NOW()
     RETURNING id
@@ -932,7 +961,7 @@ async function applyMovement(
 ): Promise<void> {
   const before = params.lot.quantityOnHand
   const delta = params.direction === '出库' ? -params.quantity : params.quantity
-  const after = before + delta
+  const after = Number((before + delta).toFixed(2))
   if (params.direction === '出库') {
     const reserved = await activeReservedQuantity(tx, params.lot.id)
     const available = before - reserved
@@ -943,12 +972,6 @@ async function applyMovement(
   if (after < 0) {
     throw new ApiError('INVALID_STATE', `库存不足：${params.lot.skuName} 当前 ${before}`)
   }
-  await tx.execute(sql`
-    UPDATE inventory_stock_lots
-       SET quantity_on_hand = ${after},
-           updated_at = NOW()
-     WHERE id = ${params.lot.id}
-  `)
   await tx.execute(sql`
     INSERT INTO inventory_movements (
       movement_key, lot_id, location_id, sku_id, doc_id, doc_item_id,
@@ -1022,8 +1045,6 @@ function docRow(row: {
     marketId: doc.marketId,
     supplierId: doc.supplierId,
     docDate: doc.docDate,
-    relatedDocId: doc.relatedDocId,
-    requestDocId: doc.requestDocId,
     relatedSaleOrderId: doc.relatedSaleOrderId,
     customerName: doc.customerName,
     employeeName: doc.employeeName,
@@ -1358,7 +1379,8 @@ export const exportInventoryLots = withPermission(
   async (
     session,
     params: Record<string, string | undefined> = {},
-  ): Promise<{ rows: InventoryLotRow[]; truncated: boolean; canViewPrice: boolean }> => {
+    options?: ExportBatchOptions<number>,
+  ): Promise<ExportBatchResult<InventoryLotRow> & { canViewPrice: boolean }> => {
     const LIMIT = 10000
     await syncInventoryLocations()
     const scoped = await scopedLocationIds(session)
@@ -1386,18 +1408,33 @@ export const exportInventoryLots = withPermission(
       )
     }
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined
-    const rows = await db
+    const query = db
       .select({ lot: inventoryStockLots, locationName: inventoryLocations.name, locationType: inventoryLocations.locationType })
       .from(inventoryStockLots)
       .leftJoin(inventoryLocations, eq(inventoryStockLots.locationId, inventoryLocations.locationId))
       .where(whereClause)
-      .orderBy(asc(inventoryLocations.locationType), asc(inventoryLocations.name), asc(inventoryStockLots.skuName), asc(inventoryStockLots.batchNo))
-      .limit(LIMIT + 1)
+      .orderBy(
+        asc(inventoryLocations.locationType),
+        asc(inventoryLocations.name),
+        asc(inventoryStockLots.skuName),
+        asc(inventoryStockLots.batchNo),
+        asc(inventoryStockLots.id),
+      )
     const priceVisible = canViewPrice(session)
+    const page = resolveExportOffsetPage(options)
+    if (page) {
+      const rows = await query.limit(page.limit + 1).offset(page.offset)
+      return {
+        ...offsetPageResult(rows.map((row) => lotRow(row, priceVisible)), page),
+        canViewPrice: priceVisible,
+      }
+    }
+    const rows = await query.limit(LIMIT + 1)
     const truncated = rows.length > LIMIT
     return {
       rows: rows.slice(0, LIMIT).map((row) => lotRow(row, priceVisible)),
       truncated,
+      hasMore: false,
       canViewPrice: priceVisible,
     }
   },
@@ -2101,8 +2138,6 @@ export const createInventoryCoreDoc = withPermission(
         marketId: normalizeText(input.marketId),
         supplierId: normalizeText(input.supplierId),
         docDate: normalizeText(input.docDate) ?? shanghaiToday(),
-        relatedDocId: normalizeText(input.relatedDocId),
-        requestDocId: normalizeText(input.requestDocId),
         relatedSaleOrderId: normalizeText(input.relatedSaleOrderId),
         clientUserId: normalizeText(input.clientUserId),
         customerName: normalizeText(input.customerName),
@@ -2142,7 +2177,11 @@ export const createInventoryCoreDoc = withPermission(
           }
           snapshot = lot
         } else if (plan?.locationRole === 'target') {
-          lot = await ensureLotFromSku(tx, targetLocationId!, serverItem, docId)
+          lot = await ensureLotFromSku(tx, targetLocationId!, serverItem, {
+            sourceDocId: docId,
+            supplierId: normalizeText(input.supplierId),
+            supplier: normalizeText(input.supplierName),
+          })
           snapshot = lot
         } else {
           const skuId = normalizeRequired(serverItem.skuId, '库存 SKU')
@@ -2359,7 +2398,7 @@ export const confirmInventoryCoreReceive = withPermission(
       await assertInventoryBusinessWritable(tx)
       const headRows = await tx.execute(sql`
         SELECT id, doc_type, status, source_location_id, target_location_id,
-               total_quantity, request_doc_id, remark
+               total_quantity, remark
           FROM inventory_docs
          WHERE id = ${id}
          FOR UPDATE
@@ -2371,7 +2410,6 @@ export const confirmInventoryCoreReceive = withPermission(
         source_location_id: string | null
         target_location_id: string | null
         total_quantity: string | number
-        request_doc_id: string | null
         remark: string | null
       }>)[0]
       if (!head) throw new ApiError('NOT_FOUND', '出库单不存在')
@@ -2395,8 +2433,6 @@ export const confirmInventoryCoreReceive = withPermission(
         sourceLocationId: head.source_location_id,
         targetLocationId: head.target_location_id,
         docDate: shanghaiToday(),
-        relatedDocId: id,
-        requestDocId: head.request_doc_id,
         totalQuantity: String(head.total_quantity),
         remark: normalizeText(remark) ?? head.remark,
         createdBy: session.employeeId,
@@ -2405,16 +2441,21 @@ export const confirmInventoryCoreReceive = withPermission(
       })
 
       const itemRows = await tx.execute(sql`
-        SELECT sku_id, batch_no, expiry_date, is_gift, quantity,
-               standard_unit_price, unit_discount, actual_unit_price, amount,
-               supply_chain_unit_cost, market_standard_unit_price, market_unit_discount,
-               market_actual_unit_price, store_standard_unit_price, store_unit_discount,
-               store_actual_unit_price, reason, remark
-          FROM inventory_doc_items
-         WHERE doc_id = ${id}
-         ORDER BY id
+        SELECT item.id AS source_item_id, item.sku_id, item.batch_no, item.expiry_date, item.is_gift, item.quantity,
+               item.standard_unit_price, item.unit_discount, item.actual_unit_price, item.amount,
+               item.supply_chain_unit_cost, item.market_standard_unit_price, item.market_unit_discount,
+               item.market_actual_unit_price, item.store_standard_unit_price, item.store_unit_discount,
+               item.store_actual_unit_price, item.reason, item.remark,
+               source_lot.supplier_id AS source_supplier_id,
+               source_lot.source_doc_id AS source_doc_id,
+               source_lot.supplier AS source_supplier
+          FROM inventory_doc_items item
+          LEFT JOIN inventory_stock_lots source_lot ON source_lot.id = item.lot_id
+         WHERE item.doc_id = ${id}
+         ORDER BY item.id
       `)
       for (const item of itemRows as unknown as Array<{
+        source_item_id: number
         sku_id: string
         batch_no: string | null
         expiry_date: string | null
@@ -2433,6 +2474,9 @@ export const confirmInventoryCoreReceive = withPermission(
         store_actual_unit_price: string | number | null
         reason: string | null
         remark: string | null
+        source_supplier_id: string | null
+        source_doc_id: string | null
+        source_supplier: string | null
       }>) {
         const lot = await ensureLotFromSku(tx, head.target_location_id, {
           skuId: item.sku_id,
@@ -2453,7 +2497,11 @@ export const confirmInventoryCoreReceive = withPermission(
           storeActualUnitPrice: numberOrNull(item.store_actual_unit_price),
           reason: item.reason,
           remark: item.remark,
-        }, inboundDocId)
+        }, {
+          sourceDocId: item.source_doc_id ?? id,
+          supplierId: item.source_supplier_id,
+          supplier: item.source_supplier,
+        })
         const [createdItem] = await tx
           .insert(inventoryDocItems)
           .values({
@@ -2493,6 +2541,14 @@ export const confirmInventoryCoreReceive = withPermission(
           createdBy: session.employeeId,
           movementKey: `receive:${id}:item:${createdItem.id}`,
           remark,
+        })
+        await tx.insert(inventoryDocLinks).values({
+          fromDocId: id,
+          toDocId: inboundDocId,
+          relationType: '发货收货',
+          fromItemId: Number(item.source_item_id),
+          toItemId: createdItem.id,
+          quantity: String(item.quantity),
         })
       }
 

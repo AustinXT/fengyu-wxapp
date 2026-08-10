@@ -85,8 +85,6 @@ const routes = {
   'order.pickupRecordsList':    () => require('./routes/order').pickupRecordsList,
 
   // 库存（门店办理）
-  'inventory.list':       () => require('./routes/inventory').list,
-  'inventory.detail':     () => require('./routes/inventory').detail,
   'inventory.stockList':  () => require('./routes/inventory').stockList,
   'inventory.reportableSkuOptions': () => require('./routes/inventory').reportableSkuOptions,
   'inventory.storeOptions': () => require('./routes/inventory').storeOptions,

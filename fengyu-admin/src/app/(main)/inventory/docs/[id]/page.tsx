@@ -74,8 +74,6 @@ export default async function Page({
     ['物流', doc.logisticsCompany],
     ['运单号', doc.trackingNo],
     ['收据附件', doc.receiptAttachmentUrl],
-    ['关联单据', doc.relatedDocId],
-    ['引用报货单', doc.requestDocId],
     ['录入人', doc.createdBy],
     ['确认时间', doc.confirmedAt ? fmtDateTime(doc.confirmedAt) : null],
     ['审批时间', doc.approvedAt ? fmtDateTime(doc.approvedAt) : null],

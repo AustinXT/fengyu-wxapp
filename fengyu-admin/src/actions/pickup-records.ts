@@ -173,12 +173,6 @@ async function createPickupInventoryDoc(
     `)) as unknown as Array<{ id: number }>
     const docItemId = inserted[0].id
     await tx.execute(sql`
-      UPDATE inventory_stock_lots
-         SET quantity_on_hand = ${after},
-             updated_at = NOW()
-       WHERE id = ${lot.id}
-    `)
-    await tx.execute(sql`
       INSERT INTO inventory_movements (
         movement_key, lot_id, location_id, sku_id, doc_id, doc_item_id,
         direction, quantity_delta,

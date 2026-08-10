@@ -29,6 +29,7 @@ interface SkuSnapshot {
   productName: string
   specName: string | null
   supplier: string | null
+  supplierId: string | null
   productSeries: string | null
   sourceType: '供应链' | '市场自采' | '转让店'
   ownerMarketId: string | null
@@ -46,6 +47,7 @@ interface LotSnapshot {
   skuName: string
   specName: string | null
   supplier: string | null
+  supplierId: string | null
   productSeries: string | null
   batchNo: string
   expiryDate: string | null
@@ -58,6 +60,7 @@ interface LotSnapshot {
   storeStandardUnitPrice: number | null
   storeUnitDiscount: number | null
   storeActualUnitPrice: number | null
+  sourceDocId: string | null
 }
 
 interface DocHeader {
@@ -69,8 +72,6 @@ interface DocHeader {
   marketId: string | null
   supplierId: string | null
   supplierName: string | null
-  relatedDocId: string | null
-  requestDocId: string | null
   cancellationRequestReason: string | null
   cancellationRequestedBy: string | null
   cancellationRequestedAt: string | Date | null
@@ -133,8 +134,6 @@ interface InsertDocHeaderInput {
   trackingNo?: string | null
   receiptAttachmentUrl?: string | null
   docDate?: string | null
-  relatedDocId?: string | null
-  requestDocId?: string | null
   totalQuantity: number
   totalAmount?: number | null
   remark?: string | null
@@ -540,6 +539,9 @@ function lotKey(input: {
   supplyChainUnitCost: number | null
   marketActualUnitPrice: number | null
   storeActualUnitPrice: number | null
+  supplier: string | null
+  supplierId: string | null
+  sourceDocId: string | null
 }): string {
   const price = (value: number | null) => value === null ? '' : value.toFixed(4)
   return [
@@ -550,6 +552,8 @@ function lotKey(input: {
     price(input.supplyChainUnitCost),
     price(input.marketActualUnitPrice),
     price(input.storeActualUnitPrice),
+    `supplier:${input.supplierId ?? input.supplier ?? ''}`,
+    `source:${input.sourceDocId ?? ''}`,
   ].join('|')
 }
 
@@ -683,6 +687,7 @@ async function loadSku(
     productName: row.product_name,
     specName: row.spec_name,
     supplier: row.supplier,
+    supplierId: null,
     productSeries: row.product_series,
     sourceType: row.source_type,
     ownerMarketId: row.owner_market_id,
@@ -702,6 +707,7 @@ async function lotForUpdate(tx: Tx, lotId: number, locationId?: string | null): 
     sku_name: string
     spec_name: string | null
     supplier: string | null
+    supplier_id: string | null
     product_series: string | null
     batch_no: string
     expiry_date: string | null
@@ -714,12 +720,13 @@ async function lotForUpdate(tx: Tx, lotId: number, locationId?: string | null): 
     store_standard_unit_price: string | number | null
     store_unit_discount: string | number | null
     store_actual_unit_price: string | number | null
+    source_doc_id: string | null
   }>(await tx.execute(sql`
-    SELECT id, location_id, sku_id, sku_name, spec_name, supplier, product_series,
+    SELECT id, location_id, sku_id, sku_name, spec_name, supplier, supplier_id, product_series,
            batch_no, expiry_date, is_gift, quantity_on_hand,
            supply_chain_unit_cost, market_standard_unit_price, market_unit_discount,
            market_actual_unit_price, store_standard_unit_price, store_unit_discount,
-           store_actual_unit_price
+           store_actual_unit_price, source_doc_id
       FROM inventory_stock_lots
      WHERE id = ${lotId}
        AND (${locationId ?? null}::text IS NULL OR location_id = ${locationId ?? null})
@@ -733,6 +740,7 @@ async function lotForUpdate(tx: Tx, lotId: number, locationId?: string | null): 
     skuName: row.sku_name,
     specName: row.spec_name,
     supplier: row.supplier,
+    supplierId: row.supplier_id,
     productSeries: row.product_series,
     batchNo: row.batch_no,
     expiryDate: row.expiry_date,
@@ -745,6 +753,7 @@ async function lotForUpdate(tx: Tx, lotId: number, locationId?: string | null): 
     storeStandardUnitPrice: numberOrNull(row.store_standard_unit_price),
     storeUnitDiscount: numberOrNull(row.store_unit_discount),
     storeActualUnitPrice: numberOrNull(row.store_actual_unit_price),
+    sourceDocId: row.source_doc_id,
   }
 }
 
@@ -785,12 +794,6 @@ async function applyLotDelta(
   const after = fixed(input.lot.quantityOnHand + input.quantityDelta)
   if (after < -EPSILON) throw new ApiError('INVALID_STATE', `库存不足：${input.lot.skuName}`)
   await tx.execute(sql`
-    UPDATE inventory_stock_lots
-       SET quantity_on_hand = ${numeric(Math.max(after, 0))},
-           updated_at = NOW()
-     WHERE id = ${input.lot.id}
-  `)
-  await tx.execute(sql`
     INSERT INTO inventory_movements (
       movement_key, lot_id, location_id, sku_id, doc_id, doc_item_id,
       direction, quantity_delta, quantity_before, quantity_after, created_by, remark
@@ -806,7 +809,7 @@ async function applyLotDelta(
 
 async function upsertLot(
   tx: Tx,
-  input: Omit<LotSnapshot, 'id' | 'quantityOnHand' | 'locationId'> & { locationId: string; sourceDocId: string },
+  input: Omit<LotSnapshot, 'id' | 'quantityOnHand' | 'locationId'> & { locationId: string },
 ): Promise<LotSnapshot> {
   const key = lotKey({
     skuId: input.skuId,
@@ -816,17 +819,20 @@ async function upsertLot(
     supplyChainUnitCost: input.supplyChainUnitCost,
     marketActualUnitPrice: input.marketActualUnitPrice,
     storeActualUnitPrice: input.storeActualUnitPrice,
+    supplier: input.supplier,
+    supplierId: input.supplierId,
+    sourceDocId: input.sourceDocId,
   })
   const [created] = rows<{ id: number }>(await tx.execute(sql`
     INSERT INTO inventory_stock_lots (
-      location_id, sku_id, lot_key, sku_name, spec_name, supplier, product_series,
+      location_id, sku_id, lot_key, sku_name, spec_name, supplier, supplier_id, product_series,
       batch_no, expiry_date, expiry_date_key, is_gift, quantity_on_hand,
       supply_chain_unit_cost, market_standard_unit_price, market_unit_discount,
       market_actual_unit_price, store_standard_unit_price, store_unit_discount,
       store_actual_unit_price, source_doc_id
     ) VALUES (
       ${input.locationId}, ${input.skuId}, ${key}, ${input.skuName}, ${text(input.specName)},
-      ${text(input.supplier)}, ${text(input.productSeries)}, ${input.batchNo},
+      ${text(input.supplier)}, ${text(input.supplierId)}, ${text(input.productSeries)}, ${input.batchNo},
       ${input.expiryDate}, ${input.expiryDate ?? ''}, ${input.isGift}, 0,
       ${numeric(input.supplyChainUnitCost)}, ${numeric(input.marketStandardUnitPrice)},
       ${numeric(input.marketUnitDiscount)}, ${numeric(input.marketActualUnitPrice)},
@@ -837,6 +843,7 @@ async function upsertLot(
       SET sku_name = EXCLUDED.sku_name,
           spec_name = EXCLUDED.spec_name,
           supplier = EXCLUDED.supplier,
+          supplier_id = COALESCE(EXCLUDED.supplier_id, inventory_stock_lots.supplier_id),
           product_series = EXCLUDED.product_series,
           updated_at = NOW()
     RETURNING id
@@ -849,7 +856,7 @@ async function insertDocHeader(tx: Tx, input: InsertDocHeaderInput): Promise<voi
     INSERT INTO inventory_docs (
       id, doc_type, status, source_location_id, target_location_id, market_id, supplier_id,
       employee_id, employee_name, supplier_name, external_party_name, logistics_company, tracking_no,
-      receipt_attachment_url, doc_date, related_doc_id, request_doc_id,
+      receipt_attachment_url, doc_date,
       total_quantity, total_amount, remark, created_by, confirmed_by, confirmed_at
     ) VALUES (
       ${input.id}, ${input.docType}, ${input.status}, ${text(input.sourceLocationId)},
@@ -857,7 +864,7 @@ async function insertDocHeader(tx: Tx, input: InsertDocHeaderInput): Promise<voi
       ${text(input.employeeId)}, ${text(input.employeeName)}, ${text(input.supplierName)},
       ${text(input.externalPartyName)}, ${text(input.logisticsCompany)}, ${text(input.trackingNo)},
       ${text(input.receiptAttachmentUrl)}, ${dateOrToday(input.docDate)},
-      ${text(input.relatedDocId)}, ${text(input.requestDocId)}, ${numeric(input.totalQuantity)},
+      ${numeric(input.totalQuantity)},
       ${numeric(input.totalAmount ?? null)}, ${text(input.remark)}, ${input.createdBy},
       ${input.confirmed ? input.createdBy : null}, ${input.confirmed ? sql`NOW()` : null}
     )
@@ -982,14 +989,12 @@ async function docForUpdate(tx: Tx, id: string): Promise<DocHeader> {
     market_id: string | null
     supplier_id: string | null
     supplier_name: string | null
-    related_doc_id: string | null
-    request_doc_id: string | null
     cancellation_request_reason: string | null
     cancellation_requested_by: string | null
     cancellation_requested_at: string | Date | null
   }>(await tx.execute(sql`
     SELECT id, doc_type, status, source_location_id, target_location_id, market_id,
-           supplier_id, supplier_name, related_doc_id, request_doc_id,
+           supplier_id, supplier_name,
            cancellation_request_reason, cancellation_requested_by, cancellation_requested_at
       FROM inventory_docs
      WHERE id = ${id}
@@ -1005,8 +1010,6 @@ async function docForUpdate(tx: Tx, id: string): Promise<DocHeader> {
     marketId: row.market_id,
     supplierId: row.supplier_id,
     supplierName: row.supplier_name,
-    relatedDocId: row.related_doc_id,
-    requestDocId: row.request_doc_id,
     cancellationRequestReason: text(row.cancellation_request_reason),
     cancellationRequestedBy: text(row.cancellation_requested_by),
     cancellationRequestedAt: row.cancellation_requested_at,
@@ -1044,6 +1047,31 @@ async function linkedQuantity(
        AND target_doc.status <> '已取消'
   `))
   return Number(row?.quantity ?? 0)
+}
+
+/**
+ * The link table is the source of truth for document lineage. Historical links
+ * are accepted only as a migration bridge for records created before v3.
+ */
+async function linkedSourceDocId(
+  tx: Tx,
+  toDocId: string,
+  sourceDocType: string,
+  relationType: string,
+  label: string,
+): Promise<string> {
+  const linked = rows<{ from_doc_id: string }>(await tx.execute(sql`
+    SELECT DISTINCT link.from_doc_id
+      FROM inventory_doc_links link
+      JOIN inventory_docs source_doc ON source_doc.id = link.from_doc_id
+     WHERE link.to_doc_id = ${toDocId}
+       AND source_doc.doc_type = ${sourceDocType}
+       AND link.relation_type IN (${relationType}, '历史关联')
+  `))
+  if (linked.length !== 1) {
+    throw new ApiError('INVALID_STATE', `${label}必须有唯一的${sourceDocType}血缘单据`)
+  }
+  return linked[0].from_doc_id
 }
 
 async function ensureSupplier(tx: Tx, supplierId: string): Promise<{ id: string; name: string }> {
@@ -1856,7 +1884,6 @@ export async function createPurchaseOrderFromMarketReplenishment(
       supplierId: supplier.id,
       supplierName: supplier.name,
       docDate: input.docDate,
-      relatedDocId: marketReportId,
       totalQuantity,
       totalAmount,
       remark: input.remark,
@@ -1967,7 +1994,6 @@ export async function createPurchaseOrderFromItemCompanyReplenishment(
       supplierId: supplier.id,
       supplierName: supplier.name,
       docDate: input.docDate,
-      relatedDocId: companyRequestId,
       totalQuantity,
       totalAmount: fixed(totalAmount),
       remark: input.remark,
@@ -2079,10 +2105,17 @@ export async function createItemCompanyShipment(
     if (order.docType !== '采购订单' || order.status === '已取消') {
       throw new ApiError('INVALID_STATE', '品项公司发货必须引用有效采购订单')
     }
-    if (!order.marketId || order.sourceLocationId !== order.marketId || !order.relatedDocId) {
+    if (!order.marketId || order.sourceLocationId !== order.marketId) {
       throw new ApiError('INVALID_STATE', '品项公司发货仅支持市场报货生成的采购订单')
     }
-    const marketReport = await docForUpdate(tx, order.relatedDocId)
+    const marketReportId = await linkedSourceDocId(
+      tx,
+      purchaseOrderId,
+      '市场报货',
+      '市场报货采购订单',
+      '品项公司发货',
+    )
+    const marketReport = await docForUpdate(tx, marketReportId)
     if (marketReport.docType !== '市场报货' || marketReport.status === '已取消') {
       throw new ApiError('INVALID_STATE', '品项公司发货仅支持市场报货生成的采购订单')
     }
@@ -2131,7 +2164,6 @@ export async function createItemCompanyShipment(
       supplierId: order.supplierId,
       supplierName: order.supplierName,
       docDate: input.docDate,
-      relatedDocId: purchaseOrderId,
       logisticsCompany: input.logisticsCompany,
       trackingNo: input.trackingNo,
       totalQuantity,
@@ -2351,8 +2383,6 @@ async function receivePhysicalShipment(
       supplierId: shipment.supplierId,
       supplierName: shipment.supplierName,
       docDate: input.docDate,
-      relatedDocId: shipmentId,
-      requestDocId: shipment.relatedDocId,
       totalQuantity,
       totalAmount,
       remark: input.remark,
@@ -2366,6 +2396,7 @@ async function receivePhysicalShipment(
         skuName: item.shipmentItem.skuName,
         specName: item.shipmentItem.specName,
         supplier: item.shipmentItem.supplier,
+        supplierId: item.sourceLot.supplierId ?? shipment.supplierId,
         productSeries: item.shipmentItem.productSeries,
         batchNo: item.shipmentItem.batchNo,
         expiryDate: item.shipmentItem.expiryDate,
@@ -2377,7 +2408,7 @@ async function receivePhysicalShipment(
         storeStandardUnitPrice: item.price.storeStandardUnitPrice ?? item.sku.storePurchasePrice,
         storeUnitDiscount: item.price.storeUnitDiscount ?? 0,
         storeActualUnitPrice: item.price.storeActualUnitPrice ?? item.sku.storePurchasePrice,
-        sourceDocId: docId,
+        sourceDocId: item.sourceLot.sourceDocId ?? docId,
       })
       const actualUnitPrice = inboundDocType === '市场采购入库'
         ? item.price.marketActualUnitPrice
@@ -2484,7 +2515,13 @@ export async function receiveSupplyChainPurchaseOrder(
     if (order.sourceLocationId !== null || order.targetLocationId !== supplyChainLocationId || order.marketId !== null) {
       throw new ApiError('INVALID_STATE', '供应链采购订单的库存主体不一致')
     }
-    const companyRequestId = required(order.relatedDocId, '品项公司报货需求单')
+    const companyRequestId = await linkedSourceDocId(
+      tx,
+      purchaseOrderId,
+      '品项公司报货需求',
+      '品项公司报货采购订单',
+      '供应链采购入库',
+    )
     const request = await docForUpdate(tx, companyRequestId)
     if (
       request.docType !== '品项公司报货需求' ||
@@ -2557,8 +2594,6 @@ export async function receiveSupplyChainPurchaseOrder(
       supplierId: order.supplierId,
       supplierName: order.supplierName,
       docDate: input.docDate,
-      relatedDocId: purchaseOrderId,
-      requestDocId: companyRequestId,
       totalQuantity,
       totalAmount,
       remark: input.remark,
@@ -2571,7 +2606,8 @@ export async function receiveSupplyChainPurchaseOrder(
         skuId: line.sku.skuId,
         skuName: line.sku.productName,
         specName: line.sku.specName,
-        supplier: line.sku.supplier,
+        supplier: order.supplierName ?? line.sku.supplier,
+        supplierId: order.supplierId,
         productSeries: line.sku.productSeries,
         batchNo: line.batchNo,
         expiryDate: line.expiryDate,
@@ -2665,7 +2701,13 @@ export async function cancelSupplyChainPurchaseOrder(
     assertType(supplyChain, '总部', '供应链采购订单主体')
     assertLocationWritable(session, supplyChain)
 
-    const companyRequestId = required(order.relatedDocId, '品项公司报货需求单')
+    const companyRequestId = await linkedSourceDocId(
+      tx,
+      purchaseOrderId,
+      '品项公司报货需求',
+      '品项公司报货采购订单',
+      '供应链采购订单取消',
+    )
     const request = await docForUpdate(tx, companyRequestId)
     if (
       request.docType !== '品项公司报货需求' ||
@@ -2859,7 +2901,6 @@ export async function createStoreAllocation(
       targetLocationId: storeId,
       marketId: sourceMarketId,
       docDate: input.docDate,
-      requestDocId: storeRequestId,
       totalQuantity,
       totalAmount,
       remark: input.remark,
@@ -3142,7 +3183,6 @@ export async function approveReturnForRestock(
       targetLocationId,
       marketId: returnDoc.marketId,
       docDate: shanghaiToday(),
-      relatedDocId: returnDocId,
       totalQuantity,
       totalAmount: null,
       remark: input.auditRemark,
@@ -3181,12 +3221,13 @@ export async function approveReturnForRestock(
         skuName: item.skuName,
         specName: item.specName,
         supplier: item.supplier,
+        supplierId: sourceLot.supplierId,
         productSeries: item.productSeries,
         batchNo: item.batchNo,
         expiryDate: item.expiryDate,
         isGift: item.isGift,
         ...priceFromItem(item),
-        sourceDocId: docId,
+        sourceDocId: sourceLot.sourceDocId ?? docId,
       })
       const inboundItemId = await insertDocItem(tx, {
         docId,
@@ -3633,6 +3674,7 @@ export async function createSelfPurchasedReceipt(
         skuName: item.sku.productName,
         specName: item.sku.specName,
         supplier: supplierName,
+        supplierId: supplier?.id ?? null,
         productSeries: item.sku.productSeries,
         batchNo: item.batchNo,
         expiryDate: item.expiryDate,
@@ -3841,7 +3883,6 @@ export async function createInventoryConversion(
       targetLocationId: locationId,
       marketId,
       docDate: input.docDate,
-      relatedDocId: outboundId,
       totalQuantity: fixed(prepared.reduce((sum, item) => sum + item.targetQuantity, 0)),
       totalAmount: null,
       remark: input.remark,
@@ -3875,12 +3916,13 @@ export async function createInventoryConversion(
         skuName: item.targetSku.productName,
         specName: item.targetSku.specName,
         supplier: item.targetSku.supplier,
+        supplierId: item.sourceLot.supplierId,
         productSeries: item.targetSku.productSeries,
         batchNo: item.targetBatchNo,
         expiryDate: item.targetExpiryDate,
         isGift: item.sourceLot.isGift,
         ...priceFromLot(item.sourceLot),
-        sourceDocId: inboundId,
+        sourceDocId: item.sourceLot.sourceDocId ?? inboundId,
       })
       const inboundItemId = await insertDocItem(tx, {
         docId: inboundId,

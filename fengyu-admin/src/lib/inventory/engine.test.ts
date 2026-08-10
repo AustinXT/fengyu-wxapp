@@ -224,7 +224,7 @@ describe('库存通用建单边界', () => {
       execute: initializedCutoverExecutor(vi.fn().mockResolvedValueOnce([{
         id: 'FPH-260809-0001', doc_type: '分院配货', status: '待收货',
         source_location_id: 'MARKET-1', target_location_id: 'STORE-1',
-        total_quantity: '1', request_doc_id: 'DBH-1', remark: null,
+        total_quantity: '1', remark: null,
       }])),
     }))
     await expect(confirmInventoryCoreReceive('FPH-260809-0001'))
@@ -604,7 +604,6 @@ describe('库存可用量与收货复核', () => {
       source_location_id: 'MARKET-1',
       target_location_id: 'STORE-1',
       total_quantity: '1',
-      request_doc_id: null,
       remark: null,
     }])
     mockDb.transaction.mockImplementation(async (callback: (tx: unknown) => unknown) => callback({
@@ -638,16 +637,16 @@ describe('库存主体启停同步', () => {
     expect(storeSql).toContain('is_active = EXCLUDED.is_active')
   })
 
-  it('初始迁移使用与运行时相同的库存主体启停规则', () => {
+  it('库存主体加固迁移使用与运行时相同的库存主体启停规则', () => {
     const migration = readFileSync(
-      resolve(process.cwd(), '../db/migrations/0005_futuristic_mauler.sql'),
+      resolve(process.cwd(), '../db/migrations/0009_inventory_integrity_guards.sql'),
       'utf8',
     )
 
-    expect(migration).toContain('parent_location_id, is_active)')
-    expect(migration).toContain('SELECT id, type, name, id, parent_id, is_active')
-    expect(migration).toContain('COALESCE(o.is_active, false) AND NOT s.is_closed')
-    expect(migration.match(/is_active = EXCLUDED\.is_active/g)).toHaveLength(2)
+    expect(migration).toContain('location_id, location_type, name, org_node_id, parent_location_id, is_active')
+    expect(migration).toContain('SELECT node.id, node.type, node.name, node.id, node.parent_id, node.is_active')
+    expect(migration).toContain('COALESCE(node.is_active, false) AND NOT store.is_closed')
+    expect(migration).toContain('is_active = EXCLUDED.is_active')
   })
 })
 
@@ -683,8 +682,6 @@ describe('库存单据详情履约进度', () => {
           marketId: 'MARKET-1',
           supplierId: null,
           docDate: '2026-08-09',
-          relatedDocId: null,
-          requestDocId: null,
           relatedSaleOrderId: null,
           customerName: null,
           employeeName: null,
@@ -808,8 +805,6 @@ describe('库存单据详情履约进度', () => {
           marketId: null,
           supplierId: 'SUP-1',
           docDate: '2026-08-10',
-          relatedDocId: 'ZBH-260810-0001',
-          requestDocId: null,
           relatedSaleOrderId: null,
           customerName: null,
           employeeName: null,
@@ -917,8 +912,6 @@ describe('库存单据详情履约进度', () => {
           marketId: 'MARKET-1',
           supplierId: null,
           docDate: '2026-08-10',
-          relatedDocId: 'CGD-260810-0001',
-          requestDocId: 'MBH-260810-0001',
           relatedSaleOrderId: null,
           customerName: null,
           employeeName: null,
@@ -1010,8 +1003,6 @@ describe('库存单据详情履约进度', () => {
           marketId: null,
           supplierId: null,
           docDate: '2026-08-10',
-          relatedDocId: null,
-          requestDocId: null,
           relatedSaleOrderId: null,
           customerName: null,
           employeeName: null,
