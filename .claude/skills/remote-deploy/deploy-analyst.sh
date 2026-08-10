@@ -68,9 +68,6 @@ EXPECT_PG_HOST=$([[ "$ENV" == "prod" ]] && echo "118.178.196.26" || echo "47.113
 PUBLIC_HOST="${PUBLIC_HOST:-${4:-$EXPECT_PG_HOST}}"
 ANALYST_PORT="${ANALYST_PORT:-3001}"
 ADMIN_PORT="${ADMIN_PORT:-3000}"
-ANALYST_PUBLIC_ORIGIN="${ANALYST_PUBLIC_ORIGIN:-http://$PUBLIC_HOST:$ANALYST_PORT}"
-ANALYST_ADMIN_ORIGIN="${ANALYST_ADMIN_ORIGIN:-http://$PUBLIC_HOST:$ADMIN_PORT}"
-ANALYST_ADMIN_LOGIN_URL="${ANALYST_ADMIN_LOGIN_URL:-$ANALYST_ADMIN_ORIGIN/login}"
 
 if [[ "$SSH_HOST" != "$SSH_HOST_DEFAULT" ]]; then
   echo "⚠️  SSH_HOST ($SSH_HOST) ≠ ENV=$ENV 绑定默认 ($SSH_HOST_DEFAULT)。" >&2
@@ -99,6 +96,13 @@ read_env_value() {
 # 避免 dev/prod 共用 docker 目录或残留 .env 时串桶。
 DEPLOY_CLOUDBASE_ENV_ID=$(read_env_value CLOUDBASE_ENV_ID)
 DEPLOY_CDN_BASE=$(read_env_value CDN_BASE)
+CONFIGURED_ANALYST_PUBLIC_ORIGIN=$(read_env_value ANALYST_PUBLIC_ORIGIN)
+# The public analyst address is shared with the admin build. Reading it from the
+# selected environment prevents a production release from silently falling back
+# to the database IP address.
+ANALYST_PUBLIC_ORIGIN="${ANALYST_PUBLIC_ORIGIN:-$CONFIGURED_ANALYST_PUBLIC_ORIGIN}"
+ANALYST_ADMIN_ORIGIN="${ANALYST_ADMIN_ORIGIN:-http://$PUBLIC_HOST:$ADMIN_PORT}"
+ANALYST_ADMIN_LOGIN_URL="${ANALYST_ADMIN_LOGIN_URL:-$ANALYST_ADMIN_ORIGIN/login}"
 RUNTIME_ENV_FILE=$(mktemp "${TMPDIR:-/tmp}/fengyu-analyst-runtime.XXXXXX")
 printf 'DEPLOY_CLOUDBASE_ENV_ID=%s\nDEPLOY_CDN_BASE=%s\n' \
   "$DEPLOY_CLOUDBASE_ENV_ID" "$DEPLOY_CDN_BASE" > "$RUNTIME_ENV_FILE"

@@ -24,7 +24,7 @@ metadata:
 ./deploy-analyst.sh <dev|prod> [ssh-host] [remote-dir] [public-host]
 ```
 
-第一个参数 `dev`/`prod` 决定目标环境：SSH host 自动路由（dev→`ali-demo` 测试 / prod→`fengyu-prod` 生产），admin 容器连对应远程 PG（dev→47.113.202.7 / prod→118.178.196.26，均 5433/fengyu_wxapp）。`[ssh-host]`/`[remote-dir]` 可显式覆盖（默认远程目录 dev=`/root/proj.xt.com/fengyu-wxapp/docker`，prod=`/www/wwwroot/fengyu-admin/docker`）。prod 有二次确认 + 生产库迁移预检，dev 无。
+第一个参数 `dev`/`prod` 决定目标环境：SSH host 自动路由（dev→`ali-demo` 测试 / prod→`fengyu-prod` 生产），admin 与 analyst 容器都连对应远程 PG（dev→47.113.202.7 / prod→118.178.196.26，均 5433/fengyu_wxapp）。`[ssh-host]`/`[remote-dir]` 可显式覆盖（默认远程目录 dev=`/root/proj.xt.com/fengyu-wxapp/docker`，prod=`/www/wwwroot/fengyu-admin/docker`）。analyst 会从 `envs/<env>.env` 读取必填的 `ANALYST_PUBLIC_ORIGIN`，并在部署后核验容器值；prod 有二次确认 + 生产库迁移预检，dev 无。
 
 ## 部署流程
 
