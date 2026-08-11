@@ -45,6 +45,12 @@
 
 > staff 不可登录管理后台。admin 不参与同步推导，仅通过管理后台手动分配。
 
+以上 7 个角色是系统迁移时保留的初始角色，不再是封闭枚举。角色定义存储在
+`permission_role_definitions`，支持新增、改名、修改说明、复制权限、调整权限和删除；
+`role_key` 为不可变内部标识，员工现有 `permission_roles` 授权迁移时原样保留。
+高级能力独立于角色键：`can_access_admin` 控制后台登录，`is_super_admin` 控制超级管理员硬闸，
+`is_store_manager` 控制员工端店长能力。至少保留一名在职超级管理员，已分配角色不可删除。
+
 ### 2.2 扩展权限矩阵
 
 在 `backend.pr.spec.md` §3.1 基础上新增 admin/customer_mgr 列和管理后台专属模块：
@@ -187,11 +193,14 @@ admin 管理权限分配/撤销、WorkFine → PG 数据同步、操作日志查
 
 #### AFF-07 权限角色管理
 
-**操作对象**: `permission_roles` | 权限：admin, hr | 操作：分配（role+scope_id）、撤销（软删除）、批量查看
+**操作对象**: `permission_role_definitions` + `permission_roles` | 权限：admin, hr | 操作：角色定义增删改、分配（role+scope_id）、撤销、批量查看
 
 **scope 传递约束**: hr 分配的 scope_id 须在其 scope 内；只有 admin 可分配/撤销 admin 角色；admin 不受 scope 限制
 
 **admin 特殊规则**: scope_id 固定 headquarters；分配需二次确认；变更强制写 operation_logs
+
+**动态角色规则**: 非超级管理员角色可绑定总部/市场/门店；超级管理员角色只允许总部。
+角色删除前必须撤销全部员工授权；角色名称全局唯一，内部 role_key 不随改名变化。
 
 #### AFF-08 业务操作（adminApi）
 
