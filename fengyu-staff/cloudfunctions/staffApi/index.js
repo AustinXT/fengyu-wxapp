@@ -43,6 +43,7 @@ const routes = {
   'customer.calendar':    () => require('./routes/customer').calendar,
   'customer.detail':      () => require('./routes/customer').detail,
   'customer.paidOrders':  () => require('./routes/customer').paidOrders,
+  'customer.homeProducts': () => require('./routes/customer').homeProducts,
   'customer.orderHistory': () => require('./routes/customer').orderHistory,
   'customer.serviceHistory': () => require('./routes/customer').serviceHistory,
   'customer.stats':       () => require('./routes/customer').stats,

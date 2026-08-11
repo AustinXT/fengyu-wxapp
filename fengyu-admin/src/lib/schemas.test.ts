@@ -270,12 +270,12 @@ describe('assignRoleSchema', () => {
     }).success).toBe(false)
   })
 
-  it('非法角色拒绝', () => {
+  it('动态角色键可通过（包含原 staff 角色）', () => {
     expect(assignRoleSchema.safeParse({
       employeeId: 'FY-260101-0001',
-      role: 'staff', // staff 不在 enum 中
+      role: 'staff',
       scopeId: 'org-store-nc01',
-    }).success).toBe(false)
+    }).success).toBe(true)
   })
 
   it('组织范围为空拒绝', () => {

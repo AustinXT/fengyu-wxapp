@@ -65,7 +65,7 @@ describe('auth 注入 staffLevel / scopeStoreIds / roleBindings', () => {
     expect(ctx.auth.staffLevel).toBe('headquarters')
     expect(ctx.auth.scopeStoreIds.sort()).toEqual(['S1', 'S2'])
     expect(ctx.auth.roleBindings).toEqual([
-      { role: 'admin', scopeId: 'hq-node', scopeType: '总部' },
+      { role: 'admin', roleName: 'admin', isStoreManager: false, scopeId: 'hq-node', scopeType: '总部', scopeName: undefined },
     ])
     expect(ctx.auth.roles).toEqual(['admin'])
     // 无指定 loginLevel → fallback 'store'（因为有 scope）
@@ -454,6 +454,22 @@ describe('requireManagementLevel', () => {
 })
 
 describe('requireManager 基于 roleBindings', () => {
+  test('自定义店长能力角色可通过', async () => {
+    const ctx = {
+      auth: {
+        staffWfId: 'emp-custom-manager',
+        roles: ['role_custom_manager'],
+        roleBindings: [{ role: 'role_custom_manager', isStoreManager: true, scopeType: '门店' }],
+        loginLevel: 'store',
+        effectiveStoreId: 'S1',
+        managerStoreIds: ['S1'],
+      },
+    }
+    let called = false
+    await requireManager()(ctx, async () => { called = true })
+    expect(called).toBe(true)
+  })
+
   test('(manager, 门店) 通过', async () => {
     const ctx = {
       auth: {

@@ -12,6 +12,8 @@ interface Customer extends MemberLevelBadgeData {
 
 interface PickupItem {
   saleItemId: string
+  saleItemGroupId?: string | null
+  sourceSaleItemIds?: string[]
   saleOrderId: string
   productName: string | null
   specName: string | null
@@ -54,6 +56,7 @@ Page({
     pickupDialog: {
       visible: false,
       saleItemId: '',
+      sourceSaleItemIds: [] as string[],
       productName: '',
       remaining: 0,
       quantity: 1,
@@ -134,6 +137,7 @@ Page({
       pickupDialog: {
         visible: true,
         saleItemId: item.saleItemId,
+        sourceSaleItemIds: item.sourceSaleItemIds || [item.saleItemId],
         productName: formatProductName(item.productName, item.specName),
         remaining: item.remaining,
         quantity: 1,
@@ -167,6 +171,7 @@ Page({
     try {
       await callStaffApi('order.createPickup', {
         saleItemId: d.saleItemId,
+        ...(d.sourceSaleItemIds.length > 1 ? { saleItemIds: d.sourceSaleItemIds } : {}),
         pickupQuantity: d.quantity,
         remark: d.remark || undefined,
         idempotencyKey: `pickup-${d.saleItemId}-${Date.now()}`,

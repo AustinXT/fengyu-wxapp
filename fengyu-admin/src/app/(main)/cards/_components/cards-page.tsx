@@ -23,6 +23,10 @@ const PAGE_SIZE_OPTIONS = [10, 20, 50];
 type CardTypeValue = "" | "all" | "疗程卡" | "单次卡";
 type CardStatusValue = "" | "active" | "exhausted" | "expired";
 
+function formatMoney(value: number): string {
+	return `¥${value.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 interface Props {
 	cards: AdminCard[];
 	filterOptions: MarketStoreFilterOptions;
@@ -125,16 +129,17 @@ export default function CardsPage({ cards, filterOptions, cardFilterOptions, tot
 		},
 		{
 			key: "remaining",
-			header: "剩余 / 总量",
+			header: "剩余 / 已付 / 总量",
 			cell: (row) => {
 				const total = row.sessionCount ?? 0;
 				const remaining = row.paidUnusedSessions ?? 0;
+				const paid = row.paidSessions ?? 0;
 				const ratio = total > 0 ? remaining / total : 0;
 				const barColor = ratio === 0 ? "bg-[#D94040]" : ratio < 0.3 ? "bg-[#D4820A]" : "bg-[#3D8A5A]";
 				return (
 					<div className="flex flex-col gap-1">
 						<span className="text-sm font-medium">
-							{remaining} / {total} {row.unit}
+							{remaining} / {paid} / {total} {row.unit}
 						</span>
 						<div className="h-1 w-20 overflow-hidden rounded bg-[#F0F0F0]">
 							<div className={`h-full ${barColor}`} style={{ width: `${Math.min(100, Math.max(0, ratio * 100))}%` }} />
@@ -142,6 +147,11 @@ export default function CardsPage({ cards, filterOptions, cardFilterOptions, tot
 					</div>
 				);
 			},
+		},
+		{
+			key: "remainingRemainder",
+			header: "剩余零头",
+			cell: (row) => <span className="text-sm">{formatMoney(row.remainingRemainder)}</span>,
 		},
 		{
 			key: "storeMarket",

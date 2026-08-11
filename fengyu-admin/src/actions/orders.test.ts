@@ -1199,14 +1199,14 @@ function mockDepositOrderReads(skuRows: any[]) {
     })
 }
 
-describe('createDepositOrder — 同 SKU 疗程卡合并', () => {
+describe('createDepositOrder — 疗程卡逐张落库', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
     ;(isInScope as any).mockReturnValue(true)
   })
 
-  it('相同 5 次卡累计为 1 行，历史实收汇总到同一回款流水', async () => {
+  it('相同 5 次卡逐张落库，并按张分摊历史实收', async () => {
     mockDepositOrderReads([{
       skuId: 'sku-deposit',
       productType: '疗程卡',
@@ -1233,24 +1233,24 @@ describe('createDepositOrder — 同 SKU 疗程卡合并', () => {
     })
 
     expect(result.success).toBe(true)
-    expect(result.itemCount).toBe(1)
+    expect(result.itemCount).toBe(3)
     const saleItemInserts = inserts.filter((c) =>
       c.values && typeof c.values === 'object' && 'saleItemId' in c.values
     )
-    expect(saleItemInserts).toHaveLength(1)
-    expect(saleItemInserts[0].values.quantity).toBe(3)
-    expect(saleItemInserts[0].values.sessionCount).toBe(15)
-    expect(saleItemInserts[0].values.remainingSessions).toBe(15)
-    expect(saleItemInserts[0].values.saleAmount).toBe('1500.00')
+    expect(saleItemInserts).toHaveLength(3)
+    expect(saleItemInserts.map((c) => c.values.quantity)).toEqual([1, 1, 1])
+    expect(saleItemInserts.map((c) => c.values.sessionCount)).toEqual([5, 5, 5])
+    expect(saleItemInserts.map((c) => c.values.remainingSessions)).toEqual([5, 5, 5])
+    expect(saleItemInserts.map((c) => c.values.saleAmount)).toEqual(['500.00', '500.00', '500.00'])
 
     const paymentInserts = inserts.filter((c) =>
       c.values && typeof c.values === 'object' && 'refSaleItemId' in c.values
     )
-    expect(paymentInserts).toHaveLength(1)
-    expect(Number(paymentInserts[0].values.amount)).toBe(1350)
+    expect(paymentInserts).toHaveLength(3)
+    expect(paymentInserts.map((c) => Number(c.values.amount))).toEqual([500, 425, 425])
   })
 
-  it('家居产品 ×3 维持 1 行 sale_items（quantity=3）', async () => {
+  it('家居产品 ×3 逐件落库，并共用同一显示行组', async () => {
     mockDepositOrderReads([{
       skuId: 'sku-home',
       productType: '家居产品',
@@ -1273,14 +1273,15 @@ describe('createDepositOrder — 同 SKU 疗程卡合并', () => {
     })
 
     expect(result.success).toBe(true)
-    expect(result.itemCount).toBe(1)
+    expect(result.itemCount).toBe(3)
     const saleItemInserts = inserts.filter((c) =>
       c.values && typeof c.values === 'object' && 'saleItemId' in c.values
     )
-    expect(saleItemInserts).toHaveLength(1)
-    expect(saleItemInserts[0].values.quantity).toBe(3)
-    expect(saleItemInserts[0].values.sessionCount).toBeNull()
-    expect(saleItemInserts[0].values.remainingSessions).toBeNull()
+    expect(saleItemInserts).toHaveLength(3)
+    expect(saleItemInserts.map((c) => c.values.quantity)).toEqual([1, 1, 1])
+    expect(saleItemInserts.map((c) => c.values.sessionCount)).toEqual([null, null, null])
+    expect(saleItemInserts.map((c) => c.values.remainingSessions)).toEqual([null, null, null])
+    expect(new Set(saleItemInserts.map((c) => c.values.saleItemGroupId)).size).toBe(1)
   })
 
   it('受限普通 SKU 不匹配顾客绑定门店市场时拒绝提交', async () => {

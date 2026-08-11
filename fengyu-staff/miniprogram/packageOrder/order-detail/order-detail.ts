@@ -51,6 +51,7 @@ interface RawOrder {
 
 interface RawOrderItem {
   sale_item_id: string;
+  sale_item_group_id?: string | null;
   sale_order_id?: string;
   sku_id?: string | null;
   item_direction?: string;
@@ -113,6 +114,7 @@ interface OrderDetailResponse {
 
 interface DisplayOrderItem {
   saleItemId: string;
+  saleItemGroupId: string | null;
   saleOrderId: string;
   skuId: string | null;
   itemDirection: string;
@@ -278,6 +280,7 @@ Page({
         const repayable = refunded > 0 ? 0 : Math.max(0, Math.round((saleAmt - recv) * 100) / 100);
         return {
           saleItemId: it.sale_item_id,
+          saleItemGroupId: it.sale_item_group_id || null,
           saleOrderId: it.sale_order_id || o.sale_order_id,
           skuId: it.sku_id || null,
           itemDirection: it.item_direction || '',
@@ -316,13 +319,15 @@ Page({
         };
       });
 
-      // 订单明细仅合并疗程卡。分组键覆盖来源订单、方向、价格、次数、有效期等业务属性，
-      // 因而只会汇总除 saleItemId 外完全相同的卡；退款与回款仍继续读取原始 items。
+      // 拆分后的寄存行优先按稳定行组聚合；其余历史行沿用原有的业务快照分组。
+      // 退款与回款仍继续读取原始 items。
       const displayItems = groupTreatmentCards(items, {
         getId: (item) => item.saleItemId,
         getQuantity: (item) => item.quantity,
         preserveNonUnitQuantity: false,
-        getIdentity: (item) => ({
+        getIdentity: (item) => item.saleItemGroupId
+          ? { saleItemGroupId: item.saleItemGroupId }
+          : ({
           sourceId: item.isTreatmentCard ? undefined : item.saleItemId,
           saleOrderId: item.saleOrderId,
           orderStatus: o.status,
@@ -363,9 +368,20 @@ Page({
         }),
       }).map((group) => {
         const primary = group.primary;
-        if (!primary.isTreatmentCard) {
-          return { ...primary, cardCount: group.cardCount };
-        }
+        const aggregate = {
+          ...primary,
+          quantity: sumGroupValue(group, (item) => item.quantity),
+          cardCount: group.cardCount,
+          totalPrice: sumGroupValue(group, (item) => item.totalPrice).toFixed(2),
+          saleAmount: sumGroupValue(group, (item) => item.saleAmount).toFixed(2),
+          received: sumGroupValue(group, (item) => item.received).toFixed(2),
+          refundedAmount: sumGroupValue(group, (item) => item.refundedAmount).toFixed(2),
+          repayable: sumGroupValue(group, (item) => item.repayable).toFixed(2),
+          overpayRefundable: sumGroupValue(group, (item) => item.overpayRefundable),
+          pickedUpQuantity: sumGroupValue(group, (item) => item.pickedUpQuantity),
+          pendingReceived: sumGroupValue(group, (item) => item.pendingReceived).toFixed(2),
+        };
+        if (!primary.isTreatmentCard) return aggregate;
 
         const sessionCount = sumGroupValue(group, (item) => item.sessionCount);
         const remainingSessions = sumGroupValue(group, (item) => item.remainingSessions);
@@ -382,14 +398,7 @@ Page({
           : 0;
 
         return {
-          ...primary,
-          quantity: sumGroupValue(group, (item) => item.quantity),
-          cardCount: group.cardCount,
-          totalPrice: sumGroupValue(group, (item) => item.totalPrice).toFixed(2),
-          saleAmount: sumGroupValue(group, (item) => item.saleAmount).toFixed(2),
-          received: sumGroupValue(group, (item) => item.received).toFixed(2),
-          refundedAmount: sumGroupValue(group, (item) => item.refundedAmount).toFixed(2),
-          repayable: sumGroupValue(group, (item) => item.repayable).toFixed(2),
+          ...aggregate,
           sessionCount,
           remainingSessions,
           paidSessions,

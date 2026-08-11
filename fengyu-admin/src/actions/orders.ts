@@ -1466,6 +1466,7 @@ export const getOrderById = withAnyPermission(
 
   const items: SaleItem[] = itemRows.map((ir) => ({
     saleItemId: ir.item.saleItemId,
+    saleItemGroupId: ir.item.saleItemGroupId ?? null,
     saleOrderId: ir.item.saleOrderId,
     itemDirection: ir.item.itemDirection as SaleItem['itemDirection'],
     refSaleItemId: ir.item.refSaleItemId,
@@ -3961,8 +3962,8 @@ export const createDepositOrder = withPermission(
     }
     for (const it of data.items) {
       if (!it || !it.skuId) return { success: false, message: 'items 缺少 skuId' }
-      if (!Number.isFinite(it.quantity) || it.quantity <= 0) {
-        return { success: false, message: 'items.quantity 必须为正' }
+      if (!Number.isInteger(it.quantity) || it.quantity <= 0) {
+        return { success: false, message: 'items.quantity 必须为正整数' }
       }
       if (it.received != null && (!Number.isFinite(it.received) || it.received < 0)) {
         return { success: false, message: 'items.received 必须为非负数' }
@@ -4015,7 +4016,8 @@ export const createDepositOrder = withPermission(
     }
     const skuMap = new Map(skuRows.map(s => [s.skuId, s]))
 
-    // 同一寄存单内相同疗程卡按 SKU 合并为一条销售明细；家居产品保持原输入行语义。
+    // 寄存单疗程卡与家居产品均逐张/件写入 sale_items；页面按行组聚合显示。
+    // 这样每个实体均有独立 sale_item_id，可单独转换、核销或提货。
     const buildDepositItem = (sku: (typeof skuRows)[number], quantity: number, received: number) => {
       const basePrice = Number(sku.specialPrice || sku.price)
       const sessionCount = sku.productType === '家居产品'
@@ -4036,29 +4038,26 @@ export const createDepositOrder = withPermission(
       }
     }
 
-    const depositItems: Array<ReturnType<typeof buildDepositItem>> = []
-    const treatmentCardItemIndex = new Map<string, number>()
-    for (const item of data.items) {
+    const depositItems: Array<ReturnType<typeof buildDepositItem> & { depositGroupKey: string }> = []
+    for (const [inputIndex, item] of data.items.entries()) {
       const sku = skuMap.get(item.skuId)!
       const received = Math.round((Number(item.received) || 0) * 100) / 100
-      if (sku.productType !== '疗程卡') {
-        depositItems.push(buildDepositItem(sku, item.quantity, received))
-        continue
+      // 金额按分均摊，最后一件吸收尾差，确保标价和历史实收的合计不变。
+      const saleAmountCents = Math.round(Number(sku.specialPrice || sku.price) * item.quantity * 100)
+      const receivedCents = Math.round(received * 100)
+      const saleAmountPerEntity = Math.trunc(saleAmountCents / item.quantity)
+      const receivedPerEntity = Math.trunc(receivedCents / item.quantity)
+      for (let i = 0; i < item.quantity; i++) {
+        const isLast = i === item.quantity - 1
+        const entitySaleAmount = (saleAmountPerEntity + (isLast ? saleAmountCents % item.quantity : 0)) / 100
+        const entityReceived = (receivedPerEntity + (isLast ? receivedCents % item.quantity : 0)) / 100
+        const entity = buildDepositItem(sku, 1, entityReceived)
+        depositItems.push({
+          ...entity,
+          saleAmount: entitySaleAmount.toFixed(2),
+          depositGroupKey: `deposit-${inputIndex}`,
+        })
       }
-
-      const existingIndex = treatmentCardItemIndex.get(item.skuId)
-      if (existingIndex == null) {
-        treatmentCardItemIndex.set(item.skuId, depositItems.length)
-        depositItems.push(buildDepositItem(sku, item.quantity, received))
-        continue
-      }
-
-      const existing = depositItems[existingIndex]
-      depositItems[existingIndex] = buildDepositItem(
-        sku,
-        existing.quantity + item.quantity,
-        existing.received + received,
-      )
     }
 
     // 在事务内生成订单号 + 写 sale_orders + sale_items
@@ -4123,15 +4122,24 @@ export const createDepositOrder = withPermission(
         }
 
         // 收集需要写实收流水的行（received>0），循环后统一 INSERT sale_order_payments + 更新 received
+        const preparedItems = depositItems.map((item, index) => ({
+          ...item,
+          saleItemId: `XSLSH-WX-${dateStr}${String(seq + index).padStart(4, '0')}`,
+        }))
+        const groupIdByKey = new Map<string, string>()
+        for (const item of preparedItems) {
+          if (!groupIdByKey.has(item.depositGroupKey)) groupIdByKey.set(item.depositGroupKey, item.saleItemId)
+        }
+
         const receiptRows: Array<{ saleItemId: string; received: number }> = []
-        for (let i = 0; i < depositItems.length; i++) {
-          const item = depositItems[i]
+        for (const item of preparedItems) {
           const sku = item.sku
-          const saleItemId = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
+          const saleItemId = item.saleItemId
           if (item.received > 0) receiptRows.push({ saleItemId, received: item.received })
 
           await tx.insert(saleItems).values({
             saleItemId,
+            saleItemGroupId: groupIdByKey.get(item.depositGroupKey)!,
             saleOrderId: id,
             storeId: data.storeId,
             itemDirection: '购买',

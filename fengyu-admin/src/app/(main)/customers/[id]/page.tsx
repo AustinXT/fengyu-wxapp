@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation'
 import {
   getCustomerById,
   getCustomerOrders,
+  getCustomerHomeProducts,
   getCustomerCoupons,
   getCustomerAppointments,
   getCustomerPhoneChangeLogs,
@@ -27,9 +28,10 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
   const canListEmployees = session ? hasPermission(session, 'employee:list') : false
   const canListStores = session ? hasPermission(session, 'store:list') : false
 
-  const [customer, orders, appointments, stores, employees, phoneChangeLogs, serviceOrders, orphanProfiles, prepaidBalance, coupons] = await Promise.all([
+  const [customer, orders, homeProducts, appointments, stores, employees, phoneChangeLogs, serviceOrders, orphanProfiles, prepaidBalance, coupons] = await Promise.all([
     getCustomerById(id),
     getCustomerOrders(id),
+    getCustomerHomeProducts(id),
     getCustomerAppointments(id),
     canListStores ? getStores() : Promise.resolve([]),
     canListEmployees ? getEmployees() : Promise.resolve([]),
@@ -58,6 +60,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
     <CustomerDetailPage
       customer={customer}
       orders={orders}
+      homeProducts={homeProducts}
       appointments={appointments}
       stores={stores}
       employees={employees}

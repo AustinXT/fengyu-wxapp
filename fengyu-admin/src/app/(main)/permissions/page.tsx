@@ -1,5 +1,6 @@
 import { Suspense } from 'react'
 import { getRolesByScope, getRoleCountsByScope } from '@/actions/permissions'
+import { getRoleDefinitions } from '@/actions/role-definitions'
 import { getEmployees } from '@/actions/employees'
 import { getOrgNodes } from '@/actions/org'
 import { getSession } from '@/lib/auth'
@@ -10,10 +11,11 @@ import PermissionsPage from './_components/permissions-page'
 export const dynamic = 'force-dynamic'
 
 export default async function Page() {
-  const [orgNodes, allEmployees, roleCounts, session] = await Promise.all([
+  const [orgNodes, allEmployees, roleCounts, roleDefinitions, session] = await Promise.all([
     getOrgNodes(),
     getEmployees(),
     getRoleCountsByScope(),
+    getRoleDefinitions(),
     getSession(),
   ])
 
@@ -41,6 +43,7 @@ export default async function Page() {
         initialRoles={initialRoles}
         initialScopeId={defaultScopeId}
         roleCounts={roleCounts}
+        roleDefinitions={roleDefinitions}
         allEmployees={allEmployees}
         orgNodes={orgNodes}
         accessibleScopeIds={accessibleScopeIds}

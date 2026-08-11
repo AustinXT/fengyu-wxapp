@@ -413,8 +413,9 @@ async function notifyRefundCreated(client, { paymentId, saleOrderId, storeId, op
   if (!storeId) return
   const mgrs = await client.query(
     `SELECT DISTINCT pr.employee_id FROM permission_roles pr
+       JOIN permission_role_definitions rd ON rd.role_key = pr.role
        JOIN stores s ON s.org_node_id = pr.scope_id
-      WHERE pr.role = 'manager' AND s.store_id = $1`,
+      WHERE rd.is_store_manager = TRUE AND s.store_id = $1`,
     [storeId],
   )
   const rows = mgrs && mgrs.rows ? mgrs.rows : mgrs

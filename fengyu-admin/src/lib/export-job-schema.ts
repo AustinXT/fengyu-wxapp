@@ -49,7 +49,11 @@ const exportSessionSchema = z.object({
   name: z.string().min(1).max(120),
   phone: z.string().max(40),
   roles: z.array(z.object({
-    role: z.enum(['admin', 'manager', 'finance', 'hr', 'product', 'customer_mgr', 'staff']),
+    role: z.string().min(1).max(64),
+    roleName: z.string().max(30).optional(),
+    canAccessAdmin: z.boolean().optional(),
+    isSuperAdmin: z.boolean().optional(),
+    isStoreManager: z.boolean().optional(),
     scopeId: z.string().min(1).max(80),
     scopeType: z.enum(['总部', '市场', '门店']),
   })).max(20),

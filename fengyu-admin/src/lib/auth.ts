@@ -23,6 +23,6 @@ export function hasRole(session: AuthSession, role: RoleType): boolean {
 /**
  * Get display role label in Chinese
  */
-export function getRoleLabel(role: RoleType): string {
-  return ROLE_LABELS[role] ?? role
+export function getRoleLabel(role: RoleType, roleName?: string): string {
+  return roleName || ROLE_LABELS[role] || role
 }

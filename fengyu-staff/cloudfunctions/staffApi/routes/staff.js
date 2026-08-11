@@ -104,6 +104,8 @@ async function list(ctx) {
       u.position_name AS position,
       u.skills,
       u.avatar_url,
+      u.store_id,
+      u.is_on_business_trip,
       d.name AS department,
       s.store_name,
       m.name AS market_name
@@ -113,7 +115,7 @@ async function list(ctx) {
     LEFT JOIN org_nodes m ON so.parent_id = m.id
     LEFT JOIN org_nodes d ON u.org_node_id = d.id
     WHERE u.is_resigned = false
-      AND u.store_id = $1
+      AND (u.store_id = $1 OR u.is_on_business_trip = true)
       AND u.employee_id IS NOT NULL
       AND u.skills && ARRAY['美容师','养生师']::text[]
     ORDER BY d.name, u.name
@@ -126,9 +128,11 @@ async function list(ctx) {
       position: r.position || '',
       skills: r.skills || [],
       avatarUrl: r.avatar_url || null,
+      storeId: r.store_id || '',
       department: r.department || '',
       storeName: r.store_name || '',
       marketName: r.market_name || '',
+      isOnBusinessTrip: r.is_on_business_trip === true,
       isManager: r.position === '门店经理'
     }))
   }

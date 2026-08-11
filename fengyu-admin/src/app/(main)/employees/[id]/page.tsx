@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation'
 import { getEmployeeById } from '@/actions/employees'
 import { getEmployeeRoles } from '@/actions/permissions'
+import { getRoleDefinitions } from '@/actions/role-definitions'
 import { getStores } from '@/actions/stores'
 import { getOrgNodes } from '@/actions/org'
 import { getSkillTags } from '@/actions/skill-tags'
@@ -24,9 +25,10 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
   const canResetPassword = hasUiCapability(actions, 'admin:reset_password')
   const canListStores = !!session && hasPermission(session, 'store:list')
   const canListOrg = !!session && hasPermission(session, 'org:list')
-  const [employee, roles, stores, orgNodes, skillTags] = await Promise.all([
+  const [employee, roles, roleDefinitions, stores, orgNodes, skillTags] = await Promise.all([
     getEmployeeById(id),
     getEmployeeRoles(id),
+    canAssignRole || canRevokeRole ? getRoleDefinitions() : Promise.resolve([]),
     canListStores ? getStores() : Promise.resolve([]),
     canListOrg ? getOrgNodes() : Promise.resolve([]),
     getSkillTags(),
@@ -38,6 +40,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
     <EmployeeDetailPage
       employee={employee}
       roles={roles}
+      roleDefinitions={roleDefinitions}
       stores={stores}
       orgNodes={orgNodes}
       skillTags={skillTags}

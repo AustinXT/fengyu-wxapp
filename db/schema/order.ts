@@ -174,6 +174,12 @@ export const saleItems = pgTable(
   "sale_items",
   {
     saleItemId: varchar("sale_item_id", { length: 30 }).primaryKey(),
+    /**
+     * 逻辑购买行分组号。寄存单将疗程卡/家居产品逐张逐件落库时，同一原始购买行
+     * 的子明细共享该值；仅供展示聚合与批量操作展开，不参与金额或库存计算。
+     * 不建外键：历史拆分后原聚合 sale_item 会被删除，分组号需继续保留其可追溯性。
+     */
+    saleItemGroupId: varchar("sale_item_group_id", { length: 30 }),
     saleOrderId: varchar("sale_order_id", { length: 30 })
       .notNull()
       .references(() => saleOrders.saleOrderId),
@@ -274,6 +280,7 @@ export const saleItems = pgTable(
   },
   (table) => [
     index("idx_sale_items_order_id").on(table.saleOrderId),
+    index("idx_sale_items_group_id").on(table.saleItemGroupId),
     index("idx_sale_items_sku_id").on(table.skuId),
     index("idx_sale_items_ref").on(table.refSaleItemId),
     index("idx_sale_items_store_order").on(table.storeId, table.saleOrderId),

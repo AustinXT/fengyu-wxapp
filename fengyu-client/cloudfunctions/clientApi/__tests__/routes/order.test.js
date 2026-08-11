@@ -1496,6 +1496,50 @@ describe('order.appointableItems', () => {
   })
 })
 
+describe('order.homeProducts', () => {
+  test('返回真实提货、退款和待提数量', async () => {
+    pg.query.mockResolvedValueOnce([
+      {
+        sale_item_id: 'SI-HOME-1', sale_order_id: 'SO-HOME-1', product_name: '精华液',
+        unit: '盒', purchased_quantity: 5,
+        picked_quantity: 2, refunded_quantity: 1, remaining_quantity: 2,
+        store_id: 's2', store_name: '外店', purchased_at: '2026-08-01T10:00:00Z', refund_pending: false,
+      },
+      {
+        sale_item_id: 'SI-HOME-2', sale_order_id: 'SO-HOME-2', product_name: '面膜',
+        unit: '盒', purchased_quantity: 1, picked_quantity: 0, refunded_quantity: 0,
+        remaining_quantity: 1, store_id: 's1', store_name: '本店',
+        purchased_at: '2026-08-02T10:00:00Z', refund_pending: true,
+      },
+    ])
+
+    const ctx = createBoundCtx({})
+    await routes.homeProducts(ctx)
+
+    expect(ctx.result.items).toEqual([
+      expect.objectContaining({
+        saleItemId: 'SI-HOME-1', pickedQuantity: 2, refundedQuantity: 1,
+        remainingQuantity: 2, status: '部分提货', storeName: '外店',
+      }),
+      expect.objectContaining({ saleItemId: 'SI-HOME-2', status: '退款处理中' }),
+    ])
+    expect(pg.query.mock.calls[0][1]).toEqual([ctx.auth.userId])
+  })
+
+  test('SQL 仅查有效购买行，并用 pickup_records 拆分真实提货', async () => {
+    pg.query.mockResolvedValueOnce([])
+    const ctx = createBoundCtx({})
+    await routes.homeProducts(ctx)
+
+    const sql = pg.query.mock.calls[0][0]
+    expect(sql).toContain('FROM pickup_records')
+    expect(sql).toContain("o.status IN ('已支付', '已完成')")
+    expect(sql).toContain("si.item_direction = '购买'")
+    expect(sql).toContain("si.product_type = '家居产品'")
+    expect(sql).toContain('picked_quantity = 0')
+  })
+})
+
 // ================================================================
 // 储值卡抵扣消费测试（储值卡抵扣 by store，2026-04-23 ticket Wave 2A）
 // ================================================================

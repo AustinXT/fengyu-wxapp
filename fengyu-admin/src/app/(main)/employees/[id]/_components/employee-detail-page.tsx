@@ -17,7 +17,6 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { Separator } from "@/components/ui/separator"
-import { getRoleLabel } from "@/lib/auth"
 import { formatDate, buildOrgPath, findAncestorMarketId } from "@/lib/utils"
 import { shanghaiToday } from "@/lib/datetime"
 import { formatPhoneSafe } from "@/lib/format"
@@ -26,10 +25,7 @@ import { updateEmployee, deleteEmployee } from "@/actions/employees"
 import { DangerZoneDelete } from "@/components/delete-action"
 import { assignRole, revokeRole } from "@/actions/permissions"
 import { resetToDefaultPassword } from "@/actions/auth"
-import { ROLE_LABELS } from "@/lib/types"
-import type { Employee, PermissionRole, Store, OrgNode, RoleType, SkillTag } from "@/lib/types"
-
-const allRoleTypes: RoleType[] = ["admin", "manager", "finance", "hr", "product", "customer_mgr", "staff"]
+import type { Employee, PermissionRole, Store, OrgNode, RoleType, SkillTag, RoleDefinition } from "@/lib/types"
 
 /** 库内墙钟字符串（"YYYY-MM-DD HH:mm:ss" 或带 T）→ datetime-local 输入值 "YYYY-MM-DDTHH:mm" */
 function toDatetimeLocal(v: string | null): string {
@@ -40,6 +36,7 @@ function toDatetimeLocal(v: string | null): string {
 interface Props {
   employee: Employee
   roles: PermissionRole[]
+  roleDefinitions: RoleDefinition[]
   stores: Store[]
   orgNodes: OrgNode[]
   skillTags: SkillTag[]
@@ -55,6 +52,7 @@ interface Props {
 export default function EmployeeDetailPage({
   employee,
   roles,
+  roleDefinitions,
   stores,
   orgNodes,
   skillTags,
@@ -276,7 +274,7 @@ export default function EmployeeDetailPage({
     {
       key: "role",
       header: "角色",
-      cell: (row) => <span className="font-medium">{getRoleLabel(row.role)}</span>,
+      cell: (row) => <span className="font-medium">{row.roleName ?? row.role}</span>,
     },
     {
       key: "scopeName",
@@ -609,8 +607,8 @@ export default function EmployeeDetailPage({
                           setRoleEntries(updated)
                         }}
                       >
-                        {allRoleTypes.filter((r) => r !== 'admin' || canAssignAdmin || entry.role === 'admin').map((r) => (
-                          <option key={r} value={r}>{ROLE_LABELS[r]}</option>
+                        {roleDefinitions.filter((role) => !role.isSuperAdmin || canAssignAdmin || entry.role === role.roleKey).map((role) => (
+                          <option key={role.roleKey} value={role.roleKey}>{role.name}</option>
                         ))}
                       </Select>
                       <OrgTreeSelect
@@ -642,7 +640,7 @@ export default function EmployeeDetailPage({
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => setRoleEntries(prev => [...prev, { role: 'manager', scopeId: '' }])}
+                      onClick={() => setRoleEntries(prev => [...prev, { role: roleDefinitions.find((role) => !role.isSuperAdmin)?.roleKey ?? roleDefinitions[0]?.roleKey ?? '', scopeId: '' }])}
                     >
                       + 添加角色
                     </Button>

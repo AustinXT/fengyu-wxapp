@@ -96,7 +96,7 @@ export function Topbar({ collapsed, onToggle, session }: TopbarProps) {
                   {session.name}
                 </div>
                 <div className="mt-0.5 text-xs text-[#999999]">
-                  {primaryRole ? getRoleLabel(primaryRole.role) : "未分配角色"}
+                  {primaryRole ? getRoleLabel(primaryRole.role, primaryRole.roleName) : "未分配角色"}
                 </div>
               </div>
 

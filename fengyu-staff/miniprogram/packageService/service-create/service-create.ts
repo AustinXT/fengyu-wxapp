@@ -14,6 +14,7 @@ const app = getApp<IAppOption>();
 
 interface PaidOrderItem {
   saleItemId: string;
+  saleItemGroupId?: string | null;
   itemName: string;
   spec: string;
   sessionCount: number;
@@ -382,7 +383,9 @@ Page({
       const groupedItems = groupTreatmentCards(items, {
         getId: (item) => item.saleItemId,
         getQuantity: (item) => item.quantity,
-        getIdentity: (item) => ({
+        getIdentity: (item) => item.saleItemGroupId
+          ? { saleItemGroupId: item.saleItemGroupId }
+          : ({
           saleOrderId: item.saleOrderId,
           saleOrderDatetime: item.saleOrderDatetime,
           paidAt: item.paidAt,

@@ -29,10 +29,6 @@ function getAdminDefaultDashboardRoles() {
   })
 }
 
-function matrix(value) {
-  return [{ value: JSON.stringify(value) }]
-}
-
 describe('permission-matrix data_center:dashboard', () => {
   beforeEach(() => {
     invalidatePermissionMatrixCache()
@@ -47,8 +43,8 @@ describe('permission-matrix data_center:dashboard', () => {
 
   test('按运行时矩阵授予和撤销 dashboard 权限', async () => {
     pg.query
-      .mockResolvedValueOnce(matrix({ manager: ['data_center:dashboard'], finance: [] }))
-      .mockResolvedValueOnce(matrix({ manager: [], finance: ['data_center:dashboard'] }))
+      .mockResolvedValueOnce([{ role_key: 'manager', actions: ['data_center:dashboard'] }, { role_key: 'finance', actions: [] }])
+      .mockResolvedValueOnce([{ role_key: 'manager', actions: [] }, { role_key: 'finance', actions: ['data_center:dashboard'] }])
 
     expect(await hasDataCenterDashboard([{ role: 'manager' }])).toBe(true)
     expect(await hasDataCenterDashboard([{ role: 'finance' }])).toBe(false)
@@ -63,8 +59,8 @@ describe('permission-matrix data_center:dashboard', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-08-08T00:00:00.000Z'))
     pg.query
-      .mockResolvedValueOnce(matrix({ hr: ['data_center:dashboard'] }))
-      .mockResolvedValueOnce(matrix({ finance: ['data_center:dashboard'] }))
+      .mockResolvedValueOnce([{ role_key: 'hr', actions: ['data_center:dashboard'] }])
+      .mockResolvedValueOnce([{ role_key: 'finance', actions: ['data_center:dashboard'] }])
 
     expect(await hasDataCenterDashboard(['hr'])).toBe(true)
     expect(await hasDataCenterDashboard(['finance'])).toBe(false)
@@ -76,22 +72,23 @@ describe('permission-matrix data_center:dashboard', () => {
     expect(pg.query).toHaveBeenCalledTimes(2)
   })
 
-  test('缺失配置时回退默认角色', async () => {
-    pg.query.mockResolvedValueOnce([])
+  test('没有角色持有 dashboard 权限时返回空集合，不恢复旧默认值', async () => {
+    pg.query.mockResolvedValueOnce([
+      { role_key: 'admin', actions: [] },
+      { role_key: 'role_custom', actions: [] },
+    ])
 
     const roles = await getDashboardRoles()
 
-    expect([...roles].sort()).toEqual([...FALLBACK_DASHBOARD_ROLES].sort())
+    expect([...roles]).toEqual([])
   })
 
-  test('解析失败不缓存，持续回退默认角色', async () => {
-    pg.query
-      .mockResolvedValueOnce([{ value: '{invalid-json' }])
-      .mockResolvedValueOnce([{ value: '{invalid-json' }])
-
-    expect(await hasDataCenterDashboard(['admin'])).toBe(true)
-    expect(await hasDataCenterDashboard(['hr'])).toBe(false)
-    expect(pg.query).toHaveBeenCalledTimes(2)
+  test('查询角色定义表并识别自定义角色', async () => {
+    pg.query.mockResolvedValueOnce([{ role_key: 'role_custom', actions: ['data_center:dashboard'] }])
+    expect(await hasDataCenterDashboard(['role_custom'])).toBe(true)
+    expect(pg.query).toHaveBeenCalledWith(
+      expect.stringContaining('FROM permission_role_definitions'),
+    )
   })
 
   test('数据库异常不缓存，回退默认角色', async () => {

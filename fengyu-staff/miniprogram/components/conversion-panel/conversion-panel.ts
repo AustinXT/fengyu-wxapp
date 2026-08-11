@@ -17,6 +17,7 @@ import { groupTreatmentCards, selectGroupSourceIds, sumGroupValue } from '../../
 
 interface HeldCard {
   saleItemId: string;
+  saleItemGroupId?: string | null;
   sourceSaleOrderId: string;
   saleOrderDatetime?: string | null;
   paidAt?: string | null;
@@ -213,7 +214,9 @@ Component({
         const cards = groupTreatmentCards(data?.cards || [], {
           getId: (card) => card.saleItemId,
           getQuantity: (card) => card.quantity,
-          getIdentity: (card) => ({
+      getIdentity: (card) => card.saleItemGroupId
+        ? { saleItemGroupId: card.saleItemGroupId }
+        : ({
             sourceSaleOrderId: card.sourceSaleOrderId,
             saleOrderDatetime: card.saleOrderDatetime,
             paidAt: card.paidAt,
@@ -246,8 +249,8 @@ Component({
             productKind: card.productKind,
             categoryId: card.categoryId,
             categoryName: card.categoryName,
-            quantity: card.quantity ?? 1,
-          }),
+        quantity: card.quantity ?? 1,
+      }),
         }).map((group) => {
           const primary = group.primary;
           return {

@@ -75,7 +75,7 @@ function deriveStaffLevel(roleBindings) {
     } else if (rb.scopeType === '市场') {
       hasMarket = true
     } else if (rb.scopeType === '门店') {
-      if (rb.role === 'manager') hasStoreManager = true
+      if (rb.isStoreManager ?? rb.role === 'manager') hasStoreManager = true
       else hasStoreOther = true
     }
     // 部门级忽略
