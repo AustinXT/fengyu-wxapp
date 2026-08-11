@@ -358,6 +358,11 @@ Page({
   },
 
   onShow() {
+    const canManage = isManager();
+    this.setData({ isManager: canManage });
+    if (!canManage) {
+      this.setData({ cardBalance: 0, cardBalanceLoaded: false });
+    }
     if (this._loaded && this._query) {
       this.loadCustomer();
       // 刷新已加载的 tab 数据（疗程卡次数可能因服务单完成而变化）
@@ -375,9 +380,17 @@ Page({
       const customer = await callStaffApi<CustomerDetail>('customer.detail', this._query);
       // lastServiceDate 为原始 pg date（序列化成 UTC 串会偏移日期），格式化为 YYYY-MM-DD
       if (customer.lastServiceDate) customer.lastServiceDate = formatDate(customer.lastServiceDate);
-      this.setData({ customer: withMemberLevelBadgeClass(customer), notesValue: customer.notes || '', notesDirty: false });
-      // Wave 3G — 拉取储值卡余额（跨店统一）。失败静默兜底为 0
-      void this.loadCardBalance();
+      const canManage = isManager();
+      this.setData({
+        customer: withMemberLevelBadgeClass(customer),
+        notesValue: customer.notes || '',
+        notesDirty: false,
+        isManager: canManage,
+        cardBalance: 0,
+        cardBalanceLoaded: false,
+      });
+      // 储值卡余额接口仅供当前门店有效店长使用，避免普通员工触发无权限请求。
+      if (canManage) void this.loadCardBalance();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';
       wx.showToast({ title: msg, icon: 'none' });
@@ -388,10 +401,14 @@ Page({
 
   /**
    * Wave 3G — 加载顾客储值卡余额（跨店统一）
-   * - 仅当 customer.clientUserId 存在时调用
-   * - 静默失败：余额展示 0，不阻塞页面
+   * - 仅当前门店有效店长且 customer.clientUserId 存在时调用
+   * - 请求失败不以余额 0 代替，避免将权限错误伪装为业务余额
    */
   async loadCardBalance() {
+    if (!isManager()) {
+      this.setData({ cardBalance: 0, cardBalanceLoaded: false });
+      return;
+    }
     const { customer } = this.data;
     if (!customer?.clientUserId) {
       this.setData({ cardBalance: 0, cardBalanceLoaded: true });
@@ -406,7 +423,7 @@ Page({
         cardBalanceLoaded: true,
       });
     } catch (_) {
-      this.setData({ cardBalance: 0, cardBalanceLoaded: true });
+      this.setData({ cardBalanceLoaded: false });
     }
   },
 
@@ -802,7 +819,16 @@ Page({
     if (!customer) return;
     const selected = this._allTreatmentCards.filter(c => c.selected);
     if (selected.length === 0) return;
-    const preloadItems = selected.flatMap((card) => {
+    const preloadItems: Array<{
+      saleItemId: string;
+      itemName: string;
+      spec: string;
+      saleOrderId: string;
+      sessionCount: number;
+      remainingSessions: number;
+      unit?: string;
+    }> = [];
+    for (const card of selected) {
       const sourceItems = card.sourceItems?.length ? card.sourceItems : [card];
       const expanded = expandGroupServiceSessions(
         {
@@ -815,9 +841,9 @@ Page({
         (item) => item.saleItemId,
         (item) => item.consumableSessions,
       );
-      return expanded.map((selection) => {
+      for (const selection of expanded) {
         const source = sourceItems.find((item) => item.saleItemId === selection.saleItemId) || card;
-        return {
+        preloadItems.push({
           saleItemId: selection.saleItemId,
           itemName: source.itemName,
           spec: source.spec,
@@ -825,9 +851,9 @@ Page({
           sessionCount: selection.sessionUsed,
           remainingSessions: source.remainingSessions,
           unit: source.unit,
-        };
-      });
-    });
+        });
+      }
+    }
     if (preloadItems.length === 0) return;
     app.globalData._serviceCreatePreload = {
       customer: {
@@ -974,6 +1000,7 @@ Page({
 
   // ===== 备注编辑 =====
   onNotesChange(e: WechatMiniprogram.CustomEvent) {
+    if (!isManager()) return;
     const val = e.detail as unknown as string;
     this.setData({
       notesValue: val,
@@ -982,6 +1009,7 @@ Page({
   },
 
   async onSaveNotes() {
+    if (!isManager()) return;
     const { customer, notesValue } = this.data;
     if (!customer?.clientUserId) return;
     this.setData({ notesSaving: true });

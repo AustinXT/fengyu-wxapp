@@ -5,12 +5,17 @@ import { getEmployees, getEmployeesOnBusinessTrip } from '@/actions/employees'
 import { getRates } from '@/actions/commission'
 import { getSkillTags } from '@/actions/skill-tags'
 import { mergeEmployeesById } from '@/lib/merge-employees'
+import { getSession } from '@/lib/auth'
+import { hasUiCapability } from '@/lib/permission-contract'
+import { requireUiPageCapability } from '@/lib/page-capability'
 import PaymentAllocationDetailPageClient from '../../_components/payment-allocation-detail-page'
 
 export const dynamic = 'force-dynamic'
 
 export default async function Page({ params }: { params: Promise<{ paymentId: string }> }) {
   const { paymentId } = await params
+  const session = await getSession()
+  requireUiPageCapability(session, 'allocation:list')
 
   // 主取数并行：本笔回款可分配项 + 候选员工（scope ∪ 出差）+ 提成矩阵 + 技能标签字典
   const [payment, scopedEmployees, tripEmployees, commissionRates, skillTags] = await Promise.all([
@@ -38,6 +43,7 @@ export default async function Page({ params }: { params: Promise<{ paymentId: st
       employees={employees}
       commissionRates={commissionRates}
       skillTags={skillTags}
+      canSave={hasUiCapability(session.permissions.actions, 'allocation:save')}
     />
   )
 }

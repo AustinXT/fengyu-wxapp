@@ -32,10 +32,14 @@ export default function ProductsPageClient({
   skus,
   categories,
   productKinds,
+  canCreate,
+  canUpdate,
 }: {
   skus: ProductSku[]
   categories: ProductCategory[]
   productKinds?: ProductCategory[]
+  canCreate: boolean
+  canUpdate: boolean
 }) {
   const { get, set, setMany } = useUrlFilters()
   const setFilter = useCallback((key: string, value: string) => {
@@ -165,11 +169,13 @@ export default function ProductsPageClient({
       header: "操作",
       cell: (row) => (
         <div className="flex gap-2">
-          <Link href={`/products/${row.skuId}`}>
-            <Button variant="link" size="sm" className="h-auto p-0">
-              详情
-            </Button>
-          </Link>
+          {canUpdate && (
+            <Link href={`/products/${row.skuId}`}>
+              <Button variant="link" size="sm" className="h-auto p-0">
+                编辑
+              </Button>
+            </Link>
+          )}
         </div>
       ),
     },
@@ -180,12 +186,16 @@ export default function ProductsPageClient({
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">商品管理</h1>
         <div className="flex gap-2">
-          <Link href="/products/categories">
-            <Button variant="outline">品项分类</Button>
-          </Link>
-          <Link href="/products/create">
-            <Button>新增商品</Button>
-          </Link>
+          {(canCreate || canUpdate) && (
+            <Link href="/products/categories">
+              <Button variant="outline">品项分类</Button>
+            </Link>
+          )}
+          {canCreate && (
+            <Link href="/products/create">
+              <Button>新增商品</Button>
+            </Link>
+          )}
         </div>
       </div>
 

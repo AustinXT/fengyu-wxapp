@@ -496,6 +496,7 @@ describe('requireManager 基于 roleBindings', () => {
     const ctx = {
       auth: {
         staffWfId: 'e1',
+        loginLevel: 'store',
         roleBindings: [{ role: 'manager', scopeId: 'nA', scopeType: '门店' }],
         managerStoreIds: ['A'],
         effectiveStoreId: 'B',
@@ -510,6 +511,7 @@ describe('requireManager 基于 roleBindings', () => {
     const ctx = {
       auth: {
         staffWfId: 'e1',
+        loginLevel: 'store',
         roleBindings: [{ role: 'manager', scopeId: 'nA', scopeType: '门店' }],
         managerStoreIds: ['A', 'B'],
         effectiveStoreId: 'B',

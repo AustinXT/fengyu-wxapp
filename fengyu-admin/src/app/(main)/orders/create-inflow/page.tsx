@@ -1,4 +1,6 @@
 import { getStores } from '@/actions/stores'
+import { getSession } from '@/lib/auth'
+import { requireUiPageCapability } from '@/lib/page-capability'
 import InflowOrderCreatePageClient from '../_components/inflow-order-create-page'
 
 export const dynamic = 'force-dynamic'
@@ -10,6 +12,7 @@ export const dynamic = 'force-dynamic'
  * 顾客数据由 client 端按需 searchCustomers 调用。
  */
 export default async function Page() {
+  requireUiPageCapability(await getSession(), 'sale_order:create')
   const stores = await getStores()
   return <InflowOrderCreatePageClient stores={stores} />
 }

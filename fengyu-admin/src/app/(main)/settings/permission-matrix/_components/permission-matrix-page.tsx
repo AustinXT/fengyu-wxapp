@@ -7,6 +7,10 @@ import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { ROLE_LABELS, type RoleType } from '@/lib/types'
 import { saveMatrix, resetMatrix, type PermissionMatrix } from '@/actions/permission-matrix'
+import {
+  getActionGrantability,
+  validatePermissionMatrix,
+} from '@/lib/permission-contract'
 
 interface Props {
   initialMatrix: PermissionMatrix
@@ -93,6 +97,7 @@ function actionKey(a: string, role: RoleType): string {
 export default function PermissionMatrixPage({ initialMatrix, allActions }: Props) {
   const [matrix, setMatrix] = useState<PermissionMatrix>(initialMatrix)
   const [pending, startTransition] = useTransition()
+  const knownActions = useMemo(() => new Set(allActions), [allActions])
 
   const initialJson = useMemo(() => JSON.stringify(initialMatrix), [initialMatrix])
   const currentJson = useMemo(() => JSON.stringify(matrix), [matrix])
@@ -111,6 +116,7 @@ export default function PermissionMatrixPage({ initialMatrix, allActions }: Prop
   }, [allActions])
 
   function toggle(role: RoleType, action: string) {
+    if (getActionGrantability(role, action, knownActions) !== 'grantable') return
     setMatrix((prev) => {
       const has = prev[role]?.includes(action) ?? false
       const next = has
@@ -123,7 +129,9 @@ export default function PermissionMatrixPage({ initialMatrix, allActions }: Prop
   function setAllForRole(role: RoleType, on: boolean) {
     setMatrix((prev) => ({
       ...prev,
-      [role]: on ? [...allActions].sort() : [],
+      [role]: on
+        ? allActions.filter((action) => getActionGrantability(role, action, knownActions) === 'grantable').sort()
+        : [],
     }))
   }
 
@@ -131,6 +139,7 @@ export default function PermissionMatrixPage({ initialMatrix, allActions }: Prop
     setMatrix((prev) => {
       const next = { ...prev }
       for (const role of ROLES) {
+        if (getActionGrantability(role, action, knownActions) !== 'grantable') continue
         const has = next[role]?.includes(action) ?? false
         if (on && !has) next[role] = [...(next[role] ?? []), action].sort()
         else if (!on && has) next[role] = next[role].filter((a) => a !== action)
@@ -140,6 +149,17 @@ export default function PermissionMatrixPage({ initialMatrix, allActions }: Prop
   }
 
   function handleSave() {
+    const validation = validatePermissionMatrix(matrix, allActions)
+    if (validation.issues.length > 0) {
+      const messages = validation.issues.map((issue) => {
+        if (issue.kind === 'missing_ui_dependency') {
+          return `${ROLE_LABELS[issue.role]}的 ${actionLabel(issue.action)} 缺少：${issue.missing.join('、')}`
+        }
+        return `${ROLE_LABELS[issue.role]}的 ${actionLabel(issue.action)} 不可授予`
+      })
+      toast.error(messages.join('；'))
+      return
+    }
     startTransition(async () => {
       try {
         const res = await saveMatrix(matrix)
@@ -211,7 +231,10 @@ export default function PermissionMatrixPage({ initialMatrix, allActions }: Prop
                   </th>
                   {ROLES.map((role) => {
                     const total = matrix[role]?.length ?? 0
-                    const allOn = total === allActions.length
+                    const grantableActions = allActions.filter(
+                      (action) => getActionGrantability(role, action, knownActions) === 'grantable',
+                    )
+                    const allOn = grantableActions.every((action) => matrix[role]?.includes(action))
                     return (
                       <th key={role} className="px-2 py-2 text-center font-medium min-w-[88px]">
                         <div className="flex flex-col items-center gap-0.5">
@@ -240,11 +263,14 @@ export default function PermissionMatrixPage({ initialMatrix, allActions }: Prop
                       </td>
                     </tr>
                     {actions.map((action) => {
-                      const rowCount = ROLES.reduce(
+                      const grantableRoles = ROLES.filter(
+                        (role) => getActionGrantability(role, action, knownActions) === 'grantable',
+                      )
+                      const rowCount = grantableRoles.reduce(
                         (n, role) => n + (matrix[role]?.includes(action) ? 1 : 0),
                         0,
                       )
-                      const allOn = rowCount === ROLES.length
+                      const allOn = grantableRoles.every((role) => matrix[role]?.includes(action))
                       return (
                         <tr key={action} className="border-b border-[var(--border)] hover:bg-[var(--accent)]/20">
                           <td className="sticky left-0 z-10 bg-[var(--background)] px-3 py-2 text-xs text-[var(--foreground)]">
@@ -264,13 +290,17 @@ export default function PermissionMatrixPage({ initialMatrix, allActions }: Prop
                           </td>
                           {ROLES.map((role) => {
                             const checked = matrix[role]?.includes(action) ?? false
+                            const grantability = getActionGrantability(role, action, knownActions)
+                            const disabled = grantability !== 'grantable'
                             return (
                               <td key={actionKey(action, role)} className="px-2 py-2 text-center">
                                 <input
                                   type="checkbox"
-                                  className="h-4 w-4 cursor-pointer accent-[var(--primary)]"
+                                  className="h-4 w-4 cursor-pointer accent-[var(--primary)] disabled:cursor-not-allowed disabled:opacity-35"
                                   checked={checked}
                                   onChange={() => toggle(role, action)}
+                                  disabled={disabled}
+                                  title={disabled ? '该权限仅系统管理员可授予' : undefined}
                                   aria-label={`${ROLE_LABELS[role]} - ${actionLabel(action)}`}
                                 />
                               </td>

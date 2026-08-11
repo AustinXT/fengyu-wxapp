@@ -39,10 +39,14 @@ interface CategoryFormData {
 export default function CategoriesPageClient({
   categories,
   productKinds,
+  canCreate,
+  canUpdate,
   canDelete,
 }: {
   categories: ProductCategory[]
   productKinds: ProductCategory[]
+  canCreate: boolean
+  canUpdate: boolean
   canDelete: boolean
 }) {
   const router = useRouter()
@@ -240,10 +244,12 @@ export default function CategoriesPageClient({
       header: "操作",
       cell: (row) => (
         <div className="flex gap-2">
-          <Button variant="link" size="sm" className="h-auto p-0" onClick={() => openEditDialog(row)}>
-            编辑
-          </Button>
-          {row.isValid ? (
+          {canUpdate && (
+            <Button variant="link" size="sm" className="h-auto p-0" onClick={() => openEditDialog(row)}>
+              编辑
+            </Button>
+          )}
+          {canUpdate && row.isValid ? (
             <Button
               variant="link"
               size="sm"
@@ -286,8 +292,10 @@ export default function CategoriesPageClient({
             />
             <span>包含已停用</span>
           </label>
-          <Button variant="outline" onClick={() => setKindDialogOpen(true)}>品项一级分类管理</Button>
-          <Button onClick={openAddDialog}>新增二级分类</Button>
+          {(canCreate || canUpdate) && (
+            <Button variant="outline" onClick={() => setKindDialogOpen(true)}>品项一级分类管理</Button>
+          )}
+          {canCreate && <Button onClick={openAddDialog}>新增二级分类</Button>}
         </div>
       </div>
 

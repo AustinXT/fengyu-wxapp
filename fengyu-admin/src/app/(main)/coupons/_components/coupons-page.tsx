@@ -50,9 +50,11 @@ interface Market {
 interface CouponsPageProps {
   templates: CouponTemplate[]
   markets: Market[]
+  canCreate: boolean
+  canUpdate: boolean
 }
 
-export default function CouponsPage({ templates, markets }: CouponsPageProps) {
+export default function CouponsPage({ templates, markets, canCreate, canUpdate }: CouponsPageProps) {
   const router = useRouter()
   const { get, set, setMany } = useUrlFilters()
   const setFilter = useCallback((key: string, value: string) => {
@@ -201,14 +203,16 @@ export default function CouponsPage({ templates, markets }: CouponsPageProps) {
               详情
             </Button>
           </Link>
-          <Button
-            variant="link"
-            size="sm"
-            className={`h-auto p-0 ${row.isActive ? 'text-[var(--destructive)]' : 'text-[#3D8A5A]'}`}
-            onClick={() => setToggleTarget(row)}
-          >
-            {row.isActive ? '停用' : '启用'}
-          </Button>
+          {canUpdate && (
+            <Button
+              variant="link"
+              size="sm"
+              className={`h-auto p-0 ${row.isActive ? 'text-[var(--destructive)]' : 'text-[#3D8A5A]'}`}
+              onClick={() => setToggleTarget(row)}
+            >
+              {row.isActive ? '停用' : '启用'}
+            </Button>
+          )}
         </div>
       ),
     },
@@ -218,9 +222,11 @@ export default function CouponsPage({ templates, markets }: CouponsPageProps) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">优惠券管理</h1>
-        <Link href="/coupons/create">
-          <Button>新增优惠券</Button>
-        </Link>
+        {canCreate && (
+          <Link href="/coupons/create">
+            <Button>新增优惠券</Button>
+          </Link>
+        )}
       </div>
 
       <div className="flex items-center gap-3">

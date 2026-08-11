@@ -1,6 +1,6 @@
 // pages/mgmt-dashboard — 管理层 Hub 页
 // 4 个 tab（首页/门店排行榜/员工排行榜/我的）在同一页面内切换，避免 wx.reLaunch 开销
-import { canAccessManagement, canSwitchLoginLevel } from '../../utils/role'
+import { canSwitchLoginLevel, isManagementMode } from '../../utils/role'
 import { callStaffApi } from '../../utils/cloud'
 import { formatAmount, formatCount, formatPercent } from '../../utils/number'
 
@@ -217,6 +217,10 @@ Page({
   },
 
   onLoad(options: { tab?: string }) {
+    if (!isManagementMode()) {
+      wx.reLaunch({ url: '/pages/workbench/workbench' })
+      return
+    }
     const tab = options?.tab as MgmtTab | undefined
     if (tab && ['dashboard', 'storeRanking', 'staffRanking', 'profile'].includes(tab)) {
       this.setData({ activeTab: tab })
@@ -236,7 +240,7 @@ Page({
   },
 
   onShow() {
-    if (!canAccessManagement()) {
+    if (!isManagementMode()) {
       wx.reLaunch({ url: '/pages/workbench/workbench' })
       return
     }

@@ -10,7 +10,7 @@ const https = require('https')
 const crypto = require('crypto')
 const { URL } = require('url')
 const pg = require('../db/pg')
-const { requireStaffBound, invalidateAuthCache } = require('../middleware/auth')
+const { requireStaffBound, invalidateAuthCache, isCurrentStoreManager } = require('../middleware/auth')
 const { assertEmployeeInScope, isStoreInScope, buildStoreScopeCondition } = require('../utils/scope')
 const { shanghaiDateStr } = require('../utils/datetime')
 
@@ -250,8 +250,8 @@ async function departments(ctx) {
 async function todayCommission(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { staffWfId, roles } = ctx.auth
-  const isManager = roles.includes('manager')
+  const { staffWfId } = ctx.auth
+  const isManager = isCurrentStoreManager(ctx.auth)
 
   const now = new Date()
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
@@ -455,8 +455,8 @@ async function monthlyCalendar(ctx) {
 async function todoList(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { staffWfId, roles, effectiveStoreId } = ctx.auth
-  const isManager = roles.includes('manager')
+  const { staffWfId, effectiveStoreId } = ctx.auth
+  const isManager = isCurrentStoreManager(ctx.auth)
 
   // 待确认预约
   let appointmentCount
@@ -597,7 +597,7 @@ async function performanceDetail(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
   const { startDate, endDate, employeeId: queryEmployeeId, salesCategory, filterType, page = 1, pageSize = 20 } = ctx.event.payload || {}
-  const isManager = ctx.auth.roles.includes('manager')
+  const isManager = isCurrentStoreManager(ctx.auth)
 
   // 美容师只能查自己
   const targetEmployeeId = (isManager && queryEmployeeId) ? queryEmployeeId : ctx.auth.staffWfId

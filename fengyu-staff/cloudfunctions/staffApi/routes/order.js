@@ -12,7 +12,7 @@
  */
 
 const pg = require('../db/pg')
-const { requireStaffBound, requireManager } = require('../middleware/auth')
+const { requireStaffBound, requireManager, isCurrentStoreManager } = require('../middleware/auth')
 const { assertOrderInScope, isStoreInScope, restrictToBoundEmployee, buildBundleMarketScopeFilter, buildNormalSkuMarketScopeFilter } = require('../utils/scope')
 const { generateWxacode, uploadToCloudStorage } = require('../utils/wxacode')
 const { getMemberThreshold } = require('../utils/config')
@@ -1362,7 +1362,7 @@ async function qrcode(ctx) {
   if (!isStoreInScope(ctx.auth, order.store_id)) {
     throw new Error('PERMISSION_DENIED: 订单不在当前门店范围内')
   }
-  if (!ctx.auth.roles.includes('manager') && order.store_id !== ctx.auth.effectiveStoreId) {
+  if (!isCurrentStoreManager(ctx.auth) && order.store_id !== ctx.auth.effectiveStoreId) {
     throw new Error('PERMISSION_DENIED: 无权查看该订单')
   }
 
@@ -1869,7 +1869,7 @@ async function close(ctx) {
   }
 
   const order = orders[0]
-  const isManagerRole = ctx.auth.roles.includes('manager')
+  const isManagerRole = isCurrentStoreManager(ctx.auth)
   const isCreator = order.opened_by && order.opened_by === ctx.auth.staffWfId
 
   if (isManagerRole) {
@@ -2001,7 +2001,7 @@ async function list(ctx) {
   }
 
   // 美容师只能看到指定自己的订单
-  if (!ctx.auth.roles.includes('manager')) {
+  if (!isCurrentStoreManager(ctx.auth)) {
     params.push(ctx.auth.staffWfId)
     whereExtra += ` AND o.preferred_employee_id = $${params.length}`
   }
@@ -2078,7 +2078,7 @@ async function detail(ctx) {
   //  4) 都不满足 → 无权查看
   // 注：门店模式普通员工不靠 inStoreScope 放开（否则可看本店他人订单），仅经分支 1/3。
   const inStoreScope = isStoreInScope(ctx.auth, order.store_id)
-  const isManager = ctx.auth.roles.includes('manager')
+  const isManager = isCurrentStoreManager(ctx.auth)
   const isMgmt = ctx.auth.loginLevel === 'management'
   let visible = inStoreScope && (isManager || order.preferred_employee_id === ctx.auth.staffWfId)
   if (!visible && isMgmt && inStoreScope) {
@@ -4199,7 +4199,7 @@ async function createPickupInventoryDoc(client, ctx, updatedItem, clientUserId, 
  * payload: { saleItemId, pickupQuantity, remark? }
  */
 async function createPickup(ctx) {
-  await requireStaffBound()(ctx, async () => {})
+  await requireManager()(ctx, async () => {})
 
   const { saleItemId, pickupQuantity, remark, idempotencyKey } = ctx.event.payload || {}
   if (!saleItemId) throw new Error('INVALID_PARAMS: 缺少 saleItemId')
@@ -4209,14 +4209,21 @@ async function createPickup(ctx) {
   // 配合 DB 层 uq_pickup_idempotency 兜底 sub-ms 并发
   if (idempotencyKey) {
     const existRes = await pg.query(
-      `SELECT id FROM pickup_records WHERE sale_item_id = $1 AND idempotency_key = $2 LIMIT 1`,
-      [saleItemId, idempotencyKey]
+      `SELECT id
+         FROM pickup_records
+        WHERE sale_item_id = $1
+          AND idempotency_key = $2
+          AND store_id = $3
+        LIMIT 1`,
+      [saleItemId, idempotencyKey, ctx.auth.effectiveStoreId]
     )
     if (existRes.length > 0) {
       const curRes = await pg.query(
         `SELECT quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity
-         FROM sale_items WHERE sale_item_id = $1`,
-        [saleItemId]
+         FROM sale_items
+        WHERE sale_item_id = $1
+          AND store_id = $2`,
+        [saleItemId, ctx.auth.effectiveStoreId]
       )
       const r = curRes[0]
       ctx.result = {
@@ -4231,7 +4238,13 @@ async function createPickup(ctx) {
   }
 
   // 冻结闭环（Bug I）：退款审批中禁止提货（家居退款 cascade 会回滚 picked_up，待审批期提货会冲突）
-  const pickupOrderRows = await pg.query(`SELECT sale_order_id FROM sale_items WHERE sale_item_id = $1`, [saleItemId])
+  const pickupOrderRows = await pg.query(
+    `SELECT sale_order_id
+       FROM sale_items
+      WHERE sale_item_id = $1
+        AND store_id = $2`,
+    [saleItemId, ctx.auth.effectiveStoreId],
+  )
   if (pickupOrderRows.length > 0) await assertNoPendingRefund(pg, pickupOrderRows[0].sale_order_id)
 
   let updated
@@ -4351,12 +4364,13 @@ async function availablePickupItems(ctx) {
  INNER JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
   LEFT JOIN stores s ON s.store_id = o.store_id
       WHERE o.client_user_id = $1
+        AND o.store_id = $2
         AND o.status = '已支付'
         AND si.item_direction = '购买'
         AND si.product_type = '家居产品'
         AND si.quantity > COALESCE(si.picked_up_quantity, 0)
    ORDER BY o.paid_at DESC, si.sale_item_id`,
-    [clientUserId],
+    [clientUserId, ctx.auth.effectiveStoreId],
   )
 
   ctx.result = rows.map((r) => ({
@@ -4398,20 +4412,18 @@ async function pickupRecordsList(ctx) {
   const params = []
   let idx = 1
 
-  const scopeIds = ctx.auth.scopeStoreIds || []
-  if (scopeIds.length === 0) {
+  const effectiveStoreId = ctx.auth.effectiveStoreId
+  if (!effectiveStoreId) {
     ctx.result = { items: [], total: 0, page: 1, pageSize: limit }
     return ctx.result
   }
-  conditions.push(`pr.store_id = ANY($${idx}::text[])`)
-  params.push(scopeIds)
+  if (storeId && storeId !== effectiveStoreId) {
+    throw new Error('PERMISSION_DENIED: 无权访问该门店')
+  }
+  conditions.push(`pr.store_id = $${idx}`)
+  params.push(effectiveStoreId)
   idx++
 
-  if (storeId) {
-    conditions.push(`pr.store_id = $${idx}`)
-    params.push(storeId)
-    idx++
-  }
   if (clientUserId) {
     conditions.push(`pr.client_user_id = $${idx}`)
     params.push(clientUserId)
@@ -4546,7 +4558,7 @@ async function refundList(ctx) {
     params.push(status)
     whereExtra += ` AND sop.status = $${params.length}`
   }
-  if (!ctx.auth.roles.includes('manager')) {
+  if (!isCurrentStoreManager(ctx.auth)) {
     params.push(ctx.auth.staffWfId)
     whereExtra += ` AND sop.operator_employee_id = $${params.length}`
   }
@@ -4620,7 +4632,7 @@ async function refundDetail(ctx) {
     throw new Error('PERMISSION_DENIED: 无权查看该退款')
   }
   // 非店长：仅允许查自己发起的退款
-  if (!ctx.auth.roles.includes('manager') && r.operator_employee_id !== ctx.auth.staffWfId) {
+  if (!isCurrentStoreManager(ctx.auth) && r.operator_employee_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 无权查看该退款')
   }
 

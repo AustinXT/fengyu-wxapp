@@ -4,7 +4,7 @@
 //   - 移除：客户分配 / 备注保存 / 储值卡余额 / 持卡勾选 + 创建服务单
 //   - 保留：订单详情跳转（只读浏览）
 import { callStaffApi } from '../../utils/cloud';
-import { canAccessManagement } from '../../utils/role';
+import { isManagementMode } from '../../utils/role';
 import { formatAmount, formatCount } from '../../utils/number';
 import { formatDateTime, formatDate, ORDER_TYPE_LABEL } from '../../utils/formatters';
 import { MemberLevelBadgeData, withMemberLevelBadgeClass } from '../../utils/member-level-badge';
@@ -260,6 +260,10 @@ Page({
   _allTreatmentCards: [] as TreatmentCard[],
 
   onLoad(options: Record<string, string>) {
+    if (!isManagementMode()) {
+      wx.reLaunch({ url: '/pages/workbench/workbench' });
+      return;
+    }
     const clientUserId = options.clientUserId || '';
     const scopeType = ((options.scopeType as ScopeType) || 'all') as ScopeType;
     const scopeId = options.scopeId ? decodeURIComponent(options.scopeId) : null;
@@ -287,7 +291,7 @@ Page({
   },
 
   onShow() {
-    if (!canAccessManagement()) {
+    if (!isManagementMode()) {
       wx.reLaunch({ url: '/pages/workbench/workbench' });
       return;
     }

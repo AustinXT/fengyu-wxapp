@@ -2,7 +2,7 @@ import { Suspense } from 'react'
 import { listLegacyOrders } from '@/actions/legacy-orders'
 import { getMarketStoreFilterOptions } from '@/actions/stores'
 import { getSession } from '@/lib/auth'
-import { hasPermission } from '@/lib/permissions'
+import { hasUiCapability } from '@/lib/permission-contract'
 import LegacyOrdersPageClient from './_components/legacy-orders-page'
 
 export const dynamic = 'force-dynamic'
@@ -32,7 +32,8 @@ export default async function Page({
     getSession(),
   ])
 
-  const canPull = session ? hasPermission(session, 'legacy_order:pull') : false
+  const actions = session?.permissions.actions ?? []
+  const canPull = hasUiCapability(actions, 'legacy_order:pull')
 
   return (
     <Suspense>
@@ -41,6 +42,10 @@ export default async function Page({
         total={total}
         filterOptions={filterOptions}
         canPull={canPull}
+        canApprove={hasUiCapability(actions, 'legacy_order:approve')}
+        canReject={hasUiCapability(actions, 'legacy_order:reject')}
+        canUpdateAmount={hasUiCapability(actions, 'legacy_order:update_amount')}
+        canUpdatePhone={hasUiCapability(actions, 'legacy_order:update_phone')}
       />
     </Suspense>
   )

@@ -13,7 +13,15 @@ import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
-export default function StoresPage({ stores }: { stores: Store[] }) {
+export default function StoresPage({
+  stores,
+  canCreate,
+  canUpdate,
+}: {
+  stores: Store[]
+  canCreate: boolean
+  canUpdate: boolean
+}) {
   const { get, set, setMany } = useUrlFilters()
   const setFilter = useCallback((key: string, value: string) => {
     setMany({ [key]: value, page: '' })
@@ -90,13 +98,13 @@ export default function StoresPage({ stores }: { stores: Store[] }) {
     {
       key: "actions",
       header: "操作",
-      cell: (row) => (
-        <Link href={`/stores/${row.storeId}/edit`}>
-          <Button variant="link" size="sm" className="h-auto p-0">
-            编辑
-          </Button>
-        </Link>
-      ),
+      cell: (row) => canUpdate ? (
+          <Link href={`/stores/${row.storeId}/edit`}>
+            <Button variant="link" size="sm" className="h-auto p-0">
+              编辑
+            </Button>
+          </Link>
+        ) : null,
     },
   ]
 
@@ -104,7 +112,7 @@ export default function StoresPage({ stores }: { stores: Store[] }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">门店管理</h1>
-        <Link href="/stores/create"><Button>新增门店</Button></Link>
+        {canCreate && <Link href="/stores/create"><Button>新增门店</Button></Link>}
       </div>
 
       <div className="flex items-center gap-3">

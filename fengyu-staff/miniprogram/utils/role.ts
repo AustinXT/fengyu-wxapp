@@ -34,17 +34,26 @@ export function canAccessStore(): boolean {
 }
 
 /**
- * 当前身份是否可执行门店店长操作。
- * - 门店店长（staffLevel='store_manager'）始终为真；
- * - 总部 / 市场 manager 切到门店模式后等同店长（用 loginLevel==='store' 收口）。
- * store_manager 切到管理层视图（mgmt 导航）后仍保留店长身份，店长写操作（开单/确认收款等）
- * 不受视图影响——门店视图入口在 tabBar 常驻，管理层视图为只读数据中心。
- * 与后端 requireManager 对齐：后端按 managerStoreIds 把店长写操作精确限定到管辖门店；
- * 管理层视图准入则单独由 data_center:dashboard + availableLoginLevels 决定。
+ * 当前身份是否可执行当前门店的店长操作。
+ *
+ * `managerStores` 是 auth.login 下发的 manager 角色管辖门店；`managerStoreIds`
+ * 用于兼容缓存或后端直接下发 id 列表的场景。两者均不命中时一律按非店长处理，
+ * 避免切换到非管辖门店后继续显示门店写操作。
  */
 export function isManager(): boolean {
-  if (getStaffLevel() === 'store_manager') return true;
-  return getLoginLevel() === 'store' && hasRole('manager');
+  if (getLoginLevel() !== 'store') return false;
+
+  const currentStoreId = getCurrentStoreId();
+  if (!currentStoreId) return false;
+
+  const g = app().globalData;
+  const scopedIds = new Set([
+    ...(Array.isArray(g.managerStoreIds) ? g.managerStoreIds : []),
+    ...(Array.isArray(g.managerStores)
+      ? g.managerStores.map((store) => store.storeId).filter(Boolean)
+      : []),
+  ]);
+  return scopedIds.has(currentStoreId);
 }
 
 /**
@@ -58,7 +67,7 @@ export function isBeautician(): boolean {
  * 判定当前用户是否拥有任一指定角色。
  * roles 来源：globalData.roles（permission_roles 表 + 后端 staffApi.auth.login 下发）。
  *
- * 与 isManager() 的区别：isManager() 基于 staffLevel（store_manager），与 roles 解耦；
+ * 与 isManager() 的区别：isManager() 还会校验当前门店是否在 manager 角色管辖范围；
  * hasRole 用于"按角色字符串数组"判定的场景（如菜单显隐、跨角色复合权限）。
  *
  * @example

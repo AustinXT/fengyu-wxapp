@@ -52,7 +52,7 @@ const orderTypeColorMap: Record<string, string> = {
   充值单: "bg-[#FFF7E6] text-[#D4820A]",
 };
 
-function OrderActions({ order }: { order: SaleOrder }) {
+function OrderActions({ order, canUpdate }: { order: SaleOrder; canUpdate: boolean }) {
   const [pending, startTransition] = useTransition();
   const router = useRouter();
   const [confirmDialog, setConfirmDialog] = useState<"confirm" | "close" | "reset" | "qrcode" | null>(null);
@@ -118,7 +118,7 @@ function OrderActions({ order }: { order: SaleOrder }) {
   return (
     <>
       <div className="flex gap-1">
-        {order.status === "待支付" && order.paymentMethod === "线下" && (
+        {canUpdate && order.status === "待支付" && order.paymentMethod === "线下" && (
           <Button size="sm" variant="outline" onClick={() => setConfirmDialog("confirm")} disabled={pending}>
             确认收款
           </Button>
@@ -128,7 +128,7 @@ function OrderActions({ order }: { order: SaleOrder }) {
             <Button size="sm" variant="outline" onClick={handleShowQrcode} disabled={pending}>
               查看二维码
             </Button>
-            <Button
+            {canUpdate && <Button
               size="sm"
               variant="ghost"
               className="text-[#D94040]"
@@ -136,15 +136,15 @@ function OrderActions({ order }: { order: SaleOrder }) {
               disabled={pending}
             >
               关闭订单
-            </Button>
+            </Button>}
           </>
         )}
         {order.status === "支付失败" && (
           <>
-            <Button size="sm" variant="outline" onClick={() => setConfirmDialog("reset")} disabled={pending}>
+            {canUpdate && <Button size="sm" variant="outline" onClick={() => setConfirmDialog("reset")} disabled={pending}>
               重置
-            </Button>
-            <Button
+            </Button>}
+            {canUpdate && <Button
               size="sm"
               variant="ghost"
               className="text-[#D94040]"
@@ -152,7 +152,7 @@ function OrderActions({ order }: { order: SaleOrder }) {
               disabled={pending}
             >
               关闭
-            </Button>
+            </Button>}
           </>
         )}
       </div>
@@ -244,11 +244,13 @@ export default function OrdersPageClient({
   filterOptions,
   total,
   canCreateOrder,
+  canUpdate,
 }: {
   orders: SaleOrder[];
   filterOptions: MarketStoreFilterOptions;
   total: number;
   canCreateOrder: boolean;
+  canUpdate: boolean;
 }) {
   const { get, set, setMany } = useUrlFilters();
   const searchParams = useSearchParams();
@@ -439,7 +441,7 @@ export default function OrdersPageClient({
                     <td className="px-4 py-3">{order.openedByName || "顾客自助"}</td>
                     <td className="px-4 py-3 text-[#999999]">{fmtDateTime(order.saleOrderDatetime)}</td>
                     <td className="px-4 py-3">
-                      <OrderActions order={order} />
+                      <OrderActions order={order} canUpdate={canUpdate} />
                     </td>
                   </tr>
                 ))}

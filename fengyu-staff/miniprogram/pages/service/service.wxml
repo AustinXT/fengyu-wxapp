@@ -74,7 +74,7 @@
       <!-- 操作按钮（阻止事件冒泡到卡片tap） -->
       <view class="card-actions" catchtap="noop">
         <van-button
-          wx:if="{{item.status === '待服务'}}"
+          wx:if="{{!isReadOnly && item.status === '待服务'}}"
           type="primary"
           size="small"
           custom-class="btn-primary-brand"
@@ -82,7 +82,7 @@
           data-id="{{item.id}}"
         >开始服务</van-button>
         <van-button
-          wx:elif="{{item.status === '服务中'}}"
+          wx:elif="{{!isReadOnly && item.status === '服务中'}}"
           type="primary"
           size="small"
           custom-class="btn-success"
@@ -90,7 +90,7 @@
           data-id="{{item.id}}"
         >标记完成</van-button>
         <van-button
-          wx:elif="{{item.status === '待客户确认' && isManager}}"
+          wx:elif="{{!isReadOnly && item.status === '待客户确认' && isManager}}"
           type="primary"
           size="small"
           custom-class="btn-success"
@@ -109,7 +109,7 @@
   </view>
 
   <!-- FAB: 新建服务单 -->
-  <view class="fab" bindtap="onNewService">
+  <view wx:if="{{!isReadOnly}}" class="fab" bindtap="onNewService">
     <van-icon name="plus" size="44rpx" color="#FFFFFF" />
   </view>
 

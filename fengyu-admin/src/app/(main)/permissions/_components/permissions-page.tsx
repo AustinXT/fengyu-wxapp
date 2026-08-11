@@ -43,6 +43,10 @@ interface PermissionsPageProps {
   orgNodes: OrgNode[]
   /** 操作者可操作的节点（角色根节点自身及其后代）；null = admin 全开 */
   accessibleScopeIds: string[] | null
+  /** 分配普通角色按钮可见性 */
+  canAssign: boolean
+  /** 分配 admin 角色选项可见性（仅系统管理员） */
+  canAssignAdmin: boolean
   /** 撤销角色按钮可见性：持有 permission:revoke 的角色（admin + hr） */
   canDelete: boolean
 }
@@ -125,7 +129,17 @@ function TreeNode({ node, allNodes, depth, selectedId, expandedIds, roleCounts, 
 
 /* ─── Main Component ─── */
 
-export default function PermissionsPage({ initialRoles, initialScopeId, roleCounts, allEmployees, orgNodes, accessibleScopeIds, canDelete }: PermissionsPageProps) {
+export default function PermissionsPage({
+  initialRoles,
+  initialScopeId,
+  roleCounts,
+  allEmployees,
+  orgNodes,
+  accessibleScopeIds,
+  canAssign,
+  canAssignAdmin,
+  canDelete,
+}: PermissionsPageProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
 
@@ -242,6 +256,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
   }
 
   async function doAssign() {
+    if (!canAssign || (assignRoleValue === 'admin' && !canAssignAdmin)) return
     setAssigning(true)
     try {
       const res = await assignRole({
@@ -288,7 +303,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">权限管理</h1>
-        <Button onClick={() => openAssignDialog()}>分配角色</Button>
+        {canAssign && <Button onClick={() => openAssignDialog()}>分配角色</Button>}
       </div>
 
       <div className="flex gap-4" style={{ minHeight: "calc(100vh - 220px)" }}>
@@ -329,9 +344,11 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
                       </Badge>
                     )}
                   </div>
-                  <Button variant="outline" size="sm" onClick={() => openAssignDialog(selectedNodeId!)}>
-                    在此范围分配角色
-                  </Button>
+                  {canAssign && (
+                    <Button variant="outline" size="sm" onClick={() => openAssignDialog(selectedNodeId!)}>
+                      在此范围分配角色
+                    </Button>
+                  )}
                 </div>
               </CardHeader>
               <CardContent className="p-0">
@@ -342,9 +359,11 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
                 ) : groupedByRole.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-20 text-[#999999]">
                     <p className="mb-4">该范围暂无角色分配</p>
-                    <Button variant="outline" size="sm" onClick={() => openAssignDialog(selectedNodeId!)}>
-                      分配角色
-                    </Button>
+                    {canAssign && (
+                      <Button variant="outline" size="sm" onClick={() => openAssignDialog(selectedNodeId!)}>
+                        分配角色
+                      </Button>
+                    )}
                   </div>
                 ) : (
                   <div className="divide-y divide-gray-200">
@@ -408,7 +427,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
       </div>
 
       {/* 分配角色 Dialog */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      {canAssign && <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogClose onOpenChange={setDialogOpen} />
         <DialogHeader>
           <DialogTitle>分配角色</DialogTitle>
@@ -451,7 +470,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
                 }
               }}
             >
-              {allRoles.filter((r) => r !== "staff").map((r) => (
+              {allRoles.filter((r) => r !== "staff" && (r !== "admin" || canAssignAdmin)).map((r) => (
                 <option key={r} value={r}>{ROLE_LABELS[r]}</option>
               ))}
             </Select>
@@ -490,7 +509,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
             确认分配
           </Button>
         </DialogFooter>
-      </Dialog>
+      </Dialog>}
 
       {/* 撤销角色二次确认 */}
       <AlertDialog open={!!revokeTarget} onOpenChange={(open) => !open && setRevokeTarget(null)}>
@@ -506,7 +525,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
       </AlertDialog>
 
       {/* 分配 admin 角色二次确认 */}
-      <AlertDialog open={adminConfirmOpen} onOpenChange={setAdminConfirmOpen}>
+      {canAssignAdmin && <AlertDialog open={adminConfirmOpen} onOpenChange={setAdminConfirmOpen}>
         <AlertDialogTitle>确认分配系统管理员？</AlertDialogTitle>
         <AlertDialogDescription>
           系统管理员拥有最高权限，不受 scope 限制，可访问全部数据和功能。请确认此操作。
@@ -523,7 +542,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
             确认分配
           </AlertDialogAction>
         </AlertDialogFooter>
-      </AlertDialog>
+      </AlertDialog>}
     </div>
   )
 }

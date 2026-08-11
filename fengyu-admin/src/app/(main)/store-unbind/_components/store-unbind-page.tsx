@@ -34,11 +34,13 @@ function formatDate(dt: string | null | undefined) {
 
 interface Props {
   requests: UnbindRequest[]
+  canApprove?: boolean
+  canReject?: boolean
   /** 是否展示行内删除入口（仅系统管理员 store_unbind:delete） */
   canDelete?: boolean
 }
 
-export default function StoreUnbindPage({ requests, canDelete = false }: Props) {
+export default function StoreUnbindPage({ requests, canApprove = false, canReject = false, canDelete = false }: Props) {
   const router = useRouter()
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [approveTarget, setApproveTarget] = useState<UnbindRequest | null>(null)
@@ -125,23 +127,27 @@ export default function StoreUnbindPage({ requests, canDelete = false }: Props) 
                       <td className="px-4 py-3 text-[#999999]">{formatDate(req.createdAt)}</td>
                       <td className="px-4 py-3">
                         <div className="flex gap-1">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => setApproveTarget(req)}
-                            disabled={pendingId === req.requestId}
-                          >
-                            通过
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="text-[#D94040]"
-                            onClick={() => setRejectTarget(req)}
-                            disabled={pendingId === req.requestId}
-                          >
-                            拒绝
-                          </Button>
+                          {canApprove && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setApproveTarget(req)}
+                              disabled={pendingId === req.requestId}
+                            >
+                              通过
+                            </Button>
+                          )}
+                          {canReject && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-[#D94040]"
+                              onClick={() => setRejectTarget(req)}
+                              disabled={pendingId === req.requestId}
+                            >
+                              拒绝
+                            </Button>
+                          )}
                         </div>
                       </td>
                     </tr>

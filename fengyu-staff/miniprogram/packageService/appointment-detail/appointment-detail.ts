@@ -1,5 +1,6 @@
 // pages/appointment-detail/appointment-detail.ts
 import { callStaffApi } from '../../utils/cloud';
+import { isManagementMode } from '../../utils/role';
 
 interface AppointmentDetail {
   id: string;
@@ -30,15 +31,18 @@ Page({
     appt: null as AppointmentDetail | null,
     statusText: '',
     statusCls: '',
+    isReadOnly: false,
   },
 
   onLoad(options: Record<string, string>) {
+    this.setData({ isReadOnly: isManagementMode() });
     if (options.id) {
       this.loadDetail(options.id);
     }
   },
 
   onShow() {
+    this.setData({ isReadOnly: isManagementMode() });
     if (this.data.appt?.id) {
       this.loadDetail(this.data.appt.id);
     }
@@ -59,6 +63,7 @@ Page({
   },
 
   onConfirm() {
+    if (this._isReadOnly()) return;
     const id = this.data.appt?.id;
     if (!id || this.data.submitting) return;
     wx.showModal({
@@ -66,7 +71,7 @@ Page({
       content: '确认该顾客的预约请求？',
       confirmText: '确认',
       success: async (res) => {
-        if (!res.confirm) return;
+        if (!res.confirm || this._isReadOnly()) return;
         this.setData({ submitting: true });
         try {
           await callStaffApi('appointment.confirm', { appointmentId: id });
@@ -83,6 +88,7 @@ Page({
   },
 
   async onCheckin() {
+    if (this._isReadOnly()) return;
     const id = this.data.appt?.id;
     if (!id || this.data.submitting) return;
     this.setData({ submitting: true });
@@ -99,12 +105,22 @@ Page({
   },
 
   onCreateService() {
+    if (this._isReadOnly()) return;
     const id = this.data.appt?.id;
+    if (!id) return;
     wx.navigateTo({ url: `/packageService/service-create/service-create?appointmentId=${id}` });
   },
 
   onBackToWorkbench() {
+    if (isManagementMode()) {
+      wx.reLaunch({ url: '/pages/mgmt-dashboard/mgmt-dashboard' });
+      return;
+    }
     wx.switchTab({ url: '/pages/workbench/workbench' });
+  },
+
+  _isReadOnly() {
+    return isManagementMode();
   },
 
   onViewServiceOrder() {

@@ -6,16 +6,20 @@ import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import {
   DEFAULT_PERMISSION_MATRIX,
+  KNOWN_PERMISSION_ACTIONS,
   invalidatePermissionMatrixCache,
 } from '@/lib/permissions'
-import type { RoleType } from '@/lib/types'
+import {
+  formatMatrixValidationIssues,
+  normalizePermissionMatrix,
+  sanitizePermissionMatrix,
+  validatePermissionMatrix,
+  type PermissionMatrix,
+} from '@/lib/permission-contract'
+
+export type { PermissionMatrix } from '@/lib/permission-contract'
 
 const PERMISSION_MATRIX_KEY = 'permission_matrix'
-
-/** 7 个合法角色（与 RoleType 对齐） */
-const ALL_ROLES: RoleType[] = [
-  'admin', 'manager', 'finance', 'hr', 'product', 'customer_mgr', 'staff',
-]
 
 /**
  * admin 必备 actions —— 删除任何一个都会让"再次进入矩阵编辑页 / 重置密码"通道被锁死。
@@ -26,30 +30,6 @@ const ADMIN_REQUIRED_ACTIONS = [
   'permission:assign_admin', // 缺失则无法重新授予 admin
   'admin:reset_password',  // 缺失则无法重置员工密码
 ] as const
-
-export type PermissionMatrix = Record<RoleType, string[]>
-
-/**
- * 规范化用户提交的矩阵：补齐 7 角色 key，每个 actions 去重 + 排序 + 过滤空串。
- */
-function normalizeMatrix(input: unknown): PermissionMatrix {
-  const result: PermissionMatrix = {
-    admin: [], manager: [], finance: [], hr: [], product: [], customer_mgr: [], staff: [],
-  }
-  if (!input || typeof input !== 'object') return result
-  const src = input as Record<string, unknown>
-  for (const role of ALL_ROLES) {
-    const raw = src[role]
-    if (!Array.isArray(raw)) continue
-    const cleaned = [...new Set(
-      raw
-        .map(a => (typeof a === 'string' ? a.trim() : ''))
-        .filter(Boolean),
-    )].sort()
-    result[role] = cleaned
-  }
-  return result
-}
 
 /**
  * 读取当前权限矩阵（DB 单源，缺失时回退 DEFAULT）。
@@ -64,14 +44,14 @@ export const getMatrix = withPermission(
         sql`SELECT value FROM system_configs WHERE key = ${PERMISSION_MATRIX_KEY} LIMIT 1`,
       )
       const raw = (rows as unknown as Array<{ value: string }>)[0]?.value
-      if (!raw) return normalizeMatrix(DEFAULT_PERMISSION_MATRIX)
+      if (!raw) return normalizePermissionMatrix(DEFAULT_PERMISSION_MATRIX)
       try {
-        return normalizeMatrix(JSON.parse(raw))
+        return sanitizePermissionMatrix(JSON.parse(raw), KNOWN_PERMISSION_ACTIONS)
       } catch {
-        return normalizeMatrix(DEFAULT_PERMISSION_MATRIX)
+        return normalizePermissionMatrix(DEFAULT_PERMISSION_MATRIX)
       }
     } catch {
-      return normalizeMatrix(DEFAULT_PERMISSION_MATRIX)
+      return normalizePermissionMatrix(DEFAULT_PERMISSION_MATRIX)
     }
   },
 )
@@ -88,7 +68,14 @@ export const saveMatrix = withPermission(
     session,
     newMatrix: PermissionMatrix,
   ): Promise<{ success: boolean; message: string }> => {
-    const normalized = normalizeMatrix(newMatrix)
+    const validation = validatePermissionMatrix(newMatrix, KNOWN_PERMISSION_ACTIONS)
+    if (validation.issues.length > 0) {
+      return {
+        success: false,
+        message: `INVALID_PARAMS: 权限矩阵无效：${formatMatrixValidationIssues(validation.issues)}`,
+      }
+    }
+    const normalized = validation.matrix
 
     // 防自锁校验
     const missingAdminAction = ADMIN_REQUIRED_ACTIONS.find(
@@ -108,8 +95,8 @@ export const saveMatrix = withPermission(
       )
       const beforeRaw = (beforeRows as unknown as Array<{ value: string }>)[0]?.value
       const before: PermissionMatrix = beforeRaw
-        ? (() => { try { return normalizeMatrix(JSON.parse(beforeRaw)) } catch { return normalizeMatrix(DEFAULT_PERMISSION_MATRIX) } })()
-        : normalizeMatrix(DEFAULT_PERMISSION_MATRIX)
+        ? (() => { try { return sanitizePermissionMatrix(JSON.parse(beforeRaw), KNOWN_PERMISSION_ACTIONS) } catch { return normalizePermissionMatrix(DEFAULT_PERMISSION_MATRIX) } })()
+        : normalizePermissionMatrix(DEFAULT_PERMISSION_MATRIX)
 
       const value = JSON.stringify(normalized)
       await db.execute(sql`
@@ -152,7 +139,7 @@ export const resetMatrix = withPermission(
         'permission_matrix.reset',
         'system_config',
         PERMISSION_MATRIX_KEY,
-        { to: normalizeMatrix(DEFAULT_PERMISSION_MATRIX) },
+        { to: normalizePermissionMatrix(DEFAULT_PERMISSION_MATRIX) },
       )
       invalidatePermissionMatrixCache()
       const { revalidatePath } = await import('next/cache')

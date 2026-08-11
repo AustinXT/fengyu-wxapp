@@ -3,6 +3,7 @@ import { getLogsPaginated } from '@/actions/logs'
 import { getMarketStoreFilterOptions } from '@/actions/stores'
 import { getSession } from '@/lib/auth'
 import { isAdminScope } from '@/lib/permissions'
+import { hasUiCapability } from '@/lib/permission-contract'
 import LogsPage from './_components/logs-page'
 
 export const dynamic = 'force-dynamic'
@@ -28,7 +29,7 @@ export default async function Page({
     getSession(),
     getMarketStoreFilterOptions(),
   ])
-  const canDelete = session ? isAdminScope(session) : false
+  const canDelete = !!(session && hasUiCapability(session.permissions.actions, 'operation_log:delete') && isAdminScope(session))
   return (
     <Suspense>
       <LogsPage logs={logs} total={total} canDelete={canDelete} filterOptions={filterOptions} />

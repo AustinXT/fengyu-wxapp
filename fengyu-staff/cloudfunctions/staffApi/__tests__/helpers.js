@@ -30,6 +30,8 @@ function createCtx(overrides = {}) {
       effectiveStoreId,
       currentStoreId: effectiveStoreId,
       scopeStoreIds: effectiveStoreId ? [effectiveStoreId] : [],
+      // 店长写操作必须命中 manager 角色的门店范围；默认 manager fixture 与当前门店对齐。
+      managerStoreIds: effectiveStoreId ? [effectiveStoreId] : [],
       // 管理层路由 fixture 默认模拟已授予 data_center:dashboard；需要测试拒绝时显式传 false。
       hasDataCenterDashboard: true,
       loginLevel: 'store',
@@ -91,6 +93,7 @@ function createManagementCtx(payload = {}, authOverrides = {}) {
       effectiveStoreId: null,
       currentStoreId: null,
       scopeStoreIds: ['store-001', 'store-002'],
+      managerStoreIds: ['store-001', 'store-002'],
       roleBindings: [
         { role: 'manager', scopeId: 'org-node-store-001', scopeType: '门店' },
         { role: 'manager', scopeId: 'org-node-store-002', scopeType: '门店' },
@@ -115,6 +118,7 @@ function createUnboundCtx(payload = {}) {
       effectiveStoreId: null,
       currentStoreId: null,
       scopeStoreIds: [],
+      managerStoreIds: [],
       loginLevel: null,
       staffLevel: null,
       roleBindings: [],

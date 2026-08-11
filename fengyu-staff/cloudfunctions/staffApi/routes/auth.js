@@ -79,7 +79,7 @@ async function buildLevelPayload(employeeId) {
   const managerBindings = roleBindings.filter((r) => r.role === 'manager')
   const managerStoreIds = managerBindings.length > 0 ? await expandScopeStoreIds(managerBindings, pg) : []
   const managerStores = await fetchScopedStores(managerStoreIds)
-  return { roles, roleBindings, staffLevel, availableLoginLevels, scopedStores, managerStores }
+  return { roles, roleBindings, staffLevel, availableLoginLevels, scopedStores, managerStores, managerStoreIds }
 }
 
 /**
@@ -120,6 +120,7 @@ async function login(ctx) {
       availableLoginLevels: [],
       scopedStores: [],
       managerStores: [],
+      managerStoreIds: [],
       skills: [],
       avatarUrl: null,
       boundStoreName: null,
@@ -137,7 +138,7 @@ async function login(ctx) {
   const isActive = user.employee_id && !user.is_resigned
   const level = isActive
     ? await buildLevelPayload(user.employee_id)
-    : { roles: [], roleBindings: [], staffLevel: null, availableLoginLevels: [], scopedStores: [], managerStores: [] }
+    : { roles: [], roleBindings: [], staffLevel: null, availableLoginLevels: [], scopedStores: [], managerStores: [], managerStoreIds: [] }
 
   ctx.result = {
     isNewUser: false,
@@ -151,6 +152,7 @@ async function login(ctx) {
     availableLoginLevels: level.availableLoginLevels,
     scopedStores: level.scopedStores,
     managerStores: level.managerStores,
+    managerStoreIds: level.managerStoreIds,
     skills: isActive && Array.isArray(user.skills) ? user.skills : [],
     avatarUrl: user.avatar_url || null,
     boundStoreName: isActive ? user.store_name : null,
@@ -272,6 +274,7 @@ async function bindPhone(ctx) {
       availableLoginLevels: level.availableLoginLevels,
       scopedStores: level.scopedStores,
       managerStores: level.managerStores,
+      managerStoreIds: level.managerStoreIds,
       skills: Array.isArray(emp.skills) ? emp.skills : [],
       avatarUrl: emp.avatar_url || null,
       boundStoreName: emp.store_name,

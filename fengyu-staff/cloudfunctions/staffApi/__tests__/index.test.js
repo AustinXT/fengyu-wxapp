@@ -8,6 +8,20 @@ const path = require('path')
 const cloud = globalThis.__mocks__.cloud
 const pg = globalThis.__mocks__.pg
 const staffApiDir = path.resolve(__dirname, '..')
+const DISABLED_ROUTE_EXPORTS = new Set([
+  'inventory.createDoc',
+  'inventory.confirmReceive',
+  'inventory.approveDoc',
+  'inventory.rejectDoc',
+  'inventory.uploadReceipt',
+])
+const REMOVED_ACTIONS = [
+  'inventory.createDoc',
+  'inventory.confirmReceive',
+  'inventory.approveDoc',
+  'inventory.rejectDoc',
+  'inventory.uploadReceipt',
+]
 
 function clearStaffApiCache() {
   Object.keys(require.cache).forEach(key => {
@@ -108,6 +122,7 @@ describe('staffApi 入口', () => {
       const mod = require(path.join(staffApiDir, 'routes', file))
       for (const fnName of Object.keys(mod)) {
         if (fnName.startsWith('__')) continue
+        if (DISABLED_ROUTE_EXPORTS.has(`${moduleName}.${fnName}`)) continue
         if (!referencedFunctions.has(`${moduleName}.${fnName}`)) {
           missing.push(`${moduleName}.${fnName}`)
         }
@@ -121,6 +136,24 @@ describe('staffApi 入口', () => {
         `\n请在 index.js 的 routes 对象中添加对应条目。`
       )
     }
+  })
+
+  test('已移除的库存写 action 不可通过公开路由调用', async () => {
+    for (const action of REMOVED_ACTIONS) {
+      const result = await main({ action, payload: {} }, {})
+      expect(result.code).toBe(-1)
+      expect(result.message).toContain('未知')
+    }
+  })
+
+  test('管理层模式由网关拒绝门店业务 mutation', async () => {
+    const result = await main({
+      action: 'order.create',
+      payload: { _loginLevel: 'management' },
+    }, {})
+    expect(result.code).toBe(-403)
+    expect(result.errorType).toBe('PERMISSION_DENIED')
+    expect(result.message).toContain('仅支持只读')
   })
 
   test('PERMISSION_DENIED 错误映射为 code: -403', async () => {

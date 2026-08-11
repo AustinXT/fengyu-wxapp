@@ -5,12 +5,17 @@ import { getEmployees, getEmployeesOnBusinessTrip } from '@/actions/employees'
 import { getRates } from '@/actions/commission'
 import { getSkillTags } from '@/actions/skill-tags'
 import { mergeEmployeesById } from '@/lib/merge-employees'
+import { getSession } from '@/lib/auth'
+import { hasUiCapability } from '@/lib/permission-contract'
+import { requireUiPageCapability } from '@/lib/page-capability'
 import ServiceCommissionDetailPageClient from '../../_components/service-commission-detail-page'
 
 export const dynamic = 'force-dynamic'
 
 export default async function Page({ params }: { params: Promise<{ serviceOrderId: string }> }) {
   const { serviceOrderId } = await params
+  const session = await getSession()
+  requireUiPageCapability(session, 'allocation:list')
   const [serviceOrder, items, commissions, scopedEmployees, tripEmployees, commissionRates, skillTags] = await Promise.all([
     getServiceOrderById(serviceOrderId),
     getServiceItems(serviceOrderId),
@@ -35,6 +40,7 @@ export default async function Page({ params }: { params: Promise<{ serviceOrderI
       employees={employees}
       commissionRates={commissionRates}
       skillTags={skillTags}
+      canSave={hasUiCapability(session.permissions.actions, 'allocation:save')}
     />
   )
 }

@@ -44,6 +44,9 @@ interface CustomerDetailPageProps {
   coupons: CustomerCoupon[]
   orphanProfiles: OrphanProfile[]
   prepaidBalance?: string
+  canUpdate?: boolean
+  canMerge?: boolean
+  canListEmployees?: boolean
   canEditPhone?: boolean
   canPullLegacy?: boolean
   /** 是否展示「危险操作」删除入口（仅系统管理员 customer:delete） */
@@ -68,6 +71,9 @@ export default function CustomerDetailPage({
   coupons,
   orphanProfiles,
   prepaidBalance,
+  canUpdate = false,
+  canMerge = false,
+  canListEmployees = false,
   canEditPhone = false,
   canPullLegacy = false,
   canDelete = false,
@@ -110,6 +116,7 @@ export default function CustomerDetailPage({
   }
 
   async function handlePhoneConfirm() {
+    if (!canUpdate) return
     setPhoneSaving(true)
     setPhoneConfirmOpen(false)
     try {
@@ -136,6 +143,7 @@ export default function CustomerDetailPage({
   }
 
   async function handleMerge(orphanUserId: string) {
+    if (!canMerge) return
     if (!confirm(`确认合并孤儿档案 ${orphanUserId} 到当前顾客？\n该操作将把孤儿行的业务数据（订单/券/积分/充值卡/预约/消息/服务单）全部归并到当前顾客，且删除孤儿行。操作不可撤销。`)) return
     setMerging(orphanUserId)
     try {
@@ -192,6 +200,7 @@ export default function CustomerDetailPage({
       : null
   )
   const doPromoterSearch = useCallback((q: string) => {
+    if (!canListEmployees) return
     if (promoterTimer.current) clearTimeout(promoterTimer.current)
     if (!q.trim()) { setPromoterResults([]); return }
     setPromoterLoading(true)
@@ -200,7 +209,7 @@ export default function CustomerDetailPage({
       setPromoterResults(results)
       setPromoterLoading(false)
     }, 300)
-  }, [])
+  }, [canListEmployees])
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
       if (promoterRef.current && !promoterRef.current.contains(e.target as Node)) setPromoterOpen(false)
@@ -237,6 +246,7 @@ export default function CustomerDetailPage({
   }
 
   async function handleSave() {
+    if (!canUpdate) return
     setSaving(true)
     try {
       const result = await updateCustomer(customer.userId, {
@@ -474,7 +484,7 @@ export default function CustomerDetailPage({
         defaultPhone={customer.phone ?? undefined}
       />
 
-      {orphanProfiles.length > 0 && (
+      {canMerge && orphanProfiles.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle className="text-base text-[#D4820A]">
@@ -537,11 +547,11 @@ export default function CustomerDetailPage({
                     取消
                   </Button>
                 </div>
-              ) : (
+              ) : canUpdate ? (
                 <Button variant="outline" size="sm" onClick={() => setIsEditing(true)}>
                   编辑
                 </Button>
-              )}
+              ) : null}
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-2 gap-x-8 gap-y-4">

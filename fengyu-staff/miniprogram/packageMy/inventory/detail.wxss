@@ -40,7 +40,7 @@
 
 .meta-tag {
   background: #FFF0EE;
-  color: #C0322A;
+  color: var(--color-primary);
   padding: 4rpx 14rpx;
   border-radius: 4rpx;
   font-size: 24rpx;
@@ -101,7 +101,7 @@
 
 .item-qty {
   font-size: 28rpx;
-  color: #C0322A;
+  color: var(--color-primary);
   font-weight: 500;
 }
 

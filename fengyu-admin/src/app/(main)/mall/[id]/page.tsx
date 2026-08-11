@@ -1,5 +1,7 @@
 import { notFound } from 'next/navigation'
 import { getProductById, getSkusByProductId, getBundleGroupsByProductId, getCategories, getMallCategories, getMarkets, resolveManageScope, getAllSkus } from '@/actions/products'
+import { getSession } from '@/lib/auth'
+import { requireUiPageCapability } from '@/lib/page-capability'
 import ProductDetailPageClient from './_components/product-detail-page'
 
 export const dynamic = 'force-dynamic'
@@ -10,6 +12,7 @@ export default async function MallProductDetailPage({
   params: Promise<{ id: string }>
 }) {
   const { id } = await params
+  requireUiPageCapability(await getSession(), 'product:update')
 
   const [product, skus, bundleGroups, mallCategories, skuCategories, markets, manageScope, allSkus] = await Promise.all([
     getProductById(id),

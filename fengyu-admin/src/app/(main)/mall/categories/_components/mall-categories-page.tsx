@@ -31,10 +31,14 @@ interface CategoryFormData {
 export default function MallCategoriesPageClient({
   categories,
   groups,
+  canCreate,
+  canUpdate,
   canDelete,
 }: {
   categories: MallCategory[]
   groups: MallCategory[]
+  canCreate: boolean
+  canUpdate: boolean
   canDelete: boolean
 }) {
   const router = useRouter()
@@ -169,9 +173,11 @@ export default function MallCategoriesPageClient({
       header: "操作",
       cell: (row) => (
         <div className="flex gap-2">
-          <Button variant="link" size="sm" className="h-auto p-0" onClick={() => openEditDialog(row)}>
-            编辑
-          </Button>
+          {canUpdate && (
+            <Button variant="link" size="sm" className="h-auto p-0" onClick={() => openEditDialog(row)}>
+              编辑
+            </Button>
+          )}
           {canDelete && (
             <Button
               variant="link"
@@ -197,8 +203,10 @@ export default function MallCategoriesPageClient({
           <h1 className="text-2xl font-bold text-[var(--foreground)]">商城分类</h1>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => setGroupDialogOpen(true)}>分组管理</Button>
-          <Button onClick={openAddDialog}>新增分类</Button>
+          {(canCreate || canUpdate) && (
+            <Button variant="outline" onClick={() => setGroupDialogOpen(true)}>分组管理</Button>
+          )}
+          {canCreate && <Button onClick={openAddDialog}>新增分类</Button>}
         </div>
       </div>
 

@@ -15,9 +15,13 @@ const PAGE_SIZE_OPTIONS = [10, 20, 50]
 export default function MallPageClient({
   categories,
   products,
+  canCreate,
+  canUpdate,
 }: {
   categories: MallCategory[]
   products: Product[]
+  canCreate: boolean
+  canUpdate: boolean
 }) {
   const [searchInput, setSearchInput] = useState("")
   const [catFilter, setCatFilter] = useState("")
@@ -118,11 +122,13 @@ export default function MallPageClient({
       key: "actions",
       header: "操作",
       cell: (row) => (
-        <Link href={`/mall/${row.productId}`}>
-          <Button variant="link" size="sm" className="h-auto p-0">
-            详情
-          </Button>
-        </Link>
+        canUpdate && (
+          <Link href={`/mall/${row.productId}`}>
+            <Button variant="link" size="sm" className="h-auto p-0">
+              编辑
+            </Button>
+          </Link>
+        )
       ),
     },
   ]
@@ -132,12 +138,16 @@ export default function MallPageClient({
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">商城管理</h1>
         <div className="flex gap-2">
-          <Link href="/mall/categories">
-            <Button variant="outline">商城分类</Button>
-          </Link>
-          <Link href="/mall/create">
-            <Button>新增商品</Button>
-          </Link>
+          {(canCreate || canUpdate) && (
+            <Link href="/mall/categories">
+              <Button variant="outline">商城分类</Button>
+            </Link>
+          )}
+          {canCreate && (
+            <Link href="/mall/create">
+              <Button>新增商品</Button>
+            </Link>
+          )}
         </div>
       </div>
 
