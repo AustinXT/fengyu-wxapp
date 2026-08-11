@@ -97,7 +97,7 @@ RUN bun build src/export-worker/index.ts \
 RUN node --conditions=react-server dist/export-worker.mjs --check
 
 # ---- 生产运行 ----
-FROM docker.m.daocloud.io/library/node:18-alpine AS runner
+FROM docker.m.daocloud.io/library/node:22-alpine AS runner
 WORKDIR /app
 
 ENV NEXT_TELEMETRY_DISABLED=1
