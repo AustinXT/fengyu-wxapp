@@ -427,6 +427,8 @@ export interface SaleOrder {
 
 export interface SaleItem {
   saleItemId: string
+  /** 同一寄存单原始购买行拆出的逐张/逐件明细共享该标识，仅供展示聚合。 */
+  saleItemGroupId?: string | null
   saleOrderId: string
   itemDirection: ItemDirection
   refSaleItemId: string | null

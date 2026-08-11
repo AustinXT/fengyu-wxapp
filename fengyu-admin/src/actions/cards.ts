@@ -713,6 +713,7 @@ export const getCardTransactions = withPermission(
  */
 export interface HeldCardCandidate {
   saleItemId: string
+  saleItemGroupId: string | null
   saleOrderId: string
   saleOrderDatetime: string | null
   paidAt: string | null
@@ -769,6 +770,7 @@ export const getCustomerHeldCards = withPermission(
   const rows = await db
     .select({
       saleItemId: saleItems.saleItemId,
+      saleItemGroupId: saleItems.saleItemGroupId,
       saleOrderId: saleItems.saleOrderId,
       saleOrderDatetime: saleOrders.saleOrderDatetime,
       paidAt: saleOrders.paidAt,
@@ -827,6 +829,7 @@ export const getCustomerHeldCards = withPermission(
     const remSess = r.remainingSessions ?? 0
     return {
       saleItemId: r.saleItemId,
+      saleItemGroupId: r.saleItemGroupId ?? null,
       saleOrderId: r.saleOrderId,
       saleOrderDatetime: r.saleOrderDatetime?.toISOString() ?? null,
       paidAt: r.paidAt?.toISOString() ?? null,

@@ -111,6 +111,7 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
       const idempotencyKey = `pickup-${selectedItem.saleItemId}-${Date.now()}`
       const res = await createPickupRecord({
         saleItemId: selectedItem.saleItemId,
+        ...(selectedItem.sourceSaleItemIds.length > 1 ? { saleItemIds: selectedItem.sourceSaleItemIds } : {}),
         pickupQuantity,
         storeId: pickupStoreId,
         clientUserId: customer.userId,

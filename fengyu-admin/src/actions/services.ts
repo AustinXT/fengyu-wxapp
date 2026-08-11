@@ -986,6 +986,7 @@ export const getServiceReview = withPermission(
 /** 顾客可用服务项目（有效收款订单中有已付未用次数的疗程卡权益：购买行 + 转换单转入行） */
 export interface AvailableSaleItem {
   saleItemId: string
+  saleItemGroupId: string | null
   saleOrderId: string
   saleOrderDatetime: string | null
   paidAt: string | null
@@ -1030,6 +1031,7 @@ export const getAvailableSaleItems = withPermission(
   const rows = await db.execute(sql`
     SELECT
       si.sale_item_id,
+      si.sale_item_group_id,
       si.sale_order_id,
       o.sale_order_datetime,
       o.paid_at,
@@ -1097,6 +1099,7 @@ export const getAvailableSaleItems = withPermission(
     const used = Math.max(total - remain, 0)
     return {
       saleItemId: r.sale_item_id,
+      saleItemGroupId: r.sale_item_group_id ?? null,
       saleOrderId: r.sale_order_id,
       saleOrderDatetime: r.sale_order_datetime instanceof Date
         ? r.sale_order_datetime.toISOString()
