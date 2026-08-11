@@ -904,6 +904,21 @@ describe('customer.homeProducts', () => {
     const ctx = createManagerCtx({})
     await expect(customerRoutes.homeProducts(ctx)).rejects.toThrow(/INVALID_PARAMS/)
   })
+
+  test('普通员工不能读取未分配给自己的顾客家居产品', async () => {
+    const ctx = createBeauticianCtx({ clientUserId: 'u-unassigned' })
+    pg.query.mockResolvedValueOnce([
+      { bound_store_id: 'store-001', bound_employee_id: 'emp-other' },
+    ])
+
+    await expect(customerRoutes.homeProducts(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED.*顾客未分配给当前员工/)
+
+    expect(pg.query).toHaveBeenCalledTimes(1)
+    const [scopeSql, scopeParams] = pg.query.mock.calls[0]
+    expect(scopeSql).toContain('bound_employee_id')
+    expect(scopeParams).toEqual(['u-unassigned'])
+  })
 })
 
 // ============================================================

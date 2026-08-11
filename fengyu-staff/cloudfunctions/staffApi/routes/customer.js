@@ -814,7 +814,9 @@ async function homeProducts(ctx) {
     return
   }
 
-  await assertCustomerInScope(pg, ctx.auth, clientUserId)
+  // 顾客档案子页统一闸门：门店普通员工只能读取分配给自己的顾客。
+  // 查询结果可跨订单门店展示，但不能借此绕过顾客档案的可见性范围。
+  await assertCustomerProfileVisible(pg, ctx.auth, clientUserId)
 
   const rows = await pg.query(
     `WITH pickup_totals AS (

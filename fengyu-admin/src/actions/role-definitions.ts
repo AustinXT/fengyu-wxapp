@@ -73,6 +73,22 @@ function normalizeActions(actions: readonly string[], isSuperAdmin: boolean): st
   return normalized
 }
 
+/**
+ * 超级管理员会绕过数据 scope，因此已在市场、门店等非总部节点分配的角色
+ * 不得直接升级。调用方必须先撤销这些分配，再创建或升级总部范围的角色。
+ */
+async function hasNonHeadquartersAssignment(roleKey: string): Promise<boolean> {
+  const rows = await db.execute(sql`
+    SELECT 1
+      FROM permission_roles pr
+      JOIN org_nodes node ON node.id = pr.scope_id
+     WHERE pr.role = ${roleKey}
+       AND node.type <> '总部'
+     LIMIT 1
+  `)
+  return (rows as unknown as unknown[]).length > 0
+}
+
 async function writeCompatibilityMirror(tx: any): Promise<void> {
   const rows = await tx
     .select({ roleKey: permissionRoleDefinitions.roleKey, actions: permissionRoleDefinitions.actions })
@@ -207,6 +223,10 @@ export const updateRoleDefinition = withPermission(
       || nextStoreManager !== before.isStoreManager
       || nextAdminAccess !== before.canAccessAdmin
     if (capabilityChanged) requireAdmin(session)
+
+    if (!before.isSuperAdmin && nextSuper && await hasNonHeadquartersAssignment(roleKey)) {
+      throw new Error('INVALID_STATE: 已在非总部范围分配的角色不能直接升级为超级管理员，请先撤销相关授权')
+    }
 
     if (before.isSuperAdmin && !nextSuper) {
       const [{ count }] = await db
