@@ -19,6 +19,25 @@ const SUPER_ADMIN_REQUIRED_ACTIONS = [
   'admin:reset_password',
 ] as const
 
+/**
+ * 角色列表按职责与权限范围展示，而不是按数据的创建时间展示。
+ *
+ * 自定义角色排在内置角色之后，仍保留其创建时间和名称作为稳定的次级排序。
+ */
+const ROLE_DISPLAY_PRIORITY = sql`
+  CASE
+    WHEN ${permissionRoleDefinitions.roleKey} = 'admin' THEN 0
+    WHEN ${permissionRoleDefinitions.isSuperAdmin} = true THEN 1
+    WHEN ${permissionRoleDefinitions.roleKey} = 'manager' THEN 10
+    WHEN ${permissionRoleDefinitions.roleKey} = 'finance' THEN 20
+    WHEN ${permissionRoleDefinitions.roleKey} = 'hr' THEN 30
+    WHEN ${permissionRoleDefinitions.roleKey} = 'product' THEN 40
+    WHEN ${permissionRoleDefinitions.roleKey} = 'customer_mgr' THEN 50
+    WHEN ${permissionRoleDefinitions.roleKey} = 'staff' THEN 60
+    ELSE 100
+  END
+`
+
 export interface RoleDefinitionInput {
   name: string
   description?: string | null
@@ -141,7 +160,11 @@ export const getRoleDefinitions = withAnyPermission(
       .from(permissionRoleDefinitions)
       .leftJoin(permissionRoles, eq(permissionRoles.role, permissionRoleDefinitions.roleKey))
       .groupBy(permissionRoleDefinitions.roleKey)
-      .orderBy(asc(permissionRoleDefinitions.createdAt), asc(permissionRoleDefinitions.name))
+      .orderBy(
+        ROLE_DISPLAY_PRIORITY,
+        asc(permissionRoleDefinitions.createdAt),
+        asc(permissionRoleDefinitions.name),
+      )
     return rows.map(serialize)
   },
 )

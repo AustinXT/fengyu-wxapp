@@ -8,6 +8,7 @@ import { Dialog, DialogClose, DialogFooter, DialogHeader, DialogTitle } from '@/
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { useUnsavedChanges } from '@/lib/hooks/use-unsaved-changes'
+import { getPermissionActionLabel, getPermissionGroupLabel } from '@/lib/permission-presentation'
 import {
   createRoleDefinition,
   deleteRoleDefinition,
@@ -163,7 +164,9 @@ export default function PermissionMatrixPage({ initialRoles, allActions, canMana
                   <span className="truncate font-medium">{role.name}</span>
                   <span className="text-xs text-[#999999]">{role.assignmentCount} 人</span>
                 </span>
-                <span className="mt-1 block truncate text-xs text-[#999999]">{role.roleKey}</span>
+                <span className="mt-1 block truncate text-xs text-[#999999]">
+                  内部标识：<code>{role.roleKey}</code>
+                </span>
               </button>
             ))}
           </CardContent>
@@ -202,12 +205,18 @@ export default function PermissionMatrixPage({ initialRoles, allActions, canMana
               <CardContent className="space-y-5">
                 {groupedActions.map(([group, actions]) => (
                   <div key={group}>
-                    <h3 className="mb-2 text-sm font-medium">{group}</h3>
+                    <h3 className="mb-2 flex items-center gap-2 text-sm font-medium">
+                      {getPermissionGroupLabel(group)}
+                      <code className="text-xs font-normal text-[#999999]">{group}</code>
+                    </h3>
                     <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                       {actions.map((action) => (
                         <label key={action} className="flex items-center gap-2 text-sm">
                           <input type="checkbox" checked={draft.actions.includes(action)} onChange={() => toggleAction(action)} />
-                          <code className="text-xs">{action}</code>
+                          <span>
+                            {getPermissionActionLabel(action)}
+                            <code className="ml-1 text-xs text-[#999999]">{action}</code>
+                          </span>
                         </label>
                       ))}
                     </div>
