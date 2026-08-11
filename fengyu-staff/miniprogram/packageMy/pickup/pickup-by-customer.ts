@@ -12,6 +12,7 @@ interface Customer extends MemberLevelBadgeData {
 interface PickupItem {
   saleItemId: string
   saleOrderId: string
+  skuId: string | null
   productName: string | null
   specName: string | null
   quantity: number
@@ -19,6 +20,15 @@ interface PickupItem {
   remaining: number
   storeId: string
   storeName: string | null
+}
+
+interface PickupInventorySkuOption {
+  inventorySkuId: string
+  productCode: string
+  productName: string | null
+  specName: string | null
+  availableQuantity: number
+  label: string
 }
 
 function normalizeSpecName(productName?: string | null, specName?: string | null): string | null {
@@ -54,6 +64,10 @@ Page({
       saleItemId: '',
       productName: '',
       remaining: 0,
+      inventorySkuOptions: [] as PickupInventorySkuOption[],
+      inventorySkuId: '',
+      inventorySkuLabel: '',
+      loadingInventorySkuOptions: false,
       quantity: 1,
       remark: '',
       submitting: false,
@@ -108,7 +122,7 @@ Page({
     this.setData({ selectedCustomer: null, items: [] })
   },
 
-  onPickupTap(e: WechatMiniprogram.CustomEvent) {
+  async onPickupTap(e: WechatMiniprogram.CustomEvent) {
     const idx = Number(e.currentTarget.dataset.idx)
     const item = this.data.items[idx]
     if (!item) return
@@ -118,10 +132,40 @@ Page({
         saleItemId: item.saleItemId,
         productName: formatProductName(item.productName, item.specName),
         remaining: item.remaining,
+        inventorySkuOptions: [],
+        inventorySkuId: '',
+        inventorySkuLabel: '',
+        loadingInventorySkuOptions: true,
         quantity: 1,
         remark: '',
         submitting: false,
       },
+    })
+    try {
+      const inventorySkuOptions = await callStaffApi<PickupInventorySkuOption[]>(
+        'order.pickupInventorySkuOptions',
+        { saleItemId: item.saleItemId },
+      )
+      const options = inventorySkuOptions || []
+      this.setData({
+        'pickupDialog.inventorySkuOptions': options,
+        'pickupDialog.inventorySkuId': '',
+        'pickupDialog.inventorySkuLabel': '',
+        'pickupDialog.loadingInventorySkuOptions': false,
+      })
+    } catch (err: any) {
+      this.setData({ 'pickupDialog.loadingInventorySkuOptions': false })
+      wx.showToast({ title: err?.message || '加载库存 SKU 失败', icon: 'none' })
+    }
+  },
+
+  onPickupInventorySkuChange(e: WechatMiniprogram.PickerChange) {
+    const index = Number(e.detail.value)
+    const selected = this.data.pickupDialog.inventorySkuOptions[index]
+    if (!selected) return
+    this.setData({
+      'pickupDialog.inventorySkuId': selected.inventorySkuId,
+      'pickupDialog.inventorySkuLabel': selected.label,
     })
   },
 
@@ -144,10 +188,20 @@ Page({
       wx.showToast({ title: `数量必须在 1 到 ${d.remaining} 之间`, icon: 'none' })
       return
     }
+    if (!d.inventorySkuId) {
+      wx.showToast({ title: '该商品尚未配置可提货的库存 SKU', icon: 'none' })
+      return
+    }
+    const inventorySku = d.inventorySkuOptions.find((item) => item.inventorySkuId === d.inventorySkuId)
+    if (!inventorySku || d.quantity > inventorySku.availableQuantity) {
+      wx.showToast({ title: `所选库存可用数量不足（当前 ${inventorySku?.availableQuantity || 0}）`, icon: 'none' })
+      return
+    }
     this.setData({ 'pickupDialog.submitting': true })
     try {
       await callStaffApi('order.createPickup', {
         saleItemId: d.saleItemId,
+        inventorySkuId: d.inventorySkuId,
         pickupQuantity: d.quantity,
         remark: d.remark || undefined,
         idempotencyKey: `pickup-${d.saleItemId}-${Date.now()}`,

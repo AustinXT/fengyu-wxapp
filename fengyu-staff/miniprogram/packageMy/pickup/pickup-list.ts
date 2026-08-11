@@ -5,6 +5,9 @@ import { formatDateTime } from '../../utils/formatters'
 interface PickupRow {
   id: number
   saleItemId: string
+  inventorySkuId: string | null
+  inventoryProductCode: string | null
+  inventoryProductName: string | null
   pickupQuantity: number
   storeName: string | null
   clientName: string | null

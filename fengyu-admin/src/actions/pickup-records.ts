@@ -7,6 +7,7 @@ import { saleItems } from '@db/order'
 import { stores } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { productSkus } from '@db/product'
+import { inventorySkus } from '@db/inventory'
 import { and, desc, eq, gte, ilike, lte, or, sql } from 'drizzle-orm'
 import { beijingBoundaryTs } from '@/lib/db-time'
 import { shanghaiToday, shanghaiYmd } from '@/lib/datetime'
@@ -35,6 +36,9 @@ export interface AdminPickupRecord {
   confirmedByName?: string
   /** SKU 完整名称，已包含商品名和规格（如"蜜语水润嫩肤护理 10次卡"） */
   skuName?: string
+  /** 实际从库存扣减的 SKU；历史提货记录可能为空。 */
+  inventorySkuId?: string
+  inventorySkuName?: string
   saleOrderId?: string
   itemQuantity?: number
   itemPickedUpQuantity?: number
@@ -81,7 +85,7 @@ async function createPickupInventoryDoc(
     storeId: string
     saleItemId: string
     saleOrderId: string
-    skuId: string
+    inventorySkuId: string
     productName: string | null
     clientUserId: string | null
     customerName: string | null
@@ -112,9 +116,8 @@ async function createPickupInventoryDoc(
            lot.supplier, lot.product_series, lot.batch_no, lot.expiry_date,
            lot.is_gift, lot.quantity_on_hand
       FROM inventory_stock_lots lot
-      JOIN inventory_skus sku ON sku.sku_id = lot.sku_id
      WHERE lot.location_id = ${data.storeId}
-       AND (lot.sku_id = ${data.skuId} OR sku.product_code = ${data.skuId})
+       AND lot.sku_id = ${data.inventorySkuId}
        AND lot.quantity_on_hand > 0
   ORDER BY lot.expiry_date NULLS LAST, lot.id
      FOR UPDATE
@@ -132,7 +135,22 @@ async function createPickupInventoryDoc(
     quantity_on_hand: string | number
   }>
 
-  const available = lotRows.reduce((acc, row) => acc + Number(row.quantity_on_hand), 0)
+  const lotIds = lotRows.map((row) => row.id)
+  const reservationRows = lotIds.length === 0
+    ? []
+    : (await tx.execute(sql`
+        SELECT lot_id,
+               COALESCE(SUM(quantity - fulfilled_quantity - released_quantity), 0) AS quantity
+          FROM inventory_stock_reservations
+         WHERE lot_id = ANY(${lotIds}::bigint[])
+           AND status = '已预留'
+      GROUP BY lot_id
+      `)) as unknown as Array<{ lot_id: number; quantity: string | number }>
+  const reservedByLot = new Map(reservationRows.map((row) => [Number(row.lot_id), Number(row.quantity)]))
+  const availableByLot = new Map(
+    lotRows.map((row) => [row.id, Math.max(0, Number(row.quantity_on_hand) - (reservedByLot.get(row.id) ?? 0))]),
+  )
+  const available = [...availableByLot.values()].reduce((acc, quantity) => acc + quantity, 0)
   if (available < data.pickupQuantity) {
     throw new ApiError('INVALID_STATE', `门店库存不足，当前可用 ${available}`)
   }
@@ -156,7 +174,8 @@ async function createPickupInventoryDoc(
   for (const lot of lotRows) {
     if (remaining <= 0) break
     const before = Number(lot.quantity_on_hand)
-    const deduct = Math.min(before, remaining)
+    const deduct = Math.min(availableByLot.get(lot.id) ?? 0, remaining)
+    if (deduct <= 0) continue
     const after = before - deduct
     const inserted = (await tx.execute(sql`
       INSERT INTO inventory_doc_items (
@@ -165,7 +184,7 @@ async function createPickupInventoryDoc(
       )
       VALUES (
         ${docId}, ${lot.id}, ${lot.sku_id}, ${data.saleItemId},
-        ${lot.sku_name || data.productName || data.skuId}, ${lot.spec_name}, ${lot.supplier},
+        ${lot.sku_name || data.productName || data.inventorySkuId}, ${lot.spec_name}, ${lot.supplier},
         ${lot.product_series}, ${lot.batch_no || ''}, ${lot.expiry_date}, ${Boolean(lot.is_gift)},
         ${deduct}, ${before}, ${data.remark?.trim() || null}
       )
@@ -254,6 +273,7 @@ export const getPickupRecordsPaginated = withPermission(
       clientPhone: clientWechatUsers.phone,
       confirmedByName: staffWechatUsers.name,
       skuName: productSkus.specName,
+      inventorySkuName: inventorySkus.productName,
       saleOrderId: saleItems.saleOrderId,
       itemQuantity: saleItems.quantity,
       itemPickedUpQuantity: saleItems.pickedUpQuantity,
@@ -264,6 +284,7 @@ export const getPickupRecordsPaginated = withPermission(
     .leftJoin(staffWechatUsers, eq(pickupRecords.confirmedBy, staffWechatUsers.employeeId))
     .leftJoin(saleItems, eq(pickupRecords.saleItemId, saleItems.saleItemId))
     .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+    .leftJoin(inventorySkus, eq(pickupRecords.inventorySkuId, inventorySkus.skuId))
     .where(whereClause)
     // 例外：提货流水型表无 updatedAt 列
     .orderBy(desc(pickupRecords.createdAt))
@@ -287,6 +308,8 @@ export const getPickupRecordsPaginated = withPermission(
       clientPhone: r.clientPhone ?? undefined,
       confirmedByName: r.confirmedByName ?? undefined,
       skuName: r.skuName ?? undefined,
+      inventorySkuId: r.record.inventorySkuId ?? undefined,
+      inventorySkuName: r.inventorySkuName ?? undefined,
       saleOrderId: r.saleOrderId ?? undefined,
       itemQuantity: r.itemQuantity ?? undefined,
       itemPickedUpQuantity: r.itemPickedUpQuantity ?? undefined,
@@ -313,6 +336,7 @@ export const getPickupRecordById = withPermission(
       clientPhone: clientWechatUsers.phone,
       confirmedByName: staffWechatUsers.name,
       skuName: productSkus.specName,
+      inventorySkuName: inventorySkus.productName,
       saleOrderId: saleItems.saleOrderId,
       itemQuantity: saleItems.quantity,
       itemPickedUpQuantity: saleItems.pickedUpQuantity,
@@ -323,6 +347,7 @@ export const getPickupRecordById = withPermission(
     .leftJoin(staffWechatUsers, eq(pickupRecords.confirmedBy, staffWechatUsers.employeeId))
     .leftJoin(saleItems, eq(pickupRecords.saleItemId, saleItems.saleItemId))
     .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+    .leftJoin(inventorySkus, eq(pickupRecords.inventorySkuId, inventorySkus.skuId))
     .where(
       and(eq(pickupRecords.id, id), scopeCondition(session, pickupRecords.storeId)),
     )
@@ -345,6 +370,8 @@ export const getPickupRecordById = withPermission(
     clientPhone: r.clientPhone ?? undefined,
     confirmedByName: r.confirmedByName ?? undefined,
     skuName: r.skuName ?? undefined,
+    inventorySkuId: r.record.inventorySkuId ?? undefined,
+    inventorySkuName: r.inventorySkuName ?? undefined,
     saleOrderId: r.saleOrderId ?? undefined,
     itemQuantity: r.itemQuantity ?? undefined,
     itemPickedUpQuantity: r.itemPickedUpQuantity ?? undefined,
@@ -364,6 +391,7 @@ export const getPickupRecordById = withPermission(
 export interface AvailablePickupItem {
   saleItemId: string
   saleOrderId: string
+  skuId: string | null
   productName: string | null
   quantity: number
   pickedUpQuantity: number
@@ -383,6 +411,7 @@ export const getAvailablePickupItems = withPermission(
     SELECT
       si.sale_item_id,
       si.sale_order_id,
+      si.sku_id,
       si.product_name,
       si.quantity,
       COALESCE(si.picked_up_quantity, 0) AS picked_up_quantity,
@@ -405,6 +434,7 @@ export const getAvailablePickupItems = withPermission(
   return (rows as unknown as Array<Record<string, unknown>>).map((r) => ({
     saleItemId: r.sale_item_id as string,
     saleOrderId: r.sale_order_id as string,
+    skuId: (r.sku_id as string | null) ?? null,
     productName: (r.product_name as string | null) ?? null,
     quantity: Number(r.quantity),
     pickedUpQuantity: Number(r.picked_up_quantity ?? 0),
@@ -413,6 +443,81 @@ export const getAvailablePickupItems = withPermission(
     storeId: r.store_id as string,
     storeName: (r.store_name as string | null) ?? null,
   }))
+  },
+)
+
+export interface PickupInventorySkuOption {
+  inventorySkuId: string
+  productCode: string
+  productName: string
+  specName: string | null
+  availableQuantity: number
+  label: string
+}
+
+/**
+ * 返回一条销售明细可用于实际出库的库存 SKU。映射是唯一来源，库存可用量已扣除预留。
+ * 管理后台允许跨店提货，因此只以传入的实际提货门店计算库存，不限制原销售门店。
+ */
+export const getPickupInventorySkuOptions = withPermission(
+  'pickup_record:create',
+  async (session, saleItemId: string, storeId: string): Promise<PickupInventorySkuOption[]> => {
+    if (!saleItemId || !storeId) throw new ApiError('INVALID_PARAMS', '缺少销售明细号或提货门店')
+    if (!isInScope(session, storeId)) throw new ApiError('PERMISSION_DENIED', '无权查询该门店库存')
+
+    const rows = await db.execute(sql`
+      SELECT mapping.inventory_sku_id,
+             inventory_sku.product_code,
+             inventory_sku.product_name,
+             inventory_sku.spec_name,
+             COALESCE(availability.available_quantity, 0) AS available_quantity
+        FROM sale_items sale_item
+        JOIN sale_orders sale_order ON sale_order.sale_order_id = sale_item.sale_order_id
+        JOIN inventory_sku_product_sku_mappings mapping
+          ON mapping.product_sku_id = sale_item.sku_id
+         AND mapping.is_active = true
+        JOIN inventory_skus inventory_sku
+          ON inventory_sku.sku_id = mapping.inventory_sku_id
+         AND inventory_sku.is_active = true
+   LEFT JOIN LATERAL (
+          SELECT COALESCE(SUM(GREATEST(
+                   0,
+                   lot.quantity_on_hand - COALESCE(reserved.quantity, 0)
+                 )), 0) AS available_quantity
+            FROM inventory_stock_lots lot
+       LEFT JOIN (
+              SELECT lot_id,
+                     COALESCE(SUM(quantity - fulfilled_quantity - released_quantity), 0) AS quantity
+                FROM inventory_stock_reservations
+               WHERE status = '已预留'
+            GROUP BY lot_id
+       ) reserved ON reserved.lot_id = lot.id
+           WHERE lot.location_id = ${storeId}
+             AND lot.sku_id = mapping.inventory_sku_id
+             AND lot.quantity_on_hand > 0
+   ) availability ON true
+       WHERE sale_item.sale_item_id = ${saleItemId}
+         AND sale_order.status = '已支付'
+         AND sale_item.item_direction = '购买'
+         AND sale_item.product_type = '家居产品'
+         AND sale_item.quantity > COALESCE(sale_item.picked_up_quantity, 0)
+    ORDER BY inventory_sku.product_name, inventory_sku.product_code, mapping.inventory_sku_id
+    `)
+
+    return (rows as unknown as Array<Record<string, unknown>>).map((row) => {
+      const inventorySkuId = row.inventory_sku_id as string
+      const productName = row.product_name as string
+      const specName = (row.spec_name as string | null) ?? null
+      const availableQuantity = Number(row.available_quantity ?? 0)
+      return {
+        inventorySkuId,
+        productCode: row.product_code as string,
+        productName,
+        specName,
+        availableQuantity,
+        label: `${productName || inventorySkuId}${specName ? ` ${specName}` : ''}（可用 ${availableQuantity}）`,
+      }
+    })
   },
 )
 
@@ -430,6 +535,7 @@ export const createPickupRecord = withPermission(
     session,
     data: {
       saleItemId: string
+      inventorySkuId: string
       pickupQuantity: number
       storeId: string
       clientUserId: string | null
@@ -440,6 +546,9 @@ export const createPickupRecord = withPermission(
   // 基础参数校验
   if (!data.saleItemId) {
     return { success: false, message: '缺少销售明细号' }
+  }
+  if (!data.inventorySkuId) {
+    return { success: false, message: '请选择实际出库库存 SKU' }
   }
   if (!Number.isInteger(data.pickupQuantity) || data.pickupQuantity <= 0) {
     return { success: false, message: '提货数量必须为正整数' }
@@ -503,6 +612,20 @@ export const createPickupRecord = withPermission(
         throw new ApiError('INVALID_STATE', '销售明细缺少 SKU，无法扣减门店库存')
       }
 
+      const mappingRows = (await tx.execute(sql`
+        SELECT mapping.id
+          FROM inventory_sku_product_sku_mappings mapping
+          JOIN inventory_skus inventory_sku ON inventory_sku.sku_id = mapping.inventory_sku_id
+         WHERE mapping.product_sku_id = ${updatedItem.sku_id}
+           AND mapping.inventory_sku_id = ${data.inventorySkuId}
+           AND mapping.is_active = true
+           AND inventory_sku.is_active = true
+         FOR KEY SHARE OF mapping
+      `)) as unknown as Array<{ id: number }>
+      if (mappingRows.length === 0) {
+        throw new ApiError('INVALID_STATE', '该销售 SKU 未配置所选库存 SKU，请先在后台维护 SKU 映射')
+      }
+
       const orderRows = (await tx.execute(sql`
         SELECT client_user_id, customer_name
           FROM sale_orders
@@ -515,7 +638,7 @@ export const createPickupRecord = withPermission(
         storeId: data.storeId,
         saleItemId: updatedItem.sale_item_id,
         saleOrderId: updatedItem.sale_order_id,
-        skuId: updatedItem.sku_id,
+        inventorySkuId: data.inventorySkuId,
         productName: updatedItem.product_name,
         clientUserId: data.clientUserId ?? orderInfo.client_user_id,
         customerName: orderInfo.customer_name,
@@ -530,6 +653,7 @@ export const createPickupRecord = withPermission(
           .insert(pickupRecords)
           .values({
             saleItemId: data.saleItemId,
+            inventorySkuId: data.inventorySkuId,
             pickupQuantity: data.pickupQuantity,
             storeId: data.storeId,
             clientUserId: data.clientUserId,
@@ -551,6 +675,7 @@ export const createPickupRecord = withPermission(
     await logOperation(session, 'create', 'pickup_record', String(createdId.pickupRecordId), {
       saleItemId: data.saleItemId,
       pickupQuantity: data.pickupQuantity,
+      inventorySkuId: data.inventorySkuId,
       storeId: data.storeId,
       clientUserId: data.clientUserId,
       inventoryDocId: createdId.inventoryDocId,

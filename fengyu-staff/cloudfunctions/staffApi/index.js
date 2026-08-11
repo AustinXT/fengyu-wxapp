@@ -82,6 +82,7 @@ const routes = {
   'order.createPickup':   () => require('./routes/order').createPickup,
   'order.createDeposit':  () => require('./routes/order').createDeposit,
   'order.availablePickupItems': () => require('./routes/order').availablePickupItems,
+  'order.pickupInventorySkuOptions': () => require('./routes/order').pickupInventorySkuOptions,
   'order.pickupRecordsList':    () => require('./routes/order').pickupRecordsList,
 
   // 库存（门店办理）

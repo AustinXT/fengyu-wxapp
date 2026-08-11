@@ -19,6 +19,9 @@
       <view class="card-body">
         <text class="card-product">{{item.productName || '商品'}} {{item.specName || ''}}</text>
       </view>
+      <view wx:if="{{item.inventoryProductName}}" class="card-foot">
+        实际出库：{{item.inventoryProductCode || item.inventorySkuId}} {{item.inventoryProductName}}
+      </view>
       <view class="card-meta">
         <text>{{item.clientName || '—'}}</text>
         <text wx:if="{{item.itemQuantity}}">进度 {{item.itemPickedUpQuantity}}/{{item.itemQuantity}}</text>

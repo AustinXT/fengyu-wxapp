@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
@@ -13,7 +13,9 @@ import { searchCustomerByPhone } from '@/actions/customers'
 import {
   createPickupRecord,
   getAvailablePickupItems,
+  getPickupInventorySkuOptions,
   type AvailablePickupItem,
+  type PickupInventorySkuOption,
 } from '@/actions/pickup-records'
 import type { Customer, Store } from '@/lib/types'
 import { formatPhoneSafe } from '@/lib/format'
@@ -36,6 +38,9 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
   const [items, setItems] = useState<AvailablePickupItem[]>([])
   const [loadingItems, setLoadingItems] = useState(false)
   const [selectedItemId, setSelectedItemId] = useState<string>('')
+  const [inventorySkuOptions, setInventorySkuOptions] = useState<PickupInventorySkuOption[]>([])
+  const [inventorySkuId, setInventorySkuId] = useState('')
+  const [loadingInventorySkuOptions, setLoadingInventorySkuOptions] = useState(false)
 
   // 提货参数
   const [pickupQuantity, setPickupQuantity] = useState<number>(1)
@@ -44,6 +49,34 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
   const [submitting, setSubmitting] = useState(false)
 
   const selectedItem = items.find((i) => i.saleItemId === selectedItemId)
+  const selectedInventorySku = inventorySkuOptions.find((option) => option.inventorySkuId === inventorySkuId)
+
+  useEffect(() => {
+    let cancelled = false
+
+    if (!selectedItemId || !pickupStoreId) {
+      setInventorySkuOptions([])
+      setInventorySkuId('')
+      setLoadingInventorySkuOptions(false)
+      return () => { cancelled = true }
+    }
+
+    setLoadingInventorySkuOptions(true)
+    setInventorySkuOptions([])
+    setInventorySkuId('')
+    getPickupInventorySkuOptions(selectedItemId, pickupStoreId)
+      .then((options) => {
+        if (!cancelled) setInventorySkuOptions(options)
+      })
+      .catch((err) => {
+        if (!cancelled) toast.error(actionErrorMessage(err, '加载库存 SKU 映射失败'))
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingInventorySkuOptions(false)
+      })
+
+    return () => { cancelled = true }
+  }, [selectedItemId, pickupStoreId])
 
   const handleSearch = async () => {
     if (!phone.trim() || !/^1\d{10}$/.test(phone.trim())) {
@@ -55,6 +88,8 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
     setCustomer(null)
     setItems([])
     setSelectedItemId('')
+    setInventorySkuOptions([])
+    setInventorySkuId('')
     try {
       const result = await searchCustomerByPhone(phone.trim())
       setSearchDone(true)
@@ -99,9 +134,11 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
   const canSubmit =
     !!customer &&
     !!selectedItem &&
+    !!selectedInventorySku &&
     !!pickupStoreId &&
     pickupQuantity > 0 &&
-    pickupQuantity <= (selectedItem?.remaining ?? 0)
+    pickupQuantity <= (selectedItem?.remaining ?? 0) &&
+    pickupQuantity <= (selectedInventorySku?.availableQuantity ?? 0)
 
   const handleSubmit = async () => {
     if (!canSubmit || !customer || !selectedItem) return
@@ -111,6 +148,7 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
       const idempotencyKey = `pickup-${selectedItem.saleItemId}-${Date.now()}`
       const res = await createPickupRecord({
         saleItemId: selectedItem.saleItemId,
+        inventorySkuId,
         pickupQuantity,
         storeId: pickupStoreId,
         clientUserId: customer.userId,
@@ -309,8 +347,36 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
                 </Select>
               </div>
               <div>
+                <label className="text-sm text-[#999999]">实际出库库存 SKU</label>
+                <Select
+                  className="mt-1"
+                  value={inventorySkuId}
+                  disabled={loadingInventorySkuOptions || inventorySkuOptions.length === 0}
+                  onChange={(e) => setInventorySkuId(e.target.value)}
+                >
+                  <option value="">
+                    {loadingInventorySkuOptions
+                      ? '加载库存 SKU 中...'
+                      : inventorySkuOptions.length === 0
+                        ? '未配置可用库存 SKU 映射'
+                        : '请选择实际出库 SKU'}
+                  </option>
+                  {inventorySkuOptions.map((option) => (
+                    <option key={option.inventorySkuId} value={option.inventorySkuId}>
+                      {option.label}
+                    </option>
+                  ))}
+                </Select>
+                {!loadingInventorySkuOptions && inventorySkuOptions.length === 0 && (
+                  <p className="mt-1 text-xs text-[#C0322A]">
+                    请先在库存 SKU 映射中配置该销售 SKU，或确认门店库存。
+                  </p>
+                )}
+              </div>
+              <div>
                 <label className="text-sm text-[#999999]">
-                  提货数量（可提 {selectedItem.remaining}）
+                  提货数量（可提 {selectedItem.remaining}
+                  {selectedInventorySku ? `，库存可用 ${selectedInventorySku.availableQuantity}` : ''}）
                 </label>
                 <Input
                   type="number"

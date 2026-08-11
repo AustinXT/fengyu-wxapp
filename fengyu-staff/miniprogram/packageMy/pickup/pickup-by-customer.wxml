@@ -79,6 +79,21 @@
       <view class="dialog-product">{{pickupDialog.productName}}</view>
       <view class="dialog-remaining">剩余可提：{{pickupDialog.remaining}}</view>
       <view class="dialog-field">
+        <text class="dialog-label">实际交付库存 SKU</text>
+        <view wx:if="{{pickupDialog.loadingInventorySkuOptions}}" class="dialog-hint">加载库存 SKU 中...</view>
+        <picker
+          wx:elif="{{pickupDialog.inventorySkuOptions.length > 0}}"
+          mode="selector"
+          range="{{pickupDialog.inventorySkuOptions}}"
+          range-key="label"
+          bindchange="onPickupInventorySkuChange"
+        >
+          <view wx:if="{{pickupDialog.inventorySkuLabel}}" class="dialog-picker">{{pickupDialog.inventorySkuLabel}}</view>
+          <view wx:else class="dialog-picker dialog-picker-placeholder">请选择实际交付的库存 SKU</view>
+        </picker>
+        <view wx:else class="dialog-warning">该销售 SKU 尚未配置库存映射，请联系后台配置后提货。</view>
+      </view>
+      <view class="dialog-field">
         <text class="dialog-label">提货数量</text>
         <input
           type="number"
@@ -101,7 +116,7 @@
       <button class="dialog-btn cancel" bindtap="closePickupDialog">取消</button>
       <button
         class="dialog-btn confirm"
-        disabled="{{pickupDialog.submitting}}"
+        disabled="{{pickupDialog.submitting || pickupDialog.loadingInventorySkuOptions || !pickupDialog.inventorySkuId}}"
         bindtap="submitPickup"
       >
         {{pickupDialog.submitting ? '提交中...' : '确认提货'}}

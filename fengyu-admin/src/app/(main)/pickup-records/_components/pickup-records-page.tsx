@@ -92,9 +92,16 @@ export default function PickupRecordsPage({ records, filterOptions, total, canCr
     },
     {
       key: 'skuName',
-      header: '商品/规格',
+      header: '销售 SKU / 实际出库',
       cell: (row) => (
-        <span className="font-medium line-clamp-1">{row.skuName ?? '—'}</span>
+        <div className="min-w-0">
+          <div className="font-medium line-clamp-1">{row.skuName ?? '—'}</div>
+          {row.inventorySkuName && (
+            <div className="text-xs text-[#999999] line-clamp-1">
+              出库：{row.inventorySkuName} ({row.inventorySkuId})
+            </div>
+          )}
+        </div>
       ),
     },
     {
@@ -247,6 +254,17 @@ export default function PickupRecordsPage({ records, filterOptions, total, canCr
               <span className="text-[#999999]">商品/规格</span>
               <span>{detail.skuName ?? '—'}</span>
             </div>
+            {detail.inventorySkuId && (
+              <div className="flex justify-between gap-4">
+                <span className="text-[#999999]">实际出库库存 SKU</span>
+                <span>
+                  {detail.inventorySkuName ?? '—'}
+                  <span className="ml-2 font-mono text-xs text-[#999999]">
+                    {detail.inventorySkuId}
+                  </span>
+                </span>
+              </div>
+            )}
             <div className="flex justify-between gap-4">
               <span className="text-[#999999]">销售明细号</span>
               <span className="font-mono text-xs">{detail.saleItemId}</span>
