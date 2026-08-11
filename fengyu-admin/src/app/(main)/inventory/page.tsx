@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { BadgePercent, Boxes, ClipboardList, Package, PackageCheck, Truck, Workflow } from 'lucide-react'
+import { BadgePercent, Boxes, ClipboardList, Link2, Package, PackageCheck, Truck, Workflow } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 
 export const dynamic = 'force-dynamic'
@@ -11,6 +11,13 @@ const MODULES = [
     desc: '独立库存 SKU / 多价体系 / 自采资料',
     icon: Package,
     color: 'text-red-700 bg-red-50',
+  },
+  {
+    href: '/inventory/sku-mappings',
+    title: '销售 SKU 映射',
+    desc: '提货商品与实际库存 SKU 的对应关系',
+    icon: Link2,
+    color: 'text-orange-700 bg-orange-50',
   },
   {
     href: '/inventory/stocks',

@@ -689,6 +689,46 @@ export const inventorySkus = pgTable(
 )
 
 /**
+ * 销售 SKU 与库存 SKU 的履约映射。
+ *
+ * 销售目录与进销存目录使用不同 SKU 主数据：前者承载定价与服务语义，后者承载
+ * 采购与库存核算语义。家居产品提货时必须通过本表选择实际扣减的库存 SKU，
+ * 不允许再按 SKU ID 或产品编号猜测匹配。
+ */
+export const inventorySkuProductSkuMappings = pgTable(
+  'inventory_sku_product_sku_mappings',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    productSkuId: text('product_sku_id')
+      .notNull()
+      .references(() => productSkus.skuId),
+    inventorySkuId: text('inventory_sku_id')
+      .notNull()
+      .references(() => inventorySkus.skuId),
+    isActive: boolean('is_active').notNull().default(true),
+    createdBy: varchar('created_by', { length: 30 }).references(
+      () => staffWechatUsers.employeeId,
+    ),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => sql`NOW()`),
+  },
+  (table) => [
+    uniqueIndex('uq_inventory_product_sku_mapping').on(
+      table.productSkuId,
+      table.inventorySkuId,
+    ),
+    index('idx_inventory_product_sku_mappings_product').on(table.productSkuId),
+    index('idx_inventory_product_sku_mappings_inventory').on(table.inventorySkuId),
+    index('idx_inventory_product_sku_mappings_active')
+      .on(table.productSkuId)
+      .where(sql`${table.isActive} = true`),
+  ],
+)
+
+/**
  * 库存主体：总部 / 市场 / 门店。
  *
  * location_id 使用组织树节点或门店主键，便于直接承接现有权限 scope：
@@ -1332,6 +1372,8 @@ export const inventoryMovements = pgTable(
 
 export type InventorySku = typeof inventorySkus.$inferSelect
 export type NewInventorySku = typeof inventorySkus.$inferInsert
+export type InventorySkuProductSkuMapping = typeof inventorySkuProductSkuMappings.$inferSelect
+export type NewInventorySkuProductSkuMapping = typeof inventorySkuProductSkuMappings.$inferInsert
 export type InventoryLocation = typeof inventoryLocations.$inferSelect
 export type NewInventoryLocation = typeof inventoryLocations.$inferInsert
 export type InventoryPromotionPlan = typeof inventoryPromotionPlans.$inferSelect

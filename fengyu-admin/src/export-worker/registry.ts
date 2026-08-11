@@ -213,7 +213,7 @@ const serviceColumns = mapColumns([
   { header: '品项（一级）', width: 14, key: 'categoryL1' },
   { header: '品项（二级）', width: 12, key: 'categoryL2' },
   { header: '商品明细', width: 24, key: 'productName' },
-  { header: '消耗数量', width: 10, key: 'sessionUsed', map: (row) => value(row, 'sessionUsed') == null ? '' : `${value(row, 'sessionUsed')} ${text(row, 'unit')}` },
+  { header: '消耗数量', width: 10, key: 'sessionUsed', map: (row) => numberOrEmpty(row, 'sessionUsed') },
   { header: '项目消耗金额', width: 12, key: 'consumeMoney' },
   { header: '单位价', width: 12, key: 'unitRealPrice' },
   { header: '状态', width: 12, key: 'status' },

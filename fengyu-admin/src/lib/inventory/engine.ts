@@ -19,11 +19,13 @@ import {
   inventoryMovements,
   inventoryPromotionPlanItems,
   inventoryPromotionPlans,
+  inventorySkuProductSkuMappings,
   inventorySkus,
   inventoryStockLots,
   inventorySuppliers,
 } from '@db/inventory'
 import { orgNodes, stores } from '@db/org'
+import { productSkus } from '@db/product'
 import { and, asc, desc, eq, gte, ilike, inArray, isNull, lte, or, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
@@ -50,6 +52,9 @@ import {
   type InventoryPromotionPlanRow,
   type InventoryPromotionRuleType,
   type InventorySkuInput,
+  type InventorySkuMappingInput,
+  type InventorySkuMappingOptions,
+  type InventorySkuMappingRow,
   type InventorySkuRow,
   type InventorySkuSourceType,
   type InventorySupplierInput,
@@ -1282,6 +1287,159 @@ export const updateInventorySku = withPermission(
       .where(eq(inventorySkus.skuId, id))
     await logOperation(session, 'update', 'inventory_skus', id, input)
     revalidatePath('/inventory/skus')
+    return { success: true }
+  },
+)
+
+function inventorySkuMappingRow(row: {
+  mapping: typeof inventorySkuProductSkuMappings.$inferSelect
+  productSku: typeof productSkus.$inferSelect
+  inventorySku: typeof inventorySkus.$inferSelect
+}): InventorySkuMappingRow {
+  return {
+    id: row.mapping.id,
+    productSkuId: row.mapping.productSkuId,
+    productSkuName: row.productSku.specName,
+    productSkuEnabled: row.productSku.isEnabled,
+    inventorySkuId: row.mapping.inventorySkuId,
+    inventorySkuCode: row.inventorySku.productCode,
+    inventorySkuName: row.inventorySku.productName,
+    inventorySkuActive: row.inventorySku.isActive,
+    isActive: row.mapping.isActive,
+    createdAt: row.mapping.createdAt.toISOString(),
+    updatedAt: row.mapping.updatedAt.toISOString(),
+  }
+}
+
+export const listInventorySkuMappings = withPermission(
+  'inventory:stock_list',
+  async (
+    _session,
+    filters: { keyword?: string; onlyActive?: boolean } = {},
+  ): Promise<InventorySkuMappingRow[]> => {
+    const conditions: SQL[] = []
+    if (filters.onlyActive !== undefined) {
+      conditions.push(eq(inventorySkuProductSkuMappings.isActive, filters.onlyActive))
+    }
+    if (filters.keyword) {
+      const pattern = `%${filters.keyword.replace(/[%_]/g, '\\$&')}%`
+      conditions.push(or(
+        ilike(inventorySkuProductSkuMappings.productSkuId, pattern),
+        ilike(productSkus.specName, pattern),
+        ilike(inventorySkuProductSkuMappings.inventorySkuId, pattern),
+        ilike(inventorySkus.productCode, pattern),
+        ilike(inventorySkus.productName, pattern),
+      )!)
+    }
+    const rows = await db
+      .select({
+        mapping: inventorySkuProductSkuMappings,
+        productSku: productSkus,
+        inventorySku: inventorySkus,
+      })
+      .from(inventorySkuProductSkuMappings)
+      .innerJoin(productSkus, eq(inventorySkuProductSkuMappings.productSkuId, productSkus.skuId))
+      .innerJoin(inventorySkus, eq(inventorySkuProductSkuMappings.inventorySkuId, inventorySkus.skuId))
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(asc(productSkus.specName), asc(inventorySkus.productName))
+    return rows.map(inventorySkuMappingRow)
+  },
+)
+
+export const listInventorySkuMappingOptions = withPermission(
+  'inventory:stock_list',
+  async (_session): Promise<InventorySkuMappingOptions> => {
+    const [productRows, inventoryRows] = await Promise.all([
+      db
+        .select({ skuId: productSkus.skuId, specName: productSkus.specName })
+        .from(productSkus)
+        .where(and(
+          eq(productSkus.productType, '家居产品'),
+          eq(productSkus.isEnabled, true),
+          isNull(productSkus.deletedAt),
+        ))
+        .orderBy(asc(productSkus.specName)),
+      db
+        .select({
+          skuId: inventorySkus.skuId,
+          productCode: inventorySkus.productCode,
+          productName: inventorySkus.productName,
+          specName: inventorySkus.specName,
+        })
+        .from(inventorySkus)
+        .where(eq(inventorySkus.isActive, true))
+        .orderBy(asc(inventorySkus.productName), asc(inventorySkus.productCode)),
+    ])
+    return { productSkus: productRows, inventorySkus: inventoryRows }
+  },
+)
+
+export const createInventorySkuMapping = withPermission(
+  'inventory:create',
+  async (session, input: InventorySkuMappingInput): Promise<{ success: true; id: number }> => {
+    const productSkuId = normalizeRequired(input.productSkuId, '销售 SKU')
+    const inventorySkuId = normalizeRequired(input.inventorySkuId, '库存 SKU')
+    const [[productSku], [inventorySku], [existing]] = await Promise.all([
+      db
+        .select({ skuId: productSkus.skuId, productType: productSkus.productType, isEnabled: productSkus.isEnabled })
+        .from(productSkus)
+        .where(and(eq(productSkus.skuId, productSkuId), isNull(productSkus.deletedAt)))
+        .limit(1),
+      db
+        .select({ skuId: inventorySkus.skuId, isActive: inventorySkus.isActive })
+        .from(inventorySkus)
+        .where(eq(inventorySkus.skuId, inventorySkuId))
+        .limit(1),
+      db
+        .select({ id: inventorySkuProductSkuMappings.id })
+        .from(inventorySkuProductSkuMappings)
+        .where(and(
+          eq(inventorySkuProductSkuMappings.productSkuId, productSkuId),
+          eq(inventorySkuProductSkuMappings.inventorySkuId, inventorySkuId),
+        ))
+        .limit(1),
+    ])
+    if (!productSku || productSku.productType !== '家居产品' || !productSku.isEnabled) {
+      throw new ApiError('INVALID_PARAMS', '销售 SKU 不存在、已停用或不是家居产品')
+    }
+    if (!inventorySku || !inventorySku.isActive) {
+      throw new ApiError('INVALID_PARAMS', '库存 SKU 不存在或已停用')
+    }
+    if (existing) throw new ApiError('CONFLICT', '该销售 SKU 与库存 SKU 的映射已存在')
+    const [created] = await db
+      .insert(inventorySkuProductSkuMappings)
+      .values({ productSkuId, inventorySkuId, createdBy: session.employeeId })
+      .returning({ id: inventorySkuProductSkuMappings.id })
+    await logOperation(session, 'create', 'inventory_sku_product_sku_mapping', String(created.id), {
+      productSkuId,
+      inventorySkuId,
+    })
+    revalidatePath('/inventory')
+    revalidatePath('/inventory/sku-mappings')
+    return { success: true, id: created.id }
+  },
+)
+
+export const updateInventorySkuMapping = withPermission(
+  'inventory:update',
+  async (session, id: number, isActive: boolean): Promise<{ success: true }> => {
+    if (!Number.isInteger(id) || id <= 0) throw new ApiError('INVALID_PARAMS', '无效映射记录')
+    const [current] = await db
+      .select()
+      .from(inventorySkuProductSkuMappings)
+      .where(eq(inventorySkuProductSkuMappings.id, id))
+      .limit(1)
+    if (!current) throw new ApiError('NOT_FOUND', 'SKU 映射不存在')
+    await db
+      .update(inventorySkuProductSkuMappings)
+      .set({ isActive, updatedAt: new Date() })
+      .where(eq(inventorySkuProductSkuMappings.id, id))
+    await logOperation(session, 'update', 'inventory_sku_product_sku_mapping', String(id), {
+      productSkuId: current.productSkuId,
+      inventorySkuId: current.inventorySkuId,
+      isActive,
+    })
+    revalidatePath('/inventory/sku-mappings')
     return { success: true }
   },
 )

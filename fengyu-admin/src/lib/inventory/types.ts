@@ -126,6 +126,30 @@ export interface InventorySkuRow extends Required<Pick<InventorySkuInput, 'produ
   updatedAt: string
 }
 
+export interface InventorySkuMappingInput {
+  productSkuId: string
+  inventorySkuId: string
+}
+
+export interface InventorySkuMappingRow {
+  id: number
+  productSkuId: string
+  productSkuName: string
+  productSkuEnabled: boolean
+  inventorySkuId: string
+  inventorySkuCode: string
+  inventorySkuName: string
+  inventorySkuActive: boolean
+  isActive: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface InventorySkuMappingOptions {
+  productSkus: Array<{ skuId: string; specName: string }>
+  inventorySkus: Array<{ skuId: string; productCode: string; productName: string; specName: string | null }>
+}
+
 export interface InventoryLocationRow {
   locationId: string
   locationType: InventoryLocationType
