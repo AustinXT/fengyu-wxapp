@@ -1606,6 +1606,7 @@ async function detail(ctx) {
   const items = await pg.query(`
     SELECT
       si.sale_item_id,
+      si.sale_item_group_id,
       si.sale_order_id,
       si.sku_id,
       si.item_direction,
@@ -1971,6 +1972,7 @@ function mapHomeProductRow(row) {
 
   return {
     saleItemId: row.sale_item_id,
+    saleItemGroupId: row.sale_item_group_id || null,
     saleOrderId: row.sale_order_id,
     productName: row.product_name || '家居产品',
     unit: row.unit || '盒',
@@ -1994,25 +1996,26 @@ async function homeProducts(ctx) {
          FROM pickup_records
         GROUP BY sale_item_id
      ), home_products AS (
-       SELECT si.sale_item_id,
-              si.sale_order_id,
-              COALESCE(si.product_name, '家居产品') AS product_name,
-              COALESCE(ps.unit, '盒') AS unit,
-              si.quantity::int AS purchased_quantity,
-              LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
-              LEAST(
+       SELECT COALESCE(si.sale_item_group_id, si.sale_item_id) AS sale_item_group_id,
+              MIN(si.sale_item_id) AS sale_item_id,
+              MIN(si.sale_order_id) AS sale_order_id,
+              MIN(COALESCE(si.product_name, '家居产品')) AS product_name,
+              MIN(COALESCE(ps.unit, '盒')) AS unit,
+              SUM(si.quantity)::int AS purchased_quantity,
+              SUM(LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0))))::int AS settled_quantity,
+              SUM(LEAST(
                 LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0))),
                 GREATEST(0, COALESCE(pt.picked_quantity, 0))
-              )::int AS picked_quantity,
-              o.store_id,
-              s.store_name,
-              COALESCE(o.paid_at, o.sale_order_datetime, o.created_at) AS purchased_at,
-              EXISTS (
+              ))::int AS picked_quantity,
+              MIN(o.store_id) AS store_id,
+              MIN(s.store_name) AS store_name,
+              MAX(COALESCE(o.paid_at, o.sale_order_datetime, o.created_at)) AS purchased_at,
+              BOOL_OR(EXISTS (
                 SELECT 1 FROM sale_order_payments sop
                  WHERE sop.sale_order_id = o.sale_order_id
                    AND sop.change_type = '退款'
                    AND sop.status = '待审批'
-              ) AS refund_pending
+              )) AS refund_pending
          FROM sale_items si
          JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
          LEFT JOIN stores s ON s.store_id = o.store_id
@@ -2022,6 +2025,7 @@ async function homeProducts(ctx) {
           AND o.status IN ('已支付', '已完成')
           AND si.item_direction = '购买'
           AND si.product_type = '家居产品'
+      GROUP BY COALESCE(si.sale_item_group_id, si.sale_item_id)
      )
      SELECT *,
             (settled_quantity - picked_quantity)::int AS refunded_quantity,

@@ -4,6 +4,7 @@ import { formatDate } from '../../utils/format';
 
 interface HomeProduct {
   saleItemId: string;
+  saleItemGroupId?: string | null;
   saleOrderId: string;
   productName: string;
   unit: string;
