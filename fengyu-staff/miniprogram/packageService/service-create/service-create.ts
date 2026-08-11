@@ -451,13 +451,14 @@ Page({
         nameQuery: '',
       });
       if (this._pendingPreloadedItems.length > 0) {
-        const selectedItems: SelectedPaidItem[] = groupedItems.flatMap((group) => {
+        const selectedItems: SelectedPaidItem[] = [];
+        for (const group of groupedItems) {
           const matched = this._pendingPreloadedItems.filter((pending) =>
             (group.sourceItems || [group]).some((source) => source.saleItemId === pending.saleItemId),
           );
-          if (matched.length === 0) return [];
+          if (matched.length === 0) continue;
           const sessionCount = matched.reduce((total, pending) => total + pending.sessionCount, 0);
-          return [{
+          selectedItems.push({
             saleItemId: group.saleItemId,
             itemName: group.itemName,
             spec: group.spec,
@@ -467,8 +468,8 @@ Page({
             consumableSessions: group.consumableSessions,
             cardCount: group.cardCount || 1,
             sourceItems: group.sourceItems || [group],
-          }];
-        });
+          });
+        }
         const flowNos: Record<string, boolean> = {};
         const sessionCounts: Record<string, number> = {};
         selectedItems.forEach((item) => {
@@ -642,10 +643,11 @@ Page({
 
     this.setData({ submitting: true });
     try {
-      const expandedItems = selectedItems.flatMap((item) => {
+      const expandedItems: Array<{ saleItemId: string; sessionUsed: number }> = [];
+      for (const item of selectedItems) {
         const primary = item.sourceItems[0];
-        if (!primary) return [];
-        return expandGroupServiceSessions(
+        if (!primary) continue;
+        expandedItems.push(...expandGroupServiceSessions(
           {
             groupKey: item.saleItemId,
             primary,
@@ -655,8 +657,8 @@ Page({
           item.sessionCount,
           (source) => source.saleItemId,
           (source) => source.consumableSessions,
-        );
-      });
+        ));
+      }
       if (expandedItems.length === 0) {
         throw new Error('请选择可核销的疗程卡');
       }

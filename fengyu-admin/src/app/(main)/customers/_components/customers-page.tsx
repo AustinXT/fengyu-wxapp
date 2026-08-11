@@ -57,11 +57,13 @@ export default function CustomersPage({
   stores,
   filterOptions,
   total,
+  canCreate,
 }: {
   customers: Customer[]
   stores: Store[]
   filterOptions: MarketStoreFilterOptions
   total: number
+  canCreate: boolean
 }) {
   const router = useRouter()
   const { get, set, setMany, searchParams } = useUrlFilters()
@@ -97,6 +99,7 @@ export default function CustomersPage({
   const [newBoundStoreId, setNewBoundStoreId] = useState("")
 
   async function handleCreate() {
+    if (!canCreate) return
     if (!newPhone.trim()) {
       toast.error("请输入手机号")
       return
@@ -210,7 +213,7 @@ export default function CustomersPage({
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">顾客管理</h1>
-        <Button onClick={() => setDialogOpen(true)}>新增顾客</Button>
+        {canCreate && <Button onClick={() => setDialogOpen(true)}>新增顾客</Button>}
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
@@ -319,7 +322,7 @@ export default function CustomersPage({
       />
 
       {/* 新增顾客 Dialog */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      {canCreate && <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogClose onOpenChange={setDialogOpen} />
         <DialogHeader>
           <DialogTitle>新增顾客</DialogTitle>
@@ -375,7 +378,7 @@ export default function CustomersPage({
             确认创建
           </Button>
         </DialogFooter>
-      </Dialog>
+      </Dialog>}
     </div>
   )
 }

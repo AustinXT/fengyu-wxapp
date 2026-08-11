@@ -1,9 +1,10 @@
 import { getDashboardStats } from '@/actions/dashboard'
+import { getSession } from '@/lib/auth'
 import DashboardPage from './_components/dashboard-page'
 
 export const dynamic = 'force-dynamic'
 
 export default async function Page() {
-  const stats = await getDashboardStats()
-  return <DashboardPage stats={stats} />
+  const [stats, session] = await Promise.all([getDashboardStats(), getSession()])
+  return <DashboardPage stats={stats} actions={session?.permissions.actions ?? []} />
 }

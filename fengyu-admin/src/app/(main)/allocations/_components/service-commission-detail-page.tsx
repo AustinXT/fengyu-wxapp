@@ -176,6 +176,7 @@ export default function ServiceCommissionDetailPageClient({
   employees,
   commissionRates = [],
   skillTags = [],
+  canSave = false,
 }: {
   serviceOrder: ServiceOrder
   serviceItems: ServiceItemDetail[]
@@ -183,6 +184,7 @@ export default function ServiceCommissionDetailPageClient({
   employees: Employee[]
   commissionRates?: CommissionRate[]
   skillTags?: SkillTag[]
+  canSave?: boolean
 }) {
   const allActiveEmployees = useMemo(
     () => sortByPosition(employees.filter((e) => !e.isResigned)),
@@ -209,6 +211,7 @@ export default function ServiceCommissionDetailPageClient({
   )
 
   const addEntry = (serviceItemId: string) => {
+    if (!canSave) return
     setItemComms((prev) => ({
       ...prev,
       [serviceItemId]: [
@@ -232,6 +235,7 @@ export default function ServiceCommissionDetailPageClient({
     field: 'skillTag' | 'employeeId' | 'ratioPercent',
     value: string,
   ) => {
+    if (!canSave) return
     setItemComms((prev) => {
       const item = serviceItems.find((i) => i.serviceItemId === serviceItemId)
       const base = item ? consumeBase(item) : 0
@@ -264,6 +268,7 @@ export default function ServiceCommissionDetailPageClient({
   }
 
   const removeEntry = (serviceItemId: string, entryId: number) => {
+    if (!canSave) return
     setItemComms((prev) => ({
       ...prev,
       [serviceItemId]: (prev[serviceItemId] || []).filter((e) => e.id !== entryId),
@@ -323,17 +328,20 @@ export default function ServiceCommissionDetailPageClient({
           onAdd={addEntry}
           onUpdate={updateEntry}
           onRemove={removeEntry}
+          canSave={canSave}
         />
       ))}
 
       {/* 保存 */}
       <Card>
         <CardContent className="pt-6">
-          <SaveButton
-            serviceOrderId={serviceOrder.serviceOrderId}
-            serviceItems={serviceItems}
-            itemComms={itemComms}
-          />
+          {canSave && (
+            <SaveButton
+              serviceOrderId={serviceOrder.serviceOrderId}
+              serviceItems={serviceItems}
+              itemComms={itemComms}
+            />
+          )}
         </CardContent>
       </Card>
     </div>
@@ -350,6 +358,7 @@ function ServiceItemCard({
   onAdd,
   onUpdate,
   onRemove,
+  canSave,
 }: {
   item: ServiceItemDetail
   entries: CommissionEntry[]
@@ -358,6 +367,7 @@ function ServiceItemCard({
   onAdd: (serviceItemId: string) => void
   onUpdate: (serviceItemId: string, entryId: number, field: 'skillTag' | 'employeeId' | 'ratioPercent', value: string) => void
   onRemove: (serviceItemId: string, entryId: number) => void
+  canSave: boolean
 }) {
   const base = consumeBase(item)
 
@@ -405,6 +415,7 @@ function ServiceItemCard({
                   <Select
                     value={entry.skillTag}
                     onChange={(e) => onUpdate(item.serviceItemId, entry.id, 'skillTag', e.target.value)}
+                    disabled={!canSave}
                   >
                     <option value="">选择</option>
                     {skillTagOptions.map((tag) => (
@@ -419,7 +430,7 @@ function ServiceItemCard({
                   <Select
                     value={entry.employeeId}
                     onChange={(e) => onUpdate(item.serviceItemId, entry.id, 'employeeId', e.target.value)}
-                    disabled={!entry.skillTag}
+                    disabled={!canSave || !entry.skillTag}
                   >
                     <option value="">{entry.skillTag ? `选择(${filteredEmployees.length}人)` : '先选标签'}</option>
                     {filteredEmployees.map((emp) => (
@@ -450,6 +461,7 @@ function ServiceItemCard({
                       value={ratioSelectValue}
                       onChange={(e) => onUpdate(item.serviceItemId, entry.id, 'ratioPercent', e.target.value)}
                       className="w-[104px]"
+                      disabled={!canSave}
                     >
                       <option value="">-</option>
                       {PERCENTAGE_OPTIONS.map((p) => (
@@ -468,6 +480,7 @@ function ServiceItemCard({
                         onChange={(e) => onUpdate(item.serviceItemId, entry.id, 'ratioPercent', e.target.value)}
                         className="w-[88px]"
                         placeholder="%"
+                        disabled={!canSave}
                       />
                     )}
                   </div>
@@ -486,9 +499,11 @@ function ServiceItemCard({
                 </div>
 
                 {/* 删除 */}
-                <Button size="sm" variant="ghost" onClick={() => onRemove(item.serviceItemId, entry.id)} className="text-[#D94040] shrink-0 px-1">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                </Button>
+                {canSave && (
+                  <Button size="sm" variant="ghost" onClick={() => onRemove(item.serviceItemId, entry.id)} className="text-[#D94040] shrink-0 px-1">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                  </Button>
+                )}
               </div>
             )
           })
@@ -509,9 +524,11 @@ function ServiceItemCard({
               </span>
             ))}
           </div>
-          <Button size="sm" variant="outline" onClick={() => onAdd(item.serviceItemId)}>
-            + 添加分配
-          </Button>
+          {canSave && (
+            <Button size="sm" variant="outline" onClick={() => onAdd(item.serviceItemId)}>
+              + 添加分配
+            </Button>
+          )}
         </div>
       </CardContent>
     </Card>

@@ -1,12 +1,15 @@
 import Link from 'next/link'
 import { Boxes, PackageCheck, PackagePlus, ShoppingBag, Repeat, AlertTriangle } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
+import { getSession } from '@/lib/auth'
+import { hasUiCapability } from '@/lib/permission-contract'
 
 export const dynamic = 'force-dynamic'
 
 const MODULES = [
   {
     href: '/inventory/stocks',
+    action: 'inventory:stock_list',
     title: '门店库存表',
     desc: '实时余额 / 批号 / 库存流水基准',
     icon: PackageCheck,
@@ -14,6 +17,7 @@ const MODULES = [
   },
   {
     href: '/inventory/procurement',
+    action: 'inventory:list',
     title: '采购入库',
     desc: '院报货 / 院入库 / 退货出库',
     icon: PackagePlus,
@@ -21,6 +25,7 @@ const MODULES = [
   },
   {
     href: '/inventory/sale',
+    action: 'inventory:list',
     title: '销售出库',
     desc: '销售出库 / 顾客退货',
     icon: ShoppingBag,
@@ -28,6 +33,7 @@ const MODULES = [
   },
   {
     href: '/inventory/transfer',
+    action: 'inventory:list',
     title: '门店调拨',
     desc: '调拨出库 / 调拨入库',
     icon: Repeat,
@@ -35,6 +41,7 @@ const MODULES = [
   },
   {
     href: '/inventory/scrap',
+    action: 'inventory:list',
     title: '报损出库',
     desc: '产品损耗 / 异常处理',
     icon: AlertTriangle,
@@ -42,7 +49,9 @@ const MODULES = [
   },
 ] as const
 
-export default function InventoryHubPage() {
+export default async function InventoryHubPage() {
+  const actions = (await getSession())?.permissions.actions ?? []
+  const modules = MODULES.filter((module) => hasUiCapability(actions, module.action))
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center gap-3">
@@ -54,7 +63,7 @@ export default function InventoryHubPage() {
       </p>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        {MODULES.map((m) => {
+        {modules.map((m) => {
           const Icon = m.icon
           return (
             <Link key={m.href} href={m.href}>

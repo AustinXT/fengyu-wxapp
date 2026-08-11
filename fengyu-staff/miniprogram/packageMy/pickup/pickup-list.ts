@@ -1,6 +1,7 @@
 // packageMy/pickup/pickup-list.ts — 提货记录列表
 import { callStaffApi } from '../../utils/cloud'
 import { formatDateTime } from '../../utils/formatters'
+import { isManager, requireManager } from '../../utils/role'
 
 interface PickupRow {
   id: number
@@ -34,18 +35,35 @@ Page({
     hasMore: true,
     startDate: '',
     endDate: '',
+    isManager: false,
   },
 
   onLoad() {
+    if (!this.ensureManagerAccess()) return
     this.refresh()
   },
 
+  onShow() {
+    this.ensureManagerAccess()
+  },
+
+  ensureManagerAccess(): boolean {
+    const manager = isManager()
+    this.setData({ isManager: manager })
+    if (manager) return true
+    requireManager()
+    wx.navigateBack()
+    return false
+  },
+
   async refresh() {
+    if (!this.ensureManagerAccess()) return
     this.setData({ items: [], page: 1, hasMore: true })
     await this.loadPage()
   },
 
   async loadPage() {
+    if (!this.ensureManagerAccess()) return
     if (this.data.loading || !this.data.hasMore) return
     this.setData({ loading: true })
     try {

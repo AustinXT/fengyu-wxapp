@@ -36,6 +36,8 @@ interface IAppOption {
     availableLoginLevels: LoginLevel[];
     scopedStores: ScopedStore[];
     managerStores: ScopedStore[];
+    /** manager 角色管辖门店的 id 列表；兼容部分 auth 缓存/响应。 */
+    managerStoreIds: string[];
     // 运行时
     loginLevel: LoginLevel | null;
     currentStoreId: string;
@@ -62,6 +64,7 @@ interface IAppOption {
     availableLoginLevels?: LoginLevel[];
     scopedStores?: ScopedStore[];
     managerStores?: ScopedStore[];
+    managerStoreIds?: string[];
   }): void;
   setLoginLevel(level: LoginLevel): void;
   setCurrentStoreId(storeId: string): void;

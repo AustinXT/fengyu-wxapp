@@ -31,13 +31,17 @@ export default function EmployeesPage({
   total,
   orgNodes,
   skillTags,
-  canDelete,
+  canCreate,
+  canManageSkillTags,
+  canDeleteSkillTags,
 }: {
   employees: Employee[];
   total: number;
   orgNodes: OrgNode[];
   skillTags: SkillTag[];
-  canDelete: boolean;
+  canCreate: boolean;
+  canManageSkillTags: boolean;
+  canDeleteSkillTags: boolean;
 }) {
   const [skillTagDialogOpen, setSkillTagDialogOpen] = useState(false);
   const { get, set, setMany } = useUrlFilters();
@@ -188,12 +192,16 @@ export default function EmployeesPage({
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">员工管理</h1>
         <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={() => setSkillTagDialogOpen(true)}>
-            标签管理
-          </Button>
-          <Link href="/employees/create">
-            <Button>新增员工</Button>
-          </Link>
+          {canManageSkillTags && (
+            <Button variant="outline" onClick={() => setSkillTagDialogOpen(true)}>
+              标签管理
+            </Button>
+          )}
+          {canCreate && (
+            <Link href="/employees/create">
+              <Button>新增员工</Button>
+            </Link>
+          )}
         </div>
       </div>
 
@@ -242,12 +250,15 @@ export default function EmployeesPage({
         onPageSizeChange={(size) => setMany({ size: String(size), page: "" })}
       />
 
-      <SkillTagManagementDialog
-        open={skillTagDialogOpen}
-        onOpenChange={setSkillTagDialogOpen}
-        skillTags={skillTags}
-        canDelete={canDelete}
-      />
+      {canManageSkillTags && (
+        <SkillTagManagementDialog
+          open={skillTagDialogOpen}
+          onOpenChange={setSkillTagDialogOpen}
+          skillTags={skillTags}
+          canManage={canManageSkillTags}
+          canDelete={canDeleteSkillTags}
+        />
+      )}
     </div>
   );
 }

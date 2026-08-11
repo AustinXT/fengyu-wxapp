@@ -27,7 +27,7 @@
 }
 
 .filter-chip.active {
-  background: #C0322A;
+  background: var(--color-primary);
   color: #FFFFFF;
 }
 
@@ -94,7 +94,7 @@
 
 .meta-tag {
   background: #FFF0EE;
-  color: #C0322A;
+  color: var(--color-primary);
   padding: 2rpx 12rpx;
   border-radius: 4rpx;
   font-size: 22rpx;
@@ -119,7 +119,7 @@
 }
 
 .customer {
-  color: #C0322A;
+  color: var(--color-primary);
 }
 
 .item-foot {

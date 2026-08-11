@@ -7,6 +7,7 @@ import { revalidatePath } from 'next/cache'
 import { alias } from 'drizzle-orm/pg-core'
 import type { Store } from '@/lib/types'
 import { scopeCondition, hasPermission } from '@/lib/permissions'
+import { getSession } from '@/lib/auth'
 import { isNodeInScope } from '@/lib/node-scope'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
@@ -63,9 +64,18 @@ export const getStores = withPermission('store:list', async (session): Promise<S
   return rows.map(rowToStore)
 })
 
-export const getMarketStoreFilterOptions = withPermission(
-  'store:list',
-  async (session): Promise<MarketStoreFilterOptions> => {
+/**
+ * 列表页的辅助市场/门店筛选数据。
+ *
+ * 主列表的读取权限与 `store:list` 是两套能力；没有门店读取权限时返回空选项，
+ * 不能让辅助下拉把已授权页面 SSR 成 403。空结果不会泄露任何门店信息。
+ */
+export async function getMarketStoreFilterOptions(): Promise<MarketStoreFilterOptions> {
+  const session = await getSession()
+  if (!session || !hasPermission(session, 'store:list')) {
+    return { markets: [], stores: [] }
+  }
+
     const rows = await db
       .select({
         storeId: stores.storeId,
@@ -93,8 +103,7 @@ export const getMarketStoreFilterOptions = withPermission(
         marketName: row.marketName,
       })),
     }
-  },
-)
+}
 
 export const getStoreById = withPermission(
   'store:list',

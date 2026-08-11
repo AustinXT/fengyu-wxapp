@@ -39,7 +39,7 @@
   padding: 4rpx 12rpx;
   border-radius: 8rpx;
   line-height: 1.3;
-  color: #C0322A;
+  color: var(--color-primary);
   background: #FCE8E6;
 }
 

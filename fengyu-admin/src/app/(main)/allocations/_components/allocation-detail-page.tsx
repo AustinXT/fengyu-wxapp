@@ -132,12 +132,14 @@ export default function AllocationDetailPageClient({
   employees,
   commissionRates = [],
   skillTags = [],
+  canSave = false,
 }: {
   order: SaleOrder
   allocations: SaleAllocation[]
   employees: Employee[]
   commissionRates?: CommissionRate[]
   skillTags?: SkillTag[]
+  canSave?: boolean
 }) {
   // 技能标签下拉选项：严格来自数据库 skill_tags（is_valid + sort_order 已在 action 内处理）
   const skillTagNames = useMemo(() => skillTags.map((t) => t.name), [skillTags])
@@ -165,6 +167,7 @@ export default function AllocationDetailPageClient({
   )
 
   const addEntry = (saleItemId: string) => {
+    if (!canSave) return
     setItemAllocs((prev) => ({
       ...prev,
       [saleItemId]: [
@@ -188,6 +191,7 @@ export default function AllocationDetailPageClient({
     field: 'skillTag' | 'employeeId' | 'ratioPercent',
     value: string,
   ) => {
+    if (!canSave) return
     setItemAllocs((prev) => {
       const item = items.find((i) => i.saleItemId === saleItemId)
       const received = item ? Number(item.received) : 0
@@ -223,6 +227,7 @@ export default function AllocationDetailPageClient({
   }
 
   const removeEntry = (saleItemId: string, entryId: number) => {
+    if (!canSave) return
     setItemAllocs((prev) => ({
       ...prev,
       [saleItemId]: (prev[saleItemId] || []).filter((e) => e.id !== entryId),
@@ -275,6 +280,7 @@ export default function AllocationDetailPageClient({
             onAdd={addEntry}
             onUpdate={updateEntry}
             onRemove={removeEntry}
+            canSave={canSave}
           />
         ))
       ) : (
@@ -291,7 +297,7 @@ export default function AllocationDetailPageClient({
       {/* 保存 */}
       <Card>
         <CardContent className="pt-6">
-          <SaveButton orderId={order.saleOrderId} items={items} itemAllocs={itemAllocs} />
+          {canSave && <SaveButton orderId={order.saleOrderId} items={items} itemAllocs={itemAllocs} />}
         </CardContent>
       </Card>
     </div>
@@ -308,6 +314,7 @@ function ItemAllocationCard({
   onAdd,
   onUpdate,
   onRemove,
+  canSave,
 }: {
   item: SaleItem
   entries: AllocationEntry[]
@@ -316,6 +323,7 @@ function ItemAllocationCard({
   onAdd: (saleItemId: string) => void
   onUpdate: (saleItemId: string, entryId: number, field: 'skillTag' | 'employeeId' | 'ratioPercent', value: string) => void
   onRemove: (saleItemId: string, entryId: number) => void
+  canSave: boolean
 }) {
   const received = Number(item.received)
 
@@ -363,6 +371,7 @@ function ItemAllocationCard({
                   <Select
                     value={entry.skillTag}
                     onChange={(e) => onUpdate(item.saleItemId, entry.id, 'skillTag', e.target.value)}
+                    disabled={!canSave}
                   >
                     <option value="">选择</option>
                     {skillTagNames.map((tag) => (
@@ -377,7 +386,7 @@ function ItemAllocationCard({
                   <Select
                     value={entry.employeeId}
                     onChange={(e) => onUpdate(item.saleItemId, entry.id, 'employeeId', e.target.value)}
-                    disabled={!entry.skillTag}
+                    disabled={!canSave || !entry.skillTag}
                   >
                     <option value="">{entry.skillTag ? `选择(${filteredEmployees.length}人)` : '先选标签'}</option>
                     {filteredEmployees.map((emp) => (
@@ -408,6 +417,7 @@ function ItemAllocationCard({
                       value={ratioSelectValue}
                       onChange={(e) => onUpdate(item.saleItemId, entry.id, 'ratioPercent', e.target.value)}
                       className="w-[104px]"
+                      disabled={!canSave}
                     >
                       <option value="">-</option>
                       {PERCENTAGE_OPTIONS.map((p) => (
@@ -426,6 +436,7 @@ function ItemAllocationCard({
                         onChange={(e) => onUpdate(item.saleItemId, entry.id, 'ratioPercent', e.target.value)}
                         className="w-[88px]"
                         placeholder="%"
+                        disabled={!canSave}
                       />
                     )}
                   </div>
@@ -444,9 +455,11 @@ function ItemAllocationCard({
                 </div>
 
                 {/* 删除 */}
-                <Button size="sm" variant="ghost" onClick={() => onRemove(item.saleItemId, entry.id)} className="text-[#D94040] shrink-0 px-1">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                </Button>
+                {canSave && (
+                  <Button size="sm" variant="ghost" onClick={() => onRemove(item.saleItemId, entry.id)} className="text-[#D94040] shrink-0 px-1">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                  </Button>
+                )}
               </div>
             )
           })
@@ -467,9 +480,11 @@ function ItemAllocationCard({
               </span>
             ))}
           </div>
-          <Button size="sm" variant="outline" onClick={() => onAdd(item.saleItemId)}>
-            + 添加分配
-          </Button>
+          {canSave && (
+            <Button size="sm" variant="outline" onClick={() => onAdd(item.saleItemId)}>
+              + 添加分配
+            </Button>
+          )}
         </div>
       </CardContent>
     </Card>

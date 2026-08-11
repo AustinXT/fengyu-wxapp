@@ -77,6 +77,7 @@ interface Props {
   messageTypes: string[]
   total: number
   canSend: boolean
+  canDelete: boolean
   filterOptions: MarketStoreFilterOptions
 }
 
@@ -85,7 +86,7 @@ interface Props {
  *
  * 2026-08-05 改：添加市场-门店筛选 + scope 过滤（通过接收人的门店关联）。
  */
-export default function MessagesPage({ messages, messageTypes, total, canSend, filterOptions }: Props) {
+export default function MessagesPage({ messages, messageTypes, total, canSend, canDelete, filterOptions }: Props) {
   const router = useRouter()
   const { get, set, setMany } = useUrlFilters()
   const setFilter = useCallback(
@@ -391,14 +392,16 @@ export default function MessagesPage({ messages, messageTypes, total, canSend, f
           >
             查看
           </Button>
-          <Button
-            variant="link"
-            size="sm"
-            className="h-auto p-0 text-[#D94040]"
-            onClick={() => setPendingDelete(row)}
-          >
-            删除
-          </Button>
+          {canDelete && (
+            <Button
+              variant="link"
+              size="sm"
+              className="h-auto p-0 text-[#D94040]"
+              onClick={() => setPendingDelete(row)}
+            >
+              删除
+            </Button>
+          )}
         </div>
       ),
     },

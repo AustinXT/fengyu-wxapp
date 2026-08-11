@@ -4,6 +4,7 @@ import Link from "next/link"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import type { DashboardStats } from "@/lib/types"
+import { hasUiCapability } from "@/lib/permission-contract"
 
 function TrendArrow({ current, previous }: { current: number; previous: number }) {
   const diff = current - previous
@@ -29,6 +30,7 @@ function TrendArrow({ current, previous }: { current: number; previous: number }
 
 interface Props {
   stats: DashboardStats
+  actions: string[]
 }
 
 /**
@@ -39,7 +41,9 @@ interface Props {
  *   - "今日业绩" = SUM(received - refunded_amount)，已扣退款（audit-17 P0-17-01/02 修复）
  *   - "今日已退款"独立展示（refunded_amount > 0 时才点亮，避免噪音）
  */
-function BusinessDashboard({ stats }: Props) {
+function BusinessDashboard({ stats, actions }: Props) {
+  const canAccess = (action: string | readonly string[]) =>
+    (Array.isArray(action) ? action : [action]).some((item) => hasUiCapability(actions, item))
   const metricCards = [
     {
       label: "今日客流",
@@ -47,6 +51,7 @@ function BusinessDashboard({ stats }: Props) {
       format: (v: number) => String(v),
       prev: stats.yesterdayVisitors,
       href: "/services",
+      action: "service:list",
       hint: "按已完成服务单去重",
     },
     {
@@ -55,6 +60,7 @@ function BusinessDashboard({ stats }: Props) {
       format: (v: number) => `¥${v.toLocaleString()}`,
       prev: stats.yesterdayRevenue,
       href: "/orders",
+      action: "sale_order:list",
       hint:
         stats.todayRefundedAmount > 0
           ? `已扣退款 ¥${stats.todayRefundedAmount.toLocaleString()}`
@@ -66,6 +72,7 @@ function BusinessDashboard({ stats }: Props) {
       format: (v: number) => String(v),
       prev: null as number | null,
       href: "/orders",
+      action: "sale_order:list",
       hint: undefined as string | undefined,
     },
     {
@@ -74,28 +81,29 @@ function BusinessDashboard({ stats }: Props) {
       format: (v: number) => String(v),
       prev: null as number | null,
       href: "/appointments",
+      action: "appointment:list",
       hint: undefined as string | undefined,
     },
   ]
 
   const todoItems = [
-    { text: `${stats.pendingAllocations} 笔订单待分配`, href: "/allocations", count: stats.pendingAllocations },
-    { text: `${stats.pendingOrders} 笔订单待处理`, href: "/orders", count: stats.pendingOrders },
-    { text: `${stats.pendingAppointments} 条预约待确认`, href: "/appointments", count: stats.pendingAppointments },
-    { text: `${stats.activeServices} 个服务单进行中`, href: "/services", count: stats.activeServices },
-  ].filter(item => item.count > 0)
+    { text: `${stats.pendingAllocations} 笔订单待分配`, href: "/allocations", count: stats.pendingAllocations, action: "allocation:list" },
+    { text: `${stats.pendingOrders} 笔订单待处理`, href: "/orders", count: stats.pendingOrders, action: "sale_order:list" },
+    { text: `${stats.pendingAppointments} 条预约待确认`, href: "/appointments", count: stats.pendingAppointments, action: "appointment:list" },
+    { text: `${stats.activeServices} 个服务单进行中`, href: "/services", count: stats.activeServices, action: "service:list" },
+  ].filter(item => item.count > 0 && canAccess(item.action))
 
   const shortcuts = [
-    { label: "开单", href: "/orders/create" },
-    { label: "订单管理", href: "/orders" },
-    { label: "顾客管理", href: "/customers" },
-    { label: "营业额分配", href: "/allocations" },
-  ]
+    { label: "开单", href: "/orders/create", action: "sale_order:create" },
+    { label: "订单管理", href: "/orders", action: "sale_order:list" },
+    { label: "顾客管理", href: "/customers", action: "customer:list" },
+    { label: "营业额分配", href: "/allocations", action: "allocation:list" },
+  ].filter(item => canAccess(item.action))
 
   return (
     <>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {metricCards.map((card) => (
+        {metricCards.filter((card) => canAccess(card.action)).map((card) => (
           <Link key={card.label} href={card.href}>
             <Card className="hover:border-[#C0322A]/30 transition-colors cursor-pointer">
               <CardContent className="p-5">
@@ -163,45 +171,47 @@ function BusinessDashboard({ stats }: Props) {
 }
 
 /** 系统管理看板：admin / hr / product */
-function SystemDashboard({ stats }: Props) {
+function SystemDashboard({ stats, actions }: Props) {
   const a = stats.adminStats
   if (!a) return null
+  const canAccess = (action: string | readonly string[]) =>
+    (Array.isArray(action) ? action : [action]).some((item) => hasUiCapability(actions, item))
 
-  const ROLE_CARDS: Record<string, Array<{ label: string; value: number; href: string }>> = {
+  const ROLE_CARDS: Record<string, Array<{ label: string; value: number; href: string; action: string | readonly string[] }>> = {
     admin: [
-      { label: "营业门店", value: a.totalStores, href: "/stores" },
-      { label: "在职员工", value: a.totalEmployees, href: "/employees" },
-      { label: "在售商品", value: a.totalProducts, href: "/products" },
-      { label: "注册顾客", value: a.totalCustomers, href: "/customers" },
+      { label: "营业门店", value: a.totalStores, href: "/stores", action: "store:list" },
+      { label: "在职员工", value: a.totalEmployees, href: "/employees", action: "employee:list" },
+      { label: "在售商品", value: a.totalProducts, href: "/products", action: "product:list" },
+      { label: "注册顾客", value: a.totalCustomers, href: "/customers", action: "customer:list" },
     ],
     hr: [
-      { label: "营业门店", value: a.totalStores, href: "/stores" },
-      { label: "在职员工", value: a.totalEmployees, href: "/employees" },
+      { label: "营业门店", value: a.totalStores, href: "/stores", action: "store:list" },
+      { label: "在职员工", value: a.totalEmployees, href: "/employees", action: "employee:list" },
     ],
     product: [
-      { label: "在售商品", value: a.totalProducts, href: "/products" },
+      { label: "在售商品", value: a.totalProducts, href: "/products", action: "product:list" },
     ],
   }
 
-  const ROLE_SHORTCUTS: Record<string, Array<{ label: string; href: string }>> = {
+  const ROLE_SHORTCUTS: Record<string, Array<{ label: string; href: string; action: string | readonly string[] }>> = {
     admin: [
-      { label: "组织架构", href: "/org" },
-      { label: "门店管理", href: "/stores" },
-      { label: "员工管理", href: "/employees" },
-      { label: "商品管理", href: "/products" },
-      { label: "权限管理", href: "/permissions" },
+      { label: "组织架构", href: "/org", action: "org:list" },
+      { label: "门店管理", href: "/stores", action: "store:list" },
+      { label: "员工管理", href: "/employees", action: "employee:list" },
+      { label: "商品管理", href: "/products", action: "product:list" },
+      { label: "权限管理", href: "/permissions", action: "permission:list" },
 
     ],
     hr: [
-      { label: "组织架构", href: "/org" },
-      { label: "门店管理", href: "/stores" },
-      { label: "员工管理", href: "/employees" },
-      { label: "权限管理", href: "/permissions" },
+      { label: "组织架构", href: "/org", action: "org:list" },
+      { label: "门店管理", href: "/stores", action: "store:list" },
+      { label: "员工管理", href: "/employees", action: "employee:list" },
+      { label: "权限管理", href: "/permissions", action: "permission:list" },
     ],
     product: [
-      { label: "商品管理", href: "/products" },
-      { label: "品项分类", href: "/products/categories" },
-      { label: "优惠券管理", href: "/coupons" },
+      { label: "商品管理", href: "/products", action: "product:list" },
+      { label: "品项分类", href: "/products/categories", action: "product:list" },
+      { label: "优惠券管理", href: "/coupons", action: "coupon:list" },
     ],
   }
 
@@ -212,7 +222,7 @@ function SystemDashboard({ stats }: Props) {
   return (
     <>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {cards.map((card) => (
+        {cards.filter((card) => canAccess(card.action)).map((card) => (
           <Link key={card.label} href={card.href}>
             <Card className="hover:border-[#C0322A]/30 transition-colors cursor-pointer">
               <CardContent className="p-5">
@@ -228,7 +238,7 @@ function SystemDashboard({ stats }: Props) {
         <CardContent className="p-5">
           <h2 className="text-base font-semibold text-[var(--foreground)] mb-4">快捷入口</h2>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            {shortcuts.map((item) => (
+            {shortcuts.filter((item) => canAccess(item.action)).map((item) => (
               <Link key={item.label} href={item.href}>
                 <Button variant="outline" className="w-full h-16 text-base">
                   {item.label}
@@ -242,7 +252,7 @@ function SystemDashboard({ stats }: Props) {
   )
 }
 
-export default function DashboardPage({ stats }: Props) {
+export default function DashboardPage({ stats, actions }: Props) {
   return (
     <div className="space-y-6">
       <div>
@@ -251,8 +261,8 @@ export default function DashboardPage({ stats }: Props) {
       </div>
 
       {stats.roleContext === 'business'
-        ? <BusinessDashboard stats={stats} />
-        : <SystemDashboard stats={stats} />
+        ? <BusinessDashboard stats={stats} actions={actions} />
+        : <SystemDashboard stats={stats} actions={actions} />
       }
     </div>
   )

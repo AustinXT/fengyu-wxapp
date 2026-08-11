@@ -1,6 +1,7 @@
 // pages/unbind-requests/unbind-requests.ts — 顾客转店申请审批
 import { callStaffApi } from '../../utils/cloud';
 import { formatDateTime } from '../../utils/formatters';
+import { isManager, requireManager } from '../../utils/role';
 
 interface UnbindRequest {
   requestId: string;
@@ -21,13 +22,22 @@ Page({
     rejectRequestId: '',
     rejectReason: '',
     submitting: false,
+    isManager: false,
   },
 
   onShow() {
+    const manager = isManager();
+    this.setData({ isManager: manager });
+    if (!manager) {
+      requireManager();
+      wx.navigateBack();
+      return;
+    }
     this.loadRequests();
   },
 
   async loadRequests() {
+    if (!isManager()) return;
     this.setData({ loading: true });
     try {
       const data = await callStaffApi<{ requests: UnbindRequest[] }>('store.unbindRequests');
@@ -45,6 +55,7 @@ Page({
   },
 
   async onApprove(e: WechatMiniprogram.TouchEvent) {
+    if (!requireManager()) return;
     const { requestId, fromStore, toStore } = e.currentTarget.dataset as {
       requestId: string; fromStore: string; toStore: string;
     };
@@ -53,7 +64,7 @@ Page({
       content: `通过后顾客将从「${fromStore}」转绑到「${toStore}」。`,
       confirmText: '通过',
       success: async (res) => {
-        if (!res.confirm) return;
+        if (!res.confirm || !requireManager()) return;
         try {
           await callStaffApi('store.approveUnbind', { requestId });
           wx.showToast({ title: '已通过', icon: 'success' });
@@ -67,6 +78,7 @@ Page({
   },
 
   onReject(e: WechatMiniprogram.TouchEvent) {
+    if (!requireManager()) return;
     const { requestId } = e.currentTarget.dataset as { requestId: string };
     this.setData({ showRejectDialog: true, rejectRequestId: requestId, rejectReason: '' });
   },
@@ -80,6 +92,7 @@ Page({
   },
 
   async onRejectDialogConfirm() {
+    if (!requireManager()) return;
     if (this.data.submitting) return;
     this.setData({ submitting: true });
     try {

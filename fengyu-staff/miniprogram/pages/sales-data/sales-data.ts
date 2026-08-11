@@ -3,6 +3,7 @@
 // scope 由 hub（mgmt-dashboard）通过路由参数透传
 import { callStaffApi } from '../../utils/cloud'
 import { formatAmount } from '../../utils/number'
+import { isManagementMode } from '../../utils/role'
 
 type Period = 'month' | 'lastMonth' | 'year'
 type ScopeType = 'all' | 'market' | 'store'
@@ -95,11 +96,21 @@ Page<IData, WechatMiniprogram.IAnyObject>({
   },
 
   onLoad(query: { scopeType?: string; scopeId?: string; scopeName?: string }) {
+    if (!isManagementMode()) {
+      wx.reLaunch({ url: '/pages/workbench/workbench' })
+      return
+    }
     const scopeType = (query?.scopeType as ScopeType) || 'all'
     const scopeId = query?.scopeId || null
     const scopeName = query?.scopeName ? decodeURIComponent(query.scopeName) : ''
     this.setData({ scopeType, scopeId, scopeName })
     this.loadData()
+  },
+
+  onShow() {
+    if (!isManagementMode()) {
+      wx.reLaunch({ url: '/pages/workbench/workbench' })
+    }
   },
 
   onPeriodChange(e: WechatMiniprogram.BaseEvent) {

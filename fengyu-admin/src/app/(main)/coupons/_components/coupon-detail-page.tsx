@@ -19,7 +19,7 @@ import { formatCurrency, formatDate } from "@/lib/utils"
 import { formatPhoneSafe } from "@/lib/format"
 import { actionErrorMessage } from "@/lib/action-error"
 import { OrgTreeSelect } from "@/components/ui/org-tree-select"
-import { updateTemplate, issueCoupon, batchIssueCoupons, getCustomersForBatchIssue, getOrgNodesForBatchIssue } from "@/actions/coupons"
+import { updateTemplate, issueCoupon, batchIssueCoupons, getCustomersForBatchIssue, getOrgNodesForBatchIssue, searchCustomersForCoupon } from "@/actions/coupons"
 import type { CouponTemplate, CouponType, IssuedCoupon, BatchCouponCustomer, OrgNode } from "@/lib/types"
 import { validateCouponValidityFields } from "./coupon-validity-helper"
 
@@ -57,9 +57,11 @@ interface Props {
   markets: Market[]
   issuedCoupons: IssuedCoupon[]
   categories: Category[]
+  canCreate: boolean
+  canUpdate: boolean
 }
 
-export default function CouponDetailPage({ template, markets, issuedCoupons, categories }: Props) {
+export default function CouponDetailPage({ template, markets, issuedCoupons, categories, canCreate, canUpdate }: Props) {
   const router = useRouter()
 
   // Edit mode state
@@ -322,8 +324,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
       return
     }
     try {
-      const { searchCustomerByPhone } = await import("@/actions/customers")
-      const customer = await searchCustomerByPhone(issuePhone.trim())
+      const customer = await searchCustomersForCoupon(issuePhone.trim())
       if (customer) {
         setIssueCustomerName(customer.name || "未知姓名")
       } else {
@@ -424,11 +425,17 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
               </>
             ) : (
               <>
-                <Button variant="outline" size="sm" onClick={handleStartEdit}>
-                  编辑
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => setBatchOpen(true)}>批量发放</Button>
-                <Button size="sm" onClick={() => setIssueOpen(true)}>发放优惠券</Button>
+                {canUpdate && (
+                  <Button variant="outline" size="sm" onClick={handleStartEdit}>
+                    编辑
+                  </Button>
+                )}
+                {canCreate && (
+                  <>
+                    <Button variant="outline" size="sm" onClick={() => setBatchOpen(true)}>批量发放</Button>
+                    <Button size="sm" onClick={() => setIssueOpen(true)}>发放优惠券</Button>
+                  </>
+                )}
               </>
             )}
           </div>
@@ -763,7 +770,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
       </Card>
 
       {/* Issue Coupon Dialog */}
-      <Dialog open={issueOpen} onOpenChange={setIssueOpen}>
+      {canCreate && <Dialog open={issueOpen} onOpenChange={setIssueOpen}>
         <DialogHeader>
           <DialogTitle>发放优惠券 - {template.name}</DialogTitle>
         </DialogHeader>
@@ -801,10 +808,10 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
             {issueLoading ? "发放中..." : "确认发放"}
           </Button>
         </DialogFooter>
-      </Dialog>
+      </Dialog>}
 
       {/* Batch Issue Coupon Dialog */}
-      <Dialog open={batchOpen} onOpenChange={(open) => { if (!open) handleCloseBatch(); else setBatchOpen(true) }} className="max-w-2xl">
+      {canCreate && <Dialog open={batchOpen} onOpenChange={(open) => { if (!open) handleCloseBatch(); else setBatchOpen(true) }} className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>批量发放优惠券 - {template.name}</DialogTitle>
         </DialogHeader>
@@ -963,7 +970,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
             {batchLoading ? "发放中..." : `确认发放（${batchPhoneList.length}张）`}
           </Button>
         </DialogFooter>
-      </Dialog>
+      </Dialog>}
     </div>
   )
 }

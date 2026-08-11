@@ -6,6 +6,10 @@ import type { SQL } from 'drizzle-orm'
 import type { PgColumn } from 'drizzle-orm/pg-core'
 import type { AuthSession, RoleType } from './types'
 import { collectDescendantNodeIds, findAncestorNodeIdByType } from './org-scope'
+import {
+  UNDELIVERED_ADMIN_ACTIONS,
+  sanitizePermissionMatrix,
+} from './permission-contract'
 
 /**
  * DEFAULT_PERMISSION_MATRIX: role → actions[]
@@ -61,58 +65,55 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     // 历史订单核对（WorkFine 导入的 status='未审核' 订单）
     'legacy_order:list', 'legacy_order:approve', 'legacy_order:reject',
     'legacy_order:update_phone', 'legacy_order:update_amount', 'legacy_order:pull',
-    // 门店库存（4 类单据 v1，2026-05-19；admin 全开）
-    'inventory:list', 'inventory:create', 'inventory:update', 'inventory:delete',
-    // 门店库存 v2（中心库存表 + 统一单据；2026-07-24 会议）
-    'inventory:stock_list', 'inventory:create_doc', 'inventory:approve', 'inventory:price_view', 'inventory:export',
+    // 门店库存（4 类单据 v1；update 及 v2 写/审批/价格能力尚未交付 Admin UI）
+    'inventory:list', 'inventory:create', 'inventory:delete',
+    'inventory:stock_list', 'inventory:export',
     // 门店拉卡拉收款配置（门店关联收款商户；admin 专属，涉及收款，hr 不开）
     'store:lakala_config',
     // 商户管理（拉卡拉收款商户档案 CRUD；独立模块 /merchants，admin + finance）
     'merchant:list', 'merchant:create', 'merchant:update', 'merchant:delete',
   ],
-  // 2026-06-24 对齐生产实配（运营在权限矩阵 UI 给店长扩权后固化为代码默认）。按模块字母序排列。
-  // 相对历史默认的敏感扩权：sale_order:delete（删单）、employee:* 全 CRUD（维护本店员工）、
-  // service:delete、pickup_record:delete、store_unbind:delete、store:lakala_config（门店收款配置）、
-  // merchant:list（收款商户只读）、message:*、operation_log:list。退款 approve 仍仅 manager/admin 持有。
+  // 店长：门店业务的非物理删除操作。物理删除和收款配置仅系统管理员可授予。
   manager: [
     'allocation:list', 'allocation:save',
-    'appointment:checkin', 'appointment:confirm', 'appointment:delete', 'appointment:list',
+    'appointment:checkin', 'appointment:confirm', 'appointment:list',
     'card_transaction:list',
     'coupon:list',
-    'customer:create', 'customer:delete', 'customer:list', 'customer:update',
+    'customer:create', 'customer:list', 'customer:update',
     'dashboard:view',
     'data_center:dashboard',
-    'employee:create', 'employee:delete', 'employee:list', 'employee:update',
-    'inventory:create', 'inventory:create_doc', 'inventory:list', 'inventory:stock_list', 'inventory:update',
+    'employee:create', 'employee:list', 'employee:update',
+    'inventory:create', 'inventory:list', 'inventory:stock_list',
     'legacy_order:approve', 'legacy_order:list', 'legacy_order:pull', 'legacy_order:reject', 'legacy_order:update_amount', 'legacy_order:update_phone',
     'merchant:list',
     'message:list', 'message:send',
     'operation_log:list',
     'org:list',
-    'pickup_record:create', 'pickup_record:delete', 'pickup_record:list',
+    'pickup_record:create', 'pickup_record:list',
     'point_transaction:list',
     'product:list',
     'sale_item:list',
-    'sale_order:create', 'sale_order:delete', 'sale_order:deposit_approve', 'sale_order:list', 'sale_order:record_payment', 'sale_order:refund_approve', 'sale_order:refund_create', 'sale_order:update',
-    'service:create', 'service:delete', 'service:list', 'service:update',
-    'store:lakala_config', 'store:list',
-    'store_unbind:approve', 'store_unbind:delete', 'store_unbind:list', 'store_unbind:reject',
+    'sale_order:create', 'sale_order:deposit_approve', 'sale_order:list', 'sale_order:record_payment', 'sale_order:refund_approve', 'sale_order:refund_create', 'sale_order:update',
+    'service:create', 'service:list', 'service:update',
+    'store:list',
+    'store_unbind:approve', 'store_unbind:list', 'store_unbind:reject',
   ],
-  // 2026-06-24 对齐生产实配。相对历史默认的扩权：commission:* 全 CRUD（提成矩阵）、coupon:list、
+  // 财务：提成矩阵维护、历史订单核对与商户档案维护；物理删除仅系统管理员可授予。
+  // 相对历史默认的扩权：commission:* 全 CRUD（提成矩阵）、coupon:list、
   // legacy_order 核对四项（approve/reject/update_amount/update_phone）、product:list、operation_log:list。
   // service:list — 营业额分配页含服务提成部分，finance 只读对账需看全。商户档案 /merchants 完整 CRUD。
   finance: [
     'allocation:list',
     'card_transaction:list',
-    'commission:create', 'commission:delete', 'commission:list', 'commission:update',
+    'commission:create', 'commission:list', 'commission:update',
     'coupon:list',
     'customer:list',
     'dashboard:view',
     'data_center:dashboard',
     'employee:list',
-    'inventory:approve', 'inventory:export', 'inventory:list', 'inventory:price_view', 'inventory:stock_list',
+    'inventory:export', 'inventory:list', 'inventory:stock_list',
     'legacy_order:approve', 'legacy_order:list', 'legacy_order:pull', 'legacy_order:reject', 'legacy_order:update_amount', 'legacy_order:update_phone',
-    'merchant:create', 'merchant:delete', 'merchant:list', 'merchant:update',
+    'merchant:create', 'merchant:list', 'merchant:update',
     'operation_log:list',
     'org:list',
     'pickup_record:list',
@@ -137,23 +138,23 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'service:list',
     'store:create', 'store:list', 'store:update',
   ],
-  // 2026-06-24 对齐生产实配。相对历史默认的扩权：inventory 写权限（create/update/delete）、
+  // 2026-06-24 对齐生产实配。库存仅保留已交付的创建/查看/导出能力；
   // sale_order:list、operation_log:list。
   product: [
     'coupon:create', 'coupon:list', 'coupon:update',
     'dashboard:view',
-    'inventory:create', 'inventory:create_doc', 'inventory:delete', 'inventory:export', 'inventory:list', 'inventory:stock_list', 'inventory:update',
+    'inventory:create', 'inventory:export', 'inventory:list', 'inventory:stock_list',
     'operation_log:list',
     'org:list',
     'product:create', 'product:list', 'product:update',
     'sale_order:list', 'sale_order:refund_create',
     'store:list',
   ],
-  // 2026-06-24 对齐生产实配。相对历史默认的扩权：appointment 全套（含 delete）、customer:delete、
+  // 2026-06-24 对齐生产实配。预约、顾客等物理删除仅系统管理员可授予。
   // inventory:list、legacy_order 核对四项、pickup_record:list、product:list、operation_log:list。
   customer_mgr: [
-    'appointment:checkin', 'appointment:confirm', 'appointment:delete', 'appointment:list',
-    'customer:create', 'customer:delete', 'customer:list', 'customer:update',
+    'appointment:checkin', 'appointment:confirm', 'appointment:list',
+    'customer:create', 'customer:list', 'customer:update',
     'dashboard:view',
     'employee:list',
     'inventory:list', 'inventory:stock_list',
@@ -179,6 +180,16 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
  */
 export const ALL_ACTIONS: string[] = [
   ...new Set(Object.values(DEFAULT_PERMISSION_MATRIX).flat()),
+].sort()
+
+/**
+ * 已知权限点 = 当前可授予项 + 未交付但仍存在后端实现的库存项。
+ *
+ * `ALL_ACTIONS` 是矩阵编辑器可见且可授予的全集；`KNOWN_PERMISSION_ACTIONS` 仅用于
+ * 读取遗留矩阵和保存报错，使未交付 action 被精确识别为不可授予而非 unknown。
+ */
+export const KNOWN_PERMISSION_ACTIONS: string[] = [
+  ...new Set([...ALL_ACTIONS, ...UNDELIVERED_ADMIN_ACTIONS]),
 ].sort()
 
 /**
@@ -218,9 +229,9 @@ export async function getPermissionMatrix(): Promise<Record<RoleType, string[]>>
       return DEFAULT_PERMISSION_MATRIX
     }
     try {
-      const parsed = JSON.parse(raw) as Record<RoleType, string[]>
-      _matrixCache = { matrix: parsed, expiresAt: now + PERMISSION_MATRIX_CACHE_TTL_MS }
-      return parsed
+      const matrix = sanitizePermissionMatrix(JSON.parse(raw), KNOWN_PERMISSION_ACTIONS)
+      _matrixCache = { matrix, expiresAt: now + PERMISSION_MATRIX_CACHE_TTL_MS }
+      return matrix
     } catch (parseErr) {
       console.error('[permission-matrix] JSON parse failed, fallback to DEFAULT', parseErr)
       return DEFAULT_PERMISSION_MATRIX

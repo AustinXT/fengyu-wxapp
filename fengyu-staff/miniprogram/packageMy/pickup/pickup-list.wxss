@@ -24,7 +24,7 @@
 
 .clear {
   font-size: 24rpx;
-  color: #C0322A;
+  color: var(--color-primary);
   margin-left: auto;
 }
 
@@ -54,7 +54,7 @@
 .card-qty {
   font-size: 28rpx;
   font-weight: 500;
-  color: #C0322A;
+  color: var(--color-primary);
 }
 
 .card-body {

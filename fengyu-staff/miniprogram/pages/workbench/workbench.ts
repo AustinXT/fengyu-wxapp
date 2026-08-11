@@ -1,6 +1,6 @@
 // pages/workbench/workbench.ts — 工作台
 import { callStaffApi } from '../../utils/cloud';
-import { isManager, requireManager } from '../../utils/role';
+import { isManagementMode, isManager, requireManager } from '../../utils/role';
 import { emit, on, EVENT_STORE_CHANGED } from '../../utils/event-bus';
 
 const app = getApp<IAppOption>();
@@ -47,6 +47,10 @@ Page({
   },
 
   onLoad() {
+    if (isManagementMode()) {
+      wx.reLaunch({ url: '/pages/mgmt-dashboard/mgmt-dashboard' });
+      return;
+    }
     this.initNavBar();
     this.setTodayDate();
   },
@@ -79,6 +83,10 @@ Page({
     if (!app.globalData.staffWfId) {
       wx.reLaunch({ url: '/pages/login/login' })
       return
+    }
+    if (isManagementMode()) {
+      wx.reLaunch({ url: '/pages/mgmt-dashboard/mgmt-dashboard' });
+      return;
     }
     this.syncStoreContext();
     this.loadWorkbench();
@@ -149,6 +157,7 @@ Page({
   },
 
   async loadWorkbench() {
+    if (isManagementMode()) return;
     this.setData({ loading: true });
     // 超时保护：10 秒后自动关闭 loading
     const timer = setTimeout(() => {
@@ -264,6 +273,7 @@ Page({
   },
 
   goUnbindRequests() {
+    if (!requireManager()) return;
     wx.navigateTo({ url: '/packageService/unbind-requests/unbind-requests' });
   },
 
@@ -273,6 +283,7 @@ Page({
   },
 
   goRefundList() {
+    if (!requireManager()) return;
     wx.navigateTo({ url: '/packageOrder/refund-list/refund-list' });
   },
 

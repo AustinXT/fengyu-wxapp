@@ -2,7 +2,7 @@ import { Suspense } from 'react'
 import { getMessagesPaginated, getMessageTypes } from '@/actions/messages'
 import { getMarketStoreFilterOptions } from '@/actions/stores'
 import { getSession } from '@/lib/auth'
-import { hasPermission } from '@/lib/permissions'
+import { hasUiCapability } from '@/lib/permission-contract'
 import MessagesPageClient from './_components/messages-page'
 
 export const dynamic = 'force-dynamic'
@@ -21,7 +21,9 @@ export default async function Page({
 
   // (main) layout 已保证 session 存在，这里仅做类型收窄
   const session = await getSession()
-  const canSend = !!session && hasPermission(session, 'message:send')
+  const actions = session?.permissions.actions ?? []
+  const canSend = hasUiCapability(actions, 'message:send')
+  const canDelete = hasUiCapability(actions, 'message:delete')
 
   const [{ data: messages, total }, messageTypes, filterOptions] = await Promise.all([
     getMessagesPaginated({
@@ -47,6 +49,7 @@ export default async function Page({
         messageTypes={messageTypes}
         total={total}
         canSend={canSend}
+        canDelete={canDelete}
         filterOptions={filterOptions}
       />
     </Suspense>

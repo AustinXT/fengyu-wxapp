@@ -204,14 +204,14 @@ describe('order.create', () => {
       .rejects.toThrow(/INVALID_PARAMS.*paymentMethod/)
   })
 
-  test('未绑定门店时拒绝开单（line 63 TRUE 分支）', async () => {
+  test('未绑定门店时先被当前门店店长门禁拒绝', async () => {
     const ctx = createManagerCtx(
       { clientPhone: '138', clientName: 'X', items: [{ skuId: 'sku-001', quantity: 1 }], paymentMethod: '线下' },
       { storeId: null }
     )
 
     await expect(orderRoutes.create(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*门店/)
+      .rejects.toThrow(/PERMISSION_DENIED.*管辖范围/)
   })
 
   test('已注册顾客有待支付订单时拒绝', async () => {
@@ -5759,6 +5759,31 @@ describe('order.customerHeldCards', () => {
 describe('order.createPickup', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
+  test('权限守卫：非当前门店有效店长不可创建提货', async () => {
+    const ctx = createBeauticianCtx({ saleItemId: 'item-001', pickupQuantity: 1 })
+
+    await expect(orderRoutes.createPickup(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
+  test('幂等查询和回读均锁定当前门店', async () => {
+    const ctx = createManagerCtx({
+      saleItemId: 'item-001',
+      pickupQuantity: 1,
+      idempotencyKey: 'pickup-idempotency-key',
+    })
+    pg.query
+      .mockResolvedValueOnce([{ id: 1 }])
+      .mockResolvedValueOnce([{ quantity: 5, picked_up_quantity: 2 }])
+
+    await orderRoutes.createPickup(ctx)
+
+    expect(pg.query.mock.calls[0][0]).toMatch(/store_id\s*=\s*\$3/)
+    expect(pg.query.mock.calls[0][1]).toEqual(['item-001', 'pickup-idempotency-key', 'store-001'])
+    expect(pg.query.mock.calls[1][0]).toMatch(/store_id\s*=\s*\$2/)
+    expect(pg.query.mock.calls[1][1]).toEqual(['item-001', 'store-001'])
+  })
+
   test('取货成功', async () => {
     const ctx = createManagerCtx({ saleItemId: 'item-001', pickupQuantity: 2 })
 
@@ -5842,6 +5867,53 @@ describe('order.createPickup', () => {
   test('取货数量 <= 0 拒绝', async () => {
     const ctx = createManagerCtx({ saleItemId: 'item-001', pickupQuantity: 0 })
     await expect(orderRoutes.createPickup(ctx)).rejects.toThrow(/INVALID_PARAMS.*取货数量/)
+  })
+})
+
+// ============================================================
+// order.availablePickupItems / order.pickupRecordsList
+// ============================================================
+describe('提货查询门店范围', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  test('可提货商品仅查询当前有效门店', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'customer-001' })
+    pg.query.mockResolvedValueOnce([])
+
+    await orderRoutes.availablePickupItems(ctx)
+
+    expect(pg.query.mock.calls[0][0]).toMatch(/o\.store_id\s*=\s*\$2/)
+    expect(pg.query.mock.calls[0][1]).toEqual(['customer-001', 'store-001'])
+  })
+
+  test('提货记录列表只使用当前有效门店，而非全量 scope', async () => {
+    const ctx = createManagerCtx({}, {
+      effectiveStoreId: 'store-current',
+      currentStoreId: 'store-current',
+      scopeStoreIds: ['store-current', 'store-other'],
+      managerStoreIds: ['store-current', 'store-other'],
+    })
+    pg.query
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ cnt: 0 }])
+
+    await orderRoutes.pickupRecordsList(ctx)
+
+    expect(pg.query.mock.calls[0][0]).toMatch(/pr\.store_id\s*=\s*\$1/)
+    expect(pg.query.mock.calls[0][0]).not.toMatch(/ANY\(\$1::text\[\]\)/)
+    expect(pg.query.mock.calls[0][1]).toEqual(['store-current'])
+  })
+
+  test('传入其他门店不能绕过当前门店范围', async () => {
+    const ctx = createManagerCtx({ storeId: 'store-other' }, {
+      effectiveStoreId: 'store-current',
+      currentStoreId: 'store-current',
+      scopeStoreIds: ['store-current', 'store-other'],
+      managerStoreIds: ['store-current', 'store-other'],
+    })
+
+    await expect(orderRoutes.pickupRecordsList(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+    expect(pg.query).not.toHaveBeenCalled()
   })
 })
 

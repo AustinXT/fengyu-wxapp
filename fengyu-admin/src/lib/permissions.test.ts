@@ -95,7 +95,7 @@ describe('DEFAULT_PERMISSION_MATRIX', () => {
     }
   })
 
-  it('manager 拥有业务操作权限 + 生产扩权（删单/员工CRUD/收款配置）', () => {
+  it('manager 拥有门店业务操作权限，但不含物理删除和收款配置', () => {
     const actions = DEFAULT_PERMISSION_MATRIX.manager
     expect(actions).toContain('sale_order:create')
     expect(actions).toContain('allocation:save')
@@ -104,11 +104,11 @@ describe('DEFAULT_PERMISSION_MATRIX', () => {
     expect(actions).toContain('customer:list')
     expect(actions).toContain('sale_item:list')
     expect(actions).toContain('card_transaction:list')
-    // 2026-06-24 对齐生产的敏感扩权（守护：勿误删）
-    expect(actions).toContain('sale_order:delete')
+    // 物理删除与拉卡拉收款配置仅系统管理员可授予。
+    expect(actions).not.toContain('sale_order:delete')
     expect(actions).toContain('sale_order:deposit_approve')
     expect(actions).toContain('employee:create')
-    expect(actions).toContain('store:lakala_config')
+    expect(actions).not.toContain('store:lakala_config')
     expect(actions).toContain('merchant:list')
   })
 

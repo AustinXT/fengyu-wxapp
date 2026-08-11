@@ -9,7 +9,7 @@
  */
 
 const pg = require('../db/pg')
-const { requireStaffBound, requireManager } = require('../middleware/auth')
+const { requireStaffBound, requireManager, isCurrentStoreManager } = require('../middleware/auth')
 const { maskPhoneForAuth } = require('../utils/phone-visibility')
 const { logOperation, logTransition } = require('../utils/operation-log')
 const { shanghaiDateStr, shanghaiYYMMDD } = require('../utils/datetime')
@@ -55,7 +55,7 @@ async function create(ctx) {
   }
 
   // 权限：店长可为任何员工创建，美容师只能指定自己
-  if (!ctx.auth.roles.includes('manager') && resolvedStaffWfId !== ctx.auth.staffWfId) {
+  if (!isCurrentStoreManager(ctx.auth) && resolvedStaffWfId !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 美容师只能创建分配给自己的服务单')
   }
 
@@ -365,7 +365,7 @@ async function start(ctx) {
 
   const so = serviceOrders[0]
 
-  if (!ctx.auth.roles.includes('manager') && so.assigned_employee_id !== ctx.auth.staffWfId) {
+  if (!isCurrentStoreManager(ctx.auth) && so.assigned_employee_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 无权操作该服务单')
   }
 
@@ -731,7 +731,7 @@ async function complete(ctx) {
 
   const so = serviceOrders[0]
 
-  if (!ctx.auth.roles.includes('manager') && so.assigned_employee_id !== ctx.auth.staffWfId) {
+  if (!isCurrentStoreManager(ctx.auth) && so.assigned_employee_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 无权操作该服务单')
   }
 
@@ -848,7 +848,7 @@ async function list(ctx) {
     whereExtra += ` AND so.status = $${params.length}`
   }
 
-  if (!ctx.auth.roles.includes('manager')) {
+  if (!isCurrentStoreManager(ctx.auth)) {
     params.push(ctx.auth.staffWfId)
     whereExtra += ` AND so.assigned_employee_id = $${params.length}`
   }
@@ -1013,7 +1013,7 @@ async function detail(ctx) {
   //  4) 都不满足 → 无权查看
   // 注：门店模式普通员工不靠 inStoreScope 放开（否则可看本店他人服务单），仅经分支 1/3。
   const inStoreScope = isStoreInScope(ctx.auth, so.store_id)
-  const isManager = ctx.auth.roles.includes('manager')
+  const isManager = isCurrentStoreManager(ctx.auth)
   const isMgmt = ctx.auth.loginLevel === 'management'
   let visible = inStoreScope && (isManager || so.assigned_employee_id === ctx.auth.staffWfId)
   if (!visible && isMgmt && inStoreScope) {
@@ -1090,7 +1090,7 @@ async function detail(ctx) {
 
   // 顾客评价：仅店长可见（防普通员工抓包）；评价仅存在于已完成单
   let review
-  if (ctx.auth.roles.includes('manager') && so.status === '已完成') {
+  if (isCurrentStoreManager(ctx.auth) && so.status === '已完成') {
     const reviewRows = await pg.query(
       `SELECT rating, comment, created_at FROM service_reviews WHERE service_order_id = $1`,
       [id]
@@ -1150,7 +1150,7 @@ async function cancel(ctx) {
 
   const so = serviceOrders[0]
 
-  if (!ctx.auth.roles.includes('manager') && so.assigned_employee_id !== ctx.auth.staffWfId) {
+  if (!isCurrentStoreManager(ctx.auth) && so.assigned_employee_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 无权操作该服务单')
   }
 
@@ -1238,7 +1238,7 @@ async function counts(ctx) {
   const params = [ctx.auth.effectiveStoreId]
   let scopeFilter = 'so.store_id = $1'
 
-  if (!ctx.auth.roles.includes('manager')) {
+  if (!isCurrentStoreManager(ctx.auth)) {
     params.push(ctx.auth.staffWfId)
     scopeFilter += ` AND so.assigned_employee_id = $${params.length}`
   }

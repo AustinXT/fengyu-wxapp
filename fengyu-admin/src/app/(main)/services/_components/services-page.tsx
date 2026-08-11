@@ -28,7 +28,7 @@ function formatDate(dt: string | null | undefined) {
   return fmtDate(dt)
 }
 
-function ServiceActions({ so }: { so: ServiceOrder }) {
+function ServiceActions({ so, canUpdate }: { so: ServiceOrder; canUpdate: boolean }) {
   const [pending, startTransition] = useTransition()
   const router = useRouter()
   const [confirmDialog, setConfirmDialog] = useState<'cancel' | 'complete' | 'confirm' | null>(null)
@@ -49,6 +49,8 @@ function ServiceActions({ so }: { so: ServiceOrder }) {
       }
     })
   }
+
+  if (!canUpdate) return null
 
   return (
     <>
@@ -107,10 +109,14 @@ export default function ServicesPageClient({
   serviceOrders,
   filterOptions,
   total,
+  canCreate,
+  canUpdate,
 }: {
   serviceOrders: ServiceOrder[]
   filterOptions: MarketStoreFilterOptions
   total: number
+  canCreate: boolean
+  canUpdate: boolean
 }) {
   const { get, set, setMany } = useUrlFilters()
   const searchParams = useSearchParams()
@@ -155,9 +161,11 @@ export default function ServicesPageClient({
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">服务单管理</h1>
-        <Link href="/services/create">
-          <Button>新建服务单</Button>
-        </Link>
+        {canCreate && (
+          <Link href="/services/create">
+            <Button>新建服务单</Button>
+          </Link>
+        )}
       </div>
 
       {/* Filters — URL-driven, 触发服务端重新查询 */}
@@ -230,7 +238,7 @@ export default function ServicesPageClient({
                     <td className="px-4 py-3">{so.employeeName || "—"}</td>
                     <td className="px-4 py-3 text-[#999999]">{formatDate(so.serviceDate)}</td>
                     <td className="px-4 py-3">
-                      <ServiceActions so={so} />
+                      <ServiceActions so={so} canUpdate={canUpdate} />
                     </td>
                   </tr>
                 ))}

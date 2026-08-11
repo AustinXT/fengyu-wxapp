@@ -2,6 +2,7 @@ import { getAppointmentsPaginated } from '@/actions/appointments'
 import { getMarketStoreFilterOptions } from '@/actions/stores'
 import { getSession } from '@/lib/auth'
 import { isAdminScope } from '@/lib/permissions'
+import { hasUiCapability } from '@/lib/permission-contract'
 import AppointmentsPageClient from './_components/appointments-page'
 
 export const dynamic = 'force-dynamic'
@@ -30,7 +31,10 @@ export default async function Page({
     getSession(),
   ])
 
-  const canDelete = session ? isAdminScope(session) : false
+  const actions = session?.permissions.actions ?? []
+  const canConfirm = hasUiCapability(actions, 'appointment:confirm')
+  const canCheckin = hasUiCapability(actions, 'appointment:checkin')
+  const canDelete = !!(session && hasUiCapability(actions, 'appointment:delete') && isAdminScope(session))
 
   return (
     <AppointmentsPageClient
@@ -39,6 +43,8 @@ export default async function Page({
       total={result.total}
       pendingCount={result.pendingCount}
       confirmedCount={result.confirmedCount}
+      canConfirm={canConfirm}
+      canCheckin={canCheckin}
       canDelete={canDelete}
     />
   )

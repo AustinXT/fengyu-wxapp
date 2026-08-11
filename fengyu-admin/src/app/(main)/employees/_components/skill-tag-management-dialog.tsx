@@ -30,11 +30,13 @@ export default function SkillTagManagementDialog({
   open,
   onOpenChange,
   skillTags: allTags,
+  canManage = false,
   canDelete,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   skillTags: SkillTag[]
+  canManage?: boolean
   canDelete: boolean
 }) {
   const router = useRouter()
@@ -64,6 +66,7 @@ export default function SkillTagManagementDialog({
   }
 
   async function handleSubmit() {
+    if (!canManage) return
     if (!form.name.trim()) {
       toast.error("请输入标签名称")
       return
@@ -105,7 +108,7 @@ export default function SkillTagManagementDialog({
   }
 
   async function handleDelete() {
-    if (!deleteTarget) return
+    if (!canDelete || !deleteTarget) return
     setDeleting(true)
     try {
       const res = await deleteSkillTag(deleteTarget.id)
@@ -135,9 +138,9 @@ export default function SkillTagManagementDialog({
       header: "操作",
       cell: (row) => (
         <div className="flex gap-2">
-          <Button variant="link" size="sm" className="h-auto p-0" onClick={() => openEdit(row)}>
+          {canManage && <Button variant="link" size="sm" className="h-auto p-0" onClick={() => openEdit(row)}>
             编辑
-          </Button>
+          </Button>}
           {canDelete && (
             <Button
               variant="link"
@@ -161,9 +164,9 @@ export default function SkillTagManagementDialog({
         </DialogHeader>
         <div className="mt-4">
           <div className="flex items-center justify-end mb-3">
-            <Button size="sm" onClick={openAdd}>
+            {canManage && <Button size="sm" onClick={openAdd}>
               新增标签
-            </Button>
+            </Button>}
           </div>
           <DataTable columns={columns} data={sorted} emptyText="暂无标签" />
         </div>

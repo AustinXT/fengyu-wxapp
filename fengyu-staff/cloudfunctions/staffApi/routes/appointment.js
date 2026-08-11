@@ -7,7 +7,7 @@
  */
 
 const pg = require('../db/pg')
-const { requireStaffBound } = require('../middleware/auth')
+const { requireStaffBound, isCurrentStoreManager } = require('../middleware/auth')
 const { logOperation, logTransition } = require('../utils/operation-log')
 const { shanghaiDateStr } = require('../utils/datetime')
 
@@ -65,7 +65,7 @@ async function list(ctx) {
   }
 
   // 美容师只看指定自己的预约
-  if (!ctx.auth.roles.includes('manager')) {
+  if (!isCurrentStoreManager(ctx.auth)) {
     params.push(ctx.auth.staffWfId)
     whereExtra += ` AND a.employee_id = $${params.length}`
   }
@@ -150,7 +150,7 @@ async function detail(ctx) {
   const a = appointments[0]
 
   // 美容师只能查看指定自己的预约
-  if (!ctx.auth.roles.includes('manager') && a.employee_id !== ctx.auth.staffWfId) {
+  if (!isCurrentStoreManager(ctx.auth) && a.employee_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 无权查看该预约')
   }
 
@@ -192,7 +192,7 @@ async function confirm(ctx) {
 
   const appt = appointments[0]
 
-  if (!ctx.auth.roles.includes('manager') && appt.employee_id !== ctx.auth.staffWfId) {
+  if (!isCurrentStoreManager(ctx.auth) && appt.employee_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 无权确认该预约')
   }
 
@@ -242,7 +242,7 @@ async function checkin(ctx) {
 
   const appt = appointments[0]
 
-  if (!ctx.auth.roles.includes('manager') && appt.employee_id !== ctx.auth.staffWfId) {
+  if (!isCurrentStoreManager(ctx.auth) && appt.employee_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 无权操作该预约')
   }
 

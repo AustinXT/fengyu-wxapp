@@ -13,7 +13,7 @@
   font-weight: 600;
   padding: 2rpx 14rpx;
   border-radius: 20rpx;
-  color: #C0322A;
+  color: var(--color-primary);
   background: #FFFFFF;
 }
 .order-no-top { font-size: 22rpx; opacity: 0.75; font-family: monospace; }
@@ -79,7 +79,7 @@
   background: #EFEFEF;
 }
 .session-bar__seg { height: 100%; }
-.session-bar__seg--remain { background: #C0322A; }
+.session-bar__seg--remain { background: var(--color-primary); }
 .session-bar__seg--paid-unused { background: #F2B6B0; }
 .session-bar__seg--unpaid { background: #DDD; }
 
@@ -234,7 +234,7 @@
   margin: 0 32rpx 12rpx;
   font-size: 26rpx;
   line-height: 1.5;
-  color: #C0322A;
+  color: var(--color-primary);
 }
 .refund-popup__hint {
   flex-shrink: 0;
@@ -284,8 +284,8 @@
 .pay-alloc-btn {
   margin-top: 8rpx;
   font-size: 22rpx;
-  color: #C0322A;
-  border: 1rpx solid #C0322A;
+  color: var(--color-primary);
+  border: 1rpx solid var(--color-primary);
   border-radius: 24rpx;
   padding: 2rpx 18rpx;
   line-height: 1.9;
