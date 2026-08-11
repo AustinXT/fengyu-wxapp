@@ -14,21 +14,27 @@ const staffRoutes = require('../../routes/staff')
 // staff.list
 // ============================================================
 describe('staff.list', () => {
-  test('返回门店在职员工列表', async () => {
+  test('返回本店及出差支援的在职员工列表，并透出所属门店', async () => {
     const ctx = createManagerCtx()
 
     pg.query.mockResolvedValueOnce([
-      { employee_id: 'emp-001', name: '张三', position: '门店经理', department: '美容部', store_name: '凤御A店', market_name: '华东市场' },
-      { employee_id: 'emp-002', name: '李四', position: '美容师', department: '美容部', store_name: '凤御A店', market_name: '华东市场' },
+      { employee_id: 'emp-001', name: '张三', position: '门店经理', store_id: 'store-001', is_on_business_trip: false, department: '美容部', store_name: '凤御A店', market_name: '华东市场' },
+      { employee_id: 'emp-002', name: '李四', position: '美容师', store_id: 'store-002', is_on_business_trip: true, department: '美容部', store_name: '凤御B店', market_name: '华东市场' },
     ])
 
     await staffRoutes.list(ctx)
 
+    expect(pg.query.mock.calls[0][0]).toMatch(/\(u\.store_id\s*=\s*\$1\s+OR\s+u\.is_on_business_trip\s*=\s*true\)/)
     expect(ctx.result.staffList).toHaveLength(2)
     expect(ctx.result.staffList[0].staffWfId).toBe('emp-001')
     expect(ctx.result.staffList[0].name).toBe('张三')
     expect(ctx.result.staffList[0].isManager).toBe(true)
     expect(ctx.result.staffList[1].isManager).toBe(false)
+    expect(ctx.result.staffList[1]).toMatchObject({
+      storeId: 'store-002',
+      storeName: '凤御B店',
+      isOnBusinessTrip: true,
+    })
   })
 
   test('养生师入选并透出 skills（供前端派生身份标签）', async () => {

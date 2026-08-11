@@ -454,6 +454,22 @@ describe('requireManagementLevel', () => {
 })
 
 describe('requireManager 基于 roleBindings', () => {
+  test('自定义店长能力角色可通过', async () => {
+    const ctx = {
+      auth: {
+        staffWfId: 'emp-custom-manager',
+        roles: ['role_custom_manager'],
+        roleBindings: [{ role: 'role_custom_manager', isStoreManager: true, scopeType: '门店' }],
+        loginLevel: 'store',
+        effectiveStoreId: 'S1',
+        managerStoreIds: ['S1'],
+      },
+    }
+    let called = false
+    await requireManager()(ctx, async () => { called = true })
+    expect(called).toBe(true)
+  })
+
   test('(manager, 门店) 通过', async () => {
     const ctx = {
       auth: {

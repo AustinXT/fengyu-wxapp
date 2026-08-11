@@ -56,12 +56,11 @@ async function getDashboardRoles() {
 
   try {
     const rows = await pg.query(
-      `SELECT role_key
-         FROM permission_role_definitions
-        WHERE $1 = ANY(actions)`,
-      [DATA_CENTER_DASHBOARD],
+      `SELECT role_key, actions
+         FROM permission_role_definitions`,
     )
-    if (!Array.isArray(rows) || rows.length === 0) {
+    if (!Array.isArray(rows)) throw new Error('invalid role definition result')
+    if (rows.length === 0) {
       const roles = fallbackRoles()
       cache = { roles, expiresAt: now + CACHE_TTL_MS }
       return roles
@@ -70,7 +69,10 @@ async function getDashboardRoles() {
     // value 分支仅保留给滚动发布期间的旧测试桩兼容；生产查询返回 role_key。
     const roles = rows[0]?.value
       ? parseDashboardRoles(rows[0].value)
-      : new Set(rows.map((row) => row.role_key).filter(Boolean))
+      : new Set(rows
+        .filter((row) => Array.isArray(row.actions) && row.actions.includes(DATA_CENTER_DASHBOARD))
+        .map((row) => row.role_key)
+        .filter(Boolean))
     if (roles) {
       cache = { roles, expiresAt: now + CACHE_TTL_MS }
       return roles

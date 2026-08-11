@@ -497,7 +497,15 @@ Page({
     preferredStaffWfId: '' as string,
     preferredStaffName: '',
     showStaffPicker: false,
-    staffListForPicker: [] as Array<{ staffWfId: string; name: string; department: string; skills?: string[] }>,
+    staffListForPicker: [] as Array<{
+      staffWfId: string;
+      name: string;
+      department: string;
+      skills?: string[];
+      storeId?: string;
+      storeName?: string;
+      isOnBusinessTrip?: boolean;
+    }>,
     staffPickerColumns: [] as string[],
   },
 
@@ -1834,12 +1842,26 @@ Page({
   async onSelectPreferredStaff() {
     if (this.data.staffListForPicker.length === 0) {
       try {
-        const data = await callStaffApi<{ staffList: Array<{ staffWfId: string; name: string; department: string; skills?: string[] }> }>('staff.list');
+        const data = await callStaffApi<{ staffList: Array<{
+          staffWfId: string;
+          name: string;
+          department: string;
+          skills?: string[];
+          storeId?: string;
+          storeName?: string;
+          isOnBusinessTrip?: boolean;
+        }> }>('staff.list');
         const list = data?.staffList || [];
         const roleTag = (skills?: string[]) => (skills || []).filter(s => s === '美容师' || s === '养生师').join('/');
+        const currentStoreId = getCurrentStoreId();
+        const supportTag = (staff: typeof list[number]) => (
+          staff.isOnBusinessTrip && staff.storeId && staff.storeId !== currentStoreId
+            ? '外店支援'
+            : ''
+        );
         this.setData({
           staffListForPicker: list,
-          staffPickerColumns: ['不指定', ...list.map(s => `${s.name}（${[roleTag(s.skills), s.department].filter(Boolean).join('·') || '未分组'}）`)],
+          staffPickerColumns: ['不指定', ...list.map(s => `${s.name}（${[roleTag(s.skills), s.department, supportTag(s)].filter(Boolean).join('·') || '未分组'}）`)],
         });
       } catch {
         return;

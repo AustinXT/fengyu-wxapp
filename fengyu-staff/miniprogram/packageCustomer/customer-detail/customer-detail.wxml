@@ -203,10 +203,6 @@
           <van-empty wx:elif="{{homeProducts.length === 0}}" description="暂无家居产品" />
           <view wx:else class="home-product-list">
             <view class="home-product-card" wx:for="{{homeProducts}}" wx:key="saleItemId">
-              <image wx:if="{{item.coverImage}}" class="home-product-image" src="{{item.coverImage}}" mode="aspectFill" />
-              <view wx:else class="home-product-image home-product-image--empty">
-                <van-icon name="photo-o" size="40rpx" color="#B8B8B8" />
-              </view>
               <view class="home-product-main">
                 <view class="home-product-head">
                   <text class="home-product-name">{{item.productName}}</text>
