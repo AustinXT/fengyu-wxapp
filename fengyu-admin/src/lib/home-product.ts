@@ -4,7 +4,6 @@ export interface CustomerHomeProduct {
   saleItemId: string
   saleOrderId: string
   productName: string
-  coverImage: string | null
   unit: string
   purchasedQuantity: number
   pickedQuantity: number

@@ -118,7 +118,7 @@ export const getRoleDefinitions = withAnyPermission(
         canAccessAdmin: permissionRoleDefinitions.canAccessAdmin,
         isSuperAdmin: permissionRoleDefinitions.isSuperAdmin,
         isStoreManager: permissionRoleDefinitions.isStoreManager,
-        assignmentCount: sql<number>`count(${permissionRoles.id})::int`,
+        assignmentCount: sql<number>`count(DISTINCT ${permissionRoles.employeeId})::int`,
         createdAt: permissionRoleDefinitions.createdAt,
         updatedAt: permissionRoleDefinitions.updatedAt,
       })
@@ -145,7 +145,12 @@ export const createRoleDefinition = withPermission(
         .where(eq(permissionRoleDefinitions.roleKey, input.copyFromRoleKey))
         .limit(1)
       if (!source) throw new Error('NOT_FOUND: 复制来源角色不存在')
-      sourceActions = source.actions
+      sourceActions = isSuperAdmin
+        ? source.actions
+        : source.actions.filter((action) => (
+          !action.endsWith(':delete')
+          && !(ADMIN_ONLY_ACTIONS as readonly string[]).includes(action)
+        ))
     }
 
     const roleKey = `role_${randomUUID()}`
@@ -270,7 +275,7 @@ export const deleteRoleDefinition = withPermission(
     if (!target) return { success: false, message: '角色不存在' }
 
     const [{ count }] = await db
-      .select({ count: sql<number>`count(*)::int` })
+      .select({ count: sql<number>`count(DISTINCT ${permissionRoles.employeeId})::int` })
       .from(permissionRoles)
       .where(eq(permissionRoles.role, roleKey))
     if (count > 0) return { success: false, message: `该角色仍分配给 ${count} 名员工，请先撤销授权` }

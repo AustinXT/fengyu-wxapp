@@ -32,7 +32,6 @@ import PullWorkfineDialog from "@/app/(main)/legacy-orders/_components/pull-work
 import { DangerZoneDelete } from "@/components/delete-action"
 import { deleteCustomer } from "@/actions/customers"
 import { getCustomerVisibleSaleItems, type CustomerVisibleSaleItem } from "./customer-entitlement-items"
-import { toHttpUrl } from "@/components/ui/image-upload"
 import type { CustomerHomeProduct } from "@/lib/home-product"
 
 interface CustomerDetailPageProps {
@@ -443,16 +442,7 @@ export default function CustomerDetailPage({
     {
       key: "productName",
       header: "产品",
-      cell: (row) => (
-        <div className="flex items-center gap-3">
-          {row.coverImage ? (
-            <img src={toHttpUrl(row.coverImage)} alt={row.productName} className="h-10 w-10 rounded-md object-cover" />
-          ) : (
-            <div className="flex h-10 w-10 items-center justify-center rounded-md bg-[var(--muted)] text-xs text-[var(--muted-foreground)]">无图</div>
-          )}
-          <span className="font-medium">{row.productName}</span>
-        </div>
-      ),
+      cell: (row) => <span className="font-medium">{row.productName}</span>,
     },
     { key: "status", header: "状态", cell: (row) => <StatusBadge status={row.status} /> },
     { key: "purchasedQuantity", header: "购买", cell: (row) => <span>{row.purchasedQuantity} {row.unit}</span> },

@@ -75,6 +75,13 @@ vi.mock('@db/user', () => ({
 }))
 
 vi.mock('@db/permission', () => ({
+  permissionRoleDefinitions: {
+    roleKey: 'role_key',
+    name: 'role_name',
+    canAccessAdmin: 'can_access_admin',
+    isSuperAdmin: 'is_super_admin',
+    isStoreManager: 'is_store_manager',
+  },
   permissionRoles: {
     employeeId: 'employee_id',
     role: 'role',
@@ -178,7 +185,8 @@ function selectChainResult(results: any[]) {
     limit,
     then: (resolve: (v: any[]) => unknown) => resolve(results),
   })
-  const from = vi.fn().mockReturnValue({ where, limit })
+  const innerJoin = vi.fn().mockReturnValue({ where })
+  const from = vi.fn().mockReturnValue({ where, limit, innerJoin })
   return { from }
 }
 
@@ -349,7 +357,8 @@ describe('changePassword — 密码变更 + JWT 重签', () => {
       // roles lookup
       const where = vi.fn().mockResolvedValue([{ role: 'admin', scopeId: 'hq', scopeType: '总部' }])
       const leftJoin = vi.fn().mockReturnValue({ where })
-      const from = vi.fn().mockReturnValue({ leftJoin })
+      const innerJoin = vi.fn().mockReturnValue({ leftJoin })
+      const from = vi.fn().mockReturnValue({ innerJoin })
       return { from }
     })
     mockUpdateChain()
@@ -418,7 +427,8 @@ describe('getSessionFromCookie — JWT → AuthSession', () => {
         { role: 'manager', scopeId: 'store-node-1', scopeType: '门店' },
       ])
       const leftJoin = vi.fn().mockReturnValue({ where })
-      const from = vi.fn().mockReturnValue({ leftJoin })
+      const innerJoin = vi.fn().mockReturnValue({ leftJoin })
+      const from = vi.fn().mockReturnValue({ innerJoin })
       return { from }
     })
 
@@ -428,7 +438,7 @@ describe('getSessionFromCookie — JWT → AuthSession', () => {
     expect(result!.employeeId).toBe('EMP-001')
     expect(result!.name).toBe('张三')
     expect(result!.roles).toEqual([
-      { role: 'manager', scopeId: 'store-node-1', scopeType: '门店' },
+      expect.objectContaining({ role: 'manager', scopeId: 'store-node-1', scopeType: '门店' }),
     ])
     expect(computeActions).toHaveBeenCalled()
     expect(expandRoleScope).toHaveBeenCalled()
@@ -454,7 +464,8 @@ describe('getSessionFromCookie — JWT → AuthSession', () => {
         { role: 'hr', scopeId: 'node-1', scopeType: null },
       ])
       const leftJoin = vi.fn().mockReturnValue({ where })
-      const from = vi.fn().mockReturnValue({ leftJoin })
+      const innerJoin = vi.fn().mockReturnValue({ leftJoin })
+      const from = vi.fn().mockReturnValue({ innerJoin })
       return { from }
     })
 
@@ -479,7 +490,8 @@ describe('getSessionFromCookie — JWT → AuthSession', () => {
         { role: 'staff', scopeId: 'node-1', scopeType: '门店' },
       ])
       const leftJoin = vi.fn().mockReturnValue({ where })
-      return { from: vi.fn().mockReturnValue({ leftJoin }) }
+      const innerJoin = vi.fn().mockReturnValue({ leftJoin })
+      return { from: vi.fn().mockReturnValue({ innerJoin }) }
     })
 
     const result = await getSessionFromCookie()

@@ -616,16 +616,7 @@ export const getCustomerHomeProducts = withPermission(
              WHERE sop.sale_order_id = o.sale_order_id
                AND sop.change_type = '退款'
                AND sop.status = '待审批'
-          ) AS refund_pending,
-          (
-            SELECT p.cover_image
-              FROM mall_product_skus mps
-              JOIN products p ON p.product_id = mps.product_id
-             WHERE mps.sku_id = si.sku_id
-               AND p.deleted_at IS NULL
-          ORDER BY p.sort_order, p.product_id
-             LIMIT 1
-          ) AS cover_image
+          ) AS refund_pending
         FROM sale_items si
         JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
         LEFT JOIN stores s ON s.store_id = o.store_id
@@ -657,7 +648,6 @@ export const getCustomerHomeProducts = withPermission(
         saleItemId: String(row.sale_item_id),
         saleOrderId: String(row.sale_order_id),
         productName: String(row.product_name || '家居产品'),
-        coverImage: (row.cover_image as string | null) ?? null,
         unit: String(row.unit || '盒'),
         purchasedQuantity: Number(row.purchased_quantity),
         pickedQuantity,

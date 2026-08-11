@@ -70,6 +70,7 @@ export const getStores = withPermission('store:list', async (session): Promise<S
  * 主列表的读取权限与 `store:list` 是两套能力；没有门店读取权限时返回空选项，
  * 不能让辅助下拉把已授权页面 SSR 成 403。空结果不会泄露任何门店信息。
  */
+// eslint-disable-next-line no-restricted-syntax -- 可选筛选数据须在无 store:list 时返回空数组，不能由 HOF 抛 403
 export async function getMarketStoreFilterOptions(): Promise<MarketStoreFilterOptions> {
   const session = await getSession()
   if (!session || !hasPermission(session, 'store:list')) {

@@ -5,7 +5,7 @@ import { and, eq, sql } from 'drizzle-orm'
 
 export async function countActiveAdmins(): Promise<number> {
   const rows = await db
-    .select({ c: sql<number>`count(*)::int` })
+    .select({ c: sql<number>`count(DISTINCT ${permissionRoles.employeeId})::int` })
     .from(permissionRoles)
     .innerJoin(permissionRoleDefinitions, eq(permissionRoles.role, permissionRoleDefinitions.roleKey))
     .innerJoin(staffWechatUsers, eq(permissionRoles.employeeId, staffWechatUsers.employeeId))
