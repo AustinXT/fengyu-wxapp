@@ -84,6 +84,7 @@ interface CalendarDay {
 // Tab 2: 购买记录
 interface PaidOrderItem {
   saleItemId: string;
+  saleItemGroupId?: string | null;
   itemName: string;
   spec: string;
   remainingSessions: number;
@@ -156,6 +157,7 @@ const ORDER_STATUS_CLASS: Record<string, string> = {
 // Tab 3: 持卡汇总
 interface TreatmentCard {
   saleItemId: string;
+  saleItemGroupId?: string | null;
   itemName: string;
   spec: string;
   remainingSessions: number;
@@ -659,7 +661,9 @@ Page({
       const groupedCards = groupTreatmentCards(cards, {
         getId: (card) => card.saleItemId,
         getQuantity: (card) => card.quantity,
-        getIdentity: (card) => ({
+        getIdentity: (card) => card.saleItemGroupId
+          ? { saleItemGroupId: card.saleItemGroupId }
+          : ({
           saleOrderId: card.saleOrderId,
           saleOrderDatetime: card.saleOrderDatetime,
           orderStatus: card.orderStatus,

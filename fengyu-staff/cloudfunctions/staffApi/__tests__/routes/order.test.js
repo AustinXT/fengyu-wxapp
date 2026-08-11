@@ -5499,7 +5499,7 @@ describe('order.createDeposit', () => {
     expect(pg.transaction).not.toHaveBeenCalled()
   })
 
-  test('寄存单相同 5 次卡合并为 1 行，累计次数和历史实收', async () => {
+  test('寄存单疗程卡按张拆为独立明细，并按张分摊历史实收', async () => {
     const ctx = createManagerCtx({
       clientUserId: 'cu-001',
       items: [
@@ -5557,19 +5557,20 @@ describe('order.createDeposit', () => {
     await orderRoutes.createDeposit(ctx)
 
     const itemInserts = txCalls.filter(c => typeof c.sql === 'string' && c.sql.includes('INSERT INTO sale_items'))
-    expect(itemInserts).toHaveLength(1)
-    expect(itemInserts[0].params[6]).toBe(15)
-    expect(itemInserts[0].params[7]).toBe(15)
-    expect(itemInserts[0].params[9]).toBe(3)
-    expect(Number(itemInserts[0].params[11])).toBe(1500)
+    expect(itemInserts).toHaveLength(3)
+    expect(itemInserts.map(c => c.params[7])).toEqual([5, 5, 5])
+    expect(itemInserts.map(c => c.params[8])).toEqual([5, 5, 5])
+    expect(itemInserts.map(c => c.params[10])).toEqual([1, 1, 1])
+    expect(itemInserts.map(c => Number(c.params[12]))).toEqual([500, 500, 500])
+    expect(new Set(itemInserts.map(c => c.params[1])).size).toBe(2)
 
     const paymentInserts = txCalls.filter(c => typeof c.sql === 'string' && c.sql.includes('INSERT INTO sale_order_payments'))
-    expect(paymentInserts).toHaveLength(1)
-    expect(Number(paymentInserts[0].params[1])).toBe(1350)
-    expect(ctx.result.itemCount).toBe(1)
+    expect(paymentInserts).toHaveLength(3)
+    expect(paymentInserts.map(c => Number(c.params[1]))).toEqual([500, 425, 425])
+    expect(ctx.result.itemCount).toBe(3)
   })
 
-  test('寄存单家居产品 ×3 维持 1 行 sale_items（quantity=3）', async () => {
+  test('寄存单家居产品 ×3 逐件落库，并共用同一显示行组', async () => {
     const ctx = createManagerCtx({
       clientUserId: 'cu-001',
       items: [{ skuId: 'sku-home', quantity: 3, received: 0 }],
@@ -5611,11 +5612,12 @@ describe('order.createDeposit', () => {
     await orderRoutes.createDeposit(ctx)
 
     const itemInserts = txCalls.filter(c => typeof c.sql === 'string' && c.sql.includes('INSERT INTO sale_items'))
-    expect(itemInserts).toHaveLength(1)
-    expect(itemInserts[0].params[6]).toBeNull()
-    expect(itemInserts[0].params[7]).toBeNull()
-    expect(itemInserts[0].params[9]).toBe(3)
-    expect(ctx.result.itemCount).toBe(1)
+    expect(itemInserts).toHaveLength(3)
+    expect(itemInserts.map(c => c.params[7])).toEqual([null, null, null])
+    expect(itemInserts.map(c => c.params[8])).toEqual([null, null, null])
+    expect(itemInserts.map(c => c.params[10])).toEqual([1, 1, 1])
+    expect(new Set(itemInserts.map(c => c.params[1])).size).toBe(1)
+    expect(ctx.result.itemCount).toBe(3)
   })
 
   test('非本店顾客拒绝开寄存单', async () => {
