@@ -25,6 +25,7 @@
         "order-detail/order-detail",
         "scan-pay/scan-pay",
         "treatment-cards/treatment-cards",
+        "home-products/home-products",
         "service-records/service-records"
       ]
     },

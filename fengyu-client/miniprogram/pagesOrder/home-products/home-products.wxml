@@ -1,0 +1,65 @@
+<van-toast id="van-toast" />
+
+<view class="container">
+  <view wx:if="{{isLoading && products.length === 0}}" class="skeleton-wrap">
+    <van-skeleton title row="3" />
+    <van-skeleton title row="3" style="margin-top:24rpx" />
+  </view>
+
+  <view wx:elif="{{loadError && products.length === 0}}" class="empty-wrap">
+    <van-empty image="error" description="加载失败，下拉刷新重试" />
+  </view>
+
+  <view wx:elif="{{products.length === 0}}" class="empty-wrap">
+    <van-empty description="暂无家居产品" />
+  </view>
+
+  <view wx:else class="product-list">
+    <view class="product-card" wx:for="{{products}}" wx:key="saleItemId">
+      <image wx:if="{{item.coverImage}}" class="product-image" src="{{item.coverImage}}" mode="aspectFill" />
+      <view wx:else class="product-image product-image--empty">
+        <van-icon name="photo-o" size="48rpx" color="#B8B8B8" />
+      </view>
+
+      <view class="product-main">
+        <view class="product-head">
+          <text class="product-name">{{item.productName}}</text>
+          <van-tag
+            color="{{item.statusClass === 'success' ? '#3D8A5A' : item.statusClass === 'progress' ? '#5E8BB3' : item.statusClass === 'pending' ? '#D4820A' : '#888888'}}"
+            text-color="#FFFFFF"
+          >{{item.status}}</van-tag>
+        </view>
+
+        <view class="count-grid">
+          <view class="count-item">
+            <text class="count-value">{{item.purchasedQuantity}}</text>
+            <text class="count-label">购买{{item.unit}}</text>
+          </view>
+          <view class="count-item">
+            <text class="count-value">{{item.pickedQuantity}}</text>
+            <text class="count-label">已提{{item.unit}}</text>
+          </view>
+          <view class="count-item">
+            <text class="count-value">{{item.refundedQuantity}}</text>
+            <text class="count-label">已退{{item.unit}}</text>
+          </view>
+          <view class="count-item count-item--remaining">
+            <text class="count-value">{{item.remainingQuantity}}</text>
+            <text class="count-label">待提{{item.unit}}</text>
+          </view>
+        </view>
+
+        <view class="product-meta">
+          <view class="meta-item">
+            <van-icon name="shop-o" size="24rpx" color="#999999" />
+            <text>{{item.storeName || item.storeId}}</text>
+          </view>
+          <view wx:if="{{item.purchasedAtFmt}}" class="meta-item">
+            <van-icon name="clock-o" size="24rpx" color="#999999" />
+            <text>{{item.purchasedAtFmt}} 购买</text>
+          </view>
+        </view>
+      </view>
+    </view>
+  </view>
+</view>
