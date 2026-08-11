@@ -218,6 +218,24 @@ interface CardFilterOption {
   label: string;
 }
 
+interface HomeProduct {
+  saleItemId: string;
+  saleOrderId: string;
+  productName: string;
+  coverImage: string | null;
+  unit: string;
+  purchasedQuantity: number;
+  pickedQuantity: number;
+  refundedQuantity: number;
+  remainingQuantity: number;
+  status: string;
+  storeId: string;
+  storeName: string | null;
+  purchasedAt: string;
+  purchasedAtFmt?: string;
+  statusClass?: string;
+}
+
 // Tab 4: 服务记录
 interface ServiceRecord {
   serviceOrderId: string;
@@ -302,6 +320,8 @@ Page({
     // Tab 3: 持卡汇总
     treatmentCards: [] as TreatmentCard[],
     cardsLoaded: false,
+    homeProducts: [] as HomeProduct[],
+    homeProductsLoaded: false,
     selectedCount: 0,
     cardProductKind: '',
     cardCategoryId: '',
@@ -370,6 +390,10 @@ Page({
         this.setData({ cardsLoaded: false });
         this.loadTreatmentCards();
       }
+      if (this.data.homeProductsLoaded) {
+        this.setData({ homeProductsLoaded: false });
+        this.loadHomeProducts();
+      }
     }
   },
 
@@ -430,21 +454,23 @@ Page({
   onTabChange(e: WechatMiniprogram.CustomEvent) {
     const index = e.detail.index as number;
     this.setData({ activeTab: index });
-    // 8-Tab：0 基本档案 / 1 消费记录 / 2 疗程卡 / 3 预约记录 / 4 服务记录 /
-    //         5 顾客优惠券 / 6 手机号变更 / 7 日历
+    // 9-Tab：0 基本档案 / 1 消费记录 / 2 疗程卡 / 3 家居产品 / 4 预约记录 /
+    //         5 服务记录 / 6 顾客优惠券 / 7 手机号变更 / 8 日历
     if (index === 1 && !this.data.purchaseLoaded) {
       this.loadPurchaseHistory();
     } else if (index === 2 && !this.data.cardsLoaded) {
       this.loadTreatmentCards();
-    } else if (index === 3 && !this.data.appointmentsLoaded) {
+    } else if (index === 3 && !this.data.homeProductsLoaded) {
+      this.loadHomeProducts();
+    } else if (index === 4 && !this.data.appointmentsLoaded) {
       this.loadAppointments();
-    } else if (index === 4 && !this.data.serviceLoaded) {
+    } else if (index === 5 && !this.data.serviceLoaded) {
       this.loadServiceHistory();
-    } else if (index === 5 && !this.data.couponsLoaded) {
+    } else if (index === 6 && !this.data.couponsLoaded) {
       this.loadCoupons();
-    } else if (index === 6 && !this.data.phoneLoaded) {
+    } else if (index === 7 && !this.data.phoneLoaded) {
       this.loadPhoneChangeLogs();
-    } else if (index === 7 && !this.data.calendarLoaded) {
+    } else if (index === 8 && !this.data.calendarLoaded) {
       this.loadCalendar();
     }
   },
@@ -781,6 +807,31 @@ Page({
     const detail = e.detail as unknown as string | { value?: string };
     const nameQuery = typeof detail === 'string' ? detail : detail?.value || '';
     this.applyTreatmentCardFilters(this._allTreatmentCards, { nameQuery });
+  },
+
+  async loadHomeProducts() {
+    const id = this._clientId();
+    if (!id) return;
+    try {
+      const rows = await callStaffApi<HomeProduct[]>('customer.homeProducts', id) || [];
+      const statusClassMap: Record<string, string> = {
+        退款处理中: 'pending',
+        待提货: 'pending',
+        部分提货: 'progress',
+        已提货: 'success',
+        已完成: 'done',
+      };
+      this.setData({
+        homeProducts: rows.map((item) => ({
+          ...item,
+          purchasedAtFmt: item.purchasedAt ? formatDate(item.purchasedAt) : '',
+          statusClass: statusClassMap[item.status] || 'done',
+        })),
+        homeProductsLoaded: true,
+      });
+    } catch (_) {
+      this.setData({ homeProducts: [], homeProductsLoaded: true });
+    }
   },
 
   onToggleCard(e: WechatMiniprogram.TouchEvent) {

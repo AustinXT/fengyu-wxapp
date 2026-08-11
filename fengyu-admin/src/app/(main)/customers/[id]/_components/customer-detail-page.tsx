@@ -32,10 +32,13 @@ import PullWorkfineDialog from "@/app/(main)/legacy-orders/_components/pull-work
 import { DangerZoneDelete } from "@/components/delete-action"
 import { deleteCustomer } from "@/actions/customers"
 import { getCustomerVisibleSaleItems, type CustomerVisibleSaleItem } from "./customer-entitlement-items"
+import { toHttpUrl } from "@/components/ui/image-upload"
+import type { CustomerHomeProduct } from "@/lib/home-product"
 
 interface CustomerDetailPageProps {
   customer: Customer
   orders: SaleOrder[]
+  homeProducts: CustomerHomeProduct[]
   appointments: Appointment[]
   stores: Store[]
   employees: Employee[]
@@ -63,6 +66,7 @@ function formatDistinctSkuName(row: Pick<SaleItem, "productName" | "skuName">): 
 export default function CustomerDetailPage({
   customer,
   orders,
+  homeProducts,
   appointments,
   stores,
   employees,
@@ -435,6 +439,31 @@ export default function CustomerDetailPage({
     },
   ]
 
+  const homeProductColumns: Column<CustomerHomeProduct>[] = [
+    {
+      key: "productName",
+      header: "产品",
+      cell: (row) => (
+        <div className="flex items-center gap-3">
+          {row.coverImage ? (
+            <img src={toHttpUrl(row.coverImage)} alt={row.productName} className="h-10 w-10 rounded-md object-cover" />
+          ) : (
+            <div className="flex h-10 w-10 items-center justify-center rounded-md bg-[var(--muted)] text-xs text-[var(--muted-foreground)]">无图</div>
+          )}
+          <span className="font-medium">{row.productName}</span>
+        </div>
+      ),
+    },
+    { key: "status", header: "状态", cell: (row) => <StatusBadge status={row.status} /> },
+    { key: "purchasedQuantity", header: "购买", cell: (row) => <span>{row.purchasedQuantity} {row.unit}</span> },
+    { key: "pickedQuantity", header: "已提", cell: (row) => <span>{row.pickedQuantity} {row.unit}</span> },
+    { key: "refundedQuantity", header: "已退", cell: (row) => <span>{row.refundedQuantity} {row.unit}</span> },
+    { key: "remainingQuantity", header: "待提", cell: (row) => <span className="font-medium text-[#C0322A]">{row.remainingQuantity} {row.unit}</span> },
+    { key: "storeName", header: "购买门店", cell: (row) => <span>{row.storeName || "—"}</span> },
+    { key: "purchasedAt", header: "购买日期", cell: (row) => <span>{formatDate(row.purchasedAt) || "—"}</span> },
+    { key: "saleOrderId", header: "订单号", cell: (row) => <span className="font-mono text-xs">{row.saleOrderId}</span> },
+  ]
+
   const appointmentColumns: Column<Appointment>[] = [
     {
       key: "appointmentTime",
@@ -524,10 +553,11 @@ export default function CustomerDetailPage({
       )}
 
       <Tabs defaultValue="profile">
-        <TabsList>
+        <TabsList className="overflow-x-auto">
           <TabsTrigger value="profile">基本档案</TabsTrigger>
           <TabsTrigger value="orders">消费记录（{orders.length}）</TabsTrigger>
           <TabsTrigger value="sessions">疗程卡（{activeSaleItems.length}）</TabsTrigger>
+          <TabsTrigger value="home-products">家居产品（{homeProducts.length}）</TabsTrigger>
           <TabsTrigger value="appointments">预约记录（{appointments.length}）</TabsTrigger>
           <TabsTrigger value="services">服务记录（{serviceOrders.length}）</TabsTrigger>
           <TabsTrigger value="coupons">顾客优惠券（{coupons.length}）</TabsTrigger>
@@ -958,6 +988,21 @@ export default function CustomerDetailPage({
                 columns={itemColumns}
                 data={filteredActiveSaleItems}
                 emptyText={hasCardFilters ? "未找到匹配的疗程卡" : "暂无疗程卡"}
+              />
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="home-products">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">家居产品</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <DataTable
+                columns={homeProductColumns}
+                data={homeProducts}
+                emptyText="暂无家居产品"
               />
             </CardContent>
           </Card>

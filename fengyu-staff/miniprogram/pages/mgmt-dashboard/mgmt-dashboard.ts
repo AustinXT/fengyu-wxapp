@@ -295,10 +295,9 @@ Page({
         scopeName: '',
       }
     }
-    // manager role binding 优先匹配门店：对于 manager@A + customer_mgr@B 的多角色用户，
-    // 确保默认 scope 选中 manager 管辖的 A 而非 scopedStores[0] 可能返回的 B。
+    // 店长能力角色绑定优先匹配门店，确保默认 scope 落在可执行店长写操作的门店。
     const managerStoreBinding = (roleBindings || []).find(
-      (b: any) => b.role === 'manager' && b.scopeType === '门店',
+      (b: any) => (b.isStoreManager ?? b.role === 'manager') && b.scopeType === '门店',
     )
     if (managerStoreBinding?.scopeId) {
       const matched = (scopedStores || []).find(

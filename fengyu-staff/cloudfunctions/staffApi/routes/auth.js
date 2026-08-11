@@ -28,14 +28,18 @@ const { hasDataCenterDashboard } = require('../utils/permission-matrix')
 async function queryRoleBindings(employeeId) {
   if (!employeeId) return []
   const rows = await pg.query(
-    `SELECT pr.role, pr.scope_id, o.type AS scope_type, o.name AS scope_name
+    `SELECT pr.role, pr.scope_id, o.type AS scope_type, o.name AS scope_name,
+            rd.name AS role_name, rd.is_store_manager
      FROM permission_roles pr
+     JOIN permission_role_definitions rd ON rd.role_key = pr.role
      LEFT JOIN org_nodes o ON o.id = pr.scope_id
      WHERE pr.employee_id = $1`,
     [employeeId]
   )
   return rows.map((r) => ({
     role: r.role,
+    roleName: r.role_name || r.role,
+    isStoreManager: r.is_store_manager ?? r.role === 'manager',
     scopeId: r.scope_id,
     scopeType: r.scope_type,
     scopeName: r.scope_name,
@@ -76,7 +80,7 @@ async function buildLevelPayload(employeeId) {
   const scopedStores = await fetchScopedStores(scopeStoreIds)
   // managerStores：仅 manager 角色绑定的门店，保留给门店模式下的店长写操作。
   // 管理层视图始终使用 scopedStores 对应的全部 scope，不使用此集合收紧范围。
-  const managerBindings = roleBindings.filter((r) => r.role === 'manager')
+  const managerBindings = roleBindings.filter((r) => r.isStoreManager)
   const managerStoreIds = managerBindings.length > 0 ? await expandScopeStoreIds(managerBindings, pg) : []
   const managerStores = await fetchScopedStores(managerStoreIds)
   return { roles, roleBindings, staffLevel, availableLoginLevels, scopedStores, managerStores, managerStoreIds }

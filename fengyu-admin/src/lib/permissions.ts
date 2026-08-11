@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import { db } from '@/db'
 import { orgNodes, stores } from '@db/org'
+import { permissionRoleDefinitions } from '@db/permission'
 import { eq, and, or, sql, inArray } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import type { PgColumn } from 'drizzle-orm/pg-core'
@@ -8,7 +9,6 @@ import type { AuthSession, RoleType } from './types'
 import { collectDescendantNodeIds, findAncestorNodeIdByType } from './org-scope'
 import {
   UNDELIVERED_ADMIN_ACTIONS,
-  sanitizePermissionMatrix,
 } from './permission-contract'
 
 /**
@@ -208,7 +208,7 @@ export function invalidatePermissionMatrixCache(): void {
 }
 
 /**
- * 取当前生效的权限矩阵：DB 优先，失败时回退 DEFAULT。
+ * 取当前生效的权限矩阵：角色定义表优先，失败时回退旧角色默认值。
  *
  * - DB 行不存在 / JSON 解析失败 / DB 连接异常 → 静默回退 DEFAULT_PERMISSION_MATRIX，
  *   并 console.error 标记，确保任何情况下 admin 都能登录。
@@ -220,24 +220,22 @@ export async function getPermissionMatrix(): Promise<Record<RoleType, string[]>>
     return _matrixCache.matrix
   }
   try {
-    const rows = await db.execute<{ value: string }>(
-      sql`SELECT value FROM system_configs WHERE key = 'permission_matrix' LIMIT 1`,
-    )
-    const raw = (rows as unknown as Array<{ value: string }>)[0]?.value
-    if (!raw) {
+    const rows = await db
+      .select({ roleKey: permissionRoleDefinitions.roleKey, actions: permissionRoleDefinitions.actions })
+      .from(permissionRoleDefinitions)
+    if (rows.length === 0) {
       _matrixCache = { matrix: DEFAULT_PERMISSION_MATRIX, expiresAt: now + PERMISSION_MATRIX_CACHE_TTL_MS }
       return DEFAULT_PERMISSION_MATRIX
     }
-    try {
-      const matrix = sanitizePermissionMatrix(JSON.parse(raw), KNOWN_PERMISSION_ACTIONS)
-      _matrixCache = { matrix, expiresAt: now + PERMISSION_MATRIX_CACHE_TTL_MS }
-      return matrix
-    } catch (parseErr) {
-      console.error('[permission-matrix] JSON parse failed, fallback to DEFAULT', parseErr)
-      return DEFAULT_PERMISSION_MATRIX
+    const known = new Set(KNOWN_PERMISSION_ACTIONS)
+    const matrix: Record<RoleType, string[]> = {}
+    for (const row of rows) {
+      matrix[row.roleKey] = [...new Set(row.actions.filter((action) => known.has(action)))].sort()
     }
+    _matrixCache = { matrix, expiresAt: now + PERMISSION_MATRIX_CACHE_TTL_MS }
+    return matrix
   } catch (dbErr) {
-    console.error('[permission-matrix] DB read failed, fallback to DEFAULT', dbErr)
+    console.error('[role-definitions] DB read failed, fallback to legacy defaults', dbErr)
     return DEFAULT_PERMISSION_MATRIX
   }
 }
@@ -373,7 +371,7 @@ export function buildScopeWhere(session: AuthSession, storeIdColumn = 'store_id'
  * 判断 session 是否拥有 admin 角色（不受 scope 限制）
  */
 export function isAdminScope(session: AuthSession): boolean {
-  return session.roles.some(r => r.role === 'admin')
+  return session.roles.some(r => r.isSuperAdmin ?? r.role === 'admin')
 }
 
 /**
@@ -383,8 +381,8 @@ export function isAdminScope(session: AuthSession): boolean {
  * 用于 actions/auth.ts 的登录闸（login 验密后）与会话二次闸（getSessionFromCookie）。
  * 仅看角色、不看权限点——即便某管理角色被配空矩阵，仍允许登录（避免误锁管理岗）。
  */
-export function canAccessAdmin(roles: Array<{ role: string }>): boolean {
-  return roles.some(r => r.role !== 'staff')
+export function canAccessAdmin(roles: Array<{ role: string; canAccessAdmin?: boolean }>): boolean {
+  return roles.some(r => r.canAccessAdmin ?? r.role !== 'staff')
 }
 
 /**
@@ -483,10 +481,7 @@ export function hasPermission(session: AuthSession, action: string): boolean {
  * 具体订单仍由调用方按 store_id 做 isInScope 行级校验。
  */
 export function isDepositOrderApprover(session: AuthSession): boolean {
-  return session.roles.some((role) => (
-    role.role === 'admin' ||
-    ((role.role === 'manager' || role.role === 'finance') && ['总部', '市场', '门店'].includes(role.scopeType))
-  ))
+  return hasPermission(session, 'sale_order:deposit_approve')
 }
 
 /**

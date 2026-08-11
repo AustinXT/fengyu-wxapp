@@ -36,6 +36,20 @@
       "when": 1786238201584,
       "tag": "0004_low_talos",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1786433298888,
+      "tag": "0005_nostalgic_ultimatum",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786433352188,
+      "tag": "0006_bright_ultimatum",
+      "breakpoints": true
     }
   ]
 }

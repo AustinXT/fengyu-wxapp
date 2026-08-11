@@ -194,6 +194,41 @@
         </view>
       </van-tab>
 
+      <van-tab title="家居产品">
+        <view class="tab-content">
+          <view class="tab-hint">展示顾客跨门店已购家居产品，提货请前往“我的 → 提货”</view>
+          <view wx:if="{{!homeProductsLoaded}}" class="loading-wrap">
+            <van-loading type="spinner" color="#C0322A" />
+          </view>
+          <van-empty wx:elif="{{homeProducts.length === 0}}" description="暂无家居产品" />
+          <view wx:else class="home-product-list">
+            <view class="home-product-card" wx:for="{{homeProducts}}" wx:key="saleItemId">
+              <image wx:if="{{item.coverImage}}" class="home-product-image" src="{{item.coverImage}}" mode="aspectFill" />
+              <view wx:else class="home-product-image home-product-image--empty">
+                <van-icon name="photo-o" size="40rpx" color="#B8B8B8" />
+              </view>
+              <view class="home-product-main">
+                <view class="home-product-head">
+                  <text class="home-product-name">{{item.productName}}</text>
+                  <text class="status-tag status-tag--{{item.statusClass}}">{{item.status}}</text>
+                </view>
+                <view class="home-product-counts">
+                  <text>购买 {{item.purchasedQuantity}}{{item.unit}}</text>
+                  <text>已提 {{item.pickedQuantity}}{{item.unit}}</text>
+                  <text wx:if="{{item.refundedQuantity > 0}}">已退 {{item.refundedQuantity}}{{item.unit}}</text>
+                  <text class="home-product-remaining">待提 {{item.remainingQuantity}}{{item.unit}}</text>
+                </view>
+                <view class="home-product-meta">
+                  <text>{{item.storeName || item.storeId}}</text>
+                  <text wx:if="{{item.purchasedAtFmt}}">{{item.purchasedAtFmt}}</text>
+                </view>
+                <text class="home-product-order">{{item.saleOrderId}}</text>
+              </view>
+            </view>
+          </view>
+        </view>
+      </van-tab>
+
       <van-tab title="预约记录">
         <view class="tab-content">
           <view wx:if="{{!appointmentsLoaded}}" class="loading-wrap">

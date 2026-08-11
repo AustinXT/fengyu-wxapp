@@ -65,7 +65,7 @@ describe('auth 注入 staffLevel / scopeStoreIds / roleBindings', () => {
     expect(ctx.auth.staffLevel).toBe('headquarters')
     expect(ctx.auth.scopeStoreIds.sort()).toEqual(['S1', 'S2'])
     expect(ctx.auth.roleBindings).toEqual([
-      { role: 'admin', scopeId: 'hq-node', scopeType: '总部' },
+      { role: 'admin', roleName: 'admin', isStoreManager: false, scopeId: 'hq-node', scopeType: '总部', scopeName: undefined },
     ])
     expect(ctx.auth.roles).toEqual(['admin'])
     // 无指定 loginLevel → fallback 'store'（因为有 scope）

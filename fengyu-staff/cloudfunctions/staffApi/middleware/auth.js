@@ -217,15 +217,19 @@ async function loadAuthBase(effectiveOpenid) {
     const isActive = user.employee_id && !user.is_resigned
 
     if (isActive) {
-      // 查角色 + scopeType
+      // 查角色定义 + scopeType。能力标记来自数据库，角色键仅作兼容标识。
       const rows = await pg.query(`
-        SELECT pr.role, pr.scope_id, o.type AS scope_type, o.name AS scope_name
+        SELECT pr.role, pr.scope_id, o.type AS scope_type, o.name AS scope_name,
+               rd.name AS role_name, rd.is_store_manager
         FROM permission_roles pr
+        JOIN permission_role_definitions rd ON rd.role_key = pr.role
         LEFT JOIN org_nodes o ON o.id = pr.scope_id
         WHERE pr.employee_id = $1
       `, [user.employee_id])
       roleBindings = rows.map(r => ({
         role: r.role,
+        roleName: r.role_name || r.role,
+        isStoreManager: r.is_store_manager ?? r.role === 'manager',
         scopeId: r.scope_id,
         scopeType: r.scope_type,
         scopeName: r.scope_name,
@@ -237,8 +241,8 @@ async function loadAuthBase(effectiveOpenid) {
       ])
       scopeStoreIds = allScopeStores
       scopeOrgNodeIds = allScopeNodes
-      // 仅展开 manager 角色绑定 → 店长写操作可达的门店集（区别于全角色并集 scopeStoreIds）
-      const managerBindings = roleBindings.filter((r) => r.role === 'manager')
+      // 仅展开具有店长能力的角色绑定 → 店长写操作可达的门店集。
+      const managerBindings = roleBindings.filter((r) => r.isStoreManager)
       // 只有 manager 角色时，全角色范围就是 manager 范围；避免重复查询且保持口径一致。
       managerStoreIds = managerBindings.length === 0
         ? []
@@ -310,7 +314,7 @@ function hasValidManagerRole(auth) {
   const bindings = auth?.roleBindings || []
   if (bindings.length > 0) {
     return bindings.some((role) => (
-      role.role === 'manager' && VALID_MANAGER_SCOPES.includes(role.scopeType)
+      (role.isStoreManager ?? role.role === 'manager') && VALID_MANAGER_SCOPES.includes(role.scopeType)
     ))
   }
   return Array.isArray(auth?.roles) && auth.roles.includes('manager')

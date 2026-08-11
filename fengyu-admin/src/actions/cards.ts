@@ -20,6 +20,7 @@ import {
   type ExportBatchResult,
 } from '@/lib/export-pagination'
 import { paidUnusedSessionsExpr } from '@/lib/paid-sessions'
+import { computeItemOverpayRemainders, type RefundSourceItem } from '@/lib/refund'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 
 // ============================================================================
@@ -65,6 +66,8 @@ export interface AdminCard {
   paidSessions: number | null
   /** 可用次数（已付未用）；paid_sessions 为 NULL 时退回物理剩余，否则 max(paid − used, 0)；列表仅含 paid_sessions>0 的卡 */
   paidUnusedSessions: number | null
+  /** 可退的行级多收余数金额。 */
+  remainingRemainder: number
   /**
    * 购买数量（B2 兜底字段）：
    * 修写入侧（疗程卡 quantity>1 拆 N 行）后，正常情况下 quantity 应恒 = 1。
@@ -81,6 +84,37 @@ export interface AdminCard {
   clientUserId: string | null
   clientName: string | null
   clientPhone: string | null
+}
+
+/**
+ * 疗程卡的「剩余零头」与退款页使用完全相同的行级多收余数口径。
+ * 卡包列表已限定 product_type='疗程卡'，因此仅需补齐退款计算所需的行快照字段。
+ */
+function computeCardRemainingRemainder(item: {
+  saleItemId: string
+  sessionCount: number | null
+  remainingSessions: number | null
+  paidSessions: number | null
+  unitRealPrice: string | number | null
+  received: string | number | null
+}): number {
+  const source: RefundSourceItem = {
+    sale_item_id: item.saleItemId,
+    sku_id: null,
+    product_name: null,
+    product_type: '疗程卡',
+    session_count: item.sessionCount,
+    remaining_sessions: item.remainingSessions,
+    paid_sessions: item.paidSessions,
+    unit_price: 0,
+    quantity: 1,
+    unit_real_price: item.unitRealPrice ?? 0,
+    received: item.received,
+    picked_up_quantity: 0,
+    sales_category: null,
+    service_fee: null,
+  }
+  return computeItemOverpayRemainders([source]).get(item.saleItemId) ?? 0
 }
 
 /** 分页结果 */
@@ -285,6 +319,8 @@ export const getCardsPaginated = withPermission(
       remainingSessions: saleItems.remainingSessions,
       paidSessions: saleItems.paidSessions,
       paidUnusedSessions: paidUnusedSessionsExpr,
+      unitRealPrice: saleItems.unitRealPrice,
+      received: saleItems.received,
       quantity: saleItems.quantity,
       expireDate: saleItems.expireDate,
       paidAt: saleOrders.paidAt,
@@ -319,6 +355,7 @@ export const getCardsPaginated = withPermission(
       remainingSessions: r.remainingSessions ?? null,
       paidSessions: r.paidSessions ?? null,
       paidUnusedSessions: r.paidUnusedSessions ?? null,
+      remainingRemainder: computeCardRemainingRemainder(r),
       quantity: r.quantity ?? 1,
       expireDate: r.expireDate ?? null,
       paidAt: r.paidAt?.toISOString() ?? null,
@@ -339,10 +376,10 @@ export const getCardsPaginated = withPermission(
 //
 // 权限：sale_item:list（与列表同）；scope 由 saleItems.storeId 约束。
 // 复用 buildCardConditions + paidUnusedSessionsExpr，保证筛选条件 / 剩余次数口径与列表一致。
-// 金额 4 列 Number 化便于 Excel 求和；时间列交前端 fmtDateTime（Asia/Shanghai）。
+// 金额 5 列 Number 化便于 Excel 求和；时间列交前端 fmtDateTime（Asia/Shanghai）。
 // ============================================================================
 
-/** 疗程卡导出行（16 列，与表头一致） */
+/** 疗程卡导出行（19 列，与表头一致） */
 export interface ExportCardRow {
   /** 顾客（主档优先，回退订单快照） */
   clientName: string
@@ -360,8 +397,12 @@ export interface ExportCardRow {
   cardType: string
   /** 剩余次数（已付未用口径） */
   remaining: number
+  /** 已付次数（按付款比例 floor） */
+  paidSessions: number
   /** 总次数 */
   totalSessions: number
+  /** 可退的行级多收余数金额。 */
+  remainingRemainder: number
   /** 单次标价 */
   unitPrice: number | null
   /** 单次优惠后价 */
@@ -411,10 +452,13 @@ export const exportCards = withPermission(
 
     const query = db
       .select({
+        saleItemId: saleItems.saleItemId,
         productName: saleItems.productName,
         specName: productSkus.specName,
         unit: productSkus.unit,
         sessionCount: saleItems.sessionCount,
+        remainingSessions: saleItems.remainingSessions,
+        paidSessions: saleItems.paidSessions,
         paidUnusedSessions: paidUnusedSessionsExpr,
         unitPrice: saleItems.unitPrice,
         unitRealPrice: saleItems.unitRealPrice,
@@ -458,7 +502,9 @@ export const exportCards = withPermission(
         unit,
         cardType: sessionCount === 1 ? `单${unit}卡` : `${sessionCount}${unit}卡`,
         remaining: r.paidUnusedSessions ?? 0,
+        paidSessions: r.paidSessions ?? 0,
         totalSessions: sessionCount,
+        remainingRemainder: computeCardRemainingRemainder(r),
         unitPrice: numOrNull(r.unitPrice),
         unitRealPrice: numOrNull(r.unitRealPrice),
         saleAmount: numOrNull(r.saleAmount),

@@ -158,7 +158,7 @@ export type CustomerInput = z.infer<typeof customerSchema>
 // ─── 权限分配 ───
 export const assignRoleSchema = z.object({
   employeeId: z.string().min(1, '请选择员工'),
-  role: z.enum(['admin', 'manager', 'finance', 'hr', 'product', 'customer_mgr']),
+  role: z.string().trim().min(1, '请选择角色').max(64, '角色标识过长'),
   scopeId: z.string().min(1, '请选择组织范围'),
 })
 export type AssignRoleInput = z.infer<typeof assignRoleSchema>

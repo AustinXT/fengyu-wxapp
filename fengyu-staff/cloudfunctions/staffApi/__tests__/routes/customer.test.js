@@ -844,6 +844,68 @@ describe('customer.paidOrders', () => {
   })
 })
 
+describe('customer.homeProducts', () => {
+  test('跨店返回顾客家居产品，并拆分真实提货与退款数量', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-home' })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([{
+        sale_item_id: 'SI-HOME', sale_order_id: 'SO-HOME', product_name: '精华液',
+        unit: '盒', purchased_quantity: 6, picked_quantity: 2, refunded_quantity: 1,
+        remaining_quantity: 3, store_id: 'store-999', store_name: '外店',
+        purchased_at: '2026-08-01T10:00:00Z', refund_pending: false,
+      }])
+
+    await customerRoutes.homeProducts(ctx)
+
+    expect(ctx.result).toEqual([
+      expect.objectContaining({
+        saleItemId: 'SI-HOME', pickedQuantity: 2, refundedQuantity: 1,
+        remainingQuantity: 3, status: '部分提货', storeId: 'store-999',
+      }),
+    ])
+    expect(pg.query.mock.calls[1][1]).toEqual(['u-home'])
+  })
+
+  test('手机号解析后校验顾客 scope，退款中状态优先', async () => {
+    const ctx = createManagerCtx({ clientPhone: '13800001111' })
+    pg.query
+      .mockResolvedValueOnce([{ user_id: 'u-phone' }])
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([{
+        sale_item_id: 'SI-PENDING', sale_order_id: 'SO-PENDING', product_name: '面膜',
+        purchased_quantity: 1, picked_quantity: 0, refunded_quantity: 0,
+        remaining_quantity: 1, store_id: 'store-001', purchased_at: '2026-08-02T10:00:00Z',
+        refund_pending: true,
+      }])
+
+    await customerRoutes.homeProducts(ctx)
+    expect(ctx.result[0].status).toBe('退款处理中')
+    expect(pg.query.mock.calls[2][1]).toEqual(['u-phone'])
+  })
+
+  test('SQL 不按订单门店过滤，且只读有效购买行', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-home' })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([])
+
+    await customerRoutes.homeProducts(ctx)
+
+    const sql = pg.query.mock.calls[1][0]
+    expect(sql).toContain('FROM pickup_records')
+    expect(sql).toContain("o.status IN ('已支付', '已完成')")
+    expect(sql).toContain("si.item_direction = '购买'")
+    expect(sql).toContain("si.product_type = '家居产品'")
+    expect(sql).not.toMatch(/o\.store_id\s*=/)
+  })
+
+  test('缺少顾客标识时拒绝', async () => {
+    const ctx = createManagerCtx({})
+    await expect(customerRoutes.homeProducts(ctx)).rejects.toThrow(/INVALID_PARAMS/)
+  })
+})
+
 // ============================================================
 // customer.stats
 // ============================================================

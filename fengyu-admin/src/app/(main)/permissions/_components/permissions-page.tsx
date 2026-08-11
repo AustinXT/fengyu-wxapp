@@ -11,11 +11,9 @@ import { Dialog, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/
 import { AlertDialog, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from "@/components/ui/alert-dialog"
 import { toast } from "sonner"
 import { assignRole, revokeRole, getRolesByScope } from "@/actions/permissions"
-import { ROLE_LABELS } from "@/lib/types"
-import { ROLE_SCOPE_TYPES } from "@/lib/role-scope-rules"
 import { actionErrorMessage } from "@/lib/action-error"
 import { cn, formatDate } from "@/lib/utils"
-import type { PermissionRole, Employee, RoleType, OrgNode } from "@/lib/types"
+import type { PermissionRole, Employee, RoleType, OrgNode, RoleDefinition } from "@/lib/types"
 
 const roleBgMap: Record<string, string> = {
   admin: "bg-[#FFF0F0] text-[#D94040] border-[#D94040]",
@@ -33,12 +31,11 @@ const scopeTypeBadge: Record<string, { label: string; className: string }> = {
   门店: { label: "门店", className: "bg-[#F5F5F5] text-[#888888] border-[#888888]" },
 }
 
-const allRoles: RoleType[] = ["admin", "manager", "finance", "hr", "product", "customer_mgr", "staff"]
-
 interface PermissionsPageProps {
   initialRoles: PermissionRole[]
   initialScopeId: string
   roleCounts: Record<string, number>
+  roleDefinitions: RoleDefinition[]
   allEmployees: Employee[]
   orgNodes: OrgNode[]
   /** 操作者可操作的节点（角色根节点自身及其后代）；null = admin 全开 */
@@ -133,6 +130,7 @@ export default function PermissionsPage({
   initialRoles,
   initialScopeId,
   roleCounts,
+  roleDefinitions,
   allEmployees,
   orgNodes,
   accessibleScopeIds,
@@ -228,21 +226,23 @@ export default function PermissionsPage({
 
   const groupedByRole = useMemo(() => {
     const groups: { role: RoleType; label: string; items: PermissionRole[] }[] = []
-    for (const role of allRoles) {
-      const items = scopeRoles.filter(r => r.role === role)
+    for (const definition of roleDefinitions) {
+      const role = definition.roleKey
+      const items = scopeRoles.filter(r => r.role === definition.roleKey)
       if (items.length > 0) {
-        groups.push({ role, label: ROLE_LABELS[role], items })
+        groups.push({ role, label: definition.name, items })
       }
     }
     return groups
-  }, [scopeRoles])
+  }, [scopeRoles, roleDefinitions])
 
   // ─── 分配角色 Dialog ───
   const [dialogOpen, setDialogOpen] = useState(false)
   const [assignEmployeeId, setAssignEmployeeId] = useState("")
   // 默认 manager：弹层下拉不含 staff，且 manager scope 类型全开（总部/市场/门店），
   // 对左侧预填的任意 scope 都合法，避免初始角色与范围置灰矛盾
-  const [assignRoleValue, setAssignRoleValue] = useState<RoleType>("manager")
+  const defaultRoleKey = roleDefinitions.find((role) => !role.isSuperAdmin)?.roleKey ?? roleDefinitions[0]?.roleKey ?? ""
+  const [assignRoleValue, setAssignRoleValue] = useState<RoleType>(defaultRoleKey)
   const [assignScopeId, setAssignScopeId] = useState("")
   const [assigning, setAssigning] = useState(false)
   const [revokeTarget, setRevokeTarget] = useState<PermissionRole | null>(null)
@@ -250,7 +250,7 @@ export default function PermissionsPage({
 
   function openAssignDialog(prefilledScopeId?: string) {
     setAssignEmployeeId("")
-    setAssignRoleValue("manager")
+    setAssignRoleValue(defaultRoleKey)
     setAssignScopeId(prefilledScopeId ?? "")
     setDialogOpen(true)
   }
@@ -456,7 +456,8 @@ export default function PermissionsPage({
               onChange={(e) => {
                 const role = e.target.value as RoleType
                 setAssignRoleValue(role)
-                if (role === "admin") {
+                const definition = roleDefinitions.find((item) => item.roleKey === role)
+                if (definition?.isSuperAdmin) {
                   const hq = orgNodes.find(n => n.type === "总部")
                   setAssignScopeId(hq ? hq.id : "")
                   return
@@ -464,17 +465,17 @@ export default function PermissionsPage({
                 // 切换角色后，清空已变非法（超出新角色 scope 类型）的已选范围
                 if (assignScopeId) {
                   const node = orgNodes.find(n => n.id === assignScopeId)
-                  if (!node || !ROLE_SCOPE_TYPES[role].includes(node.type)) {
+                  if (!node || !["总部", "市场", "门店"].includes(node.type)) {
                     setAssignScopeId("")
                   }
                 }
               }}
             >
-              {allRoles.filter((r) => r !== "staff" && (r !== "admin" || canAssignAdmin)).map((r) => (
-                <option key={r} value={r}>{ROLE_LABELS[r]}</option>
+              {roleDefinitions.filter((role) => !role.isSuperAdmin || canAssignAdmin).map((role) => (
+                <option key={role.roleKey} value={role.roleKey}>{role.name}</option>
               ))}
             </Select>
-            {assignRoleValue === "admin" && (
+            {roleDefinitions.find((role) => role.roleKey === assignRoleValue)?.isSuperAdmin && (
               <p className="text-xs text-[#D4820A] mt-1">系统管理员 scope 固定为总部级别，不受范围限制</p>
             )}
           </div>
@@ -484,7 +485,7 @@ export default function PermissionsPage({
               className="mt-1"
               orgNodes={orgNodes}
               excludeTypes={["部门"]}
-              allowedTypes={ROLE_SCOPE_TYPES[assignRoleValue]}
+              allowedTypes={roleDefinitions.find((role) => role.roleKey === assignRoleValue)?.isSuperAdmin ? ["总部"] : ["总部", "市场", "门店"]}
               allowedNodeIds={accessibleScopeIds}
               value={assignScopeId}
               onChange={(id) => setAssignScopeId(id)}
@@ -499,7 +500,7 @@ export default function PermissionsPage({
             disabled={!assignEmployeeId || !assignScopeId}
             onClick={async () => {
               if (!assignEmployeeId || !assignScopeId) return
-              if (assignRoleValue === "admin") {
+              if (roleDefinitions.find((role) => role.roleKey === assignRoleValue)?.isSuperAdmin) {
                 setAdminConfirmOpen(true)
                 return
               }
@@ -516,7 +517,7 @@ export default function PermissionsPage({
         <AlertDialogTitle>确认撤销角色？</AlertDialogTitle>
         <AlertDialogDescription>
           将撤销 {revokeTarget?.employeeName} 的{" "}
-          {ROLE_LABELS[(revokeTarget?.role ?? "staff") as RoleType]} 角色，撤销后该员工将立即失去对应权限。
+          {revokeTarget?.roleName ?? revokeTarget?.role ?? "未知"} 角色，撤销后该员工将立即失去对应权限。
         </AlertDialogDescription>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => setRevokeTarget(null)}>取消</AlertDialogCancel>

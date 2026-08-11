@@ -1,0 +1,1 @@
+ALTER TABLE "permission_roles" ADD CONSTRAINT "permission_roles_role_permission_role_definitions_role_key_fk" FOREIGN KEY ("role") REFERENCES "public"."permission_role_definitions"("role_key") ON DELETE restrict ON UPDATE no action;

@@ -2,18 +2,41 @@
 
 import { db } from '@/db'
 import { pgErrorCode } from '@/lib/pg-error'
-import { permissionRoles } from '@db/permission'
+import { permissionRoleDefinitions, permissionRoles } from '@db/permission'
 import { staffWechatUsers } from '@db/user'
 import { orgNodes } from '@db/org'
 import { eq, and, inArray, sql, desc, asc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
-import type { PermissionRole, RoleType } from '@/lib/types'
+import type { PermissionRole } from '@/lib/types'
 import { hasRole } from '@/lib/auth'
-import { hasPermission } from '@/lib/permissions'
+import { hasPermission, isAdminScope } from '@/lib/permissions'
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
-import { isScopeTypeValidForRole, type OrgNodeType } from '@/lib/role-scope-rules'
 import { countActiveAdmins } from '@/lib/admin-guard'
+
+async function loadRoleDefinition(roleKey: string): Promise<{
+  roleKey: string
+  name: string
+  isSuperAdmin: boolean
+} | null> {
+  const rows = await db.execute(sql`
+    SELECT role_key, name, is_super_admin
+      FROM permission_role_definitions
+     WHERE role_key = ${roleKey}
+     LIMIT 1
+  `)
+  const row = (rows as unknown as Array<{
+    role_key: string
+    name: string
+    is_super_admin: boolean
+  }>)[0]
+  if (!row) return null
+  return {
+    roleKey: row.role_key || roleKey,
+    name: row.name || roleKey,
+    isSuperAdmin: row.is_super_admin ?? roleKey === 'admin',
+  }
+}
 
 /** 非 admin 可操作的组织节点：角色绑定节点自身及其全部后代。 */
 function permissionScopeIds(session: Parameters<typeof hasRole>[0]): string[] {
@@ -28,7 +51,7 @@ export const getRoles = withPermission(
   'permission:list',
   async (session): Promise<PermissionRole[]> => {
   // 非 admin 用户只能看自身 scope 内的角色分配（AC-05 数据隔离）
-  const isAdmin = hasRole(session, 'admin')
+  const isAdmin = isAdminScope(session)
   const userScopeIds = permissionScopeIds(session)
   if (!isAdmin && userScopeIds.length === 0) return []
 
@@ -41,6 +64,10 @@ export const getRoles = withPermission(
       id: permissionRoles.id,
       employeeId: permissionRoles.employeeId,
       role: permissionRoles.role,
+      roleName: permissionRoleDefinitions.name,
+      canAccessAdmin: permissionRoleDefinitions.canAccessAdmin,
+      isSuperAdmin: permissionRoleDefinitions.isSuperAdmin,
+      isStoreManager: permissionRoleDefinitions.isStoreManager,
       scopeId: permissionRoles.scopeId,
       createdBy: permissionRoles.createdBy,
       createdAt: permissionRoles.createdAt,
@@ -49,6 +76,7 @@ export const getRoles = withPermission(
       scopeName: orgNodes.name,
     })
     .from(permissionRoles)
+    .innerJoin(permissionRoleDefinitions, eq(permissionRoles.role, permissionRoleDefinitions.roleKey))
     .leftJoin(staffWechatUsers, eq(permissionRoles.employeeId, staffWechatUsers.employeeId))
     .leftJoin(orgNodes, eq(permissionRoles.scopeId, orgNodes.id))
     .where(whereCondition)
@@ -59,6 +87,10 @@ export const getRoles = withPermission(
     id: r.id,
     employeeId: r.employeeId,
     role: r.role as PermissionRole['role'],
+    roleName: r.roleName,
+    canAccessAdmin: r.canAccessAdmin,
+    isSuperAdmin: r.isSuperAdmin,
+    isStoreManager: r.isStoreManager,
     scopeId: r.scopeId,
     createdBy: r.createdBy,
     createdAt: r.createdAt.toISOString(),
@@ -73,7 +105,7 @@ export const getRoles = withPermission(
 export const getRolesByScope = withPermission(
   'permission:list',
   async (session, scopeId: string): Promise<PermissionRole[]> => {
-  const isAdmin = hasRole(session, 'admin')
+  const isAdmin = isAdminScope(session)
   if (!isAdmin) {
     const userScopeIds = permissionScopeIds(session)
     if (!userScopeIds.includes(scopeId)) return []
@@ -84,6 +116,10 @@ export const getRolesByScope = withPermission(
       id: permissionRoles.id,
       employeeId: permissionRoles.employeeId,
       role: permissionRoles.role,
+      roleName: permissionRoleDefinitions.name,
+      canAccessAdmin: permissionRoleDefinitions.canAccessAdmin,
+      isSuperAdmin: permissionRoleDefinitions.isSuperAdmin,
+      isStoreManager: permissionRoleDefinitions.isStoreManager,
       scopeId: permissionRoles.scopeId,
       createdBy: permissionRoles.createdBy,
       createdAt: permissionRoles.createdAt,
@@ -92,6 +128,7 @@ export const getRolesByScope = withPermission(
       scopeName: orgNodes.name,
     })
     .from(permissionRoles)
+    .innerJoin(permissionRoleDefinitions, eq(permissionRoles.role, permissionRoleDefinitions.roleKey))
     .leftJoin(staffWechatUsers, eq(permissionRoles.employeeId, staffWechatUsers.employeeId))
     .leftJoin(orgNodes, eq(permissionRoles.scopeId, orgNodes.id))
     .where(eq(permissionRoles.scopeId, scopeId))
@@ -102,6 +139,10 @@ export const getRolesByScope = withPermission(
     id: r.id,
     employeeId: r.employeeId,
     role: r.role as PermissionRole['role'],
+    roleName: r.roleName,
+    canAccessAdmin: r.canAccessAdmin,
+    isSuperAdmin: r.isSuperAdmin,
+    isStoreManager: r.isStoreManager,
     scopeId: r.scopeId,
     createdBy: r.createdBy,
     createdAt: r.createdAt.toISOString(),
@@ -116,7 +157,7 @@ export const getRolesByScope = withPermission(
 export const getRoleCountsByScope = withPermission(
   'permission:list',
   async (session): Promise<Record<string, number>> => {
-  const isAdmin = hasRole(session, 'admin')
+  const isAdmin = isAdminScope(session)
   const userScopeIds = permissionScopeIds(session)
   if (!isAdmin && userScopeIds.length === 0) return {}
 
@@ -153,6 +194,10 @@ export const getEmployeeRoles = withPermission(
       id: permissionRoles.id,
       employeeId: permissionRoles.employeeId,
       role: permissionRoles.role,
+      roleName: permissionRoleDefinitions.name,
+      canAccessAdmin: permissionRoleDefinitions.canAccessAdmin,
+      isSuperAdmin: permissionRoleDefinitions.isSuperAdmin,
+      isStoreManager: permissionRoleDefinitions.isStoreManager,
       scopeId: permissionRoles.scopeId,
       createdBy: permissionRoles.createdBy,
       createdAt: permissionRoles.createdAt,
@@ -160,6 +205,7 @@ export const getEmployeeRoles = withPermission(
       scopeName: orgNodes.name,
     })
     .from(permissionRoles)
+    .innerJoin(permissionRoleDefinitions, eq(permissionRoles.role, permissionRoleDefinitions.roleKey))
     .leftJoin(orgNodes, eq(permissionRoles.scopeId, orgNodes.id))
     .where(eq(permissionRoles.employeeId, employeeId))
     // 例外：详情页短子列表（1~3 条），按插入顺序稳定展示
@@ -169,6 +215,10 @@ export const getEmployeeRoles = withPermission(
     id: r.id,
     employeeId: r.employeeId,
     role: r.role as PermissionRole['role'],
+    roleName: r.roleName,
+    canAccessAdmin: r.canAccessAdmin,
+    isSuperAdmin: r.isSuperAdmin,
+    isStoreManager: r.isStoreManager,
     scopeId: r.scopeId,
     createdBy: r.createdBy,
     createdAt: r.createdAt.toISOString(),
@@ -189,19 +239,22 @@ export const assignRole = withAnyPermission(
     },
   ): Promise<{ success: boolean; message: string }> => {
   // admin 角色只有持 'permission:assign_admin' 才能分配
-  if (data.role === 'admin' && !hasPermission(session, 'permission:assign_admin')) {
+  const definition = await loadRoleDefinition(data.role)
+  if (!definition) throw new Error('INVALID_PARAMS: 角色不存在')
+
+  if (definition.isSuperAdmin && !hasPermission(session, 'permission:assign_admin')) {
     throw new Error('PERMISSION_DENIED: 无权执行 permission:assign_admin')
   }
 
   // 非 admin 用户不能分配超出自身 scope 的权限
-  if (!hasRole(session, 'admin')) {
+  if (!isAdminScope(session)) {
     const userScopeIds = permissionScopeIds(session)
     if (!userScopeIds.includes(data.scopeId)) {
       return { success: false, message: '不能分配超出自身权限范围的角色' }
     }
   }
 
-  // role × scope.type 配对校验（admin: 仅总部；其余按 ROLE_SCOPE_TYPES）
+  // 超级管理员仅总部；其他动态角色统一允许总部/市场/门店。
   const [node] = await db
     .select({ type: orgNodes.type })
     .from(orgNodes)
@@ -213,11 +266,11 @@ export const assignRole = withAnyPermission(
   if (node.type === '部门') {
     throw new Error('INVALID_PARAMS: 角色不能绑定到部门型 scope')
   }
-  if (data.role === 'admin') {
+  if (definition.isSuperAdmin) {
     if (node.type !== '总部') {
       return { success: false, message: '系统管理员角色必须绑定总部节点' }
     }
-  } else if (!isScopeTypeValidForRole(data.role as RoleType, node.type as OrgNodeType)) {
+  } else if (!['总部', '市场', '门店'].includes(node.type)) {
     throw new Error(`INVALID_PARAMS: 角色 ${data.role} 不能绑定到 ${node.type} 型 scope`)
   }
 
@@ -281,13 +334,16 @@ export const revokeRole = withPermission(
     return { success: false, message: '角色记录不存在' }
   }
 
-  // 只有 admin 才能撤销 admin 角色
-  if (target.role === 'admin' && !hasRole(session, 'admin')) {
+  const definition = await loadRoleDefinition(target.role)
+  if (!definition) return { success: false, message: '角色定义不存在' }
+
+  // 只有超级管理员才能撤销超级管理员角色
+  if (definition.isSuperAdmin && !isAdminScope(session)) {
     return { success: false, message: '只有系统管理员才能撤销系统管理员角色' }
   }
 
   // admin 自删保护 + 最后 admin 保护（D-Q12-2026-04-26 / audit-22 P0-22-03）
-  if (target.role === 'admin') {
+  if (definition.isSuperAdmin) {
     if (target.employeeId === session.employeeId) {
       throw new Error('INVALID_STATE: 不能撤销自己的 admin 角色')
     }
@@ -298,7 +354,7 @@ export const revokeRole = withPermission(
   }
 
   // 非 admin 用户不能撤销超出自身 scope 的角色
-  if (!hasRole(session, 'admin')) {
+  if (!isAdminScope(session)) {
     const userScopeIds = permissionScopeIds(session)
     if (!userScopeIds.includes(target.scopeId)) {
       return { success: false, message: '不能撤销超出自身权限范围的角色' }
