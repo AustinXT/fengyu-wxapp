@@ -1501,7 +1501,7 @@ describe('order.homeProducts', () => {
     pg.query.mockResolvedValueOnce([
       {
         sale_item_id: 'SI-HOME-1', sale_order_id: 'SO-HOME-1', product_name: '精华液',
-        cover_image: 'https://img.example.com/home.jpg', unit: '盒', purchased_quantity: 5,
+        unit: '盒', purchased_quantity: 5,
         picked_quantity: 2, refunded_quantity: 1, remaining_quantity: 2,
         store_id: 's2', store_name: '外店', purchased_at: '2026-08-01T10:00:00Z', refund_pending: false,
       },

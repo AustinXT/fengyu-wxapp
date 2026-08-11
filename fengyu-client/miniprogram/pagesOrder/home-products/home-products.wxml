@@ -16,11 +16,6 @@
 
   <view wx:else class="product-list">
     <view class="product-card" wx:for="{{products}}" wx:key="saleItemId">
-      <image wx:if="{{item.coverImage}}" class="product-image" src="{{item.coverImage}}" mode="aspectFill" />
-      <view wx:else class="product-image product-image--empty">
-        <van-icon name="photo-o" size="48rpx" color="#B8B8B8" />
-      </view>
-
       <view class="product-main">
         <view class="product-head">
           <text class="product-name">{{item.productName}}</text>
