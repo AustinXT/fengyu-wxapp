@@ -50,6 +50,13 @@
       "when": 1786433352188,
       "tag": "0006_bright_ultimatum",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1786453413434,
+      "tag": "0007_spooky_virginia_dare",
+      "breakpoints": true
     }
   ]
 }
