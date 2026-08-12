@@ -7,6 +7,7 @@ import { groupTreatmentCards, sumGroupValue } from '../utils/treatment-card-grou
 
 interface OrderDetailItem {
   sale_item_id: string;
+  sale_item_group_id?: string | null;
   sale_order_id?: string;
   sku_id?: string | null;
   item_direction?: string;
@@ -219,13 +220,15 @@ Page({
         };
       });
 
-      // 订单详情只合并疗程卡展示。原始 itemsWithProgress 仍用于金额/预约判断，
+      // 拆分寄存行按稳定行组聚合；原始 itemsWithProgress 仍用于金额/预约判断，
       // 不改变任何后续业务计算或提交参数。
       const displayItems = groupTreatmentCards(itemsWithProgress, {
         getId: (item) => item.sale_item_id,
         getQuantity: (item) => item.quantity,
         preserveNonUnitQuantity: false,
-        getIdentity: (item) => ({
+        getIdentity: (item) => item.sale_item_group_id
+          ? { saleItemGroupId: item.sale_item_group_id }
+          : ({
           saleOrderId: order.sale_order_id,
           orderStatus: order.status,
           saleOrderType: order.sale_order_type,
@@ -260,7 +263,17 @@ Page({
         }),
       }).map((group) => {
         const primary = group.primary;
-        if (primary.product_type !== '疗程卡') return { ...primary, card_count: group.cardCount };
+        const aggregate = {
+          ...primary,
+          quantity: sumGroupValue(group, (item) => item.quantity),
+          sale_amount: sumGroupValue(group, (item) => item.sale_amount),
+          received: sumGroupValue(group, (item) => item.received),
+          pending_received: sumGroupValue(group, (item) => item.pending_received),
+          refunded_amount: sumGroupValue(group, (item) => item.refunded_amount),
+          picked_up_quantity: sumGroupValue(group, (item) => item.picked_up_quantity),
+          card_count: group.cardCount,
+        };
+        if (primary.product_type !== '疗程卡') return aggregate;
 
         const sessionCount = sumGroupValue(group, (item) => item.session_count);
         const remainingSessions = sumGroupValue(group, (item) => item.remaining_sessions);
@@ -276,19 +289,13 @@ Page({
         );
 
         return {
-          ...primary,
+          ...aggregate,
           sale_item_id: group.groupKey,
-          quantity: sumGroupValue(group, (item) => item.quantity),
           session_count: sessionCount,
           remaining_sessions: remainingSessions,
           paid_sessions: paidSessions,
           paid_sessions_null: paidSessionsNull,
           used_sessions: usedSessions,
-          sale_amount: sumGroupValue(group, (item) => item.sale_amount),
-          received: sumGroupValue(group, (item) => item.received),
-          pending_received: sumGroupValue(group, (item) => item.pending_received),
-          refunded_amount: sumGroupValue(group, (item) => item.refunded_amount),
-          picked_up_quantity: sumGroupValue(group, (item) => item.picked_up_quantity),
           used_pct: usedPct,
           paid_unused_pct: paidUnusedPct,
           unpaid_pct: unpaidPct,

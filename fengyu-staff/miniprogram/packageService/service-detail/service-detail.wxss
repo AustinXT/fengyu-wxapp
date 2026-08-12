@@ -16,7 +16,7 @@
 .status-label { font-size: 36rpx; font-weight: 700; }
 .status-banner--pending .status-label { color: #D4820A; }
 .status-banner--progress .status-label { color: #5E8BB3; }
-.status-banner--awaiting .status-label { color: #C0322A; }
+.status-banner--awaiting .status-label { color: var(--color-primary); }
 .status-banner--done .status-label { color: #888888; }
 .status-banner--cancelled .status-label { color: #E53935; }
 
@@ -58,7 +58,7 @@
 /* 顾客评价 */
 .review-box { background: #FFFFFF; padding: 24rpx 32rpx; }
 .review-rate-row { display: flex; align-items: center; gap: 16rpx; margin-bottom: 12rpx; }
-.review-score { font-size: 26rpx; color: #C0322A; font-weight: 600; }
+.review-score { font-size: 26rpx; color: var(--color-primary); font-weight: 600; }
 .review-comment { font-size: 28rpx; color: #2D2017; line-height: 1.6; display: block; margin-bottom: 12rpx; word-break: break-all; }
 .review-time { font-size: 22rpx; color: #BBBBBB; display: block; }
 .review-empty { background: #FFFFFF; padding: 32rpx; text-align: center; font-size: 26rpx; color: #999999; }

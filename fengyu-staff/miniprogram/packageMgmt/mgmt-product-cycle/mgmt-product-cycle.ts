@@ -1,7 +1,7 @@
 // packageMgmt/mgmt-product-cycle — 管理层"品项数据"子页
 // scope 由 hub（mgmt-dashboard）通过路由参数透传，本页不再出 scope-picker
 // 持卡人数为截面快照，不随 period 变化（仅 onLoad 时拉一次）
-import { canAccessManagement } from '../../utils/role'
+import { isManagementMode } from '../../utils/role'
 import { callStaffApi } from '../../utils/cloud'
 import { formatAmount, formatCount, formatPercent } from '../../utils/number'
 
@@ -109,6 +109,10 @@ Page({
   },
 
   onLoad(query: { scopeType?: string; scopeId?: string; scopeName?: string }) {
+    if (!isManagementMode()) {
+      wx.reLaunch({ url: '/pages/workbench/workbench' })
+      return
+    }
     const scopeType = (query?.scopeType as ScopeType) || 'all'
     const scopeId = query?.scopeId ? query.scopeId : null
     const scopeName = query?.scopeName ? decodeURIComponent(query.scopeName) : ''
@@ -119,7 +123,7 @@ Page({
   },
 
   onShow() {
-    if (!canAccessManagement()) {
+    if (!isManagementMode()) {
       wx.reLaunch({ url: '/pages/workbench/workbench' })
     }
   },

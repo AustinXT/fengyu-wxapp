@@ -1,5 +1,6 @@
 // pages/appointment/appointment.ts — 预约管理
 import { callStaffApi } from '../../utils/cloud';
+import { isManagementMode } from '../../utils/role';
 
 type ApptStatus = 'pending' | 'confirmed' | 'completed' | 'cancelled' | 'closed';
 
@@ -31,17 +32,20 @@ Page({
     page: 1,
     hasMore: true,
     actioningId: '',
+    isReadOnly: false,
   },
 
   _inited: false,
 
   onLoad(options: Record<string, string>) {
+    this.setData({ isReadOnly: isManagementMode() });
     if (options.tab) {
       this.setData({ tabActive: options.tab });
     }
   },
 
   onShow() {
+    this.setData({ isReadOnly: isManagementMode() });
     this.resetAndLoad();
   },
 
@@ -104,6 +108,7 @@ Page({
   },
 
   async onConfirmAppt(e: WechatMiniprogram.TouchEvent) {
+    if (this._isReadOnly()) return;
     const id = e.currentTarget.dataset.id as string;
     if (this.data.actioningId) return;
     this.setData({ actioningId: id });
@@ -120,6 +125,7 @@ Page({
   },
 
   async onCheckin(e: WechatMiniprogram.TouchEvent) {
+    if (this._isReadOnly()) return;
     const id = e.currentTarget.dataset.id as string;
     if (this.data.actioningId) return;
     this.setData({ actioningId: id });
@@ -136,7 +142,12 @@ Page({
   },
 
   onCreateService(e: WechatMiniprogram.TouchEvent) {
+    if (this._isReadOnly()) return;
     const id = e.currentTarget.dataset.id as string;
     wx.navigateTo({ url: `/packageService/service-create/service-create?appointmentId=${id}` });
+  },
+
+  _isReadOnly() {
+    return isManagementMode();
   },
 });

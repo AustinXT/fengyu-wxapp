@@ -158,6 +158,8 @@ const mockCardRow = {
   remainingSessions: 7,
   paidSessions: 10,
   paidUnusedSessions: 7,
+  unitRealPrice: '400.00',
+  received: '4000.00',
   expireDate: '2026-12-31',
   paidAt: new Date('2026-04-01T10:00:00Z'),
   storeId: 'store-1',
@@ -187,6 +189,7 @@ describe('getCardsPaginated — 服务端分页', () => {
     expect(result.data[0].remainingSessions).toBe(7)
     expect(result.data[0].paidSessions).toBe(10)
     expect(result.data[0].paidUnusedSessions).toBe(7)
+    expect(result.data[0].remainingRemainder).toBe(0)
     // 基础条件
     expect(eq).toHaveBeenCalledWith('item_direction', '购买')
     expect(eq).toHaveBeenCalledWith('sale_order_type', '转换单')
@@ -205,7 +208,7 @@ describe('getCardsPaginated — 服务端分页', () => {
     expect(result.data).toEqual([])
   })
 
-  it('部分支付疗程卡 → paidUnusedSessions 透传（已付未用口径，欠款时 < 物理剩余）', async () => {
+  it('部分支付疗程卡 → 已付未用、已付次数和剩余零头均按行级口径映射', async () => {
     // 15 次卡，已用 2（remaining=13），欠款只付 80%（paid=12）→ 已付未用 = 12 - 2 = 10
     const partialRow = {
       ...mockCardRow,
@@ -214,13 +217,18 @@ describe('getCardsPaginated — 服务端分页', () => {
       remainingSessions: 13,
       paidSessions: 12,
       paidUnusedSessions: 10,
+      unitRealPrice: '400.00',
+      received: '4850.00',
     }
     mockPaginatedChain(1, [partialRow])
 
     const result = await getCardsPaginated()
 
     expect(result.data[0].paidUnusedSessions).toBe(10)
+    expect(result.data[0].paidSessions).toBe(12)
     expect(result.data[0].remainingSessions).toBe(13)
+    // 行实收 4850 = 已消费 2×400 + 可退整次 10×400 + 剩余零头 50
+    expect(result.data[0].remainingRemainder).toBe(50)
     // 欠款部分支付：可用(已付未用 10) < 物理剩余(13)，差 3 次为未付款次数
     expect(result.data[0].paidUnusedSessions!).toBeLessThan(result.data[0].remainingSessions!)
   })
@@ -242,13 +250,14 @@ describe('getCardsPaginated — 服务端分页', () => {
     expect(gte).toHaveBeenCalledWith('session_count', 2)
   })
 
-  it('marketId 筛选 → 生成参数化组织节点子树条件', async () => {
-    // 市场筛选由 market-store-sql 统一生成递归 SQL，不额外发起预查询。
+  it('marketId 筛选 → 递归组织节点子查询', async () => {
     mockPaginatedChain(0, [])
 
     await getCardsPaginated({ marketId: 'market-1' })
 
-    expect((sql as any).mock.calls.some((args: unknown[]) => args.includes('market-1'))).toBe(true)
+    expect((sql as any).mock.calls.some(([strings]: [TemplateStringsArray]) =>
+      strings.join('').includes('WITH RECURSIVE descendants'),
+    )).toBe(true)
   })
 
   it('storeId 筛选 → eq(store_id, storeId)', async () => {
@@ -714,6 +723,8 @@ const mockExportRow = {
   productName: '蜜语水润嫩肤护理',
   specName: '蜜语水润嫩肤护理 10次卡',
   sessionCount: 10,
+  remainingSessions: 7,
+  paidSessions: 10,
   paidUnusedSessions: 7,
   unitPrice: '500.00',
   unitRealPrice: '400.00',
@@ -754,7 +765,9 @@ describe('exportCards — 疗程卡导出', () => {
     expect(r.productSpec).toBe('蜜语水润嫩肤护理') // productName 快照优先于 specName
     expect(r.cardType).toBe('10次卡') // sessionCount=10 派生
     expect(r.remaining).toBe(7) // 已付未用口径
+    expect(r.paidSessions).toBe(10)
     expect(r.totalSessions).toBe(10)
+    expect(r.remainingRemainder).toBe(0)
     expect(r.unitPrice).toBe(500) // numeric string → number
     expect(r.unitRealPrice).toBe(400)
     expect(r.saleAmount).toBe(4000)
@@ -782,6 +795,24 @@ describe('exportCards — 疗程卡导出', () => {
     expect(eq).toHaveBeenCalledWith('sale_order_type', '转换单')
     expect(eq).toHaveBeenCalledWith('item_direction', '转入')
     expect(inArray).toHaveBeenCalledWith('status', ['已支付', '部分支付', '已完成'])
+  })
+
+  it('部分支付且不能再兑换整次的金额 → 导出剩余零头', async () => {
+    mockExportChain([{
+      ...mockExportRow,
+      sessionCount: 15,
+      remainingSessions: 13,
+      paidSessions: 12,
+      paidUnusedSessions: 10,
+      received: '4850.00',
+    }])
+
+    const { rows } = await exportCards({})
+
+    expect(rows[0].remaining).toBe(10)
+    expect(rows[0].paidSessions).toBe(12)
+    expect(rows[0].totalSessions).toBe(15)
+    expect(rows[0].remainingRemainder).toBe(50)
   })
 
   it('单次卡 → cardType=单次卡；顾客主档 / productName 缺失时回退订单快照与 specName', async () => {

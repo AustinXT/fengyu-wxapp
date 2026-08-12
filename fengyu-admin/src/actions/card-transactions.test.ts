@@ -63,7 +63,7 @@ import { getCardTransactionsPaginated } from './card-transactions'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { scopeCondition } from '@/lib/permissions'
-import { eq, ilike, gte, lte, sql } from 'drizzle-orm'
+import { eq, ilike, gte, lte, inArray, sql } from 'drizzle-orm'
 
 const adminSession = {
   employeeId: 'ADMIN-001',
@@ -229,7 +229,7 @@ describe('getCardTransactionsPaginated — 服务端分页', () => {
     expect(eq).toHaveBeenCalledWith('bound_store_id', 'store-2')
   })
 
-  it('marketId 筛选 → 生成参数化组织节点子树条件', async () => {
+  it('marketId 筛选 → 递归组织节点子查询', async () => {
     mockThreeQueries({
       count: 0,
       rows: [],
@@ -238,7 +238,9 @@ describe('getCardTransactionsPaginated — 服务端分页', () => {
 
     await getCardTransactionsPaginated({ marketId: 'market-1' })
 
-    expect((sql as any).mock.calls.some((args: unknown[]) => args.includes('market-1'))).toBe(true)
+    expect((sql as any).mock.calls.some(([strings]: [TemplateStringsArray]) =>
+      strings.join('').includes('WITH RECURSIVE descendants'),
+    )).toBe(true)
   })
 
   it('search 筛选 → ilike(name) + ilike(phone) + 转义 %/_', async () => {

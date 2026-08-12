@@ -6,6 +6,7 @@ import { getRefundById } from '@/actions/refunds'
 import { ApprovalActions } from '../_components/approval-actions'
 import { getSession } from '@/lib/auth'
 import { hasPermission } from '@/lib/permissions'
+import { requireUiPageCapability } from '@/lib/page-capability'
 import { formatPhoneSafe } from '@/lib/format'
 import { formatDateTime as fmtDateTime } from '@/lib/utils'
 
@@ -25,10 +26,11 @@ const paymentFlowStatusColorMap: Record<string, string> = {
 
 export default async function Page({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
+  const session = await getSession()
+  requireUiPageCapability(session, ['sale_order:refund_create', 'sale_order:refund_approve'])
   const data = await getRefundById(id)
   if (!data) notFound()
 
-  const session = await getSession()
   const canApprove = !!(session && hasPermission(session, 'sale_order:refund_approve'))
 
   const { refund, origOrder, payments } = data

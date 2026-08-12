@@ -32,10 +32,12 @@ import PullWorkfineDialog from "@/app/(main)/legacy-orders/_components/pull-work
 import { DangerZoneDelete } from "@/components/delete-action"
 import { deleteCustomer } from "@/actions/customers"
 import { getCustomerVisibleSaleItems, type CustomerVisibleSaleItem } from "./customer-entitlement-items"
+import type { CustomerHomeProduct } from "@/lib/home-product"
 
 interface CustomerDetailPageProps {
   customer: Customer
   orders: SaleOrder[]
+  homeProducts: CustomerHomeProduct[]
   appointments: Appointment[]
   stores: Store[]
   employees: Employee[]
@@ -44,6 +46,9 @@ interface CustomerDetailPageProps {
   coupons: CustomerCoupon[]
   orphanProfiles: OrphanProfile[]
   prepaidBalance?: string
+  canUpdate?: boolean
+  canMerge?: boolean
+  canListEmployees?: boolean
   canEditPhone?: boolean
   canPullLegacy?: boolean
   /** 是否展示「危险操作」删除入口（仅系统管理员 customer:delete） */
@@ -60,6 +65,7 @@ function formatDistinctSkuName(row: Pick<SaleItem, "productName" | "skuName">): 
 export default function CustomerDetailPage({
   customer,
   orders,
+  homeProducts,
   appointments,
   stores,
   employees,
@@ -68,6 +74,9 @@ export default function CustomerDetailPage({
   coupons,
   orphanProfiles,
   prepaidBalance,
+  canUpdate = false,
+  canMerge = false,
+  canListEmployees = false,
   canEditPhone = false,
   canPullLegacy = false,
   canDelete = false,
@@ -110,6 +119,7 @@ export default function CustomerDetailPage({
   }
 
   async function handlePhoneConfirm() {
+    if (!canUpdate) return
     setPhoneSaving(true)
     setPhoneConfirmOpen(false)
     try {
@@ -136,6 +146,7 @@ export default function CustomerDetailPage({
   }
 
   async function handleMerge(orphanUserId: string) {
+    if (!canMerge) return
     if (!confirm(`确认合并孤儿档案 ${orphanUserId} 到当前顾客？\n该操作将把孤儿行的业务数据（订单/券/积分/充值卡/预约/消息/服务单）全部归并到当前顾客，且删除孤儿行。操作不可撤销。`)) return
     setMerging(orphanUserId)
     try {
@@ -192,6 +203,7 @@ export default function CustomerDetailPage({
       : null
   )
   const doPromoterSearch = useCallback((q: string) => {
+    if (!canListEmployees) return
     if (promoterTimer.current) clearTimeout(promoterTimer.current)
     if (!q.trim()) { setPromoterResults([]); return }
     setPromoterLoading(true)
@@ -200,7 +212,7 @@ export default function CustomerDetailPage({
       setPromoterResults(results)
       setPromoterLoading(false)
     }, 300)
-  }, [])
+  }, [canListEmployees])
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
       if (promoterRef.current && !promoterRef.current.contains(e.target as Node)) setPromoterOpen(false)
@@ -237,6 +249,7 @@ export default function CustomerDetailPage({
   }
 
   async function handleSave() {
+    if (!canUpdate) return
     setSaving(true)
     try {
       const result = await updateCustomer(customer.userId, {
@@ -425,6 +438,22 @@ export default function CustomerDetailPage({
     },
   ]
 
+  const homeProductColumns: Column<CustomerHomeProduct>[] = [
+    {
+      key: "productName",
+      header: "产品",
+      cell: (row) => <span className="font-medium">{row.productName}</span>,
+    },
+    { key: "status", header: "状态", cell: (row) => <StatusBadge status={row.status} /> },
+    { key: "purchasedQuantity", header: "购买", cell: (row) => <span>{row.purchasedQuantity} {row.unit}</span> },
+    { key: "pickedQuantity", header: "已提", cell: (row) => <span>{row.pickedQuantity} {row.unit}</span> },
+    { key: "refundedQuantity", header: "已退", cell: (row) => <span>{row.refundedQuantity} {row.unit}</span> },
+    { key: "remainingQuantity", header: "待提", cell: (row) => <span className="font-medium text-[#C0322A]">{row.remainingQuantity} {row.unit}</span> },
+    { key: "storeName", header: "购买门店", cell: (row) => <span>{row.storeName || "—"}</span> },
+    { key: "purchasedAt", header: "购买日期", cell: (row) => <span>{formatDate(row.purchasedAt) || "—"}</span> },
+    { key: "saleOrderId", header: "订单号", cell: (row) => <span className="font-mono text-xs">{row.saleOrderId}</span> },
+  ]
+
   const appointmentColumns: Column<Appointment>[] = [
     {
       key: "appointmentTime",
@@ -474,7 +503,7 @@ export default function CustomerDetailPage({
         defaultPhone={customer.phone ?? undefined}
       />
 
-      {orphanProfiles.length > 0 && (
+      {canMerge && orphanProfiles.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle className="text-base text-[#D4820A]">
@@ -514,10 +543,11 @@ export default function CustomerDetailPage({
       )}
 
       <Tabs defaultValue="profile">
-        <TabsList>
+        <TabsList className="overflow-x-auto">
           <TabsTrigger value="profile">基本档案</TabsTrigger>
           <TabsTrigger value="orders">消费记录（{orders.length}）</TabsTrigger>
           <TabsTrigger value="sessions">疗程卡（{activeSaleItems.length}）</TabsTrigger>
+          <TabsTrigger value="home-products">家居产品（{homeProducts.length}）</TabsTrigger>
           <TabsTrigger value="appointments">预约记录（{appointments.length}）</TabsTrigger>
           <TabsTrigger value="services">服务记录（{serviceOrders.length}）</TabsTrigger>
           <TabsTrigger value="coupons">顾客优惠券（{coupons.length}）</TabsTrigger>
@@ -537,11 +567,11 @@ export default function CustomerDetailPage({
                     取消
                   </Button>
                 </div>
-              ) : (
+              ) : canUpdate ? (
                 <Button variant="outline" size="sm" onClick={() => setIsEditing(true)}>
                   编辑
                 </Button>
-              )}
+              ) : null}
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-2 gap-x-8 gap-y-4">
@@ -955,6 +985,21 @@ export default function CustomerDetailPage({
                 columns={itemColumns}
                 data={filteredActiveSaleItems}
                 emptyText={hasCardFilters ? "未找到匹配的疗程卡" : "暂无疗程卡"}
+              />
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="home-products">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">家居产品</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <DataTable
+                columns={homeProductColumns}
+                data={homeProducts}
+                emptyText="暂无家居产品"
               />
             </CardContent>
           </Card>

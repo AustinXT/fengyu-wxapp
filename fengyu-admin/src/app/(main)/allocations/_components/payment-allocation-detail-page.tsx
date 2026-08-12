@@ -178,6 +178,7 @@ export default function PaymentAllocationDetailPageClient({
   employees,
   commissionRates = [],
   skillTags = [],
+  canSave = false,
 }: {
   payment: PaymentAllocatables
   storeId: string | null
@@ -185,6 +186,7 @@ export default function PaymentAllocationDetailPageClient({
   employees: Employee[]
   commissionRates?: CommissionRate[]
   skillTags?: SkillTag[]
+  canSave?: boolean
 }) {
   // 技能标签下拉选项：严格来自数据库 skill_tags（is_valid + sort_order 已在 action 内处理）
   const skillTagNames = useMemo(() => skillTags.map((t) => t.name), [skillTags])
@@ -218,6 +220,7 @@ export default function PaymentAllocationDetailPageClient({
   )
 
   const addEntry = (groupId: string) => {
+    if (!canSave) return
     setGroupAllocs((prev) => ({
       ...prev,
       [groupId]: [
@@ -241,6 +244,7 @@ export default function PaymentAllocationDetailPageClient({
     field: 'skillTag' | 'employeeId' | 'ratioPercent',
     value: string,
   ) => {
+    if (!canSave) return
     setGroupAllocs((prev) => {
       const group = groups.find((entry) => entry.groupId === groupId)
       const entries = prev[groupId] || []
@@ -276,6 +280,7 @@ export default function PaymentAllocationDetailPageClient({
   }
 
   const removeEntry = (groupId: string, entryId: number) => {
+    if (!canSave) return
     setGroupAllocs((prev) => ({
       ...prev,
       [groupId]: (prev[groupId] || []).filter((e) => e.id !== entryId),
@@ -339,7 +344,7 @@ export default function PaymentAllocationDetailPageClient({
             entries={groupAllocs[item.groupId] || []}
             getFilteredEmployees={getFilteredEmployees}
             skillTagNames={skillTagNames}
-            readOnly={isRefundAllocation}
+            readOnly={isRefundAllocation || !canSave}
             onAdd={addEntry}
             onUpdate={updateEntry}
             onRemove={removeEntry}
@@ -356,7 +361,7 @@ export default function PaymentAllocationDetailPageClient({
         </Card>
       )}
 
-      {isRefundAllocation ? (
+      {isRefundAllocation || !canSave ? (
         <div className="flex justify-end">
           <Link href="/allocations">
             <Button variant="outline">返回</Button>

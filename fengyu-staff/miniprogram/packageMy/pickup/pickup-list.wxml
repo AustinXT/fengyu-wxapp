@@ -1,5 +1,5 @@
 <!-- packageMy/pickup/pickup-list.wxml -->
-<view class="container">
+<view wx:if="{{isManager}}" class="container">
   <view class="filters">
     <picker mode="date" value="{{startDate}}" bindchange="onDateFromChange">
       <view class="date-chip">{{startDate || '起始日期'}}</view>

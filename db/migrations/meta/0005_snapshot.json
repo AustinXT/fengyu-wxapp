@@ -1,5 +1,5 @@
 {
-  "id": "76eeb6d5-b5d2-4157-a1bf-c364eb6f3b2a",
+  "id": "91a88a09-c69c-4cd1-906a-7e06502070f3",
   "prevId": "71881b0e-27a7-4c48-ab78-59831d0fef3b",
   "version": "7",
   "dialect": "postgresql",
@@ -2780,20 +2780,6 @@
           "notNull": false,
           "default": "'0'"
         },
-        "points_used": {
-          "name": "points_used",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "points_discount": {
-          "name": "points_discount",
-          "type": "numeric(10, 2)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'0'"
-        },
         "remark": {
           "name": "remark",
           "type": "text",
@@ -3095,14 +3081,6 @@
         "chk_first_payment_amount": {
           "name": "chk_first_payment_amount",
           "value": "\"sale_orders\".\"first_payment_amount\" IS NULL OR (\"sale_orders\".\"first_payment_amount\" > 0 AND \"sale_orders\".\"first_payment_amount\" <= \"sale_orders\".\"payable_amount\")"
-        },
-        "chk_sale_order_points_used": {
-          "name": "chk_sale_order_points_used",
-          "value": "\"sale_orders\".\"points_used\" >= 0"
-        },
-        "chk_sale_order_points_discount": {
-          "name": "chk_sale_order_points_discount",
-          "value": "\"sale_orders\".\"points_discount\" >= 0"
         }
       },
       "isRLSEnabled": false
@@ -4413,6 +4391,107 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.permission_role_definitions": {
+      "name": "permission_role_definitions",
+      "schema": "",
+      "columns": {
+        "role_key": {
+          "name": "role_key",
+          "type": "varchar(64)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "description": {
+          "name": "description",
+          "type": "varchar(200)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "actions": {
+          "name": "actions",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "ARRAY[]::text[]"
+        },
+        "can_access_admin": {
+          "name": "can_access_admin",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "is_super_admin": {
+          "name": "is_super_admin",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "is_store_manager": {
+          "name": "is_store_manager",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_by": {
+          "name": "updated_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "uq_permission_role_definitions_name": {
+          "name": "uq_permission_role_definitions_name",
+          "columns": [
+            {
+              "expression": "name",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.permission_roles": {
       "name": "permission_roles",
       "schema": "",
@@ -5445,199 +5524,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.point_batches": {
-      "name": "point_batches",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "bigserial",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_transaction_id": {
-          "name": "source_transaction_id",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_type": {
-          "name": "source_type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "ref_order_id": {
-          "name": "ref_order_id",
-          "type": "varchar(30)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "original_amount": {
-          "name": "original_amount",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "remaining_amount": {
-          "name": "remaining_amount",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "earned_at": {
-          "name": "earned_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expire_at": {
-          "name": "expire_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expired_at": {
-          "name": "expired_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "idx_point_batches_user_expire": {
-          "name": "idx_point_batches_user_expire",
-          "columns": [
-            {
-              "expression": "user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "expire_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_point_batches_ref_order": {
-          "name": "idx_point_batches_ref_order",
-          "columns": [
-            {
-              "expression": "ref_order_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "ref_order_id IS NOT NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_point_batches_source_txn": {
-          "name": "idx_point_batches_source_txn",
-          "columns": [
-            {
-              "expression": "source_transaction_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "point_batches_user_id_client_wechat_users_user_id_fk": {
-          "name": "point_batches_user_id_client_wechat_users_user_id_fk",
-          "tableFrom": "point_batches",
-          "tableTo": "client_wechat_users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "user_id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "point_batches_source_transaction_id_point_transactions_id_fk": {
-          "name": "point_batches_source_transaction_id_point_transactions_id_fk",
-          "tableFrom": "point_batches",
-          "tableTo": "point_transactions",
-          "columnsFrom": [
-            "source_transaction_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "point_batches_ref_order_id_sale_orders_sale_order_id_fk": {
-          "name": "point_batches_ref_order_id_sale_orders_sale_order_id_fk",
-          "tableFrom": "point_batches",
-          "tableTo": "sale_orders",
-          "columnsFrom": [
-            "ref_order_id"
-          ],
-          "columnsTo": [
-            "sale_order_id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "chk_point_batches_original_positive": {
-          "name": "chk_point_batches_original_positive",
-          "value": "\"point_batches\".\"original_amount\" > 0"
-        },
-        "chk_point_batches_remaining_range": {
-          "name": "chk_point_batches_remaining_range",
-          "value": "\"point_batches\".\"remaining_amount\" >= 0 AND \"point_batches\".\"remaining_amount\" <= \"point_batches\".\"original_amount\""
-        },
-        "chk_point_batches_expire_after_earned": {
-          "name": "chk_point_batches_expire_after_earned",
-          "value": "\"point_batches\".\"expire_at\" > \"point_batches\".\"earned_at\""
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.point_transactions": {
       "name": "point_transactions",
       "schema": "",
@@ -5782,7 +5668,7 @@
       "checkConstraints": {
         "chk_pt_amount_sign": {
           "name": "chk_pt_amount_sign",
-          "value": "(\"point_transactions\".\"amount\" < 0 AND \"point_transactions\".\"type\" IN ('消费冲销','消费抵扣','过期扣减')) OR \"point_transactions\".\"amount\" > 0"
+          "value": "(\"point_transactions\".\"amount\" < 0 AND \"point_transactions\".\"type\" = '消费冲销') OR \"point_transactions\".\"amount\" > 0"
         }
       },
       "isRLSEnabled": false

@@ -95,7 +95,7 @@ export const MENU_CONFIG: MenuGroup[] = [
       { label: "提成矩阵", icon: Grid3x3, href: "/commission", requiredActions: ["commission:list"] },
       { label: "顾客管理", icon: UserRound, href: "/customers", requiredActions: ["customer:list"] },
       { label: "疗程卡管理", icon: CreditCard, href: "/cards", requiredActions: ["sale_item:list"] },
-      { label: "优惠券管理", icon: Ticket, href: "/coupons", requiredActions: ["coupon:create"] },
+      { label: "优惠券管理", icon: Ticket, href: "/coupons", requiredActions: ["coupon:list"] },
       { label: "会员权益", icon: Gift, href: "/member-benefits", requiredActions: ["system:config"] },
       { label: "积分流水", icon: Coins, href: "/points", requiredActions: ["point_transaction:list"] },
       { label: "充值卡流水", icon: Wallet, href: "/card-transactions", requiredActions: ["card_transaction:list"] },

@@ -1,6 +1,6 @@
 // pages/order-detail/order-detail.ts
 import { callStaffApi } from '../../utils/cloud';
-import { isManager, getStaffWfId } from '../../utils/role';
+import { isManager, getStaffWfId, isManagementMode } from '../../utils/role';
 import { STATUS_CLASS, ORDER_TYPE_LABEL, formatDateTime, formatDate } from '../../utils/formatters';
 import { groupTreatmentCards, sumGroupValue } from '../../utils/treatment-card-group';
 
@@ -53,6 +53,7 @@ interface RawOrder {
 
 interface RawOrderItem {
   sale_item_id: string;
+  sale_item_group_id?: string | null;
   sale_order_id?: string;
   sku_id?: string | null;
   item_direction?: string;
@@ -115,6 +116,7 @@ interface OrderDetailResponse {
 
 interface DisplayOrderItem {
   saleItemId: string;
+  saleItemGroupId: string | null;
   saleOrderId: string;
   skuId: string | null;
   itemDirection: string;
@@ -209,6 +211,7 @@ Page({
     loading: false,
     order: null as DisplayOrder | null,
     isManager: false,
+    isReadOnly: false,
     isCreator: false,
     statusClass: '',
     refundBadge: '',
@@ -244,11 +247,19 @@ Page({
   },
 
   onLoad(options: Record<string, string>) {
-    this.setData({ isManager: isManager() });
+    this.setData({ isManager: isManager(), isReadOnly: isManagementMode() });
     if (options.id) {
       this.setData({ _saleOrderId: options.id });
       this.loadDetail(options.id);
     }
+  },
+
+  onShow() {
+    this.setData({ isManager: isManager(), isReadOnly: isManagementMode() });
+  },
+
+  _isReadOnly() {
+    return isManagementMode();
   },
 
   async loadDetail(saleOrderId: string) {
@@ -273,6 +284,7 @@ Page({
         const repayable = refunded > 0 ? 0 : Math.max(0, Math.round((saleAmt - recv) * 100) / 100);
         return {
           saleItemId: it.sale_item_id,
+          saleItemGroupId: it.sale_item_group_id || null,
           saleOrderId: it.sale_order_id || o.sale_order_id,
           skuId: it.sku_id || null,
           itemDirection: it.item_direction || '',
@@ -311,13 +323,15 @@ Page({
         };
       });
 
-      // 订单明细仅合并疗程卡。分组键覆盖来源订单、方向、价格、次数、有效期等业务属性，
-      // 因而只会汇总除 saleItemId 外完全相同的卡；退款与回款仍继续读取原始 items。
+      // 拆分后的寄存行优先按稳定行组聚合；其余历史行沿用原有的业务快照分组。
+      // 退款与回款仍继续读取原始 items。
       const displayItems = groupTreatmentCards(items, {
         getId: (item) => item.saleItemId,
         getQuantity: (item) => item.quantity,
         preserveNonUnitQuantity: false,
-        getIdentity: (item) => ({
+        getIdentity: (item) => item.saleItemGroupId
+          ? { saleItemGroupId: item.saleItemGroupId }
+          : ({
           sourceId: item.isTreatmentCard ? undefined : item.saleItemId,
           saleOrderId: item.saleOrderId,
           orderStatus: o.status,
@@ -358,9 +372,20 @@ Page({
         }),
       }).map((group) => {
         const primary = group.primary;
-        if (!primary.isTreatmentCard) {
-          return { ...primary, cardCount: group.cardCount };
-        }
+        const aggregate = {
+          ...primary,
+          quantity: sumGroupValue(group, (item) => item.quantity),
+          cardCount: group.cardCount,
+          totalPrice: sumGroupValue(group, (item) => item.totalPrice).toFixed(2),
+          saleAmount: sumGroupValue(group, (item) => item.saleAmount).toFixed(2),
+          received: sumGroupValue(group, (item) => item.received).toFixed(2),
+          refundedAmount: sumGroupValue(group, (item) => item.refundedAmount).toFixed(2),
+          repayable: sumGroupValue(group, (item) => item.repayable).toFixed(2),
+          overpayRefundable: sumGroupValue(group, (item) => item.overpayRefundable),
+          pickedUpQuantity: sumGroupValue(group, (item) => item.pickedUpQuantity),
+          pendingReceived: sumGroupValue(group, (item) => item.pendingReceived).toFixed(2),
+        };
+        if (!primary.isTreatmentCard) return aggregate;
 
         const sessionCount = sumGroupValue(group, (item) => item.sessionCount);
         const remainingSessions = sumGroupValue(group, (item) => item.remainingSessions);
@@ -377,14 +402,7 @@ Page({
           : 0;
 
         return {
-          ...primary,
-          quantity: sumGroupValue(group, (item) => item.quantity),
-          cardCount: group.cardCount,
-          totalPrice: sumGroupValue(group, (item) => item.totalPrice).toFixed(2),
-          saleAmount: sumGroupValue(group, (item) => item.saleAmount).toFixed(2),
-          received: sumGroupValue(group, (item) => item.received).toFixed(2),
-          refundedAmount: sumGroupValue(group, (item) => item.refundedAmount).toFixed(2),
-          repayable: sumGroupValue(group, (item) => item.repayable).toFixed(2),
+          ...aggregate,
           sessionCount,
           remainingSessions,
           paidSessions,
@@ -496,14 +514,14 @@ Page({
   },
 
   onResetFailed() {
-    if (this.data.submitting) return;
+    if (this._isReadOnly() || this.data.submitting) return;
     const saleOrderId = this.data._saleOrderId;
     wx.showModal({
       title: '重置支付',
       content: '确认将此订单重置为"待支付"状态？',
       confirmText: '确认重置',
       success: async (res) => {
-        if (!res.confirm) return;
+        if (!res.confirm || this._isReadOnly()) return;
         this.setData({ submitting: true });
         try {
           await callStaffApi('order.resetFailed', { saleOrderId });
@@ -520,14 +538,14 @@ Page({
   },
 
   onConfirmOffline() {
-    if (this.data.submitting) return;
+    if (this._isReadOnly() || this.data.submitting) return;
     const saleOrderId = this.data._saleOrderId;
     wx.showModal({
       title: '确认线下收款',
       content: '确认已收到顾客的现金/转账付款？',
       confirmText: '确认收款',
       success: async (res) => {
-        if (!res.confirm) return;
+        if (!res.confirm || this._isReadOnly()) return;
         this.setData({ submitting: true });
         try {
           await callStaffApi('order.confirmOffline', { saleOrderId });
@@ -544,7 +562,7 @@ Page({
   },
 
   onCloseOrder() {
-    if (this.data.submitting) return;
+    if (this._isReadOnly() || this.data.submitting) return;
     const saleOrderId = this.data._saleOrderId;
     wx.showModal({
       title: '取消订单',
@@ -552,7 +570,7 @@ Page({
       confirmText: '确认取消',
       confirmColor: '#D94040',
       success: async (res) => {
-        if (!res.confirm) return;
+        if (!res.confirm || this._isReadOnly()) return;
         this.setData({ submitting: true });
         try {
           await callStaffApi('order.close', { saleOrderId });
@@ -569,6 +587,7 @@ Page({
   },
 
   onCreateService() {
+    if (this._isReadOnly()) return;
     const saleOrderId = this.data._saleOrderId;
     wx.navigateTo({ url: `/packageService/service-create/service-create?saleOrderId=${saleOrderId}` });
   },
@@ -578,6 +597,7 @@ Page({
   },
 
   onShowQrcode() {
+    if (this._isReadOnly()) return;
     const o = this.data.order;
     if (!o) return;
     const params = `saleOrderId=${o.saleOrderId}&customerName=${encodeURIComponent(o.customerName)}&totalAmount=${o.totalAmount}`;
@@ -586,6 +606,7 @@ Page({
 
   // ===== 充值卡退款（充值单专用，走 card.createRefund）=====
   onCreateCardRefund() {
+    if (this._isReadOnly()) return;
     const o = this.data.order;
     if (!o) return;
     wx.showModal({
@@ -594,7 +615,7 @@ Page({
       confirmText: '发起退款',
       confirmColor: '#C0322A',
       success: async (res) => {
-        if (!res.confirm) return;
+        if (!res.confirm || this._isReadOnly()) return;
         wx.showLoading({ title: '提交中', mask: true });
         try {
           await callStaffApi('card.createRefund', { saleOrderId: o.saleOrderId });
@@ -612,6 +633,7 @@ Page({
 
   // ===== P2: 退款 =====
   onCreateRefund() {
+    if (this._isReadOnly()) return;
     const o = this.data.order;
     if (!o) return;
     // 可退项：疗程卡按「已付未用次数」可退；行级多收余数随所属子项一起退，不再作为独立订单级选项。
@@ -646,6 +668,7 @@ Page({
   },
 
   async onConfirmRefund() {
+    if (this._isReadOnly()) return;
     const { order, refundReason, refundSelectedIds, submitting } = this.data;
     if (submitting || !order) return;
     if (!refundReason?.trim()) {
@@ -714,6 +737,7 @@ Page({
   },
 
   onRepayTap() {
+    if (this._isReadOnly()) return;
     const o = this.data.order;
     if (!o || !o.hasDebt) return;
     // 默认线下、每行实付 = 该行可回款额（操作员可改小或清零，不要求全额）
@@ -774,7 +798,7 @@ Page({
   },
 
   async onConfirmRepay() {
-    if (this.data.submitting) return;
+    if (this._isReadOnly() || this.data.submitting) return;
     const { order, repayLines, repayMethod, repayNote, currentRemainingPayable, repayUseCard, repayCardBalance, repayCardAmountInput, repayIdempKey } = this.data;
     if (!order || !order.saleOrderId) return;
     const r2 = (n: number) => Math.round(n * 100) / 100;

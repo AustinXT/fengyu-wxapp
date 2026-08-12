@@ -84,6 +84,7 @@ interface CalendarDay {
 // Tab 2: 购买记录
 interface PaidOrderItem {
   saleItemId: string;
+  saleItemGroupId?: string | null;
   itemName: string;
   spec: string;
   remainingSessions: number;
@@ -156,6 +157,7 @@ const ORDER_STATUS_CLASS: Record<string, string> = {
 // Tab 3: 持卡汇总
 interface TreatmentCard {
   saleItemId: string;
+  saleItemGroupId?: string | null;
   itemName: string;
   spec: string;
   remainingSessions: number;
@@ -216,6 +218,23 @@ interface TreatmentCard {
 interface CardFilterOption {
   value: string;
   label: string;
+}
+
+interface HomeProduct {
+  saleItemId: string;
+  saleOrderId: string;
+  productName: string;
+  unit: string;
+  purchasedQuantity: number;
+  pickedQuantity: number;
+  refundedQuantity: number;
+  remainingQuantity: number;
+  status: string;
+  storeId: string;
+  storeName: string | null;
+  purchasedAt: string;
+  purchasedAtFmt?: string;
+  statusClass?: string;
 }
 
 // Tab 4: 服务记录
@@ -302,6 +321,8 @@ Page({
     // Tab 3: 持卡汇总
     treatmentCards: [] as TreatmentCard[],
     cardsLoaded: false,
+    homeProducts: [] as HomeProduct[],
+    homeProductsLoaded: false,
     selectedCount: 0,
     cardProductKind: '',
     cardCategoryId: '',
@@ -358,12 +379,21 @@ Page({
   },
 
   onShow() {
+    const canManage = isManager();
+    this.setData({ isManager: canManage });
+    if (!canManage) {
+      this.setData({ cardBalance: 0, cardBalanceLoaded: false });
+    }
     if (this._loaded && this._query) {
       this.loadCustomer();
       // 刷新已加载的 tab 数据（疗程卡次数可能因服务单完成而变化）
       if (this.data.cardsLoaded) {
         this.setData({ cardsLoaded: false });
         this.loadTreatmentCards();
+      }
+      if (this.data.homeProductsLoaded) {
+        this.setData({ homeProductsLoaded: false });
+        this.loadHomeProducts();
       }
     }
   },
@@ -375,9 +405,17 @@ Page({
       const customer = await callStaffApi<CustomerDetail>('customer.detail', this._query);
       // lastServiceDate 为原始 pg date（序列化成 UTC 串会偏移日期），格式化为 YYYY-MM-DD
       if (customer.lastServiceDate) customer.lastServiceDate = formatDate(customer.lastServiceDate);
-      this.setData({ customer: withMemberLevelBadgeClass(customer), notesValue: customer.notes || '', notesDirty: false });
-      // Wave 3G — 拉取储值卡余额（跨店统一）。失败静默兜底为 0
-      void this.loadCardBalance();
+      const canManage = isManager();
+      this.setData({
+        customer: withMemberLevelBadgeClass(customer),
+        notesValue: customer.notes || '',
+        notesDirty: false,
+        isManager: canManage,
+        cardBalance: 0,
+        cardBalanceLoaded: false,
+      });
+      // 储值卡余额接口仅供当前门店有效店长使用，避免普通员工触发无权限请求。
+      if (canManage) void this.loadCardBalance();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';
       wx.showToast({ title: msg, icon: 'none' });
@@ -388,10 +426,14 @@ Page({
 
   /**
    * Wave 3G — 加载顾客储值卡余额（跨店统一）
-   * - 仅当 customer.clientUserId 存在时调用
-   * - 静默失败：余额展示 0，不阻塞页面
+   * - 仅当前门店有效店长且 customer.clientUserId 存在时调用
+   * - 请求失败不以余额 0 代替，避免将权限错误伪装为业务余额
    */
   async loadCardBalance() {
+    if (!isManager()) {
+      this.setData({ cardBalance: 0, cardBalanceLoaded: false });
+      return;
+    }
     const { customer } = this.data;
     if (!customer?.clientUserId) {
       this.setData({ cardBalance: 0, cardBalanceLoaded: true });
@@ -406,28 +448,30 @@ Page({
         cardBalanceLoaded: true,
       });
     } catch (_) {
-      this.setData({ cardBalance: 0, cardBalanceLoaded: true });
+      this.setData({ cardBalanceLoaded: false });
     }
   },
 
   onTabChange(e: WechatMiniprogram.CustomEvent) {
     const index = e.detail.index as number;
     this.setData({ activeTab: index });
-    // 8-Tab：0 基本档案 / 1 消费记录 / 2 疗程卡 / 3 预约记录 / 4 服务记录 /
-    //         5 顾客优惠券 / 6 手机号变更 / 7 日历
+    // 9-Tab：0 基本档案 / 1 消费记录 / 2 疗程卡 / 3 家居产品 / 4 预约记录 /
+    //         5 服务记录 / 6 顾客优惠券 / 7 手机号变更 / 8 日历
     if (index === 1 && !this.data.purchaseLoaded) {
       this.loadPurchaseHistory();
     } else if (index === 2 && !this.data.cardsLoaded) {
       this.loadTreatmentCards();
-    } else if (index === 3 && !this.data.appointmentsLoaded) {
+    } else if (index === 3 && !this.data.homeProductsLoaded) {
+      this.loadHomeProducts();
+    } else if (index === 4 && !this.data.appointmentsLoaded) {
       this.loadAppointments();
-    } else if (index === 4 && !this.data.serviceLoaded) {
+    } else if (index === 5 && !this.data.serviceLoaded) {
       this.loadServiceHistory();
-    } else if (index === 5 && !this.data.couponsLoaded) {
+    } else if (index === 6 && !this.data.couponsLoaded) {
       this.loadCoupons();
-    } else if (index === 6 && !this.data.phoneLoaded) {
+    } else if (index === 7 && !this.data.phoneLoaded) {
       this.loadPhoneChangeLogs();
-    } else if (index === 7 && !this.data.calendarLoaded) {
+    } else if (index === 8 && !this.data.calendarLoaded) {
       this.loadCalendar();
     }
   },
@@ -617,7 +661,9 @@ Page({
       const groupedCards = groupTreatmentCards(cards, {
         getId: (card) => card.saleItemId,
         getQuantity: (card) => card.quantity,
-        getIdentity: (card) => ({
+        getIdentity: (card) => card.saleItemGroupId
+          ? { saleItemGroupId: card.saleItemGroupId }
+          : ({
           saleOrderId: card.saleOrderId,
           saleOrderDatetime: card.saleOrderDatetime,
           orderStatus: card.orderStatus,
@@ -766,6 +812,31 @@ Page({
     this.applyTreatmentCardFilters(this._allTreatmentCards, { nameQuery });
   },
 
+  async loadHomeProducts() {
+    const id = this._clientId();
+    if (!id) return;
+    try {
+      const rows = await callStaffApi<HomeProduct[]>('customer.homeProducts', id) || [];
+      const statusClassMap: Record<string, string> = {
+        退款处理中: 'pending',
+        待提货: 'pending',
+        部分提货: 'progress',
+        已提货: 'success',
+        已完成: 'done',
+      };
+      this.setData({
+        homeProducts: rows.map((item) => ({
+          ...item,
+          purchasedAtFmt: item.purchasedAt ? formatDate(item.purchasedAt) : '',
+          statusClass: statusClassMap[item.status] || 'done',
+        })),
+        homeProductsLoaded: true,
+      });
+    } catch (_) {
+      this.setData({ homeProducts: [], homeProductsLoaded: true });
+    }
+  },
+
   onToggleCard(e: WechatMiniprogram.TouchEvent) {
     const saleItemId = e.currentTarget.dataset.saleItemId as string;
     const card = this._allTreatmentCards.find((item) => item.saleItemId === saleItemId);
@@ -802,7 +873,16 @@ Page({
     if (!customer) return;
     const selected = this._allTreatmentCards.filter(c => c.selected);
     if (selected.length === 0) return;
-    const preloadItems = selected.flatMap((card) => {
+    const preloadItems: Array<{
+      saleItemId: string;
+      itemName: string;
+      spec: string;
+      saleOrderId: string;
+      sessionCount: number;
+      remainingSessions: number;
+      unit?: string;
+    }> = [];
+    for (const card of selected) {
       const sourceItems = card.sourceItems?.length ? card.sourceItems : [card];
       const expanded = expandGroupServiceSessions(
         {
@@ -815,9 +895,9 @@ Page({
         (item) => item.saleItemId,
         (item) => item.consumableSessions,
       );
-      return expanded.map((selection) => {
+      for (const selection of expanded) {
         const source = sourceItems.find((item) => item.saleItemId === selection.saleItemId) || card;
-        return {
+        preloadItems.push({
           saleItemId: selection.saleItemId,
           itemName: source.itemName,
           spec: source.spec,
@@ -825,9 +905,9 @@ Page({
           sessionCount: selection.sessionUsed,
           remainingSessions: source.remainingSessions,
           unit: source.unit,
-        };
-      });
-    });
+        });
+      }
+    }
     if (preloadItems.length === 0) return;
     app.globalData._serviceCreatePreload = {
       customer: {
@@ -974,6 +1054,7 @@ Page({
 
   // ===== 备注编辑 =====
   onNotesChange(e: WechatMiniprogram.CustomEvent) {
+    if (!isManager()) return;
     const val = e.detail as unknown as string;
     this.setData({
       notesValue: val,
@@ -982,6 +1063,7 @@ Page({
   },
 
   async onSaveNotes() {
+    if (!isManager()) return;
     const { customer, notesValue } = this.data;
     if (!customer?.clientUserId) return;
     this.setData({ notesSaving: true });

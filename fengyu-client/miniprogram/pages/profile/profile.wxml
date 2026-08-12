@@ -61,6 +61,12 @@
       bindtap="onTreatmentCards"
     />
     <van-cell
+      title="我的家居产品"
+      icon="shop-o"
+      is-link
+      bindtap="onHomeProducts"
+    />
+    <van-cell
       title="我的预约"
       icon="calendar-o"
       is-link

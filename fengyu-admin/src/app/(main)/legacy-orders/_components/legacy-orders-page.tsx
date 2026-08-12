@@ -47,9 +47,22 @@ interface Props {
   total: number
   filterOptions: MarketStoreFilterOptions
   canPull?: boolean
+  canApprove?: boolean
+  canReject?: boolean
+  canUpdateAmount?: boolean
+  canUpdatePhone?: boolean
 }
 
-export default function LegacyOrdersPageClient({ orders, total, filterOptions, canPull = false }: Props) {
+export default function LegacyOrdersPageClient({
+  orders,
+  total,
+  filterOptions,
+  canPull = false,
+  canApprove = false,
+  canReject = false,
+  canUpdateAmount = false,
+  canUpdatePhone = false,
+}: Props) {
   const router = useRouter()
   const { get, set, setMany } = useUrlFilters()
   const [, startTransition] = useTransition()
@@ -273,7 +286,7 @@ export default function LegacyOrdersPageClient({ orders, total, filterOptions, c
             >
               重置筛选
             </Button>
-            {selected.size > 0 && (
+            {canApprove && selected.size > 0 && (
               <Button size="sm" onClick={() => setBatchOpen(true)}>
                 批量通过 ({selected.size})
               </Button>
@@ -369,45 +382,53 @@ export default function LegacyOrdersPageClient({ orders, total, filterOptions, c
                       </td>
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                         <div className="flex flex-wrap gap-1">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => setApproveTarget(o)}
-                            disabled={pending}
-                          >
-                            通过
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="text-[#D94040]"
-                            onClick={() => setRejectTarget(o)}
-                            disabled={pending}
-                          >
-                            作废
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => {
-                              setAmountTarget(o)
-                              setNewAmount(String(Number(o.totalAmount).toFixed(2)))
-                            }}
-                            disabled={pending}
-                          >
-                            改金额
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => {
-                              setPhoneTarget(o)
-                              setNewPhone(o.clientPhone ?? "")
-                            }}
-                            disabled={pending}
-                          >
-                            改手机号
-                          </Button>
+                          {canApprove && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setApproveTarget(o)}
+                              disabled={pending}
+                            >
+                              通过
+                            </Button>
+                          )}
+                          {canReject && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-[#D94040]"
+                              onClick={() => setRejectTarget(o)}
+                              disabled={pending}
+                            >
+                              作废
+                            </Button>
+                          )}
+                          {canUpdateAmount && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => {
+                                setAmountTarget(o)
+                                setNewAmount(String(Number(o.totalAmount).toFixed(2)))
+                              }}
+                              disabled={pending}
+                            >
+                              改金额
+                            </Button>
+                          )}
+                          {canUpdatePhone && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => {
+                                setPhoneTarget(o)
+                                setNewPhone(o.clientPhone ?? "")
+                              }}
+                              disabled={pending}
+                            >
+                              改手机号
+                            </Button>
+                          )}
                         </div>
                       </td>
                     </tr>

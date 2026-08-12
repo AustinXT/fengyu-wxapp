@@ -165,7 +165,7 @@ describe('product.skuList', () => {
 
     const [sql, params] = pg.query.mock.calls[0]
     expect(sql).toContain('sk.market_scope')
-    expect(sql).toContain('scope_store.store_id = $2')
+    expect(sql).toContain('store.store_id = $2')
     expect(sql).toContain("NULLIF(regexp_replace(sk.market_scope, '[[:space:]]+', '', 'g'), '') IS NOT NULL")
     expect(params).toEqual(['cat-1', 'store-current'])
   })
@@ -251,7 +251,7 @@ describe('product.shopInit', () => {
 
     const [sql, params] = pg.query.mock.calls[1]
     expect(sql).toContain('sk.market_scope')
-    expect(sql).toContain('scope_store.store_id = $2')
+    expect(sql).toContain('store.store_id = $2')
     expect(params).toEqual([['cat-1'], 'store-current'])
   })
 

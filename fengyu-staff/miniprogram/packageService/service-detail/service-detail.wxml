@@ -66,7 +66,7 @@
 
     <view class="action-bar">
       <van-button
-        wx:if="{{detail.status === '待服务'}}"
+        wx:if="{{!isReadOnly && detail.status === '待服务'}}"
         type="primary" block
         disabled="{{submitting}}"
         loading="{{submitting}}"
@@ -75,7 +75,7 @@
         bind:click="onStartService"
       >开始服务</van-button>
       <van-button
-        wx:elif="{{detail.status === '服务中'}}"
+        wx:elif="{{!isReadOnly && detail.status === '服务中'}}"
         type="primary" block
         disabled="{{submitting}}"
         loading="{{submitting}}"
@@ -84,7 +84,7 @@
         bind:click="onCompleteService"
       >标记完成</van-button>
       <van-button
-        wx:elif="{{detail.status === '待客户确认' && isManager}}"
+        wx:elif="{{!isReadOnly && detail.status === '待客户确认' && isManager}}"
         type="primary" block
         disabled="{{submitting}}"
         loading="{{submitting}}"
@@ -93,7 +93,7 @@
         bind:click="onConfirmService"
       >代客户确认</van-button>
       <van-button
-        wx:if="{{detail.status === '待服务' || detail.status === '服务中' || detail.status === '待客户确认'}}"
+        wx:if="{{!isReadOnly && (detail.status === '待服务' || detail.status === '服务中' || detail.status === '待客户确认')}}"
         type="danger" block plain
         disabled="{{submitting}}"
         custom-style="border-radius: 48rpx; margin-top: 20rpx;"

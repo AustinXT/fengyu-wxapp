@@ -5,7 +5,7 @@
  * `['manager','admin','finance'].some(r => roles.includes(r))`）。
  */
 
-import { hasRole, canAccessManagement } from '../../utils/role'
+import { hasRole, canAccessManagement, isManagementMode, isManager } from '../../utils/role'
 
 // 在 globalThis 上注入 getApp mock；每个 test 通过 setGlobalRoles 改 globalData.roles
 function setGlobalRoles(roles: string[] | undefined) {
@@ -81,5 +81,63 @@ describe('canAccessManagement', () => {
     expect(canAccessManagement()).toBe(false)
     setAvailableLoginLevels(undefined)
     expect(canAccessManagement()).toBe(false)
+  })
+})
+
+describe('门店运行态角色判定', () => {
+  function setGlobalData(globalData: Record<string, unknown>) {
+    ;(globalThis as any).getApp = () => ({ globalData })
+  }
+
+  afterEach(() => {
+    delete (globalThis as any).getApp
+  })
+
+  test('仅 management 登录模式才是管理层页面运行态', () => {
+    setGlobalData({ loginLevel: 'management' })
+    expect(isManagementMode()).toBe(true)
+
+    setGlobalData({ loginLevel: 'store' })
+    expect(isManagementMode()).toBe(false)
+  })
+
+  test('店长必须在门店模式且当前门店命中 managerStores', () => {
+    setGlobalData({
+      loginLevel: 'store',
+      currentStoreId: 'store-a',
+      boundStoreId: 'store-a',
+      managerStores: [{ storeId: 'store-a', storeName: 'A 店' }],
+      managerStoreIds: [],
+    })
+    expect(isManager()).toBe(true)
+
+    setGlobalData({
+      loginLevel: 'store',
+      currentStoreId: 'store-b',
+      boundStoreId: 'store-a',
+      managerStores: [{ storeId: 'store-a', storeName: 'A 店' }],
+      managerStoreIds: [],
+    })
+    expect(isManager()).toBe(false)
+  })
+
+  test('managerStoreIds 可兼容没有门店对象的 auth 缓存', () => {
+    setGlobalData({
+      loginLevel: 'store',
+      currentStoreId: 'store-b',
+      managerStores: [],
+      managerStoreIds: ['store-b'],
+    })
+    expect(isManager()).toBe(true)
+  })
+
+  test('管理层模式即使店长管辖当前门店也不可执行门店店长操作', () => {
+    setGlobalData({
+      loginLevel: 'management',
+      currentStoreId: 'store-a',
+      managerStores: [{ storeId: 'store-a', storeName: 'A 店' }],
+      managerStoreIds: ['store-a'],
+    })
+    expect(isManager()).toBe(false)
   })
 })

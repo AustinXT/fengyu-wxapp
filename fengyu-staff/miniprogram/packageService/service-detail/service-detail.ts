@@ -1,6 +1,6 @@
 // pages/service-detail/service-detail.ts — 服务单详情
 import { callStaffApi } from '../../utils/cloud';
-import { isManager } from '../../utils/role';
+import { isManager, isManagementMode } from '../../utils/role';
 import { formatDateTime } from '../../utils/formatters';
 
 interface ServiceDetail {
@@ -35,20 +35,26 @@ Page({
     submitting: false,
     detail: null as ServiceDetail | null,
     isManager: false,
+    isReadOnly: false,
   },
 
   onLoad(options) {
-    this.setData({ isManager: isManager() });
+    this.setData({ isManager: isManager(), isReadOnly: isManagementMode() });
     if (options.id) {
       this.loadDetail(options.id);
     }
   },
 
   onShow() {
+    this.setData({ isManager: isManager(), isReadOnly: isManagementMode() });
     const { detail } = this.data;
     if (detail?.id) {
       this.loadDetail(detail.id);
     }
+  },
+
+  _isReadOnly() {
+    return isManagementMode();
   },
 
   async loadDetail(id: string) {
@@ -69,6 +75,7 @@ Page({
   },
 
   async onStartService() {
+    if (this._isReadOnly()) return;
     const { detail } = this.data;
     if (!detail || this.data.submitting) return;
     this.setData({ submitting: true });
@@ -85,6 +92,7 @@ Page({
   },
 
   onCompleteService() {
+    if (this._isReadOnly()) return;
     const { detail } = this.data;
     if (!detail || this.data.submitting) return;
     wx.showModal({
@@ -92,7 +100,7 @@ Page({
       content: '标记完成后将通知顾客确认，顾客确认后才扣减服务额度。',
       confirmText: '标记完成',
       success: async (res) => {
-        if (!res.confirm) return;
+        if (!res.confirm || this._isReadOnly()) return;
         this.setData({ submitting: true });
         try {
           await callStaffApi('service.complete', { serviceOrderId: detail.id });
@@ -111,6 +119,7 @@ Page({
 
   // 店长代客户确认（待客户确认 → 已完成，扣次数+计提成）
   onConfirmService() {
+    if (this._isReadOnly()) return;
     const { detail } = this.data;
     if (!detail || this.data.submitting) return;
     wx.showModal({
@@ -118,7 +127,7 @@ Page({
       content: '确认后将扣减服务额度并完成服务单，仅在顾客不便自行确认时使用。',
       confirmText: '确认完成',
       success: async (res) => {
-        if (!res.confirm) return;
+        if (!res.confirm || this._isReadOnly()) return;
         this.setData({ submitting: true });
         try {
           await callStaffApi('service.confirm', { serviceOrderId: detail.id });
@@ -136,6 +145,7 @@ Page({
   },
 
   onCancelService() {
+    if (this._isReadOnly()) return;
     const { detail } = this.data;
     if (!detail || this.data.submitting) return;
     wx.showModal({
@@ -144,7 +154,7 @@ Page({
       confirmText: '确认取消',
       confirmColor: '#E53935',
       success: async (res) => {
-        if (!res.confirm) return;
+        if (!res.confirm || this._isReadOnly()) return;
         this.setData({ submitting: true });
         try {
           await callStaffApi('service.cancel', { serviceOrderId: detail.id });

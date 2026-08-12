@@ -46,7 +46,7 @@ function application(overrides: Record<string, unknown> = {}) {
     channelData: {},
     submittedAt: new Date(),
     createdAt: new Date(),
-    updatedAt: new Date('2026-08-09T00:00:00.000Z'),
+    updatedAt: new Date(),
     ...overrides,
   }
 }
@@ -172,4 +172,3 @@ describe('cron-worker STEP - refreshLakalaSubMerchants', () => {
     })
   })
 })
-

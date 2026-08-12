@@ -102,8 +102,9 @@ export async function notifyRefundCreated(
   if (!p.storeId) return
   const mgrs = await executor.execute(sql`
     SELECT DISTINCT pr.employee_id FROM permission_roles pr
+      JOIN permission_role_definitions rd ON rd.role_key = pr.role
       JOIN stores s ON s.org_node_id = pr.scope_id
-     WHERE pr.role = 'manager' AND s.store_id = ${p.storeId}
+     WHERE rd.is_store_manager = TRUE AND s.store_id = ${p.storeId}
   `)
   for (const m of mgrs as unknown as Array<{ employee_id: string }>) {
     if (m.employee_id === p.operatorId) continue

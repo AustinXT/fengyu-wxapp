@@ -51,10 +51,12 @@ interface CommissionPageProps {
   rates: CommissionRate[]
   markets: MarketOption[]
   skillTags: SkillTag[]
+  canCreate: boolean
+  canUpdate: boolean
   canDelete: boolean
 }
 
-export default function CommissionPage({ rates, markets, skillTags, canDelete }: CommissionPageProps) {
+export default function CommissionPage({ rates, markets, skillTags, canCreate, canUpdate, canDelete }: CommissionPageProps) {
   const router = useRouter()
   const { get, set } = useUrlFilters()
   const activeTab = get("market") || ""
@@ -92,12 +94,14 @@ const salesCategories = useMemo(
   }, [rates, activeTab, orderTypeFilter, roleTypeFilter, salesCategoryFilter])
 
   const openAddDialog = () => {
+    if (!canCreate) return
     setEditingRate(null)
     setForm(emptyForm(activeTab || (markets[0]?.orgId ?? ""), skillTags))
     setDialogOpen(true)
   }
 
   const openEditDialog = (row: CommissionRate) => {
+    if (!canUpdate) return
     setEditingRate(row)
     setForm({
       orgId: row.orgId,
@@ -112,6 +116,7 @@ const salesCategories = useMemo(
   }
 
   const handleSubmit = async () => {
+    if ((editingRate && !canUpdate) || (!editingRate && !canCreate)) return
     if (!form.salesCategory.trim()) {
       toast.error("请输入销售分类")
       return
@@ -184,7 +189,7 @@ const salesCategories = useMemo(
   }
 
   const handleDelete = async () => {
-    if (!deleteTarget) return
+    if (!canDelete || !deleteTarget) return
     setDeleting(true)
     try {
       const delResult = await deleteRate(deleteTarget.id)
@@ -238,9 +243,9 @@ const salesCategories = useMemo(
       header: "操作",
       cell: (row) => (
         <div className="flex gap-2">
-          <Button variant="link" size="sm" className="h-auto p-0" onClick={() => openEditDialog(row)}>
+          {canUpdate && <Button variant="link" size="sm" className="h-auto p-0" onClick={() => openEditDialog(row)}>
             编辑
-          </Button>
+          </Button>}
           {canDelete && (
             <Button
               variant="link"
@@ -271,7 +276,7 @@ const salesCategories = useMemo(
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">提成矩阵</h1>
-        <Button onClick={openAddDialog}>新增规则</Button>
+        {canCreate && <Button onClick={openAddDialog}>新增规则</Button>}
       </div>
 
       <div className="flex items-center gap-3">
@@ -336,7 +341,7 @@ const salesCategories = useMemo(
       )}
 
       {/* Add/Edit Dialog */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      {(canCreate || canUpdate) && <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogHeader>
           <DialogTitle>{editingRate ? "编辑规则" : "新增规则"}</DialogTitle>
         </DialogHeader>
@@ -434,10 +439,10 @@ const salesCategories = useMemo(
             {saving ? "保存中..." : "保存"}
           </Button>
         </DialogFooter>
-      </Dialog>
+      </Dialog>}
 
       {/* Delete Confirmation */}
-      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+      {canDelete && <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <AlertDialogTitle>确认删除</AlertDialogTitle>
         <AlertDialogDescription>
           确定要删除该提成规则吗？此操作不可撤销。
@@ -450,7 +455,7 @@ const salesCategories = useMemo(
             {deleting ? "删除中..." : "确认删除"}
           </AlertDialogAction>
         </AlertDialogFooter>
-      </AlertDialog>
+      </AlertDialog>}
     </div>
   )
 }

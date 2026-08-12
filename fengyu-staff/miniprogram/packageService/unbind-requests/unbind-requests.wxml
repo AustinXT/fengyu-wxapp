@@ -25,7 +25,7 @@
         <van-cell title="转往门店" value="{{item.toStoreName}}" />
         <van-cell wx:if="{{item.note}}" title="备注" value="{{item.note}}" />
         <van-cell title="申请时间" value="{{item.createdAt}}" />
-        <view class="action-row">
+        <view wx:if="{{isManager}}" class="action-row">
           <van-button
             type="primary"
             size="small"

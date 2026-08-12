@@ -9,7 +9,7 @@ import { stores } from '@db/org'
 import { and, desc, eq, gte, ilike, lte, or, sql } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
-import { scopeCondition, isInScope, requireAdmin } from '@/lib/permissions'
+import { scopeCondition, isInScope, isAdminScope, requireAdmin } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
@@ -75,7 +75,7 @@ export const listTransferOrders = withPermission(
 
     // 调拨需要 OR 过滤：本门店是发起方 OR 本门店是接收方
     const scopeIds = session.permissions.scopeStoreIds
-    const isAdminLike = session.roles.some((r) => r.role === 'admin')
+    const isAdminLike = isAdminScope(session)
     const conditions: (SQL | undefined)[] = []
     if (!isAdminLike) {
       if (scopeIds.length === 0) {
@@ -182,7 +182,7 @@ export const getTransferOrderById = withPermission(
   'inventory:list',
   async (session, id: string): Promise<TransferOrderDetail | null> => {
     const scopeIds = session.permissions.scopeStoreIds
-    const isAdminLike = session.roles.some((r) => r.role === 'admin')
+    const isAdminLike = isAdminScope(session)
     const conditions: (SQL | undefined)[] = [eq(inventoryTransferOrders.id, id)]
     if (!isAdminLike) {
       if (scopeIds.length === 0) {

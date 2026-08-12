@@ -103,7 +103,7 @@ export function Sidebar({ collapsed, onToggle, session }: SidebarProps) {
         <div className="border-t border-[var(--border)] px-4 py-3">
           <div className="truncate text-sm font-medium text-[var(--foreground)]">{session.name}</div>
           <div className="truncate text-xs text-[#999999]">
-            {primaryRole ? getRoleLabel(primaryRole.role) : "未分配角色"}
+            {primaryRole ? getRoleLabel(primaryRole.role, primaryRole.roleName) : "未分配角色"}
           </div>
         </div>
       )}

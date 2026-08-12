@@ -18,6 +18,7 @@ App<IAppOption>({
     availableLoginLevels: [] as LoginLevel[],
     scopedStores: [] as ScopedStore[],
     managerStores: [] as ScopedStore[],
+    managerStoreIds: [] as string[],
     loginLevel: null as LoginLevel | null,
     currentStoreId: '' as string,
   },
@@ -45,6 +46,7 @@ App<IAppOption>({
         availableLoginLevels: ['store'],
         scopedStores: [{ storeId: 'store-001', storeName: '南商市场·凤御旗舰店' }],
         managerStores: [{ storeId: 'store-001', storeName: '南商市场·凤御旗舰店' }],
+        managerStoreIds: ['store-001'],
       });
       this.setLoginLevel('store');
       this.setCurrentStoreId('store-001');
@@ -70,6 +72,7 @@ App<IAppOption>({
     const availableLoginLevels = wx.getStorageSync('availableLoginLevels');
     const scopedStores = wx.getStorageSync('scopedStores');
     const managerStores = wx.getStorageSync('managerStores');
+    const managerStoreIds = wx.getStorageSync('managerStoreIds');
     const loginLevel = wx.getStorageSync('loginLevel');
     const currentStoreId = wx.getStorageSync('currentStoreId');
     if (staffWfId) this.globalData.staffWfId = staffWfId;
@@ -86,6 +89,7 @@ App<IAppOption>({
     if (availableLoginLevels) this.globalData.availableLoginLevels = availableLoginLevels;
     if (scopedStores) this.globalData.scopedStores = scopedStores;
     if (managerStores) this.globalData.managerStores = managerStores;
+    if (managerStoreIds) this.globalData.managerStoreIds = managerStoreIds;
     if (loginLevel) this.globalData.loginLevel = loginLevel;
     if (currentStoreId) this.globalData.currentStoreId = currentStoreId;
   },
@@ -103,12 +107,12 @@ App<IAppOption>({
         const {
           staffWfId, staffName, position, roles, skills, avatarUrl, phone,
           boundStoreName, boundStoreId,
-          staffLevel, roleBindings, availableLoginLevels, scopedStores, managerStores,
+          staffLevel, roleBindings, availableLoginLevels, scopedStores, managerStores, managerStoreIds,
         } = res.result.data;
         this.setStaffInfo({
           staffWfId, staffName, position, roles, skills, avatarUrl, phone,
           boundStoreName, boundStoreId,
-          staffLevel, roleBindings, availableLoginLevels, scopedStores, managerStores,
+          staffLevel, roleBindings, availableLoginLevels, scopedStores, managerStores, managerStoreIds,
         });
         // loginLevel 若本地已有且在 available 内则保留，否则 fallback available[0]
         const existingLogin = this.globalData.loginLevel;
@@ -190,6 +194,10 @@ App<IAppOption>({
       this.globalData.managerStores = info.managerStores;
       wx.setStorageSync('managerStores', info.managerStores);
     }
+    if ('managerStoreIds' in info) {
+      this.globalData.managerStoreIds = info.managerStoreIds || [];
+      wx.setStorageSync('managerStoreIds', info.managerStoreIds || []);
+    }
   },
 
   setLoginLevel(level) {
@@ -225,6 +233,7 @@ App<IAppOption>({
     this.globalData.availableLoginLevels = [];
     this.globalData.scopedStores = [];
     this.globalData.managerStores = [];
+    this.globalData.managerStoreIds = [];
     this.globalData.loginLevel = null;
     this.globalData.currentStoreId = '';
     // 清除临时页面状态

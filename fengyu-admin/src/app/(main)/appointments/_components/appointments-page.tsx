@@ -47,6 +47,8 @@ export default function AppointmentsPageClient({
   total,
   pendingCount,
   confirmedCount,
+  canConfirm = false,
+  canCheckin = false,
   canDelete = false,
 }: {
   appointments: Appointment[]
@@ -54,6 +56,8 @@ export default function AppointmentsPageClient({
   total: number
   pendingCount: number
   confirmedCount: number
+  canConfirm?: boolean
+  canCheckin?: boolean
   /** 是否展示行内删除入口（仅系统管理员 appointment:delete） */
   canDelete?: boolean
 }) {
@@ -87,6 +91,7 @@ export default function AppointmentsPageClient({
   const [cancelTarget, setCancelTarget] = useState<Appointment | null>(null)
 
   const handleAction = async (action: 'confirm' | 'checkin' | 'cancel', appt: Appointment) => {
+    if ((action === 'checkin' && !canCheckin) || (action !== 'checkin' && !canConfirm)) return
     if (action === 'cancel') {
       setCancelTarget(null)
     }
@@ -189,14 +194,14 @@ export default function AppointmentsPageClient({
                       <div className="flex gap-1">
                         {appt.status === "待确认" && (
                           <>
-                            <Button size="sm" variant="outline" onClick={() => handleAction("confirm", appt)} disabled={pendingId === appt.appointmentId}>确认</Button>
-                            <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => setCancelTarget(appt)} disabled={pendingId === appt.appointmentId}>取消</Button>
+                            {canConfirm && <Button size="sm" variant="outline" onClick={() => handleAction("confirm", appt)} disabled={pendingId === appt.appointmentId}>确认</Button>}
+                            {canConfirm && <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => setCancelTarget(appt)} disabled={pendingId === appt.appointmentId}>取消</Button>}
                           </>
                         )}
                         {appt.status === "已确认" && (
                           <>
-                            <Button size="sm" variant="outline" onClick={() => handleAction("checkin", appt)} disabled={pendingId === appt.appointmentId}>签到</Button>
-                            <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => setCancelTarget(appt)} disabled={pendingId === appt.appointmentId}>取消</Button>
+                            {canCheckin && <Button size="sm" variant="outline" onClick={() => handleAction("checkin", appt)} disabled={pendingId === appt.appointmentId}>签到</Button>}
+                            {canConfirm && <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => setCancelTarget(appt)} disabled={pendingId === appt.appointmentId}>取消</Button>}
                           </>
                         )}
                         {canDelete && (appt.status === "已取消" || appt.status === "已完成" || appt.status === "已关闭") && (

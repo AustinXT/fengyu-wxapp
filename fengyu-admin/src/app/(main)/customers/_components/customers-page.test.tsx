@@ -90,6 +90,7 @@ function renderPage() {
       stores={stores}
       filterOptions={filterOptions}
       total={0}
+      canCreate
     />,
   )
 }

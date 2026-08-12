@@ -6,7 +6,7 @@ import {
 } from "@/actions/merchants"
 import { getMarketStoreFilterOptions } from "@/actions/stores"
 import { getSession } from "@/lib/auth"
-import { hasPermission } from "@/lib/permissions"
+import { hasUiCapability } from "@/lib/permission-contract"
 import MerchantsPageClient from "./_components/merchants-page"
 
 export const dynamic = "force-dynamic"
@@ -19,9 +19,9 @@ export default async function Page({
   const params = await searchParams
   const enabled = params.enabled as MerchantEnabledFilter | undefined
 
-  const session = await getSession()
-  const canCreate = !!(session && hasPermission(session, "merchant:create"))
-  const canOnboard = !!(session && hasPermission(session, "merchant:list"))
+  const actions = (await getSession())?.permissions.actions ?? []
+  const canCreate = hasUiCapability(actions, "merchant:create")
+  const canOnboard = hasUiCapability(actions, "merchant:list")
 
   const [{ data, total }, markets, filterOptions] = await Promise.all([
     getMerchantsPaginated({

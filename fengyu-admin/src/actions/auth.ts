@@ -7,7 +7,7 @@ import { db } from '@/db'
 import { adminPasswords } from '@db/admin-auth'
 import { loginAttempts } from '@db/login-attempt'
 import { staffWechatUsers } from '@db/user'
-import { permissionRoles } from '@db/permission'
+import { permissionRoleDefinitions, permissionRoles } from '@db/permission'
 import { orgNodes } from '@db/org'
 import { eq, sql } from 'drizzle-orm'
 import { computeActions, expandRoleScope, canAccessAdmin } from '@/lib/permissions'
@@ -158,8 +158,12 @@ export async function login(
   // 禁止普通员工登录：staff（无任何管理角色）专供小程序端，不得进入 admin 后台。
   // 密码已验证通过，不计入失败锁定（不 recordFailure），仅拒发 token。
   const adminRoleRows = await db
-    .select({ role: permissionRoles.role })
+    .select({
+      role: permissionRoles.role,
+      canAccessAdmin: permissionRoleDefinitions.canAccessAdmin,
+    })
     .from(permissionRoles)
+    .innerJoin(permissionRoleDefinitions, eq(permissionRoles.role, permissionRoleDefinitions.roleKey))
     .where(eq(permissionRoles.employeeId, staff.employeeId))
   if (!canAccessAdmin(adminRoleRows)) {
     return { success: false, message: '账号权限不足，无法登录管理后台' }
@@ -260,15 +264,24 @@ export async function getSessionFromCookie(): Promise<AuthSession | null> {
     const roleRows = await db
       .select({
         role: permissionRoles.role,
+        roleName: permissionRoleDefinitions.name,
+        canAccessAdmin: permissionRoleDefinitions.canAccessAdmin,
+        isSuperAdmin: permissionRoleDefinitions.isSuperAdmin,
+        isStoreManager: permissionRoleDefinitions.isStoreManager,
         scopeId: permissionRoles.scopeId,
         scopeType: orgNodes.type,
       })
       .from(permissionRoles)
+      .innerJoin(permissionRoleDefinitions, eq(permissionRoles.role, permissionRoleDefinitions.roleKey))
       .leftJoin(orgNodes, eq(permissionRoles.scopeId, orgNodes.id))
       .where(eq(permissionRoles.employeeId, employeeId))
 
     const roles = roleRows.map(r => ({
       role: r.role as RoleType,
+      roleName: r.roleName,
+      canAccessAdmin: r.canAccessAdmin,
+      isSuperAdmin: r.isSuperAdmin,
+      isStoreManager: r.isStoreManager,
       scopeId: r.scopeId,
       scopeType: (r.scopeType ?? '门店') as '总部' | '市场' | '门店',
     }))

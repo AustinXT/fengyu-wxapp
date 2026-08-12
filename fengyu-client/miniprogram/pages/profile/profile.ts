@@ -88,6 +88,10 @@ Page({
     wx.navigateTo({ url: '/pagesOrder/treatment-cards/treatment-cards' });
   },
 
+  onHomeProducts() {
+    wx.navigateTo({ url: '/pagesOrder/home-products/home-products' });
+  },
+
   onAppointments() {
     wx.switchTab({ url: '/pages/appointment/appointment' });
   },

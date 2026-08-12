@@ -17,7 +17,6 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { Separator } from "@/components/ui/separator"
-import { getRoleLabel } from "@/lib/auth"
 import { formatDate, buildOrgPath, findAncestorMarketId } from "@/lib/utils"
 import { shanghaiToday } from "@/lib/datetime"
 import { formatPhoneSafe } from "@/lib/format"
@@ -26,10 +25,7 @@ import { updateEmployee, deleteEmployee } from "@/actions/employees"
 import { DangerZoneDelete } from "@/components/delete-action"
 import { assignRole, revokeRole } from "@/actions/permissions"
 import { resetToDefaultPassword } from "@/actions/auth"
-import { ROLE_LABELS } from "@/lib/types"
-import type { Employee, PermissionRole, Store, OrgNode, RoleType, SkillTag } from "@/lib/types"
-
-const allRoleTypes: RoleType[] = ["admin", "manager", "finance", "hr", "product", "customer_mgr", "staff"]
+import type { Employee, PermissionRole, Store, OrgNode, RoleType, SkillTag, RoleDefinition } from "@/lib/types"
 
 /** 库内墙钟字符串（"YYYY-MM-DD HH:mm:ss" 或带 T）→ datetime-local 输入值 "YYYY-MM-DDTHH:mm" */
 function toDatetimeLocal(v: string | null): string {
@@ -40,14 +36,33 @@ function toDatetimeLocal(v: string | null): string {
 interface Props {
   employee: Employee
   roles: PermissionRole[]
+  roleDefinitions: RoleDefinition[]
   stores: Store[]
   orgNodes: OrgNode[]
   skillTags: SkillTag[]
+  canUpdate?: boolean
+  canAssignRole?: boolean
+  canRevokeRole?: boolean
+  canAssignAdmin?: boolean
+  canResetPassword?: boolean
   /** 是否展示「危险操作」删除入口（仅系统管理员 employee:delete） */
   canDelete?: boolean
 }
 
-export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, skillTags, canDelete = false }: Props) {
+export default function EmployeeDetailPage({
+  employee,
+  roles,
+  roleDefinitions,
+  stores,
+  orgNodes,
+  skillTags,
+  canUpdate = false,
+  canAssignRole = false,
+  canRevokeRole = false,
+  canAssignAdmin = false,
+  canResetPassword = false,
+  canDelete = false,
+}: Props) {
   const router = useRouter()
 
   // Edit info state
@@ -81,7 +96,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
   // Inline role editing state
   const [isEditingRoles, setIsEditingRoles] = useState(false)
   useUnsavedChanges(isEditing || isEditingRoles)
-  const [roleEntries, setRoleEntries] = useState<{ role: RoleType; scopeId: string }[]>([])
+  const [roleEntries, setRoleEntries] = useState<Array<{ role: RoleType; scopeId: string; persisted?: boolean }>>([])
   const [savingRoles, setSavingRoles] = useState(false)
 
   // Password reset state
@@ -133,6 +148,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
   }
 
   async function handleSave() {
+    if (!canUpdate) return
     // 姓名 / 身份证必填校验（与新建表单 + Server Action 一致）
     if (!form.name.trim()) {
       toast.error("姓名不能为空")
@@ -192,14 +208,17 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
   }
 
   async function handleSaveRoles() {
+    if (!canAssignRole && !canRevokeRole) return
     setSavingRoles(true)
     try {
       const key = (role: string, scopeId: string) => `${role}:${scopeId}`
       const originalKeys = new Set(roles.map(r => key(r.role, r.scopeId)))
       const editedKeys = new Set(roleEntries.filter(e => e.scopeId).map(e => key(e.role, e.scopeId)))
 
-      const toRevoke = roles.filter(r => !editedKeys.has(key(r.role, r.scopeId)))
-      const toAdd = roleEntries.filter(e => e.scopeId && !originalKeys.has(key(e.role, e.scopeId)))
+      const toRevoke = canRevokeRole ? roles.filter(r => !editedKeys.has(key(r.role, r.scopeId))) : []
+      const toAdd = canAssignRole
+        ? roleEntries.filter(e => !e.persisted && e.scopeId && !originalKeys.has(key(e.role, e.scopeId)))
+        : []
 
       const errors: string[] = []
       for (const r of toRevoke) {
@@ -228,6 +247,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
   }
 
   async function handleResetToDefault() {
+    if (!canResetPassword) return
     setResettingPwd(true)
     try {
       const res = await resetToDefaultPassword(employee.employeeId)
@@ -254,7 +274,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
     {
       key: "role",
       header: "角色",
-      cell: (row) => <span className="font-medium">{getRoleLabel(row.role)}</span>,
+      cell: (row) => <span className="font-medium">{row.roleName ?? row.role}</span>,
     },
     {
       key: "scopeName",
@@ -287,7 +307,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
         >
           {employee.isResigned ? "已离职" : "在职"}
         </Badge>
-        {!employee.isResigned && (
+        {canUpdate && !employee.isResigned && (
           <Button variant="ghost" size="sm" className="text-[#D94040] ml-auto" onClick={() => {
             setResignForm({ resignedAt: shanghaiToday(), resignationReason: "" })
             setResignDialogOpen(true)
@@ -317,11 +337,11 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
                     取消
                   </Button>
                 </div>
-              ) : (
+              ) : canUpdate ? (
                 <Button variant="outline" size="sm" onClick={() => setIsEditing(true)}>
                   编辑
                 </Button>
-              )}
+              ) : null}
             </CardHeader>
             <CardContent>
               <div className="mb-6 flex items-start gap-4">
@@ -563,14 +583,14 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
                     取消
                   </Button>
                 </div>
-              ) : (
+              ) : (canAssignRole || canRevokeRole) ? (
                 <Button variant="outline" size="sm" onClick={() => {
-                  setRoleEntries(roles.map(r => ({ role: r.role as RoleType, scopeId: r.scopeId })))
+                  setRoleEntries(roles.map(r => ({ role: r.role as RoleType, scopeId: r.scopeId, persisted: true })))
                   setIsEditingRoles(true)
                 }}>
                   编辑
                 </Button>
-              )}
+              ) : null}
             </CardHeader>
             <CardContent>
               {isEditingRoles ? (
@@ -580,14 +600,15 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
                       <Select
                         className="flex-1"
                         value={entry.role}
+                        disabled={entry.persisted && !(canAssignRole && canRevokeRole)}
                         onChange={(e) => {
                           const updated = [...roleEntries]
                           updated[index] = { ...entry, role: e.target.value as RoleType }
                           setRoleEntries(updated)
                         }}
                       >
-                        {allRoleTypes.map((r) => (
-                          <option key={r} value={r}>{ROLE_LABELS[r]}</option>
+                        {roleDefinitions.filter((role) => !role.isSuperAdmin || canAssignAdmin || entry.role === role.roleKey).map((role) => (
+                          <option key={role.roleKey} value={role.roleKey}>{role.name}</option>
                         ))}
                       </Select>
                       <OrgTreeSelect
@@ -595,6 +616,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
                         orgNodes={orgNodes}
                         excludeTypes={['部门']}
                         value={entry.scopeId}
+                        disabled={entry.persisted && !(canAssignRole && canRevokeRole)}
                         onChange={(id) => {
                           const updated = [...roleEntries]
                           updated[index] = { ...entry, scopeId: id }
@@ -602,23 +624,27 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
                         }}
                         placeholder="选择组织节点"
                       />
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="text-[var(--destructive)] shrink-0"
-                        onClick={() => setRoleEntries(prev => prev.filter((_, i) => i !== index))}
-                      >
-                        删除
-                      </Button>
+                      {(!entry.persisted && canAssignRole || entry.persisted && canRevokeRole) && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-[var(--destructive)] shrink-0"
+                          onClick={() => setRoleEntries(prev => prev.filter((_, i) => i !== index))}
+                        >
+                          删除
+                        </Button>
+                      )}
                     </div>
                   ))}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setRoleEntries(prev => [...prev, { role: 'manager', scopeId: '' }])}
-                  >
-                    + 添加角色
-                  </Button>
+                  {canAssignRole && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setRoleEntries(prev => [...prev, { role: roleDefinitions.find((role) => !role.isSuperAdmin)?.roleKey ?? roleDefinitions[0]?.roleKey ?? '', scopeId: '' }])}
+                    >
+                      + 添加角色
+                    </Button>
+                  )}
                 </div>
               ) : (
                 <DataTable
@@ -663,14 +689,16 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
                 <p className="text-sm text-[var(--muted-foreground)] mb-3">
                   初始密码为手机号后 6 位，首次登录需修改密码
                 </p>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setResetPwdDialogOpen(true)}
-                  disabled={!employee.phone}
-                >
-                  重置为初始密码
-                </Button>
+                {canResetPassword && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setResetPwdDialogOpen(true)}
+                    disabled={!employee.phone}
+                  >
+                    重置为初始密码
+                  </Button>
+                )}
                 {!employee.phone && (
                   <p className="mt-2 text-xs text-[var(--destructive)]">该员工未绑定手机号，无法重置</p>
                 )}
@@ -681,7 +709,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
       </Tabs>
 
       {/* 离职确认 — 填报离职日期 + 离职原因 */}
-      <AlertDialog open={resignDialogOpen} onOpenChange={setResignDialogOpen}>
+      {canUpdate && <AlertDialog open={resignDialogOpen} onOpenChange={setResignDialogOpen}>
         <AlertDialogTitle>标记离职</AlertDialogTitle>
         <AlertDialogDescription>
           将标记「{employee.name}」为已离职，并自动作废其所有有效权限角色。此操作不可撤销。
@@ -742,10 +770,10 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
             }
           }} disabled={saving}>确认离职</AlertDialogAction>
         </AlertDialogFooter>
-      </AlertDialog>
+      </AlertDialog>}
 
       {/* 重置密码确认 */}
-      <AlertDialog open={resetPwdDialogOpen} onOpenChange={setResetPwdDialogOpen}>
+      {canResetPassword && <AlertDialog open={resetPwdDialogOpen} onOpenChange={setResetPwdDialogOpen}>
         <AlertDialogTitle>确认重置密码？</AlertDialogTitle>
         <AlertDialogDescription>
           将「{employee.name}」的密码重置为手机号后 6 位（{employee.phone?.slice(-6) ?? "—"}），首次登录需修改密码。
@@ -756,7 +784,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
             {resettingPwd ? "重置中..." : "确认重置"}
           </AlertDialogAction>
         </AlertDialogFooter>
-      </AlertDialog>
+      </AlertDialog>}
 
       {/* 危险操作：物理删除员工（仅系统管理员，仅无业务关联的测试号可删） */}
       {canDelete && (

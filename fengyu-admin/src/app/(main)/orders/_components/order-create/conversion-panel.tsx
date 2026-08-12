@@ -59,7 +59,9 @@ function groupHeldCards(cards: HeldCardCandidate[]): GroupedHeldCardCandidate[] 
   return groupTreatmentCards(cards, {
     getId: (card) => card.saleItemId,
     getQuantity: (card) => card.quantity,
-    getIdentity: (card) => ({
+    getIdentity: (card) => card.saleItemGroupId
+      ? { saleItemGroupId: card.saleItemGroupId }
+      : ({
       saleOrderId: card.saleOrderId,
       saleOrderDatetime: card.saleOrderDatetime,
       paidAt: card.paidAt,

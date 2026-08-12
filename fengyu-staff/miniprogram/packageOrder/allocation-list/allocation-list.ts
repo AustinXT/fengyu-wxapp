@@ -1,6 +1,7 @@
 // packageOrder/allocation-list/allocation-list.ts — 营业额分配（销售提成 / 服务提成 双 Tab）
 import { callStaffApi } from '../../utils/cloud';
 import { safeParseDate } from '../../utils/formatters';
+import { requireManager } from '../../utils/role';
 
 // 销售提成分配单元已下沉到「回款事件」：列表展示每一笔回款（首次支付/回款/储值卡抵扣）
 interface SalePayment {
@@ -42,10 +43,18 @@ Page({
   },
 
   onLoad() {
+    if (!requireManager()) {
+      wx.navigateBack();
+      return;
+    }
     this.loadOrders();
   },
 
   onShow() {
+    if (!requireManager()) {
+      wx.navigateBack();
+      return;
+    }
     // 从详情页返回时刷新当前 Tab（状态可能已变）
     this.reload();
   },
@@ -85,6 +94,7 @@ Page({
   },
 
   async loadOrders() {
+    if (!requireManager()) return;
     if (this.data.loading) return;
     this.setData({ loading: true });
     try {
@@ -123,6 +133,7 @@ Page({
   },
 
   onTapOrder(e: WechatMiniprogram.TouchEvent) {
+    if (!requireManager()) return;
     const id = e.currentTarget.dataset.id as string;
     if (this.data.activeTab === 'sale') {
       // 销售提成按回款逐笔分配：id = sale_payment_id

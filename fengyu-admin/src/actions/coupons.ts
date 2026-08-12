@@ -865,6 +865,37 @@ export const batchIssueCoupons = withPermission(
 )
 
 /**
+ * 单人发券的最小顾客检索。
+ *
+ * 发券并不需要打开顾客档案，因此权限归属 coupon:create，且只返回确认收件人
+ * 所需的姓名和手机号，避免把 customer:list 变成优惠券页面的隐式硬依赖。
+ */
+export const searchCustomersForCoupon = withPermission(
+  'coupon:create',
+  async (
+    _session,
+    phone: string,
+  ): Promise<{ name: string | null; phone: string } | null> => {
+    const normalizedPhone = phone.trim()
+    if (!/^1\d{10}$/.test(normalizedPhone)) {
+      return null
+    }
+
+    const [customer] = await db
+      .select({
+        name: clientWechatUsers.name,
+        phone: clientWechatUsers.phone,
+      })
+      .from(clientWechatUsers)
+      .where(eq(clientWechatUsers.phone, normalizedPhone))
+      .limit(1)
+
+    if (!customer?.phone) return null
+    return { name: customer.name, phone: customer.phone }
+  },
+)
+
+/**
  * 批量发券时的顾客分页列表。
  * 权限走 coupon:create（而非 customer:list），以便 product 角色可用。
  * 仅返回有手机号的顾客。

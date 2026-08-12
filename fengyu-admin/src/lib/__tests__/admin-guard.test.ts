@@ -7,6 +7,10 @@ vi.mock('@/db', () => ({
 }))
 
 vi.mock('@db/permission', () => ({
+  permissionRoleDefinitions: {
+    roleKey: 'role_key',
+    isSuperAdmin: 'is_super_admin',
+  },
   permissionRoles: {
     id: 'id',
     employeeId: 'employee_id',
@@ -51,8 +55,9 @@ describe('admin-guard', () => {
   describe('countActiveAdmins', () => {
     it('返回活跃 admin 行数（is_resigned=false JOIN）', async () => {
       const where = vi.fn().mockResolvedValue([{ c: 3 }])
-      const innerJoin = vi.fn().mockReturnValue({ where })
-      const from = vi.fn().mockReturnValue({ innerJoin })
+      const innerJoin2 = vi.fn().mockReturnValue({ where })
+      const innerJoin1 = vi.fn().mockReturnValue({ innerJoin: innerJoin2 })
+      const from = vi.fn().mockReturnValue({ innerJoin: innerJoin1 })
       ;(db.select as any).mockReturnValue({ from })
 
       const n = await countActiveAdmins()
@@ -62,8 +67,9 @@ describe('admin-guard', () => {
 
     it('无行时返回 0（空结果）', async () => {
       const where = vi.fn().mockResolvedValue([])
-      const innerJoin = vi.fn().mockReturnValue({ where })
-      const from = vi.fn().mockReturnValue({ innerJoin })
+      const innerJoin2 = vi.fn().mockReturnValue({ where })
+      const innerJoin1 = vi.fn().mockReturnValue({ innerJoin: innerJoin2 })
+      const from = vi.fn().mockReturnValue({ innerJoin: innerJoin1 })
       ;(db.select as any).mockReturnValue({ from })
 
       const n = await countActiveAdmins()
@@ -75,7 +81,8 @@ describe('admin-guard', () => {
     it('该员工持有 admin 角色 → true', async () => {
       const limit = vi.fn().mockResolvedValue([{ c: 1 }])
       const where = vi.fn().mockReturnValue({ limit })
-      const from = vi.fn().mockReturnValue({ where })
+      const innerJoin = vi.fn().mockReturnValue({ where })
+      const from = vi.fn().mockReturnValue({ innerJoin })
       ;(db.select as any).mockReturnValue({ from })
 
       const r = await isAdminEmployee('EMP-001')
@@ -85,7 +92,8 @@ describe('admin-guard', () => {
     it('该员工无 admin 角色 → false', async () => {
       const limit = vi.fn().mockResolvedValue([{ c: 0 }])
       const where = vi.fn().mockReturnValue({ limit })
-      const from = vi.fn().mockReturnValue({ where })
+      const innerJoin = vi.fn().mockReturnValue({ where })
+      const from = vi.fn().mockReturnValue({ innerJoin })
       ;(db.select as any).mockReturnValue({ from })
 
       const r = await isAdminEmployee('EMP-002')

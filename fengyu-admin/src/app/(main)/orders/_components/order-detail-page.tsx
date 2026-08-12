@@ -73,8 +73,10 @@ function getDisplaySaleItems(order: SaleOrder, items: NonNullable<SaleOrder["ite
     getId: (item) => item.saleItemId,
     getQuantity: (item) => item.quantity,
     preserveNonUnitQuantity: false,
-    getIdentity: (item) => ({
-      // 非疗程卡保持逐行展示；疗程卡只在其余业务属性完全一致时合并。
+    getIdentity: (item) => item.saleItemGroupId
+      ? { saleItemGroupId: item.saleItemGroupId }
+      : ({
+      // 历史无分组行保持原有规则；非疗程卡仍逐行展示。
       sourceId: item.sessionCount === null ? item.saleItemId : undefined,
       saleOrderId: order.saleOrderId,
       orderStatus: order.status,
@@ -109,9 +111,16 @@ function getDisplaySaleItems(order: SaleOrder, items: NonNullable<SaleOrder["ite
     }),
   }).map((group) => {
     const primary = group.primary;
-    if (primary.sessionCount === null) {
-      return { ...primary, cardCount: group.cardCount };
-    }
+    const aggregate = {
+      ...primary,
+      quantity: sumGroupValue(group, (item) => item.quantity),
+      saleAmount: sumGroupValue(group, (item) => item.saleAmount).toFixed(2),
+      received: sumGroupValue(group, (item) => item.received).toFixed(2),
+      pendingReceived: sumGroupValue(group, (item) => item.pendingReceived).toFixed(2),
+      pickedUpQuantity: sumGroupValue(group, (item) => item.pickedUpQuantity),
+      cardCount: group.cardCount,
+    };
+    if (primary.sessionCount === null) return aggregate;
 
     const sessionCount = sumGroupValue(group, (item) => item.sessionCount);
     const remainingSessions = sumGroupValue(group, (item) => item.remainingSessions);
@@ -120,16 +129,10 @@ function getDisplaySaleItems(order: SaleOrder, items: NonNullable<SaleOrder["ite
       : sumGroupValue(group, (item) => item.paidSessions);
 
     return {
-      ...primary,
-      quantity: sumGroupValue(group, (item) => item.quantity),
+      ...aggregate,
       sessionCount,
       remainingSessions,
       paidSessions,
-      saleAmount: sumGroupValue(group, (item) => item.saleAmount).toFixed(2),
-      received: sumGroupValue(group, (item) => item.received).toFixed(2),
-      pendingReceived: sumGroupValue(group, (item) => item.pendingReceived).toFixed(2),
-      pickedUpQuantity: sumGroupValue(group, (item) => item.pickedUpQuantity),
-      cardCount: group.cardCount,
     };
   });
 }
@@ -166,7 +169,7 @@ export default function OrderDetailPageClient({
   canListAllocations?: boolean;
   /** 是否展示「危险操作」删除入口（仅系统管理员 sale_order:delete） */
   canDelete?: boolean;
-  /** 是否展示寄存单审批入口（系统管理员 / 总部或市场店长 / 总部或市场财务） */
+  /** 是否展示寄存单审批入口（系统管理员 / 总部、市场或门店店长、财务） */
   canApproveDeposit?: boolean;
 }) {
   const router = useRouter();

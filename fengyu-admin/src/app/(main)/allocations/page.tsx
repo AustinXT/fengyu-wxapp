@@ -1,6 +1,8 @@
 import { getPendingPayments } from '@/actions/allocations'
 import { getServiceOrdersPaginated } from '@/actions/services'
 import { getMarketStoreFilterOptions } from '@/actions/stores'
+import { getSession } from '@/lib/auth'
+import { hasUiCapability } from '@/lib/permission-contract'
 import AllocationsPageClient from './_components/allocations-page'
 
 export const dynamic = 'force-dynamic'
@@ -22,7 +24,11 @@ export default async function Page({
   const dateTo = params.to || undefined
   const search = params.q || undefined
 
-  const filterOptions = await getMarketStoreFilterOptions()
+  const [filterOptions, session] = await Promise.all([getMarketStoreFilterOptions(), getSession()])
+  const actions = session?.permissions.actions ?? []
+  const canSave = hasUiCapability(actions, 'allocation:save')
+  const canViewOrders = hasUiCapability(actions, 'sale_order:list')
+  const canViewServices = hasUiCapability(actions, 'service:list')
 
   if (tab === 'service') {
     const { data: serviceOrders, total } = await getServiceOrdersPaginated({
@@ -42,6 +48,9 @@ export default async function Page({
         filterOptions={filterOptions}
         serviceOrders={serviceOrders}
         serviceTotal={total}
+        canSave={canSave}
+        canViewOrders={canViewOrders}
+        canViewServices={canViewServices}
       />
     )
   }
@@ -65,6 +74,9 @@ export default async function Page({
       filterOptions={filterOptions}
       payments={payments}
       saleTotal={total}
+      canSave={canSave}
+      canViewOrders={canViewOrders}
+      canViewServices={canViewServices}
     />
   )
 }

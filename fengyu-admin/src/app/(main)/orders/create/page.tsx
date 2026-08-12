@@ -1,7 +1,9 @@
 import { getStores } from '@/actions/stores'
 import { getEmployees, getEmployeesOnBusinessTrip } from '@/actions/employees'
 import { getRechargeConfig } from '@/actions/cards'
+import { getSession } from '@/lib/auth'
 import { mergeEmployeesById } from '@/lib/merge-employees'
+import { requireUiPageCapability } from '@/lib/page-capability'
 import OrderCreatePageClient from '../_components/order-create-page'
 
 export const dynamic = 'force-dynamic'
@@ -17,6 +19,7 @@ export const dynamic = 'force-dynamic'
  * 抛错）时兜成 null，前端提示前往 系统配置 → 充值卡配置。
  */
 export default async function Page() {
+  requireUiPageCapability(await getSession(), 'sale_order:create')
   const [stores, scopedEmployees, tripEmployees, rechargeConfig] = await Promise.all([
     getStores(),
     getEmployees(),

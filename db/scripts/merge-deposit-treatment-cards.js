@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
 /**
- * merge-deposit-treatment-cards.js — 合并同一寄存单内相同 SKU 的疗程卡销售明细。
+ * merge-deposit-treatment-cards.js — 已停用的历史合并脚本。
  *
- * 背景：旧版寄存单创建会把 quantity>1 的疗程卡拆成多条 sale_items。现已改为同 SKU
- * 合并一条；本脚本把可安全迁移的历史重复行物理合并，避免持卡/订单列表重复展示。
+ * 2026-08-11 起，寄存单疗程卡必须逐张写入 sale_items，展示层负责聚合；继续合并会破坏
+ * 单张转换能力。本文件仅保留旧实现供审计，禁止执行。历史修复请使用
+ * split-deposit-treatment-cards.js。
  *
  * 合并边界：仅 sale_order_type='寄存单'、item_direction='购买'、product_type='疗程卡'，
  * 且仅在同一 sale_order_id + sku_id 内处理。普通销售单、家居产品、跨 SKU/跨订单不受影响。
@@ -567,8 +568,5 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error('FATAL:', error.message)
-  if (error.stack) console.error(error.stack)
-  process.exitCode = 1
-})
+console.error('此脚本已停用：寄存单疗程卡必须逐张存储，请改用 split-deposit-treatment-cards.js。')
+process.exitCode = 1

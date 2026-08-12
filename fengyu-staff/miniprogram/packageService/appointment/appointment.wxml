@@ -33,12 +33,12 @@
         <van-icon name="manager-o" size="28rpx" color="#999" />
         <text class="appt-staff">{{item.staffName}}</text>
       </view>
-      <view class="appt-actions" wx:if="{{item.status === 'pending'}}">
+      <view class="appt-actions" wx:if="{{!isReadOnly && item.status === 'pending'}}">
         <van-button size="small" type="primary" catchtap="onConfirmAppt" data-id="{{item.id}}">
           确认预约
         </van-button>
       </view>
-      <view class="appt-actions" wx:if="{{item.status === 'confirmed'}}">
+      <view class="appt-actions" wx:if="{{!isReadOnly && item.status === 'confirmed'}}">
         <van-button wx:if="{{!item.checkinAt}}" size="small" type="warning" plain catchtap="onCheckin" data-id="{{item.id}}">
           顾客已到店
         </van-button>

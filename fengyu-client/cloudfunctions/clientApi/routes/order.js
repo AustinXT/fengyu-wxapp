@@ -1840,6 +1840,7 @@ async function detail(ctx) {
   const items = await pg.query(`
     SELECT
       si.sale_item_id,
+      si.sale_item_group_id,
       si.sale_order_id,
       si.sku_id,
       si.item_direction,
@@ -2194,6 +2195,86 @@ async function appointableItems(ctx) {
   ctx.result = {
     orders: Array.from(orderMap.values())
   }
+}
+
+function mapHomeProductRow(row) {
+  const pickedQuantity = Number(row.picked_quantity || 0)
+  const refundedQuantity = Number(row.refunded_quantity || 0)
+  const remainingQuantity = Number(row.remaining_quantity || 0)
+  let status
+  if (row.refund_pending) status = '退款处理中'
+  else if (remainingQuantity > 0) status = pickedQuantity > 0 ? '部分提货' : '待提货'
+  else status = refundedQuantity > 0 ? '已完成' : '已提货'
+
+  return {
+    saleItemId: row.sale_item_id,
+    saleItemGroupId: row.sale_item_group_id || null,
+    saleOrderId: row.sale_order_id,
+    productName: row.product_name || '家居产品',
+    unit: row.unit || '盒',
+    purchasedQuantity: Number(row.purchased_quantity || 0),
+    pickedQuantity,
+    refundedQuantity,
+    remainingQuantity,
+    status,
+    storeId: row.store_id,
+    storeName: row.store_name || null,
+    purchasedAt: row.purchased_at,
+  }
+}
+
+/** 当前顾客已购家居产品资产；pickup_records 是真实提货数量的权威来源。 */
+async function homeProducts(ctx) {
+  const { userId } = ctx.auth
+  const rows = await pg.query(
+    `WITH pickup_totals AS (
+       SELECT sale_item_id, SUM(pickup_quantity)::int AS picked_quantity
+         FROM pickup_records
+        GROUP BY sale_item_id
+     ), home_products AS (
+       SELECT COALESCE(si.sale_item_group_id, si.sale_item_id) AS sale_item_group_id,
+              MIN(si.sale_item_id) AS sale_item_id,
+              MIN(si.sale_order_id) AS sale_order_id,
+              MIN(COALESCE(si.product_name, '家居产品')) AS product_name,
+              MIN(COALESCE(ps.unit, '盒')) AS unit,
+              SUM(si.quantity)::int AS purchased_quantity,
+              SUM(LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0))))::int AS settled_quantity,
+              SUM(LEAST(
+                LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0))),
+                GREATEST(0, COALESCE(pt.picked_quantity, 0))
+              ))::int AS picked_quantity,
+              MIN(o.store_id) AS store_id,
+              MIN(s.store_name) AS store_name,
+              MAX(COALESCE(o.paid_at, o.sale_order_datetime, o.created_at)) AS purchased_at,
+              BOOL_OR(EXISTS (
+                SELECT 1 FROM sale_order_payments sop
+                 WHERE sop.sale_order_id = o.sale_order_id
+                   AND sop.change_type = '退款'
+                   AND sop.status = '待审批'
+              )) AS refund_pending
+         FROM sale_items si
+         JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+         LEFT JOIN stores s ON s.store_id = o.store_id
+         LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
+         LEFT JOIN pickup_totals pt ON pt.sale_item_id = si.sale_item_id
+        WHERE o.client_user_id = $1
+          AND o.status IN ('已支付', '已完成')
+          AND si.item_direction = '购买'
+          AND si.product_type = '家居产品'
+      GROUP BY COALESCE(si.sale_item_group_id, si.sale_item_id)
+     )
+     SELECT *,
+            (settled_quantity - picked_quantity)::int AS refunded_quantity,
+            (purchased_quantity - settled_quantity)::int AS remaining_quantity
+       FROM home_products
+      WHERE NOT (picked_quantity = 0 AND settled_quantity = purchased_quantity)
+   ORDER BY (purchased_quantity - settled_quantity > 0) DESC,
+            purchased_at DESC,
+            sale_item_id`,
+    [userId],
+  )
+
+  ctx.result = { items: rows.map(mapHomeProductRow) }
 }
 
 /**
@@ -3198,6 +3279,7 @@ module.exports = {
   detail,
   cancel,
   appointableItems,
+  homeProducts,
   scanDetail,
   scanAdjust,
   confirmPrepaidFull,

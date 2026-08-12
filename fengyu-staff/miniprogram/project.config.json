@@ -9,7 +9,9 @@
     "swc": false,
     "minifyWXML": true,
     "minifyWXSS": true,
-    "useCompilerPlugins": ["typescript"],
+    "useCompilerPlugins": [
+      "typescript"
+    ],
     "packNpmManually": true,
     "packNpmRelationList": [
       {
@@ -30,17 +32,36 @@
     "useApiHostProcess": true,
     "useIsolateContext": true,
     "nodeModules": true,
-    "newFeature": true
+    "newFeature": true,
+    "compileWorklet": false,
+    "localPlugins": false,
+    "disableUseStrict": false,
+    "condition": false
   },
   "compileType": "miniprogram",
   "simulatorPluginLibVersion": {},
   "packOptions": {
     "ignore": [
-      { "type": "file", "value": "README.md" },
-      { "type": "folder", "value": ".git" },
-      { "type": "folder", "value": "mock" },
-      { "type": "folder", "value": "scripts" },
-      { "type": "folder", "value": "__tests__" }
+      {
+        "value": "README.md",
+        "type": "file"
+      },
+      {
+        "value": ".git",
+        "type": "folder"
+      },
+      {
+        "value": "mock",
+        "type": "folder"
+      },
+      {
+        "value": "scripts",
+        "type": "folder"
+      },
+      {
+        "value": "__tests__",
+        "type": "folder"
+      }
     ],
     "include": []
   },

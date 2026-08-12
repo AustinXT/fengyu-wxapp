@@ -390,6 +390,8 @@ export const getPickupRecordById = withPermission(
  */
 export interface AvailablePickupItem {
   saleItemId: string
+  saleItemGroupId: string | null
+  sourceSaleItemIds: string[]
   saleOrderId: string
   skuId: string | null
   productName: string | null
@@ -409,15 +411,17 @@ export const getAvailablePickupItems = withPermission(
   ): Promise<AvailablePickupItem[]> => {
   const rows = await db.execute(sql`
     SELECT
-      si.sale_item_id,
-      si.sale_order_id,
-      si.sku_id,
-      si.product_name,
-      si.quantity,
-      COALESCE(si.picked_up_quantity, 0) AS picked_up_quantity,
-      si.unit_real_price,
-      o.store_id,
-      s.store_name
+      COALESCE(si.sale_item_group_id, si.sale_item_id) AS sale_item_group_id,
+      MIN(si.sale_item_id) AS sale_item_id,
+      ARRAY_AGG(si.sale_item_id ORDER BY si.sale_item_id) AS source_sale_item_ids,
+      MIN(si.sale_order_id) AS sale_order_id,
+      MIN(si.sku_id) AS sku_id,
+      MIN(si.product_name) AS product_name,
+      SUM(si.quantity)::int AS quantity,
+      SUM(COALESCE(si.picked_up_quantity, 0))::int AS picked_up_quantity,
+      MIN(si.unit_real_price) AS unit_real_price,
+      MIN(o.store_id) AS store_id,
+      MIN(s.store_name) AS store_name
     FROM sale_items si
     INNER JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
     LEFT JOIN stores s ON s.store_id = o.store_id
@@ -426,13 +430,16 @@ export const getAvailablePickupItems = withPermission(
       AND si.item_direction = '购买'
       AND si.product_type = '家居产品'
       AND si.quantity > COALESCE(si.picked_up_quantity, 0)
-    ORDER BY o.paid_at DESC, si.sale_item_id
+    GROUP BY COALESCE(si.sale_item_group_id, si.sale_item_id)
+    ORDER BY MAX(o.paid_at) DESC, MIN(si.sale_item_id)
   `)
 
   // 不按原订单门店过滤：提货店可能与原销售店不同（顾客跨店提货），
   // scope 约束在 createPickupRecord 对"实际提货门店"生效。
   return (rows as unknown as Array<Record<string, unknown>>).map((r) => ({
     saleItemId: r.sale_item_id as string,
+    saleItemGroupId: (r.sale_item_group_id as string | null) ?? null,
+    sourceSaleItemIds: (r.source_sale_item_ids as string[] | null) ?? [r.sale_item_id as string],
     saleOrderId: r.sale_order_id as string,
     skuId: (r.sku_id as string | null) ?? null,
     productName: (r.product_name as string | null) ?? null,
@@ -522,6 +529,148 @@ export const getPickupInventorySkuOptions = withPermission(
 )
 
 /**
+ * 为同一销售行组拆出的多条家居明细创建一次提货。
+ *
+ * 实际库存始终按 V3 SKU 映射和批次库存扣减；一张出库单汇总本次提货，提货记录
+ * 与 sale_items.picked_up_quantity 则逐条写入，以保留退款级联和库存审计的可追溯性。
+ */
+async function createGroupedPickupRecord(
+  session: { employeeId: string },
+  data: {
+    saleItemIds: string[]
+    inventorySkuId: string
+    pickupQuantity: number
+    storeId: string
+    clientUserId: string | null
+    remark?: string | null
+    idempotencyKey?: string | null
+  },
+): Promise<{ pickupRecordId: number; inventoryDocId: string; selectedSaleItemIds: string[] }> {
+  const sourceIds = [...new Set(data.saleItemIds.filter(Boolean))].sort()
+  if (sourceIds.length < 2 || !Number.isInteger(data.pickupQuantity) || data.pickupQuantity > sourceIds.length) {
+    throw new ApiError('INVALID_PARAMS', '合并提货数量或来源明细不合法')
+  }
+  const sourceIdList = sql.join(sourceIds.map((id) => sql`${id}`), sql`, `)
+  const idemKey = data.idempotencyKey?.trim() || null
+
+  return db.transaction(async (tx) => {
+    if (idemKey) {
+      const replay = (await tx.execute(sql`
+        SELECT id, sale_item_id
+          FROM pickup_records
+         WHERE sale_item_id IN (${sourceIdList})
+           AND store_id = ${data.storeId}
+           AND idempotency_key = ${idemKey}
+      ORDER BY sale_item_id
+      `)) as unknown as Array<{ id: number; sale_item_id: string }>
+      if (replay.length > 0) {
+        return {
+          pickupRecordId: replay[0].id,
+          inventoryDocId: '',
+          selectedSaleItemIds: replay.map((row) => row.sale_item_id),
+        }
+      }
+    }
+
+    const locked = (await tx.execute(sql`
+      SELECT si.sale_item_id, si.sale_item_group_id, si.sale_order_id, si.sku_id,
+             si.product_name, si.quantity, COALESCE(si.picked_up_quantity, 0) AS picked_up_quantity,
+             o.client_user_id, o.customer_name
+        FROM sale_items si
+        JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+       WHERE si.sale_item_id IN (${sourceIdList})
+         AND si.product_type = '家居产品'
+         AND si.item_direction = '购买'
+       FOR UPDATE OF si
+    `)) as unknown as Array<{
+      sale_item_id: string
+      sale_item_group_id: string | null
+      sale_order_id: string
+      sku_id: string | null
+      product_name: string | null
+      quantity: number
+      picked_up_quantity: number
+      client_user_id: string | null
+      customer_name: string | null
+    }>
+    if (locked.length !== sourceIds.length) {
+      throw new ApiError('CONFLICT', '部分家居产品已更新，请刷新后重试')
+    }
+    const first = locked[0]
+    if (!first?.sku_id || locked.some((row) =>
+      row.sale_order_id !== first.sale_order_id
+      || row.sku_id !== first.sku_id
+      || (row.sale_item_group_id || row.sale_item_id) !== (first.sale_item_group_id || first.sale_item_id)
+      || Number(row.quantity) !== 1
+      || Number(row.picked_up_quantity) !== 0,
+    )) {
+      throw new ApiError('CONFLICT', '家居产品状态已更新，请刷新后重试')
+    }
+    if (await hasPendingRefund(tx, first.sale_order_id)) {
+      throw new ApiError('INVALID_STATE', '该订单退款审批中，暂不可提货')
+    }
+
+    const mappingRows = (await tx.execute(sql`
+      SELECT mapping.id
+        FROM inventory_sku_product_sku_mappings mapping
+        JOIN inventory_skus inventory_sku ON inventory_sku.sku_id = mapping.inventory_sku_id
+       WHERE mapping.product_sku_id = ${first.sku_id}
+         AND mapping.inventory_sku_id = ${data.inventorySkuId}
+         AND mapping.is_active = true
+         AND inventory_sku.is_active = true
+       FOR KEY SHARE OF mapping
+    `)) as unknown as Array<{ id: number }>
+    if (mappingRows.length === 0) {
+      throw new ApiError('INVALID_STATE', '该销售 SKU 未配置所选库存 SKU，请先在后台维护 SKU 映射')
+    }
+
+    const selected = locked.slice(0, data.pickupQuantity)
+    const inventoryDocId = await createPickupInventoryDoc(tx, session, {
+      storeId: data.storeId,
+      saleItemId: first.sale_item_id,
+      saleOrderId: first.sale_order_id,
+      inventorySkuId: data.inventorySkuId,
+      productName: first.product_name,
+      clientUserId: data.clientUserId ?? first.client_user_id,
+      customerName: first.customer_name,
+      pickupQuantity: selected.length,
+      remark: data.remark,
+      idempotencyKey: idemKey,
+    })
+
+    const pickupRecordIds: number[] = []
+    for (const item of selected) {
+      const updated = (await tx.execute(sql`
+        UPDATE sale_items
+           SET picked_up_quantity = 1, updated_at = NOW()
+         WHERE sale_item_id = ${item.sale_item_id}
+           AND COALESCE(picked_up_quantity, 0) = 0
+        RETURNING sale_item_id
+      `)) as unknown as Array<{ sale_item_id: string }>
+      if (updated.length !== 1) throw new ApiError('CONFLICT', '家居产品状态已更新，请刷新后重试')
+
+      const inserted = await tx.insert(pickupRecords).values({
+        saleItemId: item.sale_item_id,
+        inventorySkuId: data.inventorySkuId,
+        pickupQuantity: 1,
+        storeId: data.storeId,
+        clientUserId: data.clientUserId ?? first.client_user_id,
+        confirmedBy: session.employeeId,
+        remark: data.remark?.trim() || null,
+        idempotencyKey: idemKey,
+      }).returning({ id: pickupRecords.id })
+      pickupRecordIds.push(inserted[0]?.id ?? 0)
+    }
+
+    return {
+      pickupRecordId: pickupRecordIds[0] ?? 0,
+      inventoryDocId,
+      selectedSaleItemIds: selected.map((item) => item.sale_item_id),
+    }
+  })
+}
+
+/**
  * 创建提货记录
  *
  * 事务内原子累加 sale_items.picked_up_quantity 并插入 pickup_records。
@@ -535,6 +684,7 @@ export const createPickupRecord = withPermission(
     session,
     data: {
       saleItemId: string
+      saleItemIds?: string[]
       inventorySkuId: string
       pickupQuantity: number
       storeId: string
@@ -558,6 +708,37 @@ export const createPickupRecord = withPermission(
   }
   if (!isInScope(session, data.storeId)) {
     return { success: false, message: '无权在该门店创建提货记录' }
+  }
+
+  const groupedSourceIds = [...new Set((data.saleItemIds || []).filter(Boolean))].sort()
+  if (groupedSourceIds.length > 1) {
+    try {
+      const created = await createGroupedPickupRecord(session, {
+        saleItemIds: groupedSourceIds,
+        inventorySkuId: data.inventorySkuId,
+        pickupQuantity: data.pickupQuantity,
+        storeId: data.storeId,
+        clientUserId: data.clientUserId,
+        remark: data.remark,
+        idempotencyKey: data.idempotencyKey,
+      })
+      await logOperation(session, 'create', 'pickup_record_group', created.inventoryDocId || String(created.pickupRecordId), {
+        saleItemIds: created.selectedSaleItemIds,
+        pickupQuantity: created.selectedSaleItemIds.length,
+        inventorySkuId: data.inventorySkuId,
+        storeId: data.storeId,
+        clientUserId: data.clientUserId,
+        inventoryDocId: created.inventoryDocId || null,
+      })
+      revalidatePath('/pickup-records')
+      return {
+        success: true,
+        message: created.inventoryDocId ? '提货记录创建成功' : '提货记录已存在（幂等）',
+        createdId: created.pickupRecordId,
+      }
+    } catch (err) {
+      return { success: false, message: err instanceof Error ? err.message : '创建失败' }
+    }
   }
 
   // 冻结闭环（Bug I）：该明细所属订单有待审批退款时禁止提货（与 staff createPickup 对齐；

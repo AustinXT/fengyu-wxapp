@@ -77,8 +77,8 @@ describe('待审批退款冻结跨端镜像（assertNoPendingRefund ↔ hasPendi
 })
 
 describe('退款通知跨端镜像（店长解析 + 幂等键）', () => {
-  test('两端店长解析：permission_roles JOIN stores + role=manager + store_id', () => {
-    const mgrResolve = /permission_roles[\s\S]{0,120}JOIN stores[\s\S]{0,120}role = 'manager'[\s\S]{0,80}store_id/
+  test('两端店长解析：permission_roles JOIN 角色定义 + is_store_manager + store_id', () => {
+    const mgrResolve = /permission_roles[\s\S]{0,180}permission_role_definitions[\s\S]{0,180}JOIN stores[\s\S]{0,120}is_store_manager = TRUE[\s\S]{0,80}store_id/
     expect(staffRefundUtil).toMatch(mgrResolve)
     expect(adminCascade).toMatch(mgrResolve)
   })

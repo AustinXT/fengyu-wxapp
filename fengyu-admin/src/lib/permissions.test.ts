@@ -12,9 +12,7 @@ vi.mock('next/navigation', () => ({ redirect: mockRedirect }))
 vi.mock('@/db', () => ({
   db: {
     select: vi.fn().mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue([]),
-      }),
+      from: vi.fn().mockResolvedValue([]),
     }),
     // 默认 execute 返回空数组：getPermissionMatrix 行不存在 → 回退 DEFAULT_PERMISSION_MATRIX
     execute: vi.fn().mockResolvedValue([]),
@@ -95,7 +93,7 @@ describe('DEFAULT_PERMISSION_MATRIX', () => {
     }
   })
 
-  it('manager 拥有业务操作权限 + 生产扩权（删单/员工CRUD/收款配置）', () => {
+  it('manager 拥有门店业务操作权限，但不含物理删除和收款配置', () => {
     const actions = DEFAULT_PERMISSION_MATRIX.manager
     expect(actions).toContain('sale_order:create')
     expect(actions).toContain('allocation:save')
@@ -104,11 +102,11 @@ describe('DEFAULT_PERMISSION_MATRIX', () => {
     expect(actions).toContain('customer:list')
     expect(actions).toContain('sale_item:list')
     expect(actions).toContain('card_transaction:list')
-    // 2026-06-24 对齐生产的敏感扩权（守护：勿误删）
-    expect(actions).toContain('sale_order:delete')
+    // 物理删除与拉卡拉收款配置仅系统管理员可授予。
+    expect(actions).not.toContain('sale_order:delete')
     expect(actions).toContain('sale_order:deposit_approve')
     expect(actions).toContain('employee:create')
-    expect(actions).toContain('store:lakala_config')
+    expect(actions).not.toContain('store:lakala_config')
     expect(actions).toContain('merchant:list')
   })
 
@@ -172,8 +170,10 @@ describe('deposit_approve 寄存单审批硬规则', () => {
     ['总部店长', [{ role: 'manager' as const, scopeId: 'hq', scopeType: '总部' as const }], true],
     ['总部财务', [{ role: 'finance' as const, scopeId: 'hq', scopeType: '总部' as const }], true],
     ['市场店长', [{ role: 'manager' as const, scopeId: 'm1', scopeType: '市场' as const }], true],
-    ['门店店长', [{ role: 'manager' as const, scopeId: 's1', scopeType: '门店' as const }], false],
+    ['门店店长', [{ role: 'manager' as const, scopeId: 's1', scopeType: '门店' as const }], true],
     ['市场财务', [{ role: 'finance' as const, scopeId: 'm1', scopeType: '市场' as const }], true],
+    ['门店财务', [{ role: 'finance' as const, scopeId: 's1', scopeType: '门店' as const }], true],
+    ['动态角色由权限项直接授权，不再按角色键/层级硬编码', [{ role: 'manager' as const, scopeId: 'd1', scopeType: '部门' as never }], true],
   ])('%s', (_label, roles, expected) => {
     const session = makeSession(roles, ['sale_order:deposit_approve'])
     expect(isDepositOrderApprover(session)).toBe(expected)
@@ -217,75 +217,67 @@ describe('computeActions', () => {
 })
 
 describe('getPermissionMatrix / cache', () => {
+  function mockRoleRows(rows: Array<{ roleKey: string; actions: string[] }>) {
+    const from = vi.fn().mockResolvedValue(rows)
+    ;(db.select as any).mockReturnValue({ from })
+    return from
+  }
+
   beforeEach(() => {
     invalidatePermissionMatrixCache()
     vi.clearAllMocks()
   })
 
   it('DB 行不存在时返回 DEFAULT', async () => {
-    const { db } = await import('@/db')
-    ;(db.execute as any) = vi.fn().mockResolvedValue([])
+    mockRoleRows([])
     const matrix = await getPermissionMatrix()
     expect(matrix).toEqual(DEFAULT_PERMISSION_MATRIX)
   })
 
-  it('DB 行存在且 JSON 合法时返回解析后的矩阵', async () => {
-    const fakeMatrix: Record<RoleType, string[]> = {
-      admin: ['system:config', 'permission:assign_admin', 'admin:reset_password'],
-      manager: ['dashboard:view'],
-      finance: [], hr: [], product: [], customer_mgr: [], staff: [],
-    }
-    const { db } = await import('@/db')
-    ;(db.execute as any) = vi.fn().mockResolvedValue([{ value: JSON.stringify(fakeMatrix) }])
+  it('DB 角色定义存在时按 role_key 组装动态矩阵', async () => {
+    mockRoleRows([
+      { roleKey: 'admin', actions: ['system:config', 'permission:assign_admin', 'admin:reset_password'] },
+      { roleKey: 'role_custom', actions: ['dashboard:view'] },
+      { roleKey: 'finance', actions: [] },
+    ])
     const matrix = await getPermissionMatrix()
     expect(matrix.admin).toContain('system:config')
-    expect(matrix.manager).toEqual(['dashboard:view'])
+    expect(matrix.role_custom).toEqual(['dashboard:view'])
     expect(matrix.finance).toEqual([])
   })
 
-  it('JSON 解析失败时回退 DEFAULT + console.error', async () => {
-    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const { db } = await import('@/db')
-    ;(db.execute as any) = vi.fn().mockResolvedValue([{ value: '{not valid json' }])
+  it('未知权限项不会进入运行时矩阵', async () => {
+    mockRoleRows([{ roleKey: 'role_custom', actions: ['dashboard:view', 'made_up:action'] }])
     const matrix = await getPermissionMatrix()
-    expect(matrix).toEqual(DEFAULT_PERMISSION_MATRIX)
-    expect(errSpy).toHaveBeenCalledWith(
-      expect.stringContaining('[permission-matrix]'),
-      expect.anything(),
-    )
-    errSpy.mockRestore()
+    expect(matrix.role_custom).toEqual(['dashboard:view'])
   })
 
   it('DB throw 时回退 DEFAULT + console.error', async () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const { db } = await import('@/db')
-    ;(db.execute as any) = vi.fn().mockRejectedValue(new Error('connection refused'))
+    const from = vi.fn().mockRejectedValue(new Error('connection refused'))
+    ;(db.select as any).mockReturnValue({ from })
     const matrix = await getPermissionMatrix()
     expect(matrix).toEqual(DEFAULT_PERMISSION_MATRIX)
     expect(errSpy).toHaveBeenCalledWith(
-      expect.stringContaining('[permission-matrix]'),
+      expect.stringContaining('[role-definitions]'),
       expect.anything(),
     )
     errSpy.mockRestore()
   })
 
   it('连续两次调用仅查 DB 一次（命中缓存）', async () => {
-    const { db } = await import('@/db')
-    const execMock = vi.fn().mockResolvedValue([])
-    ;(db.execute as any) = execMock
+    const from = mockRoleRows([])
     await getPermissionMatrix()
     await getPermissionMatrix()
-    expect(execMock).toHaveBeenCalledTimes(1)
+    expect(from).toHaveBeenCalledTimes(1)
   })
 
   it('invalidatePermissionMatrixCache 后再调重新查 DB', async () => {
-    const { db } = await import('@/db')
-    const execMock = vi.fn().mockResolvedValue([])
-    ;(db.execute as any) = execMock
+    const from = mockRoleRows([])
     await getPermissionMatrix()
     invalidatePermissionMatrixCache()
     await getPermissionMatrix()
-    expect(execMock).toHaveBeenCalledTimes(2)
+    expect(from).toHaveBeenCalledTimes(2)
   })
 })
 

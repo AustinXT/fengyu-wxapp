@@ -67,11 +67,13 @@ const adminSession = {
 function buildValidMatrix(): Record<RoleType, string[]> {
   return {
     admin: [
+      'dashboard:view',
+      'employee:list',
+      'org:list',
+      'permission:list',
       'system:config',
       'permission:assign_admin',
       'admin:reset_password',
-      'dashboard:view',
-      'org:list',
     ],
     manager: ['dashboard:view', 'sale_order:list'],
     finance: [],
@@ -82,18 +84,26 @@ function buildValidMatrix(): Record<RoleType, string[]> {
   }
 }
 
+function resetDbExecuteMock() {
+  ;(db.execute as any).mockReset()
+}
+
 describe('getMatrix', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    resetDbExecuteMock()
     ;(getSession as any).mockResolvedValue(adminSession)
     requirePermissionMock.mockImplementation(() => {})
   })
 
-  it('DB 行存在时返回解析后矩阵（规范化排序）', async () => {
-    const stored = { admin: ['z:b', 'a:a'], manager: [], finance: [], hr: [], product: [], customer_mgr: [], staff: [] }
+  it('DB 行存在时清洗未知权限并规范化排序', async () => {
+    const stored = {
+      admin: ['store:list', 'unknown:action', 'dashboard:view'],
+      manager: [], finance: [], hr: [], product: [], customer_mgr: [], staff: [],
+    }
     ;(db.execute as any).mockResolvedValueOnce([{ value: JSON.stringify(stored) }])
     const result = await getMatrix()
-    expect(result.admin).toEqual(['a:a', 'z:b']) // 排序
+    expect(result.admin).toEqual(['dashboard:view', 'store:list'])
   })
 
   it('DB 行缺失时回退 DEFAULT', async () => {
@@ -120,6 +130,7 @@ describe('getMatrix', () => {
 describe('saveMatrix — 防自锁校验', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    resetDbExecuteMock()
     ;(getSession as any).mockResolvedValue(adminSession)
     requirePermissionMock.mockImplementation(() => {})
   })
@@ -154,6 +165,7 @@ describe('saveMatrix — 防自锁校验', () => {
 describe('saveMatrix — happy path', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    resetDbExecuteMock()
     ;(getSession as any).mockResolvedValue(adminSession)
     requirePermissionMock.mockImplementation(() => {})
   })
@@ -215,6 +227,7 @@ describe('saveMatrix — happy path', () => {
 describe('resetMatrix', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    resetDbExecuteMock()
     ;(getSession as any).mockResolvedValue(adminSession)
     requirePermissionMock.mockImplementation(() => {})
   })

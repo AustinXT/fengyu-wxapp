@@ -15,7 +15,14 @@ const app = getApp<IAppOption>();
 
 interface StaffAction {
   name: string;
-  employeeId: string;
+  staffWfId: string;
+}
+
+interface StaffListResponse {
+  staffList: Array<{
+    staffWfId: string;
+    name: string;
+  }>;
 }
 
 // 顾客类型：'all' = 全部，其余为 customer_type 枚举字面量（须与 DB 一致）
@@ -292,15 +299,19 @@ Page({
 
   // ===== 客户分配（仅店长，长按触发） =====
   async onLongPressAssign(e: WechatMiniprogram.TouchEvent) {
+    if (!isManager()) return;
     const { clientUserId, name } = e.currentTarget.dataset;
     if (!clientUserId) return;
 
     // 懒加载员工列表
     if (this.data.staffActions.length === 0) {
       try {
-        const staff = await callStaffApi<Array<{ employeeId: string; name: string }>>('staff.list');
+        const response = await callStaffApi<StaffListResponse>('staff.list');
+        const staffList = response?.staffList || [];
         this.setData({
-          staffActions: (staff || []).map(s => ({ name: s.name, employeeId: s.employeeId })),
+          staffActions: staffList
+            .filter((staff) => Boolean(staff.staffWfId))
+            .map((staff) => ({ name: staff.name, staffWfId: staff.staffWfId })),
         });
       } catch (_) {
         wx.showToast({ title: '获取员工列表失败', icon: 'none' });
@@ -319,12 +330,17 @@ Page({
   },
 
   async onAssignSelect(e: WechatMiniprogram.CustomEvent) {
+    if (!isManager()) {
+      this.setData({ showAssignSheet: false });
+      return;
+    }
     const action = e.detail as StaffAction;
+    if (!action?.staffWfId) return;
     this.setData({ showAssignSheet: false });
     try {
       const result = await callStaffApi<{ message: string; employeeName: string }>(
         'customer.assign',
-        { clientUserId: this.data.assignTarget.clientUserId, employeeId: action.employeeId },
+        { clientUserId: this.data.assignTarget.clientUserId, employeeId: action.staffWfId },
       );
       wx.showToast({ title: `已分配给${result.employeeName}`, icon: 'success' });
     } catch (err: unknown) {

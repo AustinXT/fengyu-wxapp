@@ -2,7 +2,7 @@
 // scope 由 hub（mgmt-dashboard）通过路由参数透传，本页不再出 scope-picker
 // 搜索框为空 = scope 内全部顾客分页（50/页），有 keyword = 关键字分页（50/页）
 import { callStaffApi } from '../../utils/cloud';
-import { canAccessManagement } from '../../utils/role';
+import { isManagementMode } from '../../utils/role';
 import { MemberLevelBadgeData, withMemberLevelBadgeClasses } from '../../utils/member-level-badge';
 
 type ScopeType = 'all' | 'market' | 'store';
@@ -59,6 +59,10 @@ Page({
   },
 
   onLoad(query: { scopeType?: string; scopeId?: string; scopeName?: string }) {
+    if (!isManagementMode()) {
+      wx.reLaunch({ url: '/pages/workbench/workbench' });
+      return;
+    }
     const scopeType = ((query?.scopeType as ScopeType) || 'all') as ScopeType;
     const scopeId = query?.scopeId ? decodeURIComponent(query.scopeId) : null;
     const scopeName = query?.scopeName ? decodeURIComponent(query.scopeName) : '';
@@ -71,7 +75,7 @@ Page({
   },
 
   onShow() {
-    if (!canAccessManagement()) {
+    if (!isManagementMode()) {
       wx.reLaunch({ url: '/pages/workbench/workbench' });
       return;
     }

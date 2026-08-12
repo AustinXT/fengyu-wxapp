@@ -1,6 +1,7 @@
 // packageMy/pickup/pickup-by-customer.ts — 提货：顾客视角 + 录入
 import { callStaffApi } from '../../utils/cloud'
 import { MemberLevelBadgeData, withMemberLevelBadgeClasses } from '../../utils/member-level-badge'
+import { isManager, requireManager } from '../../utils/role'
 
 interface Customer extends MemberLevelBadgeData {
   clientUserId: string
@@ -11,6 +12,8 @@ interface Customer extends MemberLevelBadgeData {
 
 interface PickupItem {
   saleItemId: string
+  saleItemGroupId?: string | null
+  sourceSaleItemIds?: string[]
   saleOrderId: string
   skuId: string | null
   productName: string | null
@@ -59,9 +62,11 @@ Page({
     selectedCustomer: null as Customer | null,
     items: [] as PickupItem[],
     loadingItems: false,
+    isManager: false,
     pickupDialog: {
       visible: false,
       saleItemId: '',
+      sourceSaleItemIds: [] as string[],
       productName: '',
       remaining: 0,
       inventorySkuOptions: [] as PickupInventorySkuOption[],
@@ -75,7 +80,20 @@ Page({
   },
 
   onLoad() {
-    // 空，等用户搜索
+    this.ensureManagerAccess()
+  },
+
+  onShow() {
+    this.ensureManagerAccess()
+  },
+
+  ensureManagerAccess(): boolean {
+    const manager = isManager()
+    this.setData({ isManager: manager })
+    if (manager) return true
+    requireManager()
+    wx.navigateBack()
+    return false
   },
 
   onInput(e: WechatMiniprogram.Input) {
@@ -83,6 +101,7 @@ Page({
   },
 
   async onSearch() {
+    if (!this.ensureManagerAccess()) return
     const keyword = (this.data.keyword || '').trim()
     if (!keyword) {
       wx.showToast({ title: '请输入手机号或姓名', icon: 'none' })
@@ -103,6 +122,7 @@ Page({
   },
 
   async onSelectCustomer(e: WechatMiniprogram.CustomEvent) {
+    if (!this.ensureManagerAccess()) return
     const idx = Number(e.currentTarget.dataset.idx)
     const customer = this.data.customers[idx]
     if (!customer) return
@@ -123,6 +143,7 @@ Page({
   },
 
   async onPickupTap(e: WechatMiniprogram.CustomEvent) {
+    if (!this.ensureManagerAccess()) return
     const idx = Number(e.currentTarget.dataset.idx)
     const item = this.data.items[idx]
     if (!item) return
@@ -130,6 +151,7 @@ Page({
       pickupDialog: {
         visible: true,
         saleItemId: item.saleItemId,
+        sourceSaleItemIds: item.sourceSaleItemIds || [item.saleItemId],
         productName: formatProductName(item.productName, item.specName),
         remaining: item.remaining,
         inventorySkuOptions: [],
@@ -183,6 +205,7 @@ Page({
   },
 
   async submitPickup() {
+    if (!this.ensureManagerAccess()) return
     const d = this.data.pickupDialog
     if (d.quantity <= 0 || d.quantity > d.remaining) {
       wx.showToast({ title: `数量必须在 1 到 ${d.remaining} 之间`, icon: 'none' })
@@ -202,6 +225,7 @@ Page({
       await callStaffApi('order.createPickup', {
         saleItemId: d.saleItemId,
         inventorySkuId: d.inventorySkuId,
+        ...(d.sourceSaleItemIds.length > 1 ? { saleItemIds: d.sourceSaleItemIds } : {}),
         pickupQuantity: d.quantity,
         remark: d.remark || undefined,
         idempotencyKey: `pickup-${d.saleItemId}-${Date.now()}`,
@@ -224,6 +248,7 @@ Page({
   },
 
   onNavToList() {
+    if (!this.ensureManagerAccess()) return
     wx.navigateTo({ url: '/packageMy/pickup/pickup-list' })
   },
 })

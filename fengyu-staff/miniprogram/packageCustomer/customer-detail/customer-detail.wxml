@@ -70,11 +70,12 @@
             <van-cell wx:if="{{customer.lastServiceDate}}" title="上次到店" value="{{customer.lastServiceDate}}" />
             <van-cell wx:if="{{customer.visitFrequency}}" title="到店频率" value="{{customer.visitFrequency}}" />
             <van-cell title="消费金额" value="¥{{customer.totalConsumption}}" />
-            <!-- Wave 3G — 储值卡余额（跨店统一） -->
-            <van-cell wx:if="{{cardBalanceLoaded}}" title="储值卡余额" value="¥{{cardBalance}}" />
+            <!-- 储值卡余额仅当前门店有效店长可见 -->
+            <van-cell wx:if="{{isManager && cardBalanceLoaded}}" title="储值卡余额" value="¥{{cardBalance}}" />
             <van-cell wx:if="{{customer.skinType}}" title="肤质" value="{{customer.skinType}}" />
             <van-cell wx:if="{{customer.focusAreas}}" title="改善重点" value="{{customer.focusAreas}}" />
             <van-field
+              wx:if="{{isManager}}"
               label="备注"
               type="textarea"
               placeholder="请输入备注内容"
@@ -83,7 +84,7 @@
               bind:change="onNotesChange"
               border="{{false}}"
             />
-            <view wx:if="{{notesDirty}}" class="notes-save-wrap">
+            <view wx:if="{{isManager && notesDirty}}" class="notes-save-wrap">
               <van-button size="small" type="primary" loading="{{notesSaving}}" bindtap="onSaveNotes">保存备注</van-button>
             </view>
           </van-cell-group>
@@ -190,6 +191,37 @@
             </view>
           </view>
           <view wx:if="{{selectedCount > 0}}" class="bottom-bar-spacer" />
+        </view>
+      </van-tab>
+
+      <van-tab title="家居产品">
+        <view class="tab-content">
+          <view class="tab-hint">展示顾客跨门店已购家居产品，提货请前往“我的 → 提货”</view>
+          <view wx:if="{{!homeProductsLoaded}}" class="loading-wrap">
+            <van-loading type="spinner" color="#C0322A" />
+          </view>
+          <van-empty wx:elif="{{homeProducts.length === 0}}" description="暂无家居产品" />
+          <view wx:else class="home-product-list">
+            <view class="home-product-card" wx:for="{{homeProducts}}" wx:key="saleItemId">
+              <view class="home-product-main">
+                <view class="home-product-head">
+                  <text class="home-product-name">{{item.productName}}</text>
+                  <text class="status-tag status-tag--{{item.statusClass}}">{{item.status}}</text>
+                </view>
+                <view class="home-product-counts">
+                  <text>购买 {{item.purchasedQuantity}}{{item.unit}}</text>
+                  <text>已提 {{item.pickedQuantity}}{{item.unit}}</text>
+                  <text wx:if="{{item.refundedQuantity > 0}}">已退 {{item.refundedQuantity}}{{item.unit}}</text>
+                  <text class="home-product-remaining">待提 {{item.remainingQuantity}}{{item.unit}}</text>
+                </view>
+                <view class="home-product-meta">
+                  <text>{{item.storeName || item.storeId}}</text>
+                  <text wx:if="{{item.purchasedAtFmt}}">{{item.purchasedAtFmt}}</text>
+                </view>
+                <text class="home-product-order">{{item.saleOrderId}}</text>
+              </view>
+            </view>
+          </view>
         </view>
       </van-tab>
 

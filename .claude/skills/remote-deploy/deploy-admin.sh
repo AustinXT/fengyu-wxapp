@@ -146,9 +146,10 @@ echo "目标环境: $ENV（admin DB→$EXPECT_PG_HOST:5433）"
 # 远程 ADMIN_RSA_PRIVATE_KEY 须与本公钥配对，首跑后用 admin 登录验证）。
 # 任一端都缺 RSA_PUB → fail-fast（否则前端 encryptPassword 抛「缺少公钥」，登录不可用）。
 extract_pub() {
-  local line
-  line=$(grep -m1 '^NEXT_PUBLIC_RSA_PUBLIC_KEY=' "$1" 2>/dev/null || true)
-  printf '%s' "${line#*=}"
+  local value
+  # grep 未命中时返回 1；在 set -e -o pipefail 下不能让它中断后续 fallback。
+  value=$(grep '^NEXT_PUBLIC_RSA_PUBLIC_KEY=' "$1" 2>/dev/null | head -1 | cut -d= -f2- || true)
+  printf '%s' "$value"
 }
 RSA_PUB=$(extract_pub "envs/$ENV.env")
 RSA_SRC="envs/$ENV.env"
@@ -162,22 +163,12 @@ if [[ -z "$RSA_PUB" ]]; then
 fi
 echo "  RSA 公钥来源: $RSA_SRC"
 
-# Analyst 地址是 public env，须和同环境 analyst 镜像构建时使用的地址一致。
-# 未配置时保留空值，生产顶栏会隐藏入口而不会误跳到另一环境。
-ANALYST_ORIGIN=$(grep -m1 '^ANALYST_PUBLIC_ORIGIN=' "envs/$ENV.env" 2>/dev/null | cut -d= -f2- | tr -d '\r"' || true)
-if [[ -z "$ANALYST_ORIGIN" ]]; then
-  echo "  ⚠️ envs/$ENV.env 未配置 ANALYST_PUBLIC_ORIGIN，生产顶栏将隐藏经营分析入口。"
-else
-  echo "  Analyst 地址来源: envs/$ENV.env"
-fi
-
 docker buildx build \
   --platform linux/amd64 \
   --load \
   --build-arg APP_VERSION="$APP_VERSION" \
   --build-arg APP_COMMIT="$APP_COMMIT" \
   --build-arg NEXT_PUBLIC_RSA_PUBLIC_KEY="$RSA_PUB" \
-  --build-arg NEXT_PUBLIC_ANALYST_ORIGIN="$ANALYST_ORIGIN" \
   -f docker/Dockerfile.admin -t fengyu-admin:latest .
 
 echo "=== 2/5 传输镜像到 $SSH_HOST ==="
@@ -194,8 +185,8 @@ ssh "$SSH_HOST" "cd '$REMOTE_DIR' && docker compose --env-file .env --env-file .
 echo "  ✓ 已同步 docker-compose.yml + $COMPOSE_OVERRIDE + .admin-runtime.env"
 
 echo "=== 4/5 远程重启服务（base + override）==="
-# cron 与私有入网资料目录都需由容器内 uid=1001 nextjs 读写；目录不存在时 Docker 会以 root 自建并越权。
-ssh "$SSH_HOST" "mkdir -p $REMOTE_DIR/logs/cron-worker $REMOTE_DIR/logs/export-worker $REMOTE_DIR/data/private-uploads && chown -R 1001:1001 $REMOTE_DIR/logs/cron-worker $REMOTE_DIR/logs/export-worker $REMOTE_DIR/data/private-uploads"
+# cron-worker 日志挂载卷（容器内 uid=1001 nextjs 才能写入；目录不存在 docker 会以 root 自建并越权）
+ssh "$SSH_HOST" "mkdir -p $REMOTE_DIR/logs/cron-worker $REMOTE_DIR/logs/export-worker && chown -R 1001:1001 $REMOTE_DIR/logs/cron-worker $REMOTE_DIR/logs/export-worker"
 ssh "$SSH_HOST" "cd '$REMOTE_DIR' && docker compose --env-file .env --env-file .admin-runtime.env -f docker-compose.yml -f $COMPOSE_OVERRIDE up -d admin cron-worker export-worker"
 
 echo "=== 5/5 健康检查 + DB 连接验证 ==="

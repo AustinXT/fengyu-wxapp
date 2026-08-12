@@ -116,7 +116,17 @@ function TreeNode({ node, children, allNodes, depth, selectedId, expandedIds, on
   )
 }
 
-export default function OrgPage({ orgNodes: allOrgNodes, canDelete }: { orgNodes: OrgNode[]; canDelete: boolean }) {
+export default function OrgPage({
+  orgNodes: allOrgNodes,
+  canCreate,
+  canUpdate,
+  canDelete,
+}: {
+  orgNodes: OrgNode[];
+  canCreate: boolean;
+  canUpdate: boolean;
+  canDelete: boolean;
+}) {
   const router = useRouter()
   const [showInactive, setShowInactive] = useState(false)
 
@@ -324,7 +334,7 @@ export default function OrgPage({ orgNodes: allOrgNodes, canDelete }: { orgNodes
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">组织架构</h1>
         {/* 新增根节点：parentId=null（无需先选中节点）；服务端 createOrgNode 已按 org:create 鉴权 */}
-        <Button size="sm" onClick={() => openCreateDialog(null)}>新增根节点</Button>
+        {canCreate && <Button size="sm" onClick={() => openCreateDialog(null)}>新增根节点</Button>}
       </div>
 
       <div className="flex gap-4" style={{ minHeight: "calc(100vh - 220px)" }}>
@@ -366,10 +376,12 @@ export default function OrgPage({ orgNodes: allOrgNodes, canDelete }: { orgNodes
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
                 <CardTitle className="text-base">节点详情</CardTitle>
                 <div className="flex gap-2">
-                  <Button variant="outline" size="sm" onClick={() => openEditDialog(selectedNode)}>
-                    编辑
-                  </Button>
-                  <Button size="sm" onClick={() => openCreateDialog(selectedNode.id)}>新增子节点</Button>
+                  {canUpdate && (
+                    <Button variant="outline" size="sm" onClick={() => openEditDialog(selectedNode)}>
+                      编辑
+                    </Button>
+                  )}
+                  {canCreate && <Button size="sm" onClick={() => openCreateDialog(selectedNode.id)}>新增子节点</Button>}
                   {canDelete && selectedNode.type !== '总部' && (
                     <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => setDeleteTarget(selectedNode)}>
                       删除

@@ -149,6 +149,7 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
       const res = await createPickupRecord({
         saleItemId: selectedItem.saleItemId,
         inventorySkuId,
+        ...(selectedItem.sourceSaleItemIds.length > 1 ? { saleItemIds: selectedItem.sourceSaleItemIds } : {}),
         pickupQuantity,
         storeId: pickupStoreId,
         clientUserId: customer.userId,

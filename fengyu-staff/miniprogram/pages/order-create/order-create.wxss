@@ -287,7 +287,7 @@
 .recent-section { margin-bottom: 16rpx; }
 .section-label { display: block; font-size: 24rpx; color: var(--color-text-hint); margin-bottom: 8rpx; }
 .customer-found { margin-top: 8rpx; }
-.customer-cross-store { color: var(--color-brand, #C0322A) !important; }
+.customer-cross-store { color: var(--color-brand, var(--color-primary)) !important; }
 
 .confirm-items {
   background: #F5F2EE;

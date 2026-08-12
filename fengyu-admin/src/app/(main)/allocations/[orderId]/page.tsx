@@ -5,12 +5,17 @@ import { getEmployees, getEmployeesOnBusinessTrip } from '@/actions/employees'
 import { getRates } from '@/actions/commission'
 import { getSkillTags } from '@/actions/skill-tags'
 import { mergeEmployeesById } from '@/lib/merge-employees'
+import { getSession } from '@/lib/auth'
+import { hasUiCapability } from '@/lib/permission-contract'
+import { requireUiPageCapability } from '@/lib/page-capability'
 import AllocationDetailPageClient from '../_components/allocation-detail-page'
 
 export const dynamic = 'force-dynamic'
 
 export default async function Page({ params }: { params: Promise<{ orderId: string }> }) {
   const { orderId } = await params
+  const session = await getSession()
+  requireUiPageCapability(session, 'allocation:list')
   const [order, allocations, scopedEmployees, tripEmployees, commissionRates, skillTags] = await Promise.all([
     getOrderById(orderId),
     getOrderAllocations(orderId),
@@ -33,6 +38,7 @@ export default async function Page({ params }: { params: Promise<{ orderId: stri
       employees={employees}
       commissionRates={commissionRates}
       skillTags={skillTags}
+      canSave={hasUiCapability(session.permissions.actions, 'allocation:save')}
     />
   )
 }

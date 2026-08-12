@@ -4487,29 +4487,152 @@ async function assertPickupInventorySkuMapping(client, productSkuId, inventorySk
 }
 
 /**
+ * 对同一销售行组拆出的家居明细执行一次提货。
+ *
+ * 库存仍走 V3 的“销售 SKU → 实际库存 SKU”映射与批次扣减链路；出库单按本次
+ * 提货汇总，提货记录与已提数量则逐个物理明细落库，保持退款级联可追溯。
+ */
+async function createGroupedPickup(ctx, saleItemIds, inventorySkuId, pickupQuantity, remark, idempotencyKey) {
+  const ids = [...new Set(saleItemIds.filter((id) => typeof id === 'string' && id))].sort()
+  if (!Number.isInteger(pickupQuantity) || pickupQuantity <= 0 || pickupQuantity > ids.length) {
+    throw new Error('INVALID_PARAMS: 合并提货数量或来源明细不合法')
+  }
+
+  let result
+  await pg.transaction(async (client) => {
+    if (idempotencyKey) {
+      const replay = await client.query(
+        `SELECT sale_item_id
+           FROM pickup_records
+          WHERE sale_item_id = ANY($1)
+            AND store_id = $2
+            AND idempotency_key = $3
+          ORDER BY sale_item_id`,
+        [ids, ctx.auth.effectiveStoreId, idempotencyKey],
+      )
+      if (replay.rows.length > 0) {
+        const pickedIds = replay.rows.map((row) => row.sale_item_id)
+        result = {
+          saleItemIds: pickedIds,
+          pickedUp: pickedIds.length,
+          total: ids.length,
+          remaining: ids.length - pickedIds.length,
+          inventorySkuId,
+          message: '提货成功（幂等）',
+        }
+        return
+      }
+    }
+
+    await assertWorkfineInventoryInitialized(client)
+    const locked = await client.query(
+      `SELECT si.sale_item_id, si.sale_item_group_id, si.sale_order_id, si.store_id, si.sku_id,
+              si.product_name, si.quantity, COALESCE(si.picked_up_quantity, 0) AS picked_up_quantity,
+              o.client_user_id, o.customer_name
+         FROM sale_items si
+         JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+        WHERE si.sale_item_id = ANY($1)
+          AND si.product_type = '家居产品'
+          AND si.item_direction = '购买'
+        ORDER BY si.sale_item_id
+        FOR UPDATE OF si`,
+      [ids],
+    )
+    if (locked.rows.length !== ids.length) throw new Error('CONFLICT: 部分家居产品已更新，请刷新后重试')
+
+    const rows = locked.rows
+    const first = rows[0]
+    if (!first || rows.some((row) => row.store_id !== ctx.auth.effectiveStoreId
+      || row.sale_order_id !== first.sale_order_id
+      || row.sku_id !== first.sku_id
+      || (row.sale_item_group_id || row.sale_item_id) !== (first.sale_item_group_id || first.sale_item_id)
+      || Number(row.quantity) !== 1
+      || Number(row.picked_up_quantity) !== 0)) {
+      throw new Error('CONFLICT: 家居产品状态已更新，请刷新后重试')
+    }
+    await assertNoPendingRefund(client, first.sale_order_id)
+    await assertPickupInventorySkuMapping(client, first.sku_id, inventorySkuId)
+
+    const selected = rows.slice(0, pickupQuantity)
+    const inventoryDocId = await createPickupInventoryDoc(
+      client,
+      ctx,
+      first,
+      inventorySkuId,
+      first.client_user_id,
+      first.customer_name,
+      selected.length,
+      remark,
+      idempotencyKey,
+    )
+
+    for (const item of selected) {
+      const updated = await client.query(
+        `UPDATE sale_items
+            SET picked_up_quantity = 1, updated_at = NOW()
+          WHERE sale_item_id = $1
+            AND COALESCE(picked_up_quantity, 0) = 0
+          RETURNING sale_item_id`,
+        [item.sale_item_id],
+      )
+      if (updated.rowCount !== 1) throw new Error('CONFLICT: 家居产品状态已更新，请刷新后重试')
+      await client.query(
+        `INSERT INTO pickup_records (
+           sale_item_id, inventory_sku_id, pickup_quantity, store_id, client_user_id,
+           confirmed_by, remark, idempotency_key
+         ) VALUES ($1, $2, 1, $3, $4, $5, $6, $7)`,
+        [item.sale_item_id, inventorySkuId, ctx.auth.effectiveStoreId, first.client_user_id,
+          ctx.auth.staffWfId, remark || null, idempotencyKey || null],
+      )
+    }
+
+    await logOperation(client, ctx, 'order.createPickup', 'sale_item_group', first.sale_item_group_id || first.sale_item_id, {
+      _v: 5,
+      saleItemIds: selected.map((item) => item.sale_item_id),
+      pickupQuantity: selected.length,
+      inventorySkuId,
+      inventoryDocId,
+    })
+    result = {
+      saleItemIds: selected.map((item) => item.sale_item_id),
+      pickedUp: selected.length,
+      total: ids.length,
+      remaining: ids.length - selected.length,
+      inventorySkuId,
+      message: '提货成功',
+    }
+  })
+  ctx.result = result
+}
+
+/**
  * 创建取货记录（家居产品提货）
  * payload: { saleItemId, inventorySkuId, pickupQuantity, remark? }
  */
 async function createPickup(ctx) {
-  await requireStaffBound()(ctx, async () => {})
+  await requireManager()(ctx, async () => {})
 
-  const { saleItemId, inventorySkuId, pickupQuantity, remark, idempotencyKey } = ctx.event.payload || {}
+  const { saleItemId, saleItemIds, inventorySkuId, pickupQuantity, remark, idempotencyKey } = ctx.event.payload || {}
   if (!saleItemId) throw new Error('INVALID_PARAMS: 缺少 saleItemId')
   if (!inventorySkuId) throw new Error('INVALID_PARAMS: 缺少 inventorySkuId')
   if (!pickupQuantity || pickupQuantity <= 0) throw new Error('INVALID_PARAMS: 取货数量必须大于0')
+  if (Array.isArray(saleItemIds) && saleItemIds.length > 1) {
+    await createGroupedPickup(ctx, saleItemIds, inventorySkuId, Number(pickupQuantity), remark, idempotencyKey)
+    return
+  }
 
   // 幂等前置：若前端传 idempotencyKey 且已存在对应行，直接返回当前状态（不再 UPDATE/INSERT）
   // 配合 DB 层 uq_pickup_idempotency 兜底 sub-ms 并发
   if (idempotencyKey) {
     const existRes = await pg.query(
-      `SELECT id FROM pickup_records WHERE sale_item_id = $1 AND idempotency_key = $2 LIMIT 1`,
-      [saleItemId, idempotencyKey]
+      `SELECT id FROM pickup_records WHERE sale_item_id = $1 AND idempotency_key = $2 AND store_id = $3 LIMIT 1`,
+      [saleItemId, idempotencyKey, ctx.auth.effectiveStoreId]
     )
     if (existRes.length > 0) {
       const curRes = await pg.query(
         `SELECT quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity
-         FROM sale_items WHERE sale_item_id = $1`,
-        [saleItemId]
+         FROM sale_items WHERE sale_item_id = $1 AND store_id = $2`,
+        [saleItemId, ctx.auth.effectiveStoreId]
       )
       const r = curRes[0]
       ctx.result = {
@@ -4524,7 +4647,10 @@ async function createPickup(ctx) {
   }
 
   // 冻结闭环（Bug I）：退款审批中禁止提货（家居退款 cascade 会回滚 picked_up，待审批期提货会冲突）
-  const pickupOrderRows = await pg.query(`SELECT sale_order_id FROM sale_items WHERE sale_item_id = $1`, [saleItemId])
+  const pickupOrderRows = await pg.query(
+    `SELECT sale_order_id FROM sale_items WHERE sale_item_id = $1 AND store_id = $2`,
+    [saleItemId, ctx.auth.effectiveStoreId],
+  )
   if (pickupOrderRows.length > 0) await assertNoPendingRefund(pg, pickupOrderRows[0].sale_order_id)
 
   let updated
@@ -4640,31 +4766,37 @@ async function availablePickupItems(ctx) {
   if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
 
   const rows = await pg.query(
-    `SELECT si.sale_item_id,
-            si.sale_order_id,
-            si.sku_id,
-            si.product_name,
+    `SELECT COALESCE(si.sale_item_group_id, si.sale_item_id) AS sale_item_group_id,
+            MIN(si.sale_item_id) AS sale_item_id,
+            ARRAY_AGG(si.sale_item_id ORDER BY si.sale_item_id) AS source_sale_item_ids,
+            MIN(si.sale_order_id) AS sale_order_id,
+            MIN(si.sku_id) AS sku_id,
+            MIN(si.product_name) AS product_name,
             NULL::text AS spec_name,
-            si.quantity,
-            COALESCE(si.picked_up_quantity, 0) AS picked_up_quantity,
-            si.unit_real_price,
-            o.store_id,
-            o.paid_at,
-            s.store_name
+            SUM(si.quantity)::int AS quantity,
+            SUM(COALESCE(si.picked_up_quantity, 0))::int AS picked_up_quantity,
+            MIN(si.unit_real_price) AS unit_real_price,
+            MIN(o.store_id) AS store_id,
+            MAX(o.paid_at) AS paid_at,
+            MIN(s.store_name) AS store_name
        FROM sale_items si
  INNER JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
   LEFT JOIN stores s ON s.store_id = o.store_id
       WHERE o.client_user_id = $1
+        AND o.store_id = $2
         AND o.status = '已支付'
         AND si.item_direction = '购买'
         AND si.product_type = '家居产品'
         AND si.quantity > COALESCE(si.picked_up_quantity, 0)
-   ORDER BY o.paid_at DESC, si.sale_item_id`,
-    [clientUserId],
+   GROUP BY COALESCE(si.sale_item_group_id, si.sale_item_id)
+   ORDER BY MAX(o.paid_at) DESC, MIN(si.sale_item_id)`,
+    [clientUserId, ctx.auth.effectiveStoreId],
   )
 
   ctx.result = rows.map((r) => ({
     saleItemId: r.sale_item_id,
+    saleItemGroupId: r.sale_item_group_id || null,
+    sourceSaleItemIds: r.source_sale_item_ids || [r.sale_item_id],
     saleOrderId: r.sale_order_id,
     skuId: r.sku_id,
     productName: r.product_name || null,
@@ -4769,20 +4901,15 @@ async function pickupRecordsList(ctx) {
   const params = []
   let idx = 1
 
-  const scopeIds = ctx.auth.scopeStoreIds || []
-  if (scopeIds.length === 0) {
-    ctx.result = { items: [], total: 0, page: 1, pageSize: limit }
-    return ctx.result
+  const effectiveStoreId = ctx.auth.effectiveStoreId
+  if (!effectiveStoreId) throw new Error('PERMISSION_DENIED: 未选择当前工作门店')
+  if (storeId && storeId !== effectiveStoreId) {
+    throw new Error('PERMISSION_DENIED: 不可查询其他门店的提货记录')
   }
-  conditions.push(`pr.store_id = ANY($${idx}::text[])`)
-  params.push(scopeIds)
+  conditions.push(`pr.store_id = $${idx}`)
+  params.push(effectiveStoreId)
   idx++
 
-  if (storeId) {
-    conditions.push(`pr.store_id = $${idx}`)
-    params.push(storeId)
-    idx++
-  }
   if (clientUserId) {
     conditions.push(`pr.client_user_id = $${idx}`)
     params.push(clientUserId)
@@ -5218,44 +5345,39 @@ async function createDeposit(ctx) {
 
   await assertNormalSkuMarketScopeForCurrentStore(rawItemDataList, ctx.auth)
 
-  // 寄存单内相同疗程卡按 SKU 合并为一条销售明细，累计张数、次数、标价与历史实收。
-  // 家居产品保持原输入行语义，不参与合并。
-  const itemDataList = []
-  const treatmentCardItemIndex = new Map()
-  for (const d of rawItemDataList) {
-    if (d.productType !== '疗程卡') {
-      itemDataList.push(d)
-      continue
-    }
-
-    const existingIndex = treatmentCardItemIndex.get(d.skuId)
-    if (existingIndex == null) {
-      treatmentCardItemIndex.set(d.skuId, itemDataList.length)
-      itemDataList.push(d)
-      continue
-    }
-
-    const existing = itemDataList[existingIndex]
-    const quantity = existing.quantity + d.quantity
-    const sessionCount = existing.sessionCount != null && d.sessionCount != null
-      ? existing.sessionCount + d.sessionCount
-      : null
-    const saleAmount = roundMoney(existing.saleAmount + d.saleAmount)
-    const received = roundMoney(existing.received + d.received)
-    const denom = sessionCount != null && sessionCount > 0 ? sessionCount : quantity
-    const unit = denom > 0 ? roundMoney(saleAmount / denom) : saleAmount
-
-    itemDataList[existingIndex] = {
-      ...existing,
-      quantity,
-      sessionCount,
-      remainingSessions: sessionCount,
-      saleAmount,
-      received,
-      unitPrice: unit,
-      unitRealPrice: unit,
-    }
-  }
+  // 寄存单的每张疗程卡和每件家居产品都必须成为独立销售明细，才能精确承接
+  // 历史核销、转换与分次提货。来自同一输入行的明细共享 sale_item_group_id。
+  const itemDataList = rawItemDataList.flatMap((d, sourceLineIndex) => {
+    const quantity = Math.max(1, Number(d.quantity) || 1)
+    let receivedAllocated = 0
+    let amountAllocated = 0
+    return Array.from({ length: quantity }, (_, unitIndex) => {
+      const isLastUnit = unitIndex === quantity - 1
+      const received = isLastUnit
+        ? roundMoney(d.received - receivedAllocated)
+        : roundMoney(d.received / quantity)
+      const saleAmount = isLastUnit
+        ? roundMoney(d.saleAmount - amountAllocated)
+        : roundMoney(d.saleAmount / quantity)
+      receivedAllocated = roundMoney(receivedAllocated + received)
+      amountAllocated = roundMoney(amountAllocated + saleAmount)
+      const sessionCount = d.sessionCount == null ? null : Number(d.sessionCount) / quantity
+      const unitPrice = sessionCount != null && sessionCount > 0
+        ? roundMoney(saleAmount / sessionCount)
+        : saleAmount
+      return {
+        ...d,
+        sourceLineIndex,
+        quantity: 1,
+        sessionCount,
+        remainingSessions: sessionCount,
+        saleAmount,
+        received,
+        unitPrice,
+        unitRealPrice: unitPrice,
+      }
+    })
+  })
 
   const now = new Date()
   let saleOrderId
@@ -5303,23 +5425,26 @@ async function createDeposit(ctx) {
     // INSERT sale_items —— received=0（由 recalc STEP1 据流水填）；session_count/remaining_sessions 正常写
     // 同时收集 received>0 的行，循环后写 '回款'(线下) 流水
     const receiptRows = []
+    const saleItemGroups = new Map()
     for (let i = 0; i < itemDataList.length; i++) {
       const saleItemId = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
       const d = itemDataList[i]
+      const saleItemGroupId = saleItemGroups.get(d.sourceLineIndex) || saleItemId
+      saleItemGroups.set(d.sourceLineIndex, saleItemGroupId)
       const sc = d.productType === '家居产品' ? null : d.sessionCount
       const rs = d.productType === '家居产品' ? null : d.remainingSessions
       if (d.received > 0) receiptRows.push({ saleItemId, received: d.received })
 
       await tx.query(
         `INSERT INTO sale_items (
-          sale_item_id, sale_order_id, store_id, item_direction, sku_id,
+          sale_item_id, sale_item_group_id, sale_order_id, store_id, item_direction, sku_id,
           product_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received,
           sales_category, service_fee, is_shengmei, is_experience
-        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, 0, $13, 0, $14, $15)`,
+        ) VALUES ($1, $2, $3, $4, '购买', $5, $6, $7, $8, $9, $10, $11, $12, $13, 0, $14, 0, $15, $16)`,
         [
-          saleItemId, saleOrderId, storeId, d.skuId,
+          saleItemId, saleItemGroupId, saleOrderId, storeId, d.skuId,
           d.productName, d.productType,
           sc, rs,
           d.unitPrice, d.quantity, d.unitRealPrice,

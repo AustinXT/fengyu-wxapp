@@ -1,303 +1,254 @@
 'use client'
 
-import { Fragment, useMemo, useState, useTransition } from 'react'
+import { useMemo, useState, useTransition } from 'react'
 import { toast } from 'sonner'
-import { useUnsavedChanges } from '@/lib/hooks/use-unsaved-changes'
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { ROLE_LABELS, type RoleType } from '@/lib/types'
-import { saveMatrix, resetMatrix, type PermissionMatrix } from '@/actions/permission-matrix'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Dialog, DialogClose, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Select } from '@/components/ui/select'
+import { useUnsavedChanges } from '@/lib/hooks/use-unsaved-changes'
+import { getPermissionActionLabel, getPermissionGroupLabel } from '@/lib/permission-presentation'
+import {
+  createRoleDefinition,
+  deleteRoleDefinition,
+  updateRoleDefinition,
+} from '@/actions/role-definitions'
+import type { RoleDefinition } from '@/lib/types'
 
 interface Props {
-  initialMatrix: PermissionMatrix
+  initialRoles: RoleDefinition[]
   allActions: string[]
+  canManageCapabilities: boolean
 }
 
-const ROLES: RoleType[] = [
-  'admin', 'manager', 'finance', 'hr', 'product', 'customer_mgr', 'staff',
-]
+const REQUIRED_SUPER_ACTIONS = ['system:config', 'permission:assign_admin', 'admin:reset_password']
 
-/** action key 的中文分组：用前缀切片 → 中文段名，便于扫读 */
-const PREFIX_GROUP_LABELS: Record<string, string> = {
-  dashboard: '工作台',
-  org: '组织架构',
-  store: '门店',
-  merchant: '商户管理',
-  employee: '员工',
-  product: '商品',
-  commission: '提成',
-  coupon: '优惠券',
-  customer: '顾客',
-  sale_order: '销售订单',
-  sale_item: '销售明细',
-  allocation: '营业额分配',
-  service: '服务单',
-  appointment: '预约',
-  permission: '权限',
-  operation_log: '操作日志',
-  point_transaction: '积分流水',
-  card_transaction: '充值卡流水',
-  pickup_record: '提货记录',
-  store_unbind: '门店解绑',
-  data_center: '数据中心',
-  message: '消息',
-  system: '系统',
-  admin: '管理员专属',
+function groupActions(actions: string[]) {
+  const result = new Map<string, string[]>()
+  for (const action of actions) {
+    const group = action.split(':')[0]
+    result.set(group, [...(result.get(group) ?? []), action])
+  }
+  return [...result.entries()]
 }
 
-function groupOf(action: string): string {
-  const prefix = action.split(':')[0]
-  return PREFIX_GROUP_LABELS[prefix] ?? prefix
-}
-
-/** action 动词后缀 → 中文操作名 */
-const VERB_LABELS: Record<string, string> = {
-  list: '查看',
-  view: '查看',
-  create: '新增',
-  update: '编辑',
-  delete: '删除',
-  save: '保存',
-  send: '发送',
-  approve: '通过',
-  reject: '驳回',
-  assign: '分配',
-  revoke: '撤销',
-  confirm: '确认',
-  checkin: '到店核销',
-  pull: '拉取',
-  config: '配置',
-  dashboard: '看板',
-  deposit_approve: '审批寄存单',
-  record_payment: '记录收款',
-  refund_create: '发起退款',
-  refund_approve: '审批退款',
-  assign_admin: '分配管理员',
-  reset_password: '重置密码',
-  update_phone: '改手机号',
-  update_amount: '改金额',
-  lakala_config: '收款配置',
-}
-
-/** 权限键 → 中文译名（资源组·操作），如 sale_order:refund_create → 销售订单·发起退款。底层英文键不变。 */
-function actionLabel(action: string): string {
-  const [prefix, verb] = action.split(':')
-  const group = PREFIX_GROUP_LABELS[prefix] ?? prefix
-  return `${group}·${VERB_LABELS[verb] ?? verb}`
-}
-
-function actionKey(a: string, role: RoleType): string {
-  return `${role}::${a}`
-}
-
-export default function PermissionMatrixPage({ initialMatrix, allActions }: Props) {
-  const [matrix, setMatrix] = useState<PermissionMatrix>(initialMatrix)
+export default function PermissionMatrixPage({ initialRoles, allActions, canManageCapabilities }: Props) {
+  const [roles, setRoles] = useState(initialRoles)
+  const [selectedKey, setSelectedKey] = useState(initialRoles[0]?.roleKey ?? '')
+  const selected = roles.find((role) => role.roleKey === selectedKey) ?? null
+  const [draft, setDraft] = useState<RoleDefinition | null>(selected)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [newName, setNewName] = useState('')
+  const [newDescription, setNewDescription] = useState('')
+  const [copyFrom, setCopyFrom] = useState('')
   const [pending, startTransition] = useTransition()
-
-  const initialJson = useMemo(() => JSON.stringify(initialMatrix), [initialMatrix])
-  const currentJson = useMemo(() => JSON.stringify(matrix), [matrix])
-  const dirty = initialJson !== currentJson
+  const groupedActions = useMemo(() => groupActions(allActions), [allActions])
+  const dirty = !!selected && !!draft && JSON.stringify(selected) !== JSON.stringify(draft)
   useUnsavedChanges(dirty)
 
-  /** 按 action 前缀分组渲染（提升可读性，51 行铺平太密集） */
-  const groupedActions = useMemo(() => {
-    const groups = new Map<string, string[]>()
-    for (const a of allActions) {
-      const g = groupOf(a)
-      if (!groups.has(g)) groups.set(g, [])
-      groups.get(g)!.push(a)
+  function selectRole(role: RoleDefinition) {
+    if (dirty && !window.confirm('当前角色有未保存修改，确定切换吗？')) return
+    setSelectedKey(role.roleKey)
+    setDraft(role)
+  }
+
+  function toggleAction(action: string) {
+    if (!draft) return
+    setDraft({
+      ...draft,
+      actions: draft.actions.includes(action)
+        ? draft.actions.filter((item) => item !== action)
+        : [...draft.actions, action].sort(),
+    })
+  }
+
+  function setCapability(key: 'canAccessAdmin' | 'isSuperAdmin' | 'isStoreManager', value: boolean) {
+    if (!draft || !canManageCapabilities) return
+    const next = { ...draft, [key]: value }
+    if (key === 'isSuperAdmin' && value) {
+      next.canAccessAdmin = true
+      next.actions = [...new Set([...next.actions, ...REQUIRED_SUPER_ACTIONS])].sort()
     }
-    return Array.from(groups.entries())
-  }, [allActions])
-
-  function toggle(role: RoleType, action: string) {
-    setMatrix((prev) => {
-      const has = prev[role]?.includes(action) ?? false
-      const next = has
-        ? prev[role].filter((a) => a !== action)
-        : [...(prev[role] ?? []), action].sort()
-      return { ...prev, [role]: next }
-    })
+    setDraft(next)
   }
 
-  function setAllForRole(role: RoleType, on: boolean) {
-    setMatrix((prev) => ({
-      ...prev,
-      [role]: on ? [...allActions].sort() : [],
-    }))
-  }
-
-  function setAllForAction(action: string, on: boolean) {
-    setMatrix((prev) => {
-      const next = { ...prev }
-      for (const role of ROLES) {
-        const has = next[role]?.includes(action) ?? false
-        if (on && !has) next[role] = [...(next[role] ?? []), action].sort()
-        else if (!on && has) next[role] = next[role].filter((a) => a !== action)
-      }
-      return next
-    })
-  }
-
-  function handleSave() {
+  function save() {
+    if (!draft) return
     startTransition(async () => {
       try {
-        const res = await saveMatrix(matrix)
-        if (res.success) {
-          toast.success(res.message)
-          // 把 initial 同步到 current 以重置 dirty——避免再次提示离开
-          window.location.reload()
-        } else {
-          toast.error(res.message)
+        const result = await updateRoleDefinition(draft.roleKey, {
+          name: draft.name,
+          description: draft.description,
+          actions: draft.actions,
+          canAccessAdmin: draft.canAccessAdmin,
+          isSuperAdmin: draft.isSuperAdmin,
+          isStoreManager: draft.isStoreManager,
+          expectedUpdatedAt: draft.updatedAt,
+        })
+        if (!result.success) {
+          toast.error(result.message)
+          return
         }
-      } catch (e) {
-        toast.error(e instanceof Error ? e.message : '保存失败')
+        toast.success(result.message)
+        window.location.reload()
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : '保存失败')
       }
     })
   }
 
-  function handleReset() {
-    if (!window.confirm('确定重置为代码默认矩阵？\n所有自定义改动将丢失，重置后立即对全员生效。')) return
+  function create() {
     startTransition(async () => {
       try {
-        const res = await resetMatrix()
-        if (res.success) {
-          toast.success(res.message)
-          window.location.reload()
-        } else {
-          toast.error(res.message)
+        const result = await createRoleDefinition({
+          name: newName,
+          description: newDescription,
+          copyFromRoleKey: copyFrom || null,
+          canAccessAdmin: true,
+        })
+        if (!result.success) {
+          toast.error(result.message)
+          return
         }
-      } catch (e) {
-        toast.error(e instanceof Error ? e.message : '重置失败')
+        toast.success(result.message)
+        setCreateOpen(false)
+        window.location.reload()
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : '创建失败')
+      }
+    })
+  }
+
+  function remove() {
+    if (!selected || !canManageCapabilities) return
+    if (!window.confirm(`确定删除角色“${selected.name}”吗？该操作不可撤销。`)) return
+    startTransition(async () => {
+      try {
+        const result = await deleteRoleDefinition(selected.roleKey)
+        if (!result.success) {
+          toast.error(result.message)
+          return
+        }
+        toast.success(result.message)
+        setRoles((current) => current.filter((role) => role.roleKey !== selected.roleKey))
+        window.location.reload()
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : '删除失败')
       }
     })
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-[var(--foreground)]">权限矩阵</h1>
-          <p className="text-xs text-[#999999] mt-1">
-            勾选某个角色拥有的权限项。保存后 30 秒内全员生效（新登录立即生效）。
-          </p>
+          <h1 className="text-2xl font-bold">角色与权限</h1>
+          <p className="mt-1 text-sm text-[#999999]">角色名称、权限和高级能力保存后 30 秒内生效。</p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" onClick={handleReset} disabled={pending}>
-            重置默认
-          </Button>
-          <Button onClick={handleSave} loading={pending} disabled={!dirty}>
-            保存
-          </Button>
-        </div>
+        <Button onClick={() => setCreateOpen(true)}>新增角色</Button>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center justify-between">
-            <span>角色 × 权限项 真值表</span>
-            <span className="text-xs font-normal text-[#999999]">
-              共 {allActions.length} 个权限项 × {ROLES.length} 个角色
-            </span>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          <div className="overflow-auto">
-            <table className="w-full border-collapse text-sm">
-              <thead className="sticky top-0 z-10 bg-[var(--background)]">
-                <tr className="border-b border-[var(--border)]">
-                  <th className="sticky left-0 z-20 bg-[var(--background)] px-3 py-2 text-left text-xs font-medium text-[#999999] min-w-[260px]">
-                    权限项
-                  </th>
-                  {ROLES.map((role) => {
-                    const total = matrix[role]?.length ?? 0
-                    const allOn = total === allActions.length
-                    return (
-                      <th key={role} className="px-2 py-2 text-center font-medium min-w-[88px]">
-                        <div className="flex flex-col items-center gap-0.5">
-                          <span className="text-xs text-[var(--foreground)]">{ROLE_LABELS[role]}</span>
-                          <span className="text-[10px] text-[#999999]">{role}</span>
-                          <button
-                            type="button"
-                            className="text-[10px] text-[var(--primary)] hover:underline"
-                            onClick={() => setAllForRole(role, !allOn)}
-                          >
-                            {allOn ? '全清' : `全选(${total})`}
-                          </button>
-                        </div>
-                      </th>
-                    )
-                  })}
-                </tr>
-              </thead>
-              <tbody>
-                {groupedActions.map(([group, actions]) => (
-                  <Fragment key={`grp-${group}`}>
-                    <tr className="bg-[var(--muted)]/30">
-                      <td className="sticky left-0 z-10 bg-[var(--muted)]/30 px-3 py-1.5 text-xs font-semibold text-[#666666]" colSpan={ROLES.length + 1}>
-                        {group}
-                        <span className="ml-2 text-[10px] text-[#999999]">({actions.length})</span>
-                      </td>
-                    </tr>
-                    {actions.map((action) => {
-                      const rowCount = ROLES.reduce(
-                        (n, role) => n + (matrix[role]?.includes(action) ? 1 : 0),
-                        0,
-                      )
-                      const allOn = rowCount === ROLES.length
-                      return (
-                        <tr key={action} className="border-b border-[var(--border)] hover:bg-[var(--accent)]/20">
-                          <td className="sticky left-0 z-10 bg-[var(--background)] px-3 py-2 text-xs text-[var(--foreground)]">
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="flex flex-col leading-tight">
-                                <span>{actionLabel(action)}</span>
-                                <span className="font-mono text-[10px] text-[#999999]">{action}</span>
-                              </span>
-                              <button
-                                type="button"
-                                className="text-[10px] text-[var(--primary)] hover:underline shrink-0"
-                                onClick={() => setAllForAction(action, !allOn)}
-                              >
-                                {allOn ? '全清' : `全选(${rowCount})`}
-                              </button>
-                            </div>
-                          </td>
-                          {ROLES.map((role) => {
-                            const checked = matrix[role]?.includes(action) ?? false
-                            return (
-                              <td key={actionKey(action, role)} className="px-2 py-2 text-center">
-                                <input
-                                  type="checkbox"
-                                  className="h-4 w-4 cursor-pointer accent-[var(--primary)]"
-                                  checked={checked}
-                                  onChange={() => toggle(role, action)}
-                                  aria-label={`${ROLE_LABELS[role]} - ${actionLabel(action)}`}
-                                />
-                              </td>
-                            )
-                          })}
-                        </tr>
-                      )
-                    })}
-                  </Fragment>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
+      <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+        <Card>
+          <CardHeader><CardTitle className="text-base">角色列表</CardTitle></CardHeader>
+          <CardContent className="space-y-1 p-3 pt-0">
+            {roles.map((role) => (
+              <button
+                key={role.roleKey}
+                type="button"
+                onClick={() => selectRole(role)}
+                className={`w-full rounded-md px-3 py-2 text-left text-sm ${selectedKey === role.roleKey ? 'bg-[#FFF0EE] text-[#C0322A]' : 'hover:bg-gray-50'}`}
+              >
+                <span className="flex items-center justify-between gap-2">
+                  <span className="truncate font-medium">{role.name}</span>
+                  <span className="text-xs text-[#999999]">{role.assignmentCount} 人</span>
+                </span>
+                <span className="mt-1 block truncate text-xs text-[#999999]">
+                  内部标识：<code>{role.roleKey}</code>
+                </span>
+              </button>
+            ))}
+          </CardContent>
+        </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>使用说明</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2 text-xs text-[#999999]">
-          <p>· 矩阵保存到 <code className="px-1 bg-[var(--muted)] rounded">system_configs.permission_matrix</code>（DB 单源），30 秒进程缓存。</p>
-          <p>· admin 角色必须保留 <code className="px-1 bg-[var(--muted)] rounded">system:config</code> / <code className="px-1 bg-[var(--muted)] rounded">permission:assign_admin</code> / <code className="px-1 bg-[var(--muted)] rounded">admin:reset_password</code>，否则系统会拒绝保存（防自锁）。</p>
-          <p>· 已登录用户的权限来自 JWT session 缓存：保存矩阵后让对方<strong className="text-[var(--foreground)]">退出重新登录</strong>立即生效；不登出最长 24 小时（JWT TTL）后随 cookie 过期自然重算。</p>
-          <p>· "重置默认"会 DELETE DB 行 → 回退到代码常量 DEFAULT_PERMISSION_MATRIX。</p>
-        </CardContent>
-      </Card>
+        {draft ? (
+          <div className="space-y-4">
+            <Card>
+              <CardHeader><CardTitle>基本信息</CardTitle></CardHeader>
+              <CardContent className="grid gap-4 md:grid-cols-2">
+                <label className="text-sm">角色名称<Input className="mt-1" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
+                <label className="text-sm">内部标识<Input className="mt-1" value={draft.roleKey} disabled /></label>
+                <label className="text-sm md:col-span-2">角色说明<textarea className="mt-1 min-h-20 w-full rounded-md border border-gray-200 p-2" value={draft.description ?? ''} onChange={(event) => setDraft({ ...draft, description: event.target.value })} /></label>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader><CardTitle>高级能力</CardTitle></CardHeader>
+              <CardContent className="grid gap-3 md:grid-cols-3">
+                {([
+                  ['canAccessAdmin', '允许登录管理后台'],
+                  ['isSuperAdmin', '超级管理员能力'],
+                  ['isStoreManager', '员工端店长能力'],
+                ] as const).map(([key, label]) => (
+                  <label key={key} className="flex items-center gap-2 rounded-md border p-3 text-sm">
+                    <input type="checkbox" checked={draft[key]} disabled={!canManageCapabilities || (key === 'canAccessAdmin' && draft.isSuperAdmin)} onChange={(event) => setCapability(key, event.target.checked)} />
+                    {label}
+                  </label>
+                ))}
+                {!canManageCapabilities && <p className="md:col-span-3 text-xs text-[#999999]">仅超级管理员可修改高级能力。</p>}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader><CardTitle>权限项（{draft.actions.length}/{allActions.length}）</CardTitle></CardHeader>
+              <CardContent className="space-y-5">
+                {groupedActions.map(([group, actions]) => (
+                  <div key={group}>
+                    <h3 className="mb-2 flex items-center gap-2 text-sm font-medium">
+                      {getPermissionGroupLabel(group)}
+                      <code className="text-xs font-normal text-[#999999]">{group}</code>
+                    </h3>
+                    <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                      {actions.map((action) => (
+                        <label key={action} className="flex items-center gap-2 text-sm">
+                          <input type="checkbox" checked={draft.actions.includes(action)} onChange={() => toggleAction(action)} />
+                          <span>
+                            {getPermissionActionLabel(action)}
+                            <code className="ml-1 text-xs text-[#999999]">{action}</code>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+
+            <div className="flex justify-between">
+              {canManageCapabilities && <Button variant="destructive" onClick={remove} disabled={pending}>删除角色</Button>}
+              <div className="ml-auto flex gap-2">
+                <Button variant="outline" onClick={() => setDraft(selected)} disabled={!dirty || pending}>撤销修改</Button>
+                <Button onClick={save} loading={pending} disabled={!dirty}>保存角色</Button>
+              </div>
+            </div>
+          </div>
+        ) : <Card><CardContent className="py-20 text-center text-[#999999]">暂无角色</CardContent></Card>}
+      </div>
+
+      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+        <DialogClose onOpenChange={setCreateOpen} />
+        <DialogHeader><DialogTitle>新增角色</DialogTitle></DialogHeader>
+        <div className="mt-4 space-y-4">
+          <label className="block text-sm">角色名称<Input className="mt-1" value={newName} onChange={(event) => setNewName(event.target.value)} /></label>
+          <label className="block text-sm">角色说明<textarea className="mt-1 min-h-20 w-full rounded-md border border-gray-200 p-2" value={newDescription} onChange={(event) => setNewDescription(event.target.value)} /></label>
+          <label className="block text-sm">复制权限（可选）<Select className="mt-1" value={copyFrom} onChange={(event) => setCopyFrom(event.target.value)}><option value="">空权限</option>{roles.map((role) => <option key={role.roleKey} value={role.roleKey}>{role.name}</option>)}</Select></label>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setCreateOpen(false)}>取消</Button>
+          <Button onClick={create} loading={pending} disabled={!newName.trim()}>创建</Button>
+        </DialogFooter>
+      </Dialog>
     </div>
   )
 }

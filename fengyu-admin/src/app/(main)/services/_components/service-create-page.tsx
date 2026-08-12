@@ -62,7 +62,9 @@ function groupAvailableSaleItems(items: AvailableSaleItem[]): GroupedAvailableSa
   return groupTreatmentCards(items, {
     getId: (item) => item.saleItemId,
     getQuantity: (item) => item.quantity,
-    getIdentity: (item) => ({
+    getIdentity: (item) => item.saleItemGroupId
+      ? { saleItemGroupId: item.saleItemGroupId }
+      : ({
       saleOrderId: item.saleOrderId,
       saleOrderDatetime: item.saleOrderDatetime,
       paidAt: item.paidAt,

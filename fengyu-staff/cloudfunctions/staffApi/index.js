@@ -43,6 +43,7 @@ const routes = {
   'customer.calendar':    () => require('./routes/customer').calendar,
   'customer.detail':      () => require('./routes/customer').detail,
   'customer.paidOrders':  () => require('./routes/customer').paidOrders,
+  'customer.homeProducts': () => require('./routes/customer').homeProducts,
   'customer.orderHistory': () => require('./routes/customer').orderHistory,
   'customer.serviceHistory': () => require('./routes/customer').serviceHistory,
   'customer.stats':       () => require('./routes/customer').stats,
@@ -91,11 +92,6 @@ const routes = {
   'inventory.storeOptions': () => require('./routes/inventory').storeOptions,
   'inventory.docList':    () => require('./routes/inventory').docList,
   'inventory.docDetail':  () => require('./routes/inventory').docDetail,
-  'inventory.createDoc':  () => require('./routes/inventory').createDoc,
-  'inventory.confirmReceive': () => require('./routes/inventory').confirmReceive,
-  'inventory.approveDoc': () => require('./routes/inventory').approveDoc,
-  'inventory.rejectDoc':  () => require('./routes/inventory').rejectDoc,
-  'inventory.uploadReceipt': () => require('./routes/inventory').uploadReceipt,
 
   // 营业额分配（按回款逐笔分配，当前口径）
   'allocation.pendingPayments':         () => require('./routes/allocation').pendingPayments,
@@ -162,6 +158,23 @@ const routes = {
 }
 
 /**
+ * 管理层模式只用于监管视图；任何会修改门店业务数据的 action 都必须回到门店模式。
+ * 单点保护避免新页面只隐藏按钮、却仍能通过抓包调用写接口。
+ */
+const STORE_MUTATION_ACTIONS = new Set([
+  'store.approveUnbind', 'store.rejectUnbind',
+  'customer.updateNotes', 'customer.assign',
+  'order.create', 'order.qrcode', 'order.confirmOffline', 'order.close', 'order.resetFailed',
+  'order.createRefund', 'order.approveRefund', 'order.rejectRefund',
+  'order.createRepayment', 'order.createConversion', 'order.createPickup', 'order.createDeposit',
+  'allocation.savePayment', 'allocation.deletePaymentAllocation',
+  'serviceCommission.save',
+  'appointment.confirm', 'appointment.checkin',
+  'card.recharge', 'card.inflow', 'card.createRefund', 'card.approveRefund', 'card.rejectRefund',
+  'service.create', 'service.start', 'service.complete', 'service.confirm', 'service.cancel',
+])
+
+/**
  * 云函数入口函数
  */
 exports.main = async (event, context) => {
@@ -191,6 +204,9 @@ exports.main = async (event, context) => {
   try {
     // 执行中间件链 + 业务处理
     await auth(ctx, async () => {
+      if (ctx.auth.loginLevel === 'management' && STORE_MUTATION_ACTIONS.has(action)) {
+        throw new Error('PERMISSION_DENIED: 管理层模式仅支持只读操作')
+      }
       await handler(ctx)
     })
 
@@ -204,3 +220,5 @@ exports.main = async (event, context) => {
     return buildErrorResponse(error)
   }
 }
+
+exports._STORE_MUTATION_ACTIONS = STORE_MUTATION_ACTIONS

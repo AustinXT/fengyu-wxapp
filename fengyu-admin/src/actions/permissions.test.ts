@@ -4,12 +4,20 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('@/db', () => ({
   db: {
     select: vi.fn(),
+    execute: vi.fn().mockResolvedValue([{}]),
     insert: vi.fn(),
     delete: vi.fn(),
   },
 }))
 
 vi.mock('@db/permission', () => ({
+  permissionRoleDefinitions: {
+    roleKey: 'role_key',
+    name: 'role_name',
+    canAccessAdmin: 'can_access_admin',
+    isSuperAdmin: 'is_super_admin',
+    isStoreManager: 'is_store_manager',
+  },
   permissionRoles: {
     id: 'id',
     employeeId: 'employee_id',
@@ -40,6 +48,9 @@ vi.mock('@/lib/permissions', () => ({
   requireAdmin: vi.fn(),
   requireAnyPermission: vi.fn(),
   hasPermission: vi.fn(() => true),
+  isAdminScope: vi.fn((session: any) => session.roles.some((role: any) => (
+    role.isSuperAdmin ?? role.role === 'admin'
+  ))),
 }))
 
 vi.mock('@/lib/operation-log', () => ({
@@ -90,7 +101,8 @@ function setupDbSelect(returnValue: any[]) {
   const where = vi.fn().mockReturnValue({ orderBy })
   const leftJoin2 = vi.fn().mockReturnValue({ where })
   const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
-  const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
+  const innerJoin = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
+  const from = vi.fn().mockReturnValue({ innerJoin })
   ;(db.select as any).mockReturnValue({ from })
   return { where }
 }
@@ -173,7 +185,8 @@ describe('getRoles — scope filtering (AC-05)', () => {
     const where = vi.fn().mockReturnValue({ orderBy })
     const leftJoin2 = vi.fn().mockReturnValue({ where })
     const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
-    const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
+    const innerJoin = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
+    const from = vi.fn().mockReturnValue({ innerJoin })
     ;(db.select as any).mockReturnValue({ from })
 
     await getRoles()
@@ -407,15 +420,21 @@ describe('assignRole — AC-09 & scope constraint', () => {
     },
   )
 
-  it('staff 分配到 市场 型 scope → 抛 INVALID_PARAMS (staff 仅允许 门店)', async () => {
+  it('普通动态角色可分配到市场 scope', async () => {
     ;(getSession as any).mockResolvedValue(adminSession)
     ;(hasRole as any).mockReturnValue(true)
-    ;(db.select as any).mockImplementation(() => mockSelectOnce({ type: '市场' })())
+    let callCount = 0
+    ;(db.select as any).mockImplementation(() => {
+      callCount++
+      if (callCount === 1) return mockSelectOnce({ type: '市场' })()
+      return mockSelectOnce(null)()
+    })
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
 
-    await expect(
-      assignRole({ employeeId: 'EMP-Z', role: 'staff', scopeId: 'market-1' })
-    ).rejects.toThrow(/INVALID_PARAMS: 角色 staff 不能绑定到 市场 型 scope/)
-    expect(db.insert).not.toHaveBeenCalled()
+    const result = await assignRole({ employeeId: 'EMP-Z', role: 'staff', scopeId: 'market-1' })
+    expect(result.success).toBe(true)
+    expect(values).toHaveBeenCalledOnce()
   })
 
   it('manager 分配到 总部 型 scope → 成功 (manager 三 type 全允许)', async () => {

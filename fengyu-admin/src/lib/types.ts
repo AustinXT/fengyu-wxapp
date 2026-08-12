@@ -224,7 +224,8 @@ export type AllocationStatus = '待分配' | '已分配'
 export type ItemDirection = '购买' | '转出' | '转入' | '退出'
 export type CouponType = '现金券' | '品项券' | '折扣券'
 export type CouponStatus = '未使用' | '已使用' | '已过期'
-export type RoleType = 'admin' | 'manager' | 'finance' | 'hr' | 'product' | 'customer_mgr' | 'staff'
+/** 角色稳定标识。系统角色沿用旧 key，自定义角色由服务端生成。 */
+export type RoleType = string
 
 /** 角色中文名（全局唯一权威定义，所有展示/错误提示均引用此常量） */
 export const ROLE_LABELS: Record<RoleType, string> = {
@@ -235,6 +236,19 @@ export const ROLE_LABELS: Record<RoleType, string> = {
   product: '商品管理员',
   customer_mgr: '顾客管理员',
   staff: '员工',
+}
+
+export interface RoleDefinition {
+  roleKey: RoleType
+  name: string
+  description: string | null
+  actions: string[]
+  canAccessAdmin: boolean
+  isSuperAdmin: boolean
+  isStoreManager: boolean
+  assignmentCount: number
+  createdAt: string
+  updatedAt: string
 }
 
 export interface ProductCategory {
@@ -417,6 +431,8 @@ export interface SaleOrder {
 
 export interface SaleItem {
   saleItemId: string
+  /** 同一寄存单原始购买行拆出的逐张/逐件明细共享该标识，仅供展示聚合。 */
+  saleItemGroupId?: string | null
   saleOrderId: string
   itemDirection: ItemDirection
   refSaleItemId: string | null
@@ -536,6 +552,10 @@ export interface PermissionRole {
   // joined
   employeeName?: string
   scopeName?: string
+  roleName?: string
+  canAccessAdmin?: boolean
+  isSuperAdmin?: boolean
+  isStoreManager?: boolean
 }
 
 export interface CommissionRate {
@@ -661,6 +681,10 @@ export interface AuthSession {
   phone: string
   roles: Array<{
     role: RoleType
+    roleName?: string
+    canAccessAdmin?: boolean
+    isSuperAdmin?: boolean
+    isStoreManager?: boolean
     scopeId: string
     scopeType: '总部' | '市场' | '门店'
   }>

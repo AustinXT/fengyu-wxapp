@@ -59,6 +59,9 @@ export default function AllocationsPageClient({
   saleTotal = 0,
   serviceOrders = [],
   serviceTotal = 0,
+  canSave,
+  canViewOrders,
+  canViewServices,
 }: {
   tab: 'sale' | 'service'
   filterOptions: MarketStoreFilterOptions
@@ -66,6 +69,9 @@ export default function AllocationsPageClient({
   saleTotal?: number
   serviceOrders?: ServiceOrder[]
   serviceTotal?: number
+  canSave: boolean
+  canViewOrders: boolean
+  canViewServices: boolean
 }) {
   const { get, set, setMany } = useUrlFilters()
   const currentPage = Math.max(1, Number(get("page", "1")) || 1)
@@ -186,7 +192,7 @@ export default function AllocationsPageClient({
           aria-busy={isPending}
         >
           <TabsContent value="sale">
-            <SaleAllocationTable payments={payments} />
+            <SaleAllocationTable payments={payments} canSave={canSave} canViewOrders={canViewOrders} />
             <div className="mt-4">
               <Pagination
                 total={saleTotal}
@@ -200,7 +206,7 @@ export default function AllocationsPageClient({
           </TabsContent>
 
           <TabsContent value="service">
-            <ServiceCommissionTable serviceOrders={serviceOrders} />
+            <ServiceCommissionTable serviceOrders={serviceOrders} canSave={canSave} canViewServices={canViewServices} />
             <div className="mt-4">
               <Pagination
                 total={serviceTotal}
@@ -220,7 +226,15 @@ export default function AllocationsPageClient({
 
 // 销售提成「回款维度」：分配单元从订单下沉到每笔回款（sale_payment_id）。
 // 列：回款(类型+金额) / 顾客 / 门店 / 订单号 / 分配状态 / 到账时间 / 操作。
-function SaleAllocationTable({ payments }: { payments: PaymentAllocationRow[] }) {
+function SaleAllocationTable({
+  payments,
+  canSave,
+  canViewOrders,
+}: {
+  payments: PaymentAllocationRow[]
+  canSave: boolean
+  canViewOrders: boolean
+}) {
   return (
     <Card>
       <CardContent className="p-0">
@@ -253,9 +267,11 @@ function SaleAllocationTable({ payments }: { payments: PaymentAllocationRow[] })
                     <td className="px-4 py-3">{p.customerName || "—"}</td>
                     <td className="px-4 py-3">{p.storeName || "—"}</td>
                     <td className="px-4 py-3">
-                      <Link href={`/orders/${p.saleOrderId}`} className="text-[var(--primary)] hover:underline">
-                        {p.saleOrderId}
-                      </Link>
+                      {canViewOrders ? (
+                        <Link href={`/orders/${p.saleOrderId}`} className="text-[var(--primary)] hover:underline">
+                          {p.saleOrderId}
+                        </Link>
+                      ) : p.saleOrderId}
                     </td>
                     <td className="px-4 py-3">
                       <Badge variant="outline" className={statusInfo.className}>
@@ -265,11 +281,13 @@ function SaleAllocationTable({ payments }: { payments: PaymentAllocationRow[] })
                     <td className="px-4 py-3 text-[#999999]">{p.paidAt ? formatTime(p.paidAt) : "-"}</td>
                     <td className="px-4 py-3">
                       {/* 转换单现已按回款逐笔产 receipt，与销售单统一走按回款分配页 */}
-                      <Link href={`/allocations/payments/${p.salePaymentId}`}>
-                        <Button size="sm" variant="outline">
-                          {p.allocationStatus === "已分配" ? "查看分配" : "分配"}
-                        </Button>
-                      </Link>
+                      {canSave && (
+                        <Link href={`/allocations/payments/${p.salePaymentId}`}>
+                          <Button size="sm" variant="outline">
+                            {p.allocationStatus === "已分配" ? "查看分配" : "分配"}
+                          </Button>
+                        </Link>
+                      )}
                     </td>
                   </tr>
                 )
@@ -289,7 +307,15 @@ function SaleAllocationTable({ payments }: { payments: PaymentAllocationRow[] })
   )
 }
 
-function ServiceCommissionTable({ serviceOrders }: { serviceOrders: ServiceOrder[] }) {
+function ServiceCommissionTable({
+  serviceOrders,
+  canSave,
+  canViewServices,
+}: {
+  serviceOrders: ServiceOrder[]
+  canSave: boolean
+  canViewServices: boolean
+}) {
   return (
     <Card>
       <CardContent className="p-0">
@@ -312,9 +338,11 @@ function ServiceCommissionTable({ serviceOrders }: { serviceOrders: ServiceOrder
                 return (
                   <tr key={so.serviceOrderId} className="hover:bg-[#FFF0EE] transition-colors">
                     <td className="px-4 py-3">
-                      <Link href={`/services/${so.serviceOrderId}`} className="text-[var(--primary)] hover:underline">
-                        {so.serviceOrderId}
-                      </Link>
+                      {canViewServices ? (
+                        <Link href={`/services/${so.serviceOrderId}`} className="text-[var(--primary)] hover:underline">
+                          {so.serviceOrderId}
+                        </Link>
+                      ) : so.serviceOrderId}
                     </td>
                     <td className="px-4 py-3">{so.customerName || "—"}</td>
                     <td className="px-4 py-3">{so.storeName || "—"}</td>
@@ -326,11 +354,13 @@ function ServiceCommissionTable({ serviceOrders }: { serviceOrders: ServiceOrder
                       </Badge>
                     </td>
                     <td className="px-4 py-3">
-                      <Link href={`/allocations/service/${so.serviceOrderId}`}>
-                        <Button size="sm" variant="outline">
-                          {so.commissionStatus === "已分配" ? "查看分配" : "分配"}
-                        </Button>
-                      </Link>
+                      {canSave && (
+                        <Link href={`/allocations/service/${so.serviceOrderId}`}>
+                          <Button size="sm" variant="outline">
+                            {so.commissionStatus === "已分配" ? "查看分配" : "分配"}
+                          </Button>
+                        </Link>
+                      )}
                     </td>
                   </tr>
                 )

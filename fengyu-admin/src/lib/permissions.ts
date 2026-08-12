@@ -1,11 +1,15 @@
 import { redirect } from 'next/navigation'
 import { db } from '@/db'
 import { orgNodes, stores } from '@db/org'
+import { permissionRoleDefinitions } from '@db/permission'
 import { eq, and, or, sql, inArray } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import type { PgColumn } from 'drizzle-orm/pg-core'
 import type { AuthSession, RoleType } from './types'
 import { collectDescendantNodeIds, findAncestorNodeIdByType } from './org-scope'
+import {
+  UNDELIVERED_ADMIN_ACTIONS,
+} from './permission-contract'
 
 /**
  * DEFAULT_PERMISSION_MATRIX: role → actions[]
@@ -61,58 +65,55 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     // 历史订单核对（WorkFine 导入的 status='未审核' 订单）
     'legacy_order:list', 'legacy_order:approve', 'legacy_order:reject',
     'legacy_order:update_phone', 'legacy_order:update_amount', 'legacy_order:pull',
-    // 门店库存（4 类单据 v1，2026-05-19；admin 全开）
-    'inventory:list', 'inventory:create', 'inventory:update', 'inventory:delete',
-    // 门店库存 v2（中心库存表 + 统一单据；2026-07-24 会议）
-    'inventory:stock_list', 'inventory:create_doc', 'inventory:approve', 'inventory:price_view', 'inventory:export',
+    // 门店库存（4 类单据 v1；update 及 v2 写/审批/价格能力尚未交付 Admin UI）
+    'inventory:list', 'inventory:create', 'inventory:delete',
+    'inventory:stock_list', 'inventory:export',
     // 门店拉卡拉收款配置（门店关联收款商户；admin 专属，涉及收款，hr 不开）
     'store:lakala_config',
     // 商户管理（拉卡拉收款商户档案 CRUD；独立模块 /merchants，admin + finance）
     'merchant:list', 'merchant:create', 'merchant:update', 'merchant:delete',
   ],
-  // 2026-06-24 对齐生产实配（运营在权限矩阵 UI 给店长扩权后固化为代码默认）。按模块字母序排列。
-  // 相对历史默认的敏感扩权：sale_order:delete（删单）、employee:* 全 CRUD（维护本店员工）、
-  // service:delete、pickup_record:delete、store_unbind:delete、store:lakala_config（门店收款配置）、
-  // merchant:list（收款商户只读）、message:*、operation_log:list。退款 approve 仍仅 manager/admin 持有。
+  // 店长：门店业务的非物理删除操作。物理删除和收款配置仅系统管理员可授予。
   manager: [
     'allocation:list', 'allocation:save',
-    'appointment:checkin', 'appointment:confirm', 'appointment:delete', 'appointment:list',
+    'appointment:checkin', 'appointment:confirm', 'appointment:list',
     'card_transaction:list',
     'coupon:list',
-    'customer:create', 'customer:delete', 'customer:list', 'customer:update',
+    'customer:create', 'customer:list', 'customer:update',
     'dashboard:view',
     'data_center:dashboard',
-    'employee:create', 'employee:delete', 'employee:list', 'employee:update',
-    'inventory:create', 'inventory:create_doc', 'inventory:list', 'inventory:stock_list', 'inventory:update',
+    'employee:create', 'employee:list', 'employee:update',
+    'inventory:create', 'inventory:list', 'inventory:stock_list',
     'legacy_order:approve', 'legacy_order:list', 'legacy_order:pull', 'legacy_order:reject', 'legacy_order:update_amount', 'legacy_order:update_phone',
     'merchant:list',
     'message:list', 'message:send',
     'operation_log:list',
     'org:list',
-    'pickup_record:create', 'pickup_record:delete', 'pickup_record:list',
+    'pickup_record:create', 'pickup_record:list',
     'point_transaction:list',
     'product:list',
     'sale_item:list',
-    'sale_order:create', 'sale_order:delete', 'sale_order:deposit_approve', 'sale_order:list', 'sale_order:record_payment', 'sale_order:refund_approve', 'sale_order:refund_create', 'sale_order:update',
-    'service:create', 'service:delete', 'service:list', 'service:update',
-    'store:lakala_config', 'store:list',
-    'store_unbind:approve', 'store_unbind:delete', 'store_unbind:list', 'store_unbind:reject',
+    'sale_order:create', 'sale_order:deposit_approve', 'sale_order:list', 'sale_order:record_payment', 'sale_order:refund_approve', 'sale_order:refund_create', 'sale_order:update',
+    'service:create', 'service:list', 'service:update',
+    'store:list',
+    'store_unbind:approve', 'store_unbind:list', 'store_unbind:reject',
   ],
-  // 2026-06-24 对齐生产实配。相对历史默认的扩权：commission:* 全 CRUD（提成矩阵）、coupon:list、
+  // 财务：提成矩阵维护、历史订单核对与商户档案维护；物理删除仅系统管理员可授予。
+  // 相对历史默认的扩权：commission:* 全 CRUD（提成矩阵）、coupon:list、
   // legacy_order 核对四项（approve/reject/update_amount/update_phone）、product:list、operation_log:list。
   // service:list — 营业额分配页含服务提成部分，finance 只读对账需看全。商户档案 /merchants 完整 CRUD。
   finance: [
     'allocation:list',
     'card_transaction:list',
-    'commission:create', 'commission:delete', 'commission:list', 'commission:update',
+    'commission:create', 'commission:list', 'commission:update',
     'coupon:list',
     'customer:list',
     'dashboard:view',
     'data_center:dashboard',
     'employee:list',
-    'inventory:approve', 'inventory:create', 'inventory:create_doc', 'inventory:export', 'inventory:list', 'inventory:price_view', 'inventory:stock_list', 'inventory:update',
+    'inventory:export', 'inventory:list', 'inventory:stock_list',
     'legacy_order:approve', 'legacy_order:list', 'legacy_order:pull', 'legacy_order:reject', 'legacy_order:update_amount', 'legacy_order:update_phone',
-    'merchant:create', 'merchant:delete', 'merchant:list', 'merchant:update',
+    'merchant:create', 'merchant:list', 'merchant:update',
     'operation_log:list',
     'org:list',
     'pickup_record:list',
@@ -137,23 +138,23 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'service:list',
     'store:create', 'store:list', 'store:update',
   ],
-  // 2026-06-24 对齐生产实配。相对历史默认的扩权：inventory 写权限（create/update/delete）、
+  // 2026-06-24 对齐生产实配。库存仅保留已交付的创建/查看/导出能力；
   // sale_order:list、operation_log:list。
   product: [
     'coupon:create', 'coupon:list', 'coupon:update',
     'dashboard:view',
-    'inventory:create', 'inventory:create_doc', 'inventory:delete', 'inventory:export', 'inventory:list', 'inventory:stock_list', 'inventory:update',
+    'inventory:create', 'inventory:export', 'inventory:list', 'inventory:stock_list',
     'operation_log:list',
     'org:list',
     'product:create', 'product:list', 'product:update',
     'sale_order:list', 'sale_order:refund_create',
     'store:list',
   ],
-  // 2026-06-24 对齐生产实配。相对历史默认的扩权：appointment 全套（含 delete）、customer:delete、
+  // 2026-06-24 对齐生产实配。预约、顾客等物理删除仅系统管理员可授予。
   // inventory:list、legacy_order 核对四项、pickup_record:list、product:list、operation_log:list。
   customer_mgr: [
-    'appointment:checkin', 'appointment:confirm', 'appointment:delete', 'appointment:list',
-    'customer:create', 'customer:delete', 'customer:list', 'customer:update',
+    'appointment:checkin', 'appointment:confirm', 'appointment:list',
+    'customer:create', 'customer:list', 'customer:update',
     'dashboard:view',
     'employee:list',
     'inventory:list', 'inventory:stock_list',
@@ -182,6 +183,16 @@ export const ALL_ACTIONS: string[] = [
 ].sort()
 
 /**
+ * 已知权限点 = 当前可授予项 + 未交付但仍存在后端实现的库存项。
+ *
+ * `ALL_ACTIONS` 是矩阵编辑器可见且可授予的全集；`KNOWN_PERMISSION_ACTIONS` 仅用于
+ * 读取遗留矩阵和保存报错，使未交付 action 被精确识别为不可授予而非 unknown。
+ */
+export const KNOWN_PERMISSION_ACTIONS: string[] = [
+  ...new Set([...ALL_ACTIONS, ...UNDELIVERED_ADMIN_ACTIONS]),
+].sort()
+
+/**
  * 进程级权限矩阵缓存
  *
  * - TTL 30s（与 cron-worker getMemberThreshold 30s/5min 双层缓存一致）
@@ -197,7 +208,7 @@ export function invalidatePermissionMatrixCache(): void {
 }
 
 /**
- * 取当前生效的权限矩阵：DB 优先，失败时回退 DEFAULT。
+ * 取当前生效的权限矩阵：角色定义表优先，失败时回退旧角色默认值。
  *
  * - DB 行不存在 / JSON 解析失败 / DB 连接异常 → 静默回退 DEFAULT_PERMISSION_MATRIX，
  *   并 console.error 标记，确保任何情况下 admin 都能登录。
@@ -209,24 +220,22 @@ export async function getPermissionMatrix(): Promise<Record<RoleType, string[]>>
     return _matrixCache.matrix
   }
   try {
-    const rows = await db.execute<{ value: string }>(
-      sql`SELECT value FROM system_configs WHERE key = 'permission_matrix' LIMIT 1`,
-    )
-    const raw = (rows as unknown as Array<{ value: string }>)[0]?.value
-    if (!raw) {
+    const rows = await db
+      .select({ roleKey: permissionRoleDefinitions.roleKey, actions: permissionRoleDefinitions.actions })
+      .from(permissionRoleDefinitions)
+    if (rows.length === 0) {
       _matrixCache = { matrix: DEFAULT_PERMISSION_MATRIX, expiresAt: now + PERMISSION_MATRIX_CACHE_TTL_MS }
       return DEFAULT_PERMISSION_MATRIX
     }
-    try {
-      const parsed = JSON.parse(raw) as Record<RoleType, string[]>
-      _matrixCache = { matrix: parsed, expiresAt: now + PERMISSION_MATRIX_CACHE_TTL_MS }
-      return parsed
-    } catch (parseErr) {
-      console.error('[permission-matrix] JSON parse failed, fallback to DEFAULT', parseErr)
-      return DEFAULT_PERMISSION_MATRIX
+    const known = new Set(KNOWN_PERMISSION_ACTIONS)
+    const matrix: Record<RoleType, string[]> = {}
+    for (const row of rows) {
+      matrix[row.roleKey] = [...new Set(row.actions.filter((action) => known.has(action)))].sort()
     }
+    _matrixCache = { matrix, expiresAt: now + PERMISSION_MATRIX_CACHE_TTL_MS }
+    return matrix
   } catch (dbErr) {
-    console.error('[permission-matrix] DB read failed, fallback to DEFAULT', dbErr)
+    console.error('[role-definitions] DB read failed, fallback to legacy defaults', dbErr)
     return DEFAULT_PERMISSION_MATRIX
   }
 }
@@ -362,7 +371,7 @@ export function buildScopeWhere(session: AuthSession, storeIdColumn = 'store_id'
  * 判断 session 是否拥有 admin 角色（不受 scope 限制）
  */
 export function isAdminScope(session: AuthSession): boolean {
-  return session.roles.some(r => r.role === 'admin')
+  return session.roles.some(r => r.isSuperAdmin ?? r.role === 'admin')
 }
 
 /**
@@ -372,8 +381,8 @@ export function isAdminScope(session: AuthSession): boolean {
  * 用于 actions/auth.ts 的登录闸（login 验密后）与会话二次闸（getSessionFromCookie）。
  * 仅看角色、不看权限点——即便某管理角色被配空矩阵，仍允许登录（避免误锁管理岗）。
  */
-export function canAccessAdmin(roles: Array<{ role: string }>): boolean {
-  return roles.some(r => r.role !== 'staff')
+export function canAccessAdmin(roles: Array<{ role: string; canAccessAdmin?: boolean }>): boolean {
+  return roles.some(r => r.canAccessAdmin ?? r.role !== 'staff')
 }
 
 /**
@@ -468,14 +477,11 @@ export function hasPermission(session: AuthSession, action: string): boolean {
 /**
  * 寄存单审批硬规则。
  *
- * 权限矩阵只控制入口动作；寄存单审批额外限定为总部/市场层级，
- * 因为 manager/finance 也可能存在门店 scope。
+ * 权限矩阵控制入口动作；审批人可为任一业务组织层级的店长或财务。
+ * 具体订单仍由调用方按 store_id 做 isInScope 行级校验。
  */
 export function isDepositOrderApprover(session: AuthSession): boolean {
-  return session.roles.some((role) => (
-    role.role === 'admin' ||
-    ((role.role === 'manager' || role.role === 'finance') && ['总部', '市场'].includes(role.scopeType))
-  ))
+  return hasPermission(session, 'sale_order:deposit_approve')
 }
 
 /**

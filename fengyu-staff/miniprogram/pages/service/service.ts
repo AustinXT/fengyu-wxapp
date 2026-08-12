@@ -1,6 +1,6 @@
 // pages/service/service.ts — 服务 Tab
 import { callStaffApi } from '../../utils/cloud';
-import { isManager } from '../../utils/role';
+import { isManagementMode, isManager } from '../../utils/role';
 import { getElapsedTime as _getElapsedTime, formatTime as _formatTime, formatDateTime } from '../../utils/formatters';
 
 const app = getApp<IAppOption>();
@@ -37,17 +37,27 @@ Page({
     ],
     list: [] as ServiceItem[],
     isManager: false,
+    isReadOnly: false,
     actioningId: '',
   },
 
-  onLoad() {},
+  onLoad() {
+    if (isManagementMode()) {
+      this.setData({ isReadOnly: true });
+      wx.reLaunch({ url: '/pages/mgmt-dashboard/mgmt-dashboard' });
+    }
+  },
 
   onShow() {
     if (!app.globalData.staffWfId) {
       wx.reLaunch({ url: '/pages/login/login' })
       return
     }
-    this.setData({ isManager: isManager() });
+    if (isManagementMode()) {
+      wx.reLaunch({ url: '/pages/mgmt-dashboard/mgmt-dashboard' });
+      return;
+    }
+    this.setData({ isManager: isManager(), isReadOnly: false });
     this.loadList();
     this.loadTabCounts();
   },
@@ -100,6 +110,7 @@ Page({
   },
 
   async onStartService(e: WechatMiniprogram.TouchEvent) {
+    if (this._isReadOnly()) return;
     const id = e.currentTarget.dataset.id as string;
     if (this.data.actioningId) return;
     this.setData({ actioningId: id });
@@ -116,6 +127,7 @@ Page({
   },
 
   onCompleteService(e: WechatMiniprogram.TouchEvent) {
+    if (this._isReadOnly()) return;
     const id = e.currentTarget.dataset.id as string;
     if (this.data.actioningId) return;
     wx.showModal({
@@ -123,7 +135,7 @@ Page({
       content: '标记完成后将通知顾客确认，顾客确认后才扣减服务额度。',
       confirmText: '标记完成',
       success: async (res) => {
-        if (!res.confirm) return;
+        if (!res.confirm || this._isReadOnly()) return;
         this.setData({ actioningId: id });
         try {
           await callStaffApi('service.complete', { serviceOrderId: id });
@@ -142,6 +154,7 @@ Page({
 
   // 店长代客户确认（待客户确认 → 已完成，扣次数+计提成）
   onConfirmService(e: WechatMiniprogram.TouchEvent) {
+    if (this._isReadOnly()) return;
     const id = e.currentTarget.dataset.id as string;
     if (this.data.actioningId) return;
     wx.showModal({
@@ -149,7 +162,7 @@ Page({
       content: '确认后将扣减服务额度并完成服务单，仅在顾客不便自行确认时使用。',
       confirmText: '确认完成',
       success: async (res) => {
-        if (!res.confirm) return;
+        if (!res.confirm || this._isReadOnly()) return;
         this.setData({ actioningId: id });
         try {
           await callStaffApi('service.confirm', { serviceOrderId: id });
@@ -176,7 +189,12 @@ Page({
   },
 
   onNewService() {
+    if (this._isReadOnly()) return;
     wx.navigateTo({ url: '/packageService/service-create/service-create' });
+  },
+
+  _isReadOnly() {
+    return isManagementMode();
   },
 
   noop() {},

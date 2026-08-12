@@ -27,6 +27,12 @@ describe('deriveStaffLevel', () => {
     expect(deriveStaffLevel([{ role: 'manager', scopeType: '门店' }])).toBe('store_manager')
   })
 
+  test('(自定义店长能力角色, 门店) → store_manager', () => {
+    expect(deriveStaffLevel([
+      { role: 'role_custom_manager', isStoreManager: true, scopeType: '门店' },
+    ])).toBe('store_manager')
+  })
+
   test('(hr, 市场) → market', () => {
     expect(deriveStaffLevel([{ role: 'hr', scopeType: '市场' }])).toBe('market')
   })

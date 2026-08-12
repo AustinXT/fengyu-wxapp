@@ -75,7 +75,7 @@ function deriveStaffLevel(roleBindings) {
     } else if (rb.scopeType === '市场') {
       hasMarket = true
     } else if (rb.scopeType === '门店') {
-      if (rb.role === 'manager') hasStoreManager = true
+      if (rb.isStoreManager ?? rb.role === 'manager') hasStoreManager = true
       else hasStoreOther = true
     }
     // 部门级忽略
@@ -515,14 +515,14 @@ function buildNormalSkuMarketScopeCondition(auth, params, skuAlias = 'sk') {
       ${nonBlankExpr}
       AND EXISTS (
         SELECT 1
-        FROM stores scope_store
-        JOIN org_nodes scope_store_node ON scope_store.org_node_id = scope_store_node.id
-        JOIN org_nodes scope_market ON scope_store_node.parent_id = scope_market.id
-        WHERE scope_store.store_id = ${storeParam}
-          AND scope_market.type = '市场'
+        FROM stores store
+        JOIN org_nodes store_node ON store.org_node_id = store_node.id
+        JOIN org_nodes market_node ON store_node.parent_id = market_node.id
+        WHERE store.store_id = ${storeParam}
+          AND market_node.type = '市场'
           AND (
-            scope_market.id = ANY(${valuesExpr})
-            OR regexp_replace(scope_market.name, '[[:space:]]+', '', 'g') = ANY(${valuesExpr})
+            market_node.id = ANY(${valuesExpr})
+            OR regexp_replace(market_node.name, '[[:space:]]+', '', 'g') = ANY(${valuesExpr})
           )
       )
     )

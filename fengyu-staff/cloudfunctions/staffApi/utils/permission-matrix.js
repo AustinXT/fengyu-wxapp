@@ -1,7 +1,7 @@
 /**
  * Staff management-view permission lookup.
  *
- * The source of truth is system_configs.permission_matrix, shared at the
+ * The source of truth is permission_role_definitions.actions, shared at the
  * database level with the admin application. This module intentionally keeps
  * an independent implementation because cloud functions must not share code
  * with the admin application.
@@ -9,7 +9,6 @@
 
 const pg = require('../db/pg')
 
-const PERMISSION_MATRIX_KEY = 'permission_matrix'
 const DATA_CENTER_DASHBOARD = 'data_center:dashboard'
 const CACHE_TTL_MS = 30 * 1000
 
@@ -57,16 +56,23 @@ async function getDashboardRoles() {
 
   try {
     const rows = await pg.query(
-      "SELECT value FROM system_configs WHERE key = 'permission_matrix' LIMIT 1",
+      `SELECT role_key, actions
+         FROM permission_role_definitions`,
     )
-    const raw = rows[0]?.value
-    if (!raw) {
+    if (!Array.isArray(rows)) throw new Error('invalid role definition result')
+    if (rows.length === 0) {
       const roles = fallbackRoles()
       cache = { roles, expiresAt: now + CACHE_TTL_MS }
       return roles
     }
 
-    const roles = parseDashboardRoles(raw)
+    // value 分支仅保留给滚动发布期间的旧测试桩兼容；生产查询返回 role_key。
+    const roles = rows[0]?.value
+      ? parseDashboardRoles(rows[0].value)
+      : new Set(rows
+        .filter((row) => Array.isArray(row.actions) && row.actions.includes(DATA_CENTER_DASHBOARD))
+        .map((row) => row.role_key)
+        .filter(Boolean))
     if (roles) {
       cache = { roles, expiresAt: now + CACHE_TTL_MS }
       return roles

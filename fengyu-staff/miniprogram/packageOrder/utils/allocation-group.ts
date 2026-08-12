@@ -120,8 +120,12 @@ export function calculateGroupedAmounts<T extends AllocationGroupSource>(
 export function expandGroupedAllocationLines<T extends { saleItemIds: string[] }>(
   lines: T[],
 ): Array<Omit<T, 'saleItemIds'> & { saleItemId: string }> {
-  return lines.flatMap((line) => {
+  const expanded: Array<Omit<T, 'saleItemIds'> & { saleItemId: string }> = []
+  for (const line of lines) {
     const { saleItemIds, ...rest } = line
-    return saleItemIds.map((saleItemId) => ({ ...rest, saleItemId }))
-  }) as Array<Omit<T, 'saleItemIds'> & { saleItemId: string }>
+    for (const saleItemId of saleItemIds) {
+      expanded.push({ ...rest, saleItemId })
+    }
+  }
+  return expanded
 }
