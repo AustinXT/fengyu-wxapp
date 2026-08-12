@@ -1,5 +1,11 @@
 @import "tailwindcss";
 
+@keyframes analyst-progress {
+  0% { transform: translateX(-100%); }
+  50% { transform: translateX(150%); }
+  100% { transform: translateX(400%); }
+}
+
 @theme inline {
   --color-brand: oklch(0.52 0.17 25);
   --color-brand-hover: oklch(0.46 0.17 25);

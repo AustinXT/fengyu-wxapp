@@ -16,9 +16,13 @@ import {
 import { AutoSubmitFilterForm } from "@/components/auto-submit-filter-form"
 import { FilterCascader } from "@/components/filter-cascader"
 import { MetricCard } from "@/components/metric-card"
-import { NewCustomerBarChart, NewCustomerFunnelChart } from "@/components/new-customer-funnel-charts"
-import { PenetrationBarChart } from "@/components/penetration-charts"
-import { RankingBarChart, TrendChart } from "@/components/repurchase-charts"
+import {
+  NewCustomerBarChart,
+  NewCustomerFunnelChart,
+  PenetrationBarChart,
+  RankingBarChart,
+  TrendChart,
+} from "@/components/lazy-charts"
 import { ScopeCascader } from "@/components/scope-cascader"
 import {
   analystScopeSearchParams,

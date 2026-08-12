@@ -1,4 +1,5 @@
 import { cookies } from "next/headers"
+import { cache } from "react"
 import { jwtVerify, errors } from "jose"
 import { eq } from "drizzle-orm"
 import { db } from "@/db"
@@ -11,7 +12,7 @@ import { staffWechatUsers } from "@db/user"
 
 const COOKIE_NAME = "fy-admin-token"
 
-export async function getSession(): Promise<AuthSession | null> {
+export const getSession = cache(async (): Promise<AuthSession | null> => {
   try {
     const cookieStore = await cookies()
     const token = cookieStore.get(COOKIE_NAME)?.value
@@ -67,4 +68,4 @@ export async function getSession(): Promise<AuthSession | null> {
     if (err instanceof errors.JOSEError) return null
     throw err
   }
-}
+})

@@ -59,6 +59,11 @@ export function AnalystShell({
   const [metricListExpanded, setMetricListExpanded] = useState(true)
   const [expandedGroupIds, setExpandedGroupIds] = useState(DEFAULT_EXPANDED_GROUPS)
   const [settingsReady, setSettingsReady] = useState(false)
+  const [navigating, setNavigating] = useState(false)
+
+  useEffect(() => {
+    setNavigating(false)
+  }, [pathname, searchParams])
 
   useEffect(() => {
     const storedWidth = Number(window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY))
@@ -156,15 +161,32 @@ export function AnalystShell({
     return query ? `${pathnamePart}?${query}` : pathnamePart
   }
 
+  function handleNavigate(href: string) {
+    const destination = new URL(href, "https://fengyu-analyst.local")
+    const currentSearch = searchParams.toString()
+
+    if (destination.pathname === pathname && destination.search === (currentSearch ? `?${currentSearch}` : "")) {
+      setNavigating(false)
+      return
+    }
+
+    setNavigating(true)
+  }
+
   return (
-    <div className="min-h-screen bg-[var(--background)]" style={shellStyle}>
+    <div className="min-h-screen bg-[var(--background)]" style={shellStyle} aria-busy={navigating}>
+      {navigating ? (
+        <div className="fixed inset-x-0 top-0 z-[60] h-0.5 overflow-hidden bg-red-100" role="progressbar" aria-label="页面加载中">
+          <div className="h-full w-1/3 animate-[analyst-progress_900ms_ease-in-out_infinite] bg-[var(--primary)]" />
+        </div>
+      ) : null}
       {!sidebarHidden ? (
         <aside
           className="fixed inset-y-0 left-0 z-20 hidden border-r border-[var(--border)] bg-white lg:block"
           style={{ width: "var(--analyst-sidebar-width)" }}
         >
           <div className="flex h-14 items-center justify-between gap-3 border-b border-[var(--border)] px-5">
-            <Link href={withCurrentScope("/dashboard")} className="flex min-w-0 items-center gap-2">
+            <Link href={withCurrentScope("/dashboard")} onNavigate={() => handleNavigate(withCurrentScope("/dashboard"))} className="flex min-w-0 items-center gap-2">
               <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-[var(--primary)] text-white">
                 <BarChart3 className="size-5" />
               </span>
@@ -200,7 +222,7 @@ export function AnalystShell({
                           : "text-neutral-600 hover:bg-neutral-50 hover:text-neutral-950",
                       )}
                     >
-                      <Link href={withCurrentScope(item.href)} className="flex h-full min-w-0 flex-1 items-center gap-2 px-3">
+                      <Link href={withCurrentScope(item.href)} onNavigate={() => handleNavigate(withCurrentScope(item.href))} className="flex h-full min-w-0 flex-1 items-center gap-2 px-3">
                         <item.icon className="size-4 shrink-0" />
                         <span className="truncate">{item.label}</span>
                       </Link>
@@ -217,6 +239,7 @@ export function AnalystShell({
                   ) : (
                     <Link
                       href={item.href}
+                      onNavigate={() => handleNavigate(item.href)}
                       className={cn(
                         "flex h-10 items-center gap-2 rounded-md px-3 text-sm font-medium",
                         active
@@ -257,6 +280,7 @@ export function AnalystShell({
                                     <Link
                                       key={metric.id}
                                       href={withCurrentScope(metric.href)}
+                                      onNavigate={() => handleNavigate(withCurrentScope(metric.href))}
                                       className={cn(
                                         "flex min-h-8 items-center justify-between gap-2 rounded-md px-2 text-xs",
                                         metricActive
@@ -333,6 +357,7 @@ export function AnalystShell({
             <Link
               key={item.href}
               href={item.href}
+              onNavigate={() => handleNavigate(item.href)}
               className={cn(
                 "flex min-h-14 flex-col items-center justify-center gap-1 text-xs font-medium",
                 active ? "text-[var(--primary)]" : "text-neutral-500",

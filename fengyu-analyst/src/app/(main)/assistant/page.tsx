@@ -1,5 +1,5 @@
-import { AssistantChat } from "@/components/assistant-chat"
+import { AssistantChatLazy } from "@/components/assistant-chat-lazy"
 
 export default function AssistantPage() {
-  return <AssistantChat />
+  return <AssistantChatLazy />
 }
