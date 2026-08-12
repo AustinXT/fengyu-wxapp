@@ -44,8 +44,9 @@ vi.mock('@/lib/permissions', () => ({
 }))
 
 vi.mock('@/lib/permission-contract', () => ({
-  ADMIN_ONLY_ACTIONS: [],
+  getActionGrantability: vi.fn(() => 'grantable'),
   getMissingUiDependencies: vi.fn(() => []),
+  sanitizeRoleDefinitionActions: vi.fn((actions: string[]) => actions),
 }))
 
 vi.mock('@/lib/operation-log', () => ({
@@ -68,6 +69,7 @@ vi.mock('drizzle-orm', () => ({
 }))
 
 import { db } from '@/db'
+import { sql } from 'drizzle-orm'
 import { updateRoleDefinition } from './role-definitions'
 
 function mockSelectOnce(rows: unknown[]) {
@@ -103,5 +105,43 @@ describe('updateRoleDefinition', () => {
     })).rejects.toThrow(/INVALID_STATE.*非总部范围分配.*不能直接升级/)
 
     expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('以毫秒精度比较页面传入的版本，避免数据库微秒导致误报并发冲突', async () => {
+    const before = {
+      roleKey: 'role-custom',
+      name: '测试角色',
+      description: null,
+      actions: ['dashboard:view'],
+      canAccessAdmin: true,
+      isSuperAdmin: false,
+      isStoreManager: false,
+      // JS Date 无法表达数据库里实际保存的额外微秒。
+      updatedAt: new Date('2026-08-12T08:00:00.123Z'),
+    }
+    const expectedUpdatedAt = '2026-08-12T08:00:00.123Z'
+    ;(db.select as ReturnType<typeof vi.fn>).mockReturnValueOnce(mockSelectOnce([before]))
+    ;(db.transaction as ReturnType<typeof vi.fn>).mockImplementationOnce(async (callback) => callback({
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({
+          where: vi.fn(() => ({
+            returning: vi.fn().mockResolvedValue([{ roleKey: before.roleKey }]),
+          })),
+        })),
+      })),
+      select: vi.fn(() => ({ from: vi.fn().mockResolvedValue([]) })),
+      execute: vi.fn().mockResolvedValue(undefined),
+    }))
+
+    await expect(updateRoleDefinition(before.roleKey, {
+      name: before.name,
+      actions: before.actions,
+      expectedUpdatedAt,
+    })).resolves.toEqual({ success: true, message: '角色已保存' })
+
+    const lockCall = vi.mocked(sql).mock.calls.find(([strings]) => (
+      String(strings).includes("date_trunc('milliseconds'")
+    ))
+    expect(lockCall?.[2]).toBe(expectedUpdatedAt)
   })
 })

@@ -139,6 +139,29 @@ export function isActionGrantable(
   return getActionGrantability(role, action, knownActions) === 'grantable'
 }
 
+/**
+ * 清洗单个角色定义中的历史权限。
+ *
+ * 角色定义允许自定义 roleKey，不能直接复用矩阵版的 `sanitizePermissionMatrix`；
+ * 是否可持有管理员专属权限要以 `isSuperAdmin` 能力为准，而非 roleKey 名称。
+ * 该函数只用于读取历史数据和兼容镜像，写入入口仍必须严格校验，避免客户端借机新增非法权限。
+ */
+export function sanitizeRoleDefinitionActions(
+  actions: readonly unknown[],
+  isSuperAdmin: boolean,
+  knownActions: readonly string[],
+): string[] {
+  const known = new Set(knownActions)
+  const grantRole: RoleType = isSuperAdmin ? 'admin' : 'staff'
+  return [...new Set(
+    actions
+      .map((action) => (typeof action === 'string' ? action.trim() : ''))
+      .filter(Boolean),
+  )]
+    .filter((action) => isActionGrantable(grantRole, action, known))
+    .sort()
+}
+
 /** 补齐角色、去空白、去重、排序；不在此处过滤动作，供保存校验保留原始问题。 */
 export function normalizePermissionMatrix(input: unknown): PermissionMatrix {
   const result: PermissionMatrix = {

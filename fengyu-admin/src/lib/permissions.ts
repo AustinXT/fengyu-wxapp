@@ -9,6 +9,7 @@ import type { AuthSession, RoleType } from './types'
 import { collectDescendantNodeIds, findAncestorNodeIdByType } from './org-scope'
 import {
   UNDELIVERED_ADMIN_ACTIONS,
+  sanitizeRoleDefinitionActions,
 } from './permission-contract'
 
 /**
@@ -221,16 +222,23 @@ export async function getPermissionMatrix(): Promise<Record<RoleType, string[]>>
   }
   try {
     const rows = await db
-      .select({ roleKey: permissionRoleDefinitions.roleKey, actions: permissionRoleDefinitions.actions })
+      .select({
+        roleKey: permissionRoleDefinitions.roleKey,
+        actions: permissionRoleDefinitions.actions,
+        isSuperAdmin: permissionRoleDefinitions.isSuperAdmin,
+      })
       .from(permissionRoleDefinitions)
     if (rows.length === 0) {
       _matrixCache = { matrix: DEFAULT_PERMISSION_MATRIX, expiresAt: now + PERMISSION_MATRIX_CACHE_TTL_MS }
       return DEFAULT_PERMISSION_MATRIX
     }
-    const known = new Set(KNOWN_PERMISSION_ACTIONS)
     const matrix: Record<RoleType, string[]> = {}
     for (const row of rows) {
-      matrix[row.roleKey] = [...new Set(row.actions.filter((action) => known.has(action)))].sort()
+      matrix[row.roleKey] = sanitizeRoleDefinitionActions(
+        row.actions,
+        row.isSuperAdmin,
+        KNOWN_PERMISSION_ACTIONS,
+      )
     }
     _matrixCache = { matrix, expiresAt: now + PERMISSION_MATRIX_CACHE_TTL_MS }
     return matrix

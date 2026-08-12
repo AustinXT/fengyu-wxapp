@@ -217,7 +217,7 @@ describe('computeActions', () => {
 })
 
 describe('getPermissionMatrix / cache', () => {
-  function mockRoleRows(rows: Array<{ roleKey: string; actions: string[] }>) {
+  function mockRoleRows(rows: Array<{ roleKey: string; actions: string[]; isSuperAdmin?: boolean }>) {
     const from = vi.fn().mockResolvedValue(rows)
     ;(db.select as any).mockReturnValue({ from })
     return from
@@ -250,6 +250,16 @@ describe('getPermissionMatrix / cache', () => {
     mockRoleRows([{ roleKey: 'role_custom', actions: ['dashboard:view', 'made_up:action'] }])
     const matrix = await getPermissionMatrix()
     expect(matrix.role_custom).toEqual(['dashboard:view'])
+  })
+
+  it('历史管理员专属和未交付权限不会进入非超级管理员运行时矩阵', async () => {
+    mockRoleRows([{
+      roleKey: 'manager',
+      isSuperAdmin: false,
+      actions: ['dashboard:view', 'appointment:delete', 'inventory:update'],
+    }])
+    const matrix = await getPermissionMatrix()
+    expect(matrix.manager).toEqual(['dashboard:view'])
   })
 
   it('DB throw 时回退 DEFAULT + console.error', async () => {
