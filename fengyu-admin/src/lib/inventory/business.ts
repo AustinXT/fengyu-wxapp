@@ -1179,14 +1179,19 @@ async function loadLotSkuForMarket(
   return sku
 }
 
-function assertMarketFinance(session: AuthSession): void {
-  if (isAdminScope(session) || session.roles.some((role) => role.role === 'finance')) return
-  throw new ApiError('PERMISSION_DENIED', '市场自采资料与入库仅限市场财务办理')
+function assertSelfPurchaseReceiptPermission(session: AuthSession): void {
+  if (hasPermission(session, 'inventory:self_purchase_receive')) return
+  throw new ApiError('PERMISSION_DENIED', '缺少市场自采入库权限')
 }
 
-function assertSupplyChainCancellationFinance(session: AuthSession): void {
-  if (isAdminScope(session) || session.roles.some((role) => role.role === 'finance')) return
-  throw new ApiError('PERMISSION_DENIED', '品项公司发货撤回仅限市场或供应链财务办理')
+function assertShipmentCancellationPermission(
+  session: AuthSession,
+  action: 'inventory:shipment_cancel_request' | 'inventory:shipment_cancel_approve',
+): void {
+  if (hasPermission(session, action)) return
+  throw new ApiError('PERMISSION_DENIED', action === 'inventory:shipment_cancel_request'
+    ? '缺少品项发货撤回申请权限'
+    : '缺少品项发货撤回审批权限')
 }
 
 function isPromotionQuantityMatched(
@@ -3342,14 +3347,14 @@ export async function rejectReturnForRestock(
   return { success: true }
 }
 
-/** 市场财务只能提交撤回申请，不能直接回滚总部库存。 */
+/** 具备撤回申请权限的用户只能提交申请，不能直接回滚总部库存。 */
 export async function requestItemCompanyShipmentCancellation(
   session: AuthSession,
   input: RequestItemCompanyShipmentCancellationInput,
 ): Promise<{ success: true }> {
   const shipmentId = required(input.shipmentId, '品项公司发货单')
   const cancellationReason = required(input.cancellationReason, '撤回原因')
-  assertSupplyChainCancellationFinance(session)
+  assertShipmentCancellationPermission(session, 'inventory:shipment_cancel_request')
   await syncLocations()
   await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
@@ -3382,13 +3387,13 @@ export async function requestItemCompanyShipmentCancellation(
   return { success: true }
 }
 
-/** 供应链财务审批后才真正回滚总部库存与采购订单履约数量。 */
+/** 具备撤回审批权限的用户审批后才真正回滚总部库存与采购订单履约数量。 */
 export async function approveItemCompanyShipmentCancellation(
   session: AuthSession,
   input: ResolveItemCompanyShipmentCancellationInput,
 ): Promise<{ success: true }> {
   const shipmentId = required(input.shipmentId, '品项公司发货单')
-  assertSupplyChainCancellationFinance(session)
+  assertShipmentCancellationPermission(session, 'inventory:shipment_cancel_approve')
   await syncLocations()
   await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
@@ -3445,14 +3450,14 @@ export async function approveItemCompanyShipmentCancellation(
   return { success: true }
 }
 
-/** 供应链财务驳回后，发货单恢复待收货，市场可继续正常收货。 */
+/** 具备撤回审批权限的用户驳回后，发货单恢复待收货，市场可继续正常收货。 */
 export async function rejectItemCompanyShipmentCancellation(
   session: AuthSession,
   input: ResolveItemCompanyShipmentCancellationInput & { auditRemark: string },
 ): Promise<{ success: true }> {
   const shipmentId = required(input.shipmentId, '品项公司发货单')
   const auditRemark = required(input.auditRemark, '驳回原因')
-  assertSupplyChainCancellationFinance(session)
+  assertShipmentCancellationPermission(session, 'inventory:shipment_cancel_approve')
   await syncLocations()
   await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
@@ -3582,12 +3587,12 @@ export async function createMarketStaffPurchase(
   return { id }
 }
 
-/** 市场财务登记自采产品入库；只接收归属当前市场的市场自采/转让店 SKU。 */
+/** 具备自采入库权限的用户登记入库；只接收归属当前市场的市场自采/转让店 SKU。 */
 export async function createSelfPurchasedReceipt(
   session: AuthSession,
   input: CreateSelfPurchasedReceiptInput,
 ): Promise<{ id: string }> {
-  assertMarketFinance(session)
+  assertSelfPurchaseReceiptPermission(session)
   const marketId = required(input.marketId, '市场')
   if (!Array.isArray(input.items) || input.items.length === 0) {
     throw new ApiError('INVALID_PARAMS', '自采产品入库至少需要一条明细')

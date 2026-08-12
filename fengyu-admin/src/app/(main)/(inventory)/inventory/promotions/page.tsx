@@ -1,0 +1,55 @@
+import { Suspense } from 'react'
+import { listInventoryLocations } from '@/actions/inventory/locations'
+import { listInventoryPromotionPlans } from '@/actions/inventory/promotions'
+import { listInventorySkus } from '@/actions/inventory/skus'
+import { getSession } from '@/lib/auth'
+import { isAdminScope } from '@/lib/permissions'
+import { hasUiCapability } from '@/lib/permission-contract'
+import { requireAllUiPageCapabilities } from '@/lib/page-capability'
+import InventoryPromotionsPage from '../_components/inventory-promotions-page'
+
+export const dynamic = 'force-dynamic'
+
+export default async function Page() {
+  const session = await getSession()
+  requireAllUiPageCapabilities(session, ['inventory:stock_list'])
+  const [plans, locations, skus] = await Promise.all([
+    listInventoryPromotionPlans(),
+    listInventoryLocations(),
+    listInventorySkus({ page: 1, pageSize: 100, onlyActive: true }),
+  ])
+  const actions = session.permissions.actions
+  const canViewPrice = hasUiCapability(actions, 'inventory:price_view')
+  const canCreate = hasUiCapability(actions, 'inventory:create') && canViewPrice
+  const canUpdate = hasUiCapability(actions, 'inventory:update') && canViewPrice
+  const canManageGlobal = isAdminScope(session) || session.roles.some((role) => role.scopeType === '总部')
+
+  // 未获价格权限的使用者只接收非金额的方案信息，避免客户端 props 暴露优惠金额。
+  const visiblePlans = canViewPrice
+    ? plans
+    : plans.map((plan) => ({
+      ...plan,
+      items: plan.items.map((item) => ({
+        ...item,
+        marketUnitDiscount: 0,
+      })),
+    }))
+
+  return (
+    <div className="p-6">
+      <Suspense>
+        <InventoryPromotionsPage
+          rows={visiblePlans}
+          marketOptions={locations
+            .filter((location) => location.locationType === '市场')
+            .map((location) => ({ locationId: location.locationId, name: location.name }))}
+          skuOptions={skus.data}
+          canCreate={canCreate}
+          canUpdate={canUpdate}
+          canViewPrice={canViewPrice}
+          canManageGlobal={canManageGlobal}
+        />
+      </Suspense>
+    </div>
+  )
+}

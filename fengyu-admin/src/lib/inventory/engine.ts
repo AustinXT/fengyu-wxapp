@@ -670,8 +670,8 @@ function assertGenericDocTransition(docType: InventoryDocType): void {
 
 function assertSelfPurchasedSkuEditor(session: AuthSession, sourceType: InventorySkuSourceType): void {
   if (sourceType === '供应链') return
-  if (isAdminScope(session) || session.roles.some((role) => role.role === 'finance')) return
-  throw new ApiError('PERMISSION_DENIED', '市场自采和转让店产品资料仅限市场财务维护')
+  if (hasPermission(session, 'inventory:market_sku_manage')) return
+  throw new ApiError('PERMISSION_DENIED', '缺少市场自采或转让店产品资料维护权限')
 }
 
 async function generateDocNo(tx: Tx, docType: InventoryDocType): Promise<string> {

@@ -88,3 +88,27 @@ export function withAnyPermission<Args extends unknown[], R>(
     }
   }
 }
+
+/**
+ * 多项权限必须同时满足的 Server Action 守卫。
+ *
+ * 用于库存特殊业务等“基础办理权限 + 特殊业务权限”共同构成的敏感操作；不能仅依赖
+ * 角色编辑器的 UI 自动补齐，以免历史脏数据或直接调用绕过第二道授权。
+ */
+export function withAllPermissions<Args extends unknown[], R>(
+  actions: readonly string[],
+  fn: (session: AuthSession, ...args: Args) => Promise<R>,
+): (...args: Args) => Promise<R> {
+  return async (...args: Args) => {
+    const session = await getActionSession()
+    const [firstAction, ...remainingActions] = actions
+    if (!firstAction) throw new Error('INVALID_PARAMS: withAllPermissions 至少需要一个权限项')
+    requirePermission(session, firstAction)
+    for (const action of remainingActions) requirePermission(session, action)
+    try {
+      return await fn(session, ...args)
+    } catch (err) {
+      rethrowWithDigest(err)
+    }
+  }
+}

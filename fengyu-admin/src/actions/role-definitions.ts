@@ -8,7 +8,11 @@ import { permissionRoleDefinitions, permissionRoles } from '@db/permission'
 import { staffWechatUsers } from '@db/user'
 import { withAnyPermission, withPermission } from '@/lib/with-permission'
 import { requireAdmin, invalidatePermissionMatrixCache, KNOWN_PERMISSION_ACTIONS } from '@/lib/permissions'
-import { ADMIN_ONLY_ACTIONS, getMissingUiDependencies } from '@/lib/permission-contract'
+import {
+  getMissingUiDependencies,
+  isActionGrantableForRoleDefinition,
+  sanitizeRoleDefinitionActions,
+} from '@/lib/permission-contract'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
 import type { RoleDefinition } from '@/lib/types'
@@ -68,11 +72,9 @@ function normalizeActions(actions: readonly string[], isSuperAdmin: boolean): st
   const unknown = normalized.find((action) => !known.has(action))
   if (unknown) throw new Error(`INVALID_PARAMS: 未知权限项 ${unknown}`)
 
-  const adminOnly = normalized.find((action) => (
-    action.endsWith(':delete') || (ADMIN_ONLY_ACTIONS as readonly string[]).includes(action)
-  ))
-  if (adminOnly && !isSuperAdmin) {
-    throw new Error(`INVALID_PARAMS: ${adminOnly} 仅超级管理员角色可持有`)
+  const notGrantable = normalized.find((action) => !isActionGrantableForRoleDefinition(action, isSuperAdmin))
+  if (notGrantable) {
+    throw new Error(`INVALID_PARAMS: ${notGrantable} 仅超级管理员角色可持有`)
   }
 
   for (const action of normalized) {
@@ -135,6 +137,7 @@ function serialize(row: {
 }): RoleDefinition {
   return {
     ...row,
+    actions: sanitizeRoleDefinitionActions(row.actions, row.isSuperAdmin, KNOWN_PERMISSION_ACTIONS),
     assignmentCount: Number(row.assignmentCount),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -184,12 +187,7 @@ export const createRoleDefinition = withPermission(
         .where(eq(permissionRoleDefinitions.roleKey, input.copyFromRoleKey))
         .limit(1)
       if (!source) throw new Error('NOT_FOUND: 复制来源角色不存在')
-      sourceActions = isSuperAdmin
-        ? source.actions
-        : source.actions.filter((action) => (
-          !action.endsWith(':delete')
-          && !(ADMIN_ONLY_ACTIONS as readonly string[]).includes(action)
-        ))
+      sourceActions = sanitizeRoleDefinitionActions(source.actions, isSuperAdmin, KNOWN_PERMISSION_ACTIONS)
     }
 
     const roleKey = `role_${randomUUID()}`

@@ -43,7 +43,7 @@ import {
   type RequestItemCompanyShipmentCancellationInput,
   type ResolveItemCompanyShipmentCancellationInput,
 } from '@/lib/inventory/business'
-import { withPermission } from '@/lib/with-permission'
+import { withAllPermissions, withPermission } from '@/lib/with-permission'
 
 export const createStoreReplenishmentRequest = withPermission(
   'inventory:create_doc',
@@ -141,27 +141,27 @@ export const rejectReturnForRestock = withPermission(
     rejectReturnForRestockImpl(session, input),
 )
 
-export const requestItemCompanyShipmentCancellation = withPermission(
-  'inventory:create_doc',
+export const requestItemCompanyShipmentCancellation = withAllPermissions(
+  ['inventory:create_doc', 'inventory:shipment_cancel_request'],
   async (session, input: RequestItemCompanyShipmentCancellationInput) =>
     requestItemCompanyShipmentCancellationImpl(session, input),
 )
 
-export const approveItemCompanyShipmentCancellation = withPermission(
-  'inventory:approve',
+export const approveItemCompanyShipmentCancellation = withAllPermissions(
+  ['inventory:approve', 'inventory:shipment_cancel_approve'],
   async (session, input: ResolveItemCompanyShipmentCancellationInput) =>
     approveItemCompanyShipmentCancellationImpl(session, input),
 )
 
-export const rejectItemCompanyShipmentCancellation = withPermission(
-  'inventory:approve',
+export const rejectItemCompanyShipmentCancellation = withAllPermissions(
+  ['inventory:approve', 'inventory:shipment_cancel_approve'],
   async (session, input: ResolveItemCompanyShipmentCancellationInput & { auditRemark: string }) =>
     rejectItemCompanyShipmentCancellationImpl(session, input),
 )
 
 /** 兼容已打开的旧后台页面；调用后仅提交申请，不会直接撤回。 */
-export const cancelItemCompanyShipment = withPermission(
-  'inventory:create_doc',
+export const cancelItemCompanyShipment = withAllPermissions(
+  ['inventory:create_doc', 'inventory:shipment_cancel_request'],
   async (session, input: RequestItemCompanyShipmentCancellationInput) =>
     requestItemCompanyShipmentCancellationImpl(session, input),
 )
@@ -183,8 +183,8 @@ export const createMarketStaffPurchase = withPermission(
     createMarketStaffPurchaseImpl(session, input),
 )
 
-export const createSelfPurchasedReceipt = withPermission(
-  'inventory:create_doc',
+export const createSelfPurchasedReceipt = withAllPermissions(
+  ['inventory:create_doc', 'inventory:self_purchase_receive'],
   async (session, input: CreateSelfPurchasedReceiptInput) =>
     createSelfPurchasedReceiptImpl(session, input),
 )

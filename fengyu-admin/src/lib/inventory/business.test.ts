@@ -47,20 +47,20 @@ const PRICE_SESSION = {
   permissions: { actions: ['inventory:price_view'], scopeStoreIds: [] },
 } as never
 
-const MARKET_FINANCE_SESSION = {
+const CANCELLATION_REQUEST_SESSION = {
   employeeId: 'E-M1',
-  name: '市场财务',
+  name: '撤回申请人',
   phone: '13800000001',
   roles: [{ role: 'finance', scopeId: 'M1', scopeType: '市场' }],
-  permissions: { actions: [], scopeStoreIds: [] },
+  permissions: { actions: ['inventory:shipment_cancel_request'], scopeStoreIds: [] },
 } as never
 
-const SUPPLY_CHAIN_FINANCE_SESSION = {
+const CANCELLATION_APPROVER_SESSION = {
   employeeId: 'E-HQ',
-  name: '供应链财务',
+  name: '撤回审批人',
   phone: '13800000002',
   roles: [{ role: 'finance', scopeId: 'HQ', scopeType: '总部' }],
-  permissions: { actions: [], scopeStoreIds: [] },
+  permissions: { actions: ['inventory:shipment_cancel_approve'], scopeStoreIds: [] },
 } as never
 
 function storeRequestItemRow(fulfilledQuantity = '0') {
@@ -259,7 +259,7 @@ describe('inventory business action input guards', () => {
     })).rejects.toThrow('缺少关闭原因')
   })
 
-  it('市场财务提交品项公司发货撤回申请只变更状态，不回滚库存', async () => {
+  it('拥有撤回申请权限的用户提交品项公司发货撤回申请只变更状态，不回滚库存', async () => {
     const txExecute = vi.fn()
       .mockResolvedValueOnce([itemCompanyShipmentRow({ status: '待收货' })])
       .mockResolvedValueOnce([{
@@ -276,7 +276,7 @@ describe('inventory business action input guards', () => {
       execute: initializedCutoverExecutor(txExecute),
     } as never))
 
-    await expect(requestItemCompanyShipmentCancellation(MARKET_FINANCE_SESSION, {
+    await expect(requestItemCompanyShipmentCancellation(CANCELLATION_REQUEST_SESSION, {
       shipmentId: 'GFH-1', cancellationReason: '物流信息异常',
     })).resolves.toEqual({ success: true })
 
@@ -297,7 +297,7 @@ describe('inventory business action input guards', () => {
       execute: initializedCutoverExecutor(txExecute),
     } as never))
 
-    await expect(receiveItemCompanyShipment(MARKET_FINANCE_SESSION, {
+    await expect(receiveItemCompanyShipment(CANCELLATION_REQUEST_SESSION, {
       shipmentId: 'GFH-1', items: [{ shipmentItemId: 1, receivedQuantity: 1 }],
     })).rejects.toThrow('当前单据不能收货')
 
@@ -306,7 +306,7 @@ describe('inventory business action input guards', () => {
     expect(queries).not.toContain('inventory_movements')
   })
 
-  it('市场财务不能自行审批品项公司发货撤回申请', async () => {
+  it('仅有撤回申请权限的用户不能自行审批品项公司发货撤回申请', async () => {
     const txExecute = vi.fn()
       .mockResolvedValueOnce([itemCompanyShipmentRow({
         status: '待审批', cancellationRequestReason: '物流信息异常',
@@ -319,16 +319,16 @@ describe('inventory business action input guards', () => {
       execute: initializedCutoverExecutor(txExecute),
     } as never))
 
-    await expect(approveItemCompanyShipmentCancellation(MARKET_FINANCE_SESSION, {
+    await expect(approveItemCompanyShipmentCancellation(CANCELLATION_REQUEST_SESSION, {
       shipmentId: 'GFH-1', auditRemark: '自行审批',
-    })).rejects.toThrow('无权操作该库存主体')
+    })).rejects.toThrow('缺少品项发货撤回审批权限')
 
     const queries = txExecute.mock.calls.map(([query]) => renderSql(query)).join('\n')
     expect(queries).not.toContain('inventory_stock_lots')
     expect(queries).not.toContain('inventory_movements')
   })
 
-  it('供应链财务审批撤回后恢复总部库存并回退采购订单履约数量', async () => {
+  it('拥有撤回审批权限的用户审批后恢复总部库存并回退采购订单履约数量', async () => {
     const txExecute = vi.fn()
       .mockResolvedValueOnce([itemCompanyShipmentRow({
         status: '待审批', cancellationRequestReason: '物流信息异常',
@@ -346,7 +346,7 @@ describe('inventory business action input guards', () => {
       execute: initializedCutoverExecutor(txExecute),
     } as never))
 
-    await expect(approveItemCompanyShipmentCancellation(SUPPLY_CHAIN_FINANCE_SESSION, {
+    await expect(approveItemCompanyShipmentCancellation(CANCELLATION_APPROVER_SESSION, {
       shipmentId: 'GFH-1', auditRemark: '核验通过',
     })).resolves.toEqual({ success: true })
 
@@ -357,7 +357,7 @@ describe('inventory business action input guards', () => {
     expect(queries).toContain("SET status = '已取消'")
   })
 
-  it('供应链财务驳回撤回申请后恢复待收货，不产生库存回滚', async () => {
+  it('拥有撤回审批权限的用户驳回后恢复待收货，不产生库存回滚', async () => {
     const txExecute = vi.fn()
       .mockResolvedValueOnce([itemCompanyShipmentRow({
         status: '待审批', cancellationRequestReason: '物流信息异常',
@@ -371,7 +371,7 @@ describe('inventory business action input guards', () => {
       execute: initializedCutoverExecutor(txExecute),
     } as never))
 
-    await expect(rejectItemCompanyShipmentCancellation(SUPPLY_CHAIN_FINANCE_SESSION, {
+    await expect(rejectItemCompanyShipmentCancellation(CANCELLATION_APPROVER_SESSION, {
       shipmentId: 'GFH-1', auditRemark: '发货信息无误',
     })).resolves.toEqual({ success: true })
 

@@ -12,7 +12,7 @@ vi.mock('next/navigation', () => ({ redirect: mockRedirect }))
 const { mockGetSession } = vi.hoisted(() => ({ mockGetSession: vi.fn() }))
 vi.mock('@/lib/auth', () => ({ getSession: mockGetSession }))
 
-import { withPermission, withAnyPermission } from './with-permission'
+import { withAllPermissions, withPermission, withAnyPermission } from './with-permission'
 import { ApiError } from './api-error'
 
 function makeSession(actions: string[]): AuthSession {
@@ -97,6 +97,32 @@ describe('withAnyPermission', () => {
     const wrapped = withAnyPermission(['anything'], fn)
     await expect(wrapped()).rejects.toThrow('NEXT_REDIRECT:/login?expired=1')
     expect(fn).not.toHaveBeenCalled()
+  })
+})
+
+describe('withAllPermissions', () => {
+  beforeEach(() => {
+    mockRedirect.mockClear()
+    mockGetSession.mockReset()
+  })
+
+  it('AND 关系：库存特殊操作必须同时具备基础和特殊权限', async () => {
+    const fn = vi.fn(async (session: AuthSession) => session.employeeId)
+    const wrapped = withAllPermissions([
+      'inventory:create_doc',
+      'inventory:self_purchase_receive',
+    ], fn)
+
+    mockGetSession.mockResolvedValue(makeSession(['inventory:create_doc']))
+    await expect(wrapped()).rejects.toThrow('PERMISSION_DENIED: 无权执行 inventory:self_purchase_receive')
+    expect(fn).not.toHaveBeenCalled()
+
+    mockGetSession.mockResolvedValue(makeSession([
+      'inventory:create_doc',
+      'inventory:self_purchase_receive',
+    ]))
+    await expect(wrapped()).resolves.toBe('EMP-001')
+    expect(fn).toHaveBeenCalledTimes(1)
   })
 })
 
