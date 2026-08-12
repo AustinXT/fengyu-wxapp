@@ -4,6 +4,8 @@ import { sql, type SQL } from "drizzle-orm"
 import { db } from "@/db"
 import { analystScopeCacheKey, scopeFilterSql, type AnalystScope } from "@/lib/analyst-scope"
 import type { AuthSession } from "@/lib/types"
+import { AsyncTtlCache } from "@/lib/async-ttl-cache"
+import { logAnalystDataLoad } from "@/lib/performance-log"
 import {
   EMPTY_SOURCE,
   NEW_CUSTOMER_SOURCE_LABELS,
@@ -75,7 +77,10 @@ interface RawFunnelEntryRow {
   annualContributionAmount: unknown
 }
 
-const entryCache = new Map<string, { expiresAt: number; rows: NewCustomerFunnelEntry[] }>()
+const entryCache = new AsyncTtlCache<NewCustomerFunnelEntry[]>({
+  ttlMs: NEW_CUSTOMER_CACHE_TTL,
+  onLoad: ({ key, durationMs, size }) => logAnalystDataLoad({ metric: "new-customer-funnel", query: "entries", scopeKey: key, durationMs, rows: size }),
+})
 
 function cleanText(value: unknown): string {
   return String(value ?? "").trim()
@@ -161,17 +166,14 @@ function mapEntryRows(rows: unknown): NewCustomerFunnelEntry[] {
 
 async function queryFunnelEntries(session: AuthSession, scope: AnalystScope): Promise<NewCustomerFunnelEntry[]> {
   const key = analystScopeCacheKey(session, scope)
-  const cached = entryCache.get(key)
-  const now = Date.now()
-  if (cached && cached.expiresAt > now) return cached.rows
+  return entryCache.getOrLoad(key, async () => {
+    const firstOrderScope = scopeFilterSql(session, scope, "so.store_id")
+    const transferScope = scopeFilterSql(session, scope, "c.bound_store_id")
+    const serviceScope = scopeFilterSql(session, scope, "svc.store_id")
+    const memberAmountScope = scopeFilterSql(session, scope, "mo.store_id")
+    const annualAmountScope = scopeFilterSql(session, scope, "yo.store_id")
 
-  const firstOrderScope = scopeFilterSql(session, scope, "so.store_id")
-  const transferScope = scopeFilterSql(session, scope, "c.bound_store_id")
-  const serviceScope = scopeFilterSql(session, scope, "svc.store_id")
-  const memberAmountScope = scopeFilterSql(session, scope, "mo.store_id")
-  const annualAmountScope = scopeFilterSql(session, scope, "yo.store_id")
-
-  const rows = await db.execute<RawFunnelEntryRow>(sql`
+    const rows = await db.execute<RawFunnelEntryRow>(sql`
     WITH first_orders AS (
       SELECT DISTINCT ON (so.client_user_id)
         so.client_user_id,
@@ -280,11 +282,9 @@ async function queryFunnelEntries(session: AuthSession, scope: AnalystScope): Pr
     LEFT JOIN first_member_amounts fma ON fma.customer_id = e.customer_id
     LEFT JOIN annual_amounts aa ON aa.customer_id = e.customer_id
     ORDER BY e.entry_date DESC, e.customer_id
-  `)
-
-  const mapped = mapEntryRows(rows)
-  entryCache.set(key, { expiresAt: now + NEW_CUSTOMER_CACHE_TTL, rows: mapped })
-  return mapped
+    `)
+    return mapEntryRows(rows)
+  })
 }
 
 function filterEntries(

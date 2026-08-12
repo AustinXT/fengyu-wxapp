@@ -5,8 +5,11 @@ import { db } from "@/db"
 import { analystScopeCacheKey, scopeFilterSql, type AnalystScope } from "@/lib/analyst-scope"
 import type { AuthSession } from "@/lib/types"
 import { bucketCascadeOptions, type CascadeOption } from "./cascade-tree"
+import { AsyncTtlCache } from "@/lib/async-ttl-cache"
+import { logAnalystDataLoad } from "@/lib/performance-log"
 import {
   safeRate,
+  matchesPenetrationFilters,
   summarizeProductNames,
   type ProductNameObservation,
 } from "@/lib/penetration-utils"
@@ -122,8 +125,14 @@ interface RawHolderRow extends RawMemberRow {
   remainingSessions: unknown
 }
 
-const memberCache = new Map<string, { expiresAt: number; rows: MemberRow[] }>()
-const holderCache = new Map<string, { expiresAt: number; rows: HolderRow[] }>()
+const memberCache = new AsyncTtlCache<MemberRow[]>({
+  ttlMs: PENETRATION_CACHE_TTL,
+  onLoad: ({ key, durationMs, size }) => logAnalystDataLoad({ metric: "penetration", query: "members", scopeKey: key, durationMs, rows: size }),
+})
+const holderCache = new AsyncTtlCache<HolderRow[]>({
+  ttlMs: PENETRATION_CACHE_TTL,
+  onLoad: ({ key, durationMs, size }) => logAnalystDataLoad({ metric: "penetration", query: "holders", scopeKey: key, durationMs, rows: size }),
+})
 const UNSET_SERIES_ID = "__unset_series__"
 
 function cleanText(value: unknown): string {
@@ -184,25 +193,8 @@ function memberConditions(session: AuthSession, scope: AnalystScope): SQL {
   return sql.join(conditions, sql` AND `)
 }
 
-function productConditions(filters: PenetrationFilters): SQL {
-  const productKindExpr = sql`COALESCE(NULLIF(pc.product_kind, ''), '未设置一级品项')`
-  const categoryExpr = sql`COALESCE(NULLIF(pc.category_name, ''), '未设置二级品项')`
-  const seriesExpr = sql`COALESCE(NULLIF(psl.name, ''), '未设置系列')`
-  const conditions: SQL[] = [sql`TRUE`]
-
-  if (filters.productKind) conditions.push(sql`${productKindExpr} = ${filters.productKind}`)
-  if (filters.categoryName) conditions.push(sql`${categoryExpr} = ${filters.categoryName}`)
-  if (filters.seriesName) conditions.push(sql`${seriesExpr} = ${filters.seriesName}`)
-  if (filters.skuId) conditions.push(sql`si.sku_id = ${filters.skuId}`)
-
-  return sql.join(conditions, sql` AND `)
-}
-
-function cacheKey(session: AuthSession, scope: AnalystScope, filters: PenetrationFilters): string {
-  return JSON.stringify({
-    scope: analystScopeCacheKey(session, scope),
-    filters: normalizeDashboardFilters(filters),
-  })
+function cacheKey(session: AuthSession, scope: AnalystScope): string {
+  return analystScopeCacheKey(session, scope)
 }
 
 function mapMemberRows(rows: unknown): MemberRow[] {
@@ -236,27 +228,22 @@ async function queryMemberRows(
   session: AuthSession,
   scope: AnalystScope,
 ): Promise<MemberRow[]> {
-  const key = cacheKey(session, scope, {})
-  const now = Date.now()
-  const cached = memberCache.get(key)
-  if (cached && cached.expiresAt > now) return cached.rows
-
-  const whereSql = memberConditions(session, scope)
-  const rows = await db.execute<RawMemberRow>(sql`
-    SELECT
-      c.user_id AS "customerId",
-      COALESCE(NULLIF(market_node.name, ''), '未归属市场') AS "market",
-      COALESCE(NULLIF(s.store_name, ''), c.bound_store_id, '未绑定门店') AS "store"
-    FROM client_wechat_users c
-    LEFT JOIN stores s ON s.store_id = c.bound_store_id
-    LEFT JOIN org_nodes store_node ON store_node.id = s.org_node_id
-    LEFT JOIN org_nodes market_node ON market_node.id = store_node.parent_id
-    WHERE ${whereSql}
-  `)
-
-  const mapped = mapMemberRows(rows)
-  memberCache.set(key, { expiresAt: now + PENETRATION_CACHE_TTL, rows: mapped })
-  return mapped
+  const key = cacheKey(session, scope)
+  return memberCache.getOrLoad(key, async () => {
+    const whereSql = memberConditions(session, scope)
+    const rows = await db.execute<RawMemberRow>(sql`
+      SELECT
+        c.user_id AS "customerId",
+        COALESCE(NULLIF(market_node.name, ''), '未归属市场') AS "market",
+        COALESCE(NULLIF(s.store_name, ''), c.bound_store_id, '未绑定门店') AS "store"
+      FROM client_wechat_users c
+      LEFT JOIN stores s ON s.store_id = c.bound_store_id
+      LEFT JOIN org_nodes store_node ON store_node.id = s.org_node_id
+      LEFT JOIN org_nodes market_node ON market_node.id = store_node.parent_id
+      WHERE ${whereSql}
+    `)
+    return mapMemberRows(rows)
+  })
 }
 
 async function queryHolderRows(
@@ -264,14 +251,10 @@ async function queryHolderRows(
   scope: AnalystScope,
   filters: PenetrationFilters,
 ): Promise<HolderRow[]> {
-  const key = cacheKey(session, scope, filters)
-  const now = Date.now()
-  const cached = holderCache.get(key)
-  if (cached && cached.expiresAt > now) return cached.rows
-
-  const memberWhereSql = memberConditions(session, scope)
-  const productWhereSql = productConditions(filters)
-  const rows = await db.execute<RawHolderRow>(sql`
+  const key = cacheKey(session, scope)
+  const allRows = await holderCache.getOrLoad(key, async () => {
+    const memberWhereSql = memberConditions(session, scope)
+    const rows = await db.execute<RawHolderRow>(sql`
     SELECT
       c.user_id AS "customerId",
       COALESCE(NULLIF(c.customer_id, ''), c.user_id) AS "customerCode",
@@ -297,7 +280,6 @@ async function queryHolderRows(
     LEFT JOIN org_nodes store_node ON store_node.id = s.org_node_id
     LEFT JOIN org_nodes market_node ON market_node.id = store_node.parent_id
     WHERE ${memberWhereSql}
-      AND ${productWhereSql}
       AND so.status = '已支付'
       AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
       AND si.item_direction IN ('购买', '转入')
@@ -305,11 +287,16 @@ async function queryHolderRows(
       AND si.sku_id IS NOT NULL
       AND si.sku_id <> ''
       AND si.remaining_sessions > 0
-  `)
+    `)
+    return mapHolderRows(rows)
+  })
+  return filterHolderRows(allRows, filters)
+}
 
-  const mapped = mapHolderRows(rows)
-  holderCache.set(key, { expiresAt: now + PENETRATION_CACHE_TTL, rows: mapped })
-  return mapped
+function filterHolderRows(rows: HolderRow[], filters: PenetrationFilters): HolderRow[] {
+  const normalized = normalizeDashboardFilters(filters)
+  if (!normalized.productKind && !normalized.categoryName && !normalized.seriesName && !normalized.skuId) return rows
+  return rows.filter((row) => matchesPenetrationFilters(row, normalized))
 }
 
 function distinctCount(values: Iterable<string>): number {

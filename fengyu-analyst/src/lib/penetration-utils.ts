@@ -11,6 +11,25 @@ export interface ProductNameSummary {
   hasMultipleNames: boolean
 }
 
+export interface PenetrationFilterValues {
+  productKind?: string
+  categoryName?: string
+  seriesName?: string
+  skuId?: string
+}
+
+export function matchesPenetrationFilters(
+  row: Required<PenetrationFilterValues>,
+  filters: PenetrationFilterValues,
+): boolean {
+  return (
+    (!filters.productKind || row.productKind === filters.productKind) &&
+    (!filters.categoryName || row.categoryName === filters.categoryName) &&
+    (!filters.seriesName || row.seriesName === filters.seriesName) &&
+    (!filters.skuId || row.skuId === filters.skuId)
+  )
+}
+
 export function round4(value: number): number {
   return Math.round(value * 10000) / 10000
 }

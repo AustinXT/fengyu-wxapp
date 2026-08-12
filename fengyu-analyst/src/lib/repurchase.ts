@@ -6,6 +6,8 @@ import { analystScopeCacheKey, scopeFilterSql, type AnalystScope } from "@/lib/a
 import { getMemberThreshold } from "@/lib/member-threshold"
 import type { AuthSession } from "@/lib/types"
 import { bucketCascadeOptions, type CascadeOption } from "./cascade-tree"
+import { AsyncTtlCache } from "@/lib/async-ttl-cache"
+import { logAnalystDataLoad } from "@/lib/performance-log"
 
 const REPURCHASE_CACHE_TTL = 10 * 60 * 1000
 const ANOMALY_Z_THRESHOLD = 1.5
@@ -101,7 +103,20 @@ interface RawRepurchaseEntryRow {
   repurchased: unknown
 }
 
-const rowCache = new Map<string, { expiresAt: number; rows: RepurchaseEntryRow[] }>()
+interface RepurchaseCatalogRow {
+  year: number
+  productKind: string
+  categoryName: string
+}
+
+const rowCache = new AsyncTtlCache<RepurchaseEntryRow[]>({
+  ttlMs: REPURCHASE_CACHE_TTL,
+  onLoad: ({ key, durationMs, size }) => logAnalystDataLoad({ metric: "repurchase", query: "entries", scopeKey: key, durationMs, rows: size }),
+})
+const catalogCache = new AsyncTtlCache<RepurchaseCatalogRow[]>({
+  ttlMs: REPURCHASE_CACHE_TTL,
+  onLoad: ({ key, durationMs, size }) => logAnalystDataLoad({ metric: "repurchase", query: "catalog", scopeKey: key, durationMs, rows: size }),
+})
 
 function cleanText(value: unknown): string {
   return String(value ?? "").trim()
@@ -263,32 +278,29 @@ async function queryRepurchaseEntries(
     filters: normalizeDashboardFilters(filters),
     threshold,
   })
-  const cached = rowCache.get(key)
-  const now = Date.now()
-  if (cached && cached.expiresAt > now) return cached.rows
+  return rowCache.getOrLoad(key, async () => {
+    const whereSql = buildBaseConditions(session, scope, filters)
+    const productKindExpr = sql`pc.product_kind`
+    const categoryNameExpr = sql`pc.category_name`
+    const marketExpr = sql`COALESCE(NULLIF(so.market_name, ''), market_node.name, '')`
+    const storeExpr = sql`COALESCE(NULLIF(so.store_name, ''), s.store_name, so.store_id)`
+    const purchaseAtExpr = sql`COALESCE(so.sale_order_datetime, so.paid_at)`
+    const purchaseDateExpr = sql`(${purchaseAtExpr} AT TIME ZONE 'Asia/Shanghai')::date`
+    const range = resolveFilterDateRange(filters)
+    const firstEntryConditions: SQL[] = [sql`TRUE`]
+    const repurchaseConditions: SQL[] = [sql`q.sale_date > f.first_date`]
+    if (range.startDate) {
+      firstEntryConditions.push(sql`first_date >= ${range.startDate}::date`)
+      repurchaseConditions.push(sql`q.sale_date >= ${range.startDate}::date`)
+    }
+    if (range.endDate) {
+      firstEntryConditions.push(sql`first_date <= ${range.endDate}::date`)
+      repurchaseConditions.push(sql`q.sale_date <= ${range.endDate}::date`)
+    }
+    const firstEntrySql = sql.join(firstEntryConditions, sql` AND `)
+    const repurchaseSql = sql.join(repurchaseConditions, sql` AND `)
 
-  const whereSql = buildBaseConditions(session, scope, filters)
-  const productKindExpr = sql`pc.product_kind`
-  const categoryNameExpr = sql`pc.category_name`
-  const marketExpr = sql`COALESCE(NULLIF(so.market_name, ''), market_node.name, '')`
-  const storeExpr = sql`COALESCE(NULLIF(so.store_name, ''), s.store_name, so.store_id)`
-  const purchaseAtExpr = sql`COALESCE(so.sale_order_datetime, so.paid_at)`
-  const purchaseDateExpr = sql`(${purchaseAtExpr} AT TIME ZONE 'Asia/Shanghai')::date`
-  const range = resolveFilterDateRange(filters)
-  const firstEntryConditions: SQL[] = [sql`TRUE`]
-  const repurchaseConditions: SQL[] = [sql`q.sale_date > f.first_date`]
-  if (range.startDate) {
-    firstEntryConditions.push(sql`first_date >= ${range.startDate}::date`)
-    repurchaseConditions.push(sql`q.sale_date >= ${range.startDate}::date`)
-  }
-  if (range.endDate) {
-    firstEntryConditions.push(sql`first_date <= ${range.endDate}::date`)
-    repurchaseConditions.push(sql`q.sale_date <= ${range.endDate}::date`)
-  }
-  const firstEntrySql = sql.join(firstEntryConditions, sql` AND `)
-  const repurchaseSql = sql.join(repurchaseConditions, sql` AND `)
-
-  const rows = await db.execute<RawRepurchaseEntryRow>(sql`
+    const rows = await db.execute<RawRepurchaseEntryRow>(sql`
     WITH order_item_flows AS (
       SELECT
         so.client_user_id,
@@ -368,11 +380,9 @@ async function queryRepurchaseEntries(
      AND f.category_name = q.category_name
     GROUP BY q.client_user_id, q.customer_code, q.product_kind, q.category_name, f.first_date
     ORDER BY f.first_date DESC, q.product_kind, q.category_name
-  `)
-
-  const mapped = mapEntryRows(rows)
-  rowCache.set(key, { expiresAt: now + REPURCHASE_CACHE_TTL, rows: mapped })
-  return mapped
+    `)
+    return mapEntryRows(rows)
+  })
 }
 
 function aggregateKpi(rows: RepurchaseEntryRow[], prevYearRate: number | null): RepurchaseKpi {
@@ -528,49 +538,30 @@ export async function getRepurchaseDashboard(
   }
 }
 
-async function queryDistinctStrings(
-  session: AuthSession,
-  scope: AnalystScope,
-  expression: SQL,
-  extraCondition?: SQL,
-): Promise<string[]> {
-  const whereSql = buildBaseConditions(session, scope, {})
-  const rows = await db.execute<{ value: string }>(sql`
-    SELECT DISTINCT ${expression} AS value
-    FROM sale_items si
-    JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-    JOIN product_skus sk ON sk.sku_id = si.sku_id
-    JOIN product_categories pc ON pc.category_id = sk.category_id
-    LEFT JOIN stores s ON s.store_id = so.store_id
-    LEFT JOIN org_nodes store_node ON store_node.id = s.org_node_id
-    LEFT JOIN org_nodes market_node ON market_node.id = store_node.parent_id
-    WHERE ${whereSql}
-      ${extraCondition ? sql`AND ${extraCondition}` : sql``}
-      AND ${expression} IS NOT NULL
-      AND ${expression} <> ''
-    ORDER BY value
-  `)
-  return (rows as unknown as Array<{ value: unknown }>).map((row) => cleanText(row.value)).filter(Boolean)
-}
-
-async function queryAvailableYears(session: AuthSession, scope: AnalystScope): Promise<number[]> {
-  const whereSql = buildBaseConditions(session, scope, {})
-  const purchaseAtExpr = sql`COALESCE(so.sale_order_datetime, so.paid_at)`
-  const rows = await db.execute<{ value: number }>(sql`
-    SELECT DISTINCT EXTRACT(YEAR FROM (${purchaseAtExpr} AT TIME ZONE 'Asia/Shanghai'))::int AS value
-    FROM sale_items si
-    JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-    JOIN product_skus sk ON sk.sku_id = si.sku_id
-    JOIN product_categories pc ON pc.category_id = sk.category_id
-    LEFT JOIN stores s ON s.store_id = so.store_id
-    LEFT JOIN org_nodes store_node ON store_node.id = s.org_node_id
-    LEFT JOIN org_nodes market_node ON market_node.id = store_node.parent_id
-    WHERE ${whereSql}
-    ORDER BY value DESC
-  `)
-  return (rows as unknown as Array<{ value: unknown }>)
-    .map((row) => Number(row.value))
-    .filter((value) => Number.isInteger(value))
+async function queryRepurchaseCatalog(session: AuthSession, scope: AnalystScope): Promise<RepurchaseCatalogRow[]> {
+  const key = analystScopeCacheKey(session, scope)
+  return catalogCache.getOrLoad(key, async () => {
+    const whereSql = buildBaseConditions(session, scope, {})
+    const purchaseAtExpr = sql`COALESCE(so.sale_order_datetime, so.paid_at)`
+    const rows = await db.execute<{ year: unknown; productKind: unknown; categoryName: unknown }>(sql`
+      SELECT DISTINCT
+        EXTRACT(YEAR FROM (${purchaseAtExpr} AT TIME ZONE 'Asia/Shanghai'))::int AS "year",
+        pc.product_kind AS "productKind",
+        pc.category_name AS "categoryName"
+      FROM sale_items si
+      JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+      JOIN product_skus sk ON sk.sku_id = si.sku_id
+      JOIN product_categories pc ON pc.category_id = sk.category_id
+      LEFT JOIN stores s ON s.store_id = so.store_id
+      LEFT JOIN org_nodes store_node ON store_node.id = s.org_node_id
+      LEFT JOIN org_nodes market_node ON market_node.id = store_node.parent_id
+      WHERE ${whereSql}
+      ORDER BY "year" DESC, "productKind", "categoryName"
+    `)
+    return (rows as unknown as Array<{ year: unknown; productKind: unknown; categoryName: unknown }>)
+      .map((row) => ({ year: Number(row.year), productKind: cleanText(row.productKind), categoryName: cleanText(row.categoryName) }))
+      .filter((row) => Number.isInteger(row.year) && row.productKind && row.categoryName)
+  })
 }
 
 export async function getRepurchaseFilterOptions(
@@ -578,57 +569,13 @@ export async function getRepurchaseFilterOptions(
   scope: AnalystScope,
   selectedProductKind?: string,
 ): Promise<RepurchaseFilterOptions> {
-  const productKindExpr = sql`pc.product_kind`
-  const categoryNameExpr = sql`pc.category_name`
-  const categoryExpr = sql`CONCAT(pc.product_kind, ' / ', pc.category_name)`
-
-  const [years, productKinds, categoryNames, categories] = await Promise.all([
-    queryAvailableYears(session, scope),
-    queryDistinctStrings(session, scope, productKindExpr),
-    queryDistinctStrings(
-      session,
-      scope,
-      categoryNameExpr,
-      selectedProductKind ? sql`${productKindExpr} = ${selectedProductKind}` : undefined,
-    ),
-    queryDistinctStrings(session, scope, categoryExpr),
-  ])
+  const rows = await queryRepurchaseCatalog(session, scope)
+  const years = Array.from(new Set(rows.map((row) => row.year))).sort((a, b) => b - a)
+  const productKinds = Array.from(new Set(rows.map((row) => row.productKind))).sort((a, b) => a.localeCompare(b, "zh-Hans-CN"))
+  const categoryNames = Array.from(new Set(rows.filter((row) => !selectedProductKind || row.productKind === selectedProductKind).map((row) => row.categoryName))).sort((a, b) => a.localeCompare(b, "zh-Hans-CN"))
+  const categories = Array.from(new Set(rows.map((row) => formatCategory(row.productKind, row.categoryName)))).sort((a, b) => a.localeCompare(b, "zh-Hans-CN"))
 
   return { years, productKinds, categoryNames, categories }
-}
-
-/**
- * 拉取 (parent → child) 全量配对，用于 Cascader 客户端即时联动。
- * 与 queryDistinctStrings 同源（同样不缓存、同样走 buildBaseConditions 的 base WHERE），
- * 仅把单列 DISTINCT 换成双列 GROUP BY。
- */
-async function queryDistinctPairs(
-  session: AuthSession,
-  scope: AnalystScope,
-  parentExpr: SQL,
-  childExpr: SQL,
-): Promise<Array<{ parent: string; child: string }>> {
-  const whereSql = buildBaseConditions(session, scope, {})
-  const rows = await db.execute<{ parent: unknown; child: unknown }>(sql`
-    SELECT ${parentExpr} AS parent, ${childExpr} AS child
-    FROM sale_items si
-    JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-    JOIN product_skus sk ON sk.sku_id = si.sku_id
-    JOIN product_categories pc ON pc.category_id = sk.category_id
-    LEFT JOIN stores s ON s.store_id = so.store_id
-    LEFT JOIN org_nodes store_node ON store_node.id = s.org_node_id
-    LEFT JOIN org_nodes market_node ON market_node.id = store_node.parent_id
-    WHERE ${whereSql}
-      AND ${parentExpr} IS NOT NULL
-      AND ${parentExpr} <> ''
-      AND ${childExpr} IS NOT NULL
-      AND ${childExpr} <> ''
-    GROUP BY parent, child
-    ORDER BY parent, child
-  `)
-  return (rows as unknown as Array<{ parent: unknown; child: unknown }>)
-    .map((row) => ({ parent: cleanText(row.parent), child: cleanText(row.child) }))
-    .filter((row) => row.parent && row.child)
 }
 
 /**
@@ -639,9 +586,8 @@ export async function getRepurchaseCascadeTree(
   session: AuthSession,
   scope: AnalystScope,
 ): Promise<{ productKindTree: CascadeOption[] }> {
-  const productKindExpr = sql`pc.product_kind`
-  const categoryNameExpr = sql`pc.category_name`
-  const productPairs = await queryDistinctPairs(session, scope, productKindExpr, categoryNameExpr)
+  const rows = await queryRepurchaseCatalog(session, scope)
+  const productPairs = rows.map((row) => ({ parent: row.productKind, child: row.categoryName }))
   return {
     productKindTree: bucketCascadeOptions(productPairs),
   }

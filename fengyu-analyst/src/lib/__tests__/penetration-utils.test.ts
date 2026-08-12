@@ -1,7 +1,28 @@
 import { describe, expect, it } from "vitest"
-import { safeRate, summarizeProductNames } from "../penetration-utils"
+import { matchesPenetrationFilters, safeRate, summarizeProductNames } from "../penetration-utils"
 
 describe("penetration utils", () => {
+  const row = {
+    productKind: "面部",
+    categoryName: "补水",
+    seriesName: "水润系列",
+    skuId: "SKU-1",
+  }
+
+  it("matchesPenetrationFilters 支持所有维度和空筛选", () => {
+    expect(matchesPenetrationFilters(row, {})).toBe(true)
+    expect(matchesPenetrationFilters(row, { productKind: "面部", categoryName: "补水" })).toBe(true)
+    expect(matchesPenetrationFilters(row, { seriesName: "水润系列", skuId: "SKU-1" })).toBe(true)
+    expect(matchesPenetrationFilters(row, { categoryName: "抗衰" })).toBe(false)
+  })
+
+  it("matchesPenetrationFilters 保留未设置占位值语义", () => {
+    expect(matchesPenetrationFilters(
+      { productKind: "未设置一级品项", categoryName: "未设置二级品项", seriesName: "未设置系列", skuId: "SKU-2" },
+      { productKind: "未设置一级品项", seriesName: "未设置系列" },
+    )).toBe(true)
+  })
+
   it("safeRate returns 0 when denominator is 0", () => {
     expect(safeRate(3, 0)).toBe(0)
   })
