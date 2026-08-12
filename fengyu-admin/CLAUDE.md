@@ -26,22 +26,14 @@ fengyu-admin/
 │   ├── app/
 │   │   ├── (auth)/            # 登录/改密（无 Shell 布局）
 │   │   ├── (main)/            # 主布局（Sidebar + TopBar）
-│   │   │   ├── dashboard/     # 工作台（角色自适应看板）
-│   │   │   ├── orders/        # 订单管理 + 开单向导
-│   │   │   ├── allocations/   # 营业额分配（含提成比例自动参考）
-│   │   │   ├── services/      # 服务单（状态机+原子扣减）
-│   │   │   ├── appointments/  # 预约（URL Tabs + 筛选）
-│   │   │   ├── org/           # 组织架构（树形编辑）
-│   │   │   ├── stores/        # 门店
-│   │   │   ├── employees/     # 员工（含调店 scope 同步）
-│   │   │   ├── products/      # 商品 + 分类 + SKU
-│   │   │   ├── commission/    # 提成矩阵
-│   │   │   ├── customers/     # 顾客
-│   │   │   ├── coupons/       # 优惠券
-│   │   │   ├── permissions/   # 权限管理
-│   │   │   ├── sync/          # 数据同步
-│   │   │   ├── logs/          # 操作日志
-│   │   │   └── settings/      # 系统配置
+│   │   │   ├── (workspace)/dashboard/             # 工作台
+│   │   │   ├── (operations)/                      # 开单、订单、服务、预约、退款等经营业务
+│   │   │   ├── (customer-operations)/             # 顾客、卡券、会员权益与流水
+│   │   │   ├── (catalog)/                         # 商品与商城
+│   │   │   ├── (inventory)/inventory/             # 进销存（库存、单据、资料、促销）
+│   │   │   ├── (organization)/                    # 组织、门店、商户、员工、提成
+│   │   │   ├── (analytics)/data-center/           # 数据中心
+│   │   │   └── (system)/                          # 权限、消息、日志、系统配置
 │   │   └── globals.css        # Tailwind + 品牌色 CSS 变量
 │   ├── actions/               # Server Actions（18 模块，全部接真实 PG）
 │   ├── components/
@@ -54,7 +46,7 @@ fengyu-admin/
 │       ├── operation-log.ts   # 审计日志写入
 │       ├── schemas.ts         # Zod 验证 schema
 │       ├── types.ts           # TypeScript 类型定义
-│       ├── menu.ts            # 角色驱动菜单可见性
+│       ├── menu.ts            # 权限驱动的业务域二级菜单
 │       ├── utils.ts           # cn() + 格式化工具
 │       └── hooks/             # useUrlFilters, useUnsavedChanges
 ├── tests/                     # 唯一测试入口（详见 tests/README.md）
@@ -64,6 +56,8 @@ fengyu-admin/
 │   └── e2e-chains/            # Playwright 跨页跨角色业务链路（link-1~23 + 独立 config）
 └── vitest.config.ts
 ```
+
+路由组仅用于源码组织，公开 URL 保持不变（如订单仍是 `/orders`）。侧边栏采用手风琴二级菜单：工作台、数据中心直达；经营业务、客户运营、商品商城、进销存、组织商户、系统管理按叶子权限过滤。进销存的“资料配置”由 `/inventory/skus`、`/inventory/suppliers`、`/inventory/sku-mappings` 三个保留深链的页签构成。
 
 ## 常用命令
 
