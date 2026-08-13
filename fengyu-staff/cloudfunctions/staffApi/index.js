@@ -49,6 +49,7 @@ const routes = {
   'customer.stats':       () => require('./routes/customer').stats,
   'customer.listByTag':   () => require('./routes/customer').listByTag,
   'customer.refundHistory': () => require('./routes/customer').refundHistory,
+  'customer.updateName':  () => require('./routes/customer').updateName,
   'customer.updateNotes': () => require('./routes/customer').updateNotes,
   'customer.assign':      () => require('./routes/customer').assign,
   'customer.customerBalance': () => require('./routes/customer').customerBalance,
@@ -162,7 +163,7 @@ const routes = {
  */
 const STORE_MUTATION_ACTIONS = new Set([
   'store.approveUnbind', 'store.rejectUnbind',
-  'customer.updateNotes', 'customer.assign',
+  'customer.updateName', 'customer.updateNotes', 'customer.assign',
   'order.create', 'order.qrcode', 'order.confirmOffline', 'order.close', 'order.resetFailed',
   'order.createRefund', 'order.approveRefund', 'order.rejectRefund',
   'order.createRepayment', 'order.createConversion', 'order.createPickup', 'order.createDeposit',

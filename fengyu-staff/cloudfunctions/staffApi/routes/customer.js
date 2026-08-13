@@ -4,6 +4,7 @@
  * customer.calendar — 顾客消费日历
  * customer.detail — 顾客档案详情
  * customer.paidOrders — 顾客已支付订单（含明细）
+ * customer.updateName — 修改顾客姓名
  *
  * 运行时 100% PG，零 MSSQL 依赖。WorkFine 数据通过同步模块写入 client_wechat_users。
  */
@@ -1463,6 +1464,46 @@ async function updateNotes(ctx) {
 }
 
 /**
+ * 修改顾客姓名（店长专用）
+ */
+async function updateName(ctx) {
+  await requireManager()(ctx, async () => {})
+
+  const { clientUserId, name } = ctx.event.payload || {}
+  if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
+  if (typeof name !== 'string') throw new Error('INVALID_PARAMS: name 必须为字符串')
+
+  const trimmed = name.trim()
+  if (!trimmed) throw new Error('INVALID_PARAMS: 顾客姓名不能为空')
+  if (trimmed.length > 50) throw new Error('INVALID_PARAMS: 顾客姓名不能超过50个字符')
+
+  // 顾客必须存在且归属当前门店 scope。
+  await assertCustomerInScope(pg, ctx.auth, clientUserId)
+  const beforeRows = await pg.query(
+    'SELECT name FROM client_wechat_users WHERE user_id = $1',
+    [clientUserId],
+  )
+  const oldName = beforeRows[0]?.name || null
+
+  await pg.transaction(async (client) => {
+    await client.query(
+      'UPDATE client_wechat_users SET name = $1, updated_at = NOW() WHERE user_id = $2',
+      [trimmed, clientUserId],
+    )
+    // 与 admin 修改顾客档案共用 customer.update，审计中心可统一展示和筛选。
+    await logOperation(client, ctx, 'customer.update', 'customer', clientUserId, {
+      _v: 3,
+      _t: 'update',
+      changes: {
+        name: { from: oldName, to: trimmed },
+      },
+    })
+  })
+
+  ctx.result = { message: '顾客姓名已更新', name: trimmed }
+}
+
+/**
  * 查询顾客储值卡余额（店长专用，跨店共享）
  * payload: { customerUserId: string }
  * 返回: { cardId: string|null, balance: number }
@@ -1530,8 +1571,10 @@ async function assign(ctx) {
 
   await pg.transaction(async (client) => {
     await client.query(
-      'UPDATE client_wechat_users SET bound_employee_id = $1, updated_at = NOW() WHERE user_id = $2',
-      [employeeId, clientUserId]
+      `UPDATE client_wechat_users
+       SET bound_employee_id = $1, bound_employee_name = $2, updated_at = NOW()
+       WHERE user_id = $3`,
+      [employeeId, staffRows[0].name || null, clientUserId]
     )
     // Audit log
     await logOperation(client, ctx, 'customer.assign', 'customer', clientUserId, {
@@ -1786,4 +1829,4 @@ async function coupons(ctx) {
   };
 }
 
-module.exports = { search, calendar, detail, paidOrders, homeProducts, orderHistory, serviceHistory, stats, listByTag, refundHistory, updateNotes, assign, customerBalance, appointments, phoneChangeLogs, coupons };
+module.exports = { search, calendar, detail, paidOrders, homeProducts, orderHistory, serviceHistory, stats, listByTag, refundHistory, updateName, updateNotes, assign, customerBalance, appointments, phoneChangeLogs, coupons };

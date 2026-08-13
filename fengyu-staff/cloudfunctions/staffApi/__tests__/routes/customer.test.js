@@ -1,6 +1,6 @@
 /**
  * 顾客档案路由测试
- * 覆盖：search / calendar / detail / paidOrders / stats / listByTag / refundHistory / appointments / phoneChangeLogs / coupons
+ * 覆盖：search / calendar / detail / paidOrders / stats / listByTag / refundHistory / updateName / appointments / phoneChangeLogs / coupons
  * PG 单源架构，非店长脱敏
  */
 
@@ -1355,6 +1355,52 @@ describe('customer.refundHistory', () => {
 })
 
 // ============================================================
+// customer.updateName
+// ============================================================
+describe('customer.updateName', () => {
+  test('店长修改顾客姓名成功并写入审计 diff', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1', name: '  新姓名  ' })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([{ name: '旧姓名' }])
+    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
+
+    await customerRoutes.updateName(ctx)
+
+    expect(ctx.result).toEqual({ message: '顾客姓名已更新', name: '新姓名' })
+    const [sql, params] = clientQuery.mock.calls[0]
+    expect(sql).toContain('UPDATE client_wechat_users SET name = $1')
+    expect(params).toEqual(['新姓名', 'u1'])
+
+    const auditCall = clientQuery.mock.calls.find((c) => c[0].includes('operation_logs'))
+    expect(auditCall).toBeDefined()
+    expect(auditCall[1][5]).toBe('customer.update')
+    expect(JSON.parse(auditCall[1][8]).changes.name).toEqual({ from: '旧姓名', to: '新姓名' })
+  })
+
+  test.each([
+    [{ name: '张三' }, /clientUserId/],
+    [{ clientUserId: 'u1', name: 123 }, /name 必须为字符串/],
+    [{ clientUserId: 'u1', name: '   ' }, /姓名不能为空/],
+    [{ clientUserId: 'u1', name: 'a'.repeat(51) }, /不能超过50个字符/],
+  ])('非法参数被拒绝：%o', async (payload, expected) => {
+    await expect(customerRoutes.updateName(createManagerCtx(payload))).rejects.toThrow(expected)
+  })
+
+  test('顾客跨店时拒绝修改', async () => {
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-002' }])
+    await expect(customerRoutes.updateName(createManagerCtx({ clientUserId: 'u1', name: '新姓名' })))
+      .rejects.toThrow(/PERMISSION_DENIED.*顾客不在当前门店范围内/)
+  })
+
+  test('美容师无法修改顾客姓名', async () => {
+    await expect(customerRoutes.updateName(createBeauticianCtx({ clientUserId: 'u1', name: '新姓名' })))
+      .rejects.toThrow(/PERMISSION_DENIED/)
+  })
+})
+
+// ============================================================
 // customer.updateNotes
 // ============================================================
 describe('customer.updateNotes', () => {
@@ -1502,8 +1548,10 @@ describe('customer.assign', () => {
     // 事务 client 首个调用 = UPDATE
     const [sql, params] = clientQuery.mock.calls[0]
     expect(sql).toContain('bound_employee_id = $1')
+    expect(sql).toContain('bound_employee_name = $2')
     expect(params[0]).toBe('emp-b1')
-    expect(params[1]).toBe('u1')
+    expect(params[1]).toBe('李四')
+    expect(params[2]).toBe('u1')
   })
 
   test('非店长拒绝操作', async () => {

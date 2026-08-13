@@ -1,6 +1,6 @@
 // packageCustomer/customer-detail/customer-detail.ts — 7-Tab 顾客详情
 import { callStaffApi } from '../../utils/cloud';
-import { isManager } from '../../utils/role';
+import { getCurrentStoreId, isManager } from '../../utils/role';
 import { formatDateTime, formatDate, ORDER_TYPE_LABEL, formatDiscount } from '../../utils/formatters';
 import { MemberLevelBadgeData, withMemberLevelBadgeClass } from '../../utils/member-level-badge';
 import { expandGroupServiceSessions, groupTreatmentCards, sumGroupValue } from '../../utils/treatment-card-group';
@@ -38,6 +38,21 @@ interface CustomerDetail extends MemberLevelBadgeData {
 interface CustomerBalanceResponse {
   balance: number;
   cardId: string | null;
+}
+
+interface StaffAction {
+  name: string;
+  subname?: string;
+  staffWfId: string;
+}
+
+interface StaffListResponse {
+  staffList: Array<{
+    staffWfId: string;
+    name: string;
+    department?: string;
+    storeId?: string;
+  }>;
 }
 
 interface CustomerQuery {
@@ -309,6 +324,9 @@ Page({
     notesValue: '',
     notesDirty: false,
     notesSaving: false,
+    profileSaving: false,
+    showAssignSheet: false,
+    staffActions: [] as StaffAction[],
     // Tab 1: 日历
     calendarYear: 0,
     calendarMonth: 0,
@@ -1052,6 +1070,120 @@ Page({
         minSpendHint,
       };
     });
+  },
+
+  // ===== 基本档案编辑（仅当前门店有效店长） =====
+  onEditCustomerName() {
+    if (!isManager() || this.data.profileSaving) return;
+    const { customer } = this.data;
+    if (!customer?.clientUserId) return;
+
+    wx.showModal({
+      title: '修改顾客姓名',
+      content: customer.name || '',
+      editable: true,
+      placeholderText: '请输入顾客姓名',
+      confirmColor: '#C0322A',
+      success: (res) => {
+        if (res.confirm) void this.saveCustomerName(res.content);
+      },
+    });
+  },
+
+  async saveCustomerName(name: string) {
+    if (!isManager() || this.data.profileSaving) return;
+    const { customer } = this.data;
+    if (!customer?.clientUserId) return;
+
+    const trimmed = String(name || '').trim();
+    if (!trimmed) {
+      wx.showToast({ title: '顾客姓名不能为空', icon: 'none' });
+      return;
+    }
+    if (trimmed.length > 50) {
+      wx.showToast({ title: '顾客姓名不能超过50个字符', icon: 'none' });
+      return;
+    }
+    if (trimmed === customer.name) return;
+
+    this.setData({ profileSaving: true });
+    try {
+      const result = await callStaffApi<{ message: string; name: string }>('customer.updateName', {
+        clientUserId: customer.clientUserId,
+        name: trimmed,
+      });
+      this.setData({
+        customer: { ...customer, name: result.name || trimmed },
+      });
+      wx.showToast({ title: '顾客姓名已更新', icon: 'success' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '修改失败';
+      wx.showToast({ title: msg, icon: 'none' });
+    } finally {
+      this.setData({ profileSaving: false });
+    }
+  },
+
+  async onEditPreferredStaff() {
+    if (!isManager() || this.data.profileSaving) return;
+    if (!this.data.customer?.clientUserId) return;
+
+    if (this.data.staffActions.length === 0) {
+      try {
+        const response = await callStaffApi<StaffListResponse>('staff.list');
+        const currentStoreId = getCurrentStoreId();
+        const staffActions = (response?.staffList || [])
+          // 顾客长期归属只允许绑定本店员工；外店支援员工仅用于当次开单/服务。
+          .filter((staff) => Boolean(staff.staffWfId)
+            && (!currentStoreId || !staff.storeId || staff.storeId === currentStoreId))
+          .map((staff) => ({
+            name: staff.name,
+            subname: staff.department || undefined,
+            staffWfId: staff.staffWfId,
+          }));
+        this.setData({ staffActions });
+      } catch (_) {
+        wx.showToast({ title: '获取美容师列表失败', icon: 'none' });
+        return;
+      }
+    }
+
+    if (this.data.staffActions.length === 0) {
+      wx.showToast({ title: '当前门店暂无可选美容师', icon: 'none' });
+      return;
+    }
+    this.setData({ showAssignSheet: true });
+  },
+
+  onAssignClose() {
+    this.setData({ showAssignSheet: false });
+  },
+
+  async onAssignSelect(e: WechatMiniprogram.CustomEvent) {
+    if (!isManager() || this.data.profileSaving) {
+      this.setData({ showAssignSheet: false });
+      return;
+    }
+    const action = e.detail as StaffAction;
+    const { customer } = this.data;
+    if (!action?.staffWfId || !customer?.clientUserId) return;
+
+    this.setData({ showAssignSheet: false, profileSaving: true });
+    try {
+      const result = await callStaffApi<{ message: string; employeeName: string }>('customer.assign', {
+        clientUserId: customer.clientUserId,
+        employeeId: action.staffWfId,
+      });
+      this.setData({
+        customer: { ...customer, preferredStaffName: result.employeeName },
+      });
+      wx.showToast({ title: `已指定${result.employeeName}`, icon: 'success' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '修改失败';
+      wx.showToast({ title: msg, icon: 'none' });
+    } finally {
+      this.setData({ profileSaving: false });
+    }
   },
 
   // ===== 备注编辑 =====
