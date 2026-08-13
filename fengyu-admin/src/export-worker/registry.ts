@@ -1,6 +1,6 @@
 import { db } from '@/db'
 import { orgNodes } from '@db/org'
-import { exportProductSkus } from '@/actions/products'
+import { exportMallProducts, exportProductSkus } from '@/actions/products'
 import { exportCouponTemplates, getMarkets } from '@/actions/coupons'
 import {
   exportOrders,
@@ -523,6 +523,27 @@ function queryProducts(payload: Record<string, string>): ExportContent {
   }
 }
 
+function queryMallProducts(payload: Record<string, string>): ExportContent {
+  return {
+    sheetName: '商城商品',
+    columns: mapColumns([
+      { header: '商品编号', width: 20, key: 'productId' },
+      { header: '商品名称', width: 28, key: 'name' },
+      { header: '商城分类', width: 24, key: 'categoryName', map: (row) => [value(row, 'categoryGroup'), value(row, 'categoryName')].filter(Boolean).join(' / ') },
+      { header: '商品类型', width: 12, key: 'isBundle', map: (row) => value(row, 'isBundle') ? '套餐' : '普通商品' },
+      { header: '标价', key: 'price', map: (row) => numberOrEmpty(row, 'price') },
+      { header: '会员价', key: 'specialPrice', map: (row) => numberOrEmpty(row, 'specialPrice') },
+      { header: '展示状态', width: 12, key: 'isVisible', map: (row) => value(row, 'isVisible') ? '展示中' : '未展示' },
+      { header: '规格数', key: 'skuCount', map: (row) => numberOrEmpty(row, 'skuCount') },
+      { header: '排序', key: 'sortOrder', map: (row) => numberOrEmpty(row, 'sortOrder') },
+      { header: '描述', width: 32, key: 'description' },
+      { header: '创建时间', width: 20, key: 'createdAt', map: (row) => fmtDateTime(value(row, 'createdAt') as string | Date | null) },
+      { header: '更新时间', width: 20, key: 'updatedAt', map: (row) => fmtDateTime(value(row, 'updatedAt') as string | Date | null) },
+    ]),
+    rows: pagedRows((options: ExportBatchOptions<number>) => exportMallProducts(payload, options)),
+  }
+}
+
 async function queryCoupons(payload: Record<string, string>): Promise<ExportContent> {
   const markets = await getMarkets()
   const marketMap = new Map(markets.map((market) => [market.id, market.name]))
@@ -627,6 +648,8 @@ export async function createExportContent(
     }
     case 'products':
       return queryProducts(params)
+    case 'mall-products':
+      return queryMallProducts(params)
     case 'coupons':
       return queryCoupons(params)
   }
