@@ -8,6 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { MultiSelect } from "@/components/ui/multi-select";
 import { StatusBadge, Badge } from "@/components/ui/badge";
 import { Pagination } from "@/components/ui/pagination";
 import {
@@ -24,7 +25,8 @@ import { ExportButton } from "@/components/ui/export-button";
 import { fmtDateTime } from "@/lib/datetime";
 import { actionErrorMessage } from "@/lib/action-error";
 import { useUrlFilters } from "@/lib/hooks/use-url-filters";
-import type { SaleOrder, OrderStatus, SaleOrderType } from "@/lib/types";
+import { ORDER_TYPE_FILTER_OPTIONS, parseOrderTypeFilters } from "@/lib/list-filters";
+import type { SaleOrder, OrderStatus } from "@/lib/types";
 import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types";
 import MarketStoreFilter from "@/components/market-store-filter";
 
@@ -278,6 +280,7 @@ export default function OrdersPageClient({
 
   const statusFilter = get("status");
   const typeFilter = get("type");
+  const selectedOrderTypes = parseOrderTypeFilters(typeFilter) ?? [];
   const marketFilter = get("market");
   const storeFilter = get("store");
   const dateFrom = get("from");
@@ -319,16 +322,13 @@ export default function OrdersPageClient({
                 </option>
               ))}
             </Select>
-            <Select className="w-40" value={typeFilter} onChange={(e) => setFilter("type", e.target.value)}>
-              <option value="">全部单据</option>
-              {/* 2026-04-26 sale-order-domain-refactor：5→3 值；'回款单'/'退款单' 已迁至 sale_order_payments */}
-              {/* 2026-05-18 B5：+寄存单（剩余次数初始化，不计金额） */}
-              {(["销售单", "内部单", "转换单", "寄存单", "充值单"] as SaleOrderType[]).map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </Select>
+            <MultiSelect
+              className="w-40"
+              options={ORDER_TYPE_FILTER_OPTIONS.map((type) => ({ value: type, label: type }))}
+              value={selectedOrderTypes}
+              onChange={(types) => setFilter("type", types.join(","))}
+              placeholder="全部单据"
+            />
             <MarketStoreFilter
               options={filterOptions}
               marketValue={marketFilter}
