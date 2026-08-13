@@ -62,7 +62,7 @@ scope: fengyu-staff/cloudfunctions/staffApi · fengyu-admin
 
 - **staff**：`routes/inventory.js:72-77`，`storeFilterMode === 'transfer'` 分支生成
   `(m.store_id = ANY($n) OR m.counterpart_store_id = ANY($n))`；列表与 detail 一致。
-- **admin**：`actions/inventory/transfer.ts:83-93`，Drizzle `or(storeId IN ..., counterpartStoreId IN ...)` 双向。
+- **admin**：统一 V3 `lib/inventory/engine.ts` 以单据的发起/接收库存主体双向套用组织范围。
 
 **结论：双向可见口径一致。** 修改/删除权限的差异（admin 侧由**接收店确认收货**、**发出店删除**）属业务设计，非权限模型缺陷。
 

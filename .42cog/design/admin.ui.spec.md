@@ -148,9 +148,9 @@
 
 **菜单分组**：工作台、数据中心为直达入口；经营业务、客户运营、商品商城、进销存、组织商户、系统管理为可展开二级菜单。展开态采用手风琴，当前路由所属域自动展开；折叠态点击父项显示同一套可访问子项浮层。父级仅在至少一个子项有权限时展示。
 
-**进销存二级菜单**：库存总览 `/inventory`、库存查询 `/inventory/stocks`、库存业务 `/inventory/operations`、单据中心 `/inventory/docs`、资料配置 `/inventory/skus`、促销方案 `/inventory/promotions`；资料配置中以页签保留 SKU、供应商、SKU 映射三条历史深链。
+**进销存二级菜单**：库存查询 `/inventory/stocks`、供应链业务 `/inventory/operations/supply-chain`、市场业务 `/inventory/operations/market`、门店业务 `/inventory/operations/store`、单据中心 `/inventory/docs`、资料配置 `/inventory/skus`、促销方案 `/inventory/promotions`；资料配置中以页签保留 SKU、供应商、SKU 映射三条历史深链。总部可见三级业务，市场可见市场与门店业务，门店仅可见门店业务；旧库存总览与四类 V1 页面只保留兼容跳转，不再作为菜单入口。
 
-**菜单可见性规则**：叶子菜单由 `session.permissions.actions` 过滤；需要多个无条件 SSR 权限的页面（库存业务、单据中心）要求同时具备全部权限，避免菜单可见但进入页面失败。
+**菜单可见性规则**：叶子菜单由 `session.permissions.actions` 与组织范围共同过滤；需要多个无条件 SSR 权限的页面（三级库存业务、单据中心）要求同时具备全部权限，避免菜单可见但进入页面失败。
 
 ---
 
