@@ -2,15 +2,9 @@
 
 exports[`STEP 1 received 分摊 SQL 四端字节同义守护 > Snapshot 守护 > STEP 1 分摊 SQL 文本快照 1`] = `"WITH tg AS (SELECT ref_sale_item_id, SUM(amount) AS targeted FROM sale_order_payments WHERE sale_order_id = ? AND status = '已支付' AND change_type IN ('首次支付','回款','储值卡抵扣') AND ref_sale_item_id IS NOT NULL GROUP BY ref_sale_item_id), caps AS (SELECT si.sale_item_id, COALESCE(tg.targeted, 0)::numeric AS targeted, GREATEST(0, si.pending_received::numeric - COALESCE(tg.targeted, 0)::numeric) AS pend_cap, GREATEST(0, si.sale_amount::numeric - GREATEST(si.pending_received::numeric, COALESCE(tg.targeted, 0)::numeric)) AS sale_cap FROM sale_items si LEFT JOIN tg ON tg.ref_sale_item_id = si.sale_item_id WHERE si.sale_order_id = ? AND si.item_direction = '购买'), agg AS (SELECT GREATEST(0, (SELECT received FROM sale_orders WHERE sale_order_id = ?)::numeric - COALESCE((SELECT SUM(targeted) FROM tg), 0)::numeric) AS untargeted, COALESCE(SUM(pend_cap), 0)::numeric AS pend_cap_total, COALESCE(SUM(sale_cap), 0)::numeric AS sale_cap_total FROM caps) UPDATE sale_items si SET received = CASE WHEN agg.pend_cap_total > 0 OR agg.sale_cap_total > 0 THEN caps.targeted + ROUND((CASE WHEN agg.pend_cap_total > 0 THEN LEAST(agg.untargeted, agg.pend_cap_total) * caps.pend_cap / agg.pend_cap_total ELSE 0 END) + (CASE WHEN agg.sale_cap_total > 0 AND agg.untargeted > agg.pend_cap_total THEN (agg.untargeted - agg.pend_cap_total) * caps.sale_cap / agg.sale_cap_total ELSE 0 END), 2) ELSE caps.targeted END, updated_at = NOW() FROM caps, agg WHERE si.sale_item_id = caps.sale_item_id"`;
 
-exports[`STEP 1 received 分摊 SQL 四端字节同义守护 Snapshot 守护 STEP 1 分摊 SQL 文本快照 1`] = `"WITH tg AS (SELECT ref_sale_item_id, SUM(amount) AS targeted FROM sale_order_payments WHERE sale_order_id = ? AND status = '已支付' AND change_type IN ('首次支付','回款','储值卡抵扣') AND ref_sale_item_id IS NOT NULL GROUP BY ref_sale_item_id), caps AS (SELECT si.sale_item_id, COALESCE(tg.targeted, 0)::numeric AS targeted, GREATEST(0, si.pending_received::numeric - COALESCE(tg.targeted, 0)::numeric) AS pend_cap, GREATEST(0, si.sale_amount::numeric - GREATEST(si.pending_received::numeric, COALESCE(tg.targeted, 0)::numeric)) AS sale_cap FROM sale_items si LEFT JOIN tg ON tg.ref_sale_item_id = si.sale_item_id WHERE si.sale_order_id = ? AND si.item_direction = '购买'), agg AS (SELECT GREATEST(0, (SELECT received FROM sale_orders WHERE sale_order_id = ?)::numeric - COALESCE((SELECT SUM(targeted) FROM tg), 0)::numeric) AS untargeted, COALESCE(SUM(pend_cap), 0)::numeric AS pend_cap_total, COALESCE(SUM(sale_cap), 0)::numeric AS sale_cap_total FROM caps) UPDATE sale_items si SET received = CASE WHEN agg.pend_cap_total > 0 OR agg.sale_cap_total > 0 THEN caps.targeted + ROUND((CASE WHEN agg.pend_cap_total > 0 THEN LEAST(agg.untargeted, agg.pend_cap_total) * caps.pend_cap / agg.pend_cap_total ELSE 0 END) + (CASE WHEN agg.sale_cap_total > 0 AND agg.untargeted > agg.pend_cap_total THEN (agg.untargeted - agg.pend_cap_total) * caps.sale_cap / agg.sale_cap_total ELSE 0 END), 2) ELSE caps.targeted END, updated_at = NOW() FROM caps, agg WHERE si.sale_item_id = caps.sale_item_id"`;
-
 exports[`STEP 1 分支 A received=Σreceipt SQL 四端字节同义守护 > Snapshot 守护 > STEP 1 分支 A received=Σreceipt SQL 文本快照 1`] = `"UPDATE sale_items si SET received = COALESCE(GREATEST(0, (SELECT SUM(spir.amount::numeric) FROM sale_payment_item_receipts spir JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id WHERE spir.sale_order_id = ? AND spir.sale_item_id = si.sale_item_id AND sop.status = '已支付' AND sop.change_type IN ('首次支付','回款','储值卡抵扣','退款'))), 0), updated_at = NOW() WHERE si.sale_order_id = ? AND si.item_direction = '购买'"`;
 
-exports[`STEP 1 分支 A received=Σreceipt SQL 四端字节同义守护 Snapshot 守护 STEP 1 分支 A received=Σreceipt SQL 文本快照 1`] = `"UPDATE sale_items si SET received = COALESCE(GREATEST(0, (SELECT SUM(spir.amount::numeric) FROM sale_payment_item_receipts spir JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id WHERE spir.sale_order_id = ? AND spir.sale_item_id = si.sale_item_id AND sop.status = '已支付' AND sop.change_type IN ('首次支付','回款','储值卡抵扣','退款'))), 0), updated_at = NOW() WHERE si.sale_order_id = ? AND si.item_direction = '购买'"`;
-
 exports[`STEP 1.5 逐项退款净额 SQL 四端字节同义守护 > Snapshot 守护 > STEP 1.5 逐项退款净额 SQL 文本快照 1`] = `"WITH refund_items AS (SELECT elem ->> 'refSaleItemId' AS sale_item_id, COALESCE((elem ->> 'refundAmount')::numeric, 0) AS refund_amount FROM sale_order_payments sop CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN sop.note LIKE '{%' THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array' THEN (sop.note)::jsonb -> 'items' ELSE '[]'::jsonb END ELSE '[]'::jsonb END) AS elem WHERE sop.sale_order_id = ? AND sop.change_type = '退款' AND sop.status = '已支付'), agg AS (SELECT sale_item_id, SUM(refund_amount) AS refunded FROM refund_items WHERE sale_item_id IS NOT NULL GROUP BY sale_item_id) UPDATE sale_items si SET received = GREATEST(0, si.received::numeric - COALESCE(agg.refunded, 0)), updated_at = NOW() FROM (SELECT sale_item_id FROM sale_items WHERE sale_order_id = ? AND item_direction = '购买') ai LEFT JOIN agg ON agg.sale_item_id = ai.sale_item_id WHERE si.sale_item_id = ai.sale_item_id"`;
-
-exports[`STEP 1.5 逐项退款净额 SQL 四端字节同义守护 Snapshot 守护 STEP 1.5 逐项退款净额 SQL 文本快照 1`] = `"WITH refund_items AS (SELECT elem ->> 'refSaleItemId' AS sale_item_id, COALESCE((elem ->> 'refundAmount')::numeric, 0) AS refund_amount FROM sale_order_payments sop CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN sop.note LIKE '{%' THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array' THEN (sop.note)::jsonb -> 'items' ELSE '[]'::jsonb END ELSE '[]'::jsonb END) AS elem WHERE sop.sale_order_id = ? AND sop.change_type = '退款' AND sop.status = '已支付'), agg AS (SELECT sale_item_id, SUM(refund_amount) AS refunded FROM refund_items WHERE sale_item_id IS NOT NULL GROUP BY sale_item_id) UPDATE sale_items si SET received = GREATEST(0, si.received::numeric - COALESCE(agg.refunded, 0)), updated_at = NOW() FROM (SELECT sale_item_id FROM sale_items WHERE sale_order_id = ? AND item_direction = '购买') ai LEFT JOIN agg ON agg.sale_item_id = ai.sale_item_id WHERE si.sale_item_id = ai.sale_item_id"`;
 
 exports[`applyRechargeOnOrderPaid SQL 一致性守护（三端独立副本） > Snapshot 守护：三端 UPSERT 文本任一漂移立即可见 1`] = `
 {
@@ -20,23 +14,7 @@ exports[`applyRechargeOnOrderPaid SQL 一致性守护（三端独立副本） > 
 }
 `;
 
-exports[`applyRechargeOnOrderPaid SQL 一致性守护（三端独立副本） Snapshot 守护：三端 UPSERT 文本任一漂移立即可见 1`] = `
-{
-  "adminTs": "INSERT INTO prepaid_cards (card_id, user_id, balance) VALUES (?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW() RETURNING card_id",
-  "payNotify": "INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at) VALUES (?, ?, ?, NOW(), NOW()) ON CONFLICT (user_id) DO UPDATE SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW() RETURNING card_id",
-  "staff": "INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at) VALUES (?, ?, ?, NOW(), NOW()) ON CONFLICT (user_id) DO UPDATE SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW() RETURNING card_id",
-}
-`;
-
 exports[`audit-15 P0-15-02 协同：四端 settlePointsForOrder SQL 一致性守护 > Snapshot 守护（提交后任一字符漂移立即可见） > settlePoints 关键 SQL 文本快照 1`] = `
-{
-  "granted": "SELECT COALESCE(SUM(amount), 0)::bigint AS granted FROM point_transactions WHERE ref_order_id = ?",
-  "netSettled": "SELECT COALESCE(SUM(COALESCE(received,0) - COALESCE(refunded_amount,0)), 0)::numeric AS net_settled FROM sale_orders WHERE sale_order_id = ? OR ref_sale_order_id = ?",
-  "upsert": "INSERT INTO point_transactions (user_id, type, amount, ref_order_id, created_at) VALUES (?, ?, ?, ?, NOW()) ON CONFLICT (user_id, ref_order_id, type) WHERE ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销') DO UPDATE SET amount = point_transactions.amount + EXCLUDED.amount, created_at = NOW()",
-}
-`;
-
-exports[`audit-15 P0-15-02 协同：四端 settlePointsForOrder SQL 一致性守护 Snapshot 守护（提交后任一字符漂移立即可见） settlePoints 关键 SQL 文本快照 1`] = `
 {
   "granted": "SELECT COALESCE(SUM(amount), 0)::bigint AS granted FROM point_transactions WHERE ref_order_id = ?",
   "netSettled": "SELECT COALESCE(SUM(COALESCE(received,0) - COALESCE(refunded_amount,0)), 0)::numeric AS net_settled FROM sale_orders WHERE sale_order_id = ? OR ref_sale_order_id = ?",
@@ -100,71 +78,7 @@ exports[`paidUnusedSessions 派生口径守护（admin SQL snapshot + 四端 JS 
 ]
 `;
 
-exports[`paidUnusedSessions 派生口径守护（admin SQL snapshot + 四端 JS 基准 case 表） admin paid-sessions.ts paidUnused SQL 文本快照（任一字符漂移立即可见） 1`] = `"CASE WHEN ? IS NULL THEN ? ELSE GREATEST(COALESCE(?, 0) - GREATEST(? - ?, 0), 0) END"`;
-
-exports[`paidUnusedSessions 派生口径守护（admin SQL snapshot + 四端 JS 基准 case 表） 基准 case 表快照（前端三端派生公式须与此一致，改 case 需同步四端） 1`] = `
-[
-  {
-    "expected": 10,
-    "name": "全付未用",
-    "paid": 10,
-    "remaining": 10,
-    "total": 10,
-  },
-  {
-    "expected": 7,
-    "name": "全付用3",
-    "paid": 10,
-    "remaining": 7,
-    "total": 10,
-  },
-  {
-    "expected": 10,
-    "name": "部分付用2",
-    "paid": 12,
-    "remaining": 13,
-    "total": 15,
-  },
-  {
-    "expected": 0,
-    "name": "欠款未付",
-    "paid": 0,
-    "remaining": 10,
-    "total": 10,
-  },
-  {
-    "expected": 0,
-    "name": "用满已付",
-    "paid": 5,
-    "remaining": 5,
-    "total": 10,
-  },
-  {
-    "expected": 5,
-    "name": "脏数据 remaining>total used clamp 到 0",
-    "paid": 5,
-    "remaining": 13,
-    "total": 8,
-  },
-  {
-    "expected": 7,
-    "name": "历史 NULL 退回物理剩余",
-    "paid": null,
-    "remaining": 7,
-    "total": 10,
-  },
-]
-`;
-
 exports[`ticket 2026-05-19 admin orders.ts 关键 SQL 纳入跨端守护 > Snapshot 守护：admin 关键 SQL 整体文本快照 > admin 储值卡扣款相关 3 段 SQL 快照（任一漂移立即可见） 1`] = `
-{
-  "lockCard": "SELECT card_id, balance FROM prepaid_cards WHERE user_id = ? FOR UPDATE",
-  "lockOrder": "SELECT status, payment_method, store_id, total_amount, payable_amount, received, prepaid_card_amount, client_user_id, customer_name FROM sale_orders WHERE sale_order_id = ? FOR UPDATE",
-  "updBalance": "UPDATE prepaid_cards SET balance = balance - ?::numeric, updated_at = NOW() WHERE card_id = ?",
-}
-`;
-
-exports[`ticket 2026-05-19 admin orders.ts 关键 SQL 纳入跨端守护 Snapshot 守护：admin 关键 SQL 整体文本快照 admin 储值卡扣款相关 3 段 SQL 快照（任一漂移立即可见） 1`] = `
 {
   "lockCard": "SELECT card_id, balance FROM prepaid_cards WHERE user_id = ? FOR UPDATE",
   "lockOrder": "SELECT status, payment_method, store_id, total_amount, payable_amount, received, prepaid_card_amount, client_user_id, customer_name FROM sale_orders WHERE sale_order_id = ? FOR UPDATE",
@@ -174,21 +88,9 @@ exports[`ticket 2026-05-19 admin orders.ts 关键 SQL 纳入跨端守护 Snapsho
 
 exports[`ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护 > Snapshot 守护（任一字符漂移即可见） > paid_sessions 重算 SQL 文本快照 1`] = `"UPDATE sale_items SET paid_sessions = CASE WHEN sale_items.session_count IS NULL THEN NULL WHEN op.total_amount <= 0 THEN sale_items.session_count WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count ELSE LEAST(sale_items.session_count, FLOOR(sale_items.received::numeric * sale_items.session_count / sale_items.sale_amount::numeric)::integer) END, updated_at = NOW() FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = ?) op WHERE sale_items.sale_order_id = ?"`;
 
-exports[`ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护 Snapshot 守护（任一字符漂移即可见） paid_sessions 重算 SQL 文本快照 1`] = `"UPDATE sale_items SET paid_sessions = CASE WHEN sale_items.session_count IS NULL THEN NULL WHEN op.total_amount <= 0 THEN sale_items.session_count WHEN sale_items.sale_amount <= 0 THEN sale_items.session_count ELSE LEAST(sale_items.session_count, FLOOR(sale_items.received::numeric * sale_items.session_count / sale_items.sale_amount::numeric)::integer) END, updated_at = NOW() FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = ?) op WHERE sale_items.sale_order_id = ?"`;
-
 exports[`寄存单实际单价重算 SQL 双端字节同义守护 > Snapshot 守护 > 寄存单实际单价重算 SQL 文本快照 1`] = `"UPDATE sale_items SET unit_real_price = CASE WHEN session_count > 0 AND received > 0 THEN ROUND(received::numeric / session_count, 2) ELSE 0 END, updated_at = NOW() WHERE sale_order_id = ? AND item_direction = '购买' AND product_type = '疗程卡' -- DEPOSIT_REAL_PRICE"`;
 
-exports[`寄存单实际单价重算 SQL 双端字节同义守护 Snapshot 守护 寄存单实际单价重算 SQL 文本快照 1`] = `"UPDATE sale_items SET unit_real_price = CASE WHEN session_count > 0 AND received > 0 THEN ROUND(received::numeric / session_count, 2) ELSE 0 END, updated_at = NOW() WHERE sale_order_id = ? AND item_direction = '购买' AND product_type = '疗程卡' -- DEPOSIT_REAL_PRICE"`;
-
 exports[`服务单 finalize 跨端 SQL 一致性守护（staff / client / admin 三端） > Snapshot 守护 > finalize 三条核心 SQL 文本快照 1`] = `
-{
-  "commInsert": "INSERT INTO service_commissions (service_item_id, employee_id, role_type, allocation_ratio, commission_rate, commission_amount, fixed_fee, consume_amount, is_void) VALUES (?, ?, ?, 1.00, ?, ?, ?, ?, FALSE) ON CONFLICT (service_item_id, employee_id, role_type) WHERE is_void = false DO NOTHING",
-  "deduct": "UPDATE sale_items SET remaining_sessions = remaining_sessions - ? WHERE sale_item_id = ? AND remaining_sessions >= ? AND remaining_sessions IS NOT NULL AND (session_count - remaining_sessions + ?) <= COALESCE(paid_sessions, session_count)",
-  "rate": "SELECT commission_rate FROM commission_rate_matrix WHERE order_type = '服务单' AND role_type = ? AND sales_category = ? AND amount_tier_min <= ? AND (amount_tier_max IS NULL OR amount_tier_max >= ?) AND org_id = (SELECT m.id FROM service_orders so JOIN stores s ON so.store_id = s.store_id JOIN org_nodes son ON s.org_node_id = son.id JOIN org_nodes m ON son.parent_id = m.id WHERE so.service_order_id = ?) ORDER BY amount_tier_min DESC LIMIT 1",
-}
-`;
-
-exports[`服务单 finalize 跨端 SQL 一致性守护（staff / client / admin 三端） Snapshot 守护 finalize 三条核心 SQL 文本快照 1`] = `
 {
   "commInsert": "INSERT INTO service_commissions (service_item_id, employee_id, role_type, allocation_ratio, commission_rate, commission_amount, fixed_fee, consume_amount, is_void) VALUES (?, ?, ?, 1.00, ?, ?, ?, ?, FALSE) ON CONFLICT (service_item_id, employee_id, role_type) WHERE is_void = false DO NOTHING",
   "deduct": "UPDATE sale_items SET remaining_sessions = remaining_sessions - ? WHERE sale_item_id = ? AND remaining_sessions >= ? AND remaining_sessions IS NOT NULL AND (session_count - remaining_sessions + ?) <= COALESCE(paid_sessions, session_count)",
