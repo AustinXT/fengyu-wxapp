@@ -532,7 +532,7 @@ describe('service.start', () => {
       if (sql.includes('FROM sale_items') && sql.includes('FOR UPDATE')) {
         return { rows: [{ sale_item_id: 'item-001', remaining_sessions: 2, session_count: 2, paid_sessions: 2, product_type: '疗程卡' }], rowCount: 1 }
       }
-      if (sql.includes('GROUP BY sale_item_id')) return { rows: [], rowCount: 0 }
+      if (sql.includes('GROUP BY reserved_item.sale_item_id')) return { rows: [], rowCount: 0 }
       return { rows: [], rowCount: 1 }
     })
     pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
@@ -544,6 +544,9 @@ describe('service.start', () => {
     expect(updateSql).toContain("AND status = '待服务'")
     expect(clientQuery.mock.calls.some((call) => call[0].includes('FOR UPDATE'))).toBe(true)
     expect(clientQuery.mock.calls.some((call) => call[0].includes('SET reserved_at = $1'))).toBe(true)
+    const reservedSql = clientQuery.mock.calls.find((call) => call[0].includes('FROM service_items reserved_item'))[0]
+    expect(reservedSql).toMatch(/JOIN service_orders reserved_order/)
+    expect(reservedSql).toMatch(/reserved_order\.status IN \('服务中', '待客户确认'\)/)
   })
 
   test('并发竞态：start UPDATE rowCount=0 时报错', async () => {
@@ -561,7 +564,7 @@ describe('service.start', () => {
         if (sql.includes('FROM sale_items') && sql.includes('FOR UPDATE')) {
           return { rows: [{ sale_item_id: 'item-001', remaining_sessions: 1, session_count: 1, paid_sessions: 1, product_type: '疗程卡' }], rowCount: 1 }
         }
-        if (sql.includes('GROUP BY sale_item_id')) return { rows: [], rowCount: 0 }
+        if (sql.includes('GROUP BY reserved_item.sale_item_id')) return { rows: [], rowCount: 0 }
         if (sql.includes('UPDATE service_orders')) return { rows: [], rowCount: 0 }
         return { rows: [], rowCount: 1 }
       }),
@@ -586,7 +589,7 @@ describe('service.start', () => {
       if (sql.includes('FROM sale_items') && sql.includes('FOR UPDATE')) {
         return { rows: [{ sale_item_id: 'item-001', remaining_sessions: 5, session_count: 5, paid_sessions: 3, product_type: '疗程卡' }], rowCount: 1 }
       }
-      if (sql.includes('GROUP BY sale_item_id')) {
+      if (sql.includes('GROUP BY reserved_item.sale_item_id')) {
         return { rows: [{ sale_item_id: 'item-001', total_reserved: '2' }], rowCount: 1 }
       }
       return { rows: [], rowCount: 1 }

@@ -16,6 +16,7 @@ const { shanghaiDateStr, shanghaiYYMMDD } = require('../utils/datetime')
 const { assertNoPendingRefundByServiceOrder } = require('../utils/refund')
 const { isStoreInScope, restrictToBoundEmployee } = require('../utils/scope')
 const { DEPOSIT_REFUND_REMARK } = require('../utils/consume-filter')
+const { grantVisitPointsSafe } = require('../utils/visit-points')
 
 /**
  * 创建服务单
@@ -412,13 +413,17 @@ async function start(ctx) {
 
     // 2. 在行锁持有期间汇总其他服务单已预扣的次数；当前服务单的多条明细要合并校验。
     const reservedRows = await client.query(
-      `SELECT sale_item_id,
-              COALESCE(SUM(session_used) FILTER (
-                WHERE reserved_at IS NOT NULL AND service_order_id != $2
+      `SELECT reserved_item.sale_item_id,
+              COALESCE(SUM(reserved_item.session_used) FILTER (
+                WHERE reserved_item.reserved_at IS NOT NULL
+                  AND reserved_item.service_order_id != $2
+                  AND reserved_order.status IN ('服务中', '待客户确认')
               ), 0) AS total_reserved
-         FROM service_items
-        WHERE sale_item_id = ANY($1)
-        GROUP BY sale_item_id`,
+         FROM service_items reserved_item
+         JOIN service_orders reserved_order
+           ON reserved_order.service_order_id = reserved_item.service_order_id
+        WHERE reserved_item.sale_item_id = ANY($1)
+        GROUP BY reserved_item.sale_item_id`,
       [saleItemIds, serviceOrderId]
     )
     const reservedBySaleItemId = new Map(
@@ -702,6 +707,10 @@ async function finalizeServiceOrder(client, so, items, ctx, now) {
       [now, so.appointment_id]
     )
   }
+
+  // 会员到店积分：失败仅记 points.visitGrantFailed，不阻断服务完成。
+  // 按 service_date + client_user_id 幂等；员工 complete 阶段不发，仅最终 confirm 后发。
+  await grantVisitPointsSafe(client, so, items, ctx, now)
 
   return true
 }

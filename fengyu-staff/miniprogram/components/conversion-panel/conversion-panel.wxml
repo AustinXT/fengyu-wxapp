@@ -130,15 +130,15 @@
   <!-- 底部差额汇总 -->
   <view class="conv-summary">
     <view class="conv-summary-row">
-      <text class="conv-summary-label">转入金额</text>
+      <text class="conv-summary-label">应付金额</text>
       <text class="conv-summary-value">¥{{convertInAmount}}</text>
     </view>
     <view class="conv-summary-row">
-      <text class="conv-summary-label">折抵总额</text>
+      <text class="conv-summary-label">抵扣金额</text>
       <text class="conv-summary-value conv-summary-value--discount">-¥{{deductibleSumDisplay}}</text>
     </view>
     <view class="conv-summary-row">
-      <text class="conv-summary-label">差额</text>
+      <text class="conv-summary-label">实付差额</text>
       <block wx:if="{{priceDiff > 0}}">
         <text class="conv-summary-value">¥{{priceDiffDisplay}}</text>
       </block>

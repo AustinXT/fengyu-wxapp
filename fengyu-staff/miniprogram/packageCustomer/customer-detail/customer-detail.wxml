@@ -209,10 +209,9 @@
                   <text class="status-tag status-tag--{{item.statusClass}}">{{item.status}}</text>
                 </view>
                 <view class="home-product-counts">
+                  <text class="home-product-remaining">待提 {{item.pendingPickupQuantity}}{{item.unit}}</text>
+                  <text>已付 {{item.paidQuantity}}{{item.unit}}</text>
                   <text>购买 {{item.purchasedQuantity}}{{item.unit}}</text>
-                  <text>已提 {{item.pickedQuantity}}{{item.unit}}</text>
-                  <text wx:if="{{item.refundedQuantity > 0}}">已退 {{item.refundedQuantity}}{{item.unit}}</text>
-                  <text class="home-product-remaining">待提 {{item.remainingQuantity}}{{item.unit}}</text>
                 </view>
                 <view class="home-product-meta">
                   <text>{{item.storeName || item.storeId}}</text>

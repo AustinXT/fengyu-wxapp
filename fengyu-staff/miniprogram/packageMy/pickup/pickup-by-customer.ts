@@ -19,6 +19,7 @@ interface PickupItem {
   specName: string | null
   quantity: number
   pickedUpQuantity: number
+  paidQuantity: number
   remaining: number
   storeId: string
   storeName: string | null

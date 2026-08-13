@@ -852,7 +852,8 @@ describe('customer.homeProducts', () => {
       .mockResolvedValueOnce([{
         sale_item_id: 'SI-HOME', sale_order_id: 'SO-HOME', product_name: '精华液',
         unit: '盒', purchased_quantity: 6, picked_quantity: 2, refunded_quantity: 1,
-        remaining_quantity: 3, store_id: 'store-999', store_name: '外店',
+        paid_quantity: 5, pending_pickup_quantity: 3, remaining_quantity: 3,
+        store_id: 'store-999', store_name: '外店',
         purchased_at: '2026-08-01T10:00:00Z', refund_pending: false,
       }])
 
@@ -875,7 +876,8 @@ describe('customer.homeProducts', () => {
       .mockResolvedValueOnce([{
         sale_item_id: 'SI-PENDING', sale_order_id: 'SO-PENDING', product_name: '面膜',
         purchased_quantity: 1, picked_quantity: 0, refunded_quantity: 0,
-        remaining_quantity: 1, store_id: 'store-001', purchased_at: '2026-08-02T10:00:00Z',
+        paid_quantity: 1, pending_pickup_quantity: 1, remaining_quantity: 1,
+        store_id: 'store-001', purchased_at: '2026-08-02T10:00:00Z',
         refund_pending: true,
       }])
 
@@ -894,10 +896,36 @@ describe('customer.homeProducts', () => {
 
     const sql = pg.query.mock.calls[1][0]
     expect(sql).toContain('FROM pickup_records')
-    expect(sql).toContain("o.status IN ('已支付', '已完成')")
+    expect(sql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
     expect(sql).toContain("si.item_direction = '购买'")
     expect(sql).toContain("si.product_type = '家居产品'")
+    expect(sql).toMatch(/FLOOR\(GREATEST\(0, si\.received::numeric\) \* si\.quantity \/ NULLIF\(si\.sale_amount::numeric, 0\)\)/)
+    expect(sql).toContain('GREATEST(paid_quantity - picked_quantity, 0)')
     expect(sql).not.toMatch(/o\.store_id\s*=/)
+  })
+
+  test('部分支付家居产品返回已付整件数和待提数量', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-partial-home' })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([{
+        sale_item_id: 'SI-PARTIAL-HOME', sale_order_id: 'SO-PARTIAL-HOME', product_name: '面膜',
+        unit: '盒', purchased_quantity: 10, paid_quantity: 2, picked_quantity: 0,
+        refunded_quantity: 0, remaining_quantity: 10, pending_pickup_quantity: 2,
+        store_id: 'store-001', store_name: '本店', purchased_at: '2026-08-13T10:00:00Z',
+        refund_pending: false,
+      }])
+
+    await customerRoutes.homeProducts(ctx)
+
+    expect(ctx.result).toEqual([
+      expect.objectContaining({
+        purchasedQuantity: 10,
+        paidQuantity: 2,
+        pendingPickupQuantity: 2,
+        status: '待提货',
+      }),
+    ])
   })
 
   test('缺少顾客标识时拒绝', async () => {
