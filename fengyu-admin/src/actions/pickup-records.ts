@@ -351,10 +351,22 @@ export interface AvailablePickupItem {
   productName: string | null
   quantity: number
   pickedUpQuantity: number
+  paidQuantity: number
   remaining: number
   unitRealPrice: string
   storeId: string
   storeName: string | null
+}
+
+function pendingHomeProductQuantity(row: {
+  quantity: number
+  settled_quantity: number
+  picked_quantity: number
+  paid_quantity: number
+}): number {
+  const physicalRemaining = Math.max(0, Number(row.quantity) - Number(row.settled_quantity || 0))
+  const paidRemaining = Math.max(0, Number(row.paid_quantity || 0) - Number(row.picked_quantity || 0))
+  return Math.min(physicalRemaining, paidRemaining)
 }
 
 export const getAvailablePickupItems = withPermission(
@@ -364,27 +376,62 @@ export const getAvailablePickupItems = withPermission(
     clientUserId: string,
   ): Promise<AvailablePickupItem[]> => {
   const rows = await db.execute(sql`
-    SELECT
-      COALESCE(si.sale_item_group_id, si.sale_item_id) AS sale_item_group_id,
-      MIN(si.sale_item_id) AS sale_item_id,
-      ARRAY_AGG(si.sale_item_id ORDER BY si.sale_item_id) AS source_sale_item_ids,
-      MIN(si.sale_order_id) AS sale_order_id,
-      MIN(si.product_name) AS product_name,
-      SUM(si.quantity)::int AS quantity,
-      SUM(COALESCE(si.picked_up_quantity, 0))::int AS picked_up_quantity,
-      MIN(si.unit_real_price) AS unit_real_price,
-      MIN(o.store_id) AS store_id,
-      MIN(s.store_name) AS store_name
-    FROM sale_items si
-    INNER JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-    LEFT JOIN stores s ON s.store_id = o.store_id
-    WHERE o.client_user_id = ${clientUserId}
-      AND o.status = '已支付'
-      AND si.item_direction = '购买'
-      AND si.product_type = '家居产品'
-      AND si.quantity > COALESCE(si.picked_up_quantity, 0)
-    GROUP BY COALESCE(si.sale_item_group_id, si.sale_item_id)
-    ORDER BY MAX(o.paid_at) DESC, MIN(si.sale_item_id)
+    WITH pickup_totals AS (
+      SELECT sale_item_id, SUM(pickup_quantity)::int AS picked_quantity
+        FROM pickup_records
+       GROUP BY sale_item_id
+    ), home_product_rows AS (
+      SELECT COALESCE(si.sale_item_group_id, si.sale_item_id) AS sale_item_group_id,
+             si.sale_item_id,
+             si.sale_order_id,
+             si.product_name,
+             si.quantity::int AS quantity,
+             LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
+             GREATEST(0, COALESCE(pt.picked_quantity, 0))::int AS picked_quantity,
+             CASE
+               WHEN si.sale_amount <= 0 THEN si.quantity
+               ELSE LEAST(
+                 si.quantity,
+                 FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
+               )
+             END AS paid_quantity,
+             si.unit_real_price,
+             o.store_id,
+             o.paid_at,
+             s.store_name
+        FROM sale_items si
+        JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+        LEFT JOIN stores s ON s.store_id = o.store_id
+        LEFT JOIN pickup_totals pt ON pt.sale_item_id = si.sale_item_id
+       WHERE o.client_user_id = ${clientUserId}
+         AND o.status IN ('已支付', '部分支付', '已完成')
+         AND si.item_direction = '购买'
+         AND si.product_type = '家居产品'
+    ), pickup_balances AS (
+      SELECT *,
+             LEAST(
+               quantity - settled_quantity,
+               GREATEST(paid_quantity - picked_quantity, 0)
+             )::int AS pending_pickup_quantity
+        FROM home_product_rows
+    )
+    SELECT sale_item_group_id,
+           MIN(sale_item_id) FILTER (WHERE pending_pickup_quantity > 0) AS sale_item_id,
+           ARRAY_AGG(sale_item_id ORDER BY sale_item_id)
+             FILTER (WHERE pending_pickup_quantity > 0) AS source_sale_item_ids,
+           MIN(sale_order_id) AS sale_order_id,
+           MIN(product_name) AS product_name,
+           SUM(quantity)::int AS quantity,
+           SUM(picked_quantity)::int AS picked_up_quantity,
+           SUM(paid_quantity)::int AS paid_quantity,
+           SUM(pending_pickup_quantity)::int AS pending_pickup_quantity,
+           MIN(unit_real_price) AS unit_real_price,
+           MIN(store_id) AS store_id,
+           MIN(store_name) AS store_name
+      FROM pickup_balances
+  GROUP BY sale_item_group_id
+    HAVING SUM(pending_pickup_quantity) > 0
+  ORDER BY MAX(paid_at) DESC, MIN(sale_item_id) FILTER (WHERE pending_pickup_quantity > 0)
   `)
 
   // 不按原订单门店过滤：提货店可能与原销售店不同（顾客跨店提货），
@@ -397,7 +444,8 @@ export const getAvailablePickupItems = withPermission(
     productName: (r.product_name as string | null) ?? null,
     quantity: Number(r.quantity),
     pickedUpQuantity: Number(r.picked_up_quantity ?? 0),
-    remaining: Number(r.quantity) - Number(r.picked_up_quantity ?? 0),
+    paidQuantity: Number(r.paid_quantity ?? 0),
+    remaining: Number(r.pending_pickup_quantity ?? 0),
     unitRealPrice: (r.unit_real_price as string) ?? '0',
     storeId: r.store_id as string,
     storeName: (r.store_name as string | null) ?? null,
@@ -445,7 +493,20 @@ async function createGroupedPickupRecord(
     const locked = (await tx.execute(sql`
       SELECT si.sale_item_id, si.sale_item_group_id, si.sale_order_id, si.sku_id,
              si.product_name, si.quantity, COALESCE(si.picked_up_quantity, 0) AS picked_up_quantity,
-             o.client_user_id, o.customer_name
+             LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
+             COALESCE((
+               SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
+                WHERE pr.sale_item_id = si.sale_item_id
+             ), 0)::int AS picked_quantity,
+             CASE
+               WHEN si.sale_amount <= 0 THEN si.quantity
+               ELSE LEAST(
+                 si.quantity,
+                 FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
+               )
+             END AS paid_quantity,
+             si.product_type, si.item_direction,
+             o.client_user_id, o.customer_name, o.status AS order_status
         FROM sale_items si
         JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
        WHERE si.sale_item_id IN (${sourceIdList})
@@ -458,8 +519,14 @@ async function createGroupedPickupRecord(
       product_name: string | null
       quantity: number
       picked_up_quantity: number
+      settled_quantity: number
+      picked_quantity: number
+      paid_quantity: number
+      product_type: string
+      item_direction: string
       client_user_id: string | null
       customer_name: string | null
+      order_status: string
     }>
     if (locked.length !== sourceIds.length) {
       throw new ApiError('CONFLICT', '部分家居产品已更新，请刷新后重试')
@@ -470,7 +537,9 @@ async function createGroupedPickupRecord(
       || row.sku_id !== first.sku_id
       || (row.sale_item_group_id || row.sale_item_id) !== (first.sale_item_group_id || first.sale_item_id)
       || Number(row.quantity) !== 1
-      || Number(row.picked_up_quantity) !== 0,
+      || row.product_type !== '家居产品'
+      || row.item_direction !== '购买'
+      || !['已支付', '部分支付', '已完成'].includes(row.order_status),
     )) {
       throw new ApiError('CONFLICT', '家居产品状态已更新，请刷新后重试')
     }
@@ -487,7 +556,11 @@ async function createGroupedPickupRecord(
       throw new ApiError('INVALID_STATE', '该订单退款审批中，暂不可提货')
     }
 
-    const selected = locked.slice(0, data.pickupQuantity)
+    const eligible = locked.filter((row) => pendingHomeProductQuantity(row) > 0)
+    if (eligible.length < data.pickupQuantity) {
+      throw new ApiError('INVALID_STATE', `已支付可提数量不足，当前可提 ${eligible.length}`)
+    }
+    const selected = eligible.slice(0, data.pickupQuantity)
     const stockRows = (await tx.execute(sql`
       SELECT id, sku_id, sku_name, batch_no, expiry_date, quantity_on_hand
         FROM store_inventory_stocks
@@ -585,10 +658,8 @@ async function createGroupedPickupRecord(
 /**
  * 创建提货记录
  *
- * 事务内原子累加 sale_items.picked_up_quantity 并插入 pickup_records。
- * 使用 UPDATE ... WHERE 中的条件保证并发安全：
- *   (COALESCE(picked_up_quantity, 0) + $1) <= quantity
- * 若超出可提数量，UPDATE 返回 0 行，事务回滚。
+ * 事务内锁定 sale_items，按行级净实收重算已付整件数，
+ * 同时以 pickup_records 核对真实已提数量，防止超出已付权益。
  */
 export const createPickupRecord = withPermission(
   'pickup_record:create',
@@ -668,7 +739,58 @@ export const createPickupRecord = withPermission(
 
   try {
     const createdId = await db.transaction(async (tx) => {
-      // 1. 原子累加 picked_up_quantity，仅家居产品，超量会被 WHERE 拦截
+      const locked = (await tx.execute(sql`
+        SELECT si.sale_item_id, si.sale_order_id, si.sku_id, si.product_name,
+               si.product_type, si.item_direction, si.quantity,
+               LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
+               COALESCE((
+                 SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
+                  WHERE pr.sale_item_id = si.sale_item_id
+               ), 0)::int AS picked_quantity,
+               CASE
+                 WHEN si.sale_amount <= 0 THEN si.quantity
+                 ELSE LEAST(
+                   si.quantity,
+                   FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
+                 )
+               END AS paid_quantity,
+               o.status AS order_status, o.client_user_id, o.customer_name
+          FROM sale_items si
+          JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+         WHERE si.sale_item_id = ${data.saleItemId}
+         FOR UPDATE OF si
+      `)) as unknown as Array<{
+        sale_item_id: string
+        sale_order_id: string
+        sku_id: string | null
+        product_name: string | null
+        product_type: string
+        item_direction: string
+        quantity: number
+        settled_quantity: number
+        picked_quantity: number
+        paid_quantity: number
+        order_status: string
+        client_user_id: string | null
+        customer_name: string | null
+      }>
+      const lockedItem = locked[0]
+      if (!lockedItem) throw new ApiError('NOT_FOUND', '销售明细不存在')
+      if (lockedItem.product_type !== '家居产品' || lockedItem.item_direction !== '购买') {
+        throw new ApiError('INVALID_PARAMS', '销售明细不是可提货家居产品')
+      }
+      if (!['已支付', '部分支付', '已完成'].includes(lockedItem.order_status)) {
+        throw new ApiError('INVALID_STATE', '订单当前状态不允许提货')
+      }
+      const pendingPickupQuantity = pendingHomeProductQuantity(lockedItem)
+      if (data.pickupQuantity > pendingPickupQuantity) {
+        throw new ApiError('INVALID_STATE', `已支付可提数量不足，当前可提 ${pendingPickupQuantity}`)
+      }
+      if (await hasPendingRefund(tx, lockedItem.sale_order_id)) {
+        throw new ApiError('INVALID_STATE', '该订单退款审批中，暂不可提货')
+      }
+
+      // 锁行后再累加结算数；WHERE 物理上限作为最后一道数据保护。
       const updated = await tx.execute(sql`
         UPDATE sale_items
            SET picked_up_quantity = COALESCE(picked_up_quantity, 0) + ${data.pickupQuantity},
@@ -695,22 +817,14 @@ export const createPickupRecord = withPermission(
         throw new ApiError('INVALID_STATE', '销售明细缺少 SKU，无法扣减门店库存')
       }
 
-      const orderRows = (await tx.execute(sql`
-        SELECT client_user_id, customer_name
-          FROM sale_orders
-         WHERE sale_order_id = ${updatedItem.sale_order_id}
-         LIMIT 1
-      `)) as unknown as Array<{ client_user_id: string | null; customer_name: string | null }>
-      const orderInfo = orderRows[0] ?? { client_user_id: data.clientUserId, customer_name: null }
-
       const inventoryDocId = await createPickupInventoryDoc(tx, session, {
         storeId: data.storeId,
         saleItemId: updatedItem.sale_item_id,
         saleOrderId: updatedItem.sale_order_id,
         skuId: updatedItem.sku_id,
         productName: updatedItem.product_name,
-        clientUserId: data.clientUserId ?? orderInfo.client_user_id,
-        customerName: orderInfo.customer_name,
+        clientUserId: data.clientUserId ?? lockedItem.client_user_id,
+        customerName: lockedItem.customer_name,
         pickupQuantity: data.pickupQuantity,
         remark: data.remark,
         idempotencyKey: idemKey,

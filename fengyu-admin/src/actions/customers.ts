@@ -608,6 +608,13 @@ export const getCustomerHomeProducts = withPermission(
             LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0))),
             GREATEST(0, COALESCE(pt.picked_quantity, 0))
           )::int AS picked_quantity,
+          CASE
+            WHEN si.sale_amount <= 0 THEN si.quantity
+            ELSE LEAST(
+              si.quantity,
+              FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
+            )
+          END AS paid_quantity,
           o.store_id,
           s.store_name,
           COALESCE(o.paid_at, o.sale_order_datetime, o.created_at) AS purchased_at,
@@ -623,19 +630,23 @@ export const getCustomerHomeProducts = withPermission(
         LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
         LEFT JOIN pickup_totals pt ON pt.sale_item_id = si.sale_item_id
         WHERE o.client_user_id = ${userId}
-          AND o.status IN ('已支付', '已完成')
+          AND o.status IN ('已支付', '部分支付', '已完成')
           AND si.item_direction = '购买'
           AND si.product_type = '家居产品'
+      ), home_product_balances AS (
+        SELECT *,
+               (settled_quantity - picked_quantity)::int AS refunded_quantity,
+               (purchased_quantity - settled_quantity)::int AS remaining_quantity,
+               LEAST(
+                 purchased_quantity - settled_quantity,
+                 GREATEST(paid_quantity - picked_quantity, 0)
+               )::int AS pending_pickup_quantity
+          FROM home_products
       )
-      SELECT *,
-             (settled_quantity - picked_quantity)::int AS refunded_quantity,
-             (purchased_quantity - settled_quantity)::int AS remaining_quantity
-        FROM home_products
-       WHERE NOT (
-         picked_quantity = 0
-         AND settled_quantity = purchased_quantity
-       )
-    ORDER BY (purchased_quantity - settled_quantity > 0) DESC,
+      SELECT *
+        FROM home_product_balances
+       WHERE picked_quantity > 0 OR pending_pickup_quantity > 0
+    ORDER BY (pending_pickup_quantity > 0) DESC,
              purchased_at DESC,
              sale_item_id
     `)
@@ -644,20 +655,24 @@ export const getCustomerHomeProducts = withPermission(
       const pickedQuantity = Number(row.picked_quantity ?? 0)
       const refundedQuantity = Number(row.refunded_quantity ?? 0)
       const remainingQuantity = Number(row.remaining_quantity ?? 0)
+      const paidQuantity = Number(row.paid_quantity ?? 0)
+      const pendingPickupQuantity = Number(row.pending_pickup_quantity ?? 0)
       return {
         saleItemId: String(row.sale_item_id),
         saleOrderId: String(row.sale_order_id),
         productName: String(row.product_name || '家居产品'),
         unit: String(row.unit || '盒'),
         purchasedQuantity: Number(row.purchased_quantity),
+        paidQuantity,
         pickedQuantity,
         refundedQuantity,
         remainingQuantity,
+        pendingPickupQuantity,
         status: deriveHomeProductStatus(
           Boolean(row.refund_pending),
           pickedQuantity,
           refundedQuantity,
-          remainingQuantity,
+          pendingPickupQuantity,
         ),
         storeId: String(row.store_id),
         storeName: (row.store_name as string | null) ?? null,

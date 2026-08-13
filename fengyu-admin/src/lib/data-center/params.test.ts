@@ -11,7 +11,8 @@ describe('parseTab', () => {
 })
 
 describe('parseScope', () => {
-  it('market/store 需带 scopeId，否则回退 all', () => {
+  it('authorized 不需 scopeId，market/store 需带 scopeId', () => {
+    expect(parseScope({ scope: 'authorized' })).toEqual({ type: 'authorized' })
     expect(parseScope({ scope: 'market', scopeId: 'M1' })).toEqual({ type: 'market', id: 'M1' })
     expect(parseScope({ scope: 'store', scopeId: 'S1' })).toEqual({ type: 'store', id: 'S1' })
     expect(parseScope({ scope: 'market' })).toEqual({ type: 'all' }) // 缺 id
@@ -55,6 +56,12 @@ describe('parseBoardParams', () => {
       scope: { type: 'all' },
       timeRange: { preset: 'month' },
       withComparison: true,
+    })
+  })
+
+  it('授权汇总范围传递给看板 action', () => {
+    expect(parseBoardParams({ scope: 'authorized', preset: 'month' }).scope).toEqual({
+      type: 'authorized',
     })
   })
 })

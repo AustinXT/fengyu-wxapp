@@ -56,6 +56,9 @@ const exportSessionSchema = z.object({
     isStoreManager: z.boolean().optional(),
     scopeId: z.string().min(1).max(80),
     scopeType: z.enum(['总部', '市场', '门店']),
+    actions: z.array(z.string().min(1).max(100)).max(300).optional(),
+    scopeStoreIds: z.array(z.string().min(1).max(80)).max(2000).optional(),
+    scopeOrgNodeIds: z.array(z.string().min(1).max(80)).max(3000).optional(),
   })).max(20),
   permissions: z.object({
     actions: z.array(z.string().min(1).max(100)).max(300),
@@ -71,7 +74,12 @@ export function snapshotExportSession(session: AuthSession): AuthSession {
     employeeId: session.employeeId,
     name: session.name,
     phone: session.phone,
-    roles: session.roles.map((role) => ({ ...role })),
+    roles: session.roles.map((role) => ({
+      ...role,
+      ...(role.actions ? { actions: [...role.actions] } : {}),
+      ...(role.scopeStoreIds ? { scopeStoreIds: [...role.scopeStoreIds] } : {}),
+      ...(role.scopeOrgNodeIds ? { scopeOrgNodeIds: [...role.scopeOrgNodeIds] } : {}),
+    })),
     permissions: {
       actions: [...session.permissions.actions],
       scopeStoreIds: [...session.permissions.scopeStoreIds],

@@ -6,6 +6,7 @@ import { Select, SelectOption } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { DataCenterScopeOptions } from "@/lib/data-center/types"
+import { visibleScopeStores } from "@/lib/data-center/scope-options"
 import { cn } from "@/lib/utils"
 
 const PRESETS = [
@@ -17,7 +18,7 @@ const PRESETS = [
 ] as const
 
 /**
- * 数据中心公共筛选器（4 板块共用）：scope 三级级联 + 时间维度 + 同比/环比开关。
+ * 数据中心公共筛选器（4 板块共用）：授权汇总 + 市场/门店级联 + 时间维度 + 同比/环比开关。
  * 状态全部写 URL searchParams（与全站 useUrlFilters 一致），板块组件从 URL 读取并取数。
  */
 export function ScopeTimeFilter({ scopeOptions }: { scopeOptions: DataCenterScopeOptions }) {
@@ -28,6 +29,9 @@ export function ScopeTimeFilter({ scopeOptions }: { scopeOptions: DataCenterScop
   const scopeId = get("scopeId")
   const preset = get("preset") || "month"
   const cmpOn = get("cmp") !== "0"
+  const visibleStoreCount = useMemo(() => visibleScopeStores(scopeOptions).length, [scopeOptions])
+  const canAggregateAuthorized = topLevel !== "all" && visibleStoreCount > 1
+  const scopeLocked = topLevel !== "all" && visibleStoreCount <= 1
 
   // 从 URL 推导当前选中的市场/门店
   const selectedMarketId = useMemo(() => {
@@ -46,7 +50,11 @@ export function ScopeTimeFilter({ scopeOptions }: { scopeOptions: DataCenterScop
 
   function onMarketChange(mid: string) {
     if (!mid) {
-      setMany({ scope: "", scopeId: "" }) // 全部
+      setMany(
+        topLevel === "all"
+          ? { scope: "", scopeId: "" }
+          : { scope: "authorized", scopeId: "" },
+      )
     } else {
       setMany({ scope: "market", scopeId: mid }) // 选市场（清门店）
     }
@@ -72,10 +80,11 @@ export function ScopeTimeFilter({ scopeOptions }: { scopeOptions: DataCenterScop
         <Select
           className="w-40"
           value={selectedMarketId}
-          disabled={topLevel === "store"}
+          disabled={scopeLocked}
           onChange={(e) => onMarketChange(e.target.value)}
         >
           {topLevel === "all" && <SelectOption value="">全部市场</SelectOption>}
+          {canAggregateAuthorized && <SelectOption value="">全部授权门店</SelectOption>}
           {markets.map((m) => (
             <SelectOption key={m.id} value={m.id}>
               {m.name}
@@ -85,7 +94,7 @@ export function ScopeTimeFilter({ scopeOptions }: { scopeOptions: DataCenterScop
         <Select
           className="w-40"
           value={selectedStoreId}
-          disabled={topLevel === "store" || !selectedMarketId}
+          disabled={scopeLocked || !selectedMarketId}
           onChange={(e) => onStoreChange(e.target.value)}
         >
           <SelectOption value="">全部门店</SelectOption>

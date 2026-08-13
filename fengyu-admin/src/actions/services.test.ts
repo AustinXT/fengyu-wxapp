@@ -105,6 +105,10 @@ vi.mock('@/lib/operation-log', () => ({
   logTransition: vi.fn(),
 }))
 
+vi.mock('@/lib/visit-points', () => ({
+  grantVisitPointsSafe: vi.fn().mockResolvedValue({ granted: true }),
+}))
+
 vi.mock('next/cache', () => ({
   revalidatePath: vi.fn(),
 }))
@@ -128,6 +132,7 @@ import { isInScope, isAdminScope, scopeCondition } from '@/lib/permissions'
 import { eq, ilike, gte, lte, desc } from 'drizzle-orm'
 import { serviceOrders } from '@db/service'
 import { DEPOSIT_REFUND_REMARK } from '@/lib/service-remark'
+import { grantVisitPointsSafe } from '@/lib/visit-points'
 
 const mockSession = {
   employeeId: 'MGR-001',
@@ -263,6 +268,14 @@ describe('startServiceOrder — scope + 状态推进', () => {
     expect(result.message).toContain('可用次数不足')
     expect(tx.update).not.toHaveBeenCalled()
     expect(tx.execute).toHaveBeenCalledTimes(2)
+  })
+
+  it('只汇总服务中和待客户确认服务单的有效预扣', () => {
+    const source = readFileSync('src/actions/services.ts', 'utf8')
+    const fnSource = source.slice(source.indexOf('export const startServiceOrder'), source.indexOf(' * C4: 员工标记完成服务'))
+
+    expect(fnSource).toMatch(/INNER JOIN service_orders reserved_order/)
+    expect(fnSource).toMatch(/reserved_order\.status IN \('服务中', '待客户确认'\)/)
   })
 
   it('DB 异常 → 返回友好错误', async () => {
@@ -506,7 +519,14 @@ describe('confirmServiceOrder — scope + 扣减 + paid_sessions 限额 + 服务
   })
 
   it('全部行成功扣减（items_deducted = items_total）→ 确认完成 + 事务内写服务提成（M1）', async () => {
-    ;(db.select as any).mockImplementation(makeSelectChain([{ storeId: 'store-1' }]))
+    ;(db.select as any).mockImplementation(makeSelectChain([{
+      storeId: 'store-1',
+      serviceOrderType: '售后',
+      serviceDate: '2026-08-13',
+      clientUserId: 'client-1',
+      remark: '',
+      hasPositiveItem: true,
+    }]))
     const spy = mockConfirmTx({ status_updated: 1, items_deducted: 2, items_total: 2 })
 
     const result = await confirmServiceOrder('svc-1')
@@ -516,6 +536,17 @@ describe('confirmServiceOrder — scope + 扣减 + paid_sessions 限额 + 服务
     // M1：成功扣减后须在同一事务内写服务提成（settleServiceCommissions 至少多调一次 tx.execute 置 commission_status）
     expect(db.transaction).toHaveBeenCalledOnce()
     expect(spy.execute.mock.calls.length).toBeGreaterThan(1)
+    expect(grantVisitPointsSafe).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        serviceOrderId: 'svc-1',
+        serviceOrderType: '售后',
+        serviceDate: '2026-08-13',
+        clientUserId: 'client-1',
+        hasPositiveItem: true,
+      }),
+      'admin.service.confirm',
+    )
   })
 
   it('admin 用户：跳过 scope 预检查，仍执行扣减 + 写提成', async () => {

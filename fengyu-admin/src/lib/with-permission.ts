@@ -1,4 +1,8 @@
-import { requirePermission, requireAnyPermission } from '@/lib/permissions'
+import {
+  requirePermission,
+  requireAnyPermission,
+} from '@/lib/permissions'
+import { scopeSessionToActions } from '@/lib/action-scope'
 import { parseErrorPrefix } from '@/lib/api-error'
 import type { AuthSession } from '@/lib/types'
 import { getExportSession } from '@/lib/export-session-context'
@@ -57,12 +61,16 @@ async function getActionSession(): Promise<AuthSession | null> {
 export function withPermission<Args extends unknown[], R>(
   action: string,
   fn: (session: AuthSession, ...args: Args) => Promise<R>,
+  options?: { scopeActions?: readonly string[] },
 ): (...args: Args) => Promise<R> {
   return async (...args: Args) => {
     const session = await getActionSession()
     requirePermission(session, action)
     try {
-      return await fn(session, ...args)
+      return await fn(
+        scopeSessionToActions(session, options?.scopeActions ?? [action]),
+        ...args,
+      )
     } catch (err) {
       rethrowWithDigest(err)
     }
@@ -82,7 +90,7 @@ export function withAnyPermission<Args extends unknown[], R>(
     const session = await getActionSession()
     requireAnyPermission(session, actions)
     try {
-      return await fn(session, ...args)
+      return await fn(scopeSessionToActions(session, actions), ...args)
     } catch (err) {
       rethrowWithDigest(err)
     }

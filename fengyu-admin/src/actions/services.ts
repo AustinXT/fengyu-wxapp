@@ -21,6 +21,7 @@ import { DEPOSIT_REFUND_REMARK } from '@/lib/service-remark'
 import { pgErrorCode } from '@/lib/pg-error'
 import { hasPendingRefundByServiceOrder } from '@/lib/refund-cascade'
 import { settleServiceCommissions } from '@/lib/service-commission-settle'
+import { grantVisitPointsSafe } from '@/lib/visit-points'
 import { parseServiceOrderFilters, parseAllocationServiceFilters } from '@/lib/list-filters'
 import {
   offsetPageResult,
@@ -1188,12 +1189,16 @@ export const startServiceOrder = withPermission(
       const reservedRows = saleItemIds.length === 0
         ? []
         : await tx.execute(sql`
-            SELECT sale_item_id, COALESCE(SUM(session_used), 0) AS total_reserved
-            FROM service_items
-            WHERE sale_item_id IN (${sql.join(saleItemIds.map((id) => sql`${id}`), sql`, `)})
-              AND reserved_at IS NOT NULL
-              AND service_order_id <> ${serviceOrderId}
-            GROUP BY sale_item_id
+            SELECT reserved_item.sale_item_id,
+                   COALESCE(SUM(reserved_item.session_used), 0) AS total_reserved
+            FROM service_items reserved_item
+            INNER JOIN service_orders reserved_order
+              ON reserved_order.service_order_id = reserved_item.service_order_id
+            WHERE reserved_item.sale_item_id IN (${sql.join(saleItemIds.map((id) => sql`${id}`), sql`, `)})
+              AND reserved_item.reserved_at IS NOT NULL
+              AND reserved_item.service_order_id <> ${serviceOrderId}
+              AND reserved_order.status IN ('服务中', '待客户确认')
+            GROUP BY reserved_item.sale_item_id
           `)
       const reservedBySaleItemId = new Map(
         Array.from(reservedRows as unknown as Iterable<Record<string, unknown>>)
@@ -1353,6 +1358,15 @@ export const confirmServiceOrder = withPermission(
   const [svcCtx] = await db
     .select({
       storeId: serviceOrders.storeId,
+      serviceOrderType: serviceOrders.serviceOrderType,
+      serviceDate: serviceOrders.serviceDate,
+      clientUserId: serviceOrders.clientUserId,
+      remark: serviceOrders.remark,
+      hasPositiveItem: sql<boolean>`EXISTS (
+        SELECT 1 FROM service_items sit
+        WHERE sit.service_order_id = ${serviceOrders.serviceOrderId}
+          AND COALESCE(sit.unit_real_price, 0) > 0
+      )`,
       employeeName: staffWechatUsers.name,
       customerName: clientWechatUsers.name,
     })
@@ -1448,6 +1462,15 @@ export const confirmServiceOrder = withPermission(
         name: session.name,
         role: session.roles[0]?.role ?? null,
       })
+      // 到店积分失败由 SAVEPOINT 隔离并落 points.visitGrantFailed，不阻断服务完成。
+      await grantVisitPointsSafe(tx, {
+        serviceOrderId,
+        serviceOrderType: svcCtx?.serviceOrderType,
+        serviceDate: svcCtx?.serviceDate,
+        clientUserId: svcCtx?.clientUserId,
+        remark: svcCtx?.remark,
+        hasPositiveItem: svcCtx?.hasPositiveItem,
+      }, 'admin.service.confirm')
       return { kind: 'ok' as const }
     })
   } catch (err) {

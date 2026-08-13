@@ -220,7 +220,7 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
               <div className="text-center py-8 text-[#999999]">
                 <p>该顾客暂无可提货的家居产品</p>
                 <p className="text-xs mt-1">
-                  需要顾客在已支付订单中购买了家居产品，且尚未全部提完
+                  需要已支付或部分支付的金额至少覆盖一件家居产品
                 </p>
               </div>
             ) : (
@@ -239,10 +239,13 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
                         原销售门店
                       </th>
                       <th className="px-4 py-3 text-right font-medium text-gray-500">
-                        总 / 已提
+                        待提
                       </th>
                       <th className="px-4 py-3 text-right font-medium text-gray-500">
-                        可提
+                        已付
+                      </th>
+                      <th className="px-4 py-3 text-right font-medium text-gray-500">
+                        购买
                       </th>
                     </tr>
                   </thead>
@@ -272,12 +275,11 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
                             {item.saleItemId}
                           </td>
                           <td className="px-4 py-3">{item.storeName ?? '—'}</td>
-                          <td className="px-4 py-3 text-right">
-                            {item.quantity} / {item.pickedUpQuantity}
-                          </td>
                           <td className="px-4 py-3 text-right font-medium text-[#C0322A]">
                             {item.remaining}
                           </td>
+                          <td className="px-4 py-3 text-right">{item.paidQuantity}</td>
+                          <td className="px-4 py-3 text-right">{item.quantity}</td>
                         </tr>
                       )
                     })}
