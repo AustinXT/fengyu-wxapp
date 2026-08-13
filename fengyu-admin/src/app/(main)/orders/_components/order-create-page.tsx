@@ -23,7 +23,7 @@ import { formatDate } from "@/lib/utils"
 import { formatPhoneSafe } from "@/lib/format"
 import { actionErrorMessage } from "@/lib/action-error"
 import { isMember, resolveUnitPrice } from "@/lib/member-pricing"
-import { isOrderServiceStaffCandidate } from "@/lib/order-service-staff"
+import { formatOrderServiceStaffOption, getOrderServiceStaffCandidates, isOrderServiceStaffCandidate } from "@/lib/order-service-staff"
 import type { RechargeConfig } from "@/lib/recharge-tier"
 import type { ProductSku, Store, Employee, Customer, AvailableCoupon } from "@/lib/types"
 import {
@@ -1192,8 +1192,8 @@ export default function OrderCreatePageClient({
                 <label className="text-sm text-[#999999]">指定美容师（可选）</label>
                 <Select className="mt-1" value={selectedEmployeeId} onChange={(e) => setSelectedEmployeeId(e.target.value)}>
                   <option value="">不指定</option>
-                  {employees.filter((employee) => isOrderServiceStaffCandidate(employee, selectedStoreId)).map((e) => (
-                    <option key={e.employeeId} value={e.employeeId}>{e.name} ({e.positionName}){e.isOnBusinessTrip && e.storeId !== selectedStoreId ? `（${e.storeName ?? '外店'}）` : ''}</option>
+                  {getOrderServiceStaffCandidates(employees, selectedStoreId).map((e) => (
+                    <option key={e.employeeId} value={e.employeeId}>{formatOrderServiceStaffOption(e, selectedStoreId)}</option>
                   ))}
                 </Select>
               </div>

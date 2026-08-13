@@ -1882,12 +1882,12 @@ Page({
         const currentStoreId = getCurrentStoreId();
         const supportTag = (staff: typeof list[number]) => (
           staff.isOnBusinessTrip && staff.storeId && staff.storeId !== currentStoreId
-            ? '外店支援'
+            ? '（外援）'
             : ''
         );
         this.setData({
           staffListForPicker: list,
-          staffPickerColumns: ['不指定', ...list.map(s => `${s.name}（${[roleTag(s.skills), s.department, supportTag(s)].filter(Boolean).join('·') || '未分组'}）`)],
+          staffPickerColumns: ['不指定', ...list.map(s => `${s.name}（${[roleTag(s.skills), s.department].filter(Boolean).join('·') || '未分组'}）${supportTag(s)}`)],
         });
       } catch {
         return;

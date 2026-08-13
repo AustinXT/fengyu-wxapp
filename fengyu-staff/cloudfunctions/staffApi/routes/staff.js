@@ -119,7 +119,10 @@ async function list(ctx) {
       AND (u.store_id = $1 OR u.is_on_business_trip = true)
       AND u.employee_id IS NOT NULL
       AND u.skills && ARRAY['美容师','养生师']::text[]
-    ORDER BY d.name, u.name
+    ORDER BY
+      (u.store_id = $1) DESC,
+      d.name,
+      u.name
   `, [targetStoreId])
 
   ctx.result = {

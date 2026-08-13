@@ -1,7 +1,7 @@
 // pages/service-create/service-create.ts — 创建服务单
 import { callStaffApi } from '../../utils/cloud';
 import { formatDateTime, ORDER_TYPE_LABEL } from '../../utils/formatters';
-import { isManager } from '../../utils/role';
+import { getCurrentStoreId, isManager } from '../../utils/role';
 import { expandGroupServiceSessions, groupTreatmentCards, sumGroupValue } from '../../utils/treatment-card-group';
 
 // 寄存单退款专用标准化备注（数据契约）。寄存单是上线时导入老系统历史剩余次数的初始化单据，未走收款流程、
@@ -159,7 +159,14 @@ Page({
     staffName: '',
     isManager: false,
     showStaffPicker: false,
-    staffList: [] as Array<{ staffWfId: string; name: string; department: string; skills?: string[] }>,
+    staffList: [] as Array<{
+      staffWfId: string;
+      name: string;
+      department: string;
+      skills?: string[];
+      storeId?: string;
+      isOnBusinessTrip?: boolean;
+    }>,
     staffColumns: [] as string[],
     assignedStaffWfId: '' as string,
     // 备注
@@ -690,12 +697,25 @@ Page({
   // ===== 店长选择服务人员 =====
   async loadStaffList() {
     try {
-      const data = await callStaffApi<{ staffList: Array<{ staffWfId: string; name: string; department: string; skills?: string[] }> }>('staff.list');
+      const data = await callStaffApi<{ staffList: Array<{
+        staffWfId: string;
+        name: string;
+        department: string;
+        skills?: string[];
+        storeId?: string;
+        isOnBusinessTrip?: boolean;
+      }> }>('staff.list');
       const list = data?.staffList || [];
       const roleTag = (skills?: string[]) => (skills || []).filter(s => s === '美容师' || s === '养生师').join('/');
+      const currentStoreId = getCurrentStoreId();
+      const supportTag = (staff: typeof list[number]) => (
+        staff.isOnBusinessTrip && staff.storeId && staff.storeId !== currentStoreId
+          ? '（外援）'
+          : ''
+      );
       this.setData({
         staffList: list,
-        staffColumns: list.map(s => `${s.name}（${[roleTag(s.skills), s.department].filter(Boolean).join('·') || '未分组'}）`),
+        staffColumns: list.map(s => `${s.name}（${[roleTag(s.skills), s.department].filter(Boolean).join('·') || '未分组'}）${supportTag(s)}`),
       });
     } catch (_) {}
   },
