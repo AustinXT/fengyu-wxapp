@@ -187,9 +187,31 @@ async function assertSchema(client) {
 async function findMismatchedGroupIds(client, targetGroupIds, limit) {
   const params = []
   let targetFilter = ''
+  let candidateCondition = `bool_or(
+       card.remaining_sessions IS DISTINCT FROM
+       card.session_count - COALESCE(completed.used, 0) - COALESCE(converted.used, 0)
+     ) OR EXISTS (
+       SELECT 1
+         FROM service_items pending_item
+         JOIN service_orders pending_order
+           ON pending_order.service_order_id = pending_item.service_order_id
+         JOIN sale_items referenced_card
+           ON referenced_card.sale_item_id = pending_item.sale_item_id
+        WHERE referenced_card.sale_item_group_id = split.group_id
+          AND pending_order.status = '待服务'
+          AND referenced_card.product_type = '疗程卡'
+          AND (
+            COALESCE(referenced_card.remaining_sessions, 0) < pending_item.session_used
+            OR COALESCE(referenced_card.paid_sessions, referenced_card.session_count, 0)
+               - (COALESCE(referenced_card.session_count, 0) - COALESCE(referenced_card.remaining_sessions, 0))
+               < pending_item.session_used
+          )
+     )`
   if (targetGroupIds.length > 0) {
     params.push(targetGroupIds)
     targetFilter = `AND split.group_id = ANY($${params.length})`
+    // 显式指定表示操作者要求完整重放该分组，不能再被自动候选条件拦截。
+    candidateCondition = 'TRUE'
   }
   params.push(limit)
   const { rows } = await client.query(
@@ -223,10 +245,7 @@ async function findMismatchedGroupIds(client, targetGroupIds, limit) {
       WHERE card.product_type = '疗程卡'
         ${targetFilter}
      GROUP BY split.group_id
-     HAVING bool_or(
-       card.remaining_sessions IS DISTINCT FROM
-       card.session_count - COALESCE(completed.used, 0) - COALESCE(converted.used, 0)
-     )
+     HAVING ${candidateCondition}
       ORDER BY split.group_id
       LIMIT $${params.length}`,
     params,
@@ -529,5 +548,6 @@ if (require.main === module) {
 module.exports = {
   buildGroupRepairPlan,
   conversionConsumesSource,
+  findMismatchedGroupIds,
   sortCards,
 }
