@@ -15,6 +15,7 @@ export const EXPORT_JOB_TYPES = [
   'cards',
   'inventory-stocks',
   'products',
+  'mall-products',
   'coupons',
   'data-center',
 ] as const
@@ -98,6 +99,7 @@ export const EXPORT_PERMISSION_BY_TYPE: Record<ExportJobType, string> = {
   cards: 'sale_item:list',
   'inventory-stocks': 'inventory:export',
   products: 'product:list',
+  'mall-products': 'product:list',
   coupons: 'coupon:list',
   'data-center': 'data_center:dashboard',
 }
@@ -116,7 +118,8 @@ export const EXPORT_LABEL_BY_TYPE: Record<ExportJobType, string> = {
   points: '积分流水',
   cards: '疗程卡列表',
   'inventory-stocks': '库存明细',
-  products: '商城商品',
+  products: '商品管理',
+  'mall-products': '商城商品',
   coupons: '优惠券模板',
   'data-center': '数据中心',
 }
