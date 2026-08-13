@@ -577,6 +577,8 @@ Page({
   _spuCache: {} as Record<string, DisplayItem[]>,
   /** 普通商品搜索防抖计时器 */
   _kwTimer: null as ReturnType<typeof setTimeout> | null,
+  /** 普通商品搜索世代；关键词变化/清空/切换门店后使旧请求结果失效 */
+  _productSearchGeneration: 0,
   /** 商品目录世代；切换门店后使仍在飞行中的旧请求失效。 */
   _catalogGeneration: 0,
 
@@ -591,6 +593,7 @@ Page({
   onUnload() {
     if (this._unsubscribeStoreChange) this._unsubscribeStoreChange();
     if (this._kwTimer) clearTimeout(this._kwTimer);
+    this._productSearchGeneration += 1;
   },
 
   _unsubscribeStoreChange: null as (() => void) | null,
@@ -793,11 +796,13 @@ Page({
 
     const apply = () => {
       if (this._kwTimer) clearTimeout(this._kwTimer);
+      this._productSearchGeneration += 1;
       this.setData({
         productKindChoiceIndex: index,
         productKindChoice: nextChoice,
         productKeyword: '',
         searching: false,
+        catalogLoading: false,
       });
       this.applyKindChoice(nextChoice);
     };
@@ -851,7 +856,8 @@ Page({
     const wasSearching = this.data.searching;
     if (this.data.productKeyword) {
       if (this._kwTimer) clearTimeout(this._kwTimer);
-      this.setData({ productKeyword: '', searching: false });
+      this._productSearchGeneration += 1;
+      this.setData({ productKeyword: '', searching: false, catalogLoading: false });
     }
     // 点回当前分类：搜索态下需用缓存恢复分类列表，非搜索态则无变化
     if (categoryId === this.data.activeCategoryId) {
@@ -921,6 +927,7 @@ Page({
 
   onProductKeywordChange(e: WechatMiniprogram.CustomEvent) {
     const kw = ((e.detail as unknown as string) || '').trim();
+    this._productSearchGeneration += 1;
     this.setData({ productKeyword: kw });
     if (this._kwTimer) clearTimeout(this._kwTimer);
     this._kwTimer = setTimeout(() => this.applyProductSearch(), 200);
@@ -928,6 +935,7 @@ Page({
 
   onProductKeywordClear() {
     if (this._kwTimer) clearTimeout(this._kwTimer);
+    this._productSearchGeneration += 1;
     this.setData({ productKeyword: '' });
     this.applyProductSearch();
   },
@@ -937,17 +945,33 @@ Page({
    * - 关键词为空 → 恢复当前分类视图（读 _spuCache）
    * - 关键词非空 → 在全量普通商品 SKU 中按名称模糊匹配（忽略当前分类）
    */
-  applyProductSearch() {
+  async applyProductSearch() {
     const kw = this.data.productKeyword.trim().toLowerCase();
     if (!kw) {
       const cacheKey = `普通商品:${this.data.activeCategoryId}`;
-      this.setData({ searching: false, spuList: this._spuCache[cacheKey] || [] });
+      this.setData({ searching: false, catalogLoading: false, spuList: this._spuCache[cacheKey] || [] });
       return;
     }
-    const matched = filterSkusByKindChoice(this._allSkus, '普通商品')
-      .filter(s => (s.specName || '').toLowerCase().includes(kw))
-      .map((s) => skuToDisplay(s, this.data.buyerIsMember));
-    this.setData({ searching: true, spuList: matched });
+
+    const searchGeneration = this._productSearchGeneration;
+    this.setData({ searching: true, catalogLoading: true, spuList: [] });
+    try {
+      const skus = await callStaffApi<SkuItem[]>('product.skuList', {
+        keyword: kw,
+        excludeCards: true,
+      });
+      if (searchGeneration !== this._productSearchGeneration) return;
+
+      const matched = filterSkusByKindChoice(skus || [], '普通商品')
+        .map((s) => skuToDisplay(s, this.data.buyerIsMember));
+      this.setData({ searching: true, catalogLoading: false, spuList: matched });
+    } catch (err: unknown) {
+      if (searchGeneration !== this._productSearchGeneration) return;
+
+      const message = err instanceof Error ? err.message : '搜索失败';
+      this.setData({ searching: true, catalogLoading: false, spuList: [] });
+      wx.showToast({ title: message, icon: 'none' });
+    }
   },
 
   // ===== BundlePicker 选完后覆盖购物车并直接进入下单流程 =====
@@ -1417,11 +1441,13 @@ Page({
       clearTimeout(this._kwTimer);
       this._kwTimer = null;
     }
+    this._productSearchGeneration += 1;
     this.setData({
       productKindChoiceIndex: 1,
       productKindChoice: '普通商品',
       productKeyword: '',
       searching: false,
+      catalogLoading: false,
     });
     // 商品类型回到「普通商品」后刷新侧边栏 + spuList；
     // _allCategories 为空时 applyKindChoice 安全设空，随后 loadShopInit 回来会再次填充。

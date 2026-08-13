@@ -60,7 +60,7 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   '/org': ['org:list'],
   '/stores': ['store:list'],
   '/merchants': ['merchant:list'], // 商户管理（admin + finance）；getMerchantsPaginated
-  '/employees': ['employee:list', 'org:list'], // getEmployeesPaginated/getOrgNodes/getSkillTags
+  '/employees': ['employee:create', 'employee:list', 'org:list'], // page gate + getEmployeesPaginated/getOrgNodes/getSkillTags
   '/products': ['product:list'],
   '/mall': ['product:list'],
   '/commission': ['commission:list', 'employee:list'], // getRates/getMarkets(commission:list)+getSkillTags(employee:list)
@@ -113,7 +113,7 @@ const SUBPAGES: Array<{ href: string; parent: string; entryGate?: string; clause
   { href: '/coupons/[id]', parent: '/coupons', clauses: ['coupon:list'] },
   { href: '/coupons/create', parent: '/coupons', entryGate: 'coupon:create', clauses: ['coupon:list'] },
   // 员工 / 门店
-  { href: '/employees/[id]', parent: '/employees', clauses: ['employee:list', 'org:list', 'store:list'] },
+  { href: '/employees/[id]', parent: '/employees', clauses: ['employee:create', 'employee:list', 'org:list', 'store:list'] },
   { href: '/employees/create', parent: '/employees', entryGate: 'employee:create', clauses: ['employee:list', 'org:list', 'store:list'] },
   { href: '/stores/[id]/edit', parent: '/stores', clauses: ['store:list'] },
   { href: '/stores/create', parent: '/stores', entryGate: 'store:create', clauses: ['org:list'] },

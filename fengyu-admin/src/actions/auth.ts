@@ -10,7 +10,7 @@ import { staffWechatUsers } from '@db/user'
 import { permissionRoleDefinitions, permissionRoles } from '@db/permission'
 import { orgNodes } from '@db/org'
 import { eq, sql } from 'drizzle-orm'
-import { computeActions, expandRoleScope, canAccessAdmin } from '@/lib/permissions'
+import { computeRoleActions, expandRoleScope, canAccessAdmin } from '@/lib/permissions'
 import { decryptPassword } from '@/lib/password-transit'
 import { JWT_SECRET } from '@/lib/jwt-secret'
 import { withPermission } from '@/lib/with-permission'
@@ -290,16 +290,30 @@ export async function getSessionFromCookie(): Promise<AuthSession | null> {
     // 或 token 有效期内被降级为纯 staff 的用户。返回 null 触发 middleware 跳登录页。
     if (!canAccessAdmin(roles)) return null
 
-    // 计算权限（computeActions 自 2026-05-18 起异步：从 DB 取权限矩阵 + 30s 缓存）
-    const actions = await computeActions(roles)
-    const { storeIds: scopeStoreIds, orgNodeIds: scopeOrgNodeIds } = await expandRoleScope(roles)
+    // 动作权限与 scope 都保留到单条角色授权维度；withPermission
+    // 执行时只合并真正授予当前动作的角色 scope，防止跨角色扩权。
+    const [roleActions, expandedScope] = await Promise.all([
+      computeRoleActions(roles),
+      expandRoleScope(roles),
+    ])
+    const actions = Array.from(new Set(roleActions.flat()))
+    const scopedRoles = roles.map((role, index) => ({
+      ...role,
+      actions: roleActions[index] ?? [],
+      scopeStoreIds: expandedScope.roleScopes[index]?.storeIds ?? [],
+      scopeOrgNodeIds: expandedScope.roleScopes[index]?.orgNodeIds ?? [],
+    }))
 
     return {
       employeeId: staff.employeeId,
       name: staff.name ?? '未命名',
       phone: staff.phone ?? '',
-      roles,
-      permissions: { actions, scopeStoreIds, scopeOrgNodeIds },
+      roles: scopedRoles,
+      permissions: {
+        actions,
+        scopeStoreIds: expandedScope.storeIds,
+        scopeOrgNodeIds: expandedScope.orgNodeIds,
+      },
     }
   } catch {
     return null

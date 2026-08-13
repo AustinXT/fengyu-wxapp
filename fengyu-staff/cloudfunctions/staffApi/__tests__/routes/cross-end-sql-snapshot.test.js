@@ -52,6 +52,9 @@ const FILES = {
   clientPointsJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/points.js'),
   payNotifyPointsJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/points.js'),
   adminPointsSettleTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/points-settle.ts'),
+  staffCustomerJs: path.resolve(__dirname, '../../routes/customer.js'),
+  adminCustomersTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/customers.ts'),
+  adminPickupRecordsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/pickup-records.ts'),
   staffPaymentAllocatableJs: path.resolve(__dirname, '../../utils/payment-allocatable.js'),
   clientPaymentAllocatableJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/payment-allocatable.js'),
   payNotifyPaymentAllocatableJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/payment-allocatable.js'),
@@ -94,6 +97,9 @@ const FILES = {
   // M1（2026-07-14）：admin confirmServiceOrder 经 lib/service-commission-settle.ts 镜像同口径
   adminServiceCommissionSettleTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/service-commission-settle.ts'),
   adminServicesTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/services.ts'),
+  staffVisitPointsJs: path.resolve(__dirname, '../../utils/visit-points.js'),
+  clientVisitPointsJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/visit-points.js'),
+  adminVisitPointsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/visit-points.ts'),
 
   // 2026-07-21 行级退款额聚合 per-item-refund — 四端字面同义（与 paid-sessions RECEIVED_REFUNDED_DEDUCT_SQL 同源 CTE）
   staffPerItemRefundJs: path.resolve(__dirname, '../../utils/per-item-refund.js'),
@@ -1525,6 +1531,55 @@ describe('admin confirmServiceOrder 接入服务提成写入守护（M1）', () 
   })
 })
 
+// 会员到店积分：三端 finalizer 独立副本，常量、核心 INSERT+余额更新 SQL 与触发点必须一致。
+describe('会员到店积分跨端一致性守护（staff / client / admin）', () => {
+  let sources, grantSqls
+
+  beforeAll(() => {
+    sources = {
+      staff: readFile(FILES.staffVisitPointsJs),
+      client: readFile(FILES.clientVisitPointsJs),
+      admin: readFile(FILES.adminVisitPointsTs),
+    }
+    grantSqls = {
+      staff: normalizeSql(extractBacktickStringContaining(sources.staff, 'WITH inserted AS')),
+      client: normalizeSql(extractBacktickStringContaining(sources.client, 'WITH inserted AS')),
+      admin: normalizeSql(extractBacktickStringContaining(sources.admin, 'WITH inserted AS')),
+    }
+  })
+
+  test('三端配置键、默认值、流水类型和幂等前缀一致', () => {
+    for (const src of Object.values(sources)) {
+      expect(src).toContain("VISIT_POINTS_CONFIG_KEY = 'visit_points_reward'")
+      expect(src).toContain('DEFAULT_VISIT_POINTS_REWARD = 20')
+      expect(src).toContain("VISIT_POINTS_TYPE = '到店赠送'")
+      expect(src).toContain("VISIT_POINTS_EXTERNAL_REF_PREFIX = 'visit-points'")
+    }
+  })
+
+  test('三端流水写入与余额增量 SQL 归一化后一致', () => {
+    expect(grantSqls.client).toBe(grantSqls.staff)
+    expect(grantSqls.admin).toBe(grantSqls.staff)
+    expect(grantSqls.staff).toContain('ON CONFLICT DO NOTHING')
+    expect(grantSqls.staff).toContain('EXISTS (SELECT 1 FROM inserted)')
+  })
+
+  test('三个最终确认入口均调用 grantVisitPointsSafe，complete 阶段不调用', () => {
+    const staffService = readFile(FILES.staffServiceJs)
+    const clientFinalize = readFile(FILES.clientServiceFinalizeJs)
+    const adminServices = readFile(FILES.adminServicesTs)
+    expect(staffService).toMatch(/async function finalizeServiceOrder[\s\S]*grantVisitPointsSafe\s*\(/)
+    expect(clientFinalize).toMatch(/async function finalizeServiceOrder[\s\S]*grantVisitPointsSafe\s*\(/)
+    expect(adminServices).toMatch(/confirmServiceOrder[\s\S]*grantVisitPointsSafe\s*\(/)
+
+    const staffComplete = staffService.slice(
+      staffService.indexOf('async function complete'),
+      staffService.indexOf('async function confirm'),
+    )
+    expect(staffComplete).not.toContain('grantVisitPointsSafe')
+  })
+})
+
 // 寄存单退款单「跳过提成写入」跨端控制流守护（M8 / 2026-07-14 审计 M1 修复）：
 // 寄存退款单 remark === DEPOSIT_REFUND_REMARK 是 JS 控制流的 continue，SQL 字面量 snapshot
 // 看不见——三端 finalize/settle 都必须有此 skip，否则寄存退款（真扣次数、假消耗）会虚写
@@ -1851,5 +1906,37 @@ describe('cross-end-sql-snapshot 反模式守护（防镜像 bug 字面锁定失
         /ELSE\s+allocation_status\s+END/,
       )
     }
+  })
+})
+
+describe('家居产品部分支付权益跨端守护', () => {
+  const ASSET_FILES = [
+    ['staff 顾客档案', FILES.staffCustomerJs],
+    ['client 我的家居产品', FILES.clientOrderJs],
+    ['admin 顾客详情', FILES.adminCustomersTs],
+  ]
+  const PICKUP_FILES = [
+    ['staff 提货', FILES.staffOrderJs],
+    ['admin 提货', FILES.adminPickupRecordsTs],
+  ]
+
+  test.each(ASSET_FILES)('%s 纳入部分支付并按实收比例计算已付整件数', (_name, file) => {
+    const src = normalizeSql(readFile(file))
+    expect(src).toContain("o.status IN ('已支付', '部分支付', '已完成')")
+    expect(src).toContain(
+      'FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int',
+    )
+    expect(src).toContain('GREATEST(paid_quantity - picked_quantity, 0)')
+    expect(src).toContain('pending_pickup_quantity')
+  })
+
+  test.each(PICKUP_FILES)('%s 在事务锁内复算已付可提上限', (_name, file) => {
+    const src = normalizeSql(readFile(file))
+    expect(src).toContain(
+      'FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int',
+    )
+    expect(src).toContain('pendingHomeProductQuantity')
+    expect(src).toContain('FOR UPDATE OF si')
+    expect(src).toContain("['已支付', '部分支付', '已完成'].includes")
   })
 })

@@ -7,7 +7,8 @@
  *
  * 过滤 = (账号权限范围) AND (UI 选中的 scope)。
  *   - 账号权限：admin 无限制；其他角色用 scopeStoreIds 扁平列表
- *   - UI 选中：market → 子查询展开该市场下门店；store → 直接等值
+ *   - UI 选中：authorized → 不再收窄（使用上述账号权限并集）；
+ *     market → 子查询展开该市场下门店；store → 直接等值
  * UI 越权（选了权限外的 market/store）由 actions 层 validateScope 提前拦截，SQL 层再兜底。
  *
  * 提成两表（sale_payment_item_allocations / service_commissions）无 store_id，
@@ -58,7 +59,7 @@ export function scopeFilterSql(
     parts.push(sql`${col} IN (${sql.join(ids.map((i) => sql`${i}`), sql`, `)})`)
   }
 
-  // UI 选中的 scope（进一步收窄）
+  // UI 选中的 scope（进一步收窄）；all / authorized 均不追加条件。
   if (scope.type === 'store') {
     parts.push(sql`${col} = ${scope.id}`)
   } else if (scope.type === 'market') {

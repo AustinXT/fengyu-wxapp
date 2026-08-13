@@ -3063,6 +3063,61 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     expect(capturedOrder.status).toBe('已支付')
   })
 
+  it('转换单转入权益可继续折抵，且 quantity=2 的新疗程拆成两张实体卡', async () => {
+    const insertedItems: any[] = []
+    mockConvTx({
+      heldRows: [{
+        sale_item_id: 'card-from-conversion', sale_order_id: 'old-conversion',
+        store_id: 'store-1', sale_order_type: '转换单', item_direction: '转入',
+        sku_id: 'sku-old-1', product_name: '旧疗程', product_type: '疗程卡',
+        session_count: 5, remaining_sessions: 5, quantity: 1, picked_up_quantity: 0,
+        unit_price: '200.00', unit_real_price: '200.00', sales_category: '自销自耗',
+        service_fee: '0', client_user_id: 'user-1', order_status: '已支付', product_kind: '护理项目',
+      }],
+      skuRows: [{
+        skuId: 'sku-new-1', price: '500.00', serviceFee: '20.00', sessionCount: 5,
+        productType: '疗程卡', salesCategory: '自销自耗', isExperience: false,
+      }],
+      onInsertItem: (value) => { insertedItems.push(value) },
+    })
+
+    const result = await createConversionOrder({
+      ...baseConvData,
+      convertOutSaleItemIds: ['card-from-conversion'],
+      convertInItems: [{ ...baseConvData.convertInItems[0], quantity: 2 }],
+    })
+
+    expect(result.success).toBe(true)
+    const inItems = insertedItems.filter((item) => item.itemDirection === '转入')
+    expect(inItems).toHaveLength(2)
+    expect(inItems.map((item) => item.quantity)).toEqual([1, 1])
+    expect(inItems.map((item) => item.sessionCount)).toEqual([5, 5])
+    expect(new Set(inItems.map((item) => item.saleItemGroupId))).toEqual(new Set([inItems[0].saleItemId]))
+    expect(inItems.reduce((sum, item) => sum + Number(item.saleAmount), 0)).toBe(1000)
+    expect(inItems.reduce((sum, item) => sum + Number(item.serviceFee), 0)).toBe(40)
+  })
+
+  it('普通销售单的转入方向不是权益，拒绝用于转换折抵', async () => {
+    mockConvTx({
+      heldRows: [{
+        sale_item_id: 'invalid-in-row', sale_order_id: 'old-sale', store_id: 'store-1',
+        sale_order_type: '销售单', item_direction: '转入', sku_id: 'sku-old-1',
+        product_name: '异常行', product_type: '疗程卡', session_count: 5,
+        remaining_sessions: 5, quantity: 1, picked_up_quantity: 0,
+        unit_price: '200.00', unit_real_price: '200.00', sales_category: '自销自耗',
+        service_fee: '0', client_user_id: 'user-1', order_status: '已支付', product_kind: '护理项目',
+      }],
+      skuRows: [],
+    })
+
+    const result = await createConversionOrder({
+      ...baseConvData,
+      convertOutSaleItemIds: ['invalid-in-row'],
+    })
+
+    expect(result).toEqual({ success: false, message: '所选行不是有效疗程权益，不可折抵' })
+  })
+
   it('先锁转出卡再汇总预扣，并按预扣次数折抵', async () => {
     const insertedItems: any[] = []
     const captured = mockConvTx({
@@ -3094,6 +3149,8 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     expect(captured.executeSql[lockIndex]).not.toMatch(/service_items|SUM\s*\(/i)
     expect(captured.executeSql[lockIndex]).toMatch(/ORDER\s+BY\s+si\.sale_item_id\s+FOR\s+UPDATE/i)
     expect(captured.executeSql[reservedIndex]).toMatch(/reserved_at\s+IS\s+NOT\s+NULL/i)
+    expect(captured.executeSql[reservedIndex]).toMatch(/INNER\s+JOIN\s+service_orders\s+reserved_order/i)
+    expect(captured.executeSql[reservedIndex]).toMatch(/reserved_order\.status\s+IN\s*\('服务中',\s*'待客户确认'\)/i)
   })
 
   it('全部次数被服务预留 → CARD_RESERVED 透出中文业务提示', async () => {

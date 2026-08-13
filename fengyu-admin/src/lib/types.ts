@@ -687,6 +687,12 @@ export interface AuthSession {
     isStoreManager?: boolean
     scopeId: string
     scopeType: '总部' | '市场' | '门店'
+    /** 该条角色授权自身提供的动作；用于按动作收紧数据范围。 */
+    actions?: string[]
+    /** 该条角色授权根节点展开后的门店范围。 */
+    scopeStoreIds?: string[]
+    /** 该条角色授权根节点自身及全部后代组织节点。 */
+    scopeOrgNodeIds?: string[]
   }>
   permissions: {
     actions: string[]

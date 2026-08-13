@@ -44,6 +44,74 @@ describe('withPermission', () => {
     expect(result).toBe('EMP-001-42-hello')
   })
 
+  it('多角色时只把授予当前动作的 scope 传给业务函数', async () => {
+    const session: AuthSession = {
+      employeeId: 'EMP-SCOPE-TEST',
+      name: '测试用户',
+      phone: '13800138000',
+      roles: [
+        {
+          role: 'hr', scopeId: 'product-company', scopeType: '市场',
+          actions: ['employee:list'],
+          scopeStoreIds: ['PRODUCT-STORE'],
+          scopeOrgNodeIds: ['product-company'],
+        },
+        {
+          role: 'product', scopeId: 'hq', scopeType: '总部',
+          actions: ['data_center:dashboard'],
+          scopeStoreIds: ['PRODUCT-STORE', 'NC-STORE', 'JJ-STORE'],
+          scopeOrgNodeIds: ['hq', 'product-company', 'nanchang', 'jiujiang'],
+        },
+      ],
+      permissions: {
+        actions: ['employee:list', 'data_center:dashboard'],
+        scopeStoreIds: ['PRODUCT-STORE', 'NC-STORE', 'JJ-STORE'],
+        scopeOrgNodeIds: ['hq', 'product-company', 'nanchang', 'jiujiang'],
+      },
+    }
+    mockGetSession.mockResolvedValue(session)
+    const fn = vi.fn(async (scoped: AuthSession) => scoped.permissions.scopeStoreIds)
+
+    const wrapped = withPermission('employee:list', fn)
+
+    await expect(wrapped()).resolves.toEqual(['PRODUCT-STORE'])
+    expect(fn.mock.calls[0][0].roles.map((role) => role.role)).toEqual(['hr'])
+  })
+
+  it('可用 scopeActions 将引用读动作绑定到页面管理能力', async () => {
+    const session: AuthSession = {
+      employeeId: 'EMP-001',
+      name: '测试用户',
+      phone: '13800138000',
+      roles: [
+        {
+          role: 'hr', scopeId: 'product-company', scopeType: '市场',
+          actions: ['employee:list', 'employee:create'],
+          scopeStoreIds: ['PRODUCT-STORE'], scopeOrgNodeIds: ['product-company'],
+        },
+        {
+          role: 'product', scopeId: 'nanchang', scopeType: '市场',
+          actions: ['employee:list', 'data_center:dashboard'],
+          scopeStoreIds: ['NC-STORE'], scopeOrgNodeIds: ['nanchang'],
+        },
+      ],
+      permissions: {
+        actions: ['employee:list', 'employee:create', 'data_center:dashboard'],
+        scopeStoreIds: ['PRODUCT-STORE', 'NC-STORE'],
+      },
+    }
+    mockGetSession.mockResolvedValue(session)
+    const fn = vi.fn(async (scoped: AuthSession) => scoped.permissions.scopeStoreIds)
+
+    const wrapped = withPermission(
+      'employee:list',
+      fn,
+      { scopeActions: ['employee:create'] },
+    )
+
+    await expect(wrapped()).resolves.toEqual(['PRODUCT-STORE'])
+  })
+
   it('session=null：触发 redirect(/login?expired=1) 且 fn 不被调用', async () => {
     mockGetSession.mockResolvedValue(null)
     const fn = vi.fn()

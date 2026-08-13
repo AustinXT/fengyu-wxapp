@@ -88,7 +88,6 @@ export function hasUiCapability(actions: readonly string[], action: string): boo
 export function hasAllUiCapabilities(actions: readonly string[], required: readonly string[]): boolean {
   return required.every((action) => hasUiCapability(actions, action))
 }
-
 /** 补齐角色、去空白、去重、排序；不在此处过滤动作，供保存校验保留原始问题。 */
 export function normalizePermissionMatrix(input: unknown): PermissionMatrix {
   const result: PermissionMatrix = {

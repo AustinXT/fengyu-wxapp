@@ -60,8 +60,9 @@
         </view>
         <view wx:if="{{item.specName}}" class="item-spec">{{item.specName}}</view>
         <view class="item-progress">
-          <text>已提 {{item.pickedUpQuantity}} / {{item.quantity}}</text>
-          <text class="remaining">剩余 {{item.remaining}}</text>
+          <text class="remaining">待提 {{item.remaining}}</text>
+          <text>已付 {{item.paidQuantity}}</text>
+          <text>购买 {{item.quantity}}</text>
         </view>
         <view class="item-action">
           <button class="pickup-btn" data-idx="{{index}}" bindtap="onPickupTap">录入提货</button>

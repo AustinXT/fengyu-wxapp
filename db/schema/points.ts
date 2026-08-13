@@ -28,7 +28,7 @@ export const pointTransactions = pgTable(
     amount: bigint('amount', { mode: 'number' }).notNull(),
     /** 关联订单ID（可选） */
     refOrderId: varchar('ref_order_id', { length: 30 }).references(() => saleOrders.saleOrderId),
-    /** 外部幂等引用；系统批量发放（升级/活动）使用，业务发放可为 null */
+    /** 外部幂等引用；批量权益及到店积分（日去重）使用，订单消费积分可为 null */
     externalRef: text('external_ref'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -41,7 +41,7 @@ export const pointTransactions = pgTable(
     uniqueIndex('uq_point_txn_order_user_type')
       .on(table.userId, table.refOrderId, table.type)
       .where(sql`ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')`),
-    // 半严格：已知负值 type ('消费冲销'/'消费抵扣'/'过期扣减') 严格守，正值兼容未来扩展。
+    // 半严格：已知负值 type ('消费冲销'/'消费抵扣'/'过期扣减') 严格守，正值兼容未来扩展（含'到店赠送'等）。
     // 禁 amount = 0（业务上零变动流水无意义）
     check(
       'chk_pt_amount_sign',

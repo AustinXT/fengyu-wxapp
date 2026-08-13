@@ -1598,13 +1598,15 @@ describe('order.homeProducts', () => {
       {
         sale_item_id: 'SI-HOME-1', sale_order_id: 'SO-HOME-1', product_name: '精华液',
         unit: '盒', purchased_quantity: 5,
-        picked_quantity: 2, refunded_quantity: 1, remaining_quantity: 2,
+        paid_quantity: 4, picked_quantity: 2, refunded_quantity: 1,
+        remaining_quantity: 2, pending_pickup_quantity: 2,
         store_id: 's2', store_name: '外店', purchased_at: '2026-08-01T10:00:00Z', refund_pending: false,
       },
       {
         sale_item_id: 'SI-HOME-2', sale_order_id: 'SO-HOME-2', product_name: '面膜',
-        unit: '盒', purchased_quantity: 1, picked_quantity: 0, refunded_quantity: 0,
-        remaining_quantity: 1, store_id: 's1', store_name: '本店',
+        unit: '盒', purchased_quantity: 1, paid_quantity: 1,
+        picked_quantity: 0, refunded_quantity: 0,
+        remaining_quantity: 1, pending_pickup_quantity: 1, store_id: 's1', store_name: '本店',
         purchased_at: '2026-08-02T10:00:00Z', refund_pending: true,
       },
     ])
@@ -1629,10 +1631,32 @@ describe('order.homeProducts', () => {
 
     const sql = pg.query.mock.calls[0][0]
     expect(sql).toContain('FROM pickup_records')
-    expect(sql).toContain("o.status IN ('已支付', '已完成')")
+    expect(sql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
     expect(sql).toContain("si.item_direction = '购买'")
     expect(sql).toContain("si.product_type = '家居产品'")
-    expect(sql).toContain('picked_quantity = 0')
+    expect(sql).toMatch(/FLOOR\(GREATEST\(0, si\.received::numeric\) \* si\.quantity \/ NULLIF\(si\.sale_amount::numeric, 0\)\)/)
+    expect(sql).toContain('pending_pickup_quantity > 0')
+  })
+
+  test('部分支付家居产品返回已付和待提整件数', async () => {
+    pg.query.mockResolvedValueOnce([{
+      sale_item_id: 'SI-PARTIAL-HOME', sale_order_id: 'SO-PARTIAL-HOME', product_name: '面膜',
+      unit: '盒', purchased_quantity: 10, paid_quantity: 2,
+      picked_quantity: 0, refunded_quantity: 0,
+      remaining_quantity: 10, pending_pickup_quantity: 2,
+      store_id: 's1', store_name: '本店', purchased_at: '2026-08-13T10:00:00Z',
+      refund_pending: false,
+    }])
+
+    const ctx = createBoundCtx({})
+    await routes.homeProducts(ctx)
+
+    expect(ctx.result.items[0]).toMatchObject({
+      purchasedQuantity: 10,
+      paidQuantity: 2,
+      pendingPickupQuantity: 2,
+      status: '待提货',
+    })
   })
 })
 

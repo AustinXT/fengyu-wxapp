@@ -9,10 +9,11 @@
  */
 
 // ─────────────────────────────────────────────
-// scope（集团/市场/门店三级）
+// scope（集团/授权汇总/市场/门店）
 // ─────────────────────────────────────────────
 export type DataCenterScope =
   | { type: 'all' }
+  | { type: 'authorized' }
   | { type: 'market'; id: string }
   | { type: 'store'; id: string }
 
@@ -146,7 +147,7 @@ export interface ScopeOptionMarket {
   stores: ScopeOptionStore[]
 }
 export interface DataCenterScopeOptions {
-  /** 当前账号能选的最高层级：all=可选全部 / market=只能选自己市场起 / store=只能本店 */
+  /** 当前账号的最高授权层级：store 也可能由多条门店角色组成多店范围。 */
   topLevel: 'all' | 'market' | 'store'
   markets: ScopeOptionMarket[]
 }

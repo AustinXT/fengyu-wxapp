@@ -30,6 +30,12 @@ export async function validateScope(session: AuthSession, scope: DataCenterScope
   if (isAdminScope(session)) return
   if (session.roles.some((r) => r.scopeType === '总部')) return
 
+  if (scope.type === 'authorized') {
+    if (session.permissions.scopeStoreIds.length === 0) {
+      throw new PermissionError('PERMISSION_DENIED: 当前账号无可查看的授权门店')
+    }
+    return
+  }
   if (scope.type === 'all') {
     throw new PermissionError('PERMISSION_DENIED: 无权查看全部数据')
   }
@@ -50,6 +56,7 @@ export async function validateScope(session: AuthSession, scope: DataCenterScope
 /** scope 显示名（全部 / 市场名 / 门店名） */
 export async function resolveScopeName(scope: DataCenterScope): Promise<string> {
   if (scope.type === 'all') return '全部'
+  if (scope.type === 'authorized') return '全部授权门店'
   if (scope.type === 'market') {
     const [row] = await db
       .select({ name: orgNodes.name })
@@ -88,7 +95,7 @@ export async function prepareBoardContext(
     meta: {
       scope: {
         type: params.scope.type,
-        id: params.scope.type === 'all' ? null : params.scope.id,
+        id: params.scope.type === 'market' || params.scope.type === 'store' ? params.scope.id : null,
         name: scopeName,
       },
       timeRange: { start: tr.current.start, end: tr.current.end, presetLabel: tr.presetLabel },

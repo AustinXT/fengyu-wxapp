@@ -137,6 +137,18 @@ async function assertWorkfineInventoryInitialized(client) {
   }
 }
 
+function splitMoneyByCount(value, count) {
+  const totalCents = Math.round((Number(value) || 0) * 100)
+  const eachCents = Math.trunc(totalCents / count)
+  return Array.from({ length: count }, (_unused, index) =>
+    (eachCents + (index === count - 1 ? totalCents - eachCents * count : 0)) / 100)
+}
+
+function isConvertibleEntitlementRow(row) {
+  return row.item_direction === '购买'
+    || (row.sale_order_type === '转换单' && row.item_direction === '转入')
+}
+
 function calcTierLineAmount(tierAmount, tierSessions, lineSessions) {
   const amount = Math.max(0, Number(tierAmount) || 0)
   const sessions = Math.max(0, Number(tierSessions) || 0)
@@ -3646,6 +3658,7 @@ async function createConversion(ctx) {
               si.is_shengmei,
               si.is_experience,
               so.client_user_id,
+              so.sale_order_type,
               so.status AS order_status,
               pc.product_kind,
               pc_parent.category_name AS parent_category_name
@@ -3673,8 +3686,8 @@ async function createConversion(ctx) {
       if (row.client_user_id !== clientUserId) {
         throw new Error('INVALID_PARAMS: 部分卡不属于该顾客')
       }
-      if (row.item_direction !== '购买') {
-        throw new Error('INVALID_PARAMS: 所选行非购买行，不可折抵')
+      if (!isConvertibleEntitlementRow(row)) {
+        throw new Error('INVALID_PARAMS: 所选行不是有效疗程权益，不可折抵')
       }
       if (row.order_status !== '已支付' && row.order_status !== '已完成') {
         throw new Error('INVALID_PARAMS: 原订单状态不允许转换')
@@ -3687,8 +3700,13 @@ async function createConversion(ctx) {
     // 此快照之后插入新的预扣；转换扣减与预扣校验构成同一事务临界区。
     const reservedResult = await tx.query(
       `SELECT sit.sale_item_id,
-              COALESCE(SUM(sit.session_used) FILTER (WHERE sit.reserved_at IS NOT NULL), 0) AS total_reserved
+              COALESCE(SUM(sit.session_used) FILTER (
+                WHERE sit.reserved_at IS NOT NULL
+                  AND reserved_order.status IN ('服务中', '待客户确认')
+              ), 0) AS total_reserved
          FROM service_items sit
+         JOIN service_orders reserved_order
+           ON reserved_order.service_order_id = sit.service_order_id
         WHERE sit.sale_item_id = ANY($1)
         GROUP BY sit.sale_item_id`,
       [convertOutSaleItemIds]
@@ -4101,32 +4119,56 @@ async function createConversion(ctx) {
       }
     }
 
-    // 7. 转入行 × M（新卡；unit_price=标价快照，unit_real_price=成交价；店长特价时二者分离）
+    // 7. 转入行 × M（新卡；疗程卡按张落库并用 group_id 合并展示）
     for (const d of inItems) {
-      const saleItemId = `XSLSH-WX-${dateStr}${String(seq).padStart(4, '0')}`
-      seq++
-      await tx.query(
-        `INSERT INTO sale_items (
-          sale_item_id, sale_order_id, store_id, item_direction,
-          sku_id, product_name, product_type,
-          session_count, remaining_sessions,
-          unit_price, quantity, unit_real_price, sale_amount, received,
-          sales_category, service_fee, is_shengmei, is_experience, is_manager_special,
-          inventory_composition_snapshot
-        ) VALUES ($1, $2, $3, '转入', $4, $5, $6, $7, $7, $8, $9, $10, $11, $11, $12, $13, $14, $15, $16, $17::jsonb)`,
-        [
-          saleItemId, convOrderId, storeId,
-          d.skuId, d.productName, d.productType,
-          d.sessionCount,
-          d.unitPrice, d.quantity, d.unitRealPrice, d.amount,
-          d.salesCategory, d.serviceFee,
-          d.isShengmei ?? null,
-          // 转入行从 product_skus.is_experience 快照写入（2026-04-26 ticket）
-          d.isExperience === true,
-          d.isManagerSpecial === true,
-          compositionSnapshots.has(d.skuId) ? JSON.stringify(compositionSnapshots.get(d.skuId)) : null,
-        ]
-      )
+      const cardCount = d.productType === '疗程卡' ? Number(d.quantity) || 1 : 1
+      const perCardSessions = d.productType === '疗程卡' && d.sessionCount != null
+        ? Number(d.sessionCount) / cardCount
+        : d.sessionCount
+      if (d.productType === '疗程卡'
+          && (!Number.isInteger(cardCount) || cardCount <= 0
+            || !Number.isInteger(perCardSessions) || perCardSessions <= 0)) {
+        throw new Error('INVALID_PARAMS: 转入疗程卡次数必须能按张拆分')
+      }
+
+      const firstSeq = seq
+      const groupId = d.productType === '疗程卡'
+        ? `XSLSH-WX-${dateStr}${String(firstSeq).padStart(4, '0')}`
+        : null
+      const amountParts = splitMoneyByCount(d.amount, cardCount)
+      const serviceFeeParts = splitMoneyByCount(d.serviceFee, cardCount)
+
+      for (let index = 0; index < cardCount; index++) {
+        const saleItemId = `XSLSH-WX-${dateStr}${String(seq).padStart(4, '0')}`
+        seq++
+        const rowAmount = amountParts[index]
+        const rowQuantity = d.productType === '疗程卡' ? 1 : d.quantity
+        const rowUnitRealPrice = d.productType === '疗程卡'
+          ? roundMoney(rowAmount / perCardSessions)
+          : d.unitRealPrice
+        await tx.query(
+          `INSERT INTO sale_items (
+            sale_item_id, sale_item_group_id, sale_order_id, store_id, item_direction,
+            sku_id, product_name, product_type,
+            session_count, remaining_sessions,
+            unit_price, quantity, unit_real_price, sale_amount, received,
+            sales_category, service_fee, is_shengmei, is_experience, is_manager_special,
+            inventory_composition_snapshot
+          ) VALUES ($1, $2, $3, $4, '转入', $5, $6, $7, $8, $8, $9, $10, $11, $12, $12, $13, $14, $15, $16, $17, $18::jsonb)`,
+          [
+            saleItemId, groupId, convOrderId, storeId,
+            d.skuId, d.productName, d.productType,
+            perCardSessions,
+            d.unitPrice, rowQuantity, rowUnitRealPrice, rowAmount,
+            d.salesCategory, serviceFeeParts[index],
+            d.isShengmei ?? null,
+            // 转入行从 product_skus.is_experience 快照写入（2026-04-26 ticket）
+            d.isExperience === true,
+            d.isManagerSpecial === true,
+            compositionSnapshots.has(d.skuId) ? JSON.stringify(compositionSnapshots.get(d.skuId)) : null,
+          ]
+        )
+      }
     }
 
     // 8. 负差额 — UPSERT prepaid_cards + INSERT card_transactions（type='充值'）
@@ -4296,7 +4338,10 @@ async function customerHeldCards(ctx) {
      LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
      WHERE so.client_user_id = $1
        AND si.store_id = $2
-       AND si.item_direction = '购买'
+       AND (
+         si.item_direction = '购买'
+         OR (so.sale_order_type = '转换单' AND si.item_direction = '转入')
+       )
        AND so.status IN ('已支付', '已完成')
        AND si.product_type = '疗程卡'
        AND COALESCE(si.remaining_sessions, 0) > 0
@@ -4361,6 +4406,12 @@ async function customerHeldCards(ctx) {
 }
 
 // ========== P2: 取货单 ==========
+
+function pendingHomeProductQuantity(row) {
+  const physicalRemaining = Math.max(0, Number(row.quantity) - Number(row.settled_quantity || 0))
+  const paidRemaining = Math.max(0, Number(row.paid_quantity || 0) - Number(row.picked_quantity || 0))
+  return Math.min(physicalRemaining, paidRemaining)
+}
 
 async function generatePickupInventoryDocNo(client) {
   const prefix = 'GCK'
@@ -4629,7 +4680,20 @@ async function createGroupedPickup(ctx, saleItemIds, pickupQuantity, remark, ide
       `SELECT si.sale_item_id, si.sale_item_group_id, si.sale_order_id, si.store_id, si.sku_id,
               si.product_name, si.quantity, COALESCE(si.picked_up_quantity, 0) AS picked_up_quantity,
               si.inventory_composition_snapshot,
-              o.client_user_id, o.customer_name
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
+              COALESCE((
+                SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
+                 WHERE pr.sale_item_id = si.sale_item_id
+              ), 0)::int AS picked_quantity,
+              CASE
+                WHEN si.sale_amount <= 0 THEN si.quantity
+                ELSE LEAST(
+                  si.quantity,
+                  FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
+                )
+              END AS paid_quantity,
+              si.product_type, si.item_direction,
+              o.client_user_id, o.customer_name, o.status AS order_status
          FROM sale_items si
          JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
         WHERE si.sale_item_id = ANY($1)
@@ -4647,13 +4711,18 @@ async function createGroupedPickup(ctx, saleItemIds, pickupQuantity, remark, ide
       || row.sale_order_id !== first.sale_order_id
       || row.sku_id !== first.sku_id
       || (row.sale_item_group_id || row.sale_item_id) !== (first.sale_item_group_id || first.sale_item_id)
-      || Number(row.quantity) !== 1
-      || Number(row.picked_up_quantity) !== 0)) {
+      || row.product_type !== '家居产品' || row.item_direction !== '购买'
+      || !['已支付', '部分支付', '已完成'].includes(row.order_status)
+      || Number(row.quantity) !== 1)) {
       throw new Error('CONFLICT: 家居产品状态已更新，请刷新后重试')
     }
     await assertNoPendingRefund(client, first.sale_order_id)
 
-    const selected = rows.slice(0, pickupQuantity)
+    const eligible = rows.filter((row) => pendingHomeProductQuantity(row) > 0)
+    if (eligible.length < pickupQuantity) {
+      throw new Error(`INVALID_STATE: 已支付可提数量不足，当前可提 ${eligible.length}`)
+    }
+    const selected = eligible.slice(0, pickupQuantity)
     const requirements = await buildPickupRequirements(client, selected.map((item) => ({
       ...item,
       pickupUnits: 1,
@@ -4717,9 +4786,12 @@ async function createPickup(ctx) {
 
   const { saleItemId, saleItemIds, pickupQuantity, remark, idempotencyKey } = ctx.event.payload || {}
   if (!saleItemId) throw new Error('INVALID_PARAMS: 缺少 saleItemId')
-  if (!pickupQuantity || pickupQuantity <= 0) throw new Error('INVALID_PARAMS: 取货数量必须大于0')
+  const requestedQuantity = Number(pickupQuantity)
+  if (!Number.isInteger(requestedQuantity) || requestedQuantity <= 0) {
+    throw new Error('INVALID_PARAMS: 取货数量必须为正整数')
+  }
   if (Array.isArray(saleItemIds) && saleItemIds.length > 1) {
-    await createGroupedPickup(ctx, saleItemIds, Number(pickupQuantity), remark, idempotencyKey)
+    await createGroupedPickup(ctx, saleItemIds, requestedQuantity, remark, idempotencyKey)
     return
   }
 
@@ -4732,16 +4804,24 @@ async function createPickup(ctx) {
     )
     if (existRes.length > 0) {
       const curRes = await pg.query(
-        `SELECT quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity
-         FROM sale_items WHERE sale_item_id = $1 AND store_id = $2`,
+        `SELECT si.quantity,
+                LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
+                COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id), 0)::int AS picked_quantity,
+                CASE
+                  WHEN si.sale_amount <= 0 THEN si.quantity
+                  ELSE LEAST(si.quantity, FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int)
+                END AS paid_quantity
+           FROM sale_items si
+          WHERE si.sale_item_id = $1
+            AND si.store_id = $2`,
         [saleItemId, ctx.auth.effectiveStoreId]
       )
       const r = curRes[0]
       ctx.result = {
         saleItemId,
-        pickedUp: Number(r.picked_up_quantity),
+        pickedUp: Number(r.picked_quantity || 0),
         total: Number(r.quantity),
-        remaining: Number(r.quantity) - Number(r.picked_up_quantity),
+        remaining: pendingHomeProductQuantity(r),
         message: '取货成功（幂等）',
       }
       return
@@ -4756,53 +4836,61 @@ async function createPickup(ctx) {
   if (pickupOrderRows.length > 0) await assertNoPendingRefund(pg, pickupOrderRows[0].sale_order_id)
 
   let updated
+  let pendingAfterPickup = 0
   await pg.transaction(async (client) => {
     await assertWorkfineInventoryInitialized(client)
-    // 1) 原子累加 picked_up_quantity（强制本店）
+    // 1) 锁定销售明细后按净实收重算已付整件数，防止旧页面或并发请求超额提货。
+    const locked = await client.query(
+      `SELECT si.sale_item_id, si.sale_order_id, si.store_id, si.sku_id, si.product_name,
+              si.product_type, si.item_direction, si.quantity, si.inventory_composition_snapshot,
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
+              COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id), 0)::int AS picked_quantity,
+              CASE
+                WHEN si.sale_amount <= 0 THEN si.quantity
+                ELSE LEAST(si.quantity, FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int)
+              END AS paid_quantity,
+              o.status AS order_status, o.client_user_id, o.customer_name
+         FROM sale_items si
+         JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+        WHERE si.sale_item_id = $1
+        FOR UPDATE OF si`,
+      [saleItemId],
+    )
+    const row = locked.rows[0]
+    if (!row) throw new Error('INVALID_PARAMS: 商品不存在')
+    if (row.store_id !== ctx.auth.effectiveStoreId) {
+      throw new Error(`INVALID_PARAMS: 该商品仅在 ${row.store_id} 可提货，当前门店无法操作`)
+    }
+    if (row.product_type !== '家居产品' || row.item_direction !== '购买') {
+      throw new Error('INVALID_PARAMS: 该商品类型不支持提货')
+    }
+    if (!['已支付', '部分支付', '已完成'].includes(row.order_status)) {
+      throw new Error('INVALID_STATE: 订单当前状态不允许提货')
+    }
+    const pendingBeforePickup = pendingHomeProductQuantity(row)
+    if (requestedQuantity > pendingBeforePickup) {
+      throw new Error(`INVALID_STATE: 已支付可提数量不足，当前可提 ${pendingBeforePickup}`)
+    }
+    await assertNoPendingRefund(client, row.sale_order_id)
+
     const result = await client.query(
       `UPDATE sale_items
-       SET picked_up_quantity = COALESCE(picked_up_quantity, 0) + $1, updated_at = NOW()
-       WHERE sale_item_id = $2
-         AND store_id = $3
-         AND product_type = '家居产品'
-         AND (COALESCE(picked_up_quantity, 0) + $1) <= quantity
-       RETURNING sale_item_id, sale_order_id, store_id, sku_id, product_name, quantity, picked_up_quantity,
-                 inventory_composition_snapshot`,
-      [pickupQuantity, saleItemId, ctx.auth.effectiveStoreId]
+          SET picked_up_quantity = COALESCE(picked_up_quantity, 0) + $1, updated_at = NOW()
+        WHERE sale_item_id = $2
+          AND (COALESCE(picked_up_quantity, 0) + $1) <= quantity
+      RETURNING sale_item_id, sale_order_id, store_id, sku_id, product_name, quantity, picked_up_quantity,
+                inventory_composition_snapshot`,
+      [requestedQuantity, saleItemId],
     )
+    if (result.rowCount === 0) throw new Error('CONFLICT: 家居产品状态已更新，请刷新后重试')
 
-    if (result.rowCount === 0) {
-      // 区分跨店 / 已提满 / 类型错误三种失败
-      const probe = await client.query(
-        `SELECT store_id, product_type, quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity
-         FROM sale_items WHERE sale_item_id = $1`,
-        [saleItemId]
-      )
-      const row = probe.rows[0]
-      if (!row) throw new Error('INVALID_PARAMS: 商品不存在')
-      if (row.store_id !== ctx.auth.effectiveStoreId) {
-        throw new Error(`INVALID_PARAMS: 该商品仅在 ${row.store_id} 可提货，当前门店无法操作`)
-      }
-      if (row.product_type !== '家居产品') {
-        throw new Error('INVALID_PARAMS: 该商品类型不支持提货')
-      }
-      throw new Error('INVALID_PARAMS: 取货数量超出可提货数量')
-    }
-
-    // 2) 查顾客信息
-    const itemRows = await client.query(
-      `SELECT si.sale_order_id, o.client_user_id, o.customer_name
-       FROM sale_items si JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-       WHERE si.sale_item_id = $1`,
-      [saleItemId]
-    )
-    const clientUserId = itemRows.rows.length > 0 ? itemRows.rows[0].client_user_id : null
-    const customerName = itemRows.rows.length > 0 ? itemRows.rows[0].customer_name : null
-
+    const clientUserId = row.client_user_id || null
+    const customerName = row.customer_name || null
     updated = result.rows[0]
+    pendingAfterPickup = pendingBeforePickup - requestedQuantity
     const requirements = await buildPickupRequirements(client, [{
       ...updated,
-      pickupUnits: Number(pickupQuantity),
+      pickupUnits: requestedQuantity,
     }])
 
     // 3) 按完整组成写入统一库存单据 + 库存扣减流水。任一项不足时整单回滚。
@@ -4824,7 +4912,7 @@ async function createPickup(ctx) {
            sale_item_id, inventory_sku_id, pickup_quantity, store_id, client_user_id,
            confirmed_by, remark, idempotency_key
          ) VALUES ($1, NULL, $2, $3, $4, $5, $6, $7)`,
-        [saleItemId, pickupQuantity, ctx.auth.effectiveStoreId, clientUserId, ctx.auth.staffWfId, remark || null, idempotencyKey || null]
+        [saleItemId, requestedQuantity, ctx.auth.effectiveStoreId, clientUserId, ctx.auth.staffWfId, remark || null, idempotencyKey || null]
       )
     } catch (err) {
       if (err && err.code === '23505' && err.constraint === 'uq_pickup_idempotency') {
@@ -4836,7 +4924,7 @@ async function createPickup(ctx) {
     // 审计日志
     await logOperation(client, ctx, 'order.createPickup', 'sale_item', saleItemId, {
       _v: 4,
-      pickupQuantity,
+      pickupQuantity: requestedQuantity,
       productSkuId: updated.sku_id,
       inventoryMode: 'composition',
       clientUserId,
@@ -4851,7 +4939,7 @@ async function createPickup(ctx) {
     saleItemId,
     pickedUp: updated.picked_up_quantity,
     total: updated.quantity,
-    remaining: updated.quantity - updated.picked_up_quantity,
+    remaining: pendingAfterPickup,
     inventoryMode: 'composition',
     message: '取货成功',
   }
@@ -4869,30 +4957,67 @@ async function availablePickupItems(ctx) {
   if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
 
   const rows = await pg.query(
-    `SELECT COALESCE(si.sale_item_group_id, si.sale_item_id) AS sale_item_group_id,
-            MIN(si.sale_item_id) AS sale_item_id,
-            ARRAY_AGG(si.sale_item_id ORDER BY si.sale_item_id) AS source_sale_item_ids,
-            MIN(si.sale_order_id) AS sale_order_id,
-            MIN(si.sku_id) AS sku_id,
-            MIN(si.product_name) AS product_name,
+    `WITH pickup_totals AS (
+       SELECT sale_item_id, SUM(pickup_quantity)::int AS picked_quantity
+         FROM pickup_records
+        GROUP BY sale_item_id
+     ), home_product_rows AS (
+       SELECT COALESCE(si.sale_item_group_id, si.sale_item_id) AS sale_item_group_id,
+              si.sale_item_id,
+              si.sale_order_id,
+              si.sku_id,
+              si.product_name,
+              si.quantity::int AS quantity,
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
+              GREATEST(0, COALESCE(pt.picked_quantity, 0))::int AS picked_quantity,
+              CASE
+                WHEN si.sale_amount <= 0 THEN si.quantity
+                ELSE LEAST(
+                  si.quantity,
+                  FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
+                )
+              END AS paid_quantity,
+              si.unit_real_price,
+              o.store_id,
+              o.paid_at,
+              s.store_name
+         FROM sale_items si
+         JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+         LEFT JOIN stores s ON s.store_id = o.store_id
+         LEFT JOIN pickup_totals pt ON pt.sale_item_id = si.sale_item_id
+        WHERE o.client_user_id = $1
+          AND o.store_id = $2
+          AND o.status IN ('已支付', '部分支付', '已完成')
+          AND si.item_direction = '购买'
+          AND si.product_type = '家居产品'
+     ), pickup_balances AS (
+       SELECT *,
+              LEAST(
+                quantity - settled_quantity,
+                GREATEST(paid_quantity - picked_quantity, 0)
+              )::int AS pending_pickup_quantity
+         FROM home_product_rows
+     )
+     SELECT sale_item_group_id,
+            MIN(sale_item_id) FILTER (WHERE pending_pickup_quantity > 0) AS sale_item_id,
+            ARRAY_AGG(sale_item_id ORDER BY sale_item_id)
+              FILTER (WHERE pending_pickup_quantity > 0) AS source_sale_item_ids,
+            MIN(sale_order_id) AS sale_order_id,
+            MIN(sku_id) AS sku_id,
+            MIN(product_name) AS product_name,
             NULL::text AS spec_name,
-            SUM(si.quantity)::int AS quantity,
-            SUM(COALESCE(si.picked_up_quantity, 0))::int AS picked_up_quantity,
-            MIN(si.unit_real_price) AS unit_real_price,
-            MIN(o.store_id) AS store_id,
-            MAX(o.paid_at) AS paid_at,
-            MIN(s.store_name) AS store_name
-       FROM sale_items si
- INNER JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-  LEFT JOIN stores s ON s.store_id = o.store_id
-      WHERE o.client_user_id = $1
-        AND o.store_id = $2
-        AND o.status = '已支付'
-        AND si.item_direction = '购买'
-        AND si.product_type = '家居产品'
-        AND si.quantity > COALESCE(si.picked_up_quantity, 0)
-   GROUP BY COALESCE(si.sale_item_group_id, si.sale_item_id)
-   ORDER BY MAX(o.paid_at) DESC, MIN(si.sale_item_id)`,
+            SUM(quantity)::int AS quantity,
+            SUM(picked_quantity)::int AS picked_up_quantity,
+            SUM(paid_quantity)::int AS paid_quantity,
+            SUM(pending_pickup_quantity)::int AS pending_pickup_quantity,
+            MIN(unit_real_price) AS unit_real_price,
+            MIN(store_id) AS store_id,
+            MAX(paid_at) AS paid_at,
+            MIN(store_name) AS store_name
+       FROM pickup_balances
+   GROUP BY sale_item_group_id
+     HAVING SUM(pending_pickup_quantity) > 0
+   ORDER BY MAX(paid_at) DESC, MIN(sale_item_id) FILTER (WHERE pending_pickup_quantity > 0)`,
     [clientUserId, ctx.auth.effectiveStoreId],
   )
 
@@ -4906,7 +5031,8 @@ async function availablePickupItems(ctx) {
     specName: r.spec_name || null,
     quantity: Number(r.quantity),
     pickedUpQuantity: Number(r.picked_up_quantity || 0),
-    remaining: Number(r.quantity) - Number(r.picked_up_quantity || 0),
+    paidQuantity: Number(r.paid_quantity || 0),
+    remaining: Number(r.pending_pickup_quantity || 0),
     unitRealPrice: r.unit_real_price ?? '0',
     storeId: r.store_id,
     storeName: r.store_name || null,

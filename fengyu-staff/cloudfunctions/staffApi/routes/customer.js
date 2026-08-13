@@ -4,6 +4,7 @@
  * customer.calendar — 顾客消费日历
  * customer.detail — 顾客档案详情
  * customer.paidOrders — 顾客已支付订单（含明细）
+ * customer.updateName — 修改顾客姓名
  *
  * 运行时 100% PG，零 MSSQL 依赖。WorkFine 数据通过同步模块写入 client_wechat_users。
  */
@@ -773,9 +774,11 @@ function mapHomeProductRow(row) {
   const pickedQuantity = Number(row.picked_quantity || 0)
   const refundedQuantity = Number(row.refunded_quantity || 0)
   const remainingQuantity = Number(row.remaining_quantity || 0)
+  const paidQuantity = Number(row.paid_quantity || 0)
+  const pendingPickupQuantity = Number(row.pending_pickup_quantity || 0)
   let status
   if (row.refund_pending) status = '退款处理中'
-  else if (remainingQuantity > 0) status = pickedQuantity > 0 ? '部分提货' : '待提货'
+  else if (pendingPickupQuantity > 0) status = pickedQuantity > 0 ? '部分提货' : '待提货'
   else status = refundedQuantity > 0 ? '已完成' : '已提货'
 
   return {
@@ -785,9 +788,11 @@ function mapHomeProductRow(row) {
     productName: row.product_name || '家居产品',
     unit: row.unit || '盒',
     purchasedQuantity: Number(row.purchased_quantity || 0),
+    paidQuantity,
     pickedQuantity,
     refundedQuantity,
     remainingQuantity,
+    pendingPickupQuantity,
     status,
     storeId: row.store_id,
     storeName: row.store_name || null,
@@ -827,44 +832,73 @@ async function homeProducts(ctx) {
        SELECT sale_item_id, SUM(pickup_quantity)::int AS picked_quantity
          FROM pickup_records
         GROUP BY sale_item_id
-     ), home_products AS (
+     ), home_product_rows AS (
        SELECT COALESCE(si.sale_item_group_id, si.sale_item_id) AS sale_item_group_id,
-              MIN(si.sale_item_id) AS sale_item_id,
-              MIN(si.sale_order_id) AS sale_order_id,
-              MIN(COALESCE(si.product_name, '家居产品')) AS product_name,
-              MIN(COALESCE(ps.unit, '盒')) AS unit,
-              SUM(si.quantity)::int AS purchased_quantity,
-              SUM(LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0))))::int AS settled_quantity,
-              SUM(LEAST(
+              si.sale_item_id,
+              si.sale_order_id,
+              COALESCE(si.product_name, '家居产品') AS product_name,
+              COALESCE(ps.unit, '盒') AS unit,
+              si.quantity::int AS purchased_quantity,
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
+              LEAST(
                 LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0))),
                 GREATEST(0, COALESCE(pt.picked_quantity, 0))
-              ))::int AS picked_quantity,
-              MIN(o.store_id) AS store_id,
-              MIN(s.store_name) AS store_name,
-              MAX(COALESCE(o.paid_at, o.sale_order_datetime, o.created_at)) AS purchased_at,
-              BOOL_OR(EXISTS (
+              )::int AS picked_quantity,
+              CASE
+                WHEN si.sale_amount <= 0 THEN si.quantity
+                ELSE LEAST(
+                  si.quantity,
+                  FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
+                )
+              END AS paid_quantity,
+              o.store_id,
+              s.store_name,
+              COALESCE(o.paid_at, o.sale_order_datetime, o.created_at) AS purchased_at,
+              EXISTS (
                 SELECT 1 FROM sale_order_payments sop
                  WHERE sop.sale_order_id = o.sale_order_id
                    AND sop.change_type = '退款'
                    AND sop.status = '待审批'
-              )) AS refund_pending
+              ) AS refund_pending
          FROM sale_items si
          JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
          LEFT JOIN stores s ON s.store_id = o.store_id
          LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
          LEFT JOIN pickup_totals pt ON pt.sale_item_id = si.sale_item_id
         WHERE o.client_user_id = $1
-          AND o.status IN ('已支付', '已完成')
+          AND o.status IN ('已支付', '部分支付', '已完成')
           AND si.item_direction = '购买'
           AND si.product_type = '家居产品'
-      GROUP BY COALESCE(si.sale_item_group_id, si.sale_item_id)
+     ), home_products AS (
+       SELECT sale_item_group_id,
+              MIN(si.sale_item_id) AS sale_item_id,
+              MIN(si.sale_order_id) AS sale_order_id,
+              MIN(COALESCE(si.product_name, '家居产品')) AS product_name,
+              MIN(si.unit) AS unit,
+              SUM(si.purchased_quantity)::int AS purchased_quantity,
+              SUM(si.settled_quantity)::int AS settled_quantity,
+              SUM(si.picked_quantity)::int AS picked_quantity,
+              SUM(si.paid_quantity)::int AS paid_quantity,
+              MIN(si.store_id) AS store_id,
+              MIN(si.store_name) AS store_name,
+              MAX(si.purchased_at) AS purchased_at,
+              BOOL_OR(si.refund_pending) AS refund_pending
+         FROM home_product_rows si
+      GROUP BY sale_item_group_id
+     ), home_product_balances AS (
+       SELECT *,
+              (settled_quantity - picked_quantity)::int AS refunded_quantity,
+              (purchased_quantity - settled_quantity)::int AS remaining_quantity,
+              LEAST(
+                purchased_quantity - settled_quantity,
+                GREATEST(paid_quantity - picked_quantity, 0)
+              )::int AS pending_pickup_quantity
+         FROM home_products
      )
-     SELECT *,
-            (settled_quantity - picked_quantity)::int AS refunded_quantity,
-            (purchased_quantity - settled_quantity)::int AS remaining_quantity
-       FROM home_products
-      WHERE NOT (picked_quantity = 0 AND settled_quantity = purchased_quantity)
-   ORDER BY (purchased_quantity - settled_quantity > 0) DESC,
+     SELECT *
+       FROM home_product_balances
+      WHERE picked_quantity > 0 OR pending_pickup_quantity > 0
+   ORDER BY (pending_pickup_quantity > 0) DESC,
             purchased_at DESC,
             sale_item_id`,
     [clientUserId],
@@ -1431,6 +1465,46 @@ async function updateNotes(ctx) {
 }
 
 /**
+ * 修改顾客姓名（店长专用）
+ */
+async function updateName(ctx) {
+  await requireManager()(ctx, async () => {})
+
+  const { clientUserId, name } = ctx.event.payload || {}
+  if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
+  if (typeof name !== 'string') throw new Error('INVALID_PARAMS: name 必须为字符串')
+
+  const trimmed = name.trim()
+  if (!trimmed) throw new Error('INVALID_PARAMS: 顾客姓名不能为空')
+  if (trimmed.length > 50) throw new Error('INVALID_PARAMS: 顾客姓名不能超过50个字符')
+
+  // 顾客必须存在且归属当前门店 scope。
+  await assertCustomerInScope(pg, ctx.auth, clientUserId)
+  const beforeRows = await pg.query(
+    'SELECT name FROM client_wechat_users WHERE user_id = $1',
+    [clientUserId],
+  )
+  const oldName = beforeRows[0]?.name || null
+
+  await pg.transaction(async (client) => {
+    await client.query(
+      'UPDATE client_wechat_users SET name = $1, updated_at = NOW() WHERE user_id = $2',
+      [trimmed, clientUserId],
+    )
+    // 与 admin 修改顾客档案共用 customer.update，审计中心可统一展示和筛选。
+    await logOperation(client, ctx, 'customer.update', 'customer', clientUserId, {
+      _v: 3,
+      _t: 'update',
+      changes: {
+        name: { from: oldName, to: trimmed },
+      },
+    })
+  })
+
+  ctx.result = { message: '顾客姓名已更新', name: trimmed }
+}
+
+/**
  * 查询顾客储值卡余额与积分抵扣配置（店长专用，跨店共享）
  * payload: { customerUserId: string }
  * 返回: { cardId: string|null, balance: number, pointsBalance: number, pointsToYuanRate: number, pointsDeductionMaxRate: number }
@@ -1505,8 +1579,10 @@ async function assign(ctx) {
 
   await pg.transaction(async (client) => {
     await client.query(
-      'UPDATE client_wechat_users SET bound_employee_id = $1, updated_at = NOW() WHERE user_id = $2',
-      [employeeId, clientUserId]
+      `UPDATE client_wechat_users
+       SET bound_employee_id = $1, bound_employee_name = $2, updated_at = NOW()
+       WHERE user_id = $3`,
+      [employeeId, staffRows[0].name || null, clientUserId]
     )
     // Audit log
     await logOperation(client, ctx, 'customer.assign', 'customer', clientUserId, {
@@ -1761,4 +1837,4 @@ async function coupons(ctx) {
   };
 }
 
-module.exports = { search, calendar, detail, paidOrders, homeProducts, orderHistory, serviceHistory, stats, listByTag, refundHistory, updateNotes, assign, customerBalance, appointments, phoneChangeLogs, coupons };
+module.exports = { search, calendar, detail, paidOrders, homeProducts, orderHistory, serviceHistory, stats, listByTag, refundHistory, updateName, updateNotes, assign, customerBalance, appointments, phoneChangeLogs, coupons };

@@ -1,6 +1,6 @@
 /**
  * 顾客档案路由测试
- * 覆盖：search / calendar / detail / paidOrders / stats / listByTag / refundHistory / appointments / phoneChangeLogs / coupons
+ * 覆盖：search / calendar / detail / paidOrders / stats / listByTag / refundHistory / updateName / appointments / phoneChangeLogs / coupons
  * PG 单源架构，非店长脱敏
  */
 
@@ -852,7 +852,8 @@ describe('customer.homeProducts', () => {
       .mockResolvedValueOnce([{
         sale_item_id: 'SI-HOME', sale_order_id: 'SO-HOME', product_name: '精华液',
         unit: '盒', purchased_quantity: 6, picked_quantity: 2, refunded_quantity: 1,
-        remaining_quantity: 3, store_id: 'store-999', store_name: '外店',
+        paid_quantity: 5, pending_pickup_quantity: 3, remaining_quantity: 3,
+        store_id: 'store-999', store_name: '外店',
         purchased_at: '2026-08-01T10:00:00Z', refund_pending: false,
       }])
 
@@ -875,7 +876,8 @@ describe('customer.homeProducts', () => {
       .mockResolvedValueOnce([{
         sale_item_id: 'SI-PENDING', sale_order_id: 'SO-PENDING', product_name: '面膜',
         purchased_quantity: 1, picked_quantity: 0, refunded_quantity: 0,
-        remaining_quantity: 1, store_id: 'store-001', purchased_at: '2026-08-02T10:00:00Z',
+        paid_quantity: 1, pending_pickup_quantity: 1, remaining_quantity: 1,
+        store_id: 'store-001', purchased_at: '2026-08-02T10:00:00Z',
         refund_pending: true,
       }])
 
@@ -894,10 +896,36 @@ describe('customer.homeProducts', () => {
 
     const sql = pg.query.mock.calls[1][0]
     expect(sql).toContain('FROM pickup_records')
-    expect(sql).toContain("o.status IN ('已支付', '已完成')")
+    expect(sql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
     expect(sql).toContain("si.item_direction = '购买'")
     expect(sql).toContain("si.product_type = '家居产品'")
+    expect(sql).toMatch(/FLOOR\(GREATEST\(0, si\.received::numeric\) \* si\.quantity \/ NULLIF\(si\.sale_amount::numeric, 0\)\)/)
+    expect(sql).toContain('GREATEST(paid_quantity - picked_quantity, 0)')
     expect(sql).not.toMatch(/o\.store_id\s*=/)
+  })
+
+  test('部分支付家居产品返回已付整件数和待提数量', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-partial-home' })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([{
+        sale_item_id: 'SI-PARTIAL-HOME', sale_order_id: 'SO-PARTIAL-HOME', product_name: '面膜',
+        unit: '盒', purchased_quantity: 10, paid_quantity: 2, picked_quantity: 0,
+        refunded_quantity: 0, remaining_quantity: 10, pending_pickup_quantity: 2,
+        store_id: 'store-001', store_name: '本店', purchased_at: '2026-08-13T10:00:00Z',
+        refund_pending: false,
+      }])
+
+    await customerRoutes.homeProducts(ctx)
+
+    expect(ctx.result).toEqual([
+      expect.objectContaining({
+        purchasedQuantity: 10,
+        paidQuantity: 2,
+        pendingPickupQuantity: 2,
+        status: '待提货',
+      }),
+    ])
   })
 
   test('缺少顾客标识时拒绝', async () => {
@@ -1327,6 +1355,52 @@ describe('customer.refundHistory', () => {
 })
 
 // ============================================================
+// customer.updateName
+// ============================================================
+describe('customer.updateName', () => {
+  test('店长修改顾客姓名成功并写入审计 diff', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1', name: '  新姓名  ' })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([{ name: '旧姓名' }])
+    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 1 }))
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
+
+    await customerRoutes.updateName(ctx)
+
+    expect(ctx.result).toEqual({ message: '顾客姓名已更新', name: '新姓名' })
+    const [sql, params] = clientQuery.mock.calls[0]
+    expect(sql).toContain('UPDATE client_wechat_users SET name = $1')
+    expect(params).toEqual(['新姓名', 'u1'])
+
+    const auditCall = clientQuery.mock.calls.find((c) => c[0].includes('operation_logs'))
+    expect(auditCall).toBeDefined()
+    expect(auditCall[1][5]).toBe('customer.update')
+    expect(JSON.parse(auditCall[1][8]).changes.name).toEqual({ from: '旧姓名', to: '新姓名' })
+  })
+
+  test.each([
+    [{ name: '张三' }, /clientUserId/],
+    [{ clientUserId: 'u1', name: 123 }, /name 必须为字符串/],
+    [{ clientUserId: 'u1', name: '   ' }, /姓名不能为空/],
+    [{ clientUserId: 'u1', name: 'a'.repeat(51) }, /不能超过50个字符/],
+  ])('非法参数被拒绝：%o', async (payload, expected) => {
+    await expect(customerRoutes.updateName(createManagerCtx(payload))).rejects.toThrow(expected)
+  })
+
+  test('顾客跨店时拒绝修改', async () => {
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-002' }])
+    await expect(customerRoutes.updateName(createManagerCtx({ clientUserId: 'u1', name: '新姓名' })))
+      .rejects.toThrow(/PERMISSION_DENIED.*顾客不在当前门店范围内/)
+  })
+
+  test('美容师无法修改顾客姓名', async () => {
+    await expect(customerRoutes.updateName(createBeauticianCtx({ clientUserId: 'u1', name: '新姓名' })))
+      .rejects.toThrow(/PERMISSION_DENIED/)
+  })
+})
+
+// ============================================================
 // customer.updateNotes
 // ============================================================
 describe('customer.updateNotes', () => {
@@ -1474,8 +1548,10 @@ describe('customer.assign', () => {
     // 事务 client 首个调用 = UPDATE
     const [sql, params] = clientQuery.mock.calls[0]
     expect(sql).toContain('bound_employee_id = $1')
+    expect(sql).toContain('bound_employee_name = $2')
     expect(params[0]).toBe('emp-b1')
-    expect(params[1]).toBe('u1')
+    expect(params[1]).toBe('李四')
+    expect(params[2]).toBe('u1')
   })
 
   test('非店长拒绝操作', async () => {

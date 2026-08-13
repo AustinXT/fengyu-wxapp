@@ -18,6 +18,7 @@ import { shanghaiToday } from "@/lib/datetime"
 import { DEPOSIT_REFUND_REMARK } from "@/lib/service-remark"
 import { actionErrorMessage } from "@/lib/action-error"
 import { expandGroupServiceSessions, groupTreatmentCards, sumGroupValue } from "@/lib/treatment-card-group"
+import { isOrderServiceStaffCandidate } from "@/lib/order-service-staff"
 
 const steps = ["选择顾客", "选择项目", "确认提交"]
 
@@ -155,8 +156,7 @@ export default function ServiceCreatePageClient({
   useEffect(() => {
     if (selectedEmployeeId && selectedStoreId) {
       const emp = employees.find(e => e.employeeId === selectedEmployeeId)
-      // 出差员工跨门店可选，切换门店不清空（跨门店共享，2026-06-24）
-      if (emp && emp.storeId !== selectedStoreId && !emp.isOnBusinessTrip) {
+      if (!emp || !isOrderServiceStaffCandidate(emp, selectedStoreId)) {
         setSelectedEmployeeId("")
       }
     }
@@ -177,11 +177,16 @@ export default function ServiceCreatePageClient({
       setSelectedCustomer(result)
       setSearchDone(true)
       if (result) {
-        if (result.boundStoreId && stores.some(s => s.storeId === result.boundStoreId)) {
-          setSelectedStoreId(result.boundStoreId)
-        }
-        if (result.boundEmployeeId && employees.some(e => e.employeeId === result.boundEmployeeId && !e.isResigned)) {
+        const targetStoreId = result.boundStoreId && stores.some(s => s.storeId === result.boundStoreId)
+          ? result.boundStoreId
+          : selectedStoreId
+        if (targetStoreId !== selectedStoreId) setSelectedStoreId(targetStoreId)
+        if (result.boundEmployeeId && employees.some(
+          e => e.employeeId === result.boundEmployeeId && isOrderServiceStaffCandidate(e, targetStoreId),
+        )) {
           setSelectedEmployeeId(result.boundEmployeeId)
+        } else {
+          setSelectedEmployeeId("")
         }
       }
     } catch (err) {
@@ -232,8 +237,8 @@ export default function ServiceCreatePageClient({
   const getSessionUsed = (groupKey: string) =>
     selectedItems.find(i => i.groupKey === groupKey)?.sessionUsed ?? 1
 
-  const filteredEmployees = employees.filter(
-    e => !e.isResigned && (!selectedStoreId || e.storeId === selectedStoreId || e.isOnBusinessTrip) && e.skills?.includes('美容师')
+  const filteredEmployees = employees.filter((employee) =>
+    isOrderServiceStaffCandidate(employee, selectedStoreId),
   )
 
   const itemProductKinds = useMemo(

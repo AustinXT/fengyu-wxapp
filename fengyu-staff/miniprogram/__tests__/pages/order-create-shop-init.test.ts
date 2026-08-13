@@ -96,3 +96,91 @@ describe('开单商品目录刷新', () => {
     }
   })
 })
+
+describe('普通商品跨分类搜索', () => {
+  function createSearchPage() {
+    return {
+      ...pageDefinition,
+      data: {
+        ...pageDefinition.data,
+        productKindChoice: '普通商品',
+        productKeyword: '一维',
+        activeCategoryId: 'category-current',
+        buyerIsMember: false,
+        searching: false,
+        catalogLoading: false,
+        spuList: [],
+      },
+      _allSkus: [{ skuId: 'sku-current', categoryId: 'category-current' }],
+      _spuCache: {
+        '普通商品:category-current': [{ spuId: 'sku-current', spuName: '当前分类商品' }],
+      },
+      _kwTimer: null,
+      _productSearchGeneration: 0,
+      setData(update: Record<string, unknown>) {
+        Object.assign(this.data, update)
+      },
+    } as any
+  }
+
+  test('搜索请求不携带 categoryId，并展示其他二级分类的普通商品', async () => {
+    const callStaffApiMock = vi.mocked(callStaffApi)
+    callStaffApiMock.mockReset().mockResolvedValueOnce([
+      {
+        skuId: 'sku-other',
+        specName: '一维紧肤护理',
+        categoryId: 'category-other',
+        categoryName: '绝对招牌',
+        productKind: '招牌',
+        salesCategory: '',
+        price: 680,
+        specialPrice: null,
+        sessionCount: 1,
+        unit: '次',
+        productType: '疗程卡',
+        serviceFee: 0,
+        isShengmei: false,
+        isExperience: false,
+      },
+    ])
+    const page = createSearchPage()
+
+    await page.applyProductSearch()
+
+    expect(callStaffApiMock).toHaveBeenCalledWith('product.skuList', {
+      keyword: '一维',
+      excludeCards: true,
+    })
+    expect(callStaffApiMock.mock.calls[0][1]).not.toHaveProperty('categoryId')
+    expect(page.data.spuList).toHaveLength(1)
+    expect(page.data.spuList[0]).toMatchObject({
+      spuId: 'sku-other',
+      spuName: '一维紧肤护理',
+      categoryId: 'category-other',
+    })
+  })
+
+  test('清空关键词后恢复当前分类，旧搜索响应不能覆盖', async () => {
+    const request = deferred<any[]>()
+    vi.mocked(callStaffApi).mockReset().mockReturnValueOnce(request.promise)
+    const page = createSearchPage()
+
+    const pendingSearch = page.applyProductSearch()
+    page.onProductKeywordClear()
+    request.resolve([
+      {
+        skuId: 'sku-stale',
+        specName: '一维旧结果',
+        categoryId: 'category-other',
+        price: 100,
+        specialPrice: null,
+        isExperience: false,
+      },
+    ])
+    await pendingSearch
+
+    expect(page.data.searching).toBe(false)
+    expect(page.data.catalogLoading).toBe(false)
+    expect(page.data.spuList).toEqual([{ spuId: 'sku-current', spuName: '当前分类商品' }])
+  })
+})

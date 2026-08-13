@@ -115,6 +115,7 @@ async function list(ctx) {
     LEFT JOIN org_nodes m ON so.parent_id = m.id
     LEFT JOIN org_nodes d ON u.org_node_id = d.id
     WHERE u.is_resigned = false
+      AND u.store_id IS NOT NULL
       AND (u.store_id = $1 OR u.is_on_business_trip = true)
       AND u.employee_id IS NOT NULL
       AND u.skills && ARRAY['美容师','养生师']::text[]

@@ -55,9 +55,10 @@ export interface MemberBenefitsBundle {
   thanksgiving: MemberLevelBenefitsMap
 }
 
-interface SystemSettings {
+export interface SystemSettings {
   newMemberThreshold: string
   orderTimeout: string
+  visitPointsReward: string
   bannerImages: string[]
   fengyuguanImage: string
   serviceHotline: string
@@ -84,6 +85,7 @@ const DEFAULT_MEMBER_LEVEL_BENEFITS: MemberLevelBenefitsMap = {
 const DEFAULT_SETTINGS: SystemSettings = {
   newMemberThreshold: '1980',
   orderTimeout: '10',
+  visitPointsReward: '20',
   bannerImages: [],
   fengyuguanImage: '',
   serviceHotline: '',
@@ -152,13 +154,14 @@ export const getSettings = withPermission(
   try {
     const rows = await db.execute<{ key: string; value: string }>(sql`
       SELECT key, value FROM system_configs
-      WHERE key IN ('new_member_threshold', 'order_timeout', 'banner_images', 'fengyuguan_image', 'service_hotline', 'points_deduction_max_rate')
+      WHERE key IN ('new_member_threshold', 'order_timeout', 'visit_points_reward', 'banner_images', 'fengyuguan_image', 'service_hotline', 'points_deduction_max_rate')
     `)
 
     const settings: SystemSettings = { ...DEFAULT_SETTINGS }
     for (const row of rows as any[]) {
       if (row.key === 'new_member_threshold') settings.newMemberThreshold = row.value
       if (row.key === 'order_timeout') settings.orderTimeout = row.value
+      if (row.key === 'visit_points_reward') settings.visitPointsReward = row.value
       if (row.key === 'banner_images') {
         try { settings.bannerImages = JSON.parse(row.value) } catch { /* keep default */ }
       }
@@ -176,8 +179,22 @@ export const getSettings = withPermission(
 export const saveSettings = withPermission(
   'system:config',
   async (session, settings: SystemSettings): Promise<{ success: boolean; message: string }> => {
+  const normalizedVisitPointsReward = String(settings.visitPointsReward ?? '').trim()
+  const visitPointsAmount = Number(normalizedVisitPointsReward)
+  if (
+    !/^\d+$/.test(normalizedVisitPointsReward) ||
+    !Number.isSafeInteger(visitPointsAmount) ||
+    visitPointsAmount < 0
+  ) {
+    return { success: false, message: '到店赠送积分必须是非负整数' }
+  }
+
   try {
     const oldSettings = await getSettings()
+    const normalizedSettings = {
+      ...settings,
+      visitPointsReward: normalizedVisitPointsReward,
+    }
 
     await db.execute(sql`
       CREATE TABLE IF NOT EXISTS system_configs (
@@ -196,6 +213,7 @@ export const saveSettings = withPermission(
     const entries = [
       { key: 'new_member_threshold', value: settings.newMemberThreshold },
       { key: 'order_timeout', value: settings.orderTimeout },
+      { key: 'visit_points_reward', value: normalizedVisitPointsReward },
       { key: 'banner_images', value: JSON.stringify(settings.bannerImages) },
       { key: 'fengyuguan_image', value: settings.fengyuguanImage },
       { key: 'service_hotline', value: settings.serviceHotline.trim() },
@@ -255,7 +273,7 @@ export const saveSettings = withPermission(
       'system_config',
       'all',
       oldSettings as unknown as Record<string, unknown>,
-      settings as unknown as Record<string, unknown>,
+      normalizedSettings as unknown as Record<string, unknown>,
     )
 
     // 会员门槛 / 积分抵扣比例变化时，主动失效缓存：

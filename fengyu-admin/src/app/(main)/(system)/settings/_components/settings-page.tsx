@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
 import { ImageUpload } from "@/components/ui/image-upload"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
-import { saveSettings, type RechargeCardConfigInput, type ConsumeAgreementConfig } from "@/actions/settings"
+import { saveSettings, type SystemSettings, type RechargeCardConfigInput, type ConsumeAgreementConfig } from "@/actions/settings"
 import RechargeConfigForm from "./recharge-config-form"
 import ConsumeAgreementForm from "./consume-agreement-form"
 
@@ -18,14 +18,7 @@ const CDN_BASE =
   "https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la"
 
 interface SettingsPageProps {
-  initialSettings: {
-    newMemberThreshold: string
-    orderTimeout: string
-    bannerImages: string[]
-    fengyuguanImage: string
-    serviceHotline: string
-    pointsDeductionMaxRate: string
-  }
+  initialSettings: SystemSettings
   rechargeCardConfig: RechargeCardConfigInput
   consumeAgreement: ConsumeAgreementConfig
 }
@@ -33,6 +26,7 @@ interface SettingsPageProps {
 export default function SettingsPageClient({ initialSettings, rechargeCardConfig, consumeAgreement }: SettingsPageProps) {
   const [newMemberThreshold, setNewMemberThreshold] = useState(initialSettings.newMemberThreshold)
   const [orderTimeout, setOrderTimeout] = useState(initialSettings.orderTimeout)
+  const [visitPointsReward, setVisitPointsReward] = useState(initialSettings.visitPointsReward)
   const [saving, setSaving] = useState(false)
   const [formDirty, setFormDirty] = useState(false)
   useUnsavedChanges(formDirty)
@@ -50,6 +44,7 @@ export default function SettingsPageClient({ initialSettings, rechargeCardConfig
       const res = await saveSettings({
         newMemberThreshold,
         orderTimeout,
+        visitPointsReward,
         bannerImages,
         fengyuguanImage,
         serviceHotline,
@@ -99,6 +94,21 @@ export default function SettingsPageClient({ initialSettings, rechargeCardConfig
                     placeholder="1980"
                   />
                   <p className="text-xs text-[#999999]">新客户首次消费达到此金额自动升级为会员</p>
+                </div>
+
+                <Separator />
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-[var(--foreground)]">每次到店赠送积分</label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={visitPointsReward}
+                    onChange={(e) => setVisitPointsReward(e.target.value)}
+                    placeholder="20"
+                  />
+                  <p className="text-xs text-[#999999]">会员完成非零价真实服务后赠送；同一顾客每天最多一次，填 0 表示关闭</p>
                 </div>
 
                 <Separator />

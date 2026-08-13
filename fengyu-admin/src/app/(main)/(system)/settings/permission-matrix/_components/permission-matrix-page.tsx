@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogClose, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
+import { actionErrorMessage } from '@/lib/action-error'
 import { useUnsavedChanges } from '@/lib/hooks/use-unsaved-changes'
 import { getPermissionActionLabel, getPermissionGroupLabel } from '@/lib/permission-presentation'
 import {
@@ -110,7 +111,7 @@ export default function PermissionMatrixPage({ initialRoles, allActions, canMana
         toast.success(result.message)
         window.location.reload()
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : '保存失败')
+        toast.error(actionErrorMessage(error, '保存角色失败，请稍后重试'))
       }
     })
   }
@@ -132,7 +133,7 @@ export default function PermissionMatrixPage({ initialRoles, allActions, canMana
         setCreateOpen(false)
         window.location.reload()
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : '创建失败')
+        toast.error(actionErrorMessage(error, '创建角色失败，请稍后重试'))
       }
     })
   }
@@ -151,7 +152,7 @@ export default function PermissionMatrixPage({ initialRoles, allActions, canMana
         setRoles((current) => current.filter((role) => role.roleKey !== selected.roleKey))
         window.location.reload()
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : '删除失败')
+        toast.error(actionErrorMessage(error, '删除角色失败，请稍后重试'))
       }
     })
   }

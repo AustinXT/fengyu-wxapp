@@ -291,6 +291,9 @@ export const getEmployeesPaginated = withPermission(
     total: countRow?.count ?? 0,
   }
   },
+  // employee:list 是多个业务页的引用读依赖，不代表拥有“员工管理”。
+  // 主列表的菜单门槛是 employee:create，故数据范围也必须只取该能力角色。
+  { scopeActions: ['employee:create'] },
 )
 
 /** 员工导出行（一行一员工，含档案补全字段；身份证脱敏在前端做） */
@@ -364,6 +367,7 @@ export const exportEmployees = withPermission(
 
     return offsetPageResult(rows, page)
   },
+  { scopeActions: ['employee:create'] },
 )
 
 export const getEmployeeById = withPermission(
@@ -379,6 +383,7 @@ export const getEmployeeById = withPermission(
   if (rows.length === 0) return null
   return rowToEmployee(rows[0])
   },
+  { scopeActions: ['employee:create'] },
 )
 
 /** 获取组织架构第 2 级节点（市场 + 总部部门，用于筛选下拉） */

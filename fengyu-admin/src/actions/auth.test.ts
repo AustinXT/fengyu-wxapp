@@ -103,8 +103,12 @@ vi.mock('drizzle-orm', () => ({
 }))
 
 vi.mock('@/lib/permissions', () => ({
-  computeActions: vi.fn(() => ['dashboard:view']),
-  expandRoleScope: vi.fn(async () => ({ storeIds: ['store-1'], orgNodeIds: ['store-node-1', 'dept-1'] })),
+  computeRoleActions: vi.fn(() => [['dashboard:view']]),
+  expandRoleScope: vi.fn(async () => ({
+    storeIds: ['store-1'],
+    orgNodeIds: ['store-node-1', 'dept-1'],
+    roleScopes: [{ storeIds: ['store-1'], orgNodeIds: ['store-node-1', 'dept-1'] }],
+  })),
   // 登录闸 / 会话二次闸用：真实判定（持任一非 staff 角色即可入后台）
   canAccessAdmin: vi.fn((roles: Array<{ role: string }>) => roles.some((r) => r.role !== 'staff')),
   // 2026-05-17 PR-Z2 后：resetEmployeePassword/resetToDefaultPassword 走 withPermission HOF，
@@ -151,7 +155,7 @@ import { db } from '@/db'
 import { loginAttempts } from '@db/login-attempt'
 import { compare, hash } from 'bcryptjs'
 import { jwtVerify, SignJWT } from 'jose'
-import { computeActions, expandRoleScope } from '@/lib/permissions'
+import { computeRoleActions, expandRoleScope } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 import { encryptPassword } from '@/lib/password-encrypt'
 
@@ -444,11 +448,16 @@ describe('getSessionFromCookie — JWT → AuthSession', () => {
     expect(result!.roles).toEqual([
       expect.objectContaining({ role: 'manager', scopeId: 'store-node-1', scopeType: '门店' }),
     ])
-    expect(computeActions).toHaveBeenCalled()
+    expect(computeRoleActions).toHaveBeenCalled()
     expect(expandRoleScope).toHaveBeenCalled()
     expect(result!.permissions.actions).toEqual(['dashboard:view'])
     expect(result!.permissions.scopeStoreIds).toEqual(['store-1'])
     expect(result!.permissions.scopeOrgNodeIds).toEqual(['store-node-1', 'dept-1'])
+    expect(result!.roles[0]).toEqual(expect.objectContaining({
+      actions: ['dashboard:view'],
+      scopeStoreIds: ['store-1'],
+      scopeOrgNodeIds: ['store-node-1', 'dept-1'],
+    }))
   })
 
   it('scopeType 为 null → 默认 store', async () => {

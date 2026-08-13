@@ -16,6 +16,7 @@ export function parseTab(raw: string | undefined): DataCenterTab {
 }
 
 export function parseScope(raw: { scope?: string; scopeId?: string }): DataCenterScope {
+  if (raw.scope === 'authorized') return { type: 'authorized' }
   if (raw.scope === 'market' && raw.scopeId) return { type: 'market', id: raw.scopeId }
   if (raw.scope === 'store' && raw.scopeId) return { type: 'store', id: raw.scopeId }
   return { type: 'all' }

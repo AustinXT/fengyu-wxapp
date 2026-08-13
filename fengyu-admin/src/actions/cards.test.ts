@@ -511,6 +511,16 @@ describe('getCustomerHeldCards — 数据映射', () => {
     expect(rows).toEqual([])
   })
 
+  it('查询条件同时纳入购买权益与转换单转入权益', async () => {
+    mockSelectRows([])
+
+    await getCustomerHeldCards('user-1', 'store-1')
+
+    expect(eq).toHaveBeenCalledWith('item_direction', '购买')
+    expect(eq).toHaveBeenCalledWith('sale_order_type', '转换单')
+    expect(eq).toHaveBeenCalledWith('item_direction', '转入')
+  })
+
   it('remainingSessions = null 时按 0 处理（deductibleAmount=0.00）', async () => {
     mockSelectRows([{
       saleItemId: 'si-3', productName: '疗程C',

@@ -8,7 +8,7 @@ describe('deriveHomeProductStatus', () => {
     [false, 1, 0, 1, '部分提货'],
     [false, 2, 0, 0, '已提货'],
     [false, 1, 1, 0, '已完成'],
-  ] as const)('按提货进度派生状态', (pending, picked, refunded, remaining, expected) => {
-    expect(deriveHomeProductStatus(pending, picked, refunded, remaining)).toBe(expected)
+  ] as const)('按已付待提进度派生状态', (refundPending, picked, refunded, pendingPickup, expected) => {
+    expect(deriveHomeProductStatus(refundPending, picked, refunded, pendingPickup)).toBe(expected)
   })
 })

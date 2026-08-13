@@ -107,6 +107,63 @@ describe('顾客详情权限门禁', () => {
     expect(callStaffApi).toHaveBeenCalledWith('customer.customerBalance', { customerUserId: 'customer-1' })
     expect(page.data.cardBalanceLoaded).toBe(false)
   })
+
+  test('普通员工不能打开姓名或指定美容师编辑入口', async () => {
+    const page = createPage('customerDetail')
+    page.data.customer = { clientUserId: 'customer-1', name: '顾客甲' }
+
+    page.onEditCustomerName()
+    await page.onEditPreferredStaff()
+
+    expect((globalThis as any).wx.showModal).not.toHaveBeenCalled()
+    expect(callStaffApi).not.toHaveBeenCalled()
+    expect(page.data.showAssignSheet).toBe(false)
+  })
+
+  test('店长可修改顾客姓名并即时回填页面', async () => {
+    setGlobalData({ managerStoreIds: ['store-1'] })
+    const page = createPage('customerDetail')
+    page.data.customer = { clientUserId: 'customer-1', name: '顾客甲' }
+    vi.mocked(callStaffApi).mockResolvedValueOnce({ message: 'success', name: '顾客乙' })
+
+    await page.saveCustomerName('  顾客乙  ')
+
+    expect(callStaffApi).toHaveBeenCalledWith('customer.updateName', {
+      clientUserId: 'customer-1',
+      name: '顾客乙',
+    })
+    expect(page.data.customer.name).toBe('顾客乙')
+    expect(page.data.profileSaving).toBe(false)
+  })
+
+  test('店长选择本店美容师后调用 customer.assign 并即时回填', async () => {
+    setGlobalData({ managerStoreIds: ['store-1'] })
+    const page = createPage('customerDetail')
+    page.data.customer = { clientUserId: 'customer-1', name: '顾客甲', preferredStaffName: '美容师甲' }
+    vi.mocked(callStaffApi)
+      .mockResolvedValueOnce({
+        staffList: [
+          { staffWfId: 'employee-2', name: '美容师乙', department: '美容部', storeId: 'store-1' },
+          { staffWfId: 'employee-away', name: '外店支援', department: '美容部', storeId: 'store-2' },
+        ],
+      })
+      .mockResolvedValueOnce({ employeeName: '美容师乙', message: 'success' })
+
+    await page.onEditPreferredStaff()
+    expect(page.data.staffActions).toEqual([
+      { name: '美容师乙', subname: '美容部', staffWfId: 'employee-2' },
+    ])
+    expect(page.data.showAssignSheet).toBe(true)
+
+    await page.onAssignSelect({ detail: page.data.staffActions[0] })
+
+    expect(callStaffApi).toHaveBeenLastCalledWith('customer.assign', {
+      clientUserId: 'customer-1',
+      employeeId: 'employee-2',
+    })
+    expect(page.data.customer.preferredStaffName).toBe('美容师乙')
+    expect(page.data.profileSaving).toBe(false)
+  })
 })
 
 describe('顾客分配数据契约', () => {

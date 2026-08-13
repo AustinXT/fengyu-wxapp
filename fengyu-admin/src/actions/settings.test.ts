@@ -115,6 +115,7 @@ describe('getSettings — 系统配置读取（不含权益）', () => {
 
     expect(result.newMemberThreshold).toBe('1980')
     expect(result.orderTimeout).toBe('10')
+    expect(result.visitPointsReward).toBe('20')
     expect(result.bannerImages).toEqual([])
     expect(result.fengyuguanImage).toBe('')
     expect(result.pointsDeductionMaxRate).toBe('0.03')
@@ -145,12 +146,13 @@ describe('saveSettings — 系统配置保存（不含权益）', () => {
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  it('正常保存 → 执行 CREATE TABLE + 6 次 UPSERT + banner_count 查询/保存 + 日志', async () => {
+  it('正常保存 → 执行 CREATE TABLE + 7 次 UPSERT + banner_count 查询/保存 + 日志', async () => {
     ;(db.execute as any).mockResolvedValue([])
 
     const result = await saveSettings({
       newMemberThreshold: '2000',
       orderTimeout: '20',
+      visitPointsReward: '30',
       bannerImages: [],
       fengyuguanImage: '',
       serviceHotline: '',
@@ -159,11 +161,11 @@ describe('saveSettings — 系统配置保存（不含权益）', () => {
 
     expect(result.success).toBe(true)
     expect(result.message).toContain('保存成功')
-    // getSettings SELECT + CREATE TABLE + 6 UPSERT + SELECT banner_count + UPSERT banner_count = 10
-    expect(db.execute).toHaveBeenCalledTimes(10)
+    // getSettings SELECT + CREATE TABLE + 7 UPSERT + SELECT banner_count + UPSERT banner_count = 11
+    expect(db.execute).toHaveBeenCalledTimes(11)
     expect(logUpdate).toHaveBeenCalledWith(
       mockSession, 'system.saveConfig', 'system_config', 'all',
-      expect.anything(), expect.objectContaining({ newMemberThreshold: '2000' }),
+      expect.anything(), expect.objectContaining({ newMemberThreshold: '2000', visitPointsReward: '30' }),
     )
   })
 
@@ -173,6 +175,7 @@ describe('saveSettings — 系统配置保存（不含权益）', () => {
     const result = await saveSettings({
       newMemberThreshold: '1980',
       orderTimeout: '10',
+      visitPointsReward: '20',
       bannerImages: [],
       fengyuguanImage: '',
       serviceHotline: '',
@@ -189,6 +192,7 @@ describe('saveSettings — 系统配置保存（不含权益）', () => {
     const result = await saveSettings({
       newMemberThreshold: '1980',
       orderTimeout: '10',
+      visitPointsReward: '20',
       bannerImages: [],
       fengyuguanImage: 'https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la/images/fengyuguan.jpg',
       serviceHotline: '',
@@ -208,6 +212,7 @@ describe('saveSettings — 系统配置保存（不含权益）', () => {
     const result = await saveSettings({
       newMemberThreshold: '1980',
       orderTimeout: '10',
+      visitPointsReward: '20',
       bannerImages: [],
       fengyuguanImage: '',
       serviceHotline: '',
@@ -224,6 +229,7 @@ describe('saveSettings — 系统配置保存（不含权益）', () => {
     const result = await saveSettings({
       newMemberThreshold: '2500',
       orderTimeout: '10',
+      visitPointsReward: '20',
       bannerImages: [],
       fengyuguanImage: '',
       serviceHotline: '',
@@ -243,6 +249,7 @@ describe('saveSettings — 系统配置保存（不含权益）', () => {
     const result = await saveSettings({
       newMemberThreshold: '1980',
       orderTimeout: '10',
+      visitPointsReward: '20',
       bannerImages: [],
       fengyuguanImage: '',
       serviceHotline: '',
@@ -261,6 +268,7 @@ describe('saveSettings — 系统配置保存（不含权益）', () => {
     const result = await saveSettings({
       newMemberThreshold: '3000',
       orderTimeout: '10',
+      visitPointsReward: '20',
       bannerImages: [],
       fengyuguanImage: '',
       serviceHotline: '',
@@ -270,6 +278,21 @@ describe('saveSettings — 系统配置保存（不含权益）', () => {
     expect(result.success).toBe(true)
     expect(invalidateMemberThreshold).toHaveBeenCalledTimes(1)
   })
+  it('到店积分不是非负整数 → 保存前拒绝且不写 DB', async () => {
+    const result = await saveSettings({
+      newMemberThreshold: '1980',
+      orderTimeout: '10',
+      visitPointsReward: '1.5',
+      bannerImages: [],
+      fengyuguanImage: '',
+      serviceHotline: '',
+      pointsDeductionMaxRate: '0.03',
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('非负整数')
+    expect(db.execute).not.toHaveBeenCalled()
+  })
 
   it('pointsDeductionMaxRate 变化（3%→5%）→ 广播 invalidateConfig（门槛不变也触发）', async () => {
     ;(db.execute as any).mockResolvedValue([])
@@ -277,6 +300,7 @@ describe('saveSettings — 系统配置保存（不含权益）', () => {
     const result = await saveSettings({
       newMemberThreshold: '1980',
       orderTimeout: '10',
+      visitPointsReward: '20',
       bannerImages: [],
       fengyuguanImage: '',
       serviceHotline: '',
@@ -298,6 +322,7 @@ describe('saveSettings — 系统配置保存（不含权益）', () => {
     const result = await saveSettings({
       newMemberThreshold: '1980',
       orderTimeout: '10',
+      visitPointsReward: '20',
       bannerImages: [],
       fengyuguanImage: '',
       serviceHotline: '',

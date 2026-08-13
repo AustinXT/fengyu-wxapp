@@ -1,5 +1,5 @@
 /**
- * runDailyJobs — 串行执行 14 个 STEP，每个 STEP 独立 try/catch
+ * runDailyJobs — 串行执行 15 个 STEP，每个 STEP 独立 try/catch
  *
  * 与原 cronTask 入口的关键差异：
  *   - 原入口的整体 try 单点：任一 STEP 抛异常 → 后续 STEP 全部跳过
@@ -18,11 +18,12 @@
  *   7. thanksgiving             — 月度感恩权益（仅 20 号；依赖 member_level）
  *   8. resetCrossStoreFlags     — 重置顾客临时跨店标记（写入清扫；员工出差已改为长期保留，2026-07-13）
  *   9. pointsExpiry             — 积分批次过期扣减 + 60/30/7 天到期提醒
- *  10. pointsAudit              — 积分余额一致性校验（只读告警）
- *  11. roleTypeNullsAudit       — sa/sc role_type NULL 监控（只读告警）
- *  12. paymentInvariants        — 5 项资金不变量守护（只读告警；新增 2026-04-26）
- *  13. refundCascadeCoverage    — 退款 5 通道级联巡检（只读告警；新增 2026-05-18）
- *  14. storeUnbindOrphans       — store_unbind_requests 孤儿巡检（只读告警；新增 2026-05-18）
+ *  10. visitPointsRetry         — 重试服务完成时失败的到店积分（仅失败日志，不扫历史）
+ *  11. pointsAudit              — 积分余额一致性校验（只读告警）
+ *  12. roleTypeNullsAudit       — sa/sc role_type NULL 监控（只读告警）
+ *  13. paymentInvariants        — 5 项资金不变量守护（只读告警；新增 2026-04-26）
+ *  14. refundCascadeCoverage    — 退款 5 通道级联巡检（只读告警；新增 2026-05-18）
+ *  15. storeUnbindOrphans       — store_unbind_requests 孤儿巡检（只读告警；新增 2026-05-18）
  *
  *  客活/消费档位（STEP 3/5）2026-05-26 从 db/scripts/ 游离脚本纳入 cron-worker，根治筛选空。
  */
@@ -43,6 +44,7 @@ import { auditRefundCascadeCoverage } from './steps/audit-refund-cascade-coverag
 import { auditStoreUnbindOrphans } from './steps/audit-store-unbind-orphans'
 import { closeExpiredAppointments } from './steps/close-expired-appointments'
 import { resetCrossStoreFlags } from './steps/reset-cross-store-flags'
+import { retryVisitPoints } from './steps/retry-visit-points'
 
 export type Db = typeof db
 
@@ -76,6 +78,8 @@ const STEPS: ReadonlyArray<readonly [string, StepFn]> = [
   ['resetCrossStoreFlags', resetCrossStoreFlags as StepFn],
   // —— 积分批次到期处理与顾客提醒 ——
   ['pointsExpiry', processPointsExpiry],
+  // —— 积分失败补偿（写入；必须在余额审计前）——
+  ['visitPointsRetry', retryVisitPoints as StepFn],
   // —— 数据完整性审计（只读，放在末尾，不感知 ctx）——
   ['pointsAudit', auditPointsBalance as StepFn],
   ['roleTypeNullsAudit', auditRoleTypeNulls as StepFn],

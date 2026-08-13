@@ -196,16 +196,25 @@ export async function getPermissionMatrix(): Promise<Record<RoleType, string[]>>
  * 2026-05-18 起异步：从 getPermissionMatrix() 读取 DB 矩阵（含 30s 缓存 + DEFAULT fallback）。
  * 调用方仅 actions/auth.ts:getSessionFromCookie（已 async），无 edge runtime 触发面。
  */
-export async function computeActions(roles: Array<{ role: RoleType }>): Promise<string[]> {
+export async function computeRoleActions(
+  roles: Array<{ role: RoleType }>,
+): Promise<string[][]> {
   const matrix = await getPermissionMatrix()
+  return roles.map(({ role }) => [...(matrix[role] ?? [])])
+}
+
+export async function computeActions(roles: Array<{ role: RoleType }>): Promise<string[]> {
+  const roleActions = await computeRoleActions(roles)
   const actionSet = new Set<string>()
-  for (const { role } of roles) {
-    const actions = matrix[role]
-    if (actions) {
-      for (const a of actions) actionSet.add(a)
-    }
+  for (const actions of roleActions) {
+    for (const action of actions) actionSet.add(action)
   }
   return Array.from(actionSet)
+}
+
+export interface ExpandedScope {
+  orgNodeIds: string[]
+  storeIds: string[]
 }
 
 export interface ExpandedRoleScope {
@@ -213,6 +222,8 @@ export interface ExpandedRoleScope {
   orgNodeIds: string[]
   /** 后代组织节点关联的门店；总部额外覆盖历史无 org_node_id 门店。 */
   storeIds: string[]
+  /** 与传入 roles 下标一一对应，供按动作过滤角色 scope。 */
+  roleScopes: ExpandedScope[]
 }
 
 /**
@@ -224,27 +235,33 @@ export interface ExpandedRoleScope {
 export async function expandRoleScope(
   roles: AuthSession['roles'],
 ): Promise<ExpandedRoleScope> {
-  if (roles.length === 0) return { orgNodeIds: [], storeIds: [] }
+  if (roles.length === 0) return { orgNodeIds: [], storeIds: [], roleScopes: [] }
 
   const [nodes, storeRows] = await Promise.all([
     db.select({ id: orgNodes.id, parentId: orgNodes.parentId, type: orgNodes.type }).from(orgNodes),
     db.select({ storeId: stores.storeId, orgNodeId: stores.orgNodeId }).from(stores),
   ])
 
-  const hasHeadquartersScope = roles.some((role) => role.scopeType === '总部')
-  const orgNodeIds = hasHeadquartersScope
-    ? nodes.map((node) => node.id)
-    : collectDescendantNodeIds(nodes, roles.map((role) => role.scopeId))
-  const visibleNodeIds = new Set(orgNodeIds)
-  const storeIds = hasHeadquartersScope
-    ? storeRows.map((store) => store.storeId)
-    : storeRows
-      .filter((store) => store.orgNodeId && visibleNodeIds.has(store.orgNodeId))
-      .map((store) => store.storeId)
+  const roleScopes = roles.map((role): ExpandedScope => {
+    const orgNodeIds = role.scopeType === '总部'
+      ? nodes.map((node) => node.id)
+      : collectDescendantNodeIds(nodes, [role.scopeId])
+    const visibleNodeIds = new Set(orgNodeIds)
+    const storeIds = role.scopeType === '总部'
+      ? storeRows.map((store) => store.storeId)
+      : storeRows
+        .filter((store) => store.orgNodeId && visibleNodeIds.has(store.orgNodeId))
+        .map((store) => store.storeId)
+    return { orgNodeIds, storeIds }
+  })
+
+  const orgNodeIds = Array.from(new Set(roleScopes.flatMap((scope) => scope.orgNodeIds)))
+  const storeIds = Array.from(new Set(roleScopes.flatMap((scope) => scope.storeIds)))
 
   return {
-    orgNodeIds: Array.from(new Set(orgNodeIds)),
-    storeIds: Array.from(new Set(storeIds)),
+    orgNodeIds,
+    storeIds,
+    roleScopes,
   }
 }
 

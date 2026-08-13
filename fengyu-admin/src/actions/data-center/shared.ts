@@ -19,8 +19,8 @@ import type { DataCenterScopeOptions } from '@/lib/data-center/types'
 /**
  * 返回当前账号可选的 scope 树（市场 + 门店）。
  * - 总部/admin：全部市场 + 全部在营门店
- * - 市场：本市场 + 其下门店
- * - 门店：所属市场（仅含本门店）
+ * - 市场：所有获授权市场 + 其下授权门店
+ * - 门店：所有获授权门店及其所属市场（可能是多店）
  */
 export const getDataCenterScopeOptions = withPermission(
   'data_center:dashboard',
