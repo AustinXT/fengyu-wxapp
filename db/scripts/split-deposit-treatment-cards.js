@@ -28,6 +28,7 @@ const SKIP_GROUP_BACKFILL = process.argv.includes('--skip-group-backfill')
 const INITIAL_RECEIPT_NOTE = '寄存单初始化实收'
 const ALLOWED_ORDER_STATUSES = new Set(['待审批', '已支付', '已作废'])
 const CLOSED_CONVERSION_STATUSES = new Set(['已关闭', '已作废'])
+const ACTIVE_RESERVATION_STATUSES = new Set(['服务中', '待客户确认'])
 const EXPECTED_DIRECT_REFS = new Set([
   'appointments.sale_item_id',
   'pickup_records.sale_item_id',
@@ -138,6 +139,10 @@ function conversionConsumesSource(child) {
   return !CLOSED_CONVERSION_STATUSES.has(child.child_order_status)
 }
 
+function serviceReservationAfterSplit(service) {
+  return ACTIVE_RESERVATION_STATUSES.has(service.service_status) ? service.reserved_at : null
+}
+
 function usageTimestamp(row, fields, id) {
   for (const field of fields) {
     const value = row[field]
@@ -184,9 +189,10 @@ function buildTreatmentCardAllocationPlan(inspected, cardIds) {
     if (service.service_status === '已取消') continue
     const quantity = int(service.session_used, 'service_items.session_used', service.service_item_id)
     if (quantity <= 0) throw new Error(`INVALID_SERVICE_USAGE: ${service.service_item_id}=${quantity}`)
+    const effectiveReservedAt = serviceReservationAfterSplit(service)
     const mode = service.service_status === '已完成'
       ? 'consume'
-      : service.reserved_at != null
+      : effectiveReservedAt != null
         ? 'reserve'
         : 'assign'
     events.push({
@@ -459,15 +465,26 @@ async function cloneServiceCommissions(client, originalServiceItemId, nextServic
 async function distributeServices(client, inspected, serviceChunks) {
   if (inspected.services.length === 0) return
   for (const service of inspected.services) {
-    if (service.service_status === '已取消') continue
+    const reservedAt = serviceReservationAfterSplit(service)
+    if (service.service_status === '已取消') {
+      if (service.reserved_at != null) {
+        await client.query(
+          'UPDATE service_items SET reserved_at = NULL, updated_at = NOW() WHERE service_item_id = $1',
+          [service.service_item_id],
+        )
+      }
+      continue
+    }
     const chunks = serviceChunks.get(service.service_item_id)
     if (!chunks) throw new Error(`SERVICE_PLAN_MISSING: ${service.service_item_id}`)
     const cloneIds = chunks.map((chunk, index) => index === 0 ? service.service_item_id : generatedServiceItemId(service.service_item_id, index))
     const existing = await client.query('SELECT service_item_id FROM service_items WHERE service_item_id = ANY($1)', [cloneIds.slice(1)])
     if (existing.rowCount > 0) throw new Error(`SERVICE_ITEM_ID_EXISTS: ${existing.rows.map((row) => row.service_item_id).join(',')}`)
     await client.query(
-      `UPDATE service_items SET sale_item_id = $2, session_used = $3, updated_at = NOW() WHERE service_item_id = $1`,
-      [service.service_item_id, chunks[0].saleItemId, chunks[0].quantity],
+      `UPDATE service_items
+          SET sale_item_id = $2, session_used = $3, reserved_at = $4, updated_at = NOW()
+        WHERE service_item_id = $1`,
+      [service.service_item_id, chunks[0].saleItemId, chunks[0].quantity, reservedAt],
     )
     for (let index = 1; index < chunks.length; index++) {
       await client.query(
@@ -477,7 +494,7 @@ async function distributeServices(client, inspected, serviceChunks) {
          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
         [cloneIds[index], chunks[index].saleItemId, service.unit_real_price, service.is_shengmei, service.sales_category,
           service.service_order_id, chunks[index].quantity, service.employee_id, service.service_duration,
-          service.reserved_at, service.created_at, service.updated_at],
+          reservedAt, service.created_at, service.updated_at],
       )
     }
     if (chunks.length > 1) await cloneServiceCommissions(client, service.service_item_id, cloneIds, chunks.map((chunk) => chunk.quantity), int(service.session_used, 'session_used', service.service_item_id))
@@ -690,5 +707,6 @@ if (require.main === module) {
 module.exports = {
   buildTreatmentCardAllocationPlan,
   conversionConsumesSource,
+  serviceReservationAfterSplit,
   treatmentHistoryConsumption,
 }
