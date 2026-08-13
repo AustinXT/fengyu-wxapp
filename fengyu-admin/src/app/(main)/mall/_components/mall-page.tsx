@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
 import { MallCategoryCascader } from "@/components/ui/mall-category-cascader"
+import { ExportButton } from "@/components/ui/export-button"
 import { formatCurrency, formatDate } from "@/lib/utils"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
@@ -165,6 +166,15 @@ export default function MallPageClient({
           value={searchInput}
           onChange={(e) => handleSearchChange(e.target.value)}
           className="max-w-xs"
+        />
+        <ExportButton
+          exportRequest={{
+            exportType: "mall-products",
+            payload: {
+              q: searchInput.trim(),
+              category: catFilter,
+            },
+          }}
         />
       </div>
 

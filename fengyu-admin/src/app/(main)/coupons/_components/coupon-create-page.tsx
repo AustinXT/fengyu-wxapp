@@ -6,6 +6,7 @@ import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { DatePicker } from "@/components/ui/date-picker"
 import { Select } from "@/components/ui/select"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
@@ -243,18 +244,16 @@ export default function CouponCreatePage({ markets, categories }: Props) {
               <>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">开始日期</label>
-                  <Input
-                    type="date"
+                  <DatePicker
                     value={validFrom}
-                    onChange={(e) => setValidFrom(e.target.value)}
+                    onValueChange={(value) => setValidFrom(value)}
                   />
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">结束日期</label>
-                  <Input
-                    type="date"
+                  <DatePicker
                     value={validTo}
-                    onChange={(e) => setValidTo(e.target.value)}
+                    onValueChange={(value) => setValidTo(value)}
                   />
                 </div>
               </>

@@ -6,6 +6,7 @@ import { toast } from "sonner"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { DatePicker } from "@/components/ui/date-picker"
 import { Select } from "@/components/ui/select"
 import { StatusBadge } from "@/components/ui/badge"
 import { Pagination } from "@/components/ui/pagination"
@@ -151,9 +152,9 @@ export default function AppointmentsPageClient({
               onStoreChange={(value) => setFilter("store", value)}
             />
             <div className="flex items-center gap-2">
-              <Input type="date" className="w-36" value={dateFrom} onChange={(e) => setFilter("from", e.target.value)} />
+              <DatePicker className="w-36" value={dateFrom} onValueChange={(value) => setFilter("from", value)} />
               <span className="text-[#999999]">-</span>
-              <Input type="date" className="w-36" value={dateTo} onChange={(e) => setFilter("to", e.target.value)} />
+              <DatePicker className="w-36" value={dateTo} onValueChange={(value) => setFilter("to", value)} />
             </div>
             <Input
               className="w-56"

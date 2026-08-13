@@ -433,6 +433,8 @@ export interface SaleItem {
   itemDirection: ItemDirection
   refSaleItemId: string | null
   skuId: string | null
+  /** 商品类型；顾客详情等需要区分疗程卡与家居产品的查询按需返回。 */
+  productType?: ProductType
   /** 当前 SKU 的展示单位；SKU 删除或历史数据缺失时按商品类型回退。 */
   unit: string
   sessionCount: number | null

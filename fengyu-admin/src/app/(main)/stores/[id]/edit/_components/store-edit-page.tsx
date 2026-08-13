@@ -10,6 +10,7 @@ import { updateStore } from "@/actions/stores"
 import type { MerchantOption } from "@/actions/merchants"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { DatePicker } from "@/components/ui/date-picker"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectOption } from "@/components/ui/select"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -110,7 +111,7 @@ export default function StoreEditPage({
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">开业日期</label>
-              <Input name="openingDate" type="date" defaultValue={store.openingDate ?? ""} />
+              <DatePicker name="openingDate" defaultValue={store.openingDate ?? ""} />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">床位数</label>

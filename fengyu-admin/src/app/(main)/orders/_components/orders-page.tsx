@@ -1,13 +1,15 @@
 "use client";
 
-import { useState, useTransition, useCallback } from "react";
+import { useState, useTransition, useCallback, useEffect } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Input } from "@/components/ui/input"
+import { DatePicker } from "@/components/ui/date-picker";
 import { Select } from "@/components/ui/select";
+import { MultiSelect } from "@/components/ui/multi-select";
 import { StatusBadge, Badge } from "@/components/ui/badge";
 import { Pagination } from "@/components/ui/pagination";
 import {
@@ -24,7 +26,8 @@ import { ExportButton } from "@/components/ui/export-button";
 import { fmtDateTime } from "@/lib/datetime";
 import { actionErrorMessage } from "@/lib/action-error";
 import { useUrlFilters } from "@/lib/hooks/use-url-filters";
-import type { SaleOrder, OrderStatus, SaleOrderType } from "@/lib/types";
+import { ORDER_TYPE_FILTER_OPTIONS, parseOrderTypeFilters } from "@/lib/list-filters";
+import type { SaleOrder, OrderStatus } from "@/lib/types";
 import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types";
 import MarketStoreFilter from "@/components/market-store-filter";
 
@@ -278,6 +281,19 @@ export default function OrdersPageClient({
 
   const statusFilter = get("status");
   const typeFilter = get("type");
+  const [selectedOrderTypes, setSelectedOrderTypes] = useState<string[]>(
+    () => parseOrderTypeFilters(typeFilter) ?? [],
+  );
+  useEffect(() => {
+    setSelectedOrderTypes(parseOrderTypeFilters(typeFilter) ?? []);
+  }, [typeFilter]);
+  const handleOrderTypesChange = useCallback(
+    (types: string[]) => {
+      setSelectedOrderTypes(types);
+      setFilter("type", types.join(","));
+    },
+    [setFilter],
+  );
   const marketFilter = get("market");
   const storeFilter = get("store");
   const dateFrom = get("from");
@@ -319,16 +335,13 @@ export default function OrdersPageClient({
                 </option>
               ))}
             </Select>
-            <Select className="w-40" value={typeFilter} onChange={(e) => setFilter("type", e.target.value)}>
-              <option value="">全部单据</option>
-              {/* 2026-04-26 sale-order-domain-refactor：5→3 值；'回款单'/'退款单' 已迁至 sale_order_payments */}
-              {/* 2026-05-18 B5：+寄存单（剩余次数初始化，不计金额） */}
-              {(["销售单", "内部单", "转换单", "寄存单", "充值单"] as SaleOrderType[]).map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </Select>
+            <MultiSelect
+              className="w-40"
+              options={ORDER_TYPE_FILTER_OPTIONS.map((type) => ({ value: type, label: type }))}
+              value={selectedOrderTypes}
+              onChange={handleOrderTypesChange}
+              placeholder="全部单据"
+            />
             <MarketStoreFilter
               options={filterOptions}
               marketValue={marketFilter}
@@ -358,14 +371,13 @@ export default function OrdersPageClient({
             </Select>
             <div className="flex items-center gap-2">
               <span className="text-sm text-muted-foreground whitespace-nowrap">下单日期</span>
-              <Input
-                type="date"
+              <DatePicker
                 className="w-36"
                 value={dateFrom}
-                onChange={(e) => setFilter("from", e.target.value)}
+                onValueChange={(value) => setFilter("from", value)}
               />
               <span className="text-[#999999]">-</span>
-              <Input type="date" className="w-36" value={dateTo} onChange={(e) => setFilter("to", e.target.value)} />
+              <DatePicker className="w-36" value={dateTo} onValueChange={(value) => setFilter("to", value)} />
             </div>
             <Input
               className="w-56"

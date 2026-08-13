@@ -962,6 +962,7 @@ describe('mgmtCustomer 细节 SQL：交易数据跟顾客走（不再按门店�
     const itemSql = pg.query.mock.calls.map((c) => c[0]).find((sql) =>
       /FROM\s+sale_items\s+si/.test(sql) && /JOIN\s+sale_orders\s+o/.test(sql)
     )
+    expect(itemSql).toContain("si.product_type = '疗程卡'")
     expect(itemSql).toContain("si.item_direction = '购买'")
     expect(itemSql).toContain("o.sale_order_type = '转换单'")
     expect(itemSql).toContain("si.item_direction = '转入'")

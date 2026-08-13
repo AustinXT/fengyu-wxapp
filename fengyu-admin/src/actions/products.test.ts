@@ -28,6 +28,8 @@ vi.mock('@db/product', () => ({
     productId: 'product_id',
     categoryId: 'category_id',
     name: 'name',
+    sortOrder: 'sort_order',
+    deletedAt: 'deleted_at',
     salesCategory: 'sales_category',
     updatedAt: 'updated_at',
     productId_: 'product_id',
@@ -43,6 +45,7 @@ vi.mock('@db/product', () => ({
   mallCategories: {
     categoryId: 'category_id',
     categoryName: 'category_name',
+    categoryGroup: 'category_group',
     sortOrder: 'sort_order',
     isValid: 'is_valid',
     updatedAt: 'updated_at',
@@ -86,6 +89,7 @@ vi.mock('drizzle-orm', () => ({
   isNull: vi.fn((col) => ({ type: 'isNull', col })),
   isNotNull: vi.fn((col) => ({ type: 'isNotNull', col })),
   inArray: vi.fn((col, vals) => ({ type: 'inArray', col, vals })),
+  ilike: vi.fn((col, value) => ({ type: 'ilike', col, value })),
 }))
 
 vi.mock('@/lib/auth', () => ({
@@ -121,6 +125,7 @@ import {
   getCategories,
   getProductKinds,
   getProducts,
+  exportMallProducts,
   getProductById,
   getSkusByProductId,
   getAllSkus,
@@ -875,6 +880,74 @@ describe('getProducts — 商品列表', () => {
 
     expect(result).toHaveLength(1)
     expect(result[0].productId).toBe('prod-1')
+  })
+})
+
+describe('exportMallProducts — 商城商品导出', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('按筛选条件分批查询并返回稳定游标', async () => {
+    const sourceRows = [1, 2, 3].map((index) => ({
+      product: {
+        productId: `prod-${index}`,
+        categoryId: 'cat-1',
+        name: `商城商品 ${index}`,
+        coverImage: null,
+        detailImages: null,
+        description: null,
+        isBundle: index === 1,
+        price: '199.00',
+        specialPrice: null,
+        manageScope: null,
+        marketScope: null,
+        sortOrder: index,
+        isVisible: true,
+        createdAt: new Date('2026-08-13T00:00:00.000Z'),
+        updatedAt: new Date('2026-08-13T01:00:00.000Z'),
+      },
+      categoryName: '面膜',
+      categoryGroup: '居家护理',
+      skuCount: index,
+    }))
+
+    let callIndex = 0
+    const offset = vi.fn().mockResolvedValue(sourceRows)
+    const limit = vi.fn().mockReturnValue({ offset })
+    ;(db.select as any).mockImplementation(() => {
+      callIndex++
+      if (callIndex === 1) {
+        const as = vi.fn().mockReturnValue({ count: 'sku_count' })
+        const groupBy = vi.fn().mockReturnValue({ as })
+        const from = vi.fn().mockReturnValue({ groupBy })
+        return { from }
+      }
+      const query = { limit }
+      const orderBy = vi.fn().mockReturnValue(query)
+      const where = vi.fn().mockReturnValue({ orderBy })
+      const leftJoin2 = vi.fn().mockReturnValue({ where })
+      const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
+      const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
+      return { from }
+    })
+
+    const result = await exportMallProducts(
+      { q: '商品', category: 'cat-1' },
+      { limit: 2, cursor: 4 },
+    )
+
+    expect(limit).toHaveBeenCalledWith(3)
+    expect(offset).toHaveBeenCalledWith(4)
+    expect(result.rows).toHaveLength(2)
+    expect(result.rows[0]).toMatchObject({
+      productId: 'prod-1',
+      categoryName: '面膜',
+      categoryGroup: '居家护理',
+      skuCount: 1,
+    })
+    expect(result).toMatchObject({ hasMore: true, nextCursor: 6 })
   })
 })
 

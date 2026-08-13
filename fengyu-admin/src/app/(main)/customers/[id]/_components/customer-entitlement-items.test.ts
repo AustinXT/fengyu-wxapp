@@ -9,6 +9,7 @@ function makeItem(overrides: Partial<SaleItem> = {}): SaleItem {
     itemDirection: "购买",
     refSaleItemId: null,
     skuId: "SKU-1",
+    productType: "疗程卡",
     unit: "次",
     sessionCount: 1,
     remainingSessions: 1,
@@ -96,6 +97,24 @@ describe("getCustomerVisibleSaleItems", () => {
     ])
 
     expect(result.map((item) => item.saleItemId)).toEqual(["SI-PAID-UNUSED"])
+  })
+
+  it("排除具有余次数据的家居产品", () => {
+    const treatmentCard = makeItem({ saleItemId: "SI-CARD" })
+    const homeProduct = makeItem({
+      saleItemId: "SI-HOME",
+      productType: "家居产品",
+      unit: "盒",
+      sessionCount: 10,
+      remainingSessions: 2,
+      paidSessions: 2,
+    })
+
+    const result = getCustomerVisibleSaleItems([
+      makeOrder({ items: [treatmentCard, homeProduct] }),
+    ])
+
+    expect(result.map((item) => item.saleItemId)).toEqual(["SI-CARD"])
   })
 
   it("兼容 paidSessions 为 NULL 的历史行，按物理剩余显示", () => {

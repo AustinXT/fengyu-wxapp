@@ -6,6 +6,7 @@ import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { DatePicker, DateTimePicker } from "@/components/ui/date-picker"
 import { Textarea } from "@/components/ui/textarea"
 import { Select } from "@/components/ui/select"
 import { SkillSelect } from "@/components/ui/skill-select"
@@ -435,10 +436,9 @@ export default function EmployeeDetailPage({
                 <div className="space-y-2">
                   <label className="text-sm font-medium">生日</label>
                   {isEditing ? (
-                    <Input
-                      type="date"
+                    <DatePicker
                       value={form.birthday}
-                      onChange={(e) => handleFormChange("birthday", e.target.value)}
+                      onValueChange={(value) => handleFormChange("birthday", value)}
                     />
                   ) : (
                     <Input value={employee.birthday ?? ""} disabled />
@@ -447,10 +447,9 @@ export default function EmployeeDetailPage({
                 <div className="space-y-2">
                   <label className="text-sm font-medium">入职日期</label>
                   {isEditing ? (
-                    <Input
-                      type="date"
+                    <DatePicker
                       value={form.hiredAt}
-                      onChange={(e) => handleFormChange("hiredAt", e.target.value)}
+                      onValueChange={(value) => handleFormChange("hiredAt", value)}
                     />
                   ) : (
                     <Input value={employee.hiredAt ?? ""} disabled />
@@ -459,10 +458,9 @@ export default function EmployeeDetailPage({
                 <div className="space-y-2">
                   <label className="text-sm font-medium">请假开始</label>
                   {isEditing ? (
-                    <Input
-                      type="datetime-local"
+                    <DateTimePicker
                       value={form.leaveStart}
-                      onChange={(e) => handleFormChange("leaveStart", e.target.value)}
+                      onValueChange={(value) => handleFormChange("leaveStart", value)}
                     />
                   ) : (
                     <Input value={employee.leaveStart ? employee.leaveStart.slice(0, 16) : "—"} disabled />
@@ -471,10 +469,9 @@ export default function EmployeeDetailPage({
                 <div className="space-y-2">
                   <label className="text-sm font-medium">请假结束</label>
                   {isEditing ? (
-                    <Input
-                      type="datetime-local"
+                    <DateTimePicker
                       value={form.leaveEnd}
-                      onChange={(e) => handleFormChange("leaveEnd", e.target.value)}
+                      onValueChange={(value) => handleFormChange("leaveEnd", value)}
                     />
                   ) : (
                     <Input value={employee.leaveEnd ? employee.leaveEnd.slice(0, 16) : "—"} disabled />
@@ -719,10 +716,9 @@ export default function EmployeeDetailPage({
             <label className="text-sm font-medium">
               离职日期 <span className="text-[#D94040]">*</span>
             </label>
-            <Input
-              type="date"
+            <DatePicker
               value={resignForm.resignedAt}
-              onChange={(e) => setResignForm((prev) => ({ ...prev, resignedAt: e.target.value }))}
+              onValueChange={(value) => setResignForm((prev) => ({ ...prev, resignedAt: value }))}
             />
           </div>
           <div className="space-y-2">

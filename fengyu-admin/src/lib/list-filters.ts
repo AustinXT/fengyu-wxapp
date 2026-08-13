@@ -11,11 +11,35 @@ import type { EmployeeFilters } from '@/actions/employees'
 import type { PointTransactionFilters } from '@/actions/points'
 import type { CardFilters } from '@/actions/cards'
 import type { CustomerFilters } from '@/actions/customers'
+import type { SaleOrderType } from '@/lib/types'
+
+/** 订单管理可筛选的销售单据类型（与 `SaleOrderType` 联合类型保持一致）。 */
+export const ORDER_TYPE_FILTER_OPTIONS = [
+  '销售单',
+  '内部单',
+  '转换单',
+  '寄存单',
+  '充值单',
+] as const satisfies readonly SaleOrderType[]
+
+/**
+ * 订单类型多选 URL 编码：逗号分隔。
+ *
+ * 仅保留白名单内的类型，防御历史链接或手工 URL 带入已废弃值；去重后为空时不加筛选条件。
+ */
+export function parseOrderTypeFilters(raw: string | undefined): SaleOrderType[] | undefined {
+  if (!raw) return undefined
+  const validTypes = new Set<string>(ORDER_TYPE_FILTER_OPTIONS)
+  const types = [...new Set(
+    raw.split(',').map((value) => value.trim()).filter((value): value is SaleOrderType => validTypes.has(value)),
+  )]
+  return types.length ? types : undefined
+}
 
 export function parseOrderFilters(params: Record<string, string | undefined>): OrderFilters {
   return {
     status: params.status,
-    type: params.type,
+    types: parseOrderTypeFilters(params.type),
     marketId: params.market,
     storeId: params.store,
     dateFrom: params.from,

@@ -4,6 +4,7 @@ import { useCallback, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { useUrlFilters } from '@/lib/hooks/use-url-filters'
 import { Input } from '@/components/ui/input'
+import { DatePicker } from '@/components/ui/date-picker'
 import { Select } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
 import { DataTable, type Column } from '@/components/ui/data-table'
@@ -259,19 +260,17 @@ export default function InventoryListView({
 
         <div className="flex flex-col gap-1">
           <span className="text-xs text-[#666666]">起始日期</span>
-          <Input
-            type="date"
+          <DatePicker
             value={dateFrom}
-            onChange={(e) => setFilter('from', e.target.value)}
+            onValueChange={(value) => setFilter('from', value)}
             className="w-36"
           />
         </div>
         <div className="flex flex-col gap-1">
           <span className="text-xs text-[#666666]">结束日期</span>
-          <Input
-            type="date"
+          <DatePicker
             value={dateTo}
-            onChange={(e) => setFilter('to', e.target.value)}
+            onValueChange={(value) => setFilter('to', value)}
             className="w-36"
           />
         </div>
@@ -449,10 +448,9 @@ function CreateDialog({ open, onClose, category, stores, onCreate, onSuccess }: 
               </Field>
             )}
             <Field label="单据日期">
-              <Input
-                type="date"
+              <DatePicker
                 value={docDate}
-                onChange={(e) => setDocDate(e.target.value)}
+                onValueChange={(value) => setDocDate(value)}
               />
             </Field>
             {category === 'sale' && (

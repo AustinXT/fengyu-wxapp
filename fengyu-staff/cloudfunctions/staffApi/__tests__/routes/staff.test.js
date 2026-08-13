@@ -26,6 +26,7 @@ describe('staff.list', () => {
 
     expect(pg.query.mock.calls[0][0]).toMatch(/u\.store_id\s+IS\s+NOT\s+NULL/)
     expect(pg.query.mock.calls[0][0]).toMatch(/\(u\.store_id\s*=\s*\$1\s+OR\s+u\.is_on_business_trip\s*=\s*true\)/)
+    expect(pg.query.mock.calls[0][0]).toMatch(/ORDER BY\s+\(u\.store_id\s*=\s*\$1\)\s+DESC,\s+d\.name,\s+u\.name/)
     expect(ctx.result.staffList).toHaveLength(2)
     expect(ctx.result.staffList[0].staffWfId).toBe('emp-001')
     expect(ctx.result.staffList[0].name).toBe('张三')

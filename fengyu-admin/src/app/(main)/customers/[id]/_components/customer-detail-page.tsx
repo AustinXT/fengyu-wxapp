@@ -8,6 +8,7 @@ import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import type { Customer, SaleOrder, Appointment, SaleItem, Store, Employee, CustomerCoupon, CouponStatus } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { DatePicker } from "@/components/ui/date-picker"
 import { Select } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { MemberLevelBadge } from "@/components/ui/member-level-badge"
@@ -816,10 +817,9 @@ export default function CustomerDetailPage({
                 <div className="space-y-2">
                   <label className="text-sm font-medium">生日</label>
                   {isEditing ? (
-                    <Input
-                      type="date"
+                    <DatePicker
                       value={form.birthday}
-                      onChange={(e) => handleFormChange("birthday", e.target.value)}
+                      onValueChange={(value) => handleFormChange("birthday", value)}
                     />
                   ) : (
                     <Input value={customer.birthday ?? ""} disabled />

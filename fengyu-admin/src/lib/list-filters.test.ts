@@ -4,6 +4,7 @@ import {
   parseAllocationServiceFilters,
   parseEmployeeFilters,
   parseOrderFilters,
+  parseOrderTypeFilters,
   parseServiceOrderFilters,
   filterValidSkillValues,
 } from './list-filters'
@@ -81,11 +82,26 @@ describe('parseEmployeeFilters', () => {
 })
 
 describe('订单/服务单列表筛选解析', () => {
+  it('订单类型支持逗号分隔多选，并过滤无效/重复值', () => {
+    expect(parseOrderTypeFilters('销售单, 转换单,销售单,已废弃单据')).toEqual([
+      '销售单',
+      '转换单',
+    ])
+  })
+
+  it('订单类型全为无效值时不添加类型筛选', () => {
+    expect(parseOrderTypeFilters('已废弃单据,')).toBeUndefined()
+  })
+
   it('订单列表透传 market/store URL 参数', () => {
     expect(parseOrderFilters({ market: 'market-1', store: 'store-1' })).toMatchObject({
       marketId: 'market-1',
       storeId: 'store-1',
     })
+  })
+
+  it('订单列表将 type URL 参数解析为多选类型', () => {
+    expect(parseOrderFilters({ type: '销售单,充值单' }).types).toEqual(['销售单', '充值单'])
   })
 
   it('服务单列表透传 market/store URL 参数', () => {
