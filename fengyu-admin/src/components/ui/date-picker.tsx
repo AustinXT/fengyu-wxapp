@@ -148,6 +148,35 @@ function useControllableValue(
   return [value, setValue] as const
 }
 
+function useNativeInputEvents(forwardedRef: React.ForwardedRef<HTMLInputElement>) {
+  const inputRef = React.useRef<HTMLInputElement>(null)
+  const setInputRef = React.useCallback(
+    (node: HTMLInputElement | null) => {
+      inputRef.current = node
+      if (typeof forwardedRef === "function") forwardedRef(node)
+      else if (forwardedRef) forwardedRef.current = node
+    },
+    [forwardedRef],
+  )
+
+  const dispatchValueChange = React.useCallback((nextValue: string) => {
+    const input = inputRef.current
+    if (!input || input.value === nextValue) return
+
+    const nativeValueSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )?.set
+    if (nativeValueSetter) nativeValueSetter.call(input, nextValue)
+    else input.value = nextValue
+
+    input.dispatchEvent(new Event("input", { bubbles: true }))
+    input.dispatchEvent(new Event("change", { bubbles: true }))
+  }, [])
+
+  return { inputRef: setInputRef, dispatchValueChange }
+}
+
 function buildDisabledMatchers(min?: string, max?: string): Matcher[] | undefined {
   const minDate = toZonedDate(parseDateValue(min?.slice(0, 10)))
   const maxDate = toZonedDate(parseDateValue(max?.slice(0, 10)))
@@ -438,6 +467,7 @@ export const DatePicker = React.forwardRef<HTMLInputElement, DatePickerProps>(
     ref,
   ) => {
     const [value, setValue] = useControllableValue(controlledValue, defaultValue, onValueChange)
+    const { inputRef, dispatchValueChange } = useNativeInputEvents(ref)
     const [open, setOpen] = React.useState(false)
     const { triggerRef, popoverRef, position } = useDatePopover(open)
     const selected = toZonedDate(parseDateValue(value))
@@ -446,14 +476,21 @@ export const DatePicker = React.forwardRef<HTMLInputElement, DatePickerProps>(
     const todayIsAllowed = dateIsWithinBounds(todayValue, min, max)
 
     const close = React.useCallback(() => setOpen(false), [])
+    const commitValue = React.useCallback(
+      (nextValue: string) => {
+        setValue(nextValue)
+        dispatchValueChange(nextValue)
+      },
+      [dispatchValueChange, setValue],
+    )
     const selectDate = React.useCallback(
       (date: Date) => {
         const nextValue = formatDateValue(datePartsFromDate(date))
         if (!dateIsWithinBounds(nextValue, min, max)) return
-        setValue(nextValue)
+        commitValue(nextValue)
         setOpen(false)
       },
-      [max, min, setValue],
+      [commitValue, max, min],
     )
 
     return (
@@ -469,14 +506,14 @@ export const DatePicker = React.forwardRef<HTMLInputElement, DatePickerProps>(
           mode="date"
           onToggle={() => setOpen((current) => !current)}
           onClear={() => {
-            setValue("")
+            commitValue("")
             setOpen(false)
           }}
           triggerRef={triggerRef}
         />
         <input
           {...hiddenInputProps}
-          ref={ref}
+          ref={inputRef}
           id={id}
           name={name}
           type="hidden"
@@ -506,7 +543,7 @@ export const DatePicker = React.forwardRef<HTMLInputElement, DatePickerProps>(
               type="button"
               className="rounded px-2 py-1 text-sm text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
               onClick={() => {
-                setValue("")
+                commitValue("")
                 setOpen(false)
               }}
             >
@@ -549,6 +586,7 @@ export const DateTimePicker = React.forwardRef<HTMLInputElement, DateTimePickerP
     ref,
   ) => {
     const [value, setValue] = useControllableValue(controlledValue, defaultValue, onValueChange)
+    const { inputRef, dispatchValueChange } = useNativeInputEvents(ref)
     const [open, setOpen] = React.useState(false)
     const initialParts = parseDateTimeValue(value) ?? currentBeijingDateTime()
     const [draft, setDraft] = React.useState<DateTimeParts>(initialParts)
@@ -556,6 +594,13 @@ export const DateTimePicker = React.forwardRef<HTMLInputElement, DateTimePickerP
     const selected = toZonedDate(draft)
 
     const close = React.useCallback(() => setOpen(false), [])
+    const commitValue = React.useCallback(
+      (nextValue: string) => {
+        setValue(nextValue)
+        dispatchValueChange(nextValue)
+      },
+      [dispatchValueChange, setValue],
+    )
     const openPicker = React.useCallback(() => {
       setDraft(parseDateTimeValue(value) ?? currentBeijingDateTime())
       setOpen(true)
@@ -571,9 +616,9 @@ export const DateTimePicker = React.forwardRef<HTMLInputElement, DateTimePickerP
     const confirm = React.useCallback(() => {
       const nextValue = formatDateTimeValue(draft)
       if (!dateTimeIsWithinBounds(nextValue, min, max)) return
-      setValue(nextValue)
+      commitValue(nextValue)
       setOpen(false)
-    }, [draft, max, min, setValue])
+    }, [commitValue, draft, max, min])
 
     const draftValue = formatDateTimeValue(draft)
     const draftIsValid = dateTimeIsWithinBounds(draftValue, min, max)
@@ -591,14 +636,14 @@ export const DateTimePicker = React.forwardRef<HTMLInputElement, DateTimePickerP
           mode="datetime"
           onToggle={() => (open ? close() : openPicker())}
           onClear={() => {
-            setValue("")
+            commitValue("")
             setOpen(false)
           }}
           triggerRef={triggerRef}
         />
         <input
           {...hiddenInputProps}
-          ref={ref}
+          ref={inputRef}
           id={id}
           name={name}
           type="hidden"
@@ -665,7 +710,7 @@ export const DateTimePicker = React.forwardRef<HTMLInputElement, DateTimePickerP
               type="button"
               className="rounded px-2 py-1 text-sm text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
               onClick={() => {
-                setValue("")
+                commitValue("")
                 setOpen(false)
               }}
             >

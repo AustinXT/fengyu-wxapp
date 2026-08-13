@@ -38,6 +38,35 @@ describe("DatePicker", () => {
     expect(screen.queryByRole("dialog", { name: "选择日期" })).not.toBeInTheDocument()
   })
 
+  it("用户修改值时从隐藏字段向表单冒泡 input 和 change 事件", async () => {
+    const user = userEvent.setup()
+    const onInput = vi.fn()
+    const events: string[] = []
+    const { container } = render(
+      <form data-testid="form" onInput={onInput}>
+        <DatePicker name="openingDate" defaultValue="2026-05-20" aria-label="开业日期" />
+      </form>,
+    )
+    const form = screen.getByTestId("form")
+    form.addEventListener("input", (event) => {
+      events.push(`input:${(event.target as HTMLInputElement).value}`)
+    })
+    form.addEventListener("change", (event) => {
+      events.push(`change:${(event.target as HTMLInputElement).value}`)
+    })
+
+    await user.click(screen.getByRole("button", { name: "开业日期" }))
+    await user.click(
+      within(screen.getByRole("dialog", { name: "选择日期" })).getByRole("button", {
+        name: /2026年5月21日/,
+      }),
+    )
+
+    expect(container.querySelector('input[name="openingDate"]')).toHaveValue("2026-05-21")
+    expect(onInput).toHaveBeenCalledOnce()
+    expect(events).toEqual(["input:2026-05-21", "change:2026-05-21"])
+  })
+
   it("支持默认值、清空和 FormData 提交", async () => {
     const user = userEvent.setup()
     const { container } = render(
