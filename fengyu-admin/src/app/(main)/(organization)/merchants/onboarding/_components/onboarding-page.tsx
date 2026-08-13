@@ -210,6 +210,7 @@ function Field({
   hint,
   type = "text",
   required = false,
+  maxLength,
 }: {
   form: OnboardingApplicationInput
   setForm: (next: OnboardingApplicationInput) => void
@@ -219,6 +220,7 @@ function Field({
   hint?: string
   type?: string
   required?: boolean
+  maxLength?: number
 }) {
   return (
     <label className="block">
@@ -230,6 +232,7 @@ function Field({
         type={type}
         value={getGroup(form, group)[field] ?? ""}
         onChange={(event) => setForm(setFormField(form, group, field, event.target.value))}
+        maxLength={maxLength}
         className="mt-1.5"
       />
       {hint && <span className="mt-1 block text-xs text-[#999999]">{hint}</span>}
@@ -356,7 +359,16 @@ function OnboardingForm({
             label="注册地址地区码"
             hint="请选择拉卡拉地区码，保存时会自动补齐省、市编码。"
           />
-          <Field form={form} setForm={setForm} group="merchantData" field="merRegAddr" label="注册地址详细地址" required />
+          <Field
+            form={form}
+            setForm={setForm}
+            group="merchantData"
+            field="merRegAddr"
+            label="注册地址详细地址"
+            hint="仅填写省市区之后的门牌信息，最多 29 个字符。"
+            maxLength={29}
+            required
+          />
           <Field form={form} setForm={setForm} group="merchantData" field="merBlisStDt" type="date" label="营业执照开始日期" required />
           <Field form={form} setForm={setForm} group="merchantData" field="merBlisExpDt" type="date" label="营业执照到期日期" />
           <BooleanField form={form} setForm={setForm} group="merchantData" field="merBlisLongTerm" label="营业执照长期有效" />
@@ -539,6 +551,11 @@ export function OnboardingList({
             </Link>
           )}
         </div>
+      </div>
+
+      <div className="flex w-fit rounded-[var(--radius)] border border-[var(--border)] bg-white p-1">
+        <Link href="/merchants"><Button size="sm" variant="ghost">收款商户</Button></Link>
+        <Link href="/merchants/onboarding"><Button size="sm">入网申请</Button></Link>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -972,6 +989,7 @@ export function OnboardingEditor({
         ...getGroup(form, "settlementData"),
         openningBankName: bank.branchBankName,
         openningBankCode: bank.branchBankNo,
+        bankAreaCode: bank.areaCode,
         ...(bank.clearNo ? { clearingBankCode: bank.clearNo } : {}),
       },
     })
@@ -1237,7 +1255,7 @@ export function OnboardingEditor({
             <div>
               <CardTitle className="text-base">渠道认证与收款商户</CardTitle>
               <p className="mt-1 text-xs text-[#999999]">
-                审核通过后系统会绑定未启用的收款商户；子商户号由定时任务持续查询。
+                审核通过后先等待渠道认证；确认微信、支付宝认证完成时才绑定未启用的收款商户。
               </p>
             </div>
             {canEdit && (

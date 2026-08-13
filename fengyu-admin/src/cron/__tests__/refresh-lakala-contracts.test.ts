@@ -32,7 +32,7 @@ function application(overrides: Record<string, unknown> = {}) {
     status: 'FILES_READY',
     channelData: {},
     createdAt: new Date(),
-    updatedAt: new Date('2026-08-10T00:00:00.000Z'),
+    updatedAt: new Date(),
     ...overrides,
   }
 }

@@ -8,12 +8,13 @@ import {
 
 const ENV_KEYS = [
   'LAKALA_ONBOARDING_ENABLED',
-  'LAKALA_API_BASE',
-  'LAKALA_APPID',
-  'LAKALA_SERIAL_NO',
-  'LAKALA_PRIVATE_KEY_PEM',
-  'LAKALA_PLATFORM_CERT_PEM',
-  'LAKALA_SM4_KEY',
+  'LAKALA_ONBOARDING_CLIENT_MODE',
+  'LAKALA_ONBOARDING_API_BASE',
+  'LAKALA_ONBOARDING_APPID',
+  'LAKALA_ONBOARDING_SERIAL_NO',
+  'LAKALA_ONBOARDING_PRIVATE_KEY_PEM',
+  'LAKALA_ONBOARDING_PLATFORM_CERT_PEM',
+  'LAKALA_ONBOARDING_SM4_KEY',
 ]
 const originalEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]))
 
@@ -80,17 +81,18 @@ describe('拉卡拉入网鉴权', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('下载合同复用标准 LAKALA_* 身份并接受 URL-safe Base64 PDF', async () => {
+  it('下载合同使用独立 LAKALA_ONBOARDING_* 身份并接受 URL-safe Base64 PDF', async () => {
     const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
     const appId = 'pay-app-id'
     const serialNo = 'pay-serial-no'
     process.env.LAKALA_ONBOARDING_ENABLED = 'true'
-    process.env.LAKALA_API_BASE = 'https://lakala.example/api'
-    process.env.LAKALA_APPID = appId
-    process.env.LAKALA_SERIAL_NO = serialNo
-    process.env.LAKALA_PRIVATE_KEY_PEM = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()
-    process.env.LAKALA_PLATFORM_CERT_PEM = publicKey.export({ type: 'spki', format: 'pem' }).toString()
-    process.env.LAKALA_SM4_KEY = Buffer.alloc(16, 7).toString('base64')
+    process.env.LAKALA_ONBOARDING_CLIENT_MODE = 'real'
+    process.env.LAKALA_ONBOARDING_API_BASE = 'https://lakala.example/api'
+    process.env.LAKALA_ONBOARDING_APPID = appId
+    process.env.LAKALA_ONBOARDING_SERIAL_NO = serialNo
+    process.env.LAKALA_ONBOARDING_PRIVATE_KEY_PEM = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()
+    process.env.LAKALA_ONBOARDING_PLATFORM_CERT_PEM = publicKey.export({ type: 'spki', format: 'pem' }).toString()
+    process.env.LAKALA_ONBOARDING_SM4_KEY = Buffer.alloc(16, 7).toString('base64')
 
     const rawBody = JSON.stringify({
       code: '000000',
@@ -135,12 +137,13 @@ describe('拉卡拉入网鉴权', () => {
     const serialNo = 'pay-serial-no'
     const rawBody = 'https://supplier.example/contract/private?customer=private'
     process.env.LAKALA_ONBOARDING_ENABLED = 'true'
-    process.env.LAKALA_API_BASE = 'https://lakala.example/api'
-    process.env.LAKALA_APPID = appId
-    process.env.LAKALA_SERIAL_NO = serialNo
-    process.env.LAKALA_PRIVATE_KEY_PEM = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()
-    process.env.LAKALA_PLATFORM_CERT_PEM = publicKey.export({ type: 'spki', format: 'pem' }).toString()
-    process.env.LAKALA_SM4_KEY = Buffer.alloc(16, 7).toString('base64')
+    process.env.LAKALA_ONBOARDING_CLIENT_MODE = 'real'
+    process.env.LAKALA_ONBOARDING_API_BASE = 'https://lakala.example/api'
+    process.env.LAKALA_ONBOARDING_APPID = appId
+    process.env.LAKALA_ONBOARDING_SERIAL_NO = serialNo
+    process.env.LAKALA_ONBOARDING_PRIVATE_KEY_PEM = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()
+    process.env.LAKALA_ONBOARDING_PLATFORM_CERT_PEM = publicKey.export({ type: 'spki', format: 'pem' }).toString()
+    process.env.LAKALA_ONBOARDING_SM4_KEY = Buffer.alloc(16, 7).toString('base64')
 
     const timestamp = String(Math.floor(Date.now() / 1000))
     const nonce = 'supplier-response-nonce'

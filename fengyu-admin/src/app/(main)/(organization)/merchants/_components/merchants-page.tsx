@@ -129,6 +129,11 @@ export default function MerchantsPage({
         </div>
       </div>
 
+      <div className="flex w-fit rounded-[var(--radius)] border border-[var(--border)] bg-white p-1">
+        <Link href="/merchants"><Button size="sm">收款商户</Button></Link>
+        {canOnboard && <Link href="/merchants/onboarding"><Button size="sm" variant="ghost">入网申请</Button></Link>}
+      </div>
+
       <div className="flex items-center gap-3">
         <Input
           placeholder="商户名称 / 商户号"

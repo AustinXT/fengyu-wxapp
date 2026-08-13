@@ -1,7 +1,7 @@
 import 'server-only'
 
 import { createCipheriv, createDecipheriv, createHash, createSign, createVerify, randomBytes } from 'node:crypto'
-import { DEFAULT_LAKALA_VALUES, normalizeTkbsAttachmentType } from './lakala-onboarding-constants'
+import { DEFAULT_LAKALA_VALUES, DEFAULT_ONBOARDING_FEE_DATA, normalizeTkbsAttachmentType } from './lakala-onboarding-constants'
 
 type JsonRecord = Record<string, unknown>
 type HeaderMap = Headers | Record<string, string | string[] | undefined>
@@ -22,6 +22,10 @@ export interface LakalaUploadFileResult {
   errorCode?: string
   errorMessage?: string
   raw: JsonRecord
+}
+
+export interface LakalaOcrResult extends LakalaUploadFileResult {
+  ocrResult?: JsonRecord
 }
 
 export interface LakalaElectronicContractResult {
@@ -114,7 +118,7 @@ export interface LakalaBankOption {
   branchBankNo: string
   clearNo: string
   branchBankName: string
-  areaCode?: string
+  areaCode: string
   bankNo?: string
 }
 
@@ -153,7 +157,7 @@ function requireHttpsUrl(name: string): string {
 }
 
 function assertOnboardingEnabled(): void {
-  if (process.env.LAKALA_ONBOARDING_ENABLED !== 'true') {
+  if (getLakalaOnboardingClientMode() === 'disabled') {
     throw new Error('INVALID_STATE: 拉卡拉门店入网未启用或未完成开发环境配置')
   }
 }
@@ -229,7 +233,7 @@ function normalizePem(value: string): string {
   return value.replace(/\\n/g, '\n')
 }
 
-interface StandardLakalaConfig {
+interface OnboardingLakalaConfig {
   apiBase: string
   appId: string
   serialNo: string
@@ -237,29 +241,26 @@ interface StandardLakalaConfig {
   platformCertPem: string
 }
 
-/**
- * 入网与支付使用同一套拉卡拉商户身份。这里刻意不支持任何
- * LAKALA_ONBOARDING_* 密钥/证书回退，避免两条配置漂移。
- */
-function standardLakalaConfig(): StandardLakalaConfig {
-  const privateKeyPem = normalizePem(requireEnv('LAKALA_PRIVATE_KEY_PEM'))
-  const platformCertPem = normalizePem(requireEnv('LAKALA_PLATFORM_CERT_PEM'))
+/** 入网使用交接包专用身份，避免改动支付链路的 LAKALA_* 配置。 */
+function onboardingLakalaConfig(): OnboardingLakalaConfig {
+  const privateKeyPem = normalizePem(requireEnv('LAKALA_ONBOARDING_PRIVATE_KEY_PEM'))
+  const platformCertPem = normalizePem(requireEnv('LAKALA_ONBOARDING_PLATFORM_CERT_PEM'))
   if (!/-----BEGIN[\s\S]+-----/.test(privateKeyPem)) {
-    throw new Error('INVALID_STATE: LAKALA_PRIVATE_KEY_PEM 格式不合法')
+    throw new Error('INVALID_STATE: LAKALA_ONBOARDING_PRIVATE_KEY_PEM 格式不合法')
   }
   if (!/-----BEGIN[\s\S]+-----/.test(platformCertPem)) {
-    throw new Error('INVALID_STATE: LAKALA_PLATFORM_CERT_PEM 格式不合法')
+    throw new Error('INVALID_STATE: LAKALA_ONBOARDING_PLATFORM_CERT_PEM 格式不合法')
   }
   return {
-    apiBase: requireHttpsUrl('LAKALA_API_BASE'),
-    appId: requireEnv('LAKALA_APPID'),
-    serialNo: requireEnv('LAKALA_SERIAL_NO'),
+    apiBase: requireHttpsUrl('LAKALA_ONBOARDING_API_BASE'),
+    appId: requireEnv('LAKALA_ONBOARDING_APPID'),
+    serialNo: requireEnv('LAKALA_ONBOARDING_SERIAL_NO'),
     privateKeyPem,
     platformCertPem,
   }
 }
 
-function signedAuthorization(body: string, config: StandardLakalaConfig): { appId: string; authorization: string } {
+function signedAuthorization(body: string, config: OnboardingLakalaConfig): { appId: string; authorization: string } {
   assertOnboardingEnabled()
   const timestamp = String(Math.floor(Date.now() / 1000))
   const nonce = randomBytes(16).toString('hex')
@@ -301,12 +302,15 @@ async function postSignedRaw(pathname: string, body: string): Promise<SignedResp
   // Keep the kill switch ahead of any network/configuration work. Individual public
   // APIs also check it before constructing provider-specific payloads.
   assertOnboardingEnabled()
-  const config = standardLakalaConfig()
+  const config = onboardingLakalaConfig()
   const signed = signedAuthorization(body, config)
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 30_000)
   try {
-    const response = await fetch(`${config.apiBase}${pathname}`, {
+    const normalizedPath = config.apiBase.endsWith('/api') || pathname.startsWith('/api/')
+      ? pathname
+      : `/api${pathname}`
+    const response = await fetch(`${config.apiBase}${normalizedPath}`, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -342,12 +346,12 @@ async function postSignedRaw(pathname: string, body: string): Promise<SignedResp
 }
 
 function decodeSm4Key(): Buffer {
-  const source = requireEnv('LAKALA_SM4_KEY')
+  const source = requireEnv('LAKALA_ONBOARDING_SM4_KEY')
   const base64 = Buffer.from(source, 'base64')
   if (base64.length === 16) return base64
   const hex = Buffer.from(source, 'hex')
   if (/^[0-9a-fA-F]{32}$/.test(source) && hex.length === 16) return hex
-  throw new Error('INVALID_STATE: LAKALA_SM4_KEY 必须是 16 字节的 base64 或 hex')
+  throw new Error('INVALID_STATE: LAKALA_ONBOARDING_SM4_KEY 必须是 16 字节的 base64 或 hex')
 }
 
 export function verifyOnboardingSm4Key(): void {
@@ -401,7 +405,7 @@ function tkbsResult(raw: JsonRecord): { success: boolean; data: JsonRecord; erro
  * 仅在服务器读取费率；调用方不得把 feeData 写入申请表、操作日志或返回值。
  */
 export function getServerOnboardingFeePolicy(): { feeData: Array<{ fee_code: string; fee_value: string }>; version: string } {
-  const raw = requireEnv('LAKALA_ONBOARDING_FEE_DATA')
+  const raw = optionalEnv('LAKALA_ONBOARDING_FEE_DATA') ?? JSON.stringify(DEFAULT_ONBOARDING_FEE_DATA)
   let parsed: unknown
   try {
     parsed = JSON.parse(raw)
@@ -434,8 +438,16 @@ export function getLakalaOnboardingApiFamily(): 'tkbs' {
   return 'tkbs'
 }
 
-export function getLakalaOnboardingClientMode(): 'real' | 'disabled' {
-  return process.env.LAKALA_ONBOARDING_ENABLED === 'true' ? 'real' : 'disabled'
+export function getLakalaOnboardingClientMode(): 'real' | 'mock' | 'disabled' {
+  if (process.env.LAKALA_ONBOARDING_ENABLED !== 'true') return 'disabled'
+  const mode = process.env.LAKALA_ONBOARDING_CLIENT_MODE?.trim().toLowerCase()
+  if (!mode || mode === 'real') return 'real'
+  if (mode === 'mock') return 'mock'
+  throw new Error('INVALID_STATE: LAKALA_ONBOARDING_CLIENT_MODE 只能是 real 或 mock')
+}
+
+export function getLakalaOnboardingApiBase(): string | undefined {
+  return optionalEnv('LAKALA_ONBOARDING_API_BASE')
 }
 
 export function getOnboardingOrgCode(): string {
@@ -451,15 +463,31 @@ export function getOnboardingActivityId(): string {
 }
 
 export function getEContractOrgId(): string {
-  return optionalEnv('LAKALA_ONBOARDING_ECONTRACT_ORG_ID') ?? getOnboardingOrgCode()
+  return optionalEnv('LAKALA_ECONTRACT_ORG_ID') ?? optionalEnv('LAKALA_ONBOARDING_ECONTRACT_ORG_ID') ?? getOnboardingOrgCode()
 }
 
 export function getEContractType(): string {
-  return optionalEnv('LAKALA_ONBOARDING_ECONTRACT_TYPE') ?? 'EC015'
+  return optionalEnv('LAKALA_ECONTRACT_TYPE') ?? optionalEnv('LAKALA_ONBOARDING_ECONTRACT_TYPE') ?? 'EC015'
+}
+
+export function getEContractCallbackUrl(): string | undefined {
+  return optionalEnv('LAKALA_ECONTRACT_CALLBACK_URL')
 }
 
 export async function lakalaUploadFile(input: LakalaUploadFileInput): Promise<LakalaUploadFileResult> {
   assertOnboardingEnabled()
+  if (getLakalaOnboardingClientMode() === 'mock') {
+    const attachmentType = normalizeTkbsAttachmentType(input.attachmentType)
+    const fileId = `mock-file-${randomBytes(8).toString('hex')}`
+    return {
+      success: true,
+      fileId,
+      fileReference: fileId,
+      batchNo: `mock-batch-${randomBytes(6).toString('hex')}`,
+      ocrStatus: ['BUSINESS_LICENCE', 'ID_CARD_FRONT', 'ID_CARD_BEHIND'].includes(attachmentType) ? '00' : undefined,
+      raw: { code: '000000', mode: 'mock', attachmentType },
+    }
+  }
   const raw = await postSignedJson('/v3/tkbs/customer/file/upload', {
     ver: DEFAULT_LAKALA_VALUES.tkbsVersion,
     timestamp: formatLakalaTime(),
@@ -486,8 +514,51 @@ export async function lakalaUploadFile(input: LakalaUploadFileInput): Promise<La
   }
 }
 
+export async function lakalaQueryOcrResult(input: { imgType: string; batchNo: string }): Promise<LakalaOcrResult> {
+  if (!input.imgType || !input.batchNo) return { success: false, errorMessage: '缺少 OCR 批次信息', raw: {} }
+  assertOnboardingEnabled()
+  if (getLakalaOnboardingClientMode() === 'mock') {
+    return {
+      success: true,
+      batchNo: input.batchNo,
+      ocrStatus: '00',
+      raw: { code: '000000', mode: 'mock' },
+    }
+  }
+  const raw = await postSignedJson('/v3/tkbs/ocr_result', {
+    ver: DEFAULT_LAKALA_VALUES.tkbsVersion,
+    timestamp: formatLakalaTime(),
+    req_id: randomRequestId(),
+    req_data: { img_type: normalizeTkbsAttachmentType(input.imgType), batch_no: input.batchNo },
+  })
+  const result = tkbsResult(raw)
+  const ocrStatus = firstString(result.data.status, result.data.ocr_status)
+  return {
+    success: result.success && ocrStatus !== '02',
+    fileId: firstString(result.data.file_id, result.data.att_file_id, result.data.url),
+    fileReference: firstString(result.data.url, result.data.file_url),
+    showUrl: firstString(result.data.show_url, result.data.showUrl),
+    batchNo: firstString(result.data.batch_no, result.data.batchNo) ?? input.batchNo,
+    ocrStatus,
+    ocrResult: result.data.result && typeof result.data.result === 'object' ? result.data.result as JsonRecord : undefined,
+    errorCode: result.errorCode,
+    errorMessage: result.errorMessage,
+    raw,
+  }
+}
+
 export async function lakalaApplyElectronicContract(reqData: JsonRecord): Promise<LakalaElectronicContractResult> {
   assertOnboardingEnabled()
+  if (getLakalaOnboardingClientMode() === 'mock') {
+    const orderNo = firstString(reqData.order_no) ?? `mock-ec-${Date.now()}`
+    return {
+      success: true,
+      orderNo,
+      applyId: `mock-apply-${randomBytes(6).toString('hex')}`,
+      resultUrl: '/merchants/onboarding?mockContract=1',
+      raw: { code: '000000', mode: 'mock' },
+    }
+  }
   const raw = await postSignedJson('/v3/mms/open_api/ec/apply', {
     req_time: formatLakalaTime(),
     version: '3.0',
@@ -505,7 +576,7 @@ export async function lakalaApplyElectronicContract(reqData: JsonRecord): Promis
   }
 }
 
-/** 主动查询电子合同状态；不接受供应商入站回调。 */
+/** 主动查询电子合同状态，作为供应商入站回调之外的兜底。 */
 export async function lakalaQueryElectronicContract(input: {
   orderNo: string
   applyId?: string | null
@@ -514,6 +585,15 @@ export async function lakalaQueryElectronicContract(input: {
     return { success: false, errorMessage: '缺少电子合同订单号', raw: {} }
   }
   assertOnboardingEnabled()
+  if (getLakalaOnboardingClientMode() === 'mock') {
+    return {
+      success: true,
+      status: 'SIGNED',
+      contractNo: `mock-contract-${input.orderNo.slice(-12)}`,
+      orderNo: input.orderNo,
+      raw: { code: '000000', mode: 'mock' },
+    }
+  }
   const raw = await postSignedJson('/v3/mms/open_api/ec/q_status', {
     req_time: formatLakalaTime(),
     version: '3.0',
@@ -561,6 +641,14 @@ export async function lakalaDownloadElectronicContract(input: {
     return { success: false, errorMessage: '缺少电子合同订单号', raw: {} }
   }
   assertOnboardingEnabled()
+  if (getLakalaOnboardingClientMode() === 'mock') {
+    return {
+      success: true,
+      contractNo: input.contractNo ?? `mock-contract-${input.orderNo.slice(-12)}`,
+      pdfBytes: Buffer.from('%PDF-1.4\n% mock signed contract\n%%EOF\n'),
+      raw: { code: '000000', mode: 'mock' },
+    }
+  }
   const raw = await postSignedJson('/v3/mms/open_api/ec/download', {
     req_time: formatLakalaTime(),
     version: '3.0',
@@ -593,6 +681,16 @@ export async function lakalaDownloadElectronicContract(input: {
 
 export async function lakalaAddMerchant(reqData: JsonRecord): Promise<LakalaAddMerchantResult> {
   assertOnboardingEnabled()
+  if (getLakalaOnboardingClientMode() === 'mock') {
+    const suffix = firstString(reqData.external_no)?.slice(-8) ?? randomBytes(4).toString('hex')
+    return {
+      success: true,
+      contractId: `mock-contract-${suffix}`,
+      merInnerNo: `mock-inner-${suffix}`,
+      merCupNo: `mock-cup-${suffix}`,
+      raw: { code: '000000', mode: 'mock' },
+    }
+  }
   const raw = await postTkbsEncrypted('/v3/tkbs/merchant_encry', reqData)
   const result = tkbsResult(raw)
   const merchantNo = firstString(result.data.merchant_no, result.data.mer_cup_no, result.data.merchantNo)
@@ -613,6 +711,17 @@ export async function lakalaQuerySubMerchant(input: { contractId?: string | null
     return { success: false, status: 'FAILED', errorMessage: '缺少拉卡拉商户标识', raw: {} }
   }
   assertOnboardingEnabled()
+  if (getLakalaOnboardingClientMode() === 'mock') {
+    const suffix = customerNo.slice(-8)
+    return {
+      success: true,
+      status: 'SUCCESS',
+      merchantNo: input.merCupNo ?? `mock-cup-${suffix}`,
+      innerCustomerNo: input.merInnerNo ?? `mock-inner-${suffix}`,
+      terminalNo: `mock-term-${suffix}`,
+      raw: { code: '000000', mode: 'mock' },
+    }
+  }
   const raw = await postTkbsEncrypted('/v3/tkbs/open_merchant_info', {
     merchant_no: null,
     customer_no: customerNo,
@@ -660,6 +769,14 @@ function extractTerminalNo(data: JsonRecord): string | undefined {
 export async function lakalaQueryChannelSubMerchants(input: { merchantNo: string }): Promise<LakalaChannelSubMerchantResult> {
   if (!input.merchantNo) return { success: false, wechat: [], alipay: [], errorMessage: '缺少银联商户号', raw: {} }
   assertOnboardingEnabled()
+  if (getLakalaOnboardingClientMode() === 'mock') {
+    return {
+      success: true,
+      wechat: [{ subMerchantNo: `mock-wx-${input.merchantNo.slice(-8)}`, registerType: 'WXZF', channelId: 'mock-wechat', registerChannelName: '微信支付' }],
+      alipay: [{ subMerchantNo: `mock-ali-${input.merchantNo.slice(-8)}`, registerType: 'ZFBZF', channelId: 'mock-alipay', registerChannelName: '支付宝' }],
+      raw: { code: '000000', mode: 'mock' },
+    }
+  }
   const raw = await postTkbsEncrypted('/v3/tkbs/open_merchant_submer', {
     merchant_no: input.merchantNo,
     org_code: getOnboardingOrgCode(),
@@ -689,6 +806,20 @@ export async function lakalaQueryChannelSubMerchants(input: { merchantNo: string
 export async function lakalaQueryRegisterStatus(input: { merchantNo: string; registerType: 'WXZF' | 'ZFBZF' }): Promise<LakalaCertificationResult> {
   if (!input.merchantNo) return { success: false, registerType: input.registerType, errorMessage: '缺少银联商户号', raw: {} }
   assertOnboardingEnabled()
+  if (getLakalaOnboardingClientMode() === 'mock') {
+    return {
+      success: true,
+      registerType: input.registerType,
+      subMchId: input.registerType === 'WXZF' ? `mock-wx-${input.merchantNo.slice(-8)}` : `mock-ali-${input.merchantNo.slice(-8)}`,
+      merchantNo: input.merchantNo,
+      registerState: 'SUCCESS',
+      authorizeState: 'SUCCESS',
+      applymentState: 'SUCCESS',
+      registerCode: '000000',
+      registerMsg: '模拟认证成功',
+      raw: { code: '000000', mode: 'mock' },
+    }
+  }
   const raw = await postTkbsEncrypted('/v3/tkbs/open_merchant_register_status_query', {
     org_code: getOnboardingOrgCode(),
     merchant_no: input.merchantNo,
@@ -717,6 +848,9 @@ export async function lakalaQueryMerchantAuthState(input: { merchantNo: string; 
     return { success: false, ...input, errorMessage: '缺少商户号或子商户号', raw: {} }
   }
   assertOnboardingEnabled()
+  if (getLakalaOnboardingClientMode() === 'mock') {
+    return { success: true, ...input, checkResult: 'AUTHORIZED', raw: { code: '000000', mode: 'mock' } }
+  }
   const raw = await postSignedJson('/v2/mms/sme/mrchAuthStateQuery', {
     ver: '1.0.0',
     timestamp: String(Date.now()),
@@ -743,6 +877,9 @@ export async function lakalaQueryBanks(input: { areaCode: string; bankName: stri
     return { success: false, banks: [], errorMessage: '缺少开户行地区或银行名称', raw: {} }
   }
   assertOnboardingEnabled()
+  if (getLakalaOnboardingClientMode() === 'mock') {
+    return { success: true, banks: [], raw: { code: '000000', mode: 'mock' } }
+  }
   const raw = await postSignedJson('/v3/tkbs/bank', {
     ver: DEFAULT_LAKALA_VALUES.tkbsVersion,
     timestamp: formatLakalaTime(),

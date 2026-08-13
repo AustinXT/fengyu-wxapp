@@ -46,6 +46,12 @@ export const DEFAULT_LAKALA_VALUES = {
   source: 'H5',
 } as const
 
+export const DEFAULT_ONBOARDING_FEE_DATA = [
+  { fee_code: 'WECHAT', fee_value: '0.38' },
+  { fee_code: 'ALIPAY', fee_value: '0.38' },
+  { fee_code: 'SCAN_PAY', fee_value: '0.38' },
+] as const
+
 /** 将交接资料中的历史命名统一成拉卡拉当前进件接口使用的类型。 */
 export function normalizeTkbsAttachmentType(attachmentType: string, displayName?: string): string {
   const byDisplayName: Record<string, string> = {

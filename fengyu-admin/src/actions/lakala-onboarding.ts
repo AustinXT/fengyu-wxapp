@@ -20,6 +20,7 @@ import { orgNodes, stores } from '@db/org'
 import {
   getEContractOrgId,
   getEContractType,
+  getEContractCallbackUrl,
   getOnboardingActivityId,
   getOnboardingOrgCode,
   getOnboardingUserNo,
@@ -31,6 +32,7 @@ import {
   lakalaQueryBanks,
   lakalaQueryChannelSubMerchants,
   lakalaQueryMerchantAuthState,
+  lakalaQueryOcrResult,
   lakalaQueryRegisterStatus,
   lakalaQuerySubMerchant,
   lakalaUploadFile,
@@ -39,12 +41,18 @@ import {
   type LakalaChannelSubMerchantResult,
 } from '@/lib/lakala-onboarding'
 import {
+  findLocalLakalaBankAreaCodes,
+  queryLocalLakalaBanks,
+  queryLocalLakalaBanksByAreaKeywords,
+} from '@/lib/lakala-bank-directory'
+import {
   ATTACHMENT_REQUIREMENTS,
   ELECTRONIC_CONTRACT_PDF_ATTACHMENT,
   MAX_ONBOARDING_ATTACHMENT_BYTES,
   normalizeTkbsAttachmentType,
 } from '@/lib/lakala-onboarding-constants'
 import { getLakalaMerchantAreaPathByCode } from '@/lib/lakala-merchant-area'
+import { normalizeLakalaDetailAddress } from '@/lib/lakala-onboarding-address'
 import { logOperation, logTransition } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
 import { scopeCondition } from '@/lib/permissions'
@@ -146,7 +154,7 @@ export interface OnboardingBankOption {
   branchBankNo: string
   clearNo: string
   branchBankName: string
-  areaCode?: string
+  areaCode: string
   bankNo?: string
 }
 
@@ -281,9 +289,13 @@ function normalizeInput(input: OnboardingApplicationInput): OnboardingApplicatio
   const subjectName = input.merchantData.subjectName || input.merchantData.merRegName || input.merchantData.merBlisName || ''
   const registeredRegion = getLakalaMerchantAreaPathByCode(input.merchantData.merRegDistCode)
   const settlementRegion = getLakalaMerchantAreaPathByCode(input.settlementData.bankDistCode)
+  const registeredAddress = input.merchantData.merRegAddr
+    ? normalizeLakalaDetailAddress(input.merchantData.merRegAddr, registeredRegion.label)
+    : ''
   const merchantData: JsonRecord = {
     ...input.merchantData,
     ...(subjectName ? { subjectName, merRegName: subjectName, merBlisName: subjectName } : {}),
+    ...(registeredAddress ? { merRegAddr: registeredAddress } : {}),
     ...(registeredRegion.provinceCode ? { merRegProvinceCode: registeredRegion.provinceCode } : {}),
     ...(registeredRegion.cityCode ? { merRegCityCode: registeredRegion.cityCode } : {}),
   }
@@ -302,7 +314,7 @@ function normalizeInput(input: OnboardingApplicationInput): OnboardingApplicatio
       ...input.shopData,
       ...(input.shopData.shopName || !businessName ? {} : { shopName: businessName }),
       ...(input.shopData.shopDistCode || !merchantData.merRegDistCode ? {} : { shopDistCode: merchantData.merRegDistCode }),
-      ...(input.shopData.shopAddr || !merchantData.merRegAddr ? {} : { shopAddr: merchantData.merRegAddr }),
+      ...(input.shopData.shopAddr || !registeredAddress ? {} : { shopAddr: registeredAddress }),
       ...(input.shopData.shopContactName || !input.contactData.merContactName ? {} : { shopContactName: input.contactData.merContactName }),
       ...(input.shopData.shopContactMobile || !input.contactData.merContactMobile ? {} : { shopContactMobile: input.contactData.merContactMobile }),
     },
@@ -333,7 +345,7 @@ function missingFields(data: OnboardingApplicationInput): string[] {
   if (!merchant.merRegDistCode || !merchant.merRegAddr) missing.push('注册地址')
   if (!legal.larName || !legal.larIdcard || !legal.larIdcardStDt || !idCardExpiry(legal)) missing.push('法人信息')
   if (!contact.merContactName || !contact.merContactMobile) missing.push('联系人')
-  if (!settlement.acctName || !settlement.acctNo || !settlement.openningBankCode || !settlement.openningBankName || !settlement.clearingBankCode) missing.push('结算账户')
+  if (!settlement.acctName || !settlement.acctNo || !settlement.openningBankCode || !settlement.openningBankName || !settlement.clearingBankCode || !settlement.bankAreaCode) missing.push('结算账户')
   return missing
 }
 
@@ -1039,16 +1051,39 @@ async function uploadAttachmentToLakala(
     if (!result.success || !result.fileId) {
       throw new Error('INVALID_STATE: 拉卡拉未返回有效附件标识')
     }
+    let lakalaOcrStatus = result.ocrStatus ?? null
+    let ocrErrorMessage: string | null = null
+    if (result.batchNo) {
+      try {
+        const ocrResult = await writeRequestLog({
+          applicationId: application.id,
+          apiName: 'tkbs.ocr_result',
+          requestPayload: {
+            imgType: normalizeTkbsAttachmentType(attachment.attachmentType, attachment.displayName),
+            batchNo: result.batchNo,
+          },
+          invoke: () => lakalaQueryOcrResult({
+            imgType: normalizeTkbsAttachmentType(attachment.attachmentType, attachment.displayName),
+            batchNo: result.batchNo!,
+          }),
+        })
+        lakalaOcrStatus = ocrResult.ocrStatus ?? lakalaOcrStatus
+        ocrErrorMessage = ocrResult.success ? null : ocrResult.errorMessage ?? '拉卡拉附件 OCR 结果查询失败'
+      } catch {
+        // 文件上传已成功，OCR 结果查询失败不回滚文件，只记录状态供后续排查。
+        ocrErrorMessage = '拉卡拉附件 OCR 结果查询失败'
+      }
+    }
     await db.update(lakalaOnboardingAttachments).set({
       status: 'UPLOADED',
       lakalaFileId: result.fileId,
       lakalaFileReference: result.fileReference ?? null,
       lakalaBatchNo: result.batchNo ?? null,
-      lakalaOcrStatus: result.ocrStatus ?? null,
+      lakalaOcrStatus,
       uploadedToLakalaAt: new Date(),
       expiresAt: new Date(Date.now() + 23 * 60 * 60 * 1000),
       lastErrorCode: null,
-      lastErrorMessage: null,
+      lastErrorMessage: ocrErrorMessage,
       updatedAt: new Date(),
     }).where(scopedAttachmentCondition(session, application.id, attachment.id))
     return { type: normalizeTkbsAttachmentType(attachment.attachmentType, attachment.displayName), id: result.fileId }
@@ -1094,17 +1129,101 @@ function buildRegion(data: OnboardingApplicationInput): { provinceCode: string; 
   return { provinceCode, cityCode, countyCode }
 }
 
+function stripAreaSuffix(value: string): string {
+  return value.replace(/(特别行政区|自治州|自治县|自治区|新区|地区|盟|省|市|区|县)$/g, '')
+}
+
+function bankAreaKeywords(areaLabel: string): string[] {
+  const withoutProvince = areaLabel.replace(/^.+?(?:省|自治区|特别行政区)/, '')
+  const cityName = withoutProvince.match(/^(.+?(?:市|自治州|地区|盟))/)?.[1] ?? ''
+  const countyName = withoutProvince.replace(cityName, '')
+  return [...new Set([countyName, stripAreaSuffix(countyName), cityName, stripAreaSuffix(cityName)].filter(Boolean))]
+}
+
 function buildElectronicContractRequest(application: LakalaOnboardingApplication, data: OnboardingApplicationInput): Record<string, unknown> {
-  const feePolicy = getServerOnboardingFeePolicy()
   const merchant = data.merchantData
   const legal = data.legalPersonData
   const contact = data.contactData
   const settlement = data.settlementData
   const orderNo = electronicContractOrderNo(application)
   const subjectName = requiredConfigValue(merchant.merRegName, '营业执照主体')
+  const callbackUrl = requiredConfigValue(getEContractCallbackUrl(), '电子合同回调地址')
+  const businessName = merchant.merBizName || subjectName
+  const businessAddress = data.shopData.shopAddr || merchant.merRegAddr
+  const statementEmail = process.env.LAKALA_ECONTRACT_STATEMENT_EMAIL?.trim() || contact.email || process.env.LAKALA_ONBOARDING_EMAIL?.trim() || ''
+  const businessContent = process.env.LAKALA_ONBOARDING_MER_BUSI_CONTENT?.trim()
+    || process.env.LAKALA_ONBOARDING_BUSINESS_CONTENT?.trim()
+    || '美容美发服务'
+  const now = new Date()
+  const fee = '0.38%'
+  const unused = '/'
+  const ecContent = {
+    A1: subjectName,
+    A34: fee,
+    A35: fee,
+    A36: unused,
+    A37: unused,
+    A38: unused,
+    A63: '是',
+    A64: fee,
+    A65: '是',
+    A66: fee,
+    A109: unused,
+    A110: unused,
+    A111: unused,
+    A112: unused,
+    A113: unused,
+    A114: unused,
+    A115: unused,
+    A116: '自动结算',
+    A117: '是',
+    A118: unused,
+    A119: unused,
+    A120: '是',
+    A121: merchant.merRegDistCode,
+    A122: subjectName,
+    A123: process.env.LAKALA_ECONTRACT_PLATFORM_NAME?.trim() || '凤御美业',
+    A124: now.getFullYear(),
+    A125: now.getMonth() + 1,
+    A126: now.getDate(),
+    B1: now.getFullYear(),
+    B2: now.getMonth() + 1,
+    B3: '是',
+    B8: subjectName,
+    B9: businessContent,
+    B10: businessName,
+    B13: businessAddress,
+    B14: merchant.merBlis,
+    B16: settlement.acctName === subjectName ? '是' : unused,
+    B17: settlement.acctName === subjectName ? unused : '是',
+    B18: settlement.acctName === subjectName ? unused : settlement.acctName,
+    B19: settlement.openningBankName,
+    B20: settlement.acctNo,
+    B21: statementEmail,
+    B24: legal.larName,
+    B25: `身份证${legal.larIdcard}`,
+    B26: contact.merContactMobile,
+    B27: contact.merContactName,
+    B28: statementEmail,
+    B29: `身份证${legal.larIdcard}`,
+    B30: contact.merContactMobile,
+    B31: businessName,
+    B32: contact.merContactName,
+    B33: businessAddress,
+    B34: contact.merContactMobile,
+    B35: businessName,
+    B36: '1',
+    B43: '是',
+    B46: '是',
+    B50: '是',
+    B56: subjectName,
+    D1: settlement.openningBankName,
+    D6: subjectName,
+    D7: contact.merContactMobile,
+  }
   return {
     order_no: orderNo,
-    org_id: getEContractOrgId(),
+    org_id: Number(getEContractOrgId()) || getEContractOrgId(),
     ec_type_code: getEContractType(),
     cert_type: 'RESIDENT_ID',
     cert_name: requiredConfigValue(legal.larName, '法人姓名'),
@@ -1117,18 +1236,10 @@ function buildElectronicContractRequest(application: LakalaOnboardingApplication
     acct_type_code: '57',
     acct_no: requiredConfigValue(settlement.acctNo, '结算账号'),
     acct_name: requiredConfigValue(settlement.acctName, '结算账户名称'),
-    // 费率仅在服务端组装后送往拉卡拉，不写库、不返回给浏览器。
-    ec_content_parameters: JSON.stringify({
-      subject_name: subjectName,
-      business_name: merchant.merBizName || subjectName,
-      business_address: merchant.merRegAddr,
-      legal_person: legal.larName,
-      contact_name: contact.merContactName,
-      settlement_bank: settlement.openningBankName,
-      settlement_account_name: settlement.acctName,
-      fees: feePolicy.feeData,
-    }),
+    ec_content_parameters: JSON.stringify(ecContent),
+    agent_tag: 0,
     remark: `门店入网申请 ${application.applicationNo}`,
+    ret_url: callbackUrl,
   }
 }
 
@@ -1148,18 +1259,25 @@ function buildMerchantRequest(
   const settlement = data.settlementData
   const shop = data.shopData
   const region = buildRegion(data)
+  const area = getLakalaMerchantAreaPathByCode(merchant.merRegDistCode)
+  const bankArea = getLakalaMerchantAreaPathByCode(settlement.bankDistCode || merchant.merRegDistCode)
+  const merchantAddress = normalizeLakalaDetailAddress(merchant.merRegAddr || shop.shopAddr || '', area.label)
+  if (!merchantAddress) throw new Error('INVALID_STATE: 请填写详细地址（不含省市区）')
+  if (merchantAddress.length > 29) {
+    throw new Error(`INVALID_STATE: 商户详细地址需控制在 29 字以内，请去掉省市区并缩短门牌描述；当前 ${merchantAddress.length} 字`)
+  }
   const accountIdCard = settlement.accountIdCard || legal.larIdcard
   const accountIdStart = settlement.accountIdDtStart || legal.larIdcardStDt
   const accountIdEnd = settlement.accountIdDtEnd || idCardExpiry(legal)
   const request = {
     org_code: getOnboardingOrgCode(),
     user_no: getOnboardingUserNo(),
-    email: requiredConfigValue(contact.email || process.env.LAKALA_ONBOARDING_EMAIL, '入网邮箱'),
-    busi_code: requiredConfigValue(process.env.LAKALA_ONBOARDING_BUSI_CODE, '业务类型'),
+    email: contact.email || process.env.LAKALA_ONBOARDING_EMAIL?.trim() || 'lakala-onboarding@fengyu.local',
+    busi_code: process.env.LAKALA_ONBOARDING_BUSI_CODE?.trim() || 'WECHAT_PAY',
     mer_reg_name: requiredConfigValue(merchant.merRegName, '营业执照主体'),
-    mer_type: requiredConfigValue(process.env.LAKALA_ONBOARDING_MER_TYPE, '商户类型'),
+    mer_type: process.env.LAKALA_ONBOARDING_MER_TYPE?.trim() || 'TP_MERCHANT',
     mer_name: merchant.merBizName || merchant.merRegName,
-    mer_addr: requiredConfigValue(shop.shopAddr || merchant.merRegAddr, '经营地址'),
+    mer_addr: merchantAddress,
     province_code: region.provinceCode,
     city_code: region.cityCode,
     county_code: region.countyCode,
@@ -1167,10 +1285,15 @@ function buildMerchantRequest(
     license_no: requiredConfigValue(merchant.merBlis, '营业执照号'),
     license_dt_start: normalizeDate(merchant.merBlisStDt),
     license_dt_end: normalizeDate(licenseExpiry(merchant)),
-    latitude: requiredConfigValue(process.env.LAKALA_ONBOARDING_LATITUDE, '门店纬度'),
-    longtude: requiredConfigValue(process.env.LAKALA_ONBOARDING_LONGITUDE, '门店经度'),
+    latitude: process.env.LAKALA_ONBOARDING_DEFAULT_LATITUDE?.trim() || process.env.LAKALA_ONBOARDING_LATITUDE?.trim() || '28.682892',
+    longtude: process.env.LAKALA_ONBOARDING_DEFAULT_LONGTUDE?.trim()
+      || process.env.LAKALA_ONBOARDING_DEFAULT_LONGITUDE?.trim()
+      || process.env.LAKALA_ONBOARDING_LONGITUDE?.trim()
+      || '115.858197',
     source: process.env.LAKALA_ONBOARDING_SOURCE?.trim() || 'H5',
-    business_content: requiredConfigValue(process.env.LAKALA_ONBOARDING_BUSINESS_CONTENT, '经营内容'),
+    business_content: process.env.LAKALA_ONBOARDING_MER_BUSI_CONTENT?.trim()
+      || process.env.LAKALA_ONBOARDING_BUSINESS_CONTENT?.trim()
+      || '美容美发服务',
     lar_name: requiredConfigValue(legal.larName, '法人姓名'),
     lar_id_type: '01',
     lar_id_card: requiredConfigValue(legal.larIdcard, '法人证件号'),
@@ -1181,10 +1304,21 @@ function buildMerchantRequest(
     openning_bank_code: requiredConfigValue(settlement.openningBankCode, '开户行'),
     openning_bank_name: requiredConfigValue(settlement.openningBankName, '开户行名称'),
     clearing_bank_code: requiredConfigValue(settlement.clearingBankCode, '清算行号'),
-    settle_province_code: settlement.settleProvinceCode || region.provinceCode,
-    settle_province_name: settlement.settleProvinceName || '',
-    settle_city_code: settlement.settleCityCode || region.cityCode,
-    settle_city_name: settlement.settleCityName || '',
+    settle_province_code: process.env.LAKALA_ONBOARDING_SETTLE_PROVINCE_CODE?.trim()
+      || settlement.settleProvinceCode
+      || (bankArea.label.includes('江西省') ? '36' : region.provinceCode),
+    settle_province_name: process.env.LAKALA_ONBOARDING_SETTLE_PROVINCE_NAME?.trim()
+      || settlement.settleProvinceName
+      || bankArea.label.match(/^(.+?(?:省|自治区|市|特别行政区))/)?.[1]
+      || '',
+    settle_city_code: process.env.LAKALA_ONBOARDING_SETTLE_CITY_CODE?.trim()
+      || settlement.bankAreaCode
+      || settlement.settleCityCode
+      || region.cityCode,
+    settle_city_name: process.env.LAKALA_ONBOARDING_SETTLE_CITY_NAME?.trim()
+      || settlement.settleCityName
+      || bankArea.label.replace(/^.+?(?:省|自治区|特别行政区)/, '').match(/^(.+?(?:市|自治州|地区|盟))/)?.[1]
+      || '',
     account_no: requiredConfigValue(settlement.acctNo, '结算账号'),
     account_name: requiredConfigValue(settlement.acctName, '结算账户名称'),
     account_type: process.env.LAKALA_ONBOARDING_ACCOUNT_TYPE?.trim() || '57',
@@ -1197,7 +1331,7 @@ function buildMerchantRequest(
     biz_content: {
       term_num: process.env.LAKALA_ONBOARDING_TERM_NUM?.trim() || '1',
       fees: fees.feeData,
-      mcc: requiredConfigValue(process.env.LAKALA_ONBOARDING_MCC, 'MCC'),
+      mcc: process.env.LAKALA_ONBOARDING_MCC?.trim() || '13002',
       activity_id: getOnboardingActivityId(),
     },
     attchments: attachments,
@@ -1306,8 +1440,8 @@ async function cleanupOrphanPrivateFile(storageKey: string): Promise<void> {
 }
 
 /**
- * 主动查询电子合同状态。合同完成后立刻下载 URL-safe Base64 PDF 并写入私有存储。
- * 不使用供应商回调，也不会把签约 URL、PDF 或原始响应放入日志。
+ * 主动查询电子合同状态，作为供应商回调之外的兜底。合同完成后立刻下载
+ * URL-safe Base64 PDF 并写入私有存储，不把签约 URL、PDF 或原始响应放入日志。
  */
 async function refreshElectronicContractStatusInternal(
   session: AuthSession,
@@ -1746,72 +1880,35 @@ async function queryOnboardingApplicationInternal(session: AuthSession, applicat
       return { success: false, message: '拉卡拉审核通过但未返回银联商户号，暂不绑定收款商户' }
     }
 
-    let merchantId: string | null = row.app.lakalaMerchantId
-    if (result.status === 'SUCCESS' && nextMerchantNo) {
-      merchantId = await db.transaction(async (tx) => {
-        const approvedAt = nextUpdatedAt(row.app.updatedAt)
-        const channelData = markSubMerchantPollingStartedAt(row.app.channelData, approvedAt)
-        // 先通过乐观锁获得申请行锁。后续商户档案、门店绑定和申请状态都在同一事务内提交。
-        const claim = await tx.update(lakalaOnboardingApplications).set({ updatedAt: approvedAt })
-          .where(and(lockCondition(applicationId, row.app.updatedAt), applicationScopeCondition(session)))
-        if (rowsAffected(claim) === 0) {
-          throw new Error('CONFLICT: 申请已被其他操作修改，请刷新后重试')
-        }
-
-        const approvedMerchantId = await bindApprovedMerchantInTransaction(
-          tx,
-          session,
-          row.app,
-          nextMerchantNo,
-          result.terminalNo,
-        )
-        const approvedFinalizedAt = nextUpdatedAt(approvedAt)
-        const applicationUpdate = await tx.update(lakalaOnboardingApplications).set({
-          status: result.status,
-          merInnerNo: result.innerCustomerNo ?? row.app.merInnerNo,
-          merCupNo: nextMerchantNo,
-          terminalData: nextTerminalData,
-          channelData,
-          lakalaMerchantId: approvedMerchantId,
-          lastErrorCode: null,
-          lastErrorMessage: null,
-          updatedAt: approvedFinalizedAt,
-        }).where(and(
-          scopedApplicationCondition(session, applicationId),
-          lockCondition(applicationId, approvedAt),
-        ))
-        if (rowsAffected(applicationUpdate) === 0) {
-          throw new Error('CONFLICT: 申请已被其他操作修改，请刷新后重试')
-        }
-        return approvedMerchantId
-      })
-    } else {
-      const statusUpdatedAt = nextUpdatedAt(row.app.updatedAt)
-      const updated = await db.update(lakalaOnboardingApplications).set({
-        status: result.status,
-        merInnerNo: result.innerCustomerNo ?? row.app.merInnerNo,
-        merCupNo: nextMerchantNo ?? null,
-        terminalData: nextTerminalData,
-        lakalaMerchantId: merchantId,
-        lastErrorCode: result.status === 'FAILED' ? result.errorCode ?? 'AUDIT_REJECTED' : null,
-        lastErrorMessage: result.status === 'FAILED' ? '拉卡拉审核未通过，请修正资料后重新提交' : null,
-        updatedAt: statusUpdatedAt,
-      }).where(and(
-        scopedApplicationCondition(session, applicationId),
-        lockCondition(applicationId, row.app.updatedAt),
-      ))
-      if (rowsAffected(updated) === 0) {
-        return { success: false, message: '数据已被其他操作修改，请刷新后重试' }
-      }
+    const statusUpdatedAt = nextUpdatedAt(row.app.updatedAt)
+    const updated = await db.update(lakalaOnboardingApplications).set({
+      status: result.status,
+      merInnerNo: result.innerCustomerNo ?? row.app.merInnerNo,
+      merCupNo: nextMerchantNo ?? null,
+      terminalData: nextTerminalData,
+      channelData: result.status === 'SUCCESS'
+        ? markSubMerchantPollingStartedAt(row.app.channelData, statusUpdatedAt)
+        : row.app.channelData,
+      // 审核通过只保存拉卡拉编号，待微信和支付宝外部认证完成后再建档、绑门店。
+      lakalaMerchantId: row.app.lakalaMerchantId,
+      lastErrorCode: result.status === 'FAILED' ? result.errorCode ?? 'AUDIT_REJECTED' : null,
+      lastErrorMessage: result.status === 'FAILED' ? '拉卡拉审核未通过，请修正资料后重新提交' : null,
+      updatedAt: statusUpdatedAt,
+    }).where(and(
+      scopedApplicationCondition(session, applicationId),
+      lockCondition(applicationId, row.app.updatedAt),
+    ))
+    if (rowsAffected(updated) === 0) {
+      return { success: false, message: '数据已被其他操作修改，请刷新后重试' }
     }
     if (result.status === 'SUCCESS') {
       await logTransition(session, 'merchant.onboarding.approved', 'lakala_onboarding_application', applicationId, row.app.status, 'SUCCESS', {
-        collectionMerchantBound: Boolean(merchantId),
+        collectionMerchantBound: Boolean(row.app.lakalaMerchantId),
         collectionMerchantEnabled: false,
       })
       await refreshSubMerchantsInternal(session, applicationId)
       revalidateOnboarding(applicationId)
-      return { success: true, message: '拉卡拉审核通过，收款商户已绑定门店且默认保持未启用' }
+      return { success: true, message: '拉卡拉审核通过；完成微信、支付宝外部认证后将关联未启用的收款商户' }
     }
     if (result.status === 'FAILED') {
       await logTransition(session, 'merchant.onboarding.rejected', 'lakala_onboarding_application', applicationId, row.app.status, 'FAILED')
@@ -1846,6 +1943,17 @@ function certificationCompleted(result: LakalaCertificationResult): boolean {
   return result.success &&
     (register === 'SUCCESS' || result.registerCode === '000000') &&
     (!authorization || ['SUCCESS', 'AUTHORIZED', 'AUTHORIZE_STATE_AUTHORIZED'].includes(authorization))
+}
+
+function certificationSnapshotCompleted(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false
+  const result = value as Record<string, unknown>
+  const register = typeof result.registerState === 'string' ? result.registerState.toUpperCase() : ''
+  const authorization = typeof result.authorizeState === 'string' ? result.authorizeState.toUpperCase() : ''
+  const code = typeof result.registerCode === 'string' ? result.registerCode : ''
+  return result.success === true
+    && (register === 'SUCCESS' || code === '000000')
+    && (!authorization || ['SUCCESS', 'AUTHORIZED', 'AUTHORIZE_STATE_AUTHORIZED'].includes(authorization))
 }
 
 async function refreshOnboardingCertificationStatusInternal(session: AuthSession, applicationId: string): Promise<{ success: boolean; message: string }> {
@@ -1900,22 +2008,63 @@ async function refreshOnboardingCertificationStatusInternal(session: AuthSession
   }
 }
 
-/**
- * 用户主动确认入口只刷新供应商状态，不自动把收款商户 enabled 置为 true。
- * 收款启用仍由现有商户管理的权限和配置校验负责。
- */
+/** 外部认证全部完成后创建/复用未启用收款商户并绑定门店；启用仍由商户管理页人工操作。 */
 async function confirmOnboardingExternalCertificationInternal(session: AuthSession, applicationId: string): Promise<{ success: boolean; message: string }> {
   if (!parseId(applicationId)) return { success: false, message: '申请不存在' }
   const row = await getScopedApplication(session, applicationId)
   if (!row) return { success: false, message: '申请不存在或无权访问' }
+  if (row.app.lakalaMerchantId) return { success: true, message: '外部认证已确认，收款商户已关联门店且保持未启用' }
   const result = await refreshOnboardingCertificationStatusInternal(session, applicationId)
-  if (result.success) {
-    await logOperation(session, 'merchant.onboarding.certification.confirm', 'lakala_onboarding_application', applicationId, {
-      applicationNo: row.app.applicationNo,
-      collectionMerchantEnabled: false,
-    })
+  if (!result.success) return result
+
+  const latest = await getScopedApplication(session, applicationId)
+  if (!latest || latest.app.status !== 'SUCCESS' || !latest.app.merCupNo) {
+    return { success: false, message: '申请状态已变化，请刷新后重试' }
   }
-  return result
+  const channelData = latest.app.channelData && typeof latest.app.channelData === 'object'
+    ? latest.app.channelData as Record<string, unknown>
+    : {}
+  if (!certificationSnapshotCompleted(channelData.wechatCertification)
+    || !certificationSnapshotCompleted(channelData.alipayCertification)) {
+    return { success: false, message: '微信、支付宝外部认证尚未全部完成，请稍后重试' }
+  }
+
+  const merchantId = await db.transaction(async (tx) => {
+    const claimedAt = nextUpdatedAt(latest.app.updatedAt)
+    const claimed = await tx.update(lakalaOnboardingApplications).set({ updatedAt: claimedAt })
+      .where(and(
+        lockCondition(applicationId, latest.app.updatedAt),
+        applicationScopeCondition(session),
+        isNull(lakalaOnboardingApplications.lakalaMerchantId),
+      ))
+    if (rowsAffected(claimed) === 0) throw new Error('CONFLICT: 申请已被其他操作修改，请刷新后重试')
+    const linkedId = await bindApprovedMerchantInTransaction(
+      tx,
+      session,
+      latest.app,
+      latest.app.merCupNo!,
+      terminalNo(latest.app.terminalData) ?? undefined,
+    )
+    const finalizedAt = nextUpdatedAt(claimedAt)
+    const finalized = await tx.update(lakalaOnboardingApplications).set({
+      lakalaMerchantId: linkedId,
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      updatedAt: finalizedAt,
+    }).where(and(
+      scopedApplicationCondition(session, applicationId),
+      lockCondition(applicationId, claimedAt),
+    ))
+    if (rowsAffected(finalized) === 0) throw new Error('CONFLICT: 申请已被其他操作修改，请刷新后重试')
+    return linkedId
+  })
+  await logOperation(session, 'merchant.onboarding.certification.confirm', 'lakala_onboarding_application', applicationId, {
+    applicationNo: latest.app.applicationNo,
+    collectionMerchantId: merchantId,
+    collectionMerchantEnabled: false,
+  })
+  revalidateOnboarding(applicationId)
+  return { success: true, message: '外部认证已完成，收款商户已关联门店并保持未启用，请在收款商户页人工启用' }
 }
 
 async function testOnboardingWechatAuthStateInternal(session: AuthSession, applicationId: string): Promise<{ success: boolean; message: string; result?: { checkResult?: string } }> {
@@ -1955,9 +2104,35 @@ async function searchOnboardingBanksInternal(
   const keyword = bankName.trim()
   if (keyword.length < 2 || keyword.length > 80) return { success: false, message: '请输入 2 到 80 个字符的银行名称', banks: [] }
   const data = dataFromApplication(row.app)
-  const resolvedAreaCode = areaCode?.trim() || data.settlementData.bankAreaCode || data.settlementData.settleCityCode || data.merchantData.merRegCityCode
-  if (!resolvedAreaCode) return { success: false, message: '请先选择开户行所在地区', banks: [] }
+  const selectedDistrictCode = areaCode?.trim() || data.settlementData.bankDistCode || data.merchantData.merRegDistCode
+  const selectedArea = getLakalaMerchantAreaPathByCode(selectedDistrictCode)
+  if (!selectedArea.countyCode) return { success: false, message: '请先选择开户行所在地区', banks: [] }
+  const areaKeywords = bankAreaKeywords(selectedArea.label)
   try {
+    const configuredAreaCode = data.settlementData.bankAreaCode
+    if (configuredAreaCode) {
+      const directLocal = await queryLocalLakalaBanks({ areaCode: configuredAreaCode, bankName: keyword })
+      if (directLocal.length) {
+        return {
+          success: true,
+          message: `已从本地拉卡拉银行字典找到 ${directLocal.length} 个匹配支行`,
+          areaCode: configuredAreaCode,
+          banks: directLocal,
+        }
+      }
+    }
+    const localBanks = await queryLocalLakalaBanksByAreaKeywords({ areaKeywords, bankName: keyword })
+    if (localBanks.length) {
+      return {
+        success: true,
+        message: `已从本地拉卡拉银行字典找到 ${localBanks.length} 个匹配支行`,
+        areaCode: localBanks[0].areaCode,
+        banks: localBanks,
+      }
+    }
+    const inferredAreaCodes = await findLocalLakalaBankAreaCodes(areaKeywords)
+    const resolvedAreaCode = configuredAreaCode || inferredAreaCodes[0] || data.settlementData.settleCityCode || data.merchantData.merRegCityCode
+    if (!resolvedAreaCode) return { success: false, message: '未能匹配开户行城市地区码', banks: [] }
     const result = await writeRequestLog({
       applicationId,
       apiName: 'tkbs.bank',
@@ -1966,12 +2141,14 @@ async function searchOnboardingBanksInternal(
     })
     return {
       success: result.success,
-      message: result.success ? (result.banks.length ? `找到 ${result.banks.length} 个匹配支行` : '未找到匹配支行') : '拉卡拉银行列表查询失败',
+      message: result.success
+        ? (result.banks.length ? `本地未命中，已在线找到 ${result.banks.length} 个匹配支行` : '未找到匹配支行')
+        : '拉卡拉银行列表查询失败',
       areaCode: resolvedAreaCode,
       banks: result.banks,
     }
   } catch (error) {
-    return { success: false, message: safeExternalMessage(error, '拉卡拉银行列表查询失败'), areaCode: resolvedAreaCode, banks: [] }
+    return { success: false, message: safeExternalMessage(error, '拉卡拉银行列表查询失败'), banks: [] }
   }
 }
 
