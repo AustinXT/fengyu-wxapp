@@ -18,6 +18,7 @@ import {
   createStoreReplenishmentRequest as createStoreReplenishmentRequestImpl,
   getShipmentReceiptProgress as getShipmentReceiptProgressImpl,
   quoteMarketReplenishmentPrice as quoteMarketReplenishmentPriceImpl,
+  quoteMarketReplenishmentPrices as quoteMarketReplenishmentPricesImpl,
   receiveItemCompanyShipment as receiveItemCompanyShipmentImpl,
   receiveSupplyChainPurchaseOrder as receiveSupplyChainPurchaseOrderImpl,
   receiveStoreAllocation as receiveStoreAllocationImpl,
@@ -32,6 +33,7 @@ import {
   type CreateExternalMarketOutboundInput,
   type CreateInventoryConversionInput,
   type CreateMarketReplenishmentInput,
+  type MarketPromotionSelectionInput,
   type CreateMarketStaffPurchaseInput,
   type CreatePurchaseOrderInput,
   type CreateReturnForRestockInput,
@@ -67,6 +69,16 @@ export const quoteMarketReplenishmentPrice = withPermission(
     basketItems?: Array<{ skuId: string; quantity: number }>
   }) =>
     quoteMarketReplenishmentPriceImpl(session, input),
+)
+
+export const quoteMarketReplenishmentPrices = withPermission(
+  'inventory:price_view',
+  async (session, input: {
+    marketId: string
+    items: Array<{ skuId: string; quantity: number }>
+    docDate?: string | null
+    selections?: MarketPromotionSelectionInput[]
+  }) => quoteMarketReplenishmentPricesImpl(session, input),
 )
 
 export const createMarketReplenishment = withPermission(

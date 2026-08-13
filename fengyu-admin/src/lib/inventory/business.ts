@@ -160,6 +160,11 @@ interface InsertDocItemInput extends PriceSnapshot {
   unitDiscount?: number | null
   actualUnitPrice?: number | null
   amount?: number | null
+  promotionPlanId?: string | null
+  promotionPlanNoSnapshot?: string | null
+  promotionPlanNameSnapshot?: string | null
+  promotionRuleTypeSnapshot?: '单品阶梯' | '组合' | null
+  promotionSelectionMode?: '系统推荐' | '人工选择' | null
   reason?: string | null
   remark?: string | null
 }
@@ -209,6 +214,12 @@ export interface CreateMarketReplenishmentInput {
   docDate?: string | null
   remark?: string | null
   items: MarketReplenishmentLineInput[]
+  promotionSelections?: MarketPromotionSelectionInput[]
+}
+
+export interface MarketPromotionSelectionInput {
+  skuId: string
+  promotionPlanId: string
 }
 
 /** 品项公司直接向供应链提出的采购需求，不经过市场报货或门店需求汇总。 */
@@ -427,6 +438,30 @@ export interface PromotionQuote {
   promotionPlanNo: string | null
   promotionName: string | null
   promotionRuleType: '单品阶梯' | '组合' | null
+}
+
+export interface PromotionQuoteOption {
+  promotionPlanId: string
+  promotionPlanNo: string
+  promotionName: string
+  promotionRuleType: '单品阶梯' | '组合'
+  scopeMarketId: string | null
+  marketUnitDiscount: number
+  marketActualUnitPrice: number
+  componentSkuIds: string[]
+}
+
+export interface MarketPromotionQuoteLine extends PromotionQuote {
+  recommendedPromotionPlanId: string | null
+  selectionMode: '系统推荐' | '人工选择' | null
+  eligibleOptions: PromotionQuoteOption[]
+}
+
+export interface MarketPromotionQuoteResult {
+  items: MarketPromotionQuoteLine[]
+  totalStandardAmount: number
+  totalDiscountAmount: number
+  totalActualAmount: number
 }
 
 interface MarketQuoteRequest {
@@ -879,7 +914,9 @@ async function insertDocItem(tx: Tx, input: InsertDocItemInput): Promise<number>
       fulfilled_quantity, standard_unit_price, unit_discount, actual_unit_price, amount,
       supply_chain_unit_cost, market_standard_unit_price, market_unit_discount,
       market_actual_unit_price, store_standard_unit_price, store_unit_discount,
-      store_actual_unit_price, reason, remark
+      store_actual_unit_price, promotion_plan_id, promotion_plan_no_snapshot,
+      promotion_plan_name_snapshot, promotion_rule_type_snapshot, promotion_selection_mode,
+      reason, remark
     ) VALUES (
       ${input.docId}, ${input.lotId ?? null}, ${input.skuId}, ${input.skuName},
       ${text(input.specName)}, ${text(input.supplier)}, ${text(input.productSeries)},
@@ -891,7 +928,10 @@ async function insertDocItem(tx: Tx, input: InsertDocItemInput): Promise<number>
       ${numeric(input.supplyChainUnitCost)}, ${numeric(input.marketStandardUnitPrice)},
       ${numeric(input.marketUnitDiscount)}, ${numeric(input.marketActualUnitPrice)},
       ${numeric(input.storeStandardUnitPrice)}, ${numeric(input.storeUnitDiscount)},
-      ${numeric(input.storeActualUnitPrice)}, ${text(input.reason)}, ${text(input.remark)}
+      ${numeric(input.storeActualUnitPrice)}, ${text(input.promotionPlanId)},
+      ${text(input.promotionPlanNoSnapshot)}, ${text(input.promotionPlanNameSnapshot)},
+      ${text(input.promotionRuleTypeSnapshot)}, ${text(input.promotionSelectionMode)},
+      ${text(input.reason)}, ${text(input.remark)}
     )
     RETURNING id
   `))
@@ -1221,14 +1261,46 @@ function comparePromotionCandidates(
   return left.planId.localeCompare(right.planId)
 }
 
+function promotionThresholdScore(candidates: PromotionCandidate[]): number {
+  return candidates.reduce((sum, candidate) => sum + (candidate.reportMinQuantity ?? 0), 0)
+}
+
+function comparePromotionUnits(
+  left: PromotionCandidate[],
+  right: PromotionCandidate[],
+  marketId: string,
+): number {
+  const leftHead = left[0]!
+  const rightHead = right[0]!
+  const leftScope = leftHead.scopeMarketId === marketId ? 0 : 1
+  const rightScope = rightHead.scopeMarketId === marketId ? 0 : 1
+  if (leftScope !== rightScope) return leftScope - rightScope
+  const leftRule = leftHead.ruleType === '组合' ? 0 : 1
+  const rightRule = rightHead.ruleType === '组合' ? 0 : 1
+  if (leftRule !== rightRule) return leftRule - rightRule
+  const threshold = promotionThresholdScore(right) - promotionThresholdScore(left)
+  if (Math.abs(threshold) > EPSILON) return threshold
+  if (leftHead.createdAt !== rightHead.createdAt) {
+    return rightHead.createdAt.localeCompare(leftHead.createdAt)
+  }
+  const plan = leftHead.planId.localeCompare(rightHead.planId)
+  if (plan !== 0) return plan
+  return leftHead.skuId.localeCompare(rightHead.skuId)
+}
+
 /**
  * 组合福利以整张市场报货的采购数量判断：方案内每个 SKU 都命中各自的数量范围时，
  * 才给方案中的各 SKU 应用单价优惠。单品阶梯仍只按对应 SKU 的数量取价。
  */
 async function quoteMarketPricesInTx(
   tx: Tx,
-  input: { marketId: string; items: MarketQuoteRequest[]; docDate: string },
-): Promise<Map<string, PromotionQuote>> {
+  input: {
+    marketId: string
+    items: MarketQuoteRequest[]
+    docDate: string
+    selections?: MarketPromotionSelectionInput[]
+  },
+): Promise<MarketPromotionQuoteResult> {
   const quantityBySku = new Map<string, number>()
   for (const item of input.items) {
     const skuId = required(item.skuId, '库存 SKU')
@@ -1298,6 +1370,7 @@ async function quoteMarketPricesInTx(
   }
 
   const applicableBySku = new Map<string, PromotionCandidate[]>()
+  const eligibleComboPlans: PromotionCandidate[][] = []
   for (const planCandidates of candidatesByPlan.values()) {
     const ruleType = planCandidates[0]?.ruleType
     if (!ruleType) continue
@@ -1307,10 +1380,11 @@ async function quoteMarketPricesInTx(
       const matchesAllComponents = componentSkuIds.size >= 2
         && componentSkuIds.size === planCandidates.length
         && planCandidates.every((candidate) => {
-        const quantity = quantityBySku.get(candidate.skuId)
-        return quantity !== undefined && isPromotionQuantityMatched(candidate, quantity)
-      })
+          const quantity = quantityBySku.get(candidate.skuId)
+          return quantity !== undefined && isPromotionQuantityMatched(candidate, quantity)
+        })
       if (!matchesAllComponents) continue
+      eligibleComboPlans.push(planCandidates)
       for (const candidate of planCandidates) {
         const collection = applicableBySku.get(candidate.skuId) ?? []
         collection.push(candidate)
@@ -1327,18 +1401,78 @@ async function quoteMarketPricesInTx(
     }
   }
 
-  const quotes = new Map<string, PromotionQuote>()
+  const recommendationUnits: PromotionCandidate[][] = [
+    ...eligibleComboPlans,
+    ...Array.from(applicableBySku.values())
+      .flat()
+      .filter((candidate) => candidate.ruleType === '单品阶梯')
+      .map((candidate) => [candidate]),
+  ].sort((left, right) => comparePromotionUnits(left, right, input.marketId))
+
+  const recommendedBySku = new Map<string, PromotionCandidate>()
+  for (const unit of recommendationUnits) {
+    if (unit.some((candidate) => recommendedBySku.has(candidate.skuId))) continue
+    for (const candidate of unit) recommendedBySku.set(candidate.skuId, candidate)
+  }
+
+  const selectedBySku = new Map(recommendedBySku)
+  const manualSelections = new Map<string, string>()
+  for (const selection of input.selections ?? []) {
+    const skuId = required(selection.skuId, '福利选择商品')
+    const promotionPlanId = required(selection.promotionPlanId, '福利方案')
+    if (!quantityBySku.has(skuId) || manualSelections.has(skuId)) {
+      throw new ApiError('INVALID_PARAMS', '福利方案选择包含重复或无效商品')
+    }
+    const selected = applicableBySku.get(skuId)?.find((candidate) => candidate.planId === promotionPlanId)
+    if (!selected) throw new ApiError('CONFLICT', '福利方案已变化，请重新取价')
+    manualSelections.set(skuId, promotionPlanId)
+    selectedBySku.set(skuId, selected)
+  }
+
+  for (const selected of selectedBySku.values()) {
+    if (selected.ruleType !== '组合') continue
+    const components = candidatesByPlan.get(selected.planId) ?? []
+    if (
+      components.length < 2 ||
+      components.some((component) => selectedBySku.get(component.skuId)?.planId !== selected.planId)
+    ) {
+      throw new ApiError('CONFLICT', '组合福利必须整组选择，请重新取价')
+    }
+  }
+
+  const quoteItems: MarketPromotionQuoteLine[] = []
   for (const [skuId, quantity] of quantityBySku) {
     const sku = skuById.get(skuId)!
-    const promotion = [...(applicableBySku.get(skuId) ?? [])]
-      .sort((left, right) => comparePromotionCandidates(left, right, input.marketId))[0]
+    const recommended = recommendedBySku.get(skuId)
+    const promotion = selectedBySku.get(skuId)
     const base = sku.marketPurchasePrice!
     const discount = promotion?.marketUnitDiscount ?? 0
     const actual = fixed(base - discount)
     if (discount < -EPSILON || actual < -EPSILON) {
       throw new ApiError('INVALID_STATE', '福利方案计算出的市场实际单价无效')
     }
-    quotes.set(skuId, {
+    const eligibleOptions = [...(applicableBySku.get(skuId) ?? [])]
+      .sort((left, right) => comparePromotionCandidates(left, right, input.marketId))
+      .filter((candidate, index, rows) => rows.findIndex((row) => row.planId === candidate.planId) === index)
+      .map((candidate): PromotionQuoteOption => {
+        const candidateActual = fixed(base - candidate.marketUnitDiscount)
+        if (candidate.marketUnitDiscount < -EPSILON || candidateActual < -EPSILON) {
+          throw new ApiError('INVALID_STATE', '福利方案计算出的市场实际单价无效')
+        }
+        return {
+          promotionPlanId: candidate.planId,
+          promotionPlanNo: candidate.planNo,
+          promotionName: candidate.planName,
+          promotionRuleType: candidate.ruleType,
+          scopeMarketId: candidate.scopeMarketId,
+          marketUnitDiscount: fixed(candidate.marketUnitDiscount),
+          marketActualUnitPrice: candidateActual,
+          componentSkuIds: candidate.ruleType === '组合'
+            ? (candidatesByPlan.get(candidate.planId) ?? []).map((item) => item.skuId).sort()
+            : [skuId],
+        }
+      })
+    quoteItems.push({
       skuId,
       marketId: input.marketId,
       quantity,
@@ -1349,21 +1483,28 @@ async function quoteMarketPricesInTx(
       promotionPlanNo: promotion?.planNo ?? null,
       promotionName: promotion?.planName ?? null,
       promotionRuleType: promotion?.ruleType ?? null,
+      recommendedPromotionPlanId: recommended?.planId ?? null,
+      selectionMode: promotion
+        ? promotion.planId === recommended?.planId ? '系统推荐' : '人工选择'
+        : null,
+      eligibleOptions,
     })
   }
-  return quotes
-}
-
-async function quoteMarketPriceInTx(
-  tx: Tx,
-  input: { marketId: string; skuId: string; quantity: number; docDate: string },
-): Promise<PromotionQuote> {
-  const quotes = await quoteMarketPricesInTx(tx, {
-    marketId: input.marketId,
-    items: [{ skuId: input.skuId, quantity: input.quantity }],
-    docDate: input.docDate,
-  })
-  return quotes.get(input.skuId)!
+  return {
+    items: quoteItems,
+    totalStandardAmount: fixed(quoteItems.reduce(
+      (sum, item) => sum + item.quantity * item.marketStandardUnitPrice,
+      0,
+    )),
+    totalDiscountAmount: fixed(quoteItems.reduce(
+      (sum, item) => sum + item.quantity * item.marketUnitDiscount,
+      0,
+    )),
+    totalActualAmount: fixed(quoteItems.reduce(
+      (sum, item) => sum + item.quantity * item.marketActualUnitPrice,
+      0,
+    )),
+  }
 }
 
 function priceFromItem(item: DocItemSnapshot): PriceSnapshot {
@@ -1680,8 +1821,11 @@ export async function createMarketReplenishment(
   if (!Array.isArray(input.items) || input.items.length === 0) {
     throw new ApiError('INVALID_PARAMS', '市场报货至少需要一条明细')
   }
+  if ((input.promotionSelections?.length ?? 0) > 0 && !hasPermission(session, 'inventory:price_view')) {
+    throw new ApiError('PERMISSION_DENIED', '无权切换市场报货福利方案')
+  }
   await syncLocations()
-  const id = await db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
     const market = await locationForUpdate(tx, marketId)
     const supplyChain = await locationForUpdate(tx, supplyChainLocationId)
@@ -1752,11 +1896,13 @@ export async function createMarketReplenishment(
         purchaseQuantity,
       })
     }
-    const quoteBySku = await quoteMarketPricesInTx(tx, {
+    const quoteResult = await quoteMarketPricesInTx(tx, {
       marketId,
       items: prepared.map((line) => ({ skuId: line.sku.skuId, quantity: line.purchaseQuantity })),
       docDate,
+      selections: input.promotionSelections,
     })
+    const quoteBySku = new Map(quoteResult.items.map((quote) => [quote.skuId, quote]))
     const quoted = prepared.map((line) => {
       const quote = quoteBySku.get(line.sku.skuId)
       if (!quote) throw new ApiError('CONFLICT', '市场报货福利报价丢失，请重试')
@@ -1802,6 +1948,11 @@ export async function createMarketReplenishment(
         storeStandardUnitPrice: line.sku.storePurchasePrice,
         storeUnitDiscount: 0,
         storeActualUnitPrice: line.sku.storePurchasePrice,
+        promotionPlanId: line.quote.promotionPlanId,
+        promotionPlanNoSnapshot: line.quote.promotionPlanNo,
+        promotionPlanNameSnapshot: line.quote.promotionName,
+        promotionRuleTypeSnapshot: line.quote.promotionRuleType,
+        promotionSelectionMode: line.quote.selectionMode,
         remark: line.quote.promotionPlanNo ? `福利方案：${line.quote.promotionPlanNo}` : null,
       })
       for (const sourceLink of allocateMarketReportSourceLinks(
@@ -1820,11 +1971,23 @@ export async function createMarketReplenishment(
         })
       }
     }
-    return docId
+    return {
+      id: docId,
+      promotionSelections: quoted
+        .filter((line) => line.quote.promotionPlanId)
+        .map((line) => ({
+          skuId: line.sku.skuId,
+          promotionPlanId: line.quote.promotionPlanId,
+          selectionMode: line.quote.selectionMode,
+        })),
+    }
   })
-  await logOperation(session, 'inventory.market_request.create', 'inventory_docs', id, { marketId })
+  await logOperation(session, 'inventory.market_request.create', 'inventory_docs', result.id, {
+    marketId,
+    promotionSelections: result.promotionSelections,
+  })
   refreshInventoryPaths()
-  return { id }
+  return { id: result.id }
 }
 
 /** 采购订单只能从已完成的市场报货提取，不允许以自由 SKU/价格绕过需求和福利快照。 */
@@ -3986,6 +4149,34 @@ export async function createInventoryConversion(
 }
 
 /** 福利报价只读，不写 SKU 主数据；市场报货创建时会再次在同一事务中取价并快照。 */
+export async function quoteMarketReplenishmentPrices(
+  session: AuthSession,
+  input: {
+    marketId: string
+    items: MarketQuoteRequest[]
+    docDate?: string | null
+    selections?: MarketPromotionSelectionInput[]
+  },
+): Promise<MarketPromotionQuoteResult> {
+  const marketId = required(input.marketId, '市场')
+  if (!hasPermission(session, 'inventory:price_view')) {
+    throw new ApiError('PERMISSION_DENIED', '无权查看市场报货价格')
+  }
+  await syncLocations()
+  return db.transaction(async (tx) => {
+    const market = await locationForUpdate(tx, marketId)
+    assertType(market, '市场', '市场')
+    assertLocationWritable(session, market)
+    return quoteMarketPricesInTx(tx, {
+      marketId,
+      items: input.items,
+      docDate: dateOrToday(input.docDate),
+      selections: input.selections,
+    })
+  })
+}
+
+/** @deprecated 兼容旧调用；新页面统一使用批量报价，确保组合福利按整单判断。 */
 export async function quoteMarketReplenishmentPrice(
   session: AuthSession,
   input: {
@@ -3996,29 +4187,16 @@ export async function quoteMarketReplenishmentPrice(
     basketItems?: MarketQuoteRequest[]
   },
 ): Promise<PromotionQuote> {
-  const marketId = required(input.marketId, '市场')
   const skuId = required(input.skuId, '库存 SKU')
   const quantity = positive(input.quantity, '采购数量')
-  if (!hasPermission(session, 'inventory:price_view')) {
-    throw new ApiError('PERMISSION_DENIED', '无权查看市场报货价格')
-  }
-  await syncLocations()
-  return db.transaction(async (tx) => {
-    const market = await locationForUpdate(tx, marketId)
-    assertType(market, '市场', '市场')
-    assertLocationWritable(session, market)
-    const items = input.basketItems && input.basketItems.length > 0
-      ? input.basketItems
-      : [{ skuId, quantity }]
-    const quotes = await quoteMarketPricesInTx(tx, {
-      marketId,
-      items,
-      docDate: dateOrToday(input.docDate),
-    })
-    const quote = quotes.get(skuId)
-    if (!quote) throw new ApiError('INVALID_PARAMS', '报价明细中未包含当前库存 SKU')
-    return quote
+  const result = await quoteMarketReplenishmentPrices(session, {
+    marketId: input.marketId,
+    items: input.basketItems?.length ? input.basketItems : [{ skuId, quantity }],
+    docDate: input.docDate,
   })
+  const quote = result.items.find((item) => item.skuId === skuId)
+  if (!quote) throw new ApiError('INVALID_PARAMS', '报价明细中未包含当前库存 SKU')
+  return quote
 }
 
 /** 用同一份发货明细给页面展示预期、实收、差异和赠送，不从自由表单字段推断。 */

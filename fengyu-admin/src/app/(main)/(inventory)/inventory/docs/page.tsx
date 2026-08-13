@@ -1,9 +1,9 @@
 import { Suspense } from 'react'
+import { redirect } from 'next/navigation'
 import { listInventoryCoreDocs } from '@/actions/inventory/docs'
-import { listInventoryLocations } from '@/actions/inventory/locations'
-import { listInventorySkus } from '@/actions/inventory/skus'
 import { getSession } from '@/lib/auth'
-import { hasUiCapability } from '@/lib/permission-contract'
+import { genericDocBusinessLevel } from '@/lib/inventory/business-level'
+import { INVENTORY_GENERIC_DOC_TYPES, type InventoryDocType } from '@/lib/inventory/types'
 import { requireAllUiPageCapabilities } from '@/lib/page-capability'
 import InventoryDocsPage from '../_components/inventory-docs-page'
 
@@ -15,25 +15,24 @@ export default async function Page({
   searchParams: Promise<Record<string, string | undefined>>
 }) {
   const params = await searchParams
+  const createType = params.create as InventoryDocType | undefined
+  if (createType && (INVENTORY_GENERIC_DOC_TYPES as readonly string[]).includes(createType)) {
+    const level = genericDocBusinessLevel(createType)
+    if (level) redirect(`/inventory/operations/${level}?view=docs&create=${encodeURIComponent(createType)}`)
+  }
   const page = params.page ? Number(params.page) : 1
   const pageSize = params.size ? Number(params.size) : 20
   const session = await getSession()
   requireAllUiPageCapabilities(session, ['inventory:list', 'inventory:stock_list'])
-  const [docs, locations, skus] = await Promise.all([
-    listInventoryCoreDocs({
-      locationId: params.location,
-      locationType: params.level === 'supply-chain' ? '总部' : params.level === 'market' ? '市场' : params.level === 'store' ? '门店' : undefined,
-      docType: params.docType as never,
-      status: params.status as never,
-      keyword: params.q,
-      page,
-      pageSize,
-    }),
-    listInventoryLocations(),
-    listInventorySkus({ page: 1, pageSize: 100, onlyActive: true }),
-  ])
-  const canCreate = hasUiCapability(session.permissions.actions, 'inventory:create_doc')
-  const canApprove = hasUiCapability(session.permissions.actions, 'inventory:approve')
+  const docs = await listInventoryCoreDocs({
+    locationId: params.location,
+    locationType: params.level === 'supply-chain' ? '总部' : params.level === 'market' ? '市场' : params.level === 'store' ? '门店' : undefined,
+    docType: params.docType as never,
+    status: params.status as never,
+    keyword: params.q,
+    page,
+    pageSize,
+  })
 
   return (
     <div className="p-6">
@@ -41,12 +40,12 @@ export default async function Page({
         <InventoryDocsPage
           rows={docs.data}
           total={docs.total}
-          locations={locations}
-          skuOptions={skus.data}
-          canCreate={canCreate}
-          canApprove={canApprove}
+          locations={[]}
+          skuOptions={[]}
+          canCreate={false}
+          canApprove={false}
           canViewPrice={docs.canViewPrice}
-          initialDocType={params.create as never}
+          readOnly
         />
       </Suspense>
     </div>

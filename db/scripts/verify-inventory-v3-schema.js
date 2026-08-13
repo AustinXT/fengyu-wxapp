@@ -40,6 +40,11 @@ const REQUIRED_COLUMNS = [
   ['inventory_stock_lots', 'source_doc_id'],
   ['inventory_doc_links', 'from_item_id'],
   ['inventory_doc_links', 'to_item_id'],
+  ['inventory_doc_items', 'promotion_plan_id'],
+  ['inventory_doc_items', 'promotion_plan_no_snapshot'],
+  ['inventory_doc_items', 'promotion_plan_name_snapshot'],
+  ['inventory_doc_items', 'promotion_rule_type_snapshot'],
+  ['inventory_doc_items', 'promotion_selection_mode'],
   ['inventory_movements', 'quantity_before'],
   ['inventory_movements', 'quantity_after'],
 ]
@@ -53,11 +58,14 @@ const REQUIRED_CONSTRAINTS = [
   'inventory_locations_parent_location_id_inventory_locations_location_id_fk',
   'inventory_stock_lots_supplier_id_inventory_suppliers_supplier_id_fk',
   'inventory_stock_lots_source_doc_id_inventory_docs_id_fk',
+  'inventory_doc_items_promotion_plan_id_inventory_promotion_plans_id_fk',
   'inventory_doc_links_from_item_doc_fk',
   'inventory_doc_links_to_item_doc_fk',
   'inventory_movements_doc_item_doc_fk',
   'chk_inventory_docs_type',
   'chk_inventory_locations_parent_not_self',
+  'chk_inventory_doc_items_promotion_rule_type',
+  'chk_inventory_doc_items_promotion_selection_mode',
   'chk_inventory_doc_links_item_pair',
   'chk_inventory_doc_links_quantity_shape',
   'chk_inventory_doc_links_relation_type',
@@ -68,6 +76,7 @@ const REQUIRED_CONSTRAINTS = [
 
 const REQUIRED_INDEXES = [
   'uq_inventory_doc_items_id_doc',
+  'idx_inventory_doc_items_promotion',
 ]
 
 const REQUIRED_TRIGGERS = [
@@ -87,6 +96,7 @@ const REQUIRED_MIGRATIONS = [
   '0009_inventory_integrity_guards',
   '0010_mute_black_bolt',
   '0017_watery_slyde',
+  '0018_complete_amazoness',
 ]
 
 function postgresIdentifier(name) {

@@ -354,6 +354,11 @@ export interface InventoryDocItemRow {
   supplyChainUnitCost?: number | null
   marketActualUnitPrice?: number | null
   storeActualUnitPrice?: number | null
+  promotionPlanId: string | null
+  promotionPlanNoSnapshot: string | null
+  promotionPlanNameSnapshot: string | null
+  promotionRuleTypeSnapshot: InventoryPromotionRuleType | null
+  promotionSelectionMode: '系统推荐' | '人工选择' | null
   reason: string | null
   remark: string | null
   createdAt: string

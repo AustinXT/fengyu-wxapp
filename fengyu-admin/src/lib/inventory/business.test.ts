@@ -24,6 +24,7 @@ import {
   createStoreAllocation,
   createStoreReplenishmentRequest,
   quoteMarketReplenishmentPrice,
+  quoteMarketReplenishmentPrices,
   receiveItemCompanyShipment,
   receiveSupplyChainPurchaseOrder,
   rejectItemCompanyShipmentCancellation,
@@ -214,7 +215,7 @@ function mockQuoteTransaction(skus: ReturnType<typeof marketSkuRow>[], promotion
 
 describe('inventory business action input guards', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
+    vi.resetAllMocks()
   })
 
   it('拒绝没有明细的专用建单入口', async () => {
@@ -715,5 +716,59 @@ describe('inventory business action input guards', () => {
       promotionPlanNo: 'COMBO-1',
       promotionRuleType: '组合',
     })
+  })
+
+  it('批量报价按业务优先级推荐并允许改选合规单品方案', async () => {
+    mockQuoteTransaction([marketSkuRow('SKU-1')], [
+      promotionRow({
+        planId: 'TIER-HIGH', planNo: 'TIER-HIGH', skuId: 'SKU-1', discount: '5',
+        minQuantity: '4',
+      }),
+      promotionRow({
+        planId: 'TIER-LOW', planNo: 'TIER-LOW', skuId: 'SKU-1', discount: '20',
+        minQuantity: '1',
+      }),
+    ])
+
+    await expect(quoteMarketReplenishmentPrices(PRICE_SESSION, {
+      marketId: 'M1',
+      items: [{ skuId: 'SKU-1', quantity: 5 }],
+      selections: [{ skuId: 'SKU-1', promotionPlanId: 'TIER-LOW' }],
+    })).resolves.toMatchObject({
+      totalStandardAmount: 500,
+      totalDiscountAmount: 100,
+      totalActualAmount: 400,
+      items: [{
+        recommendedPromotionPlanId: 'TIER-HIGH',
+        promotionPlanId: 'TIER-LOW',
+        selectionMode: '人工选择',
+      }],
+    })
+  })
+
+  it('人工选择组合福利时必须覆盖全部组成商品', async () => {
+    mockQuoteTransaction([
+      marketSkuRow('SKU-1'),
+      marketSkuRow('SKU-2'),
+    ], [
+      promotionRow({
+        planId: 'COMBO-1', planNo: 'COMBO-1', skuId: 'SKU-1', discount: '10',
+        ruleType: '组合', minQuantity: '1',
+      }),
+      promotionRow({
+        planId: 'COMBO-1', planNo: 'COMBO-1', skuId: 'SKU-2', discount: '10',
+        ruleType: '组合', minQuantity: '1',
+      }),
+      promotionRow({
+        planId: 'SINGLE-1', planNo: 'SINGLE-1', skuId: 'SKU-1', discount: '5',
+        minQuantity: '1', scopeMarketId: null,
+      }),
+    ])
+
+    await expect(quoteMarketReplenishmentPrices(PRICE_SESSION, {
+      marketId: 'M1',
+      items: [{ skuId: 'SKU-1', quantity: 1 }, { skuId: 'SKU-2', quantity: 1 }],
+      selections: [{ skuId: 'SKU-1', promotionPlanId: 'SINGLE-1' }],
+    })).rejects.toThrow('组合福利必须整组选择')
   })
 })

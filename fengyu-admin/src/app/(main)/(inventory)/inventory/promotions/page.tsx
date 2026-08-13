@@ -7,6 +7,7 @@ import { isAdminScope } from '@/lib/permissions'
 import { hasUiCapability } from '@/lib/permission-contract'
 import { requireAllUiPageCapabilities } from '@/lib/page-capability'
 import InventoryPromotionsPage from '../_components/inventory-promotions-page'
+import { InventoryMasterDataTabs } from '../_components/inventory-master-data-tabs'
 
 export const dynamic = 'force-dynamic'
 
@@ -37,6 +38,7 @@ export default async function Page() {
 
   return (
     <div className="p-6">
+      <InventoryMasterDataTabs />
       <Suspense>
         <InventoryPromotionsPage
           rows={visiblePlans}

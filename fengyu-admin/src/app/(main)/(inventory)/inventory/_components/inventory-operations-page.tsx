@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import {
@@ -39,7 +39,7 @@ import {
   createStoreAllocation,
   createStoreReplenishmentRequest,
   getShipmentReceiptProgress,
-  quoteMarketReplenishmentPrice,
+  quoteMarketReplenishmentPrices,
   receiveItemCompanyShipment,
   receiveSupplyChainPurchaseOrder,
   receiveStoreAllocation,
@@ -48,6 +48,7 @@ import {
   requestItemCompanyShipmentCancellation,
   summarizeStoreReplenishmentRequests,
 } from '@/actions/inventory/business'
+import type { MarketPromotionQuoteResult } from '@/lib/inventory/business'
 import { getInventoryCoreDocById } from '@/actions/inventory/docs'
 import { listInventoryLotOptions } from '@/actions/inventory/stocks'
 import { actionErrorMessage } from '@/lib/action-error'
@@ -134,19 +135,19 @@ const OPERATIONS: OperationDefinition[] = [
 
 const GENERIC_OPERATIONS: Record<InventoryBusinessLevel, Array<Omit<OperationDefinition, 'id'> & { id: OperationId }>> = {
   'supply-chain': [
-    { id: 'supply-chain-conversion', level: 'supply-chain', title: '内部领用', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/docs?create=内部领用&level=supply-chain' },
+    { id: 'supply-chain-conversion', level: 'supply-chain', title: '内部领用', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/operations/supply-chain?view=docs&create=内部领用' },
   ],
   market: [
-    { id: 'market-conversion', level: 'market', title: '市场间调货', group: '市场特殊业务', icon: ArrowLeftRight, tone: 'text-[#5E8BB3] bg-[#F0F5FA]', href: '/inventory/docs?create=市场间调货出库&level=market' },
-    { id: 'market-conversion', level: 'market', title: '市场产品报损', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/docs?create=市场产品报损&level=market' },
-    { id: 'market-conversion', level: 'market', title: '市场盘点/盘溢', group: '市场特殊业务', icon: ClipboardCheck, tone: 'text-[#7B5E2B] bg-[#FFF8E6]', href: '/inventory/docs?create=市场库存盘点&level=market' },
+    { id: 'market-conversion', level: 'market', title: '市场间调货', group: '市场特殊业务', icon: ArrowLeftRight, tone: 'text-[#5E8BB3] bg-[#F0F5FA]', href: '/inventory/operations/market?view=docs&create=市场间调货出库' },
+    { id: 'market-conversion', level: 'market', title: '市场产品报损', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/operations/market?view=docs&create=市场产品报损' },
+    { id: 'market-conversion', level: 'market', title: '市场盘点/盘溢', group: '市场特殊业务', icon: ClipboardCheck, tone: 'text-[#7B5E2B] bg-[#FFF8E6]', href: '/inventory/operations/market?view=docs&create=市场库存盘点' },
   ],
   store: [
-    { id: 'store-conversion', level: 'store', title: '门店调拨', group: '发货、收货与退货', icon: ArrowLeftRight, tone: 'text-[#5E8BB3] bg-[#F0F5FA]', href: '/inventory/docs?create=分院调货出库&level=store' },
-    { id: 'store-conversion', level: 'store', title: '顾客产品出库', group: '发货、收货与退货', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/docs?create=院顾客产品出库&level=store' },
-    { id: 'store-conversion', level: 'store', title: '顾客产品退货', group: '发货、收货与退货', icon: RotateCcw, tone: 'text-[#3D8A5A] bg-[#F0F9F2]', href: '/inventory/docs?create=院顾客退货&level=store' },
-    { id: 'store-conversion', level: 'store', title: '门店产品报损', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/docs?create=院产品报损&level=store' },
-    { id: 'store-conversion', level: 'store', title: '门店库存盘点', group: '市场特殊业务', icon: ClipboardCheck, tone: 'text-[#7B5E2B] bg-[#FFF8E6]', href: '/inventory/docs?create=分院库存盘点&level=store' },
+    { id: 'store-conversion', level: 'store', title: '门店调拨', group: '发货、收货与退货', icon: ArrowLeftRight, tone: 'text-[#5E8BB3] bg-[#F0F5FA]', href: '/inventory/operations/store?view=docs&create=分院调货出库' },
+    { id: 'store-conversion', level: 'store', title: '顾客产品出库', group: '发货、收货与退货', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/operations/store?view=docs&create=院顾客产品出库' },
+    { id: 'store-conversion', level: 'store', title: '顾客产品退货', group: '发货、收货与退货', icon: RotateCcw, tone: 'text-[#3D8A5A] bg-[#F0F9F2]', href: '/inventory/operations/store?view=docs&create=院顾客退货' },
+    { id: 'store-conversion', level: 'store', title: '门店产品报损', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/operations/store?view=docs&create=院产品报损' },
+    { id: 'store-conversion', level: 'store', title: '门店库存盘点', group: '市场特殊业务', icon: ClipboardCheck, tone: 'text-[#7B5E2B] bg-[#FFF8E6]', href: '/inventory/operations/store?view=docs&create=分院库存盘点' },
   ],
 }
 
@@ -471,9 +472,6 @@ export default function InventoryOperationsPage({
             <p className="mt-1 text-sm text-[#666666]">{levelMeta.description}</p>
           </div>
         </div>
-        <Button type="button" variant="outline" onClick={() => router.push('/inventory/docs')}>
-          查看库存单据
-        </Button>
       </div>
 
       {!canCreate && !canApprove && !canSelfPurchase && !canRequestShipmentCancellation && !canApproveShipmentCancellation && (
@@ -846,14 +844,46 @@ function MarketReportForm({
   const [endDate, setEndDate] = useState('')
   const [remark, setRemark] = useState('')
   const [lines, setLines] = useState<MarketReportLine[]>([])
-  const [quotes, setQuotes] = useState<Record<string, { standard: number; discount: number; actual: number; plan: string | null }>>({})
+  const [quoteResult, setQuoteResult] = useState<MarketPromotionQuoteResult | null>(null)
   const [loadingSummary, setLoadingSummary] = useState(false)
+  const [quoting, setQuoting] = useState(false)
   const [saving, setSaving] = useState(false)
+  const quoteRequestRef = useRef(0)
+
+  const quoteItems = useMemo(() => lines
+    .filter((line) => line.selected)
+    .map((line) => ({ skuId: line.skuId, quantity: positiveNumber(line.purchaseQuantity) }))
+    .filter((line): line is { skuId: string; quantity: number } => line.quantity !== null), [lines])
+  const quoteBasketKey = useMemo(() => JSON.stringify({ marketId, docDate, items: quoteItems }), [docDate, marketId, quoteItems])
 
   function updateLine(index: number, patch: Partial<MarketReportLine>) {
-    if (patch.selected !== undefined || patch.purchaseQuantity !== undefined) setQuotes({})
     setLines((previous) => previous.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line))
   }
+
+  useEffect(() => {
+    const requestId = ++quoteRequestRef.current
+    setQuoteResult(null)
+    if (!canViewPrice || !marketId || quoteItems.length === 0) {
+      setQuoting(false)
+      return
+    }
+    setQuoting(true)
+    const timer = setTimeout(() => {
+      void quoteMarketReplenishmentPrices({ marketId, docDate: optionalText(docDate), items: quoteItems })
+        .then((result) => {
+          if (quoteRequestRef.current === requestId) setQuoteResult(result)
+        })
+        .catch((error) => {
+          if (quoteRequestRef.current === requestId) {
+            toast.error(actionErrorMessage(error, '获取福利报价失败'))
+          }
+        })
+        .finally(() => {
+          if (quoteRequestRef.current === requestId) setQuoting(false)
+        })
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [canViewPrice, docDate, marketId, quoteBasketKey, quoteItems])
 
   async function loadSummary() {
     if (!marketId) {
@@ -867,7 +897,6 @@ function MarketReportForm({
         startDate: optionalText(startDate),
         endDate: optionalText(endDate),
       })
-      setQuotes({})
       setLines(summary.items.map((item) => ({
         skuId: item.skuId,
         skuName: item.skuName,
@@ -888,39 +917,60 @@ function MarketReportForm({
     }
   }
 
-  async function quote(index: number) {
-    const line = lines[index]
-    const quantity = positiveNumber(line.purchaseQuantity)
-    if (!quantity || !marketId) {
-      toast.error('请先填写实际采购数量')
-      return
+  async function selectPromotion(skuId: string, promotionPlanId: string) {
+    if (!quoteResult) return
+    const currentLine = quoteResult.items.find((item) => item.skuId === skuId)
+    const selectedOption = currentLine?.eligibleOptions.find((option) => option.promotionPlanId === currentLine.promotionPlanId)
+    const nextOption = currentLine?.eligibleOptions.find((option) => option.promotionPlanId === promotionPlanId)
+    if (!currentLine || !nextOption) return
+    const selections = new Map(
+      quoteResult.items
+        .filter((item) => item.promotionPlanId)
+        .map((item) => [item.skuId, item.promotionPlanId!]),
+    )
+    if (selectedOption?.promotionRuleType === '组合' && selectedOption.promotionPlanId !== promotionPlanId) {
+      for (const componentSkuId of selectedOption.componentSkuIds) {
+        selections.delete(componentSkuId)
+        const coveredByNextCombo = nextOption.promotionRuleType === '组合'
+          && nextOption.componentSkuIds.includes(componentSkuId)
+        const replacedByNextSingle = nextOption.promotionRuleType === '单品阶梯'
+          && componentSkuId === skuId
+        if (coveredByNextCombo || replacedByNextSingle) continue
+        const component = quoteResult.items.find((item) => item.skuId === componentSkuId)
+        const fallback = component?.eligibleOptions.find((option) => (
+          option.promotionRuleType === '单品阶梯' && option.promotionPlanId !== selectedOption.promotionPlanId
+        ))
+        if (!fallback) {
+          toast.error('该组合福利没有完整的单品替代方案，请改选另一套组合福利')
+          return
+        }
+        selections.set(componentSkuId, fallback.promotionPlanId)
+      }
     }
-    const basketItems = lines
-      .filter((candidate) => candidate.selected)
-      .map((candidate) => ({
-        skuId: candidate.skuId,
-        quantity: positiveNumber(candidate.purchaseQuantity),
-      }))
-      .filter((candidate): candidate is { skuId: string; quantity: number } => candidate.quantity !== null)
+    if (nextOption.promotionRuleType === '组合') {
+      for (const componentSkuId of nextOption.componentSkuIds) {
+        selections.set(componentSkuId, nextOption.promotionPlanId)
+      }
+    } else {
+      selections.set(skuId, nextOption.promotionPlanId)
+    }
+    const requestId = ++quoteRequestRef.current
+    setQuoting(true)
     try {
-      const result = await quoteMarketReplenishmentPrice({
+      const result = await quoteMarketReplenishmentPrices({
         marketId,
-        skuId: line.skuId,
-        quantity,
         docDate: optionalText(docDate),
-        basketItems,
+        items: quoteItems,
+        selections: Array.from(selections, ([selectedSkuId, selectedPlanId]) => ({
+          skuId: selectedSkuId,
+          promotionPlanId: selectedPlanId,
+        })),
       })
-      setQuotes((previous) => ({
-        ...previous,
-        [line.skuId]: {
-          standard: result.marketStandardUnitPrice,
-          discount: result.marketUnitDiscount,
-          actual: result.marketActualUnitPrice,
-          plan: result.promotionPlanNo ? `${result.promotionPlanNo}${result.promotionName ? ` · ${result.promotionName}` : ''}` : null,
-        },
-      }))
+      if (quoteRequestRef.current === requestId) setQuoteResult(result)
     } catch (error) {
       toast.error(actionErrorMessage(error, '获取福利报价失败'))
+    } finally {
+      if (quoteRequestRef.current === requestId) setQuoting(false)
     }
   }
 
@@ -939,6 +989,10 @@ function MarketReportForm({
       toast.error('请选择至少一条明细并填写实际采购数量')
       return
     }
+    if (canViewPrice && (!quoteResult || quoting)) {
+      toast.error('福利报价尚未完成，请稍候')
+      return
+    }
     setSaving(true)
     try {
       const result = await createMarketReplenishment({
@@ -947,9 +1001,15 @@ function MarketReportForm({
         docDate: optionalText(docDate),
         remark: optionalText(remark),
         items: items.map((item) => ({ ...item, purchaseQuantity: item.purchaseQuantity! })),
+        promotionSelections: canViewPrice
+          ? quoteResult!.items
+              .filter((item) => item.promotionPlanId)
+              .map((item) => ({ skuId: item.skuId, promotionPlanId: item.promotionPlanId! }))
+          : undefined,
       })
       onSuccess(`市场报货单已创建：${result.id}`)
       setLines([])
+      setQuoteResult(null)
     } catch (error) {
       toast.error(actionErrorMessage(error, '创建市场报货失败'))
     } finally {
@@ -961,7 +1021,7 @@ function MarketReportForm({
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3 xl:grid-cols-5">
         <FormField label="市场">
-          <Select value={marketId} onChange={(event) => { setMarketId(event.target.value); setLines([]); setQuotes({}) }}>
+          <Select value={marketId} onChange={(event) => { setMarketId(event.target.value); setLines([]); setQuoteResult(null) }}>
             <option value="">请选择市场</option>
             {markets.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
           </Select>
@@ -1004,7 +1064,7 @@ function MarketReportForm({
               </thead>
               <tbody>
                 {lines.map((line, index) => {
-                  const currentQuote = quotes[line.skuId]
+                  const currentQuote = quoteResult?.items.find((item) => item.skuId === line.skuId)
                   return (
                     <tr key={line.skuId} className="border-t border-[var(--border)]">
                       <td className="px-3 py-2"><input type="checkbox" checked={line.selected} onChange={(event) => updateLine(index, { selected: event.target.checked })} /></td>
@@ -1015,10 +1075,44 @@ function MarketReportForm({
                       <td className="px-3 py-2"><Input className="w-24" inputMode="decimal" value={line.purchaseQuantity} onChange={(event) => updateLine(index, { purchaseQuantity: event.target.value })} disabled={!line.selected} /></td>
                       {canViewPrice && (
                         <td className="px-3 py-2">
-                          <div className="flex items-center gap-2">
-                            <Button type="button" variant="link" size="sm" className="h-auto px-0" onClick={() => void quote(index)} disabled={!line.selected}>取价</Button>
-                            {currentQuote && <span className="text-xs text-[#666666]">{currentQuote.standard} - {currentQuote.discount} = {currentQuote.actual}{currentQuote.plan ? ` · ${currentQuote.plan}` : ''}</span>}
-                          </div>
+                          {!line.selected ? (
+                            <span className="text-xs text-[#888888]">未参与本次报货</span>
+                          ) : quoting && !currentQuote ? (
+                            <span className="text-xs text-[#666666]">正在自动报价…</span>
+                          ) : currentQuote ? (
+                            <div className="min-w-64 space-y-1.5">
+                              {currentQuote.eligibleOptions.length > 1
+                                || (!currentQuote.promotionPlanId && currentQuote.eligibleOptions.length > 0) ? (
+                                <Select
+                                  value={currentQuote.promotionPlanId ?? ''}
+                                  onChange={(event) => void selectPromotion(line.skuId, event.target.value)}
+                                  disabled={quoting}
+                                  aria-label={`${line.skuName}福利方案`}
+                                >
+                                  {!currentQuote.promotionPlanId && (
+                                    <option value="" disabled>请选择福利方案</option>
+                                  )}
+                                  {currentQuote.eligibleOptions.map((option) => (
+                                    <option key={option.promotionPlanId} value={option.promotionPlanId}>
+                                      {option.promotionPlanNo} · {option.promotionName}{option.promotionRuleType === '组合' ? '（组合）' : ''}
+                                    </option>
+                                  ))}
+                                </Select>
+                              ) : currentQuote.promotionPlanNo ? (
+                                <div className="text-xs font-medium text-[#7B5E2B]">
+                                  {currentQuote.promotionPlanNo} · {currentQuote.promotionName}
+                                </div>
+                              ) : (
+                                <div className="text-xs text-[#888888]">无匹配福利，按标准价</div>
+                              )}
+                              <div className="text-xs text-[#666666]">
+                                {currentQuote.marketStandardUnitPrice} - {currentQuote.marketUnitDiscount} = {currentQuote.marketActualUnitPrice}
+                                {currentQuote.selectionMode === '人工选择' ? ' · 已改选' : currentQuote.promotionPlanId ? ' · 系统推荐' : ''}
+                              </div>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-[#D94040]">报价失败，请调整后重试</span>
+                          )}
                         </td>
                       )}
                     </tr>
@@ -1027,6 +1121,13 @@ function MarketReportForm({
               </tbody>
             </table>
           </div>
+          {canViewPrice && quoteResult && (
+            <div className="grid grid-cols-1 gap-3 rounded-[var(--radius)] border border-[#E8D8B8] bg-[#FFFDF8] p-3 text-sm sm:grid-cols-3">
+              <div><span className="text-[#888888]">标准金额</span><div className="mt-1 font-medium">{quoteResult.totalStandardAmount.toFixed(2)}</div></div>
+              <div><span className="text-[#888888]">福利优惠</span><div className="mt-1 font-medium text-[#C0322A]">-{quoteResult.totalDiscountAmount.toFixed(2)}</div></div>
+              <div><span className="text-[#888888]">应付金额</span><div className="mt-1 font-medium text-[#3D8A5A]">{quoteResult.totalActualAmount.toFixed(2)}</div></div>
+            </div>
+          )}
         </div>
       )}
 

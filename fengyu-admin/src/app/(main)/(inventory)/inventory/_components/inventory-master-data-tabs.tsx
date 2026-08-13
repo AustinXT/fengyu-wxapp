@@ -8,10 +8,11 @@ const TABS = [
   { href: '/inventory/skus', label: '库存商品' },
   { href: '/inventory/suppliers', label: '供应商' },
   { href: '/inventory/sku-mappings', label: 'SKU 映射' },
+  { href: '/inventory/promotions', label: '报货福利' },
 ] as const
 
 /**
- * 库存资料配置的三个旧地址共用这一页签导航。
+ * 库存资料配置的四个地址共用这一页签导航。
  *
  * 每项仍由独立 RSC 路由取数，以保留既有深链、权限闸门和 URL 筛选参数；
  * 因此这里使用 Link 而非把三张数据表一次性加载到客户端。

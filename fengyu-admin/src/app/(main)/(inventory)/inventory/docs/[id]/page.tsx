@@ -59,8 +59,9 @@ export default async function Page({
   const itemCompanyRequestColumnCount = itemCompanyRequestFulfillment ? 3 : 0
   const supplyChainPurchaseColumnCount = supplyChainPurchaseFulfillment ? 2 : 0
   const priceColumnCount = showPrice ? (showStoreAllocationPrice ? 4 : 2) : 0
+  const promotionColumnCount = doc.items.some((item) => item.promotionPlanId || item.promotionPlanNoSnapshot) ? 1 : 0
   const itemColumnCount = 9 + priceColumnCount + reportColumnCount + shipmentColumnCount +
-    itemCompanyRequestColumnCount + supplyChainPurchaseColumnCount
+    itemCompanyRequestColumnCount + supplyChainPurchaseColumnCount + promotionColumnCount
   const fields = [
     ['单据号', doc.id],
     ['类型', doc.docType],
@@ -189,6 +190,7 @@ export default async function Page({
                 <th className="px-3 py-2 text-right">实际单价</th>
                 <th className="px-3 py-2 text-right">金额</th>
               </>}
+              {promotionColumnCount > 0 && <th className="px-3 py-2 text-left">报货福利</th>}
               {reportFulfillment && <>
                 <th className="px-3 py-2 text-right">正常需求</th>
                 {doc.docType === '市场报货' && <th className="px-3 py-2 text-right">已采购</th>}
@@ -240,6 +242,18 @@ export default async function Page({
                     <td className="px-3 py-2 text-right">{fmt(item.actualUnitPrice)}</td>
                     <td className="px-3 py-2 text-right">{fmt(item.amount)}</td>
                   </>}
+                  {promotionColumnCount > 0 && (
+                    <td className="px-3 py-2">
+                      {item.promotionPlanNoSnapshot ? (
+                        <div>
+                          <div className="font-medium">{item.promotionPlanNoSnapshot}</div>
+                          <div className="text-xs text-[#888888]">
+                            {item.promotionPlanNameSnapshot ?? '—'} · {item.promotionRuleTypeSnapshot ?? '—'} · {item.promotionSelectionMode ?? '历史记录'}
+                          </div>
+                        </div>
+                      ) : '—'}
+                    </td>
+                  )}
                   {reportFulfillment && <>
                     <td className="px-3 py-2 text-right">{fmt(reportProgress?.normalDemandQuantity)}</td>
                     {doc.docType === '市场报货' && <td className="px-3 py-2 text-right">{fmt(reportProgress?.orderedQuantity)}</td>}

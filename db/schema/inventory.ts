@@ -523,6 +523,15 @@ export const inventoryDocItems = pgTable(
       precision: 12,
       scale: 2,
     }),
+    /** 市场报货命中的福利方案；方案删除时仅清 FK，以下快照继续保留历史语义。 */
+    promotionPlanId: text('promotion_plan_id').references(
+      () => inventoryPromotionPlans.id,
+      { onDelete: 'set null' },
+    ),
+    promotionPlanNoSnapshot: text('promotion_plan_no_snapshot'),
+    promotionPlanNameSnapshot: text('promotion_plan_name_snapshot'),
+    promotionRuleTypeSnapshot: text('promotion_rule_type_snapshot'),
+    promotionSelectionMode: text('promotion_selection_mode'),
     reason: text('reason'),
     remark: text('remark'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -531,8 +540,17 @@ export const inventoryDocItems = pgTable(
     index('idx_inventory_doc_items_doc').on(table.docId),
     index('idx_inventory_doc_items_lot').on(table.lotId),
     index('idx_inventory_doc_items_sku').on(table.skuId),
+    index('idx_inventory_doc_items_promotion').on(table.promotionPlanId),
     uniqueIndex('uq_inventory_doc_items_id_doc').on(table.id, table.docId),
     check('chk_inventory_doc_items_qty', sql`${table.quantity} > 0`),
+    check(
+      'chk_inventory_doc_items_promotion_rule_type',
+      sql`${table.promotionRuleTypeSnapshot} IS NULL OR ${table.promotionRuleTypeSnapshot} IN ('单品阶梯','组合')`,
+    ),
+    check(
+      'chk_inventory_doc_items_promotion_selection_mode',
+      sql`${table.promotionSelectionMode} IS NULL OR ${table.promotionSelectionMode} IN ('系统推荐','人工选择')`,
+    ),
   ],
 )
 
