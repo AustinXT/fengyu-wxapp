@@ -193,7 +193,8 @@ async function _queryFormattedSkuList(auth, categoryId, productKind, opts = {}) 
   const params = []
   const conditions = [
     `sk.is_enabled = true`,
-    `sk.deleted_at IS NULL`
+    `sk.deleted_at IS NULL`,
+    `pc.is_valid = true`
   ]
 
   if (categoryId) {
@@ -233,6 +234,10 @@ async function _queryFormattedSkuList(auth, categoryId, productKind, opts = {}) 
            pc.category_name, pc.product_kind, pc.sales_category
     FROM product_skus sk
     JOIN product_categories pc ON sk.category_id = pc.category_id
+    JOIN product_categories parent
+      ON parent.product_kind IS NULL
+     AND parent.category_name = pc.product_kind
+     AND parent.is_valid = true
     ${whereClause}
     ORDER BY sk.sort_order ASC
   `, params)

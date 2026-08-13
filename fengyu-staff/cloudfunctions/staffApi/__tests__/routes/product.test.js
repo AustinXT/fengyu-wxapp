@@ -160,6 +160,8 @@ describe('product.skuList', () => {
     const [sql, params] = pg.query.mock.calls[0]
     expect(sql).toContain('sk.spec_name ILIKE $1')
     expect(sql).not.toMatch(/AND sk\.category_id = \$\d+/)
+    expect(sql).toContain('pc.is_valid = true')
+    expect(sql).toMatch(/JOIN product_categories parent[\s\S]*parent\.category_name = pc\.product_kind[\s\S]*parent\.is_valid = true/)
     expect(sql).toMatch(/NOT sk\.is_experience/)
     expect(sql).toContain('store.store_id = $2')
     expect(params).toEqual(['%一维%', 'store-001'])
