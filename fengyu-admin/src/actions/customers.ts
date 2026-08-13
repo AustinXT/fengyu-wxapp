@@ -553,6 +553,7 @@ export const getCustomerOrders = withPermission(
         itemDirection: ir.item.itemDirection as SaleItem['itemDirection'],
         refSaleItemId: ir.item.refSaleItemId,
         skuId: ir.item.skuId,
+        productType: ir.item.productType ?? undefined,
         unit: ir.skuUnit ?? (ir.item.productType === '家居产品' ? '盒' : '次'),
         sessionCount: ir.item.sessionCount,
         remainingSessions: ir.item.remainingSessions,
