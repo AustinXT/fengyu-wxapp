@@ -30,7 +30,7 @@ fengyu-admin/
 │   │   │   ├── (operations)/                      # 开单、订单、服务、预约、退款等经营业务
 │   │   │   ├── (customer-operations)/             # 顾客、卡券、会员权益与流水
 │   │   │   ├── (catalog)/                         # 商品与商城
-│   │   │   ├── (inventory)/inventory/             # 进销存（库存、单据、资料、促销）
+│   │   │   ├── (inventory)/inventory/             # 库存管理（库存、单据、资料、促销）
 │   │   │   ├── (organization)/                    # 组织、门店、商户、员工、提成
 │   │   │   ├── (analytics)/data-center/           # 数据中心
 │   │   │   └── (system)/                          # 权限、消息、日志、系统配置
@@ -57,7 +57,7 @@ fengyu-admin/
 └── vitest.config.ts
 ```
 
-路由组仅用于源码组织，公开 URL 保持不变（如订单仍是 `/orders`）。侧边栏采用手风琴二级菜单：工作台、数据中心直达；经营业务、客户运营、商品商城、进销存、组织商户、系统管理按叶子权限过滤。进销存的“资料配置”由 `/inventory/skus`、`/inventory/suppliers`、`/inventory/sku-mappings` 三个保留深链的页签构成。
+路由组仅用于源码组织，公开 URL 保持不变（如订单仍是 `/orders`）。侧边栏采用手风琴二级菜单：工作台、数据中心直达；经营业务、客户运营、商品商城、库存管理、组织管理、系统管理按叶子权限过滤。库存管理的“资料配置”由 `/inventory/skus`、`/inventory/suppliers`、`/inventory/sku-mappings` 三个保留深链的页签构成。
 
 ## 常用命令
 
@@ -134,6 +134,7 @@ export const getRefundDetail = withAnyPermission(
 | 模块 | 文件 | 职责 |
 |------|------|------|
 | 入口 | `src/cron/index.ts` | node-cron 调度（`0 3 * * *` Asia/Shanghai）+ `--once` 单次模式 |
+| 备份 | `src/cron/database-backup.ts` | 03:00 定时备份、手动队列、磁盘复检、完整性校验与 7/30 天清理 |
 | 调度 | `src/cron/run.ts` | 串行 13 STEP，每个 STEP 独立 try/catch（单 STEP 失败不阻塞下一个） |
 | 配置缓存 | `src/cron/config.ts` | `getMemberThreshold` 双层缓存（30s/5min TTL） |
 | STEP 1 | `steps/close-expired-appointments.ts` | 关闭超期未到店预约 |
@@ -159,6 +160,10 @@ bun run cron:dev    # 长驻调度（开发模式）
 **生产容器内手动触发**：`docker exec fengyu-cron-worker node cron-worker.js --once`
 
 **约定**：`operation_logs.source` 写 `'cronTask'`（保留语义，便于历史日志追溯）；`benefits` 类配置（含 `member_level_benefits` / `birthday_benefits` / `thanksgiving_benefits`）每次跑前重读 `system_configs`，不缓存。
+
+## 系统自检
+
+`/settings/diagnostics` 仅 `system:diagnostics` 可访问，包含子系统/拉卡拉双 Tab。cron/export worker 通过 `SYSTEM_RUNTIME_DIR` 上报心跳；Admin 与 cron 通过 `DATABASE_BACKUP_REQUEST_DIR` 交换备份请求和脱敏状态，真实 dump 仅存在 cron 可见的 `DATABASE_BACKUP_DIR`。不得把 dump 目录挂载到 admin web，也不得增加浏览器下载/删除/恢复入口。
 
 ## 测试覆盖率
 

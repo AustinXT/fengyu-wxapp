@@ -49,7 +49,7 @@
 | PostgreSQL | 运行时依赖 | Drizzle ORM（adminApi Server Actions / API Routes） | 与小程序端共享同一实例，独立连接池 |
 | WorkFine SQL Server | 同步触发 | adminApi 调用 `db/scripts/sync-workfine.js` | admin 手动触发全量/增量同步，非运行时依赖 |
 | CloudBase 云存储 | 运行时依赖 | CloudBase SDK（图片上传） | 商品封面图、门店环境图等静态资源 |
-| staffApi / clientApi | 无直接依赖 | — | 三端通过共享 PG 实现数据一致，无 API 调用 |
+| staffApi / clientApi / payNotify | 运行自检 | CloudBase SDK + HMAC | 业务仍只通过共享 PG 耦合；仅 `system.health` 做只读健康探测 |
 
 **不依赖**：微信支付（Web 端无 JSAPI 能力）、微信身份认证（走手机号+密码）
 
@@ -121,6 +121,15 @@ adminApi:sync.trigger → 互斥锁检查
   → 写入同步日志（新增/更新/跳过行数）
   → 不覆盖 created_by != 'sync' 的手动权限记录
 ```
+
+### 系统自检与数据库备份
+
+- `system:diagnostics` 是超级管理员专用权限；所有读取/排队 Server Action 均经 `withPermission`，手动备份再经 `requireAdmin` 硬闸。
+- cron/export worker 每 30 秒原子写心跳 JSON；Admin 只读共享目录，90 秒以内正常、90~180 秒警告、超过 180 秒异常。
+- Web 与 cron 通过持久化控制目录传递手动备份请求/状态，不新建业务表。备份 dump 目录只挂载给 cron worker，Web 容器在文件系统层面无读权。
+- 容量预估为 `max(256MiB, 数据库大小×1.2, 上次 dump×1.5)`；Web 排队前检查已上报快照，cron 执行前使用 `statfs` 再检。
+- `pg_dump` 连接密码通过子进程环境传递，不放入命令行；先写 `.partial`，`pg_restore --list` 成功后原子改名。定时/手动分别保留 7/30 天。
+- 云函数健康入口绑定 `service + timestamp + nonce`，用 `CLIENT_SECRET` HMAC-SHA256 签名；Analyst 用共享 `JWT_SECRET` 同构签名。均仅执行只读探测。
 
 ## 7. 权限模型
 

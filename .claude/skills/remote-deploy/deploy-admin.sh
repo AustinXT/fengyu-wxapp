@@ -191,8 +191,8 @@ ssh "$SSH_HOST" "cd '$REMOTE_DIR' && docker compose --env-file .env --env-file .
 echo "  ✓ 已同步 docker-compose.yml + $COMPOSE_OVERRIDE + .admin-runtime.env"
 
 echo "=== 4/5 远程重启服务（base + override）==="
-# cron-worker 日志挂载卷（容器内 uid=1001 nextjs 才能写入；目录不存在 docker 会以 root 自建并越权）
-ssh "$SSH_HOST" "mkdir -p $REMOTE_DIR/logs/cron-worker $REMOTE_DIR/logs/export-worker && chown -R 1001:1001 $REMOTE_DIR/logs/cron-worker $REMOTE_DIR/logs/export-worker"
+# worker 日志、心跳和数据库备份目录（容器内 uid=1001 nextjs 才能写入）。
+ssh "$SSH_HOST" "mkdir -p $REMOTE_DIR/logs/cron-worker $REMOTE_DIR/logs/export-worker $REMOTE_DIR/data/runtime-status $REMOTE_DIR/data/backup-control $REMOTE_DIR/data/database-backups && chown -R 1001:1001 $REMOTE_DIR/logs/cron-worker $REMOTE_DIR/logs/export-worker $REMOTE_DIR/data/runtime-status $REMOTE_DIR/data/backup-control $REMOTE_DIR/data/database-backups && chmod 700 $REMOTE_DIR/data/runtime-status $REMOTE_DIR/data/backup-control $REMOTE_DIR/data/database-backups"
 ssh "$SSH_HOST" "cd '$REMOTE_DIR' && docker compose --env-file .env --env-file .admin-runtime.env -f docker-compose.yml -f $COMPOSE_OVERRIDE up -d admin cron-worker export-worker"
 
 echo "=== 5/5 健康检查 + DB 连接验证 ==="
