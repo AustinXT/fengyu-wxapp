@@ -19,6 +19,21 @@ const REQUIRED_TABLES = [
   'inventory_movements',
 ]
 
+const FORBIDDEN_TABLES = [
+  'inventory_procurement_order_items',
+  'inventory_procurement_orders',
+  'inventory_sale_order_items',
+  'inventory_sale_orders',
+  'inventory_scrap_order_items',
+  'inventory_scrap_orders',
+  'inventory_transfer_order_items',
+  'inventory_transfer_orders',
+  'store_inventory_doc_items',
+  'store_inventory_docs',
+  'store_inventory_movements',
+  'store_inventory_stocks',
+]
+
 const REQUIRED_COLUMNS = [
   ['inventory_locations', 'parent_location_id'],
   ['inventory_stock_lots', 'supplier_id'],
@@ -71,6 +86,7 @@ const REQUIRED_MIGRATIONS = [
   '0008_lucky_tag',
   '0009_inventory_integrity_guards',
   '0010_mute_black_bolt',
+  '0017_watery_slyde',
 ]
 
 function postgresIdentifier(name) {
@@ -113,6 +129,14 @@ async function main() {
     )
     const existingTables = new Set(tableRows.rows.map((row) => row.table_name))
     ok = report('required tables', REQUIRED_TABLES.filter((name) => !existingTables.has(name))) && ok
+    const forbiddenTableRows = await client.query(
+      `SELECT table_name
+         FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = ANY($1::text[])`,
+      [FORBIDDEN_TABLES],
+    )
+    ok = report('removed legacy inventory tables', forbiddenTableRows.rows.map((row) => row.table_name)) && ok
 
     const columnRows = await client.query(
       `SELECT table_name, column_name

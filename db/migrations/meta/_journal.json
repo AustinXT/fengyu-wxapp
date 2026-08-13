@@ -120,6 +120,13 @@
       "when": 1786533704471,
       "tag": "0016_inventory_permission_catalog",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1786562308425,
+      "tag": "0017_watery_slyde",
+      "breakpoints": true
     }
   ]
 }

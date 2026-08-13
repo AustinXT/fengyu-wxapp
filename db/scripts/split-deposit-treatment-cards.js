@@ -37,8 +37,7 @@ const EXPECTED_DIRECT_REFS = new Set([
   'sale_payment_allocatable_items.sale_item_id',
   'sale_payment_item_receipts.sale_item_id',
   'service_items.sale_item_id',
-  'store_inventory_doc_items.sale_item_id',
-  'store_inventory_movements.sale_item_id',
+  'inventory_doc_items.sale_item_id',
 ])
 
 function log(message) {
@@ -327,8 +326,7 @@ async function inspect(client, saleItemId) {
        (SELECT count(*)::int FROM sale_allocations WHERE sale_item_id = $1) AS allocations,
        (SELECT count(*)::int FROM sale_payment_allocatable_items WHERE sale_item_id = $1) AS allocatables,
        (SELECT count(*)::int FROM sale_payment_item_receipts WHERE sale_item_id = $1) AS receipts,
-       (SELECT count(*)::int FROM store_inventory_doc_items WHERE sale_item_id = $1) AS inventory_doc_items,
-       (SELECT count(*)::int FROM store_inventory_movements WHERE sale_item_id = $1) AS inventory_movements,
+       (SELECT count(*)::int FROM inventory_doc_items WHERE sale_item_id = $1) AS inventory_doc_items,
        (SELECT count(*)::int FROM sale_items WHERE ref_sale_item_id IN (SELECT sale_item_id FROM sale_items WHERE ref_sale_item_id = $1)) AS nested_children`,
     [saleItemId],
   )
