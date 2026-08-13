@@ -12,6 +12,7 @@ import type { AuthSession } from './types'
 import {
   hasUiCapability,
   sanitizePermissionMatrix,
+  sanitizeRoleDefinitionActions,
   validatePermissionMatrix,
 } from './permission-contract'
 import { requireUiPageCapability } from './page-capability'
@@ -78,6 +79,23 @@ describe('permission-contract', () => {
 
     expect(result.admin).toEqual(['coupon:list'])
     expect(result.manager).toEqual(['coupon:list'])
+  })
+
+  it('读取角色定义时按高级能力清洗遗留权限', () => {
+    const legacy = [
+      'coupon:list',
+      'sale_order:delete',
+      'store:lakala_config',
+      'inventory:update',
+      'lakala:onboarding:create',
+    ]
+
+    expect(sanitizeRoleDefinitionActions(legacy, false, knownActions)).toEqual(['coupon:list'])
+    expect(sanitizeRoleDefinitionActions(legacy, true, knownActions)).toEqual([
+      'coupon:list',
+      'sale_order:delete',
+      'store:lakala_config',
+    ])
   })
 
   it('UI capability 必须同时满足 action 与页面硬依赖', () => {

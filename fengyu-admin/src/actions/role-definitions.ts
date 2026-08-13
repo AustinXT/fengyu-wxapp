@@ -8,7 +8,11 @@ import { permissionRoleDefinitions, permissionRoles } from '@db/permission'
 import { staffWechatUsers } from '@db/user'
 import { withAnyPermission, withPermission } from '@/lib/with-permission'
 import { requireAdmin, invalidatePermissionMatrixCache, KNOWN_PERMISSION_ACTIONS } from '@/lib/permissions'
-import { ADMIN_ONLY_ACTIONS, getMissingUiDependencies } from '@/lib/permission-contract'
+import {
+  getActionGrantability,
+  getMissingUiDependencies,
+  sanitizeRoleDefinitionActions,
+} from '@/lib/permission-contract'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
 import type { RoleDefinition } from '@/lib/types'
@@ -65,14 +69,17 @@ function normalizeDescription(value?: string | null): string | null {
 function normalizeActions(actions: readonly string[], isSuperAdmin: boolean): string[] {
   const known = new Set(KNOWN_PERMISSION_ACTIONS)
   const normalized = [...new Set(actions.map((action) => String(action).trim()).filter(Boolean))].sort()
-  const unknown = normalized.find((action) => !known.has(action))
-  if (unknown) throw new Error(`INVALID_PARAMS: 未知权限项 ${unknown}`)
-
-  const adminOnly = normalized.find((action) => (
-    action.endsWith(':delete') || (ADMIN_ONLY_ACTIONS as readonly string[]).includes(action)
-  ))
-  if (adminOnly && !isSuperAdmin) {
-    throw new Error(`INVALID_PARAMS: ${adminOnly} 仅超级管理员角色可持有`)
+  for (const action of normalized) {
+    const grantability = getActionGrantability(isSuperAdmin ? 'admin' : 'staff', action, known)
+    if (grantability === 'unknown') {
+      throw new Error(`INVALID_PARAMS: 未知权限项 ${action}`)
+    }
+    if (grantability === 'admin_only') {
+      throw new Error(`INVALID_PARAMS: ${action} 仅超级管理员角色可持有`)
+    }
+    if (grantability === 'undelivered') {
+      throw new Error(`INVALID_PARAMS: ${action} 暂未交付管理后台，不能授予`)
+    }
   }
 
   for (const action of normalized) {
@@ -110,9 +117,20 @@ async function hasNonHeadquartersAssignment(roleKey: string): Promise<boolean> {
 
 async function writeCompatibilityMirror(tx: any): Promise<void> {
   const rows = await tx
-    .select({ roleKey: permissionRoleDefinitions.roleKey, actions: permissionRoleDefinitions.actions })
+    .select({
+      roleKey: permissionRoleDefinitions.roleKey,
+      actions: permissionRoleDefinitions.actions,
+      isSuperAdmin: permissionRoleDefinitions.isSuperAdmin,
+    })
     .from(permissionRoleDefinitions)
-  const matrix = Object.fromEntries(rows.map((row: { roleKey: string; actions: string[] }) => [row.roleKey, row.actions]))
+  const matrix = Object.fromEntries(rows.map((row: {
+    roleKey: string
+    actions: string[]
+    isSuperAdmin: boolean
+  }) => [
+    row.roleKey,
+    sanitizeRoleDefinitionActions(row.actions, row.isSuperAdmin, KNOWN_PERMISSION_ACTIONS),
+  ]))
   const value = JSON.stringify(matrix)
   await tx.execute(sql`
     INSERT INTO system_configs (key, value, updated_at)
@@ -135,6 +153,7 @@ function serialize(row: {
 }): RoleDefinition {
   return {
     ...row,
+    actions: sanitizeRoleDefinitionActions(row.actions, row.isSuperAdmin, KNOWN_PERMISSION_ACTIONS),
     assignmentCount: Number(row.assignmentCount),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -184,12 +203,11 @@ export const createRoleDefinition = withPermission(
         .where(eq(permissionRoleDefinitions.roleKey, input.copyFromRoleKey))
         .limit(1)
       if (!source) throw new Error('NOT_FOUND: 复制来源角色不存在')
-      sourceActions = isSuperAdmin
-        ? source.actions
-        : source.actions.filter((action) => (
-          !action.endsWith(':delete')
-          && !(ADMIN_ONLY_ACTIONS as readonly string[]).includes(action)
-        ))
+      sourceActions = sanitizeRoleDefinitionActions(
+        source.actions,
+        isSuperAdmin,
+        KNOWN_PERMISSION_ACTIONS,
+      )
     }
 
     const roleKey = `role_${randomUUID()}`
@@ -265,8 +283,17 @@ export const updateRoleDefinition = withPermission(
       if (count < 1) throw new Error('INVALID_STATE: 系统至少需保留 1 名在职超级管理员')
     }
 
-    const actions = normalizeActions(input.actions ?? before.actions, nextSuper)
-    const expected = input.expectedUpdatedAt ? new Date(input.expectedUpdatedAt) : before.updatedAt
+    const actions = normalizeActions(
+      input.actions ?? sanitizeRoleDefinitionActions(
+        before.actions,
+        before.isSuperAdmin,
+        KNOWN_PERMISSION_ACTIONS,
+      ),
+      nextSuper,
+    )
+    // PostgreSQL 的 timestamptz 可保留微秒，而 JavaScript Date 只能保留毫秒。
+    // 页面拿到的是 ISO 毫秒值，直接等值比较会让刚创建的角色也误判为并发冲突。
+    const expectedUpdatedAt = input.expectedUpdatedAt ?? before.updatedAt.toISOString()
     try {
       const changed = await db.transaction(async (tx) => {
         const rows = await tx
@@ -283,7 +310,7 @@ export const updateRoleDefinition = withPermission(
           })
           .where(and(
             eq(permissionRoleDefinitions.roleKey, roleKey),
-            eq(permissionRoleDefinitions.updatedAt, expected),
+            sql`date_trunc('milliseconds', ${permissionRoleDefinitions.updatedAt}) = ${expectedUpdatedAt}`,
           ))
           .returning({ roleKey: permissionRoleDefinitions.roleKey })
         if (rows.length > 0) await writeCompatibilityMirror(tx)

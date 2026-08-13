@@ -23,6 +23,7 @@ import { formatDate } from "@/lib/utils"
 import { formatPhoneSafe } from "@/lib/format"
 import { actionErrorMessage } from "@/lib/action-error"
 import { isMember, resolveUnitPrice } from "@/lib/member-pricing"
+import { isOrderServiceStaffCandidate } from "@/lib/order-service-staff"
 import type { RechargeConfig } from "@/lib/recharge-tier"
 import type { ProductSku, Store, Employee, Customer, AvailableCoupon } from "@/lib/types"
 import {
@@ -341,11 +342,16 @@ export default function OrderCreatePageClient({
     setUseCard(false)
     setCardAmountInput('0.00')
     // 自动默认顾客绑定的门店和美容师
-    if (customer.boundStoreId && stores.some(s => s.storeId === customer.boundStoreId)) {
-      setSelectedStoreId(customer.boundStoreId)
-    }
-    if (customer.boundEmployeeId && employees.some(e => e.employeeId === customer.boundEmployeeId && !e.isResigned && e.skills?.includes('美容师'))) {
+    const targetStoreId = customer.boundStoreId && stores.some(s => s.storeId === customer.boundStoreId)
+      ? customer.boundStoreId
+      : selectedStoreId
+    if (targetStoreId !== selectedStoreId) setSelectedStoreId(targetStoreId)
+    if (customer.boundEmployeeId && employees.some(
+      e => e.employeeId === customer.boundEmployeeId && isOrderServiceStaffCandidate(e, targetStoreId),
+    )) {
       setSelectedEmployeeId(customer.boundEmployeeId)
+    } else {
+      setSelectedEmployeeId("")
     }
     void prefetchKindData(productKindChoice, customer.userId)
     // 异步加载充值卡余额（开单页随时可用；含充值卡 SKU 时由 UI 锁灰，但状态仍保留以便切换时立即可用）
@@ -532,7 +538,7 @@ export default function OrderCreatePageClient({
   useEffect(() => {
     if (selectedEmployeeId && selectedStoreId) {
       const emp = employees.find(e => e.employeeId === selectedEmployeeId)
-      if (emp && emp.storeId !== selectedStoreId) {
+      if (!emp || !isOrderServiceStaffCandidate(emp, selectedStoreId)) {
         setSelectedEmployeeId("")
       }
     }
@@ -1186,7 +1192,7 @@ export default function OrderCreatePageClient({
                 <label className="text-sm text-[#999999]">指定美容师（可选）</label>
                 <Select className="mt-1" value={selectedEmployeeId} onChange={(e) => setSelectedEmployeeId(e.target.value)}>
                   <option value="">不指定</option>
-                  {employees.filter((e) => !e.isResigned && (!selectedStoreId || e.storeId === selectedStoreId || e.isOnBusinessTrip) && e.skills?.includes('美容师')).map((e) => (
+                  {employees.filter((employee) => isOrderServiceStaffCandidate(employee, selectedStoreId)).map((e) => (
                     <option key={e.employeeId} value={e.employeeId}>{e.name} ({e.positionName}){e.isOnBusinessTrip && e.storeId !== selectedStoreId ? `（${e.storeName ?? '外店'}）` : ''}</option>
                   ))}
                 </Select>

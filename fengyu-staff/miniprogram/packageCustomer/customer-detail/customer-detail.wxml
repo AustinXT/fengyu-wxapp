@@ -61,11 +61,23 @@
       <van-tab title="基本档案">
         <view class="tab-content">
           <van-cell-group class="card-group">
-            <van-cell title="客户姓名" value="{{customer.name || '—'}}" />
+            <van-cell
+              title="客户姓名"
+              value="{{customer.name || '—'}}"
+              is-link="{{isManager}}"
+              clickable="{{isManager && !profileSaving}}"
+              bind:click="onEditCustomerName"
+            />
             <van-cell wx:if="{{customer.gender}}" title="客户性别" value="{{customer.gender}}" />
             <van-cell title="手机号" value="{{isManager ? customer.phone : customer.phoneMasked}}" />
             <van-cell wx:if="{{customer.storeName}}" title="注册门店" value="{{customer.storeName}}" />
-            <van-cell wx:if="{{customer.preferredStaffName}}" title="指定美容师" value="{{customer.preferredStaffName}}" />
+            <van-cell
+              title="指定美容师"
+              value="{{customer.preferredStaffName || '未指定'}}"
+              is-link="{{isManager}}"
+              clickable="{{isManager && !profileSaving}}"
+              bind:click="onEditPreferredStaff"
+            />
             <van-cell wx:if="{{customer.topProductName}}" title="常购商品" value="{{customer.topProductName}}" />
             <van-cell wx:if="{{customer.lastServiceDate}}" title="上次到店" value="{{customer.lastServiceDate}}" />
             <van-cell wx:if="{{customer.visitFrequency}}" title="到店频率" value="{{customer.visitFrequency}}" />
@@ -209,10 +221,9 @@
                   <text class="status-tag status-tag--{{item.statusClass}}">{{item.status}}</text>
                 </view>
                 <view class="home-product-counts">
+                  <text class="home-product-remaining">待提 {{item.pendingPickupQuantity}}{{item.unit}}</text>
+                  <text>已付 {{item.paidQuantity}}{{item.unit}}</text>
                   <text>购买 {{item.purchasedQuantity}}{{item.unit}}</text>
-                  <text>已提 {{item.pickedQuantity}}{{item.unit}}</text>
-                  <text wx:if="{{item.refundedQuantity > 0}}">已退 {{item.refundedQuantity}}{{item.unit}}</text>
-                  <text class="home-product-remaining">待提 {{item.remainingQuantity}}{{item.unit}}</text>
                 </view>
                 <view class="home-product-meta">
                   <text>{{item.storeName || item.storeId}}</text>
@@ -393,6 +404,17 @@
   </block>
 
   <view class="safe-area-bottom" />
+
+  <van-action-sheet
+    wx:if="{{isManager}}"
+    show="{{showAssignSheet}}"
+    actions="{{staffActions}}"
+    cancel-text="取消"
+    description="选择指定美容师"
+    bind:close="onAssignClose"
+    bind:cancel="onAssignClose"
+    bind:select="onAssignSelect"
+  />
 </view>
 
 <!-- 底部操作栏（持卡汇总选中时） -->

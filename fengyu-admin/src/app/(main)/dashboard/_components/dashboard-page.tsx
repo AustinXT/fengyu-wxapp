@@ -180,13 +180,13 @@ function SystemDashboard({ stats, actions }: Props) {
   const ROLE_CARDS: Record<string, Array<{ label: string; value: number; href: string; action: string | readonly string[] }>> = {
     admin: [
       { label: "营业门店", value: a.totalStores, href: "/stores", action: "store:list" },
-      { label: "在职员工", value: a.totalEmployees, href: "/employees", action: "employee:list" },
+      { label: "在职员工", value: a.totalEmployees, href: "/employees", action: "employee:create" },
       { label: "在售商品", value: a.totalProducts, href: "/products", action: "product:list" },
       { label: "注册顾客", value: a.totalCustomers, href: "/customers", action: "customer:list" },
     ],
     hr: [
       { label: "营业门店", value: a.totalStores, href: "/stores", action: "store:list" },
-      { label: "在职员工", value: a.totalEmployees, href: "/employees", action: "employee:list" },
+      { label: "在职员工", value: a.totalEmployees, href: "/employees", action: "employee:create" },
     ],
     product: [
       { label: "在售商品", value: a.totalProducts, href: "/products", action: "product:list" },
@@ -197,7 +197,7 @@ function SystemDashboard({ stats, actions }: Props) {
     admin: [
       { label: "组织架构", href: "/org", action: "org:list" },
       { label: "门店管理", href: "/stores", action: "store:list" },
-      { label: "员工管理", href: "/employees", action: "employee:list" },
+      { label: "员工管理", href: "/employees", action: "employee:create" },
       { label: "商品管理", href: "/products", action: "product:list" },
       { label: "权限管理", href: "/permissions", action: "permission:list" },
 
@@ -205,7 +205,7 @@ function SystemDashboard({ stats, actions }: Props) {
     hr: [
       { label: "组织架构", href: "/org", action: "org:list" },
       { label: "门店管理", href: "/stores", action: "store:list" },
-      { label: "员工管理", href: "/employees", action: "employee:list" },
+      { label: "员工管理", href: "/employees", action: "employee:create" },
       { label: "权限管理", href: "/permissions", action: "permission:list" },
     ],
     product: [

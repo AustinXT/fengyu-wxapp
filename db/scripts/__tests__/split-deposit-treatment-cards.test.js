@@ -3,7 +3,10 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 
-const { buildTreatmentCardAllocationPlan } = require('../split-deposit-treatment-cards')
+const {
+  buildTreatmentCardAllocationPlan,
+  serviceReservationAfterSplit,
+} = require('../split-deposit-treatment-cards')
 
 function inspected({ remaining, services = [], children = [] }) {
   return {
@@ -69,4 +72,14 @@ test('历史消耗与聚合余额不一致时拒绝拆分', () => {
     }), ['SOURCE', 'CARD-2']),
     /HISTORY_CONSUMPTION_MISMATCH/,
   )
+})
+
+test('拆卡时只保留活跃服务单预扣，终态残留预扣一律清空', () => {
+  const reservedAt = '2026-08-05T10:00:00.000Z'
+
+  assert.equal(serviceReservationAfterSplit({ service_status: '服务中', reserved_at: reservedAt }), reservedAt)
+  assert.equal(serviceReservationAfterSplit({ service_status: '待客户确认', reserved_at: reservedAt }), reservedAt)
+  assert.equal(serviceReservationAfterSplit({ service_status: '已完成', reserved_at: reservedAt }), null)
+  assert.equal(serviceReservationAfterSplit({ service_status: '已取消', reserved_at: reservedAt }), null)
+  assert.equal(serviceReservationAfterSplit({ service_status: '待服务', reserved_at: reservedAt }), null)
 })

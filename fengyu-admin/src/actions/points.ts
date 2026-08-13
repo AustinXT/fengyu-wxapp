@@ -24,6 +24,7 @@ import { storeInMarketCondition } from '@/lib/market-store-sql'
  * - '等级升级奖励' — cronTask 会员等级升级时发放
  * - '消费赠送' — 订单链净额增加时自动发放（ticket 2026-04-24）
  * - '消费冲销' — 退款导致订单链净额下降时自动冲销（ticket 2026-04-24）
+ * - '到店赠送' — 会员完成符合条件的服务后按顾客+服务日期每日一次发放
  *
  * DB 层 chk_pt_amount_sign 守护：(amount<0 AND type='消费冲销') OR amount>0（migration 0028）
  * 若未来新增负值 type（如"过期扣减"/"管理员调整"）必须新增 migration 扩展 CHECK 表达式

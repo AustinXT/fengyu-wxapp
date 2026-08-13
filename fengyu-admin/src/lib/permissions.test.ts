@@ -25,6 +25,7 @@ vi.mock('@db/org', () => ({
 }))
 
 import { computeActions, requirePermission, requireAnyPermission, buildScopeWhere, DEFAULT_PERMISSION_MATRIX, ALL_ACTIONS, PermissionError, expandRoleScope, expandScopeStoreIds, expandScopeOrgNodeIds, isAdminScope, accessiblePermissionScopeIds, scopeCondition, employeeScopeCondition, isInScope, hasPermission, getPermissionMatrix, invalidatePermissionMatrixCache, canAccessAdmin, isDepositOrderApprover } from './permissions'
+import { scopeSessionToActions } from './action-scope'
 import type { AuthSession, RoleType } from './types'
 import { db } from '@/db'
 
@@ -217,7 +218,7 @@ describe('computeActions', () => {
 })
 
 describe('getPermissionMatrix / cache', () => {
-  function mockRoleRows(rows: Array<{ roleKey: string; actions: string[] }>) {
+  function mockRoleRows(rows: Array<{ roleKey: string; actions: string[]; isSuperAdmin?: boolean }>) {
     const from = vi.fn().mockResolvedValue(rows)
     ;(db.select as any).mockReturnValue({ from })
     return from
@@ -250,6 +251,16 @@ describe('getPermissionMatrix / cache', () => {
     mockRoleRows([{ roleKey: 'role_custom', actions: ['dashboard:view', 'made_up:action'] }])
     const matrix = await getPermissionMatrix()
     expect(matrix.role_custom).toEqual(['dashboard:view'])
+  })
+
+  it('历史管理员专属和未交付权限不会进入非超级管理员运行时矩阵', async () => {
+    mockRoleRows([{
+      roleKey: 'manager',
+      isSuperAdmin: false,
+      actions: ['dashboard:view', 'appointment:delete', 'inventory:update'],
+    }])
+    const matrix = await getPermissionMatrix()
+    expect(matrix.manager).toEqual(['dashboard:view'])
   })
 
   it('DB throw 时回退 DEFAULT + console.error', async () => {
@@ -589,6 +600,78 @@ describe('employeeScopeCondition — 员工双维度 scope（store_id ∪ org_no
   })
 })
 
+describe('scopeSessionToActions — 动作与角色 scope 绑定', () => {
+  it('只合并授予 employee:list 的角色范围', () => {
+    const session = mockSession({
+      roles: [
+        {
+          role: 'hr',
+          scopeId: 'product-company',
+          scopeType: '市场',
+          actions: ['employee:list', 'employee:update'],
+          scopeStoreIds: ['PRODUCT-STORE'],
+          scopeOrgNodeIds: ['product-company', 'product-store-node'],
+        },
+        {
+          role: 'product',
+          scopeId: 'hq',
+          scopeType: '总部',
+          actions: ['data_center:dashboard'],
+          scopeStoreIds: ['PRODUCT-STORE', 'NC-STORE', 'JJ-STORE'],
+          scopeOrgNodeIds: ['hq', 'product-company', 'nanchang', 'jiujiang'],
+        },
+      ],
+      permissions: {
+        actions: ['employee:list', 'employee:update', 'data_center:dashboard'],
+        scopeStoreIds: ['PRODUCT-STORE', 'NC-STORE', 'JJ-STORE'],
+        scopeOrgNodeIds: ['hq', 'product-company', 'nanchang', 'jiujiang'],
+      },
+    })
+
+    const scoped = scopeSessionToActions(session, ['employee:list'])
+
+    expect(scoped.roles.map((role) => role.role)).toEqual(['hr'])
+    expect(scoped.permissions.scopeStoreIds).toEqual(['PRODUCT-STORE'])
+    expect(scoped.permissions.scopeOrgNodeIds).toEqual([
+      'product-company',
+      'product-store-node',
+    ])
+    expect(scoped.permissions.actions).toEqual(session.permissions.actions)
+  })
+
+  it('withAnyPermission 合并所有命中动作的角色范围', () => {
+    const session = mockSession({
+      roles: [
+        {
+          role: 'manager', scopeId: 's1', scopeType: '门店',
+          actions: ['sale_order:list'], scopeStoreIds: ['S1'], scopeOrgNodeIds: ['N1'],
+        },
+        {
+          role: 'finance', scopeId: 's2', scopeType: '门店',
+          actions: ['sale_order:refund_create'], scopeStoreIds: ['S2'], scopeOrgNodeIds: ['N2'],
+        },
+        {
+          role: 'product', scopeId: 's3', scopeType: '门店',
+          actions: ['product:list'], scopeStoreIds: ['S3'], scopeOrgNodeIds: ['N3'],
+        },
+      ],
+      permissions: {
+        actions: ['sale_order:list', 'sale_order:refund_create', 'product:list'],
+        scopeStoreIds: ['S1', 'S2', 'S3'],
+      },
+    })
+
+    const scoped = scopeSessionToActions(session, [
+      'sale_order:list',
+      'sale_order:refund_create',
+    ])
+
+    expect(scoped.roles.map((role) => role.role)).toEqual(['manager', 'finance'])
+    expect(scoped.permissions.scopeStoreIds).toEqual(['S1', 'S2'])
+    expect(scoped.permissions.scopeOrgNodeIds).toEqual(['N1', 'N2'])
+  })
+})
+
 describe('isInScope', () => {
   it('admin 任何门店都返回 true', () => {
     const session = mockSession({
@@ -650,6 +733,10 @@ describe('expandRoleScope / expandScopeStoreIds', () => {
     ])
     expect(result.orgNodeIds).toEqual(['hq', 'market'])
     expect(result.storeIds).toEqual(['S001', 'legacy'])
+    expect(result.roleScopes).toEqual([{
+      orgNodeIds: ['hq', 'market'],
+      storeIds: ['S001', 'legacy'],
+    }])
   })
 
   it('市场 scope 包含任意层级的下属门店与部门节点', async () => {

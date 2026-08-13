@@ -87,6 +87,17 @@ describe('validateScope', () => {
     await expect(validateScope(s, { type: 'all' })).rejects.toThrow(/PERMISSION_DENIED/)
   })
 
+  it('多店账号可查看授权汇总，无授权门店时拒绝', async () => {
+    mockIsAdminScope.mockReturnValue(false)
+    const multiStore = makeSession([{ role: 'manager', scopeType: '门店' }], ['S1', 'S2'])
+    await expect(validateScope(multiStore, { type: 'authorized' })).resolves.toBeUndefined()
+
+    const noStore = makeSession([{ role: 'manager', scopeType: '门店' }], [])
+    await expect(validateScope(noStore, { type: 'authorized' })).rejects.toThrow(
+      /PERMISSION_DENIED/,
+    )
+  })
+
   it('市场账号选本市场放行、选他市场抛错', async () => {
     mockIsAdminScope.mockReturnValue(false)
     mockExpandVisibleMarketIds.mockResolvedValue(['MKT-OWN'])
@@ -110,6 +121,9 @@ describe('validateScope', () => {
 describe('resolveScopeName', () => {
   it('all → 全部', async () => {
     expect(await resolveScopeName({ type: 'all' })).toBe('全部')
+  })
+  it('authorized → 全部授权门店', async () => {
+    expect(await resolveScopeName({ type: 'authorized' })).toBe('全部授权门店')
   })
   it('market → org_nodes 名称', async () => {
     dbRows.value = [{ name: '自贡市场' }]
@@ -143,5 +157,21 @@ describe('prepareBoardContext', () => {
       withComparison: false,
     })
     expect(ctx.enabled).toBe(false)
+  })
+
+  it('授权汇总的 meta 不携带单一 scope id', async () => {
+    mockIsAdminScope.mockReturnValue(false)
+    const ctx = await prepareBoardContext(
+      makeSession([{ role: 'manager', scopeType: '门店' }], ['S1', 'S2']),
+      {
+        scope: { type: 'authorized' },
+        timeRange: { preset: 'month' },
+      },
+    )
+    expect(ctx.meta.scope).toEqual({
+      type: 'authorized',
+      id: null,
+      name: '全部授权门店',
+    })
   })
 })

@@ -811,7 +811,7 @@ export const getCustomerHeldCards = withPermission(
       and(
         eq(saleItems.storeId, storeId),
         eq(saleOrders.clientUserId, clientUserId),
-        eq(saleItems.itemDirection, '购买'),
+        cardEntitlementDirectionCondition(),
         or(eq(saleOrders.status, '已支付'), eq(saleOrders.status, '已完成')),
         // 2026-05-21 单品合并：折抵对象统一为 疗程卡 + 剩余次数>0（含原"体验卡单品"=1 次卡）
         eq(saleItems.productType, '疗程卡'),

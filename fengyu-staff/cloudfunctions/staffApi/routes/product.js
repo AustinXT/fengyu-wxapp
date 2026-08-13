@@ -186,13 +186,15 @@ function _formatSkuRow(sk) {
  * @param {string|null} productKind
  * @param {Object} [opts]
  * @param {boolean} [opts.excludeCards=false] true 时 WHERE 排除 is_experience SKU（体验卡）
+ * @param {string|null} [opts.keyword=null] 按商品名称模糊搜索；不依赖 categoryId 时可跨二级分类
  */
 async function _queryFormattedSkuList(auth, categoryId, productKind, opts = {}) {
-  const { excludeCards = false } = opts || {}
+  const { excludeCards = false, keyword = null } = opts || {}
   const params = []
   const conditions = [
     `sk.is_enabled = true`,
-    `sk.deleted_at IS NULL`
+    `sk.deleted_at IS NULL`,
+    `pc.is_valid = true`
   ]
 
   if (categoryId) {
@@ -203,6 +205,11 @@ async function _queryFormattedSkuList(auth, categoryId, productKind, opts = {}) 
   if (productKind) {
     params.push(productKind)
     conditions.push(`pc.product_kind = $${params.length}`)
+  }
+
+  if (keyword) {
+    params.push(`%${keyword}%`)
+    conditions.push(`sk.spec_name ILIKE $${params.length}`)
   }
 
   if (excludeCards) {
@@ -227,6 +234,10 @@ async function _queryFormattedSkuList(auth, categoryId, productKind, opts = {}) 
            pc.category_name, pc.product_kind, pc.sales_category
     FROM product_skus sk
     JOIN product_categories pc ON sk.category_id = pc.category_id
+    JOIN product_categories parent
+      ON parent.product_kind IS NULL
+     AND parent.category_name = pc.product_kind
+     AND parent.is_valid = true
     ${whereClause}
     ORDER BY sk.sort_order ASC
   `, params)
@@ -448,12 +459,17 @@ async function categories(ctx) {
  * SKU 列表（按品项分类）
  *
  * payload.excludeCards 透传到底层查询：true 时排除 is_experience SKU（体验卡）。
+ * payload.keyword 可选；传入后按商品名称模糊搜索，categoryId 为空时覆盖全部二级分类。
  * 默认 false 以保持向后兼容（其他调用方未传则行为不变）。
  */
 async function skuList(ctx) {
   await requireStaffBound()(ctx, async () => {})
-  const { categoryId, productKind, excludeCards } = ctx.event.payload || {}
-  ctx.result = await _queryFormattedSkuList(ctx.auth, categoryId, productKind, { excludeCards: !!excludeCards })
+  const { categoryId, productKind, excludeCards, keyword } = ctx.event.payload || {}
+  const normalizedKeyword = typeof keyword === 'string' ? keyword.trim() : ''
+  ctx.result = await _queryFormattedSkuList(ctx.auth, categoryId, productKind, {
+    excludeCards: !!excludeCards,
+    keyword: normalizedKeyword || null,
+  })
 }
 
 /**

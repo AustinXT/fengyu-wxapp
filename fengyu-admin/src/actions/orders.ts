@@ -95,6 +95,13 @@ function purchaseLimitExceededMessage(row: SkuPurchaseLimitRow): string {
   return `商品「${name}」每单最多可购买 ${row.purchaseLimit} 件`
 }
 
+function splitMoneyByCount(value: number | string, count: number): number[] {
+  const totalCents = Math.round((Number(value) || 0) * 100)
+  const eachCents = Math.trunc(totalCents / count)
+  return Array.from({ length: count }, (_unused, index) =>
+    (eachCents + (index === count - 1 ? totalCents - eachCents * count : 0)) / 100)
+}
+
 // 寄存单疗程卡「实际单价按实付重算」—— unit_real_price = 实付received / 总次数session_count。
 // 实付=0 的行置 0（如实反映未收款，不再回落标价）；仅 product_type='疗程卡'，家居产品行(session_count NULL)被 WHERE 排除不受影响。
 // ⚠️ 必须 deposit-only + 严格在 recalcPaidSessionsForOrder 之后调用（理由见 staff routes/order.js 同名注释）：
@@ -3283,6 +3290,7 @@ export const createConversionOrder = withPermission(
           si.service_fee,
           si.is_experience,
           so.client_user_id,
+          so.sale_order_type,
           so.status AS order_status,
           pc.product_kind
         FROM sale_items si
@@ -3306,8 +3314,13 @@ export const createConversionOrder = withPermission(
       const reservedRows = await tx.execute(sql`
         SELECT
           sit.sale_item_id,
-          COALESCE(SUM(sit.session_used) FILTER (WHERE sit.reserved_at IS NOT NULL), 0) AS total_reserved
+          COALESCE(SUM(sit.session_used) FILTER (
+            WHERE sit.reserved_at IS NOT NULL
+              AND reserved_order.status IN ('服务中', '待客户确认')
+          ), 0) AS total_reserved
         FROM service_items sit
+        INNER JOIN service_orders reserved_order
+          ON reserved_order.service_order_id = sit.service_order_id
         WHERE sit.sale_item_id IN (${sql.join(
           data.convertOutSaleItemIds.map((id) => sql`${id}`),
           sql`, `,
@@ -3341,7 +3354,9 @@ export const createConversionOrder = withPermission(
         // 归属校验：store_id / client_user_id / direction / 状态
         if (row.store_id !== data.storeId) throw new ApiError('INVALID_STATE', 'CARD_STORE_MISMATCH: 所选卡不属于当前门店')
         if (row.client_user_id !== data.clientUserId) throw new ApiError('INVALID_STATE', 'CARD_OWNER_MISMATCH: 所选卡不属于该顾客')
-        if (row.item_direction !== '购买') throw new ApiError('INVALID_STATE', 'CARD_DIRECTION_INVALID: 所选行非购买行，不可折抵')
+        const isEntitlement = row.item_direction === '购买'
+          || (row.sale_order_type === '转换单' && row.item_direction === '转入')
+        if (!isEntitlement) throw new ApiError('INVALID_STATE', 'CARD_DIRECTION_INVALID: 所选行不是有效疗程权益，不可折抵')
         if (row.order_status !== '已支付' && row.order_status !== '已完成') {
           throw new ApiError('INVALID_STATE', 'CARD_ORDER_STATUS_INVALID: 原订单状态不允许转换')
         }
@@ -3728,41 +3743,62 @@ export const createConversionOrder = withPermission(
         }
       }
 
-      // 7. 转入行
+      // 7. 转入行：疗程卡逐张落库，group_id 仅用于展示合并与操作展开。
       for (const inRow of inItems) {
-        const saleItemId = `${saleOrderId}-${String(seq).padStart(2, '0')}`
-        seq++
         // sessionCount 以服务端查到的 productSkus.session_count 为权威，
         // 组合套餐前端 payload 里疗程卡会丢失该字段（bundleSkuToProductSku 硬编码 null），
         // 这里兜底保证 remaining_sessions 正确，否则卡永远无法核销。
-        // 同 createOrder：sale_items.session_count 是行总次数维度，需 × quantity。
+        // 每张卡是独立权益实体；家居产品仍保持 quantity 聚合行。
         const skuSessionCount = inRow.sku.sessionCount ?? inRow.item.sessionCount
-        const sessionCount = skuSessionCount != null ? skuSessionCount * inRow.item.quantity : null
-        await tx.insert(saleItems).values({
-          saleItemId,
-          saleOrderId,
-          storeId: data.storeId,
-          itemDirection: '转入',
-          skuId: inRow.item.skuId,
-          productName: inRow.item.productName,
-          productType: inRow.item.productType,
-          sessionCount,
-          remainingSessions: sessionCount,
-          unitPrice: inRow.unitPrice,
-          quantity: inRow.item.quantity,
-          unitRealPrice: inRow.unitRealPrice,
-          saleAmount: inRow.amount.toFixed(2),
-          received: inRow.amount.toFixed(2),
-          salesCategory:
-            (inRow.item.salesCategory as typeof saleItems.$inferInsert['salesCategory']) ??
-            (inRow.sku.salesCategory as typeof saleItems.$inferInsert['salesCategory']) ??
-            null,
-          serviceFee: inRow.serviceFee.toFixed(2),
-          // 转入行从 product_skus 快照写入 is_experience / is_shengmei
-          isExperience: inRow.sku.isExperience === true,
-          isShengmei: inRow.sku.isShengmei ?? null,
-          isManagerSpecial: inRow.sku.isManagerSpecial === true,
-        })
+        const cardCount = inRow.item.productType === '疗程卡' ? Number(inRow.item.quantity) || 1 : 1
+        if (inRow.item.productType === '疗程卡'
+            && (!Number.isInteger(cardCount) || cardCount <= 0
+              || !Number.isInteger(skuSessionCount) || Number(skuSessionCount) <= 0)) {
+          throw new ApiError('INVALID_PARAMS', 'CONVERSION_CARD_SPLIT_INVALID: 转入疗程卡次数必须能按张拆分')
+        }
+        const firstSeq = seq
+        const groupId = inRow.item.productType === '疗程卡'
+          ? `${saleOrderId}-${String(firstSeq).padStart(2, '0')}`
+          : null
+        const amountParts = splitMoneyByCount(inRow.amount, cardCount)
+        const serviceFeeParts = splitMoneyByCount(inRow.serviceFee, cardCount)
+
+        for (let index = 0; index < cardCount; index++) {
+          const saleItemId = `${saleOrderId}-${String(seq).padStart(2, '0')}`
+          seq++
+          const sessionCount = skuSessionCount != null ? Number(skuSessionCount) : null
+          const rowAmount = amountParts[index]
+          const rowQuantity = inRow.item.productType === '疗程卡' ? 1 : inRow.item.quantity
+          const rowUnitRealPrice = inRow.item.productType === '疗程卡' && sessionCount
+            ? (rowAmount / sessionCount).toFixed(2)
+            : inRow.unitRealPrice
+          await tx.insert(saleItems).values({
+            saleItemId,
+            saleItemGroupId: groupId,
+            saleOrderId,
+            storeId: data.storeId,
+            itemDirection: '转入',
+            skuId: inRow.item.skuId,
+            productName: inRow.item.productName,
+            productType: inRow.item.productType,
+            sessionCount,
+            remainingSessions: sessionCount,
+            unitPrice: inRow.unitPrice,
+            quantity: rowQuantity,
+            unitRealPrice: rowUnitRealPrice,
+            saleAmount: rowAmount.toFixed(2),
+            received: rowAmount.toFixed(2),
+            salesCategory:
+              (inRow.item.salesCategory as typeof saleItems.$inferInsert['salesCategory']) ??
+              (inRow.sku.salesCategory as typeof saleItems.$inferInsert['salesCategory']) ??
+              null,
+            serviceFee: serviceFeeParts[index].toFixed(2),
+            // 转入行从 product_skus 快照写入 is_experience / is_shengmei
+            isExperience: inRow.sku.isExperience === true,
+            isShengmei: inRow.sku.isShengmei ?? null,
+            isManagerSpecial: inRow.sku.isManagerSpecial === true,
+          })
+        }
       }
 
       // 8. 差额退余：priceDiff < 0 → UPSERT prepaid_cards + card_transactions
@@ -3841,7 +3877,7 @@ export const createConversionOrder = withPermission(
     if (m?.includes('CARD_NOT_FOUND')) return { success: false, message: '部分卡不存在或已失效' }
     if (m?.includes('CARD_STORE_MISMATCH')) return { success: false, message: '所选卡不属于当前门店' }
     if (m?.includes('CARD_OWNER_MISMATCH')) return { success: false, message: '所选卡不属于该顾客' }
-    if (m?.includes('CARD_DIRECTION_INVALID')) return { success: false, message: '所选行非购买行，不可折抵' }
+    if (m?.includes('CARD_DIRECTION_INVALID')) return { success: false, message: '所选行不是有效疗程权益，不可折抵' }
     if (m?.includes('CARD_ORDER_STATUS_INVALID')) return { success: false, message: '原订单状态不允许转换' }
     if (m?.includes('CARD_EXHAUSTED')) return { success: false, message: '所选卡已耗尽，无法折抵' }
     if (m?.includes('CARD_RESERVED')) return { success: false, message: '所选卡可用次数不足（存在服务中预留）' }

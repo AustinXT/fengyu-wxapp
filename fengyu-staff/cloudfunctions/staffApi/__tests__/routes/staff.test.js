@@ -24,6 +24,7 @@ describe('staff.list', () => {
 
     await staffRoutes.list(ctx)
 
+    expect(pg.query.mock.calls[0][0]).toMatch(/u\.store_id\s+IS\s+NOT\s+NULL/)
     expect(pg.query.mock.calls[0][0]).toMatch(/\(u\.store_id\s*=\s*\$1\s+OR\s+u\.is_on_business_trip\s*=\s*true\)/)
     expect(ctx.result.staffList).toHaveLength(2)
     expect(ctx.result.staffList[0].staffWfId).toBe('emp-001')
@@ -52,6 +53,19 @@ describe('staff.list', () => {
     expect(ctx.result.staffList).toHaveLength(2)
     expect(ctx.result.staffList[1].name).toBe('王五')
     expect(ctx.result.staffList[1].skills).toEqual(['养生师'])
+  })
+
+  test('养生师与美容师共用本店或出差范围，不按市场放宽', async () => {
+    const ctx = createManagerCtx()
+    pg.query.mockResolvedValueOnce([])
+
+    await staffRoutes.list(ctx)
+
+    const sql = pg.query.mock.calls[0][0]
+    expect(sql).toMatch(/u\.store_id\s+IS\s+NOT\s+NULL/)
+    expect(sql).toMatch(/\(u\.store_id\s*=\s*\$1\s+OR\s+u\.is_on_business_trip\s*=\s*true\)/)
+    expect(sql).toMatch(/u\.skills\s*&&\s*ARRAY\['美容师','养生师'\]::text\[\]/)
+    expect(sql).not.toMatch(/market_name\s*=/)
   })
 
   test('payload.storeId 覆盖默认门店', async () => {

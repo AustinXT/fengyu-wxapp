@@ -6,9 +6,11 @@ export interface CustomerHomeProduct {
   productName: string
   unit: string
   purchasedQuantity: number
+  paidQuantity: number
   pickedQuantity: number
   refundedQuantity: number
   remainingQuantity: number
+  pendingPickupQuantity: number
   status: HomeProductStatus
   storeId: string
   storeName: string | null
@@ -19,9 +21,9 @@ export function deriveHomeProductStatus(
   refundPending: boolean,
   pickedQuantity: number,
   refundedQuantity: number,
-  remainingQuantity: number,
+  pendingPickupQuantity: number,
 ): HomeProductStatus {
   if (refundPending) return '退款处理中'
-  if (remainingQuantity > 0) return pickedQuantity > 0 ? '部分提货' : '待提货'
+  if (pendingPickupQuantity > 0) return pickedQuantity > 0 ? '部分提货' : '待提货'
   return refundedQuantity > 0 ? '已完成' : '已提货'
 }

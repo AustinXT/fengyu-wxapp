@@ -64,6 +64,14 @@ describe('scopeFilterSql — 账号权限范围', () => {
     expect(sql).toContain('active_node.is_active = true')
     expect(params).toEqual([])
   })
+
+  it('非 admin + scope=authorized 汇总全部授权门店，不追加市场或单店条件', () => {
+    const session = makeSession([{ role: 'manager', scopeType: '门店' }], ['S1', 'S2'])
+    const { sql, params } = render(scopeFilterSql(session, { type: 'authorized' }, 'so.store_id'))
+    expect(sql).toContain('so.store_id in')
+    expect(sql).not.toContain('with recursive descendants')
+    expect(params).toEqual(['S1', 'S2'])
+  })
 })
 
 describe('scopeFilterSql — UI 选中 scope 收窄', () => {

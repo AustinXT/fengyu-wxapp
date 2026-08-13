@@ -473,6 +473,7 @@
 | `type` | text（自由文本，非枚举） | 变动分类（见 §2.21.4） |
 | `amount` | integer | 正负均可，累加即余额 |
 | `ref_order_id` | varchar(30) \| null | FK → `sale_orders.sale_order_id`；冲销/发放以原销售单 id 聚合 |
+| `external_ref` | text \| null | 外部幂等键；到店积分使用 `visit-points:{userId}:{serviceDate}` |
 | `created_at` | timestamp | — |
 
 **余额缓存** `client_wechat_users.points_balance` + `points_updated_at`
@@ -509,6 +510,7 @@ delta    = expected - SUM(point_transactions.amount WHERE ref_order_id = X)
 | `等级升级奖励` | `cronTask` 每日重算会员等级时升级发放 | + |
 | `消费赠送`     | 订单链净额增加，`delta > 0` | + |
 | `消费冲销`     | 订单链净额下降，`delta < 0` | − |
+| `到店赠送`     | 会员完成符合条件的真实到店服务 | + |
 
 未来兑换/过期等分类扩展时追加新值（type 是自由文本，无 DB 枚举约束）。
 
@@ -542,7 +544,17 @@ delta    = expected - SUM(point_transactions.amount WHERE ref_order_id = X)
 - 偏差写入 `operation_logs('points.balanceMismatch')`，供人工排查上游触发点 bug
 - **不自动修复**（决策 D7：自动修会掩盖触发点 bug）
 
-#### 2.21.8 储值卡抵扣启用范围（2026-05-18 补）
+#### 2.21.8 会员到店积分
+
+- 与按订单实收金额计算的“消费赠送”叠加，默认每次 20 分；配置键为 `system_configs.visit_points_reward`，0 表示关闭。
+- 触发点仅为服务单最终确认：`待客户确认 → 已完成`。员工 `service.complete` 仅标记待确认，不发积分。
+- 资格按服务单创建时快照判断：`service_order_type='售后'`、`client_user_id` 非空、至少一个 `service_items.unit_real_price > 0`，并排除备注为“寄存单退款专用”的假消耗。
+- 粒度为同一顾客、同一 `service_date` 每天最多一次；`external_ref='visit-points:{userId}:{serviceDate}'` + 唯一索引保证三端并发幂等。
+- staffApi、clientApi、admin 三个 finalize 入口独立维护副本，并在流水插入成功时同步增加 `points_balance`。
+- 发放失败通过 SAVEPOINT 隔离，不回滚服务完成；写 `points.visitGrantFailed` 后由夜间 `visitPointsRetry` 仅重试失败日志，成功写 `points.visitGrantRecovered`。不扫描、不补发上线前历史服务单。
+- `POINTS_ACCRUAL_ENABLED='false'` 或到店积分配置为 0 时，实时发放与夜间补偿均暂停。
+
+#### 2.21.9 储值卡抵扣启用范围（2026-05-18 补）
 
 | 端 | 入口 | 支持范围 | 备注 |
 |----|------|----------|------|
