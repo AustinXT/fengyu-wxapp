@@ -16,6 +16,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
 } from "lucide-react"
+import { AnalystPageLoading } from "@/components/analyst-page-loading"
 import { metricGroups } from "@/lib/metric-catalog"
 import type { AuthSession } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -35,6 +36,24 @@ const navItems = [
   { label: "知识库", href: "/knowledge", icon: BookOpen },
 ]
 
+const NAVIGATION_ORIGIN = "https://fengyu-analyst.local"
+
+function navigationDestination(href: string): URL {
+  return new URL(href, NAVIGATION_ORIGIN)
+}
+
+export function getNavigationLabel(href: string): string {
+  const destination = navigationDestination(href)
+
+  if (destination.pathname === "/dashboard") {
+    const metricId = destination.searchParams.get("metric")
+    const metric = metricGroups.flatMap((group) => group.metrics).find((item) => item.id === metricId)
+    return metric?.label ?? "看板"
+  }
+
+  return navItems.find((item) => item.href === destination.pathname)?.label ?? "页面"
+}
+
 function clampSidebarWidth(width: number): number {
   return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, width))
 }
@@ -48,21 +67,24 @@ export function AnalystShell({
 }) {
   const pathname = usePathname()
   const searchParams = useSearchParams()
-  const activeMetric = searchParams.get("metric") || "repurchase"
+  const [pendingHref, setPendingHref] = useState<string | null>(null)
+  const pendingDestination = pendingHref ? navigationDestination(pendingHref) : null
+  const displayedPathname = pendingDestination?.pathname ?? pathname
+  const displayedSearchParams = pendingDestination?.searchParams ?? searchParams
+  const activeMetric = displayedSearchParams.get("metric") || "repurchase"
   const activeScope = searchParams.get("scope")
   const activeScopeId = searchParams.get("scopeId")
   const adminOrigin = process.env.NEXT_PUBLIC_ADMIN_ORIGIN || "http://localhost:3000"
-  const dashboardActive = pathname === "/dashboard"
+  const dashboardActive = displayedPathname === "/dashboard"
   const resizeState = useRef<{ startX: number; startWidth: number } | null>(null)
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH)
   const [sidebarHidden, setSidebarHidden] = useState(false)
   const [metricListExpanded, setMetricListExpanded] = useState(true)
   const [expandedGroupIds, setExpandedGroupIds] = useState(DEFAULT_EXPANDED_GROUPS)
   const [settingsReady, setSettingsReady] = useState(false)
-  const [navigating, setNavigating] = useState(false)
 
   useEffect(() => {
-    setNavigating(false)
+    setPendingHref(null)
   }, [pathname, searchParams])
 
   useEffect(() => {
@@ -162,20 +184,20 @@ export function AnalystShell({
   }
 
   function handleNavigate(href: string) {
-    const destination = new URL(href, "https://fengyu-analyst.local")
+    const destination = navigationDestination(href)
     const currentSearch = searchParams.toString()
 
     if (destination.pathname === pathname && destination.search === (currentSearch ? `?${currentSearch}` : "")) {
-      setNavigating(false)
+      setPendingHref(null)
       return
     }
 
-    setNavigating(true)
+    setPendingHref(`${destination.pathname}${destination.search}`)
   }
 
   return (
-    <div className="min-h-screen bg-[var(--background)]" style={shellStyle} aria-busy={navigating}>
-      {navigating ? (
+    <div className="min-h-screen bg-[var(--background)]" style={shellStyle} aria-busy={pendingHref !== null}>
+      {pendingHref ? (
         <div className="fixed inset-x-0 top-0 z-[60] h-0.5 overflow-hidden bg-red-100" role="progressbar" aria-label="页面加载中">
           <div className="h-full w-1/3 animate-[analyst-progress_900ms_ease-in-out_infinite] bg-[var(--primary)]" />
         </div>
@@ -208,7 +230,7 @@ export function AnalystShell({
 
           <nav className="h-[calc(100vh-4rem)] space-y-1 overflow-y-auto px-3 py-4">
             {navItems.map((item) => {
-              const active = pathname === item.href
+              const active = displayedPathname === item.href
               const isDashboardItem = item.href === "/dashboard"
 
               return (
@@ -347,17 +369,20 @@ export function AnalystShell({
           </div>
         </header>
 
-        <main className="px-4 py-4 pb-24 sm:px-6 lg:px-8 lg:py-6">{children}</main>
+        <main className="px-4 py-4 pb-24 sm:px-6 lg:px-8 lg:py-6">
+          {pendingHref ? <AnalystPageLoading key={pendingHref} label={getNavigationLabel(pendingHref)} /> : children}
+        </main>
       </div>
 
       <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-3 border-t border-[var(--border)] bg-white lg:hidden">
         {navItems.map((item) => {
-          const active = pathname === item.href
+          const active = displayedPathname === item.href
+          const href = withCurrentScope(item.href)
           return (
             <Link
               key={item.href}
-              href={item.href}
-              onNavigate={() => handleNavigate(item.href)}
+              href={href}
+              onNavigate={() => handleNavigate(href)}
               className={cn(
                 "flex min-h-14 flex-col items-center justify-center gap-1 text-xs font-medium",
                 active ? "text-[var(--primary)]" : "text-neutral-500",
