@@ -1539,6 +1539,74 @@ export const getProducts = withPermission(
   },
 )
 
+/**
+ * 导出商城商品。筛选语义与 /mall 列表一致，并由 worker 分批读取，避免一次加载全表。
+ */
+export const exportMallProducts = withPermission(
+  'product:list',
+  async (
+    _session,
+    params: Record<string, string | undefined>,
+    options?: ExportBatchOptions,
+  ): Promise<ExportBatchResult<Product>> => {
+    const skuCountSq = db
+      .select({
+        productId: mallProductSkus.productId,
+        count: sql<number>`count(*)::int`.as('sku_count'),
+      })
+      .from(mallProductSkus)
+      .groupBy(mallProductSkus.productId)
+      .as('sku_count_sq')
+
+    const conditions = [isNull(products.deletedAt)]
+    const search = params.q?.trim()
+    if (search) {
+      const escaped = search.replace(/[\\%_]/g, '\\$&')
+      conditions.push(ilike(products.name, `%${escaped}%`))
+    }
+    if (params.category) conditions.push(eq(products.categoryId, params.category))
+
+    const page = resolveExportOffsetPage(options)
+    const query = db
+      .select({
+        product: products,
+        categoryName: mallCategories.categoryName,
+        categoryGroup: mallCategories.categoryGroup,
+        skuCount: skuCountSq.count,
+      })
+      .from(products)
+      .leftJoin(mallCategories, eq(products.categoryId, mallCategories.categoryId))
+      .leftJoin(skuCountSq, eq(products.productId, skuCountSq.productId))
+      .where(and(...conditions))
+      // sortOrder 是商城人工排序权重，productId 保证导出翻页稳定。
+      .orderBy(asc(products.sortOrder), asc(products.productId))
+    const rows = page
+      ? await query.limit(page.limit + 1).offset(page.offset)
+      : await query
+
+    return offsetPageResult(rows.map((r) => ({
+      productId: r.product.productId,
+      categoryId: r.product.categoryId,
+      name: r.product.name,
+      coverImage: r.product.coverImage,
+      detailImages: r.product.detailImages,
+      description: r.product.description,
+      isBundle: r.product.isBundle,
+      price: r.product.price,
+      specialPrice: r.product.specialPrice,
+      manageScope: r.product.manageScope,
+      marketScope: r.product.marketScope,
+      sortOrder: r.product.sortOrder,
+      isVisible: r.product.isVisible,
+      createdAt: r.product.createdAt.toISOString(),
+      updatedAt: r.product.updatedAt.toISOString(),
+      categoryName: r.categoryName ?? undefined,
+      categoryGroup: r.categoryGroup ?? undefined,
+      skuCount: r.skuCount ?? 0,
+    })), page)
+  },
+)
+
 export const getProductById = withPermission(
   'product:list',
   async (_session, productId: string): Promise<Product | null> => {
