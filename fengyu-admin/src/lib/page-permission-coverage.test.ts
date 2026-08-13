@@ -73,7 +73,7 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   // —— 系统管理 ——
   '/permissions': ['permission:list', 'employee:list', 'org:list'],
   '/settings/permission-matrix': ['system:config'],
-  '/settings/lakala-diagnostics': ['system:config'],
+  '/settings/diagnostics': ['system:diagnostics'],
   '/messages': ['message:list'],
   '/logs': ['operation_log:list'],
   '/settings': ['system:config'],

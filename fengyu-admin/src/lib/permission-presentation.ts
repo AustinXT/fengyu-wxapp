@@ -96,6 +96,7 @@ export const PERMISSION_ACTION_CATALOG = {
     'store_unbind:list': '查看解绑申请',
     'store_unbind:reject': '驳回顾客解绑',
     'system:config': '管理系统设置',
+    'system:diagnostics': '运行系统自检与数据库备份',
   },
   /** 物理删除和系统级能力仅能被超级管理员角色持有，后端还有 requireAdmin() 硬闸。 */
   adminOnly: [
@@ -103,7 +104,7 @@ export const PERMISSION_ACTION_CATALOG = {
     'appointment:delete', 'commission:delete', 'customer:delete', 'employee:delete',
     'inventory:delete', 'merchant:delete', 'message:delete', 'operation_log:delete',
     'org:delete', 'pickup_record:delete', 'sale_order:delete', 'service:delete',
-    'store:lakala_config', 'store_unbind:delete', 'permission:assign_admin',
+    'store:lakala_config', 'store_unbind:delete', 'permission:assign_admin', 'system:diagnostics',
   ],
   /** 只有缺失后页面无可达 UI 的硬依赖才登记在此；普通筛选下拉可降级为空。 */
   dependencies: {

@@ -10,7 +10,7 @@ test.describe('全局布局', () => {
   test('Sidebar 显示业务域二级菜单', async ({ page }) => {
     await page.goto('/dashboard')
     await expect(page.getByRole('button', { name: '经营业务' })).toBeVisible()
-    await expect(page.getByRole('button', { name: '进销存' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '库存管理' })).toBeVisible()
     await expect(page.getByText('系统管理', { exact: true })).toBeVisible()
   })
 

@@ -38,13 +38,13 @@ describe('业务域菜单（权限点驱动）', () => {
     const nodes = getVisibleMenuItems(makeSession({ role: 'admin' }))
     expect(visibleLeaves(makeSession({ role: 'admin' }))).toHaveLength(flattenMenuItems().length)
     expect(nodes.filter(isMenuParent).map((node) => node.label)).toEqual([
-      '经营业务', '客户运营', '商品商城', '进销存', '组织商户', '系统管理',
+      '经营业务', '客户运营', '商品商城', '库存管理', '组织管理', '系统管理',
     ])
   })
 
   it('父级只在至少一个子项有权时出现', () => {
     const nodes = getVisibleMenuItems(makeSession({ role: 'product' }))
-    expect(nodes.some((node) => isMenuParent(node) && node.label === '组织商户')).toBe(false)
+    expect(nodes.some((node) => isMenuParent(node) && node.label === '组织管理')).toBe(false)
     expect(nodes.some((node) => isMenuParent(node) && node.label === '商品商城')).toBe(true)
   })
 
@@ -95,6 +95,13 @@ describe('业务域菜单（权限点驱动）', () => {
   it('多角色菜单取并集', () => {
     const labels = visibleLabels(makeSession({ role: 'hr' }, { role: 'product' }))
     expect(labels).toEqual(expect.arrayContaining(['组织架构', '商品管理', '权限管理', '资料配置']))
+  })
+
+  it('系统自检仅向持有专用权限的超级管理员展示', () => {
+    expect(visibleLabels(makeSession({ role: 'admin' }))).toContain('系统自检')
+    for (const role of ['manager', 'finance', 'hr', 'product', 'customer_mgr'] as RoleType[]) {
+      expect(visibleLabels(makeSession({ role }))).not.toContain('系统自检')
+    }
   })
 
   it('staff 和空权限均没有菜单', () => {

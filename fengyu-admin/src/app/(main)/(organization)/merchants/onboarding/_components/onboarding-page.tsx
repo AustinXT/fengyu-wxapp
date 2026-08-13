@@ -54,6 +54,7 @@ import {
   MAX_ONBOARDING_ATTACHMENT_BYTES,
 } from "@/lib/lakala-onboarding-constants"
 import { actionErrorMessage } from "@/lib/action-error"
+import { useRefreshSafeDraft } from "@/lib/hooks/use-refresh-safe-draft"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -553,11 +554,6 @@ export function OnboardingList({
         </div>
       </div>
 
-      <div className="flex w-fit rounded-[var(--radius)] border border-[var(--border)] bg-white p-1">
-        <Link href="/merchants"><Button size="sm" variant="ghost">收款商户</Button></Link>
-        <Link href="/merchants/onboarding"><Button size="sm">入网申请</Button></Link>
-      </div>
-
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="待补资料" value={counts.drafts} icon={<FileWarning className="size-6 text-[#D4820A]" />} tone="text-[#A45D00]" />
         <Metric label="待提交" value={counts.ready} icon={<ClipboardCheck className="size-6 text-[#386987]" />} tone="text-[#386987]" />
@@ -715,10 +711,19 @@ export function OnboardingEditor({
   canFinalizeMerchant: boolean
 }) {
   const router = useRouter()
-  const [form, setForm] = useState(() => formFromApplication(application))
+  const serverForm = useMemo(() => formFromApplication(application), [application])
+  const {
+    draft: form,
+    setDraft: updateForm,
+    dirty: formDirty,
+    markClean: markFormClean,
+  } = useRefreshSafeDraft({
+    identity: application.id,
+    version: application.updatedAt,
+    serverValue: serverForm,
+  })
   const [expectedUpdatedAt, setExpectedUpdatedAt] = useState(application.updatedAt)
   const [pending, startTransition] = useTransition()
-  const [formDirty, setFormDirty] = useState(false)
   const [ocrStatus, setOcrStatus] = useState<Record<string, string>>({})
   const [localPreviewUrls, setLocalPreviewUrls] = useState<Record<string, string>>({})
   const localPreviewUrlsRef = useRef<Record<string, string>>({})
@@ -726,11 +731,12 @@ export function OnboardingEditor({
   useUnsavedChanges(formDirty)
 
   useEffect(() => {
-    setForm(formFromApplication(application))
     setExpectedUpdatedAt(application.updatedAt)
-    setFormDirty(false)
+  }, [application.updatedAt])
+
+  useEffect(() => {
     setBankOptions([])
-  }, [application])
+  }, [application.id])
 
   useEffect(() => {
     localPreviewUrlsRef.current = localPreviewUrls
@@ -763,11 +769,6 @@ export function OnboardingEditor({
   const canCancelApplication = ["DRAFT", "FILES_UPLOADING", "FILES_READY", "FAILED"].includes(application.status)
     && !application.eContractOrderNo
 
-  function updateForm(next: OnboardingApplicationInput) {
-    setForm(next)
-    setFormDirty(true)
-  }
-
   async function persistDraft(): Promise<string | null> {
     const result = await saveOnboardingApplication(application.id, form, expectedUpdatedAt)
     if (!result.success) {
@@ -776,7 +777,7 @@ export function OnboardingEditor({
     }
     const updatedAt = result.updatedAt ?? expectedUpdatedAt
     setExpectedUpdatedAt(updatedAt)
-    setFormDirty(false)
+    markFormClean()
     toast.success(result.message)
     router.refresh()
     return updatedAt
@@ -868,37 +869,40 @@ export function OnboardingEditor({
       const data = payload.data
       if (isBusinessLicense) {
         const subjectName = data.merRegName || data.merBlisName || ""
-        updateForm({
-          ...form,
-          merchantData: {
-            ...getGroup(form, "merchantData"),
-            ...(subjectName ? { merRegName: subjectName, merBlisName: subjectName } : {}),
-            ...(data.merBlis ? { merBlis: data.merBlis } : {}),
-            ...(data.merRegAddr ? { merRegAddr: data.merRegAddr } : {}),
-            ...(data.merRegDistCode ? { merRegDistCode: data.merRegDistCode } : {}),
-            ...(data.merBlisStDt ? { merBlisStDt: data.merBlisStDt } : {}),
-            ...(data.merBlisExpDt ? { merBlisExpDt: data.merBlisExpDt } : {}),
-          },
-          legalPersonData: {
-            ...getGroup(form, "legalPersonData"),
-            ...(data.larName ? { larName: data.larName } : {}),
-          },
-          settlementData: {
-            ...getGroup(form, "settlementData"),
-            ...(subjectName && !getGroup(form, "settlementData").acctName ? { acctName: subjectName } : {}),
-          },
+        updateForm((current) => {
+          const settlementData = getGroup(current, "settlementData")
+          return {
+            ...current,
+            merchantData: {
+              ...getGroup(current, "merchantData"),
+              ...(subjectName ? { merRegName: subjectName, merBlisName: subjectName } : {}),
+              ...(data.merBlis ? { merBlis: data.merBlis } : {}),
+              ...(data.merRegAddr ? { merRegAddr: data.merRegAddr } : {}),
+              ...(data.merRegDistCode ? { merRegDistCode: data.merRegDistCode } : {}),
+              ...(data.merBlisStDt ? { merBlisStDt: data.merBlisStDt } : {}),
+              ...(data.merBlisExpDt ? { merBlisExpDt: data.merBlisExpDt } : {}),
+            },
+            legalPersonData: {
+              ...getGroup(current, "legalPersonData"),
+              ...(data.larName ? { larName: data.larName } : {}),
+            },
+            settlementData: {
+              ...settlementData,
+              ...(subjectName && !settlementData.acctName ? { acctName: subjectName } : {}),
+            },
+          }
         })
       } else {
-        updateForm({
-          ...form,
+        updateForm((current) => ({
+          ...current,
           legalPersonData: {
-            ...getGroup(form, "legalPersonData"),
+            ...getGroup(current, "legalPersonData"),
             ...(data.larName ? { larName: data.larName } : {}),
             ...(data.larIdcard ? { larIdcard: data.larIdcard } : {}),
             ...(data.larIdcardStDt ? { larIdcardStDt: data.larIdcardStDt } : {}),
             ...(data.larIdcardExpDt ? { larIdcardExpDt: data.larIdcardExpDt } : {}),
           },
-        })
+        }))
       }
       setOcrStatus((current) => ({
         ...current,

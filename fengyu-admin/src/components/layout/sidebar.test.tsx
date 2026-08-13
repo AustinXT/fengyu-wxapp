@@ -50,7 +50,7 @@ describe('Sidebar 二级菜单', () => {
     pathname = '/inventory/suppliers'
     render(<Sidebar collapsed={false} onToggle={() => {}} session={session} />)
 
-    expect(screen.getByRole('button', { name: '进销存' })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('button', { name: '库存管理' })).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByRole('link', { name: '资料配置' })).toHaveClass('text-[var(--primary)]')
   })
 
@@ -65,11 +65,11 @@ describe('Sidebar 二级菜单', () => {
     expect(screen.getByRole('link', { name: '顾客管理' })).toBeVisible()
   })
 
-  it('折叠态点击进销存显示二级菜单，Escape 关闭浮层', async () => {
+  it('折叠态点击库存管理显示二级菜单，Escape 关闭浮层', async () => {
     const user = userEvent.setup()
     render(<Sidebar collapsed onToggle={() => {}} session={session} />)
 
-    const trigger = screen.getByRole('button', { name: '进销存' })
+    const trigger = screen.getByRole('button', { name: '库存管理' })
     await user.click(trigger)
     expect(screen.getByRole('menu')).toBeVisible()
     expect(screen.getByRole('menuitem', { name: '供应链业务' })).toBeVisible()

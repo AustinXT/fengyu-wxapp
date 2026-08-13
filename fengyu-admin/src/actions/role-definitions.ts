@@ -19,6 +19,7 @@ import type { RoleDefinition } from '@/lib/types'
 
 const SUPER_ADMIN_REQUIRED_ACTIONS = [
   'system:config',
+  'system:diagnostics',
   'permission:assign_admin',
   'admin:reset_password',
 ] as const

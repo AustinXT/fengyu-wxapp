@@ -102,7 +102,7 @@ export const MENU_CONFIG: MenuNode[] = [
     ],
   },
   {
-    label: '进销存',
+    label: '库存管理',
     icon: Boxes,
     children: [
       { label: '库存查询', icon: PackageCheck, href: '/inventory/stocks', requiredActions: ['inventory:stock_list'] },
@@ -148,7 +148,7 @@ export const MENU_CONFIG: MenuNode[] = [
     ],
   },
   {
-    label: '组织商户',
+    label: '组织管理',
     icon: Network,
     children: [
       { label: '组织架构', icon: Network, href: '/org', requiredActions: ['org:create'] },
@@ -168,7 +168,13 @@ export const MENU_CONFIG: MenuNode[] = [
       { label: '消息中心', icon: MessageSquare, href: '/messages', requiredActions: ['message:list'] },
       { label: '操作日志', icon: ScrollText, href: '/logs', requiredActions: ['operation_log:list'] },
       { label: '系统配置', icon: Settings, href: '/settings', requiredActions: ['system:config'] },
-      { label: '拉卡拉自检', icon: Activity, href: '/settings/lakala-diagnostics', requiredActions: ['system:config'] },
+      {
+        label: '系统自检',
+        icon: Activity,
+        href: '/settings/diagnostics',
+        matchPaths: ['/settings/lakala-diagnostics'],
+        requiredActions: ['system:diagnostics'],
+      },
     ],
   },
 ]

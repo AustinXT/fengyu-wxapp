@@ -17,7 +17,7 @@ const ROUTE_LABELS: Record<string, string> = {
   "/legacy-orders": "历史订单核对",
   "/pickup-records": "提货记录",
   "/store-unbind": "门店解绑",
-  "/inventory": "进销存",
+  "/inventory": "库存管理",
   "/inventory/stocks": "库存查询",
   "/inventory/operations": "库存业务",
   "/inventory/operations/supply-chain": "供应链业务",
@@ -51,7 +51,8 @@ const ROUTE_LABELS: Record<string, string> = {
   "/messages": "消息中心",
   "/logs": "操作日志",
   "/settings": "系统配置",
-  "/settings/lakala-diagnostics": "拉卡拉入网自检",
+  "/settings/diagnostics": "系统自检",
+  "/settings/lakala-diagnostics": "系统自检",
 }
 
 interface BreadcrumbItem {
