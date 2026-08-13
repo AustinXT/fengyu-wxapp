@@ -266,6 +266,10 @@ allocation.deleteAllocation(sale_order_id)
       WHERE sale_item_id = $1 AND remaining_sessions >= session_used
     → rowCount=0 → 次数不足，回滚
     → 计算并写入 service_commissions（双字段模型，缺率写 operation_logs）
+    → 会员到店积分：售后单 + 至少一个非零价项目 + 非寄存退款备注
+      → point_transactions(type='到店赠送') + points_balance 同步增量
+      → external_ref=visit-points:{client_user_id}:{service_date}，同客同日幂等
+      → 发放失败写 points.visitGrantFailed，不阻断服务完成；夜间任务补偿
     → 状态翻转 WHERE status='待客户确认'（并发锁定，rowCount=0 视为已被其它入口确认 → 幂等）
     → 归零检查:
       → remaining_sessions = 0 → 关闭关联的待确认/已确认预约
