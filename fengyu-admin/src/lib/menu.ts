@@ -22,6 +22,7 @@ import {
   ShoppingCart,
   SlidersHorizontal,
   Stethoscope,
+  Activity,
   Store,
   Ticket,
   Undo2,
@@ -142,9 +143,8 @@ export const MENU_CONFIG: MenuNode[] = [
         icon: Package,
         href: '/inventory/skus',
         requiredActions: ['inventory:stock_list'],
-        matchPaths: ['/inventory/suppliers', '/inventory/sku-mappings'],
+        matchPaths: ['/inventory/suppliers', '/inventory/sku-mappings', '/inventory/promotions'],
       },
-      { label: '促销方案', icon: Ticket, href: '/inventory/promotions', requiredActions: ['inventory:stock_list'] },
     ],
   },
   {
@@ -168,6 +168,7 @@ export const MENU_CONFIG: MenuNode[] = [
       { label: '消息中心', icon: MessageSquare, href: '/messages', requiredActions: ['message:list'] },
       { label: '操作日志', icon: ScrollText, href: '/logs', requiredActions: ['operation_log:list'] },
       { label: '系统配置', icon: Settings, href: '/settings', requiredActions: ['system:config'] },
+      { label: '拉卡拉自检', icon: Activity, href: '/settings/lakala-diagnostics', requiredActions: ['system:config'] },
     ],
   },
 ]

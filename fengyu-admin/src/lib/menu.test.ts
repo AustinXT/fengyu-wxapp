@@ -59,7 +59,7 @@ describe('业务域菜单（权限点驱动）', () => {
       '组织架构', '门店管理', '员工管理', '权限管理',
     ]))
     expect(visibleLabels(makeSession({ role: 'product' }))).toEqual(expect.arrayContaining([
-      '商品管理', '商城管理', '资料配置', '促销方案',
+      '商品管理', '商城管理', '资料配置',
     ]))
     expect(visibleLabels(makeSession({ role: 'customer_mgr' }))).toEqual(expect.arrayContaining([
       '顾客管理', '疗程卡管理', '库存查询',
@@ -78,6 +78,7 @@ describe('业务域菜单（权限点驱动）', () => {
     const visible = getVisibleMenuItems(makeSession({ role: 'product' }))
     expect(getMenuItemForPath(visible, '/inventory/suppliers')?.label).toBe('资料配置')
     expect(getMenuItemForPath(visible, '/inventory/sku-mappings')?.href).toBe('/inventory/skus')
+    expect(getMenuItemForPath(visible, '/inventory/promotions')?.href).toBe('/inventory/skus')
     expect(getMenuItemForPath(visible, '/inventory/procurement/PROC-1')?.href).toBe('/inventory/operations/store')
   })
 

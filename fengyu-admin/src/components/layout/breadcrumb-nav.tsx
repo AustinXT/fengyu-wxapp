@@ -31,7 +31,7 @@ const ROUTE_LABELS: Record<string, string> = {
   "/inventory/skus": "资料配置",
   "/inventory/suppliers": "资料配置",
   "/inventory/sku-mappings": "资料配置",
-  "/inventory/promotions": "促销方案",
+  "/inventory/promotions": "报货福利",
   "/org": "组织架构",
   "/stores": "门店管理",
   "/employees": "员工管理",
@@ -51,6 +51,7 @@ const ROUTE_LABELS: Record<string, string> = {
   "/messages": "消息中心",
   "/logs": "操作日志",
   "/settings": "系统配置",
+  "/settings/lakala-diagnostics": "拉卡拉入网自检",
 }
 
 interface BreadcrumbItem {

@@ -73,6 +73,7 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   // —— 系统管理 ——
   '/permissions': ['permission:list', 'employee:list', 'org:list'],
   '/settings/permission-matrix': ['system:config'],
+  '/settings/lakala-diagnostics': ['system:config'],
   '/messages': ['message:list'],
   '/logs': ['operation_log:list'],
   '/settings': ['system:config'],
@@ -139,7 +140,7 @@ const SUBPAGES: Array<{ href: string; parent: string; entryGate?: string; clause
   { href: '/inventory/operations/[level]', parent: '/inventory', clauses: ['inventory:list', 'inventory:stock_list'] },
   { href: '/inventory/suppliers', parent: '/inventory', clauses: ['inventory:stock_list'] },
   { href: '/inventory/sku-mappings', parent: '/inventory', clauses: ['inventory:stock_list'] },
-  { href: '/inventory/promotions', parent: '/inventory', clauses: ['inventory:stock_list'] },
+  { href: '/inventory/promotions', parent: '/inventory/skus', clauses: ['inventory:stock_list'] },
 ]
 
 const ALL_ROLES: RoleType[] = ['admin', 'manager', 'finance', 'hr', 'product', 'customer_mgr']
