@@ -6,6 +6,7 @@ import { toast } from "sonner"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { DatePicker } from "@/components/ui/date-picker"
 import { Pagination } from "@/components/ui/pagination"
 import {
   AlertDialog,
@@ -256,15 +257,13 @@ export default function LegacyOrdersPageClient({
               marketClassName="h-9 w-full"
               storeClassName="h-9 w-full"
             />
-            <Input
-              type="date"
+            <DatePicker
               defaultValue={get("from")}
-              onChange={(e) => setMany({ from: e.target.value, page: "" })}
+              onValueChange={(value) => setMany({ from: value, page: "" })}
             />
-            <Input
-              type="date"
+            <DatePicker
               defaultValue={get("to")}
-              onChange={(e) => setMany({ to: e.target.value, page: "" })}
+              onValueChange={(value) => setMany({ to: value, page: "" })}
             />
             <select
               className="h-9 rounded-md border border-[var(--border)] bg-white px-3 text-sm"

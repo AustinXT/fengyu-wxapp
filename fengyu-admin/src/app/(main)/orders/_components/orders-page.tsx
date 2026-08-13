@@ -6,7 +6,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Input } from "@/components/ui/input"
+import { DatePicker } from "@/components/ui/date-picker";
 import { Select } from "@/components/ui/select";
 import { MultiSelect } from "@/components/ui/multi-select";
 import { StatusBadge, Badge } from "@/components/ui/badge";
@@ -358,14 +359,13 @@ export default function OrdersPageClient({
             </Select>
             <div className="flex items-center gap-2">
               <span className="text-sm text-muted-foreground whitespace-nowrap">下单日期</span>
-              <Input
-                type="date"
+              <DatePicker
                 className="w-36"
                 value={dateFrom}
-                onChange={(e) => setFilter("from", e.target.value)}
+                onValueChange={(value) => setFilter("from", value)}
               />
               <span className="text-[#999999]">-</span>
-              <Input type="date" className="w-36" value={dateTo} onChange={(e) => setFilter("to", e.target.value)} />
+              <DatePicker className="w-36" value={dateTo} onValueChange={(value) => setFilter("to", value)} />
             </div>
             <Input
               className="w-56"

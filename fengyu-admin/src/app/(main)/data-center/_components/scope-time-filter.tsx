@@ -4,6 +4,7 @@ import { useMemo } from "react"
 import { Card } from "@/components/ui/card"
 import { Select, SelectOption } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
+import { DatePicker } from "@/components/ui/date-picker"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { DataCenterScopeOptions } from "@/lib/data-center/types"
 import { visibleScopeStores } from "@/lib/data-center/scope-options"
@@ -126,18 +127,16 @@ export function ScopeTimeFilter({ scopeOptions }: { scopeOptions: DataCenterScop
         ))}
         {preset === "custom" && (
           <div className="flex items-center gap-2">
-            <Input
-              type="date"
+            <DatePicker
               className="w-40"
               value={get("start")}
-              onChange={(e) => setMany({ start: e.target.value })}
+              onValueChange={(value) => setMany({ start: value })}
             />
             <span className="text-[var(--muted-foreground)]">~</span>
-            <Input
-              type="date"
+            <DatePicker
               className="w-40"
               value={get("end")}
-              onChange={(e) => setMany({ end: e.target.value })}
+              onValueChange={(value) => setMany({ end: value })}
             />
           </div>
         )}

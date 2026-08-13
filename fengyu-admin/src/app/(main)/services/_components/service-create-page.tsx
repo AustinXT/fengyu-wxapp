@@ -6,6 +6,7 @@ import { toast } from "sonner"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { DatePicker } from "@/components/ui/date-picker"
 import { Select } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { MemberLevelBadge } from "@/components/ui/member-level-badge"
@@ -544,7 +545,7 @@ export default function ServiceCreatePageClient({
                 </div>
                 <div>
                   <label className="text-sm text-[#999999]">服务日期</label>
-                  <Input type="date" className="mt-1" value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} />
+                  <DatePicker className="mt-1" value={serviceDate} onValueChange={(value) => setServiceDate(value)} />
                 </div>
                 <div className="col-span-2">
                   <label className="text-sm text-[#999999]">备注（可选）</label>

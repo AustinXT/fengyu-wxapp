@@ -6,6 +6,7 @@ import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { DatePicker } from "@/components/ui/date-picker"
 import { Select } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { MemberLevelBadge } from "@/components/ui/member-level-badge"
@@ -536,18 +537,16 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
                 <>
                   <div className="space-y-2">
                     <label className="text-sm font-medium">开始日期</label>
-                    <Input
-                      type="date"
+                    <DatePicker
                       value={editValidFrom}
-                      onChange={(e) => setEditValidFrom(e.target.value)}
+                      onValueChange={(value) => setEditValidFrom(value)}
                     />
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-medium">结束日期</label>
-                    <Input
-                      type="date"
+                    <DatePicker
                       value={editValidTo}
-                      onChange={(e) => setEditValidTo(e.target.value)}
+                      onValueChange={(value) => setEditValidTo(value)}
                     />
                   </div>
                 </>

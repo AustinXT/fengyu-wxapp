@@ -18,6 +18,7 @@ import { formatDateTime as fmtDateTime } from '@/lib/utils'
 import { actionErrorMessage } from '@/lib/action-error'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { DatePicker } from '@/components/ui/date-picker'
 import { Select } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
 import { MemberLevelBadge } from '@/components/ui/member-level-badge'
@@ -464,18 +465,16 @@ export default function MessagesPage({ messages, messageTypes, total, canSend, c
               storeClassName="w-40"
             />
             <div className="flex items-center gap-2">
-              <Input
-                type="date"
+              <DatePicker
                 className="w-40"
                 value={dateFrom}
-                onChange={(e) => setFilter('from', e.target.value)}
+                onValueChange={(value) => setFilter('from', value)}
               />
               <span className="text-[#999999]">-</span>
-              <Input
-                type="date"
+              <DatePicker
                 className="w-40"
                 value={dateTo}
-                onChange={(e) => setFilter('to', e.target.value)}
+                onValueChange={(value) => setFilter('to', value)}
               />
             </div>
             <Input
