@@ -1604,6 +1604,7 @@ export const listInventoryCoreDocs = withPermission(
     session,
     filters: {
       locationId?: string
+      locationType?: InventoryLocationType
       docType?: InventoryDocType
       status?: InventoryCoreDocStatus
       startDate?: string
@@ -1626,6 +1627,16 @@ export const listInventoryCoreDocs = withPermission(
     }
     if (filters.locationId) {
       conditions.push(or(eq(inventoryDocs.sourceLocationId, filters.locationId), eq(inventoryDocs.targetLocationId, filters.locationId)))
+    }
+    if (filters.locationType) {
+      const typedLocations = await db
+        .select({ locationId: inventoryLocations.locationId })
+        .from(inventoryLocations)
+        .where(eq(inventoryLocations.locationType, filters.locationType))
+      const typedLocationIds = typedLocations.map((location) => location.locationId)
+      conditions.push(typedLocationIds.length > 0
+        ? or(inArray(inventoryDocs.sourceLocationId, typedLocationIds), inArray(inventoryDocs.targetLocationId, typedLocationIds))
+        : sql`FALSE`)
     }
     if (filters.docType) conditions.push(eq(inventoryDocs.docType, filters.docType))
     if (filters.status) conditions.push(eq(inventoryDocs.status, filters.status))

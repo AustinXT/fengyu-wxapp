@@ -8,7 +8,7 @@ import {
   listInventoryCoreDocs as listInventoryCoreDocsImpl,
   rejectInventoryCoreDoc as rejectInventoryCoreDocImpl,
 } from '@/lib/inventory/engine'
-import type { CreateInventoryDocInput, InventoryCoreDocStatus, InventoryDocType } from '@/lib/inventory/types'
+import type { CreateInventoryDocInput, InventoryCoreDocStatus, InventoryDocType, InventoryLocationType } from '@/lib/inventory/types'
 import { withPermission } from '@/lib/with-permission'
 
 export const listInventoryCoreDocs = withPermission(
@@ -17,6 +17,7 @@ export const listInventoryCoreDocs = withPermission(
     _session,
     filters: {
       locationId?: string
+      locationType?: InventoryLocationType
       docType?: InventoryDocType
       status?: InventoryCoreDocStatus
       startDate?: string

@@ -30,6 +30,8 @@ import {
   Users,
   Wallet,
   Coins,
+  Building2,
+  Factory,
   type LucideIcon,
 } from 'lucide-react'
 import type { AuthSession } from './types'
@@ -44,6 +46,8 @@ export interface MenuItem {
   requiredAllActions?: string[]
   /** 指向同一功能的历史深链，沿用该菜单项的高亮和父级展开状态。 */
   matchPaths?: string[]
+  /** 仅向持有指定组织范围的账号显示；总部账号可按配置进入下级业务。 */
+  allowedScopeTypes?: Array<'总部' | '市场' | '门店'>
 }
 
 export interface MenuParent {
@@ -100,14 +104,30 @@ export const MENU_CONFIG: MenuNode[] = [
     label: '进销存',
     icon: Boxes,
     children: [
-      { label: '库存总览', icon: Boxes, href: '/inventory', requiredActions: ['inventory:list', 'inventory:stock_list'] },
       { label: '库存查询', icon: PackageCheck, href: '/inventory/stocks', requiredActions: ['inventory:stock_list'] },
       {
-        label: '库存业务',
-        icon: ChartNoAxesCombined,
-        href: '/inventory/operations',
+        label: '供应链业务',
+        icon: Factory,
+        href: '/inventory/operations/supply-chain',
         requiredActions: ['inventory:list', 'inventory:stock_list'],
         requiredAllActions: ['inventory:list', 'inventory:stock_list'],
+        allowedScopeTypes: ['总部'],
+      },
+      {
+        label: '市场业务',
+        icon: Building2,
+        href: '/inventory/operations/market',
+        requiredActions: ['inventory:list', 'inventory:stock_list'],
+        requiredAllActions: ['inventory:list', 'inventory:stock_list'],
+        allowedScopeTypes: ['总部', '市场'],
+      },
+      {
+        label: '门店业务',
+        icon: Store,
+        href: '/inventory/operations/store',
+        requiredActions: ['inventory:list', 'inventory:stock_list'],
+        requiredAllActions: ['inventory:list', 'inventory:stock_list'],
+        allowedScopeTypes: ['总部', '市场', '门店'],
         matchPaths: ['/inventory/procurement', '/inventory/sale', '/inventory/transfer', '/inventory/scrap'],
       },
       {
@@ -156,9 +176,14 @@ export function isMenuParent(node: MenuNode): node is MenuParent {
   return 'children' in node
 }
 
-export function hasMenuItemAccess(item: MenuItem, actions: readonly string[]): boolean {
+export function hasMenuItemAccess(
+  item: MenuItem,
+  actions: readonly string[],
+  scopeTypes?: readonly ('总部' | '市场' | '门店')[],
+): boolean {
   return item.requiredActions.some((action) => actions.includes(action))
     && (item.requiredAllActions?.every((action) => actions.includes(action)) ?? true)
+    && (!item.allowedScopeTypes || !scopeTypes || item.allowedScopeTypes.some((scope) => scopeTypes.includes(scope)))
 }
 
 export function flattenMenuItems(nodes: readonly MenuNode[] = MENU_CONFIG): MenuItem[] {
@@ -186,12 +211,13 @@ export function getMenuParentForPath(nodes: readonly MenuNode[], pathname: strin
 
 export function getVisibleMenuItems(session: AuthSession): MenuNode[] {
   const actions = session.permissions.actions
+  const scopeTypes = session.roles.map((role) => role.scopeType)
   return MENU_CONFIG.reduce<MenuNode[]>((visible, node) => {
     if (!isMenuParent(node)) {
-      if (hasMenuItemAccess(node, actions)) visible.push(node)
+      if (hasMenuItemAccess(node, actions, scopeTypes)) visible.push(node)
       return visible
     }
-    const children = node.children.filter((item) => hasMenuItemAccess(item, actions))
+    const children = node.children.filter((item) => hasMenuItemAccess(item, actions, scopeTypes))
     if (children.length > 0) visible.push({ ...node, children })
     return visible
   }, [])

@@ -22,6 +22,7 @@ export default async function Page({
   const [docs, locations, skus] = await Promise.all([
     listInventoryCoreDocs({
       locationId: params.location,
+      locationType: params.level === 'supply-chain' ? '总部' : params.level === 'market' ? '市场' : params.level === 'store' ? '门店' : undefined,
       docType: params.docType as never,
       status: params.status as never,
       keyword: params.q,
@@ -45,6 +46,7 @@ export default async function Page({
           canCreate={canCreate}
           canApprove={canApprove}
           canViewPrice={docs.canViewPrice}
+          initialDocType={params.create as never}
         />
       </Suspense>
     </div>

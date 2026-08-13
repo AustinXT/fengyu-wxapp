@@ -19,7 +19,7 @@ function makeSession(...roles: Array<{ role: RoleType; scopeType?: '总部' | '�
     roles: roles.map((item) => ({
       role: item.role,
       scopeId: 'test-scope',
-      scopeType: item.scopeType ?? '门店',
+      scopeType: item.scopeType ?? (item.role === 'admin' ? '总部' : '门店'),
     })),
     permissions: { actions, scopeStoreIds: [] },
   }
@@ -50,10 +50,10 @@ describe('业务域菜单（权限点驱动）', () => {
 
   it('各角色仍取得既有可访问页面', () => {
     expect(visibleLabels(makeSession({ role: 'manager' }))).toEqual(expect.arrayContaining([
-      '开单', '订单管理', '顾客管理', '库存总览', '库存业务', '单据中心',
+      '开单', '订单管理', '顾客管理', '门店业务', '单据中心',
     ]))
     expect(visibleLabels(makeSession({ role: 'finance' }))).toEqual(expect.arrayContaining([
-      '订单管理', '营业额分配', '库存查询', '库存业务', '单据中心',
+      '订单管理', '营业额分配', '库存查询', '门店业务', '单据中心',
     ]))
     expect(visibleLabels(makeSession({ role: 'hr' }))).toEqual(expect.arrayContaining([
       '组织架构', '门店管理', '员工管理', '权限管理',
@@ -62,12 +62,12 @@ describe('业务域菜单（权限点驱动）', () => {
       '商品管理', '商城管理', '资料配置', '促销方案',
     ]))
     expect(visibleLabels(makeSession({ role: 'customer_mgr' }))).toEqual(expect.arrayContaining([
-      '顾客管理', '疗程卡管理', '库存总览', '库存查询',
+      '顾客管理', '疗程卡管理', '库存查询',
     ]))
   })
 
   it('库存业务与单据中心需要同时具备两项读取权限', () => {
-    const item = flattenMenuItems().find((entry) => entry.href === '/inventory/operations')
+    const item = flattenMenuItems().find((entry) => entry.href === '/inventory/operations/store')
     expect(item).toBeDefined()
     expect(hasMenuItemAccess(item!, ['inventory:list'])).toBe(false)
     expect(hasMenuItemAccess(item!, ['inventory:stock_list'])).toBe(false)
@@ -78,7 +78,17 @@ describe('业务域菜单（权限点驱动）', () => {
     const visible = getVisibleMenuItems(makeSession({ role: 'product' }))
     expect(getMenuItemForPath(visible, '/inventory/suppliers')?.label).toBe('资料配置')
     expect(getMenuItemForPath(visible, '/inventory/sku-mappings')?.href).toBe('/inventory/skus')
-    expect(getMenuItemForPath(visible, '/inventory/procurement/PROC-1')?.href).toBe('/inventory/operations')
+    expect(getMenuItemForPath(visible, '/inventory/procurement/PROC-1')?.href).toBe('/inventory/operations/store')
+  })
+
+  it('库存业务按组织范围显示', () => {
+    expect(visibleLabels(makeSession({ role: 'admin', scopeType: '总部' }))).toEqual(expect.arrayContaining([
+      '供应链业务', '市场业务', '门店业务',
+    ]))
+    expect(visibleLabels(makeSession({ role: 'manager', scopeType: '市场' }))).toEqual(expect.arrayContaining([
+      '市场业务', '门店业务',
+    ]))
+    expect(visibleLabels(makeSession({ role: 'manager', scopeType: '门店' }))).not.toContain('市场业务')
   })
 
   it('多角色菜单取并集', () => {

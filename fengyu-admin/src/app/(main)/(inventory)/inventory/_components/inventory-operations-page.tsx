@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import {
   ArrowLeftRight,
   Boxes,
@@ -58,6 +59,7 @@ import type {
   InventorySkuRow,
   InventorySupplierRow,
 } from '@/lib/inventory/types'
+import type { InventoryBusinessLevel } from '@/lib/inventory/business-level'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -78,12 +80,16 @@ type OperationId =
   | 'supply-chain-purchase-cancel'
   | 'store-allocation'
   | 'store-receipt'
-  | 'return'
-  | 'return-approval'
+  | 'store-return'
+  | 'market-return'
+  | 'store-return-approval'
+  | 'market-return-approval'
   | 'staff-purchase'
   | 'self-purchase'
   | 'external-outbound'
-  | 'conversion'
+  | 'supply-chain-conversion'
+  | 'market-conversion'
+  | 'store-conversion'
   | 'shipment-cancel'
   | 'shipment-cancel-approval'
 
@@ -96,29 +102,53 @@ interface OperationDefinition {
   approvalOnly?: boolean
   shipmentCancellationAccess?: '申请' | '审批'
   selfPurchaseOnly?: boolean
+  level: InventoryBusinessLevel
+  href?: string
 }
 
 const OPERATIONS: OperationDefinition[] = [
-  { id: 'store-request', title: '门店报货', group: '需求与采购', icon: PackagePlus, tone: 'text-[#C0322A] bg-[#FFF0EE]' },
-  { id: 'market-report', title: '市场汇总报货', group: '需求与采购', icon: PackageSearch, tone: 'text-[#5E8BB3] bg-[#F0F5FA]' },
-  { id: 'item-company-request', title: '品项公司报货需求', group: '需求与采购', icon: PackagePlus, tone: 'text-[#7B5E2B] bg-[#FFF8E6]' },
-  { id: 'purchase-order', title: '创建采购订单', group: '需求与采购', icon: ShoppingCart, tone: 'text-[#7B5E2B] bg-[#FFF8E6]' },
-  { id: 'supply-chain-purchase-order', title: '供应链采购订单', group: '需求与采购', icon: ShoppingCart, tone: 'text-[#5E8BB3] bg-[#F0F5FA]' },
-  { id: 'company-shipment', title: '品项公司发货', group: '发货、收货与退货', icon: Truck, tone: 'text-[#5E8BB3] bg-[#F0F5FA]' },
-  { id: 'market-receipt', title: '市场采购入库', group: '发货、收货与退货', icon: PackageCheck, tone: 'text-[#3D8A5A] bg-[#F0F9F2]' },
-  { id: 'supply-chain-receipt', title: '供应链采购入库', group: '发货、收货与退货', icon: PackageCheck, tone: 'text-[#3D8A5A] bg-[#F0F9F2]' },
-  { id: 'supply-chain-purchase-cancel', title: '关闭供应链采购', group: '发货、收货与退货', icon: RefreshCcw, tone: 'text-[#D94040] bg-[#FFF0F0]', approvalOnly: true },
-  { id: 'store-allocation', title: '分院配货', group: '发货、收货与退货', icon: Send, tone: 'text-[#8B5A2B] bg-[#FFF5E8]' },
-  { id: 'store-receipt', title: '分院收货入库', group: '发货、收货与退货', icon: ClipboardCheck, tone: 'text-[#3D8A5A] bg-[#F0F9F2]' },
-  { id: 'return', title: '创建退货申请', group: '发货、收货与退货', icon: Undo2, tone: 'text-[#D4820A] bg-[#FFF8E6]' },
-  { id: 'return-approval', title: '退货审批回库', group: '发货、收货与退货', icon: RotateCcw, tone: 'text-[#D4820A] bg-[#FFF8E6]', approvalOnly: true },
-  { id: 'shipment-cancel', title: '申请撤回品项发货', group: '发货、收货与退货', icon: RefreshCcw, tone: 'text-[#D94040] bg-[#FFF0F0]', shipmentCancellationAccess: '申请' },
-  { id: 'shipment-cancel-approval', title: '审批品项发货撤回', group: '发货、收货与退货', icon: RotateCcw, tone: 'text-[#D94040] bg-[#FFF0F0]', approvalOnly: true, shipmentCancellationAccess: '审批' },
-  { id: 'staff-purchase', title: '市场员工购', group: '市场特殊业务', icon: UserRoundCheck, tone: 'text-[#8A4B7A] bg-[#FCF1F9]' },
-  { id: 'self-purchase', title: '自采产品入库', group: '市场特殊业务', icon: Warehouse, tone: 'text-[#3D8A5A] bg-[#F0F9F2]', selfPurchaseOnly: true },
-  { id: 'external-outbound', title: '非凤御市场出库', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]' },
-  { id: 'conversion', title: '库存转换', group: '市场特殊业务', icon: ArrowLeftRight, tone: 'text-[#5E8BB3] bg-[#F0F5FA]' },
+  { id: 'item-company-request', level: 'supply-chain', title: '品项公司报货需求', group: '需求与采购', icon: PackagePlus, tone: 'text-[#7B5E2B] bg-[#FFF8E6]' },
+  { id: 'supply-chain-purchase-order', level: 'supply-chain', title: '供应链采购订单', group: '需求与采购', icon: ShoppingCart, tone: 'text-[#5E8BB3] bg-[#F0F5FA]' },
+  { id: 'company-shipment', level: 'supply-chain', title: '品项公司发货', group: '发货、收货与退货', icon: Truck, tone: 'text-[#5E8BB3] bg-[#F0F5FA]' },
+  { id: 'supply-chain-receipt', level: 'supply-chain', title: '供应链采购入库', group: '发货、收货与退货', icon: PackageCheck, tone: 'text-[#3D8A5A] bg-[#F0F9F2]' },
+  { id: 'supply-chain-purchase-cancel', level: 'supply-chain', title: '关闭供应链采购', group: '发货、收货与退货', icon: RefreshCcw, tone: 'text-[#D94040] bg-[#FFF0F0]', approvalOnly: true },
+  { id: 'market-return-approval', level: 'supply-chain', title: '审批市场退货', group: '发货、收货与退货', icon: RotateCcw, tone: 'text-[#D4820A] bg-[#FFF8E6]', approvalOnly: true },
+  { id: 'shipment-cancel-approval', level: 'supply-chain', title: '审批品项发货撤回', group: '发货、收货与退货', icon: RotateCcw, tone: 'text-[#D94040] bg-[#FFF0F0]', approvalOnly: true, shipmentCancellationAccess: '审批' },
+  { id: 'supply-chain-conversion', level: 'supply-chain', title: '供应链库存转换', group: '市场特殊业务', icon: ArrowLeftRight, tone: 'text-[#5E8BB3] bg-[#F0F5FA]' },
+  { id: 'market-report', level: 'market', title: '市场汇总报货', group: '需求与采购', icon: PackageSearch, tone: 'text-[#5E8BB3] bg-[#F0F5FA]' },
+  { id: 'purchase-order', level: 'market', title: '创建采购订单', group: '需求与采购', icon: ShoppingCart, tone: 'text-[#7B5E2B] bg-[#FFF8E6]' },
+  { id: 'market-receipt', level: 'market', title: '市场采购入库', group: '发货、收货与退货', icon: PackageCheck, tone: 'text-[#3D8A5A] bg-[#F0F9F2]' },
+  { id: 'store-allocation', level: 'market', title: '分院配货', group: '发货、收货与退货', icon: Send, tone: 'text-[#8B5A2B] bg-[#FFF5E8]' },
+  { id: 'store-return-approval', level: 'market', title: '审批门店退货', group: '发货、收货与退货', icon: RotateCcw, tone: 'text-[#D4820A] bg-[#FFF8E6]', approvalOnly: true },
+  { id: 'market-return', level: 'market', title: '市场退货申请', group: '发货、收货与退货', icon: Undo2, tone: 'text-[#D4820A] bg-[#FFF8E6]' },
+  { id: 'shipment-cancel', level: 'market', title: '申请撤回品项发货', group: '发货、收货与退货', icon: RefreshCcw, tone: 'text-[#D94040] bg-[#FFF0F0]', shipmentCancellationAccess: '申请' },
+  { id: 'staff-purchase', level: 'market', title: '市场员工购', group: '市场特殊业务', icon: UserRoundCheck, tone: 'text-[#8A4B7A] bg-[#FCF1F9]' },
+  { id: 'self-purchase', level: 'market', title: '自采产品入库', group: '市场特殊业务', icon: Warehouse, tone: 'text-[#3D8A5A] bg-[#F0F9F2]', selfPurchaseOnly: true },
+  { id: 'external-outbound', level: 'market', title: '非凤御市场出库', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]' },
+  { id: 'market-conversion', level: 'market', title: '市场库存转换', group: '市场特殊业务', icon: ArrowLeftRight, tone: 'text-[#5E8BB3] bg-[#F0F5FA]' },
+  { id: 'store-request', level: 'store', title: '门店报货', group: '需求与采购', icon: PackagePlus, tone: 'text-[#C0322A] bg-[#FFF0EE]' },
+  { id: 'store-receipt', level: 'store', title: '分院收货入库', group: '发货、收货与退货', icon: ClipboardCheck, tone: 'text-[#3D8A5A] bg-[#F0F9F2]' },
+  { id: 'store-return', level: 'store', title: '门店退货申请', group: '发货、收货与退货', icon: Undo2, tone: 'text-[#D4820A] bg-[#FFF8E6]' },
+  { id: 'store-conversion', level: 'store', title: '门店库存转换', group: '市场特殊业务', icon: ArrowLeftRight, tone: 'text-[#5E8BB3] bg-[#F0F5FA]' },
 ]
+
+const GENERIC_OPERATIONS: Record<InventoryBusinessLevel, Array<Omit<OperationDefinition, 'id'> & { id: OperationId }>> = {
+  'supply-chain': [
+    { id: 'supply-chain-conversion', level: 'supply-chain', title: '内部领用', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/docs?create=内部领用&level=supply-chain' },
+  ],
+  market: [
+    { id: 'market-conversion', level: 'market', title: '市场间调货', group: '市场特殊业务', icon: ArrowLeftRight, tone: 'text-[#5E8BB3] bg-[#F0F5FA]', href: '/inventory/docs?create=市场间调货出库&level=market' },
+    { id: 'market-conversion', level: 'market', title: '市场产品报损', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/docs?create=市场产品报损&level=market' },
+    { id: 'market-conversion', level: 'market', title: '市场盘点/盘溢', group: '市场特殊业务', icon: ClipboardCheck, tone: 'text-[#7B5E2B] bg-[#FFF8E6]', href: '/inventory/docs?create=市场库存盘点&level=market' },
+  ],
+  store: [
+    { id: 'store-conversion', level: 'store', title: '门店调拨', group: '发货、收货与退货', icon: ArrowLeftRight, tone: 'text-[#5E8BB3] bg-[#F0F5FA]', href: '/inventory/docs?create=分院调货出库&level=store' },
+    { id: 'store-conversion', level: 'store', title: '顾客产品出库', group: '发货、收货与退货', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/docs?create=院顾客产品出库&level=store' },
+    { id: 'store-conversion', level: 'store', title: '顾客产品退货', group: '发货、收货与退货', icon: RotateCcw, tone: 'text-[#3D8A5A] bg-[#F0F9F2]', href: '/inventory/docs?create=院顾客退货&level=store' },
+    { id: 'store-conversion', level: 'store', title: '门店产品报损', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/docs?create=院产品报损&level=store' },
+    { id: 'store-conversion', level: 'store', title: '门店库存盘点', group: '市场特殊业务', icon: ClipboardCheck, tone: 'text-[#7B5E2B] bg-[#FFF8E6]', href: '/inventory/docs?create=分院库存盘点&level=store' },
+  ],
+}
 
 function today() {
   return new Intl.DateTimeFormat('en-CA', {
@@ -388,6 +418,7 @@ function SourceDocumentItems({
 }
 
 export default function InventoryOperationsPage({
+  level,
   locations,
   skuOptions,
   suppliers,
@@ -399,6 +430,7 @@ export default function InventoryOperationsPage({
   canApproveShipmentCancellation,
   canViewPrice,
 }: {
+  level: InventoryBusinessLevel
   locations: InventoryLocationRow[]
   skuOptions: InventorySkuRow[]
   suppliers: InventorySupplierRow[]
@@ -412,8 +444,17 @@ export default function InventoryOperationsPage({
 }) {
   const router = useRouter()
   const [activeOperation, setActiveOperation] = useState<OperationId | null>(null)
-  const active = OPERATIONS.find((operation) => operation.id === activeOperation) ?? null
-  const groups = useMemo(() => Array.from(new Set(OPERATIONS.map((operation) => operation.group))), [])
+  const levelOperations = useMemo(
+    () => [...OPERATIONS.filter((operation) => operation.level === level), ...GENERIC_OPERATIONS[level]],
+    [level],
+  )
+  const active = OPERATIONS.find((operation) => operation.level === level && operation.id === activeOperation) ?? null
+  const groups = useMemo(() => Array.from(new Set(levelOperations.map((operation) => operation.group))), [levelOperations])
+  const levelMeta = {
+    'supply-chain': { title: '供应链库存业务', description: '处理品项公司需求、采购、发货、退货审批和总部库存。' },
+    market: { title: '市场库存业务', description: '处理市场采购、门店配货、退货审批及市场特殊库存业务。' },
+    store: { title: '门店库存业务', description: '处理门店报货、收货、退货、调拨和日常库存业务。' },
+  }[level]
 
   const afterSuccess = useCallback((message: string) => {
     toast.success(message)
@@ -426,8 +467,8 @@ export default function InventoryOperationsPage({
         <div className="flex items-center gap-3">
           <Boxes className="size-6 text-[var(--primary)]" />
           <div>
-            <h1 className="text-xl font-medium">库存业务流程</h1>
-            <p className="mt-1 text-sm text-[#666666]">按业务单据关系完成报货、发货、收货、配货和库存调整。</p>
+            <h1 className="text-xl font-medium">{levelMeta.title}</h1>
+            <p className="mt-1 text-sm text-[#666666]">{levelMeta.description}</p>
           </div>
         </div>
         <Button type="button" variant="outline" onClick={() => router.push('/inventory/docs')}>
@@ -446,7 +487,7 @@ export default function InventoryOperationsPage({
           <section key={group} className="space-y-3">
             <h2 className="text-sm font-medium text-[#555555]">{group}</h2>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              {OPERATIONS.filter((operation) => operation.group === group).map((operation) => {
+              {levelOperations.filter((operation) => operation.group === group).map((operation) => {
                 const Icon = operation.icon
                 const hasShipmentCancellationAccess = operation.shipmentCancellationAccess === '申请'
                   ? canRequestShipmentCancellation
@@ -457,14 +498,8 @@ export default function InventoryOperationsPage({
                 const enabled = (operation.approvalOnly ? canApprove : canCreate)
                   && hasShipmentCancellationAccess
                   && hasSelfPurchaseAccess
-                return (
-                  <button
-                    key={operation.id}
-                    type="button"
-                    disabled={!enabled}
-                    onClick={() => setActiveOperation(operation.id)}
-                    className="flex min-h-24 items-center gap-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--card)] p-4 text-left shadow-sm transition-colors hover:border-[var(--primary)] hover:bg-[#FFFDFC] disabled:cursor-not-allowed disabled:opacity-45"
-                  >
+                const content = (
+                  <>
                     <span className={`flex size-10 shrink-0 items-center justify-center rounded-[var(--radius)] ${operation.tone}`}>
                       <Icon className="size-5" />
                     </span>
@@ -475,6 +510,28 @@ export default function InventoryOperationsPage({
                       {operation.shipmentCancellationAccess === '审批' && <Badge variant="outline" className="mt-1 text-[10px]">撤回审批权限</Badge>}
                       {operation.selfPurchaseOnly && <Badge variant="outline" className="mt-1 text-[10px]">自采入库权限</Badge>}
                     </span>
+                  </>
+                )
+                if (operation.href) {
+                  return (
+                    <Link
+                      key={operation.href}
+                      href={operation.href}
+                      className="flex min-h-24 items-center gap-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--card)] p-4 text-left shadow-sm transition-colors hover:border-[var(--primary)] hover:bg-[#FFFDFC]"
+                    >
+                      {content}
+                    </Link>
+                  )
+                }
+                return (
+                  <button
+                    key={operation.id}
+                    type="button"
+                    disabled={!enabled}
+                    onClick={() => setActiveOperation(operation.id)}
+                    className="flex min-h-24 items-center gap-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--card)] p-4 text-left shadow-sm transition-colors hover:border-[var(--primary)] hover:bg-[#FFFDFC] disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    {content}
                   </button>
                 )
               })}
@@ -539,14 +596,18 @@ function OperationWorkspace({
       {operation === 'supply-chain-purchase-cancel' && <SupplyChainPurchaseCancelForm workflowDocs={workflowDocs} onSuccess={onSuccess} />}
       {operation === 'store-allocation' && <StoreAllocationForm locations={locations} skuOptions={skuOptions} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
       {operation === 'store-receipt' && <ShipmentReceiptForm workflowDocs={workflowDocs} kind="store" onSuccess={onSuccess} />}
-      {operation === 'return' && <ReturnForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
-      {operation === 'return-approval' && <ReturnApprovalForm workflowDocs={workflowDocs} onSuccess={onSuccess} />}
+      {operation === 'store-return' && <ReturnForm locations={locations} skuOptions={skuOptions} sourceType="门店" onSuccess={onSuccess} />}
+      {operation === 'market-return' && <ReturnForm locations={locations} skuOptions={skuOptions} sourceType="市场" onSuccess={onSuccess} />}
+      {operation === 'store-return-approval' && <ReturnApprovalForm workflowDocs={workflowDocs} docType="院退货" onSuccess={onSuccess} />}
+      {operation === 'market-return-approval' && <ReturnApprovalForm workflowDocs={workflowDocs} docType="市场退货" onSuccess={onSuccess} />}
       {operation === 'shipment-cancel' && <ShipmentCancellationRequestForm workflowDocs={workflowDocs} onSuccess={onSuccess} />}
       {operation === 'shipment-cancel-approval' && <ShipmentCancellationApprovalForm workflowDocs={workflowDocs} onSuccess={onSuccess} />}
       {operation === 'staff-purchase' && <MarketStaffPurchaseForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
       {operation === 'self-purchase' && <SelfPurchaseForm locations={locations} skuOptions={skuOptions} suppliers={suppliers} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
       {operation === 'external-outbound' && <ExternalOutboundForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
-      {operation === 'conversion' && <ConversionForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
+      {operation === 'supply-chain-conversion' && <ConversionForm locations={locations} skuOptions={skuOptions} locationType="总部" onSuccess={onSuccess} />}
+      {operation === 'market-conversion' && <ConversionForm locations={locations} skuOptions={skuOptions} locationType="市场" onSuccess={onSuccess} />}
+      {operation === 'store-conversion' && <ConversionForm locations={locations} skuOptions={skuOptions} locationType="门店" onSuccess={onSuccess} />}
     </div>
   )
 }
@@ -1825,13 +1886,15 @@ interface LotDraftLine {
 function ReturnForm({
   locations,
   skuOptions,
+  sourceType,
   onSuccess,
 }: {
   locations: InventoryLocationRow[]
   skuOptions: InventorySkuRow[]
+  sourceType: '市场' | '门店'
   onSuccess: (message: string) => void
 }) {
-  const sourceLocations = locations.filter((location) => (location.locationType === '门店' || location.locationType === '市场') && location.isActive)
+  const sourceLocations = locations.filter((location) => location.locationType === sourceType && location.isActive)
   const headquarters = locations.filter((location) => location.locationType === '总部' && location.isActive)
   const [sourceLocationId, setSourceLocationId] = useState('')
   const [targetLocationId, setTargetLocationId] = useState('')
@@ -1895,7 +1958,7 @@ function ReturnForm({
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
         <FormField label="退货主体">
           <Select value={sourceLocationId} onChange={(event) => selectSource(event.target.value)}>
-            <option value="">请选择门店或市场</option>
+            <option value="">请选择{sourceType}</option>
             {sourceLocations.map((location) => <option key={location.locationId} value={location.locationId}>{location.locationType} · {location.name}</option>)}
           </Select>
         </FormField>
@@ -1928,15 +1991,17 @@ function ReturnForm({
 
 function ReturnApprovalForm({
   workflowDocs,
+  docType,
   onSuccess,
 }: {
   workflowDocs: InventoryDocRow[]
+  docType: '院退货' | '市场退货'
   onSuccess: (message: string) => void
 }) {
   const { docId, doc, loading, selectDocument } = useLoadedDocument()
   const [auditRemark, setAuditRemark] = useState('')
   const [saving, setSaving] = useState(false)
-  const candidates = workflowDocs.filter((row) => (row.docType === '院退货' || row.docType === '市场退货') && row.status === '待审批')
+  const candidates = workflowDocs.filter((row) => row.docType === docType && row.status === '待审批')
 
   async function approve() {
     if (saving) return
@@ -2344,13 +2409,15 @@ interface ConversionDraftLine {
 function ConversionForm({
   locations,
   skuOptions,
+  locationType,
   onSuccess,
 }: {
   locations: InventoryLocationRow[]
   skuOptions: InventorySkuRow[]
+  locationType: InventoryLocationRow['locationType']
   onSuccess: (message: string) => void
 }) {
-  const availableLocations = locations.filter((location) => location.isActive)
+  const availableLocations = locations.filter((location) => location.locationType === locationType && location.isActive)
   const [locationId, setLocationId] = useState('')
   const [docDate, setDocDate] = useState(today)
   const [remark, setRemark] = useState('')
@@ -2400,7 +2467,7 @@ function ConversionForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <FormField label="转换库存主体"><Select value={locationId} onChange={(event) => { setLocationId(event.target.value); setLines((previous) => previous.map((line) => ({ ...line, sourceLotId: '' }))) }}><option value="">请选择总部、市场或门店</option>{availableLocations.map((location) => <option key={location.locationId} value={location.locationId}>{location.locationType} · {location.name}</option>)}</Select></FormField>
+        <FormField label="转换库存主体"><Select value={locationId} onChange={(event) => { setLocationId(event.target.value); setLines((previous) => previous.map((line) => ({ ...line, sourceLotId: '' }))) }}><option value="">请选择{locationType}</option>{availableLocations.map((location) => <option key={location.locationId} value={location.locationId}>{location.locationType} · {location.name}</option>)}</Select></FormField>
         <FormField label="转换日期"><Input type="date" value={docDate} onChange={(event) => setDocDate(event.target.value)} /></FormField>
       </div>
       <div className="space-y-3">

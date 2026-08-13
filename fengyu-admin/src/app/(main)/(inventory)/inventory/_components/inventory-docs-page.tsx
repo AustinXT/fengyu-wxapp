@@ -92,6 +92,7 @@ export default function InventoryDocsPage({
   canCreate,
   canApprove,
   canViewPrice,
+  initialDocType,
 }: {
   rows: InventoryDocRow[]
   total: number
@@ -100,12 +101,13 @@ export default function InventoryDocsPage({
   canCreate: boolean
   canApprove: boolean
   canViewPrice: boolean
+  initialDocType?: InventoryDocType
 }) {
   const router = useRouter()
   const { get, setMany } = useUrlFilters()
   const [, startTransition] = useTransition()
   const [searchInput, setSearchInput] = useState(get('q'))
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(Boolean(initialDocType && GENERIC_DOC_TYPE_SET.has(initialDocType)))
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
 
   const page = Math.max(1, Number(get('page', '1')) || 1)
@@ -215,6 +217,16 @@ export default function InventoryDocsPage({
         </div>
         <div className="flex items-center gap-2">
           <Select
+            value={get('level')}
+            onChange={(e) => setMany({ level: e.target.value, page: '' })}
+            className="w-32"
+          >
+            <option value="">全部层级</option>
+            <option value="supply-chain">供应链</option>
+            <option value="market">市场</option>
+            <option value="store">门店</option>
+          </Select>
+          <Select
             value={get('docType')}
             onChange={(e) => setMany({ docType: e.target.value, page: '' })}
             className="w-40"
@@ -240,7 +252,7 @@ export default function InventoryDocsPage({
             value={searchInput}
             onChange={(e) => handleSearchChange(e.target.value)}
           />
-          <Button variant="outline" onClick={() => setMany({ q: '', docType: '', status: '', page: '' })}>
+          <Button variant="outline" onClick={() => setMany({ q: '', level: '', docType: '', status: '', create: '', page: '' })}>
             重置
           </Button>
           {canCreate && (
@@ -267,6 +279,7 @@ export default function InventoryDocsPage({
         locations={locations}
         skuOptions={skuOptions}
         onSuccess={() => startTransition(() => router.refresh())}
+        initialDocType={initialDocType}
       />
     </div>
   )
@@ -278,15 +291,19 @@ function CreateDocDialog({
   locations,
   skuOptions,
   onSuccess,
+  initialDocType,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   locations: InventoryLocationRow[]
   skuOptions: InventorySkuRow[]
   onSuccess: () => void
+  initialDocType?: InventoryDocType
 }) {
   const [submitting, setSubmitting] = useState(false)
-  const [docType, setDocType] = useState<InventoryDocType>(INVENTORY_GENERIC_DOC_TYPES[0])
+  const [docType, setDocType] = useState<InventoryDocType>(
+    initialDocType && GENERIC_DOC_TYPE_SET.has(initialDocType) ? initialDocType : INVENTORY_GENERIC_DOC_TYPES[0],
+  )
   const [sourceLocationId, setSourceLocationId] = useState('')
   const [targetLocationId, setTargetLocationId] = useState('')
   const [docDate, setDocDate] = useState(() => {
@@ -302,6 +319,7 @@ function CreateDocDialog({
   const [lotOptionsByKey, setLotOptionsByKey] = useState<Record<string, InventoryLotRow[]>>({})
   const [loadingLotKeys, setLoadingLotKeys] = useState<Record<string, boolean>>({})
   const requiresSourceLot = SOURCE_LOT_DOC_TYPES.has(docType)
+  const isDocTypeLocked = Boolean(initialDocType && GENERIC_DOC_TYPE_SET.has(initialDocType))
 
   function updateItem(index: number, patch: Partial<DraftItem>) {
     setItems((prev) => prev.map((item, i) => (i === index ? { ...item, ...patch } : item)))
@@ -371,7 +389,7 @@ function CreateDocDialog({
       </DialogHeader>
       <div className="mt-4 space-y-4">
         <div className="grid grid-cols-4 gap-3">
-          <Select value={docType} onChange={(e) => setDocType(e.target.value as InventoryDocType)}>
+          <Select value={docType} disabled={isDocTypeLocked} onChange={(e) => setDocType(e.target.value as InventoryDocType)}>
             {INVENTORY_GENERIC_DOC_TYPES.map((type) => (
               <option key={type} value={type}>{type}</option>
             ))}

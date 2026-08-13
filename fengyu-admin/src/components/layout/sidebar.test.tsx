@@ -72,7 +72,7 @@ describe('Sidebar 二级菜单', () => {
     const trigger = screen.getByRole('button', { name: '进销存' })
     await user.click(trigger)
     expect(screen.getByRole('menu')).toBeVisible()
-    expect(screen.getByRole('menuitem', { name: '库存总览' })).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: '供应链业务' })).toBeVisible()
     await user.keyboard('{Escape}')
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
   })

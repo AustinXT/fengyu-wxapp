@@ -1414,7 +1414,7 @@ function refreshInventoryPaths(): void {
   revalidatePath('/inventory')
   revalidatePath('/inventory/docs')
   revalidatePath('/inventory/stocks')
-  revalidatePath('/inventory/operations')
+  revalidatePath('/inventory/operations', 'layout')
 }
 
 /** 门店只能为自身市场创建需求，报货本身不产生库存流水。 */
