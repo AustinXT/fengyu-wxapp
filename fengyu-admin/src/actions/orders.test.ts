@@ -2198,12 +2198,12 @@ describe('getOrdersPaginated — 服务端分页', () => {
     expect(eq).toHaveBeenCalledWith('status', '已支付')
   })
 
-  it('type 筛选 → eq 被调用', async () => {
+  it('type 多选筛选 → inArray 被调用', async () => {
     mockPaginatedChain(0, [])
 
-    await getOrdersPaginated({ type: '体验' })
+    await getOrdersPaginated({ types: ['销售单', '转换单'] })
 
-    expect(eq).toHaveBeenCalledWith('sale_order_type', '体验')
+    expect(inArray).toHaveBeenCalledWith('sale_order_type', ['销售单', '转换单'])
   })
 
   it('storeId 筛选 → eq 被调用', async () => {

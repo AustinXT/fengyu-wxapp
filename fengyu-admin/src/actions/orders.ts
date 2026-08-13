@@ -17,7 +17,7 @@ import { prepaidCards, cardTransactions } from '@db/prepaid-card'
 import { eq, desc, asc, and, or, sql, ilike, gte, lt, gt, inArray, isNull } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
-import type { AuthSession, SaleOrder, SaleItem, OrderStatus } from '@/lib/types'
+import type { AuthSession, SaleOrder, SaleItem, OrderStatus, SaleOrderType } from '@/lib/types'
 import { revalidatePath } from 'next/cache'
 import { scopeCondition, isInScope, requireAdmin, isDepositOrderApprover } from '@/lib/permissions'
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
@@ -663,7 +663,8 @@ export const getOrders = withPermission(
 /** 订单列表筛选参数 */
 export interface OrderFilters {
   status?: string
-  type?: string
+  /** 订单类型多选；由 URL `type=销售单,转换单` 解析而来。 */
+  types?: SaleOrderType[]
   marketId?: string
   storeId?: string
   dateFrom?: string
@@ -696,8 +697,8 @@ function buildOrderConditions(
   if (filters.status) {
     conditions.push(eq(saleOrders.status, filters.status as typeof saleOrders.status.enumValues[number]))
   }
-  if (filters.type) {
-    conditions.push(eq(saleOrders.saleOrderType, filters.type as typeof saleOrders.saleOrderType.enumValues[number]))
+  if (filters.types?.length) {
+    conditions.push(inArray(saleOrders.saleOrderType, filters.types))
   }
   if (filters.marketId) {
     conditions.push(storeInMarketCondition(saleOrders.storeId, filters.marketId))
