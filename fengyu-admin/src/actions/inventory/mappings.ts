@@ -1,31 +1,31 @@
 'use server'
 
 import {
-  createInventorySkuMapping as createInventorySkuMappingImpl,
-  listInventorySkuMappingOptions as listInventorySkuMappingOptionsImpl,
-  listInventorySkuMappings as listInventorySkuMappingsImpl,
-  updateInventorySkuMapping as updateInventorySkuMappingImpl,
+  createInventorySkuComposition as createInventorySkuCompositionImpl,
+  listInventorySkuCompositionOptions as listInventorySkuCompositionOptionsImpl,
+  listInventorySkuCompositions as listInventorySkuCompositionsImpl,
+  updateInventorySkuComposition as updateInventorySkuCompositionImpl,
 } from '@/lib/inventory/engine'
-import type { InventorySkuMappingInput } from '@/lib/inventory/types'
+import type { InventoryCompositionInput } from '@/lib/inventory/types'
 import { withPermission } from '@/lib/with-permission'
 
-export const listInventorySkuMappings = withPermission(
+export const listInventorySkuCompositions = withPermission(
   'inventory:stock_list',
-  async (_session, filters: { keyword?: string; onlyActive?: boolean } = {}) =>
-    listInventorySkuMappingsImpl(filters),
+  async (_session, filters: { keyword?: string; status?: 'configured' | 'unconfigured' | 'invalid' } = {}) =>
+    listInventorySkuCompositionsImpl(filters),
 )
 
-export const listInventorySkuMappingOptions = withPermission(
+export const listInventorySkuCompositionOptions = withPermission(
   'inventory:stock_list',
-  async (_session) => listInventorySkuMappingOptionsImpl(),
+  async (_session) => listInventorySkuCompositionOptionsImpl(),
 )
 
-export const createInventorySkuMapping = withPermission(
+export const createInventorySkuComposition = withPermission(
   'inventory:create',
-  async (_session, input: InventorySkuMappingInput) => createInventorySkuMappingImpl(input),
+  async (_session, input: InventoryCompositionInput) => createInventorySkuCompositionImpl(input),
 )
 
-export const updateInventorySkuMapping = withPermission(
+export const updateInventorySkuComposition = withPermission(
   'inventory:update',
-  async (_session, id: number, isActive: boolean) => updateInventorySkuMappingImpl(id, isActive),
+  async (_session, input: InventoryCompositionInput) => updateInventorySkuCompositionImpl(input),
 )

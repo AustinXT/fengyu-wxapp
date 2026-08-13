@@ -39,7 +39,6 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
   const [loadingItems, setLoadingItems] = useState(false)
   const [selectedItemId, setSelectedItemId] = useState<string>('')
   const [inventorySkuOptions, setInventorySkuOptions] = useState<PickupInventorySkuOption[]>([])
-  const [inventorySkuId, setInventorySkuId] = useState('')
   const [loadingInventorySkuOptions, setLoadingInventorySkuOptions] = useState(false)
 
   // 提货参数
@@ -49,27 +48,24 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
   const [submitting, setSubmitting] = useState(false)
 
   const selectedItem = items.find((i) => i.saleItemId === selectedItemId)
-  const selectedInventorySku = inventorySkuOptions.find((option) => option.inventorySkuId === inventorySkuId)
 
   useEffect(() => {
     let cancelled = false
 
     if (!selectedItemId || !pickupStoreId) {
       setInventorySkuOptions([])
-      setInventorySkuId('')
       setLoadingInventorySkuOptions(false)
       return () => { cancelled = true }
     }
 
     setLoadingInventorySkuOptions(true)
     setInventorySkuOptions([])
-    setInventorySkuId('')
     getPickupInventorySkuOptions(selectedItemId, pickupStoreId)
       .then((options) => {
         if (!cancelled) setInventorySkuOptions(options)
       })
       .catch((err) => {
-        if (!cancelled) toast.error(actionErrorMessage(err, '加载库存 SKU 映射失败'))
+        if (!cancelled) toast.error(actionErrorMessage(err, '加载销售商品组成失败'))
       })
       .finally(() => {
         if (!cancelled) setLoadingInventorySkuOptions(false)
@@ -89,7 +85,6 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
     setItems([])
     setSelectedItemId('')
     setInventorySkuOptions([])
-    setInventorySkuId('')
     try {
       const result = await searchCustomerByPhone(phone.trim())
       setSearchDone(true)
@@ -134,11 +129,12 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
   const canSubmit =
     !!customer &&
     !!selectedItem &&
-    !!selectedInventorySku &&
+    inventorySkuOptions.length > 0 &&
     !!pickupStoreId &&
     pickupQuantity > 0 &&
     pickupQuantity <= (selectedItem?.remaining ?? 0) &&
-    pickupQuantity <= (selectedInventorySku?.availableQuantity ?? 0)
+    inventorySkuOptions.every((component) =>
+      component.availableQuantity >= component.quantityPerSaleUnit * pickupQuantity)
 
   const handleSubmit = async () => {
     if (!canSubmit || !customer || !selectedItem) return
@@ -148,7 +144,6 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
       const idempotencyKey = `pickup-${selectedItem.saleItemId}-${Date.now()}`
       const res = await createPickupRecord({
         saleItemId: selectedItem.saleItemId,
-        inventorySkuId,
         ...(selectedItem.sourceSaleItemIds.length > 1 ? { saleItemIds: selectedItem.sourceSaleItemIds } : {}),
         pickupQuantity,
         storeId: pickupStoreId,
@@ -348,36 +343,8 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
                 </Select>
               </div>
               <div>
-                <label className="text-sm text-[#999999]">实际出库库存 SKU</label>
-                <Select
-                  className="mt-1"
-                  value={inventorySkuId}
-                  disabled={loadingInventorySkuOptions || inventorySkuOptions.length === 0}
-                  onChange={(e) => setInventorySkuId(e.target.value)}
-                >
-                  <option value="">
-                    {loadingInventorySkuOptions
-                      ? '加载库存 SKU 中...'
-                      : inventorySkuOptions.length === 0
-                        ? '未配置可用库存 SKU 映射'
-                        : '请选择实际出库 SKU'}
-                  </option>
-                  {inventorySkuOptions.map((option) => (
-                    <option key={option.inventorySkuId} value={option.inventorySkuId}>
-                      {option.label}
-                    </option>
-                  ))}
-                </Select>
-                {!loadingInventorySkuOptions && inventorySkuOptions.length === 0 && (
-                  <p className="mt-1 text-xs text-[#C0322A]">
-                    请先在库存 SKU 映射中配置该销售 SKU，或确认门店库存。
-                  </p>
-                )}
-              </div>
-              <div>
                 <label className="text-sm text-[#999999]">
-                  提货数量（可提 {selectedItem.remaining}
-                  {selectedInventorySku ? `，库存可用 ${selectedInventorySku.availableQuantity}` : ''}）
+                  提货数量（可提 {selectedItem.remaining}）
                 </label>
                 <Input
                   type="number"
@@ -387,6 +354,32 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
                   value={pickupQuantity}
                   onChange={(e) => handleQuantityChange(Number(e.target.value))}
                 />
+              </div>
+              <div className="col-span-2 md:col-span-3 rounded-lg border bg-[#FAFAFA] p-4">
+                <div className="mb-2 text-sm font-medium">本次将自动出库</div>
+                {loadingInventorySkuOptions ? (
+                  <p className="text-sm text-[#888888]">加载销售商品组成中...</p>
+                ) : inventorySkuOptions.length === 0 ? (
+                  <p className="text-sm text-[#C0322A]">该商品尚未配置库存组成，请先在“销售商品组成”中配置。</p>
+                ) : (
+                  <div className="space-y-2">
+                    {inventorySkuOptions.map((component) => {
+                      const required = component.quantityPerSaleUnit * pickupQuantity
+                      const sufficient = component.availableQuantity >= required
+                      return (
+                        <div key={component.inventorySkuId} className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                          <span>
+                            {component.productName}{component.specName ? ` ${component.specName}` : ''}
+                            <span className="ml-2 font-semibold text-[var(--primary)]">× {required}</span>
+                          </span>
+                          <span className={sufficient ? 'text-[#3D8A5A]' : 'text-[#C0322A]'}>
+                            门店可用 {component.availableQuantity}{sufficient ? '' : '，库存不足'}
+                          </span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
               <div className="col-span-2">
                 <label className="text-sm text-[#999999]">备注（可选）</label>

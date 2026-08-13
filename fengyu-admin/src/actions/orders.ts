@@ -9,10 +9,12 @@ import {
   salePaymentItemReceipts,
   salePaymentItemAllocations,
 } from '@db/order'
+import type { SaleItemInventoryCompositionSnapshotV1 } from '@db/order'
 import { userCoupons, couponTemplates } from '@db/coupon'
 import { stores, orgNodes } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { productSkus, productCategories, products, mallBundleGroups, mallProductSkus } from '@db/product'
+import { inventorySkuProductSkuMappings, inventorySkus } from '@db/inventory'
 import { prepaidCards, cardTransactions } from '@db/prepaid-card'
 import { eq, desc, asc, and, or, sql, ilike, gte, lt, gt, inArray, isNull } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
@@ -63,6 +65,80 @@ const LEGACY_INFLOW_NOTE = '旧系统充值金转入'
 // 寄存单事务客户端类型（与 lib/paid-sessions.ts AdminTx 同义）
 type OrderTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
 type DepositTx = OrderTx
+
+type CompositionSkuRow = {
+  skuId: string
+  productType: '疗程卡' | '家居产品' | null
+  specName?: string | null
+  productName?: string | null
+}
+
+/**
+ * 冻结家居产品在下单当时的库存组成。新订单必须有有效组成；历史空快照只在提货时
+ * 兼容读取最新配置，不能继续产生新的空快照数据。
+ */
+async function loadInventoryCompositionSnapshots(
+  tx: OrderTx,
+  skuRows: CompositionSkuRow[],
+): Promise<Map<string, SaleItemInventoryCompositionSnapshotV1>> {
+  const homeRows = [...new Map(
+    skuRows
+      .filter((row) => row.productType === '家居产品')
+      .map((row) => [row.skuId, row]),
+  ).values()]
+  if (homeRows.length === 0) return new Map()
+
+  const componentRows = await tx
+    .select({
+      productSkuId: inventorySkuProductSkuMappings.productSkuId,
+      inventorySkuId: inventorySkuProductSkuMappings.inventorySkuId,
+      productCode: inventorySkus.productCode,
+      productName: inventorySkus.productName,
+      specName: inventorySkus.specName,
+      inventorySkuActive: inventorySkus.isActive,
+      quantityPerSaleUnit: inventorySkuProductSkuMappings.quantityPerSaleUnit,
+    })
+    .from(inventorySkuProductSkuMappings)
+    .innerJoin(inventorySkus, eq(inventorySkuProductSkuMappings.inventorySkuId, inventorySkus.skuId))
+    .where(and(
+      inArray(inventorySkuProductSkuMappings.productSkuId, homeRows.map((row) => row.skuId)),
+      eq(inventorySkuProductSkuMappings.isActive, true),
+    ))
+    .orderBy(asc(inventorySkus.productName), asc(inventorySkus.productCode))
+
+  const snapshots = new Map<string, SaleItemInventoryCompositionSnapshotV1>()
+  const invalidProductSkuIds = new Set<string>()
+  for (const component of componentRows) {
+    if (!component.inventorySkuActive) {
+      invalidProductSkuIds.add(component.productSkuId)
+      continue
+    }
+    const snapshot = snapshots.get(component.productSkuId) ?? { version: 1 as const, components: [] }
+    snapshot.components.push({
+      inventorySkuId: component.inventorySkuId,
+      productCode: component.productCode,
+      productName: component.productName,
+      specName: component.specName,
+      quantityPerSaleUnit: component.quantityPerSaleUnit,
+    })
+    snapshots.set(component.productSkuId, snapshot)
+  }
+  const invalid = homeRows.find((row) => invalidProductSkuIds.has(row.skuId))
+  if (invalid) {
+    throw new ApiError(
+      'INVALID_STATE',
+      `INVENTORY_COMPOSITION_INVALID: 商品「${invalid.specName || invalid.productName || invalid.skuId}」的库存组成含停用商品`,
+    )
+  }
+  const missing = homeRows.find((row) => !snapshots.has(row.skuId))
+  if (missing) {
+    throw new ApiError(
+      'INVALID_STATE',
+      `INVENTORY_COMPOSITION_MISSING: 商品「${missing.specName || missing.productName || missing.skuId}」尚未配置库存组成`,
+    )
+  }
+  return snapshots
+}
 
 type SkuPurchaseLimitRow = {
   skuId: string
@@ -3111,6 +3187,8 @@ export const createOrder = withPermission(
   const skuFeeMap = new Map<string, string>()
   const skuSessionMap = new Map<string, number | null>()
   const skuExperienceMap = new Map<string, boolean>()
+  const skuProductTypeMap = new Map<string, '疗程卡' | '家居产品'>()
+  const skuSpecNameMap = new Map<string, string>()
   // 店长特别优惠行级快照源（is_manager_special 权威 = DB，不信前端）
   const skuManagerSpecialMap = new Map<string, boolean>()
   // 生美 / 销售分类行级快照源（权威 = DB，不信前端）：
@@ -3124,6 +3202,8 @@ export const createOrder = withPermission(
     const skuRows = await db
       .select({
         skuId: productSkus.skuId,
+        productType: productSkus.productType,
+        specName: productSkus.specName,
         serviceFee: productSkus.serviceFee,
         sessionCount: productSkus.sessionCount,
         isExperience: productSkus.isExperience,
@@ -3138,6 +3218,8 @@ export const createOrder = withPermission(
       skuFeeMap.set(r.skuId, r.serviceFee)
       skuSessionMap.set(r.skuId, r.sessionCount)
       skuExperienceMap.set(r.skuId, r.isExperience === true)
+      skuProductTypeMap.set(r.skuId, r.productType)
+      skuSpecNameMap.set(r.skuId, r.specName)
       skuManagerSpecialMap.set(r.skuId, r.isManagerSpecial === true)
       skuShengmeiMap.set(r.skuId, r.isShengmei)
       skuSalesCategoryMap.set(r.skuId, r.salesCategory)
@@ -3166,6 +3248,11 @@ export const createOrder = withPermission(
   let saleOrderId: string
   try {
     saleOrderId = await db.transaction(async (tx) => {
+      const compositionSnapshots = await loadInventoryCompositionSnapshots(tx, data.items.map((item) => ({
+        ...item,
+        productType: skuProductTypeMap.get(item.skuId) ?? item.productType,
+        specName: skuSpecNameMap.get(item.skuId) ?? item.productName,
+      })))
       // advisory lock 在事务内持有，直到 commit 才释放
       const idRows = await tx.execute(sql`
         WITH lock AS (
@@ -3318,6 +3405,7 @@ export const createOrder = withPermission(
           skuId: item.skuId,
           productName: item.productName,
           productType: item.productType,
+          inventoryCompositionSnapshot: compositionSnapshots.get(item.skuId) ?? null,
           sessionCount,
           remainingSessions: sessionCount,
           unitPrice,
@@ -3740,6 +3828,10 @@ export const createConversionOrder = withPermission(
         const unitRealPrice = inDenom > 0 ? (amount / inDenom).toFixed(2) : amount.toFixed(2)
         inItems.push({ item: inItem, sku, amount, unitPrice, unitRealPrice, serviceFee, categoryId: sku.categoryId })
       }
+      const compositionSnapshots = await loadInventoryCompositionSnapshots(
+        tx,
+        inItems.map((row) => row.sku),
+      )
 
       // 转换单优惠券只能抵扣券前的正补差额。券计算基数始终是转入项目的券前成交金额，
       // 实际抵扣额以 rawPriceDiff 封顶，避免把优惠券转化为储值卡余额。
@@ -4020,6 +4112,7 @@ export const createConversionOrder = withPermission(
           skuId: inRow.item.skuId,
           productName: inRow.item.productName,
           productType: inRow.item.productType,
+          inventoryCompositionSnapshot: compositionSnapshots.get(inRow.item.skuId) ?? null,
           sessionCount,
           remainingSessions: sessionCount,
           unitPrice: inRow.unitPrice,
@@ -4338,6 +4431,7 @@ export const createDepositOrder = withPermission(
     let saleOrderId: string
     try {
       saleOrderId = await db.transaction(async (tx) => {
+        const compositionSnapshots = await loadInventoryCompositionSnapshots(tx, skuRows)
         const idRows = await tx.execute(sql`
           WITH lock AS (
             SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen')::bigint)
@@ -4420,6 +4514,7 @@ export const createDepositOrder = withPermission(
             skuId: sku.skuId,
             productName: sku.specName,
             productType: sku.productType,
+            inventoryCompositionSnapshot: compositionSnapshots.get(sku.skuId) ?? null,
             sessionCount: item.sessionCount,
             remainingSessions: item.sessionCount,
             unitPrice: item.unitPrice,

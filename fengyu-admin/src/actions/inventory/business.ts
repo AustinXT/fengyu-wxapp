@@ -17,6 +17,7 @@ import {
   createStoreAllocation as createStoreAllocationImpl,
   createStoreReplenishmentRequest as createStoreReplenishmentRequestImpl,
   getShipmentReceiptProgress as getShipmentReceiptProgressImpl,
+  listMarketEmployeeOptions as listMarketEmployeeOptionsImpl,
   quoteMarketReplenishmentPrice as quoteMarketReplenishmentPriceImpl,
   quoteMarketReplenishmentPrices as quoteMarketReplenishmentPricesImpl,
   receiveItemCompanyShipment as receiveItemCompanyShipmentImpl,
@@ -193,6 +194,11 @@ export const createMarketStaffPurchase = withPermission(
   'inventory:create_doc',
   async (session, input: CreateMarketStaffPurchaseInput) =>
     createMarketStaffPurchaseImpl(session, input),
+)
+
+export const listMarketEmployeeOptions = withPermission(
+  'inventory:create_doc',
+  async (session, marketId: string) => listMarketEmployeeOptionsImpl(session, marketId),
 )
 
 export const createSelfPurchasedReceipt = withAllPermissions(

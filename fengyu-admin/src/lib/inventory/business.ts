@@ -388,8 +388,7 @@ export interface SelfPurchasedReceiptLineInput {
 
 export interface CreateSelfPurchasedReceiptInput {
   marketId: string
-  supplierId?: string | null
-  supplierName?: string | null
+  supplierId: string
   docDate?: string | null
   receiptAttachmentUrl?: string | null
   remark?: string | null
@@ -425,6 +424,11 @@ export interface CreateInventoryConversionInput {
   docDate?: string | null
   remark?: string | null
   items: InventoryConversionLineInput[]
+}
+
+export interface InventoryMarketEmployeeOption {
+  employeeId: string
+  name: string
 }
 
 export interface PromotionQuote {
@@ -1170,6 +1174,61 @@ async function employeeForMarket(
     throw new ApiError('PERMISSION_DENIED', '员工不属于当前市场')
   }
   return { id: employee.employee_id, name: employee.name?.trim() || employee.employee_id }
+}
+
+export async function listMarketEmployeeOptions(
+  session: AuthSession,
+  marketIdInput: string,
+): Promise<InventoryMarketEmployeeOption[]> {
+  const marketId = required(marketIdInput, '市场')
+  await syncLocations()
+  const [market] = rows<{
+    location_id: string
+    location_type: LocationType
+    name: string
+    parent_location_id: string | null
+  }>(await db.execute(sql`
+    SELECT location_id, location_type, name, parent_location_id
+      FROM inventory_locations
+     WHERE location_id = ${marketId}
+       AND is_active = true
+     LIMIT 1
+  `))
+  if (!market) throw new ApiError('NOT_FOUND', '市场库存主体不存在或已停用')
+  const location: Location = {
+    locationId: market.location_id,
+    locationType: market.location_type,
+    name: market.name,
+    parentLocationId: market.parent_location_id,
+  }
+  assertType(location, '市场', '员工购出库主体')
+  assertLocationWritable(session, location)
+
+  const employees = rows<{ employee_id: string; name: string | null }>(await db.execute(sql`
+    WITH RECURSIVE descendants AS (
+      SELECT id
+        FROM org_nodes
+       WHERE id = ${marketId}
+      UNION ALL
+      SELECT child.id
+        FROM org_nodes child
+        JOIN descendants parent ON child.parent_id = parent.id
+    )
+    SELECT DISTINCT employee.employee_id, employee.name
+      FROM staff_wechat_users employee
+      LEFT JOIN inventory_locations store_location
+        ON store_location.location_id = employee.store_id
+     WHERE employee.is_resigned = false
+       AND (
+         store_location.parent_location_id = ${marketId}
+         OR employee.org_node_id IN (SELECT id FROM descendants)
+       )
+  ORDER BY employee.name ASC NULLS LAST, employee.employee_id ASC
+  `))
+  return employees.map((employee) => ({
+    employeeId: employee.employee_id,
+    name: employee.name?.trim() || employee.employee_id,
+  }))
 }
 
 function marketIdForLocation(location: Location): string | null {
@@ -3766,8 +3825,8 @@ export async function createSelfPurchasedReceipt(
     const market = await locationForUpdate(tx, marketId)
     assertType(market, '市场', '自采入库主体')
     assertLocationWritable(session, market)
-    const supplier = input.supplierId ? await ensureSupplier(tx, required(input.supplierId, '供应商')) : null
-    const supplierName = supplier?.name ?? required(input.supplierName, '自采供应商名称')
+    const supplier = await ensureSupplier(tx, required(input.supplierId, '供应商'))
+    const supplierName = supplier.name
     const seenSkus = new Set<string>()
     const prepared: Array<{
       sku: SkuSnapshot
@@ -3825,7 +3884,7 @@ export async function createSelfPurchasedReceipt(
       status: '已完成',
       targetLocationId: marketId,
       marketId,
-      supplierId: supplier?.id ?? null,
+      supplierId: supplier.id,
       supplierName,
       receiptAttachmentUrl: input.receiptAttachmentUrl,
       docDate: input.docDate,
@@ -3842,7 +3901,7 @@ export async function createSelfPurchasedReceipt(
         skuName: item.sku.productName,
         specName: item.sku.specName,
         supplier: supplierName,
-        supplierId: supplier?.id ?? null,
+        supplierId: supplier.id,
         productSeries: item.sku.productSeries,
         batchNo: item.batchNo,
         expiryDate: item.expiryDate,

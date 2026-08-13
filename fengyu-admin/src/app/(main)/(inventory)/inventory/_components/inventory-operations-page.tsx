@@ -39,6 +39,7 @@ import {
   createStoreAllocation,
   createStoreReplenishmentRequest,
   getShipmentReceiptProgress,
+  listMarketEmployeeOptions,
   quoteMarketReplenishmentPrices,
   receiveItemCompanyShipment,
   receiveSupplyChainPurchaseOrder,
@@ -2271,6 +2272,9 @@ function MarketStaffPurchaseForm({
   const markets = locations.filter((location) => location.locationType === '市场' && location.isActive)
   const [marketId, setMarketId] = useState('')
   const [employeeId, setEmployeeId] = useState('')
+  const [employeeOptions, setEmployeeOptions] = useState<Array<{ employeeId: string; name: string }>>([])
+  const [loadingEmployees, setLoadingEmployees] = useState(false)
+  const employeeRequestRef = useRef(0)
   const [docDate, setDocDate] = useState(today)
   const [remark, setRemark] = useState('')
   const [lines, setLines] = useState<LotDraftLine[]>([{ skuId: '', lotId: '', quantity: '1', reason: '', remark: '' }])
@@ -2280,10 +2284,33 @@ function MarketStaffPurchaseForm({
     setLines((previous) => previous.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line))
   }
 
+  async function selectMarket(nextMarketId: string) {
+    const requestId = ++employeeRequestRef.current
+    setMarketId(nextMarketId)
+    setEmployeeId('')
+    setEmployeeOptions([])
+    setLines((previous) => previous.map((line) => ({ ...line, lotId: '' })))
+    if (!nextMarketId) {
+      setLoadingEmployees(false)
+      return
+    }
+    setLoadingEmployees(true)
+    try {
+      const options = await listMarketEmployeeOptions(nextMarketId)
+      if (employeeRequestRef.current === requestId) setEmployeeOptions(options)
+    } catch (error) {
+      if (employeeRequestRef.current === requestId) {
+        toast.error(actionErrorMessage(error, '加载市场员工失败'))
+      }
+    } finally {
+      if (employeeRequestRef.current === requestId) setLoadingEmployees(false)
+    }
+  }
+
   async function submit() {
     if (saving) return
-    if (!marketId || !employeeId.trim()) {
-      toast.error('请选择市场并填写购买员工 ID')
+    if (!marketId || !employeeId) {
+      toast.error('请选择市场和购买员工')
       return
     }
     const items = lines.map((line) => ({ lotId: Number(line.lotId), quantity: positiveNumber(line.quantity), remark: optionalText(line.remark) }))
@@ -2295,12 +2322,13 @@ function MarketStaffPurchaseForm({
     try {
       const result = await createMarketStaffPurchase({
         marketId,
-        employeeId: employeeId.trim(),
+        employeeId,
         docDate: optionalText(docDate),
         remark: optionalText(remark),
         items: items.map((item) => ({ ...item, quantity: item.quantity! })),
       })
       onSuccess(`市场员工购出库单已创建：${result.id}`)
+      setEmployeeId('')
       setLines([{ skuId: '', lotId: '', quantity: '1', reason: '', remark: '' }])
     } catch (error) {
       toast.error(actionErrorMessage(error, '创建市场员工购失败'))
@@ -2312,8 +2340,13 @@ function MarketStaffPurchaseForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <FormField label="市场"><Select value={marketId} onChange={(event) => { setMarketId(event.target.value); setLines((previous) => previous.map((line) => ({ ...line, lotId: '' }))) }}><option value="">请选择市场</option>{markets.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}</Select></FormField>
-        <FormField label="购买员工 ID"><Input value={employeeId} onChange={(event) => setEmployeeId(event.target.value)} placeholder="输入员工 ID" /></FormField>
+        <FormField label="市场"><Select value={marketId} onChange={(event) => void selectMarket(event.target.value)}><option value="">请选择市场</option>{markets.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}</Select></FormField>
+        <FormField label="购买员工">
+          <Select value={employeeId} disabled={!marketId || loadingEmployees} onChange={(event) => setEmployeeId(event.target.value)}>
+            <option value="">{loadingEmployees ? '正在加载员工' : marketId ? '请选择员工' : '请先选择市场'}</option>
+            {employeeOptions.map((employee) => <option key={employee.employeeId} value={employee.employeeId}>{employee.name}</option>)}
+          </Select>
+        </FormField>
         <FormField label="出库日期"><Input type="date" value={docDate} onChange={(event) => setDocDate(event.target.value)} /></FormField>
       </div>
       <div className="space-y-3">
@@ -2353,7 +2386,6 @@ function SelfPurchaseForm({
   const markets = locations.filter((location) => location.locationType === '市场' && location.isActive)
   const [marketId, setMarketId] = useState('')
   const [supplierId, setSupplierId] = useState('')
-  const [supplierName, setSupplierName] = useState('')
   const [docDate, setDocDate] = useState(today)
   const [receiptAttachmentUrl, setReceiptAttachmentUrl] = useState('')
   const [remark, setRemark] = useState('')
@@ -2367,8 +2399,8 @@ function SelfPurchaseForm({
 
   async function submit() {
     if (saving) return
-    if (!marketId || (!supplierId && !supplierName.trim())) {
-      toast.error('请选择市场并填写自采供应商')
+    if (!marketId || !supplierId) {
+      toast.error('请选择市场和供应商')
       return
     }
     const hasInvalidLine = lines.some((line) => {
@@ -2396,8 +2428,7 @@ function SelfPurchaseForm({
     try {
       const result = await createSelfPurchasedReceipt({
         marketId,
-        supplierId: optionalText(supplierId),
-        supplierName: supplierId ? null : optionalText(supplierName),
+        supplierId,
         docDate: optionalText(docDate),
         receiptAttachmentUrl: optionalText(receiptAttachmentUrl),
         remark: optionalText(remark),
@@ -2421,8 +2452,7 @@ function SelfPurchaseForm({
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3 xl:grid-cols-4">
         <FormField label="入库市场"><Select value={marketId} onChange={(event) => { setMarketId(event.target.value); setLines((previous) => previous.map((line) => ({ ...line, skuId: '' }))) }}><option value="">请选择市场</option>{markets.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}</Select></FormField>
-        <FormField label="供应商"><Select value={supplierId} onChange={(event) => { setSupplierId(event.target.value); if (event.target.value) setSupplierName('') }}><option value="">手填供应商</option>{suppliers.map((supplier) => <option key={supplier.supplierId} value={supplier.supplierId}>{supplier.name}</option>)}</Select></FormField>
-        {!supplierId && <FormField label="自采供应商名称"><Input value={supplierName} onChange={(event) => setSupplierName(event.target.value)} /></FormField>}
+        <FormField label="供应商"><Select value={supplierId} onChange={(event) => setSupplierId(event.target.value)}><option value="">请选择供应商</option>{suppliers.map((supplier) => <option key={supplier.supplierId} value={supplier.supplierId}>{supplier.name}</option>)}</Select></FormField>
         <FormField label="入库日期"><Input type="date" value={docDate} onChange={(event) => setDocDate(event.target.value)} /></FormField>
         <FormField label="收据附件地址" className="md:col-span-2"><Input value={receiptAttachmentUrl} onChange={(event) => setReceiptAttachmentUrl(event.target.value)} placeholder="填写附件地址" /></FormField>
       </div>

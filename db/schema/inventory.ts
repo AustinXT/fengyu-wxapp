@@ -111,11 +111,11 @@ export const inventorySkus = pgTable(
 )
 
 /**
- * 销售 SKU 与库存 SKU 的履约映射。
+ * 销售 SKU 的库存组成明细。
  *
  * 销售目录与进销存目录使用不同 SKU 主数据：前者承载定价与服务语义，后者承载
- * 采购与库存核算语义。家居产品提货时必须通过本表选择实际扣减的库存 SKU，
- * 不允许再按 SKU ID 或产品编号猜测匹配。
+ * 采购与库存核算语义。本表定义每 1 件家居产品销售 SKU 固定包含的库存 SKU
+ * 及数量；提货时按组成整套扣减，不允许由操作人任选其一。
  */
 export const inventorySkuProductSkuMappings = pgTable(
   'inventory_sku_product_sku_mappings',
@@ -127,6 +127,8 @@ export const inventorySkuProductSkuMappings = pgTable(
     inventorySkuId: text('inventory_sku_id')
       .notNull()
       .references(() => inventorySkus.skuId),
+    /** 每提货 1 件销售 SKU 需要扣减的库存 SKU 数量。 */
+    quantityPerSaleUnit: integer('quantity_per_sale_unit').notNull().default(1),
     isActive: boolean('is_active').notNull().default(true),
     createdBy: varchar('created_by', { length: 30 }).references(
       () => staffWechatUsers.employeeId,
@@ -147,6 +149,10 @@ export const inventorySkuProductSkuMappings = pgTable(
     index('idx_inventory_product_sku_mappings_active')
       .on(table.productSkuId)
       .where(sql`${table.isActive} = true`),
+    check(
+      'chk_inventory_product_sku_mapping_quantity',
+      sql`${table.quantityPerSaleUnit} > 0`,
+    ),
   ],
 )
 

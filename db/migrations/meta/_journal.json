@@ -141,6 +141,13 @@
       "when": 1786629678000,
       "tag": "0019_system_diagnostics_permission",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1786632884823,
+      "tag": "0020_woozy_scarlet_spider",
+      "breakpoints": true
     }
   ]
 }

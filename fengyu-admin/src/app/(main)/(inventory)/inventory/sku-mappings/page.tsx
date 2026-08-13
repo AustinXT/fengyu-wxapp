@@ -1,7 +1,7 @@
 import { Suspense } from 'react'
 import {
-  listInventorySkuMappingOptions,
-  listInventorySkuMappings,
+  listInventorySkuCompositionOptions,
+  listInventorySkuCompositions,
 } from '@/actions/inventory/mappings'
 import { getSession } from '@/lib/auth'
 import { hasUiCapability } from '@/lib/permission-contract'
@@ -17,16 +17,14 @@ export default async function Page({
   searchParams: Promise<Record<string, string | undefined>>
 }) {
   const params = await searchParams
-  const onlyActive = params.status === 'active'
-    ? true
-    : params.status === 'inactive'
-      ? false
-      : undefined
+  const status = ['configured', 'unconfigured', 'invalid'].includes(params.status ?? '')
+    ? params.status as 'configured' | 'unconfigured' | 'invalid'
+    : undefined
   const session = await getSession()
   requireAllUiPageCapabilities(session, ['inventory:stock_list'])
   const [rows, options] = await Promise.all([
-    listInventorySkuMappings({ keyword: params.q, onlyActive }),
-    listInventorySkuMappingOptions(),
+    listInventorySkuCompositions({ keyword: params.q, status }),
+    listInventorySkuCompositionOptions(),
   ])
   const canCreate = hasUiCapability(session.permissions.actions, 'inventory:create')
   const canUpdate = hasUiCapability(session.permissions.actions, 'inventory:update')

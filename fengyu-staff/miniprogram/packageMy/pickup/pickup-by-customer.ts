@@ -30,7 +30,9 @@ interface PickupInventorySkuOption {
   productCode: string
   productName: string | null
   specName: string | null
+  quantityPerSaleUnit: number
   availableQuantity: number
+  requiredQuantity: number
   label: string
 }
 
@@ -70,8 +72,7 @@ Page({
       productName: '',
       remaining: 0,
       inventorySkuOptions: [] as PickupInventorySkuOption[],
-      inventorySkuId: '',
-      inventorySkuLabel: '',
+      inventoryReady: false,
       loadingInventorySkuOptions: false,
       quantity: 1,
       remark: '',
@@ -155,8 +156,7 @@ Page({
         productName: formatProductName(item.productName, item.specName),
         remaining: item.remaining,
         inventorySkuOptions: [],
-        inventorySkuId: '',
-        inventorySkuLabel: '',
+        inventoryReady: false,
         loadingInventorySkuOptions: true,
         quantity: 1,
         remark: '',
@@ -168,32 +168,35 @@ Page({
         'order.pickupInventorySkuOptions',
         { saleItemId: item.saleItemId },
       )
-      const options = inventorySkuOptions || []
+      const options = (inventorySkuOptions || []).map((option) => ({
+        ...option,
+        requiredQuantity: option.quantityPerSaleUnit,
+      }))
       this.setData({
         'pickupDialog.inventorySkuOptions': options,
-        'pickupDialog.inventorySkuId': '',
-        'pickupDialog.inventorySkuLabel': '',
+        'pickupDialog.inventoryReady': options.length > 0
+          && options.every((option) => option.availableQuantity >= option.requiredQuantity),
         'pickupDialog.loadingInventorySkuOptions': false,
       })
     } catch (err: any) {
       this.setData({ 'pickupDialog.loadingInventorySkuOptions': false })
-      wx.showToast({ title: err?.message || '加载库存 SKU 失败', icon: 'none' })
+      wx.showToast({ title: err?.message || '加载销售商品组成失败', icon: 'none' })
     }
-  },
-
-  onPickupInventorySkuChange(e: WechatMiniprogram.PickerChange) {
-    const index = Number(e.detail.value)
-    const selected = this.data.pickupDialog.inventorySkuOptions[index]
-    if (!selected) return
-    this.setData({
-      'pickupDialog.inventorySkuId': selected.inventorySkuId,
-      'pickupDialog.inventorySkuLabel': selected.label,
-    })
   },
 
   onPickupQtyInput(e: WechatMiniprogram.Input) {
     const v = parseInt(e.detail.value, 10)
-    this.setData({ 'pickupDialog.quantity': isNaN(v) || v < 1 ? 1 : v })
+    const quantity = isNaN(v) || v < 1 ? 1 : v
+    const options = this.data.pickupDialog.inventorySkuOptions.map((option) => ({
+      ...option,
+      requiredQuantity: option.quantityPerSaleUnit * quantity,
+    }))
+    this.setData({
+      'pickupDialog.quantity': quantity,
+      'pickupDialog.inventorySkuOptions': options,
+      'pickupDialog.inventoryReady': options.length > 0
+        && options.every((option) => option.availableQuantity >= option.requiredQuantity),
+    })
   },
 
   onPickupRemarkInput(e: WechatMiniprogram.Input) {
@@ -211,20 +214,19 @@ Page({
       wx.showToast({ title: `数量必须在 1 到 ${d.remaining} 之间`, icon: 'none' })
       return
     }
-    if (!d.inventorySkuId) {
-      wx.showToast({ title: '该商品尚未配置可提货的库存 SKU', icon: 'none' })
+    if (d.inventorySkuOptions.length === 0) {
+      wx.showToast({ title: '该商品尚未配置库存组成', icon: 'none' })
       return
     }
-    const inventorySku = d.inventorySkuOptions.find((item) => item.inventorySkuId === d.inventorySkuId)
-    if (!inventorySku || d.quantity > inventorySku.availableQuantity) {
-      wx.showToast({ title: `所选库存可用数量不足（当前 ${inventorySku?.availableQuantity || 0}）`, icon: 'none' })
+    const insufficient = d.inventorySkuOptions.find((item) => item.availableQuantity < item.requiredQuantity)
+    if (insufficient) {
+      wx.showToast({ title: `${insufficient.productName || '库存商品'}库存不足`, icon: 'none' })
       return
     }
     this.setData({ 'pickupDialog.submitting': true })
     try {
       await callStaffApi('order.createPickup', {
         saleItemId: d.saleItemId,
-        inventorySkuId: d.inventorySkuId,
         ...(d.sourceSaleItemIds.length > 1 ? { saleItemIds: d.sourceSaleItemIds } : {}),
         pickupQuantity: d.quantity,
         remark: d.remark || undefined,

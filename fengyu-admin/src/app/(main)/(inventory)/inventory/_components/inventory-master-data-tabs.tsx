@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 const TABS = [
   { href: '/inventory/skus', label: '库存商品' },
   { href: '/inventory/suppliers', label: '供应商' },
-  { href: '/inventory/sku-mappings', label: 'SKU 映射' },
+  { href: '/inventory/sku-mappings', label: '销售商品组成' },
   { href: '/inventory/promotions', label: '报货福利' },
 ] as const
 

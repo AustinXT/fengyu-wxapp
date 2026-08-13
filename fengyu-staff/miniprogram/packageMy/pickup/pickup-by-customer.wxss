@@ -244,6 +244,39 @@
   color: #B45309;
 }
 
+.composition-list {
+  background: #F7F7F7;
+  border-radius: 8rpx;
+  padding: 8rpx 16rpx;
+}
+
+.composition-row {
+  padding: 12rpx 0;
+  border-bottom: 1rpx solid #E8E8E8;
+}
+
+.composition-row:last-child {
+  border-bottom: 0;
+}
+
+.composition-name {
+  color: #333;
+  font-size: 25rpx;
+}
+
+.composition-stock {
+  margin-top: 6rpx;
+  font-size: 22rpx;
+}
+
+.composition-stock.enough {
+  color: #3D8A5A;
+}
+
+.composition-stock.shortage {
+  color: var(--color-primary);
+}
+
 .dialog-field {
   display: flex;
   flex-direction: column;

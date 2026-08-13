@@ -336,7 +336,7 @@ async function cascadeRefund(client, params) {
               updated_at = NOW()
         WHERE coupon_id = ANY($1::text[])
           AND status = '未使用'`,
-      [`sg-inviter-${saleOrderId}`, `sg-invitee-${saleOrderId}`],
+      [[`sg-inviter-${saleOrderId}`, `sg-invitee-${saleOrderId}`]],
     )
     revokedShareGiftCoupons = shareGiftRes.rowCount || 0
   }

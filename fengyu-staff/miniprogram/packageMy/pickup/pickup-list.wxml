@@ -22,6 +22,7 @@
       <view wx:if="{{item.inventoryProductName}}" class="card-foot">
         实际出库：{{item.inventoryProductCode || item.inventorySkuId}} {{item.inventoryProductName}}
       </view>
+      <view wx:else class="card-foot">按销售商品组成自动出库</view>
       <view class="card-meta">
         <text>{{item.clientName || '—'}}</text>
         <text wx:if="{{item.itemQuantity}}">进度 {{item.itemPickedUpQuantity}}/{{item.itemQuantity}}</text>

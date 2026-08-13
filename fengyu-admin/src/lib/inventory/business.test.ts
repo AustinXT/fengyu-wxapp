@@ -21,8 +21,10 @@ import {
   createMarketReplenishment,
   createPurchaseOrderFromItemCompanyReplenishment,
   createReturnForRestock,
+  createSelfPurchasedReceipt,
   createStoreAllocation,
   createStoreReplenishmentRequest,
+  listMarketEmployeeOptions,
   quoteMarketReplenishmentPrice,
   quoteMarketReplenishmentPrices,
   receiveItemCompanyShipment,
@@ -46,6 +48,14 @@ const PRICE_SESSION = {
   phone: '13800000000',
   roles: [{ role: 'admin', scopeId: 'HQ', scopeType: '总部' }],
   permissions: { actions: ['inventory:price_view'], scopeStoreIds: [] },
+} as never
+
+const SELF_PURCHASE_SESSION = {
+  employeeId: 'E001',
+  name: '测试用户',
+  phone: '13800000000',
+  roles: [{ role: 'admin', scopeId: 'HQ', scopeType: '总部' }],
+  permissions: { actions: ['inventory:self_purchase_receive'], scopeStoreIds: [] },
 } as never
 
 const CANCELLATION_REQUEST_SESSION = {
@@ -447,6 +457,44 @@ describe('inventory business action input guards', () => {
       marketId: 'M1', employeeId: 'E002', items: [{ lotId: 1, quantity: 1 }],
     })).rejects.toThrow('员工不属于当前市场')
     expect(txExecute).toHaveBeenCalledTimes(3)
+  })
+
+  it('员工购候选项只返回所选市场组织树中的在职员工', async () => {
+    vi.mocked(db.execute)
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([{
+        location_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
+      }] as never)
+      .mockResolvedValueOnce([
+        { employee_id: 'E001', name: '员工甲' },
+        { employee_id: 'E002', name: null },
+      ] as never)
+
+    await expect(listMarketEmployeeOptions(SESSION, 'M1')).resolves.toEqual([
+      { employeeId: 'E001', name: '员工甲' },
+      { employeeId: 'E002', name: 'E002' },
+    ])
+    expect(renderSql(vi.mocked(db.execute).mock.calls[3][0])).toContain('employee.is_resigned = false')
+  })
+
+  it('自采入库必须引用有效且启用的供应商实体', async () => {
+    const txExecute = vi.fn()
+      .mockResolvedValueOnce([{
+        location_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
+      }])
+      .mockResolvedValueOnce([])
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+    } as never))
+
+    await expect(createSelfPurchasedReceipt(SELF_PURCHASE_SESSION, {
+      marketId: 'M1',
+      supplierId: 'SUP-NOT-FOUND',
+      items: [{ skuId: 'SELF-SKU', quantity: 1 }],
+    })).rejects.toThrow('供应商不存在或已停用')
+    expect(txExecute).toHaveBeenCalledTimes(2)
   })
 
   it('已由市场库存履约的门店报货不能再次进入市场报货', async () => {

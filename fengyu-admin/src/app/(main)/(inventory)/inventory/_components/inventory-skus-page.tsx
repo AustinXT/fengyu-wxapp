@@ -25,7 +25,6 @@ import { useUrlFilters } from '@/lib/hooks/use-url-filters'
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
 
 type SkuForm = {
-  productCode: string
   productName: string
   specName: string
   supplier: string
@@ -63,7 +62,6 @@ function text(value: string | null | undefined): string {
 
 function emptyForm(): SkuForm {
   return {
-    productCode: '',
     productName: '',
     specName: '',
     supplier: '',
@@ -88,7 +86,6 @@ function emptyForm(): SkuForm {
 
 function formFromRow(row: InventorySkuRow): SkuForm {
   return {
-    productCode: row.productCode,
     productName: row.productName,
     specName: text(row.specName),
     supplier: text(row.supplier),
@@ -302,7 +299,6 @@ function SkuFormDialog({
     setSubmitting(true)
     try {
       const input: InventorySkuInput = {
-        productCode: form.productCode,
         productName: form.productName,
         specName: form.specName,
         supplier: form.supplier,
@@ -346,7 +342,11 @@ function SkuFormDialog({
         <section className="space-y-3">
           <h3 className="text-sm font-medium">基础资料</h3>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field label="产品编号 *"><Input value={form.productCode} onChange={(event) => setField('productCode', event.target.value)} /></Field>
+            <Field label="产品编号">
+              <div className="flex min-h-9 items-center rounded-[var(--radius)] border border-[var(--border)] bg-[var(--muted)] px-3 text-sm text-[#666666]">
+                {row?.productCode ?? '保存后由系统自动生成'}
+              </div>
+            </Field>
             <Field label="产品名称 *"><Input value={form.productName} onChange={(event) => setField('productName', event.target.value)} /></Field>
             <Field label="规格"><Input value={form.specName} onChange={(event) => setField('specName', event.target.value)} /></Field>
             <Field label="供货商"><Input value={form.supplier} onChange={(event) => setField('supplier', event.target.value)} /></Field>

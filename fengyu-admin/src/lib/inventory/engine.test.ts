@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const { mockDb, mockGetSession } = vi.hoisted(() => ({
   mockDb: {
     execute: vi.fn(),
+    insert: vi.fn(),
     select: vi.fn(),
     update: vi.fn(),
     transaction: vi.fn(),
@@ -28,6 +29,8 @@ import {
   confirmInventoryCoreReceive,
   createInventoryCoreDoc,
   createInventoryPromotionPlan,
+  createInventorySku,
+  createInventorySupplier,
   disableInventoryPromotionPlan,
   getInventoryCoreDocById,
   rejectInventoryCoreDoc,
@@ -356,6 +359,88 @@ describe('库存 SKU 来源与价格保护', () => {
     mockDb.select.mockReset()
   })
 
+  it('库存商品编号按上海日期和当日序号由系统生成', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-13T04:00:00.000Z'))
+    try {
+      const values = vi.fn().mockResolvedValue(undefined)
+      const txExecute = vi.fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ value: 'INV-SKU-20260813-0009' }])
+      mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
+        execute: txExecute,
+        insert: vi.fn(() => ({ values })),
+      }))
+
+      await expect(createInventorySku({ productName: '测试商品' })).resolves.toEqual({
+        success: true,
+        skuId: 'INV-SKU-20260813-0010',
+      })
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({
+        skuId: 'INV-SKU-20260813-0010',
+        productCode: 'INV-SKU-20260813-0010',
+        productName: '测试商品',
+      }))
+      expect(renderSql(txExecute.mock.calls[0]?.[0])).toContain('pg_advisory_xact_lock')
+      expect(renderSql(txExecute.mock.calls[0]?.[0])).toContain('inventory_skus:INV-SKU:20260813')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('福利方案编号按上海日期和当日序号由系统生成', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-13T04:00:00.000Z'))
+    try {
+      mockDb.select.mockReturnValueOnce(selectWithoutLimit([{
+        skuId: 'SKU-1',
+        productName: '测试商品',
+        marketPurchasePrice: '100',
+      }]))
+      const values = vi.fn().mockResolvedValue(undefined)
+      const txExecute = vi.fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ value: 'PROMO-20260813-0041' }])
+      mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
+        execute: txExecute,
+        insert: vi.fn(() => ({ values })),
+      }))
+
+      await createInventoryPromotionPlan({
+        name: '测试福利',
+        startsAt: '2026-08-13',
+        endsAt: '2026-08-31',
+        items: [{ skuId: 'SKU-1', marketUnitDiscount: 10 }],
+      })
+
+      expect(values.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+        planNo: 'PROMO-20260813-0042',
+        name: '测试福利',
+      }))
+      expect(renderSql(txExecute.mock.calls[0]?.[0])).toContain('pg_advisory_xact_lock')
+      expect(renderSql(txExecute.mock.calls[0]?.[0])).toContain('inventory_promotion_plans:PROMO:20260813')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('供应商编号始终由系统生成并忽略调用方伪造编号', async () => {
+    const values = vi.fn().mockResolvedValue(undefined)
+    mockDb.insert.mockReturnValueOnce({ values })
+
+    const result = await createInventorySupplier({
+      supplierId: 'MANUAL-SUPPLIER-ID',
+      name: '测试供应商',
+    } as never)
+
+    expect(result.supplierId).toMatch(/^INV-SUP-[0-9a-f-]{36}$/)
+    expect(result.supplierId).not.toBe('MANUAL-SUPPLIER-ID')
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      supplierId: result.supplierId,
+      name: '测试供应商',
+    }))
+  })
+
   it('创建后不能跨市场或转换库存 SKU 来源', async () => {
     mockDb.select.mockImplementation(() => selectWithLimit([{
       accountingPrice: null,
@@ -407,7 +492,6 @@ describe('库存 SKU 来源与价格保护', () => {
 
   it('福利方案不能传入市场基础价覆盖产品资料', async () => {
     await expect(createInventoryPromotionPlan({
-      planNo: 'PROMO-1',
       name: '福利方案',
       startsAt: '2026-08-01',
       endsAt: '2026-08-31',
@@ -421,7 +505,6 @@ describe('库存 SKU 来源与价格保护', () => {
 
   it('组合福利必须配置至少两种不同产品且每项都有数量下限', async () => {
     const baseInput = {
-      planNo: 'COMBO-1',
       name: '组合福利',
       startsAt: '2026-08-01',
       endsAt: '2026-08-31',
@@ -453,7 +536,6 @@ describe('库存 SKU 来源与价格保护', () => {
   it('福利方案创建和更新必须具备价格查看权限', async () => {
     vi.mocked(hasPermission).mockReturnValueOnce(false).mockReturnValueOnce(false)
     const input = {
-      planNo: 'PROMO-1',
       name: '福利方案',
       startsAt: '2026-08-01',
       endsAt: '2026-08-31',
@@ -1162,7 +1244,6 @@ describe('全局福利方案引擎权限', () => {
     }))
 
     await expect(updateInventoryPromotionPlan('INV-PROMO-GLOBAL', {
-      planNo: 'GLOBAL-2',
       name: '修改后的全局方案',
       startsAt: '2026-01-01',
       endsAt: '2026-12-31',

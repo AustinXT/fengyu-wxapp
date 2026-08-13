@@ -52,9 +52,9 @@ import {
   type InventoryPromotionPlanRow,
   type InventoryPromotionRuleType,
   type InventorySkuInput,
-  type InventorySkuMappingInput,
-  type InventorySkuMappingOptions,
-  type InventorySkuMappingRow,
+  type InventoryCompositionInput,
+  type InventoryCompositionOptions,
+  type InventoryCompositionRow,
   type InventorySkuRow,
   type InventorySkuSourceType,
   type InventorySupplierInput,
@@ -690,6 +690,38 @@ async function generateDocNo(tx: Tx, docType: InventoryDocType): Promise<string>
   return `${prefix}-${ymd}-${String(seq).padStart(4, '0')}`
 }
 
+async function generateInventorySkuNo(tx: Tx): Promise<string> {
+  const prefix = 'INV-SKU'
+  const ymd = shanghaiYmd()
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`inventory_skus:${prefix}:${ymd}`}))`)
+  const rows = await tx.execute(sql`
+    SELECT product_code AS value
+      FROM inventory_skus
+     WHERE product_code LIKE ${`${prefix}-${ymd}-%`}
+  ORDER BY product_code DESC
+     LIMIT 1
+  `)
+  const latest = (rows as unknown as Array<{ value: string }>)[0]?.value
+  const seq = latest ? Number(latest.slice(-4)) + 1 : 1
+  return `${prefix}-${ymd}-${String(seq).padStart(4, '0')}`
+}
+
+async function generateInventoryPromotionNo(tx: Tx): Promise<string> {
+  const prefix = 'PROMO'
+  const ymd = shanghaiYmd()
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`inventory_promotion_plans:${prefix}:${ymd}`}))`)
+  const rows = await tx.execute(sql`
+    SELECT plan_no AS value
+      FROM inventory_promotion_plans
+     WHERE plan_no LIKE ${`${prefix}-${ymd}-%`}
+  ORDER BY plan_no DESC
+     LIMIT 1
+  `)
+  const latest = (rows as unknown as Array<{ value: string }>)[0]?.value
+  const seq = latest ? Number(latest.slice(-4)) + 1 : 1
+  return `${prefix}-${ymd}-${String(seq).padStart(4, '0')}`
+}
+
 async function lockLotById(
   tx: Tx,
   lotId: number,
@@ -1196,9 +1228,7 @@ export const listInventorySkus = withPermission(
 export const createInventorySku = withPermission(
   'inventory:create',
   async (session, input: InventorySkuInput): Promise<{ success: true; skuId: string }> => {
-    const productCode = normalizeRequired(input.productCode, '产品编号')
     const productName = normalizeRequired(input.productName, '产品名称')
-    const skuId = normalizeText(input.skuId) ?? productCode
     const sourceType = input.sourceType ?? '供应链'
     if (!INVENTORY_SKU_SOURCE_TYPES.includes(sourceType)) {
       throw new ApiError('INVALID_PARAMS', '无效库存商品来源')
@@ -1206,24 +1236,28 @@ export const createInventorySku = withPermission(
     assertSelfPurchasedSkuEditor(session, sourceType)
     const ownerMarketId = await normalizeSkuOwnerMarket(session, sourceType, input.ownerMarketId)
     const priceValues = skuPriceValues(input, canViewPrice(session))
-    await db.insert(inventorySkus).values({
-      skuId,
-      productCode,
-      productName,
-      specName: normalizeText(input.specName),
-      supplier: normalizeText(input.supplier),
-      manufacturer: normalizeText(input.manufacturer),
-      brand: normalizeText(input.brand),
-      productSeries: normalizeText(input.productSeries),
-      purchaseCategory: normalizeText(input.purchaseCategory),
-      sourceType,
-      ownerMarketId,
-      ...priceValues,
-      isReportable: input.isReportable ?? true,
-      isActive: input.isActive ?? true,
-      remark: normalizeText(input.remark),
+    const skuId = await db.transaction(async (tx) => {
+      const generatedNo = await generateInventorySkuNo(tx)
+      await tx.insert(inventorySkus).values({
+        skuId: generatedNo,
+        productCode: generatedNo,
+        productName,
+        specName: normalizeText(input.specName),
+        supplier: normalizeText(input.supplier),
+        manufacturer: normalizeText(input.manufacturer),
+        brand: normalizeText(input.brand),
+        productSeries: normalizeText(input.productSeries),
+        purchaseCategory: normalizeText(input.purchaseCategory),
+        sourceType,
+        ownerMarketId,
+        ...priceValues,
+        isReportable: input.isReportable ?? true,
+        isActive: input.isActive ?? true,
+        remark: normalizeText(input.remark),
+      })
+      return generatedNo
     })
-    await logOperation(session, 'create', 'inventory_skus', skuId, { productCode, productName })
+    await logOperation(session, 'create', 'inventory_skus', skuId, { productCode: skuId, productName })
     revalidatePath('/inventory')
     revalidatePath('/inventory/skus')
     return { success: true, skuId }
@@ -1268,7 +1302,6 @@ export const updateInventorySku = withPermission(
     await db
       .update(inventorySkus)
       .set({
-        productCode: normalizeText(input.productCode) ?? undefined,
         productName: normalizeText(input.productName) ?? undefined,
         specName: input.specName === undefined ? undefined : normalizeText(input.specName),
         supplier: input.supplier === undefined ? undefined : normalizeText(input.supplier),
@@ -1291,64 +1324,88 @@ export const updateInventorySku = withPermission(
   },
 )
 
-function inventorySkuMappingRow(row: {
-  mapping: typeof inventorySkuProductSkuMappings.$inferSelect
-  productSku: typeof productSkus.$inferSelect
-  inventorySku: typeof inventorySkus.$inferSelect
-}): InventorySkuMappingRow {
-  return {
-    id: row.mapping.id,
-    productSkuId: row.mapping.productSkuId,
-    productSkuName: row.productSku.specName,
-    productSkuEnabled: row.productSku.isEnabled,
-    inventorySkuId: row.mapping.inventorySkuId,
-    inventorySkuCode: row.inventorySku.productCode,
-    inventorySkuName: row.inventorySku.productName,
-    inventorySkuActive: row.inventorySku.isActive,
-    isActive: row.mapping.isActive,
-    createdAt: row.mapping.createdAt.toISOString(),
-    updatedAt: row.mapping.updatedAt.toISOString(),
-  }
-}
-
-export const listInventorySkuMappings = withPermission(
+export const listInventorySkuCompositions = withPermission(
   'inventory:stock_list',
   async (
     _session,
-    filters: { keyword?: string; onlyActive?: boolean } = {},
-  ): Promise<InventorySkuMappingRow[]> => {
-    const conditions: SQL[] = []
-    if (filters.onlyActive !== undefined) {
-      conditions.push(eq(inventorySkuProductSkuMappings.isActive, filters.onlyActive))
-    }
-    if (filters.keyword) {
-      const pattern = `%${filters.keyword.replace(/[%_]/g, '\\$&')}%`
-      conditions.push(or(
-        ilike(inventorySkuProductSkuMappings.productSkuId, pattern),
-        ilike(productSkus.specName, pattern),
-        ilike(inventorySkuProductSkuMappings.inventorySkuId, pattern),
-        ilike(inventorySkus.productCode, pattern),
-        ilike(inventorySkus.productName, pattern),
-      )!)
-    }
-    const rows = await db
-      .select({
+    filters: { keyword?: string; status?: 'configured' | 'unconfigured' | 'invalid' } = {},
+  ): Promise<InventoryCompositionRow[]> => {
+    const [productRows, componentRows] = await Promise.all([
+      db
+        .select({
+          productSkuId: productSkus.skuId,
+          productSkuName: productSkus.specName,
+          productSkuEnabled: productSkus.isEnabled,
+        })
+        .from(productSkus)
+        .where(and(
+          eq(productSkus.productType, '家居产品'),
+          isNull(productSkus.deletedAt),
+        ))
+        .orderBy(asc(productSkus.specName), asc(productSkus.skuId)),
+      db.select({
         mapping: inventorySkuProductSkuMappings,
-        productSku: productSkus,
         inventorySku: inventorySkus,
       })
       .from(inventorySkuProductSkuMappings)
-      .innerJoin(productSkus, eq(inventorySkuProductSkuMappings.productSkuId, productSkus.skuId))
       .innerJoin(inventorySkus, eq(inventorySkuProductSkuMappings.inventorySkuId, inventorySkus.skuId))
-      .where(conditions.length > 0 ? and(...conditions) : undefined)
-      .orderBy(asc(productSkus.specName), asc(inventorySkus.productName))
-    return rows.map(inventorySkuMappingRow)
+      .where(eq(inventorySkuProductSkuMappings.isActive, true))
+      .orderBy(asc(inventorySkus.productName), asc(inventorySkus.productCode)),
+    ])
+
+    const componentsByProduct = new Map<string, InventoryCompositionRow['components']>()
+    const updatedAtByProduct = new Map<string, string>()
+    for (const row of componentRows) {
+      const components = componentsByProduct.get(row.mapping.productSkuId) ?? []
+      components.push({
+        mappingId: row.mapping.id,
+        inventorySkuId: row.mapping.inventorySkuId,
+        inventorySkuCode: row.inventorySku.productCode,
+        inventorySkuName: row.inventorySku.productName,
+        inventorySkuSpecName: row.inventorySku.specName,
+        inventorySkuActive: row.inventorySku.isActive,
+        quantityPerSaleUnit: row.mapping.quantityPerSaleUnit,
+      })
+      componentsByProduct.set(row.mapping.productSkuId, components)
+      const iso = row.mapping.updatedAt.toISOString()
+      if (!updatedAtByProduct.has(row.mapping.productSkuId) || iso > updatedAtByProduct.get(row.mapping.productSkuId)!) {
+        updatedAtByProduct.set(row.mapping.productSkuId, iso)
+      }
+    }
+
+    const keyword = filters.keyword?.trim().toLocaleLowerCase() ?? ''
+    return productRows
+      .map((product): InventoryCompositionRow => {
+        const components = componentsByProduct.get(product.productSkuId) ?? []
+        const configurationStatus = components.length === 0
+          ? 'unconfigured'
+          : components.every((component) => component.inventorySkuActive)
+            ? 'configured'
+            : 'invalid'
+        return {
+          ...product,
+          components,
+          configurationStatus,
+          updatedAt: updatedAtByProduct.get(product.productSkuId) ?? null,
+        }
+      })
+      .filter((row) => !filters.status || row.configurationStatus === filters.status)
+      .filter((row) => !keyword || [
+        row.productSkuId,
+        row.productSkuName,
+        ...row.components.flatMap((component) => [
+          component.inventorySkuId,
+          component.inventorySkuCode,
+          component.inventorySkuName,
+          component.inventorySkuSpecName ?? '',
+        ]),
+      ].some((value) => value.toLocaleLowerCase().includes(keyword)))
   },
 )
 
-export const listInventorySkuMappingOptions = withPermission(
+export const listInventorySkuCompositionOptions = withPermission(
   'inventory:stock_list',
-  async (_session): Promise<InventorySkuMappingOptions> => {
+  async (_session): Promise<InventoryCompositionOptions> => {
     const [productRows, inventoryRows] = await Promise.all([
       db
         .select({ skuId: productSkus.skuId, specName: productSkus.specName })
@@ -1374,74 +1431,115 @@ export const listInventorySkuMappingOptions = withPermission(
   },
 )
 
-export const createInventorySkuMapping = withPermission(
-  'inventory:create',
-  async (session, input: InventorySkuMappingInput): Promise<{ success: true; id: number }> => {
+async function saveInventorySkuComposition(
+  session: AuthSession,
+  input: InventoryCompositionInput,
+): Promise<{ success: true; productSkuId: string }> {
     const productSkuId = normalizeRequired(input.productSkuId, '销售 SKU')
-    const inventorySkuId = normalizeRequired(input.inventorySkuId, '库存 SKU')
-    const [[productSku], [inventorySku], [existing]] = await Promise.all([
-      db
-        .select({ skuId: productSkus.skuId, productType: productSkus.productType, isEnabled: productSkus.isEnabled })
-        .from(productSkus)
-        .where(and(eq(productSkus.skuId, productSkuId), isNull(productSkus.deletedAt)))
-        .limit(1),
-      db
-        .select({ skuId: inventorySkus.skuId, isActive: inventorySkus.isActive })
-        .from(inventorySkus)
-        .where(eq(inventorySkus.skuId, inventorySkuId))
-        .limit(1),
-      db
-        .select({ id: inventorySkuProductSkuMappings.id })
-        .from(inventorySkuProductSkuMappings)
+    if (!Array.isArray(input.components) || input.components.length === 0) {
+      throw new ApiError('INVALID_PARAMS', '至少添加一个库存商品')
+    }
+    const components = input.components.map((component) => ({
+      inventorySkuId: normalizeRequired(component.inventorySkuId, '库存 SKU'),
+      quantityPerSaleUnit: Number(component.quantityPerSaleUnit),
+    }))
+    if (components.some((component) => !Number.isInteger(component.quantityPerSaleUnit) || component.quantityPerSaleUnit <= 0)) {
+      throw new ApiError('INVALID_PARAMS', '组成数量必须为正整数')
+    }
+    if (new Set(components.map((component) => component.inventorySkuId)).size !== components.length) {
+      throw new ApiError('INVALID_PARAMS', '同一库存商品不能重复添加')
+    }
+
+    const result = await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`inventory-composition:${productSkuId}`})::bigint)`)
+      const [[productSku], currentRows, inventoryRows] = await Promise.all([
+        tx
+          .select({ skuId: productSkus.skuId, productType: productSkus.productType })
+          .from(productSkus)
+          .where(and(eq(productSkus.skuId, productSkuId), isNull(productSkus.deletedAt)))
+          .limit(1),
+        tx
+          .select()
+          .from(inventorySkuProductSkuMappings)
+          .where(and(
+            eq(inventorySkuProductSkuMappings.productSkuId, productSkuId),
+            eq(inventorySkuProductSkuMappings.isActive, true),
+          )),
+        tx
+          .select({ skuId: inventorySkus.skuId, isActive: inventorySkus.isActive })
+          .from(inventorySkus)
+          .where(inArray(inventorySkus.skuId, components.map((component) => component.inventorySkuId))),
+      ])
+      if (!productSku || productSku.productType !== '家居产品') {
+        throw new ApiError('INVALID_PARAMS', '销售 SKU 不存在或不是家居产品')
+      }
+      if (inventoryRows.length !== components.length || inventoryRows.some((row) => !row.isActive)) {
+        throw new ApiError('INVALID_PARAMS', '部分库存商品不存在或已停用')
+      }
+
+      const currentUpdatedAt = currentRows.length === 0
+        ? null
+        : new Date(Math.max(...currentRows.map((row) => row.updatedAt.getTime()))).toISOString()
+      if (currentUpdatedAt !== input.expectedUpdatedAt) {
+        throw new ApiError('CONFLICT', '销售商品组成已被其他人修改，请刷新后重试')
+      }
+      const before = currentRows.map((row) => ({
+        inventorySkuId: row.inventorySkuId,
+        quantityPerSaleUnit: row.quantityPerSaleUnit,
+      }))
+      const now = new Date()
+      await tx
+        .update(inventorySkuProductSkuMappings)
+        .set({ isActive: false, updatedAt: now })
         .where(and(
           eq(inventorySkuProductSkuMappings.productSkuId, productSkuId),
-          eq(inventorySkuProductSkuMappings.inventorySkuId, inventorySkuId),
+          eq(inventorySkuProductSkuMappings.isActive, true),
         ))
-        .limit(1),
-    ])
-    if (!productSku || productSku.productType !== '家居产品' || !productSku.isEnabled) {
-      throw new ApiError('INVALID_PARAMS', '销售 SKU 不存在、已停用或不是家居产品')
-    }
-    if (!inventorySku || !inventorySku.isActive) {
-      throw new ApiError('INVALID_PARAMS', '库存 SKU 不存在或已停用')
-    }
-    if (existing) throw new ApiError('CONFLICT', '该销售 SKU 与库存 SKU 的映射已存在')
-    const [created] = await db
-      .insert(inventorySkuProductSkuMappings)
-      .values({ productSkuId, inventorySkuId, createdBy: session.employeeId })
-      .returning({ id: inventorySkuProductSkuMappings.id })
-    await logOperation(session, 'create', 'inventory_sku_product_sku_mapping', String(created.id), {
-      productSkuId,
-      inventorySkuId,
+      for (const component of components) {
+        await tx
+          .insert(inventorySkuProductSkuMappings)
+          .values({
+            productSkuId,
+            inventorySkuId: component.inventorySkuId,
+            quantityPerSaleUnit: component.quantityPerSaleUnit,
+            isActive: true,
+            createdBy: session.employeeId,
+            updatedAt: now,
+          })
+          .onConflictDoUpdate({
+            target: [
+              inventorySkuProductSkuMappings.productSkuId,
+              inventorySkuProductSkuMappings.inventorySkuId,
+            ],
+            set: {
+              quantityPerSaleUnit: component.quantityPerSaleUnit,
+              isActive: true,
+              updatedAt: now,
+            },
+          })
+      }
+      return { before, after: components }
     })
+    await logOperation(
+      session,
+      result.before.length === 0 ? 'create' : 'update',
+      'inventory_sku_composition',
+      productSkuId,
+      result,
+    )
     revalidatePath('/inventory')
     revalidatePath('/inventory/sku-mappings')
-    return { success: true, id: created.id }
-  },
+    return { success: true, productSkuId }
+}
+
+export const createInventorySkuComposition = withPermission(
+  'inventory:create',
+  saveInventorySkuComposition,
 )
 
-export const updateInventorySkuMapping = withPermission(
+export const updateInventorySkuComposition = withPermission(
   'inventory:update',
-  async (session, id: number, isActive: boolean): Promise<{ success: true }> => {
-    if (!Number.isInteger(id) || id <= 0) throw new ApiError('INVALID_PARAMS', '无效映射记录')
-    const [current] = await db
-      .select()
-      .from(inventorySkuProductSkuMappings)
-      .where(eq(inventorySkuProductSkuMappings.id, id))
-      .limit(1)
-    if (!current) throw new ApiError('NOT_FOUND', 'SKU 映射不存在')
-    await db
-      .update(inventorySkuProductSkuMappings)
-      .set({ isActive, updatedAt: new Date() })
-      .where(eq(inventorySkuProductSkuMappings.id, id))
-    await logOperation(session, 'update', 'inventory_sku_product_sku_mapping', String(id), {
-      productSkuId: current.productSkuId,
-      inventorySkuId: current.inventorySkuId,
-      isActive,
-    })
-    revalidatePath('/inventory/sku-mappings')
-    return { success: true }
-  },
+  saveInventorySkuComposition,
 )
 
 export const listInventoryLots = withPermission(
@@ -2786,7 +2884,7 @@ export const listInventorySuppliers = withPermission(
 export const createInventorySupplier = withPermission(
   'inventory:create',
   async (session, input: InventorySupplierInput): Promise<{ supplierId: string }> => {
-    const supplierId = normalizeText(input.supplierId) ?? `INV-SUP-${crypto.randomUUID()}`
+    const supplierId = `INV-SUP-${crypto.randomUUID()}`
     const name = normalizeRequired(input.name, '供应商名称')
     await db.insert(inventorySuppliers).values({
       supplierId,
@@ -3103,7 +3201,6 @@ export const createInventoryPromotionPlan = withPermission(
   'inventory:create',
   async (session, input: InventoryPromotionPlanInput): Promise<{ id: string }> => {
     assertPromotionPriceWritable(session)
-    const planNo = normalizeRequired(input.planNo, '方案编号')
     const name = normalizeRequired(input.name, '方案名称')
     const startsAt = normalizeYmd(input.startsAt, '开始日期')
     const endsAt = normalizeYmd(input.endsAt, '结束日期')
@@ -3116,7 +3213,9 @@ export const createInventoryPromotionPlan = withPermission(
     const items = normalizePromotionItems(input.items, ruleType)
     await assertPromotionSkus(items)
     const id = `INV-PROMO-${crypto.randomUUID()}`
+    let planNo = ''
     await db.transaction(async (tx) => {
+      planNo = await generateInventoryPromotionNo(tx)
       await tx.insert(inventoryPromotionPlans).values({
         id,
         planNo,
@@ -3156,7 +3255,6 @@ export const updateInventoryPromotionPlan = withPermission(
   ): Promise<{ success: true }> => {
     assertPromotionPriceWritable(session)
     const id = normalizeRequired(idInput, '福利方案')
-    const planNo = normalizeRequired(input.planNo, '方案编号')
     const name = normalizeRequired(input.name, '方案名称')
     const startsAt = normalizeYmd(input.startsAt, '开始日期')
     const endsAt = normalizeYmd(input.endsAt, '结束日期')
@@ -3176,7 +3274,6 @@ export const updateInventoryPromotionPlan = withPermission(
       await tx
         .update(inventoryPromotionPlans)
         .set({
-          planNo,
           name,
           startsAt,
           endsAt,
@@ -3200,7 +3297,7 @@ export const updateInventoryPromotionPlan = withPermission(
         remark: item.remark,
       })))
     })
-    await logOperation(session, 'inventory.promotion.update', 'inventory_promotion_plans', id, { planNo, scopeMarketId, ruleType })
+    await logOperation(session, 'inventory.promotion.update', 'inventory_promotion_plans', id, { planNo: current.planNo, scopeMarketId, ruleType })
     revalidatePath('/inventory/promotions')
     return { success: true }
   },

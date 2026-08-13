@@ -32,6 +32,19 @@ import { stores } from "./org";
 import { productSkus } from "./product";
 import { clientWechatUsers, staffWechatUsers } from "./user";
 
+export interface SaleItemInventoryCompositionComponentSnapshot {
+  inventorySkuId: string;
+  productCode: string;
+  productName: string;
+  specName: string | null;
+  quantityPerSaleUnit: number;
+}
+
+export interface SaleItemInventoryCompositionSnapshotV1 {
+  version: 1;
+  components: SaleItemInventoryCompositionComponentSnapshot[];
+}
+
 /**
  * 订单主表（四种单据统一模型）
  *
@@ -210,6 +223,12 @@ export const saleItems = pgTable(
     productName: text("product_name"),
     /** 商品类型快照（疗程卡/家居产品） */
     productType: productTypeEnum("product_type"),
+    /**
+     * 家居产品下单时冻结的库存组成。历史数据及非家居产品为 NULL；
+     * 历史空快照家居产品提货时读取当时最新组成，但不反向补写。
+     */
+    inventoryCompositionSnapshot: jsonb("inventory_composition_snapshot")
+      .$type<SaleItemInventoryCompositionSnapshotV1>(),
     /** 该行总次数（疗程卡：sku.session_count × quantity；非次数卡为 NULL）。是"行总次数"口径，已含 quantity。 */
     sessionCount: integer("session_count"),
     remainingSessions: integer("remaining_sessions"),

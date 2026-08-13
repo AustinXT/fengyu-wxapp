@@ -4,7 +4,7 @@
  */
 
 const pg = globalThis.__mocks__.pg
-const { createBoundCtx, createCtx } = require('../helpers')
+const { createBoundCtx, createNewUserCtx } = require('../helpers')
 
 let routes
 beforeEach(() => {
@@ -16,6 +16,13 @@ beforeEach(() => {
 })
 
 describe('points.balance', () => {
+  test('未注册或未绑定手机号 → PHONE_REQUIRED，且不查询积分', async () => {
+    const ctx = createNewUserCtx()
+
+    await expect(routes.balance(ctx)).rejects.toThrow(/PHONE_REQUIRED/)
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
   test('返回积分余额和等级名称（重构后：单表查询，levelBenefits/nextLevel 硬编码 null）', async () => {
     // 重构后 customer_points 表已去掉，仅从 client_wechat_users 读取 balance + member_level
     pg.query.mockResolvedValueOnce([{
@@ -77,6 +84,13 @@ describe('points.balance', () => {
 })
 
 describe('points.history', () => {
+  test('未注册或未绑定手机号 → PHONE_REQUIRED，且不查询流水', async () => {
+    const ctx = createNewUserCtx()
+
+    await expect(routes.history(ctx)).rejects.toThrow(/PHONE_REQUIRED/)
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
   test('返回积分变动记录', async () => {
     pg.query.mockResolvedValueOnce([
       { id: 'pt-1', type: '消费', amount: -100, ref_order_id: 'ord-1', created_at: '2025-06-01' },
@@ -110,6 +124,30 @@ describe('points.history', () => {
     const params = pg.query.mock.calls[0][1]
     expect(params).toContain(20)  // 默认 pageSize
     expect(params).toContain(0)   // 默认 offset
+  })
+
+  test.each([
+    [{ page: 0 }, /page 必须/],
+    [{ page: -1 }, /page 必须/],
+    [{ page: 1.5 }, /page 必须/],
+    [{ page: '1' }, /page 必须/],
+    [{ pageSize: 0 }, /pageSize 必须/],
+    [{ pageSize: -1 }, /pageSize 必须/],
+    [{ pageSize: 51 }, /pageSize 必须/],
+    [{ pageSize: 1.5 }, /pageSize 必须/],
+    [{ pageSize: '20' }, /pageSize 必须/],
+  ])('非法分页参数 %o → INVALID_PARAMS，且不查询流水', async (payload, message) => {
+    const ctx = createBoundCtx(payload)
+
+    await expect(routes.history(ctx)).rejects.toThrow(message)
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
+  test('分页 offset 超出安全整数 → INVALID_PARAMS', async () => {
+    const ctx = createBoundCtx({ page: Number.MAX_SAFE_INTEGER, pageSize: 50 })
+
+    await expect(routes.history(ctx)).rejects.toThrow(/page 超出允许范围/)
+    expect(pg.query).not.toHaveBeenCalled()
   })
 
   test('无记录返回空数组', async () => {

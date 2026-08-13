@@ -42,7 +42,6 @@ interface PromotionDraftItem {
 }
 
 interface PromotionForm {
-  planNo: string
   name: string
   ruleType: '单品阶梯' | '组合'
   startsAt: string
@@ -76,7 +75,6 @@ function newDraftItem(): PromotionDraftItem {
 function emptyForm(defaultMarketId = ''): PromotionForm {
   const today = todayYmd()
   return {
-    planNo: '',
     name: '',
     ruleType: '单品阶梯',
     startsAt: today,
@@ -90,7 +88,6 @@ function emptyForm(defaultMarketId = ''): PromotionForm {
 
 function toForm(row: InventoryPromotionPlanRow): PromotionForm {
   return {
-    planNo: row.planNo,
     name: row.name,
     ruleType: row.ruleType,
     startsAt: row.startsAt,
@@ -224,10 +221,9 @@ export default function InventoryPromotionsPage({
   }
 
   function validateAndBuildInput(): InventoryPromotionPlanInput | null {
-    const planNo = form.planNo.trim()
     const name = form.name.trim()
-    if (!planNo || !name) {
-      toast.error('请填写方案编号和方案名称')
+    if (!name) {
+      toast.error('请填写方案名称')
       return null
     }
     if (!form.startsAt || !form.endsAt) {
@@ -286,7 +282,6 @@ export default function InventoryPromotionsPage({
     }
 
     return {
-      planNo,
       name,
       ruleType: form.ruleType,
       startsAt: form.startsAt,
@@ -475,8 +470,10 @@ export default function InventoryPromotionsPage({
         <div className="mt-4 max-h-[68vh] space-y-5 overflow-y-auto pr-1">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <div className="space-y-2">
-              <label className="text-sm font-medium">方案编号 *</label>
-              <Input value={form.planNo} readOnly={readOnly} disabled={saving} onChange={(event) => setField('planNo', event.target.value)} />
+              <label className="text-sm font-medium">方案编号</label>
+              <div className="flex min-h-9 items-center rounded-[var(--radius)] border border-[var(--border)] bg-[var(--muted)] px-3 text-sm text-[#666666]">
+                {selectedPlan?.planNo ?? '保存后由系统自动生成'}
+              </div>
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">方案名称 *</label>

@@ -75,6 +75,50 @@ function roundMoney(value) {
   return Math.round((Number(value) || 0) * 100) / 100
 }
 
+async function loadInventoryCompositionSnapshots(client, items) {
+  const homeItems = [...new Map(
+    items.filter((item) => item.productType === '家居产品').map((item) => [item.skuId, item]),
+  ).values()]
+  if (homeItems.length === 0) return new Map()
+  const result = await client.query(
+    `SELECT mapping.product_sku_id, mapping.inventory_sku_id,
+            inventory.product_code, inventory.product_name, inventory.spec_name, inventory.is_active,
+            mapping.quantity_per_sale_unit
+       FROM inventory_sku_product_sku_mappings mapping
+       JOIN inventory_skus inventory ON inventory.sku_id = mapping.inventory_sku_id
+      WHERE mapping.is_active = TRUE
+        AND mapping.product_sku_id = ANY($1::text[])
+   ORDER BY inventory.product_name, inventory.product_code`,
+    [homeItems.map((item) => item.skuId)],
+  )
+  const snapshots = new Map()
+  const invalidProductSkuIds = new Set()
+  for (const row of result.rows) {
+    if (row.is_active === false) {
+      invalidProductSkuIds.add(row.product_sku_id)
+      continue
+    }
+    const snapshot = snapshots.get(row.product_sku_id) || { version: 1, components: [] }
+    snapshot.components.push({
+      inventorySkuId: row.inventory_sku_id,
+      productCode: row.product_code,
+      productName: row.product_name,
+      specName: row.spec_name,
+      quantityPerSaleUnit: Number(row.quantity_per_sale_unit),
+    })
+    snapshots.set(row.product_sku_id, snapshot)
+  }
+  const invalid = homeItems.find((item) => invalidProductSkuIds.has(item.skuId))
+  if (invalid) {
+    throw new Error(`INVALID_STATE: INVENTORY_COMPOSITION_INVALID: 商品「${invalid.productName || invalid.skuId}」的库存组成含停用商品`)
+  }
+  const missing = homeItems.find((item) => !snapshots.has(item.skuId))
+  if (missing) {
+    throw new Error(`INVALID_STATE: INVENTORY_COMPOSITION_MISSING: 商品「${missing.productName || missing.skuId}」尚未配置库存组成`)
+  }
+  return snapshots
+}
+
 /**
  * 顾客提货会写入库存单据和批次流水，必须等 WorkFine 期初库存核验完成。
  * 由外层提货事务持有状态行锁，避免切换重置与库存扣减交错。
@@ -1445,7 +1489,8 @@ async function create(ctx) {
     //   - zeroPayable（券/卡全额抵扣）：下方 deductPrepaidCardAtCreation 在 create 事务内即扣即结清；
     //   - 非 zeroPayable（部分储值卡 + 待付现金）：由 confirmOffline 扣卡（staffApi 唯一扣卡点，见 CLAUDE.md）。
 
-    // 创建订单明细
+    // 创建订单明细。家居产品在建单时冻结库存组成；未配置则整单回滚。
+    const compositionSnapshots = await loadInventoryCompositionSnapshots(client, itemDataList)
     for (let i = 0; i < itemDataList.length; i++) {
       const saleItemId = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
       const d = itemDataList[i]
@@ -1465,8 +1510,9 @@ async function create(ctx) {
           product_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received, pending_received,
-          sales_category, service_fee, is_shengmei, is_experience, is_manager_special
-        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, '0', $13, $14, $15, $16, $17, $18)`,
+          sales_category, service_fee, is_shengmei, is_experience, is_manager_special,
+          inventory_composition_snapshot
+        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, '0', $13, $14, $15, $16, $17, $18, $19::jsonb)`,
         [
           saleItemId, saleOrderId, storeId, d.skuId,
           d.productName, d.productType,
@@ -1481,6 +1527,7 @@ async function create(ctx) {
           d.isExperience === true,
           // is_manager_special 行级快照：从 product_skus.is_manager_special 拷贝（权威 = DB）
           d.isManagerSpecial === true,
+          compositionSnapshots.has(d.skuId) ? JSON.stringify(compositionSnapshots.get(d.skuId)) : null,
         ]
       )
     }
@@ -4011,6 +4058,8 @@ async function createConversion(ctx) {
       seq = parseInt(maxResult.rows[0].sale_item_id.slice(-4)) + 1
     }
 
+    const compositionSnapshots = await loadInventoryCompositionSnapshots(tx, inItems)
+
     // 6. 转出行 × N + 原子扣减可转换次数。服务中的预扣次数必须留在源卡上，
     // 后续 confirm 才会从这部分次数扣减。
     for (const d of outItems) {
@@ -4062,8 +4111,9 @@ async function createConversion(ctx) {
           sku_id, product_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received,
-          sales_category, service_fee, is_shengmei, is_experience, is_manager_special
-        ) VALUES ($1, $2, $3, '转入', $4, $5, $6, $7, $7, $8, $9, $10, $11, $11, $12, $13, $14, $15, $16)`,
+          sales_category, service_fee, is_shengmei, is_experience, is_manager_special,
+          inventory_composition_snapshot
+        ) VALUES ($1, $2, $3, '转入', $4, $5, $6, $7, $7, $8, $9, $10, $11, $11, $12, $13, $14, $15, $16, $17::jsonb)`,
         [
           saleItemId, convOrderId, storeId,
           d.skuId, d.productName, d.productType,
@@ -4074,6 +4124,7 @@ async function createConversion(ctx) {
           // 转入行从 product_skus.is_experience 快照写入（2026-04-26 ticket）
           d.isExperience === true,
           d.isManagerSpecial === true,
+          compositionSnapshots.has(d.skuId) ? JSON.stringify(compositionSnapshots.get(d.skuId)) : null,
         ]
       )
     }
@@ -4330,7 +4381,71 @@ async function generatePickupInventoryDocNo(client) {
   return `${prefix}-${ymd}-${String(seq).padStart(4, '0')}`
 }
 
-async function createPickupInventoryDoc(client, ctx, updatedItem, inventorySkuId, clientUserId, customerName, pickupQuantity, remark, idempotencyKey) {
+function parsePickupCompositionSnapshot(value) {
+  let snapshot = value
+  if (typeof snapshot === 'string') {
+    try { snapshot = JSON.parse(snapshot) } catch { return null }
+  }
+  if (!snapshot || snapshot.version !== 1 || !Array.isArray(snapshot.components) || snapshot.components.length === 0) return null
+  const components = []
+  for (const raw of snapshot.components) {
+    const quantity = Number(raw && raw.quantityPerSaleUnit)
+    if (!raw || !raw.inventorySkuId || !Number.isInteger(quantity) || quantity <= 0) return null
+    components.push({
+      inventorySkuId: String(raw.inventorySkuId),
+      productCode: String(raw.productCode || raw.inventorySkuId),
+      productName: String(raw.productName || raw.inventorySkuId),
+      specName: raw.specName == null ? null : String(raw.specName),
+      quantityPerSaleUnit: quantity,
+    })
+  }
+  return components
+}
+
+async function resolvePickupComposition(client, item) {
+  const frozen = parsePickupCompositionSnapshot(item.inventory_composition_snapshot)
+  if (frozen) return frozen
+  if (!item.sku_id) throw new Error('INVALID_STATE: 销售明细缺少 SKU，无法解析库存组成')
+  const result = await client.query(
+    `SELECT mapping.inventory_sku_id, inventory.product_code, inventory.product_name,
+            inventory.spec_name, inventory.is_active, mapping.quantity_per_sale_unit
+       FROM inventory_sku_product_sku_mappings mapping
+       JOIN inventory_skus inventory ON inventory.sku_id = mapping.inventory_sku_id
+      WHERE mapping.product_sku_id = $1
+        AND mapping.is_active = TRUE
+   ORDER BY inventory.product_name, inventory.product_code`,
+    [item.sku_id],
+  )
+  if (result.rows.length === 0) {
+    throw new Error('INVALID_STATE: 该销售商品尚未配置库存组成，请先在“销售商品组成”中配置')
+  }
+  if (result.rows.some((row) => row.is_active === false)) {
+    throw new Error('INVALID_STATE: 该销售商品的当前库存组成含停用商品，请先修改组成')
+  }
+  return result.rows.map((row) => ({
+    inventorySkuId: row.inventory_sku_id,
+    productCode: row.product_code,
+    productName: row.product_name,
+    specName: row.spec_name || null,
+    quantityPerSaleUnit: Number(row.quantity_per_sale_unit),
+  }))
+}
+
+async function buildPickupRequirements(client, items) {
+  const aggregated = new Map()
+  for (const item of items) {
+    const components = await resolvePickupComposition(client, item)
+    for (const component of components) {
+      const current = aggregated.get(component.inventorySkuId)
+      const quantity = component.quantityPerSaleUnit * Number(item.pickupUnits)
+      if (current) current.quantity += quantity
+      else aggregated.set(component.inventorySkuId, { ...component, quantity })
+    }
+  }
+  return [...aggregated.values()].sort((a, b) => a.inventorySkuId.localeCompare(b.inventorySkuId))
+}
+
+async function createPickupInventoryDoc(client, ctx, updatedItem, requirements, clientUserId, customerName, remark, idempotencyKey) {
   await client.query(
     `INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, store_id, parent_location_id, is_active)
      SELECT s.store_id, '门店', s.store_name, s.org_node_id, s.store_id, o.parent_id,
@@ -4348,43 +4463,43 @@ async function createPickupInventoryDoc(client, ctx, updatedItem, inventorySkuId
            updated_at = NOW()`,
     [ctx.auth.effectiveStoreId],
   )
-  const lotRows = await client.query(
-    `SELECT lot.id, lot.location_id, lot.sku_id, lot.sku_name, lot.spec_name,
-            lot.supplier, lot.product_series, lot.batch_no, lot.expiry_date,
-            lot.is_gift, lot.quantity_on_hand
-       FROM inventory_stock_lots lot
-      WHERE lot.location_id = $1
-        AND lot.sku_id = $2
-        AND lot.quantity_on_hand > 0
-   ORDER BY lot.expiry_date NULLS LAST, lot.id
-      FOR UPDATE`,
-    [ctx.auth.effectiveStoreId, inventorySkuId],
-  )
-
-  const lotIds = lotRows.rows.map((row) => row.id)
-  const reservationRows = lotIds.length === 0
-    ? { rows: [] }
-    : await client.query(
-      `SELECT lot_id,
-              COALESCE(SUM(quantity - fulfilled_quantity - released_quantity), 0) AS quantity
-         FROM inventory_stock_reservations
-        WHERE lot_id = ANY($1::bigint[])
-          AND status = '已预留'
-     GROUP BY lot_id`,
-      [lotIds],
+  const plans = []
+  for (const requirement of requirements) {
+    const lotRows = await client.query(
+      `SELECT lot.id, lot.location_id, lot.sku_id, lot.sku_name, lot.spec_name,
+              lot.supplier, lot.product_series, lot.batch_no, lot.expiry_date,
+              lot.is_gift, lot.quantity_on_hand
+         FROM inventory_stock_lots lot
+        WHERE lot.location_id = $1
+          AND lot.sku_id = $2
+          AND lot.quantity_on_hand > 0
+     ORDER BY lot.expiry_date NULLS LAST, lot.id
+        FOR UPDATE`,
+      [ctx.auth.effectiveStoreId, requirement.inventorySkuId],
     )
-  const reservedByLot = new Map(
-    reservationRows.rows.map((row) => [String(row.lot_id), Number(row.quantity)]),
-  )
-  const availableByLot = new Map()
-  let available = 0
-  for (const row of lotRows.rows) {
-    const lotAvailable = Math.max(0, Number(row.quantity_on_hand) - (reservedByLot.get(String(row.id)) || 0))
-    availableByLot.set(String(row.id), lotAvailable)
-    available += lotAvailable
-  }
-  if (available < Number(pickupQuantity)) {
-    throw new Error(`INVALID_STATE: 门店库存不足，当前可用 ${available}`)
+    const lotIds = lotRows.rows.map((row) => row.id)
+    const reservationRows = lotIds.length === 0
+      ? { rows: [] }
+      : await client.query(
+        `SELECT lot_id, COALESCE(SUM(quantity - fulfilled_quantity - released_quantity), 0) AS quantity
+           FROM inventory_stock_reservations
+          WHERE lot_id = ANY($1::bigint[])
+            AND status = '已预留'
+       GROUP BY lot_id`,
+        [lotIds],
+      )
+    const reservedByLot = new Map(reservationRows.rows.map((row) => [String(row.lot_id), Number(row.quantity)]))
+    const availableByLot = new Map()
+    let available = 0
+    for (const row of lotRows.rows) {
+      const lotAvailable = Math.max(0, Number(row.quantity_on_hand) - (reservedByLot.get(String(row.id)) || 0))
+      availableByLot.set(String(row.id), lotAvailable)
+      available += lotAvailable
+    }
+    if (available < requirement.quantity) {
+      throw new Error(`INVALID_STATE: 库存商品「${requirement.productName}」不足，需要 ${requirement.quantity}，当前可用 ${available}`)
+    }
+    plans.push({ requirement, lotRows: lotRows.rows, availableByLot })
   }
 
   const docId = await generatePickupInventoryDocNo(client)
@@ -4400,7 +4515,7 @@ async function createPickupInventoryDoc(client, ctx, updatedItem, inventorySkuId
       docId,
       ctx.auth.effectiveStoreId,
       shanghaiDateStr(),
-      pickupQuantity,
+      requirements.reduce((sum, requirement) => sum + requirement.quantity, 0),
       updatedItem.sale_order_id,
       clientUserId,
       customerName || null,
@@ -4409,15 +4524,16 @@ async function createPickupInventoryDoc(client, ctx, updatedItem, inventorySkuId
     ],
   )
 
-  let remaining = Number(pickupQuantity)
   let itemSeq = 0
-  for (const lot of lotRows.rows) {
-    if (remaining <= 0) break
-    const before = Number(lot.quantity_on_hand)
-    const deduct = Math.min(availableByLot.get(String(lot.id)) || 0, remaining)
-    if (deduct <= 0) continue
-    const after = before - deduct
-    const inserted = await client.query(
+  for (const plan of plans) {
+    let remaining = plan.requirement.quantity
+    for (const lot of plan.lotRows) {
+      if (remaining <= 0) break
+      const before = Number(lot.quantity_on_hand)
+      const deduct = Math.min(plan.availableByLot.get(String(lot.id)) || 0, remaining)
+      if (deduct <= 0) continue
+      const after = before - deduct
+      const inserted = await client.query(
       `INSERT INTO inventory_doc_items (
          doc_id, lot_id, sku_id, sale_item_id, sku_name, spec_name, supplier,
          product_series, batch_no, expiry_date, is_gift, quantity, stock_snapshot, remark
@@ -4429,7 +4545,7 @@ async function createPickupInventoryDoc(client, ctx, updatedItem, inventorySkuId
         lot.id,
         lot.sku_id,
         updatedItem.sale_item_id,
-        lot.sku_name || updatedItem.product_name || updatedItem.sku_id,
+        lot.sku_name || plan.requirement.productName || updatedItem.product_name || updatedItem.sku_id,
         lot.spec_name || null,
         lot.supplier || null,
         lot.product_series || null,
@@ -4441,8 +4557,8 @@ async function createPickupInventoryDoc(client, ctx, updatedItem, inventorySkuId
         remark || null,
       ],
     )
-    const docItemId = inserted.rows[0].id
-    await client.query(
+      const docItemId = inserted.rows[0].id
+      await client.query(
       `INSERT INTO inventory_movements (
          movement_key, lot_id, location_id, sku_id, doc_id, doc_item_id,
          direction, quantity_delta,
@@ -4462,37 +4578,21 @@ async function createPickupInventoryDoc(client, ctx, updatedItem, inventorySkuId
         ctx.auth.staffWfId,
         remark || null,
       ],
-    )
-    remaining -= deduct
+      )
+      remaining -= deduct
+    }
   }
 
   return docId
 }
 
-async function assertPickupInventorySkuMapping(client, productSkuId, inventorySkuId) {
-  const result = await client.query(
-    `SELECT mapping.id
-       FROM inventory_sku_product_sku_mappings mapping
-       JOIN inventory_skus inventory_sku ON inventory_sku.sku_id = mapping.inventory_sku_id
-      WHERE mapping.product_sku_id = $1
-        AND mapping.inventory_sku_id = $2
-        AND mapping.is_active = true
-        AND inventory_sku.is_active = true
-      FOR KEY SHARE OF mapping`,
-    [productSkuId, inventorySkuId],
-  )
-  if (result.rows.length === 0) {
-    throw new Error('INVALID_STATE: 该销售 SKU 未配置所选库存 SKU，请先在后台维护 SKU 映射')
-  }
-}
-
 /**
  * 对同一销售行组拆出的家居明细执行一次提货。
  *
- * 库存仍走 V3 的“销售 SKU → 实际库存 SKU”映射与批次扣减链路；出库单按本次
+ * 库存按下单快照（历史空快照按最新组成）与批次扣减链路；出库单按本次
  * 提货汇总，提货记录与已提数量则逐个物理明细落库，保持退款级联可追溯。
  */
-async function createGroupedPickup(ctx, saleItemIds, inventorySkuId, pickupQuantity, remark, idempotencyKey) {
+async function createGroupedPickup(ctx, saleItemIds, pickupQuantity, remark, idempotencyKey) {
   const ids = [...new Set(saleItemIds.filter((id) => typeof id === 'string' && id))].sort()
   if (!Number.isInteger(pickupQuantity) || pickupQuantity <= 0 || pickupQuantity > ids.length) {
     throw new Error('INVALID_PARAMS: 合并提货数量或来源明细不合法')
@@ -4517,7 +4617,7 @@ async function createGroupedPickup(ctx, saleItemIds, inventorySkuId, pickupQuant
           pickedUp: pickedIds.length,
           total: ids.length,
           remaining: ids.length - pickedIds.length,
-          inventorySkuId,
+          inventoryMode: 'composition',
           message: '提货成功（幂等）',
         }
         return
@@ -4528,6 +4628,7 @@ async function createGroupedPickup(ctx, saleItemIds, inventorySkuId, pickupQuant
     const locked = await client.query(
       `SELECT si.sale_item_id, si.sale_item_group_id, si.sale_order_id, si.store_id, si.sku_id,
               si.product_name, si.quantity, COALESCE(si.picked_up_quantity, 0) AS picked_up_quantity,
+              si.inventory_composition_snapshot,
               o.client_user_id, o.customer_name
          FROM sale_items si
          JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
@@ -4551,17 +4652,19 @@ async function createGroupedPickup(ctx, saleItemIds, inventorySkuId, pickupQuant
       throw new Error('CONFLICT: 家居产品状态已更新，请刷新后重试')
     }
     await assertNoPendingRefund(client, first.sale_order_id)
-    await assertPickupInventorySkuMapping(client, first.sku_id, inventorySkuId)
 
     const selected = rows.slice(0, pickupQuantity)
+    const requirements = await buildPickupRequirements(client, selected.map((item) => ({
+      ...item,
+      pickupUnits: 1,
+    })))
     const inventoryDocId = await createPickupInventoryDoc(
       client,
       ctx,
       first,
-      inventorySkuId,
+      requirements,
       first.client_user_id,
       first.customer_name,
-      selected.length,
       remark,
       idempotencyKey,
     )
@@ -4580,8 +4683,8 @@ async function createGroupedPickup(ctx, saleItemIds, inventorySkuId, pickupQuant
         `INSERT INTO pickup_records (
            sale_item_id, inventory_sku_id, pickup_quantity, store_id, client_user_id,
            confirmed_by, remark, idempotency_key
-         ) VALUES ($1, $2, 1, $3, $4, $5, $6, $7)`,
-        [item.sale_item_id, inventorySkuId, ctx.auth.effectiveStoreId, first.client_user_id,
+         ) VALUES ($1, NULL, 1, $2, $3, $4, $5, $6)`,
+        [item.sale_item_id, ctx.auth.effectiveStoreId, first.client_user_id,
           ctx.auth.staffWfId, remark || null, idempotencyKey || null],
       )
     }
@@ -4590,7 +4693,7 @@ async function createGroupedPickup(ctx, saleItemIds, inventorySkuId, pickupQuant
       _v: 5,
       saleItemIds: selected.map((item) => item.sale_item_id),
       pickupQuantity: selected.length,
-      inventorySkuId,
+      inventoryMode: 'composition',
       inventoryDocId,
     })
     result = {
@@ -4598,7 +4701,7 @@ async function createGroupedPickup(ctx, saleItemIds, inventorySkuId, pickupQuant
       pickedUp: selected.length,
       total: ids.length,
       remaining: ids.length - selected.length,
-      inventorySkuId,
+      inventoryMode: 'composition',
       message: '提货成功',
     }
   })
@@ -4607,17 +4710,16 @@ async function createGroupedPickup(ctx, saleItemIds, inventorySkuId, pickupQuant
 
 /**
  * 创建取货记录（家居产品提货）
- * payload: { saleItemId, inventorySkuId, pickupQuantity, remark? }
+ * payload: { saleItemId, pickupQuantity, remark? }；inventorySkuId 仅兼容旧客户端并被忽略。
  */
 async function createPickup(ctx) {
   await requireManager()(ctx, async () => {})
 
-  const { saleItemId, saleItemIds, inventorySkuId, pickupQuantity, remark, idempotencyKey } = ctx.event.payload || {}
+  const { saleItemId, saleItemIds, pickupQuantity, remark, idempotencyKey } = ctx.event.payload || {}
   if (!saleItemId) throw new Error('INVALID_PARAMS: 缺少 saleItemId')
-  if (!inventorySkuId) throw new Error('INVALID_PARAMS: 缺少 inventorySkuId')
   if (!pickupQuantity || pickupQuantity <= 0) throw new Error('INVALID_PARAMS: 取货数量必须大于0')
   if (Array.isArray(saleItemIds) && saleItemIds.length > 1) {
-    await createGroupedPickup(ctx, saleItemIds, inventorySkuId, Number(pickupQuantity), remark, idempotencyKey)
+    await createGroupedPickup(ctx, saleItemIds, Number(pickupQuantity), remark, idempotencyKey)
     return
   }
 
@@ -4664,7 +4766,8 @@ async function createPickup(ctx) {
          AND store_id = $3
          AND product_type = '家居产品'
          AND (COALESCE(picked_up_quantity, 0) + $1) <= quantity
-       RETURNING sale_item_id, sale_order_id, store_id, sku_id, product_name, quantity, picked_up_quantity`,
+       RETURNING sale_item_id, sale_order_id, store_id, sku_id, product_name, quantity, picked_up_quantity,
+                 inventory_composition_snapshot`,
       [pickupQuantity, saleItemId, ctx.auth.effectiveStoreId]
     )
 
@@ -4697,19 +4800,19 @@ async function createPickup(ctx) {
     const customerName = itemRows.rows.length > 0 ? itemRows.rows[0].customer_name : null
 
     updated = result.rows[0]
+    const requirements = await buildPickupRequirements(client, [{
+      ...updated,
+      pickupUnits: Number(pickupQuantity),
+    }])
 
-    // 显式映射是提货扣库存的唯一入口：不再按 SKU ID 或产品编号猜测对应关系。
-    await assertPickupInventorySkuMapping(client, updated.sku_id, inventorySkuId)
-
-    // 3) 写入统一库存单据 + 库存扣减流水。库存不足时回滚 picked_up_quantity。
+    // 3) 按完整组成写入统一库存单据 + 库存扣减流水。任一项不足时整单回滚。
     const inventoryDocId = await createPickupInventoryDoc(
       client,
       ctx,
       updated,
-      inventorySkuId,
+      requirements,
       clientUserId,
       customerName,
-      pickupQuantity,
       remark,
       idempotencyKey,
     )
@@ -4720,8 +4823,8 @@ async function createPickup(ctx) {
         `INSERT INTO pickup_records (
            sale_item_id, inventory_sku_id, pickup_quantity, store_id, client_user_id,
            confirmed_by, remark, idempotency_key
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [saleItemId, inventorySkuId, pickupQuantity, ctx.auth.effectiveStoreId, clientUserId, ctx.auth.staffWfId, remark || null, idempotencyKey || null]
+         ) VALUES ($1, NULL, $2, $3, $4, $5, $6, $7)`,
+        [saleItemId, pickupQuantity, ctx.auth.effectiveStoreId, clientUserId, ctx.auth.staffWfId, remark || null, idempotencyKey || null]
       )
     } catch (err) {
       if (err && err.code === '23505' && err.constraint === 'uq_pickup_idempotency') {
@@ -4735,7 +4838,7 @@ async function createPickup(ctx) {
       _v: 4,
       pickupQuantity,
       productSkuId: updated.sku_id,
-      inventorySkuId,
+      inventoryMode: 'composition',
       clientUserId,
       storeId: ctx.auth.effectiveStoreId,
       pickedUp: updated.picked_up_quantity,
@@ -4749,7 +4852,7 @@ async function createPickup(ctx) {
     pickedUp: updated.picked_up_quantity,
     total: updated.quantity,
     remaining: updated.quantity - updated.picked_up_quantity,
-    inventorySkuId,
+    inventoryMode: 'composition',
     message: '取货成功',
   }
 }
@@ -4812,8 +4915,8 @@ async function availablePickupItems(ctx) {
 }
 
 /**
- * 查询某条待提销售明细可选择的库存 SKU，并返回当前门店扣除预留后的可用量。
- * 映射由后台维护；员工只能从映射内的库存 SKU 选择实际交付品。
+ * 查询某条待提销售明细的固定库存组成，并返回当前门店扣除预留后的可用量。
+ * 新订单读取下单快照；历史空快照读取当前最新组成。
  */
 async function pickupInventorySkuOptions(ctx) {
   await requireManager()(ctx, async () => {})
@@ -4821,58 +4924,50 @@ async function pickupInventorySkuOptions(ctx) {
   const { saleItemId } = ctx.event.payload || {}
   if (!saleItemId) throw new Error('INVALID_PARAMS: 缺少 saleItemId')
 
-  const rows = await pg.query(
-    `SELECT mapping.inventory_sku_id,
-            inventory_sku.product_code,
-            inventory_sku.product_name,
-            inventory_sku.spec_name,
-            COALESCE(availability.available_quantity, 0) AS available_quantity
+  const itemRows = await pg.query(
+    `SELECT sale_item.sku_id, sale_item.inventory_composition_snapshot
        FROM sale_items sale_item
        JOIN sale_orders sale_order ON sale_order.sale_order_id = sale_item.sale_order_id
-       JOIN inventory_sku_product_sku_mappings mapping
-         ON mapping.product_sku_id = sale_item.sku_id
-        AND mapping.is_active = true
-       JOIN inventory_skus inventory_sku
-         ON inventory_sku.sku_id = mapping.inventory_sku_id
-        AND inventory_sku.is_active = true
-  LEFT JOIN LATERAL (
-         SELECT COALESCE(SUM(GREATEST(
-                  0,
-                  lot.quantity_on_hand - COALESCE(reserved.quantity, 0)
-                )), 0) AS available_quantity
-           FROM inventory_stock_lots lot
-      LEFT JOIN (
-             SELECT lot_id,
-                    COALESCE(SUM(quantity - fulfilled_quantity - released_quantity), 0) AS quantity
-               FROM inventory_stock_reservations
-              WHERE status = '已预留'
-           GROUP BY lot_id
-      ) reserved ON reserved.lot_id = lot.id
-          WHERE lot.location_id = $2
-            AND lot.sku_id = mapping.inventory_sku_id
-            AND lot.quantity_on_hand > 0
-  ) availability ON true
       WHERE sale_item.sale_item_id = $1
         AND sale_order.store_id = $2
         AND sale_order.status = '已支付'
         AND sale_item.item_direction = '购买'
         AND sale_item.product_type = '家居产品'
         AND sale_item.quantity > COALESCE(sale_item.picked_up_quantity, 0)
-   ORDER BY inventory_sku.product_name, inventory_sku.product_code, mapping.inventory_sku_id`,
+      LIMIT 1`,
     [saleItemId, ctx.auth.effectiveStoreId],
   )
+  if (itemRows.length === 0) throw new Error('NOT_FOUND: 没有可提货的家居产品')
+  const queryAdapter = {
+    query: async (text, params) => ({ rows: await pg.query(text, params) }),
+  }
+  const components = await resolvePickupComposition(queryAdapter, itemRows[0])
+  const availabilityRows = await pg.query(
+    `SELECT inventory.sku_id,
+            COALESCE(SUM(GREATEST(0, lot.quantity_on_hand - COALESCE(reserved.quantity, 0))), 0) AS available_quantity
+       FROM inventory_skus inventory
+  LEFT JOIN inventory_stock_lots lot
+         ON lot.sku_id = inventory.sku_id
+        AND lot.location_id = $1
+        AND lot.quantity_on_hand > 0
+  LEFT JOIN (
+         SELECT lot_id, COALESCE(SUM(quantity - fulfilled_quantity - released_quantity), 0) AS quantity
+           FROM inventory_stock_reservations
+          WHERE status = '已预留'
+       GROUP BY lot_id
+  ) reserved ON reserved.lot_id = lot.id
+      WHERE inventory.sku_id = ANY($2::text[])
+   GROUP BY inventory.sku_id`,
+    [ctx.auth.effectiveStoreId, components.map((component) => component.inventorySkuId)],
+  )
+  const availableBySku = new Map(availabilityRows.map((row) => [row.sku_id, Number(row.available_quantity)]))
 
-  ctx.result = rows.map((row) => {
-    const name = row.product_name || row.inventory_sku_id
-    const spec = row.spec_name ? ` ${row.spec_name}` : ''
-    const availableQuantity = Number(row.available_quantity || 0)
+  ctx.result = components.map((component) => {
+    const availableQuantity = availableBySku.get(component.inventorySkuId) || 0
     return {
-      inventorySkuId: row.inventory_sku_id,
-      productCode: row.product_code,
-      productName: row.product_name,
-      specName: row.spec_name || null,
+      ...component,
       availableQuantity,
-      label: `${name}${spec}（可用 ${availableQuantity}）`,
+      label: `${component.productName}${component.specName ? ` ${component.specName}` : ''} × ${component.quantityPerSaleUnit}（可用 ${availableQuantity}）`,
     }
   })
 }
@@ -5422,6 +5517,8 @@ async function createDeposit(ctx) {
       seq = parseInt(maxResult.rows[0].sale_item_id.slice(-4)) + 1
     }
 
+    const compositionSnapshots = await loadInventoryCompositionSnapshots(tx, itemDataList)
+
     // INSERT sale_items —— received=0（由 recalc STEP1 据流水填）；session_count/remaining_sessions 正常写
     // 同时收集 received>0 的行，循环后写 '回款'(线下) 流水
     const receiptRows = []
@@ -5441,8 +5538,9 @@ async function createDeposit(ctx) {
           product_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received,
-          sales_category, service_fee, is_shengmei, is_experience
-        ) VALUES ($1, $2, $3, $4, '购买', $5, $6, $7, $8, $9, $10, $11, $12, $13, 0, $14, 0, $15, $16)`,
+          sales_category, service_fee, is_shengmei, is_experience,
+          inventory_composition_snapshot
+        ) VALUES ($1, $2, $3, $4, '购买', $5, $6, $7, $8, $9, $10, $11, $12, $13, 0, $14, 0, $15, $16, $17::jsonb)`,
         [
           saleItemId, saleItemGroupId, saleOrderId, storeId, d.skuId,
           d.productName, d.productType,
@@ -5452,6 +5550,7 @@ async function createDeposit(ctx) {
           d.salesCategory,
           d.isShengmei ?? null,
           d.isExperience,
+          compositionSnapshots.has(d.skuId) ? JSON.stringify(compositionSnapshots.get(d.skuId)) : null,
         ]
       )
     }

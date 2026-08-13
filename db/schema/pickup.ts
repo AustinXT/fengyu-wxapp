@@ -20,7 +20,7 @@ export const pickupRecords = pgTable(
     saleItemId: varchar('sale_item_id', { length: 30 })
       .notNull()
       .references(() => saleItems.saleItemId),
-    /** 本次提货实际扣减的库存 SKU；历史记录允许为空。 */
+    /** 旧版单库存 SKU 提货记录；组成式提货写 NULL，实际明细以 inventory_doc_items 为准。 */
     inventorySkuId: text('inventory_sku_id').references(() => inventorySkus.skuId),
     /** 本次提货数量 */
     pickupQuantity: integer('pickup_quantity').notNull(),

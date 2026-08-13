@@ -21,6 +21,50 @@ function roundMoney(value) {
   return Math.round((Number(value) || 0) * 100) / 100
 }
 
+async function loadInventoryCompositionSnapshots(client, items) {
+  const homeItems = [...new Map(
+    items.filter((item) => item.productType === '家居产品').map((item) => [item.skuId, item]),
+  ).values()]
+  if (homeItems.length === 0) return new Map()
+  const result = await client.query(
+    `SELECT mapping.product_sku_id, mapping.inventory_sku_id,
+            inventory.product_code, inventory.product_name, inventory.spec_name, inventory.is_active,
+            mapping.quantity_per_sale_unit
+       FROM inventory_sku_product_sku_mappings mapping
+       JOIN inventory_skus inventory ON inventory.sku_id = mapping.inventory_sku_id
+      WHERE mapping.is_active = TRUE
+        AND mapping.product_sku_id = ANY($1::text[])
+   ORDER BY inventory.product_name, inventory.product_code`,
+    [homeItems.map((item) => item.skuId)],
+  )
+  const snapshots = new Map()
+  const invalidProductSkuIds = new Set()
+  for (const row of result.rows) {
+    if (row.is_active === false) {
+      invalidProductSkuIds.add(row.product_sku_id)
+      continue
+    }
+    const snapshot = snapshots.get(row.product_sku_id) || { version: 1, components: [] }
+    snapshot.components.push({
+      inventorySkuId: row.inventory_sku_id,
+      productCode: row.product_code,
+      productName: row.product_name,
+      specName: row.spec_name,
+      quantityPerSaleUnit: Number(row.quantity_per_sale_unit),
+    })
+    snapshots.set(row.product_sku_id, snapshot)
+  }
+  const invalid = homeItems.find((item) => invalidProductSkuIds.has(item.skuId))
+  if (invalid) {
+    throw new Error(`INVALID_STATE: INVENTORY_COMPOSITION_INVALID: 商品「${invalid.productName || invalid.skuId}」的库存组成含停用商品`)
+  }
+  const missing = homeItems.find((item) => !snapshots.has(item.skuId))
+  if (missing) {
+    throw new Error(`INVALID_STATE: INVENTORY_COMPOSITION_MISSING: 商品「${missing.productName || missing.skuId}」尚未配置库存组成`)
+  }
+  return snapshots
+}
+
 function moneyToCents(value) {
   return Math.max(0, Math.round((Number(value) || 0) * 100))
 }
@@ -1303,7 +1347,8 @@ async function create(ctx) {
       await deductPointsAtCreation(client, { saleOrderId: orderNo, userId, pointsUsed })
     }
 
-    // 创建订单明细（流水号递增）
+    // 创建订单明细（流水号递增）。家居产品在建单时冻结库存组成；未配置则整单回滚。
+    const compositionSnapshots = await loadInventoryCompositionSnapshots(client, itemsData)
     for (let i = 0; i < itemsData.length; i++) {
       const saleItemId = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
       const d = itemsData[i]
@@ -1316,14 +1361,16 @@ async function create(ctx) {
           product_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price,
-          sale_amount, received, pending_received, sales_category, is_experience
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, '0', $13, $14, $15)`,
+          sale_amount, received, pending_received, sales_category, is_experience,
+          inventory_composition_snapshot
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, '0', $13, $14, $15, $16::jsonb)`,
         [
           saleItemId, orderNo, storeId, d.skuId,
           d.productName, d.productType,
           d.sessionCount, d.remainingSessions,
           d.unitPrice, d.quantity, d.unitRealPrice,
-          d.saleAmount, d.received, d.salesCategory || null, d.isExperience
+          d.saleAmount, d.received, d.salesCategory || null, d.isExperience,
+          compositionSnapshots.has(d.skuId) ? JSON.stringify(compositionSnapshots.get(d.skuId)) : null,
         ]
       )
     }

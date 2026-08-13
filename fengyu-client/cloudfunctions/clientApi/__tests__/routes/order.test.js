@@ -170,7 +170,22 @@ describe('order.create', () => {
       session_count: null, product_name: '精华液', sales_category: null,
     }])
 
-    const clientQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 })
+    const clientQuery = vi.fn(async (sql) => {
+      if (/FROM inventory_sku_product_sku_mappings mapping/.test(sql)) {
+        return {
+          rows: [{
+            product_sku_id: 'sku-home',
+            inventory_sku_id: 'inventory-sku-001',
+            product_code: 'I001',
+            product_name: '库存精华液',
+            spec_name: null,
+            quantity_per_sale_unit: 2,
+          }],
+          rowCount: 1,
+        }
+      }
+      return { rows: [], rowCount: 0 }
+    })
     pg.transaction.mockImplementation(async (cb) => cb({ query: clientQuery }))
 
     const ctx = createBoundCtx({
@@ -185,7 +200,29 @@ describe('order.create', () => {
     expect(insertItemCalls[0][1][6]).toBeNull()
     expect(insertItemCalls[0][1][7]).toBeNull()
     expect(insertItemCalls[0][1][9]).toBe(5)
+    expect(JSON.parse(insertItemCalls[0][1][15]).components[0].quantityPerSaleUnit).toBe(2)
     expect(ctx.result.totalAmount).toBe(400)
+  })
+
+  test('家居产品未配置库存组成时阻断建单', async () => {
+    pg.query.mockResolvedValueOnce([{ store_id: 's1', store_name: '测试店', market_name: '华东' }])
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([{
+      sku_id: 'sku-home', product_id: 'p-home', product_type: '家居产品',
+      spec_name: '精华液', price: '80', special_price: null,
+      session_count: null, product_name: '精华液', sales_category: null,
+    }])
+    pg.transaction.mockImplementation(async (cb) => cb({
+      query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+    }))
+
+    const ctx = createBoundCtx({
+      storeId: 's1',
+      items: [{ skuId: 'sku-home', quantity: 1 }],
+      paymentMethod: '微信',
+    })
+    await expect(routes.create(ctx)).rejects.toThrow(/INVENTORY_COMPOSITION_MISSING/)
   })
 
   // PR #55 把 document_type 判定从「会员客→售后；否则若 total>=threshold→售后（分支 B）」

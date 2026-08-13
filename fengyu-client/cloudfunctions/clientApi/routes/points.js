@@ -6,13 +6,18 @@
  */
 
 const pg = require('../db/pg')
+const { requirePhone } = require('../middleware/auth')
 const { getPointsToYuanRate, getPointsDeductionMaxRate } = require('../utils/config')
+
+const MAX_PAGE_SIZE = 50
 
 /**
  * 查询积分余额及会员等级
  * 积分余额从 client_wechat_users.points_balance 直接读取；即将到期积分从 point_batches 计算。
  */
 async function balance(ctx) {
+  await requirePhone()(ctx, async () => {})
+
   const { userId } = ctx.auth
   const [pointsToYuanRate, pointsDeductionMaxRate] = await Promise.all([
     getPointsToYuanRate(),
@@ -59,9 +64,24 @@ async function balance(ctx) {
  * 积分变动历史
  */
 async function history(ctx) {
+  await requirePhone()(ctx, async () => {})
+
   const { userId } = ctx.auth
-  const { page = 1, pageSize = 20 } = ctx.event.payload || {}
+  const payload = ctx.event.payload || {}
+  const page = payload.page === undefined ? 1 : payload.page
+  const pageSize = payload.pageSize === undefined ? 20 : payload.pageSize
+
+  if (!Number.isSafeInteger(page) || page < 1) {
+    throw new Error('INVALID_PARAMS: page 必须为大于等于 1 的整数')
+  }
+  if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > MAX_PAGE_SIZE) {
+    throw new Error(`INVALID_PARAMS: pageSize 必须为 1-${MAX_PAGE_SIZE} 的整数`)
+  }
+
   const offset = (page - 1) * pageSize
+  if (!Number.isSafeInteger(offset)) {
+    throw new Error('INVALID_PARAMS: page 超出允许范围')
+  }
 
   const records = await pg.query(`
     SELECT pt.id, pt.type, pt.amount, pt.ref_order_id, pt.created_at

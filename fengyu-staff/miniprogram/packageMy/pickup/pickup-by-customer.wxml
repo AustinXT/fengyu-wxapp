@@ -79,21 +79,6 @@
       <view class="dialog-product">{{pickupDialog.productName}}</view>
       <view class="dialog-remaining">剩余可提：{{pickupDialog.remaining}}</view>
       <view class="dialog-field">
-        <text class="dialog-label">实际交付库存 SKU</text>
-        <view wx:if="{{pickupDialog.loadingInventorySkuOptions}}" class="dialog-hint">加载库存 SKU 中...</view>
-        <picker
-          wx:elif="{{pickupDialog.inventorySkuOptions.length > 0}}"
-          mode="selector"
-          range="{{pickupDialog.inventorySkuOptions}}"
-          range-key="label"
-          bindchange="onPickupInventorySkuChange"
-        >
-          <view wx:if="{{pickupDialog.inventorySkuLabel}}" class="dialog-picker">{{pickupDialog.inventorySkuLabel}}</view>
-          <view wx:else class="dialog-picker dialog-picker-placeholder">请选择实际交付的库存 SKU</view>
-        </picker>
-        <view wx:else class="dialog-warning">该销售 SKU 尚未配置库存映射，请联系后台配置后提货。</view>
-      </view>
-      <view class="dialog-field">
         <text class="dialog-label">提货数量</text>
         <input
           type="number"
@@ -101,6 +86,19 @@
           value="{{pickupDialog.quantity}}"
           bindinput="onPickupQtyInput"
         />
+      </view>
+      <view class="dialog-field">
+        <text class="dialog-label">本次将自动出库</text>
+        <view wx:if="{{pickupDialog.loadingInventorySkuOptions}}" class="dialog-hint">加载销售商品组成中...</view>
+        <view wx:elif="{{pickupDialog.inventorySkuOptions.length > 0}}" class="composition-list">
+          <view wx:for="{{pickupDialog.inventorySkuOptions}}" wx:key="inventorySkuId" class="composition-row">
+            <view class="composition-name">{{item.productName}}{{item.specName ? ' ' + item.specName : ''}} × {{item.requiredQuantity}}</view>
+            <view class="composition-stock {{item.availableQuantity >= item.requiredQuantity ? 'enough' : 'shortage'}}">
+              门店可用 {{item.availableQuantity}}{{item.availableQuantity >= item.requiredQuantity ? '' : '，库存不足'}}
+            </view>
+          </view>
+        </view>
+        <view wx:else class="dialog-warning">该商品尚未配置库存组成，请联系后台配置后提货。</view>
       </view>
       <view class="dialog-field">
         <text class="dialog-label">备注（可选）</text>
@@ -116,7 +114,7 @@
       <button class="dialog-btn cancel" bindtap="closePickupDialog">取消</button>
       <button
         class="dialog-btn confirm"
-        disabled="{{pickupDialog.submitting || pickupDialog.loadingInventorySkuOptions || !pickupDialog.inventorySkuId}}"
+        disabled="{{pickupDialog.submitting || pickupDialog.loadingInventorySkuOptions || !pickupDialog.inventoryReady}}"
         bindtap="submitPickup"
       >
         {{pickupDialog.submitting ? '提交中...' : '确认提货'}}

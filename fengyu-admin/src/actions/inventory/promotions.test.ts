@@ -45,7 +45,6 @@ const HQ_SESSION = {
 }
 
 const INPUT = {
-  planNo: 'PROMO-001',
   name: '福利方案',
   startsAt: '2026-08-01',
   endsAt: '2026-08-31',

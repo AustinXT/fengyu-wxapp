@@ -72,8 +72,6 @@ export const INVENTORY_DOC_STATUSES = [
 export type InventoryCoreDocStatus = (typeof INVENTORY_DOC_STATUSES)[number]
 
 export interface InventorySkuInput {
-  skuId?: string | null
-  productCode: string
   productName: string
   specName?: string | null
   supplier?: string | null
@@ -98,8 +96,9 @@ export interface InventorySkuInput {
   remark?: string | null
 }
 
-export interface InventorySkuRow extends Required<Pick<InventorySkuInput, 'productCode' | 'productName'>> {
+export interface InventorySkuRow extends Required<Pick<InventorySkuInput, 'productName'>> {
   skuId: string
+  productCode: string
   specName: string | null
   supplier: string | null
   manufacturer: string | null
@@ -126,26 +125,37 @@ export interface InventorySkuRow extends Required<Pick<InventorySkuInput, 'produ
   updatedAt: string
 }
 
-export interface InventorySkuMappingInput {
-  productSkuId: string
+export interface InventoryCompositionComponentInput {
   inventorySkuId: string
+  quantityPerSaleUnit: number
 }
 
-export interface InventorySkuMappingRow {
-  id: number
+export interface InventoryCompositionInput {
   productSkuId: string
-  productSkuName: string
-  productSkuEnabled: boolean
+  components: InventoryCompositionComponentInput[]
+  expectedUpdatedAt: string | null
+}
+
+export interface InventoryCompositionComponent {
+  mappingId: number
   inventorySkuId: string
   inventorySkuCode: string
   inventorySkuName: string
+  inventorySkuSpecName: string | null
   inventorySkuActive: boolean
-  isActive: boolean
-  createdAt: string
-  updatedAt: string
+  quantityPerSaleUnit: number
 }
 
-export interface InventorySkuMappingOptions {
+export interface InventoryCompositionRow {
+  productSkuId: string
+  productSkuName: string
+  productSkuEnabled: boolean
+  components: InventoryCompositionComponent[]
+  configurationStatus: 'configured' | 'unconfigured' | 'invalid'
+  updatedAt: string | null
+}
+
+export interface InventoryCompositionOptions {
   productSkus: Array<{ skuId: string; specName: string }>
   inventorySkus: Array<{ skuId: string; productCode: string; productName: string; specName: string | null }>
 }
@@ -161,7 +171,6 @@ export interface InventoryLocationRow {
 }
 
 export interface InventorySupplierInput {
-  supplierId?: string | null
   name: string
   contactName?: string | null
   phone?: string | null
@@ -194,7 +203,6 @@ export interface InventoryPromotionPlanItemInput {
 }
 
 export interface InventoryPromotionPlanInput {
-  planNo: string
   name: string
   startsAt: string
   endsAt: string
