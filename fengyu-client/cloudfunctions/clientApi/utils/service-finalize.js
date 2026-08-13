@@ -14,6 +14,7 @@
 
 const pg = require('../db/pg')
 const { DEPOSIT_REFUND_REMARK } = require('./deposit-refund-remark')
+const { grantVisitPointsSafe } = require('./visit-points')
 
 /**
  * 加载服务单的所有 service_items + 关联 sale_items 快照 + 员工 skills。
@@ -209,6 +210,10 @@ async function finalizeServiceOrder(client, so, items, now) {
       [now, so.appointment_id]
     )
   }
+
+  // 会员到店积分：失败仅记 points.visitGrantFailed，不阻断服务完成。
+  // 按 service_date + client_user_id 幂等；员工 complete 阶段不发，仅最终 confirm 后发。
+  await grantVisitPointsSafe(client, so, items, now)
 
   return true
 }

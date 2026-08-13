@@ -48,7 +48,7 @@
 
 .count-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   margin-top: 24rpx;
   padding: 18rpx 8rpx;
   border-radius: 12rpx;

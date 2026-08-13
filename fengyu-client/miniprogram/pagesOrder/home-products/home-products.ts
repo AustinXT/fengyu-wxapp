@@ -9,9 +9,11 @@ interface HomeProduct {
   productName: string;
   unit: string;
   purchasedQuantity: number;
+  paidQuantity: number;
   pickedQuantity: number;
   refundedQuantity: number;
   remainingQuantity: number;
+  pendingPickupQuantity: number;
   status: string;
   storeId: string;
   storeName: string | null;
