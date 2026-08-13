@@ -279,6 +279,14 @@ export interface WorkfineOrder {
 
 const USE_MOCK = process.env.MOCK_WORKFINE === '1'
 
+/** 系统自检专用：只读验证 WorkFine 连接，不查询业务表。 */
+export async function probeWorkfineConnection(): Promise<void> {
+  if (USE_MOCK) return
+  await runQuery(async (pool) => {
+    await pool.request().query('SELECT 1 AS ok')
+  })
+}
+
 // ---- Mock fixtures（仅 CI / 无 MSSQL 网络时启用）----
 const MOCK_CUSTOMERS: WorkfineCustomer[] = [
   { customerId: 'WF-MOCK-001', name: '测试顾客 A', phone: '13800138000' },

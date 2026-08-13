@@ -14,6 +14,7 @@ import { exportJobLabel } from '@/lib/export-job-types'
 import { createExportContent } from './registry'
 import { exportCloudPath, exportFileName } from './file-name'
 import { writeStreamXlsx } from './xlsx-writer'
+import { writeWorkerHeartbeat } from '@/lib/worker-heartbeat'
 
 const POLL_INTERVAL_MS = 2_000
 const MAINTENANCE_INTERVAL_MS = 60_000
@@ -23,6 +24,7 @@ const RETENTION_MS = 24 * 60 * 60 * 1_000
 
 let stopping = false
 let maintenanceAt = 0
+let workerBusy = false
 
 type ExportJob = typeof adminExportJobs.$inferSelect
 
@@ -189,6 +191,8 @@ async function processJob(job: ExportJob): Promise<void> {
   heartbeat.unref()
 
   try {
+    workerBusy = true
+    await writeWorkerHeartbeat('export-worker', 'busy', `处理导出任务 ${job.id}`).catch(() => undefined)
     const session = parseExportSession(job.scopeSnapshot)
     const payload = parseExportPayload(exportType, job.requestPayload)
     tempDir = await mkdtemp(path.join(tmpdir(), 'fengyu-export-'))
@@ -275,6 +279,8 @@ async function processJob(job: ExportJob): Promise<void> {
     await failJob(job, err)
   } finally {
     clearInterval(heartbeat)
+    workerBusy = false
+    await writeWorkerHeartbeat('export-worker').catch(() => undefined)
     if (tempDir) await rm(tempDir, { recursive: true, force: true }).catch((err) => {
       console.error(`[export-worker] temp cleanup failed for ${job.id}:`, err)
     })
@@ -283,6 +289,11 @@ async function processJob(job: ExportJob): Promise<void> {
 
 async function run(): Promise<void> {
   console.log('[export-worker] started (global concurrency: 1)')
+  await writeWorkerHeartbeat('export-worker')
+  const workerHeartbeat = setInterval(() => {
+    if (!workerBusy) void writeWorkerHeartbeat('export-worker').catch(() => undefined)
+  }, 30_000)
+  workerHeartbeat.unref()
   while (!stopping) {
     try {
       await runMaintenance()
@@ -297,6 +308,7 @@ async function run(): Promise<void> {
       await sleep(POLL_INTERVAL_MS)
     }
   }
+  clearInterval(workerHeartbeat)
   console.log('[export-worker] stopped')
 }
 

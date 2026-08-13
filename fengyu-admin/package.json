@@ -10,7 +10,7 @@
     "start": "next start",
     "lint": "next lint",
     "db:seed": "bun run src/db/seed.ts",
-    "cron": "node dist/cron-worker.mjs",
+    "cron": "node --conditions=react-server dist/cron-worker.mjs",
     "cron:dev": "bun --env-file=.env.local run src/cron/index.ts",
     "cron:once": "bun --env-file=.env.local run src/cron/index.ts --once",
     "export-worker": "node --conditions=react-server dist/export-worker.mjs",
