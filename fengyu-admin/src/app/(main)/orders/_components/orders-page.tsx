@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition, useCallback } from "react";
+import { useState, useTransition, useCallback, useEffect } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
@@ -281,7 +281,19 @@ export default function OrdersPageClient({
 
   const statusFilter = get("status");
   const typeFilter = get("type");
-  const selectedOrderTypes = parseOrderTypeFilters(typeFilter) ?? [];
+  const [selectedOrderTypes, setSelectedOrderTypes] = useState<string[]>(
+    () => parseOrderTypeFilters(typeFilter) ?? [],
+  );
+  useEffect(() => {
+    setSelectedOrderTypes(parseOrderTypeFilters(typeFilter) ?? []);
+  }, [typeFilter]);
+  const handleOrderTypesChange = useCallback(
+    (types: string[]) => {
+      setSelectedOrderTypes(types);
+      setFilter("type", types.join(","));
+    },
+    [setFilter],
+  );
   const marketFilter = get("market");
   const storeFilter = get("store");
   const dateFrom = get("from");
@@ -327,7 +339,7 @@ export default function OrdersPageClient({
               className="w-40"
               options={ORDER_TYPE_FILTER_OPTIONS.map((type) => ({ value: type, label: type }))}
               value={selectedOrderTypes}
-              onChange={(types) => setFilter("type", types.join(","))}
+              onChange={handleOrderTypesChange}
               placeholder="全部单据"
             />
             <MarketStoreFilter
