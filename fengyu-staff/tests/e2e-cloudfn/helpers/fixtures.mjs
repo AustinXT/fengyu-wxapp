@@ -1154,35 +1154,6 @@ export async function cleanupTestData(prefix = NS) {
       [like],
     ],
 
-    // ─── 4.5) store_inventory v2（旧兼容表，FK → stores/product_skus/sale_orders/sale_items）───
-    [
-      `DELETE FROM store_inventory_movements
-        WHERE store_id LIKE $1
-           OR sale_order_id LIKE $1
-           OR sale_item_id LIKE $1
-           OR doc_id LIKE $1`,
-      [like],
-    ],
-    [
-      `DELETE FROM store_inventory_doc_items
-        WHERE doc_id LIKE $1
-           OR sale_item_id LIKE $1
-           OR sku_id LIKE $1
-           OR stock_id IN (SELECT id FROM store_inventory_stocks WHERE store_id LIKE $1 OR sku_id LIKE $1)`,
-      [like],
-    ],
-    [
-      `DELETE FROM store_inventory_docs
-        WHERE id LIKE $1
-           OR store_id LIKE $1
-           OR counterpart_store_id LIKE $1
-           OR related_sale_order_id LIKE $1
-           OR client_user_id LIKE $1
-           OR created_by LIKE $1`,
-      [like],
-    ],
-    [`DELETE FROM store_inventory_stocks WHERE store_id LIKE $1 OR sku_id LIKE $1`, [like]],
-
     // ─── 4.5) sale_payment_allocatable_items（回款级分配子表，FK→sale_order_payments + sale_items）───
     // 必须先于 sale_order_payments（§5）和 sale_items（§7）删除，否则 FK 阻断父表删除，
     // 残留 sop 行又经 audit_employee_id / operator_employee_id 阻断 staff_wechat_users 删除 → 夹具污染级联。
