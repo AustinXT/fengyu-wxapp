@@ -58,6 +58,11 @@ read_env_value() {
 # 并用独立变量名覆盖 compose 插值，避免误用远程残留的另一环境值。
 DEPLOY_CLOUDBASE_ENV_ID=$(read_env_value CLOUDBASE_ENV_ID)
 DEPLOY_CDN_BASE=$(read_env_value CDN_BASE)
+ANALYST_PUBLIC_ORIGIN=$(read_env_value ANALYST_PUBLIC_ORIGIN)
+if ! node -e 'const u = new URL(process.argv[1]); if (!/^https?:$/.test(u.protocol) || u.username || u.password) process.exit(1)' "$ANALYST_PUBLIC_ORIGIN"; then
+  echo "✗ ANALYST_PUBLIC_ORIGIN 必须是无账号密码的 http(s) URL。" >&2
+  exit 1
+fi
 RUNTIME_ENV_FILE=$(mktemp "${TMPDIR:-/tmp}/fengyu-admin-runtime.XXXXXX")
 trap 'rm -f "$RUNTIME_ENV_FILE"' EXIT
 printf 'DEPLOY_CLOUDBASE_ENV_ID=%s\nDEPLOY_CDN_BASE=%s\n' \
@@ -169,6 +174,7 @@ docker buildx build \
   --build-arg APP_VERSION="$APP_VERSION" \
   --build-arg APP_COMMIT="$APP_COMMIT" \
   --build-arg NEXT_PUBLIC_RSA_PUBLIC_KEY="$RSA_PUB" \
+  --build-arg NEXT_PUBLIC_ANALYST_ORIGIN="$ANALYST_PUBLIC_ORIGIN" \
   -f docker/Dockerfile.admin -t fengyu-admin:latest .
 
 echo "=== 2/5 传输镜像到 $SSH_HOST ==="
