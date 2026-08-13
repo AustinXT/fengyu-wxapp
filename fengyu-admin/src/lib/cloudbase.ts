@@ -9,6 +9,7 @@ export const CDN_BASE =
   "https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la"
 
 let app: ReturnType<typeof cloudbase.init> | null = null
+let staffApp: ReturnType<typeof cloudbase.init> | null = null
 
 function cloudFileId(cloudPath: string): string {
   if (cloudPath.startsWith("cloud://")) return cloudPath
@@ -37,6 +38,19 @@ function getApp() {
     })
   }
   return app
+}
+
+function getStaffApp() {
+  if (!staffApp) {
+    const env = process.env.STAFF_ENV_ID?.trim()
+    if (!env) throw new ApiError("INVALID_STATE", "Staff CloudBase 环境未配置")
+    staffApp = cloudbase.init({
+      env,
+      secretId: process.env.TENCENTCLOUD_SECRETID!,
+      secretKey: process.env.TENCENTCLOUD_SECRETKEY!,
+    })
+  }
+  return staffApp
 }
 
 export async function uploadFile(
@@ -123,4 +137,21 @@ export async function callClientFunction<T = unknown>(
   const app = getApp()
   const res = await app.callFunction({ name, data })
   return res.result as T
+}
+
+/** 调用 staff env 下的云函数，仅供服务端内部诊断等场景使用。 */
+export async function callStaffFunction<T = unknown>(
+  name: string,
+  data: { action: string; payload?: Record<string, unknown> },
+): Promise<T> {
+  const res = await getStaffApp().callFunction({ name, data })
+  return res.result as T
+}
+
+/** 只进行身份和环境访问校验，不读写任何业务文件。 */
+export async function probeCloudbaseStorage(): Promise<void> {
+  const result = await getApp().getTempFileURL({
+    fileList: [cloudFileId('__system_health_probe_not_a_real_file__')],
+  })
+  if (!Array.isArray(result.fileList)) throw new Error('CloudBase storage response is invalid')
 }

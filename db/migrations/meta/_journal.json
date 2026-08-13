@@ -134,6 +134,13 @@
       "when": 1786612905438,
       "tag": "0018_complete_amazoness",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1786629678000,
+      "tag": "0019_system_diagnostics_permission",
+      "breakpoints": true
     }
   ]
 }

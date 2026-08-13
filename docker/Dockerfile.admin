@@ -73,13 +73,18 @@ RUN bun run build
 RUN find .next/standalone .next/static -name '*.map' -type f -delete 2>/dev/null || true
 
 # 构建 cron-worker bundle 单文件（Next.js standalone 不含 src/cron/）
-# postgres-js 默认尝试 require pg-native（alpine 无该原生模块），用 --external 跳过
+# postgres-js 默认尝试 require pg-native（alpine 无该原生模块），用 --external 跳过。
+# cron 会复用带 server-only 标记的拉卡拉 / 上传模块；保留 server-only 为外部依赖，
+# 由 Node 的 react-server 条件加载空模块，避免把默认抛错分支内联进 bundle。
 # 用 .mjs 后缀让 node 18 按 ESM 解析（drizzle / postgres-js 都是 ESM-only）
 RUN bun build src/cron/index.ts \
       --target=node \
       --format=esm \
       --outfile=dist/cron-worker.mjs \
-      --external pg-native
+      --external pg-native \
+      --external server-only
+# 实际加载 cron bundle，提前拦截 server-only / 路径 alias 等启动期错误；--check 不连库、不跑任务。
+RUN node --conditions=react-server dist/cron-worker.mjs --check
 
 # 构建异步导出 worker。与 web / cron 独立进程运行，单任务流式写 XLSX 后再上传 CloudBase。
 # with-permission 在 export session 缺失时才加载 Web auth；独立 worker 不允许该回退，
@@ -109,7 +114,7 @@ ENV HOSTNAME="0.0.0.0"
 # 影响 admin (server.js) 与 cron-worker（复用同一镜像）：postgres.js 解析无时区
 # timestamp（库里存的是北京墙钟时间）、Date 本地方法、日志时间戳全部按 Asia/Shanghai。
 # 缺此设置时 UTC 容器会把 11:24 误当 UTC 解析，前端再 +8 渲染成 19:24（晚 8 小时）。
-RUN apk add --no-cache tzdata
+RUN apk add --no-cache tzdata postgresql-client
 ENV TZ=Asia/Shanghai
 
 RUN addgroup --system --gid 1001 nodejs

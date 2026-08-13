@@ -41,6 +41,9 @@ services:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - COOKIE_SECURE=false
       - PRIVATE_UPLOAD_DIR=${PRIVATE_UPLOAD_DIR:-/var/lib/fengyu/private-uploads}
+      - SYSTEM_RUNTIME_DIR=${SYSTEM_RUNTIME_DIR:-/var/lib/fengyu/runtime-status}
+      - DATABASE_BACKUP_REQUEST_DIR=${DATABASE_BACKUP_REQUEST_DIR:-/var/lib/fengyu/backup-control}
+      - ANALYST_INTERNAL_ORIGIN=${ANALYST_INTERNAL_ORIGIN:-http://analyst:3000}
       # 锁定东八区（与 cron-worker 对齐）。Dockerfile ENV 已是权威，这里显式声明双保险，
       # 防止 admin 容器跑在 UTC 导致 postgres.js 把北京墙钟时间误读、时间列晚 8 小时。
       - TZ=Asia/Shanghai
@@ -57,6 +60,9 @@ services:
     volumes:
       # 入网资料和已签署合同仅在受保护的后台/cron 之间共享，绝不映射到 public 或 CDN。
       - ./data/private-uploads:/var/lib/fengyu/private-uploads
+      # Web 只读 worker 心跳；备份控制目录仅存脱敏队列/状态，不包含 dump 文件。
+      - ./data/runtime-status:/var/lib/fengyu/runtime-status:ro
+      - ./data/backup-control:/var/lib/fengyu/backup-control
 
   analyst:
     image: fengyu-analyst:latest
@@ -98,6 +104,11 @@ services:
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - PRIVATE_UPLOAD_DIR=${PRIVATE_UPLOAD_DIR:-/var/lib/fengyu/private-uploads}
+      - SYSTEM_RUNTIME_DIR=${SYSTEM_RUNTIME_DIR:-/var/lib/fengyu/runtime-status}
+      - DATABASE_BACKUP_REQUEST_DIR=${DATABASE_BACKUP_REQUEST_DIR:-/var/lib/fengyu/backup-control}
+      - DATABASE_BACKUP_DIR=${DATABASE_BACKUP_DIR:-/var/lib/fengyu/database-backups}
+      - SCHEDULED_BACKUP_RETENTION_DAYS=${SCHEDULED_BACKUP_RETENTION_DAYS:-7}
+      - MANUAL_BACKUP_RETENTION_DAYS=${MANUAL_BACKUP_RETENTION_DAYS:-30}
       # node-cron 已带 timezone 参数；TZ 系统时区作双保险，避免日志时间戳混乱
       - TZ=Asia/Shanghai
       # 主动告警通道：企微机器人 webhook，缺失则 STEP 5/6 退化为 console.warn（详见 src/cron/lib/notify.ts）
@@ -111,10 +122,14 @@ services:
     volumes:
       - ./logs/cron-worker:/var/log/app
       - ./data/private-uploads:/var/lib/fengyu/private-uploads
+      - ./data/runtime-status:/var/lib/fengyu/runtime-status
+      - ./data/backup-control:/var/lib/fengyu/backup-control
+      # 真实 dump 文件只挂载给 cron-worker，admin web 无法读取。
+      - ./data/database-backups:/var/lib/fengyu/database-backups
     command:
       - sh
       - -c
-      - 'node cron-worker.mjs 2>&1 | tee -a "/var/log/app/cron-worker-$$(date +%Y%m).log"'
+      - 'node --conditions=react-server cron-worker.mjs 2>&1 | tee -a "/var/log/app/cron-worker-$$(date +%Y%m).log"'
     # docker logs 自身加滚动（即便容器不重建，避免单次容器寿命内日志无限增长）
     logging:
       driver: json-file
@@ -131,6 +146,7 @@ services:
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - TZ=Asia/Shanghai
+      - SYSTEM_RUNTIME_DIR=${SYSTEM_RUNTIME_DIR:-/var/lib/fengyu/runtime-status}
       - TENCENTCLOUD_SECRETID=${TENCENTCLOUD_SECRETID}
       - TENCENTCLOUD_SECRETKEY=${TENCENTCLOUD_SECRETKEY}
       - CLOUDBASE_ENV_ID=${CLOUDBASE_ENV_ID}
@@ -140,6 +156,7 @@ services:
         condition: service_healthy
     volumes:
       - ./logs/export-worker:/var/log/app
+      - ./data/runtime-status:/var/lib/fengyu/runtime-status
     command:
       - sh
       - -c

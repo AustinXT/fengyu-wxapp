@@ -17,6 +17,7 @@ const { extractAppVersion } = require('./utils/app-version')
 
 // 路由映射表 —— 懒加载：只在匹配到 action 时才 require 对应模块
 const routes = {
+  'system.health':         () => require('./routes/system').health,
   // 认证
   'auth.login':           () => require('./routes/auth').login,
   'auth.bindPhone':       () => require('./routes/auth').bindPhone,
@@ -202,13 +203,18 @@ exports.main = async (event, context) => {
   }
 
   try {
-    // 执行中间件链 + 业务处理
-    await auth(ctx, async () => {
-      if (ctx.auth.loginLevel === 'management' && STORE_MUTATION_ACTIONS.has(action)) {
-        throw new Error('PERMISSION_DENIED: 管理层模式仅支持只读操作')
-      }
+    if (action === 'system.health') {
+      // 系统自检使用独立 HMAC 鉴权，不依赖员工 OPENID。
       await handler(ctx)
-    })
+    } else {
+      // 执行中间件链 + 业务处理
+      await auth(ctx, async () => {
+        if (ctx.auth.loginLevel === 'management' && STORE_MUTATION_ACTIONS.has(action)) {
+          throw new Error('PERMISSION_DENIED: 管理层模式仅支持只读操作')
+        }
+        await handler(ctx)
+      })
+    }
 
     return {
       code: 0,

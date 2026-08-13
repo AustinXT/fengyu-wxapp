@@ -4,10 +4,24 @@
  */
 
 const path = require('path')
+const crypto = require('crypto')
 const pg = globalThis.__mocks__.pg
 const cloud = globalThis.__mocks__.cloud
 
 const clientApiDir = path.resolve(__dirname, '..')
+
+function healthPayload(service) {
+  const timestamp = String(Date.now())
+  const nonce = '12345678-1234-1234-1234-123456789abc'
+  return {
+    service,
+    timestamp,
+    nonce,
+    signature: crypto.createHmac('sha256', process.env.CLIENT_SECRET)
+      .update(`${service}\n${timestamp}\n${nonce}`)
+      .digest('hex'),
+  }
+}
 
 /** 仅清除 routes/middleware/index 缓存，保留 db/pg 和 node_modules 的 mock */
 function clearClientApiCache() {
@@ -22,6 +36,7 @@ describe('clientApi 入口', () => {
   let main
 
   beforeEach(() => {
+    process.env.CLIENT_SECRET = 'health-test-secret'
     vi.clearAllMocks()
     clearClientApiCache()
     main = require('../index').main
@@ -47,6 +62,24 @@ describe('clientApi 入口', () => {
     const result = await main({ action: 'unknown.method' }, {})
     expect(result.code).toBe(-1)
     expect(result.message).toContain('未知')
+  })
+
+  test('system.health 使用 HMAC 签名并跳过 OPENID 鉴权', async () => {
+    vi.clearAllMocks()
+    const result = await main({ action: 'system.health', payload: healthPayload('clientApi') }, {})
+    expect(result.code).toBe(0)
+    expect(result.data.ok).toBe(true)
+    expect(pg.query).toHaveBeenCalledWith('SELECT 1 AS ok')
+    expect(cloud.getWXContext).not.toHaveBeenCalled()
+  })
+
+  test('system.health 拒绝无效签名', async () => {
+    const result = await main({
+      action: 'system.health',
+      payload: { ...healthPayload('clientApi'), signature: '0'.repeat(64) },
+    }, {})
+    expect(result.code).toBe(-401)
+    expect(result.errorType).toBe('UNAUTHORIZED')
   })
 
   test('成功路由返回 code: 0 + data', async () => {
