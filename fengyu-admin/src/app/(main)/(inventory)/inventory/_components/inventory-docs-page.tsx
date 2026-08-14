@@ -18,6 +18,7 @@ import {
   type InventoryDocItemInput,
   type InventoryDocRow,
   type InventoryLotRow,
+  type InventoryLocationFilterOptions,
   type InventoryLocationRow,
   type InventorySkuRow,
   type InventoryDocType,
@@ -25,6 +26,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { DataTable, type Column } from '@/components/ui/data-table'
 import { Dialog, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import InventoryLocationFilter from '@/components/inventory-location-filter'
 import { Input } from '@/components/ui/input'
 import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
@@ -96,6 +98,8 @@ export default function InventoryDocsPage({
   readOnly = false,
   lockedLevel,
   allowedCreateDocTypes,
+  locationFilterOptions,
+  selectedLocationId,
 }: {
   rows: InventoryDocRow[]
   total: number
@@ -108,6 +112,8 @@ export default function InventoryDocsPage({
   readOnly?: boolean
   lockedLevel?: 'supply-chain' | 'market' | 'store'
   allowedCreateDocTypes?: readonly InventoryDocType[]
+  locationFilterOptions?: InventoryLocationFilterOptions
+  selectedLocationId?: string | null
 }) {
   const router = useRouter()
   const { get, setMany } = useUrlFilters()
@@ -222,17 +228,12 @@ export default function InventoryDocsPage({
           <h1 className="text-xl font-medium">{readOnly ? '单据中心' : '本级单据记录'}</h1>
         </div>
         <div className="flex items-center gap-2">
-          {!lockedLevel && (
-            <Select
-              value={get('level')}
-              onChange={(e) => setMany({ level: e.target.value, page: '' })}
-              className="w-32"
-            >
-              <option value="">全部层级</option>
-              <option value="supply-chain">供应链</option>
-              <option value="market">市场</option>
-              <option value="store">门店</option>
-            </Select>
+          {locationFilterOptions && (
+            <InventoryLocationFilter
+              options={locationFilterOptions}
+              value={selectedLocationId ?? null}
+              onChange={(location) => setMany({ location, level: '', page: '' })}
+            />
           )}
           <Select
             value={get('docType')}
@@ -260,7 +261,18 @@ export default function InventoryDocsPage({
             value={searchInput}
             onChange={(e) => handleSearchChange(e.target.value)}
           />
-          <Button variant="outline" onClick={() => setMany({ q: '', level: '', docType: '', status: '', create: '', page: '' })}>
+          <Button
+            variant="outline"
+            onClick={() => setMany({
+              q: '',
+              location: locationFilterOptions?.defaultLocationId ?? '',
+              level: '',
+              docType: '',
+              status: '',
+              create: '',
+              page: '',
+            })}
+          >
             重置
           </Button>
           {!readOnly && canCreate && (

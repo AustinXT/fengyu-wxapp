@@ -1,9 +1,12 @@
 import { Suspense } from 'react'
 import { redirect } from 'next/navigation'
 import { listInventoryCoreDocs } from '@/actions/inventory/docs'
+import { listInventoryDocLocationFilterOptions } from '@/actions/inventory/locations'
 import { getSession } from '@/lib/auth'
 import { genericDocBusinessLevel } from '@/lib/inventory/business-level'
+import { resolveInventoryFilterLocationId } from '@/lib/inventory/location-filter'
 import { INVENTORY_GENERIC_DOC_TYPES, type InventoryDocType } from '@/lib/inventory/types'
+import { hasUiCapability } from '@/lib/permission-contract'
 import { requireAllUiPageCapabilities } from '@/lib/page-capability'
 import InventoryDocsPage from '../_components/inventory-docs-page'
 
@@ -24,15 +27,22 @@ export default async function Page({
   const pageSize = params.size ? Number(params.size) : 20
   const session = await getSession()
   requireAllUiPageCapabilities(session, ['inventory:list', 'inventory:stock_list'])
-  const docs = await listInventoryCoreDocs({
-    locationId: params.location,
-    locationType: params.level === 'supply-chain' ? '总部' : params.level === 'market' ? '市场' : params.level === 'store' ? '门店' : undefined,
-    docType: params.docType as never,
-    status: params.status as never,
-    keyword: params.q,
-    page,
-    pageSize,
-  })
+  const filterOptions = await listInventoryDocLocationFilterOptions()
+  const selectedLocationId = resolveInventoryFilterLocationId(filterOptions, params.location)
+  const docs = selectedLocationId
+    ? await listInventoryCoreDocs({
+        locationId: selectedLocationId,
+        docType: params.docType as never,
+        status: params.status as never,
+        keyword: params.q,
+        page,
+        pageSize,
+      })
+    : {
+        data: [],
+        total: 0,
+        canViewPrice: hasUiCapability(session.permissions.actions, 'inventory:price_view'),
+      }
 
   return (
     <div className="p-6">
@@ -46,6 +56,8 @@ export default async function Page({
           canApprove={false}
           canViewPrice={docs.canViewPrice}
           readOnly
+          locationFilterOptions={filterOptions}
+          selectedLocationId={selectedLocationId}
         />
       </Suspense>
     </div>

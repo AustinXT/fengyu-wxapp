@@ -170,6 +170,33 @@ export interface InventoryLocationRow {
   isActive: boolean
 }
 
+export interface InventoryLocationFilterHeadquarters {
+  locationId: string
+  name: string
+}
+
+export interface InventoryLocationFilterStore {
+  locationId: string
+  name: string
+}
+
+export interface InventoryLocationFilterMarket {
+  locationId: string
+  name: string
+  canSelectInventory: boolean
+  stores: InventoryLocationFilterStore[]
+}
+
+/**
+ * 库存主体筛选与普通“市场-门店”经营筛选不同：总部、市场、门店各自持有独立库存，
+ * 上级选项只负责组织导航，不代表包含或汇总下级库存。
+ */
+export interface InventoryLocationFilterOptions {
+  headquarters: InventoryLocationFilterHeadquarters[]
+  markets: InventoryLocationFilterMarket[]
+  defaultLocationId: string | null
+}
+
 export interface InventorySupplierInput {
   name: string
   contactName?: string | null

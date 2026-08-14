@@ -5,13 +5,13 @@ import { useSearchParams } from 'next/navigation'
 import { Boxes } from 'lucide-react'
 import { toast } from 'sonner'
 import { exportInventoryLots } from '@/actions/inventory/stocks'
-import type { InventoryLotRow } from '@/lib/inventory/types'
+import type { InventoryLocationFilterOptions, InventoryLotRow } from '@/lib/inventory/types'
 import { Button } from '@/components/ui/button'
 import { DataTable, type Column } from '@/components/ui/data-table'
 import { ExportButton } from '@/components/ui/export-button'
+import InventoryLocationFilter from '@/components/inventory-location-filter'
 import { Input } from '@/components/ui/input'
 import { Pagination } from '@/components/ui/pagination'
-import { Select } from '@/components/ui/select'
 import { exportToXlsx } from '@/lib/export-xlsx'
 import { useUrlFilters } from '@/lib/hooks/use-url-filters'
 
@@ -26,11 +26,15 @@ export default function InventoryStocksPage({
   total,
   canViewPrice,
   canExport,
+  locationFilterOptions,
+  selectedLocationId,
 }: {
   rows: InventoryLotRow[]
   total: number
   canViewPrice: boolean
   canExport: boolean
+  locationFilterOptions: InventoryLocationFilterOptions
+  selectedLocationId: string | null
 }) {
   const { get, setMany } = useUrlFilters()
   const searchParams = useSearchParams()
@@ -48,7 +52,13 @@ export default function InventoryStocksPage({
   }, [debounceRef, setMany])
 
   const handleExport = useCallback(async () => {
+    if (!selectedLocationId) {
+      toast.info('当前账号没有可访问的库存主体')
+      return
+    }
     const raw = Object.fromEntries(searchParams.entries())
+    delete raw.type
+    raw.location = selectedLocationId
     const { rows: exportRows, truncated, canViewPrice: exportCanViewPrice } = await exportInventoryLots(raw)
     if (exportRows.length === 0) {
       toast.info('当前筛选无数据可导出')
@@ -83,7 +93,7 @@ export default function InventoryStocksPage({
       rows: exportRows,
     })
     if (truncated) toast.warning('数据量过大，已导出前 10000 条，请缩小筛选范围')
-  }, [searchParams])
+  }, [searchParams, selectedLocationId])
 
   const columns: Column<InventoryLotRow>[] = [
     {
@@ -145,16 +155,11 @@ export default function InventoryStocksPage({
           <h1 className="text-xl font-medium">实时库存</h1>
         </div>
         <div className="flex items-center gap-2">
-          <Select
-            value={get('type')}
-            onChange={(e) => setMany({ type: e.target.value, page: '' })}
-            className="w-32"
-          >
-            <option value="">全部主体</option>
-            <option value="总部">总部</option>
-            <option value="市场">市场</option>
-            <option value="门店">门店</option>
-          </Select>
+          <InventoryLocationFilter
+            options={locationFilterOptions}
+            value={selectedLocationId}
+            onChange={(location) => setMany({ location, type: '', page: '' })}
+          />
           <Input
             className="w-72"
             placeholder="搜索主体 / SKU / 产品 / 批号"
@@ -167,7 +172,16 @@ export default function InventoryStocksPage({
           >
             仅看有库存
           </Button>
-          <Button variant="outline" onClick={() => setMany({ q: '', type: '', onlyPositive: '', page: '' })}>
+          <Button
+            variant="outline"
+            onClick={() => setMany({
+              q: '',
+              location: locationFilterOptions.defaultLocationId ?? '',
+              type: '',
+              onlyPositive: '',
+              page: '',
+            })}
+          >
             重置
           </Button>
           {canExport && <ExportButton onExport={handleExport} />}

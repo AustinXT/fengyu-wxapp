@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, within } from '@testing-library/react'
-import type { InventoryDocRow } from '@/lib/inventory/types'
+import type { InventoryDocRow, InventoryLocationFilterOptions } from '@/lib/inventory/types'
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
@@ -72,16 +72,36 @@ const baseProps = {
   canViewPrice: true,
 }
 
+const locationFilterOptions: InventoryLocationFilterOptions = {
+  headquarters: [{ locationId: 'HQ', name: '总部' }],
+  markets: [{
+    locationId: 'M1',
+    name: '南昌市场',
+    canSelectInventory: true,
+    stores: [{ locationId: 'S1', name: '红谷滩店' }],
+  }],
+  defaultLocationId: 'HQ',
+}
+
 describe('InventoryDocsPage 职责边界', () => {
   it('全局单据中心只提供检索和详情', () => {
-    render(<InventoryDocsPage {...baseProps} readOnly />)
+    render(
+      <InventoryDocsPage
+        {...baseProps}
+        readOnly
+        locationFilterOptions={locationFilterOptions}
+        selectedLocationId="HQ"
+      />,
+    )
 
     expect(screen.getByRole('heading', { name: '单据中心' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '详情' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '新建' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '通过' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '驳回' })).not.toBeInTheDocument()
-    expect(screen.getByDisplayValue('全部层级')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('总部（供应链）')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('供应链库存')).toBeInTheDocument()
+    expect(screen.queryByDisplayValue('全部层级')).not.toBeInTheDocument()
   })
 
   it('本级单据记录承接业务动作并锁定层级', () => {
@@ -97,7 +117,7 @@ describe('InventoryDocsPage 职责边界', () => {
     expect(screen.getByRole('button', { name: '新建' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '通过' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '驳回' })).toBeInTheDocument()
-    expect(screen.queryByDisplayValue('全部层级')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('库存市场层级')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '新建' }))
     const dialog = screen.getByRole('dialog')

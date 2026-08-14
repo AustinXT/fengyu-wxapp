@@ -33,6 +33,7 @@ import {
   createInventorySupplier,
   disableInventoryPromotionPlan,
   getInventoryCoreDocById,
+  listInventoryLocationFilterOptions,
   rejectInventoryCoreDoc,
   syncInventoryLocations,
   updateInventorySku,
@@ -62,6 +63,16 @@ function selectWithoutLimit(rows: unknown[]) {
   return {
     from: () => ({
       where: async () => rows,
+    }),
+  }
+}
+
+function selectWithOrder(rows: unknown[]) {
+  return {
+    from: () => ({
+      where: () => ({
+        orderBy: async () => rows,
+      }),
     }),
   }
 }
@@ -732,6 +743,53 @@ describe('库存主体启停同步', () => {
   })
 })
 
+describe('库存主体筛选 scope', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(isAdminScope).mockReturnValue(false)
+    mockDb.execute.mockResolvedValue([])
+  })
+
+  it('使用当前 action 收紧后的市场和门店 scope 生成选项', async () => {
+    mockGetSession.mockResolvedValue({
+      employeeId: 'E001',
+      name: '市场用户',
+      phone: '13800000000',
+      roles: [{
+        role: 'finance',
+        scopeId: 'M1',
+        scopeType: '市场',
+        actions: ['inventory:stock_list'],
+        scopeStoreIds: ['S1'],
+        scopeOrgNodeIds: ['M1', 'N-S1'],
+      }],
+      permissions: {
+        actions: ['inventory:stock_list'],
+        scopeStoreIds: ['S1'],
+        scopeOrgNodeIds: ['M1', 'N-S1'],
+      },
+    })
+    mockDb.select.mockReturnValue(selectWithOrder([
+      { locationId: 'HQ', locationType: '总部', name: '总部', orgNodeId: 'HQ', storeId: null, parentLocationId: null, isActive: true },
+      { locationId: 'M1', locationType: '市场', name: '南昌市场', orgNodeId: 'M1', storeId: null, parentLocationId: 'HQ', isActive: true },
+      { locationId: 'M2', locationType: '市场', name: '九江市场', orgNodeId: 'M2', storeId: null, parentLocationId: 'HQ', isActive: true },
+      { locationId: 'S1', locationType: '门店', name: '红谷滩店', orgNodeId: 'N-S1', storeId: 'S1', parentLocationId: 'M1', isActive: true },
+      { locationId: 'S2', locationType: '门店', name: '九江店', orgNodeId: 'N-S2', storeId: 'S2', parentLocationId: 'M2', isActive: true },
+    ]))
+
+    await expect(listInventoryLocationFilterOptions()).resolves.toEqual({
+      headquarters: [],
+      markets: [{
+        locationId: 'M1',
+        name: '南昌市场',
+        canSelectInventory: true,
+        stores: [{ locationId: 'S1', name: '红谷滩店' }],
+      }],
+      defaultLocationId: 'M1',
+    })
+  })
+})
+
 describe('库存单据详情履约进度', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -752,8 +810,6 @@ describe('库存单据详情履约进度', () => {
       permissions: { actions: ['inventory:list'], scopeStoreIds: [] },
     } as never)
     mockDb.select
-      // 市场范围无直属门店时，详情后续只可见该市场自身命中的单据。
-      .mockReturnValueOnce(selectWithoutLimit([]))
       .mockReturnValueOnce(detailHeadSelect([{
         doc: {
           id: 'MBH-260809-0001',
@@ -1194,7 +1250,6 @@ describe('全局福利方案引擎权限', () => {
   it('市场用户直调引擎时不能停用全局福利方案', async () => {
     const now = new Date()
     mockDb.select
-      .mockReturnValueOnce(selectWithoutLimit([]))
       .mockReturnValueOnce(promotionPlanSelect([{
         id: 'INV-PROMO-GLOBAL',
         planNo: 'GLOBAL-1',
@@ -1221,7 +1276,6 @@ describe('全局福利方案引擎权限', () => {
     const now = new Date()
     mockDb.execute.mockResolvedValue([])
     mockDb.select
-      .mockReturnValueOnce(selectWithoutLimit([]))
       .mockReturnValueOnce(promotionPlanSelect([{
         id: 'INV-PROMO-GLOBAL',
         planNo: 'GLOBAL-1',

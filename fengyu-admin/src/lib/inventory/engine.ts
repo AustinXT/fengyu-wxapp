@@ -45,6 +45,7 @@ import {
   type InventoryDocRow,
   type InventoryDocType,
   type InventoryLocationRow,
+  type InventoryLocationFilterOptions,
   type InventoryLocationType,
   type InventoryLotRow,
   type InventoryPromotionPlanInput,
@@ -60,6 +61,7 @@ import {
   type InventorySupplierInput,
   type InventorySupplierRow,
 } from './types'
+import { buildInventoryLocationFilterOptions } from './location-filter'
 
 const sourceLocation = alias(inventoryLocations, 'source_loc')
 const targetLocation = alias(inventoryLocations, 'target_loc')
@@ -454,45 +456,14 @@ async function scopedLocationIds(session: AuthSession): Promise<string[] | null>
     return null
   }
 
-  const ids = new Set<string>()
-  const marketIds: string[] = []
-  const storeNodeIds: string[] = []
+  // withPermission 已按当前 action 收紧 roles 与 scopeStoreIds；库存直接消费同一份
+  // 组织 scope 解析结果，避免在库存域内再维护一套“市场直属门店”展开规则。
+  const ids = new Set(session.permissions.scopeStoreIds)
   for (const role of session.roles) {
     if (role.scopeType === '市场') {
       ids.add(role.scopeId)
-      marketIds.push(role.scopeId)
-    } else if (role.scopeType === '门店') {
-      storeNodeIds.push(role.scopeId)
     }
   }
-
-  if (marketIds.length > 0) {
-    const storeNodeRows = await db
-      .select({ id: orgNodes.id })
-      .from(orgNodes)
-      .where(and(inArray(orgNodes.parentId, marketIds), eq(orgNodes.type, '门店')))
-    const marketStoreNodeIds = storeNodeRows.map((row) => row.id)
-    if (marketStoreNodeIds.length > 0) {
-      const rows = await db
-        .select({ storeId: stores.storeId })
-        .from(stores)
-        .where(inArray(stores.orgNodeId, marketStoreNodeIds))
-      for (const row of rows) {
-        ids.add(row.storeId)
-      }
-    }
-  }
-
-  if (storeNodeIds.length > 0) {
-    const rows = await db
-      .select({ storeId: stores.storeId })
-      .from(stores)
-      .where(inArray(stores.orgNodeId, storeNodeIds))
-    for (const row of rows) {
-      ids.add(row.storeId)
-    }
-  }
-
   return Array.from(ids)
 }
 
@@ -1162,6 +1133,40 @@ export const listInventoryLocations = withPermission(
       isActive: row.isActive,
     }))
   },
+)
+
+async function inventoryLocationFilterOptions(
+  session: AuthSession,
+): Promise<InventoryLocationFilterOptions> {
+  await syncInventoryLocations()
+  const scoped = await scopedLocationIds(session)
+  const rows = await db
+    .select()
+    .from(inventoryLocations)
+    .where(eq(inventoryLocations.isActive, true))
+    .orderBy(asc(inventoryLocations.locationType), asc(inventoryLocations.name))
+  return buildInventoryLocationFilterOptions(
+    rows.map((row) => ({
+      locationId: row.locationId,
+      locationType: row.locationType as InventoryLocationType,
+      name: row.name,
+      orgNodeId: row.orgNodeId,
+      storeId: row.storeId,
+      parentLocationId: row.parentLocationId,
+      isActive: row.isActive,
+    })),
+    scoped,
+  )
+}
+
+export const listInventoryLocationFilterOptions = withPermission(
+  'inventory:stock_list',
+  inventoryLocationFilterOptions,
+)
+
+export const listInventoryDocLocationFilterOptions = withPermission(
+  'inventory:list',
+  inventoryLocationFilterOptions,
 )
 
 export const listInventorySkus = withPermission(
