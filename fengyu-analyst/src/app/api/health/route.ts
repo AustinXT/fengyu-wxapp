@@ -58,13 +58,15 @@ export async function GET(request: NextRequest) {
     const databaseLatencyMs = Date.now() - startedAt
     const ai = await probeAiGateway()
     return NextResponse.json({
-      ok: ai.status !== 'error',
+      // 数据分析核心服务只依赖业务主库；AI 网关是可选能力，并且 Admin 另有独立网关探测。
+      // 单次 AI HEAD 抖动不得把整个 Analyst 误判为宕机。
+      ok: true,
       checkedAt: new Date().toISOString(),
       dependencies: {
         database: { status: 'ok', latencyMs: databaseLatencyMs },
         ai,
       },
-    }, { status: ai.status === 'error' ? 503 : 200 })
+    })
   } catch {
     return NextResponse.json({ ok: false, checkedAt: new Date().toISOString() }, { status: 503 })
   }

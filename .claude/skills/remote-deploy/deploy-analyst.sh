@@ -108,8 +108,7 @@ fi
 ANALYST_ADMIN_ORIGIN="${ANALYST_ADMIN_ORIGIN:-http://$PUBLIC_HOST:$ADMIN_PORT}"
 ANALYST_ADMIN_LOGIN_URL="${ANALYST_ADMIN_LOGIN_URL:-$ANALYST_ADMIN_ORIGIN/login}"
 RUNTIME_ENV_FILE=$(mktemp "${TMPDIR:-/tmp}/fengyu-analyst-runtime.XXXXXX")
-printf 'DEPLOY_CLOUDBASE_ENV_ID=%s\nDEPLOY_CDN_BASE=%s\n' \
-  "$DEPLOY_CLOUDBASE_ENV_ID" "$DEPLOY_CDN_BASE" > "$RUNTIME_ENV_FILE"
+bash scripts/render-admin-runtime-env.sh "$ENV" "$RUNTIME_ENV_FILE"
 COMPOSE_OVERRIDE="docker-compose.remote.yml"
 
 if [[ "$ENV" == "prod" ]]; then
@@ -195,7 +194,7 @@ echo "  ✓ 容器状态: running"
 ssh "$SSH_HOST" "docker ps --filter name=fengyu-analyst --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
 
 # HTTP 健康检查（根路由）
-HTTP_STATUS=$(ssh "$SSH_HOST" "curl -sSL -o /dev/null -w '%{http_code}' --max-time 10 http://localhost:$ANALYST_PORT/ 2>/dev/null" || echo "000")
+HTTP_STATUS=$(ssh "$SSH_HOST" "curl -sS -o /dev/null -w '%{http_code}' --max-time 10 http://localhost:$ANALYST_PORT/ 2>/dev/null" || echo "000")
 if [[ "$HTTP_STATUS" != "200" && "$HTTP_STATUS" != "307" ]]; then
   echo "❌ HTTP 健康检查失败 (状态码: $HTTP_STATUS)" >&2
   ssh "$SSH_HOST" "docker logs --tail 30 fengyu-analyst 2>&1" || true
@@ -204,7 +203,7 @@ fi
 echo "  ✓ HTTP 健康检查通过 (状态码: $HTTP_STATUS)"
 
 # API 端点检查
-API_STATUS=$(ssh "$SSH_HOST" "curl -sSL -o /dev/null -w '%{http_code}' --max-time 10 http://localhost:$ANALYST_PORT/api/health 2>/dev/null" || echo "000")
+API_STATUS=$(ssh "$SSH_HOST" "curl -sS -o /dev/null -w '%{http_code}' --max-time 10 http://localhost:$ANALYST_PORT/api/health 2>/dev/null" || echo "000")
 if [[ "$API_STATUS" == "200" ]]; then
   echo "  ✓ API 健康检查通过"
 elif [[ "$API_STATUS" == "404" ]]; then

@@ -54,8 +54,8 @@ read_env_value() {
   printf '%s' "$value"
 }
 
-# 远程 .env 保存账号密钥等运行期秘密；这里只传输目标环境的非敏感存储标识，
-# 并用独立变量名覆盖 compose 插值，避免误用远程残留的另一环境值。
+# 目标环境 CloudBase 标识、HMAC 与 staff 独立账号凭据统一写入受限临时文件，
+# 用第二个 env-file 覆盖远程 .env 残留值，避免 dev/prod 串线。
 DEPLOY_CLOUDBASE_ENV_ID=$(read_env_value CLOUDBASE_ENV_ID)
 DEPLOY_CDN_BASE=$(read_env_value CDN_BASE)
 ANALYST_PUBLIC_ORIGIN=$(read_env_value ANALYST_PUBLIC_ORIGIN)
@@ -65,8 +65,7 @@ if ! node -e 'const u = new URL(process.argv[1]); if (!/^https?:$/.test(u.protoc
 fi
 RUNTIME_ENV_FILE=$(mktemp "${TMPDIR:-/tmp}/fengyu-admin-runtime.XXXXXX")
 trap 'rm -f "$RUNTIME_ENV_FILE"' EXIT
-printf 'DEPLOY_CLOUDBASE_ENV_ID=%s\nDEPLOY_CDN_BASE=%s\n' \
-  "$DEPLOY_CLOUDBASE_ENV_ID" "$DEPLOY_CDN_BASE" > "$RUNTIME_ENV_FILE"
+bash scripts/render-admin-runtime-env.sh "$ENV" "$RUNTIME_ENV_FILE"
 COMPOSE_OVERRIDE="docker-compose.remote.yml"
 
 # prod 强制确认（dev 发 ali-demo 无生产副作用，不打断）
@@ -239,6 +238,22 @@ verify_cloudbase_runtime() {
 
 verify_cloudbase_runtime fengyu-admin
 verify_cloudbase_runtime fengyu-export-worker
+
+EXPECTED_CLIENT_SECRET=$(awk -F= '$1=="DEPLOY_CLIENT_SECRET"{print substr($0,index($0,"=")+1)}' "$RUNTIME_ENV_FILE")
+EXPECTED_CLIENT_SECRET_HASH=$(printf %s "$EXPECTED_CLIENT_SECRET" | shasum -a 256 | awk '{print $1}')
+EXPECTED_STAFF_ENV_ID=$(awk -F= '$1=="DEPLOY_STAFF_ENV_ID"{print substr($0,index($0,"=")+1)}' "$RUNTIME_ENV_FILE")
+EXPECTED_STAFF_SECRET_ID=$(awk -F= '$1=="DEPLOY_STAFF_TENCENTCLOUD_SECRETID"{print substr($0,index($0,"=")+1)}' "$RUNTIME_ENV_FILE")
+EXPECTED_STAFF_SECRET_ID_HASH=$(printf %s "$EXPECTED_STAFF_SECRET_ID" | shasum -a 256 | awk '{print $1}')
+ACTUAL_STAFF_ENV_ID=$(ssh "$SSH_HOST" "docker exec fengyu-admin sh -c 'printf %s \"\$STAFF_ENV_ID\"'" 2>/dev/null || true)
+ACTUAL_CLIENT_SECRET_HASH=$(ssh "$SSH_HOST" "docker exec fengyu-admin sh -c 'printf %s \"\$CLIENT_SECRET\" | sha256sum | cut -d\" \" -f1'" 2>/dev/null || true)
+ACTUAL_STAFF_SECRET_ID_HASH=$(ssh "$SSH_HOST" "docker exec fengyu-admin sh -c 'printf %s \"\$STAFF_TENCENTCLOUD_SECRETID\" | sha256sum | cut -d\" \" -f1'" 2>/dev/null || true)
+ACTUAL_DIAGNOSTIC_RUNTIME="$ACTUAL_STAFF_ENV_ID|$ACTUAL_CLIENT_SECRET_HASH|$ACTUAL_STAFF_SECRET_ID_HASH"
+EXPECTED_DIAGNOSTIC_RUNTIME="$EXPECTED_STAFF_ENV_ID|$EXPECTED_CLIENT_SECRET_HASH|$EXPECTED_STAFF_SECRET_ID_HASH"
+if [[ "$ACTUAL_DIAGNOSTIC_RUNTIME" != "$EXPECTED_DIAGNOSTIC_RUNTIME" ]]; then
+  echo "✗ admin 健康检查运行时配置与 $ENV 不一致（仅比较环境 ID 与密钥哈希）。" >&2
+  exit 1
+fi
+echo "  ✓ admin 健康检查 HMAC、staff 环境与独立账号凭据均与 $ENV 一致"
 
 echo ""
 echo "部署完成（env=$ENV）。"
