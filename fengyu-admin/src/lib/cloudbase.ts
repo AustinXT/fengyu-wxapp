@@ -44,10 +44,15 @@ function getStaffApp() {
   if (!staffApp) {
     const env = process.env.STAFF_ENV_ID?.trim()
     if (!env) throw new ApiError("INVALID_STATE", "Staff CloudBase 环境未配置")
+    const secretId = process.env.STAFF_TENCENTCLOUD_SECRETID?.trim()
+    const secretKey = process.env.STAFF_TENCENTCLOUD_SECRETKEY?.trim()
+    if (!secretId || !secretKey) {
+      throw new ApiError("INVALID_STATE", "Staff CloudBase 独立账号凭据未配置")
+    }
     staffApp = cloudbase.init({
       env,
-      secretId: process.env.TENCENTCLOUD_SECRETID!,
-      secretKey: process.env.TENCENTCLOUD_SECRETKEY!,
+      secretId,
+      secretKey,
     })
   }
   return staffApp

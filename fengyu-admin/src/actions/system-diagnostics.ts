@@ -6,7 +6,9 @@ import path from 'node:path'
 import { sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { db } from '@/db'
+import { ApiError } from '@/lib/api-error'
 import { callClientFunction, callStaffFunction, probeCloudbaseStorage } from '@/lib/cloudbase'
+import { diagnosticErrorDetail } from '@/lib/diagnostic-error'
 import { logOperation } from '@/lib/operation-log'
 import { requireAdmin } from '@/lib/permissions'
 import { heartbeatLevel, readWorkerHeartbeat, type WorkerName } from '@/lib/worker-heartbeat'
@@ -83,8 +85,15 @@ async function timedProbe(
       }),
     ])
     return { ...item, status: 'ok', value: successValue, latencyMs: elapsed(startedAt) }
-  } catch {
-    return { ...item, status: 'error', value: '检查失败', detail: item.detail || '请查看对应服务日志。', latencyMs: elapsed(startedAt) }
+  } catch (error) {
+    console.warn(`[system-diagnostics] ${item.key} probe failed:`, error instanceof Error ? error.message : 'unknown error')
+    return {
+      ...item,
+      status: 'error',
+      value: '检查失败',
+      detail: diagnosticErrorDetail(error, item.detail),
+      latencyMs: elapsed(startedAt),
+    }
   } finally {
     if (timer) clearTimeout(timer)
   }
@@ -106,8 +115,11 @@ function signedPayload(service: string): Record<string, string> {
 }
 
 async function verifyCloudFunctionResult(result: unknown): Promise<void> {
-  const response = result as { code?: number; data?: { ok?: boolean } }
-  if (response?.code !== 0 || response.data?.ok !== true) throw new Error('INVALID_STATE: cloud function unhealthy')
+  const response = result as { code?: unknown; message?: unknown; errorType?: unknown; data?: { ok?: boolean } }
+  if (response?.code === 0 && response.data?.ok === true) return
+  const errorType = typeof response?.errorType === 'string' ? response.errorType : 'INVALID_STATE'
+  const message = typeof response?.message === 'string' ? response.message : 'cloud function unhealthy'
+  throw new ApiError('INVALID_STATE', `${errorType}: ${message}`)
 }
 
 async function fetchGateway(url: string, headers?: HeadersInit): Promise<void> {
@@ -154,7 +166,8 @@ async function analystItem(): Promise<DiagnosticItem> {
         headers: { 'x-health-timestamp': timestamp, 'x-health-nonce': nonce, 'x-health-signature': signature },
       })
       const body = await response.json() as { ok?: boolean }
-      if (!response.ok || body.ok !== true) throw new Error('INVALID_STATE: analyst unhealthy')
+      if (response.status === 401) throw new ApiError('INVALID_STATE', 'ANALYST_UNAUTHORIZED: 401')
+      if (!response.ok || body.ok !== true) throw new ApiError('INVALID_STATE', `ANALYST_UNAVAILABLE: ${response.status}`)
     },
   )
 }
