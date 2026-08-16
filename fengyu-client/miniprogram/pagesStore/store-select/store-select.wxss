@@ -76,7 +76,7 @@
 }
 
 .store-address {
-  margin-top: 12rpx;
+  margin-top: 8rpx;
   font-size: 24rpx;
   color: var(--color-text-secondary);
   line-height: 1.4;
@@ -84,6 +84,12 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   overflow: hidden;
+}
+
+.store-market {
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: var(--color-primary);
 }
 
 .store-distance {

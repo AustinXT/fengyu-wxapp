@@ -12,10 +12,11 @@
 //      再额外建一个第二门店挂在同一 market_org，方便确认列表有多行
 //   2. navigateTo /pagesStore/store-select/store-select
 //   3. waitForPagePath + waitForData(p.allStores 含测试门店 store_id)
-//   4. navigateTo /pagesStore/store-detail/store-detail?storeId=<TEST_STORE_ID>&storeName=...
-//   5. waitForPagePath('store-detail') + waitForData(p.store.store_id === TEST_STORE_ID)
-//   6. 前端渲染字段断言：store.street_address / business_hours / phone 均非空
-//   7. clientApi.store.detail 一致性：返回字段与前端 data.store 同步
+//   4. 验证单字不检索、两字可按区域检索，清空后恢复定位失败提示
+//   5. navigateTo /pagesStore/store-detail/store-detail?storeId=<TEST_STORE_ID>&storeName=...
+//   6. waitForPagePath('store-detail') + waitForData(p.store.store_id === TEST_STORE_ID)
+//   7. 前端渲染字段断言：store.street_address / business_hours / phone 均非空
+//   8. clientApi.store.detail 一致性：返回字段与前端 data.store 同步
 
 import { launchClient, disconnect } from './helpers/automator.mjs'
 import { closePool, query } from './helpers/pg.mjs'
@@ -108,7 +109,29 @@ const STEPS = [
     }
   }],
 
-  ['3. navigateTo store-detail?storeId=<TEST_STORE_ID>', async (ctx) => {
+  ['3. 门店检索：单字拦截 + 两字区域匹配 + 清空恢复', async (ctx) => {
+    const page = await ctx.mp.currentPage()
+
+    await page.callMethod('onSearch', { detail: '店' })
+    let data = await page.data()
+    if (data.showHint !== 'minlen' || (data.stores || []).length !== 0) {
+      throw new Error(`单字检索未拦截: showHint=${data.showHint}, stores=${(data.stores || []).length}`)
+    }
+
+    await page.callMethod('onSearch', { detail: '天河' })
+    data = await page.data()
+    if (!(data.stores || []).some((store) => store.store_id === TEST_STORE_ID)) {
+      throw new Error(`两字区域检索未命中 ${TEST_STORE_ID}`)
+    }
+
+    await page.callMethod('onSearch', { detail: '' })
+    data = await page.data()
+    if (data.showHint !== 'search' || (data.stores || []).length !== 0) {
+      throw new Error(`清空搜索未恢复定位失败提示: showHint=${data.showHint}`)
+    }
+  }],
+
+  ['4. navigateTo store-detail?storeId=<TEST_STORE_ID>', async (ctx) => {
     const url = `/pagesStore/store-detail/store-detail?storeId=${encodeURIComponent(TEST_STORE_ID)}&storeName=${encodeURIComponent(NS + '_测试店')}`
     await ctx.mp.navigateTo(url)
     await waitForPagePath(ctx.mp, 'store-detail', { timeoutMs: 8000 })
@@ -119,7 +142,7 @@ const STEPS = [
     )
   }],
 
-  ['4. 前端渲染字段断言：address / hours / phone', async (ctx) => {
+  ['5. 前端渲染字段断言：address / hours / phone', async (ctx) => {
     const data = await (await ctx.mp.currentPage()).data()
     const s = data.store
     if (!s) throw new Error('store-detail.data.store 为空')
@@ -134,7 +157,7 @@ const STEPS = [
     }
   }],
 
-  ['5. clientApi.store.detail 一致性', async (ctx) => {
+  ['6. clientApi.store.detail 一致性', async (ctx) => {
     const res = await ctx.invoke('store.detail', { storeId: TEST_STORE_ID })
     if (!res || res.code !== 0) {
       throw new Error(`store.detail failed: ${JSON.stringify(res)}`)
