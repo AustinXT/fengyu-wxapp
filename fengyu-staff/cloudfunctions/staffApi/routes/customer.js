@@ -544,7 +544,7 @@ async function getConsumptionStats(clientUserId) {
     };
   }
 
-  const yearStart = new Date(new Date().getFullYear(), 0, 1);
+  const yearStart = `${shanghaiDateStr().slice(0, 4)}-01-01`;
   const rows = await pg.query(
     `WITH order_stats AS (
        SELECT
@@ -554,22 +554,40 @@ async function getConsumptionStats(clientUserId) {
            THEN (SELECT SUM(si2.received::numeric) FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
            ELSE o.received::numeric
          END
-       ), 0) AS total,
+       ), 0) AS total
+       FROM sale_orders o
+       WHERE o.status IN ('已支付', '部分支付', '已完成')
+         AND o.sale_order_type IN ('销售单', '转换单')
+         AND o.client_user_id = $1
+     ), year_payment_stats AS (
+       SELECT
+       COALESCE(SUM(
+         sop.amount::numeric
+       ), 0) AS year_total
+       FROM sale_order_payments sop
+       JOIN sale_orders o ON o.sale_order_id = sop.sale_order_id
+       WHERE sop.status = '已支付'
+         AND o.sale_order_type IN ('销售单', '转换单')
+         AND o.client_user_id = $1
+         AND o.legacy_source IS DISTINCT FROM 'workfine'
+         AND sop.paid_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Shanghai')
+         AND sop.paid_at < (($2::date + INTERVAL '1 year') AT TIME ZONE 'Asia/Shanghai')
+     ), legacy_year_stats AS (
+       SELECT
        COALESCE(SUM(
          CASE
-           WHEN o.paid_at >= $2 THEN
-             CASE
-               WHEN EXISTS (SELECT 1 FROM sale_items si WHERE si.sale_order_id = o.sale_order_id)
-               THEN (SELECT SUM(si2.received::numeric) FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
-               ELSE o.received::numeric
-             END
-           ELSE 0
+           WHEN EXISTS (SELECT 1 FROM sale_items si WHERE si.sale_order_id = o.sale_order_id)
+           THEN (SELECT SUM(si2.received::numeric) FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+           ELSE o.received::numeric
          END
        ), 0) AS year_total
        FROM sale_orders o
        WHERE o.status IN ('已支付', '部分支付', '已完成')
          AND o.sale_order_type IN ('销售单', '转换单')
          AND o.client_user_id = $1
+         AND o.legacy_source = 'workfine'
+         AND o.paid_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Shanghai')
+         AND o.paid_at < (($2::date + INTERVAL '1 year') AT TIME ZONE 'Asia/Shanghai')
      ), actual_stats AS (
        SELECT
          COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS total_actual_consumption,
@@ -581,9 +599,12 @@ async function getConsumptionStats(clientUserId) {
          AND so.status = '已完成'
          AND ${excludeDepositRefundSql('so')}
      )
-     SELECT order_stats.total, order_stats.year_total,
+     SELECT order_stats.total,
+            year_payment_stats.year_total + legacy_year_stats.year_total AS year_total,
             actual_stats.total_actual_consumption, actual_stats.year_actual_consumption
        FROM order_stats
+       CROSS JOIN year_payment_stats
+       CROSS JOIN legacy_year_stats
        CROSS JOIN actual_stats`,
     [clientUserId, yearStart],
   );

@@ -27,8 +27,14 @@ async function main() {
   await createTestStaff()
   await createTestClient()
 
-  // 消费口径夹具：WorkFine 历史销售单应计入；寄存单只是剩余权益初始化，不应重复计入。
+  // 消费口径夹具：
+  // - WorkFine 历史销售单无支付流水，继续按订单快照计入；
+  // - 原生部分支付按本年实际到账流水计入；
+  // - 跨年结清订单只把本年回款计入年度消费；
+  // - 寄存单只是剩余权益初始化，不重复计入。
   const legacySaleOrderId = `${NS}_CUSDET_SALE`
+  const partialOrderId = `${NS}_CUSDET_PARTIAL`
+  const crossYearOrderId = `${NS}_CUSDET_CROSS_YEAR`
   const depositOrderId = `${NS}_CUSDET_DEP`
   await createTestSaleOrder({
     saleOrderId: legacySaleOrderId,
@@ -43,6 +49,54 @@ async function main() {
         SET received = 1200, paid_at = NOW(), legacy_source = 'workfine'
       WHERE sale_order_id = $1`,
     [legacySaleOrderId],
+  )
+  await createTestSaleOrder({
+    saleOrderId: partialOrderId,
+    clientUserId: TEST_CLIENT_USER_ID,
+    totalAmount: 1000,
+    status: '部分支付',
+    saleOrderType: '销售单',
+  })
+  await pgQuery(
+    `UPDATE sale_orders
+        SET received = 200, paid_at = NULL
+      WHERE sale_order_id = $1`,
+    [partialOrderId],
+  )
+  await pgQuery(
+    'UPDATE sale_items SET received = 200 WHERE sale_order_id = $1',
+    [partialOrderId],
+  )
+  await pgQuery(
+    `INSERT INTO sale_order_payments
+       (sale_order_id, change_type, amount, payment_method, status,
+        source_end, operator_employee_id, paid_at)
+     VALUES ($1, '首次支付', 200, '线下', '已支付', 'staff', $2, NOW())`,
+    [partialOrderId, TEST_MANAGER_EMP_ID],
+  )
+
+  await createTestSaleOrder({
+    saleOrderId: crossYearOrderId,
+    clientUserId: TEST_CLIENT_USER_ID,
+    totalAmount: 500,
+    status: '已支付',
+    saleOrderType: '销售单',
+  })
+  await pgQuery(
+    `UPDATE sale_orders
+        SET received = 500, paid_at = NOW()
+      WHERE sale_order_id = $1`,
+    [crossYearOrderId],
+  )
+  await pgQuery(
+    `INSERT INTO sale_order_payments
+       (sale_order_id, change_type, amount, payment_method, status,
+        source_end, operator_employee_id, paid_at)
+     VALUES
+       ($1, '首次支付', 200, '线下', '已支付', 'staff', $2,
+        (date_trunc('year', NOW() AT TIME ZONE 'Asia/Shanghai') - INTERVAL '1 day') AT TIME ZONE 'Asia/Shanghai'),
+       ($1, '回款', 300, '线下', '已支付', 'staff', $2, NOW())`,
+    [crossYearOrderId, TEST_MANAGER_EMP_ID],
   )
   await createTestSaleOrder({
     saleOrderId: depositOrderId,
@@ -71,14 +125,14 @@ async function main() {
     for (const k of expectedKeys) {
       if (!(k in r.data)) errors.push(`detail 缺少字段 ${k}`)
     }
-    if (Number(r.data.totalConsumption) !== 1200) {
-      errors.push(`detail.totalConsumption 应只计历史销售单 1200，实际=${r.data.totalConsumption}`)
+    if (Number(r.data.totalConsumption) !== 1900) {
+      errors.push(`detail.totalConsumption 应为历史 1200 + 部分支付 200 + 跨年单 500 = 1900，实际=${r.data.totalConsumption}`)
     }
-    if (Number(r.data.yearConsumption) !== 1200) {
-      errors.push(`detail.yearConsumption 应只计本年历史销售单 1200，实际=${r.data.yearConsumption}`)
+    if (Number(r.data.yearConsumption) !== 1700) {
+      errors.push(`detail.yearConsumption 应为历史 1200 + 本年部分支付 200 + 本年回款 300 = 1700，实际=${r.data.yearConsumption}`)
     }
     rec(`  ✓ detail 返回字段: gender=${r.data.gender} store=${r.data.storeName} member=${r.data.memberLevel}`)
-    rec(`  ✓ 消费口径: 历史销售单=1200，寄存余额=800 未重复计入`)
+    rec(`  ✓ 消费口径: 历史快照保留，部分支付立即入年，跨年仅计本年回款，寄存未重复计入`)
   }
 
   // 管理层详情必须与门店详情同口径，同时保留无 sale_items 的 WorkFine 历史单回退。
@@ -92,11 +146,11 @@ async function main() {
   if (mgmtR.code !== 0) {
     errors.push(`mgmtCustomer.detail code=${mgmtR.code} msg=${mgmtR.message}`)
   } else {
-    if (Number(mgmtR.data.totalConsumption) !== 1200) {
-      errors.push(`mgmtCustomer.detail.totalConsumption 应为 1200，实际=${mgmtR.data.totalConsumption}`)
+    if (Number(mgmtR.data.totalConsumption) !== 1900) {
+      errors.push(`mgmtCustomer.detail.totalConsumption 应为 1900，实际=${mgmtR.data.totalConsumption}`)
     }
-    if (Number(mgmtR.data.yearConsumption) !== 1200) {
-      errors.push(`mgmtCustomer.detail.yearConsumption 应为 1200，实际=${mgmtR.data.yearConsumption}`)
+    if (Number(mgmtR.data.yearConsumption) !== 1700) {
+      errors.push(`mgmtCustomer.detail.yearConsumption 应为 1700，实际=${mgmtR.data.yearConsumption}`)
     }
     rec(`  ✓ 管理层详情消费口径与门店详情一致`)
   }

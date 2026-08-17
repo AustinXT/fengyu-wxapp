@@ -187,7 +187,8 @@ async function queryCycle(
              so.store_id,
              ${groupCol} AS grp,
              sipe.performance_date AS purchase_date,
-             SUM(sipe.amount::numeric) AS day_received
+             SUM(sipe.amount::numeric) AS day_received,
+             BOOL_OR(sipe.amount::numeric > 0) AS has_purchase
       FROM sale_item_performance_events sipe
       JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id
@@ -212,7 +213,7 @@ async function queryCycle(
       GROUP BY client_user_id, grp
     ),
     period_agg AS (
-      SELECT client_user_id, store_id, grp, purchase_date, day_received
+      SELECT client_user_id, store_id, grp, purchase_date, day_received, has_purchase
       FROM daily_agg
       WHERE purchase_date BETWEEN ${range.start} AND ${range.end}
     ),
@@ -230,7 +231,8 @@ async function queryCycle(
     tiyan AS (
       SELECT DISTINCT pa.client_user_id, pa.grp
       FROM period_agg pa
-      WHERE NOT EXISTS (
+      WHERE pa.has_purchase
+        AND NOT EXISTS (
         SELECT 1 FROM first_entry f
         WHERE f.client_user_id = pa.client_user_id AND f.grp = pa.grp
       )
@@ -358,7 +360,8 @@ async function queryCycleByStore(
              so.store_id,
              ${groupCol} AS grp,
              sipe.performance_date AS purchase_date,
-             SUM(sipe.amount::numeric) AS day_received
+             SUM(sipe.amount::numeric) AS day_received,
+             BOOL_OR(sipe.amount::numeric > 0) AS has_purchase
       FROM sale_item_performance_events sipe
       JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id
@@ -383,7 +386,7 @@ async function queryCycleByStore(
       GROUP BY client_user_id, grp
     ),
     period_agg AS (
-      SELECT client_user_id, store_id, grp, purchase_date, day_received
+      SELECT client_user_id, store_id, grp, purchase_date, day_received, has_purchase
       FROM daily_agg
       WHERE purchase_date BETWEEN ${range.start} AND ${range.end}
     ),
@@ -399,20 +402,20 @@ async function queryCycleByStore(
       WHERE q.purchase_date BETWEEN ${range.start} AND ${range.end}
     ),
     tiyan AS (
-      SELECT DISTINCT pa.client_user_id, pa.grp
+      SELECT DISTINCT pa.client_user_id, pa.store_id, pa.grp
       FROM period_agg pa
-      WHERE NOT EXISTS (
+      WHERE pa.has_purchase
+        AND NOT EXISTS (
         SELECT 1 FROM first_entry f
         WHERE f.client_user_id = pa.client_user_id AND f.grp = pa.grp
       )
     ),
     -- 期内每个门店每个客群的人数（DISTINCT client per store）+ 业绩（该门店该客群消费）
     trial_store AS (
-      SELECT pa.store_id,
-             COUNT(DISTINCT pa.client_user_id) AS cnt
-      FROM period_agg pa
-      JOIN tiyan t ON t.client_user_id = pa.client_user_id AND t.grp = pa.grp
-      GROUP BY pa.store_id
+      SELECT t.store_id,
+             COUNT(DISTINCT t.client_user_id) AS cnt
+      FROM tiyan t
+      GROUP BY t.store_id
     ),
     new_store AS (
       SELECT pa.store_id,

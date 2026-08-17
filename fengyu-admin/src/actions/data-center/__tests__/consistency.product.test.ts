@@ -113,6 +113,25 @@ describe('品项板块两端口径一致性守护', () => {
     })
   })
 
+  describe('体验客群要求期内至少一笔正向购买', () => {
+    it('两端 daily_agg 记录正向购买，period_agg 透传到 tiyan', () => {
+      for (const code of [adminCode, staffCode]) {
+        expect(code).toMatch(/BOOL_OR\(sipe\.amount::numeric\s*>\s*0\)\s+AS\s+has_purchase/i)
+        expect(code).toMatch(/period_agg\s+AS\s*\([\s\S]*?day_received,\s*has_purchase[\s\S]*?FROM\s+daily_agg/i)
+        expect(code).toMatch(/tiyan\s+AS\s*\([\s\S]*?WHERE\s+pa\.has_purchase\s+AND\s+NOT EXISTS/i)
+      }
+    })
+
+    it('admin 按店体验人数要求正向购买发生在同一门店', () => {
+      expect(adminCode).toMatch(
+        /tiyan\s+AS\s*\(\s*SELECT DISTINCT pa\.client_user_id, pa\.store_id, pa\.grp[\s\S]*?WHERE pa\.has_purchase/i,
+      )
+      expect(adminCode).toMatch(
+        /trial_store\s+AS\s*\(\s*SELECT t\.store_id, COUNT\(DISTINCT t\.client_user_id\) AS cnt FROM tiyan t GROUP BY t\.store_id/i,
+      )
+    })
+  })
+
   describe('first_entry = 全历史最早达标日（跨店合并 MIN）', () => {
     it('admin', () => {
       expect(adminCode).toMatch(/MIN\(purchase_date\)\s+AS\s+entry_date/i)
@@ -146,10 +165,13 @@ describe('品项板块两端口径一致性守护', () => {
       expect(adminCode).not.toMatch(/paid_amount/)
       expect(staffCode).not.toMatch(/paid_amount/)
     })
-    it('历史残差只补正向收款，不得用正残差抵消退款事件', () => {
-      expect(dbOrderCode).toMatch(
-        /SUM\(amount\) FILTER \( WHERE change_type IN \('首次支付', '回款', '储值卡抵扣'\) \)::numeric\(10, 2\) AS amount/,
-      )
+    it('历史残差按全部有符号 receipt 计算，退款不得被二次补成残差', () => {
+      const receiptTotals = dbOrderCode.match(
+        /receipt_totals\s+AS\s*\(([\s\S]*?)\),\s*residuals\s+AS\s*\(/i,
+      )?.[1]
+      expect(receiptTotals).toBeDefined()
+      expect(receiptTotals).toMatch(/SUM\(amount\)::numeric\(10, 2\) AS amount/i)
+      expect(receiptTotals).not.toMatch(/FILTER/i)
     })
   })
 
