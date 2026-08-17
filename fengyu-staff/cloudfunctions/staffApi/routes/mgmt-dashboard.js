@@ -9,8 +9,8 @@
  * mgmtDashboard.summary — 数据中心首页 8 卡片汇总
  *   一次返回 4 张大卡（业绩/实耗，含月店均）+ 4 张小卡（客流/客量/新会员/项目数）
  *   口径定义：notes/references/metrics.md
- *   2026-04-26 sale-order-domain-refactor / 2026-08 现金流修订：组织层级业绩按
- *   sale_order_payments 的首次支付/回款/退款流水统计，包含充值单，排除储值卡抵扣。
+ *   2026-08 业绩归属日期：组织层级业绩按 sale_order_performance_events 的
+ *   performance_date 统计；首次收款跟随订单归属日期，后续回款/退款仍按真实发生日。
  *
  * **公式 / sale_order_type / status 过滤变更必须同步
  * `fengyu-admin/src/actions/dashboard.ts`
@@ -204,19 +204,16 @@ function timeWindow(col, mode, idx, isDateColumn) {
 /* ----- 7 个指标查询 ----- */
 
 async function queryStoreRevenue(scopeType, scopeId, date, mode) {
-  // 组织层级业绩按实际现金流：不计储值卡抵扣，退款按付款流水的发生日冲销。
-  // 与 admin dashboard / data-center sales 的现金流口径保持一致。
-  const sc = buildSaleScope(scopeType, scopeId, 'so', 2)
+  const sc = buildSaleScope(scopeType, scopeId, 'spe', 2)
   const rows = await pg.query(
-    `SELECT COALESCE(SUM(sop.amount::numeric), 0) AS v
-       FROM sale_order_payments sop
-       JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
+    `SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
+       FROM sale_order_performance_events spe
       WHERE ${sc.sql}
-        AND sop.status = '已支付'
-        AND sop.change_type IN ('首次支付', '回款', '退款')
-        AND so.sale_order_type IN ('销售单', '转换单', '充值单')
-        AND so.legacy_source IS DISTINCT FROM 'workfine'
-        AND ${timeWindow('sop.paid_at', mode, 1, false)}`,
+        AND spe.status = '已支付'
+        AND spe.change_type IN ('首次支付', '回款', '退款')
+        AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+        AND spe.legacy_source IS DISTINCT FROM 'workfine'
+        AND ${timeWindow('spe.performance_date', mode, 1, true)}`,
     [date, ...sc.params],
   )
   return Number(rows[0]?.v || 0)
@@ -225,14 +222,15 @@ async function queryStoreRevenue(scopeType, scopeId, date, mode) {
 async function queryShengmeiRevenue(scopeType, scopeId, date, mode) {
   const sc = buildSaleScope(scopeType, scopeId, 'so', 2)
   const rows = await pg.query(
-    `SELECT COALESCE(SUM(si.received::numeric), 0) AS v
-       FROM sale_orders so
-       JOIN sale_items si ON si.sale_order_id = so.sale_order_id
+    `SELECT COALESCE(SUM(sipe.amount::numeric), 0) AS v
+       FROM sale_item_performance_events sipe
+       JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
+       JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id
       WHERE ${sc.sql}
         AND so.sale_order_type IN ('销售单', '转换单')
         AND so.status = '已支付'
         AND si.is_shengmei = TRUE
-        AND ${timeWindow('so.paid_at', mode, 1, false)}`,
+        AND ${timeWindow('sipe.performance_date', mode, 1, true)}`,
     [date, ...sc.params],
   )
   return Number(rows[0]?.v || 0)
@@ -328,19 +326,12 @@ async function querySalesCommissionIncome(scopeType, scopeId, date, mode) {
        JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
        JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
        JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-       LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+       JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
       WHERE ${sc.sql}
         AND spia.is_void = FALSE
         AND so.sale_order_type IN ('销售单', '转换单')
-        AND (
-          (sop.id IS NOT NULL
-            AND sop.status = '已支付'
-            AND ${timeWindow('sop.paid_at', mode, 1, false)})
-          OR
-          (sop.id IS NULL
-            AND so.status = '已支付'
-            AND ${timeWindow('so.paid_at', mode, 1, false)})
-        )`,
+        AND spe.status = '已支付'
+        AND ${timeWindow('spe.performance_date', mode, 1, true)}`,
     [date, ...sc.params],
   )
   return Number(rows[0]?.v || 0)
@@ -650,16 +641,9 @@ function timeWindowPeriod(col, period, _isDateColumn) {
   return `date_trunc('year', ${col}) = date_trunc('year', NOW()::date)`
 }
 
-function paidAllocationPeriodWindow(paymentAlias, orderAlias, period) {
-  return `(
-    (${paymentAlias}.id IS NOT NULL
-      AND ${paymentAlias}.status = '已支付'
-      AND ${timeWindowPeriod(`${paymentAlias}.paid_at`, period, false)})
-    OR
-    (${paymentAlias}.id IS NULL
-      AND ${orderAlias}.status = '已支付'
-      AND ${timeWindowPeriod(`${orderAlias}.paid_at`, period, false)})
-  )`
+function performanceEventPeriodWindow(eventAlias, period) {
+  return `${eventAlias}.status = '已支付'
+    AND ${timeWindowPeriod(`${eventAlias}.performance_date`, period, true)}`
 }
 
 /**
@@ -748,19 +732,17 @@ async function rankingRevenue(period, storeFilter) {
        s.store_id,
        s.store_name,
        o.name AS market_name,
-       COALESCE(SUM(sop.amount::numeric), 0) AS value
+       COALESCE(SUM(spe.amount::numeric), 0) AS value
      FROM stores s
      JOIN org_nodes o_store ON s.org_node_id = o_store.id
      JOIN org_nodes o ON o_store.parent_id = o.id
-     LEFT JOIN sale_orders so
-       ON so.store_id = s.store_id
-       AND so.sale_order_type IN ('销售单', '转换单', '充值单')
-       AND so.legacy_source IS DISTINCT FROM 'workfine'
-     LEFT JOIN sale_order_payments sop
-       ON sop.sale_order_id = so.sale_order_id
-       AND sop.status = '已支付'
-       AND sop.change_type IN ('首次支付', '回款', '退款')
-       AND ${timeWindowPeriod('sop.paid_at', period, false)}
+     LEFT JOIN sale_order_performance_events spe
+       ON spe.store_id = s.store_id
+       AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+       AND spe.legacy_source IS DISTINCT FROM 'workfine'
+       AND spe.status = '已支付'
+       AND spe.change_type IN ('首次支付', '回款', '退款')
+       AND ${timeWindowPeriod('spe.performance_date', period, true)}
      WHERE ${storeFilter.sql}
      GROUP BY s.store_id, s.store_name, o.name
      ORDER BY value DESC, s.store_name ASC`,
@@ -1010,10 +992,10 @@ revenue_by_emp AS (
   JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
   JOIN sale_items si  ON si.sale_item_id  = spir.sale_item_id
   JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-  LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+  JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
   WHERE spia.is_void = FALSE
     AND so.sale_order_type IN ('销售单','转换单')
-    AND ${paidAllocationPeriodWindow('sop', 'so', period)}
+    AND ${performanceEventPeriodWindow('spe', period)}
   GROUP BY spia.employee_id
 )
 SELECT
@@ -1168,10 +1150,10 @@ sales_comm AS (
   JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
   JOIN sale_items si  ON si.sale_item_id  = spir.sale_item_id
   JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-  LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+  JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
   WHERE spia.is_void = FALSE
     AND so.sale_order_type IN ('销售单','转换单')
-    AND ${paidAllocationPeriodWindow('sop', 'so', period)}
+    AND ${performanceEventPeriodWindow('spe', period)}
   GROUP BY spia.employee_id
 ),
 service_comm AS (
@@ -1306,17 +1288,17 @@ async function salesData(ctx) {
   const t0 = Date.now()
   const [revRows, custRevRows, consRows, custConsRows, prodOutRows, catRows, kindRows, nameRows, skeletonRows] =
     await Promise.all([
-      // SQL 1: 总业绩（实际现金流；不含储值卡抵扣，退款按退款到账日负向冲销）
+      // SQL 1: 总业绩（首次收款按订单归属日，后续回款/退款按真实发生日）
       pg.query(
-        `SELECT COALESCE(SUM(sop.amount::numeric), 0) AS v
-           FROM sale_order_payments sop
-           JOIN sale_orders o ON o.sale_order_id = sop.sale_order_id
+        `SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
+           FROM sale_order_performance_events spe
+           JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
           WHERE ${scSale.sql}
-            AND sop.status = '已支付'
-            AND sop.change_type IN ('首次支付', '回款', '退款')
+            AND spe.status = '已支付'
+            AND spe.change_type IN ('首次支付', '回款', '退款')
             AND o.sale_order_type IN ('销售单', '转换单', '充值单')
             AND o.legacy_source IS DISTINCT FROM 'workfine'
-            AND sop.paid_at::date BETWEEN $1 AND $2`,
+            AND spe.performance_date BETWEEN $1 AND $2`,
         saleP,
       ),
       // SQL 2: 分客型业绩（按同一笔实际现金流分桶）
@@ -1324,26 +1306,26 @@ async function salesData(ctx) {
       //   并把 became_member_at IS NULL（历史回填缺口）的"会员客"归到"老会员"（COALESCE 兜底）。
       pg.query(
         `SELECT
-            COALESCE(SUM(sop.amount::numeric) FILTER (
+            COALESCE(SUM(spe.amount::numeric) FILTER (
               WHERE c.customer_type = '小美客'
             ), 0) AS xiaomei,
-            COALESCE(SUM(sop.amount::numeric) FILTER (
+            COALESCE(SUM(spe.amount::numeric) FILTER (
               WHERE c.customer_type = '会员客'
                 AND COALESCE(c.became_member_at, '1970-01-01'::timestamptz)::date >= $1
             ), 0) AS new_member,
-            COALESCE(SUM(sop.amount::numeric) FILTER (
+            COALESCE(SUM(spe.amount::numeric) FILTER (
               WHERE c.customer_type = '会员客'
                 AND COALESCE(c.became_member_at, '1970-01-01'::timestamptz)::date < $1
             ), 0) AS old_member
-           FROM sale_order_payments sop
-           JOIN sale_orders o ON o.sale_order_id = sop.sale_order_id
+           FROM sale_order_performance_events spe
+           JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
            JOIN client_wechat_users c ON c.user_id = o.client_user_id
           WHERE ${scSale.sql}
-            AND sop.status = '已支付'
-            AND sop.change_type IN ('首次支付', '回款', '退款')
+            AND spe.status = '已支付'
+            AND spe.change_type IN ('首次支付', '回款', '退款')
             AND o.sale_order_type IN ('销售单', '转换单', '充值单')
             AND o.legacy_source IS DISTINCT FROM 'workfine'
-            AND sop.paid_at::date BETWEEN $1 AND $2`,
+            AND spe.performance_date BETWEEN $1 AND $2`,
         saleP,
       ),
       // SQL 3: 总实耗
@@ -1385,37 +1367,39 @@ async function salesData(ctx) {
       // SQL 5: 分客型产品出库（product_type='家居产品' 行级；2026-05-20 P0-3 修复 NULL 兜底）
       pg.query(
         `SELECT
-            COALESCE(SUM(si.received::numeric) FILTER (
+            COALESCE(SUM(sipe.amount::numeric) FILTER (
               WHERE c.customer_type = '小美客'
             ), 0) AS xiaomei,
-            COALESCE(SUM(si.received::numeric) FILTER (
+            COALESCE(SUM(sipe.amount::numeric) FILTER (
               WHERE c.customer_type = '会员客'
                 AND COALESCE(c.became_member_at, '1970-01-01'::timestamptz)::date >= $1
             ), 0) AS new_member,
-            COALESCE(SUM(si.received::numeric) FILTER (
+            COALESCE(SUM(sipe.amount::numeric) FILTER (
               WHERE c.customer_type = '会员客'
                 AND COALESCE(c.became_member_at, '1970-01-01'::timestamptz)::date < $1
             ), 0) AS old_member
-           FROM sale_items si
-           JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+           FROM sale_item_performance_events sipe
+           JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
+           JOIN sale_orders o ON o.sale_order_id = sipe.sale_order_id
            JOIN client_wechat_users c ON c.user_id = o.client_user_id
           WHERE ${scSale.sql}
             AND si.product_type = '家居产品'
             AND o.sale_order_type IN ('销售单', '转换单')
             AND o.status = '已支付'
-            AND o.paid_at::date BETWEEN $1 AND $2`,
+            AND sipe.performance_date BETWEEN $1 AND $2`,
         saleP,
       ),
       // SQL 6: 按经营类型汇总
       pg.query(
         `SELECT si.sales_category AS label,
-                COALESCE(SUM(si.received::numeric), 0) AS value
-           FROM sale_items si
-           JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+                COALESCE(SUM(sipe.amount::numeric), 0) AS value
+           FROM sale_item_performance_events sipe
+           JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
+           JOIN sale_orders o ON o.sale_order_id = sipe.sale_order_id
           WHERE ${scSale.sql}
             AND o.sale_order_type IN ('销售单', '转换单')
             AND o.status = '已支付'
-            AND o.paid_at::date BETWEEN $1 AND $2
+            AND sipe.performance_date BETWEEN $1 AND $2
             AND si.sales_category IS NOT NULL
           GROUP BY si.sales_category
           ORDER BY value DESC`,
@@ -1424,15 +1408,16 @@ async function salesData(ctx) {
       // SQL 7: 按一级品项汇总
       pg.query(
         `SELECT pc.product_kind AS label,
-                COALESCE(SUM(si.received::numeric), 0) AS value
-           FROM sale_items si
-           JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+                COALESCE(SUM(sipe.amount::numeric), 0) AS value
+           FROM sale_item_performance_events sipe
+           JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
+           JOIN sale_orders o ON o.sale_order_id = sipe.sale_order_id
            JOIN product_skus sk ON sk.sku_id = si.sku_id
            JOIN product_categories pc ON pc.category_id = sk.category_id
           WHERE ${scSale.sql}
             AND o.sale_order_type IN ('销售单', '转换单')
             AND o.status = '已支付'
-            AND o.paid_at::date BETWEEN $1 AND $2
+            AND sipe.performance_date BETWEEN $1 AND $2
             AND pc.product_kind IS NOT NULL
           GROUP BY pc.product_kind
           ORDER BY value DESC`,
@@ -1442,15 +1427,16 @@ async function salesData(ctx) {
       pg.query(
         `SELECT pc.product_kind AS kind,
                 pc.category_name AS label,
-                COALESCE(SUM(si.received::numeric), 0) AS value
-           FROM sale_items si
-           JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+                COALESCE(SUM(sipe.amount::numeric), 0) AS value
+           FROM sale_item_performance_events sipe
+           JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
+           JOIN sale_orders o ON o.sale_order_id = sipe.sale_order_id
            JOIN product_skus sk ON sk.sku_id = si.sku_id
            JOIN product_categories pc ON pc.category_id = sk.category_id
           WHERE ${scSale.sql}
             AND o.sale_order_type IN ('销售单', '转换单')
             AND o.status = '已支付'
-            AND o.paid_at::date BETWEEN $1 AND $2
+            AND sipe.performance_date BETWEEN $1 AND $2
             AND pc.product_kind IS NOT NULL
             AND pc.category_name IS NOT NULL
           GROUP BY pc.product_kind, pc.category_name`,

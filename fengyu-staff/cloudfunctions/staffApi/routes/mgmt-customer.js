@@ -131,7 +131,8 @@ async function getTopProductScoped(clientUserId, scopeType, scopeId) {
 }
 
 /**
- * 消费和实耗统计（交易数据跟顾客走，累计 + 年度）
+ * 消费和实耗统计（交易数据跟顾客走，累计 + 年度）。
+ * 仅销售单、转换单计入消费；寄存单只是剩余服务权益初始化，不能重复计入。
  */
 async function getConsumptionStatsScoped(clientUserId, scopeType, scopeId) {
   if (!clientUserId) {
@@ -147,11 +148,27 @@ async function getConsumptionStatsScoped(clientUserId, scopeType, scopeId) {
   const rows = await pg.query(
     `WITH order_stats AS (
        SELECT
-       COALESCE(SUM(si.received::numeric), 0) AS total,
-       COALESCE(SUM(CASE WHEN o.paid_at >= $2 THEN si.received::numeric ELSE 0 END), 0) AS year_total
+       COALESCE(SUM(
+         CASE
+           WHEN EXISTS (SELECT 1 FROM sale_items si WHERE si.sale_order_id = o.sale_order_id)
+           THEN (SELECT SUM(si2.received::numeric) FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+           ELSE o.received::numeric
+         END
+       ), 0) AS total,
+       COALESCE(SUM(
+         CASE
+           WHEN o.paid_at >= $2 THEN
+             CASE
+               WHEN EXISTS (SELECT 1 FROM sale_items si WHERE si.sale_order_id = o.sale_order_id)
+               THEN (SELECT SUM(si2.received::numeric) FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
+               ELSE o.received::numeric
+             END
+           ELSE 0
+         END
+       ), 0) AS year_total
        FROM sale_orders o
-       JOIN sale_items si ON o.sale_order_id = si.sale_order_id
-       WHERE o.status = '已支付'
+       WHERE o.status IN ('已支付', '部分支付', '已完成')
+         AND o.sale_order_type IN ('销售单', '转换单')
          AND o.client_user_id = $1
      ), actual_stats AS (
        SELECT

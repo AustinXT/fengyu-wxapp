@@ -215,10 +215,11 @@ async function cycleStats(ctx) {
       SELECT so.client_user_id,
              so.store_id,
              pc.product_kind,
-             so.paid_at::date           AS purchase_date,
-             SUM(si.received::numeric)  AS day_received
-        FROM sale_items si
-        JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+             sipe.performance_date      AS purchase_date,
+             SUM(sipe.amount::numeric)  AS day_received
+        FROM sale_item_performance_events sipe
+        JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
+        JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id
         JOIN product_skus sk ON sk.sku_id = si.sku_id
         JOIN product_categories pc ON pc.category_id = sk.category_id
        WHERE ${sc.sql}
@@ -226,8 +227,8 @@ async function cycleStats(ctx) {
          AND so.status = '已支付'
          AND so.client_user_id IS NOT NULL
          AND pc.product_kind IS NOT NULL
-         AND so.paid_at::date <= $2
-       GROUP BY so.client_user_id, so.store_id, pc.product_kind, so.paid_at::date
+         AND sipe.performance_date <= $2
+       GROUP BY so.client_user_id, so.store_id, pc.product_kind, sipe.performance_date
     ),
     qualifying_days AS (
       SELECT client_user_id, store_id, product_kind, purchase_date

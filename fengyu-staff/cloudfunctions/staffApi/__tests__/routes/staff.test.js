@@ -358,7 +358,7 @@ describe('staff.performanceDetail', () => {
     expect(ctx.result.categorySummary['自销自耗'].service).toBe(200)
   })
 
-  test('部分支付订单的已支付回款分配计入销售提成', async () => {
+  test('部分支付订单的已支付回款分配按业绩事件日期计入销售提成', async () => {
     const ctx = createManagerCtx({
       startDate: '2026-07-01',
       endDate: '2026-07-31',
@@ -387,11 +387,11 @@ describe('staff.performanceDetail', () => {
     await staffRoutes.performanceDetail(ctx)
 
     const allocSql = pg.query.mock.calls[0][0]
-    expect(allocSql).toContain('LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id')
-    expect(allocSql).toContain("sop.status = '已支付'")
-    expect(allocSql).toContain('sop.paid_at >= $2')
-    expect(allocSql).toContain('sop.id IS NULL')
-    expect(allocSql).toContain("o.status = '已支付'")
+    expect(allocSql).toContain('JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id')
+    expect(allocSql).toContain("spe.status = '已支付'")
+    expect(allocSql).toContain('spe.performance_date >= ($2::timestamptz')
+    expect(allocSql).toContain('spe.performance_date < ($3::timestamptz')
+    expect(allocSql).toContain('spe.performance_date AS paid_at')
     expect(ctx.result.totalSalesAlloc).toBe(26)
     expect(ctx.result.totalCommission).toBe(26)
     expect(ctx.result.items[0].orderId).toBe('FY-XSD-WX-2607190047')

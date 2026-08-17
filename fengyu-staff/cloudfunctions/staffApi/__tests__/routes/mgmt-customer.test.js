@@ -171,9 +171,9 @@ function setupCommonMocks(opts = {}) {
 
     // detail 消费统计
     if (
-      /COALESCE\(SUM\(si\.received::numeric\),\s*0\)\s+AS\s+total/.test(sql) &&
+      /WITH\s+order_stats\s+AS/.test(sql) &&
       /year_total/.test(sql) &&
-      /JOIN\s+sale_items\s+si/.test(sql)
+      /total_actual_consumption/.test(sql)
     ) {
       return detailConsumptionRows
     }
@@ -707,11 +707,14 @@ describe('mgmtCustomer.detail 出数', () => {
     const sqls = pg.query.mock.calls.map((c) => c[0])
     const consumptionSql = sqls.find(
       (s) =>
-        /COALESCE\(SUM\(si\.received::numeric\),\s*0\)\s+AS\s+total/.test(s) &&
+        /WITH\s+order_stats\s+AS/.test(s) &&
         /year_total/.test(s),
     )
     // 交易数据跟顾客走：详情统计不按门店过滤，顾客可见性由 assertCustomerInScope 守护。
     expect(consumptionSql).not.toMatch(/(?:o|so)\.store_id/)
+    expect(consumptionSql).toContain('EXISTS (SELECT 1 FROM sale_items')
+    expect(consumptionSql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
+    expect(consumptionSql).toContain("o.sale_order_type IN ('销售单', '转换单')")
     expect(consumptionSql).toContain('FROM service_orders so')
     expect(consumptionSql).toContain('JOIN service_items sit ON sit.service_order_id = so.service_order_id')
     expect(consumptionSql).toContain("so.status = '已完成'")
@@ -803,7 +806,7 @@ describe('mgmtCustomer.detail 出数', () => {
     )
     const consumptionSql = sqls.find(
       (s) =>
-        /COALESCE\(SUM\(si\.received::numeric\),\s*0\)\s+AS\s+total/.test(s) &&
+        /WITH\s+order_stats\s+AS/.test(s) &&
         /year_total/.test(s),
     )
 
