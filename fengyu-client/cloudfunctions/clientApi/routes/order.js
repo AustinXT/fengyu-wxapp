@@ -1788,8 +1788,7 @@ async function cancel(ctx) {
     // 防并发：他端先 confirmOffline / payNotify 把单子置 '已支付' 时本端不可越权关闭
     const allowedStatusList = cancelableStatuses // 已根据 isPrepaidFull 计算
     const updRes = await client.query(
-      `UPDATE sale_orders
-       SET status = '已关闭',
+      `UPDATE sale_orders SET status = '已关闭',
            pending_prepaid_card_amount = 0,
            payable_amount = CASE
              WHEN sale_order_type IN ('销售单','内部单','转换单')
@@ -1839,6 +1838,30 @@ async function cancel(ctx) {
              ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
             [cardId, prepaidCardAmount, orderNo, `card-cancel-rev-${orderNo}`]
           )
+          // 取消全额储值卡单是对原扣款的作废：流水不再属于已结算，
+          // actual prepaid 与行级通道分摊由后续统一重算归零。
+          await client.query(
+            `UPDATE sale_order_payments
+                SET status = '已作废', allocation_status = NULL
+              WHERE sale_order_id = $1
+                AND change_type = '储值卡抵扣'
+                AND payment_method = '储值卡'
+                AND status = '已支付'`,
+            [orderNo]
+          )
+          await client.query(
+            `UPDATE sale_orders
+                SET received = 0, refunded_amount = 0,
+                    prepaid_card_amount = 0, pending_prepaid_card_amount = 0,
+                    payable_amount = CASE
+                      WHEN sale_order_type IN ('销售单','内部单','转换单') THEN total_amount
+                      ELSE payable_amount
+                    END,
+                    updated_at = NOW()
+              WHERE sale_order_id = $1`,
+            [orderNo]
+          )
+          await recalcPaidSessionsForOrder(client, orderNo)
         }
       }
     }

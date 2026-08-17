@@ -420,14 +420,14 @@ describe('order.create', () => {
 
     // 2) 订单主表 INSERT：status='已支付'、received=0、payment_method='无'、paid_at 非空
     // params: [0]orderNo [1]status [2]docType [3]market [4]store [5]now [6]userId
-    //         [7]phone [8]name [9]total [10]prepaidCard [11]received [12]payable [13]payment_method
-    //         [14]preferredStaff [15]couponId [16]couponDiscount [17]paid_at
+    //         [7]phone [8]name [9]total [10]actualPrepaid [11]pendingPrepaid [12]received [13]payable
+    //         [14]payment_method [15]preferredStaff [16]couponId [17]couponDiscount [18]paid_at
     const orderInsert = txnQueries.find(q => /INSERT INTO sale_orders/.test(q.sql))
     expect(orderInsert).toBeDefined()
     expect(orderInsert.params[1]).toBe('已支付')
-    expect(orderInsert.params[11]).toBe(0)   // received=0（券抵扣无到账）
-    expect(orderInsert.params[13]).toBe('无') // payment_method
-    expect(orderInsert.params[17]).not.toBeNull() // paid_at=now
+    expect(orderInsert.params[12]).toBe(0)   // received=0（券抵扣无到账）
+    expect(orderInsert.params[14]).toBe('无') // payment_method
+    expect(orderInsert.params[18]).not.toBeNull() // paid_at=now
 
     // 3) 无储值卡（prepaidCardAmount=0）：不扣卡、不写 amount=0 储值卡抵扣流水（否则违 chk_sop_amount_sign）
     expect(txnQueries.find(q => /UPDATE prepaid_cards/.test(q.sql))).toBeUndefined()
@@ -1730,7 +1730,8 @@ describe('prepaid card deduction - order.create', () => {
     })
     await routes.create(ctx)
 
-    expect(ctx.result.prepaidCardAmount).toBe(100)
+    expect(ctx.result.prepaidCardAmount).toBe(0)
+    expect(ctx.result.pendingPrepaidCardAmount).toBe(100)
     expect(ctx.result.paidAmount).toBe(200)
     expect(ctx.result.paymentMethod).toBe('微信')
     expect(ctx.result.status).toBe('待支付')
@@ -2155,7 +2156,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
-                prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
+                prepaid_card_amount: '0', pending_prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
               }],
               rowCount: 1,
             }
@@ -2198,7 +2199,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
-                prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
+                prepaid_card_amount: '0', pending_prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
               }],
               rowCount: 1,
             }
@@ -2224,7 +2225,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
-                prepaid_card_amount: '100', payable_amount: '200', total_amount: '300',
+                prepaid_card_amount: '0', pending_prepaid_card_amount: '100', payable_amount: '200', total_amount: '300',
               }],
               rowCount: 1,
             }
@@ -2247,7 +2248,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '已支付', client_user_id: 'user-001',
-                prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
+                prepaid_card_amount: '0', pending_prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
               }],
               rowCount: 1,
             }
@@ -2272,7 +2273,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
-                prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
+                prepaid_card_amount: '0', pending_prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
               }],
               rowCount: 1,
             }
@@ -2311,7 +2312,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'other-user',
-                prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
+                prepaid_card_amount: '0', pending_prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
               }],
               rowCount: 1,
             }
@@ -2339,7 +2340,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
-                prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
+                prepaid_card_amount: '0', pending_prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
               }],
               rowCount: 1,
             }
@@ -2374,7 +2375,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
-                prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
+                prepaid_card_amount: '0', pending_prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
               }],
               rowCount: 1,
             }

@@ -124,10 +124,10 @@ describe('order.repay', () => {
     expect(calls.some((s) => /UPDATE prepaid_cards SET balance/.test(s))).toBe(true)
     // 重构后不再 INSERT INTO sale_orders（凭证单消除）
     expect(calls.some((s) => /INSERT INTO sale_orders/.test(s))).toBe(false)
-    // 修退款现金泄漏：纯卡回款记 '储值卡抵扣'（非 '回款'）并把卡额并入 prepaid_card_amount，
+    // 修退款现金泄漏：纯卡回款记 '储值卡抵扣'（非 '回款'），并由统一重算从流水累计 actual prepaid，
     // 使退款 splitRefundByOriginalPayment 把该部分回冲储值卡而非退现金
     expect(calls.some((s) => /INSERT INTO sale_order_payments[\s\S]*'储值卡抵扣'/.test(s))).toBe(true)
-    expect(calls.some((s) => /UPDATE sale_orders[\s\S]*prepaid_card_amount = COALESCE\(prepaid_card_amount/.test(s))).toBe(true)
+    expect(calls.some((s) => /prepaid_card_amount = card_totals\.settled_prepaid/.test(s))).toBe(true)
   })
 
   test('微信线上回款 → 调聚合主扫 preorder，返回 wx.requestPayment 参数（不写 payments 行）', async () => {

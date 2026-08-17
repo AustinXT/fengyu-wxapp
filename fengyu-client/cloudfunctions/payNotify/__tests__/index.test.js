@@ -126,6 +126,7 @@ function makeOrder(overrides = {}) {
     client_user_id: 'user-001',
     store_id: 'store-A',
     prepaid_card_amount: '0',
+    pending_prepaid_card_amount: '0',
     paid_amount: '300.00',
     ...overrides,
   }
@@ -287,13 +288,15 @@ describe('payNotify index.js', () => {
     expect(orderSelectCall[1][0]).toBe('FY-XSD-WX-2604240001')
   })
 
-  test('2. 部分抵扣订单（prepaid_card_amount=100）微信支付成功 → 扣 balance + INSERT 扣款 + 已支付', async () => {
+  test('2. 部分抵扣订单（pending_prepaid_card_amount=100）微信支付成功 → 扣 balance + INSERT 扣款 + 已支付', async () => {
     const { main } = loadFreshIndex()
     mockPoolQuery.mockResolvedValueOnce({
       rows: [
         makeOrder({
           total_amount: '300.00',
-          prepaid_card_amount: '100.00',
+          prepaid_card_amount: '0.00',
+          pending_prepaid_card_amount: '100.00',
+          payable_amount: '200.00',
           paid_amount: '200.00', // payable = 300 - 100 = 200
         }),
       ],
@@ -397,7 +400,10 @@ describe('payNotify index.js', () => {
     const { main } = loadFreshIndex()
     // 构造：total=600 prepaid=500 → payable=100（fullyPaid 触发扣款分支）
     mockPoolQuery.mockResolvedValueOnce({
-      rows: [makeOrder({ total_amount: '600.00', prepaid_card_amount: '500.00', paid_amount: '100.00' })],
+      rows: [makeOrder({
+        total_amount: '600.00', prepaid_card_amount: '0.00',
+        pending_prepaid_card_amount: '500.00', payable_amount: '100.00', paid_amount: '100.00',
+      })],
     })
 
     setupClientQueryRouter([
