@@ -143,7 +143,7 @@
 | 跨店共享 | 一户一账户；`prepaid_cards.store_id` 列已 DROP；顾客换绑门店后原余额继续可用 |
 | 抵扣开关默认开 | 有余额时默认 `useCard=true`，能抵多少抵多少；用户可手动关闭 |
 | 实付 = 0 时 | `payment_method='无'`（`paymentMethodEnum` 已扩展为 4 值：微信/支付宝/线下/无）；UI 隐藏支付方式按钮组 |
-| 金额字段 | `sale_orders.prepaid_card_amount`（抵扣额，不计入实付）+ `paid_amount`（走支付通道的实付）；`prepaid_card_amount + paid_amount = total_amount`（DB CHECK） |
+| 金额字段 | `pending_prepaid_card_amount`=未扣卡预选额；`prepaid_card_amount`=已结算储值卡实付净额（含多次回款/储值卡退款累计）；`payable_amount`=当前约定现金应付 |
 | 不支持自定义抵扣金额 | UI 仅给开关，后端按 `min(balance, total - couponDiscount)` 自动算 |
 | 余额不足 | 返回 `INSUFFICIENT_BALANCE`；前端弹框由用户决定（关抵扣重付 / 取消订单），不自动降级 |
 
@@ -158,7 +158,7 @@
 
 **扫码支付链路（员工预选 → 顾客确认）**:
 
-- 店长在员工端预选的抵扣方案随订单存入（`prepaid_card_amount` 为预选值，`prepaid_cards.balance` 未动）
+- 店长在员工端预选的抵扣方案写入 `pending_prepaid_card_amount`（`prepaid_card_amount` 仍是已结算净额，`prepaid_cards.balance` 未动）
 - 顾客扫码进 `scan-pay` 页 → 看到预填方案 → 可调整（关抵扣 / 部分抵扣 / 改支付方式）→ 调 `order.scanAdjust` 重算落库
 - 顾客点"确认支付"：
   - `paid_amount = 0` → `order.confirmPrepaidFull`（事务内扣卡 + 置已支付）

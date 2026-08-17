@@ -265,6 +265,8 @@
 | `unit_real_price` | numeric(10,2) | 优惠后单价 |
 | `sale_amount` | numeric(10,2) | 优惠后销售金额 |
 | `received` | numeric(10,2) | 实收金额（退出行为负数） |
+| `prepaid_card_received` | numeric(10,2) | 储值卡实付分摊：订单 `prepaid_card_amount` 按所有明细的有符号 `received` 分摊；按 `sale_item_id` 排序的最后非零行用减法吸收分币尾差，分母为 0 时全部为 0 |
+| `cash_received` | numeric(10,2) generated | 现金实付分摊，数据库生成列，恒等于 `received - prepaid_card_received` |
 | `expire_date` | date \| null | 到期日（家居产品为 null） |
 | `remark` | text | 备注 |
 | `sales_category` | enum \| null | 销售分类：`自销自耗` / `他销自耗` / `他销他耗` / `生态合作` |

@@ -129,7 +129,7 @@
 
 **开单行为**:
 
-1. 店长启用充值卡抵扣后手填金额（默认 `0.00`）→ `staffApi.order.create` / `order.createConversion` 写入 `sale_orders.prepaid_card_amount`；全额抵扣时支付方式落 `'无'`
+1. 店长启用充值卡抵扣后手填金额（默认 `0.00`）→ 未扣卡预选值写入 `sale_orders.pending_prepaid_card_amount`；扣卡成功后才转入 `prepaid_card_amount`，全额抵扣时支付方式落 `'无'`
 2. 部分抵扣：`prepaid_cards.balance` 不动、`card_transactions` 不写入，订单 `status='待支付'`，继续走二维码或线下确认收款
 3. 全额抵扣：创建事务内以 `FOR UPDATE` 二次校验余额，扣 `balance`、写 `card_transactions(type='扣款')` 和储值卡抵扣流水，订单直接结清
 4. 部分抵扣的顾客扫码 → `scan-pay` 页（顾客端）调整/确认；超时未确认时订单按现有 TTL 关闭，预选值作废且余额仍不变
