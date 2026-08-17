@@ -4,8 +4,8 @@
  * 数据中心 — 品项板块取数 action（getProductBoard）
  *
  * 口径权威：notes/references/metrics.md
- *   - §「品项顾客周期子页（mgmt-product-cycle）」（持卡截面 + daily_agg→qualifying_days→
- *     first_entry→period_agg→xinzeng/fugou/tiyan CTE 链）
+ *   - §「品项顾客周期子页（mgmt-product-cycle）」（持卡截面 + daily_agg→qualifying_days /
+ *     repurchase_qualifying_days→first_entry→period_agg→xinzeng/fugou/tiyan CTE 链）
  *   - §「品项顾客周期子页 → 3. 二级品项（category_name）粒度」（admin 独有的二级下钻扩展）
  *   - §「品项维度汇总」（一级=product_kind，二级=category_name）
  *
@@ -19,12 +19,13 @@
  *   - 持卡 sale_order_type IN ('销售单','转换单','寄存单')（寄存单为 WorkFine 剩余次数初始化纳入）。
  *   - 占比分母 = memberCount（client_wechat_users.became_member_at IS NOT NULL ∩ scope by bound_store_id，
  *     持卡为截面，不带 $date 守卫）。
- *   - 达标日（qualifying day）= SUM(si.received) 在 (client_user_id, store_id, 分组键, purchase_date)
- *     分组下 >= threshold（getMemberThreshold，默认 1980）。
+ *   - 进入达标日 = 销售单/转换单/寄存单的 SUM(si.received) 在
+ *     (client_user_id, store_id, 分组键, purchase_date) 分组下 >= threshold。
+ *   - 复购达标日与区间业绩只统计销售单/转换单；寄存单只作为进入基线，不能触发复购。
  *   - purchase_date = COALESCE(so.sale_order_datetime, so.paid_at)::date。
  *   - entry_date = 全历史（截至 endDate）最早达标日，跨店合并；新增 = entry_date 落区间；
  *     复购 = 区间内 entry_date 后再次达标（threshold 共用）；体验 = 区间内有购买但全历史无达标日。
- *   - cycleStats 基础过滤 sale_order_type IN ('销售单','转换单') ∩ 排除已关闭/已作废/未审核/待审批/支付失败；
+ *   - cycleStats 基础过滤 sale_order_type IN ('销售单','转换单','寄存单') ∩ 排除已关闭/已作废/未审核/待审批/支付失败；
  *     不要求 status='已支付'，received 达标即计入。
  *   - scope 用 so.store_id；客户维度（memberCount）用 c.bound_store_id。
  *
@@ -187,13 +188,19 @@ async function queryCycle(
              so.store_id,
              ${groupCol} AS grp,
              ${purchaseDateExpr} AS purchase_date,
-             SUM(si.received::numeric) AS day_received
+             SUM(si.received::numeric) AS day_received,
+             COALESCE(
+               SUM(si.received::numeric) FILTER (
+                 WHERE so.sale_order_type IN ('销售单', '转换单')
+               ),
+               0
+             ) AS purchase_received
       FROM sale_items si
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
       JOIN product_skus sk ON sk.sku_id = si.sku_id
       JOIN product_categories pc ON pc.category_id = sk.category_id
       WHERE ${sc}
-        AND so.sale_order_type IN ('销售单', '转换单')
+        AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
         AND so.status NOT IN ('已关闭', '已作废', '未审核', '待审批', '支付失败')
         AND so.client_user_id IS NOT NULL
         AND ${filter}
@@ -206,15 +213,21 @@ async function queryCycle(
       FROM daily_agg
       WHERE day_received >= ${threshold}
     ),
+    repurchase_qualifying_days AS (
+      SELECT client_user_id, store_id, grp, purchase_date
+      FROM daily_agg
+      WHERE purchase_received >= ${threshold}
+    ),
     first_entry AS (
       SELECT client_user_id, grp, MIN(purchase_date) AS entry_date
       FROM qualifying_days
       GROUP BY client_user_id, grp
     ),
     period_agg AS (
-      SELECT client_user_id, store_id, grp, purchase_date, day_received
+      SELECT client_user_id, store_id, grp, purchase_date, purchase_received AS day_received
       FROM daily_agg
       WHERE purchase_date BETWEEN ${range.start} AND ${range.end}
+        AND purchase_received > 0
     ),
     xinzeng AS (
       SELECT client_user_id, grp, entry_date
@@ -223,7 +236,7 @@ async function queryCycle(
     ),
     fugou AS (
       SELECT DISTINCT q.client_user_id, q.grp
-      FROM qualifying_days q
+      FROM repurchase_qualifying_days q
       JOIN xinzeng x ON x.client_user_id = q.client_user_id AND x.grp = q.grp
       WHERE q.purchase_date BETWEEN ${range.start} AND ${range.end}
         AND q.purchase_date > x.entry_date
@@ -359,13 +372,19 @@ async function queryCycleByStore(
              so.store_id,
              ${groupCol} AS grp,
              ${purchaseDateExpr} AS purchase_date,
-             SUM(si.received::numeric) AS day_received
+             SUM(si.received::numeric) AS day_received,
+             COALESCE(
+               SUM(si.received::numeric) FILTER (
+                 WHERE so.sale_order_type IN ('销售单', '转换单')
+               ),
+               0
+             ) AS purchase_received
       FROM sale_items si
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
       JOIN product_skus sk ON sk.sku_id = si.sku_id
       JOIN product_categories pc ON pc.category_id = sk.category_id
       WHERE ${sc}
-        AND so.sale_order_type IN ('销售单', '转换单')
+        AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
         AND so.status NOT IN ('已关闭', '已作废', '未审核', '待审批', '支付失败')
         AND so.client_user_id IS NOT NULL
         AND ${filter}
@@ -378,15 +397,21 @@ async function queryCycleByStore(
       FROM daily_agg
       WHERE day_received >= ${threshold}
     ),
+    repurchase_qualifying_days AS (
+      SELECT client_user_id, store_id, grp, purchase_date
+      FROM daily_agg
+      WHERE purchase_received >= ${threshold}
+    ),
     first_entry AS (
       SELECT client_user_id, grp, MIN(purchase_date) AS entry_date
       FROM qualifying_days
       GROUP BY client_user_id, grp
     ),
     period_agg AS (
-      SELECT client_user_id, store_id, grp, purchase_date, day_received
+      SELECT client_user_id, store_id, grp, purchase_date, purchase_received AS day_received
       FROM daily_agg
       WHERE purchase_date BETWEEN ${range.start} AND ${range.end}
+        AND purchase_received > 0
     ),
     xinzeng AS (
       SELECT client_user_id, grp, entry_date
@@ -395,7 +420,7 @@ async function queryCycleByStore(
     ),
     fugou AS (
       SELECT DISTINCT q.client_user_id, q.grp
-      FROM qualifying_days q
+      FROM repurchase_qualifying_days q
       JOIN xinzeng x ON x.client_user_id = q.client_user_id AND x.grp = q.grp
       WHERE q.purchase_date BETWEEN ${range.start} AND ${range.end}
         AND q.purchase_date > x.entry_date

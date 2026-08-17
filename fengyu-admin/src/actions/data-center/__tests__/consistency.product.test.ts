@@ -9,9 +9,10 @@
  * 完整 SQL snapshot 不可行。守护策略 = "关键不变量字面量匹配"：
  *   1. 持卡 = paid_sessions > 0，不按 product_type 过滤
  *   2. 持卡 sale_order_type IN ('销售单','转换单','寄存单')
- *   3. cycle CTE 链：daily_agg / qualifying_days / first_entry / period_agg / xinzeng / fugou / tiyan
- *   4. 达标日阈值（day_received >= threshold；getMemberThreshold）
- *   5. cycle 基础过滤 sale_order_type IN ('销售单','转换单') ∩ 排除无效状态，不要求 status='已支付'
+ *   3. cycle CTE 链：daily_agg / qualifying_days / repurchase_qualifying_days /
+ *      first_entry / period_agg / xinzeng / fugou / tiyan
+ *   4. 进入/复购达标日分别使用 day_received / purchase_received，并共用 threshold
+ *   5. cycle 进入基线纳入寄存单；复购达标与区间业绩只统计销售单/转换单
  *   6. 业绩 = SUM(received)（禁 paid_amount）
  *   7. 一级分组键 product_kind（admin 额外 category_name 二级，为 admin 独有扩展）
  *
@@ -87,12 +88,21 @@ describe('品项板块两端口径一致性守护', () => {
     })
   })
 
-  describe('cycle CTE 链一致（daily_agg / qualifying_days / first_entry / period_agg / xinzeng / fugou / tiyan）', () => {
-    const ctes = ['daily_agg', 'qualifying_days', 'first_entry', 'period_agg', 'xinzeng', 'fugou', 'tiyan']
-    it('admin 含全部 7 个 CTE', () => {
+  describe('cycle CTE 链一致（进入基线与复购达标分流）', () => {
+    const ctes = [
+      'daily_agg',
+      'qualifying_days',
+      'repurchase_qualifying_days',
+      'first_entry',
+      'period_agg',
+      'xinzeng',
+      'fugou',
+      'tiyan',
+    ]
+    it('admin 含全部 8 个 CTE', () => {
       for (const c of ctes) expect(adminCode).toContain(c)
     })
-    it('staff 含全部 7 个 CTE', () => {
+    it('staff 含全部 8 个 CTE', () => {
       for (const c of ctes) expect(staffCode).toContain(c)
     })
   })
@@ -127,14 +137,37 @@ describe('品项板块两端口径一致性守护', () => {
     })
   })
 
-  describe('cycle 基础过滤 sale_order_type IN (销售单, 转换单) ∩ 排除无效状态', () => {
+  describe('cycle 进入基线纳入寄存单，复购事件仅限销售单/转换单', () => {
     it('admin', () => {
-      expect(adminSrc).toMatch(/sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/)
-      expect(adminCode).toMatch(/so\.status\s+NOT\s+IN\s*\(\s*'已关闭'\s*,\s*'已作废'\s*,\s*'未审核'\s*,\s*'待审批'\s*,\s*'支付失败'\s*\)/)
+      expect(adminCode).toMatch(
+        /daily_agg[\s\S]*?sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*,\s*'寄存单'\s*\)/,
+      )
+      expect(adminCode).toMatch(
+        /FILTER\s*\(\s*WHERE\s+so\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)\s*\)[\s\S]*?AS\s+purchase_received/,
+      )
+      expect(adminCode).toMatch(
+        /so\.status\s+NOT\s+IN\s*\(\s*'已关闭'\s*,\s*'已作废'\s*,\s*'未审核'\s*,\s*'待审批'\s*,\s*'支付失败'\s*\)/,
+      )
     })
     it('staff', () => {
-      expect(staffSrc).toMatch(/sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/)
-      expect(staffCode).toMatch(/so\.status\s+NOT\s+IN\s*\(\s*'已关闭'\s*,\s*'已作废'\s*,\s*'未审核'\s*,\s*'待审批'\s*,\s*'支付失败'\s*\)/)
+      expect(staffCode).toMatch(
+        /daily_agg[\s\S]*?sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*,\s*'寄存单'\s*\)/,
+      )
+      expect(staffCode).toMatch(
+        /FILTER\s*\(\s*WHERE\s+so\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)\s*\)[\s\S]*?AS\s+purchase_received/,
+      )
+      expect(staffCode).toMatch(
+        /so\.status\s+NOT\s+IN\s*\(\s*'已关闭'\s*,\s*'已作废'\s*,\s*'未审核'\s*,\s*'待审批'\s*,\s*'支付失败'\s*\)/,
+      )
+    })
+    it('两端 fugou 只读取 repurchase_qualifying_days，且区间业绩排除寄存金额', () => {
+      for (const code of [adminCode, staffCode]) {
+        expect(code).toMatch(/repurchase_qualifying_days\s+AS\s*\([\s\S]*?WHERE\s+purchase_received\s*>=/)
+        expect(code).toMatch(
+          /period_agg\s+AS\s*\([\s\S]*?purchase_received\s+AS\s+day_received[\s\S]*?purchase_received\s*>\s*0/,
+        )
+        expect(code).toMatch(/fugou\s+AS\s*\([\s\S]*?FROM\s+repurchase_qualifying_days\s+q/)
+      }
     })
   })
 
