@@ -47,6 +47,9 @@ export function parseOrderFilters(params: Record<string, string | undefined>): O
     search: params.q,
     paymentMethod: params.payment,
     hasPrepaidDeduction: params.hasPrepaid === '1',
+    conversionMode: params.conversionMode === 'experience' || params.conversionMode === 'normal'
+      ? params.conversionMode
+      : undefined,
     allocationStatus: params.allocationStatus,
   }
 }

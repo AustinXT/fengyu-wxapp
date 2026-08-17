@@ -228,6 +228,8 @@ export default function OrderCreatePageClient({
   const [heldCards, setHeldCards] = useState<HeldCardCandidate[]>([])
   const [heldCardsLoading, setHeldCardsLoading] = useState(false)
   const [selectedHeldCardIds, setSelectedHeldCardIds] = useState<string[]>([])
+  const [isExperienceConversion, setIsExperienceConversion] = useState(false)
+  const [conversionReceivedInput, setConversionReceivedInput] = useState("")
   const [paymentMethod, setPaymentMethod] = useState("微信")
   const [selectedStoreId, setSelectedStoreId] = useState<string>(stores[0]?.storeId || "")
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>("")
@@ -242,6 +244,9 @@ export default function OrderCreatePageClient({
     priceDiff: number
     prepaidCardCredit: number
     prepaidCardAmount: number
+    isExperienceConversion: boolean
+    receivedAmount: number
+    remainingAmount: number
   } | null>(null)
   const [searchDone, setSearchDone] = useState(false)
   const [confirming, setConfirming] = useState(false)
@@ -400,6 +405,8 @@ export default function OrderCreatePageClient({
     // 不同订单类型的抵扣上限口径不同，切换后要求重新确认金额。
     setUseCard(false)
     setCardAmountInput('0.00')
+    setIsExperienceConversion(false)
+    setConversionReceivedInput("")
   }
 
   // PR-C: 当切到转换单 + 已知顾客 + 门店时，加载折抵候选卡
@@ -434,6 +441,8 @@ export default function OrderCreatePageClient({
   useEffect(() => {
     if (orderType !== '转换单') {
       setSelectedHeldCardIds([])
+      setIsExperienceConversion(false)
+      setConversionReceivedInput("")
     }
   }, [orderType])
 
@@ -575,6 +584,7 @@ export default function OrderCreatePageClient({
   // 允许店长在 Step3 手动修改应付金额（最低 0，不超过标价）。
   const canEditSaleAmount = (item: CartItem) =>
     !isInternal &&
+    !(isConversion && isExperienceConversion) &&
     item.sku.isManagerSpecial === true &&
     item.sku.bundlePrice == null && item.sku.bundleGroupId == null
 
@@ -610,7 +620,7 @@ export default function OrderCreatePageClient({
   const conversionCouponCap = isConversion
     ? Math.max(0, Math.round((couponBaseTotal - conversionTotalOut) * 100) / 100)
     : 0
-  const rawCouponDiscount = !isInternal && selectedCouponForCalc
+  const rawCouponDiscount = !isInternal && !isExperienceConversion && selectedCouponForCalc
     ? Math.max(0, Number(selectedCouponForCalc.discountAmount) || 0)
     : 0
   // 转换单券额以正补差额封顶，杜绝把多余券额转为充值卡余额。
@@ -676,13 +686,21 @@ export default function OrderCreatePageClient({
   const conversionCardAmount = isConversion && conversionPriceDiff > 0 && useCard
     ? clampPrepaidAmount(cardAmountInput, conversionCardMax)
     : 0
+  const conversionRemainingPayable = isExperienceConversion
+    ? 0
+    : Math.max(0, Math.round((conversionPriceDiff - conversionCardAmount) * 100) / 100)
+  const conversionReceivedAmount = conversionRemainingPayable <= 0
+    ? 0
+    : conversionReceivedInput.trim() === ''
+      ? conversionRemainingPayable
+      : Math.max(0, Math.min(Number(conversionReceivedInput) || 0, conversionRemainingPayable))
 
   // 折抵卡变化后若已没有正补差额，不能保留之前选中的优惠券。
   useEffect(() => {
-    if (isConversion && conversionCouponCap <= 0 && selectedCouponId) {
+    if (isConversion && (isExperienceConversion || conversionCouponCap <= 0) && selectedCouponId) {
       setSelectedCouponId("")
     }
-  }, [conversionCouponCap, isConversion, selectedCouponId])
+  }, [conversionCouponCap, isConversion, isExperienceConversion, selectedCouponId])
 
   // 销售单/内部单充值卡抵扣：上限 = min(余额, 本次实收合计)；salePayable = 抵扣后应付现金
   const saleCardMax = Math.min(Math.max(0, customerCardBalance), Math.max(0, totalReceived))
@@ -1358,6 +1376,22 @@ export default function OrderCreatePageClient({
                   onCardAmountBlur={() => {
                     setCardAmountInput((value) => clampPrepaidAmount(value, conversionCardMax).toFixed(2))
                   }}
+                  isExperienceConversion={isExperienceConversion}
+                  onExperienceConversionChange={(checked) => {
+                    setIsExperienceConversion(checked)
+                    setConversionReceivedInput("")
+                    if (checked) {
+                      setUseCard(false)
+                      setCardAmountInput("0.00")
+                      setSelectedCouponId("")
+                      setPriceOverrides({})
+                    }
+                  }}
+                  receivedAmountInput={conversionReceivedInput === "" ? conversionRemainingPayable.toFixed(2) : conversionReceivedInput}
+                  receivedAmount={conversionReceivedAmount}
+                  remainingPayable={conversionRemainingPayable}
+                  onReceivedAmountChange={setConversionReceivedInput}
+                  onReceivedAmountBlur={() => setConversionReceivedInput(conversionReceivedAmount.toFixed(2))}
                 />
               </div>
             ) : (
@@ -1590,7 +1624,7 @@ export default function OrderCreatePageClient({
                       remark: remark.trim() || null,
                       convertOutSaleItemIds: selectedHeldCardIds,
                       convertInItems: cart.map((item) => {
-                        const override = priceOverrides[item.sku.skuId]
+                        const override = isExperienceConversion ? undefined : priceOverrides[item.sku.skuId]
                         const amounts = getItemAmounts(item, override, { buyerIsMember })
                         return {
                           skuId: item.sku.skuId,
@@ -1603,8 +1637,10 @@ export default function OrderCreatePageClient({
                           quantity: item.quantity,
                         }
                       }),
-                      prepaidCardAmount: conversionCardAmount,
-                      couponId: selectedCouponId || undefined,
+                      prepaidCardAmount: isExperienceConversion ? 0 : conversionCardAmount,
+                      couponId: isExperienceConversion ? undefined : (selectedCouponId || undefined),
+                      receivedAmount: isExperienceConversion ? 0 : conversionReceivedAmount,
+                      isExperienceConversion,
                     })
                     if (res.success && res.saleOrderId) {
                       toast.success(res.message)
@@ -1615,7 +1651,13 @@ export default function OrderCreatePageClient({
                         priceDiff: res.priceDiff ?? 0,
                         prepaidCardCredit: res.prepaidCardCredit ?? 0,
                         prepaidCardAmount: res.prepaidCardAmount ?? 0,
+                        isExperienceConversion: res.isExperienceConversion ?? false,
+                        receivedAmount: res.receivedAmount ?? 0,
+                        remainingAmount: res.remainingAmount ?? 0,
                       })
+                      setCreatedStatus((res.remainingAmount ?? 0) > 0 ? '待支付' : '已支付')
+                      setCreatedPayable(res.remainingAmount ?? 0)
+                      setConfirmAmountInput((res.receivedAmount ?? 0).toFixed(2))
                       setStep(3)
                     } else {
                       toast.error(res.message)
@@ -1777,6 +1819,9 @@ export default function OrderCreatePageClient({
                 <p className="text-[#666666]">
                   转入 ¥{conversionResult.totalIn.toFixed(2)} ｜ 折抵 ¥{conversionResult.totalOut.toFixed(2)}
                 </p>
+                {conversionResult.isExperienceConversion && (
+                  <p className="text-[var(--primary)] font-semibold">体验转换：已按旧卡价值锁价，应付与实付均为 ¥0.00</p>
+                )}
                 {conversionResult.prepaidCardAmount > 0 && (
                   <p className="text-[#3D8A5A]">
                     储值卡抵扣 ¥{conversionResult.prepaidCardAmount.toFixed(2)}
@@ -1786,7 +1831,9 @@ export default function OrderCreatePageClient({
                   const remaining = Math.max(0, Math.round((conversionResult.priceDiff - conversionResult.prepaidCardAmount) * 100) / 100)
                   if (conversionResult.priceDiff > 0 && remaining > 0) {
                     return (
-                      <p className="text-[#D94040] font-semibold">请确认补差额收款 ¥{remaining.toFixed(2)}</p>
+                      <p className="text-[#D94040] font-semibold">
+                        本次收款 ¥{conversionResult.receivedAmount.toFixed(2)}，剩余挂账 ¥{Math.max(0, remaining - conversionResult.receivedAmount).toFixed(2)}
+                      </p>
                     )
                   }
                   if (conversionResult.priceDiff > 0 && remaining <= 0) {
@@ -1822,6 +1869,7 @@ export default function OrderCreatePageClient({
                 部分支付 / 全额储值卡抵扣已结清 不显示二维码）*/}
             {paymentMethod !== '线下' && createdOrderId && !paymentConfirmed
               && createdStatus !== '部分支付' && createdStatus !== '已支付'
+              && (!conversionResult || conversionResult.receivedAmount > 0)
               && (!conversionResult || (conversionResult.priceDiff - conversionResult.prepaidCardAmount) > 0.005) && (
               <OrderQRCode orderId={createdOrderId} />
             )}
@@ -1831,6 +1879,7 @@ export default function OrderCreatePageClient({
                 转换单全额储值卡抵扣已结清（无剩余应付）则不显示确认收款。*/}
             {paymentMethod === '线下' && createdOrderId && !paymentConfirmed
               && createdStatus !== '已支付'
+              && (!conversionResult || conversionResult.receivedAmount > 0)
               && (!conversionResult || (conversionResult.priceDiff - conversionResult.prepaidCardAmount) > 0.005) && (
               <div className="pt-2 space-y-2 max-w-xs mx-auto">
                 {!rechargeResult && !conversionResult && (
@@ -1853,9 +1902,10 @@ export default function OrderCreatePageClient({
                   loading={confirming}
                   className="bg-[#3D8A5A] hover:bg-[#2E6B45] text-white w-full"
                   onClick={async () => {
-                    // 普通销售/内部单：传本次确认金额（空 → 全额）；充值/转换单：全额（undefined）
+                    // 普通销售/内部单及转换单均按页面上的本次实付确认；充值单仍全额确认。
                     const isPlainSale = !rechargeResult && !conversionResult
-                    const amt = isPlainSale && confirmAmountInput.trim() !== ''
+                    const shouldUseConfirmAmount = (isPlainSale || !!conversionResult) && confirmAmountInput.trim() !== ''
+                    const amt = shouldUseConfirmAmount
                       ? Math.round(Number(confirmAmountInput) * 100) / 100
                       : undefined
                     if (amt !== undefined && (!Number.isFinite(amt) || amt < 0)) {
@@ -1903,6 +1953,7 @@ export default function OrderCreatePageClient({
                 setKindDataCache({ 组合套餐: undefined, 普通商品: undefined, 体验卡: undefined })
                 setHeldCards([])
                 setSelectedHeldCardIds([])
+                setIsExperienceConversion(false); setConversionReceivedInput("")
                 setConversionResult(null)
                 setRechargeSelectedFace(0); setRechargeCustomInput(""); setRechargeResult(null)
               }}>

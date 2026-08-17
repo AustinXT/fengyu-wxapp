@@ -375,6 +375,12 @@ export interface SaleOrder {
   marketName: string
   storeId: string
   saleOrderDatetime: string
+  /** 首次业绩事件的归属日期（YYYY-MM-DD，上海自然日）。 */
+  performanceAttributionDate: string
+  /** 一次性人工调整时间；非 null 表示修改机会已使用。 */
+  performanceAttributionAdjustedAt: string | null
+  /** 一次性人工调整人员工编号。 */
+  performanceAttributionAdjustedBy: string | null
   clientUserId: string | null
   clientPhone: string | null
   customerName: string | null
@@ -404,6 +410,10 @@ export interface SaleOrder {
   remark: string | null
   /** 活动单标记（纯标识，不影响金额/提成口径；admin/staff 开单勾选） */
   isActivity?: boolean
+  /** 转换单是否采用旧卡划卡价值强制定价 */
+  isExperienceConversion?: boolean
+  /** 首次收款上限（部分支付二维码/线下确认使用，到账后清空） */
+  firstPaymentAmount?: string | null
   /**
    * 会员升级单标记（recalcCustomerType 在顾客首次跃迁为会员客时自动打标）。
    * 由 is_membership_upgrade 列同步四端字节；导出与列表均暴露。
@@ -420,6 +430,8 @@ export interface SaleOrder {
   offlineConfirmedByName?: string
   /** 审批人姓名（audited_by → staff_wechat_users.name） */
   auditedByName?: string
+  /** 业绩归属日期调整人姓名。 */
+  performanceAttributionAdjustedByName?: string
   items?: SaleItem[]
   /** 是否参与营业额分配（仅销售单/转换单且非历史订单）；由 getOrderById 计算注入，控制订单详情页分配入口显隐 */
   allocatable?: boolean

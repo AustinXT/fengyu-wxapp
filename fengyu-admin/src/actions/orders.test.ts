@@ -41,6 +41,7 @@ vi.mock('@db/order', () => ({
     documentType: 'document_type',
     remark: 'remark',
     isActivity: 'is_activity',
+    isExperienceConversion: 'is_experience_conversion',
     // 迁移 0077 双库已迁；admin 导出/列表 select 字段
     isMembershipUpgrade: 'is_membership_upgrade',
     openedBy: 'opened_by',
@@ -2206,6 +2207,15 @@ describe('getOrdersPaginated — 服务端分页', () => {
     expect(inArray).toHaveBeenCalledWith('sale_order_type', ['销售单', '转换单'])
   })
 
+  it('体验转换审计筛选同时限定转换单类型与体验标记', async () => {
+    mockPaginatedChain(0, [])
+
+    await getOrdersPaginated({ conversionMode: 'experience' })
+
+    expect(eq).toHaveBeenCalledWith('sale_order_type', '转换单')
+    expect(eq).toHaveBeenCalledWith('is_experience_conversion', true)
+  })
+
   it('storeId 筛选 → eq 被调用', async () => {
     mockPaginatedChain(0, [])
 
@@ -3222,6 +3232,102 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     expect(capturedOrder.totalAmount).toBe('200.00')
     expect(capturedOrder.status).toBe('待支付')
     expect(result.prepaidCardCredit).toBe(0)
+  })
+
+  it('普通转换可录入部分实付，冻结首次收款金额并保留剩余欠款', async () => {
+    let capturedOrder: any
+    mockConvTx({
+      heldRows: [{
+        sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
+        sku_id: 'sku-old-1', product_name: '老疗程', product_type: '疗程卡',
+        session_count: 3, remaining_sessions: 3, quantity: 1, unit_price: '100.00', unit_real_price: '100.00',
+        sales_category: '自销自耗', service_fee: '0', client_user_id: 'user-1', order_status: '已支付',
+      }],
+      skuRows: [{
+        skuId: 'sku-new-1', price: '500.00', serviceFee: '0', sessionCount: 10,
+        productType: '疗程卡', salesCategory: '自销自耗',
+      }],
+      onInsertOrder: (v) => { capturedOrder = v },
+    })
+
+    const result = await createConversionOrder({ ...baseConvData, receivedAmount: 100 })
+
+    expect(result).toMatchObject({
+      success: true,
+      priceDiff: 200,
+      receivedAmount: 100,
+      remainingAmount: 200,
+      status: '待支付',
+    })
+    expect(capturedOrder).toMatchObject({
+      totalAmount: '200.00',
+      payableAmount: '200.00',
+      received: '0',
+      firstPaymentAmount: '100.00',
+      isExperienceConversion: false,
+    })
+  })
+
+  it('体验转换按旧卡划卡价值强制分摊转入价，不补不退且订单直接结清', async () => {
+    let capturedOrder: any
+    const insertedItems: any[] = []
+    mockConvTx({
+      heldRows: [{
+        sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
+        sku_id: 'sku-old-1', product_name: '老疗程', product_type: '疗程卡',
+        session_count: 8, remaining_sessions: 8, quantity: 1, unit_price: '100.00', unit_real_price: '100.00',
+        sales_category: '自销自耗', service_fee: '0', client_user_id: 'user-1', order_status: '已支付',
+      }],
+      skuRows: [
+        { skuId: 'sku-new-1', price: '300.00', serviceFee: '0', sessionCount: 3, productType: '疗程卡', salesCategory: '自销自耗' },
+        { skuId: 'sku-new-2', price: '700.00', serviceFee: '0', sessionCount: 7, productType: '疗程卡', salesCategory: '他销自耗' },
+      ],
+      onInsertOrder: (v) => { capturedOrder = v },
+      onInsertItem: (v) => { insertedItems.push(v) },
+    })
+
+    const result = await createConversionOrder({
+      ...baseConvData,
+      isExperienceConversion: true,
+      convertInItems: [
+        { ...baseConvData.convertInItems[0], skuId: 'sku-new-1', productName: '新项目A', sessionCount: 3 },
+        { ...baseConvData.convertInItems[0], skuId: 'sku-new-2', productName: '新项目B', sessionCount: 7 },
+      ],
+    })
+
+    expect(result).toMatchObject({
+      success: true,
+      totalOut: 800,
+      totalIn: 800,
+      priceDiff: 0,
+      prepaidCardCredit: 0,
+      receivedAmount: 0,
+      remainingAmount: 0,
+      isExperienceConversion: true,
+      status: '已支付',
+    })
+    expect(capturedOrder).toMatchObject({
+      totalAmount: '0.00', payableAmount: '0.00', received: '0', paymentMethod: '无',
+      firstPaymentAmount: null, isExperienceConversion: true, status: '已支付',
+    })
+    expect(insertedItems.filter((item) => item.itemDirection === '转入').map((item) => item.saleAmount))
+      .toEqual(['240.00', '560.00'])
+  })
+
+  it('体验转换拒绝优惠券、储值卡抵扣和实付金额', async () => {
+    for (const forbidden of [
+      { couponId: 'coupon-1' },
+      { prepaidCardAmount: 1 },
+      { receivedAmount: 1 },
+    ]) {
+      const result = await createConversionOrder({
+        ...baseConvData,
+        isExperienceConversion: true,
+        ...forbidden,
+      })
+      expect(result).toEqual({ success: false, message: '体验转换不允许优惠券、储值卡抵扣或收款' })
+    }
+    expect(db.transaction).not.toHaveBeenCalled()
   })
 
   it('priceDiff < 0：差额入储值卡，status=已支付', async () => {
@@ -4924,6 +5030,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     ;(db.select as any)
       .mockReturnValueOnce(makeChain([rawA, rawB]))
       .mockReturnValueOnce(makeChain([]))
+      .mockReturnValueOnce(makeChain([]))
       .mockReturnValueOnce(makeChain([{
         saleOrderId: rawA.saleOrderId,
         settledPaymentCount: 2,
@@ -5145,12 +5252,12 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     const itemOldest = makeItem('ITEM-OLD', 'item-old', '2026-07-02T00:00:00.000Z')
     const rechargeNewest = makeRecharge('RECHARGE-NEW', '2026-07-03T00:00:00.000Z')
     const rechargeOldest = makeRecharge('RECHARGE-OLD', '2026-07-01T00:00:00.000Z')
-    // 每页依次为：商品行查询、充值单查询、已入账款项汇总查询。
+    // 每页依次为：商品行查询、充值单查询、转换差额储值金查询、已入账款项汇总查询。
     const results = [
-      [itemNewest, itemOldest], [rechargeNewest, rechargeOldest], [],
-      [itemOldest], [rechargeNewest, rechargeOldest], [],
-      [itemOldest], [rechargeOldest], [],
-      [], [rechargeOldest], [],
+      [itemNewest, itemOldest], [rechargeNewest, rechargeOldest], [], [],
+      [itemOldest], [rechargeNewest, rechargeOldest], [], [],
+      [itemOldest], [rechargeOldest], [], [],
+      [], [rechargeOldest], [], [],
     ]
     let call = 0
     ;(db.select as any).mockImplementation(() => makePagedChain(results[call++] ?? []))
@@ -5160,9 +5267,9 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     const third = await exportOrders({}, { limit: 1, cursor: second.nextCursor })
     const fourth = await exportOrders({}, { limit: 1, cursor: third.nextCursor })
 
-    expect(first.nextCursor).toEqual({ itemOffset: 1, rechargeOffset: 0 })
-    expect(second.nextCursor).toEqual({ itemOffset: 1, rechargeOffset: 1 })
-    expect(third.nextCursor).toEqual({ itemOffset: 2, rechargeOffset: 1 })
+    expect(first.nextCursor).toEqual({ itemOffset: 1, rechargeOffset: 0, cardCreditOffset: 0 })
+    expect(second.nextCursor).toEqual({ itemOffset: 1, rechargeOffset: 1, cardCreditOffset: 0 })
+    expect(third.nextCursor).toEqual({ itemOffset: 2, rechargeOffset: 1, cardCreditOffset: 0 })
     expect(fourth.hasMore).toBe(false)
     expect([
       ...first.rows,
@@ -5306,6 +5413,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     ;(db.select as any)
       .mockReturnValueOnce(makeChain([]))
       .mockReturnValueOnce(makeChain([rechargeRow]))
+      .mockReturnValueOnce(makeChain([]))
       .mockReturnValueOnce(makeChain([{
         saleOrderId: rechargeRow.saleOrderId,
         settledPaymentCount: 1,
@@ -5377,6 +5485,51 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     expect(rows[2].productName).toBe('储值卡充值')
   })
 
+  it('普通转换负差额：导出独立储值金入账行，转出+转入+入账金额可勾稽为0', async () => {
+    const orderBase = {
+      marketName: '九江', storeName: '南昌店', saleOrderId: 'FY-CONV-CREDIT', saleOrderType: '转换单',
+      documentType: '售后', status: '已支付', custName: '李女士', custPhone: '13800000000',
+      fallbackName: null, fallbackPhone: null, customerSource: null, promoterEmployeeName: null,
+      prepaidCardAmount: '0.00', orderReceived: '0.00', refundedAmount: '0.00', paymentMethod: '无',
+      isMembershipUpgrade: false, isActivity: false, isExperienceConversion: false,
+      customerType: '会员客', openedByName: '员工', remark: null,
+      saleOrderDatetime: new Date('2026-08-17T01:00:00.000Z'),
+      performanceAttributionDate: '2026-08-17',
+      createdAt: new Date('2026-08-17T01:00:00.000Z'),
+    }
+    const outRow = {
+      ...orderBase, sourceId: '01-out', totalAmount: '-1000.00', received: '-1000.00',
+      productType: '疗程卡', productName: '旧卡', salesCategory: '自销自耗', sessionCount: 10,
+      paidUnusedSessions: 0, unitRealPrice: '100.00', categoryL1: null, categoryL2: null,
+    }
+    const inRow = {
+      ...orderBase, sourceId: '02-in', totalAmount: '800.00', received: '800.00',
+      productType: '疗程卡', productName: '新项目', salesCategory: '自销自耗', sessionCount: 8,
+      paidUnusedSessions: 8, unitRealPrice: '100.00', categoryL1: null, categoryL2: null,
+    }
+    const creditRow = {
+      ...orderBase, sourceId: 99, amount: '200.00', createdAt: new Date('2026-08-17T01:00:01.000Z'),
+    }
+    ;(db.select as any)
+      .mockReturnValueOnce(makeChain([outRow, inRow]))
+      .mockReturnValueOnce(makeChain([]))
+      .mockReturnValueOnce(makeChain([creditRow]))
+      .mockReturnValueOnce(makeChain([]))
+
+    const { rows } = await exportOrders({})
+
+    expect(rows.map((row) => row.productName)).toEqual(['旧卡', '新项目', '转换差额转入储值卡'])
+    expect(rows[2]).toMatchObject({
+      totalAmount: '200.00',
+      received: '200.00',
+      prepaidCardAmount: '0.00',
+      cashAmount: '0.00',
+      productType: null,
+    })
+    expect(rows.reduce((sum, row) => sum + Number(row.totalAmount), 0)).toBe(0)
+    expect(rows.reduce((sum, row) => sum + Number(row.received), 0)).toBe(0)
+  })
+
   it('待支付订单只有预选储值卡抵扣且无已入账流水时，储值卡抵扣和现付均为 0', async () => {
     const pendingRow = {
       marketName: '九江', storeName: '店', saleOrderId: 'FY-PENDING', saleOrderType: '销售单',
@@ -5434,6 +5587,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     }
     ;(db.select as any)
       .mockReturnValueOnce(makeChain([refundedRow]))
+      .mockReturnValueOnce(makeChain([]))
       .mockReturnValueOnce(makeChain([]))
       .mockReturnValueOnce(makeChain([{
         saleOrderId: refundedRow.saleOrderId,

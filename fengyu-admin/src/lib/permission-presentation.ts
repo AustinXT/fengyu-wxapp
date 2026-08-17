@@ -94,6 +94,7 @@ const PERMISSION_ACTION_LABELS: Record<string, string> = {
   'sale_order:delete': '删除销售订单',
   'sale_order:deposit_approve': '审核定金订单',
   'sale_order:list': '查看销售订单',
+  'sale_order:performance_attribution_update': '修改业绩归属日期',
   'sale_order:record_payment': '登记订单收款',
   'sale_order:refund_approve': '审核订单退款',
   'sale_order:refund_create': '发起订单退款',

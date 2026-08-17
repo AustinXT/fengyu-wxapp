@@ -527,6 +527,9 @@ export const getCustomerOrders = withPermission(
       marketName: r.order.marketName,
       storeId: r.order.storeId,
       saleOrderDatetime: r.order.saleOrderDatetime.toISOString(),
+      performanceAttributionDate: r.order.performanceAttributionDate,
+      performanceAttributionAdjustedAt: r.order.performanceAttributionAdjustedAt?.toISOString() ?? null,
+      performanceAttributionAdjustedBy: r.order.performanceAttributionAdjustedBy,
       clientUserId: r.order.clientUserId,
       // 顾客档案权威 > sale_orders 兜底
       clientPhone: r.custPhone || r.order.clientPhone || null,

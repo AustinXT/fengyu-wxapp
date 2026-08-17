@@ -17,6 +17,7 @@ import { DangerZoneDelete } from "@/components/delete-action";
 import { actionErrorMessage } from "@/lib/action-error";
 import { approveDepositOrder, deleteOrder, rejectDepositOrder } from "@/actions/orders";
 import { groupTreatmentCards, sumGroupValue } from "@/lib/treatment-card-group";
+import { PerformanceAttributionDialog } from "./performance-attribution-dialog";
 
 /** ticket 2026-04-24 PR-3 §3.3 — change_type/status 中文展示，退款金额红色 */
 const paymentChangeTypeLabelMap: Record<string, string> = {
@@ -59,6 +60,7 @@ const operationActionLabelMap: Record<string, string> = {
   "order.createDeposit": "寄存单初始化",
   "order.approveDeposit": "审批寄存单通过",
   "order.rejectDeposit": "驳回寄存单",
+  "order.performanceAttribution.update": "修改业绩归属日期",
 };
 
 function formatDateTime(dt: string | null) {
@@ -149,6 +151,8 @@ export default function OrderDetailPageClient({
   canListAllocations = true,
   canDelete = false,
   canApproveDeposit = false,
+  canAdjustPerformanceAttribution = false,
+  cardCredits = [],
 }: {
   order: SaleOrder;
   allocations: SaleAllocation[];
@@ -171,6 +175,10 @@ export default function OrderDetailPageClient({
   canDelete?: boolean;
   /** 是否展示寄存单审批入口（系统管理员 / 总部、市场或门店店长、财务） */
   canApproveDeposit?: boolean;
+  /** 是否可使用一次性业绩归属日期调整入口。 */
+  canAdjustPerformanceAttribution?: boolean;
+  /** 转换负差额进入顾客储值卡的资产流水（不伪装成付款流水） */
+  cardCredits?: Array<{ amount: string; createdAt: string }>;
 }) {
   const router = useRouter();
   const items = order.items || [];
@@ -198,16 +206,19 @@ export default function OrderDetailPageClient({
   // 确认收款的剩余应收现金（payable 口径，不含储值卡）：作确认收款弹层预填/上限。
   const remainingPayable = Math.max(0, Math.round((payableAmount - paidAmount) * 100) / 100);
   // 开单约定实付草稿合计（pending_received 之和），cap 到剩余应付现金，作确认收款默认预填（两步式 2026-06-07）
-  const pendingReceivedTotal = Math.max(0, Math.min(remainingPayable, Math.round(items.reduce((s, it) => s + Number(it.pendingReceived ?? "0"), 0) * 100) / 100));
+  const pendingReceivedTotal = order.saleOrderType === "转换单"
+    ? Math.max(0, Math.min(remainingPayable, Number(order.firstPaymentAmount ?? remainingPayable)))
+    : Math.max(0, Math.min(remainingPayable, Math.round(items.reduce((s, it) => s + Number(it.pendingReceived ?? "0"), 0) * 100) / 100));
   // 确认收款：线下「待支付」订单的首次收款入账入口
   const canShowConfirmOffline = canConfirmOffline && order.paymentMethod === "线下" && order.status === "待支付";
 
   // 录入回款：用于已开始收款的订单补尾款。
   // 与确认收款互斥——线下「待支付」走确认收款，避免双按钮歧义（录入回款写'回款'且不自动扣预选卡）。
-  // 回款仅对销售单 + 非历史订单可见（寄存单/历史订单禁止事后资金变更，后端亦兜底拒绝）
+  // 回款支持销售单和普通转换单；体验转换在后端与 UI 双重禁止补款。
   const canShowRecordPayment =
     canRecordPayment &&
-    order.saleOrderType === "销售单" &&
+    (order.saleOrderType === "销售单" || order.saleOrderType === "转换单") &&
+    !order.isExperienceConversion &&
     order.legacySource !== "workfine" &&
     repayRemaining > 0 &&
     (order.status === "部分支付" || order.status === "待支付") &&
@@ -217,6 +228,7 @@ export default function OrderDetailPageClient({
   const [confirmOfflineDialogOpen, setConfirmOfflineDialogOpen] = useState(false);
   const [refundFormOpen, setRefundFormOpen] = useState(false);
   const [depositApprovalPending, setDepositApprovalPending] = useState<"approve" | "reject" | null>(null);
+  const [performanceAttributionDialogOpen, setPerformanceAttributionDialogOpen] = useState(false);
 
   // 退款按钮仅对销售单 + 非历史订单 + 已支付/已完成/部分支付 可见
   // （历史订单是 sale_order_type='销售单' 但 legacySource='workfine'，必须显式排除，否则按钮会露出）
@@ -415,6 +427,11 @@ export default function OrderDetailPageClient({
                     活动
                   </Badge>
                 )}
+                {order.isExperienceConversion && (
+                  <Badge variant="secondary" className="bg-[#FFF0EE] text-[#C0322A]">
+                    体验转换
+                  </Badge>
+                )}
               </p>
             </div>
             {order.documentType && (
@@ -470,6 +487,41 @@ export default function OrderDetailPageClient({
               <span className="text-[#999999]">下单时间</span>
               <p className="font-medium mt-1">{formatDateTime(order.saleOrderDatetime)}</p>
             </div>
+            <div>
+              <span className="text-[#999999]">业绩归属日期</span>
+              <div className="mt-1 flex flex-wrap items-center gap-2">
+                <p className="font-medium">{formatDate(order.performanceAttributionDate)}</p>
+                <Badge
+                  variant="secondary"
+                  className={order.performanceAttributionAdjustedAt
+                    ? "bg-[#FFF7E6] text-[#D4820A]"
+                    : "bg-gray-100 text-[#666666]"}
+                >
+                  {order.performanceAttributionAdjustedAt ? "已人工调整" : "系统默认"}
+                </Badge>
+                {canAdjustPerformanceAttribution && !order.performanceAttributionAdjustedAt && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setPerformanceAttributionDialogOpen(true)}
+                  >
+                    修改
+                  </Button>
+                )}
+              </div>
+            </div>
+            {order.performanceAttributionAdjustedAt && (
+              <div>
+                <span className="text-[#999999]">归属调整记录</span>
+                <p className="font-medium mt-1">
+                  {order.performanceAttributionAdjustedByName || order.performanceAttributionAdjustedBy || "—"}
+                  <span className="ml-2 text-sm font-normal text-[#999999]">
+                    {formatDateTime(order.performanceAttributionAdjustedAt)}
+                  </span>
+                </p>
+              </div>
+            )}
             <div>
               <span className="text-[#999999]">支付时间</span>
               <p className="font-medium mt-1">{formatDateTime(order.paidAt)}</p>
@@ -569,6 +621,17 @@ export default function OrderDetailPageClient({
           <CardTitle>商品明细</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
+          {cardCredits.length > 0 && (
+            <div className="mx-4 mb-4 rounded border border-[#B8D3EA] bg-[#F5FAFF] px-4 py-3 text-sm">
+              <div className="font-medium text-[#1565C0]">转换差额转入储值卡</div>
+              {cardCredits.map((credit, index) => (
+                <div key={`${credit.createdAt}-${index}`} className="mt-1 flex justify-between text-[#666666]">
+                  <span>{formatDateTime(credit.createdAt)} · 顾客资产增加</span>
+                  <span className="font-semibold text-[#1565C0]">+¥{Number(credit.amount).toLocaleString()}</span>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 sticky top-0">
@@ -865,6 +928,17 @@ export default function OrderDetailPageClient({
       {/* 创建退款弹层（ticket 2026-04-24 退款 PR-Y） */}
       {canShowRefund && (
         <RefundForm open={refundFormOpen} onOpenChange={setRefundFormOpen} saleOrderId={order.saleOrderId} />
+      )}
+
+      {canAdjustPerformanceAttribution && !order.performanceAttributionAdjustedAt && (
+        <PerformanceAttributionDialog
+          open={performanceAttributionDialogOpen}
+          onOpenChange={setPerformanceAttributionDialogOpen}
+          saleOrderId={order.saleOrderId}
+          originalOrderDate={formatDate(order.saleOrderDatetime)}
+          currentAttributionDate={order.performanceAttributionDate}
+          expectedUpdatedAt={order.updatedAt}
+        />
       )}
 
       {/* 危险操作：物理删除订单（仅系统管理员） */}

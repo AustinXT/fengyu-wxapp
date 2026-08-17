@@ -7,8 +7,8 @@ import { hasPermission, isAdminScope, isDepositOrderApprover } from '@/lib/permi
 import { hasUiCapability } from '@/lib/permission-contract'
 import { requireUiPageCapability } from '@/lib/page-capability'
 import { db } from '@/db'
-import { prepaidCards } from '@db/prepaid-card'
-import { eq } from 'drizzle-orm'
+import { cardTransactions, prepaidCards } from '@db/prepaid-card'
+import { and, eq } from 'drizzle-orm'
 import OrderDetailPageClient from '../_components/order-detail-page'
 
 export const dynamic = 'force-dynamic'
@@ -45,6 +45,10 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
   const canRecordPayment = hasUiCapability(actions, 'sale_order:record_payment')
   // 确认线下收款权限（与 confirmOfflinePayment action 同权限 sale_order:update）
   const canConfirmOffline = hasUiCapability(actions, 'sale_order:update')
+  const canAdjustPerformanceAttribution = hasUiCapability(
+    actions,
+    'sale_order:performance_attribution_update',
+  )
   // 「创建退款」按钮：仅提单权限（所有 admin 角色都有）；审批走 /refunds 流程
   const canRefund = !!(session && hasPermission(session, 'sale_order:refund_create'))
   // 物理删除订单：仅系统管理员（sale_order:delete）
@@ -63,6 +67,12 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
       .limit(1)
     cardBalance = row ? Number(row.balance) : null
   }
+  const cardCredits = order.saleOrderType === '转换单'
+    ? await db
+        .select({ amount: cardTransactions.amount, createdAt: cardTransactions.createdAt })
+        .from(cardTransactions)
+        .where(and(eq(cardTransactions.refOrderId, id), eq(cardTransactions.type, '充值')))
+    : []
 
   return (
     <OrderDetailPageClient
@@ -77,6 +87,8 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
       canListAllocations={canListAllocations}
       canDelete={canDelete}
       canApproveDeposit={canApproveDeposit}
+      canAdjustPerformanceAttribution={canAdjustPerformanceAttribution}
+      cardCredits={cardCredits.map((row) => ({ amount: row.amount, createdAt: row.createdAt.toISOString() }))}
     />
   )
 }

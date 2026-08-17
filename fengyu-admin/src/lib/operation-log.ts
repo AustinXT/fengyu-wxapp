@@ -3,6 +3,8 @@ import { operationLogs } from '@db/operation-log'
 import type { AuthSession } from './types'
 import { sanitizeDetail } from './pii'
 
+type OperationLogExecutor = Pick<typeof db, 'select' | 'insert'>
+
 /**
  * 对比 before/after，返回实际变更的字段 diff。
  * 只遍历 after 中的 key（Partial 更新只有变更字段）。
@@ -35,6 +37,7 @@ export async function logOperation(
   targetType: string,
   targetId: string,
   detail?: Record<string, unknown>,
+  executor: OperationLogExecutor = db,
 ) {
   const primaryRole = session.roles[0]
 
@@ -45,7 +48,7 @@ export async function logOperation(
     try {
       const { orgNodes } = await import('@db/org')
       const { eq } = await import('drizzle-orm')
-      const [node] = await db
+      const [node] = await executor
         .select({ id: orgNodes.id, name: orgNodes.name })
         .from(orgNodes)
         .where(eq(orgNodes.id, primaryRole.scopeId))
@@ -59,7 +62,7 @@ export async function logOperation(
     }
   }
 
-  await db.insert(operationLogs).values({
+  await executor.insert(operationLogs).values({
     operatorEmployeeId: session.employeeId,
     operatorName: session.name,
     operatorRole: primaryRole?.role ?? null,
@@ -86,6 +89,7 @@ export async function logUpdate(
   targetId: string,
   before: Record<string, unknown>,
   after: Record<string, unknown>,
+  executor: OperationLogExecutor = db,
 ) {
   const changes = computeChanges(before, after)
   if (!changes) return
@@ -93,7 +97,7 @@ export async function logUpdate(
     _v: 3,
     _t: 'update',
     changes,
-  })
+  }, executor)
 }
 
 /**

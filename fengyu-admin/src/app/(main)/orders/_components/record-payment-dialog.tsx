@@ -58,6 +58,7 @@ export function RecordPaymentDialog({
   const [loading, setLoading] = useState(false)
 
   const [items, setItems] = useState<RepayableItem[]>([])
+  const [mode, setMode] = useState<'items' | 'order'>('items')
   const [remainingPayable, setRemainingPayable] = useState<number>(remainingPayableProp)
   const [cardBalance, setCardBalance] = useState<number | null>(cardBalanceProp)
   // 各子项实付金额（saleItemId → 金额字符串）
@@ -83,11 +84,15 @@ export function RecordPaymentDialog({
     getRepayable(saleOrderId)
       .then((res) => {
         if (cancelled) return
-        setItems(res.items)
+        setMode(res.mode)
+        const repayableItems = res.mode === 'order'
+          ? [{ saleItemId: '__ORDER__', productName: '转换单剩余欠款', saleAmount: res.remainingPayable.toFixed(2), received: '0.00', remaining: res.remainingPayable.toFixed(2) }]
+          : res.items
+        setItems(repayableItems)
         setRemainingPayable(res.remainingPayable)
         setCardBalance(res.cardBalance)
         const real: Record<string, string> = {}
-        for (const it of res.items) real[it.saleItemId] = it.remaining
+        for (const it of repayableItems) real[it.saleItemId] = it.remaining
         setLineReal(real)
         setUseCard(false)
         setCardAmountInput("0.00")
@@ -177,7 +182,9 @@ export function RecordPaymentDialog({
         const cardRes = await recordPayment({
           saleOrderId,
           paymentMethod: "储值卡",
-          items: cardItems,
+          ...(mode === 'order'
+            ? { prepaidCardAmount: cardDeduct }
+            : { items: cardItems }),
           note: note.trim() || undefined,
           idempotencyKey: idempotencyKey || undefined,
         })
@@ -219,7 +226,9 @@ export function RecordPaymentDialog({
       const res = await recordPayment({
         saleOrderId,
         paymentMethod: "线下",
-        items: payloadItems,
+        ...(mode === 'order'
+          ? { repayAmount: needPay, prepaidCardAmount: cardDeduct }
+          : { items: payloadItems }),
         note: note.trim() || undefined,
         idempotencyKey: idempotencyKey || undefined,
       })
@@ -243,9 +252,9 @@ export function RecordPaymentDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogClose onOpenChange={onOpenChange} />
       <DialogHeader>
-        <DialogTitle>录入回款（按子项）</DialogTitle>
+        <DialogTitle>{mode === 'order' ? '录入转换单回款' : '录入回款（按子项）'}</DialogTitle>
         <DialogDescription>
-          向订单 {saleOrderId} 追加款项。各子项填本次实付金额，可勾选储值卡抵扣；线下即时记账，微信 / 支付宝由顾客扫码在线支付。可只对部分子项回款，不要求一次性付清。
+          向订单 {saleOrderId} 追加款项。{mode === 'order' ? '转换单按订单级欠款回款；' : '各子项填本次实付金额；'}可勾选储值卡抵扣，线下即时记账，微信 / 支付宝由顾客扫码在线支付。
         </DialogDescription>
       </DialogHeader>
 
