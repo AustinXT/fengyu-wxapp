@@ -27,6 +27,7 @@ interface ScanOrder {
   firstPaymentAmount: number | null;
   paymentMethod: PayMethod;
   couponDiscount: number;
+  isExperienceConversion: boolean;
 }
 
 interface ScanOrderItem {
@@ -127,13 +128,17 @@ Page({
       const isRepayment = orderData.status === '部分支付';
       let remaining;
       if (isRepayment) {
-        const scanItems: any[] = Array.isArray(orderData.items) ? orderData.items : [];
-        let sum = 0;
-        for (const i of scanItems) {
-          if (Number(i.refundedAmount || 0) > 0) continue;
-          sum += Math.max(0, Number(i.saleAmount || 0) - Number(i.received || 0));
+        if (orderData.orderType === '转换单') {
+          remaining = Math.max(0, Math.round((totalAmount - received + refundedAmount) * 100) / 100);
+        } else {
+          const scanItems: any[] = Array.isArray(data.items) ? data.items : [];
+          let sum = 0;
+          for (const i of scanItems) {
+            if (Number(i.refundedAmount || 0) > 0) continue;
+            sum += Math.max(0, Number(i.saleAmount || 0) - Number(i.received || 0));
+          }
+          remaining = Math.round(sum * 100) / 100;
         }
-        remaining = Math.round(sum * 100) / 100;
       } else {
         const netReceived = Math.round((received - refundedAmount) * 100) / 100;
         remaining = Math.max(0, Math.round((payable - netReceived) * 100) / 100);
@@ -382,7 +387,10 @@ Page({
     if (route === 'alipayPay') {
       // 聚合主扫支付宝：后端串调 preorder(41) + share_code 返回吱口令；订单状态由 payNotify 异步推进
       const aliData = await callClientApi<{ status?: string; reason?: string; alipayShareToken?: string; paidAmount?: number }>(
-        'order.alipayPay', { saleOrderId: orderNo },
+        'order.alipayPay', {
+          saleOrderId: orderNo,
+          ...(isFirstPartialScan && firstPaymentAmount > 0 ? { payAmount: firstPaymentAmount } : {}),
+        },
       );
       // 防御性短路：后端识别为全额储值卡抵扣 → 直接跳详情页
       if (aliData?.status === '已支付' || aliData?.reason === 'prepaid_card_full') {

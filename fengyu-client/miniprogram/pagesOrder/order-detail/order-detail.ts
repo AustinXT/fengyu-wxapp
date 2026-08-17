@@ -44,6 +44,7 @@ interface OrderDetailData {
   sale_order_id: string;
   status: string;
   sale_order_type: string;
+  is_experience_conversion?: boolean;
   document_type?: string | null;
   legacy_source?: string | null;
   sale_order_datetime: string;
@@ -335,17 +336,26 @@ Page({
       // sale_items.received 为行净额（STEP 1.5 已扣该行退款）；未退行 received净 = received毛。
       // 2026-04-26 sale-order-domain-refactor: received/refunded_amount 替代已 DROP 的 paid_amount。
       let outstandingSum = 0;
-      for (const it of itemsWithProgress) {
-        const refunded = Number(it.refunded_amount ?? 0);
-        if (refunded > 0) continue;
-        outstandingSum += Math.max(0, Number(it.sale_amount || 0) - Number(it.received || 0));
+      if (order.sale_order_type === '转换单') {
+        outstandingSum = Math.max(
+          0,
+          Number(order.total_amount || 0) - Number(order.received || 0) + Number(order.refunded_amount || 0),
+        );
+      } else {
+        for (const it of itemsWithProgress) {
+          const refunded = Number(it.refunded_amount ?? 0);
+          if (refunded > 0) continue;
+          outstandingSum += Math.max(0, Number(it.sale_amount || 0) - Number(it.received || 0));
+        }
       }
       const outstanding = Math.round(outstandingSum * 100) / 100;
       const refundedAmount = Number(order.refunded_amount ?? 0);
       const refundedFmt = refundedAmount.toFixed(2);
       const hasRefund = refundedAmount > 0 && order.status !== '已退款';
       // 可继续支付（回款）：部分支付 且 存在未退未付清的行
-      const canContinuePay = order.status === '部分支付' && outstanding > 0;
+      const canContinuePay = order.status === '部分支付'
+        && outstanding > 0
+        && !order.is_experience_conversion;
 
       this.setData({
         order: {

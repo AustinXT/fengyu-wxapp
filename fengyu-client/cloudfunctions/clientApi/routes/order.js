@@ -562,6 +562,7 @@ async function scanDetail(ctx) {
       received,
       refundedAmount,
       firstPaymentAmount,
+      isExperienceConversion: order.is_experience_conversion === true,
       paymentMethod: order.payment_method || '微信',
       couponDiscount: Number(order.coupon_discount || 0)
     },
@@ -1301,7 +1302,12 @@ async function pay(ctx) {
 
   // 计算剩余应付 = payable_amount - 净到账（received - refunded_amount）
   const { remaining } = await calcPaymentRemaining(orderNo, order)
-  const effectiveRemaining = remaining
+  // 首次部分支付金额是服务端冻结的本次收款上限；即使客户端漏传/篡改 payAmount，
+  // 也只能按该上限创建支付单。首笔发起后字段会被清空，后续扫码再按真实剩余应付。
+  const firstPaymentCap = Number(order.first_payment_amount || 0)
+  const effectiveRemaining = firstPaymentCap > 0
+    ? Math.min(remaining, firstPaymentCap)
+    : remaining
 
   // 校验本次支付金额
   let thisPayAmount
@@ -2144,7 +2150,10 @@ async function alipayPay(ctx) {
 
   // 计算剩余应付 = payable_amount - 净到账（received - refunded_amount），逻辑同 pay
   const { remaining } = await calcPaymentRemaining(orderNo, order)
-  const effectiveRemaining = remaining
+  const firstPaymentCapAli = Number(order.first_payment_amount || 0)
+  const effectiveRemaining = firstPaymentCapAli > 0
+    ? Math.min(remaining, firstPaymentCapAli)
+    : remaining
 
   let thisPayAmount
   if (payAmountInput !== undefined && payAmountInput !== null) {
@@ -2598,8 +2607,11 @@ async function repay(ctx) {
     if (!['待支付', '部分支付'].includes(origOrder.status)) {
       throw new Error('INVALID_STATE: 订单状态不允许回款')
     }
-    if (origOrder.sale_order_type !== '销售单') {
-      throw new Error('INVALID_PARAMS: 仅销售单支持回款')
+    if (!['销售单', '转换单'].includes(origOrder.sale_order_type)) {
+      throw new Error('INVALID_PARAMS: 仅销售单或转换单支持回款')
+    }
+    if (origOrder.is_experience_conversion === true) {
+      throw new Error('INVALID_STATE: EXPERIENCE_CONVERSION_REPAYMENT_FORBIDDEN: 体验转换不允许补款')
     }
     currentStatus = origOrder.status
 
@@ -2612,7 +2624,11 @@ async function repay(ctx) {
       : Math.round((Number(origOrder.total_amount || 0) - Number(origOrder.prepaid_card_amount || 0)) * 100) / 100
     let directedItems = null
     let remaining
-    if (Number(origOrder.refunded_amount || 0) > 0) {
+    if (origOrder.sale_order_type === '转换单') {
+      const received = Number(origOrder.received || 0)
+      const refundedAmount = Number(origOrder.refunded_amount || 0)
+      remaining = Math.round((Number(origOrder.total_amount || 0) - received + refundedAmount) * 100) / 100
+    } else if (Number(origOrder.refunded_amount || 0) > 0) {
       const repayItemRows = await client.query(
         `SELECT sale_item_id, sale_amount::numeric AS sale_amount, received::numeric AS received
            FROM sale_items WHERE sale_order_id = $1 AND item_direction = '购买'`,

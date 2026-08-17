@@ -25,6 +25,7 @@ describe('order.scanDetail', () => {
         sale_order_id: 'FY-001', status: '待支付', store_id: 's1',
         sale_order_type: '销售单', total_amount: 100, store_name: '南昌旗舰店', opener_name: '张三', opened_by: 'emp-001',
         prepaid_card_amount: 30, payable_amount: 70, received: 0, refunded_amount: 0,
+        first_payment_amount: 20, is_experience_conversion: false,
         payment_method: '微信', coupon_discount: 0,
       }])
       .mockResolvedValueOnce([{
@@ -43,6 +44,8 @@ describe('order.scanDetail', () => {
     expect(ctx.result.order.payableAmount).toBe(70)
     expect(ctx.result.order.received).toBe(0)
     expect(ctx.result.order.refundedAmount).toBe(0)
+    expect(ctx.result.order.firstPaymentAmount).toBe(20)
+    expect(ctx.result.order.isExperienceConversion).toBe(false)
     expect(ctx.result.order.paymentMethod).toBe('微信')
     expect(ctx.result.items).toHaveLength(1)
     expect(ctx.result.items[0].coverImage).toBe('https://img.example.com/a.jpg')
@@ -971,6 +974,36 @@ describe('order.pay', () => {
     const args = __mocks__.lakalaClient.requestPreorder.mock.calls[0][0]
     expect(args.totalAmountFen).toBe(15000)
     expect(ctx.result.paymentParams).toBeDefined()
+  })
+
+  test('普通转换首次部分支付以 first_payment_amount 为服务端硬上限', async () => {
+    const now = new Date()
+    mockPayQueries({
+      order: {
+        sale_order_id: 'FY-CONV-PARTIAL', status: '待支付', sale_order_type: '转换单', store_id: 'store-1',
+        client_user_id: 'user-001', total_amount: 2000, payable_amount: 2000, received: 0,
+        prepaid_card_amount: 0, first_payment_amount: 500,
+        sale_order_datetime: now.toISOString(),
+      },
+    })
+
+    const ctx = createBoundCtx({ orderNo: 'FY-CONV-PARTIAL' })
+    await routes.pay(ctx)
+
+    expect(ctx.result.paidAmount).toBe(500)
+    expect(__mocks__.lakalaClient.requestPreorder.mock.calls[0][0].totalAmountFen).toBe(50000)
+
+    vi.clearAllMocks()
+    mockPayQueries({
+      order: {
+        sale_order_id: 'FY-CONV-PARTIAL-2', status: '待支付', sale_order_type: '转换单', store_id: 'store-1',
+        client_user_id: 'user-001', total_amount: 2000, payable_amount: 2000, received: 0,
+        prepaid_card_amount: 0, first_payment_amount: 500,
+        sale_order_datetime: now.toISOString(),
+      },
+    })
+    const tamperedCtx = createBoundCtx({ orderNo: 'FY-CONV-PARTIAL-2', payAmount: 600 })
+    await expect(routes.pay(tamperedCtx)).rejects.toThrow(/INVALID_PARAMS.*超过剩余应付/)
   })
 })
 
