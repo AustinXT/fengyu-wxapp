@@ -595,7 +595,8 @@ exports.main = async (event) => {
     // 注：wechat_transaction_id 列已在 migration 0018 DROP，三方流水号下沉到 sale_order_payments.external_txn_id
     const orderResult = await pg.query(
       `SELECT status, payment_method, preferred_employee_id,
-              total_amount, payable_amount, client_user_id, store_id, prepaid_card_amount,
+              total_amount, payable_amount, client_user_id, store_id,
+              prepaid_card_amount, pending_prepaid_card_amount,
               sale_order_type, ref_sale_order_id, market_name
        FROM sale_orders WHERE sale_order_id = $1`,
       [saleOrderId]
@@ -647,15 +648,17 @@ exports.main = async (event) => {
       //   凭证单本身在事务末尾再更新 status='已支付'。
       //
       // 先决定本次金额 payAmount：优先取 event.payAmount，否则按目标订单剩余应付推算
-      //   remaining = (total_amount - prepaid_card_amount) - Σ payments.amount (已支付, 首次/回款/退款)
-      // 第一次回调时 payments 表为空，remaining = total_amount - prepaid_card_amount（即全单线上应付）
+      //   remaining = payable_amount - Σ现金类 payments.amount（已支付, 首次/回款/退款）
+      // actual/pending 储值卡均已从 payable_amount 扣除，且这里不累计储值卡流水，避免重复扣减。
       // 线上应付现金基准 = payable_amount 列（已编码充值折扣），旧单 NULL 用 total - prepaid 兜底。
       // 普通单 payable_amount == total - prepaid（不变）；充值单 payable(实付 980) ≠ total(面额 1000)，
       // 不用 payable 则 980 回调永远判为「部分支付」且储值卡不入账。
       const payableAmount = targetOrder.payable_amount != null
         ? Math.round(Number(targetOrder.payable_amount) * 100) / 100
         : Math.round(
-            (Number(targetOrder.total_amount || 0) - Number(targetOrder.prepaid_card_amount || 0)) * 100
+            (Number(targetOrder.total_amount || 0)
+              - Number(targetOrder.prepaid_card_amount || 0)
+              - Number(targetOrder.pending_prepaid_card_amount || 0)) * 100
           ) / 100
       const sumRes = await client.query(
         `SELECT COALESCE(SUM(amount), 0) AS paid_sum
@@ -751,9 +754,9 @@ exports.main = async (event) => {
       )
       const pendingCardAmount = Math.round(Number(pendingCardRes.rows[0]?.pending_card || 0) * 100) / 100
 
-      // 判定目标订单最终状态（线上累计 + 待支付储值卡抵扣意向）
+      // 判定目标订单最终状态：payable_amount 已排除 actual/pending 储值卡，只比较现金净到账。
       const newPaidSum = Math.round((paidSum + thisPayAmount) * 100) / 100
-      const fullyPaid = (newPaidSum + pendingCardAmount) + 0.001 >= payableAmount
+      const fullyPaid = newPaidSum + 0.001 >= payableAmount
       const newStatus = fullyPaid ? '已支付' : '部分支付'
 
       // 1. 更新目标订单：received 累加、status 置新值、paid_at（全额时）
@@ -763,6 +766,7 @@ exports.main = async (event) => {
         `UPDATE sale_orders
          SET status = $1::order_status,
              received = $2,
+             first_payment_amount = NULL,
              paid_at = CASE WHEN $1::text = '已支付' THEN $3 ELSE paid_at END,
              updated_at = $3
          WHERE sale_order_id = $4
@@ -866,18 +870,22 @@ exports.main = async (event) => {
         }
       }
 
-      // 3b. 消费扣款入账（订单的 prepaid_card_amount > 0 时扣余额）
+      // 3b. 初始预选储值卡消费：只处理未对应「待支付储值卡流水」的 pending 部分。
       // 幂等：card_transactions 用 ref_order_id + type='扣款' 的 NOT EXISTS 守护
       // 余额不足时抛错 → 整个事务回滚 → 订单保持 '待支付'（ticket §4.8 #38）
       // 本次回调实际消费的储值卡额（计入按回款逐笔分配的 eventAmount）
       let prepaidConsumedThisCallback = 0
-      if (targetOrder.client_user_id && Number(targetOrder.prepaid_card_amount) > 0) {
+      const initialPendingCardAmount = Math.max(
+        0,
+        Math.round((Number(targetOrder.pending_prepaid_card_amount || 0) - pendingCardAmount) * 100) / 100,
+      )
+      if (targetOrder.client_user_id && initialPendingCardAmount > 0) {
         const dupCheck = await client.query(
           `SELECT 1 FROM card_transactions WHERE ref_order_id = $1 AND type = '扣款' LIMIT 1`,
           [targetOrderNo]
         )
         if (dupCheck.rows.length === 0) {
-          const prepaidAmount = Number(targetOrder.prepaid_card_amount)
+          const prepaidAmount = initialPendingCardAmount
           // 二次校验余额（FOR UPDATE 锁，防并发）
           const cardRow = await client.query(
             `SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1 FOR UPDATE`,
@@ -912,7 +920,11 @@ exports.main = async (event) => {
           // received 口径含储值卡抵扣：上面 received 仅累加了线上付款，此处补记卡抵扣部分使 received=线上+卡=总实收，
           // 随后重算 paid_sessions（received 增长 → 可消费次数单调上升）。
           await client.query(
-            `UPDATE sale_orders SET received = received + $1, updated_at = NOW() WHERE sale_order_id = $2`,
+            `UPDATE sale_orders
+             SET received = received + $1,
+                 pending_prepaid_card_amount = GREATEST(0, pending_prepaid_card_amount::numeric - $1::numeric),
+                 updated_at = NOW()
+             WHERE sale_order_id = $2`,
             [prepaidAmount, targetOrderNo]
           )
           prepaidConsumedThisCallback = prepaidAmount
@@ -961,12 +973,11 @@ exports.main = async (event) => {
               [now, pr.id]
             )
           }
-          // received 含储值卡抵扣（I1）；prepaid_card_amount/payable_amount 同步维护 I5（payable = total - prepaid）。
+          // received 含储值卡抵扣（I1）；actual 由统一重算器从已支付流水聚合，pending 原子扣减。
           await client.query(
             `UPDATE sale_orders
              SET received = received + $1,
-                 prepaid_card_amount = COALESCE(prepaid_card_amount, 0) + $1,
-                 payable_amount = COALESCE(payable_amount, total_amount) - $1,
+                 pending_prepaid_card_amount = GREATEST(0, pending_prepaid_card_amount::numeric - $1::numeric),
                  updated_at = $2
              WHERE sale_order_id = $3`,
             [pendingCardAmount, now, targetOrderNo]

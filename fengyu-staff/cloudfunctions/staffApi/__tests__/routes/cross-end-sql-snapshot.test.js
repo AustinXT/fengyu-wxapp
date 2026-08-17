@@ -669,6 +669,11 @@ describe('SUMMARY v3 §2 #14：refund-cascade 双端 5 通道覆盖守护', () =
         expect(src, `${name} 缺未使用门控`).toMatch(/status\s*=\s*'未使用'/)
       }
     })
+    test('staff 的 ANY(text[]) 必须将礼券 ID 数组作为单个 $1 参数绑定', () => {
+      expect(staffSrc).toMatch(
+        /WHERE\s+coupon_id\s*=\s*ANY\(\$1::text\[\]\)[\s\S]*?\[\s*\[\s*`sg-inviter-\$\{saleOrderId\}`\s*,\s*`sg-invitee-\$\{saleOrderId\}`\s*\]\s*\]/,
+      )
+    })
   })
 
   // 通道 4：point_transactions 比例冲销（INSERT '消费冲销' 行 + 重算 points_balance）

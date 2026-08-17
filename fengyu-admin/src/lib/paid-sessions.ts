@@ -105,6 +105,28 @@ export const paidUnusedSessionsExpr = sql<number>`CASE WHEN ${saleItems.paidSess
  * 抛 CONFLICT，提示调用方先取消已生成的服务单。
  */
 export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: string): Promise<void> {
+  // STEP 0：款项流水是 actual 储值卡金额的权威源；pending 仅代表尚未扣卡意向。
+  await tx.execute(sql`
+    WITH card_totals AS (
+      SELECT GREATEST(0, COALESCE(SUM(amount::numeric) FILTER (
+               WHERE status = '已支付'
+                 AND (change_type = '储值卡抵扣' OR (change_type = '退款' AND payment_method = '储值卡'))
+             ), 0))::numeric(10, 2) AS settled_prepaid
+      FROM sale_order_payments
+      WHERE sale_order_id = ${saleOrderId}
+    )
+    UPDATE sale_orders so
+    SET prepaid_card_amount = card_totals.settled_prepaid,
+        payable_amount = CASE
+          WHEN so.sale_order_type IN ('销售单','内部单','转换单')
+            THEN GREATEST(0, so.total_amount::numeric - card_totals.settled_prepaid - so.pending_prepaid_card_amount::numeric)
+          ELSE so.payable_amount
+        END,
+        updated_at = NOW()
+    FROM card_totals
+    WHERE so.sale_order_id = ${saleOrderId}
+  `)
+
   // STEP 1：两路分流
   //   A. 正向 receipt 覆盖订单毛实收 → received = Σ 有符号 sale_payment_item_receipts.amount per item；
   //      退款 receipt 为负数，天然得到净额，不再额外扣 note.items[]。
@@ -214,6 +236,51 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
       WHERE si.sale_item_id = ai.sale_item_id
     `)
   }
+
+  // STEP 1.75：received 已成为最终有符号净额，按它分摊 actual 储值卡/现金通道。
+  await tx.execute(sql`
+    WITH order_amounts AS (
+      SELECT prepaid_card_amount::numeric AS prepaid_total
+      FROM sale_orders
+      WHERE sale_order_id = ${saleOrderId}
+    ),
+    ranked AS (
+      SELECT si.sale_item_id,
+             si.received::numeric AS item_received,
+             oa.prepaid_total,
+             SUM(si.received::numeric) OVER () AS received_total,
+             ROW_NUMBER() OVER (ORDER BY si.sale_item_id) AS rn,
+             COUNT(*) OVER () AS item_count
+      FROM sale_items si
+      CROSS JOIN order_amounts oa
+      WHERE si.sale_order_id = ${saleOrderId} AND si.received::numeric <> 0
+    ),
+    rounded AS (
+      SELECT ranked.*,
+             ROUND(prepaid_total * item_received / received_total, 2) AS provisional
+      FROM ranked
+      WHERE received_total <> 0 AND prepaid_total <> 0
+    ),
+    allocated AS (
+      SELECT sale_item_id,
+             CASE WHEN rn = item_count
+                    THEN prepaid_total - COALESCE(SUM(provisional) FILTER (WHERE rn < item_count) OVER (), 0)
+                  ELSE provisional
+             END::numeric(10, 2) AS prepaid_share
+      FROM rounded
+    ),
+    targets AS (
+      SELECT si.sale_item_id, COALESCE(allocated.prepaid_share, 0)::numeric(10, 2) AS prepaid_share
+      FROM sale_items si
+      LEFT JOIN allocated ON allocated.sale_item_id = si.sale_item_id
+      WHERE si.sale_order_id = ${saleOrderId}
+    )
+    UPDATE sale_items si
+    SET prepaid_card_received = targets.prepaid_share,
+        updated_at = NOW()
+    FROM targets
+    WHERE si.sale_item_id = targets.sale_item_id
+  `)
 
   // STEP 2: 按行级公式重算 paid_sessions（received 已净额，不再下分订单级退款；守 cross-end-sql-snapshot）
   await tx.execute(sql`

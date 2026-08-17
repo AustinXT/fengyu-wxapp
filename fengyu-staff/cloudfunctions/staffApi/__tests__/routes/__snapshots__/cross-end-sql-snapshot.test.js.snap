@@ -81,7 +81,7 @@ exports[`paidUnusedSessions 派生口径守护（admin SQL snapshot + 四端 JS 
 exports[`ticket 2026-05-19 admin orders.ts 关键 SQL 纳入跨端守护 > Snapshot 守护：admin 关键 SQL 整体文本快照 > admin 储值卡扣款相关 3 段 SQL 快照（任一漂移立即可见） 1`] = `
 {
   "lockCard": "SELECT card_id, balance FROM prepaid_cards WHERE user_id = ? FOR UPDATE",
-  "lockOrder": "SELECT status, payment_method, store_id, total_amount, payable_amount, received, prepaid_card_amount, client_user_id, customer_name FROM sale_orders WHERE sale_order_id = ? FOR UPDATE",
+  "lockOrder": "SELECT status, payment_method, store_id, total_amount, payable_amount, received, prepaid_card_amount, client_user_id, customer_name, sale_order_type, first_payment_amount FROM sale_orders WHERE sale_order_id = ? FOR UPDATE",
   "updBalance": "UPDATE prepaid_cards SET balance = balance - ?::numeric, updated_at = NOW() WHERE card_id = ?",
 }
 `;

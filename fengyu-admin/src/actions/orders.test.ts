@@ -265,7 +265,7 @@ vi.mock('@/lib/points-settle', () => ({
   })),
 }))
 
-import { createOrder, confirmOfflinePayment, closeOrder, resetOrderFailed, getOrdersPaginated, createConversionOrder, recordPayment, deleteOrder, exportOrders, exportAllocationOrders, createDepositOrder } from './orders'
+import { createOrder, confirmOfflinePayment, closeOrder, resetOrderFailed, getOrdersPaginated, createConversionOrder, recordPayment, deleteOrder, exportOrders, exportAllocationOrders, createDepositOrder, updatePerformanceAttributionDate } from './orders'
 import { settlePointsSafe } from '@/lib/points-settle'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
@@ -274,6 +274,7 @@ import { calcCouponDiscount } from '@/lib/utils'
 import { eq, ilike, gte, lt, gt, inArray } from 'drizzle-orm'
 import { requirePermission } from '@/lib/permissions'
 import { ApiError } from '@/lib/api-error'
+import { logUpdate } from '@/lib/operation-log'
 
 const mockSession = {
   employeeId: 'EMP-001',
@@ -1640,6 +1641,13 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
     expect(result.message).toContain('不能超过剩余应付')
   })
 
+  it('转换单确认金额不能超过录单时填写的首笔实付', async () => {
+    mockConfirmTx({ lock: { sale_order_type: '转换单', first_payment_amount: '50.00' } })
+    const result = await confirmOfflinePayment('order-1', 80)
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不能超过转换单录入的实付金额')
+  })
+
   it('事务异常 → 返回友好错误', async () => {
     ;(db.transaction as any).mockRejectedValue(new Error('connection lost'))
     const result = await confirmOfflinePayment('order-1')
@@ -2614,13 +2622,16 @@ describe('createOrder — 内部单半价 + 禁用优惠券', () => {
 describe('createOrder — 会员价分流（后端权威定价）', () => {
   // 捕获事务内 INSERT 的 sale_item（含 per-session 派生后的 unit_price / unit_real_price）
   function mockCaptureTx() {
-    const cap: { item?: any } = {}
+    const cap: { item?: any; items: any[] } = { items: [] }
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       const tx = {
         execute: vi.fn().mockResolvedValue([{ id: 'FY-XSD-WX-260410-MP01' }]),
         insert: vi.fn().mockImplementation((table: any) => ({
           values: vi.fn().mockImplementation((v: any) => {
-            if (table && 'saleItemId' in v) cap.item = v
+            if (table && 'saleItemId' in v) {
+              cap.item = v
+              cap.items.push(v)
+            }
             return Promise.resolve({})
           }),
         })),
@@ -2736,6 +2747,42 @@ describe('createOrder — 会员价分流（后端权威定价）', () => {
     })
     expect(result.success).toBe(true)
     expect(cap.item.unitRealPrice).toBe('99.00') // 套餐价 99，未被改写为会员价 150
+  })
+
+  it('同品类同规格疗程卡累计次数命中最高梯度，忽略前端伪造金额', async () => {
+    const oneSession = {
+      skuId: 'sku-tier-1', categoryId: 'cat-face', specName: '面部护理', productType: '疗程卡',
+      sessionCount: 1, price: '300.00', specialPrice: null, serviceFee: '0',
+      isExperience: false, isManagerSpecial: false, isShengmei: false,
+      marketScope: null, purchaseLimit: null, salesCategory: '自销自耗',
+    }
+    const twoSessions = { ...oneSession, skuId: 'sku-tier-2', sessionCount: 2, price: '550.00' }
+    const threeSessionTier = { ...oneSession, skuId: 'sku-tier-3', sessionCount: 3, price: '600.00' }
+    ;(db.select as any)
+      .mockImplementationOnce(mockSelectRows([oneSession, twoSessions]))
+      .mockImplementationOnce(mockSelectFound({ customerType: '流量客', memberLevel: null }))
+      .mockImplementationOnce(mockSelectRows([oneSession, twoSessions, threeSessionTier]))
+      .mockImplementationOnce(mockSelectRows([oneSession, twoSessions]))
+      .mockImplementationOnce(mockSelectFound({ phone: '13812345678', name: '顾客甲' }))
+
+    const cap = mockCaptureTx()
+    const result = await createOrder({
+      ...baseOrderData,
+      items: [
+        {
+          ...baseOrderData.items[0], skuId: oneSession.skuId, productName: '面部护理1次',
+          sessionCount: 1, unitPrice: '9999', unitRealPrice: '9999', saleAmount: '9999',
+        },
+        {
+          ...baseOrderData.items[0], skuId: twoSessions.skuId, productName: '面部护理2次',
+          sessionCount: 2, unitPrice: '9999', unitRealPrice: '9999', saleAmount: '9999',
+        },
+      ],
+    })
+
+    expect(result.success).toBe(true)
+    expect(cap.items.map((item) => item.saleAmount)).toEqual(['200.00', '400.00'])
+    expect(cap.items.map((item) => item.unitRealPrice)).toEqual(['200.00', '200.00'])
   })
 })
 
@@ -2958,6 +3005,12 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
               salesCategory: '自销自耗', purchaseLimit: null,
             }],
             [{
+              skuId: 'sku-new-1', specName: '新项目', price: '500', specialPrice: null,
+              serviceFee: '0', sessionCount: 1, productType: '疗程卡', isExperience: false,
+              isManagerSpecial: false, isShengmei: false, categoryId: 'cat-new',
+              salesCategory: '自销自耗', purchaseLimit: null,
+            }],
+            [{
               status: '未使用', expireAt: new Date(Date.now() + 86_400_000), userId: 'user-1',
               couponType: '现金券', discountValue: '300', maxDiscount: null, minSpend: '0', isActive: true,
               applicableStoreIds: null, applicableCategoryIds: null, applicableProductIds: null, applicableMarketIds: null,
@@ -2969,8 +3022,8 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
           const chain: any = {}
           chain.innerJoin = vi.fn().mockReturnValue(chain)
           chain.leftJoin = vi.fn().mockReturnValue(chain)
-          chain.where = vi.fn().mockImplementation(() => selectCall === 2 ? chain : Promise.resolve(rows))
-          if (selectCall === 2) chain.limit = vi.fn().mockResolvedValue(rows)
+          chain.where = vi.fn().mockImplementation(() => selectCall === 3 ? chain : Promise.resolve(rows))
+          if (selectCall === 3) chain.limit = vi.fn().mockResolvedValue(rows)
           return { from: vi.fn().mockReturnValue(chain) }
         }),
         insert: vi.fn().mockReturnValue({
@@ -3052,6 +3105,48 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     expect(result.priceDiff).toBe(0)
     expect(capturedOrder.totalAmount).toBe('0.00')
     expect(capturedOrder.status).toBe('已支付')
+  })
+
+  it('转入多行累计次数命中最高疗程梯度，服务端覆盖前端伪造金额', async () => {
+    const insertedItems: any[] = []
+    const oneSession = {
+      skuId: 'sku-tier-1', categoryId: 'cat-face', specName: '面部护理',
+      price: '300.00', specialPrice: null, serviceFee: '0', sessionCount: 1,
+      productType: '疗程卡', salesCategory: '自销自耗', isExperience: false,
+      isManagerSpecial: false, isShengmei: false, marketScope: null, purchaseLimit: null,
+    }
+    const twoSessions = { ...oneSession, skuId: 'sku-tier-2', sessionCount: 2, price: '550.00' }
+    const threeSessionTier = { ...oneSession, skuId: 'sku-tier-3', sessionCount: 3, price: '600.00' }
+    mockConvTx({
+      heldRows: [{
+        sale_item_id: 'card-1', sale_order_id: 'old-order', store_id: 'store-1', item_direction: '购买',
+        sku_id: 'sku-old', product_name: '旧疗程', product_type: '疗程卡', session_count: 1,
+        remaining_sessions: 1, quantity: 1, picked_up_quantity: 0, unit_price: '100', unit_real_price: '100',
+        sales_category: '自销自耗', service_fee: '0', is_experience: false, is_shengmei: false,
+        client_user_id: 'user-1', order_status: '已支付', product_kind: '护理项目',
+      }],
+      skuRows: [oneSession, twoSessions, threeSessionTier],
+      onInsertItem: (value) => { insertedItems.push(value) },
+    })
+
+    const result = await createConversionOrder({
+      ...baseConvData,
+      convertInItems: [
+        {
+          ...baseConvData.convertInItems[0], skuId: oneSession.skuId, productName: '面部护理1次',
+          sessionCount: 1, unitPrice: '9999', unitRealPrice: '9999', saleAmount: '9999',
+        },
+        {
+          ...baseConvData.convertInItems[0], skuId: twoSessions.skuId, productName: '面部护理2次',
+          sessionCount: 2, unitPrice: '9999', unitRealPrice: '9999', saleAmount: '9999',
+        },
+      ],
+    })
+
+    expect(result).toMatchObject({ success: true, totalIn: 600, totalOut: 100, priceDiff: 500 })
+    const inItems = insertedItems.filter((item) => item.itemDirection === '转入')
+    expect(inItems.map((item) => item.saleAmount)).toEqual(['200.00', '400.00'])
+    expect(inItems.map((item) => item.unitRealPrice)).toEqual(['200.00', '200.00'])
   })
 
   it('转换单转入权益可继续折抵，且 quantity=2 的新疗程拆成两张实体卡', async () => {
@@ -3259,6 +3354,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
       remainingAmount: 200,
       status: '待支付',
     })
+    expect(result.message).toContain('本次应收 ¥100.00，剩余挂账 ¥100.00')
     expect(capturedOrder).toMatchObject({
       totalAmount: '200.00',
       payableAmount: '200.00',
@@ -3318,7 +3414,9 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     for (const forbidden of [
       { couponId: 'coupon-1' },
       { prepaidCardAmount: 1 },
+      { prepaidCardAmount: -1 },
       { receivedAmount: 1 },
+      { receivedAmount: -1 },
     ]) {
       const result = await createConversionOrder({
         ...baseConvData,
@@ -3880,6 +3978,119 @@ describe('createOrder — 线下开单不记款 + 线上首付（receivedAmount 
     expect(bag.order.status).toBe('待支付')
     expect(bag.order.received).toBe('0.00')
     expect(bag.payments).toHaveLength(0)
+  })
+})
+
+describe('updatePerformanceAttributionDate — 一次性业绩归属日期调整', () => {
+  const input = {
+    saleOrderId: 'FY-XSD-WX-2608170001',
+    performanceAttributionDate: '2026-08-24',
+    expectedUpdatedAt: '2026-08-17T02:03:04.567Z',
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      name: '店长甲',
+      permissions: {
+        ...mockSession.permissions,
+        actions: ['sale_order:performance_attribution_update'],
+      },
+    })
+    ;(isInScope as any).mockReturnValue(true)
+  })
+
+  function mockAttributionTransaction({
+    adjustedAt = null,
+    currentDate = '2026-08-17',
+    updatedRows = [{
+      performance_attribution_date: '2026-08-24',
+      performance_attribution_adjusted_at: new Date('2026-08-17T03:00:00.000Z'),
+      performance_attribution_adjusted_by: 'EMP-001',
+      updated_at: new Date('2026-08-17T03:00:00.000Z'),
+    }],
+  }: {
+    adjustedAt?: Date | null
+    currentDate?: string
+    updatedRows?: any[]
+  } = {}) {
+    const execute = vi.fn()
+      .mockResolvedValueOnce([{
+        sale_order_id: input.saleOrderId,
+        store_id: 'store-1',
+        performance_attribution_date: currentDate,
+        performance_attribution_adjusted_at: adjustedAt,
+        original_order_date: '2026-08-17',
+        min_performance_date: '2026-08-10',
+        max_performance_date: '2026-08-24',
+      }])
+      .mockResolvedValueOnce(updatedRows)
+    const tx = { execute, select: vi.fn(), insert: vi.fn() }
+    ;(db.transaction as any).mockImplementation(async (fn: any) => fn(tx))
+    return { tx, execute }
+  }
+
+  it('允许原始订单日期 +7 天边界，写入调整人、CAS 和审计日志', async () => {
+    const { tx, execute } = mockAttributionTransaction()
+
+    const result = await updatePerformanceAttributionDate(input)
+
+    expect(result.success).toBe(true)
+    expect(result.data.performanceAttributionDate).toBe('2026-08-24')
+    expect(requirePermission).toHaveBeenCalledWith(
+      expect.anything(),
+      'sale_order:performance_attribution_update',
+    )
+    expect(execute.mock.calls[0][0].__sqlText).toMatch(/FOR UPDATE/)
+    expect(execute.mock.calls[1][0].__sqlText).toMatch(/performance_attribution_adjusted_at IS NULL/)
+    expect(execute.mock.calls[1][0].__sqlText).toMatch(/date_trunc\('milliseconds', updated_at\)/)
+    expect(logUpdate).toHaveBeenCalledWith(
+      expect.anything(),
+      'order.performanceAttribution.update',
+      'sale_order',
+      input.saleOrderId,
+      { performanceAttributionDate: '2026-08-17' },
+      expect.objectContaining({
+        performanceAttributionDate: '2026-08-24',
+        performanceAttributionAdjustedBy: 'EMP-001',
+      }),
+      tx,
+    )
+  })
+
+  it('同日提交不消耗修改机会', async () => {
+    const { execute } = mockAttributionTransaction({ currentDate: '2026-08-24' })
+
+    await expect(updatePerformanceAttributionDate(input)).rejects.toThrow(/INVALID_PARAMS.*当前日期相同/)
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(logUpdate).not.toHaveBeenCalled()
+  })
+
+  it('超出原始订单日期前后 7 天时拒绝', async () => {
+    const { execute } = mockAttributionTransaction()
+
+    await expect(updatePerformanceAttributionDate({
+      ...input,
+      performanceAttributionDate: '2026-08-25',
+    })).rejects.toThrow(/INVALID_PARAMS.*前后 7 天/)
+    expect(execute).toHaveBeenCalledTimes(1)
+  })
+
+  it('已调整订单不允许再改', async () => {
+    const { execute } = mockAttributionTransaction({
+      adjustedAt: new Date('2026-08-17T02:30:00.000Z'),
+    })
+
+    await expect(updatePerformanceAttributionDate(input)).rejects.toThrow(/CONFLICT.*已经调整过/)
+    expect(execute).toHaveBeenCalledTimes(1)
+  })
+
+  it('订单版本已变化时 CAS 失败，不写审计日志', async () => {
+    mockAttributionTransaction({ updatedRows: [] })
+
+    await expect(updatePerformanceAttributionDate(input)).rejects.toThrow(/CONFLICT.*刷新后重试/)
+    expect(logUpdate).not.toHaveBeenCalled()
   })
 })
 

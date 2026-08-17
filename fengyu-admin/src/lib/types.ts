@@ -385,8 +385,12 @@ export interface SaleOrder {
   clientPhone: string | null
   customerName: string | null
   totalAmount: string
-  /** 储值卡抵扣金额（抵扣项，不计入实付）；与 received 之和等于 totalAmount */
+  /** 已结算储值卡实付净额（已支付储值卡流水累计，储值卡退款为负向）。 */
   prepaidCardAmount: string
+  /** 尚未结算的储值卡预选/混合支付意向金额。 */
+  pendingPrepaidCardAmount: string
+  /** 约定现金应付额 = total - actual prepaid - pending prepaid（充值/寄存单除外）。 */
+  payableAmount: string
   /**
    * 实收金额（聚合 sale_order_payments[change_type∈(首次支付/回款/储值卡抵扣), status='已支付'] 的快照）。
    * 2026-04-26 sale-order-domain-refactor：原 paidAmount 列与 received 重复，已 DROP；统一改用 received。
@@ -457,6 +461,10 @@ export interface SaleItem {
   unitRealPrice: string
   saleAmount: string
   received: string
+  /** 按本单有符号 received 比例分摊的储值卡实付。 */
+  prepaidCardReceived: string
+  /** 数据库生成值：received - prepaidCardReceived。 */
+  cashReceived: string
   /** 待确认实付草稿（开单约定实付，行级；不进 received/paid_sessions，仅展示 + 确认收款入账参考） */
   pendingReceived: string
   expireDate: string | null

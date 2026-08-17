@@ -532,6 +532,7 @@ async function getTopProduct(clientUserId) {
  *
  * 状态口径：'已支付', '部分支付', '已完成'（与 paidOrders 对齐）。
  * WorkFine 历史导入及退款归零后的销售单都可能是 '已完成'，仍须计入有效订单。
+ * 单据口径：仅销售单、转换单计入消费；寄存单只是剩余服务权益初始化，不能重复计入。
  */
 async function getConsumptionStats(clientUserId) {
   if (!clientUserId) {
@@ -566,7 +567,9 @@ async function getConsumptionStats(clientUserId) {
          END
        ), 0) AS year_total
        FROM sale_orders o
-       WHERE o.status IN ('已支付', '部分支付', '已完成') AND o.client_user_id = $1
+       WHERE o.status IN ('已支付', '部分支付', '已完成')
+         AND o.sale_order_type IN ('销售单', '转换单')
+         AND o.client_user_id = $1
      ), actual_stats AS (
        SELECT
          COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS total_actual_consumption,

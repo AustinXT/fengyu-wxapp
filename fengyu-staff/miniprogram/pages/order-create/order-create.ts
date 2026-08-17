@@ -2125,6 +2125,9 @@ Page({
           }
           return item;
         }),
+        // 组合套餐转换必须透传套餐主商品，后端据此复核分组配额并使用套餐下沉价；
+        // 缺少该字段会把套餐子项按普通 SKU 单价重算，导致付款码金额高于结算预览。
+        bundleProductId: cart.find(c => c.refBundleId)?.refBundleId || undefined,
         paymentMethod,
         couponId: conversionIsExperience ? undefined : (selectedCoupon?.couponId || undefined),
         // 默认值也显式透传，保持转换单与普通开单的充值卡金额契约一致。

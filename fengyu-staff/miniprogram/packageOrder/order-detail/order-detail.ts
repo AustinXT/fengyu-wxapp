@@ -27,6 +27,8 @@ interface RawOrder {
   offline_confirmed_at?: string;
   created_at?: string;
   paid_at?: string;
+  performance_attribution_date?: string;
+  performance_attribution_adjusted_at?: string | null;
   total_amount?: string;
   // 2026-04-26 sale-order-domain-refactor: paid_amount 列已 DROP，改用 received / refunded_amount
   received?: string;
@@ -180,6 +182,8 @@ interface DisplayOrder {
   confirmedAt: string;
   createdAt: string;
   paidAt: string;
+  performanceAttributionDate: string;
+  performanceAttributionAdjusted: boolean;
   totalAmount: string;
   paidAmount: string;
   prepaidCardAmount: string;
@@ -474,6 +478,8 @@ Page({
           confirmedAt: formatDateTime(o.offline_confirmed_at),
           createdAt: formatDateTime(o.created_at),
           paidAt: formatDateTime(o.paid_at),
+          performanceAttributionDate: formatDate(o.performance_attribution_date),
+          performanceAttributionAdjusted: !!o.performance_attribution_adjusted_at,
           totalAmount: totalAmount.toFixed(2),
           paidAmount: netReceived.toFixed(2),
           prepaidCardAmount: prepaidCardAmount.toFixed(2),

@@ -336,7 +336,9 @@ async function cascadeRefund(client, params) {
               updated_at = NOW()
         WHERE coupon_id = ANY($1::text[])
           AND status = '未使用'`,
-      [`sg-inviter-${saleOrderId}`, `sg-invitee-${saleOrderId}`],
+      // pg.query 的第二个参数是「占位符参数列表」；SQL 只有 $1，
+      // 因此 text[] 必须作为 $1 的单个数组值传入，不能拆成两个绑定参数。
+      [[`sg-inviter-${saleOrderId}`, `sg-invitee-${saleOrderId}`]],
     )
     revokedShareGiftCoupons = shareGiftRes.rowCount || 0
   }

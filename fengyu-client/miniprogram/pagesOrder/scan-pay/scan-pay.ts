@@ -132,12 +132,17 @@ Page({
           remaining = Math.max(0, Math.round((totalAmount - received + refundedAmount) * 100) / 100);
         } else {
           const scanItems: any[] = Array.isArray(data.items) ? data.items : [];
-          let sum = 0;
-          for (const i of scanItems) {
-            if (Number(i.refundedAmount || 0) > 0) continue;
-            sum += Math.max(0, Number(i.saleAmount || 0) - Number(i.received || 0));
+          if (scanItems.length === 0) {
+            // 明细暂未返回时使用订单级净应付兜底，避免把仍有欠款的订单误算为 0。
+            remaining = Math.max(0, Math.round((payable - received + refundedAmount) * 100) / 100);
+          } else {
+            let sum = 0;
+            for (const i of scanItems) {
+              if (Number(i.refundedAmount || 0) > 0) continue;
+              sum += Math.max(0, Number(i.saleAmount || 0) - Number(i.received || 0));
+            }
+            remaining = Math.round(sum * 100) / 100;
           }
-          remaining = Math.round(sum * 100) / 100;
         }
       } else {
         const netReceived = Math.round((received - refundedAmount) * 100) / 100;

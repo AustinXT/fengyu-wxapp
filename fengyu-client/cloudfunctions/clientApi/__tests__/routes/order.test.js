@@ -992,6 +992,7 @@ describe('order.pay', () => {
 
     expect(ctx.result.paidAmount).toBe(500)
     expect(__mocks__.lakalaClient.requestPreorder.mock.calls[0][0].totalAmountFen).toBe(50000)
+    expect(pg.query.mock.calls.some(([sql]) => String(sql).includes('first_payment_amount = NULL'))).toBe(false)
 
     vi.clearAllMocks()
     mockPayQueries({

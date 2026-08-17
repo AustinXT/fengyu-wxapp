@@ -580,6 +580,7 @@ describe('customer.detail', () => {
     expect(sql).toMatch(/CASE[\s\S]*WHEN/)
     expect(sql).toContain('EXISTS (SELECT 1 FROM sale_items')
     expect(sql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
+    expect(sql).toContain("o.sale_order_type IN ('销售单', '转换单')")
     expect(sql).toContain('FROM service_orders so')
     expect(sql).toContain('JOIN service_items sit ON sit.service_order_id = so.service_order_id')
     expect(sql).toContain("so.status = '已完成'")

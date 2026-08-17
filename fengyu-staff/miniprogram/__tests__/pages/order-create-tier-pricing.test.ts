@@ -213,4 +213,64 @@ describe('开单疗程卡阶梯价', () => {
       }),
     )
   })
+
+  test('组合套餐转换提交透传套餐主商品 ID', async () => {
+    const callStaffApiMock = vi.mocked(callStaffApi)
+    callStaffApiMock.mockReset().mockResolvedValueOnce({
+      saleOrderId: 'FY-XSD-WX-2608160038',
+      priceDiff: 2940,
+      prepaidCardCredit: 0,
+      prepaidCardAmount: 0,
+      status: '待支付',
+    })
+    const bundleItem = {
+      ...createCartItem('sku-bundle-neck', 1, 1980),
+      quantity: 3,
+      refBundleId: 'prod-body-bundle',
+    }
+    const page = {
+      ...pageDefinition,
+      data: {
+        customerInfo: { clientUserId: 'client-001' },
+        cart: [bundleItem],
+        remark: '',
+        submitting: false,
+        conversionSelectedSaleItemIds: ['sale-item-old-001'],
+        conversionPriceDiff: 2940,
+        conversionPaymentMethod: '线下',
+        conversionPrepaidCardAmount: 0,
+        conversionRemaining: 2940,
+        conversionReceivedAmount: 2940,
+        conversionIsExperience: false,
+        conversionIsActivity: false,
+        preferredStaffWfId: '',
+        selectedCoupon: null,
+      },
+      saveRecentCustomer: vi.fn(),
+      updateCart: vi.fn(),
+      setData(update: Record<string, unknown>) {
+        Object.assign(this.data, update)
+      },
+    }
+    const wxMock = globalThis.wx as any
+    const originalShowToast = wxMock.showToast
+    const originalNavigateTo = wxMock.navigateTo
+    wxMock.showToast = vi.fn()
+    wxMock.navigateTo = vi.fn()
+
+    try {
+      await page._submitConversion()
+    } finally {
+      wxMock.showToast = originalShowToast
+      wxMock.navigateTo = originalNavigateTo
+    }
+
+    expect(callStaffApiMock).toHaveBeenCalledWith(
+      'order.createConversion',
+      expect.objectContaining({
+        bundleProductId: 'prod-body-bundle',
+        convertInItems: [expect.objectContaining({ skuId: 'sku-bundle-neck', quantity: 3 })],
+      }),
+    )
+  })
 })

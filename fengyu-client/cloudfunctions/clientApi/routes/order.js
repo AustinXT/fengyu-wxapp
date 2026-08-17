@@ -330,7 +330,16 @@ async function createLakalaAlipayShareCode({
 async function closeExpiredOrder(orderNo) {
   return await pg.transaction(async (client) => {
     const result = await client.query(
-      "UPDATE sale_orders SET status = '已关闭', updated_at = NOW() WHERE sale_order_id = $1 AND status = '待支付' AND opened_by IS NULL",
+      `UPDATE sale_orders
+       SET status = '已关闭',
+           pending_prepaid_card_amount = 0,
+           payable_amount = CASE
+             WHEN sale_order_type IN ('销售单','内部单','转换单')
+               THEN GREATEST(0, total_amount::numeric - prepaid_card_amount::numeric)
+             ELSE payable_amount
+           END,
+           updated_at = NOW()
+       WHERE sale_order_id = $1 AND status = '待支付' AND opened_by IS NULL`,
       [orderNo]
     )
     if (result.rowCount > 0) {
@@ -520,6 +529,7 @@ async function scanDetail(ctx) {
   const items = await pg.query(`
     SELECT
       si.sale_item_id, si.unit_price, si.quantity, si.received,
+      si.prepaid_card_received, si.cash_received,
       si.sale_amount, si.session_count,
       COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
       si.product_name,
@@ -538,9 +548,10 @@ async function scanDetail(ctx) {
   // 应付实金 = total - prepaid_card_amount（payable_amount 列冗余，兜底现算）
   const totalAmount = Number(order.total_amount || 0)
   const prepaidCardAmount = Number(order.prepaid_card_amount || 0)
+  const pendingPrepaidCardAmount = Number(order.pending_prepaid_card_amount || 0)
   const payableAmount = Number(order.payable_amount || 0) > 0
     ? Number(order.payable_amount)
-    : Math.round((totalAmount - prepaidCardAmount) * 100) / 100
+    : Math.round((totalAmount - prepaidCardAmount - pendingPrepaidCardAmount) * 100) / 100
   const received = Number(order.received || 0)
   const refundedAmount = Number(order.refunded_amount || 0)
   // 首付金额（admin 在线上分次开单时写入；NULL 表示按剩余应付全额收）
@@ -558,6 +569,7 @@ async function scanDetail(ctx) {
       orderType: order.sale_order_type,
       totalAmount,
       prepaidCardAmount,
+      pendingPrepaidCardAmount,
       payableAmount,
       received,
       refundedAmount,
@@ -576,6 +588,8 @@ async function scanDetail(ctx) {
       sessionCount: i.session_count,
       unit: i.unit,
       received: i.received,
+      prepaidCardReceived: i.prepaid_card_received,
+      cashReceived: i.cash_received,
       refundedAmount: Number(itemRefundMap.get(i.sale_item_id) || 0),
       coverImage: i.cover_image || ''
     }))
@@ -1038,22 +1052,24 @@ async function create(ctx) {
     // 创建订单主表（全额抵扣时直接 '已支付' + paid_at）
     // 2026-04-26 sale-order-domain-refactor:
     //   - paid_amount 列已 DROP；统一改用 received（已到账金额，初始 0；全额储值卡抵扣时 = prepaidCardAmount）
-    //   - payable_amount = total_amount - prepaid_card_amount（应付实金，取代旧 paid_amount 在 create 时的语义）
+    //   - payable_amount = total_amount - actual prepaid - pending prepaid（约定现金应付）
     //   - 全额抵扣单的 received = prepaidCardAmount（储值卡抵扣等同已收；券全额抵扣 prepaidCardAmount=0 → received=0）
     const initialStatus = zeroPayable ? '已支付' : '待支付'
     const initialReceived = zeroPayable ? prepaidCardAmount : 0
+    const initialSettledPrepaid = prepaidFullPaid ? prepaidCardAmount : 0
+    const initialPendingPrepaid = prepaidFullPaid ? 0 : prepaidCardAmount
     await client.query(
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id, store_name,
         sale_order_datetime, client_user_id, client_phone, customer_name,
-        total_amount, prepaid_card_amount, received, payable_amount, payment_method,
+        total_amount, prepaid_card_amount, pending_prepaid_card_amount, received, payable_amount, payment_method,
         preferred_employee_id, coupon_id, coupon_discount,
         paid_at, created_at, updated_at
-      ) VALUES ($1, $2, '销售单', $3, $4, $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $6, $6)`,
+      ) VALUES ($1, $2, '销售单', $3, $4, $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $6, $6)`,
       [
         orderNo, initialStatus, documentType, marketName, storeId, now, userId,
         ctx.auth.phone || null, customerName,
-        totalAmount, prepaidCardAmount, initialReceived, paidAmount, effectivePaymentMethod,
+        totalAmount, initialSettledPrepaid, initialPendingPrepaid, initialReceived, paidAmount, effectivePaymentMethod,
         preferredStaffWfId || null, inputCouponId || null, couponDiscount,
         zeroPayable ? now : null
       ]
@@ -1167,6 +1183,7 @@ async function create(ctx) {
       saleOrderId: orderNo,
       totalAmount,
       prepaidCardAmount: finalPrepaidCardAmount,
+      pendingPrepaidCardAmount: 0,
       paidAmount: finalPaidAmount,
       paymentMethod: finalPaymentMethod,
       status: '已支付',
@@ -1182,7 +1199,8 @@ async function create(ctx) {
     orderNo,
     saleOrderId: orderNo,
     totalAmount,
-    prepaidCardAmount: finalPrepaidCardAmount,
+    prepaidCardAmount: 0,
+    pendingPrepaidCardAmount: finalPrepaidCardAmount,
     paidAmount: finalPaidAmount,
     paymentMethod: finalPaymentMethod,
     status: '待支付'
@@ -1198,8 +1216,8 @@ async function create(ctx) {
  *   退款汇总改为 sale_orders.refunded_amount（聚合 sale_order_payments[退款,已支付] 取负）。
  *
  * 对外"剩余应付"语义：
- *   payable_amount = total_amount - prepaid_card_amount
- *   remaining = payable_amount - 已到账金额 + 已退款金额（退款冲销已到账，需要补回欠款）
+ *   payable_amount = total_amount - actual prepaid - pending prepaid
+ *   remaining = total_amount - pending prepaid - 净到账；actual prepaid 已在净到账流水中，不重复扣减。
  *
  * 已到账金额（含储值卡抵扣）= Σ (payments.amount WHERE status='已支付' AND change_type IN ('首次支付','回款','储值卡抵扣'))
  * 退款金额（取负）         = Σ (payments.amount WHERE status='已支付' AND change_type='退款')
@@ -1209,7 +1227,8 @@ async function create(ctx) {
 async function calcPaymentRemaining(orderNo, orderRow) {
   const totalAmount = Number(orderRow.total_amount || 0)
   const prepaidCardAmount = Number(orderRow.prepaid_card_amount || 0)
-  const payableAmount = Math.round((totalAmount - prepaidCardAmount) * 100) / 100
+  const pendingPrepaidCardAmount = Number(orderRow.pending_prepaid_card_amount || 0)
+  const payableAmount = Math.round((totalAmount - prepaidCardAmount - pendingPrepaidCardAmount) * 100) / 100
 
   // 净到账 = 首次支付/回款/储值卡抵扣 - 退款（amount<0 自带负号）
   // pg.query 返回 rows 数组（见 db/pg.js），不需要 .rows 解包
@@ -1222,7 +1241,7 @@ async function calcPaymentRemaining(orderNo, orderRow) {
     [orderNo]
   )
   const paidSum = Number(rows[0]?.paid_sum || 0)
-  const remaining = Math.round((payableAmount - paidSum) * 100) / 100
+  const remaining = Math.round((totalAmount - pendingPrepaidCardAmount - paidSum) * 100) / 100
   return { payableAmount, paidSum, remaining }
 }
 
@@ -1287,9 +1306,10 @@ async function pay(ctx) {
   // 此分支属兜底防御——理论上不会进入本函数
   const totalAmount0 = Number(order.total_amount || 0)
   const prepaidCardAmount0 = Number(order.prepaid_card_amount || 0)
+  const pendingPrepaidCardAmount0 = Number(order.pending_prepaid_card_amount || 0)
   const payableAmount0 = Number(order.payable_amount || 0) > 0
     ? Number(order.payable_amount)
-    : Math.round((totalAmount0 - prepaidCardAmount0) * 100) / 100
+    : Math.round((totalAmount0 - prepaidCardAmount0 - pendingPrepaidCardAmount0) * 100) / 100
   if (payableAmount0 === 0 && order.status === '待支付') {
     ctx.result = {
       orderNo,
@@ -1361,12 +1381,8 @@ async function pay(ctx) {
     subAppid: cfg.subAppid,
     requestIp: getRequestIp(),
   })
-  // 首付金额已发起拉卡拉支付：清空 first_payment_amount，让后续扫码（继续支付）按剩余应付走
-  // 仅清空非空值，避免无谓写；不影响 NULL 默认（全额）订单
-  await pg.query(
-    'UPDATE sale_orders SET first_payment_amount = NULL, updated_at = $1 WHERE sale_order_id = $2 AND first_payment_amount IS NOT NULL',
-    [now, orderNo]
-  )
+  // first_payment_amount 必须保留到真实支付回调入账；仅发起预下单不代表付款成功。
+  // payNotify 成功写入首笔款项时再清空，避免顾客放弃付款后重新扫码被放大到全额。
   ctx.result = {
     orderNo,
     totalAmount,
@@ -1426,9 +1442,10 @@ async function offlinePay(ctx) {
   // 全额储值卡抵扣：payable_amount = 0，直接短路返回已支付
   const totalAmountOff = Number(order.total_amount || 0)
   const prepaidCardAmountOff = Number(order.prepaid_card_amount || 0)
+  const pendingPrepaidCardAmountOff = Number(order.pending_prepaid_card_amount || 0)
   const payableAmountOff = Number(order.payable_amount || 0) > 0
     ? Number(order.payable_amount)
-    : Math.round((totalAmountOff - prepaidCardAmountOff) * 100) / 100
+    : Math.round((totalAmountOff - prepaidCardAmountOff - pendingPrepaidCardAmountOff) * 100) / 100
   if (payableAmountOff === 0) {
     ctx.result = {
       orderNo,
@@ -1508,6 +1525,7 @@ async function list(ctx) {
       o.total_amount,
       o.payable_amount,
       o.prepaid_card_amount,
+      o.pending_prepaid_card_amount,
       o.received,
       o.refunded_amount,
       o.created_at
@@ -1530,6 +1548,8 @@ async function list(ctx) {
         si.sale_item_id,
         si.quantity,
         si.received,
+        si.prepaid_card_received,
+        si.cash_received,
         si.sale_amount,
         si.session_count,
         si.remaining_sessions,
@@ -1628,6 +1648,8 @@ async function detail(ctx) {
       si.quantity,
       si.sale_amount,
       si.received,
+      si.prepaid_card_received,
+      si.cash_received,
       si.pending_received,
       si.expire_date,
       si.remark,
@@ -1734,10 +1756,11 @@ async function cancel(ctx) {
   // 2026-04-26 sale-order-domain-refactor:
   //   - paid_amount 已删除 → 全额抵扣判定改为 payable_amount=0（即 total = prepaid_card_amount）
   const prepaidCardAmount = Number(order.prepaid_card_amount || 0)
+  const pendingPrepaidCardAmount = Number(order.pending_prepaid_card_amount || 0)
   const totalAmountCnl = Number(order.total_amount || 0)
   const payableAmountCnl = Number(order.payable_amount || 0) > 0
     ? Number(order.payable_amount)
-    : Math.round((totalAmountCnl - prepaidCardAmount) * 100) / 100
+    : Math.round((totalAmountCnl - prepaidCardAmount - pendingPrepaidCardAmount) * 100) / 100
   const isPrepaidFull = prepaidCardAmount > 0 && payableAmountCnl === 0
   const cancelableStatuses = ['待支付']
   if (isPrepaidFull && order.status === '已支付') {
@@ -1765,7 +1788,15 @@ async function cancel(ctx) {
     // 防并发：他端先 confirmOffline / payNotify 把单子置 '已支付' 时本端不可越权关闭
     const allowedStatusList = cancelableStatuses // 已根据 isPrepaidFull 计算
     const updRes = await client.query(
-      `UPDATE sale_orders SET status = '已关闭', updated_at = $1
+      `UPDATE sale_orders
+       SET status = '已关闭',
+           pending_prepaid_card_amount = 0,
+           payable_amount = CASE
+             WHEN sale_order_type IN ('销售单','内部单','转换单')
+               THEN GREATEST(0, total_amount::numeric - prepaid_card_amount::numeric)
+             ELSE payable_amount
+           END,
+           updated_at = $1
        WHERE sale_order_id = $2
          AND client_user_id = $3
          AND status = ANY($4::order_status[])`,
@@ -2135,9 +2166,10 @@ async function alipayPay(ctx) {
   // 全额储值卡抵扣短路：payable_amount=0 → 不应进入拉卡拉，返回 isPrepaidFull 让前端跳详情页
   // （与 pay 行为对齐；防御性兜底——理论上前端已在 onSubmitOrder 提前走 confirmPrepaidFull）
   const prepaidCardAmountAli = Number(order.prepaid_card_amount || 0)
+  const pendingPrepaidCardAmountAli = Number(order.pending_prepaid_card_amount || 0)
   const payableAmountAli = Number(order.payable_amount || 0) > 0
     ? Number(order.payable_amount)
-    : Math.round((totalAmount - prepaidCardAmountAli) * 100) / 100
+    : Math.round((totalAmount - prepaidCardAmountAli - pendingPrepaidCardAmountAli) * 100) / 100
   if (payableAmountAli === 0 && order.status === '待支付') {
     ctx.result = {
       orderNo,
@@ -2209,13 +2241,7 @@ async function alipayPay(ctx) {
     requestIp: requestIpAli,
     bizLink: preorderRespAli.alipayQrUrl,
   })
-  // 首付金额已发起拉卡拉支付：清空 first_payment_amount，让后续扫码（继续支付）按剩余应付走
-  // CAS-EXEMPT: 仅清空 first_payment_amount 资金列，不翻 status（lint 正则误匹配后续 ctx.result.status）；
-  //            WHERE first_payment_amount IS NOT NULL 已提供幂等防并发。
-  await pg.query(
-    'UPDATE sale_orders SET first_payment_amount = NULL, updated_at = $1 WHERE sale_order_id = $2 AND first_payment_amount IS NOT NULL',
-    [now, orderNo]
-  )
+  // 与微信一致：首付上限在 payNotify 确认真实到账时清空，预下单阶段继续保留。
   ctx.result = {
     orderNo,
     totalAmount,
@@ -2230,7 +2256,7 @@ async function alipayPay(ctx) {
 /**
  * 顾客在支付前调整抵扣方案（员工扫码 + 顾客自助下单两类入口共用）
  * payload: { saleOrderId, useCard, prepaidCardAmount?, paymentMethod? }
- * 订单状态必须='待支付'；balance 不动，本端点只重算订单的 prepaid_card_amount/payable_amount/payment_method
+ * 订单状态必须='待支付'；balance 不动，本端点只重算订单的 pending_prepaid_card_amount/payable_amount/payment_method
  *
  * 归属规则：
  *   - 员工开单（opened_by IS NOT NULL）：允许 client_user_id 为空（首次扫码绑定）或等于当前用户
@@ -2324,7 +2350,7 @@ async function scanAdjust(ctx) {
   const now = new Date()
   await pg.query(
     `UPDATE sale_orders
-     SET prepaid_card_amount = $1,
+     SET pending_prepaid_card_amount = $1,
          payable_amount = $2,
          payment_method = $3,
          client_user_id = COALESCE(client_user_id, $4),
@@ -2374,7 +2400,7 @@ async function confirmPrepaidFull(ctx) {
 
   await pg.transaction(async (client) => {
     const ordRes = await client.query(
-      `SELECT sale_order_id, status, client_user_id, prepaid_card_amount, payable_amount, total_amount
+      `SELECT sale_order_id, status, client_user_id, prepaid_card_amount, pending_prepaid_card_amount, payable_amount, total_amount
        FROM sale_orders WHERE sale_order_id = $1`,
       [saleOrderId]
     )
@@ -2388,10 +2414,10 @@ async function confirmPrepaidFull(ctx) {
     if (order.client_user_id && order.client_user_id !== userId) {
       throw new Error('PERMISSION_DENIED: 无权操作该订单')
     }
-    const prepaidCardAmount = Number(order.prepaid_card_amount || 0)
+    const prepaidCardAmount = Number(order.pending_prepaid_card_amount || 0)
     const payableAmount = Number(order.payable_amount || 0) > 0
       ? Number(order.payable_amount)
-      : Math.round((Number(order.total_amount || 0) - prepaidCardAmount) * 100) / 100
+      : Math.round((Number(order.total_amount || 0) - Number(order.prepaid_card_amount || 0) - prepaidCardAmount) * 100) / 100
     if (payableAmount !== 0) {
       throw new Error('INVALID_PARAMS: 订单非全额抵扣，不能走此通道')
     }
@@ -2471,6 +2497,7 @@ async function confirmPrepaidFull(ctx) {
                AND change_type = '退款'
            ), 0),
            status = '已支付',
+           pending_prepaid_card_amount = 0,
            client_user_id = COALESCE(client_user_id, $1),
            paid_at = COALESCE(paid_at, NOW()),
            updated_at = NOW()
@@ -2621,7 +2648,9 @@ async function repay(ctx) {
     //    无退款 → 沿用订单级口径（正常回款，与首次支付/原逻辑一致）。
     const payableAmount = Number(origOrder.payable_amount || 0) > 0
       ? Number(origOrder.payable_amount)
-      : Math.round((Number(origOrder.total_amount || 0) - Number(origOrder.prepaid_card_amount || 0)) * 100) / 100
+      : Math.round((Number(origOrder.total_amount || 0)
+          - Number(origOrder.prepaid_card_amount || 0)
+          - Number(origOrder.pending_prepaid_card_amount || 0)) * 100) / 100
     let directedItems = null
     let remaining
     if (origOrder.sale_order_type === '转换单') {
@@ -2664,6 +2693,18 @@ async function repay(ctx) {
     await client.query(
       `UPDATE sale_order_payments SET status = '已作废'
        WHERE sale_order_id = $1 AND change_type = '储值卡抵扣' AND status = '待支付'`,
+      [saleOrderId]
+    )
+    await client.query(
+      `UPDATE sale_orders
+       SET pending_prepaid_card_amount = 0,
+           payable_amount = CASE
+             WHEN sale_order_type IN ('销售单','内部单','转换单')
+               THEN GREATEST(0, total_amount::numeric - prepaid_card_amount::numeric)
+             ELSE payable_amount
+           END,
+           updated_at = NOW()
+       WHERE sale_order_id = $1`,
       [saleOrderId]
     )
     //    - 纯储值卡通道（isPureCard）：当场扣卡 + INSERT payments(回款/储值卡/已支付)，无线上款本就原子。
@@ -2723,6 +2764,18 @@ async function repay(ctx) {
         ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '待支付', 'client', $3, $4, NULL)`,
         [saleOrderId, prepaidCardAmountInput, '储值卡抵扣待线上到账（client.repay 混合支付）', now]
       )
+      await client.query(
+        `UPDATE sale_orders
+         SET pending_prepaid_card_amount = $1,
+             payable_amount = CASE
+               WHEN sale_order_type IN ('销售单','内部单','转换单')
+                 THEN GREATEST(0, total_amount::numeric - prepaid_card_amount::numeric - $1::numeric)
+               ELSE payable_amount
+             END,
+             updated_at = $2
+         WHERE sale_order_id = $3`,
+        [prepaidCardAmountInput, now, saleOrderId]
+      )
     }
 
     // 4. 线上回款：不写 payments 行（payNotify 回调写）；仅更新原单 payment_method 反映最近通道
@@ -2749,23 +2802,20 @@ async function repay(ctx) {
       const newReceived = Math.round(Number(aggRes.rows[0]?.received_sum || 0) * 100) / 100
       const newRefunded = Math.round(Number(aggRes.rows[0]?.refunded_sum || 0) * 100) / 100
       const newNet = Math.round((newReceived - newRefunded) * 100) / 100
-      const fullyPaid = newNet + 0.001 >= payableAmount
+      const fullyPaid = newNet + 0.001 >= Number(origOrder.total_amount || 0)
       finalStatus = fullyPaid ? '已支付' : '部分支付'
-      // 纯卡回款：把本次卡抵扣额并入 prepaid_card_amount（增量，保留原 create-time 卡额；client create-card 延迟消费、
-      // 不在 储值卡抵扣 行里，故用 += 而非 Σ重算），同步降 payable_amount 维护 I5（payable=total-prepaid）。
-      // status 仍按事务起始的 payableAmount 判定（received 含本次卡抵扣，付清即 已支付），不受本次 prepaid bump 影响。
+      // actual 储值卡金额与 payable_amount 由下方 recalcPaidSessionsForOrder 从流水统一重聚合。
       const repayUpd = await client.query(
         `UPDATE sale_orders
          SET status = $1::order_status,
              received = $2,
              refunded_amount = $3,
-             prepaid_card_amount = COALESCE(prepaid_card_amount, 0) + $6,
-             payable_amount = COALESCE(payable_amount, total_amount) - $6,
+             pending_prepaid_card_amount = 0,
              paid_at = CASE WHEN $1::text = '已支付' THEN COALESCE(paid_at, $4) ELSE paid_at END,
              updated_at = $4
          WHERE sale_order_id = $5
            AND status IN ('待支付', '部分支付')`,
-        [finalStatus, newReceived, newRefunded, now, saleOrderId, prepaidCardAmountInput]
+        [finalStatus, newReceived, newRefunded, now, saleOrderId]
       )
       if (repayUpd.rowCount === 0) {
         throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED:sale_orders:${saleOrderId}:→${finalStatus}`)

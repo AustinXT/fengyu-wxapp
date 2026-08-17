@@ -38,6 +38,7 @@
       <van-cell wx:if="{{order.allocationStatus}}" title="分配状态" value="{{order.allocationStatus}}" />
       <van-cell title="创建时间" value="{{order.createdAt}}" />
       <van-cell wx:if="{{order.paidAt}}" title="支付时间" value="{{order.paidAt}}" />
+      <van-cell wx:if="{{order.performanceAttributionDate}}" title="业绩归属日期" value="{{order.performanceAttributionDate}}{{order.performanceAttributionAdjusted ? '（已调整）' : ''}}" />
       <van-cell wx:if="{{order.isLegacy}}" title="数据来源" value="历史导入订单" />
       <van-cell wx:if="{{order.remark}}" title="备注" value="{{order.remark}}" />
     </van-cell-group>

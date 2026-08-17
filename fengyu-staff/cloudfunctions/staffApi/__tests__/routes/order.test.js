@@ -1746,6 +1746,21 @@ describe('order.confirmOffline', () => {
       .rejects.toThrow(/INVALID_PARAMS.*不可确认/)
   })
 
+  test('转换单确认金额不能超过录单时填写的首笔实付', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-CONV-001', confirmAmount: 80 })
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-CONV-001', status: '待支付', payment_method: '线下',
+        store_id: 'store-001', sale_order_type: '转换单', first_payment_amount: '50',
+        total_amount: '200', payable_amount: '200', prepaid_card_amount: '0', received: '0',
+      }])
+      .mockResolvedValueOnce([])
+
+    await expect(orderRoutes.confirmOffline(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*不能超过转换单录入的实付金额/)
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
   test('待支付线下订单可直接确认收款（跳过 wechat 拦截，进入事务）', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-001' })
 
@@ -4414,12 +4429,172 @@ describe('order.createConversion', () => {
     expect(ctx.result).toMatchObject({
       status: '待支付', priceDiff: 200, receivedAmount: 50, remainingAmount: 200,
     })
+    expect(ctx.result.message).toContain('本次应收 ¥50.00，剩余挂账 ¥150.00')
     const orderInsert = calls.find(({ sql }) => sql.includes('INSERT INTO sale_orders'))
     expect(orderInsert.params[9]).toBe('200.00')
     expect(orderInsert.params[10]).toBe('200.00')
     expect(orderInsert.params[12]).toBe('0.00')
     expect(orderInsert.params[21]).toBe('50.00')
     expect(orderInsert.params[22]).toBe(false)
+  })
+
+  test('组合套餐转换按套餐下沉价计费：5940 减旧卡 3000 后应付 2940', async () => {
+    const sourceRows = Array.from({ length: 6 }, (_, index) => ({
+      sale_item_id: `item-card-${index + 1}`,
+      sale_order_id: 'order-old',
+      store_id: 'store-001',
+      item_direction: '购买',
+      sku_id: 'sku-old',
+      product_name: '旧项目',
+      product_type: '疗程卡',
+      session_count: 1,
+      remaining_sessions: 1,
+      quantity: 1,
+      picked_up_quantity: 0,
+      unit_price: '598',
+      unit_real_price: '500',
+      sales_category: '自销自耗',
+      service_fee: '0',
+      client_user_id: 'cu-001',
+      sale_order_type: '销售单',
+      order_status: '已支付',
+      product_kind: '护理项目',
+    }))
+    const ctx = createManagerCtx({
+      clientUserId: 'cu-001',
+      convertOutSaleItemIds: sourceRows.map((row) => row.sale_item_id),
+      convertInItems: [
+        { skuId: 'sku-neck', quantity: 3 },
+        { skuId: 'sku-v-face', quantity: 1 },
+      ],
+      bundleProductId: 'prod-body-bundle',
+      paymentMethod: '线下',
+    })
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'cu-001', phone: '138', name: '王莉', customer_type: '会员客', bound_store_id: 'store-001',
+    }])
+
+    const calls = []
+    pg.transaction.mockImplementationOnce(async (cb) => cb({
+      query: vi.fn(async (sql, params) => {
+        calls.push({ sql, params })
+        if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
+        if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
+        if (sql.includes('FROM sale_items si') && sql.includes('FOR UPDATE OF si')) {
+          return { rows: sourceRows, rowCount: sourceRows.length }
+        }
+        if (sql.includes('FROM service_items sit')) return { rows: [], rowCount: 0 }
+        if (sql.includes('FROM products p')) {
+          return { rows: [{ product_id: 'prod-body-bundle', is_bundle: true }], rowCount: 1 }
+        }
+        if (sql.includes('FROM mall_bundle_groups')) {
+          return {
+            rows: [
+              { id: 85, group_name: '体态项目', pick_count: 3 },
+              { id: 86, group_name: '赠送项目', pick_count: 1 },
+            ],
+            rowCount: 2,
+          }
+        }
+        if (sql.includes('FROM mall_product_skus')) {
+          return {
+            rows: [
+              { sku_id: 'sku-neck', bundle_group_id: 85, bundle_price: '1980', bundle_list_price: '1980' },
+              { sku_id: 'sku-v-face', bundle_group_id: 86, bundle_price: '0', bundle_list_price: '0' },
+            ],
+            rowCount: 2,
+          }
+        }
+        if (sql.includes('FROM product_skus s') && sql.includes('JOIN product_categories')) {
+          if (params[0] === 'sku-neck') {
+            return {
+              rows: [{
+                sku_id: 'sku-neck', product_type: '疗程卡', spec_name: '循环系统·二维颈锁',
+                price: '1280', special_price: '1280', session_count: 1, service_fee: '0',
+                sales_category: '他销他耗', is_manager_special: false, category_id: 'cat-body',
+              }],
+              rowCount: 1,
+            }
+          }
+          return {
+            rows: [{
+              sku_id: 'sku-v-face', product_type: '疗程卡', spec_name: '紧肤系统·一维小V脸',
+              price: '5800', special_price: '5800', session_count: 1, service_fee: '0',
+              sales_category: '他销他耗', is_manager_special: false, category_id: 'cat-body',
+            }],
+            rowCount: 1,
+          }
+        }
+        return defaultQueryResult(sql)
+      }),
+    }))
+
+    await orderRoutes.createConversion(ctx)
+
+    expect(ctx.result).toMatchObject({
+      totalIn: 5940,
+      totalOut: 3000,
+      priceDiff: 2940,
+      remainingAmount: 2940,
+      status: '待支付',
+    })
+    const orderInsert = calls.find(({ sql }) => sql.includes('INSERT INTO sale_orders'))
+    expect(orderInsert.params[9]).toBe('2940.00')
+    expect(orderInsert.params[10]).toBe('2940.00')
+
+    const inItemInserts = calls.filter(({ sql }) => sql.includes('INSERT INTO sale_items') && sql.includes("'转入'"))
+    expect(inItemInserts).toHaveLength(4)
+    expect(inItemInserts.map(({ params }) => Number(params[11]))).toEqual([1980, 1980, 1980, 0])
+    expect(calls.some(({ sql }) => sql.includes('COALESCE(s.is_experience, false) = false'))).toBe(false)
+  })
+
+  test('组合套餐转换拒绝不属于套餐的转入 SKU', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'cu-001',
+      convertOutSaleItemIds: ['item-card-1'],
+      convertInItems: [{ skuId: 'sku-forged', quantity: 1 }],
+      bundleProductId: 'prod-body-bundle',
+      paymentMethod: '线下',
+    })
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'cu-001', phone: '138', name: '王莉', customer_type: '会员客', bound_store_id: 'store-001',
+    }])
+    pg.transaction.mockImplementationOnce(async (cb) => cb({
+      query: vi.fn(async (sql) => {
+        if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
+        if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
+        if (sql.includes('FROM sale_items si') && sql.includes('FOR UPDATE OF si')) {
+          return {
+            rows: [{
+              sale_item_id: 'item-card-1', sale_order_id: 'order-old', store_id: 'store-001',
+              item_direction: '购买', sku_id: 'sku-old', product_name: '旧项目', product_type: '疗程卡',
+              session_count: 1, remaining_sessions: 1, quantity: 1, picked_up_quantity: 0,
+              unit_price: '100', unit_real_price: '100', sales_category: '自销自耗', service_fee: '0',
+              client_user_id: 'cu-001', sale_order_type: '销售单', order_status: '已支付', product_kind: '护理项目',
+            }],
+            rowCount: 1,
+          }
+        }
+        if (sql.includes('FROM service_items sit')) return { rows: [], rowCount: 0 }
+        if (sql.includes('FROM products p')) {
+          return { rows: [{ product_id: 'prod-body-bundle', is_bundle: true }], rowCount: 1 }
+        }
+        if (sql.includes('FROM mall_bundle_groups')) {
+          return { rows: [{ id: 85, group_name: '体态项目', pick_count: 1 }], rowCount: 1 }
+        }
+        if (sql.includes('FROM mall_product_skus')) {
+          return {
+            rows: [{
+              sku_id: 'sku-legit', bundle_group_id: 85, bundle_price: '1980', bundle_list_price: '1980',
+            }],
+            rowCount: 1,
+          }
+        }
+        return defaultQueryResult(sql)
+      }),
+    }))
+
+    await expect(orderRoutes.createConversion(ctx)).rejects.toThrow(/BUNDLE_SKU_NOT_BELONG/)
   })
 
   test('体验转换按旧卡价值强制定价，不补不退并直接结清', async () => {
@@ -4457,7 +4632,9 @@ describe('order.createConversion', () => {
     for (const forbidden of [
       { couponId: 'coupon-1' },
       { prepaidCardAmount: 1 },
+      { prepaidCardAmount: -1 },
       { receivedAmount: 1 },
+      { receivedAmount: -1 },
     ]) {
       const ctx = createManagerCtx({
         clientUserId: 'cu-001',

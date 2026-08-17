@@ -9,11 +9,11 @@
  */
 import './setup.mjs'
 import {
-  NS, TEST_MANAGER_OPENID, TEST_MANAGER_EMP_ID, TEST_CLIENT_USER_ID, pgQuery, closePool,
+  NS, TEST_STORE_ID, TEST_MANAGER_OPENID, TEST_MANAGER_EMP_ID, TEST_CLIENT_USER_ID, pgQuery, closePool,
 } from './setup.mjs'
 import { invokeStaffApi } from './helpers/invoke.mjs'
 import {
-  ensureTestStore, createTestStaff, createTestClient, createTestAppointment,
+  ensureTestStore, createTestStaff, createTestClient, createTestSaleOrder, createTestAppointment,
   cleanupTestData,
 } from './helpers/fixtures.mjs'
 
@@ -26,6 +26,37 @@ async function main() {
   await ensureTestStore()
   await createTestStaff()
   await createTestClient()
+
+  // 消费口径夹具：WorkFine 历史销售单应计入；寄存单只是剩余权益初始化，不应重复计入。
+  const legacySaleOrderId = `${NS}_CUSDET_SALE`
+  const depositOrderId = `${NS}_CUSDET_DEP`
+  await createTestSaleOrder({
+    saleOrderId: legacySaleOrderId,
+    clientUserId: TEST_CLIENT_USER_ID,
+    totalAmount: 1200,
+    status: '已支付',
+    saleOrderType: '销售单',
+  })
+  await pgQuery('DELETE FROM sale_items WHERE sale_order_id = $1', [legacySaleOrderId])
+  await pgQuery(
+    `UPDATE sale_orders
+        SET received = 1200, paid_at = NOW(), legacy_source = 'workfine'
+      WHERE sale_order_id = $1`,
+    [legacySaleOrderId],
+  )
+  await createTestSaleOrder({
+    saleOrderId: depositOrderId,
+    clientUserId: TEST_CLIENT_USER_ID,
+    totalAmount: 800,
+    status: '已支付',
+    saleOrderType: '寄存单',
+  })
+  await pgQuery(
+    `UPDATE sale_orders
+        SET received = 800, paid_at = NOW()
+      WHERE sale_order_id = $1`,
+    [depositOrderId],
+  )
 
   const errors = []
 
@@ -40,7 +71,34 @@ async function main() {
     for (const k of expectedKeys) {
       if (!(k in r.data)) errors.push(`detail 缺少字段 ${k}`)
     }
+    if (Number(r.data.totalConsumption) !== 1200) {
+      errors.push(`detail.totalConsumption 应只计历史销售单 1200，实际=${r.data.totalConsumption}`)
+    }
+    if (Number(r.data.yearConsumption) !== 1200) {
+      errors.push(`detail.yearConsumption 应只计本年历史销售单 1200，实际=${r.data.yearConsumption}`)
+    }
     rec(`  ✓ detail 返回字段: gender=${r.data.gender} store=${r.data.storeName} member=${r.data.memberLevel}`)
+    rec(`  ✓ 消费口径: 历史销售单=1200，寄存余额=800 未重复计入`)
+  }
+
+  // 管理层详情必须与门店详情同口径，同时保留无 sale_items 的 WorkFine 历史单回退。
+  const mgmtR = await invokeStaffApi('mgmtCustomer.detail', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    _loginLevel: 'management',
+    clientUserId: TEST_CLIENT_USER_ID,
+    scopeType: 'store',
+    scopeId: TEST_STORE_ID,
+  })
+  if (mgmtR.code !== 0) {
+    errors.push(`mgmtCustomer.detail code=${mgmtR.code} msg=${mgmtR.message}`)
+  } else {
+    if (Number(mgmtR.data.totalConsumption) !== 1200) {
+      errors.push(`mgmtCustomer.detail.totalConsumption 应为 1200，实际=${mgmtR.data.totalConsumption}`)
+    }
+    if (Number(mgmtR.data.yearConsumption) !== 1200) {
+      errors.push(`mgmtCustomer.detail.yearConsumption 应为 1200，实际=${mgmtR.data.yearConsumption}`)
+    }
+    rec(`  ✓ 管理层详情消费口径与门店详情一致`)
   }
 
   // ─── 2. customer.appointments — 建 2 条预约后查 ───

@@ -228,6 +228,10 @@ describe('payNotify index.js', () => {
         result: { rows: [{ id: 11 }], rowCount: 1 },
       },
       {
+        match: /UPDATE sale_order_payments SET allocation_status = '待分配'/,
+        result: { rows: [], rowCount: 1 },
+      },
+      {
         match: /AS receipt_positive_total/,
         result: { rows: [{ receipt_positive_total: '300.00', order_received: '300.00' }], rowCount: 1 },
       },
@@ -616,6 +620,7 @@ describe('payNotify index.js', () => {
     )
     expect(statusUpd[1][0]).toBe('部分支付')
     expect(Number(statusUpd[1][1])).toBe(100)
+    expect(statusUpd[0]).toContain('first_payment_amount = NULL')
 
     // 不应走到到期日；部分到账也会进入 receipt 捕获/自动分配链路，但不得再写旧表
     // 注：2026-05-21 单品合并后 expire_date 自动赋值整体移除，此守卫恒成立
