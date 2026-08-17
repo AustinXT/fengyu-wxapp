@@ -3,9 +3,9 @@
 import { useCallback, useRef, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { ClipboardPlus } from "lucide-react"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { AdminMerchant, MerchantMarketOption } from "@/actions/merchants"
+import type { OnboardingListItem } from "@/actions/lakala-onboarding"
 import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -13,8 +13,10 @@ import { Select, SelectOption } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { formatDateTime } from "@/lib/utils"
 import MarketStoreFilter from "@/components/market-store-filter"
+import { OnboardingList } from "../onboarding/_components/onboarding-page"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -24,6 +26,7 @@ export default function MerchantsPage({
   markets,
   canCreate,
   canOnboard = false,
+  onboardingApplications = [],
   filterOptions,
 }: {
   merchants: AdminMerchant[]
@@ -31,11 +34,13 @@ export default function MerchantsPage({
   markets: MerchantMarketOption[]
   canCreate: boolean
   canOnboard?: boolean
+  onboardingApplications?: OnboardingListItem[]
   filterOptions: MarketStoreFilterOptions
 }) {
   const router = useRouter()
   const { get, setMany } = useUrlFilters()
   const [searchInput, setSearchInput] = useState(get("q"))
+  const [activeTab, setActiveTab] = useState<"merchants" | "onboarding">("merchants")
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const enabledFilter = get("enabled")
@@ -118,56 +123,66 @@ export default function MerchantsPage({
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {canOnboard && (
-            <Link href="/merchants/onboarding">
-              <Button variant="outline"><ClipboardPlus />门店入网</Button>
-            </Link>
-          )}
-          {canCreate && (
+          {activeTab === "merchants" && canCreate && (
             <Button onClick={() => router.push("/merchants/create")}>新建商户</Button>
           )}
         </div>
       </div>
 
-      <div className="flex items-center gap-3">
-        <Input
-          placeholder="商户名称 / 商户号"
-          value={searchInput}
-          onChange={(e) => handleSearchChange(e.target.value)}
-          className="w-56"
-        />
-        <MarketStoreFilter
-          options={filterOptions}
-          marketValue={marketFilter}
-          storeValue={storeFilter}
-          onMarketChange={(value) => {
-            setMany({ market: value, store: '', page: '' })
-          }}
-          onStoreChange={(value) => setMany({ store: value, page: '' })}
-          marketClassName="w-40"
-          storeClassName="w-48"
-        />
-        <Select
-          value={enabledFilter}
-          onChange={(e) => setMany({ enabled: e.target.value, page: "" })}
-          className="w-40"
-        >
-          <SelectOption value="">全部状态</SelectOption>
-          <SelectOption value="enabled">已启用</SelectOption>
-          <SelectOption value="disabled">未启用</SelectOption>
-        </Select>
-      </div>
+      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as "merchants" | "onboarding")}>
+        <TabsList>
+          <TabsTrigger value="merchants">收款商户</TabsTrigger>
+          {canOnboard && <TabsTrigger value="onboarding">入网申请</TabsTrigger>}
+        </TabsList>
 
-      <DataTable columns={columns} data={merchants} emptyText="暂无商户" />
+        <TabsContent value="merchants" className="space-y-4">
+          <div className="flex items-center gap-3">
+            <Input
+              placeholder="商户名称 / 商户号"
+              value={searchInput}
+              onChange={(e) => handleSearchChange(e.target.value)}
+              className="w-56"
+            />
+            <MarketStoreFilter
+              options={filterOptions}
+              marketValue={marketFilter}
+              storeValue={storeFilter}
+              onMarketChange={(value) => {
+                setMany({ market: value, store: '', page: '' })
+              }}
+              onStoreChange={(value) => setMany({ store: value, page: '' })}
+              marketClassName="w-40"
+              storeClassName="w-48"
+            />
+            <Select
+              value={enabledFilter}
+              onChange={(e) => setMany({ enabled: e.target.value, page: "" })}
+              className="w-40"
+            >
+              <SelectOption value="">全部状态</SelectOption>
+              <SelectOption value="enabled">已启用</SelectOption>
+              <SelectOption value="disabled">未启用</SelectOption>
+            </Select>
+          </div>
 
-      <Pagination
-        total={total}
-        page={currentPage}
-        pageSize={pageSize}
-        pageSizeOptions={PAGE_SIZE_OPTIONS}
-        onPageChange={(p) => setMany({ page: String(p) })}
-        onPageSizeChange={(s) => setMany({ size: String(s), page: "1" })}
-      />
+          <DataTable columns={columns} data={merchants} emptyText="暂无商户" />
+
+          <Pagination
+            total={total}
+            page={currentPage}
+            pageSize={pageSize}
+            pageSizeOptions={PAGE_SIZE_OPTIONS}
+            onPageChange={(p) => setMany({ page: String(p) })}
+            onPageSizeChange={(s) => setMany({ size: String(s), page: "1" })}
+          />
+        </TabsContent>
+
+        {canOnboard && (
+          <TabsContent value="onboarding">
+            <OnboardingList applications={onboardingApplications} canCreate={canCreate} embedded />
+          </TabsContent>
+        )}
+      </Tabs>
     </div>
   )
 }
