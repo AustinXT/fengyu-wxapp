@@ -76,10 +76,7 @@ CREATE VIEW "public"."sale_item_performance_events" AS (
      AND spe.status = '已支付'
   ),
   receipt_totals AS (
-    SELECT sale_item_id,
-           SUM(amount) FILTER (
-             WHERE change_type IN ('首次支付', '回款', '储值卡抵扣')
-           )::numeric(10, 2) AS amount
+    SELECT sale_item_id, SUM(amount)::numeric(10, 2) AS amount
     FROM paid_receipts
     GROUP BY sale_item_id
   ),
