@@ -161,13 +161,13 @@ describe('aggregateOrderExportRows', () => {
     expect(result.map((row) => row.refundedAmount)).toEqual(['100.00', '0.00'])
   })
 
-  it('退款 receipt 覆盖不完整时按退款前行应付分摊，全退行不会因净实收为零丢失权重', () => {
+  it('退款 receipt 总额与净退款不一致时仍按退款商品缩放，不污染未退款商品', () => {
     const result = aggregateOrderExportRows([
       orderRow({
         __sourceId: 'REFUNDED',
         totalAmount: '100.00',
         received: '0.00',
-        refundedAmount: '100.00',
+        refundedAmount: '90.00',
         __itemRefundedAmount: '100.00',
       }),
       orderRow({
@@ -175,12 +175,46 @@ describe('aggregateOrderExportRows', () => {
         __skuId: 'SKU-OTHER',
         totalAmount: '100.00',
         received: '100.00',
-        refundedAmount: '100.00',
+        refundedAmount: '90.00',
         __itemRefundedAmount: null,
       }),
     ])
 
-    expect(result.map((row) => row.refundedAmount)).toEqual(['50.00', '50.00'])
+    expect(result.map((row) => row.refundedAmount)).toEqual(['90.00', '0.00'])
+  })
+
+  it('多个退款商品按毛退款明细权重缩放净退款且分值守恒', () => {
+    const result = aggregateOrderExportRows([
+      orderRow({
+        __sourceId: 'REFUND-A',
+        refundedAmount: '90.01',
+        __itemRefundedAmount: '60.00',
+      }),
+      orderRow({
+        __sourceId: 'REFUND-B',
+        __skuId: 'SKU-B',
+        refundedAmount: '90.01',
+        __itemRefundedAmount: '40.00',
+      }),
+      orderRow({
+        __sourceId: 'ACTIVE',
+        __skuId: 'SKU-ACTIVE',
+        refundedAmount: '90.01',
+        __itemRefundedAmount: '0.00',
+      }),
+    ])
+
+    expect(result.map((row) => row.refundedAmount)).toEqual(['54.01', '36.00', '0.00'])
+    expect(result.reduce((sum, row) => sum + Number(row.refundedAmount), 0)).toBeCloseTo(90.01, 2)
+  })
+
+  it('历史数据完全没有退款 receipt 时才按退款前行应付兜底', () => {
+    const result = aggregateOrderExportRows([
+      orderRow({ __sourceId: 'LEGACY-A', totalAmount: '100.00', refundedAmount: '90.00', __itemRefundedAmount: null }),
+      orderRow({ __sourceId: 'LEGACY-B', __skuId: 'SKU-B', totalAmount: '200.00', refundedAmount: '90.00', __itemRefundedAmount: null }),
+    ])
+
+    expect(result.map((row) => row.refundedAmount)).toEqual(['30.00', '60.00'])
   })
 })
 

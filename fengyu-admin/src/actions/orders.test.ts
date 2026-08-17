@@ -167,7 +167,7 @@ vi.mock('@db/system-config', () => ({
 }))
 
 vi.mock('@db/product', () => ({
-  productSkus: { skuId: 'sku_id', specName: 'spec_name', productId: 'product_id', categoryId: 'category_id', price: 'price', specialPrice: 'special_price', serviceFee: 'service_fee', sessionCount: 'session_count', unit: 'unit', purchaseLimit: 'purchase_limit', productType: 'product_type', isExperience: 'is_experience', isManagerSpecial: 'is_manager_special', isShengmei: 'is_shengmei' },
+  productSkus: { skuId: 'sku_id', specName: 'spec_name', productId: 'product_id', categoryId: 'category_id', price: 'price', specialPrice: 'special_price', serviceFee: 'service_fee', sessionCount: 'session_count', unit: 'unit', purchaseLimit: 'purchase_limit', productType: 'product_type', isExperience: 'is_experience', isManagerSpecial: 'is_manager_special', isShengmei: 'is_shengmei', marketScope: 'market_scope', isEnabled: 'is_enabled', deletedAt: 'deleted_at' },
   products: {
     productId: 'product_id', name: 'name', isBundle: 'is_bundle',
     deletedAt: 'deleted_at', marketScope: 'market_scope',
@@ -199,12 +199,13 @@ vi.mock('drizzle-orm', () => ({
   // ticket 2026-05-19：sql 模板调用保留 strings.raw 副本，
   // 便于 mockTxByKeyword 按 SQL 文本关键字（FOR UPDATE / SELECT 1 FROM card_transactions 等）路由
   sql: Object.assign(
-    vi.fn((strings: any, ..._values: any[]) => ({
+    vi.fn((strings: any, ...values: any[]) => ({
       __sqlText: Array.isArray(strings?.raw)
         ? strings.raw.join(' ? ')
         : Array.isArray(strings)
           ? strings.join(' ? ')
           : String(strings ?? ''),
+      __sqlValues: values,
       // paid-sessions.ts 的 paidUnusedSessionsExpr 模块级 sql(...).as(...) 需要链式 .as
       as: vi.fn().mockReturnValue({ type: 'sql-as' }),
     })),
@@ -271,10 +272,11 @@ import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope, scopeCondition } from '@/lib/permissions'
 import { calcCouponDiscount } from '@/lib/utils'
-import { eq, ilike, gte, lt, gt, inArray } from 'drizzle-orm'
+import { eq, ilike, gte, lt, gt, inArray, isNull } from 'drizzle-orm'
 import { requirePermission } from '@/lib/permissions'
 import { ApiError } from '@/lib/api-error'
 import { logUpdate } from '@/lib/operation-log'
+import { hasPendingRefund } from '@/lib/refund-cascade'
 
 const mockSession = {
   employeeId: 'EMP-001',
@@ -1533,6 +1535,7 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
       status: '待支付', payment_method: '线下', store_id: 'store-1',
       total_amount: '200.00', payable_amount: '200.00', received: '0',
       prepaid_card_amount: '0', client_user_id: null, customer_name: '顾客甲',
+      lakala_out_order_no: null,
       ...over,
     }
   }
@@ -1543,10 +1546,12 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
    */
   function mockConfirmTx(opts: { updateRowCount?: number; lock?: Record<string, any>; sumReceived?: string } = {}) {
     const updateRowCount = opts.updateRowCount ?? 1
+    const statements: string[] = []
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       const tx = {
         execute: vi.fn().mockImplementation((sqlArg: any) => {
           const text: string = sqlArg?.__sqlText ?? ''
+          statements.push(text)
           if (/SELECT\s+status,\s*payment_method/i.test(text) && /FOR\s+UPDATE/i.test(text)) {
             return Promise.resolve([lockRow(opts.lock)])
           }
@@ -1569,6 +1574,7 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
       }
       return fn(tx)
     })
+    return statements
   }
 
   it('终态 UPDATE rowCount=0（并发已变更）→ 失败', async () => {
@@ -1583,6 +1589,21 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
     const result = await confirmOfflinePayment('order-x')
     expect(result.success).toBe(false)
     expect(result.message).toContain('状态已变更')
+  })
+
+  it('preorder 已 claim 但支付方式尚未切微信时拒绝线下确认', async () => {
+    const statements = mockConfirmTx({
+      lock: {
+        payment_method: '线下',
+        lakala_out_order_no: 'FY-XSD-WX-2608170001_1786960800',
+      },
+    })
+
+    const result = await confirmOfflinePayment('order-active-intent')
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('PAYMENT_INTENT_ACTIVE')
+    expect(statements).toHaveLength(1)
   })
 
   it('正常确认收款（全额）→ 已支付 + 事务内写现金流水 + 翻态', async () => {
@@ -1616,6 +1637,8 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
       // 写了现金首次支付流水 + 翻态 UPDATE
       expect(capturedExecutes.some((t) => /INSERT INTO sale_order_payments/i.test(t))).toBe(true)
       expect(capturedExecutes.some((t) => /UPDATE\s+sale_orders\s+SET\s+status/i.test(t))).toBe(true)
+      const orderUpdate = capturedExecutes.find((t) => /UPDATE\s+sale_orders\s+SET\s+status/i.test(t))
+      expect(orderUpdate).toContain('lakala_out_order_no IS NULL')
       return result
     })
 
@@ -1624,6 +1647,54 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
     expect(result.message).toContain('确认收款成功')
     expect(result.status).toBe('已支付')
     expect(db.transaction).toHaveBeenCalledOnce()
+  })
+
+  it('已有正向储值卡抵扣时，后续现金归类为回款且查询排除退款', async () => {
+    let firstPaymentCheck = ''
+    let cashInsertValues: unknown[] = []
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        execute: vi.fn().mockImplementation((sqlArg: any) => {
+          const text: string = sqlArg?.__sqlText ?? ''
+          if (/SELECT\s+status,\s*payment_method/i.test(text) && /FOR\s+UPDATE/i.test(text)) {
+            return Promise.resolve([lockRow()])
+          }
+          if (/SELECT\s+1\s+FROM\s+sale_order_payments/i.test(text)
+            && /change_type\s+IN\s*\('首次支付','回款','储值卡抵扣'\)/i.test(text)) {
+            firstPaymentCheck = text
+            return Promise.resolve([{ exists: 1 }])
+          }
+          if (/INSERT\s+INTO\s+sale_order_payments/i.test(text)) {
+            cashInsertValues = sqlArg?.__sqlValues ?? []
+            return Promise.resolve([{ id: 11 }])
+          }
+          if (/AS\s+new_received/i.test(text)) {
+            return Promise.resolve([{ new_received: '100', new_prepaid: '50' }])
+          }
+          if (/UPDATE\s+sale_orders\s+SET\s+status/i.test(text)) {
+            return Promise.resolve({ rowCount: 1 })
+          }
+          return Promise.resolve({})
+        }),
+        select: vi.fn().mockImplementation(() => {
+          const chain: any = {}
+          chain.from = vi.fn().mockReturnValue(chain)
+          chain.where = vi.fn().mockReturnValue(chain)
+          chain.limit = vi.fn().mockResolvedValue([])
+          return chain
+        }),
+        insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue({}) }),
+      }
+      return fn(tx)
+    })
+
+    const result = await confirmOfflinePayment('order-card-first', 100)
+
+    expect(result.success).toBe(true)
+    expect(firstPaymentCheck).toContain('amount::numeric > 0')
+    expect(firstPaymentCheck).toContain("change_type IN ('首次支付','回款','储值卡抵扣')")
+    expect(firstPaymentCheck).not.toContain("change_type IN ('首次支付','回款','退款')")
+    expect(cashInsertValues).toContain('回款')
   })
 
   it('部分确认（confirmAmount < 应付）→ 部分支付', async () => {
@@ -1933,6 +2004,21 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
     expect(result.message).toContain('状态已变更')
   })
 
+  it('活动在线支付意图存在时原子拒绝关闭', async () => {
+    mockSelectBefore([{
+      status: '待支付',
+      customerName: '顾客甲',
+      totalAmount: '200.00',
+      lakalaOutOrderNo: 'order-1_123',
+    }])
+    mockCloseTx(0)
+
+    const result = await closeOrder('order-1')
+
+    expect(result).toEqual({ success: false, message: '在线支付处理中，暂不能关闭订单' })
+    expect(isNull).toHaveBeenCalledWith('lakala_out_order_no')
+  })
+
   it('正常关闭（rowCount=1）→ 事务内两步均执行', async () => {
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       const tx = {
@@ -1954,6 +2040,7 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
     const result = await closeOrder('order-1')
     expect(result.success).toBe(true)
     expect(db.transaction).toHaveBeenCalledOnce()
+    expect(isNull).toHaveBeenCalledWith('lakala_out_order_no')
   })
 
   it('关闭待支付转换单 → 恢复源卡次数并作废转换权益', async () => {
@@ -2762,6 +2849,11 @@ describe('createOrder — 会员价分流（后端权威定价）', () => {
     ;(db.select as any)
       .mockImplementationOnce(mockSelectRows([oneSession, twoSessions]))
       .mockImplementationOnce(mockSelectFound({ customerType: '流量客', memberLevel: null }))
+      .mockImplementationOnce(mockSelectFound({
+        isCrossStoreTemp: false,
+        marketId: 'market-a',
+        marketName: '市场A',
+      }))
       .mockImplementationOnce(mockSelectRows([oneSession, twoSessions, threeSessionTier]))
       .mockImplementationOnce(mockSelectRows([oneSession, twoSessions]))
       .mockImplementationOnce(mockSelectFound({ phone: '13812345678', name: '顾客甲' }))
@@ -2784,6 +2876,7 @@ describe('createOrder — 会员价分流（后端权威定价）', () => {
     expect(result.success).toBe(true)
     expect(cap.items.map((item) => item.saleAmount)).toEqual(['200.00', '400.00'])
     expect(cap.items.map((item) => item.unitRealPrice)).toEqual(['200.00', '200.00'])
+    expect(isNull).toHaveBeenCalledWith('market_scope')
   })
 })
 
@@ -3148,6 +3241,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     const inItems = insertedItems.filter((item) => item.itemDirection === '转入')
     expect(inItems.map((item) => item.saleAmount)).toEqual(['200.00', '400.00'])
     expect(inItems.map((item) => item.unitRealPrice)).toEqual(['200.00', '200.00'])
+    expect(isNull).toHaveBeenCalledWith('market_scope')
   })
 
   it('转换单转入权益可继续折抵，且 quantity=2 的新疗程拆成两张实体卡', async () => {
@@ -4124,48 +4218,46 @@ describe('recordPayment — 管理后台录入回款', () => {
     sumRow?: { new_received: string; new_prepaid: string }
     updateRowCount?: number
     throwOnStep?: string
+    idempotencyHit?: boolean
+    legacyCardIdempotencyHit?: boolean
   } = {}) {
     const captured = { insertValues: [] as Array<{ table: string; v: any }>, executed: [] as string[] }
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
-      let execCall = 0
       const tx = {
         execute: vi.fn().mockImplementation((arg: any) => {
-          execCall++
           // 记录顺序（便于调试失败用例）
-          captured.executed.push(String(arg?.__sqlText ?? `exec-${execCall}`))
-          // step 1: SELECT FOR UPDATE 原单
-          if (execCall === 1) {
+          const statement = String(arg?.__sqlText ?? '')
+          captured.executed.push(statement)
+          if (/SELECT \* FROM sale_orders[\s\S]*FOR UPDATE/.test(statement)) {
             return Promise.resolve(opts.lockedOrder ? [opts.lockedOrder] : [])
           }
-          // step 2: advisory lock + 生成订单号
-          if (execCall === 2) {
+          if (statement.includes("external_trade_info ->> 'adminRecordPaymentIdempotencyKey'")) {
+            return Promise.resolve(opts.idempotencyHit ? [{ exists: 1 }] : [])
+          }
+          if (statement.includes('SELECT 1 FROM card_transactions') && statement.includes('external_ref')) {
+            return Promise.resolve(opts.legacyCardIdempotencyHit ? [{ exists: 1 }] : [])
+          }
+          if (statement.includes('pg_advisory_xact_lock')) {
             return Promise.resolve([{ id: opts.orderIdGen ?? 'FY-HKD-WX-2604250001' }])
           }
-          // 需要储值卡？step 3: SELECT balance FOR UPDATE；step 4: UPDATE balance
-          if (opts.cardBalance !== undefined) {
-            if (execCall === 3) {
-              return Promise.resolve(
-                opts.cardBalance
-                  ? [{ card_id: opts.cardBalance.cardId, balance: opts.cardBalance.balance.toFixed(2) }]
-                  : [],
-              )
-            }
-            if (execCall === 4) {
-              return Promise.resolve({})
-            }
+          if (/SELECT card_id, balance FROM prepaid_cards[\s\S]*FOR UPDATE/.test(statement)) {
+            return Promise.resolve(
+              opts.cardBalance
+                ? [{ card_id: opts.cardBalance.cardId, balance: opts.cardBalance.balance.toFixed(2) }]
+                : [],
+            )
           }
-          // 后面的 SELECT SUM(payments) + UPDATE sale_orders
-          // 需要根据 cardBalance 存在与否确定 step 编号
-          const stepOffset = opts.cardBalance !== undefined ? 2 : 0
-          if (execCall === 3 + stepOffset) {
+          if (/UPDATE prepaid_cards/.test(statement)) return Promise.resolve({})
+          if (/AS new_received/.test(statement)) {
             return Promise.resolve([
               {
                 new_received: opts.sumRow?.new_received ?? '0',
                 new_prepaid: opts.sumRow?.new_prepaid ?? '0',
+                new_refunded: '0',
               },
             ])
           }
-          if (execCall === 4 + stepOffset) {
+          if (/UPDATE sale_orders[\s\S]*SET status/.test(statement)) {
             return Promise.resolve({ rowCount: opts.updateRowCount ?? 1 })
           }
           return Promise.resolve({})
@@ -4254,6 +4346,148 @@ describe('recordPayment — 管理后台录入回款', () => {
       operatorEmployeeId: 'EMP-001',
     })
     expect(captured.executed.some((statement) => statement.includes('first_payment_amount = NULL'))).toBe(true)
+  })
+
+  it('活动拉卡拉意图存续时拒绝线下入账且不产生资金副作用', async () => {
+    const captured = mockRecordTx({
+      lockedOrder: {
+        ...lockedPartialOrder,
+        lakala_out_order_no: 'FY-XSD-WX-260420-0001-P1',
+        pending_prepaid_card_amount: '0.00',
+      },
+    })
+
+    const result = await recordPayment(basePayload)
+
+    expect(result).toEqual({
+      success: false,
+      error: {
+        code: 'CONFLICT',
+        message: 'PAYMENT_INTENT_ACTIVE: 订单存在进行中的在线支付，请等待支付结果或先取消在线支付',
+      },
+    })
+    expect(captured.insertValues).toHaveLength(0)
+    expect(captured.executed).toHaveLength(1)
+  })
+
+  it('混合在线支付仍有待结算储值卡时拒绝新线下入账', async () => {
+    const captured = mockRecordTx({
+      lockedOrder: {
+        ...lockedPartialOrder,
+        lakala_out_order_no: null,
+        pending_prepaid_card_amount: '20.00',
+      },
+    })
+
+    const result = await recordPayment(basePayload)
+
+    expect(result.success).toBe(false)
+    if (!result.success) expect(result.error.code).toBe('CONFLICT')
+    expect(captured.insertValues).toHaveLength(0)
+    expect(captured.executed).toHaveLength(1)
+  })
+
+  it('储值卡同幂等键已成功时先返回原结果，不被活动在线意图阻断', async () => {
+    const captured = mockRecordTx({
+      lockedOrder: {
+        ...lockedPartialOrder,
+        lakala_out_order_no: 'FY-XSD-WX-260420-0001-P1',
+        pending_prepaid_card_amount: '20.00',
+      },
+      idempotencyHit: true,
+    })
+
+    const result = await recordPayment({
+      saleOrderId: basePayload.saleOrderId,
+      repayAmount: 0,
+      paymentMethod: '储值卡',
+      prepaidCardAmount: 20,
+      idempotencyKey: 'same-intent',
+    })
+
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.idempotent).toBe(true)
+    expect(captured.insertValues).toHaveLength(0)
+    expect(captured.executed).toHaveLength(2)
+  })
+
+  it('纯现金新幂等键写入稳定 payment 事实，不依赖 externalTxnId', async () => {
+    const captured = mockRecordTx({
+      lockedOrder: lockedPartialOrder,
+      idempotencyHit: false,
+      sumRow: { new_received: '200', new_prepaid: '0' },
+    })
+
+    const result = await recordPayment({
+      saleOrderId: basePayload.saleOrderId,
+      repayAmount: 100,
+      paymentMethod: '线下',
+      idempotencyKey: 'cash-attempt-2',
+    })
+
+    expect(result.success).toBe(true)
+    expect(captured.insertValues).toHaveLength(1)
+    expect(captured.insertValues[0].v).toMatchObject({
+      changeType: '回款',
+      externalTxnId: null,
+      externalTradeInfo: { adminRecordPaymentIdempotencyKey: 'cash-attempt-2' },
+    })
+  })
+
+  it('纯现金同键重试在首次已结清后仍幂等成功，早于退款/终态/活动意图检查', async () => {
+    const captured = mockRecordTx({
+      lockedOrder: {
+        ...lockedPartialOrder,
+        status: '已支付',
+        received: '200.00',
+        lakala_out_order_no: 'FY-XSD-WX-260420-0001_1786960800',
+        pending_prepaid_card_amount: '20.00',
+      },
+      idempotencyHit: true,
+    })
+
+    const result = await recordPayment({
+      saleOrderId: basePayload.saleOrderId,
+      repayAmount: 100,
+      paymentMethod: '线下',
+      idempotencyKey: 'cash-attempt-1',
+    })
+
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.idempotent).toBe(true)
+      expect(result.data.refStatus).toBe('已支付')
+    }
+    expect(captured.executed).toHaveLength(2)
+    expect(captured.insertValues).toHaveLength(0)
+    expect(hasPendingRefund).not.toHaveBeenCalled()
+    expect(db.execute).not.toHaveBeenCalled()
+  })
+
+  it('纯储值卡同键重试在首次结清后直接返回，不再次锁卡或扣款', async () => {
+    const captured = mockRecordTx({
+      lockedOrder: {
+        ...lockedPartialOrder,
+        status: '已支付',
+        received: '200.00',
+        prepaid_card_amount: '100.00',
+      },
+      idempotencyHit: true,
+    })
+
+    const result = await recordPayment({
+      saleOrderId: basePayload.saleOrderId,
+      repayAmount: 0,
+      paymentMethod: '储值卡',
+      prepaidCardAmount: 100,
+      idempotencyKey: 'card-attempt-1',
+    })
+
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.idempotent).toBe(true)
+    expect(captured.executed).toHaveLength(2)
+    expect(captured.executed.some((statement) => /SELECT card_id, balance FROM prepaid_cards/.test(statement))).toBe(false)
+    expect(captured.insertValues).toHaveLength(0)
   })
 
   it('多次回款累加：100 已付 + 50 回款 → "部分支付"；后续再回 50 → "已支付"', async () => {
@@ -4481,6 +4715,7 @@ describe('freezeConversionRepaymentAmount — admin 在线转换回款金额冻�
     refunded_amount: '0.00',
     first_payment_amount: null,
     pending_prepaid_card_amount: '0.00',
+    lakala_out_order_no: null,
     legacy_source: null,
     is_experience_conversion: false,
   }
@@ -4525,8 +4760,9 @@ describe('freezeConversionRepaymentAmount — admin 在线转换回款金额冻�
     expect(result).toEqual({ success: true, data: { amount: 40, reused: false } })
     expect(statements[0]).toContain('FOR UPDATE')
     expect(statements[1]).toContain('first_payment_amount =')
-    expect(statements[1]).toContain('lakala_out_order_no = NULL')
+    expect(statements[1]).not.toMatch(/SET[\s\S]*lakala_out_order_no\s*=/)
     expect(statements[1]).toContain('first_payment_amount IS NULL')
+    expect(statements[1]).toContain('lakala_out_order_no IS NULL')
     expect(statements[1]).toContain('received =')
     expect(statements[1]).toContain('refunded_amount =')
   })
@@ -4571,6 +4807,26 @@ describe('freezeConversionRepaymentAmount — admin 在线转换回款金额冻�
       expect(result.error.code).toBe('CONFLICT')
       expect(result.error.message).toContain('已有 ¥50.00 在线回款意图')
     }
+  })
+
+  it('历史 unrestricted O1 即使 first_payment_amount 为空也不得解绑渠道单', async () => {
+    const statements = mockFreezeTx({
+      ...lockedConversion,
+      first_payment_amount: null,
+      lakala_out_order_no: 'FY-XSD-WX-260420-0001_1786960800',
+    })
+
+    const result = await freezeConversionRepaymentAmount({
+      saleOrderId: lockedConversion.sale_order_id,
+      amount: 40,
+    })
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.code).toBe('CONFLICT')
+      expect(result.error.message).toContain('PAYMENT_INTENT_ACTIVE')
+    }
+    expect(statements).toHaveLength(1)
   })
 
   it('CAS 未命中时返回并发冲突', async () => {

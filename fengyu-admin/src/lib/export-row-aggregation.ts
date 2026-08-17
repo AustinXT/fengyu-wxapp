@@ -171,7 +171,7 @@ function orderBusinessKey(row: ExportRow): string {
 }
 
 function allocationWeights(rows: ExportRow[]): number[] {
-  // 退款 receipt 缺失或覆盖不完整时，received 已是退款后的净额；用它作权重会让
+  // 退款 receipt 完全缺失时，received 已是退款后的净额；用它作权重会让
   // 全退行权重归零，并把退款错分给未退款行。sale_items.sale_amount（导出字段
   // totalAmount）是退款前的行应付事实，兜底分摊应优先使用它。
   const saleAmounts = rows.map((row) => Math.abs(cents(row.totalAmount) ?? 0))
@@ -190,12 +190,15 @@ export function aggregateOrderExportRows<T extends ExportRow>(sourceRows: T[]): 
   const weights = allocationWeights(rows)
   const refundTotal = cents(rows[0].refundedAmount)
   if (refundTotal != null) {
-    const exactRefunds = rows.map((row) => cents(row.__itemRefundedAmount))
-    const hasCompleteReceiptCoverage = exactRefunds.every((value) => value != null) &&
-      exactRefunds.reduce((sum, value) => sum + (value ?? 0), 0) === Math.abs(refundTotal)
-    const parts = hasCompleteReceiptCoverage
-      ? exactRefunds.map((value) => value ?? 0)
-      : splitCentsWithLastRemainder(refundTotal, weights)
+    // 商品退款 receipt 记录的是退款前毛额，订单 refunded_amount 是扣除手续费、
+    // 透支扣除后的实际净退款，两者不应要求数值相等。只要存在逐项退款事实，
+    // 就以其毛额作为权重缩放净退款；仅在历史数据完全没有 receipt 时按行应付兜底。
+    const refundReceiptWeights = rows.map((row) => Math.abs(cents(row.__itemRefundedAmount) ?? 0))
+    const hasRefundReceipt = refundReceiptWeights.some((value) => value > 0)
+    const parts = splitCentsWithLastRemainder(
+      refundTotal,
+      hasRefundReceipt ? refundReceiptWeights : weights,
+    )
     rows.forEach((row, index) => {
       row.refundedAmount = money(parts[index])
     })

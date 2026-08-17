@@ -43,7 +43,11 @@ import {
   type ExportBatchResult,
 } from '@/lib/export-pagination'
 import { parseOrderFilters, parseAllocationOrderFilters } from '@/lib/list-filters'
-import { orderMarketScopeCondition, resolveCustomerOrderMarketScope } from '@/lib/order-market-scope'
+import {
+  orderMarketScopeCondition,
+  resolveCustomerOrderMarketScope,
+  type CustomerOrderMarketScope,
+} from '@/lib/order-market-scope'
 
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
 const opener = alias(staffWechatUsers, 'opener') as unknown as typeof staffWechatUsers
@@ -2010,7 +2014,7 @@ export const confirmOfflinePayment = withPermission(
         SELECT status, payment_method, store_id, total_amount, payable_amount,
                received, prepaid_card_amount, pending_prepaid_card_amount,
                client_user_id, customer_name,
-               sale_order_type, first_payment_amount
+               sale_order_type, first_payment_amount, lakala_out_order_no
         FROM sale_orders WHERE sale_order_id = ${saleOrderId} FOR UPDATE
       `)
       const lockedRows = lockRes as unknown as any[]
@@ -2018,6 +2022,11 @@ export const confirmOfflinePayment = withPermission(
       const locked = lockedRows[0]
       if (locked.status !== '待支付' || locked.payment_method !== '线下') return { matched: false as const }
       if (!isInScope(session, locked.store_id)) return { matched: false as const }
+      // clientApi 会先原子 claim lakala_out_order_no，再把 payment_method 切到微信/支付宝。
+      // 因此不能只靠 payment_method='线下' 判断：claim 与方式回写之间的窗口仍是真实活动渠道单。
+      if (String(locked.lakala_out_order_no || '').trim()) {
+        throw new ApiError('CONFLICT', 'PAYMENT_INTENT_ACTIVE: 在线支付处理中，暂不能确认线下收款')
+      }
 
       const orderTotal = Number(locked.total_amount || 0)
       const orderActualPrepaid = Number(locked.prepaid_card_amount || 0)
@@ -2124,12 +2133,13 @@ export const confirmOfflinePayment = withPermission(
       }
 
       // 现金流水：confirmAmount > 0 时写 1 行（首次/回款）。
-      // change_type：已存在非储值卡 payments → '回款'，否则 '首次支付'（正常路径恒为首次支付）。
+      // change_type：整单已有更早成功正向款（含储值卡抵扣）→ '回款'，否则 '首次支付'。
       if (cashAmount > 0) {
         const existRes = await tx.execute(sql`
           SELECT 1 FROM sale_order_payments
           WHERE sale_order_id = ${saleOrderId} AND status = '已支付'
-            AND change_type IN ('首次支付','回款','退款') LIMIT 1
+            AND amount::numeric > 0
+            AND change_type IN ('首次支付','回款','储值卡抵扣') LIMIT 1
         `)
         const existRows = existRes as unknown as any[]
         const cashChangeType = existRows.length > 0 ? '回款' : '首次支付'
@@ -2185,7 +2195,9 @@ export const confirmOfflinePayment = withPermission(
             offline_confirmed_by = ${session.employeeId},
             offline_confirmed_at = NOW(),
             updated_at = NOW()
-        WHERE sale_order_id = ${saleOrderId} AND status = '待支付'
+        WHERE sale_order_id = ${saleOrderId}
+          AND status = '待支付'
+          AND lakala_out_order_no IS NULL
       `)
       if (rowsAffected(updRes) === 0) {
         // 并发：状态在本事务可见性内已变更
@@ -2232,6 +2244,9 @@ export const confirmOfflinePayment = withPermission(
     if (err instanceof ApiError && err.prefix === 'INVALID_PARAMS') {
       return { success: false, message: err.message.replace(/^INVALID_PARAMS:\s*/, '') }
     }
+    if (err instanceof ApiError && err.prefix === 'CONFLICT') {
+      return { success: false, message: err.message.replace(/^CONFLICT:\s*/, '') }
+    }
     // 透传 INSUFFICIENT_BALANCE（储值卡余额不足 / 无卡）
     const msg: string = err?.message || ''
     if (msg.startsWith('INSUFFICIENT_BALANCE')) {
@@ -2272,6 +2287,7 @@ export const closeOrder = withPermission(
       totalAmount: saleOrders.totalAmount,
       saleOrderType: saleOrders.saleOrderType,
       storeId: saleOrders.storeId,
+      lakalaOutOrderNo: saleOrders.lakalaOutOrderNo,
     })
     .from(saleOrders)
     .where(eq(saleOrders.saleOrderId, saleOrderId))
@@ -2295,6 +2311,7 @@ export const closeOrder = withPermission(
         .where(and(
           eq(saleOrders.saleOrderId, saleOrderId),
           or(eq(saleOrders.status, '待支付'), eq(saleOrders.status, '支付失败')),
+          isNull(saleOrders.lakalaOutOrderNo),
           scopeCondition(session, saleOrders.storeId),
         ))
 
@@ -2339,7 +2356,12 @@ export const closeOrder = withPermission(
     })
 
     if (!txResult.matched) {
-      return { success: false, message: '订单状态已变更，无法关闭' }
+      return {
+        success: false,
+        message: orderCtx?.lakalaOutOrderNo
+          ? '在线支付处理中，暂不能关闭订单'
+          : '订单状态已变更，无法关闭',
+      }
     }
   } catch {
     return { success: false, message: '关闭订单失败，请稍后重试' }
@@ -2582,6 +2604,16 @@ type NormalSkuMarketScopeRow = {
   marketScope: string | null | undefined
 }
 
+type CustomerMarketScopeProvider = () => Promise<CustomerOrderMarketScope>
+
+function createCustomerMarketScopeProvider(clientUserId: string): CustomerMarketScopeProvider {
+  let scopePromise: Promise<CustomerOrderMarketScope> | null = null
+  return () => {
+    scopePromise ??= resolveCustomerOrderMarketScope(clientUserId)
+    return scopePromise
+  }
+}
+
 /**
  * 普通 SKU 的提交兜底：仅检查实际配置了 market_scope 的非体验卡 SKU。
  *
@@ -2589,8 +2621,8 @@ type NormalSkuMarketScopeRow = {
  * 由 validateBundleOrderForCustomer 校验套餐主商品范围，不能在此重复套 SKU 范围。
  */
 async function findNormalSkuMarketScopeViolation(
-  clientUserId: string,
   skuRows: NormalSkuMarketScopeRow[],
+  getCustomerMarketScope: CustomerMarketScopeProvider,
 ): Promise<NormalSkuMarketScopeRow | null> {
   const restrictedSkuById = new Map<string, NormalSkuMarketScopeRow>()
   for (const sku of skuRows) {
@@ -2599,7 +2631,7 @@ async function findNormalSkuMarketScopeViolation(
   }
   if (restrictedSkuById.size === 0) return null
 
-  const customerMarketScope = await resolveCustomerOrderMarketScope(clientUserId)
+  const customerMarketScope = await getCustomerMarketScope()
   const restrictedSkuIds = [...restrictedSkuById.keys()]
   const visibleRows = await db
     .select({ skuId: productSkus.skuId })
@@ -2628,8 +2660,8 @@ function normalSkuMarketScopeMessage(sku: NormalSkuMarketScopeRow): string {
  */
 async function validateBundleOrderForCustomer(
   bundleProductId: string | null | undefined,
-  clientUserId: string,
   items: BundleOrderItem[],
+  getCustomerMarketScope: CustomerMarketScopeProvider,
 ): Promise<string | null> {
   if (!bundleProductId) {
     return items.some((item) => item.isBundle)
@@ -2639,7 +2671,7 @@ async function validateBundleOrderForCustomer(
 
   if (items.length === 0) return '组合套餐商品明细不能为空'
 
-  const customerMarketScope = await resolveCustomerOrderMarketScope(clientUserId)
+  const customerMarketScope = await getCustomerMarketScope()
   const [bundle] = await db
     .select({ productId: products.productId })
     .from(products)
@@ -2831,10 +2863,11 @@ export const createOrder = withPermission(
     return { success: false, message: '内部单不允许叠加优惠券' }
   }
 
+  const getCustomerMarketScope = createCustomerMarketScopeProvider(data.clientUserId)
   const bundleValidationError = await validateBundleOrderForCustomer(
     data.bundleProductId,
-    data.clientUserId,
     data.items,
+    getCustomerMarketScope,
   )
   if (bundleValidationError) {
     return { success: false, message: bundleValidationError }
@@ -2895,7 +2928,7 @@ export const createOrder = withPermission(
   }
 
   if (!data.bundleProductId) {
-    const marketScopeViolation = await findNormalSkuMarketScopeViolation(data.clientUserId, pricingRows)
+    const marketScopeViolation = await findNormalSkuMarketScopeViolation(pricingRows, getCustomerMarketScope)
     if (marketScopeViolation) {
       return { success: false, message: normalSkuMarketScopeMessage(marketScopeViolation) }
     }
@@ -3024,6 +3057,7 @@ export const createOrder = withPermission(
       .map((line) => line.categoryId as string),
   ))
   if (treatmentTierCategoryIds.length > 0) {
+    const customerMarketScope = await getCustomerMarketScope()
     const tierCandidates = await db
       .select({
         categoryId: productSkus.categoryId,
@@ -3043,6 +3077,7 @@ export const createOrder = withPermission(
         eq(productSkus.isExperience, false),
         eq(productSkus.isManagerSpecial, false),
         isNull(productSkus.deletedAt),
+        orderMarketScopeCondition(productSkus.marketScope, customerMarketScope),
       ))
     const tierAmounts = calculateTreatmentTierLineAmounts(
       treatmentTierLines,
@@ -3784,6 +3819,7 @@ export const createConversionOrder = withPermission(
   if (!client) {
     return { success: false, message: '顾客不存在' }
   }
+  const getCustomerMarketScope = createCustomerMarketScopeProvider(data.clientUserId)
 
   // 事务：锁转出行 + 校验 + 计算金额 + 插入订单 + 插入两段 items + 储值卡补差
   let result: {
@@ -3966,7 +4002,7 @@ export const createConversionOrder = withPermission(
         .from(productSkus)
         .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
         .where(and(inArray(productSkus.skuId, inSkuIds), isNull(productSkus.deletedAt)))
-      const marketScopeViolation = await findNormalSkuMarketScopeViolation(data.clientUserId, skuRows)
+      const marketScopeViolation = await findNormalSkuMarketScopeViolation(skuRows, getCustomerMarketScope)
       if (marketScopeViolation) {
         throw new ApiError('INVALID_PARAMS', normalSkuMarketScopeMessage(marketScopeViolation))
       }
@@ -4043,6 +4079,7 @@ export const createConversionOrder = withPermission(
           .map((line) => line.categoryId as string),
       ))
       if (treatmentTierCategoryIds.length > 0) {
+        const customerMarketScope = await getCustomerMarketScope()
         const tierCandidates = await tx
           .select({
             categoryId: productSkus.categoryId,
@@ -4063,6 +4100,7 @@ export const createConversionOrder = withPermission(
             eq(productSkus.isExperience, false),
             eq(productSkus.isManagerSpecial, false),
             isNull(productSkus.deletedAt),
+            orderMarketScopeCondition(productSkus.marketScope, customerMarketScope),
           ))
         const tierAmounts = calculateTreatmentTierLineAmounts(
           treatmentTierLines,
@@ -4682,7 +4720,8 @@ export const createDepositOrder = withPermission(
     if (skuRows.length !== skuIds.length) {
       return { success: false, message: '部分商品不存在或已下架' }
     }
-    const marketScopeViolation = await findNormalSkuMarketScopeViolation(data.clientUserId, skuRows)
+    const getCustomerMarketScope = createCustomerMarketScopeProvider(data.clientUserId)
+    const marketScopeViolation = await findNormalSkuMarketScopeViolation(skuRows, getCustomerMarketScope)
     if (marketScopeViolation) {
       return { success: false, message: normalSkuMarketScopeMessage(marketScopeViolation) }
     }
@@ -5357,20 +5396,6 @@ export const recordPayment = withPermission(
     : null
   const hasItems = !!(repayItems && repayItems.length > 0)
 
-  // 已退行不可回款（行级口径，与 client/staff 一致）：按子项回款校验所选行未退款；
-  // 整单回款遇订单有退款则要求按子项（避免非定向分摊误充已退行）
-  const recordRefundMap = await getPerItemRefundedMap(saleOrderId)
-  const orderHasRefund = [...recordRefundMap.values()].some((v) => Number(v) > 0)
-  if (hasItems) {
-    for (const it of repayItems!) {
-      if ((recordRefundMap.get(it.saleItemId) || 0) > 0) {
-        return { success: false, error: { code: 'INVALID_STATE', message: `子项 ${it.saleItemId} 已退款，不可再回款` } }
-      }
-    }
-  } else if (orderHasRefund) {
-    return { success: false, error: { code: 'INVALID_STATE', message: '本单存在已退款项目，请按子项回款未退款的项目' } }
-  }
-
   const repayAmount = hasItems
     ? Math.round(repayItems!.reduce((s, it) => s + it.repayAmount, 0) * 100) / 100
     : Math.round(Number(input.repayAmount || 0) * 100) / 100
@@ -5404,12 +5429,15 @@ export const recordPayment = withPermission(
   // 与 chk_sop_method_txn（仅约束微信/支付宝）约束。
   const externalTxnId = input.externalTxnId?.trim() || null
 
-  // 幂等键（2026-06-29 防重复扣卡）：前端为本次回款意向生成 idempotencyKey，重试/误点复用同一值。
-  // 仅储值卡抵扣场景（prepaidCardAmount>0）用作扣卡 external_ref —— 纯现金回款由 uq_sop_txn 守护、不需此键。
-  // 缺失时退回旧 repaymentOrderId-based external_ref（向后兼容老前端，仅放弃幂等保护）。
+  // 幂等键：前端为本次回款意向生成 idempotencyKey，重试/误点复用同一值。
+  // 所有通道都把它写入已支付 payment 的 external_trade_info，作为事务内稳定完成事实；
+  // 储值卡另保留 card_transactions.external_ref，兼容修复前已经成功扣卡的请求。
   const idempotencyKey = input.idempotencyKey?.trim() || null
   const repayIdempRef = idempotencyKey && prepaidCardAmount > 0
     ? `card-repay-${saleOrderId}-${idempotencyKey}`
+    : null
+  const paymentIdempotencyFact = idempotencyKey
+    ? { adminRecordPaymentIdempotencyKey: idempotencyKey }
     : null
 
   // 事务：锁原单 + 校验 + 扣卡 + 插凭证单 + 插 payments + 重算原单
@@ -5429,6 +5457,38 @@ export const recordPayment = withPermission(
       // scope 保护：admin 跨门店免检；manager / finance 等 scoped 角色按 storeId 校验
       if (!isInScope(session, locked.store_id)) {
         throw new ApiError('PERMISSION_DENIED', 'OUT_OF_SCOPE: 该订单不在你的可见门店范围内')
+      }
+
+      // 幂等预检必须紧跟订单存在/scope 校验：首次请求可能已经把订单结清，或随后出现
+      // 退款/在线支付意图；同键成功重试仍应返回首次结果，不能被这些后置状态误拒。
+      if (idempotencyKey) {
+        const dupPaymentRes = await tx.execute(sql`
+          SELECT 1
+          FROM sale_order_payments
+          WHERE sale_order_id = ${saleOrderId}
+            AND status = '已支付'
+            AND source_end = 'admin'
+            AND external_trade_info ->> 'adminRecordPaymentIdempotencyKey' = ${idempotencyKey}
+          LIMIT 1
+        `)
+        let idempotencyHit = (dupPaymentRes as unknown as Array<unknown>).length > 0
+
+        // 向后兼容：旧版本仅在储值卡扣款 external_ref 持久化幂等键。
+        if (!idempotencyHit && repayIdempRef) {
+          const legacyCardDupRes = await tx.execute(sql`
+            SELECT 1 FROM card_transactions WHERE external_ref = ${repayIdempRef} LIMIT 1
+          `)
+          idempotencyHit = (legacyCardDupRes as unknown as Array<unknown>).length > 0
+        }
+        if (idempotencyHit) {
+          return {
+            repaymentOrderId: '',
+            refStatus: locked.status as OrderStatus,
+            refPaidAmount: Number(locked.received || 0).toFixed(2),
+            refPrepaidCardAmount: Number(locked.prepaid_card_amount || 0).toFixed(2),
+            idempotent: true,
+          }
+        }
       }
 
       // 寄存单 / 历史订单(legacy)是「一次性初始化」单，禁止任何事后资金变更 —— 不支持回款
@@ -5455,22 +5515,30 @@ export const recordPayment = withPermission(
         throw new ApiError('CLIENT_NOT_REGISTERED', '顾客未注册小程序，无法使用储值卡抵扣')
       }
 
-      // 幂等预检（2026-06-29 防重复扣卡）：锁原单后查同 idempotencyKey 的 card-repay 扣款是否已落库。
-      // 命中 → 整笔回款已处理（余额已扣、流水已记），直接返回当前状态、跳过本次扣卡/payments/received 全部逻辑。
-      // 行锁（上面 SELECT ... FOR UPDATE）串行化同单请求，两次重试无竞态：第二次拿到锁时首次已 COMMIT 可见。
-      if (repayIdempRef) {
-        const dupRes = await tx.execute(sql`
-          SELECT 1 FROM card_transactions WHERE external_ref = ${repayIdempRef} LIMIT 1
-        `)
-        if ((dupRes as unknown as Array<unknown>).length > 0) {
-          return {
-            repaymentOrderId: '',
-            refStatus: locked.status as OrderStatus,
-            refPaidAmount: Number(locked.received || 0).toFixed(2),
-            refPrepaidCardAmount: Number(locked.prepaid_card_amount || 0).toFixed(2),
-            idempotent: true,
+      // 已退行不可回款（行级口径，与 client/staff 一致）。该校验必须位于幂等预检之后：
+      // 首次成功后才发生退款时，同键重试仍应返回已完成，而不是被新退款状态误拒。
+      const recordRefundMap = await getPerItemRefundedMap(saleOrderId)
+      const orderHasRefund = [...recordRefundMap.values()].some((value) => Number(value) > 0)
+      if (hasItems) {
+        for (const item of repayItems!) {
+          if ((recordRefundMap.get(item.saleItemId) || 0) > 0) {
+            throw new ApiError('INVALID_STATE', `子项 ${item.saleItemId} 已退款，不可再回款`)
           }
         }
+      } else if (orderHasRefund) {
+        throw new ApiError('INVALID_STATE', '本单存在已退款项目，请按子项回款未退款的项目')
+      }
+
+      // 在线支付意图与线下入账互斥。必须在行锁内、且位于幂等预检之后：
+      // 已成功处理的同键重试仍应直接返回幂等结果；其他新请求不得在顾客仍可完成
+      // 拉卡拉付款或混合支付待结算时清空冻结金额，避免重复收款/已扣款未入账。
+      const hasActiveOnlinePaymentIntent = Boolean(String(locked.lakala_out_order_no || '').trim())
+        || Number(locked.pending_prepaid_card_amount || 0) > 0
+      if (hasActiveOnlinePaymentIntent) {
+        throw new ApiError(
+          'CONFLICT',
+          'PAYMENT_INTENT_ACTIVE: 订单存在进行中的在线支付，请等待支付结果或先取消在线支付',
+        )
       }
 
       // 2) 计算欠款：total - received（= settleTarget - received，与下方结清判定 line 3558 一致）。
@@ -5578,6 +5646,7 @@ export const recordPayment = withPermission(
           amount: repayAmount.toFixed(2),
           paymentMethod,
           externalTxnId,
+          externalTradeInfo: paymentIdempotencyFact,
           status: '已支付',
           sourceEnd: 'admin',
           paidAt: nowTs(),
@@ -5593,6 +5662,7 @@ export const recordPayment = withPermission(
           amount: prepaidCardAmount.toFixed(2),
           paymentMethod: '储值卡',
           externalTxnId: null,
+          externalTradeInfo: paymentIdempotencyFact,
           status: '已支付',
           sourceEnd: 'admin',
           paidAt: nowTs(),
@@ -5725,6 +5795,22 @@ export const recordPayment = withPermission(
     const msg = err?.message as string | undefined
     if (msg?.includes('REF_ORDER_NOT_FOUND')) {
       return { success: false, error: { code: 'REF_ORDER_NOT_FOUND', message: '原订单不存在' } }
+    }
+    if (msg?.includes('PAYMENT_INTENT_ACTIVE')) {
+      return {
+        success: false,
+        error: {
+          code: 'CONFLICT',
+          message: 'PAYMENT_INTENT_ACTIVE: 订单存在进行中的在线支付，请等待支付结果或先取消在线支付',
+        },
+      }
+    }
+    if (msg?.startsWith('INVALID_STATE:')
+      && (msg.includes('已退款，不可再回款') || msg.includes('本单存在已退款项目'))) {
+      return {
+        success: false,
+        error: { code: 'INVALID_STATE', message: msg.replace(/^INVALID_STATE:\s*/, '') },
+      }
     }
     // 状态机拒绝（保留原行为：行 1895 throw new Error(`INVALID_STATE:${locked.status}`) 仍生效）
     if (msg?.startsWith('INVALID_STATE:') && !msg.includes('ORDER_ID_GEN_FAILED')) {
@@ -5873,6 +5959,11 @@ export const freezeConversionRepaymentAmount = withPermission(
         if (pendingCardCents > 0) {
           throw new ApiError('CONFLICT', 'PAYMENT_INTENT_ACTIVE: 订单已有待结算储值卡支付意图，请完成或取消后重试')
         }
+        // 任何已 claim 的渠道单都可能继续真实扣款。历史 unrestricted O1 可能没有
+        // first_payment_amount，但同样不能被本操作解绑或覆盖。
+        if (String(locked.lakala_out_order_no || '').trim()) {
+          throw new ApiError('CONFLICT', 'PAYMENT_INTENT_ACTIVE: 订单已有进行中的在线支付，请等待支付结果后重试')
+        }
         const remainingCents = Math.round(
           (
             Number(locked.total_amount || 0) -
@@ -5900,13 +5991,13 @@ export const freezeConversionRepaymentAmount = withPermission(
         const updateRes = await tx.execute(sql`
           UPDATE sale_orders
           SET first_payment_amount = ${(amountCents / 100).toFixed(2)}::numeric,
-              lakala_out_order_no = NULL,
               updated_at = NOW()
           WHERE sale_order_id = ${saleOrderId}
             AND status = ${locked.status}
             AND received = ${Number(locked.received || 0).toFixed(2)}::numeric
             AND refunded_amount = ${Number(locked.refunded_amount || 0).toFixed(2)}::numeric
             AND first_payment_amount IS NULL
+            AND lakala_out_order_no IS NULL
         `)
         if (rowsAffected(updateRes) !== 1) {
           throw new ApiError('CONFLICT', 'CONCURRENT_CHANGED: 订单金额或状态已变化，请刷新后重试')
