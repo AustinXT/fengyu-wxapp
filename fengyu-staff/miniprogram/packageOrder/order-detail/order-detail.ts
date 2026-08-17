@@ -884,7 +884,15 @@ Page({
           wx.showToast({ title: '储值卡已抵扣结清', icon: 'success' });
           this.loadDetail(this.data._saleOrderId);
         } else {
-          // 跳收款码页：顾客扫码进收银台在线付剩余应付，payNotify 回调写 change_type=回款
+          // 转换单先把操作员填写的本次在线回款额冻结到订单；二维码页和顾客收银台均从
+          // first_payment_amount 读取硬上限，避免默认按整笔剩余欠款收费。普通销售单维持原有逐项回款流程。
+          if (order.orderType === '转换单') {
+            await callStaffApi('order.qrcode', {
+              saleOrderId: order.saleOrderId,
+              paymentAmount: needPay,
+            });
+          }
+          // 跳收款码页：顾客扫码进收银台在线付本次冻结金额，payNotify 回调写 change_type=回款
           const params = `saleOrderId=${order.saleOrderId}&customerName=${encodeURIComponent(order.customerName)}&totalAmount=${order.totalAmount}`;
           wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?${params}` });
         }

@@ -471,7 +471,7 @@ Component({
      *   remaining = priceDiff - card（抵扣后仍需付现金）
      * remaining <= 0（全额抵扣）时清空 paymentMethod（无需选）。
      */
-    recalcCard(this: any) {
+    recalcCard(this: any, options: { preserveReceivedInput?: boolean } = {}) {
       if (this.data.isExperienceConversion) {
         this.setData({
           useCard: false,
@@ -508,9 +508,13 @@ Component({
         remaining,
         remainingDisplay: remaining.toFixed(2),
         receivedAmount: Math.round(receivedAmount * 100) / 100,
-        receivedAmountInput: (Math.round(receivedAmount * 100) / 100).toFixed(2),
         debtAmountDisplay: Math.max(0, Math.round((remaining - receivedAmount) * 100) / 100).toFixed(2),
       };
+      // bindinput 期间保留用户正在编辑的原始字符串，避免每个字符都被 toFixed(2)
+      // 覆盖并重置光标；仅失焦或其它金额重算场景格式化为两位小数。
+      if (!options.preserveReceivedInput) {
+        update.receivedAmountInput = (Math.round(receivedAmount * 100) / 100).toFixed(2);
+      }
       // 抵扣后无需付现金 → 清空支付方式
       if (receivedAmount <= 0 && this.data.paymentMethod) {
         update.paymentMethod = null;
@@ -591,7 +595,7 @@ Component({
     onReceivedAmountInput(this: any, e: WechatMiniprogram.CustomEvent) {
       this._receivedTouched = true;
       this.setData({ receivedAmountInput: String(e.detail?.value ?? '') });
-      this.recalcCard();
+      this.recalcCard({ preserveReceivedInput: true });
     },
 
     onReceivedAmountBlur(this: any) {

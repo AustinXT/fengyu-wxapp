@@ -153,9 +153,10 @@ Page({
         remaining = Math.max(0, Math.round((payable - netReceived) * 100) / 100);
       }
       const firstPaymentAmount = Number(orderData.firstPaymentAmount || 0);
-      // 首次扫码（received === 0）且 admin 设置了 firstPaymentAmount：本次只收首付
+      // first_payment_amount 是服务端冻结的本次在线收款上限：既用于首次首付，
+      // 也用于员工在部分支付转换单上发起的订单级部分回款。
       const isFirstPartialScan = firstPaymentAmount > 0 && received === 0;
-      const paid = isFirstPartialScan
+      const paid = firstPaymentAmount > 0
         ? Math.min(firstPaymentAmount, remaining)
         : remaining;
       const couponDiscount = Number(orderData.couponDiscount || 0);
@@ -362,10 +363,11 @@ Page({
 
   /** 根据当前 paid/method 路由到对应支付端点 */
   async executeConfirm(): Promise<void> {
-    const { orderNo, paidAmount, paymentMethod, balanceUpdatedAt, firstPaymentAmount, isFirstPartialScan } = this.data;
+    const { orderNo, paidAmount, paymentMethod, balanceUpdatedAt, firstPaymentAmount } = this.data;
 
-    // 回款（部分支付）走 order.repay：支持储值卡抵扣尾款 + 微信/支付宝付差额（线下在回款隐藏）
-    if (this.data.isRepayment) {
+    // 普通回款走 order.repay；员工已冻结 first_payment_amount 的转换单部分回款
+    // 改走 pay/alipayPay，复用其服务端硬上限并允许本次金额小于整笔剩余欠款。
+    if (this.data.isRepayment && firstPaymentAmount <= 0) {
       await this.executeRepayConfirm();
       return;
     }
@@ -399,7 +401,7 @@ Page({
       const aliData = await callClientApi<{ status?: string; reason?: string; alipayShareToken?: string; paidAmount?: number }>(
         'order.alipayPay', {
           saleOrderId: orderNo,
-          ...(isFirstPartialScan && firstPaymentAmount > 0 ? { payAmount: firstPaymentAmount } : {}),
+          ...(firstPaymentAmount > 0 ? { payAmount: firstPaymentAmount } : {}),
         },
       );
       // 防御性短路：后端识别为全额储值卡抵扣 → 直接跳详情页
@@ -426,7 +428,7 @@ Page({
     // wechatPay：聚合主扫直接拿 wx.requestPayment 5 字段
     // 首付场景下显式传 payAmount，后端按约束扣款 + 清空 first_payment_amount；后续扫码默认按剩余应付走
     const payPayload: { saleOrderId: string; payAmount?: number } = { saleOrderId: orderNo };
-    if (isFirstPartialScan && firstPaymentAmount > 0) {
+    if (firstPaymentAmount > 0) {
       payPayload.payAmount = firstPaymentAmount;
     }
     const data = await callClientApi<{ paymentParams?: any }>('order.pay', payPayload);

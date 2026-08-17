@@ -70,6 +70,32 @@ function formatDateTime(dt: string | null) {
 
 type DisplaySaleItem = SaleItem & { cardCount: number };
 
+export function calculateConfirmOfflineAmounts(
+  order: Pick<SaleOrder, "payableAmount" | "received" | "saleOrderType" | "firstPaymentAmount">,
+  items: Array<Pick<SaleItem, "pendingReceived">>,
+): { remainingPayable: number; suggestedAmount: number } {
+  // payable_amount 已扣除已结算和待结算的储值卡金额，是确认线下现金收款的持久化上限。
+  // 不能由 total - prepaid_card_amount 重新推导，否则会漏掉 pending_prepaid_card_amount。
+  const storedPayableAmount = Number(order.payableAmount);
+  const payableAmount = Math.max(
+    0,
+    Math.round((Number.isFinite(storedPayableAmount) ? storedPayableAmount : 0) * 100) / 100,
+  );
+  const storedReceived = Number(order.received);
+  const paidAmount = Number.isFinite(storedReceived) ? storedReceived : 0;
+  const remainingPayable = Math.max(0, Math.round((payableAmount - paidAmount) * 100) / 100);
+  const suggestedAmount = order.saleOrderType === "转换单"
+    ? Math.max(0, Math.min(remainingPayable, Number(order.firstPaymentAmount ?? remainingPayable)))
+    : Math.max(
+      0,
+      Math.min(
+        remainingPayable,
+        Math.round(items.reduce((sum, item) => sum + Number(item.pendingReceived ?? "0"), 0) * 100) / 100,
+      ),
+    );
+  return { remainingPayable, suggestedAmount };
+}
+
 function getDisplaySaleItems(order: SaleOrder, items: NonNullable<SaleOrder["items"]>): DisplaySaleItem[] {
   return groupTreatmentCards(items, {
     getId: (item) => item.saleItemId,
@@ -198,17 +224,13 @@ export default function OrderDetailPageClient({
   const isLegacy = order.legacySource === "workfine";
 
   const totalAmount = Number(order.totalAmount ?? "0");
-  const payableAmount = Math.max(0, Math.round((totalAmount - prepaidCardAmount) * 100) / 100);
   // 回款欠款（总额口径 = total − paidAmount，含储值卡，与 status 结清判定一致）：
   // 用于「录入回款」按钮条件 + 剩余欠款展示。旧口径 payable(扣卡) − paidAmount(含卡) 会让含卡部分支付单
   // 算成 ≤0 → clamp 死锁（按钮消失、显示欠款¥0），故回款改用总额减。
   const repayRemaining = Math.max(0, Math.round((totalAmount - paidAmount) * 100) / 100);
   // 确认收款的剩余应收现金（payable 口径，不含储值卡）：作确认收款弹层预填/上限。
-  const remainingPayable = Math.max(0, Math.round((payableAmount - paidAmount) * 100) / 100);
-  // 开单约定实付草稿合计（pending_received 之和），cap 到剩余应付现金，作确认收款默认预填（两步式 2026-06-07）
-  const pendingReceivedTotal = order.saleOrderType === "转换单"
-    ? Math.max(0, Math.min(remainingPayable, Number(order.firstPaymentAmount ?? remainingPayable)))
-    : Math.max(0, Math.min(remainingPayable, Math.round(items.reduce((s, it) => s + Number(it.pendingReceived ?? "0"), 0) * 100) / 100));
+  // 开单约定实付草稿合计（pending_received 之和），cap 到剩余应付现金，作确认收款默认预填（两步式 2026-06-07）。
+  const { remainingPayable, suggestedAmount: pendingReceivedTotal } = calculateConfirmOfflineAmounts(order, items);
   // 确认收款：线下「待支付」订单的首次收款入账入口
   const canShowConfirmOffline = canConfirmOffline && order.paymentMethod === "线下" && order.status === "待支付";
 

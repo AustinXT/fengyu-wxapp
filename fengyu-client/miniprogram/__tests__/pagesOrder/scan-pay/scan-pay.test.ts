@@ -476,6 +476,41 @@ describe('scan-pay 回款（部分支付）场景', () => {
     expect(calls).not.toContain('order.pay');
   });
 
+  test('转换单已冻结本次部分回款：页面显示500且走 order.pay 显式提交500，不放大为剩余1500', async () => {
+    callClientApiMock.mockImplementation((action: string) => {
+      if (action === 'order.scanDetail') {
+        return Promise.resolve({
+          order: {
+            orderNo: 'FY-CONV-CAP', status: '部分支付', storeId: 's1', storeName: '门店A',
+            openerName: '店长', orderType: '转换单',
+            totalAmount: 2000, prepaidCardAmount: 0, payableAmount: 2000,
+            received: 500, refundedAmount: 0, firstPaymentAmount: 500,
+            paymentMethod: '微信', couponDiscount: 0,
+          },
+          items: [],
+        });
+      }
+      if (action === 'card.balance') return Promise.resolve({ balance: 0, cardId: null });
+      if (action === 'order.pay') return Promise.resolve({ paymentParams: { paySign: 'x' } });
+      return Promise.resolve({});
+    });
+
+    const inst = createPageInstance();
+    await inst.loadOrder('FY-CONV-CAP');
+    inst.data.orderNo = 'FY-CONV-CAP';
+
+    expect(inst.data.isRepayment).toBe(true);
+    expect(inst.data.remaining).toBe(1500);
+    expect(inst.data.paidAmount).toBe(500);
+
+    await inst.onSubmit();
+
+    const payCall = callClientApiMock.mock.calls.find((c: any[]) => c[0] === 'order.pay');
+    expect(payCall?.[1]).toEqual({ saleOrderId: 'FY-CONV-CAP', payAmount: 500 });
+    expect(callClientApiMock.mock.calls.map((c: any[]) => c[0])).not.toContain('order.repay');
+    expect(wxMock.requestPayment).toHaveBeenCalledTimes(1);
+  });
+
   test('勾卡(余额不足尾款)：抵扣 80、付 120；order.repay(微信+卡混合)，回款不调 scanAdjust', async () => {
     mockRepay('FY-R2', 80, { paymentParams: { paySign: 'x' } });
     const inst = createPageInstance();

@@ -129,7 +129,7 @@
   </view>
 
   <!-- 底部差额汇总 -->
-  <view class="conv-summary">
+  <view wx:if="{{!isExperienceConversion}}" class="conv-summary">
     <view class="conv-summary-row">
       <text class="conv-summary-label">应付金额</text>
       <text class="conv-summary-value">¥{{convertInAmount}}</text>
