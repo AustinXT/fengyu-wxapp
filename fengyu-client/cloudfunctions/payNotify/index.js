@@ -184,7 +184,8 @@ function isPayNotifyEnabled() {
  *
  * 返回：
  *   - null              非 HTTP 入口（走原 callFunction 路径）
- *   - { _lakalaCallbackAcked: true, ackBody: {...} }   退款回调 / 非成功状态，已 ack
+ *   - { _lakalaCallbackAcked: true, ackBody: {...} }   退款回调 / 非终态非成功状态，已 ack
+ *   - { orderNo, tradeState, _lakalaTerminalPayment: true } FAIL/CLOSE，待按当前单号 CAS 释放
  *   - { orderNo, transactionId, payAmount, paymentMethod, _httpEntry: true }  成功支付回调，待业务处理
  * 抛错：签名 / IP 白名单失败，由 main 转 403 响应
  */
@@ -243,7 +244,17 @@ function parseHttpTriggerEvent(event) {
   if (tradeState === 'REFUND' || tradeState === 'PART_REFUND') {
     return { _lakalaCallbackAcked: true, ackBody: { code: 'SUCCESS', message: '退款回调已确认' } }
   }
-  // 非成功状态（INIT/CREATE/FAIL/DEAL/UNKNOWN/CLOSE）：ack 跳过业务，等下次成功回调
+  // 明确失败/关闭：交给 main 按当前 out_trade_no CAS 释放活动意图后再 ack。
+  // 不能在 parse 阶段直接 ack，否则受限回款会永久卡在 PAYMENT_INTENT_ACTIVE。
+  if (tradeState === 'FAIL' || tradeState === 'CLOSE') {
+    return {
+      orderNo: outTradeNo,
+      tradeState,
+      _lakalaTerminalPayment: true,
+      _httpEntry: true,
+    }
+  }
+  // 其它非成功状态（INIT/CREATE/DEAL/UNKNOWN）：仍可能在途，保留意图并 ack 等后续通知。
   if (tradeState !== 'SUCCESS') {
     return { _lakalaCallbackAcked: true, ackBody: { code: 'SUCCESS', message: `非成功状态 ${tradeState} ack` } }
   }
@@ -476,6 +487,18 @@ async function runPaymentReconcile() {
         termNo: merchant.termNo,
         outTradeNo: o.lakala_out_order_no,
       })
+      if (resp && ['FAIL', 'CLOSE'].includes(resp.tradeState)) {
+        await pg.query(
+          `UPDATE sale_orders
+           SET lakala_out_order_no = NULL, updated_at = NOW()
+           WHERE sale_order_id = $1
+             AND status IN ('待支付', '部分支付')
+             AND lakala_out_order_no = $2`,
+          [o.sale_order_id, o.lakala_out_order_no]
+        )
+        skip++
+        continue
+      }
       if (!resp || resp.tradeState !== 'SUCCESS') { skip++; continue }
       // 已入账（external_txn_id = 拉卡拉 tradeNo 已存在）→ 幂等跳过，避免每分钟重复 callFunction
       const paid = await pg.query(
@@ -686,6 +709,32 @@ exports.main = async (event) => {
   const isHttpEntry = !!httpEntryResult
 
   try {
+    if (businessEvent && businessEvent._lakalaTerminalPayment) {
+      // FAIL/CLOSE 会清除活动支付意图，属于写操作；只接受已完成 IP/签名校验的 HTTP 映射结果。
+      // callFunction 入口即使伪造 _httpEntry 字段也不会令 isHttpEntry 成真。
+      if (!isHttpEntry) {
+        console.warn('[payNotify] unauthenticated terminal callback rejected')
+        return { code: -403, message: 'PERMISSION_DENIED: LAKALA_TERMINAL_CALLBACK_HTTP_ONLY', data: null }
+      }
+      const terminalOutTradeNo = String(businessEvent.orderNo || '')
+      const terminalSaleOrderId = terminalOutTradeNo.replace(/_\d+$/, '')
+      if (terminalOutTradeNo && terminalSaleOrderId) {
+        const pg = getPg()
+        await pg.query(
+          `UPDATE sale_orders
+           SET lakala_out_order_no = NULL, updated_at = NOW()
+           WHERE sale_order_id = $1
+             AND status IN ('待支付', '部分支付')
+             AND lakala_out_order_no = $2`,
+          [terminalSaleOrderId, terminalOutTradeNo]
+        )
+      }
+      return {
+        statusCode: 200,
+        body: JSON.stringify({ code: 'SUCCESS', message: `终态 ${businessEvent.tradeState} 已确认` }),
+      }
+    }
+
     const { orderNo, transactionId, payAmount: payAmountInput, paymentMethod: paymentMethodInput, tradeInfo } = businessEvent
     // PII 精简日志：不打全 event，仅 orderNo + txn 前 8 位
     const txnSummary = transactionId ? String(transactionId).slice(0, 8) : 'null'
@@ -711,15 +760,23 @@ exports.main = async (event) => {
     // sale_order_id 形如 FY-XSD-WX-YYMMDDNNNN（无下划线），故剥尾部 `_<数字>` 安全且对无后缀输入幂等。
     const saleOrderId = String(orderNo).replace(/_\d+$/, '')
 
-    // 幂等检查：订单是否已支付
+    // 同一查询读取订单和 txn 幂等标记，但业务判断仍严格先看 transaction_already_paid：
+    // 首次成功处理会清空活动意图，随后同一回调重投仍应 ACK。
     // 注：wechat_transaction_id 列已在 migration 0018 DROP，三方流水号下沉到 sale_order_payments.external_txn_id
     const orderResult = await pg.query(
       `SELECT status, payment_method, preferred_employee_id,
               total_amount, payable_amount, client_user_id, store_id,
               prepaid_card_amount, pending_prepaid_card_amount,
-              sale_order_type, ref_sale_order_id, market_name
+              sale_order_type, ref_sale_order_id, market_name,
+              lakala_out_order_no, first_payment_amount,
+              EXISTS (
+                SELECT 1 FROM sale_order_payments p
+                WHERE p.sale_order_id = sale_orders.sale_order_id
+                  AND p.external_txn_id = $2
+                  AND p.status = '已支付'
+              ) AS transaction_already_paid
        FROM sale_orders WHERE sale_order_id = $1`,
-      [saleOrderId]
+      [saleOrderId, transactionId]
     )
 
     if (orderResult.rows.length === 0) {
@@ -729,16 +786,25 @@ exports.main = async (event) => {
 
     const order = orderResult.rows[0]
 
+    if (order.transaction_already_paid === true) {
+      console.log('[payNotify] 重复回调（txn 已入账），跳过:', orderNo, txnSummary)
+      return isHttpEntry
+        ? { statusCode: 200, body: JSON.stringify({ code: 'SUCCESS', message: '已处理（幂等）' }) }
+        : { code: 'SUCCESS', message: '已处理（幂等）' }
+    }
+
     // 回款单已在 2026-04-26 sale-order-domain-refactor 从 sale_order_type 枚举移除（合并到 sale_order_payments.change_type='回款'）。
     // 这里不再判别 isRepaymentCredential，所有支付都按原单推进；回款由 change_type 区分。
     const targetOrderNo = saleOrderId
     let targetOrder = order
     const isRepaymentCredential = false  // 兼容下方未清理的引用（如有），后续整体重构时移除
 
-    // 幂等：凭证单自身或原单已终态 → 再写一次 payments（ON CONFLICT DO NOTHING）后返回
+    // 未知 txn 到达终态订单不是幂等，不能 ACK 成功掩盖真实扣款未入账。
     if (order.status === '已支付' || order.status === '已完成') {
-      console.log('[payNotify] 订单已支付，跳过:', orderNo)
-      return { code: 'SUCCESS', message: '已处理' }
+      console.warn('[payNotify] 终态订单收到未知 txn:', orderNo, txnSummary)
+      return isHttpEntry
+        ? { statusCode: 409, body: JSON.stringify({ code: 'FAIL', message: '订单已终态且交易未入账' }) }
+        : { code: 'FAIL', message: '订单已终态且交易未入账' }
     }
 
     // 处理 '待支付' / '部分支付' 两种状态
@@ -766,7 +832,8 @@ exports.main = async (event) => {
         `SELECT status, payment_method, preferred_employee_id,
                 total_amount, payable_amount, client_user_id, store_id,
                 prepaid_card_amount, pending_prepaid_card_amount,
-                sale_order_type, ref_sale_order_id, market_name
+                sale_order_type, ref_sale_order_id, market_name,
+                lakala_out_order_no, first_payment_amount
          FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE`,
         [targetOrderNo]
       )
@@ -775,9 +842,36 @@ exports.main = async (event) => {
         return { code: 'FAIL', message: '订单不存在' }
       }
       targetOrder = lockedOrderRes.rows[0]
+
+      // 行锁后再次以 txn 查询幂等，覆盖两个相同回调并发进入、首个事务已提交并清空意图的场景。
+      const lockedDuplicateTxn = await client.query(
+        `SELECT 1 FROM sale_order_payments
+         WHERE sale_order_id = $1
+           AND external_txn_id = $2
+           AND status = '已支付'
+         LIMIT 1`,
+        [targetOrderNo, txnId]
+      )
+      if (lockedDuplicateTxn.rows.length > 0) {
+        await client.query('ROLLBACK')
+        return isHttpEntry
+          ? { statusCode: 200, body: JSON.stringify({ code: 'SUCCESS', message: '已处理（幂等）' }) }
+          : { code: 'SUCCESS', message: '已处理（幂等）' }
+      }
       if (!['待支付', '部分支付'].includes(targetOrder.status)) {
         await client.query('ROLLBACK')
-        return { code: 'SUCCESS', message: '订单状态已变更（幂等）' }
+        return isHttpEntry
+          ? { statusCode: 409, body: JSON.stringify({ code: 'FAIL', message: '订单状态已变更且交易未入账' }) }
+          : { code: 'FAIL', message: '订单状态已变更且交易未入账' }
+      }
+
+      if (!targetOrder.lakala_out_order_no
+          || String(targetOrder.lakala_out_order_no) !== String(orderNo)) {
+        await client.query('ROLLBACK')
+        console.error('[payNotify] 非当前拉卡拉意图:', JSON.stringify({ saleOrderId: targetOrderNo, callbackOutTradeNo: orderNo, currentOutTradeNo: targetOrder.lakala_out_order_no || null }))
+        return isHttpEntry
+          ? { statusCode: 409, body: JSON.stringify({ code: 'FAIL', message: '非当前支付意图' }) }
+          : { code: 'FAIL', message: '非当前支付意图' }
       }
 
       // ========== 核心幂等：INSERT payments 行（ON CONFLICT DO NOTHING） ==========
@@ -822,6 +916,13 @@ exports.main = async (event) => {
         throw new Error(`INVALID_PARAMS: 本次支付金额超过订单剩余应付 (${thisPayAmount} > ${remaining})`)
       }
 
+      const frozenAmount = Number(targetOrder.first_payment_amount || 0)
+      const expectedFrozenAmount = frozenAmount > 0 ? Math.min(frozenAmount, remaining) : 0
+      if (frozenAmount > 0
+          && Math.round(thisPayAmount * 100) !== Math.round(expectedFrozenAmount * 100)) {
+        throw new Error(`INVALID_STATE: PAYMENT_INTENT_AMOUNT_MISMATCH: 回调金额与冻结金额不一致 (${thisPayAmount} != ${expectedFrozenAmount})`)
+      }
+
       // change_type：
       //   - 回款凭证单回调：总是 '回款'（线上通道）
       //   - 普通销售单：判断是否已有 '首次支付' 行
@@ -831,7 +932,11 @@ exports.main = async (event) => {
       } else {
         const firstPayCheck = await client.query(
           `SELECT 1 FROM sale_order_payments
-           WHERE sale_order_id = $1 AND change_type = '首次支付' LIMIT 1`,
+           WHERE sale_order_id = $1
+             AND status = '已支付'
+             AND amount > 0
+             AND (change_type = '首次支付' OR change_type IN ('回款', '储值卡抵扣'))
+           LIMIT 1`,
           [targetOrderNo]
         )
         changeType = firstPayCheck.rows.length > 0 ? '回款' : '首次支付'
@@ -937,11 +1042,13 @@ exports.main = async (event) => {
          SET status = $1::order_status,
              received = $2,
              first_payment_amount = NULL,
+             lakala_out_order_no = NULL,
              paid_at = CASE WHEN $1::text = '已支付' THEN $3 ELSE paid_at END,
              updated_at = $3
          WHERE sale_order_id = $4
-           AND status IN ('待支付', '部分支付')`,
-        [newStatus, newReceived, now, targetOrderNo]
+           AND status IN ('待支付', '部分支付')
+           AND lakala_out_order_no = $5`,
+        [newStatus, newReceived, now, targetOrderNo, orderNo]
       )
       if (updResult.rowCount === 0) {
         // 主单已被其他事务先翻至终态（已支付/已关闭等），回滚 payment 插入并幂等 ack 微信
