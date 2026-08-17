@@ -235,7 +235,7 @@ function buildBaseConditions(session: AuthSession, scope: AnalystScope, filters:
 
   const conditions: SQL[] = [
     scopeFilterSql(session, scope, "so.store_id"),
-    // 寄存单承载 WorkFine 历史持卡品项及历史实收，是复购进入基线的一部分。
+    // 寄存单承载 WorkFine 历史持卡品项及历史实收，只参与首次进入基线。
     sql`so.sale_order_type IN ('销售单', '转换单', '寄存单')`,
     sql`so.status NOT IN ('已关闭', '已作废', '未审核', '待审批', '支付失败')`,
     sql`so.client_user_id IS NOT NULL`,
@@ -289,14 +289,14 @@ async function queryRepurchaseEntries(
     const purchaseDateExpr = sql`(${purchaseAtExpr} AT TIME ZONE 'Asia/Shanghai')::date`
     const range = resolveFilterDateRange(filters)
     const firstEntryConditions: SQL[] = [sql`TRUE`]
-    const repurchaseConditions: SQL[] = [sql`q.sale_date > f.first_date`]
+    const repurchaseConditions: SQL[] = [sql`r.sale_date > f.first_date`]
     if (range.startDate) {
       firstEntryConditions.push(sql`first_date >= ${range.startDate}::date`)
-      repurchaseConditions.push(sql`q.sale_date >= ${range.startDate}::date`)
+      repurchaseConditions.push(sql`r.sale_date >= ${range.startDate}::date`)
     }
     if (range.endDate) {
       firstEntryConditions.push(sql`first_date <= ${range.endDate}::date`)
-      repurchaseConditions.push(sql`q.sale_date <= ${range.endDate}::date`)
+      repurchaseConditions.push(sql`r.sale_date <= ${range.endDate}::date`)
     }
     const firstEntrySql = sql.join(firstEntryConditions, sql` AND `)
     const repurchaseSql = sql.join(repurchaseConditions, sql` AND `)
@@ -310,6 +310,7 @@ async function queryRepurchaseEntries(
         ${productKindExpr} AS product_kind,
         ${categoryNameExpr} AS category_name,
         so.sale_order_id,
+        so.sale_order_type,
         ${purchaseAtExpr} AS min_date,
         ${purchaseDateExpr} AS sale_date,
         so.store_id,
@@ -326,7 +327,7 @@ async function queryRepurchaseEntries(
       LEFT JOIN client_wechat_users c ON c.user_id = so.client_user_id
       WHERE ${whereSql}
         ${range.endDate ? sql`AND ${purchaseDateExpr} <= ${range.endDate}::date` : sql``}
-      GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
+      GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12
       HAVING SUM(si.received::numeric) > 0
     ),
     daily_agg AS (
@@ -340,6 +341,10 @@ async function queryRepurchaseEntries(
         store,
         market,
         SUM(total_amount) AS day_amount,
+        COALESCE(
+          SUM(total_amount) FILTER (WHERE sale_order_type IN ('销售单', '转换单')),
+          0
+        ) AS repurchase_day_amount,
         MIN(min_date) AS min_date,
         (ARRAY_AGG(customer_name ORDER BY min_date))[1] AS customer_name
       FROM order_item_flows
@@ -349,6 +354,11 @@ async function queryRepurchaseEntries(
       SELECT *
       FROM daily_agg
       WHERE day_amount >= ${threshold}
+    ),
+    repurchase_qualified_days AS (
+      SELECT *
+      FROM daily_agg
+      WHERE repurchase_day_amount >= ${threshold}
     ),
     first_entry AS (
       SELECT
@@ -363,6 +373,20 @@ async function queryRepurchaseEntries(
       SELECT *
       FROM first_entry
       WHERE ${firstEntrySql}
+    ),
+    repurchase_flags AS (
+      SELECT
+        f.client_user_id,
+        f.product_kind,
+        f.category_name,
+        f.first_date,
+        COALESCE(BOOL_OR(${repurchaseSql}), FALSE) AS repurchased
+      FROM entry_cohort f
+      LEFT JOIN repurchase_qualified_days r
+        ON r.client_user_id = f.client_user_id
+       AND r.product_kind = f.product_kind
+       AND r.category_name = f.category_name
+      GROUP BY f.client_user_id, f.product_kind, f.category_name, f.first_date
     )
     SELECT
       q.customer_code AS "customerId",
@@ -373,13 +397,13 @@ async function queryRepurchaseEntries(
       f.first_date AS "firstDate",
       (ARRAY_AGG(q.store ORDER BY q.sale_date, q.min_date))[1] AS "store",
       (ARRAY_AGG(q.market ORDER BY q.sale_date, q.min_date))[1] AS "market",
-      BOOL_OR(${repurchaseSql}) AS "repurchased"
+      f.repurchased AS "repurchased"
     FROM qualified_days q
-    JOIN entry_cohort f
+    JOIN repurchase_flags f
       ON f.client_user_id = q.client_user_id
      AND f.product_kind = q.product_kind
      AND f.category_name = q.category_name
-    GROUP BY q.client_user_id, q.customer_code, q.product_kind, q.category_name, f.first_date
+    GROUP BY q.client_user_id, q.customer_code, q.product_kind, q.category_name, f.first_date, f.repurchased
     ORDER BY f.first_date DESC, q.product_kind, q.category_name
     `)
     return mapEntryRows(rows)
