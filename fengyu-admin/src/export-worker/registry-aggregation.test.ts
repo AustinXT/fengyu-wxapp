@@ -24,7 +24,7 @@ function sourceOrderRow(sourceId: string) {
     unit: '次',
     unitRealPrice: 100,
     totalAmount: '100.00',
-    prepaidCardAmount: '200.00',
+    prepaidCardAmount: '100.00',
     cashAmount: '0.00',
     received: '100.00',
     refundedAmount: '0.00',
