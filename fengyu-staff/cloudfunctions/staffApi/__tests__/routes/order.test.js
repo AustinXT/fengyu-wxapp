@@ -4776,6 +4776,67 @@ describe('order.createConversion', () => {
     await expect(orderRoutes.createConversion(ctx)).rejects.toThrow(/BUNDLE_SKU_NOT_BELONG/)
   })
 
+  test('组合套餐转换拒绝套餐配置中已停用的转入 SKU', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'cu-001',
+      convertOutSaleItemIds: ['item-card-1'],
+      convertInItems: [{ skuId: 'sku-disabled', quantity: 1 }],
+      bundleProductId: 'prod-body-bundle',
+      paymentMethod: '线下',
+    })
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'cu-001', phone: '138', name: '王莉', customer_type: '会员客', bound_store_id: 'store-001',
+    }])
+    const calls = []
+    pg.transaction.mockImplementationOnce(async (cb) => cb({
+      query: vi.fn(async (sql, params) => {
+        calls.push({ sql, params })
+        if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
+        if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
+        if (sql.includes('FROM sale_items si') && sql.includes('FOR UPDATE OF si')) {
+          return {
+            rows: [{
+              sale_item_id: 'item-card-1', sale_order_id: 'order-old', store_id: 'store-001',
+              item_direction: '购买', sku_id: 'sku-old', product_name: '旧项目', product_type: '疗程卡',
+              session_count: 1, remaining_sessions: 1, quantity: 1, picked_up_quantity: 0,
+              unit_price: '100', unit_real_price: '100', sales_category: '自销自耗', service_fee: '0',
+              client_user_id: 'cu-001', sale_order_type: '销售单', order_status: '已支付', product_kind: '护理项目',
+            }],
+            rowCount: 1,
+          }
+        }
+        if (sql.includes('FROM service_items sit')) return { rows: [], rowCount: 0 }
+        if (sql.includes('FROM products p')) {
+          return { rows: [{ product_id: 'prod-body-bundle', is_bundle: true }], rowCount: 1 }
+        }
+        if (sql.includes('FROM mall_bundle_groups')) {
+          return { rows: [{ id: 85, group_name: '体态项目', pick_count: 1 }], rowCount: 1 }
+        }
+        if (sql.includes('FROM mall_product_skus')) {
+          return {
+            rows: [{
+              sku_id: 'sku-disabled', bundle_group_id: 85, bundle_price: '1980', bundle_list_price: '1980',
+            }],
+            rowCount: 1,
+          }
+        }
+        if (sql.includes('FROM product_skus s') && sql.includes('JOIN product_categories')) {
+          return { rows: [], rowCount: 0 }
+        }
+        return defaultQueryResult(sql)
+      }),
+    }))
+
+    await expect(orderRoutes.createConversion(ctx)).rejects.toThrow(/商品 sku-disabled 不存在/)
+
+    const skuQuery = calls.find(({ sql }) =>
+      sql.includes('FROM product_skus s') && sql.includes('JOIN product_categories')
+    )
+    expect(skuQuery.sql).toContain('s.is_enabled = true')
+    expect(calls.some(({ sql }) => sql.includes('INSERT INTO sale_orders'))).toBe(false)
+    expect(calls.some(({ sql }) => sql.includes('INSERT INTO sale_items'))).toBe(false)
+  })
+
   test('体验转换按旧卡价值强制定价，不补不退并直接结清', async () => {
     const ctx = createManagerCtx({
       clientUserId: 'cu-001',
@@ -5254,7 +5315,7 @@ describe('order.createConversion', () => {
     expect(inInsert.params[16]).toBe(true)
   })
 
-  test('转换单阶梯价同步写入转入明细成交金额', async () => {
+  test('转换单阶梯价排除停用和体验候选并同步写入转入明细成交金额', async () => {
     const ctx = createManagerCtx({
       clientUserId: 'cu-001',
       convertOutSaleItemIds: ['item-tier-old'],
@@ -5363,8 +5424,32 @@ describe('order.createConversion', () => {
                 is_experience: false,
                 is_manager_special: false,
               },
+              {
+                sku_id: 'sku-tier-disabled-15',
+                category_id: 'cat-tier',
+                product_type: '疗程卡',
+                spec_name: '阶梯项目',
+                price: '1200',
+                special_price: null,
+                session_count: 15,
+                is_enabled: false,
+                is_experience: false,
+                is_manager_special: false,
+              },
+              {
+                sku_id: 'sku-tier-experience-15',
+                category_id: 'cat-tier',
+                product_type: '疗程卡',
+                spec_name: '阶梯项目',
+                price: '900',
+                special_price: null,
+                session_count: 15,
+                is_enabled: true,
+                is_experience: true,
+                is_manager_special: false,
+              },
             ],
-            rowCount: 2,
+            rowCount: 4,
           }
         }
         return defaultQueryResult(sql)
@@ -5376,6 +5461,14 @@ describe('order.createConversion', () => {
     // 5 + 10 次命中 10 次卡 1800 的阶梯，转入总额为 900 + 1800。
     expect(ctx.result.totalIn).toBe(2700)
     expect(ctx.result.priceDiff).toBe(1700)
+
+    const tierQuery = txCalls.find(c =>
+      typeof c.sql === 'string'
+      && c.sql.includes('WHERE s.category_id = ANY($1)')
+      && c.sql.includes("s.product_type = '疗程卡'")
+    )
+    expect(tierQuery.sql).toContain('s.is_enabled = true')
+    expect(tierQuery.sql).toContain('COALESCE(s.is_experience, false) = false')
 
     const inInserts = txCalls.filter(c =>
       typeof c.sql === 'string' && c.sql.includes('INSERT INTO sale_items') && c.sql.includes("'转入'")

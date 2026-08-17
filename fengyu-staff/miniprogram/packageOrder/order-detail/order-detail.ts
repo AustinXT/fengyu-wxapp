@@ -36,6 +36,7 @@ interface RawOrder {
   prepaid_card_amount?: string;
   pending_prepaid_card_amount?: string;
   payable_amount?: string;
+  first_payment_amount?: string | null;
   opened_by?: string;
   refund_reason?: string;
   ref_sale_order_id?: string;
@@ -457,11 +458,15 @@ Page({
       // 欠款口径 = total − netReceived（与 status 结清判定 settleTarget = payable + prepaid 一致；
       // received 按 I1 含储值卡抵扣，须用总额减，否则含卡部分支付单 payable(扣卡)−received(含卡) ≤ 0 → hasDebt 误判）
       const remainingPayable = Math.max(0, Math.round((totalAmount - netReceived) * 100) / 100);
-      // 「发起回款」仅在已首次支付（部分支付）且仍有欠款时显示；
-      // 待支付走「确认线下收款」，已结清/终态均不显示回款入口
+      // 销售单仍仅在部分支付后发起回款；普通转换单允许零首付形成的待支付欠款
+      // 进入订单级回款。first_payment_amount>0 表示已有冻结支付场次，不能再开新意图。
       const orderType = o.sale_order_type || '';
-      const hasDebt = (orderType === '销售单' || orderType === '转换单')
-        && o.status === '部分支付'
+      const hasActivePaymentCap = Number(o.first_payment_amount || 0) > 0;
+      const hasRepayableStatus = (orderType === '销售单' && o.status === '部分支付')
+        || (orderType === '转换单'
+          && (o.status === '待支付' || o.status === '部分支付')
+          && !hasActivePaymentCap);
+      const hasDebt = hasRepayableStatus
         && remainingPayable > 0
         && !o.is_experience_conversion;
 

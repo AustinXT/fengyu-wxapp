@@ -1197,7 +1197,9 @@ Page({
     const conversionCouponCap = isConversion
       ? Math.max(0, Math.round((couponBaseTotal - (Number(this.data.conversionDeductibleSum) || 0)) * 100) / 100)
       : couponBaseTotal;
-    const effectiveCouponDiscount = !isInternal && !this.data.conversionIsExperience && this.data.selectedCoupon
+    const effectiveCouponDiscount = !isInternal
+      && (!isConversion || !this.data.conversionIsExperience)
+      && this.data.selectedCoupon
       ? Math.round(Math.min(rawCouponDiscount, conversionCouponCap) * 100) / 100
       : 0;
     const shouldClearConversionCoupon = isConversion
@@ -1693,6 +1695,7 @@ Page({
       update.conversionPaymentMethod = null;
       update.conversionPrepaidCardAmount = 0;
       update.conversionRemaining = 0;
+      update.conversionIsExperience = false;
       update.conversionIsActivity = false;
       update.conversionCouponBaseTotal = 0;
       update.conversionCouponEnabled = false;

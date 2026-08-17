@@ -160,6 +160,38 @@ describe('开单疗程卡阶梯价', () => {
     expect(page.data.cart[0]).toMatchObject({ couponShare: '0.00', saleAmount: '300.00' })
   })
 
+  test('切离体验转换后清除体验标记并恢复销售单优惠券计价', () => {
+    const cart = [createCartItem('sku-sales', 1, 300)]
+    const page = {
+      ...pageDefinition,
+      data: {
+        ...pageDefinition.data,
+        saleOrderType: '转换单',
+        conversionIsExperience: true,
+        buyerIsMember: false,
+        selectedCoupon: null,
+        cart,
+        cartPopupVisible: false,
+      },
+      _allSkus: [],
+      setData(update: Record<string, unknown>) {
+        Object.assign(this.data, update)
+      },
+      revalidateCoupon: vi.fn(),
+      recomputePrepaidAmounts: vi.fn(),
+    }
+
+    page.onSelectSaleOrderType({ currentTarget: { dataset: { type: '销售单' } } } as any)
+
+    expect(page.data.conversionIsExperience).toBe(false)
+
+    page.setData({ selectedCoupon: { couponId: 'coupon-sales', name: '销售券', discount: 100 } })
+    page.updateCart(page.data.cart)
+
+    expect(page.data.couponDiscount).toBe(100)
+    expect(page.data.cart[0]).toMatchObject({ couponShare: '100.00', saleAmount: '200.00' })
+  })
+
   test('转换单提交透传所选优惠券', async () => {
     const callStaffApiMock = vi.mocked(callStaffApi)
     callStaffApiMock.mockResolvedValueOnce({
