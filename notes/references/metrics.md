@@ -528,15 +528,16 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 术语 | 定义 |
 |------|------|
 | **purchase_date（消费日期）** | `COALESCE(so.sale_order_datetime, so.paid_at)::date`；优先订单消费时间，缺失时回退付款时间 |
-| **qualifying day（达标日）** | `SUM(si.received)` 在 `(client_user_id, store_id, product_kind, purchase_date)` 分组下 ≥ `new_member_threshold`（从 `system_configs` 动态读取，工具函数 `getMemberThreshold()`，默认 1980）|
-| **entry_date（首次进入日）** | 某 client 在某 product_kind 下，全历史（截至 $endDate）中最早的达标日（跨门店合并） |
+| **entry qualifying day（进入达标日）** | 销售单/转换单/寄存单的 `SUM(si.received)` 在 `(client_user_id, store_id, product_kind, purchase_date)` 分组下 ≥ `new_member_threshold`（从 `system_configs` 动态读取，默认 1980）|
+| **repurchase qualifying day（复购达标日）** | 同一分组下仅汇总销售单/转换单的 `SUM(si.received)`，达到同一 threshold；寄存单金额不参与，不能触发复购 |
+| **entry_date（首次进入日）** | 某 client 在某 product_kind 下，全历史（截至 $endDate）中最早的进入达标日（跨门店合并） |
 | **品项进入（xinzeng/newEntry）** | entry_date 落在 `[startDate, endDate]` 内的顾客 |
-| **复购（fugou）** | 本期品项进入 cohort 中，entry_date 后在 `[startDate, endDate]` 内再次有达标日的顾客（threshold 与进入共用） |
-| **体验（tiyan）** | 在 `[startDate, endDate]` 内有购买，但全历史（截至 endDate）从未有达标日的顾客 |
+| **复购（fugou）** | 本期品项进入 cohort 中，entry_date 后在 `[startDate, endDate]` 内再次有复购达标日的顾客（threshold 与进入共用） |
+| **体验（tiyan）** | 在 `[startDate, endDate]` 内有销售单/转换单购买，但全历史（截至 endDate）从未有进入达标日的顾客 |
 
-> **同一天合并规则**：同一顾客 + 同一门店 + 同一 product_kind + 同一日期的多笔消费先合并再对比 threshold。
-> **金额口径**：直接使用 `sale_items.received` 累计净实收，回款已累计在该字段内；不再另查回款流水。
-> **订单状态口径**：周期统计不要求 `so.status='已支付'`；排除 `已关闭/已作废/未审核/待审批/支付失败` 后，`received` 达标即计入，部分支付订单也可能达标。
+> **同一天合并规则**：同一顾客 + 同一门店 + 同一 product_kind + 同一日期的多笔消费先合并；进入基线汇总三类订单，复购达标仅汇总销售单/转换单，再分别对比 threshold。
+> **金额口径**：直接使用 `sale_items.received` 累计净实收，回款已累计在该字段内；不再另查回款流水。寄存单只用于进入基线，不计入体验/进入/复购的区间业绩。
+> **订单状态口径**：周期统计不要求 `so.status='已支付'`；排除 `已关闭/已作废/未审核/待审批/支付失败` 后，分别按进入金额列和真实购买金额列判断是否达标，部分支付订单也可能达标。
 > **三类关系**：体验 ∩ 品项进入 = ∅，体验 ∩ 复购 = ∅；品项进入当天本身不算复购，必须存在 entry_date 之后的达标日。
 
 **底层 CTE（三类指标共用）**：
@@ -545,12 +546,16 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 WITH daily_agg AS (
   SELECT so.client_user_id, so.store_id,
          pc.product_kind,    COALESCE(so.sale_order_datetime, so.paid_at)::date AS purchase_date,
-         SUM(si.received)                     AS day_received
+         SUM(si.received)                     AS day_received,
+         COALESCE(
+           SUM(si.received) FILTER (WHERE so.sale_order_type IN ('销售单','转换单')),
+           0
+         )                                    AS purchase_received
   FROM sale_items si
   JOIN sale_orders so ON si.sale_order_id  = so.sale_order_id
   JOIN product_skus sk ON si.sku_id        = sk.sku_id
   JOIN product_categories pc ON sk.category_id = pc.category_id
-  WHERE so.sale_order_type IN ('销售单','转换单')
+  WHERE so.sale_order_type IN ('销售单','转换单','寄存单')
     AND so.status NOT IN ('已关闭','已作废','未审核','待审批','支付失败')
     AND so.client_user_id IS NOT NULL
     AND COALESCE(so.sale_order_datetime, so.paid_at)::date <= $endDate
@@ -562,22 +567,29 @@ qualifying_days AS (
   SELECT client_user_id, store_id, product_kind, purchase_date
   FROM daily_agg WHERE day_received >= $threshold
 ),
-first_entry AS (                              -- entry_date：全历史最早达标日（跨店合并）
+repurchase_qualifying_days AS (
+  SELECT client_user_id, store_id, product_kind, purchase_date
+  FROM daily_agg WHERE purchase_received >= $threshold
+),
+first_entry AS (                              -- entry_date：全历史最早进入达标日（跨店合并）
   SELECT client_user_id, product_kind, MIN(purchase_date) AS entry_date
   FROM qualifying_days
   GROUP BY client_user_id, product_kind
 ),
-period_agg AS (                               -- 期内每日聚合
-  SELECT client_user_id, store_id, product_kind, purchase_date, day_received
-  FROM daily_agg WHERE purchase_date BETWEEN $startDate AND $endDate
+period_agg AS (                               -- 期内真实购买每日聚合（排除寄存金额）
+  SELECT client_user_id, store_id, product_kind, purchase_date,
+         purchase_received AS day_received
+  FROM daily_agg
+  WHERE purchase_date BETWEEN $startDate AND $endDate
+    AND purchase_received > 0
 ),
 xinzeng AS (                                  -- 新增：entry_date 在期内
   SELECT client_user_id, product_kind, entry_date FROM first_entry
   WHERE entry_date BETWEEN $startDate AND $endDate
 ),
-fugou AS (                                    -- 复购：本期进入 cohort，entry_date 后期内再次达标
+fugou AS (                                    -- 复购：本期进入 cohort，entry_date 后期内真实购买再次达标
   SELECT DISTINCT q.client_user_id, q.product_kind
-  FROM qualifying_days q
+  FROM repurchase_qualifying_days q
   JOIN xinzeng x ON x.client_user_id = q.client_user_id
                 AND x.product_kind   = q.product_kind
   WHERE q.purchase_date BETWEEN $startDate AND $endDate
@@ -607,8 +619,8 @@ tiyan AS (                                    -- 体验：期内有购买但全�
 | 复购客单价（repurchaseAvgTicket） | `repurchaseRevenue / repurchaseCount` | 派生；防除零 → `--` |
 | 复购率（repurchaseRate） | `repurchaseCount / newCount` | 派生；防除零 → `--` |
 
-> **新增人数 = 品项进入总人数**：对应原始需求"首次在该品项消费达标 | 首笔消费实收累计 ≥ new_member_threshold"。
-> **各类业绩口径**：为该客群在 period 内该 product_kind 的全部购买 `SUM(received)`（非仅达标当日），
+> **新增人数 = 品项进入总人数**：正常购买按"首次在该品项消费达标 | 首笔消费实收累计 ≥ new_member_threshold"；寄存单承载 WorkFine 历史实收时，只作为进入基线的兼容数据。
+> **各类业绩口径**：为该客群在 period 内该 product_kind 的销售单/转换单购买 `SUM(received)`（非仅达标当日，排除寄存单），
 > 体现"该客群对期内收入的贡献"。
 > **性能注意**：`daily_agg` 全历史扫描（`purchase_date <= $endDate`，无下界），随运营时长增长。
 > 建议追加面向 `sale_order_datetime/paid_at` 与 `client_user_id/status` 的复合索引；800ms slow warn 阈值。
@@ -624,7 +636,7 @@ tiyan AS (                                    -- 体验：期内有购买但全�
 > | 仅选一级（`productKind`） | `pc.product_kind` | WHERE `pc.product_kind = $productKind` 过滤后仍按一级聚合（单组）|
 > | 选到二级（`categoryName`，附带其一级） | `pc.category_name` | WHERE `pc.product_kind = $productKind AND pc.category_name = $categoryName` 过滤后按二级聚合（单组）|
 >
-> **口径与一级完全同构**——所有 CTE（`daily_agg` / `qualifying_days` / `first_entry` / `period_agg` / `xinzeng` / `fugou` / `tiyan`）
+> **口径与一级完全同构**——所有 CTE（`daily_agg` / `qualifying_days` / `repurchase_qualifying_days` / `first_entry` / `period_agg` / `xinzeng` / `fugou` / `tiyan`）
 > 与持卡截面查询的逻辑、阈值（`getMemberThreshold`，默认 1980）、达标日规则、复购必须晚于进入日的规则
 > **均不变**，唯一差异是把分组键 `pc.product_kind` 整体替换为 `pc.category_name`（达标日聚合的 GROUP BY 维度
 > 与 `first_entry` 跨店合并键同步替换）。即：
