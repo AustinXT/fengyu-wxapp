@@ -57,6 +57,20 @@
       "when": 1786453413434,
       "tag": "0007_spooky_virginia_dare",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1786928149704,
+      "tag": "0008_naive_marvex",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1786928808006,
+      "tag": "0009_massive_speed_demon",
+      "breakpoints": true
     }
   ]
 }

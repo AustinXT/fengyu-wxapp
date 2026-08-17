@@ -61,6 +61,19 @@ function toTimestamp(v) {
   return v instanceof Date ? v.toISOString() : String(v)
 }
 
+function toShanghaiDate(v) {
+  const parsed = new Date(v)
+  if (Number.isNaN(parsed.getTime())) return String(v).slice(0, 10)
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(parsed)
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+  return `${values.year}-${values.month}-${values.day}`
+}
+
 function log(msg) {
   console.log(`[LEGACY] ${msg}`)
 }
@@ -186,6 +199,7 @@ function processRows(rows, lookups) {
       marketName,
       storeId,
       saleOrderDatetime: saleDate,
+      performanceAttributionDate: toShanghaiDate(saleDate),
       clientUserId,
       clientPhone: phone,
       customerName,
@@ -220,7 +234,7 @@ async function batchInsert(pgPool, rows, dryRun) {
   if (dryRun) return rows.length
 
   let inserted = 0
-  const COLS_PER_ROW = 16
+  const COLS_PER_ROW = 17
 
   for (let b = 0; b < totalBatches; b++) {
     const slice = rows.slice(b * BATCH_SIZE, (b + 1) * BATCH_SIZE)
@@ -231,6 +245,7 @@ async function batchInsert(pgPool, rows, dryRun) {
       r.marketName,
       r.storeId,
       r.saleOrderDatetime,
+      r.performanceAttributionDate,
       r.clientUserId,
       r.clientPhone,
       r.customerName,
@@ -251,7 +266,7 @@ async function batchInsert(pgPool, rows, dryRun) {
         `
         INSERT INTO sale_orders (
           sale_order_id, status, sale_order_type, market_name, store_id,
-          sale_order_datetime, client_user_id, client_phone, customer_name,
+          sale_order_datetime, performance_attribution_date, client_user_id, client_phone, customer_name,
           total_amount, payable_amount, received, payment_method,
           legacy_source, legacy_customer_id, legacy_raw_snapshot
         ) VALUES ${mv.placeholders}

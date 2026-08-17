@@ -9,6 +9,7 @@ import {
   jsonb,
   numeric,
   pgTable,
+  pgView,
   text,
   timestamp,
   uniqueIndex,
@@ -56,6 +57,18 @@ export const saleOrders = pgTable(
     /** 所属门店名称（快照，与 market_name 一致；门店改名后历史订单仍显示下单时名称） */
     storeName: varchar("store_name", { length: 100 }),
     saleOrderDatetime: timestamp("sale_order_datetime", { withTimezone: true }).notNull(),
+    /**
+     * 业绩归属日期（上海自然日）。仅首次业绩事件按本字段归集；后续回款/退款仍按各自 paid_at。
+     * 原始订单时间 sale_order_datetime 始终保留真实业务事实，不因经营周期调整而改写。
+     */
+    performanceAttributionDate: date("performance_attribution_date")
+      .notNull()
+      .default(sql`(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date`),
+    /** 首次人工调整时间；非 NULL 即表示该订单的一次修改机会已使用。 */
+    performanceAttributionAdjustedAt: timestamp("performance_attribution_adjusted_at", { withTimezone: true }),
+    /** 首次人工调整人；员工删除后置空，完整审计仍由 operation_logs 保留。 */
+    performanceAttributionAdjustedBy: varchar("performance_attribution_adjusted_by", { length: 30 })
+      .references(() => staffWechatUsers.employeeId, { onDelete: "set null" }),
     clientUserId: text("client_user_id").references(() => clientWechatUsers.userId),
     clientPhone: varchar("client_phone", { length: 30 }),
     customerName: varchar("customer_name", { length: 50 }),
@@ -81,14 +94,13 @@ export const saleOrders = pgTable(
      */
     refundedAmount: numeric("refunded_amount", { precision: 10, scale: 2 }).notNull().default("0"),
     /**
-     * 首付金额上限（仅线上分期场景使用，nullable）。
+     * 首次收款金额上限（分期/转换单部分支付场景使用，nullable）。
      *
      * 语义：admin 开单时若 paymentMethod ∈ {微信, 支付宝} 且实付 < 应付，
      * 把"本次 QR 应收金额"写入此字段。scan-pay 读取后传给 order.pay() 的 payAmount，
      * 让微信/支付宝 QR 只收首付额；payNotify 回调入账后清空此字段（=NULL）。
      *
-     * 线下/储值卡场景：始终为 NULL（线下首次收款直接写入 sale_order_payments[change_type='首次支付']，
-     * 由 sale_orders.received 反映；不需要单独首付字段）。
+     * 普通转换单在首次收款尚未确认时也使用该字段冻结本次应收上限；线上回调或线下确认后清空。
      *
      * 不变量：first_payment_amount IS NULL OR (0 < first_payment_amount <= payable_amount)
      */
@@ -114,6 +126,8 @@ export const saleOrders = pgTable(
     remark: text("remark"),
     /** 活动单标记（纯标识，不影响金额/提成/营收口径；admin/staff 开单时勾选） */
     isActivity: boolean("is_activity").notNull().default(false),
+    /** 体验转换标记；仅转换单可为 true，金额由系统按旧卡划卡价值强制定价 */
+    isExperienceConversion: boolean("is_experience_conversion").notNull().default(false),
     /** 会员升级单标记（该订单触发顾客首次跃迁为会员客；由 recalcCustomerType 在首次跃迁时自动打标，非手动勾选） */
     isMembershipUpgrade: boolean("is_membership_upgrade").notNull().default(false),
     /**
@@ -143,6 +157,10 @@ export const saleOrders = pgTable(
       .on(table.clientPhone, table.storeId)
       .where(sql`status = '待支付' AND client_user_id IS NULL`),
     index("idx_sale_orders_store_status").on(table.storeId, table.status),
+    index("idx_sale_orders_performance_date_store").on(table.performanceAttributionDate, table.storeId),
+    index("idx_sale_orders_experience_conversion_audit")
+      .on(table.storeId, table.saleOrderDatetime)
+      .where(sql`is_experience_conversion = true`),
     index("idx_sale_orders_ref").on(table.refSaleOrderId),
     index("idx_sale_orders_client_user_id")
       .on(table.clientUserId)
@@ -567,6 +585,181 @@ export const salePaymentItemAllocations = pgTable(
   ],
 );
 
+const saleOrderPerformanceEventsQuery = sql`
+  WITH classified AS (
+    SELECT
+      sop.id AS sale_payment_id,
+      sop.sale_order_id,
+      so.store_id,
+      so.sale_order_type,
+      so.legacy_source,
+      sop.change_type,
+      sop.payment_method,
+      sop.status,
+      sop.amount,
+      sop.paid_at,
+      so.performance_attribution_date,
+      (
+        sop.change_type = '首次支付'
+        OR (
+          sop.change_type = '储值卡抵扣'
+          AND sop.status = '已支付'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM sale_order_payments prior
+            WHERE prior.sale_order_id = sop.sale_order_id
+              AND prior.status = '已支付'
+              AND prior.change_type IN ('首次支付', '回款', '储值卡抵扣')
+              AND (
+                COALESCE(prior.paid_at, prior.created_at),
+                prior.id
+              ) < (
+                COALESCE(sop.paid_at, sop.created_at),
+                sop.id
+              )
+          )
+        )
+      ) AS is_initial_event
+    FROM sale_order_payments sop
+    JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
+  )
+  SELECT
+    sale_payment_id,
+    sale_order_id,
+    store_id,
+    sale_order_type,
+    legacy_source,
+    change_type,
+    payment_method,
+    status,
+    amount,
+    paid_at,
+    CASE
+      WHEN is_initial_event THEN performance_attribution_date
+      ELSE (COALESCE(paid_at, CURRENT_TIMESTAMP) AT TIME ZONE 'Asia/Shanghai')::date
+    END AS performance_date,
+    is_initial_event
+  FROM classified
+`;
+
+/**
+ * 订单款项业绩事件视图。
+ *
+ * - 首次支付，以及没有更早成功正向款项的首次纯储值卡抵扣，使用订单业绩归属日期；
+ * - 后续回款、后续储值卡抵扣和退款使用各自真实 paid_at 的上海自然日；
+ * - 视图保留全部状态，报表必须继续限定 status='已支付'。
+ */
+export const saleOrderPerformanceEvents = pgView(
+  "sale_order_performance_events",
+  {
+    salePaymentId: bigint("sale_payment_id", { mode: "number" }).notNull(),
+    saleOrderId: varchar("sale_order_id", { length: 30 }).notNull(),
+    storeId: text("store_id").notNull(),
+    saleOrderType: saleOrderTypeEnum("sale_order_type").notNull(),
+    legacySource: text("legacy_source"),
+    changeType: paymentChangeTypeEnum("change_type").notNull(),
+    paymentMethod: paymentMethodEnum("payment_method").notNull(),
+    status: paymentFlowStatusEnum("status").notNull(),
+    amount: numeric("amount", { precision: 10, scale: 2 }).notNull(),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+    performanceDate: date("performance_date").notNull(),
+    isInitialEvent: boolean("is_initial_event").notNull(),
+  },
+).as(saleOrderPerformanceEventsQuery);
+
+/**
+ * 商品子项业绩事件视图。
+ *
+ * 新数据逐笔读取 sale_payment_item_receipts；历史缺失部分以
+ * sale_items.received - SUM(已支付 receipt.amount) 形成归属日残差事件。
+ * 因此任意时点按 sale_item 汇总本视图，结果恒等于 sale_items.received。
+ */
+export const saleItemPerformanceEvents = pgView(
+  "sale_item_performance_events",
+  {
+    eventKey: text("event_key").notNull(),
+    receiptId: bigint("receipt_id", { mode: "number" }),
+    salePaymentId: bigint("sale_payment_id", { mode: "number" }),
+    saleOrderId: varchar("sale_order_id", { length: 30 }).notNull(),
+    saleItemId: varchar("sale_item_id", { length: 30 }).notNull(),
+    storeId: text("store_id").notNull(),
+    amount: numeric("amount", { precision: 10, scale: 2 }).notNull(),
+    salesCategory: salesCategoryEnum("sales_category"),
+    changeType: paymentChangeTypeEnum("change_type").notNull(),
+    performanceDate: date("performance_date").notNull(),
+    isInitialEvent: boolean("is_initial_event").notNull(),
+    isLegacyResidual: boolean("is_legacy_residual").notNull(),
+  },
+).as(sql`
+  WITH performance_events AS (
+    ${saleOrderPerformanceEventsQuery}
+  ),
+  paid_receipts AS (
+    SELECT
+      spir.id,
+      spir.sale_payment_id,
+      spir.sale_order_id,
+      spir.sale_item_id,
+      spir.amount,
+      spir.sales_category,
+      spe.store_id,
+      spe.change_type,
+      spe.performance_date,
+      spe.is_initial_event
+    FROM sale_payment_item_receipts spir
+    JOIN performance_events spe
+      ON spe.sale_payment_id = spir.sale_payment_id
+     AND spe.status = '已支付'
+  ),
+  receipt_totals AS (
+    SELECT sale_item_id, SUM(amount)::numeric(10, 2) AS amount
+    FROM paid_receipts
+    GROUP BY sale_item_id
+  ),
+  residuals AS (
+    SELECT
+      si.sale_item_id,
+      si.sale_order_id,
+      so.store_id,
+      ROUND(si.received::numeric - COALESCE(rt.amount, 0)::numeric, 2)::numeric(10, 2) AS amount,
+      si.sales_category,
+      so.performance_attribution_date
+    FROM sale_items si
+    JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+    LEFT JOIN receipt_totals rt ON rt.sale_item_id = si.sale_item_id
+    WHERE ROUND(si.received::numeric - COALESCE(rt.amount, 0)::numeric, 2) <> 0
+  )
+  SELECT
+    'receipt:' || pr.id::text AS event_key,
+    pr.id AS receipt_id,
+    pr.sale_payment_id,
+    pr.sale_order_id,
+    pr.sale_item_id,
+    pr.store_id,
+    pr.amount,
+    pr.sales_category,
+    pr.change_type,
+    pr.performance_date,
+    pr.is_initial_event,
+    false AS is_legacy_residual
+  FROM paid_receipts pr
+  UNION ALL
+  SELECT
+    'residual:' || r.sale_item_id AS event_key,
+    NULL::bigint AS receipt_id,
+    NULL::bigint AS sale_payment_id,
+    r.sale_order_id,
+    r.sale_item_id,
+    r.store_id,
+    r.amount,
+    r.sales_category,
+    '首次支付'::payment_change_type AS change_type,
+    r.performance_attribution_date AS performance_date,
+    true AS is_initial_event,
+    true AS is_legacy_residual
+  FROM residuals r
+`);
+
 export type SaleOrder = typeof saleOrders.$inferSelect;
 export type NewSaleOrder = typeof saleOrders.$inferInsert;
 export type SaleItem = typeof saleItems.$inferSelect;
@@ -581,3 +774,5 @@ export type SalePaymentItemReceipt = typeof salePaymentItemReceipts.$inferSelect
 export type NewSalePaymentItemReceipt = typeof salePaymentItemReceipts.$inferInsert;
 export type SalePaymentItemAllocation = typeof salePaymentItemAllocations.$inferSelect;
 export type NewSalePaymentItemAllocation = typeof salePaymentItemAllocations.$inferInsert;
+export type SaleOrderPerformanceEvent = typeof saleOrderPerformanceEvents.$inferSelect;
+export type SaleItemPerformanceEvent = typeof saleItemPerformanceEvents.$inferSelect;
