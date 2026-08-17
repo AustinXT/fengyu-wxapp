@@ -122,12 +122,12 @@ describe('品项板块两端口径一致性守护', () => {
       }
     })
 
-    it('admin 按店体验人数要求正向购买发生在同一门店', () => {
+    it('admin 明细体验人数要求正向购买发生在目标分组内', () => {
       expect(adminCode).toMatch(
-        /tiyan\s+AS\s*\(\s*SELECT DISTINCT pa\.client_user_id, pa\.store_id, pa\.grp[\s\S]*?WHERE pa\.has_purchase/i,
+        /tiyan\s+AS\s*\(\s*SELECT DISTINCT pa\.client_user_id, pa\.group_id, pa\.entry_group_id, pa\.grp[\s\S]*?WHERE pa\.has_purchase/i,
       )
       expect(adminCode).toMatch(
-        /trial_store\s+AS\s*\(\s*SELECT t\.store_id, COUNT\(DISTINCT t\.client_user_id\) AS cnt FROM tiyan t GROUP BY t\.store_id/i,
+        /trial_group\s+AS\s*\(\s*SELECT t\.group_id, COUNT\(DISTINCT t\.client_user_id\) AS cnt FROM tiyan t GROUP BY t\.group_id/i,
       )
     })
   })
@@ -142,6 +142,19 @@ describe('品项板块两端口径一致性守护', () => {
     it('两端 daily_agg 全历史下界（performance_date <= 区间末）', () => {
       expect(adminCode).toMatch(/sipe\.performance_date\s*<=\s*\$\{range\.end\}/)
       expect(staffCode).toMatch(/sipe\.performance_date\s*<=\s*\$2/)
+    })
+  })
+
+  describe('市场明细人数在市场内去重', () => {
+    it('市场持卡直接按 market_id + 顾客聚合，不能由门店持卡相加', () => {
+      expect(adminCode).toMatch(/queryCardHoldersByGroup[\s\S]*?sk\.market_id[\s\S]*?COUNT\(DISTINCT\s+so\.client_user_id\)[\s\S]*?GROUP BY \$\{groupId\}/i)
+    })
+
+    it('市场 first_entry 以 market_id 为分组键，跨市场仍分别归属', () => {
+      expect(adminCode).toMatch(/entryGroupId\s*=\s*group\s*===\s*'market'\s*\?\s*sql\.raw\('sk\.market_id::text'\)/i)
+      expect(adminCode).toMatch(/first_entry\s+AS\s*\([\s\S]*?GROUP BY\s+client_user_id,\s*entry_group_id,\s*grp/i)
+      expect(adminCode).toMatch(/new_group\s+AS\s*\([\s\S]*?COUNT\(DISTINCT\s+pa\.client_user_id\)/i)
+      expect(adminCode).toMatch(/repurchase_group\s+AS\s*\([\s\S]*?COUNT\(DISTINCT\s+pa\.client_user_id\)/i)
     })
   })
 

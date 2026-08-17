@@ -7,7 +7,7 @@ import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { parseBoardParams } from "@/lib/data-center/params"
 import { getProductBoard } from "@/actions/data-center/product"
 import { KpiGrid, type KpiGridItem } from "../kpi-card"
-import { BreakdownTable, type BreakdownColumn } from "../breakdown-table"
+import { BreakdownTable } from "../breakdown-table"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import type { ProductBoardParams, ProductBoardResult } from "@/lib/data-center/types"
 
@@ -25,19 +25,6 @@ const KPI_CYCLE: KpiGridItem[] = [
   { key: "repurchaseRevenue", label: "复购业绩" },
   { key: "repurchaseAvgTicket", label: "复购客单价" },
   { key: "repurchaseRate", label: "复购率", hint: "复购人数 ÷ 持卡人数" },
-]
-
-// ── 明细表列（key 对应 byMarket/byStore[].metrics）────────────────────
-const BREAKDOWN_COLUMNS: BreakdownColumn[] = [
-  { key: "cardHolders", label: "持卡人数", unit: "count" },
-  { key: "cardHolderRate", label: "持卡占比", unit: "percent" },
-  { key: "trialCount", label: "体验人数", unit: "count" },
-  { key: "newCount", label: "新增人数", unit: "count" },
-  { key: "newRevenue", label: "新增业绩", unit: "amount" },
-  { key: "newAvgTicket", label: "新增客单价", unit: "amount" },
-  { key: "repurchaseCount", label: "复购人数", unit: "count" },
-  { key: "repurchaseRevenue", label: "复购业绩", unit: "amount" },
-  { key: "repurchaseRate", label: "复购率", unit: "percent" },
 ]
 
 export function ProductBoard() {
@@ -149,23 +136,16 @@ export function ProductBoard() {
         <TabsContent value="market">
           <BreakdownTable
             rows={data?.byMarket ?? []}
-            columns={BREAKDOWN_COLUMNS}
-            firstColLabel="市场"
             loading={loading}
             exportFilename={`品项明细_按市场_${label}`}
-            exportSheetName="品项明细_按市场"
             exportView="product-market"
           />
         </TabsContent>
         <TabsContent value="store">
           <BreakdownTable
             rows={data?.byStore ?? []}
-            columns={BREAKDOWN_COLUMNS}
-            firstColLabel="门店"
-            showMarket
             loading={loading}
             exportFilename={`品项明细_按门店_${label}`}
-            exportSheetName="品项明细_按门店"
             exportView="product-store"
           />
         </TabsContent>

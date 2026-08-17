@@ -247,18 +247,20 @@ WHERE c.customer_status IN ('保有会员-稳定','保有会员-有效')
 
 > 6 个消费分桶 × 2 列（人数 / 消费金额）+ 1 项会员客单价。
 > "消费金额"是会员被经营情况的订单层历史消费指标，不等同于本页定义的组织层级现金流业绩；本节保留既有订单口径：
-> `paid_amount` ∩ `sale_order_type IN ('销售单','转换单')` ∩ `status='已支付'` ∩ `[paid_at_period]`。
+> `received - refunded_amount` ∩ `sale_order_type IN ('销售单','转换单')` ∩ `status='已支付'`
+> ∩ `legacy_source IS DISTINCT FROM 'workfine'` ∩ `[paid_at_period]`。
 
 **底层会员消费聚合 CTE**（所有分桶共用）：
 
 ```sql
 WITH member_spend AS (
   SELECT o.client_user_id,
-         SUM(o.paid_amount) AS spend
+         SUM(o.received - COALESCE(o.refunded_amount, 0)) AS spend
   FROM sale_orders o
   JOIN client_wechat_users c ON c.user_id = o.client_user_id
   WHERE o.sale_order_type IN ('销售单','转换单')
     AND o.status = '已支付'
+    AND o.legacy_source IS DISTINCT FROM 'workfine'
     AND o.paid_at::date BETWEEN $startDate AND $endDate
     AND c.customer_type = '会员客'
     AND <scope on o.store_id>
@@ -291,7 +293,7 @@ WITH member_spend AS (
 | 指标 | 公式 | 数据源 | 筛选条件 |
 |------|------|--------|----------|
 | 新增会员数（newMemberCount） | `COUNT(*)` | `client_wechat_users` | `became_member_at::date BETWEEN $startDate AND $endDate` ∩ scope（`bound_store_id`） |
-| 新增会员对应消费（newMemberSpend） | `SUM(o.paid_amount)` | `sale_orders` | JOIN 上面的新增会员；`sale_order_type IN ('销售单','转换单')` ∩ `status='已支付'` ∩ `paid_at::date BETWEEN $startDate AND $endDate` ∩ scope（`store_id`） |
+| 新增会员对应消费（newMemberSpend） | `SUM(o.received - COALESCE(o.refunded_amount, 0))` | `sale_orders` | JOIN 上面的新增会员；`sale_order_type IN ('销售单','转换单')` ∩ `status='已支付'` ∩ `legacy_source IS DISTINCT FROM 'workfine'` ∩ `paid_at::date BETWEEN $startDate AND $endDate` ∩ scope（`store_id`） |
 | 新增会员客单价（newMemberAvgTicket） | `newMemberSpend / newMemberCount` | 派生；防除零 → `--` |
 | 新增会员成交率（newMemberConvRate） | `newMemberCount / trialFootfall × 100%` | 派生；防除零 → `--` |
 
@@ -441,6 +443,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 2026-04-25 | 跨接口/前后端口径审计补丁：(a) `payNotify` INSERT `sale_allocations` 补 `role_type` + `is_void` 列（按 `staff.skills[1]` 派生，兜底 `'美容师'`），新增 `db/scripts/backfill-allocations-roletype.js` 双库回填存量 NULL 行；(b) `service.js` INSERT `service_commissions` 显式写 `is_void=FALSE`（防 schema drift）；(c) `staffRanking.producer_employees` CTE 由 `is_resigned=FALSE` 切 `hired_at/resigned_at + NOW()` 锚点（`is_resigned` 在 staffApi 查询路径退役）；(d) `mgmt-traffic.regMember` 切 `became_member_at::date <= endDate` 与首页 `memberCount` 对齐；(e) §3 `retainedStable/retainedActive` 与首页 `retainedMemberCount` 等价关系与 24h 滞后明示；(f) §派生指标修订 `monthlyAvgPerStore` 由后端预算的现实；(g) 废弃 `mgmt-customer-detail` 日历"≥1000 → X.Xk"折叠规则；(h) 前端 `retainRate` / 持卡占比统一走 `formatPercent` |
 | 2026-05-26 | admin 数据中心（`/data-center`）上线：新增 §「数据中心（admin）板块专属指标」+ 品项二级（category_name）粒度节。3 项用户拍板口径——流量客业绩=仅 `customer_type='流量客'`；单次客耗=`生美实耗÷服务人次`；店长人数=`在营门店数`（每店一店长，不依赖 position_name）。排名榜/区间指标统一走顶部 TimeRange（today/week/month/year/custom），同比环比仅作用 KPI 标量 |
 | 2026-08-08 | 数据中心经营统计统一仅纳入 `org_nodes.is_active=TRUE` 的门店：门店数、全部区间指标、门店/员工排行榜及范围下拉同步过滤；单店范围不再固定计 1，停用门店返回零数据 |
+| 2026-08-18 | 数据中心市场明细修订：顾客人数在市场内去重，跨市场分别归属；客量消费经营改用 `received - refunded_amount` 并排除 WorkFine；品项持卡仅疗程卡且纳入寄存单；人效技师人均会员量改用市场去重客流 |
 
 ---
 
@@ -514,12 +517,12 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 ### 1. 持卡人数（截面快照，不随 period 变化）
 
 > 以查询时刻（NOW()）为准；切换 period chip 不影响此数据，UI 加角标"截面"提示。
-> **持卡 = 未使用完的疗程卡 或 单次卡**（`product_type IN ('疗程卡','单品')`，`remaining_sessions > 0`）。院装产品（提货物品）不计入。
+> **持卡 = 未使用完的疗程卡**（`product_type = '疗程卡'`，`remaining_sessions > 0`）。院装产品（提货物品）不计入。
 > 分母「总会员人数」同 `memberCount`（`client_wechat_users.became_member_at IS NOT NULL` ∩ scope by `bound_store_id`，T2 历史化口径；持卡为截面，本子页不带 `$date` 守卫）。
 
 | 指标 | 公式 | 数据源 | 筛选条件 |
 |------|------|--------|----------|
-| 持卡人数（cardHolderCount）per product_kind | `COUNT(DISTINCT so.client_user_id)` | `sale_items si` JOIN `sale_orders so` JOIN `product_skus sk` JOIN `product_categories pc` | `si.product_type IN ('疗程卡','单品')` ∩ `si.remaining_sessions > 0` ∩ `so.sale_order_type IN ('销售单','转换单')` ∩ `so.status='已支付'` ∩ scope（`so.store_id`）；按 `pc.product_kind` 分组 |
+| 持卡人数（cardHolderCount）per product_kind | `COUNT(DISTINCT so.client_user_id)` | `sale_items si` JOIN `sale_orders so` JOIN `product_skus sk` JOIN `product_categories pc` | `si.product_type = '疗程卡'` ∩ `si.remaining_sessions > 0` ∩ `so.sale_order_type IN ('销售单','转换单','寄存单')` ∩ `so.status='已支付'` ∩ scope（`so.store_id`）；按 `pc.product_kind` 分组 |
 | 占比（cardHolderRate）per product_kind | `cardHolderCount / memberCount × 100%` | 派生；`memberCount=0` → `--` | — |
 
 ### 2. 体验 / 新增 / 复购（区间维度，时间轴 `paid_at`）
@@ -667,3 +670,8 @@ tiyan AS (                                    -- 体验：期内有购买但全�
 > **时间口径**：数据中心排名榜与上述区间指标统一走顶部时间维度 `col::date BETWEEN current.start AND current.end`
 > （TimeRange：今日/本周/本月/今年/自定义），而非 staff 端固定 month/lastMonth/year 锚 NOW()。
 > **同比/环比**：仅 KPI 卡片标量计算（本期/上期/去年同期 delta%），明细表与排名榜不做逐行对比。
+>
+> **市场级人数去重**：市场明细中的顾客人数均在市场内按 `client_user_id` 去重，跨市场则分别归属。
+> 客量消费经营的会员消费先按 `market_id + client_user_id` 汇总，再分桶；流量客按市场去重。
+> 品项持卡、体验、新增、复购人数同样直接按市场去重，品项 `first_entry` 在市场内合并；
+> 人效的技师人均会员量分子使用市场内去重客流。金额、服务人次和项目数仍按实际发生门店的事件汇总。

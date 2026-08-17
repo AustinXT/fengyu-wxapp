@@ -146,6 +146,19 @@ describe('客量板块两端口径一致性守护', () => {
     })
   })
 
+  describe('市场明细人数在市场内去重', () => {
+    it('会员消费先按分组 + 顾客聚合，再计算分桶', () => {
+      expect(adminCode).toMatch(/group_skel\s+AS\s*\(/)
+      expect(adminCode).toMatch(/member_spend\s+AS\s*\([\s\S]*?JOIN\s+skel\s+sk\s+ON\s+sk\.store_id\s*=\s*o\.store_id[\s\S]*?GROUP BY \$\{groupId\},\s*o\.client_user_id/i)
+      expect(adminCode).toMatch(/spend_agg\s+AS\s*\([\s\S]*?GROUP BY\s+group_id/i)
+    })
+
+    it('流量客人数按分组 DISTINCT 顾客，不由门店人数求和', () => {
+      expect(adminCode).toMatch(/traffic_cust\s+AS\s*\([\s\S]*?COUNT\(DISTINCT\s+so\.client_user_id\)\s+AS\s+traffic_customers[\s\S]*?GROUP BY \$\{groupId\}/i)
+      expect(adminCode).not.toMatch(/SUM\(traffic_cust\.traffic_customers\)/i)
+    })
+  })
+
   describe('sale_order_type 过滤 = IN (销售单, 转换单)', () => {
     it('admin', () => {
       expect(adminSrc).toMatch(/sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/)
