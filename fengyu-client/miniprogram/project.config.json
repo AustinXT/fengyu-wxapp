@@ -44,7 +44,10 @@
     "showES6CompileOption": false,
     "useCompilerPlugins": [
       "typescript"
-    ]
+    ],
+    "compileWorklet": false,
+    "localPlugins": false,
+    "condition": false
   },
   "appid": "wx811eb4ded3dfba3f",
   "projectname": "fengyu-client",
@@ -58,30 +61,32 @@
     "include": [],
     "ignore": [
       {
-        "type": "file",
-        "value": "README.md"
+        "value": "README.md",
+        "type": "file"
       },
       {
-        "type": "file",
-        "value": ".eslintrc.js"
+        "value": ".eslintrc.js",
+        "type": "file"
       },
       {
-        "type": "folder",
-        "value": ".git"
+        "value": ".git",
+        "type": "folder"
       },
       {
-        "type": "folder",
-        "value": "node_modules"
+        "value": "node_modules",
+        "type": "folder"
       },
       {
-        "type": "folder",
-        "value": "__tests__"
+        "value": "__tests__",
+        "type": "folder"
       },
       {
-        "type": "folder",
-        "value": "minitest"
+        "value": "minitest",
+        "type": "folder"
       }
     ]
   },
-  "cloudfunctionTemplateRoot": "cloudfunctionTemplate/"
+  "cloudfunctionTemplateRoot": "cloudfunctionTemplate/",
+  "compileType": "miniprogram",
+  "simulatorPluginLibVersion": {}
 }
