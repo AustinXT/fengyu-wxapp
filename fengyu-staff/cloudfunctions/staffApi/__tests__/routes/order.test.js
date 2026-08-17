@@ -1295,9 +1295,10 @@ describe('order.create', () => {
     await orderRoutes.create(ctx)
 
     // total=200, prepaid=50, payable=150（非 zeroPayable）→ 两步式：paidAmount=0、status='待支付'。
-    // 储值卡 prepaid_card_amount 仅作"预选"快照；扣卡 + 写储值卡抵扣/首次支付 payments 均归 confirmOffline。
+    // 预选只进 pending_prepaid_card_amount；扣卡 + 写储值卡抵扣/首次支付 payments 均归 confirmOffline。
     expect(ctx.result.totalAmount).toBe(200)
-    expect(ctx.result.prepaidCardAmount).toBe(50)
+    expect(ctx.result.prepaidCardAmount).toBe(0)
+    expect(ctx.result.pendingPrepaidCardAmount).toBe(50)
     expect(ctx.result.payableAmount).toBe(150)
     expect(ctx.result.paidAmount).toBe(0)
     expect(ctx.result.status).toBe('待支付')
@@ -1384,9 +1385,10 @@ describe('order.create', () => {
 
     await orderRoutes.create(ctx)
 
-    // 两步式：paidAmount=0（create 不入账）；prepaidCardAmount=30 仅预选快照
+    // 两步式：paidAmount=0（create 不入账）；预选额只写 pending
     expect(ctx.result.paidAmount).toBe(0)
-    expect(ctx.result.prepaidCardAmount).toBe(30)
+    expect(ctx.result.prepaidCardAmount).toBe(0)
+    expect(ctx.result.pendingPrepaidCardAmount).toBe(30)
 
     // 不变量（create 阶段）：sale_orders.paid_amount = Σ(payments.amount WHERE 已支付 AND change_type ∈ {首次支付,回款,退款})
     // 两步式下两侧均为 0（create 不写已支付流水），等式仍成立
@@ -2839,7 +2841,7 @@ describe('order.qrcode', () => {
         sale_order_id: 'FY-QR-CARD', status: '待支付', sale_order_type: '销售单',
         client_phone: '138', customer_name: '李四', payment_method: '微信',
         paid_at: null, store_id: 'store-001', opened_by: 'emp-001',
-        total_amount: '500', prepaid_card_amount: '200',
+        total_amount: '500', prepaid_card_amount: '0', pending_prepaid_card_amount: '200',
       }])
       .mockResolvedValueOnce([
         { sale_item_id: 'item-1', received: '0', pending_received: '500', sale_amount: '500', product_name: '面部护理' },
@@ -4434,8 +4436,8 @@ describe('order.createConversion', () => {
     expect(orderInsert.params[9]).toBe('200.00')
     expect(orderInsert.params[10]).toBe('200.00')
     expect(orderInsert.params[12]).toBe('0.00')
-    expect(orderInsert.params[21]).toBe('50.00')
-    expect(orderInsert.params[22]).toBe(false)
+    expect(orderInsert.params[22]).toBe('50.00')
+    expect(orderInsert.params[23]).toBe(false)
   })
 
   test('组合套餐转换按套餐下沉价计费：5940 减旧卡 3000 后应付 2940', async () => {
@@ -4618,9 +4620,9 @@ describe('order.createConversion', () => {
       isExperienceConversion: true,
     })
     const orderInsert = calls.find(({ sql }) => sql.includes('INSERT INTO sale_orders'))
-    expect(orderInsert.params.slice(9, 14)).toEqual(['0.00', '0.00', '0.00', '0.00', '无'])
-    expect(orderInsert.params[21]).toBeNull()
-    expect(orderInsert.params[22]).toBe(true)
+    expect(orderInsert.params.slice(9, 15)).toEqual(['0.00', '0.00', '0.00', '0.00', '0.00', '无'])
+    expect(orderInsert.params[22]).toBeNull()
+    expect(orderInsert.params[23]).toBe(true)
     const inItemInsert = calls.find(({ sql }) => sql.includes('INSERT INTO sale_items') && sql.includes("'转入'"))
     expect(inItemInsert.params[10]).toBe(100)
     expect(inItemInsert.params[11]).toBe(100)
@@ -4832,8 +4834,8 @@ describe('order.createConversion', () => {
     const orderInsert = calls.find((call) => call.sql.includes('INSERT INTO sale_orders'))
     const couponClaim = calls.find((call) => call.sql.includes('UPDATE user_coupons'))
     const inItemInsert = calls.find((call) => call.sql.includes('INSERT INTO sale_items') && call.sql.includes("'转入'"))
-    expect(orderInsert.params[16]).toBe('coupon-001')
-    expect(orderInsert.params[17]).toBe('100.00')
+    expect(orderInsert.params[17]).toBe('coupon-001')
+    expect(orderInsert.params[18]).toBe('100.00')
     expect(couponClaim.params.slice(1)).toEqual(['coupon-001', 'cu-001'])
     expect(calls.indexOf(couponClaim)).toBeGreaterThan(calls.indexOf(orderInsert))
     expect(inItemInsert.params[10]).toBe(400)
@@ -6377,7 +6379,8 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
 
     await orderRoutes.create(ctx)
 
-    expect(ctx.result.prepaidCardAmount).toBe(300.5)
+    expect(ctx.result.prepaidCardAmount).toBe(0)
+    expect(ctx.result.pendingPrepaidCardAmount).toBe(300.5)
     // PR-2: 线上支付 pending → paidAmount=0（sale_orders.paid_amount 是"已入账"快照，不是"应付"）
     expect(ctx.result.paidAmount).toBe(0)
     expect(ctx.result.payableAmount).toBe(699.5)
@@ -6544,7 +6547,8 @@ describe('order.confirmOffline — 储值卡扣款（staffApi 唯一扣卡点）
         payment_method: '线下',
         store_id: 'store-001',
         client_user_id: 'cu-001',
-        prepaid_card_amount: '300.00',
+        prepaid_card_amount: '0.00',
+        pending_prepaid_card_amount: '300.00',
         paid_amount: '200.00',
         total_amount: '500.00',
         payable_amount: '200.00',
@@ -6602,7 +6606,8 @@ describe('order.confirmOffline — 储值卡扣款（staffApi 唯一扣卡点）
         payment_method: '线下',
         store_id: 'store-001',
         client_user_id: 'cu-001',
-        prepaid_card_amount: '300.00',
+        prepaid_card_amount: '0.00',
+        pending_prepaid_card_amount: '300.00',
         paid_amount: '200.00',
         total_amount: '500.00',
         payable_amount: '200.00',
@@ -6652,7 +6657,8 @@ describe('order.confirmOffline — 储值卡扣款（staffApi 唯一扣卡点）
         payment_method: '线下',
         store_id: 'store-001',
         client_user_id: 'cu-001',
-        prepaid_card_amount: '300.00',
+        prepaid_card_amount: '0.00',
+        pending_prepaid_card_amount: '300.00',
         paid_amount: '200.00',
         total_amount: '500.00',
         payable_amount: '200.00',
