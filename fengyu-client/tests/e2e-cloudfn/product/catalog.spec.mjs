@@ -9,15 +9,16 @@
 import '../setup.mjs'
 import {
   NS, closePool, pgQuery,
+  TEST_CLIENT_OPENID, TEST_MARKET_ORG_ID,
   TEST_MALL_CATEGORY_ID, TEST_PRODUCT_CATEGORY_ID,
   TEST_PRODUCT_ID, TEST_SKU_NORMAL_ID,
 } from '../setup.mjs'
-import { invokePublic } from '../helpers/invoke-client.mjs'
+import { invokeAs, invokePublic } from '../helpers/invoke-client.mjs'
 import {
   ensureTestCategories, createTestProduct, createTestSku,
   cleanupClientExtras,
 } from '../helpers/client-fixtures.mjs'
-import { cleanupTestData } from '../helpers/fixtures.mjs'
+import { cleanupTestData, createTestClient } from '../helpers/fixtures.mjs'
 
 async function caseCategoriesHasTest() {
   await ensureTestCategories()
@@ -62,6 +63,46 @@ async function caseSpuListEmptyCategory() {
   if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
   const list = res.data?.spuList || []
   if (list.length !== 0) throw new Error(`expect empty list, got ${list.length}`)
+}
+
+async function caseProductMarketScopeByBoundStore() {
+  await createTestClient()
+  await createTestSku({
+    skuId: TEST_SKU_NORMAL_ID,
+    productId: TEST_PRODUCT_ID,
+    productMarketScope: `${NS}_OTHER_MARKET,${TEST_MARKET_ORG_ID}`,
+  })
+
+  async function expectProductVisible(expected, label) {
+    const res = await invokeAs(TEST_CLIENT_OPENID, 'product.spuList', {
+      categoryId: TEST_MALL_CATEGORY_ID,
+    })
+    if (res.code !== 0) throw new Error(`${label}: expect code=0, got ${res.code}: ${res.message}`)
+    const visible = (res.data?.spuList || []).some(p => p.product_id === TEST_PRODUCT_ID)
+    if (visible !== expected) {
+      throw new Error(`${label}: expect visible=${expected}, got ${visible}`)
+    }
+  }
+
+  await expectProductVisible(true, '多市场 ID 包含顾客门店所属市场')
+
+  await pgQuery(`UPDATE products SET market_scope = $1 WHERE product_id = $2`, [
+    `${NS}_OTHER_MARKET`,
+    TEST_PRODUCT_ID,
+  ])
+  await expectProductVisible(false, '市场 ID 未命中')
+
+  await pgQuery(`UPDATE products SET market_scope = '' WHERE product_id = $1`, [TEST_PRODUCT_ID])
+  await expectProductVisible(false, '空字符串范围')
+
+  await pgQuery(`UPDATE products SET market_scope = $1 WHERE product_id = $2`, [
+    `${NS}_市场`,
+    TEST_PRODUCT_ID,
+  ])
+  await expectProductVisible(true, '历史市场名称')
+
+  await pgQuery(`UPDATE products SET market_scope = NULL WHERE product_id = $1`, [TEST_PRODUCT_ID])
+  await expectProductVisible(true, '全部市场')
 }
 
 async function caseShopInit() {
@@ -134,6 +175,7 @@ const CASES = [
   ['spuList without categoryId returns test product', caseSpuListAll],
   ['spuList by categoryId scoped to that category', caseSpuListByCategory],
   ['spuList for unknown categoryId returns empty', caseSpuListEmptyCategory],
+  ['spuList 按商城商品 market_scope 过滤绑定门店市场', caseProductMarketScopeByBoundStore],
   ['shopInit returns { groups, categories, spuList }', caseShopInit],
   ['hotList 排除 disabled SKU 的 product', caseHotListEmptySkuMarketScope],
   ['search by name 命中商品（跨分类·不传 categoryId）', caseSearchByName],

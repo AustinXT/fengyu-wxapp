@@ -80,19 +80,21 @@ export async function createTestProduct({
   isBundle = false,
   isVisible = true,
   sortOrder = 0,
+  marketScope = null,
 } = {}) {
   await ensureTestCategories()
   await pgQuery(
     `INSERT INTO products (
        product_id, category_id, name, price, is_bundle,
-       sort_order, is_visible
+       sort_order, is_visible, market_scope
      )
-     VALUES ($1, $2, $3, $4::numeric, $5, $6, $7)
+     VALUES ($1, $2, $3, $4::numeric, $5, $6, $7, $8)
      ON CONFLICT (product_id) DO UPDATE
        SET name = EXCLUDED.name, price = EXCLUDED.price,
            sort_order = EXCLUDED.sort_order,
-           is_visible = EXCLUDED.is_visible`,
-    [productId, TEST_MALL_CATEGORY_ID, name, price, isBundle, sortOrder, isVisible]
+           is_visible = EXCLUDED.is_visible,
+           market_scope = EXCLUDED.market_scope`,
+    [productId, TEST_MALL_CATEGORY_ID, name, price, isBundle, sortOrder, isVisible, marketScope]
   )
   return { productId }
 }
@@ -108,6 +110,8 @@ export async function createTestProduct({
  * @param {boolean} opts.isExperience
  * @param {boolean} opts.linkToProduct - 是否插入 mall_product_skus 关联（默认 true）
  * @param {number} opts.productSortOrder - 关联商城商品排序，仅用于需要命中 hotList LIMIT 的用例
+ * @param {string|null} opts.productMarketScope - 商城商品的市场可见范围
+ * @param {string|null} opts.skuMarketScope - SKU 的市场可见范围
  */
 export async function createTestSku({
   skuId = TEST_SKU_NORMAL_ID,
@@ -119,27 +123,34 @@ export async function createTestSku({
   isExperience = false,
   linkToProduct = true,
   productSortOrder = 0,
+  productMarketScope = null,
+  skuMarketScope = null,
 } = {}) {
   await ensureTestCategories()
   await pgQuery(
     `INSERT INTO product_skus (
        sku_id, category_id, product_type, spec_name, price,
        session_count, sort_order, service_fee,
-       is_experience, is_enabled
+       is_experience, is_enabled, market_scope
      )
      VALUES ($1, $2, $3::product_type, $4, $5::numeric,
              $6, 0, 0,
-             $7, true)
+             $7, true, $8)
      ON CONFLICT (sku_id) DO UPDATE
        SET price = EXCLUDED.price, spec_name = EXCLUDED.spec_name,
            session_count = EXCLUDED.session_count, is_enabled = true,
-           is_experience = EXCLUDED.is_experience`,
+           is_experience = EXCLUDED.is_experience,
+           market_scope = EXCLUDED.market_scope`,
     [skuId, TEST_PRODUCT_CATEGORY_ID, productType, specName, price,
-     sessionCount, isExperience]
+     sessionCount, isExperience, skuMarketScope]
   )
 
   if (linkToProduct) {
-    await createTestProduct({ productId, sortOrder: productSortOrder })
+    await createTestProduct({
+      productId,
+      sortOrder: productSortOrder,
+      marketScope: productMarketScope,
+    })
     await pgQuery(
       `INSERT INTO mall_product_skus (product_id, sku_id, sort_order)
        VALUES ($1, $2, 0)
