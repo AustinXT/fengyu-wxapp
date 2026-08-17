@@ -111,6 +111,18 @@ describe('recomputeAmounts — 储值卡抵扣计算', () => {
     expect(r.paidAmount).toBe(200.05);
     expect(r.showPayMethodGroup).toBe(true);
   });
+
+  test('取消后恢复既有订单：pending=80 时即使余额 500，也保持 80+220 原方案', () => {
+    const r = recomputeAmounts({
+      totalAmount: 300,
+      couponDiscount: 0,
+      cardBalance: 500,
+      useCard: true,
+      prepaidCardAmountLimit: 80,
+    });
+    expect(r.prepaidCardAmount).toBe(80);
+    expect(r.paidAmount).toBe(220);
+  });
 });
 
 describe('parseAgreement — 协议正文解析为段落', () => {

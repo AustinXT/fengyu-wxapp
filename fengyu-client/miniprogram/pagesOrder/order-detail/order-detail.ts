@@ -449,14 +449,16 @@ Page({
       this._countdownTimer = null;
     }
     this.setData({ confirmingPayment: true, countdown: '' });
-    const poller = pollPaymentConfirm(saleOrderId);
+    const poller = pollPaymentConfirm(saleOrderId, {
+      baselineReceived: Number(this.data.order?.received || 0),
+    });
     this._poller = poller;
     try {
-      await poller.promise;
+      const paymentResult = await poller.promise;
       await this.loadDetail(saleOrderId);
       // 以刷新后的本地 status 为准（轮询结果可能因网络抖动过时），判断是否需要提示
       const finalStatus = this.data.order?.status;
-      if (finalStatus !== '已支付' && finalStatus !== '部分支付') {
+      if (finalStatus !== '已支付' && !paymentResult.sessionCompleted) {
         // 超时仍未确认到账：提示用户稍后下拉刷新（订单已扣款，回调可能仍在补偿）
         Toast.fail('支付确认中，请稍后下拉刷新');
       }

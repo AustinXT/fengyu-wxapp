@@ -10,6 +10,7 @@ import {
   recomputeAmounts,
   decideConfirmRoute,
 } from '../../../pagesOrder/scan-pay/scan-pay.logic';
+import { isPaymentSessionComplete } from '../../../pagesOrder/utils/payment-poll';
 
 // ====== Mock 微信全局 + Page + utils/cloud ======
 const callClientApiMock = vi.fn();
@@ -115,6 +116,26 @@ describe('scan-pay.logic — decideConfirmRoute', () => {
   });
   test('paid>0 + 线下 → offlinePay', () => {
     expect(decideConfirmRoute(100, '线下')).toBe('offlinePay');
+  });
+});
+
+describe('payment-poll — 本场次完成判定', () => {
+  test('历史已有部分支付且拉卡拉仍 CREATE，不算本场次成功', () => {
+    expect(isPaymentSessionComplete(
+      { status: '部分支付', reconciled: false, received: 500, firstPaymentAmount: 500, lakalaTradeState: 'CREATE' },
+      { baselineReceived: 500, expectedFirstPaymentAmount: 500 },
+    )).toBe(false);
+  });
+
+  test('实收增长、payNotify 对账成功或限额明确清空，任一均可确认本场次成功', () => {
+    expect(isPaymentSessionComplete(
+      { status: '部分支付', reconciled: false, received: 1000, firstPaymentAmount: null },
+      { baselineReceived: 500, expectedFirstPaymentAmount: 500 },
+    )).toBe(true);
+    expect(isPaymentSessionComplete(
+      { status: '部分支付', reconciled: true, received: 500, firstPaymentAmount: 500 },
+      { baselineReceived: 500 },
+    )).toBe(true);
   });
 });
 
@@ -490,7 +511,7 @@ describe('scan-pay 回款（部分支付）场景', () => {
           items: [],
         });
       }
-      if (action === 'card.balance') return Promise.resolve({ balance: 0, cardId: null });
+      if (action === 'card.balance') return Promise.resolve({ balance: 80, cardId: 'c1' });
       if (action === 'order.pay') return Promise.resolve({ paymentParams: { paySign: 'x' } });
       return Promise.resolve({});
     });
@@ -500,7 +521,13 @@ describe('scan-pay 回款（部分支付）场景', () => {
     inst.data.orderNo = 'FY-CONV-CAP';
 
     expect(inst.data.isRepayment).toBe(true);
+    expect(inst.data.isRestrictedRepayment).toBe(true);
     expect(inst.data.remaining).toBe(1500);
+    expect(inst.data.paidAmount).toBe(500);
+
+    await inst.onUseCardChange({ detail: true });
+    expect(inst.data.useCard).toBe(false);
+    expect(inst.data.prepaidCardAmount).toBe(0);
     expect(inst.data.paidAmount).toBe(500);
 
     await inst.onSubmit();

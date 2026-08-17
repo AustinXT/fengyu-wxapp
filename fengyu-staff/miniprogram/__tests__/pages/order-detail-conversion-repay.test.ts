@@ -56,6 +56,7 @@ function createPage() {
       repayCardBalance: 1000,
       repayCardAmountInput: '200.00',
       repayIdempKey: 'repay-key',
+      showRepayPopup: true,
       submitting: false,
       _saleOrderId: 'FY-CONV-REPAY',
     },
@@ -67,7 +68,7 @@ function createPage() {
 }
 
 describe('转换单订单级在线回款', () => {
-  test('先扣储值卡后冻结本次在线金额，再跳转二维码页', async () => {
+  test('同一事务扣储值卡并冻结本次在线金额，再跳转二维码页', async () => {
     vi.mocked(callStaffApi).mockResolvedValue({} as never)
     const page = createPage()
 
@@ -78,16 +79,26 @@ describe('转换单订单级在线回款', () => {
         refSaleOrderId: 'FY-CONV-REPAY',
         paymentMethod: '储值卡',
         prepaidCardAmount: 200,
+        onlinePaymentAmount: 300,
         note: undefined,
         idempotencyKey: 'repay-key',
-      }],
-      ['order.qrcode', {
-        saleOrderId: 'FY-CONV-REPAY',
-        paymentAmount: 300,
       }],
     ])
     expect(wx.navigateTo).toHaveBeenCalledWith({
       url: '/packageOrder/order-qrcode/order-qrcode?saleOrderId=FY-CONV-REPAY&customerName=%E6%B5%8B%E8%AF%95%E9%A1%BE%E5%AE%A2&totalAmount=2000.00',
     })
+  })
+
+  test('原子回款响应失败时立即刷新且保留弹层幂等键', async () => {
+    vi.mocked(callStaffApi).mockRejectedValueOnce(new Error('CONFLICT: 网络响应丢失'))
+    const page = createPage()
+    page.loadDetail = vi.fn().mockResolvedValue(undefined)
+
+    await page.onConfirmRepay()
+
+    expect(page.loadDetail).toHaveBeenCalledWith('FY-CONV-REPAY')
+    expect(page.data.showRepayPopup).toBe(true)
+    expect(page.data.repayIdempKey).toBe('repay-key')
+    expect(wx.navigateTo).not.toHaveBeenCalled()
   })
 })

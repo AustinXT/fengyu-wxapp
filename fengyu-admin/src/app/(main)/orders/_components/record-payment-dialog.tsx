@@ -8,7 +8,12 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectOption } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
-import { recordPayment, getRepayable, generateOrderWxacode } from "@/actions/orders"
+import {
+  recordPayment,
+  getRepayable,
+  freezeConversionRepaymentAmount,
+  generateOrderWxacode,
+} from "@/actions/orders"
 
 /**
  * 录入回款弹层（ticket 2026-05-21 按子项定向回款；2026-06-24 重构：储值卡改独立抵扣勾选）
@@ -200,7 +205,17 @@ export function RecordPaymentDialog({
         router.refresh()
         return
       }
-      // 3) 生成 client 小程序码，顾客扫码进收银台用微信/支付宝付剩余
+      // 3) 转换单先由服务端锁单并冻结本场次金额；顾客收银台只允许收取该金额。
+      // 同额重试会复用冻结意图，不同金额不能覆盖仍可能在途的支付。
+      if (mode === 'order') {
+        const freezeRes = await freezeConversionRepaymentAmount({ saleOrderId, amount: needPay })
+        if (!freezeRes.success) {
+          toast.error(freezeRes.error.message)
+          router.refresh()
+          return
+        }
+      }
+      // 4) 生成 client 小程序码，顾客扫码进收银台用微信/支付宝付冻结金额
       const qrRes = await generateOrderWxacode(saleOrderId)
       if (!qrRes.success || !qrRes.dataUrl) {
         toast.error(qrRes.message || "生成收款码失败")

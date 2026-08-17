@@ -68,8 +68,10 @@ Page({
     firstPaymentAmount: 0,
     // 当前扫码是否是首次扫（received === 0 && firstPaymentAmount > 0）
     isFirstPartialScan: false,
-    // 回款（部分支付订单）：储值卡由店员先扣，顾客只付现金尾款 → 隐藏抵扣区+线下，方式限微信/支付宝
+    // 回款（部分支付订单）：普通回款可选卡；员工冻结金额的受限回款禁卡，方式限微信/支付宝。
     isRepayment: false,
+    // 员工冻结 first_payment_amount 的受限回款：本场次不允许顾客再选储值卡。
+    isRestrictedRepayment: false,
     showPayMethodGroup: true,
     // 2026-05-19 dirty-read 修复：余额版本号（来自 scanAdjust.balanceSnapshot.updatedAt）
     // confirmPrepaidFull 时回传，后端 FOR UPDATE 锁后比对，不一致 → CONFLICT
@@ -156,6 +158,7 @@ Page({
       // first_payment_amount 是服务端冻结的本次在线收款上限：既用于首次首付，
       // 也用于员工在部分支付转换单上发起的订单级部分回款。
       const isFirstPartialScan = firstPaymentAmount > 0 && received === 0;
+      const isRestrictedRepayment = isRepayment && firstPaymentAmount > 0;
       const paid = firstPaymentAmount > 0
         ? Math.min(firstPaymentAmount, remaining)
         : remaining;
@@ -164,7 +167,7 @@ Page({
       const restoredMethod = validMethods.includes(orderData.paymentMethod)
         ? (orderData.paymentMethod as PayMethod)
         : '微信';
-      // 回款场景：部分支付订单（已有首付到账，扫码付剩余应付）。储值卡由店员先扣，顾客侧不再自选储值卡；方式限微信/支付宝
+      // 回款场景：部分支付订单（已有首付到账，扫码付剩余应付）；受限回款由 isRestrictedRepayment 禁卡。
       // （isRepayment 已在上方 remaining 计算前定义）
       const effectiveMethod: PayMethod = isRepayment && restoredMethod === '线下' ? '微信' : restoredMethod;
 
@@ -193,6 +196,7 @@ Page({
         firstPaymentAmount,
         isFirstPartialScan,
         isRepayment,
+        isRestrictedRepayment,
         showPayMethodGroup: paid > 0,
       });
     } catch (err: any) {
@@ -241,6 +245,10 @@ Page({
 
   /** 储值卡开关 */
   async onUseCardChange(e: WxEvent<boolean>) {
+    if (this.data.isRestrictedRepayment) {
+      this.setData({ useCard: false, prepaidCardAmount: 0 });
+      return;
+    }
     const useCard = !!e.detail;
     if (useCard && this.data.cardBalance <= 0) {
       // 余额为 0：拦截开启
@@ -281,12 +289,17 @@ Page({
    */
   async confirmAndRedirect(orderNo: string) {
     Toast.loading({ message: '支付结果确认中', forbidClick: true, duration: 0 });
-    const poller = pollPaymentConfirm(orderNo);
+    const poller = pollPaymentConfirm(orderNo, {
+      baselineReceived: Number(this.data.order?.received || 0),
+      expectedFirstPaymentAmount: this.data.firstPaymentAmount > 0
+        ? this.data.firstPaymentAmount
+        : undefined,
+    });
     this._poller = poller;
     try {
       const r = await poller.promise;
       Toast.clear();
-      if (r.status === '已支付' || r.status === '部分支付') {
+      if (r.sessionCompleted) {
         Toast.success('支付成功');
         setTimeout(() => {
           wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${orderNo}` });
