@@ -20,7 +20,8 @@
  *   - 持卡 sale_order_type IN ('销售单','转换单','寄存单')（寄存单为 WorkFine 剩余次数初始化纳入）。
  *   - 占比分母 = memberCount（client_wechat_users.became_member_at IS NOT NULL ∩ scope by bound_store_id，
  *     持卡为截面，不带 $date 守卫）。
- *   - 达标日（qualifying day）= SUM(si.received) 在 (client_user_id, store_id, 分组键, paid_at::date)
+ *   - 达标日（qualifying day）= SUM(sale_item_performance_events.amount)
+ *     在 (client_user_id, store_id, 分组键, performance_date)
  *     分组下 >= threshold（getMemberThreshold，默认 1980/1990）。
  *   - entry_date = 全历史（截至 endDate）最早达标日，跨店合并；新增 = entry_date 落区间；
  *     复购 = 区间内有达标日（threshold 共用）；体验 = 区间内有购买但全历史无达标日。新增 ⊆ 复购。
@@ -185,10 +186,11 @@ async function queryCycle(
       SELECT so.client_user_id,
              so.store_id,
              ${groupCol} AS grp,
-             so.paid_at::date AS purchase_date,
-             SUM(si.received::numeric) AS day_received
-      FROM sale_items si
-      JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+             sipe.performance_date AS purchase_date,
+             SUM(sipe.amount::numeric) AS day_received
+      FROM sale_item_performance_events sipe
+      JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
+      JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id
       JOIN product_skus sk ON sk.sku_id = si.sku_id
       JOIN product_categories pc ON pc.category_id = sk.category_id
       WHERE ${sc}
@@ -196,8 +198,8 @@ async function queryCycle(
         AND so.status = '已支付'
         AND so.client_user_id IS NOT NULL
         AND ${filter}
-        AND so.paid_at::date <= ${range.end}
-      GROUP BY so.client_user_id, so.store_id, ${groupCol}, so.paid_at::date
+        AND sipe.performance_date <= ${range.end}
+      GROUP BY so.client_user_id, so.store_id, ${groupCol}, sipe.performance_date
     ),
     qualifying_days AS (
       SELECT client_user_id, store_id, grp, purchase_date
@@ -355,10 +357,11 @@ async function queryCycleByStore(
       SELECT so.client_user_id,
              so.store_id,
              ${groupCol} AS grp,
-             so.paid_at::date AS purchase_date,
-             SUM(si.received::numeric) AS day_received
-      FROM sale_items si
-      JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+             sipe.performance_date AS purchase_date,
+             SUM(sipe.amount::numeric) AS day_received
+      FROM sale_item_performance_events sipe
+      JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
+      JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id
       JOIN product_skus sk ON sk.sku_id = si.sku_id
       JOIN product_categories pc ON pc.category_id = sk.category_id
       WHERE ${sc}
@@ -366,8 +369,8 @@ async function queryCycleByStore(
         AND so.status = '已支付'
         AND so.client_user_id IS NOT NULL
         AND ${filter}
-        AND so.paid_at::date <= ${range.end}
-      GROUP BY so.client_user_id, so.store_id, ${groupCol}, so.paid_at::date
+        AND sipe.performance_date <= ${range.end}
+      GROUP BY so.client_user_id, so.store_id, ${groupCol}, sipe.performance_date
     ),
     qualifying_days AS (
       SELECT client_user_id, store_id, grp, purchase_date
