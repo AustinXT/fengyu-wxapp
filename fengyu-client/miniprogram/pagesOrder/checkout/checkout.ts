@@ -287,9 +287,11 @@ Page({
         return;
       }
 
-      // 尊重订单已有的抵扣状态：DB 已写入 prepaid_card_amount=0 时 useCard 默认关，
+      // 尊重订单已有的抵扣状态：待支付阶段的预选值存在 pending_prepaid_card_amount，
       // 避免 UI 默认 useCard=true 与 DB 不一致——用户后续切换会通过 onSubmitOrder 的 scanAdjust 同步
-      const orderPrepaidCardAmount = Number(order.prepaid_card_amount || 0);
+      const orderPrepaidCardAmount = Number(
+        order.pending_prepaid_card_amount || order.prepaid_card_amount || 0,
+      );
 
       this.setData({
         spuName: items.length > 1

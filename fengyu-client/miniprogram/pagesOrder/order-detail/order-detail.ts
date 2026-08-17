@@ -23,6 +23,8 @@ interface OrderDetailItem {
   cover_image?: string | null;
   quantity: number;
   received: number;
+  prepaid_card_received?: number;
+  cash_received?: number;
   pending_received?: number;
   sale_amount: number;
   refunded_amount?: number;
@@ -68,6 +70,7 @@ interface OrderDetailData {
   received?: number;
   refunded_amount?: number;
   prepaid_card_amount?: number;
+  pending_prepaid_card_amount?: number;
   items?: OrderDetailItem[];
   order_time_fmt?: string;
   expire_time_fmt?: string;

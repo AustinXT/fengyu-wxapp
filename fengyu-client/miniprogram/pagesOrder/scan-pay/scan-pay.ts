@@ -17,6 +17,7 @@ interface ScanOrder {
   orderType: string;
   totalAmount: number;
   prepaidCardAmount: number;
+  pendingPrepaidCardAmount: number;
   // 2026-04-26 sale-order-domain-refactor:
   //   - paidAmount 字段（来自旧 paid_amount 列）已删除
   //   - 后端 scanDetail 现返回 received / refundedAmount / payableAmount
@@ -114,15 +115,18 @@ Page({
 
       const orderData = data.order || {};
       const totalAmount = Number(orderData.totalAmount || 0);
-      const prepaid = Number(orderData.prepaidCardAmount || 0);
+      const actualPrepaid = Number(orderData.prepaidCardAmount || 0);
+      const pendingPrepaid = Number(orderData.pendingPrepaidCardAmount || 0);
+      // 待支付阶段恢复预选抵扣；真正扣卡后才读实际储值卡实付。
+      const prepaid = pendingPrepaid > 0 ? pendingPrepaid : actualPrepaid;
       // 2026-04-26 sale-order-domain-refactor:
       //   - paid_amount → received（已到账）；本次应付实金 = payable - 净到账
-      //   - 兜底：payableAmount 缺失时按 total - prepaid 推算（与后端兜底逻辑一致）
+      //   - 兜底：payableAmount 缺失时按 total - 实际储值卡 - 待扣储值卡推算
       const received = Number(orderData.received || 0);
       const refundedAmount = Number(orderData.refundedAmount || 0);
-      const payable = Number(orderData.payableAmount) > 0
+      const payable = orderData.payableAmount != null && Number.isFinite(Number(orderData.payableAmount))
         ? Number(orderData.payableAmount)
-        : Math.round((totalAmount - prepaid) * 100) / 100;
+        : Math.round((totalAmount - actualPrepaid - pendingPrepaid) * 100) / 100;
       // 回款（部分支付）用行级口径：已退行不计入，只有「未退且未付清」的行可继续支付；
       // 首次支付（待支付）无退款，沿用订单级 payable - 净到账（行级 Σ 未扣储值卡意向，首次场景不适用）
       const isRepayment = orderData.status === '部分支付';
@@ -167,7 +171,8 @@ Page({
         order: {
           ...orderData,
           totalAmount,
-          prepaidCardAmount: prepaid,
+          prepaidCardAmount: actualPrepaid,
+          pendingPrepaidCardAmount: pendingPrepaid,
           payableAmount: payable,
           received,
           refundedAmount,

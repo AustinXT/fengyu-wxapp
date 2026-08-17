@@ -34,6 +34,7 @@ interface RawOrder {
   received?: string;
   refunded_amount?: string;
   prepaid_card_amount?: string;
+  pending_prepaid_card_amount?: string;
   payable_amount?: string;
   opened_by?: string;
   refund_reason?: string;
@@ -63,6 +64,8 @@ interface RawOrderItem {
   product_type?: string;
   sale_amount?: string;
   received?: string;
+  prepaid_card_received?: string;
+  cash_received?: string;
   pending_received?: string;
   refunded_amount?: string;
   session_count?: number;
@@ -442,7 +445,11 @@ Page({
       const hasPendingRefund = payments.some((p) => p.isRefund && (p.status === '待审批' || p.status === '待支付'));
 
       const totalAmount = Number(o.total_amount || 0);
-      const prepaidCardAmount = Number(o.prepaid_card_amount || 0);
+      const actualPrepaidCardAmount = Number(o.prepaid_card_amount || 0);
+      const pendingPrepaidCardAmount = Number(o.pending_prepaid_card_amount || 0);
+      const prepaidCardAmount = (o.status === '待支付' || o.status === '支付失败')
+        ? pendingPrepaidCardAmount
+        : actualPrepaidCardAmount;
       // 2026-04-26 sale-order-domain-refactor: paid_amount 列已 DROP，净到账 = received - refunded_amount
       const received = Number(o.received || 0);
       const refundedAmount = Number(o.refunded_amount || 0);
