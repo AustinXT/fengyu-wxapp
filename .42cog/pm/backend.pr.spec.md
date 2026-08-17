@@ -199,6 +199,9 @@
 | `market_name` | varchar(100) | 所属市场（快照） |
 | `store_id` | text | FK → `stores.store_id`，NOT NULL |
 | `sale_order_datetime` | timestamp | 销售日期时间 |
+| `performance_attribution_date` | date | 首次业绩归属日，NOT NULL；默认取当前上海自然日，历史单按 `sale_order_datetime` 上海自然日回填 |
+| `performance_attribution_adjusted_at` | timestamptz \| null | 归属日一次性调整时间；非空即永久禁止再改 |
+| `performance_attribution_adjusted_by` | varchar(30) \| null | 调整人，FK → `staff_wechat_users.employee_id`，员工删除时置 null |
 | `client_user_id` | text \| null | FK → `client_wechat_users.user_id` |
 | `client_phone` | varchar(30) \| null | 顾客手机号快照；员工开单时必填 |
 | `customer_name` | varchar(50) \| null | 顾客姓名快照 |
@@ -230,6 +233,15 @@
 > **约束**: `UNIQUE(client_user_id) WHERE status='待支付' AND client_user_id IS NOT NULL`、`UNIQUE(client_phone, store_id) WHERE status='待支付' AND client_user_id IS NULL`。**索引**: `(store_id, status)`、`(ref_sale_order_id)`。
 >
 > **expire_at**：应用层计算（`created_at + 10min`），不存储，通过 SQL 条件懒清理。
+
+**业绩归属规则（2026-08-17 已决）**：
+
+- 原始 `sale_order_datetime` / `paid_at` 不允许因报表需求改写。
+- admin 动作 `sale_order:performance_attribution_update` 仅默认授予系统管理员、店长、财务；必须通过 scope 校验。
+- 操作时间不限；目标日期必须在原始订单上海自然日前后 7 天内（含边界）。同日提交不消耗机会。
+- 更新使用 `FOR UPDATE` + `performance_attribution_adjusted_at IS NULL` + `updated_at` CAS，保证并发下仅一次成功，并在同一事务写 `operation_logs`。
+- `sale_order_performance_events`：首次支付，或没有更早成功正向款项的首笔纯储值卡抵扣，使用订单归属日；其他回款/退款使用流水 `paid_at` 的上海自然日。
+- `sale_item_performance_events`：将已支付 receipt 按上述事件日期展开；旧数据无完整 receipt 时用订单归属日补齐 `sale_items.received` 差额。
 
 ### 2.9 sale_items（销售明细）
 
@@ -711,7 +723,8 @@ login 返回中包含 `permissions` 字段：
 17. **员工开单顾客身份验证**：通过手机号查询 `client_wechat_users.phone`，填入 `client_user_id`
 18. **预约取消后可重新发起**：`已取消` 可重新发起；`已关闭` 不可
 19. **回款规则**：`ref_sale_order_id` 必填；回款时原子累加原 `sale_item.received`；支持多次回款（N:1）；支付方式与销售单一致；仅员工端操作
-20. **转换规则**：转换单包含 `转出` 行和 `转入` 行，单事务完成；`转出` 原子扣减 `remaining_sessions`。普通转换 `total_amount` = 正补差价，负差额以 `card_transactions(type='充值', ref_order_id=转换单号)` 转入储值金；正补差允许 `receivedAmount ∈ [0,payable]`，部分收款用 `first_payment_amount` 限制首笔支付，后续按订单级欠款回款。体验转换以旧卡划卡价值强制重定价转入行，订单金额/应付/实收均为 0、直接已支付、不得补退差额或形成任何支付流水，并以 `is_experience_conversion=true` 审计。
+20. **转换规则**：转换单包含 `转出` 行和 `转入` 行，单事务完成；`转出` 原子扣减 `remaining_sessions`。普通转换 `total_amount` = 正补差价，负差额以 `card_transactions(type='充值', ref_order_id=转换单号)` 转入储值金；正补差允许 `receivedAmount ∈ [0,payable]`，部分收款用 `first_payment_amount` 限制首笔支付，该上限只能在真实支付回调或线下确认入账后清空，后续按订单级欠款回款。体验转换以旧卡划卡价值强制重定价转入行，订单金额/应付/实收均为 0、直接已支付、不得补退差额或形成任何支付流水，并以 `is_experience_conversion=true` 审计。
+    - **疗程卡累计梯度计价**：员工端和管理后台创建销售单或转换单时，将非体验、非店长特价、非套餐的疗程卡按 `category_id + spec_name` 分组，累计次数为各行 `session_count × quantity` 之和；在同组启用且未删除的普通疗程卡 SKU 中，选择 `session_count > 1`、不超过累计次数的最高档位（同次数档取顾客适用每次价最低者），并按“档位适用总价 ÷ 档位次数 × 行次数”重算每行金额。会员适用 `special_price`，否则适用 `price`。前端仅负责预览，服务端必须以 SKU 数据权威重算；内部单、寄存单、套餐、体验卡、店长特价不参与，体验转换最终由旧卡划卡价值覆盖。
 21. **退款规则**：创建时状态为 `待审批`；店长审批后原子扣减 `remaining_sessions`；`total_amount` 为负数；handling_fee 存入 `remark`
 22. **回款/转换/退款仅员工端操作**
 23. **capability 列 SSoT**（2026-04-26 ticket 落地）：体验卡 / 充值卡 等"特殊 SKU 行为"判定一律读 `product_skus.is_experience` / `is_recharge_card`，**禁止**写 `WHERE product_kind = '体验卡'` / `'充值卡'` 字面量。两列互斥（`chk_sku_not_both_capabilities` CHECK 保护）。`product_kind` 仅作组织/分类标签。开单时 `sale_items` 自动快照同名列，行级不可变（admin 后续修改 SKU capability 不影响历史订单）。
