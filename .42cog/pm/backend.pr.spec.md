@@ -203,7 +203,9 @@
 | `client_phone` | varchar(30) \| null | 顾客手机号快照；员工开单时必填 |
 | `customer_name` | varchar(50) \| null | 顾客姓名快照 |
 | `total_amount` | numeric(10,2) | 订单总金额（退款为负数），NOT NULL |
+| `first_payment_amount` | numeric(10,2) \| null | 首次收款上限；普通转换/分期首次支付发起后清空 |
 | `payment_method` | enum | `微信` / `支付宝` / `线下` |
+| `is_experience_conversion` | boolean | 体验转换审计标记，DEFAULT false；仅转换单可置 true |
 | `sale_order_source` | enum | `client` / `staff` / `admin`；回款/转换/退款仅 `staff` 或 `admin` |
 | `opened_by` | varchar(30) \| null | 开单人，FK → `staff_wechat_users.employee_id` |
 | `preferred_employee_id` | varchar(30) \| null | 顾客指定美容师，FK → `staff_wechat_users.employee_id` |
@@ -709,7 +711,7 @@ login 返回中包含 `permissions` 字段：
 17. **员工开单顾客身份验证**：通过手机号查询 `client_wechat_users.phone`，填入 `client_user_id`
 18. **预约取消后可重新发起**：`已取消` 可重新发起；`已关闭` 不可
 19. **回款规则**：`ref_sale_order_id` 必填；回款时原子累加原 `sale_item.received`；支持多次回款（N:1）；支付方式与销售单一致；仅员工端操作
-20. **转换规则**：`ref_sale_order_id` 必填；转换单包含 `转出` 行和 `转入` 行，单事务完成；`转出` 原子扣减 `remaining_sessions`；`total_amount` = 补差价
+20. **转换规则**：转换单包含 `转出` 行和 `转入` 行，单事务完成；`转出` 原子扣减 `remaining_sessions`。普通转换 `total_amount` = 正补差价，负差额以 `card_transactions(type='充值', ref_order_id=转换单号)` 转入储值金；正补差允许 `receivedAmount ∈ [0,payable]`，部分收款用 `first_payment_amount` 限制首笔支付，后续按订单级欠款回款。体验转换以旧卡划卡价值强制重定价转入行，订单金额/应付/实收均为 0、直接已支付、不得补退差额或形成任何支付流水，并以 `is_experience_conversion=true` 审计。
 21. **退款规则**：创建时状态为 `待审批`；店长审批后原子扣减 `remaining_sessions`；`total_amount` 为负数；handling_fee 存入 `remark`
 22. **回款/转换/退款仅员工端操作**
 23. **capability 列 SSoT**（2026-04-26 ticket 落地）：体验卡 / 充值卡 等"特殊 SKU 行为"判定一律读 `product_skus.is_experience` / `is_recharge_card`，**禁止**写 `WHERE product_kind = '体验卡'` / `'充值卡'` 字面量。两列互斥（`chk_sku_not_both_capabilities` CHECK 保护）。`product_kind` 仅作组织/分类标签。开单时 `sale_items` 自动快照同名列，行级不可变（admin 后续修改 SKU capability 不影响历史订单）。
