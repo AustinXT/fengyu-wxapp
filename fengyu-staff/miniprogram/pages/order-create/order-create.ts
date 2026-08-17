@@ -533,6 +533,10 @@ Page({
     conversionPrepaidCardAmount: 0,
     /** 转换单抵扣后仍需付现金（priceDiff - prepaidCardAmount） */
     conversionRemaining: 0,
+    /** 普通转换本次计划收款，可小于应付并形成挂账 */
+    conversionReceivedAmount: 0,
+    /** 体验转换标记（订单级，区别于商品 SKU 的 isExperience） */
+    conversionIsExperience: false as boolean,
     /** 转换单活动勾选（ConversionPanel 自管，change 事件上报；与销售/内部单 isActivity 独立） */
     conversionIsActivity: false as boolean,
     /** 转换单券前转入合计，用于按折抵总额判断是否仍有可抵扣的正补差额 */
@@ -1150,7 +1154,8 @@ Page({
     const row = cart[idx];
     // 仅店长特价行 + 销售单/转换单 + 普通商品放行（组合套餐不适用）
     const supportsManagerSpecial =
-      this.data.saleOrderType === '销售单' || this.data.saleOrderType === '转换单';
+      this.data.saleOrderType === '销售单'
+      || (this.data.saleOrderType === '转换单' && !this.data.conversionIsExperience);
     if (!supportsManagerSpecial || !row.isManagerSpecial
         || row.refBundleId || row.productType === '组合套餐') {
       return;
@@ -1203,7 +1208,7 @@ Page({
     const isInternal = saleOrderType === '内部单';
     const isSales = saleOrderType === '销售单';
     const isConversion = saleOrderType === '转换单';
-    const supportsManagerSpecial = isSales || isConversion;
+    const supportsManagerSpecial = isSales || (isConversion && !this.data.conversionIsExperience);
     // 销售单 + 转换单均需计算疗程卡梯度累加价（寄存单/内部单不计算）
     const tierLineMap = (isSales || isConversion)
       ? buildTreatmentTierLineMap(cart, this._allSkus, this.data.buyerIsMember)
@@ -1245,7 +1250,9 @@ Page({
     const conversionCouponCap = isConversion
       ? Math.max(0, Math.round((couponBaseTotal - (Number(this.data.conversionDeductibleSum) || 0)) * 100) / 100)
       : couponBaseTotal;
-    const effectiveCouponDiscount = !isInternal && this.data.selectedCoupon
+    const effectiveCouponDiscount = !isInternal
+      && (!isConversion || !this.data.conversionIsExperience)
+      && this.data.selectedCoupon
       ? Math.round(Math.min(rawCouponDiscount, conversionCouponCap) * 100) / 100
       : 0;
     const shouldClearConversionCoupon = isConversion
@@ -1327,6 +1334,8 @@ Page({
       conversionPaymentMethod: null,
       conversionPrepaidCardAmount: 0,
       conversionRemaining: 0,
+      conversionReceivedAmount: 0,
+      conversionIsExperience: false,
       conversionIsActivity: false,
       conversionCouponBaseTotal: 0,
       conversionCouponEnabled: false,
@@ -1401,6 +1410,8 @@ Page({
       conversionPaymentMethod: null,
       conversionPrepaidCardAmount: 0,
       conversionRemaining: 0,
+      conversionReceivedAmount: 0,
+      conversionIsExperience: false,
       conversionIsActivity: false,
       conversionCouponBaseTotal: 0,
       conversionCouponEnabled: false,
@@ -1793,6 +1804,7 @@ Page({
       update.conversionPaymentMethod = null;
       update.conversionPrepaidCardAmount = 0;
       update.conversionRemaining = 0;
+      update.conversionIsExperience = false;
       update.conversionIsActivity = false;
       update.conversionCouponBaseTotal = 0;
       update.conversionCouponEnabled = false;
@@ -1813,14 +1825,16 @@ Page({
 
   /** PR-C §C3 — ConversionPanel 子组件 change 事件：同步选卡/差额到主 state */
   onConversionPanelChange(e: WechatMiniprogram.CustomEvent) {
-    const { selectedSaleItemIds, deductibleSum, priceDiff, paymentMethod, prepaidCardAmount, remaining, isActivity } = (e.detail || {}) as {
+    const { selectedSaleItemIds, deductibleSum, priceDiff, paymentMethod, prepaidCardAmount, remaining, receivedAmount, isActivity, isExperienceConversion } = (e.detail || {}) as {
       selectedSaleItemIds?: string[];
       deductibleSum?: number;
       priceDiff?: number;
       paymentMethod?: '微信' | '支付宝' | '线下' | null;
       prepaidCardAmount?: number;
       remaining?: number;
+      receivedAmount?: number;
       isActivity?: boolean;
+      isExperienceConversion?: boolean;
     };
     const previousDeductibleSum = Number(this.data.conversionDeductibleSum) || 0;
     const nextDeductibleSum = Number(deductibleSum) || 0;
@@ -1831,6 +1845,8 @@ Page({
       conversionPaymentMethod: paymentMethod ?? null,
       conversionPrepaidCardAmount: Number(prepaidCardAmount) || 0,
       conversionRemaining: Number(remaining) || 0,
+      conversionReceivedAmount: Number(receivedAmount) || 0,
+      conversionIsExperience: !!isExperienceConversion,
       conversionIsActivity: !!isActivity,
     });
     // 折抵卡金额改变会收窄/放宽转换单可抵扣的正补差额。
@@ -1838,6 +1854,23 @@ Page({
     if (Math.abs(nextDeductibleSum - previousDeductibleSum) > 0.005) {
       this.updateCart(this.data.cart);
     }
+  },
+
+  onConversionExperienceChange(e: WechatMiniprogram.CustomEvent) {
+    const enabled = !!(e.detail as { value?: boolean })?.value;
+    const cart = this.data.cart.map((item) => enabled
+      ? { ...item, saleAmountOverride: undefined }
+      : item);
+    this.setData({
+      conversionIsExperience: enabled,
+      selectedCoupon: enabled ? null : this.data.selectedCoupon,
+      couponDiscount: enabled ? 0 : this.data.couponDiscount,
+      couponTotal: enabled ? '' : this.data.couponTotal,
+      conversionPrepaidCardAmount: enabled ? 0 : this.data.conversionPrepaidCardAmount,
+      conversionPaymentMethod: enabled ? null : this.data.conversionPaymentMethod,
+      cart,
+    });
+    this.updateCart(cart);
   },
 
   /**
@@ -1991,12 +2024,12 @@ Page({
         const currentStoreId = getCurrentStoreId();
         const supportTag = (staff: typeof list[number]) => (
           staff.isOnBusinessTrip && staff.storeId && staff.storeId !== currentStoreId
-            ? '外店支援'
+            ? '（外援）'
             : ''
         );
         this.setData({
           staffListForPicker: list,
-          staffPickerColumns: ['不指定', ...list.map(s => `${s.name}（${[roleTag(s.skills), s.department, supportTag(s)].filter(Boolean).join('·') || '未分组'}）`)],
+          staffPickerColumns: ['不指定', ...list.map(s => `${s.name}（${[roleTag(s.skills), s.department].filter(Boolean).join('·') || '未分组'}）${supportTag(s)}`)],
         });
       } catch {
         return;
@@ -2165,7 +2198,8 @@ Page({
     const {
       customerInfo, cart, remark, submitting,
       conversionSelectedSaleItemIds, conversionPriceDiff, conversionPaymentMethod,
-      conversionPrepaidCardAmount, conversionRemaining, selectedCoupon,
+      conversionPrepaidCardAmount, conversionRemaining, conversionReceivedAmount,
+      conversionIsExperience, selectedCoupon,
     } = this.data;
     if (!customerInfo) {
       wx.showToast({ title: '请先用手机号确认顾客身份', icon: 'none' });
@@ -2176,7 +2210,7 @@ Page({
       return;
     }
     // 抵扣后仍需付现金（remaining > 0）才必选支付方式；全额储值卡抵扣无需选
-    if (conversionRemaining > 0 && !conversionPaymentMethod) {
+    if (!conversionIsExperience && conversionReceivedAmount > 0 && !conversionPaymentMethod) {
       wx.showToast({ title: '请选择支付方式', icon: 'none' });
       return;
     }
@@ -2185,14 +2219,16 @@ Page({
     try {
       // remaining > 0 用所选方式；否则（全额抵扣 / 差额<=0）后端忽略但需合法值，默认 '微信'
       const paymentMethod: '微信' | '支付宝' | '线下' =
-        conversionRemaining > 0 ? (conversionPaymentMethod as '微信' | '支付宝' | '线下') : '微信';
+        !conversionIsExperience && conversionReceivedAmount > 0
+          ? (conversionPaymentMethod as '微信' | '支付宝' | '线下')
+          : '微信';
       const res = await callStaffApi<{
         saleOrderId: string; priceDiff: number; prepaidCardCredit: number; prepaidCardAmount: number; status: string;
       }>('order.createConversion', {
         clientUserId: customerInfo.clientUserId,
         convertOutSaleItemIds: conversionSelectedSaleItemIds,
         convertInItems: cart.map(c => {
-          const editable = !!c.isManagerSpecial && !c.refBundleId && c.productType !== '组合套餐';
+          const editable = !conversionIsExperience && !!c.isManagerSpecial && !c.refBundleId && c.productType !== '组合套餐';
           const hasOv = editable && c.saleAmountOverride != null && c.saleAmountOverride !== '';
           const effSale = hasOv
             ? Math.max(0, Math.min(parseFloat(c.saleAmountOverride as string) || 0, c.price * c.quantity))
@@ -2210,10 +2246,15 @@ Page({
           }
           return item;
         }),
+        // 组合套餐转换必须透传套餐主商品，后端据此复核分组配额并使用套餐下沉价；
+        // 缺少该字段会把套餐子项按普通 SKU 单价重算，导致付款码金额高于结算预览。
+        bundleProductId: cart.find(c => c.refBundleId)?.refBundleId || undefined,
         paymentMethod,
-        couponId: selectedCoupon?.couponId || undefined,
+        couponId: conversionIsExperience ? undefined : (selectedCoupon?.couponId || undefined),
         // 默认值也显式透传，保持转换单与普通开单的充值卡金额契约一致。
-        prepaidCardAmount: conversionPrepaidCardAmount,
+        prepaidCardAmount: conversionIsExperience ? 0 : conversionPrepaidCardAmount,
+        receivedAmount: conversionIsExperience ? 0 : conversionReceivedAmount,
+        isExperienceConversion: conversionIsExperience,
         isActivity: this.data.conversionIsActivity,
         preferredStaffWfId: this.data.preferredStaffWfId || undefined,
         remark: remark || undefined,
@@ -2229,6 +2270,8 @@ Page({
         conversionPaymentMethod: null,
         conversionPrepaidCardAmount: 0,
         conversionRemaining: 0,
+        conversionReceivedAmount: 0,
+        conversionIsExperience: false,
         conversionIsActivity: false,
       });
       // Toast 差异化
@@ -2236,10 +2279,11 @@ Page({
       const card = Number(res.prepaidCardAmount) || 0;
       const remaining = Math.max(0, Math.round((diff - card) * 100) / 100);
       let title = '转换成功';
-      if (diff > 0 && remaining > 0) {
+      if (diff > 0 && remaining > 0 && conversionReceivedAmount > 0) {
+        const debt = Math.max(0, Math.round((remaining - conversionReceivedAmount) * 100) / 100);
         title = paymentMethod === '线下'
-          ? `请确认补差额收款 ¥${remaining.toFixed(2)}`
-          : `请${paymentMethod}支付差额 ¥${remaining.toFixed(2)}`;
+          ? `请确认收款 ¥${conversionReceivedAmount.toFixed(2)}${debt > 0 ? `，挂账 ¥${debt.toFixed(2)}` : ''}`
+          : `请${paymentMethod}支付 ¥${conversionReceivedAmount.toFixed(2)}`;
       } else if (diff > 0 && remaining <= 0) {
         title = `储值卡全额抵扣 ¥${card.toFixed(2)}，已结清`;
       } else if (diff < 0) {
@@ -2248,7 +2292,7 @@ Page({
       }
       wx.showToast({ title, icon: 'none', duration: 2500 });
       // 抵扣后仍需付现金 → 跳订单码继续收款；否则（全额抵扣 / 差额<=0）直接完成
-      if (remaining > 0) {
+      if (!conversionIsExperience && conversionReceivedAmount > 0) {
         wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?saleOrderId=${res.saleOrderId}` });
       }
     } catch (err: unknown) {

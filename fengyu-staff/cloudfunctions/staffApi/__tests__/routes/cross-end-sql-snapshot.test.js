@@ -669,6 +669,11 @@ describe('SUMMARY v3 §2 #14：refund-cascade 双端 5 通道覆盖守护', () =
         expect(src, `${name} 缺未使用门控`).toMatch(/status\s*=\s*'未使用'/)
       }
     })
+    test('staff 的 ANY(text[]) 必须将礼券 ID 数组作为单个 $1 参数绑定', () => {
+      expect(staffSrc).toMatch(
+        /WHERE\s+coupon_id\s*=\s*ANY\(\$1::text\[\]\)[\s\S]*?\[\s*\[\s*`sg-inviter-\$\{saleOrderId\}`\s*,\s*`sg-invitee-\$\{saleOrderId\}`\s*\]\s*\]/,
+      )
+    })
   })
 
   // 通道 4：point_transactions 比例冲销（INSERT '消费冲销' 行 + 重算 points_balance）
@@ -1182,7 +1187,73 @@ describe("ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护", 
   })
 })
 
+// 转换单转入行 received 重算：staff/client/payNotify/admin 四端支付入口均会调用
+// recalcPaidSessionsForOrder，必须保持同一“旧卡价值 + 净到账”分摊口径。
+describe('转换单转入 received 重算 SQL 四端一致性守护', () => {
+  const marker = 'WITH conversion_order AS'
+  let sqls
+
+  beforeAll(() => {
+    sqls = {
+      staff: normalizeSql(extractBacktickStringContaining(readFile(FILES.staffPaidSessionsJs), marker)),
+      client: normalizeSql(extractBacktickStringContaining(readFile(FILES.clientPaidSessionsJs), marker)),
+      payNotify: normalizeSql(extractBacktickStringContaining(readFile(FILES.payNotifyPaidSessionsJs), marker)),
+      adminTs: normalizeSql(extractBacktickStringContaining(readFile(FILES.adminPaidSessionsTs), marker)),
+    }
+  })
+
+  test('四端归一化后字面一致', () => {
+    expect(sqls.client).toBe(sqls.staff)
+    expect(sqls.payNotify).toBe(sqls.staff)
+    expect(sqls.adminTs).toBe(sqls.staff)
+  })
+
+  test('目标值必须为 min(转入总价, 转出旧卡价值 + 订单净到账)，并按稳定顺序吸收尾差', () => {
+    expect(sqls.staff).toContain("conversion_order.sale_order_type = '转换单'")
+    expect(sqls.staff).toContain("out_item.item_direction = '转出'")
+    expect(sqls.staff).toContain("si.item_direction = '转入'")
+    expect(sqls.staff).toMatch(/LEAST\(conversion_order\.in_total, conversion_order\.converted_value \+ conversion_order\.net_received\)/)
+    expect(sqls.staff).toMatch(/ROW_NUMBER\(\) OVER\s*\(ORDER BY si\.sale_item_id\)\s+AS rn/)
+    expect(sqls.staff).toContain('WHEN rn = item_count THEN target_received -')
+  })
+
+  test('转换单转入 received SQL 文本快照', () => {
+    expect(sqls.staff).toMatchSnapshot()
+  })
+})
+
 // ─────────────────────────────────────────────────────────────────────────────
+// sale_items 储值卡/现金实付分摊：四端各保留独立副本，归一化后必须完全一致。
+describe("sale_items 支付通道实付分摊 SQL 四端一致性守护", () => {
+  const sources = {
+    staff: readFile(FILES.staffPaidSessionsJs),
+    client: readFile(FILES.clientPaidSessionsJs),
+    payNotify: readFile(FILES.payNotifyPaidSessionsJs),
+    adminTs: readFile(FILES.adminPaidSessionsTs),
+  }
+  const extractAll = (marker) => Object.fromEntries(
+    Object.entries(sources).map(([name, src]) => [name, normalizeSql(extractBacktickStringContaining(src, marker))]),
+  )
+
+  test('订单储值卡实付净额重算四端一致', () => {
+    const sqls = extractAll('settled_prepaid')
+    expect(sqls.client).toBe(sqls.staff)
+    expect(sqls.payNotify).toBe(sqls.staff)
+    expect(sqls.adminTs).toBe(sqls.staff)
+  })
+
+  test('行级储值卡分摊四端一致，且具备有符号分母与累计边界差', () => {
+    const sqls = extractAll('prepaid_share')
+    expect(sqls.client).toBe(sqls.staff)
+    expect(sqls.payNotify).toBe(sqls.staff)
+    expect(sqls.adminTs).toBe(sqls.staff)
+    expect(sqls.staff).toMatch(/SUM\(si\.received::numeric\)\s+OVER\s*\(\)\s+AS received_total/)
+    expect(sqls.staff).toMatch(/SUM\(si\.received::numeric\) OVER \(ORDER BY si\.sale_item_id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\) AS cumulative_received/)
+    expect(sqls.staff).toMatch(/ROUND\(prepaid_total \* cumulative_received \/ received_total, 2\) - ROUND\(prepaid_total \* \(cumulative_received - item_received\) \/ received_total, 2\)/)
+    expect(sqls.staff).not.toMatch(/item_count|provisional/)
+  })
+})
+
 // Block 7b': STEP 1 分支 A received = Σ receipt SQL 四端字节同义
 //   recalcPaidSessionsForOrder STEP1 两路分流：订单有完整 receipt 覆盖 → received = Σ 有符号 receipt.amount per item
 //   （分支 A，主路径，精确，退款 receipt 为负数）；无完整 receipt → 回退分支 B 瀑布（见下一块）。
@@ -1938,5 +2009,30 @@ describe('家居产品部分支付权益跨端守护', () => {
     expect(src).toContain('pendingHomeProductQuantity')
     expect(src).toContain('FOR UPDATE OF si')
     expect(src).toContain("['已支付', '部分支付', '已完成'].includes")
+  })
+})
+
+describe('转换单在线回款意图事务守护', () => {
+  const staffOrder = readFile(FILES.staffOrderJs)
+  const qrcodeBody = staffOrder.match(/async function qrcode\b[\s\S]*?(?=\nasync function )/)?.[0] || ''
+  const repaymentBody = staffOrder.match(/async function createRepayment\b[\s\S]*?(?=\n\/\/ ========== P2)/)?.[0] || ''
+
+  test('qrcode 使用行锁和 NULL-CAS，禁止覆盖已有在线回款意图', () => {
+    expect(qrcodeBody).toContain('FOR UPDATE')
+    expect(qrcodeBody).toContain('first_payment_amount IS NULL')
+    expect(qrcodeBody).toContain('lakala_out_order_no IS NULL')
+    expect(qrcodeBody).toContain("String(locked.lakala_out_order_no || '').trim()")
+    expect(qrcodeBody).toContain('ONLINE_PAYMENT_INTENT_ACTIVE')
+    expect(qrcodeBody).not.toMatch(/SET first_payment_amount = \$1,[\s\S]*lakala_out_order_no = NULL/)
+  })
+
+  test('createRepayment 拒绝活动渠道单，并可在无渠道单时同事务冻结卡后在线补差', () => {
+    expect(repaymentBody).toContain('onlinePaymentAmount')
+    expect(repaymentBody).toContain('totalThisTime + onlinePaymentAmount')
+    expect(repaymentBody).toMatch(/pending_prepaid_card_amount = 0,[\s\S]*first_payment_amount = \$4/)
+    expect(repaymentBody).toContain('nextOnlinePaymentAmount')
+    expect(repaymentBody).toContain("String(locked.lakala_out_order_no || '').trim()")
+    expect(repaymentBody).toContain('lakala_out_order_no IS NULL')
+    expect(repaymentBody).not.toContain('lakala_out_order_no = CASE')
   })
 })

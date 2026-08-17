@@ -202,9 +202,8 @@ order.create(store_id, client_phone, cart_items, preferred_employee_id,
   → 若 useCard: 事务内 SELECT balance FROM prepaid_cards WHERE user_id=$1
     （注意：无 FOR UPDATE，因为不写；仅做基础预选余额校验）
   → PG 写入 sale_orders(待支付) + sale_items(价格快照)
-    + 预选字段: prepaid_card_amount / paid_amount / payment_method
-      - paid_amount = 0 → payment_method 强制落 '无'
-      - paid_amount > 0 → 取前端传的建议通道
+    + 预选字段: pending_prepaid_card_amount / payable_amount / payment_method
+      - prepaid_card_amount 仅保存已结算储值卡实付净额
   → **balance 不动、card_transactions 不写入**（纯预选）
   → 返回 sale_order_id
 
@@ -361,7 +360,7 @@ staff.todoList → 6 种待办:
 
 **不扣卡的关键路径**（预选 / 转交客户端扣）：
 
-- `order.create`：部分抵扣仅写入预选值（`prepaid_card_amount` / `received` / `payment_method`），`balance` 不动
+- `order.create`：部分抵扣仅写入预选值（`pending_prepaid_card_amount` / `payable_amount` / `payment_method`），`balance` 不动
 - `order.createConversion` 正差额部分抵扣 / `order.createRepayment`：沿用"店长开单 → 顾客扫码确认"链路，balance 由 clientApi / payNotify / confirmOffline 处理
 - `order.createConversion` 负差额（多退给客户）：保留现有"充入储值卡"逻辑，UPSERT 维度改为 `ON CONFLICT (user_id)`，INSERT 列集不含 `store_id`
 

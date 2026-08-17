@@ -13,7 +13,7 @@
  *      first_entry / period_agg / xinzeng / fugou / tiyan
  *   4. 进入/复购达标日分别使用 day_received / purchase_received，并共用 threshold
  *   5. cycle 进入基线纳入寄存单；复购达标与区间业绩只统计销售单/转换单
- *   6. 业绩 = SUM(received)（禁 paid_amount）
+ *   6. 业绩 = SUM(sale_item_performance_events.amount)（禁 paid_amount）
  *   7. 一级分组键 product_kind（admin 额外 category_name 二级，为 admin 独有扩展）
  *
  * 任一端一级口径变更必须双端同步，否则数据中心品项板块与员工端 mgmtProduct 数字对不上。
@@ -108,12 +108,12 @@ describe('品项板块两端口径一致性守护', () => {
   })
 
   describe('达标日 = day_received >= threshold（getMemberThreshold）', () => {
-    it('admin daily_agg 用 SUM(si.received) + day_received >= threshold', () => {
-      expect(adminCode).toMatch(/SUM\(si\.received::numeric\)\s+AS\s+day_received/i)
+    it('admin daily_agg 用支付事件金额 + day_received >= threshold', () => {
+      expect(adminCode).toMatch(/SUM\(sipe\.amount::numeric\)\s+AS\s+day_received/i)
       expect(adminCode).toMatch(/day_received\s*>=\s*\$\{threshold\}/)
     })
-    it('staff daily_agg 用 SUM(si.received) + day_received >= $3(threshold)', () => {
-      expect(staffCode).toMatch(/SUM\(si\.received::numeric\)\s+AS\s+day_received/i)
+    it('staff daily_agg 用支付事件金额 + day_received >= $3(threshold)', () => {
+      expect(staffCode).toMatch(/SUM\(sipe\.amount::numeric\)\s+AS\s+day_received/i)
       expect(staffCode).toMatch(/day_received\s*>=\s*\$3/)
     })
     it('两端经 getMemberThreshold 注入阈值', () => {
@@ -129,11 +129,11 @@ describe('品项板块两端口径一致性守护', () => {
     it('staff', () => {
       expect(staffCode).toMatch(/MIN\(purchase_date\)\s+AS\s+entry_date/i)
     })
-    it('两端 daily_agg 全历史下界（purchase_date <= 区间末）', () => {
-      expect(adminCode).toMatch(/purchaseDateExpr\s*=\s*sql`COALESCE\(so\.sale_order_datetime,\s*so\.paid_at\)::date`/)
-      expect(adminCode).toMatch(/\$\{purchaseDateExpr\}\s*<=\s*\$\{range\.end\}/)
-      expect(staffCode).toMatch(/purchaseDateSql\s*=\s*'COALESCE\(so\.sale_order_datetime,\s*so\.paid_at\)::date'/)
-      expect(staffCode).toMatch(/\$\{purchaseDateSql\}\s*<=\s*\$2/)
+    it('两端 daily_agg 全历史下界（performance_date <= 区间末）', () => {
+      expect(adminCode).toMatch(/FROM\s+sale_item_performance_events\s+sipe/)
+      expect(adminCode).toMatch(/sipe\.performance_date\s*<=\s*\$\{range\.end\}/)
+      expect(staffCode).toMatch(/FROM\s+sale_item_performance_events\s+sipe/)
+      expect(staffCode).toMatch(/sipe\.performance_date\s*<=\s*\$2/)
     })
   })
 
@@ -182,7 +182,7 @@ describe('品项板块两端口径一致性守护', () => {
     })
   })
 
-  describe('业绩 = SUM(received)（禁 paid_amount）', () => {
+  describe('业绩 = SUM(支付事件 amount)（禁 paid_amount）', () => {
     it('两端禁用 paid_amount（已 DROP，防回归）', () => {
       expect(adminCode).not.toMatch(/paid_amount/)
       expect(staffCode).not.toMatch(/paid_amount/)

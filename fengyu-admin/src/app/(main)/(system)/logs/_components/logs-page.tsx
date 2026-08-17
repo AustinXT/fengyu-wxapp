@@ -4,6 +4,7 @@ import { Fragment, useState, useMemo, useCallback } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { DatePicker } from "@/components/ui/date-picker"
 import { Select } from "@/components/ui/select"
 import { Pagination } from "@/components/ui/pagination"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
@@ -334,18 +335,16 @@ export default function LogsPage({ logs, total, canDelete = false, filterOptions
               storeClassName="w-40"
             />
             <div className="flex items-center gap-2">
-              <Input
-                type="date"
+              <DatePicker
                 className="w-40"
                 value={dateFrom}
-                onChange={(e) => setFilter("from", e.target.value)}
+                onValueChange={(value) => setFilter("from", value)}
               />
               <span className="text-[#999999]">-</span>
-              <Input
-                type="date"
+              <DatePicker
                 className="w-40"
                 value={dateTo}
-                onChange={(e) => setFilter("to", e.target.value)}
+                onValueChange={(value) => setFilter("to", value)}
               />
             </div>
           </div>

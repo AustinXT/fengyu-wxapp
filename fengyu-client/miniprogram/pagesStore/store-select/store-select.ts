@@ -2,6 +2,12 @@
 import Toast from '@vant/weapp/toast/toast';
 import { getCurrentLocation } from '../utils/location';
 import { haversineKm, formatDistance, formatStoreAddress } from '../utils/distance';
+import {
+  MIN_STORE_SEARCH_LENGTH,
+  filterStoresByCity,
+  getStoreSearchLength,
+  searchStores,
+} from '../utils/store-search';
 import { callClientApi } from '../../utils/cloud';
 
 const app = getApp<IAppOption>();
@@ -35,8 +41,7 @@ Page({
     userLat: null as number | null,
     userLng: null as number | null,
     locationFailed: false,
-    // 'search': 定位失败，提示搜索；'minlen': 输入不足2字符；'': 正常
-    showHint: '' as '' | 'search' | 'minlen',
+    showHint: '' as '' | 'search' | 'minlen' | 'no-city' | 'no-result' | 'load-error',
   },
 
   onLoad() {
@@ -45,59 +50,53 @@ Page({
   },
 
   async loadStoresWithLocation() {
-    let city = '';
-    try {
-      const loc = await getCurrentLocation();
-      city = loc.city;
-      this.setData({
-        currentCity: loc.city,
-        currentDistrict: loc.district,
-        userLat: loc.latitude,
-        userLng: loc.longitude,
-      });
-    } catch (err: any) {
-      console.warn('[loadStoresWithLocation] 定位失败或被拒绝:', err);
-      // 定位失败：标记状态，预加载全量门店供搜索使用
-      this.setData({ locationFailed: true, showHint: 'search' });
-    }
-    this.loadStores(city);
-  },
-
-  async loadStores(city: string = '') {
     this.setData({ isLoading: true });
-    try {
-      const payload = city ? { city } : {};
-      const data = await callClientApi<{ stores: Store[] }>('store.list', payload);
-      const stores: Store[] = (data?.stores || []).map(s => ({
-        ...s,
-        market_name: s.market_name || '其他',
-        store_region: s.store_region || '',
-      }));
+    const locationTask = getCurrentLocation()
+      .then((location) => ({ ok: true as const, location }))
+      .catch((error: unknown) => ({ ok: false as const, error }));
+    const storesTask = callClientApi<{ stores: Store[] }>('store.list', {})
+      .then((data) => ({ ok: true as const, data }))
+      .catch((error: unknown) => ({ ok: false as const, error }));
 
-      // 按城市筛选后无门店：提示并停止，不降级显示全部
-      if (city && stores.length === 0) {
-        Toast.fail(`${city}暂无门店`);
-        this.setData({ allStores: [], stores: [] });
-        return;
-      }
+    const [locationResult, storesResult] = await Promise.all([locationTask, storesTask]);
 
-      this.setData({ allStores: stores });
-
-      // 定位失败时预加载全量门店供搜索，但不展示列表
-      if (this.data.locationFailed) return;
-
-      this.setData({ stores: this.decorateAndSort(stores) });
-    } catch (err: any) {
-      console.error('[loadStores] error:', err);
-      // 可能是权限拒绝，检查错误类型
-      if (err.errMsg?.includes('auth deny') || err.errMsg?.includes('authorize')) {
-        Toast.fail('需要定位权限才能显示附近门店');
-      } else {
-        Toast.fail(err?.message || '加载门店失败');
-      }
-    } finally {
-      this.setData({ isLoading: false });
+    if (!locationResult.ok) {
+      console.warn('[loadStoresWithLocation] 定位失败或被拒绝:', locationResult.error);
     }
+
+    if (!storesResult.ok) {
+      const err = storesResult.error as any;
+      console.error('[loadStoresWithLocation] 加载门店失败:', err);
+      Toast.fail(err?.message || '加载门店失败');
+      this.setData({
+        allStores: [],
+        stores: [],
+        locationFailed: !locationResult.ok,
+        showHint: 'load-error',
+        isLoading: false,
+      });
+      return;
+    }
+
+    const allStores: Store[] = (storesResult.data?.stores || []).map((store) => ({
+      ...store,
+      market_name: store.market_name || '其他',
+      store_region: store.store_region || '',
+    }));
+    const currentCity = locationResult.ok ? locationResult.location.city : '';
+    const locationFailed = !locationResult.ok;
+
+    this.setData({
+      allStores,
+      currentCity,
+      currentDistrict: locationResult.ok ? locationResult.location.district : '',
+      userLat: locationResult.ok ? locationResult.location.latitude : null,
+      userLng: locationResult.ok ? locationResult.location.longitude : null,
+      locationFailed,
+      isLoading: false,
+    }, () => {
+      this.refreshVisibleStores(this.data.keyword, allStores, { currentCity, locationFailed });
+    });
   },
 
   // 计算地址/距离并按距离升序（无法计算距离的排最后）
@@ -122,27 +121,46 @@ Page({
     return decorated;
   },
 
-  onSearch(e: WxEvent<string>) {
-    const keyword = (e.detail as string).trim();
-    this.setData({ keyword });
+  refreshVisibleStores(
+    rawKeyword: string,
+    allStores?: Store[],
+    locationState?: { currentCity: string; locationFailed: boolean },
+  ) {
+    const sourceStores = allStores ?? this.data.allStores;
+    const keywordLength = getStoreSearchLength(rawKeyword);
 
-    if (keyword.length >= 2) {
-      const filtered = this.data.allStores.filter(s =>
-        s.store_name.includes(keyword) || s.store_region.includes(keyword)
-      );
-      this.setData({ showHint: '', stores: this.decorateAndSort(filtered) });
-    } else if (keyword.length === 0) {
-      if (this.data.locationFailed) {
-        // 定位失败：清空搜索恢复提示
-        this.setData({ stores: [], showHint: 'search' });
-      } else {
-        // 定位成功：清空搜索恢复城市门店
-        this.setData({ showHint: '', stores: this.decorateAndSort(this.data.allStores) });
-      }
-    } else {
-      // 1 个字符：提示需要至少2个字符
-      this.setData({ stores: [], showHint: 'minlen' });
+    if (keywordLength >= MIN_STORE_SEARCH_LENGTH) {
+      const matched = searchStores(sourceStores, rawKeyword);
+      this.setData({
+        stores: this.decorateAndSort(matched),
+        showHint: matched.length > 0 ? '' : 'no-result',
+      });
+      return;
     }
+
+    if (keywordLength > 0) {
+      this.setData({ stores: [], showHint: 'minlen' });
+      return;
+    }
+
+    const locationFailed = locationState?.locationFailed ?? this.data.locationFailed;
+    if (locationFailed) {
+      this.setData({ stores: [], showHint: 'search' });
+      return;
+    }
+
+    const currentCity = locationState?.currentCity ?? this.data.currentCity;
+    const cityStores = filterStoresByCity(sourceStores, currentCity);
+    this.setData({
+      stores: this.decorateAndSort(cityStores),
+      showHint: cityStores.length > 0 ? '' : 'no-city',
+    });
+  },
+
+  onSearch(e: WxEvent<string>) {
+    const keyword = String(e.detail || '');
+    this.setData({ keyword });
+    this.refreshVisibleStores(keyword);
   },
 
   onShow() {

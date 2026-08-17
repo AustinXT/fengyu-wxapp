@@ -126,7 +126,7 @@ function buildEntry(
   }
 }
 
-function initCommissions(
+export function initCommissions(
   serviceItems: ServiceItemDetail[],
   commissions: ServiceCommission[],
   employees: Employee[],

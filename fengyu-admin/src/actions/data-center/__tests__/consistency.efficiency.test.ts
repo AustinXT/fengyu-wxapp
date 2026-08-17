@@ -15,7 +15,7 @@
  *   5. 新会员 = became_member_at 归 bound_employee_id
  *   6. 项目数 = session_used ∩ sales_category IN ('自销自耗','他销自耗')
  *   7. 产能员工 producer_employees：hired_at/resigned_at 历史化
- *   8. sale_payment_item_allocations 统计按回款级 paid_at/status 优先，旧 paymentId=NULL 行才回退订单级
+ *   8. sale_payment_item_allocations 按 sale_order_performance_events.performance_date 归期
  *
  * ★ 额外守护（本板块改造）：efficiency.ts 的 ranking 必须用 BETWEEN 区间，
  *   而非 staff 的 date_trunc period（timeWindowPeriod）。任一端漂移则数字对不上。
@@ -83,23 +83,21 @@ describe('数据中心人效板块两端口径一致性守护', () => {
   })
 
   describe('销售单/转换单 + 已支付回款分配（业绩/销售提成口径）', () => {
-    it('admin efficiency.ts 含 IN (销售单, 转换单) + 回款级 paid_at/status 优先', () => {
+    it('admin efficiency.ts 含 IN (销售单, 转换单) + 业绩事件归期', () => {
       expect(adminSrc).toMatch(/sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/)
       expect(adminSrc).toMatch(/JOIN sale_payment_item_receipts spir ON spir\.id = spia\.sale_payment_item_receipt_id/)
-      expect(adminSrc).toMatch(/JOIN sale_order_payments sop ON sop\.id = spir\.sale_payment_id/)
-      expect(adminSrc).toMatch(/function paidAllocationDateBetween/)
-      expect(adminSrc).toMatch(/paymentAlias}\.status/)
-      expect(adminSrc).toMatch(/paymentAlias}\.paid_at/)
-      expect(adminSrc).toMatch(/paymentAlias}\.id/)
-      expect(adminSrc).toMatch(/paidAllocationDateBetween\('sop', 'so', cur\.start, cur\.end\)/)
+      expect(adminSrc).toMatch(/JOIN sale_order_performance_events spe ON spe\.sale_payment_id = spir\.sale_payment_id/)
+      expect(adminSrc).toMatch(/function performanceEventDateBetween/)
+      expect(adminSrc).toMatch(/eventAlias}\.status/)
+      expect(adminSrc).toMatch(/eventAlias}\.performance_date/)
+      expect(adminSrc).toMatch(/performanceEventDateBetween\('spe', cur\.start, cur\.end\)/)
     })
-    it('staff mgmt-dashboard.js 含 IN (销售单, 转换单) + 回款级 paid_at/status 优先', () => {
+    it('staff mgmt-dashboard.js 含 IN (销售单, 转换单) + 业绩事件归期', () => {
       expect(staffSrc).toMatch(/sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/)
       expect(staffSrc).toMatch(/JOIN sale_payment_item_receipts spir ON spir\.id = spia\.sale_payment_item_receipt_id/)
-      expect(staffSrc).toMatch(/JOIN sale_order_payments sop ON sop\.id = spir\.sale_payment_id/)
-      expect(staffSrc).toMatch(/sop\.status = '已支付'/)
-      expect(staffSrc).toMatch(/sop\.paid_at/)
-      expect(staffSrc).toMatch(/sop\.id IS NULL/)
+      expect(staffSrc).toMatch(/JOIN sale_order_performance_events spe ON spe\.sale_payment_id = spir\.sale_payment_id/)
+      expect(staffSrc).toMatch(/spe\.status = '已支付'/)
+      expect(staffSrc).toMatch(/spe\.performance_date/)
     })
   })
 
@@ -182,8 +180,8 @@ describe('数据中心人效板块两端口径一致性守护', () => {
 
   describe('★ 改造守护：efficiency.ts ranking 用 BETWEEN 区间，而非 date_trunc period', () => {
     it('admin efficiency.ts 含 BETWEEN 区间过滤（跟随顶部 TimeRange）', () => {
-      // 业绩/实耗/项目数/新会员 等均按 paid_at/service_date/became_member_at BETWEEN 区间。
-      expect(adminBody).toMatch(/paid_at::date\s+BETWEEN/i)
+      // 业绩/实耗/项目数/新会员 等均按 performance_date/service_date/became_member_at BETWEEN 区间。
+      expect(adminBody).toMatch(/performance_date\s+BETWEEN/i)
       expect(adminBody).toMatch(/service_date\s+BETWEEN/i)
       expect(adminBody).toMatch(/became_member_at::date\s+BETWEEN/i)
     })
@@ -206,15 +204,13 @@ describe('数据中心人效板块两端口径一致性守护', () => {
   describe('门店排行榜业绩 = 付款流水现金流（员工榜/提成口径保持独立）', () => {
     function expectStoreRankCashflow(src: string, start: string, end: string) {
       const n = normalize(stripComments(between(src, start, end)))
-      expect(n).toMatch(/(?:FROM|LEFT JOIN)\s+sale_order_payments\s+sop/i)
-      expect(n).toMatch(/sop\.sale_order_id\s*=\s*so\.sale_order_id|so\.sale_order_id\s*=\s*sop\.sale_order_id/i)
-      expect(n).toMatch(/SUM\(sop\.amount::numeric\)/i)
-      expect(n).toMatch(/sop\.status\s*=\s*'已支付'/)
-      expect(n).toMatch(/sop\.change_type\s+IN\s*\(\s*'首次支付'\s*,\s*'回款'\s*,\s*'退款'\s*\)/)
-      expect(n).toMatch(/so\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*,\s*'充值单'\s*\)/)
-      expect(n).toMatch(/sop\.paid_at::date\s+BETWEEN|timeWindowPeriod\('sop\.paid_at'|date_trunc\([^)]*sop\.paid_at/i)
+      expect(n).toMatch(/(?:FROM|LEFT JOIN)\s+sale_order_performance_events\s+spe/i)
+      expect(n).toMatch(/SUM\(spe\.amount::numeric\)/i)
+      expect(n).toMatch(/spe\.status\s*=\s*'已支付'/)
+      expect(n).toMatch(/spe\.change_type\s+IN\s*\(\s*'首次支付'\s*,\s*'回款'\s*,\s*'退款'\s*\)/)
+      expect(n).toMatch(/spe\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*,\s*'充值单'\s*\)/)
+      expect(n).toMatch(/spe\.performance_date\s+BETWEEN|timeWindowPeriod\('spe\.performance_date'|date_trunc\([^)]*spe\.performance_date/i)
       expect(n).toMatch(/legacy_source\s+IS\s+DISTINCT\s+FROM\s+'workfine'/i)
-      expect(n).not.toMatch(/so\.status\s*=/)
       expect(n).not.toMatch(/refunded_amount|so\.received/i)
     }
 

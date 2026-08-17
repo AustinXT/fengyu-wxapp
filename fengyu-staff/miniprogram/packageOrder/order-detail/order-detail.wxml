@@ -14,6 +14,7 @@
     <view class="status-banner status-banner--{{statusClass}}">
       <text class="status-text">{{order.status}}</text>
       <text wx:if="{{order.isActivity}}" class="activity-badge">活动</text>
+      <text wx:if="{{order.isExperienceConversion}}" class="activity-badge">体验转换</text>
       <text wx:if="{{refundBadge}}" class="refund-badge">{{refundBadge}}</text>
       <text class="order-no-top">{{order.saleOrderId}}</text>
     </view>
@@ -26,6 +27,7 @@
       <van-cell wx:if="{{order.marketName}}" title="所属市场" value="{{order.marketName}}" />
       <van-cell title="订单来源" value="{{order.orderSourceLabel}}" />
       <van-cell title="下单方式" value="{{order.orderTypeLabel}}" />
+      <van-cell wx:if="{{order.isExperienceConversion}}" title="转换模式" value="体验转换（系统锁价，不补不退）" />
       <van-cell wx:if="{{order.documentType}}" title="单据类型" value="{{order.documentType}}" />
       <van-cell wx:if="{{order.refOrderId}}" title="关联原单" value="{{order.refOrderId}}" />
       <van-cell wx:if="{{order.preferredStaffName}}" title="指定美容师" value="{{order.preferredStaffName}}" />
@@ -37,6 +39,7 @@
       <van-cell wx:if="{{order.allocationStatus}}" title="分配状态" value="{{order.allocationStatus}}" />
       <van-cell title="创建时间" value="{{order.createdAt}}" />
       <van-cell wx:if="{{order.paidAt}}" title="支付时间" value="{{order.paidAt}}" />
+      <van-cell wx:if="{{order.performanceAttributionDate}}" title="业绩归属日期" value="{{order.performanceAttributionDate}}{{order.performanceAttributionAdjusted ? '（已调整）' : ''}}" />
       <van-cell wx:if="{{order.isLegacy}}" title="数据来源" value="历史导入订单" />
       <van-cell wx:if="{{order.remark}}" title="备注" value="{{order.remark}}" />
     </van-cell-group>
@@ -137,12 +140,12 @@
         bind:click="onResetFailed"
       >重置支付失败</van-button>
       <van-button
-        wx:if="{{!isReadOnly && (isManager || isCreator) && order.status === '待支付'}}"
+        wx:if="{{!isReadOnly && (isManager || isCreator) && order.canViewQrcode}}"
         block plain type="primary"
         custom-class="btn-outline-brand"
         custom-style="border-radius:48rpx;margin-top:24rpx;"
         bind:click="onShowQrcode"
-      >查看收款码</van-button>
+      >{{order.canResumeOnlinePayment ? '查看本次收款码（¥' + order.activePaymentAmount + '）' : '查看收款码'}}</van-button>
       <van-button
         wx:if="{{!isReadOnly && (isManager || isCreator) && order.status === '待支付'}}"
         block plain type="danger"
@@ -151,7 +154,7 @@
       >取消订单</van-button>
       <!-- Ticket 2 PR-A：发起回款（店长 + 有欠款） -->
       <van-button
-        wx:if="{{!isReadOnly && isManager && order.hasDebt}}"
+        wx:if="{{!isReadOnly && isManager && order.canInitiateRepayment}}"
         block type="primary"
         custom-class="btn-primary-brand"
         custom-style="border-radius:48rpx;"
@@ -263,10 +266,10 @@
     closeable
   >
     <view class="repay-popup">
-      <view class="repay-title">按子项回款</view>
+      <view class="repay-title">{{order.orderType === '转换单' ? '转换单回款' : '按子项回款'}}</view>
       <view class="repay-debt">
         欠款金额：<text class="repay-debt-hot">¥{{order.remainingPayable}}</text>
-        <text class="repay-debt-tip">（可只对部分子项回款，不要求一次性付清）</text>
+        <text class="repay-debt-tip">{{order.orderType === '转换单' ? '（按订单级欠款回款）' : '（可只对部分子项回款，不要求一次性付清）'}}</text>
       </view>
 
       <view class="repay-section-label">支付方式</view>
@@ -295,9 +298,9 @@
       </view>
 
       <!-- 储值卡抵扣勾选（仅顾客有余额时可用，金额手填） -->
-      <view wx:if="{{repayCardBalance > 0}}" class="repay-card-toggle {{repayUseCard ? 'repay-card-toggle--on' : ''}}" bind:tap="onToggleUseCard">
+      <view wx:if="{{repayCardBalance > 0 || repayCardLocked}}" class="repay-card-toggle {{repayUseCard ? 'repay-card-toggle--on' : ''}}" bind:tap="onToggleUseCard">
         <text class="repay-card-mark">{{repayUseCard ? '☑' : '☐'}}</text>
-        <text class="repay-card-label">使用储值卡抵扣</text>
+        <text class="repay-card-label">{{repayCardLocked ? '使用订单预选储值卡抵扣' : '使用储值卡抵扣'}}</text>
         <text class="repay-card-balance">余额 ¥{{repayCardBalance}}</text>
       </view>
       <view wx:if="{{repayUseCard}}" class="repay-card-input-row">
@@ -308,11 +311,12 @@
             class="repay-card-input"
             type="digit"
             value="{{repayCardAmountInput}}"
+            disabled="{{repayCardLocked}}"
             bindinput="onRepayCardAmountInput"
             bindblur="onRepayCardAmountBlur"
           />
         </view>
-        <text class="repay-card-max">最多 ¥{{repayCardMax}}</text>
+        <text class="repay-card-max">{{repayCardLocked ? '已固定' : '最多'}} ¥{{repayCardMax}}</text>
       </view>
 
       <view wx:if="{{repayMethod === '微信' || repayMethod === '支付宝'}}" class="repay-online-hint">

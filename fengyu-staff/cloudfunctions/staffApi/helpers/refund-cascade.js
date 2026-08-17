@@ -336,6 +336,7 @@ async function cascadeRefund(client, params) {
               updated_at = NOW()
         WHERE coupon_id = ANY($1::text[])
           AND status = '未使用'`,
+      // text[] 是 SQL 唯一占位符 $1 的单个绑定值，不能拆成两个参数。
       [[`sg-inviter-${saleOrderId}`, `sg-invitee-${saleOrderId}`]],
     )
     revokedShareGiftCoupons = shareGiftRes.rowCount || 0

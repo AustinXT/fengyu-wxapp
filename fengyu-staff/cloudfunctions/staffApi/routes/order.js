@@ -12,7 +12,7 @@
  */
 
 const pg = require('../db/pg')
-const { requireStaffBound, requireManager } = require('../middleware/auth')
+const { requireStaffBound, requireManager, isCurrentStoreManager } = require('../middleware/auth')
 const { assertOrderInScope, isStoreInScope, restrictToBoundEmployee, buildBundleMarketScopeFilter, buildNormalSkuMarketScopeFilter } = require('../utils/scope')
 const { generateWxacode, uploadToCloudStorage } = require('../utils/wxacode')
 const { getMemberThreshold, getPointsToYuanRate, getPointsDeductionMaxRate } = require('../utils/config')
@@ -142,6 +142,30 @@ function splitMoneyByCount(value, count) {
   const eachCents = Math.trunc(totalCents / count)
   return Array.from({ length: count }, (_unused, index) =>
     (eachCents + (index === count - 1 ? totalCents - eachCents * count : 0)) / 100)
+}
+
+/** 按服务端正常成交价权重，把体验转换转入总额精确分摊到旧卡划卡价值。 */
+function allocateExperienceConversionAmounts(items, targetAmount) {
+  const targetCents = Math.round(Number(targetAmount) * 100)
+  const weights = items.map((item) => Math.max(0, Math.round(Number(item.saleAmount || item.amount || 0) * 100)))
+  const weightTotal = weights.reduce((sum, value) => sum + value, 0)
+  if (targetCents < 0 || weightTotal <= 0) {
+    throw new Error('INVALID_STATE: EXPERIENCE_CONVERSION_PRICE_INVALID: 体验转换项目正常价格必须大于0')
+  }
+  let allocatedCents = 0
+  items.forEach((item, index) => {
+    const cents = index === items.length - 1
+      ? targetCents - allocatedCents
+      : Math.floor(targetCents * weights[index] / weightTotal)
+    allocatedCents += cents
+    const amount = cents / 100
+    const denom = item.sessionCount != null && Number(item.sessionCount) > 0
+      ? Number(item.sessionCount)
+      : Number(item.quantity) || 1
+    item.amount = amount
+    item.saleAmount = amount
+    item.unitRealPrice = roundMoney(amount / denom)
+  })
 }
 
 function isConvertibleEntitlementRow(row) {
@@ -394,6 +418,8 @@ function applyTreatmentTierPricing(rawItems, tierSkuRows, buyerIsMember, saleOrd
         s.category_id === categoryId &&
         s.spec_name === productName &&
         s.product_type === '疗程卡' &&
+        s.is_enabled !== false &&
+        s.is_experience !== true &&
         s.is_manager_special !== true &&
         s.session_count != null &&
         Number(s.session_count) > 1 &&
@@ -697,13 +723,90 @@ async function assertNormalSkuMarketScopeForCurrentStore(skuRows, auth, query = 
   throw new Error(`INVALID_PARAMS: 商品 ${sku.specName || sku.productName || sku.skuId} 不适用于当前门店`)
 }
 
-async function _loadAndValidateBundle(bundleProductId, items, auth) {
+/**
+ * 阶梯计价候选按顾客实时绑定市场过滤，不按开单员工当前工作台过滤。
+ * 临时跨店顾客允许全市场商品及任意已配置市场商品；普通顾客按绑定门店所属市场；
+ * 顾客/门店/市场关系缺失时保守退化为仅全市场商品。
+ */
+async function resolveCustomerOrderMarketScope(
+  clientUserId,
+  query = (text, params) => pg.query(text, params),
+) {
+  if (!clientUserId) return { type: 'globalOnly' }
+
+  const result = await query(
+    `SELECT customer_scope.is_cross_store_temp,
+            market_node.id AS market_id,
+            market_node.name AS market_name
+       FROM client_wechat_users customer_scope
+       LEFT JOIN stores bound_store
+         ON bound_store.store_id = customer_scope.bound_store_id
+       LEFT JOIN org_nodes store_node
+         ON store_node.id = bound_store.org_node_id
+       LEFT JOIN org_nodes market_node
+         ON market_node.id = store_node.parent_id
+        AND market_node.type = '市场'
+      WHERE customer_scope.user_id = $1
+      LIMIT 1`,
+    [clientUserId],
+  )
+  const rows = Array.isArray(result) ? result : (result.rows || [])
+  const row = rows[0]
+  if (row?.is_cross_store_temp === true) return { type: 'allConfigured' }
+  if (!row?.market_id || !row.market_name) return { type: 'globalOnly' }
+  return {
+    type: 'market',
+    marketId: row.market_id,
+    marketName: row.market_name,
+  }
+}
+
+function buildCustomerOrderMarketScopeFilter(scope, params, skuAlias = 's') {
+  const scopeExpr = `${skuAlias}.market_scope`
+  const normalizedScopeExpr = `regexp_replace(${scopeExpr}, '[[:space:]]+', '', 'g')`
+  const valuesExpr = `string_to_array(${normalizedScopeExpr}, ',')`
+  const globalExpr = `${scopeExpr} IS NULL`
+  const nonBlankExpr = `NULLIF(${normalizedScopeExpr}, '') IS NOT NULL`
+
+  if (scope?.type === 'allConfigured') {
+    return `AND (${globalExpr} OR ${nonBlankExpr})`
+  }
+  if (scope?.type !== 'market') {
+    return `AND ${globalExpr}`
+  }
+
+  params.push(scope.marketId, String(scope.marketName).replace(/\s+/g, ''))
+  const marketIdParam = `$${params.length - 1}`
+  const marketNameParam = `$${params.length}`
+  return `AND (
+    ${globalExpr}
+    OR (
+      ${nonBlankExpr}
+      AND (
+        ${marketIdParam} = ANY(${valuesExpr})
+        OR ${marketNameParam} = ANY(${valuesExpr})
+      )
+    )
+  )`
+}
+
+async function _loadAndValidateBundle(
+  bundleProductId,
+  items,
+  auth,
+  query = (text, params) => pg.query(text, params),
+) {
   if (!bundleProductId) return null
+
+  const queryRows = async (text, params) => {
+    const result = await query(text, params)
+    return Array.isArray(result) ? result : (result.rows || [])
+  }
 
   const productParams = [bundleProductId]
   // 独立实现，避免 staffApi 跨模块共享运行时代码；与 product.shopInit 同一 SQL 语义。
   const marketScopeFilter = buildBundleMarketScopeFilter(auth, productParams)
-  const productRows = await pg.query(
+  const productRows = await queryRows(
     `SELECT p.product_id, p.is_bundle FROM products p
      WHERE p.product_id = $1 AND p.deleted_at IS NULL
        ${marketScopeFilter}`,
@@ -713,11 +816,11 @@ async function _loadAndValidateBundle(bundleProductId, items, auth) {
     throw new Error('INVALID_PARAMS: BUNDLE_NOT_AVAILABLE: 套餐不存在、已删除或不适用于当前门店')
   }
 
-  const groupRows = await pg.query(
+  const groupRows = await queryRows(
     `SELECT id, group_name, pick_count FROM mall_bundle_groups WHERE product_id = $1`,
     [bundleProductId]
   )
-  const mpsRows = await pg.query(
+  const mpsRows = await queryRows(
     `SELECT sku_id, bundle_group_id, bundle_price, bundle_list_price
      FROM mall_product_skus WHERE product_id = $1`,
     [bundleProductId]
@@ -1051,19 +1154,23 @@ async function create(ctx) {
   if (tierBaseItems.length > 0) {
     const categoryIds = [...new Set(tierBaseItems.map(d => d.categoryId))]
     const productNames = [...new Set(tierBaseItems.map(d => d.productName))]
+    const tierParams = [categoryIds, productNames]
+    const customerMarketScope = await resolveCustomerOrderMarketScope(clientUserId)
+    const tierMarketScopeFilter = buildCustomerOrderMarketScopeFilter(customerMarketScope, tierParams, 's')
     const tierSkuRows = await pg.query(
-      `SELECT sku_id, category_id, product_type, spec_name, price, special_price, session_count,
-              is_manager_special
-       FROM product_skus
-       WHERE deleted_at IS NULL
-         AND is_enabled = true
-         AND product_type = '疗程卡'
-         AND COALESCE(is_experience, false) = false
-         AND COALESCE(is_manager_special, false) = false
-         AND category_id = ANY($1)
-         AND spec_name = ANY($2)
-         AND session_count IS NOT NULL`,
-      [categoryIds, productNames]
+      `SELECT s.sku_id, s.category_id, s.product_type, s.spec_name, s.price, s.special_price,
+              s.session_count, s.is_manager_special
+       FROM product_skus s
+       WHERE s.deleted_at IS NULL
+         AND s.is_enabled = true
+         AND s.product_type = '疗程卡'
+         AND COALESCE(s.is_experience, false) = false
+         AND COALESCE(s.is_manager_special, false) = false
+         AND s.category_id = ANY($1)
+         AND s.spec_name = ANY($2)
+         AND s.session_count IS NOT NULL
+         ${tierMarketScopeFilter}`,
+      tierParams
     )
     applyTreatmentTierPricing(rawItemDataList, tierSkuRows, buyerIsMember, saleOrderType)
   }
@@ -1317,7 +1424,7 @@ async function create(ctx) {
   // 故预选上界 + 现金口径都以此为基线（见下方 maxPrepayable / confirmOffline）。
   const sumItemReceived = Math.round(itemDataList.reduce((sum, d) => sum + d.received, 0) * 100) / 100
 
-  // ========== 充值卡预选（店长开单 = 预选，不扣卡；DB 字段 prepaid_card_amount 命名保持不变）==========
+  // ========== 充值卡预选（店长开单 = 预选，不扣卡；写 pending_prepaid_card_amount）==========
   // 仅显式输入抵扣金额时查询余额（不加 FOR UPDATE，因为开单预选不写 balance）。
   // useCard=true 但未传金额按 0 处理，避免沿用旧版的自动抵满行为。
   let prepaidCardAmount = 0
@@ -1346,7 +1453,7 @@ async function create(ctx) {
   }
 
   // ========== 款项流水（sale_order_payments）语义 ==========
-  // payable_amount = total - prepaid_card_amount（整单生命周期"应收现金"冗余列，含未来回款的欠款部分）。
+  // payable_amount = total - actual prepaid - pending prepaid（整单生命周期"约定现金应收"冗余列）。
   //   本单当下应收现金 = 当下实付 − 卡 = sumItemReceived − prepaid（由 confirmOffline 默认收取）；
   //   欠款 = total − 当下实付，经 createRepayment 回款累加进 received 直到 received = payable 结清。
   //   故此处保持 total − prepaid 不变（勿改成 当下实付 − prepaid，否则欠款单会被误判为已结清）。
@@ -1355,6 +1462,7 @@ async function create(ctx) {
   // 无款可付，创建即结清为'已支付'，否则卡在'待支付'死循环（0 元发不起线上支付、
   // payment_method='无' 也走不了 confirmOffline）。isFullCardCoverage（含储值卡）是其子集。
   const zeroPayable = payableAmount === 0
+  const isFullCardCoverage = zeroPayable && prepaidCardAmount > 0
 
   // receivedAmount（本次现场实收）= Σ 行实付（前端传入，默认 = 行应付）
   //   - 充值卡抵扣 + 行实付汇总 不应超过 totalAmount；若超出（默认场景下勾上充值卡）自动 cap 至 payableAmount
@@ -1438,7 +1546,6 @@ async function create(ctx) {
     // 零应付（payable==0：券全额 / 储值卡全额 / 二者叠加）：无现金可收，创建即结清。
     // 优先于线上判定——线上零应付同样无需等 payNotify。isFullCardCoverage 是其"含储值卡"子集，
     // 仅用于"是否需要事务内扣卡 + recalc"分支（券全额 card=0 无卡可扣、走 per-item 摊次）。
-    const isFullCardCoverage = payableAmount === 0 && prepaidCardAmount > 0
     // 两步式（2026-06-07 修 P0）：开单不收款（paidAmount=0），非 zeroPayable 一律 '待支付'，
     // 由 confirmOffline（线下/储值卡）/ payNotify（线上）入账翻态（'部分支付'/'已支付'）。
     // zeroPayable（券/卡全额抵扣）无现金可收、create 内即扣卡结清，落 '已支付'。
@@ -1446,6 +1553,8 @@ async function create(ctx) {
     // received 列：零应付 = prepaid（券全额时 prepaid=0 → received=0；卡全额时 = 卡额，与 '储值卡抵扣' 流水一致）；
     // 其余 = 本次现金 paidAmount。
     const receivedColumn = zeroPayable ? prepaidCardAmount : paidAmount
+    const settledPrepaidColumn = isFullCardCoverage ? prepaidCardAmount : 0
+    const pendingPrepaidColumn = isFullCardCoverage ? 0 : prepaidCardAmount
     // paid_at 语义：payments 行已支付即"有钱到账"时间，冗余到 sale_orders.paid_at；
     // 挂账订单无入账 → NULL。线下全额 / 零应付（券/卡全额抵扣）订单已结清，paid_at 落 now。
     const paidAtValue = (paidAmount > 0 || zeroPayable) ? now : null
@@ -1455,9 +1564,9 @@ async function create(ctx) {
         sale_order_datetime, total_amount, client_user_id, client_phone, customer_name,
         payment_method, opened_by,
         preferred_employee_id, coupon_id, coupon_discount, points_used, points_discount, remark, is_activity, allocation_status,
-        prepaid_card_amount, received, payable_amount, paid_at,
+        prepaid_card_amount, pending_prepaid_card_amount, received, payable_amount, paid_at,
         created_at, updated_at
-      ) VALUES ($1, $17, $2, $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $23, $24, $16, $22, '待分配', $18, $19, $20, $21, $6, $6)`,
+      ) VALUES ($1, $17, $2, $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $24, $25, $16, $23, '待分配', $18, $19, $20, $21, $22, $6, $6)`,
       [
         saleOrderId, saleOrderType, documentType, marketName, storeId, now,
         totalAmount, clientUserId, clientPhone, clientName,
@@ -1466,7 +1575,7 @@ async function create(ctx) {
         inputCouponId || null, couponDiscount,
         orderRemark || null,
         initialStatus,
-        prepaidCardAmount, receivedColumn, payableAmount,
+        settledPrepaidColumn, pendingPrepaidColumn, receivedColumn, payableAmount,
         paidAtValue,
         isActivity === true,
         pointsUsed,
@@ -1497,7 +1606,7 @@ async function create(ctx) {
     // ========== 两步式（2026-06-07 修 P0「待支付可消费疗程卡」）：开单不写收款流水 ==========
     // 线下/储值卡的现金实收由店长 confirmOffline「确认收款」入账（写 '首次支付'/已支付流水 + 翻态 + recalc）；
     // 线上（微信/支付宝）由 payNotify 回调入账。开单时一律不写 '已支付' payments 行（received=0、paid_sessions=0，
-    // 杜绝未付款消费）。储值卡抵扣的 prepaid_card_amount 仅作"预选"，真正扣卡 + 写 '储值卡抵扣' 流水：
+    // 杜绝未付款消费）。储值卡抵扣的 pending_prepaid_card_amount 仅作"预选"，真正扣卡 + 写 '储值卡抵扣' 流水：
     //   - zeroPayable（券/卡全额抵扣）：下方 deductPrepaidCardAtCreation 在 create 事务内即扣即结清；
     //   - 非 zeroPayable（部分储值卡 + 待付现金）：由 confirmOffline 扣卡（staffApi 唯一扣卡点，见 CLAUDE.md）。
 
@@ -1614,7 +1723,8 @@ async function create(ctx) {
     couponDiscount,
     pointsUsed,
     pointsDiscount,
-    prepaidCardAmount,
+    prepaidCardAmount: isFullCardCoverage ? prepaidCardAmount : 0,
+    pendingPrepaidCardAmount: isFullCardCoverage ? 0 : prepaidCardAmount,
     paidAmount,
     receivedAmount,
     paymentMethod: effectivePaymentMethod,
@@ -1632,15 +1742,96 @@ async function qrcode(ctx) {
 
   const payload = ctx.event.payload || {}
   const saleOrderId = payload.saleOrderId
+  const paymentAmountInput = payload.paymentAmount
   if (!saleOrderId) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
+  }
+
+  // 转换单订单级在线回款：二维码本身只携带订单号，顾客端会从订单读取
+  // first_payment_amount 作为微信/支付宝本次收款硬上限。店长从详情页填写部分
+  // 回款时必须先原子冻结该金额，否则收银台会回退为整笔剩余欠款。
+  if (paymentAmountInput !== undefined && paymentAmountInput !== null) {
+    await requireManager()(ctx, async () => {})
+    const paymentAmount = Number(paymentAmountInput)
+    if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
+      throw new Error('INVALID_PARAMS: 本次在线回款金额必须大于0')
+    }
+    if (Math.abs(Math.round(paymentAmount * 100) - paymentAmount * 100) > 1e-6) {
+      throw new Error('INVALID_PARAMS: 本次在线回款金额最多保留2位小数')
+    }
+    const roundedPaymentAmount = roundMoney(paymentAmount)
+
+    await pg.transaction(async (client) => {
+      const lockedRes = await client.query(
+        `SELECT sale_order_id, store_id, sale_order_type, status, is_experience_conversion,
+                total_amount, received, refunded_amount, pending_prepaid_card_amount,
+                first_payment_amount, lakala_out_order_no
+           FROM sale_orders
+          WHERE sale_order_id = $1
+          FOR UPDATE`,
+        [saleOrderId]
+      )
+      if (lockedRes.rows.length === 0) {
+        throw new Error('NOT_FOUND: 订单不存在')
+      }
+      const locked = lockedRes.rows[0]
+      if (locked.store_id !== ctx.auth.effectiveStoreId) {
+        throw new Error('PERMISSION_DENIED: 订单不属于当前门店')
+      }
+      if (locked.sale_order_type !== '转换单' || locked.is_experience_conversion === true) {
+        throw new Error('INVALID_STATE: ONLINE_PAYMENT_CAP_NOT_ALLOWED: 仅普通转换单支持冻结在线回款金额')
+      }
+      if (!['待支付', '部分支付'].includes(locked.status)) {
+        throw new Error(`INVALID_STATE: 订单当前状态为"${locked.status}"，不可发起在线回款`)
+      }
+      // 拉卡拉单号一旦存在，就代表渠道侧仍可能真实扣款。即使历史/异常数据没有
+      // first_payment_amount，也不能用新 cap 覆盖并清掉旧单号；恢复二维码只走
+      // 不带 paymentAmount 的只读分支。
+      if (String(locked.lakala_out_order_no || '').trim()) {
+        throw new Error('CONFLICT: ONLINE_PAYMENT_INTENT_ACTIVE: 已有进行中的在线回款，请勿重复出码')
+      }
+      const remainingPayable = Math.max(0, roundMoney(
+        Number(locked.total_amount || 0)
+          - Number(locked.received || 0)
+          + Number(locked.refunded_amount || 0)
+          - Number(locked.pending_prepaid_card_amount || 0)
+      ))
+      if (roundedPaymentAmount > remainingPayable + 0.001) {
+        throw new Error('INVALID_PARAMS: 本次在线回款金额不能超过订单欠款')
+      }
+
+      // first_payment_amount 同时承担订单级在线支付意图：真实到账前不得被另一设备覆盖。
+      // 相同金额视为同一意图的幂等重试（二维码可复用）；不同金额必须先等待原意图完成。
+      const activePaymentAmount = roundMoney(Number(locked.first_payment_amount || 0))
+      if (activePaymentAmount > 0) {
+        if (Math.abs(activePaymentAmount - roundedPaymentAmount) > 0.001) {
+          throw new Error('CONFLICT: ONLINE_PAYMENT_INTENT_ACTIVE: 已有进行中的在线回款，请勿重复出码')
+        }
+        return
+      }
+
+      const updateRes = await client.query(
+        `UPDATE sale_orders
+            SET first_payment_amount = $1,
+                updated_at = NOW()
+          WHERE sale_order_id = $2
+            AND status = $3
+            AND first_payment_amount IS NULL
+            AND lakala_out_order_no IS NULL`,
+        [roundedPaymentAmount, saleOrderId, locked.status]
+      )
+      if (updateRes.rowCount !== 1) {
+        throw new Error('CONFLICT: 订单状态已变更，请刷新后重试')
+      }
+    })
   }
 
   const orders = await pg.query(
     `SELECT o.sale_order_id, o.status, o.sale_order_type, o.client_phone, o.customer_name,
             o.payment_method, o.paid_at, o.store_id, o.opened_by,
-            o.total_amount, o.prepaid_card_amount, o.payable_amount,
-            o.received, o.refunded_amount
+            o.total_amount, o.prepaid_card_amount, o.pending_prepaid_card_amount, o.payable_amount,
+            o.received, o.refunded_amount, o.first_payment_amount,
+            o.is_experience_conversion
      FROM sale_orders o
      WHERE o.sale_order_id = $1`,
     [saleOrderId]
@@ -1662,7 +1853,8 @@ async function qrcode(ctx) {
 
   const items = await pg.query(`
     SELECT
-      si.sale_item_id, si.received, si.pending_received, si.sale_amount,
+      si.sale_item_id, si.received, si.prepaid_card_received, si.cash_received,
+      si.pending_received, si.sale_amount,
       si.product_name
     FROM sale_items si
     WHERE si.sale_order_id = $1
@@ -1674,14 +1866,14 @@ async function qrcode(ctx) {
 
   // 实际需支付金额（付款码顶部展示给顾客扫码）
   const prepaidCardAmount = Number(order.prepaid_card_amount || 0)
+  const pendingPrepaidCardAmount = Number(order.pending_prepaid_card_amount || 0)
   let actualPayable
   if (order.status === '部分支付') {
-    // 回款场景：剩余欠款 = 应付实金 − 净到账（received − refunded）
-    const payable = Number(order.payable_amount || 0) > 0
-      ? Number(order.payable_amount)
-      : Math.max(0, Math.round((totalAmount - prepaidCardAmount) * 100) / 100)
+    // 回款场景：actual 储值卡已包含在 received，不能再从 payable 重复扣减。
     const netReceived = Math.round((Number(order.received || 0) - Number(order.refunded_amount || 0)) * 100) / 100
-    actualPayable = Math.max(0, Math.round((payable - netReceived) * 100) / 100)
+    const remaining = Math.max(0, Math.round((totalAmount - pendingPrepaidCardAmount - netReceived) * 100) / 100)
+    const frozenPayment = Number(order.first_payment_amount || 0)
+    actualPayable = frozenPayment > 0 ? Math.min(remaining, frozenPayment) : remaining
   } else if (order.sale_order_type === '充值单' || order.sale_order_type === '转换单') {
     // 充值卡单（card.recharge，0 行 sale_items）/ 转换单（sale_items 未写 pending_received，默认 0）：
     // 不能走逐行 pending_received（恒为 0 会让二维码显示 ¥0），待支付额直接取订单应付金额。
@@ -1689,8 +1881,9 @@ async function qrcode(ctx) {
     // payable_amount 缺失（历史/迁移数据）时回退 total−储值卡，与部分支付分支对称，避免静默 ¥0。
     const payable = Number(order.payable_amount || 0) > 0
       ? Number(order.payable_amount)
-      : Math.max(0, Math.round((totalAmount - prepaidCardAmount) * 100) / 100)
-    actualPayable = Math.max(0, Math.round(payable * 100) / 100)
+      : Math.max(0, Math.round((totalAmount - prepaidCardAmount - pendingPrepaidCardAmount) * 100) / 100)
+    const firstPayment = Number(order.first_payment_amount || 0)
+    actualPayable = Math.max(0, Math.round((firstPayment > 0 ? firstPayment : payable) * 100) / 100)
   } else {
     // 待支付（首付）= Σ各商品明细实付 − 储值卡抵扣
     // 两步式开单 sale_items.received=0（开单不记账），故用 pending_received（逐行实付草稿）作为「商品实付」口径
@@ -1698,7 +1891,7 @@ async function qrcode(ctx) {
       (s, i) => s + Number(i.pending_received != null ? i.pending_received : (i.sale_amount || 0)),
       0
     )
-    actualPayable = Math.max(0, Math.round((sumItemReal - prepaidCardAmount) * 100) / 100)
+    actualPayable = Math.max(0, Math.round((sumItemReal - pendingPrepaidCardAmount) * 100) / 100)
   }
 
   // 推导二维码显示状态（UI-only 标签，不写库）
@@ -1748,11 +1941,16 @@ async function qrcode(ctx) {
     paidAt: order.paid_at,
     openedBy: order.opened_by,
     totalAmount,
+    prepaidCardAmount,
+    pendingPrepaidCardAmount,
     actualPayable,
+    isExperienceConversion: order.is_experience_conversion === true,
     items: items.map(i => ({
       saleItemId: i.sale_item_id,
       productName: i.product_name,
-      received: i.received
+      received: i.received,
+      prepaidCardReceived: i.prepaid_card_received,
+      cashReceived: i.cash_received,
     })),
     qrcodeUrl,
     qrcodeError
@@ -1772,102 +1970,96 @@ async function confirmOffline(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
   }
 
-  const orders = await pg.query(
-    "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2",
-    [saleOrderId, ctx.auth.effectiveStoreId]
-  )
-
-  if (orders.length === 0) {
-    throw new Error('INVALID_PARAMS: 订单不存在或不属于本门店')
-  }
-
-  const order = orders[0]
-
-  if (order.status === '待支付' && order.payment_method !== '线下') {
-    throw new Error(`INVALID_PARAMS: 非线下支付订单不可直接确认收款`)
-  }
-  // PR-2: 允许对 '待支付' / '部分支付' 订单确认收款
-  if (!['待支付', '部分支付'].includes(order.status)) {
-    throw new Error(`INVALID_PARAMS: 订单当前状态为"${order.status}"，不可确认收款`)
-  }
-
-  const now = new Date()
-
-  // 查询订单明细
-  const items = await pg.query(
-    `SELECT si.sale_item_id, si.sku_id, si.received, si.pending_received, si.product_type
-     FROM sale_items si
-     WHERE si.sale_order_id = $1`,
-    [saleOrderId]
-  )
-
-  const totalReceived = items.reduce((s, i) => s + Number(i.received || 0), 0)
-  // 两步式（2026-06-07）：开单约定实付草稿合计（pending_received），作 confirmAmount 缺省依据，
-  // 使店长「一键确认」收的是开单约定的实付（含折扣/首付），而非全额应付。
-  const pendingTotal = Math.round(items.reduce((s, i) => s + Number(i.pending_received || 0), 0) * 100) / 100
-
-  // ========== 本次确认收款金额 + 目标订单状态 ==========
-  // confirmAmount 默认（两步式 2026-06-07）= 当下应收现金 = 当下实付 − 储值卡 − 已收，cap 到剩余应付现金：
-  //   - 无折扣（pending_received=应付）：缺省 = remainingPayable（全额，行为不变）；
-  //   - 有折扣/首付（pending_received<应付）：缺省 = 约定实付 − 卡 − 已收（避免一键确认多收）；
-  //   - 无草稿（旧订单 pending_received=0）：回退全额 remainingPayable。
-  // ⚠️ 充值卡从「当下实付」里抵：现金 = pending − prepaid（而非 pending 全当现金再叠加扣卡，
-  //    否则欠款+卡订单会多收一笔卡额）。外层 max(0,…) 兜底 pending < prepaid 边缘（卡只抵到 pending）。
-  // 店长可显式传 confirmAmount 覆盖。payable_amount 旧订单 NULL 时用 total - prepaid 兜底。
-  const orderTotal = Number(order.total_amount || 0)
-  const orderPrepaid = Number(order.prepaid_card_amount || 0)
-  const orderReceived = Number(order.received || 0)
-  const orderPayable = order.payable_amount != null
-    ? Number(order.payable_amount)
-    : Math.round((orderTotal - orderPrepaid) * 100) / 100
-  const remainingPayable = Math.round((orderPayable - orderReceived) * 100) / 100
-  const pendingRemaining = pendingTotal > 0
-    ? Math.max(0, Math.min(remainingPayable, Math.round((pendingTotal - orderPrepaid - orderReceived) * 100) / 100))
-    : remainingPayable
-
-  let confirmAmount
-  if (inputConfirmAmount === undefined || inputConfirmAmount === null) {
-    confirmAmount = pendingRemaining
-  } else {
-    confirmAmount = Number(inputConfirmAmount)
-    if (!Number.isFinite(confirmAmount) || confirmAmount < 0) {
-      throw new Error('INVALID_PARAMS: 本次确认金额必须为非负数')
+  const result = await pg.transaction(async (client) => {
+    // 必须先锁订单再计算金额。qrcode/createRepayment/payNotify 都会更新同一行，
+    // 若在事务外读取 first_payment_amount，会把并发刚冻结的小额在线意图按旧的大额快照入账。
+    const lockedRes = await client.query(
+      `SELECT *
+       FROM sale_orders
+       WHERE sale_order_id = $1 AND store_id = $2
+       FOR UPDATE`,
+      [saleOrderId, ctx.auth.effectiveStoreId]
+    )
+    if (lockedRes.rows.length === 0) {
+      throw new Error('INVALID_PARAMS: 订单不存在或不属于本门店')
     }
-    if (confirmAmount > remainingPayable + 0.001) {
-      throw new Error('INVALID_PARAMS: 本次确认金额不能超过剩余应付金额')
+
+    const order = lockedRes.rows[0]
+    if (order.status === '待支付' && order.payment_method !== '线下') {
+      throw new Error('INVALID_PARAMS: 非线下支付订单不可直接确认收款')
     }
-    confirmAmount = Math.round(confirmAmount * 100) / 100
-  }
+    if (!['待支付', '部分支付'].includes(order.status)) {
+      throw new Error(`INVALID_PARAMS: 订单当前状态为"${order.status}"，不可确认收款`)
+    }
+    // 已创建渠道预下单后禁止改走线下。否则渠道后续成功会与本次线下入账竞争，形成重复收款。
+    if (order.lakala_out_order_no) {
+      throw new Error('CONFLICT: ONLINE_PAYMENT_INTENT_ACTIVE: 已有进行中的在线支付，请先完成该支付')
+    }
 
-  // 结清判定基准 = payable_amount + prepaid（顾客应付现金 + 储值卡抵扣），不用 total_amount。
-  // 普通单 payable = total - prepaid，故 payable + prepaid === total（行为不变）；
-  // 充值单 payable(实付 980) ≠ total(面额 1000)，须用 payable 否则永远判为部分支付。
-  const settleTarget = Math.round((orderPayable + orderPrepaid) * 100) / 100
-  // received / targetStatus 的权威值由事务内「从流水重聚合」产出（维护 I1：received = Σ[首次支付/回款/储值卡抵扣]，
-  // 跨端字面对齐 admin confirmOfflinePayment）。原 orderReceived+confirmAmount 漏算储值卡抵扣，会让
-  // recalcPaidSessionsForOrder 把缺卡的 received 按 pending_received 比例摊到各行 → sale_items.received 被现金比例稀释。
-  let newReceived = 0
-  let targetStatus = '部分支付'
-
-  // 仅在本次"确认现金到账"(confirmAmount > 0) 时写 payments 行
-  // 已有 payments 则本次为"回款"，否则为"首次支付"
-  let paymentChangeType = null
-  if (confirmAmount > 0) {
-    const existingPaymentsRow = await pg.query(
-      `SELECT 1 FROM sale_order_payments
-       WHERE sale_order_id = $1 AND status = '已支付'
-         AND change_type IN ('首次支付','回款','退款')
-       LIMIT 1`,
+    const now = new Date()
+    const itemRes = await client.query(
+      `SELECT si.sale_item_id, si.sku_id, si.received, si.pending_received, si.product_type
+       FROM sale_items si
+       WHERE si.sale_order_id = $1`,
       [saleOrderId]
     )
-    paymentChangeType = existingPaymentsRow.length > 0 ? '回款' : '首次支付'
-  }
+    const items = itemRes.rows
+    const totalReceived = items.reduce((s, i) => s + Number(i.received || 0), 0)
+    const pendingTotal = Math.round(items.reduce((s, i) => s + Number(i.pending_received || 0), 0) * 100) / 100
 
-  await pg.transaction(async (client) => {
+    // 本次确认金额必须完全基于锁内快照。pending_prepaid 尚未计入 received，故从现金欠款中单独扣除。
+    const orderTotal = Number(order.total_amount || 0)
+    const orderPrepaid = Number(order.prepaid_card_amount || 0)
+    const orderPendingPrepaid = Number(order.pending_prepaid_card_amount || 0)
+    const orderReceived = Number(order.received || 0)
+    const orderPayable = order.payable_amount != null
+      ? Number(order.payable_amount)
+      : Math.round((orderTotal - orderPrepaid - orderPendingPrepaid) * 100) / 100
+    const settleTarget = order.sale_order_type === '充值单' ? orderPayable : orderTotal
+    const remainingPayable = Math.max(0, Math.round((settleTarget - orderReceived + Number(order.refunded_amount || 0) - orderPendingPrepaid) * 100) / 100)
+    const pendingRemaining = pendingTotal > 0
+      ? Math.max(0, Math.min(remainingPayable, Math.round((pendingTotal - orderPendingPrepaid - orderReceived) * 100) / 100))
+      : remainingPayable
+    const conversionFirstPayment = order.sale_order_type === '转换单'
+      ? Number(order.first_payment_amount || 0)
+      : 0
+
+    let confirmAmount
+    if (inputConfirmAmount === undefined || inputConfirmAmount === null) {
+      confirmAmount = conversionFirstPayment > 0
+        ? Math.min(remainingPayable, conversionFirstPayment)
+        : pendingRemaining
+    } else {
+      confirmAmount = Number(inputConfirmAmount)
+      if (!Number.isFinite(confirmAmount) || confirmAmount < 0) {
+        throw new Error('INVALID_PARAMS: 本次确认金额必须为非负数')
+      }
+      if (confirmAmount > remainingPayable + 0.001) {
+        throw new Error('INVALID_PARAMS: 本次确认金额不能超过剩余应付金额')
+      }
+      if (conversionFirstPayment > 0 && confirmAmount > conversionFirstPayment + 0.001) {
+        throw new Error('INVALID_PARAMS: 本次确认金额不能超过转换单录入的实付金额')
+      }
+      confirmAmount = Math.round(confirmAmount * 100) / 100
+    }
+
+    let paymentChangeType = null
+    if (confirmAmount > 0) {
+      const existingPaymentsRow = await client.query(
+        `SELECT 1 FROM sale_order_payments
+         WHERE sale_order_id = $1 AND status = '已支付'
+           AND amount::numeric > 0
+           AND change_type IN ('首次支付','回款','储值卡抵扣')
+         LIMIT 1`,
+        [saleOrderId]
+      )
+      paymentChangeType = existingPaymentsRow.rows.length > 0 ? '回款' : '首次支付'
+    }
+
     // ========== 储值卡扣款（staffApi 唯一扣卡点）==========
     // 预选值 > 0 且顾客已注册时，事务内锁余额 + 扣减 + 写 card_transactions + 写 '储值卡抵扣' payments 行
-    // （create 时 sale_orders.prepaid_card_amount 仅作为"预选"金额，此处才真正入账）
-    const prepaidAmount = Number(order.prepaid_card_amount || 0)
+    // （create 时只写 pending_prepaid_card_amount，此处才真正扣卡并进入 actual）
+    const prepaidAmount = Number(order.pending_prepaid_card_amount || 0)
     // 回款事件主流水行 id（现金行优先；纯储值卡则取储值卡抵扣行）—— 按回款逐笔分配的归属键
     let cashPaymentId = null
     let cardPaymentId = null
@@ -1952,20 +2144,29 @@ async function confirmOffline(ctx) {
        WHERE sale_order_id = $1`,
       [saleOrderId]
     )
-    newReceived = Math.round(Number(sumRes.rows[0].new_received) * 100) / 100
+    const newReceived = Math.round(Number(sumRes.rows[0].new_received) * 100) / 100
     const newPrepaid = Math.round(Number(sumRes.rows[0].new_prepaid) * 100) / 100
     // 结清判定：含卡 received 直接比 settleTarget(=payable+prepaid 锁单快照)，与 admin orders.ts / createRepayment 一致
-    targetStatus = newReceived + 0.005 >= settleTarget ? '已支付' : '部分支付'
+    const targetStatus = newReceived + 0.005 >= settleTarget ? '已支付' : '部分支付'
 
     // ========== 更新 sale_orders（C4 合规：WHERE 锁定当前状态防并发竞态）==========
     // paid_at 语义：'已支付' → 本次确认时间（"最后一次到账时间"快照）；'部分支付' → 保留原值（NULL 续 NULL）
     const paidAtValue = targetStatus === '已支付' ? now : (order.paid_at || null)
     const updateResult = await client.query(
       `UPDATE sale_orders
-       SET status = $1, received = $2, prepaid_card_amount = $3, paid_at = $4, updated_at = $5,
+       SET status = $1, received = $2, prepaid_card_amount = $3,
+           pending_prepaid_card_amount = 0,
+           paid_at = $4, updated_at = $5,
+           first_payment_amount = NULL,
            offline_confirmed_by = $6, offline_confirmed_at = $5
-       WHERE sale_order_id = $7 AND status = $8`,
-      [targetStatus, newReceived, newPrepaid, paidAtValue, now, ctx.auth.staffWfId, saleOrderId, order.status]
+       WHERE sale_order_id = $7
+         AND status = $8
+         AND first_payment_amount IS NOT DISTINCT FROM $9::numeric
+         AND lakala_out_order_no IS NOT DISTINCT FROM $10::text`,
+      [
+        targetStatus, newReceived, newPrepaid, paidAtValue, now, ctx.auth.staffWfId,
+        saleOrderId, order.status, order.first_payment_amount, order.lakala_out_order_no,
+      ]
     )
     if (updateResult.rowCount === 0) {
       throw new Error('INVALID_PARAMS: 订单状态已变更，请刷新后重试')
@@ -2067,20 +2268,30 @@ async function confirmOffline(ctx) {
     await logTransition(client, ctx, 'order.confirmOffline', 'sale_order', saleOrderId, order.status, targetStatus, {
       confirmAmount,
       received: newReceived,
-      prepaidCardAmount: orderPrepaid > 0 ? orderPrepaid : null,
+      prepaidCardAmount: prepaidAmount > 0 ? prepaidAmount : null,
     })
+
+    return {
+      order,
+      now,
+      targetStatus,
+      newReceived,
+      confirmAmount,
+      settleTarget,
+      totalReceived,
+    }
   })
 
   ctx.result = {
     saleOrderId,
-    status: targetStatus,
-    paidAt: targetStatus === '已支付' ? now : (order.paid_at || null),
-    paidAmount: newReceived, // 向后兼容字段名（前端老代码读 paidAmount）
-    received: newReceived,
-    confirmAmount,
-    remainingPayable: Math.round((orderPayable - newReceived) * 100) / 100,
-    totalReceived,
-    message: targetStatus === '已支付' ? '线下收款已确认' : '已确认本次收款（订单仍部分支付）'
+    status: result.targetStatus,
+    paidAt: result.targetStatus === '已支付' ? result.now : (result.order.paid_at || null),
+    paidAmount: result.newReceived, // 向后兼容字段名（前端老代码读 paidAmount）
+    received: result.newReceived,
+    confirmAmount: result.confirmAmount,
+    remainingPayable: Math.max(0, Math.round((result.settleTarget - result.newReceived + Number(result.order.refunded_amount || 0)) * 100) / 100),
+    totalReceived: result.totalReceived,
+    message: result.targetStatus === '已支付' ? '线下收款已确认' : '已确认本次收款（订单仍部分支付）'
   }
 }
 
@@ -2153,36 +2364,50 @@ async function close(ctx) {
   // scope 守卫
   await assertOrderInScope(pg, ctx.auth, saleOrderId)
 
-  const orders = await pg.query(
-    'SELECT * FROM sale_orders WHERE sale_order_id = $1',
-    [saleOrderId]
-  )
-
-  if (orders.length === 0) {
-    throw new Error('INVALID_PARAMS: 订单不存在')
-  }
-
-  const order = orders[0]
-  const isManagerRole = ctx.auth.roles.includes('manager')
-  const isCreator = order.opened_by && order.opened_by === ctx.auth.staffWfId
-
-  if (isManagerRole) {
-    if (!['待支付', '支付失败'].includes(order.status)) {
-      throw new Error(`INVALID_PARAMS: 订单当前状态"${order.status}"不允许关闭`)
-    }
-  } else if (isCreator) {
-    if (order.status !== '待支付') {
-      throw new Error(`INVALID_PARAMS: 订单当前状态"${order.status}"不允许取消`)
-    }
-  } else {
-    throw new Error('PERMISSION_DENIED: 无权操作该订单')
-  }
-
   const now = new Date()
 
   await pg.transaction(async (client) => {
+    // 必须先锁定订单再判断状态、渠道意图和操作者身份；否则 pay/qrcode 可在事务外
+    // 快照之后写入 lakala_out_order_no，本请求仍会关闭订单并作废支付流水。
+    const lockedRes = await client.query(
+      'SELECT * FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE',
+      [saleOrderId]
+    )
+    if (lockedRes.rows.length === 0) {
+      throw new Error('INVALID_PARAMS: 订单不存在')
+    }
+    const order = lockedRes.rows[0]
+    const isManagerRole = isCurrentStoreManager(ctx.auth)
+    const isCreator = order.opened_by && order.opened_by === ctx.auth.staffWfId
+
+    if (isManagerRole) {
+      if (!['待支付', '支付失败'].includes(order.status)) {
+        throw new Error(`INVALID_PARAMS: 订单当前状态"${order.status}"不允许关闭`)
+      }
+    } else if (isCreator) {
+      if (order.status !== '待支付') {
+        throw new Error(`INVALID_PARAMS: 订单当前状态"${order.status}"不允许取消`)
+      }
+    } else {
+      throw new Error('PERMISSION_DENIED: 无权操作该订单')
+    }
+    if (String(order.lakala_out_order_no || '').trim()) {
+      throw new Error('CONFLICT: ONLINE_PAYMENT_INTENT_ACTIVE: 已有进行中的在线支付，暂不可关闭订单')
+    }
+
     const updateResult = await client.query(
-      "UPDATE sale_orders SET status = '已关闭', allocation_status = NULL, updated_at = $1 WHERE sale_order_id = $2 AND status = $3",
+      `UPDATE sale_orders
+       SET status = '已关闭', allocation_status = NULL,
+           pending_prepaid_card_amount = 0,
+           payable_amount = CASE
+             WHEN sale_order_type IN ('销售单','内部单','转换单')
+               THEN GREATEST(0, total_amount::numeric - prepaid_card_amount::numeric)
+             ELSE payable_amount
+           END,
+           updated_at = $1
+       WHERE sale_order_id = $2
+         AND status = $3
+         AND lakala_out_order_no IS NULL`,
       [now, saleOrderId, order.status]
     )
     if (updateResult.rowCount === 0) {
@@ -2206,6 +2431,12 @@ async function close(ctx) {
          SET allocation_status = NULL
        WHERE sale_order_id = $1
           AND allocation_status IN ('待分配', '已分配')`,
+      [saleOrderId],
+    )
+    await client.query(
+      `UPDATE sale_order_payments
+          SET status = '已作废'::payment_flow_status
+        WHERE sale_order_id = $1 AND status = '待支付'`,
       [saleOrderId],
     )
     // 释放关联的优惠券
@@ -2312,7 +2543,8 @@ async function list(ctx) {
     SELECT
       o.sale_order_id, o.status, o.sale_order_type, o.client_phone, o.customer_name,
       o.payment_method, o.preferred_employee_id,
-      o.paid_at, o.created_at, o.opened_by, o.total_amount, o.is_activity,
+      o.paid_at, o.created_at, o.opened_by, o.total_amount,
+      o.prepaid_card_amount, o.pending_prepaid_card_amount, o.payable_amount, o.is_activity,
       c.name AS cust_name, c.phone AS cust_phone,
       -- 营业额分配口径：仅销售单/转换单且非历史订单可分配（与 order.detail allocatable / allocation.js ALLOCATABLE_ORDER_TYPES 一致），控制列表页分配按钮显隐
       (o.sale_order_type IN ('销售单','转换单') AND o.legacy_source IS DISTINCT FROM 'workfine') AS allocatable,
@@ -2443,7 +2675,8 @@ async function detail(ctx) {
     SELECT
       si.sale_item_id, si.sale_order_id, si.sku_id, si.session_count, si.remaining_sessions,
       si.paid_sessions,
-      si.unit_price, si.quantity, si.unit_real_price, si.sale_amount, si.received, si.pending_received,
+      si.unit_price, si.quantity, si.unit_real_price, si.sale_amount, si.received,
+      si.prepaid_card_received, si.cash_received, si.pending_received,
       si.expire_date, si.remark, si.sales_category, si.ref_sale_item_id,
       si.product_name, si.product_type, si.picked_up_quantity,
       COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
@@ -3212,6 +3445,7 @@ async function createRepayment(ctx) {
     paymentMethod,
     note,
     idempotencyKey,
+    onlinePaymentAmount: inputOnlinePaymentAmount,
   } = payload
   const storeId = ctx.auth.effectiveStoreId
 
@@ -3257,6 +3491,21 @@ async function createRepayment(ctx) {
   const totalThisTime = Math.round((repayAmount + prepaidCardAmount) * 100) / 100
   if (totalThisTime <= 0) {
     throw new Error('INVALID_PARAMS: 回款金额必须大于0')
+  }
+
+  let onlinePaymentAmount = null
+  if (inputOnlinePaymentAmount !== undefined && inputOnlinePaymentAmount !== null) {
+    const parsed = Number(inputOnlinePaymentAmount)
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      throw new Error('INVALID_PARAMS: 在线回款金额必须大于0')
+    }
+    if (Math.abs(Math.round(parsed * 100) - parsed * 100) > 1e-6) {
+      throw new Error('INVALID_PARAMS: 在线回款金额最多保留2位小数')
+    }
+    onlinePaymentAmount = roundMoney(parsed)
+    if (prepaidCardAmount <= 0) {
+      throw new Error('INVALID_PARAMS: 在线回款意图必须与本次储值卡入账一起提交')
+    }
   }
 
   // 储值卡付款方式下不应再传 repayAmount>0（语义是纯储值卡回款）
@@ -3305,6 +3554,9 @@ async function createRepayment(ctx) {
     if (locked.legacy_source === 'workfine') {
       throw new Error('INVALID_STATE: 历史订单不支持回款')
     }
+    if (locked.is_experience_conversion === true) {
+      throw new Error('INVALID_STATE: EXPERIENCE_CONVERSION_REPAYMENT_FORBIDDEN: 体验转换不允许补款')
+    }
 
     if (!['部分支付', '待支付'].includes(locked.status)) {
       throw new Error(`INVALID_STATE: 订单当前状态"${locked.status}"不允许回款`)
@@ -3319,6 +3571,12 @@ async function createRepayment(ctx) {
         [repayIdempRef]
       )
       if (dupRes.rows.length > 0) {
+        if (onlinePaymentAmount !== null) {
+          const frozenAmount = roundMoney(Number(locked.first_payment_amount || 0))
+          if (Math.abs(frozenAmount - onlinePaymentAmount) > 0.001) {
+            throw new Error('CONFLICT: ONLINE_PAYMENT_INTENT_MISMATCH: 幂等回款对应的在线金额不一致')
+          }
+        }
         return {
           refSaleOrderId,
           repayAmount,
@@ -3331,6 +3589,12 @@ async function createRepayment(ctx) {
       }
     }
 
+    // 渠道单仍在途时，任何新的回款（线下、储值卡或“扣卡 + 新在线 cap”）都必须拒绝。
+    // 幂等预检放在前面，仅允许已经完整成功的同键请求重放；未命中时尚未发生任何新写入。
+    if (String(locked.lakala_out_order_no || '').trim()) {
+      throw new Error('CONFLICT: ONLINE_PAYMENT_INTENT_ACTIVE: 已有进行中的在线回款，请勿重复发起回款')
+    }
+
     // 2) 计算欠款：total − netReceived（netReceived = received − refunded_amount），与前端 order-detail 一致。
     // received 按 I1 含储值卡抵扣（Σ[首次支付/回款/储值卡抵扣]），须用总额减；旧口径
     // payable(=total−prepaid,扣卡) − received(含卡) 会让含卡部分支付单算成无欠款，导致回款被超额校验拒。
@@ -3339,6 +3603,18 @@ async function createRepayment(ctx) {
     const origReceived = Number(locked.received || 0)
     const origRefunded = Number(locked.refunded_amount || 0)
     const remainingPayable = Math.round((origTotal - origReceived + origRefunded) * 100) / 100
+
+    if (onlinePaymentAmount !== null) {
+      if (locked.sale_order_type !== '转换单' || locked.is_experience_conversion === true) {
+        throw new Error('INVALID_STATE: ONLINE_PAYMENT_CAP_NOT_ALLOWED: 仅普通转换单支持冻结在线回款金额')
+      }
+      if (Number(locked.first_payment_amount || 0) > 0) {
+        throw new Error('CONFLICT: ONLINE_PAYMENT_INTENT_ACTIVE: 已有进行中的在线回款，请勿重复出码')
+      }
+      if (roundMoney(totalThisTime + onlinePaymentAmount) > remainingPayable + 0.001) {
+        throw new Error('INVALID_PARAMS: 本次储值卡与在线回款合计超过订单欠款')
+      }
+    }
 
     // 3) 超额校验
     if (totalThisTime > remainingPayable + 0.001) {
@@ -3488,13 +3764,19 @@ async function createRepayment(ctx) {
 
     // paid_at 语义：目标 '已支付' 时设为本次时间；部分支付保留原值
     const paidAtValue = targetStatus === '已支付' ? now : (locked.paid_at || null)
+    // 即时入账后旧上限必须清除；仅“卡扣 + 在线补差”原子场景写入本场次的新上限。
+    const nextOnlinePaymentAmount = targetStatus === '已支付' ? null : onlinePaymentAmount
 
     const updateRes = await client.query(
       `UPDATE sale_orders
          SET status = $1, received = $2, prepaid_card_amount = $3,
-             paid_at = $4, updated_at = $5
-       WHERE sale_order_id = $6 AND status = $7`,
-      [targetStatus, newReceived, newPrepaid, paidAtValue, now, refSaleOrderId, locked.status]
+             pending_prepaid_card_amount = 0,
+             first_payment_amount = $4,
+             paid_at = $5, updated_at = $6
+       WHERE sale_order_id = $7
+         AND status = $8
+         AND lakala_out_order_no IS NULL`,
+      [targetStatus, newReceived, newPrepaid, nextOnlinePaymentAmount, paidAtValue, now, refSaleOrderId, locked.status]
     )
     if (updateRes.rowCount === 0) {
       throw new Error('INVALID_STATE: 原订单状态已变更，请刷新后重试')
@@ -3574,6 +3856,7 @@ async function createRepayment(ctx) {
  *   clientUserId: string,              // 必须实名顾客（要挂储值卡）
  *   convertOutSaleItemIds: string[],   // 整张卡折抵，不带 qty
  *   convertInItems: [{ skuId, quantity, saleAmount?, unitRealPrice?, manualSaleAmountOverride? }],
+ *   bundleProductId?: string,          // 组合套餐主商品 ID；套餐转换必须传
  *   paymentMethod: '微信' | '支付宝' | '线下',
  *   preferredStaffWfId?: string,
  *   remark?: string
@@ -3586,13 +3869,17 @@ async function createConversion(ctx) {
     clientUserId,
     convertOutSaleItemIds,
     convertInItems,
+    bundleProductId,
     paymentMethod,
     preferredStaffWfId,
     remark,
     prepaidCardAmount: inputPrepaidCardAmount,
     isActivity,
+    isExperienceConversion: inputIsExperienceConversion,
+    receivedAmount: inputReceivedAmount,
     couponId: inputCouponId,
   } = ctx.event.payload || {}
+  const isExperienceConversion = inputIsExperienceConversion === true
   const storeId = ctx.auth.effectiveStoreId
   // market_name 在 INSERT 时以门店反查 org 树市场名为权威（子查询），此处仅备开单人快照作 COALESCE 兜底。
   const marketName = ctx.auth.marketName || ''
@@ -3607,6 +3894,17 @@ async function createConversion(ctx) {
   if (Array.isArray(inputCouponId)) {
     throw new Error('INVALID_PARAMS: MULTIPLE_COUPON_NOT_SUPPORTED: 一张订单仅支持一张优惠券')
   }
+  if (isExperienceConversion) {
+    const requestedCard = Number(inputPrepaidCardAmount || 0)
+    const requestedReceived = Number(inputReceivedAmount || 0)
+    if (inputCouponId
+        || !Number.isFinite(requestedCard)
+        || !Number.isFinite(requestedReceived)
+        || requestedCard !== 0
+        || requestedReceived !== 0) {
+      throw new Error('INVALID_STATE: EXPERIENCE_CONVERSION_PAYMENT_FORBIDDEN: 体验转换不允许优惠券、储值卡抵扣或收款')
+    }
+  }
   if (!paymentMethod || !['微信', '支付宝', '线下'].includes(paymentMethod)) {
     throw new Error('INVALID_PARAMS: 支付方式仅支持 微信/支付宝/线下')
   }
@@ -3614,7 +3912,7 @@ async function createConversion(ctx) {
 
   // 查顾客快照信息（姓名 / phone）
   const clientRows = await pg.query(
-    `SELECT user_id, phone, name, customer_type, member_level, bound_store_id
+    `SELECT user_id, phone, name, customer_type, member_level, bound_store_id, is_cross_store_temp
      FROM client_wechat_users WHERE user_id = $1 LIMIT 1`,
     [clientUserId]
   )
@@ -3623,8 +3921,8 @@ async function createConversion(ctx) {
   if (!client.bound_store_id) {
     throw new Error('CLIENT_NOT_REGISTERED: 顾客未注册小程序或未绑定门店')
   }
-  // 非本店顾客禁止开转换单（同 order.create 口径）
-  if (!isStoreInScope(ctx.auth, client.bound_store_id)) {
+  // 与 order.create 对齐：普通顾客必须属于当前 scope；临时跨店顾客允许在外店转换。
+  if (!isStoreInScope(ctx.auth, client.bound_store_id) && !client.is_cross_store_temp) {
     throw new Error('PERMISSION_DENIED: 该顾客不属于当前门店，无法开单')
   }
 
@@ -3760,7 +4058,14 @@ async function createConversion(ctx) {
       })
     }
 
-    // 2. 转入项目 — 按 SKU 查询计价；店长特价 SKU 可沿用销售单的手填应付金额
+    // 2. 转入项目 — 组合套餐先在同一事务内复核套餐范围/子项/分组配额，并使用套餐下沉价；
+    // 普通 SKU 按会员价计价，店长特价 SKU 可沿用销售单的手填应付金额。
+    const bundleSkuPrices = await _loadAndValidateBundle(
+      bundleProductId,
+      convertInItems,
+      ctx.auth,
+      (text, params) => tx.query(text, params),
+    )
     const inItems = []
     const buyerIsMember = isMember(client.customer_type, client.member_level)
     for (const req of convertInItems) {
@@ -3770,16 +4075,30 @@ async function createConversion(ctx) {
                 s.is_shengmei, s.is_experience, s.is_manager_special, s.purchase_limit, s.market_scope, s.category_id, pc.sales_category
          FROM product_skus s
          JOIN product_categories pc ON s.category_id = pc.category_id
-         WHERE s.sku_id = $1 AND s.deleted_at IS NULL`,
+         WHERE s.sku_id = $1 AND s.deleted_at IS NULL AND s.is_enabled = true`,
         [req.skuId]
       )
-      if (skuRes.rows.length === 0) throw new Error(`INVALID_PARAMS: 商品 ${req.skuId} 不存在`)
+      if (skuRes.rows.length === 0) throw new Error(`INVALID_PARAMS: 商品 ${req.skuId} 不存在或已停用`)
       const sku = skuRes.rows[0]
       const qty = Number(req.quantity) || 1
-      const { listUnit, realUnit: applicableUnit } = resolveUnitPrice(sku, buyerIsMember)
+      const standardPricing = resolveUnitPrice(sku, buyerIsMember)
+      const bundlePricing = bundleSkuPrices ? bundleSkuPrices.get(req.skuId) : null
+      const listUnit = bundlePricing && bundlePricing.listPrice != null
+        ? Number(bundlePricing.listPrice)
+        : standardPricing.listUnit
+      const applicableUnit = bundlePricing
+        ? (bundlePricing.salePrice != null ? Number(bundlePricing.salePrice) : listUnit)
+        : standardPricing.realUnit
+      if (!Number.isFinite(listUnit) || !Number.isFinite(applicableUnit)
+          || listUnit < 0 || applicableUnit < 0 || applicableUnit > listUnit + 0.005) {
+        throw new Error('INVALID_PARAMS: 套餐单价配置非法')
+      }
       let amount = Math.round(applicableUnit * qty * 100) / 100
       // 店长特价手填金额（manualSaleAmountOverride 标记，用于梯度累加过滤）
-      const manualSaleAmountOverride = sku.is_manager_special === true && (req.saleAmount != null || req.unitRealPrice != null)
+      const manualSaleAmountOverride = !isExperienceConversion
+        && !bundlePricing
+        && sku.is_manager_special === true
+        && (req.saleAmount != null || req.unitRealPrice != null)
       if (manualSaleAmountOverride) {
         const inputAmount = req.saleAmount != null
           ? Number(req.saleAmount)
@@ -3815,39 +4134,58 @@ async function createConversion(ctx) {
         isExperience: sku.is_experience === true,
         marketScope: sku.market_scope,
         isManagerSpecial: sku.is_manager_special === true,
+        isBundleLine: !!bundlePricing,
         manualSaleAmountOverride,
         purchaseLimit: sku.purchase_limit != null ? Number(sku.purchase_limit) : null,
       })
     }
 
-    await assertNormalSkuMarketScopeForCurrentStore(
-      inItems.map((item) => ({
-        skuId: item.skuId,
-        specName: item.productName,
-        isExperience: item.isExperience,
-        marketScope: item.marketScope,
-      })),
-      ctx.auth,
-      (text, params) => tx.query(text, params),
-    )
+    if (!bundleSkuPrices) {
+      await assertNormalSkuMarketScopeForCurrentStore(
+        inItems.map((item) => ({
+          skuId: item.skuId,
+          specName: item.productName,
+          isExperience: item.isExperience,
+          marketScope: item.marketScope,
+        })),
+        ctx.auth,
+        (text, params) => tx.query(text, params),
+      )
+    }
 
     // 2.5. 转入项目应用疗程卡梯度累加价（与销售单对齐）
     // 查询所有可能用于梯度计算的 SKU（同分类+同名称的所有疗程卡规格）
     const tierSkuIds = new Set()
     for (const item of inItems) {
-      if (item.productType === '疗程卡' && item.categoryId && !item.isExperience && !item.manualSaleAmountOverride) {
+      if (item.productType === '疗程卡' && item.categoryId && !item.isExperience
+          && !item.manualSaleAmountOverride && !item.isBundleLine) {
         tierSkuIds.add(item.categoryId + '::' + item.productName)
       }
     }
     let tierSkuRows = []
     if (tierSkuIds.size > 0) {
       const categoryIds = [...new Set(inItems.map(i => i.categoryId).filter(Boolean))]
+      const productNames = [...new Set(inItems.map(i => i.productName).filter(Boolean))]
+      const tierParams = [categoryIds, productNames]
+      const customerMarketScope = await resolveCustomerOrderMarketScope(
+        clientUserId,
+        (text, params) => tx.query(text, params),
+      )
+      const tierMarketScopeFilter = buildCustomerOrderMarketScopeFilter(customerMarketScope, tierParams, 's')
       const tierSkuRes = await tx.query(
         `SELECT s.sku_id, s.category_id, s.spec_name, s.product_type, s.price, s.special_price,
-                s.session_count, s.is_experience, s.is_manager_special
+                s.session_count, s.is_enabled, s.is_experience, s.is_manager_special
          FROM product_skus s
-         WHERE s.category_id = ANY($1) AND s.product_type = '疗程卡' AND s.deleted_at IS NULL`,
-        [categoryIds]
+         WHERE s.category_id = ANY($1)
+           AND s.product_type = '疗程卡'
+           AND s.deleted_at IS NULL
+           AND s.is_enabled = true
+           AND COALESCE(s.is_experience, false) = false
+           AND COALESCE(s.is_manager_special, false) = false
+           AND s.spec_name = ANY($2)
+           AND s.session_count IS NOT NULL
+           ${tierMarketScopeFilter}`,
+        tierParams
       )
       tierSkuRows = tierSkuRes.rows
     }
@@ -3856,6 +4194,10 @@ async function createConversion(ctx) {
     // 转入明细写库时 amount 会同时落到 sale_amount 和 received，必须同步梯度成交价。
     for (const item of inItems) {
       item.amount = item.saleAmount
+    }
+
+    if (isExperienceConversion) {
+      allocateExperienceConversionAmounts(inItems, totalOut)
     }
 
     // 重新计算 totalIn（梯度累加可能改变了 amount / saleAmount）
@@ -3874,7 +4216,7 @@ async function createConversion(ctx) {
     // 先用券前转入额校验券范围/门槛，随后将实际抵扣额按 rawPriceDiff 封顶并分摊回转入行。
     const rawPriceDiff = Math.round((totalIn - totalOut) * 100) / 100
     let couponDiscount = 0
-    if (inputCouponId) {
+    if (inputCouponId && !isExperienceConversion) {
       if (rawPriceDiff <= 0) {
         throw new Error('INVALID_STATE: CONVERSION_COUPON_NO_POSITIVE_DIFFERENCE: 转换单无正补差额，不能使用优惠券')
       }
@@ -3988,13 +4330,13 @@ async function createConversion(ctx) {
       (sum, item) => sum + (Number(item.saleAmount) || Number(item.amount) || 0),
       0,
     ) * 100) / 100
-    const priceDiff = Math.round((totalIn - totalOut) * 100) / 100
+    const priceDiff = isExperienceConversion ? 0 : Math.round((totalIn - totalOut) * 100) / 100
     const orderTotal = Math.max(0, priceDiff)
 
     // 储值卡抵扣（仅补差额 priceDiff > 0 时有效）：显式金额必须在 [0, min(补差额, 余额)] 内。
     // payable = priceDiff - card；全额抵扣（payable==0 且 card>0）则事务内即时扣卡 + 结清。
     let card = 0
-    if (inputPrepaidCardAmount != null) {
+    if (inputPrepaidCardAmount != null && !isExperienceConversion) {
       const v = Number(inputPrepaidCardAmount)
       if (!Number.isFinite(v) || v < 0) throw new Error('INVALID_PARAMS: 储值卡抵扣金额必须为非负数')
       card = Math.round(v * 100) / 100
@@ -4014,13 +4356,24 @@ async function createConversion(ctx) {
       }
     }
     const payable = Math.max(0, Math.round((orderTotal - card) * 100) / 100)
+    let firstPaymentAmount = null
+    let initialPaymentAmount = 0
+    if (!isExperienceConversion && payable > 0) {
+      const requested = inputReceivedAmount == null ? payable : Number(inputReceivedAmount)
+      if (!Number.isFinite(requested) || requested < 0 || requested > payable + 0.001) {
+        throw new Error('INVALID_PARAMS: 实付金额必须在0和应付金额之间')
+      }
+      const rounded = roundMoney(requested)
+      initialPaymentAmount = rounded
+      if (rounded > 0 && rounded < payable) firstPaymentAmount = rounded
+    }
     const isFullCardCoverage = card > 0 && payable === 0
     // 差额>0 且仍需付现金：'待支付'（线下走 confirmOffline，线上走 payNotify）；
     // 差额>0 全额抵扣 或 差额<=0：'已支付'
     const orderStatus = priceDiff > 0 ? (payable > 0 ? '待支付' : '已支付') : '已支付'
     const orderPaid = priceDiff <= 0 || isFullCardCoverage
     // 全额抵扣 payment_method 落 '无'（现金通道无需使用，与 order.create 对齐）
-    const effectivePaymentMethod = isFullCardCoverage ? '无' : paymentMethod
+    const effectivePaymentMethod = isExperienceConversion || isFullCardCoverage ? '无' : paymentMethod
 
     // 3. document_type 快照：仅按下单时会员身份判（售前=非会员客，售后=会员客）
     const documentType = client.customer_type === '会员客' ? '售后' : '售前'
@@ -4031,15 +4384,18 @@ async function createConversion(ctx) {
         sale_order_id, status, sale_order_type, document_type,
         market_name, store_id, store_name, sale_order_datetime,
         client_user_id, client_phone, customer_name,
-        total_amount, payable_amount, prepaid_card_amount, received,
+        total_amount, payable_amount, prepaid_card_amount, pending_prepaid_card_amount, received,
         payment_method, opened_by,
         preferred_employee_id, coupon_id, coupon_discount, allocation_status, remark,
-        paid_at, created_at, updated_at, is_activity
-      ) VALUES ($1, $2, '转换单', $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, '待分配', $19, $20, $6, $6, $21)`,
+        paid_at, created_at, updated_at, is_activity,
+        first_payment_amount, is_experience_conversion
+      ) VALUES ($1, $2, '转换单', $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, '待分配', $20, $21, $6, $6, $22, $23, $24)`,
       [
         convOrderId, orderStatus, documentType, marketName, storeId, now,
         clientUserId, client.phone || null, client.name || null,
-        orderTotal.toFixed(2), payable.toFixed(2), card.toFixed(2),
+        orderTotal.toFixed(2), payable.toFixed(2),
+        (isFullCardCoverage ? card : 0).toFixed(2),
+        (isFullCardCoverage ? 0 : card).toFixed(2),
         (isFullCardCoverage ? card : 0).toFixed(2),
         effectivePaymentMethod, ctx.auth.staffWfId,
         preferredStaffWfId || null,
@@ -4047,6 +4403,8 @@ async function createConversion(ctx) {
         remark || null,
         orderPaid ? now : null,
         isActivity === true,
+        firstPaymentAmount != null ? firstPaymentAmount.toFixed(2) : null,
+        isExperienceConversion,
       ]
     )
 
@@ -4247,14 +4605,24 @@ async function createConversion(ctx) {
       priceDiff,
       couponId: inputCouponId || null,
       couponDiscount,
+      bundleProductId: bundleProductId || null,
       prepaidCardAmount: card,
+      receivedAmount: initialPaymentAmount,
+      isExperienceConversion,
       orderStatus,
     })
 
-    return { totalIn, totalOut, priceDiff, orderStatus, couponDiscount, prepaidCardCredit, prepaidCardAmount: card }
+    return {
+      totalIn, totalOut, priceDiff, orderStatus, couponDiscount, prepaidCardCredit,
+      prepaidCardAmount: card, firstPaymentAmount, initialPaymentAmount, payable, isExperienceConversion,
+    }
   })
 
-  const convRemaining = Math.max(0, Math.round((result.priceDiff - result.prepaidCardAmount) * 100) / 100)
+  const convRemaining = Math.max(0, roundMoney(result.payable))
+  const convDebt = Math.max(0, roundMoney(convRemaining - result.initialPaymentAmount))
+  const convCardPrefix = result.prepaidCardAmount > 0
+    ? `储值卡抵扣 ¥${result.prepaidCardAmount.toFixed(2)}，`
+    : ''
   ctx.result = {
     saleOrderId: convOrderId,
     status: result.orderStatus,
@@ -4264,12 +4632,15 @@ async function createConversion(ctx) {
     couponDiscount: result.couponDiscount,
     prepaidCardCredit: result.prepaidCardCredit,
     prepaidCardAmount: result.prepaidCardAmount,
+    isExperienceConversion: result.isExperienceConversion,
+    receivedAmount: result.initialPaymentAmount,
+    remainingAmount: result.payable,
     message:
       result.priceDiff > 0
         ? (convRemaining > 0
-            ? (result.prepaidCardAmount > 0
-                ? `转换单已创建，储值卡抵扣 ¥${result.prepaidCardAmount.toFixed(2)}，请收款 ¥${convRemaining.toFixed(2)}`
-                : '转换单已创建')
+            ? (result.initialPaymentAmount > 0
+                ? `转换单已创建，${convCardPrefix}本次应收 ¥${result.initialPaymentAmount.toFixed(2)}${convDebt > 0 ? `，剩余挂账 ¥${convDebt.toFixed(2)}` : ''}`
+                : `转换单已创建，${convCardPrefix}已挂账 ¥${convRemaining.toFixed(2)}`)
             : `转换单已完成，储值卡全额抵扣 ¥${result.prepaidCardAmount.toFixed(2)}`)
         : '转换单已创建',
   }
@@ -5746,5 +6117,7 @@ Object.defineProperty(module.exports, '__testables__', {
     _loadAndValidateBundle,
     buildNormalSkuMarketScopeFilter,
     assertNormalSkuMarketScopeForCurrentStore,
+    resolveCustomerOrderMarketScope,
+    buildCustomerOrderMarketScopeFilter,
   },
 })

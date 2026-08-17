@@ -14,6 +14,9 @@ const payNotifyPaidSessions = require('../../../../../fengyu-client/cloudfunctio
 
 const {
   computePaidSessionsForItem,
+  ORDER_PREPAID_CARD_RECALC_SQL,
+  CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL,
+  SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL,
   PAID_SESSIONS_RECALC_SQL,
   FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL,
 } = staffPaidSessions
@@ -150,6 +153,35 @@ describe('computePaidSessionsForItem 公式边界（行级）', () => {
 })
 
 describe('PAID_SESSIONS_RECALC_SQL 模板字面量守护', () => {
+  test('储值卡实付必须来自已支付抵扣与储值卡退款净额，现金退款不回冲', () => {
+    expect(ORDER_PREPAID_CARD_RECALC_SQL).toContain("change_type = '储值卡抵扣'")
+    expect(ORDER_PREPAID_CARD_RECALC_SQL).toContain("change_type = '退款' AND payment_method = '储值卡'")
+    expect(ORDER_PREPAID_CARD_RECALC_SQL).toContain("status = '已支付'")
+  })
+
+  test('行级储值卡分摊必须用有符号 received 的累计边界差', () => {
+    expect(SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL).toContain('SUM(si.received::numeric) OVER () AS received_total')
+    expect(SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL).toMatch(
+      /SUM\(si\.received::numeric\) OVER \(\s*ORDER BY si\.sale_item_id\s+ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\s*\) AS cumulative_received/,
+    )
+    expect(SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL).toContain('ROUND(prepaid_total * cumulative_received / received_total, 2)')
+    expect(SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL).toContain(
+      'ROUND(prepaid_total * (cumulative_received - item_received) / received_total, 2)',
+    )
+    expect(SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL).toContain('WHERE received_total <> 0 AND prepaid_total <> 0')
+    expect(SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL).not.toContain('GREATEST(0, si.received')
+    expect(SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL).not.toContain('item_count')
+  })
+
+  test('转换单转入行按旧卡价值 + 本单净到账分摊，且封顶转入总价', () => {
+    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain("conversion_order.sale_order_type = '转换单'")
+    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain("out_item.item_direction = '转出'")
+    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain("in_item.item_direction = '转入'")
+    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain('conversion_order.converted_value + conversion_order.net_received')
+    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain('LEAST(conversion_order.in_total,')
+    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toMatch(/WHEN rn = item_count\s+THEN target_received -/)
+  })
+
   test('行级公式必须为 received × session_count / sale_amount（session_count 参与，先乘后除保整数精度）', () => {
     // received 已由 STEP1（receipt/瀑布）+ STEP1.5（逐项退款净额）前置算好，
     // 本 SQL 不再下分订单级 refund，直接用净 received × session_count / sale_amount。
@@ -186,6 +218,37 @@ describe('PAID_SESSIONS_RECALC_SQL 模板字面量守护', () => {
     expect(FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL).toMatch(/sale_amount\s*<=\s*0/i)
     expect(FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL).toMatch(/LOWER\(COALESCE\(elem ->> 'isFullItemRefund', 'false'\)\) = 'true'/)
     expect(FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL).toMatch(/SET paid_sessions = 0/i)
+  })
+})
+
+function allocateCentsByCumulativeBoundary(totalCents, signedWeights) {
+  const totalWeight = signedWeights.reduce((sum, weight) => sum + weight, 0)
+  if (totalCents === 0 || totalWeight === 0) return signedWeights.map(() => 0)
+  let cumulativeWeight = 0
+  return signedWeights.map((weight) => {
+    const previousBoundary = Math.round(totalCents * cumulativeWeight / totalWeight)
+    cumulativeWeight += weight
+    const currentBoundary = Math.round(totalCents * cumulativeWeight / totalWeight)
+    return currentBoundary - previousBoundary
+  })
+}
+
+describe('储值卡累计边界分币', () => {
+  test('2 分按四个等权正向品项分摊时非负且守恒', () => {
+    const shares = allocateCentsByCumulativeBoundary(2, [1, 1, 1, 1])
+    expect(shares).toEqual([1, 0, 1, 0])
+    expect(shares.every((share) => share >= 0)).toBe(true)
+    expect(shares.reduce((sum, share) => sum + share, 0)).toBe(2)
+  })
+
+  test('1 分按三个等权正向品项分摊时非负且守恒', () => {
+    const shares = allocateCentsByCumulativeBoundary(1, [1, 1, 1])
+    expect(shares.every((share) => share >= 0)).toBe(true)
+    expect(shares.reduce((sum, share) => sum + share, 0)).toBe(1)
+  })
+
+  test('转换事件保留转出负号并让有符号卡款闭合', () => {
+    expect(allocateCentsByCumulativeBoundary(5, [-80, 100])).toEqual([-20, 25])
   })
 })
 
@@ -235,12 +298,18 @@ describe('退款 receipt 覆盖分流', () => {
 
     await copy.recalcPaidSessionsForOrder(fixture.client, 'order-refund-receipt')
 
-    expect(fixture.calls[0]).toContain("sop.change_type IN ('首次支付','回款','储值卡抵扣')")
-    expect(fixture.calls[0]).not.toContain("'退款'")
+    const coverageSql = fixture.calls.find((query) => typeof query === 'string' && query.includes('AS receipt_positive_total'))
+    expect(fixture.calls[0]).toBe(copy.ORDER_PREPAID_CARD_RECALC_SQL)
+    expect(coverageSql).toContain("sop.change_type IN ('首次支付','回款','储值卡抵扣')")
+    expect(coverageSql).not.toContain("'退款'")
     expect(copy.SALE_ITEMS_RECEIVED_FROM_RECEIPTS_SQL).toContain("'退款'")
     expect(fixture.calls).toContain(copy.SALE_ITEMS_RECEIVED_FROM_RECEIPTS_SQL)
     expect(fixture.calls).not.toContain(copy.SALE_ITEMS_RECEIVED_ALLOC_SQL)
     expect(fixture.calls).not.toContain(copy.RECEIVED_REFUNDED_DEDUCT_SQL)
+    expect(fixture.calls.indexOf(copy.CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL))
+      .toBeLessThan(fixture.calls.indexOf(copy.SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL))
+    expect(fixture.calls.indexOf(copy.SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL))
+      .toBeLessThan(fixture.calls.indexOf(copy.PAID_SESSIONS_RECALC_SQL))
     expect(fixture.state).toEqual({ received: 60, paidSessions: 6 })
   })
 
@@ -251,10 +320,69 @@ describe('退款 receipt 覆盖分流', () => {
 
     const allocationIndex = fixture.calls.indexOf(copy.SALE_ITEMS_RECEIVED_ALLOC_SQL)
     const deductIndex = fixture.calls.indexOf(copy.RECEIVED_REFUNDED_DEDUCT_SQL)
+    const conversionIndex = fixture.calls.indexOf(copy.CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL)
+    const channelIndex = fixture.calls.indexOf(copy.SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL)
     const recalcIndex = fixture.calls.indexOf(copy.PAID_SESSIONS_RECALC_SQL)
     expect(allocationIndex).toBeGreaterThan(-1)
     expect(deductIndex).toBeGreaterThan(allocationIndex)
-    expect(recalcIndex).toBeGreaterThan(deductIndex)
+    expect(conversionIndex).toBeGreaterThan(deductIndex)
+    expect(channelIndex).toBeGreaterThan(conversionIndex)
+    expect(recalcIndex).toBeGreaterThan(channelIndex)
     expect(fixture.state).toEqual({ received: 60, paidSessions: 6 })
+  })
+})
+
+describe('转换单转入次数随实际到账解锁', () => {
+  test.each(PAID_SESSION_COPIES)('%s: 旧卡3500转入5000，到账500只解锁80%，结清1500后解锁100%', async (_name, copy) => {
+    async function recalcWithReceived(orderReceived) {
+      const state = {
+        orderReceived,
+        outReceived: -3500,
+        inItems: [
+          { saleAmount: 2500, received: 2500, sessionCount: 5, paidSessions: 5 },
+          { saleAmount: 2500, received: 2500, sessionCount: 5, paidSessions: 5 },
+        ],
+      }
+      const client = {
+        query: async (query) => {
+          if (typeof query === 'string' && query.includes('AS receipt_positive_total')) {
+            return { rows: [{ receipt_positive_total: String(orderReceived), order_received: String(orderReceived) }] }
+          }
+          if (query === copy.CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL) {
+            const totalIn = state.inItems.reduce((sum, item) => sum + item.saleAmount, 0)
+            const target = Math.min(totalIn, Math.abs(state.outReceived) + state.orderReceived)
+            let allocated = 0
+            state.inItems.forEach((item, index) => {
+              item.received = index === state.inItems.length - 1
+                ? Math.round((target - allocated) * 100) / 100
+                : Math.round((target * item.saleAmount / totalIn) * 100) / 100
+              allocated += item.received
+            })
+          }
+          if (query === copy.PAID_SESSIONS_RECALC_SQL) {
+            state.inItems.forEach((item) => {
+              item.paidSessions = copy.computePaidSessionsForItem({
+                itemReceived: item.received,
+                itemSaleAmount: item.saleAmount,
+                itemSessionCount: item.sessionCount,
+                orderTotal: 1500,
+                orderRefunded: 0,
+              })
+            })
+          }
+          return { rows: [], rowCount: 0 }
+        },
+      }
+      await copy.recalcPaidSessionsForOrder(client, 'conversion-order')
+      return state.inItems
+    }
+
+    const partial = await recalcWithReceived(500)
+    expect(partial.map((item) => item.received)).toEqual([2000, 2000])
+    expect(partial.map((item) => item.paidSessions)).toEqual([4, 4])
+
+    const settled = await recalcWithReceived(1500)
+    expect(settled.map((item) => item.received)).toEqual([2500, 2500])
+    expect(settled.map((item) => item.paidSessions)).toEqual([5, 5])
   })
 })

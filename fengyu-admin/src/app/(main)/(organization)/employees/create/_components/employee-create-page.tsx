@@ -6,6 +6,7 @@ import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { DatePicker } from "@/components/ui/date-picker"
 import { Select } from "@/components/ui/select"
 import { SkillSelect } from "@/components/ui/skill-select"
 import { OrgTreeSelect } from "@/components/ui/org-tree-select"
@@ -231,18 +232,16 @@ export default function EmployeeCreatePage({ stores, orgNodes, skillTags }: Prop
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">生日</label>
-              <Input
-                type="date"
+              <DatePicker
                 value={form.birthday}
-                onChange={(e) => handleChange("birthday", e.target.value)}
+                onValueChange={(value) => handleChange("birthday", value)}
               />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">入职日期</label>
-              <Input
-                type="date"
+              <DatePicker
                 value={form.hiredAt}
-                onChange={(e) => handleChange("hiredAt", e.target.value)}
+                onValueChange={(value) => handleChange("hiredAt", value)}
               />
             </div>
             <div className="space-y-2 col-span-2">

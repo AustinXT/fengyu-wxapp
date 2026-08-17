@@ -171,9 +171,9 @@ function setupCommonMocks(opts = {}) {
 
     // detail 消费统计
     if (
-      /COALESCE\(SUM\(si\.received::numeric\),\s*0\)\s+AS\s+total/.test(sql) &&
+      /WITH\s+order_stats\s+AS/.test(sql) &&
       /year_total/.test(sql) &&
-      /JOIN\s+sale_items\s+si/.test(sql)
+      /total_actual_consumption/.test(sql)
     ) {
       return detailConsumptionRows
     }
@@ -707,16 +707,29 @@ describe('mgmtCustomer.detail 出数', () => {
     const sqls = pg.query.mock.calls.map((c) => c[0])
     const consumptionSql = sqls.find(
       (s) =>
-        /COALESCE\(SUM\(si\.received::numeric\),\s*0\)\s+AS\s+total/.test(s) &&
+        /WITH\s+order_stats\s+AS/.test(s) &&
         /year_total/.test(s),
     )
     // 交易数据跟顾客走：详情统计不按门店过滤，顾客可见性由 assertCustomerInScope 守护。
     expect(consumptionSql).not.toMatch(/(?:o|so)\.store_id/)
+    expect(consumptionSql).toContain('EXISTS (SELECT 1 FROM sale_items')
+    expect(consumptionSql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
+    expect(consumptionSql).toContain("o.sale_order_type IN ('销售单', '转换单')")
+    expect(consumptionSql).toContain('FROM sale_order_payments sop')
+    expect(consumptionSql).toContain("sop.status = '已支付'")
+    expect(consumptionSql).toContain('SUM(\n         sop.amount::numeric')
+    expect(consumptionSql).toContain("o.legacy_source IS DISTINCT FROM 'workfine'")
+    expect(consumptionSql).toContain("o.legacy_source = 'workfine'")
+    expect(consumptionSql).toContain("sop.paid_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Shanghai')")
+    expect(consumptionSql).toContain("sop.paid_at < (($2::date + INTERVAL '1 year') AT TIME ZONE 'Asia/Shanghai')")
+    expect(consumptionSql).not.toContain('WHEN o.paid_at >= $2')
     expect(consumptionSql).toContain('FROM service_orders so')
     expect(consumptionSql).toContain('JOIN service_items sit ON sit.service_order_id = so.service_order_id')
     expect(consumptionSql).toContain("so.status = '已完成'")
     expect(consumptionSql).toContain('so.service_date >= $2::date')
     expect(consumptionSql).toContain('so.remark IS DISTINCT FROM')
+    const consumptionCall = pg.query.mock.calls.find((c) => c[0] === consumptionSql)
+    expect(consumptionCall[1][1]).toMatch(/^\d{4}-01-01$/)
   })
 
   test('visitFrequency 与 topProductName 透传（消费统计不再按 scope 过滤，跟顾客走）', async () => {
@@ -803,7 +816,7 @@ describe('mgmtCustomer.detail 出数', () => {
     )
     const consumptionSql = sqls.find(
       (s) =>
-        /COALESCE\(SUM\(si\.received::numeric\),\s*0\)\s+AS\s+total/.test(s) &&
+        /WITH\s+order_stats\s+AS/.test(s) &&
         /year_total/.test(s),
     )
 
@@ -962,6 +975,7 @@ describe('mgmtCustomer 细节 SQL：交易数据跟顾客走（不再按门店�
     const itemSql = pg.query.mock.calls.map((c) => c[0]).find((sql) =>
       /FROM\s+sale_items\s+si/.test(sql) && /JOIN\s+sale_orders\s+o/.test(sql)
     )
+    expect(itemSql).toContain("si.product_type = '疗程卡'")
     expect(itemSql).toContain("si.item_direction = '购买'")
     expect(itemSql).toContain("o.sale_order_type = '转换单'")
     expect(itemSql).toContain("si.item_direction = '转入'")

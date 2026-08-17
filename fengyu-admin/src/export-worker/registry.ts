@@ -34,6 +34,11 @@ import {
   type ExportBatchResult,
 } from '@/lib/export-pagination'
 import {
+  aggregateAllocationExportRows,
+  aggregateContiguousExportRows,
+  aggregateOrderExportRows,
+} from '@/lib/export-row-aggregation'
+import {
   exportJobLabel,
   type DataCenterExportPayload,
   type ExportJobPayload,
@@ -154,10 +159,12 @@ const orderColumns = mapColumns([
   { header: '支付方式', width: 12, key: 'paymentMethod', map: (row) => paymentMethodMap[String(value(row, 'paymentMethod') ?? '')] ?? text(row, 'paymentMethod') },
   { header: '是否纳客', width: 8, key: 'isMembershipUpgrade', map: (row) => boolLabel(row, 'isMembershipUpgrade') },
   { header: '是否活动', width: 8, key: 'isActivity', map: (row) => boolLabel(row, 'isActivity') },
+  { header: '是否体验转换', width: 12, key: 'isExperienceConversion', map: (row) => boolLabel(row, 'isExperienceConversion') },
   { header: '经营类型', width: 10, key: 'salesCategory' },
   { header: '顾客类型', width: 10, key: 'customerType', map: (row) => cellOr(value(row, 'customerType'), '未注册') },
   { header: '开单人', width: 10, key: 'openedByName' },
   { header: '下单时间', width: 20, key: 'saleOrderDatetime', map: (row) => fmtDateTime(value(row, 'saleOrderDatetime') as string | Date | null) },
+  { header: '业绩归属日期', width: 14, key: 'performanceAttributionDate', map: (row) => fmtDate(value(row, 'performanceAttributionDate') as string | Date | null) },
   { header: '创建时间', width: 20, key: 'createdAt', map: (row) => fmtDateTime(value(row, 'createdAt') as string | Date | null) },
   { header: '备注', width: 24, key: 'remark' },
 ])
@@ -580,13 +587,21 @@ export async function createExportContent(
       return {
         sheetName: '订单',
         columns: orderColumns,
-        rows: pagedRows((options: ExportBatchOptions<ExportOrdersCursor>) => exportOrders(params, options)),
+        rows: aggregateContiguousExportRows(
+          pagedRows((options: ExportBatchOptions<ExportOrdersCursor>) => exportOrders(params, options)),
+          (row) => String(row.saleOrderId ?? row.__sourceId ?? ''),
+          aggregateOrderExportRows,
+        ),
       }
     case 'allocation-sales':
       return {
         sheetName: '销售提成',
         columns: allocationSalesColumns,
-        rows: pagedRows((options: ExportBatchOptions<ExportAllocationOrdersCursor>) => exportAllocationOrders(params, options)),
+        rows: aggregateContiguousExportRows(
+          pagedRows((options: ExportBatchOptions<ExportAllocationOrdersCursor>) => exportAllocationOrders(params, options)),
+          (row) => String(row.__salePaymentId ?? row.__sourceId ?? ''),
+          aggregateAllocationExportRows,
+        ),
       }
     case 'allocation-services':
       return {

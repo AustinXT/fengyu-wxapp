@@ -129,7 +129,7 @@ product.shopInit(门店商品初始化)
   → 加入购物车(localStorage) 或 直接下单
   → order.create(SKU 快照 + 可选美容师 + 可选券 + useCard/prepaidCardAmount)
     → 事务内 SELECT balance FROM prepaid_cards WHERE user_id FOR UPDATE
-    → 写入 sale_orders(prepaid_card_amount + paid_amount; total=prepaid+paid)
+    → 写入 sale_orders(pending_prepaid_card_amount + payable_amount)；扣卡后才累计 prepaid_card_amount
     → payment_method 规则:
         paid_amount = 0  → 强制落 '无'（同事务扣卡 + 置已支付，跳过 order.pay）
         paid_amount > 0  → 取前端传值 ∈ {'微信','支付宝','线下'}
@@ -144,7 +144,7 @@ product.shopInit(门店商品初始化)
 ### 7.2 扫码支付（跨双端，含预选抵扣调整）
 
 ```text
-员工端 order.create → PG 订单(待支付, 预选 prepaid_card_amount；balance 未动)
+员工端 order.create → PG 订单(待支付, 预选 pending_prepaid_card_amount；balance 未动)
   → 员工端 order.qrcode → 生成小程序码(含 orderNo 或 path)
   → 顾客微信扫码 → 顾客端解析:
     → path 型: navigateTo 对应页面
@@ -153,7 +153,7 @@ product.shopInit(门店商品初始化)
     + card.balance(拉取实时余额，用于调整)
   → 顾客可调整预选方案:
     → order.scanAdjust(useCard, prepaidCardAmount?, paymentMethod?)
-      → 后端重算 prepaid_card_amount / paid_amount / payment_method
+      → 后端重算 pending_prepaid_card_amount / payable_amount / payment_method
       → status 保持'待支付'，balance 仍不动
   → 顾客点"确认支付":
     → paid_amount = 0 → order.confirmPrepaidFull
@@ -228,13 +228,13 @@ product.shopInit(门店商品初始化)
 | 触发点 | 场景 | 事务动作 |
 |--------|------|---------|
 | `order.create` | 顾客端直下单 + 全额抵扣（`paid_amount = 0`） | `SELECT balance FOR UPDATE` → 扣减 → INSERT `扣款` → 订单 `'已支付'` → `payment_method='无'` |
-| `payNotify` | 微信支付成功回调（有 `prepaid_card_amount > 0`） | 事务内扣 balance + INSERT `扣款` + 订单 `'已支付'` |
+| `payNotify` | 微信支付成功回调（有 `pending_prepaid_card_amount > 0`） | 事务内扣 balance + INSERT `扣款` + 将实付转入 `prepaid_card_amount` + 订单 `'已支付'` |
 | `order.confirmPrepaidFull` | 员工开单 → 顾客扫码 → 确认支付（`paid_amount = 0`） | 同 `order.create` 全额抵扣路径 |
 
 **不扣款的两处关键路径**：
 
 - `staffApi.order.create`（员工开单）：写入预选值，`balance` 不动
-- `order.scanAdjust`（顾客扫码后调整）：重算 `prepaid_card_amount/paid_amount/payment_method`，`balance` 不动
+- `order.scanAdjust`（顾客扫码后调整）：重算 `pending_prepaid_card_amount/payable_amount/payment_method`，`balance` 不动
 
 **幂等**：`INSERT ... WHERE NOT EXISTS (SELECT 1 FROM card_transactions WHERE ref_order_id=$1 AND type='扣款')`。
 

@@ -6,6 +6,7 @@ import { toast } from "sonner"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { DatePicker } from "@/components/ui/date-picker"
 import { Select } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { MemberLevelBadge } from "@/components/ui/member-level-badge"
@@ -18,7 +19,7 @@ import { shanghaiToday } from "@/lib/datetime"
 import { DEPOSIT_REFUND_REMARK } from "@/lib/service-remark"
 import { actionErrorMessage } from "@/lib/action-error"
 import { expandGroupServiceSessions, groupTreatmentCards, sumGroupValue } from "@/lib/treatment-card-group"
-import { isOrderServiceStaffCandidate } from "@/lib/order-service-staff"
+import { formatOrderServiceStaffOption, getOrderServiceStaffCandidates, isOrderServiceStaffCandidate } from "@/lib/order-service-staff"
 
 const steps = ["选择顾客", "选择项目", "确认提交"]
 
@@ -237,9 +238,7 @@ export default function ServiceCreatePageClient({
   const getSessionUsed = (groupKey: string) =>
     selectedItems.find(i => i.groupKey === groupKey)?.sessionUsed ?? 1
 
-  const filteredEmployees = employees.filter((employee) =>
-    isOrderServiceStaffCandidate(employee, selectedStoreId),
-  )
+  const filteredEmployees = getOrderServiceStaffCandidates(employees, selectedStoreId)
 
   const itemProductKinds = useMemo(
     () => Array.from(new Set(availableItems.map((item) => item.productKind).filter((value): value is string => Boolean(value)))),
@@ -540,13 +539,13 @@ export default function ServiceCreatePageClient({
                   <Select className="mt-1" value={selectedEmployeeId} onChange={(e) => setSelectedEmployeeId(e.target.value)}>
                     <option value="">请选择</option>
                     {filteredEmployees.map((e) => (
-                      <option key={e.employeeId} value={e.employeeId}>{e.name} ({e.positionName}){e.isOnBusinessTrip && e.storeId !== selectedStoreId ? `（${e.storeName ?? '外店'}）` : ''}</option>
+                      <option key={e.employeeId} value={e.employeeId}>{formatOrderServiceStaffOption(e, selectedStoreId)}</option>
                     ))}
                   </Select>
                 </div>
                 <div>
                   <label className="text-sm text-[#999999]">服务日期</label>
-                  <Input type="date" className="mt-1" value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} />
+                  <DatePicker className="mt-1" value={serviceDate} onValueChange={(value) => setServiceDate(value)} />
                 </div>
                 <div className="col-span-2">
                   <label className="text-sm text-[#999999]">备注（可选）</label>

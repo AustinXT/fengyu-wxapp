@@ -21,6 +21,8 @@ export interface RecomputeInput {
   pointsDeductionMaxRate: number; // 抵扣上限比例
   cardBalance: number;     // 储值卡余额
   useCard: boolean;        // 用户开关
+  /** 恢复既有待支付订单时的原 pending 金额；未传表示按可用余额正常重算 */
+  prepaidCardAmountLimit?: number | null;
 }
 
 export interface RecomputeResult {
@@ -89,7 +91,13 @@ export function recomputeAmounts(input: RecomputeInput): RecomputeResult {
   const effectiveUseCard = input.useCard && balance > 0 && netBeforeCard > 0;
 
   const prepaidCardAmount = effectiveUseCard
-    ? round2(Math.min(balance, netBeforeCard))
+    ? round2(Math.min(
+      balance,
+      netBeforeCard,
+      input.prepaidCardAmountLimit == null
+        ? Number.POSITIVE_INFINITY
+        : Math.max(0, Number(input.prepaidCardAmountLimit) || 0),
+    ))
     : 0;
   const paidAmount = round2(netBeforeCard - prepaidCardAmount);
 

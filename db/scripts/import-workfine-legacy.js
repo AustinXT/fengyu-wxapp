@@ -56,9 +56,47 @@ function trim(v) {
   return s === '' ? null : s
 }
 
-function toTimestamp(v) {
+function workfineWallParts(v) {
   if (!v) return null
-  return v instanceof Date ? v.toISOString() : String(v)
+  if (v instanceof Date) {
+    if (Number.isNaN(v.getTime())) return null
+    return {
+      year: String(v.getUTCFullYear()).padStart(4, '0'),
+      month: String(v.getUTCMonth() + 1).padStart(2, '0'),
+      day: String(v.getUTCDate()).padStart(2, '0'),
+      hour: String(v.getUTCHours()).padStart(2, '0'),
+      minute: String(v.getUTCMinutes()).padStart(2, '0'),
+      second: String(v.getUTCSeconds()).padStart(2, '0'),
+      millisecond: String(v.getUTCMilliseconds()).padStart(3, '0'),
+    }
+  }
+
+  const text = String(v).trim()
+  const match = text.match(
+    /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?)?/,
+  )
+  if (!match) return null
+  return {
+    year: match[1],
+    month: match[2],
+    day: match[3],
+    hour: match[4] || '00',
+    minute: match[5] || '00',
+    second: match[6] || '00',
+    millisecond: (match[7] || '0').padEnd(3, '0'),
+  }
+}
+
+function toTimestamp(v) {
+  const parts = workfineWallParts(v)
+  if (!parts) return v ? String(v) : null
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}.${parts.millisecond}+08:00`
+}
+
+function toWorkfineBusinessDate(v) {
+  const parts = workfineWallParts(v)
+  if (!parts) return v ? String(v).slice(0, 10) : null
+  return `${parts.year}-${parts.month}-${parts.day}`
 }
 
 function log(msg) {
@@ -70,7 +108,7 @@ async function queryWorkfine(mssqlPool, since) {
   const { recordset } = await mssqlPool.request().query(`
     SELECT
       RTRIM(s.UDF_S_372)  AS legacy_order_no,
-      s.UDF_S_350          AS sale_date,
+      CONVERT(varchar(23), s.UDF_S_350, 121) AS sale_date,
       RTRIM(s.UDF_S_348)  AS market_name,
       RTRIM(s.UDF_S_349)  AS store_name,
       RTRIM(s.UDF_S_1485) AS legacy_customer_id,
@@ -186,6 +224,7 @@ function processRows(rows, lookups) {
       marketName,
       storeId,
       saleOrderDatetime: saleDate,
+      performanceAttributionDate: toWorkfineBusinessDate(row.sale_date),
       clientUserId,
       clientPhone: phone,
       customerName,
@@ -220,7 +259,7 @@ async function batchInsert(pgPool, rows, dryRun) {
   if (dryRun) return rows.length
 
   let inserted = 0
-  const COLS_PER_ROW = 16
+  const COLS_PER_ROW = 17
 
   for (let b = 0; b < totalBatches; b++) {
     const slice = rows.slice(b * BATCH_SIZE, (b + 1) * BATCH_SIZE)
@@ -231,6 +270,7 @@ async function batchInsert(pgPool, rows, dryRun) {
       r.marketName,
       r.storeId,
       r.saleOrderDatetime,
+      r.performanceAttributionDate,
       r.clientUserId,
       r.clientPhone,
       r.customerName,
@@ -251,7 +291,7 @@ async function batchInsert(pgPool, rows, dryRun) {
         `
         INSERT INTO sale_orders (
           sale_order_id, status, sale_order_type, market_name, store_id,
-          sale_order_datetime, client_user_id, client_phone, customer_name,
+          sale_order_datetime, performance_attribution_date, client_user_id, client_phone, customer_name,
           total_amount, payable_amount, received, payment_method,
           legacy_source, legacy_customer_id, legacy_raw_snapshot
         ) VALUES ${mv.placeholders}
@@ -339,4 +379,11 @@ async function main() {
   }
 }
 
-main()
+if (require.main === module) main()
+
+module.exports = {
+  processRows,
+  toTimestamp,
+  toWorkfineBusinessDate,
+  workfineWallParts,
+}

@@ -6,12 +6,12 @@
   <!-- 当前城市提示 -->
   <view wx:if="{{currentCity}}" class="location-bar">
     <van-icon name="location-o" size="14" />
-    <text>当前城市：{{currentCity}}{{currentDistrict ? ' · ' + currentDistrict : ''}}</text>
+    <text>当前城市：{{currentCity}}{{currentDistrict ? ' · ' + currentDistrict : ''}}（搜索支持全国）</text>
   </view>
 
   <van-search
     value="{{keyword}}"
-    placeholder="搜索门店名称或区域"
+    placeholder="搜索门店名称、市场或区域"
     bind:change="onSearch"
     background="#F8F4EF"
   />
@@ -29,7 +29,19 @@
 
   <!-- 提示：搜索字符不足 -->
   <view wx:elif="{{showHint === 'minlen'}}" class="empty-wrap">
-    <van-empty image="search" description="请至少输入2个字符" />
+    <van-empty image="search" description="请至少输入2个字" />
+  </view>
+
+  <view wx:elif="{{showHint === 'no-city'}}" class="empty-wrap">
+    <van-empty image="search" description="当前城市暂无门店，请搜索其他城市" />
+  </view>
+
+  <view wx:elif="{{showHint === 'no-result'}}" class="empty-wrap">
+    <van-empty image="search" description="未找到匹配门店" />
+  </view>
+
+  <view wx:elif="{{showHint === 'load-error'}}" class="empty-wrap">
+    <van-empty description="门店加载失败，请稍后重试" />
   </view>
 
   <!-- 空态 -->
@@ -64,6 +76,7 @@
           <text class="store-name">{{item.store_name}}</text>
           <van-tag wx:if="{{selectedStore === item.store_name}}" type="primary" round>当前</van-tag>
         </view>
+        <view wx:if="{{item.market_name}}" class="store-market">{{item.market_name}}</view>
         <view wx:if="{{item.fullAddress}}" class="store-address">{{item.fullAddress}}</view>
       </view>
 

@@ -111,6 +111,29 @@ describe('serviceCommission.detail', () => {
     expect(ctx.result.rates[0].serviceRates['护理项目']).toBe(0.3)
   })
 
+  test('同名服务项目按 service_item_id 分开返回，不按商品名称合并', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'SO-1' })
+    pg.query
+      .mockResolvedValueOnce([{ service_order_id: 'SO-1', status: '已完成', market_name: '测试市场', commission_status: '已分配' }])
+      .mockResolvedValueOnce([
+        { service_item_id: 'si-1', product_name: '水光护理', unit_real_price: '100', session_used: 1 },
+        { service_item_id: 'si-2', product_name: '水光护理', unit_real_price: '100', session_used: 1 },
+      ])
+      .mockResolvedValueOnce([
+        { service_item_id: 'si-1', employee_id: 'emp-a' },
+        { service_item_id: 'si-2', employee_id: 'emp-b' },
+      ])
+      .mockResolvedValueOnce([])
+
+    await routes.detail(ctx)
+
+    expect(ctx.result.items.map(item => item.service_item_id)).toEqual(['si-1', 'si-2'])
+    expect(ctx.result.commissions).toEqual([
+      expect.objectContaining({ service_item_id: 'si-1', employee_id: 'emp-a' }),
+      expect.objectContaining({ service_item_id: 'si-2', employee_id: 'emp-b' }),
+    ])
+  })
+
   test('服务单不存在/不属本店 → NOT_FOUND', async () => {
     const ctx = createManagerCtx({ serviceOrderId: 'SO-X' })
     pg.query.mockResolvedValueOnce([])

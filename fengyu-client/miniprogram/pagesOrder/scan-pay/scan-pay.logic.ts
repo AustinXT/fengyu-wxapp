@@ -29,6 +29,13 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+/** 恢复历史待扣金额时只允许缩小到当前可信余额，余额增加不能放大原意向。 */
+export function restorePendingPrepaid(pendingAmount: number, currentBalance: number): number {
+  const pending = round2(Math.max(0, Number(pendingAmount) || 0));
+  const balance = round2(Math.max(0, Number(currentBalance) || 0));
+  return round2(Math.min(pending, balance));
+}
+
 /**
  * 重算抵扣方案
  * 应抵部分 = totalAmount - couponDiscount

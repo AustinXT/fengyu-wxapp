@@ -25,6 +25,7 @@ describe('order.scanDetail', () => {
         sale_order_id: 'FY-001', status: '待支付', store_id: 's1',
         sale_order_type: '销售单', total_amount: 100, store_name: '南昌旗舰店', opener_name: '张三', opened_by: 'emp-001',
         prepaid_card_amount: 30, payable_amount: 70, received: 0, refunded_amount: 0,
+        first_payment_amount: 20, is_experience_conversion: false,
         payment_method: '微信', coupon_discount: 0,
       }])
       .mockResolvedValueOnce([{
@@ -43,6 +44,8 @@ describe('order.scanDetail', () => {
     expect(ctx.result.order.payableAmount).toBe(70)
     expect(ctx.result.order.received).toBe(0)
     expect(ctx.result.order.refundedAmount).toBe(0)
+    expect(ctx.result.order.firstPaymentAmount).toBe(20)
+    expect(ctx.result.order.isExperienceConversion).toBe(false)
     expect(ctx.result.order.paymentMethod).toBe('微信')
     expect(ctx.result.items).toHaveLength(1)
     expect(ctx.result.items[0].coverImage).toBe('https://img.example.com/a.jpg')
@@ -454,14 +457,14 @@ describe('order.create', () => {
 
     // 2) 订单主表 INSERT：status='已支付'、received=0、payment_method='无'、paid_at 非空
     // params: [0]orderNo [1]status [2]docType [3]market [4]store [5]now [6]userId
-    //         [7]phone [8]name [9]total [10]prepaidCard [11]received [12]payable [13]payment_method
-    //         [14]preferredStaff [15]couponId [16]couponDiscount [17]paid_at
+    //         [7]phone [8]name [9]total [10]actualPrepaid [11]pendingPrepaid [12]received [13]payable
+    //         [14]payment_method [15]preferredStaff [16]couponId [17]couponDiscount [18]paid_at
     const orderInsert = txnQueries.find(q => /INSERT INTO sale_orders/.test(q.sql))
     expect(orderInsert).toBeDefined()
     expect(orderInsert.params[1]).toBe('已支付')
-    expect(orderInsert.params[11]).toBe(0)   // received=0（券抵扣无到账）
-    expect(orderInsert.params[13]).toBe('无') // payment_method
-    expect(orderInsert.params[17]).not.toBeNull() // paid_at=now
+    expect(orderInsert.params[12]).toBe(0)   // received=0（券抵扣无到账）
+    expect(orderInsert.params[14]).toBe('无') // payment_method
+    expect(orderInsert.params[18]).not.toBeNull() // paid_at=now
 
     // 3) 无储值卡（prepaidCardAmount=0）：不扣卡、不写 amount=0 储值卡抵扣流水（否则违 chk_sop_amount_sign）
     expect(txnQueries.find(q => /UPDATE prepaid_cards/.test(q.sql))).toBeUndefined()
@@ -688,8 +691,8 @@ describe('order.create', () => {
     expect(ctx.result.totalAmount).toBe(97.97)
     expect(ctx.result.pointsUsed).toBe(303)
     expect(ctx.result.pointsDiscount).toBe(3.03)
-    expect(orderInsertCall[1][17]).toBe(303)
-    expect(orderInsertCall[1][18]).toBe(3.03)
+    expect(orderInsertCall[1][18]).toBe(303)
+    expect(orderInsertCall[1][19]).toBe(3.03)
     expect(itemInsertCalls).toHaveLength(2)
     expect(Number(itemInsertCalls[0][1][11])).toBe(32.01)
     expect(Number(itemInsertCalls[1][1][11])).toBe(65.96)
@@ -832,6 +835,7 @@ describe('order.pay', () => {
     LAKALA_PRIVATE_KEY_PEM: '-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----',
     LAKALA_PLATFORM_CERT_PEM: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----',
     LAKALA_NOTIFY_URL: 'https://notify.test/lakala/notify',
+    LAKALA_ALIPAY_SHARE_SOURCE: 'FENGYU',
     LAKALA_ENV: 'release',
   }
   const lakalaEnvSnapshot = {}
@@ -852,13 +856,58 @@ describe('order.pay', () => {
   const STORE_LAKALA_ROW = [{ merchant_no: 'M-TEST', term_no: 'T-TEST', enabled: true }]
 
   // 按 SQL 派发的 pg.query mock（对查询条数/顺序鲁棒，避免脆弱的 once 序列）
-  function mockPayQueries({ order, paidSum = 0 }) {
+  function mockPayQueries({
+    order,
+    paidSum = 0,
+    merchantRows = STORE_LAKALA_ROW,
+    lockedOrderOverrides = {},
+  }) {
+    let activeOutTradeNo = order.lakala_out_order_no || null
+    const transactionSql = []
+    const lockedOrder = () => ({
+      sale_order_type: '销售单',
+      prepaid_card_amount: 0,
+      pending_prepaid_card_amount: 0,
+      received: paidSum,
+      refunded_amount: 0,
+      first_payment_amount: null,
+      payable_amount: null,
+      ...order,
+      ...lockedOrderOverrides,
+      lakala_out_order_no: activeOutTradeNo,
+    })
+    pg.transaction.mockImplementation(async (cb) => {
+      const clientQuery = vi.fn(async (sql, params) => {
+        transactionSql.push({ sql, params })
+        if (/FROM sale_orders[\s\S]*FOR UPDATE/.test(sql)) {
+          return { rows: [lockedOrder()], rowCount: 1 }
+        }
+        if (/FROM prepaid_cards[\s\S]*FOR UPDATE/.test(sql)) {
+          return { rows: [{ balance: '99999.00' }], rowCount: 1 }
+        }
+        if (/lakala_merchants/.test(sql)) {
+          return { rows: merchantRows, rowCount: merchantRows.length }
+        }
+        if (/SET lakala_out_order_no = \$1/.test(sql)) {
+          activeOutTradeNo = params[0]
+          return { rows: [{ sale_order_id: order.sale_order_id }], rowCount: 1 }
+        }
+        if (/SET client_user_id = CASE[\s\S]*payment_method = \$2/.test(sql)) {
+          return { rows: [{ sale_order_id: order.sale_order_id }], rowCount: 1 }
+        }
+        return { rows: [], rowCount: 0 }
+      })
+      return cb({ query: clientQuery })
+    })
     pg.query.mockImplementation(async (sql) => {
       if (/SELECT \* FROM sale_orders/.test(sql)) return [order]
-      if (/SUM\(amount\)/.test(sql)) return [{ paid_sum: paidSum }]
-      if (/lakala_merchants/.test(sql)) return STORE_LAKALA_ROW
-      return [] // UPDATE / hasPaymentRows / 其它
+      if (/SET lakala_out_order_no = NULL/.test(sql)) {
+        activeOutTradeNo = null
+        return [{ sale_order_id: order.sale_order_id }]
+      }
+      return []
     })
+    return { transactionSql }
   }
 
   test('正常发起微信支付（聚合主扫 trans_type=71 直接返回 wx.requestPayment 5 字段）', async () => {
@@ -895,18 +944,33 @@ describe('order.pay', () => {
     expect(args.termNo).toBe('T-TEST')
   })
 
+  test('充值单按 payable_amount 实付口径预下单，不按充值面额 total_amount 扣款', async () => {
+    const now = new Date()
+    mockPayQueries({
+      order: {
+        sale_order_id: 'FY-CZ-WX-001', status: '待支付', sale_order_type: '充值单', store_id: 'store-1',
+        client_user_id: 'user-001', total_amount: 1000, payable_amount: 300,
+        prepaid_card_amount: 0, pending_prepaid_card_amount: 0, received: 0, refunded_amount: 0,
+        sale_order_datetime: now.toISOString(),
+      },
+    })
+
+    const ctx = createBoundCtx({ orderNo: 'FY-CZ-WX-001' })
+    await routes.pay(ctx)
+
+    expect(ctx.result.paidAmount).toBe(300)
+    expect(__mocks__.lakalaClient.requestPreorder.mock.calls[0][0].totalAmountFen).toBe(30000)
+  })
+
   test('门店已启用拉卡拉但未配商户号 → LAKALA_NOT_CONFIGURED（不再 fallback env 默认号）', async () => {
     const now = new Date()
-    pg.query.mockImplementation(async (sql) => {
-      if (/SELECT \* FROM sale_orders/.test(sql)) return [{
+    mockPayQueries({
+      order: {
         sale_order_id: 'FY-001', status: '待支付', store_id: 'store-1',
         client_user_id: 'user-001', total_amount: 100, paid_amount: 100,
         sale_order_datetime: now.toISOString(),
-      }]
-      if (/SUM\(amount\)/.test(sql)) return [{ paid_sum: 0 }]
-      // 门店启用了拉卡拉，但 merchant_no/term_no 为空（未进件）
-      if (/lakala_merchants/.test(sql)) return [{ merchant_no: null, term_no: null, enabled: true }]
-      return []
+      },
+      merchantRows: [{ merchant_no: null, term_no: null, enabled: true }],
     })
 
     const ctx = createBoundCtx({ orderNo: 'FY-001' })
@@ -917,16 +981,13 @@ describe('order.pay', () => {
 
   test('门店配了商户号但无终端号 → 抛 LAKALA_TERM_NO_MISSING（一店一商户、env 不兜底）', async () => {
     const now = new Date()
-    pg.query.mockImplementation(async (sql) => {
-      if (/SELECT \* FROM sale_orders/.test(sql)) return [{
+    mockPayQueries({
+      order: {
         sale_order_id: 'FY-001', status: '待支付', store_id: 'store-1',
         client_user_id: 'user-001', total_amount: 100, paid_amount: 100,
         sale_order_datetime: now.toISOString(),
-      }]
-      if (/SUM\(amount\)/.test(sql)) return [{ paid_sum: 0 }]
-      // 门店启用拉卡拉、有商户号，但终端号为空 → 应抛 LAKALA_TERM_NO_MISSING（聚合主扫 term_no M 必填，env 不兜底）
-      if (/lakala_merchants/.test(sql)) return [{ merchant_no: '82242107230052S', term_no: null, enabled: true }]
-      return []
+      },
+      merchantRows: [{ merchant_no: '82242107230052S', term_no: null, enabled: true }],
     })
 
     const ctx = createBoundCtx({ orderNo: 'FY-001' })
@@ -936,11 +997,13 @@ describe('order.pay', () => {
 
   test('paid_amount=0（全额抵扣）直接短路返回已支付', async () => {
     const now = new Date()
-    pg.query.mockResolvedValueOnce([{
-      sale_order_id: 'FY-001', status: '待支付',
-      client_user_id: 'user-001', total_amount: 300, paid_amount: 0, prepaid_card_amount: 300,
-      sale_order_datetime: now.toISOString(),
-    }])
+    mockPayQueries({
+      order: {
+        sale_order_id: 'FY-001', status: '待支付',
+        client_user_id: 'user-001', total_amount: 300, paid_amount: 0, prepaid_card_amount: 300,
+        sale_order_datetime: now.toISOString(),
+      },
+    })
 
     const ctx = createBoundCtx({ orderNo: 'FY-001' })
     await routes.pay(ctx)
@@ -1017,16 +1080,14 @@ describe('order.pay', () => {
 
   test('pay 携带 payAmount 超过剩余应付 → INVALID_PARAMS', async () => {
     const now = new Date()
-    pg.query.mockResolvedValueOnce([{
-      sale_order_id: 'FY-001', status: '待支付',
-      client_user_id: 'user-001', total_amount: 200, paid_amount: 200,
-      prepaid_card_amount: 0,
-      sale_order_datetime: now.toISOString(),
-    }])
-    // calcPaymentRemaining SUM=0
-    pg.query.mockResolvedValueOnce([{ paid_sum: 0 }])
-    // hasPaymentRows 空
-    pg.query.mockResolvedValueOnce([])
+    mockPayQueries({
+      order: {
+        sale_order_id: 'FY-001', status: '待支付', store_id: 'store-1',
+        client_user_id: 'user-001', total_amount: 200, paid_amount: 200,
+        prepaid_card_amount: 0,
+        sale_order_datetime: now.toISOString(),
+      },
+    })
 
     const ctx = createBoundCtx({ orderNo: 'FY-001', payAmount: 500 })
     await expect(routes.pay(ctx)).rejects.toThrow(/INVALID_PARAMS.*超过剩余应付/)
@@ -1067,6 +1128,188 @@ describe('order.pay', () => {
     const args = __mocks__.lakalaClient.requestPreorder.mock.calls[0][0]
     expect(args.totalAmountFen).toBe(15000)
     expect(ctx.result.paymentParams).toBeDefined()
+  })
+
+  test('普通转换首次部分支付以 first_payment_amount 为服务端硬上限', async () => {
+    const now = new Date()
+    mockPayQueries({
+      order: {
+        sale_order_id: 'FY-CONV-PARTIAL', status: '待支付', sale_order_type: '转换单', store_id: 'store-1',
+        client_user_id: 'user-001', total_amount: 2000, payable_amount: 2000, received: 0,
+        prepaid_card_amount: 0, first_payment_amount: 500,
+        sale_order_datetime: now.toISOString(),
+      },
+    })
+
+    const ctx = createBoundCtx({ orderNo: 'FY-CONV-PARTIAL' })
+    await routes.pay(ctx)
+
+    expect(ctx.result.paidAmount).toBe(500)
+    expect(__mocks__.lakalaClient.requestPreorder.mock.calls[0][0].totalAmountFen).toBe(50000)
+    expect(pg.query.mock.calls.some(([sql]) => String(sql).includes('first_payment_amount = NULL'))).toBe(false)
+
+    vi.clearAllMocks()
+    mockPayQueries({
+      order: {
+        sale_order_id: 'FY-CONV-PARTIAL-2', status: '待支付', sale_order_type: '转换单', store_id: 'store-1',
+        client_user_id: 'user-001', total_amount: 2000, payable_amount: 2000, received: 0,
+        prepaid_card_amount: 0, first_payment_amount: 500,
+        sale_order_datetime: now.toISOString(),
+      },
+    })
+    const tamperedCtx = createBoundCtx({ orderNo: 'FY-CONV-PARTIAL-2', payAmount: 600 })
+    await expect(routes.pay(tamperedCtx)).rejects.toThrow(/INVALID_PARAMS.*超过剩余应付/)
+  })
+
+  test('事务外旧快照 cap=NULL，锁内 cap=500 → 只按锁内金额预占并创建 500 元渠道单', async () => {
+    const now = new Date()
+    const order = {
+      sale_order_id: 'FY-CONV-CAP-RACE', status: '待支付', sale_order_type: '转换单', store_id: 'store-1',
+      client_user_id: 'user-001', total_amount: 2000, payable_amount: 2000, received: 0,
+      prepaid_card_amount: 0, pending_prepaid_card_amount: 0, first_payment_amount: null,
+      sale_order_datetime: now.toISOString(),
+    }
+    const captured = mockPayQueries({
+      order,
+      lockedOrderOverrides: { first_payment_amount: 500 },
+    })
+
+    const ctx = createBoundCtx({ orderNo: order.sale_order_id })
+    await routes.pay(ctx)
+
+    expect(ctx.result.paidAmount).toBe(500)
+    expect(__mocks__.lakalaClient.requestPreorder.mock.calls[0][0].totalAmountFen).toBe(50000)
+    const plan = captured.transactionSql.find(({ sql }) => /SET client_user_id = CASE/.test(sql))
+    expect(plan.sql).toContain('lakala_out_order_no = $5')
+    expect(plan.params[4]).toBe(__mocks__.lakalaClient.requestPreorder.mock.calls[0][0].outTradeNo)
+  })
+
+  test('受限 cap=500 时拒绝客户端下调为 400，避免渠道金额与回调冻结额不一致', async () => {
+    const now = new Date()
+    const order = {
+      sale_order_id: 'FY-CONV-CAP-LOW', status: '待支付', sale_order_type: '转换单', store_id: 'store-1',
+      client_user_id: 'user-001', total_amount: 2000, payable_amount: 2000, received: 0,
+      prepaid_card_amount: 0, pending_prepaid_card_amount: 0, first_payment_amount: null,
+      sale_order_datetime: now.toISOString(),
+    }
+    mockPayQueries({ order, lockedOrderOverrides: { first_payment_amount: 500 } })
+
+    const ctx = createBoundCtx({ orderNo: order.sale_order_id, payAmount: 400 })
+    await expect(routes.pay(ctx)).rejects.toThrow(/支付金额必须等于本次冻结金额/)
+    expect(__mocks__.lakalaClient.requestPreorder).not.toHaveBeenCalled()
+  })
+
+  test('事务外旧 received/pending 不参与下单：锁内资金已变化时拒绝按旧欠款预下单', async () => {
+    const now = new Date()
+    const order = {
+      sale_order_id: 'FY-PAY-SNAPSHOT-RACE', status: '部分支付', sale_order_type: '销售单', store_id: 'store-1',
+      client_user_id: 'user-001', total_amount: 1000, payable_amount: 1000,
+      prepaid_card_amount: 0, pending_prepaid_card_amount: 0, received: 0, refunded_amount: 0,
+      sale_order_datetime: now.toISOString(),
+    }
+    mockPayQueries({
+      order,
+      lockedOrderOverrides: { pending_prepaid_card_amount: 100, received: 200 },
+    })
+
+    const ctx = createBoundCtx({ orderNo: order.sale_order_id, payAmount: 1000 })
+    await expect(routes.pay(ctx)).rejects.toThrow(/支付金额超过剩余应付/)
+    expect(__mocks__.lakalaClient.requestPreorder).not.toHaveBeenCalled()
+  })
+
+  test('受限回款已有活动拉卡拉意图 → CONFLICT，不创建第二个预下单', async () => {
+    const now = new Date()
+    const order = {
+      sale_order_id: 'FY-CONV-ACTIVE', status: '部分支付', sale_order_type: '转换单', store_id: 'store-1',
+      client_user_id: 'user-001', total_amount: 2000, payable_amount: 2000, received: 500,
+      prepaid_card_amount: 0, first_payment_amount: 500,
+      lakala_out_order_no: 'FY-CONV-ACTIVE_1770000000',
+      sale_order_datetime: now.toISOString(),
+    }
+    mockPayQueries({ order, paidSum: 500 })
+
+    const ctx = createBoundCtx({ orderNo: order.sale_order_id, payAmount: 500 })
+    await expect(routes.pay(ctx)).rejects.toThrow(/CONFLICT: PAYMENT_INTENT_ACTIVE/)
+    expect(__mocks__.lakalaClient.requestPreorder).not.toHaveBeenCalled()
+    expect(pg.query.mock.calls.some(([sql]) => /SET client_user_id = CASE|SET payment_method/.test(sql))).toBe(false)
+  })
+
+  test('支付宝已有活动拉卡拉意图 → 在写 payment_method/顾客绑定前拒绝', async () => {
+    const now = new Date()
+    const order = {
+      sale_order_id: 'FY-ALI-ACTIVE', status: '待支付', store_id: 'store-1',
+      client_user_id: 'user-001', total_amount: 100, payable_amount: 100,
+      prepaid_card_amount: 0, pending_prepaid_card_amount: 0,
+      lakala_out_order_no: 'FY-ALI-ACTIVE_1770000000',
+      sale_order_datetime: now.toISOString(),
+    }
+    mockPayQueries({ order })
+
+    const ctx = createBoundCtx({ orderNo: order.sale_order_id })
+    await expect(routes.alipayPay(ctx)).rejects.toThrow(/CONFLICT: PAYMENT_INTENT_ACTIVE/)
+    expect(__mocks__.lakalaClient.requestPreorder).not.toHaveBeenCalled()
+    expect(pg.query.mock.calls.some(([sql]) => /SET payment_method = '支付宝'/.test(sql))).toBe(false)
+  })
+
+  test('preorder 明确业务失败 → 按本次 out_trade_no CAS 释放意图', async () => {
+    const now = new Date()
+    const order = {
+      sale_order_id: 'FY-PREORDER-FAIL', status: '待支付', store_id: 'store-1',
+      client_user_id: 'user-001', total_amount: 100, payable_amount: 100,
+      prepaid_card_amount: 0, pending_prepaid_card_amount: 0,
+      sale_order_datetime: now.toISOString(),
+    }
+    mockPayQueries({ order })
+    __mocks__.lakalaClient.requestPreorder.mockRejectedValueOnce(
+      new Error('INVALID_STATE: LAKALA_PREORDER_FAILED: BBS12345')
+    )
+
+    const ctx = createBoundCtx({ orderNo: order.sale_order_id })
+    await expect(routes.pay(ctx)).rejects.toThrow(/LAKALA_PREORDER_FAILED/)
+
+    const release = pg.query.mock.calls.find(([sql]) => /SET lakala_out_order_no = NULL/.test(sql))
+    expect(release).toBeDefined()
+    expect(release[1][0]).toBe(order.sale_order_id)
+    expect(release[1][1]).toMatch(/^FY-PREORDER-FAIL_\d+$/)
+  })
+
+  test('preorder 网络结果不确定 → 保留意图，不创建第二笔', async () => {
+    const now = new Date()
+    const order = {
+      sale_order_id: 'FY-PREORDER-UNKNOWN', status: '待支付', store_id: 'store-1',
+      client_user_id: 'user-001', total_amount: 100, payable_amount: 100,
+      prepaid_card_amount: 0, pending_prepaid_card_amount: 0,
+      sale_order_datetime: now.toISOString(),
+    }
+    mockPayQueries({ order })
+    __mocks__.lakalaClient.requestPreorder.mockRejectedValueOnce(
+      new Error('INVALID_STATE: LAKALA_TIMEOUT_30000ms')
+    )
+
+    const ctx = createBoundCtx({ orderNo: order.sale_order_id })
+    await expect(routes.pay(ctx)).rejects.toThrow(/LAKALA_TIMEOUT/)
+    expect(pg.query.mock.calls.some(([sql]) => /SET lakala_out_order_no = NULL/.test(sql))).toBe(false)
+  })
+
+  test('已有意图查询为 CLOSE → CAS 释放旧单后允许重新占位', async () => {
+    const now = new Date()
+    const order = {
+      sale_order_id: 'FY-RETRY-CLOSED', status: '待支付', store_id: 'store-1',
+      client_user_id: 'user-001', total_amount: 100, payable_amount: 100,
+      prepaid_card_amount: 0, pending_prepaid_card_amount: 0,
+      lakala_out_order_no: 'FY-RETRY-CLOSED_1700000000',
+      sale_order_datetime: now.toISOString(),
+    }
+    mockPayQueries({ order })
+    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({ tradeState: 'CLOSE' })
+
+    const ctx = createBoundCtx({ orderNo: order.sale_order_id })
+    await routes.pay(ctx)
+
+    expect(pg.query.mock.calls.some(([sql]) => /SET lakala_out_order_no = NULL/.test(sql))).toBe(true)
+    expect(__mocks__.lakalaClient.requestPreorder).toHaveBeenCalledTimes(1)
+    expect(__mocks__.lakalaClient.requestPreorder.mock.calls[0][0].outTradeNo)
+      .not.toBe(order.lakala_out_order_no)
   })
 })
 
@@ -1302,9 +1545,8 @@ describe('order.cancel', () => {
     await expect(routes.cancel(ctx)).rejects.toThrow(/INVALID_PARAMS.*不允许取消/)
   })
 
-  test('取消已发起拉卡拉的线上待支付单 → 不再调显式关单接口（依赖 timeout_express 自动失效）', async () => {
-    // 聚合主扫迁移后：拉卡拉无显式关单接口；订单按 timeout_express=10min 自动失效
-    // 迟到的成功回调会被 payNotify 的 CAS 守卫挡掉（订单已 '已关闭' 时不会再翻 '已支付'）
+  test('取消已发起拉卡拉的线上待支付单 → 保持本地待支付，等待渠道明确终态', async () => {
+    // 聚合主扫无显式关单接口，不能先把本地订单关闭；否则渠道迟到成功会形成已扣款未入账。
     pg.query.mockImplementation(async (sql) => {
       if (/SELECT \* FROM sale_orders/.test(sql)) return [{
         sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
@@ -1316,10 +1558,9 @@ describe('order.cancel', () => {
     pg.transaction.mockImplementation(async (cb) => cb({ query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }))
 
     const ctx = createBoundCtx({ orderNo: 'FY-001' })
-    await routes.cancel(ctx)
+    await expect(routes.cancel(ctx)).rejects.toThrow(/PAYMENT_INTENT_ACTIVE/)
 
-    expect(ctx.result.status).toBe('已关闭')
-    // 不再有 closeCashierOrder / 任何 lakala HTTP 调用
+    expect(pg.transaction).not.toHaveBeenCalled()
     expect(__mocks__.lakalaClient.request).not.toHaveBeenCalled()
   })
 })
@@ -1375,6 +1616,30 @@ describe('order.queryLakalaStatus', () => {
     expect(__mocks__.lakalaClient.queryTrade).not.toHaveBeenCalled()
   })
 
+  test('拉卡拉明确 FAIL → 查询接口按旧单号 CAS 释放活动意图', async () => {
+    const outTradeNo = 'FY-FAIL-001_1700000000'
+    pg.query.mockImplementation(async (sql) => {
+      if (/SELECT sale_order_id, status/.test(sql)) return [{
+        sale_order_id: 'FY-FAIL-001', status: '待支付', store_id: 'store-1',
+        lakala_out_order_no: outTradeNo, client_user_id: 'user-001',
+      }]
+      if (/lakala_merchants/.test(sql)) return [{ merchant_no: 'M1', term_no: 'T1', enabled: true }]
+      if (/SET lakala_out_order_no = NULL/.test(sql)) return [{ sale_order_id: 'FY-FAIL-001' }]
+      return []
+    })
+    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({
+      ok: true, code: 'BBS00000', tradeState: 'FAIL', tradeNo: 'LAK-T-FAIL', raw: {},
+    })
+
+    const ctx = createBoundCtx({ orderNo: 'FY-FAIL-001' })
+    await routes.queryLakalaStatus(ctx)
+
+    expect(ctx.result.lakalaTradeState).toBe('FAIL')
+    expect(ctx.result.lakalaIntentReleased).toBe(true)
+    const release = pg.query.mock.calls.find(([sql]) => /SET lakala_out_order_no = NULL/.test(sql))
+    expect(release[1]).toEqual(['FY-FAIL-001', outTradeNo])
+  })
+
   test('非本人订单 → PERMISSION_DENIED', async () => {
     pg.query.mockImplementation(async () => [{
       sale_order_id: 'FY-001', status: '待支付', client_user_id: 'other-user',
@@ -1419,7 +1684,9 @@ describe('order.confirmPayment', () => {
 
   test('待支付 + 拉卡拉 SUCCESS → callFunction 调 payNotify 触发补偿入账，重查 status 已翻 → reconciled', async () => {
     pg.query.mockImplementation(async (sql) => {
-      if (/SELECT status FROM sale_orders/.test(sql)) return [{ status: '已支付' }] // payNotify 后重查
+      if (/SELECT status, received, first_payment_amount FROM sale_orders/.test(sql)) {
+        return [{ status: '已支付', received: 100, first_payment_amount: null }]
+      }
       if (/FROM sale_orders/.test(sql)) return [{
         sale_order_id: 'FY-001', status: '待支付', store_id: 'store-1',
         lakala_out_order_no: 'FY-001_1700000000', client_user_id: 'user-001', payment_method: '微信',
@@ -1449,6 +1716,44 @@ describe('order.confirmPayment', () => {
         }),
       })
     )
+  })
+
+  test('历史状态已是部分支付：拉卡拉尚未成功时不把旧状态当本场次到账；成功后以 ACK/实收增长确认', async () => {
+    let afterNotify = false
+    pg.query.mockImplementation(async (sql) => {
+      if (/SELECT status, received, first_payment_amount FROM sale_orders/.test(sql)) {
+        afterNotify = true
+        return [{ status: '部分支付', received: 1000, first_payment_amount: null }]
+      }
+      if (/FROM sale_orders/.test(sql)) return [{
+        sale_order_id: 'FY-PARTIAL', status: '部分支付', store_id: 'store-1',
+        lakala_out_order_no: 'FY-PARTIAL_1700000000', client_user_id: 'user-001', payment_method: '微信',
+        received: 500, first_payment_amount: 500,
+      }]
+      if (/lakala_merchants/.test(sql)) return [{ merchant_no: 'M1', term_no: 'T1', enabled: true }]
+      return []
+    })
+    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({
+      ok: true, tradeState: 'CREATE', tradeNo: 'LAK-PARTIAL', totalAmountFen: 50000, raw: {},
+    })
+
+    const waitingCtx = createBoundCtx({ saleOrderId: 'FY-PARTIAL' })
+    await routes.confirmPayment(waitingCtx)
+    expect(waitingCtx.result.status).toBe('部分支付')
+    expect(waitingCtx.result.reconciled).toBe(false)
+    expect(waitingCtx.result.received).toBe(500)
+    expect(waitingCtx.result.firstPaymentAmount).toBe(500)
+    expect(afterNotify).toBe(false)
+
+    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({
+      ok: true, tradeState: 'SUCCESS', tradeNo: 'LAK-PARTIAL', totalAmountFen: 50000, raw: {},
+    })
+    const paidCtx = createBoundCtx({ saleOrderId: 'FY-PARTIAL' })
+    await routes.confirmPayment(paidCtx)
+    expect(paidCtx.result.status).toBe('部分支付')
+    expect(paidCtx.result.reconciled).toBe(true)
+    expect(paidCtx.result.received).toBe(1000)
+    expect(paidCtx.result.firstPaymentAmount).toBeNull()
   })
 
   test('终态（已支付）→ skip，不查拉卡拉也不调入账', async () => {
@@ -1792,7 +2097,8 @@ describe('prepaid card deduction - order.create', () => {
     })
     await routes.create(ctx)
 
-    expect(ctx.result.prepaidCardAmount).toBe(100)
+    expect(ctx.result.prepaidCardAmount).toBe(0)
+    expect(ctx.result.pendingPrepaidCardAmount).toBe(100)
     expect(ctx.result.paidAmount).toBe(200)
     expect(ctx.result.paymentMethod).toBe('微信')
     expect(ctx.result.status).toBe('待支付')
@@ -2217,7 +2523,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
-                prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
+                prepaid_card_amount: '0', pending_prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
               }],
               rowCount: 1,
             }
@@ -2260,7 +2566,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
-                prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
+                prepaid_card_amount: '0', pending_prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
               }],
               rowCount: 1,
             }
@@ -2286,7 +2592,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
-                prepaid_card_amount: '100', payable_amount: '200', total_amount: '300',
+                prepaid_card_amount: '0', pending_prepaid_card_amount: '100', payable_amount: '200', total_amount: '300',
               }],
               rowCount: 1,
             }
@@ -2309,7 +2615,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '已支付', client_user_id: 'user-001',
-                prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
+                prepaid_card_amount: '0', pending_prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
               }],
               rowCount: 1,
             }
@@ -2334,7 +2640,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
-                prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
+                prepaid_card_amount: '0', pending_prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
               }],
               rowCount: 1,
             }
@@ -2373,7 +2679,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'other-user',
-                prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
+                prepaid_card_amount: '0', pending_prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
               }],
               rowCount: 1,
             }
@@ -2401,7 +2707,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
-                prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
+                prepaid_card_amount: '0', pending_prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
               }],
               rowCount: 1,
             }
@@ -2436,7 +2742,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
-                prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
+                prepaid_card_amount: '0', pending_prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
               }],
               rowCount: 1,
             }

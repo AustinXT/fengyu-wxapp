@@ -116,6 +116,18 @@ describe('recomputeAmounts — 储值卡抵扣计算', () => {
     expect(r.showPayMethodGroup).toBe(true);
   });
 
+  test('取消后恢复既有订单时保留冻结的储值卡方案', () => {
+    const r = recomputeAmounts({
+      totalAmount: 300,
+      couponDiscount: 0,
+      cardBalance: 500,
+      useCard: true,
+      prepaidCardAmountLimit: 80,
+    });
+    expect(r.prepaidCardAmount).toBe(80);
+    expect(r.paidAmount).toBe(220);
+  });
+
   test('case 10: 优惠券后先抵积分，再用储值卡抵扣剩余应付', () => {
     const r = recomputeAmounts({
       totalAmount: 300,

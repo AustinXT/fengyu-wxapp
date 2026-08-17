@@ -1,0 +1,2 @@
+ALTER TABLE "sale_orders" ADD COLUMN "is_experience_conversion" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+CREATE INDEX "idx_sale_orders_experience_conversion_audit" ON "sale_orders" USING btree ("store_id","sale_order_datetime") WHERE is_experience_conversion = true;

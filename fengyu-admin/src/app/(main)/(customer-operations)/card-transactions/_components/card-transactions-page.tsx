@@ -9,6 +9,7 @@ import type {
 import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types"
 import MarketStoreFilter from "@/components/market-store-filter"
 import { Input } from "@/components/ui/input"
+import { DatePicker } from "@/components/ui/date-picker"
 import { Select } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { MemberLevelBadge } from "@/components/ui/member-level-badge"
@@ -227,17 +228,15 @@ export default function CardTransactionsPage({
           ))}
         </Select>
         <div className="flex items-center gap-2">
-          <Input
-            type="date"
+          <DatePicker
             value={startDate}
-            onChange={(e) => setFilter("start", e.target.value)}
+            onValueChange={(value) => setFilter("start", value)}
             className="w-40"
           />
           <span className="text-[#999]">—</span>
-          <Input
-            type="date"
+          <DatePicker
             value={endDate}
-            onChange={(e) => setFilter("end", e.target.value)}
+            onValueChange={(value) => setFilter("end", value)}
             className="w-40"
           />
         </div>

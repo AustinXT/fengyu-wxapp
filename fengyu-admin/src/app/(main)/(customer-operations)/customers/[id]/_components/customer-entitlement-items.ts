@@ -9,8 +9,11 @@ const VISIBLE_CARD_ORDER_STATUSES: ReadonlySet<SaleOrder["status"]> = new Set([
 
 function isCardEntitlementItem(order: SaleOrder, item: SaleItem) {
   return (
-    item.itemDirection === "购买" ||
-    (order.saleOrderType === "转换单" && item.itemDirection === "转入")
+    item.productType === "疗程卡" &&
+    (
+      item.itemDirection === "购买" ||
+      (order.saleOrderType === "转换单" && item.itemDirection === "转入")
+    )
   )
 }
 

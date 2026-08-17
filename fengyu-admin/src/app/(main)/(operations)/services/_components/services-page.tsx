@@ -7,6 +7,7 @@ import { toast } from "sonner"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { DatePicker } from "@/components/ui/date-picker"
 import { Select } from "@/components/ui/select"
 import { StatusBadge, Badge } from "@/components/ui/badge"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
@@ -187,9 +188,9 @@ export default function ServicesPageClient({
             />
             <div className="flex items-center gap-2">
               <span className="text-sm text-muted-foreground whitespace-nowrap">服务日期</span>
-              <Input type="date" className="w-36" value={dateFrom} onChange={(e) => setFilter("from", e.target.value)} />
+              <DatePicker className="w-36" value={dateFrom} onValueChange={(value) => setFilter("from", value)} />
               <span className="text-[#999999]">-</span>
-              <Input type="date" className="w-36" value={dateTo} onChange={(e) => setFilter("to", e.target.value)} />
+              <DatePicker className="w-36" value={dateTo} onValueChange={(value) => setFilter("to", value)} />
             </div>
             <Input
               className="w-56"

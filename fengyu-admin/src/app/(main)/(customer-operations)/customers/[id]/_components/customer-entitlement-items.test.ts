@@ -9,6 +9,7 @@ function makeItem(overrides: Partial<SaleItem> = {}): SaleItem {
     itemDirection: "购买",
     refSaleItemId: null,
     skuId: "SKU-1",
+    productType: "疗程卡",
     unit: "次",
     sessionCount: 1,
     remainingSessions: 1,
@@ -18,6 +19,8 @@ function makeItem(overrides: Partial<SaleItem> = {}): SaleItem {
     unitRealPrice: "211.00",
     saleAmount: "211.00",
     received: "211.00",
+    prepaidCardReceived: "0",
+    cashReceived: "211.00",
     pendingReceived: "0",
     expireDate: null,
     remark: null,
@@ -40,11 +43,16 @@ function makeOrder(overrides: Partial<SaleOrder> = {}): SaleOrder {
     marketName: "南昌市场",
     storeId: "STORE-1",
     saleOrderDatetime: "2026-07-25T09:00:00.000Z",
+    performanceAttributionDate: "2026-07-25",
+    performanceAttributionAdjustedAt: null,
+    performanceAttributionAdjustedBy: null,
     clientUserId: "USER-1",
     clientPhone: "13800000000",
     customerName: "欧阳娟娟",
     totalAmount: "211.00",
     prepaidCardAmount: "0",
+    pendingPrepaidCardAmount: "0",
+    payableAmount: "211.00",
     received: "211.00",
     refundedAmount: "0",
     paymentMethod: "线下",
@@ -96,6 +104,24 @@ describe("getCustomerVisibleSaleItems", () => {
     ])
 
     expect(result.map((item) => item.saleItemId)).toEqual(["SI-PAID-UNUSED"])
+  })
+
+  it("排除具有余次数据的家居产品", () => {
+    const treatmentCard = makeItem({ saleItemId: "SI-CARD" })
+    const homeProduct = makeItem({
+      saleItemId: "SI-HOME",
+      productType: "家居产品",
+      unit: "盒",
+      sessionCount: 10,
+      remainingSessions: 2,
+      paidSessions: 2,
+    })
+
+    const result = getCustomerVisibleSaleItems([
+      makeOrder({ items: [treatmentCard, homeProduct] }),
+    ])
+
+    expect(result.map((item) => item.saleItemId)).toEqual(["SI-CARD"])
   })
 
   it("兼容 paidSessions 为 NULL 的历史行，按物理剩余显示", () => {

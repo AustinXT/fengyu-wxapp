@@ -12,17 +12,17 @@
  * 移植源（CloudBase 纯 JS 原生 SQL，禁止 import，照搬口径成 admin Drizzle raw SQL）：
  *   fengyu-staff/cloudfunctions/staffApi/routes/mgmt-product.js
  *     - cardHolders：持卡人数 + 占比（截面快照，不随 period 变化）
- *     - cycleStats：体验/新增/复购全套 CTE（区间维度，时间轴 sale_order_datetime，缺失时回退 paid_at）
+ *     - cycleStats：体验/新增/复购全套 CTE（区间维度，时间轴为支付事件业绩归属日）
  *
  * ★ 口径红线（consistency.product.test.ts 字面量守护，禁止偏离）：
  *   - 持卡 = si.paid_sessions > 0；DISTINCT client。不再按 product_type 过滤。
  *   - 持卡 sale_order_type IN ('销售单','转换单','寄存单')（寄存单为 WorkFine 剩余次数初始化纳入）。
  *   - 占比分母 = memberCount（client_wechat_users.became_member_at IS NOT NULL ∩ scope by bound_store_id，
  *     持卡为截面，不带 $date 守卫）。
- *   - 进入达标日 = 销售单/转换单/寄存单的 SUM(si.received) 在
+ *   - 进入达标日 = 销售单/转换单/寄存单的 SUM(sale_item_performance_events.amount) 在
  *     (client_user_id, store_id, 分组键, purchase_date) 分组下 >= threshold。
  *   - 复购达标日与区间业绩只统计销售单/转换单；寄存单只作为进入基线，不能触发复购。
- *   - purchase_date = COALESCE(so.sale_order_datetime, so.paid_at)::date。
+ *   - purchase_date = sale_item_performance_events.performance_date。
  *   - entry_date = 全历史（截至 endDate）最早达标日，跨店合并；新增 = entry_date 落区间；
  *     复购 = 区间内 entry_date 后再次达标（threshold 共用）；体验 = 区间内有购买但全历史无达标日。
  *   - cycleStats 基础过滤 sale_order_type IN ('销售单','转换单','寄存单') ∩ 排除已关闭/已作废/未审核/待审批/支付失败；
@@ -181,21 +181,21 @@ async function queryCycle(
   metric: 'count' | 'revenue',
 ): Promise<number> {
   const sc = scopeFilterSql(session, scope, 'so.store_id')
-  const purchaseDateExpr = sql`COALESCE(so.sale_order_datetime, so.paid_at)::date`
   const rows = await db.execute(sql`
     WITH daily_agg AS (
       SELECT so.client_user_id,
              so.store_id,
              ${groupCol} AS grp,
-             ${purchaseDateExpr} AS purchase_date,
-             SUM(si.received::numeric) AS day_received,
+             sipe.performance_date AS purchase_date,
+             SUM(sipe.amount::numeric) AS day_received,
              COALESCE(
-               SUM(si.received::numeric) FILTER (
+               SUM(sipe.amount::numeric) FILTER (
                  WHERE so.sale_order_type IN ('销售单', '转换单')
                ),
                0
              ) AS purchase_received
-      FROM sale_items si
+      FROM sale_item_performance_events sipe
+      JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
       JOIN product_skus sk ON sk.sku_id = si.sku_id
       JOIN product_categories pc ON pc.category_id = sk.category_id
@@ -204,9 +204,9 @@ async function queryCycle(
         AND so.status NOT IN ('已关闭', '已作废', '未审核', '待审批', '支付失败')
         AND so.client_user_id IS NOT NULL
         AND ${filter}
-        AND ${purchaseDateExpr} <= ${range.end}
-      GROUP BY so.client_user_id, so.store_id, ${groupCol}, ${purchaseDateExpr}
-      HAVING SUM(si.received::numeric) > 0
+        AND sipe.performance_date <= ${range.end}
+      GROUP BY so.client_user_id, so.store_id, ${groupCol}, sipe.performance_date
+      HAVING SUM(sipe.amount::numeric) > 0
     ),
     qualifying_days AS (
       SELECT client_user_id, store_id, grp, purchase_date
@@ -365,21 +365,21 @@ async function queryCycleByStore(
   >
 > {
   const sc = scopeFilterSql(session, scope, 'so.store_id')
-  const purchaseDateExpr = sql`COALESCE(so.sale_order_datetime, so.paid_at)::date`
   const rows = await db.execute(sql`
     WITH daily_agg AS (
       SELECT so.client_user_id,
              so.store_id,
              ${groupCol} AS grp,
-             ${purchaseDateExpr} AS purchase_date,
-             SUM(si.received::numeric) AS day_received,
+             sipe.performance_date AS purchase_date,
+             SUM(sipe.amount::numeric) AS day_received,
              COALESCE(
-               SUM(si.received::numeric) FILTER (
+               SUM(sipe.amount::numeric) FILTER (
                  WHERE so.sale_order_type IN ('销售单', '转换单')
                ),
                0
              ) AS purchase_received
-      FROM sale_items si
+      FROM sale_item_performance_events sipe
+      JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
       JOIN product_skus sk ON sk.sku_id = si.sku_id
       JOIN product_categories pc ON pc.category_id = sk.category_id
@@ -388,9 +388,9 @@ async function queryCycleByStore(
         AND so.status NOT IN ('已关闭', '已作废', '未审核', '待审批', '支付失败')
         AND so.client_user_id IS NOT NULL
         AND ${filter}
-        AND ${purchaseDateExpr} <= ${range.end}
-      GROUP BY so.client_user_id, so.store_id, ${groupCol}, ${purchaseDateExpr}
-      HAVING SUM(si.received::numeric) > 0
+        AND sipe.performance_date <= ${range.end}
+      GROUP BY so.client_user_id, so.store_id, ${groupCol}, sipe.performance_date
+      HAVING SUM(sipe.amount::numeric) > 0
     ),
     qualifying_days AS (
       SELECT client_user_id, store_id, grp, purchase_date

@@ -8,6 +8,7 @@ vi.mock('../../utils/cloud', () => ({
 let pageDefinition: Record<string, any>
 let originalGetApp: unknown
 let originalPage: unknown
+const testApp = { globalData: {} as Record<string, unknown> }
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -22,7 +23,7 @@ function deferred<T>() {
 beforeAll(async () => {
   originalGetApp = (globalThis as any).getApp
   originalPage = (globalThis as any).Page
-  ;(globalThis as any).getApp = () => ({ globalData: {} })
+  ;(globalThis as any).getApp = () => testApp
   ;(globalThis as any).Page = (definition: Record<string, any>) => {
     pageDefinition = definition
   }
@@ -94,6 +95,50 @@ describe('开单商品目录刷新', () => {
     } finally {
       ;(globalThis as any).wx.showToast = originalShowToast
     }
+  })
+})
+
+describe('指定美容师选择', () => {
+  test('外店出差员工明确追加（外援）标记', async () => {
+    testApp.globalData = { currentStoreId: 'store-a', loginLevel: 'store' }
+    vi.mocked(callStaffApi).mockReset().mockResolvedValueOnce({
+      staffList: [
+        {
+          staffWfId: 'local',
+          name: '本店美容师',
+          department: '美容部',
+          skills: ['美容师'],
+          storeId: 'store-a',
+          isOnBusinessTrip: false,
+        },
+        {
+          staffWfId: 'support',
+          name: '支援美容师',
+          department: '美容部',
+          skills: ['美容师'],
+          storeId: 'store-b',
+          isOnBusinessTrip: true,
+        },
+      ],
+    })
+    const page = {
+      ...pageDefinition,
+      data: {
+        ...pageDefinition.data,
+        staffListForPicker: [],
+      },
+      setData(update: Record<string, unknown>) {
+        Object.assign(this.data, update)
+      },
+    }
+
+    await page.onSelectPreferredStaff()
+
+    expect(page.data.staffPickerColumns).toEqual([
+      '不指定',
+      '本店美容师（美容师·美容部）',
+      '支援美容师（美容师·美容部）（外援）',
+    ])
   })
 })
 

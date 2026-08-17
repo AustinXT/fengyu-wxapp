@@ -203,7 +203,7 @@ async function cardHolders(ctx) {
  *   - 最后用 UNION ALL 拆三段（group_kind: 'trial' / 'new' / 'repurchase'）
  *
  * 参数顺序：$1=startDate, $2=endDate, $3=threshold, $4...=scope params
- *   daily_agg WHERE: purchase_date <= $2（全历史下界）
+ *   daily_agg WHERE: performance_date <= $2（全历史下界）
  *   period_agg WHERE: BETWEEN $1 AND $2
  */
 async function cycleStats(ctx) {
@@ -229,22 +229,21 @@ async function cycleStats(ctx) {
   // scope params 起始下标 $4
   const sc = buildSaleScope(scopeType, scopeId, 'so', 4)
   const params = [startDate, endDate, threshold, ...sc.params]
-  const purchaseDateSql = 'COALESCE(so.sale_order_datetime, so.paid_at)::date'
-
   const sql = `
     WITH daily_agg AS (
       SELECT so.client_user_id,
              so.store_id,
              pc.product_kind,
-             ${purchaseDateSql}         AS purchase_date,
-             SUM(si.received::numeric)  AS day_received,
+             sipe.performance_date       AS purchase_date,
+             SUM(sipe.amount::numeric)   AS day_received,
              COALESCE(
-               SUM(si.received::numeric) FILTER (
+               SUM(sipe.amount::numeric) FILTER (
                  WHERE so.sale_order_type IN ('销售单','转换单')
                ),
                0
              )                           AS purchase_received
-        FROM sale_items si
+        FROM sale_item_performance_events sipe
+        JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
         JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
         JOIN product_skus sk ON sk.sku_id = si.sku_id
         JOIN product_categories pc ON pc.category_id = sk.category_id
@@ -253,9 +252,9 @@ async function cycleStats(ctx) {
          AND so.status NOT IN ('已关闭','已作废','未审核','待审批','支付失败')
          AND so.client_user_id IS NOT NULL
          AND pc.product_kind IS NOT NULL
-         AND ${purchaseDateSql} <= $2
-       GROUP BY so.client_user_id, so.store_id, pc.product_kind, ${purchaseDateSql}
-      HAVING SUM(si.received::numeric) > 0
+         AND sipe.performance_date <= $2
+       GROUP BY so.client_user_id, so.store_id, pc.product_kind, sipe.performance_date
+      HAVING SUM(sipe.amount::numeric) > 0
     ),
     qualifying_days AS (
       SELECT client_user_id, store_id, product_kind, purchase_date
