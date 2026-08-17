@@ -62,6 +62,7 @@ export const UI_ACTION_DEPENDENCIES: Readonly<Record<string, readonly string[]>>
 
   'sale_order:create': ['employee:list', 'store:list'],
   'sale_order:update': ['sale_order:list'],
+  'sale_order:performance_attribution_update': ['sale_order:list'],
   'sale_order:record_payment': ['sale_order:list'],
   'sale_order:deposit_approve': ['sale_order:list'],
   'sale_order:delete': ['sale_order:list'],

@@ -5,6 +5,7 @@ import { pollPaymentConfirm, PaymentPoller } from '../utils/payment-poll';
 import {
   recomputeAmounts,
   decideConfirmRoute,
+  restorePendingPrepaid,
   PayMethod,
 } from './scan-pay.logic';
 
@@ -17,6 +18,7 @@ interface ScanOrder {
   orderType: string;
   totalAmount: number;
   prepaidCardAmount: number;
+  pendingPrepaidCardAmount: number;
   // 2026-04-26 sale-order-domain-refactor:
   //   - paidAmount 字段（来自旧 paid_amount 列）已删除
   //   - 后端 scanDetail 现返回 received / refundedAmount / payableAmount
@@ -27,6 +29,7 @@ interface ScanOrder {
   firstPaymentAmount: number | null;
   paymentMethod: PayMethod;
   couponDiscount: number;
+  isExperienceConversion: boolean;
 }
 
 interface ScanOrderItem {
@@ -41,6 +44,17 @@ interface ScanOrderItem {
   unit: string;
   received: number;
   coverImage: string;
+}
+
+interface WechatPaymentAttempt {
+  key: string;
+  paymentParams: any;
+}
+
+interface AlipayPaymentAttempt {
+  key: string;
+  shareToken: string;
+  amount: string;
 }
 
 Page({
@@ -66,8 +80,10 @@ Page({
     firstPaymentAmount: 0,
     // 当前扫码是否是首次扫（received === 0 && firstPaymentAmount > 0）
     isFirstPartialScan: false,
-    // 回款（部分支付订单）：储值卡由店员先扣，顾客只付现金尾款 → 隐藏抵扣区+线下，方式限微信/支付宝
+    // 回款（部分支付订单）：普通回款可选卡；员工冻结金额的受限回款禁卡，方式限微信/支付宝。
     isRepayment: false,
+    // 员工冻结 first_payment_amount 的受限回款：本场次不允许顾客再选储值卡。
+    isRestrictedRepayment: false,
     showPayMethodGroup: true,
     // 2026-05-19 dirty-read 修复：余额版本号（来自 scanAdjust.balanceSnapshot.updatedAt）
     // confirmPrepaidFull 时回传，后端 FOR UPDATE 锁后比对，不一致 → CONFLICT
@@ -81,6 +97,10 @@ Page({
 
   // 支付结果轮询器（issue #37）；onUnload 清理防内存泄漏
   _poller: null as PaymentPoller | null,
+  // 同一页面内复用已创建的第三方支付场次。微信支付面板被用户取消并不代表
+  // 拉卡拉 preorder 失效，重复请求后端只会命中 PAYMENT_INTENT_ACTIVE。
+  _wechatAttempt: null as WechatPaymentAttempt | null,
+  _alipayAttempt: null as AlipayPaymentAttempt | null,
 
   onLoad(options) {
     const { scene, orderNo, saleOrderId } = options as { scene?: string; orderNo?: string; saleOrderId?: string };
@@ -97,12 +117,14 @@ Page({
   },
 
   async loadOrder(saleOrderId: string) {
+    this._wechatAttempt = null;
+    this._alipayAttempt = null;
     this.setData({ isLoading: true, errorMsg: '', statusMsg: '' });
     try {
-      // 并行：订单详情 + 储值卡余额
+      // 并行读取；余额失败时不能把“不可信”当 0 后继续调起第三方渠道。
       const [data, balanceData] = await Promise.all([
         callClientApi<{ order?: any; items?: any[]; statusMsg?: string }>('order.scanDetail', { saleOrderId }),
-        callClientApi<{ balance: number; cardId: string | null }>('card.balance', {}).catch(() => ({ balance: 0, cardId: null })),
+        callClientApi<{ balance: number; cardId: string | null }>('card.balance', {}),
       ]);
 
       // 非待支付订单：显示状态提示
@@ -113,35 +135,80 @@ Page({
 
       const orderData = data.order || {};
       const totalAmount = Number(orderData.totalAmount || 0);
-      const prepaid = Number(orderData.prepaidCardAmount || 0);
+      const actualPrepaid = Number(orderData.prepaidCardAmount || 0);
+      let pendingPrepaid = Number(orderData.pendingPrepaidCardAmount || 0);
+      const cardBalance = Number(balanceData.balance || 0);
+      let balanceUpdatedAt: string | null = null;
+
+      // 历史 pending 只能按 min(pending, 当前余额) 恢复。余额下降时立即同步服务端，
+      // 确保随后现金应付额和 payNotify 待扣卡额来自同一份新快照。
+      const restoredPending = restorePendingPrepaid(pendingPrepaid, cardBalance);
+      if (orderData.status === '待支付'
+          && pendingPrepaid > 0
+          && Math.round(restoredPending * 100) !== Math.round(pendingPrepaid * 100)) {
+        const validMethods: PayMethod[] = ['微信', '支付宝', '线下'];
+        const syncMethod: PayMethod = validMethods.includes(orderData.paymentMethod)
+          ? orderData.paymentMethod as PayMethod
+          : '微信';
+        const adjusted = await callClientApi<{
+          prepaidCardAmount: number;
+          paidAmount: number;
+          paymentMethod: PayMethod;
+          balanceSnapshot?: { updatedAt?: string } | null;
+        }>('order.scanAdjust', {
+          saleOrderId,
+          useCard: restoredPending > 0,
+          prepaidCardAmount: restoredPending > 0 ? restoredPending : undefined,
+          paymentMethod: syncMethod,
+        });
+        pendingPrepaid = Number(adjusted.prepaidCardAmount || 0);
+        orderData.pendingPrepaidCardAmount = pendingPrepaid;
+        orderData.payableAmount = Number(adjusted.paidAmount || 0);
+        orderData.paymentMethod = adjusted.paymentMethod;
+        balanceUpdatedAt = adjusted.balanceSnapshot?.updatedAt || null;
+      }
+
+      // 待支付阶段恢复预选抵扣；真正扣卡后才读实际储值卡实付。
+      const prepaid = pendingPrepaid > 0 ? pendingPrepaid : actualPrepaid;
       // 2026-04-26 sale-order-domain-refactor:
       //   - paid_amount → received（已到账）；本次应付实金 = payable - 净到账
-      //   - 兜底：payableAmount 缺失时按 total - prepaid 推算（与后端兜底逻辑一致）
+      //   - 兜底：payableAmount 缺失时按 total - 实际储值卡 - 待扣储值卡推算
       const received = Number(orderData.received || 0);
       const refundedAmount = Number(orderData.refundedAmount || 0);
-      const payable = Number(orderData.payableAmount) > 0
+      const payable = orderData.payableAmount != null && Number.isFinite(Number(orderData.payableAmount))
         ? Number(orderData.payableAmount)
-        : Math.round((totalAmount - prepaid) * 100) / 100;
+        : Math.round((totalAmount - actualPrepaid - pendingPrepaid) * 100) / 100;
       // 回款（部分支付）用行级口径：已退行不计入，只有「未退且未付清」的行可继续支付；
       // 首次支付（待支付）无退款，沿用订单级 payable - 净到账（行级 Σ 未扣储值卡意向，首次场景不适用）
       const isRepayment = orderData.status === '部分支付';
       let remaining;
       if (isRepayment) {
-        const scanItems: any[] = Array.isArray(orderData.items) ? orderData.items : [];
-        let sum = 0;
-        for (const i of scanItems) {
-          if (Number(i.refundedAmount || 0) > 0) continue;
-          sum += Math.max(0, Number(i.saleAmount || 0) - Number(i.received || 0));
+        if (orderData.orderType === '转换单') {
+          remaining = Math.max(0, Math.round((totalAmount - received + refundedAmount) * 100) / 100);
+        } else {
+          const scanItems: any[] = Array.isArray(data.items) ? data.items : [];
+          if (scanItems.length === 0) {
+            // 明细暂未返回时使用订单级净应付兜底，避免把仍有欠款的订单误算为 0。
+            remaining = Math.max(0, Math.round((payable - received + refundedAmount) * 100) / 100);
+          } else {
+            let sum = 0;
+            for (const i of scanItems) {
+              if (Number(i.refundedAmount || 0) > 0) continue;
+              sum += Math.max(0, Number(i.saleAmount || 0) - Number(i.received || 0));
+            }
+            remaining = Math.round(sum * 100) / 100;
+          }
         }
-        remaining = Math.round(sum * 100) / 100;
       } else {
         const netReceived = Math.round((received - refundedAmount) * 100) / 100;
         remaining = Math.max(0, Math.round((payable - netReceived) * 100) / 100);
       }
       const firstPaymentAmount = Number(orderData.firstPaymentAmount || 0);
-      // 首次扫码（received === 0）且 admin 设置了 firstPaymentAmount：本次只收首付
+      // first_payment_amount 是服务端冻结的本次在线收款上限：既用于首次首付，
+      // 也用于员工在部分支付转换单上发起的订单级部分回款。
       const isFirstPartialScan = firstPaymentAmount > 0 && received === 0;
-      const paid = isFirstPartialScan
+      const isRestrictedRepayment = isRepayment && firstPaymentAmount > 0;
+      const paid = firstPaymentAmount > 0
         ? Math.min(firstPaymentAmount, remaining)
         : remaining;
       const couponDiscount = Number(orderData.couponDiscount || 0);
@@ -149,7 +216,7 @@ Page({
       const restoredMethod = validMethods.includes(orderData.paymentMethod)
         ? (orderData.paymentMethod as PayMethod)
         : '微信';
-      // 回款场景：部分支付订单（已有首付到账，扫码付剩余应付）。储值卡由店员先扣，顾客侧不再自选储值卡；方式限微信/支付宝
+      // 回款场景：部分支付订单（已有首付到账，扫码付剩余应付）；受限回款由 isRestrictedRepayment 禁卡。
       // （isRepayment 已在上方 remaining 计算前定义）
       const effectiveMethod: PayMethod = isRepayment && restoredMethod === '线下' ? '微信' : restoredMethod;
 
@@ -157,7 +224,8 @@ Page({
         order: {
           ...orderData,
           totalAmount,
-          prepaidCardAmount: prepaid,
+          prepaidCardAmount: actualPrepaid,
+          pendingPrepaidCardAmount: pendingPrepaid,
           payableAmount: payable,
           received,
           refundedAmount,
@@ -166,7 +234,7 @@ Page({
           couponDiscount,
         },
         items: data.items || [],
-        cardBalance: Number(balanceData?.balance || 0),
+        cardBalance,
         useCard: isRepayment ? false : prepaid > 0,
         prepaidCardAmount: isRepayment ? 0 : prepaid,
         paidAmount: paid,
@@ -177,7 +245,9 @@ Page({
         firstPaymentAmount,
         isFirstPartialScan,
         isRepayment,
+        isRestrictedRepayment,
         showPayMethodGroup: paid > 0,
+        balanceUpdatedAt,
       });
     } catch (err: any) {
       this.setData({ errorMsg: err.message || '加载订单信息失败，请稍后重试' });
@@ -208,11 +278,17 @@ Page({
   /** 同步当前抵扣方案到后端（不阻塞 UI）
    *  2026-05-19 dirty-read 修复：从 scanAdjust 响应中提取 balanceSnapshot.updatedAt 写入 data，供 confirmPrepaidFull 校验
    */
-  async pushAdjust(useCard: boolean, paidAmount: number, paymentMethod: PayMethod): Promise<void> {
+  async pushAdjust(
+    useCard: boolean,
+    paidAmount: number,
+    paymentMethod: PayMethod,
+    prepaidCardAmount?: number,
+  ): Promise<void> {
     try {
       const res = await callClientApi<{ balanceSnapshot?: { updatedAt?: string } | null }>('order.scanAdjust', {
         saleOrderId: this.data.orderNo,
         useCard,
+        ...(useCard && prepaidCardAmount != null ? { prepaidCardAmount } : {}),
         paymentMethod: paidAmount > 0 ? paymentMethod : undefined,
       });
       const updatedAt = res && res.balanceSnapshot ? res.balanceSnapshot.updatedAt || null : null;
@@ -225,32 +301,48 @@ Page({
 
   /** 储值卡开关 */
   async onUseCardChange(e: WxEvent<boolean>) {
+    if (this.data.isRestrictedRepayment) {
+      this.setData({ useCard: false, prepaidCardAmount: 0 });
+      return;
+    }
     const useCard = !!e.detail;
     if (useCard && this.data.cardBalance <= 0) {
       // 余额为 0：拦截开启
       return;
     }
-    const { paidAmount } = this.applyRecompute(useCard);
+    if (useCard !== this.data.useCard) {
+      this._wechatAttempt = null;
+      this._alipayAttempt = null;
+    }
+    const { paidAmount, prepaidCardAmount } = this.applyRecompute(useCard);
     // 回款场景不走 scanAdjust（仅支持待支付）；储值卡抵扣随 order.repay 一次性提交
     if (this.data.isRepayment) return;
-    await this.pushAdjust(useCard, paidAmount, this.data.paymentMethod).catch(() => {});
+    await this.pushAdjust(useCard, paidAmount, this.data.paymentMethod, prepaidCardAmount).catch(() => {});
   },
 
   /** 支付方式选择 */
   async onPayMethodChange(e: WxEvent<string>) {
     const method = e.detail as PayMethod;
+    if (method !== this.data.paymentMethod) {
+      this._wechatAttempt = null;
+      this._alipayAttempt = null;
+    }
     this.setData({ paymentMethod: method });
     // 回款不预同步抵扣方案（不动部分支付订单的储值卡快照）；方式由 pay/alipayPay 自行落库
     if (!this.data.isRepayment && this.data.paidAmount > 0) {
-      await this.pushAdjust(this.data.useCard, this.data.paidAmount, method).catch(() => {});
+      await this.pushAdjust(this.data.useCard, this.data.paidAmount, method, this.data.prepaidCardAmount).catch(() => {});
     }
   },
 
   onPayMethodTap(e: WechatMiniprogram.TouchEvent) {
     const { method } = e.currentTarget.dataset as { method: PayMethod };
+    if (method !== this.data.paymentMethod) {
+      this._wechatAttempt = null;
+      this._alipayAttempt = null;
+    }
     this.setData({ paymentMethod: method });
     if (!this.data.isRepayment && this.data.paidAmount > 0) {
-      this.pushAdjust(this.data.useCard, this.data.paidAmount, method).catch(() => {});
+      this.pushAdjust(this.data.useCard, this.data.paidAmount, method, this.data.prepaidCardAmount).catch(() => {});
     }
   },
 
@@ -265,12 +357,17 @@ Page({
    */
   async confirmAndRedirect(orderNo: string) {
     Toast.loading({ message: '支付结果确认中', forbidClick: true, duration: 0 });
-    const poller = pollPaymentConfirm(orderNo);
+    const poller = pollPaymentConfirm(orderNo, {
+      baselineReceived: Number(this.data.order?.received || 0),
+      expectedFirstPaymentAmount: this.data.firstPaymentAmount > 0
+        ? this.data.firstPaymentAmount
+        : undefined,
+    });
     this._poller = poller;
     try {
       const r = await poller.promise;
       Toast.clear();
-      if (r.status === '已支付' || r.status === '部分支付') {
+      if (r.sessionCompleted) {
         Toast.success('支付成功');
         setTimeout(() => {
           wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${orderNo}` });
@@ -320,6 +417,10 @@ Page({
       if (lower.includes('requestpayment:fail') && lower.includes('cancel')) {
         return;
       }
+      if (errorType === 'PAYMENT_INTENT_CARD_BALANCE_BLOCKED') {
+        Toast.fail(msg || '储值卡余额不足，当前支付场次已保留');
+        return;
+      }
       // 微信封禁/限制小程序支付能力（banned / 违反平台规则 / no permission / access denied）：
       // 引导改用「到店付款」，或让顾客在其本人小程序内用支付宝支付。
       if (['banned', 'platform rules', 'violated', '违规', '违反', 'no permission', 'access denied']
@@ -345,12 +446,38 @@ Page({
     }
   },
 
+  /**
+   * 复用已创建的渠道场次前重新确认待扣卡余额。这里只阻止调起渠道，不修改订单支付计划，
+   * 因而余额恢复后仍可继续复用同一 paymentParams / share token。
+   */
+  async assertCachedAttemptCardBalance(pendingAmount: number): Promise<void> {
+    const expected = Math.round(Math.max(0, Number(pendingAmount) || 0) * 100) / 100;
+    if (expected <= 0) return;
+
+    let balanceData: { balance: number; cardId: string | null };
+    try {
+      balanceData = await callClientApi<{ balance: number; cardId: string | null }>('card.balance', {});
+    } catch (_err) {
+      const err: any = new Error('储值卡余额暂时无法确认，当前支付场次已保留，请稍后重试');
+      err.errorType = 'PAYMENT_INTENT_CARD_BALANCE_BLOCKED';
+      throw err;
+    }
+    const current = Math.round(Math.max(0, Number(balanceData?.balance) || 0) * 100) / 100;
+    this.setData({ cardBalance: current });
+    if (current + 0.001 < expected) {
+      const err: any = new Error(`储值卡余额不足（需 ¥${expected.toFixed(2)}），当前支付场次已保留`);
+      err.errorType = 'PAYMENT_INTENT_CARD_BALANCE_BLOCKED';
+      throw err;
+    }
+  },
+
   /** 根据当前 paid/method 路由到对应支付端点 */
   async executeConfirm(): Promise<void> {
-    const { orderNo, paidAmount, paymentMethod, balanceUpdatedAt, firstPaymentAmount, isFirstPartialScan } = this.data;
+    const { orderNo, paidAmount, paymentMethod, balanceUpdatedAt, firstPaymentAmount } = this.data;
 
-    // 回款（部分支付）走 order.repay：支持储值卡抵扣尾款 + 微信/支付宝付差额（线下在回款隐藏）
-    if (this.data.isRepayment) {
+    // 普通回款走 order.repay；员工已冻结 first_payment_amount 的转换单部分回款
+    // 改走 pay/alipayPay，复用其服务端硬上限并允许本次金额小于整笔剩余欠款。
+    if (this.data.isRepayment && firstPaymentAmount <= 0) {
       await this.executeRepayConfirm();
       return;
     }
@@ -381,11 +508,26 @@ Page({
 
     if (route === 'alipayPay') {
       // 聚合主扫支付宝：后端串调 preorder(41) + share_code 返回吱口令；订单状态由 payNotify 异步推进
-      const aliData = await callClientApi<{ status?: string; reason?: string; alipayShareToken?: string; paidAmount?: number }>(
-        'order.alipayPay', { saleOrderId: orderNo },
-      );
+      const aliAmount = firstPaymentAmount > 0 ? firstPaymentAmount : paidAmount;
+      const attemptKey = `order.alipayPay|${orderNo}|${aliAmount}`;
+      let aliData: { status?: string; reason?: string; alipayShareToken?: string; paidAmount?: number };
+      if (this._alipayAttempt?.key === attemptKey) {
+        await this.assertCachedAttemptCardBalance(Number(this.data.order?.pendingPrepaidCardAmount || 0));
+        aliData = {
+          alipayShareToken: this._alipayAttempt.shareToken,
+          paidAmount: Number(this._alipayAttempt.amount),
+        };
+      } else {
+        aliData = await callClientApi(
+          'order.alipayPay', {
+            saleOrderId: orderNo,
+            ...(firstPaymentAmount > 0 ? { payAmount: firstPaymentAmount } : {}),
+          },
+        );
+      }
       // 防御性短路：后端识别为全额储值卡抵扣 → 直接跳详情页
       if (aliData?.status === '已支付' || aliData?.reason === 'prepaid_card_full') {
+        this._alipayAttempt = null;
         Toast.success('已使用储值卡支付');
         setTimeout(() => {
           wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${orderNo}` });
@@ -397,10 +539,15 @@ Page({
         Toast.fail('支付宝吱口令获取失败');
         return;
       }
+      this._alipayAttempt = {
+        key: attemptKey,
+        shareToken,
+        amount: Number(aliData?.paidAmount || paidAmount).toFixed(2),
+      };
       this.setData({
         showAlipayShare: true,
         alipayShareToken: shareToken,
-        alipayAmount: Number(aliData?.paidAmount || paidAmount).toFixed(2),
+        alipayAmount: this._alipayAttempt.amount,
       });
       return;
     }
@@ -408,16 +555,30 @@ Page({
     // wechatPay：聚合主扫直接拿 wx.requestPayment 5 字段
     // 首付场景下显式传 payAmount，后端按约束扣款 + 清空 first_payment_amount；后续扫码默认按剩余应付走
     const payPayload: { saleOrderId: string; payAmount?: number } = { saleOrderId: orderNo };
-    if (isFirstPartialScan && firstPaymentAmount > 0) {
+    if (firstPaymentAmount > 0) {
       payPayload.payAmount = firstPaymentAmount;
     }
-    const data = await callClientApi<{ paymentParams?: any }>('order.pay', payPayload);
-    const payParams = data.paymentParams;
+    const attemptAmount = firstPaymentAmount > 0 ? firstPaymentAmount : paidAmount;
+    const attemptKey = `order.pay|${orderNo}|${attemptAmount}`;
+    const cachedWechatAttempt = this._wechatAttempt?.key === attemptKey ? this._wechatAttempt : null;
+    const reusingWechatAttempt = !!cachedWechatAttempt;
+    let payParams = cachedWechatAttempt?.paymentParams || null;
+    if (!payParams) {
+      const data = await callClientApi<{ paymentParams?: any }>('order.pay', payPayload);
+      payParams = data.paymentParams;
+      if (payParams?.paySign) {
+        this._wechatAttempt = { key: attemptKey, paymentParams: payParams };
+      }
+    }
     if (!payParams || !payParams.paySign) {
       Toast.fail('支付参数获取失败');
       return;
     }
+    if (reusingWechatAttempt) {
+      await this.assertCachedAttemptCardBalance(Number(this.data.order?.pendingPrepaidCardAmount || 0));
+    }
     await wx.requestPayment(payParams);
+    this._wechatAttempt = null;
     await this.confirmAndRedirect(orderNo);
   },
 
@@ -448,17 +609,29 @@ Page({
 
     // 支付宝：聚合主扫吱口令（可叠加储值卡抵扣）
     if (paymentMethod === '支付宝') {
-      const aliData = await callClientApi<{ alipayShareToken?: string }>('order.repay', {
-        saleOrderId: orderNo,
-        paymentMethod: '支付宝',
-        repayAmount: paidAmount,
-        prepaidCardAmount,
-      });
+      const attemptKey = `order.repay.alipay|${orderNo}|${paidAmount}|${prepaidCardAmount}`;
+      let aliData: { alipayShareToken?: string };
+      if (this._alipayAttempt?.key === attemptKey) {
+        await this.assertCachedAttemptCardBalance(prepaidCardAmount);
+        aliData = { alipayShareToken: this._alipayAttempt.shareToken };
+      } else {
+        aliData = await callClientApi<{ alipayShareToken?: string }>('order.repay', {
+          saleOrderId: orderNo,
+          paymentMethod: '支付宝',
+          repayAmount: paidAmount,
+          prepaidCardAmount,
+        });
+      }
       const shareToken = aliData?.alipayShareToken;
       if (!shareToken) {
         Toast.fail('支付宝吱口令获取失败');
         return;
       }
+      this._alipayAttempt = {
+        key: attemptKey,
+        shareToken,
+        amount: Number(paidAmount).toFixed(2),
+      };
       this.setData({
         showAlipayShare: true,
         alipayShareToken: shareToken,
@@ -468,18 +641,31 @@ Page({
     }
 
     // 微信：聚合主扫 wx.requestPayment（可叠加储值卡抵扣）
-    const data = await callClientApi<{ paymentParams?: any }>('order.repay', {
-      saleOrderId: orderNo,
-      paymentMethod: '微信',
-      repayAmount: paidAmount,
-      prepaidCardAmount,
-    });
-    const payParams = data.paymentParams;
+    const attemptKey = `order.repay.wechat|${orderNo}|${paidAmount}|${prepaidCardAmount}`;
+    const cachedWechatAttempt = this._wechatAttempt?.key === attemptKey ? this._wechatAttempt : null;
+    const reusingWechatAttempt = !!cachedWechatAttempt;
+    let payParams = cachedWechatAttempt?.paymentParams || null;
+    if (!payParams) {
+      const data = await callClientApi<{ paymentParams?: any }>('order.repay', {
+        saleOrderId: orderNo,
+        paymentMethod: '微信',
+        repayAmount: paidAmount,
+        prepaidCardAmount,
+      });
+      payParams = data.paymentParams;
+      if (payParams?.paySign) {
+        this._wechatAttempt = { key: attemptKey, paymentParams: payParams };
+      }
+    }
     if (!payParams || !payParams.paySign) {
       Toast.fail('支付参数获取失败');
       return;
     }
+    if (reusingWechatAttempt) {
+      await this.assertCachedAttemptCardBalance(prepaidCardAmount);
+    }
     await wx.requestPayment(payParams);
+    this._wechatAttempt = null;
     await this.confirmAndRedirect(orderNo);
   },
 
@@ -496,6 +682,8 @@ Page({
         // 旧版本号已失效，重置；用户重新调 pushAdjust 时会再写入
         balanceUpdatedAt: null,
       });
+      this._wechatAttempt = null;
+      this._alipayAttempt = null;
     } catch (_e) {
       // 拉余额失败时 UI 保留旧值，不阻塞提示
     }
@@ -517,6 +705,8 @@ Page({
 
     if (res.confirm) {
       // 关闭抵扣 → scanAdjust(useCard=false) → 重新执行 confirm
+      this._wechatAttempt = null;
+      this._alipayAttempt = null;
       const { paidAmount } = this.applyRecompute(false);
       await this.pushAdjust(false, paidAmount, this.data.paymentMethod).catch(() => {});
       await this.executeConfirm();
@@ -544,6 +734,7 @@ Page({
 
   onAlipayShareDone() {
     this.setData({ showAlipayShare: false });
+    this._alipayAttempt = null;
     this.confirmAndRedirect(this.data.orderNo);
   },
 

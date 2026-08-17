@@ -129,7 +129,7 @@ describe('parseHttpTriggerEvent 聚合主扫', () => {
     expect(res.statusCode).not.toBe(400)
     // 业务层 SELECT 用剥离后的 saleOrderId 'FY-XSD-WX-2604240001' 查
     const lastCall = mockPoolQuery.mock.calls[mockPoolQuery.mock.calls.length - 1]
-    expect(lastCall[1]).toEqual(['FY-XSD-WX-2604240001'])  // _1700000000 后缀已剥离
+    expect(lastCall[1][0]).toBe('FY-XSD-WX-2604240001')  // _1700000000 后缀已剥离
   })
 
   test('trade_state=REFUND → ack SUCCESS 跳过业务（不进 payNotify 主流程）', async () => {
@@ -162,7 +162,7 @@ describe('parseHttpTriggerEvent 聚合主扫', () => {
     expect(body.message).toMatch(/退款回调/)
   })
 
-  test.each(['INIT', 'CREATE', 'FAIL', 'DEAL', 'UNKNOWN', 'CLOSE'])(
+  test.each(['INIT', 'CREATE', 'DEAL', 'UNKNOWN'])(
     'trade_state=%s → ack SUCCESS 跳过业务（等下次成功回调）',
     async (state) => {
       const { main } = loadFreshIndex()
@@ -176,6 +176,41 @@ describe('parseHttpTriggerEvent 聚合主扫', () => {
       expect(body.message).toContain('非成功状态')
     }
   )
+
+  test.each(['FAIL', 'CLOSE'])(
+    'trade_state=%s → 按当前 out_trade_no CAS 释放后 ack',
+    async (state) => {
+      const { main } = loadFreshIndex()
+      const event = makeHttpEvent({
+        out_trade_no: 'FY-XSD-WX-001_1700000000', trade_no: 'LAK-T-001',
+        trade_state: state, account_type: 'WECHAT',
+      })
+      const res = await main(event)
+      expect(JSON.parse(res.body).code).toBe('SUCCESS')
+      const release = mockPoolQuery.mock.calls.find(([sql]) => /SET lakala_out_order_no = NULL/.test(sql))
+      expect(release).toBeDefined()
+      expect(release[1]).toEqual(['FY-XSD-WX-001', 'FY-XSD-WX-001_1700000000'])
+    }
+  )
+
+  test('非 HTTP callFunction 伪造终态字段 → 拒绝且不清理活动意图', async () => {
+    const { main } = loadFreshIndex()
+    mockPoolQuery.mockClear()
+
+    const res = await main({
+      orderNo: 'FY-XSD-WX-001_1700000000',
+      tradeState: 'CLOSE',
+      _lakalaTerminalPayment: true,
+      _httpEntry: true,
+    })
+
+    expect(res).toEqual({
+      code: -403,
+      message: 'PERMISSION_DENIED: LAKALA_TERMINAL_CALLBACK_HTTP_ONLY',
+      data: null,
+    })
+    expect(mockPoolQuery).not.toHaveBeenCalled()
+  })
 
   test('account_type=ALIPAY → 验签 + 字段映射通过（落业务层后 paymentMethod=支付宝）', async () => {
     const { main } = loadFreshIndex()
@@ -255,6 +290,6 @@ describe('parseHttpTriggerEvent 聚合主扫', () => {
     expect(res.statusCode).not.toBe(403)
     // 业务层 SELECT 用剥离后的 saleOrderId 查
     const lastCall = mockPoolQuery.mock.calls[mockPoolQuery.mock.calls.length - 1]
-    expect(lastCall[1]).toEqual(['FY-XSD-WX-2604240001'])
+    expect(lastCall[1][0]).toBe('FY-XSD-WX-2604240001')
   })
 })

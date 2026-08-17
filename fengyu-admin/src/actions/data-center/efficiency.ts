@@ -81,21 +81,13 @@ function ratio(num: number | null, den: number | null): number | null {
   return num / den
 }
 
-function paidAllocationDateBetween(
-  paymentAlias: string,
-  orderAlias: string,
+function performanceEventDateBetween(
+  eventAlias: string,
   start: string,
   end: string,
 ) {
-  return sql`(
-    (${sql.raw(`${paymentAlias}.id`)} IS NOT NULL
-      AND ${sql.raw(`${paymentAlias}.status`)} = '已支付'
-      AND ${sql.raw(`${paymentAlias}.paid_at`)}::date BETWEEN ${start} AND ${end})
-    OR
-    (${sql.raw(`${paymentAlias}.id`)} IS NULL
-      AND ${sql.raw(`${orderAlias}.status`)} = '已支付'
-      AND ${sql.raw(`${orderAlias}.paid_at`)}::date BETWEEN ${start} AND ${end})
-  )`
+  return sql`${sql.raw(`${eventAlias}.status`)} = '已支付'
+    AND ${sql.raw(`${eventAlias}.performance_date`)} BETWEEN ${start} AND ${end}`
 }
 
 /** 行表 → store_id → value 映射 */
@@ -141,11 +133,11 @@ export const getEfficiencyBoard = withPermission(
       JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
       JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-      LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+      JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
       WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
         AND spia.is_void = FALSE
         AND so.sale_order_type IN ('销售单', '转换单')
-        AND ${paidAllocationDateBetween('sop', 'so', cur.start, cur.end)}
+        AND ${performanceEventDateBetween('spe', cur.start, cur.end)}
     `)
 
     /** 实耗（员工归属，全局合计）= SUM(unit_real_price * session_used) ∩ 已完成 */
@@ -166,11 +158,11 @@ export const getEfficiencyBoard = withPermission(
       JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
       JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-      LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+      JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
       WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
         AND spia.is_void = FALSE
         AND so.sale_order_type IN ('销售单', '转换单')
-        AND ${paidAllocationDateBetween('sop', 'so', cur.start, cur.end)}
+        AND ${performanceEventDateBetween('spe', cur.start, cur.end)}
     `)
 
     /** 服务提成（全局合计）= SUM(service_commissions.commission_amount) */
@@ -286,11 +278,11 @@ export const getEfficiencyBoard = withPermission(
       JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
       JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-      LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+      JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
       WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
         AND spia.is_void = FALSE
         AND so.sale_order_type IN ('销售单', '转换单')
-        AND ${paidAllocationDateBetween('sop', 'so', cur.start, cur.end)}
+        AND ${performanceEventDateBetween('spe', cur.start, cur.end)}
       GROUP BY so.store_id
     `)
 
@@ -326,11 +318,11 @@ export const getEfficiencyBoard = withPermission(
       JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
       JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-      LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+      JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
       WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
         AND spia.is_void = FALSE
         AND so.sale_order_type IN ('销售单', '转换单')
-        AND ${paidAllocationDateBetween('sop', 'so', cur.start, cur.end)}
+        AND ${performanceEventDateBetween('spe', cur.start, cur.end)}
       GROUP BY so.store_id
     `)
 
@@ -380,19 +372,17 @@ export const getEfficiencyBoard = withPermission(
 
     const qStoreRankRevenue = db.execute(sql`
       SELECT s.store_id, s.store_name, o.name AS market_name,
-        COALESCE(SUM(sop.amount::numeric), 0) AS value
+        COALESCE(SUM(spe.amount::numeric), 0) AS value
       FROM stores s
       JOIN org_nodes o_store ON s.org_node_id = o_store.id
       JOIN org_nodes o ON o_store.parent_id = o.id
-      LEFT JOIN sale_orders so
-        ON so.store_id = s.store_id
-        AND so.sale_order_type IN ('销售单', '转换单', '充值单')
-        AND so.legacy_source IS DISTINCT FROM 'workfine'
-      LEFT JOIN sale_order_payments sop
-        ON sop.sale_order_id = so.sale_order_id
-        AND sop.status = '已支付'
-        AND sop.change_type IN ('首次支付', '回款', '退款')
-        AND sop.paid_at::date BETWEEN ${cur.start} AND ${cur.end}
+      LEFT JOIN sale_order_performance_events spe
+        ON spe.store_id = s.store_id
+        AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+        AND spe.legacy_source IS DISTINCT FROM 'workfine'
+        AND spe.status = '已支付'
+        AND spe.change_type IN ('首次支付', '回款', '退款')
+        AND spe.performance_date BETWEEN ${cur.start} AND ${cur.end}
       WHERE ${scopeFilterSql(session, scope, 's.store_id')}
       GROUP BY s.store_id, s.store_name, o.name
       ORDER BY value DESC, s.store_name ASC
@@ -506,10 +496,10 @@ export const getEfficiencyBoard = withPermission(
         JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
         JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
         JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-        LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+        JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
         WHERE spia.is_void = FALSE
           AND so.sale_order_type IN ('销售单', '转换单')
-          AND ${paidAllocationDateBetween('sop', 'so', cur.start, cur.end)}
+          AND ${performanceEventDateBetween('spe', cur.start, cur.end)}
         GROUP BY spia.employee_id
       )
       SELECT pe.employee_id, pe.employee_name, pe.store_id, pe.store_name, pe.market_name,
@@ -585,10 +575,10 @@ export const getEfficiencyBoard = withPermission(
         JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
         JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
         JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-        LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+        JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
         WHERE spia.is_void = FALSE
           AND so.sale_order_type IN ('销售单', '转换单')
-          AND ${paidAllocationDateBetween('sop', 'so', cur.start, cur.end)}
+          AND ${performanceEventDateBetween('spe', cur.start, cur.end)}
         GROUP BY spia.employee_id
       ),
       service_comm AS (
@@ -633,10 +623,10 @@ export const getEfficiencyBoard = withPermission(
         JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
         JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
         JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-        LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+        JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
         WHERE spia.is_void = FALSE
           AND so.sale_order_type IN ('销售单', '转换单')
-          AND ${paidAllocationDateBetween('sop', 'so', cur.start, cur.end)}
+          AND ${performanceEventDateBetween('spe', cur.start, cur.end)}
         GROUP BY spia.employee_id
       ),
       consume_by_emp_cat AS (

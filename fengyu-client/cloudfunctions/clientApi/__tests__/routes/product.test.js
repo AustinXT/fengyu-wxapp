@@ -32,20 +32,39 @@ describe('product.categories', () => {
     const ctx = createNewUserCtx()
     await routes.categories(ctx)
 
-    expect(pg.query.mock.calls[0][0]).toContain('market_scope IS NULL')
+    expect(pg.query.mock.calls[0][0]).toContain('p.market_scope IS NULL')
+    expect(pg.query.mock.calls[0][0]).toContain('sk.market_scope IS NULL')
     expect(pg.query.mock.calls[0][1]).toEqual([])
   })
 
-  test('有市场绑定时包含 market_scope 参数', async () => {
+  test('有绑定门店时商品和 SKU 均按门店所属市场 ID 列表过滤', async () => {
     pg.query.mockResolvedValueOnce([])
 
     const ctx = createBoundCtx({}, { boundMarketName: '华东市场' })
     await routes.categories(ctx)
 
     const [calledSql, params] = pg.query.mock.calls[0]
-    expect(calledSql).toContain('market_scope')
+    expect(calledSql).toContain('p.market_scope')
+    expect(calledSql).toContain('sk.market_scope')
     expect(calledSql).toContain('FROM stores s')
-    expect(params).toEqual(['华东市场', ['store-001']])
+    expect(calledSql).toContain('pm.id = ANY')
+    expect(params).toEqual([['store-001'], ['store-001']])
+  })
+
+  test('无绑定门店但有市场名时兼容历史名称范围', async () => {
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx(
+      {},
+      { boundStoreId: null, boundStoreName: null, boundMarketName: '华东 市场' }
+    )
+    await routes.categories(ctx)
+
+    const [calledSql, params] = pg.query.mock.calls[0]
+    expect(calledSql).toContain("replace($1, ' ', '') = ANY")
+    expect(calledSql).toContain("replace($2, ' ', '') = ANY")
+    expect(calledSql).not.toContain('FROM stores s')
+    expect(params).toEqual(['华东 市场', '华东 市场'])
   })
 })
 
@@ -99,9 +118,11 @@ describe('product.spuList', () => {
     await routes.spuList(ctx)
 
     const [productSql, productParams] = pg.query.mock.calls[0]
+    expect(productSql).toContain('p.market_scope')
     expect(productSql).toContain('sk.market_scope')
     expect(productSql).toContain('FROM stores s')
-    expect(productParams).toEqual(['南昌凤御', 'cat-1', ['store-nanchang']])
+    expect(productSql).toContain('pm.id = ANY')
+    expect(productParams).toEqual([['store-nanchang'], 'cat-1', ['store-nanchang']])
 
     const [skuSql, skuParams] = pg.query.mock.calls[1]
     expect(skuSql).toContain('sk.market_scope')
@@ -208,6 +229,12 @@ describe('product.spuDetail', () => {
     )
     await routes.spuDetail(ctx)
 
+    const [productSql, productParams] = pg.query.mock.calls[0]
+    expect(productSql).toContain('p.market_scope')
+    expect(productSql).toContain('FROM stores s')
+    expect(productSql).toContain('pm.id = ANY')
+    expect(productParams).toEqual(['p1', ['store-nanchang']])
+
     const [skuSql, skuParams] = pg.query.mock.calls[1]
     expect(skuSql).toContain('sk.market_scope')
     expect(skuSql).toContain('FROM stores s')
@@ -242,9 +269,10 @@ describe('product.hotList', () => {
     expect(ctx.result.spuList[0].priceFrom).toBe(80)
 
     const [productSql, productParams] = pg.query.mock.calls[0]
+    expect(productSql).toContain('p.market_scope')
     expect(productSql).toContain('sk.market_scope')
     expect(productSql).toContain('FROM stores s')
-    expect(productParams).toEqual([3, '华东市场', ['store-001']])
+    expect(productParams).toEqual([3, ['store-001'], ['store-001']])
 
     const [skuSql, skuParams] = pg.query.mock.calls[1]
     expect(skuSql).toContain('sk.market_scope')
@@ -282,6 +310,10 @@ describe('product.shopInit', () => {
     expect(ctx.result.categories).toHaveLength(1)
     expect(ctx.result.spuList).toHaveLength(1)
     expect(ctx.result.spuList[0].product_id).toBe('p1')
+
+    expect(pg.query.mock.calls[0][0]).toContain('p.market_scope')
+    expect(pg.query.mock.calls[1][0]).toContain('p.market_scope')
+    expect(pg.query.mock.calls[2][0]).toContain('p.market_scope')
 
     const [skuSql, skuParams] = pg.query.mock.calls[3]
     expect(skuSql).toContain('sk.market_scope')

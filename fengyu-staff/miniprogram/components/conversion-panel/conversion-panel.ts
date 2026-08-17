@@ -89,6 +89,10 @@ Component({
             cardMaxDisplay: '0.00',
             remaining: 0,
             remainingDisplay: '0.00',
+            isExperienceConversion: false,
+            receivedAmountInput: '0.00',
+            receivedAmount: 0,
+            debtAmountDisplay: '0.00',
           });
           this.loadCards(val);
         } else {
@@ -173,6 +177,8 @@ Component({
     errorMsg: '',
     /** 活动勾选（panel 内自管，change 事件上报主页） */
     isActivity: false,
+    /** 体验转换：总价锁定为所选旧卡划卡价值，不补不退 */
+    isExperienceConversion: false,
     /** 充值卡抵扣（仅补差额 > 0 时可用）：开关 + 实际抵扣额 + 抵扣后应付 */
     useCard: false,
     cardAmountInput: '0.00',
@@ -181,6 +187,9 @@ Component({
     cardMaxDisplay: '0.00',
     remaining: 0,
     remainingDisplay: '0.00',
+    receivedAmountInput: '0.00',
+    receivedAmount: 0,
+    debtAmountDisplay: '0.00',
   },
 
   /**
@@ -196,6 +205,7 @@ Component({
     created(this: any) {
       this._requestSeq = 0;
       this._allCards = [];
+      this._receivedTouched = false;
     },
   },
 
@@ -399,6 +409,10 @@ Component({
         (source) => source.saleItemId,
       );
       const selectedIds = [...otherIds, ...selectedForGroup];
+      if (selectedIds.length === 0 && this.data.isExperienceConversion) {
+        this.setData({ isExperienceConversion: false });
+        this.triggerEvent('experiencechange', { value: false });
+      }
       const selectedSet = new Set(selectedIds);
       const cards = (this._allCards || []).map((item: HeldCard) => {
         const itemSources = item.sourceItems?.length ? item.sourceItems : [item];
@@ -457,7 +471,24 @@ Component({
      *   remaining = priceDiff - card（抵扣后仍需付现金）
      * remaining <= 0（全额抵扣）时清空 paymentMethod（无需选）。
      */
-    recalcCard(this: any) {
+    recalcCard(this: any, options: { preserveReceivedInput?: boolean } = {}) {
+      if (this.data.isExperienceConversion) {
+        this.setData({
+          useCard: false,
+          cardAmountInput: '0.00',
+          cardAmount: 0,
+          cardAmountDisplay: '0.00',
+          cardMaxDisplay: '0.00',
+          remaining: 0,
+          remainingDisplay: '0.00',
+          receivedAmountInput: '0.00',
+          receivedAmount: 0,
+          debtAmountDisplay: '0.00',
+          paymentMethod: null,
+        });
+        this._emitChange();
+        return;
+      }
       const diff = this.data.priceDiff as number;
       const balance = Math.max(0, Number(this.properties.cardBalance) || 0);
       const maxCard = Math.round(Math.min(balance, Math.max(0, diff)) * 100) / 100;
@@ -466,15 +497,26 @@ Component({
       const card = this.data.useCard ? Math.min(requestedAmount, maxCard) : 0;
       const cardRounded = Math.round(card * 100) / 100;
       const remaining = Math.max(0, Math.round((Math.max(0, diff) - cardRounded) * 100) / 100);
+      const inputReceived = Number(this.data.receivedAmountInput);
+      const receivedAmount = this._receivedTouched
+        ? Math.max(0, Math.min(Number.isFinite(inputReceived) ? inputReceived : 0, remaining))
+        : remaining;
       const update: Record<string, any> = {
         cardAmount: cardRounded,
         cardAmountDisplay: cardRounded.toFixed(2),
         cardMaxDisplay: maxCard.toFixed(2),
         remaining,
         remainingDisplay: remaining.toFixed(2),
+        receivedAmount: Math.round(receivedAmount * 100) / 100,
+        debtAmountDisplay: Math.max(0, Math.round((remaining - receivedAmount) * 100) / 100).toFixed(2),
       };
+      // bindinput 期间保留用户正在编辑的原始字符串，避免每个字符都被 toFixed(2)
+      // 覆盖并重置光标；仅失焦或其它金额重算场景格式化为两位小数。
+      if (!options.preserveReceivedInput) {
+        update.receivedAmountInput = (Math.round(receivedAmount * 100) / 100).toFixed(2);
+      }
       // 抵扣后无需付现金 → 清空支付方式
-      if (remaining <= 0 && this.data.paymentMethod) {
+      if (receivedAmount <= 0 && this.data.paymentMethod) {
         update.paymentMethod = null;
       }
       this.setData(update);
@@ -511,7 +553,7 @@ Component({
     onPaymentMethodTap(this: any, e: WechatMiniprogram.TouchEvent) {
       const method = e.currentTarget.dataset.method as string;
       if (!PAYMENT_METHODS.includes(method as PaymentMethod)) return;
-      if (this.data.remaining <= 0) return;
+      if (this.data.receivedAmount <= 0) return;
       this.setData({ paymentMethod: method as PaymentMethod });
       this._emitChange();
     },
@@ -519,7 +561,7 @@ Component({
     /** 转入项目店长特价输入：只上报父页面，金额重算由 order-create 统一处理 */
     onSaleAmountChange(this: any, e: WechatMiniprogram.CustomEvent) {
       const skuId = e.currentTarget.dataset.skuId as string;
-      if (!skuId) return;
+      if (!skuId || this.data.isExperienceConversion) return;
       this.triggerEvent('amountchange', {
         skuId,
         value: String(e.detail?.value ?? ''),
@@ -533,6 +575,34 @@ Component({
       this._emitChange();
     },
 
+    onToggleExperienceConversion(this: any, e: WechatMiniprogram.CustomEvent) {
+      const next = !!e.detail;
+      if (next && (this.data.selectedIds.length === 0 || !Array.isArray(this.properties.cartItems) || this.properties.cartItems.length === 0)) {
+        wx.showToast({ title: '请先选择折抵卡和转入项目', icon: 'none' });
+        return;
+      }
+      this._receivedTouched = false;
+      this.setData({
+        isExperienceConversion: next,
+        useCard: false,
+        cardAmountInput: '0.00',
+        paymentMethod: null,
+      });
+      this.triggerEvent('experiencechange', { value: next });
+      this.recalcCard();
+    },
+
+    onReceivedAmountInput(this: any, e: WechatMiniprogram.CustomEvent) {
+      this._receivedTouched = true;
+      this.setData({ receivedAmountInput: String(e.detail?.value ?? '') });
+      this.recalcCard({ preserveReceivedInput: true });
+    },
+
+    onReceivedAmountBlur(this: any) {
+      this._receivedTouched = true;
+      this.recalcCard();
+    },
+
     _emitChange() {
       this.triggerEvent('change', {
         selectedSaleItemIds: [...this.data.selectedIds],
@@ -541,6 +611,8 @@ Component({
         paymentMethod: this.data.paymentMethod,
         prepaidCardAmount: this.data.cardAmount,
         remaining: this.data.remaining,
+        receivedAmount: this.data.receivedAmount,
+        isExperienceConversion: this.data.isExperienceConversion,
         isActivity: this.data.isActivity,
       });
     },

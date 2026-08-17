@@ -47,6 +47,13 @@ export interface ConversionPanelProps {
   onCardAmountChange?: (v: string) => void
   /** 抵扣金额失焦，由父组件按统一口径钳制并格式化 */
   onCardAmountBlur?: () => void
+  isExperienceConversion: boolean
+  onExperienceConversionChange: (checked: boolean) => void
+  receivedAmountInput: string
+  receivedAmount: number
+  remainingPayable: number
+  onReceivedAmountChange: (value: string) => void
+  onReceivedAmountBlur: () => void
 }
 
 interface GroupedHeldCardCandidate extends HeldCardCandidate {
@@ -136,6 +143,13 @@ export function ConversionPanel({
   onToggleCard,
   onCardAmountChange,
   onCardAmountBlur,
+  isExperienceConversion,
+  onExperienceConversionChange,
+  receivedAmountInput,
+  receivedAmount,
+  remainingPayable,
+  onReceivedAmountChange,
+  onReceivedAmountBlur,
 }: ConversionPanelProps) {
   const [productKindFilter, setProductKindFilter] = useState("")
   const [categoryFilter, setCategoryFilter] = useState("")
@@ -354,8 +368,32 @@ export function ConversionPanel({
               </div>
             </div>
 
+            <div className="bg-white rounded border border-[var(--border)] p-3 flex items-center justify-between gap-4">
+              <div>
+                <div className="text-sm font-medium">体验转换</div>
+                <div className="text-xs text-[#999999] mt-0.5">按旧卡划卡价值锁定新项目价格，不补差、不退款</div>
+              </div>
+              <input
+                type="checkbox"
+                checked={isExperienceConversion}
+                disabled={selectedIds.length === 0 || totalIn <= 0}
+                onChange={(event) => onExperienceConversionChange(event.target.checked)}
+                className="h-4 w-4"
+              />
+            </div>
+
+            {isExperienceConversion && (
+              <div className="rounded border border-[#F0C7C3] bg-[#FFF7F6] p-3 text-sm">
+                <div className="flex justify-between">
+                  <span>体验转换订单价</span>
+                  <span className="font-semibold text-[var(--primary)]">¥{totalOut.toFixed(2)}</span>
+                </div>
+                <p className="text-xs text-[#999999] mt-1">应付与实付均为 ¥0.00；各转入项目由服务端按正常价格权重分摊。</p>
+              </div>
+            )}
+
             {/* 充值卡抵扣（仅补差额 > 0 时显示） */}
-            {priceDiff > 0 && (
+            {priceDiff > 0 && !isExperienceConversion && (
               <div className="bg-white rounded border border-[var(--border)] p-3">
                 <div className="flex items-center justify-between">
                   <div>
@@ -394,19 +432,37 @@ export function ConversionPanel({
               </div>
             )}
 
+            {remainingPayable > 0 && !isExperienceConversion && (
+              <div className="bg-white rounded border border-[var(--border)] p-3 space-y-2">
+                <label className="text-sm font-medium">本次实付金额</label>
+                <Input
+                  type="number"
+                  min="0"
+                  max={remainingPayable}
+                  step="0.01"
+                  value={receivedAmountInput}
+                  onChange={(event) => onReceivedAmountChange(event.target.value)}
+                  onBlur={onReceivedAmountBlur}
+                />
+                <p className="text-xs text-[#999999]">
+                  本次收款 ¥{receivedAmount.toFixed(2)}，剩余挂账 ¥{Math.max(0, remainingPayable - receivedAmount).toFixed(2)}
+                </p>
+              </div>
+            )}
+
             <div className="text-sm text-center">
-              {priceDiff > 0 && cardAmount > 0 && priceDiff - cardAmount <= 0.005 && (
+              {!isExperienceConversion && priceDiff > 0 && cardAmount > 0 && priceDiff - cardAmount <= 0.005 && (
                 <p className="text-[#3D8A5A] font-semibold">储值卡全额抵扣 ¥{cardAmount.toFixed(2)}，无需补款</p>
               )}
-              {priceDiff > 0 && priceDiff - cardAmount > 0.005 && (
+              {!isExperienceConversion && priceDiff > 0 && priceDiff - cardAmount > 0.005 && (
                 <p className="text-[#D94040] font-semibold">
                   {cardAmount > 0 ? `储值卡抵扣 ¥${cardAmount.toFixed(2)}，` : ''}还需支付 ¥{(priceDiff - cardAmount).toFixed(2)}
                 </p>
               )}
-              {priceDiff === 0 && (
+              {!isExperienceConversion && priceDiff === 0 && (
                 <p className="text-[#3D8A5A] font-semibold">折抵抵平，无需补款</p>
               )}
-              {priceDiff < 0 && (
+              {!isExperienceConversion && priceDiff < 0 && (
                 <p className="text-[#5E8BB3] font-semibold">
                   将充入储值卡 ¥{Math.abs(priceDiff).toFixed(2)}
                 </p>

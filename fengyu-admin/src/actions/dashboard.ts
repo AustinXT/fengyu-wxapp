@@ -10,7 +10,7 @@ import { withPermission } from '@/lib/with-permission'
  * 业务角色看板（manager/finance）零默认值。
  *
  * 2026-04-26 sale-order-domain-refactor（2026-08 现金流口径修订）：
- *   - 组织层级营业额改为 `SUM(sale_order_payments.amount)`，按 `sop.paid_at` 归期，
+ *   - 组织层级营业额读取 `sale_order_performance_events`：首次按订单归属日期，后续流水按真实发生日，
  *     仅纳入首次支付/回款/退款和销售单/转换单/充值单；储值卡抵扣排除
  *   - `sale_orders.received` / `refunded_amount` 仅作订单快照，不再作为组织层级业绩源
  *   - 客流（visitors）改为 service_orders[已完成]，与 staff mgmt-dashboard 对齐
@@ -75,9 +75,8 @@ export const getDashboardStats = withPermission('dashboard:view', async (session
     /**
      * 业绩 / 实付 / 已退款 / 待办。
      *
-     * 组织层级业绩改按付款流水净现金流：首次支付、回款、退款均按 sop.paid_at 归期，
-     * 包含充值单，排除储值卡抵扣。订单数量和待办保持独立聚合，避免 payment JOIN 放大计数。
-     * 时区统一 Asia/Shanghai：时间戳存的是北京墙钟字面，直接 ::date 取北京日期即可。
+     * 经营业绩按 performance_date；真实实付/退款仍按 paid_at，避免统计归属改写资金事实。
+     * 包含充值单，排除储值卡抵扣。订单数量和待办保持独立聚合。
      */
     const orderStats = await db.execute(sql`
       WITH tz_today AS (
@@ -89,54 +88,53 @@ export const getDashboardStats = withPermission('dashboard:view', async (session
       payment_metrics AS (
         SELECT
           COALESCE(SUM(CASE
-            WHEN sop.paid_at::date = (SELECT today FROM bounds)
-              AND sop.status = '已支付'
-              AND sop.change_type IN ('首次支付', '回款', '退款')
-              AND so.sale_order_type IN ('销售单', '转换单', '充值单')
-            THEN sop.amount::numeric
+            WHEN spe.performance_date = (SELECT today FROM bounds)
+              AND spe.status = '已支付'
+              AND spe.change_type IN ('首次支付', '回款', '退款')
+              AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+            THEN spe.amount::numeric
           END), 0) AS today_revenue,
           COALESCE(SUM(CASE
-            WHEN sop.paid_at::date = (SELECT today FROM bounds)
-              AND sop.status = '已支付'
-              AND sop.change_type IN ('首次支付', '回款')
-              AND sop.amount::numeric > 0
-              AND so.sale_order_type IN ('销售单', '转换单', '充值单')
-            THEN sop.amount::numeric
+            WHEN (spe.paid_at AT TIME ZONE 'Asia/Shanghai')::date = (SELECT today FROM bounds)
+              AND spe.status = '已支付'
+              AND spe.change_type IN ('首次支付', '回款')
+              AND spe.amount::numeric > 0
+              AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+            THEN spe.amount::numeric
           END), 0) AS today_paid_amount,
           COALESCE(SUM(CASE
-            WHEN sop.paid_at::date = (SELECT today FROM bounds)
-              AND sop.status = '已支付'
-              AND sop.change_type = '退款'
-              AND so.sale_order_type IN ('销售单', '转换单', '充值单')
-            THEN ABS(sop.amount::numeric)
+            WHEN (spe.paid_at AT TIME ZONE 'Asia/Shanghai')::date = (SELECT today FROM bounds)
+              AND spe.status = '已支付'
+              AND spe.change_type = '退款'
+              AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+            THEN ABS(spe.amount::numeric)
           END), 0) AS today_refunded_amount,
           COALESCE(SUM(CASE
-            WHEN sop.paid_at::date = (SELECT yesterday FROM bounds)
-              AND sop.status = '已支付'
-              AND sop.change_type IN ('首次支付', '回款', '退款')
-              AND so.sale_order_type IN ('销售单', '转换单', '充值单')
-            THEN sop.amount::numeric
+            WHEN spe.performance_date = (SELECT yesterday FROM bounds)
+              AND spe.status = '已支付'
+              AND spe.change_type IN ('首次支付', '回款', '退款')
+              AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+            THEN spe.amount::numeric
           END), 0) AS yesterday_revenue,
           COALESCE(SUM(CASE
-            WHEN sop.paid_at::date = (SELECT yesterday FROM bounds)
-              AND sop.status = '已支付'
-              AND sop.change_type IN ('首次支付', '回款')
-              AND sop.amount::numeric > 0
-              AND so.sale_order_type IN ('销售单', '转换单', '充值单')
-            THEN sop.amount::numeric
+            WHEN (spe.paid_at AT TIME ZONE 'Asia/Shanghai')::date = (SELECT yesterday FROM bounds)
+              AND spe.status = '已支付'
+              AND spe.change_type IN ('首次支付', '回款')
+              AND spe.amount::numeric > 0
+              AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+            THEN spe.amount::numeric
           END), 0) AS yesterday_paid_amount,
           COALESCE(SUM(CASE
-            WHEN sop.status = '已支付'
-              AND sop.change_type IN ('首次支付', '回款')
-              AND sop.amount::numeric > 0
-              AND so.sale_order_type IN ('销售单', '转换单', '充值单')
-            THEN sop.amount::numeric
+            WHEN spe.status = '已支付'
+              AND spe.change_type IN ('首次支付', '回款')
+              AND spe.amount::numeric > 0
+              AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+            THEN spe.amount::numeric
           END), 0) AS total_paid_amount
-        FROM sale_order_payments sop
-        JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
-        WHERE so.store_id IN (${sql.join(scopeIds.map(id => sql`${id}`), sql`, `)})
+        FROM sale_order_performance_events spe
+        WHERE spe.store_id IN (${sql.join(scopeIds.map(id => sql`${id}`), sql`, `)})
           -- 历史订单（WorkFine 核对补登）不计入经营营收（仅供会员体系重算）
-          AND so.legacy_source IS DISTINCT FROM 'workfine'
+          AND spe.legacy_source IS DISTINCT FROM 'workfine'
       ),
       order_metrics AS (
         SELECT

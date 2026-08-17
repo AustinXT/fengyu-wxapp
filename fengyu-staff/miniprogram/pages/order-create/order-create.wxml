@@ -360,7 +360,7 @@
         <!-- PR-C §C3 — 转换单 Panel（saleOrderType='转换单' 时渲染） -->
         <block wx:if="{{saleOrderType === '转换单'}}">
           <!-- 转换单仅在券前仍有正补差额时可用券；实际抵扣额会按补差额封顶 -->
-          <block wx:if="{{conversionCouponEnabled}}">
+          <block wx:if="{{conversionCouponEnabled && !conversionIsExperience}}">
             <view class="confirm-coupon-row" bindtap="onSelectCoupon">
               <text class="confirm-item-label">顾客优惠券</text>
               <view class="confirm-coupon-value">
@@ -379,6 +379,7 @@
             cardBalance="{{customerCardBalance}}"
             cartItems="{{cart}}"
             bind:amountchange="onConversionSaleAmountChange"
+            bind:experiencechange="onConversionExperienceChange"
             bind:change="onConversionPanelChange"
           />
         </block>

@@ -110,12 +110,15 @@ module.exports.unit = function(total, divisor) {
         <view class="deduction-row__right">
           <van-switch
             checked="{{useCard}}"
-            disabled="{{cardBalance <= 0}}"
+            disabled="{{cardBalance <= 0 || isRestrictedRepayment}}"
             active-color="#C0322A"
             size="40rpx"
             bind:change="onUseCardChange"
           />
         </view>
+      </view>
+      <view wx:if="{{isRestrictedRepayment}}" class="deduction-tips">
+        本次回款金额已由门店锁定，不支持追加储值卡抵扣
       </view>
       <view wx:if="{{useCard && prepaidCardAmount > 0}}" class="deduction-row deduction-row--sub">
         <text class="deduction-row__sub-label">抵扣金额</text>
@@ -139,8 +142,12 @@ module.exports.unit = function(total, divisor) {
       <view wx:if="{{isFirstPartialScan}}" class="paid-section__hint">
         本次支付 ¥{{fmt.price(firstPaymentAmount)}}（首付），剩余款项可后续扫码支付
       </view>
-      <!-- 回款提示：部分支付订单（已有首付到账，本次付剩余应付） -->
-      <view wx:if="{{isRepayment}}" class="paid-section__hint">
+      <!-- 店员冻结的订单级部分回款：本次只付 first_payment_amount，不放大为整笔欠款 -->
+      <view wx:if="{{isRepayment && firstPaymentAmount > 0}}" class="paid-section__hint">
+        本次回款 ¥{{fmt.price(firstPaymentAmount)}}，其余欠款可后续支付
+      </view>
+      <!-- 普通回款：未设置本次上限时支付全部剩余应付 -->
+      <view wx:elif="{{isRepayment}}" class="paid-section__hint">
         本单已部分支付，本次为回款，支付剩余应付款项
       </view>
 

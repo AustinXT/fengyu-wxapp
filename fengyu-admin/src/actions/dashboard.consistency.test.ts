@@ -10,10 +10,10 @@
  * 因两端 ORM 不同（Drizzle vs 原生 pg）且 admin 用大 CTE，
  * staff 用按指标拆分的多查询，**完整 SQL snapshot 不可行**。
  * 守护策略改为"关键不变量字面量匹配"：
- *   1. 营业额公式 = SUM(sale_order_payments.amount)
+ *   1. 营业额公式 = SUM(sale_order_performance_events.amount)
  *   2. 付款类型 = 首次支付 / 回款 / 退款，排除储值卡抵扣
  *   3. 订单类型 = 销售单 / 转换单 / 充值单
- *   4. 归期 = 付款流水 paid_at，不依赖父订单状态
+ *   4. 归期 = performance_date：首次收款跟随订单归属日，后续流水按 paid_at
  *
  * 任一端公式变更必须双端同步，否则数据中心首页与 admin dashboard 数字对不上。
  */
@@ -50,13 +50,12 @@ function between(src: string, start: string, end: string): string {
 
 function expectCashflowRevenueSql(src: string) {
   const normalized = normalize(stripComments(src))
-  expect(normalized).toMatch(/FROM\s+sale_order_payments\s+sop/i)
-  expect(normalized).toMatch(/JOIN\s+sale_orders\s+so\s+ON\s+so\.sale_order_id\s*=\s*sop\.sale_order_id/i)
-  expect(normalized).toMatch(/sop\.amount::numeric/i)
-  expect(normalized).toMatch(/sop\.status\s*=\s*'已支付'/)
-  expect(normalized).toMatch(/sop\.change_type\s+IN\s*\(\s*'首次支付'\s*,\s*'回款'\s*,\s*'退款'\s*\)/)
-  expect(normalized).toMatch(/so\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*,\s*'充值单'\s*\)/)
-  expect(normalized).toMatch(/sop\.paid_at/i)
+  expect(normalized).toMatch(/FROM\s+sale_order_performance_events\s+spe/i)
+  expect(normalized).toMatch(/spe\.amount::numeric/i)
+  expect(normalized).toMatch(/spe\.status\s*=\s*'已支付'/)
+  expect(normalized).toMatch(/spe\.change_type\s+IN\s*\(\s*'首次支付'\s*,\s*'回款'\s*,\s*'退款'\s*\)/)
+  expect(normalized).toMatch(/spe\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*,\s*'充值单'\s*\)/)
+  expect(normalized).toMatch(/spe\.performance_date/i)
   expect(normalized).toMatch(/legacy_source\s+IS\s+DISTINCT\s+FROM\s+'workfine'/i)
   expect(normalized).not.toMatch(/储值卡抵扣/)
   expect(normalized).not.toMatch(/payment_method/i)
@@ -99,8 +98,8 @@ describe('dashboard 组织层级现金流业绩一致性守护', () => {
       const paymentMetrics = normalize(stripComments(
         between(adminSrc, 'payment_metrics AS (', 'order_metrics AS ('),
       ))
-      expect(paymentMetrics).toMatch(/sop\.change_type IN \('首次支付', '回款'\)[\s\S]*?AS today_paid_amount/)
-      expect(paymentMetrics).toMatch(/sop\.change_type = '退款'[\s\S]*?ABS\(sop\.amount::numeric\)[\s\S]*?AS today_refunded_amount/)
+      expect(paymentMetrics).toMatch(/spe\.change_type IN \('首次支付', '回款'\)[\s\S]*?AS today_paid_amount/)
+      expect(paymentMetrics).toMatch(/spe\.change_type = '退款'[\s\S]*?ABS\(spe\.amount::numeric\)[\s\S]*?AS today_refunded_amount/)
     })
 
     it('订单数量和待办仍在独立的 sale_orders CTE 中统计', () => {

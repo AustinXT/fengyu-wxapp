@@ -23,7 +23,7 @@ import {
 import { Dialog, DialogHeader, DialogTitle, DialogClose } from "@/components/ui/dialog";
 import { confirmOfflinePayment, closeOrder, resetOrderFailed, generateOrderWxacode } from "@/actions/orders";
 import { ExportButton } from "@/components/ui/export-button";
-import { fmtDateTime } from "@/lib/datetime";
+import { fmtDate, fmtDateTime } from "@/lib/datetime";
 import { actionErrorMessage } from "@/lib/action-error";
 import { useUrlFilters } from "@/lib/hooks/use-url-filters";
 import { ORDER_TYPE_FILTER_OPTIONS, parseOrderTypeFilters } from "@/lib/list-filters";
@@ -300,6 +300,7 @@ export default function OrdersPageClient({
   const dateTo = get("to");
   const paymentMethodFilter = get("payment");
   const hasPrepaidFilter = get("hasPrepaid");
+  const conversionModeFilter = get("conversionMode");
 
   const currentPage = Math.max(1, Number(get("page", "1")) || 1);
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20;
@@ -363,6 +364,15 @@ export default function OrdersPageClient({
             </Select>
             <Select
               className="w-40"
+              value={conversionModeFilter}
+              onChange={(e) => setFilter("conversionMode", e.target.value)}
+            >
+              <option value="">全部转换模式</option>
+              <option value="experience">体验转换</option>
+              <option value="normal">普通转换</option>
+            </Select>
+            <Select
+              className="w-40"
               value={hasPrepaidFilter}
               onChange={(e) => setFilter("hasPrepaid", e.target.value)}
             >
@@ -413,6 +423,7 @@ export default function OrdersPageClient({
                   <th className="px-4 py-3 text-left font-medium text-gray-500">支付方式</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">开单人</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">下单时间</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">业绩归属日期</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">操作</th>
                 </tr>
               </thead>
@@ -431,6 +442,11 @@ export default function OrdersPageClient({
                       {order.isActivity && (
                         <Badge variant="secondary" className="ml-1 bg-[#FCE8E6] text-[#C0322A]">
                           活动
+                        </Badge>
+                      )}
+                      {order.isExperienceConversion && (
+                        <Badge variant="secondary" className="ml-1 bg-[#FFF0EE] text-[#C0322A]">
+                          体验转换
                         </Badge>
                       )}
                     </td>
@@ -452,6 +468,14 @@ export default function OrdersPageClient({
                     <td className="px-4 py-3">{paymentMethodMap[order.paymentMethod] || order.paymentMethod}</td>
                     <td className="px-4 py-3">{order.openedByName || "顾客自助"}</td>
                     <td className="px-4 py-3 text-[#999999]">{fmtDateTime(order.saleOrderDatetime)}</td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      {fmtDate(order.performanceAttributionDate)}
+                      {order.performanceAttributionAdjustedAt && (
+                        <Badge variant="secondary" className="ml-1 bg-[#FFF7E6] text-[#D4820A]">
+                          已调整
+                        </Badge>
+                      )}
+                    </td>
                     <td className="px-4 py-3">
                       <OrderActions order={order} canUpdate={canUpdate} />
                     </td>
@@ -459,7 +483,7 @@ export default function OrdersPageClient({
                 ))}
                 {orders.length === 0 && (
                   <tr>
-                    <td colSpan={11} className="px-4 py-12 text-center text-[#999999]">
+                    <td colSpan={12} className="px-4 py-12 text-center text-[#999999]">
                       {total === 0 ? "暂无订单数据" : "未找到匹配结果，请调整筛选条件"}
                     </td>
                   </tr>

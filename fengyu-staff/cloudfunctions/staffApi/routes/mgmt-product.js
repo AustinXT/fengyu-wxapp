@@ -215,10 +215,12 @@ async function cycleStats(ctx) {
       SELECT so.client_user_id,
              so.store_id,
              pc.product_kind,
-             so.paid_at::date           AS purchase_date,
-             SUM(si.received::numeric)  AS day_received
-        FROM sale_items si
-        JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+             sipe.performance_date      AS purchase_date,
+             SUM(sipe.amount::numeric)  AS day_received,
+             BOOL_OR(sipe.amount::numeric > 0) AS has_purchase
+        FROM sale_item_performance_events sipe
+        JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
+        JOIN sale_orders so ON so.sale_order_id = sipe.sale_order_id
         JOIN product_skus sk ON sk.sku_id = si.sku_id
         JOIN product_categories pc ON pc.category_id = sk.category_id
        WHERE ${sc.sql}
@@ -226,8 +228,8 @@ async function cycleStats(ctx) {
          AND so.status = '已支付'
          AND so.client_user_id IS NOT NULL
          AND pc.product_kind IS NOT NULL
-         AND so.paid_at::date <= $2
-       GROUP BY so.client_user_id, so.store_id, pc.product_kind, so.paid_at::date
+         AND sipe.performance_date <= $2
+       GROUP BY so.client_user_id, so.store_id, pc.product_kind, sipe.performance_date
     ),
     qualifying_days AS (
       SELECT client_user_id, store_id, product_kind, purchase_date
@@ -242,7 +244,7 @@ async function cycleStats(ctx) {
        GROUP BY client_user_id, product_kind
     ),
     period_agg AS (
-      SELECT client_user_id, store_id, product_kind, purchase_date, day_received
+      SELECT client_user_id, store_id, product_kind, purchase_date, day_received, has_purchase
         FROM daily_agg
        WHERE purchase_date BETWEEN $1 AND $2
     ),
@@ -261,7 +263,8 @@ async function cycleStats(ctx) {
     tiyan AS (
       SELECT DISTINCT pa.client_user_id, pa.product_kind
         FROM period_agg pa
-       WHERE NOT EXISTS (
+       WHERE pa.has_purchase
+         AND NOT EXISTS (
          SELECT 1 FROM first_entry f
           WHERE f.client_user_id = pa.client_user_id
             AND f.product_kind   = pa.product_kind

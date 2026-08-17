@@ -3,13 +3,13 @@
 //
 // 背景：payNotify 异步回调天生有延迟（典型 2–5s）且偶发丢失，前端 wx.requestPayment 成功后
 // 立即跳转会看到"待支付"。本 helper 支付成功后轮询 order.confirmPayment（后端主动对账+补偿入账），
-// 直到订单变为已支付/部分支付，或确认无需轮询（储值卡/线下单/终态），或超时。
+// 直到确认“本支付场次”已到账，或确认无需轮询（储值卡/线下单/终态），或超时。
 //
 // 用法：
 //   const poller = pollPaymentConfirm(orderNo, { onTick: r => ... });
 //   const r = await poller.promise;
 //   poller.clear();                  // 页面 onUnload/onHide 调，防内存泄漏
-//   // r.status ∈ {'已支付','部分支付'} → 确认完成；r.reason ∈ {'no_lakala_order','terminal'} → 无需轮询；
+//   // r.sessionCompleted=true → 本场次确认完成；r.reason ∈ {'no_lakala_order','terminal'} → 无需轮询；
 //   //   否则超时（status 通常仍待支付）。
 
 import { callClientApi } from '../../utils/cloud';
@@ -19,11 +19,19 @@ export interface PaymentConfirmResult {
   reconciled: boolean;
   reason?: string;
   lakalaTradeState?: string;
+  received?: number;
+  firstPaymentAmount?: number | null;
+  /** 本轮询对应的支付场次是否已有可靠到账证据 */
+  sessionCompleted?: boolean;
 }
 
 export interface PollOptions {
   intervalMs?: number;
   timeoutMs?: number;
+  /** 发起支付前订单实收，用于识别本场次实收增长 */
+  baselineReceived?: number;
+  /** 发起支付前冻结的场次上限；到账后服务端会原子清空 */
+  expectedFirstPaymentAmount?: number;
 }
 
 /** 终止轮询的 reason：储值卡/线下单或终态，confirmPayment 不需要对账 */
@@ -34,9 +42,27 @@ export interface PaymentPoller {
   clear: () => void;
 }
 
+/** “部分支付”可能是历史状态，不能单独作为本场次成功证据。 */
+export function isPaymentSessionComplete(
+  result: PaymentConfirmResult,
+  opts: Pick<PollOptions, 'baselineReceived' | 'expectedFirstPaymentAmount'> = {},
+): boolean {
+  if (result.status === '已支付') return true;
+  if (result.reconciled) return true;
+  if (opts.baselineReceived != null
+      && Number(result.received || 0) > Number(opts.baselineReceived) + 0.001) {
+    return true;
+  }
+  if (Number(opts.expectedFirstPaymentAmount || 0) > 0
+      && result.firstPaymentAmount === null) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * 轮询 order.confirmPayment。
- * 终止条件（任一）：status 已支付/部分支付；reason ∈ {no_lakala_order, terminal}；超时；外部 clear()。
+ * 终止条件（任一）：本场次已确认到账；reason ∈ {no_lakala_order, terminal}；超时；外部 clear()。
  * 超时返回最后一次结果（status 通常仍待支付，调用方据此提示"请稍后下拉刷新"）。
  *
  * clear() 置 settled + 清 timer + resolve promise：
@@ -74,8 +100,12 @@ export function pollPaymentConfirm(saleOrderId: string, opts: PollOptions = {}):
           reconciled: !!r.reconciled,
           reason: r.reason,
           lakalaTradeState: r.lakalaTradeState,
+          received: r.received,
+          firstPaymentAmount: r.firstPaymentAmount,
         };
-        if (r.status === '已支付' || r.status === '部分支付' || STOP_REASONS.has(r.reason || '')) {
+        const sessionCompleted = isPaymentSessionComplete(lastResult, opts);
+        lastResult.sessionCompleted = sessionCompleted;
+        if (sessionCompleted || STOP_REASONS.has(r.reason || '')) {
           finish();
           return;
         }

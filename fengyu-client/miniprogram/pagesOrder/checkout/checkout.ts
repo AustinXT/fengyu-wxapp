@@ -74,6 +74,8 @@ Page({
     cardId: '' as string,
     useCard: true,                // 默认开（决策 #1）；余额 = 0 时 effectiveUseCard 自动 false
     prepaidCardAmount: 0,         // 由 recomputeAmounts 派生
+    // 取消支付后恢复既有订单时，锁定原 pending 金额；用户手动切换开关后清空，恢复常规重算。
+    restoredPrepaidCardAmount: null as number | null,
     paidAmount: 0,                // 由 recomputeAmounts 派生
     showPayMethodGroup: true,     // 由 recomputeAmounts 派生：实付 > 0 才显示
     netBeforeCard: 0,             // 应抵扣部分（=总价-券），UI 显示用
@@ -287,9 +289,11 @@ Page({
         return;
       }
 
-      // 尊重订单已有的抵扣状态：DB 已写入 prepaid_card_amount=0 时 useCard 默认关，
+      // 尊重订单已有的抵扣状态：待支付阶段的预选值存在 pending_prepaid_card_amount，
       // 避免 UI 默认 useCard=true 与 DB 不一致——用户后续切换会通过 onSubmitOrder 的 scanAdjust 同步
-      const orderPrepaidCardAmount = Number(order.prepaid_card_amount || 0);
+      const orderPrepaidCardAmount = Number(
+        order.pending_prepaid_card_amount || order.prepaid_card_amount || 0,
+      );
 
       this.setData({
         spuName: items.length > 1
@@ -304,6 +308,8 @@ Page({
         couponDiscount: existingCouponDiscount,
         paymentMethod: restoredMethod,
         useCard: orderPrepaidCardAmount > 0,
+        prepaidCardAmount: orderPrepaidCardAmount,
+        restoredPrepaidCardAmount: orderPrepaidCardAmount > 0 ? orderPrepaidCardAmount : null,
         // 还原订单指定的美容师（覆盖 loadDefaultStaff 的并行竞态）
         staffWfId: order.preferred_employee_id || '',
         staffName: order.preferred_staff_name || '',
@@ -396,6 +402,7 @@ Page({
       couponDiscount: Number(this.data.couponDiscount) || 0,
       cardBalance: Number(this.data.cardBalance) || 0,
       useCard: this.data.useCard,
+      prepaidCardAmountLimit: this.data.restoredPrepaidCardAmount,
     });
     this.setData({
       prepaidCardAmount: result.prepaidCardAmount,
@@ -409,7 +416,11 @@ Page({
   onToggleUseCard(e: WxEvent<boolean>) {
     // 余额 = 0 时禁用：忽略 change 事件
     if (this.data.cardBalance <= 0) return;
-    this.setData({ useCard: !!e.detail });
+    this.setData({
+      useCard: !!e.detail,
+      // 明确的用户操作代表重新选择方案；之后才允许按当前余额重新计算。
+      restoredPrepaidCardAmount: null,
+    });
     this.recomputeAmounts();
   },
 

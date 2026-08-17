@@ -23,6 +23,7 @@ import { formatDate } from "@/lib/utils"
 import { formatPhoneSafe } from "@/lib/format"
 import { actionErrorMessage } from "@/lib/action-error"
 import { isMember, resolveUnitPrice } from "@/lib/member-pricing"
+import { calculateTreatmentTierLineAmounts } from "@/lib/treatment-tier-pricing"
 import { formatOrderServiceStaffOption, getOrderServiceStaffCandidates, isOrderServiceStaffCandidate } from "@/lib/order-service-staff"
 import type { RechargeConfig } from "@/lib/recharge-tier"
 import type { ProductSku, Store, Employee, Customer, AvailableCoupon } from "@/lib/types"
@@ -88,7 +89,7 @@ interface PrefetchedKindData {
 function getItemAmounts(
   item: CartItem,
   override?: ItemPriceOverride,
-  opts?: { buyerIsMember?: boolean; isInternal?: boolean },
+  opts?: { buyerIsMember?: boolean; isInternal?: boolean; tierLineAmount?: number | null },
 ) {
   // 默认成交单价分流（与后端 createOrder 同口径，后端为权威）：
   // - 内部单：一律按标价 price（后端再 ×50%，不取会员/体验价）
@@ -104,7 +105,9 @@ function getItemAmounts(
           { price: item.sku.price, specialPrice: item.sku.specialPrice, isExperience: item.sku.isExperience },
           opts?.buyerIsMember ?? false,
         ).realUnit
-  const defaultSaleAmount = defaultUnitPrice * item.quantity
+  const defaultSaleAmount = opts?.tierLineAmount != null
+    ? opts.tierLineAmount
+    : defaultUnitPrice * item.quantity
 
   // 应付金额：店长特别优惠可手填覆盖，统一钳制到 [0, 标价小计]（向下调，不许涨价）。
   // 未设 override.saleAmount 的普通项 → defaultSaleAmount（钳制为恒等，零行为变化）。
@@ -228,6 +231,8 @@ export default function OrderCreatePageClient({
   const [heldCards, setHeldCards] = useState<HeldCardCandidate[]>([])
   const [heldCardsLoading, setHeldCardsLoading] = useState(false)
   const [selectedHeldCardIds, setSelectedHeldCardIds] = useState<string[]>([])
+  const [isExperienceConversion, setIsExperienceConversion] = useState(false)
+  const [conversionReceivedInput, setConversionReceivedInput] = useState("")
   const [paymentMethod, setPaymentMethod] = useState("微信")
   const [selectedStoreId, setSelectedStoreId] = useState<string>(stores[0]?.storeId || "")
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>("")
@@ -242,6 +247,9 @@ export default function OrderCreatePageClient({
     priceDiff: number
     prepaidCardCredit: number
     prepaidCardAmount: number
+    isExperienceConversion: boolean
+    receivedAmount: number
+    remainingAmount: number
   } | null>(null)
   const [searchDone, setSearchDone] = useState(false)
   const [confirming, setConfirming] = useState(false)
@@ -400,6 +408,8 @@ export default function OrderCreatePageClient({
     // 不同订单类型的抵扣上限口径不同，切换后要求重新确认金额。
     setUseCard(false)
     setCardAmountInput('0.00')
+    setIsExperienceConversion(false)
+    setConversionReceivedInput("")
   }
 
   // PR-C: 当切到转换单 + 已知顾客 + 门店时，加载折抵候选卡
@@ -434,6 +444,8 @@ export default function OrderCreatePageClient({
   useEffect(() => {
     if (orderType !== '转换单') {
       setSelectedHeldCardIds([])
+      setIsExperienceConversion(false)
+      setConversionReceivedInput("")
     }
   }, [orderType])
 
@@ -553,10 +565,38 @@ export default function OrderCreatePageClient({
   const isConversion = orderType === '转换单'
   const internalRatio = isInternal ? 0.5 : 1
 
+  const activeKindData = kindDataCache[kindDataCacheKey(productKindChoice, selectedCustomer?.userId)]
+  const tierCandidates = useMemo(
+    () => activeKindData?.normalGroups.flatMap((group) => group.categories.flatMap((category) => category.skus)) ?? [],
+    [activeKindData],
+  )
+  const tierLineAmounts = useMemo(
+    () => calculateTreatmentTierLineAmounts(
+      cart.map((item) => ({
+        categoryId: item.sku.categoryId,
+        specName: item.sku.specName,
+        productType: item.sku.productType,
+        sessionCount: item.sku.sessionCount,
+        quantity: item.quantity,
+        isExperience: item.sku.isExperience,
+        isManagerSpecial: item.sku.isManagerSpecial,
+        isBundle: !!item.bundleProductId || item.sku.bundlePrice != null || item.sku.bundleGroupId != null,
+      })),
+      tierCandidates,
+      buyerIsMember,
+      orderType,
+    ),
+    [buyerIsMember, cart, orderType, tierCandidates],
+  )
+
   // 应付合计（购物车显示，不含手动覆盖）：按会员价分流取各行成交单价（套餐沿用套餐价，不分流）；
   // 内部单按标价 ×50%（与 cartPriceLines 同口径，否则 Step2「合计」对内部单显示 ~翻倍）
-  const catalogTotal = cart.reduce((sum, item) => {
-    const a = getItemAmounts(item, undefined, { buyerIsMember, isInternal })
+  const catalogTotal = cart.reduce((sum, item, index) => {
+    const a = getItemAmounts(item, undefined, {
+      buyerIsMember,
+      isInternal,
+      tierLineAmount: tierLineAmounts[index],
+    })
     return sum + a.defaultSaleAmount * internalRatio
   }, 0)
 
@@ -575,22 +615,30 @@ export default function OrderCreatePageClient({
   // 允许店长在 Step3 手动修改应付金额（最低 0，不超过标价）。
   const canEditSaleAmount = (item: CartItem) =>
     !isInternal &&
+    !(isConversion && isExperienceConversion) &&
     item.sku.isManagerSpecial === true &&
     item.sku.bundlePrice == null && item.sku.bundleGroupId == null
 
   // 各行「价格」（含内部单半价处理；店长特价行用手填应付作为 pre-coupon 基线）
   const cartPriceLines = useMemo(() => {
-    return cart.map((item) => {
+    return cart.map((item, index) => {
       // 店长特价行：pre-coupon 基线 = 手填应付（getItemAmounts 内已钳制 [0, 适用价小计]）
       if (canEditSaleAmount(item)) {
-        return Math.round(getItemAmounts(item, priceOverrides[item.sku.skuId], { buyerIsMember }).saleAmount * 100) / 100
+        return Math.round(getItemAmounts(item, priceOverrides[item.sku.skuId], {
+          buyerIsMember,
+          tierLineAmount: tierLineAmounts[index],
+        }).saleAmount * 100) / 100
       }
       // 内部单：基线 = 标价 price × 数量（后端 ×50%，不分流）；销售单 = 会员价分流应付小计
-      const a = getItemAmounts(item, undefined, { buyerIsMember, isInternal })
+      const a = getItemAmounts(item, undefined, {
+        buyerIsMember,
+        isInternal,
+        tierLineAmount: tierLineAmounts[index],
+      })
       return Math.round(a.defaultSaleAmount * internalRatio * 100) / 100
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cart, internalRatio, priceOverrides, isInternal, isConversion, buyerIsMember])
+  }, [cart, internalRatio, priceOverrides, isInternal, isConversion, buyerIsMember, tierLineAmounts])
 
   // 转换单：折抵合计 totalOut（已选卡）。优惠券仅可抵扣券前的正补差额，
   // 因此这里必须基于 cartPriceLines（含阶梯价和店长特价）而不是券后总额计算上限。
@@ -610,7 +658,7 @@ export default function OrderCreatePageClient({
   const conversionCouponCap = isConversion
     ? Math.max(0, Math.round((couponBaseTotal - conversionTotalOut) * 100) / 100)
     : 0
-  const rawCouponDiscount = !isInternal && selectedCouponForCalc
+  const rawCouponDiscount = !isInternal && !isExperienceConversion && selectedCouponForCalc
     ? Math.max(0, Number(selectedCouponForCalc.discountAmount) || 0)
     : 0
   // 转换单券额以正补差额封顶，杜绝把多余券额转为充值卡余额。
@@ -642,7 +690,11 @@ export default function OrderCreatePageClient({
         ? Math.min(Math.max(0, receivedOverride), saleAmount)
         : saleAmount
       // 适用成交单价（会员价分流；内部单不分流=标价；套餐沿用套餐价）+ 标价（划线基线）
-      const defaultUnitPrice = getItemAmounts(item, undefined, { buyerIsMember, isInternal }).defaultUnitPrice
+      const defaultUnitPrice = getItemAmounts(item, undefined, {
+        buyerIsMember,
+        isInternal,
+        tierLineAmount: tierLineAmounts[i],
+      }).defaultUnitPrice
       const listUnitPrice = Number(item.sku.price)
       const isBundleItem = item.sku.bundlePrice != null || item.sku.bundleGroupId != null
       return {
@@ -655,7 +707,7 @@ export default function OrderCreatePageClient({
         isBundleItem,
       }
     })
-  }, [cart, cartPriceLines, couponShares, priceOverrides, suppressOverride, buyerIsMember, isInternal])
+  }, [cart, cartPriceLines, couponShares, priceOverrides, suppressOverride, buyerIsMember, isInternal, tierLineAmounts])
 
   const { totalSaleAmount, totalReceived } = useMemo(() => {
     let sa = 0, rc = 0
@@ -676,13 +728,21 @@ export default function OrderCreatePageClient({
   const conversionCardAmount = isConversion && conversionPriceDiff > 0 && useCard
     ? clampPrepaidAmount(cardAmountInput, conversionCardMax)
     : 0
+  const conversionRemainingPayable = isExperienceConversion
+    ? 0
+    : Math.max(0, Math.round((conversionPriceDiff - conversionCardAmount) * 100) / 100)
+  const conversionReceivedAmount = conversionRemainingPayable <= 0
+    ? 0
+    : conversionReceivedInput.trim() === ''
+      ? conversionRemainingPayable
+      : Math.max(0, Math.min(Number(conversionReceivedInput) || 0, conversionRemainingPayable))
 
   // 折抵卡变化后若已没有正补差额，不能保留之前选中的优惠券。
   useEffect(() => {
-    if (isConversion && conversionCouponCap <= 0 && selectedCouponId) {
+    if (isConversion && (isExperienceConversion || conversionCouponCap <= 0) && selectedCouponId) {
       setSelectedCouponId("")
     }
-  }, [conversionCouponCap, isConversion, selectedCouponId])
+  }, [conversionCouponCap, isConversion, isExperienceConversion, selectedCouponId])
 
   // 销售单/内部单充值卡抵扣：上限 = min(余额, 本次实收合计)；salePayable = 抵扣后应付现金
   const saleCardMax = Math.min(Math.max(0, customerCardBalance), Math.max(0, totalReceived))
@@ -933,10 +993,14 @@ export default function OrderCreatePageClient({
               </h3>
               {cart.length > 0 ? (
                 <div className="space-y-2">
-                  {cart.map((item) => {
+                  {cart.map((item, index) => {
                     // 会员价分流：成交单价 = 会员价分流后的适用单价（套餐沿用套餐价，不分流）；
                     // 内部单按标价计价（行金额再 ×50%，与 catalogTotal 同口径，避免「合计半价/单行全价」不一致）
-                    const amt = getItemAmounts(item, undefined, { buyerIsMember, isInternal })
+                    const amt = getItemAmounts(item, undefined, {
+                      buyerIsMember,
+                      isInternal,
+                      tierLineAmount: tierLineAmounts[index],
+                    })
                     const unitPrice = amt.defaultUnitPrice
                     const listUnit = Number(item.sku.price)
                     const isBundleItem = item.sku.bundlePrice != null || item.sku.bundleGroupId != null
@@ -1358,6 +1422,22 @@ export default function OrderCreatePageClient({
                   onCardAmountBlur={() => {
                     setCardAmountInput((value) => clampPrepaidAmount(value, conversionCardMax).toFixed(2))
                   }}
+                  isExperienceConversion={isExperienceConversion}
+                  onExperienceConversionChange={(checked) => {
+                    setIsExperienceConversion(checked)
+                    setConversionReceivedInput("")
+                    if (checked) {
+                      setUseCard(false)
+                      setCardAmountInput("0.00")
+                      setSelectedCouponId("")
+                      setPriceOverrides({})
+                    }
+                  }}
+                  receivedAmountInput={conversionReceivedInput === "" ? conversionRemainingPayable.toFixed(2) : conversionReceivedInput}
+                  receivedAmount={conversionReceivedAmount}
+                  remainingPayable={conversionRemainingPayable}
+                  onReceivedAmountChange={setConversionReceivedInput}
+                  onReceivedAmountBlur={() => setConversionReceivedInput(conversionReceivedAmount.toFixed(2))}
                 />
               </div>
             ) : (
@@ -1589,9 +1669,12 @@ export default function OrderCreatePageClient({
                       preferredEmployeeId: selectedEmployeeId || undefined,
                       remark: remark.trim() || null,
                       convertOutSaleItemIds: selectedHeldCardIds,
-                      convertInItems: cart.map((item) => {
-                        const override = priceOverrides[item.sku.skuId]
-                        const amounts = getItemAmounts(item, override, { buyerIsMember })
+                      convertInItems: cart.map((item, index) => {
+                        const override = isExperienceConversion ? undefined : priceOverrides[item.sku.skuId]
+                        const amounts = getItemAmounts(item, override, {
+                          buyerIsMember,
+                          tierLineAmount: tierLineAmounts[index],
+                        })
                         return {
                           skuId: item.sku.skuId,
                           productName: item.product.name,
@@ -1603,8 +1686,10 @@ export default function OrderCreatePageClient({
                           quantity: item.quantity,
                         }
                       }),
-                      prepaidCardAmount: conversionCardAmount,
-                      couponId: selectedCouponId || undefined,
+                      prepaidCardAmount: isExperienceConversion ? 0 : conversionCardAmount,
+                      couponId: isExperienceConversion ? undefined : (selectedCouponId || undefined),
+                      receivedAmount: isExperienceConversion ? 0 : conversionReceivedAmount,
+                      isExperienceConversion,
                     })
                     if (res.success && res.saleOrderId) {
                       toast.success(res.message)
@@ -1615,7 +1700,13 @@ export default function OrderCreatePageClient({
                         priceDiff: res.priceDiff ?? 0,
                         prepaidCardCredit: res.prepaidCardCredit ?? 0,
                         prepaidCardAmount: res.prepaidCardAmount ?? 0,
+                        isExperienceConversion: res.isExperienceConversion ?? false,
+                        receivedAmount: res.receivedAmount ?? 0,
+                        remainingAmount: res.remainingAmount ?? 0,
                       })
+                      setCreatedStatus((res.remainingAmount ?? 0) > 0 ? '待支付' : '已支付')
+                      setCreatedPayable(res.remainingAmount ?? 0)
+                      setConfirmAmountInput((res.receivedAmount ?? 0).toFixed(2))
                       setStep(3)
                     } else {
                       toast.error(res.message)
@@ -1631,8 +1722,12 @@ export default function OrderCreatePageClient({
                 // 销售单 / 内部单 — 走原 createOrder
                 // 校验手动金额（内部单跳过 priceOverrides，因为禁用了改价）
                 if (!suppressOverride) {
-                  for (const item of cart) {
-                    const amounts = getItemAmounts(item, priceOverrides[item.sku.skuId], { buyerIsMember, isInternal })
+                  for (const [index, item] of cart.entries()) {
+                    const amounts = getItemAmounts(item, priceOverrides[item.sku.skuId], {
+                      buyerIsMember,
+                      isInternal,
+                      tierLineAmount: tierLineAmounts[index],
+                    })
                     if (isNaN(amounts.saleAmount) || amounts.saleAmount < 0) {
                       toast.error(`${item.product.name} 的应付金额无效`); return
                     }
@@ -1687,12 +1782,16 @@ export default function OrderCreatePageClient({
                     receivedAmount: receivedAmountArg,
                     prepaidCardAmount: saleCardAmount,
                     bundleProductId,
-                    items: cart.map((item) => {
+                    items: cart.map((item, index) => {
                       // 后端为定价权威：普通商品按会员价分流重定价（忽略此处单价），店长特价钳制，
                       // 套餐(isBundle)维持现状；内部单后端按标价 ×0.5（前端传原价 saleAmount，不预先半价）。
                       const isBundleItem = !!item.bundleProductId || item.sku.bundlePrice != null || item.sku.bundleGroupId != null
                       const override = suppressOverride ? undefined : priceOverrides[item.sku.skuId]
-                      const amounts = getItemAmounts(item, override, { buyerIsMember, isInternal })
+                      const amounts = getItemAmounts(item, override, {
+                        buyerIsMember,
+                        isInternal,
+                        tierLineAmount: tierLineAmounts[index],
+                      })
                       return {
                         skuId: item.sku.skuId,
                         productName: item.product.name,
@@ -1777,6 +1876,9 @@ export default function OrderCreatePageClient({
                 <p className="text-[#666666]">
                   转入 ¥{conversionResult.totalIn.toFixed(2)} ｜ 折抵 ¥{conversionResult.totalOut.toFixed(2)}
                 </p>
+                {conversionResult.isExperienceConversion && (
+                  <p className="text-[var(--primary)] font-semibold">体验转换：已按旧卡价值锁价，应付与实付均为 ¥0.00</p>
+                )}
                 {conversionResult.prepaidCardAmount > 0 && (
                   <p className="text-[#3D8A5A]">
                     储值卡抵扣 ¥{conversionResult.prepaidCardAmount.toFixed(2)}
@@ -1786,7 +1888,9 @@ export default function OrderCreatePageClient({
                   const remaining = Math.max(0, Math.round((conversionResult.priceDiff - conversionResult.prepaidCardAmount) * 100) / 100)
                   if (conversionResult.priceDiff > 0 && remaining > 0) {
                     return (
-                      <p className="text-[#D94040] font-semibold">请确认补差额收款 ¥{remaining.toFixed(2)}</p>
+                      <p className="text-[#D94040] font-semibold">
+                        本次收款 ¥{conversionResult.receivedAmount.toFixed(2)}，剩余挂账 ¥{Math.max(0, remaining - conversionResult.receivedAmount).toFixed(2)}
+                      </p>
                     )
                   }
                   if (conversionResult.priceDiff > 0 && remaining <= 0) {
@@ -1822,6 +1926,7 @@ export default function OrderCreatePageClient({
                 部分支付 / 全额储值卡抵扣已结清 不显示二维码）*/}
             {paymentMethod !== '线下' && createdOrderId && !paymentConfirmed
               && createdStatus !== '部分支付' && createdStatus !== '已支付'
+              && (!conversionResult || conversionResult.receivedAmount > 0)
               && (!conversionResult || (conversionResult.priceDiff - conversionResult.prepaidCardAmount) > 0.005) && (
               <OrderQRCode orderId={createdOrderId} />
             )}
@@ -1831,6 +1936,7 @@ export default function OrderCreatePageClient({
                 转换单全额储值卡抵扣已结清（无剩余应付）则不显示确认收款。*/}
             {paymentMethod === '线下' && createdOrderId && !paymentConfirmed
               && createdStatus !== '已支付'
+              && (!conversionResult || conversionResult.receivedAmount > 0)
               && (!conversionResult || (conversionResult.priceDiff - conversionResult.prepaidCardAmount) > 0.005) && (
               <div className="pt-2 space-y-2 max-w-xs mx-auto">
                 {!rechargeResult && !conversionResult && (
@@ -1853,9 +1959,10 @@ export default function OrderCreatePageClient({
                   loading={confirming}
                   className="bg-[#3D8A5A] hover:bg-[#2E6B45] text-white w-full"
                   onClick={async () => {
-                    // 普通销售/内部单：传本次确认金额（空 → 全额）；充值/转换单：全额（undefined）
+                    // 普通销售/内部单及转换单均按页面上的本次实付确认；充值单仍全额确认。
                     const isPlainSale = !rechargeResult && !conversionResult
-                    const amt = isPlainSale && confirmAmountInput.trim() !== ''
+                    const shouldUseConfirmAmount = (isPlainSale || !!conversionResult) && confirmAmountInput.trim() !== ''
+                    const amt = shouldUseConfirmAmount
                       ? Math.round(Number(confirmAmountInput) * 100) / 100
                       : undefined
                     if (amt !== undefined && (!Number.isFinite(amt) || amt < 0)) {
@@ -1903,6 +2010,7 @@ export default function OrderCreatePageClient({
                 setKindDataCache({ 组合套餐: undefined, 普通商品: undefined, 体验卡: undefined })
                 setHeldCards([])
                 setSelectedHeldCardIds([])
+                setIsExperienceConversion(false); setConversionReceivedInput("")
                 setConversionResult(null)
                 setRechargeSelectedFace(0); setRechargeCustomInput(""); setRechargeResult(null)
               }}>

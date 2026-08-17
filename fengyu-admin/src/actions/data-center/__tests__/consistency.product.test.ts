@@ -12,7 +12,7 @@
  *   3. cycle CTE 链：daily_agg / qualifying_days / first_entry / period_agg / xinzeng / fugou / tiyan
  *   4. 达标日阈值（day_received >= threshold；getMemberThreshold）
  *   5. cycle 基础过滤 sale_order_type IN ('销售单','转换单') ∩ status='已支付'
- *   6. 业绩 = SUM(received)（禁 paid_amount）
+ *   6. 业绩 = SUM(sale_item_performance_events.amount)（禁 paid_amount）
  *   7. 一级分组键 product_kind（admin 额外 category_name 二级，为 admin 独有扩展）
  *
  * 任一端一级口径变更必须双端同步，否则数据中心品项板块与员工端 mgmtProduct 数字对不上。
@@ -26,6 +26,7 @@ const STAFF_MGMT_PRODUCT = path.resolve(
   __dirname,
   '../../../../../fengyu-staff/cloudfunctions/staffApi/routes/mgmt-product.js',
 )
+const DB_ORDER_SCHEMA = path.resolve(__dirname, '../../../../../db/schema/order.ts')
 
 function normalize(src: string): string {
   return src.replace(/\s+/g, ' ').trim()
@@ -43,12 +44,14 @@ describe('品项板块两端口径一致性守护', () => {
   let staffSrc: string
   let adminCode: string // 剥注释后
   let staffCode: string
+  let dbOrderCode: string
 
   beforeAll(() => {
     adminSrc = fs.readFileSync(ADMIN_PRODUCT, 'utf-8')
     staffSrc = fs.readFileSync(STAFF_MGMT_PRODUCT, 'utf-8')
     adminCode = normalize(stripComments(adminSrc))
     staffCode = normalize(stripComments(staffSrc))
+    dbOrderCode = normalize(stripComments(fs.readFileSync(DB_ORDER_SCHEMA, 'utf-8')))
   })
 
   describe('持卡 = product_type = 疗程卡 ∩ remaining_sessions > 0（DISTINCT client）', () => {
@@ -96,17 +99,36 @@ describe('品项板块两端口径一致性守护', () => {
   })
 
   describe('达标日 = day_received >= threshold（getMemberThreshold）', () => {
-    it('admin daily_agg 用 SUM(si.received) + day_received >= threshold', () => {
-      expect(adminCode).toMatch(/SUM\(si\.received::numeric\)\s+AS\s+day_received/i)
+    it('admin daily_agg 用 SUM(sipe.amount) + day_received >= threshold', () => {
+      expect(adminCode).toMatch(/SUM\(sipe\.amount::numeric\)\s+AS\s+day_received/i)
       expect(adminCode).toMatch(/day_received\s*>=\s*\$\{threshold\}/)
     })
-    it('staff daily_agg 用 SUM(si.received) + day_received >= $3(threshold)', () => {
-      expect(staffCode).toMatch(/SUM\(si\.received::numeric\)\s+AS\s+day_received/i)
+    it('staff daily_agg 用 SUM(sipe.amount) + day_received >= $3(threshold)', () => {
+      expect(staffCode).toMatch(/SUM\(sipe\.amount::numeric\)\s+AS\s+day_received/i)
       expect(staffCode).toMatch(/day_received\s*>=\s*\$3/)
     })
     it('两端经 getMemberThreshold 注入阈值', () => {
       expect(adminCode).toMatch(/getMemberThreshold/)
       expect(staffCode).toMatch(/getMemberThreshold/)
+    })
+  })
+
+  describe('体验客群要求期内至少一笔正向购买', () => {
+    it('两端 daily_agg 记录正向购买，period_agg 透传到 tiyan', () => {
+      for (const code of [adminCode, staffCode]) {
+        expect(code).toMatch(/BOOL_OR\(sipe\.amount::numeric\s*>\s*0\)\s+AS\s+has_purchase/i)
+        expect(code).toMatch(/period_agg\s+AS\s*\([\s\S]*?day_received,\s*has_purchase[\s\S]*?FROM\s+daily_agg/i)
+        expect(code).toMatch(/tiyan\s+AS\s*\([\s\S]*?WHERE\s+pa\.has_purchase\s+AND\s+NOT EXISTS/i)
+      }
+    })
+
+    it('admin 按店体验人数要求正向购买发生在同一门店', () => {
+      expect(adminCode).toMatch(
+        /tiyan\s+AS\s*\(\s*SELECT DISTINCT pa\.client_user_id, pa\.store_id, pa\.grp[\s\S]*?WHERE pa\.has_purchase/i,
+      )
+      expect(adminCode).toMatch(
+        /trial_store\s+AS\s*\(\s*SELECT t\.store_id, COUNT\(DISTINCT t\.client_user_id\) AS cnt FROM tiyan t GROUP BY t\.store_id/i,
+      )
     })
   })
 
@@ -117,10 +139,9 @@ describe('品项板块两端口径一致性守护', () => {
     it('staff', () => {
       expect(staffCode).toMatch(/MIN\(purchase_date\)\s+AS\s+entry_date/i)
     })
-    it('两端 daily_agg 全历史下界（paid_at::date <= 区间末）', () => {
-      // admin: so.paid_at::date <= ${range.end}；staff: so.paid_at::date <= $2
-      expect(adminCode).toMatch(/so\.paid_at::date\s*<=\s*\$\{range\.end\}/)
-      expect(staffCode).toMatch(/so\.paid_at::date\s*<=\s*\$2/)
+    it('两端 daily_agg 全历史下界（performance_date <= 区间末）', () => {
+      expect(adminCode).toMatch(/sipe\.performance_date\s*<=\s*\$\{range\.end\}/)
+      expect(staffCode).toMatch(/sipe\.performance_date\s*<=\s*\$2/)
     })
   })
 
@@ -135,10 +156,22 @@ describe('品项板块两端口径一致性守护', () => {
     })
   })
 
-  describe('业绩 = SUM(received)（禁 paid_amount）', () => {
+  describe('业绩 = SUM(sale_item_performance_events.amount)（禁 paid_amount）', () => {
+    it('两端使用行级业绩事件视图', () => {
+      expect(adminCode).toMatch(/FROM\s+sale_item_performance_events\s+sipe/i)
+      expect(staffCode).toMatch(/FROM\s+sale_item_performance_events\s+sipe/i)
+    })
     it('两端禁用 paid_amount（已 DROP，防回归）', () => {
       expect(adminCode).not.toMatch(/paid_amount/)
       expect(staffCode).not.toMatch(/paid_amount/)
+    })
+    it('历史残差按全部有符号 receipt 计算，退款不得被二次补成残差', () => {
+      const receiptTotals = dbOrderCode.match(
+        /receipt_totals\s+AS\s*\(([\s\S]*?)\),\s*residuals\s+AS\s*\(/i,
+      )?.[1]
+      expect(receiptTotals).toBeDefined()
+      expect(receiptTotals).toMatch(/SUM\(amount\)::numeric\(10, 2\) AS amount/i)
+      expect(receiptTotals).not.toMatch(/FILTER/i)
     })
   })
 

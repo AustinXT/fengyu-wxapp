@@ -93,7 +93,7 @@ function AlertDialog({ open, onOpenChange, children }: AlertDialogProps) {
     <dialog
       ref={dialogRef}
       className={cn(
-        "m-auto w-full max-w-md rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--card)] p-0 text-[var(--card-foreground)] shadow-lg backdrop:bg-black/50",
+        "m-auto w-full max-w-md overflow-visible rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--card)] p-0 text-[var(--card-foreground)] shadow-lg backdrop:bg-black/50",
         "open:animate-in open:fade-in-0 open:zoom-in-95"
       )}
       onClick={handleBackdropClick}

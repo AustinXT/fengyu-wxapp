@@ -113,6 +113,22 @@ describe("DatePicker", () => {
     expect(screen.queryByRole("dialog", { name: "选择日期" })).not.toBeInTheDocument()
     expect(trigger).toHaveFocus()
   })
+
+  it("在原生 dialog 内打开时将弹层挂载到同一 top-layer 子树", async () => {
+    const user = userEvent.setup()
+    const { container } = render(
+      <dialog open>
+        <DatePicker value="2026-05-20" aria-label="离职日期" />
+      </dialog>,
+    )
+    const hostDialog = container.querySelector("dialog") as HTMLDialogElement
+
+    await user.click(screen.getByRole("button", { name: "离职日期" }))
+
+    const datePopover = screen.getByRole("dialog", { name: "选择日期" })
+    expect(hostDialog).toContainElement(datePopover)
+    expect(datePopover.parentElement).toBe(hostDialog)
+  })
 })
 
 describe("DateTimePicker", () => {

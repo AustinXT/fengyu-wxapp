@@ -10,12 +10,14 @@
 
 | 指标 | 公式 | 数据源 | 筛选条件 |
 |------|------|--------|----------|
-| 业绩（门店 / 市场 / 总部） | `SUM(sop.amount)` | `sale_order_payments sop` JOIN `sale_orders so` | `sop.status='已支付'` ∩ `sop.change_type IN ('首次支付','回款','退款')` ∩ `so.sale_order_type IN ('销售单','转换单','充值单')` ∩ `so.legacy_source IS DISTINCT FROM 'workfine'` ∩ `[sop.paid_at]` |
-| 生美业绩 | `SUM(received)` | `sale_items.received` | JOIN sale_orders；`sale_order_type IN ('销售单','转换单')` ∩ `status='已支付'` ∩ `is_shengmei=TRUE` ∩ `[paid_at]` |
+| 业绩（门店 / 市场 / 总部） | `SUM(spe.amount)` | `sale_order_performance_events spe` | `spe.status='已支付'` ∩ `spe.change_type IN ('首次支付','回款','退款')` ∩ `spe.sale_order_type IN ('销售单','转换单','充值单')` ∩ `spe.legacy_source IS DISTINCT FROM 'workfine'` ∩ `[spe.performance_date]` |
+| 生美业绩 | `SUM(sipe.amount)` | `sale_item_performance_events sipe` | JOIN sale_items + sale_orders；`sale_order_type IN ('销售单','转换单')` ∩ `status='已支付'` ∩ `is_shengmei=TRUE` ∩ `[sipe.performance_date]` |
 | 实耗 | `SUM(unit_real_price * session_used)` | `service_items.unit_real_price` × `service_items.session_used` | JOIN service_orders；`status='已完成'` ∩ `[service_date]` |
 | 生美实耗 | `SUM(unit_real_price * session_used)` | 同上 | 加 `service_items.is_shengmei=TRUE` |
 
-> **组织层级业绩的现金流规则**：只统计状态为“已支付”的实际资金变动：首次支付、回款和退款；`储值卡抵扣`不属于现金流，必须排除。充值单的首次支付/回款纳入业绩；退款的 `amount` 为负数，按退款流水的 `paid_at` 当日冲减，不回溯原订单支付日。不得用父订单 `status` 过滤，因此部分支付订单已经到账的付款也计入。
+> **组织层级业绩的归属规则**：只统计状态为“已支付”的首次支付、回款和退款；`储值卡抵扣`不属于组织现金业绩，必须排除。首次支付的 `performance_date` 取订单 `performance_attribution_date`；回款/退款取自身 `paid_at` 的上海自然日。退款 `amount` 为负数，不回溯原订单归属日。不得用父订单 `status` 过滤，因此部分支付订单已到账的付款也计入。
+>
+> **订单日期与归属日期**：`performance_attribution_date` 默认等于原始订单的上海自然日。原始 `sale_order_datetime` 始终保留。有权人员可不受操作时间限制地调整一次，但新日期必须在原始订单日前后 7 天内（含）。
 >
 > **组织层级业绩 vs 生美 / 品项 / 员工归属为何不同**：现金流无法可靠拆到 SKU 或员工。生美业绩、品项统计、员工业绩和员工提成继续使用各自既有的订单/分配口径；充值现金只进入组织层级总业绩和分客型业绩，不进入生美或品项分类。
 
@@ -36,7 +38,7 @@
 
 | 指标 | 公式 | 数据源 | 筛选条件 |
 |------|------|--------|----------|
-| 销售提成收入（salesCommissionIncome） | `SUM(total_amount)` | `sale_allocations.total_amount` | JOIN sale_items + sale_orders；`role_type IN ('美容师','养生师')` ∩ `is_void=FALSE` ∩ `sale_order_type IN ('销售单','转换单')` ∩ `status='已支付'` ∩ `[paid_at]` |
+| 销售提成收入（salesCommissionIncome） | `SUM(spia.commission_amount)` | `sale_payment_item_allocations spia` | JOIN receipt + sale item/order + `sale_order_performance_events`；`is_void=FALSE` ∩ `sale_order_type IN ('销售单','转换单')` ∩ `spe.status='已支付'` ∩ `[spe.performance_date]` |
 | 服务提成收入（serviceCommissionIncome） | `SUM(commission_amount)` | `service_commissions.commission_amount` | JOIN service_items + service_orders；`role_type IN ('美容师','养生师')` ∩ `is_void=FALSE` ∩ `status='已完成'` ∩ `[service_date]` |
 
 > **为何 role_type 限定美容师/养生师**：管理层观察的是"产能员工"的人均产出；推广师虽享提成但人头不计入「员工数」（`skills && ARRAY['美容师','养生师']`），分子分母口径必须一致。
@@ -51,12 +53,12 @@
 
 | 指标（员工层） | 公式 | 归属字段 | 时间窗口 | 备注 |
 |------|------|---------|---------|------|
-| 业绩 | `SUM(sale_allocations.total_amount)` | `sale_allocations.employee_id` | `[paid_at_period]` | `role_type IN ('美容师','养生师')` ∩ `is_void=FALSE` ∩ `sale_order_type IN ('销售单','转换单')` ∩ `status='已支付'` |
+| 业绩 | `SUM(spia.allocated_amount)` | `sale_payment_item_allocations.employee_id` | `[spe.performance_date_period]` | JOIN receipt + `sale_order_performance_events`；`is_void=FALSE` ∩ `sale_order_type IN ('销售单','转换单')` ∩ `spe.status='已支付'` |
 | 实耗 | `SUM(service_items.unit_real_price * service_items.session_used)` | `service_items.employee_id` | `[service_date_period]` | `service_orders.status='已完成'` |
 | 客流 | `COUNT(DISTINCT service_orders.client_user_id)` | `service_items.employee_id` | `[service_date_period]` | 员工内去重，跨员工不去重；`status='已完成'` ∩ `client_user_id IS NOT NULL` |
 | 项目数 | `SUM(service_items.session_used)` | `service_items.employee_id` | `[service_date_period]` | `sales_category IN ('自销自耗','他销自耗')` ∩ `status='已完成'` |
 | 新会员 | `COUNT(*)` | `client_wechat_users.bound_employee_id` | `[became_member_at_period]` | `became_member_at IS NOT NULL`；`bound_employee_id IS NULL` 的新会员不归属任何员工（与"无归属新会员"差额由监控关注） |
-| 收入 | 销售提成 + 服务提成 | 销售=`sale_allocations.employee_id`；服务=`service_commissions.employee_id` | 销售按 `[paid_at_period]`；服务按 `[service_date_period]` | `role_type IN ('美容师','养生师')` ∩ `is_void=FALSE`；销售=业绩公式同构；服务+`service_commissions.commission_amount` |
+| 收入 | 销售提成 + 服务提成 | 销售=`sale_payment_item_allocations.employee_id`；服务=`service_commissions.employee_id` | 销售按 `[spe.performance_date_period]`；服务按 `[service_date_period]` | `is_void=FALSE`；销售使用 `commission_amount`；服务使用 `service_commissions.commission_amount` |
 
 > **业绩 vs 收入区别**：业绩仅含销售部分（`sale_allocations`）；收入 = 销售 + 服务提成（`service_commissions`）。两者销售部分公式相同；收入因加服务提成而 ≥ 业绩。
 >

@@ -375,12 +375,22 @@ export interface SaleOrder {
   marketName: string
   storeId: string
   saleOrderDatetime: string
+  /** 首次业绩事件的归属日期（YYYY-MM-DD，上海自然日）。 */
+  performanceAttributionDate: string
+  /** 一次性人工调整时间；非 null 表示修改机会已使用。 */
+  performanceAttributionAdjustedAt: string | null
+  /** 一次性人工调整人员工编号。 */
+  performanceAttributionAdjustedBy: string | null
   clientUserId: string | null
   clientPhone: string | null
   customerName: string | null
   totalAmount: string
-  /** 储值卡抵扣金额（抵扣项，不计入实付）；与 received 之和等于 totalAmount */
+  /** 已结算储值卡实付净额（已支付储值卡流水累计，储值卡退款为负向）。 */
   prepaidCardAmount: string
+  /** 尚未结算的储值卡预选/混合支付意向金额。 */
+  pendingPrepaidCardAmount: string
+  /** 约定现金应付额 = total - actual prepaid - pending prepaid（充值/寄存单除外）。 */
+  payableAmount: string
   /**
    * 实收金额（聚合 sale_order_payments[change_type∈(首次支付/回款/储值卡抵扣), status='已支付'] 的快照）。
    * 2026-04-26 sale-order-domain-refactor：原 paidAmount 列与 received 重复，已 DROP；统一改用 received。
@@ -404,6 +414,10 @@ export interface SaleOrder {
   remark: string | null
   /** 活动单标记（纯标识，不影响金额/提成口径；admin/staff 开单勾选） */
   isActivity?: boolean
+  /** 转换单是否采用旧卡划卡价值强制定价 */
+  isExperienceConversion?: boolean
+  /** 首次收款上限（部分支付二维码/线下确认使用，到账后清空） */
+  firstPaymentAmount?: string | null
   /**
    * 会员升级单标记（recalcCustomerType 在顾客首次跃迁为会员客时自动打标）。
    * 由 is_membership_upgrade 列同步四端字节；导出与列表均暴露。
@@ -420,6 +434,8 @@ export interface SaleOrder {
   offlineConfirmedByName?: string
   /** 审批人姓名（audited_by → staff_wechat_users.name） */
   auditedByName?: string
+  /** 业绩归属日期调整人姓名。 */
+  performanceAttributionAdjustedByName?: string
   items?: SaleItem[]
   /** 是否参与营业额分配（仅销售单/转换单且非历史订单）；由 getOrderById 计算注入，控制订单详情页分配入口显隐 */
   allocatable?: boolean
@@ -445,6 +461,10 @@ export interface SaleItem {
   unitRealPrice: string
   saleAmount: string
   received: string
+  /** 按本单有符号 received 比例分摊的储值卡实付。 */
+  prepaidCardReceived: string
+  /** 数据库生成值：received - prepaidCardReceived。 */
+  cashReceived: string
   /** 待确认实付草稿（开单约定实付，行级；不进 received/paid_sessions，仅展示 + 确认收款入账参考） */
   pendingReceived: string
   expireDate: string | null

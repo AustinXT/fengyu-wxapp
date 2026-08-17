@@ -160,6 +160,38 @@ describe('开单疗程卡阶梯价', () => {
     expect(page.data.cart[0]).toMatchObject({ couponShare: '0.00', saleAmount: '300.00' })
   })
 
+  test('切离体验转换后清除体验标记并恢复销售单优惠券计价', () => {
+    const cart = [createCartItem('sku-sales', 1, 300)]
+    const page = {
+      ...pageDefinition,
+      data: {
+        ...pageDefinition.data,
+        saleOrderType: '转换单',
+        conversionIsExperience: true,
+        buyerIsMember: false,
+        selectedCoupon: null,
+        cart,
+        cartPopupVisible: false,
+      },
+      _allSkus: [],
+      setData(update: Record<string, unknown>) {
+        Object.assign(this.data, update)
+      },
+      revalidateCoupon: vi.fn(),
+      recomputePrepaidAmounts: vi.fn(),
+    }
+
+    page.onSelectSaleOrderType({ currentTarget: { dataset: { type: '销售单' } } } as any)
+
+    expect(page.data.conversionIsExperience).toBe(false)
+
+    page.setData({ selectedCoupon: { couponId: 'coupon-sales', name: '销售券', discount: 100 } })
+    page.updateCart(page.data.cart)
+
+    expect(page.data.couponDiscount).toBe(100)
+    expect(page.data.cart[0]).toMatchObject({ couponShare: '100.00', saleAmount: '200.00' })
+  })
+
   test('转换单提交透传所选优惠券', async () => {
     const callStaffApiMock = vi.mocked(callStaffApi)
     callStaffApiMock.mockResolvedValueOnce({
@@ -210,6 +242,66 @@ describe('开单疗程卡阶梯价', () => {
         clientUserId: 'client-001',
         couponId: 'coupon-001',
         convertOutSaleItemIds: ['sale-item-old-001'],
+      }),
+    )
+  })
+
+  test('组合套餐转换提交透传套餐主商品 ID', async () => {
+    const callStaffApiMock = vi.mocked(callStaffApi)
+    callStaffApiMock.mockReset().mockResolvedValueOnce({
+      saleOrderId: 'FY-XSD-WX-2608160038',
+      priceDiff: 2940,
+      prepaidCardCredit: 0,
+      prepaidCardAmount: 0,
+      status: '待支付',
+    })
+    const bundleItem = {
+      ...createCartItem('sku-bundle-neck', 1, 1980),
+      quantity: 3,
+      refBundleId: 'prod-body-bundle',
+    }
+    const page = {
+      ...pageDefinition,
+      data: {
+        customerInfo: { clientUserId: 'client-001' },
+        cart: [bundleItem],
+        remark: '',
+        submitting: false,
+        conversionSelectedSaleItemIds: ['sale-item-old-001'],
+        conversionPriceDiff: 2940,
+        conversionPaymentMethod: '线下',
+        conversionPrepaidCardAmount: 0,
+        conversionRemaining: 2940,
+        conversionReceivedAmount: 2940,
+        conversionIsExperience: false,
+        conversionIsActivity: false,
+        preferredStaffWfId: '',
+        selectedCoupon: null,
+      },
+      saveRecentCustomer: vi.fn(),
+      updateCart: vi.fn(),
+      setData(update: Record<string, unknown>) {
+        Object.assign(this.data, update)
+      },
+    }
+    const wxMock = globalThis.wx as any
+    const originalShowToast = wxMock.showToast
+    const originalNavigateTo = wxMock.navigateTo
+    wxMock.showToast = vi.fn()
+    wxMock.navigateTo = vi.fn()
+
+    try {
+      await page._submitConversion()
+    } finally {
+      wxMock.showToast = originalShowToast
+      wxMock.navigateTo = originalNavigateTo
+    }
+
+    expect(callStaffApiMock).toHaveBeenCalledWith(
+      'order.createConversion',
+      expect.objectContaining({
+        bundleProductId: 'prod-body-bundle',
+        convertInItems: [expect.objectContaining({ skuId: 'sku-bundle-neck', quantity: 3 })],
       }),
     )
   })

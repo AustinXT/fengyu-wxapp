@@ -753,12 +753,12 @@ export const importWorkfineOrdersByCustomer = withPermission(
         const insRes = await tx.execute(sql`
           INSERT INTO sale_orders (
             sale_order_id, status, sale_order_type, market_name, store_id, store_name,
-            sale_order_datetime, client_user_id, client_phone, customer_name,
+            sale_order_datetime, performance_attribution_date, client_user_id, client_phone, customer_name,
             total_amount, payable_amount, received, payment_method,
             legacy_source, legacy_customer_id, legacy_raw_snapshot
           ) VALUES (
             ${o.legacyOrderNo}, '未审核'::order_status, '销售单'::sale_order_type, ${marketName}, ${storeId}, ${o.storeName},
-            ${o.saleDate}::timestamp AT TIME ZONE 'Asia/Shanghai', ${clientUserId}, ${o.phone}, ${o.customerName},
+            ${o.saleDate}::timestamp AT TIME ZONE 'Asia/Shanghai', ${o.saleDate}::date, ${clientUserId}, ${o.phone}, ${o.customerName},
             ${amountStr}::numeric, ${amountStr}::numeric, 0, '无',
             'workfine', ${o.legacyCustomerId}, ${JSON.stringify(snapshot)}::jsonb
           )

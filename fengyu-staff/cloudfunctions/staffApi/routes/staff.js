@@ -59,18 +59,10 @@ function postJson(urlStr, body, headers) {
   })
 }
 
-function paidAllocationWindow(paymentAlias, orderAlias, startIdx, endIdx) {
-  return `(
-    (${paymentAlias}.id IS NOT NULL
-      AND ${paymentAlias}.status = '已支付'
-      AND ${paymentAlias}.paid_at >= $${startIdx}
-      AND ${paymentAlias}.paid_at < $${endIdx})
-    OR
-    (${paymentAlias}.id IS NULL
-      AND ${orderAlias}.status = '已支付'
-      AND ${orderAlias}.paid_at >= $${startIdx}
-      AND ${orderAlias}.paid_at < $${endIdx})
-  )`
+function performanceEventWindow(eventAlias, startIdx, endIdx) {
+  return `${eventAlias}.status = '已支付'
+    AND ${eventAlias}.performance_date >= ($${startIdx}::timestamptz AT TIME ZONE 'Asia/Shanghai')::date
+    AND ${eventAlias}.performance_date < ($${endIdx}::timestamptz AT TIME ZONE 'Asia/Shanghai')::date`
 }
 
 /**
@@ -276,10 +268,10 @@ async function todayCommission(ctx) {
     JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
     JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-    LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+    JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
     WHERE spia.employee_id = $1
       AND spia.is_void = false
-      AND ${paidAllocationWindow('sop', 'o', 2, 3)}
+      AND ${performanceEventWindow('spe', 2, 3)}
   `, [staffWfId, todayStart, todayEnd])
 
   // 今日服务单数
@@ -303,10 +295,10 @@ async function todayCommission(ctx) {
     JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
     JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-    LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+    JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
     WHERE spia.employee_id = $1
       AND spia.is_void = false
-      AND ${paidAllocationWindow('sop', 'o', 2, 3)}
+      AND ${performanceEventWindow('spe', 2, 3)}
   `, [staffWfId, thisMonthStart, thisMonthEnd])
 
   // 本月服务单数（个人口径）
@@ -331,10 +323,10 @@ async function todayCommission(ctx) {
     JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
     JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-    LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+    JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
     WHERE spia.employee_id = $1
       AND spia.is_void = false
-      AND ${paidAllocationWindow('sop', 'o', 2, 3)}
+      AND ${performanceEventWindow('spe', 2, 3)}
   `, [staffWfId, lastMonthStart, lastMonthEnd])
 
   // 上月服务单数
@@ -358,21 +350,21 @@ async function todayCommission(ctx) {
     lastMonthServiceCount: Number(lastMonthSvcRows[0].service_count),
   }
 
-  // 店长：门店今日总营收（2026-04-26 refactor：业绩口径 = received - refunded_amount）
+  // 店长：门店今日总业绩（首次收款按订单归属日，后续回款/退款按真实发生日）
   // 门店过滤用 effectiveStoreId（当前选中门店），多店店长切店后才正确
   const eff = ctx.auth.effectiveStoreId
   if (isManager && eff) {
-    const sc = buildStoreScopeCondition(ctx.auth, 'o.store_id', 1)
+    const sc = buildStoreScopeCondition(ctx.auth, 'spe.store_id', 1)
     const storeRows = await pg.query(`
-      SELECT COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric), 0) AS store_revenue
-      FROM sale_orders o
+      SELECT COALESCE(SUM(spe.amount::numeric), 0) AS store_revenue
+      FROM sale_order_performance_events spe
       WHERE ${sc.sql}
-        AND o.sale_order_type IN ('销售单', '转换单')
-        AND o.status = '已支付'
-        AND o.legacy_source IS DISTINCT FROM 'workfine'
-        AND o.paid_at >= $${sc.params.length + 1}
-        AND o.paid_at < $${sc.params.length + 2}
-    `, [...sc.params, todayStart, todayEnd])
+        AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+        AND spe.status = '已支付'
+        AND spe.change_type IN ('首次支付', '回款', '退款')
+        AND spe.legacy_source IS DISTINCT FROM 'workfine'
+        AND spe.performance_date = $${sc.params.length + 1}::date
+    `, [...sc.params, todayStr])
     result.storeTodayRevenue = Number(storeRows[0].store_revenue).toFixed(2)
   }
 
@@ -383,7 +375,7 @@ async function todayCommission(ctx) {
  * 月度业绩日历（整店口径）
  *
  * 口径约定（勿误改）：日历每日格子 + 头部合计 = 整店汇总业绩
- *   = SUM(sale_orders.received - refunded_amount)，sale_order_type IN ('销售单','转换单')、status='已支付'，
+ *   = SUM(sale_order_performance_events.amount)，首次收款按订单归属日，后续流水按真实发生日，
  *   按 effectiveStoreId（当前选中门店）过滤，与首卡「门店今日营收」/ mgmt-dashboard.queryStoreRevenue 同口径。
  *   ⚠️ 这是【整店营业额】维度，不是登录员工的个人分成份额（个人本月累计走 todayCommission.thisMonth*）。
  */
@@ -402,37 +394,39 @@ async function monthlyCalendar(ctx) {
   const monthStartStr = shanghaiDateStr(monthStart)
   const monthEndStr = shanghaiDateStr(monthEnd)
 
-  const sc = buildStoreScopeCondition(ctx.auth, 'o.store_id', 1)
+  const sc = buildStoreScopeCondition(ctx.auth, 'spe.store_id', 1)
 
-  // 按日汇总整店营业额（received - refunded）
+  // 按业绩归属日汇总整店业绩
   const dailyRows = await pg.query(`
     SELECT
-      DATE(o.paid_at) AS date,
-      SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric) AS amount
-    FROM sale_orders o
+      spe.performance_date AS date,
+      SUM(spe.amount::numeric) AS amount
+    FROM sale_order_performance_events spe
     WHERE ${sc.sql}
-      AND o.sale_order_type IN ('销售单', '转换单')
-      AND o.status = '已支付'
-      AND o.legacy_source IS DISTINCT FROM 'workfine'
-      AND o.paid_at >= $${sc.params.length + 1}
-      AND o.paid_at < $${sc.params.length + 2}
-    GROUP BY DATE(o.paid_at)
-    ORDER BY DATE(o.paid_at)
-  `, [...sc.params, monthStart, monthEnd])
+      AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+      AND spe.status = '已支付'
+      AND spe.change_type IN ('首次支付', '回款', '退款')
+      AND spe.legacy_source IS DISTINCT FROM 'workfine'
+      AND spe.performance_date >= $${sc.params.length + 1}::date
+      AND spe.performance_date < $${sc.params.length + 2}::date
+    GROUP BY spe.performance_date
+    ORDER BY spe.performance_date
+  `, [...sc.params, monthStartStr, monthEndStr])
 
   // 月度整店汇总
   const totalRows = await pg.query(`
     SELECT
-      COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric), 0) AS total_amount,
-      COUNT(*) AS total_order_count
-    FROM sale_orders o
+      COALESCE(SUM(spe.amount::numeric), 0) AS total_amount,
+      COUNT(DISTINCT spe.sale_order_id) AS total_order_count
+    FROM sale_order_performance_events spe
     WHERE ${sc.sql}
-      AND o.sale_order_type IN ('销售单', '转换单')
-      AND o.status = '已支付'
-      AND o.legacy_source IS DISTINCT FROM 'workfine'
-      AND o.paid_at >= $${sc.params.length + 1}
-      AND o.paid_at < $${sc.params.length + 2}
-  `, [...sc.params, monthStart, monthEnd])
+      AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
+      AND spe.status = '已支付'
+      AND spe.change_type IN ('首次支付', '回款', '退款')
+      AND spe.legacy_source IS DISTINCT FROM 'workfine'
+      AND spe.performance_date >= $${sc.params.length + 1}::date
+      AND spe.performance_date < $${sc.params.length + 2}::date
+  `, [...sc.params, monthStartStr, monthEndStr])
 
   // 月度整店服务单数
   const svcSc = buildStoreScopeCondition(ctx.auth, 'store_id', 1)
@@ -645,19 +639,19 @@ async function performanceDetail(ctx) {
       o.sale_order_id,
       o.customer_name,
       o.client_phone,
-      COALESCE(sop.paid_at, o.paid_at) AS paid_at,
+      spe.performance_date AS paid_at,
       o.store_id
     FROM sale_payment_item_allocations spia
     JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
     JOIN sale_items si ON si.sale_item_id = spir.sale_item_id
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
     LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
-    LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+    JOIN sale_order_performance_events spe ON spe.sale_payment_id = spir.sale_payment_id
     WHERE spia.employee_id = $1
       AND spia.is_void = false
-      AND ${paidAllocationWindow('sop', 'o', 2, 3)}
+      AND ${performanceEventWindow('spe', 2, 3)}
       ${allocWhere}
-    ORDER BY COALESCE(sop.paid_at, o.paid_at) DESC
+    ORDER BY spe.performance_date DESC, spia.id DESC
   `, allocParams)
 
   // 服务提成明细（基于 service_commissions 表）

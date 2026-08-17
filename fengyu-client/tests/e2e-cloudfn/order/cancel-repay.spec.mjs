@@ -143,6 +143,57 @@ async function caseRepayPartialRejected() {
   expectError(res, 'INVALID_PARAMS', { messageIncludes: '全部未付金额' })
 }
 
+// 混合支付取消/失败后的 pending 储值卡意向不得压低下次回款上限。
+// 场景：total=300，已收=100，旧 pending 卡额=80 使 payable 暂降为 220。
+// 重试时顾客仍应能按真实欠款 200 提交；旧意向应在校验前作废。
+async function caseRepayClearsStalePendingCardBeforeValidation() {
+  await createTestClient()
+  const orderNo = `${NS}_RP_STALE`.slice(0, 30)
+  await createTestPendingSaleOrder({ saleOrderId: orderNo, totalAmount: 300 })
+  await pgQuery(
+    `UPDATE sale_orders
+        SET status = '部分支付', received = 100,
+            prepaid_card_amount = 0, pending_prepaid_card_amount = 80,
+            payable_amount = 220
+      WHERE sale_order_id = $1`,
+    [orderNo]
+  )
+  await pgQuery(
+    `INSERT INTO sale_order_payments (
+       sale_order_id, change_type, amount, payment_method, external_txn_id,
+       status, source_end, paid_at, created_at
+     ) VALUES
+       ($1, '首次支付', 100, '微信', $2, '已支付', 'client', NOW(), NOW()),
+       ($1, '储值卡抵扣', 80, '储值卡', NULL, '待支付', 'client', NULL, NOW())`,
+    [orderNo, `${NS}_RP_STALE_TXN`]
+  )
+
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'order.repay', {
+    saleOrderId: orderNo,
+    paymentMethod: '线下',
+    repayAmount: 200,
+    prepaidCardAmount: 0,
+  })
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+
+  const [order] = await pgQuery(
+    `SELECT pending_prepaid_card_amount, payable_amount, payment_method
+       FROM sale_orders WHERE sale_order_id = $1`,
+    [orderNo]
+  )
+  if (Number(order.pending_prepaid_card_amount) !== 0 || Number(order.payable_amount) !== 300) {
+    throw new Error(`expect pending=0/payable=300, got ${JSON.stringify(order)}`)
+  }
+  const [staleIntent] = await pgQuery(
+    `SELECT status FROM sale_order_payments
+      WHERE sale_order_id = $1 AND change_type = '储值卡抵扣'`,
+    [orderNo]
+  )
+  if (staleIntent?.status !== '已作废') {
+    throw new Error(`expect stale card intent=已作废, got ${staleIntent?.status}`)
+  }
+}
+
 /**
  * 回归 ticket 2026-05-19 paid_sessions：repay 储值卡通道部分回款后 paid_sessions 按比例 floor
  *
@@ -220,6 +271,7 @@ const CASES = [
   ['cancel cross-user → INVALID_PARAMS/订单不存在', caseCancelCrossUserDenied],
   ['repay (储值卡) on 部分支付 全额付清 → received=200/已支付', caseRepayHappy],
   ['repay 部分金额被拒 → INVALID_PARAMS/全部未付金额（ticket 2026-05-21 REQ1）', caseRepayPartialRejected],
+  ['repay 校验前清理旧 pending 储值卡意向 → 可按真实欠款重试', caseRepayClearsStalePendingCardBeforeValidation],
   ['repay (储值卡) 全额付清 12次卡 → paid_sessions=12（回归 ticket 2026-05-19）', caseRepayPureCardPartialRecalcPaidSessions],
   ['repay on 已支付 → INVALID_STATE', caseRepayAlreadyPaidRejected],
 ]

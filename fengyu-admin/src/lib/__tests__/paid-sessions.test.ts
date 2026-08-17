@@ -13,7 +13,20 @@
  *   - refund 下分后单调下降
  */
 import { describe, it, expect } from 'vitest'
-import { computePaidSessionsForItem, recalcPaidSessionsForOrder } from '@/lib/paid-sessions'
+import {
+  computePaidSessionsForItem,
+  CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL,
+  recalcPaidSessionsForOrder,
+} from '@/lib/paid-sessions'
+
+describe('转换单转入 received 重算', () => {
+  it('以旧卡价值 + 净到账为目标，并按转入行金额分摊至分', () => {
+    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain("conversion_order.sale_order_type = '转换单'")
+    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain('conversion_order.converted_value + conversion_order.net_received')
+    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain('LEAST(conversion_order.in_total,')
+    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toMatch(/WHEN rn = item_count\s+THEN target_received -/)
+  })
+})
 
 describe('computePaidSessionsForItem 行级', () => {
   it('储值卡全额抵扣订单：item.received 含抵扣 = item.sale_amount → paid_sessions = session_count', () => {
@@ -251,10 +264,16 @@ describe('退款 receipt 覆盖分流', () => {
 
     const allocationIndex = fixture.executed.findIndex((text) => text.includes('WITH tg AS'))
     const deductIndex = fixture.executed.findIndex((text) => text.includes('WITH refund_items AS'))
+    const conversionIndex = fixture.executed.findIndex((text) => text.includes('WITH conversion_order AS'))
+    const channelSql = fixture.executed.find((text) => text.includes('AS cumulative_received'))
     const recalcIndex = fixture.executed.findIndex((text) => text.includes('paid_sessions = CASE'))
     expect(allocationIndex).toBeGreaterThan(-1)
     expect(deductIndex).toBeGreaterThan(allocationIndex)
-    expect(recalcIndex).toBeGreaterThan(deductIndex)
+    expect(conversionIndex).toBeGreaterThan(deductIndex)
+    expect(recalcIndex).toBeGreaterThan(conversionIndex)
+    expect(channelSql).toContain('ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW')
+    expect(channelSql).toContain('ROUND(prepaid_total * cumulative_received / received_total, 2)')
+    expect(channelSql).not.toContain('item_count')
     expect(fixture.state).toEqual({ received: 60, paidSessions: 6 })
   })
 })

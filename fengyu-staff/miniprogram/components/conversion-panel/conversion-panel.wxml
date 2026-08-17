@@ -15,7 +15,7 @@
       <view class="confirm-item-row">
         <text class="confirm-item-label">应付金额</text>
         <view
-          wx:if="{{item.isManagerSpecial && !item.refBundleId && item.productType !== '组合套餐'}}"
+          wx:if="{{item.isManagerSpecial && !item.refBundleId && item.productType !== '组合套餐' && !isExperienceConversion}}"
           class="confirm-discount-input-wrap"
         >
           <text class="confirm-special-badge">店长特价</text>
@@ -29,6 +29,7 @@
             bindblur="onSaleAmountChange"
           />
         </view>
+        <text wx:elif="{{isExperienceConversion}}" class="confirm-item-receivable">系统按旧卡价值分摊</text>
         <text wx:else class="confirm-item-receivable">¥{{item.saleAmount}}</text>
       </view>
       <!-- 疗程卡规定次数（仅次数卡展示） -->
@@ -128,7 +129,7 @@
   </view>
 
   <!-- 底部差额汇总 -->
-  <view class="conv-summary">
+  <view wx:if="{{!isExperienceConversion}}" class="conv-summary">
     <view class="conv-summary-row">
       <text class="conv-summary-label">应付金额</text>
       <text class="conv-summary-value">¥{{convertInAmount}}</text>
@@ -151,8 +152,30 @@
     </view>
   </view>
 
+  <view class="activity-section">
+    <view class="activity-row">
+      <view>
+        <text class="activity-label">体验转换</text>
+        <text class="prepaid-card-empty-hint">开启后按旧卡价值锁价，不补差、不退款</text>
+      </view>
+      <van-switch
+        checked="{{isExperienceConversion}}"
+        disabled="{{selectedIds.length === 0 || cartItems.length === 0}}"
+        size="40rpx"
+        active-color="#C0322A"
+        bind:change="onToggleExperienceConversion"
+      />
+    </view>
+  </view>
+
+  <view wx:if="{{isExperienceConversion}}" class="prepaid-paid-summary">
+    <text class="prepaid-paid-label">体验转换订单价</text>
+    <text class="prepaid-paid-amount">¥{{deductibleSumDisplay}}</text>
+    <text class="prepaid-paid-fullcover-hint">应付与实付均为 ¥0.00</text>
+  </view>
+
   <!-- 充值卡抵扣（prepaid-card-section 样式，对齐销售单；仅补差额 > 0） -->
-  <view wx:if="{{priceDiff > 0}}" class="prepaid-card-section">
+  <view wx:if="{{priceDiff > 0 && !isExperienceConversion}}" class="prepaid-card-section">
     <text class="prepaid-card-section-title">抵扣（预选）</text>
     <view class="prepaid-card-row">
       <view class="prepaid-card-info">
@@ -190,7 +213,7 @@
   </view>
 
   <!-- 还需支付（仿销售单 prepaid-paid-summary；仅补差额 > 0） -->
-  <view wx:if="{{priceDiff > 0}}" class="prepaid-paid-summary">
+  <view wx:if="{{priceDiff > 0 && !isExperienceConversion}}" class="prepaid-paid-summary">
     <text class="prepaid-paid-label">还需支付</text>
     <block wx:if="{{remaining > 0}}">
       <text class="prepaid-paid-amount">¥{{remainingDisplay}}</text>
@@ -198,8 +221,28 @@
     <text wx:else class="prepaid-paid-fullcover-hint">储值卡全额抵扣，无需补款</text>
   </view>
 
+  <view wx:if="{{remaining > 0 && !isExperienceConversion}}" class="prepaid-card-section">
+    <text class="prepaid-card-section-title">本次收款</text>
+    <view class="prepaid-card-deduct-row">
+      <text class="prepaid-card-deduct-label">实付金额</text>
+      <view class="prepaid-card-amount-input-wrap">
+        <text class="prepaid-card-amount-prefix">¥</text>
+        <input
+          class="prepaid-card-amount-input"
+          type="digit"
+          value="{{receivedAmountInput}}"
+          bindinput="onReceivedAmountInput"
+          bindblur="onReceivedAmountBlur"
+        />
+      </view>
+    </view>
+    <view class="prepaid-card-max-hint">
+      <text>本次收款后挂账 ¥{{debtAmountDisplay}}</text>
+    </view>
+  </view>
+
   <!-- 支付方式：3 卡片组（仅 priceDiff>0 && remaining>0），对齐销售单 order-type-cards -->
-  <view wx:if="{{priceDiff > 0 && remaining > 0}}" class="order-type-cards">
+  <view wx:if="{{priceDiff > 0 && receivedAmount > 0 && !isExperienceConversion}}" class="order-type-cards">
     <view
       class="order-type-card {{paymentMethod === '微信' ? 'order-type-card--active' : ''}}"
       data-method="微信"

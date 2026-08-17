@@ -153,6 +153,132 @@ const RECEIVED_REFUNDED_DEDUCT_SQL = `WITH refund_items AS (
     LEFT JOIN agg ON agg.sale_item_id = ai.sale_item_id
     WHERE si.sale_item_id = ai.sale_item_id`
 
+/**
+ * STEP 1.6：转换单转入行按已兑现价值重建 received。
+ * 已兑现价值 = 转出旧卡价值 + 本单净到账，且封顶转入总价；多行按 sale_amount
+ * 权重分摊，最后一行吸收分币尾差。这样待支付/部分支付转换单不会因创建时写入
+ * 完整转入金额而提前解锁全部次数，结清时又恰好恢复完整转入价值。
+ */
+const CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL = `WITH conversion_order AS (
+      SELECT so.sale_order_type,
+             GREATEST(0, so.received::numeric - so.refunded_amount::numeric) AS net_received,
+             COALESCE((
+               SELECT SUM(GREATEST(0, -out_item.received::numeric))
+               FROM sale_items out_item
+               WHERE out_item.sale_order_id = $1 AND out_item.item_direction = '转出'
+             ), 0)::numeric AS converted_value,
+             COALESCE((
+               SELECT SUM(in_item.sale_amount::numeric)
+               FROM sale_items in_item
+               WHERE in_item.sale_order_id = $1 AND in_item.item_direction = '转入'
+                 AND in_item.sale_amount::numeric > 0
+             ), 0)::numeric AS in_total
+      FROM sale_orders so
+      WHERE so.sale_order_id = $1
+    ),
+    ranked AS (
+      SELECT si.sale_item_id,
+             si.sale_amount::numeric AS item_sale_amount,
+             conversion_order.in_total,
+             LEAST(conversion_order.in_total,
+                   conversion_order.converted_value + conversion_order.net_received) AS target_received,
+             ROW_NUMBER() OVER (ORDER BY si.sale_item_id) AS rn,
+             COUNT(*) OVER () AS item_count
+      FROM sale_items si
+      CROSS JOIN conversion_order
+      WHERE conversion_order.sale_order_type = '转换单'
+        AND si.sale_order_id = $1
+        AND si.item_direction = '转入'
+        AND si.sale_amount::numeric > 0
+    ),
+    provisional AS (
+      SELECT ranked.*,
+             ROUND(target_received * item_sale_amount / in_total, 2) AS provisional_received
+      FROM ranked
+      WHERE in_total > 0
+    ),
+    allocated AS (
+      SELECT sale_item_id,
+             CASE WHEN rn = item_count
+                    THEN target_received - COALESCE(SUM(provisional_received) FILTER (WHERE rn < item_count) OVER (), 0)
+                  ELSE provisional_received
+             END::numeric(10, 2) AS item_received
+      FROM provisional
+    )
+    UPDATE sale_items si
+    SET received = allocated.item_received,
+        updated_at = NOW()
+    FROM allocated
+    WHERE si.sale_item_id = allocated.sale_item_id`
+
+/**
+ * STEP 0：从已结算款项流水重聚合订单储值卡实付净额。
+ * 现金退款不回冲 prepaid_card_amount；未来储值卡退款以 payment_method='储值卡' 的负数退款进入净额。
+ * pending_prepaid_card_amount 是未扣卡意向，不从流水重建。
+ */
+const ORDER_PREPAID_CARD_RECALC_SQL = `WITH card_totals AS (
+      SELECT GREATEST(0, COALESCE(SUM(amount::numeric) FILTER (
+               WHERE status = '已支付'
+                 AND (change_type = '储值卡抵扣' OR (change_type = '退款' AND payment_method = '储值卡'))
+             ), 0))::numeric(10, 2) AS settled_prepaid
+      FROM sale_order_payments
+      WHERE sale_order_id = $1
+    )
+    UPDATE sale_orders so
+    SET prepaid_card_amount = card_totals.settled_prepaid,
+        payable_amount = CASE
+          WHEN so.sale_order_type IN ('销售单','内部单','转换单')
+            THEN GREATEST(0, so.total_amount::numeric - card_totals.settled_prepaid - so.pending_prepaid_card_amount::numeric)
+          ELSE so.payable_amount
+        END,
+        updated_at = NOW()
+    FROM card_totals
+    WHERE so.sale_order_id = $1`
+
+/**
+ * STEP 1.75：按所有 sale_items.received 的有符号净额分摊订单储值卡实付。
+ * 非零实收项按 sale_item_id 稳定排序，以累计比例的相邻边界差分摊，避免逐行四舍五入产生负尾差。
+ * 分母为 0（含正负相抵）或订单储值卡实付为 0 时，全部分摊为 0。
+ */
+const SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL = `WITH order_amounts AS (
+      SELECT prepaid_card_amount::numeric AS prepaid_total
+      FROM sale_orders
+      WHERE sale_order_id = $1
+    ),
+    ranked AS (
+      SELECT si.sale_item_id,
+             si.received::numeric AS item_received,
+             oa.prepaid_total,
+             SUM(si.received::numeric) OVER () AS received_total,
+             SUM(si.received::numeric) OVER (
+               ORDER BY si.sale_item_id
+               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+             ) AS cumulative_received
+      FROM sale_items si
+      CROSS JOIN order_amounts oa
+      WHERE si.sale_order_id = $1 AND si.received::numeric <> 0
+    ),
+    allocated AS (
+      SELECT sale_item_id,
+             (
+               ROUND(prepaid_total * cumulative_received / received_total, 2)
+               - ROUND(prepaid_total * (cumulative_received - item_received) / received_total, 2)
+             )::numeric(10, 2) AS prepaid_share
+      FROM ranked
+      WHERE received_total <> 0 AND prepaid_total <> 0
+    ),
+    targets AS (
+      SELECT si.sale_item_id, COALESCE(allocated.prepaid_share, 0)::numeric(10, 2) AS prepaid_share
+      FROM sale_items si
+      LEFT JOIN allocated ON allocated.sale_item_id = si.sale_item_id
+      WHERE si.sale_order_id = $1
+    )
+    UPDATE sale_items si
+    SET prepaid_card_received = targets.prepaid_share,
+        updated_at = NOW()
+    FROM targets
+    WHERE si.sale_item_id = targets.sale_item_id`
+
 const PAID_SESSIONS_RECALC_SQL = `UPDATE sale_items
 SET paid_sessions = CASE
   WHEN sale_items.session_count IS NULL THEN NULL
@@ -201,6 +327,8 @@ const FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL = `WITH full_refund_zero_items A
  * @param {string} saleOrderId
  */
 async function recalcPaidSessionsForOrder(client, saleOrderId) {
+  // STEP 0：款项流水是 actual 储值卡金额的权威源；pending 仅代表尚未扣卡意向。
+  await client.query(ORDER_PREPAID_CARD_RECALC_SQL, [saleOrderId])
   // STEP 1：两路分流
   //   A. 正向 receipt 覆盖订单毛实收 → received = Σ 有符号 receipt.amount per item（退款为负数）
   //   B. receipt 不完整或无 → 回退瀑布 + note.items[].refundAmount 扣减（保护历史部分支付订单）
@@ -228,6 +356,10 @@ async function recalcPaidSessionsForOrder(client, saleOrderId) {
     // 分支 A 已由负数 receipt 得到净额，故不在 A 中执行本扣减。
     await client.query(RECEIVED_REFUNDED_DEDUCT_SQL, [saleOrderId])
   }
+  // STEP 1.6：转换单转入价值随旧卡折抵 + 实际到账逐步解锁，禁止部分付款提前释放全部次数。
+  await client.query(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL, [saleOrderId])
+  // STEP 1.75：received 已成为最终有符号净额，按它分摊 actual 储值卡/现金通道。
+  await client.query(SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL, [saleOrderId])
   // STEP 2：行级公式重算 paid_sessions（received 已净额，不再下分订单级退款）
   await client.query(PAID_SESSIONS_RECALC_SQL, [saleOrderId])
   // STEP 2.5：0 元 item 若已随退款全退，覆盖 paid_sessions=0（否则 sale_amount<=0 兜底会保留满次数）
@@ -256,6 +388,9 @@ module.exports = {
   SALE_ITEMS_RECEIVED_ALLOC_SQL,
   SALE_ITEMS_RECEIVED_FROM_RECEIPTS_SQL,
   RECEIVED_REFUNDED_DEDUCT_SQL,
+  CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL,
+  ORDER_PREPAID_CARD_RECALC_SQL,
+  SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL,
   PAID_SESSIONS_RECALC_SQL,
   FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL,
   recalcPaidSessionsForOrder,

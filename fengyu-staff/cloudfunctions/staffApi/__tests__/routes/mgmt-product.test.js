@@ -346,7 +346,7 @@ describe('mgmtProduct.cycleStats SQL 形态', () => {
     return pg.query.mock.calls.map((c) => c[0]).find((s) => /WITH\s+daily_agg\s+AS/.test(s))
   }
 
-  test('daily_agg GROUP BY 含 client_user_id, store_id, product_kind, paid_at::date', async () => {
+  test('daily_agg GROUP BY 含 client_user_id, store_id, product_kind, performance_date', async () => {
     setupCycleMocks({})
     const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
     await cycleStats(ctx)
@@ -355,11 +355,11 @@ describe('mgmtProduct.cycleStats SQL 形态', () => {
     expect(sql).toBeTruthy()
     // GROUP BY 子句紧随 daily_agg
     expect(sql).toMatch(
-      /GROUP BY\s+so\.client_user_id\s*,\s*so\.store_id\s*,\s*pc\.product_kind\s*,\s*so\.paid_at::date/,
+      /GROUP BY\s+so\.client_user_id\s*,\s*so\.store_id\s*,\s*pc\.product_kind\s*,\s*sipe\.performance_date/,
     )
   })
 
-  test('daily_agg WHERE 含 sale_order_type IN ("销售单","转换单") + status="已支付" + paid_at <= $2', async () => {
+  test('daily_agg WHERE 含 sale_order_type IN ("销售单","转换单") + status="已支付" + performance_date <= $2', async () => {
     setupCycleMocks({})
     const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
     await cycleStats(ctx)
@@ -367,7 +367,8 @@ describe('mgmtProduct.cycleStats SQL 形态', () => {
     const sql = getCycleSql()
     expect(sql).toMatch(/so\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/)
     expect(sql).toMatch(/so\.status\s*=\s*'已支付'/)
-    expect(sql).toMatch(/so\.paid_at::date\s*<=\s*\$2/)
+    expect(sql).toMatch(/sipe\.performance_date\s*<=\s*\$2/)
+    expect(sql).toMatch(/FROM\s+sale_item_performance_events\s+sipe/)
   })
 
   test('qualifying_days WHERE 用 day_received >= $3 不等式（threshold 参数化）', async () => {
@@ -420,6 +421,16 @@ describe('mgmtProduct.cycleStats SQL 形态', () => {
     const sql = getCycleSql()
     expect(sql).toMatch(/tiyan\s+AS\s*\(/)
     expect(sql).toMatch(/NOT EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+first_entry\s+f/)
+  })
+
+  test('tiyan 只认正向购买事件，纯退款不计入体验客群', async () => {
+    setupCycleMocks({})
+    const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
+    await cycleStats(ctx)
+
+    const sql = getCycleSql()
+    expect(sql).toMatch(/BOOL_OR\(sipe\.amount::numeric\s*>\s*0\)\s+AS\s+has_purchase/)
+    expect(sql).toMatch(/tiyan\s+AS\s*\([\s\S]*?WHERE\s+pa\.has_purchase\s+AND\s+NOT EXISTS/)
   })
 
   test('period_agg WHERE 含 purchase_date BETWEEN $1 AND $2', async () => {

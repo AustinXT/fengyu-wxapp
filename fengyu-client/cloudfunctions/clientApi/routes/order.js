@@ -220,6 +220,25 @@ async function resolveLakalaMerchant(storeId) {
   return { merchantNo, termNo }
 }
 
+async function resolveLakalaMerchantInTransaction(client, storeId) {
+  if (!lakalaConfig.isReady()) return null
+  if (!storeId) return null
+  const result = await client.query(
+    `SELECT lm.merchant_no, lm.term_no, lm.enabled
+       FROM stores s
+       JOIN lakala_merchants lm ON lm.id = s.lakala_merchant_id
+      WHERE s.store_id = $1`,
+    [storeId]
+  )
+  if (result.rows.length === 0) return null
+  const row = result.rows[0]
+  if (!row.enabled || !row.merchant_no) return null
+  if (!row.term_no) {
+    throw new Error('INVALID_STATE: LAKALA_TERM_NO_MISSING: 该门店未配置拉卡拉终端号，请联系管理员')
+  }
+  return { merchantNo: row.merchant_no, termNo: row.term_no }
+}
+
 /**
  * 提取客户端 IP（拉卡拉风控字段 location_info.request_ip 必送）。
  * CloudBase 云函数走 cloud.getWXContext().CLIENTIP；某些 callFunction 调用下可能为空，兜底 '0.0.0.0'。
@@ -246,24 +265,43 @@ function getRequestIp() {
  * }>}
  */
 async function createLakalaPreorder({
-  orderNo, merchantNo, termNo,
+  orderNo, outTradeNo, merchantNo, termNo,
   payAmountYuan, accountType, transType,
   openid, subAppid, requestIp,
   subject, attach,
 }) {
   const totalAmountFen = Math.round(payAmountYuan * 100)
-  const outTradeNo = `${orderNo}_${Math.floor(Date.now() / 1000)}`
+  if (!outTradeNo) {
+    throw new Error('INVALID_STATE: PAYMENT_INTENT_NOT_RESERVED: 支付场次尚未预占')
+  }
 
-  const resp = await lakalaClient.requestPreorder({
-    merchantNo, termNo, outTradeNo,
-    accountType, transType,
-    totalAmountFen,
-    requestIp: requestIp || '0.0.0.0',
-    subject: subject || `凤御美容订单 ${orderNo}`,
-    attach: attach || orderNo,
-    subAppid, openid,
-    timeoutExpressMin: 10,
-  })
+  let resp
+  try {
+    resp = await lakalaClient.requestPreorder({
+      merchantNo, termNo, outTradeNo,
+      accountType, transType,
+      totalAmountFen,
+      requestIp: requestIp || '0.0.0.0',
+      subject: subject || `凤御美容订单 ${orderNo}`,
+      attach: attach || orderNo,
+      subAppid, openid,
+      timeoutExpressMin: 10,
+    })
+  } catch (err) {
+    const definitelyNotCreated = err
+      && /LAKALA_PREORDER_FAILED/.test(String(err.message || ''))
+    if (definitelyNotCreated) {
+      await pg.query(
+        `UPDATE sale_orders
+         SET lakala_out_order_no = NULL, updated_at = NOW()
+         WHERE sale_order_id = $1
+           AND status IN ('待支付', '部分支付')
+           AND lakala_out_order_no = $2`,
+        [orderNo, outTradeNo]
+      )
+    }
+    throw err
+  }
 
   // 微信通道：校验拉卡拉返回的 app_id 与我方 subAppid 一致（防止拉卡拉商户绑定错误导致用户支付到别人账户）
   if (accountType === 'WECHAT' && transType === '71') {
@@ -272,15 +310,6 @@ async function createLakalaPreorder({
     }
   }
 
-  // 持久化本次商户流水号（聚合主扫的 out_trade_no），供后续 queryLakalaStatus 兜底查询。
-  // CAS-EXEMPT：仅写 lakala_out_order_no（列名沿用，语义为"最近一次发起 preorder 的 out_trade_no"），不翻 status。
-  // 同时刷新 updated_at，让 payNotify.runPaymentReconcile 定时补偿窗口能锚定"最近一次发起拉卡拉支付"
-  // （sale_order_datetime 是下单时间不随回款变化，回款会覆写 lakala_out_order_no；updated_at 才能反映）。
-  await pg.query(
-    'UPDATE sale_orders SET lakala_out_order_no = $1, updated_at = NOW() WHERE sale_order_id = $2',
-    [outTradeNo, orderNo]
-  )
-
   if (accountType === 'WECHAT' && transType === '71') {
     return { outTradeNo, tradeNo: resp.tradeNo, paymentParams: resp.paymentParams }
   }
@@ -288,6 +317,240 @@ async function createLakalaPreorder({
     return { outTradeNo, tradeNo: resp.tradeNo, alipayQrUrl: resp.alipayQrUrl }
   }
   return { outTradeNo, tradeNo: resp.tradeNo }
+}
+
+let lastLakalaOutTradeSuffix = 0
+
+function buildLakalaOutTradeNo(orderNo, excludedOutTradeNo) {
+  const excludedMatch = String(excludedOutTradeNo || '').match(/_(\d+)$/)
+  const excludedSuffix = excludedMatch ? Number(excludedMatch[1]) : 0
+  let suffix = Math.max(Math.floor(Date.now() / 1000), lastLakalaOutTradeSuffix + 1)
+  if (suffix === excludedSuffix) suffix += 1
+  lastLakalaOutTradeSuffix = suffix
+  return `${orderNo}_${suffix}`
+}
+
+async function releaseLakalaPaymentIntent(orderNo, outTradeNo) {
+  return pg.query(
+    `UPDATE sale_orders
+     SET lakala_out_order_no = NULL, updated_at = NOW()
+     WHERE sale_order_id = $1
+       AND status IN ('待支付', '部分支付')
+       AND lakala_out_order_no = $2
+     RETURNING sale_order_id`,
+    [orderNo, outTradeNo]
+  )
+}
+
+function activePaymentIntentError(order) {
+  const err = new Error('CONFLICT: PAYMENT_INTENT_ACTIVE: 本次支付单已生成，请勿重复发起')
+  err.activeOutTradeNo = order.lakala_out_order_no
+  err.activeStoreId = order.store_id
+  err.activeMerchant = order._lakalaMerchant
+  return err
+}
+
+function normalizeRequestedPayAmount(payAmountInput) {
+  if (payAmountInput === undefined || payAmountInput === null) return null
+  const value = Number(payAmountInput)
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error('INVALID_PARAMS: 支付金额无效')
+  }
+  if (Math.abs(Math.round(value * 100) - value * 100) > 1e-6) {
+    throw new Error('INVALID_PARAMS: 支付金额最多保留 2 位小数')
+  }
+  return Math.round(value * 100) / 100
+}
+
+/**
+ * 在单个行锁事务内重读订单资金快照、校验卡余额、计算本次金额并预占拉卡拉单号。
+ * payment_method / client_user_id 的支付计划更新必须以刚预占的精确 out_trade_no 为 CAS。
+ */
+async function reserveDirectOnlinePaymentIntent({
+  orderNo,
+  userId,
+  payAmountInput,
+  paymentMethod,
+  outTradeNo,
+  requireAlipayShareSource = false,
+}) {
+  const requestedAmount = normalizeRequestedPayAmount(payAmountInput)
+  return pg.transaction(async (client) => {
+    const lockedRes = await client.query(
+      `SELECT sale_order_id, status, sale_order_type, store_id, client_user_id, opened_by,
+              sale_order_datetime, total_amount, payable_amount, prepaid_card_amount,
+              pending_prepaid_card_amount, received, refunded_amount, first_payment_amount,
+              lakala_out_order_no
+       FROM sale_orders
+       WHERE sale_order_id = $1
+       FOR UPDATE`,
+      [orderNo]
+    )
+    if (lockedRes.rows.length === 0) {
+      throw new Error('INVALID_PARAMS: 订单不存在')
+    }
+    const order = lockedRes.rows[0]
+
+    if (order.client_user_id) {
+      if (order.client_user_id !== userId) {
+        throw new Error('PERMISSION_DENIED: 无权操作该订单')
+      }
+    } else if (!order.opened_by) {
+      throw new Error('INVALID_PARAMS: 订单不存在')
+    }
+    if (!['待支付', '部分支付'].includes(order.status)) {
+      throw new Error('INVALID_PARAMS: 订单状态不允许支付')
+    }
+    if (order.status === '待支付' && !order.opened_by) {
+      const orderTime = new Date(order.sale_order_datetime)
+      if (Date.now() - orderTime.getTime() > 10 * 60 * 1000) {
+        throw new Error('INVALID_PARAMS: 订单已超时，请重新下单')
+      }
+    }
+
+    const totalAmount = Math.round(Number(order.total_amount || 0) * 100) / 100
+    const prepaidAmount = Math.round(Number(order.prepaid_card_amount || 0) * 100) / 100
+    const pendingPrepaidAmount = Math.round(Number(order.pending_prepaid_card_amount || 0) * 100) / 100
+    const computedPayableAmount = Math.round(
+      (totalAmount - prepaidAmount - pendingPrepaidAmount) * 100
+    ) / 100
+    const rawStoredPayableAmount = order.payable_amount == null
+      ? null
+      : Math.round(Number(order.payable_amount || 0) * 100) / 100
+    const effectivePayableAmount = order.sale_order_type === '充值单'
+      ? (rawStoredPayableAmount == null ? computedPayableAmount : rawStoredPayableAmount)
+      : (rawStoredPayableAmount != null && rawStoredPayableAmount > 0
+          ? rawStoredPayableAmount
+          : computedPayableAmount)
+    const receivedAmount = Math.round(Number(order.received || 0) * 100) / 100
+    const refundedAmount = Math.round(Number(order.refunded_amount || 0) * 100) / 100
+    const netReceived = Math.round((receivedAmount - refundedAmount) * 100) / 100
+    const remainingBase = order.sale_order_type === '充值单'
+      ? effectivePayableAmount
+      : totalAmount - pendingPrepaidAmount
+    const remaining = Math.round((remainingBase - netReceived) * 100) / 100
+
+    if (effectivePayableAmount <= 0 && order.status === '待支付') {
+      return {
+        prepaidFull: true,
+        orderNo,
+        totalAmount: order.total_amount,
+        status: '已支付',
+      }
+    }
+    if (remaining <= 0) {
+      throw new Error('INVALID_STATE: 订单无欠款')
+    }
+
+    const firstPaymentCap = Math.round(Number(order.first_payment_amount || 0) * 100) / 100
+    const effectiveRemaining = firstPaymentCap > 0
+      ? Math.min(remaining, firstPaymentCap)
+      : remaining
+    const payAmount = requestedAmount == null ? effectiveRemaining : requestedAmount
+    if (payAmount > effectiveRemaining + 0.001) {
+      throw new Error('INVALID_PARAMS: 支付金额超过剩余应付')
+    }
+    if (firstPaymentCap > 0 && payAmount + 0.001 < effectiveRemaining) {
+      throw new Error('INVALID_PARAMS: 支付金额必须等于本次冻结金额')
+    }
+
+    if (pendingPrepaidAmount > 0) {
+      const cardRes = await client.query(
+        'SELECT balance FROM prepaid_cards WHERE user_id = $1 FOR UPDATE',
+        [userId]
+      )
+      if (cardRes.rows.length === 0
+          || Number(cardRes.rows[0].balance || 0) + 0.001 < pendingPrepaidAmount) {
+        throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足，请重新选择抵扣金额')
+      }
+    }
+
+    if (requireAlipayShareSource && !lakalaConfig.readConfig().alipayShareSource) {
+      throw new Error('INVALID_STATE: ALIPAY_NOT_AVAILABLE: 暂不支持支付宝，请使用微信支付')
+    }
+
+    const merchant = await resolveLakalaMerchantInTransaction(client, order.store_id)
+    if (!merchant) {
+      throw new Error('INVALID_STATE: LAKALA_NOT_CONFIGURED: 该门店未启用拉卡拉聚合支付，请联系管理员')
+    }
+
+    if (order.lakala_out_order_no) {
+      order._lakalaMerchant = merchant
+      throw activePaymentIntentError(order)
+    }
+
+    const claimRes = await client.query(
+      `UPDATE sale_orders
+       SET lakala_out_order_no = $1, updated_at = NOW()
+       WHERE sale_order_id = $2
+         AND status = $3
+         AND lakala_out_order_no IS NULL
+       RETURNING sale_order_id`,
+      [outTradeNo, orderNo, order.status]
+    )
+    if (claimRes.rowCount !== 1) {
+      throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 支付场次已变化，请刷新后重试')
+    }
+
+    const planRes = await client.query(
+      `UPDATE sale_orders
+       SET client_user_id = CASE
+             WHEN client_user_id IS NULL AND opened_by IS NOT NULL THEN $1
+             ELSE client_user_id
+           END,
+           payment_method = $2,
+           updated_at = NOW()
+       WHERE sale_order_id = $3
+         AND status = $4
+         AND lakala_out_order_no = $5
+       RETURNING sale_order_id`,
+      [userId, paymentMethod, orderNo, order.status, outTradeNo]
+    )
+    if (planRes.rowCount !== 1) {
+      throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 支付场次已变化，请刷新后重试')
+    }
+
+    return {
+      prepaidFull: false,
+      orderNo,
+      outTradeNo,
+      storeId: order.store_id,
+      status: order.status,
+      totalAmount: order.total_amount,
+      payAmount,
+      pendingPrepaidAmount,
+      merchant,
+    }
+  })
+}
+
+async function reserveDirectOnlinePaymentIntentWithTerminalRetry(options) {
+  let excludedOutTradeNo = null
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const outTradeNo = buildLakalaOutTradeNo(options.orderNo, excludedOutTradeNo)
+    try {
+      return await reserveDirectOnlinePaymentIntent({ ...options, outTradeNo })
+    } catch (err) {
+      if (!err || !err.activeOutTradeNo || attempt > 0) throw err
+      const merchant = err.activeMerchant || await resolveLakalaMerchant(err.activeStoreId)
+      if (!merchant) throw err
+      try {
+        const oldTrade = await lakalaClient.queryTrade({
+          merchantNo: merchant.merchantNo,
+          termNo: merchant.termNo,
+          outTradeNo: err.activeOutTradeNo,
+        })
+        if (!oldTrade || !['FAIL', 'CLOSE'].includes(oldTrade.tradeState)) throw err
+        await releaseLakalaPaymentIntent(options.orderNo, err.activeOutTradeNo)
+        excludedOutTradeNo = err.activeOutTradeNo
+      } catch (queryErr) {
+        if (queryErr === err) throw err
+        console.warn('[order/reserveDirectOnlinePaymentIntent] 旧意图状态不确定，保留:', options.orderNo, queryErr && queryErr.message)
+        throw err
+      }
+    }
+  }
+  throw new Error('CONFLICT: PAYMENT_INTENT_ACTIVE: 本次支付单已生成，请勿重复发起')
 }
 
 /**
@@ -330,7 +593,19 @@ async function createLakalaAlipayShareCode({
 async function closeExpiredOrder(orderNo) {
   return await pg.transaction(async (client) => {
     const result = await client.query(
-      "UPDATE sale_orders SET status = '已关闭', updated_at = NOW() WHERE sale_order_id = $1 AND status = '待支付' AND opened_by IS NULL",
+      `UPDATE sale_orders
+       SET status = '已关闭',
+           pending_prepaid_card_amount = 0,
+           payable_amount = CASE
+             WHEN sale_order_type IN ('销售单','内部单','转换单')
+               THEN GREATEST(0, total_amount::numeric - prepaid_card_amount::numeric)
+             ELSE payable_amount
+           END,
+           updated_at = NOW()
+       WHERE sale_order_id = $1
+         AND status = '待支付'
+         AND opened_by IS NULL
+         AND lakala_out_order_no IS NULL`,
       [orderNo]
     )
     if (result.rowCount > 0) {
@@ -520,6 +795,7 @@ async function scanDetail(ctx) {
   const items = await pg.query(`
     SELECT
       si.sale_item_id, si.unit_price, si.quantity, si.received,
+      si.prepaid_card_received, si.cash_received,
       si.sale_amount, si.session_count,
       COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
       si.product_name,
@@ -538,9 +814,10 @@ async function scanDetail(ctx) {
   // 应付实金 = total - prepaid_card_amount（payable_amount 列冗余，兜底现算）
   const totalAmount = Number(order.total_amount || 0)
   const prepaidCardAmount = Number(order.prepaid_card_amount || 0)
+  const pendingPrepaidCardAmount = Number(order.pending_prepaid_card_amount || 0)
   const payableAmount = Number(order.payable_amount || 0) > 0
     ? Number(order.payable_amount)
-    : Math.round((totalAmount - prepaidCardAmount) * 100) / 100
+    : Math.round((totalAmount - prepaidCardAmount - pendingPrepaidCardAmount) * 100) / 100
   const received = Number(order.received || 0)
   const refundedAmount = Number(order.refunded_amount || 0)
   // 首付金额（admin 在线上分次开单时写入；NULL 表示按剩余应付全额收）
@@ -558,10 +835,12 @@ async function scanDetail(ctx) {
       orderType: order.sale_order_type,
       totalAmount,
       prepaidCardAmount,
+      pendingPrepaidCardAmount,
       payableAmount,
       received,
       refundedAmount,
       firstPaymentAmount,
+      isExperienceConversion: order.is_experience_conversion === true,
       paymentMethod: order.payment_method || '微信',
       couponDiscount: Number(order.coupon_discount || 0)
     },
@@ -575,6 +854,8 @@ async function scanDetail(ctx) {
       sessionCount: i.session_count,
       unit: i.unit,
       received: i.received,
+      prepaidCardReceived: i.prepaid_card_received,
+      cashReceived: i.cash_received,
       refundedAmount: Number(itemRefundMap.get(i.sale_item_id) || 0),
       coverImage: i.cover_image || ''
     }))
@@ -1037,22 +1318,24 @@ async function create(ctx) {
     // 创建订单主表（全额抵扣时直接 '已支付' + paid_at）
     // 2026-04-26 sale-order-domain-refactor:
     //   - paid_amount 列已 DROP；统一改用 received（已到账金额，初始 0；全额储值卡抵扣时 = prepaidCardAmount）
-    //   - payable_amount = total_amount - prepaid_card_amount（应付实金，取代旧 paid_amount 在 create 时的语义）
+    //   - payable_amount = total_amount - actual prepaid - pending prepaid（约定现金应付）
     //   - 全额抵扣单的 received = prepaidCardAmount（储值卡抵扣等同已收；券全额抵扣 prepaidCardAmount=0 → received=0）
     const initialStatus = zeroPayable ? '已支付' : '待支付'
     const initialReceived = zeroPayable ? prepaidCardAmount : 0
+    const initialSettledPrepaid = prepaidFullPaid ? prepaidCardAmount : 0
+    const initialPendingPrepaid = prepaidFullPaid ? 0 : prepaidCardAmount
     await client.query(
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id, store_name,
         sale_order_datetime, client_user_id, client_phone, customer_name,
-        total_amount, prepaid_card_amount, received, payable_amount, payment_method,
+        total_amount, prepaid_card_amount, pending_prepaid_card_amount, received, payable_amount, payment_method,
         preferred_employee_id, coupon_id, coupon_discount,
         paid_at, created_at, updated_at
-      ) VALUES ($1, $2, '销售单', $3, $4, $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $6, $6)`,
+      ) VALUES ($1, $2, '销售单', $3, $4, $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $6, $6)`,
       [
         orderNo, initialStatus, documentType, marketName, storeId, now, userId,
         ctx.auth.phone || null, customerName,
-        totalAmount, prepaidCardAmount, initialReceived, paidAmount, effectivePaymentMethod,
+        totalAmount, initialSettledPrepaid, initialPendingPrepaid, initialReceived, paidAmount, effectivePaymentMethod,
         preferredStaffWfId || null, inputCouponId || null, couponDiscount,
         zeroPayable ? now : null
       ]
@@ -1166,6 +1449,7 @@ async function create(ctx) {
       saleOrderId: orderNo,
       totalAmount,
       prepaidCardAmount: finalPrepaidCardAmount,
+      pendingPrepaidCardAmount: 0,
       paidAmount: finalPaidAmount,
       paymentMethod: finalPaymentMethod,
       status: '已支付',
@@ -1181,48 +1465,12 @@ async function create(ctx) {
     orderNo,
     saleOrderId: orderNo,
     totalAmount,
-    prepaidCardAmount: finalPrepaidCardAmount,
+    prepaidCardAmount: 0,
+    pendingPrepaidCardAmount: finalPrepaidCardAmount,
     paidAmount: finalPaidAmount,
     paymentMethod: finalPaymentMethod,
     status: '待支付'
   }
-}
-
-/**
- * 计算订单的"本次应付剩余"
- *
- * 2026-04-26 sale-order-domain-refactor 后：
- *   sale_orders.paid_amount / wechat_transaction_id / alipay_transaction_id 三列已 DROP；
- *   实付汇总改为 sale_orders.received（已到账金额冗余快照），
- *   退款汇总改为 sale_orders.refunded_amount（聚合 sale_order_payments[退款,已支付] 取负）。
- *
- * 对外"剩余应付"语义：
- *   payable_amount = total_amount - prepaid_card_amount
- *   remaining = payable_amount - 已到账金额 + 已退款金额（退款冲销已到账，需要补回欠款）
- *
- * 已到账金额（含储值卡抵扣）= Σ (payments.amount WHERE status='已支付' AND change_type IN ('首次支付','回款','储值卡抵扣'))
- * 退款金额（取负）         = Σ (payments.amount WHERE status='已支付' AND change_type='退款')
- *
- * 这里 paidSum 返回净到账（已到账 + 退款），与 received - refunded_amount 等价。
- */
-async function calcPaymentRemaining(orderNo, orderRow) {
-  const totalAmount = Number(orderRow.total_amount || 0)
-  const prepaidCardAmount = Number(orderRow.prepaid_card_amount || 0)
-  const payableAmount = Math.round((totalAmount - prepaidCardAmount) * 100) / 100
-
-  // 净到账 = 首次支付/回款/储值卡抵扣 - 退款（amount<0 自带负号）
-  // pg.query 返回 rows 数组（见 db/pg.js），不需要 .rows 解包
-  const rows = await pg.query(
-    `SELECT COALESCE(SUM(amount), 0) AS paid_sum
-     FROM sale_order_payments
-     WHERE sale_order_id = $1
-       AND status = '已支付'
-       AND change_type IN ('首次支付','回款','储值卡抵扣','退款')`,
-    [orderNo]
-  )
-  const paidSum = Number(rows[0]?.paid_sum || 0)
-  const remaining = Math.round((payableAmount - paidSum) * 100) / 100
-  return { payableAmount, paidSum, remaining }
 }
 
 /**
@@ -1254,42 +1502,34 @@ async function pay(ctx) {
     throw new Error('INVALID_PARAMS: 订单不存在')
   }
 
-  const order = orders[0]
+  const preflightOrder = orders[0]
 
-  // 权限：已绑定用户 → 校验一致；未绑定 → 仅允许员工开单订单
-  if (order.client_user_id) {
-    if (order.client_user_id !== userId) {
+  // 事务前只做快速鉴权/自助超时清理；资金字段和状态必须在后续 FOR UPDATE 后重读。
+  if (preflightOrder.client_user_id) {
+    if (preflightOrder.client_user_id !== userId) {
       throw new Error('PERMISSION_DENIED: 无权操作该订单')
     }
-  } else if (!order.opened_by) {
+  } else if (!preflightOrder.opened_by) {
     throw new Error('INVALID_PARAMS: 订单不存在')
-  }
-
-  // 允许支付的状态：待支付 / 部分支付
-  if (order.status !== '待支付' && order.status !== '部分支付') {
-    throw new Error('INVALID_PARAMS: 订单状态不允许支付')
   }
 
   // 10分钟超时检查仅对 '待支付' 且顾客自助单(opened_by 为空)生效：
   // 部分支付订单已有首次到账不自动过期；员工单不套用自助超时（closeExpiredOrder 内部跳过，issue #27）
-  if (order.status === '待支付') {
-    const orderTime = new Date(order.sale_order_datetime)
+  if (preflightOrder.status === '待支付') {
+    const orderTime = new Date(preflightOrder.sale_order_datetime)
     if (Date.now() - orderTime.getTime() > 10 * 60 * 1000) {
       const closed = await closeExpiredOrder(orderNo)
       if (closed) throw new Error('INVALID_PARAMS: 订单已超时，请重新下单')
     }
   }
 
-  const now = new Date()
-
-  // 全额储值卡抵扣：payable_amount = 0（total = prepaid_card_amount），订单已在 create 阶段置 '已支付'
-  // 此分支属兜底防御——理论上不会进入本函数
-  const totalAmount0 = Number(order.total_amount || 0)
-  const prepaidCardAmount0 = Number(order.prepaid_card_amount || 0)
-  const payableAmount0 = Number(order.payable_amount || 0) > 0
-    ? Number(order.payable_amount)
-    : Math.round((totalAmount0 - prepaidCardAmount0) * 100) / 100
-  if (payableAmount0 === 0 && order.status === '待支付') {
+  const reservation = await reserveDirectOnlinePaymentIntentWithTerminalRetry({
+    orderNo,
+    userId,
+    payAmountInput,
+    paymentMethod: '微信',
+  })
+  if (reservation.prepaidFull) {
     ctx.result = {
       orderNo,
       status: '已支付',
@@ -1299,72 +1539,25 @@ async function pay(ctx) {
     return
   }
 
-  // 计算剩余应付 = payable_amount - 净到账（received - refunded_amount）
-  const { remaining } = await calcPaymentRemaining(orderNo, order)
-  const effectiveRemaining = remaining
-
-  // 校验本次支付金额
-  let thisPayAmount
-  if (payAmountInput !== undefined && payAmountInput !== null) {
-    const v = Number(payAmountInput)
-    if (!Number.isFinite(v) || v <= 0) {
-      throw new Error('INVALID_PARAMS: 支付金额无效')
-    }
-    // 浮点容差：39.8 * 100 在 JS 里是 3979.9999999999995，严格 !== 会误判
-    if (Math.abs(Math.round(v * 100) - v * 100) > 1e-6) {
-      throw new Error('INVALID_PARAMS: 支付金额最多保留 2 位小数')
-    }
-    if (v > effectiveRemaining + 0.001) {
-      throw new Error('INVALID_PARAMS: 支付金额超过剩余应付')
-    }
-    thisPayAmount = Math.round(v * 100) / 100
-  } else {
-    thisPayAmount = effectiveRemaining
-  }
-
-  // 自动绑定 client_user_id（仅 staff 来源且未绑定时）
-  if (!order.client_user_id && order.opened_by) {
-    // CAS-EXEMPT: 仅写 PII（client_user_id）+ 支付方式，不翻 status
-    await pg.query(
-      'UPDATE sale_orders SET client_user_id = $1, payment_method = $2, updated_at = $3 WHERE sale_order_id = $4',
-      [userId, '微信', now, orderNo]
-    )
-  } else {
-    // CAS-EXEMPT: 仅设支付方式，不翻 status
-    await pg.query(
-      "UPDATE sale_orders SET payment_method = '微信', updated_at = $1 WHERE sale_order_id = $2",
-      [now, orderNo]
-    )
-  }
-
-  const totalAmount = order.total_amount
-
-  const merchant = await resolveLakalaMerchant(order.store_id)
-  if (!merchant) {
-    throw new Error('INVALID_STATE: LAKALA_NOT_CONFIGURED: 该门店未启用拉卡拉聚合支付，请联系管理员')
-  }
   const cfg = lakalaConfig.readConfig()
   const { paymentParams } = await createLakalaPreorder({
     orderNo,
-    merchantNo: merchant.merchantNo,
-    termNo: merchant.termNo,
-    payAmountYuan: thisPayAmount,
+    outTradeNo: reservation.outTradeNo,
+    merchantNo: reservation.merchant.merchantNo,
+    termNo: reservation.merchant.termNo,
+    payAmountYuan: reservation.payAmount,
     accountType: 'WECHAT',
     transType: '71',
     openid: ctx.auth.openid,
     subAppid: cfg.subAppid,
     requestIp: getRequestIp(),
   })
-  // 首付金额已发起拉卡拉支付：清空 first_payment_amount，让后续扫码（继续支付）按剩余应付走
-  // 仅清空非空值，避免无谓写；不影响 NULL 默认（全额）订单
-  await pg.query(
-    'UPDATE sale_orders SET first_payment_amount = NULL, updated_at = $1 WHERE sale_order_id = $2 AND first_payment_amount IS NOT NULL',
-    [now, orderNo]
-  )
+  // first_payment_amount 必须保留到真实支付回调入账；仅发起预下单不代表付款成功。
+  // payNotify 成功写入首笔款项时再清空，避免顾客放弃付款后重新扫码被放大到全额。
   ctx.result = {
     orderNo,
-    totalAmount,
-    paidAmount: thisPayAmount,
+    totalAmount: reservation.totalAmount,
+    paidAmount: reservation.payAmount,
     paymentMethod: '微信',
     paymentParams,  // wx.requestPayment 5 字段：timeStamp/nonceStr/package/signType/paySign
   }
@@ -1409,6 +1602,9 @@ async function offlinePay(ctx) {
   if (order.status !== '待支付') {
     throw new Error('INVALID_PARAMS: 订单状态不允许付款')
   }
+  if (order.lakala_out_order_no) {
+    throw new Error('CONFLICT: PAYMENT_INTENT_ACTIVE: 在线支付仍在处理中，暂不能改为线下付款')
+  }
 
   // 10分钟超时检查（关闭并释放优惠券）；员工单 closeExpiredOrder 内部跳过，不抛超时（issue #27）
   const orderTimeOffline = new Date(order.sale_order_datetime)
@@ -1420,9 +1616,10 @@ async function offlinePay(ctx) {
   // 全额储值卡抵扣：payable_amount = 0，直接短路返回已支付
   const totalAmountOff = Number(order.total_amount || 0)
   const prepaidCardAmountOff = Number(order.prepaid_card_amount || 0)
+  const pendingPrepaidCardAmountOff = Number(order.pending_prepaid_card_amount || 0)
   const payableAmountOff = Number(order.payable_amount || 0) > 0
     ? Number(order.payable_amount)
-    : Math.round((totalAmountOff - prepaidCardAmountOff) * 100) / 100
+    : Math.round((totalAmountOff - prepaidCardAmountOff - pendingPrepaidCardAmountOff) * 100) / 100
   if (payableAmountOff === 0) {
     ctx.result = {
       orderNo,
@@ -1434,7 +1631,7 @@ async function offlinePay(ctx) {
 
   const now = new Date()
   const offlineUpd = await pg.query(
-    "UPDATE sale_orders SET client_user_id = COALESCE(client_user_id, $1), payment_method = '线下', updated_at = $2 WHERE sale_order_id = $3 AND status = '待支付'",
+    "UPDATE sale_orders SET client_user_id = COALESCE(client_user_id, $1), payment_method = '线下', updated_at = $2 WHERE sale_order_id = $3 AND status = '待支付' AND lakala_out_order_no IS NULL",
     [userId, now, orderNo]
   )
   if (offlineUpd.rowCount === 0) {
@@ -1502,6 +1699,7 @@ async function list(ctx) {
       o.total_amount,
       o.payable_amount,
       o.prepaid_card_amount,
+      o.pending_prepaid_card_amount,
       o.received,
       o.refunded_amount,
       o.created_at
@@ -1524,6 +1722,8 @@ async function list(ctx) {
         si.sale_item_id,
         si.quantity,
         si.received,
+        si.prepaid_card_received,
+        si.cash_received,
         si.sale_amount,
         si.session_count,
         si.remaining_sessions,
@@ -1622,6 +1822,8 @@ async function detail(ctx) {
       si.quantity,
       si.sale_amount,
       si.received,
+      si.prepaid_card_received,
+      si.cash_received,
       si.pending_received,
       si.expire_date,
       si.remark,
@@ -1724,14 +1926,19 @@ async function cancel(ctx) {
 
   const order = orders[0]
 
+  if (order.lakala_out_order_no) {
+    throw new Error('CONFLICT: PAYMENT_INTENT_ACTIVE: 在线支付仍在处理中，暂不能取消订单')
+  }
+
   // 允许取消状态：待支付（常规）、已支付（仅全额抵扣单，需回冲储值卡）
   // 2026-04-26 sale-order-domain-refactor:
   //   - paid_amount 已删除 → 全额抵扣判定改为 payable_amount=0（即 total = prepaid_card_amount）
   const prepaidCardAmount = Number(order.prepaid_card_amount || 0)
+  const pendingPrepaidCardAmount = Number(order.pending_prepaid_card_amount || 0)
   const totalAmountCnl = Number(order.total_amount || 0)
   const payableAmountCnl = Number(order.payable_amount || 0) > 0
     ? Number(order.payable_amount)
-    : Math.round((totalAmountCnl - prepaidCardAmount) * 100) / 100
+    : Math.round((totalAmountCnl - prepaidCardAmount - pendingPrepaidCardAmount) * 100) / 100
   const isPrepaidFull = prepaidCardAmount > 0 && payableAmountCnl === 0
   const cancelableStatuses = ['待支付']
   if (isPrepaidFull && order.status === '已支付') {
@@ -1759,10 +1966,18 @@ async function cancel(ctx) {
     // 防并发：他端先 confirmOffline / payNotify 把单子置 '已支付' 时本端不可越权关闭
     const allowedStatusList = cancelableStatuses // 已根据 isPrepaidFull 计算
     const updRes = await client.query(
-      `UPDATE sale_orders SET status = '已关闭', updated_at = $1
+      `UPDATE sale_orders SET status = '已关闭',
+           pending_prepaid_card_amount = 0,
+           payable_amount = CASE
+             WHEN sale_order_type IN ('销售单','内部单','转换单')
+               THEN GREATEST(0, total_amount::numeric - prepaid_card_amount::numeric)
+             ELSE payable_amount
+           END,
+           updated_at = $1
        WHERE sale_order_id = $2
          AND client_user_id = $3
-         AND status = ANY($4::order_status[])`,
+         AND status = ANY($4::order_status[])
+         AND lakala_out_order_no IS NULL`,
       [now, orderNo, userId, allowedStatusList]
     )
     if (updRes.rowCount !== 1) {
@@ -1802,6 +2017,30 @@ async function cancel(ctx) {
              ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
             [cardId, prepaidCardAmount, orderNo, `card-cancel-rev-${orderNo}`]
           )
+          // 取消全额储值卡单是对原扣款的作废：流水不再属于已结算，
+          // actual prepaid 与行级通道分摊由后续统一重算归零。
+          await client.query(
+            `UPDATE sale_order_payments
+                SET status = '已作废', allocation_status = NULL
+              WHERE sale_order_id = $1
+                AND change_type = '储值卡抵扣'
+                AND payment_method = '储值卡'
+                AND status = '已支付'`,
+            [orderNo]
+          )
+          await client.query(
+            `UPDATE sale_orders
+                SET received = 0, refunded_amount = 0,
+                    prepaid_card_amount = 0, pending_prepaid_card_amount = 0,
+                    payable_amount = CASE
+                      WHEN sale_order_type IN ('销售单','内部单','转换单') THEN total_amount
+                      ELSE payable_amount
+                    END,
+                    updated_at = NOW()
+              WHERE sale_order_id = $1`,
+            [orderNo]
+          )
+          await recalcPaidSessionsForOrder(client, orderNo)
         }
       }
     }
@@ -2101,38 +2340,33 @@ async function alipayPay(ctx) {
     throw new Error('INVALID_PARAMS: 订单不存在')
   }
 
-  const order = orders[0]
+  const preflightOrder = orders[0]
 
-  if (order.client_user_id) {
-    if (order.client_user_id !== userId) {
+  if (preflightOrder.client_user_id) {
+    if (preflightOrder.client_user_id !== userId) {
       throw new Error('PERMISSION_DENIED: 无权操作该订单')
     }
-  } else if (!order.opened_by) {
+  } else if (!preflightOrder.opened_by) {
     throw new Error('INVALID_PARAMS: 订单不存在')
   }
 
-  if (order.status !== '待支付' && order.status !== '部分支付') {
-    throw new Error('INVALID_PARAMS: 订单状态不允许支付')
-  }
-
   // 10分钟超时检查（仅 '待支付' 且顾客自助单生效）；员工单 closeExpiredOrder 内部跳过，不抛超时（issue #27）
-  if (order.status === '待支付') {
-    const orderTimeAlipay = new Date(order.sale_order_datetime)
+  if (preflightOrder.status === '待支付') {
+    const orderTimeAlipay = new Date(preflightOrder.sale_order_datetime)
     if (Date.now() - orderTimeAlipay.getTime() > 10 * 60 * 1000) {
       const closed = await closeExpiredOrder(orderNo)
       if (closed) throw new Error('INVALID_PARAMS: 订单已超时，请重新下单')
     }
   }
 
-  const totalAmount = Number(order.total_amount || 0)
-
-  // 全额储值卡抵扣短路：payable_amount=0 → 不应进入拉卡拉，返回 isPrepaidFull 让前端跳详情页
-  // （与 pay 行为对齐；防御性兜底——理论上前端已在 onSubmitOrder 提前走 confirmPrepaidFull）
-  const prepaidCardAmountAli = Number(order.prepaid_card_amount || 0)
-  const payableAmountAli = Number(order.payable_amount || 0) > 0
-    ? Number(order.payable_amount)
-    : Math.round((totalAmount - prepaidCardAmountAli) * 100) / 100
-  if (payableAmountAli === 0 && order.status === '待支付') {
+  const reservation = await reserveDirectOnlinePaymentIntentWithTerminalRetry({
+    orderNo,
+    userId,
+    payAmountInput,
+    paymentMethod: '支付宝',
+    requireAlipayShareSource: true,
+  })
+  if (reservation.prepaidFull) {
     ctx.result = {
       orderNo,
       status: '已支付',
@@ -2142,50 +2376,15 @@ async function alipayPay(ctx) {
     return
   }
 
-  // 计算剩余应付 = payable_amount - 净到账（received - refunded_amount），逻辑同 pay
-  const { remaining } = await calcPaymentRemaining(orderNo, order)
-  const effectiveRemaining = remaining
-
-  let thisPayAmount
-  if (payAmountInput !== undefined && payAmountInput !== null) {
-    const v = Number(payAmountInput)
-    if (!Number.isFinite(v) || v <= 0) {
-      throw new Error('INVALID_PARAMS: 支付金额无效')
-    }
-    // 浮点容差：39.8 * 100 在 JS 里是 3979.9999999999995，严格 !== 会误判
-    if (Math.abs(Math.round(v * 100) - v * 100) > 1e-6) {
-      throw new Error('INVALID_PARAMS: 支付金额最多保留 2 位小数')
-    }
-    if (v > effectiveRemaining + 0.001) {
-      throw new Error('INVALID_PARAMS: 支付金额超过剩余应付')
-    }
-    thisPayAmount = Math.round(v * 100) / 100
-  } else {
-    thisPayAmount = effectiveRemaining
-  }
-
-  const now = new Date()
-  // CAS-EXEMPT: 仅设支付方式（支付宝）+ PII（client_user_id），不翻 status
-  await pg.query(
-    "UPDATE sale_orders SET payment_method = '支付宝', client_user_id = COALESCE(client_user_id, $1), updated_at = $2 WHERE sale_order_id = $3",
-    [userId, now, orderNo]
-  )
-
-  const merchantAli = await resolveLakalaMerchant(order.store_id)
-  if (!merchantAli) {
-    throw new Error('INVALID_STATE: LAKALA_NOT_CONFIGURED: 该门店未启用拉卡拉聚合支付，请联系管理员')
-  }
   const cfgAli = lakalaConfig.readConfig()
-  if (!cfgAli.alipayShareSource) {
-    throw new Error('INVALID_STATE: ALIPAY_NOT_AVAILABLE: 暂不支持支付宝，请使用微信支付')
-  }
   const requestIpAli = getRequestIp()
   // 步骤 1: preorder(ALIPAY, NATIVE=41) 拿二维码 URL
   const preorderRespAli = await createLakalaPreorder({
     orderNo,
-    merchantNo: merchantAli.merchantNo,
-    termNo: merchantAli.termNo,
-    payAmountYuan: thisPayAmount,
+    outTradeNo: reservation.outTradeNo,
+    merchantNo: reservation.merchant.merchantNo,
+    termNo: reservation.merchant.termNo,
+    payAmountYuan: reservation.payAmount,
     accountType: 'ALIPAY',
     transType: '41',
     requestIp: requestIpAli,
@@ -2193,35 +2392,29 @@ async function alipayPay(ctx) {
   // 步骤 2: share_code 用 alipayQrUrl 作为 biz_link 换取吱口令
   const shareCodeResp = await createLakalaAlipayShareCode({
     orderNo,
-    merchantNo: merchantAli.merchantNo,
-    termNo: merchantAli.termNo,
+    merchantNo: reservation.merchant.merchantNo,
+    termNo: reservation.merchant.termNo,
     outTradeNo: preorderRespAli.outTradeNo,
-    payAmountYuan: thisPayAmount,
+    payAmountYuan: reservation.payAmount,
     requestIp: requestIpAli,
     bizLink: preorderRespAli.alipayQrUrl,
   })
-  // 首付金额已发起拉卡拉支付：清空 first_payment_amount，让后续扫码（继续支付）按剩余应付走
-  // CAS-EXEMPT: 仅清空 first_payment_amount 资金列，不翻 status（lint 正则误匹配后续 ctx.result.status）；
-  //            WHERE first_payment_amount IS NOT NULL 已提供幂等防并发。
-  await pg.query(
-    'UPDATE sale_orders SET first_payment_amount = NULL, updated_at = $1 WHERE sale_order_id = $2 AND first_payment_amount IS NOT NULL',
-    [now, orderNo]
-  )
+  // 与微信一致：首付上限在 payNotify 确认真实到账时清空，预下单阶段继续保留。
   ctx.result = {
     orderNo,
-    totalAmount,
-    paidAmount: thisPayAmount,
+    totalAmount: reservation.totalAmount,
+    paidAmount: reservation.payAmount,
     paymentMethod: '支付宝',
     alipayShareToken: shareCodeResp.shareToken,
     alipayExpireDate: shareCodeResp.expireDate,
-    status: order.status,
+    status: reservation.status,
   }
 }
 
 /**
  * 顾客在支付前调整抵扣方案（员工扫码 + 顾客自助下单两类入口共用）
  * payload: { saleOrderId, useCard, prepaidCardAmount?, paymentMethod? }
- * 订单状态必须='待支付'；balance 不动，本端点只重算订单的 prepaid_card_amount/payable_amount/payment_method
+ * 订单状态必须='待支付'；balance 不动，本端点只重算订单的 pending_prepaid_card_amount/payable_amount/payment_method
  *
  * 归属规则：
  *   - 员工开单（opened_by IS NOT NULL）：允许 client_user_id 为空（首次扫码绑定）或等于当前用户
@@ -2254,6 +2447,9 @@ async function scanAdjust(ctx) {
 
   if (order.status !== '待支付') {
     throw new Error('INVALID_PARAMS: 订单状态不允许调整')
+  }
+  if (order.lakala_out_order_no) {
+    throw new Error('CONFLICT: PAYMENT_INTENT_ACTIVE: 在线支付仍在处理中，暂不能调整抵扣方案')
   }
   // 归属校验：自助下单必须已绑定 client_user_id；员工开单允许 client_user_id 为空（首次扫码绑定）
   if (!order.opened_by && !order.client_user_id) {
@@ -2315,12 +2511,14 @@ async function scanAdjust(ctx) {
   const now = new Date()
   await pg.query(
     `UPDATE sale_orders
-     SET prepaid_card_amount = $1,
+     SET pending_prepaid_card_amount = $1,
          payable_amount = $2,
          payment_method = $3,
          client_user_id = COALESCE(client_user_id, $4),
          updated_at = $5
-     WHERE sale_order_id = $6 AND status = '待支付'`,
+     WHERE sale_order_id = $6
+       AND status = '待支付'
+       AND lakala_out_order_no IS NULL`,
     [prepaidCardAmount, paidAmount, effectivePaymentMethod, userId, now, saleOrderId]
   )
 
@@ -2365,8 +2563,9 @@ async function confirmPrepaidFull(ctx) {
 
   await pg.transaction(async (client) => {
     const ordRes = await client.query(
-      `SELECT sale_order_id, status, client_user_id, prepaid_card_amount, payable_amount, total_amount
-       FROM sale_orders WHERE sale_order_id = $1`,
+      `SELECT sale_order_id, status, client_user_id, prepaid_card_amount,
+              pending_prepaid_card_amount, payable_amount, total_amount, lakala_out_order_no
+       FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE`,
       [saleOrderId]
     )
     if (ordRes.rows.length === 0) {
@@ -2376,13 +2575,16 @@ async function confirmPrepaidFull(ctx) {
     if (order.status !== '待支付') {
       throw new Error('INVALID_PARAMS: 订单状态不允许支付')
     }
+    if (order.lakala_out_order_no) {
+      throw new Error('CONFLICT: PAYMENT_INTENT_ACTIVE: 在线支付仍在处理中，暂不能改用储值卡支付')
+    }
     if (order.client_user_id && order.client_user_id !== userId) {
       throw new Error('PERMISSION_DENIED: 无权操作该订单')
     }
-    const prepaidCardAmount = Number(order.prepaid_card_amount || 0)
+    const prepaidCardAmount = Number(order.pending_prepaid_card_amount || 0)
     const payableAmount = Number(order.payable_amount || 0) > 0
       ? Number(order.payable_amount)
-      : Math.round((Number(order.total_amount || 0) - prepaidCardAmount) * 100) / 100
+      : Math.round((Number(order.total_amount || 0) - Number(order.prepaid_card_amount || 0) - prepaidCardAmount) * 100) / 100
     if (payableAmount !== 0) {
       throw new Error('INVALID_PARAMS: 订单非全额抵扣，不能走此通道')
     }
@@ -2462,6 +2664,7 @@ async function confirmPrepaidFull(ctx) {
                AND change_type = '退款'
            ), 0),
            status = '已支付',
+           pending_prepaid_card_amount = 0,
            client_user_id = COALESCE(client_user_id, $1),
            paid_at = COALESCE(paid_at, NOW()),
            updated_at = NOW()
@@ -2579,7 +2782,10 @@ async function repay(ctx) {
   const now = new Date()
   let finalStatus // 原单最新 status（pure-card 路径会推到 '已支付'/'部分支付'；线上/线下路径不动）
   let currentStatus // 原单当前 status（线下路径返回用，状态不变）
-  let storeId    // 原单门店 id，回到事务外用于解析拉卡拉商户配置
+  const reservedOutTradeNo = (!isPureCard && !isOffline)
+    ? buildLakalaOutTradeNo(saleOrderId)
+    : null
+  let repayMerchant = null
 
   await pg.transaction(async (client) => {
     // 1. 锁原单 + 校验归属 + 状态
@@ -2591,28 +2797,75 @@ async function repay(ctx) {
       throw new Error('INVALID_PARAMS: 订单不存在')
     }
     const origOrder = origRes.rows[0]
-    storeId = origOrder.store_id
     if (origOrder.client_user_id && origOrder.client_user_id !== userId) {
       throw new Error('PERMISSION_DENIED: 无权操作该订单')
     }
     if (!['待支付', '部分支付'].includes(origOrder.status)) {
       throw new Error('INVALID_STATE: 订单状态不允许回款')
     }
-    if (origOrder.sale_order_type !== '销售单') {
-      throw new Error('INVALID_PARAMS: 仅销售单支持回款')
+    if (!['销售单', '转换单'].includes(origOrder.sale_order_type)) {
+      throw new Error('INVALID_PARAMS: 仅销售单或转换单支持回款')
+    }
+    if (origOrder.is_experience_conversion === true) {
+      throw new Error('INVALID_STATE: EXPERIENCE_CONVERSION_REPAYMENT_FORBIDDEN: 体验转换不允许补款')
     }
     currentStatus = origOrder.status
 
-    // 2. 计算欠款 + 定向分摊项。
+    const frozenPaymentAmount = Number(origOrder.first_payment_amount || 0)
+    // 受限转换回款由 staff 冻结金额后统一走 order.pay/alipayPay；repay 的事务在预下单前
+    // 已提交，无法与第三方意图 CAS 原子化。这里必须在任何 pending 作废/订单 UPDATE 前
+    // fail-fast，避免旧客户端覆盖或破坏正在途的支付场次。
+    if (origOrder.lakala_out_order_no) {
+      throw new Error('CONFLICT: PAYMENT_INTENT_ACTIVE: 本次支付单已生成，请勿重复发起')
+    }
+    if (origOrder.sale_order_type === '转换单' && frozenPaymentAmount > 0) {
+      throw new Error('INVALID_STATE: CONVERSION_REPAYMENT_USE_ORDER_PAY: 受限转换回款请使用订单支付')
+    }
+
+    // 2. 先作废旧的储值卡抵扣意向并恢复本单应付。
+    //    失败/取消的混合支付会留下 pending 意向并暂时降低 payable_amount。
+    //    新一次回款必须在计算、校验欠款前清理它，否则顾客按真实未付额重试会被误判为超额。
+    await client.query(
+      `UPDATE sale_order_payments SET status = '已作废'
+       WHERE sale_order_id = $1 AND change_type = '储值卡抵扣' AND status = '待支付'`,
+      [saleOrderId]
+    )
+    await client.query(
+      `UPDATE sale_orders
+       SET pending_prepaid_card_amount = 0,
+           payable_amount = CASE
+             WHEN sale_order_type IN ('销售单','内部单','转换单')
+               THEN GREATEST(0, total_amount::numeric - prepaid_card_amount::numeric)
+             ELSE payable_amount
+           END,
+           updated_at = NOW()
+       WHERE sale_order_id = $1`,
+      [saleOrderId]
+    )
+    origOrder.pending_prepaid_card_amount = 0
+    if (['销售单', '内部单', '转换单'].includes(origOrder.sale_order_type)) {
+      origOrder.payable_amount = Math.max(
+        0,
+        Number(origOrder.total_amount || 0) - Number(origOrder.prepaid_card_amount || 0)
+      )
+    }
+
+    // 3. 计算欠款 + 定向分摊项。
     //    有退款 → 行级口径（已退行不计入，只有「未退且未付清」的行可继续支付），capture 定向到未退行
     //    避免非定向瀑布流把回款误充到已退行（received/paid_sessions 复活）；
     //    无退款 → 沿用订单级口径（正常回款，与首次支付/原逻辑一致）。
     const payableAmount = Number(origOrder.payable_amount || 0) > 0
       ? Number(origOrder.payable_amount)
-      : Math.round((Number(origOrder.total_amount || 0) - Number(origOrder.prepaid_card_amount || 0)) * 100) / 100
+      : Math.round((Number(origOrder.total_amount || 0)
+          - Number(origOrder.prepaid_card_amount || 0)
+          - Number(origOrder.pending_prepaid_card_amount || 0)) * 100) / 100
     let directedItems = null
     let remaining
-    if (Number(origOrder.refunded_amount || 0) > 0) {
+    if (origOrder.sale_order_type === '转换单') {
+      const received = Number(origOrder.received || 0)
+      const refundedAmount = Number(origOrder.refunded_amount || 0)
+      remaining = Math.round((Number(origOrder.total_amount || 0) - received + refundedAmount) * 100) / 100
+    } else if (Number(origOrder.refunded_amount || 0) > 0) {
       const repayItemRows = await client.query(
         `SELECT sale_item_id, sale_amount::numeric AS sale_amount, received::numeric AS received
            FROM sale_items WHERE sale_order_id = $1 AND item_direction = '购买'`,
@@ -2632,24 +2885,37 @@ async function repay(ctx) {
     if (remaining <= 0) {
       throw new Error('INVALID_STATE: 订单无欠款')
     }
-    if (totalNew > remaining + 0.001) {
-      throw new Error('INVALID_PARAMS: 回款金额超过剩余应付')
+    // first_payment_amount 是员工冻结的本支付场次硬上限。锁单后按“现金 + 储值卡”合计执行，
+    // 旧版小程序或直接 API 调用也不能把 500 元场次放大为整笔 2000 元欠款。
+    const firstPaymentCap = frozenPaymentAmount
+    const hasPaymentCap = firstPaymentCap > 0
+    const paymentTarget = hasPaymentCap ? Math.min(remaining, firstPaymentCap) : remaining
+    if (totalNew > paymentTarget + 0.001) {
+      throw new Error(hasPaymentCap
+        ? 'INVALID_PARAMS: 回款金额超过本次支付上限'
+        : 'INVALID_PARAMS: 回款金额超过剩余应付')
     }
-    // 顾客端继续支付强制全额：只能一次性付清全部未付金额，不允许部分回款
-    // （按子项部分回款仅 admin/staff 可做；client 一律全额）
-    if (totalNew + 0.001 < remaining) {
-      throw new Error('INVALID_PARAMS: 继续支付必须支付全部未付金额')
+    // 无冻结场次时仍强制一次付清；有冻结场次时必须恰好支付本场次目标额，不能少付或拆单。
+    if (totalNew + 0.001 < paymentTarget) {
+      throw new Error(hasPaymentCap
+        ? 'INVALID_PARAMS: 回款金额必须等于本次支付金额'
+        : 'INVALID_PARAMS: 继续支付必须支付全部未付金额')
     }
 
-    // 3. 储值卡扣款（按通道分流）。先无条件作废本单此前遗留的「待支付储值卡抵扣」意向：
-    //    同一订单可被重复扫码（取消线上支付后重选抵扣额、或从混合改纯线上/线下/纯卡），旧意向若残留
-    //    会被 payNotify 误消费、扣走顾客并不想用的储值卡。在订单 FOR UPDATE 锁下清理，避免并发竞态。
+    // 所有本地配置校验都必须早于本次 pending 计划写入和 out_trade_no 预占；配置缺失会回滚
+    // 上方对遗留 pending 的清理，不留下假活动意图或半套混合支付计划。
+    if (!isPureCard && !isOffline) {
+      if (paymentMethod === '支付宝' && !lakalaConfig.readConfig().alipayShareSource) {
+        throw new Error('INVALID_STATE: ALIPAY_NOT_AVAILABLE: 暂不支持支付宝，请使用微信支付')
+      }
+      repayMerchant = await resolveLakalaMerchantInTransaction(client, origOrder.store_id)
+      if (!repayMerchant) {
+        throw new Error('INVALID_STATE: LAKALA_NOT_CONFIGURED: 该门店未启用拉卡拉聚合支付，请联系管理员')
+      }
+    }
+
+    // 4. 储值卡扣款（按通道分流）。
     let cardPaymentId = null
-    await client.query(
-      `UPDATE sale_order_payments SET status = '已作废'
-       WHERE sale_order_id = $1 AND change_type = '储值卡抵扣' AND status = '待支付'`,
-      [saleOrderId]
-    )
     //    - 纯储值卡通道（isPureCard）：当场扣卡 + INSERT payments(回款/储值卡/已支付)，无线上款本就原子。
     //    - 线上+储值卡混合：不当场扣卡，仅写一行待支付储值卡抵扣意向；扣减 + 入账 + 状态推进推迟到
     //      payNotify 线上到账同事务执行（支付取消/失败 → 意向行保持待支付、储值卡分文不动，一起回滚）。
@@ -2707,19 +2973,57 @@ async function repay(ctx) {
         ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '待支付', 'client', $3, $4, NULL)`,
         [saleOrderId, prepaidCardAmountInput, '储值卡抵扣待线上到账（client.repay 混合支付）', now]
       )
-    }
-
-    // 4. 线上回款：不写 payments 行（payNotify 回调写）；仅更新原单 payment_method 反映最近通道
-    if (!isPureCard) {
-      // CAS-EXEMPT: 仅设支付方式，不翻 status（status 由后续 STEP 5 重算或 payNotify 推进）
       await client.query(
-        `UPDATE sale_orders SET payment_method = $1, updated_at = $2
+        `UPDATE sale_orders
+         SET pending_prepaid_card_amount = $1,
+             payable_amount = CASE
+               WHEN sale_order_type IN ('销售单','内部单','转换单')
+                 THEN GREATEST(0, total_amount::numeric - prepaid_card_amount::numeric - $1::numeric)
+               ELSE payable_amount
+             END,
+             updated_at = $2
          WHERE sale_order_id = $3`,
-        [paymentMethod, now, saleOrderId]
+        [prepaidCardAmountInput, now, saleOrderId]
       )
     }
 
-    // 5. 重算原单 received/refunded_amount + 推进 status：仅纯储值卡通道（当场扣卡 + 写了已支付储值卡回款行）。
+    // 5. 支付计划：线上通道在同一行锁事务内先预占唯一 out_trade_no，再用精确单号 CAS
+    // 绑定 payment_method；混合支付的 pending 计划与该场次一并提交/回滚。
+    if (!isPureCard && !isOffline) {
+      const claimRes = await client.query(
+        `UPDATE sale_orders
+         SET lakala_out_order_no = $1, updated_at = $2
+         WHERE sale_order_id = $3
+           AND status = $4
+           AND lakala_out_order_no IS NULL
+         RETURNING sale_order_id`,
+        [reservedOutTradeNo, now, saleOrderId, origOrder.status]
+      )
+      if (claimRes.rowCount !== 1) {
+        throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 支付场次已变化，请刷新后重试')
+      }
+      const planRes = await client.query(
+        `UPDATE sale_orders
+         SET payment_method = $1, updated_at = $2
+         WHERE sale_order_id = $3
+           AND status = $4
+           AND lakala_out_order_no = $5
+         RETURNING sale_order_id`,
+        [paymentMethod, now, saleOrderId, origOrder.status, reservedOutTradeNo]
+      )
+      if (planRes.rowCount !== 1) {
+        throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 支付场次已变化，请刷新后重试')
+      }
+    } else if (isOffline) {
+      // CAS-EXEMPT: 线下只记录支付方式，不翻 status；staff 确认收款时再推进资金状态。
+      await client.query(
+        `UPDATE sale_orders SET payment_method = $1, updated_at = $2
+         WHERE sale_order_id = $3 AND status = $4`,
+        [paymentMethod, now, saleOrderId, origOrder.status]
+      )
+    }
+
+    // 6. 重算原单 received/refunded_amount + 推进 status：仅纯储值卡通道（当场扣卡 + 写了已支付储值卡回款行）。
     //    线上+储值卡混合通道此处 **不推进** —— received/状态推进随储值卡扣减一并推迟到 payNotify STEP 3c。
     if (isPureCard && prepaidCardAmountInput > 0) {
       const aggRes = await client.query(
@@ -2733,23 +3037,21 @@ async function repay(ctx) {
       const newReceived = Math.round(Number(aggRes.rows[0]?.received_sum || 0) * 100) / 100
       const newRefunded = Math.round(Number(aggRes.rows[0]?.refunded_sum || 0) * 100) / 100
       const newNet = Math.round((newReceived - newRefunded) * 100) / 100
-      const fullyPaid = newNet + 0.001 >= payableAmount
+      const fullyPaid = newNet + 0.001 >= Number(origOrder.total_amount || 0)
       finalStatus = fullyPaid ? '已支付' : '部分支付'
-      // 纯卡回款：把本次卡抵扣额并入 prepaid_card_amount（增量，保留原 create-time 卡额；client create-card 延迟消费、
-      // 不在 储值卡抵扣 行里，故用 += 而非 Σ重算），同步降 payable_amount 维护 I5（payable=total-prepaid）。
-      // status 仍按事务起始的 payableAmount 判定（received 含本次卡抵扣，付清即 已支付），不受本次 prepaid bump 影响。
+      // actual 储值卡金额与 payable_amount 由下方 recalcPaidSessionsForOrder 从流水统一重聚合。
       const repayUpd = await client.query(
         `UPDATE sale_orders
          SET status = $1::order_status,
              received = $2,
              refunded_amount = $3,
-             prepaid_card_amount = COALESCE(prepaid_card_amount, 0) + $6,
-             payable_amount = COALESCE(payable_amount, total_amount) - $6,
+             pending_prepaid_card_amount = 0,
+             first_payment_amount = NULL,
              paid_at = CASE WHEN $1::text = '已支付' THEN COALESCE(paid_at, $4) ELSE paid_at END,
              updated_at = $4
          WHERE sale_order_id = $5
            AND status IN ('待支付', '部分支付')`,
-        [finalStatus, newReceived, newRefunded, now, saleOrderId, prepaidCardAmountInput]
+        [finalStatus, newReceived, newRefunded, now, saleOrderId]
       )
       if (repayUpd.rowCount === 0) {
         throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED:sale_orders:${saleOrderId}:→${finalStatus}`)
@@ -2804,16 +3106,13 @@ async function repay(ctx) {
   }
 
   // 线上通道：调聚合主扫 preorder（微信） / preorder+share_code（支付宝）
-  const repayMerchant = await resolveLakalaMerchant(storeId)
-  if (!repayMerchant) {
-    throw new Error('INVALID_STATE: LAKALA_NOT_CONFIGURED: 该门店未启用拉卡拉聚合支付，请联系管理员')
-  }
   const repayCfg = lakalaConfig.readConfig()
   const repayRequestIp = getRequestIp()
 
   if (paymentMethod === '微信') {
     const { paymentParams: repayPaymentParams } = await createLakalaPreorder({
       orderNo: saleOrderId,
+      outTradeNo: reservedOutTradeNo,
       merchantNo: repayMerchant.merchantNo,
       termNo: repayMerchant.termNo,
       payAmountYuan: repayAmountInput,
@@ -2838,6 +3137,7 @@ async function repay(ctx) {
     }
     const repayPreorderResp = await createLakalaPreorder({
       orderNo: saleOrderId,
+      outTradeNo: reservedOutTradeNo,
       merchantNo: repayMerchant.merchantNo,
       termNo: repayMerchant.termNo,
       payAmountYuan: repayAmountInput,
@@ -2867,11 +3167,12 @@ async function repay(ctx) {
 }
 
 /**
- * 查询拉卡拉聚合主扫交易状态（只读轮询兜底）
+ * 查询拉卡拉聚合主扫交易状态（轮询兜底）
  *
  * 前端轮询 order.detail 仍 '待支付' 时可调本接口，主动问拉卡拉该单是否已支付，
- * 避免 payNotify 延迟/丢失时死等。**不改 DB**——订单结算（置已支付/积分/储值卡等）仍由
- * payNotify 单源负责；本接口仅把拉卡拉视角的 trade_state 透出给前端做 UX 决策。
+ * 避免 payNotify 延迟/丢失时死等。**不直接入账**——订单结算（置已支付/积分/储值卡等）仍由
+ * payNotify 单源负责；本接口仅在拉卡拉明确 FAIL/CLOSE 时按旧 out_trade_no CAS 释放
+ * 活动意图，其余状态只透出给前端做 UX 决策。
  *
  * trade_state ∈ INIT/CREATE/SUCCESS/FAIL/DEAL/UNKNOWN/CLOSE/PART_REFUND/REFUND
  * 'SUCCESS' 才表示真实到账（'BBS00000' 成功码仅说明查到了交易记录）
@@ -2911,6 +3212,19 @@ async function queryLakalaStatus(ctx) {
     termNo: merchant.termNo,
     outTradeNo: order.lakala_out_order_no,
   })
+  let lakalaIntentReleased = false
+  if (resp && ['FAIL', 'CLOSE'].includes(resp.tradeState)) {
+    const released = await pg.query(
+      `UPDATE sale_orders
+       SET lakala_out_order_no = NULL, updated_at = NOW()
+       WHERE sale_order_id = $1
+         AND status IN ('待支付', '部分支付')
+         AND lakala_out_order_no = $2
+       RETURNING sale_order_id`,
+      [orderNo, order.lakala_out_order_no]
+    )
+    lakalaIntentReleased = released.length > 0
+  }
   ctx.result = {
     orderNo,
     localStatus: order.status,
@@ -2918,6 +3232,7 @@ async function queryLakalaStatus(ctx) {
     lakalaOk: resp.ok,
     lakalaTradeState: resp.tradeState || null,  // 'SUCCESS' 才算到账
     lakalaCode: resp.code,
+    lakalaIntentReleased,
   }
 }
 
@@ -2974,7 +3289,9 @@ async function confirmPayment(ctx) {
   }
 
   const orders = await pg.query(
-    'SELECT sale_order_id, status, store_id, lakala_out_order_no, client_user_id, payment_method FROM sale_orders WHERE sale_order_id = $1',
+    `SELECT sale_order_id, status, store_id, lakala_out_order_no, client_user_id, payment_method,
+            received, first_payment_amount
+     FROM sale_orders WHERE sale_order_id = $1`,
     [orderNo]
   )
   if (orders.length === 0) {
@@ -2987,6 +3304,12 @@ async function confirmPayment(ctx) {
 
   const localStatus = order.status
   const hasLakalaOrder = !!order.lakala_out_order_no
+  const localPaymentSnapshot = {
+    received: Number(order.received || 0),
+    firstPaymentAmount: order.first_payment_amount == null
+      ? null
+      : Number(order.first_payment_amount),
+  }
 
   // 早期决策：终态 / 无拉卡拉单 → 无需对账，直接返回本地 status
   if (decideReconcile(localStatus, hasLakalaOrder, null) === 'skip') {
@@ -2995,6 +3318,7 @@ async function confirmPayment(ctx) {
       status: localStatus,
       reconciled: false,
       reason: hasLakalaOrder ? 'terminal' : 'no_lakala_order',
+      ...localPaymentSnapshot,
     }
     return
   }
@@ -3004,11 +3328,11 @@ async function confirmPayment(ctx) {
   try {
     merchant = await resolveLakalaMerchant(order.store_id)
   } catch (e) {
-    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, reason: 'lakala_not_configured', message: e.message }
+    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, reason: 'lakala_not_configured', message: e.message, ...localPaymentSnapshot }
     return
   }
   if (!merchant) {
-    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, reason: 'lakala_not_configured' }
+    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, reason: 'lakala_not_configured', ...localPaymentSnapshot }
     return
   }
 
@@ -3020,21 +3344,42 @@ async function confirmPayment(ctx) {
       outTradeNo: order.lakala_out_order_no,
     })
   } catch (e) {
-    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, reason: 'query_failed', message: e.message }
+    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, reason: 'query_failed', message: e.message, ...localPaymentSnapshot }
     return
   }
 
   const tradeState = resp.tradeState || ''
+  if (['FAIL', 'CLOSE'].includes(tradeState)) {
+    const released = await pg.query(
+      `UPDATE sale_orders
+       SET lakala_out_order_no = NULL, updated_at = NOW()
+       WHERE sale_order_id = $1
+         AND status IN ('待支付', '部分支付')
+         AND lakala_out_order_no = $2
+       RETURNING sale_order_id`,
+      [orderNo, order.lakala_out_order_no]
+    )
+    ctx.result = {
+      saleOrderId: orderNo,
+      status: localStatus,
+      reconciled: false,
+      lakalaTradeState: tradeState,
+      lakalaIntentReleased: released.length > 0,
+      reason: 'terminal_failed',
+      ...localPaymentSnapshot,
+    }
+    return
+  }
   // 拉卡拉侧尚未 SUCCESS：返回本地 status，前端继续轮询
   if (decideReconcile(localStatus, hasLakalaOrder, tradeState) !== 'reconcile') {
-    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, lakalaTradeState: tradeState, reason: 'not_success' }
+    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, lakalaTradeState: tradeState, reason: 'not_success', ...localPaymentSnapshot }
     return
   }
 
   // 拉卡拉 SUCCESS + 本地待支付/部分支付 → 触发与回调同款的幂等入账
   const payAmount = Math.round(Number(resp.totalAmountFen || 0)) / 100
   if (!(payAmount > 0)) {
-    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, lakalaTradeState: tradeState, reason: 'invalid_amount' }
+    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, lakalaTradeState: tradeState, reason: 'invalid_amount', ...localPaymentSnapshot }
     return
   }
   const paymentMethod = order.payment_method === '支付宝' ? '支付宝' : '微信'
@@ -3052,17 +3397,28 @@ async function confirmPayment(ctx) {
     })
     payNotifyResult = r && r.result
   } catch (e) {
-    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, reason: 'paynotify_call_failed', message: e.message }
+    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, reason: 'paynotify_call_failed', message: e.message, ...localPaymentSnapshot }
     return
   }
 
   // 重查本地 status（payNotify 已更新），返回最新态
-  const after = await pg.query('SELECT status FROM sale_orders WHERE sale_order_id = $1', [orderNo])
+  const after = await pg.query(
+    'SELECT status, received, first_payment_amount FROM sale_orders WHERE sale_order_id = $1',
+    [orderNo]
+  )
   const newStatus = (after[0] && after[0].status) || localStatus
+  const newReceived = Number((after[0] && after[0].received) ?? order.received ?? 0)
+  const newFirstPaymentAmount = after[0] && after[0].first_payment_amount != null
+    ? Number(after[0].first_payment_amount)
+    : null
   ctx.result = {
     saleOrderId: orderNo,
     status: newStatus,
-    reconciled: !!(payNotifyResult && payNotifyResult.code === 'SUCCESS' && newStatus !== localStatus),
+    // 部分支付订单本场次到账后状态仍可能保持“部分支付”；payNotify 成功 ACK 本身也是本场次完成证据，
+    // 不能再依赖 status 必须发生变化。
+    reconciled: !!(payNotifyResult && payNotifyResult.code === 'SUCCESS'),
+    received: newReceived,
+    firstPaymentAmount: newFirstPaymentAmount,
     payNotifyResult,
   }
 }
