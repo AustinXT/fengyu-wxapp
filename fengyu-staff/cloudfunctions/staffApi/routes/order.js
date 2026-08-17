@@ -1118,6 +1118,7 @@ async function create(ctx) {
   // 无款可付，创建即结清为'已支付'，否则卡在'待支付'死循环（0 元发不起线上支付、
   // payment_method='无' 也走不了 confirmOffline）。isFullCardCoverage（含储值卡）是其子集。
   const zeroPayable = payableAmount === 0
+  const isFullCardCoverage = zeroPayable && prepaidCardAmount > 0
 
   // receivedAmount（本次现场实收）= Σ 行实付（前端传入，默认 = 行应付）
   //   - 充值卡抵扣 + 行实付汇总 不应超过 totalAmount；若超出（默认场景下勾上充值卡）自动 cap 至 payableAmount
@@ -1201,7 +1202,6 @@ async function create(ctx) {
     // 零应付（payable==0：券全额 / 储值卡全额 / 二者叠加）：无现金可收，创建即结清。
     // 优先于线上判定——线上零应付同样无需等 payNotify。isFullCardCoverage 是其"含储值卡"子集，
     // 仅用于"是否需要事务内扣卡 + recalc"分支（券全额 card=0 无卡可扣、走 per-item 摊次）。
-    const isFullCardCoverage = payableAmount === 0 && prepaidCardAmount > 0
     // 两步式（2026-06-07 修 P0）：开单不收款（paidAmount=0），非 zeroPayable 一律 '待支付'，
     // 由 confirmOffline（线下/储值卡）/ payNotify（线上）入账翻态（'部分支付'/'已支付'）。
     // zeroPayable（券/卡全额抵扣）无现金可收、create 内即扣卡结清，落 '已支付'。
