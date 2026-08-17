@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState, useTransition } from 'react'
 import type { ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import { Package, Pencil, Plus } from 'lucide-react'
+import { toast } from 'sonner'
 import { createInventorySku, updateInventorySku } from '@/actions/inventory/skus'
 import {
   INVENTORY_SKU_SOURCE_TYPES,
@@ -20,6 +21,7 @@ import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { actionErrorMessage } from '@/lib/action-error'
 import { useUrlFilters } from '@/lib/hooks/use-url-filters'
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
@@ -37,6 +39,7 @@ type SkuForm = {
   retailPrice: string
   accountingPrice: string
   supplyChainPurchasePrice: string
+  marketPurchasePrice: string
   storePurchasePrice: string
   marketStaffPurchasePrice: string
   marketPurchaseDiscount: string
@@ -74,6 +77,7 @@ function emptyForm(): SkuForm {
     retailPrice: '',
     accountingPrice: '',
     supplyChainPurchasePrice: '',
+    marketPurchasePrice: '',
     storePurchasePrice: '',
     marketStaffPurchasePrice: '',
     marketPurchaseDiscount: '',
@@ -98,6 +102,7 @@ function formFromRow(row: InventorySkuRow): SkuForm {
     retailPrice: row.retailPrice == null ? '' : String(row.retailPrice),
     accountingPrice: row.accountingPrice == null ? '' : String(row.accountingPrice),
     supplyChainPurchasePrice: row.supplyChainPurchasePrice == null ? '' : String(row.supplyChainPurchasePrice),
+    marketPurchasePrice: row.marketPurchasePrice == null ? '' : String(row.marketPurchasePrice),
     storePurchasePrice: row.storePurchasePrice == null ? '' : String(row.storePurchasePrice),
     marketStaffPurchasePrice: row.marketStaffPurchasePrice == null ? '' : String(row.marketStaffPurchasePrice),
     marketPurchaseDiscount: row.marketPurchaseDiscount == null ? '' : String(row.marketPurchaseDiscount),
@@ -296,6 +301,15 @@ function SkuFormDialog({
 
   async function submit() {
     if (submitting) return
+    const hasManualMarketPrice = form.marketPurchasePrice.trim().length > 0
+    const manualMarketPrice = num(form.marketPurchasePrice)
+    if (hasManualMarketPrice && (manualMarketPrice == null || manualMarketPrice < 0)) {
+      toast.error('请输入有效的市场进货价')
+      return
+    }
+    const marketPurchasePrice = hasManualMarketPrice
+      ? manualMarketPrice
+      : calculatedMarketPrice
     setSubmitting(true)
     try {
       const input: InventorySkuInput = {
@@ -311,9 +325,7 @@ function SkuFormDialog({
         retailPrice: canViewPrice ? num(form.retailPrice) : null,
         accountingPrice: canViewPrice ? num(form.accountingPrice) : null,
         supplyChainPurchasePrice: canViewPrice ? num(form.supplyChainPurchasePrice) : null,
-        ...(canViewPrice && calculatedMarketPrice !== null
-          ? { marketPurchasePrice: calculatedMarketPrice }
-          : {}),
+        marketPurchasePrice: canViewPrice ? marketPurchasePrice : null,
         storePurchasePrice: canViewPrice ? num(form.storePurchasePrice) : null,
         marketStaffPurchasePrice: canViewPrice ? num(form.marketStaffPurchasePrice) : null,
         marketPurchaseDiscount: canViewPrice ? num(form.marketPurchaseDiscount) : null,
@@ -322,12 +334,17 @@ function SkuFormDialog({
         isActive: form.isActive,
         remark: form.remark,
       }
-      if (row) await updateInventorySku(row.skuId, input)
-      else await createInventorySku(input)
+      if (row) {
+        await updateInventorySku(row.skuId, input)
+        toast.success('库存商品已更新')
+      } else {
+        await createInventorySku(input)
+        toast.success('库存商品已创建')
+      }
       onOpenChange(false)
       onSuccess()
     } catch (error) {
-      alert((error as Error).message || '保存失败')
+      toast.error(actionErrorMessage(error, row ? '更新库存商品失败' : '创建库存商品失败'))
     } finally {
       setSubmitting(false)
     }
@@ -383,13 +400,15 @@ function SkuFormDialog({
               <Field label="核算价"><Input inputMode="decimal" value={form.accountingPrice} onChange={(event) => setField('accountingPrice', event.target.value)} /></Field>
               <Field label="市场折扣（25 表示 25%）"><Input inputMode="decimal" value={form.marketPurchaseDiscount} onChange={(event) => setField('marketPurchaseDiscount', event.target.value)} /></Field>
               <Field label="市场进货价">
-                <Input
-                  inputMode="decimal"
-                  value={calculatedMarketPrice == null
-                    ? row?.marketPurchasePrice == null ? '' : String(row.marketPurchasePrice)
-                    : String(calculatedMarketPrice)}
-                  readOnly
-                />
+                <div className="space-y-1">
+                  <Input
+                    inputMode="decimal"
+                    value={form.marketPurchasePrice}
+                    placeholder={calculatedMarketPrice == null ? undefined : String(calculatedMarketPrice)}
+                    onChange={(event) => setField('marketPurchasePrice', event.target.value)}
+                  />
+                  <p className="text-xs text-[#888888]">留空时按核算价 × 市场折扣自动计算</p>
+                </div>
               </Field>
               <Field label="自采实际进货价"><Input inputMode="decimal" value={form.itemCompanyPurchasePrice} onChange={(event) => setField('itemCompanyPurchasePrice', event.target.value)} /></Field>
             </div>

@@ -295,7 +295,13 @@ function physicalTableNameFromMetadataRow(row) {
     'table_code',
     'table',
   ])
-  const candidates = [preferred, ...Object.values(row)]
+  // WorkFine 的查询/列表元数据可能把另一个物理表名写进 native_name，
+  // 例如 table_name=UDV_L_244、native_name=UDT_S_585。只要存在明确的
+  // 表名列，它就是结构事实；不能再从显示名等任意字段回退，否则会把查询
+  // 元数据误登记成第二张同名 UDT 物理表。
+  if (text(preferred)) return normalizePhysicalTableName(preferred)
+
+  const candidates = Object.values(row)
   const physicalTables = new Set(
     candidates
       .flatMap((value) => {

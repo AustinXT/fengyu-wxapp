@@ -325,6 +325,7 @@ function skuPriceValues(
   existing?: {
     accountingPrice: string | number | null
     marketPurchaseDiscount: string | number | null
+    marketPurchasePrice: string | number | null
   },
 ) {
   if (!allowPriceInput) {
@@ -351,29 +352,35 @@ function skuPriceValues(
   const rawDiscount = input.marketPurchaseDiscount === undefined
     ? numberOrNull(existing?.marketPurchaseDiscount)
     : numberOrNull(input.marketPurchaseDiscount)
-  const hasMarketPriceFormula = rawAccounting !== null || rawDiscount !== null
+  const existingMarketPurchasePrice = numberOrNull(existing?.marketPurchasePrice)
+  const marketPurchasePriceInput = input.marketPurchasePrice === undefined
+    ? undefined
+    : numString(input.marketPurchasePrice)
+  const formulaChanged = input.accountingPrice !== undefined || input.marketPurchaseDiscount !== undefined
   let marketPurchasePrice: string | null | undefined
 
-  // 市场进货价是核算价与市场折扣的派生值，不能被前端或福利方案改写。
-  // 旧 WorkFine 导入仍可保留历史快照；在线维护只在完整公式存在时重算。
-  if (hasMarketPriceFormula) {
-    if (rawAccounting === null || rawDiscount === null) {
-      throw new ApiError('INVALID_PARAMS', '设置核算价或市场折扣时，必须同时具备两项数据')
-    }
+  if (rawAccounting !== null && (!Number.isFinite(rawAccounting) || rawAccounting < 0)) {
+    throw new ApiError('INVALID_PARAMS', '核算价无效')
+  }
+  let calculatedMarketPurchasePrice: string | null = null
+  if (rawDiscount !== null) {
     const ratio = rawDiscount > 1 ? rawDiscount / 100 : rawDiscount
-    if (!Number.isFinite(rawAccounting) || rawAccounting < 0 || !Number.isFinite(ratio) || ratio < 0 || ratio > 1) {
-      throw new ApiError('INVALID_PARAMS', '核算价或市场折扣无效')
+    if (!Number.isFinite(ratio) || ratio < 0 || ratio > 1) {
+      throw new ApiError('INVALID_PARAMS', '市场折扣无效')
     }
-    marketPurchasePrice = numString(Math.round(rawAccounting * ratio * 100) / 100)
-  } else if (
-    input.accountingPrice !== undefined ||
-    input.marketPurchaseDiscount !== undefined ||
-    input.marketPurchasePrice === null
-  ) {
-    // 两个公式字段被清空后，不能继续沿用上一次派生出的市场进货价。
-    marketPurchasePrice = null
-  } else if (input.marketPurchasePrice !== undefined) {
-    throw new ApiError('INVALID_PARAMS', '市场进货价由核算价和市场折扣计算，不能手工填写')
+    if (rawAccounting !== null) {
+      calculatedMarketPurchasePrice = numString(Math.round(rawAccounting * ratio * 100) / 100)
+    }
+  }
+
+  // 手填市场进货价优先；只有明确留空且公式完整时才使用派生值。
+  // 更新请求未包含市场进货价时保留历史值，避免编辑其他资料误覆盖 WorkFine 快照。
+  if (marketPurchasePriceInput !== undefined) {
+    marketPurchasePrice = marketPurchasePriceInput ?? calculatedMarketPurchasePrice
+  } else if (!existing) {
+    marketPurchasePrice = calculatedMarketPurchasePrice
+  } else if (existingMarketPurchasePrice === null && formulaChanged && calculatedMarketPurchasePrice !== null) {
+    marketPurchasePrice = calculatedMarketPurchasePrice
   }
   return {
     retailPrice: input.retailPrice === undefined ? undefined : numString(input.retailPrice),
@@ -1280,6 +1287,7 @@ export const updateInventorySku = withPermission(
       .select({
         accountingPrice: inventorySkus.accountingPrice,
         marketPurchaseDiscount: inventorySkus.marketPurchaseDiscount,
+        marketPurchasePrice: inventorySkus.marketPurchasePrice,
         sourceType: inventorySkus.sourceType,
         ownerMarketId: inventorySkus.ownerMarketId,
       })

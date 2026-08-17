@@ -312,6 +312,26 @@ test('模板字段必须用 owner_id 关联物理表 ID，不能退化为 templa
   )
 })
 
+test('模板元数据存在明确 table_name 时不从 native_name 误判物理表', () => {
+  const metadata = normalizeTemplateMetadata(
+    [
+      { id: 585, table_name: 'UDT_S_585', native_name: '院产品报损单_主表' },
+      { id: 15335, table_name: 'UDV_L_244', native_name: 'UDT_S_585' },
+    ],
+    [
+      { owner_id: 585, column_name: 'UDF_S_5168', native_name: '报损日期' },
+      { owner_id: 15335, column_name: 'REPORTSTATUS', native_name: 'REPORTSTATUS' },
+    ],
+  )
+
+  assert.equal(metadata.tables.length, 1)
+  assert.equal(getMetadataTable(metadata, 'UDT_S_585').id, '585')
+  assert.deepEqual(
+    getMetadataTable(metadata, 'UDT_S_585').fields.map((field) => field.columnName),
+    ['UDF_S_5168'],
+  )
+})
+
 test('重复来源键但库存内容冲突时拒绝迁移', () => {
   const definition = { view: 'UDV_519', label: '公司库存', locationType: '总部' }
   const first = normalizeSnapshotRow(snapshotRow(), definition, options)

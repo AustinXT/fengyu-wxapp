@@ -466,24 +466,99 @@ describe('库存 SKU 来源与价格保护', () => {
     })).rejects.toThrow('来源和归属市场创建后不可修改')
   })
 
-  it('市场进货价不能脱离核算价和市场折扣手工写入', async () => {
+  it('允许手工填写市场进货价且不要求核算价和市场折扣', async () => {
+    const set = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }))
     mockDb.select.mockImplementation(() => selectWithLimit([{
       accountingPrice: null,
       marketPurchaseDiscount: null,
+      marketPurchasePrice: '78',
       sourceType: '供应链',
       ownerMarketId: null,
     }]))
+    mockDb.update.mockReturnValue({ set })
 
-    await expect(updateInventorySku('SKU-1', {
+    await updateInventorySku('SKU-1', {
       marketPurchasePrice: 123,
-    })).rejects.toThrow('市场进货价由核算价和市场折扣计算')
+    })
+
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({
+      marketPurchasePrice: '123',
+    }))
   })
 
-  it('同时清空核算价和市场折扣时清空派生市场进货价', async () => {
+  it('手工市场进货价优先于核算价和市场折扣公式', async () => {
     const set = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }))
     mockDb.select.mockImplementation(() => selectWithLimit([{
       accountingPrice: '4000',
       marketPurchaseDiscount: '0.25',
+      marketPurchasePrice: '1000',
+      sourceType: '供应链',
+      ownerMarketId: null,
+    }]))
+    mockDb.update.mockReturnValue({ set })
+
+    await updateInventorySku('SKU-1', {
+      accountingPrice: 5000,
+      marketPurchaseDiscount: 25,
+      marketPurchasePrice: 1200,
+    })
+
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({
+      accountingPrice: '5000',
+      marketPurchaseDiscount: '25',
+      marketPurchasePrice: '1200',
+    }))
+  })
+
+  it('市场进货价留空且公式完整时自动计算', async () => {
+    const set = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }))
+    mockDb.select.mockImplementation(() => selectWithLimit([{
+      accountingPrice: null,
+      marketPurchaseDiscount: null,
+      marketPurchasePrice: null,
+      sourceType: '供应链',
+      ownerMarketId: null,
+    }]))
+    mockDb.update.mockReturnValue({ set })
+
+    await updateInventorySku('SKU-1', {
+      accountingPrice: 4000,
+      marketPurchaseDiscount: 25,
+      marketPurchasePrice: null,
+    })
+
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({
+      marketPurchasePrice: '1000',
+    }))
+  })
+
+  it('核算价或市场折扣单独填写时允许保存并保留现有市场进货价', async () => {
+    const set = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }))
+    mockDb.select.mockImplementation(() => selectWithLimit([{
+      accountingPrice: null,
+      marketPurchaseDiscount: null,
+      marketPurchasePrice: '78',
+      sourceType: '供应链',
+      ownerMarketId: null,
+    }]))
+    mockDb.update.mockReturnValue({ set })
+
+    await updateInventorySku('SKU-1', {
+      accountingPrice: 100,
+    })
+
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({
+      accountingPrice: '100',
+      marketPurchasePrice: undefined,
+    }))
+  })
+
+  it('明确清空市场进货价且公式不完整时保存为空', async () => {
+    const set = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }))
+    mockDb.select.mockImplementation(() => selectWithLimit([{
+      accountingPrice: '4000',
+      marketPurchaseDiscount: '0.25',
+      marketPurchasePrice: '1000',
       sourceType: '供应链',
       ownerMarketId: null,
     }]))
@@ -492,6 +567,7 @@ describe('库存 SKU 来源与价格保护', () => {
     await updateInventorySku('SKU-1', {
       accountingPrice: null,
       marketPurchaseDiscount: null,
+      marketPurchasePrice: null,
     })
 
     expect(set).toHaveBeenCalledWith(expect.objectContaining({
