@@ -235,7 +235,8 @@ function buildBaseConditions(session: AuthSession, scope: AnalystScope, filters:
 
   const conditions: SQL[] = [
     scopeFilterSql(session, scope, "so.store_id"),
-    sql`so.sale_order_type IN ('销售单', '转换单')`,
+    // 寄存单承载 WorkFine 历史持卡品项及历史实收，是复购进入基线的一部分。
+    sql`so.sale_order_type IN ('销售单', '转换单', '寄存单')`,
     sql`so.status NOT IN ('已关闭', '已作废', '未审核', '待审批', '支付失败')`,
     sql`so.client_user_id IS NOT NULL`,
     sql`si.item_direction = '购买'`,
