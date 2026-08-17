@@ -2101,14 +2101,19 @@ describe('转换单在线回款意图事务守护', () => {
   test('qrcode 使用行锁和 NULL-CAS，禁止覆盖已有在线回款意图', () => {
     expect(qrcodeBody).toContain('FOR UPDATE')
     expect(qrcodeBody).toContain('first_payment_amount IS NULL')
+    expect(qrcodeBody).toContain('lakala_out_order_no IS NULL')
+    expect(qrcodeBody).toContain("String(locked.lakala_out_order_no || '').trim()")
     expect(qrcodeBody).toContain('ONLINE_PAYMENT_INTENT_ACTIVE')
-    expect(qrcodeBody).toMatch(/SET first_payment_amount = \$1,[\s\S]*lakala_out_order_no = NULL/)
+    expect(qrcodeBody).not.toMatch(/SET first_payment_amount = \$1,[\s\S]*lakala_out_order_no = NULL/)
   })
 
-  test('createRepayment 入账清旧上限，并可在同一事务冻结卡后在线补差', () => {
+  test('createRepayment 拒绝活动渠道单，并可在无渠道单时同事务冻结卡后在线补差', () => {
     expect(repaymentBody).toContain('onlinePaymentAmount')
     expect(repaymentBody).toContain('totalThisTime + onlinePaymentAmount')
     expect(repaymentBody).toMatch(/pending_prepaid_card_amount = 0,[\s\S]*first_payment_amount = \$4/)
     expect(repaymentBody).toContain('nextOnlinePaymentAmount')
+    expect(repaymentBody).toContain("String(locked.lakala_out_order_no || '').trim()")
+    expect(repaymentBody).toContain('lakala_out_order_no IS NULL')
+    expect(repaymentBody).not.toContain('lakala_out_order_no = CASE')
   })
 })
