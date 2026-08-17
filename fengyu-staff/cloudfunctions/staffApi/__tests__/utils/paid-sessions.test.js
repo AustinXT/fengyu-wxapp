@@ -14,6 +14,8 @@ const payNotifyPaidSessions = require('../../../../../fengyu-client/cloudfunctio
 
 const {
   computePaidSessionsForItem,
+  ORDER_PREPAID_CARD_RECALC_SQL,
+  SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL,
   PAID_SESSIONS_RECALC_SQL,
   FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL,
 } = staffPaidSessions
@@ -150,6 +152,20 @@ describe('computePaidSessionsForItem 公式边界（行级）', () => {
 })
 
 describe('PAID_SESSIONS_RECALC_SQL 模板字面量守护', () => {
+  test('储值卡实付必须来自已支付抵扣与储值卡退款净额，现金退款不回冲', () => {
+    expect(ORDER_PREPAID_CARD_RECALC_SQL).toContain("change_type = '储值卡抵扣'")
+    expect(ORDER_PREPAID_CARD_RECALC_SQL).toContain("change_type = '退款' AND payment_method = '储值卡'")
+    expect(ORDER_PREPAID_CARD_RECALC_SQL).toContain("status = '已支付'")
+  })
+
+  test('行级储值卡分摊必须用有符号 received，最后非零行用减法吸收尾差', () => {
+    expect(SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL).toContain('SUM(si.received::numeric) OVER () AS received_total')
+    expect(SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL).toContain('ORDER BY si.sale_item_id')
+    expect(SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL).toMatch(/WHEN rn = item_count\s+THEN prepaid_total -/)
+    expect(SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL).toContain('WHERE received_total <> 0 AND prepaid_total <> 0')
+    expect(SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL).not.toContain('GREATEST(0, si.received')
+  })
+
   test('行级公式必须为 received × session_count / sale_amount（session_count 参与，先乘后除保整数精度）', () => {
     // received 已由 STEP1（receipt/瀑布）+ STEP1.5（逐项退款净额）前置算好，
     // 本 SQL 不再下分订单级 refund，直接用净 received × session_count / sale_amount。
@@ -235,12 +251,16 @@ describe('退款 receipt 覆盖分流', () => {
 
     await copy.recalcPaidSessionsForOrder(fixture.client, 'order-refund-receipt')
 
-    expect(fixture.calls[0]).toContain("sop.change_type IN ('首次支付','回款','储值卡抵扣')")
-    expect(fixture.calls[0]).not.toContain("'退款'")
+    const coverageSql = fixture.calls.find((query) => typeof query === 'string' && query.includes('AS receipt_positive_total'))
+    expect(fixture.calls[0]).toBe(copy.ORDER_PREPAID_CARD_RECALC_SQL)
+    expect(coverageSql).toContain("sop.change_type IN ('首次支付','回款','储值卡抵扣')")
+    expect(coverageSql).not.toContain("'退款'")
     expect(copy.SALE_ITEMS_RECEIVED_FROM_RECEIPTS_SQL).toContain("'退款'")
     expect(fixture.calls).toContain(copy.SALE_ITEMS_RECEIVED_FROM_RECEIPTS_SQL)
     expect(fixture.calls).not.toContain(copy.SALE_ITEMS_RECEIVED_ALLOC_SQL)
     expect(fixture.calls).not.toContain(copy.RECEIVED_REFUNDED_DEDUCT_SQL)
+    expect(fixture.calls.indexOf(copy.SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL))
+      .toBeLessThan(fixture.calls.indexOf(copy.PAID_SESSIONS_RECALC_SQL))
     expect(fixture.state).toEqual({ received: 60, paidSessions: 6 })
   })
 
@@ -251,10 +271,12 @@ describe('退款 receipt 覆盖分流', () => {
 
     const allocationIndex = fixture.calls.indexOf(copy.SALE_ITEMS_RECEIVED_ALLOC_SQL)
     const deductIndex = fixture.calls.indexOf(copy.RECEIVED_REFUNDED_DEDUCT_SQL)
+    const channelIndex = fixture.calls.indexOf(copy.SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL)
     const recalcIndex = fixture.calls.indexOf(copy.PAID_SESSIONS_RECALC_SQL)
     expect(allocationIndex).toBeGreaterThan(-1)
     expect(deductIndex).toBeGreaterThan(allocationIndex)
-    expect(recalcIndex).toBeGreaterThan(deductIndex)
+    expect(channelIndex).toBeGreaterThan(deductIndex)
+    expect(recalcIndex).toBeGreaterThan(channelIndex)
     expect(fixture.state).toEqual({ received: 60, paidSessions: 6 })
   })
 })

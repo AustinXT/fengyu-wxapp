@@ -1188,6 +1188,36 @@ describe("ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护", 
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
+// sale_items 储值卡/现金实付分摊：四端各保留独立副本，归一化后必须完全一致。
+describe("sale_items 支付通道实付分摊 SQL 四端一致性守护", () => {
+  const sources = {
+    staff: readFile(FILES.staffPaidSessionsJs),
+    client: readFile(FILES.clientPaidSessionsJs),
+    payNotify: readFile(FILES.payNotifyPaidSessionsJs),
+    adminTs: readFile(FILES.adminPaidSessionsTs),
+  }
+  const extractAll = (marker) => Object.fromEntries(
+    Object.entries(sources).map(([name, src]) => [name, normalizeSql(extractBacktickStringContaining(src, marker))]),
+  )
+
+  test('订单储值卡实付净额重算四端一致', () => {
+    const sqls = extractAll('settled_prepaid')
+    expect(sqls.client).toBe(sqls.staff)
+    expect(sqls.payNotify).toBe(sqls.staff)
+    expect(sqls.adminTs).toBe(sqls.staff)
+  })
+
+  test('行级储值卡分摊四端一致，且具备有符号分母、稳定排序和减法尾差', () => {
+    const sqls = extractAll('prepaid_share')
+    expect(sqls.client).toBe(sqls.staff)
+    expect(sqls.payNotify).toBe(sqls.staff)
+    expect(sqls.adminTs).toBe(sqls.staff)
+    expect(sqls.staff).toMatch(/SUM\(si\.received::numeric\)\s+OVER\s*\(\)\s+AS received_total/)
+    expect(sqls.staff).toMatch(/ROW_NUMBER\(\)\s+OVER\s*\(ORDER BY si\.sale_item_id\)\s+AS rn/)
+    expect(sqls.staff).toMatch(/WHEN rn = item_count THEN prepaid_total -/)
+  })
+})
+
 // Block 7b': STEP 1 分支 A received = Σ receipt SQL 四端字节同义
 //   recalcPaidSessionsForOrder STEP1 两路分流：订单有完整 receipt 覆盖 → received = Σ 有符号 receipt.amount per item
 //   （分支 A，主路径，精确，退款 receipt 为负数）；无完整 receipt → 回退分支 B 瀑布（见下一块）。

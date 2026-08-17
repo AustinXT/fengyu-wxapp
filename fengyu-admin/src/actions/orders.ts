@@ -2318,10 +2318,15 @@ export const closeOrder = withPermission(
 
       await tx.execute(sql`
         UPDATE sale_order_payments
-         SET allocation_status = NULL,
-             status = CASE WHEN status = '待支付' THEN '已作废' ELSE status END
+         SET allocation_status = NULL
        WHERE sale_order_id = ${saleOrderId}
-          AND (allocation_status IN ('待分配', '已分配') OR status = '待支付')
+          AND allocation_status IN ('待分配', '已分配')
+      `)
+
+      await tx.execute(sql`
+        UPDATE sale_order_payments
+           SET status = '已作废'
+         WHERE sale_order_id = ${saleOrderId} AND status = '待支付'
       `)
 
       // 归还优惠券（订单关闭时释放已核销的券）

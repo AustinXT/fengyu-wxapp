@@ -1983,10 +1983,15 @@ async function close(ctx) {
     )
     await client.query(
       `UPDATE sale_order_payments
-         SET allocation_status = NULL,
-             status = CASE WHEN status = '待支付' THEN '已作废'::payment_flow_status ELSE status END
+         SET allocation_status = NULL
        WHERE sale_order_id = $1
-          AND (allocation_status IN ('待分配', '已分配') OR status = '待支付')`,
+          AND allocation_status IN ('待分配', '已分配')`,
+      [saleOrderId],
+    )
+    await client.query(
+      `UPDATE sale_order_payments
+          SET status = '已作废'::payment_flow_status
+        WHERE sale_order_id = $1 AND status = '待支付'`,
       [saleOrderId],
     )
     // 释放关联的优惠券
