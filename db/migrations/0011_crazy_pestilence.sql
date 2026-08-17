@@ -2,47 +2,6 @@ ALTER TABLE "sale_items" ADD COLUMN "prepaid_card_received" numeric(10, 2) DEFAU
 ALTER TABLE "sale_items" ADD COLUMN "cash_received" numeric(10, 2) GENERATED ALWAYS AS (received - prepaid_card_received) STORED;--> statement-breakpoint
 ALTER TABLE "sale_orders" ADD COLUMN "pending_prepaid_card_amount" numeric(10, 2) DEFAULT '0' NOT NULL;
 
--- 旧已结清订单可能在 sale_order_payments 引入时只回填了非储值卡实付。
--- 先把旧 prepaid_card_amount 与已结算储值卡净流水之间的正向缺口补成实付流水，
--- 让本迁移及后续各端从流水重聚合时都不会把历史储值卡实付清零。
-WITH historical_card_totals AS (
-  SELECT so.sale_order_id,
-         so.prepaid_card_amount::numeric AS old_prepaid,
-         COALESCE(SUM(sop.amount::numeric) FILTER (
-           WHERE sop.status = '已支付'
-             AND (sop.change_type = '储值卡抵扣'
-                  OR (sop.change_type = '退款' AND sop.payment_method = '储值卡'))
-         ), 0)::numeric AS settled_prepaid
-  FROM sale_orders so
-  LEFT JOIN sale_order_payments sop ON sop.sale_order_id = so.sale_order_id
-  WHERE so.status IN ('已支付', '已完成')
-    AND so.prepaid_card_amount::numeric > 0
-  GROUP BY so.sale_order_id, so.prepaid_card_amount
-),
-historical_card_gaps AS (
-  SELECT sale_order_id,
-         ROUND(old_prepaid - settled_prepaid, 2)::numeric(10, 2) AS missing_prepaid
-  FROM historical_card_totals
-  WHERE ROUND(old_prepaid - settled_prepaid, 2) > 0
-)
-INSERT INTO sale_order_payments (
-  sale_order_id, change_type, amount, payment_method, external_txn_id,
-  status, source_end, operator_employee_id, note, created_at, paid_at
-)
-SELECT gaps.sale_order_id,
-       '储值卡抵扣'::payment_change_type,
-       gaps.missing_prepaid,
-       '储值卡'::payment_method,
-       NULL,
-       '已支付'::payment_flow_status,
-       'admin'::payment_source_end,
-       NULL,
-       '系统迁移补齐历史储值卡实付',
-       COALESCE(so.paid_at, so.sale_order_datetime, so.created_at),
-       COALESCE(so.paid_at, so.sale_order_datetime, so.created_at)
-FROM historical_card_gaps gaps
-JOIN sale_orders so ON so.sale_order_id = gaps.sale_order_id;--> statement-breakpoint
-
 -- Backfill actual/pending 储值卡语义：旧 prepaid_card_amount 同时包含已结算与预选值。
 WITH payment_totals AS (
   SELECT so.sale_order_id,
