@@ -424,6 +424,12 @@ function PopoverShell({
 
   if (!open || typeof document === "undefined") return null
 
+  // A native modal <dialog> lives in the browser's top layer. Portaling to
+  // document.body from inside one leaves the calendar underneath the dialog
+  // and its backdrop regardless of z-index, so keep the popover in the same
+  // top-layer subtree when a picker is used inside a dialog.
+  const portalContainer = triggerRef.current?.closest("dialog[open]") ?? document.body
+
   return createPortal(
     <div
       ref={popoverRef}
@@ -443,7 +449,7 @@ function PopoverShell({
     >
       {children}
     </div>,
-    document.body,
+    portalContainer,
   )
 }
 
