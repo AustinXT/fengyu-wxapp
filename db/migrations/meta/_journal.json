@@ -71,6 +71,20 @@
       "when": 1786928808006,
       "tag": "0009_massive_speed_demon",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1786930106819,
+      "tag": "0010_flaky_thunderbolt_ross",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1786930777195,
+      "tag": "0011_crazy_pestilence",
+      "breakpoints": true
     }
   ]
 }

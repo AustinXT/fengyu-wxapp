@@ -74,9 +74,19 @@ export const saleOrders = pgTable(
     customerName: varchar("customer_name", { length: 50 }),
     /** 订单总金额；商品价格之和，扣除优惠券 */
     totalAmount: numeric("total_amount", { precision: 10, scale: 2 }).notNull(),
-    /** 储值卡抵扣金额（抵扣项，不计入实付） */
+    /**
+     * 已结算储值卡实付净额。
+     * 权威来源：已支付的「储值卡抵扣」正向流水 + payment_method='储值卡' 的已支付退款负向流水。
+     * 未实际扣卡的预选金额只写 pending_prepaid_card_amount，不得提前进入本字段。
+     */
     prepaidCardAmount: numeric("prepaid_card_amount", { precision: 10, scale: 2 }).notNull().default("0"),
-    /** 应付实金金额 = total_amount - prepaid_card_amount；创建订单时计算并冻结，作为冗余列便于前端/报表筛选 */
+    /** 尚未结算的储值卡预选/混合支付意向金额；结算后原子转入 prepaid_card_amount。 */
+    pendingPrepaidCardAmount: numeric("pending_prepaid_card_amount", { precision: 10, scale: 2 }).notNull().default("0"),
+    /**
+     * 订单约定现金应付额。
+     * 销售/内部/转换单 = total_amount - prepaid_card_amount - pending_prepaid_card_amount；
+     * 充值单仍为档位实付、寄存单仍为 0。
+     */
     payableAmount: numeric("payable_amount", { precision: 10, scale: 2 }).notNull().default("0"),
     /**
      * 实收金额（走 payment_method 指定通道）；received = 0 ⇔ payment_method = '无'。
@@ -259,6 +269,14 @@ export const saleItems = pgTable(
      * Σ(购买行) = sale_orders.received − Σ逐项退款（不再恒等毛额 received）。**不是行单价**（行价看 sale_amount）。
      */
     received: numeric("received", { precision: 10, scale: 2 }).notNull(),
+    /**
+     * 储值卡实付分摊。按本单所有 sale_items.received 的有符号净额比例分摊订单
+     * prepaid_card_amount；最后一个非零实收项用减法吸收分币尾差。分母为 0 时全部置 0。
+     */
+    prepaidCardReceived: numeric("prepaid_card_received", { precision: 10, scale: 2 }).notNull().default("0"),
+    /** 现金实付分摊，数据库生成列，恒等于 received - prepaid_card_received。 */
+    cashReceived: numeric("cash_received", { precision: 10, scale: 2 })
+      .generatedAlwaysAs(sql`received - prepaid_card_received`),
     /**
      * 逐行实付草稿（开单首付 UI 填的单次每项实付金额快照，行级）。
      * 作为 STEP 1 两段式瀑布的「第一段产能」权重：无定向额（首付/无 items 回款）优先按 pending_received
@@ -712,7 +730,10 @@ export const saleItemPerformanceEvents = pgView(
      AND spe.status = '已支付'
   ),
   receipt_totals AS (
-    SELECT sale_item_id, SUM(amount)::numeric(10, 2) AS amount
+    SELECT sale_item_id,
+           SUM(amount) FILTER (
+             WHERE change_type IN ('首次支付', '回款', '储值卡抵扣')
+           )::numeric(10, 2) AS amount
     FROM paid_receipts
     GROUP BY sale_item_id
   ),
