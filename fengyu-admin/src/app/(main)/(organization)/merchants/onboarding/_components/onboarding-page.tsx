@@ -2,7 +2,6 @@
 
 import {
   useEffect,
-  useId,
   useMemo,
   useRef,
   useState,
@@ -62,6 +61,17 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Input } from "@/components/ui/input"
 import { cn, formatDateTime } from "@/lib/utils"
+import {
+  buildLakalaMerchantAreaDirectory,
+  parseLakalaMerchantAreas,
+  type LakalaMerchantAreaRow,
+} from "@/lib/lakala-merchant-area-client"
+import {
+  channelMerchantNumbers,
+  onboardingBusinessStatus,
+  onboardingMetricCounts,
+  onboardingStatusText,
+} from "@/lib/lakala-onboarding-presentation"
 
 type StringRecord = Record<string, string>
 
@@ -74,48 +84,23 @@ type ActionResult = {
   updatedAt?: string
 }
 
-type LakalaArea = {
-  code: string
-  name: string
-  parentCode: string
-}
-
-let areaRowsPromise: Promise<LakalaArea[]> | null = null
+let areaRowsPromise: Promise<LakalaMerchantAreaRow[]> | null = null
 const PDF_ATTACHMENT_TYPES = new Set(["BUSINESS_LICENCE", "OPENING_PERMIT"])
 
 function allowsPdfAttachment(attachmentType: string): boolean {
   return PDF_ATTACHMENT_TYPES.has(attachmentType)
 }
 
-function loadLakalaAreas(): Promise<LakalaArea[]> {
+function loadLakalaAreas(): Promise<LakalaMerchantAreaRow[]> {
   if (!areaRowsPromise) {
     areaRowsPromise = fetch("/data/lakala-merchant-areas.tsv")
       .then(async (response) => {
         if (!response.ok) throw new Error("无法加载拉卡拉地区码")
-        const text = await response.text()
-        return text
-          .split(/\r?\n/)
-          .slice(1)
-          .flatMap((line) => {
-            const [code, name, parentCode] = line.split("\t")
-            return code && name ? [{ code, name, parentCode: parentCode || "" }] : []
-          })
+        return parseLakalaMerchantAreas(await response.text())
       })
       .catch(() => [])
   }
   return areaRowsPromise
-}
-
-const statusText: Record<OnboardingStatus, string> = {
-  DRAFT: "草稿",
-  FILES_UPLOADING: "资料保存中",
-  FILES_READY: "资料已就绪",
-  SUBMITTING: "提交中",
-  SUBMITTED: "已提交",
-  REGISTERING: "审核中",
-  SUCCESS: "审核通过",
-  FAILED: "审核失败",
-  CANCELLED: "已取消",
 }
 
 function toStringRecord(value: unknown): StringRecord {
@@ -159,47 +144,21 @@ function setFormField(
   }
 }
 
-function StatusBadge({ status }: { status: OnboardingStatus }) {
-  const className = status === "SUCCESS"
+function StatusBadge({ status, label }: { status: OnboardingStatus; label?: string }) {
+  const completed = label === "办理完成"
+  const warning = ["待渠道报备", "待终端号", "待外部认证", "待启用"].includes(label ?? "")
+  const className = completed
     ? "border-[#3D8A5A] bg-[#F0F9F2] text-[#287342]"
     : status === "FAILED" || status === "CANCELLED"
       ? "border-[#D94040] bg-[#FFF5F4] text-[#B42318]"
-      : status === "DRAFT" || status === "FILES_UPLOADING"
+      : warning || status === "DRAFT" || status === "FILES_UPLOADING"
         ? "border-[#D4820A] bg-[#FFF8E6] text-[#A45D00]"
         : "border-[#7A67A8] bg-[#F5F1FA] text-[#62508B]"
-  return <Badge variant="outline" className={className}>{statusText[status]}</Badge>
-}
-
-function todoForApplication(application: OnboardingListItem): string {
-  if (application.status === "SUCCESS") {
-    if (!application.merCupNo || !application.terminalNo) return "等待拉卡拉返回收款编号"
-    if (!application.lakalaMerchantId) return "待关联收款商户"
-    return application.lakalaMerchantEnabled
-      ? "收款已启用"
-      : "完成渠道认证后，请在收款商户页人工启用"
-  }
-  if (application.status === "FAILED") return "修正资料后重新提交"
-  if (application.status === "SUBMITTED" || application.status === "REGISTERING") return "等待拉卡拉审核"
-  return application.missing || "补齐资料并提交拉卡拉"
+  return <Badge variant="outline" className={className}>{label ?? onboardingStatusText[status]}</Badge>
 }
 
 function formatFileSize(bytes: number): string {
   return (bytes / 1024 / 1024).toFixed(1) + " MB"
-}
-
-function channelMerchantNumbers(
-  channelData: Record<string, unknown>,
-  channel: "wechat" | "alipay",
-): string {
-  const values = channelData[channel]
-  if (!Array.isArray(values)) return ""
-  return values
-    .flatMap((value) => {
-      if (!value || typeof value !== "object") return []
-      const number = (value as Record<string, unknown>).subMerchantNo
-      return typeof number === "string" ? [number] : []
-    })
-    .join("、")
 }
 
 function Field({
@@ -283,8 +242,7 @@ function LakalaAreaCodeField({
   label: string
   hint: string
 }) {
-  const listId = useId()
-  const [areas, setAreas] = useState<LakalaArea[]>([])
+  const [areas, setAreas] = useState<LakalaMerchantAreaRow[]>([])
   const value = getGroup(form, group)[field] ?? ""
 
   useEffect(() => {
@@ -297,28 +255,290 @@ function LakalaAreaCodeField({
     }
   }, [])
 
-  const selected = useMemo(() => areas.find((area) => area.code === value), [areas, value])
+  const directory = useMemo(() => buildLakalaMerchantAreaDirectory(areas), [areas])
+  const valuePath = useMemo(() => directory.getPathByCode(value), [directory, value])
+  const [provinceCode, setProvinceCode] = useState("")
+  const [cityCode, setCityCode] = useState("")
+  const [countyCode, setCountyCode] = useState("")
+
+  useEffect(() => {
+    setProvinceCode(valuePath.provinceCode)
+    setCityCode(valuePath.cityCode)
+    setCountyCode(valuePath.countyCode)
+  }, [valuePath])
+
+  const cityOptions = directory.getCityOptions(provinceCode)
+  const countyOptions = directory.getCountyOptions(cityCode)
   return (
-    <label className="block sm:col-span-2">
+    <div className="block sm:col-span-2">
       <span className="text-sm font-medium text-[var(--foreground)]">
         {label} <span className="text-[#D94040]">*</span>
       </span>
-      <Input
-        list={listId}
-        value={value}
-        onChange={(event) => setForm(setFormField(form, group, field, event.target.value.trim()))}
-        placeholder="输入或选择拉卡拉区县地区码"
-        className="mt-1.5"
-      />
-      <datalist id={listId}>
-        {areas.map((area) => (
-          <option key={area.code} value={area.code} label={area.name} />
-        ))}
-      </datalist>
+      <div className="mt-1.5 grid gap-2 sm:grid-cols-3">
+        <select
+          aria-label={label + "省份"}
+          value={provinceCode}
+          onChange={(event) => {
+            setProvinceCode(event.target.value)
+            setCityCode("")
+            setCountyCode("")
+            setForm(setFormField(form, group, field, ""))
+          }}
+          className="h-9 w-full rounded-[var(--radius)] border border-[var(--input)] bg-white px-3 text-sm"
+        >
+          <option value="">请选择省</option>
+          {directory.provinceOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+        <select
+          aria-label={label + "城市"}
+          value={cityCode}
+          disabled={!provinceCode}
+          onChange={(event) => {
+            setCityCode(event.target.value)
+            setCountyCode("")
+            setForm(setFormField(form, group, field, ""))
+          }}
+          className="h-9 w-full rounded-[var(--radius)] border border-[var(--input)] bg-white px-3 text-sm disabled:bg-[var(--muted)]"
+        >
+          <option value="">请选择市</option>
+          {cityOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+        <select
+          aria-label={label + "区县"}
+          value={countyCode}
+          disabled={!cityCode}
+          onChange={(event) => {
+            const code = event.target.value
+            setCountyCode(code)
+            setForm(setFormField(form, group, field, code))
+          }}
+          className="h-9 w-full rounded-[var(--radius)] border border-[var(--input)] bg-white px-3 text-sm disabled:bg-[var(--muted)]"
+        >
+          <option value="">请选择区县</option>
+          {countyOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+      </div>
       <span className="mt-1 block text-xs text-[#999999]">
-        {selected ? "已选择：" + selected.name + "（" + selected.code + "）" : hint}
+        {valuePath.label ? "已选择：" + valuePath.label + "（" + value + "）" : hint}
       </span>
-    </label>
+    </div>
+  )
+}
+
+export function OpeningBankField({
+  form,
+  setForm,
+  applicationId,
+}: {
+  form: OnboardingApplicationInput
+  setForm: (next: OnboardingApplicationInput) => void
+  applicationId: string
+}) {
+  const settlement = getGroup(form, "settlementData")
+  const [areas, setAreas] = useState<LakalaMerchantAreaRow[]>([])
+  const [bankKeyword, setBankKeyword] = useState(settlement.openningBankName ?? "")
+  const [bankOptions, setBankOptions] = useState<OnboardingBankOption[]>([])
+  const [searching, startSearch] = useTransition()
+  const directory = useMemo(() => buildLakalaMerchantAreaDirectory(areas), [areas])
+  const valuePath = useMemo(() => directory.getPathByCode(settlement.bankDistCode), [directory, settlement.bankDistCode])
+  const [provinceCode, setProvinceCode] = useState("")
+  const [cityCode, setCityCode] = useState("")
+  const [countyCode, setCountyCode] = useState("")
+  const hasSelectedBank = Boolean(
+    settlement.openningBankName
+      && settlement.openningBankCode
+      && settlement.clearingBankCode
+      && settlement.bankAreaCode,
+  )
+
+  useEffect(() => {
+    let mounted = true
+    void loadLakalaAreas().then((rows) => {
+      if (mounted) setAreas(rows)
+    })
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  useEffect(() => {
+    setProvinceCode(valuePath.provinceCode)
+    setCityCode(valuePath.cityCode)
+    setCountyCode(valuePath.countyCode)
+  }, [valuePath])
+
+  useEffect(() => {
+    if (!hasSelectedBank) setBankKeyword(settlement.openningBankName ?? "")
+  }, [hasSelectedBank, settlement.openningBankName])
+
+  const clearBankSelection = (nextBankDistCode: string, nextKeyword = "") => {
+    setBankKeyword(nextKeyword)
+    setBankOptions([])
+    setForm({
+      ...form,
+      settlementData: {
+        ...settlement,
+        bankDistCode: nextBankDistCode,
+        bankAreaCode: "",
+        openningBankCode: "",
+        openningBankName: "",
+        clearingBankCode: "",
+        settleProvinceCode: "",
+        settleProvinceName: "",
+        settleCityCode: "",
+        settleCityName: "",
+      },
+    })
+  }
+
+  const selectBank = (bank: OnboardingBankOption) => {
+    setBankKeyword(bank.branchBankName)
+    setBankOptions([])
+    setForm({
+      ...form,
+      settlementData: {
+        ...settlement,
+        bankDistCode: countyCode,
+        bankAreaCode: bank.areaCode,
+        openningBankCode: bank.branchBankNo,
+        openningBankName: bank.branchBankName,
+        clearingBankCode: bank.clearNo,
+        settleProvinceCode: "",
+        settleProvinceName: "",
+        settleCityCode: "",
+        settleCityName: "",
+      },
+    })
+    toast.success("已选择拉卡拉标准开户支行")
+  }
+
+  const searchBanks = () => {
+    if (!countyCode) {
+      toast.error("请先选择开户行所在地")
+      return
+    }
+    startSearch(async () => {
+      try {
+        const result = await searchOnboardingBanks(applicationId, bankKeyword, countyCode)
+        if (!result.success) {
+          setBankOptions([])
+          toast.error(result.message || "开户行查询失败")
+          return
+        }
+        setBankOptions(result.banks ?? [])
+        if (!result.banks?.length) toast.info(result.message || "未找到匹配开户行")
+      } catch (error) {
+        setBankOptions([])
+        toast.error(actionErrorMessage(error, "开户行查询失败"))
+      }
+    })
+  }
+
+  const cityOptions = directory.getCityOptions(provinceCode)
+  const countyOptions = directory.getCountyOptions(cityCode)
+  return (
+    <div className="space-y-2 sm:col-span-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-sm font-medium text-[var(--foreground)]">开户支行 <span className="text-[#D94040]">*</span></span>
+        <span className="text-xs text-[#999999]">必须从查询结果中选择</span>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-3">
+        <select
+          aria-label="开户行省份"
+          value={provinceCode}
+          onChange={(event) => {
+            setProvinceCode(event.target.value)
+            setCityCode("")
+            setCountyCode("")
+            clearBankSelection("")
+          }}
+          className="h-9 w-full rounded-[var(--radius)] border border-[var(--input)] bg-white px-3 text-sm"
+        >
+          <option value="">请选择省</option>
+          {directory.provinceOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+        <select
+          aria-label="开户行城市"
+          value={cityCode}
+          disabled={!provinceCode}
+          onChange={(event) => {
+            setCityCode(event.target.value)
+            setCountyCode("")
+            clearBankSelection("")
+          }}
+          className="h-9 w-full rounded-[var(--radius)] border border-[var(--input)] bg-white px-3 text-sm disabled:bg-[var(--muted)]"
+        >
+          <option value="">请选择市</option>
+          {cityOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+        <select
+          aria-label="开户行区县"
+          value={countyCode}
+          disabled={!cityCode}
+          onChange={(event) => {
+            const code = event.target.value
+            setCountyCode(code)
+            clearBankSelection(code)
+          }}
+          className="h-9 w-full rounded-[var(--radius)] border border-[var(--input)] bg-white px-3 text-sm disabled:bg-[var(--muted)]"
+        >
+          <option value="">请选择区县</option>
+          {countyOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+      </div>
+      {hasSelectedBank ? (
+        <div className="flex flex-col gap-2 rounded-[var(--radius)] border border-[#D7EBDD] bg-[#F6FBF7] p-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-medium">{settlement.openningBankName}</p>
+            <p className="mt-1 text-xs text-[#6B8F76]">系统已保存标准支行、行号和清算行号。</p>
+          </div>
+          <Button type="button" variant="outline" size="sm" onClick={() => clearBankSelection(countyCode)}>重新选择</Button>
+        </div>
+      ) : (
+        <>
+          <div className="flex gap-2">
+            <Input
+              aria-label="开户支行关键字"
+              value={bankKeyword}
+              onChange={(event) => {
+                const nextKeyword = event.target.value
+                if (settlement.bankAreaCode || settlement.openningBankCode || settlement.clearingBankCode) {
+                  clearBankSelection(countyCode, nextKeyword)
+                } else {
+                  setBankKeyword(nextKeyword)
+                  setBankOptions([])
+                }
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault()
+                  searchBanks()
+                }
+              }}
+              placeholder="输入关键词，例如：招商银行南昌分行"
+            />
+            <Button type="button" variant="outline" disabled={searching || !bankKeyword.trim()} onClick={searchBanks}>
+              {searching ? "查询中" : "查询支行"}
+            </Button>
+          </div>
+          {bankOptions.length > 0 && (
+            <div className="max-h-56 overflow-y-auto rounded-[var(--radius)] border border-[var(--border)] bg-white py-1">
+              {bankOptions.map((bank) => (
+                <button
+                  key={bank.branchBankNo}
+                  type="button"
+                  onClick={() => selectBank(bank)}
+                  className="block w-full px-3 py-2 text-left text-sm hover:bg-[var(--muted)]"
+                >
+                  {bank.branchBankName + "（" + bank.branchBankNo + "）"}
+                </button>
+              ))}
+            </div>
+          )}
+          <p className="text-xs text-[#999999]">更改地区或关键词后，旧的支行编码会被清空。</p>
+        </>
+      )}
+    </div>
   )
 }
 
@@ -326,19 +546,13 @@ function OnboardingForm({
   form,
   setForm,
   pending,
-  bankOptions,
-  onSearchBanks,
-  onSelectBank,
+  applicationId,
 }: {
   form: OnboardingApplicationInput
   setForm: (next: OnboardingApplicationInput) => void
   pending: boolean
-  bankOptions: OnboardingBankOption[]
-  onSearchBanks: (keyword: string) => Promise<void>
-  onSelectBank: (bank: OnboardingBankOption) => void
+  applicationId: string
 }) {
-  const [bankKeyword, setBankKeyword] = useState(getGroup(form, "settlementData").openningBankName ?? "")
-
   return (
     <fieldset disabled={pending} className="grid min-w-0 gap-4 border-0 p-0 xl:grid-cols-2">
       <Card>
@@ -396,60 +610,7 @@ function OnboardingForm({
           <CardContent className="grid gap-4 sm:grid-cols-2">
             <Field form={form} setForm={setForm} group="settlementData" field="acctName" label="结算户名" required />
             <Field form={form} setForm={setForm} group="settlementData" field="acctNo" label="结算账号" required />
-            <LakalaAreaCodeField
-              form={form}
-              setForm={setForm}
-              group="settlementData"
-              field="bankDistCode"
-              label="开户地区码"
-              hint="用于查询开户支行，并在保存时补齐结算省、市编码。"
-            />
-            <Field form={form} setForm={setForm} group="settlementData" field="openningBankCode" label="开户支行编码" required />
-            <Field form={form} setForm={setForm} group="settlementData" field="clearingBankCode" label="清算行号" required />
-            <div className="sm:col-span-2">
-              <label className="block text-sm font-medium text-[var(--foreground)]">
-                开户支行名称 <span className="text-[#D94040]">*</span>
-              </label>
-              <div className="mt-1.5 flex gap-2">
-                <Input
-                  value={bankKeyword}
-                  onChange={(event) => setBankKeyword(event.target.value)}
-                  placeholder="输入支行关键字后查询"
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={!bankKeyword.trim()}
-                  onClick={() => void onSearchBanks(bankKeyword)}
-                >
-                  查询
-                </Button>
-              </div>
-              {bankOptions.length > 0 && (
-                <select
-                  className="mt-2 h-9 w-full rounded-[var(--radius)] border border-[var(--input)] bg-white px-3 text-sm"
-                  defaultValue=""
-                  onChange={(event) => {
-                    const bank = bankOptions[Number(event.target.value)]
-                    if (bank) onSelectBank(bank)
-                    event.currentTarget.value = ""
-                  }}
-                >
-                  <option value="">选择查询结果填入</option>
-                  {bankOptions.map((bank, index) => (
-                    <option key={bank.branchBankNo} value={index}>
-                      {bank.branchBankName + "（" + bank.branchBankNo + "）"}
-                    </option>
-                  ))}
-                </select>
-              )}
-              <Input
-                value={getGroup(form, "settlementData").openningBankName ?? ""}
-                onChange={(event) => setForm(setFormField(form, "settlementData", "openningBankName", event.target.value))}
-                className="mt-2"
-                placeholder="开户支行名称"
-              />
-            </div>
+            <OpeningBankField form={form} setForm={setForm} applicationId={applicationId} />
           </CardContent>
         </Card>
 
@@ -477,17 +638,14 @@ type OnboardingListRow = OnboardingListItem & Record<string, unknown>
 export function OnboardingList({
   applications,
   canCreate,
+  embedded = false,
 }: {
   applications: OnboardingListItem[]
   canCreate: boolean
+  embedded?: boolean
 }) {
   const rows = applications as OnboardingListRow[]
-  const counts = useMemo(() => ({
-    drafts: rows.filter((item) => ["DRAFT", "FILES_UPLOADING", "FAILED"].includes(item.status)).length,
-    ready: rows.filter((item) => item.status === "FILES_READY").length,
-    reviewing: rows.filter((item) => ["SUBMITTING", "SUBMITTED", "REGISTERING"].includes(item.status)).length,
-    success: rows.filter((item) => item.status === "SUCCESS").length,
-  }), [rows])
+  const counts = useMemo(() => onboardingMetricCounts(applications), [applications])
 
   const columns: Column<OnboardingListRow>[] = [
     {
@@ -509,12 +667,17 @@ export function OnboardingList({
     {
       key: "status",
       header: "状态",
-      cell: (row) => <StatusBadge status={row.status} />,
+      cell: (row) => <StatusBadge status={row.status} label={onboardingBusinessStatus(row).label} />,
     },
     {
       key: "todo",
       header: "当前待办",
-      cell: (row) => <span className="text-[#666666]">{todoForApplication(row)}</span>,
+      cell: (row) => <span className="text-[#666666]">{onboardingBusinessStatus(row).todo}</span>,
+    },
+    {
+      key: "owner",
+      header: "负责人",
+      cell: (row) => row.owner ?? "—",
     },
     {
       key: "updatedAt",
@@ -537,15 +700,17 @@ export function OnboardingList({
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold">门店拉卡拉入网</h1>
+          <h1 className={embedded ? "text-lg font-semibold" : "text-2xl font-bold"}>门店拉卡拉入网</h1>
           <p className="mt-1 text-xs text-[#999999]">
             记录门店资料、电子合同、拉卡拉审核、渠道认证及收款商户关联。
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Link href="/merchants">
-            <Button variant="outline"><ArrowLeft />收款商户</Button>
-          </Link>
+          {!embedded && (
+            <Link href="/merchants">
+              <Button variant="outline"><ArrowLeft />收款商户</Button>
+            </Link>
+          )}
           {canCreate && (
             <Link href="/merchants/onboarding/new">
               <Button><Plus />发起入网申请</Button>
@@ -557,8 +722,8 @@ export function OnboardingList({
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="待补资料" value={counts.drafts} icon={<FileWarning className="size-6 text-[#D4820A]" />} tone="text-[#A45D00]" />
         <Metric label="待提交" value={counts.ready} icon={<ClipboardCheck className="size-6 text-[#386987]" />} tone="text-[#386987]" />
-        <Metric label="审核中" value={counts.reviewing} icon={<RefreshCw className="size-6 text-[#62508B]" />} tone="text-[#62508B]" />
-        <Metric label="审核通过" value={counts.success} icon={<CheckCircle2 className="size-6 text-[#3D8A5A]" />} tone="text-[#287342]" />
+        <Metric label="办理中" value={counts.reviewing} icon={<RefreshCw className="size-6 text-[#62508B]" />} tone="text-[#62508B]" />
+        <Metric label="办理完成" value={counts.completed} icon={<CheckCircle2 className="size-6 text-[#3D8A5A]" />} tone="text-[#287342]" />
       </div>
 
       <DataTable columns={columns} data={rows} emptyText="暂无入网申请" />
@@ -727,16 +892,11 @@ export function OnboardingEditor({
   const [ocrStatus, setOcrStatus] = useState<Record<string, string>>({})
   const [localPreviewUrls, setLocalPreviewUrls] = useState<Record<string, string>>({})
   const localPreviewUrlsRef = useRef<Record<string, string>>({})
-  const [bankOptions, setBankOptions] = useState<OnboardingBankOption[]>([])
   useUnsavedChanges(formDirty)
 
   useEffect(() => {
     setExpectedUpdatedAt(application.updatedAt)
   }, [application.updatedAt])
-
-  useEffect(() => {
-    setBankOptions([])
-  }, [application.id])
 
   useEffect(() => {
     localPreviewUrlsRef.current = localPreviewUrls
@@ -764,7 +924,10 @@ export function OnboardingEditor({
     wechatSubMerchant ? "" : "微信子商户号",
     alipaySubMerchant ? "" : "支付宝子商户号",
   ].filter(Boolean)
-  const canConfirmMerchant = application.status === "SUCCESS" && missingCollectionNumbers.length === 0
+  const canConfirmMerchant = application.status === "SUCCESS"
+    && !application.lakalaMerchantId
+    && missingCollectionNumbers.length === 0
+  const businessStatus = onboardingBusinessStatus(application)
   const contractPdf = attachments.get(ELECTRONIC_CONTRACT_PDF_ATTACHMENT.attachmentType)
   const canCancelApplication = ["DRAFT", "FILES_UPLOADING", "FILES_READY", "FAILED"].includes(application.status)
     && !application.eContractOrderNo
@@ -968,39 +1131,6 @@ export function OnboardingEditor({
     }
   }
 
-  async function searchBank(keyword: string) {
-    try {
-      const result = await searchOnboardingBanks(
-        application.id,
-        keyword,
-        getGroup(form, "settlementData").bankDistCode ?? "",
-      )
-      if (!result.success) {
-        toast.error(result.message || "开户行查询失败")
-        return
-      }
-      setBankOptions(result.banks ?? [])
-      if (!result.banks?.length) toast.info(result.message || "未找到匹配开户行")
-    } catch (error) {
-      toast.error(actionErrorMessage(error, "开户行查询失败"))
-    }
-  }
-
-  function selectBank(bank: OnboardingBankOption) {
-    updateForm({
-      ...form,
-      settlementData: {
-        ...getGroup(form, "settlementData"),
-        openningBankName: bank.branchBankName,
-        openningBankCode: bank.branchBankNo,
-        bankAreaCode: bank.areaCode,
-        ...(bank.clearNo ? { clearingBankCode: bank.clearNo } : {}),
-      },
-    })
-    setBankOptions([])
-    toast.success("已填入开户支行，请确认")
-  }
-
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -1011,7 +1141,7 @@ export function OnboardingEditor({
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-2xl font-bold">门店拉卡拉入网申请</h1>
-              <StatusBadge status={application.status} />
+              <StatusBadge status={application.status} label={businessStatus.label} />
             </div>
             <p className="mt-1 text-xs text-[#999999]">
               {application.storeName + " · " + application.applicationNo + " · 最近更新 " + formatDateTime(application.updatedAt)}
@@ -1057,7 +1187,7 @@ export function OnboardingEditor({
       <Card className="border-[#F6D8A8]">
         <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
           <div>
-            <p className="text-sm font-medium">当前待办：{todoForApplication(application)}</p>
+            <p className="text-sm font-medium">当前待办：{businessStatus.todo}</p>
             <p className="mt-1 text-xs text-[#999999]">
               市场：{application.marketName ?? "—"} · 负责人：{application.owner ?? "—"}
             </p>
@@ -1169,9 +1299,7 @@ export function OnboardingEditor({
         form={form}
         setForm={updateForm}
         pending={pending || !canEdit}
-        bankOptions={bankOptions}
-        onSearchBanks={searchBank}
-        onSelectBank={selectBank}
+        applicationId={application.id}
       />
 
       <Card>
@@ -1259,7 +1387,7 @@ export function OnboardingEditor({
             <div>
               <CardTitle className="text-base">渠道认证与收款商户</CardTitle>
               <p className="mt-1 text-xs text-[#999999]">
-                审核通过后先等待渠道认证；确认微信、支付宝认证完成时才绑定未启用的收款商户。
+                审核通过后完成渠道认证；刷新到微信认证通过且已有终端号时，系统会自动绑定并启用收款商户。
               </p>
             </div>
             {canEdit && (
@@ -1298,8 +1426,8 @@ export function OnboardingEditor({
             </div>
             <div className="flex flex-col justify-between gap-3 rounded-[var(--radius)] border border-[#D9D2F0] bg-[#F7F4FC] p-4 sm:flex-row sm:items-center">
               <div>
-                <p className="text-sm font-medium">法人完成外部认证后刷新状态</p>
-                <p className="mt-1 text-xs text-[#62508B]">收款商户会保持未启用状态，仍需在收款商户页单独启用。</p>
+                <p className="text-sm font-medium">法人完成微信认证后刷新状态</p>
+                <p className="mt-1 text-xs text-[#62508B]">刷新认证可自动启用收款；“人工确认”仅用于需要操作员核验的情况，绑定后仍保持未启用。</p>
               </div>
               <div className="flex flex-wrap gap-2">
                 <Link href="/merchants/lakala-guides/wechat" target="_blank">
@@ -1314,10 +1442,10 @@ export function OnboardingEditor({
                     onClick={() => runAction(
                       () => confirmOnboardingExternalCertification(application.id),
                       "确认外部认证失败",
-                      { confirmText: "请确认法人已完成微信和支付宝认证。此操作不会自动启用收款。" },
+                      { confirmText: "请确认已人工核验微信和支付宝认证。此操作只关联商户，不会启用收款。" },
                     )}
                   >
-                    <ClipboardCheck />确认认证
+                    <ClipboardCheck />人工确认
                   </Button>
                 )}
               </div>
