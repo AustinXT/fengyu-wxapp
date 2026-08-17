@@ -127,14 +127,6 @@ export function aggregateOrderExportRows<T extends ExportRow>(sourceRows: T[]): 
   if (rows.every((row) => row.__sourceKind === 'recharge')) return rows as T[]
 
   const weights = allocationWeights(rows)
-  for (const key of ['prepaidCardAmount', 'cashAmount'] as const) {
-    const total = cents(rows[0][key])
-    if (total == null) continue
-    const parts = splitCentsWithLastRemainder(total, weights)
-    rows.forEach((row, index) => {
-      row[key] = money(parts[index])
-    })
-  }
   const refundTotal = cents(rows[0].refundedAmount)
   if (refundTotal != null) {
     const exactRefunds = rows.map((row) => cents(row.__itemRefundedAmount))

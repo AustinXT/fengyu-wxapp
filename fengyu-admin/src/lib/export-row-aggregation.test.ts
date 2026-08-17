@@ -22,7 +22,7 @@ function orderRow(overrides: Row = {}): Row {
     unitRealPrice: 100,
     salesCategory: '自销自耗',
     totalAmount: '100.00',
-    prepaidCardAmount: '2100.00',
+    prepaidCardAmount: '100.00',
     cashAmount: '0.00',
     received: '100.00',
     refundedAmount: '0.00',
@@ -101,11 +101,11 @@ describe('aggregateOrderExportRows', () => {
     expect(result[0].received).toBe('2100.00')
   })
 
-  it('金额除不尽时保留“20 行合并 + 1 行尾差”两行', () => {
+  it('直接聚合已持久化的行级储值卡/现金实付，不再二次分摊', () => {
     const rows = Array.from({ length: 21 }, (_, index) => orderRow({
       __sourceId: `ITEM-${index + 1}`,
-      prepaidCardAmount: '100.00',
-      cashAmount: '0.00',
+      prepaidCardAmount: index === 20 ? '4.80' : '4.76',
+      cashAmount: index === 20 ? '95.20' : '95.24',
     }))
     const result = aggregateOrderExportRows(rows)
 
@@ -113,6 +113,7 @@ describe('aggregateOrderExportRows', () => {
     expect(result.map((row) => row.sessionCount)).toEqual([20, 1])
     expect(result.map((row) => row.prepaidCardAmount)).toEqual(['95.20', '4.80'])
     expect(result.reduce((sum, row) => sum + Number(row.prepaidCardAmount), 0)).toBe(100)
+    expect(result.reduce((sum, row) => sum + Number(row.cashAmount), 0)).toBe(2000)
   })
 
   it('两张相同 30 次卡合并为 60 次，不同 SKU 和使用状态保持分开', () => {

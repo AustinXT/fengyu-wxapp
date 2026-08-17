@@ -1470,6 +1470,8 @@ export const getRefundById = withAnyPermission(
       customerName: rows[0].custName || o.customerName || null,
       totalAmount: o.totalAmount,
       prepaidCardAmount: o.prepaidCardAmount ?? '0',
+      pendingPrepaidCardAmount: o.pendingPrepaidCardAmount ?? '0',
+      payableAmount: o.payableAmount ?? '0',
       received: o.received ?? '0',
       refundedAmount: o.refundedAmount ?? '0',
       paymentMethod: o.paymentMethod as PaymentMethod,
