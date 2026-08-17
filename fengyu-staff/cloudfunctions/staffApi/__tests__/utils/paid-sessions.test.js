@@ -159,12 +159,18 @@ describe('PAID_SESSIONS_RECALC_SQL 模板字面量守护', () => {
     expect(ORDER_PREPAID_CARD_RECALC_SQL).toContain("status = '已支付'")
   })
 
-  test('行级储值卡分摊必须用有符号 received，最后非零行用减法吸收尾差', () => {
+  test('行级储值卡分摊必须用有符号 received 的累计边界差', () => {
     expect(SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL).toContain('SUM(si.received::numeric) OVER () AS received_total')
-    expect(SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL).toContain('ORDER BY si.sale_item_id')
-    expect(SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL).toMatch(/WHEN rn = item_count\s+THEN prepaid_total -/)
+    expect(SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL).toMatch(
+      /SUM\(si\.received::numeric\) OVER \(\s*ORDER BY si\.sale_item_id\s+ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\s*\) AS cumulative_received/,
+    )
+    expect(SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL).toContain('ROUND(prepaid_total * cumulative_received / received_total, 2)')
+    expect(SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL).toContain(
+      'ROUND(prepaid_total * (cumulative_received - item_received) / received_total, 2)',
+    )
     expect(SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL).toContain('WHERE received_total <> 0 AND prepaid_total <> 0')
     expect(SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL).not.toContain('GREATEST(0, si.received')
+    expect(SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL).not.toContain('item_count')
   })
 
   test('转换单转入行按旧卡价值 + 本单净到账分摊，且封顶转入总价', () => {
@@ -212,6 +218,37 @@ describe('PAID_SESSIONS_RECALC_SQL 模板字面量守护', () => {
     expect(FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL).toMatch(/sale_amount\s*<=\s*0/i)
     expect(FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL).toMatch(/LOWER\(COALESCE\(elem ->> 'isFullItemRefund', 'false'\)\) = 'true'/)
     expect(FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL).toMatch(/SET paid_sessions = 0/i)
+  })
+})
+
+function allocateCentsByCumulativeBoundary(totalCents, signedWeights) {
+  const totalWeight = signedWeights.reduce((sum, weight) => sum + weight, 0)
+  if (totalCents === 0 || totalWeight === 0) return signedWeights.map(() => 0)
+  let cumulativeWeight = 0
+  return signedWeights.map((weight) => {
+    const previousBoundary = Math.round(totalCents * cumulativeWeight / totalWeight)
+    cumulativeWeight += weight
+    const currentBoundary = Math.round(totalCents * cumulativeWeight / totalWeight)
+    return currentBoundary - previousBoundary
+  })
+}
+
+describe('储值卡累计边界分币', () => {
+  test('2 分按四个等权正向品项分摊时非负且守恒', () => {
+    const shares = allocateCentsByCumulativeBoundary(2, [1, 1, 1, 1])
+    expect(shares).toEqual([1, 0, 1, 0])
+    expect(shares.every((share) => share >= 0)).toBe(true)
+    expect(shares.reduce((sum, share) => sum + share, 0)).toBe(2)
+  })
+
+  test('1 分按三个等权正向品项分摊时非负且守恒', () => {
+    const shares = allocateCentsByCumulativeBoundary(1, [1, 1, 1])
+    expect(shares.every((share) => share >= 0)).toBe(true)
+    expect(shares.reduce((sum, share) => sum + share, 0)).toBe(1)
+  })
+
+  test('转换事件保留转出负号并让有符号卡款闭合', () => {
+    expect(allocateCentsByCumulativeBoundary(5, [-80, 100])).toEqual([-20, 25])
   })
 })
 

@@ -1242,14 +1242,15 @@ describe("sale_items 支付通道实付分摊 SQL 四端一致性守护", () => 
     expect(sqls.adminTs).toBe(sqls.staff)
   })
 
-  test('行级储值卡分摊四端一致，且具备有符号分母、稳定排序和减法尾差', () => {
+  test('行级储值卡分摊四端一致，且具备有符号分母与累计边界差', () => {
     const sqls = extractAll('prepaid_share')
     expect(sqls.client).toBe(sqls.staff)
     expect(sqls.payNotify).toBe(sqls.staff)
     expect(sqls.adminTs).toBe(sqls.staff)
     expect(sqls.staff).toMatch(/SUM\(si\.received::numeric\)\s+OVER\s*\(\)\s+AS received_total/)
-    expect(sqls.staff).toMatch(/ROW_NUMBER\(\)\s+OVER\s*\(ORDER BY si\.sale_item_id\)\s+AS rn/)
-    expect(sqls.staff).toMatch(/WHEN rn = item_count THEN prepaid_total -/)
+    expect(sqls.staff).toMatch(/SUM\(si\.received::numeric\) OVER \(ORDER BY si\.sale_item_id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\) AS cumulative_received/)
+    expect(sqls.staff).toMatch(/ROUND\(prepaid_total \* cumulative_received \/ received_total, 2\) - ROUND\(prepaid_total \* \(cumulative_received - item_received\) \/ received_total, 2\)/)
+    expect(sqls.staff).not.toMatch(/item_count|provisional/)
   })
 })
 

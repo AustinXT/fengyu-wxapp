@@ -350,7 +350,7 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
     WHERE si.sale_item_id = allocated.sale_item_id
   `)
 
-  // STEP 1.75：received 已成为最终有符号净额，按它分摊 actual 储值卡/现金通道。
+  // STEP 1.75：received 已成为最终有符号净额，用累计边界差分摊 actual 储值卡/现金通道。
   await tx.execute(sql`
     WITH order_amounts AS (
       SELECT prepaid_card_amount::numeric AS prepaid_total
@@ -362,25 +362,22 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
              si.received::numeric AS item_received,
              oa.prepaid_total,
              SUM(si.received::numeric) OVER () AS received_total,
-             ROW_NUMBER() OVER (ORDER BY si.sale_item_id) AS rn,
-             COUNT(*) OVER () AS item_count
+             SUM(si.received::numeric) OVER (
+               ORDER BY si.sale_item_id
+               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+             ) AS cumulative_received
       FROM sale_items si
       CROSS JOIN order_amounts oa
       WHERE si.sale_order_id = ${saleOrderId} AND si.received::numeric <> 0
     ),
-    rounded AS (
-      SELECT ranked.*,
-             ROUND(prepaid_total * item_received / received_total, 2) AS provisional
-      FROM ranked
-      WHERE received_total <> 0 AND prepaid_total <> 0
-    ),
     allocated AS (
       SELECT sale_item_id,
-             CASE WHEN rn = item_count
-                    THEN prepaid_total - COALESCE(SUM(provisional) FILTER (WHERE rn < item_count) OVER (), 0)
-                  ELSE provisional
-             END::numeric(10, 2) AS prepaid_share
-      FROM rounded
+             (
+               ROUND(prepaid_total * cumulative_received / received_total, 2)
+               - ROUND(prepaid_total * (cumulative_received - item_received) / received_total, 2)
+             )::numeric(10, 2) AS prepaid_share
+      FROM ranked
+      WHERE received_total <> 0 AND prepaid_total <> 0
     ),
     targets AS (
       SELECT si.sale_item_id, COALESCE(allocated.prepaid_share, 0)::numeric(10, 2) AS prepaid_share

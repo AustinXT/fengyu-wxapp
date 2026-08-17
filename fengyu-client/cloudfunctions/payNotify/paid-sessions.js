@@ -237,7 +237,7 @@ const ORDER_PREPAID_CARD_RECALC_SQL = `WITH card_totals AS (
 
 /**
  * STEP 1.75：按所有 sale_items.received 的有符号净额分摊订单储值卡实付。
- * 非零实收项按 sale_item_id 稳定排序，前 N-1 项四舍五入，最后一项用减法吸收尾差。
+ * 非零实收项按 sale_item_id 稳定排序，以累计比例的相邻边界差分摊，避免逐行四舍五入产生负尾差。
  * 分母为 0（含正负相抵）或订单储值卡实付为 0 时，全部分摊为 0。
  */
 const SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL = `WITH order_amounts AS (
@@ -250,25 +250,22 @@ const SALE_ITEMS_PAYMENT_CHANNEL_ALLOC_SQL = `WITH order_amounts AS (
              si.received::numeric AS item_received,
              oa.prepaid_total,
              SUM(si.received::numeric) OVER () AS received_total,
-             ROW_NUMBER() OVER (ORDER BY si.sale_item_id) AS rn,
-             COUNT(*) OVER () AS item_count
+             SUM(si.received::numeric) OVER (
+               ORDER BY si.sale_item_id
+               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+             ) AS cumulative_received
       FROM sale_items si
       CROSS JOIN order_amounts oa
       WHERE si.sale_order_id = $1 AND si.received::numeric <> 0
     ),
-    rounded AS (
-      SELECT ranked.*,
-             ROUND(prepaid_total * item_received / received_total, 2) AS provisional
-      FROM ranked
-      WHERE received_total <> 0 AND prepaid_total <> 0
-    ),
     allocated AS (
       SELECT sale_item_id,
-             CASE WHEN rn = item_count
-                    THEN prepaid_total - COALESCE(SUM(provisional) FILTER (WHERE rn < item_count) OVER (), 0)
-                  ELSE provisional
-             END::numeric(10, 2) AS prepaid_share
-      FROM rounded
+             (
+               ROUND(prepaid_total * cumulative_received / received_total, 2)
+               - ROUND(prepaid_total * (cumulative_received - item_received) / received_total, 2)
+             )::numeric(10, 2) AS prepaid_share
+      FROM ranked
+      WHERE received_total <> 0 AND prepaid_total <> 0
     ),
     targets AS (
       SELECT si.sale_item_id, COALESCE(allocated.prepaid_share, 0)::numeric(10, 2) AS prepaid_share
