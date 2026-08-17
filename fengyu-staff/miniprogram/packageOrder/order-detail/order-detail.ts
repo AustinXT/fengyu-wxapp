@@ -37,6 +37,7 @@ interface RawOrder {
   pending_prepaid_card_amount?: string;
   payable_amount?: string;
   first_payment_amount?: string | null;
+  lakala_out_order_no?: string | null;
   opened_by?: string;
   refund_reason?: string;
   ref_sale_order_id?: string;
@@ -191,8 +192,15 @@ interface DisplayOrder {
   totalAmount: string;
   paidAmount: string;
   prepaidCardAmount: string;
+  pendingPrepaidCardAmount: string;
+  grossRemainingPayable: string;
   remainingPayable: string;
   hasDebt: boolean;
+  hasActivePaymentCap: boolean;
+  activePaymentAmount: string;
+  canInitiateRepayment: boolean;
+  canResumeOnlinePayment: boolean;
+  canViewQrcode: boolean;
   /** 详情扩展：单据类型 / 所属市场 / 券名 / 券抵扣 / 分配状态 / 历史订单标记 */
   documentType: string;
   marketName: string;
@@ -242,6 +250,9 @@ Page({
     repayCardBalance: 0,
     repayCardAmountInput: '0.00',
     repayCardMax: '0.00',
+    // 创建订单时已预选、尚待结算的储值卡金额：回款弹层必须固定带入，禁止再次选卡重复抵扣。
+    repayCardLocked: false,
+    repayPendingCardAmount: 0,
     // 本次回款意向幂等键（打开弹层生成一次，重试/误点复用，防重复扣卡；服务端据此作扣卡 external_ref）
     repayIdempKey: '',
     repayRealTotal: '0.00',
@@ -455,20 +466,31 @@ Page({
       const received = Number(o.received || 0);
       const refundedAmount = Number(o.refunded_amount || 0);
       const netReceived = Math.round((received - refundedAmount) * 100) / 100;
-      // 欠款口径 = total − netReceived（与 status 结清判定 settleTarget = payable + prepaid 一致；
-      // received 按 I1 含储值卡抵扣，须用总额减，否则含卡部分支付单 payable(扣卡)−received(含卡) ≤ 0 → hasDebt 误判）
-      const remainingPayable = Math.max(0, Math.round((totalAmount - netReceived) * 100) / 100);
+      const grossRemainingPayable = Math.max(0, Math.round((totalAmount - netReceived) * 100) / 100);
+      // 现金待收 = total − netReceived − pendingPrepaid。
+      // actual 储值卡已包含在 received，不能再扣；pending 尚未进入 received，需单独从本次现金欠款扣除。
+      const remainingPayable = Math.max(0, Math.round((totalAmount - netReceived - pendingPrepaidCardAmount) * 100) / 100);
       // 销售单仍仅在部分支付后发起回款；普通转换单允许零首付形成的待支付欠款
-      // 进入订单级回款。first_payment_amount>0 表示已有冻结支付场次，不能再开新意图。
+      // 进入订单级回款。是否有欠款与是否允许新建支付意图分离：已有 cap 时保留欠款展示和二维码恢复入口。
       const orderType = o.sale_order_type || '';
-      const hasActivePaymentCap = Number(o.first_payment_amount || 0) > 0;
+      const frozenPaymentAmount = Number(o.first_payment_amount || 0);
+      const hasActivePaymentCap = frozenPaymentAmount > 0 || !!String(o.lakala_out_order_no || '').trim();
       const hasRepayableStatus = (orderType === '销售单' && o.status === '部分支付')
         || (orderType === '转换单'
-          && (o.status === '待支付' || o.status === '部分支付')
-          && !hasActivePaymentCap);
+          && (o.status === '待支付' || o.status === '部分支付'));
       const hasDebt = hasRepayableStatus
         && remainingPayable > 0
         && !o.is_experience_conversion;
+      const canInitiateRepayment = hasDebt && !hasActivePaymentCap;
+      const canResumeOnlinePayment = orderType === '转换单'
+        && (o.status === '待支付' || o.status === '部分支付')
+        && hasActivePaymentCap
+        && remainingPayable > 0
+        && !o.is_experience_conversion;
+      const canViewQrcode = o.status === '待支付' || canResumeOnlinePayment;
+      const activePaymentAmount = hasActivePaymentCap
+        ? Math.min(remainingPayable, frozenPaymentAmount > 0 ? frozenPaymentAmount : remainingPayable)
+        : 0;
 
       this.setData({
         order: {
@@ -495,8 +517,15 @@ Page({
           totalAmount: totalAmount.toFixed(2),
           paidAmount: netReceived.toFixed(2),
           prepaidCardAmount: prepaidCardAmount.toFixed(2),
+          pendingPrepaidCardAmount: pendingPrepaidCardAmount.toFixed(2),
+          grossRemainingPayable: grossRemainingPayable.toFixed(2),
           remainingPayable: remainingPayable.toFixed(2),
           hasDebt,
+          hasActivePaymentCap,
+          activePaymentAmount: activePaymentAmount.toFixed(2),
+          canInitiateRepayment,
+          canResumeOnlinePayment,
+          canViewQrcode,
           documentType: o.document_type || '',
           marketName: o.market_name || '',
           couponName: o.coupon_name || '',
@@ -739,10 +768,17 @@ Page({
   _recalcRepayTotals(lines: Array<{ real: string }>) {
     const r2 = (n: number) => Math.round(n * 100) / 100;
     const realTotal = r2(lines.reduce((s, l) => s + (Number(l.real) || 0), 0));
-    const cardMax = r2(Math.min(Math.max(0, this.data.repayCardBalance), Math.max(0, realTotal)));
+    const lockedPendingCard = this.data.repayCardLocked
+      ? r2(Math.max(0, this.data.repayPendingCardAmount))
+      : 0;
+    const cardMax = this.data.repayCardLocked
+      ? lockedPendingCard
+      : r2(Math.min(Math.max(0, this.data.repayCardBalance), Math.max(0, realTotal)));
     const requested = Number(this.data.repayCardAmountInput);
     const requestedAmount = Number.isFinite(requested) ? Math.max(0, requested) : 0;
-    const cardDeduct = this.data.repayUseCard ? r2(Math.min(requestedAmount, cardMax)) : 0;
+    const cardDeduct = this.data.repayCardLocked
+      ? lockedPendingCard
+      : (this.data.repayUseCard ? r2(Math.min(requestedAmount, cardMax)) : 0);
     const needPay = r2(Math.max(0, realTotal - cardDeduct));
     this.setData({
       repayRealTotal: realTotal.toFixed(2),
@@ -755,14 +791,32 @@ Page({
   onRepayTap() {
     if (this._isReadOnly()) return;
     const o = this.data.order;
-    if (!o || !o.hasDebt) return;
+    if (!o || !o.canInitiateRepayment) return;
     // 默认线下、每行实付 = 该行可回款额（操作员可改小或清零，不要求全额）
+    const pendingCardAmount = o.orderType === '转换单'
+      ? Number(o.pendingPrepaidCardAmount || 0)
+      : 0;
+    // 已有 pending 卡额尚未扣卡，必须把它作为本场固定组成部分：本场总额用
+    // total-netReceived，卡额固定为 pending，现金/在线部分才是其差额。
+    const conversionRepayable = pendingCardAmount > 0 ? o.grossRemainingPayable : o.remainingPayable;
     const lines = o.orderType === '转换单'
-      ? [{ saleItemId: '__ORDER__', itemName: '转换单剩余欠款', repayable: o.remainingPayable, real: o.remainingPayable }]
+      ? [{ saleItemId: '__ORDER__', itemName: '转换单剩余欠款', repayable: conversionRepayable, real: conversionRepayable }]
       : (o.items || [])
         .filter((it) => Number(it.repayable) > 0)
         .map((it) => ({ saleItemId: it.saleItemId, itemName: it.itemName, repayable: it.repayable, real: it.repayable }));
-    this.setData({ showRepayPopup: true, repayLines: lines, repayMethod: '线下', repayNote: '', repayUseCard: false, repayCardAmountInput: '0.00', repayCardMax: '0.00', repayIdempKey: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}` });
+    this.setData({
+      showRepayPopup: true,
+      repayLines: lines,
+      repayMethod: '线下',
+      repayNote: '',
+      repayUseCard: pendingCardAmount > 0,
+      repayCardAmountInput: pendingCardAmount.toFixed(2),
+      repayCardMax: pendingCardAmount.toFixed(2),
+      repayCardLocked: pendingCardAmount > 0,
+      repayPendingCardAmount: pendingCardAmount,
+      currentRemainingPayable: Number(conversionRepayable),
+      repayIdempKey: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+    });
     this._recalcRepayTotals(lines);
   },
 
@@ -790,18 +844,21 @@ Page({
 
   // 切换「使用储值卡抵扣」勾选；每次切换从 0.00 开始填写。
   onToggleUseCard() {
+    if (this.data.repayCardLocked) return;
     if (this.data.repayCardBalance <= 0) return;
     this.setData({ repayUseCard: !this.data.repayUseCard, repayCardAmountInput: '0.00' });
     this._recalcRepayTotals(this.data.repayLines);
   },
 
   onRepayCardAmountInput(e: WechatMiniprogram.CustomEvent) {
+    if (this.data.repayCardLocked) return;
     const raw = String((e.detail as unknown as { value?: string })?.value ?? e.detail ?? '');
     this.setData({ repayCardAmountInput: raw });
     this._recalcRepayTotals(this.data.repayLines);
   },
 
   onRepayCardAmountBlur() {
+    if (this.data.repayCardLocked) return;
     const realTotal = this.data.repayLines.reduce((sum, line) => sum + (Number(line.real) || 0), 0);
     const maxAmount = Math.min(Math.max(0, this.data.repayCardBalance), Math.max(0, realTotal));
     const requested = Number(this.data.repayCardAmountInput);
@@ -837,6 +894,10 @@ Page({
       wx.showToast({ title: `超出欠款 ¥${currentRemainingPayable.toFixed(2)}`, icon: 'none' });
       return;
     }
+    if (this.data.repayCardLocked && realTotal + 0.001 < this.data.repayPendingCardAmount) {
+      wx.showToast({ title: `本次实付不能低于预选储值卡 ¥${this.data.repayPendingCardAmount.toFixed(2)}`, icon: 'none' });
+      return;
+    }
     for (const it of reals) {
       if (it.real < 0) {
         wx.showToast({ title: '金额不能为负', icon: 'none' });
@@ -848,12 +909,26 @@ Page({
       }
     }
 
-    // 储值卡抵扣（手填且不超过余额/本次实付）+ 按各子项实付比例摊分（末项补差，每项 ≤ 该行实付）
+    // 储值卡抵扣 + 按各子项实付比例摊分（末项补差，每项 ≤ 该行实付）。
+    // 已有 pending 时它是服务端待结算事实，不能再按当前余额 min 后静默缩小：余额不足
+    // 必须在任何扣卡/出码请求前明确阻断；余额足够则本次卡额恒等于固定 pending。
+    const fixedPendingCard = this.data.repayCardLocked
+      ? r2(Math.max(0, this.data.repayPendingCardAmount))
+      : 0;
+    if (this.data.repayCardLocked && repayCardBalance + 0.001 < fixedPendingCard) {
+      wx.showToast({
+        title: `储值卡余额不足（预选 ¥${fixedPendingCard.toFixed(2)}，当前 ¥${Math.max(0, repayCardBalance).toFixed(2)}）`,
+        icon: 'none',
+      });
+      return;
+    }
     const cardMax = Math.min(Math.max(0, repayCardBalance), realTotal);
     const requestedCard = Number(repayCardAmountInput);
-    const cardDeduct = repayUseCard && Number.isFinite(requestedCard)
-      ? r2(Math.min(Math.max(0, requestedCard), cardMax))
-      : 0;
+    const cardDeduct = this.data.repayCardLocked
+      ? fixedPendingCard
+      : (repayUseCard && Number.isFinite(requestedCard)
+        ? r2(Math.min(Math.max(0, requestedCard), cardMax))
+        : 0);
     const filled = reals.filter((it) => it.real > 0);
     const cardMap: Record<string, number> = {};
     let acc = 0;
