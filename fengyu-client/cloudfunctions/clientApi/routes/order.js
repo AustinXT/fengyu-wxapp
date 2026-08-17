@@ -2665,7 +2665,35 @@ async function repay(ctx) {
     }
     currentStatus = origOrder.status
 
-    // 2. 计算欠款 + 定向分摊项。
+    // 2. 先作废旧的储值卡抵扣意向并恢复本单应付。
+    //    失败/取消的混合支付会留下 pending 意向并暂时降低 payable_amount。
+    //    新一次回款必须在计算、校验欠款前清理它，否则顾客按真实未付额重试会被误判为超额。
+    await client.query(
+      `UPDATE sale_order_payments SET status = '已作废'
+       WHERE sale_order_id = $1 AND change_type = '储值卡抵扣' AND status = '待支付'`,
+      [saleOrderId]
+    )
+    await client.query(
+      `UPDATE sale_orders
+       SET pending_prepaid_card_amount = 0,
+           payable_amount = CASE
+             WHEN sale_order_type IN ('销售单','内部单','转换单')
+               THEN GREATEST(0, total_amount::numeric - prepaid_card_amount::numeric)
+             ELSE payable_amount
+           END,
+           updated_at = NOW()
+       WHERE sale_order_id = $1`,
+      [saleOrderId]
+    )
+    origOrder.pending_prepaid_card_amount = 0
+    if (['销售单', '内部单', '转换单'].includes(origOrder.sale_order_type)) {
+      origOrder.payable_amount = Math.max(
+        0,
+        Number(origOrder.total_amount || 0) - Number(origOrder.prepaid_card_amount || 0)
+      )
+    }
+
+    // 3. 计算欠款 + 定向分摊项。
     //    有退款 → 行级口径（已退行不计入，只有「未退且未付清」的行可继续支付），capture 定向到未退行
     //    避免非定向瀑布流把回款误充到已退行（received/paid_sessions 复活）；
     //    无退款 → 沿用订单级口径（正常回款，与首次支付/原逻辑一致）。
@@ -2709,27 +2737,8 @@ async function repay(ctx) {
       throw new Error('INVALID_PARAMS: 继续支付必须支付全部未付金额')
     }
 
-    // 3. 储值卡扣款（按通道分流）。先无条件作废本单此前遗留的「待支付储值卡抵扣」意向：
-    //    同一订单可被重复扫码（取消线上支付后重选抵扣额、或从混合改纯线上/线下/纯卡），旧意向若残留
-    //    会被 payNotify 误消费、扣走顾客并不想用的储值卡。在订单 FOR UPDATE 锁下清理，避免并发竞态。
+    // 4. 储值卡扣款（按通道分流）。
     let cardPaymentId = null
-    await client.query(
-      `UPDATE sale_order_payments SET status = '已作废'
-       WHERE sale_order_id = $1 AND change_type = '储值卡抵扣' AND status = '待支付'`,
-      [saleOrderId]
-    )
-    await client.query(
-      `UPDATE sale_orders
-       SET pending_prepaid_card_amount = 0,
-           payable_amount = CASE
-             WHEN sale_order_type IN ('销售单','内部单','转换单')
-               THEN GREATEST(0, total_amount::numeric - prepaid_card_amount::numeric)
-             ELSE payable_amount
-           END,
-           updated_at = NOW()
-       WHERE sale_order_id = $1`,
-      [saleOrderId]
-    )
     //    - 纯储值卡通道（isPureCard）：当场扣卡 + INSERT payments(回款/储值卡/已支付)，无线上款本就原子。
     //    - 线上+储值卡混合：不当场扣卡，仅写一行待支付储值卡抵扣意向；扣减 + 入账 + 状态推进推迟到
     //      payNotify 线上到账同事务执行（支付取消/失败 → 意向行保持待支付、储值卡分文不动，一起回滚）。
@@ -2801,7 +2810,7 @@ async function repay(ctx) {
       )
     }
 
-    // 4. 线上回款：不写 payments 行（payNotify 回调写）；仅更新原单 payment_method 反映最近通道
+    // 5. 线上回款：不写 payments 行（payNotify 回调写）；仅更新原单 payment_method 反映最近通道
     if (!isPureCard) {
       // CAS-EXEMPT: 仅设支付方式，不翻 status（status 由后续 STEP 5 重算或 payNotify 推进）
       await client.query(
@@ -2811,7 +2820,7 @@ async function repay(ctx) {
       )
     }
 
-    // 5. 重算原单 received/refunded_amount + 推进 status：仅纯储值卡通道（当场扣卡 + 写了已支付储值卡回款行）。
+    // 6. 重算原单 received/refunded_amount + 推进 status：仅纯储值卡通道（当场扣卡 + 写了已支付储值卡回款行）。
     //    线上+储值卡混合通道此处 **不推进** —— received/状态推进随储值卡扣减一并推迟到 payNotify STEP 3c。
     if (isPureCard && prepaidCardAmountInput > 0) {
       const aggRes = await client.query(

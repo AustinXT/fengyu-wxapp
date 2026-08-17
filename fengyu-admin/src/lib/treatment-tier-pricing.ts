@@ -95,7 +95,7 @@ export function calculateTreatmentTierLineAmounts(
         return (left.amount / left.sessionCount) - (right.amount / right.sessionCount)
       })[0]
 
-    if (!tier || tier.sessionCount <= 1 || tier.amount <= 0) continue
+    if (!tier || tier.sessionCount <= 1 || !Number.isFinite(tier.amount) || tier.amount < 0) continue
     for (const index of indexes) {
       const line = lines[index]
       const lineSessions = Number(line.sessionCount) * Math.max(1, Number(line.quantity) || 1)

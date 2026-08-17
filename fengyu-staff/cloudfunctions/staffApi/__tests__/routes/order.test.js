@@ -2831,6 +2831,7 @@ describe('order.qrcode', () => {
     expect(ctx.result.actualPayable).toBe(500)
     expect(ctx.result.items).toHaveLength(1)
     expect(wxacode.generateWxacode).toHaveBeenCalledWith('FY-QR-001', expect.any(String))
+    expect(pg.transaction).not.toHaveBeenCalled()
   })
 
   test('储值卡抵扣后实际需支付 = 商品实付 − 储值卡（不显示应付）', async () => {
@@ -2893,7 +2894,7 @@ describe('order.qrcode', () => {
     expect(ctx.result.actualPayable).toBe(150)
   })
 
-  test('普通转换单录入部分实付后，二维码只展示被冻结的首次收款金额', async () => {
+  test('普通转换单冻结后再次查询二维码，只读取 cap 且不覆盖', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-QR-CONV-PARTIAL' })
 
     pg.query
@@ -2910,6 +2911,113 @@ describe('order.qrcode', () => {
 
     expect(ctx.result.actualPayable).toBe(500)
     expect(ctx.result.isExperienceConversion).toBe(false)
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
+  test('部分支付转换单可冻结本次在线回款上限，二维码只展示操作员填写金额', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-QR-CONV-REPAY', paymentAmount: 500 })
+    const txCalls = []
+    pg.transaction.mockImplementationOnce(async (cb) => cb({
+      query: vi.fn(async (sql, params) => {
+        txCalls.push({ sql, params })
+        if (sql.includes('FOR UPDATE')) {
+          return {
+            rows: [{
+              sale_order_id: 'FY-QR-CONV-REPAY', store_id: 'store-001', sale_order_type: '转换单',
+              status: '部分支付', is_experience_conversion: false,
+              total_amount: '2000', received: '500', refunded_amount: '0', pending_prepaid_card_amount: '0',
+            }],
+            rowCount: 1,
+          }
+        }
+        if (sql.includes('SET first_payment_amount = $1')) {
+          return { rows: [], rowCount: 1 }
+        }
+        return defaultQueryResult(sql)
+      }),
+    }))
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-QR-CONV-REPAY', status: '部分支付', sale_order_type: '转换单',
+        client_phone: '138', customer_name: '赵六', payment_method: '微信',
+        paid_at: null, store_id: 'store-001', opened_by: 'emp-001',
+        total_amount: '2000', received: '500', refunded_amount: '0',
+        prepaid_card_amount: '0', pending_prepaid_card_amount: '0', payable_amount: '2000',
+        first_payment_amount: '500', is_experience_conversion: false,
+      }])
+      .mockResolvedValueOnce([])
+
+    await orderRoutes.qrcode(ctx)
+
+    const update = txCalls.find(({ sql }) => sql.includes('SET first_payment_amount = $1'))
+    expect(update.params).toEqual([500, 'FY-QR-CONV-REPAY', '部分支付'])
+    expect(ctx.result.actualPayable).toBe(500)
+  })
+
+  test('冻结的转换单在线回款金额不得超过订单欠款', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-QR-CONV-OVER', paymentAmount: 1500 })
+    pg.transaction.mockImplementationOnce(async (cb) => cb({
+      query: vi.fn(async (sql) => {
+        if (sql.includes('FOR UPDATE')) {
+          return {
+            rows: [{
+              sale_order_id: 'FY-QR-CONV-OVER', store_id: 'store-001', sale_order_type: '转换单',
+              status: '部分支付', is_experience_conversion: false,
+              total_amount: '2000', received: '1000', refunded_amount: '0', pending_prepaid_card_amount: '0',
+            }],
+            rowCount: 1,
+          }
+        }
+        return defaultQueryResult(sql)
+      }),
+    }))
+
+    await expect(orderRoutes.qrcode(ctx)).rejects.toThrow(/INVALID_PARAMS.*不能超过订单欠款/)
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
+  test('非转换单不能借 qrcode 写入在线回款上限', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-QR-NORMAL-CAP', paymentAmount: 100 })
+    pg.transaction.mockImplementationOnce(async (cb) => cb({
+      query: vi.fn(async (sql) => {
+        if (sql.includes('FOR UPDATE')) {
+          return {
+            rows: [{
+              sale_order_id: 'FY-QR-NORMAL-CAP', store_id: 'store-001', sale_order_type: '销售单',
+              status: '部分支付', is_experience_conversion: false,
+              total_amount: '500', received: '100', refunded_amount: '0', pending_prepaid_card_amount: '0',
+            }],
+            rowCount: 1,
+          }
+        }
+        return defaultQueryResult(sql)
+      }),
+    }))
+
+    await expect(orderRoutes.qrcode(ctx)).rejects.toThrow(/INVALID_STATE.*仅普通转换单/)
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
+  test('跨店订单不能写入在线回款上限', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-QR-OTHER-STORE', paymentAmount: 100 })
+    pg.transaction.mockImplementationOnce(async (cb) => cb({
+      query: vi.fn(async (sql) => {
+        if (sql.includes('FOR UPDATE')) {
+          return {
+            rows: [{
+              sale_order_id: 'FY-QR-OTHER-STORE', store_id: 'store-other', sale_order_type: '转换单',
+              status: '部分支付', is_experience_conversion: false,
+              total_amount: '500', received: '100', refunded_amount: '0', pending_prepaid_card_amount: '0',
+            }],
+            rowCount: 1,
+          }
+        }
+        return defaultQueryResult(sql)
+      }),
+    }))
+
+    await expect(orderRoutes.qrcode(ctx)).rejects.toThrow(/PERMISSION_DENIED.*不属于当前门店/)
+    expect(pg.query).not.toHaveBeenCalled()
   })
 
   test('充值卡单 payable_amount 缺失时回退 total_amount，不静默显示 ¥0', async () => {
@@ -4438,6 +4546,10 @@ describe('order.createConversion', () => {
     expect(orderInsert.params[12]).toBe('0.00')
     expect(orderInsert.params[22]).toBe('50.00')
     expect(orderInsert.params[23]).toBe(false)
+    const conversionReceivedRecalc = calls.find(({ sql }) => sql.includes('WITH conversion_order AS'))
+    const paidSessionsRecalc = calls.find(({ sql }) => sql.includes('paid_sessions = CASE'))
+    expect(conversionReceivedRecalc).toBeDefined()
+    expect(calls.indexOf(conversionReceivedRecalc)).toBeLessThan(calls.indexOf(paidSessionsRecalc))
   })
 
   test('组合套餐转换按套餐下沉价计费：5940 减旧卡 3000 后应付 2940', async () => {

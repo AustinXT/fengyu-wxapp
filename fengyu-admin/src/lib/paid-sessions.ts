@@ -91,6 +91,64 @@ export const FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL = `WITH full_refund_zero_
       )`
 
 /**
+ * STEP 1.6：转换单转入行按已兑现价值重建 received。
+ * 已兑现价值 = 转出旧卡价值 + 本单净到账，且封顶转入总价；多行按 sale_amount
+ * 权重分摊，最后一行吸收分币尾差。这样待支付/部分支付转换单不会因创建时写入
+ * 完整转入金额而提前解锁全部次数，结清时又恰好恢复完整转入价值。
+ */
+export const CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL = `WITH conversion_order AS (
+      SELECT so.sale_order_type,
+             GREATEST(0, so.received::numeric - so.refunded_amount::numeric) AS net_received,
+             COALESCE((
+               SELECT SUM(GREATEST(0, -out_item.received::numeric))
+               FROM sale_items out_item
+               WHERE out_item.sale_order_id = $1 AND out_item.item_direction = '转出'
+             ), 0)::numeric AS converted_value,
+             COALESCE((
+               SELECT SUM(in_item.sale_amount::numeric)
+               FROM sale_items in_item
+               WHERE in_item.sale_order_id = $1 AND in_item.item_direction = '转入'
+                 AND in_item.sale_amount::numeric > 0
+             ), 0)::numeric AS in_total
+      FROM sale_orders so
+      WHERE so.sale_order_id = $1
+    ),
+    ranked AS (
+      SELECT si.sale_item_id,
+             si.sale_amount::numeric AS item_sale_amount,
+             conversion_order.in_total,
+             LEAST(conversion_order.in_total,
+                   conversion_order.converted_value + conversion_order.net_received) AS target_received,
+             ROW_NUMBER() OVER (ORDER BY si.sale_item_id) AS rn,
+             COUNT(*) OVER () AS item_count
+      FROM sale_items si
+      CROSS JOIN conversion_order
+      WHERE conversion_order.sale_order_type = '转换单'
+        AND si.sale_order_id = $1
+        AND si.item_direction = '转入'
+        AND si.sale_amount::numeric > 0
+    ),
+    provisional AS (
+      SELECT ranked.*,
+             ROUND(target_received * item_sale_amount / in_total, 2) AS provisional_received
+      FROM ranked
+      WHERE in_total > 0
+    ),
+    allocated AS (
+      SELECT sale_item_id,
+             CASE WHEN rn = item_count
+                    THEN target_received - COALESCE(SUM(provisional_received) FILTER (WHERE rn < item_count) OVER (), 0)
+                  ELSE provisional_received
+             END::numeric(10, 2) AS item_received
+      FROM provisional
+    )
+    UPDATE sale_items si
+    SET received = allocated.item_received,
+        updated_at = NOW()
+    FROM allocated
+    WHERE si.sale_item_id = allocated.sale_item_id`
+
+/**
  * 已付未用次数（可用次数）派生表达式 —— 查询侧只读派生（与上方 RECALC 写入对照）。
  * admin 单源：卡包列表/详情（cards.ts）+ 订单导出 + 营业额分配导出（orders.ts）复用。
  *   - paid_sessions IS NULL（migration 0040 前历史行未回填）→ 退回物理剩余 remaining_sessions，避免误显「已耗尽」
@@ -236,6 +294,61 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
       WHERE si.sale_item_id = ai.sale_item_id
     `)
   }
+
+  // STEP 1.6：转换单转入价值随旧卡折抵 + 实际到账逐步解锁，禁止部分付款提前释放全部次数。
+  await tx.execute(sql`
+    WITH conversion_order AS (
+      SELECT so.sale_order_type,
+             GREATEST(0, so.received::numeric - so.refunded_amount::numeric) AS net_received,
+             COALESCE((
+               SELECT SUM(GREATEST(0, -out_item.received::numeric))
+               FROM sale_items out_item
+               WHERE out_item.sale_order_id = ${saleOrderId} AND out_item.item_direction = '转出'
+             ), 0)::numeric AS converted_value,
+             COALESCE((
+               SELECT SUM(in_item.sale_amount::numeric)
+               FROM sale_items in_item
+               WHERE in_item.sale_order_id = ${saleOrderId} AND in_item.item_direction = '转入'
+                 AND in_item.sale_amount::numeric > 0
+             ), 0)::numeric AS in_total
+      FROM sale_orders so
+      WHERE so.sale_order_id = ${saleOrderId}
+    ),
+    ranked AS (
+      SELECT si.sale_item_id,
+             si.sale_amount::numeric AS item_sale_amount,
+             conversion_order.in_total,
+             LEAST(conversion_order.in_total,
+                   conversion_order.converted_value + conversion_order.net_received) AS target_received,
+             ROW_NUMBER() OVER (ORDER BY si.sale_item_id) AS rn,
+             COUNT(*) OVER () AS item_count
+      FROM sale_items si
+      CROSS JOIN conversion_order
+      WHERE conversion_order.sale_order_type = '转换单'
+        AND si.sale_order_id = ${saleOrderId}
+        AND si.item_direction = '转入'
+        AND si.sale_amount::numeric > 0
+    ),
+    provisional AS (
+      SELECT ranked.*,
+             ROUND(target_received * item_sale_amount / in_total, 2) AS provisional_received
+      FROM ranked
+      WHERE in_total > 0
+    ),
+    allocated AS (
+      SELECT sale_item_id,
+             CASE WHEN rn = item_count
+                    THEN target_received - COALESCE(SUM(provisional_received) FILTER (WHERE rn < item_count) OVER (), 0)
+                  ELSE provisional_received
+             END::numeric(10, 2) AS item_received
+      FROM provisional
+    )
+    UPDATE sale_items si
+    SET received = allocated.item_received,
+        updated_at = NOW()
+    FROM allocated
+    WHERE si.sale_item_id = allocated.sale_item_id
+  `)
 
   // STEP 1.75：received 已成为最终有符号净额，按它分摊 actual 储值卡/现金通道。
   await tx.execute(sql`

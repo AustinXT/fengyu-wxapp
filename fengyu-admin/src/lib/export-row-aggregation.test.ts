@@ -147,6 +147,28 @@ describe('aggregateOrderExportRows', () => {
     ])
     expect(result.map((row) => row.refundedAmount)).toEqual(['100.00', '0.00'])
   })
+
+  it('退款 receipt 覆盖不完整时按退款前行应付分摊，全退行不会因净实收为零丢失权重', () => {
+    const result = aggregateOrderExportRows([
+      orderRow({
+        __sourceId: 'REFUNDED',
+        totalAmount: '100.00',
+        received: '0.00',
+        refundedAmount: '100.00',
+        __itemRefundedAmount: '100.00',
+      }),
+      orderRow({
+        __sourceId: 'ACTIVE',
+        __skuId: 'SKU-OTHER',
+        totalAmount: '100.00',
+        received: '100.00',
+        refundedAmount: '100.00',
+        __itemRefundedAmount: null,
+      }),
+    ])
+
+    expect(result.map((row) => row.refundedAmount)).toEqual(['50.00', '50.00'])
+  })
 })
 
 describe('aggregateAllocationExportRows', () => {

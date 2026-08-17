@@ -423,6 +423,16 @@ describe('mgmtProduct.cycleStats SQL 形态', () => {
     expect(sql).toMatch(/NOT EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+first_entry\s+f/)
   })
 
+  test('tiyan 只认正向购买事件，纯退款不计入体验客群', async () => {
+    setupCycleMocks({})
+    const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
+    await cycleStats(ctx)
+
+    const sql = getCycleSql()
+    expect(sql).toMatch(/BOOL_OR\(sipe\.amount::numeric\s*>\s*0\)\s+AS\s+has_purchase/)
+    expect(sql).toMatch(/tiyan\s+AS\s*\([\s\S]*?WHERE\s+pa\.has_purchase\s+AND\s+NOT EXISTS/)
+  })
+
   test('period_agg WHERE 含 purchase_date BETWEEN $1 AND $2', async () => {
     setupCycleMocks({})
     const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })

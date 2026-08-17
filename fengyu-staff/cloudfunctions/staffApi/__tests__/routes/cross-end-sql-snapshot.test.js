@@ -1187,6 +1187,41 @@ describe("ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护", 
   })
 })
 
+// 转换单转入行 received 重算：staff/client/payNotify/admin 四端支付入口均会调用
+// recalcPaidSessionsForOrder，必须保持同一“旧卡价值 + 净到账”分摊口径。
+describe('转换单转入 received 重算 SQL 四端一致性守护', () => {
+  const marker = 'WITH conversion_order AS'
+  let sqls
+
+  beforeAll(() => {
+    sqls = {
+      staff: normalizeSql(extractBacktickStringContaining(readFile(FILES.staffPaidSessionsJs), marker)),
+      client: normalizeSql(extractBacktickStringContaining(readFile(FILES.clientPaidSessionsJs), marker)),
+      payNotify: normalizeSql(extractBacktickStringContaining(readFile(FILES.payNotifyPaidSessionsJs), marker)),
+      adminTs: normalizeSql(extractBacktickStringContaining(readFile(FILES.adminPaidSessionsTs), marker)),
+    }
+  })
+
+  test('四端归一化后字面一致', () => {
+    expect(sqls.client).toBe(sqls.staff)
+    expect(sqls.payNotify).toBe(sqls.staff)
+    expect(sqls.adminTs).toBe(sqls.staff)
+  })
+
+  test('目标值必须为 min(转入总价, 转出旧卡价值 + 订单净到账)，并按稳定顺序吸收尾差', () => {
+    expect(sqls.staff).toContain("conversion_order.sale_order_type = '转换单'")
+    expect(sqls.staff).toContain("out_item.item_direction = '转出'")
+    expect(sqls.staff).toContain("si.item_direction = '转入'")
+    expect(sqls.staff).toMatch(/LEAST\(conversion_order\.in_total, conversion_order\.converted_value \+ conversion_order\.net_received\)/)
+    expect(sqls.staff).toMatch(/ROW_NUMBER\(\) OVER\s*\(ORDER BY si\.sale_item_id\)\s+AS rn/)
+    expect(sqls.staff).toContain('WHEN rn = item_count THEN target_received -')
+  })
+
+  test('转换单转入 received SQL 文本快照', () => {
+    expect(sqls.staff).toMatchSnapshot()
+  })
+})
+
 // ─────────────────────────────────────────────────────────────────────────────
 // sale_items 储值卡/现金实付分摊：四端各保留独立副本，归一化后必须完全一致。
 describe("sale_items 支付通道实付分摊 SQL 四端一致性守护", () => {

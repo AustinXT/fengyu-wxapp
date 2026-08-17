@@ -60,6 +60,30 @@ describe('calculateTreatmentTierLineAmounts', () => {
     )).toEqual([250, 500])
   })
 
+  it('会员命中零元档位时保留零元成交价', () => {
+    expect(calculateTreatmentTierLineAmounts(
+      [line(1), line(2)],
+      [candidate(2, 596, { specialPrice: 0 })],
+      true,
+      '销售单',
+    )).toEqual([0, 0])
+  })
+
+  it('非有限或负数档位价不覆盖原计价', () => {
+    expect(calculateTreatmentTierLineAmounts(
+      [line(2)],
+      [candidate(2, Number.POSITIVE_INFINITY)],
+      false,
+      '销售单',
+    )).toEqual([null])
+    expect(calculateTreatmentTierLineAmounts(
+      [line(2)],
+      [candidate(2, -1)],
+      false,
+      '销售单',
+    )).toEqual([null])
+  })
+
   it('体验卡、店长特价、套餐与内部单不参与梯度', () => {
     const candidates = [candidate(2, 596)]
     expect(calculateTreatmentTierLineAmounts(

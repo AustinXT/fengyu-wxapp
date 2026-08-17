@@ -113,10 +113,13 @@ function orderBusinessKey(row: ExportRow): string {
 }
 
 function allocationWeights(rows: ExportRow[]): number[] {
-  const received = rows.map((row) => Math.abs(cents(row.received) ?? 0))
-  if (received.some((value) => value > 0)) return received
+  // 退款 receipt 缺失或覆盖不完整时，received 已是退款后的净额；用它作权重会让
+  // 全退行权重归零，并把退款错分给未退款行。sale_items.sale_amount（导出字段
+  // totalAmount）是退款前的行应付事实，兜底分摊应优先使用它。
   const saleAmounts = rows.map((row) => Math.abs(cents(row.totalAmount) ?? 0))
   if (saleAmounts.some((value) => value > 0)) return saleAmounts
+  const received = rows.map((row) => Math.abs(cents(row.received) ?? 0))
+  if (received.some((value) => value > 0)) return received
   return rows.map((row) => positiveQuantity(row))
 }
 

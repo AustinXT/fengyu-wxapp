@@ -1387,8 +1387,68 @@ async function qrcode(ctx) {
 
   const payload = ctx.event.payload || {}
   const saleOrderId = payload.saleOrderId
+  const paymentAmountInput = payload.paymentAmount
   if (!saleOrderId) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
+  }
+
+  // 转换单订单级在线回款：二维码本身只携带订单号，顾客端会从订单读取
+  // first_payment_amount 作为微信/支付宝本次收款硬上限。店长从详情页填写部分
+  // 回款时必须先原子冻结该金额，否则收银台会回退为整笔剩余欠款。
+  if (paymentAmountInput !== undefined && paymentAmountInput !== null) {
+    await requireManager()(ctx, async () => {})
+    const paymentAmount = Number(paymentAmountInput)
+    if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
+      throw new Error('INVALID_PARAMS: 本次在线回款金额必须大于0')
+    }
+    if (Math.abs(Math.round(paymentAmount * 100) - paymentAmount * 100) > 1e-6) {
+      throw new Error('INVALID_PARAMS: 本次在线回款金额最多保留2位小数')
+    }
+    const roundedPaymentAmount = roundMoney(paymentAmount)
+
+    await pg.transaction(async (client) => {
+      const lockedRes = await client.query(
+        `SELECT sale_order_id, store_id, sale_order_type, status, is_experience_conversion,
+                total_amount, received, refunded_amount, pending_prepaid_card_amount
+           FROM sale_orders
+          WHERE sale_order_id = $1
+          FOR UPDATE`,
+        [saleOrderId]
+      )
+      if (lockedRes.rows.length === 0) {
+        throw new Error('NOT_FOUND: 订单不存在')
+      }
+      const locked = lockedRes.rows[0]
+      if (locked.store_id !== ctx.auth.effectiveStoreId) {
+        throw new Error('PERMISSION_DENIED: 订单不属于当前门店')
+      }
+      if (locked.sale_order_type !== '转换单' || locked.is_experience_conversion === true) {
+        throw new Error('INVALID_STATE: ONLINE_PAYMENT_CAP_NOT_ALLOWED: 仅普通转换单支持冻结在线回款金额')
+      }
+      if (!['待支付', '部分支付'].includes(locked.status)) {
+        throw new Error(`INVALID_STATE: 订单当前状态为"${locked.status}"，不可发起在线回款`)
+      }
+      const remainingPayable = Math.max(0, roundMoney(
+        Number(locked.total_amount || 0)
+          - Number(locked.received || 0)
+          + Number(locked.refunded_amount || 0)
+          - Number(locked.pending_prepaid_card_amount || 0)
+      ))
+      if (roundedPaymentAmount > remainingPayable + 0.001) {
+        throw new Error('INVALID_PARAMS: 本次在线回款金额不能超过订单欠款')
+      }
+
+      const updateRes = await client.query(
+        `UPDATE sale_orders
+            SET first_payment_amount = $1, updated_at = NOW()
+          WHERE sale_order_id = $2
+            AND status = $3`,
+        [roundedPaymentAmount, saleOrderId, locked.status]
+      )
+      if (updateRes.rowCount !== 1) {
+        throw new Error('CONFLICT: 订单状态已变更，请刷新后重试')
+      }
+    })
   }
 
   const orders = await pg.query(
@@ -1436,7 +1496,9 @@ async function qrcode(ctx) {
   if (order.status === '部分支付') {
     // 回款场景：actual 储值卡已包含在 received，不能再从 payable 重复扣减。
     const netReceived = Math.round((Number(order.received || 0) - Number(order.refunded_amount || 0)) * 100) / 100
-    actualPayable = Math.max(0, Math.round((totalAmount - pendingPrepaidCardAmount - netReceived) * 100) / 100)
+    const remaining = Math.max(0, Math.round((totalAmount - pendingPrepaidCardAmount - netReceived) * 100) / 100)
+    const frozenPayment = Number(order.first_payment_amount || 0)
+    actualPayable = frozenPayment > 0 ? Math.min(remaining, frozenPayment) : remaining
   } else if (order.sale_order_type === '充值单' || order.sale_order_type === '转换单') {
     // 充值卡单（card.recharge，0 行 sale_items）/ 转换单（sale_items 未写 pending_received，默认 0）：
     // 不能走逐行 pending_received（恒为 0 会让二维码显示 ¥0），待支付额直接取订单应付金额。

@@ -243,6 +243,44 @@ describe('order.repay', () => {
     }
   })
 
+  test('遗留 pending 储值卡意向 → 先作废并恢复 payable，再按真实欠款校验重试金额', async () => {
+    // total=300、已收=100；旧 pending=80 把 payable 暂降为 220。
+    // 真实欠款仍为 200，因此本次线下意向 200 应通过，不应按 220-100=120 误报超额。
+    const router = makeClientQueryRouter([
+      {
+        match: /FROM sale_orders WHERE sale_order_id = \$1 FOR UPDATE/,
+        result: {
+          rows: [makeOrigOrderRow({
+            payable_amount: '220.00',
+            pending_prepaid_card_amount: '80.00',
+          })],
+          rowCount: 1,
+        },
+      },
+      { match: /UPDATE sale_order_payments SET status = '已作废'/, result: { rows: [], rowCount: 1 } },
+      { match: /UPDATE sale_orders[\s\S]*pending_prepaid_card_amount = 0/, result: { rows: [], rowCount: 1 } },
+      { match: /UPDATE sale_orders SET payment_method/, result: { rows: [], rowCount: 1 } },
+    ])
+    pg.transaction.mockImplementation(async (cb) => await cb({ query: router }))
+
+    const ctx = createBoundCtx({
+      saleOrderId: 'FY-XSD-WX-2604240001',
+      paymentMethod: '线下',
+      repayAmount: 200,
+      prepaidCardAmount: 0,
+    })
+    await routes.repay(ctx)
+
+    expect(ctx.result.repayAmount).toBe(200)
+    const calls = router.mock.calls.map((c) => c[0])
+    const invalidateAt = calls.findIndex((s) => /UPDATE sale_order_payments SET status = '已作废'/.test(s))
+    const restoreAt = calls.findIndex((s) => /pending_prepaid_card_amount = 0/.test(s))
+    const markMethodAt = calls.findIndex((s) => /UPDATE sale_orders SET payment_method/.test(s))
+    expect(invalidateAt).toBeGreaterThan(0)
+    expect(restoreAt).toBeGreaterThan(invalidateAt)
+    expect(markMethodAt).toBeGreaterThan(restoreAt)
+  })
+
   test('超额回款 → INVALID_PARAMS', async () => {
     // payable=300, received=250, refunded=0 → 欠款=50，本次 100 超额
     const router = makeClientQueryRouter([
