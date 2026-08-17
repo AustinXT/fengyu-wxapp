@@ -174,4 +174,24 @@ describe("getCustomerVisibleSaleItems", () => {
       pendingReceived: "0.00",
     })
   })
+
+  it("来源订单不同但业务快照一致时合并疗程卡", () => {
+    const first = makeItem({ saleItemId: "SI-ORDER-1", saleOrderId: "SO-1" })
+    const second = makeItem({ saleItemId: "SI-ORDER-2", saleOrderId: "SO-2" })
+
+    const result = getCustomerVisibleSaleItems([
+      makeOrder({ saleOrderId: "SO-1", items: [first] }),
+      makeOrder({ saleOrderId: "SO-2", items: [second] }),
+    ])
+
+    expect(result).toHaveLength(1)
+    expect(result[0]).toMatchObject({
+      saleItemId: "SI-ORDER-1",
+      cardCount: 2,
+      quantity: 2,
+      sessionCount: 2,
+      remainingSessions: 2,
+      paidSessions: 2,
+    })
+  })
 })

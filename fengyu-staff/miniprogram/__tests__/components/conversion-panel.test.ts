@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest'
+import { callStaffApi } from '../../utils/cloud'
 
 vi.mock('../../utils/cloud', () => ({
   callStaffApi: vi.fn(),
@@ -63,5 +64,51 @@ describe('conversion-panel 本次收款输入', () => {
     )
     expect(wxml).toContain('<view wx:if="{{!isExperienceConversion}}" class="conv-summary">')
     expect(wxml).toContain('应付与实付均为 ¥0.00')
+  })
+})
+
+describe('conversion-panel 疗程卡分组', () => {
+  test('次数不同的同组卡拆行，选择合并行仍提交原始卡 ID', async () => {
+    const component = createComponent()
+    const snapshot = {
+      saleItemGroupId: 'GROUP-SAME',
+      productName: '肩颈舒缓SPA',
+      productType: '疗程卡',
+      unit: '次',
+      remainingQuantity: null,
+      unitRealPrice: '100.00',
+      deductibleAmount: '100.00',
+      quantity: 1,
+      sessionCount: 2,
+      paidSessions: 2,
+      unitPrice: '100.00',
+      saleAmount: '200.00',
+      received: '200.00',
+      pendingReceived: '0.00',
+      expireDate: '2026-12-31',
+      orderStatus: '已支付',
+    }
+    vi.mocked(callStaffApi).mockResolvedValue({
+      cards: [
+        { saleItemId: 'CARD-ONE', sourceSaleOrderId: 'ORDER-ONE', ...snapshot, remainingSessions: 1 },
+        { saleItemId: 'CARD-TWO', sourceSaleOrderId: 'ORDER-TWO', ...snapshot, remainingSessions: 2 },
+        { saleItemId: 'CARD-THREE', sourceSaleOrderId: 'ORDER-THREE', ...snapshot, remainingSessions: 2 },
+      ],
+    })
+
+    await component.loadCards('CLIENT-1')
+
+    expect(component.data.cards).toHaveLength(2)
+    expect(component.data.cards.map((card: any) => card.sourceItems.length)).toEqual([1, 2])
+    expect(component.data.cards.map((card: any) => card.remainingSessions)).toEqual([1, 4])
+
+    component._setGroupSelection(component.data.cards[1], 2)
+
+    expect(component.data.selectedIds).toEqual(['CARD-TWO', 'CARD-THREE'])
+    expect(component.data.deductibleSum).toBe(200)
+    expect(component.triggerEvent).toHaveBeenLastCalledWith('change', expect.objectContaining({
+      selectedSaleItemIds: ['CARD-TWO', 'CARD-THREE'],
+      deductibleSum: 200,
+    }))
   })
 })

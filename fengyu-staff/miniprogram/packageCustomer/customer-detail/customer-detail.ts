@@ -3,7 +3,7 @@ import { callStaffApi } from '../../utils/cloud';
 import { getCurrentStoreId, isManager } from '../../utils/role';
 import { formatDateTime, formatDate, ORDER_TYPE_LABEL, formatDiscount } from '../../utils/formatters';
 import { MemberLevelBadgeData, withMemberLevelBadgeClass } from '../../utils/member-level-badge';
-import { expandGroupServiceSessions, groupTreatmentCards, sumGroupValue } from '../../utils/treatment-card-group';
+import { expandGroupServiceSessions, getTreatmentCardBusinessIdentity, groupTreatmentCards, sumGroupValue } from '../../utils/treatment-card-group';
 
 const app = getApp<IAppOption>();
 
@@ -681,51 +681,7 @@ Page({
       const groupedCards = groupTreatmentCards(cards, {
         getId: (card) => card.saleItemId,
         getQuantity: (card) => card.quantity,
-        getIdentity: (card) => card.saleItemGroupId
-          ? { saleItemGroupId: card.saleItemGroupId }
-          : ({
-          saleOrderId: card.saleOrderId,
-          saleOrderDatetime: card.saleOrderDatetime,
-          orderStatus: card.orderStatus,
-          paidAt: card.paidAt,
-          saleOrderType: card.saleOrderType,
-          documentType: card.documentType,
-          marketName: card.marketName,
-          legacySource: card.legacySource,
-          orderStoreId: card.orderStoreId,
-          storeName: card.storeName,
-          itemName: card.itemName,
-          spec: card.spec,
-          storeId: card.storeId,
-          skuId: card.skuId,
-          itemDirection: card.itemDirection,
-          refSaleItemId: card.refSaleItemId,
-          totalSessions: card.totalSessions,
-          remainingSessions: card.remainingSessions,
-          paidSessions: card.paidSessions,
-          consumableSessions: card.consumableSessions,
-          usedSessions: card.usedSessions,
-          paidUnusedSessions: card.paidUnusedSessions,
-          unit: card.unit,
-          unitRealPrice: card.unitRealPrice,
-          unitPrice: card.unitPrice,
-          saleAmount: card.saleAmount,
-          received: card.received,
-          pendingReceived: card.pendingReceived,
-          expireDate: card.expireDate,
-          remark: card.remark,
-          salesCategory: card.salesCategory,
-          pickedUpQuantity: card.pickedUpQuantity,
-          category: card.category,
-          categoryColor: card.categoryColor,
-          productKind: card.productKind,
-          categoryId: card.categoryId,
-          categoryName: card.categoryName,
-          saleOrderTypeLabel: card.saleOrderTypeLabel,
-          disabled: card.disabled,
-          disabledReason: card.disabledReason,
-          quantity: card.quantity ?? 1,
-        }),
+        getIdentity: (card) => getTreatmentCardBusinessIdentity(card),
       }).map((group) => {
         const primary = group.primary;
         const totalSessions = sumGroupValue(group, (card) => card.totalSessions);

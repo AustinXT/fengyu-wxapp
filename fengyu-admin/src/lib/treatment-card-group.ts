@@ -14,7 +14,38 @@ export interface TreatmentCardGroupOptions<T> {
 }
 
 function stableKey(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableKey).join(',')}]`
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([field, item]) => `${JSON.stringify(field)}:${stableKey(item)}`)
+      .join(',')}}`
+  }
   return JSON.stringify(value) ?? String(value)
+}
+
+const TREATMENT_CARD_IDENTITY_IGNORED_FIELDS = new Set([
+  'saleItemId',
+  'saleItemGroupId',
+  'saleOrderId',
+  'sourceSaleOrderId',
+  'sale_item_id',
+  'sale_item_group_id',
+  'sale_order_id',
+  'source_sale_order_id',
+])
+
+/** 展示合并忽略订单/卡行技术 ID，其余业务快照字段必须完全一致。 */
+export function getTreatmentCardBusinessIdentity(snapshot: object): Record<string, unknown> {
+  const identity: Record<string, unknown> = {}
+  for (const [field, value] of Object.entries(snapshot)) {
+    if (!TREATMENT_CARD_IDENTITY_IGNORED_FIELDS.has(field)) {
+      identity[field] = value
+    }
+  }
+  return identity
 }
 
 export function groupTreatmentCards<T>(
