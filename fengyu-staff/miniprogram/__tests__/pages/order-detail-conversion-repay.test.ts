@@ -68,6 +68,61 @@ function createPage() {
 }
 
 describe('转换单订单级在线回款', () => {
+  test('零首付待支付转换单开放订单级回款入口', async () => {
+    vi.mocked(callStaffApi).mockResolvedValueOnce({
+      order: {
+        sale_order_id: 'FY-CONV-ZERO',
+        sale_order_type: '转换单',
+        status: '待支付',
+        total_amount: '1500.00',
+        received: '0.00',
+        refunded_amount: '0.00',
+        first_payment_amount: null,
+        customer_name: '零首付顾客',
+        is_experience_conversion: false,
+      },
+      items: [],
+      payments: [],
+      cardBalance: 0,
+    } as never)
+    const page = createPage()
+
+    await page.loadDetail('FY-CONV-ZERO')
+
+    expect(page.data.order.hasDebt).toBe(true)
+    page.onRepayTap()
+    expect(page.data.repayLines).toEqual([{
+      saleItemId: '__ORDER__',
+      itemName: '转换单剩余欠款',
+      repayable: '1500.00',
+      real: '1500.00',
+    }])
+  })
+
+  test('待支付转换单已有冻结支付场次时不开放新回款入口', async () => {
+    vi.mocked(callStaffApi).mockResolvedValueOnce({
+      order: {
+        sale_order_id: 'FY-CONV-CAPPED',
+        sale_order_type: '转换单',
+        status: '待支付',
+        total_amount: '1500.00',
+        received: '0.00',
+        refunded_amount: '0.00',
+        first_payment_amount: '500.00',
+        customer_name: '首付顾客',
+        is_experience_conversion: false,
+      },
+      items: [],
+      payments: [],
+      cardBalance: 0,
+    } as never)
+    const page = createPage()
+
+    await page.loadDetail('FY-CONV-CAPPED')
+
+    expect(page.data.order.hasDebt).toBe(false)
+  })
+
   test('同一事务扣储值卡并冻结本次在线金额，再跳转二维码页', async () => {
     vi.mocked(callStaffApi).mockResolvedValue({} as never)
     const page = createPage()

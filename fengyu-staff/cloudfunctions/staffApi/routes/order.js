@@ -176,6 +176,8 @@ function applyTreatmentTierPricing(rawItems, tierSkuRows, buyerIsMember, saleOrd
         s.category_id === categoryId &&
         s.spec_name === productName &&
         s.product_type === '疗程卡' &&
+        s.is_enabled !== false &&
+        s.is_experience !== true &&
         s.is_manager_special !== true &&
         s.session_count != null &&
         Number(s.session_count) > 1 &&
@@ -3694,10 +3696,10 @@ async function createConversion(ctx) {
                 s.is_shengmei, s.is_experience, s.is_manager_special, s.purchase_limit, s.market_scope, s.category_id, pc.sales_category
          FROM product_skus s
          JOIN product_categories pc ON s.category_id = pc.category_id
-         WHERE s.sku_id = $1 AND s.deleted_at IS NULL`,
+         WHERE s.sku_id = $1 AND s.deleted_at IS NULL AND s.is_enabled = true`,
         [req.skuId]
       )
-      if (skuRes.rows.length === 0) throw new Error(`INVALID_PARAMS: 商品 ${req.skuId} 不存在`)
+      if (skuRes.rows.length === 0) throw new Error(`INVALID_PARAMS: 商品 ${req.skuId} 不存在或已停用`)
       const sku = skuRes.rows[0]
       const qty = Number(req.quantity) || 1
       const standardPricing = resolveUnitPrice(sku, buyerIsMember)
@@ -3786,9 +3788,15 @@ async function createConversion(ctx) {
       const categoryIds = [...new Set(inItems.map(i => i.categoryId).filter(Boolean))]
       const tierSkuRes = await tx.query(
         `SELECT s.sku_id, s.category_id, s.spec_name, s.product_type, s.price, s.special_price,
-                s.session_count, s.is_experience, s.is_manager_special
+                s.session_count, s.is_enabled, s.is_experience, s.is_manager_special
          FROM product_skus s
-         WHERE s.category_id = ANY($1) AND s.product_type = '疗程卡' AND s.deleted_at IS NULL`,
+         WHERE s.category_id = ANY($1)
+           AND s.product_type = '疗程卡'
+           AND s.deleted_at IS NULL
+           AND s.is_enabled = true
+           AND COALESCE(s.is_experience, false) = false
+           AND COALESCE(s.is_manager_special, false) = false
+           AND s.session_count IS NOT NULL`,
         [categoryIds]
       )
       tierSkuRows = tierSkuRes.rows
