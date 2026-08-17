@@ -322,11 +322,10 @@ test('0013 journal 与 snapshot 由 drizzle generate 连续生成且不夹带 sc
   const journal = JSON.parse(read('migrations/meta/_journal.json'))
   const snapshot12 = JSON.parse(read('migrations/meta/0012_snapshot.json'))
   const snapshot13 = JSON.parse(read('migrations/meta/0013_snapshot.json'))
-  const last = journal.entries.at(-1)
+  const entry13 = journal.entries.find((entry) => entry.idx === 13)
 
-  assert.equal(last.idx, 13)
-  assert.equal(last.tag, '0013_repair_prepaid_card_history')
-  assert.ok(last.when > journal.entries.at(-2).when)
+  assert.equal(entry13.tag, '0013_repair_prepaid_card_history')
+  assert.ok(entry13.when > journal.entries.find((entry) => entry.idx === 12).when)
   assert.equal(snapshot13.prevId, snapshot12.id)
 
   delete snapshot12.id
@@ -334,4 +333,64 @@ test('0013 journal 与 snapshot 由 drizzle generate 连续生成且不夹带 sc
   delete snapshot13.id
   delete snapshot13.prevId
   assert.deepEqual(snapshot13, snapshot12)
+})
+
+test('0014 将整单最早的成功正向款标为唯一 initial，并同步重建两个业绩视图', () => {
+  const schemaSql = read('schema/order.ts')
+  const migrationSql = read('migrations/0014_sturdy_sentinels.sql')
+  const snapshot14 = JSON.parse(read('migrations/meta/0014_snapshot.json'))
+  const definitions = [
+    schemaSql,
+    migrationSql,
+    snapshot14.views['public.sale_order_performance_events'].definition,
+    snapshot14.views['public.sale_item_performance_events'].definition,
+  ]
+
+  for (const definition of definitions) {
+    assert.match(definition, /sop\.status = '已支付'/)
+    assert.match(definition, /sop\.amount::numeric > 0/)
+    assert.match(definition, /sop\.change_type IN \('首次支付', '回款', '储值卡抵扣'\)/)
+    assert.match(definition, /prior\.status = '已支付'/)
+    assert.match(definition, /prior\.amount::numeric > 0/)
+    assert.match(definition, /COALESCE\(prior\.paid_at, prior\.created_at\),\s*prior\.id/)
+    assert.match(definition, /COALESCE\(sop\.paid_at, sop\.created_at\),\s*sop\.id/)
+    assert.doesNotMatch(definition, /sop\.change_type = '首次支付'\s+OR/)
+  }
+
+  assert.equal((migrationSql.match(/DROP VIEW "public"\."sale_item_performance_events"/g) ?? []).length, 1)
+  assert.equal((migrationSql.match(/DROP VIEW "public"\."sale_order_performance_events"/g) ?? []).length, 1)
+  assert.equal((migrationSql.match(/CREATE VIEW "public"\."sale_item_performance_events"/g) ?? []).length, 1)
+  assert.equal((migrationSql.match(/CREATE VIEW "public"\."sale_order_performance_events"/g) ?? []).length, 1)
+})
+
+test('0014 journal/snapshot 连续生成且仅追加新迁移', () => {
+  const journal = JSON.parse(read('migrations/meta/_journal.json'))
+  const snapshot13 = JSON.parse(read('migrations/meta/0013_snapshot.json'))
+  const snapshot14 = JSON.parse(read('migrations/meta/0014_snapshot.json'))
+  const last = journal.entries.at(-1)
+
+  assert.equal(last.idx, 14)
+  assert.equal(last.tag, '0014_sturdy_sentinels')
+  assert.ok(last.when > journal.entries.at(-2).when)
+  assert.equal(snapshot14.prevId, snapshot13.id)
+
+  assert.notDeepEqual(
+    snapshot14.views['public.sale_order_performance_events'],
+    snapshot13.views['public.sale_order_performance_events'],
+  )
+  assert.notDeepEqual(
+    snapshot14.views['public.sale_item_performance_events'],
+    snapshot13.views['public.sale_item_performance_events'],
+  )
+  for (const viewName of [
+    'public.sale_order_performance_events',
+    'public.sale_item_performance_events',
+  ]) {
+    snapshot14.views[viewName] = snapshot13.views[viewName]
+  }
+  delete snapshot13.id
+  delete snapshot13.prevId
+  delete snapshot14.id
+  delete snapshot14.prevId
+  assert.deepEqual(snapshot14, snapshot13, '0014 除两个业绩视图外不应夹带其他 schema 变化')
 })

@@ -618,24 +618,23 @@ const saleOrderPerformanceEventsQuery = sql`
       sop.paid_at,
       so.performance_attribution_date,
       (
-        sop.change_type = '首次支付'
-        OR (
-          sop.change_type = '储值卡抵扣'
-          AND sop.status = '已支付'
-          AND NOT EXISTS (
-            SELECT 1
-            FROM sale_order_payments prior
-            WHERE prior.sale_order_id = sop.sale_order_id
-              AND prior.status = '已支付'
-              AND prior.change_type IN ('首次支付', '回款', '储值卡抵扣')
-              AND (
-                COALESCE(prior.paid_at, prior.created_at),
-                prior.id
-              ) < (
-                COALESCE(sop.paid_at, sop.created_at),
-                sop.id
-              )
-          )
+        sop.status = '已支付'
+        AND sop.amount::numeric > 0
+        AND sop.change_type IN ('首次支付', '回款', '储值卡抵扣')
+        AND NOT EXISTS (
+          SELECT 1
+          FROM sale_order_payments prior
+          WHERE prior.sale_order_id = sop.sale_order_id
+            AND prior.status = '已支付'
+            AND prior.amount::numeric > 0
+            AND prior.change_type IN ('首次支付', '回款', '储值卡抵扣')
+            AND (
+              COALESCE(prior.paid_at, prior.created_at),
+              prior.id
+            ) < (
+              COALESCE(sop.paid_at, sop.created_at),
+              sop.id
+            )
         )
       ) AS is_initial_event
     FROM sale_order_payments sop
@@ -663,7 +662,7 @@ const saleOrderPerformanceEventsQuery = sql`
 /**
  * 订单款项业绩事件视图。
  *
- * - 首次支付，以及没有更早成功正向款项的首次纯储值卡抵扣，使用订单业绩归属日期；
+ * - 每单按支付时间、创建时间、ID 排序的首笔成功正向款项使用订单业绩归属日期；
  * - 后续回款、后续储值卡抵扣和退款使用各自真实 paid_at 的上海自然日；
  * - 视图保留全部状态，报表必须继续限定 status='已支付'。
  */
