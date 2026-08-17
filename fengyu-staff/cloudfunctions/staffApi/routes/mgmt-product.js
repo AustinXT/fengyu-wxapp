@@ -197,8 +197,10 @@ async function cardHolders(ctx) {
  * 内部：
  *   - getSalesDataPeriod(period) → { startDate, endDate }
  *   - getMemberThreshold() → threshold
- *   - 单次 SQL：WITH daily_agg → qualifying_days → first_entry → period_agg → xinzeng/fugou/tiyan
- *     最后用 UNION ALL 拆三段（group_kind: 'trial' / 'new' / 'repurchase'）
+ *   - 单次 SQL：WITH daily_agg → qualifying_days / repurchase_qualifying_days
+ *     → first_entry → period_agg → xinzeng/fugou/tiyan
+ *   - 寄存单只参与首次进入基线；复购达标与区间业绩只统计销售单/转换单
+ *   - 最后用 UNION ALL 拆三段（group_kind: 'trial' / 'new' / 'repurchase'）
  *
  * 参数顺序：$1=startDate, $2=endDate, $3=threshold, $4...=scope params
  *   daily_agg WHERE: purchase_date <= $2（全历史下界）
@@ -235,13 +237,19 @@ async function cycleStats(ctx) {
              so.store_id,
              pc.product_kind,
              ${purchaseDateSql}         AS purchase_date,
-             SUM(si.received::numeric)  AS day_received
+             SUM(si.received::numeric)  AS day_received,
+             COALESCE(
+               SUM(si.received::numeric) FILTER (
+                 WHERE so.sale_order_type IN ('销售单','转换单')
+               ),
+               0
+             )                           AS purchase_received
         FROM sale_items si
         JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
         JOIN product_skus sk ON sk.sku_id = si.sku_id
         JOIN product_categories pc ON pc.category_id = sk.category_id
        WHERE ${sc.sql}
-         AND so.sale_order_type IN ('销售单','转换单')
+         AND so.sale_order_type IN ('销售单','转换单','寄存单')
          AND so.status NOT IN ('已关闭','已作废','未审核','待审批','支付失败')
          AND so.client_user_id IS NOT NULL
          AND pc.product_kind IS NOT NULL
@@ -254,6 +262,11 @@ async function cycleStats(ctx) {
         FROM daily_agg
        WHERE day_received >= $3
     ),
+    repurchase_qualifying_days AS (
+      SELECT client_user_id, store_id, product_kind, purchase_date
+        FROM daily_agg
+       WHERE purchase_received >= $3
+    ),
     first_entry AS (
       SELECT client_user_id,
              product_kind,
@@ -262,9 +275,11 @@ async function cycleStats(ctx) {
        GROUP BY client_user_id, product_kind
     ),
     period_agg AS (
-      SELECT client_user_id, store_id, product_kind, purchase_date, day_received
+      SELECT client_user_id, store_id, product_kind, purchase_date,
+             purchase_received AS day_received
         FROM daily_agg
        WHERE purchase_date BETWEEN $1 AND $2
+         AND purchase_received > 0
     ),
     xinzeng AS (
       SELECT client_user_id, product_kind, entry_date
@@ -273,7 +288,7 @@ async function cycleStats(ctx) {
     ),
     fugou AS (
       SELECT DISTINCT q.client_user_id, q.product_kind
-        FROM qualifying_days q
+        FROM repurchase_qualifying_days q
         JOIN xinzeng x ON x.client_user_id = q.client_user_id
                       AND x.product_kind   = q.product_kind
        WHERE q.purchase_date BETWEEN $1 AND $2

@@ -4,7 +4,7 @@
  * 覆盖：
  *   - 入参/权限校验（INVALID_PARAMS / PERMISSION_DENIED）
  *   - cardHolders SQL 形态（持卡过滤、JOIN、scope 三档、memberCount 派生 rate）
- *   - cycleStats SQL 形态（CTE 链断言：daily_agg → qualifying_days → first_entry → period_agg → xinzeng/fugou/tiyan）
+ *   - cycleStats SQL 形态（进入基线与可复购达标分流的 CTE 链）
  *   - 出数与防除零（avgTicket=null when count=0）
  *   - threshold 注入（getMemberThreshold mock）
  */
@@ -360,13 +360,14 @@ describe('mgmtProduct.cycleStats SQL 形态', () => {
     )
   })
 
-  test('daily_agg 纳入有效订单净实收，并以消费日期截止 $2', async () => {
+  test('daily_agg 纳入寄存单进入基线，并以消费日期截止 $2', async () => {
     setupCycleMocks({})
     const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
     await cycleStats(ctx)
 
     const sql = getCycleSql()
-    expect(sql).toMatch(/so\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/)
+    expect(sql).toMatch(/so\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*,\s*'寄存单'\s*\)/)
+    expect(sql).toMatch(/FILTER\s*\(\s*WHERE\s+so\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)\s*\)/)
     expect(sql).toMatch(/so\.status\s+NOT\s+IN\s*\(\s*'已关闭'\s*,\s*'已作废'\s*,\s*'未审核'\s*,\s*'待审批'\s*,\s*'支付失败'\s*\)/)
     expect(sql).toMatch(/COALESCE\(so\.sale_order_datetime,\s*so\.paid_at\)::date\s*<=\s*\$2/)
   })
@@ -381,6 +382,17 @@ describe('mgmtProduct.cycleStats SQL 形态', () => {
     // 不能用 = 等式
     expect(sql).toMatch(/day_received\s*>=\s*\$3/)
     expect(sql).not.toMatch(/day_received\s*=\s*\$3/)
+  })
+
+  test('复购达标与区间业绩只使用销售单/转换单金额', async () => {
+    setupCycleMocks({})
+    const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
+    await cycleStats(ctx)
+
+    const sql = getCycleSql()
+    expect(sql).toMatch(/repurchase_qualifying_days\s+AS\s*\([\s\S]*?purchase_received\s*>=\s*\$3/)
+    expect(sql).toMatch(/period_agg\s+AS\s*\([\s\S]*?purchase_received\s+AS\s+day_received[\s\S]*?purchase_received\s*>\s*0/)
+    expect(sql).toMatch(/fugou\s+AS\s*\([\s\S]*?FROM\s+repurchase_qualifying_days\s+q/)
   })
 
   test('first_entry SELECT 用 MIN(purchase_date)，GROUP BY 不含 store_id（跨店合并）', async () => {
