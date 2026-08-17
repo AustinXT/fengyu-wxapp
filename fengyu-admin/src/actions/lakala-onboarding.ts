@@ -1105,7 +1105,9 @@ async function uploadRequiredAttachments(session: AuthSession, application: Laka
 
 function safeExternalMessage(error: unknown, fallback: string): string {
   if (!(error instanceof Error)) return fallback
-  if (error.message.startsWith('INVALID_STATE: ')) return error.message.slice('INVALID_STATE: '.length)
+  for (const prefix of ['INVALID_STATE: ', 'CONFLICT: ', 'NOT_FOUND: ']) {
+    if (error.message.startsWith(prefix)) return error.message.slice(prefix.length)
+  }
   return fallback
 }
 
@@ -1603,6 +1605,7 @@ async function bindApprovedMerchantInTransaction(
   application: LakalaOnboardingApplication,
   merchantNo: string,
   terminalNumber: string | undefined,
+  enabled: boolean,
 ): Promise<string> {
   const merchantName = dataFromApplication(application).merchantData.merRegName || application.applicationNo
   const [store] = await tx.select({
@@ -1614,27 +1617,42 @@ async function bindApprovedMerchantInTransaction(
     scopeCondition(session, stores.storeId),
   )).limit(1)
   if (!store) throw new Error('NOT_FOUND: 门店不存在或无权访问')
-  if (store.lakalaMerchantId) {
-    if (store.lakalaMerchantId === application.lakalaMerchantId) return store.lakalaMerchantId
-    throw new Error('CONFLICT: 门店已绑定其他收款商户，请先核对配置')
-  }
-
   const [market] = store.orgNodeId
     ? await tx.select({ marketOrgNodeId: orgNodes.parentId }).from(orgNodes)
       .where(eq(orgNodes.id, store.orgNodeId)).limit(1)
     : []
-  const [existing] = await tx.select().from(lakalaMerchants)
+  let [existing] = await tx.select().from(lakalaMerchants)
     .where(eq(lakalaMerchants.merchantNo, merchantNo)).limit(1)
+  if (application.lakalaMerchantId && existing && existing.id !== application.lakalaMerchantId) {
+    throw new Error('CONFLICT: 申请已关联的收款商户与拉卡拉商户号不一致')
+  }
+  if (!existing && application.lakalaMerchantId) {
+    ;[existing] = await tx.select().from(lakalaMerchants)
+      .where(eq(lakalaMerchants.id, application.lakalaMerchantId)).limit(1)
+    if (existing?.merchantNo && existing.merchantNo !== merchantNo) {
+      throw new Error('CONFLICT: 申请已关联的收款商户号与审核结果不一致')
+    }
+  }
+  if (store.lakalaMerchantId && store.lakalaMerchantId !== existing?.id) {
+    throw new Error('CONFLICT: 门店已绑定其他收款商户，请先核对配置')
+  }
   let merchantId: string
   if (existing) {
     if (existing.marketOrgNodeId && market?.marketOrgNodeId && existing.marketOrgNodeId !== market.marketOrgNodeId) {
       throw new Error('CONFLICT: 拉卡拉商户已属于其他市场，不能跨市场绑定')
     }
     merchantId = existing.id
-    if ((terminalNumber && existing.termNo !== terminalNumber) || existing.enabled) {
+    if (existing.merchantName !== merchantName
+      || existing.merchantNo !== merchantNo
+      || (terminalNumber && existing.termNo !== terminalNumber)
+      || existing.enabled !== enabled
+      || (!existing.marketOrgNodeId && market?.marketOrgNodeId)) {
       await tx.update(lakalaMerchants).set({
+        ...(existing.merchantName !== merchantName ? { merchantName } : {}),
+        ...(existing.merchantNo !== merchantNo ? { merchantNo } : {}),
         ...(terminalNumber && existing.termNo !== terminalNumber ? { termNo: terminalNumber } : {}),
-        enabled: false,
+        ...(!existing.marketOrgNodeId && market?.marketOrgNodeId ? { marketOrgNodeId: market.marketOrgNodeId } : {}),
+        enabled,
         updatedAt: new Date(),
       }).where(eq(lakalaMerchants.id, existing.id))
     }
@@ -1645,7 +1663,7 @@ async function bindApprovedMerchantInTransaction(
       merchantName,
       merchantNo,
       termNo: terminalNumber ?? null,
-      enabled: false,
+      enabled,
       marketOrgNodeId: market?.marketOrgNodeId ?? null,
     })
   }
@@ -1660,6 +1678,26 @@ async function bindApprovedMerchantInTransaction(
     throw new Error('CONFLICT: 门店已被并发绑定其他收款商户，请先核对配置')
   }
   return merchantId
+}
+
+async function revokeApprovedMerchantInTransaction(
+  tx: AdminTx,
+  session: AuthSession,
+  application: LakalaOnboardingApplication,
+): Promise<void> {
+  if (!application.lakalaMerchantId) return
+  await tx.update(lakalaMerchants).set({
+    enabled: false,
+    updatedAt: new Date(),
+  }).where(eq(lakalaMerchants.id, application.lakalaMerchantId))
+  await tx.update(stores).set({
+    lakalaMerchantId: null,
+    updatedAt: new Date(),
+  }).where(and(
+    eq(stores.storeId, application.storeId),
+    eq(stores.lakalaMerchantId, application.lakalaMerchantId),
+    scopeCondition(session, stores.storeId),
+  ))
 }
 
 async function submitApplicationWithSession(
@@ -1728,7 +1766,7 @@ async function submitApplicationWithSession(
       status: 'REGISTERING',
     })
     revalidateOnboarding(applicationId)
-    return { success: true, message: '已提交拉卡拉，等待审核；审核通过后将绑定收款商户（默认不启用收款）' }
+    return { success: true, message: '已提交拉卡拉，等待审核；审核通过后请继续完成渠道认证' }
   } catch (error) {
     const failedAt = nextUpdatedAt(started)
     await db.update(lakalaOnboardingApplications).set({
@@ -1771,6 +1809,7 @@ function serializeChannelResult(result: LakalaCertificationResult): Record<strin
     registerMsg: result.registerMsg,
     rejectReason: result.rejectReason,
     errorCode: result.errorCode,
+    errorMessage: result.errorMessage,
     checkedAt: new Date().toISOString(),
   }
 }
@@ -1889,7 +1928,7 @@ async function queryOnboardingApplicationInternal(session: AuthSession, applicat
       channelData: result.status === 'SUCCESS'
         ? markSubMerchantPollingStartedAt(row.app.channelData, statusUpdatedAt)
         : row.app.channelData,
-      // 审核通过只保存拉卡拉编号，待微信和支付宝外部认证完成后再建档、绑门店。
+      // 审核通过只保存拉卡拉编号；微信认证通过后再自动建档、绑门店并启用。
       lakalaMerchantId: row.app.lakalaMerchantId,
       lastErrorCode: result.status === 'FAILED' ? result.errorCode ?? 'AUDIT_REJECTED' : null,
       lastErrorMessage: result.status === 'FAILED' ? '拉卡拉审核未通过，请修正资料后重新提交' : null,
@@ -1908,7 +1947,7 @@ async function queryOnboardingApplicationInternal(session: AuthSession, applicat
       })
       await refreshSubMerchantsInternal(session, applicationId)
       revalidateOnboarding(applicationId)
-      return { success: true, message: '拉卡拉审核通过；完成微信、支付宝外部认证后将关联未启用的收款商户' }
+      return { success: true, message: '拉卡拉审核通过；请查询渠道子商户号并完成微信认证' }
     }
     if (result.status === 'FAILED') {
       await logTransition(session, 'merchant.onboarding.rejected', 'lakala_onboarding_application', applicationId, row.app.status, 'FAILED')
@@ -1938,22 +1977,30 @@ function channelEntries(channelData: Record<string, unknown>, name: 'wechat' | '
 }
 
 function certificationCompleted(result: LakalaCertificationResult): boolean {
+  if (certificationFailed(result)) return false
   const register = result.registerState?.toUpperCase()
   const authorization = result.authorizeState?.toUpperCase()
+  const applyment = result.applymentState?.toUpperCase()
   return result.success &&
-    (register === 'SUCCESS' || result.registerCode === '000000') &&
-    (!authorization || ['SUCCESS', 'AUTHORIZED', 'AUTHORIZE_STATE_AUTHORIZED'].includes(authorization))
+    (register === 'SUCCESS' || result.registerCode === '000000' || result.registerMsg === '成功') &&
+    (!authorization || ['SUCCESS', 'AUTHORIZED', 'AUTHORIZE_STATE_AUTHORIZED', 'AUTHORIZE_STATE_SUCCESS'].includes(authorization)) &&
+    (!applyment || ['SUCCESS', 'APPLYMENT_STATE_SUCCESS', 'APPLYMENT_STATE_FINISHED', 'APPLYMENT_STATE_PASSED'].includes(applyment))
 }
 
-function certificationSnapshotCompleted(value: unknown): boolean {
-  if (!value || typeof value !== 'object') return false
-  const result = value as Record<string, unknown>
-  const register = typeof result.registerState === 'string' ? result.registerState.toUpperCase() : ''
-  const authorization = typeof result.authorizeState === 'string' ? result.authorizeState.toUpperCase() : ''
-  const code = typeof result.registerCode === 'string' ? result.registerCode : ''
-  return result.success === true
-    && (register === 'SUCCESS' || code === '000000')
-    && (!authorization || ['SUCCESS', 'AUTHORIZED', 'AUTHORIZE_STATE_AUTHORIZED'].includes(authorization))
+function certificationFailed(result: Pick<LakalaCertificationResult, 'registerState' | 'authorizeState' | 'applymentState' | 'registerCode' | 'rejectReason' | 'errorMessage'>): boolean {
+  if (result.rejectReason || result.errorMessage) return true
+  const values = [result.registerState, result.authorizeState, result.applymentState, result.registerCode]
+    .filter((value): value is string => typeof value === 'string')
+    .map((value) => value.toUpperCase())
+  return values.some((value) => ['FAIL', 'REJECT', 'UNAUTHORIZED', 'INVALID', 'ERROR'].some((token) => value.includes(token)))
+}
+
+function certificationFailureReason(result: LakalaCertificationResult): string {
+  return result.rejectReason
+    || result.errorMessage
+    || result.registerMsg
+    || result.errorCode
+    || '微信认证未通过'
 }
 
 async function refreshOnboardingCertificationStatusInternal(session: AuthSession, applicationId: string): Promise<{ success: boolean; message: string }> {
@@ -1965,8 +2012,7 @@ async function refreshOnboardingCertificationStatusInternal(session: AuthSession
   }
   const channelData = (row.app.channelData as Record<string, unknown>) ?? {}
   const wechat = channelEntries(channelData, 'wechat')[0]
-  const alipay = channelEntries(channelData, 'alipay')[0]
-  if (!wechat || !alipay) return { success: false, message: '请先查询微信、支付宝子商户号' }
+  if (!wechat) return { success: false, message: '请先查询微信子商户号' }
   try {
     const [wechatResult, alipayResult] = await Promise.all([
       writeRequestLog({
@@ -1982,58 +2028,146 @@ async function refreshOnboardingCertificationStatusInternal(session: AuthSession
         invoke: () => lakalaQueryRegisterStatus({ merchantNo: row.app.merCupNo!, registerType: 'ZFBZF' }),
       }),
     ])
+    const checkedAt = new Date().toISOString()
+    const wechatPassed = certificationCompleted(wechatResult)
+    const wechatFailed = !wechatResult.success || certificationFailed(wechatResult)
+    const terminalNumber = terminalNo(row.app.terminalData)
+    const previousPolling = channelData.certificationPolling && typeof channelData.certificationPolling === 'object' && !Array.isArray(channelData.certificationPolling)
+      ? channelData.certificationPolling as Record<string, unknown>
+      : {}
+    const reason = wechatPassed
+      ? terminalNumber ? '微信认证已通过，办理完成' : '微信认证已通过，等待拉卡拉返回终端号'
+      : wechatFailed ? certificationFailureReason(wechatResult) : '微信认证暂未通过，请稍后再次查询'
     const next = {
       ...channelData,
       wechatCertification: serializeChannelResult(wechatResult),
       alipayCertification: serializeChannelResult(alipayResult),
+      certificationPolling: {
+        ...previousPolling,
+        status: wechatPassed ? terminalNumber ? 'DONE' : 'WAIT_TERMINAL' : wechatFailed ? 'FAILED' : 'ACTIVE',
+        startedAt: typeof previousPolling.startedAt === 'string' ? previousPolling.startedAt : checkedAt,
+        lastCheckedAt: checkedAt,
+        stoppedAt: wechatPassed || wechatFailed ? checkedAt : null,
+        reason,
+      },
     }
+
+    if (wechatPassed && terminalNumber) {
+      const merchantId = await db.transaction(async (tx) => {
+        const claimedAt = nextUpdatedAt(row.app.updatedAt)
+        const claimed = await tx.update(lakalaOnboardingApplications).set({ updatedAt: claimedAt })
+          .where(and(
+            lockCondition(applicationId, row.app.updatedAt),
+            applicationScopeCondition(session),
+          ))
+        if (rowsAffected(claimed) === 0) throw new Error('CONFLICT: 申请已被其他操作修改，请刷新后重试')
+        const linkedId = await bindApprovedMerchantInTransaction(
+          tx,
+          session,
+          row.app,
+          row.app.merCupNo!,
+          terminalNumber,
+          true,
+        )
+        const finalizedAt = nextUpdatedAt(claimedAt)
+        const finalized = await tx.update(lakalaOnboardingApplications).set({
+          lakalaMerchantId: linkedId,
+          channelData: next,
+          lastErrorCode: null,
+          lastErrorMessage: null,
+          updatedAt: finalizedAt,
+        }).where(and(
+          scopedApplicationCondition(session, applicationId),
+          lockCondition(applicationId, claimedAt),
+        ))
+        if (rowsAffected(finalized) === 0) throw new Error('CONFLICT: 申请已被其他操作修改，请刷新后重试')
+        return linkedId
+      })
+      await logOperation(session, 'merchant.onboarding.certification.complete', 'lakala_onboarding_application', applicationId, {
+        applicationNo: row.app.applicationNo,
+        collectionMerchantId: merchantId,
+        collectionMerchantEnabled: true,
+        alipayCertificationCompleted: certificationCompleted(alipayResult),
+      })
+      revalidateOnboarding(applicationId)
+      return { success: true, message: '微信认证已通过，办理完成，收款商户已启用' }
+    }
+
+    if (wechatFailed) {
+      await db.transaction(async (tx) => {
+        const claimedAt = nextUpdatedAt(row.app.updatedAt)
+        const claimed = await tx.update(lakalaOnboardingApplications).set({ updatedAt: claimedAt })
+          .where(and(
+            lockCondition(applicationId, row.app.updatedAt),
+            applicationScopeCondition(session),
+          ))
+        if (rowsAffected(claimed) === 0) throw new Error('CONFLICT: 申请已被其他操作修改，请刷新后重试')
+        await revokeApprovedMerchantInTransaction(tx, session, row.app)
+        const finalizedAt = nextUpdatedAt(claimedAt)
+        const finalized = await tx.update(lakalaOnboardingApplications).set({
+          lakalaMerchantId: null,
+          channelData: next,
+          lastErrorCode: wechatResult.errorCode ?? 'WECHAT_CERTIFICATION_FAILED',
+          lastErrorMessage: reason,
+          updatedAt: finalizedAt,
+        }).where(and(
+          scopedApplicationCondition(session, applicationId),
+          lockCondition(applicationId, claimedAt),
+        ))
+        if (rowsAffected(finalized) === 0) throw new Error('CONFLICT: 申请已被其他操作修改，请刷新后重试')
+      })
+      await logOperation(session, 'merchant.onboarding.certification.failed', 'lakala_onboarding_application', applicationId, {
+        applicationNo: row.app.applicationNo,
+        revokedCollectionMerchantId: row.app.lakalaMerchantId,
+      })
+      revalidateOnboarding(applicationId)
+      return { success: true, message: `微信认证未通过：${reason}` }
+    }
+
     const refreshedAt = nextUpdatedAt(row.app.updatedAt)
     const updated = await db.update(lakalaOnboardingApplications).set({
       channelData: next,
       lastErrorCode: null,
-      lastErrorMessage: null,
+      lastErrorMessage: wechatPassed ? '微信认证已通过，但尚未获取终端号，请点击查询审核状态' : null,
       updatedAt: refreshedAt,
     }).where(and(
       scopedApplicationCondition(session, applicationId),
       lockCondition(applicationId, row.app.updatedAt),
     ))
-    if (rowsAffected(updated) === 0) {
-      return { success: false, message: '数据已被其他人修改，请刷新后重试' }
-    }
+    if (rowsAffected(updated) === 0) return { success: false, message: '数据已被其他人修改，请刷新后重试' }
     revalidateOnboarding(applicationId)
-    const complete = certificationCompleted(wechatResult) && certificationCompleted(alipayResult)
-    return { success: true, message: complete ? '微信、支付宝外部认证均已完成；请在商户管理中审核后启用收款' : '外部认证尚未全部完成，请稍后重试' }
+    return wechatPassed
+      ? { success: true, message: '微信认证已通过，但尚未获取终端号；获取后再刷新认证状态即会自动启用收款' }
+      : { success: true, message: '微信认证暂未通过，请稍后再次查询' }
   } catch (error) {
     return { success: false, message: safeExternalMessage(error, '外部认证状态查询失败') }
   }
 }
 
-/** 外部认证全部完成后创建/复用未启用收款商户并绑定门店；启用仍由商户管理页人工操作。 */
+/** 操作员手工确认渠道认证后，创建/复用未启用收款商户并绑定门店。 */
 async function confirmOnboardingExternalCertificationInternal(session: AuthSession, applicationId: string): Promise<{ success: boolean; message: string }> {
   if (!parseId(applicationId)) return { success: false, message: '申请不存在' }
   const row = await getScopedApplication(session, applicationId)
   if (!row) return { success: false, message: '申请不存在或无权访问' }
-  if (row.app.lakalaMerchantId) return { success: true, message: '外部认证已确认，收款商户已关联门店且保持未启用' }
-  const result = await refreshOnboardingCertificationStatusInternal(session, applicationId)
-  if (!result.success) return result
-
-  const latest = await getScopedApplication(session, applicationId)
-  if (!latest || latest.app.status !== 'SUCCESS' || !latest.app.merCupNo) {
-    return { success: false, message: '申请状态已变化，请刷新后重试' }
-  }
-  const channelData = latest.app.channelData && typeof latest.app.channelData === 'object'
-    ? latest.app.channelData as Record<string, unknown>
+  if (row.app.status !== 'SUCCESS') return { success: false, message: '请先等待拉卡拉入网审核通过' }
+  if (row.app.lakalaMerchantId) return { success: true, message: '收款商户已关联门店' }
+  const channelData = row.app.channelData && typeof row.app.channelData === 'object'
+    ? row.app.channelData as Record<string, unknown>
     : {}
-  if (!certificationSnapshotCompleted(channelData.wechatCertification)
-    || !certificationSnapshotCompleted(channelData.alipayCertification)) {
-    return { success: false, message: '微信、支付宝外部认证尚未全部完成，请稍后重试' }
-  }
+  const terminalNumber = terminalNo(row.app.terminalData)
+  const missing = [
+    row.app.merCupNo?.startsWith('82') ? null : '银联商户号',
+    terminalNumber ? null : '终端号',
+    channelEntries(channelData, 'wechat').length ? null : '微信子商户号',
+    channelEntries(channelData, 'alipay').length ? null : '支付宝子商户号',
+  ].filter((item): item is string => Boolean(item))
+  if (missing.length) return { success: false, message: `请先取得：${missing.join('、')}` }
 
   const merchantId = await db.transaction(async (tx) => {
-    const claimedAt = nextUpdatedAt(latest.app.updatedAt)
+    const claimedAt = nextUpdatedAt(row.app.updatedAt)
     const claimed = await tx.update(lakalaOnboardingApplications).set({ updatedAt: claimedAt })
       .where(and(
-        lockCondition(applicationId, latest.app.updatedAt),
+        lockCondition(applicationId, row.app.updatedAt),
         applicationScopeCondition(session),
         isNull(lakalaOnboardingApplications.lakalaMerchantId),
       ))
@@ -2041,13 +2175,19 @@ async function confirmOnboardingExternalCertificationInternal(session: AuthSessi
     const linkedId = await bindApprovedMerchantInTransaction(
       tx,
       session,
-      latest.app,
-      latest.app.merCupNo!,
-      terminalNo(latest.app.terminalData) ?? undefined,
+      row.app,
+      row.app.merCupNo!,
+      terminalNumber ?? undefined,
+      false,
     )
     const finalizedAt = nextUpdatedAt(claimedAt)
     const finalized = await tx.update(lakalaOnboardingApplications).set({
       lakalaMerchantId: linkedId,
+      channelData: {
+        ...channelData,
+        externalCertificationConfirmedAt: new Date().toISOString(),
+        externalCertificationConfirmedBy: session.name || session.phone || session.employeeId,
+      },
       lastErrorCode: null,
       lastErrorMessage: null,
       updatedAt: finalizedAt,
@@ -2059,7 +2199,7 @@ async function confirmOnboardingExternalCertificationInternal(session: AuthSessi
     return linkedId
   })
   await logOperation(session, 'merchant.onboarding.certification.confirm', 'lakala_onboarding_application', applicationId, {
-    applicationNo: latest.app.applicationNo,
+    applicationNo: row.app.applicationNo,
     collectionMerchantId: merchantId,
     collectionMerchantEnabled: false,
   })
