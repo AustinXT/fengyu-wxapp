@@ -2876,6 +2876,25 @@ describe('order.qrcode', () => {
     expect(ctx.result.actualPayable).toBe(150)
   })
 
+  test('普通转换单录入部分实付后，二维码只展示被冻结的首次收款金额', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-QR-CONV-PARTIAL' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-QR-CONV-PARTIAL', status: '待支付', sale_order_type: '转换单',
+        client_phone: '138', customer_name: '赵六', payment_method: '微信',
+        paid_at: null, store_id: 'store-001', opened_by: 'emp-001',
+        total_amount: '2000', prepaid_card_amount: '0', payable_amount: '2000',
+        first_payment_amount: '500', is_experience_conversion: false,
+      }])
+      .mockResolvedValueOnce([])
+
+    await orderRoutes.qrcode(ctx)
+
+    expect(ctx.result.actualPayable).toBe(500)
+    expect(ctx.result.isExperienceConversion).toBe(false)
+  })
+
   test('充值卡单 payable_amount 缺失时回退 total_amount，不静默显示 ¥0', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-QR-RECHARGE-FALLBACK' })
 
@@ -4376,6 +4395,83 @@ describe('order.createConversion', () => {
     }))
     return calls
   }
+
+  test('普通转换支持部分实付并将首次收款金额冻结到订单', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'cu-001',
+      convertOutSaleItemIds: ['item-card-1'],
+      convertInItems: [{ skuId: 'sku-new', quantity: 1 }],
+      paymentMethod: '线下',
+      receivedAmount: 50,
+    })
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'cu-001', phone: '138', name: '张三', customer_type: '会员客', bound_store_id: 'store-001',
+    }])
+    const calls = mockPositiveDifferenceConversion(null)
+
+    await orderRoutes.createConversion(ctx)
+
+    expect(ctx.result).toMatchObject({
+      status: '待支付', priceDiff: 200, receivedAmount: 50, remainingAmount: 200,
+    })
+    const orderInsert = calls.find(({ sql }) => sql.includes('INSERT INTO sale_orders'))
+    expect(orderInsert.params[9]).toBe('200.00')
+    expect(orderInsert.params[10]).toBe('200.00')
+    expect(orderInsert.params[12]).toBe('0.00')
+    expect(orderInsert.params[21]).toBe('50.00')
+    expect(orderInsert.params[22]).toBe(false)
+  })
+
+  test('体验转换按旧卡价值强制定价，不补不退并直接结清', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'cu-001',
+      convertOutSaleItemIds: ['item-card-1'],
+      convertInItems: [{ skuId: 'sku-new', quantity: 1 }],
+      paymentMethod: '线下',
+      isExperienceConversion: true,
+    })
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'cu-001', phone: '138', name: '张三', customer_type: '会员客', bound_store_id: 'store-001',
+    }])
+    const calls = mockPositiveDifferenceConversion(null)
+
+    await orderRoutes.createConversion(ctx)
+
+    expect(ctx.result).toMatchObject({
+      status: '已支付', totalOut: 100, totalIn: 100, priceDiff: 0,
+      prepaidCardCredit: 0, receivedAmount: 0, remainingAmount: 0,
+      isExperienceConversion: true,
+    })
+    const orderInsert = calls.find(({ sql }) => sql.includes('INSERT INTO sale_orders'))
+    expect(orderInsert.params.slice(9, 14)).toEqual(['0.00', '0.00', '0.00', '0.00', '无'])
+    expect(orderInsert.params[21]).toBeNull()
+    expect(orderInsert.params[22]).toBe(true)
+    const inItemInsert = calls.find(({ sql }) => sql.includes('INSERT INTO sale_items') && sql.includes("'转入'"))
+    expect(inItemInsert.params[10]).toBe(100)
+    expect(inItemInsert.params[11]).toBe(100)
+    expect(calls.some(({ sql }) => sql.includes('INSERT INTO prepaid_cards'))).toBe(false)
+    expect(calls.some(({ sql }) => sql.includes('INSERT INTO sale_order_payments'))).toBe(false)
+  })
+
+  test('体验转换拒绝优惠券、储值卡抵扣和实付金额', async () => {
+    for (const forbidden of [
+      { couponId: 'coupon-1' },
+      { prepaidCardAmount: 1 },
+      { receivedAmount: 1 },
+    ]) {
+      const ctx = createManagerCtx({
+        clientUserId: 'cu-001',
+        convertOutSaleItemIds: ['item-card-1'],
+        convertInItems: [{ skuId: 'sku-new', quantity: 1 }],
+        paymentMethod: '线下',
+        isExperienceConversion: true,
+        ...forbidden,
+      })
+      await expect(orderRoutes.createConversion(ctx))
+        .rejects.toThrow(/EXPERIENCE_CONVERSION_PAYMENT_FORBIDDEN/)
+    }
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
 
   test('转换单转入疗程卡可作为下一张转换单的折抵权益', async () => {
     const ctx = createManagerCtx({

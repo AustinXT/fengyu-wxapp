@@ -46,6 +46,7 @@ interface RawOrder {
   offline_confirmed_by_name?: string;
   allocatable?: boolean;
   is_activity?: boolean;
+  is_experience_conversion?: boolean;
   remark?: string;
 }
 
@@ -192,6 +193,7 @@ interface DisplayOrder {
   allocationStatus: string;
   isLegacy: boolean;
   isActivity: boolean;
+  isExperienceConversion: boolean;
   remark: string;
   /** 原始逐项列表；退款、回款继续使用它，不能被展示聚合结果替代。 */
   items: DisplayOrderItem[];
@@ -447,9 +449,10 @@ Page({
       // 「发起回款」仅在已首次支付（部分支付）且仍有欠款时显示；
       // 待支付走「确认线下收款」，已结清/终态均不显示回款入口
       const orderType = o.sale_order_type || '';
-      const hasDebt = orderType === '销售单'
+      const hasDebt = (orderType === '销售单' || orderType === '转换单')
         && o.status === '部分支付'
-        && remainingPayable > 0;
+        && remainingPayable > 0
+        && !o.is_experience_conversion;
 
       this.setData({
         order: {
@@ -483,6 +486,7 @@ Page({
           allocationStatus: o.allocation_status || '',
           isLegacy: o.legacy_source === 'workfine',
           isActivity: !!o.is_activity,
+          isExperienceConversion: !!o.is_experience_conversion,
           remark: o.remark || '',
           items,
           displayItems,
@@ -735,9 +739,11 @@ Page({
     const o = this.data.order;
     if (!o || !o.hasDebt) return;
     // 默认线下、每行实付 = 该行可回款额（操作员可改小或清零，不要求全额）
-    const lines = (o.items || [])
-      .filter((it) => Number(it.repayable) > 0)
-      .map((it) => ({ saleItemId: it.saleItemId, itemName: it.itemName, repayable: it.repayable, real: it.repayable }));
+    const lines = o.orderType === '转换单'
+      ? [{ saleItemId: '__ORDER__', itemName: '转换单剩余欠款', repayable: o.remainingPayable, real: o.remainingPayable }]
+      : (o.items || [])
+        .filter((it) => Number(it.repayable) > 0)
+        .map((it) => ({ saleItemId: it.saleItemId, itemName: it.itemName, repayable: it.repayable, real: it.repayable }));
     this.setData({ showRepayPopup: true, repayLines: lines, repayMethod: '线下', repayNote: '', repayUseCard: false, repayCardAmountInput: '0.00', repayCardMax: '0.00', repayIdempKey: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}` });
     this._recalcRepayTotals(lines);
   },
@@ -852,7 +858,9 @@ Page({
           await callStaffApi('order.createRepayment', {
             refSaleOrderId: order.saleOrderId,
             paymentMethod: '储值卡',
-            items: cardItems,
+            ...(order.orderType === '转换单'
+              ? { prepaidCardAmount: cardDeduct }
+              : { items: cardItems }),
             note: repayNote || undefined,
             idempotencyKey: repayIdempKey || undefined,
           });
@@ -889,7 +897,9 @@ Page({
       await callStaffApi('order.createRepayment', {
         refSaleOrderId: order.saleOrderId,
         paymentMethod: '线下',
-        items,
+        ...(order.orderType === '转换单'
+          ? { repayAmount: r2(realTotal - cardDeduct), prepaidCardAmount: cardDeduct }
+          : { items }),
         note: repayNote || undefined,
         idempotencyKey: repayIdempKey || undefined,
       });

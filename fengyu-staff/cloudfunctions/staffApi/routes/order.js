@@ -80,6 +80,30 @@ function splitMoneyByCount(value, count) {
     (eachCents + (index === count - 1 ? totalCents - eachCents * count : 0)) / 100)
 }
 
+/** 按服务端正常成交价权重，把体验转换转入总额精确分摊到旧卡划卡价值。 */
+function allocateExperienceConversionAmounts(items, targetAmount) {
+  const targetCents = Math.round(Number(targetAmount) * 100)
+  const weights = items.map((item) => Math.max(0, Math.round(Number(item.saleAmount || item.amount || 0) * 100)))
+  const weightTotal = weights.reduce((sum, value) => sum + value, 0)
+  if (targetCents < 0 || weightTotal <= 0) {
+    throw new Error('INVALID_STATE: EXPERIENCE_CONVERSION_PRICE_INVALID: 体验转换项目正常价格必须大于0')
+  }
+  let allocatedCents = 0
+  items.forEach((item, index) => {
+    const cents = index === items.length - 1
+      ? targetCents - allocatedCents
+      : Math.floor(targetCents * weights[index] / weightTotal)
+    allocatedCents += cents
+    const amount = cents / 100
+    const denom = item.sessionCount != null && Number(item.sessionCount) > 0
+      ? Number(item.sessionCount)
+      : Number(item.quantity) || 1
+    item.amount = amount
+    item.saleAmount = amount
+    item.unitRealPrice = roundMoney(amount / denom)
+  })
+}
+
 function isConvertibleEntitlementRow(row) {
   return row.item_direction === '购买'
     || (row.sale_order_type === '转换单' && row.item_direction === '转入')
@@ -1358,7 +1382,8 @@ async function qrcode(ctx) {
     `SELECT o.sale_order_id, o.status, o.sale_order_type, o.client_phone, o.customer_name,
             o.payment_method, o.paid_at, o.store_id, o.opened_by,
             o.total_amount, o.prepaid_card_amount, o.payable_amount,
-            o.received, o.refunded_amount
+            o.received, o.refunded_amount, o.first_payment_amount,
+            o.is_experience_conversion
      FROM sale_orders o
      WHERE o.sale_order_id = $1`,
     [saleOrderId]
@@ -1408,7 +1433,8 @@ async function qrcode(ctx) {
     const payable = Number(order.payable_amount || 0) > 0
       ? Number(order.payable_amount)
       : Math.max(0, Math.round((totalAmount - prepaidCardAmount) * 100) / 100)
-    actualPayable = Math.max(0, Math.round(payable * 100) / 100)
+    const firstPayment = Number(order.first_payment_amount || 0)
+    actualPayable = Math.max(0, Math.round((firstPayment > 0 ? firstPayment : payable) * 100) / 100)
   } else {
     // 待支付（首付）= Σ各商品明细实付 − 储值卡抵扣
     // 两步式开单 sale_items.received=0（开单不记账），故用 pending_received（逐行实付草稿）作为「商品实付」口径
@@ -1467,6 +1493,7 @@ async function qrcode(ctx) {
     openedBy: order.opened_by,
     totalAmount,
     actualPayable,
+    isExperienceConversion: order.is_experience_conversion === true,
     items: items.map(i => ({
       saleItemId: i.sale_item_id,
       productName: i.product_name,
@@ -1542,10 +1569,15 @@ async function confirmOffline(ctx) {
   const pendingRemaining = pendingTotal > 0
     ? Math.max(0, Math.min(remainingPayable, Math.round((pendingTotal - orderPrepaid - orderReceived) * 100) / 100))
     : remainingPayable
+  const conversionFirstPayment = order.sale_order_type === '转换单'
+    ? Number(order.first_payment_amount || 0)
+    : 0
 
   let confirmAmount
   if (inputConfirmAmount === undefined || inputConfirmAmount === null) {
-    confirmAmount = pendingRemaining
+    confirmAmount = conversionFirstPayment > 0
+      ? Math.min(remainingPayable, conversionFirstPayment)
+      : pendingRemaining
   } else {
     confirmAmount = Number(inputConfirmAmount)
     if (!Number.isFinite(confirmAmount) || confirmAmount < 0) {
@@ -1681,6 +1713,7 @@ async function confirmOffline(ctx) {
     const updateResult = await client.query(
       `UPDATE sale_orders
        SET status = $1, received = $2, prepaid_card_amount = $3, paid_at = $4, updated_at = $5,
+           first_payment_amount = NULL,
            offline_confirmed_by = $6, offline_confirmed_at = $5
        WHERE sale_order_id = $7 AND status = $8`,
       [targetStatus, newReceived, newPrepaid, paidAtValue, now, ctx.auth.staffWfId, saleOrderId, order.status]
@@ -3018,6 +3051,9 @@ async function createRepayment(ctx) {
     if (locked.legacy_source === 'workfine') {
       throw new Error('INVALID_STATE: 历史订单不支持回款')
     }
+    if (locked.is_experience_conversion === true) {
+      throw new Error('INVALID_STATE: EXPERIENCE_CONVERSION_REPAYMENT_FORBIDDEN: 体验转换不允许补款')
+    }
 
     if (!['部分支付', '待支付'].includes(locked.status)) {
       throw new Error(`INVALID_STATE: 订单当前状态"${locked.status}"不允许回款`)
@@ -3304,8 +3340,11 @@ async function createConversion(ctx) {
     remark,
     prepaidCardAmount: inputPrepaidCardAmount,
     isActivity,
+    isExperienceConversion: inputIsExperienceConversion,
+    receivedAmount: inputReceivedAmount,
     couponId: inputCouponId,
   } = ctx.event.payload || {}
+  const isExperienceConversion = inputIsExperienceConversion === true
   const storeId = ctx.auth.effectiveStoreId
   // market_name 在 INSERT 时以门店反查 org 树市场名为权威（子查询），此处仅备开单人快照作 COALESCE 兜底。
   const marketName = ctx.auth.marketName || ''
@@ -3319,6 +3358,17 @@ async function createConversion(ctx) {
   }
   if (Array.isArray(inputCouponId)) {
     throw new Error('INVALID_PARAMS: MULTIPLE_COUPON_NOT_SUPPORTED: 一张订单仅支持一张优惠券')
+  }
+  if (isExperienceConversion) {
+    const requestedCard = Number(inputPrepaidCardAmount || 0)
+    const requestedReceived = Number(inputReceivedAmount || 0)
+    if (inputCouponId
+        || !Number.isFinite(requestedCard)
+        || !Number.isFinite(requestedReceived)
+        || requestedCard !== 0
+        || requestedReceived !== 0) {
+      throw new Error('INVALID_STATE: EXPERIENCE_CONVERSION_PAYMENT_FORBIDDEN: 体验转换不允许优惠券、储值卡抵扣或收款')
+    }
   }
   if (!paymentMethod || !['微信', '支付宝', '线下'].includes(paymentMethod)) {
     throw new Error('INVALID_PARAMS: 支付方式仅支持 微信/支付宝/线下')
@@ -3492,7 +3542,9 @@ async function createConversion(ctx) {
       const { listUnit, realUnit: applicableUnit } = resolveUnitPrice(sku, buyerIsMember)
       let amount = Math.round(applicableUnit * qty * 100) / 100
       // 店长特价手填金额（manualSaleAmountOverride 标记，用于梯度累加过滤）
-      const manualSaleAmountOverride = sku.is_manager_special === true && (req.saleAmount != null || req.unitRealPrice != null)
+      const manualSaleAmountOverride = !isExperienceConversion
+        && sku.is_manager_special === true
+        && (req.saleAmount != null || req.unitRealPrice != null)
       if (manualSaleAmountOverride) {
         const inputAmount = req.saleAmount != null
           ? Number(req.saleAmount)
@@ -3571,6 +3623,10 @@ async function createConversion(ctx) {
       item.amount = item.saleAmount
     }
 
+    if (isExperienceConversion) {
+      allocateExperienceConversionAmounts(inItems, totalOut)
+    }
+
     // 重新计算 totalIn（梯度累加可能改变了 amount / saleAmount）
     let totalIn = 0
     for (const item of inItems) {
@@ -3587,7 +3643,7 @@ async function createConversion(ctx) {
     // 先用券前转入额校验券范围/门槛，随后将实际抵扣额按 rawPriceDiff 封顶并分摊回转入行。
     const rawPriceDiff = Math.round((totalIn - totalOut) * 100) / 100
     let couponDiscount = 0
-    if (inputCouponId) {
+    if (inputCouponId && !isExperienceConversion) {
       if (rawPriceDiff <= 0) {
         throw new Error('INVALID_STATE: CONVERSION_COUPON_NO_POSITIVE_DIFFERENCE: 转换单无正补差额，不能使用优惠券')
       }
@@ -3701,13 +3757,13 @@ async function createConversion(ctx) {
       (sum, item) => sum + (Number(item.saleAmount) || Number(item.amount) || 0),
       0,
     ) * 100) / 100
-    const priceDiff = Math.round((totalIn - totalOut) * 100) / 100
+    const priceDiff = isExperienceConversion ? 0 : Math.round((totalIn - totalOut) * 100) / 100
     const orderTotal = Math.max(0, priceDiff)
 
     // 储值卡抵扣（仅补差额 priceDiff > 0 时有效）：显式金额必须在 [0, min(补差额, 余额)] 内。
     // payable = priceDiff - card；全额抵扣（payable==0 且 card>0）则事务内即时扣卡 + 结清。
     let card = 0
-    if (inputPrepaidCardAmount != null) {
+    if (inputPrepaidCardAmount != null && !isExperienceConversion) {
       const v = Number(inputPrepaidCardAmount)
       if (!Number.isFinite(v) || v < 0) throw new Error('INVALID_PARAMS: 储值卡抵扣金额必须为非负数')
       card = Math.round(v * 100) / 100
@@ -3727,13 +3783,24 @@ async function createConversion(ctx) {
       }
     }
     const payable = Math.max(0, Math.round((orderTotal - card) * 100) / 100)
+    let firstPaymentAmount = null
+    let initialPaymentAmount = 0
+    if (!isExperienceConversion && payable > 0) {
+      const requested = inputReceivedAmount == null ? payable : Number(inputReceivedAmount)
+      if (!Number.isFinite(requested) || requested < 0 || requested > payable + 0.001) {
+        throw new Error('INVALID_PARAMS: 实付金额必须在0和应付金额之间')
+      }
+      const rounded = roundMoney(requested)
+      initialPaymentAmount = rounded
+      if (rounded > 0 && rounded < payable) firstPaymentAmount = rounded
+    }
     const isFullCardCoverage = card > 0 && payable === 0
     // 差额>0 且仍需付现金：'待支付'（线下走 confirmOffline，线上走 payNotify）；
     // 差额>0 全额抵扣 或 差额<=0：'已支付'
     const orderStatus = priceDiff > 0 ? (payable > 0 ? '待支付' : '已支付') : '已支付'
     const orderPaid = priceDiff <= 0 || isFullCardCoverage
     // 全额抵扣 payment_method 落 '无'（现金通道无需使用，与 order.create 对齐）
-    const effectivePaymentMethod = isFullCardCoverage ? '无' : paymentMethod
+    const effectivePaymentMethod = isExperienceConversion || isFullCardCoverage ? '无' : paymentMethod
 
     // 3. document_type 快照：仅按下单时会员身份判（售前=非会员客，售后=会员客）
     const documentType = client.customer_type === '会员客' ? '售后' : '售前'
@@ -3747,8 +3814,9 @@ async function createConversion(ctx) {
         total_amount, payable_amount, prepaid_card_amount, received,
         payment_method, opened_by,
         preferred_employee_id, coupon_id, coupon_discount, allocation_status, remark,
-        paid_at, created_at, updated_at, is_activity
-      ) VALUES ($1, $2, '转换单', $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, '待分配', $19, $20, $6, $6, $21)`,
+        paid_at, created_at, updated_at, is_activity,
+        first_payment_amount, is_experience_conversion
+      ) VALUES ($1, $2, '转换单', $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, '待分配', $19, $20, $6, $6, $21, $22, $23)`,
       [
         convOrderId, orderStatus, documentType, marketName, storeId, now,
         clientUserId, client.phone || null, client.name || null,
@@ -3760,6 +3828,8 @@ async function createConversion(ctx) {
         remark || null,
         orderPaid ? now : null,
         isActivity === true,
+        firstPaymentAmount != null ? firstPaymentAmount.toFixed(2) : null,
+        isExperienceConversion,
       ]
     )
 
@@ -3957,13 +4027,18 @@ async function createConversion(ctx) {
       couponId: inputCouponId || null,
       couponDiscount,
       prepaidCardAmount: card,
+      receivedAmount: initialPaymentAmount,
+      isExperienceConversion,
       orderStatus,
     })
 
-    return { totalIn, totalOut, priceDiff, orderStatus, couponDiscount, prepaidCardCredit, prepaidCardAmount: card }
+    return {
+      totalIn, totalOut, priceDiff, orderStatus, couponDiscount, prepaidCardCredit,
+      prepaidCardAmount: card, firstPaymentAmount, initialPaymentAmount, payable, isExperienceConversion,
+    }
   })
 
-  const convRemaining = Math.max(0, Math.round((result.priceDiff - result.prepaidCardAmount) * 100) / 100)
+  const convRemaining = Math.max(0, roundMoney(result.payable))
   ctx.result = {
     saleOrderId: convOrderId,
     status: result.orderStatus,
@@ -3973,6 +4048,9 @@ async function createConversion(ctx) {
     couponDiscount: result.couponDiscount,
     prepaidCardCredit: result.prepaidCardCredit,
     prepaidCardAmount: result.prepaidCardAmount,
+    isExperienceConversion: result.isExperienceConversion,
+    receivedAmount: result.initialPaymentAmount,
+    remainingAmount: result.payable,
     message:
       result.priceDiff > 0
         ? (convRemaining > 0

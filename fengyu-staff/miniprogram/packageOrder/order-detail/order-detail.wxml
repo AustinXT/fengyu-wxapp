@@ -14,6 +14,7 @@
     <view class="status-banner status-banner--{{statusClass}}">
       <text class="status-text">{{order.status}}</text>
       <text wx:if="{{order.isActivity}}" class="activity-badge">活动</text>
+      <text wx:if="{{order.isExperienceConversion}}" class="activity-badge">体验转换</text>
       <text wx:if="{{refundBadge}}" class="refund-badge">{{refundBadge}}</text>
       <text class="order-no-top">{{order.saleOrderId}}</text>
     </view>
@@ -26,6 +27,7 @@
       <van-cell wx:if="{{order.marketName}}" title="所属市场" value="{{order.marketName}}" />
       <van-cell title="订单来源" value="{{order.orderSourceLabel}}" />
       <van-cell title="下单方式" value="{{order.orderTypeLabel}}" />
+      <van-cell wx:if="{{order.isExperienceConversion}}" title="转换模式" value="体验转换（系统锁价，不补不退）" />
       <van-cell wx:if="{{order.documentType}}" title="单据类型" value="{{order.documentType}}" />
       <van-cell wx:if="{{order.refOrderId}}" title="关联原单" value="{{order.refOrderId}}" />
       <van-cell wx:if="{{order.preferredStaffName}}" title="指定美容师" value="{{order.preferredStaffName}}" />
@@ -262,10 +264,10 @@
     closeable
   >
     <view class="repay-popup">
-      <view class="repay-title">按子项回款</view>
+      <view class="repay-title">{{order.orderType === '转换单' ? '转换单回款' : '按子项回款'}}</view>
       <view class="repay-debt">
         欠款金额：<text class="repay-debt-hot">¥{{order.remainingPayable}}</text>
-        <text class="repay-debt-tip">（可只对部分子项回款，不要求一次性付清）</text>
+        <text class="repay-debt-tip">{{order.orderType === '转换单' ? '（按订单级欠款回款）' : '（可只对部分子项回款，不要求一次性付清）'}}</text>
       </view>
 
       <view class="repay-section-label">支付方式</view>
