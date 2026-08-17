@@ -133,7 +133,7 @@ function makeOrder(overrides = {}) {
 }
 
 /**
- * PR-4: 默认 payments 层 mock —— 自动补齐 payNotify 新增的 3 个查询
+ * PR-4: 默认 payments 层 mock —— 自动补齐 payNotify payments 查询
  *   1. SUM(amount) FROM sale_order_payments → 已到账金额，默认 0
  *   2. SELECT 1 FROM sale_order_payments WHERE change_type='首次支付' → 默认空（触发首次支付）
  *   3. INSERT INTO sale_order_payments ... RETURNING id → 默认返回 1 行（非重复回调）
@@ -141,7 +141,7 @@ function makeOrder(overrides = {}) {
  *      避免 index.js L760-L764 因 rowCount=0 短路到「订单状态已变更（幂等）」早退）
  * 外层若传入自定义 routes，仍可在这些之前注册更具体 matcher 覆盖。
  */
-function defaultPaymentsRoutes() {
+function defaultPaymentsRoutes({ cashPaidSum = '300', receivedSum = cashPaidSum } = {}) {
   return [
     {
       match: /SELECT COALESCE\(SUM\(amount\), 0\) AS paid_sum/,
@@ -150,6 +150,10 @@ function defaultPaymentsRoutes() {
     {
       match: /FROM sale_order_payments[\s\S]*change_type = '首次支付'/,
       result: { rows: [], rowCount: 0 },
+    },
+    {
+      match: /AS cash_paid_sum[\s\S]*AS received_sum/,
+      result: { rows: [{ cash_paid_sum: cashPaidSum, received_sum: receivedSum }], rowCount: 1 },
     },
     {
       match: /INSERT INTO sale_order_payments/,
@@ -169,6 +173,13 @@ function defaultPaymentsRoutes() {
  */
 function setupClientQueryRouter(routes) {
   mockClientQuery.mockImplementation(async (sql /* , params */) => {
+    if (/FROM sale_orders WHERE sale_order_id = \$1 FOR UPDATE/.test(sql)) {
+      const outerResult = mockPoolQuery.mock.results[0] && await mockPoolQuery.mock.results[0].value
+      return {
+        rows: outerResult && outerResult.rows ? outerResult.rows : [],
+        rowCount: outerResult && outerResult.rows ? outerResult.rows.length : 0,
+      }
+    }
     for (const route of routes) {
       if (typeof route.match === 'string' ? sql.includes(route.match) : route.match.test(sql)) {
         if (typeof route.result === 'function') {
@@ -303,7 +314,7 @@ describe('payNotify index.js', () => {
     })
 
     setupClientQueryRouter([
-      ...defaultPaymentsRoutes(),
+      ...defaultPaymentsRoutes({ cashPaidSum: '200', receivedSum: '300' }),
       { match: "si.is_recharge_card = true", result: { rows: [], rowCount: 0 } },
       {
         match: "type = '扣款'",
@@ -340,6 +351,124 @@ describe('payNotify index.js', () => {
     // 事务应 COMMIT
     expect(calls.map((c) => c[0])).toContain('COMMIT')
     expect(calls.map((c) => c[0])).not.toContain('ROLLBACK')
+  })
+
+  test('部分现金到账也先兑现本场次 pending 储值卡，再以现金+卡重算 received/部分支付状态', async () => {
+    const { main } = loadFreshIndex()
+    mockPoolQuery.mockResolvedValueOnce({
+      rows: [makeOrder({
+        status: '待支付',
+        sale_order_type: '转换单',
+        total_amount: '2000.00',
+        payable_amount: '1500.00',
+        pending_prepaid_card_amount: '500.00',
+      })],
+    })
+    setupClientQueryRouter([
+      ...defaultPaymentsRoutes({ cashPaidSum: '500', receivedSum: '1000' }),
+      { match: /external_ref = \$1[\s\S]*type = '扣款'/, result: { rows: [], rowCount: 0 } },
+      {
+        match: 'FROM prepaid_cards WHERE user_id',
+        result: { rows: [{ card_id: 'FY-CARD-PARTIAL', balance: '1000.00' }], rowCount: 1 },
+      },
+    ])
+
+    const res = await main({
+      orderNo: 'FY-XSD-WX-PARTIAL-CARD',
+      transactionId: 'wx-txn-partial-card',
+      payAmount: 500,
+    })
+    expect(res.code).toBe('SUCCESS')
+    expect(res.message).toMatch(/部分支付/)
+
+    const calls = mockClientQuery.mock.calls
+    const statusUpdate = calls.find(([sql]) => /UPDATE sale_orders[\s\S]*SET status = \$1::order_status/.test(sql))
+    expect(statusUpdate[1][0]).toBe('部分支付')
+    expect(Number(statusUpdate[1][1])).toBe(1000)
+    expect(calls.some(([sql]) => /UPDATE prepaid_cards SET balance = balance - \$1/.test(sql))).toBe(true)
+    expect(calls.some(([sql]) => /INSERT INTO card_transactions/.test(sql))).toBe(true)
+    const cardDeductAt = calls.findIndex(([sql]) => /UPDATE prepaid_cards SET balance = balance - \$1/.test(sql))
+    const commitAt = calls.findIndex(([sql]) => sql === 'COMMIT')
+    expect(cardDeductAt).toBeGreaterThan(-1)
+    expect(commitAt).toBeGreaterThan(cardDeductAt)
+  })
+
+  test('连续两场现金回调：第二场权威聚合保留首场已结算卡款，received 从 1000 增至 1500', async () => {
+    const { main } = loadFreshIndex()
+    const order = makeOrder({
+      status: '待支付',
+      sale_order_type: '转换单',
+      total_amount: '2000.00',
+      payable_amount: '1500.00',
+      pending_prepaid_card_amount: '500.00',
+    })
+    let cashPaid = 0
+    let cardPaid = 0
+    let paymentId = 10
+    const receivedUpdates = []
+
+    mockPoolQuery.mockImplementation(async (sql) => {
+      if (/FROM sale_orders WHERE sale_order_id = \$1/.test(sql)) {
+        return { rows: [{ ...order }], rowCount: 1 }
+      }
+      return { rows: [], rowCount: 0 }
+    })
+    mockClientQuery.mockImplementation(async (sql, params = []) => {
+      if (/FROM sale_orders WHERE sale_order_id = \$1 FOR UPDATE/.test(sql)) {
+        return { rows: [{ ...order }], rowCount: 1 }
+      }
+      if (/SELECT COALESCE\(SUM\(amount\), 0\) AS paid_sum/.test(sql)) {
+        return { rows: [{ paid_sum: String(cashPaid) }], rowCount: 1 }
+      }
+      if (/change_type = '首次支付'/.test(sql)) {
+        return { rows: cashPaid > 0 ? [{ exists: 1 }] : [], rowCount: cashPaid > 0 ? 1 : 0 }
+      }
+      if (/INSERT INTO sale_order_payments[\s\S]*ON CONFLICT \(sale_order_id, payment_method, external_txn_id\)/.test(sql)) {
+        cashPaid += Number(params[2])
+        return { rows: [{ id: paymentId++ }], rowCount: 1 }
+      }
+      if (/change_type = '储值卡抵扣' AND status = '待支付'/.test(sql)) {
+        return { rows: [], rowCount: 0 }
+      }
+      if (/external_ref = \$1 AND type = '扣款'/.test(sql)) {
+        return { rows: [], rowCount: 0 }
+      }
+      if (/FROM prepaid_cards WHERE user_id = \$1 FOR UPDATE/.test(sql)) {
+        return { rows: [{ card_id: 'FY-CARD-TWO-CALLBACKS', balance: '1000.00' }], rowCount: 1 }
+      }
+      if (/INSERT INTO sale_order_payments[\s\S]*'储值卡抵扣'/.test(sql)) {
+        cardPaid += Number(params[1])
+        return { rows: [], rowCount: 1 }
+      }
+      if (/AS cash_paid_sum[\s\S]*AS received_sum/.test(sql)) {
+        return {
+          rows: [{ cash_paid_sum: String(cashPaid), received_sum: String(cashPaid + cardPaid) }],
+          rowCount: 1,
+        }
+      }
+      if (/UPDATE sale_orders[\s\S]*SET status = \$1::order_status/.test(sql)) {
+        order.status = params[0]
+        order.received = String(params[1])
+        order.first_payment_amount = null
+        receivedUpdates.push(Number(params[1]))
+        return { rows: [], rowCount: 1 }
+      }
+      return { rows: [], rowCount: 1 }
+    })
+
+    const first = await main({
+      orderNo: 'FY-XSD-WX-TWO-CALLBACKS', transactionId: 'wx-txn-session-1', payAmount: 500,
+    })
+    order.pending_prepaid_card_amount = '0'
+    const second = await main({
+      orderNo: 'FY-XSD-WX-TWO-CALLBACKS', transactionId: 'wx-txn-session-2', payAmount: 500,
+    })
+
+    expect(first.message).toMatch(/部分支付/)
+    expect(second.message).toMatch(/部分支付/)
+    expect(receivedUpdates).toEqual([1000, 1500])
+    expect(cardPaid).toBe(500)
+    expect(cashPaid).toBe(1000)
   })
 
   test('3. 全额抵扣订单（理论不走 payNotify）若收到 → 基于订单状态幂等短路', async () => {
@@ -407,7 +536,7 @@ describe('payNotify index.js', () => {
     })
 
     setupClientQueryRouter([
-      ...defaultPaymentsRoutes(),
+      ...defaultPaymentsRoutes({ cashPaidSum: '500', receivedSum: '500' }),
       { match: "si.is_recharge_card = true", result: { rows: [], rowCount: 0 } },
       { match: "type = '扣款'", result: { rows: [], rowCount: 0 } },
       // balance 不足
@@ -447,7 +576,7 @@ describe('payNotify index.js', () => {
     const upsertSpy = vi.fn(async () => ({ rows: [{ card_id: 'FY-CARD-NEW' }], rowCount: 1 }))
 
     setupClientQueryRouter([
-      ...defaultPaymentsRoutes(),
+      ...defaultPaymentsRoutes({ cashPaidSum: '500', receivedSum: '500' }),
       // 充值幂等检查：ref_order_id + type='充值'
       {
         match: /SELECT 1 FROM card_transactions WHERE ref_order_id = \$1 AND type = '充值' LIMIT 1/,
@@ -552,6 +681,10 @@ describe('payNotify index.js', () => {
         match: /FROM sale_order_payments[\s\S]*change_type = '首次支付'/,
         result: { rows: [], rowCount: 0 },
       },
+      {
+        match: /AS cash_paid_sum[\s\S]*AS received_sum/,
+        result: { rows: [{ cash_paid_sum: '300', received_sum: '300' }], rowCount: 1 },
+      },
       { match: /INSERT INTO sale_order_payments/, result: insertSpy },
       // CAS 守卫放行（rowCount=1），避免短路到「订单状态已变更（幂等）」早退
       {
@@ -602,6 +735,10 @@ describe('payNotify index.js', () => {
       {
         match: /FROM sale_order_payments[\s\S]*change_type = '首次支付'/,
         result: { rows: [], rowCount: 0 },
+      },
+      {
+        match: /AS cash_paid_sum[\s\S]*AS received_sum/,
+        result: { rows: [{ cash_paid_sum: '100', received_sum: '100' }], rowCount: 1 },
       },
       { match: /INSERT INTO sale_order_payments/, result: { rows: [{ id: 10 }], rowCount: 1 } },
       // CAS 守卫放行（rowCount=1），避免短路到「订单状态已变更（幂等）」早退
@@ -691,6 +828,10 @@ describe('payNotify index.js', () => {
       {
         match: /FROM sale_order_payments[\s\S]*change_type = '首次支付'/,
         result: { rows: [{ '?column?': 1 }], rowCount: 1 },
+      },
+      {
+        match: /AS cash_paid_sum[\s\S]*AS received_sum/,
+        result: { rows: [{ cash_paid_sum: '300', received_sum: '300' }], rowCount: 1 },
       },
       { match: /INSERT INTO sale_order_payments/, result: { rows: [{ id: 99 }], rowCount: 1 } },
       { match: "si.is_recharge_card = true", result: { rows: [], rowCount: 0 } },

@@ -5667,6 +5667,7 @@ export const recordPayment = withPermission(
             refunded_amount = ${newRefunded.toFixed(2)}::numeric,
             prepaid_card_amount = ${newPrepaid.toFixed(2)}::numeric,
             pending_prepaid_card_amount = 0,
+            first_payment_amount = NULL,
             payable_amount = CASE
               WHEN sale_order_type IN ('销售单', '内部单', '转换单')
                 THEN GREATEST(total_amount - ${newPrepaid.toFixed(2)}::numeric, 0)
@@ -5815,7 +5816,123 @@ export const recordPayment = withPermission(
   },
 )
 
-// ========== 小程序码生成 ==========
+// ========== 在线回款金额冻结 + 小程序码生成 ==========
+
+/**
+ * admin 为转换单生成在线回款码前冻结本场次金额。
+ * first_payment_amount 同时作为顾客收银台的硬上限和轻量支付意图：同额重试复用，
+ * 不同金额必须等待旧意图完成或显式取消，不能覆盖仍可能在途的第三方支付。
+ */
+export const freezeConversionRepaymentAmount = withPermission(
+  'sale_order:record_payment',
+  async (
+    session,
+    input: { saleOrderId: string; amount: number },
+  ): Promise<
+    | { success: true; data: { amount: number; reused: boolean } }
+    | { success: false; error: { code: string; message: string } }
+  > => {
+    const saleOrderId = String(input.saleOrderId || '').trim()
+    const amountCents = Math.round(Number(input.amount) * 100)
+    if (!saleOrderId || !Number.isFinite(amountCents) || amountCents <= 0) {
+      return { success: false, error: { code: 'INVALID_PARAMS', message: '在线回款金额必须大于 0' } }
+    }
+
+    try {
+      const result = await db.transaction(async (tx) => {
+        const lockRes = await tx.execute(sql`
+          SELECT sale_order_id, sale_order_type, status, store_id, total_amount, received, refunded_amount,
+                 first_payment_amount, pending_prepaid_card_amount, lakala_out_order_no,
+                 legacy_source, is_experience_conversion
+          FROM sale_orders
+          WHERE sale_order_id = ${saleOrderId}
+          FOR UPDATE
+        `)
+        const locked = (lockRes as unknown as any[])[0]
+        if (!locked) throw new ApiError('NOT_FOUND', '订单不存在')
+        if (!isInScope(session, locked.store_id)) {
+          throw new ApiError('PERMISSION_DENIED', 'OUT_OF_SCOPE: 该订单不在你的可见门店范围内')
+        }
+        if (locked.sale_order_type !== '转换单') {
+          throw new ApiError('INVALID_STATE', 'ONLINE_REPAYMENT_TYPE_INVALID: 仅转换单支持冻结在线回款金额')
+        }
+        if (!['待支付', '部分支付'].includes(locked.status)) {
+          throw new ApiError('INVALID_STATE', `订单当前状态“${locked.status}”不允许回款`)
+        }
+        if (locked.legacy_source === 'workfine') {
+          throw new ApiError('INVALID_STATE', '历史订单不支持回款')
+        }
+        if (locked.is_experience_conversion === true) {
+          throw new ApiError('INVALID_STATE', 'EXPERIENCE_CONVERSION_REPAYMENT_FORBIDDEN: 体验转换不允许补款')
+        }
+        if (await hasPendingRefund(tx, saleOrderId)) {
+          throw new ApiError('INVALID_STATE', 'REFUND_IN_PROGRESS: 该订单退款审批中，暂不可回款')
+        }
+
+        const pendingCardCents = Math.round(Number(locked.pending_prepaid_card_amount || 0) * 100)
+        if (pendingCardCents > 0) {
+          throw new ApiError('CONFLICT', 'PAYMENT_INTENT_ACTIVE: 订单已有待结算储值卡支付意图，请完成或取消后重试')
+        }
+        const remainingCents = Math.round(
+          (
+            Number(locked.total_amount || 0) -
+            Number(locked.received || 0) +
+            Number(locked.refunded_amount || 0)
+          ) * 100,
+        )
+        if (amountCents > remainingCents) {
+          throw new ApiError('CONFLICT', `OVERPAY:${(remainingCents / 100).toFixed(2)}: 本次回款金额超过订单欠款`)
+        }
+
+        const activeAmount = locked.first_payment_amount == null
+          ? null
+          : Math.round(Number(locked.first_payment_amount) * 100)
+        if (activeAmount != null) {
+          if (activeAmount !== amountCents) {
+            throw new ApiError(
+              'CONFLICT',
+              `PAYMENT_INTENT_ACTIVE: 订单已有 ¥${(activeAmount / 100).toFixed(2)} 在线回款意图，不能覆盖为其他金额`,
+            )
+          }
+          return { amount: amountCents / 100, reused: true }
+        }
+
+        const updateRes = await tx.execute(sql`
+          UPDATE sale_orders
+          SET first_payment_amount = ${(amountCents / 100).toFixed(2)}::numeric,
+              lakala_out_order_no = NULL,
+              updated_at = NOW()
+          WHERE sale_order_id = ${saleOrderId}
+            AND status = ${locked.status}
+            AND received = ${Number(locked.received || 0).toFixed(2)}::numeric
+            AND refunded_amount = ${Number(locked.refunded_amount || 0).toFixed(2)}::numeric
+            AND first_payment_amount IS NULL
+        `)
+        if (rowsAffected(updateRes) !== 1) {
+          throw new ApiError('CONFLICT', 'CONCURRENT_CHANGED: 订单金额或状态已变化，请刷新后重试')
+        }
+        return { amount: amountCents / 100, reused: false }
+      })
+
+      if (!result.reused) {
+        await logOperation(session, 'order.freeze_online_repayment', 'sale_order', saleOrderId, {
+          amount: result.amount.toFixed(2),
+        })
+        revalidatePath('/orders')
+        revalidatePath(`/orders/${saleOrderId}`)
+      }
+      return { success: true, data: result }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      const parsed = parseErrorPrefix(message)
+      if (parsed) {
+        return { success: false, error: { code: parsed.prefix, message: parsed.displayMessage } }
+      }
+      console.error('[freezeConversionRepaymentAmount] unexpected error:', err)
+      return { success: false, error: { code: 'UNKNOWN', message: '冻结在线回款金额失败，请刷新后重试' } }
+    }
+  },
+)
 
 const WX_CLIENT_APPID = process.env.WX_CLIENT_APPID || 'wx811eb4ded3dfba3f'
 const WX_CLIENT_SECRET = process.env.WX_CLIENT_SECRET

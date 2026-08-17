@@ -2951,7 +2951,72 @@ describe('order.qrcode', () => {
 
     const update = txCalls.find(({ sql }) => sql.includes('SET first_payment_amount = $1'))
     expect(update.params).toEqual([500, 'FY-QR-CONV-REPAY', '部分支付'])
+    expect(update.sql).toContain('lakala_out_order_no = NULL')
+    expect(update.sql).toContain('first_payment_amount IS NULL')
     expect(ctx.result.actualPayable).toBe(500)
+  })
+
+  test('相同金额的在线回款意图幂等复用，不覆盖已创建的第三方支付单', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-QR-CONV-IDEMP', paymentAmount: 500 })
+    const txCalls = []
+    pg.transaction.mockImplementationOnce(async (cb) => cb({
+      query: vi.fn(async (sql, params) => {
+        txCalls.push({ sql, params })
+        if (sql.includes('FOR UPDATE')) {
+          return {
+            rows: [{
+              sale_order_id: 'FY-QR-CONV-IDEMP', store_id: 'store-001', sale_order_type: '转换单',
+              status: '部分支付', is_experience_conversion: false,
+              total_amount: '2000', received: '500', refunded_amount: '0', pending_prepaid_card_amount: '0',
+              first_payment_amount: '500', lakala_out_order_no: 'FY-QR-CONV-IDEMP_123',
+            }],
+            rowCount: 1,
+          }
+        }
+        return defaultQueryResult(sql)
+      }),
+    }))
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-QR-CONV-IDEMP', status: '部分支付', sale_order_type: '转换单',
+        client_phone: '138', customer_name: '赵六', payment_method: '微信',
+        paid_at: null, store_id: 'store-001', opened_by: 'emp-001',
+        total_amount: '2000', received: '500', refunded_amount: '0',
+        prepaid_card_amount: '0', pending_prepaid_card_amount: '0', payable_amount: '2000',
+        first_payment_amount: '500', is_experience_conversion: false,
+      }])
+      .mockResolvedValueOnce([])
+
+    await orderRoutes.qrcode(ctx)
+
+    expect(txCalls.some(({ sql }) => sql.includes('SET first_payment_amount = $1'))).toBe(false)
+    expect(ctx.result.actualPayable).toBe(500)
+  })
+
+  test('已有不同金额的在线回款意图时拒绝覆盖', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-QR-CONV-CONFLICT', paymentAmount: 300 })
+    const txCalls = []
+    pg.transaction.mockImplementationOnce(async (cb) => cb({
+      query: vi.fn(async (sql, params) => {
+        txCalls.push({ sql, params })
+        if (sql.includes('FOR UPDATE')) {
+          return {
+            rows: [{
+              sale_order_id: 'FY-QR-CONV-CONFLICT', store_id: 'store-001', sale_order_type: '转换单',
+              status: '部分支付', is_experience_conversion: false,
+              total_amount: '2000', received: '500', refunded_amount: '0', pending_prepaid_card_amount: '0',
+              first_payment_amount: '500', lakala_out_order_no: 'FY-QR-CONV-CONFLICT_123',
+            }],
+            rowCount: 1,
+          }
+        }
+        return defaultQueryResult(sql)
+      }),
+    }))
+
+    await expect(orderRoutes.qrcode(ctx)).rejects.toThrow(/CONFLICT.*已有进行中的在线回款/)
+    expect(txCalls.some(({ sql }) => sql.includes('SET first_payment_amount = $1'))).toBe(false)
+    expect(pg.query).not.toHaveBeenCalled()
   })
 
   test('冻结的转换单在线回款金额不得超过订单欠款', async () => {

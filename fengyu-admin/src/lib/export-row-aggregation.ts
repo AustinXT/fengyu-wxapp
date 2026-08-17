@@ -58,24 +58,82 @@ function sumMoney(rows: ExportRow[], key: string): string | number | null {
 }
 
 /**
- * 金额分摊统一使用“前 N-1 行四舍五入、最后一行吸收尾差”。输入和输出均为分，
- * 因而每个字段都严格满足 sum(parts) === totalCents。
+ * 按累计权重边界分摊整数分。每个边界只做一次四舍五入，因此同时满足：
+ * - sum(parts) === totalCents；
+ * - 每个分片都不与 totalCents 异号；
+ * - 小额拆到多行时不会由最后一行吸收出负尾差。
  */
 export function splitCentsWithLastRemainder(totalCents: number, weights: number[]): number[] {
   if (weights.length === 0) return []
-  if (weights.length === 1) return [totalCents]
+  const integralTotal = Math.round(totalCents)
+  if (weights.length === 1) return [integralTotal]
   const normalized = weights.map((weight) => Math.max(0, Number.isFinite(weight) ? weight : 0))
   const weightTotal = normalized.reduce((sum, weight) => sum + weight, 0)
   const effective = weightTotal > 0 ? normalized : normalized.map(() => 1)
   const effectiveTotal = effective.reduce((sum, weight) => sum + weight, 0)
+  const sign = integralTotal < 0 ? -1 : 1
+  const absoluteTotal = Math.abs(integralTotal)
   const parts: number[] = []
   let allocated = 0
-  for (let index = 0; index < effective.length - 1; index += 1) {
-    const part = Math.round((totalCents * effective[index]) / effectiveTotal)
-    parts.push(part)
-    allocated += part
+  let cumulativeWeight = 0
+  for (const weight of effective) {
+    cumulativeWeight += weight
+    const cumulativeAllocation = Math.round((absoluteTotal * cumulativeWeight) / effectiveTotal)
+    const absolutePart = cumulativeAllocation - allocated
+    parts.push(absolutePart === 0 ? 0 : sign * absolutePart)
+    allocated = cumulativeAllocation
   }
-  parts.push(totalCents - allocated)
+  return parts
+}
+
+/**
+ * 按 receipt 的有符号金额占事件净额的比例分摊通道金额。
+ * 先向零取整，再把剩余的分补给同方向的最大余数，避免把转出行分成正通道金额。
+ */
+function splitSignedCentsByEventNet(
+  totalCents: number,
+  signedWeights: number[],
+  eventNetCents: number,
+): number[] {
+  if (signedWeights.length === 0) return []
+  if (totalCents === 0) return signedWeights.map(() => 0)
+  if (eventNetCents === 0) return splitCentsWithLastRemainder(totalCents, signedWeights.map(Math.abs))
+
+  const exact = signedWeights.map((weight) => (weight * totalCents) / eventNetCents)
+  const parts = exact.map((value) => Math.trunc(value))
+  let remainder = totalCents - parts.reduce((sum, value) => sum + value, 0)
+
+  if (remainder > 0) {
+    const candidates = exact
+      .map((value, index) => ({ index, fraction: value - parts[index] }))
+      .filter(({ fraction }) => fraction > 0)
+      .sort((a, b) => b.fraction - a.fraction || a.index - b.index)
+    for (let index = 0; index < remainder; index += 1) {
+      const candidate = candidates[index % candidates.length]
+      if (!candidate) break
+      parts[candidate.index] += 1
+    }
+  } else if (remainder < 0) {
+    const candidates = exact
+      .map((value, index) => ({ index, fraction: value - parts[index] }))
+      .filter(({ fraction }) => fraction < 0)
+      .sort((a, b) => a.fraction - b.fraction || a.index - b.index)
+    for (let index = 0; index < -remainder; index += 1) {
+      const candidate = candidates[index % candidates.length]
+      if (!candidate) break
+      parts[candidate.index] -= 1
+    }
+  }
+
+  remainder = totalCents - parts.reduce((sum, value) => sum + value, 0)
+  if (remainder !== 0) {
+    // 非标准脏数据（例如通道净额与 receipt 净额方向相反）仍需守恒；选择绝对金额最大的行吸收。
+    const fallbackIndex = signedWeights.reduce(
+      (best, weight, index) => Math.abs(weight) > Math.abs(signedWeights[best] ?? 0) ? index : best,
+      0,
+    )
+    parts[fallbackIndex] += remainder
+  }
   return parts
 }
 
@@ -277,9 +335,10 @@ export function aggregateAllocationExportRows<T extends ExportRow>(sourceRows: T
     // 混合收款只把 receipt 挂在现金主流水上；超出主流水金额的部分即同事件储值卡抵扣。
     prepaidTotal = Math.max(0, Math.min(eventTotal, eventTotal - paymentAmount))
   }
-  const prepaidParts = splitCentsWithLastRemainder(
+  const prepaidParts = splitSignedCentsByEventNet(
     prepaidTotal,
-    receipts.map((receipt) => Math.abs(receipt.amountCents)),
+    receipts.map((receipt) => receipt.amountCents),
+    eventTotal,
   )
   receipts.forEach((receipt, index) => {
     receipt.prepaidCents = prepaidParts[index] ?? 0

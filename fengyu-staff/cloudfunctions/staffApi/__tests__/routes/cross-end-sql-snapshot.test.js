@@ -2091,3 +2091,23 @@ describe('家居产品部分支付权益跨端守护', () => {
     expect(src).toContain("['已支付', '部分支付', '已完成'].includes")
   })
 })
+
+describe('转换单在线回款意图事务守护', () => {
+  const staffOrder = readFile(FILES.staffOrderJs)
+  const qrcodeBody = staffOrder.match(/async function qrcode\b[\s\S]*?(?=\nasync function )/)?.[0] || ''
+  const repaymentBody = staffOrder.match(/async function createRepayment\b[\s\S]*?(?=\n\/\/ ========== P2)/)?.[0] || ''
+
+  test('qrcode 使用行锁和 NULL-CAS，禁止覆盖已有在线回款意图', () => {
+    expect(qrcodeBody).toContain('FOR UPDATE')
+    expect(qrcodeBody).toContain('first_payment_amount IS NULL')
+    expect(qrcodeBody).toContain('ONLINE_PAYMENT_INTENT_ACTIVE')
+    expect(qrcodeBody).toMatch(/SET first_payment_amount = \$1,[\s\S]*lakala_out_order_no = NULL/)
+  })
+
+  test('createRepayment 入账清旧上限，并可在同一事务冻结卡后在线补差', () => {
+    expect(repaymentBody).toContain('onlinePaymentAmount')
+    expect(repaymentBody).toContain('totalThisTime + onlinePaymentAmount')
+    expect(repaymentBody).toMatch(/pending_prepaid_card_amount = 0,[\s\S]*first_payment_amount = \$4/)
+    expect(repaymentBody).toContain('nextOnlinePaymentAmount')
+  })
+})

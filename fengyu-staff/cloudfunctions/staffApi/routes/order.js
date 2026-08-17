@@ -1409,7 +1409,8 @@ async function qrcode(ctx) {
     await pg.transaction(async (client) => {
       const lockedRes = await client.query(
         `SELECT sale_order_id, store_id, sale_order_type, status, is_experience_conversion,
-                total_amount, received, refunded_amount, pending_prepaid_card_amount
+                total_amount, received, refunded_amount, pending_prepaid_card_amount,
+                first_payment_amount, lakala_out_order_no
            FROM sale_orders
           WHERE sale_order_id = $1
           FOR UPDATE`,
@@ -1438,11 +1439,24 @@ async function qrcode(ctx) {
         throw new Error('INVALID_PARAMS: 本次在线回款金额不能超过订单欠款')
       }
 
+      // first_payment_amount 同时承担订单级在线支付意图：真实到账前不得被另一设备覆盖。
+      // 相同金额视为同一意图的幂等重试（二维码可复用）；不同金额必须先等待原意图完成。
+      const activePaymentAmount = roundMoney(Number(locked.first_payment_amount || 0))
+      if (activePaymentAmount > 0) {
+        if (Math.abs(activePaymentAmount - roundedPaymentAmount) > 0.001) {
+          throw new Error('CONFLICT: ONLINE_PAYMENT_INTENT_ACTIVE: 已有进行中的在线回款，请勿重复出码')
+        }
+        return
+      }
+
       const updateRes = await client.query(
         `UPDATE sale_orders
-            SET first_payment_amount = $1, updated_at = NOW()
+            SET first_payment_amount = $1,
+                lakala_out_order_no = NULL,
+                updated_at = NOW()
           WHERE sale_order_id = $2
-            AND status = $3`,
+            AND status = $3
+            AND first_payment_amount IS NULL`,
         [roundedPaymentAmount, saleOrderId, locked.status]
       )
       if (updateRes.rowCount !== 1) {
@@ -3057,6 +3071,7 @@ async function createRepayment(ctx) {
     paymentMethod,
     note,
     idempotencyKey,
+    onlinePaymentAmount: inputOnlinePaymentAmount,
   } = payload
   const storeId = ctx.auth.effectiveStoreId
 
@@ -3102,6 +3117,21 @@ async function createRepayment(ctx) {
   const totalThisTime = Math.round((repayAmount + prepaidCardAmount) * 100) / 100
   if (totalThisTime <= 0) {
     throw new Error('INVALID_PARAMS: 回款金额必须大于0')
+  }
+
+  let onlinePaymentAmount = null
+  if (inputOnlinePaymentAmount !== undefined && inputOnlinePaymentAmount !== null) {
+    const parsed = Number(inputOnlinePaymentAmount)
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      throw new Error('INVALID_PARAMS: 在线回款金额必须大于0')
+    }
+    if (Math.abs(Math.round(parsed * 100) - parsed * 100) > 1e-6) {
+      throw new Error('INVALID_PARAMS: 在线回款金额最多保留2位小数')
+    }
+    onlinePaymentAmount = roundMoney(parsed)
+    if (prepaidCardAmount <= 0) {
+      throw new Error('INVALID_PARAMS: 在线回款意图必须与本次储值卡入账一起提交')
+    }
   }
 
   // 储值卡付款方式下不应再传 repayAmount>0（语义是纯储值卡回款）
@@ -3167,6 +3197,12 @@ async function createRepayment(ctx) {
         [repayIdempRef]
       )
       if (dupRes.rows.length > 0) {
+        if (onlinePaymentAmount !== null) {
+          const frozenAmount = roundMoney(Number(locked.first_payment_amount || 0))
+          if (Math.abs(frozenAmount - onlinePaymentAmount) > 0.001) {
+            throw new Error('CONFLICT: ONLINE_PAYMENT_INTENT_MISMATCH: 幂等回款对应的在线金额不一致')
+          }
+        }
         return {
           refSaleOrderId,
           repayAmount,
@@ -3187,6 +3223,18 @@ async function createRepayment(ctx) {
     const origReceived = Number(locked.received || 0)
     const origRefunded = Number(locked.refunded_amount || 0)
     const remainingPayable = Math.round((origTotal - origReceived + origRefunded) * 100) / 100
+
+    if (onlinePaymentAmount !== null) {
+      if (locked.sale_order_type !== '转换单' || locked.is_experience_conversion === true) {
+        throw new Error('INVALID_STATE: ONLINE_PAYMENT_CAP_NOT_ALLOWED: 仅普通转换单支持冻结在线回款金额')
+      }
+      if (Number(locked.first_payment_amount || 0) > 0) {
+        throw new Error('CONFLICT: ONLINE_PAYMENT_INTENT_ACTIVE: 已有进行中的在线回款，请勿重复出码')
+      }
+      if (roundMoney(totalThisTime + onlinePaymentAmount) > remainingPayable + 0.001) {
+        throw new Error('INVALID_PARAMS: 本次储值卡与在线回款合计超过订单欠款')
+      }
+    }
 
     // 3) 超额校验
     if (totalThisTime > remainingPayable + 0.001) {
@@ -3336,14 +3384,18 @@ async function createRepayment(ctx) {
 
     // paid_at 语义：目标 '已支付' 时设为本次时间；部分支付保留原值
     const paidAtValue = targetStatus === '已支付' ? now : (locked.paid_at || null)
+    // 即时入账后旧上限必须清除；仅“卡扣 + 在线补差”原子场景写入本场次的新上限。
+    const nextOnlinePaymentAmount = targetStatus === '已支付' ? null : onlinePaymentAmount
 
     const updateRes = await client.query(
       `UPDATE sale_orders
          SET status = $1, received = $2, prepaid_card_amount = $3,
              pending_prepaid_card_amount = 0,
-             paid_at = $4, updated_at = $5
-       WHERE sale_order_id = $6 AND status = $7`,
-      [targetStatus, newReceived, newPrepaid, paidAtValue, now, refSaleOrderId, locked.status]
+             first_payment_amount = $4,
+             lakala_out_order_no = CASE WHEN $4::numeric IS NOT NULL THEN NULL ELSE lakala_out_order_no END,
+             paid_at = $5, updated_at = $6
+       WHERE sale_order_id = $7 AND status = $8`,
+      [targetStatus, newReceived, newPrepaid, nextOnlinePaymentAmount, paidAtValue, now, refSaleOrderId, locked.status]
     )
     if (updateRes.rowCount === 0) {
       throw new Error('INVALID_STATE: 原订单状态已变更，请刷新后重试')

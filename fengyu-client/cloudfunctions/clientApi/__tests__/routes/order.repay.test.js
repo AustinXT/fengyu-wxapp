@@ -300,6 +300,83 @@ describe('order.repay', () => {
     await expect(routes.repay(ctx)).rejects.toThrow(/INVALID_PARAMS.*超过剩余应付/)
   })
 
+  test('转换单冻结场次已有活动第三方意图：任何 mutation 前 fail-fast CONFLICT', async () => {
+    const router = makeClientQueryRouter([
+      {
+        match: /FROM sale_orders WHERE sale_order_id = \$1 FOR UPDATE/,
+        result: { rows: [makeOrigOrderRow({
+          sale_order_type: '转换单', total_amount: '2000.00', received: '500.00',
+          payable_amount: '2000.00', first_payment_amount: '500.00',
+          lakala_out_order_no: 'FY-XSD-WX-2604240001_1770000000',
+        })], rowCount: 1 },
+      },
+    ])
+    pg.transaction.mockImplementation(async (cb) => await cb({ query: router }))
+
+    const ctx = createBoundCtx({
+      saleOrderId: 'FY-XSD-WX-2604240001',
+      paymentMethod: '微信',
+      repayAmount: 500,
+      prepaidCardAmount: 0,
+    })
+    await expect(routes.repay(ctx)).rejects.toThrow(/CONFLICT: PAYMENT_INTENT_ACTIVE/)
+    expect(globalThis.__mocks__.lakalaClient.requestPreorder).not.toHaveBeenCalled()
+    expect(router.mock.calls).toHaveLength(1)
+    expect(router.mock.calls.some(([sql]) => /^\s*(UPDATE|INSERT|DELETE)\b/.test(sql))).toBe(false)
+  })
+
+  test('转换单冻结场次尚未预下单：order.repay 禁止进入，强制使用原子预占的 order.pay', async () => {
+    const router = makeClientQueryRouter([
+      {
+        match: /FROM sale_orders WHERE sale_order_id = \$1 FOR UPDATE/,
+        result: { rows: [makeOrigOrderRow({
+          sale_order_type: '转换单', total_amount: '2000.00', received: '500.00',
+          payable_amount: '2000.00', first_payment_amount: '500.00', lakala_out_order_no: null,
+        })], rowCount: 1 },
+      },
+    ])
+    pg.transaction.mockImplementation(async (cb) => await cb({ query: router }))
+
+    const ctx = createBoundCtx({
+      saleOrderId: 'FY-XSD-WX-2604240001',
+      paymentMethod: '微信',
+      repayAmount: 500,
+      prepaidCardAmount: 0,
+    })
+    await expect(routes.repay(ctx)).rejects.toThrow(/INVALID_STATE: CONVERSION_REPAYMENT_USE_ORDER_PAY/)
+    expect(router.mock.calls).toHaveLength(1)
+    expect(globalThis.__mocks__.lakalaClient.requestPreorder).not.toHaveBeenCalled()
+  })
+
+  test('受限纯卡回款成功入账后原子清空 first_payment_amount', async () => {
+    const router = makeClientQueryRouter([
+      {
+        match: /FROM sale_orders WHERE sale_order_id = \$1 FOR UPDATE/,
+        result: { rows: [makeOrigOrderRow({
+          sale_order_type: '销售单', total_amount: '2000.00', received: '500.00',
+          payable_amount: '2000.00', first_payment_amount: '500.00',
+        })], rowCount: 1 },
+      },
+      { match: 'FROM prepaid_cards WHERE user_id', result: { rows: [{ card_id: 'FY-CARD-X', balance: '800.00' }], rowCount: 1 } },
+      { match: /INSERT INTO sale_order_payments/, result: { rows: [{ id: 91 }], rowCount: 1 } },
+      { match: /received_sum/, result: { rows: [{ received_sum: '1000', refunded_sum: '0' }], rowCount: 1 } },
+      { match: /UPDATE sale_orders[\s\S]*SET status/, result: { rows: [], rowCount: 1 } },
+    ])
+    pg.transaction.mockImplementation(async (cb) => await cb({ query: router }))
+
+    const ctx = createBoundCtx({
+      saleOrderId: 'FY-XSD-WX-2604240001',
+      paymentMethod: '储值卡',
+      repayAmount: 0,
+      prepaidCardAmount: 500,
+    })
+    await routes.repay(ctx)
+
+    const statusUpdate = router.mock.calls.find(([sql]) => /UPDATE sale_orders[\s\S]*SET status/.test(sql))
+    expect(statusUpdate[0]).toContain('first_payment_amount = NULL')
+    expect(ctx.result.status).toBe('部分支付')
+  })
+
   test('订单已关闭 → INVALID_STATE', async () => {
     const router = makeClientQueryRouter([
       {

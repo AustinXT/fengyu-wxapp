@@ -521,6 +521,126 @@ exports.runShippingBackfill = runShippingBackfill
 exports.runPaymentReconcile = runPaymentReconcile
 
 /**
+ * 在本次线上到账事务内兑现订单当前绑定的待扣储值卡。
+ *
+ * initial pending 来自开单时 sale_orders.pending_prepaid_card_amount；repay intents 来自
+ * client.repay 写入的待支付储值卡流水。调用方已锁定 intents，并在本函数返回后统一写
+ * sale_orders.received/status，避免“先标部分支付并早退、卡款永远不扣”的状态漂移。
+ */
+async function settlePendingPrepaidForPayment(client, {
+  targetOrder,
+  targetOrderNo,
+  pendingIntentRows,
+  pendingIntentAmount,
+  now,
+}) {
+  if (!targetOrder.client_user_id) return 0
+
+  let consumed = 0
+  const initialPendingCardAmount = Math.max(
+    0,
+    Math.round(
+      (Number(targetOrder.pending_prepaid_card_amount || 0) - pendingIntentAmount) * 100
+    ) / 100,
+  )
+
+  if (initialPendingCardAmount > 0) {
+    const dupCheck = await client.query(
+      `SELECT 1 FROM card_transactions
+       WHERE external_ref = $1 AND type = '扣款' LIMIT 1`,
+      [`card-deduct-${targetOrderNo}`]
+    )
+    if (dupCheck.rows.length === 0) {
+      const cardRow = await client.query(
+        `SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1 FOR UPDATE`,
+        [targetOrder.client_user_id]
+      )
+      if (cardRow.rows.length === 0
+          || Number(cardRow.rows[0].balance) + 0.001 < initialPendingCardAmount) {
+        throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足以完成扣款')
+      }
+      const cardId = cardRow.rows[0].card_id
+      await client.query(
+        `UPDATE prepaid_cards SET balance = balance - $1, updated_at = NOW() WHERE card_id = $2`,
+        [initialPendingCardAmount, cardId]
+      )
+      await client.query(
+        `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
+         VALUES ($1, '扣款', $2, $3, $4, NOW())
+         ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
+        [cardId, -initialPendingCardAmount, targetOrderNo, `card-deduct-${targetOrderNo}`]
+      )
+      await client.query(
+        `INSERT INTO sale_order_payments (
+          sale_order_id, change_type, amount, payment_method,
+          external_txn_id, status, source_end, operator_employee_id,
+          note, created_at, paid_at
+        ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'notify', NULL,
+          $3, NOW(), NOW())`,
+        [targetOrderNo, initialPendingCardAmount, `储值卡抵扣 订单 ${targetOrderNo}`]
+      )
+      await client.query(
+        `UPDATE sale_orders
+         SET pending_prepaid_card_amount = GREATEST(
+               0, pending_prepaid_card_amount::numeric - $1::numeric
+             ),
+             updated_at = $2
+         WHERE sale_order_id = $3`,
+        [initialPendingCardAmount, now, targetOrderNo]
+      )
+      consumed = initialPendingCardAmount
+      console.log(`[payNotify] 消费扣款: order=${targetOrderNo}, card=${cardId}, amount=${initialPendingCardAmount}`)
+    } else {
+      console.log(`[payNotify] 消费扣款幂等跳过: order=${targetOrderNo}`)
+    }
+  }
+
+  if (pendingIntentRows.length > 0 && pendingIntentAmount > 0) {
+    const cardRow = await client.query(
+      `SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1 FOR UPDATE`,
+      [targetOrder.client_user_id]
+    )
+    if (cardRow.rows.length === 0
+        || Number(cardRow.rows[0].balance) + 0.001 < pendingIntentAmount) {
+      throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足以完成混合回款抵扣')
+    }
+    const cardId = cardRow.rows[0].card_id
+    await client.query(
+      `UPDATE prepaid_cards SET balance = balance - $1, updated_at = NOW() WHERE card_id = $2`,
+      [pendingIntentAmount, cardId]
+    )
+    for (const intent of pendingIntentRows) {
+      const amount = Math.round(Number(intent.amount) * 100) / 100
+      await client.query(
+        `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
+         VALUES ($1, '扣款', $2, $3, $4, NOW())
+         ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
+        [cardId, -amount, targetOrderNo, `card-repay-intent-${intent.id}`]
+      )
+      await client.query(
+        `UPDATE sale_order_payments
+         SET status = '已支付', paid_at = $1
+         WHERE id = $2 AND status = '待支付'`,
+        [now, intent.id]
+      )
+    }
+    await client.query(
+      `UPDATE sale_orders
+       SET pending_prepaid_card_amount = GREATEST(
+             0, pending_prepaid_card_amount::numeric - $1::numeric
+           ),
+           updated_at = $2
+       WHERE sale_order_id = $3`,
+      [pendingIntentAmount, now, targetOrderNo]
+    )
+    consumed = Math.round((consumed + pendingIntentAmount) * 100) / 100
+    console.log(`[payNotify] 混合回款储值卡抵扣消费: order=${targetOrderNo}, card=${cardId}, amount=${pendingIntentAmount}`)
+  }
+
+  return consumed
+}
+
+/**
  * 云函数入口
  *
  * 注意：member_level（钻石等级）由 cronTask 每日凌晨3点统一重算，本函数不直接更新。
@@ -612,7 +732,7 @@ exports.main = async (event) => {
     // 回款单已在 2026-04-26 sale-order-domain-refactor 从 sale_order_type 枚举移除（合并到 sale_order_payments.change_type='回款'）。
     // 这里不再判别 isRepaymentCredential，所有支付都按原单推进；回款由 change_type 区分。
     const targetOrderNo = saleOrderId
-    const targetOrder = order
+    let targetOrder = order
     const isRepaymentCredential = false  // 兼容下方未清理的引用（如有），后续整体重构时移除
 
     // 幂等：凭证单自身或原单已终态 → 再写一次 payments（ON CONFLICT DO NOTHING）后返回
@@ -639,6 +759,26 @@ exports.main = async (event) => {
     const client = await pg.connect()
     try {
       await client.query('BEGIN')
+
+      // 所有回调先锁主单，再读取本场次 pending/received。这样同订单不同 txn 的并发回调会串行，
+      // 后到事务能看到前一事务已兑现的卡款，避免对同一 pending 快照重复扣卡。
+      const lockedOrderRes = await client.query(
+        `SELECT status, payment_method, preferred_employee_id,
+                total_amount, payable_amount, client_user_id, store_id,
+                prepaid_card_amount, pending_prepaid_card_amount,
+                sale_order_type, ref_sale_order_id, market_name
+         FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE`,
+        [targetOrderNo]
+      )
+      if (lockedOrderRes.rows.length === 0) {
+        await client.query('ROLLBACK')
+        return { code: 'FAIL', message: '订单不存在' }
+      }
+      targetOrder = lockedOrderRes.rows[0]
+      if (!['待支付', '部分支付'].includes(targetOrder.status)) {
+        await client.query('ROLLBACK')
+        return { code: 'SUCCESS', message: '订单状态已变更（幂等）' }
+      }
 
       // ========== 核心幂等：INSERT payments 行（ON CONFLICT DO NOTHING） ==========
       //
@@ -747,17 +887,47 @@ exports.main = async (event) => {
       // 储值卡扣减推迟到此处与线上到账同事务执行，故判定整单结清时必须把待支付意向额一并计入，
       // 否则线上款单独 < 应付会被判为「部分支付」而储值卡永不入账、订单卡死。
       const pendingCardRes = await client.query(
-        `SELECT COALESCE(SUM(amount), 0) AS pending_card
-         FROM sale_order_payments
-         WHERE sale_order_id = $1 AND change_type = '储值卡抵扣' AND status = '待支付'`,
+        `SELECT id, amount FROM sale_order_payments
+         WHERE sale_order_id = $1 AND change_type = '储值卡抵扣' AND status = '待支付'
+         ORDER BY id
+         FOR UPDATE`,
         [targetOrderNo]
       )
-      const pendingCardAmount = Math.round(Number(pendingCardRes.rows[0]?.pending_card || 0) * 100) / 100
+      const pendingCardRows = pendingCardRes.rows
+      const pendingCardAmount = Math.round(
+        pendingCardRows.reduce((sum, row) => sum + Number(row.amount || 0), 0) * 100
+      ) / 100
 
-      // 判定目标订单最终状态：payable_amount 已排除 actual/pending 储值卡，只比较现金净到账。
-      const newPaidSum = Math.round((paidSum + thisPayAmount) * 100) / 100
+      // 卡款必须先于“部分支付”早退兑现。本函数与线上流水 INSERT、订单状态更新处于同一事务；
+      // 任一步失败都会整体回滚，避免现金已入账但本场次储值卡仍悬空。
+      const prepaidConsumedThisCallback = await settlePendingPrepaidForPayment(client, {
+        targetOrder,
+        targetOrderNo,
+        pendingIntentRows: pendingCardRows,
+        pendingIntentAmount: pendingCardAmount,
+        now,
+      })
+
+      // INSERT 线上流水、兑现储值卡意向后，从已支付流水权威重聚合订单实收。
+      // 不能只用“本次现金 + 本次卡款”：后续回款回调的 pending 已归零，否则会丢掉此前
+      // 已结算的储值卡金额（如首场现金 500 + 卡 500，第二场现金 500 应累计为 1500）。
+      const paidAggregateRes = await client.query(
+        `SELECT
+           COALESCE(SUM(CASE
+             WHEN status = '已支付' AND change_type IN ('首次支付','回款','退款')
+               THEN amount ELSE 0 END), 0) AS cash_paid_sum,
+           COALESCE(SUM(CASE
+             WHEN status = '已支付' AND change_type IN ('首次支付','回款','储值卡抵扣')
+               THEN amount ELSE 0 END), 0) AS received_sum
+         FROM sale_order_payments
+         WHERE sale_order_id = $1`,
+        [targetOrderNo]
+      )
+      // payable_amount 已排除 actual/pending 储值卡，终态仍按现金净到账判断。
+      const newPaidSum = Math.round(Number(paidAggregateRes.rows[0]?.cash_paid_sum || 0) * 100) / 100
       const fullyPaid = newPaidSum + 0.001 >= payableAmount
       const newStatus = fullyPaid ? '已支付' : '部分支付'
+      const newReceived = Math.round(Number(paidAggregateRes.rows[0]?.received_sum || 0) * 100) / 100
 
       // 1. 更新目标订单：received 累加、status 置新值、paid_at（全额时）
       // CAS 守卫（state-machine-cas-guard ticket）：只允许从 待支付/部分支付 翻转
@@ -771,7 +941,7 @@ exports.main = async (event) => {
              updated_at = $3
          WHERE sale_order_id = $4
            AND status IN ('待支付', '部分支付')`,
-        [newStatus, newPaidSum, now, targetOrderNo]
+        [newStatus, newReceived, now, targetOrderNo]
       )
       if (updResult.rowCount === 0) {
         // 主单已被其他事务先翻至终态（已支付/已关闭等），回滚 payment 插入并幂等 ack 微信
@@ -800,20 +970,21 @@ exports.main = async (event) => {
         }
       }
 
-      // 按回款逐笔分配：线上部分支付也逐笔捕获可分配额 + 自动分给开单销售员（本次=thisPayAmount，无定向）
+      // 按回款逐笔分配：部分到账也必须包含本场次已兑现的储值卡，保证 receipt 与 received 同口径。
       // 必须在 recalcPaidSessionsForOrder 之前：新 STEP1 从 receipt 聚合 received。
       if (!fullyPaid) {
+        const partialEventAmount = Math.round((thisPayAmount + prepaidConsumedThisCallback) * 100) / 100
         const perItemPartial = await capturePaymentAllocatables(client, {
           salePaymentId: onlinePaymentId,
           saleOrderId: targetOrderNo,
-          eventAmount: thisPayAmount,
+          eventAmount: partialEventAmount,
           directedItems: null,
         })
         await autoAllocateOnlinePayment(client, {
           salePaymentId: onlinePaymentId,
           saleOrderId: targetOrderNo,
           perItem: perItemPartial,
-          eventAmount: thisPayAmount,
+          eventAmount: partialEventAmount,
           preferredEmployeeId: targetOrder.preferred_employee_id,
           marketName: targetOrder.market_name,
           now,
@@ -825,7 +996,7 @@ exports.main = async (event) => {
         await recalcPaidSessionsForOrder(client, targetOrderNo)
 
         await client.query('COMMIT')
-        console.log('[payNotify] 订单部分支付到账:', orderNo, `paid_sum=${newPaidSum}/${payableAmount}`)
+        console.log('[payNotify] 订单部分支付到账:', orderNo, `received=${newReceived}`)
         // 微信发货上报：本次微信交易已到账即上报（每笔交易各对应发货管理一条订单）
         await reportWxShippingSafe(pg, { saleOrderId: targetOrderNo, paymentMethod, tradeInfo })
         return { code: 'SUCCESS', message: '部分支付已到账' }
@@ -867,123 +1038,6 @@ exports.main = async (event) => {
           } else {
             console.log(`[payNotify] 充值入账幂等跳过: order=${targetOrderNo}`)
           }
-        }
-      }
-
-      // 3b. 初始预选储值卡消费：只处理未对应「待支付储值卡流水」的 pending 部分。
-      // 幂等：card_transactions 用 ref_order_id + type='扣款' 的 NOT EXISTS 守护
-      // 余额不足时抛错 → 整个事务回滚 → 订单保持 '待支付'（ticket §4.8 #38）
-      // 本次回调实际消费的储值卡额（计入按回款逐笔分配的 eventAmount）
-      let prepaidConsumedThisCallback = 0
-      const initialPendingCardAmount = Math.max(
-        0,
-        Math.round((Number(targetOrder.pending_prepaid_card_amount || 0) - pendingCardAmount) * 100) / 100,
-      )
-      if (targetOrder.client_user_id && initialPendingCardAmount > 0) {
-        const dupCheck = await client.query(
-          `SELECT 1 FROM card_transactions WHERE ref_order_id = $1 AND type = '扣款' LIMIT 1`,
-          [targetOrderNo]
-        )
-        if (dupCheck.rows.length === 0) {
-          const prepaidAmount = initialPendingCardAmount
-          // 二次校验余额（FOR UPDATE 锁，防并发）
-          const cardRow = await client.query(
-            `SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1 FOR UPDATE`,
-            [targetOrder.client_user_id]
-          )
-          if (cardRow.rows.length === 0 || Number(cardRow.rows[0].balance) < prepaidAmount) {
-            throw new Error(`INSUFFICIENT_BALANCE: 储值卡余额不足以完成扣款`)
-          }
-          const cardId = cardRow.rows[0].card_id
-          await client.query(
-            `UPDATE prepaid_cards SET balance = balance - $1, updated_at = NOW() WHERE card_id = $2`,
-            [prepaidAmount, cardId]
-          )
-          await client.query(
-            `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
-             VALUES ($1, '扣款', $2, $3, $4, NOW())
-             ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
-            [cardId, -prepaidAmount, targetOrderNo, `card-deduct-${targetOrderNo}`]
-          )
-          // 写储值卡抵扣流水（修复 2026-06-08：amount 为**正数**，与 staff confirmOffline / admin 及
-          // received = Σ[首次支付/回款/储值卡抵扣] 不变量 I1 跨端一致；原写负数会让混合线上单 received 少记、
-          // refundCap 算少致全退被卡 + I1 cron 误报）。
-          await client.query(
-            `INSERT INTO sale_order_payments (
-              sale_order_id, change_type, amount, payment_method,
-              external_txn_id, status, source_end, operator_employee_id,
-              note, created_at, paid_at
-            ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'notify', NULL,
-              $3, NOW(), NOW())`,
-            [targetOrderNo, prepaidAmount, `储值卡抵扣 订单 ${targetOrderNo}`]
-          )
-          // received 口径含储值卡抵扣：上面 received 仅累加了线上付款，此处补记卡抵扣部分使 received=线上+卡=总实收，
-          // 随后重算 paid_sessions（received 增长 → 可消费次数单调上升）。
-          await client.query(
-            `UPDATE sale_orders
-             SET received = received + $1,
-                 pending_prepaid_card_amount = GREATEST(0, pending_prepaid_card_amount::numeric - $1::numeric),
-                 updated_at = NOW()
-             WHERE sale_order_id = $2`,
-            [prepaidAmount, targetOrderNo]
-          )
-          prepaidConsumedThisCallback = prepaidAmount
-          console.log(`[payNotify] 消费扣款: order=${targetOrderNo}, card=${cardId}, amount=${prepaidAmount}`)
-        } else {
-          console.log(`[payNotify] 消费扣款幂等跳过: order=${targetOrderNo}`)
-        }
-      }
-
-      // 3c. 混合回款「待支付储值卡抵扣」意向消费（client.repay 线上+储值卡混合支付）。
-      // client.repay 混合通道只写了 status='待支付' 的储值卡抵扣意向、未动余额；此处线上款已确认到账，
-      // 在**同一事务**内扣减储值卡余额 + 写 card_transactions + 把意向行翻 '已支付' + 补记 received/prepaid_card_amount/payable_amount。
-      // 余额不足 → throw → 整事务回滚（含本次线上 payments 行），订单保持原状态、储值卡分文不动（与 STEP 3b 失败语义一致）。
-      // 幂等：①意向行 status='待支付' 过滤（重试时已翻已支付 → 取不到行 → 跳过）；②card_transactions external_ref 唯一。
-      if (targetOrder.client_user_id && pendingCardAmount > 0) {
-        const pendingRows = await client.query(
-          `SELECT id, amount FROM sale_order_payments
-           WHERE sale_order_id = $1 AND change_type = '储值卡抵扣' AND status = '待支付'
-           ORDER BY id
-           FOR UPDATE`,
-          [targetOrderNo]
-        )
-        if (pendingRows.rows.length > 0) {
-          const cardRow = await client.query(
-            `SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1 FOR UPDATE`,
-            [targetOrder.client_user_id]
-          )
-          if (cardRow.rows.length === 0 || Number(cardRow.rows[0].balance) + 0.001 < pendingCardAmount) {
-            throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足以完成混合回款抵扣')
-          }
-          const cardId = cardRow.rows[0].card_id
-          await client.query(
-            `UPDATE prepaid_cards SET balance = balance - $1, updated_at = NOW() WHERE card_id = $2`,
-            [pendingCardAmount, cardId]
-          )
-          for (const pr of pendingRows.rows) {
-            const amt = Math.round(Number(pr.amount) * 100) / 100
-            await client.query(
-              `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
-               VALUES ($1, '扣款', $2, $3, $4, NOW())
-               ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
-              [cardId, -amt, targetOrderNo, `card-repay-intent-${pr.id}`]
-            )
-            await client.query(
-              `UPDATE sale_order_payments SET status = '已支付', paid_at = $1 WHERE id = $2 AND status = '待支付'`,
-              [now, pr.id]
-            )
-          }
-          // received 含储值卡抵扣（I1）；actual 由统一重算器从已支付流水聚合，pending 原子扣减。
-          await client.query(
-            `UPDATE sale_orders
-             SET received = received + $1,
-                 pending_prepaid_card_amount = GREATEST(0, pending_prepaid_card_amount::numeric - $1::numeric),
-                 updated_at = $2
-             WHERE sale_order_id = $3`,
-            [pendingCardAmount, now, targetOrderNo]
-          )
-          prepaidConsumedThisCallback = Math.round((prepaidConsumedThisCallback + pendingCardAmount) * 100) / 100
-          console.log(`[payNotify] 混合回款储值卡抵扣消费: order=${targetOrderNo}, card=${cardId}, amount=${pendingCardAmount}`)
         }
       }
 

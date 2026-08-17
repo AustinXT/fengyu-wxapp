@@ -249,10 +249,31 @@ async function createLakalaPreorder({
   orderNo, merchantNo, termNo,
   payAmountYuan, accountType, transType,
   openid, subAppid, requestIp,
-  subject, attach,
+  subject, attach, enforceSingleIntent = false,
 }) {
   const totalAmountFen = Math.round(payAmountYuan * 100)
   const outTradeNo = `${orderNo}_${Math.floor(Date.now() / 1000)}`
+
+  // 员工冻结 first_payment_amount 的受限回款同一时刻只能有一个第三方支付单。
+  // staff 创建新意图时会把 lakala_out_order_no 清空；这里用 CAS 先占位，再请求拉卡拉，
+  // 防止旧客户端重复点击或两台设备并发生成不同 out_trade_no。预下单请求失败时也保留
+  // 本次 out_trade_no：网络错误可能只是响应丢失，清空后重试会在第三方生成第二笔在途单。
+  if (enforceSingleIntent) {
+    const claimed = await pg.query(
+      `UPDATE sale_orders
+       SET lakala_out_order_no = $1, updated_at = NOW()
+       WHERE sale_order_id = $2
+         AND status IN ('待支付', '部分支付')
+         AND first_payment_amount IS NOT NULL
+         AND first_payment_amount::numeric > 0
+         AND lakala_out_order_no IS NULL
+       RETURNING sale_order_id`,
+      [outTradeNo, orderNo]
+    )
+    if (claimed.length === 0) {
+      throw new Error('CONFLICT: PAYMENT_INTENT_ACTIVE: 本次回款支付单已生成，请勿重复发起')
+    }
+  }
 
   const resp = await lakalaClient.requestPreorder({
     merchantNo, termNo, outTradeNo,
@@ -276,10 +297,12 @@ async function createLakalaPreorder({
   // CAS-EXEMPT：仅写 lakala_out_order_no（列名沿用，语义为"最近一次发起 preorder 的 out_trade_no"），不翻 status。
   // 同时刷新 updated_at，让 payNotify.runPaymentReconcile 定时补偿窗口能锚定"最近一次发起拉卡拉支付"
   // （sale_order_datetime 是下单时间不随回款变化，回款会覆写 lakala_out_order_no；updated_at 才能反映）。
-  await pg.query(
-    'UPDATE sale_orders SET lakala_out_order_no = $1, updated_at = NOW() WHERE sale_order_id = $2',
-    [outTradeNo, orderNo]
-  )
+  if (!enforceSingleIntent) {
+    await pg.query(
+      'UPDATE sale_orders SET lakala_out_order_no = $1, updated_at = NOW() WHERE sale_order_id = $2',
+      [outTradeNo, orderNo]
+    )
+  }
 
   if (accountType === 'WECHAT' && transType === '71') {
     return { outTradeNo, tradeNo: resp.tradeNo, paymentParams: resp.paymentParams }
@@ -1380,6 +1403,7 @@ async function pay(ctx) {
     openid: ctx.auth.openid,
     subAppid: cfg.subAppid,
     requestIp: getRequestIp(),
+    enforceSingleIntent: firstPaymentCap > 0,
   })
   // first_payment_amount 必须保留到真实支付回调入账；仅发起预下单不代表付款成功。
   // payNotify 成功写入首笔款项时再清空，避免顾客放弃付款后重新扫码被放大到全额。
@@ -2253,6 +2277,7 @@ async function alipayPay(ctx) {
     accountType: 'ALIPAY',
     transType: '41',
     requestIp: requestIpAli,
+    enforceSingleIntent: firstPaymentCapAli > 0,
   })
   // 步骤 2: share_code 用 alipayQrUrl 作为 biz_link 换取吱口令
   const shareCodeResp = await createLakalaAlipayShareCode({
@@ -2639,6 +2664,7 @@ async function repay(ctx) {
   let finalStatus // 原单最新 status（pure-card 路径会推到 '已支付'/'部分支付'；线上/线下路径不动）
   let currentStatus // 原单当前 status（线下路径返回用，状态不变）
   let storeId    // 原单门店 id，回到事务外用于解析拉卡拉商户配置
+  let hasPaymentCap = false
 
   await pg.transaction(async (client) => {
     // 1. 锁原单 + 校验归属 + 状态
@@ -2664,6 +2690,17 @@ async function repay(ctx) {
       throw new Error('INVALID_STATE: EXPERIENCE_CONVERSION_REPAYMENT_FORBIDDEN: 体验转换不允许补款')
     }
     currentStatus = origOrder.status
+
+    const frozenPaymentAmount = Number(origOrder.first_payment_amount || 0)
+    // 受限转换回款由 staff 冻结金额后统一走 order.pay/alipayPay；repay 的事务在预下单前
+    // 已提交，无法与第三方意图 CAS 原子化。这里必须在任何 pending 作废/订单 UPDATE 前
+    // fail-fast，避免旧客户端覆盖或破坏正在途的支付场次。
+    if (frozenPaymentAmount > 0 && origOrder.lakala_out_order_no) {
+      throw new Error('CONFLICT: PAYMENT_INTENT_ACTIVE: 本次回款支付单已生成，请勿重复发起')
+    }
+    if (origOrder.sale_order_type === '转换单' && frozenPaymentAmount > 0) {
+      throw new Error('INVALID_STATE: CONVERSION_REPAYMENT_USE_ORDER_PAY: 受限转换回款请使用订单支付')
+    }
 
     // 2. 先作废旧的储值卡抵扣意向并恢复本单应付。
     //    失败/取消的混合支付会留下 pending 意向并暂时降低 payable_amount。
@@ -2728,13 +2765,21 @@ async function repay(ctx) {
     if (remaining <= 0) {
       throw new Error('INVALID_STATE: 订单无欠款')
     }
-    if (totalNew > remaining + 0.001) {
-      throw new Error('INVALID_PARAMS: 回款金额超过剩余应付')
+    // first_payment_amount 是员工冻结的本支付场次硬上限。锁单后按“现金 + 储值卡”合计执行，
+    // 旧版小程序或直接 API 调用也不能把 500 元场次放大为整笔 2000 元欠款。
+    const firstPaymentCap = frozenPaymentAmount
+    hasPaymentCap = firstPaymentCap > 0
+    const paymentTarget = hasPaymentCap ? Math.min(remaining, firstPaymentCap) : remaining
+    if (totalNew > paymentTarget + 0.001) {
+      throw new Error(hasPaymentCap
+        ? 'INVALID_PARAMS: 回款金额超过本次支付上限'
+        : 'INVALID_PARAMS: 回款金额超过剩余应付')
     }
-    // 顾客端继续支付强制全额：只能一次性付清全部未付金额，不允许部分回款
-    // （按子项部分回款仅 admin/staff 可做；client 一律全额）
-    if (totalNew + 0.001 < remaining) {
-      throw new Error('INVALID_PARAMS: 继续支付必须支付全部未付金额')
+    // 无冻结场次时仍强制一次付清；有冻结场次时必须恰好支付本场次目标额，不能少付或拆单。
+    if (totalNew + 0.001 < paymentTarget) {
+      throw new Error(hasPaymentCap
+        ? 'INVALID_PARAMS: 回款金额必须等于本次支付金额'
+        : 'INVALID_PARAMS: 继续支付必须支付全部未付金额')
     }
 
     // 4. 储值卡扣款（按通道分流）。
@@ -2843,6 +2888,7 @@ async function repay(ctx) {
              received = $2,
              refunded_amount = $3,
              pending_prepaid_card_amount = 0,
+             first_payment_amount = NULL,
              paid_at = CASE WHEN $1::text = '已支付' THEN COALESCE(paid_at, $4) ELSE paid_at END,
              updated_at = $4
          WHERE sale_order_id = $5
@@ -2920,6 +2966,7 @@ async function repay(ctx) {
       openid: ctx.auth.openid,
       subAppid: repayCfg.subAppid,
       requestIp: repayRequestIp,
+      enforceSingleIntent: hasPaymentCap,
     })
     ctx.result = {
       saleOrderId,
@@ -2942,6 +2989,7 @@ async function repay(ctx) {
       accountType: 'ALIPAY',
       transType: '41',
       requestIp: repayRequestIp,
+      enforceSingleIntent: hasPaymentCap,
     })
     const repayShareCodeResp = await createLakalaAlipayShareCode({
       orderNo: saleOrderId,
@@ -3072,7 +3120,9 @@ async function confirmPayment(ctx) {
   }
 
   const orders = await pg.query(
-    'SELECT sale_order_id, status, store_id, lakala_out_order_no, client_user_id, payment_method FROM sale_orders WHERE sale_order_id = $1',
+    `SELECT sale_order_id, status, store_id, lakala_out_order_no, client_user_id, payment_method,
+            received, first_payment_amount
+     FROM sale_orders WHERE sale_order_id = $1`,
     [orderNo]
   )
   if (orders.length === 0) {
@@ -3085,6 +3135,12 @@ async function confirmPayment(ctx) {
 
   const localStatus = order.status
   const hasLakalaOrder = !!order.lakala_out_order_no
+  const localPaymentSnapshot = {
+    received: Number(order.received || 0),
+    firstPaymentAmount: order.first_payment_amount == null
+      ? null
+      : Number(order.first_payment_amount),
+  }
 
   // 早期决策：终态 / 无拉卡拉单 → 无需对账，直接返回本地 status
   if (decideReconcile(localStatus, hasLakalaOrder, null) === 'skip') {
@@ -3093,6 +3149,7 @@ async function confirmPayment(ctx) {
       status: localStatus,
       reconciled: false,
       reason: hasLakalaOrder ? 'terminal' : 'no_lakala_order',
+      ...localPaymentSnapshot,
     }
     return
   }
@@ -3102,11 +3159,11 @@ async function confirmPayment(ctx) {
   try {
     merchant = await resolveLakalaMerchant(order.store_id)
   } catch (e) {
-    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, reason: 'lakala_not_configured', message: e.message }
+    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, reason: 'lakala_not_configured', message: e.message, ...localPaymentSnapshot }
     return
   }
   if (!merchant) {
-    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, reason: 'lakala_not_configured' }
+    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, reason: 'lakala_not_configured', ...localPaymentSnapshot }
     return
   }
 
@@ -3118,21 +3175,21 @@ async function confirmPayment(ctx) {
       outTradeNo: order.lakala_out_order_no,
     })
   } catch (e) {
-    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, reason: 'query_failed', message: e.message }
+    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, reason: 'query_failed', message: e.message, ...localPaymentSnapshot }
     return
   }
 
   const tradeState = resp.tradeState || ''
   // 拉卡拉侧尚未 SUCCESS：返回本地 status，前端继续轮询
   if (decideReconcile(localStatus, hasLakalaOrder, tradeState) !== 'reconcile') {
-    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, lakalaTradeState: tradeState, reason: 'not_success' }
+    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, lakalaTradeState: tradeState, reason: 'not_success', ...localPaymentSnapshot }
     return
   }
 
   // 拉卡拉 SUCCESS + 本地待支付/部分支付 → 触发与回调同款的幂等入账
   const payAmount = Math.round(Number(resp.totalAmountFen || 0)) / 100
   if (!(payAmount > 0)) {
-    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, lakalaTradeState: tradeState, reason: 'invalid_amount' }
+    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, lakalaTradeState: tradeState, reason: 'invalid_amount', ...localPaymentSnapshot }
     return
   }
   const paymentMethod = order.payment_method === '支付宝' ? '支付宝' : '微信'
@@ -3150,17 +3207,28 @@ async function confirmPayment(ctx) {
     })
     payNotifyResult = r && r.result
   } catch (e) {
-    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, reason: 'paynotify_call_failed', message: e.message }
+    ctx.result = { saleOrderId: orderNo, status: localStatus, reconciled: false, reason: 'paynotify_call_failed', message: e.message, ...localPaymentSnapshot }
     return
   }
 
   // 重查本地 status（payNotify 已更新），返回最新态
-  const after = await pg.query('SELECT status FROM sale_orders WHERE sale_order_id = $1', [orderNo])
+  const after = await pg.query(
+    'SELECT status, received, first_payment_amount FROM sale_orders WHERE sale_order_id = $1',
+    [orderNo]
+  )
   const newStatus = (after[0] && after[0].status) || localStatus
+  const newReceived = Number((after[0] && after[0].received) ?? order.received ?? 0)
+  const newFirstPaymentAmount = after[0] && after[0].first_payment_amount != null
+    ? Number(after[0].first_payment_amount)
+    : null
   ctx.result = {
     saleOrderId: orderNo,
     status: newStatus,
-    reconciled: !!(payNotifyResult && payNotifyResult.code === 'SUCCESS' && newStatus !== localStatus),
+    // 部分支付订单本场次到账后状态仍可能保持“部分支付”；payNotify 成功 ACK 本身也是本场次完成证据，
+    // 不能再依赖 status 必须发生变化。
+    reconciled: !!(payNotifyResult && payNotifyResult.code === 'SUCCESS'),
+    received: newReceived,
+    firstPaymentAmount: newFirstPaymentAmount,
     payNotifyResult,
   }
 }

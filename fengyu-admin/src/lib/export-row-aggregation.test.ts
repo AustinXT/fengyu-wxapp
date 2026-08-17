@@ -80,11 +80,24 @@ function allocationRow(index: number, employee: 'A' | 'B', overrides: Row = {}):
 }
 
 describe('splitCentsWithLastRemainder', () => {
-  it('最后一行吸收不能整除的尾差且总额严格守恒', () => {
+  it('累计比例分摊不能整除的尾差且总额严格守恒', () => {
     const parts = splitCentsWithLastRemainder(10_000, Array.from({ length: 21 }, () => 1))
-    expect(parts.slice(0, 20)).toEqual(Array.from({ length: 20 }, () => 476))
-    expect(parts[20]).toBe(480)
+    expect(parts.every((value) => value === 476 || value === 477)).toBe(true)
     expect(parts.reduce((sum, value) => sum + value, 0)).toBe(10_000)
+  })
+
+  it('2 分拆给 4 个等权行不会产生负尾差', () => {
+    const parts = splitCentsWithLastRemainder(2, [1, 1, 1, 1])
+    expect(parts).toEqual([1, 0, 1, 0])
+    expect(parts.every((value) => value >= 0)).toBe(true)
+    expect(parts.reduce((sum, value) => sum + value, 0)).toBe(2)
+  })
+
+  it('负总额分摊的每个分片保持同号并严格守恒', () => {
+    const parts = splitCentsWithLastRemainder(-2, [1, 1, 1, 1])
+    expect(parts).toEqual([-1, 0, -1, 0])
+    expect(parts.every((value) => value <= 0)).toBe(true)
+    expect(parts.reduce((sum, value) => sum + value, 0)).toBe(-2)
   })
 })
 
@@ -229,6 +242,30 @@ describe('aggregateAllocationExportRows', () => {
     expect(result[0].received).toBe('-200.00')
     expect(result[0].refundedAmount).toBe('200.00')
     expect(result[0].employeeName).toBeNull()
+  })
+
+  it('转换事件按 receipt 有符号净额分摊现金与储值卡通道', () => {
+    const result = aggregateAllocationExportRows([
+      allocationRow(1, 'A', {
+        __skuId: 'SKU-CONVERT-OUT',
+        __itemDirection: '转出',
+        __receiptAmount: '-80.00',
+        __paymentAmount: '15.00',
+        __paymentChangeType: '回款',
+      }),
+      allocationRow(2, 'A', {
+        __skuId: 'SKU-CONVERT-IN',
+        __itemDirection: '转入',
+        __receiptAmount: '100.00',
+        __paymentAmount: '15.00',
+        __paymentChangeType: '回款',
+      }),
+    ])
+
+    expect(result).toHaveLength(2)
+    expect(result.map((row) => row.received)).toEqual(['-80.00', '100.00'])
+    expect(result.map((row) => row.prepaidCardAmount)).toEqual(['-20.00', '25.00'])
+    expect(result.reduce((sum, row) => sum + Number(row.prepaidCardAmount), 0)).toBe(5)
   })
 })
 

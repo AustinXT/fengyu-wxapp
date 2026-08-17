@@ -265,7 +265,7 @@ vi.mock('@/lib/points-settle', () => ({
   })),
 }))
 
-import { createOrder, confirmOfflinePayment, closeOrder, resetOrderFailed, getOrdersPaginated, createConversionOrder, recordPayment, deleteOrder, exportOrders, exportAllocationOrders, createDepositOrder, updatePerformanceAttributionDate } from './orders'
+import { createOrder, confirmOfflinePayment, closeOrder, resetOrderFailed, getOrdersPaginated, createConversionOrder, recordPayment, freezeConversionRepaymentAmount, deleteOrder, exportOrders, exportAllocationOrders, createDepositOrder, updatePerformanceAttributionDate } from './orders'
 import { settlePointsSafe } from '@/lib/points-settle'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
@@ -4132,7 +4132,7 @@ describe('recordPayment — 管理后台录入回款', () => {
         execute: vi.fn().mockImplementation((arg: any) => {
           execCall++
           // 记录顺序（便于调试失败用例）
-          captured.executed.push(`exec-${execCall}`)
+          captured.executed.push(String(arg?.__sqlText ?? `exec-${execCall}`))
           // step 1: SELECT FOR UPDATE 原单
           if (execCall === 1) {
             return Promise.resolve(opts.lockedOrder ? [opts.lockedOrder] : [])
@@ -4253,6 +4253,7 @@ describe('recordPayment — 管理后台录入回款', () => {
       sourceEnd: 'admin',
       operatorEmployeeId: 'EMP-001',
     })
+    expect(captured.executed.some((statement) => statement.includes('first_payment_amount = NULL'))).toBe(true)
   })
 
   it('多次回款累加：100 已付 + 50 回款 → "部分支付"；后续再回 50 → "已支付"', async () => {
@@ -4465,6 +4466,125 @@ describe('recordPayment — 管理后台录入回款', () => {
     expect(result.success).toBe(false)
     if (!result.success) {
       expect(result.error.code).toBe('CONCURRENT_CHANGED')
+    }
+  })
+})
+
+describe('freezeConversionRepaymentAmount — admin 在线转换回款金额冻结', () => {
+  const lockedConversion = {
+    sale_order_id: 'FY-XSD-WX-260420-0001',
+    sale_order_type: '转换单',
+    status: '部分支付',
+    store_id: 'store-1',
+    total_amount: '100.00',
+    received: '0.00',
+    refunded_amount: '0.00',
+    first_payment_amount: null,
+    pending_prepaid_card_amount: '0.00',
+    legacy_source: null,
+    is_experience_conversion: false,
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      permissions: {
+        ...mockSession.permissions,
+        actions: ['sale_order:record_payment'],
+      },
+    })
+    ;(isInScope as any).mockReturnValue(true)
+  })
+
+  function mockFreezeTx(locked: Record<string, any>, updateRowCount = 1) {
+    const statements: string[] = []
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      let call = 0
+      const tx = {
+        execute: vi.fn().mockImplementation((arg: any) => {
+          call += 1
+          statements.push(String(arg?.__sqlText ?? ''))
+          if (call === 1) return Promise.resolve([locked])
+          return Promise.resolve({ rowCount: updateRowCount })
+        }),
+      }
+      return fn(tx)
+    })
+    return statements
+  }
+
+  it('锁单后以 CAS 写入管理员选择的本次金额', async () => {
+    const statements = mockFreezeTx(lockedConversion)
+
+    const result = await freezeConversionRepaymentAmount({
+      saleOrderId: lockedConversion.sale_order_id,
+      amount: 40,
+    })
+
+    expect(result).toEqual({ success: true, data: { amount: 40, reused: false } })
+    expect(statements[0]).toContain('FOR UPDATE')
+    expect(statements[1]).toContain('first_payment_amount =')
+    expect(statements[1]).toContain('lakala_out_order_no = NULL')
+    expect(statements[1]).toContain('first_payment_amount IS NULL')
+    expect(statements[1]).toContain('received =')
+    expect(statements[1]).toContain('refunded_amount =')
+  })
+
+  it('退款后的欠款按 total - received + refunded_amount 冻结', async () => {
+    mockFreezeTx({
+      ...lockedConversion,
+      received: '80.00',
+      refunded_amount: '20.00',
+    })
+
+    const result = await freezeConversionRepaymentAmount({
+      saleOrderId: lockedConversion.sale_order_id,
+      amount: 40,
+    })
+
+    expect(result).toEqual({ success: true, data: { amount: 40, reused: false } })
+  })
+
+  it('同额活动意图可幂等复用，不重复更新', async () => {
+    const statements = mockFreezeTx({ ...lockedConversion, first_payment_amount: '40.00' })
+
+    const result = await freezeConversionRepaymentAmount({
+      saleOrderId: lockedConversion.sale_order_id,
+      amount: 40,
+    })
+
+    expect(result).toEqual({ success: true, data: { amount: 40, reused: true } })
+    expect(statements).toHaveLength(1)
+  })
+
+  it('拒绝用不同金额覆盖已有活动意图', async () => {
+    mockFreezeTx({ ...lockedConversion, first_payment_amount: '50.00' })
+
+    const result = await freezeConversionRepaymentAmount({
+      saleOrderId: lockedConversion.sale_order_id,
+      amount: 40,
+    })
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.code).toBe('CONFLICT')
+      expect(result.error.message).toContain('已有 ¥50.00 在线回款意图')
+    }
+  })
+
+  it('CAS 未命中时返回并发冲突', async () => {
+    mockFreezeTx(lockedConversion, 0)
+
+    const result = await freezeConversionRepaymentAmount({
+      saleOrderId: lockedConversion.sale_order_id,
+      amount: 40,
+    })
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.code).toBe('CONFLICT')
+      expect(result.error.message).toContain('订单金额或状态已变化')
     }
   })
 })

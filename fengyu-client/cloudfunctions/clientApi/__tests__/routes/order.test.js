@@ -767,6 +767,9 @@ describe('order.pay', () => {
       if (/SELECT \* FROM sale_orders/.test(sql)) return [order]
       if (/SUM\(amount\)/.test(sql)) return [{ paid_sum: paidSum }]
       if (/lakala_merchants/.test(sql)) return STORE_LAKALA_ROW
+      if (/UPDATE sale_orders[\s\S]*lakala_out_order_no = \$1[\s\S]*RETURNING sale_order_id/.test(sql)) {
+        return [{ sale_order_id: order.sale_order_id }]
+      }
       return [] // UPDATE / hasPaymentRows / 其它
     })
   }
@@ -1005,6 +1008,28 @@ describe('order.pay', () => {
     })
     const tamperedCtx = createBoundCtx({ orderNo: 'FY-CONV-PARTIAL-2', payAmount: 600 })
     await expect(routes.pay(tamperedCtx)).rejects.toThrow(/INVALID_PARAMS.*超过剩余应付/)
+  })
+
+  test('受限回款已有活动拉卡拉意图 → CONFLICT，不创建第二个预下单', async () => {
+    const now = new Date()
+    const order = {
+      sale_order_id: 'FY-CONV-ACTIVE', status: '部分支付', sale_order_type: '转换单', store_id: 'store-1',
+      client_user_id: 'user-001', total_amount: 2000, payable_amount: 2000, received: 500,
+      prepaid_card_amount: 0, first_payment_amount: 500,
+      lakala_out_order_no: 'FY-CONV-ACTIVE_1770000000',
+      sale_order_datetime: now.toISOString(),
+    }
+    pg.query.mockImplementation(async (sql) => {
+      if (/SELECT \* FROM sale_orders/.test(sql)) return [order]
+      if (/SUM\(amount\)/.test(sql)) return [{ paid_sum: 500 }]
+      if (/lakala_merchants/.test(sql)) return STORE_LAKALA_ROW
+      if (/UPDATE sale_orders[\s\S]*RETURNING sale_order_id/.test(sql)) return []
+      return []
+    })
+
+    const ctx = createBoundCtx({ orderNo: order.sale_order_id, payAmount: 500 })
+    await expect(routes.pay(ctx)).rejects.toThrow(/CONFLICT: PAYMENT_INTENT_ACTIVE/)
+    expect(__mocks__.lakalaClient.requestPreorder).not.toHaveBeenCalled()
   })
 })
 
@@ -1357,7 +1382,9 @@ describe('order.confirmPayment', () => {
 
   test('待支付 + 拉卡拉 SUCCESS → callFunction 调 payNotify 触发补偿入账，重查 status 已翻 → reconciled', async () => {
     pg.query.mockImplementation(async (sql) => {
-      if (/SELECT status FROM sale_orders/.test(sql)) return [{ status: '已支付' }] // payNotify 后重查
+      if (/SELECT status, received, first_payment_amount FROM sale_orders/.test(sql)) {
+        return [{ status: '已支付', received: 100, first_payment_amount: null }]
+      }
       if (/FROM sale_orders/.test(sql)) return [{
         sale_order_id: 'FY-001', status: '待支付', store_id: 'store-1',
         lakala_out_order_no: 'FY-001_1700000000', client_user_id: 'user-001', payment_method: '微信',
@@ -1387,6 +1414,44 @@ describe('order.confirmPayment', () => {
         }),
       })
     )
+  })
+
+  test('历史状态已是部分支付：拉卡拉尚未成功时不把旧状态当本场次到账；成功后以 ACK/实收增长确认', async () => {
+    let afterNotify = false
+    pg.query.mockImplementation(async (sql) => {
+      if (/SELECT status, received, first_payment_amount FROM sale_orders/.test(sql)) {
+        afterNotify = true
+        return [{ status: '部分支付', received: 1000, first_payment_amount: null }]
+      }
+      if (/FROM sale_orders/.test(sql)) return [{
+        sale_order_id: 'FY-PARTIAL', status: '部分支付', store_id: 'store-1',
+        lakala_out_order_no: 'FY-PARTIAL_1700000000', client_user_id: 'user-001', payment_method: '微信',
+        received: 500, first_payment_amount: 500,
+      }]
+      if (/lakala_merchants/.test(sql)) return [{ merchant_no: 'M1', term_no: 'T1', enabled: true }]
+      return []
+    })
+    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({
+      ok: true, tradeState: 'CREATE', tradeNo: 'LAK-PARTIAL', totalAmountFen: 50000, raw: {},
+    })
+
+    const waitingCtx = createBoundCtx({ saleOrderId: 'FY-PARTIAL' })
+    await routes.confirmPayment(waitingCtx)
+    expect(waitingCtx.result.status).toBe('部分支付')
+    expect(waitingCtx.result.reconciled).toBe(false)
+    expect(waitingCtx.result.received).toBe(500)
+    expect(waitingCtx.result.firstPaymentAmount).toBe(500)
+    expect(afterNotify).toBe(false)
+
+    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({
+      ok: true, tradeState: 'SUCCESS', tradeNo: 'LAK-PARTIAL', totalAmountFen: 50000, raw: {},
+    })
+    const paidCtx = createBoundCtx({ saleOrderId: 'FY-PARTIAL' })
+    await routes.confirmPayment(paidCtx)
+    expect(paidCtx.result.status).toBe('部分支付')
+    expect(paidCtx.result.reconciled).toBe(true)
+    expect(paidCtx.result.received).toBe(1000)
+    expect(paidCtx.result.firstPaymentAmount).toBeNull()
   })
 
   test('终态（已支付）→ skip，不查拉卡拉也不调入账', async () => {
