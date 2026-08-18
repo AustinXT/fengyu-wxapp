@@ -90,11 +90,12 @@ function performanceEventDateBetween(
     AND ${sql.raw(`${eventAlias}.performance_date`)} BETWEEN ${start} AND ${end}`
 }
 
-/** 行表 → store_id → value 映射 */
+/** 行表 → store_id / market_id → value 映射 */
 function toMap(rows: unknown): Map<string, number> {
   const m = new Map<string, number>()
   for (const r of rows as Array<Record<string, unknown>>) {
-    m.set(String(r.store_id), Number(r.v ?? 0))
+    const id = r.store_id ?? r.market_id
+    if (id != null) m.set(String(id), Number(r.v ?? 0))
   }
   return m
 }
@@ -241,7 +242,7 @@ export const getEfficiencyBoard = withPermission(
     `)
 
     // ═══════════════════════════════════════════════════════════════════
-    //  Part B — 按门店分组聚合（byMarket 明细用，JS 内按 market 合并）
+    //  Part B — 门店事件聚合 + 市场内去重客流（byMarket 明细用）
     // ═══════════════════════════════════════════════════════════════════
 
     const skeleton = scopeStoreSkeletonSql(session, scope)
@@ -339,15 +340,19 @@ export const getEfficiencyBoard = withPermission(
       GROUP BY so.store_id
     `)
 
-    /** 客流 by store */
-    const qFootfallByStore = db.execute(sql`
-      SELECT so.store_id, COUNT(DISTINCT so.client_user_id) AS v
+    /**
+     * 客流 by market：市场内 DISTINCT 顾客，不能由门店去重客流相加。
+     * 金额、实耗、项目数仍保留各门店事件汇总；这里只有人数需要跨店再去重。
+     */
+    const qFootfallByMarket = db.execute(sql`
+      WITH skel AS (${skeleton})
+      SELECT sk.market_id, COUNT(DISTINCT so.client_user_id) AS v
       FROM service_orders so
-      WHERE ${scopeFilterSql(session, scope, 'so.store_id')}
-        AND so.status = '已完成'
+      JOIN skel sk ON sk.store_id = so.store_id
+      WHERE so.status = '已完成'
         AND so.client_user_id IS NOT NULL
         AND so.service_date BETWEEN ${cur.start} AND ${cur.end}
-      GROUP BY so.store_id
+      GROUP BY sk.market_id
     `)
 
     /** 项目数 by store */
@@ -701,7 +706,7 @@ export const getEfficiencyBoard = withPermission(
       // Part B
       skelRows, managerByStoreR, techByStoreR, revenueByStoreR, consumeByStoreR,
       shengmeiConsumeByStoreR, salesCommByStoreR, serviceCommByStoreR,
-      footfallByStoreR, projectByStoreR,
+      footfallByMarketR, projectByStoreR,
       // Part C
       storeRankRevenueR, storeRankConsumeR, storeRankRetainedR, storeRankNewMemberR, storeRankProjectR,
       // Part D
@@ -713,7 +718,7 @@ export const getEfficiencyBoard = withPermission(
       qFootfallTotal, qProjectCountTotal, qMemberCount, qTechnicianCount, qManagerCount,
       qStoreSkeleton, qManagerByStore, qTechByStore, qRevenueByStore, qConsumeByStore,
       qShengmeiConsumeByStore, qSalesCommByStore, qServiceCommByStore,
-      qFootfallByStore, qProjectByStore,
+      qFootfallByMarket, qProjectByStore,
       qStoreRankRevenue, qStoreRankConsume, qStoreRankRetainedMember, qStoreRankNewMember, qStoreRankProjectCount,
       qStaffRankRevenue, qStaffRankConsume, qStaffRankNewMember, qStaffRankProjectCount, qStaffRankIncome,
       qStaffDetail,
@@ -741,7 +746,7 @@ export const getEfficiencyBoard = withPermission(
       empAvgProjects: mk(ratio(projectCountTotal, technicianCount), 'count'),
     }
 
-    // ── byMarket 装配（按门店聚合到市场，再算各项人均）──────────────────
+    // ── byMarket 装配（事件指标按门店汇总；客流直接取市场去重值）─────────
     const managerMap = toMap(managerByStoreR)
     const techMap = toMap(techByStoreR)
     const revMap = toMap(revenueByStoreR)
@@ -749,7 +754,7 @@ export const getEfficiencyBoard = withPermission(
     const shengmeiConsMap = toMap(shengmeiConsumeByStoreR)
     const salesCommMap = toMap(salesCommByStoreR)
     const serviceCommMap = toMap(serviceCommByStoreR)
-    const footfallMap = toMap(footfallByStoreR)
+    const footfallByMarketMap = toMap(footfallByMarketR)
     const projectMap = toMap(projectByStoreR)
 
     type MarketAgg = {
@@ -761,7 +766,6 @@ export const getEfficiencyBoard = withPermission(
       consume: number
       shengmeiConsume: number
       income: number
-      footfall: number
       projectCount: number
     }
     const marketMap = new Map<string, MarketAgg>()
@@ -779,7 +783,6 @@ export const getEfficiencyBoard = withPermission(
           consume: 0,
           shengmeiConsume: 0,
           income: 0,
-          footfall: 0,
           projectCount: 0,
         }
         marketMap.set(marketId, m)
@@ -790,7 +793,6 @@ export const getEfficiencyBoard = withPermission(
       m.consume += consMap.get(storeId) ?? 0
       m.shengmeiConsume += shengmeiConsMap.get(storeId) ?? 0
       m.income += (salesCommMap.get(storeId) ?? 0) + (serviceCommMap.get(storeId) ?? 0)
-      m.footfall += footfallMap.get(storeId) ?? 0
       m.projectCount += projectMap.get(storeId) ?? 0
     }
 
@@ -805,7 +807,7 @@ export const getEfficiencyBoard = withPermission(
         techAvgConsume: ratio(m.consume, m.technicianCount),
         techAvgShengmeiConsume: ratio(m.shengmeiConsume, m.technicianCount),
         techAvgIncome: ratio(m.income, m.technicianCount),
-        techAvgMembers: ratio(m.footfall, m.technicianCount),
+        techAvgMembers: ratio(footfallByMarketMap.get(m.marketId) ?? 0, m.technicianCount),
         techAvgProjects: ratio(m.projectCount, m.technicianCount),
       },
     }))

@@ -271,4 +271,47 @@ describe('getCustomerBoard 装配', () => {
     expect(m.metrics.convRate).toBeNull()
     expect(m.metrics.consumePerVisit).toBeNull()
   })
+
+  it('市场消费经营直接使用市场内去重结果，不累加跨店顾客', async () => {
+    responder.skeletonRows = [
+      { market_id: 'm1', market_name: '市场A', store_id: 's1', store_name: '门店1' },
+      { market_id: 'm1', market_name: '市场A', store_id: 's2', store_name: '门店2' },
+    ]
+    const reg = {
+      registered: 0, retained: 0, visit_once: 0, visit_twice: 0,
+      dormant: 0, react_dormant: 0, frozen: 0, react_frozen: 0, deep: 0, react_deep: 0,
+    }
+    responder.regActiveRows = [
+      { group_id: 'm1', ...reg },
+      { group_id: 's1', ...reg },
+      { group_id: 's2', ...reg },
+    ]
+    // 两店各有同一顾客：市场聚合 SQL 已先去重，市场行不能变成门店行之和。
+    const byStore = {
+      bucket_d: 1, bucket_c: 0, bucket_b: 0, bucket_a: 0, bucket_v: 0, bucket_vic: 0,
+      operated_total: 0, member_spend_total: 1000, member_spend_count: 1,
+      new_members: 0, new_spend: 0, traffic_customers: 1, traffic_visits: 1,
+      member_visits: 0, project_count: 0, sm_total: 0, service_count: 1,
+    }
+    responder.opsRows = [
+      {
+        group_id: 'm1',
+        ...byStore,
+        member_spend_total: 2000,
+        traffic_customers: 1,
+        traffic_visits: 2,
+        service_count: 2,
+      },
+      { group_id: 's1', ...byStore },
+      { group_id: 's2', ...byStore },
+    ]
+
+    const res = await getCustomerBoard(PARAMS)
+    const market = res.byMarket.find((row) => row.groupId === 'm1')!
+
+    expect(market.metrics.bucketD).toBe(1)
+    expect(market.metrics.trafficCustomers).toBe(1)
+    expect(market.metrics.trafficVisits).toBe(2)
+    expect(market.metrics.memberAvgTicket).toBe(2000)
+  })
 })

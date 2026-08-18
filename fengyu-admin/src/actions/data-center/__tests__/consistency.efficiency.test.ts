@@ -178,6 +178,16 @@ describe('数据中心人效板块两端口径一致性守护', () => {
     })
   })
 
+  describe('市场人效客流在市场内去重', () => {
+    it('市场技师人均会员量使用 market_id + DISTINCT 顾客，不累加门店客流', () => {
+      expect(adminBody).toMatch(/qFootfallByMarket/i)
+      expect(adminBody).toMatch(/SELECT\s+sk\.market_id\s*,\s*COUNT\(DISTINCT\s+so\.client_user_id\)\s+AS\s+v/i)
+      expect(adminBody).toMatch(/GROUP BY\s+sk\.market_id/i)
+      expect(adminBody).toMatch(/techAvgMembers:\s*ratio\(footfallByMarketMap\.get\(m\.marketId\)/i)
+      expect(adminBody).not.toMatch(/m\.footfall\s*\+=/i)
+    })
+  })
+
   describe('★ 改造守护：efficiency.ts ranking 用 BETWEEN 区间，而非 date_trunc period', () => {
     it('admin efficiency.ts 含 BETWEEN 区间过滤（跟随顶部 TimeRange）', () => {
       // 业绩/实耗/项目数/新会员 等均按 performance_date/service_date/became_member_at BETWEEN 区间。

@@ -2,7 +2,7 @@
 import { callStaffApi } from '../../utils/cloud';
 import { isManager, getStaffWfId, isManagementMode } from '../../utils/role';
 import { STATUS_CLASS, ORDER_TYPE_LABEL, formatDateTime, formatDate } from '../../utils/formatters';
-import { groupTreatmentCards, sumGroupValue } from '../../utils/treatment-card-group';
+import { getTreatmentCardBusinessIdentity, groupTreatmentCards, sumGroupValue } from '../../utils/treatment-card-group';
 
 const PAY_TYPE_LABEL: Record<string, string> = {
   wechat: '微信支付',
@@ -340,53 +340,16 @@ Page({
         };
       });
 
-      // 拆分后的寄存行优先按稳定行组聚合；其余历史行沿用原有的业务快照分组。
+      // 疗程卡仅在完整业务快照一致时合并；非疗程商品始终按原始行隔离。
       // 退款与回款仍继续读取原始 items。
       const displayItems = groupTreatmentCards(items, {
         getId: (item) => item.saleItemId,
         getQuantity: (item) => item.quantity,
         preserveNonUnitQuantity: false,
-        getIdentity: (item) => item.saleItemGroupId
-          ? { saleItemGroupId: item.saleItemGroupId }
-          : ({
-          sourceId: item.isTreatmentCard ? undefined : item.saleItemId,
-          saleOrderId: item.saleOrderId,
-          orderStatus: o.status,
-          saleOrderType: o.sale_order_type,
-          documentType: o.document_type,
-          legacySource: o.legacy_source,
-          saleOrderDatetime: o.sale_order_datetime,
-          paidAt: o.paid_at,
-          storeId: o.store_id,
-          marketName: o.market_name,
-          skuId: item.skuId,
-          itemDirection: item.itemDirection,
-          refSaleItemId: item.refSaleItemId,
-          productType: item.productType,
-          itemName: item.itemName,
-          spec: item.spec,
-          totalPrice: item.totalPrice,
-          saleAmount: item.saleAmount,
-          received: item.received,
-          refundedAmount: item.refundedAmount,
-          repayable: item.repayable,
-          sessionCount: item.sessionCount,
-          remainingSessions: item.remainingSessions,
-          paidSessions: item.paidSessions ?? null,
-          usedSessions: item.usedSessions,
-          paidUnusedSessions: item.paidUnusedSessions,
-          unit: item.unit,
-          unitPrice: item.unitPrice,
-          unitRealPrice: item.unitRealPrice,
-          pendingReceived: item.pendingReceived,
-          overpayRefundable: item.overpayRefundable,
-          expireDate: item.expireDate,
-          salesCategory: item.salesCategory,
-          pickedUpQuantity: item.pickedUpQuantity,
-          hasDiscount: item.hasDiscount,
-          remark: item.remark,
-          quantity: item.quantity,
-        }),
+        getIdentity: (item) => {
+          const identity = getTreatmentCardBusinessIdentity(item);
+          return item.isTreatmentCard ? identity : { ...identity, sourceId: item.saleItemId };
+        },
       }).map((group) => {
         const primary = group.primary;
         const aggregate = {
