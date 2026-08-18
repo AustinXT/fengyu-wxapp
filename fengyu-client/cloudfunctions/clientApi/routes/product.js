@@ -23,7 +23,8 @@ function marketScopeValues(scopeExpr) {
  *
  * admin 保存的是逗号分隔的市场 org_nodes.id；历史数据可能是市场名。
  * 顾客端只有 boundStoreId / boundMarketName，因此优先用门店反查市场 id/name，
- * 同时兼容旧的名称匹配。未绑门店时只允许全局可见数据。
+ * 同时兼容旧的名称匹配。普通商城浏览在未绑门店时先按商品层全市场准入，
+ * 再允许该商品下配置了具体市场的有效 SKU 用于展示。
  *
  * 语义约定（2026-08-06 修复）：
  * - NULL = 全部市场可见
@@ -65,6 +66,25 @@ function buildMarketScopeFilter(auth, params, tableAlias) {
 }
 
 /**
+ * 普通商城浏览的 SKU 可见范围过滤。
+ *
+ * 未绑定门店时，商品层的 market_scope 已由调用方严格限定为 NULL（全部市场）。
+ * 此时允许商品下的指定市场 SKU 展示，只有空字符串（明确表示任何市场不可见）
+ * 仍需排除。绑定门店或仅有历史市场名时，沿用标准门店/市场范围过滤。
+ */
+function buildCatalogSkuMarketScopeFilter(auth, params, tableAlias = 'sk') {
+  const hasStore = Boolean(auth?.boundStoreId)
+  const hasMarket = Boolean(auth?.boundMarketName)
+
+  if (!hasStore && !hasMarket) {
+    const scopeExpr = `${tableAlias}.market_scope`
+    return `AND (${scopeExpr} IS NULL OR btrim(${scopeExpr}) <> '')`
+  }
+
+  return buildMarketScopeFilter(auth, params, tableAlias)
+}
+
+/**
  * 计算 SPU 列表展示价（priceFrom / listPriceFrom）
  *
  * 组合套餐（is_bundle）展示套餐总价（SPU 的 special_price / price），
@@ -96,7 +116,7 @@ function computeListPriceFrom(product, skus) {
 async function getCategoriesList(auth) {
   const params = []
   const productMarketScopeFilter = buildMarketScopeFilter(auth, params, 'p')
-  const skuMarketScopeFilter = buildMarketScopeFilter(auth, params, 'sk')
+  const skuMarketScopeFilter = buildCatalogSkuMarketScopeFilter(auth, params, 'sk')
 
   const sql = `
     SELECT
@@ -128,7 +148,7 @@ async function getCategoriesList(auth) {
 async function getCategoryGroups(auth) {
   const params = []
   const productMarketScopeFilter = buildMarketScopeFilter(auth, params, 'p')
-  const skuMarketScopeFilter = buildMarketScopeFilter(auth, params, 'sk')
+  const skuMarketScopeFilter = buildCatalogSkuMarketScopeFilter(auth, params, 'sk')
 
   const sql = `
     SELECT
@@ -185,7 +205,7 @@ async function getProductListByCategory({ categoryId, auth, keyword }) {
   }
 
   // 仅返回有有效 SKU 的商品
-  const existsSkuMarketScopeFilter = buildMarketScopeFilter(auth, params, 'sk')
+  const existsSkuMarketScopeFilter = buildCatalogSkuMarketScopeFilter(auth, params, 'sk')
   whereClause += ` AND EXISTS (
     SELECT 1 FROM mall_product_skus mps
     JOIN product_skus sk ON mps.sku_id = sk.sku_id
@@ -213,7 +233,7 @@ async function getProductListByCategory({ categoryId, auth, keyword }) {
   let allSkus = []
   if (productIds.length > 0) {
     const skuParams = [productIds]
-    const skuMarketScopeFilter = buildMarketScopeFilter(auth, skuParams, 'sk')
+    const skuMarketScopeFilter = buildCatalogSkuMarketScopeFilter(auth, skuParams, 'sk')
     allSkus = await pg.query(`
       SELECT
         mps.product_id, sk.sku_id, sk.product_type, sk.spec_name,
@@ -354,7 +374,7 @@ async function hotList(ctx) {
   const { limit = 6 } = ctx.event.payload || {}
   const params = [limit]
   const productMarketScopeFilter = buildMarketScopeFilter(ctx.auth, params, 'p')
-  const existsSkuMarketScopeFilter = buildMarketScopeFilter(ctx.auth, params, 'sk')
+  const existsSkuMarketScopeFilter = buildCatalogSkuMarketScopeFilter(ctx.auth, params, 'sk')
 
   const productRows = await pg.query(`
     SELECT
@@ -382,7 +402,7 @@ async function hotList(ctx) {
   let allSkus = []
   if (productIds.length > 0) {
     const skuParams = [productIds]
-    const skuMarketScopeFilter = buildMarketScopeFilter(ctx.auth, skuParams, 'sk')
+    const skuMarketScopeFilter = buildCatalogSkuMarketScopeFilter(ctx.auth, skuParams, 'sk')
     allSkus = await pg.query(`
       SELECT mps.product_id, sk.sku_id, sk.price, sk.special_price, mps.bundle_price
       FROM mall_product_skus mps
@@ -446,7 +466,7 @@ async function spuDetail(ctx) {
 
   // PR-D：JOIN product_categories pc → parent_pc，带出 product_kind + kind_display_color
   const skuParams = [productId]
-  const skuMarketScopeFilter = buildMarketScopeFilter(ctx.auth, skuParams, 'sk')
+  const skuMarketScopeFilter = buildCatalogSkuMarketScopeFilter(ctx.auth, skuParams, 'sk')
   const skuList = await pg.query(`
     SELECT
       sk.sku_id, sk.product_type, sk.spec_name,

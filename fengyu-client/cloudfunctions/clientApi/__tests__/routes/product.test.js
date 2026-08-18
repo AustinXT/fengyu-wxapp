@@ -26,14 +26,15 @@ describe('product.categories', () => {
     expect(ctx.result.categories[0].category_name).toBe('护理项目')
   })
 
-  test('无市场绑定时过滤 market_scope IS NULL', async () => {
+  test('未绑定门店时商品要求全市场，但允许指定市场 SKU 参与目录展示', async () => {
     pg.query.mockResolvedValueOnce([])
 
     const ctx = createNewUserCtx()
     await routes.categories(ctx)
 
     expect(pg.query.mock.calls[0][0]).toContain('p.market_scope IS NULL')
-    expect(pg.query.mock.calls[0][0]).toContain('sk.market_scope IS NULL')
+    expect(pg.query.mock.calls[0][0]).toContain("sk.market_scope IS NULL OR btrim(sk.market_scope) <> ''")
+    expect(pg.query.mock.calls[0][0]).not.toContain('FROM stores s')
     expect(pg.query.mock.calls[0][1]).toEqual([])
   })
 
@@ -103,6 +104,33 @@ describe('product.spuList', () => {
     expect(ctx.result.spuList[0].listPriceFrom).toBe(599)
   })
 
+  test('未绑定门店时全市场 SPU 可带指定市场 SKU 返回', async () => {
+    pg.query.mockResolvedValueOnce([
+      { product_id: 'p-global', name: '全市场商品', category_id: 'cat-1', category_name: '护理', cover_image: '', sort_order: 1, price: 100, special_price: 80, is_bundle: false },
+    ])
+    pg.query.mockResolvedValueOnce([
+      { product_id: 'p-global', sku_id: 'sku-market', price: 100, special_price: 80, market_scope: 'market-other', sort_order: 1 },
+    ])
+
+    const ctx = createNewUserCtx({ categoryId: 'cat-1' })
+    await routes.spuList(ctx)
+
+    expect(ctx.result.spuList).toHaveLength(1)
+    expect(ctx.result.spuList[0].skuList).toHaveLength(1)
+    expect(ctx.result.spuList[0].skuList[0].sku_id).toBe('sku-market')
+
+    const [productSql, productParams] = pg.query.mock.calls[0]
+    expect(productSql).toContain('p.market_scope IS NULL')
+    expect(productSql).toContain("sk.market_scope IS NULL OR btrim(sk.market_scope) <> ''")
+    expect(productSql).not.toContain('FROM stores s')
+    expect(productParams).toEqual(['cat-1'])
+
+    const [skuSql, skuParams] = pg.query.mock.calls[1]
+    expect(skuSql).toContain("sk.market_scope IS NULL OR btrim(sk.market_scope) <> ''")
+    expect(skuSql).not.toContain('FROM stores s')
+    expect(skuParams).toEqual([['p-global']])
+  })
+
   test('商品存在性与下发 SKU 列表同步按绑定门店所属市场过滤', async () => {
     pg.query.mockResolvedValueOnce([
       { product_id: 'p1', name: '美白护理', category_id: 'cat-1', category_name: '护理', cover_image: '', sort_order: 1, price: 100, special_price: 80, is_bundle: false },
@@ -137,6 +165,28 @@ describe('product.spuList', () => {
     await routes.spuList(ctx)
 
     expect(ctx.result.spuList).toEqual([])
+  })
+})
+
+describe('product.search', () => {
+  test('未绑定门店时可搜索到全市场 SPU 的指定市场 SKU', async () => {
+    pg.query.mockResolvedValueOnce([
+      { product_id: 'p-global', name: '全市场商品', category_id: 'cat-1', category_name: '护理', cover_image: '', sort_order: 1, price: 100, special_price: 80, is_bundle: false },
+    ])
+    pg.query.mockResolvedValueOnce([
+      { product_id: 'p-global', sku_id: 'sku-market', price: 100, special_price: 80, market_scope: 'market-other', sort_order: 1 },
+    ])
+
+    const ctx = createNewUserCtx({ keyword: '全市场' })
+    await routes.search(ctx)
+
+    expect(ctx.result.spuList).toHaveLength(1)
+    expect(ctx.result.spuList[0].skuList[0].sku_id).toBe('sku-market')
+
+    const [productSql, productParams] = pg.query.mock.calls[0]
+    expect(productSql).toContain('p.market_scope IS NULL')
+    expect(productSql).toContain("sk.market_scope IS NULL OR btrim(sk.market_scope) <> ''")
+    expect(productParams).toEqual(['%全市场%'])
   })
 })
 
@@ -241,6 +291,32 @@ describe('product.spuDetail', () => {
     expect(skuParams).toEqual(['p1', ['store-nanchang']])
   })
 
+  test('未绑定门店时全市场商品详情包含指定市场 SKU', async () => {
+    pg.query.mockResolvedValueOnce([{
+      product_id: 'p-global', name: '全市场商品', category_id: 'cat-1',
+      category_name: '护理', cover_image: '', description: '', sort_order: 1,
+      price: 100, special_price: 80, is_bundle: false,
+    }])
+    pg.query.mockResolvedValueOnce([
+      { sku_id: 'sku-market', price: 100, special_price: 80, market_scope: 'market-other', sort_order: 1 },
+    ])
+
+    const ctx = createNewUserCtx({ productId: 'p-global' })
+    await routes.spuDetail(ctx)
+
+    expect(ctx.result.spu.skuList).toHaveLength(1)
+    expect(ctx.result.spu.skuList[0].sku_id).toBe('sku-market')
+
+    const [productSql, productParams] = pg.query.mock.calls[0]
+    expect(productSql).toContain('p.market_scope IS NULL')
+    expect(productParams).toEqual(['p-global'])
+
+    const [skuSql, skuParams] = pg.query.mock.calls[1]
+    expect(skuSql).toContain("sk.market_scope IS NULL OR btrim(sk.market_scope) <> ''")
+    expect(skuSql).not.toContain('FROM stores s')
+    expect(skuParams).toEqual(['p-global'])
+  })
+
   test('缺少 productId → INVALID_PARAMS', async () => {
     const ctx = createCtx({ payload: {} })
     await expect(routes.spuDetail(ctx)).rejects.toThrow(/INVALID_PARAMS.*productId/)
@@ -278,6 +354,25 @@ describe('product.hotList', () => {
     expect(skuSql).toContain('sk.market_scope')
     expect(skuSql).toContain('FROM stores s')
     expect(skuParams).toEqual([['p1'], ['store-001']])
+  })
+
+  test('未绑定门店时全市场商品可带指定市场 SKU 出现在热门列表', async () => {
+    pg.query.mockResolvedValueOnce([
+      { product_id: 'p-global', name: '热门全市场商品', category_id: 'c1', category_name: '护理', cover_image: '', sort_order: 1, price: 100, special_price: 80, is_bundle: false },
+    ])
+    pg.query.mockResolvedValueOnce([
+      { product_id: 'p-global', sku_id: 'sku-market', price: 100, special_price: 80, market_scope: 'market-other', sort_order: 1 },
+    ])
+
+    const ctx = createNewUserCtx({ limit: 3 })
+    await routes.hotList(ctx)
+
+    expect(ctx.result.spuList).toHaveLength(1)
+    expect(ctx.result.spuList[0].priceFrom).toBe(80)
+    expect(pg.query.mock.calls[0][0]).toContain("sk.market_scope IS NULL OR btrim(sk.market_scope) <> ''")
+    expect(pg.query.mock.calls[0][1]).toEqual([3])
+    expect(pg.query.mock.calls[1][0]).toContain("sk.market_scope IS NULL OR btrim(sk.market_scope) <> ''")
+    expect(pg.query.mock.calls[1][1]).toEqual([['p-global']])
   })
 })
 
@@ -329,6 +424,24 @@ describe('product.shopInit', () => {
 
     expect(ctx.result.categories).toEqual([])
     expect(ctx.result.spuList).toEqual([])
+  })
+
+  test('未绑定门店时分类与分组查询允许全市场 SPU 的指定市场 SKU', async () => {
+    pg.query
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+
+    const ctx = createNewUserCtx()
+    await routes.shopInit(ctx)
+
+    expect(ctx.result.categories).toEqual([])
+    expect(ctx.result.spuList).toEqual([])
+    for (const [sql, params] of pg.query.mock.calls) {
+      expect(sql).toContain('p.market_scope IS NULL')
+      expect(sql).toContain("sk.market_scope IS NULL OR btrim(sk.market_scope) <> ''")
+      expect(sql).not.toContain('FROM stores s')
+      expect(params).toEqual([])
+    }
   })
 })
 
