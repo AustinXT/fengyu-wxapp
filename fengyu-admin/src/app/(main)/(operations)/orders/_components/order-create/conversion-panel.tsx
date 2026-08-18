@@ -20,7 +20,7 @@ import { Separator } from "@/components/ui/separator"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import type { HeldCardCandidate } from "@/actions/cards"
-import { groupTreatmentCards, selectGroupSourceIds, sumGroupValue } from "@/lib/treatment-card-group"
+import { getTreatmentCardBusinessIdentity, groupTreatmentCards, selectGroupSourceIds, sumGroupValue } from "@/lib/treatment-card-group"
 
 export interface ConversionPanelProps {
   /** 加载中（父组件正在调用 getCustomerHeldCards） */
@@ -66,43 +66,7 @@ function groupHeldCards(cards: HeldCardCandidate[]): GroupedHeldCardCandidate[] 
   return groupTreatmentCards(cards, {
     getId: (card) => card.saleItemId,
     getQuantity: (card) => card.quantity,
-    getIdentity: (card) => card.saleItemGroupId
-      ? { saleItemGroupId: card.saleItemGroupId }
-      : ({
-      saleOrderId: card.saleOrderId,
-      saleOrderDatetime: card.saleOrderDatetime,
-      paidAt: card.paidAt,
-      orderStatus: card.orderStatus,
-      saleOrderType: card.saleOrderType,
-      documentType: card.documentType,
-      marketName: card.marketName,
-      legacySource: card.legacySource,
-      storeId: card.storeId,
-      skuId: card.skuId,
-      itemDirection: card.itemDirection,
-      refSaleItemId: card.refSaleItemId,
-      productName: card.productName,
-      productType: card.productType,
-      unit: card.unit,
-      quantity: card.quantity,
-      sessionCount: card.sessionCount,
-      remainingSessions: card.remainingSessions,
-      paidSessions: card.paidSessions,
-      remainingQty: card.remainingQty,
-      unitPrice: card.unitPrice,
-      unitRealPrice: card.unitRealPrice,
-      saleAmount: card.saleAmount,
-      received: card.received,
-      pendingReceived: card.pendingReceived,
-      deductibleAmount: card.deductibleAmount,
-      expireDate: card.expireDate,
-      remark: card.remark,
-      salesCategory: card.salesCategory,
-      pickedUpQuantity: card.pickedUpQuantity,
-      productKind: card.productKind,
-      categoryId: card.categoryId,
-      categoryName: card.categoryName,
-    }),
+    getIdentity: (card) => getTreatmentCardBusinessIdentity(card),
   }).map((group) => {
     const primary = group.primary
     return {

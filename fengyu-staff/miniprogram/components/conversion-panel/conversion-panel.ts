@@ -13,7 +13,7 @@
 // 不依赖父组件重渲染：props 变化由 observer 触发 loadCards
 
 import { callStaffApi } from '../../utils/cloud'
-import { groupTreatmentCards, selectGroupSourceIds, sumGroupValue } from '../../utils/treatment-card-group'
+import { getTreatmentCardBusinessIdentity, groupTreatmentCards, selectGroupSourceIds, sumGroupValue } from '../../utils/treatment-card-group'
 
 interface HeldCard {
   saleItemId: string;
@@ -224,43 +224,7 @@ Component({
         const cards = groupTreatmentCards(data?.cards || [], {
           getId: (card) => card.saleItemId,
           getQuantity: (card) => card.quantity,
-      getIdentity: (card) => card.saleItemGroupId
-        ? { saleItemGroupId: card.saleItemGroupId }
-        : ({
-            sourceSaleOrderId: card.sourceSaleOrderId,
-            saleOrderDatetime: card.saleOrderDatetime,
-            paidAt: card.paidAt,
-            orderStatus: card.orderStatus,
-            saleOrderType: card.saleOrderType,
-            documentType: card.documentType,
-            marketName: card.marketName,
-            legacySource: card.legacySource,
-            storeId: card.storeId,
-            skuId: card.skuId,
-            itemDirection: card.itemDirection,
-            refSaleItemId: card.refSaleItemId,
-            productName: card.productName,
-            productType: card.productType,
-            unit: card.unit,
-            remainingSessions: card.remainingSessions,
-            remainingQuantity: card.remainingQuantity,
-            sessionCount: card.sessionCount,
-            paidSessions: card.paidSessions,
-            unitPrice: card.unitPrice,
-            unitRealPrice: card.unitRealPrice,
-            saleAmount: card.saleAmount,
-            received: card.received,
-            pendingReceived: card.pendingReceived,
-            deductibleAmount: card.deductibleAmount,
-            expireDate: card.expireDate,
-            remark: card.remark,
-            salesCategory: card.salesCategory,
-            pickedUpQuantity: card.pickedUpQuantity,
-            productKind: card.productKind,
-            categoryId: card.categoryId,
-            categoryName: card.categoryName,
-        quantity: card.quantity ?? 1,
-      }),
+          getIdentity: (card) => getTreatmentCardBusinessIdentity(card),
         }).map((group) => {
           const primary = group.primary;
           return {

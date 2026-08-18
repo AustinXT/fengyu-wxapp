@@ -16,7 +16,7 @@ import { maskPhone } from "@/lib/pii";
 import { DangerZoneDelete } from "@/components/delete-action";
 import { actionErrorMessage } from "@/lib/action-error";
 import { approveDepositOrder, deleteOrder, rejectDepositOrder } from "@/actions/orders";
-import { groupTreatmentCards, sumGroupValue } from "@/lib/treatment-card-group";
+import { getTreatmentCardBusinessIdentity, groupTreatmentCards, sumGroupValue } from "@/lib/treatment-card-group";
 import { PerformanceAttributionDialog } from "./performance-attribution-dialog";
 
 /** ticket 2026-04-24 PR-3 §3.3 — change_type/status 中文展示，退款金额红色 */
@@ -101,42 +101,10 @@ function getDisplaySaleItems(order: SaleOrder, items: NonNullable<SaleOrder["ite
     getId: (item) => item.saleItemId,
     getQuantity: (item) => item.quantity,
     preserveNonUnitQuantity: false,
-    getIdentity: (item) => item.saleItemGroupId
-      ? { saleItemGroupId: item.saleItemGroupId }
-      : ({
-      // 历史无分组行保持原有规则；非疗程卡仍逐行展示。
-      sourceId: item.sessionCount === null ? item.saleItemId : undefined,
-      saleOrderId: order.saleOrderId,
-      orderStatus: order.status,
-      saleOrderType: order.saleOrderType,
-      documentType: order.documentType,
-      storeId: order.storeId,
-      marketName: order.marketName,
-      saleOrderDatetime: order.saleOrderDatetime,
-      paidAt: order.paidAt,
-      itemDirection: item.itemDirection,
-      refSaleItemId: item.refSaleItemId,
-      skuId: item.skuId,
-      unit: item.unit,
-      sessionCount: item.sessionCount,
-      remainingSessions: item.remainingSessions,
-      paidSessions: item.paidSessions,
-      unitPrice: item.unitPrice,
-      quantity: item.quantity,
-      unitRealPrice: item.unitRealPrice,
-      saleAmount: item.saleAmount,
-      received: item.received,
-      pendingReceived: item.pendingReceived,
-      expireDate: item.expireDate,
-      pickedUpQuantity: item.pickedUpQuantity,
-      remark: item.remark,
-      salesCategory: item.salesCategory,
-      skuName: item.skuName,
-      productName: item.productName,
-      productKind: item.productKind,
-      categoryId: item.categoryId,
-      categoryName: item.categoryName,
-    }),
+    getIdentity: (item) => {
+      const identity = getTreatmentCardBusinessIdentity(item)
+      return item.productType === "疗程卡" ? identity : { ...identity, sourceId: item.saleItemId }
+    },
   }).map((group) => {
     const primary = group.primary;
     const aggregate = {

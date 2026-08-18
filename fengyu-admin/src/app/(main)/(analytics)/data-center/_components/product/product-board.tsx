@@ -7,14 +7,14 @@ import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { parseBoardParams } from "@/lib/data-center/params"
 import { getProductBoard } from "@/actions/data-center/product"
 import { KpiGrid, type KpiGridItem } from "../kpi-card"
-import { BreakdownTable, type BreakdownColumn } from "../breakdown-table"
+import { BreakdownTable } from "../breakdown-table"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import type { ProductBoardParams, ProductBoardResult } from "@/lib/data-center/types"
 
 // ── KPI 卡片矩阵（key 对应后端 ProductBoardResult.kpis）────────────────
 const KPI_CARD: KpiGridItem[] = [
-  { key: "cardHolders", label: "持卡人数", hint: "以当前时刻未用完疗程卡为准，不随时间区间变化" },
-  { key: "cardHolderRate", label: "持卡占比", hint: "持卡人数 ÷ 会员数（以当前时刻未用完疗程卡为准）" },
+  { key: "cardHolders", label: "持卡人数", hint: "已解锁次数大于 0，不随时间区间变化" },
+  { key: "cardHolderRate", label: "持卡占比", hint: "持卡人数 ÷ 会员数（截面）" },
 ]
 const KPI_CYCLE: KpiGridItem[] = [
   { key: "trialCount", label: "体验人数", hint: "区间内有购买但全历史未达标" },
@@ -25,19 +25,6 @@ const KPI_CYCLE: KpiGridItem[] = [
   { key: "repurchaseRevenue", label: "复购业绩" },
   { key: "repurchaseAvgTicket", label: "复购客单价" },
   { key: "repurchaseRate", label: "复购率", hint: "复购人数 ÷ 品项进入人数" },
-]
-
-// ── 明细表列（key 对应 byMarket/byStore[].metrics）────────────────────
-const BREAKDOWN_COLUMNS: BreakdownColumn[] = [
-  { key: "cardHolders", label: "持卡人数", unit: "count" },
-  { key: "cardHolderRate", label: "持卡占比", unit: "percent" },
-  { key: "trialCount", label: "体验人数", unit: "count" },
-  { key: "newCount", label: "品项进入人数", unit: "count" },
-  { key: "newRevenue", label: "进入业绩", unit: "amount" },
-  { key: "newAvgTicket", label: "进入客单价", unit: "amount" },
-  { key: "repurchaseCount", label: "复购人数", unit: "count" },
-  { key: "repurchaseRevenue", label: "复购业绩", unit: "amount" },
-  { key: "repurchaseRate", label: "复购率", unit: "percent" },
 ]
 
 export function ProductBoard() {
@@ -129,7 +116,7 @@ export function ProductBoard() {
       <section className="flex flex-col gap-3">
         <h2 className="text-sm font-semibold text-[var(--foreground)]">持卡情况</h2>
         <div className="text-xs text-[var(--muted-foreground)]">
-          持卡人数 / 占比为截面快照（以当前时刻未用完疗程卡为准），不随时间区间变化。
+          持卡人数 / 占比为截面快照（以当前时刻已解锁次数大于 0 为准），不随时间区间变化。
         </div>
         <KpiGrid items={KPI_CARD} kpis={kpis} columns={2} />
       </section>
@@ -149,23 +136,16 @@ export function ProductBoard() {
         <TabsContent value="market">
           <BreakdownTable
             rows={data?.byMarket ?? []}
-            columns={BREAKDOWN_COLUMNS}
-            firstColLabel="市场"
             loading={loading}
             exportFilename={`品项明细_按市场_${label}`}
-            exportSheetName="品项明细_按市场"
             exportView="product-market"
           />
         </TabsContent>
         <TabsContent value="store">
           <BreakdownTable
             rows={data?.byStore ?? []}
-            columns={BREAKDOWN_COLUMNS}
-            firstColLabel="门店"
-            showMarket
             loading={loading}
             exportFilename={`品项明细_按门店_${label}`}
-            exportSheetName="品项明细_按门店"
             exportView="product-store"
           />
         </TabsContent>

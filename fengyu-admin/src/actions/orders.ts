@@ -1215,7 +1215,7 @@ export const exportOrders = withPermission(
       : await rechargeQuery.limit(limit + 1).offset(cursor.rechargeOffset)
 
     // 普通转换单旧卡价值高于转入商品时，差额会形成一笔 card_transactions 充值流水。
-    // 该资产变动不属于支付，但必须作为独立明细行导出，才能与转换单的转出/转入金额勾稽。
+    // 该资产变动不属于支付，但在订单明细导出中归入储值卡通道，才能与转换单的转出/转入金额逐行勾稽。
     const cardCreditQuery = db
       .select({
         marketName: saleOrders.marketName,
@@ -1402,7 +1402,7 @@ export const exportOrders = withPermission(
           customerSource: r.customerSource ?? null,
           promoterEmployeeName: r.promoterEmployeeName ?? null,
           totalAmount: r.amount,
-          prepaidCardAmount: '0.00',
+          prepaidCardAmount: r.amount,
           cashAmount: '0.00',
           received: r.amount,
           refundedAmount: '0.00',

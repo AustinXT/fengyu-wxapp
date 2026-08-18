@@ -4,26 +4,22 @@ import { Card } from "@/components/ui/card"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { ExportButton } from "@/components/ui/export-button"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
+import {
+  getDataCenterRankingConfig,
+  type DataCenterRankingView,
+} from "@/lib/data-center/columns"
 import { formatByUnit } from "@/lib/data-center/format"
 import type { RankingRow, MetricUnit } from "@/lib/data-center/types"
-import type { DataCenterExportView } from "@/lib/export-job-types"
 import { useSearchParams } from "next/navigation"
-
-export interface RankingMetric {
-  key: string // 对应 rankings 的键
-  label: string
-  unit: MetricUnit
-}
 
 /**
  * 排名榜（泛化）：顶部 metric 切换 Tab（组件内部状态，非 URL），下方排名表。
  * 门店榜 / 员工榜共用；showMarket 控制是否展示「所属市场」列。
- * 传入 exportFilenamePrefix 时，每个 metric 表上方显示导出按钮（导出该 metric 排名）。
+ * 排名指标由 data-center/columns.ts 按 exportView 统一提供。
  */
 export function RankingBoard({
   title,
   rankings,
-  metrics,
   showMarket = true,
   loading = false,
   exportFilenamePrefix,
@@ -31,13 +27,13 @@ export function RankingBoard({
 }: {
   title: string
   rankings: Record<string, RankingRow[]>
-  metrics: RankingMetric[]
   showMarket?: boolean
   loading?: boolean
   exportFilenamePrefix?: string
-  exportView?: Extract<DataCenterExportView, 'efficiency-store-ranking' | 'efficiency-staff-ranking'>
+  exportView: DataCenterRankingView
 }) {
   const searchParams = useSearchParams()
+  const { metrics } = getDataCenterRankingConfig(exportView)
   if (metrics.length === 0) return null
 
   const columnsFor = (unit: MetricUnit): Column<RankingRow>[] => [
@@ -68,7 +64,7 @@ export function RankingBoard({
         {metrics.map((m) => (
           <TabsContent key={m.key} value={m.key}>
             <div className="flex flex-col gap-2">
-              {exportFilenamePrefix && exportView && (
+              {exportFilenamePrefix && (
                 <div className="flex justify-end">
                   <ExportButton
                     disabled={loading}

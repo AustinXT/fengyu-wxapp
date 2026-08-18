@@ -137,6 +137,23 @@ describe('品项板块两端口径一致性守护', () => {
     })
   })
 
+  describe('市场明细人数在市场内去重', () => {
+    it('市场持卡直接按 market_id + 顾客聚合，不能由门店持卡相加', () => {
+      expect(adminCode).toMatch(
+        /queryCardHoldersByGroup[\s\S]*?sk\.market_id[\s\S]*?COUNT\(DISTINCT\s+so\.client_user_id\)[\s\S]*?GROUP BY\s+\$\{groupId\}/i,
+      )
+    })
+
+    it('市场 first_entry 以 market_id 为分组键，跨市场仍分别归属', () => {
+      expect(adminCode).toMatch(
+        /entryGroupId\s*=\s*group\s*===\s*'market'\s*\?\s*sql\.raw\('sk\.market_id::text'\)/i,
+      )
+      expect(adminCode).toMatch(/first_entry\s+AS\s*\([\s\S]*?GROUP BY\s+client_user_id,\s*entry_group_id,\s*grp/i)
+      expect(adminCode).toMatch(/new_group\s+AS\s*\([\s\S]*?COUNT\(DISTINCT\s+pa\.client_user_id\)/i)
+      expect(adminCode).toMatch(/repurchase_group\s+AS\s*\([\s\S]*?COUNT\(DISTINCT\s+pa\.client_user_id\)/i)
+    })
+  })
+
   describe('cycle 进入基线纳入寄存单，复购事件仅限销售单/转换单', () => {
     it('admin', () => {
       expect(adminCode).toMatch(

@@ -22,9 +22,14 @@ import { getSalesBoard } from '@/actions/data-center/sales'
 import { getCustomerBoard } from '@/actions/data-center/customer'
 import { getProductBoard } from '@/actions/data-center/product'
 import { getEfficiencyBoard } from '@/actions/data-center/efficiency'
+import {
+  getDataCenterBreakdownConfig,
+  getDataCenterRankingConfig,
+  type DataCenterMetricColumn,
+} from '@/lib/data-center/columns'
 import { parseBoardParams } from '@/lib/data-center/params'
 import { headerWithUnit, metricCell } from '@/lib/data-center/export'
-import type { BreakdownRow, MetricUnit, RankingRow } from '@/lib/data-center/types'
+import type { BreakdownRow, RankingRow } from '@/lib/data-center/types'
 import { fmtDate, fmtDateTime } from '@/lib/datetime'
 import { formatCurrency } from '@/lib/utils'
 import {
@@ -357,105 +362,39 @@ const inventoryColumns = (canViewPrice: boolean) => mapColumns([
   { header: '更新时间', width: 20, key: 'updatedAt', map: (row) => fmtDateTime(value(row, 'updatedAt') as string | Date | null) },
 ])
 
-const dataCenterMetricColumns: Record<string, Array<{ key: string; label: string; unit: MetricUnit }>> = {
-  'sales-market': [
-    ['storeCount', '门店数', 'count'], ['technicianCount', '技师人数', 'count'],
-    ['storeRevenue', '总业绩', 'amount'], ['shengmeiRevenue', '生美业绩', 'amount'],
-    ['revenuePerStore', '业绩店均', 'amount'], ['shengmeiRevenuePerStore', '生美店均', 'amount'],
-    ['newCustomerRevenue', '新增客业绩', 'amount'], ['trafficCustomerRevenue', '流量客业绩', 'amount'],
-    ['storeConsume', '总实耗', 'amount'], ['shengmeiConsume', '生美实耗', 'amount'],
-    ['consumePerStore', '实耗店均', 'amount'], ['shengmeiConsumePerStore', '生美实耗店均', 'amount'],
-  ].map(([key, label, unit]) => ({ key, label, unit: unit as MetricUnit })),
-  'sales-store': [
-    ['technicianCount', '技师人数', 'count'], ['storeRevenue', '总业绩', 'amount'],
-    ['shengmeiRevenue', '生美业绩', 'amount'], ['newCustomerRevenue', '新增客业绩', 'amount'],
-    ['trafficCustomerRevenue', '流量客业绩', 'amount'], ['storeConsume', '总实耗', 'amount'],
-    ['shengmeiConsume', '生美实耗', 'amount'],
-  ].map(([key, label, unit]) => ({ key, label, unit: unit as MetricUnit })),
-  'customer-market-reg': [
-    ['registered', '会员注册', 'count'], ['retained', '保有会员', 'count'], ['visitOnce', '回店1次', 'count'],
-    ['visitOnceRate', '1次达成率', 'percent'], ['visitTwice', '回店2次', 'count'], ['visitTwiceRate', '2次达成率', 'percent'],
-    ['dormant', '沉睡', 'count'], ['reactivatedDormant', '激活沉睡', 'count'], ['frozen', '冰冻', 'count'],
-    ['reactivatedFrozen', '激活冰冻', 'count'], ['deep', '休眠', 'count'], ['reactivatedDeep', '激活休眠', 'count'],
-  ].map(([key, label, unit]) => ({ key, label, unit: unit as MetricUnit })),
-  'customer-market-ops': [
-    ['bucketD', '<1990', 'count'], ['bucketC', '≥1990', 'count'], ['bucketB', '≥1万', 'count'], ['bucketA', '≥3万', 'count'],
-    ['bucketV', '≥6万', 'count'], ['bucketVIC', '≥10万', 'count'], ['operatedTotal', '被经营总数', 'count'],
-    ['newMembers', '会员新增', 'count'], ['trafficCustomers', '流量客', 'count'], ['convRate', '成交率', 'percent'],
-    ['memberAvgTicket', '会员客单', 'amount'], ['newCustomerAvgTicket', '新客客单', 'amount'], ['trafficVisits', '流量人次', 'count'],
-    ['memberVisits', '会员人次', 'count'], ['projectCount', '项目数', 'count'], ['consumePerVisit', '单次客耗', 'amount'],
-  ].map(([key, label, unit]) => ({ key, label, unit: unit as MetricUnit })),
-  'product-market': [
-    ['cardHolders', '持卡人数', 'count'], ['cardHolderRate', '持卡占比', 'percent'], ['trialCount', '体验人数', 'count'],
-    ['newCount', '新增人数', 'count'], ['newRevenue', '新增业绩', 'amount'], ['newAvgTicket', '新增客单价', 'amount'],
-    ['repurchaseCount', '复购人数', 'count'], ['repurchaseRevenue', '复购业绩', 'amount'], ['repurchaseRate', '复购率', 'percent'],
-  ].map(([key, label, unit]) => ({ key, label, unit: unit as MetricUnit })),
-  'product-store': [
-    ['cardHolders', '持卡人数', 'count'], ['cardHolderRate', '持卡占比', 'percent'], ['trialCount', '体验人数', 'count'],
-    ['newCount', '新增人数', 'count'], ['newRevenue', '新增业绩', 'amount'], ['newAvgTicket', '新增客单价', 'amount'],
-    ['repurchaseCount', '复购人数', 'count'], ['repurchaseRevenue', '复购业绩', 'amount'], ['repurchaseRate', '复购率', 'percent'],
-  ].map(([key, label, unit]) => ({ key, label, unit: unit as MetricUnit })),
-  'efficiency-market': [
-    ['managerCount', '店长人数', 'count'], ['managerAvgIncome', '店长人均收入', 'amount'], ['technicianCount', '技师人数', 'count'],
-    ['techAvgRevenue', '技师人均业绩', 'amount'], ['techAvgConsume', '技师人均实耗', 'amount'],
-    ['techAvgShengmeiConsume', '技师人均生美实耗', 'amount'], ['techAvgIncome', '技师人均收入', 'amount'],
-    ['techAvgMembers', '技师人均会员量', 'count'], ['techAvgProjects', '技师人均项目数', 'count'],
-  ].map(([key, label, unit]) => ({ key, label, unit: unit as MetricUnit })),
-  'efficiency-staff': [
-    ['revenue', '当月业绩', 'amount'], ['saleZxzh', '自销自耗', 'amount'], ['saleTxzh', '他销自耗', 'amount'],
-    ['saleTxth', '他销他耗', 'amount'], ['saleEco', '生态合作', 'amount'], ['consumeTotal', '实耗合计', 'amount'],
-    ['newMember', '纳客数', 'count'], ['projectCount', '项目数', 'count'], ['serviceHeadcount', '服务人头', 'count'],
-    ['serviceVisits', '服务人次', 'count'],
-  ].map(([key, label, unit]) => ({ key, label, unit: unit as MetricUnit })),
-}
-
-const rankingMetrics: Record<string, Array<{ key: string; label: string; unit: MetricUnit }>> = {
-  'efficiency-store-ranking': [
-    ['revenue', '业绩', 'amount'], ['consume', '实耗', 'amount'], ['retainedMember', '保有会员', 'count'],
-    ['newMember', '新会员', 'count'], ['projectCount', '项目数', 'count'],
-  ].map(([key, label, unit]) => ({ key, label, unit: unit as MetricUnit })),
-  'efficiency-staff-ranking': [
-    ['revenue', '业绩', 'amount'], ['consume', '实耗', 'amount'], ['newMember', '新会员', 'count'],
-    ['projectCount', '项目数', 'count'], ['income', '收入', 'amount'],
-  ].map(([key, label, unit]) => ({ key, label, unit: unit as MetricUnit })),
-}
-
 function breakdownContent(
-  view: string,
+  view: DataCenterExportPayload['view'],
   rows: BreakdownRow[],
 ): ExportContent {
-  const definitions = dataCenterMetricColumns[view] ?? []
-  const isStore = view.endsWith('-store') || view === 'customer-store-reg' || view === 'customer-store-ops'
-  const isStaff = view === 'efficiency-staff'
-  const firstLabel = view.includes('customer') ? (isStore ? '门店' : '市场') : isStaff ? '姓名' : isStore ? '门店' : view.includes('efficiency') ? '市场' : view.includes('product') || view.includes('sales') ? (isStore ? '门店' : '市场') : '名称'
+  const config = getDataCenterBreakdownConfig(view)
   const columns: WorkerExportColumn<Row>[] = [
-    { header: firstLabel, width: 18, value: (row) => text(row, 'groupName') },
+    { header: config.groupLabel, width: 18, value: (row) => text(row, 'groupName') },
   ]
-  if (isStaff) {
-    columns.push(
-      { header: '门店', width: 14, value: (row) => String((value(row, 'labels') as Record<string, string> | undefined)?.store ?? '') },
-      { header: '职级', width: 14, value: (row) => String((value(row, 'labels') as Record<string, string> | undefined)?.position ?? '') },
-    )
-  } else if (isStore || view === 'customer-store-reg' || view === 'customer-store-ops') {
-    columns.push({ header: '所属市场', width: 16, value: (row) => text(row, 'marketName') })
+  for (const textColumn of config.textColumns) {
+    columns.push({
+      header: textColumn.label,
+      width: textColumn.source === 'marketName' ? 16 : 14,
+      value: (row) => textColumn.source === 'marketName'
+        ? text(row, 'marketName')
+        : String((value(row, 'labels') as Record<string, string> | undefined)?.[textColumn.key] ?? ''),
+    })
   }
-  for (const definition of definitions) {
+  for (const definition of config.metricColumns) {
     columns.push({
       header: headerWithUnit(definition.label, definition.unit),
       value: (row) => metricCell((value(row, 'metrics') as Record<string, number | null> | undefined)?.[definition.key], definition.unit),
     })
   }
   return {
-    sheetName: exportJobLabel('data-center', { view: view as DataCenterExportPayload['view'], params: {} }).replace(/.*-/, '').slice(0, 31),
+    sheetName: exportJobLabel('data-center', { view, params: {} }).replace(/.*-/, '').slice(0, 31),
     columns,
     rows: fromRows(rows as unknown as Row[]),
   }
 }
 
 function rankingContent(
-  view: string,
   rows: RankingRow[],
-  metric: { key: string; label: string; unit: MetricUnit },
+  metric: DataCenterMetricColumn,
 ): ExportContent {
   const columns: WorkerExportColumn<Row>[] = [
     { header: '排名', width: 8, value: (row) => numberOrEmpty(row, 'rank') },
@@ -501,11 +440,11 @@ async function queryDataCenter(
   const board = await getEfficiencyBoard(base)
   if (view === 'efficiency-market') return breakdownContent(view, board.byMarket)
   if (view === 'efficiency-staff') return breakdownContent(view, board.byStaff)
-  const metrics = rankingMetrics[view] ?? []
-  const metric = metrics.find((item) => item.key === payload.metric)
+  const config = getDataCenterRankingConfig(view)
+  const metric = config.metrics.find((item) => item.key === payload.metric)
   if (!metric) throw new Error('INVALID_PARAMS: 排名指标无效')
   const source = view === 'efficiency-store-ranking' ? board.storeRankings : board.staffRankings
-  return rankingContent(view, source[metric.key] ?? [], metric)
+  return rankingContent(source[metric.key] ?? [], metric)
 }
 
 function queryProducts(payload: Record<string, string>): ExportContent {

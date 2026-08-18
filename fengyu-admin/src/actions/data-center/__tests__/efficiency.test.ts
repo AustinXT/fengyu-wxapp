@@ -18,7 +18,7 @@
  *                 footfallTotal / projectCountTotal / memberCount / technicianCount / managerCount
  *   Part B（9-18）：skeleton / managerByStore / techByStore / revenueByStore / consumeByStore /
  *                 shengmeiConsumeByStore / salesCommByStore / serviceCommByStore /
- *                 footfallByStore / projectByStore
+ *                 footfallByMarket / projectByStore
  *   Part C（19-23）：storeRank revenue / consume / retainedMember / newMember / projectCount
  *   Part D（24-28）：staffRank revenue / consume / newMember / projectCount / income
  */
@@ -76,7 +76,7 @@ const v = (n: number) => [{ v: n }]
  * 按"调用顺序"配置 db.execute 返回值（29 次）。
  * @param opts.scalars Part A 9 个标量（默认全 0）
  * @param opts.skeleton Part B 骨架行
- * @param opts.detail   Part B 9 个明细行表（manager/tech/rev/cons/shengmeiCons/salesComm/serviceComm/footfall/project）
+ * @param opts.detail   Part B 9 个明细行表（manager/tech/rev/cons/shengmeiCons/salesComm/serviceComm/marketFootfall/project）
  * @param opts.storeRanks Part C 5 个门店榜行表
  * @param opts.staffRanks Part D 5 个员工榜行表
  */
@@ -218,7 +218,7 @@ describe('getEfficiencyBoard — byMarket 明细装配', () => {
         [{ store_id: 'S1', v: 200 }], // shengmeiConsume
         [{ store_id: 'S1', v: 150 }, { store_id: 'S2', v: 50 }], // salesComm
         [{ store_id: 'S1', v: 60 }, { store_id: 'S2', v: 40 }], // serviceComm
-        [{ store_id: 'S1', v: 30 }], // footfall
+        [{ market_id: 'M1', v: 30 }], // 市场内去重 footfall
         [{ store_id: 'S1', v: 90 }], // project
       ],
     })
@@ -237,7 +237,7 @@ describe('getEfficiencyBoard — byMarket 明细装配', () => {
     expect(m1.metrics.techAvgShengmeiConsume).toBe(40)
     // 技师人均收入 = 300/5 = 60
     expect(m1.metrics.techAvgIncome).toBe(60)
-    // 技师人均会员量(客流) = 30/5 = 6
+    // 技师人均会员量(市场内去重客流) = 30/5 = 6
     expect(m1.metrics.techAvgMembers).toBe(6)
     // 技师人均项目数 = 90/5 = 18
     expect(m1.metrics.techAvgProjects).toBe(18)
@@ -263,6 +263,29 @@ describe('getEfficiencyBoard — byMarket 明细装配', () => {
     expect(m1.metrics.technicianCount).toBe(0)
     expect(m1.metrics.techAvgRevenue).toBeNull()
     expect(m1.metrics.managerAvgIncome).toBeNull()
+  })
+
+  it('同市场跨店到访顾客只计一次客流', async () => {
+    setupQueue({
+      skeleton: [
+        { store_id: 'S1', store_name: '门店一', market_id: 'M1', market_name: '市场甲' },
+        { store_id: 'S2', store_name: '门店二', market_id: 'M1', market_name: '市场甲' },
+      ],
+      detail: [
+        [{ store_id: 'S1', v: 1 }, { store_id: 'S2', v: 1 }], // manager
+        [{ store_id: 'S1', v: 2 }, { store_id: 'S2', v: 2 }], // tech
+        [], [], [], [], [],
+        // 两门店客流如果相加会是 6；市场查询已去重，返回 4。
+        [{ market_id: 'M1', v: 4 }],
+        [],
+      ],
+    })
+
+    const res = await getEfficiencyBoard(baseParams)
+    const market = res.byMarket.find((row) => row.groupId === 'M1')!
+
+    expect(market.metrics.technicianCount).toBe(4)
+    expect(market.metrics.techAvgMembers).toBe(1)
   })
 
   it('空骨架 → byMarket 为空数组', async () => {

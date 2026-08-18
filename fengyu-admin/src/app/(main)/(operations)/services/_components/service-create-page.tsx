@@ -18,7 +18,7 @@ import { formatPhoneSafe } from "@/lib/format"
 import { shanghaiToday } from "@/lib/datetime"
 import { DEPOSIT_REFUND_REMARK } from "@/lib/service-remark"
 import { actionErrorMessage } from "@/lib/action-error"
-import { expandGroupServiceSessions, groupTreatmentCards, sumGroupValue } from "@/lib/treatment-card-group"
+import { expandGroupServiceSessions, getTreatmentCardBusinessIdentity, groupTreatmentCards, sumGroupValue } from "@/lib/treatment-card-group"
 import { formatOrderServiceStaffOption, getOrderServiceStaffCandidates, isOrderServiceStaffCandidate } from "@/lib/order-service-staff"
 
 const steps = ["选择顾客", "选择项目", "确认提交"]
@@ -64,41 +64,7 @@ function groupAvailableSaleItems(items: AvailableSaleItem[]): GroupedAvailableSa
   return groupTreatmentCards(items, {
     getId: (item) => item.saleItemId,
     getQuantity: (item) => item.quantity,
-    getIdentity: (item) => item.saleItemGroupId
-      ? { saleItemGroupId: item.saleItemGroupId }
-      : ({
-      saleOrderId: item.saleOrderId,
-      saleOrderDatetime: item.saleOrderDatetime,
-      paidAt: item.paidAt,
-      orderStatus: item.orderStatus,
-      saleOrderType: item.saleOrderType,
-      documentType: item.documentType,
-      marketName: item.marketName,
-      legacySource: item.legacySource,
-      storeId: item.storeId,
-      skuId: item.skuId,
-      itemDirection: item.itemDirection,
-      refSaleItemId: item.refSaleItemId,
-      productName: item.productName,
-      productType: item.productType,
-      unit: item.unit,
-      productKind: item.productKind,
-      categoryId: item.categoryId,
-      categoryName: item.categoryName,
-      sessionCount: item.sessionCount,
-      remainingSessions: item.remainingSessions,
-      paidSessions: item.paidSessions,
-      paidUnusedSessions: item.paidUnusedSessions,
-      quantity: item.quantity,
-      unitPrice: item.unitPrice,
-      unitRealPrice: item.unitRealPrice,
-      saleAmount: item.saleAmount,
-      received: item.received,
-      pendingReceived: item.pendingReceived,
-      expireDate: item.expireDate,
-      remark: item.remark,
-      salesCategory: item.salesCategory,
-    }),
+    getIdentity: (item) => getTreatmentCardBusinessIdentity(item),
   }).map((group) => {
     const primary = group.primary
     return {

@@ -2,7 +2,7 @@
 import { callStaffApi } from '../../utils/cloud';
 import { formatDateTime, ORDER_TYPE_LABEL } from '../../utils/formatters';
 import { getCurrentStoreId, isManager } from '../../utils/role';
-import { expandGroupServiceSessions, groupTreatmentCards, sumGroupValue } from '../../utils/treatment-card-group';
+import { expandGroupServiceSessions, getTreatmentCardBusinessIdentity, groupTreatmentCards, sumGroupValue } from '../../utils/treatment-card-group';
 
 // 寄存单退款专用标准化备注（数据契约）。寄存单是上线时导入老系统历史剩余次数的初始化单据，未走收款流程、
 // 无法开正常退款单；退寄存疗程卡次数时走正常服务单扣减次数并在备注选此预设打标，供后续从消耗业绩统计过滤。
@@ -390,50 +390,7 @@ Page({
       const groupedItems = groupTreatmentCards(items, {
         getId: (item) => item.saleItemId,
         getQuantity: (item) => item.quantity,
-        getIdentity: (item) => item.saleItemGroupId
-          ? { saleItemGroupId: item.saleItemGroupId }
-          : ({
-          saleOrderId: item.saleOrderId,
-          saleOrderDatetime: item.saleOrderDatetime,
-          paidAt: item.paidAt,
-          orderStatus: item.orderStatus,
-          saleOrderType: item.saleOrderType,
-          documentType: item.documentType,
-          marketName: item.marketName,
-          legacySource: item.legacySource,
-          orderStoreId: item.orderStoreId,
-          storeName: item.storeName,
-          storeId: item.storeId,
-          skuId: item.skuId,
-          itemDirection: item.itemDirection,
-          refSaleItemId: item.refSaleItemId,
-          itemName: item.itemName,
-          spec: item.spec,
-          productType: item.productType,
-          totalSessions: item.totalSessions,
-          remainingSessions: item.remainingSessions,
-          paidSessions: item.paidSessions,
-          consumableSessions: item.consumableSessions,
-          unit: item.unit,
-          unitRealPrice: item.unitRealPrice,
-          unitPrice: item.unitPrice,
-          saleAmount: item.saleAmount,
-          received: item.received,
-          pendingReceived: item.pendingReceived,
-          expireDate: item.expireDate,
-          remark: item.remark,
-          salesCategory: item.salesCategory,
-          pickedUpQuantity: item.pickedUpQuantity,
-          category: item.category,
-          categoryColor: item.categoryColor,
-          productKind: item.productKind,
-          categoryId: item.categoryId,
-          categoryName: item.categoryName,
-          saleOrderTypeLabel: item.saleOrderTypeLabel,
-          disabled: item.disabled,
-          disabledReason: item.disabledReason,
-          quantity: item.quantity ?? 1,
-        }),
+        getIdentity: (item) => getTreatmentCardBusinessIdentity(item),
       }).map((group) => {
         const primary = group.primary;
         const totalSessions = sumGroupValue(group, (item) => item.totalSessions);

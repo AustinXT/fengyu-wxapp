@@ -6,7 +6,7 @@ import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { parseBoardParams } from "@/lib/data-center/params"
 import { getCustomerBoard } from "@/actions/data-center/customer"
 import { KpiGrid, type KpiGridItem } from "../kpi-card"
-import { BreakdownTable, type BreakdownColumn } from "../breakdown-table"
+import { BreakdownTable } from "../breakdown-table"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import type { CustomerBoardResult } from "@/lib/data-center/types"
 
@@ -37,43 +37,6 @@ const KPI_OPERATION: KpiGridItem[] = [
   { key: "serviceCount", label: "服务人次" },
   { key: "projectCount", label: "服务项目数" },
   { key: "consumePerVisit", label: "单次客耗", hint: "生美实耗 ÷ 频率" },
-]
-
-// ── 明细表列定义 ──────────────────────────────────────────────
-// 表1：注册客活
-const COLS_REG_ACTIVE: BreakdownColumn[] = [
-  { key: "registered", label: "会员注册", unit: "count" },
-  { key: "retained", label: "保有会员", unit: "count" },
-  { key: "visitOnce", label: "回店1次", unit: "count" },
-  { key: "visitOnceRate", label: "1次达成率", unit: "percent" },
-  { key: "visitTwice", label: "回店2次", unit: "count" },
-  { key: "visitTwiceRate", label: "2次达成率", unit: "percent" },
-  { key: "dormant", label: "沉睡", unit: "count" },
-  { key: "reactivatedDormant", label: "激活沉睡", unit: "count" },
-  { key: "frozen", label: "冰冻", unit: "count" },
-  { key: "reactivatedFrozen", label: "激活冰冻", unit: "count" },
-  { key: "deep", label: "休眠", unit: "count" },
-  { key: "reactivatedDeep", label: "激活休眠", unit: "count" },
-]
-
-// 表2：消费分桶 + 经营
-const COLS_OPS: BreakdownColumn[] = [
-  { key: "bucketD", label: "<1990", unit: "count" },
-  { key: "bucketC", label: "≥1990", unit: "count" },
-  { key: "bucketB", label: "≥1万", unit: "count" },
-  { key: "bucketA", label: "≥3万", unit: "count" },
-  { key: "bucketV", label: "≥6万", unit: "count" },
-  { key: "bucketVIC", label: "≥10万", unit: "count" },
-  { key: "operatedTotal", label: "被经营总数", unit: "count" },
-  { key: "newMembers", label: "会员新增", unit: "count" },
-  { key: "trafficCustomers", label: "流量客", unit: "count" },
-  { key: "convRate", label: "成交率", unit: "percent" },
-  { key: "memberAvgTicket", label: "会员客单", unit: "amount" },
-  { key: "newCustomerAvgTicket", label: "新客客单", unit: "amount" },
-  { key: "trafficVisits", label: "流量人次", unit: "count" },
-  { key: "memberVisits", label: "会员人次", unit: "count" },
-  { key: "projectCount", label: "项目数", unit: "count" },
-  { key: "consumePerVisit", label: "单次客耗", unit: "amount" },
 ]
 
 export function CustomerBoard() {
@@ -149,16 +112,16 @@ export function CustomerBoard() {
           <TabsTrigger value="store-ops">门店·消费经营</TabsTrigger>
         </TabsList>
         <TabsContent value="market-reg">
-          <BreakdownTable rows={data?.byMarket ?? []} columns={COLS_REG_ACTIVE} firstColLabel="市场" loading={loading} exportFilename={`客量明细_市场注册客活_${label}`} exportSheetName="市场注册客活" exportView="customer-market-reg" />
+          <BreakdownTable rows={data?.byMarket ?? []} loading={loading} exportFilename={`客量明细_市场注册客活_${label}`} exportView="customer-market-reg" />
         </TabsContent>
         <TabsContent value="market-ops">
-          <BreakdownTable rows={data?.byMarket ?? []} columns={COLS_OPS} firstColLabel="市场" loading={loading} exportFilename={`客量明细_市场消费经营_${label}`} exportSheetName="市场消费经营" exportView="customer-market-ops" />
+          <BreakdownTable rows={data?.byMarket ?? []} loading={loading} exportFilename={`客量明细_市场消费经营_${label}`} exportView="customer-market-ops" />
         </TabsContent>
         <TabsContent value="store-reg">
-          <BreakdownTable rows={data?.byStore ?? []} columns={COLS_REG_ACTIVE} firstColLabel="门店" showMarket loading={loading} exportFilename={`客量明细_门店注册客活_${label}`} exportSheetName="门店注册客活" exportView="customer-store-reg" />
+          <BreakdownTable rows={data?.byStore ?? []} loading={loading} exportFilename={`客量明细_门店注册客活_${label}`} exportView="customer-store-reg" />
         </TabsContent>
         <TabsContent value="store-ops">
-          <BreakdownTable rows={data?.byStore ?? []} columns={COLS_OPS} firstColLabel="门店" showMarket loading={loading} exportFilename={`客量明细_门店消费经营_${label}`} exportSheetName="门店消费经营" exportView="customer-store-ops" />
+          <BreakdownTable rows={data?.byStore ?? []} loading={loading} exportFilename={`客量明细_门店消费经营_${label}`} exportView="customer-store-ops" />
         </TabsContent>
       </Tabs>
     </div>

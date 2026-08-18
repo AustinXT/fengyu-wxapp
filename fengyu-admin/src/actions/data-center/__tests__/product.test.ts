@@ -15,10 +15,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 /**
  * mock @/db.execute —— 按 SQL 文本内容路由：
  *   - filterOptions（含 'DISTINCT pc.product_kind' 特征）→ filterRows
- *   - 骨架（含 o_store + market_id，无 group/CTE）→ skeletonRows
- *   - 持卡按店（含 paid_sessions > 0 + GROUP BY so.store_id）→ cardByStoreRows
- *   - 会员按店（含 bound_store_id + GROUP BY）→ memberByStoreRows
- *   - cycle 按店（含 store_ids 并集 + trial_store/new_store/repurchase_store）→ cycleByStoreRows
+ *   - 骨架（含 o_store + market_id，无 CTE）→ skeletonRows
+ *   - 持卡 / 会员 / cycle 的市场、门店直出聚合（WITH skel）→ 对应 rows
  *   - 持卡总量（含 paid_sessions > 0，无 GROUP BY store）→ scalarCard
  *   - 会员总量（含 became_member_at，无 GROUP BY）→ scalarMember
  *   - cycle 标量（含 WITH daily_agg + cohort）→ scalarCycle
@@ -27,8 +25,11 @@ const responder: {
   filterRows: Array<Record<string, unknown>>
   skeletonRows: Array<Record<string, unknown>>
   cardByStoreRows: Array<Record<string, unknown>>
+  cardByMarketRows: Array<Record<string, unknown>>
   memberByStoreRows: Array<Record<string, unknown>>
+  memberByMarketRows: Array<Record<string, unknown>>
   cycleByStoreRows: Array<Record<string, unknown>>
+  cycleByMarketRows: Array<Record<string, unknown>>
   scalarCard: Record<string, unknown>
   scalarMember: Record<string, unknown>
   scalarCycle: Record<string, unknown>
@@ -36,12 +37,19 @@ const responder: {
   filterRows: [],
   skeletonRows: [],
   cardByStoreRows: [],
+  cardByMarketRows: [],
   memberByStoreRows: [],
+  memberByMarketRows: [],
   cycleByStoreRows: [],
+  cycleByMarketRows: [],
   scalarCard: { v: 0 },
   scalarMember: { v: 0 },
   scalarCycle: { count: 0, revenue: 0 },
 }
+
+// 明细查询固定按：持卡/会员/cycle 的门店组，再持卡/会员/cycle 的市场组触发。
+// Drizzle 的 sql.raw 动态列不会出现在这个简化 SQL 文本中，因此这里不从文本猜 market_id。
+let breakdownQueryIndex = 0
 
 /** 从 drizzle sql 对象重建粗略 SQL 文本（仅用于路由判断） */
 function sqlText(q: unknown): string {
@@ -64,21 +72,22 @@ vi.mock('@/db', () => ({
       if (/DISTINCT pc\.product_kind/.test(t) && /category_name AS category/.test(t)) {
         return responder.filterRows
       }
-      // 骨架（o_store + market_id，非 CTE/分组）
-      if (/o_store/.test(t) && /market_id/.test(t) && !/WITH daily_agg/.test(t)) {
+      // 明细聚合（WITH skel）：市场、门店查询分别返回已按目标维度去重的数据。
+      if (/WITH skel/.test(t) && /daily_agg/.test(t)) {
+        const isMarketGroup = breakdownQueryIndex++ >= 3
+        return isMarketGroup ? responder.cycleByMarketRows : responder.cycleByStoreRows
+      }
+      if (/WITH skel/.test(t) && /paid_sessions/.test(t)) {
+        const isMarketGroup = breakdownQueryIndex++ >= 3
+        return isMarketGroup ? responder.cardByMarketRows : responder.cardByStoreRows
+      }
+      if (/WITH skel/.test(t) && /became_member_at/.test(t)) {
+        const isMarketGroup = breakdownQueryIndex++ >= 3
+        return isMarketGroup ? responder.memberByMarketRows : responder.memberByStoreRows
+      }
+      // 骨架（o_store + market_id，无 CTE）
+      if (/o_store/.test(t) && /market_id/.test(t)) {
         return responder.skeletonRows
-      }
-      // cycle 按店（含 store_ids 并集 + 各客群 store 聚合，无 cohort 标量段）
-      if (/store_ids/.test(t) && /trial_store/.test(t)) {
-        return responder.cycleByStoreRows
-      }
-      // 持卡按店（paid_sessions > 0 + GROUP BY store_id）
-      if (/paid_sessions/.test(t) && /GROUP BY so\.store_id/.test(t)) {
-        return responder.cardByStoreRows
-      }
-      // 会员按店（bound_store_id + GROUP BY）
-      if (/became_member_at/.test(t) && /GROUP BY c\.bound_store_id/.test(t)) {
-        return responder.memberByStoreRows
       }
       // cycle 标量（WITH daily_agg + cohort）
       if (/WITH daily_agg/.test(t) && /cohort/.test(t)) {
@@ -147,11 +156,15 @@ const PARAMS: ProductBoardParams = {
 }
 
 beforeEach(() => {
+  breakdownQueryIndex = 0
   responder.filterRows = []
   responder.skeletonRows = []
   responder.cardByStoreRows = []
+  responder.cardByMarketRows = []
   responder.memberByStoreRows = []
+  responder.memberByMarketRows = []
   responder.cycleByStoreRows = []
+  responder.cycleByMarketRows = []
   responder.scalarCard = { v: 0 }
   responder.scalarMember = { v: 0 }
   responder.scalarCycle = { count: 0, revenue: 0 }
@@ -245,11 +258,23 @@ describe('getProductBoard 装配', () => {
     responder.skeletonRows = [
       { market_id: 'm1', market_name: '市场A', store_id: 's1', store_name: '门店1' },
     ]
-    responder.cardByStoreRows = [{ store_id: 's1', v: 6 }]
-    responder.memberByStoreRows = [{ store_id: 's1', v: 24 }]
+    responder.cardByStoreRows = [{ group_id: 's1', v: 6 }]
+    responder.cardByMarketRows = [{ group_id: 'm1', v: 6 }]
+    responder.memberByStoreRows = [{ group_id: 's1', v: 24 }]
+    responder.memberByMarketRows = [{ group_id: 'm1', v: 24 }]
     responder.cycleByStoreRows = [
       {
-        store_id: 's1',
+        group_id: 's1',
+        trial_count: 2,
+        new_count: 3,
+        new_revenue: 30000,
+        repurchase_count: 3,
+        repurchase_revenue: 30000,
+      },
+    ]
+    responder.cycleByMarketRows = [
+      {
+        group_id: 'm1',
         trial_count: 2,
         new_count: 3,
         new_revenue: 30000,
@@ -301,10 +326,15 @@ describe('getProductBoard 装配', () => {
     responder.skeletonRows = [
       { market_id: 'm1', market_name: '市场A', store_id: 's1', store_name: '门店1' },
     ]
-    responder.cardByStoreRows = [{ store_id: 's1', v: 0 }]
-    responder.memberByStoreRows = [{ store_id: 's1', v: 0 }] // 会员 0 → 占比 null
+    responder.cardByStoreRows = [{ group_id: 's1', v: 0 }] // 持卡 0 → 复购率 null
+    responder.cardByMarketRows = [{ group_id: 'm1', v: 0 }]
+    responder.memberByStoreRows = [{ group_id: 's1', v: 0 }] // 会员 0 → 占比 null
+    responder.memberByMarketRows = [{ group_id: 'm1', v: 0 }]
     responder.cycleByStoreRows = [
-      { store_id: 's1', trial_count: 0, new_count: 0, new_revenue: 0, repurchase_count: 0, repurchase_revenue: 0 },
+      { group_id: 's1', trial_count: 0, new_count: 0, new_revenue: 0, repurchase_count: 0, repurchase_revenue: 0 },
+    ]
+    responder.cycleByMarketRows = [
+      { group_id: 'm1', trial_count: 0, new_count: 0, new_revenue: 0, repurchase_count: 0, repurchase_revenue: 0 },
     ]
 
     const res = await getProductBoard(PARAMS)
@@ -312,5 +342,33 @@ describe('getProductBoard 装配', () => {
     expect(m.metrics.cardHolderRate).toBeNull()
     expect(m.metrics.newAvgTicket).toBeNull()
     expect(m.metrics.repurchaseRate).toBeNull()
+  })
+
+  it('市场行使用市场内去重结果，不累加同市场跨店顾客', async () => {
+    responder.skeletonRows = [
+      { market_id: 'm1', market_name: '市场A', store_id: 's1', store_name: '门店1' },
+      { market_id: 'm1', market_name: '市场A', store_id: 's2', store_name: '门店2' },
+    ]
+    // 同一顾客在两店均有记录：门店行可各有一份，市场行必须以市场去重值为准。
+    responder.cardByStoreRows = [{ group_id: 's1', v: 4 }, { group_id: 's2', v: 4 }]
+    responder.cardByMarketRows = [{ group_id: 'm1', v: 5 }]
+    responder.memberByStoreRows = [{ group_id: 's1', v: 10 }, { group_id: 's2', v: 10 }]
+    responder.memberByMarketRows = [{ group_id: 'm1', v: 20 }]
+    responder.cycleByStoreRows = [
+      { group_id: 's1', trial_count: 3, new_count: 3, new_revenue: 300, repurchase_count: 3, repurchase_revenue: 300 },
+      { group_id: 's2', trial_count: 3, new_count: 3, new_revenue: 300, repurchase_count: 3, repurchase_revenue: 300 },
+    ]
+    responder.cycleByMarketRows = [
+      { group_id: 'm1', trial_count: 5, new_count: 5, new_revenue: 600, repurchase_count: 5, repurchase_revenue: 600 },
+    ]
+
+    const res = await getProductBoard(PARAMS)
+    const market = res.byMarket.find((row) => row.groupId === 'm1')!
+
+    expect(market.metrics.cardHolders).toBe(5)
+    expect(market.metrics.trialCount).toBe(5)
+    expect(market.metrics.newCount).toBe(5)
+    expect(market.metrics.repurchaseCount).toBe(5)
+    expect(market.metrics.newRevenue).toBe(600)
   })
 })

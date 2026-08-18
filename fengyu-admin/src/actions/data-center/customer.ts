@@ -476,6 +476,8 @@ async function queryRegActiveBreakdown(
   const groupId = group === 'market' ? sql.raw('sk.market_id') : sql.raw('sk.store_id')
   const start = range.start
   const end = range.end
+  const serviceScope = scopeFilterSql(session, scope, 'so.store_id')
+  const customerScope = scopeFilterSql(session, scope, 'c.bound_store_id')
 
   const rows = await db.execute(sql`
     WITH skel AS (${skeleton}),
@@ -483,7 +485,8 @@ async function queryRegActiveBreakdown(
     reg AS (
       SELECT c.bound_store_id AS store_id, COUNT(*) AS registered
       FROM client_wechat_users c
-      WHERE c.bound_store_id IS NOT NULL
+      WHERE ${customerScope}
+        AND c.bound_store_id IS NOT NULL
         AND c.became_member_at IS NOT NULL
         AND c.became_member_at::date <= ${end}
       GROUP BY c.bound_store_id
@@ -493,7 +496,8 @@ async function queryRegActiveBreakdown(
       SELECT c.bound_store_id AS store_id, COUNT(DISTINCT so.client_user_id) AS retained
       FROM service_orders so
       JOIN client_wechat_users c ON c.user_id = so.client_user_id
-      WHERE c.bound_store_id IS NOT NULL
+      WHERE ${customerScope}
+        AND c.bound_store_id IS NOT NULL
         AND so.status = '已完成'
         AND so.client_user_id IS NOT NULL
         AND so.service_date BETWEEN (${end}::date - INTERVAL '90 days')::date AND ${end}
@@ -507,7 +511,9 @@ async function queryRegActiveBreakdown(
              c.customer_status AS cstatus
       FROM service_orders so
       JOIN client_wechat_users c ON c.user_id = so.client_user_id
-      WHERE c.bound_store_id IS NOT NULL
+      WHERE ${serviceScope}
+        AND ${customerScope}
+        AND c.bound_store_id IS NOT NULL
         AND so.status = '已完成'
         AND so.client_user_id IS NOT NULL
         AND so.service_date BETWEEN ${start} AND ${end}
@@ -528,14 +534,16 @@ async function queryRegActiveBreakdown(
              COUNT(*) FILTER (WHERE c.customer_status = '冰冻') AS frozen,
              COUNT(*) FILTER (WHERE c.customer_status = '休眠') AS deep
       FROM client_wechat_users c
-      WHERE c.bound_store_id IS NOT NULL
+      WHERE ${customerScope}
+        AND c.bound_store_id IS NOT NULL
       GROUP BY c.bound_store_id
     ),
     -- 本月激活 anchor 反推（期内有到店 + anchor 非保有 + anchor 状态分档），按 bound_store_id 归组
     visited_in_period AS (
       SELECT DISTINCT so.client_user_id
       FROM service_orders so
-      WHERE so.status = '已完成'
+      WHERE ${serviceScope}
+        AND so.status = '已完成'
         AND so.client_user_id IS NOT NULL
         AND so.service_date BETWEEN ${start}::date AND ${end}
     ),
@@ -553,7 +561,8 @@ async function queryRegActiveBreakdown(
         ON so.client_user_id = c.user_id
        AND so.status = '已完成'
        AND so.service_date <= (${start}::date - 1)
-      WHERE c.became_member_at IS NOT NULL
+      WHERE ${customerScope}
+        AND c.became_member_at IS NOT NULL
         AND c.became_member_at::date <= (${start}::date - 1)
         AND c.bound_store_id IS NOT NULL
       GROUP BY c.user_id, c.bound_store_id
@@ -623,9 +632,10 @@ async function queryRegActiveBreakdown(
 }
 
 /**
- * 消费分桶 + 经营明细：scope 骨架 LEFT JOIN 各子聚合，按 group_col GROUP BY。
- * 6 档分桶左闭右开（member_spend CTE）；客户/订单维度归组取 store_id（服务/订单按 so/o.store_id，
- * 客户类按 bound_store_id），明细表通常一致（顾客在绑定店产生服务）。
+ * 消费分桶 + 经营明细：先由 scope 骨架构造市场/门店分组，再在分组内聚合。
+ *
+ * 市场人数必须在市场内先按 client_user_id 去重：同一顾客跨同市场门店消费时，会员消费
+ * 先合并后分桶，流量客也只计一次；跨市场仍分别归属。金额、人次、项目数仍按实际发生门店汇总。
  */
 async function queryOpsBreakdown(
   session: AuthSession,
@@ -635,26 +645,35 @@ async function queryOpsBreakdown(
 ): Promise<Map<string, OpsAgg>> {
   const skeleton = scopeStoreSkeletonSql(session, scope)
   const groupId = group === 'market' ? sql.raw('sk.market_id') : sql.raw('sk.store_id')
+  const groupName = group === 'market' ? sql.raw('sk.market_name') : sql.raw('sk.store_name')
   const start = range.start
   const end = range.end
 
   const rows = await db.execute(sql`
     WITH skel AS (${skeleton}),
-    -- 会员消费分桶（按 store_id 归组）：spend = received - refunded_amount
+    group_skel AS (
+      SELECT ${groupId} AS group_id,
+             MAX(${groupName}) AS group_name,
+             MAX(sk.market_name) AS market_name
+      FROM skel sk
+      GROUP BY ${groupId}
+    ),
+    -- 会员消费先按当前市场/门店 + 顾客合并：spend = received - refunded_amount
     member_spend AS (
-      SELECT o.store_id, o.client_user_id,
+      SELECT ${groupId} AS group_id, o.client_user_id,
              SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric) AS spend
       FROM sale_orders o
+      JOIN skel sk ON sk.store_id = o.store_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
       WHERE o.sale_order_type IN ('销售单', '转换单')
         AND o.status = '已支付'
         AND o.legacy_source IS DISTINCT FROM 'workfine'
         AND o.paid_at::date BETWEEN ${start} AND ${end}
         AND c.customer_type = '会员客'
-      GROUP BY o.store_id, o.client_user_id
+      GROUP BY ${groupId}, o.client_user_id
     ),
     spend_agg AS (
-      SELECT store_id,
+      SELECT group_id,
         COUNT(*) FILTER (WHERE spend < 1990) AS bucket_d,
         COUNT(*) FILTER (WHERE spend >= 1990 AND spend < 10000) AS bucket_c,
         COUNT(*) FILTER (WHERE spend >= 10000 AND spend < 30000) AS bucket_b,
@@ -665,22 +684,24 @@ async function queryOpsBreakdown(
         COALESCE(SUM(spend), 0) AS member_spend_total,
         COUNT(*) AS member_spend_count
       FROM member_spend
-      GROUP BY store_id
+      GROUP BY group_id
     ),
-    -- 新增会员数（bound_store_id 归组）
+    -- 新增会员数按顾客绑定门店归组（绑定门店唯一，市场内无需二次去重）
     newmem AS (
-      SELECT c.bound_store_id AS store_id, COUNT(*) AS new_members
+      SELECT ${groupId} AS group_id, COUNT(*) AS new_members
       FROM client_wechat_users c
+      JOIN skel sk ON sk.store_id = c.bound_store_id
       WHERE c.bound_store_id IS NOT NULL
         AND c.became_member_at IS NOT NULL
         AND c.became_member_at::date BETWEEN ${start} AND ${end}
-      GROUP BY c.bound_store_id
+      GROUP BY ${groupId}
     ),
-    -- 新增会员对应消费（按 o.store_id 归组）
+    -- 新增会员对应消费按实际订单发生门店汇总
     newmem_spend AS (
-      SELECT o.store_id,
+      SELECT ${groupId} AS group_id,
              COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric), 0) AS new_spend
       FROM sale_orders o
+      JOIN skel sk ON sk.store_id = o.store_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
       WHERE c.became_member_at IS NOT NULL
         AND c.became_member_at::date BETWEEN ${start} AND ${end}
@@ -688,89 +709,93 @@ async function queryOpsBreakdown(
         AND o.status = '已支付'
         AND o.legacy_source IS DISTINCT FROM 'workfine'
         AND o.paid_at::date BETWEEN ${start} AND ${end}
-      GROUP BY o.store_id
+      GROUP BY ${groupId}
     ),
-    -- 流量客人数（成交率分母，体验客+小美客，按 so.store_id 归组）
+    -- 流量客人数（成交率分母，体验客+小美客，市场内 DISTINCT 客户）
     traffic_cust AS (
-      SELECT so.store_id, COUNT(DISTINCT so.client_user_id) AS traffic_customers
+      SELECT ${groupId} AS group_id, COUNT(DISTINCT so.client_user_id) AS traffic_customers
       FROM service_orders so
+      JOIN skel sk ON sk.store_id = so.store_id
       JOIN client_wechat_users c ON c.user_id = so.client_user_id
       WHERE so.status = '已完成'
         AND so.service_date BETWEEN ${start} AND ${end}
         AND c.customer_type IN ('体验客', '小美客')
-      GROUP BY so.store_id
+      GROUP BY ${groupId}
     ),
-    -- 流量人次 / 会员人次（service_orders 行数，按 so.store_id 归组）
+    -- 流量人次 / 会员人次（service_orders 行数，按实际发生门店汇总）
     visits_agg AS (
-      SELECT so.store_id,
+      SELECT ${groupId} AS group_id,
         COUNT(*) FILTER (WHERE c.customer_type IN ('体验客', '小美客')) AS traffic_visits,
         COUNT(*) FILTER (WHERE c.customer_type = '会员客') AS member_visits
       FROM service_orders so
+      JOIN skel sk ON sk.store_id = so.store_id
       JOIN client_wechat_users c ON c.user_id = so.client_user_id
       WHERE so.status = '已完成'
         AND so.service_date BETWEEN ${start} AND ${end}
-      GROUP BY so.store_id
+      GROUP BY ${groupId}
     ),
-    -- 项目数（sales_category 限定，按 so.store_id 归组）
+    -- 项目数（sales_category 限定，按实际发生门店汇总）
     proj_agg AS (
-      SELECT so.store_id, COALESCE(SUM(sit.session_used), 0) AS project_count
+      SELECT ${groupId} AS group_id, COALESCE(SUM(sit.session_used), 0) AS project_count
       FROM service_orders so
+      JOIN skel sk ON sk.store_id = so.store_id
       JOIN service_items sit ON sit.service_order_id = so.service_order_id
       WHERE so.status = '已完成'
         AND so.service_date BETWEEN ${start} AND ${end}
         AND sit.sales_category IN ('自销自耗', '他销自耗')
         AND ${excludeDepositRefundSql('so')}
-      GROUP BY so.store_id
+      GROUP BY ${groupId}
     ),
-    -- 生美实耗（单次客耗分子，按 so.store_id 归组）
+    -- 生美实耗（单次客耗分子，按实际发生门店汇总）
     sm_consume AS (
-      SELECT so.store_id,
+      SELECT ${groupId} AS group_id,
              COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used::numeric), 0) AS sm_total
       FROM service_orders so
+      JOIN skel sk ON sk.store_id = so.store_id
       JOIN service_items sit ON sit.service_order_id = so.service_order_id
       WHERE so.status = '已完成'
         AND so.service_date BETWEEN ${start} AND ${end}
         AND sit.is_shengmei = TRUE
         AND ${excludeDepositRefundSql('so')}
-      GROUP BY so.store_id
+      GROUP BY ${groupId}
     ),
-    -- 服务人次（单次客耗分母 = 已完成 service_orders 行数，按 so.store_id 归组）
+    -- 服务人次（单次客耗分母 = 已完成 service_orders 行数）
     svc_all AS (
-      SELECT so.store_id, COUNT(*) AS service_count
+      SELECT ${groupId} AS group_id, COUNT(*) AS service_count
       FROM service_orders so
+      JOIN skel sk ON sk.store_id = so.store_id
       WHERE so.status = '已完成'
         AND so.service_date BETWEEN ${start} AND ${end}
-      GROUP BY so.store_id
+      GROUP BY ${groupId}
     )
     SELECT
-      ${groupId} AS group_id,
-      COALESCE(SUM(spend_agg.bucket_d), 0) AS bucket_d,
-      COALESCE(SUM(spend_agg.bucket_c), 0) AS bucket_c,
-      COALESCE(SUM(spend_agg.bucket_b), 0) AS bucket_b,
-      COALESCE(SUM(spend_agg.bucket_a), 0) AS bucket_a,
-      COALESCE(SUM(spend_agg.bucket_v), 0) AS bucket_v,
-      COALESCE(SUM(spend_agg.bucket_vic), 0) AS bucket_vic,
-      COALESCE(SUM(spend_agg.operated_total), 0) AS operated_total,
-      COALESCE(SUM(spend_agg.member_spend_total), 0) AS member_spend_total,
-      COALESCE(SUM(spend_agg.member_spend_count), 0) AS member_spend_count,
-      COALESCE(SUM(newmem.new_members), 0) AS new_members,
-      COALESCE(SUM(newmem_spend.new_spend), 0) AS new_spend,
-      COALESCE(SUM(traffic_cust.traffic_customers), 0) AS traffic_customers,
-      COALESCE(SUM(visits_agg.traffic_visits), 0) AS traffic_visits,
-      COALESCE(SUM(visits_agg.member_visits), 0) AS member_visits,
-      COALESCE(SUM(proj_agg.project_count), 0) AS project_count,
-      COALESCE(SUM(sm_consume.sm_total), 0) AS sm_total,
-      COALESCE(SUM(svc_all.service_count), 0) AS service_count
-    FROM skel sk
-    LEFT JOIN spend_agg ON spend_agg.store_id = sk.store_id
-    LEFT JOIN newmem ON newmem.store_id = sk.store_id
-    LEFT JOIN newmem_spend ON newmem_spend.store_id = sk.store_id
-    LEFT JOIN traffic_cust ON traffic_cust.store_id = sk.store_id
-    LEFT JOIN visits_agg ON visits_agg.store_id = sk.store_id
-    LEFT JOIN proj_agg ON proj_agg.store_id = sk.store_id
-    LEFT JOIN sm_consume ON sm_consume.store_id = sk.store_id
-    LEFT JOIN svc_all ON svc_all.store_id = sk.store_id
-    GROUP BY ${groupId}
+      gs.group_id,
+      COALESCE(spend_agg.bucket_d, 0) AS bucket_d,
+      COALESCE(spend_agg.bucket_c, 0) AS bucket_c,
+      COALESCE(spend_agg.bucket_b, 0) AS bucket_b,
+      COALESCE(spend_agg.bucket_a, 0) AS bucket_a,
+      COALESCE(spend_agg.bucket_v, 0) AS bucket_v,
+      COALESCE(spend_agg.bucket_vic, 0) AS bucket_vic,
+      COALESCE(spend_agg.operated_total, 0) AS operated_total,
+      COALESCE(spend_agg.member_spend_total, 0) AS member_spend_total,
+      COALESCE(spend_agg.member_spend_count, 0) AS member_spend_count,
+      COALESCE(newmem.new_members, 0) AS new_members,
+      COALESCE(newmem_spend.new_spend, 0) AS new_spend,
+      COALESCE(traffic_cust.traffic_customers, 0) AS traffic_customers,
+      COALESCE(visits_agg.traffic_visits, 0) AS traffic_visits,
+      COALESCE(visits_agg.member_visits, 0) AS member_visits,
+      COALESCE(proj_agg.project_count, 0) AS project_count,
+      COALESCE(sm_consume.sm_total, 0) AS sm_total,
+      COALESCE(svc_all.service_count, 0) AS service_count
+    FROM group_skel gs
+    LEFT JOIN spend_agg ON spend_agg.group_id = gs.group_id
+    LEFT JOIN newmem ON newmem.group_id = gs.group_id
+    LEFT JOIN newmem_spend ON newmem_spend.group_id = gs.group_id
+    LEFT JOIN traffic_cust ON traffic_cust.group_id = gs.group_id
+    LEFT JOIN visits_agg ON visits_agg.group_id = gs.group_id
+    LEFT JOIN proj_agg ON proj_agg.group_id = gs.group_id
+    LEFT JOIN sm_consume ON sm_consume.group_id = gs.group_id
+    LEFT JOIN svc_all ON svc_all.group_id = gs.group_id
   `)
 
   const map = new Map<string, OpsAgg>()

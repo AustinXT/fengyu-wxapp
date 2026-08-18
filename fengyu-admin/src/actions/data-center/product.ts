@@ -282,93 +282,99 @@ interface ProductStoreAgg {
   repurchaseRevenue: number
 }
 
+type BreakdownGroup = 'market' | 'store'
+
+type CycleAgg = Omit<ProductStoreAgg, 'cardHolders'>
+
 /**
- * 持卡人数（截面）按 store_id 归组（DISTINCT client per store；同一顾客跨店各算一次）。
+ * 持卡人数（截面）按市场/门店归组。
+ * 市场级直接 COUNT(DISTINCT client)，避免把跨店持卡顾客从门店行再次相加。
  */
-async function queryCardHoldersByStore(
+async function queryCardHoldersByGroup(
   session: AuthSession,
   scope: DataCenterScope,
   filter: SQL,
+  group: BreakdownGroup,
 ): Promise<Map<string, number>> {
-  const sc = scopeFilterSql(session, scope, 'so.store_id')
+  const skeleton = scopeStoreSkeletonSql(session, scope)
+  const groupId = group === 'market' ? sql.raw('sk.market_id') : sql.raw('sk.store_id')
   const rows = await db.execute(sql`
-    SELECT so.store_id, COUNT(DISTINCT so.client_user_id) AS v
+    WITH skel AS (${skeleton})
+    SELECT ${groupId} AS group_id, COUNT(DISTINCT so.client_user_id) AS v
     FROM sale_items si
     JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-    JOIN product_skus sk ON sk.sku_id = si.sku_id
-    JOIN product_categories pc ON pc.category_id = sk.category_id
-    WHERE ${sc}
-      AND si.paid_sessions > 0
+    JOIN skel sk ON sk.store_id = so.store_id
+    JOIN product_skus sku ON sku.sku_id = si.sku_id
+    JOIN product_categories pc ON pc.category_id = sku.category_id
+    WHERE si.paid_sessions > 0
       AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
       AND so.status = '已支付'
       AND so.client_user_id IS NOT NULL
       AND ${filter}
-    GROUP BY so.store_id
+    GROUP BY ${groupId}
   `)
   const m = new Map<string, number>()
   for (const raw of rows as unknown[]) {
     const r = raw as Record<string, unknown>
-    const id = String(r.store_id ?? '')
+    const id = String(r.group_id ?? '')
     if (id) m.set(id, num(r.v))
   }
   return m
 }
 
-/** 会员数按 store_id 归组（占比分母，bound_store_id）。 */
-async function queryMemberCountByStore(
+/** 会员数按市场/门店归组（占比分母，bound_store_id；绑定门店唯一）。 */
+async function queryMemberCountByGroup(
   session: AuthSession,
   scope: DataCenterScope,
+  group: BreakdownGroup,
 ): Promise<Map<string, number>> {
-  const sc = scopeFilterSql(session, scope, 'c.bound_store_id')
+  const skeleton = scopeStoreSkeletonSql(session, scope)
+  const groupId = group === 'market' ? sql.raw('sk.market_id') : sql.raw('sk.store_id')
   const rows = await db.execute(sql`
-    SELECT c.bound_store_id AS store_id, COUNT(*) AS v
+    WITH skel AS (${skeleton})
+    SELECT ${groupId} AS group_id, COUNT(*) AS v
     FROM client_wechat_users c
-    WHERE ${sc}
-      AND c.bound_store_id IS NOT NULL
+    JOIN skel sk ON sk.store_id = c.bound_store_id
+    WHERE c.bound_store_id IS NOT NULL
       AND c.became_member_at IS NOT NULL
-    GROUP BY c.bound_store_id
+    GROUP BY ${groupId}
   `)
   const m = new Map<string, number>()
   for (const raw of rows as unknown[]) {
     const r = raw as Record<string, unknown>
-    const id = String(r.store_id ?? '')
+    const id = String(r.group_id ?? '')
     if (id) m.set(id, num(r.v))
   }
   return m
 }
 
 /**
- * 体验/新增/复购人数 + 新增业绩 + 复购业绩，按 store_id 归组（单查，全套 CTE）。
+ * 体验/新增/复购人数 + 新增业绩 + 复购业绩，按市场/门店归组（单查，全套 CTE）。
  *
- * store_id 归组采用 period_agg.store_id（消费发生的门店）。同一顾客在该品项的
- * entry_date 仍跨店合并（first_entry 不带 store_id），但人数落到「期内消费发生的门店」，
- * 与 KPI 总量（DISTINCT client 跨店去重）口径上的差异：明细各门店人数相加 ≥ KPI 总量
- * （同顾客跨门店购买会在多店各计一次），与 sales 板块明细的归组语义一致（业务接受）。
+ * 门店行保留原有的全 scope 跨店 first_entry 合并规则；市场行在每个市场内合并
+ * first_entry，并在市场内按顾客去重。这样同一顾客跨市场仍分别归属，跨同市场门店
+ * 不会重复累计人数。
  */
-async function queryCycleByStore(
+async function queryCycleByGroup(
   session: AuthSession,
   scope: DataCenterScope,
   range: ResolvedRange,
   threshold: number,
   groupCol: SQL,
   filter: SQL,
-): Promise<
-  Map<
-    string,
-    {
-      trialCount: number
-      newCount: number
-      newRevenue: number
-      repurchaseCount: number
-      repurchaseRevenue: number
-    }
-  >
-> {
-  const sc = scopeFilterSql(session, scope, 'so.store_id')
+  group: BreakdownGroup,
+): Promise<Map<string, CycleAgg>> {
+  const skeleton = scopeStoreSkeletonSql(session, scope)
+  const groupId = group === 'market' ? sql.raw('sk.market_id') : sql.raw('sk.store_id')
+  // 门店明细沿用全 scope 跨店首次达标；市场明细在市场内独立判定，跨市场分别归属。
+  const entryGroupId = group === 'market' ? sql.raw('sk.market_id::text') : sql.raw("'all'")
   const rows = await db.execute(sql`
-    WITH daily_agg AS (
+    WITH skel AS (${skeleton}),
+    daily_agg AS (
       SELECT so.client_user_id,
              so.store_id,
+             ${groupId} AS group_id,
+             ${entryGroupId} AS entry_group_id,
              ${groupCol} AS grp,
              sipe.performance_date AS purchase_date,
              SUM(sipe.amount::numeric) AS day_received,
@@ -381,111 +387,112 @@ async function queryCycleByStore(
       FROM sale_item_performance_events sipe
       JOIN sale_items si ON si.sale_item_id = sipe.sale_item_id
       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
-      JOIN product_skus sk ON sk.sku_id = si.sku_id
-      JOIN product_categories pc ON pc.category_id = sk.category_id
-      WHERE ${sc}
-        AND so.sale_order_type IN ('销售单', '转换单', '寄存单')
+      JOIN skel sk ON sk.store_id = so.store_id
+      JOIN product_skus sku ON sku.sku_id = si.sku_id
+      JOIN product_categories pc ON pc.category_id = sku.category_id
+      WHERE so.sale_order_type IN ('销售单', '转换单', '寄存单')
         AND so.status NOT IN ('已关闭', '已作废', '未审核', '待审批', '支付失败')
         AND so.client_user_id IS NOT NULL
         AND ${filter}
         AND sipe.performance_date <= ${range.end}
-      GROUP BY so.client_user_id, so.store_id, ${groupCol}, sipe.performance_date
+      GROUP BY so.client_user_id, so.store_id, ${groupId}, ${entryGroupId}, ${groupCol}, sipe.performance_date
       HAVING SUM(sipe.amount::numeric) > 0
     ),
     qualifying_days AS (
-      SELECT client_user_id, store_id, grp, purchase_date
+      SELECT client_user_id, store_id, group_id, entry_group_id, grp, purchase_date
       FROM daily_agg
       WHERE day_received >= ${threshold}
     ),
     repurchase_qualifying_days AS (
-      SELECT client_user_id, store_id, grp, purchase_date
+      SELECT client_user_id, store_id, group_id, entry_group_id, grp, purchase_date
       FROM daily_agg
       WHERE purchase_received >= ${threshold}
     ),
     first_entry AS (
-      SELECT client_user_id, grp, MIN(purchase_date) AS entry_date
+      SELECT client_user_id, entry_group_id, grp, MIN(purchase_date) AS entry_date
       FROM qualifying_days
-      GROUP BY client_user_id, grp
+      GROUP BY client_user_id, entry_group_id, grp
     ),
     period_agg AS (
-      SELECT client_user_id, store_id, grp, purchase_date, purchase_received AS day_received
+      SELECT client_user_id, store_id, group_id, entry_group_id, grp, purchase_date, purchase_received AS day_received
       FROM daily_agg
       WHERE purchase_date BETWEEN ${range.start} AND ${range.end}
         AND purchase_received > 0
     ),
     xinzeng AS (
-      SELECT client_user_id, grp, entry_date
+      SELECT client_user_id, entry_group_id, grp, entry_date
       FROM first_entry
       WHERE entry_date BETWEEN ${range.start} AND ${range.end}
     ),
     fugou AS (
-      SELECT DISTINCT q.client_user_id, q.grp
+      SELECT DISTINCT q.client_user_id, q.entry_group_id, q.grp
       FROM repurchase_qualifying_days q
-      JOIN xinzeng x ON x.client_user_id = q.client_user_id AND x.grp = q.grp
+      JOIN xinzeng x
+        ON x.client_user_id = q.client_user_id
+       AND x.entry_group_id = q.entry_group_id
+       AND x.grp = q.grp
       WHERE q.purchase_date BETWEEN ${range.start} AND ${range.end}
         AND q.purchase_date > x.entry_date
     ),
     tiyan AS (
-      SELECT DISTINCT pa.client_user_id, pa.grp
+      SELECT DISTINCT pa.client_user_id, pa.group_id, pa.entry_group_id, pa.grp
       FROM period_agg pa
       WHERE NOT EXISTS (
         SELECT 1 FROM first_entry f
-        WHERE f.client_user_id = pa.client_user_id AND f.grp = pa.grp
+        WHERE f.client_user_id = pa.client_user_id
+          AND f.entry_group_id = pa.entry_group_id
+          AND f.grp = pa.grp
       )
     ),
-    -- 期内每个门店每个客群的人数（DISTINCT client per store）+ 业绩（该门店该客群消费）
-    trial_store AS (
-      SELECT pa.store_id,
-             COUNT(DISTINCT pa.client_user_id) AS cnt
-      FROM period_agg pa
-      JOIN tiyan t ON t.client_user_id = pa.client_user_id AND t.grp = pa.grp
-      GROUP BY pa.store_id
+    -- 每组内人数 DISTINCT client；新增/复购业绩仍按该组的实际消费事件汇总。
+    trial_group AS (
+      SELECT t.group_id,
+             COUNT(DISTINCT t.client_user_id) AS cnt
+      FROM tiyan t
+      GROUP BY t.group_id
     ),
-    new_store AS (
-      SELECT pa.store_id,
+    new_group AS (
+      SELECT pa.group_id,
              COUNT(DISTINCT pa.client_user_id) AS cnt,
              COALESCE(SUM(pa.day_received), 0) AS revenue
       FROM period_agg pa
-      JOIN xinzeng x ON x.client_user_id = pa.client_user_id AND x.grp = pa.grp
-      GROUP BY pa.store_id
+      JOIN xinzeng x
+        ON x.client_user_id = pa.client_user_id
+       AND x.entry_group_id = pa.entry_group_id
+       AND x.grp = pa.grp
+      GROUP BY pa.group_id
     ),
-    repurchase_store AS (
-      SELECT pa.store_id,
+    repurchase_group AS (
+      SELECT pa.group_id,
              COUNT(DISTINCT pa.client_user_id) AS cnt,
              COALESCE(SUM(pa.day_received), 0) AS revenue
       FROM period_agg pa
-      JOIN fugou fg ON fg.client_user_id = pa.client_user_id AND fg.grp = pa.grp
-      GROUP BY pa.store_id
+      JOIN fugou fg
+        ON fg.client_user_id = pa.client_user_id
+       AND fg.entry_group_id = pa.entry_group_id
+       AND fg.grp = pa.grp
+      GROUP BY pa.group_id
     ),
-    -- 期内有消费的所有门店（并集），LEFT JOIN 各客群聚合避免 FULL OUTER 链路漏行
-    store_ids AS (
-      SELECT DISTINCT store_id FROM period_agg
+    -- 期内有消费的所有分组（并集），LEFT JOIN 各客群聚合避免 FULL OUTER 链路漏行
+    group_ids AS (
+      SELECT DISTINCT group_id FROM period_agg
     )
     SELECT
-      s.store_id AS store_id,
+      s.group_id AS group_id,
       COALESCE(t.cnt, 0) AS trial_count,
       COALESCE(n.cnt, 0) AS new_count,
       COALESCE(n.revenue, 0) AS new_revenue,
       COALESCE(r.cnt, 0) AS repurchase_count,
       COALESCE(r.revenue, 0) AS repurchase_revenue
-    FROM store_ids s
-    LEFT JOIN trial_store t ON t.store_id = s.store_id
-    LEFT JOIN new_store n ON n.store_id = s.store_id
-    LEFT JOIN repurchase_store r ON r.store_id = s.store_id
+    FROM group_ids s
+    LEFT JOIN trial_group t ON t.group_id = s.group_id
+    LEFT JOIN new_group n ON n.group_id = s.group_id
+    LEFT JOIN repurchase_group r ON r.group_id = s.group_id
   `)
-  const m = new Map<
-    string,
-    {
-      trialCount: number
-      newCount: number
-      newRevenue: number
-      repurchaseCount: number
-      repurchaseRevenue: number
-    }
-  >()
+  const m = new Map<string, CycleAgg>()
   for (const raw of rows as unknown[]) {
     const r = raw as Record<string, unknown>
-    const id = String(r.store_id ?? '')
+    const id = String(r.group_id ?? '')
     if (!id) continue
     m.set(id, {
       trialCount: num(r.trial_count),
@@ -601,23 +608,37 @@ export const getProductBoard = withPermission(
       }
     })
 
-    const [cardByStore, memberByStore, cycleByStore] = await Promise.all([
-      queryCardHoldersByStore(session, scope, filter),
-      queryMemberCountByStore(session, scope),
-      queryCycleByStore(session, scope, cur, threshold, groupCol, filter),
+    const [
+      cardByStore,
+      memberByStore,
+      cycleByStore,
+      cardByMarket,
+      memberByMarket,
+      cycleByMarket,
+    ] = await Promise.all([
+      queryCardHoldersByGroup(session, scope, filter, 'store'),
+      queryMemberCountByGroup(session, scope, 'store'),
+      queryCycleByGroup(session, scope, cur, threshold, groupCol, filter, 'store'),
+      queryCardHoldersByGroup(session, scope, filter, 'market'),
+      queryMemberCountByGroup(session, scope, 'market'),
+      queryCycleByGroup(session, scope, cur, threshold, groupCol, filter, 'market'),
     ])
+
+    const toAgg = (id: string, cardMap: Map<string, number>, cycleMap: Map<string, CycleAgg>): ProductStoreAgg => {
+      const cycle = cycleMap.get(id)
+      return {
+        cardHolders: cardMap.get(id) ?? 0,
+        trialCount: cycle?.trialCount ?? 0,
+        newCount: cycle?.newCount ?? 0,
+        newRevenue: cycle?.newRevenue ?? 0,
+        repurchaseCount: cycle?.repurchaseCount ?? 0,
+        repurchaseRevenue: cycle?.repurchaseRevenue ?? 0,
+      }
+    }
 
     // 门店级聚合
     const storeAggs = skeleton.map((s) => {
-      const cyc = cycleByStore.get(s.storeId)
-      const agg: ProductStoreAgg = {
-        cardHolders: cardByStore.get(s.storeId) ?? 0,
-        trialCount: cyc?.trialCount ?? 0,
-        newCount: cyc?.newCount ?? 0,
-        newRevenue: cyc?.newRevenue ?? 0,
-        repurchaseCount: cyc?.repurchaseCount ?? 0,
-        repurchaseRevenue: cyc?.repurchaseRevenue ?? 0,
-      }
+      const agg = toAgg(s.storeId, cardByStore, cycleByStore)
       return { ...s, agg, memberCount: memberByStore.get(s.storeId) ?? 0 }
     })
 
@@ -628,42 +649,16 @@ export const getProductBoard = withPermission(
       metrics: buildMetrics(s.agg, s.memberCount),
     }))
 
-    // 按市场聚合（在 JS 内按 marketId 求和；占比/客单价/复购率重新派生）
-    type MarketAcc = { name: string; agg: ProductStoreAgg; memberCount: number }
-    const marketMap = new Map<string, MarketAcc>()
+    // 市场人数直接由 SQL 按 market_id + 顾客去重，不能由门店行相加。
+    const marketGroups = new Map<string, { name: string }>()
     for (const s of storeAggs) {
-      let m = marketMap.get(s.marketId)
-      if (!m) {
-        m = {
-          name: s.marketName,
-          agg: {
-            cardHolders: 0,
-            trialCount: 0,
-            newCount: 0,
-            newRevenue: 0,
-            repurchaseCount: 0,
-            repurchaseRevenue: 0,
-          },
-          memberCount: 0,
-        }
-        marketMap.set(s.marketId, m)
-      }
-      m.agg.cardHolders += s.agg.cardHolders
-      m.agg.trialCount += s.agg.trialCount
-      m.agg.newCount += s.agg.newCount
-      m.agg.newRevenue += s.agg.newRevenue
-      m.agg.repurchaseCount += s.agg.repurchaseCount
-      m.agg.repurchaseRevenue += s.agg.repurchaseRevenue
-      m.memberCount += s.memberCount
+      if (!marketGroups.has(s.marketId)) marketGroups.set(s.marketId, { name: s.marketName })
     }
 
-    const byMarket: BreakdownRow[] = Array.from(marketMap.entries()).map(([id, m]) => ({
+    const byMarket: BreakdownRow[] = Array.from(marketGroups.entries()).map(([id, market]) => ({
       groupId: id,
-      groupName: m.name,
-      metrics: buildMetrics(
-        { ...m.agg, newRevenue: round2(m.agg.newRevenue), repurchaseRevenue: round2(m.agg.repurchaseRevenue) },
-        m.memberCount,
-      ),
+      groupName: market.name,
+      metrics: buildMetrics(toAgg(id, cardByMarket, cycleByMarket), memberByMarket.get(id) ?? 0),
     }))
 
     // 稳定排序：按 groupName

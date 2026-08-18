@@ -1,5 +1,5 @@
 import type { SaleItem, SaleOrder } from "@/lib/types"
-import { groupTreatmentCards, sumGroupValue } from "@/lib/treatment-card-group"
+import { getTreatmentCardBusinessIdentity, groupTreatmentCards, sumGroupValue } from "@/lib/treatment-card-group"
 
 const VISIBLE_CARD_ORDER_STATUSES: ReadonlySet<SaleOrder["status"]> = new Set([
   "已支付",
@@ -55,7 +55,7 @@ export function getCustomerVisibleSaleItems(orders: SaleOrder[]): CustomerVisibl
     getId: ({ item }) => item.saleItemId,
     getQuantity: ({ item }) => item.quantity,
     preserveNonUnitQuantity: false,
-    getIdentity: ({ order, item }) => ({
+    getIdentity: ({ order, item }) => getTreatmentCardBusinessIdentity({
       saleOrderId: order.saleOrderId,
       orderStatus: order.status,
       saleOrderType: order.saleOrderType,
