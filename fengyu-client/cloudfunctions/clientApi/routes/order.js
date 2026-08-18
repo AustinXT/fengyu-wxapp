@@ -878,6 +878,42 @@ async function closeExpiredOrdersByUser(userId) {
 }
 
 /**
+ * 顾客自助下单时复核 SKU 的市场范围。
+ *
+ * 目录允许未绑定门店用户先浏览全市场商品下配置的市场 SKU，但提交订单时
+ * 必须以本次订单的目标门店为准重新授权。NULL 表示全市场；空字符串/纯空白
+ * 表示没有可见市场；其余值是逗号分隔的市场 org_nodes.id，兼容历史市场名。
+ * 过滤放在 SQL 中，避免只依赖前端目录或 auth 缓存造成跨市场下单。
+ */
+function buildOrderSkuMarketScopeFilter(params, storeId, tableAlias = 'sk') {
+  const scopeExpr = `${tableAlias}.market_scope`
+  const normalizedScopeExpr = `regexp_replace(${scopeExpr}, '[[:space:]]+', '', 'g')`
+  const valuesExpr = `string_to_array(${normalizedScopeExpr}, ',')`
+  const storeParam = `$${params.length + 1}`
+  params.push(storeId)
+
+  return `AND (
+    ${scopeExpr} IS NULL
+    OR (
+      NULLIF(${normalizedScopeExpr}, '') IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+        FROM stores scope_store
+        JOIN org_nodes scope_store_node ON scope_store.org_node_id = scope_store_node.id
+        JOIN org_nodes scope_market_node
+          ON scope_store_node.parent_id = scope_market_node.id
+         AND scope_market_node.type = '市场'
+        WHERE scope_store.store_id = ${storeParam}
+          AND (
+            scope_market_node.id = ANY(${valuesExpr})
+            OR regexp_replace(scope_market_node.name, '[[:space:]]+', '', 'g') = ANY(${valuesExpr})
+          )
+      )
+    )
+  )`
+}
+
+/**
  * 组合套餐校验 + 定价 map
  *
  * 仅当 order.create payload 含 bundleProductId 时调用：
@@ -1180,6 +1216,8 @@ async function create(ctx) {
   // 查询 SKU 信息（product_skus → product_categories 两表 JOIN）
   // 2026-05-20 充值卡剥离 SKU 化：充值不再走 order.create，is_recharge_card 字段已下线
   const skuIds = items.map(i => i.skuId)
+  const skuQueryParams = [skuIds]
+  const skuMarketScopeFilter = buildOrderSkuMarketScopeFilter(skuQueryParams, storeId)
   const skuResults = await pg.query(`
     SELECT
       sk.sku_id, sk.product_type, sk.spec_name,
@@ -1188,7 +1226,8 @@ async function create(ctx) {
     FROM product_skus sk
     JOIN product_categories pc ON sk.category_id = pc.category_id
     WHERE sk.sku_id = ANY($1) AND sk.deleted_at IS NULL
-  `, [skuIds])
+      ${skuMarketScopeFilter}
+  `, skuQueryParams)
 
   // 构建 SKU 映射
   const skuMap = {}
