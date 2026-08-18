@@ -333,7 +333,10 @@ async function shopInit(ctx) {
 async function skuDetail(ctx) {
   const { skuId, productId } = ctx.event.payload || {}
   const params = [skuId, productId || null]
-  const marketScopeFilter = buildMarketScopeFilter(ctx.auth, params, 'sk')
+  // 结算页的直接下单入口也会调用 skuDetail。未绑定门店时必须与目录详情
+  // 使用同一套“全市场商品下允许展示已配置市场 SKU”的规则，否则会出现
+  // 目录可选但结算页加载价格失败的断链。
+  const marketScopeFilter = buildCatalogSkuMarketScopeFilter(ctx.auth, params, 'sk')
 
   if (!skuId) {
     throw new Error('INVALID_PARAMS: 缺少 skuId 参数')

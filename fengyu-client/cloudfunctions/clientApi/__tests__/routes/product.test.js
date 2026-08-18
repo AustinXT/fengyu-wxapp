@@ -229,6 +229,24 @@ describe('product.skuDetail', () => {
     expect(params).toEqual(['sku-1', null, ['store-nanchang']])
   })
 
+  test('未绑定门店时指定市场 SKU 详情可用于直接下单预览', async () => {
+    pg.query.mockResolvedValueOnce([{
+      sku_id: 'sku-market', product_type: '疗程卡',
+      spec_name: '市场专属卡', price: 1000, special_price: 800,
+      session_count: 10, service_fee: 0, sort_order: 1, is_shengmei: false,
+      category_id: 'cat-1', category_name: '护理项目', product_kind: '护理项目', sales_category: null,
+    }])
+
+    const ctx = createNewUserCtx({ skuId: 'sku-market' })
+    await routes.skuDetail(ctx)
+
+    expect(ctx.result.sku.sku_id).toBe('sku-market')
+    const [calledSql, params] = pg.query.mock.calls[0]
+    expect(calledSql).toContain("sk.market_scope IS NULL OR btrim(sk.market_scope) <> ''")
+    expect(calledSql).not.toContain('FROM stores s')
+    expect(params).toEqual(['sku-market', null])
+  })
+
   test('缺少 skuId → INVALID_PARAMS', async () => {
     const ctx = createCtx({ payload: {} })
     await expect(routes.skuDetail(ctx)).rejects.toThrow(/INVALID_PARAMS.*skuId/)

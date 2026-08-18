@@ -143,6 +143,15 @@ async function caseGlobalProductVisibleWithoutBoundStore() {
     throw new Error('全市场 SPU 详情应包含指定市场 SKU')
   }
 
+  // 直接下单的结算页以 skuDetail 重取权威价格；该接口必须与 SPU 详情使用同一未绑店可见性。
+  const skuDetail = await invokePublic('product.skuDetail', {
+    skuId: TEST_SKU_NORMAL_ID,
+    productId: TEST_PRODUCT_ID,
+  })
+  if (skuDetail.code !== 0 || skuDetail.data?.sku?.sku_id !== TEST_SKU_NORMAL_ID) {
+    throw new Error(`未绑店用户应能加载指定市场 SKU 的结算价格: ${skuDetail.message || 'SKU 缺失'}`)
+  }
+
   await pgQuery(`UPDATE product_skus SET market_scope = '' WHERE sku_id = $1`, [TEST_SKU_NORMAL_ID])
   list = await getPublicSpuList()
   if (list.some(p => p.product_id === TEST_PRODUCT_ID)) {
