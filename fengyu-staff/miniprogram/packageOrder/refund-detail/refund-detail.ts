@@ -107,6 +107,7 @@ Page({
     rejectPopup: false,
     rejectReason: '',
     saleOrderType: '',
+    submitting: false,
   },
 
   onLoad(options: { id?: string }) {
@@ -178,6 +179,7 @@ Page({
   },
 
   onApprove() {
+    if (this.data.submitting) return;
     // 充值单退款走 card.approveRefund（扣 prepaid_cards.balance）；销售单退款走 order.approveRefund（5 通道 cascade）
     const isRecharge = this.data.saleOrderType === '充值单';
     wx.showModal({
@@ -189,17 +191,20 @@ Page({
       confirmColor: '#C0322A',
       success: async (res) => {
         if (!res.confirm) return;
+        if (this.data.submitting) return;
+        this.setData({ submitting: true });
         wx.showLoading({ title: '审批中', mask: true });
         try {
           const action = isRecharge ? 'card.approveRefund' : 'order.approveRefund';
           await callStaffApi(action, { paymentId: Number(this.data.refundId) });
-          wx.hideLoading();
           wx.showToast({ title: '审批已通过', icon: 'success' });
           this.loadDetail();
         } catch (err: unknown) {
-          wx.hideLoading();
           const msg = err instanceof Error ? err.message : '操作失败';
           wx.showToast({ title: msg, icon: 'none' });
+        } finally {
+          wx.hideLoading();
+          this.setData({ submitting: false });
         }
       },
     });
@@ -218,11 +223,13 @@ Page({
   },
 
   async onConfirmReject() {
+    if (this.data.submitting) return;
     const reason = (this.data.rejectReason || '').trim();
     if (!reason) {
       wx.showToast({ title: '请输入驳回原因', icon: 'none' });
       return;
     }
+    this.setData({ submitting: true });
     wx.showLoading({ title: '提交中', mask: true });
     try {
       // 充值单退款走 card.rejectRefund（读 reason），销售单走 order.rejectRefund（读 auditRemark）；传两字段兼容
@@ -232,14 +239,15 @@ Page({
         auditRemark: reason,
         reason,
       });
-      wx.hideLoading();
       wx.showToast({ title: '已驳回', icon: 'success' });
       this.setData({ rejectPopup: false, rejectReason: '' });
       this.loadDetail();
     } catch (err: unknown) {
-      wx.hideLoading();
       const msg = err instanceof Error ? err.message : '操作失败';
       wx.showToast({ title: msg, icon: 'none' });
+    } finally {
+      wx.hideLoading();
+      this.setData({ submitting: false });
     }
   },
 });

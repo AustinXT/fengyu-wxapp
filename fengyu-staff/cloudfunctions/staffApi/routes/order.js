@@ -3008,12 +3008,12 @@ async function approveRefund(ctx) {
     await reconcileAllocationStatusAfterRefund(client, refSaleOrderId)
     await reconcileOrderStatusAfterRefund(client, refSaleOrderId)
 
-    // 5. 重算顾客消费档位 + 顾客类型
+    // 5. 退款只会降低净消费，这里仅重算允许随净额下降的 spending_tier。
+    // recalcCustomerType / recalcMemberLevel 都是“只升不降”的支付结算逻辑，
+    // 在退款审批中不会产生有效变更，反而会延长事务并增加云函数超时风险。
+    // 与 admin approveRefund 保持一致。
     if (sopRow.client_user_id) {
       await refreshSpendingTier(client, sopRow.client_user_id)
-      await recalcCustomerType(client, sopRow.client_user_id)
-      // 会员等级即时重算（只升不降；退款路径下消费降低 → rank 不增即跳过）
-      await recalcMemberLevel(client, sopRow.client_user_id, await getMemberThreshold(), 'staffApi')
     }
 
     // 6. 写 operation_logs（审计）

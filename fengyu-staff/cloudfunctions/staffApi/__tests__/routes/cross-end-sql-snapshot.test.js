@@ -766,6 +766,17 @@ describe('SUMMARY v3 §2 #14：cascadeRefund 触发点防回归', () => {
     const src = readFile(FILES.staffOrderJs)
     expect(src).toMatch(/await\s+cascadeRefund\s*\(\s*client\s*,/)
   })
+
+  test('staff approveRefund 与 admin 一致：退款只刷新 spending_tier，不执行只升不降的结算重算', () => {
+    const src = readFile(FILES.staffOrderJs)
+    const approveBody = src.slice(
+      src.indexOf('async function approveRefund(ctx)'),
+      src.indexOf('async function rejectRefund(ctx)'),
+    )
+    expect(approveBody).toContain('await refreshSpendingTier(client, sopRow.client_user_id)')
+    expect(approveBody).not.toMatch(/await\s+recalcCustomerType\s*\(/)
+    expect(approveBody).not.toMatch(/await\s+recalcMemberLevel\s*\(/)
+  })
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
