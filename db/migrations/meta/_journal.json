@@ -106,6 +106,13 @@
       "when": 1786963616965,
       "tag": "0014_sturdy_sentinels",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1787319436926,
+      "tag": "0015_curved_blue_blade",
+      "breakpoints": true
     }
   ]
 }

@@ -12,8 +12,11 @@ import { Select, SelectOption } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { formatDateTime } from "@/lib/utils"
 import MarketStoreFilter from "@/components/market-store-filter"
+import OnboardingList from "../onboarding-prototype/onboarding-prototype"
+import type { OnboardingListItem } from "@/actions/lakala-onboarding"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -23,16 +26,19 @@ export default function MerchantsPage({
   markets,
   canCreate,
   filterOptions,
+  onboardingApplications,
 }: {
   merchants: AdminMerchant[]
   total: number
   markets: MerchantMarketOption[]
   canCreate: boolean
   filterOptions: MarketStoreFilterOptions
+  onboardingApplications: OnboardingListItem[]
 }) {
   const router = useRouter()
   const { get, setMany } = useUrlFilters()
   const [searchInput, setSearchInput] = useState(get("q"))
+  const [activeTab, setActiveTab] = useState("merchants")
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const enabledFilter = get("enabled")
@@ -114,11 +120,18 @@ export default function MerchantsPage({
             拉卡拉收款商户档案；门店在「门店编辑」页选择关联本表的商户。
           </p>
         </div>
-        {canCreate && (
+        {activeTab === "merchants" && canCreate && (
           <Button onClick={() => router.push("/merchants/create")}>新建商户</Button>
         )}
       </div>
 
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <TabsList>
+          <TabsTrigger value="merchants">收款商户</TabsTrigger>
+          <TabsTrigger value="onboarding">入网申请</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="merchants" className="space-y-4">
       <div className="flex items-center gap-3">
         <Input
           placeholder="商户名称 / 商户号"
@@ -158,6 +171,11 @@ export default function MerchantsPage({
         onPageChange={(p) => setMany({ page: String(p) })}
         onPageSizeChange={(s) => setMany({ size: String(s), page: "1" })}
       />
+        </TabsContent>
+        <TabsContent value="onboarding">
+          <OnboardingList applications={onboardingApplications} embedded />
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }

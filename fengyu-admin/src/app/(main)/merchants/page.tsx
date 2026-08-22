@@ -4,6 +4,7 @@ import {
   getMerchantMarketOptions,
   type MerchantEnabledFilter,
 } from "@/actions/merchants"
+import { listOnboardingApplications } from "@/actions/lakala-onboarding"
 import { getMarketStoreFilterOptions } from "@/actions/stores"
 import { getSession } from "@/lib/auth"
 import { hasUiCapability } from "@/lib/permission-contract"
@@ -22,7 +23,7 @@ export default async function Page({
   const session = await getSession()
   const canCreate = hasUiCapability(session?.permissions.actions ?? [], "merchant:create")
 
-  const [{ data, total }, markets, filterOptions] = await Promise.all([
+  const [{ data, total }, markets, filterOptions, onboardingApplications] = await Promise.all([
     getMerchantsPaginated({
       search: params.q,
       enabled: enabled === "enabled" || enabled === "disabled" ? enabled : undefined,
@@ -33,6 +34,7 @@ export default async function Page({
     }),
     getMerchantMarketOptions(),
     getMarketStoreFilterOptions(),
+    listOnboardingApplications(),
   ])
 
   return (
@@ -43,6 +45,7 @@ export default async function Page({
         markets={markets}
         canCreate={canCreate}
         filterOptions={filterOptions}
+        onboardingApplications={onboardingApplications}
       />
     </Suspense>
   )

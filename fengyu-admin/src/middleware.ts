@@ -7,6 +7,10 @@ const COOKIE_NAME = 'fy-admin-token'
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
+  if (pathname.startsWith('/merchants/lakala-guides') || pathname.startsWith('/lakala-guides')) {
+    return NextResponse.next()
+  }
+
   // Auth pages: allow without token
   if (pathname.startsWith('/login') || pathname.startsWith('/change-password')) {
     // Session expired: clear stale cookie and stay on login

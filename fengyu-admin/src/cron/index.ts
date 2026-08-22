@@ -18,6 +18,8 @@
  */
 import cron from 'node-cron'
 import { runDailyJobs } from './run'
+import { db } from '@/db'
+import { refreshLakalaSubMerchants } from './steps/refresh-lakala-submerchants'
 
 const ONCE = process.argv.includes('--once')
 const ONLY = process.argv
@@ -47,7 +49,18 @@ if (ONCE) {
     { timezone: 'Asia/Shanghai' },
   )
 
+  cron.schedule(
+    '0 * * * *',
+    () => {
+      refreshLakalaSubMerchants(db)
+        .then((result) => console.log('[cron-worker] lakala sub-merchants:', result))
+        .catch((err) => console.error('[cron-worker] lakala sub-merchant poll failed:', err))
+    },
+    { timezone: 'Asia/Shanghai' },
+  )
+
   console.log('[cron-worker] scheduled at 03:00 Asia/Shanghai (cron: 0 3 * * *)')
+  console.log('[cron-worker] lakala sub-merchant polling at minute 0 every hour')
 
   // SIGTERM 优雅退出（compose down 时）
   process.on('SIGTERM', () => {

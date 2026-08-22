@@ -48,6 +48,9 @@ services:
       - WX_CLIENT_APPID=${WX_CLIENT_APPID}
       - WX_CLIENT_SECRET=${WX_CLIENT_SECRET}
       - WXACODE_ENV_VERSION=${WXACODE_ENV_VERSION}
+      - PRIVATE_UPLOAD_DIR=/var/lib/fengyu-admin/private-uploads
+    volumes:
+      - ./private-uploads:/var/lib/fengyu-admin/private-uploads
     depends_on:
       postgres:
         condition: service_healthy

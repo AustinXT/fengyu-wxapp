@@ -23,7 +23,7 @@ metadata:
 ./deploy-admin.sh <dev|prod> [ssh-host] [remote-dir]
 ```
 
-第一个参数 `dev`/`prod` 决定目标环境：SSH host 自动路由（dev→`ali-demo` 测试 / prod→`fengyu-prod` 生产），admin 容器连对应远程 PG（dev→47.113.202.7 / prod→118.178.196.26，均 5433/fengyu_wxapp）。`[ssh-host]`/`[remote-dir]` 可显式覆盖（默认远程目录 dev=`/root/proj.xt.com/fengyu-wxapp/docker`，prod=`/www/wwwroot/fengyu-admin/docker`）。prod 有二次确认 + 生产库迁移预检，dev 无。
+第一个参数决定环境：`dev` 默认部署到 `ali-demo`，`prod` 部署到 `fengyu-prod`。但当当前 Git 分支为 `feat/lakala-payment-migration` 时，执行 `deploy-admin.sh dev` 会自动改为 `sqlserver101`（`101.34.242.103`）和 `/www/wwwroot/fengyu-admin/docker`，从而与同事的 `ali-demo` 测试环境隔离。该分支部署只读取 101 服务器现有 `.env`，不会同步任何密钥或证书。`[ssh-host]`/`[remote-dir]` 可显式覆盖。prod 有二次确认 + 生产库迁移预检。
 
 ## 部署流程
 
