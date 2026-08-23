@@ -3,7 +3,7 @@ import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
 import { pollPaymentConfirm, PaymentPoller } from '../utils/payment-poll';
 import { formatDateTimeShort, formatDate, calculateTriProgress } from '../../utils/format';
-import { groupTreatmentCards, sumGroupValue } from '../utils/treatment-card-group';
+import { getTreatmentCardBusinessIdentity, groupTreatmentCards, sumGroupValue } from '../utils/treatment-card-group';
 
 interface OrderDetailItem {
   sale_item_id: string;
@@ -224,47 +224,16 @@ Page({
         };
       });
 
-      // 拆分寄存行按稳定行组聚合；原始 itemsWithProgress 仍用于金额/预约判断，
-      // 不改变任何后续业务计算或提交参数。
+      // 疗程卡仅在完整业务快照一致时合并；非疗程商品始终按原始行隔离。
+      // 原始 itemsWithProgress 仍用于金额/预约判断，不改变任何后续业务计算或提交参数。
       const displayItems = groupTreatmentCards(itemsWithProgress, {
         getId: (item) => item.sale_item_id,
         getQuantity: (item) => item.quantity,
         preserveNonUnitQuantity: false,
-        getIdentity: (item) => item.sale_item_group_id
-          ? { saleItemGroupId: item.sale_item_group_id }
-          : ({
-          saleOrderId: order.sale_order_id,
-          orderStatus: order.status,
-          saleOrderType: order.sale_order_type,
-          documentType: order.document_type,
-          legacySource: order.legacy_source,
-          saleOrderDatetime: order.sale_order_datetime,
-          paidAt: order.paid_at,
-          storeId: order.store_id,
-          marketName: order.market_name,
-          productName: item.product_name,
-          productType: item.product_type,
-          sourceId: item.product_type === '疗程卡' ? undefined : item.sale_item_id,
-          skuId: item.sku_id,
-          itemDirection: item.item_direction,
-          refSaleItemId: item.ref_sale_item_id,
-          sessionCount: item.session_count,
-          remainingSessions: item.remaining_sessions,
-          paidSessions: item.paid_sessions_null ? null : item.paid_sessions,
-          unit: item.unit,
-          unitPrice: item.unit_price,
-          unitRealPrice: item.unit_real_price,
-          saleAmount: item.sale_amount,
-          received: item.received,
-          pendingReceived: item.pending_received,
-          refundedAmount: item.refunded_amount ?? 0,
-          expireDate: item.expire_date,
-          remark: item.remark,
-          salesCategory: item.sales_category,
-          pickedUpQuantity: item.picked_up_quantity,
-          quantity: item.quantity,
-          coverImage: item.cover_image,
-        }),
+        getIdentity: (item) => {
+          const identity = getTreatmentCardBusinessIdentity(item);
+          return item.product_type === '疗程卡' ? identity : { ...identity, sourceId: item.sale_item_id };
+        },
       }).map((group) => {
         const primary = group.primary;
         const aggregate = {

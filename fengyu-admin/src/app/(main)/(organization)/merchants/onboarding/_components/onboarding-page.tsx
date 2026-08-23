@@ -1,13 +1,6 @@
 "use client"
 
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useTransition,
-  type ReactNode,
-} from "react"
+import { useEffect, useMemo, useState, useTransition } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
@@ -15,30 +8,31 @@ import {
   ArrowLeft,
   Building2,
   CheckCircle2,
+  ChevronRight,
   ClipboardCheck,
+  CreditCard,
+  FileCheck2,
   FileText,
   FileWarning,
-  Landmark,
   Plus,
   RefreshCw,
   Save,
   Send,
   Store,
+  Trash2,
   Upload,
-  XCircle,
+  UserRound,
 } from "lucide-react"
 import {
-  cancelOnboardingApplication,
-  confirmOnboardingExternalCertification,
   createOnboardingApplication,
+  confirmOnboardingExternalCertification,
   initiateElectronicContract,
+  deleteOnboardingApplication,
   queryOnboardingApplication,
-  reconsiderOnboardingApplication,
-  refreshElectronicContractStatus,
-  refreshOnboardingCertificationStatus,
   refreshOnboardingSubMerchants,
-  saveOnboardingApplication,
+  reconsiderOnboardingApplication,
   searchOnboardingBanks,
+  saveOnboardingApplication,
   submitOnboardingApplication,
   type OnboardingApplicationInput,
   type OnboardingBankOption,
@@ -47,338 +41,307 @@ import {
   type OnboardingStatus,
   type OnboardingStoreOption,
 } from "@/actions/lakala-onboarding"
-import {
-  ATTACHMENT_REQUIREMENTS,
-  ELECTRONIC_CONTRACT_PDF_ATTACHMENT,
-  MAX_ONBOARDING_ATTACHMENT_BYTES,
-} from "@/lib/lakala-onboarding-constants"
+import { ATTACHMENT_REQUIREMENTS, MAX_ONBOARDING_ATTACHMENT_BYTES } from "@/lib/lakala-onboarding-constants"
 import { actionErrorMessage } from "@/lib/action-error"
-import { useRefreshSafeDraft } from "@/lib/hooks/use-refresh-safe-draft"
-import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
+import { areaCodeFromAddress, getAreaPathByCode, getCityOptions, getCountyOptions, getProvinceOptions } from "@/lib/china-area"
+import {
+  getLakalaMerchantAreaPathByCode,
+  getLakalaMerchantCityOptions,
+  getLakalaMerchantCountyOptions,
+  getLakalaMerchantProvinceOptions,
+  lakalaMerchantAreaCodeFromAddress,
+} from "@/lib/lakala-merchant-area"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { DataTable, type Column } from "@/components/ui/data-table"
-import { Input } from "@/components/ui/input"
+import { DatePicker } from "@/components/ui/date-picker"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { cn, formatDateTime } from "@/lib/utils"
-import {
-  buildLakalaMerchantAreaDirectory,
-  parseLakalaMerchantAreas,
-  type LakalaMerchantAreaRow,
-} from "@/lib/lakala-merchant-area-client"
-import {
-  channelMerchantNumbers,
-  onboardingBusinessStatus,
-  onboardingMetricCounts,
-  onboardingStatusText,
-} from "@/lib/lakala-onboarding-presentation"
 
-type StringRecord = Record<string, string>
-
-type ActionResult = {
-  success: boolean
-  message: string
-  id?: string
-  applicationId?: string
-  resultUrl?: string
-  updatedAt?: string
-}
-
-let areaRowsPromise: Promise<LakalaMerchantAreaRow[]> | null = null
-const PDF_ATTACHMENT_TYPES = new Set(["BUSINESS_LICENCE", "OPENING_PERMIT"])
-
-function allowsPdfAttachment(attachmentType: string): boolean {
-  return PDF_ATTACHMENT_TYPES.has(attachmentType)
-}
-
-function loadLakalaAreas(): Promise<LakalaMerchantAreaRow[]> {
-  if (!areaRowsPromise) {
-    areaRowsPromise = fetch("/data/lakala-merchant-areas.tsv")
-      .then(async (response) => {
-        if (!response.ok) throw new Error("无法加载拉卡拉地区码")
-        return parseLakalaMerchantAreas(await response.text())
-      })
-      .catch(() => [])
-  }
-  return areaRowsPromise
-}
-
-function toStringRecord(value: unknown): StringRecord {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {}
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>).flatMap(([key, item]) =>
-      typeof item === "string" || typeof item === "number" || typeof item === "boolean"
-        ? [[key, String(item)]]
-        : [],
-    ),
-  )
-}
-
-function formFromApplication(application: OnboardingDetail): OnboardingApplicationInput {
-  return {
-    merchantData: toStringRecord(application.merchantData),
-    legalPersonData: toStringRecord(application.legalPersonData),
-    contactData: toStringRecord(application.contactData),
-    settlementData: toStringRecord(application.settlementData),
-    shopData: toStringRecord(application.shopData),
-    terminalData: toStringRecord(application.terminalData),
-  }
-}
-
-function getGroup(
-  form: OnboardingApplicationInput,
-  group: keyof OnboardingApplicationInput,
-): StringRecord {
-  return toStringRecord(form[group])
-}
-
-function setFormField(
-  form: OnboardingApplicationInput,
-  group: keyof OnboardingApplicationInput,
-  field: string,
-  value: string,
-): OnboardingApplicationInput {
-  return {
-    ...form,
-    [group]: { ...getGroup(form, group), [field]: value },
-  }
+const statusText: Record<OnboardingStatus, string> = {
+  DRAFT: "草稿",
+  FILES_UPLOADING: "资料保存中",
+  FILES_READY: "资料已保存",
+  SUBMITTING: "提交中",
+  SUBMITTED: "已提交",
+  REGISTERING: "报备中",
+  SUCCESS: "成功",
+  FAILED: "失败",
+  CANCELLED: "已取消",
 }
 
 function StatusBadge({ status, label }: { status: OnboardingStatus; label?: string }) {
-  const completed = label === "办理完成"
-  const warning = ["待渠道报备", "待终端号", "待外部认证", "待启用"].includes(label ?? "")
-  const className = completed
-    ? "border-[#3D8A5A] bg-[#F0F9F2] text-[#287342]"
-    : status === "FAILED" || status === "CANCELLED"
-      ? "border-[#D94040] bg-[#FFF5F4] text-[#B42318]"
-      : warning || status === "DRAFT" || status === "FILES_UPLOADING"
-        ? "border-[#D4820A] bg-[#FFF8E6] text-[#A45D00]"
-        : "border-[#7A67A8] bg-[#F5F1FA] text-[#62508B]"
-  return <Badge variant="outline" className={className}>{label ?? onboardingStatusText[status]}</Badge>
+  const done = label === "办理完成"
+  const warning = label === "待渠道报备" || label === "待终端号" || label === "待外部认证" || label === "待启用"
+  const danger = label === "失败"
+  const warm = danger || warning || ["DRAFT", "FILES_UPLOADING", "FAILED"].includes(status)
+  const ok = done || (!label && ["FILES_READY", "SUCCESS", "SUBMITTED"].includes(status))
+  return (
+    <Badge
+      variant="outline"
+      className={cn(
+        warm && "border-[#D4820A] bg-[#FFF8E6] text-[#A45D00]",
+        ok && "border-[#3D8A5A] bg-[#F0F9F2] text-[#287342]",
+        !warm && !ok && "border-[#7A67A8] bg-[#F5F1FA] text-[#62508B]",
+      )}
+    >
+      {label ?? statusText[status] ?? status}
+    </Badge>
+  )
 }
 
-function formatFileSize(bytes: number): string {
-  return (bytes / 1024 / 1024).toFixed(1) + " MB"
+function getChannelSubMerchantText(channelData: Record<string, unknown>, key: "wechat" | "alipay") {
+  const value = channelData[key]
+  if (!Array.isArray(value)) return ""
+  return value.map((item) => {
+    if (!item || typeof item !== "object") return ""
+    const subMerchantNo = (item as Record<string, unknown>).subMerchantNo
+    return typeof subMerchantNo === "string" ? subMerchantNo : ""
+  }).filter(Boolean).join("、")
+}
+
+function getTerminalNo(application: Pick<OnboardingListItem, "terminalNo"> | OnboardingDetail) {
+  if (application.terminalNo) return application.terminalNo
+  const terminalData = "terminalData" in application ? application.terminalData : null
+  const value = terminalData?.termNo || terminalData?.terminalNo || terminalData?.term_no
+  return typeof value === "string" ? value.trim() : ""
+}
+
+function applicationBusinessStatus(application: Pick<OnboardingListItem, "status" | "lakalaMerchantId" | "lakalaMerchantEnabled" | "channelData" | "merCupNo" | "terminalNo">) {
+  if (application.status !== "SUCCESS") return { label: statusText[application.status] ?? application.status, todo: application.status === "REGISTERING" ? "等待拉卡拉审核" : null }
+  const wechatSubMerchant = getChannelSubMerchantText(application.channelData, "wechat")
+  const alipaySubMerchant = getChannelSubMerchantText(application.channelData, "alipay")
+  const terminalNo = getTerminalNo(application)
+  if (!application.merCupNo) return { label: "待渠道报备", todo: "等待银联商户号" }
+  if (!terminalNo) return { label: "待终端号", todo: "请查询状态获取终端号" }
+  if (!wechatSubMerchant) return { label: "待渠道报备", todo: "等待微信子商户号" }
+  if (!alipaySubMerchant) return { label: "待渠道报备", todo: "等待支付宝子商户号" }
+  if (application.lakalaMerchantId) {
+    return application.lakalaMerchantEnabled
+      ? { label: "办理完成", todo: "收款商户已启用并绑定门店" }
+      : { label: "待启用", todo: "已关联收款商户，请到收款商户页手动启用" }
+  }
+  return { label: "待外部认证", todo: "请法人按指南完成微信/支付宝认证后关联收款商户" }
+}
+
+function setGroupValue(
+  form: OnboardingApplicationInput,
+  group: keyof OnboardingApplicationInput,
+  name: string,
+  value: string,
+): OnboardingApplicationInput {
+  return { ...form, [group]: { ...(form[group] ?? {}), [name]: value } }
+}
+
+function removeAreaPrefix(address?: string, countyCode?: string) {
+  let result = (address || "").trim()
+  if (!result) return result
+
+  const labels = new Set<string>()
+  const selectedArea = getAreaPathByCode(countyCode)
+  if (selectedArea.label) labels.add(selectedArea.label)
+  const selectedLakalaArea = getLakalaMerchantAreaPathByCode(countyCode)
+  if (selectedLakalaArea.label) labels.add(selectedLakalaArea.label)
+
+  const ocrAreaCode = areaCodeFromAddress(result)
+  const ocrArea = getAreaPathByCode(ocrAreaCode)
+  if (ocrArea.label) labels.add(ocrArea.label)
+  const ocrLakalaAreaCode = lakalaMerchantAreaCodeFromAddress(result)
+  const ocrLakalaArea = getLakalaMerchantAreaPathByCode(ocrLakalaAreaCode)
+  if (ocrLakalaArea.label) labels.add(ocrLakalaArea.label)
+
+  for (const label of labels) {
+    const parts = [
+      label.match(/^.+?(省|自治区|市)/)?.[0] ?? "",
+      label.replace(/^.+?(省|自治区|市)/, "").match(/^.+?(市|自治州|地区|盟)/)?.[0] ?? "",
+      label.replace(/^.+?(省|自治区|市)/, "").replace(/^.+?(市|自治州|地区|盟)/, ""),
+    ].filter(Boolean)
+    for (const part of parts) {
+      if (part && result.startsWith(part)) result = result.slice(part.length).trim()
+    }
+  }
+
+  return result
+}
+
+function shortLakalaAddress(address?: string, countyCode?: string) {
+  const withoutArea = removeAreaPrefix(address, countyCode)
+  const firstSegment = withoutArea.split(/[、，,；;]/)[0]?.trim()
+  return firstSegment || withoutArea
+}
+
+function normalizeOnboardingFormForDisplay(form: OnboardingApplicationInput): OnboardingApplicationInput {
+  const merRegAddr = shortLakalaAddress(form.merchantData.merRegAddr, form.merchantData.merRegDistCode)
+  return {
+    ...form,
+    merchantData: {
+      ...form.merchantData,
+      ...(merRegAddr ? { merRegAddr } : {}),
+    },
+  }
 }
 
 function Field({
   form,
   setForm,
   group,
-  field,
+  name,
   label,
   hint,
-  type = "text",
-  required = false,
+  inputType = "text",
+  date = false,
   maxLength,
 }: {
   form: OnboardingApplicationInput
-  setForm: (next: OnboardingApplicationInput) => void
+  setForm: (form: OnboardingApplicationInput) => void
   group: keyof OnboardingApplicationInput
-  field: string
+  name: string
   label: string
   hint?: string
-  type?: string
-  required?: boolean
+  inputType?: string
+  date?: boolean
   maxLength?: number
 }) {
+  const value = (form[group] ?? {})[name] ?? ""
   return (
     <label className="block">
-      <span className="text-sm font-medium text-[var(--foreground)]">
-        {label}
-        {required && <span className="text-[#D94040]"> *</span>}
-      </span>
-      <Input
-        type={type}
-        value={getGroup(form, group)[field] ?? ""}
-        onChange={(event) => setForm(setFormField(form, group, field, event.target.value))}
-        maxLength={maxLength}
-        className="mt-1.5"
-      />
+      <span className="text-sm font-medium text-[var(--foreground)]">{label}</span>
+      {date ? (
+        <DatePicker
+          value={value}
+          onValueChange={(nextValue) => setForm(setGroupValue(form, group, name, nextValue))}
+          className="mt-1.5 w-full"
+        />
+      ) : (
+        <input
+          type={inputType}
+          value={value}
+          maxLength={maxLength}
+          onChange={(event) => setForm(setGroupValue(form, group, name, event.target.value))}
+          className="mt-1.5 h-9 w-full rounded-[var(--radius)] border border-[var(--input)] bg-white px-3 text-sm outline-none focus:border-[var(--ring)] focus:ring-1 focus:ring-[var(--ring)]"
+        />
+      )}
       {hint && <span className="mt-1 block text-xs text-[#999999]">{hint}</span>}
     </label>
   )
 }
 
-function BooleanField({
+function SelectField({
   form,
   setForm,
   group,
-  field,
+  name,
   label,
+  options,
+  hint,
 }: {
   form: OnboardingApplicationInput
-  setForm: (next: OnboardingApplicationInput) => void
+  setForm: (form: OnboardingApplicationInput) => void
   group: keyof OnboardingApplicationInput
-  field: string
+  name: string
   label: string
+  options: Array<{ label: string; value: string }>
+  hint?: string
 }) {
-  const checked = getGroup(form, group)[field] === "true"
   return (
-    <label className="flex min-h-10 items-center gap-2 pt-6 text-sm">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(event) => setForm(setFormField(form, group, field, String(event.target.checked)))}
-        className="size-4"
-      />
-      {label}
+    <label className="block">
+      <span className="text-sm font-medium text-[var(--foreground)]">{label}</span>
+      <select
+        value={(form[group] ?? {})[name] ?? ""}
+        onChange={(event) => setForm(setGroupValue(form, group, name, event.target.value))}
+        className="mt-1.5 h-9 w-full rounded-[var(--radius)] border border-[var(--input)] bg-white px-3 text-sm outline-none focus:border-[var(--ring)] focus:ring-1 focus:ring-[var(--ring)]"
+      >
+        <option value="">请选择</option>
+        {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+      {hint && <span className="mt-1 block text-xs text-[#999999]">{hint}</span>}
     </label>
   )
 }
 
-function LakalaAreaCodeField({
-  form,
-  setForm,
-  group,
-  field,
-  label,
-  hint,
-}: {
-  form: OnboardingApplicationInput
-  setForm: (next: OnboardingApplicationInput) => void
-  group: keyof OnboardingApplicationInput
-  field: string
-  label: string
-  hint: string
-}) {
-  const [areas, setAreas] = useState<LakalaMerchantAreaRow[]>([])
-  const value = getGroup(form, group)[field] ?? ""
-
-  useEffect(() => {
-    let mounted = true
-    void loadLakalaAreas().then((rows) => {
-      if (mounted) setAreas(rows)
-    })
-    return () => {
-      mounted = false
-    }
-  }, [])
-
-  const directory = useMemo(() => buildLakalaMerchantAreaDirectory(areas), [areas])
-  const valuePath = useMemo(() => directory.getPathByCode(value), [directory, value])
-  const [provinceCode, setProvinceCode] = useState("")
-  const [cityCode, setCityCode] = useState("")
-  const [countyCode, setCountyCode] = useState("")
-
-  useEffect(() => {
-    setProvinceCode(valuePath.provinceCode)
-    setCityCode(valuePath.cityCode)
-    setCountyCode(valuePath.countyCode)
-  }, [valuePath])
-
-  const cityOptions = directory.getCityOptions(provinceCode)
-  const countyOptions = directory.getCountyOptions(cityCode)
-  return (
-    <div className="block sm:col-span-2">
-      <span className="text-sm font-medium text-[var(--foreground)]">
-        {label} <span className="text-[#D94040]">*</span>
-      </span>
-      <div className="mt-1.5 grid gap-2 sm:grid-cols-3">
-        <select
-          aria-label={label + "省份"}
-          value={provinceCode}
-          onChange={(event) => {
-            setProvinceCode(event.target.value)
-            setCityCode("")
-            setCountyCode("")
-            setForm(setFormField(form, group, field, ""))
-          }}
-          className="h-9 w-full rounded-[var(--radius)] border border-[var(--input)] bg-white px-3 text-sm"
-        >
-          <option value="">请选择省</option>
-          {directory.provinceOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-        </select>
-        <select
-          aria-label={label + "城市"}
-          value={cityCode}
-          disabled={!provinceCode}
-          onChange={(event) => {
-            setCityCode(event.target.value)
-            setCountyCode("")
-            setForm(setFormField(form, group, field, ""))
-          }}
-          className="h-9 w-full rounded-[var(--radius)] border border-[var(--input)] bg-white px-3 text-sm disabled:bg-[var(--muted)]"
-        >
-          <option value="">请选择市</option>
-          {cityOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-        </select>
-        <select
-          aria-label={label + "区县"}
-          value={countyCode}
-          disabled={!cityCode}
-          onChange={(event) => {
-            const code = event.target.value
-            setCountyCode(code)
-            setForm(setFormField(form, group, field, code))
-          }}
-          className="h-9 w-full rounded-[var(--radius)] border border-[var(--input)] bg-white px-3 text-sm disabled:bg-[var(--muted)]"
-        >
-          <option value="">请选择区县</option>
-          {countyOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-        </select>
-      </div>
-      <span className="mt-1 block text-xs text-[#999999]">
-        {valuePath.label ? "已选择：" + valuePath.label + "（" + value + "）" : hint}
-      </span>
-    </div>
-  )
-}
-
-export function OpeningBankField({
+function OpeningBankField({
   form,
   setForm,
   applicationId,
 }: {
   form: OnboardingApplicationInput
-  setForm: (next: OnboardingApplicationInput) => void
+  setForm: (form: OnboardingApplicationInput) => void
   applicationId: string
 }) {
-  const settlement = getGroup(form, "settlementData")
-  const [areas, setAreas] = useState<LakalaMerchantAreaRow[]>([])
-  const [bankKeyword, setBankKeyword] = useState(settlement.openningBankName ?? "")
-  const [bankOptions, setBankOptions] = useState<OnboardingBankOption[]>([])
-  const [searching, startSearch] = useTransition()
-  const directory = useMemo(() => buildLakalaMerchantAreaDirectory(areas), [areas])
-  const valuePath = useMemo(() => directory.getPathByCode(settlement.bankDistCode), [directory, settlement.bankDistCode])
-  const [provinceCode, setProvinceCode] = useState("")
-  const [cityCode, setCityCode] = useState("")
-  const [countyCode, setCountyCode] = useState("")
-  const hasSelectedBank = Boolean(
-    settlement.openningBankName
-      && settlement.openningBankCode
-      && settlement.clearingBankCode
-      && settlement.bankAreaCode,
-  )
+  const [bankName, setBankName] = useState(form.settlementData.openningBankName ?? "")
+  const [options, setOptions] = useState<OnboardingBankOption[]>([])
+  const [pending, startTransition] = useTransition()
+  const effectiveBankDistCode = form.settlementData.bankDistCode || form.merchantData.merRegDistCode || ""
+  const bankAreaPath = getAreaPathByCode(effectiveBankDistCode)
+  const [provinceCode, setProvinceCode] = useState(bankAreaPath.provinceCode)
+  const [cityCode, setCityCode] = useState(bankAreaPath.cityCode)
+  const [countyCode, setCountyCode] = useState(bankAreaPath.countyCode)
+  const selectedBankName = form.settlementData.openningBankName ?? ""
+  const hasSelectedBank = Boolean(selectedBankName && form.settlementData.openningBankCode && form.settlementData.bankAreaCode)
 
   useEffect(() => {
-    let mounted = true
-    void loadLakalaAreas().then((rows) => {
-      if (mounted) setAreas(rows)
-    })
-    return () => {
-      mounted = false
-    }
-  }, [])
+    const nextPath = getAreaPathByCode(effectiveBankDistCode)
+    setProvinceCode(nextPath.provinceCode)
+    setCityCode(nextPath.cityCode)
+    setCountyCode(nextPath.countyCode)
+    if (!hasSelectedBank) setBankName(form.settlementData.openningBankName ?? "")
+  }, [effectiveBankDistCode, form.settlementData.openningBankName, hasSelectedBank])
 
-  useEffect(() => {
-    setProvinceCode(valuePath.provinceCode)
-    setCityCode(valuePath.cityCode)
-    setCountyCode(valuePath.countyCode)
-  }, [valuePath])
+  const provinceOptions = getProvinceOptions()
+  const cityOptions = getCityOptions(provinceCode)
+  const countyOptions = getCountyOptions(cityCode)
 
-  useEffect(() => {
-    if (!hasSelectedBank) setBankKeyword(settlement.openningBankName ?? "")
-  }, [hasSelectedBank, settlement.openningBankName])
-
-  const clearBankSelection = (nextBankDistCode: string, nextKeyword = "") => {
-    setBankKeyword(nextKeyword)
-    setBankOptions([])
+  const clearBankSelection = (nextBankName = bankName, nextBankDistCode = countyCode || "") => {
+    setOptions([])
     setForm({
       ...form,
       settlementData: {
-        ...settlement,
+        ...form.settlementData,
         bankDistCode: nextBankDistCode,
+        bankAreaCode: "",
+        openningBankCode: "",
+        openningBankName: "",
+        clearingBankCode: "",
+        settleProvinceCode: "",
+        settleProvinceName: "",
+        settleCityCode: "",
+        settleCityName: "",
+      },
+    })
+    setBankName(nextBankName)
+  }
+
+  const selectBank = (option: OnboardingBankOption) => {
+    setBankName(option.branchBankName)
+    setOptions([])
+    const selectedBankDistCode = countyCode || effectiveBankDistCode
+    setForm({
+      ...form,
+      settlementData: {
+        ...form.settlementData,
+        bankDistCode: selectedBankDistCode,
+        bankAreaCode: option.areaCode ?? "",
+        openningBankCode: option.branchBankNo,
+        openningBankName: option.branchBankName,
+        clearingBankCode: option.clearNo,
+      },
+    })
+  }
+
+  const resetBank = () => {
+    setBankName("")
+    setOptions([])
+    setForm({
+      ...form,
+      settlementData: {
+        ...form.settlementData,
         bankAreaCode: "",
         openningBankCode: "",
         openningBankName: "",
@@ -391,396 +354,441 @@ export function OpeningBankField({
     })
   }
 
-  const selectBank = (bank: OnboardingBankOption) => {
-    setBankKeyword(bank.branchBankName)
-    setBankOptions([])
-    setForm({
-      ...form,
-      settlementData: {
-        ...settlement,
-        bankDistCode: countyCode,
-        bankAreaCode: bank.areaCode,
-        openningBankCode: bank.branchBankNo,
-        openningBankName: bank.branchBankName,
-        clearingBankCode: bank.clearNo,
-        settleProvinceCode: "",
-        settleProvinceName: "",
-        settleCityCode: "",
-        settleCityName: "",
-      },
-    })
-    toast.success("已选择拉卡拉标准开户支行")
-  }
-
-  const searchBanks = () => {
-    if (!countyCode) {
+  const search = () => startTransition(async () => {
+    const selectedBankDistCode = countyCode || effectiveBankDistCode
+    if (!selectedBankDistCode) {
       toast.error("请先选择开户行所在地")
       return
     }
-    startSearch(async () => {
-      try {
-        const result = await searchOnboardingBanks(applicationId, bankKeyword, countyCode)
-        if (!result.success) {
-          setBankOptions([])
-          toast.error(result.message || "开户行查询失败")
-          return
-        }
-        setBankOptions(result.banks ?? [])
-        if (!result.banks?.length) toast.info(result.message || "未找到匹配开户行")
-      } catch (error) {
-        setBankOptions([])
-        toast.error(actionErrorMessage(error, "开户行查询失败"))
-      }
-    })
-  }
+    const result = await searchOnboardingBanks(applicationId, bankName, selectedBankDistCode)
+    if (!result.success) {
+      setOptions([])
+      toast.error(result.message)
+      return
+    }
+    setOptions(result.banks)
+    toast.success(result.message)
+  })
 
-  const cityOptions = directory.getCityOptions(provinceCode)
-  const countyOptions = directory.getCountyOptions(cityCode)
   return (
     <div className="space-y-2 sm:col-span-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="text-sm font-medium text-[var(--foreground)]">开户支行 <span className="text-[#D94040]">*</span></span>
-        <span className="text-xs text-[#999999]">必须从查询结果中选择</span>
+        <span className="block text-sm font-medium text-[var(--foreground)]">开户支行</span>
+        <span className="text-xs text-[#999999]">示例：招商银行股份有限公司南昌分行</span>
       </div>
-      <div className="grid gap-2 sm:grid-cols-3">
-        <select
-          aria-label="开户行省份"
-          value={provinceCode}
-          onChange={(event) => {
-            setProvinceCode(event.target.value)
-            setCityCode("")
-            setCountyCode("")
-            clearBankSelection("")
-          }}
-          className="h-9 w-full rounded-[var(--radius)] border border-[var(--input)] bg-white px-3 text-sm"
-        >
-          <option value="">请选择省</option>
-          {directory.provinceOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-        </select>
-        <select
-          aria-label="开户行城市"
-          value={cityCode}
-          disabled={!provinceCode}
-          onChange={(event) => {
-            setCityCode(event.target.value)
-            setCountyCode("")
-            clearBankSelection("")
-          }}
-          className="h-9 w-full rounded-[var(--radius)] border border-[var(--input)] bg-white px-3 text-sm disabled:bg-[var(--muted)]"
-        >
-          <option value="">请选择市</option>
-          {cityOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-        </select>
-        <select
-          aria-label="开户行区县"
-          value={countyCode}
-          disabled={!cityCode}
-          onChange={(event) => {
-            const code = event.target.value
-            setCountyCode(code)
-            clearBankSelection(code)
-          }}
-          className="h-9 w-full rounded-[var(--radius)] border border-[var(--input)] bg-white px-3 text-sm disabled:bg-[var(--muted)]"
-        >
-          <option value="">请选择区县</option>
-          {countyOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-        </select>
+      <div>
+        <span className="text-xs text-[#999999]">开户行所在地</span>
+        <div className="mt-1 grid gap-2 sm:grid-cols-3">
+          <select
+            value={provinceCode}
+            onChange={(event) => {
+              const nextProvinceCode = event.target.value
+              setProvinceCode(nextProvinceCode)
+              setCityCode("")
+              setCountyCode("")
+              clearBankSelection("", "")
+            }}
+            className="h-9 w-full rounded-[var(--radius)] border border-[var(--input)] bg-white px-3 text-sm outline-none focus:border-[var(--ring)] focus:ring-1 focus:ring-[var(--ring)]"
+          >
+            <option value="">请选择省</option>
+            {provinceOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+          <select
+            value={cityCode}
+            onChange={(event) => {
+              const nextCityCode = event.target.value
+              setCityCode(nextCityCode)
+              setCountyCode("")
+              clearBankSelection("", "")
+            }}
+            disabled={!provinceCode}
+            className="h-9 w-full rounded-[var(--radius)] border border-[var(--input)] bg-white px-3 text-sm outline-none focus:border-[var(--ring)] focus:ring-1 focus:ring-[var(--ring)] disabled:bg-[var(--muted)]"
+          >
+            <option value="">请选择市</option>
+            {cityOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+          <select
+            value={countyCode}
+            onChange={(event) => {
+              const nextCountyCode = event.target.value
+              setCountyCode(nextCountyCode)
+              clearBankSelection("", nextCountyCode)
+            }}
+            disabled={!cityCode}
+            className="h-9 w-full rounded-[var(--radius)] border border-[var(--input)] bg-white px-3 text-sm outline-none focus:border-[var(--ring)] focus:ring-1 focus:ring-[var(--ring)] disabled:bg-[var(--muted)]"
+          >
+            <option value="">请选择区县</option>
+            {countyOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </div>
       </div>
       {hasSelectedBank ? (
         <div className="flex flex-col gap-2 rounded-[var(--radius)] border border-[#D7EBDD] bg-[#F6FBF7] p-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <p className="text-sm font-medium">{settlement.openningBankName}</p>
-            <p className="mt-1 text-xs text-[#6B8F76]">系统已保存标准支行、行号和清算行号。</p>
+            <p className="text-sm font-medium text-[var(--foreground)]">{selectedBankName}</p>
+            <p className="mt-1 text-xs text-[#6B8F76]">系统已保存拉卡拉标准支行信息。</p>
           </div>
-          <Button type="button" variant="outline" size="sm" onClick={() => clearBankSelection(countyCode)}>重新选择</Button>
+          <Button type="button" variant="outline" size="sm" onClick={resetBank}>重新选择</Button>
         </div>
       ) : (
         <>
           <div className="flex gap-2">
-            <Input
-              aria-label="开户支行关键字"
-              value={bankKeyword}
+            <input
+              value={bankName}
               onChange={(event) => {
-                const nextKeyword = event.target.value
-                if (settlement.bankAreaCode || settlement.openningBankCode || settlement.clearingBankCode) {
-                  clearBankSelection(countyCode, nextKeyword)
-                } else {
-                  setBankKeyword(nextKeyword)
-                  setBankOptions([])
+                const nextValue = event.target.value
+                if (form.settlementData.openningBankCode || form.settlementData.clearingBankCode || form.settlementData.bankAreaCode) clearBankSelection(nextValue, countyCode || effectiveBankDistCode)
+                else {
+                  setBankName(nextValue)
+                  setOptions([])
                 }
               }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault()
-                  searchBanks()
-                }
-              }}
-              placeholder="输入关键词，例如：招商银行南昌分行"
+              onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); search() } }}
+              placeholder="输入关键词，例如：工商、工商 丰城、南昌分行"
+              className="h-9 min-w-0 flex-1 rounded-[var(--radius)] border border-[var(--input)] bg-white px-3 text-sm outline-none focus:border-[var(--ring)] focus:ring-1 focus:ring-[var(--ring)]"
             />
-            <Button type="button" variant="outline" disabled={searching || !bankKeyword.trim()} onClick={searchBanks}>
-              {searching ? "查询中" : "查询支行"}
-            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={search} disabled={pending}>{pending ? "查询中" : "查询支行"}</Button>
           </div>
-          {bankOptions.length > 0 && (
-            <div className="max-h-56 overflow-y-auto rounded-[var(--radius)] border border-[var(--border)] bg-white py-1">
-              {bankOptions.map((bank) => (
-                <button
-                  key={bank.branchBankNo}
-                  type="button"
-                  onClick={() => selectBank(bank)}
-                  className="block w-full px-3 py-2 text-left text-sm hover:bg-[var(--muted)]"
-                >
-                  {bank.branchBankName + "（" + bank.branchBankNo + "）"}
-                </button>
-              ))}
+          {options.length > 0 && (
+            <div className="rounded-[var(--radius)] border border-[var(--border)] bg-white">
+              <p className="border-b border-[var(--border)] px-3 py-2 text-xs text-[#999999]">请选择开户支行</p>
+              <div className="max-h-56 overflow-y-auto py-1">
+                {options.map((option) => (
+                  <button
+                    key={option.branchBankNo}
+                    type="button"
+                    onClick={() => selectBank(option)}
+                    className="block w-full px-3 py-2 text-left text-sm hover:bg-[var(--muted)]"
+                  >
+                    {option.branchBankName}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
-          <p className="text-xs text-[#999999]">更改地区或关键词后，旧的支行编码会被清空。</p>
+          <p className="text-xs text-[#999999]">必须从查询结果中选择一条支行；行号和清算号会隐藏保存并用于提交。</p>
         </>
       )}
     </div>
   )
 }
 
-function OnboardingForm({
+function ReadOnlyField({ label, value }: { label: string; value: string }) {
+  return <label className="block"><span className="text-sm font-medium text-[var(--foreground)]">{label}</span><input value={value} readOnly className="mt-1.5 h-9 w-full rounded-[var(--radius)] border border-[var(--input)] bg-[var(--muted)] px-3 text-sm text-[#666666] outline-none" /></label>
+}
+
+function nextHourlyPollText() {
+  const next = new Date()
+  next.setHours(next.getHours() + 1, 0, 0, 0)
+  return formatDateTime(next.toISOString())
+}
+
+function formatFileSize(bytes: number) {
+  return `${(bytes / 1024 / 1024).toFixed(1)}MB`
+}
+
+function AreaCodeField({
   form,
   setForm,
-  pending,
-  applicationId,
+  group,
+  name,
+  label,
+  hint,
 }: {
   form: OnboardingApplicationInput
-  setForm: (next: OnboardingApplicationInput) => void
-  pending: boolean
-  applicationId: string
+  setForm: (form: OnboardingApplicationInput) => void
+  group: keyof OnboardingApplicationInput
+  name: string
+  label: string
+  hint?: string
 }) {
+  const value = (form[group] ?? {})[name] ?? ""
+  const valuePath = getLakalaMerchantAreaPathByCode(value)
+  const [provinceCode, setProvinceCode] = useState(valuePath.provinceCode)
+  const [cityCode, setCityCode] = useState(valuePath.cityCode)
+  const [countyCode, setCountyCode] = useState(valuePath.countyCode)
+
+  useEffect(() => {
+    const nextPath = getLakalaMerchantAreaPathByCode(value)
+    setProvinceCode(nextPath.provinceCode)
+    setCityCode(nextPath.cityCode)
+    setCountyCode(nextPath.countyCode)
+  }, [value])
+
+  const provinceOptions = getLakalaMerchantProvinceOptions()
+  const cityOptions = getLakalaMerchantCityOptions(provinceCode)
+  const countyOptions = getLakalaMerchantCountyOptions(cityCode)
   return (
-    <fieldset disabled={pending} className="grid min-w-0 gap-4 border-0 p-0 xl:grid-cols-2">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Building2 className="size-4 text-[var(--primary)]" />
-            主体、法人和联系人
-          </CardTitle>
-          <p className="text-xs text-[#999999]">营业执照和身份证 OCR 仅用于预填，提交前请逐项核对。</p>
-        </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-2">
-          <Field form={form} setForm={setForm} group="merchantData" field="merRegName" label="商户注册名称" required />
-          <Field form={form} setForm={setForm} group="merchantData" field="merBlis" label="统一社会信用代码" required />
-          <LakalaAreaCodeField
-            form={form}
-            setForm={setForm}
-            group="merchantData"
-            field="merRegDistCode"
-            label="注册地址地区码"
-            hint="请选择拉卡拉地区码，保存时会自动补齐省、市编码。"
-          />
-          <Field
-            form={form}
-            setForm={setForm}
-            group="merchantData"
-            field="merRegAddr"
-            label="注册地址详细地址"
-            hint="仅填写省市区之后的门牌信息，最多 29 个字符。"
-            maxLength={29}
-            required
-          />
-          <Field form={form} setForm={setForm} group="merchantData" field="merBlisStDt" type="date" label="营业执照开始日期" required />
-          <Field form={form} setForm={setForm} group="merchantData" field="merBlisExpDt" type="date" label="营业执照到期日期" />
-          <BooleanField form={form} setForm={setForm} group="merchantData" field="merBlisLongTerm" label="营业执照长期有效" />
-          <Field form={form} setForm={setForm} group="legalPersonData" field="larName" label="法人姓名" required />
-          <Field form={form} setForm={setForm} group="legalPersonData" field="larIdcard" label="法人身份证号" required />
-          <Field form={form} setForm={setForm} group="legalPersonData" field="larIdcardStDt" type="date" label="身份证开始日期" required />
-          <Field form={form} setForm={setForm} group="legalPersonData" field="larIdcardExpDt" type="date" label="身份证到期日期" />
-          <BooleanField form={form} setForm={setForm} group="legalPersonData" field="larIdcardLongTerm" label="身份证长期有效" />
-          <Field form={form} setForm={setForm} group="contactData" field="merContactName" label="联系人姓名" required />
-          <Field form={form} setForm={setForm} group="contactData" field="merContactMobile" label="联系人手机号" required />
-          <Field form={form} setForm={setForm} group="contactData" field="email" label="联系人邮箱" />
-        </CardContent>
-      </Card>
-
-      <div className="space-y-4">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Landmark className="size-4 text-[var(--primary)]" />
-              结算账户
-            </CardTitle>
-            <p className="text-xs text-[#999999]">账户资料仅在有权限的服务端保存和提交，不会出现在外部请求记录中。</p>
-          </CardHeader>
-          <CardContent className="grid gap-4 sm:grid-cols-2">
-            <Field form={form} setForm={setForm} group="settlementData" field="acctName" label="结算户名" required />
-            <Field form={form} setForm={setForm} group="settlementData" field="acctNo" label="结算账号" required />
-            <OpeningBankField form={form} setForm={setForm} applicationId={applicationId} />
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Store className="size-4 text-[var(--primary)]" />
-              门店与终端资料
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="grid gap-4 sm:grid-cols-2">
-            <Field form={form} setForm={setForm} group="shopData" field="shopName" label="门店名称" required />
-            <Field form={form} setForm={setForm} group="shopData" field="shopContactMobile" label="门店联系电话" />
-            <Field form={form} setForm={setForm} group="shopData" field="shopAddr" label="门店详细地址" required />
-            <Field form={form} setForm={setForm} group="terminalData" field="termNum" label="申请终端数量" type="number" />
-          </CardContent>
-        </Card>
+    <label className="block">
+      <span className="text-sm font-medium text-[var(--foreground)]">{label}</span>
+      <div className="mt-1.5 grid gap-2 sm:grid-cols-3">
+        <select
+          value={provinceCode}
+          onChange={(event) => {
+            setProvinceCode(event.target.value)
+            setCityCode("")
+            setCountyCode("")
+            setForm(setGroupValue(form, group, name, ""))
+          }}
+          className="h-9 w-full rounded-[var(--radius)] border border-[var(--input)] bg-white px-3 text-sm outline-none focus:border-[var(--ring)] focus:ring-1 focus:ring-[var(--ring)]"
+        >
+          <option value="">请选择省</option>
+          {provinceOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+        <select
+          value={cityCode}
+          disabled={!provinceCode}
+          onChange={(event) => {
+            setCityCode(event.target.value)
+            setCountyCode("")
+            setForm(setGroupValue(form, group, name, ""))
+          }}
+          className="h-9 w-full rounded-[var(--radius)] border border-[var(--input)] bg-white px-3 text-sm outline-none focus:border-[var(--ring)] focus:ring-1 focus:ring-[var(--ring)] disabled:bg-[var(--muted)] disabled:text-[#999999]"
+        >
+          <option value="">请选择市</option>
+          {cityOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+        <select
+          value={countyCode}
+          disabled={!cityCode}
+          onChange={(event) => {
+            setCountyCode(event.target.value)
+            setForm(setGroupValue(form, group, name, event.target.value))
+          }}
+          className="h-9 w-full rounded-[var(--radius)] border border-[var(--input)] bg-white px-3 text-sm outline-none focus:border-[var(--ring)] focus:ring-1 focus:ring-[var(--ring)] disabled:bg-[var(--muted)] disabled:text-[#999999]"
+        >
+          <option value="">请选择区县</option>
+          {countyOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
       </div>
-    </fieldset>
+      {hint && <span className="mt-1 block text-xs text-[#999999]">{hint}</span>}
+    </label>
   )
 }
 
-type OnboardingListRow = OnboardingListItem & Record<string, unknown>
+function LicenseExpiryField({
+  form,
+  setForm,
+}: {
+  form: OnboardingApplicationInput
+  setForm: (form: OnboardingApplicationInput) => void
+}) {
+  const longTerm = form.merchantData.merBlisLongTerm === "true"
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-sm font-medium text-[var(--foreground)]">执照截止日期</span>
+        <label className="inline-flex items-center gap-1.5 text-xs text-[#666666]">
+          <input
+            type="checkbox"
+            checked={longTerm}
+            onChange={(event) => {
+              let next = setGroupValue(form, "merchantData", "merBlisLongTerm", event.target.checked ? "true" : "")
+              if (event.target.checked) next = setGroupValue(next, "merchantData", "merBlisExpDt", "")
+              setForm(next)
+            }}
+            className="size-4 rounded border-[var(--input)]"
+          />
+          长期有效
+        </label>
+      </div>
+      <DatePicker
+        value={longTerm ? "" : (form.merchantData.merBlisExpDt ?? "")}
+        disabled={longTerm}
+        onValueChange={(nextValue) => setForm(setGroupValue(form, "merchantData", "merBlisExpDt", nextValue))}
+        className="mt-1.5 w-full"
+      />
+      <span className="mt-1 block text-xs text-[#999999]">{longTerm ? "长期有效时可不填截止日期" : "营业执照有截止日期时填写"}</span>
+    </div>
+  )
+}
+
+function IdCardExpiryField({
+  form,
+  setForm,
+}: {
+  form: OnboardingApplicationInput
+  setForm: (form: OnboardingApplicationInput) => void
+}) {
+  const longTerm = form.legalPersonData.larIdcardLongTerm === "true"
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-sm font-medium text-[var(--foreground)]">证件截止日期</span>
+        <label className="inline-flex items-center gap-1.5 text-xs text-[#666666]">
+          <input
+            type="checkbox"
+            checked={longTerm}
+            onChange={(event) => {
+              let next = setGroupValue(form, "legalPersonData", "larIdcardLongTerm", event.target.checked ? "true" : "")
+              if (event.target.checked) next = setGroupValue(next, "legalPersonData", "larIdcardExpDt", "")
+              setForm(next)
+            }}
+            className="size-4 rounded border-[var(--input)]"
+          />
+          长期有效
+        </label>
+      </div>
+      <DatePicker
+        value={longTerm ? "" : (form.legalPersonData.larIdcardExpDt ?? "")}
+        disabled={longTerm}
+        onValueChange={(nextValue) => setForm(setGroupValue(form, "legalPersonData", "larIdcardExpDt", nextValue))}
+        className="mt-1.5 w-full"
+      />
+      <span className="mt-1 block text-xs text-[#999999]">{longTerm ? "长期有效时可不填截止日期" : "身份证背面有截止日期时填写"}</span>
+    </div>
+  )
+}
 
 export function OnboardingList({
   applications,
-  canCreate,
   embedded = false,
+  canCreate = true,
 }: {
   applications: OnboardingListItem[]
-  canCreate: boolean
   embedded?: boolean
+  canCreate?: boolean
 }) {
-  const rows = applications as OnboardingListRow[]
-  const counts = useMemo(() => onboardingMetricCounts(applications), [applications])
+  const router = useRouter()
+  const [deleteTarget, setDeleteTarget] = useState<OnboardingListItem | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const counts = useMemo(() => ({
+    missing: applications.filter((item) => item.status === "DRAFT" || item.status === "FAILED").length,
+    ready: applications.filter((item) => item.status === "FILES_READY").length,
+    reviewing: applications.filter((item) => item.status === "SUBMITTED" || item.status === "REGISTERING" || applicationBusinessStatus(item).label !== "办理完成" && item.status === "SUCCESS").length,
+    completed: applications.filter((item) => applicationBusinessStatus(item).label === "办理完成").length,
+  }), [applications])
 
-  const columns: Column<OnboardingListRow>[] = [
-    {
-      key: "applicationNo",
-      header: "申请编号",
-      cell: (row) => <span className="font-mono text-xs">{row.applicationNo}</span>,
-    },
-    {
-      key: "storeName",
-      header: "门店",
-      cell: (row) => <span className="font-medium">{row.storeName}</span>,
-    },
-    {
-      key: "marketName",
-      header: "所属市场",
-      cell: (row) => row.marketName ?? "—",
-    },
-    { key: "subjectName", header: "主体名称" },
-    {
-      key: "status",
-      header: "状态",
-      cell: (row) => <StatusBadge status={row.status} label={onboardingBusinessStatus(row).label} />,
-    },
-    {
-      key: "todo",
-      header: "当前待办",
-      cell: (row) => <span className="text-[#666666]">{onboardingBusinessStatus(row).todo}</span>,
-    },
-    {
-      key: "owner",
-      header: "负责人",
-      cell: (row) => row.owner ?? "—",
-    },
-    {
-      key: "updatedAt",
-      header: "更新时间",
-      cell: (row) => <span className="text-xs text-[#999999]">{formatDateTime(row.updatedAt)}</span>,
-    },
-    {
-      key: "action",
-      header: "",
-      className: "text-right",
-      cell: (row) => (
-        <Link href={"/merchants/onboarding/" + row.id}>
-          <Button size="sm" variant="outline">查看</Button>
-        </Link>
-      ),
-    },
-  ]
+  const handleDelete = async () => {
+    if (!deleteTarget) return
+    setDeleting(true)
+    try {
+      const result = await deleteOnboardingApplication(deleteTarget.id)
+      if (!result.success) {
+        toast.error(result.message)
+        return
+      }
+      toast.success(result.message)
+      setDeleteTarget(null)
+      router.refresh()
+    } catch (error) {
+      toast.error(actionErrorMessage(error, "删除失败"))
+    } finally {
+      setDeleting(false)
+    }
+  }
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className={embedded ? "text-lg font-semibold" : "text-2xl font-bold"}>门店拉卡拉入网</h1>
-          <p className="mt-1 text-xs text-[#999999]">
-            记录门店资料、电子合同、拉卡拉审核、渠道认证及收款商户关联。
-          </p>
+          <div className="flex items-center gap-2"><h1 className={embedded ? "text-lg font-semibold" : "text-2xl font-bold"}>门店拉卡拉入网申请</h1></div>
+          <p className="mt-1 text-xs text-[#999999]">从凤御门店发起申请，一次补齐主体、结算、门店和附件资料；审核成功后系统自动生成/绑定收款商户。</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {!embedded && (
-            <Link href="/merchants">
-              <Button variant="outline"><ArrowLeft />收款商户</Button>
-            </Link>
-          )}
-          {canCreate && (
-            <Link href="/merchants/onboarding/new">
-              <Button><Plus />发起入网申请</Button>
-            </Link>
-          )}
+          {!embedded && <Link href="/merchants"><Button variant="outline"><ArrowLeft />返回商户管理</Button></Link>}
+          {canCreate && <Link href="/merchants/onboarding/new"><Button><Plus />为门店发起入网</Button></Link>}
         </div>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Metric label="待补资料" value={counts.drafts} icon={<FileWarning className="size-6 text-[#D4820A]" />} tone="text-[#A45D00]" />
-        <Metric label="待提交" value={counts.ready} icon={<ClipboardCheck className="size-6 text-[#386987]" />} tone="text-[#386987]" />
-        <Metric label="办理中" value={counts.reviewing} icon={<RefreshCw className="size-6 text-[#62508B]" />} tone="text-[#62508B]" />
-        <Metric label="办理完成" value={counts.completed} icon={<CheckCircle2 className="size-6 text-[#3D8A5A]" />} tone="text-[#287342]" />
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Card><CardContent className="flex items-center justify-between p-4"><div><p className="text-xs text-[#999999]">待补资料</p><p className="mt-1 text-2xl font-semibold text-[#A45D00]">{counts.missing}</p></div><FileWarning className="size-7 text-[#D4820A]" /></CardContent></Card>
+        <Card><CardContent className="flex items-center justify-between p-4"><div><p className="text-xs text-[#999999]">待提交</p><p className="mt-1 text-2xl font-semibold text-[#386987]">{counts.ready}</p></div><ClipboardCheck className="size-7 text-[#5E8BB3]" /></CardContent></Card>
+        <Card><CardContent className="flex items-center justify-between p-4"><div><p className="text-xs text-[#999999]">拉卡拉审核中</p><p className="mt-1 text-2xl font-semibold text-[#62508B]">{counts.reviewing}</p></div><Building2 className="size-7 text-[#7A67A8]" /></CardContent></Card>
+        <Card><CardContent className="flex items-center justify-between p-4"><div><p className="text-xs text-[#999999]">办理完成</p><p className="mt-1 text-2xl font-semibold text-[#2E7D4F]">{counts.completed}</p></div><CheckCircle2 className="size-7 text-[#3A9B66]" /></CardContent></Card>
       </div>
 
-      <DataTable columns={columns} data={rows} emptyText="暂无入网申请" />
+      <Card>
+        <CardHeader className="flex-row items-center justify-between space-y-0"><div><CardTitle className="text-base">门店入网申请列表</CardTitle><p className="mt-1 text-xs font-normal text-[#999999]">列表负责查找待办；点进一条申请后，所有资料、协议、提交和记录都在同一详情页完成。</p></div><Button variant="outline" size="sm" onClick={() => location.reload()}><RefreshCw />刷新状态</Button></CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[940px] text-sm">
+              <thead className="border-b border-[var(--border)] text-xs text-[#999999]">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium">申请编号</th>
+                  <th className="px-3 py-2 text-left font-medium">门店</th>
+                  <th className="px-3 py-2 text-left font-medium">市场</th>
+                  <th className="px-3 py-2 text-left font-medium">主体名称</th>
+                  <th className="px-3 py-2 text-left font-medium">状态</th>
+                  <th className="px-3 py-2 text-left font-medium">当前待办</th>
+                  <th className="px-3 py-2 text-left font-medium">负责人</th>
+                  <th className="px-3 py-2 text-left font-medium">更新时间</th>
+                  <th className="px-3 py-2 text-right font-medium">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {applications.length === 0 ? (
+                  <tr><td colSpan={9} className="px-3 py-10 text-center text-[#999999]">暂无入网申请</td></tr>
+                ) : applications.map((application) => {
+                  const businessStatus = applicationBusinessStatus(application)
+                  return (
+                    <tr key={application.id} className="border-b border-[var(--border)] last:border-0 hover:bg-[var(--muted)]">
+                      <td className="px-3 py-3 font-mono text-xs text-[#666666]">{application.orderNo}</td>
+                      <td className="px-3 py-3 font-medium">{application.storeName}</td>
+                      <td className="px-3 py-3 text-[#666666]">{application.marketName ?? "—"}</td>
+                      <td className="px-3 py-3 text-[#666666]">{application.subjectName}</td>
+                      <td className="px-3 py-3"><StatusBadge status={application.status} label={businessStatus.label} /></td>
+                      <td className="px-3 py-3 text-[#666666]">{businessStatus.todo ?? application.missing ?? "资料齐全，可确认提交"}</td>
+                      <td className="px-3 py-3">{application.owner ?? "—"}</td>
+                      <td className="px-3 py-3 text-[#666666]">{formatDateTime(application.updatedAt)}</td>
+                      <td className="px-3 py-3">
+                        <div className="flex justify-end gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="text-[#D94040] hover:text-[#C0322A]"
+                            onClick={() => setDeleteTarget(application)}
+                          >
+                            <Trash2 />删除
+                          </Button>
+                          <Link href={`/merchants/onboarding/${application.id}`}><Button size="sm" variant="outline">办理<ChevronRight /></Button></Link>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      <AlertDialog open={Boolean(deleteTarget)} onOpenChange={(open) => !open && !deleting && setDeleteTarget(null)}>
+        <AlertDialogTitle>确认删除入网申请？</AlertDialogTitle>
+        <AlertDialogDescription>
+          删除「{deleteTarget?.orderNo}」后无法恢复，会同时删除申请资料、附件和本机私有文件。关联的收款商户及门店绑定不会被删除。
+        </AlertDialogDescription>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={deleting} onClick={() => setDeleteTarget(null)}>取消</AlertDialogCancel>
+          <AlertDialogAction onClick={handleDelete} disabled={deleting}>
+            {deleting ? "删除中..." : "确认删除"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialog>
     </div>
   )
 }
 
-function Metric({
-  label,
-  value,
-  icon,
-  tone,
-}: {
-  label: string
-  value: number
-  icon: ReactNode
-  tone: string
-}) {
-  return (
-    <Card>
-      <CardContent className="flex items-center justify-between p-4">
-        <div>
-          <p className="text-xs text-[#999999]">{label}</p>
-          <p className={cn("mt-1 text-2xl font-semibold", tone)}>{value}</p>
-        </div>
-        {icon}
-      </CardContent>
-    </Card>
-  )
-}
-
-type OnboardingStoreRow = OnboardingStoreOption & Record<string, unknown>
-
 export function NewOnboardingApplication({ stores }: { stores: OnboardingStoreOption[] }) {
   const router = useRouter()
-  const options = stores as OnboardingStoreRow[]
-  const [storeId, setStoreId] = useState(
-    options.find((item) => !item.hasCollectionMerchant && !item.activeApplicationId)?.storeId ?? "",
-  )
+  const [storeId, setStoreId] = useState(stores.find((item) => !item.hasCollectionMerchant && !item.activeApplicationId)?.storeId ?? stores[0]?.storeId ?? "")
   const [pending, startTransition] = useTransition()
-  const selected = options.find((item) => item.storeId === storeId)
-  const blocked = !selected || selected.hasCollectionMerchant || Boolean(selected.activeApplicationId)
+  const selected = stores.find((item) => item.storeId === storeId)
+  const blocked = Boolean(selected?.hasCollectionMerchant || selected?.activeApplicationId)
 
   function create() {
     if (!selected) return
     startTransition(async () => {
       try {
         const result = await createOnboardingApplication(selected.storeId)
-        const id = result.id
-        if (!result.success || !id) {
-          toast.error(result.message || "创建入网申请失败")
+        if (!result.success || !result.id) {
+          toast.error(result.message)
           return
         }
         toast.success(result.message)
-        router.push("/merchants/onboarding/" + id)
+        router.push(`/merchants/onboarding/${result.id}`)
       } catch (error) {
-        toast.error(actionErrorMessage(error, "创建入网申请失败"))
+        toast.error(actionErrorMessage(error, "创建失败"))
       }
     })
   }
@@ -789,57 +797,30 @@ export function NewOnboardingApplication({ stores }: { stores: OnboardingStoreOp
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold">发起门店入网申请</h1>
-          <p className="mt-1 text-xs text-[#999999]">只能选择未关联收款商户、且没有进行中申请的门店。</p>
+          <h1 className="text-2xl font-bold">新建门店入网申请</h1>
+          <p className="mt-1 text-xs text-[#999999]">先选择要办理拉卡拉入网的凤御门店；创建后进入资料填写和提交。</p>
         </div>
-        <Link href="/merchants/onboarding">
-          <Button variant="outline"><ArrowLeft />返回入网列表</Button>
-        </Link>
+        <Link href="/merchants"><Button variant="outline"><ArrowLeft />返回商户管理</Button></Link>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Store className="size-4 text-[var(--primary)]" />
-            选择门店
-          </CardTitle>
-        </CardHeader>
+      <Card className="border-[#F6D8A8] bg-[#FFFCF5]">
+        <CardHeader className="flex-row items-center gap-2 space-y-0"><Store className="size-4 text-[#A45D00]" /><div><CardTitle className="text-base">1. 选择门店</CardTitle><p className="mt-1 text-xs font-normal text-[#8B6B32]">系统会检查该门店是否已有收款商户或进行中的入网申请。</p></div></CardHeader>
         <CardContent className="space-y-4">
           <label className="block">
             <span className="text-sm font-medium">门店</span>
-            <select
-              value={storeId}
-              onChange={(event) => setStoreId(event.target.value)}
-              className="mt-1.5 h-10 w-full rounded-[var(--radius)] border border-[var(--input)] bg-white px-3 text-sm"
-            >
-              <option value="">请选择门店</option>
-              {options.map((item) => (
-                <option key={item.storeId} value={item.storeId}>
-                  {[item.marketName, item.storeName].filter(Boolean).join(" / ")}
-                </option>
-              ))}
+            <select value={storeId} onChange={(event) => setStoreId(event.target.value)} className="mt-1.5 h-9 w-full rounded-[var(--radius)] border border-[var(--input)] bg-white px-3 text-sm">
+              {stores.map((item) => <option key={item.storeId} value={item.storeId}>{[item.marketName, item.storeName].filter(Boolean).join(" / ")}</option>)}
             </select>
           </label>
           {selected && (
             <div className="grid gap-3 md:grid-cols-3">
-              <InfoBox
-                label="收款商户"
-                value={selected.hasCollectionMerchant ? "已绑定，不能重复申请" : "未绑定"}
-                warning={selected.hasCollectionMerchant}
-              />
-              <InfoBox
-                label="进行中申请"
-                value={selected.activeApplicationId ? "已有进行中申请" : "无"}
-                warning={Boolean(selected.activeApplicationId)}
-              />
-              <InfoBox label="可发起状态" value={blocked ? "不可创建" : "可创建草稿"} warning={blocked} />
+              <div className="rounded-[var(--radius)] border border-[var(--border)] bg-white p-3"><p className="text-xs text-[#999999]">收款商户</p><p className={cn("mt-1 text-sm font-medium", selected.hasCollectionMerchant ? "text-[#3D8A5A]" : "text-[#666666]")}>{selected.hasCollectionMerchant ? "已有绑定" : "未绑定"}</p></div>
+              <div className="rounded-[var(--radius)] border border-[var(--border)] bg-white p-3"><p className="text-xs text-[#999999]">进行中申请</p><p className={cn("mt-1 text-sm font-medium", selected.activeApplicationId ? "text-[#A45D00]" : "text-[#3D8A5A]")}>{selected.activeApplicationId || "无"}</p></div>
+              <div className="rounded-[var(--radius)] border border-[var(--border)] bg-white p-3"><p className="text-xs text-[#999999]">创建结果</p><p className="mt-1 text-sm font-medium">{blocked ? "不可重复创建" : "可创建草稿"}</p></div>
             </div>
           )}
           <div className="flex justify-end">
-            <Button disabled={blocked || pending} onClick={create}>
-              <Plus />
-              {pending ? "创建中..." : "创建并填写资料"}
-            </Button>
+            <Button disabled={blocked || !selected || pending} onClick={create}><Plus />{pending ? "创建中..." : "创建并进入详情"}</Button>
           </div>
         </CardContent>
       </Card>
@@ -847,646 +828,399 @@ export function NewOnboardingApplication({ stores }: { stores: OnboardingStoreOp
   )
 }
 
-function InfoBox({
-  label,
-  value,
-  warning,
-}: {
-  label: string
-  value: string
-  warning: boolean
-}) {
-  return (
-    <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--muted)] p-3">
-      <p className="text-xs text-[#999999]">{label}</p>
-      <p className={cn("mt-1 text-sm font-medium", warning ? "text-[#A45D00]" : "text-[#287342]")}>{value}</p>
-    </div>
-  )
-}
-
-type RequestLogRow = OnboardingDetail["requestLogs"][number] & Record<string, unknown>
-
 export function OnboardingEditor({
   application,
-  canEdit,
-  canFinalizeMerchant,
+  canEdit: _canEdit = true,
+  canFinalizeMerchant: _canFinalizeMerchant = true,
 }: {
   application: OnboardingDetail
-  canEdit: boolean
-  canFinalizeMerchant: boolean
+  canEdit?: boolean
+  canFinalizeMerchant?: boolean
 }) {
   const router = useRouter()
-  const serverForm = useMemo(() => formFromApplication(application), [application])
-  const {
-    draft: form,
-    setDraft: updateForm,
-    dirty: formDirty,
-    markClean: markFormClean,
-  } = useRefreshSafeDraft({
-    identity: application.id,
-    version: application.updatedAt,
-    serverValue: serverForm,
-  })
-  const [expectedUpdatedAt, setExpectedUpdatedAt] = useState(application.updatedAt)
   const [pending, startTransition] = useTransition()
-  const [ocrStatus, setOcrStatus] = useState<Record<string, string>>({})
+  const [form, setForm] = useState<OnboardingApplicationInput>(() => normalizeOnboardingFormForDisplay({
+    merchantData: application.merchantData,
+    legalPersonData: application.legalPersonData,
+    contactData: application.contactData,
+    settlementData: application.settlementData,
+    shopData: application.shopData,
+    terminalData: application.terminalData,
+  }))
   const [localPreviewUrls, setLocalPreviewUrls] = useState<Record<string, string>>({})
-  const localPreviewUrlsRef = useRef<Record<string, string>>({})
-  useUnsavedChanges(formDirty)
-
-  useEffect(() => {
-    setExpectedUpdatedAt(application.updatedAt)
-  }, [application.updatedAt])
-
-  useEffect(() => {
-    localPreviewUrlsRef.current = localPreviewUrls
-  }, [localPreviewUrls])
-
-  useEffect(() => () => {
-    Object.values(localPreviewUrlsRef.current).forEach((url) => URL.revokeObjectURL(url))
-  }, [])
-
-  const attachments = useMemo(() => {
-    const byType = new Map<string, OnboardingDetail["attachments"][number]>()
-    for (const attachment of application.attachments) {
-      if (!byType.has(attachment.attachmentType)) byType.set(attachment.attachmentType, attachment)
-    }
-    return byType
-  }, [application.attachments])
-
-  const wechatSubMerchant = channelMerchantNumbers(application.channelData, "wechat")
-  const alipaySubMerchant = channelMerchantNumbers(application.channelData, "alipay")
-  const waitingForAudit = ["SUBMITTING", "SUBMITTED", "REGISTERING"].includes(application.status)
-  const needsReconsider = application.status === "FAILED" && Boolean(application.merInnerNo || application.merCupNo)
-  const missingCollectionNumbers = [
-    application.merCupNo ? "" : "银联商户号",
-    application.terminalNo ? "" : "终端号",
-    wechatSubMerchant ? "" : "微信子商户号",
-    alipaySubMerchant ? "" : "支付宝子商户号",
-  ].filter(Boolean)
-  const canConfirmMerchant = application.status === "SUCCESS"
-    && !application.lakalaMerchantId
-    && missingCollectionNumbers.length === 0
-  const businessStatus = onboardingBusinessStatus(application)
-  const contractPdf = attachments.get(ELECTRONIC_CONTRACT_PDF_ATTACHMENT.attachmentType)
-  const canCancelApplication = ["DRAFT", "FILES_UPLOADING", "FILES_READY", "FAILED"].includes(application.status)
-    && !application.eContractOrderNo
-
-  async function persistDraft(): Promise<string | null> {
-    const result = await saveOnboardingApplication(application.id, form, expectedUpdatedAt)
-    if (!result.success) {
-      toast.error(result.message || "保存草稿失败")
-      return null
-    }
-    const updatedAt = result.updatedAt ?? expectedUpdatedAt
-    setExpectedUpdatedAt(updatedAt)
-    markFormClean()
-    toast.success(result.message)
-    router.refresh()
-    return updatedAt
+  const [ocrStatus, setOcrStatus] = useState<Record<string, string>>({})
+  const hasLakalaCustomer = Boolean(application.merInnerNo || application.merCupNo)
+  const needsReconsider = hasLakalaCustomer && application.status === "FAILED"
+  const waitingForAudit = hasLakalaCustomer && !needsReconsider && application.status !== "SUCCESS"
+  const businessStatus = applicationBusinessStatus(application)
+  const wechatSubMerchantText = getChannelSubMerchantText(application.channelData, "wechat")
+  const alipaySubMerchantText = getChannelSubMerchantText(application.channelData, "alipay")
+  const hasWechatSubMerchant = Boolean(wechatSubMerchantText)
+  const hasAlipaySubMerchant = Boolean(alipaySubMerchantText)
+  const lastSubMerchantCheckedAt = application.subMerchantCheckedAt ? formatDateTime(application.subMerchantCheckedAt) : null
+  const subMerchantPolling = application.channelData.subMerchantPolling && typeof application.channelData.subMerchantPolling === "object"
+    ? application.channelData.subMerchantPolling as { status?: string; reason?: string; stoppedAt?: string; lastCheckedAt?: string }
+    : null
+  const subMerchantPollingTimedOut = subMerchantPolling?.status === "TIMEOUT"
+  const terminalNo = getTerminalNo(application)
+  const requiredCollectionNumbers = [
+    { label: "银联商户号", value: application.merCupNo },
+    { label: "终端号", value: terminalNo },
+    { label: "微信子商户号", value: wechatSubMerchantText },
+    { label: "支付宝子商户号", value: alipaySubMerchantText },
+  ]
+  const missingCollectionNumbers = requiredCollectionNumbers.filter((item) => !item.value).map((item) => item.label)
+  const canConfirmCollectionMerchant = application.status === "SUCCESS" && missingCollectionNumbers.length === 0 && !application.lakalaMerchantId
+  const showTopError = Boolean(application.lastErrorMessage && application.status !== "SUCCESS")
+  const attachments = new Map<string, OnboardingDetail["attachments"][number]>()
+  for (const item of application.attachments) {
+    if (!attachments.has(item.displayName)) attachments.set(item.displayName, item)
   }
 
-  function runAction(
-    action: () => Promise<ActionResult>,
-    fallback: string,
-    options: { saveFirst?: boolean; confirmText?: string } = {},
-  ) {
-    if (options.confirmText && !window.confirm(options.confirmText)) return
+  useEffect(() => {
+    return () => {
+      Object.values(localPreviewUrls).forEach((url) => URL.revokeObjectURL(url))
+    }
+  }, [localPreviewUrls])
+
+  async function runOcr(displayName: string, file: File) {
+    if (!["营业执照", "法人身份证正面", "法人身份证反面"].includes(displayName)) return
+    const body = new FormData()
+    body.set("file", file)
+    const target =
+      displayName === "营业执照"
+        ? "/api/ocr/business-license"
+        : "/api/ocr/id-card"
+    if (displayName === "法人身份证反面") body.set("side", "back")
+    setOcrStatus((current) => ({ ...current, [displayName]: "OCR 识别中..." }))
+    const response = await fetch(target, { method: "POST", body })
+    const payload = await response.json()
+    if (!payload.ok) {
+      setOcrStatus((current) => ({ ...current, [displayName]: payload.error || "OCR 识别失败" }))
+      toast.error(payload.error || "OCR 识别失败")
+      return
+    }
+    const data = payload.data ?? {}
+    setForm((current) => {
+      if (displayName === "营业执照") {
+        const merRegDistCode = data.merRegDistCode || current.merchantData.merRegDistCode
+        const subjectName = data.merRegName || data.merBlisName
+        const previousSubjectNames = [
+          current.merchantData.subjectName,
+          current.merchantData.merRegName,
+          current.merchantData.merBlisName,
+        ].filter(Boolean)
+        const shouldSyncAcctName = Boolean(
+          subjectName &&
+          (!current.settlementData.acctName || previousSubjectNames.includes(current.settlementData.acctName)),
+        )
+        return {
+          ...current,
+          merchantData: {
+            ...current.merchantData,
+            ...(subjectName ? { subjectName, merRegName: subjectName, merBlisName: subjectName } : {}),
+            ...(data.merBlis ? { merBlis: data.merBlis } : {}),
+            ...(data.merRegAddr ? { merRegAddr: shortLakalaAddress(data.merRegAddr, merRegDistCode) } : {}),
+            ...(merRegDistCode ? { merRegDistCode } : {}),
+            ...(data.merBlisStDt ? { merBlisStDt: data.merBlisStDt } : {}),
+            ...(data.merBlisExpDt ? { merBlisExpDt: data.merBlisExpDt } : {}),
+            ...(data.merBlisLongTerm ? { merBlisLongTerm: data.merBlisLongTerm } : {}),
+          },
+          legalPersonData: {
+            ...current.legalPersonData,
+            ...(data.larName ? { larName: data.larName } : {}),
+          },
+          settlementData: {
+            ...current.settlementData,
+            ...(shouldSyncAcctName ? { acctName: subjectName } : {}),
+          },
+        }
+      }
+      return {
+        ...current,
+        legalPersonData: {
+          ...current.legalPersonData,
+          ...(data.larName ? { larName: data.larName } : {}),
+          ...(data.larIdcard ? { larIdcard: data.larIdcard } : {}),
+          ...(data.larIdcardStDt ? { larIdcardStDt: data.larIdcardStDt } : {}),
+          ...(data.larIdcardExpDt ? { larIdcardExpDt: data.larIdcardExpDt } : {}),
+          ...(data.larIdcardLongTerm ? { larIdcardLongTerm: data.larIdcardLongTerm } : {}),
+        },
+      }
+    })
+    setOcrStatus((current) => ({ ...current, [displayName]: "OCR 已识别并填入下方字段，可手动修改" }))
+    toast.success(`${displayName} OCR 已填入`)
+  }
+
+  async function upload(displayName: string, attType: string, file?: File) {
+    if (!file) return
+    if (file.size > MAX_ONBOARDING_ATTACHMENT_BYTES) {
+      toast.error(`${displayName} 文件过大（${formatFileSize(file.size)}），请压缩到 5MB 内后重新上传`)
+      return
+    }
+    if (file.type.startsWith("image/")) {
+      setLocalPreviewUrls((current) => {
+        if (current[displayName]) URL.revokeObjectURL(current[displayName])
+        return { ...current, [displayName]: URL.createObjectURL(file) }
+      })
+    }
+    await runOcr(displayName, file)
+    const body = new FormData()
+    body.set("file", file)
+    body.set("attType", attType)
+    body.set("displayName", displayName)
+    const response = await fetch(`/api/merchants/onboarding/${application.id}/files`, { method: "POST", body })
+    const payload = await response.json()
+    if (!payload.ok) {
+      toast.error(payload.error || "上传失败")
+      return
+    }
+    toast.success(`${displayName} 已保存，提交时上传拉卡拉`)
+    router.refresh()
+  }
+
+  function save() {
     startTransition(async () => {
       try {
-        if (options.saveFirst && !(await persistDraft())) return
-        const result = await action()
-        if (result.success) {
-          toast.success(result.message)
-        } else {
-          toast.error(result.message || fallback)
-        }
+        const result = await saveOnboardingApplication(application.id, form)
+        result.success ? toast.success(result.message) : toast.error(result.message)
         router.refresh()
       } catch (error) {
+        toast.error(actionErrorMessage(error, "保存失败"))
+      }
+    })
+  }
+
+  async function saveCurrentDraftBeforeAction() {
+    const result = await saveOnboardingApplication(application.id, form)
+    if (!result.success) {
+      toast.error(result.message || "保存当前资料失败")
+      return false
+    }
+    return true
+  }
+
+  type OnboardingActionResult = { success: boolean; message: string; resultUrl?: string }
+
+  function runAction(
+    fn: (id: string) => Promise<OnboardingActionResult>,
+    fallback: string,
+    options?: { saveFirst?: boolean; onSuccess?: (result: OnboardingActionResult) => void; onAbort?: () => void },
+  ) {
+    startTransition(async () => {
+      try {
+        if (options?.saveFirst) {
+          const saved = await saveCurrentDraftBeforeAction()
+          if (!saved) {
+            options.onAbort?.()
+            return
+          }
+        }
+        const result = await fn(application.id)
+        result.success ? toast.success(result.message) : toast.error(result.message)
+        if (result.success) options?.onSuccess?.(result)
+        else options?.onAbort?.()
+        router.refresh()
+      } catch (error) {
+        options?.onAbort?.()
         toast.error(actionErrorMessage(error, fallback))
       }
     })
   }
 
-  function beginContract() {
+  function openContractPlaceholderWindow() {
     const contractWindow = window.open("about:blank", "_blank")
-    if (contractWindow) contractWindow.opener = null
-    startTransition(async () => {
-      try {
-        const updatedAt = await persistDraft()
-        if (!updatedAt) {
-          contractWindow?.close()
-          return
-        }
-        const result = await initiateElectronicContract(application.id, updatedAt)
-        if (!result.success || !result.resultUrl) {
-          contractWindow?.close()
-          toast.error(result.message || "发起电子合同失败")
-          return
-        }
-        toast.success(result.message)
-        if (contractWindow) {
-          contractWindow.location.replace(result.resultUrl)
+    if (!contractWindow) return null
+    contractWindow.opener = null
+    contractWindow.document.title = "拉卡拉在线签约"
+    contractWindow.document.body.innerHTML = '<p style="font-family: system-ui, sans-serif; padding: 24px;">正在打开签约页面...</p>'
+    return contractWindow
+  }
+
+  function startElectronicContract() {
+    const contractWindow = openContractPlaceholderWindow()
+    runAction(initiateElectronicContract, "发起签约失败", {
+      saveFirst: true,
+      onSuccess: (result) => {
+        if (result.resultUrl) {
+          if (contractWindow) contractWindow.location.href = result.resultUrl
+          else window.open(result.resultUrl, "_blank", "noopener,noreferrer")
         } else {
-          window.open(result.resultUrl, "_blank", "noopener,noreferrer")
+          contractWindow?.close()
         }
-        router.refresh()
-      } catch (error) {
-        contractWindow?.close()
-        toast.error(actionErrorMessage(error, "发起电子合同失败"))
-      }
+      },
+      onAbort: () => contractWindow?.close(),
     })
   }
 
-  async function runOcr(
-    definition: (typeof ATTACHMENT_REQUIREMENTS)[number],
-    file: File,
-  ) {
-    const isBusinessLicense = definition.attachmentType === "BUSINESS_LICENCE"
-    const isIdCard = definition.attachmentType === "ID_CARD_FRONT" || definition.attachmentType === "ID_CARD_BEHIND"
-    if (!isBusinessLicense && !isIdCard) return
-
-    setOcrStatus((current) => ({ ...current, [definition.attachmentType]: "OCR 识别中..." }))
-    const body = new FormData()
-    body.set("file", file)
-    if (definition.attachmentType === "ID_CARD_BEHIND") body.set("side", "back")
-
-    try {
-      const response = await fetch(
-        isBusinessLicense ? "/api/ocr/business-license" : "/api/ocr/id-card",
-        { method: "POST", body },
-      )
-      const payload = await response.json().catch(() => ({})) as {
-        ok?: boolean
-        data?: Record<string, string>
-        error?: string
-      }
-      if (!payload.ok || !payload.data) {
-        setOcrStatus((current) => ({
-          ...current,
-          [definition.attachmentType]: payload.error || "OCR 未识别，请手动填写",
-        }))
-        return
-      }
-
-      const data = payload.data
-      if (isBusinessLicense) {
-        const subjectName = data.merRegName || data.merBlisName || ""
-        updateForm((current) => {
-          const settlementData = getGroup(current, "settlementData")
-          return {
-            ...current,
-            merchantData: {
-              ...getGroup(current, "merchantData"),
-              ...(subjectName ? { merRegName: subjectName, merBlisName: subjectName } : {}),
-              ...(data.merBlis ? { merBlis: data.merBlis } : {}),
-              ...(data.merRegAddr ? { merRegAddr: data.merRegAddr } : {}),
-              ...(data.merRegDistCode ? { merRegDistCode: data.merRegDistCode } : {}),
-              ...(data.merBlisStDt ? { merBlisStDt: data.merBlisStDt } : {}),
-              ...(data.merBlisExpDt ? { merBlisExpDt: data.merBlisExpDt } : {}),
-            },
-            legalPersonData: {
-              ...getGroup(current, "legalPersonData"),
-              ...(data.larName ? { larName: data.larName } : {}),
-            },
-            settlementData: {
-              ...settlementData,
-              ...(subjectName && !settlementData.acctName ? { acctName: subjectName } : {}),
-            },
-          }
-        })
-      } else {
-        updateForm((current) => ({
-          ...current,
-          legalPersonData: {
-            ...getGroup(current, "legalPersonData"),
-            ...(data.larName ? { larName: data.larName } : {}),
-            ...(data.larIdcard ? { larIdcard: data.larIdcard } : {}),
-            ...(data.larIdcardStDt ? { larIdcardStDt: data.larIdcardStDt } : {}),
-            ...(data.larIdcardExpDt ? { larIdcardExpDt: data.larIdcardExpDt } : {}),
-          },
-        }))
-      }
-      setOcrStatus((current) => ({
-        ...current,
-        [definition.attachmentType]: "OCR 已识别，请确认下方字段",
-      }))
-    } catch {
-      setOcrStatus((current) => ({
-        ...current,
-        [definition.attachmentType]: "OCR 未识别，请手动填写",
-      }))
-    }
-  }
-
-  async function upload(
-    definition: (typeof ATTACHMENT_REQUIREMENTS)[number],
-    file?: File,
-  ) {
-    if (!file || !canEdit) return
-    if (file.size <= 0 || file.size > MAX_ONBOARDING_ATTACHMENT_BYTES) {
-      toast.error(definition.label + "文件大小需在 " + formatFileSize(MAX_ONBOARDING_ATTACHMENT_BYTES) + " 以内")
+  function confirmCollectionMerchant() {
+    if (missingCollectionNumbers.length > 0) {
+      toast.error(`请先取得：${missingCollectionNumbers.join("、")}`)
       return
     }
-    const acceptsPdf = allowsPdfAttachment(definition.attachmentType)
-    if (!["image/jpeg", "image/png", ...(acceptsPdf ? ["application/pdf"] : [])].includes(file.type)) {
-      toast.error(definition.label + (acceptsPdf ? "仅支持 JPG、PNG 图片或 PDF" : "仅支持 JPG 或 PNG 图片"))
-      return
-    }
-
-    if (file.type.startsWith("image/")) {
-      const nextUrl = URL.createObjectURL(file)
-      setLocalPreviewUrls((current) => {
-        if (current[definition.attachmentType]) URL.revokeObjectURL(current[definition.attachmentType])
-        return { ...current, [definition.attachmentType]: nextUrl }
-      })
-    }
-    await runOcr(definition, file)
-
-    const body = new FormData()
-    body.set("file", file)
-    body.set("attachmentType", definition.attachmentType)
-    body.set("expectedUpdatedAt", expectedUpdatedAt)
-    try {
-      const response = await fetch("/api/merchants/onboarding/" + application.id + "/files", {
-        method: "POST",
-        body,
-      })
-      const payload = await response.json().catch(() => ({})) as {
-        ok?: boolean
-        error?: string
-        data?: { updatedAt?: string }
-      }
-      const updatedAt = typeof payload.data?.updatedAt === "string" ? payload.data.updatedAt : null
-      if (updatedAt) setExpectedUpdatedAt(updatedAt)
-      if (!payload.ok) {
-        toast.error(payload.error || "资料上传失败")
-        if (updatedAt) router.refresh()
-        return
-      }
-      toast.success(definition.label + "已私有保存")
-      router.refresh()
-    } catch {
-      toast.error("资料上传失败，请稍后重试")
-    }
+    const confirmed = window.confirm("请确认营业执照对应法人已按指南完成微信/支付宝实名认证。确认后系统会关联收款商户，但不会自动启用，仍需到“收款商户”页手动启用。")
+    if (!confirmed) return
+    runAction(confirmOnboardingExternalCertification, "关联收款商户失败")
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="flex min-w-0 items-start gap-3">
-          <Link href="/merchants/onboarding">
-            <Button variant="outline" size="sm" aria-label="返回入网列表"><ArrowLeft /></Button>
-          </Link>
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-2xl font-bold">门店拉卡拉入网申请</h1>
-              <StatusBadge status={application.status} label={businessStatus.label} />
-            </div>
-            <p className="mt-1 text-xs text-[#999999]">
-              {application.storeName + " · " + application.applicationNo + " · 最近更新 " + formatDateTime(application.updatedAt)}
-            </p>
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {canFinalizeMerchant && (
-            <Button
-              variant="outline"
-              disabled={pending}
-              onClick={() => runAction(
-                () => queryOnboardingApplication(application.id),
-                "查询审核状态失败",
-              )}
-            >
-              <RefreshCw />查询审核状态
-            </Button>
-          )}
-          {!waitingForAudit && application.status !== "SUCCESS" && application.status !== "CANCELLED" && (
-            <Button
-              disabled={pending || !canEdit}
-              onClick={() => runAction(
-                () => needsReconsider
-                  ? reconsiderOnboardingApplication(application.id)
-                  : submitOnboardingApplication(application.id),
-                needsReconsider ? "重新提交失败" : "提交失败",
-                { saveFirst: true },
-              )}
-            >
-              <Send />{needsReconsider ? "修正后重新提交" : "提交拉卡拉"}
-            </Button>
-          )}
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center gap-3">
+        <Link href="/merchants"><Button variant="outline" size="sm"><ArrowLeft />返回商户管理</Button></Link>
+        <div>
+          <div className="flex flex-wrap items-center gap-2"><h1 className="text-2xl font-bold">门店拉卡拉入网申请</h1><StatusBadge status={application.status} label={businessStatus.label} /><span className="font-mono text-xs text-[#999999]">{application.orderNo}</span></div>
+          <p className="mt-1 text-xs text-[#999999]">{application.storeName} · 补齐主体、法人、联系人、结算账户和附件；审核成功后系统自动生成/绑定收款商户。</p>
         </div>
       </div>
 
-      {application.lastErrorMessage && (
-        <div className="rounded-[var(--radius)] border border-[#F3B8B2] bg-[#FFF8F7] px-4 py-3 text-sm text-[#B42318]">
-          {application.lastErrorMessage}
-        </div>
-      )}
+      {showTopError && <div className="rounded-[var(--radius)] border border-[#F3B8B2] bg-[#FFF8F7] px-4 py-3 text-sm text-[#D94040]">{application.lastErrorMessage}</div>}
 
       <Card className="border-[#F6D8A8]">
-        <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
-          <div>
-            <p className="text-sm font-medium">当前待办：{businessStatus.todo}</p>
-            <p className="mt-1 text-xs text-[#999999]">
-              市场：{application.marketName ?? "—"} · 负责人：{application.owner ?? "—"}
-            </p>
-          </div>
-          {canEdit && (
-            <div className="flex flex-wrap gap-2">
-              {["DRAFT", "FILES_UPLOADING", "FILES_READY", "FAILED"].includes(application.status) && (
-                <Button
-                  variant="outline"
-                  disabled={pending}
-                  onClick={() => startTransition(() => void persistDraft())}
-                >
-                  <Save />保存草稿
-                </Button>
-              )}
-              {canCancelApplication && (
-                <Button
-                  variant="outline"
-                  disabled={pending}
-                  onClick={() => runAction(
-                    () => cancelOnboardingApplication(application.id, expectedUpdatedAt),
-                    "取消申请失败",
-                    { confirmText: "确定取消这份入网申请吗？私有资料将按留存策略保留。" },
-                  )}
-                >
-                  <XCircle />取消申请
-                </Button>
-              )}
-            </div>
-          )}
+        <CardContent className="flex flex-col gap-4 p-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-wrap items-center gap-3"><StatusBadge status={application.status} label={businessStatus.label} /><span className="text-sm font-medium">当前待办：{businessStatus.todo ?? application.missing ?? "资料齐全，可确认提交"}</span><span className="text-xs text-[#999999]">负责人：{application.owner ?? "—"} · 最近更新：{formatDateTime(application.updatedAt)}</span></div>
+          <div className="flex shrink-0 flex-wrap gap-2"><Button variant="outline" size="sm" onClick={() => runAction(queryOnboardingApplication, "查询失败")} disabled={pending}><RefreshCw />查询状态</Button>{!waitingForAudit && application.status !== "SUCCESS" && <Button size="sm" disabled={pending} onClick={() => runAction(needsReconsider ? reconsiderOnboardingApplication : submitOnboardingApplication, needsReconsider ? "重新提交失败" : "提交失败", { saveFirst: true })}><Send />{needsReconsider ? "修正后重新提交" : "提交拉卡拉"}</Button>}</div>
         </CardContent>
       </Card>
 
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Upload className="size-4 text-[var(--primary)]" />
-            资料上传
-          </CardTitle>
-          <p className="text-xs text-[#999999]">
-            附件只保存到私有目录，单个文件不超过 5 MB。营业执照和身份证图片上传后会尝试 OCR 预填。
-          </p>
-        </CardHeader>
+        <CardHeader className="flex-row items-center gap-2 space-y-0"><Upload className="size-4 text-[var(--primary)]" /><div><CardTitle className="text-base">1. 资料上传</CardTitle><p className="mt-1 text-xs font-normal text-[#999999]">营业执照和身份证上传后可 OCR 预填；原件仅私有保存，单个文件不超过 5 MB。</p></div></CardHeader>
         <CardContent>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            {ATTACHMENT_REQUIREMENTS.map((definition) => {
-              const attachment = attachments.get(definition.attachmentType)
-              const previewUrl = localPreviewUrls[definition.attachmentType] || attachment?.previewUrl
-              const uploaded = Boolean(attachment && !["FAILED", "DELETED", "EXPIRED"].includes(attachment.status))
-              const previewIsImage = attachment?.mimeType?.startsWith("image/") || Boolean(localPreviewUrls[definition.attachmentType])
-              return (
-                <div
-                  key={definition.attachmentType}
-                  className={cn(
-                    "min-h-36 rounded-[var(--radius)] border p-3",
-                    uploaded ? "border-[#B7E4C7] bg-[#F0F9F2]" : "border-dashed border-[#B8C4D2]",
+            {ATTACHMENT_REQUIREMENTS.map((item) => {
+              const attachment = attachments.get(item.displayName)
+              const uploaded = !!attachment && ["LOCAL_SAVED", "UPLOADING", "UPLOADED"].includes(attachment.status)
+              const previewUrl = localPreviewUrls[item.displayName] || (attachment?.mimeType?.startsWith("image/") ? attachment.previewUrl : null)
+              return <div key={item.key} className={cn("min-h-28 rounded-[var(--radius)] border p-3", uploaded ? "border-[#B7E4C7] bg-[#F0F9F2]" : "border-dashed border-[#B8C4D2]")}>
+                <div className="flex items-start justify-between gap-2"><p className="text-sm font-medium">{item.label}</p>{uploaded ? <CheckCircle2 className="size-4 text-[#3D8A5A]" /> : <FileWarning className="size-4 text-[#999999]" />}</div>
+                <p className="mt-1 text-xs text-[#999999]">{attachment?.fileName ?? "未上传"}</p>
+                {attachment?.lastErrorMessage && <p className="mt-1 text-xs text-[#D94040]">{attachment.lastErrorMessage}</p>}
+                <label className={cn("mt-3 block cursor-pointer overflow-hidden rounded-[var(--radius)] border bg-white", previewUrl ? "border-[var(--border)]" : "inline-flex h-7 w-fit items-center gap-1 px-2 text-xs hover:bg-[var(--muted)]")}>
+                  {previewUrl ? (
+                    <div>
+                      <img src={previewUrl} alt={`${item.label}预览`} className="h-32 w-full object-contain bg-[#FAFAFA]" />
+                      <div className="flex items-center gap-1 border-t border-[var(--border)] px-2 py-1.5 text-xs text-[#666666]"><Upload className="size-3" />点击图片重新上传</div>
+                    </div>
+                  ) : (
+                    <><Upload className="size-3" />{uploaded ? "重新上传" : "选择文件"}</>
                   )}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <p className="text-sm font-medium">{definition.label}</p>
-                    {uploaded
-                      ? <CheckCircle2 className="size-4 text-[#3D8A5A]" />
-                      : <FileWarning className="size-4 text-[#999999]" />}
-                  </div>
-                  <p className="mt-1 truncate text-xs text-[#999999]">{attachment?.fileName ?? "未上传"}</p>
-                  {previewUrl && (
-                    <a
-                      href={previewUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="mt-2 block overflow-hidden rounded border border-[var(--border)] text-xs text-[var(--primary)] hover:underline"
-                    >
-                      {previewIsImage ? (
-                        <>
-                          {/* Private image URLs use the current session cookie and cannot use Next image optimization. */}
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={previewUrl} alt={definition.label + "预览"} className="h-24 w-full bg-white object-contain" />
-                        </>
-                      ) : "查看已上传文件"}
-                    </a>
-                  )}
-                  {attachment?.lastErrorMessage && (
-                    <p className="mt-1 text-xs text-[#B42318]">{attachment.lastErrorMessage}</p>
-                  )}
-                  {ocrStatus[definition.attachmentType] && (
-                    <p className="mt-1 text-xs text-[#386987]">{ocrStatus[definition.attachmentType]}</p>
-                  )}
-                  {canEdit && (
-                    <label className="mt-2 inline-flex h-8 cursor-pointer items-center gap-1 rounded-[var(--radius)] border border-[var(--border)] bg-white px-2 text-xs hover:bg-[var(--muted)]">
-                      <Upload className="size-3" />{uploaded ? "重新上传" : "选择文件"}
-                      <input
-                        hidden
-                        type="file"
-                        accept={allowsPdfAttachment(definition.attachmentType)
-                          ? "image/jpeg,image/png,application/pdf"
-                          : "image/jpeg,image/png"}
-                        onChange={(event) => void upload(definition, event.target.files?.[0])}
-                      />
-                    </label>
-                  )}
-                </div>
-              )
+                  <input type="file" hidden accept="image/png,image/jpeg,image/jpg,application/pdf" onChange={(event) => upload(item.displayName, item.attType, event.target.files?.[0])} />
+                </label>
+                {ocrStatus[item.displayName] && <p className={cn("mt-2 text-xs", ocrStatus[item.displayName].includes("失败") ? "text-[#D94040]" : "text-[#3D8A5A]")}>{ocrStatus[item.displayName]}</p>}
+              </div>
             })}
           </div>
         </CardContent>
       </Card>
 
-      <OnboardingForm
-        form={form}
-        setForm={updateForm}
-        pending={pending || !canEdit}
-        applicationId={application.id}
-      />
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card>
+          <CardHeader className="flex-row items-center gap-2 space-y-0"><Building2 className="size-4 text-[var(--primary)]" /><div><CardTitle className="text-base">2. 主体资料、法人和联系人</CardTitle><p className="mt-1 text-xs font-normal text-[#999999]">页面只让你确认营业执照上的主体信息；提交时后端会自动映射为拉卡拉需要的商户注册名称、营业执照名称等接口字段。</p></div></CardHeader>
+          <CardContent className="grid gap-4 sm:grid-cols-2">
+            <Field form={form} setForm={setForm} group="merchantData" name="subjectName" label="营业执照名称 / 主体名称" hint="来自营业执照 OCR；后端会同步用于拉卡拉的商户注册名称和营业执照名称" />
+            <Field form={form} setForm={setForm} group="merchantData" name="merBlis" label="统一社会信用代码 / 营业执照号" />
+            <AreaCodeField form={form} setForm={setForm} group="merchantData" name="merRegDistCode" label="注册地址地区" />
+            <Field
+              form={form}
+              setForm={setForm}
+              group="merchantData"
+              name="merRegAddr"
+              label="详细地址（不含省市区）"
+              maxLength={29}
+            />
+            <Field form={form} setForm={setForm} group="merchantData" name="merBlisStDt" date label="执照开始日期" />
+            <LicenseExpiryField form={form} setForm={setForm} />
+            <div className="mt-1 border-t border-[var(--border)] pt-4 sm:col-span-2"><p className="flex items-center gap-2 text-sm font-semibold"><UserRound className="size-4 text-[var(--primary)]" />法人和联系人</p></div>
+            <Field form={form} setForm={setForm} group="legalPersonData" name="larName" label="法人姓名" />
+            <Field form={form} setForm={setForm} group="legalPersonData" name="larIdcard" label="法人身份证号" />
+            <Field form={form} setForm={setForm} group="legalPersonData" name="larIdcardStDt" date label="证件开始日期" />
+            <IdCardExpiryField form={form} setForm={setForm} />
+            <Field form={form} setForm={setForm} group="contactData" name="merContactName" label="联系人" />
+            <Field form={form} setForm={setForm} group="contactData" name="merContactMobile" label="联系人手机号" />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex-row items-center gap-2 space-y-0"><CreditCard className="size-4 text-[var(--primary)]" /><CardTitle className="text-base">3. 结算账户</CardTitle></CardHeader>
+          <CardContent className="space-y-4">
+            <div className="rounded-[var(--radius)] border border-[#F6D8A8] bg-[#FFFCF5] px-3 py-2 text-xs text-[#8B6B32]">结算方式固定为对公，账户信息必须由经办人手动确认。</div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field form={form} setForm={setForm} group="settlementData" name="acctName" label="结算户名" />
+              <Field form={form} setForm={setForm} group="settlementData" name="acctNo" label="银行账号" hint="实际接入时以加密方式保存" />
+              <OpeningBankField form={form} setForm={setForm} applicationId={application.id} />
+            </div>
+          </CardContent>
+        </Card>
+      </div>
 
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <FileText className="size-4 text-[var(--primary)]" />
-            电子合同与提交
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex flex-col justify-between gap-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--muted)] p-4 sm:flex-row sm:items-center">
-            <div>
-              <p className="text-sm font-medium">拉卡拉电子合同</p>
-              <p className="mt-1 text-xs text-[#999999]">
-                {application.eContractStatus === "COMPLETED"
-                  ? "已完成签约" + (application.eContractNo ? "，合同号：" + application.eContractNo : "")
-                  : "保存资料后从拉卡拉正式电子合同服务发起签约；系统通过主动查询确认签约结果。"}
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {application.eContractOrderNo && application.eContractStatus !== "COMPLETED" && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={pending || !canEdit}
-                  onClick={() => runAction(
-                    () => refreshElectronicContractStatus(application.id),
-                    "查询电子合同状态失败",
-                  )}
-                >
-                  <RefreshCw />查询签约状态
-                </Button>
-              )}
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={pending || !canEdit || application.eContractStatus === "COMPLETED"}
-                onClick={beginContract}
-              >
-                <FileText />发起电子合同
-              </Button>
-            </div>
-          </div>
-          {contractPdf?.previewUrl && (
-            <a
-              href={contractPdf.previewUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-2 text-sm text-[var(--primary)] hover:underline"
-            >
-              <FileText className="size-4" />查看已私有保存的签约合同
-            </a>
-          )}
-          <div className="flex flex-wrap justify-end gap-2">
-            {canEdit && (
-              <Button
-                variant="outline"
-                disabled={pending}
-                onClick={() => startTransition(() => void persistDraft())}
-              >
-                <Save />保存草稿
-              </Button>
-            )}
-            {!waitingForAudit && application.status !== "SUCCESS" && application.status !== "CANCELLED" && (
-              <Button
-                disabled={pending || !canEdit}
-                onClick={() => runAction(
-                  () => needsReconsider
-                    ? reconsiderOnboardingApplication(application.id)
-                    : submitOnboardingApplication(application.id),
-                  needsReconsider ? "重新提交失败" : "提交失败",
-                  { saveFirst: true },
-                )}
-              >
-                <Send />{needsReconsider ? "修正后重新提交" : "提交拉卡拉"}
-              </Button>
-            )}
-          </div>
-        </CardContent>
+        <CardHeader className="flex-row items-center gap-2 space-y-0"><FileText className="size-4 text-[var(--primary)]" /><div><CardTitle className="text-base">4. 提交前确认</CardTitle><p className="mt-1 text-xs font-normal text-[#999999]">保存草稿和提交进件在同一处完成；只有点击提交时才上传拉卡拉，缺资料时系统会提示。</p></div></CardHeader>
+        <CardContent className="space-y-4"><div className="flex flex-col justify-between gap-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--muted)] p-4 sm:flex-row sm:items-center"><div><p className="text-sm font-medium">拉卡拉在线签约</p><p className="mt-1 text-xs text-[#999999]">{application.eContractStatus === "COMPLETED" ? `已签约，合同号：${application.eContractNo}` : application.eContractResultUrl ? "签约已发起，请由法人在拉卡拉页面完成签约" : "资料确认后发起签约；签约完成后系统自动取得合同号"}</p></div><div className="flex flex-wrap gap-2">{application.eContractResultUrl && application.eContractStatus !== "COMPLETED" && <Button variant="outline" size="sm" onClick={() => window.open(application.eContractResultUrl!, "_blank", "noopener,noreferrer")}>打开签约页面</Button>}<Button variant="outline" size="sm" disabled={pending || application.eContractStatus === "COMPLETED"} onClick={startElectronicContract}><FileCheck2 />{application.eContractResultUrl ? "重新发起签约" : "发起在线签约"}</Button></div></div>{needsReconsider && <p className="rounded-[var(--radius)] border border-[#F6D8A8] bg-[#FFFCF5] px-3 py-2 text-xs text-[#8B6B32]">审核已拒绝。修正资料后请先保存草稿，再重新提交资料；系统会重新上传附件并同步拉卡拉进件。</p>}{waitingForAudit && <p className="rounded-[var(--radius)] border border-[#D9D2F0] bg-[#F7F4FC] px-3 py-2 text-xs text-[#62508B]">该申请已提交拉卡拉，正在等待审核。请使用“查询状态”，不要重复提交。</p>}<div className="flex flex-wrap justify-end gap-2 border-t border-[var(--border)] pt-4"><Button variant="outline" onClick={save} disabled={pending}><Save />保存草稿</Button><Button variant="outline" onClick={() => runAction(queryOnboardingApplication, "查询失败")} disabled={pending}><RefreshCw />查询状态</Button>{!waitingForAudit && application.status !== "SUCCESS" && <Button onClick={() => runAction(needsReconsider ? reconsiderOnboardingApplication : submitOnboardingApplication, needsReconsider ? "重新提交失败" : "提交失败", { saveFirst: true })} disabled={pending}><Send />{needsReconsider ? "修正后重新提交" : "提交拉卡拉"}</Button>}</div></CardContent>
       </Card>
 
       {application.status === "SUCCESS" && (
         <Card>
-          <CardHeader className="flex-row flex-wrap items-start justify-between gap-3 space-y-0">
+          <CardHeader className="flex-row items-center justify-between space-y-0">
             <div>
-              <CardTitle className="text-base">渠道认证与收款商户</CardTitle>
-              <p className="mt-1 text-xs text-[#999999]">
-                审核通过后完成渠道认证；刷新到微信认证通过且已有终端号时，系统会自动绑定并启用收款商户。
-              </p>
+              <CardTitle className="text-base">5. 收款商户与渠道认证</CardTitle>
+              <p className="mt-1 text-xs font-normal text-[#999999]">入网审核通过后展示收款编号；请法人按指南在微信/支付宝外部页面完成认证，再人工确认关联收款商户。</p>
             </div>
-            {canEdit && (
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={pending}
-                  onClick={() => runAction(
-                    () => refreshOnboardingSubMerchants(application.id),
-                    "查询子商户号失败",
-                  )}
-                >
-                  <RefreshCw />查询子商户号
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={pending}
-                  onClick={() => runAction(
-                    () => refreshOnboardingCertificationStatus(application.id),
-                    "查询认证状态失败",
-                  )}
-                >
-                  <RefreshCw />查询认证状态
-                </Button>
-              </div>
-            )}
+            <div className="flex flex-wrap gap-2">
+              {(!hasWechatSubMerchant || !hasAlipaySubMerchant) && <Button variant="outline" size="sm" disabled={pending} onClick={() => runAction(refreshOnboardingSubMerchants, "子商户号查询失败")}><RefreshCw />查询子商户号</Button>}
+              <Link href="/merchants/lakala-guides/wechat" target="_blank"><Button variant="outline" size="sm">微信实名认证指南</Button></Link>
+              <Link href="/merchants/lakala-guides/alipay" target="_blank"><Button variant="outline" size="sm">支付宝实名认证指南</Button></Link>
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid gap-3 md:grid-cols-4">
-              <InfoBox label="银联商户号" value={application.merCupNo || "等待返回"} warning={!application.merCupNo} />
-              <InfoBox label="终端号" value={application.terminalNo || "等待返回"} warning={!application.terminalNo} />
-              <InfoBox label="微信子商户号" value={wechatSubMerchant || "等待报备"} warning={!wechatSubMerchant} />
-              <InfoBox label="支付宝子商户号" value={alipaySubMerchant || "等待报备"} warning={!alipaySubMerchant} />
+            <div className="grid gap-4 md:grid-cols-4">
+              <div className="rounded-[var(--radius)] border border-[#D9E8DF] bg-[#F6FBF8] p-4">
+                <p className="text-xs text-[#6B8A76]">银联商户号</p>
+                <p className="mt-1 break-all text-base font-semibold text-[#287342]">{application.merCupNo ?? "等待返回"}</p>
+              </div>
+              <div className={cn("rounded-[var(--radius)] border p-4", terminalNo ? "border-[#D9E8DF] bg-[#F6FBF8]" : "border-[#E7E1D0] bg-[#FFFCF5]")}>
+                <p className="text-xs text-[#777777]">终端号</p>
+                <p className={cn("mt-1 break-all text-base font-semibold", terminalNo ? "text-[#287342]" : "text-[#8B6B32]")}>{terminalNo || "等待拉卡拉返回"}</p>
+              </div>
+              <div className={cn("rounded-[var(--radius)] border p-4", hasWechatSubMerchant ? "border-[#D9E8DF] bg-[#F6FBF8]" : "border-[#E7E1D0] bg-[#FFFCF5]")}>
+                <p className="text-xs text-[#777777]">微信子商户号</p>
+                <p className={cn("mt-1 break-all text-base font-semibold", hasWechatSubMerchant ? "text-[#287342]" : "text-[#8B6B32]")}>{wechatSubMerchantText || "等待拉卡拉报备返回"}</p>
+              </div>
+              <div className={cn("rounded-[var(--radius)] border p-4", hasAlipaySubMerchant ? "border-[#D9E8DF] bg-[#F6FBF8]" : "border-[#E7E1D0] bg-[#FFFCF5]")}>
+                <p className="text-xs text-[#777777]">支付宝子商户号</p>
+                <p className={cn("mt-1 break-all text-base font-semibold", hasAlipaySubMerchant ? "text-[#287342]" : "text-[#8B6B32]")}>{alipaySubMerchantText || "等待拉卡拉报备返回"}</p>
+              </div>
             </div>
-            <div className="flex flex-col justify-between gap-3 rounded-[var(--radius)] border border-[#D9D2F0] bg-[#F7F4FC] p-4 sm:flex-row sm:items-center">
+            <div className="rounded-[var(--radius)] border border-[#D9D2F0] bg-[#F7F4FC] px-3 py-2 text-xs text-[#62508B]">
+              {missingCollectionNumbers.length > 0
+                ? subMerchantPollingTimedOut
+                  ? `${subMerchantPolling?.reason || "子商户号 72 小时未全部返回"}${subMerchantPolling?.stoppedAt ? `，停止时间：${formatDateTime(subMerchantPolling.stoppedAt)}` : ""}。请联系拉卡拉确认渠道报备结果。`
+                  : `还缺：${missingCollectionNumbers.join("、")}。${lastSubMerchantCheckedAt ? `上次查询：${lastSubMerchantCheckedAt}；` : ""}系统会每小时自动查询渠道报备，页面可以关闭。`
+                : "请使用营业执照对应法人本人账号/身份，按微信和支付宝指南完成外部认证。完成后点击下方按钮关联收款商户。"}
+            </div>
+            <div className="flex flex-col justify-between gap-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--muted)] p-4 sm:flex-row sm:items-center">
               <div>
-                <p className="text-sm font-medium">法人完成微信认证后刷新状态</p>
-                <p className="mt-1 text-xs text-[#62508B]">刷新认证可自动启用收款；“人工确认”仅用于需要操作员核验的情况，绑定后仍保持未启用。</p>
+                <p className="text-sm font-medium">外部认证完成后关联收款商户</p>
+                <p className="mt-1 text-xs text-[#999999]">
+                  {application.lakalaMerchantId
+                    ? "已关联收款商户；收款状态保持未启用/待启用，请到“收款商户”页手动启用。"
+                    : missingCollectionNumbers.length
+                      ? `编号未齐，暂不能关联：${missingCollectionNumbers.join("、")}`
+                      : "确认后系统会生成/更新收款商户并绑定门店，但不会自动启用。"}
+                </p>
               </div>
-              <div className="flex flex-wrap gap-2">
-                <Link href="/merchants/lakala-guides/wechat" target="_blank">
-                  <Button variant="outline" size="sm">微信认证指南</Button>
-                </Link>
-                <Link href="/merchants/lakala-guides/alipay" target="_blank">
-                  <Button variant="outline" size="sm">支付宝认证指南</Button>
-                </Link>
-                {canEdit && (
-                  <Button
-                    disabled={pending || !canConfirmMerchant}
-                    onClick={() => runAction(
-                      () => confirmOnboardingExternalCertification(application.id),
-                      "确认外部认证失败",
-                      { confirmText: "请确认已人工核验微信和支付宝认证。此操作只关联商户，不会启用收款。" },
-                    )}
-                  >
-                    <ClipboardCheck />人工确认
-                  </Button>
-                )}
-              </div>
+              <Button disabled={pending || !canConfirmCollectionMerchant} onClick={confirmCollectionMerchant}>
+                <ClipboardCheck />我已完成认证，关联收款商户
+              </Button>
             </div>
           </CardContent>
         </Card>
       )}
 
       <Card>
-        <CardHeader><CardTitle className="text-base">外部请求记录</CardTitle></CardHeader>
-        <CardContent>
-          <DataTable
-            columns={[
-              {
-                key: "createdAt",
-                header: "时间",
-                cell: (log) => <span className="text-xs text-[#999999]">{formatDateTime(log.createdAt)}</span>,
-              },
-              { key: "apiName", header: "接口" },
-              {
-                key: "status",
-                header: "结果",
-                cell: (log) => (
-                  <span className={
-                    log.status === "SUCCEEDED"
-                      ? "text-[#287342]"
-                      : log.status === "FAILED"
-                        ? "text-[#B42318]"
-                        : "text-[#62508B]"
-                  }>
-                    {log.status}
-                  </span>
-                ),
-              },
-              { key: "errorMessage", header: "说明", cell: (log) => log.errorMessage ?? "—" },
-            ] satisfies Column<RequestLogRow>[]}
-            data={application.requestLogs as RequestLogRow[]}
-            emptyText="暂无外部请求记录"
-          />
-        </CardContent>
+        <CardHeader><CardTitle className="text-base">拉卡拉提交记录</CardTitle></CardHeader>
+        <CardContent><div className="overflow-x-auto"><table className="w-full text-sm"><thead className="border-b border-[var(--border)] text-xs text-[#999999]"><tr><th className="px-2 py-2 text-left font-medium">时间</th><th className="px-2 py-2 text-left font-medium">接口</th><th className="px-2 py-2 text-left font-medium">结果</th><th className="px-2 py-2 text-left font-medium">错误</th></tr></thead><tbody>{application.requestLogs.length === 0 ? <tr><td colSpan={4} className="px-2 py-6 text-center text-[#999999]">暂无请求记录</td></tr> : application.requestLogs.map((log) => <tr key={log.id} className="border-b border-[var(--border)] last:border-0"><td className="px-2 py-3 text-[#666666]">{formatDateTime(log.createdAt)}</td><td className="px-2 py-3">{log.apiName}</td><td className={cn("px-2 py-3", log.success ? "text-[#3D8A5A]" : "text-[#D94040]")}>{log.success ? "成功" : "失败"}</td><td className="px-2 py-3">{log.errorMessage ?? "—"}</td></tr>)}</tbody></table></div></CardContent>
       </Card>
     </div>
   )
 }
+
+export default OnboardingList

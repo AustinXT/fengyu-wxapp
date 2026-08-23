@@ -2,7 +2,7 @@
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
 import { formatDate } from '../../utils/format';
-import { groupTreatmentCards, sumGroupValue } from '../utils/treatment-card-group';
+import { getTreatmentCardBusinessIdentity, groupTreatmentCards, sumGroupValue } from '../utils/treatment-card-group';
 
 const app = getApp<IAppOption>();
 
@@ -146,44 +146,7 @@ Page({
       const groupedItems = groupTreatmentCards(items, {
         getId: (item) => item.sale_item_id,
         getQuantity: (item) => item.quantity,
-        getIdentity: (item) => ({
-          saleOrderId: item.sale_order_id,
-          saleOrderDatetime: item.sale_order_datetime,
-          paidAt: item.paid_at,
-          orderStatus: item.order_status,
-          saleOrderType: item.sale_order_type,
-          documentType: item.document_type,
-          legacySource: item.legacy_source,
-          storeId: item.store_id,
-          storeName: item.store_name,
-          marketName: item.market_name,
-          skuId: item.sku_id,
-          itemDirection: item.item_direction,
-          refSaleItemId: item.ref_sale_item_id,
-          productName: item.product_name,
-          productType: item.product_type,
-          sessionCount: item.session_count,
-          remainingSessions: item.remaining_sessions,
-          paidSessions: item.disabled ? null : item.paid_sessions,
-          usedSessions: item.used_sessions,
-          paidUnusedSessions: item.paid_unused_sessions,
-          unit: item.unit,
-          unitPrice: item.unit_price,
-          unitRealPrice: item.unit_real_price,
-          saleAmount: item.sale_amount,
-          received: item.received,
-          pendingReceived: item.pending_received,
-          expireDate: item.expire_date,
-          remark: item.remark,
-          salesCategory: item.sales_category,
-          pickedUpQuantity: item.picked_up_quantity,
-          productKind: item.product_kind,
-          categoryId: item.category_id,
-          categoryName: item.category_name,
-          disabled: item.disabled,
-          disabledReason: item.disabled_reason,
-          quantity: item.quantity ?? 1,
-        }),
+        getIdentity: (item) => getTreatmentCardBusinessIdentity(item),
       }).map((group) => {
         const primary = group.primary;
         const disabled = !!primary.disabled;

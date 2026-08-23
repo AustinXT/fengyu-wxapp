@@ -1,5 +1,3 @@
-import 'server-only'
-
 export type LakalaMerchantAreaOption = { value: string; label: string }
 
 type LakalaMerchantAreaRow = { code: string; name: string; parentCode: string }
@@ -85,53 +83,35 @@ export function getLakalaMerchantAreaPathByCode(code?: string | null) {
   }
 }
 
-// 预计算叶子行及其路径，避免每次 OCR 调用都扫描 5000+ 行并逐行回溯父链。
-let _leafRowIndex: Array<{
-  code: string
-  name: string
-  label: string
-  parts: string[]
-}> | undefined
-
-function leafRowIndex(): Array<{ code: string; name: string; label: string; parts: string[] }> {
-  if (_leafRowIndex) return _leafRowIndex
-  _leafRowIndex = lakalaMerchantAreaRows
-    .filter((row) => {
-      const children = childrenByParent.get(row.code) ?? []
-      return children.length === 0 || children.every((child) => child.name === row.name)
-    })
-    .map((row) => {
-      const path = getLakalaMerchantAreaPathByCode(row.code)
-      const label = compact(path.label)
-      const parts = label ? label.match(/.+?(省|自治区|市)|.+?(市|自治州|地区|盟)|.+$/g) ?? [] : []
-      return { code: row.code, name: compact(row.name), label, parts }
-    })
-  return _leafRowIndex
-}
-
 export function lakalaMerchantAreaCodeFromAddress(address?: string | null) {
   if (!address) return undefined
   const text = compact(address)
   if (!text) return undefined
 
-  const leafRows = leafRowIndex()
+  const leafRows = lakalaMerchantAreaRows.filter((row) => {
+    const children = childrenByParent.get(row.code) ?? []
+    return children.length === 0 || children.every((child) => child.name === row.name)
+  })
 
   const candidates = leafRows
     .map((row) => {
+      const path = getLakalaMerchantAreaPathByCode(row.code)
+      const label = compact(path.label)
+      const parts = label ? path.label.match(/.+?(省|自治区|市)|.+?(市|自治州|地区|盟)|.+$/g) ?? [] : []
+      const countyName = compact(row.name)
       let score = 0
-      if (row.label && text.includes(row.label)) score = 5
-      else if (row.parts.length >= 3 && text.includes(compact(row.parts[0])) && text.includes(compact(row.parts[1])) && text.includes(compact(row.parts[2]))) score = 4
-      else if (row.parts.length >= 2 && text.includes(compact(row.parts[1])) && text.includes(row.name)) score = 3
-      else if (row.name && text.includes(row.name)) score = 1
-      return { code: row.code, name: row.name, label: row.label, score }
+      if (label && text.includes(label)) score = 5
+      else if (parts.length >= 3 && text.includes(compact(parts[0])) && text.includes(compact(parts[1])) && text.includes(compact(parts[2]))) score = 4
+      else if (parts.length >= 2 && text.includes(compact(parts[1])) && text.includes(countyName)) score = 3
+      else if (countyName && text.includes(countyName)) score = 1
+      return { row, path, score }
     })
     .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score || b.label.length - a.label.length)
+    .sort((a, b) => b.score - a.score || b.path.label.length - a.path.label.length)
 
   const best = candidates[0]
   if (!best) return undefined
-  if (best.score > 1) return best.code
-  const sameName = candidates.filter((item) => item.score === 1 && item.name === best.name)
-  return sameName.length === 1 ? best.code : undefined
+  if (best.score > 1) return best.row.code
+  const sameName = candidates.filter((item) => item.score === 1 && item.row.name === best.row.name)
+  return sameName.length === 1 ? best.row.code : undefined
 }
-

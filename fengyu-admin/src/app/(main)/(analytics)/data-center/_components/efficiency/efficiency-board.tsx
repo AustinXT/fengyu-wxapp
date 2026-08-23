@@ -6,8 +6,8 @@ import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { parseBoardParams } from "@/lib/data-center/params"
 import { getEfficiencyBoard } from "@/actions/data-center/efficiency"
 import { KpiGrid, type KpiGridItem } from "../kpi-card"
-import { BreakdownTable, type BreakdownColumn } from "../breakdown-table"
-import { RankingBoard, type RankingMetric } from "../ranking-board"
+import { BreakdownTable } from "../breakdown-table"
+import { RankingBoard } from "../ranking-board"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import type { EfficiencyBoardResult } from "@/lib/data-center/types"
 
@@ -20,52 +20,6 @@ const KPI_ITEMS: KpiGridItem[] = [
   { key: "empAvgProjects", label: "人均项目数", hint: "生美项目 ÷ 员工" },
   { key: "managerAvgMembers", label: "店长人均会员数", hint: "会员数 ÷ 店长数" },
   { key: "managerAvgEmployees", label: "店长人均员工数", hint: "员工数 ÷ 店长数" },
-]
-
-// ── 按市场人效明细列（key 对应 byMarket[].metrics）────────────────────
-const MARKET_COLUMNS: BreakdownColumn[] = [
-  { key: "managerCount", label: "店长人数", unit: "count" },
-  { key: "managerAvgIncome", label: "店长人均收入", unit: "amount" },
-  { key: "technicianCount", label: "技师人数", unit: "count" },
-  { key: "techAvgRevenue", label: "技师人均业绩", unit: "amount" },
-  { key: "techAvgConsume", label: "技师人均实耗", unit: "amount" },
-  { key: "techAvgShengmeiConsume", label: "技师人均生美实耗", unit: "amount" },
-  { key: "techAvgIncome", label: "技师人均收入", unit: "amount" },
-  { key: "techAvgMembers", label: "技师人均会员量", unit: "count" },
-  { key: "techAvgProjects", label: "技师人均项目数", unit: "count" },
-]
-
-// ── 按技师人效明细列（key 对应 byStaff[].metrics）──
-// 销售额按 salesCategoryEnum 4 枚举值拆分（4 列之和=当月业绩），实耗合并为单列「实耗合计」。
-const STAFF_DETAIL_COLUMNS: BreakdownColumn[] = [
-  { key: "revenue", label: "当月业绩", unit: "amount" },
-  { key: "saleZxzh", label: "自销自耗", unit: "amount" },
-  { key: "saleTxzh", label: "他销自耗", unit: "amount" },
-  { key: "saleTxth", label: "他销他耗", unit: "amount" },
-  { key: "saleEco", label: "生态合作", unit: "amount" },
-  { key: "consumeTotal", label: "实耗合计", unit: "amount" },
-  { key: "newMember", label: "纳客数", unit: "count" },
-  { key: "projectCount", label: "项目数", unit: "count" },
-  { key: "serviceHeadcount", label: "服务人头", unit: "count" },
-  { key: "serviceVisits", label: "服务人次", unit: "count" },
-]
-
-// ── 门店排名榜 metric（key 对应 storeRankings）────────────────────────
-const STORE_RANK_METRICS: RankingMetric[] = [
-  { key: "revenue", label: "业绩", unit: "amount" },
-  { key: "consume", label: "实耗", unit: "amount" },
-  { key: "retainedMember", label: "保有会员", unit: "count" },
-  { key: "newMember", label: "新会员", unit: "count" },
-  { key: "projectCount", label: "项目数", unit: "count" },
-]
-
-// ── 员工排名榜 metric（key 对应 staffRankings）────────────────────────
-const STAFF_RANK_METRICS: RankingMetric[] = [
-  { key: "revenue", label: "业绩", unit: "amount" },
-  { key: "consume", label: "实耗", unit: "amount" },
-  { key: "newMember", label: "新会员", unit: "count" },
-  { key: "projectCount", label: "项目数", unit: "count" },
-  { key: "income", label: "收入", unit: "amount" },
 ]
 
 export function EfficiencyBoard() {
@@ -124,26 +78,16 @@ export function EfficiencyBoard() {
         <TabsContent value="detail">
           <BreakdownTable
             rows={data?.byMarket ?? []}
-            columns={MARKET_COLUMNS}
-            firstColLabel="市场"
             loading={loading}
             exportFilename={`人效明细_按市场_${label}`}
-            exportSheetName="人效明细_按市场"
             exportView="efficiency-market"
           />
         </TabsContent>
         <TabsContent value="staff-detail">
           <BreakdownTable
             rows={data?.byStaff ?? []}
-            columns={STAFF_DETAIL_COLUMNS}
-            firstColLabel="姓名"
-            textColumns={[
-              { key: "store", label: "门店" },
-              { key: "position", label: "职级" },
-            ]}
             loading={loading}
             exportFilename={`人效明细_按技师_${label}`}
-            exportSheetName="人效明细_按技师"
             exportView="efficiency-staff"
           />
         </TabsContent>
@@ -151,7 +95,6 @@ export function EfficiencyBoard() {
           <RankingBoard
             title="门店排名榜"
             rankings={data?.storeRankings ?? {}}
-            metrics={STORE_RANK_METRICS}
             showMarket
             loading={loading}
             exportFilenamePrefix={`人效_门店排名榜_${label}`}
@@ -162,7 +105,6 @@ export function EfficiencyBoard() {
           <RankingBoard
             title="员工排名榜"
             rankings={data?.staffRankings ?? {}}
-            metrics={STAFF_RANK_METRICS}
             showMarket
             loading={loading}
             exportFilenamePrefix={`人效_员工排名榜_${label}`}

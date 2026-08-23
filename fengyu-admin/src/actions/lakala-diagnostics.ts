@@ -1,284 +1,218 @@
-'use server'
+"use server";
 
-import { createPrivateKey, createPublicKey } from 'node:crypto'
-import { access } from 'node:fs/promises'
-import { sql } from 'drizzle-orm'
-import { db } from '@/db'
-import { getLakalaOnboardingClientMode, verifyOnboardingSm4Key } from '@/lib/lakala-onboarding'
-import { getPrivateUploadRoot } from '@/lib/upload-file'
-import { withPermission } from '@/lib/with-permission'
+import { createPrivateKey } from "crypto";
+import { access, readFile } from "fs/promises";
+import { URL } from "url";
+import { withPermission } from "@/lib/with-permission";
+import {
+  getLakalaBaseUrl,
+  getLakalaOnboardingApiFamily,
+  getLakalaOnboardingClientMode,
+  getLakalaOnboardingEnv,
+  getOnboardingActivityId,
+  getOnboardingSm4Key,
+  getOnboardingUserNo,
+  getOrgCode,
+  verifyOnboardingSm4Key,
+} from "@/lib/lakala-onboarding";
 
-export type LakalaDiagnosticStatus = 'ok' | 'warn' | 'error'
+export type LakalaDiagnosticStatus = "ok" | "warn" | "error";
+
 export type LakalaDiagnosticItem = {
-  key: string
-  label: string
-  status: LakalaDiagnosticStatus
-  value: string
-  detail?: string
-}
+  key: string;
+  label: string;
+  status: LakalaDiagnosticStatus;
+  value: string;
+  detail?: string;
+};
+
 export type LakalaDiagnostics = {
-  generatedAt: string
-  summary: LakalaDiagnosticStatus
-  items: LakalaDiagnosticItem[]
-}
+  generatedAt: string;
+  summary: LakalaDiagnosticStatus;
+  items: LakalaDiagnosticItem[];
+};
 
-function exists(...names: string[]): boolean {
-  return names.some((name) => Boolean(process.env[name]?.trim()))
-}
-
-function configuredItem(key: string, label: string, names: string[], optional = false): LakalaDiagnosticItem {
-  const configured = exists(...names)
+function boolItem(key: string, label: string, exists: boolean, okText = "已配置", missingText = "未配置"): LakalaDiagnosticItem {
   return {
     key,
     label,
-    status: configured ? 'ok' : optional ? 'warn' : 'error',
-    value: configured ? '已配置' : '未配置',
-    detail: names.join(' / '),
-  }
+    status: exists ? "ok" : "error",
+    value: exists ? okText : missingText,
+  };
 }
 
-function safeGateway(envName: 'LAKALA_API_BASE' | 'LAKALA_ONBOARDING_API_BASE'): string {
-  const value = process.env[envName]?.trim() || ''
-  if (!value) return '未配置'
+function envValue(...names: string[]) {
+  for (const name of names) {
+    const value = process.env[name];
+    if (value) return { name, value };
+  }
+  return null;
+}
+
+function safeHost(value: string) {
   try {
-    const url = new URL(value)
-    return `${url.protocol}//${url.host}`
+    const url = new URL(value);
+    return `${url.protocol}//${url.host}`;
   } catch {
-    return '格式异常'
+    return value ? "格式异常" : "未配置";
   }
 }
 
-function paymentSwitchItem(): LakalaDiagnosticItem {
-  const value = process.env.PAYNOTIFY_ENABLED?.trim().toLowerCase()
-  if (value === 'true') {
-    return { key: 'paymentSwitch', label: '支付通知开关', status: 'ok', value: '已启用' }
-  }
-  if (value === 'false') {
+async function checkPrivateKey(): Promise<LakalaDiagnosticItem> {
+  const pem = envValue("LAKALA_ONBOARDING_PRIVATE_KEY_PEM");
+  const path = envValue("LAKALA_ONBOARDING_MERCHANT_PRIVATE_KEY_PATH");
+  try {
+    const key = pem?.value || (path ? await readFile(path.value, "utf8") : "");
+    if (!key) {
+      return { key: "privateKey", label: "商户私钥", status: "error", value: "未配置" };
+    }
+    createPrivateKey(key.replace(/\\n/g, "\n"));
     return {
-      key: 'paymentSwitch',
-      label: '支付通知开关',
-      status: 'warn',
-      value: '已停用',
-      detail: 'PAYNOTIFY_ENABLED=false，拉卡拉支付通知入口不会处理业务请求。',
-    }
-  }
-  return {
-    key: 'paymentSwitch',
-    label: '支付通知开关',
-    status: 'error',
-    value: '未配置或格式错误',
-    detail: 'PAYNOTIFY_ENABLED 仅接受 true / false。',
-  }
-}
-
-function signingKeyItem(
-  key: string,
-  label: string,
-  envName: 'LAKALA_PRIVATE_KEY_PEM' | 'LAKALA_ONBOARDING_PRIVATE_KEY_PEM',
-): LakalaDiagnosticItem {
-  const pem = process.env[envName]?.replace(/\\n/g, '\n') || ''
-  if (!pem) return { key, label, status: 'error', value: '未配置' }
-  try {
-    createPrivateKey(pem)
-    return { key, label, status: 'ok', value: '已配置且可解析' }
-  } catch {
-    return { key, label, status: 'error', value: '已配置但无法解析' }
-  }
-}
-
-function platformCertificateItem(): LakalaDiagnosticItem {
-  const pem = process.env.LAKALA_PLATFORM_CERT_PEM?.replace(/\\n/g, '\n') || ''
-  if (!pem) {
-    return { key: 'paymentPlatformCert', label: '支付平台证书', status: 'error', value: '未配置' }
-  }
-  try {
-    createPublicKey(pem)
-    return {
-      key: 'paymentPlatformCert',
-      label: '支付平台证书',
-      status: 'ok',
-      value: '已配置且可解析',
-    }
-  } catch {
-    return {
-      key: 'paymentPlatformCert',
-      label: '支付平台证书',
-      status: 'error',
-      value: '已配置但无法解析',
-    }
-  }
-}
-
-async function onboardingPrivateKeyItem(): Promise<LakalaDiagnosticItem> {
-  const key = process.env.LAKALA_ONBOARDING_PRIVATE_KEY_PEM?.replace(/\\n/g, '\n') || ''
-  if (!key) return { key: 'onboardingPrivateKey', label: '入网商户私钥', status: 'error', value: '未配置' }
-  try {
-    createPrivateKey(key)
-    return { key: 'onboardingPrivateKey', label: '入网商户私钥', status: 'ok', value: '已配置且可解析' }
-  } catch {
-    return { key: 'onboardingPrivateKey', label: '入网商户私钥', status: 'error', value: '已配置但无法解析' }
-  }
-}
-
-async function paymentDatabaseItem(): Promise<LakalaDiagnosticItem> {
-  try {
-    const [tableRow] = (await db.execute(sql`
-      SELECT to_regclass('public.lakala_merchants') IS NOT NULL AS merchants
-    `)) as unknown as Array<{ merchants: boolean }>
-    if (!tableRow?.merchants) {
-      return { key: 'paymentDatabase', label: '收款商户配置', status: 'error', value: '数据表缺失' }
-    }
-
-    const [row] = (await db.execute(sql`
-      SELECT
-        COUNT(*) FILTER (WHERE enabled) AS enabled_count,
-        COUNT(*) FILTER (
-          WHERE enabled AND (
-            merchant_no IS NULL OR BTRIM(merchant_no) = ''
-            OR term_no IS NULL OR BTRIM(term_no) = ''
-          )
-        ) AS incomplete_count
-      FROM lakala_merchants
-    `)) as unknown as Array<{ enabled_count: string | number; incomplete_count: string | number }>
-    const enabledCount = Number(row?.enabled_count || 0)
-    const incompleteCount = Number(row?.incomplete_count || 0)
-    if (incompleteCount > 0) {
-      return {
-        key: 'paymentDatabase',
-        label: '收款商户配置',
-        status: 'error',
-        value: `${incompleteCount} 个启用商户配置不完整`,
-        detail: '启用的商户必须同时配置商户号和终端号。',
-      }
-    }
-    return {
-      key: 'paymentDatabase',
-      label: '收款商户配置',
-      status: enabledCount > 0 ? 'ok' : 'warn',
-      value: enabledCount > 0 ? `${enabledCount} 个启用商户已就绪` : '暂无启用商户',
-    }
-  } catch {
-    return { key: 'paymentDatabase', label: '收款商户配置', status: 'error', value: '检查失败' }
-  }
-}
-
-async function databaseItem(): Promise<LakalaDiagnosticItem> {
-  try {
-    const [row] = (await db.execute(sql`
-      SELECT
-        to_regclass('public.lakala_onboarding_applications') IS NOT NULL AS applications,
-        to_regclass('public.lakala_onboarding_attachments') IS NOT NULL AS attachments,
-        to_regclass('public.lakala_onboarding_request_logs') IS NOT NULL AS request_logs
-    `)) as unknown as Array<{ applications: boolean; attachments: boolean; request_logs: boolean }>
-    const ready = Boolean(row?.applications && row.attachments && row.request_logs)
-    return {
-      key: 'database',
-      label: '入网数据库表',
-      status: ready ? 'ok' : 'error',
-      value: ready ? '3 张表均已就绪' : '表不完整',
-    }
-  } catch {
-    return { key: 'database', label: '入网数据库表', status: 'error', value: '检查失败' }
-  }
-}
-
-async function privateStorageItem(): Promise<LakalaDiagnosticItem> {
-  try {
-    const root = getPrivateUploadRoot()
-    await access(root)
-    return { key: 'storage', label: '私有附件目录', status: 'ok', value: '已配置且可访问' }
+      key: "privateKey",
+      label: "商户私钥",
+      status: "ok",
+      value: pem ? `${pem.name} 已配置且可解析` : `${path?.name ?? "私钥文件"} 可读取且可解析`,
+    };
   } catch (error) {
     return {
-      key: 'storage',
-      label: '私有附件目录',
-      status: 'error',
-      value: '不可访问',
-      detail: error instanceof Error ? error.message : undefined,
-    }
+      key: "privateKey",
+      label: "商户私钥",
+      status: "error",
+      value: "不可用",
+      detail: error instanceof Error ? error.message : "私钥解析失败",
+    };
   }
 }
 
-function sm4Item(mode: 'real' | 'mock' | 'disabled'): LakalaDiagnosticItem {
+async function checkPlatformCert(): Promise<LakalaDiagnosticItem> {
+  const pem = envValue("LAKALA_ONBOARDING_PLATFORM_CERT_PEM");
+  const path = envValue("LAKALA_ONBOARDING_PLATFORM_CERT_PATH");
+  if (pem) return { key: "platformCert", label: "平台证书", status: "ok", value: `${pem.name} 已配置` };
+  if (!path) return { key: "platformCert", label: "平台证书", status: "warn", value: "未配置", detail: "当前代码提交签名暂未使用平台证书，但真实验签/回调验签时会需要。" };
   try {
-    verifyOnboardingSm4Key()
-    return { key: 'sm4', label: 'SM4 加密密钥', status: 'ok', value: '已配置且格式正确' }
-  } catch {
+    await access(path.value);
+    return { key: "platformCert", label: "平台证书", status: "ok", value: `${path.name} 可读取` };
+  } catch (error) {
     return {
-      key: 'sm4',
-      label: 'SM4 加密密钥',
-      status: mode === 'real' ? 'error' : 'warn',
-      value: '未配置或格式错误',
-      detail: mode === 'real' ? '真实 merchant_encry 调用必须配置。' : 'mock 模式不会使用该密钥。',
-    }
+      key: "platformCert",
+      label: "平台证书",
+      status: "error",
+      value: "证书文件不可读取",
+      detail: error instanceof Error ? error.message : "读取失败",
+    };
   }
 }
 
-export const getLakalaDiagnostics = withPermission(
-  'system:diagnostics',
-  async (): Promise<LakalaDiagnostics> => {
-    let mode: 'real' | 'mock' | 'disabled' = 'disabled'
-    try {
-      mode = getLakalaOnboardingClientMode()
-    } catch {
-      // 由下方调用模式项明确展示非法配置。
-    }
-    const ocrMode = process.env.ALIYUN_OCR_MODE?.trim().toLowerCase() || 'real'
-    const ocrReady = ocrMode === 'mock' || exists('ALIYUN_OCR_ACCESS_KEY_ID', 'ALIYUN_ACCESS_KEY_ID')
-      && exists('ALIYUN_OCR_ACCESS_KEY_SECRET', 'ALIYUN_ACCESS_KEY_SECRET')
-    const paymentGateway = safeGateway('LAKALA_API_BASE')
-    const onboardingGateway = safeGateway('LAKALA_ONBOARDING_API_BASE')
-    const items: LakalaDiagnosticItem[] = [
-      paymentSwitchItem(),
-      {
-        key: 'paymentGateway',
-        label: '支付网关',
-        status: paymentGateway === '未配置' || paymentGateway === '格式异常' ? 'error' : 'ok',
-        value: paymentGateway,
-        detail: '仅展示协议与主机名，不发起真实交易。',
-      },
-      configuredItem('paymentAppId', '支付应用 ID', ['LAKALA_APPID']),
-      configuredItem('paymentSerialNo', '支付证书序列号', ['LAKALA_SERIAL_NO']),
-      signingKeyItem('paymentPrivateKey', '支付签名私钥', 'LAKALA_PRIVATE_KEY_PEM'),
-      platformCertificateItem(),
-      configuredItem('paymentNotifyUrl', '支付通知地址', ['LAKALA_NOTIFY_URL']),
-      configuredItem('paymentIpWhitelist', '回调 IP 白名单', ['LAKALA_CALLBACK_IP_WHITELIST']),
-      await paymentDatabaseItem(),
-      {
-        key: 'clientMode',
-        label: '入网调用模式',
-        status: mode === 'real' ? 'ok' : mode === 'mock' ? 'warn' : 'error',
-        value: mode,
-        detail: mode === 'mock' ? '不会向拉卡拉创建真实商户或合同。' : undefined,
-      },
-      {
-        key: 'gateway',
-        label: '入网网关',
-        status: onboardingGateway === '未配置' || onboardingGateway === '格式异常' ? 'error' : 'ok',
-        value: onboardingGateway,
-        detail: '仅展示协议与主机名。',
-      },
-      configuredItem('appId', '入网应用 ID', ['LAKALA_ONBOARDING_APPID']),
-      configuredItem('serialNo', '入网证书序列号', ['LAKALA_ONBOARDING_SERIAL_NO']),
-      configuredItem('platformCert', '拉卡拉平台证书', ['LAKALA_ONBOARDING_PLATFORM_CERT_PEM']),
-      configuredItem('orgCode', '入网机构号', ['LAKALA_ONBOARDING_ORG_CODE']),
-      configuredItem('userNo', '入网用户号', ['LAKALA_ONBOARDING_USER_NO']),
-      configuredItem('activityId', '入网活动 ID', ['LAKALA_ONBOARDING_ACTIVITY_ID']),
-      configuredItem('callback', '电子合同回调地址', ['LAKALA_ECONTRACT_CALLBACK_URL']),
-      await onboardingPrivateKeyItem(),
-      sm4Item(mode),
-      {
-        key: 'ocr',
-        label: '阿里云 OCR',
-        status: ocrReady ? (ocrMode === 'mock' ? 'warn' : 'ok') : 'error',
-        value: ocrReady ? `${ocrMode} 模式已就绪` : '凭据未配置',
-        detail: '不展示 AccessKey。',
-      },
-      await databaseItem(),
-      await privateStorageItem(),
-    ]
-    const summary: LakalaDiagnosticStatus = items.some((item) => item.status === 'error')
-      ? 'error'
-      : items.some((item) => item.status === 'warn') ? 'warn' : 'ok'
-    return { generatedAt: new Date().toISOString(), summary, items }
-  },
-)
+async function checkGatewayReachable(baseUrl: string): Promise<LakalaDiagnosticItem> {
+  try {
+    const url = new URL(baseUrl);
+    const response = await fetch(`${url.protocol}//${url.host}`, {
+      method: "HEAD",
+      signal: AbortSignal.timeout(3500),
+    });
+    return {
+      key: "gatewayReachable",
+      label: "网关连通性",
+      status: "ok",
+      value: `HTTP ${response.status}`,
+      detail: "能连到网关域名；业务接口是否通过仍以 tkbs 文件上传/进件返回为准。",
+    };
+  } catch (error) {
+    return {
+      key: "gatewayReachable",
+      label: "网关连通性",
+      status: "warn",
+      value: "未确认",
+      detail: error instanceof Error ? error.message : "访问网关失败；可能是网络、DNS、白名单或网关不支持 HEAD。",
+    };
+  }
+}
+
+function checkSm4Key(): LakalaDiagnosticItem {
+  try {
+    verifyOnboardingSm4Key();
+    const source = envValue("LAKALA_ONBOARDING_SM4_KEY", "LAKALA_ONBOARDING_APP_SECRET");
+    return { key: "sm4Key", label: "SM4 加密密钥", status: "ok", value: `${source?.name ?? "SM4 配置"} 已配置且可用` };
+  } catch (error) {
+    return {
+      key: "sm4Key",
+      label: "SM4 加密密钥",
+      status: "error",
+      value: getOnboardingSm4Key() ? "不可用" : "未配置",
+      detail: error instanceof Error ? error.message : "merchant_encry 需要 LAKALA_ONBOARDING_SM4_KEY 或 LAKALA_ONBOARDING_APP_SECRET",
+    };
+  }
+}
+
+export const getLakalaDiagnostics = withPermission("system:config", async (): Promise<LakalaDiagnostics> => {
+  const mode = getLakalaOnboardingClientMode();
+  const env = getLakalaOnboardingEnv();
+  const baseUrl = getLakalaBaseUrl();
+  const family = getLakalaOnboardingApiFamily();
+  const callback = envValue("LAKALA_ONBOARDING_CALLBACK_URL");
+  const appId = envValue("LAKALA_ONBOARDING_APP_ID", "LAKALA_ONBOARDING_APPID");
+  const serialNo = envValue(
+    "LAKALA_ONBOARDING_MERCHANT_CERT_SERIAL_NO",
+    "LAKALA_ONBOARDING_SERIAL_NO",
+  );
+
+  const items: LakalaDiagnosticItem[] = [
+    {
+      key: "apiFamily",
+      label: "接口体系",
+      status: family === "tkbs" ? "ok" : "warn",
+      value: family,
+      detail: family === "tkbs" ? "后台入网使用拓客商服 API，不使用支付配置。" : "当前仍为旧 mms 接口，仅兼容历史测试。",
+    },
+    {
+      key: "clientMode",
+      label: "调用模式",
+      status: mode === "real" ? "ok" : "warn",
+      value: mode,
+      detail: mode === "real"
+        ? "后台入网会真实请求拉卡拉接口。"
+        : "后台入网当前不会请求拉卡拉，只会走本地 mock。",
+    },
+    {
+      key: "environment",
+      label: "拉卡拉环境",
+      status: env === "test" ? "ok" : "warn",
+      value: env,
+      detail: env === "test" ? "后台入网当前指向测试环境。" : "后台入网当前指向生产环境，提交前请谨慎确认。",
+    },
+    {
+      key: "baseUrl",
+      label: "网关地址",
+      status: baseUrl ? "ok" : "error",
+      value: safeHost(baseUrl),
+      detail: "仅显示协议和域名，不展示完整敏感参数。",
+    },
+    {
+      key: "orgCode",
+      label: "机构号",
+      status: getOrgCode() ? "ok" : "error",
+      value: getOrgCode() ? "LAKALA_ONBOARDING_ORG_CODE 已配置" : "未配置",
+    },
+    boolItem("appId", "应用 ID", Boolean(appId), appId ? `${appId.name} 已配置` : "已配置"),
+    boolItem("serialNo", "商户证书序列号", Boolean(serialNo), serialNo ? `${serialNo.name} 已配置` : "已配置"),
+    boolItem("userNo", "归属用户 user_no", Boolean(getOnboardingUserNo()), getOnboardingUserNo() ? "LAKALA_ONBOARDING_USER_NO 已配置" : "已配置"),
+    boolItem("activityId", "活动 ID", Boolean(getOnboardingActivityId()), getOnboardingActivityId() ? "LAKALA_ONBOARDING_ACTIVITY_ID 已配置" : "已配置"),
+    boolItem("callback", "回调地址", Boolean(callback), callback ? `${callback.name} 已配置` : "已配置"),
+    await checkPrivateKey(),
+    await checkPlatformCert(),
+    checkSm4Key(),
+    await checkGatewayReachable(baseUrl),
+  ];
+
+  const summary: LakalaDiagnosticStatus = items.some((item) => item.status === "error")
+    ? "error"
+    : items.some((item) => item.status === "warn")
+      ? "warn"
+      : "ok";
+
+  return {
+    generatedAt: new Date().toISOString(),
+    summary,
+    items,
+  };
+});

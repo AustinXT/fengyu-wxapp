@@ -47,9 +47,16 @@ admin 远程部署用 `docker/docker-compose.remote.yml` override。`deploy-admi
 `envs/<env>.env` 生成仅含 CloudBase envId/CDN 的远程运行时覆盖文件，禁止手工把另一环境的
 存储值写死到 compose。
 
-管理后台右上角的「经营分析」入口由 `ANALYST_PUBLIC_ORIGIN` 按环境构建注入：
-`dev.env` 与 `prod.env` 必须分别填写对应 analyst 地址，不能交叉复用。缺少生产配置时入口会隐藏，
-避免误跳到另一环境；本地 admin 开发回退到 `http://localhost:3100`。
+拉卡拉门店入网分支 `feat/lakala-payment-migration` 的测试部署会自动切换到
+`101.34.242.103`（SSH 别名 `sqlserver101`）：
+
+```bash
+.claude/skills/remote-deploy/deploy-admin.sh dev
+```
+
+该命令不上传或覆盖远程 `.env`、证书、私钥、SM4Key、OCR 密钥和门店附件；它只从目标服务器
+的现有 `.env` 读取构建所需的公钥及非敏感存储标识，并在部署前检查
+`LAKALA_ONBOARDING_*` 配置。其他分支执行相同的 `dev` 命令仍指向 `ali-demo`，`prod` 仍需显式使用 `prod`。
 
 ## 小程序自适应（不需要渲染）
 

@@ -7,7 +7,7 @@ description: |
   "上线 admin"、"服务器更新一下"、"发布到远程"时激活。
 disable-model-invocation: true
 user-invocable: true
-argument-hint: '[admin|analyst]'
+argument-hint: '[admin]'
 metadata:
   title: 远程部署（本地构建）
   description_zh: 本地 docker build → save/load → compose up
@@ -21,17 +21,16 @@ metadata:
 
 ```bash
 ./deploy-admin.sh <dev|prod> [ssh-host] [remote-dir]
-./deploy-analyst.sh <dev|prod> [ssh-host] [remote-dir] [public-host]
 ```
 
-第一个参数 `dev`/`prod` 决定目标环境：SSH host 自动路由（dev→`ali-demo` 测试 / prod→`fengyu-prod` 生产），admin 与 analyst 容器都连对应远程 PG（dev→47.113.202.7 / prod→118.178.196.26，均 5433/fengyu_wxapp）。`[ssh-host]`/`[remote-dir]` 可显式覆盖（默认远程目录 dev=`/root/proj.xt.com/fengyu-wxapp/docker`，prod=`/www/wwwroot/fengyu-admin/docker`）。analyst 会从 `envs/<env>.env` 读取必填的 `ANALYST_PUBLIC_ORIGIN`，并在部署后核验容器值；prod 有二次确认 + 生产库迁移预检，dev 无。
+第一个参数决定环境：`dev` 默认部署到 `ali-demo`，`prod` 部署到 `fengyu-prod`。但当当前 Git 分支为 `feat/lakala-payment-migration` 时，执行 `deploy-admin.sh dev` 会自动改为 `sqlserver101`（`101.34.242.103`）和 `/www/wwwroot/fengyu-admin/docker`，从而与同事的 `ali-demo` 测试环境隔离。该分支部署只读取 101 服务器现有 `.env`，不会同步任何密钥或证书。`[ssh-host]`/`[remote-dir]` 可显式覆盖。prod 有二次确认 + 生产库迁移预检。
 
 ## 部署流程
 
-1. **本地 docker build** — admin 使用 `docker/Dockerfile.admin`；analyst 使用 `docker/Dockerfile.analyst`
+1. **本地 docker build** — 使用 `docker/Dockerfile.admin` 多阶段构建（bun install → bun build → node:18-alpine runner）
 2. **镜像传输** — `docker save | gzip | ssh docker load`（管道传输不落盘）
-3. **远程启动** — `docker compose up -d admin` 或 `docker compose up -d analyst`
-4. **健康检查** — admin curl localhost:3000；analyst curl localhost:3001
+3. **远程启动** — `docker compose up -d admin`
+4. **健康检查** — curl localhost:3000
 
 ## 前置条件
 

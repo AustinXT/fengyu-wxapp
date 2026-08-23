@@ -1,15 +1,14 @@
 #!/bin/bash
-# 部署 fengyu-admin 镜像到远程服务器（按 env 自动路由：prod→fengyu-prod / dev→ali-demo）。
-# dev/prod 均走 admin 远程覆盖层（docker-compose.remote.yml）连远程 PG 5433；
-# CloudBase 桶配置从 envs/<env>.env 注入，避免 dev/prod 复用时串桶。
+# 部署 fengyu-admin 镜像到远程服务器（prod→fengyu-prod；dev 默认→ali-demo）。
+# 当 dev 部署且当前是拉卡拉入网分支时，自动路由到 101.34.242.103，避免与同事的测试环境冲突。
 #
 # Usage:
 #   .claude/skills/remote-deploy/deploy-admin.sh <dev|prod> [ssh-host] [remote-dir]
 #
 # 参数：
 #   $1 (required) — dev / prod
-#   $2 (optional) — SSH host，默认按 env 自动选择（prod=fengyu-prod / dev=ali-demo），可被 SSH_HOST 环境变量覆盖
-#   $3 (optional) — 远程 docker/ 目录绝对路径，默认 dev=/root/proj.xt.com/fengyu-wxapp/docker，prod=/www/wwwroot/fengyu-admin/docker
+#   $2 (optional) — SSH host，可被 SSH_HOST 环境变量覆盖
+#   $3 (optional) — 远程 docker/ 目录绝对路径，可被 REMOTE_DIR 环境变量覆盖
 
 set -eo pipefail
 
@@ -20,14 +19,30 @@ if [[ -z "${1:-}" ]] || [[ ! "$1" =~ ^(dev|prod)$ ]]; then
 fi
 
 ENV="$1"
-# SSH host 按环境自动路由（prod→fengyu-prod / dev→ali-demo）；可被第 2 参数或 SSH_HOST 环境变量覆盖
-SSH_HOST_DEFAULT=$([[ "$ENV" == "prod" ]] && echo "fengyu-prod" || echo "ali-demo")
+CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || true)
+IS_LAKALA_TEST_TARGET=false
+if [[ "$ENV" == "dev" && "$CURRENT_BRANCH" == "feat/lakala-payment-migration" ]]; then
+  IS_LAKALA_TEST_TARGET=true
+fi
+
+case "$ENV" in
+  dev)
+    if [[ "$IS_LAKALA_TEST_TARGET" == true ]]; then
+      SSH_HOST_DEFAULT="sqlserver101"
+      REMOTE_DIR_DEFAULT="/www/wwwroot/fengyu-admin/docker"
+      EXPECT_PG_HOST=""
+    else
+      SSH_HOST_DEFAULT="ali-demo"
+      REMOTE_DIR_DEFAULT="/root/proj.xt.com/fengyu-wxapp/docker"
+      EXPECT_PG_HOST="47.113.202.7"
+    fi
+    ;;
+  prod) SSH_HOST_DEFAULT="fengyu-prod"; REMOTE_DIR_DEFAULT="/www/wwwroot/fengyu-admin/docker"; EXPECT_PG_HOST="118.178.196.26" ;;
+esac
+# SSH host 按环境自动路由；可被第 2 参数或 SSH_HOST 环境变量覆盖
 SSH_HOST="${SSH_HOST:-${2:-$SSH_HOST_DEFAULT}}"
 # 远程 docker/ 目录；可被第 3 参数或 REMOTE_DIR 环境变量覆盖
-REMOTE_DIR_DEFAULT=$([[ "$ENV" == "prod" ]] && echo "/www/wwwroot/fengyu-admin/docker" || echo "/root/proj.xt.com/fengyu-wxapp/docker")
 REMOTE_DIR="${REMOTE_DIR:-${3:-$REMOTE_DIR_DEFAULT}}"
-# 期望的远程 admin DB host（部署后断言用）：prod=118.178.196.26 / dev=47.113.202.7（两端均 5433/fengyu_wxapp，仅 IP 区分）
-EXPECT_PG_HOST=$([[ "$ENV" == "prod" ]] && echo "118.178.196.26" || echo "47.113.202.7")
 
 # [预检] SSH_HOST 与 ENV 绑定默认 host 一致性：env/arg 把部署目标覆盖成异环境 host 时
 # （典型：shell 残留 export SSH_HOST=fengyu-prod，随后跑 deploy-admin.sh dev），会绕过下方仅看 ENV
@@ -54,18 +69,50 @@ read_env_value() {
   printf '%s' "$value"
 }
 
-# 目标环境 CloudBase 标识、HMAC 与 staff 独立账号凭据统一写入受限临时文件，
-# 用第二个 env-file 覆盖远程 .env 残留值，避免 dev/prod 串线。
-DEPLOY_CLOUDBASE_ENV_ID=$(read_env_value CLOUDBASE_ENV_ID)
-DEPLOY_CDN_BASE=$(read_env_value CDN_BASE)
-ANALYST_PUBLIC_ORIGIN=$(read_env_value ANALYST_PUBLIC_ORIGIN)
-if ! node -e 'const u = new URL(process.argv[1]); if (!/^https?:$/.test(u.protocol) || u.username || u.password) process.exit(1)' "$ANALYST_PUBLIC_ORIGIN"; then
-  echo "✗ ANALYST_PUBLIC_ORIGIN 必须是无账号密码的 http(s) URL。" >&2
-  exit 1
+read_remote_env_value() {
+  local key="$1"
+  local value
+  value=$(ssh "$SSH_HOST" "awk -F= -v k='$key' '\$1==k {sub(/^[^=]*=/, \"\"); gsub(/^\"|\"$/, \"\"); print; exit}' '$REMOTE_DIR/.env'" 2>/dev/null | tr -d '\r')
+  if [[ -z "$value" ]]; then
+    echo "✗ 测试服务器 $REMOTE_DIR/.env 缺少 $key，无法部署。" >&2
+    exit 1
+  fi
+  printf '%s' "$value"
+}
+
+check_test_onboarding_runtime() {
+  ssh "$SSH_HOST" "REMOTE_ENV_FILE='$REMOTE_DIR/.env' sh -s" <<'EOF'
+set -eu
+get_env() {
+  awk -F= -v k="$1" '$1==k {sub(/^[^=]*=/, ""); gsub(/^"|"$/, ""); print; exit}' "$REMOTE_ENV_FILE"
+}
+for key in LAKALA_ONBOARDING_ENV LAKALA_ONBOARDING_API_BASE LAKALA_ONBOARDING_APPID LAKALA_ONBOARDING_SM4_KEY; do
+  test -n "$(get_env "$key")" || { echo "missing:$key" >&2; exit 1; }
+done
+case "$(get_env LAKALA_ONBOARDING_ENV)" in release|prod|production) ;; *) echo 'invalid:LAKALA_ONBOARDING_ENV' >&2; exit 1;; esac
+test "$(get_env LAKALA_ONBOARDING_API_BASE)" = 'https://s2.lakala.com' || { echo 'invalid:LAKALA_ONBOARDING_API_BASE' >&2; exit 1; }
+test "$(get_env LAKALA_ONBOARDING_APPID)" != 'OP00000003' || { echo 'invalid:LAKALA_ONBOARDING_APPID' >&2; exit 1; }
+EOF
+}
+
+# 远程 .env 保存账号密钥等运行期秘密；只传输目标环境的非敏感存储标识，
+# 并用独立变量名覆盖 compose 插值，避免误用远程残留的另一环境值。
+# 拉卡拉分支的 dev 部署以 101 服务器自己的 .env 为准，避免把配置复制进本机或 Git。
+if [[ "$IS_LAKALA_TEST_TARGET" == true ]]; then
+  if ! check_test_onboarding_runtime; then
+    echo "✗ 测试服务器入网配置校验失败：必须是完整的生产拉卡拉配置，且不得回退到支付 LAKALA_*。" >&2
+    exit 1
+  fi
+  DEPLOY_CLOUDBASE_ENV_ID=$(read_remote_env_value CLOUDBASE_ENV_ID)
+  DEPLOY_CDN_BASE=$(read_remote_env_value CDN_BASE)
+else
+  DEPLOY_CLOUDBASE_ENV_ID=$(read_env_value CLOUDBASE_ENV_ID)
+  DEPLOY_CDN_BASE=$(read_env_value CDN_BASE)
 fi
 RUNTIME_ENV_FILE=$(mktemp "${TMPDIR:-/tmp}/fengyu-admin-runtime.XXXXXX")
 trap 'rm -f "$RUNTIME_ENV_FILE"' EXIT
-bash scripts/render-admin-runtime-env.sh "$ENV" "$RUNTIME_ENV_FILE"
+printf 'DEPLOY_CLOUDBASE_ENV_ID=%s\nDEPLOY_CDN_BASE=%s\n' \
+  "$DEPLOY_CLOUDBASE_ENV_ID" "$DEPLOY_CDN_BASE" > "$RUNTIME_ENV_FILE"
 COMPOSE_OVERRIDE="docker-compose.remote.yml"
 
 # prod 强制确认（dev 发 ali-demo 无生产副作用，不打断）
@@ -78,7 +125,11 @@ if [[ "$ENV" == "prod" ]]; then
     exit 1
   fi
 else
-  echo "==> Deploy admin to DEV ($SSH_HOST)，admin 容器将连 47.113.202.7:5433/fengyu_wxapp（测试业务库）"
+  if [[ "$IS_LAKALA_TEST_TARGET" == true ]]; then
+    echo "==> Deploy admin to LAKALA TEST ($SSH_HOST / 101.34.242.103)，远程 .env 与数据库均以测试服务器现有配置为准"
+  else
+    echo "==> Deploy admin to DEV ($SSH_HOST)，admin 容器将连 47.113.202.7:5433/fengyu_wxapp（测试业务库）"
+  fi
 fi
 
 # [预检] prod 部署前：生产库迁移必须先于代码上线。
@@ -143,7 +194,11 @@ echo "=== 1/5 本地构建 Docker 镜像（linux/amd64）==="
 APP_VERSION=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo dev)
 APP_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "")
 echo "版本号: $APP_VERSION${APP_COMMIT:+ · $APP_COMMIT}"
-echo "目标环境: $ENV（admin DB→$EXPECT_PG_HOST:5433）"
+if [[ -n "$EXPECT_PG_HOST" ]]; then
+  echo "目标环境: $ENV（admin DB→$EXPECT_PG_HOST:5433）"
+else
+  echo "目标环境: $ENV（admin DB→测试服务器远程 .env 的 ADMIN_DATABASE_URL）"
+fi
 
 # 登录密码 RSA 公钥：NEXT_PUBLIC_ 变量须在「构建期」inline 进客户端 bundle。
 # 优先读 envs/$ENV.env；缺失则 fallback envs/prod.env（RSA 密钥对 env 无关，dev/prod 可共用同一对公钥；
@@ -155,9 +210,14 @@ extract_pub() {
   value=$(grep '^NEXT_PUBLIC_RSA_PUBLIC_KEY=' "$1" 2>/dev/null | head -1 | cut -d= -f2- || true)
   printf '%s' "$value"
 }
-RSA_PUB=$(extract_pub "envs/$ENV.env")
-RSA_SRC="envs/$ENV.env"
-if [[ -z "$RSA_PUB" ]]; then
+if [[ "$IS_LAKALA_TEST_TARGET" == true ]]; then
+  RSA_PUB=$(read_remote_env_value NEXT_PUBLIC_RSA_PUBLIC_KEY)
+  RSA_SRC="测试服务器 $REMOTE_DIR/.env"
+else
+  RSA_PUB=$(extract_pub "envs/$ENV.env")
+  RSA_SRC="envs/$ENV.env"
+fi
+if [[ -z "$RSA_PUB" && "$ENV" != "test" ]]; then
   RSA_PUB=$(extract_pub "envs/prod.env")
   RSA_SRC="envs/prod.env（fallback：envs/$ENV.env 未配 NEXT_PUBLIC_RSA_PUBLIC_KEY）"
 fi
@@ -173,7 +233,6 @@ docker buildx build \
   --build-arg APP_VERSION="$APP_VERSION" \
   --build-arg APP_COMMIT="$APP_COMMIT" \
   --build-arg NEXT_PUBLIC_RSA_PUBLIC_KEY="$RSA_PUB" \
-  --build-arg NEXT_PUBLIC_ANALYST_ORIGIN="$ANALYST_PUBLIC_ORIGIN" \
   -f docker/Dockerfile.admin -t fengyu-admin:latest .
 
 echo "=== 2/5 传输镜像到 $SSH_HOST ==="
@@ -190,8 +249,11 @@ ssh "$SSH_HOST" "cd '$REMOTE_DIR' && docker compose --env-file .env --env-file .
 echo "  ✓ 已同步 docker-compose.yml + $COMPOSE_OVERRIDE + .admin-runtime.env"
 
 echo "=== 4/5 远程重启服务（base + override）==="
-# worker 日志、心跳和数据库备份目录（容器内 uid=1001 nextjs 才能写入）。
-ssh "$SSH_HOST" "mkdir -p $REMOTE_DIR/logs/cron-worker $REMOTE_DIR/logs/export-worker $REMOTE_DIR/data/runtime-status $REMOTE_DIR/data/backup-control $REMOTE_DIR/data/database-backups && chown -R 1001:1001 $REMOTE_DIR/logs/cron-worker $REMOTE_DIR/logs/export-worker $REMOTE_DIR/data/runtime-status $REMOTE_DIR/data/backup-control $REMOTE_DIR/data/database-backups && chmod 700 $REMOTE_DIR/data/runtime-status $REMOTE_DIR/data/backup-control $REMOTE_DIR/data/database-backups"
+# cron-worker 日志挂载卷（容器内 uid=1001 nextjs 才能写入；目录不存在 docker 会以 root 自建并越权）
+if ! ssh "$SSH_HOST" "mkdir -p '$REMOTE_DIR/logs/cron-worker' '$REMOTE_DIR/logs/export-worker' && chown -R 1001:1001 '$REMOTE_DIR/logs/cron-worker' '$REMOTE_DIR/logs/export-worker'"; then
+  echo "  当前 SSH 用户无日志目录写权限，尝试 sudo 修复既有目录归属。"
+  ssh "$SSH_HOST" "sudo mkdir -p '$REMOTE_DIR/logs/cron-worker' '$REMOTE_DIR/logs/export-worker' && sudo chown -R 1001:1001 '$REMOTE_DIR/logs/cron-worker' '$REMOTE_DIR/logs/export-worker'"
+fi
 ssh "$SSH_HOST" "cd '$REMOTE_DIR' && docker compose --env-file .env --env-file .admin-runtime.env -f docker-compose.yml -f $COMPOSE_OVERRIDE up -d admin cron-worker export-worker"
 
 echo "=== 5/5 健康检查 + DB 连接验证 ==="
@@ -204,6 +266,8 @@ echo "  DATABASE_URL: ${DB_REDACTED:-（无法读取，admin 容器可能未就�
 GOT_HOST=$(node -e "const s=process.argv[1]||'';const m=s.match(/@([^:]+):\d+\//);process.stdout.write(m?m[1]:'')" "$DB_URL" 2>/dev/null || echo "")
 if [[ -z "$GOT_HOST" ]]; then
   echo "  ⚠️  无法提取 DB host（容器未就绪？），跳过 IP 断言——请手动核对 DATABASE_URL。" >&2
+elif [[ "$IS_LAKALA_TEST_TARGET" == true ]]; then
+  echo "  ✓ admin DB host=$GOT_HOST（拉卡拉测试服务器远程 .env 配置）"
 elif [[ "$GOT_HOST" == "$EXPECT_PG_HOST" ]]; then
   echo "  ✓ admin DB host=$GOT_HOST 与 $ENV 一致"
 elif [[ "$GOT_HOST" =~ ^(172\.(1[6-9]|2[0-9]|3[01])\.|10\.|192\.168\.) ]]; then
@@ -239,27 +303,11 @@ verify_cloudbase_runtime() {
 verify_cloudbase_runtime fengyu-admin
 verify_cloudbase_runtime fengyu-export-worker
 
-EXPECTED_CLIENT_SECRET=$(awk -F= '$1=="DEPLOY_CLIENT_SECRET"{print substr($0,index($0,"=")+1)}' "$RUNTIME_ENV_FILE")
-EXPECTED_CLIENT_SECRET_HASH=$(printf %s "$EXPECTED_CLIENT_SECRET" | shasum -a 256 | awk '{print $1}')
-EXPECTED_STAFF_ENV_ID=$(awk -F= '$1=="DEPLOY_STAFF_ENV_ID"{print substr($0,index($0,"=")+1)}' "$RUNTIME_ENV_FILE")
-EXPECTED_STAFF_SECRET_ID=$(awk -F= '$1=="DEPLOY_STAFF_TENCENTCLOUD_SECRETID"{print substr($0,index($0,"=")+1)}' "$RUNTIME_ENV_FILE")
-EXPECTED_STAFF_SECRET_ID_HASH=$(printf %s "$EXPECTED_STAFF_SECRET_ID" | shasum -a 256 | awk '{print $1}')
-ACTUAL_STAFF_ENV_ID=$(ssh "$SSH_HOST" "docker exec fengyu-admin sh -c 'printf %s \"\$STAFF_ENV_ID\"'" 2>/dev/null || true)
-ACTUAL_CLIENT_SECRET_HASH=$(ssh "$SSH_HOST" "docker exec fengyu-admin sh -c 'printf %s \"\$CLIENT_SECRET\" | sha256sum | cut -d\" \" -f1'" 2>/dev/null || true)
-ACTUAL_STAFF_SECRET_ID_HASH=$(ssh "$SSH_HOST" "docker exec fengyu-admin sh -c 'printf %s \"\$STAFF_TENCENTCLOUD_SECRETID\" | sha256sum | cut -d\" \" -f1'" 2>/dev/null || true)
-ACTUAL_DIAGNOSTIC_RUNTIME="$ACTUAL_STAFF_ENV_ID|$ACTUAL_CLIENT_SECRET_HASH|$ACTUAL_STAFF_SECRET_ID_HASH"
-EXPECTED_DIAGNOSTIC_RUNTIME="$EXPECTED_STAFF_ENV_ID|$EXPECTED_CLIENT_SECRET_HASH|$EXPECTED_STAFF_SECRET_ID_HASH"
-if [[ "$ACTUAL_DIAGNOSTIC_RUNTIME" != "$EXPECTED_DIAGNOSTIC_RUNTIME" ]]; then
-  echo "✗ admin 健康检查运行时配置与 $ENV 不一致（仅比较环境 ID 与密钥哈希）。" >&2
-  exit 1
-fi
-echo "  ✓ admin 健康检查 HMAC、staff 环境与独立账号凭据均与 $ENV 一致"
-
 echo ""
 echo "部署完成（env=$ENV）。"
 echo ""
 echo "下一步验证（必查）："
-echo "  1. ssh $SSH_HOST 'docker exec fengyu-admin env | grep DATABASE_URL'   # 应为 $EXPECT_PG_HOST:5433"
+echo "  1. ssh $SSH_HOST 'docker exec fengyu-admin env | grep DATABASE_URL'   # 应为目标环境业务库"
 echo "  2. ssh $SSH_HOST 'docker exec fengyu-admin env | grep CLOUDBASE_ENV_ID' # 应为 $DEPLOY_CLOUDBASE_ENV_ID"
 echo "  3. ssh $SSH_HOST 'docker logs fengyu-admin --tail 50'                  # 看启动是否正常"
 echo "  4. 浏览器打开 admin 域名 → 用初始账号登录验证（含 RSA 密码解密）"

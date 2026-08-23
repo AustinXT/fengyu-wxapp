@@ -105,6 +105,70 @@ async function caseProductMarketScopeByBoundStore() {
   await expectProductVisible(true, '全部市场')
 }
 
+async function caseGlobalProductVisibleWithoutBoundStore() {
+  await createTestSku({
+    skuId: TEST_SKU_NORMAL_ID,
+    productId: TEST_PRODUCT_ID,
+    productMarketScope: null,
+    skuMarketScope: `${NS}_OTHER_MARKET`,
+  })
+
+  async function getPublicSpuList() {
+    const res = await invokePublic('product.spuList', { categoryId: TEST_MALL_CATEGORY_ID })
+    if (res.code !== 0) throw new Error(`spuList: expect code=0, got ${res.code}: ${res.message}`)
+    return res.data?.spuList || []
+  }
+
+  let list = await getPublicSpuList()
+  let hit = list.find(p => p.product_id === TEST_PRODUCT_ID)
+  if (!hit || !hit.skuList?.some(s => s.sku_id === TEST_SKU_NORMAL_ID)) {
+    throw new Error('全市场 SPU 应向未绑店用户展示指定市场 SKU')
+  }
+
+  const categories = await invokePublic('product.categories', {})
+  if (categories.code !== 0) throw new Error(`categories: expect code=0, got ${categories.code}: ${categories.message}`)
+  if (!(categories.data?.categories || []).some(c => c.category_id === TEST_MALL_CATEGORY_ID)) {
+    throw new Error('全市场 SPU 应让未绑店用户看到所属分类')
+  }
+
+  const search = await invokePublic('product.search', { keyword: '测试商品' })
+  if (search.code !== 0) throw new Error(`search: expect code=0, got ${search.code}: ${search.message}`)
+  if (!(search.data?.spuList || []).some(p => p.product_id === TEST_PRODUCT_ID)) {
+    throw new Error('全市场 SPU 应可被未绑店用户搜索到')
+  }
+
+  const detail = await invokePublic('product.spuDetail', { productId: TEST_PRODUCT_ID })
+  if (detail.code !== 0) throw new Error(`spuDetail: expect code=0, got ${detail.code}: ${detail.message}`)
+  if (!(detail.data?.spu?.skuList || []).some(s => s.sku_id === TEST_SKU_NORMAL_ID)) {
+    throw new Error('全市场 SPU 详情应包含指定市场 SKU')
+  }
+
+  // 直接下单的结算页以 skuDetail 重取权威价格；该接口必须与 SPU 详情使用同一未绑店可见性。
+  const skuDetail = await invokePublic('product.skuDetail', {
+    skuId: TEST_SKU_NORMAL_ID,
+    productId: TEST_PRODUCT_ID,
+  })
+  if (skuDetail.code !== 0 || skuDetail.data?.sku?.sku_id !== TEST_SKU_NORMAL_ID) {
+    throw new Error(`未绑店用户应能加载指定市场 SKU 的结算价格: ${skuDetail.message || 'SKU 缺失'}`)
+  }
+
+  await pgQuery(`UPDATE product_skus SET market_scope = '' WHERE sku_id = $1`, [TEST_SKU_NORMAL_ID])
+  list = await getPublicSpuList()
+  if (list.some(p => p.product_id === TEST_PRODUCT_ID)) {
+    throw new Error('空字符串 SKU 范围应继续对未绑店用户隐藏商品')
+  }
+
+  await pgQuery(`UPDATE product_skus SET market_scope = NULL WHERE sku_id = $1`, [TEST_SKU_NORMAL_ID])
+  await pgQuery(`UPDATE products SET market_scope = $1 WHERE product_id = $2`, [
+    `${NS}_OTHER_MARKET`,
+    TEST_PRODUCT_ID,
+  ])
+  list = await getPublicSpuList()
+  if (list.some(p => p.product_id === TEST_PRODUCT_ID)) {
+    throw new Error('指定市场 SPU 不应向未绑店用户展示')
+  }
+}
+
 async function caseShopInit() {
   await ensureTestCategories()
   await createTestSku({ skuId: TEST_SKU_NORMAL_ID, productId: TEST_PRODUCT_ID })
@@ -176,6 +240,7 @@ const CASES = [
   ['spuList by categoryId scoped to that category', caseSpuListByCategory],
   ['spuList for unknown categoryId returns empty', caseSpuListEmptyCategory],
   ['spuList 按商城商品 market_scope 过滤绑定门店市场', caseProductMarketScopeByBoundStore],
+  ['未绑店用户可浏览全市场 SPU 及其指定市场 SKU', caseGlobalProductVisibleWithoutBoundStore],
   ['shopInit returns { groups, categories, spuList }', caseShopInit],
   ['hotList 排除 disabled SKU 的 product', caseHotListEmptySkuMarketScope],
   ['search by name 命中商品（跨分类·不传 categoryId）', caseSearchByName],

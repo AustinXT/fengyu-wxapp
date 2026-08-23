@@ -6091,7 +6091,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     expect(rows[2].productName).toBe('储值卡充值')
   })
 
-  it('普通转换负差额：导出独立储值金入账行，转出+转入+入账金额可勾稽为0', async () => {
+  it('普通转换负差额：储值金入账行归入储值卡通道，金额列逐行勾稽', async () => {
     const orderBase = {
       marketName: '九江', storeName: '南昌店', saleOrderId: 'FY-CONV-CREDIT', saleOrderType: '转换单',
       documentType: '售后', status: '已支付', custName: '李女士', custPhone: '13800000000',
@@ -6104,17 +6104,17 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       createdAt: new Date('2026-08-17T01:00:00.000Z'),
     }
     const outRow = {
-      ...orderBase, sourceId: '01-out', totalAmount: '-1000.00', received: '-1000.00',
+      ...orderBase, sourceId: '01-out', totalAmount: '-300.00', cashAmount: '-300.00', received: '-300.00',
       productType: '疗程卡', productName: '旧卡', salesCategory: '自销自耗', sessionCount: 10,
       paidUnusedSessions: 0, unitRealPrice: '100.00', categoryL1: null, categoryL2: null,
     }
     const inRow = {
-      ...orderBase, sourceId: '02-in', totalAmount: '800.00', received: '800.00',
+      ...orderBase, sourceId: '02-in', totalAmount: '298.00', cashAmount: '298.00', received: '298.00',
       productType: '疗程卡', productName: '新项目', salesCategory: '自销自耗', sessionCount: 8,
       paidUnusedSessions: 8, unitRealPrice: '100.00', categoryL1: null, categoryL2: null,
     }
     const creditRow = {
-      ...orderBase, sourceId: 99, amount: '200.00', createdAt: new Date('2026-08-17T01:00:01.000Z'),
+      ...orderBase, sourceId: 99, amount: '2.00', createdAt: new Date('2026-08-17T01:00:01.000Z'),
     }
     ;(db.select as any)
       .mockReturnValueOnce(makeChain([outRow, inRow]))
@@ -6126,14 +6126,19 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
 
     expect(rows.map((row) => row.productName)).toEqual(['旧卡', '新项目', '转换差额转入储值卡'])
     expect(rows[2]).toMatchObject({
-      totalAmount: '200.00',
-      received: '200.00',
-      prepaidCardAmount: '0.00',
+      totalAmount: '2.00',
+      received: '2.00',
+      prepaidCardAmount: '2.00',
       cashAmount: '0.00',
       productType: null,
     })
     expect(rows.reduce((sum, row) => sum + Number(row.totalAmount), 0)).toBe(0)
     expect(rows.reduce((sum, row) => sum + Number(row.received), 0)).toBe(0)
+    for (const row of rows) {
+      const channelAmount = Number(row.prepaidCardAmount) + Number(row.cashAmount)
+      expect(Number(row.totalAmount)).toBe(channelAmount)
+      expect(Number(row.received)).toBe(channelAmount)
+    }
   })
 
   it('待支付订单只有预选储值卡抵扣且无已入账流水时，储值卡抵扣和现付均为 0', async () => {

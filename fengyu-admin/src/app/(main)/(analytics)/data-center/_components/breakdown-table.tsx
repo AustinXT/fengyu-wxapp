@@ -2,66 +2,51 @@
 
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { ExportButton } from "@/components/ui/export-button"
+import {
+  getDataCenterBreakdownConfig,
+  type DataCenterBreakdownView,
+} from "@/lib/data-center/columns"
 import { formatByUnit } from "@/lib/data-center/format"
-import type { BreakdownRow, MetricUnit } from "@/lib/data-center/types"
-import type { DataCenterExportView } from "@/lib/export-job-types"
+import type { BreakdownRow } from "@/lib/data-center/types"
 import { useSearchParams } from "next/navigation"
-
-export interface BreakdownColumn {
-  key: string // 对应 BreakdownRow.metrics 的键
-  label: string
-  unit: MetricUnit
-}
 
 /**
  * 按市场/按门店明细表（泛化，4 板块复用）。
- * 第一列为分组名（市场/门店）；showMarket=true 时额外插入「所属市场」列（按门店分组用）。
- * textColumns：分组名之后插入的额外文本列（取 row.labels[key]，如按技师明细的门店/职级）。
- * 传入 exportView 时，标题行右侧创建异步导出任务，worker 按相同 URL 条件重新查询数据。
+ * 列布局由 data-center/columns.ts 按 exportView 统一提供，页面与异步导出不会漂移。
  */
 export function BreakdownTable({
   title,
   rows,
-  columns,
-  firstColLabel = "名称",
-  showMarket = false,
-  textColumns = [],
   loading = false,
   exportFilename,
-  exportSheetName = "明细",
   exportView,
 }: {
   title?: string
   rows: BreakdownRow[]
-  columns: BreakdownColumn[]
-  firstColLabel?: string
-  showMarket?: boolean
-  textColumns?: { key: string; label: string }[]
   loading?: boolean
   exportFilename?: string
-  exportSheetName?: string
-  exportView?: DataCenterExportView
+  exportView: DataCenterBreakdownView
 }) {
   const searchParams = useSearchParams()
+  const config = getDataCenterBreakdownConfig(exportView)
   const tableColumns: Column<BreakdownRow>[] = [
     {
       key: "groupName",
-      header: firstColLabel,
+      header: config.groupLabel,
       cell: (r) => <span className="font-medium">{r.groupName}</span>,
     },
-    ...textColumns.map((t) => ({
-      key: t.key,
-      header: t.label,
-      cell: (r: BreakdownRow) => r.labels?.[t.key] ?? "—",
+    ...config.textColumns.map((column) => ({
+      key: column.key,
+      header: column.label,
+      cell: (r: BreakdownRow) => column.source === "marketName"
+        ? r.marketName ?? "—"
+        : r.labels?.[column.key] ?? "—",
     })),
-    ...(showMarket
-      ? [{ key: "marketName", header: "所属市场", cell: (r: BreakdownRow) => r.marketName ?? "—" }]
-      : []),
-    ...columns.map((c) => ({
-      key: c.key,
-      header: c.label,
+    ...config.metricColumns.map((column) => ({
+      key: column.key,
+      header: column.label,
       className: "text-right tabular-nums",
-      cell: (r: BreakdownRow) => formatByUnit(r.metrics[c.key], c.unit),
+      cell: (r: BreakdownRow) => formatByUnit(r.metrics[column.key], column.unit),
     })),
   ]
 

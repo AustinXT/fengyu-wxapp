@@ -1,242 +1,240 @@
-import 'server-only'
+import "server-only";
+import OcrApi20210707, * as $ocr from "@alicloud/ocr-api20210707";
+import * as $OpenApi from "@alicloud/openapi-client";
+import * as $Util from "@alicloud/tea-util";
+import { Readable } from "stream";
+import type { BusinessLicenseOcrResult, IdCardOcrResult } from "./types";
+import type { UploadFileLike } from "@/lib/upload-file";
+import { lakalaMerchantAreaCodeFromAddress } from "@/lib/lakala-merchant-area";
 
-import { Readable } from 'node:stream'
-import OcrClient, {
-  RecognizeBusinessLicenseRequest,
-  RecognizeIdcardRequest,
-} from '@alicloud/ocr-api20210707'
-import { Config } from '@alicloud/openapi-client'
-import { RuntimeOptions } from '@alicloud/tea-util'
-import { getLakalaMerchantAreaPathByCode, lakalaMerchantAreaCodeFromAddress } from '../lakala-merchant-area'
-import { normalizeLakalaDetailAddress } from '../lakala-onboarding-address'
-import type { BusinessLicenseOcrResult, IdCardOcrResult } from './types'
-import { OcrConfigurationError, OcrServiceError } from './types'
-
-type OcrFile = Pick<File, 'arrayBuffer' | 'name'>
-type UnknownRecord = Record<string, unknown>
-
-function requiredEnv(...names: string[]): string {
-  for (const name of names) {
-    const value = process.env[name]?.trim()
-    if (value) return value
-  }
-  throw new OcrConfigurationError(`OCR 未配置：缺少 ${names.join(' 或 ')}`)
+function ocrMode() {
+  return process.env.ALIYUN_OCR_MODE === "real" ? "real" : "mock";
 }
 
-function ocrMode(): 'real' | 'mock' {
-  const value = process.env.ALIYUN_OCR_MODE?.trim().toLowerCase()
-  if (!value || value === 'real') return 'real'
-  if (value === 'mock') return 'mock'
-  throw new OcrConfigurationError('OCR 配置错误：ALIYUN_OCR_MODE 只能是 real 或 mock')
+function formatDate(value?: string) {
+  if (!value) return undefined;
+  if (/长期|永久/i.test(value)) return undefined;
+  const digits = value.replace(/[^\d]/g, "");
+  if (digits.length >= 8) return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
+  return value;
 }
 
-function mockBusinessLicense(): BusinessLicenseOcrResult {
+function dateRange(value?: string) {
+  if (!value) return {};
+  const normalized = value.replace(/年|月/g, ".").replace(/日/g, "");
+  const matches = normalized.match(/\d{4}[./-]\d{1,2}[./-]\d{1,2}/g) ?? [];
   return {
-    merBlisName: 'OCR 模拟营业执照主体',
-    merRegName: 'OCR 模拟营业执照主体',
-    merBlis: '91360100MOCK000001',
-    merRegAddr: '模拟路 1 号',
-    larName: '模拟法人',
-    merBlisStDt: '2021-01-01',
-    merBlisExpDt: '2041-01-01',
-  }
+    start: formatDate(matches[0]),
+    end: formatDate(matches[1]),
+    longTerm: isLongTerm(value),
+  };
 }
 
-function mockIdCard(side: 'face' | 'back'): IdCardOcrResult {
-  return side === 'face'
-    ? { side, larName: '模拟法人', larIdcard: '360102199001011234' }
-    : { side, larIdcardStDt: '2021-01-01', larIdcardExpDt: '2041-01-01' }
-}
-
-function nestedIdCardResult(result: UnknownRecord, side: 'face' | 'back'): UnknownRecord {
-  const sideRecord = asRecord(valueByKey(result, side))
-  const sideData = asRecord(parseMaybeJson(valueByKey(sideRecord, 'data')))
-  return flattenWords({
-    ...result,
-    ...sideRecord,
-    ...sideData,
-  })
-}
-
-export function parseAliyunIdCardResult(value: unknown, side: 'face' | 'back'): IdCardOcrResult {
-  const result = nestedIdCardResult(flattenWords(unwrapResponse(value)), side)
-  const period = dateRange(textValue(result, ['validPeriod', 'validPeriodRange', '有效期限', '证件有效期']))
-  return side === 'face'
-    ? {
-        side,
-        larName: textValue(result, ['name', '姓名']),
-        larIdcard: textValue(result, ['idNumber', 'idNo', 'num', '身份证号', '公民身份号码']),
-      }
-    : {
-        side,
-        larIdcardStDt: period.start ?? formatDate(textValue(result, ['startDate', 'issueDate', 'validFrom', '签发日期', '有效期起始日期'])),
-        larIdcardExpDt: period.end ?? formatDate(textValue(result, ['endDate', 'expiryDate', 'validTo', '失效日期', '有效期截止日期'])),
-        larIdcardLongTerm: period.longTerm ?? (/长期|永久/i.test(textValue(result, ['endDate', 'expiryDate', 'validTo', '失效日期', '有效期截止日期']) ?? '') ? 'true' : undefined),
-      }
-}
-
-export function parseAliyunBusinessLicenseResult(value: unknown): BusinessLicenseOcrResult {
-  const result = flattenWords(unwrapResponse(value))
-  const expiry = textValue(result, ['validPeriodEnd', 'validToDate', 'expiryDate', 'validTo', 'endDate', 'validPeriod', '有效期', '有效期截止日期'])
-  const rawAddress = textValue(result, ['address', 'businessAddress', 'registeredAddress', 'registerAddress', '住所', '注册地址', '经营场所'])
-  const areaCode = lakalaMerchantAreaCodeFromAddress(rawAddress)
-  const registeredRegion = getLakalaMerchantAreaPathByCode(areaCode)
-  const merRegAddr = rawAddress
-    ? normalizeLakalaDetailAddress(rawAddress, registeredRegion.label)
-    : undefined
-  return {
-    merBlisName: textValue(result, ['name', 'companyName', 'businessName', 'enterpriseName', '企业名称', '营业执照名称', '名称']),
-    merRegName: textValue(result, ['name', 'companyName', 'businessName', 'enterpriseName', '企业名称', '营业执照名称', '名称']),
-    merBlis: textValue(result, ['creditCode', 'registerNumber', 'socialCreditCode', 'regNum', 'registrationNumber', '统一社会信用代码', '社会信用代码', '注册号']),
-    merRegAddr,
-    merRegProvinceCode: registeredRegion.provinceCode || undefined,
-    merRegCityCode: registeredRegion.cityCode || undefined,
-    merRegDistCode: registeredRegion.countyCode || undefined,
-    larName: textValue(result, ['legalPerson', 'legalRepresentative', 'legalPersonName', '法人', '法定代表人', '经营者']),
-    merBlisStDt: formatDate(textValue(result, ['validPeriodStart', 'validFromDate', 'startDate', 'validFrom', 'establishDate', 'RegistrationDate', 'registrationDate', '成立日期', '有效期起始日期'])),
-    merBlisExpDt: formatDate(expiry),
-    merBlisLongTerm: /长期|永久/i.test(expiry ?? '') ? 'true' : undefined,
-  }
-}
-
-function valueByKey(record: UnknownRecord, key: string): unknown {
-  if (key in record) return record[key]
-  const actualKey = Object.keys(record).find((item) => item.toLowerCase() === key.toLowerCase())
-  return actualKey ? record[actualKey] : undefined
-}
-
-function asRecord(value: unknown): UnknownRecord {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as UnknownRecord
-    : {}
-}
-
-function parseMaybeJson(value: unknown): unknown {
-  if (typeof value !== 'string') return value
-  const trimmed = value.trim()
-  if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '[')) return value
-  try {
-    return JSON.parse(trimmed)
-  } catch {
-    return value
-  }
-}
-
-function unwrapResponse(value: unknown): UnknownRecord {
-  let current = value
-  for (let depth = 0; depth < 5; depth += 1) {
-    current = parseMaybeJson(current)
-    const record = asRecord(current)
-    if (!Object.keys(record).length) break
-    const nested = valueByKey(record, 'data') ?? valueByKey(record, 'result') ?? valueByKey(record, 'body')
-    if (nested === undefined) return record
-    current = nested
-  }
-  return asRecord(current)
-}
-
-function textValue(record: UnknownRecord, keys: string[]): string | undefined {
-  for (const key of keys) {
-    const value = valueByKey(record, key)
-    if (typeof value === 'string' && value.trim()) return value.trim()
-    if (typeof value === 'number') return String(value)
-  }
-  return undefined
-}
-
-function formatDate(value?: string): string | undefined {
-  if (!value || /长期|永久/i.test(value)) return undefined
-  const digits = value.replace(/\D/g, '')
-  if (digits.length < 8) return value
-  return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`
-}
-
-function dateRange(value?: string): { start?: string; end?: string; longTerm?: string } {
-  if (!value) return {}
-  const normalized = value.replace(/年|月/g, '.').replace(/日/g, '')
-  const dates = normalized.match(/\d{4}[./-]\d{1,2}[./-]\d{1,2}/g) ?? []
-  return {
-    start: formatDate(dates[0]),
-    end: formatDate(dates[1]),
-    longTerm: /长期|永久/i.test(value) ? 'true' : undefined,
-  }
-}
-
-function flattenWords(record: UnknownRecord): UnknownRecord {
-  const out: UnknownRecord = { ...record }
-  for (const key of ['prism_wordsInfo', 'prismWordsInfo', 'wordsInfo', 'wordInfo', 'items']) {
-    const values = valueByKey(record, key)
-    if (!Array.isArray(values)) continue
-    for (const value of values) {
-      const item = asRecord(value)
-      const field = textValue(item, ['key', 'name', 'label', 'fieldName', '字段'])
-      const content = textValue(item, ['word', 'value', 'text', 'content', '字段值'])
-      if (field && content) out[field] = content
-    }
-  }
-  return out
+function isLongTerm(value?: string) {
+  return value && /长期|永久/i.test(value) ? "true" : undefined;
 }
 
 function createClient() {
-  const accessKeyId = requiredEnv('ALIYUN_OCR_ACCESS_KEY_ID', 'ALIYUN_ACCESS_KEY_ID')
-  const accessKeySecret = requiredEnv('ALIYUN_OCR_ACCESS_KEY_SECRET', 'ALIYUN_ACCESS_KEY_SECRET')
-  const config = new Config({ accessKeyId, accessKeySecret })
-  config.endpoint = process.env.ALIYUN_OCR_ENDPOINT?.trim() || 'ocr-api.cn-hangzhou.aliyuncs.com'
-  return {
-    client: new OcrClient(config),
-    runtimeOptions: new RuntimeOptions({
-      readTimeout: Number(process.env.ALIYUN_OCR_READ_TIMEOUT_MS || 20_000),
-      connectTimeout: Number(process.env.ALIYUN_OCR_CONNECT_TIMEOUT_MS || 10_000),
-      autoretry: true,
-      maxAttempts: 2,
-    }),
+  const accessKeyId = process.env.ALIYUN_ACCESS_KEY_ID;
+  const accessKeySecret = process.env.ALIYUN_ACCESS_KEY_SECRET;
+  if (!accessKeyId || !accessKeySecret) {
+    throw new Error("请先配置 ALIYUN_ACCESS_KEY_ID 和 ALIYUN_ACCESS_KEY_SECRET");
   }
+  const config = new $OpenApi.Config({
+    accessKeyId,
+    accessKeySecret,
+  });
+  config.endpoint = process.env.ALIYUN_OCR_ENDPOINT || "ocr-api.cn-hangzhou.aliyuncs.com";
+  return new OcrApi20210707(config);
 }
 
-async function runRecognition(
-  kind: 'businessLicense' | 'idCard',
-  file: OcrFile,
-  extra: UnknownRecord = {},
-): Promise<UnknownRecord> {
-  const { client, runtimeOptions } = createClient()
+function runtimeOptions() {
+  const readTimeout = Number(process.env.ALIYUN_OCR_READ_TIMEOUT_MS || 20000);
+  const connectTimeout = Number(process.env.ALIYUN_OCR_CONNECT_TIMEOUT_MS || 10000);
+  return new $Util.RuntimeOptions({
+    readTimeout,
+    connectTimeout,
+    autoretry: true,
+    maxAttempts: 2,
+  });
+}
+
+async function withOcrRetry<T>(operation: () => Promise<T>) {
   try {
-    const buffer = Buffer.from(await file.arrayBuffer())
-    const requestInput = {
-      body: Readable.from(buffer),
-      ...extra,
-    }
-    const response = kind === 'businessLicense'
-      ? await client.recognizeBusinessLicenseWithOptions(
-        new RecognizeBusinessLicenseRequest(requestInput),
-        runtimeOptions,
-      )
-      : await client.recognizeIdcardWithOptions(
-        new RecognizeIdcardRequest(requestInput),
-        runtimeOptions,
-      )
-    return flattenWords(unwrapResponse(response.body ?? response))
+    return await operation();
   } catch (error) {
-    if (error instanceof OcrConfigurationError) throw error
-    // OCR SDK 异常可能回显上传资料或供应商原始响应，日志只保留固定事件名。
-    console.error('Aliyun OCR request failed')
-    throw new OcrServiceError()
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/timeout|ReadTimeout|ConnectTimeout/i.test(message)) throw error;
+    return operation();
   }
 }
 
-export async function recognizeBusinessLicense(file: OcrFile): Promise<BusinessLicenseOcrResult> {
-  if (ocrMode() === 'mock') return mockBusinessLicense()
-  const result = await runRecognition('businessLicense', file)
-  const parsed = parseAliyunBusinessLicenseResult(result)
-  if (!Object.values(parsed).some(Boolean)) throw new OcrServiceError('OCR 未识别出营业执照字段，请手动填写')
-  return parsed
+function bodyToRecord(body: unknown): Record<string, unknown> {
+  if (!body || typeof body !== "object") return {};
+  return JSON.parse(JSON.stringify(body)) as Record<string, unknown>;
 }
 
-export async function recognizeIdCard(file: OcrFile, side: 'face' | 'back'): Promise<IdCardOcrResult> {
-  if (ocrMode() === 'mock') return mockIdCard(side)
-  const result = await runRecognition('idCard', file, { side })
-  const parsed = parseAliyunIdCardResult(result, side)
-  if (!Object.values(parsed).some((value) => value && value !== side)) {
-    throw new OcrServiceError('OCR 未识别出身份证字段，请手动填写')
+function parseMaybeJson(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed || !["{", "["].includes(trimmed[0])) return value;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
   }
-  return parsed
+}
+
+function valueByKey(raw: Record<string, unknown>, key: string) {
+  if (key in raw) return raw[key];
+  const found = Object.keys(raw).find((item) => item.toLowerCase() === key.toLowerCase());
+  return found ? raw[found] : undefined;
+}
+
+function pick(raw: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = valueByKey(raw, key);
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number") return String(value);
+  }
+  return undefined;
+}
+
+function collectWordInfo(raw: Record<string, unknown>) {
+  const out: Record<string, unknown> = {};
+  for (const listKey of ["prism_wordsInfo", "prismWordsInfo", "wordsInfo", "wordInfo", "items"]) {
+    const value = valueByKey(raw, listKey);
+    if (!Array.isArray(value)) continue;
+    for (const item of value) {
+      if (!item || typeof item !== "object") continue;
+      const row = item as Record<string, unknown>;
+      const key = pick(row, ["key", "name", "label", "字段", "fieldName"]);
+      const text = pick(row, ["word", "value", "text", "content", "字段值"]);
+      if (key && text) out[key] = text;
+    }
+  }
+  return out;
+}
+
+function normalizeAliyunResult(raw: Record<string, unknown>) {
+  let current: unknown = raw;
+  for (let i = 0; i < 5; i += 1) {
+    current = parseMaybeJson(current);
+    if (!current || typeof current !== "object" || Array.isArray(current)) break;
+    const record = current as Record<string, unknown>;
+    const nested = valueByKey(record, "data") ?? valueByKey(record, "result") ?? valueByKey(record, "body");
+    if (!nested) break;
+    current = nested;
+  }
+  const result = current && typeof current === "object" && !Array.isArray(current)
+    ? (current as Record<string, unknown>)
+    : raw;
+  return {
+    ...result,
+    ...collectWordInfo(result),
+  };
+}
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function nestedIdCardResult(result: Record<string, unknown>, side: "face" | "back") {
+  const sideRecord = objectRecord(valueByKey(result, side));
+  const sideData = objectRecord(valueByKey(sideRecord, "data"));
+  return {
+    ...result,
+    ...sideRecord,
+    ...sideData,
+    ...collectWordInfo(sideRecord),
+    ...collectWordInfo(sideData),
+  };
+}
+
+function hasAnyValue(values: Record<string, unknown>) {
+  return Object.values(values).some((value) => typeof value === "string" && value.trim());
+}
+
+export async function recognizeBusinessLicense(file: UploadFileLike): Promise<BusinessLicenseOcrResult> {
+  if (ocrMode() !== "real") {
+    return {
+      merBlisName: "南昌凤御美容服务有限公司",
+      merRegName: "南昌凤御美容服务有限公司",
+      merBlis: "91360103TEST00002X",
+      merRegAddr: "江西省南昌市红谷滩区会展路 999 号",
+      larName: "陈小燕",
+      merBlisStDt: "2021-04-15",
+      merBlisExpDt: "2041-04-14",
+      merBlisLongTerm: "",
+      raw: { mode: "mock", fileName: file.name },
+    };
+  }
+
+  const client = createClient();
+  const body = Buffer.from(await file.arrayBuffer());
+  const request = new $ocr.RecognizeBusinessLicenseRequest({
+    body: Readable.from(body) as unknown as ReadableStream,
+  });
+  const response = await withOcrRetry(() => client.recognizeBusinessLicenseWithOptions(request, runtimeOptions()));
+  const raw = bodyToRecord(response.body);
+  const result = normalizeAliyunResult(raw);
+  const name = pick(result, ["name", "companyName", "businessName", "enterpriseName", "company", "企业名称", "营业执照名称", "名称"]);
+  const address = pick(result, ["address", "businessAddress", "registeredAddress", "registerAddress", "住所", "注册地址", "经营场所"]);
+  const startText = pick(result, ["validPeriodStart", "validFromDate", "startDate", "validFrom", "establishDate", "RegistrationDate", "registrationDate", "成立日期", "有效期起始日期", "营业期限自"]);
+  const expiryText = pick(result, ["validPeriodEnd", "validToDate", "expiryDate", "validTo", "endDate", "validPeriod", "有效期", "有效期截止日期", "营业期限至", "执照有效期"]);
+  const longTerm = isLongTerm(expiryText) || (startText && !expiryText ? "true" : undefined);
+  const parsed = {
+    merBlisName: name,
+    merRegName: name,
+    merBlis: pick(result, ["creditCode", "registerNumber", "socialCreditCode", "regNum", "registrationNumber", "统一社会信用代码", "社会信用代码", "注册号"]),
+    merRegAddr: address,
+    merRegDistCode: lakalaMerchantAreaCodeFromAddress(address),
+    larName: pick(result, ["legalPerson", "legalRepresentative", "legalPersonName", "法人", "法定代表人", "经营者"]),
+    merBlisStDt: formatDate(startText),
+    merBlisExpDt: formatDate(expiryText),
+    merBlisLongTerm: longTerm,
+    raw,
+  };
+  if (!hasAnyValue(parsed)) {
+    throw new Error("OCR 调用成功，但暂未匹配到营业执照字段；请联系管理员查看阿里云返回格式");
+  }
+  return parsed;
+}
+
+export async function recognizeIdCard(file: UploadFileLike, side: "face" | "back"): Promise<IdCardOcrResult> {
+  if (ocrMode() !== "real") {
+    return {
+      side,
+      ...(side === "face"
+        ? { larName: "陈小燕", larIdcard: "360102199001011234" }
+        : { larIdcardStDt: "2018-06-01", larIdcardExpDt: "2038-06-01", larIdcardLongTerm: "" }),
+      raw: { mode: "mock", side, fileName: file.name },
+    };
+  }
+
+  const client = createClient();
+  const body = Buffer.from(await file.arrayBuffer());
+  const request = new $ocr.RecognizeIdcardRequest({
+    body: Readable.from(body) as unknown as ReadableStream,
+  });
+  const response = await withOcrRetry(() => client.recognizeIdcardWithOptions(request, runtimeOptions()));
+  const raw = bodyToRecord(response.body);
+  const result = normalizeAliyunResult(raw);
+  const idResult = nestedIdCardResult(result, side);
+  const periodText = pick(idResult, ["validPeriod", "validPeriodRange", "有效期限", "证件有效期"]);
+  const period = dateRange(periodText);
+
+  const parsed = {
+    side,
+    larName: side === "face" ? pick(idResult, ["name", "姓名"]) : undefined,
+    larIdcard: side === "face" ? pick(idResult, ["idNumber", "idNo", "num", "身份证号", "公民身份号码"]) : undefined,
+    larIdcardStDt: side === "back" ? period.start || formatDate(pick(idResult, ["startDate", "issueDate", "validFrom", "签发日期", "有效期起始日期"])) : undefined,
+    larIdcardExpDt: side === "back" ? period.end || formatDate(pick(idResult, ["endDate", "expiryDate", "validTo", "失效日期", "有效期截止日期"])) : undefined,
+    larIdcardLongTerm: side === "back" ? period.longTerm || isLongTerm(pick(idResult, ["endDate", "expiryDate", "validTo", "失效日期", "有效期截止日期"])) : undefined,
+    raw,
+  };
+  if (!hasAnyValue(parsed)) {
+    throw new Error("OCR 调用成功，但暂未匹配到身份证字段；请联系管理员查看阿里云返回格式");
+  }
+  return parsed;
 }

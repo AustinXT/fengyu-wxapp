@@ -287,6 +287,32 @@ describe('order.create', () => {
     await expect(routes.create(ctx)).rejects.toThrow(/INVALID_PARAMS.*请先绑定门店后再下单/)
   })
 
+  test('下单按提交门店复核 SKU 市场范围，拒绝跨市场 SKU', async () => {
+    pg.query.mockResolvedValueOnce([{ store_id: 'store-b', store_name: 'B店', market_name: '市场B' }])
+    pg.query.mockResolvedValueOnce([]) // closeExpiredOrdersByUser
+    pg.query.mockResolvedValueOnce([]) // check pending
+    // SQL 已按 store-b 的市场范围过滤，跨市场 SKU 不会进入结果集
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx(
+      {
+        storeId: 'store-b',
+        items: [{ skuId: 'sku-market-a', quantity: 1 }],
+        paymentMethod: '微信',
+      },
+      // 模拟用户从市场 A 切换到市场 B 后仍持有旧购物车
+      { boundStoreId: 'store-a', boundMarketName: '市场A' },
+    )
+
+    await expect(routes.create(ctx)).rejects.toThrow(/INVALID_PARAMS.*sku-market-a.*不存在/)
+
+    const [skuSql, skuParams] = pg.query.mock.calls[3]
+    expect(skuSql).toContain('scope_market_node')
+    expect(skuSql).toContain('scope_store.store_id = $2')
+    expect(skuSql).toContain("NULLIF(regexp_replace(sk.market_scope, '[[:space:]]+', '', 'g'), '') IS NOT NULL")
+    expect(skuParams).toEqual([['sku-market-a'], 'store-b'])
+  })
+
   test('已有待支付订单 → INVALID_PARAMS + pendingOrderNo', async () => {
     pg.query.mockResolvedValueOnce([{ store_id: 's1', store_name: '测试店', market_name: '华东' }])
     pg.query.mockResolvedValueOnce([])

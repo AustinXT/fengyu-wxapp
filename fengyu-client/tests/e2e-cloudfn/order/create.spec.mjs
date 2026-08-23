@@ -17,6 +17,7 @@ import '../setup.mjs'
 import {
   NS, closePool, pgQuery,
   TEST_CLIENT_OPENID, TEST_CLIENT_USER_ID, TEST_STORE_ID,
+  TEST_HQ_ORG_ID, TEST_MARKET_ORG_ID,
   TEST_SKU_NORMAL_ID, TEST_SKU_EXPERIENCE_ID, TEST_PRODUCT_ID,
   TEST_CLIENT_PHONE, TEST_MANAGER_EMP_ID, getPool,
 } from '../setup.mjs'
@@ -48,6 +49,37 @@ async function ensureNoPhoneClient() {
 }
 
 const ORDER_NO_RE = /^FY-XSD-WX-\d{6}\d{4}$/
+const OTHER_MARKET_ORG_ID = `${NS}_SCOPE_MARKET_B`
+const OTHER_STORE_ORG_ID = `${NS}_SCOPE_STORE_B_ORG`
+const OTHER_STORE_ID = `${NS}_SCOPE_STORE_B`
+
+async function ensureOtherMarketStore() {
+  await ensureTestStore()
+  await pgQuery(
+    `INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
+     VALUES ($1, $2, '市场', $3, 1, true)
+     ON CONFLICT (id) DO UPDATE
+       SET name = EXCLUDED.name, type = EXCLUDED.type,
+           parent_id = EXCLUDED.parent_id, is_active = EXCLUDED.is_active`,
+    [OTHER_MARKET_ORG_ID, `${NS}_范围市场B`, TEST_HQ_ORG_ID],
+  )
+  await pgQuery(
+    `INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
+     VALUES ($1, $2, '门店', $3, 0, true)
+     ON CONFLICT (id) DO UPDATE
+       SET name = EXCLUDED.name, type = EXCLUDED.type,
+           parent_id = EXCLUDED.parent_id, is_active = EXCLUDED.is_active`,
+    [OTHER_STORE_ORG_ID, `${NS}_范围测试店B`, OTHER_MARKET_ORG_ID],
+  )
+  await pgQuery(
+    `INSERT INTO stores (store_id, store_name, org_node_id, opening_date, is_closed)
+     VALUES ($1, $2, $3, CURRENT_DATE, false)
+     ON CONFLICT (store_id) DO UPDATE
+       SET store_name = EXCLUDED.store_name, org_node_id = EXCLUDED.org_node_id,
+           is_closed = EXCLUDED.is_closed`,
+    [OTHER_STORE_ID, `${NS}_范围测试店B`, OTHER_STORE_ORG_ID],
+  )
+}
 
 async function caseHappySingleSku() {
   await createTestClient()
@@ -114,6 +146,48 @@ async function caseInvalidSkuRejected() {
     paymentMethod: '微信',
   })
   expectError(res, 'INVALID_PARAMS')
+}
+
+async function caseMarketScopedSkuAcceptedAtMatchingStore() {
+  await createTestClient()
+  await createTestSku({
+    skuId: TEST_SKU_NORMAL_ID,
+    productId: TEST_PRODUCT_ID,
+    skuMarketScope: TEST_MARKET_ORG_ID,
+  })
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'order.create', {
+    storeId: TEST_STORE_ID,
+    items: [{ skuId: TEST_SKU_NORMAL_ID, quantity: 1 }],
+    paymentMethod: '微信',
+  })
+  expectSuccess(res)
+}
+
+async function caseCrossMarketSkuRejectedAtOrderSubmit() {
+  await createTestClient()
+  await ensureOtherMarketStore()
+  await createTestSku({
+    skuId: TEST_SKU_NORMAL_ID,
+    productId: TEST_PRODUCT_ID,
+    productMarketScope: null,
+    skuMarketScope: TEST_MARKET_ORG_ID,
+  })
+
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'order.create', {
+    storeId: OTHER_STORE_ID,
+    items: [{ skuId: TEST_SKU_NORMAL_ID, quantity: 1 }],
+    paymentMethod: '微信',
+  })
+  expectError(res, 'INVALID_PARAMS')
+
+  const created = await pgQuery(
+    `SELECT sale_order_id FROM sale_orders
+     WHERE client_user_id = $1 AND store_id = $2`,
+    [TEST_CLIENT_USER_ID, OTHER_STORE_ID],
+  )
+  if (created.length !== 0) {
+    throw new Error('跨市场 SKU 不应创建订单')
+  }
 }
 
 async function caseMissingItems() {
@@ -338,6 +412,8 @@ const CASES = [
   ['happy single SKU → status=待支付 + order_no format', caseHappySingleSku],
   ['multi SKU + quantity > 1 → 2 sale_items + total summed', caseMultiSkuQuantity],
   ['invalid (non-existent) SKU → INVALID_PARAMS', caseInvalidSkuRejected],
+  ['market-scoped SKU is accepted at its matching store', caseMarketScopedSkuAcceptedAtMatchingStore],
+  ['cross-market SKU is rejected when the order is submitted', caseCrossMarketSkuRejectedAtOrderSubmit],
   ['empty items → INVALID_PARAMS', caseMissingItems],
   ['no phone bound → PHONE_REQUIRED', casePhoneRequired],
   ['create closes expired pending order then creates new', caseCloseExpiredThenCreate],
