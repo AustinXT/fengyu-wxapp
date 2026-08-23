@@ -1,0 +1,1673 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>日总结小程序 · 可点击原型</title>
+  <style>
+    :root {
+      --brand: #c92f2f;
+      --brand-deep: #9f1f24;
+      --brand-soft: #fff1f1;
+      --ink: #1f2329;
+      --muted: #7c8491;
+      --subtle: #a1a8b3;
+      --line: #ededed;
+      --page: #f6f6f6;
+      --card: #fff;
+      --warn: #d49614;
+      --warn-soft: #fff8df;
+      --ok: #16a36a;
+      --ok-soft: #eaf8f1;
+      --danger: #d84a4a;
+      --danger-soft: #fff0f0;
+      --shadow: 0 14px 34px rgba(52, 30, 30, .08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background:
+        linear-gradient(180deg, #f7f4f4 0%, #eeeeee 100%);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+
+    .workspace {
+      padding: 30px 26px 42px;
+    }
+
+    .brief {
+      max-width: 1250px;
+      margin: 0 auto 22px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 420px;
+      gap: 24px;
+      align-items: end;
+    }
+
+    .brief h1 {
+      margin: 0 0 10px;
+      font-size: 30px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .brief p {
+      margin: 0;
+      max-width: 760px;
+      color: #625a5a;
+      font-size: 14px;
+      line-height: 1.8;
+    }
+
+    .scope {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+
+    .scope span {
+      min-height: 34px;
+      border: 1px solid #f0d8d8;
+      border-radius: 8px;
+      padding: 8px 10px;
+      background: #fff;
+      color: #8f2d2d;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .phone {
+      width: 390px;
+      height: 844px;
+      overflow: hidden;
+      background: #101217;
+      border: 10px solid #101217;
+      border-radius: 34px;
+      box-shadow: var(--shadow);
+      position: relative;
+    }
+
+    .screen {
+      height: 100%;
+      overflow: hidden;
+      background: var(--page);
+      border-radius: 24px;
+      position: relative;
+    }
+
+    .fixed-title {
+      position: absolute;
+      left: 16px;
+      top: 14px;
+      z-index: 5;
+      padding: 6px 10px;
+      color: #fff;
+      background: rgba(15, 18, 24, .74);
+      border-radius: 999px;
+      font-size: 12px;
+      pointer-events: none;
+    }
+
+    .status {
+      height: 40px;
+      padding: 10px 18px 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #fff;
+      color: #111;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .signal {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 12px;
+    }
+
+    .battery {
+      width: 25px;
+      height: 12px;
+      border: 2px solid #111;
+      border-radius: 4px;
+      position: relative;
+    }
+
+    .battery::before {
+      content: "";
+      position: absolute;
+      right: -5px;
+      top: 3px;
+      width: 3px;
+      height: 5px;
+      background: #111;
+      border-radius: 0 2px 2px 0;
+    }
+
+    .battery::after {
+      content: "";
+      position: absolute;
+      left: 2px;
+      top: 2px;
+      width: 15px;
+      height: 4px;
+      background: #111;
+      border-radius: 2px;
+    }
+
+    .nav {
+      height: 52px;
+      padding: 0 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #fff;
+      border-bottom: 1px solid var(--line);
+      position: relative;
+    }
+
+    .nav-title {
+      position: absolute;
+      left: 86px;
+      right: 86px;
+      text-align: center;
+      font-size: 18px;
+      font-weight: 800;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .back {
+      width: 30px;
+      height: 30px;
+      border: 0;
+      background: transparent;
+      position: relative;
+    }
+
+    .back::before {
+      content: "";
+      position: absolute;
+      left: 9px;
+      top: 8px;
+      width: 11px;
+      height: 11px;
+      border-left: 3px solid #222;
+      border-bottom: 3px solid #222;
+      transform: rotate(45deg);
+    }
+
+    .capsule {
+      width: 82px;
+      height: 30px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-around;
+      background: #fff;
+      font-weight: 900;
+    }
+
+    .content {
+      height: calc(100% - 92px);
+      overflow: auto;
+      padding: 12px 14px 94px;
+    }
+
+    .content.no-tabs {
+      padding-bottom: 22px;
+    }
+
+    .content.with-actions {
+      padding-bottom: 172px;
+    }
+
+    .home-content {
+      height: calc(100% - 214px);
+      padding-bottom: 88px;
+    }
+
+    .tabs {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 76px;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      background: #fff;
+      border-top: 1px solid var(--line);
+      padding-bottom: 8px;
+    }
+
+    .tabs.three {
+      grid-template-columns: repeat(3, 1fr);
+    }
+
+    .tab {
+      width: 100%;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      color: #969090;
+      font-size: 12px;
+    }
+
+    .tab.active {
+      color: var(--brand);
+      font-weight: 800;
+    }
+
+    .tab-icon {
+      width: 24px;
+      height: 24px;
+      border: 2px solid currentColor;
+      border-radius: 7px;
+      position: relative;
+    }
+
+    .tab-icon.dot::after {
+      content: "";
+      width: 7px;
+      height: 7px;
+      background: currentColor;
+      border-radius: 50%;
+      position: absolute;
+      right: -3px;
+      top: -3px;
+    }
+
+    .card,
+    .list-card,
+    .notice,
+    .form-section {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      margin-bottom: 10px;
+    }
+
+    .card,
+    .form-section {
+      padding: 14px;
+    }
+
+    .notice {
+      padding: 12px;
+      background: var(--warn-soft);
+      border-color: #f0d77a;
+      color: #8a6912;
+      font-size: 12px;
+      line-height: 1.8;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .section-title {
+      font-size: 16px;
+      font-weight: 900;
+    }
+
+    .section-sub {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .link {
+      flex: 0 0 auto;
+      color: var(--brand);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 24px;
+      padding: 0 9px;
+      border-radius: 999px;
+      background: var(--brand-soft);
+      color: var(--brand-deep);
+      font-size: 11px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .tag.ok {
+      background: var(--ok-soft);
+      color: var(--ok);
+    }
+
+    .tag.warn {
+      background: var(--warn-soft);
+      color: var(--warn);
+    }
+
+    .tag.danger {
+      background: var(--danger-soft);
+      color: var(--danger);
+    }
+
+    .brand-home {
+      height: 98px;
+      padding: 12px 14px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #fff;
+      border-bottom: 1px solid var(--line);
+      position: relative;
+    }
+
+    .brand-logo {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      color: var(--brand);
+      font-weight: 900;
+      letter-spacing: .4px;
+    }
+
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      border: 3px solid var(--brand);
+      border-radius: 50% 50% 44% 44%;
+      position: relative;
+      transform: rotate(45deg);
+    }
+
+    .brand-mark::after {
+      content: "";
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--brand);
+      position: absolute;
+      left: 8px;
+      top: 8px;
+    }
+
+    .brand-text strong,
+    .brand-text span {
+      display: block;
+      line-height: 1.05;
+    }
+
+    .brand-text strong {
+      font-size: 18px;
+    }
+
+    .brand-text span {
+      margin-top: 4px;
+      font-size: 12px;
+      color: #a94b4b;
+    }
+
+    .brand-home .capsule {
+      position: absolute;
+      right: 14px;
+      top: 34px;
+    }
+
+    .today-card {
+      margin-top: 0;
+      position: relative;
+      z-index: 2;
+    }
+
+    .today-summary {
+      margin-bottom: 12px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    .today-summary h2 {
+      margin: 0 0 8px;
+      font-size: 24px;
+      line-height: 1.22;
+      letter-spacing: 0;
+    }
+
+    .today-summary p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.7;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+
+    .stats.two {
+      grid-template-columns: repeat(2, 1fr);
+    }
+
+    .stat {
+      min-height: 74px;
+      padding: 10px;
+      border-radius: 8px;
+      background: #fffafa;
+      border: 1px solid #f3e6e6;
+    }
+
+    .stat span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .stat b {
+      display: block;
+      margin-top: 6px;
+      font-size: 18px;
+      line-height: 1.2;
+      color: #272727;
+    }
+
+    .primary-action {
+      width: 100%;
+      height: 46px;
+      margin-top: 14px;
+      border: 0;
+      border-radius: 8px;
+      color: #fff;
+      background: var(--brand);
+      font-size: 15px;
+      font-weight: 900;
+    }
+
+    .plain-action {
+      width: 100%;
+      height: 44px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: #5a5353;
+      background: #fff;
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    .data-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+      min-height: 34px;
+      border-bottom: 1px solid #f1eeee;
+      font-size: 13px;
+    }
+
+    .data-row:last-child {
+      border-bottom: 0;
+    }
+
+    .data-row span {
+      color: #625c5c;
+    }
+
+    .data-row b {
+      font-size: 14px;
+      white-space: nowrap;
+    }
+
+    .toolbar {
+      display: grid;
+      grid-template-columns: 1fr 86px;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .select-pill,
+    .small-btn {
+      min-height: 38px;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #fff;
+      color: #5a5353;
+      font-size: 13px;
+    }
+
+    .small-btn {
+      justify-content: center;
+      color: var(--brand);
+      font-weight: 800;
+    }
+
+    .sync-card {
+      border-color: #f2dddd;
+      background: linear-gradient(180deg, #fff 0%, #fff8f8 100%);
+    }
+
+    .sync-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .sync-metric {
+      min-height: 66px;
+      padding: 9px 10px;
+      border-radius: 8px;
+      border: 1px solid #f1e2e2;
+      background: #fff;
+    }
+
+    .sync-metric span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .sync-metric b {
+      display: block;
+      margin-top: 5px;
+      font-size: 17px;
+    }
+
+    .cycle-switch {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      margin-bottom: 10px;
+      padding: 4px;
+      border-radius: 8px;
+      background: #f5eeee;
+    }
+
+    .cycle-input {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .cycle-switch label {
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 6px;
+      color: #7b7070;
+      font-size: 13px;
+      font-weight: 900;
+      cursor: pointer;
+    }
+
+    #home-month:checked ~ .cycle-switch label[for="home-month"],
+    #home-week:checked ~ .cycle-switch label[for="home-week"],
+    .cycle-switch label.active {
+      background: #fff;
+      color: var(--brand);
+      box-shadow: 0 4px 12px rgba(120, 50, 50, .1);
+    }
+
+    .cycle-panel {
+      display: none;
+    }
+
+    #home-month:checked ~ .month-panel,
+    #home-week:checked ~ .week-panel {
+      display: grid;
+    }
+
+    .period-note {
+      margin-bottom: 10px;
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid #f1dddd;
+      background: #fff8f8;
+      color: #625c5c;
+      font-size: 12px;
+      line-height: 1.75;
+    }
+
+    .period-note b {
+      color: var(--brand-deep);
+    }
+
+    .fixed-info {
+      min-height: 38px;
+      margin-bottom: 10px;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      background: #fff;
+      color: #5a5353;
+      font-size: 13px;
+    }
+
+    .textarea {
+      width: 100%;
+      height: 120px;
+      resize: none;
+      border: 1px solid #e3dddd;
+      border-radius: 6px;
+      padding: 11px;
+      color: #303640;
+      background: #fff;
+      font-family: inherit;
+      font-size: 13px;
+      line-height: 1.65;
+    }
+
+    .textarea.short {
+      height: 88px;
+    }
+
+    .input {
+      width: 100%;
+      height: 40px;
+      margin: 6px 0 10px;
+      padding: 0 11px;
+      border: 1px solid #e3dddd;
+      border-radius: 6px;
+      background: #fff;
+      font-size: 13px;
+    }
+
+    .field-label {
+      color: #4e5662;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .counter {
+      margin-top: 4px;
+      color: var(--subtle);
+      font-size: 11px;
+      text-align: right;
+    }
+
+    .bottom-actions {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 76px;
+      height: 74px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      padding: 10px 14px 12px;
+      background: #fff;
+      border-top: 1px solid var(--line);
+    }
+
+    .btn {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: #5a5353;
+      font-size: 15px;
+      font-weight: 900;
+    }
+
+    .btn.primary {
+      border-color: var(--brand);
+      background: var(--brand);
+      color: #fff;
+    }
+
+    .list-card {
+      padding: 13px;
+    }
+
+    .list-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: flex-start;
+      margin-bottom: 8px;
+    }
+
+    .list-card h3 {
+      margin: 0 0 5px;
+      font-size: 15px;
+      line-height: 1.3;
+    }
+
+    .list-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.65;
+    }
+
+    .filter-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .filter {
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: #6b6464;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .filter.active {
+      color: #fff;
+      border-color: var(--brand);
+      background: var(--brand);
+    }
+
+    .overview-tools {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .filter-chip {
+      height: 42px;
+      padding: 0 12px;
+      border: 1px solid #f1dddd;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: #fff8f8;
+      color: var(--brand-deep);
+      font-size: 14px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .filter-chip.right {
+      justify-content: flex-end;
+    }
+
+    .filter-chip .chev {
+      margin-left: auto;
+      color: #9d3333;
+    }
+
+    .role-note {
+      margin-bottom: 10px;
+      padding: 10px 12px;
+      border: 1px solid #f1dddd;
+      border-radius: 8px;
+      background: #fff8f8;
+      color: #8f2d2d;
+      font-size: 12px;
+      line-height: 1.65;
+    }
+
+    .table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border-radius: 8px;
+      font-size: 12px;
+    }
+
+    .table th,
+    .table td {
+      padding: 9px 6px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+    }
+
+    .table th {
+      color: var(--muted);
+      background: #fafafa;
+      font-weight: 800;
+    }
+
+    .review-item {
+      display: grid;
+      grid-template-columns: 36px 1fr auto;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .review-item:last-child {
+      border-bottom: 0;
+    }
+
+    .avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: var(--brand-soft);
+      color: var(--brand-deep);
+      font-weight: 900;
+    }
+
+    .review-name {
+      font-size: 14px;
+      font-weight: 900;
+    }
+
+    .review-meta {
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .store-item {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .store-item:last-child {
+      border-bottom: 0;
+    }
+
+    .store-name {
+      font-size: 14px;
+      font-weight: 900;
+    }
+
+    .store-meta {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .market-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 8;
+      display: flex;
+      align-items: flex-end;
+      background: rgba(15, 18, 24, .34);
+    }
+
+    .market-sheet {
+      width: 100%;
+      padding: 14px;
+      background: #fff;
+      border-radius: 18px 18px 0 0;
+      box-shadow: 0 -16px 36px rgba(20, 20, 20, .16);
+    }
+
+    .sheet-title {
+      margin-bottom: 10px;
+      font-size: 17px;
+      font-weight: 900;
+      text-align: center;
+    }
+
+    .market-option {
+      min-height: 48px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+      border-bottom: 1px solid var(--line);
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    .market-option:last-of-type {
+      border-bottom: 0;
+    }
+
+    .market-option span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 500;
+    }
+
+    .market-option.active {
+      color: var(--brand);
+    }
+
+    .sheet-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .sheet-actions .btn {
+      height: 42px;
+    }
+
+    .progress-row {
+      display: grid;
+      grid-template-columns: 62px 1fr 42px;
+      gap: 8px;
+      align-items: center;
+      margin: 11px 0;
+      font-size: 12px;
+    }
+
+    .bar {
+      height: 8px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: #eeeeee;
+    }
+
+    .bar span {
+      display: block;
+      height: 100%;
+      border-radius: 999px;
+      background: var(--brand);
+    }
+
+    .flow {
+      display: grid;
+      gap: 8px;
+    }
+
+    .flow-step {
+      display: grid;
+      grid-template-columns: 26px 1fr;
+      gap: 9px;
+      align-items: start;
+    }
+
+    .num {
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: var(--brand-soft);
+      color: var(--brand-deep);
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .flow-step b {
+      display: block;
+      margin-bottom: 3px;
+      font-size: 13px;
+    }
+
+    .flow-step span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .mini-note {
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: #fafafa;
+      border: 1px dashed #e2dddd;
+      color: #6b6464;
+      font-size: 12px;
+      line-height: 1.65;
+    }
+
+    .interactive-stage {
+      max-width: 1250px;
+      margin: 0 auto 28px;
+      display: grid;
+      grid-template-columns: 390px minmax(0, 1fr);
+      gap: 24px;
+      align-items: start;
+    }
+
+    .interactive-note {
+      padding: 18px 20px;
+      border: 1px solid #f0d8d8;
+      border-radius: 8px;
+      background: #fff;
+      color: #423939;
+    }
+
+    .interactive-note h2 {
+      margin: 0 0 8px;
+      font-size: 18px;
+    }
+
+    .interactive-note p {
+      margin: 0 0 14px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.75;
+    }
+
+    .role-switch {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    .role-btn {
+      min-height: 40px;
+      border: 1px solid #f0d8d8;
+      border-radius: 8px;
+      background: #fff8f8;
+      color: var(--brand-deep);
+      font-size: 13px;
+      font-weight: 900;
+      cursor: pointer;
+    }
+
+    .role-btn.active {
+      border-color: var(--brand);
+      background: var(--brand);
+      color: #fff;
+    }
+
+    .click-map {
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.65;
+    }
+
+    .clickable,
+    .tab,
+    .filter-chip,
+    .market-option,
+    .store-item,
+    .review-item,
+    .list-card,
+    button {
+      cursor: pointer;
+    }
+
+    .phone.interactive-phone {
+      margin: 0;
+    }
+
+    .app-toast {
+      position: absolute;
+      left: 50%;
+      bottom: 96px;
+      z-index: 20;
+      transform: translateX(-50%);
+      max-width: 260px;
+      padding: 9px 13px;
+      border-radius: 999px;
+      background: rgba(20, 23, 30, .84);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 800;
+      text-align: center;
+      pointer-events: none;
+    }
+
+    @media (max-width: 1260px) {
+      .brief {
+        grid-template-columns: 1fr;
+      }
+
+      .interactive-stage {
+        grid-template-columns: 390px;
+        justify-content: center;
+      }
+
+    }
+
+    @media (max-width: 860px) {
+      .workspace {
+        padding: 18px 10px 32px;
+      }
+
+      .scope {
+        grid-template-columns: 1fr;
+      }
+
+    }
+    /* V3 information architecture */
+    .segmented { display:grid; grid-template-columns:repeat(3,1fr); gap:4px; margin-bottom:12px; padding:4px; border-radius:10px; background:#ececec; }
+    .segmented.two { grid-template-columns:repeat(2,1fr); }
+    .segment { border:0; border-radius:7px; padding:8px 4px; background:transparent; color:var(--muted); font-size:12px; font-weight:700; cursor:pointer; }
+    .segment.active { background:#fff; color:var(--brand); box-shadow:0 2px 8px rgba(0,0,0,.06); }
+    .page-link { color:var(--brand); font-size:12px; font-weight:700; cursor:pointer; }
+    .tree-row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:13px 0; border-bottom:1px solid var(--line); cursor:pointer; }
+    .tree-row:last-child { border-bottom:0; }
+    .tree-row strong { display:block; font-size:14px; }
+    .tree-row span { display:block; margin-top:4px; color:var(--muted); font-size:11px; }
+    .tree-arrow { color:var(--subtle); font-size:18px; }
+    .search-input { width:100%; border:1px solid var(--line); border-radius:10px; padding:11px 13px; background:#fff; font:inherit; outline:none; }
+    .search-input:focus { border-color:#e3a3a3; }
+    .field-error { margin-top:6px; color:var(--danger); font-size:11px; }
+    .textarea.error { border-color:var(--danger); background:var(--danger-soft); }
+    .meta-line { display:flex; align-items:center; justify-content:space-between; gap:12px; color:var(--muted); font-size:12px; }
+    .modal-copy { margin:8px 0 16px; color:var(--muted); font-size:13px; line-height:1.7; }
+  </style>
+</head>
+<body>
+  <main class="workspace clean-workspace">
+    <section class="brief">
+      <div>
+        <h1>轻量日总结小程序 · 可点击原型</h1>
+        <p>员工完成个人日报，店长管理本店提交，管理层按授权范围查看市场、门店与员工。</p>
+      </div>
+      <div class="scope">
+        <span>员工：首页｜记录｜我的</span>
+        <span>店长：首页｜本店｜我的</span>
+        <span>管理层：总览｜组织｜我的</span>
+      </div>
+    </section>
+    <section class="interactive-stage">
+      <article class="phone interactive-phone">
+        <div class="fixed-title">可点击主流程</div>
+        <div class="screen" id="app-screen"></div>
+      </article>
+      <aside class="interactive-note">
+        <h2>演示工作台</h2>
+        <p>角色切换位于手机外，仅用于验证不同身份的页面与权限。</p>
+        <div class="role-switch" id="role-switch">
+          <button class="role-btn active" data-role="employee">员工</button>
+          <button class="role-btn" data-role="manager">店长</button>
+          <button class="role-btn" data-role="admin" data-admin-scope="hq">总部管理</button>
+          <button class="role-btn" data-role="admin" data-admin-scope="market">浙江市场负责人</button>
+        </div>
+        <div class="click-map">
+          <span>员工：首页 → 填写 / 草稿 / 提交 → 详情；记录按经营月归档。</span>
+          <span>店长：首页处理个人日报；本店按今日 / 周 / 月查看人员。</span>
+          <span>管理层：总览发现问题；组织按市场 → 门店 → 员工下钻。</span>
+        </div>
+      </aside>
+    </section>
+  </main>
+  <script>
+    (() => {
+      const data = {
+        today: "2026-07-06",
+        markets: [
+          { id: "zhejiang", name: "浙江市场" },
+          { id: "jiangsu", name: "江苏市场" },
+          { id: "shanghai", name: "上海市场" }
+        ],
+        stores: [
+          { id: "westlake", name: "杭州西湖旗舰店", marketId: "zhejiang" },
+          { id: "binjiang", name: "杭州滨江店", marketId: "zhejiang" },
+          { id: "ningbo", name: "宁波鄞州店", marketId: "zhejiang" },
+          { id: "shaoxing", name: "绍兴柯桥店", marketId: "zhejiang" },
+          { id: "suzhou", name: "苏州中心店", marketId: "jiangsu" },
+          { id: "shanghai", name: "上海静安店", marketId: "shanghai" }
+        ],
+        employees: [
+          { id: "zhang", name: "张三", role: "美容顾问", storeId: "westlake", status: "draft" },
+          { id: "li", name: "李四", role: "美容顾问", storeId: "westlake", status: "submitted" },
+          { id: "wang", name: "王五", role: "养生师", storeId: "westlake", status: "missing" },
+          { id: "zhao", name: "赵店长", role: "店长", storeId: "westlake", status: "submitted" },
+          { id: "sun", name: "孙七", role: "美容顾问", storeId: "binjiang", status: "submitted" },
+          { id: "wu", name: "吴敏", role: "店长", storeId: "ningbo", status: "missing" },
+          { id: "zhou", name: "周八", role: "美容顾问", storeId: "suzhou", status: "submitted" },
+          { id: "chen", name: "陈九", role: "店长", storeId: "shanghai", status: "submitted" }
+        ],
+        records: {
+          zhang: [
+            { date:"2026-07-06", status:"draft", action:"已完成重点客户回访。", growth:"今天复盘了体验卡客户转化话术。", plan:"明日补齐高意向客户跟进。", mentor:"李老师", peer:"赵六" },
+            { date:"2026-07-05", status:"submitted", action:"完成老客回访 12 人，其中 4 人预约到店。", growth:"先讲清改善周期，再进入套餐推荐，沟通更顺畅。", plan:"上午回访 8 位老客，下午邀约体验卡用户。", mentor:"李老师", peer:"赵六" },
+            { date:"2026-07-04", status:"submitted", action:"整理 8 位高意向客户并完成二次跟进。", growth:"跟进前先看历史项目，沟通效率更高。", plan:"继续跟进未成交顾客。", mentor:"李老师", peer:"赵六" }
+          ],
+          zhao: [
+            { date:"2026-07-06", status:"submitted", action:"跟进本店未提交人员，复盘本周目标。", growth:"提交提醒应前置到晚会之前。", plan:"明日关注低频提交员工。", mentor:"市场总监", peer:"李四" },
+            { date:"2026-07-05", status:"submitted", action:"完成门店员工日总结检查。", growth:"班前明确当天重点，晚会复盘更聚焦。", plan:"继续关注本月提交率。", mentor:"市场总监", peer:"李四" }
+          ],
+          li: [{ date:"2026-07-06", status:"submitted", action:"完成 5 位体验卡客户跟进。", growth:"价格异议要回到需求本身。", plan:"整理高意向名单。", mentor:"赵店长", peer:"张三" }],
+          wang: [{ date:"2026-07-05", status:"submitted", action:"完成项目服务 6 人。", growth:"服务后回访要更及时。", plan:"明日完成老客回访。", mentor:"赵店长", peer:"李四" }],
+          sun: [{ date:"2026-07-06", status:"submitted", action:"完成老客复购跟进。", growth:"复购客户需要先看历史项目。", plan:"继续邀约到店。", mentor:"店长", peer:"同事" }],
+          wu: [{ date:"2026-07-05", status:"submitted", action:"复盘门店本周目标。", growth:"提醒动作还可以更前置。", plan:"关注未提交员工。", mentor:"市场总监", peer:"运营" }],
+          zhou: [{ date:"2026-07-06", status:"submitted", action:"跟进江苏市场会员复购 9 人。", growth:"邀约前确认项目体验感更顺畅。", plan:"整理沉睡会员名单。", mentor:"苏州店长", peer:"同事" }],
+          chen: [{ date:"2026-07-06", status:"submitted", action:"复盘上海门店今日提交。", growth:"晚会前确认提交节奏更稳定。", plan:"跟进低频提交员工。", mentor:"市场总监", peer:"运营" }]
+        },
+        months: [
+          { id:"2026-07", label:"2026年7月", range:"06-26 至 07-25", due:30, submitted:24 },
+          { id:"2026-06", label:"2026年6月", range:"05-26 至 06-25", due:30, submitted:27 },
+          { id:"2026-05", label:"2026年5月", range:"04-26 至 05-25", due:31, submitted:25 }
+        ]
+      };
+
+      const initialForm = () => ({ action:"", growth:"", plan:"", mentor:"", peer:"", dirty:false, errors:{} });
+      const state = {
+        role:"employee", adminScope:"hq", page:"home", stack:[], modal:null, toast:"",
+        selectedMonth:"2026-07", period:"week", storePeriod:"today", selectedMarket:"all",
+        selectedStore:"westlake", selectedEmployee:"zhang", selectedRecordDate:data.today,
+        orgView:"tree", employeeRole:"全部", employeeSearch:"", employeeStore:"all",
+        personalReportAnchor:"summary", contentScrollTop:0, editingSubmitted:false, form:initialForm()
+      };
+
+      const roleTabs = {
+        employee:[["home","首页"],["records","记录"],["mine","我的"]],
+        manager:[["home","首页"],["myStore","本店"],["mine","我的"]],
+        admin:[["overview","总览"],["organization","组织"],["mine","我的"]]
+      };
+      const statusText = { missing:"未填写", draft:"草稿", submitted:"已提交" };
+      const employee = id => data.employees.find(x => x.id === id) || data.employees[0];
+      const store = id => data.stores.find(x => x.id === id) || data.stores[0];
+      const market = id => data.markets.find(x => x.id === id) || data.markets[0];
+      const records = id => data.records[id] || (data.records[id] = []);
+      const currentUser = () => state.role === "manager" ? employee("zhao") : employee("zhang");
+      const selectedMonth = () => data.months.find(x => x.id === state.selectedMonth) || data.months[0];
+      const scopedMarketIds = () => state.adminScope === "market" ? ["zhejiang"] : data.markets.map(x => x.id);
+      const scopedStores = () => data.stores.filter(x => scopedMarketIds().includes(x.marketId) && (state.selectedMarket === "all" || x.marketId === state.selectedMarket));
+      const employeesForStore = id => data.employees.filter(x => x.storeId === id);
+      const periodLabel = value => ({today:"今日",week:"本经营周",month:"本经营月"}[value] || value);
+      const pseudoStats = (seed, period=state.period) => {
+        const days = period === "today" ? 1 : period === "week" ? 7 : selectedMonth().due;
+        const due = Math.max(1, seed) * days;
+        const rate = Math.max(48, Math.min(96, 58 + (seed * 7) % 35));
+        const submitted = Math.round(due * rate / 100);
+        return { due, submitted, missing:due-submitted, rate };
+      };
+
+      function chrome(){ return `<div class="status"><span>16:22</span><span class="signal">5G <span class="battery"></span></span></div>`; }
+      function nav(title, back=true){ return `<div class="nav">${back?'<button class="back" data-action="back" aria-label="返回"></button>':'<span style="width:30px"></span>'}<div class="nav-title">${title}</div><div class="capsule">••• ◎</div></div>`; }
+      function tabs(active){ return `<div class="tabs">${roleTabs[state.role].map(([page,label])=>`<div class="tab ${active===page?'active':''}" data-tab="${page}"><span class="tab-icon ${active===page?'dot':''}"></span>${label}</div>`).join("")}</div>`; }
+      function tag(status){ const cls=status==="submitted"?"ok":status==="draft"?"warn":"danger"; return `<span class="tag ${cls}">${statusText[status]||status}</span>`; }
+      function statsCard(title, stats, subtitle=""){ return `<div class="card"><div class="section-head"><div><div class="section-title">${title}</div>${subtitle?`<div class="section-sub">${subtitle}</div>`:""}</div><span class="tag ${stats.rate>=90?'ok':stats.rate>=70?'warn':'danger'}">${stats.rate}%</span></div><div class="stats"><div class="stat"><span>应提交</span><b>${stats.due}</b></div><div class="stat"><span>已提交</span><b>${stats.submitted}</b></div><div class="stat"><span>未提交</span><b>${stats.missing}</b></div></div></div>`; }
+      function weeklyMetrics(){ return `<div class="card sync-card"><div class="section-head"><div class="section-title">本经营周指标</div><span class="page-link" data-action="open-current-month">查看本经营月 ›</span></div><div class="sync-grid"><div class="sync-metric"><span>销售目标</span><b>¥65,000</b></div><div class="sync-metric"><span>销售完成率</span><b>74.8%</b></div><div class="sync-metric"><span>消耗目标</span><b>¥45,000</b></div><div class="sync-metric"><span>消耗完成率</span><b>76.0%</b></div></div></div>`; }
+      function monthlyMetrics(){ return `<div class="section-head" style="margin-top:12px"><div class="section-title">经营指标</div></div><div class="sync-grid"><div class="sync-metric"><span>销售目标</span><b>¥260,000</b></div><div class="sync-metric"><span>销售完成率</span><b>82.6%</b></div><div class="sync-metric"><span>消耗目标</span><b>¥180,000</b></div><div class="sync-metric"><span>消耗完成率</span><b>79.2%</b></div></div>`; }
+      function periodSwitch(value, action="period"){ return `<div class="segmented">${[["today","今日"],["week","本经营周"],["month","本经营月"]].map(([id,label])=>`<button class="segment ${value===id?'active':''}" data-${action}="${id}">${label}</button>`).join("")}</div>`; }
+      function toast(){ return state.toast ? `<div class="app-toast">${state.toast}</div>` : ""; }
+
+      function recordRow(row, ownerId, owns=false){
+        const visible = owns ? row.status : (row.status === "draft" ? "missing" : row.status);
+        const clickable = visible !== "missing";
+        const summary = visible === "submitted" ? row.action : visible === "draft" ? row.action : "今日未提交";
+        const todayMarker=row.date===data.today?'id="personal-report-today"':'';
+        return `<div ${todayMarker} class="list-card ${clickable?'clickable':''}" ${clickable?`data-record-date="${row.date}" data-record-owner="${ownerId}"`:''}><div class="list-top"><div><h3>${row.date} 日总结</h3><p>${summary}</p></div>${tag(visible)}</div></div>`;
+      }
+
+      function homePage(){
+        const user=currentUser(), ownRecords=records(user.id).slice(0,2);
+        const button=user.status==="submitted"?["查看今日日总结","today-detail"]:user.status==="draft"?["继续填写","go-fill"]:["填写今日日总结","go-fill"];
+        const managerSummary=state.role==="manager"?`<div class="card clickable" data-action="open-store-today"><div class="section-head"><div><div class="section-title">本店今日提交</div><div class="section-sub">含店长本人 · 点击查看人员</div></div><span class="tag warn">50%</span></div><div class="stats"><div class="stat"><span>应提交</span><b>4</b></div><div class="stat"><span>已提交</span><b>2</b></div><div class="stat"><span>未提交</span><b>2</b></div></div></div>`:"";
+        return `${chrome()}<div class="brand-home"><div class="brand-logo"><span class="brand-mark"></span><span class="brand-text"><strong>FENGYU</strong><span>凤御美业</span></span></div><div class="capsule">••• ◎</div></div><div class="content home-content"><div class="card today-card"><div class="today-summary"><h2>我的日总结</h2><p>${data.today} · ${user.name} · ${store(user.storeId).name}</p></div><div class="section-head"><div class="section-title">今日状态</div>${tag(user.status)}</div><button class="primary-action" data-action="${button[1]}">${button[0]}</button></div>${weeklyMetrics()}${managerSummary}<div class="section-head"><div class="section-title">我的最近日总结</div><span class="page-link" data-action="open-personal-records">历史记录 ›</span></div>${ownRecords.map(x=>recordRow(x,user.id,true)).join("")}</div>${tabs("home")}${toast()}`;
+      }
+
+      function personalReportContent(person){
+        const month=selectedMonth(), owns=person.id===currentUser().id&&state.role!=="admin";
+        const submitted=Math.max(1, month.submitted-person.id.length);
+        const rows=recordsForMonth(person.id).filter(row=>owns||row.status==="submitted");
+        return `<div class="card"><div class="section-head"><div><div class="section-title">${person.name}</div><div class="section-sub">${person.role} · ${store(person.storeId).name}</div></div><div class="avatar">${person.name[0]}</div></div></div>${monthPicker()}<div id="personal-report-summary" class="card">${statsCardInner("月度提交概况",{due:month.due,submitted,missing:month.due-submitted,rate:Math.round(submitted/month.due*100)},month.range)}${monthlyMetrics()}</div><div id="personal-report-history" class="section-head"><div class="section-title">历史日报记录</div><span class="section-sub">${month.label}</span></div>${rows.map(row=>recordRow(row,person.id,owns)).join("")||'<div class="notice">当前经营月暂无已提交日总结。</div>'}`;
+      }
+      function statsCardInner(title,stats,subtitle){ return `<div class="section-head"><div><div class="section-title">${title}</div><div class="section-sub">${subtitle}</div></div><span class="tag ${stats.rate>=90?'ok':stats.rate>=70?'warn':'danger'}">${stats.rate}%</span></div><div class="stats"><div class="stat"><span>应提交</span><b>${stats.due}</b></div><div class="stat"><span>已提交</span><b>${stats.submitted}</b></div><div class="stat"><span>未提交</span><b>${stats.missing}</b></div></div>`; }
+      function recordsForMonth(id){
+        const base=records(id);
+        if(state.selectedMonth==="2026-07") return base;
+        const dates=state.selectedMonth==="2026-06"?["2026-06-25","2026-06-24"]:["2026-05-25","2026-05-24"];
+        const source=base.filter(x=>x.status==="submitted");
+        return dates.map((date,i)=>({...source[i%Math.max(source.length,1)]||records("zhang")[1],date,status:"submitted"}));
+      }
+      function personalReportPage(primary=false){
+        const person=employee(state.selectedEmployee), nested=!primary;
+        return `${chrome()}${nav(`${person.name}的个人日报`,nested)}<div class="content ${nested?'no-tabs':''}">${personalReportContent(person)}</div>${nested?'':tabs("records")}${monthModal()}${toast()}`;
+      }
+      function monthPicker(){ const m=selectedMonth(); return `<div class="overview-tools" style="grid-template-columns:1fr"><div class="filter-chip" data-action="open-month">${m.label} · ${m.range} <span class="chev">⌄</span></div></div>`; }
+
+      function fillField(key,title,placeholder,max){ const value=state.form[key]||"", error=state.form.errors[key]; return `<div class="form-section"><div class="section-head"><div class="section-title">${title}</div><span class="tag danger">必填</span></div><textarea class="textarea short ${error?'error':''}" data-form-field="${key}" maxlength="${max}" placeholder="${placeholder}">${escapeHtml(value)}</textarea><div class="counter">${value.length}/${max}</div>${error?`<div class="field-error">${error}</div>`:""}</div>`; }
+      function fillPage(){ const user=currentUser(); return `${chrome()}${nav(state.editingSubmitted?"修改今日总结":"填写日总结")}<div class="content with-actions"><div class="toolbar"><div class="fixed-info" style="flex:1">今天 · ${data.today}</div><button class="small-btn" data-action="copy-last">复制上次内容</button></div><div class="fixed-info">当前门店：${store(user.storeId).name}</div>${fillField("action","一 今日行动","建议写 1-3 条关键行动...",500)}${fillField("growth","二 今日成长","一句话写今天的问题、收获或复盘...",300)}${fillField("plan","三 明日计划","写明天最重要的 1-3 个动作...",500)}<div class="form-section"><div class="section-head"><div class="section-title">四 指导关系</div><span class="tag">选填</span></div><label class="field-label">指导员</label><div class="select-pill" data-action="choose-mentor" style="margin:6px 0 10px">${state.form.mentor||"请选择指导员"} <span>⌄</span></div><label class="field-label">同事</label><div class="select-pill" data-action="choose-peer" style="margin-top:6px">${state.form.peer||"请选择同事"} <span>⌄</span></div></div></div><div class="bottom-actions"><button class="btn" data-action="save-draft">保存草稿</button><button class="btn primary" data-action="submit-summary">${state.editingSubmitted?"重新提交":"提交总结"}</button></div>${confirmModal()}${toast()}`; }
+
+      function myStorePage(){
+        const people=employeesForStore(currentUser().storeId), stats=pseudoStats(people.length,state.storePeriod);
+        return `${chrome()}${nav("本店日报",false)}<div class="content">${periodSwitch(state.storePeriod,"store-period")}${statsCard("本店提交概况",stats,`${store(currentUser().storeId).name} · ${periodLabel(state.storePeriod)}`)}<div class="card"><div class="section-head"><div class="section-title">人员提交列表</div><span class="section-sub">草稿对店长显示为未提交</span></div>${people.map(person=>personRow(person,state.storePeriod)).join("")}</div></div>${tabs("myStore")}${toast()}`;
+      }
+      function personRow(person,period=state.period){
+        const visible=person.status==="draft"?"missing":person.status, stats=pseudoStats(1,period);
+        const meta=period==="today"?`${person.role} · ${visible==="submitted"?'今日已提交':'今日未提交'}`:`${person.role} · 已交 ${stats.submitted}/${stats.due}`;
+        return `<div class="review-item clickable" data-person-open="${person.id}"><div class="avatar">${person.name[0]}</div><div><div class="review-name">${person.name}</div><div class="review-meta">${meta}</div></div>${period==="today"?tag(visible):`<span class="tag ${stats.rate>=70?'ok':'warn'}">${stats.rate}%</span>`}</div>`;
+      }
+
+      function attentionOrder(item){ return (item.status==="missing"?0:item.status==="draft"?1:2)+item.id.length/100; }
+      function overviewPage(){
+        const stores=scopedStores(), marketIds=[...new Set(stores.map(x=>x.marketId))], people=data.employees.filter(x=>stores.some(s=>s.id===x.storeId));
+        const isHeadquarters=state.adminScope==="hq", showMarkets=isHeadquarters&&state.selectedMarket==="all";
+        const title=isHeadquarters?"管理总览":`${market("zhejiang").name}总览`;
+        const scopeLabel=state.selectedMarket==="all"?"全部授权市场":market(state.selectedMarket).name;
+        const scopeControl=isHeadquarters?`<div class="overview-tools"><div class="filter-chip" data-action="open-scope">查看范围：${scopeLabel} <span class="chev">⌄</span></div></div>`:"";
+        const concernMarkets=marketIds.slice().sort((a,b)=>a.length-b.length).slice(0,3).map(marketRow).join("");
+        const concernStores=stores.slice().sort((a,b)=>a.id.length-b.id.length).slice(0,3).map(storeRow).join("");
+        const concernPeople=people.slice().sort((a,b)=>attentionOrder(a)-attentionOrder(b)).slice(0,3).map(x=>personRow(x,state.period)).join("");
+        return `${chrome()}${nav(title,false)}<div class="content">${scopeControl}${periodSwitch(state.period)}${statsCard("提交概况",pseudoStats(people.length,state.period),`${scopeLabel} · ${periodLabel(state.period)}`)}${showMarkets?`<div class="card"><div class="section-head"><div><div class="section-title">待关注市场</div><div class="section-sub">仅展示需要处理的市场</div></div></div>${concernMarkets}</div>`:""}<div class="card"><div class="section-head"><div><div class="section-title">待关注门店</div><div class="section-sub">仅展示需要处理的门店</div></div></div>${concernStores||'<div class="notice">当前范围暂无待关注门店。</div>'}</div><div class="card"><div class="section-head"><div><div class="section-title">待关注员工</div><div class="section-sub">仅展示需要处理的员工</div></div></div>${concernPeople||'<div class="notice">当前范围暂无待关注员工。</div>'}</div></div>${tabs("overview")}${scopeModal()}${toast()}`;
+      }
+      function marketRow(id){ const m=market(id), count=data.stores.filter(x=>x.marketId===id).length, stats=pseudoStats(count*4,state.period); return `<div class="tree-row" data-market-open="${id}"><div><strong>${m.name}</strong><span>${count} 家门店 · 提交率 ${stats.rate}%</span></div><b class="tree-arrow">›</b></div>`; }
+      function storeRow(s){ const stats=pseudoStats(employeesForStore(s.id).length||3,state.period); return `<div class="tree-row" data-store-open="${s.id}"><div><strong>${s.name}</strong><span>${market(s.marketId).name} · 已交 ${stats.submitted}/${stats.due}</span></div><b class="tree-arrow">›</b></div>`; }
+
+      function organizationPage(){
+        return `${chrome()}${nav("组织",false)}<div class="content"><div class="segmented two"><button class="segment ${state.orgView==='tree'?'active':''}" data-org-view="tree">组织架构</button><button class="segment ${state.orgView==='people'?'active':''}" data-org-view="people">人员查找</button></div>${state.orgView==="tree"?organizationTree():peopleSearch()}</div>${tabs("organization")}${toast()}`;
+      }
+      function organizationTree(){ const ids=scopedMarketIds(); const rows=state.adminScope==="market"?data.stores.filter(x=>x.marketId==="zhejiang").map(storeRow).join(""):ids.map(marketRow).join(""); return `<div class="card"><div class="section-head"><div><div class="section-title">${state.adminScope==='hq'?'全部授权市场':'浙江市场'}</div><div class="section-sub">${state.adminScope==='hq'?'按市场 → 门店 → 员工逐层查看':'按门店 → 员工逐层查看'}</div></div></div>${rows}</div>`; }
+      function peopleSearch(){
+        const allowedStores=data.stores.filter(x=>scopedMarketIds().includes(x.marketId)&&(state.selectedMarket==="all"||x.marketId===state.selectedMarket));
+        const list=data.employees.filter(x=>allowedStores.some(s=>s.id===x.storeId)).filter(x=>!state.employeeSearch||x.name.includes(state.employeeSearch)).filter(x=>state.employeeStore==="all"||x.storeId===state.employeeStore).filter(x=>state.employeeRole==="全部"||x.role.includes(state.employeeRole));
+        return `<input class="search-input" data-search placeholder="搜索员工姓名" value="${escapeHtml(state.employeeSearch)}"><div class="overview-tools" style="margin-top:10px">${state.adminScope==='hq'?`<div class="filter-chip" data-action="open-scope">${state.selectedMarket==='all'?'全部市场':market(state.selectedMarket).name} <span>⌄</span></div>`:`<div class="filter-chip">浙江市场</div>`}<div class="filter-chip" data-action="cycle-store">${state.employeeStore==='all'?'全部门店':store(state.employeeStore).name} <span>⌄</span></div></div><div class="filter-row">${["全部","店长","顾问","养生师"].map(x=>`<button class="filter ${state.employeeRole===x?'active':''}" data-role-filter="${x}">${x}</button>`).join("")}</div><div class="card"><div class="section-head"><div class="section-title">员工列表</div><span class="section-sub">${list.length} 人</span></div>${list.map(x=>personRow(x,"month")).join("")}</div>`;
+      }
+
+      function rangeReportPage({title,subtitle,stats,listTitle,rows}){ return `${chrome()}${nav(title)}<div class="content no-tabs">${periodSwitch(state.period)}${statsCard("提交概况",stats,subtitle)}<div class="card"><div class="section-head"><div class="section-title">${listTitle}</div></div>${rows||'<div class="notice">当前范围暂无可查看的明细。</div>'}</div></div>${toast()}`; }
+      function marketReportPage(){ const m=market(state.selectedMarket), stores=data.stores.filter(x=>x.marketId===m.id), people=data.employees.filter(x=>stores.some(s=>s.id===x.storeId)); return rangeReportPage({title:`${m.name}日报`,subtitle:`${m.name} · ${periodLabel(state.period)}`,stats:pseudoStats(people.length,state.period),listTitle:"门店列表",rows:stores.map(storeRow).join("")}); }
+      function storeReportPage(){ const s=store(state.selectedStore), people=employeesForStore(s.id); return rangeReportPage({title:`${s.name}日报`,subtitle:`${market(s.marketId).name} · ${periodLabel(state.period)}`,stats:pseudoStats(people.length||3,state.period),listTitle:"人员提交列表",rows:people.map(x=>personRow(x,state.period)).join("")}); }
+      function detailPage(){ const person=employee(state.selectedEmployee), row=records(person.id).find(x=>x.date===state.selectedRecordDate)||records(person.id)[0], owns=person.id===currentUser().id&&state.role!=="admin", editable=owns&&row?.date===data.today&&row?.status==="submitted"; if(!row)return `${chrome()}${nav("日总结详情")}<div class="content no-tabs"><div class="notice">未找到该日总结。</div></div>`; return `${chrome()}${nav("日总结详情")}<div class="content no-tabs"><div class="card"><div class="section-head"><div><div class="section-title">${row.date}</div><div class="section-sub">${person.name} · ${person.role} · ${store(person.storeId).name}</div></div>${tag(row.status)}</div>${row.updatedAt?`<div class="meta-line"><span>最近提交</span><b>${row.updatedAt}</b></div>`:""}</div>${detailBlock("今日行动",row.action)}${detailBlock("今日成长",row.growth)}${detailBlock("明日计划",row.plan)}<div class="card"><div class="section-title">指导关系</div><div class="data-row"><span>指导员</span><b>${row.mentor||"未选择"}</b></div><div class="data-row"><span>同事</span><b>${row.peer||"未选择"}</b></div></div>${editable?'<button class="primary-action" data-action="edit-today">修改今日总结</button>':''}</div>${toast()}`; }
+      function detailBlock(title,text){ return `<div class="card"><div class="section-title">${title}</div><p style="margin:10px 0 0;color:#444c58;font-size:13px;line-height:1.8;white-space:pre-wrap">${escapeHtml(text||"未填写")}</p></div>`; }
+      function minePage(){
+        const admin=state.role==="admin", user=admin?{name:state.adminScope==="hq"?"总部运营":"浙江市场总监",role:state.adminScope==="hq"?"总部管理人员":"市场负责人"}:currentUser();
+        const org=admin?(state.adminScope==="hq"?"品牌总部":"浙江市场"):store(user.storeId).name;
+        const range=admin?(state.adminScope==="hq"?"全部授权市场":"浙江市场"):store(user.storeId).name;
+        return `${chrome()}${nav("我的",false)}<div class="content"><div class="card"><div class="section-head" style="margin:0"><div><div class="section-title">${user.name}</div><div class="section-sub">凤御美业 · ${user.role}</div></div><div class="avatar" style="width:48px;height:48px">${user.name[0]}</div></div></div><div class="card"><div class="section-head"><div class="section-title">身份与授权</div><span class="tag ok">已绑定</span></div><div class="data-row"><span>${admin?'所属组织':'所属门店'}</span><b>${org}</b></div><div class="data-row"><span>当前${admin?'管理身份':'岗位'}</span><b>${user.role}</b></div><div class="data-row"><span>授权查看范围</span><b>${range}</b></div></div>${admin?'<div class="card"><div class="section-title">工作台</div><div class="data-row"><span>多身份用户</span><b>可切换授权工作台</b></div><div class="notice">工作台与范围由后台授权下发。</div></div>':''}<div class="card"><div class="section-title">账号与绑定</div><div class="data-row"><span>绑定状态</span><b>正常</b></div><div class="data-row"><span>需要换绑</span><b class="page-link">联系管理员</b></div></div></div>${tabs("mine")}`;
+      }
+
+      function monthModal(){ if(state.modal!=="month")return""; return `<div class="market-overlay"><div class="market-sheet"><div class="sheet-title">选择经营月</div>${data.months.map(x=>`<div class="market-option ${x.id===state.selectedMonth?'active':''}" data-month="${x.id}"><div>${x.label}<span>${x.range}</span></div>${x.id===state.selectedMonth?'<b>✓</b>':''}</div>`).join("")}<div class="period-note">选择后立即生效</div></div></div>`; }
+      function scopeModal(){ if(state.modal!=="scope")return""; const options=state.adminScope==="market"?[{id:"zhejiang",name:"浙江市场"}]:[{id:"all",name:"全部授权市场"},...data.markets]; return `<div class="market-overlay"><div class="market-sheet"><div class="sheet-title">选择查看范围</div>${options.map(x=>`<div class="market-option ${x.id===state.selectedMarket?'active':''}" data-scope="${x.id}"><div>${x.name}<span>${x.id==='all'?'查看全部授权范围':'仅查看该市场'}</span></div>${x.id===state.selectedMarket?'<b>✓</b>':''}</div>`).join("")}<div class="period-note">范围由后台授权下发，选择后立即生效</div></div></div>`; }
+      function confirmModal(){ if(!["leave","overwrite"].includes(state.modal))return""; const leave=state.modal==="leave"; return `<div class="market-overlay"><div class="market-sheet"><div class="sheet-title">${leave?'内容尚未保存':'覆盖当前内容？'}</div><p class="modal-copy">${leave?'离开后本次修改将不会保留。':'复制上次内容会覆盖当前三个正文输入框。'}</p><div class="sheet-actions"><button class="btn" data-action="cancel-modal">取消</button><button class="btn primary" data-action="${leave?'confirm-leave':'confirm-copy'}">${leave?'直接离开':'确认覆盖'}</button></div></div></div>`; }
+      function escapeHtml(value){ return String(value||"").replace(/[&<>"']/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[ch])); }
+
+      function snapshot(){ const content=document.querySelector("#app-screen .content"); return {page:state.page,selectedMonth:state.selectedMonth,period:state.period,storePeriod:state.storePeriod,selectedMarket:state.selectedMarket,selectedStore:state.selectedStore,selectedEmployee:state.selectedEmployee,selectedRecordDate:state.selectedRecordDate,orgView:state.orgView,employeeRole:state.employeeRole,employeeStore:state.employeeStore,employeeSearch:state.employeeSearch,personalReportAnchor:state.personalReportAnchor,contentScrollTop:content?.scrollTop||0}; }
+      function openPage(page,push=true){ if(push)state.stack.push(snapshot()); state.page=page; state.modal=null; render(); }
+      function back(force=false){ if(state.page==="fill"&&state.form.dirty&&!force){state.modal="leave";render();return;} const prev=state.stack.pop(); if(prev)Object.assign(state,prev); else state.page=state.role==="admin"?"overview":"home"; state.modal=null; render(); }
+      function showToast(message){ state.toast=message; render(); clearTimeout(showToast.timer); showToast.timer=setTimeout(()=>{state.toast="";render();},1400); }
+      function loadFormFromRecord(row){ state.form={action:row?.action||"",growth:row?.growth||"",plan:row?.plan||"",mentor:row?.mentor||"",peer:row?.peer||"",dirty:false,errors:{}}; }
+      function copyLast(){ const user=currentUser(), last=records(user.id).find(x=>x.status==="submitted"&&x.date!==data.today); if(!last){showToast("暂无可复制的已提交记录");return;} state.form.action=last.action;state.form.growth=last.growth;state.form.plan=last.plan;state.form.dirty=true;state.form.errors={};state.modal=null;showToast("已复制上次正文内容"); }
+      function saveCurrent(status){
+        const user=currentUser(); let row=records(user.id).find(x=>x.date===data.today);
+        if(!row){row={date:data.today};records(user.id).unshift(row);}
+        Object.assign(row,{status,action:state.form.action,growth:state.form.growth,plan:state.form.plan,mentor:state.form.mentor,peer:state.form.peer});
+        user.status=status; state.form.dirty=false;
+        if(status==="submitted"){row.updatedAt="今天 16:22";state.selectedEmployee=user.id;state.selectedRecordDate=data.today;state.editingSubmitted=false;openPage("detail",false);showToast("日总结已提交");}
+        else {state.stack=[];state.page="home";render();showToast("草稿已保存");}
+      }
+
+      const renderers={home:homePage,records:()=>personalReportPage(true),personalReport:()=>personalReportPage(false),fill:fillPage,myStore:myStorePage,overview:overviewPage,organization:organizationPage,marketReport:marketReportPage,storeReport:storeReportPage,detail:detailPage,mine:minePage};
+      function render(){
+        const screen=document.getElementById("app-screen");
+        screen.innerHTML=(renderers[state.page]||homePage)();
+        document.querySelectorAll(".role-btn").forEach(x=>x.classList.toggle("active",x.dataset.role===state.role&&(state.role!=="admin"||x.dataset.adminScope===state.adminScope)));
+        if(state.page==="personalReport"||state.page==="records"){
+          const targetId=state.personalReportAnchor==="history"?"personal-report-history":state.personalReportAnchor==="today"?"personal-report-today":"personal-report-summary";
+          const target=screen.querySelector(`#${targetId}`), content=screen.querySelector(".content");
+          if(target&&content) content.scrollTop=Math.max(0,target.offsetTop-content.offsetTop-10);
+        }else if(state.contentScrollTop){
+          const content=screen.querySelector(".content");
+          if(content) content.scrollTop=state.contentScrollTop;
+        }
+        state.contentScrollTop=0;
+      }
+
+      document.addEventListener("input",e=>{
+        if(e.target.matches("[data-form-field]")){const key=e.target.dataset.formField;state.form[key]=e.target.value;state.form.dirty=true;delete state.form.errors[key];const counter=e.target.parentElement.querySelector(".counter");if(counter)counter.textContent=`${e.target.value.length}/${e.target.maxLength}`;e.target.classList.remove("error");const error=e.target.parentElement.querySelector(".field-error");if(error)error.remove();}
+        if(e.target.matches("[data-search]")){state.employeeSearch=e.target.value;state.orgView="people";render();const input=document.querySelector("[data-search]");if(input){input.focus();input.setSelectionRange(input.value.length,input.value.length);}}
+      });
+      document.addEventListener("click",e=>{
+        const role=e.target.closest("[data-role]");
+        if(role&&!e.target.closest("#app-screen")){state.role=role.dataset.role;state.adminScope=role.dataset.adminScope||state.adminScope;state.page=state.role==="admin"?"overview":"home";state.stack=[];state.selectedMarket=state.adminScope==="market"?"zhejiang":"all";state.selectedStore="westlake";state.selectedEmployee=state.role==="manager"?"zhao":"zhang";state.selectedMonth="2026-07";state.period="week";state.storePeriod="today";state.orgView="tree";state.employeeRole="全部";state.employeeSearch="";state.employeeStore="all";state.personalReportAnchor="summary";state.contentScrollTop=0;state.toast="";render();return;}
+        if(!e.target.closest("#app-screen"))return;
+        const tab=e.target.closest("[data-tab]");if(tab){state.stack=[];state.page=tab.dataset.tab;state.modal=null;if(state.page==="myStore")state.storePeriod="today";if(state.page==="records"){state.selectedEmployee=currentUser().id;state.personalReportAnchor="summary";}render();return;}
+        const period=e.target.closest("[data-period]");if(period){state.period=period.dataset.period;render();return;}
+        const storePeriod=e.target.closest("[data-store-period]");if(storePeriod){state.storePeriod=storePeriod.dataset.storePeriod;render();return;}
+        const month=e.target.closest("[data-month]");if(month){state.selectedMonth=month.dataset.month;state.modal=null;render();return;}
+        const scope=e.target.closest("[data-scope]");if(scope){state.selectedMarket=scope.dataset.scope;state.employeeStore="all";state.modal=null;render();return;}
+        const org=e.target.closest("[data-org-view]");if(org){state.orgView=org.dataset.orgView;render();return;}
+        const rf=e.target.closest("[data-role-filter]");if(rf){state.employeeRole=rf.dataset.roleFilter;render();return;}
+        const mo=e.target.closest("[data-market-open]");if(mo){state.selectedMarket=mo.dataset.marketOpen;openPage("marketReport");return;}
+        const so=e.target.closest("[data-store-open]");if(so){state.selectedStore=so.dataset.storeOpen;openPage("storeReport");return;}
+        const po=e.target.closest("[data-person-open]");if(po){state.selectedEmployee=po.dataset.personOpen;state.personalReportAnchor=(state.page==="myStore"&&state.storePeriod==="today")||state.period==="today"?"today":"summary";openPage("personalReport");return;}
+        const ro=e.target.closest("[data-record-date]");if(ro){state.selectedEmployee=ro.dataset.recordOwner;state.selectedRecordDate=ro.dataset.recordDate;const row=records(state.selectedEmployee).find(x=>x.date===state.selectedRecordDate);if(row?.status==="draft"&&state.selectedEmployee===currentUser().id){loadFormFromRecord(row);state.editingSubmitted=false;openPage("fill");}else openPage("detail");return;}
+        const action=e.target.closest("[data-action]")?.dataset.action;if(!action)return;
+        if(action==="back")back();
+        if(action==="go-fill"){const row=records(currentUser().id).find(x=>x.date===data.today);loadFormFromRecord(row?.status==="draft"?row:null);state.editingSubmitted=false;openPage("fill");}
+        if(action==="today-detail"){state.selectedEmployee=currentUser().id;state.selectedRecordDate=data.today;openPage("detail");}
+        if(action==="open-current-month"){state.selectedMonth="2026-07";state.selectedEmployee=currentUser().id;state.personalReportAnchor="summary";openPage(state.role==="manager"?"personalReport":"records");}
+        if(action==="open-personal-records"){state.selectedEmployee=currentUser().id;state.personalReportAnchor="history";openPage(state.role==="manager"?"personalReport":"records");}
+        if(action==="open-store-today"){state.storePeriod="today";state.stack=[];state.page="myStore";render();}
+        if(action==="open-month"){state.modal="month";render();}
+        if(action==="open-scope"){state.modal="scope";render();}
+        if(action==="copy-last"){const has=state.form.action||state.form.growth||state.form.plan;if(has){state.modal="overwrite";render();}else copyLast();}
+        if(action==="confirm-copy")copyLast();
+        if(action==="cancel-modal"){state.modal=null;render();}
+        if(action==="confirm-leave")back(true);
+        if(action==="choose-mentor"){state.form.mentor=state.form.mentor?"":"李老师";state.form.dirty=true;render();}
+        if(action==="choose-peer"){state.form.peer=state.form.peer?"":"赵六";state.form.dirty=true;render();}
+        if(action==="save-draft")saveCurrent("draft");
+        if(action==="submit-summary"){state.form.errors={};["action","growth","plan"].forEach(k=>{if(!state.form[k].trim())state.form.errors[k]="请填写后再提交";});if(Object.keys(state.form.errors).length){render();showToast("请补全必填内容");}else saveCurrent("submitted");}
+        if(action==="edit-today"){const row=records(currentUser().id).find(x=>x.date===data.today);loadFormFromRecord(row);state.editingSubmitted=true;openPage("fill");}
+        if(action==="cycle-store"){const ids=["all",...scopedStores().map(x=>x.id)];state.employeeStore=ids[(ids.indexOf(state.employeeStore)+1)%ids.length];render();}
+      });
+
+
+      render();
+    })();
+  </script>
+<!-- 经营目标与日报快照增强：保留原有原型流程，在前端本地补齐目标设置、实时指标和历史快照。 -->
+<style>
+  .fy-goal-panel { margin: 12px 0; padding: 14px; border: 1px solid #f2d8d8; border-radius: 12px; background: #fffafa; }
+  .fy-goal-panel__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .fy-goal-panel__title { color: #20252e; font-size: 17px; font-weight: 700; }
+  .fy-goal-panel__period { margin: -3px 0 10px; color: #8b919b; font-size: 12px; line-height: 1.6; }
+  .fy-goal-panel__link { border: 0; background: transparent; color: #c92c32; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .fy-metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .fy-metric { min-height: 76px; padding: 10px 8px; border: 1px solid #f0e7e7; border-radius: 9px; background: #fff; box-sizing: border-box; }
+  .fy-metric__label { color: #8b919b; font-size: 12px; line-height: 1.45; }
+  .fy-metric__value { margin-top: 7px; color: #222831; font-size: 17px; font-weight: 700; line-height: 1.1; word-break: break-all; }
+  .fy-goal-inline { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; padding-top: 2px; }
+  .fy-goal-inline__item { display: flex; justify-content: space-between; gap: 8px; padding: 7px 0; border-bottom: 1px solid #f3eded; color: #6e747d; font-size: 13px; }
+  .fy-goal-inline__item strong { color: #252a33; font-size: 14px; white-space: nowrap; }
+  .fy-goal-mask { position: fixed; z-index: 9999; inset: 0; display: flex; align-items: flex-end; background: rgba(0, 0, 0, .42); }
+  .fy-goal-sheet { width: 100%; max-width: 540px; margin: 0 auto; padding: 20px 18px calc(20px + env(safe-area-inset-bottom)); border-radius: 18px 18px 0 0; background: #fff; box-sizing: border-box; }
+  .fy-goal-sheet__head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+  .fy-goal-sheet__head h3 { margin: 0; color: #20252e; font-size: 19px; }
+  .fy-goal-close { border: 0; background: transparent; color: #8b919b; font-size: 25px; line-height: 1; cursor: pointer; }
+  .fy-goal-period { margin: 16px 0 8px; color: #2c313a; font-size: 15px; font-weight: 700; }
+  .fy-goal-period small { display: block; margin-top: 3px; color: #8b919b; font-size: 12px; font-weight: 400; }
+  .fy-goal-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .fy-goal-inputs label { color: #666d77; font-size: 13px; }
+  .fy-goal-inputs input { width: 100%; margin-top: 6px; padding: 10px; border: 1px solid #e1e4e8; border-radius: 8px; box-sizing: border-box; color: #232831; font-size: 16px; }
+  .fy-goal-save { width: 100%; margin-top: 20px; padding: 13px; border: 0; border-radius: 8px; background: #d83437; color: #fff; font-size: 16px; font-weight: 700; cursor: pointer; }
+  .fy-month-modal .fy-goal-sheet { align-self: center; margin: auto; border-radius: 16px; }
+</style>
+<script>
+(() => {
+  const FY_GOALS_KEY = 'fengyu-daily-summary-goals-v1';
+  const FY_SNAPSHOTS_KEY = 'fengyu-daily-summary-snapshots-v1';
+  const defaults = {
+    week: { salesTarget: 65000, consumptionTarget: 45000, salesCompleted: 48600, consumptionCompleted: 34200 },
+    month: { salesTarget: 260000, consumptionTarget: 180000, salesCompleted: 188600, consumptionCompleted: 130200 }
+  };
+
+  const money = value => '¥' + Number(value || 0).toLocaleString('zh-CN', { maximumFractionDigits: 0 });
+  const rate = (done, target) => Number(target) > 0 ? (Number(done || 0) / Number(target) * 100).toFixed(1) + '%' : '--';
+  const readJSON = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) || fallback; } catch (_) { return fallback; } };
+  const writeJSON = (key, value) => localStorage.setItem(key, JSON.stringify(value));
+  const pad = number => String(number).padStart(2, '0');
+  const isoDate = date => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+
+  function visibleDate() {
+    const input = document.querySelector('input[type="date"]');
+    if (input && /^\d{4}-\d{2}-\d{2}$/.test(input.value)) return input.value;
+    const found = document.body.innerText.match(/20\d{2}-\d{2}-\d{2}/);
+    return found ? found[0] : '2026-07-06';
+  }
+
+  function periods(dateText = visibleDate()) {
+    const date = new Date(`${dateText}T12:00:00`);
+    const day = (date.getDay() + 6) % 7;
+    const weekStart = new Date(date); weekStart.setDate(date.getDate() - day);
+    const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate() + 6);
+    const monthStart = new Date(date.getFullYear(), date.getMonth(), date.getDate() >= 26 ? 26 : -5);
+    const monthEnd = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 25);
+    const formatRange = (start, end) => `${start.getMonth() + 1}月${start.getDate()}日-${end.getMonth() + 1}月${end.getDate()}日`;
+    return {
+      week: { type: 'week', startDate: isoDate(weekStart), endDate: isoDate(weekEnd), label: `本经营周（${formatRange(weekStart, weekEnd)}）` },
+      month: { type: 'month', startDate: isoDate(monthStart), endDate: isoDate(monthEnd), label: `本经营月（${formatRange(monthStart, monthEnd)}）` }
+    };
+  }
+
+  function goalState(kind) {
+    const saved = readJSON(FY_GOALS_KEY, {});
+    return { ...defaults[kind], ...(saved[kind] || {}) };
+  }
+
+  function metrics(kind) {
+    const value = goalState(kind);
+    return [
+      ['销售目标', money(value.salesTarget)],
+      ['销售完成金额', money(value.salesCompleted)],
+      ['销售完成率', rate(value.salesCompleted, value.salesTarget)],
+      ['消耗目标', money(value.consumptionTarget)],
+      ['消耗完成金额', money(value.consumptionCompleted)],
+      ['消耗完成率', rate(value.consumptionCompleted, value.consumptionTarget)]
+    ];
+  }
+
+  function metricGrid(kind, compact = false) {
+    const list = metrics(kind);
+    if (compact) return `<div class="fy-goal-inline">${list.map(([label, value]) => `<div class="fy-goal-inline__item"><span>${label}</span><strong>${value}</strong></div>`).join('')}</div>`;
+    return `<div class="fy-metric-grid">${list.map(([label, value]) => `<div class="fy-metric"><div class="fy-metric__label">${label}</div><div class="fy-metric__value">${value}</div></div>`).join('')}</div>`;
+  }
+
+  function goalModule(snapshot, canSet) {
+    const current = periods();
+    const source = snapshot || { week: goalState('week'), month: goalState('month'), periods: current };
+    const week = source.week || goalState('week');
+    const month = source.month || goalState('month');
+    const weekLabel = (source.periods && source.periods.week && source.periods.week.label) || current.week.label;
+    const monthLabel = (source.periods && source.periods.month && source.periods.month.label) || current.month.label;
+    const toInline = value => [
+      ['销售目标', money(value.salesTarget)], ['销售完成金额', money(value.salesCompleted)], ['销售完成率', rate(value.salesCompleted, value.salesTarget)],
+      ['消耗目标', money(value.consumptionTarget)], ['消耗完成金额', money(value.consumptionCompleted)], ['消耗完成率', rate(value.consumptionCompleted, value.consumptionTarget)]
+    ];
+    const list = toInline(week);
+    return `<section class="fy-goal-panel" data-fy-goal-module="1"><div class="fy-goal-panel__head"><span class="fy-goal-panel__title">目标</span>${canSet ? '<button class="fy-goal-panel__link" onclick="window.fyOpenGoalSettings()">设置目标</button>' : ''}</div><div class="fy-goal-panel__period">${weekLabel}<br>${monthLabel}</div><div class="fy-goal-inline">${list.map(([label, value]) => `<div class="fy-goal-inline__item"><span>${label}</span><strong>${value}</strong></div>`).join('')}</div><div class="fy-goal-panel__period" style="margin:12px 0 2px">本经营月概览</div><div class="fy-goal-inline">${toInline(month).map(([label, value]) => `<div class="fy-goal-inline__item"><span>${label}</span><strong>${value}</strong></div>`).join('')}</div></section>`;
+  }
+
+  function textElement(text) {
+    return [...document.querySelectorAll('body *')].find(el => el.children.length === 0 && el.textContent.trim() === text);
+  }
+
+  function actionBlock() {
+    const title = textElement('今日行动');
+    if (!title) return null;
+    let node = title;
+    while (node.parentElement && node.parentElement !== document.body) {
+      const parent = node.parentElement;
+      if (parent.textContent.includes('今日行动') && !parent.textContent.includes('今日成长') && parent.children.length <= 8) return parent;
+      node = parent;
+    }
+    return title.parentElement;
+  }
+
+  function snapshotForVisibleDate() {
+    return readJSON(FY_SNAPSHOTS_KEY, {})[visibleDate()] || null;
+  }
+
+  function addDailyGoalModule() {
+    const target = actionBlock();
+    if (!target || target.previousElementSibling && target.previousElementSibling.dataset.fyGoalModule) return;
+    const isFill = document.body.innerText.includes('保存草稿') || document.body.innerText.includes('复制上次内容');
+    target.insertAdjacentHTML('beforebegin', goalModule(isFill ? null : snapshotForVisibleDate(), isFill));
+  }
+
+  function findOldMetricGrid() {
+    const sales = textElement('销售目标');
+    if (!sales) return null;
+    let node = sales;
+    while (node.parentElement && node.parentElement !== document.body) {
+      const parent = node.parentElement;
+      const text = parent.textContent;
+      if (text.includes('销售目标') && text.includes('消耗目标') && !text.includes('我的最近日总结') && parent.children.length >= 2) return parent;
+      node = parent;
+    }
+    return null;
+  }
+
+  function addHomeMetrics() {
+    const heading = textElement('本经营周指标');
+    const oldGrid = findOldMetricGrid();
+    if (!heading || !oldGrid || document.querySelector('[data-fy-home-metrics]')) return;
+    oldGrid.style.display = 'none';
+    oldGrid.insertAdjacentHTML('beforebegin', `<div data-fy-home-metrics="1" class="fy-goal-panel"><div class="fy-goal-panel__head"><span class="fy-goal-panel__title">本经营周指标</span><button class="fy-goal-panel__link" onclick="window.fyOpenMonthMetrics()">查看本经营月 ›</button></div>${metricGrid('week')}</div>`);
+    const likelyHeader = heading.parentElement;
+    if (likelyHeader && likelyHeader !== oldGrid && likelyHeader.textContent.includes('本经营周指标')) likelyHeader.style.display = 'none';
+  }
+
+  function closeSheet() { document.querySelector('.fy-goal-mask')?.remove(); }
+  window.fyOpenGoalSettings = () => {
+    closeSheet();
+    const p = periods(); const week = goalState('week'); const month = goalState('month');
+    document.body.insertAdjacentHTML('beforeend', `<div class="fy-goal-mask" onclick="if(event.target===this) window.fyCloseGoalSheet()"><div class="fy-goal-sheet"><div class="fy-goal-sheet__head"><h3>设置经营目标</h3><button class="fy-goal-close" onclick="window.fyCloseGoalSheet()">×</button></div><div class="fy-goal-period">${p.week.label}<small>仅保存当前经营周目标</small></div><div class="fy-goal-inputs"><label>销售目标<input id="fy-week-sales" type="number" min="0" value="${week.salesTarget}"></label><label>消耗目标<input id="fy-week-consumption" type="number" min="0" value="${week.consumptionTarget}"></label></div><div class="fy-goal-period">${p.month.label}<small>仅保存当前经营月目标</small></div><div class="fy-goal-inputs"><label>销售目标<input id="fy-month-sales" type="number" min="0" value="${month.salesTarget}"></label><label>消耗目标<input id="fy-month-consumption" type="number" min="0" value="${month.consumptionTarget}"></label></div><button class="fy-goal-save" onclick="window.fySaveGoalSettings()">保存目标</button></div></div>`);
+  };
+  window.fyCloseGoalSheet = closeSheet;
+  window.fySaveGoalSettings = () => {
+    const existing = readJSON(FY_GOALS_KEY, {});
+    const value = id => Math.max(0, Number(document.getElementById(id).value || 0));
+    writeJSON(FY_GOALS_KEY, {
+      ...existing,
+      week: { ...goalState('week'), salesTarget: value('fy-week-sales'), consumptionTarget: value('fy-week-consumption'), ...periods().week },
+      month: { ...goalState('month'), salesTarget: value('fy-month-sales'), consumptionTarget: value('fy-month-consumption'), ...periods().month }
+    });
+    closeSheet();
+    decorate();
+  };
+  window.fyOpenMonthMetrics = () => {
+    closeSheet();
+    document.body.insertAdjacentHTML('beforeend', `<div class="fy-goal-mask fy-month-modal" onclick="if(event.target===this) window.fyCloseGoalSheet()"><div class="fy-goal-sheet"><div class="fy-goal-sheet__head"><h3>本经营月指标</h3><button class="fy-goal-close" onclick="window.fyCloseGoalSheet()">×</button></div><div class="fy-goal-panel__period">${periods().month.label}</div>${metricGrid('month')}</div></div>`);
+  };
+
+  function saveSnapshot() {
+    const date = visibleDate();
+    const all = readJSON(FY_SNAPSHOTS_KEY, {});
+    if (all[date]) return;
+    all[date] = { date, periods: periods(date), week: goalState('week'), month: goalState('month') };
+    writeJSON(FY_SNAPSHOTS_KEY, all);
+  }
+
+  function decorate() { addHomeMetrics(); addDailyGoalModule(); }
+  let scheduled = false;
+  const schedule = () => {
+    if (scheduled) return;
+    scheduled = true;
+    requestAnimationFrame(() => { scheduled = false; decorate(); });
+  };
+  document.addEventListener('click', event => {
+    const button = event.target.closest('button, .btn, [role="button"]');
+    if (button && /提交日报|确认提交|提交$/.test(button.textContent.trim())) saveSnapshot();
+    schedule();
+  }, true);
+  new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', schedule); else schedule();
+})();
+</script>
+</body>
+</html>

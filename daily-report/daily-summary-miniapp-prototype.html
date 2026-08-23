@@ -1,0 +1,2967 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>日总结独立小程序原型</title>
+  <style>
+    :root {
+      --brand: #c92f2f;
+      --brand-deep: #9f1f24;
+      --brand-soft: #fff1f1;
+      --ink: #1f2329;
+      --muted: #7c8491;
+      --subtle: #a1a8b3;
+      --line: #ededed;
+      --page: #f6f6f6;
+      --card: #fff;
+      --warn: #d49614;
+      --warn-soft: #fff8df;
+      --ok: #16a36a;
+      --ok-soft: #eaf8f1;
+      --danger: #d84a4a;
+      --danger-soft: #fff0f0;
+      --shadow: 0 14px 34px rgba(52, 30, 30, .08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background:
+        linear-gradient(180deg, #f7f4f4 0%, #eeeeee 100%);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+
+    .workspace {
+      padding: 30px 26px 42px;
+    }
+
+    .brief {
+      max-width: 1250px;
+      margin: 0 auto 22px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 420px;
+      gap: 24px;
+      align-items: end;
+    }
+
+    .brief h1 {
+      margin: 0 0 10px;
+      font-size: 30px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .brief p {
+      margin: 0;
+      max-width: 760px;
+      color: #625a5a;
+      font-size: 14px;
+      line-height: 1.8;
+    }
+
+    .scope {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+
+    .scope span {
+      min-height: 34px;
+      border: 1px solid #f0d8d8;
+      border-radius: 8px;
+      padding: 8px 10px;
+      background: #fff;
+      color: #8f2d2d;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .boards {
+      max-width: 1250px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: repeat(3, 390px);
+      gap: 26px;
+      justify-content: center;
+      align-items: start;
+    }
+
+    .handoff-notes {
+      max-width: 1250px;
+      margin: 26px auto 0;
+      padding: 18px 20px;
+      background: #fff;
+      border: 1px solid #f0d8d8;
+      border-radius: 8px;
+      color: #3a3333;
+    }
+
+    .static-title,
+    .boards,
+    .handoff-notes {
+      display: none;
+    }
+
+    .handoff-notes h2 {
+      margin: 0 0 8px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    .handoff-notes p {
+      margin: 0 0 14px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.75;
+    }
+
+    .handoff-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 390px);
+      gap: 12px;
+    }
+
+    .handoff-item {
+      min-height: 96px;
+      padding: 13px;
+      border-radius: 8px;
+      background: #fff8f8;
+      border: 1px solid #f4e3e3;
+    }
+
+    .handoff-item b {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--brand-deep);
+      font-size: 14px;
+    }
+
+    .handoff-item span {
+      display: block;
+      color: #655d5d;
+      font-size: 12px;
+      line-height: 1.7;
+    }
+
+    .phone {
+      width: 390px;
+      height: 844px;
+      overflow: hidden;
+      background: #101217;
+      border: 10px solid #101217;
+      border-radius: 34px;
+      box-shadow: var(--shadow);
+      position: relative;
+    }
+
+    .screen {
+      height: 100%;
+      overflow: hidden;
+      background: var(--page);
+      border-radius: 24px;
+      position: relative;
+    }
+
+    .fixed-title {
+      position: absolute;
+      left: 16px;
+      top: 14px;
+      z-index: 5;
+      padding: 6px 10px;
+      color: #fff;
+      background: rgba(15, 18, 24, .74);
+      border-radius: 999px;
+      font-size: 12px;
+      pointer-events: none;
+    }
+
+    .status {
+      height: 40px;
+      padding: 10px 18px 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #fff;
+      color: #111;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .signal {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 12px;
+    }
+
+    .battery {
+      width: 25px;
+      height: 12px;
+      border: 2px solid #111;
+      border-radius: 4px;
+      position: relative;
+    }
+
+    .battery::before {
+      content: "";
+      position: absolute;
+      right: -5px;
+      top: 3px;
+      width: 3px;
+      height: 5px;
+      background: #111;
+      border-radius: 0 2px 2px 0;
+    }
+
+    .battery::after {
+      content: "";
+      position: absolute;
+      left: 2px;
+      top: 2px;
+      width: 15px;
+      height: 4px;
+      background: #111;
+      border-radius: 2px;
+    }
+
+    .nav {
+      height: 52px;
+      padding: 0 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #fff;
+      border-bottom: 1px solid var(--line);
+      position: relative;
+    }
+
+    .nav-title {
+      position: absolute;
+      left: 86px;
+      right: 86px;
+      text-align: center;
+      font-size: 18px;
+      font-weight: 800;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .back {
+      width: 30px;
+      height: 30px;
+      border: 0;
+      background: transparent;
+      position: relative;
+    }
+
+    .back::before {
+      content: "";
+      position: absolute;
+      left: 9px;
+      top: 8px;
+      width: 11px;
+      height: 11px;
+      border-left: 3px solid #222;
+      border-bottom: 3px solid #222;
+      transform: rotate(45deg);
+    }
+
+    .capsule {
+      width: 82px;
+      height: 30px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-around;
+      background: #fff;
+      font-weight: 900;
+    }
+
+    .content {
+      height: calc(100% - 92px);
+      overflow: auto;
+      padding: 12px 14px 94px;
+    }
+
+    .content.no-tabs {
+      padding-bottom: 22px;
+    }
+
+    .content.with-actions {
+      padding-bottom: 172px;
+    }
+
+    .home-content {
+      height: calc(100% - 214px);
+      padding-bottom: 88px;
+    }
+
+    .tabs {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 76px;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      background: #fff;
+      border-top: 1px solid var(--line);
+      padding-bottom: 8px;
+    }
+
+    .tabs.three {
+      grid-template-columns: repeat(3, 1fr);
+    }
+
+    .tab {
+      width: 100%;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      color: #969090;
+      font-size: 12px;
+    }
+
+    .tab.active {
+      color: var(--brand);
+      font-weight: 800;
+    }
+
+    .tab-icon {
+      width: 24px;
+      height: 24px;
+      border: 2px solid currentColor;
+      border-radius: 7px;
+      position: relative;
+    }
+
+    .tab-icon.dot::after {
+      content: "";
+      width: 7px;
+      height: 7px;
+      background: currentColor;
+      border-radius: 50%;
+      position: absolute;
+      right: -3px;
+      top: -3px;
+    }
+
+    .card,
+    .list-card,
+    .notice,
+    .form-section {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      margin-bottom: 10px;
+    }
+
+    .card,
+    .form-section {
+      padding: 14px;
+    }
+
+    .notice {
+      padding: 12px;
+      background: var(--warn-soft);
+      border-color: #f0d77a;
+      color: #8a6912;
+      font-size: 12px;
+      line-height: 1.8;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .section-title {
+      font-size: 16px;
+      font-weight: 900;
+    }
+
+    .section-sub {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .link {
+      flex: 0 0 auto;
+      color: var(--brand);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 24px;
+      padding: 0 9px;
+      border-radius: 999px;
+      background: var(--brand-soft);
+      color: var(--brand-deep);
+      font-size: 11px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .tag.ok {
+      background: var(--ok-soft);
+      color: var(--ok);
+    }
+
+    .tag.warn {
+      background: var(--warn-soft);
+      color: var(--warn);
+    }
+
+    .tag.danger {
+      background: var(--danger-soft);
+      color: var(--danger);
+    }
+
+    .brand-home {
+      height: 98px;
+      padding: 12px 14px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #fff;
+      border-bottom: 1px solid var(--line);
+      position: relative;
+    }
+
+    .brand-logo {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      color: var(--brand);
+      font-weight: 900;
+      letter-spacing: .4px;
+    }
+
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      border: 3px solid var(--brand);
+      border-radius: 50% 50% 44% 44%;
+      position: relative;
+      transform: rotate(45deg);
+    }
+
+    .brand-mark::after {
+      content: "";
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--brand);
+      position: absolute;
+      left: 8px;
+      top: 8px;
+    }
+
+    .brand-text strong,
+    .brand-text span {
+      display: block;
+      line-height: 1.05;
+    }
+
+    .brand-text strong {
+      font-size: 18px;
+    }
+
+    .brand-text span {
+      margin-top: 4px;
+      font-size: 12px;
+      color: #a94b4b;
+    }
+
+    .brand-home .capsule {
+      position: absolute;
+      right: 14px;
+      top: 34px;
+    }
+
+    .today-card {
+      margin-top: 0;
+      position: relative;
+      z-index: 2;
+    }
+
+    .today-summary {
+      margin-bottom: 12px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    .today-summary h2 {
+      margin: 0 0 8px;
+      font-size: 24px;
+      line-height: 1.22;
+      letter-spacing: 0;
+    }
+
+    .today-summary p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.7;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+
+    .stats.two {
+      grid-template-columns: repeat(2, 1fr);
+    }
+
+    .stat {
+      min-height: 74px;
+      padding: 10px;
+      border-radius: 8px;
+      background: #fffafa;
+      border: 1px solid #f3e6e6;
+    }
+
+    .stat span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .stat b {
+      display: block;
+      margin-top: 6px;
+      font-size: 18px;
+      line-height: 1.2;
+      color: #272727;
+    }
+
+    .primary-action {
+      width: 100%;
+      height: 46px;
+      margin-top: 14px;
+      border: 0;
+      border-radius: 8px;
+      color: #fff;
+      background: var(--brand);
+      font-size: 15px;
+      font-weight: 900;
+    }
+
+    .plain-action {
+      width: 100%;
+      height: 44px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: #5a5353;
+      background: #fff;
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    .data-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+      min-height: 34px;
+      border-bottom: 1px solid #f1eeee;
+      font-size: 13px;
+    }
+
+    .data-row:last-child {
+      border-bottom: 0;
+    }
+
+    .data-row span {
+      color: #625c5c;
+    }
+
+    .data-row b {
+      font-size: 14px;
+      white-space: nowrap;
+    }
+
+    .toolbar {
+      display: grid;
+      grid-template-columns: 1fr 86px;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .select-pill,
+    .small-btn {
+      min-height: 38px;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #fff;
+      color: #5a5353;
+      font-size: 13px;
+    }
+
+    .small-btn {
+      justify-content: center;
+      color: var(--brand);
+      font-weight: 800;
+    }
+
+    .sync-card {
+      border-color: #f2dddd;
+      background: linear-gradient(180deg, #fff 0%, #fff8f8 100%);
+    }
+
+    .sync-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .sync-metric {
+      min-height: 66px;
+      padding: 9px 10px;
+      border-radius: 8px;
+      border: 1px solid #f1e2e2;
+      background: #fff;
+    }
+
+    .sync-metric span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .sync-metric b {
+      display: block;
+      margin-top: 5px;
+      font-size: 17px;
+    }
+
+    .cycle-switch {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      margin-bottom: 10px;
+      padding: 4px;
+      border-radius: 8px;
+      background: #f5eeee;
+    }
+
+    .cycle-input {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .cycle-switch label {
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 6px;
+      color: #7b7070;
+      font-size: 13px;
+      font-weight: 900;
+      cursor: pointer;
+    }
+
+    #home-month:checked ~ .cycle-switch label[for="home-month"],
+    #home-week:checked ~ .cycle-switch label[for="home-week"],
+    .cycle-switch label.active {
+      background: #fff;
+      color: var(--brand);
+      box-shadow: 0 4px 12px rgba(120, 50, 50, .1);
+    }
+
+    .cycle-panel {
+      display: none;
+    }
+
+    #home-month:checked ~ .month-panel,
+    #home-week:checked ~ .week-panel {
+      display: grid;
+    }
+
+    .period-note {
+      margin-bottom: 10px;
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid #f1dddd;
+      background: #fff8f8;
+      color: #625c5c;
+      font-size: 12px;
+      line-height: 1.75;
+    }
+
+    .period-note b {
+      color: var(--brand-deep);
+    }
+
+    .fixed-info {
+      min-height: 38px;
+      margin-bottom: 10px;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      background: #fff;
+      color: #5a5353;
+      font-size: 13px;
+    }
+
+    .textarea {
+      width: 100%;
+      height: 120px;
+      resize: none;
+      border: 1px solid #e3dddd;
+      border-radius: 6px;
+      padding: 11px;
+      color: #303640;
+      background: #fff;
+      font-family: inherit;
+      font-size: 13px;
+      line-height: 1.65;
+    }
+
+    .textarea.short {
+      height: 88px;
+    }
+
+    .input {
+      width: 100%;
+      height: 40px;
+      margin: 6px 0 10px;
+      padding: 0 11px;
+      border: 1px solid #e3dddd;
+      border-radius: 6px;
+      background: #fff;
+      font-size: 13px;
+    }
+
+    .field-label {
+      color: #4e5662;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .counter {
+      margin-top: 4px;
+      color: var(--subtle);
+      font-size: 11px;
+      text-align: right;
+    }
+
+    .bottom-actions {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 76px;
+      height: 74px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      padding: 10px 14px 12px;
+      background: #fff;
+      border-top: 1px solid var(--line);
+    }
+
+    .btn {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: #5a5353;
+      font-size: 15px;
+      font-weight: 900;
+    }
+
+    .btn.primary {
+      border-color: var(--brand);
+      background: var(--brand);
+      color: #fff;
+    }
+
+    .list-card {
+      padding: 13px;
+    }
+
+    .list-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: flex-start;
+      margin-bottom: 8px;
+    }
+
+    .list-card h3 {
+      margin: 0 0 5px;
+      font-size: 15px;
+      line-height: 1.3;
+    }
+
+    .list-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.65;
+    }
+
+    .filter-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .filter {
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: #6b6464;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .filter.active {
+      color: #fff;
+      border-color: var(--brand);
+      background: var(--brand);
+    }
+
+    .overview-tools {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .filter-chip {
+      height: 42px;
+      padding: 0 12px;
+      border: 1px solid #f1dddd;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: #fff8f8;
+      color: var(--brand-deep);
+      font-size: 14px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .filter-chip.right {
+      justify-content: flex-end;
+    }
+
+    .filter-chip .chev {
+      margin-left: auto;
+      color: #9d3333;
+    }
+
+    .role-note {
+      margin-bottom: 10px;
+      padding: 10px 12px;
+      border: 1px solid #f1dddd;
+      border-radius: 8px;
+      background: #fff8f8;
+      color: #8f2d2d;
+      font-size: 12px;
+      line-height: 1.65;
+    }
+
+    .table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border-radius: 8px;
+      font-size: 12px;
+    }
+
+    .table th,
+    .table td {
+      padding: 9px 6px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+    }
+
+    .table th {
+      color: var(--muted);
+      background: #fafafa;
+      font-weight: 800;
+    }
+
+    .review-item {
+      display: grid;
+      grid-template-columns: 36px 1fr auto;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .review-item:last-child {
+      border-bottom: 0;
+    }
+
+    .avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: var(--brand-soft);
+      color: var(--brand-deep);
+      font-weight: 900;
+    }
+
+    .review-name {
+      font-size: 14px;
+      font-weight: 900;
+    }
+
+    .review-meta {
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .store-item {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .store-item:last-child {
+      border-bottom: 0;
+    }
+
+    .store-name {
+      font-size: 14px;
+      font-weight: 900;
+    }
+
+    .store-meta {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .market-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 8;
+      display: flex;
+      align-items: flex-end;
+      background: rgba(15, 18, 24, .34);
+    }
+
+    .market-sheet {
+      width: 100%;
+      padding: 14px;
+      background: #fff;
+      border-radius: 18px 18px 0 0;
+      box-shadow: 0 -16px 36px rgba(20, 20, 20, .16);
+    }
+
+    .sheet-title {
+      margin-bottom: 10px;
+      font-size: 17px;
+      font-weight: 900;
+      text-align: center;
+    }
+
+    .market-option {
+      min-height: 48px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+      border-bottom: 1px solid var(--line);
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    .market-option:last-of-type {
+      border-bottom: 0;
+    }
+
+    .market-option span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 500;
+    }
+
+    .market-option.active {
+      color: var(--brand);
+    }
+
+    .sheet-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .sheet-actions .btn {
+      height: 42px;
+    }
+
+    .progress-row {
+      display: grid;
+      grid-template-columns: 62px 1fr 42px;
+      gap: 8px;
+      align-items: center;
+      margin: 11px 0;
+      font-size: 12px;
+    }
+
+    .bar {
+      height: 8px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: #eeeeee;
+    }
+
+    .bar span {
+      display: block;
+      height: 100%;
+      border-radius: 999px;
+      background: var(--brand);
+    }
+
+    .flow {
+      display: grid;
+      gap: 8px;
+    }
+
+    .flow-step {
+      display: grid;
+      grid-template-columns: 26px 1fr;
+      gap: 9px;
+      align-items: start;
+    }
+
+    .num {
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: var(--brand-soft);
+      color: var(--brand-deep);
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .flow-step b {
+      display: block;
+      margin-bottom: 3px;
+      font-size: 13px;
+    }
+
+    .flow-step span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .mini-note {
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: #fafafa;
+      border: 1px dashed #e2dddd;
+      color: #6b6464;
+      font-size: 12px;
+      line-height: 1.65;
+    }
+
+    .interactive-stage {
+      max-width: 1250px;
+      margin: 0 auto 28px;
+      display: grid;
+      grid-template-columns: 390px minmax(0, 1fr);
+      gap: 24px;
+      align-items: start;
+    }
+
+    .interactive-note {
+      padding: 18px 20px;
+      border: 1px solid #f0d8d8;
+      border-radius: 8px;
+      background: #fff;
+      color: #423939;
+    }
+
+    .interactive-note h2 {
+      margin: 0 0 8px;
+      font-size: 18px;
+    }
+
+    .interactive-note p {
+      margin: 0 0 14px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.75;
+    }
+
+    .role-switch {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    .role-btn {
+      min-height: 40px;
+      border: 1px solid #f0d8d8;
+      border-radius: 8px;
+      background: #fff8f8;
+      color: var(--brand-deep);
+      font-size: 13px;
+      font-weight: 900;
+      cursor: pointer;
+    }
+
+    .role-btn.active {
+      border-color: var(--brand);
+      background: var(--brand);
+      color: #fff;
+    }
+
+    .click-map {
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.65;
+    }
+
+    .clickable,
+    .tab,
+    .filter-chip,
+    .market-option,
+    .store-item,
+    .review-item,
+    .list-card,
+    button {
+      cursor: pointer;
+    }
+
+    .phone.interactive-phone {
+      margin: 0;
+    }
+
+    .app-toast {
+      position: absolute;
+      left: 50%;
+      bottom: 96px;
+      z-index: 20;
+      transform: translateX(-50%);
+      max-width: 260px;
+      padding: 9px 13px;
+      border-radius: 999px;
+      background: rgba(20, 23, 30, .84);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 800;
+      text-align: center;
+      pointer-events: none;
+    }
+
+    .static-title {
+      max-width: 1250px;
+      margin: 0 auto 12px;
+      color: #8f2d2d;
+      font-size: 15px;
+      font-weight: 900;
+    }
+
+    @media (max-width: 1260px) {
+      .brief {
+        grid-template-columns: 1fr;
+      }
+
+      .interactive-stage {
+        grid-template-columns: 390px;
+        justify-content: center;
+      }
+
+      .boards {
+        grid-template-columns: repeat(2, 390px);
+      }
+
+      .handoff-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 860px) {
+      .workspace {
+        padding: 18px 10px 32px;
+      }
+
+      .scope {
+        grid-template-columns: 1fr;
+      }
+
+      .boards {
+        grid-template-columns: 390px;
+      }
+    }
+    /* V3 information architecture */
+    .static-title { display:block; max-width:1250px; margin:34px auto 16px; font-size:20px; font-weight:800; }
+    .boards { display:grid; }
+    .handoff-notes { display:block; }
+    .segmented { display:grid; grid-template-columns:repeat(3,1fr); gap:4px; margin-bottom:12px; padding:4px; border-radius:10px; background:#ececec; }
+    .segmented.two { grid-template-columns:repeat(2,1fr); }
+    .segment { border:0; border-radius:7px; padding:8px 4px; background:transparent; color:var(--muted); font-size:12px; font-weight:700; cursor:pointer; }
+    .segment.active { background:#fff; color:var(--brand); box-shadow:0 2px 8px rgba(0,0,0,.06); }
+    .page-link { color:var(--brand); font-size:12px; font-weight:700; cursor:pointer; }
+    .tree-row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:13px 0; border-bottom:1px solid var(--line); cursor:pointer; }
+    .tree-row:last-child { border-bottom:0; }
+    .tree-row strong { display:block; font-size:14px; }
+    .tree-row span { display:block; margin-top:4px; color:var(--muted); font-size:11px; }
+    .tree-arrow { color:var(--subtle); font-size:18px; }
+    .search-input { width:100%; border:1px solid var(--line); border-radius:10px; padding:11px 13px; background:#fff; font:inherit; outline:none; }
+    .search-input:focus { border-color:#e3a3a3; }
+    .field-error { margin-top:6px; color:var(--danger); font-size:11px; }
+    .textarea.error { border-color:var(--danger); background:var(--danger-soft); }
+    .meta-line { display:flex; align-items:center; justify-content:space-between; gap:12px; color:var(--muted); font-size:12px; }
+    .modal-copy { margin:8px 0 16px; color:var(--muted); font-size:13px; line-height:1.7; }
+    .static-screen-note { padding:11px 13px; color:#655d5d; background:#fff8f8; border:1px solid #f4e3e3; border-radius:8px; font-size:12px; line-height:1.7; }
+  </style>
+</head>
+<body>
+  <main class="workspace">
+    <section class="brief">
+      <div>
+        <h1>轻量日总结小程序新版原型</h1>
+        <p>围绕“每天写总结、按权限看提交”形成轻量闭环。首页看今日状态和经营背景，填写页只负责快速提交；店长、市场总监、品牌总部按权限查看提交记录。经营数据只做辅助展示，不替代原经营端报表。</p>
+      </div>
+      <div class="scope">
+        <span>填写内容：行动 + 成长 + 计划</span>
+        <span>首页展示：月 / 周指标切换</span>
+        <span>权限逻辑：同页不同范围</span>
+      </div>
+    </section>
+
+    <section class="interactive-stage">
+      <article class="phone interactive-phone">
+        <div class="fixed-title">可点击主流程</div>
+        <div class="screen" id="app-screen"></div>
+      </article>
+      <aside class="interactive-note">
+        <h2>可点击原型</h2>
+        <p>这台手机使用假数据模拟真实流程：切换角色后，首页、底部 tab、提交统计和下钻路径会跟着变化。</p>
+        <div class="role-switch" id="role-switch">
+          <button class="role-btn active" data-role="employee">员工</button>
+          <button class="role-btn" data-role="manager">店长</button>
+          <button class="role-btn" data-role="admin">管理层</button>
+        </div>
+        <div class="click-map">
+          <span>员工：总结 → 填写 → 保存草稿 / 提交 → 记录 → 详情。</span>
+          <span>店长：总结 / 填写 / 记录 / 我的；记录先看本店提交，再点员工看日总结。</span>
+          <span>管理层：首页 → 市场筛选 / 门店 → 员工记录 → 日报详情。</span>
+        </div>
+      </aside>
+    </section>
+
+    <div class="static-title">静态页面说明稿</div>
+
+    <section class="boards">
+      <article class="phone">
+        <div class="fixed-title">员工 / 店长：首页</div>
+        <div class="screen">
+          <div class="status">
+            <span>16:22</span>
+            <span class="signal">5G <span class="battery"></span></span>
+          </div>
+          <div class="brand-home">
+            <div class="brand-logo">
+              <span class="brand-mark"></span>
+              <span class="brand-text">
+                <strong>FENGYU</strong>
+                <span>凤御美业</span>
+              </span>
+            </div>
+            <div class="capsule">••• ◎</div>
+          </div>
+          <div class="content home-content">
+            <div class="card today-card">
+              <div class="today-summary">
+                <h2>我的日总结</h2>
+                <p>2026年7月6日 · 张三 · 杭州西湖旗舰店</p>
+              </div>
+              <div class="section-head">
+                <div>
+                  <div class="section-title">今日状态</div>
+                </div>
+                <span class="tag warn">草稿</span>
+              </div>
+              <div class="stats three">
+                <div class="stat"><span>本周应交</span><b>7</b></div>
+                <div class="stat"><span>已提交</span><b>5</b></div>
+                <div class="stat"><span>草稿</span><b>1</b></div>
+              </div>
+              <button class="primary-action">继续填写今日日总结</button>
+            </div>
+
+            <div class="card sync-card">
+              <div class="section-head">
+                <div>
+                  <div class="section-title">经营进度</div>
+                  <div class="section-sub">经营月 / 周按后台配置周期统计，不按自然月 / 周。</div>
+                </div>
+                <span class="link">可切换</span>
+              </div>
+              <input class="cycle-input" type="radio" name="home-cycle" id="home-month" checked>
+              <input class="cycle-input" type="radio" name="home-cycle" id="home-week">
+              <div class="cycle-switch">
+                <label for="home-month">经营月</label>
+                <label for="home-week">经营周</label>
+              </div>
+              <div class="sync-grid cycle-panel month-panel">
+                <div class="sync-metric"><span>本月销售目标</span><b>¥260,000</b></div>
+                <div class="sync-metric"><span>销售完成</span><b>¥214,800</b></div>
+                <div class="sync-metric"><span>销售完成率</span><b>82.6%</b></div>
+                <div class="sync-metric"><span>本月消耗目标</span><b>¥180,000</b></div>
+                <div class="sync-metric"><span>消耗完成</span><b>¥142,600</b></div>
+                <div class="sync-metric"><span>消耗完成率</span><b>79.2%</b></div>
+              </div>
+              <div class="sync-grid cycle-panel week-panel">
+                <div class="sync-metric"><span>本周销售目标</span><b>¥65,000</b></div>
+                <div class="sync-metric"><span>销售完成</span><b>¥48,600</b></div>
+                <div class="sync-metric"><span>销售完成率</span><b>74.8%</b></div>
+                <div class="sync-metric"><span>本周消耗目标</span><b>¥45,000</b></div>
+                <div class="sync-metric"><span>消耗完成</span><b>¥34,200</b></div>
+                <div class="sync-metric"><span>消耗完成率</span><b>76.0%</b></div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="section-head">
+                <div>
+                  <div class="section-title">本店今日提交</div>
+                  <div class="section-sub">店长本人也在应提交人员内。</div>
+                </div>
+                <span class="tag warn">70%</span>
+              </div>
+              <div class="stats">
+                <div class="stat"><span>应提交</span><b>10</b></div>
+                <div class="stat"><span>已提交</span><b>7</b></div>
+                <div class="stat"><span>未提交</span><b>3</b></div>
+              </div>
+              <div class="progress-row"><span>提交率</span><div class="bar"><span style="width:70%"></span></div><b>70%</b></div>
+            </div>
+
+            <div class="section-head">
+              <div class="section-title">最近日总结</div>
+              <span class="link">完整记录</span>
+            </div>
+            <div class="list-card">
+              <div class="list-top">
+                <div>
+                  <h3>2026年7月6日 日总结</h3>
+                  <p>草稿 · 已填写今日行动，明日计划待补充</p>
+                </div>
+                <span class="tag warn">草稿</span>
+              </div>
+              <button class="plain-action">继续填写</button>
+            </div>
+            <div class="list-card">
+              <div class="list-top">
+                <div>
+                  <h3>2026年7月5日 日总结</h3>
+                  <p>已提交 · 老客回访 12 人，预约到店 4 人</p>
+                </div>
+                <span class="tag ok">已提交</span>
+              </div>
+            </div>
+            <div class="list-card">
+              <div class="list-top">
+                <div>
+                  <h3>2026年7月4日 日总结</h3>
+                  <p>已提交 · 明日重点：体验卡客户到店转化</p>
+                </div>
+                <span class="tag ok">已提交</span>
+              </div>
+            </div>
+          </div>
+          <div class="tabs">
+            <div class="tab active"><span class="tab-icon dot"></span>总结</div>
+            <div class="tab"><span class="tab-icon"></span>填写</div>
+            <div class="tab"><span class="tab-icon"></span>记录</div>
+            <div class="tab"><span class="tab-icon"></span>我的</div>
+          </div>
+        </div>
+      </article>
+
+      <article class="phone">
+        <div class="fixed-title">日总结填写</div>
+        <div class="screen">
+          <div class="status">
+            <span>16:22</span>
+            <span class="signal">5G <span class="battery"></span></span>
+          </div>
+          <div class="nav">
+            <button class="back" aria-label="返回"></button>
+            <div class="nav-title">日总结</div>
+            <div class="capsule">••• ◎</div>
+          </div>
+          <div class="content with-actions">
+            <div class="toolbar">
+              <div class="select-pill">今天 2026-07-06 <span>⌄</span></div>
+              <div class="small-btn">复制昨日</div>
+            </div>
+            <div class="fixed-info">当前门店：杭州西湖旗舰店</div>
+
+            <div class="form-section">
+              <div class="section-head">
+                <div class="section-title">一 今日行动</div>
+                <span class="tag danger">必填</span>
+              </div>
+              <textarea class="textarea short" placeholder="建议写 1-3 条关键行动，例如回访、邀约、成交跟进..."></textarea>
+              <div class="counter">0/500</div>
+            </div>
+
+            <div class="form-section">
+              <div class="section-head">
+                <div class="section-title">二 今日成长</div>
+                <span class="tag danger">必填</span>
+              </div>
+              <textarea class="textarea short" placeholder="一句话写今天的问题、收获或复盘..."></textarea>
+              <div class="counter">0/300</div>
+            </div>
+
+            <div class="form-section">
+              <div class="section-head">
+                <div class="section-title">三 明日计划</div>
+                <span class="tag danger">必填</span>
+              </div>
+              <textarea class="textarea short" placeholder="写明天最重要的 1-3 个动作..."></textarea>
+              <div class="counter">0/500</div>
+            </div>
+
+            <div class="form-section">
+              <div class="section-head">
+                <div class="section-title">四 指导关系</div>
+                <span class="tag">选填</span>
+              </div>
+              <label class="field-label">指导员</label>
+              <div class="select-pill" style="margin:6px 0 10px;">请选择指导员 <span>⌄</span></div>
+              <label class="field-label">同事</label>
+              <div class="select-pill" style="margin-top:6px;">请选择同事 <span>⌄</span></div>
+            </div>
+
+          </div>
+          <div class="bottom-actions">
+            <button class="btn">保存草稿</button>
+            <button class="btn primary">提交总结</button>
+          </div>
+          <div class="tabs">
+            <div class="tab"><span class="tab-icon"></span>总结</div>
+            <div class="tab active"><span class="tab-icon dot"></span>填写</div>
+            <div class="tab"><span class="tab-icon"></span>记录</div>
+            <div class="tab"><span class="tab-icon"></span>我的</div>
+          </div>
+        </div>
+      </article>
+
+      <article class="phone">
+        <div class="fixed-title">本店记录</div>
+        <div class="screen">
+          <div class="status">
+            <span>16:22</span>
+            <span class="signal">5G <span class="battery"></span></span>
+          </div>
+          <div class="nav">
+            <button class="back" aria-label="返回"></button>
+            <div class="nav-title">本店记录</div>
+            <div class="capsule">••• ◎</div>
+          </div>
+          <div class="content">
+            <div class="role-note">店长查看所属门店人员提交情况；统计口径按“所属门店”，员工草稿对店长显示为未提交。</div>
+            <div class="toolbar">
+              <div class="select-pill">今天 2026-07-06 <span>⌄</span></div>
+              <div class="small-btn">筛选</div>
+            </div>
+            <div class="card">
+              <div class="section-head">
+                <div>
+                  <div class="section-title">杭州西湖旗舰店</div>
+                  <div class="section-sub">员工、店长、顾问、养生师均需提交。</div>
+                </div>
+                <span class="tag">今日</span>
+              </div>
+              <div class="stats">
+                <div class="stat"><span>应提交</span><b>10</b></div>
+                <div class="stat"><span>已提交</span><b>7</b></div>
+                <div class="stat"><span>未提交</span><b>3</b></div>
+              </div>
+              <div class="progress-row"><span>提交率</span><div class="bar"><span style="width:70%"></span></div><b>70%</b></div>
+            </div>
+
+            <div class="card">
+              <div class="section-head">
+                <div class="section-title">人员提交列表</div>
+                <span class="link">点员工看记录</span>
+              </div>
+              <div class="review-item">
+                <div class="avatar">李</div>
+                <div>
+                  <div class="review-name">李四</div>
+                  <div class="review-meta">美容顾问 · 2026年7月6日已提交</div>
+                </div>
+                <span class="tag ok">记录</span>
+              </div>
+              <div class="review-item">
+                <div class="avatar">张</div>
+                <div>
+                  <div class="review-name">张三</div>
+                  <div class="review-meta">美容顾问 · 今日未提交</div>
+                </div>
+                <span class="tag danger">未提交</span>
+              </div>
+              <div class="review-item">
+                <div class="avatar">王</div>
+                <div>
+                  <div class="review-name">王五</div>
+                  <div class="review-meta">养生师 · 今日未提交</div>
+                </div>
+                <span class="tag danger">未提交</span>
+              </div>
+              <div class="review-item">
+                <div class="avatar">赵</div>
+                <div>
+                  <div class="review-name">赵店长</div>
+                  <div class="review-meta">店长 · 店长本人也需要提交</div>
+                </div>
+                <span class="tag ok">已提交</span>
+              </div>
+            </div>
+            <div class="card">
+              <div class="section-head">
+                <div class="section-title">提交进度</div>
+                <span class="link">自动汇总</span>
+              </div>
+              <div class="progress-row"><span>今日</span><div class="bar"><span style="width:70%"></span></div><b>70%</b></div>
+              <div class="progress-row"><span>本周</span><div class="bar"><span style="width:82%"></span></div><b>82%</b></div>
+              <div class="progress-row"><span>本月</span><div class="bar"><span style="width:91%"></span></div><b>91%</b></div>
+            </div>
+          </div>
+          <div class="tabs">
+            <div class="tab"><span class="tab-icon"></span>总结</div>
+            <div class="tab"><span class="tab-icon"></span>填写</div>
+            <div class="tab active"><span class="tab-icon dot"></span>记录</div>
+            <div class="tab"><span class="tab-icon"></span>我的</div>
+          </div>
+        </div>
+      </article>
+
+      <article class="phone">
+        <div class="fixed-title">员工记录</div>
+        <div class="screen">
+          <div class="status">
+            <span>16:22</span>
+            <span class="signal">5G <span class="battery"></span></span>
+          </div>
+          <div class="nav">
+            <button class="back" aria-label="返回"></button>
+            <div class="nav-title">张三的日总结</div>
+            <div class="capsule">••• ◎</div>
+          </div>
+          <div class="content">
+            <div class="role-note">从本店记录或提交总览下钻进入；员工本人进入时只展示自己的记录。</div>
+            <div class="card">
+              <div class="section-head">
+                <div>
+                  <div class="section-title">张三</div>
+                  <div class="section-sub">杭州西湖旗舰店 · 美容顾问</div>
+                </div>
+                <span class="tag">本月记录</span>
+              </div>
+              <div class="data-row"><span>所属门店</span><b>杭州西湖旗舰店</b></div>
+              <div class="data-row"><span>本月应提交</span><b>30</b></div>
+              <div class="data-row"><span>本月已提交</span><b>24</b></div>
+            </div>
+            <div class="filter-row">
+              <button class="filter">今天</button>
+              <button class="filter active">本月</button>
+              <button class="filter">自定义</button>
+            </div>
+            <div class="list-card">
+              <div class="list-top">
+                <div>
+                  <h3>2026年7月6日 日总结</h3>
+                  <p>未提交 · 店长不可查看员工草稿内容</p>
+                </div>
+                <span class="tag danger">未提交</span>
+              </div>
+            </div>
+            <div class="list-card">
+              <div class="list-top">
+                <div>
+                  <h3>2026年7月5日 日总结</h3>
+                  <p>已提交 · 今日行动 3 条，明日计划 2 条</p>
+                </div>
+                <span class="tag ok">详情</span>
+              </div>
+            </div>
+            <div class="list-card">
+              <div class="list-top">
+                <div>
+                  <h3>2026年7月4日 日总结</h3>
+                  <p>已提交 · 指导员：李老师，同事：赵六</p>
+                </div>
+                <span class="tag ok">详情</span>
+              </div>
+            </div>
+          </div>
+          <div class="tabs">
+            <div class="tab"><span class="tab-icon"></span>记录</div>
+            <div class="tab active"><span class="tab-icon dot"></span>员工</div>
+            <div class="tab"><span class="tab-icon"></span>详情</div>
+          </div>
+        </div>
+      </article>
+
+      <article class="phone">
+        <div class="fixed-title">日报详情</div>
+        <div class="screen">
+          <div class="status">
+            <span>16:22</span>
+            <span class="signal">5G <span class="battery"></span></span>
+          </div>
+          <div class="nav">
+            <button class="back" aria-label="返回"></button>
+            <div class="nav-title">张三的日总结</div>
+            <div class="capsule">••• ◎</div>
+          </div>
+          <div class="content no-tabs">
+            <div class="card">
+              <div class="section-head">
+                <div>
+                  <div class="section-title">2026年7月5日</div>
+                  <div class="section-sub">杭州西湖旗舰店 · 美容顾问 张三</div>
+                </div>
+                <span class="tag ok">已提交</span>
+              </div>
+              <div class="data-row"><span>经营月</span><b>06-26 至 07-25</b></div>
+              <div class="data-row"><span>经营周</span><b>第 2 周</b></div>
+            </div>
+
+            <div class="card">
+              <div class="section-head">
+                <div>
+                  <div class="section-title">月 / 周概况</div>
+                  <div class="section-sub">仅展示日报所需概况，完整经营分析在经营端查看。</div>
+                </div>
+              </div>
+              <div class="stats two">
+                <div class="stat"><span>月销售完成率</span><b>82.6%</b></div>
+                <div class="stat"><span>月消耗完成率</span><b>79.2%</b></div>
+                <div class="stat"><span>周销售完成率</span><b>74.8%</b></div>
+                <div class="stat"><span>周消耗完成率</span><b>76.0%</b></div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="section-head">
+                <div class="section-title">今日行动</div>
+              </div>
+              <p style="margin:0;color:#444c58;font-size:13px;line-height:1.8;">1. 完成老客回访 12 人，其中 4 人预约明日到店。<br>2. 跟进体验卡客户，整理 8 位高意向名单。<br>3. 配合店长复盘本周目标差距。</p>
+            </div>
+
+            <div class="card">
+              <div class="section-head">
+                <div class="section-title">今日成长</div>
+              </div>
+              <p style="margin:0;color:#444c58;font-size:13px;line-height:1.8;">今天发现顾客对项目价格犹豫时，需要先把皮肤问题和改善周期讲清楚，再进入套餐推荐。</p>
+            </div>
+
+            <div class="card">
+              <div class="section-head">
+                <div class="section-title">明日计划</div>
+              </div>
+              <p style="margin:0;color:#444c58;font-size:13px;line-height:1.8;">1. 上午完成 8 位老客回访。<br>2. 下午重点邀约体验卡用户到店。<br>3. 晚上补充未成交顾客跟进记录。</p>
+            </div>
+
+            <div class="card">
+              <div class="section-head">
+                <div class="section-title">指导关系</div>
+              </div>
+              <div class="data-row"><span>指导员</span><b>李老师</b></div>
+              <div class="data-row"><span>同事</span><b>赵六</b></div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <article class="phone">
+        <div class="fixed-title">提交总览</div>
+        <div class="screen">
+          <div class="status">
+            <span>16:22</span>
+            <span class="signal">5G <span class="battery"></span></span>
+          </div>
+          <div class="nav">
+            <button class="back" aria-label="返回"></button>
+            <div class="nav-title">管理层</div>
+            <div class="capsule">••• ◎</div>
+          </div>
+          <div class="content">
+            <div class="overview-tools">
+              <div class="filter-chip">提交周期：今日</div>
+              <div class="filter-chip right">查看范围：全部市场 <span class="chev">⌄</span></div>
+            </div>
+            <div class="filter-row">
+              <button class="filter active">今日</button>
+              <button class="filter">本经营周</button>
+              <button class="filter">本经营月</button>
+            </div>
+
+            <div class="role-note">本小程序管理层只看日总结提交状态；经营金额请到经营端查看。</div>
+
+            <div class="card">
+              <div class="section-head">
+                <div>
+                  <div class="section-title">提交总览</div>
+                  <div class="section-sub">今日</div>
+                </div>
+                <span class="tag">全部市场</span>
+              </div>
+              <div class="stats">
+                <div class="stat"><span>应提交</span><b>108</b></div>
+                <div class="stat"><span>已提交</span><b>86</b></div>
+                <div class="stat"><span>未提交</span><b>22</b></div>
+              </div>
+              <div class="progress-row"><span>提交率</span><div class="bar"><span style="width:80%"></span></div><b>80%</b></div>
+            </div>
+
+            <div class="card">
+              <div class="section-head">
+                <div>
+                  <div class="section-title">待关注门店</div>
+                  <div class="section-sub">按提交率低、未提交人数多排序。</div>
+                </div>
+                <span class="link">当前：全部市场</span>
+              </div>
+              <div class="data-row"><span>宁波鄞州店</span><b>12/20 · 60%</b></div>
+              <div class="data-row"><span>杭州西湖旗舰店</span><b>7/10 · 70%</b></div>
+              <div class="data-row"><span>绍兴柯桥店</span><b>15/21 · 71%</b></div>
+            </div>
+
+            <div class="card">
+              <div class="section-head">
+                <div>
+                  <div class="section-title">待关注员工</div>
+                  <div class="section-sub">今日未提交优先展示。</div>
+                </div>
+                <span class="link">点员工看记录</span>
+              </div>
+              <div class="review-item"><div class="avatar">张</div><div><div class="review-name">张三</div><div class="review-meta">美容顾问 · 杭州西湖旗舰店 · 今日未提交</div></div><span class="tag danger">今日未提交</span></div>
+              <div class="review-item"><div class="avatar">王</div><div><div class="review-name">王五</div><div class="review-meta">养生师 · 杭州西湖旗舰店 · 今日未提交</div></div><span class="tag danger">今日未提交</span></div>
+            </div>
+          </div>
+          <div class="tabs">
+            <div class="tab active"><span class="tab-icon dot"></span>首页</div>
+            <div class="tab"><span class="tab-icon"></span>门店</div>
+            <div class="tab"><span class="tab-icon"></span>员工</div>
+            <div class="tab"><span class="tab-icon"></span>我的</div>
+          </div>
+        </div>
+      </article>
+
+      <article class="phone">
+        <div class="fixed-title">市场筛选弹层</div>
+        <div class="screen">
+          <div class="status">
+            <span>16:22</span>
+            <span class="signal">5G <span class="battery"></span></span>
+          </div>
+          <div class="nav">
+            <button class="back" aria-label="返回"></button>
+            <div class="nav-title">管理层</div>
+            <div class="capsule">••• ◎</div>
+          </div>
+          <div class="content">
+            <div class="overview-tools">
+              <div class="filter-chip">提交周期：今日</div>
+              <div class="filter-chip right">查看范围：全部市场 <span class="chev">⌄</span></div>
+            </div>
+            <div class="card">
+              <div class="section-head">
+                <div>
+                  <div class="section-title">提交总览</div>
+                  <div class="section-sub">点击右上角市场筛选后的交互状态。</div>
+                </div>
+                <span class="tag">总部</span>
+              </div>
+              <div class="stats">
+                <div class="stat"><span>覆盖门店</span><b>12</b></div>
+                <div class="stat"><span>应提交</span><b>214</b></div>
+                <div class="stat"><span>已提交</span><b>186</b></div>
+              </div>
+            </div>
+          </div>
+          <div class="tabs">
+            <div class="tab active"><span class="tab-icon dot"></span>首页</div>
+            <div class="tab"><span class="tab-icon"></span>门店</div>
+            <div class="tab"><span class="tab-icon"></span>员工</div>
+            <div class="tab"><span class="tab-icon"></span>我的</div>
+          </div>
+          <div class="market-overlay">
+            <div class="market-sheet">
+              <div class="sheet-title">选择市场</div>
+              <div class="market-option active">
+                <div>全部市场<span>总部可查看全部范围</span></div>
+                <b>✓</b>
+              </div>
+              <div class="market-option">
+                <div>浙江市场<span>市场总监仅显示自己负责的市场</span></div>
+              </div>
+              <div class="market-option">
+                <div>江苏市场<span>总部可切换查看</span></div>
+              </div>
+              <div class="market-option">
+                <div>上海市场<span>总部可切换查看</span></div>
+              </div>
+              <div class="period-note">店长角色通常不展示市场筛选，或展示为不可切换的所属门店范围。</div>
+              <div class="sheet-actions">
+                <button class="btn">取消</button>
+                <button class="btn primary">确定</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <article class="phone">
+        <div class="fixed-title">我的</div>
+        <div class="screen">
+          <div class="status">
+            <span>16:22</span>
+            <span class="signal">5G <span class="battery"></span></span>
+          </div>
+          <div class="nav">
+            <button class="back" aria-label="返回"></button>
+            <div class="nav-title">我的</div>
+            <div class="capsule">••• ◎</div>
+          </div>
+          <div class="content">
+            <div class="card">
+              <div class="section-head" style="margin-bottom:0;">
+                <div>
+                  <div class="section-title">张三</div>
+                  <div class="section-sub">凤御美业 · 杭州西湖旗舰店</div>
+                </div>
+                <div class="avatar" style="width:48px;height:48px;">张</div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="section-head">
+                <div class="section-title">身份信息</div>
+                <span class="tag ok">已绑定</span>
+              </div>
+              <div class="data-row"><span>当前角色</span><b>员工 / 店长</b></div>
+              <div class="data-row"><span>所属门店</span><b>杭州西湖旗舰店</b></div>
+              <div class="data-row"><span>员工身份</span><b>美容顾问</b></div>
+              <div class="data-row"><span>绑定状态</span><b>已绑定员工身份</b></div>
+            </div>
+
+            <div class="card">
+              <div class="section-head">
+                <div class="section-title">登录与权限</div>
+                <span class="link">身份识别</span>
+              </div>
+              <div class="data-row"><span>进入方式</span><b>从原小程序进入</b></div>
+              <div class="data-row"><span>直接打开小程序</span><b>微信授权识别</b></div>
+              <div class="data-row"><span>可查看范围</span><b>按角色权限</b></div>
+            </div>
+
+            <div class="notice">
+              未识别到员工身份时，提示联系管理员绑定所属门店和员工信息；本页不承载商城、预约、个人资料等原小程序功能。
+            </div>
+
+            <button class="plain-action" style="margin-bottom:10px;">重新绑定身份</button>
+            <button class="plain-action">退出登录</button>
+          </div>
+          <div class="tabs">
+            <div class="tab"><span class="tab-icon"></span>总结</div>
+            <div class="tab"><span class="tab-icon"></span>填写</div>
+            <div class="tab"><span class="tab-icon"></span>记录</div>
+            <div class="tab active"><span class="tab-icon dot"></span>我的</div>
+          </div>
+        </div>
+      </article>
+
+    </section>
+
+    <section class="handoff-notes">
+      <h2>原型说明：以下不是小程序页面</h2>
+      <p>上面展示新版核心页面：我的日总结、填写日总结、本店记录、员工记录、日报详情、提交总览、市场筛选弹层和我的。第一版只做提交记录闭环，不做提醒、审核、点评、考核。</p>
+      <div class="handoff-grid">
+        <div class="handoff-item">
+          <b>填写更轻</b>
+          <span>填写页只写今日行动、今日成长、明日计划；指导员和同事作为选填关系。</span>
+        </div>
+        <div class="handoff-item">
+          <b>首页看背景</b>
+          <span>经营月和经营周指标放在首页切换查看，填写页只提示当前周期，不展示完整经营指标。</span>
+        </div>
+        <div class="handoff-item">
+          <b>按门店统计</b>
+          <span>应提交人员以所属门店为准，草稿不算提交，提交总结后才进入已提交。</span>
+        </div>
+        <div class="handoff-item">
+          <b>同页不同权</b>
+          <span>总部、市场总监复用提交总览；店长回到记录查看本店，市场筛选按角色限制可选范围。</span>
+        </div>
+      </div>
+    </section>
+  </main>
+  <script type="text/plain" id="legacy-prototype-script">
+    const appData = {
+      today: "2026-07-06",
+      stores: [
+        { id: "westlake", name: "杭州西湖旗舰店", market: "浙江市场", due: 10, submitted: 7, periods: { today: { due: 10, submitted: 7 }, month: { due: 300, submitted: 248 }, lastMonth: { due: 310, submitted: 286 } } },
+        { id: "binjiang", name: "杭州滨江店", market: "浙江市场", due: 23, submitted: 21, periods: { today: { due: 23, submitted: 21 }, month: { due: 690, submitted: 631 }, lastMonth: { due: 713, submitted: 676 } } },
+        { id: "ningbo", name: "宁波鄞州店", market: "浙江市场", due: 20, submitted: 12, periods: { today: { due: 20, submitted: 12 }, month: { due: 600, submitted: 438 }, lastMonth: { due: 620, submitted: 552 } } },
+        { id: "shaoxing", name: "绍兴柯桥店", market: "浙江市场", due: 21, submitted: 15, periods: { today: { due: 21, submitted: 15 }, month: { due: 630, submitted: 516 }, lastMonth: { due: 651, submitted: 587 } } },
+        { id: "suzhou", name: "苏州中心店", market: "江苏市场", due: 18, submitted: 16, periods: { today: { due: 18, submitted: 16 }, month: { due: 540, submitted: 486 }, lastMonth: { due: 558, submitted: 521 } } },
+        { id: "shanghai", name: "上海静安店", market: "上海市场", due: 16, submitted: 15, periods: { today: { due: 16, submitted: 15 }, month: { due: 480, submitted: 446 }, lastMonth: { due: 496, submitted: 461 } } }
+      ],
+      employees: [
+        { id: "zhang", name: "张三", role: "美容顾问", storeId: "westlake", status: "draft" },
+        { id: "li", name: "李四", role: "美容顾问", storeId: "westlake", status: "submitted" },
+        { id: "wang", name: "王五", role: "养生师", storeId: "westlake", status: "missing" },
+        { id: "zhao", name: "赵店长", role: "店长", storeId: "westlake", status: "submitted" },
+        { id: "sun", name: "孙七", role: "美容顾问", storeId: "binjiang", status: "submitted" },
+        { id: "zhou", name: "周八", role: "美容顾问", storeId: "suzhou", status: "submitted" },
+        { id: "chen", name: "陈九", role: "店长", storeId: "shanghai", status: "submitted" }
+      ],
+      records: {
+        zhang: [
+          { date: "2026年7月6日", status: "draft", action: "已填写今日行动，明日计划待补充", growth: "今天复盘了体验卡客户转化话术。", plan: "明日补齐高意向客户跟进。", mentor: "李老师", peer: "赵六" },
+          { date: "2026年7月5日", status: "submitted", action: "今日行动 3 条，明日计划 2 条", growth: "发现顾客犹豫时，需要先讲清改善周期。", plan: "上午回访 8 位老客，下午邀约体验卡用户。", mentor: "李老师", peer: "赵六" },
+          { date: "2026年7月4日", status: "submitted", action: "指导员：李老师，同事：赵六", growth: "复盘了本周目标差距。", plan: "继续跟进未成交顾客。", mentor: "李老师", peer: "赵六" }
+        ],
+        li: [
+          { date: "2026年7月6日", status: "submitted", action: "老客回访 12 人，预约到店 4 人", growth: "邀约前先确认顾客最近状态，效率更高。", plan: "明日重点跟进入店客户。", mentor: "赵店长", peer: "张三" },
+          { date: "2026年7月5日", status: "submitted", action: "完成 5 位体验卡客户跟进", growth: "价格异议要回到需求本身。", plan: "整理高意向名单。", mentor: "赵店长", peer: "张三" }
+        ],
+        wang: [
+          { date: "2026年7月5日", status: "submitted", action: "完成项目服务 6 人", growth: "服务后回访要更及时。", plan: "补充今日未提交总结。", mentor: "赵店长", peer: "李四" }
+        ],
+        zhao: [
+          { date: "2026年7月6日", status: "submitted", action: "跟进本店未提交人员，复盘本周目标", growth: "店内提交提醒要前置到晚会前。", plan: "明日关注宁波市场交流方案。", mentor: "总部运营", peer: "李四" }
+        ],
+        sun: [
+          { date: "2026年7月6日", status: "submitted", action: "完成老客复购跟进", growth: "复购客户需要先看历史项目。", plan: "继续邀约到店。", mentor: "店长", peer: "同事" }
+        ],
+        zhou: [
+          { date: "2026年7月6日", status: "submitted", action: "跟进江苏市场会员复购 9 人", growth: "邀约前先确认项目体验感，沟通更顺。", plan: "明日整理沉睡会员名单。", mentor: "苏州店长", peer: "同事" },
+          { date: "2026年7月5日", status: "submitted", action: "完成新客体验回访 6 人", growth: "先问感受再推荐项目更自然。", plan: "补充高意向客户备注。", mentor: "苏州店长", peer: "同事" }
+        ],
+        chen: [
+          { date: "2026年7月6日", status: "submitted", action: "复盘上海门店今日提交和未提交人员", growth: "晚会前确认提交节奏更稳定。", plan: "明日跟进本月低频提交员工。", mentor: "市场总监", peer: "运营" },
+          { date: "2026年7月5日", status: "submitted", action: "完成门店员工日总结检查", growth: "需要把未提交提醒提前到收班前。", plan: "继续关注本月提交率。", mentor: "市场总监", peer: "运营" }
+        ]
+      },
+      cycle: {
+        month: [
+          ["本月销售目标", "¥260,000"],
+          ["销售完成", "¥214,800"],
+          ["销售完成率", "82.6%"],
+          ["本月消耗目标", "¥180,000"],
+          ["消耗完成", "¥142,600"],
+          ["消耗完成率", "79.2%"]
+        ],
+        week: [
+          ["本周销售目标", "¥65,000"],
+          ["销售完成", "¥48,600"],
+          ["销售完成率", "74.8%"],
+          ["本周消耗目标", "¥45,000"],
+          ["消耗完成", "¥34,200"],
+          ["消耗完成率", "76.0%"]
+        ]
+      }
+    };
+
+    const appState = {
+      role: "employee",
+      page: "home",
+      cycle: "month",
+      selectedMarket: "全部市场",
+      selectedSubmitPeriod: "today",
+      selectedRecordMonth: "2026-07",
+      employeeRoleFilter: "全部",
+      selectedStoreId: "westlake",
+      selectedEmployeeId: "zhang",
+      selectedRecordIndex: 0,
+      modal: null,
+      stack: [],
+      toast: ""
+    };
+
+    const roleTabs = {
+      employee: [["home", "总结"], ["fill", "填写"], ["records", "记录"], ["mine", "我的"]],
+      manager: [["home", "总结"], ["fill", "填写"], ["records", "记录"], ["mine", "我的"]],
+      admin: [["home", "首页"], ["stores", "门店"], ["employees", "员工"], ["mine", "我的"]]
+    };
+
+    const roleNames = { employee: "员工", manager: "店长", admin: "管理层" };
+    const statusText = { draft: "草稿", submitted: "已提交", missing: "未提交" };
+    const statusClass = { draft: "warn", submitted: "ok", missing: "danger" };
+    const roleFilterLabels = ["全部", "店长", "顾问", "养生师"];
+    const submitPeriodLabels = { today: "今日", businessWeek: "本经营周", businessMonth: "本经营月" };
+    const recordMonths = [
+      { id: "2026-07", label: "2026年7月", range: "06-26 至 07-25", due: 30, submitted: 24, metrics: [["销售目标", "¥260,000"], ["销售完成", "¥214,800"], ["销售完成率", "82.6%"], ["消耗目标", "¥180,000"], ["消耗完成", "¥142,600"], ["消耗完成率", "79.2%"]] },
+      { id: "2026-06", label: "2026年6月", range: "05-26 至 06-25", due: 30, submitted: 27, metrics: [["销售目标", "¥248,000"], ["销售完成", "¥226,400"], ["销售完成率", "91.3%"], ["消耗目标", "¥176,000"], ["消耗完成", "¥153,200"], ["消耗完成率", "87.0%"]] },
+      { id: "2026-05", label: "2026年5月", range: "04-26 至 05-25", due: 31, submitted: 25, metrics: [["销售目标", "¥238,000"], ["销售完成", "¥191,600"], ["销售完成率", "80.5%"], ["消耗目标", "¥168,000"], ["消耗完成", "¥132,800"], ["消耗完成率", "79.0%"]] }
+    ];
+
+    function storeById(id) {
+      return appData.stores.find((store) => store.id === id) || appData.stores[0];
+    }
+
+    function employeeById(id) {
+      return appData.employees.find((employee) => employee.id === id) || appData.employees[0];
+    }
+
+    function currentUser() {
+      return appState.role === "manager" ? employeeById("zhao") : employeeById("zhang");
+    }
+
+    function recordsFor(employeeId) {
+      return appData.records[employeeId] || [];
+    }
+
+    function selectedRecordMonth() {
+      return recordMonths.find((month) => month.id === appState.selectedRecordMonth) || recordMonths[0];
+    }
+
+    function currentStoreEmployees() {
+      return appData.employees.filter((employee) => employee.storeId === appState.selectedStoreId);
+    }
+
+    function submitPeriodKey() {
+      if (appState.selectedSubmitPeriod === "businessWeek") return "week";
+      if (appState.selectedSubmitPeriod === "businessMonth") return "month";
+      return "today";
+    }
+
+    function storeStats(storeId) {
+      const store = storeById(storeId);
+      const people = appData.employees.filter((employee) => employee.storeId === storeId);
+      const submitted = people.filter((employee) => employee.status === "submitted").length;
+      const due = Math.max(store.due || people.length, people.length);
+      const missing = Math.max(due - submitted, 0);
+      const rate = due ? Math.round((submitted / due) * 100) : 0;
+      return { due, submitted, missing, rate };
+    }
+
+    function periodStatsForStore(store, period = "today") {
+      if (period === "week") {
+        const today = store.periods?.today || { due: store.due, submitted: store.submitted };
+        const due = today.due * 7;
+        const submitted = Math.max(0, Math.min(due, Math.round(today.submitted * 6.2)));
+        const missing = Math.max(due - submitted, 0);
+        const rate = due ? Math.round((submitted / due) * 100) : 0;
+        return { due, submitted, missing, rate };
+      }
+      const row = store.periods?.[period] || { due: store.due, submitted: store.submitted };
+      const missing = Math.max(row.due - row.submitted, 0);
+      const rate = row.due ? Math.round((row.submitted / row.due) * 100) : 0;
+      return { due: row.due, submitted: row.submitted, missing, rate };
+    }
+
+    function marketStores() {
+      if (appState.selectedMarket === "全部市场") return appData.stores;
+      return appData.stores.filter((store) => store.market === appState.selectedMarket);
+    }
+
+    function marketStats(period = "today") {
+      const stores = marketStores();
+      const due = stores.reduce((sum, store) => sum + periodStatsForStore(store, period).due, 0);
+      const submitted = stores.reduce((sum, store) => sum + periodStatsForStore(store, period).submitted, 0);
+      const rate = due ? Math.round((submitted / due) * 100) : 0;
+      return { stores: stores.length, due, submitted, missing: due - submitted, rate };
+    }
+
+    function employeesInMarketScope() {
+      const storeIds = new Set(marketStores().map((store) => store.id));
+      return appData.employees.filter((employee) => storeIds.has(employee.storeId));
+    }
+
+    function employeePeriodStats(employee, period = "today") {
+      const todayStatus = visibleStatus(employee.status, false);
+      if (period === "today") {
+        const submitted = todayStatus === "submitted" ? 1 : 0;
+        return { due: 1, submitted, missing: 1 - submitted, rate: submitted ? 100 : 0, status: todayStatus };
+      }
+      const base = employee.id.charCodeAt(0) + employee.id.length;
+      const due = period === "week" ? 7 : period === "month" ? 30 : 31;
+      const submitted = Math.max(0, Math.min(due, due - (base % 7) - (employee.status === "missing" ? 4 : 0)));
+      const rate = Math.round((submitted / due) * 100);
+      return { due, submitted, missing: due - submitted, rate, status: submitted === due ? "submitted" : "missing" };
+    }
+
+    function selectedStoreSubmitStats(store) {
+      return periodStatsForStore(store, submitPeriodKey());
+    }
+
+    function selectedEmployeeSubmitStats(employee) {
+      return employeePeriodStats(employee, submitPeriodKey());
+    }
+
+    function adminMonthlyStoreStats(store) {
+      return storeMonthStats(store, selectedRecordMonth());
+    }
+
+    function adminMonthlyEmployeeStats(employee) {
+      const month = selectedRecordMonth();
+      const stats = employeePeriodStats(employee, "month");
+      const submitted = Math.max(0, Math.min(month.due, Math.round(stats.submitted * (month.submitted / month.due))));
+      const missing = Math.max(month.due - submitted, 0);
+      const rate = month.due ? Math.round((submitted / month.due) * 100) : 0;
+      return { due: month.due, submitted, missing, rate, status: rate >= 100 ? "submitted" : "missing" };
+    }
+
+    function submitAttentionScore(store) {
+      const stats = appState.page === "home" ? periodStatsForStore(store, "week") : adminMonthlyStoreStats(store);
+      return stats.missing * 4 + Math.max(0, 100 - stats.rate);
+    }
+
+    function setPage(page, options = {}) {
+      if (options.push) appState.stack.push({ page: appState.page, selectedStoreId: appState.selectedStoreId, selectedEmployeeId: appState.selectedEmployeeId, selectedRecordIndex: appState.selectedRecordIndex });
+      appState.page = page;
+      appState.modal = null;
+      renderApp();
+    }
+
+    function goBack() {
+      const previous = appState.stack.pop();
+      if (previous) {
+        Object.assign(appState, previous);
+      } else {
+        appState.page = appState.role === "admin" ? "home" : "home";
+      }
+      appState.modal = null;
+      renderApp();
+    }
+
+    function showToast(message) {
+      appState.toast = message;
+      renderApp();
+      window.clearTimeout(showToast.timer);
+      showToast.timer = window.setTimeout(() => {
+        appState.toast = "";
+        renderApp();
+      }, 1400);
+    }
+
+    function statusTag(status) {
+      return `<span class="tag ${statusClass[status] || ""}">${statusText[status] || status}</span>`;
+    }
+
+    function visibleStatus(status, viewerOwnsRecord = false) {
+      if (!viewerOwnsRecord && status === "draft") return "missing";
+      return status;
+    }
+
+    function visibleRecords(employeeId, viewerOwnsRecord = false) {
+      const rows = recordsFor(employeeId);
+      return viewerOwnsRecord ? rows : rows.filter((record) => record.status !== "draft");
+    }
+
+    function chromeStart(time = "16:22") {
+      return `<div class="status"><span>${time}</span><span class="signal">5G <span class="battery"></span></span></div>`;
+    }
+
+    function nav(title, showBack = true) {
+      return `<div class="nav">${showBack ? '<button class="back" data-action="back" aria-label="返回"></button>' : '<span style="width:30px"></span>'}<div class="nav-title">${title}</div><div class="capsule">••• ◎</div></div>`;
+    }
+
+    function tabs(active) {
+      const items = roleTabs[appState.role];
+      return `<div class="tabs">${items.map(([page, label]) => `<div class="tab ${page === active ? "active" : ""}" data-tab="${page}"><span class="tab-icon ${page === active ? "dot" : ""}"></span>${label}</div>`).join("")}</div>`;
+    }
+
+    function cycleCard() {
+      const rows = appData.cycle.week.map(([label, value]) => `<div class="sync-metric"><span>${label}</span><b>${value}</b></div>`).join("");
+      return `<div class="card sync-card">
+        <div class="section-head"><div class="section-title">本经营周指标</div></div>
+        <div class="sync-grid">${rows}</div>
+      </div>`;
+    }
+
+    function homePage() {
+      if (appState.role === "admin") return adminHome();
+      const user = currentUser();
+      const store = storeById(user.storeId);
+      const records = visibleRecords(user.id, true).slice(0, 2);
+      const buttonText = user.status === "submitted" ? "查看今日总结" : user.status === "draft" ? "继续填写今日日总结" : "填写今日日总结";
+      const weeklyMissing = user.status === "submitted" ? 1 : 2;
+      const storeSummary = appState.role === "manager" ? managerStoreSummary() : "";
+      return `${chromeStart()}<div class="brand-home"><div class="brand-logo"><span class="brand-mark"></span><span class="brand-text"><strong>FENGYU</strong><span>凤御美业</span></span></div><div class="capsule">••• ◎</div></div>
+      <div class="content home-content">
+        <div class="card today-card">
+          <div class="today-summary"><h2>我的日总结</h2></div>
+          <div class="section-head"><div class="section-title">今日状态</div><span class="tag">${appData.today}</span></div>
+          <div class="stats three"><div class="stat"><span>本周应交</span><b>7</b></div><div class="stat"><span>已提交</span><b>${user.status === "submitted" ? 6 : 5}</b></div><div class="stat"><span>未提交</span><b>${weeklyMissing}</b></div></div>
+          <button class="primary-action" data-action="${user.status === "submitted" ? "today-detail" : "go-fill"}">${buttonText}</button>
+        </div>
+        ${cycleCard()}
+        ${storeSummary}
+        <div class="section-head"><div class="section-title">最近日总结</div><span class="link" data-tab="records">完整记录</span></div>
+        ${records.map((record, index) => recordCard(record, user.id, index, true)).join("")}
+      </div>${tabs("home")}${toastHtml()}`;
+    }
+
+    function managerStoreSummary() {
+      const stats = storeStats("westlake");
+      return `<div class="card clickable" data-tab="records">
+        <div class="section-head"><div><div class="section-title">本店今日提交</div><div class="section-sub">含店长本人。</div></div><span class="tag warn">${stats.rate}%</span></div>
+        <div class="data-row"><span>杭州西湖旗舰店</span><b>${stats.submitted}/${stats.due}</b></div>
+        <div class="data-row"><span>未提交</span><b>${stats.missing}</b></div>
+      </div>`;
+    }
+
+    function fillPage() {
+      const user = currentUser();
+      const store = storeById(user.storeId);
+      return `${chromeStart()}${nav("日总结")}
+        <div class="content with-actions">
+          <div class="toolbar"><div class="select-pill" data-action="fake-date">今天 2026-07-06 <span>⌄</span></div><div class="small-btn" data-action="copy-yesterday">复制昨日</div></div>
+          <div class="fixed-info">当前门店：${store.name}</div>
+          ${field("一 今日行动", "建议写 1-3 条关键行动，例如回访、邀约、成交跟进...", 500)}
+          ${field("二 今日成长", "一句话写今天的问题、收获或复盘...", 300)}
+          ${field("三 明日计划", "写明天最重要的 1-3 个动作...", 500)}
+          <div class="form-section"><div class="section-head"><div class="section-title">四 指导关系</div><span class="tag">选填</span></div><label class="field-label">指导员</label><div class="select-pill" data-action="fake-select" style="margin:6px 0 10px;">请选择指导员 <span>⌄</span></div><label class="field-label">同事</label><div class="select-pill" data-action="fake-select" style="margin-top:6px;">请选择同事 <span>⌄</span></div></div>
+        </div>
+        <div class="bottom-actions"><button class="btn" data-action="save-draft">保存草稿</button><button class="btn primary" data-action="submit-summary">提交总结</button></div>
+        ${tabs("fill")}${toastHtml()}`;
+    }
+
+    function field(title, placeholder, max) {
+      return `<div class="form-section"><div class="section-head"><div class="section-title">${title}</div><span class="tag danger">必填</span></div><textarea class="textarea short" placeholder="${placeholder}"></textarea><div class="counter">0/${max}</div></div>`;
+    }
+
+    function recordsPage() {
+      if (appState.role === "manager") {
+        appState.selectedStoreId = currentUser().storeId;
+        return storePage("records");
+      }
+      const user = currentUser();
+      return `${chromeStart()}${nav("我的记录", false)}
+        <div class="content">
+          ${recordMonthPicker()}
+          ${employeeRecordSummary(user)}
+          ${recordListForMonth(user.id, true)}
+        </div>${tabs("records")}${recordMonthModal()}${toastHtml()}`;
+    }
+
+    function recordCard(record, employeeId, index, viewerOwnsRecord = false) {
+      const status = visibleStatus(record.status, viewerOwnsRecord);
+      const summary = status === "submitted" ? `已提交 · ${record.action}` : status === "draft" ? record.action : "今日未提交";
+      const actionTag = status === "submitted" ? '<span class="tag ok">详情</span>' : status === "draft" ? '<span class="tag warn">继续</span>' : statusTag(status);
+      return `<div class="list-card" data-employee="${employeeId}" data-record="${index}">
+        <div class="list-top"><div><h3>${record.date} 日总结</h3><p>${summary}</p></div>${actionTag}</div>
+      </div>`;
+    }
+
+    function storePage(activeTab) {
+      const store = storeById(appState.selectedStoreId);
+      if (appState.role === "manager") return managerMonthlyStorePage(store, activeTab);
+      const month = selectedRecordMonth();
+      const stats = adminMonthlyStoreStats(store);
+      const people = currentStoreEmployees();
+      return `${chromeStart()}${nav(store.name)}
+        <div class="content">
+          ${recordMonthPicker()}
+          <div class="card"><div class="section-head"><div><div class="section-title">月度提交</div><div class="section-sub">经营月 ${month.range}</div></div><span class="tag ${stats.rate >= 90 ? "ok" : stats.rate >= 70 ? "warn" : "danger"}">${stats.rate}%</span></div><div class="stats"><div class="stat"><span>应提交</span><b>${stats.due}</b></div><div class="stat"><span>已提交</span><b>${stats.submitted}</b></div><div class="stat"><span>未提交</span><b>${stats.missing}</b></div></div>${monthlyMetricsBlock(month)}</div>
+          <div class="card"><div class="section-head"><div class="section-title">人员提交</div></div>${people.map(managerMonthlyPersonRow).join("")}</div>
+        </div>${recordMonthModal()}${toastHtml()}`;
+    }
+
+    function managerMonthlyStorePage(store, activeTab) {
+      const month = selectedRecordMonth();
+      const stats = storeMonthStats(store, month);
+      const people = currentStoreEmployees();
+      return `${chromeStart()}${nav("本店记录")}
+        <div class="content">
+          ${recordMonthPicker()}
+          <div class="card"><div class="section-head"><div><div class="section-title">${store.name}</div><div class="section-sub">经营月 ${month.range}</div></div><span class="tag ${stats.rate >= 90 ? "ok" : stats.rate >= 70 ? "warn" : "danger"}">${stats.rate}%</span></div><div class="stats"><div class="stat"><span>应提交</span><b>${stats.due}</b></div><div class="stat"><span>已提交</span><b>${stats.submitted}</b></div><div class="stat"><span>未提交</span><b>${stats.missing}</b></div></div>${monthlyMetricsBlock(month)}</div>
+          <div class="card"><div class="section-head"><div class="section-title">人员提交</div></div>${people.map(managerMonthlyPersonRow).join("")}</div>
+        </div>${tabs(activeTab || "records")}${recordMonthModal()}${toastHtml()}`;
+    }
+
+    function personRow(employee) {
+      const status = visibleStatus(employee.status, employee.id === currentUser().id && appState.role !== "admin");
+      return `<div class="review-item" data-employee-open="${employee.id}"><div class="avatar">${employee.name.slice(0, 1)}</div><div><div class="review-name">${employee.name}</div><div class="review-meta">${employee.role} · ${status === "submitted" ? "今日已提交" : "今日未提交"}</div></div>${statusTag(status)}</div>`;
+    }
+    function storeMonthStats(store, month) {
+      const due = store.due * month.due;
+      const submitted = Math.round(due * (month.submitted / month.due) * (store.submitted / store.due));
+      const missing = Math.max(due - submitted, 0);
+      const rate = due ? Math.round((submitted / due) * 100) : 0;
+      return { due, submitted, missing, rate };
+    }
+
+    function managerMonthlyPersonRow(employee) {
+      const month = selectedRecordMonth();
+      const stats = employeePeriodStats(employee, "month");
+      const submitted = Math.max(0, Math.min(month.due, Math.round(stats.submitted * (month.submitted / month.due))));
+      const missing = Math.max(month.due - submitted, 0);
+      const rate = month.due ? Math.round((submitted / month.due) * 100) : 0;
+      const cls = rate >= 90 ? "ok" : rate >= 70 ? "warn" : "danger";
+      return `<div class="review-item" data-employee-open="${employee.id}"><div class="avatar">${employee.name.slice(0, 1)}</div><div><div class="review-name">${employee.name}</div><div class="review-meta">${employee.role} · 已交 ${submitted}/${month.due} · 未交 ${missing}</div></div><span class="tag ${cls}">${rate}%</span></div>`;
+    }
+
+    function monthlyMetricsBlock(month) {
+      return `<div class="section-head" style="margin-top:12px;"><div class="section-title">经营指标</div></div><div class="sync-grid">${month.metrics.map(([label, value]) => `<div class="sync-metric"><span>${label}</span><b>${value}</b></div>`).join("")}</div>`;
+    }
+
+
+    function employeesPage() {
+      const people = appState.role === "admin" ? filteredAdminEmployees() : appData.employees.filter((employee) => employee.storeId === "westlake");
+      const marketOverview = appState.role === "admin" && appState.selectedMarket === "全部市场" ? marketEmployeeOverviewCard() : "";
+      return `${chromeStart()}${nav("员工", false)}
+        <div class="content">
+          ${appState.role === "admin" ? adminMonthFilterBar() + roleFilterSwitch() : ""}
+          ${marketOverview}
+          <div class="card"><div class="section-head"><div class="section-title">员工提交</div></div>${people.map(appState.role === "admin" ? adminEmployeeRow : personRow).join("")}</div>
+        </div>${tabs("employees")}${recordMonthModal()}${marketModal()}${toastHtml()}`;
+    }
+
+    function employeeRecordPage() {
+      const employee = employeeById(appState.selectedEmployeeId);
+      const ownsRecord = employee.id === currentUser().id && appState.role !== "admin";
+      return `${chromeStart()}${nav(`${employee.name}的日总结`)}
+        <div class="content no-tabs">
+          ${recordMonthPicker()}
+          ${employeeRecordSummary(employee)}
+          ${recordListForMonth(employee.id, ownsRecord)}
+        </div>${recordMonthModal()}${toastHtml()}`;
+    }
+
+    function employeeRecordSummary(employee) {
+      const month = selectedRecordMonth();
+      const submitRate = Math.round((month.submitted / month.due) * 100);
+      return `<div class="card"><div class="section-head"><div><div class="section-title">月度记录</div><div class="section-sub">${month.range}</div></div><span class="tag ${submitRate >= 90 ? "ok" : submitRate >= 70 ? "warn" : "danger"}">${submitRate}%</span></div><div class="stats"><div class="stat"><span>应提交</span><b>${month.due}</b></div><div class="stat"><span>已提交</span><b>${month.submitted}</b></div><div class="stat"><span>未提交</span><b>${month.due - month.submitted}</b></div></div>${monthlyMetricsBlock(month)}</div>`;
+    }
+
+    function recordMonthPicker() {
+      return `<div class="overview-tools" style="grid-template-columns:1fr;"><div class="filter-chip" data-action="open-record-month">${selectedRecordMonth().label} <span class="chev">⌄</span></div></div>`;
+    }
+
+    function recordListForMonth(employeeId, ownsRecord) {
+      const rows = recordsForMonth(employeeId, ownsRecord);
+      return rows.length ? rows.map((record, index) => recordCard(record, employeeId, recordsFor(employeeId).indexOf(record), ownsRecord)).join("") : '<div class="notice">当前月份暂无已提交日总结。</div>';
+    }
+
+    function recordsForMonth(employeeId, ownsRecord) {
+      const source = visibleRecords(employeeId, ownsRecord);
+      if (appState.selectedRecordMonth === "2026-07") return source;
+      const templates = source.filter((record) => ownsRecord || record.status !== "draft");
+      const dates = appState.selectedRecordMonth === "2026-06" ? ["2026年6月25日", "2026年6月24日", "2026年6月23日"] : ["2026年5月25日", "2026年5月24日", "2026年5月23日"];
+      return dates.map((date, index) => {
+        const base = templates[index] || templates[templates.length - 1] || source[0];
+        return { ...base, date, status: "submitted", action: index === 0 ? "完成当月重点客户跟进，整理复盘记录" : base.action };
+      });
+    }
+
+    function detailPage() {
+      const employee = employeeById(appState.selectedEmployeeId);
+      const record = recordsFor(employee.id)[appState.selectedRecordIndex] || recordsFor(employee.id)[0];
+      return `${chromeStart()}${nav(`${employee.name}的日总结`)}
+        <div class="content no-tabs">
+          <div class="card"><div class="section-head"><div><div class="section-title">${record.date}</div><div class="section-sub">${storeById(employee.storeId).name} · ${employee.role} · ${employee.name}</div></div>${statusTag(record.status)}</div></div>
+          ${detailBlock("今日行动", record.action)}
+          ${detailBlock("今日成长", record.growth)}
+          ${detailBlock("明日计划", record.plan)}
+          <div class="card"><div class="section-head"><div class="section-title">指导关系</div></div><div class="data-row"><span>指导员</span><b>${record.mentor}</b></div><div class="data-row"><span>同事</span><b>${record.peer}</b></div></div>
+        </div>${toastHtml()}`;
+    }
+
+    function detailBlock(title, text) {
+      return `<div class="card"><div class="section-head"><div class="section-title">${title}</div></div><p style="margin:0;color:#444c58;font-size:13px;line-height:1.8;">${text}</p></div>`;
+    }
+
+    function adminHome() {
+      const stores = marketStores();
+      const previousPeriod = appState.selectedSubmitPeriod;
+      appState.selectedSubmitPeriod = "businessWeek";
+      const summary = marketStats("week");
+      const concernStores = stores.slice().sort((a, b) => submitAttentionScore(b) - submitAttentionScore(a)).slice(0, 3);
+      const employees = filteredAdminEmployees("week").slice(0, 4);
+      appState.selectedSubmitPeriod = previousPeriod;
+      return `${chromeStart()}${nav("管理层", false)}
+        <div class="content">
+          ${adminHomeFilterBar()}
+          ${weeklySubmitSummaryCard(summary)}
+          <div class="card"><div class="section-head"><div class="section-title">本周待关注门店</div></div>${concernStores.map((store) => adminStoreRow(store, "week")).join("")}</div>
+          <div class="card"><div class="section-head"><div class="section-title">本周待关注员工</div><span class="link">点员工看记录</span></div>${employees.length ? employees.map((employee) => adminEmployeeRow(employee, "week")).join("") : '<div class="notice">当前范围内暂无待关注员工。</div>'}</div>
+        </div>${tabs("home")}${marketModal()}${toastHtml()}`;
+    }
+
+    function storesPage() {
+      const stores = marketStores().slice().sort((a, b) => submitAttentionScore(b) - submitAttentionScore(a));
+      const marketOverview = appState.selectedMarket === "全部市场" ? marketStoreOverviewCard() : "";
+      return `${chromeStart()}${nav("门店", false)}
+        <div class="content">
+          ${adminMonthFilterBar()}
+          ${marketOverview}
+          <div class="card"><div class="section-head"><div class="section-title">门店提交</div></div>${stores.map(storeItem).join("")}</div>
+        </div>${tabs("stores")}${recordMonthModal()}${marketModal()}${toastHtml()}`;
+    }
+
+    function storeItem(store) {
+      return adminStoreRow(store);
+    }
+
+    function adminStoreRow(store, mode = "month") {
+      const stats = mode === "week" ? periodStatsForStore(store, "week") : adminMonthlyStoreStats(store);
+      const cls = stats.rate >= 90 ? "ok" : stats.rate >= 70 ? "warn" : "danger";
+      return `<div class="store-item" data-store-open="${store.id}"><div><div class="store-name">${store.name}</div><div class="store-meta">${store.market} · ${store.due}人 · 已交 ${stats.submitted}/${stats.due} · 未交 ${stats.missing}</div></div><span class="tag ${cls}">${stats.rate}%</span></div>`;
+    }
+
+    function adminHomeFilterBar() {
+      return `<div class="overview-tools"><div class="filter-chip">本经营周提交</div><div class="filter-chip right" data-action="open-market">查看范围：${appState.selectedMarket} <span class="chev">⌄</span></div></div>`;
+    }
+
+    function adminMonthFilterBar() {
+      return `<div class="overview-tools"><div class="filter-chip" data-action="open-record-month">查看月份：${selectedRecordMonth().label} <span class="chev">⌄</span></div><div class="filter-chip right" data-action="open-market">查看范围：${appState.selectedMarket} <span class="chev">⌄</span></div></div>`;
+    }
+
+    function roleFilterSwitch() {
+      return `<div class="filter-row">${roleFilterLabels.map((label) => `<button class="filter ${appState.employeeRoleFilter === label ? "active" : ""}" data-employee-role-filter="${label}">${label}</button>`).join("")}</div>`;
+    }
+
+    function marketNames() {
+      return [...new Set(appData.stores.map((store) => store.market))];
+    }
+
+    function marketStoreOverviewCard() {
+      return `<div class="card"><div class="section-head"><div class="section-title">市场门店概览</div></div>${marketNames().map(marketStoreOverviewRow).join("")}</div>`;
+    }
+
+    function marketStoreOverviewRow(market) {
+      const stores = appData.stores.filter((store) => store.market === market);
+      const stats = stores.reduce((acc, store) => {
+        const row = adminMonthlyStoreStats(store);
+        acc.due += row.due;
+        acc.submitted += row.submitted;
+        acc.missing += row.missing;
+        return acc;
+      }, { due: 0, submitted: 0, missing: 0 });
+      stats.rate = stats.due ? Math.round((stats.submitted / stats.due) * 100) : 0;
+      return marketOverviewRow(market, `${stores.length} 家门店 · 已交 ${stats.submitted}/${stats.due} · 未交 ${stats.missing}`, stats.rate);
+    }
+
+    function marketEmployeeOverviewCard() {
+      return `<div class="card"><div class="section-head"><div class="section-title">市场人员概览</div></div>${marketNames().map(marketEmployeeOverviewRow).join("")}</div>`;
+    }
+
+    function marketEmployeeOverviewRow(market) {
+      const storeIds = new Set(appData.stores.filter((store) => store.market === market).map((store) => store.id));
+      const roleMap = { "店长": "店长", "顾问": "美容顾问", "养生师": "养生师" };
+      const targetRole = roleMap[appState.employeeRoleFilter];
+      const people = appData.employees.filter((employee) => storeIds.has(employee.storeId) && (!targetRole || employee.role === targetRole));
+      const stats = people.reduce((acc, employee) => {
+        const row = adminMonthlyEmployeeStats(employee);
+        acc.due += row.due;
+        acc.submitted += row.submitted;
+        acc.missing += row.missing;
+        return acc;
+      }, { due: 0, submitted: 0, missing: 0 });
+      stats.rate = stats.due ? Math.round((stats.submitted / stats.due) * 100) : 0;
+      return marketOverviewRow(market, `${people.length} 人 · 已交 ${stats.submitted}/${stats.due} · 未交 ${stats.missing}`, stats.rate);
+    }
+
+    function marketOverviewRow(market, meta, rate) {
+      const cls = rate >= 90 ? "ok" : rate >= 70 ? "warn" : "danger";
+      return `<div class="store-item" data-market="${market}"><div><div class="store-name">${market}</div><div class="store-meta">${meta}</div></div><span class="tag ${cls}">${rate}%</span></div>`;
+    }
+
+    function filteredAdminEmployees(mode = "month") {
+      const roleMap = { "店长": "店长", "顾问": "美容顾问", "养生师": "养生师" };
+      const targetRole = roleMap[appState.employeeRoleFilter];
+      return employeesInMarketScope()
+        .filter((employee) => !targetRole || employee.role === targetRole)
+        .sort((a, b) => employeeSubmitScore(b, mode) - employeeSubmitScore(a, mode));
+    }
+
+    function employeeSubmitScore(employee, mode = "month") {
+      const stats = mode === "week" ? employeePeriodStats(employee, "week") : adminMonthlyEmployeeStats(employee);
+      return stats.missing * 8 + Math.max(0, 100 - stats.rate);
+    }
+
+    function weeklySubmitSummaryCard(stats) {
+      return `<div class="card"><div class="section-head"><div class="section-title">本周提交总览</div></div><div class="stats"><div class="stat"><span>应提交</span><b>${stats.due}</b></div><div class="stat"><span>已提交</span><b>${stats.submitted}</b></div><div class="stat"><span>未提交</span><b>${stats.missing}</b></div></div><div class="progress-row"><span>提交率</span><div class="bar"><span style="width:${stats.rate}%"></span></div><b>${stats.rate}%</b></div></div>`;
+    }
+
+    function adminEmployeeRow(employee, mode = "month") {
+      const stats = mode === "week" ? employeePeriodStats(employee, "week") : adminMonthlyEmployeeStats(employee);
+      const store = storeById(employee.storeId);
+      const cls = stats.rate >= 90 ? "ok" : stats.rate >= 70 ? "warn" : "danger";
+      return `<div class="review-item" data-employee-open="${employee.id}"><div class="avatar">${employee.name.slice(0, 1)}</div><div><div class="review-name">${employee.name}</div><div class="review-meta">${store.name} · ${employee.role}</div><div class="review-meta">已交 ${stats.submitted}/${stats.due} · 未交 ${stats.missing}</div></div><span class="tag ${cls}">${stats.rate}%</span></div>`;
+    }
+
+    function minePage() {
+      const user = currentUser();
+      const range = appState.role === "admin" ? appState.selectedMarket : storeById(user.storeId).name;
+      return `${chromeStart()}${nav("我的", false)}
+        <div class="content">
+          <div class="card"><div class="section-head" style="margin-bottom:0;"><div><div class="section-title">${user.name}</div><div class="section-sub">凤御美业 · ${storeById(user.storeId).name}</div></div><div class="avatar" style="width:48px;height:48px;">${user.name.slice(0, 1)}</div></div></div>
+          <div class="card"><div class="section-head"><div class="section-title">身份信息</div><span class="tag ok">已绑定</span></div><div class="data-row"><span>当前角色</span><b>${roleNames[appState.role]}</b></div><div class="data-row"><span>所属门店</span><b>${storeById(user.storeId).name}</b></div><div class="data-row"><span>可查看范围</span><b>${range}</b></div></div>
+          <div class="card"><div class="section-head"><div class="section-title">切换演示角色</div><span class="link">假数据</span></div><div class="filter-row"><button class="filter ${appState.role === "employee" ? "active" : ""}" data-role="employee">员工</button><button class="filter ${appState.role === "manager" ? "active" : ""}" data-role="manager">店长</button><button class="filter ${appState.role === "admin" ? "active" : ""}" data-role="admin">管理层</button></div></div>
+          <div class="notice">未识别到员工身份时，提示联系管理员绑定所属门店和员工信息；本页不承载商城、预约、个人资料等原小程序功能。</div>
+        </div>${tabs("mine")}${toastHtml()}`;
+    }
+
+    function marketModal() {
+      if (appState.modal !== "market") return "";
+      const markets = ["全部市场", "浙江市场", "江苏市场", "上海市场"];
+      return `<div class="market-overlay"><div class="market-sheet"><div class="sheet-title">选择市场</div>${markets.map((market) => `<div class="market-option ${market === appState.selectedMarket ? "active" : ""}" data-market="${market}"><div>${market}<span>${market === "全部市场" ? "总部可查看全部范围" : "切换后更新门店与提交统计"}</span></div>${market === appState.selectedMarket ? "<b>✓</b>" : ""}</div>`).join("")}<div class="period-note">市场总监仅显示自己负责的市场；店长角色通常不展示市场筛选。</div><div class="sheet-actions"><button class="btn" data-action="close-modal">取消</button><button class="btn primary" data-action="close-modal">确定</button></div></div></div>`;
+    }
+
+    function recordMonthModal() {
+      if (appState.modal !== "recordMonth") return "";
+      return `<div class="market-overlay"><div class="market-sheet"><div class="sheet-title">选择月份</div>${recordMonths.map((month) => `<div class="market-option ${month.id === appState.selectedRecordMonth ? "active" : ""}" data-record-month="${month.id}"><div>${month.label}<span>${month.range}</span></div>${month.id === appState.selectedRecordMonth ? "<b>✓</b>" : ""}</div>`).join("")}<div class="sheet-actions"><button class="btn" data-action="close-modal">取消</button><button class="btn primary" data-action="close-modal">确定</button></div></div></div>`;
+    }
+
+    function toastHtml() {
+      return appState.toast ? `<div class="app-toast">${appState.toast}</div>` : "";
+    }
+
+    function renderApp() {
+      const screen = document.getElementById("app-screen");
+      if (!screen) return;
+      const renderers = {
+        home: homePage,
+        fill: fillPage,
+        records: recordsPage,
+        store: storePage,
+        stores: storesPage,
+        employees: employeesPage,
+        employeeRecord: employeeRecordPage,
+        detail: detailPage,
+        mine: minePage
+      };
+      screen.innerHTML = (renderers[appState.page] || homePage)();
+      document.querySelectorAll(".role-btn").forEach((button) => button.classList.toggle("active", button.dataset.role === appState.role));
+    }
+
+    function switchRole(role) {
+      appState.role = role;
+      appState.page = "home";
+      appState.stack = [];
+      appState.modal = null;
+      appState.selectedStoreId = "westlake";
+      appState.selectedEmployeeId = role === "manager" ? "zhao" : "zhang";
+      renderApp();
+    }
+
+    document.addEventListener("click", (event) => {
+      const roleButton = event.target.closest("[data-role]");
+      if (roleButton) {
+        switchRole(roleButton.dataset.role);
+        return;
+      }
+
+      const screen = event.target.closest("#app-screen");
+      if (!screen) return;
+
+
+      const submitPeriod = event.target.closest("[data-submit-period]");
+      if (submitPeriod) {
+        appState.selectedSubmitPeriod = submitPeriod.dataset.submitPeriod;
+        renderApp();
+        return;
+      }
+
+      const employeeRoleFilter = event.target.closest("[data-employee-role-filter]");
+      if (employeeRoleFilter) {
+        appState.employeeRoleFilter = employeeRoleFilter.dataset.employeeRoleFilter;
+        renderApp();
+        return;
+      }
+
+
+      const recordMonth = event.target.closest("[data-record-month]");
+      if (recordMonth) {
+        appState.selectedRecordMonth = recordMonth.dataset.recordMonth;
+        appState.modal = null;
+        renderApp();
+        return;
+      }
+
+      const tab = event.target.closest("[data-tab]");
+      if (tab) {
+        appState.stack = [];
+        setPage(tab.dataset.tab);
+        return;
+      }
+
+      const storeOpen = event.target.closest("[data-store-open]");
+      if (storeOpen) {
+        appState.selectedStoreId = storeOpen.dataset.storeOpen;
+        setPage("store", { push: true });
+        return;
+      }
+
+      const employeeOpen = event.target.closest("[data-employee-open]");
+      if (employeeOpen) {
+        appState.selectedEmployeeId = employeeOpen.dataset.employeeOpen;
+        setPage("employeeRecord", { push: true });
+        return;
+      }
+
+      const recordOpen = event.target.closest("[data-record]");
+      if (recordOpen) {
+        appState.selectedEmployeeId = recordOpen.dataset.employee;
+        appState.selectedRecordIndex = Number(recordOpen.dataset.record);
+        setPage("detail", { push: true });
+        return;
+      }
+
+      const market = event.target.closest("[data-market]");
+      if (market) {
+        appState.selectedMarket = market.dataset.market;
+        appState.modal = null;
+        showToast(`已切换到${appState.selectedMarket}`);
+        return;
+      }
+
+      const action = event.target.closest("[data-action]")?.dataset.action;
+      if (!action) return;
+
+      if (action === "back") goBack();
+      if (action === "go-fill") setPage("fill", { push: true });
+      if (action === "today-detail") {
+        appState.selectedEmployeeId = currentUser().id;
+        appState.selectedRecordIndex = 0;
+        setPage("detail", { push: true });
+      }
+      if (action === "save-draft") {
+        currentUser().status = "draft";
+        recordsFor(currentUser().id)[0].status = "draft";
+        setPage("home");
+        showToast("已保存草稿");
+      }
+      if (action === "submit-summary") {
+        currentUser().status = "submitted";
+        recordsFor(currentUser().id)[0].status = "submitted";
+        recordsFor(currentUser().id)[0].action = "今日行动 3 条，明日计划 2 条";
+        setPage("home");
+        showToast("已提交日总结");
+      }
+      if (action === "open-market") {
+        appState.modal = "market";
+        renderApp();
+      }
+      if (action === "open-record-month") {
+        appState.modal = "recordMonth";
+        renderApp();
+      }
+      if (action === "close-modal") {
+        appState.modal = null;
+        renderApp();
+      }
+      if (action === "copy-yesterday") showToast("已复制昨日内容");
+      if (action === "fake-date") showToast("日期选择为假数据演示");
+      if (action === "fake-filter") showToast("筛选为假数据演示");
+      if (action === "fake-select") showToast("选择器为假数据演示");
+    });
+
+    renderApp();
+  </script>
+  <script>
+    (() => {
+      const data = {
+        today: "2026-07-06",
+        markets: [
+          { id: "zhejiang", name: "浙江市场" },
+          { id: "jiangsu", name: "江苏市场" },
+          { id: "shanghai", name: "上海市场" }
+        ],
+        stores: [
+          { id: "westlake", name: "杭州西湖旗舰店", marketId: "zhejiang" },
+          { id: "binjiang", name: "杭州滨江店", marketId: "zhejiang" },
+          { id: "ningbo", name: "宁波鄞州店", marketId: "zhejiang" },
+          { id: "shaoxing", name: "绍兴柯桥店", marketId: "zhejiang" },
+          { id: "suzhou", name: "苏州中心店", marketId: "jiangsu" },
+          { id: "shanghai", name: "上海静安店", marketId: "shanghai" }
+        ],
+        employees: [
+          { id: "zhang", name: "张三", role: "美容顾问", storeId: "westlake", status: "draft" },
+          { id: "li", name: "李四", role: "美容顾问", storeId: "westlake", status: "submitted" },
+          { id: "wang", name: "王五", role: "养生师", storeId: "westlake", status: "missing" },
+          { id: "zhao", name: "赵店长", role: "店长", storeId: "westlake", status: "submitted" },
+          { id: "sun", name: "孙七", role: "美容顾问", storeId: "binjiang", status: "submitted" },
+          { id: "wu", name: "吴敏", role: "店长", storeId: "ningbo", status: "missing" },
+          { id: "zhou", name: "周八", role: "美容顾问", storeId: "suzhou", status: "submitted" },
+          { id: "chen", name: "陈九", role: "店长", storeId: "shanghai", status: "submitted" }
+        ],
+        records: {
+          zhang: [
+            { date:"2026-07-06", status:"draft", action:"已完成重点客户回访。", growth:"今天复盘了体验卡客户转化话术。", plan:"明日补齐高意向客户跟进。", mentor:"李老师", peer:"赵六" },
+            { date:"2026-07-05", status:"submitted", action:"完成老客回访 12 人，其中 4 人预约到店。", growth:"先讲清改善周期，再进入套餐推荐，沟通更顺畅。", plan:"上午回访 8 位老客，下午邀约体验卡用户。", mentor:"李老师", peer:"赵六" },
+            { date:"2026-07-04", status:"submitted", action:"整理 8 位高意向客户并完成二次跟进。", growth:"跟进前先看历史项目，沟通效率更高。", plan:"继续跟进未成交顾客。", mentor:"李老师", peer:"赵六" }
+          ],
+          zhao: [
+            { date:"2026-07-06", status:"submitted", action:"跟进本店未提交人员，复盘本周目标。", growth:"提交提醒应前置到晚会之前。", plan:"明日关注低频提交员工。", mentor:"市场总监", peer:"李四" },
+            { date:"2026-07-05", status:"submitted", action:"完成门店员工日总结检查。", growth:"班前明确当天重点，晚会复盘更聚焦。", plan:"继续关注本月提交率。", mentor:"市场总监", peer:"李四" }
+          ],
+          li: [{ date:"2026-07-06", status:"submitted", action:"完成 5 位体验卡客户跟进。", growth:"价格异议要回到需求本身。", plan:"整理高意向名单。", mentor:"赵店长", peer:"张三" }],
+          wang: [{ date:"2026-07-05", status:"submitted", action:"完成项目服务 6 人。", growth:"服务后回访要更及时。", plan:"明日完成老客回访。", mentor:"赵店长", peer:"李四" }],
+          sun: [{ date:"2026-07-06", status:"submitted", action:"完成老客复购跟进。", growth:"复购客户需要先看历史项目。", plan:"继续邀约到店。", mentor:"店长", peer:"同事" }],
+          wu: [{ date:"2026-07-05", status:"submitted", action:"复盘门店本周目标。", growth:"提醒动作还可以更前置。", plan:"关注未提交员工。", mentor:"市场总监", peer:"运营" }],
+          zhou: [{ date:"2026-07-06", status:"submitted", action:"跟进江苏市场会员复购 9 人。", growth:"邀约前确认项目体验感更顺畅。", plan:"整理沉睡会员名单。", mentor:"苏州店长", peer:"同事" }],
+          chen: [{ date:"2026-07-06", status:"submitted", action:"复盘上海门店今日提交。", growth:"晚会前确认提交节奏更稳定。", plan:"跟进低频提交员工。", mentor:"市场总监", peer:"运营" }]
+        },
+        months: [
+          { id:"2026-07", label:"2026年7月", range:"06-26 至 07-25", due:30, submitted:24 },
+          { id:"2026-06", label:"2026年6月", range:"05-26 至 06-25", due:30, submitted:27 },
+          { id:"2026-05", label:"2026年5月", range:"04-26 至 05-25", due:31, submitted:25 }
+        ]
+      };
+
+      const initialForm = () => ({ action:"", growth:"", plan:"", mentor:"", peer:"", dirty:false, errors:{} });
+      const state = {
+        role:"employee", adminScope:"hq", page:"home", stack:[], modal:null, toast:"",
+        selectedMonth:"2026-07", period:"week", storePeriod:"today", selectedMarket:"all",
+        selectedStore:"westlake", selectedEmployee:"zhang", selectedRecordDate:data.today,
+        orgView:"tree", employeeRole:"全部", employeeSearch:"", employeeStore:"all",
+        personalRecordsMode:false, editingSubmitted:false, form:initialForm()
+      };
+
+      const roleTabs = {
+        employee:[["home","首页"],["records","记录"],["mine","我的"]],
+        manager:[["home","首页"],["myStore","本店"],["mine","我的"]],
+        admin:[["overview","总览"],["organization","组织"],["mine","我的"]]
+      };
+      const statusText = { missing:"未填写", draft:"草稿", submitted:"已提交" };
+      const employee = id => data.employees.find(x => x.id === id) || data.employees[0];
+      const store = id => data.stores.find(x => x.id === id) || data.stores[0];
+      const market = id => data.markets.find(x => x.id === id) || data.markets[0];
+      const records = id => data.records[id] || (data.records[id] = []);
+      const currentUser = () => state.role === "manager" ? employee("zhao") : employee("zhang");
+      const selectedMonth = () => data.months.find(x => x.id === state.selectedMonth) || data.months[0];
+      const scopedMarketIds = () => state.adminScope === "market" ? ["zhejiang"] : data.markets.map(x => x.id);
+      const scopedStores = () => data.stores.filter(x => scopedMarketIds().includes(x.marketId) && (state.selectedMarket === "all" || x.marketId === state.selectedMarket));
+      const employeesForStore = id => data.employees.filter(x => x.storeId === id);
+      const periodLabel = value => ({today:"今日",week:"本经营周",month:"本经营月"}[value] || value);
+      const pseudoStats = (seed, period=state.period) => {
+        const days = period === "today" ? 1 : period === "week" ? 7 : selectedMonth().due;
+        const due = Math.max(1, seed) * days;
+        const rate = Math.max(48, Math.min(96, 58 + (seed * 7) % 35));
+        const submitted = Math.round(due * rate / 100);
+        return { due, submitted, missing:due-submitted, rate };
+      };
+
+      function chrome(){ return `<div class="status"><span>16:22</span><span class="signal">5G <span class="battery"></span></span></div>`; }
+      function nav(title, back=true){ return `<div class="nav">${back?'<button class="back" data-action="back" aria-label="返回"></button>':'<span style="width:30px"></span>'}<div class="nav-title">${title}</div><div class="capsule">••• ◎</div></div>`; }
+      function tabs(active){ return `<div class="tabs">${roleTabs[state.role].map(([page,label])=>`<div class="tab ${active===page?'active':''}" data-tab="${page}"><span class="tab-icon ${active===page?'dot':''}"></span>${label}</div>`).join("")}</div>`; }
+      function tag(status){ const cls=status==="submitted"?"ok":status==="draft"?"warn":"danger"; return `<span class="tag ${cls}">${statusText[status]||status}</span>`; }
+      function statsCard(title, stats, subtitle=""){ return `<div class="card"><div class="section-head"><div><div class="section-title">${title}</div>${subtitle?`<div class="section-sub">${subtitle}</div>`:""}</div><span class="tag ${stats.rate>=90?'ok':stats.rate>=70?'warn':'danger'}">${stats.rate}%</span></div><div class="stats"><div class="stat"><span>应提交</span><b>${stats.due}</b></div><div class="stat"><span>已提交</span><b>${stats.submitted}</b></div><div class="stat"><span>未提交</span><b>${stats.missing}</b></div></div></div>`; }
+      function weeklyMetrics(){ return `<div class="card sync-card"><div class="section-head"><div class="section-title">本经营周指标</div><span class="page-link" data-action="open-current-month">查看本经营月 ›</span></div><div class="sync-grid"><div class="sync-metric"><span>销售目标</span><b>¥65,000</b></div><div class="sync-metric"><span>销售完成率</span><b>74.8%</b></div><div class="sync-metric"><span>消耗目标</span><b>¥45,000</b></div><div class="sync-metric"><span>消耗完成率</span><b>76.0%</b></div></div></div>`; }
+      function monthlyMetrics(){ return `<div class="section-head" style="margin-top:12px"><div class="section-title">经营指标</div></div><div class="sync-grid"><div class="sync-metric"><span>销售目标</span><b>¥260,000</b></div><div class="sync-metric"><span>销售完成率</span><b>82.6%</b></div><div class="sync-metric"><span>消耗目标</span><b>¥180,000</b></div><div class="sync-metric"><span>消耗完成率</span><b>79.2%</b></div></div>`; }
+      function periodSwitch(value, action="period"){ return `<div class="segmented">${[["today","今日"],["week","本经营周"],["month","本经营月"]].map(([id,label])=>`<button class="segment ${value===id?'active':''}" data-${action}="${id}">${label}</button>`).join("")}</div>`; }
+      function toast(){ return state.toast ? `<div class="app-toast">${state.toast}</div>` : ""; }
+
+      function recordRow(row, ownerId, owns=false){
+        const visible = owns ? row.status : (row.status === "draft" ? "missing" : row.status);
+        const clickable = visible !== "missing";
+        const summary = visible === "submitted" ? row.action : visible === "draft" ? row.action : "今日未提交";
+        return `<div class="list-card ${clickable?'clickable':''}" ${clickable?`data-record-date="${row.date}" data-record-owner="${ownerId}"`:''}><div class="list-top"><div><h3>${row.date} 日总结</h3><p>${summary}</p></div>${tag(visible)}</div></div>`;
+      }
+
+      function homePage(){
+        const user=currentUser(), ownRecords=records(user.id).slice(0,2);
+        const button=user.status==="submitted"?["查看今日日总结","today-detail"]:user.status==="draft"?["继续填写","go-fill"]:["填写今日日总结","go-fill"];
+        const managerSummary=state.role==="manager"?`<div class="card clickable" data-action="open-store-today"><div class="section-head"><div><div class="section-title">本店今日提交</div><div class="section-sub">含店长本人 · 点击查看人员</div></div><span class="tag warn">50%</span></div><div class="stats"><div class="stat"><span>应提交</span><b>4</b></div><div class="stat"><span>已提交</span><b>2</b></div><div class="stat"><span>未提交</span><b>2</b></div></div></div>`:"";
+        return `${chrome()}<div class="brand-home"><div class="brand-logo"><span class="brand-mark"></span><span class="brand-text"><strong>FENGYU</strong><span>凤御美业</span></span></div><div class="capsule">••• ◎</div></div><div class="content home-content"><div class="card today-card"><div class="today-summary"><h2>我的日总结</h2><p>${data.today} · ${user.name} · ${store(user.storeId).name}</p></div><div class="section-head"><div class="section-title">今日状态</div>${tag(user.status)}</div><button class="primary-action" data-action="${button[1]}">${button[0]}</button></div>${weeklyMetrics()}${managerSummary}<div class="section-head"><div class="section-title">我的最近日总结</div><span class="page-link" data-action="open-personal-records">查看全部 ›</span></div>${ownRecords.map(x=>recordRow(x,user.id,true)).join("")}</div>${tabs("home")}${toast()}`;
+      }
+
+      function recordsContent(user){ const month=selectedMonth(); return `${monthPicker()}<div class="card">${statsCardInner("月度提交概况",{due:month.due,submitted:month.submitted,missing:month.due-month.submitted,rate:Math.round(month.submitted/month.due*100)},month.range)}${monthlyMetrics()}</div>${recordsForMonth(user.id).map(x=>recordRow(x,user.id,true)).join("")}`; }
+      function statsCardInner(title,stats,subtitle){ return `<div class="section-head"><div><div class="section-title">${title}</div><div class="section-sub">${subtitle}</div></div><span class="tag ${stats.rate>=90?'ok':stats.rate>=70?'warn':'danger'}">${stats.rate}%</span></div><div class="stats"><div class="stat"><span>应提交</span><b>${stats.due}</b></div><div class="stat"><span>已提交</span><b>${stats.submitted}</b></div><div class="stat"><span>未提交</span><b>${stats.missing}</b></div></div>`; }
+      function recordsForMonth(id){
+        const base=records(id);
+        if(state.selectedMonth==="2026-07") return base;
+        const dates=state.selectedMonth==="2026-06"?["2026-06-25","2026-06-24"]:["2026-05-25","2026-05-24"];
+        const source=base.filter(x=>x.status==="submitted");
+        return dates.map((date,i)=>({...source[i%Math.max(source.length,1)]||records("zhang")[1],date,status:"submitted"}));
+      }
+      function recordsPage(nested=false){ const title=nested?"我的日总结记录":"我的记录"; return `${chrome()}${nav(title,nested)}<div class="content ${nested?'no-tabs':''}">${recordsContent(currentUser())}</div>${nested?'':tabs("records")}${monthModal()}${toast()}`; }
+      function monthPicker(){ const m=selectedMonth(); return `<div class="overview-tools" style="grid-template-columns:1fr"><div class="filter-chip" data-action="open-month">${m.label} · ${m.range} <span class="chev">⌄</span></div></div>`; }
+
+      function fillField(key,title,placeholder,max){ const value=state.form[key]||"", error=state.form.errors[key]; return `<div class="form-section"><div class="section-head"><div class="section-title">${title}</div><span class="tag danger">必填</span></div><textarea class="textarea short ${error?'error':''}" data-form-field="${key}" maxlength="${max}" placeholder="${placeholder}">${escapeHtml(value)}</textarea><div class="counter">${value.length}/${max}</div>${error?`<div class="field-error">${error}</div>`:""}</div>`; }
+      function fillPage(){ const user=currentUser(); return `${chrome()}${nav(state.editingSubmitted?"修改今日总结":"填写日总结")}<div class="content with-actions"><div class="toolbar"><div class="fixed-info" style="flex:1">今天 · ${data.today}</div><button class="small-btn" data-action="copy-last">复制上次内容</button></div><div class="fixed-info">当前门店：${store(user.storeId).name}</div>${fillField("action","一 今日行动","建议写 1-3 条关键行动...",500)}${fillField("growth","二 今日成长","一句话写今天的问题、收获或复盘...",300)}${fillField("plan","三 明日计划","写明天最重要的 1-3 个动作...",500)}<div class="form-section"><div class="section-head"><div class="section-title">四 指导关系</div><span class="tag">选填</span></div><label class="field-label">指导员</label><div class="select-pill" data-action="choose-mentor" style="margin:6px 0 10px">${state.form.mentor||"请选择指导员"} <span>⌄</span></div><label class="field-label">同事</label><div class="select-pill" data-action="choose-peer" style="margin-top:6px">${state.form.peer||"请选择同事"} <span>⌄</span></div></div></div><div class="bottom-actions"><button class="btn" data-action="save-draft">保存草稿</button><button class="btn primary" data-action="submit-summary">${state.editingSubmitted?"重新提交":"提交总结"}</button></div>${confirmModal()}${toast()}`; }
+
+      function myStorePage(){
+        const people=employeesForStore(currentUser().storeId), stats=pseudoStats(people.length,state.storePeriod);
+        return `${chrome()}${nav("本店日报",false)}<div class="content">${periodSwitch(state.storePeriod,"store-period")}${statsCard("本店提交概况",stats,`${store(currentUser().storeId).name} · ${periodLabel(state.storePeriod)}`)}<div class="card"><div class="section-head"><div class="section-title">人员提交列表</div><span class="section-sub">草稿对店长显示为未提交</span></div>${people.map(person=>personRow(person,state.storePeriod)).join("")}</div></div>${tabs("myStore")}${toast()}`;
+      }
+      function personRow(person,period=state.period){
+        const visible=person.status==="draft"?"missing":person.status, stats=pseudoStats(1,period);
+        const todayClickable=period!=="today"||visible==="submitted";
+        const meta=period==="today"?`${person.role} · ${visible==="submitted"?'今日已提交':'今日未提交'}`:`${person.role} · 已交 ${stats.submitted}/${stats.due}`;
+        return `<div class="review-item ${todayClickable?'clickable':''}" ${todayClickable?`data-person-open="${person.id}"`:''}><div class="avatar">${person.name[0]}</div><div><div class="review-name">${person.name}</div><div class="review-meta">${meta}</div></div>${period==="today"?tag(visible):`<span class="tag ${stats.rate>=70?'ok':'warn'}">${stats.rate}%</span>`}</div>`;
+      }
+
+      function overviewPage(){
+        const stores=scopedStores(), marketIds=[...new Set(stores.map(x=>x.marketId))], people=data.employees.filter(x=>stores.some(s=>s.id===x.storeId));
+        const showMarkets=state.adminScope==="hq"&&state.selectedMarket==="all";
+        const summary=pseudoStats(people.length,state.period);
+        const scopeControl=state.adminScope==="hq"?`<div class="filter-chip" data-action="open-scope">查看范围：${state.selectedMarket==="all"?"全部授权市场":market(state.selectedMarket).name} <span class="chev">⌄</span></div>`:`<div class="filter-chip">查看范围：浙江市场</div>`;
+        return `${chrome()}${nav("提交总览",false)}<div class="content"><div class="overview-tools">${scopeControl}</div>${periodSwitch(state.period)}${statsCard(`${periodLabel(state.period)}提交总览`,summary)}${showMarkets?`<div class="card"><div class="section-head"><div class="section-title">待关注市场</div></div>${marketIds.map(id=>marketRow(id)).join("")}</div>`:""}<div class="card"><div class="section-head"><div class="section-title">待关注门店</div></div>${stores.slice().sort((a,b)=>a.id.length-b.id.length).slice(0,4).map(storeRow).join("")}</div><div class="card"><div class="section-head"><div class="section-title">待关注员工</div></div>${people.slice().sort((a,b)=>a.status.localeCompare(b.status)).slice(0,5).map(x=>personRow(x,state.period)).join("")}</div></div>${tabs("overview")}${scopeModal()}${toast()}`;
+      }
+      function marketRow(id){ const m=market(id), count=data.stores.filter(x=>x.marketId===id).length, stats=pseudoStats(count*4,state.period); return `<div class="tree-row" data-market-open="${id}"><div><strong>${m.name}</strong><span>${count} 家门店 · 提交率 ${stats.rate}%</span></div><b class="tree-arrow">›</b></div>`; }
+      function storeRow(s){ const stats=pseudoStats(employeesForStore(s.id).length||3,state.period); return `<div class="tree-row" data-store-open="${s.id}"><div><strong>${s.name}</strong><span>${market(s.marketId).name} · 已交 ${stats.submitted}/${stats.due}</span></div><b class="tree-arrow">›</b></div>`; }
+
+      function organizationPage(){
+        return `${chrome()}${nav("组织",false)}<div class="content"><div class="segmented two"><button class="segment ${state.orgView==='tree'?'active':''}" data-org-view="tree">组织架构</button><button class="segment ${state.orgView==='people'?'active':''}" data-org-view="people">人员查找</button></div>${state.orgView==="tree"?organizationTree():peopleSearch()}</div>${tabs("organization")}${toast()}`;
+      }
+      function organizationTree(){ const ids=scopedMarketIds(); const rows=state.adminScope==="market"?data.stores.filter(x=>x.marketId==="zhejiang").map(storeRow).join(""):ids.map(marketRow).join(""); return `<div class="card"><div class="section-head"><div><div class="section-title">${state.adminScope==='hq'?'全部授权市场':'浙江市场'}</div><div class="section-sub">${state.adminScope==='hq'?'按市场 → 门店 → 员工逐层查看':'按门店 → 员工逐层查看'}</div></div></div>${rows}</div>`; }
+      function peopleSearch(){
+        const allowedStores=data.stores.filter(x=>scopedMarketIds().includes(x.marketId)&&(state.selectedMarket==="all"||x.marketId===state.selectedMarket));
+        const list=data.employees.filter(x=>allowedStores.some(s=>s.id===x.storeId)).filter(x=>!state.employeeSearch||x.name.includes(state.employeeSearch)).filter(x=>state.employeeStore==="all"||x.storeId===state.employeeStore).filter(x=>state.employeeRole==="全部"||x.role.includes(state.employeeRole));
+        return `<input class="search-input" data-search placeholder="搜索员工姓名" value="${escapeHtml(state.employeeSearch)}"><div class="overview-tools" style="margin-top:10px">${state.adminScope==='hq'?`<div class="filter-chip" data-action="open-scope">${state.selectedMarket==='all'?'全部市场':market(state.selectedMarket).name} <span>⌄</span></div>`:`<div class="filter-chip">浙江市场</div>`}<div class="filter-chip" data-action="cycle-store">${state.employeeStore==='all'?'全部门店':store(state.employeeStore).name} <span>⌄</span></div></div><div class="filter-row">${["全部","店长","顾问","养生师"].map(x=>`<button class="filter ${state.employeeRole===x?'active':''}" data-role-filter="${x}">${x}</button>`).join("")}</div><div class="card"><div class="section-head"><div class="section-title">员工列表</div><span class="section-sub">${list.length} 人</span></div>${list.map(x=>personRow(x,"month")).join("")}</div>`;
+      }
+
+      function marketDetailPage(){ const m=market(state.selectedMarket), stores=data.stores.filter(x=>x.marketId===m.id), stats=pseudoStats(stores.length*4,state.period); return `${chrome()}${nav("市场详情")}<div class="content no-tabs">${periodSwitch(state.period)}${statsCard(m.name+"提交概况",stats,periodLabel(state.period))}<div class="card"><div class="section-head"><div class="section-title">门店列表</div></div>${stores.map(storeRow).join("")}</div></div>${toast()}`; }
+      function storeDetailPage(){ const s=store(state.selectedStore), people=employeesForStore(s.id), stats=pseudoStats(people.length||3,state.period); return `${chrome()}${nav("门店详情")}<div class="content no-tabs">${periodSwitch(state.period)}${statsCard(s.name+"提交概况",stats,`${market(s.marketId).name} · ${periodLabel(state.period)}`)}<div class="card"><div class="section-head"><div class="section-title">人员提交列表</div></div>${people.length?people.map(x=>personRow(x,state.period)).join(""):'<div class="notice">当前门店暂无人员明细。</div>'}</div></div>${toast()}`; }
+      function employeeRecordsPage(){ const person=employee(state.selectedEmployee), month=selectedMonth(), owns=person.id===currentUser().id&&state.role!=="admin"; return `${chrome()}${nav(`${person.name}的日报记录`)}<div class="content no-tabs"><div class="card"><div class="section-head"><div><div class="section-title">${person.name}</div><div class="section-sub">${store(person.storeId).name} · ${person.role}</div></div><div class="avatar">${person.name[0]}</div></div></div>${monthPicker()}${statsCard("月度提交概况",{due:month.due,submitted:Math.max(1,month.submitted-person.id.length),missing:month.due-Math.max(1,month.submitted-person.id.length),rate:Math.round(Math.max(1,month.submitted-person.id.length)/month.due*100)},month.range)}${recordsForMonth(person.id).filter(x=>owns||x.status==="submitted").map(x=>recordRow(x,person.id,owns)).join("")||'<div class="notice">当前月份暂无已提交日总结。</div>'}</div>${monthModal()}${toast()}`; }
+      function detailPage(){ const person=employee(state.selectedEmployee), row=records(person.id).find(x=>x.date===state.selectedRecordDate)||records(person.id)[0], owns=person.id===currentUser().id&&state.role!=="admin", editable=owns&&row?.date===data.today&&row?.status==="submitted"; if(!row)return `${chrome()}${nav("日总结详情")}<div class="content no-tabs"><div class="notice">未找到该日总结。</div></div>`; return `${chrome()}${nav("日总结详情")}<div class="content no-tabs"><div class="card"><div class="section-head"><div><div class="section-title">${row.date}</div><div class="section-sub">${person.name} · ${person.role} · ${store(person.storeId).name}</div></div>${tag(row.status)}</div>${row.updatedAt?`<div class="meta-line"><span>最近提交</span><b>${row.updatedAt}</b></div>`:""}</div>${detailBlock("今日行动",row.action)}${detailBlock("今日成长",row.growth)}${detailBlock("明日计划",row.plan)}<div class="card"><div class="section-title">指导关系</div><div class="data-row"><span>指导员</span><b>${row.mentor||"未选择"}</b></div><div class="data-row"><span>同事</span><b>${row.peer||"未选择"}</b></div></div>${editable?'<button class="primary-action" data-action="edit-today">修改今日总结</button>':''}</div>${toast()}`; }
+      function detailBlock(title,text){ return `<div class="card"><div class="section-title">${title}</div><p style="margin:10px 0 0;color:#444c58;font-size:13px;line-height:1.8;white-space:pre-wrap">${escapeHtml(text||"未填写")}</p></div>`; }
+      function minePage(){
+        const admin=state.role==="admin", user=admin?{name:state.adminScope==="hq"?"总部运营":"浙江市场总监",role:state.adminScope==="hq"?"总部管理人员":"市场负责人"}:currentUser();
+        const org=admin?(state.adminScope==="hq"?"品牌总部":"浙江市场"):store(user.storeId).name;
+        const range=admin?(state.adminScope==="hq"?"全部授权市场":"浙江市场"):store(user.storeId).name;
+        return `${chrome()}${nav("我的",false)}<div class="content"><div class="card"><div class="section-head" style="margin:0"><div><div class="section-title">${user.name}</div><div class="section-sub">凤御美业 · ${user.role}</div></div><div class="avatar" style="width:48px;height:48px">${user.name[0]}</div></div></div><div class="card"><div class="section-head"><div class="section-title">身份与授权</div><span class="tag ok">已绑定</span></div><div class="data-row"><span>${admin?'所属组织':'所属门店'}</span><b>${org}</b></div><div class="data-row"><span>当前${admin?'管理身份':'岗位'}</span><b>${user.role}</b></div><div class="data-row"><span>授权查看范围</span><b>${range}</b></div></div>${admin?'<div class="card"><div class="section-title">工作台</div><div class="data-row"><span>多身份用户</span><b>可切换授权工作台</b></div><div class="notice">工作台与范围由后台授权下发。</div></div>':''}<div class="card"><div class="section-title">账号与绑定</div><div class="data-row"><span>绑定状态</span><b>正常</b></div><div class="data-row"><span>需要换绑</span><b class="page-link">联系管理员</b></div></div></div>${tabs("mine")}`;
+      }
+
+      function monthModal(){ if(state.modal!=="month")return""; return `<div class="market-overlay"><div class="market-sheet"><div class="sheet-title">选择经营月</div>${data.months.map(x=>`<div class="market-option ${x.id===state.selectedMonth?'active':''}" data-month="${x.id}"><div>${x.label}<span>${x.range}</span></div>${x.id===state.selectedMonth?'<b>✓</b>':''}</div>`).join("")}<div class="period-note">选择后立即生效</div></div></div>`; }
+      function scopeModal(){ if(state.modal!=="scope")return""; const options=state.adminScope==="market"?[{id:"zhejiang",name:"浙江市场"}]:[{id:"all",name:"全部授权市场"},...data.markets]; return `<div class="market-overlay"><div class="market-sheet"><div class="sheet-title">选择查看范围</div>${options.map(x=>`<div class="market-option ${x.id===state.selectedMarket?'active':''}" data-scope="${x.id}"><div>${x.name}<span>${x.id==='all'?'查看全部授权范围':'仅查看该市场'}</span></div>${x.id===state.selectedMarket?'<b>✓</b>':''}</div>`).join("")}<div class="period-note">范围由后台授权下发，选择后立即生效</div></div></div>`; }
+      function confirmModal(){ if(!["leave","overwrite"].includes(state.modal))return""; const leave=state.modal==="leave"; return `<div class="market-overlay"><div class="market-sheet"><div class="sheet-title">${leave?'内容尚未保存':'覆盖当前内容？'}</div><p class="modal-copy">${leave?'离开后本次修改将不会保留。':'复制上次内容会覆盖当前三个正文输入框。'}</p><div class="sheet-actions"><button class="btn" data-action="cancel-modal">取消</button><button class="btn primary" data-action="${leave?'confirm-leave':'confirm-copy'}">${leave?'直接离开':'确认覆盖'}</button></div></div></div>`; }
+      function escapeHtml(value){ return String(value||"").replace(/[&<>"']/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[ch])); }
+
+      function snapshot(){ return {page:state.page,selectedMonth:state.selectedMonth,period:state.period,storePeriod:state.storePeriod,selectedMarket:state.selectedMarket,selectedStore:state.selectedStore,selectedEmployee:state.selectedEmployee,selectedRecordDate:state.selectedRecordDate,orgView:state.orgView,employeeRole:state.employeeRole,employeeStore:state.employeeStore,employeeSearch:state.employeeSearch,personalRecordsMode:state.personalRecordsMode}; }
+      function openPage(page,push=true){ if(push)state.stack.push(snapshot()); state.page=page; state.modal=null; render(); }
+      function back(force=false){ if(state.page==="fill"&&state.form.dirty&&!force){state.modal="leave";render();return;} const prev=state.stack.pop(); if(prev)Object.assign(state,prev); else state.page=state.role==="admin"?"overview":"home"; state.modal=null; render(); }
+      function showToast(message){ state.toast=message; render(); clearTimeout(showToast.timer); showToast.timer=setTimeout(()=>{state.toast="";render();},1400); }
+      function loadFormFromRecord(row){ state.form={action:row?.action||"",growth:row?.growth||"",plan:row?.plan||"",mentor:row?.mentor||"",peer:row?.peer||"",dirty:false,errors:{}}; }
+      function copyLast(){ const user=currentUser(), last=records(user.id).find(x=>x.status==="submitted"&&x.date!==data.today); if(!last){showToast("暂无可复制的已提交记录");return;} state.form.action=last.action;state.form.growth=last.growth;state.form.plan=last.plan;state.form.dirty=true;state.form.errors={};state.modal=null;showToast("已复制上次正文内容"); }
+      function saveCurrent(status){
+        const user=currentUser(); let row=records(user.id).find(x=>x.date===data.today);
+        if(!row){row={date:data.today};records(user.id).unshift(row);}
+        Object.assign(row,{status,action:state.form.action,growth:state.form.growth,plan:state.form.plan,mentor:state.form.mentor,peer:state.form.peer});
+        user.status=status; state.form.dirty=false;
+        if(status==="submitted"){row.updatedAt="今天 16:22";state.selectedEmployee=user.id;state.selectedRecordDate=data.today;state.editingSubmitted=false;openPage("detail",false);showToast("日总结已提交");}
+        else {state.stack=[];state.page="home";render();showToast("草稿已保存");}
+      }
+
+      const renderers={home:homePage,records:()=>recordsPage(false),personalRecords:()=>recordsPage(true),fill:fillPage,myStore:myStorePage,overview:overviewPage,organization:organizationPage,marketDetail:marketDetailPage,storeDetail:storeDetailPage,employeeRecords:employeeRecordsPage,detail:detailPage,mine:minePage};
+      function render(){ const screen=document.getElementById("app-screen"); screen.innerHTML=(renderers[state.page]||homePage)(); document.querySelectorAll(".role-btn").forEach(x=>x.classList.toggle("active",x.dataset.role===state.role&&(state.role!=="admin"||x.dataset.adminScope===state.adminScope))); }
+
+      document.addEventListener("input",e=>{
+        if(e.target.matches("[data-form-field]")){const key=e.target.dataset.formField;state.form[key]=e.target.value;state.form.dirty=true;delete state.form.errors[key];const counter=e.target.parentElement.querySelector(".counter");if(counter)counter.textContent=`${e.target.value.length}/${e.target.maxLength}`;e.target.classList.remove("error");const error=e.target.parentElement.querySelector(".field-error");if(error)error.remove();}
+        if(e.target.matches("[data-search]")){state.employeeSearch=e.target.value;state.orgView="people";render();const input=document.querySelector("[data-search]");if(input){input.focus();input.setSelectionRange(input.value.length,input.value.length);}}
+      });
+      document.addEventListener("click",e=>{
+        const role=e.target.closest("[data-role]");
+        if(role&&!e.target.closest("#app-screen")){state.role=role.dataset.role;state.adminScope=role.dataset.adminScope||state.adminScope;state.page=state.role==="admin"?"overview":"home";state.stack=[];state.selectedMarket=state.adminScope==="market"?"zhejiang":"all";state.period="week";state.orgView="tree";state.toast="";render();return;}
+        if(!e.target.closest("#app-screen"))return;
+        const tab=e.target.closest("[data-tab]");if(tab){state.stack=[];state.page=tab.dataset.tab;state.modal=null;if(state.page==="myStore")state.storePeriod="today";render();return;}
+        const period=e.target.closest("[data-period]");if(period){state.period=period.dataset.period;render();return;}
+        const storePeriod=e.target.closest("[data-store-period]");if(storePeriod){state.storePeriod=storePeriod.dataset.storePeriod;render();return;}
+        const month=e.target.closest("[data-month]");if(month){state.selectedMonth=month.dataset.month;state.modal=null;render();return;}
+        const scope=e.target.closest("[data-scope]");if(scope){state.selectedMarket=scope.dataset.scope;state.modal=null;render();return;}
+        const org=e.target.closest("[data-org-view]");if(org){state.orgView=org.dataset.orgView;render();return;}
+        const rf=e.target.closest("[data-role-filter]");if(rf){state.employeeRole=rf.dataset.roleFilter;render();return;}
+        const mo=e.target.closest("[data-market-open]");if(mo){state.selectedMarket=mo.dataset.marketOpen;openPage("marketDetail");return;}
+        const so=e.target.closest("[data-store-open]");if(so){state.selectedStore=so.dataset.storeOpen;openPage("storeDetail");return;}
+        const po=e.target.closest("[data-person-open]");if(po){const id=po.dataset.personOpen, person=employee(id), visible=person.status==="draft"?"missing":person.status;state.selectedEmployee=id;if((state.page==="myStore"||state.page==="storeDetail")&&(state.storePeriod==="today"||state.period==="today")&&visible==="submitted"){state.selectedRecordDate=data.today;openPage("detail");}else openPage("employeeRecords");return;}
+        const ro=e.target.closest("[data-record-date]");if(ro){state.selectedEmployee=ro.dataset.recordOwner;state.selectedRecordDate=ro.dataset.recordDate;const row=records(state.selectedEmployee).find(x=>x.date===state.selectedRecordDate);if(row?.status==="draft"&&state.selectedEmployee===currentUser().id){loadFormFromRecord(row);state.editingSubmitted=false;openPage("fill");}else openPage("detail");return;}
+        const action=e.target.closest("[data-action]")?.dataset.action;if(!action)return;
+        if(action==="back")back();
+        if(action==="go-fill"){const row=records(currentUser().id).find(x=>x.date===data.today);loadFormFromRecord(row?.status==="draft"?row:null);state.editingSubmitted=false;openPage("fill");}
+        if(action==="today-detail"){state.selectedEmployee=currentUser().id;state.selectedRecordDate=data.today;openPage("detail");}
+        if(action==="open-current-month"){state.selectedMonth="2026-07";state.personalRecordsMode=state.role==="manager";openPage(state.role==="manager"?"personalRecords":"records");}
+        if(action==="open-personal-records"){state.personalRecordsMode=state.role==="manager";openPage(state.role==="manager"?"personalRecords":"records");}
+        if(action==="open-store-today"){state.storePeriod="today";state.stack=[];state.page="myStore";render();}
+        if(action==="open-month"){state.modal="month";render();}
+        if(action==="open-scope"){state.modal="scope";render();}
+        if(action==="copy-last"){const has=state.form.action||state.form.growth||state.form.plan;if(has){state.modal="overwrite";render();}else copyLast();}
+        if(action==="confirm-copy")copyLast();
+        if(action==="cancel-modal"){state.modal=null;render();}
+        if(action==="confirm-leave")back(true);
+        if(action==="choose-mentor"){state.form.mentor=state.form.mentor?"":"李老师";state.form.dirty=true;render();}
+        if(action==="choose-peer"){state.form.peer=state.form.peer?"":"赵六";state.form.dirty=true;render();}
+        if(action==="save-draft")saveCurrent("draft");
+        if(action==="submit-summary"){state.form.errors={};["action","growth","plan"].forEach(k=>{if(!state.form[k].trim())state.form.errors[k]="请填写后再提交";});if(Object.keys(state.form.errors).length){render();showToast("请补全必填内容");}else saveCurrent("submitted");}
+        if(action==="edit-today"){const row=records(currentUser().id).find(x=>x.date===data.today);loadFormFromRecord(row);state.editingSubmitted=true;openPage("fill");}
+        if(action==="cycle-store"){const ids=["all",...data.stores.filter(x=>scopedMarketIds().includes(x.marketId)).map(x=>x.id)];state.employeeStore=ids[(ids.indexOf(state.employeeStore)+1)%ids.length];render();}
+      });
+
+      function updateDocumentation(){
+        document.querySelector(".brief").innerHTML=`<div><h1>轻量日总结小程序 · 信息架构定稿原型</h1><p>员工完成个人日报，店长管理本店提交，管理层按授权范围查看市场、门店与员工。一级导航按工作任务划分，填写和详情统一采用下钻页面。</p></div><div class="scope"><span>员工：首页｜记录｜我的</span><span>店长：首页｜本店｜我的</span><span>管理层：总览｜组织｜我的</span></div>`;
+        document.querySelector(".interactive-note").innerHTML=`<h2>可点击主流程</h2><p>角色切换位于手机外，仅用于演示不同工作台。二级页面隐藏底栏并按来源返回。</p><div class="role-switch" id="role-switch"><button class="role-btn active" data-role="employee">员工</button><button class="role-btn" data-role="manager">店长</button><button class="role-btn" data-role="admin" data-admin-scope="hq">总部管理</button><button class="role-btn" data-role="admin" data-admin-scope="market">浙江市场负责人</button></div><div class="click-map"><span>员工：首页 → 填写 / 草稿 / 提交 → 详情；记录按经营月归档。</span><span>店长：首页处理个人日报；本店按今日 / 周 / 月查看人员。</span><span>管理层：总览发现问题；组织按市场 → 门店 → 员工下钻，或直接人员查找。</span></div>`;
+        document.querySelector(".static-title").textContent="静态页面说明稿 · 与可点击流程同步";
+        const boards=document.querySelector(".boards"), saved={...state}, savedForm={...state.form};
+        const screens=[];
+        const add=(title,html)=>screens.push(`<article class="phone"><div class="fixed-title">${title}</div><div class="screen">${html}</div></article>`);
+        state.role="employee";state.page="home";add("员工：首页",homePage());add("员工：填写日总结",fillPage());
+        state.role="manager";state.page="myStore";state.storePeriod="today";add("店长：本店日报",myStorePage());
+        state.role="admin";state.adminScope="hq";state.selectedMarket="all";state.page="overview";add("总部：提交总览",overviewPage());
+        state.page="organization";state.orgView="tree";add("管理层：组织架构",organizationPage());
+        state.adminScope="market";state.selectedMarket="zhejiang";state.page="overview";add("市场负责人：浙江总览",overviewPage());
+        state.selectedEmployee="zhang";state.selectedRecordDate="2026-07-05";add("公共页：日总结详情",detailPage());
+        boards.innerHTML=screens.join(""); Object.assign(state,saved);state.form=savedForm;
+        document.querySelector(".handoff-notes").innerHTML=`<h2>页面与交互约束</h2><p>静态稿展示关键代表页；完整路径请在上方可点击手机中切换角色验证。</p><div class="handoff-grid"><div class="handoff-item"><b>一级导航</b><span>仅首页、记录、本店、总览、组织、我的显示底栏。</span></div><div class="handoff-item"><b>填写闭环</b><span>复制上次、草稿恢复、必填校验、提交详情、当天修改。</span></div><div class="handoff-item"><b>组织权限</b><span>总部与单市场负责人由模拟后端授权能力控制范围。</span></div><div class="handoff-item"><b>公共下钻</b><span>市场详情、门店详情、员工记录、日报详情复用同一页面。</span></div></div>`;
+      }
+
+      updateDocumentation();
+      render();
+    })();
+  </script>
+</body>
+</html>
