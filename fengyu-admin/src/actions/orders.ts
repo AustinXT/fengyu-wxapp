@@ -1006,7 +1006,8 @@ export const getOrdersPaginated = withPermission(
  * 订单号/状态/顾客/支付方式等订单级字段在每条明细行内重复；
  * 金额列走「商品行口径」（与 exportAllocationOrders 对齐）：订单金额=sale_items.sale_amount（行应付）、
  *   实付=sale_items.received（行级净实收，已扣该行退款）；储值卡抵扣/现付分别直接取
- *   sale_items.prepaid_card_received / cash_received。充值单取订单级 total_amount(面额)/received(实付)。
+ *   sale_items.prepaid_card_received / cash_received。充值单及无明细兜底行按订单级快照换算净实收，
+ *   与商品行保持相同的退款后口径。
  * 行级字段（商品类型/品质一二级/总次数/可用次数/单次价格/经营类型/商品明细）按 item 各自展示；充值单无 item 留空。
  * 寄存单 5 个销售口径金额列留空（exportOrders 内 isDeposit 分支：total=0 与 received>0 并存会误导）。
  * 历史订单（legacySource='workfine'）默认纳入，与列表分页口径一致。
@@ -1216,7 +1217,6 @@ export const exportOrders = withPermission(
           totalAmount: saleOrders.totalAmount,
           prepaidCardAmount: saleOrders.prepaidCardAmount,
           orderReceived: saleOrders.received,
-          received: saleOrders.received,
           refundedAmount: saleOrders.refundedAmount,
           paymentMethod: saleOrders.paymentMethod,
           isMembershipUpgrade: saleOrders.isMembershipUpgrade,
@@ -1305,7 +1305,6 @@ export const exportOrders = withPermission(
         totalAmount: saleOrders.totalAmount,
         prepaidCardAmount: saleOrders.prepaidCardAmount,
         orderReceived: saleOrders.received,
-        received: saleOrders.received,
         refundedAmount: saleOrders.refundedAmount,
         paymentMethod: saleOrders.paymentMethod,
         isMembershipUpgrade: saleOrders.isMembershipUpgrade,
@@ -1347,16 +1346,21 @@ export const exportOrders = withPermission(
       return Number.isFinite(amount) ? Math.round(amount * 100) / 100 : 0
     }
     const formatAmount = (amount: number) => amount.toFixed(2)
-    const resolveRechargeAmounts = (order: {
+    // 充值单与无商品明细兜底行没有 item 级净实收可直接读取，统一从订单级毛实收换算。
+    // 当前退款策略全部走现金，因此 refundedAmount 从现金通道扣减；received 必须同步转为净额，
+    // 才能与商品行口径一致并始终满足 received = prepaidCardAmount + cashAmount。
+    const resolveOrderLevelAmounts = (order: {
       prepaidCardAmount: string | null
       orderReceived: string | null
       refundedAmount: string | null
     }) => {
       const orderReceived = toAmount(order.orderReceived)
       const prepaidCardAmount = toAmount(order.prepaidCardAmount)
+      const netReceived = orderReceived - toAmount(order.refundedAmount)
       return {
+        received: formatAmount(netReceived),
         prepaidCardAmount: formatAmount(prepaidCardAmount),
-        cashAmount: formatAmount(orderReceived - prepaidCardAmount - toAmount(order.refundedAmount)),
+        cashAmount: formatAmount(netReceived - prepaidCardAmount),
       }
     }
 
@@ -1424,7 +1428,7 @@ export const exportOrders = withPermission(
         }
       }),
       ...rechargeOrders.map((r) => {
-        const settledAmounts = resolveRechargeAmounts(r)
+        const orderAmounts = resolveOrderLevelAmounts(r)
         return {
           source: 'recharge' as const,
           sourceId: String(r.sourceId ?? r.saleOrderId),
@@ -1441,9 +1445,9 @@ export const exportOrders = withPermission(
           customerSource: r.customerSource ?? null,
           promoterEmployeeName: r.promoterEmployeeName ?? null,
           totalAmount: r.totalAmount,
-          prepaidCardAmount: settledAmounts.prepaidCardAmount,
-          cashAmount: settledAmounts.cashAmount,
-          received: r.received ?? '0',
+          prepaidCardAmount: orderAmounts.prepaidCardAmount,
+          cashAmount: orderAmounts.cashAmount,
+          received: orderAmounts.received,
           refundedAmount: r.refundedAmount ?? '0',
           paymentMethod: r.paymentMethod,
           isMembershipUpgrade: r.isMembershipUpgrade ?? false,
@@ -1471,7 +1475,7 @@ export const exportOrders = withPermission(
         }
       }),
       ...orderFallbackRows.map((r) => {
-        const settledAmounts = resolveRechargeAmounts(r)
+        const orderAmounts = resolveOrderLevelAmounts(r)
         return {
           source: 'orderFallback' as const,
           sourceId: String(r.sourceId ?? r.saleOrderId),
@@ -1487,9 +1491,9 @@ export const exportOrders = withPermission(
             customerSource: r.customerSource ?? null,
             promoterEmployeeName: r.promoterEmployeeName ?? null,
             totalAmount: r.totalAmount,
-            prepaidCardAmount: settledAmounts.prepaidCardAmount,
-            cashAmount: settledAmounts.cashAmount,
-            received: r.received ?? '0',
+            prepaidCardAmount: orderAmounts.prepaidCardAmount,
+            cashAmount: orderAmounts.cashAmount,
+            received: orderAmounts.received,
             refundedAmount: r.refundedAmount ?? '0',
             paymentMethod: r.paymentMethod,
             isMembershipUpgrade: r.isMembershipUpgrade ?? false,
