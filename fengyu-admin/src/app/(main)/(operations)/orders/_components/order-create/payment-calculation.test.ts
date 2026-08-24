@@ -11,6 +11,12 @@ describe('allocateDiscountPerLine', () => {
     expect(shares).toEqual([3.33, 3.33, 3.34])
     expect(shares.reduce((sum, value) => sum + value, 0)).toBe(10)
   })
+
+  it('小额抵扣不会因逐行四舍五入超支', () => {
+    const shares = allocateDiscountPerLine([1, 1, 1, 1], 0.02)
+    expect(shares).toEqual([0.01, 0.01, 0, 0])
+    expect(shares.reduce((sum, value) => sum + value, 0)).toBe(0.02)
+  })
 })
 
 describe('calculateSaleCashAmount', () => {

@@ -62,15 +62,16 @@ export function allocateDiscountPerLine(priceLines: number[], discountAmount: nu
   }
   const n = priceLines.length
   const shares: number[] = []
-  let acc = 0
+  const discountCents = Math.round(discount * 100)
+  let allocatedCents = 0
   for (let i = 0; i < n - 1; i++) {
     const raw = (discount * priceLines[i]) / total
-    const cent = Math.round(raw * 100) / 100
-    shares.push(cent)
-    acc += cent
+    const remainingCents = discountCents - allocatedCents
+    const shareCents = Math.min(Math.round(raw * 100), remainingCents)
+    shares.push(shareCents / 100)
+    allocatedCents += shareCents
   }
   // 末行吸收尾差
-  const last = Math.round((discount - acc) * 100) / 100
-  shares.push(Math.max(0, last))
+  shares.push((discountCents - allocatedCents) / 100)
   return shares
 }

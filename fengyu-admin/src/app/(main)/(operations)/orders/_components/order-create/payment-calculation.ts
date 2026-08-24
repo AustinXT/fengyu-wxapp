@@ -5,13 +5,18 @@ export function allocateDiscountPerLine(priceLines: number[], discountAmount: nu
   if (discount <= 0 || total <= 0) return priceLines.map(() => 0)
 
   const shares: number[] = []
-  let allocated = 0
+  const discountCents = Math.round(discount * 100)
+  let allocatedCents = 0
   for (let index = 0; index < priceLines.length - 1; index++) {
-    const share = Math.round((discount * priceLines[index] / total) * 100) / 100
-    shares.push(share)
-    allocated += share
+    const remainingCents = discountCents - allocatedCents
+    const shareCents = Math.min(
+      Math.round((discount * priceLines[index] / total) * 100),
+      remainingCents,
+    )
+    shares.push(shareCents / 100)
+    allocatedCents += shareCents
   }
-  shares.push(Math.max(0, Math.round((discount - allocated) * 100) / 100))
+  shares.push((discountCents - allocatedCents) / 100)
   return shares
 }
 

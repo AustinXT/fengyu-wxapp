@@ -102,4 +102,10 @@ describe('allocateDiscountPerLine — 订单级抵扣按行应付比例摊算', 
   test('积分按券后应付比例分摊', () => {
     expect(allocateDiscountPerLine([100, 300], 12)).toEqual([3, 9])
   })
+
+  test('小额抵扣不会因逐行四舍五入超支', () => {
+    const r = allocateDiscountPerLine([1, 1, 1, 1], 0.02)
+    expect(r).toEqual([0.01, 0.01, 0, 0])
+    expect(r.reduce((sum, value) => sum + value, 0)).toBe(0.02)
+  })
 })
