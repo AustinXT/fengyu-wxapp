@@ -274,7 +274,7 @@ import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope, scopeCondition } from '@/lib/permissions'
 import { calcCouponDiscount } from '@/lib/utils'
-import { eq, ilike, gte, lt, gt, inArray, isNull } from 'drizzle-orm'
+import { eq, ilike, gte, lt, gt, inArray, isNull, sql } from 'drizzle-orm'
 import { requirePermission } from '@/lib/permissions'
 import { ApiError } from '@/lib/api-error'
 import { logUpdate } from '@/lib/operation-log'
@@ -2361,6 +2361,27 @@ describe('getOrdersPaginated — 服务端分页', () => {
     await getOrdersPaginated({ dateTo: '2026-03-31' })
 
     expect(lt).toHaveBeenCalled()
+    expect((sql as any).mock.calls.some(([strings]: any[]) =>
+      Array.isArray(strings?.raw) && strings.raw.join('').includes('::date + 1'),
+    )).toBe(true)
+  })
+
+  it('款项日期口径使用已支付流水 EXISTS，且不再按下单时间过滤', async () => {
+    mockPaginatedChain(0, [])
+    ;(gte as any).mockClear()
+    ;(lt as any).mockClear()
+
+    await getOrdersPaginated({
+      dateBasis: 'payment',
+      dateFrom: '2026-08-04',
+      dateTo: '2026-08-04',
+    })
+
+    expect(gte).not.toHaveBeenCalled()
+    expect(lt).not.toHaveBeenCalled()
+    expect((sql as any).mock.calls.some(([strings]: any[]) =>
+      Array.isArray(strings?.raw) && strings.raw.join('').includes('payment_date_filter'),
+    )).toBe(true)
   })
 
   it('paidAt 为 null → 序列化为 null', async () => {
@@ -5822,7 +5843,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     expect(rows).toHaveLength(100001)
   })
 
-  it('worker 分页跨商品行和充值单推进独立游标，不重复也不遗漏', async () => {
+  it('worker 分页跨商品行、充值单和无明细兜底行推进独立游标，不重复也不遗漏', async () => {
     const makeItem = (saleOrderId: string, sourceId: string, date: string) => ({
       sourceId,
       saleOrderId,
@@ -5858,12 +5879,12 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     const itemOldest = makeItem('ITEM-OLD', 'item-old', '2026-07-02T00:00:00.000Z')
     const rechargeNewest = makeRecharge('RECHARGE-NEW', '2026-07-03T00:00:00.000Z')
     const rechargeOldest = makeRecharge('RECHARGE-OLD', '2026-07-01T00:00:00.000Z')
-    // 每页依次为：商品行查询、充值单查询、转换差额储值金查询。
+    // 每页依次为：商品行查询、充值单查询、转换差额储值金查询、无明细订单查询。
     const results = [
-      [itemNewest, itemOldest], [rechargeNewest, rechargeOldest], [],
-      [itemOldest], [rechargeNewest, rechargeOldest], [],
-      [itemOldest], [rechargeOldest], [],
-      [], [rechargeOldest], [],
+      [itemNewest, itemOldest], [rechargeNewest, rechargeOldest], [], [],
+      [itemOldest], [rechargeNewest, rechargeOldest], [], [],
+      [itemOldest], [rechargeOldest], [], [],
+      [], [rechargeOldest], [], [],
     ]
     let call = 0
     ;(db.select as any).mockImplementation(() => makePagedChain(results[call++] ?? []))
@@ -5873,9 +5894,9 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     const third = await exportOrders({}, { limit: 1, cursor: second.nextCursor })
     const fourth = await exportOrders({}, { limit: 1, cursor: third.nextCursor })
 
-    expect(first.nextCursor).toEqual({ itemOffset: 1, rechargeOffset: 0, cardCreditOffset: 0 })
-    expect(second.nextCursor).toEqual({ itemOffset: 1, rechargeOffset: 1, cardCreditOffset: 0 })
-    expect(third.nextCursor).toEqual({ itemOffset: 2, rechargeOffset: 1, cardCreditOffset: 0 })
+    expect(first.nextCursor).toEqual({ itemOffset: 1, rechargeOffset: 0, cardCreditOffset: 0, orderFallbackOffset: 0 })
+    expect(second.nextCursor).toEqual({ itemOffset: 1, rechargeOffset: 1, cardCreditOffset: 0, orderFallbackOffset: 0 })
+    expect(third.nextCursor).toEqual({ itemOffset: 2, rechargeOffset: 1, cardCreditOffset: 0, orderFallbackOffset: 0 })
     expect(fourth.hasMore).toBe(false)
     expect([
       ...first.rows,
@@ -6045,6 +6066,44 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     expect(rows[0].salesCategory).toBeNull()
   })
 
+  it('WorkFine 历史订单无 sale_items 时生成订单级兜底行，不再整单漏导', async () => {
+    const fallback = {
+      sourceId: 'FY-XSD2607260012',
+      marketName: '南昌', storeName: '南昌店', saleOrderId: 'FY-XSD2607260012',
+      saleOrderType: '销售单', documentType: '售前', status: '已支付',
+      custName: null, custPhone: null, customerSource: null, promoterEmployeeName: null,
+      fallbackName: '陈凤婷', fallbackPhone: '13800000000',
+      totalAmount: '2682.00', prepaidCardAmount: '0.00', orderReceived: '2682.00',
+      received: '2682.00', refundedAmount: '0.00', paymentMethod: '线下',
+      isMembershipUpgrade: false, isActivity: false, isExperienceConversion: false,
+      customerType: null, openedByName: null,
+      saleOrderDatetime: new Date('2026-08-01T00:00:00.000Z'),
+      performanceAttributionDate: '2026-08-01',
+      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      remark: null, legacySource: 'workfine',
+    }
+    ;(db.select as any)
+      .mockReturnValueOnce(makeChain([]))
+      .mockReturnValueOnce(makeChain([]))
+      .mockReturnValueOnce(makeChain([]))
+      .mockReturnValueOnce(makeChain([fallback]))
+
+    const { rows } = await exportOrders({ q: fallback.saleOrderId })
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      saleOrderId: fallback.saleOrderId,
+      customerName: '陈凤婷',
+      totalAmount: '2682.00',
+      received: '2682.00',
+      cashAmount: '2682.00',
+      productName: '历史订单（无商品明细）',
+      productType: null,
+      sessionCount: null,
+      __sourceKind: 'orderFallback',
+    })
+  })
+
   it('混合：item 行（销售/转换）+ 充值单造行，合并后按订单时间 desc 排序', async () => {
     const sale = {
       marketName: 'M', storeName: 'S', saleOrderId: 'FY-SALE', saleOrderType: '销售单',
@@ -6089,7 +6148,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     expect(rows[2].productName).toBe('储值卡充值')
   })
 
-  it('普通转换负差额：储值金入账行归入储值卡通道，金额列逐行勾稽', async () => {
+  it('普通转换负差额：储值金入账行记入负数现付，订单金额与实付仍可勾稽', async () => {
     const orderBase = {
       marketName: '九江', storeName: '南昌店', saleOrderId: 'FY-CONV-CREDIT', saleOrderType: '转换单',
       documentType: '售后', status: '已支付', custName: '李女士', custPhone: '13800000000',
@@ -6126,13 +6185,15 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     expect(rows[2]).toMatchObject({
       totalAmount: '2.00',
       received: '2.00',
-      prepaidCardAmount: '2.00',
-      cashAmount: '0.00',
+      prepaidCardAmount: '0.00',
+      cashAmount: '-2.00',
       productType: null,
     })
     expect(rows.reduce((sum, row) => sum + Number(row.totalAmount), 0)).toBe(0)
     expect(rows.reduce((sum, row) => sum + Number(row.received), 0)).toBe(0)
-    for (const row of rows) {
+    // 真实商品行继续满足通道恒等式；储值金入账合成行按业务要求是明确例外：
+    // 它以负数现付表达资产转入，同时以正数订单金额/实付闭合转换金额。
+    for (const row of rows.slice(0, 2)) {
       const channelAmount = Number(row.prepaidCardAmount) + Number(row.cashAmount)
       expect(Number(row.totalAmount)).toBe(channelAmount)
       expect(Number(row.received)).toBe(channelAmount)

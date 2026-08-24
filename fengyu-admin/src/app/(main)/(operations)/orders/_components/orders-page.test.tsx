@@ -61,4 +61,21 @@ describe("OrdersPage — 订单类型筛选", () => {
     expect(mockSetMany).toHaveBeenNthCalledWith(2, { type: "销售单,内部单", page: "" })
     expect(screen.getByRole("button", { name: /销售单、内部单/ })).toBeInTheDocument()
   })
+
+  it("可切换到款项发生日期并写入导出共用的 URL 参数", async () => {
+    const user = userEvent.setup()
+    render(
+      <OrdersPage
+        orders={[]}
+        filterOptions={{ markets: [], stores: [] }}
+        total={0}
+        canCreateOrder={false}
+        canUpdate={false}
+      />,
+    )
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "日期口径" }), "payment")
+
+    expect(mockSetMany).toHaveBeenCalledWith({ dateBasis: "payment", page: "" })
+  })
 })

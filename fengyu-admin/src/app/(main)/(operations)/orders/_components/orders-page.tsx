@@ -311,6 +311,7 @@ export default function OrdersPageClient({
   const storeFilter = get("store");
   const dateFrom = get("from");
   const dateTo = get("to");
+  const dateBasis = get("dateBasis", "order") === "payment" ? "payment" : "order";
   const paymentMethodFilter = get("payment");
   const hasPrepaidFilter = get("hasPrepaid");
   const conversionModeFilter = get("conversionMode");
@@ -392,14 +393,28 @@ export default function OrdersPageClient({
               <option value="1">有储值卡抵扣</option>
             </Select>
             <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground whitespace-nowrap">下单日期</span>
+              <Select
+                className="w-40"
+                aria-label="日期口径"
+                value={dateBasis}
+                onChange={(e) => setFilter("dateBasis", e.target.value === "payment" ? "payment" : "")}
+              >
+                <option value="order">下单日期</option>
+                <option value="payment">款项发生日期</option>
+              </Select>
               <DatePicker
                 className="w-36"
+                aria-label={`${dateBasis === "payment" ? "款项发生" : "下单"}开始日期`}
                 value={dateFrom}
                 onValueChange={(value) => setFilter("from", value)}
               />
               <span className="text-[#999999]">-</span>
-              <DatePicker className="w-36" value={dateTo} onValueChange={(value) => setFilter("to", value)} />
+              <DatePicker
+                className="w-36"
+                aria-label={`${dateBasis === "payment" ? "款项发生" : "下单"}结束日期`}
+                value={dateTo}
+                onValueChange={(value) => setFilter("to", value)}
+              />
             </div>
             <Input
               className="w-56"

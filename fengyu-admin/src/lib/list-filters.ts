@@ -70,6 +70,7 @@ export function parseOrderFilters(params: Record<string, string | undefined>): O
     storeId: params.store,
     dateFrom: params.from,
     dateTo: params.to,
+    dateBasis: params.dateBasis === 'payment' ? 'payment' : 'order',
     search: params.q,
     paymentMethod: params.payment,
     hasPrepaidDeduction: params.hasPrepaid === '1',
