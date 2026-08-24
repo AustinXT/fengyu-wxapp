@@ -446,7 +446,8 @@ async function detail(ctx) {
   const selectCols = `c.user_id, c.phone, c.name, c.customer_id, c.member_level,
     c.bound_employee_id, c.skin_type, c.improvement_focus,
     c.skin_issue, c.wellness_preference, c.gender, c.notes, c.customer_source,
-    c.promoter_employee_name, c.inviter_user_id, c.invited_at, c.customer_type,
+    COALESCE(promoter.name, c.promoter_employee_name) AS promoter_employee_name,
+    c.inviter_user_id, c.invited_at, c.customer_type,
     c.spending_tier, c.monthly_activity, c.customer_status, c.birthday,
     c.occupation, c.is_married, c.wechat_name, c.points_balance,
     c.bound_store_id, s.store_name, inviter.name AS inviter_name,
@@ -454,6 +455,7 @@ async function detail(ctx) {
 
   const fromClause = `FROM client_wechat_users c
     LEFT JOIN stores s ON s.store_id = c.bound_store_id
+    LEFT JOIN staff_wechat_users promoter ON promoter.employee_id = c.promoter_employee_id
     LEFT JOIN client_wechat_users inviter ON inviter.user_id = c.inviter_user_id`
 
   let pgUser = null

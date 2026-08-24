@@ -22,4 +22,20 @@ describe('顾客详情固定两排页签', () => {
     expect(wxss).toMatch(/\.customer-tabs\s*\{[^}]*grid-template-columns:\s*repeat\(5,/s)
     expect(wxss).toMatch(/\.customer-tabs__native-nav\s*\{[^}]*display:\s*none/s)
   })
+
+  test('疗程卡按来源订单展示非空备注并携带到服务单 preload', () => {
+    const ts = fs.readFileSync(
+      path.join(ROOT, 'packageCustomer/customer-detail/customer-detail.ts'),
+      'utf-8',
+    )
+    const wxml = fs.readFileSync(
+      path.join(ROOT, 'packageCustomer/customer-detail/customer-detail.wxml'),
+      'utf-8',
+    )
+
+    expect(ts).toContain('sourceOrderRemarks: collectSourceOrderRemarks(group.sourceItems)')
+    expect(ts).toContain('orderRemark: source.orderRemark || null')
+    expect(wxml).toContain('item.sourceOrderRemarks && item.sourceOrderRemarks.length')
+    expect(wxml).toContain('订单备注：{{remarkItem.orderRemark}}')
+  })
 })

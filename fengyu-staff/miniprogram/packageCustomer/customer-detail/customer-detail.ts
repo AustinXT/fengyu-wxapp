@@ -3,7 +3,7 @@ import { callStaffApi } from '../../utils/cloud';
 import { getCurrentStoreId, isManager } from '../../utils/role';
 import { formatDateTime, formatDate, ORDER_TYPE_LABEL, formatDiscount } from '../../utils/formatters';
 import { MemberLevelBadgeData, withMemberLevelBadgeClass } from '../../utils/member-level-badge';
-import { expandGroupServiceSessions, getTreatmentCardBusinessIdentity, groupTreatmentCards, sumGroupValue } from '../../utils/treatment-card-group';
+import { collectSourceOrderRemarks, expandGroupServiceSessions, getTreatmentCardBusinessIdentity, groupTreatmentCards, SourceOrderRemark, sumGroupValue } from '../../utils/treatment-card-group';
 
 const app = getApp<IAppOption>();
 
@@ -148,6 +148,7 @@ interface PaidOrderItem {
   remark?: string | null;
   salesCategory?: string | null;
   pickedUpQuantity?: number | null;
+  orderRemark?: string | null;
 }
 
 interface PaidOrder {
@@ -241,9 +242,11 @@ interface TreatmentCard {
   remark?: string | null;
   salesCategory?: string | null;
   pickedUpQuantity?: number | null;
+  orderRemark?: string | null;
   groupKey?: string;
   cardCount?: number;
   sourceItems?: TreatmentCard[];
+  sourceOrderRemarks?: SourceOrderRemark[];
 }
 
 interface CardFilterOption {
@@ -727,6 +730,7 @@ Page({
           groupKey: group.groupKey,
           sourceItems: group.sourceItems,
           cardCount: group.cardCount,
+          sourceOrderRemarks: collectSourceOrderRemarks(group.sourceItems),
           quantity: sumGroupValue(group, (card) => card.quantity ?? 1),
           totalSessions,
           remainingSessions,
@@ -885,6 +889,7 @@ Page({
       sessionCount: number;
       remainingSessions: number;
       unit?: string;
+      orderRemark?: string | null;
     }> = [];
     for (const card of selected) {
       const sourceItems = card.sourceItems?.length ? card.sourceItems : [card];
@@ -909,6 +914,7 @@ Page({
           sessionCount: selection.sessionUsed,
           remainingSessions: source.remainingSessions,
           unit: source.unit,
+          orderRemark: source.orderRemark || null,
         });
       }
     }

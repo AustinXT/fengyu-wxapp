@@ -211,6 +211,12 @@
                   <view class="tc-meta">
                     <text class="tc-order">{{item.saleOrderId}}</text>
                   </view>
+                  <view class="order-remark-list" wx:if="{{item.sourceOrderRemarks && item.sourceOrderRemarks.length}}">
+                    <view class="order-remark" wx:for="{{item.sourceOrderRemarks}}" wx:for-item="remarkItem" wx:key="saleOrderId">
+                      <text class="order-remark__order">{{remarkItem.saleOrderId}}</text>
+                      <text class="order-remark__content">订单备注：{{remarkItem.orderRemark}}</text>
+                    </view>
+                  </view>
                   <text class="tc-sessions">剩余 {{item.paidUnusedSessions}} / 已付 {{item.paidSessions == null ? '—' : item.paidSessions}} / 共 {{item.totalSessions}} {{item.unit || '次'}} · 共 {{item.cardCount || 1}} 张{{item.unitRealPrice ? ' · 单' + (item.unit || '次') + '实付 ¥' + item.unitRealPrice : ''}}{{item.disabledReason ? ' · ' + item.disabledReason : ''}}</text>
                   <view class="session-bar">
                     <view class="session-bar__seg session-bar__seg--used" style="width:{{item.usedPct}}%"></view>

@@ -35,7 +35,29 @@ const TREATMENT_CARD_IDENTITY_IGNORED_FIELDS = new Set([
   'sale_item_group_id',
   'sale_order_id',
   'source_sale_order_id',
+  'orderRemark',
+  'order_remark',
 ])
+
+export interface SourceOrderRemark {
+  saleOrderId: string
+  orderRemark: string
+}
+
+/** 按来源订单去重并保留各自备注；空备注不产生展示项。 */
+export function collectSourceOrderRemarks<T extends { saleOrderId?: string; orderRemark?: string | null }>(
+  items: readonly T[],
+): SourceOrderRemark[] {
+  const remarks = new Map<string, SourceOrderRemark>()
+  for (const item of items) {
+    const saleOrderId = item.saleOrderId?.trim() || ''
+    const orderRemark = item.orderRemark?.trim() || ''
+    if (saleOrderId && orderRemark && !remarks.has(saleOrderId)) {
+      remarks.set(saleOrderId, { saleOrderId, orderRemark })
+    }
+  }
+  return Array.from(remarks.values())
+}
 
 /** 展示合并忽略订单/卡行技术 ID，其余业务快照字段必须完全一致。 */
 export function getTreatmentCardBusinessIdentity(snapshot: object): Record<string, unknown> {
