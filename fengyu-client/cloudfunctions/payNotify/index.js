@@ -20,6 +20,7 @@ const { verifyHealthPayload } = require('./utils/system-health')
 const { recalcPaidSessionsForOrder } = require('./paid-sessions')
 const { capturePaymentAllocatables, refreshOrderAllocationRollup } = require('./payment-allocatable')
 const { getPerItemRefundedMap, computeRefundAwareDirectedItems } = require('./per-item-refund')
+const { classifySaleOrderDocumentType } = require('./document-type')
 
 /**
  * 线上支付自动逐笔分配：把本次回款（perItem 逐项可分配额）100% 记到开单指定销售员名下，
@@ -1051,6 +1052,19 @@ exports.main = async (event) => {
       const fullyPaid = newPaidSum + 0.001 >= payableAmount
       const newStatus = fullyPaid ? '已支付' : '部分支付'
       const newReceived = Math.round(Number(paidAggregateRes.rows[0]?.received_sum || 0) * 100) / 100
+
+      if (!['部分支付', '已支付', '已完成'].includes(targetOrder.status)) {
+        const documentType = await classifySaleOrderDocumentType(
+          client,
+          targetOrder.client_user_id,
+          targetOrderNo,
+        )
+        await client.query(
+          `UPDATE sale_orders SET document_type = $1::document_type
+           WHERE sale_order_id = $2 AND status = $3`,
+          [documentType, targetOrderNo, targetOrder.status],
+        )
+      }
 
       // 1. 更新目标订单：received 累加、status 置新值、paid_at（全额时）
       // CAS 守卫（state-machine-cas-guard ticket）：只允许从 待支付/部分支付 翻转

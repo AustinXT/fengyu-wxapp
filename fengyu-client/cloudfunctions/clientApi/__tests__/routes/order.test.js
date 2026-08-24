@@ -107,7 +107,7 @@ describe('order.create', () => {
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn()
+        query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 })
           .mockResolvedValueOnce({ rows: [], rowCount: 0 })
           .mockResolvedValueOnce({ rows: [], rowCount: 0 })
           .mockResolvedValueOnce({ rows: [], rowCount: 0 })
@@ -230,8 +230,8 @@ describe('order.create', () => {
     expect(clientQuery.mock.calls.some(([sql]) => /inventory_sku_product_sku_mappings/.test(sql))).toBe(false)
   })
 
-  // 开单只写预测值，首次成功入账时由数据库触发器在顾客锁内冻结权威分类。
-  test('document_type 开单预测：非会员客 → 售前一次', async () => {
+  // 开单在事务内按历史达标次数分类；后续首次成功入账路径会再次按同一规则确认。
+  test('document_type 开单分类：无历史达标单 → 售前一次', async () => {
     pg.query.mockResolvedValueOnce([{ store_id: 's1', store_name: '测试店', market_name: '华东' }])
     pg.query.mockResolvedValueOnce([])  // closeExpiredOrdersByUser
     pg.query.mockResolvedValueOnce([])  // check pending

@@ -17,6 +17,7 @@ const lakalaClient = require('../utils/lakala-client')
 const lakalaConfig = require('../utils/lakala-config')
 const { shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
 const { INVENTORY_LINKAGE_ENABLED } = require('../utils/feature-flags')
+const { classifySaleOrderDocumentType } = require('../utils/document-type')
 
 function roundMoney(value) {
   return Math.round((Number(value) || 0) * 100) / 100
@@ -1244,10 +1245,9 @@ async function create(ctx) {
     }
   }
 
-  // 查询顾客姓名 + 会员身份（customer_type + member_level）
-  // —— 会员价分流（会员价 vs 标价）与 document_type 判断共用，须在定价前完成。
+  // 查询顾客姓名 + 会员身份（customer_type + member_level），供会员价分流（会员价 vs 标价）。
   let customerName = null
-  let documentType = '售前一次'
+  let documentType
   let buyerIsMember = false
   {
     const userRows = await pg.query(
@@ -1256,7 +1256,6 @@ async function create(ctx) {
     )
     if (userRows.length > 0) {
       if (userRows[0].name) customerName = userRows[0].name
-      if (userRows[0].customer_type === '会员客') documentType = '售后'
       buyerIsMember = isMember(userRows[0].customer_type, userRows[0].member_level)
     }
   }
@@ -1520,7 +1519,7 @@ async function create(ctx) {
     }
   }
 
-  // document_type 此处仅为开单预测值；数据库触发器会在首次成功入账事务内按达标次数冻结权威快照。
+  // document_type 在创建事务内写预测值；首次成功入账路径会按达标次数再次冻结权威快照。
 
   // 使用事务创建订单（订单号+流水号在事务内原子生成）
   let orderNo
@@ -1608,6 +1607,7 @@ async function create(ctx) {
       orderSeq = parseInt(orderSeqResult.rows[0].sale_order_id.slice(-4)) + 1
     }
     orderNo = `FY-XSD-WX-${dateStrOrder}${String(orderSeq).padStart(4, '0')}`
+    documentType = await classifySaleOrderDocumentType(client, userId, orderNo)
 
     // 在事务内查询今日最大序号
     const today = new Date()
@@ -3367,6 +3367,14 @@ async function repay(ctx) {
       const newNet = Math.round((newReceived - newRefunded) * 100) / 100
       const fullyPaid = newNet + 0.001 >= Number(origOrder.total_amount || 0)
       finalStatus = fullyPaid ? '已支付' : '部分支付'
+      if (!['部分支付', '已支付', '已完成'].includes(origOrder.status)) {
+        const documentType = await classifySaleOrderDocumentType(client, userId, saleOrderId)
+        await client.query(
+          `UPDATE sale_orders SET document_type = $1::document_type
+           WHERE sale_order_id = $2 AND status = $3`,
+          [documentType, saleOrderId, origOrder.status]
+        )
+      }
       // actual 储值卡金额与 payable_amount 由下方 recalcPaidSessionsForOrder 从流水统一重聚合。
       const repayUpd = await client.query(
         `UPDATE sale_orders
