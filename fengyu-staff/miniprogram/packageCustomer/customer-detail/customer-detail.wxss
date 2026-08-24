@@ -105,7 +105,8 @@
   background: #FFF0EE;
 }
 
-/* van-tabs 仅承载内容和切换状态，隐藏其默认横向导航。 */
+/* van-tabs 仅承载内容和切换状态，连同默认导航占位一起隐藏。 */
+.customer-tabs__native-wrap,
 .customer-tabs__native-nav {
   display: none !important;
 }

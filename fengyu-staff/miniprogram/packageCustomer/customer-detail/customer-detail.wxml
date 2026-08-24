@@ -69,7 +69,13 @@
         bindtap="onTabTap"
       >{{item}}</view>
     </view>
-    <van-tabs active="{{activeTab}}" bind:change="onTabChange" color="#C0322A" nav-class="customer-tabs__native-nav">
+    <van-tabs
+      active="{{activeTab}}"
+      bind:change="onTabChange"
+      color="#C0322A"
+      nav-class="customer-tabs__native-nav"
+      wrap-class="customer-tabs__native-wrap"
+    >
       <van-tab title="基本档案">
         <view class="tab-content">
           <van-cell-group class="card-group">

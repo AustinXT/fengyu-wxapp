@@ -18,9 +18,10 @@ describe('顾客详情固定两排页签', () => {
     expect(wxml).toContain('wx:for="{{tabTitles}}"')
     expect(wxml).toContain('bindtap="onTabTap"')
     expect(wxml).toContain('nav-class="customer-tabs__native-nav"')
+    expect(wxml).toContain('wrap-class="customer-tabs__native-wrap"')
     expect(wxml).not.toMatch(/<van-tabs[^>]*\sscrollable(?:=|\s|>)/)
     expect(wxss).toMatch(/\.customer-tabs\s*\{[^}]*grid-template-columns:\s*repeat\(5,/s)
-    expect(wxss).toMatch(/\.customer-tabs__native-nav\s*\{[^}]*display:\s*none/s)
+    expect(wxss).toMatch(/\.customer-tabs__native-wrap,\s*\.customer-tabs__native-nav\s*\{[^}]*display:\s*none/s)
   })
 
   test('疗程卡按来源订单展示非空备注并携带到服务单 preload', () => {
