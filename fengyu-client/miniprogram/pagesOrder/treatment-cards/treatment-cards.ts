@@ -28,6 +28,7 @@ Page({
       // 展平为卡片列表（含三段进度：已用 / 已付未用 / 未付）
       const cards: any[] = [];
       for (const order of orders) {
+        const orderRemark = typeof order.orderRemark === 'string' ? order.orderRemark.trim() : '';
         for (const item of (order.items || [])) {
           const paidRaw = item.paidSessions;
           const paid = Number(paidRaw ?? 0);
@@ -42,6 +43,7 @@ Page({
             // NULL 卡（migration 0040 前未回填）：标记用于隐藏「预约」按钮 + 已付显示「—」
             paidSessionsNull: paidRaw == null,
             saleOrderId: order.saleOrderId,
+            orderRemark,
             storeName: order.storeName,
             usedSessions: used,
             paidUnusedSessions: paidRaw == null ? remaining : Math.max(0, paid - used),

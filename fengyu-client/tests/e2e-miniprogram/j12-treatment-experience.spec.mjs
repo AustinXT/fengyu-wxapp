@@ -38,6 +38,7 @@ import { waitForPagePath, waitForData } from './helpers/wait-for-page.mjs'
 
 const COURSE_ORDER_ID = 'TEST_E2E_L3_ORD_COURSE1'
 const COURSE_ITEM_ID = 'TEST_E2E_L3_ITM_COURSE1'
+const COURSE_ORDER_REMARK = 'TEST_E2E_L3_订单备注：顾客希望安排安静房间'
 
 async function createPaidCourseOrder(userId) {
   // 注意：开单人外键 sale_orders.opened_by → staff_wechat_users.employee_id
@@ -62,14 +63,14 @@ async function createPaidCourseOrder(userId) {
          sale_order_id, status, sale_order_type, market_name, store_id,
          sale_order_datetime, client_user_id, client_phone, customer_name,
          total_amount, prepaid_card_amount, payable_amount, received,
-         payment_method, opened_by, allocation_status, paid_at
+         payment_method, opened_by, allocation_status, paid_at, remark
        )
        VALUES ($1, '已支付'::order_status, '销售单'::sale_order_type,
                'TEST_E2E_L3_市场', $2,
                NOW(), $3, $4, 'TEST_E2E_L3_顾客',
                500, 0, 500, 500,
-               '微信'::payment_method, $5, '待分配'::allocation_status, NOW())`,
-      [COURSE_ORDER_ID, TEST_STORE_ID, userId, TEST_CLIENT_PHONE, TEST_STAFF_EMPLOYEE_ID]
+               '微信'::payment_method, $5, '待分配'::allocation_status, NOW(), $6)`,
+      [COURSE_ORDER_ID, TEST_STORE_ID, userId, TEST_CLIENT_PHONE, TEST_STAFF_EMPLOYEE_ID, COURSE_ORDER_REMARK]
     )
     await client.query(
       `INSERT INTO sale_items (
@@ -119,6 +120,19 @@ const STEPS = [
     }
     if (Number(item.remainingSessions) !== 5) {
       throw new Error(`remainingSessions=${item.remainingSessions}, expected 5`)
+    }
+    if (hit.orderRemark !== COURSE_ORDER_REMARK) {
+      throw new Error(`orderRemark=${hit.orderRemark}, expected ${COURSE_ORDER_REMARK}`)
+    }
+
+    const pageData = await waitForData(
+      ctx.mp,
+      (data) => Array.isArray(data.cards) && data.cards.some((card) => card.saleOrderId === COURSE_ORDER_ID),
+      { timeoutMs: 6000, name: 'treatment card with order remark' }
+    )
+    const card = pageData.cards.find((entry) => entry.saleOrderId === COURSE_ORDER_ID)
+    if (card?.orderRemark !== COURSE_ORDER_REMARK) {
+      throw new Error(`page card orderRemark=${card?.orderRemark}, expected ${COURSE_ORDER_REMARK}`)
     }
   }],
 

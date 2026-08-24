@@ -1864,6 +1864,7 @@ describe('order.appointableItems', () => {
   test('返回可预约项目列表', async () => {
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-001', order_status: '已支付',
+      order_remark: '顾客希望安排安静房间',
       store_id: 's1', store_name: '测试店', market_name: '华东',
       preferred_employee_id: null, sale_item_id: 'SI-001',
       sku_id: 'sku-1', product_name: '护理A',
@@ -1875,13 +1876,16 @@ describe('order.appointableItems', () => {
     await routes.appointableItems(ctx)
 
     expect(ctx.result.orders).toHaveLength(1)
+    expect(ctx.result.orders[0].orderRemark).toBe('顾客希望安排安静房间')
     expect(ctx.result.orders[0].items).toHaveLength(1)
     expect(ctx.result.orders[0].items[0].active).toBe(true)
+    expect(pg.query.mock.calls[0][0]).toContain('o.remark AS order_remark')
   })
 
   test('包含部分支付订单中已解锁的疗程卡', async () => {
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-PARTIAL', order_status: '部分支付',
+      order_remark: null,
       store_id: 's1', store_name: '测试店', market_name: '华东',
       preferred_employee_id: null, sale_item_id: 'SI-PARTIAL',
       sku_id: 'sku-1', product_name: '护理A',
@@ -1896,6 +1900,7 @@ describe('order.appointableItems', () => {
     const sql = pg.query.mock.calls[0][0]
     expect(sql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
     expect(ctx.result.orders[0].orderStatus).toBe('部分支付')
+    expect(ctx.result.orders[0].orderRemark).toBeNull()
     expect(ctx.result.orders[0].items[0].paidSessions).toBe(2)
   })
 
