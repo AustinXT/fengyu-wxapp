@@ -1,23 +1,29 @@
-# envs/ — 双环境配置中央目录
+# envs/ — 三环境配置中央目录
 
-凤御项目有 **两个 CloudBase env**（dev / prod），分别承载完整的云函数 + PG 链路。
+凤御项目有 **dev / test / prod 三个部署环境**，但只有两个 CloudBase env（dev / prod）。
+test 有独立服务器和 PG，不部署 CloudBase 云函数，只供 test admin/analyst 访问既有资源。
 此目录是所有环境差异变量的 **单一权威源**。
 
 ## 拓扑
 
-| 端 | dev/测试 envId | dev/测试 PG | prod envId | prod PG |
-|----|-----------|-------------|------------|---------|
-| client | `cloud1-3gpht4b01ff88838` | 47.113.202.7:5433/fengyu_wxapp | `fengyu-client-prod-d1cga6909c0ba` | 118.178.196.26:5433/fengyu_wxapp |
-| staff | `cloud1-9g3ydpg512eecc99` | 47.113.202.7:5433/fengyu_wxapp | `fengyu-staff-prod-d4dtv6052992e9` | 118.178.196.26:5433/fengyu_wxapp |
+| 环境 | SSH host | 迁移 PG | 容器 PG | CloudBase |
+|------|----------|---------|---------|-----------|
+| dev | `ali-demo` | `47.113.202.7:5433/fengyu_wxapp` | 同迁移地址 | dev client/staff env |
+| test | `sqlserver101` | `101.34.242.103:5433/fengyu_wxapp` | `172.18.0.1:5433/fengyu_wxapp` | 无独立 env，强制跳过云函数部署 |
+| prod | `fengyu-prod` | `118.178.196.26:5433/fengyu_wxapp` | 生产公网地址或已验证同机网桥 | prod client/staff env |
 
-dev 与 prod 由 **两个不同的腾讯云子账号** 管理（账号凭证在 `fengyu-{client,staff}/.env`）。
+CloudBase envId：dev client=`cloud1-3gpht4b01ff88838`、staff=`cloud1-9g3ydpg512eecc99`；prod client=`fengyu-client-prod-d1cga6909c0ba`、staff=`fengyu-staff-prod-d4dtv6052992e9`。
+
+client 与 staff CloudBase 由 **两个不同的腾讯云子账号** 管理；两套账号凭据必须独立
+（历史兼容来源为 `fengyu-{client,staff}/.env`，集中配置使用 `TENCENTCLOUD_*` 与
+`STAFF_TENCENTCLOUD_*` 区分）。
 
 ## 文件
 
 | 文件 | git | 说明 |
 |------|-----|------|
 | `dev.env.example` / `prod.env.example` | ✓ | 占位符模板，列出所有必需变量 |
-| `dev.env` / `prod.env` | ✗ | 真实值（含 PEM / SM4 / 拉卡拉密钥） |
+| `dev.env` / `test.env` / `prod.env` | ✗ | 真实值（含 PEM / SM4 / 拉卡拉密钥） |
 | `.active` | ✗ | 当前 active env 名（dev / prod），由 use-env.sh 写 |
 
 ## 使用
@@ -44,19 +50,20 @@ cat envs/.active
 之后 `scripts/deploy-cloudfunctions.sh` 会按 active env 选 envId + 自动切 tcb 双账号部署。
 
 admin 远程部署用 `docker/docker-compose.remote.yml` override。`deploy-admin.sh` 会从
-`envs/<env>.env` 生成仅含 CloudBase envId/CDN 的远程运行时覆盖文件，禁止手工把另一环境的
-存储值写死到 compose。
+`envs/<env>.env` 生成权限为 0600 的远程运行时覆盖文件；client/staff 标识及账号凭据使用独立
+变量，禁止手工把另一端账号或另一环境的值写死到 compose。
 
-拉卡拉门店入网分支 `feat/lakala-payment-migration` 的测试部署会自动切换到
-`101.34.242.103`（SSH 别名 `sqlserver101`）：
+拉卡拉门店入网测试必须显式选择 test，部署到 `101.34.242.103`（SSH 别名
+`sqlserver101`）：
 
 ```bash
-.claude/skills/remote-deploy/deploy-admin.sh dev
+.claude/skills/remote-deploy/deploy-admin.sh test
 ```
 
 该命令不上传或覆盖远程 `.env`、证书、私钥、SM4Key、OCR 密钥和门店附件；它只从目标服务器
 的现有 `.env` 读取构建所需的公钥及非敏感存储标识，并在部署前检查拉卡拉共享凭据与
-`LAKALA_ONBOARDING_API_BASE`。其他分支执行相同的 `dev` 命令仍指向 `ali-demo`，`prod` 仍需显式使用 `prod`。
+`LAKALA_ONBOARDING_API_BASE`。`dev` 始终指向 `ali-demo`，`test` 始终指向 `sqlserver101`，
+`prod` 始终指向 `fengyu-prod`，不得再依赖分支名隐式改写目标。
 
 拉卡拉支付与门店入网统一复用 `LAKALA_*` 的模式、环境、APPID、证书、SM4、机构号、用户号、
 活动 ID、MCC、结算类型和来源。`LAKALA_ONBOARDING_*` 只保留入网 API 地址及业务参数，电子合同
@@ -76,10 +83,10 @@ admin 远程部署用 `docker/docker-compose.remote.yml` override。`deploy-admi
 ## 添加新变量
 
 1. 同步加入 `dev.env.example` + `prod.env.example`（含说明注释）
-2. 同步加入 `dev.env` + `prod.env`（真实值）
+2. 同步加入 `dev.env` + `test.env` + `prod.env`（真实值）
 3. 如果云函数需要：在 `fengyu-{client,staff}/cloudbaserc.example.json` 的 envVariables 加 `"NEW_VAR": "${NEW_VAR}"`
 4. 如果 admin 需要：在 `docker/docker-compose.remote.yml` 的 environment 加 `NEW_VAR`，并决定它应由远程 `.env` 还是部署脚本生成的运行时覆盖文件注入
-5. 远程 `docker/.env` 同步追加（生产 `ssh fengyu-prod` / 测试 `ssh ali-demo` 后手工改）
+5. 远程 `docker/.env` 同步追加（prod=`ssh fengyu-prod` / test=`ssh sqlserver101` / dev=`ssh ali-demo` 后手工改）
 
 修改后运行 `node scripts/check-env-shape.mjs`，确保 `prod.env.example`、`dev.env.example` 以及本地
 `prod.env` / `test.env` / `dev.env` 的键集合与顺序完全一致。`prod.env.example` 是唯一结构基准，
@@ -87,7 +94,7 @@ admin 远程部署用 `docker/docker-compose.remote.yml` override。`deploy-admi
 
 ## 安全
 
-- `envs/{dev,prod}.env` 已 `.gitignore`
+- `envs/{dev,test,prod}.env` 已 `.gitignore`
 - 切到 prod 时 `use-env.sh` 打印 ⚠️ 横幅，避免误部署
 - `deploy-cloudfunctions.sh` 强制 confirm
-- e2e 入口不得连生产 IP `118.178.196.26`（防污染生产；2026-07-17 起 dev/测试与 prod 均用 5433 端口，环境仅靠 IP 区分）
+- e2e 入口只允许连接 dev IP `47.113.202.7`，不得连接 test `101.34.242.103` 或 prod `118.178.196.26`；三个环境均用 5433 端口，仅靠 IP 区分

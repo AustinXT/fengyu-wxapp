@@ -3,7 +3,7 @@
 #
 # Usage:
 #   .claude/skills/remote-deploy/deploy-analyst.sh <dev|test|prod> [ssh-host] [remote-dir] [public-host]
-#   .claude/skills/remote-deploy/deploy-analyst.sh --rollback <ssh-host>
+#   .claude/skills/remote-deploy/deploy-analyst.sh --rollback <ssh-host> [remote-dir]
 #
 # Rollback:
 #   回滚到上一个镜像版本（需要先部署过至少两次）
@@ -12,14 +12,30 @@ set -euo pipefail
 
 if [[ "${1:-}" == "--rollback" ]]; then
   if [[ -z "${2:-}" ]]; then
-    echo "Usage: $0 --rollback <ssh-host>" >&2
+    echo "Usage: $0 --rollback <ssh-host> [remote-dir]" >&2
     exit 1
   fi
   SSH_HOST="$2"
-  REMOTE_DIR="${REMOTE_DIR:-/root/proj.xt.com/fengyu-wxapp/docker}"
+  case "$SSH_HOST" in
+    ali-demo|47.113.202.7)
+      ROLLBACK_REMOTE_DIR_DEFAULT="/root/proj.xt.com/fengyu-wxapp/docker"
+      ;;
+    sqlserver101|101.34.242.103|fengyu-prod|118.178.196.26)
+      ROLLBACK_REMOTE_DIR_DEFAULT="/www/wwwroot/fengyu-admin/docker"
+      ;;
+    *)
+      ROLLBACK_REMOTE_DIR_DEFAULT=""
+      ;;
+  esac
+  REMOTE_DIR="${REMOTE_DIR:-${3:-$ROLLBACK_REMOTE_DIR_DEFAULT}}"
+  if [[ -z "$REMOTE_DIR" ]]; then
+    echo "✗ 无法从 SSH host '$SSH_HOST' 推断远程目录，请传 [remote-dir] 或设置 REMOTE_DIR。" >&2
+    exit 1
+  fi
 
   echo "=== 回滚 fengyu-analyst ==="
   echo "SSH Host: $SSH_HOST"
+  echo "Remote dir: $REMOTE_DIR"
   read -p "确认回滚到上一个镜像版本？(yes/no): " confirm
   if [[ "$confirm" != "yes" ]]; then
     echo "已取消"
@@ -46,7 +62,7 @@ if [[ "${1:-}" == "--rollback" ]]; then
   # 临时标记旧镜像
   ssh "$SSH_HOST" "docker tag $PREVIOUS_IMAGE fengyu-analyst:rollback-temp"
   ssh "$SSH_HOST" "docker tag fengyu-analyst:rollback-temp fengyu-analyst:latest"
-  ssh "$SSH_HOST" "cd $REMOTE_DIR && docker compose --env-file .env --env-file .admin-runtime.env -f docker-compose.yml -f docker-compose.remote.yml up -d analyst"
+  ssh "$SSH_HOST" "cd '$REMOTE_DIR' && docker compose --env-file .env --env-file .admin-runtime.env -f docker-compose.yml -f docker-compose.remote.yml up -d analyst"
   ssh "$SSH_HOST" "docker rmi fengyu-analyst:rollback-temp 2>/dev/null || true"
 
   echo "✓ 回滚完成"
@@ -55,15 +71,15 @@ fi
 
 if [[ -z "${1:-}" ]] || [[ ! "$1" =~ ^(dev|test|prod)$ ]]; then
   echo "Usage: $0 <dev|test|prod> [ssh-host] [remote-dir] [public-host]" >&2
-  echo "       $0 --rollback <ssh-host>" >&2
+  echo "       $0 --rollback <ssh-host> [remote-dir]" >&2
   exit 1
 fi
 
 ENV="$1"
 case "$ENV" in
-  dev) SSH_HOST_DEFAULT="ali-demo"; REMOTE_DIR_DEFAULT="/root/proj.xt.com/fengyu-wxapp/docker"; EXPECT_PG_HOST="47.113.202.7" ;;
-  test) SSH_HOST_DEFAULT="sqlserver101"; REMOTE_DIR_DEFAULT="/www/wwwroot/fengyu-admin/docker"; EXPECT_PG_HOST="101.34.242.103" ;;
-  prod) SSH_HOST_DEFAULT="fengyu-prod"; REMOTE_DIR_DEFAULT="/www/wwwroot/fengyu-admin/docker"; EXPECT_PG_HOST="118.178.196.26" ;;
+  dev) ENV_LABEL="DEV"; SSH_HOST_DEFAULT="ali-demo"; REMOTE_DIR_DEFAULT="/root/proj.xt.com/fengyu-wxapp/docker"; EXPECT_PG_HOST="47.113.202.7" ;;
+  test) ENV_LABEL="TEST"; SSH_HOST_DEFAULT="sqlserver101"; REMOTE_DIR_DEFAULT="/www/wwwroot/fengyu-admin/docker"; EXPECT_PG_HOST="101.34.242.103" ;;
+  prod) ENV_LABEL="PROD"; SSH_HOST_DEFAULT="fengyu-prod"; REMOTE_DIR_DEFAULT="/www/wwwroot/fengyu-admin/docker"; EXPECT_PG_HOST="118.178.196.26" ;;
 esac
 SSH_HOST="${SSH_HOST:-${2:-$SSH_HOST_DEFAULT}}"
 REMOTE_DIR="${REMOTE_DIR:-${3:-$REMOTE_DIR_DEFAULT}}"
@@ -121,7 +137,7 @@ if [[ "$ENV" == "prod" ]]; then
     exit 1
   fi
 else
-  echo "==> Deploy analyst to ${ENV^^} ($SSH_HOST)"
+  echo "==> Deploy analyst to $ENV_LABEL ($SSH_HOST)"
   echo "    public: $ANALYST_PUBLIC_ORIGIN"
   echo "    admin:  $ANALYST_ADMIN_ORIGIN"
   echo "    db:     $EXPECT_PG_HOST:5433/fengyu_wxapp"
