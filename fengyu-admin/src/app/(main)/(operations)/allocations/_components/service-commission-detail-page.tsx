@@ -13,6 +13,7 @@ import { Separator } from "@/components/ui/separator"
 import { batchSaveServiceCommissions } from "@/actions/service-commissions"
 import type { ServiceOrder, ServiceCommission, Employee, CommissionRate, SkillTag } from "@/lib/types"
 import type { ServiceItemDetail } from "@/actions/services"
+import { isEmployeeInStoreAssignmentScope } from "@/lib/employee-assignment"
 
 // --------------- 常量 ---------------
 
@@ -29,6 +30,7 @@ interface CommissionEntry {
   allocAmount: string       // 分配金额 = ratioPercent/100 × perSessionPrice × sessionUsed
   commissionRate: number    // 提成比例（从矩阵获取，按 consumeBase 查档）
   commissionAmount: string  // 提成金额 = allocAmount × commissionRate
+  legacyEmployeeName?: string
 }
 
 // --------------- 工具函数 ---------------
@@ -132,6 +134,7 @@ export function initCommissions(
   employees: Employee[],
   commissionRates: CommissionRate[],
   marketName: string,
+  targetStoreId: string,
   assignedEmployeeId?: string | null,
 ): Record<string, CommissionEntry[]> {
   const result: Record<string, CommissionEntry[]> = {}
@@ -145,15 +148,19 @@ export function initCommissions(
     const skillTag = comm.roleType || deriveSkillTag(emp)
 
     const ratioPercent = String(Number((Number(comm.allocationRatio) * 100).toFixed(1)))
-    result[comm.serviceItemId].push(
-      buildEntry(item, skillTag, comm.employeeId, ratioPercent, commissionRates, marketName, Number(comm.commissionRate)),
-    )
+    result[comm.serviceItemId].push({
+      ...buildEntry(item, skillTag, comm.employeeId, ratioPercent, commissionRates, marketName, Number(comm.commissionRate)),
+      legacyEmployeeName: comm.employeeName,
+    })
   }
 
   // 未分配的服务明细默认预填 1 行：指派美容师 + 100% + 按费率算的单人提成
   // （用户可改/可加行；提交仍走 batchSaveServiceCommissions）
   if (assignedEmployeeId) {
     const assignedEmp = employees.find((e) => e.employeeId === assignedEmployeeId)
+    if (!assignedEmp || !isEmployeeInStoreAssignmentScope(assignedEmp, targetStoreId, marketName)) {
+      return result
+    }
     const assignedSkillTag = deriveSkillTag(assignedEmp)
     for (const item of serviceItems) {
       if (result[item.serviceItemId].length === 0) {
@@ -194,20 +201,27 @@ export default function ServiceCommissionDetailPageClient({
   // 不再硬编码白名单——字典加新标签后此页立即可选）
   const skillTagNames = useMemo(() => skillTags.map((t) => t.name), [skillTags])
 
-  // 跨门店共享（2026-06-24，取消市场级与品项老师特例）：所有角色统一为
-  // 「服务单门店员工 ∪ 标记出差的员工」。出差员工由 page 的 getEmployeesOnBusinessTrip
-  // 全公司补充池并入候选，故能跨门店命中；出差标记长期保留直至 admin 手动改回（2026-07-13 起不再每日重置）。
+  // 外店出差员工仅能在服务单所属市场内参与分配。
   const getFilteredEmployees = (skillTag: string) => {
     if (!skillTag) return []
     return allActiveEmployees.filter(
-      (e) => (e.storeId === serviceOrder.storeId || e.isOnBusinessTrip) && e.skills?.includes(skillTag)
+      (e) => isEmployeeInStoreAssignmentScope(e, serviceOrder.storeId, serviceOrder.marketName ?? undefined)
+        && e.skills?.includes(skillTag)
     )
   }
 
   const marketName = serviceOrder.marketName
 
   const [itemComms, setItemComms] = useState<Record<string, CommissionEntry[]>>(() =>
-    initCommissions(serviceItems, commissions, employees, commissionRates, marketName, serviceOrder.assignedEmployeeId)
+    initCommissions(
+      serviceItems,
+      commissions,
+      employees,
+      commissionRates,
+      marketName,
+      serviceOrder.storeId,
+      serviceOrder.assignedEmployeeId,
+    )
   )
 
   const addEntry = (serviceItemId: string) => {
@@ -433,6 +447,11 @@ function ServiceItemCard({
                     disabled={!canSave || !entry.skillTag}
                   >
                     <option value="">{entry.skillTag ? `选择(${filteredEmployees.length}人)` : '先选标签'}</option>
+                    {entry.employeeId && !filteredEmployees.some((emp) => emp.employeeId === entry.employeeId) && (
+                      <option value={entry.employeeId} disabled>
+                        {entry.legacyEmployeeName || entry.employeeId}（历史跨市场）
+                      </option>
+                    )}
                     {filteredEmployees.map((emp) => (
                       <option key={emp.employeeId} value={emp.employeeId}>
                         {emp.name}

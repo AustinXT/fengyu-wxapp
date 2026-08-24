@@ -131,6 +131,19 @@ describe('order.create', () => {
     vi.clearAllMocks()
   })
 
+  test('跨市场出差美容师不能通过 preferredStaffWfId 绕过候选列表', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '13800001111',
+      clientName: '测试顾客',
+      items: [{ skuId: 'sku-001', quantity: 1 }],
+      paymentMethod: '线下',
+      preferredStaffWfId: 'emp-cross-market',
+    })
+    pg.query.mockResolvedValueOnce([])
+
+    await expect(orderRoutes.create(ctx)).rejects.toThrow(/INVALID_PARAMS.*同市场出差支援范围/)
+  })
+
   test('店长开单成功 — 普通订单', async () => {
     const ctx = createManagerCtx({
       clientPhone: '13800001111',

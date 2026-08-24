@@ -17,6 +17,12 @@ const serviceRoutes = require('../../routes/service')
 describe('service.create', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    pg.query.mockImplementation(async (sql, params) => {
+      if (sql.includes('JOIN stores employee_store')) {
+        return (params?.[0] || []).map(employee_id => ({ employee_id }))
+      }
+      return []
+    })
   })
 
   test('店长为美容师创建服务单', async () => {
@@ -1903,6 +1909,12 @@ describe('service.list 深层覆盖', () => {
 describe('service.create clientUserId 解析', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    pg.query.mockImplementation(async (sql, params) => {
+      if (sql.includes('JOIN stores employee_store')) {
+        return (params?.[0] || []).map(employee_id => ({ employee_id }))
+      }
+      return []
+    })
   })
 
   test('通过 clientPhone 从 client_wechat_users 解析 clientUserId', async () => {

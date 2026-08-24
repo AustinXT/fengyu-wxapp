@@ -33,6 +33,7 @@ import {
 } from '@/lib/export-pagination'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { nowTs } from '@/lib/db-time'
+import { getInvalidEmployeeAssignmentId } from '@/lib/employee-assignment-server'
 
 function serializeServiceOrder(r: {
   service_order: typeof serviceOrders.$inferSelect
@@ -1663,6 +1664,13 @@ export const createServiceOrder = withPermission(
   // 校验 storeId 在用户 scope 内
   if (!isInScope(session, data.storeId)) {
     return { success: false, message: '无权在该门店创建服务单' }
+  }
+  if (await getInvalidEmployeeAssignmentId(
+    [data.assignedEmployeeId],
+    data.storeId,
+    { requireServiceSkills: true },
+  )) {
+    return { success: false, message: '所选美容师不属于本门店或同市场出差支援范围' }
   }
 
   // 根据顾客成为会员客的时间戳判定服务单类型：

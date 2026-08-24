@@ -123,7 +123,11 @@ export default function ServiceCreatePageClient({
   useEffect(() => {
     if (selectedEmployeeId && selectedStoreId) {
       const emp = employees.find(e => e.employeeId === selectedEmployeeId)
-      if (!emp || !isOrderServiceStaffCandidate(emp, selectedStoreId)) {
+      if (!emp || !isOrderServiceStaffCandidate(
+        emp,
+        selectedStoreId,
+        stores.find((store) => store.storeId === selectedStoreId)?.marketName,
+      )) {
         setSelectedEmployeeId("")
       }
     }
@@ -149,7 +153,11 @@ export default function ServiceCreatePageClient({
           : selectedStoreId
         if (targetStoreId !== selectedStoreId) setSelectedStoreId(targetStoreId)
         if (result.boundEmployeeId && employees.some(
-          e => e.employeeId === result.boundEmployeeId && isOrderServiceStaffCandidate(e, targetStoreId),
+          e => e.employeeId === result.boundEmployeeId && isOrderServiceStaffCandidate(
+            e,
+            targetStoreId,
+            stores.find((store) => store.storeId === targetStoreId)?.marketName,
+          ),
         )) {
           setSelectedEmployeeId(result.boundEmployeeId)
         } else {
@@ -204,7 +212,11 @@ export default function ServiceCreatePageClient({
   const getSessionUsed = (groupKey: string) =>
     selectedItems.find(i => i.groupKey === groupKey)?.sessionUsed ?? 1
 
-  const filteredEmployees = getOrderServiceStaffCandidates(employees, selectedStoreId)
+  const filteredEmployees = getOrderServiceStaffCandidates(
+    employees,
+    selectedStoreId,
+    stores.find((store) => store.storeId === selectedStoreId)?.marketName,
+  )
 
   const itemProductKinds = useMemo(
     () => Array.from(new Set(availableItems.map((item) => item.productKind).filter((value): value is string => Boolean(value)))),

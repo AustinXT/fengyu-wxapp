@@ -52,7 +52,7 @@ function mockOrderAndItems(order, items) {
     .mockResolvedValueOnce(items)
 }
 
-const COMPLETED_ORDER = { service_order_id: 'SO-1', status: '已完成', commission_status: '待分配', remark: null }
+const COMPLETED_ORDER = { service_order_id: 'SO-1', status: '已完成', commission_status: '待分配', remark: null, store_id: 'store-001' }
 
 describe('serviceCommission.pendingList', () => {
   beforeEach(() => { vi.clearAllMocks() })
@@ -152,7 +152,15 @@ describe('serviceCommission.detail', () => {
 })
 
 describe('serviceCommission.save', () => {
-  beforeEach(() => { vi.clearAllMocks() })
+  beforeEach(() => {
+    vi.clearAllMocks()
+    pg.query.mockImplementation(async (sql, params) => {
+      if (sql.includes('JOIN stores employee_store')) {
+        return (params?.[0] || []).map(employee_id => ({ employee_id }))
+      }
+      return []
+    })
+  })
 
   test('保存成功 — recompute consumeBase=unit_real_price×session_used', async () => {
     const ctx = createManagerCtx({

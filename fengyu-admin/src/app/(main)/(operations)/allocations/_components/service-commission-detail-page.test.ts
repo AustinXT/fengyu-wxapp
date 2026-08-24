@@ -22,6 +22,7 @@ describe('服务单提成按服务项目拆分', () => {
       employees as never[],
       [],
       '测试市场',
+      'store-test',
     )
 
     expect(Object.keys(result)).toEqual(['SERVICE-ITEM-1', 'SERVICE-ITEM-2'])

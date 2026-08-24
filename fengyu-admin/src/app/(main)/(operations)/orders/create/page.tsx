@@ -26,7 +26,7 @@ export default async function Page() {
     getEmployeesOnBusinessTrip(),
     getRechargeConfig().catch(() => null),
   ])
-  // 跨门店共享（2026-06-24）：scope 内员工 ∪ 全公司出差员工；前端开单选美容师按「门店 ∪ 出差」筛选
+  // 候选池 = scope 内员工 ∪ 当前可见市场的出差员工；前端再按目标门店市场精确过滤。
   const employees = mergeEmployeesById(scopedEmployees, tripEmployees)
   return <OrderCreatePageClient stores={stores} employees={employees} rechargeConfig={rechargeConfig} />
 }

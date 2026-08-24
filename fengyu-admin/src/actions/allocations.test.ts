@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+vi.mock('@/lib/employee-assignment-server', () => ({ getInvalidEmployeeAssignmentId: vi.fn().mockResolvedValue(null) }))
 
 // 退款前置检查（allocations.ts 调 hasPendingRefund / hasSettledRefund / hasSettledRefundForPayment）：
 // 默认 false 走正常分支（预防 flaky）。订单级 hasSettledRefund 给 batchSaveAllocations，回款级 ForPayment 给 savePaymentAllocations。

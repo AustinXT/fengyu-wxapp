@@ -11,6 +11,7 @@ const base = {
   storeId: 'store-a',
   skills: ['美容师'],
   isOnBusinessTrip: false,
+  marketName: '市场A',
 }
 
 describe('isOrderServiceStaffCandidate', () => {
@@ -18,11 +19,16 @@ describe('isOrderServiceStaffCandidate', () => {
     expect(isOrderServiceStaffCandidate({ ...base, skills: [skill] }, 'store-a')).toBe(true)
   })
 
-  it('其他门店养生师仅在出差时可选', () => {
+  it('其他门店养生师仅在同市场出差时可选', () => {
     const wellnessStaff = { ...base, storeId: 'store-b', skills: ['养生师'] }
 
-    expect(isOrderServiceStaffCandidate(wellnessStaff, 'store-a')).toBe(false)
-    expect(isOrderServiceStaffCandidate({ ...wellnessStaff, isOnBusinessTrip: true }, 'store-a')).toBe(true)
+    expect(isOrderServiceStaffCandidate(wellnessStaff, 'store-a', '市场A')).toBe(false)
+    expect(isOrderServiceStaffCandidate({ ...wellnessStaff, isOnBusinessTrip: true }, 'store-a', '市场A')).toBe(true)
+    expect(isOrderServiceStaffCandidate({
+      ...wellnessStaff,
+      isOnBusinessTrip: true,
+      marketName: '市场B',
+    }, 'store-a', '市场A')).toBe(false)
   })
 
   it('排除无绑定门店、已离职或无服务技能的人员', () => {
@@ -52,7 +58,7 @@ describe('getOrderServiceStaffCandidates', () => {
       employee('local-z', 'Zulu Local', 'store-a'),
       employee('trip-z', 'Zulu Trip', 'store-c', true),
       employee('local-a', 'Alpha Local', 'store-a'),
-    ], 'store-a')
+    ], 'store-a', '市场A')
 
     expect(result.map((item) => item.employeeId)).toEqual([
       'local-a',

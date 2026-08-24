@@ -921,7 +921,7 @@ describe('getOrgLevel2ForFilter', () => {
 // 2026-05-18 picker LIMIT 截断回归：getEmployees() 是开单/服务单/分配/客户分配 picker
 // 共用数据源；曾经写死 .limit(500)，全库 2000+ 员工时按 name 排序后某店员工被截断，
 // 导致 admin /orders/create 选南昌万科店时下拉只显示 2 人（其余 14 人因 name 落在 500
-// 行之后被截）。这里断言链路不再调 limit，且 select 链路顺序为 from → leftJoin × 2 →
+// 行之后被截）。这里断言链路不再调 limit，且 select 链路顺序为 from → leftJoin × 4 →
 // where → orderBy。
 describe('getEmployees — picker 数据源不得有 LIMIT', () => {
   const pickerSession = {
@@ -967,7 +967,9 @@ describe('getEmployees — picker 数据源不得有 LIMIT', () => {
     // → TypeError，测试失败。
     const orderBy = vi.fn().mockResolvedValue(allRows)
     const where = vi.fn().mockReturnValue({ orderBy })
-    const leftJoin2 = vi.fn().mockReturnValue({ where })
+    const leftJoin4 = vi.fn().mockReturnValue({ where })
+    const leftJoin3 = vi.fn().mockReturnValue({ leftJoin: leftJoin4 })
+    const leftJoin2 = vi.fn().mockReturnValue({ leftJoin: leftJoin3 })
     const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
     const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
     ;(db.select as any).mockReturnValue({ from })
