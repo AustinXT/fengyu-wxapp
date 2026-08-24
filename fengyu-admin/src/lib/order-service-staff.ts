@@ -1,4 +1,5 @@
 import type { Employee } from '@/lib/types'
+import { isEmployeeInStoreAssignmentScope } from '@/lib/employee-assignment'
 
 const ASSIGNABLE_SKILLS = new Set(['美容师', '养生师'])
 
@@ -7,14 +8,12 @@ const ASSIGNABLE_SKILLS = new Set(['美容师', '养生师'])
  * 在职、有绑定门店、具备美容师或养生师技能，且属于开单门店或正在出差支援。
  */
 export function isOrderServiceStaffCandidate(
-  employee: Pick<Employee, 'isResigned' | 'storeId' | 'skills' | 'isOnBusinessTrip'>,
+  employee: Pick<Employee, 'isResigned' | 'storeId' | 'skills' | 'isOnBusinessTrip' | 'marketName'>,
   targetStoreId: string,
+  targetMarketName?: string,
 ): boolean {
   return Boolean(
-    targetStoreId
-      && !employee.isResigned
-      && employee.storeId
-      && (employee.storeId === targetStoreId || employee.isOnBusinessTrip)
+    isEmployeeInStoreAssignmentScope(employee, targetStoreId, targetMarketName)
       && employee.skills?.some((skill) => ASSIGNABLE_SKILLS.has(skill)),
   )
 }
@@ -26,9 +25,10 @@ export function isOrderServiceStaffCandidate(
 export function getOrderServiceStaffCandidates(
   employees: Employee[],
   targetStoreId: string,
+  targetMarketName?: string,
 ): Employee[] {
   return employees
-    .filter((employee) => isOrderServiceStaffCandidate(employee, targetStoreId))
+    .filter((employee) => isOrderServiceStaffCandidate(employee, targetStoreId, targetMarketName))
     .sort((a, b) => {
       const localStoreOrder = Number(b.storeId === targetStoreId) - Number(a.storeId === targetStoreId)
       if (localStoreOrder !== 0) return localStoreOrder

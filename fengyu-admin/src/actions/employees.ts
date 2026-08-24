@@ -10,7 +10,7 @@ import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
 import type { Employee } from '@/lib/types'
-import { scopeCondition, isInScope, requireAdmin, employeeScopeCondition } from '@/lib/permissions'
+import { scopeCondition, isInScope, requireAdmin, employeeScopeCondition, isAdminScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
@@ -30,6 +30,8 @@ import { orgNodeInScopeCondition, storeInOrgNodeCondition } from '@/lib/market-s
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
 const storeNode = alias(orgNodes, 'store_node') as unknown as typeof orgNodes
 const marketNode = alias(orgNodes, 'market_node') as unknown as typeof orgNodes
+const scopeStore = alias(stores, 'scope_store') as unknown as typeof stores
+const scopeStoreNode = alias(orgNodes, 'scope_store_node') as unknown as typeof orgNodes
 
 // drizzle 0.45 alias 后的 join row 被推断为宽松 { [x: string]: any }，
 // 严格类型签名跟实际不匹配 — 用 any 解锁 build；运行时行为不变
@@ -63,6 +65,7 @@ function rowToEmployee(row: any): Employee {
     updatedAt: e.updatedAt?.toISOString() ?? '',
     storeName: row.stores?.storeName ?? undefined,
     departmentName: row.org_nodes?.name ?? undefined,
+    marketName: row.market_node?.name ?? undefined,
   }
 }
 
@@ -83,6 +86,8 @@ export const getEmployees = withPermission(
     .from(staffWechatUsers)
     .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
     .leftJoin(orgNodes, eq(staffWechatUsers.orgNodeId, orgNodes.id))
+    .leftJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
+    .leftJoin(marketNode, eq(storeNode.parentId, marketNode.id))
     .where(employeeScopeCondition(session, staffWechatUsers.storeId, staffWechatUsers.orgNodeId))
     // 例外：picker 字母序（人眼扫视更友好）
     .orderBy(asc(staffWechatUsers.name))
@@ -106,6 +111,8 @@ export const getItemTeachers = withPermission(
     .from(staffWechatUsers)
     .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
     .leftJoin(orgNodes, eq(staffWechatUsers.orgNodeId, orgNodes.id))
+    .leftJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
+    .leftJoin(marketNode, eq(storeNode.parentId, marketNode.id))
     .where(and(
       eq(staffWechatUsers.isResigned, false),
       sql`'品项老师' = ANY(${staffWechatUsers.skills})`,
@@ -118,24 +125,36 @@ export const getItemTeachers = withPermission(
 )
 
 /**
- * 全公司在职「出差支援」员工 — 跨门店开单 / 分配的候选补充池（2026-06-24）。
+ * 当前权限可见市场内的在职「出差支援」员工 — 跨门店开单 / 分配候选补充池。
  *
- * is_on_business_trip=true 的员工可被任意门店的开单 / 营业额分配 / 服务提成分配选中，
- * 故**不加 scopeCondition**，返回全部在职出差员工。调用方需与 getEmployees 结果按
- * employeeId 去重合并，再交前端按「本门店 ∪ 出差」+ 技能筛选。出差标记长期保留直至 admin 手动改回（不再每日重置）。
+ * 外店出差员工仅能被同市场门店选中。这里先按登录用户可见市场收窄补充池，调用方再按
+ * 目标门店市场精确过滤。出差标记长期保留直至 admin 手动改回（不再每日重置）。
  */
 export const getEmployeesOnBusinessTrip = withPermission(
   'employee:list',
-  async (): Promise<Employee[]> => {
+  async (session): Promise<Employee[]> => {
+  const conditions = [
+    eq(staffWechatUsers.isResigned, false),
+    eq(staffWechatUsers.isOnBusinessTrip, true),
+  ]
+  if (!isAdminScope(session)) {
+    const scopeStoreIds = session.permissions.scopeStoreIds
+    if (scopeStoreIds.length === 0) return []
+    const visibleMarketIds = db
+      .select({ marketId: scopeStoreNode.parentId })
+      .from(scopeStore)
+      .innerJoin(scopeStoreNode, eq(scopeStoreNode.id, scopeStore.orgNodeId))
+      .where(inArray(scopeStore.storeId, scopeStoreIds))
+    conditions.push(inArray(marketNode.id, visibleMarketIds))
+  }
   const rows = await db
     .select()
     .from(staffWechatUsers)
     .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
     .leftJoin(orgNodes, eq(staffWechatUsers.orgNodeId, orgNodes.id))
-    .where(and(
-      eq(staffWechatUsers.isResigned, false),
-      eq(staffWechatUsers.isOnBusinessTrip, true),
-    ))
+    .leftJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
+    .leftJoin(marketNode, eq(storeNode.parentId, marketNode.id))
+    .where(and(...conditions))
     // 例外：picker 字母序（与 getEmployees 一致）
     .orderBy(asc(staffWechatUsers.name))
 
@@ -284,10 +303,7 @@ export const getEmployeesPaginated = withPermission(
   ])
 
   return {
-    data: rows.map(row => ({
-      ...rowToEmployee(row),
-      marketName: (row as any).market_node?.name ?? undefined,
-    })),
+    data: rows.map(rowToEmployee),
     total: countRow?.count ?? 0,
   }
   },
@@ -378,6 +394,8 @@ export const getEmployeeById = withPermission(
     .from(staffWechatUsers)
     .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
     .leftJoin(orgNodes, eq(staffWechatUsers.orgNodeId, orgNodes.id))
+    .leftJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
+    .leftJoin(marketNode, eq(storeNode.parentId, marketNode.id))
     .where(and(eq(staffWechatUsers.employeeId, employeeId), employeeScopeCondition(session, staffWechatUsers.storeId, staffWechatUsers.orgNodeId)))
 
   if (rows.length === 0) return null

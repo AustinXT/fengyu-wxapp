@@ -318,7 +318,7 @@ function envValue(...names: string[]) {
 }
 
 export function getLakalaOnboardingApiFamily() {
-  return envValue("LAKALA_ONBOARDING_API_FAMILY") === "mms" ? "mms" : "tkbs";
+  return envValue("LAKALA_API_FAMILY") === "mms" ? "mms" : "tkbs";
 }
 
 function normalizeLakalaEnv(value: string | undefined) {
@@ -326,11 +326,11 @@ function normalizeLakalaEnv(value: string | undefined) {
 }
 
 export function getLakalaOnboardingEnv() {
-  return normalizeLakalaEnv(process.env.LAKALA_ONBOARDING_ENV);
+  return normalizeLakalaEnv(process.env.LAKALA_ENV);
 }
 
 export function getLakalaOnboardingClientMode() {
-  return envValue("LAKALA_ONBOARDING_CLIENT_MODE") === "real" ? "real" : "mock";
+  return envValue("LAKALA_CLIENT_MODE") === "real" ? "real" : "mock";
 }
 
 export function getLakalaBaseUrl() {
@@ -347,31 +347,31 @@ export function getLakalaBaseUrl() {
 }
 
 export function getOrgCode() {
-  return envValue("LAKALA_ONBOARDING_ORG_CODE");
+  return envValue("LAKALA_ORG_CODE");
 }
 
 export function getOnboardingAppId() {
-  return envValue("LAKALA_ONBOARDING_APP_ID", "LAKALA_ONBOARDING_APPID");
+  return envValue("LAKALA_APPID");
 }
 
 export function getOnboardingSerialNo() {
-  return envValue("LAKALA_ONBOARDING_MERCHANT_CERT_SERIAL_NO", "LAKALA_ONBOARDING_SERIAL_NO");
+  return envValue("LAKALA_SERIAL_NO");
 }
 
 export function getOnboardingUserNo() {
-  return envValue("LAKALA_ONBOARDING_USER_NO");
+  return envValue("LAKALA_USER_NO");
 }
 
 export function getOnboardingSm4Key() {
-  return envValue("LAKALA_ONBOARDING_SM4_KEY", "LAKALA_ONBOARDING_APP_SECRET");
+  return envValue("LAKALA_SM4_KEY");
 }
 
 export function getOnboardingActivityId() {
-  return envValue("LAKALA_ONBOARDING_ACTIVITY_ID");
+  return envValue("LAKALA_ACTIVITY_ID");
 }
 
 export function getOnboardingMcc() {
-  return envValue("LAKALA_ONBOARDING_MCC") || DEFAULT_LAKALA_VALUES.mccCode;
+  return envValue("LAKALA_MCC") || DEFAULT_LAKALA_VALUES.mccCode;
 }
 
 export function getOnboardingBusiCode() {
@@ -379,11 +379,11 @@ export function getOnboardingBusiCode() {
 }
 
 export function getOnboardingSettlementType() {
-  return envValue("LAKALA_ONBOARDING_SETTLEMENT_TYPE") || DEFAULT_LAKALA_VALUES.settlementType;
+  return envValue("LAKALA_SETTLEMENT_TYPE") || DEFAULT_LAKALA_VALUES.settlementType;
 }
 
 export function getOnboardingSource() {
-  return envValue("LAKALA_ONBOARDING_SOURCE") || DEFAULT_LAKALA_VALUES.source;
+  return envValue("LAKALA_SOURCE") || DEFAULT_LAKALA_VALUES.source;
 }
 
 export function getOnboardingEmail() {
@@ -407,7 +407,7 @@ export function getEContractCallbackUrl() {
 }
 
 export function getEContractOrgId() {
-  return envValue("LAKALA_ECONTRACT_ORG_ID") || getOrgCode();
+  return getOrgCode();
 }
 
 export function getEContractType() {
@@ -419,19 +419,16 @@ function requireEnv(...names: string[]) {
     const value = process.env[name];
     if (value) return value;
   }
-  throw new Error(`${names.join(" or ")} is required when LAKALA_ONBOARDING_CLIENT_MODE=real`);
+  throw new Error(`${names.join(" or ")} is required when LAKALA_CLIENT_MODE=real`);
 }
 
 async function resolvePrivateKey() {
-  const pem = envValue("LAKALA_ONBOARDING_PRIVATE_KEY_PEM");
-  if (pem) return pem.replace(/\\n/g, "\n");
-  const privateKeyPath = requireEnv("LAKALA_ONBOARDING_MERCHANT_PRIVATE_KEY_PATH");
-  return readFile(privateKeyPath, "utf8");
+  return requireEnv("LAKALA_PRIVATE_KEY_PEM").replace(/\\n/g, "\n");
 }
 
 async function signBody(body: string) {
-  const appId = requireEnv("LAKALA_ONBOARDING_APP_ID", "LAKALA_ONBOARDING_APPID");
-  const serialNo = requireEnv("LAKALA_ONBOARDING_MERCHANT_CERT_SERIAL_NO", "LAKALA_ONBOARDING_SERIAL_NO");
+  const appId = requireEnv("LAKALA_APPID");
+  const serialNo = requireEnv("LAKALA_SERIAL_NO");
   const privateKey = await resolvePrivateKey();
   const timestamp = String(Math.floor(Date.now() / 1000));
   const nonceStr = randomBytes(16).toString("hex");
@@ -526,18 +523,11 @@ function decodeSm4Key(value: string) {
   if (hex.length === 16) return hex;
   const utf8 = Buffer.from(trimmed, "utf8");
   if (utf8.length === 16) return utf8;
-  throw new Error("LAKALA_ONBOARDING_SM4_KEY 必须是 16 字节，或对应的 base64/hex 编码");
+  throw new Error("LAKALA_SM4_KEY 必须是 16 字节，或对应的 base64/hex 编码");
 }
 
 function resolveSm4KeyBuffer() {
-  const directKey = envValue("LAKALA_ONBOARDING_SM4_KEY");
-  if (directKey) return decodeSm4Key(directKey);
-
-  const appSecret = requireEnv("LAKALA_ONBOARDING_APP_SECRET");
-  const derivedHex = Buffer.from(appSecret, "utf8").toString("hex").slice(0, 32);
-  const derived = Buffer.from(derivedHex, "hex");
-  if (derived.length === 16) return derived;
-  throw new Error("LAKALA_ONBOARDING_APP_SECRET 转换后的 SM4 密钥长度不足 16 字节");
+  return decodeSm4Key(requireEnv("LAKALA_SM4_KEY"));
 }
 
 export function verifyOnboardingSm4Key() {

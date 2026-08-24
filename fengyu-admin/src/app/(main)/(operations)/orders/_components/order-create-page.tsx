@@ -374,7 +374,11 @@ export default function OrderCreatePageClient({
       : selectedStoreId
     if (targetStoreId !== selectedStoreId) setSelectedStoreId(targetStoreId)
     if (customer.boundEmployeeId && employees.some(
-      e => e.employeeId === customer.boundEmployeeId && isOrderServiceStaffCandidate(e, targetStoreId),
+      e => e.employeeId === customer.boundEmployeeId && isOrderServiceStaffCandidate(
+        e,
+        targetStoreId,
+        stores.find((store) => store.storeId === targetStoreId)?.marketName,
+      ),
     )) {
       setSelectedEmployeeId(customer.boundEmployeeId)
     } else {
@@ -582,7 +586,11 @@ export default function OrderCreatePageClient({
   useEffect(() => {
     if (selectedEmployeeId && selectedStoreId) {
       const emp = employees.find(e => e.employeeId === selectedEmployeeId)
-      if (!emp || !isOrderServiceStaffCandidate(emp, selectedStoreId)) {
+      if (!emp || !isOrderServiceStaffCandidate(
+        emp,
+        selectedStoreId,
+        stores.find((store) => store.storeId === selectedStoreId)?.marketName,
+      )) {
         setSelectedEmployeeId("")
       }
     }
@@ -1336,7 +1344,11 @@ export default function OrderCreatePageClient({
                 <label className="text-sm text-[#999999]">指定美容师（可选）</label>
                 <Select className="mt-1" value={selectedEmployeeId} onChange={(e) => setSelectedEmployeeId(e.target.value)}>
                   <option value="">不指定</option>
-                  {getOrderServiceStaffCandidates(employees, selectedStoreId).map((e) => (
+                  {getOrderServiceStaffCandidates(
+                    employees,
+                    selectedStoreId,
+                    stores.find((store) => store.storeId === selectedStoreId)?.marketName,
+                  ).map((e) => (
                     <option key={e.employeeId} value={e.employeeId}>{formatOrderServiceStaffOption(e, selectedStoreId)}</option>
                   ))}
                 </Select>

@@ -1,7 +1,6 @@
 "use server";
 
 import { createPrivateKey } from "crypto";
-import { access, readFile } from "fs/promises";
 import { URL } from "url";
 import { withPermission } from "@/lib/with-permission";
 import {
@@ -59,10 +58,9 @@ function safeHost(value: string) {
 }
 
 async function checkPrivateKey(): Promise<LakalaDiagnosticItem> {
-  const pem = envValue("LAKALA_ONBOARDING_PRIVATE_KEY_PEM");
-  const path = envValue("LAKALA_ONBOARDING_MERCHANT_PRIVATE_KEY_PATH");
+  const pem = envValue("LAKALA_PRIVATE_KEY_PEM");
   try {
-    const key = pem?.value || (path ? await readFile(path.value, "utf8") : "");
+    const key = pem?.value || "";
     if (!key) {
       return { key: "privateKey", label: "商户私钥", status: "error", value: "未配置" };
     }
@@ -71,7 +69,7 @@ async function checkPrivateKey(): Promise<LakalaDiagnosticItem> {
       key: "privateKey",
       label: "商户私钥",
       status: "ok",
-      value: pem ? `${pem.name} 已配置且可解析` : `${path?.name ?? "私钥文件"} 可读取且可解析`,
+      value: `${pem?.name ?? "LAKALA_PRIVATE_KEY_PEM"} 已配置且可解析`,
     };
   } catch (error) {
     return {
@@ -85,22 +83,9 @@ async function checkPrivateKey(): Promise<LakalaDiagnosticItem> {
 }
 
 async function checkPlatformCert(): Promise<LakalaDiagnosticItem> {
-  const pem = envValue("LAKALA_ONBOARDING_PLATFORM_CERT_PEM");
-  const path = envValue("LAKALA_ONBOARDING_PLATFORM_CERT_PATH");
+  const pem = envValue("LAKALA_PLATFORM_CERT_PEM");
   if (pem) return { key: "platformCert", label: "平台证书", status: "ok", value: `${pem.name} 已配置` };
-  if (!path) return { key: "platformCert", label: "平台证书", status: "warn", value: "未配置", detail: "当前代码提交签名暂未使用平台证书，但真实验签/回调验签时会需要。" };
-  try {
-    await access(path.value);
-    return { key: "platformCert", label: "平台证书", status: "ok", value: `${path.name} 可读取` };
-  } catch (error) {
-    return {
-      key: "platformCert",
-      label: "平台证书",
-      status: "error",
-      value: "证书文件不可读取",
-      detail: error instanceof Error ? error.message : "读取失败",
-    };
-  }
+  return { key: "platformCert", label: "平台证书", status: "warn", value: "未配置", detail: "当前代码提交签名暂未使用平台证书，但真实验签/回调验签时会需要。" };
 }
 
 async function checkGatewayReachable(baseUrl: string): Promise<LakalaDiagnosticItem> {
@@ -131,7 +116,7 @@ async function checkGatewayReachable(baseUrl: string): Promise<LakalaDiagnosticI
 function checkSm4Key(): LakalaDiagnosticItem {
   try {
     verifyOnboardingSm4Key();
-    const source = envValue("LAKALA_ONBOARDING_SM4_KEY", "LAKALA_ONBOARDING_APP_SECRET");
+    const source = envValue("LAKALA_SM4_KEY");
     return { key: "sm4Key", label: "SM4 加密密钥", status: "ok", value: `${source?.name ?? "SM4 配置"} 已配置且可用` };
   } catch (error) {
     return {
@@ -139,7 +124,7 @@ function checkSm4Key(): LakalaDiagnosticItem {
       label: "SM4 加密密钥",
       status: "error",
       value: getOnboardingSm4Key() ? "不可用" : "未配置",
-      detail: error instanceof Error ? error.message : "merchant_encry 需要 LAKALA_ONBOARDING_SM4_KEY 或 LAKALA_ONBOARDING_APP_SECRET",
+      detail: error instanceof Error ? error.message : "merchant_encry 需要 LAKALA_SM4_KEY",
     };
   }
 }
@@ -149,12 +134,9 @@ export const getLakalaDiagnostics = withPermission("system:config", async (): Pr
   const env = getLakalaOnboardingEnv();
   const baseUrl = getLakalaBaseUrl();
   const family = getLakalaOnboardingApiFamily();
-  const callback = envValue("LAKALA_ONBOARDING_CALLBACK_URL");
-  const appId = envValue("LAKALA_ONBOARDING_APP_ID", "LAKALA_ONBOARDING_APPID");
-  const serialNo = envValue(
-    "LAKALA_ONBOARDING_MERCHANT_CERT_SERIAL_NO",
-    "LAKALA_ONBOARDING_SERIAL_NO",
-  );
+  const callback = envValue("LAKALA_ECONTRACT_CALLBACK_URL");
+  const appId = envValue("LAKALA_APPID");
+  const serialNo = envValue("LAKALA_SERIAL_NO");
 
   const items: LakalaDiagnosticItem[] = [
     {
@@ -162,7 +144,7 @@ export const getLakalaDiagnostics = withPermission("system:config", async (): Pr
       label: "接口体系",
       status: family === "tkbs" ? "ok" : "warn",
       value: family,
-      detail: family === "tkbs" ? "后台入网使用拓客商服 API，不使用支付配置。" : "当前仍为旧 mms 接口，仅兼容历史测试。",
+      detail: family === "tkbs" ? "后台入网使用拓客商服 API，并复用支付侧凭据。" : "当前仍为旧 mms 接口，仅兼容历史测试。",
     },
     {
       key: "clientMode",
@@ -191,12 +173,12 @@ export const getLakalaDiagnostics = withPermission("system:config", async (): Pr
       key: "orgCode",
       label: "机构号",
       status: getOrgCode() ? "ok" : "error",
-      value: getOrgCode() ? "LAKALA_ONBOARDING_ORG_CODE 已配置" : "未配置",
+      value: getOrgCode() ? "LAKALA_ORG_CODE 已配置" : "未配置",
     },
     boolItem("appId", "应用 ID", Boolean(appId), appId ? `${appId.name} 已配置` : "已配置"),
     boolItem("serialNo", "商户证书序列号", Boolean(serialNo), serialNo ? `${serialNo.name} 已配置` : "已配置"),
-    boolItem("userNo", "归属用户 user_no", Boolean(getOnboardingUserNo()), getOnboardingUserNo() ? "LAKALA_ONBOARDING_USER_NO 已配置" : "已配置"),
-    boolItem("activityId", "活动 ID", Boolean(getOnboardingActivityId()), getOnboardingActivityId() ? "LAKALA_ONBOARDING_ACTIVITY_ID 已配置" : "已配置"),
+    boolItem("userNo", "归属用户 user_no", Boolean(getOnboardingUserNo()), getOnboardingUserNo() ? "LAKALA_USER_NO 已配置" : "已配置"),
+    boolItem("activityId", "活动 ID", Boolean(getOnboardingActivityId()), getOnboardingActivityId() ? "LAKALA_ACTIVITY_ID 已配置" : "已配置"),
     boolItem("callback", "回调地址", Boolean(callback), callback ? `${callback.name} 已配置` : "已配置"),
     await checkPrivateKey(),
     await checkPlatformCert(),

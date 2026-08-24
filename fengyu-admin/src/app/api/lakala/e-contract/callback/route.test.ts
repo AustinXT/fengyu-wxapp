@@ -16,19 +16,19 @@ vi.mock('@/db', () => ({
 
 import { POST } from './route'
 
-const originalOrgId = process.env.LAKALA_ECONTRACT_ORG_ID
+const originalOrgId = process.env.LAKALA_ORG_CODE
 
 describe('电子合同回调', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    process.env.LAKALA_ECONTRACT_ORG_ID = '10001'
+    process.env.LAKALA_ORG_CODE = '10001'
     execute.mockResolvedValue([])
     updateWhere.mockResolvedValue({ count: 1 })
   })
 
   afterEach(() => {
-    if (originalOrgId === undefined) delete process.env.LAKALA_ECONTRACT_ORG_ID
-    else process.env.LAKALA_ECONTRACT_ORG_ID = originalOrgId
+    if (originalOrgId === undefined) delete process.env.LAKALA_ORG_CODE
+    else process.env.LAKALA_ORG_CODE = originalOrgId
   })
 
   it('机构号不匹配时拒绝且不执行运行时 DDL', async () => {

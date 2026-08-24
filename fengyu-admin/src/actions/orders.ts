@@ -53,6 +53,7 @@ import {
   type CustomerOrderMarketScope,
 } from '@/lib/order-market-scope'
 import { INVENTORY_LINKAGE_ENABLED } from '@/lib/inventory-feature-flags'
+import { getInvalidEmployeeAssignmentId } from '@/lib/employee-assignment-server'
 
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
 const opener = alias(staffWechatUsers, 'opener') as unknown as typeof staffWechatUsers
@@ -3148,6 +3149,13 @@ export const createOrder = withPermission(
   if (!isInScope(session, data.storeId)) {
     return { success: false, message: '无权在该门店创建订单' }
   }
+  if (data.preferredEmployeeId && await getInvalidEmployeeAssignmentId(
+    [data.preferredEmployeeId],
+    data.storeId,
+    { requireServiceSkills: true },
+  )) {
+    return { success: false, message: '所选美容师不属于本门店或同市场出差支援范围' }
+  }
 
   // 充值卡剥离 SKU 化（2026-05-20）：充值订单走独立 createRechargeOrder action，
   // 不再走 createSaleOrder。这里删除原"isRechargeOrder 识别 + 字段强制覆盖"块。
@@ -4148,6 +4156,13 @@ export const createConversionOrder = withPermission(
   if (!isInScope(session, data.storeId)) {
     return { success: false, message: '无权在该门店创建订单' }
   }
+  if (data.preferredEmployeeId && await getInvalidEmployeeAssignmentId(
+    [data.preferredEmployeeId],
+    data.storeId,
+    { requireServiceSkills: true },
+  )) {
+    return { success: false, message: '所选美容师不属于本门店或同市场出差支援范围' }
+  }
   if (!data.clientUserId) {
     return { success: false, message: '转换单必须指定顾客' }
   }
@@ -5036,6 +5051,13 @@ export const createDepositOrder = withPermission(
   ): Promise<{ success: boolean; message: string; saleOrderId?: string; itemCount?: number }> => {
     if (!isInScope(session, data.storeId)) {
       return { success: false, message: '无权在该门店创建订单' }
+    }
+    if (data.preferredEmployeeId && await getInvalidEmployeeAssignmentId(
+      [data.preferredEmployeeId],
+      data.storeId,
+      { requireServiceSkills: true },
+    )) {
+      return { success: false, message: '所选美容师不属于本门店或同市场出差支援范围' }
     }
     if (!data.clientUserId) {
       return { success: false, message: '寄存单必须指定顾客' }

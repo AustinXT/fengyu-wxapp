@@ -12,6 +12,7 @@ import { StatusBadge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { batchSaveAllocations } from "@/actions/allocations"
 import type { SaleOrder, SaleItem, SaleAllocation, Employee, CommissionRate, SkillTag } from "@/lib/types"
+import { isEmployeeInStoreAssignmentScope } from "@/lib/employee-assignment"
 
 // --------------- 常量 ---------------
 
@@ -28,6 +29,7 @@ interface AllocationEntry {
   amount: string          // 自动 = ratioPercent/100 × received
   commissionRate: number  // 自动从提成矩阵获取
   commissionAmount: string // 自动 = amount × commissionRate
+  legacyEmployeeName?: string
 }
 
 // --------------- 工具函数 ---------------
@@ -118,6 +120,7 @@ function initAllocations(
       amount,
       commissionRate,
       commissionAmount: (Number(amount) * commissionRate).toFixed(2),
+      legacyEmployeeName: alloc.employeeName,
     })
   }
 
@@ -149,13 +152,12 @@ export default function AllocationDetailPageClient({
     [employees],
   )
 
-  // 跨门店共享（2026-06-24，取消市场级与品项老师特例）：所有角色统一为
-  // 「订单门店员工 ∪ 标记出差的员工」。出差员工由 page 的 getEmployeesOnBusinessTrip
-  // 全公司补充池并入候选，故能跨门店命中；出差标记长期保留直至 admin 手动改回（2026-07-13 起不再每日重置）。
+  // 外店出差员工仅能在订单所属市场内参与分配。
   const getFilteredEmployees = (skillTag: string) => {
     if (!skillTag) return []
     return allActiveEmployees.filter(
-      (e) => (e.storeId === order.storeId || e.isOnBusinessTrip) && e.skills?.includes(skillTag)
+      (e) => isEmployeeInStoreAssignmentScope(e, order.storeId, order.marketName ?? undefined)
+        && e.skills?.includes(skillTag)
     )
   }
 
@@ -389,6 +391,11 @@ function ItemAllocationCard({
                     disabled={!canSave || !entry.skillTag}
                   >
                     <option value="">{entry.skillTag ? `选择(${filteredEmployees.length}人)` : '先选标签'}</option>
+                    {entry.employeeId && !filteredEmployees.some((emp) => emp.employeeId === entry.employeeId) && (
+                      <option value={entry.employeeId} disabled>
+                        {entry.legacyEmployeeName || entry.employeeId}（历史跨市场）
+                      </option>
+                    )}
                     {filteredEmployees.map((emp) => (
                       <option key={emp.employeeId} value={emp.employeeId}>
                         {emp.name}

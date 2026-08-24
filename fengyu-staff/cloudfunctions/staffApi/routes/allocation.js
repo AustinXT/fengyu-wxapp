@@ -17,6 +17,10 @@ const { logOperation } = require('../utils/operation-log')
 const { assertNoPendingRefund, assertNoSettledRefundForPayment } = require('../utils/refund')
 const { resolveMarketNameByStore } = require('../utils/market')
 const { refreshOrderAllocationRollup } = require('../utils/payment-allocatable')
+const {
+  isEmployeeAssignableToStore,
+  assertEmployeesAssignableToStore,
+} = require('../utils/employee-assignment')
 
 // P2-14 Q5: skillTags 驱动的业绩分配校验
 // 每池 = (saleItemId, roleType) 二元组，池间互不约束
@@ -259,6 +263,9 @@ async function suggestPayment(ctx) {
   let deptAnomalous = false
   if (pay.preferred_employee_id) {
     beauticianInfo = await resolveStaffRoles(pay.preferred_employee_id)
+    if (beauticianInfo && !(await isEmployeeAssignableToStore(pg, pay.preferred_employee_id, pay.store_id))) {
+      beauticianInfo = null
+    }
     if (beauticianInfo && beauticianInfo.skills.length === 0) deptAnomalous = true
   }
   const isNewCustomer = await checkNewCustomer(pay.client_phone, pay.sale_order_id)
@@ -353,9 +360,21 @@ async function suggestPayment(ctx) {
              d.name AS department, s.store_name
       FROM staff_wechat_users u
       LEFT JOIN stores s ON u.store_id = s.store_id
+      LEFT JOIN org_nodes so ON s.org_node_id = so.id
       LEFT JOIN org_nodes d ON u.org_node_id = d.id
       WHERE u.is_resigned = false
-        AND (u.store_id = $1 OR u.is_on_business_trip = true)
+        AND (
+          u.store_id = $1
+          OR (
+            u.is_on_business_trip = true
+            AND so.parent_id = (
+              SELECT target_store_node.parent_id
+              FROM stores target_store
+              JOIN org_nodes target_store_node ON target_store_node.id = target_store.org_node_id
+              WHERE target_store.store_id = $1
+            )
+          )
+        )
         AND u.employee_id IS NOT NULL
       ORDER BY u.name`, [pay.store_id])
     candidateEmployees = empRows.map(r => ({
@@ -435,6 +454,11 @@ async function savePayment(ctx) {
   // 退款后重分配守卫（2026-06-24）：本回款的可分配 item 中存在「已支付退款」冲销时禁止重分配——退款已记负数冲销行（挂退款流水 id），
   // 重保存会作废原回款正数行 + 写新正数行，与退款负数行脱节 → 净额错乱。回款级守卫：同单其它无关 item 的回款不受影响。两端镜像 admin savePaymentAllocations。
   await assertNoSettledRefundForPayment(pg, salePaymentId)
+  await assertEmployeesAssignableToStore(
+    pg,
+    allocations.map((allocation) => allocation.employeeId),
+    pay.store_id,
+  )
 
   const allocItems = await pg.query(
     'SELECT id AS receipt_id, sale_item_id, amount::numeric AS amount, sales_category FROM sale_payment_item_receipts WHERE sale_payment_id = $1',

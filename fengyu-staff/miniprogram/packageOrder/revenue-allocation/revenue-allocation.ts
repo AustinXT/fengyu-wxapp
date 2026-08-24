@@ -506,6 +506,7 @@ Page({
     const { candidateEmployees, orderStoreId } = this.data;
     return candidateEmployees.filter(e => {
       if (!e.skills || !e.skills.includes(skillTag)) return false;
+      // candidateEmployees 已由 staffApi 按订单市场收窄；此处只做门店/出差标记的展示层复核。
       return e.storeId === orderStoreId || !!e.isOnBusinessTrip;
     });
   },

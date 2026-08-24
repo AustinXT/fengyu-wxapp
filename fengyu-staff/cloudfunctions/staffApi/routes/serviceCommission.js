@@ -19,6 +19,7 @@ const { logOperation } = require('../utils/operation-log')
 const { assertNoPendingRefundByServiceOrder } = require('../utils/refund')
 const { resolveMarketNameByStore } = require('../utils/market')
 const { DEPOSIT_REFUND_REMARK } = require('../utils/consume-filter')
+const { assertEmployeesAssignableToStore } = require('../utils/employee-assignment')
 
 // 与 allocation.js 同源校验范式：每池 = (serviceItemId, roleType)，池间互不约束
 // 分配比例校验：0~1 之间（精度 0.001，支持自定义小数比例）
@@ -168,9 +169,21 @@ async function detail(ctx) {
              d.name AS department, s.store_name
       FROM staff_wechat_users u
       LEFT JOIN stores s ON u.store_id = s.store_id
+      LEFT JOIN org_nodes so ON s.org_node_id = so.id
       LEFT JOIN org_nodes d ON u.org_node_id = d.id
       WHERE u.is_resigned = false
-        AND (u.store_id = $1 OR u.is_on_business_trip = true)
+        AND (
+          u.store_id = $1
+          OR (
+            u.is_on_business_trip = true
+            AND so.parent_id = (
+              SELECT target_store_node.parent_id
+              FROM stores target_store
+              JOIN org_nodes target_store_node ON target_store_node.id = target_store.org_node_id
+              WHERE target_store.store_id = $1
+            )
+          )
+        )
         AND u.employee_id IS NOT NULL
       ORDER BY u.name
     `, [order.store_id])
@@ -209,7 +222,7 @@ async function save(ctx) {
 
   // 服务单 scope + 状态校验
   const orders = await pg.query(
-    'SELECT service_order_id, status, commission_status, completed_at, remark FROM service_orders WHERE service_order_id = $1 AND store_id = $2',
+    'SELECT service_order_id, status, commission_status, completed_at, remark, store_id FROM service_orders WHERE service_order_id = $1 AND store_id = $2',
     [serviceOrderId, ctx.auth.effectiveStoreId]
   )
   if (orders.length === 0) {
@@ -234,7 +247,6 @@ async function save(ctx) {
   if (order.remark === DEPOSIT_REFUND_REMARK) {
     throw new Error('INVALID_STATE: 寄存单退款专用服务单不参与提成分配')
   }
-
   // 加载服务明细定价（校验归属 + 重算）
   const itemRows = await pg.query(`
     SELECT sit.service_item_id, sit.session_used, sit.unit_real_price, sit.sales_category,
@@ -310,6 +322,11 @@ async function save(ctx) {
       empIds.add(c.employeeId)
     }
   }
+  await assertEmployeesAssignableToStore(
+    pg,
+    commissions.map((commission) => commission.employeeId),
+    order.store_id,
+  )
 
   const now = new Date()
 

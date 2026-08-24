@@ -44,6 +44,7 @@ const {
 const { logOperation, logTransition } = require('../utils/operation-log')
 const { shanghaiDateStr, shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
 const { INVENTORY_LINKAGE_ENABLED } = require('../utils/feature-flags')
+const { assertEmployeesAssignableToStore } = require('../utils/employee-assignment')
 
 // 模块级缓存：saleOrderId → qrcodeUrl，避免轮询时重复生成
 const qrcodeCache = new Map()
@@ -947,6 +948,9 @@ async function create(ctx) {
   }
   if (!storeId) {
     throw new Error('INVALID_PARAMS: 缺少门店信息')
+  }
+  if (preferredStaffWfId) {
+    await assertEmployeesAssignableToStore(pg, [preferredStaffWfId], storeId, { requireServiceSkills: true })
   }
 
   // sale_order_type 直接使用 DB 枚举文本（无历史兼容映射）

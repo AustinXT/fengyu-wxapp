@@ -55,8 +55,12 @@ admin 远程部署用 `docker/docker-compose.remote.yml` override。`deploy-admi
 ```
 
 该命令不上传或覆盖远程 `.env`、证书、私钥、SM4Key、OCR 密钥和门店附件；它只从目标服务器
-的现有 `.env` 读取构建所需的公钥及非敏感存储标识，并在部署前检查
-`LAKALA_ONBOARDING_*` 配置。其他分支执行相同的 `dev` 命令仍指向 `ali-demo`，`prod` 仍需显式使用 `prod`。
+的现有 `.env` 读取构建所需的公钥及非敏感存储标识，并在部署前检查拉卡拉共享凭据与
+`LAKALA_ONBOARDING_API_BASE`。其他分支执行相同的 `dev` 命令仍指向 `ali-demo`，`prod` 仍需显式使用 `prod`。
+
+拉卡拉支付与门店入网统一复用 `LAKALA_*` 的模式、环境、APPID、证书、SM4、机构号、用户号、
+活动 ID、MCC、结算类型和来源。`LAKALA_ONBOARDING_*` 只保留入网 API 地址及业务参数，电子合同
+回调地址和合同类型继续使用 `LAKALA_ECONTRACT_*`；电子合同机构号统一读取 `LAKALA_ORG_CODE`。
 
 ## 小程序自适应（不需要渲染）
 
@@ -76,6 +80,10 @@ admin 远程部署用 `docker/docker-compose.remote.yml` override。`deploy-admi
 3. 如果云函数需要：在 `fengyu-{client,staff}/cloudbaserc.example.json` 的 envVariables 加 `"NEW_VAR": "${NEW_VAR}"`
 4. 如果 admin 需要：在 `docker/docker-compose.remote.yml` 的 environment 加 `NEW_VAR`，并决定它应由远程 `.env` 还是部署脚本生成的运行时覆盖文件注入
 5. 远程 `docker/.env` 同步追加（生产 `ssh fengyu-prod` / 测试 `ssh ali-demo` 后手工改）
+
+修改后运行 `node scripts/check-env-shape.mjs`，确保 `prod.env.example`、`dev.env.example` 以及本地
+`prod.env` / `test.env` / `dev.env` 的键集合与顺序完全一致。`prod.env.example` 是唯一结构基准，
+真实生产值仍应以 prod 容器运行态和 CloudBase 函数配置为准。
 
 ## 安全
 

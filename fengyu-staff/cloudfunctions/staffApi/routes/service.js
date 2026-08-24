@@ -17,6 +17,7 @@ const { assertNoPendingRefundByServiceOrder } = require('../utils/refund')
 const { isStoreInScope, restrictToBoundEmployee } = require('../utils/scope')
 const { DEPOSIT_REFUND_REMARK } = require('../utils/consume-filter')
 const { grantVisitPointsSafe } = require('../utils/visit-points')
+const { assertEmployeesAssignableToStore } = require('../utils/employee-assignment')
 
 /**
  * 创建服务单
@@ -59,7 +60,6 @@ async function create(ctx) {
   if (!isCurrentStoreManager(ctx.auth) && resolvedStaffWfId !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 美容师只能创建分配给自己的服务单')
   }
-
   // 验证关联预约
   if (appointmentId) {
     const appts = await pg.query(
@@ -214,6 +214,13 @@ async function create(ctx) {
       }
     }
   }
+
+  await assertEmployeesAssignableToStore(
+    pg,
+    [resolvedStaffWfId, ...normalizedItems.map((item) => item.employeeId)],
+    ctx.auth.effectiveStoreId,
+    { requireServiceSkills: true },
+  )
 
   // serviceOrderId 在事务内由 generateServiceOrderId(client) 生成，保证 advisory lock
   // 持有窗口覆盖 SELECT MAX → INSERT 全程，闭合 TOCTOU

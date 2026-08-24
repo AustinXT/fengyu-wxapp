@@ -15,6 +15,7 @@ import { rowsAffected } from '@/lib/pg-rows'
 import { refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
 import { nowTs, beijingBoundaryTs } from '@/lib/db-time'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
+import { getInvalidEmployeeAssignmentId } from '@/lib/employee-assignment-server'
 
 /**
  * 销售提成率查找（销售提成固化快照用）。
@@ -548,6 +549,12 @@ export const savePaymentAllocations = withPermission(
     // 重保存会作废原回款正数行 + 写新正数行，与退款负数行脱节 → 净额错乱。回款级守卫：同单其它无关 item 的回款不受影响。两端镜像 staff allocation.savePayment。
     if (await hasSettledRefundForPayment(db, salePaymentId)) {
       return { success: false, message: '该订单已退款，营业额分配已锁定，不可再修改' }
+    }
+    if (await getInvalidEmployeeAssignmentId(
+      allocations.map((allocation) => allocation.employeeId),
+      pay.store_id as string,
+    )) {
+      return { success: false, message: '所选员工不属于本门店或同市场出差支援范围' }
     }
 
     // 可分配额快照（基数 amount + 销售类别）

@@ -20,7 +20,7 @@ export async function POST(request: Request) {
     const status = typeof payload.ecStatus === "string" ? payload.ecStatus : "";
     const ecNo = typeof payload.ecNo === "string" ? payload.ecNo : "";
     if (!orderNo || !status) throw new Error("电子合同回调缺少 orderNo 或 ecStatus");
-    if (orgId !== String(process.env.LAKALA_ECONTRACT_ORG_ID || process.env.LAKALA_ONBOARDING_ORG_CODE || "")) throw new Error("电子合同回调机构号不匹配");
+    if (orgId !== String(process.env.LAKALA_ORG_CODE || "")) throw new Error("电子合同回调机构号不匹配");
     await ensureEContractColumns();
     const [application] = await db.select().from(lakalaOnboardingApplications).where(eq(lakalaOnboardingApplications.eContractOrderNo, orderNo)).limit(1);
     if (!application) throw new Error("电子合同回调订单不存在");

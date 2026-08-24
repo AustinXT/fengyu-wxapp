@@ -86,12 +86,12 @@ set -eu
 get_env() {
   awk -F= -v k="$1" '$1==k {sub(/^[^=]*=/, ""); gsub(/^"|"$/, ""); print; exit}' "$REMOTE_ENV_FILE"
 }
-for key in LAKALA_ONBOARDING_ENV LAKALA_ONBOARDING_API_BASE LAKALA_ONBOARDING_APPID LAKALA_ONBOARDING_SM4_KEY; do
+for key in LAKALA_ENV LAKALA_ONBOARDING_API_BASE LAKALA_APPID LAKALA_SM4_KEY; do
   test -n "$(get_env "$key")" || { echo "missing:$key" >&2; exit 1; }
 done
-case "$(get_env LAKALA_ONBOARDING_ENV)" in release|prod|production) ;; *) echo 'invalid:LAKALA_ONBOARDING_ENV' >&2; exit 1;; esac
+case "$(get_env LAKALA_ENV)" in release|prod|production) ;; *) echo 'invalid:LAKALA_ENV' >&2; exit 1;; esac
 test "$(get_env LAKALA_ONBOARDING_API_BASE)" = 'https://s2.lakala.com' || { echo 'invalid:LAKALA_ONBOARDING_API_BASE' >&2; exit 1; }
-test "$(get_env LAKALA_ONBOARDING_APPID)" != 'OP00000003' || { echo 'invalid:LAKALA_ONBOARDING_APPID' >&2; exit 1; }
+test "$(get_env LAKALA_APPID)" != 'OP00000003' || { echo 'invalid:LAKALA_APPID' >&2; exit 1; }
 EOF
 }
 

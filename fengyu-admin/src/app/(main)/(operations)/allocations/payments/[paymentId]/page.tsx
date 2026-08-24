@@ -32,7 +32,7 @@ export default async function Page({ params }: { params: Promise<{ paymentId: st
   // 供「订单门店 ∪ 出差员工」候选过滤与摘要展示用。
   const order = await getOrderById(payment.saleOrderId)
 
-  // 跨门店共享（2026-06-24）：scope 内员工 ∪ 全公司出差员工（按 employeeId 去重）
+  // 候选池按 employeeId 合并；前端仅保留订单门店员工或同市场出差员工。
   const employees = mergeEmployeesById(scopedEmployees, tripEmployees)
 
   return (

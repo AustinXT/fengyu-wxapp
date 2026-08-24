@@ -61,6 +61,12 @@
         </view>
       </view>
 
+      <!-- 员工开单时填写的订单备注；空备注不占空间 -->
+      <view wx:if="{{item.orderRemark}}" class="tc-card__remark">
+        <text class="tc-card__remark-label">订单备注</text>
+        <text class="tc-card__remark-value">{{item.orderRemark}}</text>
+      </view>
+
       <!-- 底部：门店 + 有效期 + 预约按钮 -->
       <view class="tc-card__footer">
         <view class="tc-card__meta">
