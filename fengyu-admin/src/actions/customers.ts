@@ -1010,6 +1010,30 @@ export const updateCustomer = withPermission(
     return { success: false, message: '绑定门店仅允许新增顾客时设置，请通过顾客转店/解绑流程处理' }
   }
 
+  const allowedUpdateFields = new Set([
+    'name',
+    'gender',
+    'phone',
+    'memberLevel',
+    'customerSource',
+    'birthday',
+    'occupation',
+    'isMarried',
+    'wechatName',
+    'skinType',
+    'improvementFocus',
+    'skinIssue',
+    'wellnessPreference',
+    'notes',
+    'promoterEmployeeId',
+    'boundEmployeeId',
+    'isCrossStoreTemp',
+  ])
+  const unexpectedFields = Object.keys(data).filter((field) => !allowedUpdateFields.has(field))
+  if (unexpectedFields.length > 0) {
+    return { success: false, message: `包含不允许修改的字段：${unexpectedFields.join('、')}` }
+  }
+
   // 服务端输入校验
   if (data.phone !== undefined && data.phone !== null && !/^1\d{10}$/.test(data.phone)) {
     return { success: false, message: '手机号格式不正确（需为 11 位手机号）' }
@@ -1022,7 +1046,9 @@ export const updateCustomer = withPermission(
     .where(and(eq(clientWechatUsers.userId, userId), scopeCond)).limit(1)
   if (!before) return { success: false, message: '顾客不存在或无权修改' }
 
-  const updateData: Record<string, unknown> = { ...data }
+  const updateData: Record<string, unknown> = Object.fromEntries(
+    Object.entries(data).filter(([field, value]) => allowedUpdateFields.has(field) && value !== undefined),
+  )
 
   // boundEmployeeId 变更时同步写入冗余姓名
   if ('boundEmployeeId' in data) {

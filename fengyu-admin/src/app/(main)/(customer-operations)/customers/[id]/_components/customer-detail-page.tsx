@@ -728,12 +728,19 @@ export default function CustomerDetailPage({
                     <div ref={promoterRef} className="relative">
                       <Input
                         placeholder={canListEmployees ? "输入至少 3 位姓名或手机号" : "无员工查看权限"}
-                        value={promoterOpen ? promoterSearch : (selectedPromoter?.name ?? customer.promoterEmployeeName ?? "")}
+                        value={promoterOpen
+                          ? promoterSearch
+                          : promoterChanged
+                            ? (selectedPromoter?.name ?? "")
+                            : (selectedPromoter?.name ?? customer.promoterEmployeeName ?? "")}
                         disabled={!canListEmployees}
                         onFocus={() => { setPromoterOpen(true); setPromoterSearch("") }}
                         onChange={(e) => { setPromoterSearch(e.target.value); setPromoterOpen(true); doPromoterSearch(e.target.value) }}
                       />
-                      {(selectedPromoter || customer.promoterEmployeeName) && !promoterOpen && canListEmployees && (
+                      {(promoterChanged
+                        ? selectedPromoter !== null
+                        : Boolean(selectedPromoter || customer.promoterEmployeeName))
+                        && !promoterOpen && canListEmployees && (
                         <button
                           type="button"
                           className="absolute right-2 top-1/2 -translate-y-1/2 text-[#999999] hover:text-[#333333] text-sm"

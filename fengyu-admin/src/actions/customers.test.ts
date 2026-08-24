@@ -305,6 +305,19 @@ describe('updateCustomer — 校验 + scope + 错误处理', () => {
     )
   })
 
+  it('仅注入 promoterEmployeeName → 运行时白名单拒绝，不写入自由文本', async () => {
+    const result = await updateCustomer('user-1', {
+      promoterEmployeeName: '任意推荐人文本',
+    } as any)
+
+    expect(result).toEqual({
+      success: false,
+      message: '包含不允许修改的字段：promoterEmployeeName',
+    })
+    expect(db.select).not.toHaveBeenCalled()
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
   it('不存在、离职或越权推荐员工 → 拒绝且不更新顾客', async () => {
     let selectCall = 0
     ;(db.select as any).mockImplementation(() => {
