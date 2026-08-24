@@ -34,15 +34,29 @@ const marketName = sql<string | null>`(
   WHERE s.store_id = ${clientWechatUsers.boundStoreId}
 )`.as('market_name')
 
+const inviterName = sql<string | null>`(
+  SELECT inviter.name FROM client_wechat_users inviter
+  WHERE inviter.user_id = ${clientWechatUsers.inviterUserId}
+)`.as('inviter_name')
+
+const inviterPhone = sql<string | null>`(
+  SELECT inviter.phone FROM client_wechat_users inviter
+  WHERE inviter.user_id = ${clientWechatUsers.inviterUserId}
+)`.as('inviter_phone')
+
 const customerColumns = {
   ...getTableColumns(clientWechatUsers),
   storeName,
   marketName,
+  inviterName,
+  inviterPhone,
 }
 
 type CustomerRow = typeof clientWechatUsers.$inferSelect & {
   storeName: string | null
   marketName: string | null
+  inviterName: string | null
+  inviterPhone: string | null
 }
 
 function serializeCustomer(row: CustomerRow): Customer {
@@ -62,6 +76,10 @@ function serializeCustomer(row: CustomerRow): Customer {
     memberLevelLockedUntil: row.memberLevelLockedUntil ? row.memberLevelLockedUntil.toISOString() : null,
     customerSource: row.customerSource,
     promoterEmployeeName: row.promoterEmployeeName,
+    inviterUserId: row.inviterUserId,
+    inviterName: row.inviterName,
+    inviterPhone: row.inviterPhone,
+    invitedAt: row.invitedAt ? row.invitedAt.toISOString() : null,
     customerType: row.customerType,
     spendingTier: row.spendingTier,
     monthlyActivity: row.monthlyActivity,
@@ -75,6 +93,7 @@ function serializeCustomer(row: CustomerRow): Customer {
     skinIssue: row.skinIssue,
     wellnessPreference: row.wellnessPreference,
     notes: row.notes,
+    pointsBalance: row.pointsBalance,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     storeName: row.storeName ?? undefined,

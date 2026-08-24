@@ -1129,6 +1129,21 @@ describe('mgmtCustomer 出数完整路径', () => {
           bound_store_id: 'store-001',
           store_name: ' A 店 ',
           birthday: '1990-03-15',
+          customer_source: '老带新',
+          promoter_employee_name: '员工甲',
+          inviter_name: '顾客乙',
+          inviter_phone: '13600006666',
+          invited_at: '2026-01-02T03:04:05Z',
+          customer_type: '会员客',
+          spending_tier: '5000-9999',
+          monthly_activity: '活跃',
+          customer_status: '正常到店',
+          occupation: '教师',
+          is_married: true,
+          wechat_name: '小李',
+          skin_issue: '干纹',
+          wellness_preference: '经络',
+          points_balance: '66',
         },
       ],
       nameRows: [{ customer_name: '回退姓名' }],
@@ -1168,6 +1183,12 @@ describe('mgmtCustomer 出数完整路径', () => {
     expect(ctx.result.totalActualConsumption).toBe(5200)
     expect(ctx.result.yearActualConsumption).toBe(1800)
     expect(ctx.result.birthday).toBe('1990-03-15')
+    expect(ctx.result).toMatchObject({
+      customerSource: '老带新', promoterEmployeeName: '员工甲', inviterName: '顾客乙',
+      inviterPhone: '13600006666', customerType: '会员客', occupation: '教师',
+      isMarried: true, wechatName: '小李', skinIssue: '干纹', wellnessPreference: '经络',
+      pointsBalance: 66,
+    })
     expect(ctx.result.source).toBe('both') // customer_id 非空
     expect(ctx.result.phone).toBe('13700137000') // market 不脱敏
   })

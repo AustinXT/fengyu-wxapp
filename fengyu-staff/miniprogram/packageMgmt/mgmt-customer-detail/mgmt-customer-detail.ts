@@ -23,6 +23,19 @@ interface CustomerDetail extends MemberLevelBadgeData {
   memberLevel: string | null;
   source: string;
   preferredStaffName: string | null;
+  customerSource: string | null;
+  promoterEmployeeName: string | null;
+  inviterName: string | null;
+  inviterPhone: string;
+  invitedAt: string | null;
+  customerType: string | null;
+  spendingTier: string | null;
+  monthlyActivity: string | null;
+  customerStatus: string | null;
+  birthday: string | null;
+  occupation: string | null;
+  isMarried: boolean | null;
+  wechatName: string | null;
   totalConsumption: number;
   yearConsumption: number;
   totalActualConsumption: number;
@@ -30,7 +43,10 @@ interface CustomerDetail extends MemberLevelBadgeData {
   storeName: string;
   skinType: string | null;
   focusAreas: string | null;
+  skinIssue: string | null;
+  wellnessPreference: string | null;
   notes: string | null;
+  pointsBalance: number;
   lastServiceDate: string | null;
   visitFrequency: string | null;
   topProductName: string | null;
@@ -323,6 +339,7 @@ Page({
       // 金额字段就地格式化为「千分位 + 2 位小数」展示串。
       const customer = {
         ...raw,
+        invitedAt: raw.invitedAt ? formatDateTime(raw.invitedAt) : null,
         totalConsumption: formatAmount(raw.totalConsumption),
         yearConsumption: formatAmount(raw.yearConsumption),
         totalActualConsumption: formatAmount(raw.totalActualConsumption),

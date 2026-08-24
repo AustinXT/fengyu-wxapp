@@ -25,7 +25,7 @@ const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
 const MEMBER_LEVELS = ["黑钻", "金钻", "粉钻", "星钻", "初钻"]
 
-const CUSTOMER_SOURCES = ["美团", "抖音", "小程序", "推带新", "地推卡", "拓客卡", "老带新", "转让店", "自进店", "内部员工或家属"]
+const CUSTOMER_SOURCES = ["美团", "抖音", "小程序", "推广部", "全员地推", "外请团队拓客", "老带新", "转让店", "自进店", "员工或家属"]
 
 const CUSTOMER_TYPES = ["流量客", "体验客", "小美客", "会员客"]
 const SPENDING_TIERS = ["10W+", "6-10W", "3-6W", "1-3W", "1990-1W", "<1990"]

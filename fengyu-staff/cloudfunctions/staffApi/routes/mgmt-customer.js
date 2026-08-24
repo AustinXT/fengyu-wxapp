@@ -444,11 +444,17 @@ async function detail(ctx) {
   const fullPhone = isMgmtFullPhone(ctx.auth)
 
   const selectCols = `c.user_id, c.phone, c.name, c.customer_id, c.member_level,
-    c.bound_employee_id, c.skin_type, c.improvement_focus, c.gender, c.notes,
-    c.bound_store_id, s.store_name, c.birthday`
+    c.bound_employee_id, c.skin_type, c.improvement_focus,
+    c.skin_issue, c.wellness_preference, c.gender, c.notes, c.customer_source,
+    c.promoter_employee_name, c.inviter_user_id, c.invited_at, c.customer_type,
+    c.spending_tier, c.monthly_activity, c.customer_status, c.birthday,
+    c.occupation, c.is_married, c.wechat_name, c.points_balance,
+    c.bound_store_id, s.store_name, inviter.name AS inviter_name,
+    inviter.phone AS inviter_phone`
 
   const fromClause = `FROM client_wechat_users c
-    LEFT JOIN stores s ON s.store_id = c.bound_store_id`
+    LEFT JOIN stores s ON s.store_id = c.bound_store_id
+    LEFT JOIN client_wechat_users inviter ON inviter.user_id = c.inviter_user_id`
 
   let pgUser = null
   if (id) {
@@ -530,9 +536,24 @@ async function detail(ctx) {
     memberLevel: pgUser.member_level || null,
     storeName: pgUser.store_name ? pgUser.store_name.trim() : '',
     preferredStaffName,
+    customerSource: pgUser.customer_source || null,
+    promoterEmployeeName: pgUser.promoter_employee_name || null,
+    inviterName: pgUser.inviter_name || null,
+    inviterPhone: fullPhone ? (pgUser.inviter_phone || '') : maskPhone(pgUser.inviter_phone || ''),
+    invitedAt: pgUser.invited_at || null,
+    customerType: pgUser.customer_type || null,
+    spendingTier: pgUser.spending_tier || null,
+    monthlyActivity: pgUser.monthly_activity || null,
+    customerStatus: pgUser.customer_status || null,
+    occupation: pgUser.occupation || null,
+    isMarried: pgUser.is_married,
+    wechatName: pgUser.wechat_name || null,
     skinType: pgUser.skin_type || null,
     focusAreas: pgUser.improvement_focus || null,
+    skinIssue: pgUser.skin_issue || null,
+    wellnessPreference: pgUser.wellness_preference || null,
     notes: pgUser.notes || null,
+    pointsBalance: Number(pgUser.points_balance) || 0,
     lastServiceDate: visitInfo.lastServiceDate,
     visitFrequency: visitInfo.visitFrequency,
     topProductName: topProduct,
