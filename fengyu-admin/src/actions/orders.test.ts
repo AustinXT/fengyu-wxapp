@@ -2559,7 +2559,7 @@ describe('getOrderById — prepaidCardAmount + received', () => {
       saleOrderId: 'FY-XSD-WX-260423-0001',
       status: '已支付',
       saleOrderType: '销售单',
-      documentType: '售前',
+      documentType: '售前一次',
       refSaleOrderId: null,
       marketName: '南昌市场',
       storeId: 'store-1',
@@ -4350,7 +4350,7 @@ describe('recordPayment — 管理后台录入回款', () => {
     customer_name: '顾客甲',
     store_id: 'store-1',
     market_name: '南昌市场',
-    document_type: '售前',
+    document_type: '售前一次',
     paid_at: null,
   }
 
@@ -6101,7 +6101,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     const fallback = {
       sourceId: 'FY-XSD2607260012',
       marketName: '南昌', storeName: '南昌店', saleOrderId: 'FY-XSD2607260012',
-      saleOrderType: '销售单', documentType: '售前', status: '已支付',
+      saleOrderType: '销售单', documentType: '售前一次', status: '已支付',
       custName: null, custPhone: null, customerSource: null, promoterEmployeeName: null,
       fallbackName: '陈凤婷', fallbackPhone: '13800000000',
       totalAmount: '2682.00', prepaidCardAmount: '0.00', orderReceived: '2682.00',

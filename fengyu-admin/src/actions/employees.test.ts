@@ -98,7 +98,7 @@ vi.mock('@/actions/skill-tags', () => ({
   deleteSkillTag: vi.fn(),
 }))
 
-import { createEmployee, updateEmployee, getEmployees, getEmployeesPaginated, getOrgLevel2ForFilter, exportEmployees } from './employees'
+import { createEmployee, updateEmployee, getEmployees, getEmployeesPaginated, getOrgLevel2ForFilter, exportEmployees, searchEmployees } from './employees'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope } from '@/lib/permissions'
@@ -112,6 +112,43 @@ const mockSession = {
   roles: [{ role: 'admin', scopeId: 'hq-1' }],
   permissions: { actions: ['employee:create', 'employee:update'], scopeStoreIds: [] },
 }
+
+describe('searchEmployees — 推荐员工受权限 scope 约束', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      permissions: { actions: ['employee:list'], scopeStoreIds: ['store-1'] },
+    })
+  })
+
+  it('少于 3 位关键词直接返回空，不查数据库', async () => {
+    await expect(searchEmployees('12')).resolves.toEqual([])
+    expect(db.select).not.toHaveBeenCalled()
+  })
+
+  it('返回员工编号、门店和脱敏手机号，不泄露完整手机号', async () => {
+    const rows = [{
+      employeeId: 'EMP-001', name: '王员工', phone: '13812345678',
+      storeName: '一店', isResigned: false,
+    }]
+    const chain: any = {}
+    chain.from = vi.fn().mockReturnValue(chain)
+    chain.leftJoin = vi.fn().mockReturnValue(chain)
+    chain.where = vi.fn().mockReturnValue(chain)
+    chain.orderBy = vi.fn().mockReturnValue(chain)
+    chain.limit = vi.fn().mockResolvedValue(rows)
+    ;(db.select as any).mockReturnValue(chain)
+
+    const result = await searchEmployees('13812345678')
+
+    expect(result).toEqual([{
+      employeeId: 'EMP-001', name: '王员工', phoneMasked: '138****5678',
+      storeName: '一店', isResigned: false,
+    }])
+    expect(chain.limit).toHaveBeenCalledWith(20)
+  })
+})
 
 function mockSelectEmpty() {
   const limit = vi.fn().mockResolvedValue([])

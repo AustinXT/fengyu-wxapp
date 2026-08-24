@@ -1247,7 +1247,7 @@ async function create(ctx) {
   // 查询顾客姓名 + 会员身份（customer_type + member_level）
   // —— 会员价分流（会员价 vs 标价）与 document_type 判断共用，须在定价前完成。
   let customerName = null
-  let documentType = '售前'
+  let documentType = '售前一次'
   let buyerIsMember = false
   {
     const userRows = await pg.query(
@@ -1520,8 +1520,7 @@ async function create(ctx) {
     }
   }
 
-  // document_type 仅按下单时会员身份判（售前=非会员客，售后=会员客），已在定价前查 customer_type 时定值；
-  // 「成为会员那一单」下单时仍非会员客 → 售前，不再按金额阈值兜底升级为售后。
+  // document_type 此处仅为开单预测值；数据库触发器会在首次成功入账事务内按达标次数冻结权威快照。
 
   // 使用事务创建订单（订单号+流水号在事务内原子生成）
   let orderNo

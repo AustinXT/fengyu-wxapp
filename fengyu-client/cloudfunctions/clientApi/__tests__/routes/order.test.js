@@ -230,10 +230,8 @@ describe('order.create', () => {
     expect(clientQuery.mock.calls.some(([sql]) => /inventory_sku_product_sku_mappings/.test(sql))).toBe(false)
   })
 
-  // PR #55 把 document_type 判定从「会员客→售后；否则若 total>=threshold→售后（分支 B）」
-  // 改为「仅按下单时会员身份判（售前=非会员客，售后=会员客）」。
-  // 防回归：未来若误加回 totalAmount>=getMemberThreshold() 阈值分支，本测试用大额非会员客拦截。
-  test('document_type 仅按会员身份判：非会员客 + 大额 → 售前（不再因金额达标升级为售后）', async () => {
+  // 开单只写预测值，首次成功入账时由数据库触发器在顾客锁内冻结权威分类。
+  test('document_type 开单预测：非会员客 → 售前一次', async () => {
     pg.query.mockResolvedValueOnce([{ store_id: 's1', store_name: '测试店', market_name: '华东' }])
     pg.query.mockResolvedValueOnce([])  // closeExpiredOrdersByUser
     pg.query.mockResolvedValueOnce([])  // check pending
@@ -269,7 +267,7 @@ describe('order.create', () => {
     expect(orderInsertCall).toBeDefined()
     // params 顺序：$1=orderNo $2=initialStatus $3=documentType $4=marketName $5=storeId ...
     // JS 数组索引 [2] 对应 $3=document_type（详见 order.js L823-838）
-    expect(orderInsertCall[1][2]).toBe('售前')
+    expect(orderInsertCall[1][2]).toBe('售前一次')
   })
 
   test('无手机号 → PHONE_REQUIRED', async () => {

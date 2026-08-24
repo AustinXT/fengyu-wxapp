@@ -95,7 +95,7 @@ async function recharge(ctx) {
   }
   const clientPhone = user.phone || null
   const customerName = user.name || null
-  const documentType = user.customer_type === '会员客' ? '售后' : '售前'
+  const documentType = user.customer_type === '会员客' ? '售后' : '售前一次'
 
   // 事务内：advisory lock + 生成订单号 + INSERT sale_orders（不写 sale_items）
   let saleOrderId
@@ -219,7 +219,7 @@ async function inflow(ctx) {
   }
   const clientPhone = user.phone || null
   const customerName = user.name || null
-  const documentType = user.customer_type === '会员客' ? '售后' : '售前'
+  const documentType = user.customer_type === '会员客' ? '售后' : '售前一次'
   const note = remark ? `${LEGACY_INFLOW_NOTE}｜${remark}` : LEGACY_INFLOW_NOTE
 
   // 幂等 token：前端每次提交生成、CloudBase SDK 自动重试携带同一值，后端据此去重，杜绝网络重试重复入账

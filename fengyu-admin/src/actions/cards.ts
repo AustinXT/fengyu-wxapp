@@ -1054,7 +1054,7 @@ export const createRechargeOrder = withPermission(
       .where(eq(clientWechatUsers.userId, data.clientUserId))
       .limit(1)
     if (!client) return { success: false, message: '顾客不存在' }
-    const documentType: '售前' | '售后' = client.customerType === '会员客' ? '售后' : '售前'
+    const documentType: '售前一次' | '售后' = client.customerType === '会员客' ? '售后' : '售前一次'
 
     // 门店 + marketName 快照（与 staff card.recharge 同口径：跨两级 org_nodes 取上级 market）
     const storeRows = (await db.execute(sql`

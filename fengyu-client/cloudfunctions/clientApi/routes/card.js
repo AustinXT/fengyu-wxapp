@@ -256,7 +256,7 @@ async function recharge(ctx) {
 
   // 查询顾客姓名 + document_type
   let customerName = null
-  let documentType = '售前'
+  let documentType = '售前一次'
   {
     const userRows = await pg.query(
       'SELECT name, customer_type FROM client_wechat_users WHERE user_id = $1',

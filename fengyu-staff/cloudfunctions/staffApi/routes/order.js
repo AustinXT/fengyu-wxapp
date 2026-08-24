@@ -1498,9 +1498,8 @@ async function create(ctx) {
     effectivePaymentMethod = paymentMethod
   }
 
-  // ========== 计算 document_type（售前/售后快照） ==========
-  // 仅按下单时会员身份判：售前=非会员客，售后=会员客。「成为会员那一单」下单时仍非会员客 → 售前。
-  let documentType = '售前'
+  // ========== 开单 document_type 预测值（入账时由数据库冻结） ==========
+  let documentType = '售前一次'
   if (clientUserId) {
     const ctRows = await pg.query(
       'SELECT customer_type FROM client_wechat_users WHERE user_id = $1',
@@ -4381,8 +4380,8 @@ async function createConversion(ctx) {
     // 全额抵扣 payment_method 落 '无'（现金通道无需使用，与 order.create 对齐）
     const effectivePaymentMethod = isExperienceConversion || isFullCardCoverage ? '无' : paymentMethod
 
-    // 3. document_type 快照：仅按下单时会员身份判（售前=非会员客，售后=会员客）
-    const documentType = client.customer_type === '会员客' ? '售后' : '售前'
+    // 3. 开单预测值；结清时按转换单现付净额参与达标次数核算。
+    const documentType = client.customer_type === '会员客' ? '售后' : '售前一次'
 
     // 4. 插入订单主表
     await tx.query(
@@ -5991,8 +5990,8 @@ async function createDeposit(ctx) {
     // 订单号（advisory lock 防并发）
     saleOrderId = await generateOrderNo('FY-XSD-WX-', tx)
 
-    // document_type：寄存单是把老顾客剩余次数初始化进来，固定 '售后'
-    const documentType = '售后'
+    // 开单预测值；首次入账时由数据库按顾客历史达标次数冻结。
+    const documentType = '售前一次'
 
     // INSERT sale_orders —— 寄存单核心：金额全 0、status 待审批、payment_method='无'
     await tx.query(

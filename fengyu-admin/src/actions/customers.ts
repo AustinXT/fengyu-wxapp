@@ -329,7 +329,7 @@ export interface ExportCustomerRow {
  * 累计消费口径 = refresh-spending-tier.ts 的 spending_tier 分桶原值：
  *   SUM(GREATEST(received - refunded_amount, 0)) FILTER (WHERE sale_order_type IN ('销售单','转换单'))
  * 含 WorkFine 历史单、不限支付状态，故数值与「消费档位」列严格对应。
- * 推荐人 = client_wechat_users.promoter_employee_name 姓名快照。
+ * 推荐人 = 关联员工当前姓名；关联失效或旧 client 仅写姓名时回退快照。
  */
 export const exportCustomers = withPermission(
   'customer:list',

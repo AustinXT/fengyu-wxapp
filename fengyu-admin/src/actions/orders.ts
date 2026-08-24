@@ -3866,10 +3866,8 @@ export const createOrder = withPermission(
   // （2026-04-26 sale-order-domain-refactor：paid_amount 列已 DROP，统一用 received）
   const paidAmountSnapshot = zeroPayable ? prepaidCardAmount : 0
 
-  // 计算 document_type（售前/售后快照）：仅按下单时会员身份判——售前=非会员客，售后=会员客。
-  // 复用上方会员价分流已查得的 buyerCustomerType（省一次 client_wechat_users 查询）。
-  // 「成为会员那一单」下单时仍非会员客 → 售前；跃迁发生在支付后 recalcCustomerType，不影响本快照。
-  const documentType: '售前' | '售后' = buyerCustomerType === '会员客' ? '售后' : '售前'
+  // 开单仅写预测值；首次成功入账时由数据库按顾客历史达标次数冻结权威快照。
+  const documentType: '售前一次' | '售后' = buyerCustomerType === '会员客' ? '售后' : '售前一次'
 
   // 事务外批量查询本次涉及 sku 的 service_fee（固定手工费）、session_count（疗程卡次数）
   // 与 is_experience（capability 权威源）。
@@ -4813,8 +4811,8 @@ export const createConversionOrder = withPermission(
       const saleOrderId = (idRows as any[])[0]?.id as string
       if (!saleOrderId) throw new ApiError('INVALID_STATE', 'ORDER_ID_GEN_FAILED: 订单号生成失败')
 
-      // 4. 计算 documentType（售前/售后）：仅按下单时会员身份判（售前=非会员客，售后=会员客）
-      const documentType: '售前' | '售后' = client.customerType === '会员客' ? '售后' : '售前'
+      // 4. 开单预测值；转换单结清时按现付净额参与达标次数核算。
+      const documentType: '售前一次' | '售后' = client.customerType === '会员客' ? '售后' : '售前一次'
 
       // 5. 插入订单主表
       // 顾客补现场景：priceDiff > 0 → total_amount=priceDiff，status 按抵扣后应付决定
@@ -5666,7 +5664,7 @@ export const createPrepaidInflow = withPermission(
       .where(eq(clientWechatUsers.userId, data.clientUserId))
       .limit(1)
     if (!client) return { success: false, message: '顾客不存在' }
-    const documentType: '售前' | '售后' = client.customerType === '会员客' ? '售后' : '售前'
+    const documentType: '售前一次' | '售后' = client.customerType === '会员客' ? '售后' : '售前一次'
 
     // 门店 + marketName 快照（跨两级 org_nodes 取上级 market，同 createRechargeOrder）
     const storeRows = (await db.execute(sql`
