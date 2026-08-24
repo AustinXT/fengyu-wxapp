@@ -86,6 +86,18 @@ function trim(val) {
   return s === '' ? null : s
 }
 
+const CUSTOMER_SOURCE_ALIASES = {
+  推带新: '推广部',
+  地推卡: '全员地推',
+  拓客卡: '外请团队拓客',
+  内部员工或家属: '员工或家属',
+}
+
+function normalizeCustomerSource(val) {
+  const source = trim(val)
+  return source ? (CUSTOMER_SOURCE_ALIASES[source] || source) : null
+}
+
 /** 中国手机号校验：11位数字、1开头，不符合则返回 null */
 function validPhone(val) {
   if (!val) return null
@@ -562,7 +574,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
         trim(row.name),
         storeName ? (storeMap[storeName] || null) : null,
         trim(row.bound_employee_id), trim(row.member_level),
-        trim(row.customer_source), trim(row.category),
+        normalizeCustomerSource(row.customer_source), trim(row.category),
         toDateStr(row.birthday), trim(row.occupation),
         toBool(row.is_married_raw), trim(row.wechat_name),
         trim(row.skin_type),

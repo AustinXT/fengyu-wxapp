@@ -120,13 +120,13 @@ export const customerSourceEnum = pgEnum("customer_source", [
   "美团",
   "抖音",
   "小程序",
-  "推带新",
-  "地推卡",
-  "拓客卡",
+  "推广部",
+  "全员地推",
+  "外请团队拓客",
   "老带新",
   "转让店",
   "自进店",
-  "内部员工或家属",
+  "员工或家属",
 ]);
 
 export const customerTypeEnum = pgEnum("customer_type", ["流量客", "体验客", "小美客", "会员客"]);
