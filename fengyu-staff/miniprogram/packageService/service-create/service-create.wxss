@@ -94,6 +94,27 @@
 }
 
 /* ===== 疗程卡筛选 ===== */
+.order-remark-list { width: 100%; margin-top: 8rpx; }
+.order-remark {
+  padding: 10rpx 12rpx;
+  margin-top: 8rpx;
+  border-radius: 8rpx;
+  background: #F8F5F1;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.order-remark__order { display: block; margin-bottom: 4rpx; color: var(--color-text-hint); font: 20rpx monospace; }
+.order-remark__content {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 22rpx;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+.selected-item-remarks { padding-left: 44rpx; }
 .card-filter-bar {
   margin: 0 -32rpx 20rpx;
   padding: 0 32rpx 16rpx;
@@ -241,6 +262,7 @@
 .selected-item {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12rpx;
   padding: 12rpx 0;
   border-bottom: 1rpx solid #F5F2EE;
@@ -251,6 +273,7 @@
 }
 
 .selected-item-name {
+  flex: 1;
   font-size: 26rpx;
   color: #2D2017;
 }

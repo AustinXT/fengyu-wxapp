@@ -377,6 +377,8 @@ describe('customer.detail', () => {
       .mockResolvedValueOnce([{ last_date: '2026-03-10', visit_count_90d: '8' }])  // getVisitInfo
       .mockResolvedValueOnce([{ product_name: '蜜语生玑10次卡', cnt: '5' }])  // getTopProduct
     await customerRoutes.detail(ctx)
+    expect(pg.query.mock.calls[0][0]).toContain('COALESCE(promoter.name, c.promoter_employee_name)')
+    expect(pg.query.mock.calls[0][0]).toContain('promoter.employee_id = c.promoter_employee_id')
     expect(ctx.result.id).toBe('C001')
     expect(ctx.result.name).toBe('张三')
     expect(ctx.result.gender).toBe('女')
@@ -711,8 +713,8 @@ describe('customer.paidOrders', () => {
       { sale_order_id: 'SO-002', status: '已支付', paid_at: '2024-06-15T14:00:00Z' },
     ])
     pg.query.mockResolvedValueOnce([
-      { sale_order_id: 'SO-001', sale_item_id: 'item-001', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', product_name: '面部护理', unit_real_price: '100.00', unit: '次', category_id: 'face-care', category_name: '面部护理', product_kind: '护理项目' },
-      { sale_order_id: 'SO-002', sale_item_id: 'item-002', session_count: 5, remaining_sessions: 5, sku_id: 'sku-2', product_type: '疗程卡', product_name: '身体护理', unit_real_price: '50.00' },
+      { sale_order_id: 'SO-001', sale_item_id: 'item-001', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', product_name: '面部护理', unit_real_price: '100.00', unit: '次', category_id: 'face-care', category_name: '面部护理', product_kind: '护理项目', order_remark: '  下次重点护理\n敏感区  ' },
+      { sale_order_id: 'SO-002', sale_item_id: 'item-002', session_count: 5, remaining_sessions: 5, sku_id: 'sku-2', product_type: '疗程卡', product_name: '身体护理', unit_real_price: '50.00', order_remark: '   ' },
     ])
     await customerRoutes.paidOrders(ctx)
     expect(ctx.result).toHaveLength(2)
@@ -721,6 +723,8 @@ describe('customer.paidOrders', () => {
     expect(ctx.result[0].items[0].itemName).toBe('面部护理')
     expect(ctx.result[0].items[0].remainingSessions).toBe(8)
     expect(ctx.result[0].items[0].unitRealPrice).toBe('100.00')
+    expect(ctx.result[0].items[0].orderRemark).toBe('下次重点护理\n敏感区')
+    expect(ctx.result[1].items[0].orderRemark).toBeNull()
     expect(ctx.result[0].items[0]).toMatchObject({
       unit: '次',
       productKind: '护理项目',
@@ -857,6 +861,7 @@ describe('customer.paidOrders', () => {
       /FROM\s+sale_items\s+si/.test(sql) && /JOIN\s+sale_orders\s+o/.test(sql)
     )
     expect(itemSql).toContain("si.product_type = '疗程卡'")
+    expect(itemSql).toContain('o.remark AS order_remark')
     expect(itemSql).toContain("si.item_direction = '购买'")
     expect(itemSql).toContain("o.sale_order_type = '转换单'")
     expect(itemSql).toContain("si.item_direction = '转入'")

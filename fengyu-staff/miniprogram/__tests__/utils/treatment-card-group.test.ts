@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  collectSourceOrderRemarks,
   expandGroupServiceSessions,
   getTreatmentCardBusinessIdentity,
   groupTreatmentCards,
@@ -117,5 +118,17 @@ describe('treatment-card-group', () => {
         { saleItemId: 'B', sessionUsed: 2 },
       ])
     expect(selectGroupSourceIds(cardGroup, 1, (card) => card.saleItemId)).toEqual(['A'])
+  })
+
+  it('合并卡按来源订单展示非空备注，不串单', () => {
+    expect(collectSourceOrderRemarks([
+      { saleOrderId: 'SO-1', orderRemark: '  提醒 A  ' },
+      { saleOrderId: 'SO-1', orderRemark: '提醒 A' },
+      { saleOrderId: 'SO-2', orderRemark: '提醒 B\n第二行' },
+      { saleOrderId: 'SO-3', orderRemark: '   ' },
+    ])).toEqual([
+      { saleOrderId: 'SO-1', orderRemark: '提醒 A' },
+      { saleOrderId: 'SO-2', orderRemark: '提醒 B\n第二行' },
+    ])
   })
 })

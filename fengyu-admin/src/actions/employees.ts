@@ -26,6 +26,7 @@ import {
 import { parseEmployeeFilters, filterValidSkillValues } from '@/lib/list-filters'
 import { getSkillTags } from '@/actions/skill-tags'
 import { orgNodeInScopeCondition, storeInOrgNodeCondition } from '@/lib/market-store-sql'
+import { maskPhone } from '@/lib/pii'
 
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
 const storeNode = alias(orgNodes, 'store_node') as unknown as typeof orgNodes
@@ -163,17 +164,23 @@ export const getEmployeesOnBusinessTrip = withPermission(
 )
 
 /**
- * 搜索在职员工（不限 scope），用于推荐人选择等场景。
- * 返回简要信息，最多 20 条。
+ * 搜索当前 scope 内的在职员工，用于推荐人选择等场景。
+ * 手机号仅返回脱敏值，避免选择器接口泄露完整 PII。
  */
 export const searchEmployees = withPermission(
-  'customer:update',
+  'employee:list',
   async (
-    _session,
+    session,
     keyword: string,
-  ): Promise<{ employeeId: string; name: string | null; phone: string | null }[]> => {
+  ): Promise<{
+    employeeId: string
+    name: string | null
+    phoneMasked: string
+    storeName: string | null
+    isResigned: false
+  }[]> => {
   const trimmed = keyword.trim()
-  if (!trimmed) return []
+  if (trimmed.length < 3) return []
 
   const pattern = `%${trimmed}%`
   const rows = await db
@@ -181,11 +188,15 @@ export const searchEmployees = withPermission(
       employeeId: staffWechatUsers.employeeId,
       name: staffWechatUsers.name,
       phone: staffWechatUsers.phone,
+      storeName: stores.storeName,
+      isResigned: staffWechatUsers.isResigned,
     })
     .from(staffWechatUsers)
+    .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
     .where(
       and(
         eq(staffWechatUsers.isResigned, false),
+        employeeScopeCondition(session, staffWechatUsers.storeId, staffWechatUsers.orgNodeId),
         or(
           ilike(staffWechatUsers.name, pattern),
           ilike(staffWechatUsers.phone, pattern),
@@ -196,7 +207,13 @@ export const searchEmployees = withPermission(
     .orderBy(asc(staffWechatUsers.name))
     .limit(20)
 
-  return rows
+  return rows.map((row) => ({
+    employeeId: row.employeeId,
+    name: row.name,
+    phoneMasked: maskPhone(row.phone),
+    storeName: row.storeName,
+    isResigned: false as const,
+  }))
   },
 )
 

@@ -23,6 +23,7 @@ import { paidUnusedSessionsExpr } from '@/lib/paid-sessions'
 import { computeItemOverpayRemainders, type RefundSourceItem } from '@/lib/refund'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { getPointsToYuanRate, getPointsDeductionMaxRate } from '@/lib/system-config'
+import { classifySaleOrderDocumentType } from '@/lib/document-type'
 
 // ============================================================================
 // 管理端卡包列表（/cards 页面）
@@ -1042,20 +1043,17 @@ export const createRechargeOrder = withPermission(
       return { success: false, message: (err?.message || '档位匹配失败').replace(/^[A-Z_]+:\s*/, '') }
     }
 
-    // 顾客 + market_name + documentType 快照
+    // 顾客 + market_name 快照；documentType 在创建事务内按历史达标次数计算。
     const [client] = await db
       .select({
         userId: clientWechatUsers.userId,
         name: clientWechatUsers.name,
         phone: clientWechatUsers.phone,
-        customerType: clientWechatUsers.customerType,
       })
       .from(clientWechatUsers)
       .where(eq(clientWechatUsers.userId, data.clientUserId))
       .limit(1)
     if (!client) return { success: false, message: '顾客不存在' }
-    const documentType: '售前' | '售后' = client.customerType === '会员客' ? '售后' : '售前'
-
     // 门店 + marketName 快照（与 staff card.recharge 同口径：跨两级 org_nodes 取上级 market）
     const storeRows = (await db.execute(sql`
       SELECT s.store_id, pm.name AS market_name
@@ -1102,6 +1100,7 @@ export const createRechargeOrder = withPermission(
         `)
         const id = (idRows as unknown as Array<{ id: string }>)[0]?.id
         if (!id) throw new ApiError('INVALID_STATE', '订单号生成失败')
+        const documentType = await classifySaleOrderDocumentType(tx, data.clientUserId, id)
 
         await tx.insert(saleOrders).values({
           saleOrderId: id,

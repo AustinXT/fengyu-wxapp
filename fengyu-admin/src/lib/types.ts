@@ -99,6 +99,7 @@ export interface Customer {
   /** 保级截止时间（ISO 字符串）；NULL 或 ≤now 表示保级期已过 */
   memberLevelLockedUntil: string | null
   customerSource: string | null
+  promoterEmployeeId: string | null
   promoterEmployeeName: string | null
   inviterUserId: string | null
   inviterName: string | null
@@ -369,7 +370,7 @@ export interface MallCategory {
   updatedAt: string
 }
 
-export type DocumentType = '售前' | '售后'
+export type DocumentType = '售前一次' | '售前二次' | '售后'
 
 export interface SaleOrder {
   saleOrderId: string

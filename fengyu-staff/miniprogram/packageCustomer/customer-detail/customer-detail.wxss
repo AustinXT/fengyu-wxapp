@@ -66,6 +66,51 @@
   line-height: 1.4;
 }
 
+/* 顾客详情固定两排导航：9 个入口按 5 列排列，第二排保留 4 项 */
+.customer-tabs {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  background: #FFFFFF;
+  border-bottom: 1rpx solid #E8E8E8;
+}
+
+.customer-tab {
+  position: relative;
+  min-width: 0;
+  padding: 20rpx 4rpx;
+  color: var(--color-text-secondary);
+  font-size: 24rpx;
+  line-height: 32rpx;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.customer-tab--active {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.customer-tab--active::after {
+  position: absolute;
+  right: 24rpx;
+  bottom: 0;
+  left: 24rpx;
+  height: 4rpx;
+  border-radius: 2rpx;
+  background: var(--color-primary);
+  content: '';
+}
+
+.customer-tab--pressed {
+  background: #FFF0EE;
+}
+
+/* van-tabs 仅承载内容和切换状态，连同默认导航占位一起隐藏。 */
+.customer-tabs__native-wrap,
+.customer-tabs__native-nav {
+  display: none !important;
+}
+
 /* Tab 内容区 */
 .tab-content {
   padding: 16rpx 0;
@@ -338,6 +383,26 @@
   font-size: 20rpx;
   color: var(--color-text-hint);
   font-family: monospace;
+}
+.order-remark-list { margin: 8rpx 0; }
+.order-remark {
+  padding: 10rpx 12rpx;
+  margin-top: 8rpx;
+  border-radius: 8rpx;
+  background: #F8F5F1;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.order-remark__order { display: block; margin-bottom: 4rpx; color: var(--color-text-hint); font: 20rpx monospace; }
+.order-remark__content {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 22rpx;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
 }
 .tc-sessions {
   font-size: 22rpx;

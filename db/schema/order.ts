@@ -58,7 +58,7 @@ export const saleOrders = pgTable(
     saleOrderId: varchar("sale_order_id", { length: 30 }).primaryKey(),
     status: orderStatusEnum("status").notNull().default("待支付"),
     saleOrderType: saleOrderTypeEnum("sale_order_type").notNull().default("销售单"),
-    /** 销售单据类型：售前（非会员客）/ 售后（会员客 or 金额达标） */
+    /** 单据阶段快照：按顾客达标消费次数冻结为售前一次 / 售前二次 / 售后 */
     documentType: documentTypeEnum("document_type"),
     /** 回款/退款引用的原销售单，销售单为 null */
     refSaleOrderId: varchar("ref_sale_order_id", { length: 30 }).references((): any => saleOrders.saleOrderId),

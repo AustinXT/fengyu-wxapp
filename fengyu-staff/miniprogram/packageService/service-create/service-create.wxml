@@ -101,6 +101,12 @@
               <text class="order-item-sessions">剩余 {{si.consumableSessions}} / 已付 {{si.paidSessions == null ? '—' : si.paidSessions}} / 共 {{si.totalSessions || si.sessionCount}} {{si.unit || '次'}} · 共 {{si.cardCount || 1}} 张{{si.unitRealPrice ? ' · 单' + (si.unit || '次') + '实付 ¥' + si.unitRealPrice : ''}}{{si.disabledReason ? ' · ' + si.disabledReason : ''}}</text>
               </view>
               <view class="order-item-sub" wx:if="{{si.saleOrderId}}">{{si.saleOrderId}} · {{si.paidAt}}</view>
+              <view class="order-remark-list" wx:if="{{si.sourceOrderRemarks && si.sourceOrderRemarks.length}}">
+                <view class="order-remark" wx:for="{{si.sourceOrderRemarks}}" wx:for-item="remarkItem" wx:key="saleOrderId">
+                  <text class="order-remark__order">{{remarkItem.saleOrderId}}</text>
+                  <text class="order-remark__content">订单备注：{{remarkItem.orderRemark}}</text>
+                </view>
+              </view>
             </view>
             <van-icon
               name="{{si.disabled ? 'close' : (selectedFlowNos[si.saleItemId] ? 'success' : 'circle')}}"
@@ -132,6 +138,12 @@
     <view class="selected-item" wx:for="{{selectedItems}}" wx:key="saleItemId">
       <van-icon name="success" size="28rpx" color="#3D8A5A" />
       <text class="selected-item-name">{{item.itemName}}{{item.spec ? ' (' + item.spec + ')' : ''}} · 本次 {{item.sessionCount}} {{item.unit || '次'}} · 共 {{item.cardCount}} 张</text>
+      <view class="order-remark-list selected-item-remarks" wx:if="{{item.sourceOrderRemarks && item.sourceOrderRemarks.length}}">
+        <view class="order-remark" wx:for="{{item.sourceOrderRemarks}}" wx:for-item="remarkItem" wx:key="saleOrderId">
+          <text class="order-remark__order">{{remarkItem.saleOrderId}}</text>
+          <text class="order-remark__content">订单备注：{{remarkItem.orderRemark}}</text>
+        </view>
+      </view>
     </view>
   </view>
 

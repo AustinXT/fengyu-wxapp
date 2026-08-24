@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('@/lib/employee-assignment-server', () => ({ getInvalidEmployeeAssignmentId: vi.fn().mockResolvedValue(null) }))
+vi.mock('@/lib/document-type', () => ({
+  classifySaleOrderDocumentType: vi.fn().mockResolvedValue('售前一次'),
+}))
 
 // 退款前置检查（orders.ts recordPayment 等调 hasPendingRefund）：
 // 默认 false（无退款审批中），让现有用例走正常分支；不 mock 会跑真实实现拿 mock 的 db 误判。
@@ -2559,7 +2562,7 @@ describe('getOrderById — prepaidCardAmount + received', () => {
       saleOrderId: 'FY-XSD-WX-260423-0001',
       status: '已支付',
       saleOrderType: '销售单',
-      documentType: '售前',
+      documentType: '售前一次',
       refSaleOrderId: null,
       marketName: '南昌市场',
       storeId: 'store-1',
@@ -4350,7 +4353,7 @@ describe('recordPayment — 管理后台录入回款', () => {
     customer_name: '顾客甲',
     store_id: 'store-1',
     market_name: '南昌市场',
-    document_type: '售前',
+    document_type: '售前一次',
     paid_at: null,
   }
 
@@ -6066,11 +6069,42 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     expect(rows[0].salesCategory).toBeNull()
   })
 
+  it('充值单退款后实付与现付同步转为净额，保持通道金额可勾稽', async () => {
+    const rechargeRow = {
+      sourceId: 'FY-RECHARGE-REFUND',
+      saleOrderId: 'FY-RECHARGE-REFUND',
+      saleOrderType: '充值单',
+      totalAmount: '120.00',
+      prepaidCardAmount: '0.00',
+      orderReceived: '100.00',
+      refundedAmount: '20.00',
+      saleOrderDatetime: new Date('2026-08-02T00:00:00.000Z'),
+      createdAt: new Date('2026-08-02T00:00:00.000Z'),
+    }
+    ;(db.select as any)
+      .mockReturnValueOnce(makeChain([]))
+      .mockReturnValueOnce(makeChain([rechargeRow]))
+      .mockReturnValueOnce(makeChain([]))
+      .mockReturnValueOnce(makeChain([]))
+
+    const { rows } = await exportOrders({ q: rechargeRow.saleOrderId })
+
+    expect(rows[0]).toMatchObject({
+      received: '80.00',
+      prepaidCardAmount: '0.00',
+      cashAmount: '80.00',
+      refundedAmount: '20.00',
+    })
+    expect(Number(rows[0].received)).toBe(
+      Number(rows[0].prepaidCardAmount) + Number(rows[0].cashAmount),
+    )
+  })
+
   it('WorkFine 历史订单无 sale_items 时生成订单级兜底行，不再整单漏导', async () => {
     const fallback = {
       sourceId: 'FY-XSD2607260012',
       marketName: '南昌', storeName: '南昌店', saleOrderId: 'FY-XSD2607260012',
-      saleOrderType: '销售单', documentType: '售前', status: '已支付',
+      saleOrderType: '销售单', documentType: '售前一次', status: '已支付',
       custName: null, custPhone: null, customerSource: null, promoterEmployeeName: null,
       fallbackName: '陈凤婷', fallbackPhone: '13800000000',
       totalAmount: '2682.00', prepaidCardAmount: '0.00', orderReceived: '2682.00',
@@ -6102,6 +6136,42 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       sessionCount: null,
       __sourceKind: 'orderFallback',
     })
+  })
+
+  it.each([
+    { paymentCase: '现金支付', prepaidCardAmount: '0.00', expectedCashAmount: '80.00' },
+    { paymentCase: '全储值卡支付', prepaidCardAmount: '100.00', expectedCashAmount: '-20.00' },
+  ])('无明细兜底行在$paymentCase退款后统一使用净额口径', async ({ prepaidCardAmount, expectedCashAmount }) => {
+    const fallback = {
+      sourceId: 'FY-FALLBACK-REFUND',
+      saleOrderId: 'FY-FALLBACK-REFUND',
+      saleOrderType: '销售单',
+      totalAmount: '100.00',
+      prepaidCardAmount,
+      orderReceived: '100.00',
+      refundedAmount: '20.00',
+      saleOrderDatetime: new Date('2026-08-03T00:00:00.000Z'),
+      createdAt: new Date('2026-08-03T00:00:00.000Z'),
+      legacySource: 'workfine',
+    }
+    ;(db.select as any)
+      .mockReturnValueOnce(makeChain([]))
+      .mockReturnValueOnce(makeChain([]))
+      .mockReturnValueOnce(makeChain([]))
+      .mockReturnValueOnce(makeChain([fallback]))
+
+    const { rows } = await exportOrders({ q: fallback.saleOrderId })
+
+    expect(rows[0]).toMatchObject({
+      received: '80.00',
+      prepaidCardAmount,
+      cashAmount: expectedCashAmount,
+      refundedAmount: '20.00',
+      __sourceKind: 'orderFallback',
+    })
+    expect(Number(rows[0].received)).toBe(
+      Number(rows[0].prepaidCardAmount) + Number(rows[0].cashAmount),
+    )
   })
 
   it('混合：item 行（销售/转换）+ 充值单造行，合并后按订单时间 desc 排序', async () => {

@@ -17,6 +17,8 @@ vi.mock('@db/user', () => ({
     name: 'name',
     boundStoreId: 'bound_store_id',
     boundEmployeeId: 'bound_employee_id',
+    promoterEmployeeId: 'promoter_employee_id',
+    promoterEmployeeName: 'promoter_employee_name',
     updatedAt: 'updated_at',
     memberLevel: 'member_level',
     customerType: 'customer_type',
@@ -24,7 +26,10 @@ vi.mock('@db/user', () => ({
     monthlyActivity: 'monthly_activity',
     customerStatus: 'customer_status',
   },
-  staffWechatUsers: { employeeId: 'employee_id', name: 'name' },
+  staffWechatUsers: {
+    employeeId: 'employee_id', name: 'name', storeId: 'store_id',
+    orgNodeId: 'org_node_id', isResigned: 'is_resigned',
+  },
 }))
 
 vi.mock('@db/prepaid-card', () => ({
@@ -125,6 +130,7 @@ vi.mock('@/lib/auth', () => ({
 vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
   scopeCondition: vi.fn(() => undefined),
+  employeeScopeCondition: vi.fn(() => undefined),
   isAdminScope: vi.fn(() => false),
   isInScope: vi.fn(() => true), // 默认允许
 }))
@@ -266,6 +272,90 @@ describe('updateCustomer — 校验 + scope + 错误处理', () => {
 
     expect(result.success).toBe(true)
     expect(result.message).toContain('已更新')
+  })
+
+  it('绑定推荐员工 → 只信任 employeeId，并写入服务端查询到的姓名快照', async () => {
+    let selectCall = 0
+    ;(db.select as any).mockImplementation(() => {
+      selectCall++
+      const rows = selectCall === 1
+        ? [{ userId: 'user-1', promoterEmployeeId: null, promoterEmployeeName: '旧快照' }]
+        : [{ employeeId: 'EMP-001', name: '王员工' }]
+      const chain: any = {}
+      chain.from = vi.fn().mockReturnValue(chain)
+      chain.where = vi.fn().mockReturnValue(chain)
+      chain.limit = vi.fn().mockResolvedValue(rows)
+      return chain
+    })
+    const where = vi.fn().mockResolvedValue({ count: 1 })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateCustomer('user-1', { promoterEmployeeId: 'EMP-001' })
+
+    expect(result.success).toBe(true)
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({
+      promoterEmployeeId: 'EMP-001',
+      promoterEmployeeName: '王员工',
+    }))
+    expect(logUpdate).toHaveBeenCalledWith(
+      mockSession, 'customer.update', 'customer', 'user-1',
+      expect.anything(),
+      expect.objectContaining({ promoterEmployeeId: 'EMP-001', promoterEmployeeName: '王员工' }),
+    )
+  })
+
+  it('仅注入 promoterEmployeeName → 运行时白名单拒绝，不写入自由文本', async () => {
+    const result = await updateCustomer('user-1', {
+      promoterEmployeeName: '任意推荐人文本',
+    } as any)
+
+    expect(result).toEqual({
+      success: false,
+      message: '包含不允许修改的字段：promoterEmployeeName',
+    })
+    expect(db.select).not.toHaveBeenCalled()
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('不存在、离职或越权推荐员工 → 拒绝且不更新顾客', async () => {
+    let selectCall = 0
+    ;(db.select as any).mockImplementation(() => {
+      selectCall++
+      const rows = selectCall === 1 ? [{ userId: 'user-1' }] : []
+      const chain: any = {}
+      chain.from = vi.fn().mockReturnValue(chain)
+      chain.where = vi.fn().mockReturnValue(chain)
+      chain.limit = vi.fn().mockResolvedValue(rows)
+      return chain
+    })
+
+    const result = await updateCustomer('user-1', { promoterEmployeeId: 'INVALID' })
+
+    expect(result).toEqual({ success: false, message: '推荐员工不存在、已离职或不在权限范围内' })
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('显式清空推荐员工 → ID 与姓名快照同时清空并进入审计 diff', async () => {
+    mockSelectBefore([{
+      userId: 'user-1', promoterEmployeeId: 'EMP-001', promoterEmployeeName: '王员工',
+    }])
+    const where = vi.fn().mockResolvedValue({ count: 1 })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateCustomer('user-1', { promoterEmployeeId: null })
+
+    expect(result.success).toBe(true)
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({
+      promoterEmployeeId: null,
+      promoterEmployeeName: null,
+    }))
+    expect(logUpdate).toHaveBeenCalledWith(
+      mockSession, 'customer.update', 'customer', 'user-1',
+      expect.anything(),
+      expect.objectContaining({ promoterEmployeeId: null, promoterEmployeeName: null }),
+    )
   })
 
   // ── admin 修改顾客手机号专项（P2 — admin-only 换绑）────────────────────────

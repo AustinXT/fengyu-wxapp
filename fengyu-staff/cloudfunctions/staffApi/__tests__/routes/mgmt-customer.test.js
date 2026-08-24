@@ -1165,6 +1165,11 @@ describe('mgmtCustomer 出数完整路径', () => {
     })
     await detail(ctx)
 
+    const detailSql = pg.query.mock.calls.find(([sql]) =>
+      sql.includes('COALESCE(promoter.name, c.promoter_employee_name)'),
+    )?.[0]
+    expect(detailSql).toContain('promoter.employee_id = c.promoter_employee_id')
+
     expect(ctx.result.id).toBe('cust-id-001')
     expect(ctx.result.clientUserId).toBe('u-detail')
     expect(ctx.result.name).toBe('回退姓名')

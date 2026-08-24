@@ -54,6 +54,7 @@ import {
 } from '@/lib/order-market-scope'
 import { INVENTORY_LINKAGE_ENABLED } from '@/lib/inventory-feature-flags'
 import { getInvalidEmployeeAssignmentId } from '@/lib/employee-assignment-server'
+import { classifySaleOrderDocumentType } from '@/lib/document-type'
 
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
 const opener = alias(staffWechatUsers, 'opener') as unknown as typeof staffWechatUsers
@@ -1006,7 +1007,8 @@ export const getOrdersPaginated = withPermission(
  * 订单号/状态/顾客/支付方式等订单级字段在每条明细行内重复；
  * 金额列走「商品行口径」（与 exportAllocationOrders 对齐）：订单金额=sale_items.sale_amount（行应付）、
  *   实付=sale_items.received（行级净实收，已扣该行退款）；储值卡抵扣/现付分别直接取
- *   sale_items.prepaid_card_received / cash_received。充值单取订单级 total_amount(面额)/received(实付)。
+ *   sale_items.prepaid_card_received / cash_received。充值单及无明细兜底行按订单级快照换算净实收，
+ *   与商品行保持相同的退款后口径。
  * 行级字段（商品类型/品质一二级/总次数/可用次数/单次价格/经营类型/商品明细）按 item 各自展示；充值单无 item 留空。
  * 寄存单 5 个销售口径金额列留空（exportOrders 内 isDeposit 分支：total=0 与 received>0 并存会误导）。
  * 历史订单（legacySource='workfine'）默认纳入，与列表分页口径一致。
@@ -1216,7 +1218,6 @@ export const exportOrders = withPermission(
           totalAmount: saleOrders.totalAmount,
           prepaidCardAmount: saleOrders.prepaidCardAmount,
           orderReceived: saleOrders.received,
-          received: saleOrders.received,
           refundedAmount: saleOrders.refundedAmount,
           paymentMethod: saleOrders.paymentMethod,
           isMembershipUpgrade: saleOrders.isMembershipUpgrade,
@@ -1305,7 +1306,6 @@ export const exportOrders = withPermission(
         totalAmount: saleOrders.totalAmount,
         prepaidCardAmount: saleOrders.prepaidCardAmount,
         orderReceived: saleOrders.received,
-        received: saleOrders.received,
         refundedAmount: saleOrders.refundedAmount,
         paymentMethod: saleOrders.paymentMethod,
         isMembershipUpgrade: saleOrders.isMembershipUpgrade,
@@ -1347,16 +1347,21 @@ export const exportOrders = withPermission(
       return Number.isFinite(amount) ? Math.round(amount * 100) / 100 : 0
     }
     const formatAmount = (amount: number) => amount.toFixed(2)
-    const resolveRechargeAmounts = (order: {
+    // 充值单与无商品明细兜底行没有 item 级净实收可直接读取，统一从订单级毛实收换算。
+    // 当前退款策略全部走现金，因此 refundedAmount 从现金通道扣减；received 必须同步转为净额，
+    // 才能与商品行口径一致并始终满足 received = prepaidCardAmount + cashAmount。
+    const resolveOrderLevelAmounts = (order: {
       prepaidCardAmount: string | null
       orderReceived: string | null
       refundedAmount: string | null
     }) => {
       const orderReceived = toAmount(order.orderReceived)
       const prepaidCardAmount = toAmount(order.prepaidCardAmount)
+      const netReceived = orderReceived - toAmount(order.refundedAmount)
       return {
+        received: formatAmount(netReceived),
         prepaidCardAmount: formatAmount(prepaidCardAmount),
-        cashAmount: formatAmount(orderReceived - prepaidCardAmount - toAmount(order.refundedAmount)),
+        cashAmount: formatAmount(netReceived - prepaidCardAmount),
       }
     }
 
@@ -1424,7 +1429,7 @@ export const exportOrders = withPermission(
         }
       }),
       ...rechargeOrders.map((r) => {
-        const settledAmounts = resolveRechargeAmounts(r)
+        const orderAmounts = resolveOrderLevelAmounts(r)
         return {
           source: 'recharge' as const,
           sourceId: String(r.sourceId ?? r.saleOrderId),
@@ -1441,9 +1446,9 @@ export const exportOrders = withPermission(
           customerSource: r.customerSource ?? null,
           promoterEmployeeName: r.promoterEmployeeName ?? null,
           totalAmount: r.totalAmount,
-          prepaidCardAmount: settledAmounts.prepaidCardAmount,
-          cashAmount: settledAmounts.cashAmount,
-          received: r.received ?? '0',
+          prepaidCardAmount: orderAmounts.prepaidCardAmount,
+          cashAmount: orderAmounts.cashAmount,
+          received: orderAmounts.received,
           refundedAmount: r.refundedAmount ?? '0',
           paymentMethod: r.paymentMethod,
           isMembershipUpgrade: r.isMembershipUpgrade ?? false,
@@ -1471,7 +1476,7 @@ export const exportOrders = withPermission(
         }
       }),
       ...orderFallbackRows.map((r) => {
-        const settledAmounts = resolveRechargeAmounts(r)
+        const orderAmounts = resolveOrderLevelAmounts(r)
         return {
           source: 'orderFallback' as const,
           sourceId: String(r.sourceId ?? r.saleOrderId),
@@ -1487,9 +1492,9 @@ export const exportOrders = withPermission(
             customerSource: r.customerSource ?? null,
             promoterEmployeeName: r.promoterEmployeeName ?? null,
             totalAmount: r.totalAmount,
-            prepaidCardAmount: settledAmounts.prepaidCardAmount,
-            cashAmount: settledAmounts.cashAmount,
-            received: r.received ?? '0',
+            prepaidCardAmount: orderAmounts.prepaidCardAmount,
+            cashAmount: orderAmounts.cashAmount,
+            received: orderAmounts.received,
             refundedAmount: r.refundedAmount ?? '0',
             paymentMethod: r.paymentMethod,
             isMembershipUpgrade: r.isMembershipUpgrade ?? false,
@@ -2585,11 +2590,13 @@ export const confirmOfflinePayment = withPermission(
         ? Math.round(orderPayable * 100) / 100
         : Math.round(orderTotal * 100) / 100
       const targetStatus: OrderStatus = newReceived + 0.005 >= settleTarget ? '已支付' : '部分支付'
+      const documentType = await classifySaleOrderDocumentType(tx, clientUserId, saleOrderId)
       // paid_at 写北京墙钟字面（见 lib/db-time）：结清→NOW()，未结清→NULL（保留原行为）。
       const paidAtExpr = targetStatus === '已支付' ? nowTs() : sql`NULL`
       const updRes = await tx.execute(sql`
         UPDATE sale_orders
         SET status = ${targetStatus}::order_status,
+            document_type = ${documentType}::document_type,
             received = ${newReceived.toFixed(2)}::numeric,
             prepaid_card_amount = ${newPrepaid.toFixed(2)}::numeric,
             pending_prepaid_card_amount = 0,
@@ -3389,8 +3396,6 @@ export const createOrder = withPermission(
   }
 
   // 会员判定：会员客 或 有钻石等级（member_level 非空），任一满足。
-  // 顺带缓存 customerType 供下方 document_type 快照复用（省一次查询）。
-  let buyerCustomerType: string | null = null
   let buyerIsMember = false
   if (data.clientUserId) {
     const [buyerRow] = await db
@@ -3398,7 +3403,6 @@ export const createOrder = withPermission(
       .from(clientWechatUsers)
       .where(eq(clientWechatUsers.userId, data.clientUserId))
       .limit(1)
-    buyerCustomerType = buyerRow?.customerType ?? null
     buyerIsMember = isMember(buyerRow?.customerType, buyerRow?.memberLevel)
   }
 
@@ -3862,11 +3866,6 @@ export const createOrder = withPermission(
   // （2026-04-26 sale-order-domain-refactor：paid_amount 列已 DROP，统一用 received）
   const paidAmountSnapshot = zeroPayable ? prepaidCardAmount : 0
 
-  // 计算 document_type（售前/售后快照）：仅按下单时会员身份判——售前=非会员客，售后=会员客。
-  // 复用上方会员价分流已查得的 buyerCustomerType（省一次 client_wechat_users 查询）。
-  // 「成为会员那一单」下单时仍非会员客 → 售前；跃迁发生在支付后 recalcCustomerType，不影响本快照。
-  const documentType: '售前' | '售后' = buyerCustomerType === '会员客' ? '售后' : '售前'
-
   // 事务外批量查询本次涉及 sku 的 service_fee（固定手工费）、session_count（疗程卡次数）
   // 与 is_experience（capability 权威源）。
   // 用于 sale_items 快照：service_fee 供服务完成时参与提成计算，
@@ -3961,6 +3960,7 @@ export const createOrder = withPermission(
       `)
       const id = (idRows as any[])[0]?.id as string
       if (!id) throw new ApiError('INVALID_STATE', '订单号生成失败')
+      const documentType = await classifySaleOrderDocumentType(tx, data.clientUserId, id)
 
       // 顾客维度全量待支付单互斥：业务守卫查所有待支付单（含自助单），本事务 order-gen
       // advisory lock 串行化开单使其原子；DB uq 仅兜底 opened_by IS NULL 自助单
@@ -4809,8 +4809,8 @@ export const createConversionOrder = withPermission(
       const saleOrderId = (idRows as any[])[0]?.id as string
       if (!saleOrderId) throw new ApiError('INVALID_STATE', 'ORDER_ID_GEN_FAILED: 订单号生成失败')
 
-      // 4. 计算 documentType（售前/售后）：仅按下单时会员身份判（售前=非会员客，售后=会员客）
-      const documentType: '售前' | '售后' = client.customerType === '会员客' ? '售后' : '售前'
+      // 4. 按既有达标单次数写开单预测值；首次入账时会再次冻结权威快照。
+      const documentType = await classifySaleOrderDocumentType(tx, data.clientUserId, saleOrderId)
 
       // 5. 插入订单主表
       // 顾客补现场景：priceDiff > 0 → total_amount=priceDiff，status 按抵扣后应付决定
@@ -5313,13 +5313,14 @@ export const createDepositOrder = withPermission(
         `)
         const id = (idRows as any[])[0]?.id as string
         if (!id) throw new ApiError('INVALID_STATE', '订单号生成失败')
+        const documentType = await classifySaleOrderDocumentType(tx, data.clientUserId, id)
 
         const now = new Date()
         await tx.insert(saleOrders).values({
           saleOrderId: id,
           status: '待审批',
           saleOrderType: '寄存单',
-          documentType: '售后',
+          documentType,
           marketName: data.marketName,
           storeId: data.storeId,
           storeName: sql<string>`(SELECT store_name FROM stores WHERE store_id = ${data.storeId})`,
@@ -5456,7 +5457,7 @@ export const approveDepositOrder = withPermission(
     let approvedReceived = '0'
     await db.transaction(async (tx) => {
       const lockedRows = await tx.execute(sql`
-        SELECT sale_order_id, status, sale_order_type, store_id
+        SELECT sale_order_id, status, sale_order_type, store_id, client_user_id
         FROM sale_orders
         WHERE sale_order_id = ${saleOrderId}
         FOR UPDATE
@@ -5466,6 +5467,7 @@ export const approveDepositOrder = withPermission(
         status: string
         sale_order_type: string
         store_id: string
+        client_user_id: string | null
       }>)[0]
       if (!order) {
         throw new ApiError('NOT_FOUND', '寄存单不存在')
@@ -5481,6 +5483,7 @@ export const approveDepositOrder = withPermission(
       }
 
       const approvedAt = nowTs()
+      const documentType = await classifySaleOrderDocumentType(tx, order.client_user_id, saleOrderId)
       await tx.execute(sql`
         UPDATE sale_order_payments
         SET status = '已支付',
@@ -5496,6 +5499,7 @@ export const approveDepositOrder = withPermission(
       const updatedRows = await tx.execute(sql`
         UPDATE sale_orders
         SET status = '已支付',
+            document_type = ${documentType}::document_type,
             paid_at = ${approvedAt},
             audited_at = ${approvedAt},
             audited_by = ${session.employeeId},
@@ -5650,20 +5654,17 @@ export const createPrepaidInflow = withPermission(
     if (amt > 99999999.99) return { success: false, message: '转入金额超出上限' } // NUMERIC(10,2) 上界保护
     if (!isInScope(session, data.storeId)) return { success: false, message: '无权在该门店转入' }
 
-    // 顾客 + documentType 快照
+    // 顾客快照；documentType 在创建事务内按历史达标次数计算。
     const [client] = await db
       .select({
         userId: clientWechatUsers.userId,
         name: clientWechatUsers.name,
         phone: clientWechatUsers.phone,
-        customerType: clientWechatUsers.customerType,
       })
       .from(clientWechatUsers)
       .where(eq(clientWechatUsers.userId, data.clientUserId))
       .limit(1)
     if (!client) return { success: false, message: '顾客不存在' }
-    const documentType: '售前' | '售后' = client.customerType === '会员客' ? '售后' : '售前'
-
     // 门店 + marketName 快照（跨两级 org_nodes 取上级 market，同 createRechargeOrder）
     const storeRows = (await db.execute(sql`
       SELECT s.store_id, pm.name AS market_name
@@ -5708,6 +5709,7 @@ export const createPrepaidInflow = withPermission(
         `)
         const id = (idRows as unknown as Array<{ id: string }>)[0]?.id
         if (!id) throw new ApiError('INVALID_STATE', '订单号生成失败')
+        const documentType = await classifySaleOrderDocumentType(tx, data.clientUserId, id)
 
         // 转入单：直接 '已支付'，total=payable=received=amt（1:1），prepaid=0，线下，paid_at=now
         // 不加待支付并发守卫（uq_sale_orders_client_pending 现仅约束 opened_by IS NULL 自助单，迁移不应被无关待支付单卡住）
@@ -6248,6 +6250,10 @@ export const recordPayment = withPermission(
       // 充值单不进回款路径（一次性付清），total 锚无副作用。
       const settleTarget = Math.round(origTotal * 100) / 100
       const targetStatus: OrderStatus = settled + 0.001 >= settleTarget ? '已支付' : '部分支付'
+      const documentType = ['部分支付', '已支付', '已完成'].includes(locked.status)
+        ? null
+        : await classifySaleOrderDocumentType(tx, locked.client_user_id, saleOrderId)
+      const documentTypeExpr = documentType ? sql`${documentType}::document_type` : sql`document_type`
       // paid_at 写北京墙钟字面（见 lib/db-time）：结清→NOW()；未结清→保留原值（paid_at = paid_at 无害）。
       // 原 ISO 字符串内插会让 postgres.js 走 UTC 字面落库（早 8h）；改 SQL 片段根治。
       const paidAtExpr = targetStatus === '已支付' ? nowTs() : sql`paid_at`
@@ -6255,6 +6261,7 @@ export const recordPayment = withPermission(
       const updRes = await tx.execute(sql`
         UPDATE sale_orders
         SET status = ${targetStatus},
+            document_type = ${documentTypeExpr},
             received = ${newReceived.toFixed(2)}::numeric,
             refunded_amount = ${newRefunded.toFixed(2)}::numeric,
             prepaid_card_amount = ${newPrepaid.toFixed(2)}::numeric,

@@ -10,6 +10,7 @@
 const pg = require('../db/pg')
 const { requirePhone } = require('../middleware/auth')
 const { shanghaiYYMMDD } = require('../utils/datetime')
+const { classifySaleOrderDocumentType } = require('../utils/document-type')
 
 // =============================================================
 // 内部：从 system_configs 加载档位 + 匹配
@@ -254,17 +255,16 @@ async function recharge(ctx) {
   }
   const marketName = storeRows[0].market_name || boundMarketName || ''
 
-  // 查询顾客姓名 + document_type
+  // 查询顾客姓名；document_type 在创建事务内按历史达标次数计算。
   let customerName = null
-  let documentType = '售前'
+  let documentType
   {
     const userRows = await pg.query(
-      'SELECT name, customer_type FROM client_wechat_users WHERE user_id = $1',
+      'SELECT name FROM client_wechat_users WHERE user_id = $1',
       [userId]
     )
     if (userRows.length > 0) {
       if (userRows[0].name) customerName = userRows[0].name
-      if (userRows[0].customer_type === '会员客') documentType = '售后'
     }
   }
 
@@ -298,6 +298,7 @@ async function recharge(ctx) {
       orderSeq = parseInt(orderSeqResult.rows[0].sale_order_id.slice(-4)) + 1
     }
     saleOrderId = `FY-XSD-WX-${dateStrOrder}${String(orderSeq).padStart(4, '0')}`
+    documentType = await classifySaleOrderDocumentType(client, userId, saleOrderId)
 
     // 充值单：sale_order_type='充值单'、total_amount=面值、payable_amount=实付、不写 sale_items
     // payment_method='微信' 只是占位，前端后续调 order.pay/alipayPay/offlinePay 会按所选方式覆盖

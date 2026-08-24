@@ -48,6 +48,7 @@ interface IAppOption {
       items: Array<{
         saleItemId: string; itemName: string; spec: string;
         saleOrderId: string; sessionCount: number; remainingSessions: number; unit?: string;
+        orderRemark?: string | null;
       }>;
     } | null;
   };
