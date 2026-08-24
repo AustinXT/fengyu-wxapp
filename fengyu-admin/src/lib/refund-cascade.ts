@@ -198,7 +198,7 @@ async function buildReceiptRefundItems(
   refundPaymentId: number,
   effItems: CascadeRefundItem[],
 ): Promise<Array<{ saleItemId: string; refundAmount: number }>> {
-  const refundCentsByItem = new Map<string, number>()
+  const requestedCentsByItem = new Map<string, number>()
   let overpayCents = 0
   for (const it of effItems) {
     const cents = Math.round(Number(it.refundAmount || 0) * 100)
@@ -206,16 +206,15 @@ async function buildReceiptRefundItems(
     if (isLegacyOverpaySentinel(it)) {
       overpayCents += cents
     } else {
-      addRefundCents(refundCentsByItem, it.saleItemId, cents)
+      addRefundCents(requestedCentsByItem, it.saleItemId, cents)
     }
   }
 
-  if (overpayCents > 0) {
-    const selectedItemIds = Array.from(refundCentsByItem.keys())
-    const selectedFilter = selectedItemIds.length > 0
-      ? sql`AND si.sale_item_id IN (${sql.join(selectedItemIds.map((id) => sql`${id}`), sql`, `)})`
-      : sql``
-    const residualRows = (await tx.execute(sql`
+  const requestedTotalCents = overpayCents
+    + Array.from(requestedCentsByItem.values()).reduce((sum, cents) => sum + cents, 0)
+  if (requestedTotalCents <= 0) return []
+
+  const residualRows = (await tx.execute(sql`
       SELECT si.sale_item_id,
              COALESCE(SUM(CASE
                WHEN sop.status = '已支付'
@@ -233,52 +232,39 @@ async function buildReceiptRefundItems(
         LEFT JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
        WHERE si.sale_order_id = ${saleOrderId}
          AND si.item_direction = '购买'
-         ${selectedFilter}
        GROUP BY si.sale_item_id
        ORDER BY si.sale_item_id
-    `)) as unknown as Array<{ sale_item_id: string; positive_amount: string; prior_refund_amount: string }>
-    const capacityRows = (await tx.execute(sql`
-      SELECT si.sale_item_id,
-             CASE WHEN si.product_type = '疗程卡'
-               THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0)) * COALESCE(si.unit_real_price::numeric, 0)
-               ELSE GREATEST(0, COALESCE(si.picked_up_quantity, 0)) * COALESCE(si.unit_real_price::numeric, 0)
-             END AS consumed_value,
-             CASE WHEN si.product_type = '疗程卡'
-               THEN GREATEST(0, LEAST(
-                 COALESCE(si.remaining_sessions, 0),
-                 CASE WHEN si.paid_sessions IS NULL
-                   THEN COALESCE(si.remaining_sessions, 0)
-                   ELSE COALESCE(si.paid_sessions, 0) - GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))
-                 END
-               )) * COALESCE(si.unit_real_price::numeric, 0)
-               ELSE GREATEST(0, COALESCE(si.quantity, 0) - COALESCE(si.picked_up_quantity, 0)) * COALESCE(si.unit_real_price::numeric, 0)
-             END AS refundable_value
-        FROM sale_items si
-       WHERE si.sale_order_id = ${saleOrderId}
-         AND si.item_direction = '购买'
-         ${selectedFilter}
-       ORDER BY si.sale_item_id
-    `)) as unknown as Array<{ sale_item_id: string; consumed_value: string; refundable_value: string }>
-    const capacityByItem = new Map(
-      capacityRows.map((r) => [r.sale_item_id, {
-        consumedCents: Math.round(Number(r.consumed_value || 0) * 100),
-        refundableCents: Math.round(Number(r.refundable_value || 0) * 100),
-      }]),
-    )
-    const candidates = residualRows
-      .map((r) => {
-        const positiveCents = Math.round(Number(r.positive_amount || 0) * 100)
-        const priorRefundCents = Math.round(Number(r.prior_refund_amount || 0) * 100)
-        const capacity = capacityByItem.get(r.sale_item_id) ?? { consumedCents: 0, refundableCents: 0 }
-        return {
-          saleItemId: r.sale_item_id,
-          weightCents: Math.max(0, positiveCents - priorRefundCents - capacity.consumedCents - capacity.refundableCents),
-        }
-      })
-      .filter((r) => r.weightCents > 0)
-    for (const part of allocateCentsByWeight(overpayCents, candidates)) {
-      addRefundCents(refundCentsByItem, part.saleItemId, part.cents)
-    }
+  `)) as unknown as Array<{ sale_item_id: string; positive_amount: string; prior_refund_amount: string }>
+  const availableCentsByItem = new Map(residualRows.map((r) => [
+    r.sale_item_id,
+    Math.max(
+      0,
+      Math.round(Number(r.positive_amount || 0) * 100)
+        - Math.round(Number(r.prior_refund_amount || 0) * 100),
+    ),
+  ]))
+  const refundCentsByItem = new Map<string, number>()
+  let overflowCents = overpayCents
+  for (const [saleItemId, requestedCents] of requestedCentsByItem) {
+    const mappedCents = Math.min(requestedCents, availableCentsByItem.get(saleItemId) ?? 0)
+    addRefundCents(refundCentsByItem, saleItemId, mappedCents)
+    overflowCents += requestedCents - mappedCents
+  }
+  const candidates = residualRows
+    .map((r) => ({
+      saleItemId: r.sale_item_id,
+      weightCents: Math.max(
+        0,
+        (availableCentsByItem.get(r.sale_item_id) ?? 0) - (refundCentsByItem.get(r.sale_item_id) ?? 0),
+      ),
+    }))
+    .filter((r) => r.weightCents > 0)
+  for (const part of allocateCentsByWeight(overflowCents, candidates)) {
+    addRefundCents(refundCentsByItem, part.saleItemId, part.cents)
+  }
+  const mappedTotalCents = Array.from(refundCentsByItem.values()).reduce((sum, cents) => sum + cents, 0)
+  if (mappedTotalCents !== requestedTotalCents) {
+    throw new Error('INVALID_STATE: 退款金额无法完整映射到商品行实收')
   }
 
   return Array.from(refundCentsByItem.entries()).map(([saleItemId, cents]) => ({

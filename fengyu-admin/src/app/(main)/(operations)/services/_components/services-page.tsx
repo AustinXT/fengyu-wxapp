@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition, useCallback } from "react"
+import { useState, useTransition, useCallback, useEffect } from "react"
 import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { toast } from "sonner"
@@ -8,7 +8,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { DatePicker } from "@/components/ui/date-picker"
-import { Select } from "@/components/ui/select"
+import { MultiSelect } from "@/components/ui/multi-select"
 import { StatusBadge, Badge } from "@/components/ui/badge"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { Pagination } from "@/components/ui/pagination"
@@ -17,10 +17,11 @@ import { createExportJob } from "@/actions/export-jobs"
 import { ExportButton } from "@/components/ui/export-button"
 import { actionErrorMessage } from "@/lib/action-error"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
-import type { ServiceOrder, ServiceOrderStatus } from "@/lib/types"
+import type { ServiceOrder } from "@/lib/types"
 import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types"
 import MarketStoreFilter from "@/components/market-store-filter"
 import { formatDate as fmtDate } from "@/lib/utils"
+import { SERVICE_ORDER_STATUS_FILTER_OPTIONS, parseServiceOrderStatusFilters } from "@/lib/list-filters"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -127,7 +128,8 @@ export default function ServicesPageClient({
     const raw = Object.fromEntries(searchParams.entries())
     // 消耗明细仅含「已完成」服务单（已扣减次数）；若当前按其它状态筛选，导出会因 WHERE
     // status='已完成' AND status=筛选值 恒空，提前提示而非发空请求，避免「列表有数据、导出无数据」困惑。
-    if (raw.status && raw.status !== '已完成') {
+    const exportStatuses = parseServiceOrderStatusFilters(raw.status)
+    if (exportStatuses?.length && !exportStatuses.includes('已完成')) {
       toast.warning(`消耗明细仅包含「已完成」服务单，当前筛选状态为「${raw.status}」，无已实现消耗可导出`)
       return
     }
@@ -151,6 +153,16 @@ export default function ServicesPageClient({
   }, [setFilter, debounceRef])
 
   const statusFilter = get("status")
+  const [selectedStatuses, setSelectedStatuses] = useState<string[]>(
+    () => parseServiceOrderStatusFilters(statusFilter) ?? [],
+  )
+  useEffect(() => {
+    setSelectedStatuses(parseServiceOrderStatusFilters(statusFilter) ?? [])
+  }, [statusFilter])
+  const handleStatusesChange = useCallback((statuses: string[]) => {
+    setSelectedStatuses(statuses)
+    setFilter("status", statuses.join(","))
+  }, [setFilter])
   const marketFilter = get("market")
   const storeFilter = get("store")
   const dateFrom = get("from")
@@ -173,12 +185,13 @@ export default function ServicesPageClient({
       <Card>
         <CardContent className="p-4">
           <div className="flex flex-wrap gap-3">
-            <Select className="w-40" value={statusFilter} onChange={(e) => setFilter("status", e.target.value)}>
-              <option value="">全部状态</option>
-              {(["待服务", "服务中", "待客户确认", "已完成", "已取消"] as ServiceOrderStatus[]).map((s) => (
-                <option key={s} value={s}>{s}</option>
-              ))}
-            </Select>
+            <MultiSelect
+              className="w-40"
+              options={SERVICE_ORDER_STATUS_FILTER_OPTIONS.map((status) => ({ value: status, label: status }))}
+              value={selectedStatuses}
+              onChange={handleStatusesChange}
+              placeholder="全部状态"
+            />
             <MarketStoreFilter
               options={filterOptions}
               marketValue={marketFilter}

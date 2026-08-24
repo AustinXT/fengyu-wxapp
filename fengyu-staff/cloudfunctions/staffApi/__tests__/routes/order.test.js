@@ -6722,10 +6722,9 @@ describe('order.createPickup', () => {
     expect(ctx.result.saleItemId).toBe('item-001')
     expect(ctx.result.pickedUp).toBe(2)
     expect(ctx.result.remaining).toBe(3) // 5 - 2
+    expect(ctx.result.inventoryMode).toBe('record-only')
     expect(ctx.result.message).toContain('取货成功')
-    expect(transactionClient.query.mock.calls.filter(([sql]) => /INSERT INTO inventory_doc_items/.test(sql))).toHaveLength(2)
-    const inventoryDocInsert = transactionClient.query.mock.calls.find(([sql]) => /INSERT INTO inventory_docs/.test(sql))
-    expect(inventoryDocInsert[1][3]).toBe(6) // 2 件 × (库存品A 1 + 库存品B 2)
+    expect(transactionClient.query.mock.calls.some(([sql]) => /inventory_cutover_states|inventory_stock_lots|inventory_docs|inventory_movements/.test(sql))).toBe(false)
     const pickupInsert = transactionClient.query.mock.calls.find(([sql]) => /INSERT INTO pickup_records/.test(sql))
     expect(pickupInsert[0]).toMatch(/VALUES \(\$1, NULL/)
   })
@@ -6733,7 +6732,6 @@ describe('order.createPickup', () => {
   test('超出可提货数量拒绝', async () => {
     const ctx = createManagerCtx({ saleItemId: 'item-001', inventorySkuId: 'inventory-sku-001', pickupQuantity: 10 })
     const clientResults = [
-      { rows: [{ status: '已初始化' }], rowCount: 1 },
       { rows: [{
         sale_item_id: 'item-001', sale_order_id: 'FY-001', store_id: 'store-001',
         product_type: '家居产品', item_direction: '购买', quantity: 5,
@@ -6751,7 +6749,6 @@ describe('order.createPickup', () => {
   test('跨店提货拒绝 — sale_items.store_id 与员工当前门店不一致', async () => {
     const ctx = createManagerCtx({ saleItemId: 'item-other-store', inventorySkuId: 'inventory-sku-001', pickupQuantity: 1 })
     const clientResults = [
-      { rows: [{ status: '已初始化' }], rowCount: 1 },
       { rows: [{
         sale_item_id: 'item-other-store', sale_order_id: 'FY-OTHER', store_id: 'store-999',
         product_type: '家居产品', item_direction: '购买', quantity: 5,

@@ -52,6 +52,7 @@ import {
   resolveCustomerOrderMarketScope,
   type CustomerOrderMarketScope,
 } from '@/lib/order-market-scope'
+import { INVENTORY_LINKAGE_ENABLED } from '@/lib/inventory-feature-flags'
 
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
 const opener = alias(staffWechatUsers, 'opener') as unknown as typeof staffWechatUsers
@@ -80,13 +81,14 @@ type CompositionSkuRow = {
 }
 
 /**
- * 冻结家居产品在下单当时的库存组成。新订单必须有有效组成；历史空快照只在提货时
- * 兼容读取最新配置，不能继续产生新的空快照数据。
+ * 联动开启时冻结家居产品在下单当时的库存组成；临时关闭时返回空 Map，
+ * 允许主流程写入 null 快照且不访问库存表。
  */
 async function loadInventoryCompositionSnapshots(
   tx: OrderTx,
   skuRows: CompositionSkuRow[],
 ): Promise<Map<string, SaleItemInventoryCompositionSnapshotV1>> {
+  if (!INVENTORY_LINKAGE_ENABLED) return new Map()
   const homeRows = [...new Map(
     skuRows
       .filter((row) => row.productType === '家居产品')
@@ -782,6 +784,8 @@ export const getOrders = withPermission(
 /** 订单列表筛选参数 */
 export interface OrderFilters {
   status?: string
+  /** 订单状态多选；由 URL `status=待支付,待审批` 解析而来。 */
+  statuses?: OrderStatus[]
   /** 订单类型多选；由 URL `type=销售单,转换单` 解析而来。 */
   types?: SaleOrderType[]
   marketId?: string
@@ -817,6 +821,9 @@ function buildOrderConditions(
 
   if (filters.status) {
     conditions.push(eq(saleOrders.status, filters.status as typeof saleOrders.status.enumValues[number]))
+  }
+  if (filters.statuses?.length) {
+    conditions.push(inArray(saleOrders.status, filters.statuses))
   }
   if (filters.types?.length) {
     conditions.push(inArray(saleOrders.saleOrderType, filters.types))

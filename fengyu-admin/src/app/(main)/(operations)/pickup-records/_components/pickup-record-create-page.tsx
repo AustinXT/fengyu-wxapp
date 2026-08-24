@@ -20,6 +20,7 @@ import {
 import type { Customer, Store } from '@/lib/types'
 import { formatPhoneSafe } from '@/lib/format'
 import { actionErrorMessage } from '@/lib/action-error'
+import { INVENTORY_LINKAGE_ENABLED } from '@/lib/inventory-feature-flags'
 
 interface Props {
   stores: Store[]
@@ -51,6 +52,12 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
 
   useEffect(() => {
     let cancelled = false
+
+    if (!INVENTORY_LINKAGE_ENABLED) {
+      setInventorySkuOptions([])
+      setLoadingInventorySkuOptions(false)
+      return () => { cancelled = true }
+    }
 
     if (!selectedItemId || !pickupStoreId) {
       setInventorySkuOptions([])
@@ -129,12 +136,14 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
   const canSubmit =
     !!customer &&
     !!selectedItem &&
-    inventorySkuOptions.length > 0 &&
     !!pickupStoreId &&
     pickupQuantity > 0 &&
     pickupQuantity <= (selectedItem?.remaining ?? 0) &&
-    inventorySkuOptions.every((component) =>
-      component.availableQuantity >= component.quantityPerSaleUnit * pickupQuantity)
+    (!INVENTORY_LINKAGE_ENABLED || (
+      inventorySkuOptions.length > 0 &&
+      inventorySkuOptions.every((component) =>
+        component.availableQuantity >= component.quantityPerSaleUnit * pickupQuantity)
+    ))
 
   const handleSubmit = async () => {
     if (!canSubmit || !customer || !selectedItem) return
@@ -357,7 +366,7 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
                   onChange={(e) => handleQuantityChange(Number(e.target.value))}
                 />
               </div>
-              <div className="col-span-2 md:col-span-3 rounded-lg border bg-[#FAFAFA] p-4">
+              {INVENTORY_LINKAGE_ENABLED && <div className="col-span-2 md:col-span-3 rounded-lg border bg-[#FAFAFA] p-4">
                 <div className="mb-2 text-sm font-medium">本次将自动出库</div>
                 {loadingInventorySkuOptions ? (
                   <p className="text-sm text-[#888888]">加载销售商品组成中...</p>
@@ -382,7 +391,7 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
                     })}
                   </div>
                 )}
-              </div>
+              </div>}
               <div className="col-span-2">
                 <label className="text-sm text-[#999999]">备注（可选）</label>
                 <Input

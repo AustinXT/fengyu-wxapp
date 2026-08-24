@@ -1191,10 +1191,7 @@ describe('createOrder — B2 拆行（疗程卡 quantity>1 → N 行）', () => 
     expect(saleItemInserts).toHaveLength(1)
     expect(saleItemInserts[0].values.quantity).toBe(10)
     expect(saleItemInserts[0].values.productType).toBe('家居产品')
-    expect(saleItemInserts[0].values.inventoryCompositionSnapshot).toMatchObject({
-      version: 1,
-      components: [{ inventorySkuId: 'inventory-sku-001', quantityPerSaleUnit: 1 }],
-    })
+    expect(saleItemInserts[0].values.inventoryCompositionSnapshot).toBeNull()
   })
 })
 
@@ -1304,7 +1301,7 @@ describe('createDepositOrder — 疗程卡逐张落库', () => {
     expect(saleItemInserts.map((c) => c.values.sessionCount)).toEqual([null, null, null])
     expect(saleItemInserts.map((c) => c.values.remainingSessions)).toEqual([null, null, null])
     expect(new Set(saleItemInserts.map((c) => c.values.saleItemGroupId)).size).toBe(1)
-    expect(saleItemInserts.every((c) => c.values.inventoryCompositionSnapshot?.version === 1)).toBe(true)
+    expect(saleItemInserts.every((c) => c.values.inventoryCompositionSnapshot == null)).toBe(true)
   })
 
   it('受限普通 SKU 不匹配顾客绑定门店市场时拒绝提交', async () => {

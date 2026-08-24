@@ -43,6 +43,7 @@ const {
 } = require('../utils/refund')
 const { logOperation, logTransition } = require('../utils/operation-log')
 const { shanghaiDateStr, shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
+const { INVENTORY_LINKAGE_ENABLED } = require('../utils/feature-flags')
 
 // 模块级缓存：saleOrderId → qrcodeUrl，避免轮询时重复生成
 const qrcodeCache = new Map()
@@ -76,6 +77,7 @@ function roundMoney(value) {
 }
 
 async function loadInventoryCompositionSnapshots(client, items) {
+  if (!INVENTORY_LINKAGE_ENABLED) return new Map()
   const homeItems = [...new Map(
     items.filter((item) => item.productType === '家居产品').map((item) => [item.skuId, item]),
   ).values()]
@@ -1610,7 +1612,7 @@ async function create(ctx) {
     //   - zeroPayable（券/卡全额抵扣）：下方 deductPrepaidCardAtCreation 在 create 事务内即扣即结清；
     //   - 非 zeroPayable（部分储值卡 + 待付现金）：由 confirmOffline 扣卡（staffApi 唯一扣卡点，见 CLAUDE.md）。
 
-    // 创建订单明细。家居产品在建单时冻结库存组成；未配置则整单回滚。
+    // 创建订单明细。联动开启时冻结家居产品库存组成；临时关闭时写 null，不阻断建单。
     const compositionSnapshots = await loadInventoryCompositionSnapshots(client, itemDataList)
     for (let i = 0; i < itemDataList.length; i++) {
       const saleItemId = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
@@ -5011,8 +5013,8 @@ async function createPickupInventoryDoc(client, ctx, updatedItem, requirements, 
 /**
  * 对同一销售行组拆出的家居明细执行一次提货。
  *
- * 库存按下单快照（历史空快照按最新组成）与批次扣减链路；出库单按本次
- * 提货汇总，提货记录与已提数量则逐个物理明细落库，保持退款级联可追溯。
+ * 联动开启时按下单快照和批次库存扣减；临时关闭时只写提货记录与已提数量，
+ * 两种模式都保持退款级联可追溯。
  */
 async function createGroupedPickup(ctx, saleItemIds, pickupQuantity, remark, idempotencyKey) {
   const ids = [...new Set(saleItemIds.filter((id) => typeof id === 'string' && id))].sort()
@@ -5039,14 +5041,14 @@ async function createGroupedPickup(ctx, saleItemIds, pickupQuantity, remark, ide
           pickedUp: pickedIds.length,
           total: ids.length,
           remaining: ids.length - pickedIds.length,
-          inventoryMode: 'composition',
+          inventoryMode: INVENTORY_LINKAGE_ENABLED ? 'composition' : 'record-only',
           message: '提货成功（幂等）',
         }
         return
       }
     }
 
-    await assertWorkfineInventoryInitialized(client)
+    if (INVENTORY_LINKAGE_ENABLED) await assertWorkfineInventoryInitialized(client)
     const locked = await client.query(
       `SELECT si.sale_item_id, si.sale_item_group_id, si.sale_order_id, si.store_id, si.sku_id,
               si.product_name, si.quantity, COALESCE(si.picked_up_quantity, 0) AS picked_up_quantity,
@@ -5094,20 +5096,23 @@ async function createGroupedPickup(ctx, saleItemIds, pickupQuantity, remark, ide
       throw new Error(`INVALID_STATE: 已支付可提数量不足，当前可提 ${eligible.length}`)
     }
     const selected = eligible.slice(0, pickupQuantity)
-    const requirements = await buildPickupRequirements(client, selected.map((item) => ({
-      ...item,
-      pickupUnits: 1,
-    })))
-    const inventoryDocId = await createPickupInventoryDoc(
-      client,
-      ctx,
-      first,
-      requirements,
-      first.client_user_id,
-      first.customer_name,
-      remark,
-      idempotencyKey,
-    )
+    let inventoryDocId = null
+    if (INVENTORY_LINKAGE_ENABLED) {
+      const requirements = await buildPickupRequirements(client, selected.map((item) => ({
+        ...item,
+        pickupUnits: 1,
+      })))
+      inventoryDocId = await createPickupInventoryDoc(
+        client,
+        ctx,
+        first,
+        requirements,
+        first.client_user_id,
+        first.customer_name,
+        remark,
+        idempotencyKey,
+      )
+    }
 
     for (const item of selected) {
       const updated = await client.query(
@@ -5133,7 +5138,7 @@ async function createGroupedPickup(ctx, saleItemIds, pickupQuantity, remark, ide
       _v: 5,
       saleItemIds: selected.map((item) => item.sale_item_id),
       pickupQuantity: selected.length,
-      inventoryMode: 'composition',
+      inventoryMode: INVENTORY_LINKAGE_ENABLED ? 'composition' : 'record-only',
       inventoryDocId,
     })
     result = {
@@ -5141,7 +5146,7 @@ async function createGroupedPickup(ctx, saleItemIds, pickupQuantity, remark, ide
       pickedUp: selected.length,
       total: ids.length,
       remaining: ids.length - selected.length,
-      inventoryMode: 'composition',
+      inventoryMode: INVENTORY_LINKAGE_ENABLED ? 'composition' : 'record-only',
       message: '提货成功',
     }
   })
@@ -5193,6 +5198,7 @@ async function createPickup(ctx) {
         pickedUp: Number(r.picked_quantity || 0),
         total: Number(r.quantity),
         remaining: pendingHomeProductQuantity(r),
+        inventoryMode: INVENTORY_LINKAGE_ENABLED ? 'composition' : 'record-only',
         message: '取货成功（幂等）',
       }
       return
@@ -5209,7 +5215,7 @@ async function createPickup(ctx) {
   let updated
   let pendingAfterPickup = 0
   await pg.transaction(async (client) => {
-    await assertWorkfineInventoryInitialized(client)
+    if (INVENTORY_LINKAGE_ENABLED) await assertWorkfineInventoryInitialized(client)
     // 1) 锁定销售明细后按净实收重算已付整件数，防止旧页面或并发请求超额提货。
     const locked = await client.query(
       `SELECT si.sale_item_id, si.sale_order_id, si.store_id, si.sku_id, si.product_name,
@@ -5259,22 +5265,25 @@ async function createPickup(ctx) {
     const customerName = row.customer_name || null
     updated = result.rows[0]
     pendingAfterPickup = pendingBeforePickup - requestedQuantity
-    const requirements = await buildPickupRequirements(client, [{
-      ...updated,
-      pickupUnits: requestedQuantity,
-    }])
+    let inventoryDocId = null
+    if (INVENTORY_LINKAGE_ENABLED) {
+      const requirements = await buildPickupRequirements(client, [{
+        ...updated,
+        pickupUnits: requestedQuantity,
+      }])
 
-    // 3) 按完整组成写入统一库存单据 + 库存扣减流水。任一项不足时整单回滚。
-    const inventoryDocId = await createPickupInventoryDoc(
-      client,
-      ctx,
-      updated,
-      requirements,
-      clientUserId,
-      customerName,
-      remark,
-      idempotencyKey,
-    )
+      // 按完整组成写入统一库存单据 + 库存扣减流水。任一项不足时整单回滚。
+      inventoryDocId = await createPickupInventoryDoc(
+        client,
+        ctx,
+        updated,
+        requirements,
+        clientUserId,
+        customerName,
+        remark,
+        idempotencyKey,
+      )
+    }
 
     // 4) 插入提货记录（DB 层 uq_pickup_idempotency 兜底 race；命中则整事务 rollback 防 UPDATE/库存重复扣减）
     try {
@@ -5297,7 +5306,7 @@ async function createPickup(ctx) {
       _v: 4,
       pickupQuantity: requestedQuantity,
       productSkuId: updated.sku_id,
-      inventoryMode: 'composition',
+      inventoryMode: INVENTORY_LINKAGE_ENABLED ? 'composition' : 'record-only',
       clientUserId,
       storeId: ctx.auth.effectiveStoreId,
       pickedUp: updated.picked_up_quantity,
@@ -5311,7 +5320,7 @@ async function createPickup(ctx) {
     pickedUp: updated.picked_up_quantity,
     total: updated.quantity,
     remaining: pendingAfterPickup,
-    inventoryMode: 'composition',
+    inventoryMode: INVENTORY_LINKAGE_ENABLED ? 'composition' : 'record-only',
     message: '取货成功',
   }
 }
