@@ -2251,7 +2251,36 @@ async function cancel(ctx) {
   const order = orders[0]
 
   if (order.lakala_out_order_no) {
-    throw new Error('CONFLICT: PAYMENT_INTENT_ACTIVE: 在线支付仍在处理中，暂不能取消订单')
+    // wx.requestPayment 失败/取消只发生在小程序侧，云函数不会自动获知；预下单时写入的
+    // lakala_out_order_no 因此仍可能残留。取消前必须以渠道状态为准：仅 FAIL/CLOSE 是
+    // 可安全释放的明确终态，SUCCESS/处理中/查询异常都不能本地关单，避免已扣款未入账。
+    let merchant
+    try {
+      merchant = await resolveLakalaMerchant(order.store_id)
+      if (!merchant) {
+        throw new Error('拉卡拉商户配置不可用')
+      }
+      const trade = await lakalaClient.queryTrade({
+        merchantNo: merchant.merchantNo,
+        termNo: merchant.termNo,
+        outTradeNo: order.lakala_out_order_no,
+      })
+      if (trade && ['FAIL', 'CLOSE'].includes(trade.tradeState)) {
+        const released = await releaseLakalaPaymentIntent(orderNo, order.lakala_out_order_no)
+        if (released.length === 0) {
+          throw new Error('CONFLICT: PAYMENT_INTENT_CHANGED: 支付状态已变化，请刷新订单后重试')
+        }
+        order.lakala_out_order_no = null
+      } else if (trade && trade.tradeState === 'SUCCESS') {
+        throw new Error('CONFLICT: PAYMENT_ALREADY_SUCCEEDED: 支付已成功，正在更新订单，请稍后刷新')
+      } else {
+        throw new Error('CONFLICT: PAYMENT_INTENT_ACTIVE: 支付结果仍在确认中，请稍后再取消')
+      }
+    } catch (err) {
+      if (err && /^CONFLICT:/.test(String(err.message || ''))) throw err
+      console.warn('[order/cancel] 支付状态查询失败，保留活动意图:', orderNo, err && err.message)
+      throw new Error('CONFLICT: PAYMENT_STATUS_UNCERTAIN: 暂时无法确认支付结果，请稍后重试')
+    }
   }
 
   // 允许取消状态：待支付（常规）、已支付（仅全额抵扣单，需回冲储值卡）

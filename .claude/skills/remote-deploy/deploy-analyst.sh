@@ -115,6 +115,8 @@ read_env_value() {
 DEPLOY_CLOUDBASE_ENV_ID=$(read_env_value CLOUDBASE_ENV_ID)
 DEPLOY_CDN_BASE=$(read_env_value CDN_BASE)
 CONFIGURED_ANALYST_PUBLIC_ORIGIN=$(read_env_value ANALYST_PUBLIC_ORIGIN)
+CONFIGURED_ANALYST_ADMIN_ORIGIN=$(read_env_value ANALYST_ADMIN_ORIGIN)
+CONFIGURED_ANALYST_ADMIN_LOGIN_URL=$(read_env_value ANALYST_ADMIN_LOGIN_URL)
 # The public analyst address is shared with the admin build. Reading it from the
 # selected environment prevents a production release from silently falling back
 # to the database IP address.
@@ -123,8 +125,8 @@ if ! node -e 'const u = new URL(process.argv[1]); if (!/^https?:$/.test(u.protoc
   echo "✗ ANALYST_PUBLIC_ORIGIN 必须是无账号密码的 http(s) URL。" >&2
   exit 1
 fi
-ANALYST_ADMIN_ORIGIN="${ANALYST_ADMIN_ORIGIN:-http://$PUBLIC_HOST:$ADMIN_PORT}"
-ANALYST_ADMIN_LOGIN_URL="${ANALYST_ADMIN_LOGIN_URL:-$ANALYST_ADMIN_ORIGIN/login}"
+ANALYST_ADMIN_ORIGIN="${ANALYST_ADMIN_ORIGIN:-$CONFIGURED_ANALYST_ADMIN_ORIGIN}"
+ANALYST_ADMIN_LOGIN_URL="${ANALYST_ADMIN_LOGIN_URL:-$CONFIGURED_ANALYST_ADMIN_LOGIN_URL}"
 RUNTIME_ENV_FILE=$(mktemp "${TMPDIR:-/tmp}/fengyu-analyst-runtime.XXXXXX")
 bash scripts/render-admin-runtime-env.sh "$ENV" "$RUNTIME_ENV_FILE"
 COMPOSE_OVERRIDE="docker-compose.remote.yml"
