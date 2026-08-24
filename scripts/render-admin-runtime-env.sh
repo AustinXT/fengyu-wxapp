@@ -41,15 +41,11 @@ STAFF_SECRET_SOURCE="$ENV_FILE"
 STAFF_SECRET_ID="$(read_value "$ENV_FILE" STAFF_TENCENTCLOUD_SECRETID)"
 STAFF_SECRET_KEY="$(read_value "$ENV_FILE" STAFF_TENCENTCLOUD_SECRETKEY)"
 if [[ -z "$STAFF_SECRET_ID" || -z "$STAFF_SECRET_KEY" ]]; then
-  if [[ "$ENV_NAME" == "test" ]]; then
-    STAFF_SECRET_ID="$(required_value "$ENV_FILE" TENCENTCLOUD_SECRETID)"
-    STAFF_SECRET_KEY="$(required_value "$ENV_FILE" TENCENTCLOUD_SECRETKEY)"
-  else
-    # dev 历史配置把 staff 账号凭据放在 fengyu-staff/.env；兼容读取但不复制进仓库。
-    STAFF_SECRET_SOURCE="$ROOT/fengyu-staff/.env"
-    STAFF_SECRET_ID="$(required_value "$STAFF_SECRET_SOURCE" TENCENTCLOUD_SECRETID)"
-    STAFF_SECRET_KEY="$(required_value "$STAFF_SECRET_SOURCE" TENCENTCLOUD_SECRETKEY)"
-  fi
+  # 历史配置把 staff 子账号凭据放在 fengyu-staff/.env；兼容读取但不复制进仓库。
+  # 所有环境都只能回退到 staff 账号，绝不能把 client 的通用 TENCENTCLOUD_* 注入 staffApi。
+  STAFF_SECRET_SOURCE="$ROOT/fengyu-staff/.env"
+  STAFF_SECRET_ID="$(required_value "$STAFF_SECRET_SOURCE" TENCENTCLOUD_SECRETID)"
+  STAFF_SECRET_KEY="$(required_value "$STAFF_SECRET_SOURCE" TENCENTCLOUD_SECRETKEY)"
 fi
 
 umask 077

@@ -197,7 +197,7 @@ unset MIGRATE_DATABASE_URL
 - 正常全量发布时在 admin 发布之后执行，使 admin 顶栏与 analyst 容器使用同一 `ANALYST_PUBLIC_ORIGIN`。
 - `$ENV=prod` 时脚本有交互式二次确认（输入 `yes`）；`$ENV=dev|test` 无 confirm。
 - 脚本内部：本地 buildx `--platform linux/amd64` → 镜像传输 → 同步 compose + analyst 运行期配置 → `compose up -d analyst` → 容器、HTTP、DB IP、`NEXT_PUBLIC_ANALYST_ORIGIN`、JWT 终检。
-- 复述 `✓ HTTP 健康检查通过`、DATABASE_URL 脱敏回显、`NEXT_PUBLIC_ANALYST_ORIGIN` 与 Phase 0 的值一致，以及 analyst DB host 与 `$ENV` 一致。失败时停止，按脚本输出使用 `deploy-analyst.sh --rollback $SSH_HOST` 回滚。
+- 复述 `✓ HTTP 健康检查通过`、DATABASE_URL 脱敏回显、`NEXT_PUBLIC_ANALYST_ORIGIN` 与 Phase 0 的值一致，以及 analyst DB host 与 `$ENV` 一致。失败时停止，按脚本输出使用 `deploy-analyst.sh --rollback $SSH_HOST` 回滚；脚本会为 `sqlserver101` / `fengyu-prod` 选择 `/www/wwwroot/fengyu-admin/docker`，为 `ali-demo` 选择 `/root/proj.xt.com/fengyu-wxapp/docker`。
 
 ---
 

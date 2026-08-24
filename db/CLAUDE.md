@@ -50,10 +50,11 @@ npm run db:studio     # Drizzle Studio 可视化管理
 2. `npm run db:generate` — drizzle-kit 产出 `migrations/00NN_<name>.sql` + 对应 `meta/00NN_snapshot.json` + 更新 `meta/_journal.json`
 3. **本地验证**：起一个临时 docker PG，用 `DATABASE_URL=postgresql://postgres:...@localhost:54399/test npx drizzle-kit migrate` 在空库上跑一次，确认新 migration 能从零 apply 起整个 schema
 4. **提交 PR**：必须同时包含 `schema/*.ts` + `migrations/00NN_*.sql` + `migrations/meta/` 三者的改动，缺一不可
-5. **部署**：PR merge 后，**两个库都要迁**（双活，不是生产 + 冷备）：
-   - 开发期：`npm run db:migrate` 默认打 **47.113.202.7:5433/fengyu_wxapp**（开发/测试库，`db/.env` 里的 URL）
-   - 生产变更：显式传 URL 再对 **118.178.196.26:5433/fengyu_wxapp**（生产库）迁一次：`DATABASE_URL="postgresql://fengyu:fengyu123@118.178.196.26:5433/fengyu_wxapp" npm run db:migrate`
-   - 详见下文「生产库与开发/测试库（双机）」小节
+5. **部署**：PR merge 后，**dev / test / prod 三个业务库都要迁**（都在使用，不是生产 + 冷备）：
+   - dev：`npm run db:migrate` 默认打 **47.113.202.7:5433/fengyu_wxapp**（`db/.env` 的 URL）
+   - test：从 `envs/test.env` 的 `PG_CONNECTION_STRING` 显式迁 **101.34.242.103:5433/fengyu_wxapp**；不得使用容器网桥地址 `172.18.0.1`
+   - prod：从 `envs/prod.env` 的 `ADMIN_DATABASE_URL` 显式迁 **118.178.196.26:5433/fengyu_wxapp**
+   - 详见下文「dev / test / prod 三套业务库」小节；完整发版优先使用 `/release-all <env>` 的目标断言与迁移门禁
 
 ### 严格禁止
 
@@ -61,7 +62,7 @@ npm run db:studio     # Drizzle Studio 可视化管理
 - **禁止** 手写 `.sql` 文件塞进 `db/migrations/`（哪怕序号不冲突）
 - **禁止** 手动编辑 `db/migrations/meta/_journal.json`（baseline reset 收尾用 `db/scripts/reset-drizzle-journal.js` 除外）
 - **禁止** 在已 merge 的 migration 上原地修改，应该写一个新 migration 修复
-- **禁止** 用 `db:push` 对生产/开发库 push schema，会让 journal 脱节
+- **禁止** 用 `db:push` 对 prod/test/dev 任一业务库 push schema，会让 journal 脱节
 - **唯一例外**：生成的 migration `.sql` 文件末尾可以追加手写 `UPDATE`/`INSERT` 做数据回填（参考归档里的
   `_archive_pre_baseline_2026_04/sql/0018_green_rogue.sql` 模式），但**只能追加**，不能修改 drizzle-kit 生成的部分
 
@@ -71,27 +72,44 @@ npm run db:studio     # Drizzle Studio 可视化管理
 - **已在远程 apply 过的 migration 要改**：**绝对不要**改它，写一个新的 migration 来修复
 - **发现 schema.ts 和实际库 drift**：不要再 psql 补漏，一律走 `db:generate` → review SQL → `db:migrate` 流程
 
-## 生产库与开发/测试库（2026-07-17 双机迁移）
+## dev / test / prod 三套业务库（2026-08-24 三环境拆分）
 
-项目有两个独立 PG 实例，分处两台服务器。**自 2026-07-17 起按「生产 / 开发+测试」双机划分**（取代此前 ali-demo 单机双端口拓扑；旧拓扑见 `project_env_topology_202607` memory）。**两个库都在使用，schema 必须同时维护——不是生产 + 冷备的关系。**
+项目有三个独立 PG 实例，分处三台服务器。2026-08-24 起 test 从原 dev/test 共库拓扑拆到
+`sqlserver101`；此前 2026-07-17 的「生产 / 开发+测试」双机口径不再适用。**三套库都在使用，schema
+必须同步维护——不是生产 + 冷备的关系。**
 
 | 角色 | 连接 | 使用方 |
 |------|------|--------|
-| **生产业务库** | `postgresql://fengyu:fengyu123@118.178.196.26:5433/fengyu_wxapp`（fengyu-prod 服务器） | 线上 admin（`docker-compose.remote.yml` 的 `ADMIN_DATABASE_URL`）、prod CloudBase env 的 staffApi / clientApi / payNotify、**trial + release 版小程序** |
-| **开发/测试库** | `postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp`（ali-demo 服务器） | 本地 admin（`.env.local`）、dev CloudBase env 的云函数、**仅 develop 版小程序**、`db/.env` 的 `DATABASE_URL`（`db:migrate` 默认目标）。**5434/fengyu 已删除，dev 与 test 合并共用此库** |
+| **prod 业务库** | `postgresql://fengyu:***@118.178.196.26:5433/fengyu_wxapp`（fengyu-prod） | 线上 admin、prod CloudBase 的 staffApi / clientApi / payNotify、**trial + release 版小程序** |
+| **test 业务库** | 本地迁移：`postgresql://fengyu:***@101.34.242.103:5433/fengyu_wxapp`；101 容器：`postgresql://fengyu:***@172.18.0.1:5433/fengyu_wxapp` | sqlserver101 上的 test admin / analyst；test 没有独立 CloudBase，禁止部署云函数 |
+| **dev 业务库** | `postgresql://fengyu:***@47.113.202.7:5433/fengyu_wxapp`（ali-demo） | 本地/远程 dev admin、dev CloudBase 云函数、**仅 develop 版小程序**、`db/.env` 默认迁移目标 |
 
-⚠ 两个库**均用 5433 端口 + fengyu_wxapp 库名**，仅靠 **IP** 区分（prod=118.178.196.26 / dev·测试=47.113.202.7）。`deploy-cloudfunctions.sh` 与 `dump-prod.sh` 已改为按 IP 校验环境（旧的端口约定 5434=dev/5433=prod 作废）。
+⚠ 三套库**均用 5433 端口 + `fengyu_wxapp` 库名**，本地迁移仅靠 **IP** 区分：
+dev=`47.113.202.7`、test=`101.34.242.103`、prod=`118.178.196.26`。`172.18.0.1` 只允许
+sqlserver101 上的容器回连宿主，禁止作为本地 migration / backfill 目标。
 
-**schema 变更两个库都要迁**：
+**schema 变更三个库都要迁**：
 
-- 开发期：`npm run db:migrate` 默认打 **47.113.202.7:5433/fengyu_wxapp**（开发/测试库，`db/.env` 里的 URL）。
-- 生产变更：显式传 URL 再对 **118.178.196.26:5433/fengyu_wxapp**（生产库）迁一次：
+- dev：`npm run db:migrate` 默认打 **47.113.202.7:5433/fengyu_wxapp**。
+- test：必须从 `../envs/test.env` 读取 `PG_CONNECTION_STRING`，并在执行前断言公网 host 是
+  **101.34.242.103**。
+- prod：必须从 `../envs/prod.env` 读取 `ADMIN_DATABASE_URL`，并在执行前断言 host 是
+  **118.178.196.26**。
 
 ```bash
-DATABASE_URL="postgresql://fengyu:fengyu123@118.178.196.26:5433/fengyu_wxapp" npm run db:migrate
+TARGET_DATABASE_URL="$(grep -m1 '^PG_CONNECTION_STRING=' ../envs/test.env | cut -d= -f2- | tr -d '\r\"')"
+node -e 'const u=new URL(process.argv[1]); if(u.hostname!=="101.34.242.103"||u.port!=="5433"||u.pathname!=="/fengyu_wxapp") process.exit(1)' "$TARGET_DATABASE_URL"
+DATABASE_URL="$TARGET_DATABASE_URL" npm run db:migrate
+
+TARGET_DATABASE_URL="$(grep -m1 '^ADMIN_DATABASE_URL=' ../envs/prod.env | cut -d= -f2- | tr -d '\r\"')"
+node -e 'const u=new URL(process.argv[1]); if(u.hostname!=="118.178.196.26"||u.port!=="5433"||u.pathname!=="/fengyu_wxapp") process.exit(1)' "$TARGET_DATABASE_URL"
+DATABASE_URL="$TARGET_DATABASE_URL" npm run db:migrate
+unset TARGET_DATABASE_URL
 ```
 
-**数据修复 / backfill**：先分清目标库——开发/测试改 47.113.202.7:5433、生产改 118.178.196.26:5433，**永远显式传 `DATABASE_URL`**。**e2e 绝不碰生产 IP 118.178.196.26。**
+**数据修复 / backfill**：先分清目标环境——dev=`47.113.202.7:5433`、test=`101.34.242.103:5433`、
+prod=`118.178.196.26:5433`，**永远显式传 `DATABASE_URL` 并断言 host/port/dbname**。仅修某环境的数据时只跑
+目标库；需要三环境一致的修复必须三库分别执行并记录结果。**e2e 只允许使用 dev，绝不碰 test 或 prod。**
 
 ## Baseline reset 历史
 
@@ -99,7 +117,7 @@ DATABASE_URL="postgresql://fengyu:fengyu123@118.178.196.26:5433/fengyu_wxapp" np
 `db/migrations/_archive_pre_baseline_2026_04/README.md`。在此之前的迁移历史通过 git log 和归档目录查询。
 
 **5433 drift 修复（同日完成）**：5433/fengyu_wxapp 的 schema drift 已通过 `db/scripts/5433-converge.sql`
-一次性 delta DDL 修复，并用 `db/scripts/reset-drizzle-journal.js` 对齐 journal。两库的 `drizzle.__drizzle_migrations`
+一次性 delta DDL 修复，并用 `db/scripts/reset-drizzle-journal.js` 对齐 journal。当时 prod/dev 两库的 `drizzle.__drizzle_migrations`
 现在完全一致（同一 baseline hash + created_at）。drift 历史清单保留在 `db/scripts/follow-up-5433-drift.txt` 文件头加了 RESOLVED 标记。
 全量备份位于 `~/backups/5433-before-drift-fix-20260410.dump`（50MB custom format）。
 
@@ -156,7 +174,7 @@ docker rm -f pg-from-zero
 - 幂等：再跑一次会全 SKIP
 - 与后续 `npm run db:migrate` 完全兼容
 
-**生产 118.178.196.26:5433 / 开发·测试 47.113.202.7:5433 不要跑此脚本**（已 apply 过；直接 `npm run db:migrate` 即可）。
+**prod 118.178.196.26:5433 / test 101.34.242.103:5433 / dev 47.113.202.7:5433 都不要跑此脚本**（业务库应直接运行目标断言后的 `db:migrate`）。
 
 ## 同步脚本
 

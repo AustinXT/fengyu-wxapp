@@ -42,13 +42,16 @@ metadata:
 
 ## 回滚
 
-本地保留所有构建过的镜像：
+远程会保留上一版 analyst 镜像，回滚脚本会按已知 SSH host 推断正确目录；未知 host
+必须显式传目录：
 
 ```bash
-# 查看历史版本
-docker images fengyu-admin
+# test（自动使用 /www/wwwroot/fengyu-admin/docker）
+./deploy-analyst.sh --rollback sqlserver101
 
-# 回滚到指定版本
-docker tag fengyu-admin:<old-tag> fengyu-admin:latest
-./deploy-admin.sh
+# 自定义 host
+./deploy-analyst.sh --rollback <ssh-host> <remote-dir>
 ```
+
+admin 回滚需在目标远程主机把已验证的旧镜像重新标记为 `fengyu-admin:latest`，再用同环境
+`./deploy-admin.sh <dev|test|prod>` 重新部署。

@@ -62,6 +62,21 @@ read_env_value() {
   printf '%s' "$value"
 }
 
+read_staff_account_value() {
+  local key="$1"
+  local value
+  value=$(grep -m1 "^STAFF_${key}=" "envs/$ENV.env" 2>/dev/null | cut -d= -f2- | tr -d '\r"' || true)
+  if [[ -z "$value" ]]; then
+    # 兼容历史配置，但只允许回退到 staff 子账号文件，绝不能读取 client 的通用凭据。
+    value=$(grep -m1 "^${key}=" "fengyu-staff/.env" 2>/dev/null | cut -d= -f2- | tr -d '\r"' || true)
+  fi
+  if [[ -z "$value" ]]; then
+    echo "✗ envs/$ENV.env 缺少 STAFF_${key}，且 fengyu-staff/.env 缺少 $key，无法部署。" >&2
+    exit 1
+  fi
+  printf '%s' "$value"
+}
+
 read_remote_env_value() {
   local key="$1"
   local value
@@ -88,8 +103,8 @@ test "$(get_env LAKALA_APPID)" != 'OP00000003' || { echo 'invalid:LAKALA_APPID' 
 EOF
 }
 
-# 远程 .env 保存账号密钥等运行期秘密；只传输目标环境的非敏感存储标识，
-# 并用独立变量名覆盖 compose 插值，避免误用远程残留的另一环境值。
+# 远程 .env 保存账号密钥等运行期秘密；目标环境的 client/staff 标识和独立账号凭据
+# 通过权限为 0600 的临时覆盖文件传输，避免误用远程残留的另一端账号或另一环境值。
 # test 部署以 101 服务器自己的 .env 为准，避免把配置复制进本机或 Git。
 if [[ "$IS_LAKALA_TEST_TARGET" == true ]]; then
   if ! check_test_onboarding_runtime; then
@@ -104,8 +119,8 @@ else
 fi
 DEPLOY_CLIENT_SECRET=$(read_env_value CLIENT_SECRET)
 DEPLOY_STAFF_ENV_ID=$(read_env_value STAFF_ENV_ID)
-DEPLOY_STAFF_TENCENTCLOUD_SECRETID=$(read_env_value TENCENTCLOUD_SECRETID)
-DEPLOY_STAFF_TENCENTCLOUD_SECRETKEY=$(read_env_value TENCENTCLOUD_SECRETKEY)
+DEPLOY_STAFF_TENCENTCLOUD_SECRETID=$(read_staff_account_value TENCENTCLOUD_SECRETID)
+DEPLOY_STAFF_TENCENTCLOUD_SECRETKEY=$(read_staff_account_value TENCENTCLOUD_SECRETKEY)
 RUNTIME_ENV_FILE=$(mktemp "${TMPDIR:-/tmp}/fengyu-admin-runtime.XXXXXX")
 trap 'rm -f "$RUNTIME_ENV_FILE"' EXIT
 printf 'DEPLOY_CLOUDBASE_ENV_ID=%s\nDEPLOY_CDN_BASE=%s\nDEPLOY_CLIENT_SECRET=%s\nDEPLOY_STAFF_ENV_ID=%s\nDEPLOY_STAFF_TENCENTCLOUD_SECRETID=%s\nDEPLOY_STAFF_TENCENTCLOUD_SECRETKEY=%s\n' \
@@ -238,7 +253,8 @@ docker save fengyu-admin:latest | gzip | ssh "$SSH_HOST" "docker load"
 
 echo "=== 3/5 同步 docker-compose 文件和环境覆盖（base + remote override）==="
 # remote override 让 admin 连远程 PG 5433、注入 JWT/RSA 私钥、禁用本地 postgres 容器。
-# CloudBase 标识从 envs/$ENV.env 生成 .admin-runtime.env，不能复用远程 .env 的残留值。
+# CloudBase 标识和 client/staff 独立凭据从 envs/$ENV.env 生成 .admin-runtime.env，
+# 不能复用远程 .env 的残留值。
 scp docker/docker-compose.yml "$SSH_HOST:$REMOTE_DIR/docker-compose.yml"
 scp "docker/$COMPOSE_OVERRIDE" "$SSH_HOST:$REMOTE_DIR/$COMPOSE_OVERRIDE"
 scp "$RUNTIME_ENV_FILE" "$SSH_HOST:$REMOTE_DIR/.admin-runtime.env"
