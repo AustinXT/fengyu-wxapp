@@ -1498,7 +1498,7 @@ function buildEContractReqData(app: NonNullable<Awaited<ReturnType<typeof getOnb
   const orderNo = app.eContractOrderNo || eContractOrderNo(app.id);
   return {
     order_no: orderNo,
-    org_id: Number(requireOnboardingConfig("LAKALA_ECONTRACT_ORG_ID", getEContractOrgId())),
+    org_id: Number(requireOnboardingConfig("LAKALA_ORG_CODE", getEContractOrgId())),
     ec_type_code: getEContractType(),
     cert_type: "RESIDENT_ID",
     cert_name: data.legalPersonData.larName,
@@ -1526,8 +1526,8 @@ function buildAddMerReqData(app: NonNullable<Awaited<ReturnType<typeof getOnboar
   const accountIdEnd = data.settlementData.accountIdDtEnd || idCardExpiryForSubmit(data.legalPersonData);
   const merAddr = validateTkbsMerchantAddress(data);
   return {
-    org_code: requireOnboardingConfig("LAKALA_ONBOARDING_ORG_CODE", getOrgCode()),
-    user_no: requireOnboardingConfig("LAKALA_ONBOARDING_USER_NO", getOnboardingUserNo()),
+    org_code: requireOnboardingConfig("LAKALA_ORG_CODE", getOrgCode()),
+    user_no: requireOnboardingConfig("LAKALA_USER_NO", getOnboardingUserNo()),
     email: data.contactData.email || getOnboardingEmail(),
     busi_code: getOnboardingBusiCode(),
     mer_reg_name: data.merchantData.merRegName,
@@ -1572,7 +1572,7 @@ function buildAddMerReqData(app: NonNullable<Awaited<ReturnType<typeof getOnboar
       term_num: process.env.LAKALA_ONBOARDING_TERM_NUM || "1",
       fees: DEFAULT_FEE_DATA,
       mcc: getOnboardingMcc(),
-      activity_id: requireOnboardingConfig("LAKALA_ONBOARDING_ACTIVITY_ID", getOnboardingActivityId()),
+      activity_id: requireOnboardingConfig("LAKALA_ACTIVITY_ID", getOnboardingActivityId()),
     },
     attchments: fileData,
     settle_type: process.env.LAKALA_ONBOARDING_SETTLE_TYPE || DEFAULT_LAKALA_VALUES.settleType,
