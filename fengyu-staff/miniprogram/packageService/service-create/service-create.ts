@@ -2,7 +2,7 @@
 import { callStaffApi } from '../../utils/cloud';
 import { formatDateTime, ORDER_TYPE_LABEL } from '../../utils/formatters';
 import { getCurrentStoreId, isManager } from '../../utils/role';
-import { expandGroupServiceSessions, getTreatmentCardBusinessIdentity, groupTreatmentCards, sumGroupValue } from '../../utils/treatment-card-group';
+import { collectSourceOrderRemarks, expandGroupServiceSessions, getTreatmentCardBusinessIdentity, groupTreatmentCards, SourceOrderRemark, sumGroupValue } from '../../utils/treatment-card-group';
 
 // 寄存单退款专用标准化备注（数据契约）。寄存单是上线时导入老系统历史剩余次数的初始化单据，未走收款流程、
 // 无法开正常退款单；退寄存疗程卡次数时走正常服务单扣减次数并在备注选此预设打标，供后续从消耗业绩统计过滤。
@@ -67,9 +67,11 @@ interface PaidOrderItem {
   remark?: string | null;
   salesCategory?: string | null;
   pickedUpQuantity?: number | null;
+  orderRemark?: string | null;
   groupKey?: string;
   cardCount?: number;
   sourceItems?: PaidOrderItem[];
+  sourceOrderRemarks?: SourceOrderRemark[];
 }
 
 interface SelectedPaidItem {
@@ -82,6 +84,7 @@ interface SelectedPaidItem {
   consumableSessions: number;
   cardCount: number;
   sourceItems: PaidOrderItem[];
+  sourceOrderRemarks: SourceOrderRemark[];
 }
 
 interface CardFilterOption {
@@ -178,7 +181,7 @@ Page({
   },
 
   _allPaidItems: [] as PaidOrderItem[],
-  _pendingPreloadedItems: [] as Array<{ saleItemId: string; sessionCount: number }>,
+  _pendingPreloadedItems: [] as Array<{ saleItemId: string; sessionCount: number; orderRemark: string | null }>,
 
   onLoad(options) {
     const { staffName, staffWfId } = app.globalData;
@@ -195,6 +198,7 @@ Page({
         this._pendingPreloadedItems = preload.items.map((item) => ({
           saleItemId: item.saleItemId,
           sessionCount: item.sessionCount,
+          orderRemark: item.orderRemark?.trim() || null,
         }));
         this.setData({
           selectedCustomer: preload.customer,
@@ -346,6 +350,7 @@ Page({
       const items: PaidOrderItem[] = [];
       for (const o of orders || []) {
         for (const i of o.items) {
+          const preloadedItem = this._pendingPreloadedItems.find((item) => item.saleItemId === i.saleItemId);
           const total = Number(i.totalSessions || i.sessionCount || 0);
           const remain = Number(i.remainingSessions || 0);
           const isNullCard = i.paidSessions == null;
@@ -357,6 +362,7 @@ Page({
           if (consumable <= 0 && !isNullCard) continue;
           items.push({
             ...i,
+            orderRemark: i.orderRemark?.trim() || preloadedItem?.orderRemark || null,
             saleOrderId: o.saleOrderId,
             saleOrderDatetime: o.saleOrderDatetime,
             orderStatus: o.status,
@@ -404,6 +410,7 @@ Page({
           groupKey: group.groupKey,
           sourceItems: group.sourceItems,
           cardCount: group.cardCount,
+          sourceOrderRemarks: collectSourceOrderRemarks(group.sourceItems),
           quantity: sumGroupValue(group, (item) => item.quantity ?? 1),
           totalSessions,
           sessionCount: totalSessions,
@@ -435,6 +442,7 @@ Page({
             consumableSessions: group.consumableSessions,
             cardCount: group.cardCount || 1,
             sourceItems: group.sourceItems || [group],
+            sourceOrderRemarks: group.sourceOrderRemarks || [],
           });
         }
         const flowNos: Record<string, boolean> = {};
@@ -543,6 +551,7 @@ Page({
         consumableSessions: paidItem.consumableSessions,
         cardCount: paidItem.cardCount || 1,
         sourceItems: paidItem.sourceItems || [paidItem],
+        sourceOrderRemarks: paidItem.sourceOrderRemarks || [],
       });
     }
     const flowNos: Record<string, boolean> = {};

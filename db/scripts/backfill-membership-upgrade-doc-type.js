@@ -2,13 +2,13 @@
 
 /**
  * backfill-membership-upgrade-doc-type.js — 一次性回填存量「成为会员那一单」的
- * is_membership_upgrade 标记 + document_type='售前'
+ * is_membership_upgrade 标记 + document_type='售前一次'
  *
  * 背景：
  *   document_type 创建判定原含「金额达标算售后」分支 B，导致「成为会员那一单」
  *   （下单时仍非会员客、因金额达标触发分支 B）被判成「售后」。已改为仅按下单时
  *   会员身份判（分支 B 移除，售前=非会员客，售后=会员客）。本脚本修正存量：给每个
- *   已是会员客的顾客，把其 paid_at 最早的达标销售单改 document_type='售前' 并补打
+ *   已是会员客的顾客，把其 paid_at 最早的达标销售单改 document_type='售前一次' 并补打
  *   is_membership_upgrade。
  *
  *   is_membership_upgrade 打标代码（recalcCustomerType，四端镜像）已写好但尚未部署，
@@ -22,7 +22,7 @@
  *   payNotify 原回款累计分支已退化为恒为空的死代码，故不存在「超集单」需在线打标的场景。
  *   本脚本只需覆盖单笔 total_amount >= threshold 的销售单。
  *
- * 幂等：UPDATE WHERE 跳过 (is_membership_upgrade=true AND document_type='售前') 的行，
+ * 幂等：UPDATE WHERE 跳过 (is_membership_upgrade=true AND document_type='售前一次') 的行，
  *   二次运行无副作用。
  *
  * 用法：
@@ -86,7 +86,7 @@ const PREVIEW_SQL = `
 SELECT
   COUNT(*)::int                                            AS target_orders,
   COUNT(DISTINCT client_user_id)::int                      AS target_customers,
-  SUM(CASE WHEN old_doc_type <> '售前' THEN 1 ELSE 0 END)::int              AS doc_type_to_fix,
+  SUM(CASE WHEN old_doc_type <> '售前一次' THEN 1 ELSE 0 END)::int          AS doc_type_to_fix,
   SUM(CASE WHEN old_flag = false THEN 1 ELSE 0 END)::int                    AS flag_to_set
   FROM _mem_upgrade_target
 `
@@ -94,10 +94,10 @@ SELECT
 const UPDATE_SQL = `
 UPDATE sale_orders
    SET is_membership_upgrade = true,
-       document_type = '售前',
+       document_type = '售前一次',
        updated_at = NOW()
  WHERE sale_order_id IN (SELECT sale_order_id FROM _mem_upgrade_target)
-   AND (is_membership_upgrade = false OR document_type <> '售前')
+   AND (is_membership_upgrade = false OR document_type <> '售前一次')
 RETURNING sale_order_id, client_user_id
 `
 

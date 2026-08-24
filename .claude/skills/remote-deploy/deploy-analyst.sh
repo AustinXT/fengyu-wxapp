@@ -2,7 +2,7 @@
 # Deploy fengyu-analyst to remote docker host.
 #
 # Usage:
-#   .claude/skills/remote-deploy/deploy-analyst.sh <dev|prod> [ssh-host] [remote-dir] [public-host]
+#   .claude/skills/remote-deploy/deploy-analyst.sh <dev|test|prod> [ssh-host] [remote-dir] [public-host]
 #   .claude/skills/remote-deploy/deploy-analyst.sh --rollback <ssh-host>
 #
 # Rollback:
@@ -53,18 +53,20 @@ if [[ "${1:-}" == "--rollback" ]]; then
   exit 0
 fi
 
-if [[ -z "${1:-}" ]] || [[ ! "$1" =~ ^(dev|prod)$ ]]; then
-  echo "Usage: $0 <dev|prod> [ssh-host] [remote-dir] [public-host]" >&2
+if [[ -z "${1:-}" ]] || [[ ! "$1" =~ ^(dev|test|prod)$ ]]; then
+  echo "Usage: $0 <dev|test|prod> [ssh-host] [remote-dir] [public-host]" >&2
   echo "       $0 --rollback <ssh-host>" >&2
   exit 1
 fi
 
 ENV="$1"
-SSH_HOST_DEFAULT=$([[ "$ENV" == "prod" ]] && echo "fengyu-prod" || echo "ali-demo")
+case "$ENV" in
+  dev) SSH_HOST_DEFAULT="ali-demo"; REMOTE_DIR_DEFAULT="/root/proj.xt.com/fengyu-wxapp/docker"; EXPECT_PG_HOST="47.113.202.7" ;;
+  test) SSH_HOST_DEFAULT="sqlserver101"; REMOTE_DIR_DEFAULT="/www/wwwroot/fengyu-admin/docker"; EXPECT_PG_HOST="101.34.242.103" ;;
+  prod) SSH_HOST_DEFAULT="fengyu-prod"; REMOTE_DIR_DEFAULT="/www/wwwroot/fengyu-admin/docker"; EXPECT_PG_HOST="118.178.196.26" ;;
+esac
 SSH_HOST="${SSH_HOST:-${2:-$SSH_HOST_DEFAULT}}"
-REMOTE_DIR_DEFAULT=$([[ "$ENV" == "prod" ]] && echo "/www/wwwroot/fengyu-admin/docker" || echo "/root/proj.xt.com/fengyu-wxapp/docker")
 REMOTE_DIR="${REMOTE_DIR:-${3:-$REMOTE_DIR_DEFAULT}}"
-EXPECT_PG_HOST=$([[ "$ENV" == "prod" ]] && echo "118.178.196.26" || echo "47.113.202.7")
 PUBLIC_HOST="${PUBLIC_HOST:-${4:-$EXPECT_PG_HOST}}"
 ANALYST_PORT="${ANALYST_PORT:-3001}"
 ADMIN_PORT="${ADMIN_PORT:-3000}"
@@ -119,7 +121,7 @@ if [[ "$ENV" == "prod" ]]; then
     exit 1
   fi
 else
-  echo "==> Deploy analyst to DEV ($SSH_HOST)"
+  echo "==> Deploy analyst to ${ENV^^} ($SSH_HOST)"
   echo "    public: $ANALYST_PUBLIC_ORIGIN"
   echo "    admin:  $ANALYST_ADMIN_ORIGIN"
   echo "    db:     $EXPECT_PG_HOST:5433/fengyu_wxapp"
@@ -223,7 +225,17 @@ echo "  DATABASE_URL: ${DB_REDACTED:-not readable}"
 echo "  NEXT_PUBLIC_ANALYST_ORIGIN: ${ORIGIN:-not readable}"
 echo "  JWT_SECRET length: ${JWT_LEN:-0}"
 
-if [[ "$GOT_HOST" != "$EXPECT_PG_HOST" ]]; then
+if [[ "$GOT_HOST" == "$EXPECT_PG_HOST" ]]; then
+  echo "  ✓ analyst DB host=$GOT_HOST 与 $ENV 一致"
+elif [[ "$ENV" == "test" && "$GOT_HOST" == "172.18.0.1" ]]; then
+  HOST_PUBLIC_IP=$(ssh "$SSH_HOST" "curl -s --max-time 5 ifconfig.me 2>/dev/null || curl -s --max-time 5 ip.sb 2>/dev/null" | head -1 || true)
+  PG_LISTENING=$(ssh "$SSH_HOST" "ss -tlnp 2>/dev/null | grep -q ':5433' && echo yes || echo no" || true)
+  if [[ "$HOST_PUBLIC_IP" != "$EXPECT_PG_HOST" || "$PG_LISTENING" != "yes" ]]; then
+    echo "Test DB bridge verification failed (public=${HOST_PUBLIC_IP:-empty}, pg5433=${PG_LISTENING:-no})" >&2
+    exit 1
+  fi
+  echo "  ✓ analyst DB host=172.18.0.1（Docker 网桥回连 101.34.242.103:5433）"
+else
   echo "Expected DB host $EXPECT_PG_HOST, got ${GOT_HOST:-empty}" >&2
   exit 1
 fi

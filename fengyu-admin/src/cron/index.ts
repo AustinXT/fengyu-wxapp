@@ -22,12 +22,16 @@ import { db } from '@/db'
 import { refreshLakalaSubMerchants } from './steps/refresh-lakala-submerchants'
 
 const ONCE = process.argv.includes('--once')
+const CHECK = process.argv.includes('--check')
 const ONLY = process.argv
   .find((a) => a.startsWith('--only='))
   ?.split('=')[1]
   ?.trim()
 
-if (ONCE) {
+if (CHECK) {
+  console.log('[cron-worker] startup check passed')
+  process.exit(0)
+} else if (ONCE) {
   // 本地开发 / 部署后冒烟测试：跑一次立即退出
   // 支持 --only=<stepName> 只跑指定 STEP（e2e 测试用，单 STEP 5-30s）
   runDailyJobs(ONLY ? { only: ONLY } : undefined)

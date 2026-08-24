@@ -3,7 +3,7 @@ import { callStaffApi } from '../../utils/cloud';
 import { getCurrentStoreId, isManager } from '../../utils/role';
 import { formatDateTime, formatDate, ORDER_TYPE_LABEL, formatDiscount } from '../../utils/formatters';
 import { MemberLevelBadgeData, withMemberLevelBadgeClass } from '../../utils/member-level-badge';
-import { expandGroupServiceSessions, getTreatmentCardBusinessIdentity, groupTreatmentCards, sumGroupValue } from '../../utils/treatment-card-group';
+import { collectSourceOrderRemarks, expandGroupServiceSessions, getTreatmentCardBusinessIdentity, groupTreatmentCards, SourceOrderRemark, sumGroupValue } from '../../utils/treatment-card-group';
 
 const app = getApp<IAppOption>();
 
@@ -148,6 +148,7 @@ interface PaidOrderItem {
   remark?: string | null;
   salesCategory?: string | null;
   pickedUpQuantity?: number | null;
+  orderRemark?: string | null;
 }
 
 interface PaidOrder {
@@ -241,9 +242,11 @@ interface TreatmentCard {
   remark?: string | null;
   salesCategory?: string | null;
   pickedUpQuantity?: number | null;
+  orderRemark?: string | null;
   groupKey?: string;
   cardCount?: number;
   sourceItems?: TreatmentCard[];
+  sourceOrderRemarks?: SourceOrderRemark[];
 }
 
 interface CardFilterOption {
@@ -336,6 +339,7 @@ Page({
     customer: null as CustomerDetail | null,
     isManager: false,
     activeTab: 0,
+    tabTitles: ['基本档案', '消费记录', '疗程卡', '家居产品', '预约记录', '服务记录', '顾客优惠券', '手机号变更', '日历'],
     // Tab 0: 详情（客户信息）
     notesValue: '',
     notesDirty: false,
@@ -491,6 +495,10 @@ Page({
 
   onTabChange(e: WechatMiniprogram.CustomEvent) {
     const index = e.detail.index as number;
+    this.selectTab(index);
+  },
+
+  selectTab(index: number) {
     this.setData({ activeTab: index });
     // 9-Tab：0 基本档案 / 1 消费记录 / 2 疗程卡 / 3 家居产品 / 4 预约记录 /
     //         5 服务记录 / 6 顾客优惠券 / 7 手机号变更 / 8 日历
@@ -511,6 +519,12 @@ Page({
     } else if (index === 8 && !this.data.calendarLoaded) {
       this.loadCalendar();
     }
+  },
+
+  onTabTap(e: WechatMiniprogram.TouchEvent) {
+    const index = Number(e.currentTarget.dataset.index);
+    if (!Number.isInteger(index) || index < 0 || index >= this.data.tabTitles.length) return;
+    this.selectTab(index);
   },
 
   /** 构建客户标识参数（clientUserId 优先，否则 clientPhone） */
@@ -716,6 +730,7 @@ Page({
           groupKey: group.groupKey,
           sourceItems: group.sourceItems,
           cardCount: group.cardCount,
+          sourceOrderRemarks: collectSourceOrderRemarks(group.sourceItems),
           quantity: sumGroupValue(group, (card) => card.quantity ?? 1),
           totalSessions,
           remainingSessions,
@@ -874,6 +889,7 @@ Page({
       sessionCount: number;
       remainingSessions: number;
       unit?: string;
+      orderRemark?: string | null;
     }> = [];
     for (const card of selected) {
       const sourceItems = card.sourceItems?.length ? card.sourceItems : [card];
@@ -898,6 +914,7 @@ Page({
           sessionCount: selection.sessionUsed,
           remainingSessions: source.remainingSessions,
           unit: source.unit,
+          orderRemark: source.orderRemark || null,
         });
       }
     }

@@ -361,7 +361,8 @@ async function detail(ctx) {
   const selectCols = `c.user_id, c.phone, c.name, c.customer_id, c.member_level,
     c.bound_employee_id, c.skin_type, c.improvement_focus,
     c.skin_issue, c.wellness_preference, c.gender, c.notes, c.customer_source,
-    c.promoter_employee_name, c.inviter_user_id, c.invited_at, c.customer_type,
+    COALESCE(promoter.name, c.promoter_employee_name) AS promoter_employee_name,
+    c.inviter_user_id, c.invited_at, c.customer_type,
     c.spending_tier, c.monthly_activity, c.customer_status, c.birthday,
     c.occupation, c.is_married, c.wechat_name, c.points_balance,
     c.bound_store_id, s.store_name, inviter.name AS inviter_name,
@@ -369,6 +370,7 @@ async function detail(ctx) {
 
   const fromClause = `FROM client_wechat_users c
     LEFT JOIN stores s ON s.store_id = c.bound_store_id
+    LEFT JOIN staff_wechat_users promoter ON promoter.employee_id = c.promoter_employee_id
     LEFT JOIN client_wechat_users inviter ON inviter.user_id = c.inviter_user_id`;
 
   // 按优先级依次查找：customer_id → user_id → phone
@@ -732,6 +734,7 @@ async function paidOrders(ctx) {
       si.remark,
       si.sales_category,
       si.picked_up_quantity,
+      o.remark AS order_remark,
       COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
       ps.category_id,
       pc.category_name,
@@ -793,6 +796,9 @@ async function paidOrders(ctx) {
       remark: item.remark || null,
       salesCategory: item.sales_category || null,
       pickedUpQuantity: item.picked_up_quantity != null ? Number(item.picked_up_quantity) : null,
+      orderRemark: typeof item.order_remark === "string" && item.order_remark.trim()
+        ? item.order_remark.trim()
+        : null,
       categoryId: item.category_id || "",
       categoryName: item.category_name || "",
       category: item.category_name || "",

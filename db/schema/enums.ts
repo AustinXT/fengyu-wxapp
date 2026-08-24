@@ -131,7 +131,7 @@ export const customerSourceEnum = pgEnum("customer_source", [
 
 export const customerTypeEnum = pgEnum("customer_type", ["流量客", "体验客", "小美客", "会员客"]);
 
-export const documentTypeEnum = pgEnum("document_type", ["售前", "售后"]);
+export const documentTypeEnum = pgEnum("document_type", ["售前一次", "售前二次", "售后"]);
 
 export const spendingTierEnum = pgEnum("spending_tier", ["10W+", "6-10W", "3-6W", "1-3W", "1990-1W", "<1990"]);
 

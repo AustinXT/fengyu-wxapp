@@ -37,7 +37,7 @@ function makeOrder(overrides: Partial<SaleOrder> = {}): SaleOrder {
     saleOrderId: "SO-1",
     status: "已支付",
     saleOrderType: "销售单",
-    documentType: "售前",
+    documentType: "售前一次",
     refSaleOrderId: null,
     legacySource: null,
     marketName: "南昌市场",
