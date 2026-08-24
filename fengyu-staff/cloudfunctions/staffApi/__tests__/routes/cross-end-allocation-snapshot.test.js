@@ -45,6 +45,7 @@ const FILES = {
   refundReceiptExistingBackfill0085Sql: path.join(ARCHIVED_MIGRATIONS_DIR, '0085_refund_receipt_existing_backfill.sql'),
   overpayReceiptItemBackfill0086Sql: path.join(ARCHIVED_MIGRATIONS_DIR, '0086_overpay_receipt_item_backfill.sql'),
   overpayReceiptItemRemap0090Sql: path.join(ARCHIVED_MIGRATIONS_DIR, '0090_remap_overpay_receipts_by_item_excess.sql'),
+  overpayReceiptDrain0029Sql: path.resolve(__dirname, '../../../../../db/migrations/0029_repair_overpay_item_receipts.sql'),
   refundAllocationMirrorBackfill0087Sql: path.join(ARCHIVED_MIGRATIONS_DIR, '0087_refund_allocation_mirror_backfill.sql'),
 
   payNotifyIndexJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/index.js'),
@@ -318,7 +319,7 @@ describe('断言6：0082 退款 receipt backfill 使用 note.items[].refundAmoun
 // 断言 7：0082 正向 receipt 按实际 payment.amount 重建逐笔归属
 // ─────────────────────────────────────────────────────────────────────────────
 describe('断言7：0082 正向 receipt backfill 修正逐笔支付归属', () => {
-  let src, incrementalSrc, clearFullRefundSrc, refundReceiptRepairSrc, overpayReceiptRepairSrc, overpayReceiptRemapSrc, refundAllocationMirrorSrc
+  let src, incrementalSrc, clearFullRefundSrc, refundReceiptRepairSrc, overpayReceiptRepairSrc, overpayReceiptRemapSrc, overpayReceiptDrainSrc, refundAllocationMirrorSrc
 
   beforeAll(() => {
     src = readFile(FILES.receiptMigration0082Sql)
@@ -327,6 +328,7 @@ describe('断言7：0082 正向 receipt backfill 修正逐笔支付归属', () =
     refundReceiptRepairSrc = readFile(FILES.refundReceiptExistingBackfill0085Sql)
     overpayReceiptRepairSrc = readFile(FILES.overpayReceiptItemBackfill0086Sql)
     overpayReceiptRemapSrc = readFile(FILES.overpayReceiptItemRemap0090Sql)
+    overpayReceiptDrainSrc = readFile(FILES.overpayReceiptDrain0029Sql)
     refundAllocationMirrorSrc = readFile(FILES.refundAllocationMirrorBackfill0087Sql)
   })
 
@@ -418,6 +420,19 @@ describe('断言7：0082 正向 receipt backfill 修正逐笔支付归属', () =
     expect(overpayReceiptRemapSrc).toMatch(/ON CONFLICT \(sale_payment_item_receipt_id, employee_id, role_type\) WHERE is_void = false/)
     expect(overpayReceiptRemapSrc).toMatch(/SET paid_sessions = CASE/)
     expect(overpayReceiptRemapSrc).toMatch(/datafix\.overpayReceiptItemRemap/)
+  })
+
+  test('0029 把 OVERPAY 退款排空到真正承载实收的商品行', () => {
+    expect(overpayReceiptDrainSrc).toMatch(/_0029_receipt_targets/)
+    expect(overpayReceiptDrainSrc).toMatch(/spir\.sale_payment_id <> opr\.sale_payment_id/)
+    expect(overpayReceiptDrainSrc).toMatch(/COALESCE\(rr\.refund_cents, 0\)/)
+    expect(overpayReceiptDrainSrc).not.toMatch(/selectedItemIds/)
+    expect(overpayReceiptDrainSrc).toMatch(/cannot map every refunded cent to a funded sale item/)
+    expect(overpayReceiptDrainSrc).toMatch(/DELETE FROM sale_payment_item_allocations/)
+    expect(overpayReceiptDrainSrc).toMatch(/INSERT INTO sale_payment_item_allocations/)
+    expect(overpayReceiptDrainSrc).toMatch(/SET received = COALESCE\(GREATEST\(0/)
+    expect(overpayReceiptDrainSrc).toMatch(/THEN '已退款'::order_status/)
+    expect(overpayReceiptDrainSrc).toMatch(/datafix\.overpayItemReceiptDrain/)
   })
 
   test('0087 为退款 receipt 补负数营业额子分配并清空全退单分配状态', () => {

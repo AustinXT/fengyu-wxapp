@@ -36,6 +36,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import type { AuthSession } from './types'
+import { INVENTORY_ENTRY_ENABLED } from './inventory-feature-flags'
 
 export interface MenuItem {
   label: string
@@ -49,12 +50,16 @@ export interface MenuItem {
   matchPaths?: string[]
   /** 仅向持有指定组织范围的账号显示；总部账号可按配置进入下级业务。 */
   allowedScopeTypes?: Array<'总部' | '市场' | '门店'>
+  /** 临时关闭导航入口；页面、权限和深链保持可用。 */
+  hidden?: boolean
 }
 
 export interface MenuParent {
   label: string
   icon: LucideIcon
   children: MenuItem[]
+  /** 临时关闭整个业务域导航。 */
+  hidden?: boolean
 }
 
 export type MenuNode = MenuItem | MenuParent
@@ -77,7 +82,7 @@ export const MENU_CONFIG: MenuNode[] = [
       { label: '退款管理', icon: Undo2, href: '/refunds', requiredActions: ['sale_order:refund_create', 'sale_order:refund_approve'] },
       { label: '服务单管理', icon: Stethoscope, href: '/services', requiredActions: ['service:list'] },
       { label: '预约管理', icon: CalendarCheck, href: '/appointments', requiredActions: ['appointment:list'] },
-      { label: '提货记录', icon: PackageCheck, href: '/pickup-records', requiredActions: ['pickup_record:list'] },
+      { label: '提货记录', icon: PackageCheck, href: '/pickup-records', requiredActions: ['pickup_record:list'], hidden: !INVENTORY_ENTRY_ENABLED },
       { label: '门店解绑', icon: Unlink, href: '/store-unbind', requiredActions: ['store_unbind:list'] },
     ],
   },
@@ -104,6 +109,7 @@ export const MENU_CONFIG: MenuNode[] = [
   {
     label: '库存管理',
     icon: Boxes,
+    hidden: !INVENTORY_ENTRY_ENABLED,
     children: [
       { label: '库存查询', icon: PackageCheck, href: '/inventory/stocks', requiredActions: ['inventory:stock_list'] },
       {
@@ -188,7 +194,8 @@ export function hasMenuItemAccess(
   actions: readonly string[],
   scopeTypes?: readonly ('总部' | '市场' | '门店')[],
 ): boolean {
-  return item.requiredActions.some((action) => actions.includes(action))
+  return item.hidden !== true
+    && item.requiredActions.some((action) => actions.includes(action))
     && (item.requiredAllActions?.every((action) => actions.includes(action)) ?? true)
     && (!item.allowedScopeTypes || !scopeTypes || item.allowedScopeTypes.some((scope) => scopeTypes.includes(scope)))
 }
@@ -224,6 +231,7 @@ export function getVisibleMenuItems(session: AuthSession): MenuNode[] {
       if (hasMenuItemAccess(node, actions, scopeTypes)) visible.push(node)
       return visible
     }
+    if (node.hidden) return visible
     const children = node.children.filter((item) => hasMenuItemAccess(item, actions, scopeTypes))
     if (children.length > 0) visible.push({ ...node, children })
     return visible

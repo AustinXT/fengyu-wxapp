@@ -4,8 +4,10 @@ import {
   parseAllocationServiceFilters,
   parseEmployeeFilters,
   parseOrderFilters,
+  parseOrderStatusFilters,
   parseOrderTypeFilters,
   parseServiceOrderFilters,
+  parseServiceOrderStatusFilters,
   filterValidSkillValues,
 } from './list-filters'
 
@@ -93,6 +95,14 @@ describe('订单/服务单列表筛选解析', () => {
     expect(parseOrderTypeFilters('已废弃单据,')).toBeUndefined()
   })
 
+  it('订单状态支持逗号分隔多选，并过滤无效/重复值', () => {
+    expect(parseOrderStatusFilters('待支付, 已支付,待支付,未知')).toEqual(['待支付', '已支付'])
+  })
+
+  it('服务单状态支持逗号分隔多选，并过滤无效/重复值', () => {
+    expect(parseServiceOrderStatusFilters('待服务,已完成,待服务,未知')).toEqual(['待服务', '已完成'])
+  })
+
   it('订单列表透传 market/store URL 参数', () => {
     expect(parseOrderFilters({ market: 'market-1', store: 'store-1' })).toMatchObject({
       marketId: 'market-1',
@@ -104,11 +114,19 @@ describe('订单/服务单列表筛选解析', () => {
     expect(parseOrderFilters({ type: '销售单,充值单' }).types).toEqual(['销售单', '充值单'])
   })
 
+  it('订单列表将 status URL 参数解析为多选状态', () => {
+    expect(parseOrderFilters({ status: '待支付,待审批' }).statuses).toEqual(['待支付', '待审批'])
+  })
+
   it('服务单列表透传 market/store URL 参数', () => {
     expect(parseServiceOrderFilters({ market: 'market-1', store: 'store-1' })).toMatchObject({
       marketId: 'market-1',
       storeId: 'store-1',
     })
+  })
+
+  it('服务单列表将 status URL 参数解析为多选状态', () => {
+    expect(parseServiceOrderFilters({ status: '待服务,服务中' }).statuses).toEqual(['待服务', '服务中'])
   })
 
   it('营业额分配销售提成透传 market/store 并锁定已支付订单', () => {

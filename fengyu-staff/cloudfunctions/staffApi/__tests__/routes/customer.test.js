@@ -360,7 +360,12 @@ describe('customer.detail', () => {
       .mockResolvedValueOnce([{
         user_id: 'u1', phone: '13800001111', name: '张三', customer_id: 'C001',
         member_level: 'VIP', bound_employee_id: 'emp-002', skin_type: '干性', improvement_focus: '保湿',
-        gender: '女', notes: '过敏体质', bound_store_id: 'store-001', store_name: '南昌旗舰店',
+        skin_issue: '敏感泛红', wellness_preference: '艾灸', gender: '女', notes: '过敏体质',
+        customer_source: '老带新', promoter_employee_name: '员工甲', inviter_name: '顾客乙',
+        inviter_phone: '13700002222', invited_at: '2026-01-02T03:04:05Z', customer_type: '会员客',
+        spending_tier: '5000-9999', monthly_activity: '活跃', customer_status: '正常到店',
+        birthday: '1990-03-15', occupation: '教师', is_married: true, wechat_name: '小张', points_balance: '88',
+        bound_store_id: 'store-001', store_name: '南昌旗舰店',
       }])
       .mockResolvedValueOnce([{ name: '李四' }])  // preferredStaffName
       .mockResolvedValueOnce([{
@@ -382,6 +387,12 @@ describe('customer.detail', () => {
     expect(ctx.result.skinType).toBe('干性')
     expect(ctx.result.focusAreas).toBe('保湿')
     expect(ctx.result.notes).toBe('过敏体质')
+    expect(ctx.result).toMatchObject({
+      customerSource: '老带新', promoterEmployeeName: '员工甲', inviterName: '顾客乙',
+      inviterPhone: '13700002222', customerType: '会员客', birthday: '1990-03-15',
+      occupation: '教师', isMarried: true, wechatName: '小张', skinIssue: '敏感泛红',
+      wellnessPreference: '艾灸', pointsBalance: 88,
+    })
     expect(ctx.result.lastServiceDate).toBe('2026-03-10')
     expect(ctx.result.visitFrequency).toBe('两周一次')  // 8 visits in 90 days
     expect(ctx.result.topProductName).toBe('蜜语生玑10次卡')

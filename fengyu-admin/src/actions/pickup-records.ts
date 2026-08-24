@@ -19,6 +19,7 @@ import { ApiError } from '@/lib/api-error'
 import { hasPendingRefund } from '@/lib/refund-cascade'
 import { revalidatePath } from 'next/cache'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
+import { INVENTORY_LINKAGE_ENABLED } from '@/lib/inventory-feature-flags'
 
 export interface AdminPickupRecord {
   id: number
@@ -683,8 +684,8 @@ export const getPickupInventorySkuOptions = withPermission(
 /**
  * 为同一销售行组拆出的多条家居明细创建一次提货。
  *
- * 实际库存始终按下单快照（历史空快照按最新组成）和批次库存扣减；一张出库单汇总本次提货，提货记录
- * 与 sale_items.picked_up_quantity 则逐条写入，以保留退款级联和库存审计的可追溯性。
+ * 联动开启时按下单快照和批次库存扣减；临时关闭时只写提货记录与已提数量，
+ * 两种模式都保留退款级联需要的逐条可追溯性。
  */
 async function createGroupedPickupRecord(
   session: { employeeId: string },
@@ -696,7 +697,7 @@ async function createGroupedPickupRecord(
     remark?: string | null
     idempotencyKey?: string | null
   },
-): Promise<{ pickupRecordId: number; inventoryDocId: string; selectedSaleItemIds: string[] }> {
+): Promise<{ pickupRecordId: number; inventoryDocId: string | null; selectedSaleItemIds: string[]; replayed: boolean }> {
   const sourceIds = [...new Set(data.saleItemIds.filter(Boolean))].sort()
   if (sourceIds.length < 2 || !Number.isInteger(data.pickupQuantity) || data.pickupQuantity > sourceIds.length) {
     throw new ApiError('INVALID_PARAMS', '合并提货数量或来源明细不合法')
@@ -717,8 +718,9 @@ async function createGroupedPickupRecord(
       if (replay.length > 0) {
         return {
           pickupRecordId: replay[0].id,
-          inventoryDocId: '',
+          inventoryDocId: null,
           selectedSaleItemIds: replay.map((row) => row.sale_item_id),
+          replayed: true,
         }
       }
     }
@@ -769,7 +771,7 @@ async function createGroupedPickupRecord(
       throw new ApiError('CONFLICT', '部分家居产品已更新，请刷新后重试')
     }
     const first = locked[0]
-    if (!first?.sku_id || locked.some((row) =>
+    if (!first || (INVENTORY_LINKAGE_ENABLED && !first.sku_id) || locked.some((row) =>
       row.sale_order_id !== first.sale_order_id
       || row.sku_id !== first.sku_id
       || (row.sale_item_group_id || row.sale_item_id) !== (first.sale_item_group_id || first.sale_item_id)
@@ -789,22 +791,25 @@ async function createGroupedPickupRecord(
       throw new ApiError('INVALID_STATE', `已支付可提数量不足，当前可提 ${eligible.length}`)
     }
     const selected = eligible.slice(0, data.pickupQuantity)
-    const requirements = await buildPickupRequirements(tx, selected.map((item) => ({
-      skuId: item.sku_id,
-      inventoryCompositionSnapshot: item.inventory_composition_snapshot,
-      pickupUnits: 1,
-    })))
-    const inventoryDocId = await createPickupInventoryDoc(tx, session, {
-      storeId: data.storeId,
-      saleItemId: first.sale_item_id,
-      saleOrderId: first.sale_order_id,
-      productName: first.product_name,
-      clientUserId: data.clientUserId ?? first.client_user_id,
-      customerName: first.customer_name,
-      requirements,
-      remark: data.remark,
-      idempotencyKey: idemKey,
-    })
+    let inventoryDocId: string | null = null
+    if (INVENTORY_LINKAGE_ENABLED) {
+      const requirements = await buildPickupRequirements(tx, selected.map((item) => ({
+        skuId: item.sku_id,
+        inventoryCompositionSnapshot: item.inventory_composition_snapshot,
+        pickupUnits: 1,
+      })))
+      inventoryDocId = await createPickupInventoryDoc(tx, session, {
+        storeId: data.storeId,
+        saleItemId: first.sale_item_id,
+        saleOrderId: first.sale_order_id,
+        productName: first.product_name,
+        clientUserId: data.clientUserId ?? first.client_user_id,
+        customerName: first.customer_name,
+        requirements,
+        remark: data.remark,
+        idempotencyKey: idemKey,
+      })
+    }
 
     const pickupRecordIds: number[] = []
     for (const item of selected) {
@@ -834,6 +839,7 @@ async function createGroupedPickupRecord(
       pickupRecordId: pickupRecordIds[0] ?? 0,
       inventoryDocId,
       selectedSaleItemIds: selected.map((item) => item.sale_item_id),
+      replayed: false,
     }
   })
 }
@@ -888,7 +894,7 @@ export const createPickupRecord = withPermission(
       await logOperation(session, 'create', 'pickup_record_group', created.inventoryDocId || String(created.pickupRecordId), {
         saleItemIds: created.selectedSaleItemIds,
         pickupQuantity: created.selectedSaleItemIds.length,
-        inventoryMode: 'composition',
+        inventoryMode: INVENTORY_LINKAGE_ENABLED ? 'composition' : 'record-only',
         storeId: data.storeId,
         clientUserId: data.clientUserId,
         inventoryDocId: created.inventoryDocId || null,
@@ -896,7 +902,7 @@ export const createPickupRecord = withPermission(
       revalidatePath('/pickup-records')
       return {
         success: true,
-        message: created.inventoryDocId ? '提货记录创建成功' : '提货记录已存在（幂等）',
+        message: created.replayed ? '提货记录已存在（幂等）' : '提货记录创建成功',
         createdId: created.pickupRecordId,
       }
     } catch (err) {
@@ -1005,27 +1011,30 @@ export const createPickupRecord = withPermission(
         throw new ApiError('INVALID_STATE', '销售明细不存在、非家居产品或超出可提数量')
       }
       const updatedItem = updatedRows[0]
-      if (!updatedItem.sku_id) {
+      if (INVENTORY_LINKAGE_ENABLED && !updatedItem.sku_id) {
         throw new ApiError('INVALID_STATE', '销售明细缺少 SKU，无法扣减门店库存')
       }
 
-      const requirements = await buildPickupRequirements(tx, [{
-        skuId: updatedItem.sku_id,
-        inventoryCompositionSnapshot: updatedItem.inventory_composition_snapshot,
-        pickupUnits: data.pickupQuantity,
-      }])
+      let inventoryDocId: string | null = null
+      if (INVENTORY_LINKAGE_ENABLED) {
+        const requirements = await buildPickupRequirements(tx, [{
+          skuId: updatedItem.sku_id!,
+          inventoryCompositionSnapshot: updatedItem.inventory_composition_snapshot,
+          pickupUnits: data.pickupQuantity,
+        }])
 
-      const inventoryDocId = await createPickupInventoryDoc(tx, session, {
-        storeId: data.storeId,
-        saleItemId: updatedItem.sale_item_id,
-        saleOrderId: updatedItem.sale_order_id,
-        productName: updatedItem.product_name,
-        clientUserId: data.clientUserId ?? lockedItem.client_user_id,
-        customerName: lockedItem.customer_name,
-        requirements,
-        remark: data.remark,
-        idempotencyKey: idemKey,
-      })
+        inventoryDocId = await createPickupInventoryDoc(tx, session, {
+          storeId: data.storeId,
+          saleItemId: updatedItem.sale_item_id,
+          saleOrderId: updatedItem.sale_order_id,
+          productName: updatedItem.product_name,
+          clientUserId: data.clientUserId ?? lockedItem.client_user_id,
+          customerName: lockedItem.customer_name,
+          requirements,
+          remark: data.remark,
+          idempotencyKey: idemKey,
+        })
+      }
 
       // 2. 插入 pickup_records；DB 层 uq_pickup_idempotency 兜底 race，命中即整事务回滚防 UPDATE 重复累加
       try {
@@ -1055,7 +1064,7 @@ export const createPickupRecord = withPermission(
     await logOperation(session, 'create', 'pickup_record', String(createdId.pickupRecordId), {
       saleItemId: data.saleItemId,
       pickupQuantity: data.pickupQuantity,
-      inventoryMode: 'composition',
+      inventoryMode: INVENTORY_LINKAGE_ENABLED ? 'composition' : 'record-only',
       storeId: data.storeId,
       clientUserId: data.clientUserId,
       inventoryDocId: createdId.inventoryDocId,

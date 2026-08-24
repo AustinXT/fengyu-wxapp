@@ -609,15 +609,16 @@ describe('SUMMARY v3 §2 #14：refund-cascade 双端 5 通道覆盖守护', () =
       expect(staffSrc).toMatch(/ON\s+CONFLICT\s*\(sale_payment_item_receipt_id,\s*employee_id,\s*role_type\)\s*WHERE\s+is_void\s*=\s*false\s+DO\s+NOTHING/i)
       expect(adminSrc).toMatch(/ON\s+CONFLICT\s*\(sale_payment_item_receipt_id,\s*employee_id,\s*role_type\)\s*WHERE\s+is_void\s*=\s*false\s+DO\s+NOTHING/i)
     })
-    test('两端必须只按行级超额容量映射历史 OVERPAY 哨兵 receipt', () => {
+    test('两端必须按行级实收剩余容量映射历史 OVERPAY 哨兵 receipt', () => {
       for (const [name, src] of [['staff', staffSrc], ['admin', adminSrc]]) {
         expect(src, `${name} 缺历史 OVERPAY 哨兵判定`).toMatch(/isLegacyOverpaySentinel/)
         expect(src, `${name} 缺 receipt 构建 helper`).toMatch(/buildReceiptRefundItems/)
         expect(src, `${name} 缺 OVERPAY 哨兵识别`).toMatch(/saleItemId === 'OVERPAY'/)
         expect(src, `${name} 缺正向 receipt 残留计算`).toMatch(/prior_refund_amount/)
-        expect(src, `${name} 缺行级已消费价值扣减`).toMatch(/consumed_value/)
-        expect(src, `${name} 缺行级可退价值扣减`).toMatch(/refundable_value/)
+        expect(src, `${name} 缺商品行可用实收容量`).toMatch(/availableCentsByItem/)
+        expect(src, `${name} 缺退款全额映射守卫`).toMatch(/mappedTotalCents !== requestedTotalCents/)
         expect(src, `${name} 缺按超额容量分配 overpay`).toMatch(/allocateCentsByWeight/)
+        expect(src, `${name} 不应把 OVERPAY 限制在已选退款商品`).not.toMatch(/selectedItemIds/)
         expect(src, `${name} 通道 1 未使用映射后的 receipt 列表`).toMatch(/const receiptRefundItems = await buildReceiptRefundItems/)
       }
     })
@@ -765,6 +766,17 @@ describe('SUMMARY v3 §2 #14：cascadeRefund 触发点防回归', () => {
   test('staff routes/order.js approveRefund 路径必须调用 cascadeRefund(client, ...)', () => {
     const src = readFile(FILES.staffOrderJs)
     expect(src).toMatch(/await\s+cascadeRefund\s*\(\s*client\s*,/)
+  })
+
+  test('staff approveRefund 与 admin 一致：退款只刷新 spending_tier，不执行只升不降的结算重算', () => {
+    const src = readFile(FILES.staffOrderJs)
+    const approveBody = src.slice(
+      src.indexOf('async function approveRefund(ctx)'),
+      src.indexOf('async function rejectRefund(ctx)'),
+    )
+    expect(approveBody).toContain('await refreshSpendingTier(client, sopRow.client_user_id)')
+    expect(approveBody).not.toMatch(/await\s+recalcCustomerType\s*\(/)
+    expect(approveBody).not.toMatch(/await\s+recalcMemberLevel\s*\(/)
   })
 })
 

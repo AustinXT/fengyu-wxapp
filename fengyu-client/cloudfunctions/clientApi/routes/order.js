@@ -16,12 +16,14 @@ const { getPerItemRefundedMap, getPerItemRefundedMapBatch, computeRefundAwareDir
 const lakalaClient = require('../utils/lakala-client')
 const lakalaConfig = require('../utils/lakala-config')
 const { shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
+const { INVENTORY_LINKAGE_ENABLED } = require('../utils/feature-flags')
 
 function roundMoney(value) {
   return Math.round((Number(value) || 0) * 100) / 100
 }
 
 async function loadInventoryCompositionSnapshots(client, items) {
+  if (!INVENTORY_LINKAGE_ENABLED) return new Map()
   const homeItems = [...new Map(
     items.filter((item) => item.productType === '家居产品').map((item) => [item.skuId, item]),
   ).values()]
@@ -1669,7 +1671,7 @@ async function create(ctx) {
       await deductPointsAtCreation(client, { saleOrderId: orderNo, userId, pointsUsed })
     }
 
-    // 创建订单明细（流水号递增）。家居产品在建单时冻结库存组成；未配置则整单回滚。
+    // 创建订单明细（流水号递增）。联动开启时冻结家居产品库存组成；临时关闭时写 null，不阻断建单。
     const compositionSnapshots = await loadInventoryCompositionSnapshots(client, itemsData)
     for (let i = 0; i < itemsData.length; i++) {
       const saleItemId = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`

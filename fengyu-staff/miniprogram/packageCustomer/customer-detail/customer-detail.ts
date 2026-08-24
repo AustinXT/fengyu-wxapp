@@ -19,6 +19,19 @@ interface CustomerDetail extends MemberLevelBadgeData {
   memberLevel: string | null;
   source: string;
   preferredStaffName: string | null;
+  customerSource: string | null;
+  promoterEmployeeName: string | null;
+  inviterName: string | null;
+  inviterPhone: string;
+  invitedAt: string | null;
+  customerType: string | null;
+  spendingTier: string | null;
+  monthlyActivity: string | null;
+  customerStatus: string | null;
+  birthday: string | null;
+  occupation: string | null;
+  isMarried: boolean | null;
+  wechatName: string | null;
   totalConsumption: number;
   yearConsumption: number;
   totalActualConsumption: number;
@@ -26,7 +39,10 @@ interface CustomerDetail extends MemberLevelBadgeData {
   storeName: string;
   skinType: string | null;
   focusAreas: string | null;
+  skinIssue: string | null;
+  wellnessPreference: string | null;
   notes: string | null;
+  pointsBalance: number;
   lastServiceDate: string | null;
   visitFrequency: string | null;
   topProductName: string | null;
@@ -425,6 +441,7 @@ Page({
       const customer = await callStaffApi<CustomerDetail>('customer.detail', this._query);
       // lastServiceDate 为原始 pg date（序列化成 UTC 串会偏移日期），格式化为 YYYY-MM-DD
       if (customer.lastServiceDate) customer.lastServiceDate = formatDate(customer.lastServiceDate);
+      if (customer.invitedAt) customer.invitedAt = formatDateTime(customer.invitedAt);
       const canManage = isManager();
       this.setData({
         customer: withMemberLevelBadgeClass(customer),

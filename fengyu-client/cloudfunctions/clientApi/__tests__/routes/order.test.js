@@ -203,11 +203,12 @@ describe('order.create', () => {
     expect(insertItemCalls[0][1][6]).toBeNull()
     expect(insertItemCalls[0][1][7]).toBeNull()
     expect(insertItemCalls[0][1][9]).toBe(5)
-    expect(JSON.parse(insertItemCalls[0][1][15]).components[0].quantityPerSaleUnit).toBe(2)
+    expect(insertItemCalls[0][1][15]).toBeNull()
+    expect(clientQuery.mock.calls.some(([sql]) => /inventory_sku_product_sku_mappings/.test(sql))).toBe(false)
     expect(ctx.result.totalAmount).toBe(400)
   })
 
-  test('家居产品未配置库存组成时阻断建单', async () => {
+  test('进销存联动关闭时，家居产品未配置库存组成也可建单', async () => {
     pg.query.mockResolvedValueOnce([{ store_id: 's1', store_name: '测试店', market_name: '华东' }])
     pg.query.mockResolvedValueOnce([])
     pg.query.mockResolvedValueOnce([])
@@ -216,16 +217,17 @@ describe('order.create', () => {
       spec_name: '精华液', price: '80', special_price: null,
       session_count: null, product_name: '精华液', sales_category: null,
     }])
-    pg.transaction.mockImplementation(async (cb) => cb({
-      query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
-    }))
+    const clientQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 })
+    pg.transaction.mockImplementation(async (cb) => cb({ query: clientQuery }))
 
     const ctx = createBoundCtx({
       storeId: 's1',
       items: [{ skuId: 'sku-home', quantity: 1 }],
       paymentMethod: '微信',
     })
-    await expect(routes.create(ctx)).rejects.toThrow(/INVENTORY_COMPOSITION_MISSING/)
+    await routes.create(ctx)
+    expect(ctx.result.saleOrderId).toBeTruthy()
+    expect(clientQuery.mock.calls.some(([sql]) => /inventory_sku_product_sku_mappings/.test(sql))).toBe(false)
   })
 
   // PR #55 把 document_type 判定从「会员客→售后；否则若 total>=threshold→售后（分支 B）」

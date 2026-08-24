@@ -2,6 +2,7 @@
 import { callStaffApi } from '../../utils/cloud'
 import { MemberLevelBadgeData, withMemberLevelBadgeClasses } from '../../utils/member-level-badge'
 import { isManager, requireManager } from '../../utils/role'
+import { INVENTORY_LINKAGE_ENABLED } from '../../utils/feature-flags'
 
 interface Customer extends MemberLevelBadgeData {
   clientUserId: string
@@ -66,6 +67,7 @@ Page({
     items: [] as PickupItem[],
     loadingItems: false,
     isManager: false,
+    inventoryLinkageEnabled: INVENTORY_LINKAGE_ENABLED,
     pickupDialog: {
       visible: false,
       saleItemId: '',
@@ -157,13 +159,14 @@ Page({
         productName: formatProductName(item.productName, item.specName),
         remaining: item.remaining,
         inventorySkuOptions: [],
-        inventoryReady: false,
-        loadingInventorySkuOptions: true,
+        inventoryReady: !INVENTORY_LINKAGE_ENABLED,
+        loadingInventorySkuOptions: INVENTORY_LINKAGE_ENABLED,
         quantity: 1,
         remark: '',
         submitting: false,
       },
     })
+    if (!INVENTORY_LINKAGE_ENABLED) return
     try {
       const inventorySkuOptions = await callStaffApi<PickupInventorySkuOption[]>(
         'order.pickupInventorySkuOptions',
@@ -188,6 +191,10 @@ Page({
   onPickupQtyInput(e: WechatMiniprogram.Input) {
     const v = parseInt(e.detail.value, 10)
     const quantity = isNaN(v) || v < 1 ? 1 : v
+    if (!INVENTORY_LINKAGE_ENABLED) {
+      this.setData({ 'pickupDialog.quantity': quantity })
+      return
+    }
     const options = this.data.pickupDialog.inventorySkuOptions.map((option) => ({
       ...option,
       requiredQuantity: option.quantityPerSaleUnit * quantity,
@@ -215,14 +222,16 @@ Page({
       wx.showToast({ title: `数量必须在 1 到 ${d.remaining} 之间`, icon: 'none' })
       return
     }
-    if (d.inventorySkuOptions.length === 0) {
-      wx.showToast({ title: '该商品尚未配置库存组成', icon: 'none' })
-      return
-    }
-    const insufficient = d.inventorySkuOptions.find((item) => item.availableQuantity < item.requiredQuantity)
-    if (insufficient) {
-      wx.showToast({ title: `${insufficient.productName || '库存商品'}库存不足`, icon: 'none' })
-      return
+    if (INVENTORY_LINKAGE_ENABLED) {
+      if (d.inventorySkuOptions.length === 0) {
+        wx.showToast({ title: '该商品尚未配置库存组成', icon: 'none' })
+        return
+      }
+      const insufficient = d.inventorySkuOptions.find((item) => item.availableQuantity < item.requiredQuantity)
+      if (insufficient) {
+        wx.showToast({ title: `${insufficient.productName || '库存商品'}库存不足`, icon: 'none' })
+        return
+      }
     }
     this.setData({ 'pickupDialog.submitting': true })
     try {

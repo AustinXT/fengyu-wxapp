@@ -12,7 +12,7 @@ import { eq, desc, and, or, sql, ilike, gte, lte, isNotNull, notExists, inArray 
 import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
-import type { ServiceOrder } from '@/lib/types'
+import type { ServiceOrder, ServiceOrderStatus } from '@/lib/types'
 import { scopeCondition, isInScope, isAdminScope, requireAdmin } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logTransition } from '@/lib/operation-log'
@@ -86,6 +86,8 @@ export const getServiceOrders = withPermission(
 /** 服务单列表筛选参数 */
 export interface ServiceOrderFilters {
   status?: string
+  /** 服务单状态多选；由 URL `status=待服务,服务中` 解析而来。 */
+  statuses?: ServiceOrderStatus[]
   marketId?: string
   storeId?: string
   dateFrom?: string
@@ -108,6 +110,9 @@ function buildServiceOrderConditions(
 
   if (filters.status) {
     conditions.push(eq(serviceOrders.status, filters.status as typeof serviceOrders.status.enumValues[number]))
+  }
+  if (filters.statuses?.length) {
+    conditions.push(inArray(serviceOrders.status, filters.statuses))
   }
   if (filters.marketId) {
     conditions.push(storeInMarketCondition(serviceOrders.storeId, filters.marketId))

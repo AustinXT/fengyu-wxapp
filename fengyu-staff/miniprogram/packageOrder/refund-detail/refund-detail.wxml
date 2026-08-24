@@ -79,8 +79,8 @@
 
     <!-- 审批操作按钮（仅店长 + 待审批） -->
     <view class="action-bar" wx:if="{{isManager && refund.status === '待审批'}}">
-      <van-button type="danger" plain bind:click="onShowReject" custom-class="btn-reject">驳回</van-button>
-      <van-button type="primary" bind:click="onApprove" custom-class="btn-approve">审批通过</van-button>
+      <van-button type="danger" plain disabled="{{submitting}}" bind:click="onShowReject" custom-class="btn-reject">驳回</van-button>
+      <van-button type="primary" loading="{{submitting}}" disabled="{{submitting}}" bind:click="onApprove" custom-class="btn-approve">审批通过</van-button>
     </view>
   </block>
 

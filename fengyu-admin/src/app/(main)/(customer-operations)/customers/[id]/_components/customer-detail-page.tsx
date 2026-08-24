@@ -687,7 +687,7 @@ export default function CustomerDetailPage({
                   )}
                 </div>
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">推荐人</label>
+                  <label className="text-sm font-medium">员工推荐人</label>
                   {isEditing ? (
                     <div ref={promoterRef} className="relative">
                       <Input
@@ -735,6 +735,17 @@ export default function CustomerDetailPage({
                   ) : (
                     <Input value={customer.promoterEmployeeName ?? ""} disabled />
                   )}
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">顾客推荐人</label>
+                  <Input
+                    value={customer.inviterName || (customer.inviterPhone ? formatPhoneSafe(customer.inviterPhone) : "")}
+                    disabled
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">推荐时间</label>
+                  <Input value={customer.invitedAt ? formatDateTime(customer.invitedAt) : ""} disabled />
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">会员等级</label>
@@ -808,13 +819,13 @@ export default function CustomerDetailPage({
                         <option value="小程序">小程序</option>
                       </optgroup>
                       <optgroup label="线下来源">
-                        <option value="推带新">推带新</option>
-                        <option value="地推卡">地推卡</option>
-                        <option value="拓客卡">拓客卡</option>
+                        <option value="推广部">推广部</option>
+                        <option value="全员地推">全员地推</option>
+                        <option value="外请团队拓客">外请团队拓客</option>
                         <option value="老带新">老带新</option>
                         <option value="转让店">转让店</option>
                         <option value="自进店">自进店</option>
-                        <option value="内部员工或家属">内部员工或家属</option>
+                        <option value="员工或家属">员工或家属</option>
                       </optgroup>
                     </Select>
                   ) : (
@@ -924,6 +935,10 @@ export default function CustomerDetailPage({
                       {customer.notes || "—"}
                     </div>
                   )}
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">积分余额</label>
+                  <Input value={String(customer.pointsBalance)} disabled />
                 </div>
               </div>
             </CardContent>

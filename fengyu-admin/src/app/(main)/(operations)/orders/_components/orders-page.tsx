@@ -26,8 +26,8 @@ import { ExportButton } from "@/components/ui/export-button";
 import { fmtDate, fmtDateTime } from "@/lib/datetime";
 import { actionErrorMessage } from "@/lib/action-error";
 import { useUrlFilters } from "@/lib/hooks/use-url-filters";
-import { ORDER_TYPE_FILTER_OPTIONS, parseOrderTypeFilters } from "@/lib/list-filters";
-import type { SaleOrder, OrderStatus } from "@/lib/types";
+import { ORDER_STATUS_FILTER_OPTIONS, ORDER_TYPE_FILTER_OPTIONS, parseOrderStatusFilters, parseOrderTypeFilters } from "@/lib/list-filters";
+import type { SaleOrder } from "@/lib/types";
 import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types";
 import MarketStoreFilter from "@/components/market-store-filter";
 
@@ -280,6 +280,19 @@ export default function OrdersPageClient({
   );
 
   const statusFilter = get("status");
+  const [selectedStatuses, setSelectedStatuses] = useState<string[]>(
+    () => parseOrderStatusFilters(statusFilter) ?? [],
+  );
+  useEffect(() => {
+    setSelectedStatuses(parseOrderStatusFilters(statusFilter) ?? []);
+  }, [statusFilter]);
+  const handleStatusesChange = useCallback(
+    (statuses: string[]) => {
+      setSelectedStatuses(statuses);
+      setFilter("status", statuses.join(","));
+    },
+    [setFilter],
+  );
   const typeFilter = get("type");
   const [selectedOrderTypes, setSelectedOrderTypes] = useState<string[]>(
     () => parseOrderTypeFilters(typeFilter) ?? [],
@@ -328,14 +341,13 @@ export default function OrdersPageClient({
       <Card>
         <CardContent className="p-4">
           <div className="flex flex-wrap gap-3">
-            <Select className="w-40" value={statusFilter} onChange={(e) => setFilter("status", e.target.value)}>
-              <option value="">全部状态</option>
-              {(["待支付", "待审批", "已支付", "部分支付", "已完成", "已退款", "未审核", "支付失败", "已关闭", "已作废"] as OrderStatus[]).map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </Select>
+            <MultiSelect
+              className="w-40"
+              options={ORDER_STATUS_FILTER_OPTIONS.map((status) => ({ value: status, label: status }))}
+              value={selectedStatuses}
+              onChange={handleStatusesChange}
+              placeholder="全部状态"
+            />
             <MultiSelect
               className="w-40"
               options={ORDER_TYPE_FILTER_OPTIONS.map((type) => ({ value: type, label: type }))}

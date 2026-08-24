@@ -11,7 +11,16 @@ import type { EmployeeFilters } from '@/actions/employees'
 import type { PointTransactionFilters } from '@/actions/points'
 import type { CardFilters } from '@/actions/cards'
 import type { CustomerFilters } from '@/actions/customers'
-import type { SaleOrderType } from '@/lib/types'
+import type { OrderStatus, SaleOrderType, ServiceOrderStatus } from '@/lib/types'
+
+export const ORDER_STATUS_FILTER_OPTIONS = [
+  '待支付', '待审批', '已支付', '部分支付', '已完成',
+  '已退款', '未审核', '支付失败', '已关闭', '已作废',
+] as const satisfies readonly OrderStatus[]
+
+export const SERVICE_ORDER_STATUS_FILTER_OPTIONS = [
+  '待服务', '服务中', '待客户确认', '已完成', '已取消',
+] as const satisfies readonly ServiceOrderStatus[]
 
 /** 订单管理可筛选的销售单据类型（与 `SaleOrderType` 联合类型保持一致）。 */
 export const ORDER_TYPE_FILTER_OPTIONS = [
@@ -36,9 +45,26 @@ export function parseOrderTypeFilters(raw: string | undefined): SaleOrderType[] 
   return types.length ? types : undefined
 }
 
+function parseMultiValueFilter<T extends string>(raw: string | undefined, options: readonly T[]): T[] | undefined {
+  if (!raw) return undefined
+  const validValues = new Set<string>(options)
+  const values = [...new Set(
+    raw.split(',').map((value) => value.trim()).filter((value): value is T => validValues.has(value)),
+  )]
+  return values.length ? values : undefined
+}
+
+export function parseOrderStatusFilters(raw: string | undefined): OrderStatus[] | undefined {
+  return parseMultiValueFilter(raw, ORDER_STATUS_FILTER_OPTIONS)
+}
+
+export function parseServiceOrderStatusFilters(raw: string | undefined): ServiceOrderStatus[] | undefined {
+  return parseMultiValueFilter(raw, SERVICE_ORDER_STATUS_FILTER_OPTIONS)
+}
+
 export function parseOrderFilters(params: Record<string, string | undefined>): OrderFilters {
   return {
-    status: params.status,
+    statuses: parseOrderStatusFilters(params.status),
     types: parseOrderTypeFilters(params.type),
     marketId: params.market,
     storeId: params.store,
@@ -56,7 +82,7 @@ export function parseOrderFilters(params: Record<string, string | undefined>): O
 
 export function parseServiceOrderFilters(params: Record<string, string | undefined>): ServiceOrderFilters {
   return {
-    status: params.status,
+    statuses: parseServiceOrderStatusFilters(params.status),
     marketId: params.market,
     storeId: params.store,
     dateFrom: params.from,

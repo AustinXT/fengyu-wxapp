@@ -100,6 +100,10 @@ export interface Customer {
   memberLevelLockedUntil: string | null
   customerSource: string | null
   promoterEmployeeName: string | null
+  inviterUserId: string | null
+  inviterName: string | null
+  inviterPhone: string | null
+  invitedAt: string | null
   customerType: string
   spendingTier: string
   monthlyActivity: string | null
@@ -113,6 +117,7 @@ export interface Customer {
   skinIssue: string | null
   wellnessPreference: string | null
   notes: string | null
+  pointsBalance: number
   createdAt: string
   updatedAt: string
   // joined

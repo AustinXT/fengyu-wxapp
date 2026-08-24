@@ -88,7 +88,7 @@
           bindinput="onPickupQtyInput"
         />
       </view>
-      <view class="dialog-field">
+      <view wx:if="{{inventoryLinkageEnabled}}" class="dialog-field">
         <text class="dialog-label">本次将自动出库</text>
         <view wx:if="{{pickupDialog.loadingInventorySkuOptions}}" class="dialog-hint">加载销售商品组成中...</view>
         <view wx:elif="{{pickupDialog.inventorySkuOptions.length > 0}}" class="composition-list">
@@ -115,7 +115,7 @@
       <button class="dialog-btn cancel" bindtap="closePickupDialog">取消</button>
       <button
         class="dialog-btn confirm"
-        disabled="{{pickupDialog.submitting || pickupDialog.loadingInventorySkuOptions || !pickupDialog.inventoryReady}}"
+        disabled="{{pickupDialog.submitting || (inventoryLinkageEnabled && (pickupDialog.loadingInventorySkuOptions || !pickupDialog.inventoryReady))}}"
         bindtap="submitPickup"
       >
         {{pickupDialog.submitting ? '提交中...' : '确认提货'}}

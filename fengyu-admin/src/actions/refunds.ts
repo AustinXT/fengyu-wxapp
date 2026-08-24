@@ -1192,6 +1192,9 @@ export const approveRefund = withPermission(
     if (msg.includes('PAID_SESSIONS_UNDERFLOW')) {
       return { success: false, error: { code: 'CONFLICT', message: '该订单已有消费次数，本次退款会使已支付次数低于已消费次数，请先取消相关服务单回滚消费再退款' } }
     }
+    if (msg.includes('退款金额无法完整映射到商品行实收')) {
+      return { success: false, error: { code: 'INVALID_STATE', message: '商品行实收数据异常，本次退款已回滚，请联系管理员处理' } }
+    }
     console.error('[approveRefund] unexpected error:', err)
     return { success: false, error: { code: 'UNKNOWN', message: '审批退款失败，请稍后重试' } }
   }

@@ -2,6 +2,7 @@
 import { callStaffApi } from '../../utils/cloud';
 import { isManagementMode, isManager, requireManager } from '../../utils/role';
 import { emit, on, EVENT_STORE_CHANGED } from '../../utils/event-bus';
+import { INVENTORY_ENTRY_ENABLED } from '../../utils/feature-flags';
 
 const app = getApp<IAppOption>();
 
@@ -12,6 +13,7 @@ Page({
     staffName: '',
     position: '',
     isManager: false,
+    inventoryEntryEnabled: INVENTORY_ENTRY_ENABLED,
     currentStoreId: '',
     scopedStores: [] as ScopedStore[],
     hasMultiStore: false,

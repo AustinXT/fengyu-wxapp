@@ -45,6 +45,18 @@ function trim(val) {
   return s === '' ? null : s
 }
 
+const CUSTOMER_SOURCE_ALIASES = {
+  推带新: '推广部',
+  地推卡: '全员地推',
+  拓客卡: '外请团队拓客',
+  内部员工或家属: '员工或家属',
+}
+
+function normalizeCustomerSource(val) {
+  const source = trim(val)
+  return source ? (CUSTOMER_SOURCE_ALIASES[source] || source) : null
+}
+
 function toBool(val) {
   if (val === null || val === undefined) return false
   return String(val).trim() === '是'
@@ -258,7 +270,7 @@ async function main() {
         `, [
           idGen.next(), customerId, trim(c.name) || customerId,
           storeId, trim(c.bound_employee_id), trim(c.member_level),
-          trim(c.customer_source), trim(c.category), toDateStr(c.birthday),
+          normalizeCustomerSource(c.customer_source), trim(c.category), toDateStr(c.birthday),
           trim(c.occupation), toBool(c.is_married_raw), trim(c.wechat_name),
           trim(c.skin_type), trim(c.improvement_focus),
           trim(c.skin_issue), trim(c.wellness_preference),

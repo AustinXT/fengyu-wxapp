@@ -10,13 +10,13 @@ export const NEW_CUSTOMER_SOURCE_LABELS = [
   "美团",
   "抖音",
   "小程序",
-  "推带新",
-  "地推卡",
-  "拓客卡",
+  "推广部",
+  "全员地推",
+  "外请团队拓客",
   "老带新",
   TRANSFER_SOURCE,
   "自进店",
-  "内部员工或家属",
+  "员工或家属",
   EMPTY_SOURCE,
 ]
 

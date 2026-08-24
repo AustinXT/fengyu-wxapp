@@ -101,7 +101,7 @@ const newCustomerFiltersSchema = z.object({
   endMonth: nullableText.describe("结束月份 YYYY-MM。为空时按系统默认月份范围。"),
   unitLevel: z.enum(["market", "store"]).nullable().optional().describe("单位层级：market=市场，store=门店。"),
   tableMode: z.enum(["months", "units"]).nullable().optional().describe("对比方式：months=多月份对比，units=多单位对比。"),
-  source: nullableText.describe("新客来源渠道，例如美团、抖音、地推卡、老带新、转让店、未填写。为空表示全部来源。"),
+  source: nullableText.describe("新客来源渠道，例如美团、抖音、全员地推、老带新、转让店、未填写。为空表示全部来源。"),
   market: nullableText.describe("市场区域名称。为空表示当前权限内全部市场。"),
   store: nullableText.describe("门店名称。为空表示当前权限内全部门店。"),
 })
@@ -437,7 +437,7 @@ export function createAssistantSystemPrompt(): string {
 - 普及率按顾客绑定门店和市场归属；商品维度按 sale_items.sku_id 合并，展示名优先使用 product_skus.spec_name 当前名称，sale_items.product_name 仅作为历史名称。
 - 招牌、王牌、明星等通常是一级品项；科颜美、安吉丽、功能养生等可能是二级品项；二级品项、系列、商品名都由服务端商品词典归一化，字段不确定时不要臆造。
 - 新客漏斗新客基数：非“转让店”来源必须有已支付销售单/转换单才计入，归属月取首笔有效订单时间；“转让店”只要有顾客档案即可计入，归属月取顾客档案创建时间。
-- 新客漏斗来源按当前系统 customer_source 枚举全部展开，包括美团、抖音、小程序、推带新、地推卡、拓客卡、老带新、转让店、自进店、内部员工或家属、未填写。
+- 新客漏斗来源按当前系统 customer_source 枚举全部展开，包括美团、抖音、小程序、推广部、全员地推、外请团队拓客、老带新、转让店、自进店、员工或家属、未填写。
 - 新客漏斗到店：入漏斗后 T+90 内首次完成服务，T+30、T+60、T+90 互斥；漏斗图只展示新客总人数、合计到店人数、会员客户数。
 - 新客漏斗会员客户：必须来自 T+90 已到店人群且已成为会员；不要求 became_member_at 晚于首次服务日。
 - 所有查询都已经由服务端绑定当前用户组织范围，不要要求用户提供权限范围。
