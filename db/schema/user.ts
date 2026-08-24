@@ -43,6 +43,9 @@ export const clientWechatUsers = pgTable(
     /** 上一级别快照；null 表示首次成为会员（即"新会员"判定条件） */
     oldMemberLevel: memberLevelEnum('old_member_level'),
     customerSource: customerSourceEnum('customer_source'),
+    /** 推荐员工可靠关联；删除员工时保留姓名快照并清空关联 */
+    promoterEmployeeId: varchar('promoter_employee_id', { length: 30 })
+      .references((): any => staffWechatUsers.employeeId, { onDelete: 'set null' }),
     /** 推荐人姓名快照；旧 client 仍只写此列，关联失效时用于展示回退 */
     promoterEmployeeName: varchar('promoter_employee_name', { length: 50 }),
     /** 邀请人（客户 user_id）；首次 bindStore 时写入，写入后不变 */
@@ -83,6 +86,7 @@ export const clientWechatUsers = pgTable(
     uniqueIndex('uq_client_users_phone').on(table.phone).where(sql`phone IS NOT NULL`),
     uniqueIndex('uq_client_users_customer_id').on(table.customerId).where(sql`customer_id IS NOT NULL`),
     index('idx_client_users_bound_store_id').on(table.boundStoreId),
+    index('idx_client_users_promoter_employee_id').on(table.promoterEmployeeId).where(sql`promoter_employee_id IS NOT NULL`),
     index('idx_client_users_inviter').on(table.inviterUserId).where(sql`inviter_user_id IS NOT NULL`),
     check('chk_inviter_not_self', sql`${table.inviterUserId} IS NULL OR ${table.inviterUserId} <> ${table.userId}`),
     check('chk_cwu_phone_format', sql`${table.phone} IS NULL OR ${table.phone} ~ '^1[3-9][0-9]{9}$'`),

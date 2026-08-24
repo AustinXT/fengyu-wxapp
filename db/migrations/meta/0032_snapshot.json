@@ -1,6 +1,6 @@
 {
-  "id": "0f587950-e42c-4e06-9dd0-6747d7624ed7",
-  "prevId": "c2ea3ba0-074a-45af-9ade-14d979f4caa6",
+  "id": "43be6970-1ccc-4e57-8d44-9de2f1a6431d",
+  "prevId": "0f587950-e42c-4e06-9dd0-6747d7624ed7",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1216,6 +1216,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "promoter_employee_id": {
+          "name": "promoter_employee_id",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "promoter_employee_name": {
           "name": "promoter_employee_name",
           "type": "varchar(50)",
@@ -1422,6 +1428,22 @@
           "method": "btree",
           "with": {}
         },
+        "idx_client_users_promoter_employee_id": {
+          "name": "idx_client_users_promoter_employee_id",
+          "columns": [
+            {
+              "expression": "promoter_employee_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "promoter_employee_id IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "idx_client_users_inviter": {
           "name": "idx_client_users_inviter",
           "columns": [
@@ -1451,6 +1473,19 @@
             "store_id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "client_wechat_users_promoter_employee_id_staff_wechat_users_employee_id_fk": {
+          "name": "client_wechat_users_promoter_employee_id_staff_wechat_users_employee_id_fk",
+          "tableFrom": "client_wechat_users",
+          "tableTo": "staff_wechat_users",
+          "columnsFrom": [
+            "promoter_employee_id"
+          ],
+          "columnsTo": [
+            "employee_id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         },
         "client_wechat_users_inviter_user_id_client_wechat_users_user_id_fk": {
