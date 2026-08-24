@@ -66,6 +66,50 @@
   line-height: 1.4;
 }
 
+/* 顾客详情固定两排导航：9 个入口按 5 列排列，第二排保留 4 项 */
+.customer-tabs {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  background: #FFFFFF;
+  border-bottom: 1rpx solid #E8E8E8;
+}
+
+.customer-tab {
+  position: relative;
+  min-width: 0;
+  padding: 20rpx 4rpx;
+  color: var(--color-text-secondary);
+  font-size: 24rpx;
+  line-height: 32rpx;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.customer-tab--active {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.customer-tab--active::after {
+  position: absolute;
+  right: 24rpx;
+  bottom: 0;
+  left: 24rpx;
+  height: 4rpx;
+  border-radius: 2rpx;
+  background: var(--color-primary);
+  content: '';
+}
+
+.customer-tab--pressed {
+  background: #FFF0EE;
+}
+
+/* van-tabs 仅承载内容和切换状态，隐藏其默认横向导航。 */
+.customer-tabs__native-nav {
+  display: none !important;
+}
+
 /* Tab 内容区 */
 .tab-content {
   padding: 16rpx 0;

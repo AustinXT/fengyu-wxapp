@@ -1,4 +1,4 @@
-<!-- packageCustomer/customer-detail/customer-detail.wxml — 8-Tab 顾客详情 -->
+<!-- packageCustomer/customer-detail/customer-detail.wxml — 9-Tab 顾客详情 -->
 <view class="container">
 
   <view wx:if="{{loading}}" class="loading-wrap">
@@ -56,8 +56,20 @@
       </view>
     </view>
 
-    <!-- 8-Tab 导航：7 核心（与 admin 一致）+ 日历（员工端特有） -->
-    <van-tabs active="{{activeTab}}" bind:change="onTabChange" color="#C0322A" scrollable ellipsis="{{false}}" line-width="40rpx">
+    <!-- 固定两排导航：全部入口直接可见，不依赖横向滑动 -->
+    <view class="customer-tabs" role="tablist" aria-label="顾客详情栏目">
+      <view
+        wx:for="{{tabTitles}}"
+        wx:key="*this"
+        class="customer-tab {{activeTab === index ? 'customer-tab--active' : ''}}"
+        role="tab"
+        aria-selected="{{activeTab === index}}"
+        hover-class="customer-tab--pressed"
+        data-index="{{index}}"
+        bindtap="onTabTap"
+      >{{item}}</view>
+    </view>
+    <van-tabs active="{{activeTab}}" bind:change="onTabChange" color="#C0322A" nav-class="customer-tabs__native-nav">
       <van-tab title="基本档案">
         <view class="tab-content">
           <van-cell-group class="card-group">
