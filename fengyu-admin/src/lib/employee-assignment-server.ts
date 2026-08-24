@@ -8,6 +8,7 @@ export async function getInvalidEmployeeAssignmentId(
 ): Promise<string | null> {
   const ids = [...new Set(employeeIds.filter(Boolean))]
   if (ids.length === 0) return null
+  const employeeIdParams = sql.join(ids.map((id) => sql`${id}`), sql`, `)
 
   const rows = (await db.execute(sql`
     SELECT u.employee_id
@@ -16,7 +17,7 @@ export async function getInvalidEmployeeAssignmentId(
     JOIN org_nodes employee_store_node ON employee_store_node.id = employee_store.org_node_id
     JOIN stores target_store ON target_store.store_id = ${targetStoreId}
     JOIN org_nodes target_store_node ON target_store_node.id = target_store.org_node_id
-    WHERE u.employee_id = ANY(${ids}::text[])
+    WHERE u.employee_id IN (${employeeIdParams})
       AND u.is_resigned = false
       AND u.store_id IS NOT NULL
       AND (
