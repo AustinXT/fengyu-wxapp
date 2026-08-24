@@ -174,7 +174,7 @@ export default function CustomerDetailPage({
     gender: customer.gender ?? "",
     isCrossStoreTemp: customer.isCrossStoreTemp,
     boundEmployeeId: customer.boundEmployeeId ?? "",
-    promoterEmployeeName: customer.promoterEmployeeName ?? "",
+    promoterEmployeeId: customer.promoterEmployeeId ?? "",
     customerSource: customer.customerSource ?? "",
     birthday: customer.birthday ?? "",
     occupation: customer.occupation ?? "",
@@ -190,28 +190,54 @@ export default function CustomerDetailPage({
     setForm((prev) => ({ ...prev, [field]: value }))
   }
 
-  // 推荐人搜索选择（异步搜索，不受 scope/limit 限制）
-  type PromoterOption = { employeeId: string; name: string | null; phone: string | null }
+  // 推荐员工只能通过受权限和 scope 约束的异步搜索选择，不接受自由文本提交。
+  type PromoterOption = {
+    employeeId: string
+    name: string | null
+    phoneMasked: string
+    storeName: string | null
+    isResigned: false
+  }
   const [promoterSearch, setPromoterSearch] = useState("")
   const [promoterOpen, setPromoterOpen] = useState(false)
   const [promoterResults, setPromoterResults] = useState<PromoterOption[]>([])
   const [promoterLoading, setPromoterLoading] = useState(false)
+  const [promoterError, setPromoterError] = useState("")
+  const [promoterChanged, setPromoterChanged] = useState(false)
   const promoterRef = useRef<HTMLDivElement>(null)
   const promoterTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [selectedPromoter, setSelectedPromoter] = useState<PromoterOption | null>(
     customer.promoterEmployeeName
-      ? { employeeId: '', name: customer.promoterEmployeeName, phone: null }
+      ? {
+          employeeId: customer.promoterEmployeeId ?? '',
+          name: customer.promoterEmployeeName,
+          phoneMasked: '',
+          storeName: null,
+          isResigned: false,
+        }
       : null
   )
   const doPromoterSearch = useCallback((q: string) => {
     if (!canListEmployees) return
     if (promoterTimer.current) clearTimeout(promoterTimer.current)
-    if (!q.trim()) { setPromoterResults([]); return }
+    const trimmed = q.trim()
+    setPromoterError("")
+    if (trimmed.length < 3) {
+      setPromoterResults([])
+      setPromoterLoading(false)
+      return
+    }
     setPromoterLoading(true)
     promoterTimer.current = setTimeout(async () => {
-      const results = await searchEmployees(q)
-      setPromoterResults(results)
-      setPromoterLoading(false)
+      try {
+        const results = await searchEmployees(trimmed)
+        setPromoterResults(results)
+      } catch (err) {
+        setPromoterResults([])
+        setPromoterError(actionErrorMessage(err, "搜索失败，请稍后重试"))
+      } finally {
+        setPromoterLoading(false)
+      }
     }, 300)
   }, [canListEmployees])
   useEffect(() => {
@@ -219,7 +245,10 @@ export default function CustomerDetailPage({
       if (promoterRef.current && !promoterRef.current.contains(e.target as Node)) setPromoterOpen(false)
     }
     document.addEventListener("mousedown", handleClickOutside)
-    return () => document.removeEventListener("mousedown", handleClickOutside)
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside)
+      if (promoterTimer.current) clearTimeout(promoterTimer.current)
+    }
   }, [])
 
   function handleCancelEdit() {
@@ -228,7 +257,7 @@ export default function CustomerDetailPage({
       gender: customer.gender ?? "",
       isCrossStoreTemp: customer.isCrossStoreTemp,
       boundEmployeeId: customer.boundEmployeeId ?? "",
-      promoterEmployeeName: customer.promoterEmployeeName ?? "",
+      promoterEmployeeId: customer.promoterEmployeeId ?? "",
       customerSource: customer.customerSource ?? "",
       birthday: customer.birthday ?? "",
       occupation: customer.occupation ?? "",
@@ -241,9 +270,16 @@ export default function CustomerDetailPage({
     })
     setSelectedPromoter(
       customer.promoterEmployeeName
-        ? { employeeId: '', name: customer.promoterEmployeeName, phone: null }
+        ? {
+            employeeId: customer.promoterEmployeeId ?? '',
+            name: customer.promoterEmployeeName,
+            phoneMasked: '',
+            storeName: null,
+            isResigned: false,
+          }
         : null,
     )
+    setPromoterChanged(false)
     setPromoterSearch("")
     setPromoterOpen(false)
     setIsEditing(false)
@@ -258,7 +294,7 @@ export default function CustomerDetailPage({
         gender: form.gender || null,
         isCrossStoreTemp: form.isCrossStoreTemp,
         boundEmployeeId: form.boundEmployeeId || null,
-        promoterEmployeeName: form.promoterEmployeeName || null,
+        ...(promoterChanged ? { promoterEmployeeId: form.promoterEmployeeId || null } : {}),
         customerSource: form.customerSource || null,
         birthday: form.birthday || null,
         occupation: form.occupation || null,
@@ -691,16 +727,23 @@ export default function CustomerDetailPage({
                   {isEditing ? (
                     <div ref={promoterRef} className="relative">
                       <Input
-                        placeholder="输入姓名或手机号搜索"
-                        value={promoterOpen ? promoterSearch : (selectedPromoter?.name ?? form.promoterEmployeeName)}
+                        placeholder={canListEmployees ? "输入至少 3 位姓名或手机号" : "无员工查看权限"}
+                        value={promoterOpen ? promoterSearch : (selectedPromoter?.name ?? customer.promoterEmployeeName ?? "")}
+                        disabled={!canListEmployees}
                         onFocus={() => { setPromoterOpen(true); setPromoterSearch("") }}
                         onChange={(e) => { setPromoterSearch(e.target.value); setPromoterOpen(true); doPromoterSearch(e.target.value) }}
                       />
-                      {form.promoterEmployeeName && !promoterOpen && (
+                      {(selectedPromoter || customer.promoterEmployeeName) && !promoterOpen && canListEmployees && (
                         <button
                           type="button"
                           className="absolute right-2 top-1/2 -translate-y-1/2 text-[#999999] hover:text-[#333333] text-sm"
-                          onClick={() => { handleFormChange("promoterEmployeeName", ""); setSelectedPromoter(null); setPromoterSearch("") }}
+                          aria-label="清空推荐员工"
+                          onClick={() => {
+                            handleFormChange("promoterEmployeeId", "")
+                            setSelectedPromoter(null)
+                            setPromoterChanged(true)
+                            setPromoterSearch("")
+                          }}
                         >
                           ✕
                         </button>
@@ -709,23 +752,29 @@ export default function CustomerDetailPage({
                         <ul className="absolute z-10 mt-1 max-h-48 w-full overflow-auto rounded-md border border-[var(--border)] bg-[var(--background)] shadow-md">
                           {promoterLoading ? (
                             <li className="px-3 py-2 text-sm text-[#999999]">搜索中…</li>
-                          ) : !promoterSearch.trim() ? (
-                            <li className="px-3 py-2 text-sm text-[#999999]">请输入关键词搜索</li>
+                          ) : promoterError ? (
+                            <li className="px-3 py-2 text-sm text-[#C0322A]">{promoterError}</li>
+                          ) : promoterSearch.trim().length < 3 ? (
+                            <li className="px-3 py-2 text-sm text-[#999999]">请输入至少 3 位关键词</li>
                           ) : promoterResults.length === 0 ? (
                             <li className="px-3 py-2 text-sm text-[#999999]">无匹配结果</li>
                           ) : (
                             promoterResults.map((emp) => (
                               <li
                                 key={emp.employeeId}
-                                className={`cursor-pointer px-3 py-2 text-sm hover:bg-[var(--muted)] ${emp.name === form.promoterEmployeeName ? "bg-[var(--muted)] font-medium" : ""}`}
+                                className={`cursor-pointer px-3 py-2 text-sm hover:bg-[var(--muted)] ${emp.employeeId === form.promoterEmployeeId ? "bg-[var(--muted)] font-medium" : ""}`}
                                 onMouseDown={() => {
-                                  handleFormChange("promoterEmployeeName", emp.name ?? "")
+                                  handleFormChange("promoterEmployeeId", emp.employeeId)
                                   setSelectedPromoter(emp)
+                                  setPromoterChanged(true)
                                   setPromoterOpen(false)
                                   setPromoterSearch("")
                                 }}
                               >
-                                {emp.name}{emp.phone ? ` (${formatPhoneSafe(emp.phone)})` : ""}
+                                <div>{emp.name || "未命名员工"} · {emp.phoneMasked || "无手机号"}</div>
+                                <div className="text-xs text-[#999999]">
+                                  {emp.employeeId} · {emp.storeName || "未分配门店"} · 在职
+                                </div>
                               </li>
                             ))
                           )}

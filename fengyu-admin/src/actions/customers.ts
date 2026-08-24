@@ -1,13 +1,13 @@
 'use server'
 
 import { db } from '@/db'
-import { clientWechatUsers } from '@db/user'
+import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { saleOrders } from '@db/order'
 import { stores, orgNodes } from '@db/org'
 import { eq, and, or, desc, asc, inArray, sql, ilike, isNotNull, getTableColumns } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import type { Customer, SaleOrder, SaleItem, Appointment, AuthSession, CustomerCoupon, CouponType, CouponStatus } from '@/lib/types'
-import { scopeCondition, isAdminScope, isInScope, requireAdmin } from '@/lib/permissions'
+import { scopeCondition, employeeScopeCondition, isAdminScope, isInScope, requireAdmin } from '@/lib/permissions'
 import { hasRole } from '@/lib/auth'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
@@ -44,12 +44,19 @@ const inviterPhone = sql<string | null>`(
   WHERE inviter.user_id = ${clientWechatUsers.inviterUserId}
 )`.as('inviter_phone')
 
+const promoterCurrentNameSql = sql<string | null>`(
+  SELECT promoter.name FROM staff_wechat_users promoter
+  WHERE promoter.employee_id = ${clientWechatUsers.promoterEmployeeId}
+)`
+const promoterCurrentName = promoterCurrentNameSql.as('promoter_current_name')
+
 const customerColumns = {
   ...getTableColumns(clientWechatUsers),
   storeName,
   marketName,
   inviterName,
   inviterPhone,
+  promoterCurrentName,
 }
 
 type CustomerRow = typeof clientWechatUsers.$inferSelect & {
@@ -57,6 +64,7 @@ type CustomerRow = typeof clientWechatUsers.$inferSelect & {
   marketName: string | null
   inviterName: string | null
   inviterPhone: string | null
+  promoterCurrentName: string | null
 }
 
 function serializeCustomer(row: CustomerRow): Customer {
@@ -75,7 +83,8 @@ function serializeCustomer(row: CustomerRow): Customer {
     memberLevelUpgradedAt: row.memberLevelUpgradedAt ? row.memberLevelUpgradedAt.toISOString() : null,
     memberLevelLockedUntil: row.memberLevelLockedUntil ? row.memberLevelLockedUntil.toISOString() : null,
     customerSource: row.customerSource,
-    promoterEmployeeName: row.promoterEmployeeName,
+    promoterEmployeeId: row.promoterEmployeeId,
+    promoterEmployeeName: row.promoterCurrentName ?? row.promoterEmployeeName,
     inviterUserId: row.inviterUserId,
     inviterName: row.inviterName,
     inviterPhone: row.inviterPhone,
@@ -102,8 +111,8 @@ function serializeCustomer(row: CustomerRow): Customer {
   }
 }
 
-/** 推荐人姓名快照（直接读取客户档案） */
-const promoterName = clientWechatUsers.promoterEmployeeName
+/** 推荐员工当前姓名优先，关联失效或旧 client 仅写快照时回退历史姓名。 */
+const promoterName = sql<string | null>`COALESCE(${promoterCurrentNameSql}, ${clientWechatUsers.promoterEmployeeName})`
 
 /** 顾客导出取数列（12 表头所需字段 + storeName + promoterName） */
 const exportCustomerColumns = {
@@ -989,7 +998,7 @@ export const updateCustomer = withPermission(
     skinIssue: string | null
     wellnessPreference: string | null
     notes: string | null
-    promoterEmployeeName: string | null
+    promoterEmployeeId: string | null
     boundEmployeeId: string | null
     /** 临时跨门店标记（需求21）；每日 03:00 cron 重置为 false */
     isCrossStoreTemp: boolean
@@ -1006,22 +1015,52 @@ export const updateCustomer = withPermission(
     return { success: false, message: '手机号格式不正确（需为 11 位手机号）' }
   }
 
+  const scopeCond = scopeCondition(session, clientWechatUsers.boundStoreId)
+
+  // 先确认顾客在当前 scope 内，避免后续员工校验形成越权枚举侧信道。
+  const [before] = await db.select().from(clientWechatUsers)
+    .where(and(eq(clientWechatUsers.userId, userId), scopeCond)).limit(1)
+  if (!before) return { success: false, message: '顾客不存在或无权修改' }
+
+  const updateData: Record<string, unknown> = { ...data }
+
   // boundEmployeeId 变更时同步写入冗余姓名
   if ('boundEmployeeId' in data) {
     if (data.boundEmployeeId) {
-      const { staffWechatUsers } = await import('@db/user')
       const [emp] = await db.select({ name: staffWechatUsers.name }).from(staffWechatUsers)
         .where(eq(staffWechatUsers.employeeId, data.boundEmployeeId)).limit(1)
-      ;(data as any).boundEmployeeName = emp?.name ?? null
+      updateData.boundEmployeeName = emp?.name ?? null
     } else {
-      ;(data as any).boundEmployeeName = null
+      updateData.boundEmployeeName = null
     }
   }
 
-  // 获取旧值用于日志 diff
-  const [before] = await db.select().from(clientWechatUsers).where(eq(clientWechatUsers.userId, userId)).limit(1)
+  // admin 只提交 employeeId；服务端解析当前姓名并同步写 ID + 姓名快照。
+  if ('promoterEmployeeId' in data) {
+    if (data.promoterEmployeeId) {
+      const [promoter] = await db
+        .select({
+          employeeId: staffWechatUsers.employeeId,
+          name: staffWechatUsers.name,
+        })
+        .from(staffWechatUsers)
+        .where(and(
+          eq(staffWechatUsers.employeeId, data.promoterEmployeeId),
+          eq(staffWechatUsers.isResigned, false),
+          employeeScopeCondition(session, staffWechatUsers.storeId, staffWechatUsers.orgNodeId),
+        ))
+        .limit(1)
+      if (!promoter) {
+        return { success: false, message: '推荐员工不存在、已离职或不在权限范围内' }
+      }
+      updateData.promoterEmployeeId = promoter.employeeId
+      updateData.promoterEmployeeName = promoter.name
+    } else {
+      updateData.promoterEmployeeId = null
+      updateData.promoterEmployeeName = null
+    }
+  }
 
-  const scopeCond = scopeCondition(session, clientWechatUsers.boundStoreId)
   const whereConditions = expectedUpdatedAt
     ? and(
         eq(clientWechatUsers.userId, userId),
@@ -1032,7 +1071,7 @@ export const updateCustomer = withPermission(
 
   let result: any
   try {
-    result = await db.update(clientWechatUsers).set(data as any).where(whereConditions)
+    result = await db.update(clientWechatUsers).set(updateData as any).where(whereConditions)
   } catch (err: any) {
     if (pgErrorCode(err) === '23505') {
       return { success: false, message: '该手机号已被其他顾客使用' }
@@ -1047,7 +1086,7 @@ export const updateCustomer = withPermission(
     }
   }
 
-  await logUpdate(session, 'customer.update', 'customer', userId, before as Record<string, unknown>, data)
+  await logUpdate(session, 'customer.update', 'customer', userId, before as Record<string, unknown>, updateData)
 
   const { revalidatePath } = await import('next/cache')
   revalidatePath('/customers')
