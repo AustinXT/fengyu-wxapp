@@ -41,7 +41,7 @@ function mockScopeAllow(storeId = 'store-001') {
  * 默认 client.query 返回结果（识别 RETURNING / bool_and 等需要 rows[0] 的 SQL）。
  * 内联 vi.fn 中 fallthrough 也应使用此函数，否则 .rows[0].id 会 undefined。
  */
-function defaultQueryResult(sql) {
+function defaultQueryResult(sql, params) {
   if (typeof sql === 'string' && /RETURNING\s+id/i.test(sql)) {
     return { rows: [{ id: 1 }], rowCount: 1 }
   }
@@ -67,11 +67,24 @@ function defaultQueryResult(sql) {
   if (typeof sql === 'string' && /bool_and\s*\(\s*is_experience/i.test(sql)) {
     return { rows: [{ all_experience: false, all_normal: true }], rowCount: 1 }
   }
+  if (typeof sql === 'string' && /FROM inventory_sku_product_sku_mappings mapping/.test(sql)) {
+    return {
+      rows: [{
+        product_sku_id: params?.[0]?.[0] || 'sku-home',
+        inventory_sku_id: 'inventory-sku-001',
+        product_code: 'I001',
+        product_name: '库存商品',
+        spec_name: null,
+        quantity_per_sale_unit: 1,
+      }],
+      rowCount: 1,
+    }
+  }
   return { rows: [], rowCount: 1 }
 }
 
 function makeClientQueryMock(_defaultResult) {
-  return vi.fn(async (sql, _params) => defaultQueryResult(sql))
+  return vi.fn(async (sql, params) => defaultQueryResult(sql, params))
 }
 
 // confirmOffline 的订单/明细/payment 分类读取已收进同一事务。旧用例仍用 pg.query
@@ -6628,6 +6641,7 @@ describe('order.createPickup', () => {
   test('幂等查询和回读均锁定当前门店', async () => {
     const ctx = createManagerCtx({
       saleItemId: 'item-001',
+      inventorySkuId: 'inventory-sku-001',
       pickupQuantity: 1,
       idempotencyKey: 'pickup-idempotency-key',
     })
@@ -6644,12 +6658,16 @@ describe('order.createPickup', () => {
   })
 
   test('取货成功', async () => {
-    const ctx = createManagerCtx({ saleItemId: 'item-001', pickupQuantity: 2 })
+    const ctx = createManagerCtx({ saleItemId: 'item-001', inventorySkuId: 'inventory-sku-001', pickupQuantity: 2 })
+    let transactionClient
 
     // createPickup 主体在 pg.transaction(cb) 内，调用 client.query；用 mockImplementation 替换 transaction
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql) => {
+        query: vi.fn(async (sql, params) => {
+          if (/FROM inventory_cutover_states/.test(sql)) {
+            return { rows: [{ status: '已初始化' }], rowCount: 1 }
+          }
           if (/FOR UPDATE OF si/.test(sql) && /AS paid_quantity/.test(sql)) {
             return {
               rows: [{
@@ -6671,22 +6689,31 @@ describe('order.createPickup', () => {
                 product_name: '家居产品A',
                 quantity: 5,
                 picked_up_quantity: 2,
+                inventory_composition_snapshot: {
+                  version: 1,
+                  components: [
+                    { inventorySkuId: 'inventory-sku-001', productCode: 'I001', productName: '库存品A', specName: null, quantityPerSaleUnit: 1 },
+                    { inventorySkuId: 'inventory-sku-002', productCode: 'I002', productName: '库存品B', specName: null, quantityPerSaleUnit: 2 },
+                  ],
+                },
               }],
               rowCount: 1,
             }
           }
-          if (/FROM store_inventory_stocks/.test(sql)) {
-            return { rows: [{ id: 1, store_id: 'store-001', sku_id: 'sku-001', sku_name: '家居产品A', batch_no: 'B1', expiry_date: null, quantity_on_hand: 5 }], rowCount: 1 }
+          if (/FROM inventory_stock_lots/.test(sql)) {
+            const skuId = params[1]
+            return { rows: [{ id: skuId === 'inventory-sku-001' ? 1 : 2, location_id: 'store-001', sku_id: skuId, sku_name: skuId, batch_no: 'B1', expiry_date: null, quantity_on_hand: 10 }], rowCount: 1 }
           }
-          if (/SELECT id FROM store_inventory_docs/.test(sql)) {
+          if (/SELECT id FROM inventory_docs/.test(sql)) {
             return { rows: [], rowCount: 0 }
           }
-          if (/INSERT INTO store_inventory_doc_items/.test(sql)) {
+          if (/INSERT INTO inventory_doc_items/.test(sql)) {
             return { rows: [{ id: 10 }], rowCount: 1 }
           }
           return { rows: [], rowCount: 1 }
         }),
       }
+      transactionClient = client
       return await cb(client)
     })
 
@@ -6696,11 +6723,17 @@ describe('order.createPickup', () => {
     expect(ctx.result.pickedUp).toBe(2)
     expect(ctx.result.remaining).toBe(3) // 5 - 2
     expect(ctx.result.message).toContain('取货成功')
+    expect(transactionClient.query.mock.calls.filter(([sql]) => /INSERT INTO inventory_doc_items/.test(sql))).toHaveLength(2)
+    const inventoryDocInsert = transactionClient.query.mock.calls.find(([sql]) => /INSERT INTO inventory_docs/.test(sql))
+    expect(inventoryDocInsert[1][3]).toBe(6) // 2 件 × (库存品A 1 + 库存品B 2)
+    const pickupInsert = transactionClient.query.mock.calls.find(([sql]) => /INSERT INTO pickup_records/.test(sql))
+    expect(pickupInsert[0]).toMatch(/VALUES \(\$1, NULL/)
   })
 
   test('超出可提货数量拒绝', async () => {
-    const ctx = createManagerCtx({ saleItemId: 'item-001', pickupQuantity: 10 })
+    const ctx = createManagerCtx({ saleItemId: 'item-001', inventorySkuId: 'inventory-sku-001', pickupQuantity: 10 })
     const clientResults = [
+      { rows: [{ status: '已初始化' }], rowCount: 1 },
       { rows: [{
         sale_item_id: 'item-001', sale_order_id: 'FY-001', store_id: 'store-001',
         product_type: '家居产品', item_direction: '购买', quantity: 5,
@@ -6716,8 +6749,9 @@ describe('order.createPickup', () => {
   })
 
   test('跨店提货拒绝 — sale_items.store_id 与员工当前门店不一致', async () => {
-    const ctx = createManagerCtx({ saleItemId: 'item-other-store', pickupQuantity: 1 })
+    const ctx = createManagerCtx({ saleItemId: 'item-other-store', inventorySkuId: 'inventory-sku-001', pickupQuantity: 1 })
     const clientResults = [
+      { rows: [{ status: '已初始化' }], rowCount: 1 },
       { rows: [{
         sale_item_id: 'item-other-store', sale_order_id: 'FY-OTHER', store_id: 'store-999',
         product_type: '家居产品', item_direction: '购买', quantity: 5,
@@ -6736,6 +6770,9 @@ describe('order.createPickup', () => {
     const ctx = createManagerCtx({ saleItemId: 'item-partial', pickupQuantity: 3 })
     pg.transaction.mockImplementation(async (cb) => cb({
       query: vi.fn(async (sql) => {
+        if (/FROM inventory_cutover_states/.test(sql)) {
+          return { rows: [{ status: '已初始化' }], rowCount: 1 }
+        }
         if (/FOR UPDATE OF si/.test(sql)) {
           return { rows: [{
             sale_item_id: 'item-partial', sale_order_id: 'FY-PARTIAL', store_id: 'store-001',
@@ -6756,7 +6793,7 @@ describe('order.createPickup', () => {
   })
 
   test('取货数量 <= 0 拒绝', async () => {
-    const ctx = createManagerCtx({ saleItemId: 'item-001', pickupQuantity: 0 })
+    const ctx = createManagerCtx({ saleItemId: 'item-001', inventorySkuId: 'inventory-sku-001', pickupQuantity: 0 })
     await expect(orderRoutes.createPickup(ctx)).rejects.toThrow(/INVALID_PARAMS.*取货数量/)
   })
 })

@@ -15,6 +15,7 @@ interface PickupItem {
   saleItemGroupId?: string | null
   sourceSaleItemIds?: string[]
   saleOrderId: string
+  skuId: string | null
   productName: string | null
   specName: string | null
   quantity: number
@@ -23,6 +24,17 @@ interface PickupItem {
   remaining: number
   storeId: string
   storeName: string | null
+}
+
+interface PickupInventorySkuOption {
+  inventorySkuId: string
+  productCode: string
+  productName: string | null
+  specName: string | null
+  quantityPerSaleUnit: number
+  availableQuantity: number
+  requiredQuantity: number
+  label: string
 }
 
 function normalizeSpecName(productName?: string | null, specName?: string | null): string | null {
@@ -60,6 +72,9 @@ Page({
       sourceSaleItemIds: [] as string[],
       productName: '',
       remaining: 0,
+      inventorySkuOptions: [] as PickupInventorySkuOption[],
+      inventoryReady: false,
+      loadingInventorySkuOptions: false,
       quantity: 1,
       remark: '',
       submitting: false,
@@ -129,7 +144,7 @@ Page({
     this.setData({ selectedCustomer: null, items: [] })
   },
 
-  onPickupTap(e: WechatMiniprogram.CustomEvent) {
+  async onPickupTap(e: WechatMiniprogram.CustomEvent) {
     if (!this.ensureManagerAccess()) return
     const idx = Number(e.currentTarget.dataset.idx)
     const item = this.data.items[idx]
@@ -141,16 +156,48 @@ Page({
         sourceSaleItemIds: item.sourceSaleItemIds || [item.saleItemId],
         productName: formatProductName(item.productName, item.specName),
         remaining: item.remaining,
+        inventorySkuOptions: [],
+        inventoryReady: false,
+        loadingInventorySkuOptions: true,
         quantity: 1,
         remark: '',
         submitting: false,
       },
     })
+    try {
+      const inventorySkuOptions = await callStaffApi<PickupInventorySkuOption[]>(
+        'order.pickupInventorySkuOptions',
+        { saleItemId: item.saleItemId },
+      )
+      const options = (inventorySkuOptions || []).map((option) => ({
+        ...option,
+        requiredQuantity: option.quantityPerSaleUnit,
+      }))
+      this.setData({
+        'pickupDialog.inventorySkuOptions': options,
+        'pickupDialog.inventoryReady': options.length > 0
+          && options.every((option) => option.availableQuantity >= option.requiredQuantity),
+        'pickupDialog.loadingInventorySkuOptions': false,
+      })
+    } catch (err: any) {
+      this.setData({ 'pickupDialog.loadingInventorySkuOptions': false })
+      wx.showToast({ title: err?.message || '加载销售商品组成失败', icon: 'none' })
+    }
   },
 
   onPickupQtyInput(e: WechatMiniprogram.Input) {
     const v = parseInt(e.detail.value, 10)
-    this.setData({ 'pickupDialog.quantity': isNaN(v) || v < 1 ? 1 : v })
+    const quantity = isNaN(v) || v < 1 ? 1 : v
+    const options = this.data.pickupDialog.inventorySkuOptions.map((option) => ({
+      ...option,
+      requiredQuantity: option.quantityPerSaleUnit * quantity,
+    }))
+    this.setData({
+      'pickupDialog.quantity': quantity,
+      'pickupDialog.inventorySkuOptions': options,
+      'pickupDialog.inventoryReady': options.length > 0
+        && options.every((option) => option.availableQuantity >= option.requiredQuantity),
+    })
   },
 
   onPickupRemarkInput(e: WechatMiniprogram.Input) {
@@ -166,6 +213,15 @@ Page({
     const d = this.data.pickupDialog
     if (d.quantity <= 0 || d.quantity > d.remaining) {
       wx.showToast({ title: `数量必须在 1 到 ${d.remaining} 之间`, icon: 'none' })
+      return
+    }
+    if (d.inventorySkuOptions.length === 0) {
+      wx.showToast({ title: '该商品尚未配置库存组成', icon: 'none' })
+      return
+    }
+    const insufficient = d.inventorySkuOptions.find((item) => item.availableQuantity < item.requiredQuantity)
+    if (insufficient) {
+      wx.showToast({ title: `${insufficient.productName || '库存商品'}库存不足`, icon: 'none' })
       return
     }
     this.setData({ 'pickupDialog.submitting': true })

@@ -15,10 +15,10 @@ const pg = require('../db/pg')
 const { requireStaffBound, requireManager, isCurrentStoreManager } = require('../middleware/auth')
 const { assertOrderInScope, isStoreInScope, restrictToBoundEmployee, buildBundleMarketScopeFilter, buildNormalSkuMarketScopeFilter } = require('../utils/scope')
 const { generateWxacode, uploadToCloudStorage } = require('../utils/wxacode')
-const { getMemberThreshold } = require('../utils/config')
+const { getMemberThreshold, getPointsToYuanRate, getPointsDeductionMaxRate } = require('../utils/config')
 // 充值卡剥离 SKU 化（2026-05-20）：充值识别改为 sale_orders.sale_order_type='充值单'，
 // 不再依赖虚拟 SKU ID 或 product_name 正则解析面值。
-const { settlePointsSafe } = require('../utils/points')
+const { settlePointsSafe, grantPointBatch, consumePointBatches } = require('../utils/points')
 const { recalcMemberLevel } = require('../utils/member-level')
 const { isMember, resolveUnitPrice } = require('../utils/member-pricing')
 const { recalcPaidSessionsForOrder, computePaidSessionsForItem } = require('../utils/paid-sessions')
@@ -50,6 +50,8 @@ const qrcodeCache = new Map()
 // 寄存单历史实收流水的 note 标记（change_type='回款' 行）。
 // 编辑寄存单实收时按此标记删重建；与 admin 端 actions/orders.ts 字面量保持一致。
 const DEPOSIT_RECEIPT_NOTE = '寄存单初始化实收'
+const WORKFINE_INVENTORY_CUTOVER_KEY = 'workfine_inventory'
+const WORKFINE_INVENTORY_INITIALIZED_STATUS = '已初始化'
 
 // 寄存单疗程卡「实际单价按实付重算」SQL —— unit_real_price = 实付received / 总次数session_count。
 // 实付=0 的行置 0（如实反映未收款，不再回落标价）；仅 product_type='疗程卡'，家居产品行(session_count NULL)被 WHERE 排除不受影响。
@@ -71,6 +73,68 @@ const DEPOSIT_REAL_PRICE_RECALC_SQL = `UPDATE sale_items
 
 function roundMoney(value) {
   return Math.round((Number(value) || 0) * 100) / 100
+}
+
+async function loadInventoryCompositionSnapshots(client, items) {
+  const homeItems = [...new Map(
+    items.filter((item) => item.productType === '家居产品').map((item) => [item.skuId, item]),
+  ).values()]
+  if (homeItems.length === 0) return new Map()
+  const result = await client.query(
+    `SELECT mapping.product_sku_id, mapping.inventory_sku_id,
+            inventory.product_code, inventory.product_name, inventory.spec_name, inventory.is_active,
+            mapping.quantity_per_sale_unit
+       FROM inventory_sku_product_sku_mappings mapping
+       JOIN inventory_skus inventory ON inventory.sku_id = mapping.inventory_sku_id
+      WHERE mapping.is_active = TRUE
+        AND mapping.product_sku_id = ANY($1::text[])
+   ORDER BY inventory.product_name, inventory.product_code`,
+    [homeItems.map((item) => item.skuId)],
+  )
+  const snapshots = new Map()
+  const invalidProductSkuIds = new Set()
+  for (const row of result.rows) {
+    if (row.is_active === false) {
+      invalidProductSkuIds.add(row.product_sku_id)
+      continue
+    }
+    const snapshot = snapshots.get(row.product_sku_id) || { version: 1, components: [] }
+    snapshot.components.push({
+      inventorySkuId: row.inventory_sku_id,
+      productCode: row.product_code,
+      productName: row.product_name,
+      specName: row.spec_name,
+      quantityPerSaleUnit: Number(row.quantity_per_sale_unit),
+    })
+    snapshots.set(row.product_sku_id, snapshot)
+  }
+  const invalid = homeItems.find((item) => invalidProductSkuIds.has(item.skuId))
+  if (invalid) {
+    throw new Error(`INVALID_STATE: INVENTORY_COMPOSITION_INVALID: 商品「${invalid.productName || invalid.skuId}」的库存组成含停用商品`)
+  }
+  const missing = homeItems.find((item) => !snapshots.has(item.skuId))
+  if (missing) {
+    throw new Error(`INVALID_STATE: INVENTORY_COMPOSITION_MISSING: 商品「${missing.productName || missing.skuId}」尚未配置库存组成`)
+  }
+  return snapshots
+}
+
+/**
+ * 顾客提货会写入库存单据和批次流水，必须等 WorkFine 期初库存核验完成。
+ * 由外层提货事务持有状态行锁，避免切换重置与库存扣减交错。
+ */
+async function assertWorkfineInventoryInitialized(client) {
+  const result = await client.query(
+    `SELECT status
+       FROM inventory_cutover_states
+      WHERE cutover_key = $1
+      FOR KEY SHARE`,
+    [WORKFINE_INVENTORY_CUTOVER_KEY],
+  )
+  const state = result.rows[0]
+  if (!state || state.status !== WORKFINE_INVENTORY_INITIALIZED_STATUS) {
+    throw new Error('INVALID_STATE: WorkFine 库存期初尚未完成核验，暂不允许写入库存')
+  }
 }
 
 function splitMoneyByCount(value, count) {
@@ -115,6 +179,184 @@ function calcTierLineAmount(tierAmount, tierSessions, lineSessions) {
   const line = Math.max(0, Number(lineSessions) || 0)
   if (amount <= 0 || sessions <= 0 || line <= 0) return 0
   return Math.round((amount * line * 100) / sessions) / 100
+}
+
+function moneyToCents(value) {
+  return Math.max(0, Math.round((Number(value) || 0) * 100))
+}
+
+function pointsToDiscountCents(points, rate) {
+  return Math.floor(points * rate * 100 + 1e-6)
+}
+
+function computePointsDeduction({
+  usePoints,
+  requestedPoints,
+  pointsBalance,
+  rawTotal,
+  currentAmount,
+  pointsToYuanRate,
+  pointsDeductionMaxRate,
+}) {
+  const explicit = requestedPoints !== undefined && requestedPoints !== null
+  const enabled = usePoints === true || (explicit && Number(requestedPoints) > 0)
+  if (!enabled) return { pointsUsed: 0, pointsDiscount: 0 }
+
+  const balance = Math.floor(Number(pointsBalance) || 0)
+  const rate = Number(pointsToYuanRate) || 0
+  const maxRate = Number(pointsDeductionMaxRate) || 0
+  const capCents = Math.min(
+    Math.floor(Math.max(0, Number(rawTotal) || 0) * maxRate * 100 + 1e-6),
+    moneyToCents(currentAmount),
+  )
+  if (balance <= 0 || rate <= 0 || maxRate <= 0 || capCents <= 0) {
+    if (explicit && Number(requestedPoints) > 0) {
+      throw new Error('INSUFFICIENT_BALANCE: 积分余额不足或当前订单不可抵扣')
+    }
+    return { pointsUsed: 0, pointsDiscount: 0 }
+  }
+
+  if (explicit) {
+    const points = Number(requestedPoints)
+    if (!Number.isInteger(points) || points < 0) {
+      throw new Error('INVALID_PARAMS: 积分抵扣数量必须为非负整数')
+    }
+    if (points === 0) return { pointsUsed: 0, pointsDiscount: 0 }
+    if (points > balance) {
+      throw new Error('INSUFFICIENT_BALANCE: 积分余额不足')
+    }
+    const discountCents = pointsToDiscountCents(points, rate)
+    if (discountCents <= 0) {
+      throw new Error('INVALID_PARAMS: 积分抵扣金额过小')
+    }
+    if (discountCents > capCents) {
+      throw new Error('INVALID_PARAMS: 积分抵扣金额超过本单上限')
+    }
+    return { pointsUsed: points, pointsDiscount: discountCents / 100 }
+  }
+
+  const centsPerPoint = rate * 100
+  const maxPointsByCap = Math.floor(capCents / centsPerPoint)
+  const pointsUsed = Math.max(0, Math.min(balance, maxPointsByCap))
+  const discountCents = Math.min(capCents, pointsToDiscountCents(pointsUsed, rate))
+  return discountCents > 0
+    ? { pointsUsed, pointsDiscount: discountCents / 100 }
+    : { pointsUsed: 0, pointsDiscount: 0 }
+}
+
+function applyOrderLevelDiscountToItems(items, discountAmount) {
+  const discountCents = moneyToCents(discountAmount)
+  if (!discountCents || !items.length) return
+
+  const totalCents = items.reduce((sum, item) => sum + moneyToCents(item.saleAmount), 0)
+  if (!totalCents) return
+
+  let distributedCents = 0
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]
+    const baseCents = moneyToCents(item.saleAmount)
+    const shareCents = i === items.length - 1
+      ? discountCents - distributedCents
+      : Math.min(baseCents, Math.round(discountCents * (baseCents / totalCents)))
+    distributedCents += shareCents
+
+    const saleCents = Math.max(0, baseCents - shareCents)
+    item.saleAmount = saleCents / 100
+    item.received = Math.min(moneyToCents(item.received), saleCents) / 100
+
+    const denom = (item.sessionCount != null && item.sessionCount > 0) ? item.sessionCount : (item.quantity || 1)
+    const listBase = Number(item.listUnitPrice != null ? item.listUnitPrice : item.unitPrice || 0)
+    const listTotalRow = roundMoney(listBase * (item.quantity || 1))
+    item.unitRealPrice = denom > 0 ? roundMoney(item.saleAmount / denom) : item.saleAmount
+    item.unitPrice = denom > 0 ? roundMoney(listTotalRow / denom) : listTotalRow
+  }
+}
+
+async function getAvailablePointsBalance(client, userId) {
+  const res = await client.query(
+    `SELECT COALESCE(SUM(remaining_amount), 0)::bigint AS balance
+       FROM (
+         SELECT remaining_amount
+           FROM point_batches
+          WHERE user_id = $1
+            AND remaining_amount > 0
+            AND expire_at > NOW()
+          FOR UPDATE
+       ) locked_batches`,
+    [userId],
+  )
+  return Number(res.rows?.[0]?.balance || 0)
+}
+
+async function recomputePointsBalance(client, userId) {
+  await client.query(
+    `UPDATE client_wechat_users c
+        SET points_balance = COALESCE((
+              SELECT SUM(pb.remaining_amount)
+                FROM point_batches pb
+               WHERE pb.user_id = c.user_id
+                 AND pb.expire_at > NOW()
+            ), 0),
+            points_updated_at = NOW()
+      WHERE c.user_id = $1`,
+    [userId],
+  )
+}
+
+async function deductPointsAtCreation(client, { saleOrderId, userId, pointsUsed }) {
+  if (!pointsUsed || pointsUsed <= 0) return
+  // 积分相关锁序固定为 point_batches -> client_wechat_users，与过期任务一致。
+  const available = await getAvailablePointsBalance(client, userId)
+  if (available < pointsUsed) {
+    throw new Error('INSUFFICIENT_BALANCE: 积分余额不足')
+  }
+  await client.query('SELECT user_id FROM client_wechat_users WHERE user_id = $1 FOR UPDATE', [userId])
+  const inserted = await client.query(
+    `INSERT INTO point_transactions (user_id, type, amount, ref_order_id, external_ref, created_at)
+     VALUES ($1, '消费抵扣', $2, $3, $4, NOW())
+     ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING
+     RETURNING id`,
+    [userId, -pointsUsed, saleOrderId, `points-deduct-${saleOrderId}`],
+  )
+  if (inserted.rows?.[0]?.id) {
+    await consumePointBatches(client, { userId, amount: -pointsUsed, refOrderId: saleOrderId })
+    await recomputePointsBalance(client, userId)
+  }
+}
+
+async function releasePointsDeduction(client, { saleOrderId, userId, pointsUsed = 0 }) {
+  if (!saleOrderId || !userId || Number(pointsUsed || 0) <= 0) return
+  await client.query('SELECT user_id FROM client_wechat_users WHERE user_id = $1 FOR UPDATE', [userId])
+  const rows = await client.query(
+    `SELECT
+       COALESCE(SUM(CASE WHEN type = '消费抵扣' THEN -amount ELSE 0 END), 0)::bigint AS deducted,
+       COALESCE(SUM(CASE WHEN type = '消费抵扣退回' THEN amount ELSE 0 END), 0)::bigint AS returned
+     FROM point_transactions
+     WHERE ref_order_id = $1 AND user_id = $2
+       AND type IN ('消费抵扣','消费抵扣退回')`,
+    [saleOrderId, userId],
+  )
+  const pointsToRelease = Number(rows.rows?.[0]?.deducted || 0) - Number(rows.rows?.[0]?.returned || 0)
+  if (pointsToRelease <= 0) return
+
+  const inserted = await client.query(
+    `INSERT INTO point_transactions (user_id, type, amount, ref_order_id, external_ref, created_at)
+     VALUES ($1, '消费抵扣退回', $2, $3, $4, NOW())
+     ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING
+     RETURNING id`,
+    [userId, pointsToRelease, saleOrderId, `points-deduct-rev-${saleOrderId}`],
+  )
+  const pointTransactionId = Number(inserted.rows?.[0]?.id || 0)
+  if (pointTransactionId) {
+    await grantPointBatch(client, {
+      userId,
+      pointTransactionId,
+      type: '消费抵扣退回',
+      amount: pointsToRelease,
+      refOrderId: saleOrderId,
+    })
+    await recomputePointsBalance(client, userId)
+  }
 }
 
 function findPurchaseLimitViolation(items, skuRows) {
@@ -664,6 +906,8 @@ async function create(ctx) {
     remark: orderRemark,
     useCard,
     prepaidCardAmount: inputPrepaidCardAmount,
+    usePoints,
+    pointsUsed: inputPointsUsed,
     isActivity,
     bundleProductId,
   } = payload
@@ -717,6 +961,9 @@ async function create(ctx) {
   if (saleOrderType === '内部单' && inputCouponId) {
     throw new Error('INVALID_PARAMS: 内部单不允许叠加优惠券')
   }
+  if (saleOrderType !== '销售单' && (usePoints || Number(inputPointsUsed || 0) > 0)) {
+    throw new Error('INVALID_PARAMS: 仅销售单支持积分抵扣')
+  }
 
   // 历史 customPrice/discount 入参已废弃（前端按行不再传），后端不再处理
   // 行级"应付金额"由订单级券摊算得出，不再可手工编辑
@@ -724,7 +971,7 @@ async function create(ctx) {
   // 查询顾客是否已注册客户端小程序并绑定门店
   // 2026-07-08 修复 T1：补 select phone, name —— 下方 let 覆写（line 466-467 客户档案权威覆盖）需要这俩字段
   const clientUsers = await pg.query(
-    'SELECT user_id, bound_store_id, is_cross_store_temp, customer_type, member_level, phone, name FROM client_wechat_users WHERE phone = $1 LIMIT 1',
+    'SELECT user_id, bound_store_id, is_cross_store_temp, customer_type, member_level, phone, name, points_balance FROM client_wechat_users WHERE phone = $1 LIMIT 1',
     [clientPhone]
   )
   if (clientUsers.length === 0 || !clientUsers[0].bound_store_id) {
@@ -974,6 +1221,7 @@ async function create(ctx) {
       itemDataList.push(d)
     }
   }
+  const rawTotalBeforeDeductions = roundMoney(itemDataList.reduce((sum, d) => sum + d.saleAmount, 0))
 
   // ========== 优惠券处理 ==========
   let couponDiscount = 0
@@ -1095,6 +1343,29 @@ async function create(ctx) {
       item.saleAmount = Math.max(0, Math.round((item.saleAmount - share) * 100) / 100)
       // unitRealPrice 与 saleAmount 同口径（应付单价）
       item.unitRealPrice = item.quantity > 0 ? Math.round((item.saleAmount / item.quantity) * 100) / 100 : 0
+    }
+  }
+
+  let pointsUsed = 0
+  let pointsDiscount = 0
+  if (usePoints || inputPointsUsed != null) {
+    const [pointsToYuanRate, pointsDeductionMaxRate] = await Promise.all([
+      getPointsToYuanRate(),
+      getPointsDeductionMaxRate(),
+    ])
+    const deduction = computePointsDeduction({
+      usePoints,
+      requestedPoints: inputPointsUsed,
+      pointsBalance: clientUsers[0].points_balance,
+      rawTotal: rawTotalBeforeDeductions,
+      currentAmount: roundMoney(itemDataList.reduce((sum, d) => sum + d.saleAmount, 0)),
+      pointsToYuanRate,
+      pointsDeductionMaxRate,
+    })
+    pointsUsed = deduction.pointsUsed
+    pointsDiscount = deduction.pointsDiscount
+    if (pointsDiscount > 0) {
+      applyOrderLevelDiscountToItems(itemDataList, pointsDiscount)
     }
   }
 
@@ -1292,10 +1563,10 @@ async function create(ctx) {
         sale_order_id, status, sale_order_type, document_type, market_name, store_id, store_name,
         sale_order_datetime, total_amount, client_user_id, client_phone, customer_name,
         payment_method, opened_by,
-        preferred_employee_id, coupon_id, coupon_discount, remark, is_activity, allocation_status,
+        preferred_employee_id, coupon_id, coupon_discount, points_used, points_discount, remark, is_activity, allocation_status,
         prepaid_card_amount, pending_prepaid_card_amount, received, payable_amount, paid_at,
         created_at, updated_at
-      ) VALUES ($1, $17, $2, $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $23, '待分配', $18, $19, $20, $21, $22, $6, $6)`,
+      ) VALUES ($1, $17, $2, $3, COALESCE((SELECT m.name FROM stores s JOIN org_nodes so ON s.org_node_id = so.id JOIN org_nodes m ON so.parent_id = m.id WHERE s.store_id = $5), $4), $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $24, $25, $16, $23, '待分配', $18, $19, $20, $21, $22, $6, $6)`,
       [
         saleOrderId, saleOrderType, documentType, marketName, storeId, now,
         totalAmount, clientUserId, clientPhone, clientName,
@@ -1307,6 +1578,8 @@ async function create(ctx) {
         settledPrepaidColumn, pendingPrepaidColumn, receivedColumn, payableAmount,
         paidAtValue,
         isActivity === true,
+        pointsUsed,
+        pointsDiscount,
       ]
     )
 
@@ -1326,6 +1599,10 @@ async function create(ctx) {
       }
     }
 
+    if (pointsUsed > 0) {
+      await deductPointsAtCreation(client, { saleOrderId, userId: clientUserId, pointsUsed })
+    }
+
     // ========== 两步式（2026-06-07 修 P0「待支付可消费疗程卡」）：开单不写收款流水 ==========
     // 线下/储值卡的现金实收由店长 confirmOffline「确认收款」入账（写 '首次支付'/已支付流水 + 翻态 + recalc）；
     // 线上（微信/支付宝）由 payNotify 回调入账。开单时一律不写 '已支付' payments 行（received=0、paid_sessions=0，
@@ -1333,7 +1610,8 @@ async function create(ctx) {
     //   - zeroPayable（券/卡全额抵扣）：下方 deductPrepaidCardAtCreation 在 create 事务内即扣即结清；
     //   - 非 zeroPayable（部分储值卡 + 待付现金）：由 confirmOffline 扣卡（staffApi 唯一扣卡点，见 CLAUDE.md）。
 
-    // 创建订单明细
+    // 创建订单明细。家居产品在建单时冻结库存组成；未配置则整单回滚。
+    const compositionSnapshots = await loadInventoryCompositionSnapshots(client, itemDataList)
     for (let i = 0; i < itemDataList.length; i++) {
       const saleItemId = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
       const d = itemDataList[i]
@@ -1353,8 +1631,9 @@ async function create(ctx) {
           product_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received, pending_received,
-          sales_category, service_fee, is_shengmei, is_experience, is_manager_special
-        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, '0', $13, $14, $15, $16, $17, $18)`,
+          sales_category, service_fee, is_shengmei, is_experience, is_manager_special,
+          inventory_composition_snapshot
+        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, '0', $13, $14, $15, $16, $17, $18, $19::jsonb)`,
         [
           saleItemId, saleOrderId, storeId, d.skuId,
           d.productName, d.productType,
@@ -1369,6 +1648,7 @@ async function create(ctx) {
           d.isExperience === true,
           // is_manager_special 行级快照：从 product_skus.is_manager_special 拷贝（权威 = DB）
           d.isManagerSpecial === true,
+          compositionSnapshots.has(d.skuId) ? JSON.stringify(compositionSnapshots.get(d.skuId)) : null,
         ]
       )
     }
@@ -1441,6 +1721,8 @@ async function create(ctx) {
     totalAmount,
     payableAmount,
     couponDiscount,
+    pointsUsed,
+    pointsDiscount,
     prepaidCardAmount: isFullCardCoverage ? prepaidCardAmount : 0,
     pendingPrepaidCardAmount: isFullCardCoverage ? 0 : prepaidCardAmount,
     paidAmount,
@@ -1565,7 +1847,7 @@ async function qrcode(ctx) {
   if (!isStoreInScope(ctx.auth, order.store_id)) {
     throw new Error('PERMISSION_DENIED: 订单不在当前门店范围内')
   }
-  if (!isCurrentStoreManager(ctx.auth) && order.store_id !== ctx.auth.effectiveStoreId) {
+  if (!ctx.auth.roles.includes('manager') && order.store_id !== ctx.auth.effectiveStoreId) {
     throw new Error('PERMISSION_DENIED: 无权查看该订单')
   }
 
@@ -2164,6 +2446,11 @@ async function close(ctx) {
        WHERE used_sale_order_id = $1`,
       [saleOrderId]
     )
+    await releasePointsDeduction(client, {
+      saleOrderId,
+      userId: order.client_user_id,
+      pointsUsed: order.points_used,
+    })
     // 审计日志
     await logTransition(client, ctx, 'order.close', 'sale_order', saleOrderId, order.status, '已关闭')
   })
@@ -2244,7 +2531,7 @@ async function list(ctx) {
   }
 
   // 美容师只能看到指定自己的订单
-  if (!isCurrentStoreManager(ctx.auth)) {
+  if (!ctx.auth.roles.includes('manager')) {
     params.push(ctx.auth.staffWfId)
     whereExtra += ` AND o.preferred_employee_id = $${params.length}`
   }
@@ -2322,7 +2609,7 @@ async function detail(ctx) {
   //  4) 都不满足 → 无权查看
   // 注：门店模式普通员工不靠 inStoreScope 放开（否则可看本店他人订单），仅经分支 1/3。
   const inStoreScope = isStoreInScope(ctx.auth, order.store_id)
-  const isManager = isCurrentStoreManager(ctx.auth)
+  const isManager = ctx.auth.roles.includes('manager')
   const isMgmt = ctx.auth.loginLevel === 'management'
   let visible = inStoreScope && (isManager || order.preferred_employee_id === ctx.auth.staffWfId)
   if (!visible && isMgmt && inStoreScope) {
@@ -2386,7 +2673,7 @@ async function detail(ctx) {
 
   const items = await pg.query(`
     SELECT
-      si.sale_item_id, si.sale_item_group_id, si.sale_order_id, si.sku_id, si.session_count, si.remaining_sessions,
+      si.sale_item_id, si.sale_order_id, si.sku_id, si.session_count, si.remaining_sessions,
       si.paid_sessions,
       si.unit_price, si.quantity, si.unit_real_price, si.sale_amount, si.received,
       si.prepaid_card_received, si.cash_received, si.pending_received,
@@ -4147,6 +4434,8 @@ async function createConversion(ctx) {
       seq = parseInt(maxResult.rows[0].sale_item_id.slice(-4)) + 1
     }
 
+    const compositionSnapshots = await loadInventoryCompositionSnapshots(tx, inItems)
+
     // 6. 转出行 × N + 原子扣减可转换次数。服务中的预扣次数必须留在源卡上，
     // 后续 confirm 才会从这部分次数扣减。
     for (const d of outItems) {
@@ -4221,8 +4510,9 @@ async function createConversion(ctx) {
             sku_id, product_name, product_type,
             session_count, remaining_sessions,
             unit_price, quantity, unit_real_price, sale_amount, received,
-            sales_category, service_fee, is_shengmei, is_experience, is_manager_special
-          ) VALUES ($1, $2, $3, $4, '转入', $5, $6, $7, $8, $8, $9, $10, $11, $12, $12, $13, $14, $15, $16, $17)`,
+            sales_category, service_fee, is_shengmei, is_experience, is_manager_special,
+            inventory_composition_snapshot
+          ) VALUES ($1, $2, $3, $4, '转入', $5, $6, $7, $8, $8, $9, $10, $11, $12, $12, $13, $14, $15, $16, $17, $18::jsonb)`,
           [
             saleItemId, groupId, convOrderId, storeId,
             d.skuId, d.productName, d.productType,
@@ -4233,6 +4523,7 @@ async function createConversion(ctx) {
             // 转入行从 product_skus.is_experience 快照写入（2026-04-26 ticket）
             d.isExperience === true,
             d.isManagerSpecial === true,
+            compositionSnapshots.has(d.skuId) ? JSON.stringify(compositionSnapshots.get(d.skuId)) : null,
           ]
         )
       }
@@ -4375,7 +4666,6 @@ async function customerHeldCards(ctx) {
 
   const rows = await pg.query(
     `SELECT si.sale_item_id,
-            si.sale_item_group_id,
             si.sale_order_id AS source_sale_order_id,
             so.sale_order_datetime,
             so.paid_at,
@@ -4449,7 +4739,6 @@ async function customerHeldCards(ctx) {
   ctx.result = {
     cards: rows.map(r => ({
       saleItemId: r.sale_item_id,
-      saleItemGroupId: r.sale_item_group_id || null,
       sourceSaleOrderId: r.source_sale_order_id,
       saleOrderDatetime: r.sale_order_datetime || null,
       paidAt: r.paid_at || null,
@@ -4499,11 +4788,11 @@ async function generatePickupInventoryDocNo(client) {
   const prefix = 'GCK'
   const ymd = shanghaiYMD()
   await client.query('SELECT pg_advisory_xact_lock(hashtext($1)::bigint)', [
-    `store_inventory_docs:${prefix}:${ymd}`,
+    `inventory_docs:${prefix}:${ymd}`,
   ])
   const rows = await client.query(
     `SELECT id
-       FROM store_inventory_docs
+       FROM inventory_docs
       WHERE id LIKE $1
    ORDER BY id DESC
       LIMIT 1`,
@@ -4514,28 +4803,131 @@ async function generatePickupInventoryDocNo(client) {
   return `${prefix}-${ymd}-${String(seq).padStart(4, '0')}`
 }
 
-async function createPickupInventoryDoc(client, ctx, updatedItem, clientUserId, customerName, pickupQuantity, remark, idempotencyKey) {
-  const stockRows = await client.query(
-    `SELECT id, store_id, sku_id, sku_name, batch_no, expiry_date, quantity_on_hand
-       FROM store_inventory_stocks
-      WHERE store_id = $1
-        AND sku_id = $2
-        AND quantity_on_hand > 0
-   ORDER BY expiry_date NULLS LAST, id
-      FOR UPDATE`,
-    [ctx.auth.effectiveStoreId, updatedItem.sku_id],
-  )
+function parsePickupCompositionSnapshot(value) {
+  let snapshot = value
+  if (typeof snapshot === 'string') {
+    try { snapshot = JSON.parse(snapshot) } catch { return null }
+  }
+  if (!snapshot || snapshot.version !== 1 || !Array.isArray(snapshot.components) || snapshot.components.length === 0) return null
+  const components = []
+  for (const raw of snapshot.components) {
+    const quantity = Number(raw && raw.quantityPerSaleUnit)
+    if (!raw || !raw.inventorySkuId || !Number.isInteger(quantity) || quantity <= 0) return null
+    components.push({
+      inventorySkuId: String(raw.inventorySkuId),
+      productCode: String(raw.productCode || raw.inventorySkuId),
+      productName: String(raw.productName || raw.inventorySkuId),
+      specName: raw.specName == null ? null : String(raw.specName),
+      quantityPerSaleUnit: quantity,
+    })
+  }
+  return components
+}
 
-  let available = 0
-  for (const row of stockRows.rows) available += Number(row.quantity_on_hand)
-  if (available < Number(pickupQuantity)) {
-    throw new Error(`INVALID_STATE: 门店库存不足，当前可用 ${available}`)
+async function resolvePickupComposition(client, item) {
+  const frozen = parsePickupCompositionSnapshot(item.inventory_composition_snapshot)
+  if (frozen) return frozen
+  if (!item.sku_id) throw new Error('INVALID_STATE: 销售明细缺少 SKU，无法解析库存组成')
+  const result = await client.query(
+    `SELECT mapping.inventory_sku_id, inventory.product_code, inventory.product_name,
+            inventory.spec_name, inventory.is_active, mapping.quantity_per_sale_unit
+       FROM inventory_sku_product_sku_mappings mapping
+       JOIN inventory_skus inventory ON inventory.sku_id = mapping.inventory_sku_id
+      WHERE mapping.product_sku_id = $1
+        AND mapping.is_active = TRUE
+   ORDER BY inventory.product_name, inventory.product_code`,
+    [item.sku_id],
+  )
+  if (result.rows.length === 0) {
+    throw new Error('INVALID_STATE: 该销售商品尚未配置库存组成，请先在“销售商品组成”中配置')
+  }
+  if (result.rows.some((row) => row.is_active === false)) {
+    throw new Error('INVALID_STATE: 该销售商品的当前库存组成含停用商品，请先修改组成')
+  }
+  return result.rows.map((row) => ({
+    inventorySkuId: row.inventory_sku_id,
+    productCode: row.product_code,
+    productName: row.product_name,
+    specName: row.spec_name || null,
+    quantityPerSaleUnit: Number(row.quantity_per_sale_unit),
+  }))
+}
+
+async function buildPickupRequirements(client, items) {
+  const aggregated = new Map()
+  for (const item of items) {
+    const components = await resolvePickupComposition(client, item)
+    for (const component of components) {
+      const current = aggregated.get(component.inventorySkuId)
+      const quantity = component.quantityPerSaleUnit * Number(item.pickupUnits)
+      if (current) current.quantity += quantity
+      else aggregated.set(component.inventorySkuId, { ...component, quantity })
+    }
+  }
+  return [...aggregated.values()].sort((a, b) => a.inventorySkuId.localeCompare(b.inventorySkuId))
+}
+
+async function createPickupInventoryDoc(client, ctx, updatedItem, requirements, clientUserId, customerName, remark, idempotencyKey) {
+  await client.query(
+    `INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, store_id, parent_location_id, is_active)
+     SELECT s.store_id, '门店', s.store_name, s.org_node_id, s.store_id, o.parent_id,
+            COALESCE(o.is_active, false) AND NOT s.is_closed
+       FROM stores s
+       LEFT JOIN org_nodes o ON o.id = s.org_node_id
+      WHERE s.store_id = $1
+     ON CONFLICT (location_id) DO UPDATE
+       SET location_type = EXCLUDED.location_type,
+           name = EXCLUDED.name,
+           org_node_id = EXCLUDED.org_node_id,
+           store_id = EXCLUDED.store_id,
+           parent_location_id = EXCLUDED.parent_location_id,
+           is_active = EXCLUDED.is_active,
+           updated_at = NOW()`,
+    [ctx.auth.effectiveStoreId],
+  )
+  const plans = []
+  for (const requirement of requirements) {
+    const lotRows = await client.query(
+      `SELECT lot.id, lot.location_id, lot.sku_id, lot.sku_name, lot.spec_name,
+              lot.supplier, lot.product_series, lot.batch_no, lot.expiry_date,
+              lot.is_gift, lot.quantity_on_hand
+         FROM inventory_stock_lots lot
+        WHERE lot.location_id = $1
+          AND lot.sku_id = $2
+          AND lot.quantity_on_hand > 0
+     ORDER BY lot.expiry_date NULLS LAST, lot.id
+        FOR UPDATE`,
+      [ctx.auth.effectiveStoreId, requirement.inventorySkuId],
+    )
+    const lotIds = lotRows.rows.map((row) => row.id)
+    const reservationRows = lotIds.length === 0
+      ? { rows: [] }
+      : await client.query(
+        `SELECT lot_id, COALESCE(SUM(quantity - fulfilled_quantity - released_quantity), 0) AS quantity
+           FROM inventory_stock_reservations
+          WHERE lot_id = ANY($1::bigint[])
+            AND status = '已预留'
+       GROUP BY lot_id`,
+        [lotIds],
+      )
+    const reservedByLot = new Map(reservationRows.rows.map((row) => [String(row.lot_id), Number(row.quantity)]))
+    const availableByLot = new Map()
+    let available = 0
+    for (const row of lotRows.rows) {
+      const lotAvailable = Math.max(0, Number(row.quantity_on_hand) - (reservedByLot.get(String(row.id)) || 0))
+      availableByLot.set(String(row.id), lotAvailable)
+      available += lotAvailable
+    }
+    if (available < requirement.quantity) {
+      throw new Error(`INVALID_STATE: 库存商品「${requirement.productName}」不足，需要 ${requirement.quantity}，当前可用 ${available}`)
+    }
+    plans.push({ requirement, lotRows: lotRows.rows, availableByLot })
   }
 
   const docId = await generatePickupInventoryDocNo(client)
   await client.query(
-    `INSERT INTO store_inventory_docs (
-       id, doc_type, status, store_id, doc_date, total_quantity,
+    `INSERT INTO inventory_docs (
+       id, doc_type, status, source_location_id, doc_date, total_quantity,
        related_sale_order_id, client_user_id, customer_name,
        remark, created_by, confirmed_by, confirmed_at
      )
@@ -4545,7 +4937,7 @@ async function createPickupInventoryDoc(client, ctx, updatedItem, clientUserId, 
       docId,
       ctx.auth.effectiveStoreId,
       shanghaiDateStr(),
-      pickupQuantity,
+      requirements.reduce((sum, requirement) => sum + requirement.quantity, 0),
       updatedItem.sale_order_id,
       clientUserId,
       customerName || null,
@@ -4554,74 +4946,77 @@ async function createPickupInventoryDoc(client, ctx, updatedItem, clientUserId, 
     ],
   )
 
-  let remaining = Number(pickupQuantity)
   let itemSeq = 0
-  for (const stock of stockRows.rows) {
-    if (remaining <= 0) break
-    const before = Number(stock.quantity_on_hand)
-    const deduct = Math.min(before, remaining)
-    const after = before - deduct
-    const inserted = await client.query(
-      `INSERT INTO store_inventory_doc_items (
-         doc_id, stock_id, sku_id, sale_item_id, sku_name, batch_no, expiry_date,
-         quantity, stock_snapshot, remark
+  for (const plan of plans) {
+    let remaining = plan.requirement.quantity
+    for (const lot of plan.lotRows) {
+      if (remaining <= 0) break
+      const before = Number(lot.quantity_on_hand)
+      const deduct = Math.min(plan.availableByLot.get(String(lot.id)) || 0, remaining)
+      if (deduct <= 0) continue
+      const after = before - deduct
+      const inserted = await client.query(
+      `INSERT INTO inventory_doc_items (
+         doc_id, lot_id, sku_id, sale_item_id, sku_name, spec_name, supplier,
+         product_series, batch_no, expiry_date, is_gift, quantity, stock_snapshot, remark
        )
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
        RETURNING id`,
       [
         docId,
-        stock.id,
-        stock.sku_id,
+        lot.id,
+        lot.sku_id,
         updatedItem.sale_item_id,
-        stock.sku_name || updatedItem.product_name || updatedItem.sku_id,
-        stock.batch_no || '',
-        stock.expiry_date || null,
+        lot.sku_name || plan.requirement.productName || updatedItem.product_name || updatedItem.sku_id,
+        lot.spec_name || null,
+        lot.supplier || null,
+        lot.product_series || null,
+        lot.batch_no || '',
+        lot.expiry_date || null,
+        Boolean(lot.is_gift),
         deduct,
         before,
         remark || null,
       ],
     )
-    const docItemId = inserted.rows[0].id
-    await client.query(
-      `UPDATE store_inventory_stocks
-          SET quantity_on_hand = $1,
-              updated_at = NOW()
-        WHERE id = $2`,
-      [after, stock.id],
-    )
-    await client.query(
-      `INSERT INTO store_inventory_movements (
-         movement_key, stock_id, store_id, sku_id, doc_id, doc_item_id,
-         sale_order_id, sale_item_id, direction, quantity_delta,
+      const docItemId = inserted.rows[0].id
+      await client.query(
+      `INSERT INTO inventory_movements (
+         movement_key, lot_id, location_id, sku_id, doc_id, doc_item_id,
+         direction, quantity_delta,
          quantity_before, quantity_after, created_by, remark
        )
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'出库',$9,$10,$11,$12,$13)`,
+       VALUES ($1,$2,$3,$4,$5,$6,'出库',$7,$8,$9,$10,$11)`,
       [
         `pickup:${updatedItem.sale_item_id}:${idempotencyKey || docId}:${itemSeq++}`,
-        stock.id,
+        lot.id,
         ctx.auth.effectiveStoreId,
-        stock.sku_id,
+        lot.sku_id,
         docId,
         docItemId,
-        updatedItem.sale_order_id,
-        updatedItem.sale_item_id,
         -deduct,
         before,
         after,
         ctx.auth.staffWfId,
         remark || null,
       ],
-    )
-    remaining -= deduct
+      )
+      remaining -= deduct
+    }
   }
 
   return docId
 }
 
-/** 将同一行组中多个 quantity=1 的家居明细作为一次提货写入一张出库单。 */
+/**
+ * 对同一销售行组拆出的家居明细执行一次提货。
+ *
+ * 库存按下单快照（历史空快照按最新组成）与批次扣减链路；出库单按本次
+ * 提货汇总，提货记录与已提数量则逐个物理明细落库，保持退款级联可追溯。
+ */
 async function createGroupedPickup(ctx, saleItemIds, pickupQuantity, remark, idempotencyKey) {
   const ids = [...new Set(saleItemIds.filter((id) => typeof id === 'string' && id))].sort()
-  if (ids.length === 0 || !Number.isInteger(pickupQuantity) || pickupQuantity <= 0 || pickupQuantity > ids.length) {
+  if (!Number.isInteger(pickupQuantity) || pickupQuantity <= 0 || pickupQuantity > ids.length) {
     throw new Error('INVALID_PARAMS: 合并提货数量或来源明细不合法')
   }
 
@@ -4644,14 +5039,18 @@ async function createGroupedPickup(ctx, saleItemIds, pickupQuantity, remark, ide
           pickedUp: pickedIds.length,
           total: ids.length,
           remaining: ids.length - pickedIds.length,
+          inventoryMode: 'composition',
           message: '提货成功（幂等）',
         }
         return
       }
     }
+
+    await assertWorkfineInventoryInitialized(client)
     const locked = await client.query(
       `SELECT si.sale_item_id, si.sale_item_group_id, si.sale_order_id, si.store_id, si.sku_id,
               si.product_name, si.quantity, COALESCE(si.picked_up_quantity, 0) AS picked_up_quantity,
+              si.inventory_composition_snapshot,
               LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
               COALESCE((
                 SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
@@ -4676,10 +5075,12 @@ async function createGroupedPickup(ctx, saleItemIds, pickupQuantity, remark, ide
       [ids],
     )
     if (locked.rows.length !== ids.length) throw new Error('CONFLICT: 部分家居产品已更新，请刷新后重试')
+
     const rows = locked.rows
     const first = rows[0]
     if (!first || rows.some((row) => row.store_id !== ctx.auth.effectiveStoreId
-      || row.sale_order_id !== first.sale_order_id || row.sku_id !== first.sku_id
+      || row.sale_order_id !== first.sale_order_id
+      || row.sku_id !== first.sku_id
       || (row.sale_item_group_id || row.sale_item_id) !== (first.sale_item_group_id || first.sale_item_id)
       || row.product_type !== '家居产品' || row.item_direction !== '购买'
       || !['已支付', '部分支付', '已完成'].includes(row.order_status)
@@ -4693,97 +5094,83 @@ async function createGroupedPickup(ctx, saleItemIds, pickupQuantity, remark, ide
       throw new Error(`INVALID_STATE: 已支付可提数量不足，当前可提 ${eligible.length}`)
     }
     const selected = eligible.slice(0, pickupQuantity)
-    const stockRows = await client.query(
-      `SELECT id, sku_id, sku_name, batch_no, expiry_date, quantity_on_hand
-         FROM store_inventory_stocks
-        WHERE store_id = $1 AND sku_id = $2 AND quantity_on_hand > 0
-        ORDER BY expiry_date NULLS LAST, id
-        FOR UPDATE`,
-      [ctx.auth.effectiveStoreId, first.sku_id],
-    )
-    if (stockRows.rows.reduce((total, row) => total + Number(row.quantity_on_hand), 0) < selected.length) {
-      throw new Error('INVALID_STATE: 门店库存不足')
-    }
-
-    const docId = await generatePickupInventoryDocNo(client)
-    await client.query(
-      `INSERT INTO store_inventory_docs (id, doc_type, status, store_id, doc_date, total_quantity,
-         related_sale_order_id, client_user_id, customer_name, remark, created_by, confirmed_by, confirmed_at)
-       VALUES ($1, '院顾客产品出库', '已完成', $2, $3, $4, $5, $6, $7, $8, $9, $9, NOW())`,
-      [docId, ctx.auth.effectiveStoreId, shanghaiDateStr(), selected.length, first.sale_order_id,
-        first.client_user_id, first.customer_name || null, remark || null, ctx.auth.staffWfId],
+    const requirements = await buildPickupRequirements(client, selected.map((item) => ({
+      ...item,
+      pickupUnits: 1,
+    })))
+    const inventoryDocId = await createPickupInventoryDoc(
+      client,
+      ctx,
+      first,
+      requirements,
+      first.client_user_id,
+      first.customer_name,
+      remark,
+      idempotencyKey,
     )
 
-    let stockIndex = 0
-    let movementIndex = 0
     for (const item of selected) {
-      while (Number(stockRows.rows[stockIndex]?.quantity_on_hand || 0) <= 0) stockIndex++
-      const stock = stockRows.rows[stockIndex]
-      const before = Number(stock.quantity_on_hand)
-      const after = before - 1
-      const docItem = await client.query(
-        `INSERT INTO store_inventory_doc_items (doc_id, stock_id, sku_id, sale_item_id, sku_name, batch_no, expiry_date, quantity, stock_snapshot, remark)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$9) RETURNING id`,
-        [docId, stock.id, stock.sku_id, item.sale_item_id, stock.sku_name || item.product_name || item.sku_id,
-          stock.batch_no || '', stock.expiry_date || null, before, remark || null],
-      )
-      await client.query('UPDATE store_inventory_stocks SET quantity_on_hand = $1, updated_at = NOW() WHERE id = $2', [after, stock.id])
-      stock.quantity_on_hand = after
-      await client.query(
-        `INSERT INTO store_inventory_movements (movement_key, stock_id, store_id, sku_id, doc_id, doc_item_id,
-           sale_order_id, sale_item_id, direction, quantity_delta, quantity_before, quantity_after, created_by, remark)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'出库',-1,$9,$10,$11,$12)`,
-        [`pickup:${item.sale_item_id}:${idempotencyKey || docId}:${movementIndex++}`, stock.id,
-          ctx.auth.effectiveStoreId, stock.sku_id, docId, docItem.rows[0].id, first.sale_order_id,
-          item.sale_item_id, before, after, ctx.auth.staffWfId, remark || null],
-      )
-      await client.query(
-        `UPDATE sale_items SET picked_up_quantity = 1, updated_at = NOW()
-          WHERE sale_item_id = $1 AND COALESCE(picked_up_quantity, 0) = 0`,
+      const updated = await client.query(
+        `UPDATE sale_items
+            SET picked_up_quantity = 1, updated_at = NOW()
+          WHERE sale_item_id = $1
+            AND COALESCE(picked_up_quantity, 0) = 0
+          RETURNING sale_item_id`,
         [item.sale_item_id],
       )
+      if (updated.rowCount !== 1) throw new Error('CONFLICT: 家居产品状态已更新，请刷新后重试')
       await client.query(
-        `INSERT INTO pickup_records (sale_item_id, pickup_quantity, store_id, client_user_id, confirmed_by, remark, idempotency_key)
-         VALUES ($1, 1, $2, $3, $4, $5, $6)`,
-        [item.sale_item_id, ctx.auth.effectiveStoreId, first.client_user_id, ctx.auth.staffWfId, remark || null, idempotencyKey || null],
+        `INSERT INTO pickup_records (
+           sale_item_id, inventory_sku_id, pickup_quantity, store_id, client_user_id,
+           confirmed_by, remark, idempotency_key
+         ) VALUES ($1, NULL, 1, $2, $3, $4, $5, $6)`,
+        [item.sale_item_id, ctx.auth.effectiveStoreId, first.client_user_id,
+          ctx.auth.staffWfId, remark || null, idempotencyKey || null],
       )
     }
+
     await logOperation(client, ctx, 'order.createPickup', 'sale_item_group', first.sale_item_group_id || first.sale_item_id, {
-      _v: 5, saleItemIds: selected.map((item) => item.sale_item_id), pickupQuantity: selected.length, inventoryDocId: docId,
+      _v: 5,
+      saleItemIds: selected.map((item) => item.sale_item_id),
+      pickupQuantity: selected.length,
+      inventoryMode: 'composition',
+      inventoryDocId,
     })
-    result = { saleItemIds: selected.map((item) => item.sale_item_id), pickedUp: selected.length, total: ids.length, remaining: ids.length - selected.length, message: '提货成功' }
+    result = {
+      saleItemIds: selected.map((item) => item.sale_item_id),
+      pickedUp: selected.length,
+      total: ids.length,
+      remaining: ids.length - selected.length,
+      inventoryMode: 'composition',
+      message: '提货成功',
+    }
   })
   ctx.result = result
 }
 
 /**
  * 创建取货记录（家居产品提货）
- * payload: { saleItemId, pickupQuantity, remark? }
+ * payload: { saleItemId, pickupQuantity, remark? }；inventorySkuId 仅兼容旧客户端并被忽略。
  */
 async function createPickup(ctx) {
   await requireManager()(ctx, async () => {})
 
   const { saleItemId, saleItemIds, pickupQuantity, remark, idempotencyKey } = ctx.event.payload || {}
-  if (Array.isArray(saleItemIds) && saleItemIds.length > 1) {
-    await createGroupedPickup(ctx, saleItemIds, Number(pickupQuantity), remark, idempotencyKey)
-    return
-  }
   if (!saleItemId) throw new Error('INVALID_PARAMS: 缺少 saleItemId')
   const requestedQuantity = Number(pickupQuantity)
   if (!Number.isInteger(requestedQuantity) || requestedQuantity <= 0) {
     throw new Error('INVALID_PARAMS: 取货数量必须为正整数')
+  }
+  if (Array.isArray(saleItemIds) && saleItemIds.length > 1) {
+    await createGroupedPickup(ctx, saleItemIds, requestedQuantity, remark, idempotencyKey)
+    return
   }
 
   // 幂等前置：若前端传 idempotencyKey 且已存在对应行，直接返回当前状态（不再 UPDATE/INSERT）
   // 配合 DB 层 uq_pickup_idempotency 兜底 sub-ms 并发
   if (idempotencyKey) {
     const existRes = await pg.query(
-      `SELECT id
-         FROM pickup_records
-        WHERE sale_item_id = $1
-          AND idempotency_key = $2
-          AND store_id = $3
-        LIMIT 1`,
+      `SELECT id FROM pickup_records WHERE sale_item_id = $1 AND idempotency_key = $2 AND store_id = $3 LIMIT 1`,
       [saleItemId, idempotencyKey, ctx.auth.effectiveStoreId]
     )
     if (existRes.length > 0) {
@@ -4814,10 +5201,7 @@ async function createPickup(ctx) {
 
   // 冻结闭环（Bug I）：退款审批中禁止提货（家居退款 cascade 会回滚 picked_up，待审批期提货会冲突）
   const pickupOrderRows = await pg.query(
-    `SELECT sale_order_id
-       FROM sale_items
-      WHERE sale_item_id = $1
-        AND store_id = $2`,
+    `SELECT sale_order_id FROM sale_items WHERE sale_item_id = $1 AND store_id = $2`,
     [saleItemId, ctx.auth.effectiveStoreId],
   )
   if (pickupOrderRows.length > 0) await assertNoPendingRefund(pg, pickupOrderRows[0].sale_order_id)
@@ -4825,10 +5209,11 @@ async function createPickup(ctx) {
   let updated
   let pendingAfterPickup = 0
   await pg.transaction(async (client) => {
+    await assertWorkfineInventoryInitialized(client)
     // 1) 锁定销售明细后按净实收重算已付整件数，防止旧页面或并发请求超额提货。
     const locked = await client.query(
       `SELECT si.sale_item_id, si.sale_order_id, si.store_id, si.sku_id, si.product_name,
-              si.product_type, si.item_direction, si.quantity,
+              si.product_type, si.item_direction, si.quantity, si.inventory_composition_snapshot,
               LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
               COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id), 0)::int AS picked_quantity,
               CASE
@@ -4864,7 +5249,8 @@ async function createPickup(ctx) {
           SET picked_up_quantity = COALESCE(picked_up_quantity, 0) + $1, updated_at = NOW()
         WHERE sale_item_id = $2
           AND (COALESCE(picked_up_quantity, 0) + $1) <= quantity
-      RETURNING sale_item_id, sale_order_id, store_id, sku_id, product_name, quantity, picked_up_quantity`,
+      RETURNING sale_item_id, sale_order_id, store_id, sku_id, product_name, quantity, picked_up_quantity,
+                inventory_composition_snapshot`,
       [requestedQuantity, saleItemId],
     )
     if (result.rowCount === 0) throw new Error('CONFLICT: 家居产品状态已更新，请刷新后重试')
@@ -4873,15 +5259,19 @@ async function createPickup(ctx) {
     const customerName = row.customer_name || null
     updated = result.rows[0]
     pendingAfterPickup = pendingBeforePickup - requestedQuantity
+    const requirements = await buildPickupRequirements(client, [{
+      ...updated,
+      pickupUnits: requestedQuantity,
+    }])
 
-    // 3) 写入统一库存单据 + 库存扣减流水。库存不足时回滚 picked_up_quantity。
+    // 3) 按完整组成写入统一库存单据 + 库存扣减流水。任一项不足时整单回滚。
     const inventoryDocId = await createPickupInventoryDoc(
       client,
       ctx,
       updated,
+      requirements,
       clientUserId,
       customerName,
-      requestedQuantity,
       remark,
       idempotencyKey,
     )
@@ -4889,8 +5279,10 @@ async function createPickup(ctx) {
     // 4) 插入提货记录（DB 层 uq_pickup_idempotency 兜底 race；命中则整事务 rollback 防 UPDATE/库存重复扣减）
     try {
       await client.query(
-        `INSERT INTO pickup_records (sale_item_id, pickup_quantity, store_id, client_user_id, confirmed_by, remark, idempotency_key)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        `INSERT INTO pickup_records (
+           sale_item_id, inventory_sku_id, pickup_quantity, store_id, client_user_id,
+           confirmed_by, remark, idempotency_key
+         ) VALUES ($1, NULL, $2, $3, $4, $5, $6, $7)`,
         [saleItemId, requestedQuantity, ctx.auth.effectiveStoreId, clientUserId, ctx.auth.staffWfId, remark || null, idempotencyKey || null]
       )
     } catch (err) {
@@ -4904,6 +5296,8 @@ async function createPickup(ctx) {
     await logOperation(client, ctx, 'order.createPickup', 'sale_item', saleItemId, {
       _v: 4,
       pickupQuantity: requestedQuantity,
+      productSkuId: updated.sku_id,
+      inventoryMode: 'composition',
       clientUserId,
       storeId: ctx.auth.effectiveStoreId,
       pickedUp: updated.picked_up_quantity,
@@ -4917,6 +5311,7 @@ async function createPickup(ctx) {
     pickedUp: updated.picked_up_quantity,
     total: updated.quantity,
     remaining: pendingAfterPickup,
+    inventoryMode: 'composition',
     message: '取货成功',
   }
 }
@@ -4941,6 +5336,7 @@ async function availablePickupItems(ctx) {
        SELECT COALESCE(si.sale_item_group_id, si.sale_item_id) AS sale_item_group_id,
               si.sale_item_id,
               si.sale_order_id,
+              si.sku_id,
               si.product_name,
               si.quantity::int AS quantity,
               LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
@@ -4978,6 +5374,7 @@ async function availablePickupItems(ctx) {
             ARRAY_AGG(sale_item_id ORDER BY sale_item_id)
               FILTER (WHERE pending_pickup_quantity > 0) AS source_sale_item_ids,
             MIN(sale_order_id) AS sale_order_id,
+            MIN(sku_id) AS sku_id,
             MIN(product_name) AS product_name,
             NULL::text AS spec_name,
             SUM(quantity)::int AS quantity,
@@ -4997,9 +5394,10 @@ async function availablePickupItems(ctx) {
 
   ctx.result = rows.map((r) => ({
     saleItemId: r.sale_item_id,
-    saleItemGroupId: r.sale_item_group_id,
+    saleItemGroupId: r.sale_item_group_id || null,
     sourceSaleItemIds: r.source_sale_item_ids || [r.sale_item_id],
     saleOrderId: r.sale_order_id,
+    skuId: r.sku_id,
     productName: r.product_name || null,
     specName: r.spec_name || null,
     quantity: Number(r.quantity),
@@ -5011,6 +5409,64 @@ async function availablePickupItems(ctx) {
     storeName: r.store_name || null,
     paidAt: r.paid_at,
   }))
+}
+
+/**
+ * 查询某条待提销售明细的固定库存组成，并返回当前门店扣除预留后的可用量。
+ * 新订单读取下单快照；历史空快照读取当前最新组成。
+ */
+async function pickupInventorySkuOptions(ctx) {
+  await requireManager()(ctx, async () => {})
+
+  const { saleItemId } = ctx.event.payload || {}
+  if (!saleItemId) throw new Error('INVALID_PARAMS: 缺少 saleItemId')
+
+  const itemRows = await pg.query(
+    `SELECT sale_item.sku_id, sale_item.inventory_composition_snapshot
+       FROM sale_items sale_item
+       JOIN sale_orders sale_order ON sale_order.sale_order_id = sale_item.sale_order_id
+      WHERE sale_item.sale_item_id = $1
+        AND sale_order.store_id = $2
+        AND sale_order.status = '已支付'
+        AND sale_item.item_direction = '购买'
+        AND sale_item.product_type = '家居产品'
+        AND sale_item.quantity > COALESCE(sale_item.picked_up_quantity, 0)
+      LIMIT 1`,
+    [saleItemId, ctx.auth.effectiveStoreId],
+  )
+  if (itemRows.length === 0) throw new Error('NOT_FOUND: 没有可提货的家居产品')
+  const queryAdapter = {
+    query: async (text, params) => ({ rows: await pg.query(text, params) }),
+  }
+  const components = await resolvePickupComposition(queryAdapter, itemRows[0])
+  const availabilityRows = await pg.query(
+    `SELECT inventory.sku_id,
+            COALESCE(SUM(GREATEST(0, lot.quantity_on_hand - COALESCE(reserved.quantity, 0))), 0) AS available_quantity
+       FROM inventory_skus inventory
+  LEFT JOIN inventory_stock_lots lot
+         ON lot.sku_id = inventory.sku_id
+        AND lot.location_id = $1
+        AND lot.quantity_on_hand > 0
+  LEFT JOIN (
+         SELECT lot_id, COALESCE(SUM(quantity - fulfilled_quantity - released_quantity), 0) AS quantity
+           FROM inventory_stock_reservations
+          WHERE status = '已预留'
+       GROUP BY lot_id
+  ) reserved ON reserved.lot_id = lot.id
+      WHERE inventory.sku_id = ANY($2::text[])
+   GROUP BY inventory.sku_id`,
+    [ctx.auth.effectiveStoreId, components.map((component) => component.inventorySkuId)],
+  )
+  const availableBySku = new Map(availabilityRows.map((row) => [row.sku_id, Number(row.available_quantity)]))
+
+  ctx.result = components.map((component) => {
+    const availableQuantity = availableBySku.get(component.inventorySkuId) || 0
+    return {
+      ...component,
+      availableQuantity,
+      label: `${component.productName}${component.specName ? ` ${component.specName}` : ''} × ${component.quantityPerSaleUnit}（可用 ${availableQuantity}）`,
+    }
+  })
 }
 
 /**
@@ -5038,12 +5494,9 @@ async function pickupRecordsList(ctx) {
   let idx = 1
 
   const effectiveStoreId = ctx.auth.effectiveStoreId
-  if (!effectiveStoreId) {
-    ctx.result = { items: [], total: 0, page: 1, pageSize: limit }
-    return ctx.result
-  }
+  if (!effectiveStoreId) throw new Error('PERMISSION_DENIED: 未选择当前工作门店')
   if (storeId && storeId !== effectiveStoreId) {
-    throw new Error('PERMISSION_DENIED: 无权访问该门店')
+    throw new Error('PERMISSION_DENIED: 不可查询其他门店的提货记录')
   }
   conditions.push(`pr.store_id = $${idx}`)
   params.push(effectiveStoreId)
@@ -5070,6 +5523,7 @@ async function pickupRecordsList(ctx) {
   const dataSql = `
     SELECT pr.id,
            pr.sale_item_id,
+           pr.inventory_sku_id,
            pr.pickup_quantity,
            pr.store_id,
            pr.client_user_id,
@@ -5081,6 +5535,8 @@ async function pickupRecordsList(ctx) {
            cw.phone AS client_phone,
            sw.name AS confirmed_by_name,
            si.product_name,
+           inventory_sku.product_code AS inventory_product_code,
+           inventory_sku.product_name AS inventory_product_name,
            NULL::text AS spec_name,
            si.quantity AS item_quantity,
            si.picked_up_quantity AS item_picked_up_quantity,
@@ -5090,6 +5546,7 @@ async function pickupRecordsList(ctx) {
  LEFT JOIN client_wechat_users cw ON cw.user_id = pr.client_user_id
  LEFT JOIN staff_wechat_users sw ON sw.employee_id = pr.confirmed_by
  LEFT JOIN sale_items si ON si.sale_item_id = pr.sale_item_id
+ LEFT JOIN inventory_skus inventory_sku ON inventory_sku.sku_id = pr.inventory_sku_id
        ${whereSql}
   ORDER BY pr.created_at DESC
      LIMIT ${limit} OFFSET ${offset}
@@ -5105,6 +5562,9 @@ async function pickupRecordsList(ctx) {
     items: rows.map((r) => ({
       id: r.id,
       saleItemId: r.sale_item_id,
+      inventorySkuId: r.inventory_sku_id || null,
+      inventoryProductCode: r.inventory_product_code || null,
+      inventoryProductName: r.inventory_product_name || null,
       pickupQuantity: r.pickup_quantity,
       storeId: r.store_id,
       storeName: r.store_name || null,
@@ -5183,7 +5643,7 @@ async function refundList(ctx) {
     params.push(status)
     whereExtra += ` AND sop.status = $${params.length}`
   }
-  if (!isCurrentStoreManager(ctx.auth)) {
+  if (!ctx.auth.roles.includes('manager')) {
     params.push(ctx.auth.staffWfId)
     whereExtra += ` AND sop.operator_employee_id = $${params.length}`
   }
@@ -5257,7 +5717,7 @@ async function refundDetail(ctx) {
     throw new Error('PERMISSION_DENIED: 无权查看该退款')
   }
   // 非店长：仅允许查自己发起的退款
-  if (!isCurrentStoreManager(ctx.auth) && r.operator_employee_id !== ctx.auth.staffWfId) {
+  if (!ctx.auth.roles.includes('manager') && r.operator_employee_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 无权查看该退款')
   }
 
@@ -5418,7 +5878,7 @@ async function createDeposit(ctx) {
   }
 
   // 拉 SKU 信息（参考 createConversion 的 SKU JOIN 模式）
-  const rawItemDataList = await Promise.all(items.map(async (item, inputIndex) => {
+  const rawItemDataList = await Promise.all(items.map(async (item) => {
     if (!item || !item.skuId) {
       throw new Error('INVALID_PARAMS: items 缺少 skuId')
     }
@@ -5437,8 +5897,8 @@ async function createDeposit(ctx) {
     const sku = skuRows[0]
     // 寄存单仅承载次数初始化语义，充值卡剥离 SKU 化（2026-05-20）后不再有充值 SKU 可入参
     const quantity = Number(item.quantity) || 1
-    if (!Number.isInteger(quantity) || quantity <= 0) {
-      throw new Error('INVALID_PARAMS: quantity 必须为正整数')
+    if (quantity <= 0) {
+      throw new Error('INVALID_PARAMS: quantity 必须为正')
     }
     // 历史实收金额（可选，默认 0）：>0 时写 '回款'(线下) 流水，total_amount 仍保持 0
     const itemReceived = item.received != null ? Math.round((Number(item.received) || 0) * 100) / 100 : 0
@@ -5472,45 +5932,44 @@ async function createDeposit(ctx) {
       isShengmei: sku.is_shengmei ?? null,
       isExperience: sku.is_experience === true,
       marketScope: sku.market_scope,
-      depositGroupKey: `deposit-${inputIndex}`,
     }
   }))
 
   await assertNormalSkuMarketScopeForCurrentStore(rawItemDataList, ctx.auth)
 
-  // 寄存单疗程卡与家居产品均按张/件落库。每个原始输入行的子明细共享
-  // depositGroupKey，写库时再替换为首张 sale_item_id 作为稳定展示分组号。
-  const itemDataList = []
-  for (const d of rawItemDataList) {
-    const entityCount = d.quantity
-    const perCardSessions = d.sessionCount != null ? d.sessionCount / entityCount : null
-    if (perCardSessions != null && (!Number.isInteger(perCardSessions) || perCardSessions <= 0)) {
-      throw new Error('INVALID_PARAMS: 寄存疗程卡次数必须能按张拆分')
-    }
-
-    // 金额按分均摊，最后一件吸收尾差，保证标价与历史实收总额严格守恒。
-    const saleAmountCents = Math.round(d.saleAmount * 100)
-    const receivedCents = Math.round(d.received * 100)
-    const saleAmountPerEntity = Math.trunc(saleAmountCents / entityCount)
-    const receivedPerEntity = Math.trunc(receivedCents / entityCount)
-    for (let i = 0; i < entityCount; i++) {
-      const isLast = i === entityCount - 1
-      const saleAmount = (saleAmountPerEntity + (isLast ? saleAmountCents % entityCount : 0)) / 100
-      const received = (receivedPerEntity + (isLast ? receivedCents % entityCount : 0)) / 100
-      const denom = perCardSessions != null && perCardSessions > 0 ? perCardSessions : 1
-      const unit = roundMoney(saleAmount / denom)
-      itemDataList.push({
+  // 寄存单的每张疗程卡和每件家居产品都必须成为独立销售明细，才能精确承接
+  // 历史核销、转换与分次提货。来自同一输入行的明细共享 sale_item_group_id。
+  const itemDataList = rawItemDataList.flatMap((d, sourceLineIndex) => {
+    const quantity = Math.max(1, Number(d.quantity) || 1)
+    let receivedAllocated = 0
+    let amountAllocated = 0
+    return Array.from({ length: quantity }, (_, unitIndex) => {
+      const isLastUnit = unitIndex === quantity - 1
+      const received = isLastUnit
+        ? roundMoney(d.received - receivedAllocated)
+        : roundMoney(d.received / quantity)
+      const saleAmount = isLastUnit
+        ? roundMoney(d.saleAmount - amountAllocated)
+        : roundMoney(d.saleAmount / quantity)
+      receivedAllocated = roundMoney(receivedAllocated + received)
+      amountAllocated = roundMoney(amountAllocated + saleAmount)
+      const sessionCount = d.sessionCount == null ? null : Number(d.sessionCount) / quantity
+      const unitPrice = sessionCount != null && sessionCount > 0
+        ? roundMoney(saleAmount / sessionCount)
+        : saleAmount
+      return {
         ...d,
+        sourceLineIndex,
         quantity: 1,
-        sessionCount: perCardSessions,
-        remainingSessions: perCardSessions,
+        sessionCount,
+        remainingSessions: sessionCount,
         saleAmount,
         received,
-        unitPrice: unit,
-        unitRealPrice: unit,
-      })
-    }
-  }
+        unitPrice,
+        unitRealPrice: unitPrice,
+      }
+    })
+  })
 
   const now = new Date()
   let saleOrderId
@@ -5555,20 +6014,17 @@ async function createDeposit(ctx) {
       seq = parseInt(maxResult.rows[0].sale_item_id.slice(-4)) + 1
     }
 
+    const compositionSnapshots = await loadInventoryCompositionSnapshots(tx, itemDataList)
+
     // INSERT sale_items —— received=0（由 recalc STEP1 据流水填）；session_count/remaining_sessions 正常写
     // 同时收集 received>0 的行，循环后写 '回款'(线下) 流水
-    const preparedItems = itemDataList.map((d, index) => ({
-      ...d,
-      saleItemId: `XSLSH-WX-${dateStr}${String(seq + index).padStart(4, '0')}`,
-    }))
-    const groupIdByKey = new Map()
-    for (const item of preparedItems) {
-      if (!groupIdByKey.has(item.depositGroupKey)) groupIdByKey.set(item.depositGroupKey, item.saleItemId)
-    }
-
     const receiptRows = []
-    for (const item of preparedItems) {
-      const { saleItemId, ...d } = item
+    const saleItemGroups = new Map()
+    for (let i = 0; i < itemDataList.length; i++) {
+      const saleItemId = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
+      const d = itemDataList[i]
+      const saleItemGroupId = saleItemGroups.get(d.sourceLineIndex) || saleItemId
+      saleItemGroups.set(d.sourceLineIndex, saleItemGroupId)
       const sc = d.productType === '家居产品' ? null : d.sessionCount
       const rs = d.productType === '家居产品' ? null : d.remainingSessions
       if (d.received > 0) receiptRows.push({ saleItemId, received: d.received })
@@ -5579,10 +6035,11 @@ async function createDeposit(ctx) {
           product_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received,
-          sales_category, service_fee, is_shengmei, is_experience
-        ) VALUES ($1, $2, $3, $4, '购买', $5, $6, $7, $8, $9, $10, $11, $12, $13, 0, $14, 0, $15, $16)`,
+          sales_category, service_fee, is_shengmei, is_experience,
+          inventory_composition_snapshot
+        ) VALUES ($1, $2, $3, $4, '购买', $5, $6, $7, $8, $9, $10, $11, $12, $13, 0, $14, 0, $15, $16, $17::jsonb)`,
         [
-          saleItemId, groupIdByKey.get(d.depositGroupKey), saleOrderId, storeId, d.skuId,
+          saleItemId, saleItemGroupId, saleOrderId, storeId, d.skuId,
           d.productName, d.productType,
           sc, rs,
           d.unitPrice, d.quantity, d.unitRealPrice,
@@ -5590,6 +6047,7 @@ async function createDeposit(ctx) {
           d.salesCategory,
           d.isShengmei ?? null,
           d.isExperience,
+          compositionSnapshots.has(d.skuId) ? JSON.stringify(compositionSnapshots.get(d.skuId)) : null,
         ]
       )
     }
@@ -5648,6 +6106,7 @@ module.exports = {
   createPickup,
   createDeposit,
   availablePickupItems,
+  pickupInventorySkuOptions,
   pickupRecordsList,
 }
 

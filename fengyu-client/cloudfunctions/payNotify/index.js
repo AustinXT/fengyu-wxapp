@@ -16,6 +16,7 @@ const { getMemberThreshold } = require('./config')
 const { settlePointsSafe } = require('./points')
 const { recalcMemberLevel } = require('./member-level')
 const { parseErrorPrefix } = require('./error-codes')
+const { verifyHealthPayload } = require('./utils/system-health')
 const { recalcPaidSessionsForOrder } = require('./paid-sessions')
 const { capturePaymentAllocatables, refreshOrderAllocationRollup } = require('./payment-allocatable')
 const { getPerItemRefundedMap, computeRefundAwareDirectedItems } = require('./per-item-refund')
@@ -669,6 +670,23 @@ async function settlePendingPrepaidForPayment(client, {
  * 注意：member_level（钻石等级）由 cronTask 每日凌晨3点统一重算，本函数不直接更新。
  */
 exports.main = async (event) => {
+  // Admin 系统自检：先于支付开关分流，仅做 HMAC + PG SELECT 1。
+  if (event && event.action === 'system.health') {
+    try {
+      verifyHealthPayload(event.payload, 'payNotify')
+      await getPg().query('SELECT 1 AS ok')
+      return { code: 0, message: 'success', data: { ok: true, checkedAt: new Date().toISOString() } }
+    } catch (error) {
+      const parsed = parseErrorPrefix(error && error.message)
+      return {
+        code: parsed && parsed.prefix === 'UNAUTHORIZED' ? -401 : -1,
+        message: parsed ? parsed.displayMessage : '服务器内部错误',
+        errorType: parsed ? parsed.prefix : null,
+        data: null,
+      }
+    }
+  }
+
   // ========== CloudBase 定时触发器：微信发货补偿上报 ==========
   // 独立于支付回调，仅需 WX_SHIPPING_ENABLED + CLIENT_APPSECRET + PG（不依赖拉卡拉配置），
   // 故先于 isPayNotifyEnabled 分流；定时事件由 CloudBase 注入 event.Type==='Timer'。

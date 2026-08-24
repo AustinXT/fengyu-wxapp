@@ -99,7 +99,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
   <van-cell-group title="金额明细" inset>
     <van-cell
       title="商品总价"
-      value="¥{{fmt.price(order.coupon_discount > 0 ? order.total_amount * 1 + order.coupon_discount * 1 : order.total_amount)}}"
+      value="¥{{fmt.price(order.total_amount * 1 + (order.coupon_discount || 0) * 1 + (order.points_discount || 0) * 1)}}"
     />
     <van-cell
       wx:if="{{order.coupon_id}}"
@@ -109,6 +109,13 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
       value-class="coupon-discount-value"
     />
     <van-cell wx:else title="优惠" value="- ¥0.00" />
+    <van-cell
+      wx:if="{{order.points_discount > 0}}"
+      title="积分抵扣"
+      label="{{order.points_used}}积分"
+      value="-¥{{fmt.price(order.points_discount)}}"
+      value-class="coupon-discount-value"
+    />
     <van-cell title="实付" class="total-cell">
       <view slot="right-icon" class="total-price-wrap">
         <text class="total-symbol">¥</text>

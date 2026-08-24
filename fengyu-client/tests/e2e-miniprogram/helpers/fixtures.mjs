@@ -183,6 +183,16 @@ export async function cleanupL3TestData(prefix = NS) {
     ],
     [`DELETE FROM card_transactions WHERE ref_order_id LIKE $1`, [like]],
     [
+      `DELETE FROM point_batches WHERE user_id IN (
+         SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1 OR openid LIKE $1
+       )`, [like],
+    ],
+    [
+      `DELETE FROM point_batches WHERE user_id IN (
+         SELECT user_id FROM client_wechat_users WHERE phone = ANY($1::text[])
+       )`, [testPhones],
+    ],
+    [
       `DELETE FROM point_transactions WHERE user_id IN (
          SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1 OR openid LIKE $1
        )`, [like],
@@ -220,6 +230,39 @@ export async function cleanupL3TestData(prefix = NS) {
       `DELETE FROM service_items WHERE sale_item_id IN (
          SELECT sale_item_id FROM sale_items WHERE store_id LIKE $1 OR sale_order_id LIKE $1
        )`, [like],
+    ],
+    // 逐项收款明细 FK → 收款 / 订单项，必须先于 sale_order_payments / sale_items 删除。
+    [
+      `DELETE FROM sale_payment_item_allocations WHERE sale_payment_item_receipt_id IN (
+         SELECT id FROM sale_payment_item_receipts WHERE sale_order_id IN (
+           SELECT so.sale_order_id FROM sale_orders so
+            WHERE so.sale_order_id LIKE $1 OR so.store_id LIKE $1
+               OR so.client_user_id IN (
+                 SELECT user_id FROM client_wechat_users
+                  WHERE user_id LIKE $1 OR openid LIKE $1 OR phone = ANY($2::text[])
+               )
+         )
+       )`, [like, testPhones],
+    ],
+    [
+      `DELETE FROM sale_payment_item_receipts WHERE sale_order_id IN (
+         SELECT so.sale_order_id FROM sale_orders so
+          WHERE so.sale_order_id LIKE $1 OR so.store_id LIKE $1
+             OR so.client_user_id IN (
+               SELECT user_id FROM client_wechat_users
+                WHERE user_id LIKE $1 OR openid LIKE $1 OR phone = ANY($2::text[])
+             )
+       )`, [like, testPhones],
+    ],
+    [
+      `DELETE FROM sale_payment_allocatable_items WHERE sale_order_id IN (
+         SELECT so.sale_order_id FROM sale_orders so
+          WHERE so.sale_order_id LIKE $1 OR so.store_id LIKE $1
+             OR so.client_user_id IN (
+               SELECT user_id FROM client_wechat_users
+                WHERE user_id LIKE $1 OR openid LIKE $1 OR phone = ANY($2::text[])
+             )
+       )`, [like, testPhones],
     ],
     [`DELETE FROM sale_order_payments WHERE sale_order_id LIKE $1`, [like]],
     // 二轨：sale_order_payments 按 phone 命中订单
@@ -284,7 +327,12 @@ export async function cleanupL3TestData(prefix = NS) {
          SELECT sale_order_id FROM sale_orders WHERE store_id LIKE $1
        )`, [like],
     ],
-    // point_transactions 也 FK → sale_orders.sale_order_id（积分赠送/冲销 ref），必须先清
+    // point_batches / point_transactions 都 FK → sale_orders.sale_order_id，必须按依赖顺序先清
+    [
+      `DELETE FROM point_batches WHERE ref_order_id IN (
+         SELECT sale_order_id FROM sale_orders WHERE store_id LIKE $1
+       )`, [like],
+    ],
     [
       `DELETE FROM point_transactions WHERE ref_order_id IN (
          SELECT sale_order_id FROM sale_orders WHERE store_id LIKE $1

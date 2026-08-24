@@ -430,7 +430,16 @@ export async function cleanupL3TestData() {
     ],
 
     // ─── 1) 子表（依赖 sale_orders / sale_items / 顾客 / 员工）───
-    // point_transactions（confirmOffline / approveRefund 副作用，必须先于 sale_orders）
+    // point_batches / point_transactions（积分抵扣、confirmOffline、退款副作用；按 FK 顺序）
+    [`DELETE FROM point_batches WHERE ref_order_id LIKE $1`, [ORD_LIKE]],
+    [
+      `DELETE FROM point_batches
+         WHERE ref_order_id IN (
+           SELECT sale_order_id FROM sale_orders WHERE client_user_id LIKE $1 OR opened_by LIKE $1
+         )`,
+      [NS_LIKE],
+    ],
+    [`DELETE FROM point_batches WHERE user_id LIKE $1`, [NS_LIKE]],
     [`DELETE FROM point_transactions WHERE ref_order_id LIKE $1`, [ORD_LIKE]],
     [
       `DELETE FROM point_transactions
@@ -469,6 +478,33 @@ export async function cleanupL3TestData() {
     ],
 
     // ─── 2) sale_* 链 ───
+    [
+      `DELETE FROM sale_payment_item_allocations
+         WHERE sale_payment_item_receipt_id IN (
+           SELECT id FROM sale_payment_item_receipts
+            WHERE sale_order_id IN (
+              SELECT sale_order_id FROM sale_orders
+               WHERE sale_order_id LIKE $1 OR client_user_id LIKE $2 OR opened_by LIKE $2
+            )
+         )`,
+      [ORD_LIKE, NS_LIKE],
+    ],
+    [
+      `DELETE FROM sale_payment_item_receipts
+         WHERE sale_order_id IN (
+           SELECT sale_order_id FROM sale_orders
+            WHERE sale_order_id LIKE $1 OR client_user_id LIKE $2 OR opened_by LIKE $2
+         )`,
+      [ORD_LIKE, NS_LIKE],
+    ],
+    [
+      `DELETE FROM sale_payment_allocatable_items
+         WHERE sale_order_id IN (
+           SELECT sale_order_id FROM sale_orders
+            WHERE sale_order_id LIKE $1 OR client_user_id LIKE $2 OR opened_by LIKE $2
+         )`,
+      [ORD_LIKE, NS_LIKE],
+    ],
     [`DELETE FROM sale_allocations WHERE sale_item_id LIKE $1`, [ITM_LIKE]],
     [
       `DELETE FROM sale_allocations

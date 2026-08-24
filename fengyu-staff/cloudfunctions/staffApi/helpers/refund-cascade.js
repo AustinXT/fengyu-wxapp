@@ -151,7 +151,7 @@ async function cascadeRefund(client, params) {
   }
 
   const voidedReason = refundReason
-    ? `退款审批通过：${String(refundReason).slice(0, 200)}`
+    ? `退款审批通过：${String(refundReason).slice(0, 500)}`
     : '退款审批通过'
   const now = new Date()
 
@@ -321,7 +321,7 @@ async function cascadeRefund(client, params) {
   if (wholeOrder) {
     const couponRes = await client.query(
       `UPDATE user_coupons
-          SET status = '未使用', used_at = NULL, used_sale_order_id = NULL
+          SET status = '未使用', used_at = NULL, used_sale_order_id = NULL, updated_at = NOW()
         WHERE used_sale_order_id = $1
           AND status = '已使用'
           AND (expire_at IS NULL OR expire_at > NOW())`,
@@ -336,8 +336,7 @@ async function cascadeRefund(client, params) {
               updated_at = NOW()
         WHERE coupon_id = ANY($1::text[])
           AND status = '未使用'`,
-      // pg.query 的第二个参数是「占位符参数列表」；SQL 只有 $1，
-      // 因此 text[] 必须作为 $1 的单个数组值传入，不能拆成两个绑定参数。
+      // text[] 是 SQL 唯一占位符 $1 的单个绑定值，不能拆成两个参数。
       [[`sg-inviter-${saleOrderId}`, `sg-invitee-${saleOrderId}`]],
     )
     revokedShareGiftCoupons = shareGiftRes.rowCount || 0
@@ -366,6 +365,15 @@ async function cascadeRefund(client, params) {
     const received = Number(orderRes.rows[0]?.received || 0)
     const refunded = Number(orderRes.rows[0]?.refunded || 0)
     const target = received > 0 ? Math.round((grantedTotal * refunded) / received) : grantedTotal
+    const reversedRes = await client.query(
+      `SELECT COALESCE(-SUM(amount), 0) AS reversed
+         FROM point_transactions
+        WHERE user_id = $1
+          AND ref_order_id = $2
+          AND type = '消费冲销'`,
+      [pointUserId, saleOrderId],
+    )
+    const reverseDelta = Math.max(0, target - Number(reversedRes.rows[0]?.reversed || 0))
     await client.query(
       `INSERT INTO point_transactions
          (user_id, ref_order_id, type, amount, created_at)
@@ -376,10 +384,47 @@ async function cascadeRefund(client, params) {
       [pointUserId, saleOrderId, -target, now],
     )
     reversedPoints = target
+    if (reverseDelta > 0) {
+      await client.query(
+        `WITH locked_batches AS (
+           SELECT id, ref_order_id, expire_at, remaining_amount
+             FROM point_batches
+            WHERE user_id = $1
+              AND remaining_amount > 0
+              AND expire_at > NOW()
+            ORDER BY CASE WHEN $3::text IS NOT NULL AND ref_order_id = $3 THEN 0 ELSE 1 END, expire_at, id
+            FOR UPDATE
+         ),
+         prioritized AS (
+           SELECT id,
+                  remaining_amount,
+                  SUM(remaining_amount) OVER (
+                    ORDER BY CASE WHEN $3::text IS NOT NULL AND ref_order_id = $3 THEN 0 ELSE 1 END, expire_at, id
+                  ) AS running
+             FROM locked_batches
+         ),
+         allocation AS (
+           SELECT id,
+                  LEAST(remaining_amount, GREATEST(0, $2 - (running - remaining_amount))) AS consume_amount
+             FROM prioritized
+            WHERE running - remaining_amount < $2
+         )
+         UPDATE point_batches pb
+            SET remaining_amount = pb.remaining_amount - allocation.consume_amount,
+                updated_at = NOW()
+           FROM allocation
+          WHERE pb.id = allocation.id
+            AND allocation.consume_amount > 0`,
+        [pointUserId, reverseDelta, saleOrderId],
+      )
+    }
     await client.query(
       `UPDATE client_wechat_users
           SET points_balance = COALESCE((
-                SELECT SUM(amount) FROM point_transactions WHERE user_id = $1
+                SELECT SUM(remaining_amount)
+                  FROM point_batches
+                 WHERE user_id = $1
+                   AND expire_at > NOW()
               ), 0),
               points_updated_at = $2,
               updated_at = $2

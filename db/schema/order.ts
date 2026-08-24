@@ -33,6 +33,19 @@ import { stores } from "./org";
 import { productSkus } from "./product";
 import { clientWechatUsers, staffWechatUsers } from "./user";
 
+export interface SaleItemInventoryCompositionComponentSnapshot {
+  inventorySkuId: string;
+  productCode: string;
+  productName: string;
+  specName: string | null;
+  quantityPerSaleUnit: number;
+}
+
+export interface SaleItemInventoryCompositionSnapshotV1 {
+  version: 1;
+  components: SaleItemInventoryCompositionComponentSnapshot[];
+}
+
 /**
  * 订单主表（四种单据统一模型）
  *
@@ -72,7 +85,7 @@ export const saleOrders = pgTable(
     clientUserId: text("client_user_id").references(() => clientWechatUsers.userId),
     clientPhone: varchar("client_phone", { length: 30 }),
     customerName: varchar("customer_name", { length: 50 }),
-    /** 订单总金额；商品价格之和，扣除优惠券 */
+    /** 订单总金额；商品价格之和，扣除优惠券和积分抵扣 */
     totalAmount: numeric("total_amount", { precision: 10, scale: 2 }).notNull(),
     /**
      * 已结算储值卡实付净额。
@@ -132,6 +145,12 @@ export const saleOrders = pgTable(
     couponId: text("coupon_id"),
     /** 券抵扣总金额 */
     couponDiscount: numeric("coupon_discount", { precision: 10, scale: 2 }).default("0"),
+    /** 积分抵扣使用积分数 */
+    pointsUsed: bigint("points_used", { mode: "number" }).notNull().default(0),
+    /** 积分抵扣金额 */
+    pointsDiscount: numeric("points_discount", { precision: 10, scale: 2 }).notNull().default("0"),
+    // comment-only: non-negative invariants for points_used/points_discount are enforced by
+    // chk_sale_order_points_used / chk_sale_order_points_discount below (extra() block).
     /** 订单备注（员工端开单时填写） */
     remark: text("remark"),
     /** 活动单标记（纯标识，不影响金额/提成/营收口径；admin/staff 开单时勾选） */
@@ -188,6 +207,10 @@ export const saleOrders = pgTable(
       "chk_first_payment_amount",
       sql`${table.firstPaymentAmount} IS NULL OR (${table.firstPaymentAmount} > 0 AND ${table.firstPaymentAmount} <= ${table.payableAmount})`,
     ),
+    /** 积分消耗量非负（>= 0） */
+    check("chk_sale_order_points_used", sql`${table.pointsUsed} >= 0`),
+    /** 积分抵扣金额非负（>= 0） */
+    check("chk_sale_order_points_discount", sql`${table.pointsDiscount} >= 0`),
   ],
 );
 
@@ -228,6 +251,12 @@ export const saleItems = pgTable(
     productName: text("product_name"),
     /** 商品类型快照（疗程卡/家居产品） */
     productType: productTypeEnum("product_type"),
+    /**
+     * 家居产品下单时冻结的库存组成。历史数据及非家居产品为 NULL；
+     * 历史空快照家居产品提货时读取当时最新组成，但不反向补写。
+     */
+    inventoryCompositionSnapshot: jsonb("inventory_composition_snapshot")
+      .$type<SaleItemInventoryCompositionSnapshotV1>(),
     /** 该行总次数（疗程卡：sku.session_count × quantity；非次数卡为 NULL）。是"行总次数"口径，已含 quantity。 */
     sessionCount: integer("session_count"),
     remainingSessions: integer("remaining_sessions"),

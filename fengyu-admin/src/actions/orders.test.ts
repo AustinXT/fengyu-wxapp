@@ -189,6 +189,7 @@ vi.mock('drizzle-orm', () => ({
   eq: vi.fn((a, b) => ({ type: 'eq', a, b })),
   and: vi.fn((...args) => ({ type: 'and', args })),
   or: vi.fn((...args) => ({ type: 'or', args })),
+  asc: vi.fn((col) => ({ type: 'asc', col })),
   desc: vi.fn((col) => ({ type: 'desc', col })),
   gte: vi.fn((a, b) => ({ type: 'gte', a, b })),
   lt: vi.fn((a, b) => ({ type: 'lt', a, b })),
@@ -1043,6 +1044,19 @@ function mockTransactionCaptureInserts(orderId = 'FY-XSD-WX-260518001') {
       // 待支付订单 partial unique index 检查（line 1194-1207）；空结果绕过 conflict
       select: vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockResolvedValue([{
+                productSkuId: 'sku-home',
+                inventorySkuId: 'inventory-sku-001',
+                productCode: 'I001',
+                productName: '库存商品',
+                specName: null,
+                inventorySkuActive: true,
+                quantityPerSaleUnit: 1,
+              }]),
+            }),
+          }),
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([]),
           }),
@@ -1177,6 +1191,10 @@ describe('createOrder — B2 拆行（疗程卡 quantity>1 → N 行）', () => 
     expect(saleItemInserts).toHaveLength(1)
     expect(saleItemInserts[0].values.quantity).toBe(10)
     expect(saleItemInserts[0].values.productType).toBe('家居产品')
+    expect(saleItemInserts[0].values.inventoryCompositionSnapshot).toMatchObject({
+      version: 1,
+      components: [{ inventorySkuId: 'inventory-sku-001', quantityPerSaleUnit: 1 }],
+    })
   })
 })
 
@@ -1286,6 +1304,7 @@ describe('createDepositOrder — 疗程卡逐张落库', () => {
     expect(saleItemInserts.map((c) => c.values.sessionCount)).toEqual([null, null, null])
     expect(saleItemInserts.map((c) => c.values.remainingSessions)).toEqual([null, null, null])
     expect(new Set(saleItemInserts.map((c) => c.values.saleItemGroupId)).size).toBe(1)
+    expect(saleItemInserts.every((c) => c.values.inventoryCompositionSnapshot?.version === 1)).toBe(true)
   })
 
   it('受限普通 SKU 不匹配顾客绑定门店市场时拒绝提交', async () => {

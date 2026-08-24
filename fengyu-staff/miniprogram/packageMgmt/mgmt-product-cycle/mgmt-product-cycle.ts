@@ -5,7 +5,7 @@ import { isManagementMode } from '../../utils/role'
 import { callStaffApi } from '../../utils/cloud'
 import { formatAmount, formatCount, formatPercent } from '../../utils/number'
 
-type Period = 'month' | 'lastMonth' | 'year'
+type Period = 'month' | 'lastMonth' | 'year' | 'custom'
 type ScopeType = 'all' | 'market' | 'store'
 
 interface CardHolderRow {
@@ -24,6 +24,8 @@ interface ProductKindRow {
   count: number
   revenue: number
   avgTicket: number | null // null → '--'
+  entryCount?: number
+  repurchaseRate?: number | null // 0-1；null → '--'
 }
 
 interface CycleStatsResp {
@@ -45,6 +47,8 @@ interface CardHolderDisplayRow {
 interface ProductKindDisplayRow {
   productKind: string
   count: string
+  entryCount: string
+  repurchaseRate: string
   revenue: string
   avgTicket: string
 }
@@ -59,13 +63,34 @@ const PERIODS: { key: Period; label: string }[] = [
   { key: 'month',     label: '本月' },
   { key: 'lastMonth', label: '上月' },
   { key: 'year',      label: '本年' },
+  { key: 'custom',    label: '自定义' },
 ]
+
+function pad2(value: number): string {
+  return String(value).padStart(2, '0')
+}
+
+function formatDate(date: Date): string {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`
+}
+
+function getDefaultRange(): { startDate: string; endDate: string } {
+  const now = new Date()
+  return {
+    startDate: `${now.getFullYear()}-01-01`,
+    endDate: formatDate(now),
+  }
+}
+
+const DEFAULT_RANGE = getDefaultRange()
 
 Page({
   data: {
     period: 'month' as Period,
     periods: PERIODS,
     periodsForPicker: PERIODS.map((p) => ({ label: p.label, value: p.key })),
+    startDate: DEFAULT_RANGE.startDate,
+    endDate: DEFAULT_RANGE.endDate,
     scopeType: 'all' as ScopeType,
     scopeId: null as string | null,
     scopeName: '' as string,
@@ -111,6 +136,20 @@ Page({
     this.loadCycleStats()
   },
 
+  onStartDateChange(e: WechatMiniprogram.CustomEvent<{ value: string }>) {
+    const startDate = e.detail?.value
+    if (!startDate || startDate === this.data.startDate) return
+    this.setData({ startDate })
+    if (this.data.period === 'custom') this.loadCycleStats()
+  },
+
+  onEndDateChange(e: WechatMiniprogram.CustomEvent<{ value: string }>) {
+    const endDate = e.detail?.value
+    if (!endDate || endDate === this.data.endDate) return
+    this.setData({ endDate })
+    if (this.data.period === 'custom') this.loadCycleStats()
+  },
+
   async loadCardHolders() {
     this.setData({ cardLoading: true, cardError: false })
     try {
@@ -139,11 +178,16 @@ Page({
   async loadCycleStats() {
     this.setData({ loading: true, cycleError: false })
     try {
-      const resp = await callStaffApi<CycleStatsResp>('mgmtProduct.cycleStats', {
+      const payload: Record<string, unknown> = {
         period: this.data.period,
         scopeType: this.data.scopeType,
         scopeId: this.data.scopeId,
-      })
+      }
+      if (this.data.period === 'custom') {
+        payload.startDate = this.data.startDate
+        payload.endDate = this.data.endDate
+      }
+      const resp = await callStaffApi<CycleStatsResp>('mgmtProduct.cycleStats', payload)
       this.setData({
         cycleData: resp,
         display: this.buildDisplay(resp),
@@ -173,13 +217,20 @@ Page({
     const mapRow = (r: ProductKindRow): ProductKindDisplayRow => ({
       productKind: r.productKind,
       count: formatCount(r.count),
+      entryCount: '',
+      repurchaseRate: '',
       revenue: formatAmount(r.revenue),
       avgTicket: r.avgTicket == null ? '--' : formatAmount(r.avgTicket),
+    })
+    const mapRepurchaseRow = (r: ProductKindRow): ProductKindDisplayRow => ({
+      ...mapRow(r),
+      entryCount: r.entryCount == null ? '--' : formatCount(r.entryCount),
+      repurchaseRate: r.repurchaseRate == null ? '--' : formatPercent(r.repurchaseRate),
     })
     return {
       trial:      (s.trial || []).map(mapRow),
       newEntry:   (s.newEntry || []).map(mapRow),
-      repurchase: (s.repurchase || []).map(mapRow),
+      repurchase: (s.repurchase || []).map(mapRepurchaseRow),
     }
   },
 })

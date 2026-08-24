@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * clientApi.config.banners / fengyuguan / shareGift / invalidateConfig 全分支
+ * clientApi.config.banners / fengyuguan / shareGift / serviceHotline / invalidateConfig 全分支
  *
  * 路由源：fengyu-client/cloudfunctions/clientApi/routes/config.js
  *
@@ -16,7 +16,7 @@
  *   - invalidateConfig 只清进程内 utils/config 缓存（getMemberThreshold 用），副作用不可直接观测；
  *     仅断言 code=0 + success=true
  *
- * 用例（10 个）：
+ * 用例（12 个）：
  *   1. banners 有数据         — INSERT system_configs(banner_count='2') → { count:2, v:number }
  *   2. banners 无数据         — DELETE banner_count + banner_images → { count:0 }
  *   3. fengyuguan 有数据      — INSERT → 返回 url
@@ -38,6 +38,7 @@ const BANNER_KEY = 'banner_images'
 const BANNER_COUNT_KEY = 'banner_count'
 const FENGYUGUAN_KEY = 'fengyuguan_image'
 const SHARE_GIFT_KEY = 'share_gift_config'
+const SERVICE_HOTLINE_KEY = 'service_hotline'
 
 /**
  * 备份 + 恢复系统配置（避免污染生产配置）
@@ -75,6 +76,7 @@ let _bannerBackup = null
 let _bannerCountBackup = null
 let _fengyuguanBackup = null
 let _shareGiftBackup = null
+let _serviceHotlineBackup = null
 
 // ─── shareGift 5 个公开字段（路由白名单） ───────────────────
 const SHARE_GIFT_PUBLIC_KEYS = ['enabled', 'percent', 'minFaceValue', 'maxFaceValue', 'validityDays']
@@ -113,6 +115,31 @@ async function caseFengyuguanWithData() {
   }
   if (typeof res.data.v !== 'number' || res.data.v <= 0) {
     throw new Error(`expect v>0 number (cache version), got ${JSON.stringify(res.data.v)}`)
+  }
+}
+
+async function caseServiceHotlineWithData() {
+  const phone = `${NS}-400-1234`
+  await upsertConfig(SERVICE_HOTLINE_KEY, phone)
+  const res = await invokePublic('config.serviceHotline', {})
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  if (res.data.phone !== phone) {
+    throw new Error(`phone mismatch: expected ${phone}, got ${res.data.phone}`)
+  }
+  if (typeof res.data.v !== 'number' || res.data.v <= 0) {
+    throw new Error(`expect v>0 number (cache version), got ${JSON.stringify(res.data.v)}`)
+  }
+}
+
+async function caseServiceHotlineNoRow() {
+  await pgQuery('DELETE FROM system_configs WHERE key = $1', [SERVICE_HOTLINE_KEY])
+  const res = await invokePublic('config.serviceHotline', {})
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  if (res.data.phone !== '') {
+    throw new Error(`expect phone='' when no row, got ${JSON.stringify(res.data.phone)}`)
+  }
+  if (res.data.v !== 0) {
+    throw new Error(`expect v=0 when no row, got ${JSON.stringify(res.data.v)}`)
   }
 }
 
@@ -226,6 +253,8 @@ const CASES = [
   ['banners with data → returns array of URLs', caseBannersWithData],
   ['banners no row → returns []', caseBannersEmpty],
   ['fengyuguan with data → returns url', caseFengyuguanWithData],
+  ['serviceHotline with data → returns phone', caseServiceHotlineWithData],
+  ['serviceHotline no row → {phone:"",v:0}', caseServiceHotlineNoRow],
   ['invalidateConfig → code=0 success=true', caseInvalidateConfig],
   ['shareGift no row → {enabled:false}', caseShareGiftNoRow],
   ['shareGift explicit enabled=false → {enabled:false}', caseShareGiftExplicitDisabled],
@@ -244,6 +273,7 @@ try {
   _bannerCountBackup = await snapshotConfigRow(BANNER_COUNT_KEY)
   _fengyuguanBackup = await snapshotConfigRow(FENGYUGUAN_KEY)
   _shareGiftBackup = await snapshotConfigRow(SHARE_GIFT_KEY)
+  _serviceHotlineBackup = await snapshotConfigRow(SERVICE_HOTLINE_KEY)
 
   for (const [name, fn] of CASES) {
     await cleanupClientExtras(NS)
@@ -266,6 +296,7 @@ try {
     await restoreConfigRow(BANNER_COUNT_KEY, _bannerCountBackup)
     await restoreConfigRow(FENGYUGUAN_KEY, _fengyuguanBackup)
     await restoreConfigRow(SHARE_GIFT_KEY, _shareGiftBackup)
+    await restoreConfigRow(SERVICE_HOTLINE_KEY, _serviceHotlineBackup)
   } catch (e) {
     console.warn(`[config] restore failed: ${e.message}`)
   }

@@ -52,8 +52,12 @@ require.cache[wxPath] = {
 const configPath = require.resolve('../utils/config')
 const mockConfig = {
   getMemberThreshold: vi.fn(async () => 1980),
+  getPointsToYuanRate: vi.fn(async () => 0.01),
+  getPointsDeductionMaxRate: vi.fn(async () => 0.03),
   invalidateCache: vi.fn(),
   FALLBACK_THRESHOLD: 1980,
+  FALLBACK_POINTS_TO_YUAN_RATE: 0.01,
+  FALLBACK_POINTS_DEDUCTION_MAX_RATE: 0.03,
 }
 require.cache[configPath] = {
   id: configPath,
@@ -124,6 +128,8 @@ beforeEach(() => {
   })
   mockCloud.callFunction.mockReset().mockResolvedValue({ result: { code: 'SUCCESS', message: '已处理' } })
   mockConfig.getMemberThreshold.mockReset().mockResolvedValue(1980)
+  mockConfig.getPointsToYuanRate.mockReset().mockResolvedValue(0.01)
+  mockConfig.getPointsDeductionMaxRate.mockReset().mockResolvedValue(0.03)
   mockConfig.invalidateCache.mockReset()
   mockLakalaClient.request.mockReset().mockResolvedValue({
     code: 'BBS00000', msg: '操作成功', resp_data: {}, expectedCode: 'BBS00000', ok: true,

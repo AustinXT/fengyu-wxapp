@@ -73,6 +73,7 @@ const mockSession = {
 const EMPTY_BENEFIT = {
   points: 0,
   couponTemplateIds: [],
+  couponQuantities: {},
   messageTitle: '',
   messageBody: '',
 }
@@ -97,12 +98,14 @@ describe('getSettings — 系统配置读取（不含权益）', () => {
     ;(db.execute as any).mockResolvedValue([
       { key: 'new_member_threshold', value: '3000' },
       { key: 'order_timeout', value: '15' },
+      { key: 'points_deduction_max_rate', value: '0.05' },
     ])
 
     const result = await getSettings()
 
     expect(result.newMemberThreshold).toBe('3000')
     expect(result.orderTimeout).toBe('15')
+    expect(result.pointsDeductionMaxRate).toBe('0.05')
   })
 
   it('DB 无记录 → 返回默认值', async () => {
@@ -115,6 +118,7 @@ describe('getSettings — 系统配置读取（不含权益）', () => {
     expect(result.visitPointsReward).toBe('20')
     expect(result.bannerImages).toEqual([])
     expect(result.fengyuguanImage).toBe('')
+    expect(result.pointsDeductionMaxRate).toBe('0.03')
   })
 
   it('返回对象不再包含 memberLevelBenefits 字段', async () => {
@@ -130,6 +134,7 @@ describe('getSettings — 系统配置读取（不含权益）', () => {
 
     expect(result.newMemberThreshold).toBe('1980')
     expect(result.orderTimeout).toBe('10')
+    expect(result.pointsDeductionMaxRate).toBe('0.03')
   })
 })
 
@@ -141,7 +146,7 @@ describe('saveSettings — 系统配置保存（不含权益）', () => {
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  it('正常保存 → 执行 CREATE TABLE + 5 次 UPSERT + banner_count 查询/保存 + 日志', async () => {
+  it('正常保存 → 执行 CREATE TABLE + 7 次 UPSERT + banner_count 查询/保存 + 日志', async () => {
     ;(db.execute as any).mockResolvedValue([])
 
     const result = await saveSettings({
@@ -150,12 +155,14 @@ describe('saveSettings — 系统配置保存（不含权益）', () => {
       visitPointsReward: '30',
       bannerImages: [],
       fengyuguanImage: '',
+      serviceHotline: '',
+      pointsDeductionMaxRate: '0.03',
     })
 
     expect(result.success).toBe(true)
     expect(result.message).toContain('保存成功')
-    // getSettings SELECT + CREATE TABLE + 5 UPSERT + SELECT banner_count + UPSERT banner_count = 9
-    expect(db.execute).toHaveBeenCalledTimes(9)
+    // getSettings SELECT + CREATE TABLE + 7 UPSERT + SELECT banner_count + UPSERT banner_count = 11
+    expect(db.execute).toHaveBeenCalledTimes(11)
     expect(logUpdate).toHaveBeenCalledWith(
       mockSession, 'system.saveConfig', 'system_config', 'all',
       expect.anything(), expect.objectContaining({ newMemberThreshold: '2000', visitPointsReward: '30' }),
@@ -171,6 +178,8 @@ describe('saveSettings — 系统配置保存（不含权益）', () => {
       visitPointsReward: '20',
       bannerImages: [],
       fengyuguanImage: '',
+      serviceHotline: '',
+      pointsDeductionMaxRate: '0.03',
     })
 
     expect(result.success).toBe(false)
@@ -186,6 +195,8 @@ describe('saveSettings — 系统配置保存（不含权益）', () => {
       visitPointsReward: '20',
       bannerImages: [],
       fengyuguanImage: 'https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la/images/fengyuguan.jpg',
+      serviceHotline: '',
+      pointsDeductionMaxRate: '0.03',
     })
 
     expect(result.success).toBe(true)
@@ -204,6 +215,8 @@ describe('saveSettings — 系统配置保存（不含权益）', () => {
       visitPointsReward: '20',
       bannerImages: [],
       fengyuguanImage: '',
+      serviceHotline: '',
+      pointsDeductionMaxRate: '0.03',
     })
 
     expect(result.success).toBe(true)
@@ -219,6 +232,8 @@ describe('saveSettings — 系统配置保存（不含权益）', () => {
       visitPointsReward: '20',
       bannerImages: [],
       fengyuguanImage: '',
+      serviceHotline: '',
+      pointsDeductionMaxRate: '0.03',
     })
 
     expect(result.success).toBe(true)
@@ -237,6 +252,8 @@ describe('saveSettings — 系统配置保存（不含权益）', () => {
       visitPointsReward: '20',
       bannerImages: [],
       fengyuguanImage: '',
+      serviceHotline: '',
+      pointsDeductionMaxRate: '0.03',
     })
 
     expect(result.success).toBe(true)
@@ -254,12 +271,13 @@ describe('saveSettings — 系统配置保存（不含权益）', () => {
       visitPointsReward: '20',
       bannerImages: [],
       fengyuguanImage: '',
+      serviceHotline: '',
+      pointsDeductionMaxRate: '0.03',
     })
 
     expect(result.success).toBe(true)
     expect(invalidateMemberThreshold).toHaveBeenCalledTimes(1)
   })
-
   it('到店积分不是非负整数 → 保存前拒绝且不写 DB', async () => {
     const result = await saveSettings({
       newMemberThreshold: '1980',
@@ -267,15 +285,56 @@ describe('saveSettings — 系统配置保存（不含权益）', () => {
       visitPointsReward: '1.5',
       bannerImages: [],
       fengyuguanImage: '',
+      serviceHotline: '',
+      pointsDeductionMaxRate: '0.03',
     })
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('非负整数')
     expect(db.execute).not.toHaveBeenCalled()
   })
-})
 
-// ── listActiveCouponTemplates ─────────────────────────────────────────────────
+  it('pointsDeductionMaxRate 变化（3%→5%）→ 广播 invalidateConfig（门槛不变也触发）', async () => {
+    ;(db.execute as any).mockResolvedValue([])
+
+    const result = await saveSettings({
+      newMemberThreshold: '1980',
+      orderTimeout: '10',
+      visitPointsReward: '20',
+      bannerImages: [],
+      fengyuguanImage: '',
+      serviceHotline: '',
+      pointsDeductionMaxRate: '0.05',
+    })
+
+    expect(result.success).toBe(true)
+    // 门槛未变 → 不清 admin 自身 member threshold 缓存
+    expect(invalidateMemberThreshold).not.toHaveBeenCalled()
+    // deduct rate 变化 → 广播清 clientApi 整个 utils/config 缓存（含 deduct rate 缓存）
+    expect(callClientFunction).toHaveBeenCalledWith('clientApi', {
+      action: 'config.invalidateConfig',
+    })
+  })
+
+  it('pointsDeductionMaxRate 非法值（>1）→ clamp 为 0.03，与默认相等故不广播', async () => {
+    ;(db.execute as any).mockResolvedValue([])
+
+    const result = await saveSettings({
+      newMemberThreshold: '1980',
+      orderTimeout: '10',
+      visitPointsReward: '20',
+      bannerImages: [],
+      fengyuguanImage: '',
+      serviceHotline: '',
+      pointsDeductionMaxRate: '1.5',
+    })
+
+    expect(result.success).toBe(true)
+    // clamp 后 = 默认 0.03 = oldSettings 默认值 → 视为未变化 → 不广播
+    // （若 clamp 未生效，'1.5' ≠ '0.03' 会触发广播，此断言即失败）
+    expect(callClientFunction).not.toHaveBeenCalled()
+  })
+})
 
 describe('listActiveCouponTemplates — 优惠券模板列表', () => {
   beforeEach(() => {
@@ -411,11 +470,11 @@ describe('saveMemberBenefits — 三组会员权益保存', () => {
     const result = await saveMemberBenefits({
       upgrade: {
         ...EMPTY_BENEFITS_MAP,
-        初钻: { points: -5, couponTemplateIds: ['', 'tpl-1', 'tpl-1'], messageTitle: '  a  ', messageBody: '' },
+        初钻: { points: -5, couponTemplateIds: ['', 'tpl-1', 'tpl-1'], couponQuantities: {}, messageTitle: '  a  ', messageBody: '' },
       },
       birthday: {
         ...EMPTY_BENEFITS_MAP,
-        星钻: { points: 10.9, couponTemplateIds: [], messageTitle: '', messageBody: '' },
+        星钻: { points: 10.9, couponTemplateIds: [], couponQuantities: {}, messageTitle: '', messageBody: '' },
       },
       thanksgiving: EMPTY_BENEFITS_MAP,
     })
@@ -427,6 +486,41 @@ describe('saveMemberBenefits — 三组会员权益保存', () => {
     expect(normalized.upgrade.初钻.couponTemplateIds).toEqual(['tpl-1'])
     expect(normalized.upgrade.初钻.messageTitle).toBe('a')
     expect(normalized.birthday.星钻.points).toBe(10)
+    // 旧配置无 couponQuantities → 每个选中模板缺省回退为 1
+    expect(normalized.upgrade.初钻.couponQuantities).toEqual({ 'tpl-1': 1 })
+  })
+
+  it('couponQuantities 规范化：负值/小数→1、>99→99、未勾选模板的残留被清理', async () => {
+    ;(db.execute as any).mockResolvedValue([])
+
+    await saveMemberBenefits({
+      upgrade: {
+        ...EMPTY_BENEFITS_MAP,
+        初钻: {
+          points: 0,
+          couponTemplateIds: ['tpl-1', 'tpl-2'],
+          // tpl-1 负值→1；tpl-2 小数 3.7→3；tpl-3 不在 couponTemplateIds → 残留被清理
+          couponQuantities: { 'tpl-1': -2, 'tpl-2': 3.7, 'tpl-3': 5 },
+          messageTitle: '',
+          messageBody: '',
+        },
+      },
+      birthday: EMPTY_BENEFITS_MAP,
+      thanksgiving: {
+        ...EMPTY_BENEFITS_MAP,
+        黑钻: {
+          points: 0,
+          couponTemplateIds: ['tpl-t'],
+          couponQuantities: { 'tpl-t': 150 }, // >99 → 99
+          messageTitle: '',
+          messageBody: '',
+        },
+      },
+    })
+
+    const normalized = (logUpdate as any).mock.calls[0][5] as any
+    expect(normalized.upgrade.初钻.couponQuantities).toEqual({ 'tpl-1': 1, 'tpl-2': 3 })
+    expect(normalized.thanksgiving.黑钻.couponQuantities).toEqual({ 'tpl-t': 99 })
   })
 
   it('DB 异常 → 返回失败消息', async () => {

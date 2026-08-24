@@ -73,6 +73,8 @@ const lines = [
   `LAKALA_ENV=${clientFn.LAKALA_ENV}`,
   `LAKALA_PRIVATE_KEY_PEM=${q(clientFn.LAKALA_PRIVATE_KEY_PEM)}`,
   `LAKALA_PLATFORM_CERT_PEM=${q(clientFn.LAKALA_PLATFORM_CERT_PEM)}`,
+  `LAKALA_SM4_KEY=${q(clientFn.LAKALA_SM4_KEY || '')}`,
+  'LAKALA_ONBOARDING_ENABLED=false',
   '',
   '# === 第三方 ===',
   `TMAP_KEY=${clientFn.TMAP_KEY}`,

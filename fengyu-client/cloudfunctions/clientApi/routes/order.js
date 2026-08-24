@@ -6,8 +6,8 @@
 const cloud = require('wx-server-sdk')
 const pg = require('../db/pg')
 const { requirePhone } = require('../middleware/auth')
-const { getMemberThreshold } = require('../utils/config')
-const { settlePointsSafe } = require('../utils/points')
+const { getMemberThreshold, getPointsToYuanRate, getPointsDeductionMaxRate } = require('../utils/config')
+const { settlePointsSafe, grantPointBatch, consumePointBatches } = require('../utils/points')
 const { recalcMemberLevel } = require('../utils/member-level')
 const { isMember, resolveUnitPrice } = require('../utils/member-pricing')
 const { recalcPaidSessionsForOrder } = require('../utils/paid-sessions')
@@ -16,6 +16,231 @@ const { getPerItemRefundedMap, getPerItemRefundedMapBatch, computeRefundAwareDir
 const lakalaClient = require('../utils/lakala-client')
 const lakalaConfig = require('../utils/lakala-config')
 const { shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
+
+function roundMoney(value) {
+  return Math.round((Number(value) || 0) * 100) / 100
+}
+
+async function loadInventoryCompositionSnapshots(client, items) {
+  const homeItems = [...new Map(
+    items.filter((item) => item.productType === '家居产品').map((item) => [item.skuId, item]),
+  ).values()]
+  if (homeItems.length === 0) return new Map()
+  const result = await client.query(
+    `SELECT mapping.product_sku_id, mapping.inventory_sku_id,
+            inventory.product_code, inventory.product_name, inventory.spec_name, inventory.is_active,
+            mapping.quantity_per_sale_unit
+       FROM inventory_sku_product_sku_mappings mapping
+       JOIN inventory_skus inventory ON inventory.sku_id = mapping.inventory_sku_id
+      WHERE mapping.is_active = TRUE
+        AND mapping.product_sku_id = ANY($1::text[])
+   ORDER BY inventory.product_name, inventory.product_code`,
+    [homeItems.map((item) => item.skuId)],
+  )
+  const snapshots = new Map()
+  const invalidProductSkuIds = new Set()
+  for (const row of result.rows) {
+    if (row.is_active === false) {
+      invalidProductSkuIds.add(row.product_sku_id)
+      continue
+    }
+    const snapshot = snapshots.get(row.product_sku_id) || { version: 1, components: [] }
+    snapshot.components.push({
+      inventorySkuId: row.inventory_sku_id,
+      productCode: row.product_code,
+      productName: row.product_name,
+      specName: row.spec_name,
+      quantityPerSaleUnit: Number(row.quantity_per_sale_unit),
+    })
+    snapshots.set(row.product_sku_id, snapshot)
+  }
+  const invalid = homeItems.find((item) => invalidProductSkuIds.has(item.skuId))
+  if (invalid) {
+    throw new Error(`INVALID_STATE: INVENTORY_COMPOSITION_INVALID: 商品「${invalid.productName || invalid.skuId}」的库存组成含停用商品`)
+  }
+  const missing = homeItems.find((item) => !snapshots.has(item.skuId))
+  if (missing) {
+    throw new Error(`INVALID_STATE: INVENTORY_COMPOSITION_MISSING: 商品「${missing.productName || missing.skuId}」尚未配置库存组成`)
+  }
+  return snapshots
+}
+
+function moneyToCents(value) {
+  return Math.max(0, Math.round((Number(value) || 0) * 100))
+}
+
+function pointsToDiscountCents(points, rate) {
+  return Math.floor(points * rate * 100 + 1e-6)
+}
+
+function computePointsDeduction({
+  usePoints,
+  requestedPoints,
+  pointsBalance,
+  rawTotal,
+  currentAmount,
+  pointsToYuanRate,
+  pointsDeductionMaxRate,
+}) {
+  const explicit = requestedPoints !== undefined && requestedPoints !== null
+  const enabled = usePoints === true || (explicit && Number(requestedPoints) > 0)
+  if (!enabled) return { pointsUsed: 0, pointsDiscount: 0 }
+
+  const balance = Math.floor(Number(pointsBalance) || 0)
+  const rate = Number(pointsToYuanRate) || 0
+  const maxRate = Number(pointsDeductionMaxRate) || 0
+  const capCents = Math.min(
+    Math.floor(Math.max(0, Number(rawTotal) || 0) * maxRate * 100 + 1e-6),
+    moneyToCents(currentAmount),
+  )
+  if (balance <= 0 || rate <= 0 || maxRate <= 0 || capCents <= 0) {
+    if (explicit && Number(requestedPoints) > 0) {
+      throw new Error('INSUFFICIENT_BALANCE: 积分余额不足或当前订单不可抵扣')
+    }
+    return { pointsUsed: 0, pointsDiscount: 0 }
+  }
+
+  if (explicit) {
+    const points = Number(requestedPoints)
+    if (!Number.isInteger(points) || points < 0) {
+      throw new Error('INVALID_PARAMS: 积分抵扣数量必须为非负整数')
+    }
+    if (points === 0) return { pointsUsed: 0, pointsDiscount: 0 }
+    if (points > balance) {
+      throw new Error('INSUFFICIENT_BALANCE: 积分余额不足')
+    }
+    const discountCents = pointsToDiscountCents(points, rate)
+    if (discountCents <= 0) {
+      throw new Error('INVALID_PARAMS: 积分抵扣金额过小')
+    }
+    if (discountCents > capCents) {
+      throw new Error('INVALID_PARAMS: 积分抵扣金额超过本单上限')
+    }
+    return { pointsUsed: points, pointsDiscount: discountCents / 100 }
+  }
+
+  const centsPerPoint = rate * 100
+  const maxPointsByCap = Math.floor(capCents / centsPerPoint)
+  const pointsUsed = Math.max(0, Math.min(balance, maxPointsByCap))
+  const discountCents = Math.min(capCents, pointsToDiscountCents(pointsUsed, rate))
+  return discountCents > 0
+    ? { pointsUsed, pointsDiscount: discountCents / 100 }
+    : { pointsUsed: 0, pointsDiscount: 0 }
+}
+
+function applyOrderLevelDiscountToItems(items, discountAmount) {
+  const discountCents = moneyToCents(discountAmount)
+  if (!discountCents || !items.length) return
+
+  const totalCents = items.reduce((sum, item) => sum + moneyToCents(item.saleAmount), 0)
+  if (!totalCents) return
+
+  let distributedCents = 0
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]
+    const baseCents = moneyToCents(item.saleAmount)
+    const shareCents = i === items.length - 1
+      ? discountCents - distributedCents
+      : Math.min(baseCents, Math.round(discountCents * (baseCents / totalCents)))
+    distributedCents += shareCents
+
+    const saleCents = Math.max(0, baseCents - shareCents)
+    item.saleAmount = saleCents / 100
+    item.received = Math.min(moneyToCents(item.received), saleCents) / 100
+
+    const denom = (item.sessionCount != null && item.sessionCount > 0) ? item.sessionCount : (item.quantity || 1)
+    const listTotalRow = roundMoney(Number(item.listUnit || 0) * (item.quantity || 1))
+    item.unitRealPrice = denom > 0 ? roundMoney(item.saleAmount / denom) : item.saleAmount
+    item.unitPrice = denom > 0 ? roundMoney(listTotalRow / denom) : listTotalRow
+  }
+}
+
+async function getAvailablePointsBalance(client, userId) {
+  const res = await client.query(
+    `SELECT COALESCE(SUM(remaining_amount), 0)::bigint AS balance
+       FROM (
+         SELECT remaining_amount
+           FROM point_batches
+          WHERE user_id = $1
+            AND remaining_amount > 0
+            AND expire_at > NOW()
+          FOR UPDATE
+       ) locked_batches`,
+    [userId],
+  )
+  return Number(res.rows?.[0]?.balance || 0)
+}
+
+async function recomputePointsBalance(client, userId) {
+  await client.query(
+    `UPDATE client_wechat_users c
+        SET points_balance = COALESCE((
+              SELECT SUM(pb.remaining_amount)
+                FROM point_batches pb
+               WHERE pb.user_id = c.user_id
+                 AND pb.expire_at > NOW()
+            ), 0),
+            points_updated_at = NOW()
+      WHERE c.user_id = $1`,
+    [userId],
+  )
+}
+
+async function deductPointsAtCreation(client, { saleOrderId, userId, pointsUsed }) {
+  if (!pointsUsed || pointsUsed <= 0) return
+  // 积分相关锁序固定为 point_batches -> client_wechat_users，与过期任务一致。
+  const available = await getAvailablePointsBalance(client, userId)
+  if (available < pointsUsed) {
+    throw new Error('INSUFFICIENT_BALANCE: 积分余额不足')
+  }
+  await client.query('SELECT user_id FROM client_wechat_users WHERE user_id = $1 FOR UPDATE', [userId])
+  const inserted = await client.query(
+    `INSERT INTO point_transactions (user_id, type, amount, ref_order_id, external_ref, created_at)
+     VALUES ($1, '消费抵扣', $2, $3, $4, NOW())
+     ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING
+     RETURNING id`,
+    [userId, -pointsUsed, saleOrderId, `points-deduct-${saleOrderId}`],
+  )
+  if (inserted.rows?.[0]?.id) {
+    await consumePointBatches(client, { userId, amount: -pointsUsed, refOrderId: saleOrderId })
+    await recomputePointsBalance(client, userId)
+  }
+}
+
+async function releasePointsDeduction(client, { saleOrderId, userId, pointsUsed = 0 }) {
+  if (!saleOrderId || !userId || Number(pointsUsed || 0) <= 0) return
+  await client.query('SELECT user_id FROM client_wechat_users WHERE user_id = $1 FOR UPDATE', [userId])
+  const rows = await client.query(
+    `SELECT
+       COALESCE(SUM(CASE WHEN type = '消费抵扣' THEN -amount ELSE 0 END), 0)::bigint AS deducted,
+       COALESCE(SUM(CASE WHEN type = '消费抵扣退回' THEN amount ELSE 0 END), 0)::bigint AS returned
+     FROM point_transactions
+     WHERE ref_order_id = $1 AND user_id = $2
+       AND type IN ('消费抵扣','消费抵扣退回')`,
+    [saleOrderId, userId],
+  )
+  const pointsToRelease = Number(rows.rows?.[0]?.deducted || 0) - Number(rows.rows?.[0]?.returned || 0)
+  if (pointsToRelease <= 0) return
+
+  const inserted = await client.query(
+    `INSERT INTO point_transactions (user_id, type, amount, ref_order_id, external_ref, created_at)
+     VALUES ($1, '消费抵扣退回', $2, $3, $4, NOW())
+     ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING
+     RETURNING id`,
+    [userId, pointsToRelease, saleOrderId, `points-deduct-rev-${saleOrderId}`],
+  )
+  const pointTransactionId = Number(inserted.rows?.[0]?.id || 0)
+  if (pointTransactionId) {
+    await grantPointBatch(client, {
+      userId,
+      pointTransactionId,
+      type: '消费抵扣退回',
+      amount: pointsToRelease,
+      refOrderId: saleOrderId,
+    })
+    await recomputePointsBalance(client, userId)
+  }
+}
 
 /**
  * 重算顾客消费档位（spending_tier，净额口径）—— clientApi 独立副本，镜像 staffApi
@@ -592,6 +817,17 @@ async function createLakalaAlipayShareCode({
  */
 async function closeExpiredOrder(orderNo) {
   return await pg.transaction(async (client) => {
+    const orderRows = await client.query(
+      `SELECT client_user_id, points_used
+         FROM sale_orders
+        WHERE sale_order_id = $1
+          AND status = '待支付'
+          AND opened_by IS NULL
+        FOR UPDATE`,
+      [orderNo],
+    )
+    if (orderRows.rows.length === 0) return false
+
     const result = await client.query(
       `UPDATE sale_orders
        SET status = '已关闭',
@@ -614,6 +850,11 @@ async function closeExpiredOrder(orderNo) {
          WHERE used_sale_order_id = $1`,
         [orderNo]
       )
+      await releasePointsDeduction(client, {
+        saleOrderId: orderNo,
+        userId: orderRows.rows[0].client_user_id,
+        pointsUsed: orderRows.rows[0].points_used,
+      })
       return true
     }
     return false
@@ -878,7 +1119,9 @@ async function scanDetail(ctx) {
       firstPaymentAmount,
       isExperienceConversion: order.is_experience_conversion === true,
       paymentMethod: order.payment_method || '微信',
-      couponDiscount: Number(order.coupon_discount || 0)
+      couponDiscount: Number(order.coupon_discount || 0),
+      pointsUsed: Number(order.points_used || 0),
+      pointsDiscount: Number(order.points_discount || 0)
     },
     items: items.map(i => ({
       saleItemId: i.sale_item_id,
@@ -923,7 +1166,9 @@ async function create(ctx) {
     orderType: orderTypeParam, // 可选, 'promo' | undefined
     couponId: inputCouponId, // 可选, 优惠券ID
     useCard, // 可选, 是否使用储值卡抵扣
-    prepaidCardAmount: inputPrepaidCardAmount // 可选, 前端传的抵扣金额
+    prepaidCardAmount: inputPrepaidCardAmount, // 可选, 前端传的抵扣金额
+    usePoints, // 可选, 是否使用积分抵扣
+    pointsUsed: inputPointsUsed // 可选, 前端传的积分抵扣数量
   } = payload
 
   // J3 (B9 ticket follow-up): 拒绝数组形式 couponId — 一张订单仅支持 1 张优惠券
@@ -1064,7 +1309,6 @@ async function create(ctx) {
       isExperience: !!sku.is_experience
     }
   })
-
   // B2：疗程卡 quantity>1 必须按"每张卡"拆成 N 行 sale_items。
   // 前端购物车继续按 SKU 合并 quantity；后端落库保持每张卡独立，避免 5 次卡 ×2 变成 1 张 10 次卡。
   const itemsData = []
@@ -1105,6 +1349,7 @@ async function create(ctx) {
     }
   }
   totalAmount = Math.round(itemsData.reduce((s, d) => s + d.saleAmount, 0) * 100) / 100
+  const rawTotalBeforeDeductions = totalAmount
 
   // 充值卡剥离 SKU 化（2026-05-20）后，order.create 不会有充值卡 SKU 入参，
   // D4 混单守卫已无意义（migration 0043 同步拆触发器）。
@@ -1248,6 +1493,31 @@ async function create(ctx) {
     totalAmount = Math.round(totalAmount * 100) / 100
   }
 
+  let pointsUsed = 0
+  let pointsDiscount = 0
+  if (usePoints || inputPointsUsed != null) {
+    const [pointsToYuanRate, pointsDeductionMaxRate, pointsRows] = await Promise.all([
+      getPointsToYuanRate(),
+      getPointsDeductionMaxRate(),
+      pg.query('SELECT points_balance FROM client_wechat_users WHERE user_id = $1', [userId]),
+    ])
+    const deduction = computePointsDeduction({
+      usePoints,
+      requestedPoints: inputPointsUsed,
+      pointsBalance: pointsRows[0]?.points_balance,
+      rawTotal: rawTotalBeforeDeductions,
+      currentAmount: totalAmount,
+      pointsToYuanRate,
+      pointsDeductionMaxRate,
+    })
+    pointsUsed = deduction.pointsUsed
+    pointsDiscount = deduction.pointsDiscount
+    if (pointsDiscount > 0) {
+      applyOrderLevelDiscountToItems(itemsData, pointsDiscount)
+      totalAmount = roundMoney(itemsData.reduce((sum, d) => sum + d.saleAmount, 0))
+    }
+  }
+
   // document_type 仅按下单时会员身份判（售前=非会员客，售后=会员客），已在定价前查 customer_type 时定值；
   // 「成为会员那一单」下单时仍非会员客 → 售前，不再按金额阈值兜底升级为售后。
 
@@ -1368,14 +1638,14 @@ async function create(ctx) {
         sale_order_id, status, sale_order_type, document_type, market_name, store_id, store_name,
         sale_order_datetime, client_user_id, client_phone, customer_name,
         total_amount, prepaid_card_amount, pending_prepaid_card_amount, received, payable_amount, payment_method,
-        preferred_employee_id, coupon_id, coupon_discount,
+        preferred_employee_id, coupon_id, coupon_discount, points_used, points_discount,
         paid_at, created_at, updated_at
-      ) VALUES ($1, $2, '销售单', $3, $4, $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $6, $6)`,
+      ) VALUES ($1, $2, '销售单', $3, $4, $5, (SELECT store_name FROM stores WHERE store_id = $5), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $6, $6)`,
       [
         orderNo, initialStatus, documentType, marketName, storeId, now, userId,
         ctx.auth.phone || null, customerName,
         totalAmount, initialSettledPrepaid, initialPendingPrepaid, initialReceived, paidAmount, effectivePaymentMethod,
-        preferredStaffWfId || null, inputCouponId || null, couponDiscount,
+        preferredStaffWfId || null, inputCouponId || null, couponDiscount, pointsUsed, pointsDiscount,
         zeroPayable ? now : null
       ]
     )
@@ -1395,7 +1665,12 @@ async function create(ctx) {
       }
     }
 
-    // 创建订单明细（流水号递增）
+    if (pointsUsed > 0) {
+      await deductPointsAtCreation(client, { saleOrderId: orderNo, userId, pointsUsed })
+    }
+
+    // 创建订单明细（流水号递增）。家居产品在建单时冻结库存组成；未配置则整单回滚。
+    const compositionSnapshots = await loadInventoryCompositionSnapshots(client, itemsData)
     for (let i = 0; i < itemsData.length; i++) {
       const saleItemId = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
       const d = itemsData[i]
@@ -1408,14 +1683,16 @@ async function create(ctx) {
           product_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price,
-          sale_amount, received, pending_received, sales_category, is_experience
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, '0', $13, $14, $15)`,
+          sale_amount, received, pending_received, sales_category, is_experience,
+          inventory_composition_snapshot
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, '0', $13, $14, $15, $16::jsonb)`,
         [
           saleItemId, orderNo, storeId, d.skuId,
           d.productName, d.productType,
           d.sessionCount, d.remainingSessions,
           d.unitPrice, d.quantity, d.unitRealPrice,
-          d.saleAmount, d.received, d.salesCategory || null, d.isExperience
+          d.saleAmount, d.received, d.salesCategory || null, d.isExperience,
+          compositionSnapshots.has(d.skuId) ? JSON.stringify(compositionSnapshots.get(d.skuId)) : null,
         ]
       )
     }
@@ -1487,6 +1764,8 @@ async function create(ctx) {
       orderNo,
       saleOrderId: orderNo,
       totalAmount,
+      pointsUsed,
+      pointsDiscount,
       prepaidCardAmount: finalPrepaidCardAmount,
       pendingPrepaidCardAmount: 0,
       paidAmount: finalPaidAmount,
@@ -1494,7 +1773,7 @@ async function create(ctx) {
       status: '已支付',
       // 卡全额抵扣保留 'prepaid_card_full'（前端老逻辑判定）；券全额抵扣用 'coupon_full'。
       // 两者前端处理一致（跳详情、不唤起支付），reason 仅供文案/埋点区分。
-      reason: finalPrepaidCardAmount > 0 ? 'prepaid_card_full' : 'coupon_full',
+      reason: finalPrepaidCardAmount > 0 ? 'prepaid_card_full' : (pointsDiscount > 0 ? 'points_full' : 'coupon_full'),
       paymentParams: null,
     }
     return
@@ -1504,6 +1783,8 @@ async function create(ctx) {
     orderNo,
     saleOrderId: orderNo,
     totalAmount,
+    pointsUsed,
+    pointsDiscount,
     prepaidCardAmount: 0,
     pendingPrepaidCardAmount: finalPrepaidCardAmount,
     paidAmount: finalPaidAmount,
@@ -1572,7 +1853,10 @@ async function pay(ctx) {
     ctx.result = {
       orderNo,
       status: '已支付',
-      reason: 'prepaid_card_full',
+      reason: Number(preflightOrder.prepaid_card_amount || 0) > 0
+        || Number(preflightOrder.pending_prepaid_card_amount || 0) > 0
+        ? 'prepaid_card_full'
+        : (Number(preflightOrder.points_used || 0) > 0 ? 'points_full' : 'coupon_full'),
       paymentParams: null,
     }
     return
@@ -1663,7 +1947,7 @@ async function offlinePay(ctx) {
     ctx.result = {
       orderNo,
       status: '已支付',
-      reason: 'prepaid_card_full',
+      reason: prepaidCardAmountOff > 0 ? 'prepaid_card_full' : (Number(order.points_used || 0) > 0 ? 'points_full' : 'coupon_full'),
     }
     return
   }
@@ -1973,12 +2257,13 @@ async function cancel(ctx) {
   // 2026-04-26 sale-order-domain-refactor:
   //   - paid_amount 已删除 → 全额抵扣判定改为 payable_amount=0（即 total = prepaid_card_amount）
   const prepaidCardAmount = Number(order.prepaid_card_amount || 0)
+  const pointsUsedCnl = Number(order.points_used || 0)
   const pendingPrepaidCardAmount = Number(order.pending_prepaid_card_amount || 0)
   const totalAmountCnl = Number(order.total_amount || 0)
   const payableAmountCnl = Number(order.payable_amount || 0) > 0
     ? Number(order.payable_amount)
     : Math.round((totalAmountCnl - prepaidCardAmount - pendingPrepaidCardAmount) * 100) / 100
-  const isPrepaidFull = prepaidCardAmount > 0 && payableAmountCnl === 0
+  const isPrepaidFull = (prepaidCardAmount > 0 || pointsUsedCnl > 0) && payableAmountCnl === 0
   const cancelableStatuses = ['待支付']
   if (isPrepaidFull && order.status === '已支付') {
     // 全额抵扣单顾客确认立刻取消：允许回冲
@@ -2029,6 +2314,7 @@ async function cancel(ctx) {
        WHERE used_sale_order_id = $1`,
       [orderNo]
     )
+    await releasePointsDeduction(client, { saleOrderId: orderNo, userId, pointsUsed: pointsUsedCnl })
 
     // 若已扣过卡：反向 INSERT 充值流水 + UPDATE prepaid_cards balance 回冲
     if (hasDeducted) {

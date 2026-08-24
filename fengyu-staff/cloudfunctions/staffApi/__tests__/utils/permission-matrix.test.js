@@ -21,6 +21,8 @@ function getAdminDefaultDashboardRoles() {
   const roles = ['admin', 'manager', 'finance', 'hr', 'product', 'customer_mgr', 'staff']
 
   return roles.filter((role) => {
+    // admin 通过 [...ALL_ACTIONS] 动态持有目录中的全部动作，源码块里不会重复出现字面量。
+    if (role === 'admin' && /admin:\s*\[\.\.\.ALL_ACTIONS\]/.test(source)) return true
     const block = source.match(new RegExp(`^  ${role}: \\[([\\s\\S]*?)\\],`, 'm'))
     if (!block) {
       throw new Error(`未能解析 admin DEFAULT_PERMISSION_MATRIX.${role}`)

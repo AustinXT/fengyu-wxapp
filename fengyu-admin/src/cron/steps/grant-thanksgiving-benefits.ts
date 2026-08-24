@@ -10,7 +10,8 @@
  * 幂等键：
  *   消息 idempotency_key  = `thx-msg-${YYYY-MM}-${userId}`
  *   积分 external_ref     = `thx-pts-${YYYY-MM}-${userId}`
- *   优惠券 coupon_id      = `thx-${YYYY-MM}-${userId}-${templateId}`
+ *   优惠券 coupon_id      = 第 1 张沿用 `thx-${YYYY-MM}-${userId}-${templateId}`；
+ *                            第 2..N 张为 `thx-${YYYY-MM}-${userId}-${templateId}-${i}`
  */
 
 import { sql } from 'drizzle-orm'
@@ -18,12 +19,16 @@ import type { Db } from '../run'
 import { loadJsonConfig } from '../lib/benefits-loader'
 import { type CronContext, dateSqlOf, nowOf } from '../lib/cron-context'
 import { beijingTs } from '@/lib/db-time'
+import { clampCouponQuantity } from '@/lib/coupon-quantity'
+import { grantPointBatch } from '@/lib/points-batches'
 
 interface BenefitItem {
   messageTitle?: string
   messageBody?: string
   points?: number
   couponTemplateIds?: string[]
+  /** 每个模板的发放数量（缺省=1）；由 admin 配置 normalizeBenefits 保证 [1,99] */
+  couponQuantities?: Record<string, number>
 }
 type ThanksgivingConfig = Record<string, BenefitItem>
 
@@ -101,6 +106,12 @@ export async function grantThanksgivingBenefits(
             couponTemplateCount: Array.isArray(cfg.couponTemplateIds)
               ? cfg.couponTemplateIds.length
               : 0,
+            couponTotalQuantity: Array.isArray(cfg.couponTemplateIds)
+              ? cfg.couponTemplateIds.reduce(
+                  (s, id) => s + clampCouponQuantity(cfg.couponQuantities?.[id]),
+                  0,
+                )
+              : 0,
             messageTitle: cfg.messageTitle || null,
           },
         })
@@ -141,7 +152,7 @@ async function grantOneThanksgiving(
     `)
   }
 
-  // 2) 积分
+  // 2) 积分（仅当流水成功插入才生成批次并重算余额）
   if (config.points && config.points > 0) {
     const externalRef = `thx-pts-${yearMonth}-${userId}`
     const inserted = (await tx.execute(sql`
@@ -152,11 +163,23 @@ async function grantOneThanksgiving(
       RETURNING id
     `)) as Array<{ id: number }>
     if (inserted.length > 0) {
+      await grantPointBatch(tx, {
+        userId,
+        pointTransactionId: Number(inserted[0].id),
+        type: '感恩回馈',
+        amount: config.points,
+        refOrderId: null,
+      })
       await tx.execute(sql`
-        UPDATE client_wechat_users
-           SET points_balance = points_balance + ${config.points},
+        UPDATE client_wechat_users c
+           SET points_balance = COALESCE((
+                 SELECT SUM(pb.remaining_amount)
+                 FROM point_batches pb
+                 WHERE pb.user_id = c.user_id
+                   AND pb.expire_at > NOW()
+               ), 0),
                points_updated_at = NOW()
-         WHERE user_id = ${userId}
+         WHERE c.user_id = ${userId}
       `)
     }
   }
@@ -175,15 +198,20 @@ async function grantOneThanksgiving(
         continue
       }
 
-      const expireAt = new Date(nowOf(ctx).getTime() + 10 * 86400000)
-      const couponId = `thx-${yearMonth}-${userId}-${templateId}`
-      const externalRef = couponId  // 双写 external_ref：DB 层 uq_user_coupons_external_ref 兜底
-      await tx.execute(sql`
-        INSERT INTO user_coupons
-          (coupon_id, template_id, user_id, status, expire_at, external_ref, created_at)
-        VALUES (${couponId}, ${templateId}, ${userId}, '未使用', ${beijingTs(expireAt)}, ${externalRef}, NOW())
-        ON CONFLICT (coupon_id) DO NOTHING
-      `)
+      const expireTs = beijingTs(new Date(nowOf(ctx).getTime() + 10 * 86400000))
+      // 第 1 张沿用历史 key，保证补跑命中旧幂等记录；第 2..N 张追加序号。
+      const qty = clampCouponQuantity(config.couponQuantities?.[templateId])
+      const baseCouponId = `thx-${yearMonth}-${userId}-${templateId}`
+      for (let i = 1; i <= qty; i++) {
+        const couponId = i === 1 ? baseCouponId : `${baseCouponId}-${i}`
+        const externalRef = couponId // 双写 external_ref：DB 层 uq_user_coupons_external_ref 兜底
+        await tx.execute(sql`
+          INSERT INTO user_coupons
+            (coupon_id, template_id, user_id, status, expire_at, external_ref, created_at)
+          VALUES (${couponId}, ${templateId}, ${userId}, '未使用', ${expireTs}, ${externalRef}, NOW())
+          ON CONFLICT (coupon_id) DO NOTHING
+        `)
+      }
     }
   }
 }

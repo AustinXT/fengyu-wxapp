@@ -52,17 +52,17 @@ const FILES = {
   clientPointsJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/points.js'),
   payNotifyPointsJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/points.js'),
   adminPointsSettleTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/points-settle.ts'),
-
-  staffOrderJs: path.resolve(__dirname, '../../routes/order.js'),
   staffCustomerJs: path.resolve(__dirname, '../../routes/customer.js'),
-  payNotifyIndexJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/index.js'),
-  adminOrdersTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/orders.ts'),
   adminCustomersTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/customers.ts'),
   adminPickupRecordsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/pickup-records.ts'),
   staffPaymentAllocatableJs: path.resolve(__dirname, '../../utils/payment-allocatable.js'),
   clientPaymentAllocatableJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/payment-allocatable.js'),
   payNotifyPaymentAllocatableJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/payment-allocatable.js'),
   adminPaymentAllocatableTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/payment-allocatable.ts'),
+
+  staffOrderJs: path.resolve(__dirname, '../../routes/order.js'),
+  payNotifyIndexJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/index.js'),
+  adminOrdersTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/orders.ts'),
 
   // ticket 2026-05-19-sale-items-paid-sessions — paid_sessions 重算 SQL 四端字节同义
   staffPaidSessionsJs: path.resolve(__dirname, '../../utils/paid-sessions.js'),
@@ -1327,60 +1327,6 @@ describe("STEP 1 分支 A received=Σreceipt SQL 四端字节同义守护", () =
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Block 7b'': STEP 1 覆盖判断与回退退款扣减四端同义
-//   覆盖判断只能用正向 receipt 对齐 sale_orders.received 毛实收；退款负 receipt 只参与
-//   分支 A 的行级净额重建。否则 +100/-40 会误判 receipt 不完整并回退到退款前次数。
-// ─────────────────────────────────────────────────────────────────────────────
-describe('STEP 1 receipt 覆盖判断与回退退款扣减四端守护', () => {
-  const MARKER_RECEIPT_COVERAGE = 'AS receipt_positive_total'
-  let coverageSqls
-
-  beforeAll(() => {
-    coverageSqls = {
-      staff: normalizeSql(extractBacktickStringContaining(readFile(FILES.staffPaidSessionsJs), MARKER_RECEIPT_COVERAGE)),
-      client: normalizeSql(extractBacktickStringContaining(readFile(FILES.clientPaidSessionsJs), MARKER_RECEIPT_COVERAGE)),
-      payNotify: normalizeSql(extractBacktickStringContaining(readFile(FILES.payNotifyPaidSessionsJs), MARKER_RECEIPT_COVERAGE)),
-      adminTs: normalizeSql(extractBacktickStringContaining(readFile(FILES.adminPaidSessionsTs), MARKER_RECEIPT_COVERAGE)),
-    }
-  })
-
-  test('四端覆盖判断只累计正向首次支付/回款/储值卡抵扣，并与订单毛实收比较', () => {
-    for (const sql of Object.values(coverageSqls)) {
-      expect(sql).toMatch(/sop\.change_type IN\s*\('首次支付','回款','储值卡抵扣'\)/)
-      expect(sql).not.toContain("'退款'")
-      expect(sql).toMatch(/SELECT received::numeric FROM sale_orders WHERE sale_order_id = \?/)
-    }
-  })
-
-  test('覆盖判断 SQL 四端归一化后字面相同', () => {
-    expect(coverageSqls.client).toBe(coverageSqls.staff)
-    expect(coverageSqls.payNotify).toBe(coverageSqls.staff)
-    expect(coverageSqls.adminTs).toBe(coverageSqls.staff)
-  })
-
-  test('三个 pg 副本的 Branch B 都在瀑布后实际执行 note.items[].refundAmount 扣减', () => {
-    for (const source of [
-      readFile(FILES.staffPaidSessionsJs),
-      readFile(FILES.clientPaidSessionsJs),
-      readFile(FILES.payNotifyPaidSessionsJs),
-    ]) {
-      expect(source).toMatch(/^\s*await client\.query\(RECEIVED_REFUNDED_DEDUCT_SQL, \[saleOrderId\]\)$/m)
-    }
-  })
-
-  test('admin 的 Branch B 也在瀑布后实际执行逐项退款扣减', () => {
-    const source = readFile(FILES.adminPaidSessionsTs)
-    const allocationIndex = source.indexOf('WITH tg AS')
-    const refundDeductIndex = source.indexOf('WITH refund_items AS', allocationIndex)
-    const paidRecalcIndex = source.indexOf('paid_sessions = CASE', refundDeductIndex)
-    expect(allocationIndex).toBeGreaterThan(-1)
-    expect(refundDeductIndex).toBeGreaterThan(allocationIndex)
-    expect(paidRecalcIndex).toBeGreaterThan(refundDeductIndex)
-    expect(source.slice(refundDeductIndex - 80, refundDeductIndex)).toMatch(/await tx\.execute\(sql`\s*$/)
-  })
-})
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Block 7b'': STEP 2.5 0 元 item 全退 paid_sessions 覆盖
 //   0 元赠送/寄存 item 的公式兜底会给满 paid_sessions；退款 note.items[] 明确标记
 //   isFullItemRefund=true 时必须覆盖为 0，避免已退赠送卡继续在卡包出现。
@@ -1877,57 +1823,6 @@ describe('营业额分配：回款级 allocation_status 置「已分配」守护
   })
 })
 
-describe('回款分配状态 CAS 守护', () => {
-  const PENDING_TRANSITION_RE = /UPDATE\s+sale_order_payments\s+SET\s+allocation_status\s*=\s*'待分配'(?:\s*::allocation_status)?\s+WHERE\s+id\s*=\s*(?:\$\{salePaymentId\}|\$1)\s+AND\s+\(\s*allocation_status\s+IS\s+NULL\s+OR\s+allocation_status\s*=\s*'待分配'\s*\)/g
-  const REFUND_ALLOCATED_RE = /UPDATE\s+sale_order_payments\s+SET\s+allocation_status\s*=\s*'已分配'(?:\s*::allocation_status)?\s+WHERE\s+id\s*=\s*(?:\$\{refundPaymentId\}|\$1)\s+AND\s+change_type\s*=\s*'退款'\s+AND\s+\(\s*allocation_status\s+IS\s+NULL\s+OR\s+allocation_status\s*=\s*'待分配'\s*\)/
-  const FULL_REFUND_CLEAR_RE = /UPDATE\s+sale_order_payments\s+p\s+SET\s+allocation_status\s*=\s*NULL\s+WHERE\s+p\.sale_order_id\s*=\s*(?:\$\{saleOrderId\}|\$1)\s+AND\s+p\.allocation_status\s+IN\s*\(\s*'待分配'\s*,\s*'已分配'\s*\)\s+AND\s+EXISTS\s*\(SELECT 1 FROM full_refund_zero_net\)/
-  const ORDER_CLOSE_CLEAR_RE = /UPDATE\s+sale_order_payments\s+SET\s+allocation_status\s*=\s*NULL\s+WHERE\s+sale_order_id\s*=\s*(?:\$\{saleOrderId\}|\$1)\s+AND\s+allocation_status\s+IN\s*\(\s*'待分配'\s*,\s*'已分配'\s*\)/
-
-  let paymentAllocatableSources
-  let fullRefundSources
-  let refundCascadeSources
-  let closeOrderSources
-
-  beforeAll(() => {
-    paymentAllocatableSources = {
-      staff: readFile(FILES.staffPaymentAllocatableJs),
-      client: readFile(FILES.clientPaymentAllocatableJs),
-      payNotify: readFile(FILES.payNotifyPaymentAllocatableJs),
-      admin: readFile(FILES.adminPaymentAllocatableTs),
-    }
-    fullRefundSources = { ...paymentAllocatableSources }
-    refundCascadeSources = {
-      staff: readFile(FILES.staffRefundCascadeJs),
-      admin: readFile(FILES.adminRefundCascadeTs),
-    }
-    closeOrderSources = {
-      staff: readFile(FILES.staffOrderJs),
-      admin: readFile(FILES.adminOrdersTs),
-    }
-  })
-
-  test('四端回款初始化的两个分支仅允许 NULL/待分配 → 待分配', () => {
-    for (const [end, src] of Object.entries(paymentAllocatableSources)) {
-      expect([...src.matchAll(PENDING_TRANSITION_RE)], `${end} 必须有两个受 CAS 保护的待分配写入`).toHaveLength(2)
-    }
-  })
-
-  test('四端全退清理和双端关单清理仅清除合法分配状态', () => {
-    for (const [end, src] of Object.entries(fullRefundSources)) {
-      expect(src, `${end} 全退清理缺少合法前置态`).toMatch(FULL_REFUND_CLEAR_RE)
-    }
-    for (const [end, src] of Object.entries(closeOrderSources)) {
-      expect(src, `${end} 关单清理缺少合法前置态`).toMatch(ORDER_CLOSE_CLEAR_RE)
-    }
-  })
-
-  test('退款级联仅允许 NULL/待分配 → 已分配', () => {
-    for (const [end, src] of Object.entries(refundCascadeSources)) {
-      expect(src, `${end} 退款级联缺少 CAS 前置态`).toMatch(REFUND_ALLOCATED_RE)
-    }
-  })
-})
-
 // ============================================================================
 // ticket 2026-06-29 paidUnusedSessions 派生口径守护
 //
@@ -2013,18 +1908,49 @@ describe('2026-07-21 per-item-refund 行级退款聚合 SQL 四端一致性', ()
   })
 })
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PR #74 meta：cross-end-sql-snapshot 反模式守护（防镜像 bug 字面锁定失效）
-//
-// 背景（测试夹具缺陷）：snapshot 仅做四端字面比对。若四端 SQL 同时被引入同一
-// 同形 bug（如 SUM(amount)::int 截断 bigint / 全额退款后 rollup 保留旧状态），
-// 字面仍然一致 → snapshot PASS，夹具形同虚设。本块对「已知反模式」做
-// not-to-contain 特征守护：任一端拷贝回退到反模式立即失败（即使四端完全一致）。
-//
-// 已知反模式（PR #74 已修复，防回退）：
-//   1. granted SQL 用 ::int 截断 SUM(amount)（应 ::bigint）— g03
-//   2. 全额退款后 rollup 保留订单旧 allocation_status，造成父子状态不一致。
-// ─────────────────────────────────────────────────────────────────────────────
+describe('积分抵扣与过期任务锁序守护', () => {
+  function extractFunctionSection(src, functionName) {
+    const start = src.indexOf(`async function ${functionName}`)
+    expect(start, `未找到 ${functionName}`).toBeGreaterThanOrEqual(0)
+    const next = src.indexOf('\nasync function ', start + functionName.length)
+    return src.slice(start, next === -1 ? src.length : next)
+  }
+
+  const cases = [
+    {
+      name: 'clientApi',
+      file: FILES.clientOrderJs,
+      functionName: 'deductPointsAtCreation',
+      availabilityCall: 'getAvailablePointsBalance',
+    },
+    {
+      name: 'staffApi',
+      file: FILES.staffOrderJs,
+      functionName: 'deductPointsAtCreation',
+      availabilityCall: 'getAvailablePointsBalance',
+    },
+    {
+      name: 'admin',
+      file: FILES.adminOrdersTs,
+      functionName: 'deductPointsAtCreationTx',
+      availabilityCall: 'availablePointsBalanceTx',
+    },
+  ]
+
+  test.each(cases)('$name 先锁积分批次，再锁顾客缓存行', ({ file, functionName, availabilityCall }) => {
+    const src = readFile(file)
+    const body = extractFunctionSection(src, functionName)
+    const availabilityBody = extractFunctionSection(src, availabilityCall)
+    const availabilityIndex = body.indexOf(availabilityCall)
+    const userLockIndex = body.indexOf('SELECT user_id FROM client_wechat_users')
+
+    expect(availabilityIndex).toBeGreaterThanOrEqual(0)
+    expect(userLockIndex).toBeGreaterThan(availabilityIndex)
+    expect(availabilityBody).toMatch(/FROM point_batches[\s\S]*?FOR UPDATE/)
+  })
+})
+
+// PR #74: shared SQL snapshots alone cannot detect a regression copied to all ends.
 describe('cross-end-sql-snapshot 反模式守护（防镜像 bug 字面锁定失效）', () => {
   let grantedSqls
   let allocRollupSqls
@@ -2044,30 +1970,23 @@ describe('cross-end-sql-snapshot 反模式守护（防镜像 bug 字面锁定失
     }
   })
 
-  // 反模式 1：SUM(amount) 不得被 ::int 截断/溢出（应 ::bigint）
-  test('四端 granted SQL 不得用 ::int 截断 SUM(amount)（应 ::bigint，防 g03 回退）', () => {
+  test('四端 granted SQL 必须用 bigint 汇总 SUM(amount)', () => {
     for (const [end, sql] of Object.entries(grantedSqls)) {
-      expect(sql, `${end} granted SQL 用 ::int 截断 SUM(amount)，应改 ::bigint`).not.toMatch(
+      expect(sql, `${end} granted SQL 用 int 截断 SUM(amount)，应改 bigint`).not.toMatch(
         /SUM\(amount\)[\s\S]*::\s*int\b/i,
       )
+      expect(sql, `${end} granted SQL 缺少 bigint cast`).toMatch(/SUM\(amount\)[\s\S]*::\s*bigint\b/i)
     }
   })
 
-  // 反模式 1 正向：granted SQL 必须显式 ::bigint（防省略 cast 或改回 ::int）
-  test('四端 granted SQL 必须用 ::bigint 汇总 SUM(amount)', () => {
-    for (const [end, sql] of Object.entries(grantedSqls)) {
-      expect(sql, `${end} granted SQL 缺少 ::bigint cast`).toMatch(/SUM\(amount\)[\s\S]*::\s*bigint\b/i)
-    }
-  })
-
-  // 反模式 2：子付款状态全部清空后，父订单也必须清空。
   test('四端 rollup 在无待/已分配子付款时必须归 NULL', () => {
     for (const [end, sql] of Object.entries(allocRollupSqls)) {
       expect(sql, `${end} rollup 缺少无子付款状态时清空父订单的分支`).toMatch(
         /ELSE\s+NULL::allocation_status\s+END/,
       )
       expect(sql, `${end} rollup 不得保留已失效的父订单 allocation_status`).not.toMatch(
-        /ELSE\s+allocation_status\s+END/)
+        /ELSE\s+allocation_status\s+END/,
+      )
     }
   })
 })

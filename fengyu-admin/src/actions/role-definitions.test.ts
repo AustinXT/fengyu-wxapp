@@ -40,12 +40,18 @@ vi.mock('@/lib/with-permission', () => ({
 vi.mock('@/lib/permissions', () => ({
   requireAdmin: vi.fn(),
   invalidatePermissionMatrixCache: vi.fn(),
-  KNOWN_PERMISSION_ACTIONS: [],
+  KNOWN_PERMISSION_ACTIONS: [
+    'dashboard:view',
+    'system:config',
+    'system:diagnostics',
+    'permission:assign_admin',
+    'admin:reset_password',
+  ],
 }))
 
 vi.mock('@/lib/permission-contract', () => ({
-  getActionGrantability: vi.fn(() => 'grantable'),
   getMissingUiDependencies: vi.fn(() => []),
+  isActionGrantableForRoleDefinition: vi.fn(() => true),
   sanitizeRoleDefinitionActions: vi.fn((actions: string[]) => actions),
 }))
 

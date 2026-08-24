@@ -35,6 +35,7 @@ db/.env
 docker/.env
 *.sql.backup
 postgres_data/
+docker/data/private-uploads/
 .env
 .env.local
 *.key

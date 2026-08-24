@@ -1,0 +1,3 @@
+ALTER TABLE "sale_items" ADD COLUMN "inventory_composition_snapshot" jsonb;--> statement-breakpoint
+ALTER TABLE "inventory_sku_product_sku_mappings" ADD COLUMN "quantity_per_sale_unit" integer DEFAULT 1 NOT NULL;--> statement-breakpoint
+ALTER TABLE "inventory_sku_product_sku_mappings" ADD CONSTRAINT "chk_inventory_product_sku_mapping_quantity" CHECK ("inventory_sku_product_sku_mappings"."quantity_per_sale_unit" > 0);

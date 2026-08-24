@@ -1,0 +1,72 @@
+<!-- packageMy/inventory/form.wxml -->
+<view class="container">
+  <view class="source-card">
+    <text class="source-label">发起门店</text>
+    <text class="source-value">{{sourceStoreName || sourceStoreId || '当前门店'}}</text>
+  </view>
+
+  <view class="section">
+    <view class="section-title">添加明细</view>
+
+    <view wx:if="{{itemMode === 'reportableSku'}}" class="field">
+      <text class="field-label">可报货产品</text>
+      <picker range="{{skuOptions}}" range-key="displayName" value="{{selectedSkuIndex < 0 ? 0 : selectedSkuIndex}}" bindchange="onSkuChange">
+        <view class="selector {{selectedSku ? '' : 'placeholder'}}">{{selectedSku ? selectedSku.displayName : '请选择可报货产品'}}</view>
+      </picker>
+      <view wx:if="{{selectedSku}}" class="stock-reference">本店库存参考：{{selectedSku.stockReference}}</view>
+    </view>
+
+    <view wx:if="{{itemMode === 'stockLot'}}" class="field">
+      <text class="field-label">库存批次</text>
+      <picker range="{{stockOptions}}" range-key="displayName" value="{{selectedLotIndex < 0 ? 0 : selectedLotIndex}}" bindchange="onLotChange">
+        <view class="selector {{selectedLot ? '' : 'placeholder'}}">{{selectedLot ? selectedLot.displayName : '请选择库存批次'}}</view>
+      </picker>
+      <view wx:if="{{selectedLot}}" class="stock-reference">当前库存：{{selectedLot.quantityOnHand}}</view>
+    </view>
+
+    <view wx:if="{{needsTargetStore}}" class="field">
+      <text class="field-label">接收门店</text>
+      <picker range="{{storeOptions}}" range-key="storeName" value="{{selectedStoreIndex < 0 ? 0 : selectedStoreIndex}}" bindchange="onStoreChange">
+        <view class="selector {{selectedStore ? '' : 'placeholder'}}">{{selectedStore ? selectedStore.storeName : '请选择同市场接收门店'}}</view>
+      </picker>
+    </view>
+
+    <view class="field">
+      <text class="field-label">数量</text>
+      <input class="input" type="digit" placeholder="请输入数量" value="{{quantityInput}}" bindinput="onQuantityInput" />
+    </view>
+
+    <view wx:if="{{needsReason}}" class="field">
+      <text class="field-label">报损原因</text>
+      <input class="input" placeholder="请填写报损原因" value="{{reasonInput}}" bindinput="onReasonInput" maxlength="100" />
+    </view>
+
+    <button class="add-button" bindtap="onAddItem" disabled="{{loadingOptions}}">添加明细</button>
+  </view>
+
+  <view class="section">
+    <view class="section-title">单据明细（{{items.length}}）</view>
+    <view wx:if="{{items.length === 0}}" class="empty">请先添加产品或库存批次</view>
+    <view wx:for="{{items}}" wx:key="key" class="item-row">
+      <view class="item-main">
+        <text class="item-name">{{item.skuName}}</text>
+        <text wx:if="{{item.specName}}" class="item-meta">{{item.specName}}</text>
+        <text wx:if="{{item.batchNo}}" class="item-meta">批号：{{item.batchNo}}</text>
+        <text wx:if="{{item.reason}}" class="item-reason">{{item.reason}}</text>
+      </view>
+      <view class="item-right">
+        <text class="item-quantity">×{{item.quantity}}</text>
+        <text class="remove" data-index="{{index}}" bindtap="onRemoveItem">删除</text>
+      </view>
+    </view>
+  </view>
+
+  <view class="section">
+    <view class="section-title">备注</view>
+    <textarea class="remark" placeholder="选填" value="{{remark}}" bindinput="onRemarkInput" maxlength="200" auto-height />
+  </view>
+
+  <view class="submit-bar">
+    <button class="submit-button" bindtap="onSubmit" loading="{{submitting}}" disabled="{{submitting || loadingOptions}}">提交单据</button>
+  </view>
+</view>

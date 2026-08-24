@@ -5,7 +5,12 @@ import { clearCart } from '../../utils/cart';
 import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
 import { buildCouponDisplay, formatDate } from '../../utils/format';
 import { getIsMember, priceView } from '../../utils/member-pricing';
-import { recomputeAmounts, parseAgreement, DEFAULT_AGREEMENT_TEXT } from './checkout-helpers';
+import {
+  recomputeAmounts,
+  parseAgreement,
+  DEFAULT_AGREEMENT_TEXT,
+  normalizePointsDeductionMaxRate,
+} from './checkout-helpers';
 
 const app = getApp<IAppOption>();
 
@@ -73,6 +78,14 @@ Page({
     cardBalance: 0,
     cardId: '' as string,
     useCard: true,                // 默认开（决策 #1）；余额 = 0 时 effectiveUseCard 自动 false
+    // 积分抵扣
+    pointsBalance: 0,
+    usePoints: true,
+    pointsUsed: 0,
+    pointsDiscount: 0,
+    maxPointsUsable: 0,
+    pointsToYuanRate: 0.01,
+    pointsDeductionMaxRate: 0.03,
     prepaidCardAmount: 0,         // 由 recomputeAmounts 派生
     // 取消支付后恢复既有订单时，锁定原 pending 金额；用户手动切换开关后清空，恢复常规重算。
     restoredPrepaidCardAmount: null as number | null,
@@ -102,6 +115,7 @@ Page({
     this.loadDefaultStaff();
     // 加载储值卡余额（与门店无关，跨店可用；注意先于 recompute 生效）
     this.loadCardBalance();
+    this.loadPointsBalance();
 
     const existingId = saleOrderId || orderNo;
     if (existingId) {
@@ -255,8 +269,10 @@ Page({
 
       const firstItem = items[0] || {};
       const existingCouponDiscount = Number(order.coupon_discount || 0);
-      // unitPrice 需为扣券前金额，WXML 用 unitPrice - couponDiscount 计算实付
-      const preDiscountTotal = Number(order.total_amount || 0) + existingCouponDiscount;
+      const existingPointsUsed = Number(order.points_used || 0);
+      const existingPointsDiscount = Number(order.points_discount || 0);
+      // unitPrice 需为扣抵扣前金额，WXML/recompute 用 unitPrice - couponDiscount - pointsDiscount 计算实付
+      const preDiscountTotal = Number(order.total_amount || 0) + existingCouponDiscount + existingPointsDiscount;
       // 还原支付方式（避免默认 wechat 覆盖用户原选）
       const validMethods = ['微信', '支付宝', '线下'] as const;
       const restoredMethod = validMethods.includes(order.payment_method) ? order.payment_method : '微信';
@@ -281,6 +297,9 @@ Page({
           paidAmount: payable,
           showPayMethodGroup: payable > 0,
           prepaidCardAmount: 0,
+          pointsUsed: 0,
+          pointsDiscount: 0,
+          maxPointsUsable: 0,
           couponDiscount: 0,
           netBeforeCard: 0,
           // 充值单不需要协议勾选（充值说明已展示在 recharge 页 footer）
@@ -306,6 +325,10 @@ Page({
         storeName: order.store_name || '',
         quantity: 1,
         couponDiscount: existingCouponDiscount,
+        pointsUsed: existingPointsUsed,
+        pointsDiscount: existingPointsDiscount,
+        maxPointsUsable: existingPointsUsed,
+        usePoints: existingPointsUsed > 0,
         paymentMethod: restoredMethod,
         useCard: orderPrepaidCardAmount > 0,
         prepaidCardAmount: orderPrepaidCardAmount,
@@ -389,6 +412,32 @@ Page({
     }
   },
 
+  /** 拉取积分余额与抵扣配置，并触发一次 recompute */
+  async loadPointsBalance() {
+    try {
+      const data = await callClientApi<{
+        balance: number;
+        pointsToYuanRate?: number;
+        pointsDeductionMaxRate?: number;
+      }>('points.balance', {});
+      const balance = Math.floor(Number(data?.balance) || 0);
+      const isExistingOrder = !!this.data.existingOrderNo;
+      this.setData({
+        pointsBalance: balance,
+        pointsToYuanRate: Number(data?.pointsToYuanRate) || 0.01,
+        pointsDeductionMaxRate: normalizePointsDeductionMaxRate(data?.pointsDeductionMaxRate),
+        usePoints: isExistingOrder ? this.data.usePoints : (balance > 0 ? this.data.usePoints : false),
+      });
+      this.recomputeAmounts();
+    } catch {
+      this.setData({
+        pointsBalance: 0,
+        usePoints: this.data.existingOrderNo ? this.data.usePoints : false,
+      });
+      this.recomputeAmounts();
+    }
+  },
+
   /** 根据当前 totalAmount/couponDiscount/cardBalance/useCard 重算抵扣明细 */
   recomputeAmounts() {
     // 充值单分支：paidAmount 已由 loadExistingOrder 写定为 payable_amount，不参与抵扣计算
@@ -397,15 +446,41 @@ Page({
     const totalAmount = this.data.fromCart
       ? Number(this.data.totalPrice) || 0
       : (Number(this.data.unitPrice) || 0) * (Number(this.data.quantity) || 1);
+    if (this.data.existingOrderNo) {
+      const netAfterDiscounts = Math.round(Math.max(
+        0,
+        totalAmount - (Number(this.data.couponDiscount) || 0) - (Number(this.data.pointsDiscount) || 0),
+      ) * 100) / 100;
+      const effectiveUseCard = this.data.useCard && this.data.cardBalance > 0 && netAfterDiscounts > 0;
+      const prepaidCardAmount = effectiveUseCard
+        ? Math.round(Math.min(Number(this.data.cardBalance) || 0, netAfterDiscounts) * 100) / 100
+        : 0;
+      const paidAmount = Math.round((netAfterDiscounts - prepaidCardAmount) * 100) / 100;
+      this.setData({
+        prepaidCardAmount,
+        paidAmount,
+        showPayMethodGroup: paidAmount > 0,
+        netBeforeCard: netAfterDiscounts,
+      });
+      return;
+    }
     const result = recomputeAmounts({
       totalAmount,
       couponDiscount: Number(this.data.couponDiscount) || 0,
+      pointsBalance: Number(this.data.pointsBalance) || 0,
+      usePoints: this.data.usePoints,
+      pointsUsed: undefined,
+      pointsToYuanRate: Number(this.data.pointsToYuanRate) || 0.01,
+      pointsDeductionMaxRate: normalizePointsDeductionMaxRate(this.data.pointsDeductionMaxRate),
       cardBalance: Number(this.data.cardBalance) || 0,
       useCard: this.data.useCard,
       prepaidCardAmountLimit: this.data.restoredPrepaidCardAmount,
     });
     this.setData({
       prepaidCardAmount: result.prepaidCardAmount,
+      pointsUsed: result.pointsUsed,
+      pointsDiscount: result.pointsDiscount,
+      maxPointsUsable: result.maxPointsUsable,
       paidAmount: result.paidAmount,
       showPayMethodGroup: result.showPayMethodGroup,
       netBeforeCard: result.netBeforeCard,
@@ -421,6 +496,13 @@ Page({
       // 明确的用户操作代表重新选择方案；之后才允许按当前余额重新计算。
       restoredPrepaidCardAmount: null,
     });
+    this.recomputeAmounts();
+  },
+
+  /** 积分开关切换 */
+  onToggleUsePoints(e: WxEvent<boolean>) {
+    if (this.data.pointsBalance <= 0 || this.data.maxPointsUsable <= 0 || this.data.existingOrderNo) return;
+    this.setData({ usePoints: !!e.detail });
     this.recomputeAmounts();
   },
 
@@ -665,6 +747,8 @@ Page({
         paymentMethod: this.data.paymentMethod,
         orderType: this.data.orderType !== 'normal' ? this.data.orderType : undefined,
         couponId: this.data.selectedCoupon?.couponId || undefined,
+        usePoints: this.data.usePoints && this.data.pointsUsed > 0,
+        pointsUsed: this.data.usePoints && this.data.pointsUsed > 0 ? this.data.pointsUsed : undefined,
         useCard: this.data.useCard && this.data.cardBalance > 0,
         prepaidCardAmount: this.data.prepaidCardAmount,
       });
@@ -675,12 +759,13 @@ Page({
       // 全额抵扣（券/卡）：后端已置 '已支付'，跳详情页不唤起支付
       const isPrepaidFull = data?.status === '已支付'
         || data?.reason === 'prepaid_card_full'
+        || data?.reason === 'points_full'
         || data?.reason === 'coupon_full'
         || (data?.paymentParams === null && Number(data?.paidAmount || 0) === 0);
       if (isPrepaidFull) {
         if (this.data.fromCart) clearCart();
         if (this.data.bundleProductId) wx.removeStorageSync('bundleCheckoutItems');
-        Toast.success(Number(data?.prepaidCardAmount || 0) > 0 ? '已使用储值卡支付' : '已使用优惠券抵扣');
+        Toast.success(Number(data?.prepaidCardAmount || 0) > 0 ? '已使用储值卡支付' : (Number(data?.pointsDiscount || 0) > 0 ? '已使用积分抵扣' : '已使用优惠券抵扣'));
         setTimeout(() => wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` }), 1200);
         return;
       }

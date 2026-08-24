@@ -9,12 +9,14 @@ const PAGE_SIZE = 20;
 const TYPE_COLOR_MAP: Record<string, string> = {
   appointment: '#096DD9',
   order: '#52C41A',
+  points: '#C0322A',
   system: '#FAAD14',
 };
 
 const TYPE_ICON_MAP: Record<string, string> = {
   appointment: 'calendar-o',
   order: 'orders-o',
+  points: 'gold-coin-o',
   system: 'info-o',
 };
 

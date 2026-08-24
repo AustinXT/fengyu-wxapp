@@ -61,6 +61,8 @@ interface OrderDetailData {
   coupon_id: string | null;
   coupon_discount: number;
   coupon_name: string | null;
+  points_used?: number;
+  points_discount?: number;
   expire_at: string | null;
   // Ticket 2026-04-26 sale-order-domain-refactor:
   //   - 字段 paid_amount → received（已到账金额聚合快照）

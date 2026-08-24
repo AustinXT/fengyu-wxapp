@@ -89,6 +89,19 @@
         />
       </view>
       <view class="dialog-field">
+        <text class="dialog-label">本次将自动出库</text>
+        <view wx:if="{{pickupDialog.loadingInventorySkuOptions}}" class="dialog-hint">加载销售商品组成中...</view>
+        <view wx:elif="{{pickupDialog.inventorySkuOptions.length > 0}}" class="composition-list">
+          <view wx:for="{{pickupDialog.inventorySkuOptions}}" wx:key="inventorySkuId" class="composition-row">
+            <view class="composition-name">{{item.productName}}{{item.specName ? ' ' + item.specName : ''}} × {{item.requiredQuantity}}</view>
+            <view class="composition-stock {{item.availableQuantity >= item.requiredQuantity ? 'enough' : 'shortage'}}">
+              门店可用 {{item.availableQuantity}}{{item.availableQuantity >= item.requiredQuantity ? '' : '，库存不足'}}
+            </view>
+          </view>
+        </view>
+        <view wx:else class="dialog-warning">该商品尚未配置库存组成，请联系后台配置后提货。</view>
+      </view>
+      <view class="dialog-field">
         <text class="dialog-label">备注（可选）</text>
         <input
           class="dialog-input"
@@ -102,7 +115,7 @@
       <button class="dialog-btn cancel" bindtap="closePickupDialog">取消</button>
       <button
         class="dialog-btn confirm"
-        disabled="{{pickupDialog.submitting}}"
+        disabled="{{pickupDialog.submitting || pickupDialog.loadingInventorySkuOptions || !pickupDialog.inventoryReady}}"
         bindtap="submitPickup"
       >
         {{pickupDialog.submitting ? '提交中...' : '确认提货'}}
