@@ -1,42 +1,35 @@
 #!/bin/bash
-# 部署 fengyu-admin 镜像到远程服务器（prod→fengyu-prod；dev 默认→ali-demo）。
-# 当 dev 部署且当前是拉卡拉入网分支时，自动路由到 101.34.242.103，避免与同事的测试环境冲突。
+# 部署 fengyu-admin 镜像到远程服务器（prod→fengyu-prod；test→sqlserver101；dev→ali-demo）。
 #
 # Usage:
-#   .claude/skills/remote-deploy/deploy-admin.sh <dev|prod> [ssh-host] [remote-dir]
+#   .claude/skills/remote-deploy/deploy-admin.sh <dev|test|prod> [ssh-host] [remote-dir]
 #
 # 参数：
-#   $1 (required) — dev / prod
+#   $1 (required) — dev / test / prod
 #   $2 (optional) — SSH host，可被 SSH_HOST 环境变量覆盖
 #   $3 (optional) — 远程 docker/ 目录绝对路径，可被 REMOTE_DIR 环境变量覆盖
 
 set -eo pipefail
 
-if [[ -z "${1:-}" ]] || [[ ! "$1" =~ ^(dev|prod)$ ]]; then
-  echo "Usage: $0 <dev|prod> [ssh-host] [remote-dir]" >&2
-  echo "  $1 must be 'dev' or 'prod'" >&2
+if [[ -z "${1:-}" ]] || [[ ! "$1" =~ ^(dev|test|prod)$ ]]; then
+  echo "Usage: $0 <dev|test|prod> [ssh-host] [remote-dir]" >&2
+  echo "  $1 must be 'dev', 'test', or 'prod'" >&2
   exit 1
 fi
 
 ENV="$1"
-CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || true)
 IS_LAKALA_TEST_TARGET=false
-if [[ "$ENV" == "dev" && "$CURRENT_BRANCH" == "feat/lakala-payment-migration" ]]; then
+if [[ "$ENV" == "test" ]]; then
   IS_LAKALA_TEST_TARGET=true
 fi
 
 case "$ENV" in
   dev)
-    if [[ "$IS_LAKALA_TEST_TARGET" == true ]]; then
-      SSH_HOST_DEFAULT="sqlserver101"
-      REMOTE_DIR_DEFAULT="/www/wwwroot/fengyu-admin/docker"
-      EXPECT_PG_HOST=""
-    else
-      SSH_HOST_DEFAULT="ali-demo"
-      REMOTE_DIR_DEFAULT="/root/proj.xt.com/fengyu-wxapp/docker"
-      EXPECT_PG_HOST="47.113.202.7"
-    fi
+    SSH_HOST_DEFAULT="ali-demo"
+    REMOTE_DIR_DEFAULT="/root/proj.xt.com/fengyu-wxapp/docker"
+    EXPECT_PG_HOST="47.113.202.7"
     ;;
+  test) SSH_HOST_DEFAULT="sqlserver101"; REMOTE_DIR_DEFAULT="/www/wwwroot/fengyu-admin/docker"; EXPECT_PG_HOST="101.34.242.103" ;;
   prod) SSH_HOST_DEFAULT="fengyu-prod"; REMOTE_DIR_DEFAULT="/www/wwwroot/fengyu-admin/docker"; EXPECT_PG_HOST="118.178.196.26" ;;
 esac
 # SSH host 按环境自动路由；可被第 2 参数或 SSH_HOST 环境变量覆盖
@@ -97,7 +90,7 @@ EOF
 
 # 远程 .env 保存账号密钥等运行期秘密；只传输目标环境的非敏感存储标识，
 # 并用独立变量名覆盖 compose 插值，避免误用远程残留的另一环境值。
-# 拉卡拉分支的 dev 部署以 101 服务器自己的 .env 为准，避免把配置复制进本机或 Git。
+# test 部署以 101 服务器自己的 .env 为准，避免把配置复制进本机或 Git。
 if [[ "$IS_LAKALA_TEST_TARGET" == true ]]; then
   if ! check_test_onboarding_runtime; then
     echo "✗ 测试服务器入网配置校验失败：必须是完整的生产拉卡拉配置，且不得回退到支付 LAKALA_*。" >&2
@@ -109,10 +102,15 @@ else
   DEPLOY_CLOUDBASE_ENV_ID=$(read_env_value CLOUDBASE_ENV_ID)
   DEPLOY_CDN_BASE=$(read_env_value CDN_BASE)
 fi
+DEPLOY_CLIENT_SECRET=$(read_env_value CLIENT_SECRET)
+DEPLOY_STAFF_ENV_ID=$(read_env_value STAFF_ENV_ID)
+DEPLOY_STAFF_TENCENTCLOUD_SECRETID=$(read_env_value TENCENTCLOUD_SECRETID)
+DEPLOY_STAFF_TENCENTCLOUD_SECRETKEY=$(read_env_value TENCENTCLOUD_SECRETKEY)
 RUNTIME_ENV_FILE=$(mktemp "${TMPDIR:-/tmp}/fengyu-admin-runtime.XXXXXX")
 trap 'rm -f "$RUNTIME_ENV_FILE"' EXIT
-printf 'DEPLOY_CLOUDBASE_ENV_ID=%s\nDEPLOY_CDN_BASE=%s\n' \
-  "$DEPLOY_CLOUDBASE_ENV_ID" "$DEPLOY_CDN_BASE" > "$RUNTIME_ENV_FILE"
+printf 'DEPLOY_CLOUDBASE_ENV_ID=%s\nDEPLOY_CDN_BASE=%s\nDEPLOY_CLIENT_SECRET=%s\nDEPLOY_STAFF_ENV_ID=%s\nDEPLOY_STAFF_TENCENTCLOUD_SECRETID=%s\nDEPLOY_STAFF_TENCENTCLOUD_SECRETKEY=%s\n' \
+  "$DEPLOY_CLOUDBASE_ENV_ID" "$DEPLOY_CDN_BASE" "$DEPLOY_CLIENT_SECRET" "$DEPLOY_STAFF_ENV_ID" \
+  "$DEPLOY_STAFF_TENCENTCLOUD_SECRETID" "$DEPLOY_STAFF_TENCENTCLOUD_SECRETKEY" > "$RUNTIME_ENV_FILE"
 COMPOSE_OVERRIDE="docker-compose.remote.yml"
 
 # prod 强制确认（dev 发 ali-demo 无生产副作用，不打断）
@@ -250,9 +248,9 @@ echo "  ✓ 已同步 docker-compose.yml + $COMPOSE_OVERRIDE + .admin-runtime.en
 
 echo "=== 4/5 远程重启服务（base + override）==="
 # cron-worker 日志挂载卷（容器内 uid=1001 nextjs 才能写入；目录不存在 docker 会以 root 自建并越权）
-if ! ssh "$SSH_HOST" "mkdir -p '$REMOTE_DIR/logs/cron-worker' '$REMOTE_DIR/logs/export-worker' && chown -R 1001:1001 '$REMOTE_DIR/logs/cron-worker' '$REMOTE_DIR/logs/export-worker'"; then
+if ! ssh "$SSH_HOST" "mkdir -p '$REMOTE_DIR/logs/cron-worker' '$REMOTE_DIR/logs/export-worker' '$REMOTE_DIR/data/runtime-status' && chown -R 1001:1001 '$REMOTE_DIR/logs/cron-worker' '$REMOTE_DIR/logs/export-worker' '$REMOTE_DIR/data/runtime-status'"; then
   echo "  当前 SSH 用户无日志目录写权限，尝试 sudo 修复既有目录归属。"
-  ssh "$SSH_HOST" "sudo mkdir -p '$REMOTE_DIR/logs/cron-worker' '$REMOTE_DIR/logs/export-worker' && sudo chown -R 1001:1001 '$REMOTE_DIR/logs/cron-worker' '$REMOTE_DIR/logs/export-worker'"
+  ssh "$SSH_HOST" "sudo mkdir -p '$REMOTE_DIR/logs/cron-worker' '$REMOTE_DIR/logs/export-worker' '$REMOTE_DIR/data/runtime-status' && sudo chown -R 1001:1001 '$REMOTE_DIR/logs/cron-worker' '$REMOTE_DIR/logs/export-worker' '$REMOTE_DIR/data/runtime-status'"
 fi
 ssh "$SSH_HOST" "cd '$REMOTE_DIR' && docker compose --env-file .env --env-file .admin-runtime.env -f docker-compose.yml -f $COMPOSE_OVERRIDE up -d admin cron-worker export-worker"
 
@@ -266,8 +264,6 @@ echo "  DATABASE_URL: ${DB_REDACTED:-（无法读取，admin 容器可能未就�
 GOT_HOST=$(node -e "const s=process.argv[1]||'';const m=s.match(/@([^:]+):\d+\//);process.stdout.write(m?m[1]:'')" "$DB_URL" 2>/dev/null || echo "")
 if [[ -z "$GOT_HOST" ]]; then
   echo "  ⚠️  无法提取 DB host（容器未就绪？），跳过 IP 断言——请手动核对 DATABASE_URL。" >&2
-elif [[ "$IS_LAKALA_TEST_TARGET" == true ]]; then
-  echo "  ✓ admin DB host=$GOT_HOST（拉卡拉测试服务器远程 .env 配置）"
 elif [[ "$GOT_HOST" == "$EXPECT_PG_HOST" ]]; then
   echo "  ✓ admin DB host=$GOT_HOST 与 $ENV 一致"
 elif [[ "$GOT_HOST" =~ ^(172\.(1[6-9]|2[0-9]|3[01])\.|10\.|192\.168\.) ]]; then
