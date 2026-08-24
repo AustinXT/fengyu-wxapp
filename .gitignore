@@ -51,6 +51,7 @@ cloudbaserc.*.json
 envs/dev.env
 envs/prod.env
 envs/.active
+envs/*.env
 envs/*.pem
 envs/*.cer
 
