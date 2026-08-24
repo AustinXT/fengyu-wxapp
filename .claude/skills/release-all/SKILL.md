@@ -6,8 +6,9 @@ description: |
   git tag, runs pending Drizzle migrations against the selected target database,
   cross-compiles the Next.js admin and fengyu-analyst, then ships both to the target host
   (prod→fengyu-prod / test→sqlserver101 / dev→ali-demo). Dev and prod also deploy
-  staffApi, clientApi, and payNotify to their own CloudBase envs; test is admin-only
-  because it has no independent CloudBase env and must never overwrite prod CloudBase.
+  staffApi, clientApi, and payNotify to their own CloudBase envs; test deploys admin
+  and fengyu-analyst but skips CloudBase functions because it has no independent
+  CloudBase environment and must never overwrite prod CloudBase.
   Use when the user says 发版 / 上线 / 发布生产 / 发布测试 / 发 dev / release / ship to dev|test|prod.
   This is an UPDATE release — runs pending migrations only through db:migrate, never wipes the DB.
 argument-hint: '[dev|test|prod] [skip-tests|skip-version|skip-admin|skip-analyst|skip-cloudfn]'
@@ -39,9 +40,10 @@ metadata:
 | env 文件 | `envs/dev.env` | `envs/test.env` | `envs/prod.env` |
 | `ENV_PROFILE` | `dev` | `test` | `prod` |
 | admin | 发布 | 发布 | 发布 |
-| analyst | 发布 | **强制跳过** | 发布 |
+| analyst | 发布 | 发布 | 发布 |
 | CloudBase 云函数 | dev env | **强制跳过** | prod env |
 | admin 命令 | `deploy-admin.sh dev` | `deploy-admin.sh test` | `deploy-admin.sh prod` |
+| analyst 命令 | `deploy-analyst.sh dev` | `deploy-analyst.sh test` | `deploy-analyst.sh prod` |
 
 三个数据库均用 5433 端口 + `fengyu_wxapp` 库名，按 host 区分。test 的 `ADMIN_DATABASE_URL` 是只在 101 宿主可用的 `172.18.0.1`；本地迁移必须改用 `test.env` 的 `PG_CONNECTION_STRING`（公网 host 101.34.242.103）。
 
@@ -51,11 +53,11 @@ metadata:
 - `node scripts/gen-version.js` — 版本号写入两端 `miniprogram/utils/version.ts`（env 无关）
 - `npm --prefix db run db:migrate` — 将 Drizzle pending migration 应用到显式指定的目标库
 - `.claude/skills/remote-deploy/deploy-admin.sh <dev|test|prod>` — admin 交叉编译 + 远程部署
-- `.claude/skills/remote-deploy/deploy-analyst.sh <dev|prod>` — analyst 交叉编译 + 远程部署（读取同环境 `ANALYST_PUBLIC_ORIGIN`，并校验容器 DB / public origin）
+- `.claude/skills/remote-deploy/deploy-analyst.sh <dev|test|prod>` — analyst 交叉编译 + 远程部署（读取同环境 `ANALYST_PUBLIC_ORIGIN`，并校验容器 DB / public origin）
 - `scripts/use-env.sh <dev|prod>` — 切 env + 渲染 cloudbaserc（含 ENV_PROFILE 守卫）
 - `scripts/deploy-cloudfunctions.sh` — 按 `.active` 串行双账号部署 staffApi/clientApi/payNotify
 
-参数（可组合）：`dev` / `test` / `prod`（三选一，默认 prod）+ `skip-tests` `skip-version` `skip-admin` `skip-analyst` `skip-cloudfn`。数据库迁移不可跳过。选择 `test` 时等价于强制追加 `skip-analyst skip-cloudfn`，即使用户未传也必须跳过。
+参数（可组合）：`dev` / `test` / `prod`（三选一，默认 prod）+ `skip-tests` `skip-version` `skip-admin` `skip-analyst` `skip-cloudfn`。数据库迁移不可跳过。选择 `test` 时强制追加 `skip-cloudfn`；analyst 默认正常发布，除非显式传入 `skip-analyst`。
 
 ## Usage
 
@@ -97,7 +99,7 @@ metadata:
    ```
    - 重 e2e（L2 `bun run test:l2` / L3 / playwright）**不自动跑**：耗时，且 client 与 staff L2 共用 TE2L2_ 命名空间 + 同一库，并发会污染夹具产生假失败。如用户要跑，提醒先确认无其它端并发。
 
-4. **analyst 发布配置**（dev/prod 且未传 `skip-analyst`）：读取 `envs/$ENV.env` 的 `ANALYST_PUBLIC_ORIGIN`，必须是无账号密码的 `http` 或 `https` URL。test 强制跳过本项。
+4. **analyst 发布配置**（未传 `skip-analyst`）：读取 `envs/$ENV.env` 的 `ANALYST_PUBLIC_ORIGIN`，必须是无账号密码的 `http` 或 `https` URL。
    ```bash
    ANALYST_PUBLIC_ORIGIN="$(grep -m1 '^ANALYST_PUBLIC_ORIGIN=' "envs/$ENV.env" | cut -d= -f2- | tr -d '\r\"')"
    test -n "$ANALYST_PUBLIC_ORIGIN" || { echo 'ANALYST_PUBLIC_ORIGIN 缺失 ✗ 停' >&2; exit 1; }
@@ -186,14 +188,14 @@ unset MIGRATE_DATABASE_URL
 - 复述 `✓ HTTP 健康检查通过`、RSA 公钥来源、DATABASE_URL 脱敏回显、`✓ admin DB host=... 与 $ENV 一致`。
 - ⚠️ dev admin 首跑前确认 ali-demo 远程 `docker/.env` 已配 `ADMIN_DATABASE_URL`/`ADMIN_JWT_SECRET`/`ADMIN_RSA_PRIVATE_KEY`（实测已配，连 47.113.202.7）；旧 trick `deploy-admin.sh prod ali-demo` 已被 DB 断言淘汰，发 ali-demo 一律用 `deploy-admin.sh dev`。
 
-## §5 Phase 4 — analyst 交叉编译 + 发布（test 强制跳过；否则除非 `skip-analyst`）
+## §5 Phase 4 — analyst 交叉编译 + 发布（除非 `skip-analyst`）
 
 ```bash
 .claude/skills/remote-deploy/deploy-analyst.sh $ENV
 ```
 
 - 正常全量发布时在 admin 发布之后执行，使 admin 顶栏与 analyst 容器使用同一 `ANALYST_PUBLIC_ORIGIN`。
-- `$ENV=prod` 时脚本有交互式二次确认（输入 `yes`）；`$ENV=dev` 无 confirm。
+- `$ENV=prod` 时脚本有交互式二次确认（输入 `yes`）；`$ENV=dev|test` 无 confirm。
 - 脚本内部：本地 buildx `--platform linux/amd64` → 镜像传输 → 同步 compose + analyst 运行期配置 → `compose up -d analyst` → 容器、HTTP、DB IP、`NEXT_PUBLIC_ANALYST_ORIGIN`、JWT 终检。
 - 复述 `✓ HTTP 健康检查通过`、DATABASE_URL 脱敏回显、`NEXT_PUBLIC_ANALYST_ORIGIN` 与 Phase 0 的值一致，以及 analyst DB host 与 `$ENV` 一致。失败时停止，按脚本输出使用 `deploy-analyst.sh --rollback $SSH_HOST` 回滚。
 
@@ -223,11 +225,11 @@ scripts/deploy-cloudfunctions.sh  # prod confirm + 串行双账号 + tcb fn code
    ```
    dev/prod 必须命中对应公网 IP；test 允许 `172.18.0.1`，但必须同时验证宿主公网 IP=`101.34.242.103` 且 5433 正在监听。不符则报错并提示回滚。
 
-2. **analyst 终检**【DB assert ④】（test 跳过；否则除非传入 `skip-analyst`）：
+2. **analyst 终检**【DB assert ④】（除非传入 `skip-analyst`）：
    ```bash
    ssh $SSH_HOST "docker exec fengyu-analyst sh -c 'printf \"%s|%s\" \"\$DATABASE_URL\" \"\$NEXT_PUBLIC_ANALYST_ORIGIN\"'" | sed -E 's#://[^@]+@#://***@#'
    ```
-   - `DATABASE_URL` host 必须为 `$EXPECT_IP`；`NEXT_PUBLIC_ANALYST_ORIGIN` 必须等于 Phase 0 的 `ANALYST_PUBLIC_ORIGIN`。
+   - dev/prod 的 `DATABASE_URL` host 必须为 `$EXPECT_IP`；test 允许 `172.18.0.1`，但须同时验证宿主公网 IP=`101.34.242.103` 且 5433 正在监听。`NEXT_PUBLIC_ANALYST_ORIGIN` 必须等于 Phase 0 的 `ANALYST_PUBLIC_ORIGIN`。
    - 容器状态须为 `running`，`curl http://localhost:3001/` 必须为 `200` 或 `307`。
 
 3. **云函数 env 终检**【DB assert ⑤】（test 跳过）：逐个 `getFunctionConfig`（cloudbase-mcp 或 `tcb fn detail <fn>`）核对**线上**值：

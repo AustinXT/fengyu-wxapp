@@ -1,6 +1,6 @@
 # 发版验证清单（dev/test/prod）
 
-配合 `SKILL.md` 的 Phase 0 与 Phase 6 使用。dev/prod 的 CloudBase 线上值以 `getFunctionConfig` / `tcb fn detail` 实测为准；test 没有独立 CloudBase，禁止部署或验证云函数，只验证 101 上的 admin 和测试库。
+配合 `SKILL.md` 的 Phase 0 与 Phase 6 使用。dev/prod 的 CloudBase 线上值以 `getFunctionConfig` / `tcb fn detail` 实测为准；test 没有独立 CloudBase，禁止部署或验证云函数，只验证 101 上的 admin、analyst 和测试库。
 
 ## 环境变量安全表（防 dev 值误入 prod / prod 值误入 dev）
 
@@ -14,7 +14,7 @@
 | `CLIENT_SECRET` | dev secret | 101 现有配置 | prod 独立 secret | HMAC 桥断裂或跨环境互通 |
 | `CLIENT_SERVICE_URL` | dev 域名 | 101 现有配置 | prod 真实域名 | 跨服务调用指错环境 |
 | `ADMIN_JWT_SECRET` | dev jwt | test 独立 jwt | prod 独立 jwt | 跨环境 session 互通 |
-| `ANALYST_PUBLIC_ORIGIN` | dev analyst URL | N/A（不发布 analyst） | prod analyst URL | analyst 入口串环境 |
+| `ANALYST_PUBLIC_ORIGIN` | dev analyst URL | `http://101.34.242.103:3001` | prod analyst URL | analyst 入口串环境 |
 | `LAKALA_*` | SIT 沙箱 | 101 既有测试配置 | prod 真实商户凭证 | 支付或入网不可用 |
 | `PAYNOTIFY_ENABLED` | `true` | N/A（不部署云函数） | `true` | 支付通知不可用 |
 
@@ -44,9 +44,9 @@ tcb fn invoke staffApi          # 空 payload，期望 -401 UNAUTHORIZED（函�
 ssh $SSH_HOST "curl -sf http://localhost:3000/ >/dev/null && echo admin-ok"
 ssh $SSH_HOST "docker exec fengyu-admin sh -c 'echo \$DATABASE_URL'" | sed -E 's#://[^@]+@#://***@#'   # 含 $EXPECT_IP:5433/fengyu_wxapp
 ssh $SSH_HOST "curl -sSL -o /dev/null -w '%{http_code}\\n' --max-time 10 http://localhost:3001/"  # 期望 200 或 307
-ssh $SSH_HOST "docker exec fengyu-analyst sh -c 'printf \"%s|%s\\n\" \"\$DATABASE_URL\" \"\$NEXT_PUBLIC_ANALYST_ORIGIN\"'" | sed -E 's#://[^@]+@#://***@#'  # DB 含 $EXPECT_IP:5433，origin 与 envs/$ENV.env 一致
+ssh $SSH_HOST "docker exec fengyu-analyst sh -c 'printf \"%s|%s\\n\" \"\$DATABASE_URL\" \"\$NEXT_PUBLIC_ANALYST_ORIGIN\"'" | sed -E 's#://[^@]+@#://***@#'  # dev/prod DB 含 $EXPECT_IP:5433；test 可为 172.18.0.1:5433；origin 与 envs/$ENV.env 一致
 ```
-（`$SSH_HOST`：prod=fengyu-prod / test=sqlserver101 / dev=ali-demo。test 只执行 admin 冒烟。）
+（`$SSH_HOST`：prod=fengyu-prod / test=sqlserver101 / dev=ali-demo。test 执行 admin + analyst 冒烟，但跳过云函数冒烟。）
 
 ## 回滚指引
 

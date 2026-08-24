@@ -21,9 +21,10 @@ metadata:
 
 ```bash
 ./deploy-admin.sh <dev|test|prod> [ssh-host] [remote-dir]
+./deploy-analyst.sh <dev|test|prod> [ssh-host] [remote-dir] [public-host]
 ```
 
-第一个参数决定环境：`dev` 部署到 `ali-demo`，`test` 部署到 `sqlserver101`（`101.34.242.103`），`prod` 部署到 `fengyu-prod`。test 只读取 101 服务器现有 `.env`，不会同步任何密钥或证书。`[ssh-host]`/`[remote-dir]` 可显式覆盖。prod 有二次确认 + 生产库迁移预检。
+第一个参数决定环境：`dev` 部署到 `ali-demo`，`test` 部署到 `sqlserver101`（`101.34.242.103`），`prod` 部署到 `fengyu-prod`。test 的 admin 与 analyst 均连接 101 宿主测试库（容器内 `172.18.0.1:5433`），analyst 默认发布到 `http://101.34.242.103:3001`。`[ssh-host]`/`[remote-dir]` 可显式覆盖。prod 有二次确认 + 生产库迁移预检。
 
 ## 部署流程
 

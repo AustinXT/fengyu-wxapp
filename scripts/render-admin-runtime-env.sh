@@ -8,8 +8,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ENV_NAME="${1:-}"
 OUTPUT="${2:-}"
 
-if [[ ! "$ENV_NAME" =~ ^(dev|prod)$ ]] || [[ -z "$OUTPUT" ]]; then
-  echo "Usage: $0 <dev|prod> <output-file>" >&2
+if [[ ! "$ENV_NAME" =~ ^(dev|test|prod)$ ]] || [[ -z "$OUTPUT" ]]; then
+  echo "Usage: $0 <dev|test|prod> <output-file>" >&2
   exit 1
 fi
 
@@ -41,10 +41,15 @@ STAFF_SECRET_SOURCE="$ENV_FILE"
 STAFF_SECRET_ID="$(read_value "$ENV_FILE" STAFF_TENCENTCLOUD_SECRETID)"
 STAFF_SECRET_KEY="$(read_value "$ENV_FILE" STAFF_TENCENTCLOUD_SECRETKEY)"
 if [[ -z "$STAFF_SECRET_ID" || -z "$STAFF_SECRET_KEY" ]]; then
-  # dev 历史配置把 staff 账号凭据放在 fengyu-staff/.env；兼容读取但不复制进仓库。
-  STAFF_SECRET_SOURCE="$ROOT/fengyu-staff/.env"
-  STAFF_SECRET_ID="$(required_value "$STAFF_SECRET_SOURCE" TENCENTCLOUD_SECRETID)"
-  STAFF_SECRET_KEY="$(required_value "$STAFF_SECRET_SOURCE" TENCENTCLOUD_SECRETKEY)"
+  if [[ "$ENV_NAME" == "test" ]]; then
+    STAFF_SECRET_ID="$(required_value "$ENV_FILE" TENCENTCLOUD_SECRETID)"
+    STAFF_SECRET_KEY="$(required_value "$ENV_FILE" TENCENTCLOUD_SECRETKEY)"
+  else
+    # dev 历史配置把 staff 账号凭据放在 fengyu-staff/.env；兼容读取但不复制进仓库。
+    STAFF_SECRET_SOURCE="$ROOT/fengyu-staff/.env"
+    STAFF_SECRET_ID="$(required_value "$STAFF_SECRET_SOURCE" TENCENTCLOUD_SECRETID)"
+    STAFF_SECRET_KEY="$(required_value "$STAFF_SECRET_SOURCE" TENCENTCLOUD_SECRETKEY)"
+  fi
 fi
 
 umask 077
