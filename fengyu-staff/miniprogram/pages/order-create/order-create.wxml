@@ -438,6 +438,27 @@
             <view wx:if="{{selectedCoupon}}" class="confirm-coupon-info">
               <text>{{selectedCoupon.name}}</text>
             </view>
+
+            <!-- 积分与优惠券同级：先确定订单级抵扣，再展示按应付比例分摊后的商品明细 -->
+            <view class="confirm-points-row">
+              <view class="prepaid-card-info">
+                <text class="confirm-item-label">积分抵扣</text>
+                <text class="prepaid-card-balance">可用 {{customerPointsBalance}} 分</text>
+              </view>
+              <van-switch
+                checked="{{usePoints}}"
+                size="40rpx"
+                active-color="#C0322A"
+                disabled="{{customerPointsBalance <= 0 || maxPointsUsable <= 0 || customerBalanceLoading}}"
+                bind:change="onTogglePoints"
+              />
+            </view>
+            <view wx:if="{{usePoints && pointsDiscount > 0}}" class="confirm-coupon-info">
+              <text>-¥{{pointsDiscount}}（{{pointsUsed}}积分）</text>
+            </view>
+            <view wx:elif="{{customerPointsBalance <= 0}}" class="confirm-coupon-info">
+              <text>顾客暂无可抵扣积分</text>
+            </view>
           </block>
 
           <view class="confirm-items">
@@ -468,7 +489,7 @@
                   <input
                     class="confirm-discount-input"
                     type="digit"
-                    value="{{item.saleAmount}}"
+                    value="{{item.saleAmountOverride || item.couponBaseAmount}}"
                     placeholder="0"
                     data-sku-id="{{item.skuId}}"
                     bindblur="onSaleAmountChange"
@@ -480,7 +501,13 @@
                     <text class="confirm-item-receivable">¥{{item.halfPriceSaleAmount}}</text>
                   </view>
                 </block>
-                <text wx:else class="confirm-item-receivable">¥{{item.saleAmount}}</text>
+                <text wx:else class="confirm-item-receivable">¥{{item.finalSaleAmount || item.saleAmount}}</text>
+              </view>
+
+              <view wx:if="{{saleOrderType === '销售单' && (item.couponShare > 0 || item.pointsShare > 0)}}" class="confirm-line-discount">
+                <text wx:if="{{item.couponShare > 0}}">优惠券 -¥{{item.couponShare}}</text>
+                <text wx:if="{{item.pointsShare > 0}}">积分 -¥{{item.pointsShare}}</text>
+                <text wx:if="{{item.isManagerSpecial}}">抵扣后应付 ¥{{item.finalSaleAmount}}</text>
               </view>
 
               <!-- 实付金额：可编辑，0 ≤ received ≤ 应付 -->
@@ -491,7 +518,7 @@
                   <input
                     class="confirm-discount-input"
                     type="digit"
-                    value="{{item.received}}"
+                    value="{{item.finalReceived || item.received}}"
                     placeholder="0"
                     data-sku-id="{{item.skuId}}"
                     bindblur="onReceivedChange"
@@ -512,7 +539,7 @@
                   <text class="confirm-total-amount">¥{{payableTotal}}</text>
                 </view>
               </block>
-              <text wx:else class="confirm-total-amount">¥{{payableTotal}}</text>
+              <text wx:else class="confirm-total-amount">¥{{payableAfterPoints}}</text>
             </view>
           </view>
 
@@ -529,31 +556,9 @@
             </view>
           </view>
 
-          <!-- Wave 3G — 抵扣区（预选）：充值卡。与支付方式区明确分离 -->
+          <!-- Wave 3G — 充值卡预选。积分已作为订单级抵扣移到商品明细上方 -->
           <view class="prepaid-card-section">
-            <text class="prepaid-card-section-title">抵扣（预选）</text>
-            <view wx:if="{{saleOrderType === '销售单'}}" class="prepaid-card-row">
-              <view class="prepaid-card-info">
-                <text class="prepaid-card-label">积分</text>
-                <text class="prepaid-card-balance">可用 {{customerPointsBalance}} 分</text>
-              </view>
-              <view class="prepaid-card-switch-wrap">
-                <van-switch
-                  checked="{{usePoints}}"
-                  size="40rpx"
-                  active-color="#C0322A"
-                  disabled="{{customerPointsBalance <= 0 || maxPointsUsable <= 0 || customerBalanceLoading}}"
-                  bind:change="onTogglePoints"
-                />
-              </view>
-            </view>
-            <view wx:if="{{saleOrderType === '销售单' && usePoints && pointsDiscount > 0}}" class="prepaid-card-deduct-row">
-              <text class="prepaid-card-deduct-label">积分抵扣</text>
-              <text class="prepaid-card-deduct-amount">-¥{{pointsDiscount}}<text class="prepaid-card-deduct-hint">（{{pointsUsed}}积分）</text></text>
-            </view>
-            <view wx:elif="{{saleOrderType === '销售单' && customerPointsBalance <= 0}}" class="prepaid-card-empty-hint">
-              <text>顾客暂无可抵扣积分</text>
-            </view>
+            <text class="prepaid-card-section-title">充值卡（预选）</text>
             <view class="prepaid-card-row">
               <view class="prepaid-card-info">
                 <text class="prepaid-card-label">充值卡</text>

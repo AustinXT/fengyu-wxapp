@@ -4,7 +4,7 @@
  * 新签名：computePrepaidDeduction({ payableAmount, customerCardBalance, useCard, prepaidCardAmount })
  * - 调用方先算好"应付合计" payableAmount = Σ 行 saleAmount（含订单级券摊算）
  * - 本函数仅负责把手填抵扣额按应付金额和充值卡余额钳制，再拆为 prepaidCardAmount + paidAmount
- * - 与新开单流程中 cart-calc.ts 的 calcCartTotal / allocateCouponPerLine 配合一致
+ * - 与新开单流程中 cart-calc.ts 的 calcCartTotal / allocateDiscountPerLine 配合一致
  */
 import { computePrepaidDeduction, type PrepaidComputeInput } from '../../utils/prepaid-card-calc'
 

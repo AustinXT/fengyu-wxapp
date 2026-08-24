@@ -1,4 +1,4 @@
-import { calcCartTotal, calcHalfPriceTotal, allocateCouponPerLine, calcTierLineAmount } from '../../utils/cart-calc'
+import { calcCartTotal, calcHalfPriceTotal, allocateDiscountPerLine, calcTierLineAmount } from '../../utils/cart-calc'
 
 describe('calcCartTotal — 原价合计（行 price × qty 之和）', () => {
   test('多商品合计', () => {
@@ -65,13 +65,13 @@ describe('calcTierLineAmount — 疗程卡阶梯价行金额', () => {
   })
 })
 
-describe('allocateCouponPerLine — 订单级优惠券按行应付比例摊算', () => {
+describe('allocateDiscountPerLine — 订单级抵扣按行应付比例摊算', () => {
   test('无券 → 全 0', () => {
-    expect(allocateCouponPerLine([100, 200, 300], 0)).toEqual([0, 0, 0])
+    expect(allocateDiscountPerLine([100, 200, 300], 0)).toEqual([0, 0, 0])
   })
 
   test('券 < 总额：守恒 + 末行吸收尾差', () => {
-    const r = allocateCouponPerLine([100, 200, 300], 60)
+    const r = allocateDiscountPerLine([100, 200, 300], 60)
     expect(r.length).toBe(3)
     const sum = Math.round(r.reduce((s, x) => s + x, 0) * 100) / 100
     expect(sum).toBe(60)
@@ -80,22 +80,32 @@ describe('allocateCouponPerLine — 订单级优惠券按行应付比例摊算',
   })
 
   test('券 > 总额 → 截断到总额', () => {
-    const r = allocateCouponPerLine([100], 200)
+    const r = allocateDiscountPerLine([100], 200)
     expect(r[0]).toBe(100)
   })
 
   test('负数券 → 全 0', () => {
-    expect(allocateCouponPerLine([100, 100], -10)).toEqual([0, 0])
+    expect(allocateDiscountPerLine([100, 100], -10)).toEqual([0, 0])
   })
 
   test('单行', () => {
-    expect(allocateCouponPerLine([300], 30)).toEqual([30])
+    expect(allocateDiscountPerLine([300], 30)).toEqual([30])
   })
 
   test('精度尾差由末行吸收（守恒）', () => {
     // 3 行同价 100，券 10 → raw share = 3.333... 前两行 round 后 3.33，末行吸收尾差
-    const r = allocateCouponPerLine([100, 100, 100], 10)
+    const r = allocateDiscountPerLine([100, 100, 100], 10)
     const sum = Math.round(r.reduce((s, x) => s + x, 0) * 100) / 100
     expect(sum).toBe(10)
+  })
+
+  test('积分按券后应付比例分摊', () => {
+    expect(allocateDiscountPerLine([100, 300], 12)).toEqual([3, 9])
+  })
+
+  test('小额抵扣不会因逐行四舍五入超支', () => {
+    const r = allocateDiscountPerLine([1, 1, 1, 1], 0.02)
+    expect(r).toEqual([0.01, 0.01, 0, 0])
+    expect(r.reduce((sum, value) => sum + value, 0)).toBe(0.02)
   })
 })
