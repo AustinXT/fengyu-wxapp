@@ -40,7 +40,7 @@ import {
   type ItemPriceOverride,
   type BundleAddPayload,
 } from "./order-create"
-import { calculateSaleCashAmount, requiresOfflineCardOnlyConfirmation } from "./order-create/payment-calculation"
+import { allocateDiscountPerLine, calculateSaleCashAmount, requiresOfflineCardOnlyConfirmation } from "./order-create/payment-calculation"
 import type { Product } from "@/lib/types"
 
 /**
@@ -152,30 +152,6 @@ function findCartPurchaseLimitViolation(
     if (row.sku.purchaseLimit != null && row.quantity > row.sku.purchaseLimit) return row
   }
   return null
-}
-
-/**
- * 按行应付比例分摊订单级优惠券折扣（与 staff utils/cart-calc.ts:allocateCouponPerLine 同算法）
- * - priceLines = 各行 价格×数量（已含内部单半价处理）
- * - 出参 shares[i] = 摊到 i 行的券折扣（元，2 位精度）
- * - 尾差消化到最后一行
- */
-function allocateCouponPerLine(priceLines: number[], couponAmount: number): number[] {
-  const total = priceLines.reduce((s, x) => s + x, 0)
-  const coupon = Math.max(0, Math.min(couponAmount, total))
-  if (coupon <= 0 || total <= 0) return priceLines.map(() => 0)
-  const n = priceLines.length
-  const shares: number[] = []
-  let acc = 0
-  for (let i = 0; i < n - 1; i++) {
-    const raw = (coupon * priceLines[i]) / total
-    const cent = Math.round(raw * 100) / 100
-    shares.push(cent)
-    acc += cent
-  }
-  const last = Math.round((coupon - acc) * 100) / 100
-  shares.push(Math.max(0, last))
-  return shares
 }
 
 function pointsToDiscountCents(points: number, rate: number): number {
@@ -724,7 +700,7 @@ export default function OrderCreatePageClient({
 
   // 各行摊到的券折扣（按 priceLines 比例，末行吸收尾差）
   const couponShares = useMemo(
-    () => allocateCouponPerLine(cartPriceLines, couponDiscountTotal),
+    () => allocateDiscountPerLine(cartPriceLines, couponDiscountTotal),
     [cartPriceLines, couponDiscountTotal],
   )
 
@@ -804,22 +780,27 @@ export default function OrderCreatePageClient({
     ],
   )
   const pointShares = useMemo(
-    () => allocateCouponPerLine(perItemAmounts.map((a) => a.saleAmount), pointsPreview.pointsDiscount),
+    () => allocateDiscountPerLine(perItemAmounts.map((a) => a.saleAmount), pointsPreview.pointsDiscount),
     [perItemAmounts, pointsPreview.pointsDiscount],
   )
+  const perItemAmountsAfterPoints = useMemo(() => perItemAmounts.map((amounts, index) => {
+    const pointsShare = pointShares[index] || 0
+    const finalSaleAmount = Math.max(0, Math.round((amounts.saleAmount - pointsShare) * 100) / 100)
+    const finalReceived = Math.min(amounts.received, finalSaleAmount)
+    return { ...amounts, pointsShare, finalSaleAmount, finalReceived }
+  }), [perItemAmounts, pointShares])
   const { totalSaleAmountAfterPoints, totalReceivedAfterPoints } = useMemo(() => {
     let sale = 0
     let received = 0
-    for (let i = 0; i < perItemAmounts.length; i++) {
-      const rowSale = Math.max(0, Math.round((perItemAmounts[i].saleAmount - (pointShares[i] || 0)) * 100) / 100)
-      sale += rowSale
-      received += Math.min(perItemAmounts[i].received, rowSale)
+    for (const amounts of perItemAmountsAfterPoints) {
+      sale += amounts.finalSaleAmount
+      received += amounts.finalReceived
     }
     return {
       totalSaleAmountAfterPoints: Math.round(sale * 100) / 100,
       totalReceivedAfterPoints: Math.round(received * 100) / 100,
     }
-  }, [perItemAmounts, pointShares])
+  }, [perItemAmountsAfterPoints])
 
   const conversionPriceDiff = Math.round((totalSaleAmount - conversionTotalOut) * 100) / 100
   // 转换单充值卡抵扣：仅补差额 > 0 时可抵扣，上限 = min(余额, 补差额)
@@ -1416,6 +1397,48 @@ export default function OrderCreatePageClient({
                   )}
                 </div>
               )}
+
+              {/* 积分与优惠券同级：先确定订单级抵扣，再展示分摊后的商品明细。 */}
+              {pointsEnabledForOrder && (
+                <div className="col-span-2 md:col-span-3">
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm text-[#999999]">积分抵扣（可用 {customerPointsBalance.toLocaleString()} 分）</label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={usePoints}
+                        disabled={customerPointsBalance <= 0 || pointsPreview.maxPoints <= 0}
+                        onChange={(e) => setUsePoints(e.target.checked)}
+                        className="h-4 w-4"
+                      />
+                      <span className={`text-xs ${customerPointsBalance <= 0 ? 'text-[#cccccc]' : 'text-[#666666]'}`}>
+                        启用
+                      </span>
+                    </label>
+                  </div>
+                  {usePoints && customerPointsBalance > 0 && pointsPreview.maxPoints > 0 ? (
+                    <div className="mt-1 flex items-center gap-2">
+                      <Input
+                        type="number"
+                        min="0"
+                        max={pointsPreview.maxPoints}
+                        step="1"
+                        className="h-9 text-sm w-28"
+                        placeholder={`留空=${pointsPreview.maxPoints}`}
+                        value={pointsInput}
+                        onChange={(e) => setPointsInput(e.target.value)}
+                      />
+                      <span className="text-xs text-[#3D8A5A]">
+                        -¥{pointsPreview.pointsDiscount.toFixed(2)}（{pointsPreview.pointsUsed.toLocaleString()}积分）
+                      </span>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-[#999999] mt-1">
+                      {customerPointsBalance <= 0 ? '暂无可抵扣积分' : `最多抵 ¥${pointsPreview.maxDiscount.toFixed(2)}`}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
 
             <Separator />
@@ -1553,7 +1576,7 @@ export default function OrderCreatePageClient({
                 </div>
                 <div className="space-y-2">
                   {cart.map((item, idx) => {
-                    const a = perItemAmounts[idx]
+                    const a = perItemAmountsAfterPoints[idx]
                     if (!a) return null
                     // 内部单锁定逐行实付（禁用改价）；线下与线上一致，逐行实付可编辑（实收合计在「确认收款」一键入账）
                     const lockReceived = suppressOverride
@@ -1610,12 +1633,20 @@ export default function OrderCreatePageClient({
                                 }))
                               }}
                             />
+                            {(a.couponShare > 0 || a.pointsShare > 0) && (
+                              <div className="mt-1 text-right text-[10px] text-[#3D8A5A]">
+                                抵扣后 ¥{a.finalSaleAmount.toFixed(2)}
+                              </div>
+                            )}
                           </div>
                         ) : (
                           <span className="col-span-2 text-right">
-                            ¥{a.saleAmount.toFixed(2)}
+                            ¥{a.finalSaleAmount.toFixed(2)}
                             {a.couponShare > 0 && (
-                              <span className="ml-1 text-[10px] text-[#3D8A5A]">-¥{a.couponShare.toFixed(2)}</span>
+                              <span className="ml-1 block text-[10px] text-[#3D8A5A]">券 -¥{a.couponShare.toFixed(2)}</span>
+                            )}
+                            {a.pointsShare > 0 && (
+                              <span className="ml-1 block text-[10px] text-[#3D8A5A]">积分 -¥{a.pointsShare.toFixed(2)}</span>
                             )}
                           </span>
                         )}
@@ -1624,11 +1655,11 @@ export default function OrderCreatePageClient({
                           <Input
                             type="number"
                             min="0"
-                            max={a.saleAmount}
+                            max={a.finalSaleAmount}
                             step="0.01"
                             disabled={lockReceived}
                             className="h-8 text-sm text-right"
-                            value={hasReceivedOverride ? (override!.received as string) : a.saleAmount.toFixed(2)}
+                            value={hasReceivedOverride ? (override!.received as string) : a.finalReceived.toFixed(2)}
                             onChange={(e) => {
                               if (lockReceived) return
                               setPriceOverrides(prev => ({
@@ -1636,6 +1667,17 @@ export default function OrderCreatePageClient({
                                 [item.sku.skuId]: {
                                   saleAmount: prev[item.sku.skuId]?.saleAmount ?? null,
                                   received: e.target.value,
+                                  receivedTouched: true,
+                                }
+                              }))
+                            }}
+                            onBlur={(e) => {
+                              const clamped = Math.max(0, Math.min(Number(e.target.value) || 0, a.finalSaleAmount))
+                              setPriceOverrides(prev => ({
+                                ...prev,
+                                [item.sku.skuId]: {
+                                  saleAmount: prev[item.sku.skuId]?.saleAmount ?? null,
+                                  received: clamped.toFixed(2),
                                   receivedTouched: true,
                                 }
                               }))
@@ -1662,51 +1704,6 @@ export default function OrderCreatePageClient({
                     )
                   })}
                 </div>
-                {pointsEnabledForOrder && (() => {
-                  const maxDiscount = pointsPreview.maxDiscount
-                  return (
-                    <div className="mt-4 border border-[var(--border)] rounded p-3 bg-white">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className="text-sm font-medium text-[var(--foreground)]">积分抵扣</div>
-                          <div className="text-xs text-[#999999] mt-0.5">
-                            可用 {customerPointsBalance.toLocaleString()} 积分，最多抵 ¥{maxDiscount.toFixed(2)}
-                          </div>
-                        </div>
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={usePoints}
-                            disabled={customerPointsBalance <= 0 || pointsPreview.maxPoints <= 0}
-                            onChange={(e) => setUsePoints(e.target.checked)}
-                            className="h-4 w-4"
-                          />
-                          <span className={`text-xs ${customerPointsBalance <= 0 ? 'text-[#cccccc]' : 'text-[#666666]'}`}>
-                            启用
-                          </span>
-                        </label>
-                      </div>
-                      {usePoints && customerPointsBalance > 0 && pointsPreview.maxPoints > 0 && (
-                        <div className="mt-2 flex items-center gap-2">
-                          <span className="text-xs text-[#999999]">使用积分</span>
-                          <Input
-                            type="number"
-                            min="0"
-                            max={pointsPreview.maxPoints}
-                            step="1"
-                            className="h-8 text-sm w-32"
-                            placeholder={`留空=${pointsPreview.maxPoints}`}
-                            value={pointsInput}
-                            onChange={(e) => setPointsInput(e.target.value)}
-                          />
-                          <span className="text-xs text-[#3D8A5A]">
-                            抵扣 {pointsPreview.pointsUsed.toLocaleString()} 积分 / ¥{pointsPreview.pointsDiscount.toFixed(2)}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  )
-                })()}
                 {/* 充值卡抵扣 UI（admin 新增；商品清单下方） */}
                 {!isConversion && selectedCustomer?.userId && (() => {
                   return (
@@ -1766,7 +1763,7 @@ export default function OrderCreatePageClient({
                         </div>
                       )}
                       <div className="text-sm text-[#999999]">
-                        应付合计: ¥{totalSaleAmount.toFixed(2)}
+                        应付合计: ¥{totalSaleAmountAfterPoints.toFixed(2)}
                       </div>
                       {pointsPreview.pointsDiscount > 0 && (
                         <div className="text-sm text-[#3D8A5A]">
@@ -1880,11 +1877,12 @@ export default function OrderCreatePageClient({
                     if (isNaN(amounts.saleAmount) || amounts.saleAmount < 0) {
                       toast.error(`${item.product.name} 的应付金额无效`); return
                     }
-                    if (isNaN(amounts.received) || amounts.received < 0) {
+                    const receivedOverride = priceOverrides[item.sku.skuId]?.received
+                    const received = receivedOverride != null && receivedOverride !== ''
+                      ? Number(receivedOverride)
+                      : perItemAmountsAfterPoints[index]?.finalReceived ?? 0
+                    if (isNaN(received) || received < 0) {
                       toast.error(`${item.product.name} 的实付金额无效`); return
-                    }
-                    if (amounts.received > amounts.saleAmount + 0.005) {
-                      toast.error(`${item.product.name} 的实付金额不能超过应付金额`); return
                     }
                   }
                 }
@@ -1952,7 +1950,8 @@ export default function OrderCreatePageClient({
                         unitRealPrice: (amounts.saleAmount / item.quantity).toFixed(2),
                         quantity: item.quantity,
                         saleAmount: amounts.saleAmount.toFixed(2),
-                        received: amounts.received.toFixed(2),
+                        // 仅实付传最终行上限；应付仍传抵扣前基数，由服务端统一摊券、摊积分。
+                        received: (perItemAmountsAfterPoints[index]?.finalReceived ?? 0).toFixed(2),
                         salesCategory: null,
                         isBundle: isBundleItem,
                       }
