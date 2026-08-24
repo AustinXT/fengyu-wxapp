@@ -7,9 +7,6 @@
  *   - 订单状态单向推进
  *   - 美容师行级过滤
  */
-
-
-
 const pg = globalThis.__mocks__.pg
 const { createManagerCtx, createBeauticianCtx } = require('../helpers')
 const orderRoutes = require('../../routes/order')
@@ -1613,7 +1610,7 @@ describe('order.create', () => {
     expect(orderInsertParams[2]).toBe('售前一次')
   })
 
-  test('document_type 仅按会员身份判：会员客 → 售后', async () => {
+  test('document_type 不由会员身份直接决定：无历史达标单仍为售前一次', async () => {
     const ctx = createManagerCtx({
       clientPhone: '13800001111',
       clientName: '测试顾客',
@@ -1634,9 +1631,6 @@ describe('order.create', () => {
         service_fee: '0', is_shengmei: false, is_experience: false, is_manager_special: false,
         sales_category: '自销自耗', product_kind: '护理',
       }])
-      // document_type 专项查询：会员客
-      .mockResolvedValueOnce([{ customer_type: '会员客' }])
-
     let orderInsertParams = null
     pg.transaction.mockImplementation(async (fn) => {
       const client = {
@@ -1654,8 +1648,8 @@ describe('order.create', () => {
     await orderRoutes.create(ctx)
 
     expect(orderInsertParams).not.toBeNull()
-    // params[2] = documentType：会员客判「售后」
-    expect(orderInsertParams[2]).toBe('售后')
+    // params[2] = documentType：会员身份不参与阶段分类
+    expect(orderInsertParams[2]).toBe('售前一次')
   })
 })
 
@@ -5909,6 +5903,8 @@ describe('order.createConversion', () => {
           price: '500', session_count: 10, service_fee: '0', sales_category: '自销自耗',
         }], rowCount: 1,
       })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // document_type: 顾客级 advisory lock
+      .mockResolvedValueOnce({ rows: [{ document_type: '售前一次' }], rowCount: 1 }) // document_type: 阶段分类
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT sale_orders
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // SELECT max sale_item_id
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT 转出行
@@ -5962,6 +5958,8 @@ describe('order.createConversion', () => {
           price: '500', session_count: 5, service_fee: '0', sales_category: '自销自耗',
         }], rowCount: 1,
       })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // document_type: 顾客级 advisory lock
+      .mockResolvedValueOnce({ rows: [{ document_type: '售前一次' }], rowCount: 1 }) // document_type: 阶段分类
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT sale_orders
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // SELECT max sale_item_id
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT 转出行
@@ -6103,6 +6101,8 @@ describe('order.createConversion', () => {
           price: '200', session_count: 5, service_fee: '0', sales_category: '自销自耗',
         }], rowCount: 1,
       })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // document_type: 顾客级 advisory lock
+      .mockResolvedValueOnce({ rows: [{ document_type: '售前一次' }], rowCount: 1 }) // document_type: 阶段分类
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT sale_orders
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // SELECT max sale_item_id
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT 转出行
@@ -6238,7 +6238,7 @@ describe('order.createConversion', () => {
     expect(insertCall.params[2]).toBe('售前一次')
   })
 
-  test('document_type 仅按会员身份判：会员客 → 售后', async () => {
+  test('document_type 不由会员身份直接决定：无历史达标单仍为售前一次', async () => {
     const ctx = createManagerCtx({
       clientUserId: 'cu-001',
       convertOutSaleItemIds: ['item-dt-out-mb'],
@@ -6251,7 +6251,6 @@ describe('order.createConversion', () => {
       user_id: 'cu-001', phone: '138', name: '赵六',
       customer_type: '会员客', bound_store_id: 'store-001',
     }])
-
     // 2) 单一主事务：捕获 INSERT INTO sale_orders 参数
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => {
@@ -6291,8 +6290,8 @@ describe('order.createConversion', () => {
 
     const insertCall = txCalls.find(c => c.sql.includes('INSERT INTO sale_orders'))
     expect(insertCall).toBeDefined()
-    // params[2] = documentType：会员客判「售后」
-    expect(insertCall.params[2]).toBe('售后')
+    // params[2] = documentType：会员身份不参与阶段分类
+    expect(insertCall.params[2]).toBe('售前一次')
   })
 })
 

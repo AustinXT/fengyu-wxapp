@@ -45,6 +45,7 @@ const { logOperation, logTransition } = require('../utils/operation-log')
 const { shanghaiDateStr, shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
 const { INVENTORY_LINKAGE_ENABLED } = require('../utils/feature-flags')
 const { assertEmployeesAssignableToStore } = require('../utils/employee-assignment')
+const { classifySaleOrderDocumentType } = require('../utils/document-type')
 
 // 模块级缓存：saleOrderId → qrcodeUrl，避免轮询时重复生成
 const qrcodeCache = new Map()
@@ -1498,17 +1499,8 @@ async function create(ctx) {
     effectivePaymentMethod = paymentMethod
   }
 
-  // ========== 开单 document_type 预测值（入账时由数据库冻结） ==========
-  let documentType = '售前一次'
-  if (clientUserId) {
-    const ctRows = await pg.query(
-      'SELECT customer_type FROM client_wechat_users WHERE user_id = $1',
-      [clientUserId]
-    )
-    if (ctRows.length > 0 && ctRows[0].customer_type === '会员客') {
-      documentType = '售后'
-    }
-  }
+  // ========== 开单 document_type（创建事务内按历史达标次数计算） ==========
+  let documentType
 
   await pg.transaction(async (client) => {
     // 按顾客串行化开单（advisory lock 持有到 COMMIT）：uq 拆除员工单 DB 兜底后，业务守卫
@@ -1527,6 +1519,7 @@ async function create(ctx) {
     // 生成 saleOrderId（内部独占 advisory_xact_lock(hashtext('sale_order_id_gen'))，
     // 锁持有到外层 COMMIT，闭合 TOCTOU）。同一事务内再次请求同 key 是 no-op（reentrant）
     saleOrderId = await generateOrderNo(undefined, client)
+    documentType = await classifySaleOrderDocumentType(client, clientUserId, saleOrderId)
 
     const today = now
     const dateStr = shanghaiYMD(today)
@@ -2153,6 +2146,18 @@ async function confirmOffline(ctx) {
     const newPrepaid = Math.round(Number(sumRes.rows[0].new_prepaid) * 100) / 100
     // 结清判定：含卡 received 直接比 settleTarget(=payable+prepaid 锁单快照)，与 admin orders.ts / createRepayment 一致
     const targetStatus = newReceived + 0.005 >= settleTarget ? '已支付' : '部分支付'
+    if (!['部分支付', '已支付', '已完成'].includes(order.status)) {
+      const documentType = await classifySaleOrderDocumentType(
+        client,
+        order.client_user_id,
+        saleOrderId,
+      )
+      await client.query(
+        `UPDATE sale_orders SET document_type = $1::document_type
+         WHERE sale_order_id = $2 AND status = $3`,
+        [documentType, saleOrderId, order.status],
+      )
+    }
 
     // ========== 更新 sale_orders（C4 合规：WHERE 锁定当前状态防并发竞态）==========
     // paid_at 语义：'已支付' → 本次确认时间（"最后一次到账时间"快照）；'部分支付' → 保留原值（NULL 续 NULL）
@@ -3766,6 +3771,18 @@ async function createRepayment(ctx) {
     // 充值单不进回款路径（一次性付清），total 锚无副作用。
     const settleTarget = Math.round(Number(locked.total_amount || 0) * 100) / 100
     const targetStatus = settled + 0.001 >= settleTarget ? '已支付' : '部分支付'
+    if (!['部分支付', '已支付', '已完成'].includes(locked.status)) {
+      const documentType = await classifySaleOrderDocumentType(
+        client,
+        locked.client_user_id,
+        refSaleOrderId,
+      )
+      await client.query(
+        `UPDATE sale_orders SET document_type = $1::document_type
+         WHERE sale_order_id = $2 AND status = $3`,
+        [documentType, refSaleOrderId, locked.status],
+      )
+    }
 
     // paid_at 语义：目标 '已支付' 时设为本次时间；部分支付保留原值
     const paidAtValue = targetStatus === '已支付' ? now : (locked.paid_at || null)
@@ -4380,8 +4397,8 @@ async function createConversion(ctx) {
     // 全额抵扣 payment_method 落 '无'（现金通道无需使用，与 order.create 对齐）
     const effectivePaymentMethod = isExperienceConversion || isFullCardCoverage ? '无' : paymentMethod
 
-    // 3. 开单预测值；结清时按转换单现付净额参与达标次数核算。
-    const documentType = client.customer_type === '会员客' ? '售后' : '售前一次'
+    // 3. 按既有达标单次数写预测值；首次入账时再次冻结权威快照。
+    const documentType = await classifySaleOrderDocumentType(tx, clientUserId, convOrderId)
 
     // 4. 插入订单主表
     await tx.query(
@@ -5990,8 +6007,8 @@ async function createDeposit(ctx) {
     // 订单号（advisory lock 防并发）
     saleOrderId = await generateOrderNo('FY-XSD-WX-', tx)
 
-    // 开单预测值；首次入账时由数据库按顾客历史达标次数冻结。
-    const documentType = '售前一次'
+    // 按既有达标单次数写预测值；审批入账时再次冻结权威快照。
+    const documentType = await classifySaleOrderDocumentType(tx, clientUserId, saleOrderId)
 
     // INSERT sale_orders —— 寄存单核心：金额全 0、status 待审批、payment_method='无'
     await tx.query(
