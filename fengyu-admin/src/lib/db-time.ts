@@ -61,3 +61,13 @@ export function beijingTs(d: Date) {
 export function beijingBoundaryTs(dateStr: string, time: '00:00:00' | '23:59:59') {
   return sql`${`${dateStr} ${time}`}::timestamp AT TIME ZONE 'Asia/Shanghai'`
 }
+
+/**
+ * 日期筛选结束边界的次日零点，供半开区间 `[from, nextDay(to))` 使用。
+ *
+ * 不能使用 `< 当日 23:59:59`：timestamptz 保留微秒，该写法会漏掉结束日
+ * `23:59:59.000000` 及之后的最后一秒数据。日期加法留在 PG 内完成，避免 JS 时区漂移。
+ */
+export function beijingNextDayBoundaryTs(dateStr: string) {
+  return sql`(${dateStr}::date + 1)::timestamp AT TIME ZONE 'Asia/Shanghai'`
+}

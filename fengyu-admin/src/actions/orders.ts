@@ -39,7 +39,7 @@ import { capturePaymentAllocatables, refreshOrderAllocationRollup } from '@/lib/
 import { getPerItemRefundedMap } from '@/lib/per-item-refund'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { shanghaiYmd } from '@/lib/datetime'
-import { nowTs, beijingBoundaryTs } from '@/lib/db-time'
+import { nowTs, beijingBoundaryTs, beijingNextDayBoundaryTs } from '@/lib/db-time'
 import {
   resolveExportBatchLimit,
   type ExportBatchOptions,
@@ -793,6 +793,8 @@ export interface OrderFilters {
   storeId?: string
   dateFrom?: string
   dateTo?: string
+  /** 日期筛选口径：默认按下单时间；payment 按已入账款项发生时间。 */
+  dateBasis?: 'order' | 'payment'
   search?: string
   /** 支付方式筛选（含 `'无'` = 全额储值卡抵扣） */
   paymentMethod?: string
@@ -840,15 +842,29 @@ function buildOrderConditions(
   if (filters.storeId) {
     conditions.push(eq(saleOrders.storeId, filters.storeId))
   }
-  if (filters.dateFrom) {
-    // dateFrom 是日期串（date input 'YYYY-MM-DD'）：ES 规范按 UTC 午夜解析 new Date(dateFrom)，
-    // postgres.js 发 UTC ISO → PG 当墙钟早 8h，漏当天 00:00-08:00。直接拼北京字面 00:00:00::timestamp
-    // （与 sale_order_datetime 北京字面同语义，不经 new Date/beijingTs）。
-    conditions.push(gte(saleOrders.saleOrderDatetime, beijingBoundaryTs(filters.dateFrom, '00:00:00')))
-  }
-  if (filters.dateTo) {
-    // 同上：dateTo 日期串拼 23:59:59 北京字面，取当天结束。
-    conditions.push(lt(saleOrders.saleOrderDatetime, beijingBoundaryTs(filters.dateTo, '23:59:59')))
+  if (filters.dateBasis === 'payment' && (filters.dateFrom || filters.dateTo)) {
+    // 款项日期只决定订单是否入选，导出金额仍是订单当前累计快照。
+    // status='已支付' 同时覆盖首次支付、回款、储值卡抵扣和已完成退款。
+    conditions.push(sql`EXISTS (
+      SELECT 1
+      FROM ${saleOrderPayments} AS payment_date_filter
+      WHERE payment_date_filter.sale_order_id = ${saleOrders.saleOrderId}
+        AND payment_date_filter.status = '已支付'
+        ${filters.dateFrom
+          ? sql`AND payment_date_filter.paid_at >= ${beijingBoundaryTs(filters.dateFrom, '00:00:00')}`
+          : sql``}
+        ${filters.dateTo
+          ? sql`AND payment_date_filter.paid_at < ${beijingNextDayBoundaryTs(filters.dateTo)}`
+          : sql``}
+    )`)
+  } else {
+    if (filters.dateFrom) {
+      conditions.push(gte(saleOrders.saleOrderDatetime, beijingBoundaryTs(filters.dateFrom, '00:00:00')))
+    }
+    if (filters.dateTo) {
+      // 半开区间取次日零点，完整包含结束日所有微秒。
+      conditions.push(lt(saleOrders.saleOrderDatetime, beijingNextDayBoundaryTs(filters.dateTo)))
+    }
   }
   if (filters.search) {
     const pattern = `%${filters.search}%`
@@ -1052,7 +1068,7 @@ export interface ExportOrderRow {
   remark: string | null
   /** 以下字段仅供异步导出 worker 跨分页聚合，不映射到 Excel 列。 */
   __sourceId?: string
-  __sourceKind?: 'item' | 'recharge' | 'cardCredit'
+  __sourceKind?: 'item' | 'recharge' | 'cardCredit' | 'orderFallback'
   __skuId?: string | null
   __itemDirection?: string | null
   __quantity?: number
@@ -1065,6 +1081,7 @@ export interface ExportOrdersCursor {
   itemOffset: number
   rechargeOffset: number
   cardCreditOffset: number
+  orderFallbackOffset: number
 }
 
 export interface ExportAllocationOrdersCursor {
@@ -1091,6 +1108,7 @@ export const exportOrders = withPermission(
       itemOffset: nonNegativeOffset(options?.cursor?.itemOffset),
       rechargeOffset: nonNegativeOffset(options?.cursor?.rechargeOffset),
       cardCreditOffset: nonNegativeOffset(options?.cursor?.cardCreditOffset),
+      orderFallbackOffset: nonNegativeOffset(options?.cursor?.orderFallbackOffset),
     }
 
     // 从 sale_items 出发（明细级）；innerJoin sale_orders 保证每行有归属订单
@@ -1223,7 +1241,8 @@ export const exportOrders = withPermission(
       : await rechargeQuery.limit(limit + 1).offset(cursor.rechargeOffset)
 
     // 普通转换单旧卡价值高于转入商品时，差额会形成一笔 card_transactions 充值流水。
-    // 该资产变动不属于支付，但在订单明细导出中归入储值卡通道，才能与转换单的转出/转入金额逐行勾稽。
+    // 该资产变动不属于储值卡抵扣；订单明细导出按业务记账口径归入负数现付。
+    // 订单金额/实付仍保留正数，使转换单的转出、转入和储值金入账金额可勾稽为 0。
     const cardCreditQuery = db
       .select({
         marketName: saleOrders.marketName,
@@ -1267,6 +1286,62 @@ export const exportOrders = withPermission(
       ? await cardCreditQuery
       : await cardCreditQuery.limit(limit + 1).offset(cursor.cardCreditOffset)
 
+    // WorkFine 历史销售单没有 sale_items；未来若出现同类异常原生单，也不能从订单导出中静默消失。
+    // 仅为完全没有可导出明细的非充值订单造一条订单级兜底行，正常商品行不会重复。
+    const orderFallbackQuery = db
+      .select({
+        marketName: saleOrders.marketName,
+        storeName: saleOrders.storeName,
+        saleOrderId: saleOrders.saleOrderId,
+        saleOrderType: saleOrders.saleOrderType,
+        documentType: saleOrders.documentType,
+        status: saleOrders.status,
+        custName: clientWechatUsers.name,
+        custPhone: clientWechatUsers.phone,
+        customerSource: clientWechatUsers.customerSource,
+        promoterEmployeeName: clientWechatUsers.promoterEmployeeName,
+        fallbackName: saleOrders.customerName,
+        fallbackPhone: saleOrders.clientPhone,
+        totalAmount: saleOrders.totalAmount,
+        prepaidCardAmount: saleOrders.prepaidCardAmount,
+        orderReceived: saleOrders.received,
+        received: saleOrders.received,
+        refundedAmount: saleOrders.refundedAmount,
+        paymentMethod: saleOrders.paymentMethod,
+        isMembershipUpgrade: saleOrders.isMembershipUpgrade,
+        isActivity: saleOrders.isActivity,
+        isExperienceConversion: saleOrders.isExperienceConversion,
+        customerType: clientWechatUsers.customerType,
+        openedByName: opener.name,
+        saleOrderDatetime: saleOrders.saleOrderDatetime,
+        performanceAttributionDate: saleOrders.performanceAttributionDate,
+        createdAt: saleOrders.createdAt,
+        remark: saleOrders.remark,
+        legacySource: saleOrders.legacySource,
+        sourceId: saleOrders.saleOrderId,
+      })
+      .from(saleOrders)
+      .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
+      .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
+      .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
+      .where(and(
+        whereClause,
+        sql`${saleOrders.saleOrderType} <> '充值单'`,
+        sql`NOT EXISTS (
+          SELECT 1
+          FROM ${saleItems} AS export_item
+          WHERE export_item.sale_order_id = ${saleOrders.saleOrderId}
+            AND (
+              export_item.item_direction = '购买'
+              OR (${saleOrders.saleOrderType} = '转换单' AND export_item.item_direction IN ('转出', '转入'))
+            )
+        )`,
+      ))
+      .orderBy(desc(saleOrders.saleOrderDatetime), saleOrders.saleOrderId)
+    const orderFallbackRows = limit == null
+      ? await orderFallbackQuery
+      : await orderFallbackQuery.limit(limit + 1).offset(cursor.orderFallbackOffset)
+
     const toAmount = (value: string | number | null | undefined) => {
       const amount = Number(value ?? 0)
       return Number.isFinite(amount) ? Math.round(amount * 100) / 100 : 0
@@ -1289,7 +1364,7 @@ export const exportOrders = withPermission(
     // 导出按筛选条件返回全量，合并后仅做整体排序。
     const combined: Array<{
       row: ExportOrderRow
-      source: 'item' | 'recharge' | 'cardCredit'
+      source: 'item' | 'recharge' | 'cardCredit' | 'orderFallback'
       sourceId: string
     }> = [
       ...itemRows.map((r) => {
@@ -1395,6 +1470,53 @@ export const exportOrders = withPermission(
           },
         }
       }),
+      ...orderFallbackRows.map((r) => {
+        const settledAmounts = resolveRechargeAmounts(r)
+        return {
+          source: 'orderFallback' as const,
+          sourceId: String(r.sourceId ?? r.saleOrderId),
+          row: {
+            marketName: r.marketName,
+            storeName: r.storeName,
+            saleOrderId: r.saleOrderId,
+            saleOrderType: r.saleOrderType,
+            documentType: r.documentType,
+            status: r.status,
+            customerName: r.custName || r.fallbackName || null,
+            clientPhone: r.custPhone || r.fallbackPhone || null,
+            customerSource: r.customerSource ?? null,
+            promoterEmployeeName: r.promoterEmployeeName ?? null,
+            totalAmount: r.totalAmount,
+            prepaidCardAmount: settledAmounts.prepaidCardAmount,
+            cashAmount: settledAmounts.cashAmount,
+            received: r.received ?? '0',
+            refundedAmount: r.refundedAmount ?? '0',
+            paymentMethod: r.paymentMethod,
+            isMembershipUpgrade: r.isMembershipUpgrade ?? false,
+            isActivity: r.isActivity ?? false,
+            isExperienceConversion: r.isExperienceConversion ?? false,
+            salesCategory: null,
+            customerType: r.customerType,
+            openedByName: r.openedByName,
+            saleOrderDatetime: r.saleOrderDatetime.toISOString(),
+            performanceAttributionDate: r.performanceAttributionDate,
+            createdAt: r.createdAt.toISOString(),
+            productType: null,
+            categoryL1: null,
+            categoryL2: null,
+            productName: r.legacySource === 'workfine'
+              ? '历史订单（无商品明细）'
+              : '订单（无商品明细）',
+            sessionCount: null,
+            unit: null,
+            paidUnusedSessions: null,
+            unitRealPrice: null,
+            remark: r.remark,
+            __sourceId: String(r.sourceId ?? r.saleOrderId),
+            __sourceKind: 'orderFallback' as const,
+          },
+        }
+      }),
       ...cardCreditRows.map((r) => ({
         source: 'cardCredit' as const,
         sourceId: String(r.sourceId),
@@ -1410,8 +1532,8 @@ export const exportOrders = withPermission(
           customerSource: r.customerSource ?? null,
           promoterEmployeeName: r.promoterEmployeeName ?? null,
           totalAmount: r.amount,
-          prepaidCardAmount: r.amount,
-          cashAmount: '0.00',
+          prepaidCardAmount: '0.00',
+          cashAmount: formatAmount(-toAmount(r.amount)),
           received: r.amount,
           refundedAmount: '0.00',
           paymentMethod: null,
@@ -1448,7 +1570,7 @@ export const exportOrders = withPermission(
       if (byTime !== 0) return byTime
       const byOrder = left.row.saleOrderId.localeCompare(right.row.saleOrderId)
       if (byOrder !== 0) return byOrder
-      const sourcePriority = { item: 0, recharge: 1, cardCredit: 2 } as const
+      const sourcePriority = { item: 0, recharge: 1, orderFallback: 2, cardCredit: 3 } as const
       const bySource = sourcePriority[left.source] - sourcePriority[right.source]
       return bySource || left.sourceId.localeCompare(right.sourceId)
     })
@@ -1460,9 +1582,11 @@ export const exportOrders = withPermission(
     const itemCount = selected.filter((item) => item.source === 'item').length
     const rechargeCount = selected.filter((item) => item.source === 'recharge').length
     const cardCreditCount = selected.filter((item) => item.source === 'cardCredit').length
+    const orderFallbackCount = selected.filter((item) => item.source === 'orderFallback').length
     const hasMore = itemRows.length > itemCount
       || rechargeOrders.length > rechargeCount
       || cardCreditRows.length > cardCreditCount
+      || orderFallbackRows.length > orderFallbackCount
     return {
       rows,
       truncated: false,
@@ -1473,6 +1597,7 @@ export const exportOrders = withPermission(
               itemOffset: cursor.itemOffset + itemCount,
               rechargeOffset: cursor.rechargeOffset + rechargeCount,
               cardCreditOffset: cursor.cardCreditOffset + cardCreditCount,
+              orderFallbackOffset: cursor.orderFallbackOffset + orderFallbackCount,
             },
           }
         : {}),

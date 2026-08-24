@@ -118,6 +118,12 @@ describe('订单/服务单列表筛选解析', () => {
     expect(parseOrderFilters({ status: '待支付,待审批' }).statuses).toEqual(['待支付', '待审批'])
   })
 
+  it('订单日期口径仅接受 payment，其余值回落为 order', () => {
+    expect(parseOrderFilters({ dateBasis: 'payment' }).dateBasis).toBe('payment')
+    expect(parseOrderFilters({ dateBasis: 'invalid' }).dateBasis).toBe('order')
+    expect(parseOrderFilters({}).dateBasis).toBe('order')
+  })
+
   it('服务单列表透传 market/store URL 参数', () => {
     expect(parseServiceOrderFilters({ market: 'market-1', store: 'store-1' })).toMatchObject({
       marketId: 'market-1',
