@@ -1543,6 +1543,24 @@ describe('order.detail', () => {
 })
 
 describe('order.cancel', () => {
+  const lakalaEnv = {
+    LAKALA_API_BASE: 'https://x', LAKALA_APPID: 'OP', LAKALA_SERIAL_NO: 'sn',
+    LAKALA_PRIVATE_KEY_PEM: 'pk', LAKALA_PLATFORM_CERT_PEM: 'cert',
+  }
+  const originalLakalaEnv = {}
+  beforeEach(() => {
+    for (const [key, value] of Object.entries(lakalaEnv)) {
+      originalLakalaEnv[key] = process.env[key]
+      process.env[key] = value
+    }
+  })
+  afterEach(() => {
+    for (const key of Object.keys(lakalaEnv)) {
+      if (originalLakalaEnv[key] === undefined) delete process.env[key]
+      else process.env[key] = originalLakalaEnv[key]
+    }
+  })
+
   test('正常取消待支付订单', async () => {
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
@@ -1571,8 +1589,32 @@ describe('order.cancel', () => {
     await expect(routes.cancel(ctx)).rejects.toThrow(/INVALID_PARAMS.*不允许取消/)
   })
 
-  test('取消已发起拉卡拉的线上待支付单 → 保持本地待支付，等待渠道明确终态', async () => {
-    // 聚合主扫无显式关单接口，不能先把本地订单关闭；否则渠道迟到成功会形成已扣款未入账。
+  test('取消已发起但渠道已 FAIL 的线上待支付单 → 释放意图后关闭订单', async () => {
+    pg.query.mockImplementation(async (sql) => {
+      if (/SELECT \* FROM sale_orders/.test(sql)) return [{
+        sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
+        store_id: 'store-1', lakala_out_order_no: 'FY-001_1700000000',
+      }]
+      if (/lakala_merchants/.test(sql)) return [{ merchant_no: 'M1', term_no: 'T1', enabled: true }]
+      if (/SET lakala_out_order_no = NULL/.test(sql)) return [{ sale_order_id: 'FY-001' }]
+      return []
+    })
+    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({ ok: true, tradeState: 'FAIL' })
+    pg.transaction.mockImplementation(async (cb) => cb({
+      query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }),
+    }))
+
+    const ctx = createBoundCtx({ orderNo: 'FY-001' })
+    await routes.cancel(ctx)
+
+    expect(ctx.result.status).toBe('已关闭')
+    expect(__mocks__.lakalaClient.queryTrade).toHaveBeenCalledWith({
+      merchantNo: 'M1', termNo: 'T1', outTradeNo: 'FY-001_1700000000',
+    })
+    expect(pg.transaction).toHaveBeenCalledTimes(1)
+  })
+
+  test('取消已发起且渠道仍 CREATE 的线上待支付单 → 保持本地待支付', async () => {
     pg.query.mockImplementation(async (sql) => {
       if (/SELECT \* FROM sale_orders/.test(sql)) return [{
         sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
@@ -1581,13 +1623,27 @@ describe('order.cancel', () => {
       if (/lakala_merchants/.test(sql)) return [{ merchant_no: 'M1', term_no: 'T1', enabled: true }]
       return []
     })
-    pg.transaction.mockImplementation(async (cb) => cb({ query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }))
+    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
 
     const ctx = createBoundCtx({ orderNo: 'FY-001' })
-    await expect(routes.cancel(ctx)).rejects.toThrow(/PAYMENT_INTENT_ACTIVE/)
-
+    await expect(routes.cancel(ctx)).rejects.toThrow(/PAYMENT_INTENT_ACTIVE.*支付结果仍在确认中/)
     expect(pg.transaction).not.toHaveBeenCalled()
-    expect(__mocks__.lakalaClient.request).not.toHaveBeenCalled()
+  })
+
+  test('取消已发起且渠道已 SUCCESS 的线上待支付单 → 禁止关闭并提示刷新', async () => {
+    pg.query.mockImplementation(async (sql) => {
+      if (/SELECT \* FROM sale_orders/.test(sql)) return [{
+        sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
+        store_id: 'store-1', lakala_out_order_no: 'FY-001_1700000000',
+      }]
+      if (/lakala_merchants/.test(sql)) return [{ merchant_no: 'M1', term_no: 'T1', enabled: true }]
+      return []
+    })
+    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({ ok: true, tradeState: 'SUCCESS' })
+
+    const ctx = createBoundCtx({ orderNo: 'FY-001' })
+    await expect(routes.cancel(ctx)).rejects.toThrow(/PAYMENT_ALREADY_SUCCEEDED.*支付已成功/)
+    expect(pg.transaction).not.toHaveBeenCalled()
   })
 })
 
