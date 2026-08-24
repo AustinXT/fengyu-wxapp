@@ -52,7 +52,7 @@ BEGIN
     FROM sale_orders o
    WHERE o.client_user_id = p_client_user_id
      AND o.sale_order_id <> p_sale_order_id
-     AND o.status IN ('已支付', '已完成')
+     AND o.status IN ('部分支付', '已支付', '已完成')
      AND (
        (o.sale_order_type = '销售单'
         AND GREATEST(o.received::numeric - o.refunded_amount::numeric, 0) >= v_threshold)
@@ -89,8 +89,8 @@ BEGIN
   -- 待支付开单写预测值；首次进入有效支付状态时写最终权威快照。
   -- 后续回款、退款及状态流转不得重排历史分类。
   IF TG_OP = 'INSERT'
-     OR (NEW.status IN ('已支付', '已完成')
-         AND OLD.status NOT IN ('已支付', '已完成')) THEN
+     OR (NEW.status IN ('部分支付', '已支付', '已完成')
+         AND OLD.status NOT IN ('部分支付', '已支付', '已完成')) THEN
     NEW.document_type := classify_sale_order_document_type(
       NEW.client_user_id,
       NEW.sale_order_id,
@@ -122,7 +122,7 @@ WITH cfg AS (
   SELECT o.sale_order_id, o.client_user_id,
          COALESCE(o.paid_at, o.sale_order_datetime, o.created_at) AS order_at,
          CASE
-           WHEN o.status IN ('已支付', '已完成')
+           WHEN o.status IN ('部分支付', '已支付', '已完成')
             AND ((o.sale_order_type = '销售单'
                   AND GREATEST(o.received::numeric - o.refunded_amount::numeric, 0) >= cfg.threshold)
                  OR (o.sale_order_type = '转换单'

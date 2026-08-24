@@ -20,12 +20,16 @@ describe('销售订单 document_type 达标次数迁移', () => {
     expect(migration).not.toMatch(/sale_order_type\s+IN\s*\([^)]*'充值单'/)
   })
 
-  test('顾客级事务锁、首次结清冻结和三阶段映射均存在', () => {
+  test('顾客级事务锁、首次有效入账冻结和三阶段映射均存在', () => {
     expect(migration).toContain("pg_advisory_xact_lock(hashtext('document-type:' || p_client_user_id)::bigint)")
-    expect(migration).toContain("OLD.status NOT IN ('已支付', '已完成')")
+    expect(migration).toContain("OLD.status NOT IN ('部分支付', '已支付', '已完成')")
     expect(migration).toContain("WHEN v_hit_count <= 1 THEN '售前一次'")
     expect(migration).toContain("WHEN v_hit_count = 2 THEN '售前二次'")
     expect(migration).toContain("ELSE '售后'")
+  })
+
+  test('部分支付同时纳入历史计数、首次入账冻结和存量回填', () => {
+    expect(migration.match(/status IN \('部分支付', '已支付', '已完成'\)/g)).toHaveLength(3)
   })
 
   test('退款不会触发历史分类重排', () => {
