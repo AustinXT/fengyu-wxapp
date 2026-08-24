@@ -376,7 +376,7 @@ async function enableMerchantAfterWechatCertification(app: NonNullable<Awaited<R
   const merchantName = data.merchantData.merRegName || data.merchantData.merBlisName || data.merchantData.merBizName || app.orderNo;
   const terminalNo = getStoredTerminalNo(app.terminalData);
   if (!terminalNo) {
-    throw new Error("微信认证已通过，但拉卡拉尚未返回终端号，请先点击查询状态获取终端号");
+    throw new Error("INVALID_STATE: 微信认证已通过，但拉卡拉尚未返回终端号，请先点击查询状态获取终端号");
   }
   const [marketRow] = await db
     .select({ marketId: orgNodes.parentId })
@@ -432,11 +432,11 @@ async function associateDisabledMerchantForApplication(app: NonNullable<Awaited<
   });
   const merchantName = data.merchantData.merRegName || data.merchantData.merBlisName || data.merchantData.subjectName || data.merchantData.merBizName || app.orderNo;
   const terminalNo = getStoredTerminalNo(app.terminalData);
-  if (!app.merCupNo?.startsWith("82")) throw new Error("缺少银联商户号，不能关联收款商户");
-  if (!terminalNo) throw new Error("缺少终端号，不能关联收款商户");
+  if (!app.merCupNo?.startsWith("82")) throw new Error("INVALID_STATE: 缺少银联商户号，不能关联收款商户");
+  if (!terminalNo) throw new Error("INVALID_STATE: 缺少终端号，不能关联收款商户");
   const channelData = (app.channelData as Record<string, unknown>) ?? {};
-  if (!hasWechatSubMerchant(channelData)) throw new Error("缺少微信子商户号，不能关联收款商户");
-  if (!hasAlipaySubMerchant(channelData)) throw new Error("缺少支付宝子商户号，不能关联收款商户");
+  if (!hasWechatSubMerchant(channelData)) throw new Error("INVALID_STATE: 缺少微信子商户号，不能关联收款商户");
+  if (!hasAlipaySubMerchant(channelData)) throw new Error("INVALID_STATE: 缺少支付宝子商户号，不能关联收款商户");
 
   const [marketRow] = await db
     .select({ marketId: orgNodes.parentId })
@@ -615,7 +615,7 @@ function requiredData(app: NonNullable<Awaited<ReturnType<typeof getOnboardingAp
     terminalData: app.terminalData as JsonRecord,
   });
   const missing = missingFromData(data);
-  if (missing.length) throw new Error(`提交前请先补齐：${missing.join("、")}`);
+  if (missing.length) throw new Error(`INVALID_PARAMS: 提交前请先补齐：${missing.join("、")}`);
   return data;
 }
 
@@ -1023,9 +1023,9 @@ export const uploadOnboardingAttachment = withPermission(
   async (_session, applicationId: string, file: UploadFileLike, attType: string, displayName: string) => {
   await ensureOnboardingSchema();
   const app = await getOnboardingApplicationForService(applicationId);
-  if (!app) throw new Error("申请不存在");
+  if (!app) throw new Error("NOT_FOUND: 申请不存在");
   if (typeof file.size === "number" && file.size > MAX_ONBOARDING_ATTACHMENT_BYTES) {
-    throw new Error(onboardingAttachmentTooLargeMessage(displayName, file.size));
+    throw new Error(`INVALID_PARAMS: ${onboardingAttachmentTooLargeMessage(displayName, file.size)}`);
   }
   if (!app.merInnerNo && !app.merCupNo) {
     await db.update(lakalaOnboardingApplications).set({ status: "FILES_UPLOADING", lastErrorCode: null, lastErrorMessage: null }).where(eq(lakalaOnboardingApplications.id, applicationId));
@@ -1103,7 +1103,7 @@ async function uploadAttachmentToLakala(app: NonNullable<Awaited<ReturnType<type
       .update(lakalaOnboardingAttachments)
       .set({ status: "FAILED", lastErrorMessage: message })
       .where(eq(lakalaOnboardingAttachments.id, attachment.id));
-    throw new Error(message);
+    throw new Error(`INVALID_PARAMS: ${message}`);
   }
   const buffer = await readFile(attachment.localPath);
   await db
@@ -1132,7 +1132,7 @@ async function uploadAttachmentToLakala(app: NonNullable<Awaited<ReturnType<type
       .update(lakalaOnboardingAttachments)
       .set({ status: "FAILED", lastErrorMessage: message })
       .where(eq(lakalaOnboardingAttachments.id, attachment.id));
-    throw new Error(`${attachment.displayName}：${message}`);
+    throw new Error(`INVALID_STATE: ${attachment.displayName}：${message}`);
   }
   const uploadedAt = new Date();
   const expiresAt = new Date(uploadedAt.getTime() + 24 * 60 * 60 * 1000);
@@ -1194,7 +1194,7 @@ async function validateAndUploadAttachments(app: NonNullable<Awaited<ReturnType<
     }
     missing.delete(displayName);
   }
-  if (missing.size > 0) throw new Error(`缺少必传附件：${Array.from(missing).join("、")}`);
+  if (missing.size > 0) throw new Error(`INVALID_PARAMS: 缺少必传附件：${Array.from(missing).join("、")}`);
   for (const displayName of ATTACHMENT_REQUIREMENTS.map((item) => item.displayName)) {
     const attachment = latestByName.get(displayName);
     if (!attachment) continue;
@@ -1208,7 +1208,7 @@ function normalizeDateForLakala(value?: string) {
 }
 
 function requireOnboardingConfig(name: string, value: string) {
-  if (!value) throw new Error(`缺少后台入网配置：${name}`);
+  if (!value) throw new Error(`INVALID_STATE: 缺少后台入网配置：${name}`);
   return value;
 }
 
@@ -1370,9 +1370,9 @@ function lakalaMerchantAddressForSubmit(data: OnboardingApplicationInput) {
 
 function validateTkbsMerchantAddress(data: OnboardingApplicationInput) {
   const merAddr = lakalaMerchantAddressForSubmit(data);
-  if (!merAddr) throw new Error("请填写详细地址（不含省市区）");
+  if (!merAddr) throw new Error("INVALID_PARAMS: 请填写详细地址（不含省市区）");
   if (merAddr.length > 29) {
-    throw new Error(`商户详细地址需控制在 29 字以内，请去掉省市区并缩短门牌描述；当前提交值为：${merAddr}`);
+    throw new Error(`INVALID_PARAMS: 商户详细地址需控制在 29 字以内，请去掉省市区并缩短门牌描述；当前提交值为：${merAddr}`);
   }
   return merAddr;
 }
@@ -1396,7 +1396,7 @@ function resolveTkbsRegionCodes(data: OnboardingApplicationInput) {
   const cityCode = envOrData("LAKALA_ONBOARDING_CITY_CODE", merchantRegion?.cityCode);
   const countyCode = envOrData("LAKALA_ONBOARDING_COUNTY_CODE", merchantRegion?.countyCode);
   if (!provinceCode || !cityCode || !countyCode) {
-    throw new Error("注册地址地区未匹配到拉卡拉地区码，请重新选择注册地址省市区后再提交");
+    throw new Error("INVALID_PARAMS: 注册地址地区未匹配到拉卡拉地区码，请重新选择注册地址省市区后再提交");
   }
   return {
     provinceCode,
@@ -1494,7 +1494,7 @@ function buildEContractContent(data: OnboardingApplicationInput) {
 
 function buildEContractReqData(app: NonNullable<Awaited<ReturnType<typeof getOnboardingApplicationForService>>>, data: OnboardingApplicationInput) {
   const callbackUrl = getEContractCallbackUrl();
-  if (!callbackUrl) throw new Error("缺少电子合同回调地址：LAKALA_ECONTRACT_CALLBACK_URL");
+  if (!callbackUrl) throw new Error("INVALID_STATE: 缺少电子合同回调地址：LAKALA_ECONTRACT_CALLBACK_URL");
   const orderNo = app.eContractOrderNo || eContractOrderNo(app.id);
   return {
     order_no: orderNo,
@@ -1592,7 +1592,7 @@ export const initiateElectronicContract = withPermission(
       const reqData = buildEContractReqData(app, data);
       const result = await lakalaApplyElectronicContract(reqData);
       await writeLog({ applicationId, apiName: "mms.ec.apply", requestPayload: reqData, responsePayload: result.raw, success: result.success, errorCode: result.errorCode, errorMessage: result.errorMessage });
-      if (!result.success || !result.resultUrl) throw new Error(result.errorMessage || "电子合同申请失败");
+      if (!result.success || !result.resultUrl) throw new Error(`INVALID_STATE: ${result.errorMessage || "电子合同申请失败"}`);
       await db.update(lakalaOnboardingApplications).set({
         eContractOrderNo: result.orderNo || reqData.order_no,
         eContractApplyId: result.applyId || null,
@@ -1639,7 +1639,7 @@ export const submitOnboardingApplication = withPermission(
       const reqData = buildAddMerReqData(app, data, fileData);
       const result = await lakalaAddMerchant(reqData);
       await writeLog({ applicationId, apiName: isRealTkbs ? "tkbs.merchant_encry" : "addMer", requestPayload: reqData, responsePayload: result.raw, success: result.success, errorCode: result.errorCode, errorMessage: result.errorMessage });
-      if (!result.success) throw new Error(result.errorMessage || "拉卡拉进件失败");
+      if (!result.success) throw new Error(`INVALID_STATE: ${result.errorMessage || "拉卡拉进件失败"}`);
       if (isRealTkbs) {
         await db.update(lakalaOnboardingApplications).set({
           status: "REGISTERING",
