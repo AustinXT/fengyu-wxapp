@@ -4,22 +4,28 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const mockUploadFile = vi.fn()
 const mockGetTempFileURL = vi.fn()
 const mockDeleteFile = vi.fn()
+const mockCallFunction = vi.fn()
+const mockInit = vi.fn().mockReturnValue({
+  uploadFile: (...args: unknown[]) => mockUploadFile(...args),
+  getTempFileURL: (...args: unknown[]) => mockGetTempFileURL(...args),
+  deleteFile: (...args: unknown[]) => mockDeleteFile(...args),
+  callFunction: (...args: unknown[]) => mockCallFunction(...args),
+})
 vi.mock('@cloudbase/node-sdk', () => ({
   default: {
-    init: vi.fn().mockReturnValue({
-      uploadFile: (...args: unknown[]) => mockUploadFile(...args),
-      getTempFileURL: (...args: unknown[]) => mockGetTempFileURL(...args),
-      deleteFile: (...args: unknown[]) => mockDeleteFile(...args),
-    }),
+    init: (...args: unknown[]) => mockInit(...args),
   },
 }))
 
-import { uploadFile, getTempFileUrl, deleteByCloudPaths, CDN_BASE } from './cloudbase'
+import { uploadFile, getTempFileUrl, deleteByCloudPaths, callStaffFunction, CDN_BASE } from './cloudbase'
 
 describe('cloudbase', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     process.env.CLOUDBASE_ENV_ID = 'test-env'
+    process.env.STAFF_ENV_ID = 'staff-test-env'
+    process.env.STAFF_TENCENTCLOUD_SECRETID = 'staff-secret-id'
+    process.env.STAFF_TENCENTCLOUD_SECRETKEY = 'staff-secret-key'
   })
 
   it('CDN_BASE 是 tcb.qcloud.la 地址', () => {
@@ -88,5 +94,21 @@ describe('cloudbase', () => {
 
     await expect(getTempFileUrl('admin/exports/1/content.xlsx'))
       .rejects.toThrow('导出文件不存在或已过期')
+  })
+
+  it('staffApi 使用独立腾讯云账号凭据', async () => {
+    mockCallFunction.mockResolvedValue({ result: { code: 0 } })
+
+    await callStaffFunction('staffApi', { action: 'system.health', payload: {} })
+
+    expect(mockInit).toHaveBeenCalledWith({
+      env: 'staff-test-env',
+      secretId: 'staff-secret-id',
+      secretKey: 'staff-secret-key',
+    })
+    expect(mockCallFunction).toHaveBeenCalledWith({
+      name: 'staffApi',
+      data: { action: 'system.health', payload: {} },
+    })
   })
 })

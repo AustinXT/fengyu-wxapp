@@ -253,14 +253,14 @@ describe('getPermissionMatrix / cache', () => {
     expect(matrix.role_custom).toEqual(['dashboard:view'])
   })
 
-  it('历史管理员专属和未交付权限不会进入非超级管理员运行时矩阵', async () => {
+  it('历史管理员专属权限不会进入非超级管理员运行时矩阵，已交付库存权限保留', async () => {
     mockRoleRows([{
       roleKey: 'manager',
       isSuperAdmin: false,
       actions: ['dashboard:view', 'appointment:delete', 'inventory:update'],
     }])
     const matrix = await getPermissionMatrix()
-    expect(matrix.manager).toEqual(['dashboard:view'])
+    expect(matrix.manager).toEqual(['dashboard:view', 'inventory:update'])
   })
 
   it('DB throw 时回退 DEFAULT + console.error', async () => {

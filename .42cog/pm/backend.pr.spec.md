@@ -246,6 +246,8 @@
 ### 2.9 sale_items（销售明细）
 
 > **复用说明**：sale_items 用于**销售单 / 内部单 / 转换单**三类的明细行；退款 / 回款已下沉至 `sale_order_payments`，部分退款时通过 `sale_order_payments.ref_sale_item_id` 关联原明细行。`item_direction` 标识行的方向语义：
+
+家居产品购买/转入行使用 `inventory_composition_snapshot`（JSONB）冻结下单时的库存组成，格式为 `{ version: 1, components: [{ inventorySkuId, productCode, productName, specName, quantityPerSaleUnit }] }`。新订单的家居行必须有非空有效快照；疗程卡为 NULL。历史空快照不回填，提货时读取最新有效组成。
 > - `购买`（默认）：正常购买行
 > - `转出`：转换退出行，`quantity` = 退次数，`received` = 负数
 > - `转入`：转换转入行，创建新的 sale_item

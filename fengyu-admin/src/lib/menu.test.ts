@@ -1,198 +1,139 @@
-import { describe, it, expect } from "vitest";
-import { getVisibleMenuGroups, MENU_CONFIG } from "./menu";
-import { DEFAULT_PERMISSION_MATRIX } from "./permissions";
-import type { AuthSession, RoleType } from "./types";
+import { describe, expect, it } from 'vitest'
+import {
+  flattenMenuItems,
+  getMenuItemForPath,
+  getVisibleMenuItems,
+  hasMenuItemAccess,
+  isMenuParent,
+  MENU_CONFIG,
+} from './menu'
+import { DEFAULT_PERMISSION_MATRIX } from './permissions'
+import type { AuthSession, RoleType } from './types'
 
-/**
- * 构造 session：actions 由角色经 DEFAULT_PERMISSION_MATRIX 摊平（与运行时 computeActions 同口径）。
- * 菜单 2026-06-24 改为权限点驱动后，可见性取决于 session.permissions.actions，而非 roles。
- */
-function makeSession(
-  ...roles: Array<{ role: RoleType; scopeType?: "总部" | "市场" | "门店" }>
-): AuthSession {
-  const actions = [
-    ...new Set(roles.flatMap((r) => DEFAULT_PERMISSION_MATRIX[r.role] ?? [])),
-  ];
+function makeSession(...roles: Array<{ role: RoleType; scopeType?: '总部' | '市场' | '门店' }>): AuthSession {
+  const actions = [...new Set(roles.flatMap((item) => DEFAULT_PERMISSION_MATRIX[item.role] ?? []))]
   return {
-    employeeId: "test",
-    name: "测试",
-    phone: "13800000000",
-    roles: roles.map((r) => ({
-      role: r.role,
-      scopeId: "test-scope",
-      scopeType: r.scopeType ?? "门店",
+    employeeId: 'test',
+    name: '测试',
+    phone: '13800000000',
+    roles: roles.map((item) => ({
+      role: item.role,
+      scopeId: 'test-scope',
+      scopeType: item.scopeType ?? (item.role === 'admin' ? '总部' : '门店'),
     })),
     permissions: { actions, scopeStoreIds: [] },
-  };
+  }
 }
 
-function getMenuLabels(session: AuthSession): string[] {
-  return getVisibleMenuGroups(session).flatMap((g) => g.items.map((i) => i.label));
+function visibleLeaves(session: AuthSession) {
+  return flattenMenuItems(getVisibleMenuItems(session))
 }
 
-const TOTAL_ITEMS = MENU_CONFIG.reduce((n, g) => n + g.items.length, 0);
+function visibleLabels(session: AuthSession) {
+  return visibleLeaves(session).map((item) => item.label)
+}
 
-describe("getVisibleMenuGroups（权限点驱动）", () => {
-  it("admin 看到全部菜单（持 ALL_ACTIONS）", () => {
-    const labels = getMenuLabels(makeSession({ role: "admin" }));
-    expect(labels).toHaveLength(TOTAL_ITEMS);
-    // 权限点驱动下 admin 全权，不再隐藏业务操作菜单（开单/服务单等）
-    expect(labels).toContain("开单");
-    expect(labels).toContain("服务单管理");
-    expect(labels).toContain("系统配置");
-  });
+describe('业务域菜单（权限点驱动）', () => {
+  it('admin 可见全部叶子菜单和全部业务域', () => {
+    const nodes = getVisibleMenuItems(makeSession({ role: 'admin' }))
+    expect(visibleLeaves(makeSession({ role: 'admin' }))).toHaveLength(flattenMenuItems().length)
+    expect(nodes.filter(isMenuParent).map((node) => node.label)).toEqual([
+      '经营业务', '客户运营', '商品商城', '库存管理', '组织管理', '系统管理',
+    ])
+  })
 
-  it("manager 看到业务操作 + 顾客/卡包，且含生产扩权的员工/商户/消息/日志", () => {
-    const labels = getMenuLabels(makeSession({ role: "manager" }));
-    expect(labels).toContain("开单");
-    expect(labels).toContain("订单管理");
-    expect(labels).toContain("营业额分配");
-    expect(labels).toContain("服务单管理");
-    expect(labels).toContain("预约管理");
-    expect(labels).toContain("顾客管理");
-    expect(labels).toContain("疗程卡管理");
-    expect(labels).toContain("退款管理");
-    expect(labels).toContain("员工管理"); // 生产扩权：manager 有 employee:create
-    expect(labels).toContain("商户管理"); // manager 有 merchant:list
-    expect(labels).toContain("消息中心"); // manager 有 message:list
-    expect(labels).toContain("操作日志"); // manager 有 operation_log:list
-    // 仍无：组织/门店/商品管理、提成、权限、系统配置（无对应门槛 action）
-    expect(labels).not.toContain("组织架构");
-    expect(labels).not.toContain("门店管理");
-    expect(labels).not.toContain("商品管理");
-    expect(labels).not.toContain("提成矩阵");
-    expect(labels).not.toContain("权限管理");
-    expect(labels).not.toContain("系统配置");
-  });
+  it('父级只在至少一个子项有权时出现', () => {
+    const nodes = getVisibleMenuItems(makeSession({ role: 'product' }))
+    expect(nodes.some((node) => isMenuParent(node) && node.label === '组织管理')).toBe(false)
+    expect(nodes.some((node) => isMenuParent(node) && node.label === '商品商城')).toBe(true)
+  })
 
-  it("finance 看到对账类，且含生产扩权的提成矩阵/服务单", () => {
-    const labels = getMenuLabels(makeSession({ role: "finance" }));
-    expect(labels).toContain("订单管理");
-    expect(labels).toContain("营业额分配");
-    expect(labels).toContain("退款管理");
-    expect(labels).toContain("顾客管理");
-    expect(labels).toContain("充值卡流水");
-    expect(labels).toContain("商户管理");
-    expect(labels).toContain("提成矩阵"); // 生产扩权：finance 有 commission:list
-    expect(labels).toContain("服务单管理"); // finance 有 service:list
-    expect(labels).toContain("操作日志");
-    // 无：开单（无 sale_order:create）、预约、员工管理、消息中心（无 message:list）
-    expect(labels).not.toContain("开单");
-    expect(labels).not.toContain("预约管理");
-    expect(labels).not.toContain("员工管理");
-    expect(labels).not.toContain("消息中心");
-  });
+  it('各角色仍取得既有可访问页面', () => {
+    expect(visibleLabels(makeSession({ role: 'manager' }))).toEqual(expect.arrayContaining([
+      '开单', '订单管理', '顾客管理', '门店业务', '单据中心',
+    ]))
+    expect(visibleLabels(makeSession({ role: 'finance' }))).toEqual(expect.arrayContaining([
+      '订单管理', '营业额分配', '库存查询', '门店业务', '单据中心',
+    ]))
+    expect(visibleLabels(makeSession({ role: 'hr' }))).toEqual(expect.arrayContaining([
+      '组织架构', '门店管理', '员工管理', '权限管理',
+    ]))
+    expect(visibleLabels(makeSession({ role: 'product' }))).toEqual(expect.arrayContaining([
+      '商品管理', '商城管理', '资料配置',
+    ]))
+    expect(visibleLabels(makeSession({ role: 'customer_mgr' }))).toEqual(expect.arrayContaining([
+      '顾客管理', '疗程卡管理', '库存查询',
+    ]))
+  })
 
-  it("hr 看到组织/门店/员工/权限，且含生产扩权的订单/服务单/消息", () => {
-    const labels = getMenuLabels(makeSession({ role: "hr" }));
-    expect(labels).toContain("组织架构");
-    expect(labels).toContain("门店管理");
-    expect(labels).toContain("员工管理");
-    expect(labels).toContain("权限管理");
-    expect(labels).toContain("订单管理"); // 生产扩权：hr 有 sale_order:list
-    expect(labels).toContain("服务单管理"); // hr 有 service:list
-    expect(labels).toContain("消息中心"); // hr 有 message:list
-    expect(labels).not.toContain("商品管理");
-    expect(labels).not.toContain("提成矩阵");
-    expect(labels).not.toContain("开单");
-    expect(labels).not.toContain("充值卡流水");
-  });
+  it('库存业务与单据中心需要同时具备两项读取权限', () => {
+    const item = flattenMenuItems().find((entry) => entry.href === '/inventory/operations/store')
+    expect(item).toBeDefined()
+    expect(hasMenuItemAccess(item!, ['inventory:list'])).toBe(false)
+    expect(hasMenuItemAccess(item!, ['inventory:stock_list'])).toBe(false)
+    expect(hasMenuItemAccess(item!, ['inventory:list', 'inventory:stock_list'])).toBe(true)
+  })
 
-  it("product 看到商品/商城/优惠券/库存，且含生产扩权的订单", () => {
-    const labels = getMenuLabels(makeSession({ role: "product" }));
-    expect(labels).toContain("商品管理");
-    expect(labels).toContain("商城管理");
-    expect(labels).toContain("优惠券管理");
-    expect(labels).toContain("门店库存");
-    expect(labels).toContain("订单管理"); // 生产扩权：product 有 sale_order:list
-    expect(labels).not.toContain("员工管理");
-    expect(labels).not.toContain("权限管理");
-    expect(labels).not.toContain("充值卡流水");
-  });
+  it('资料配置的历史深链沿用同一菜单项', () => {
+    const visible = getVisibleMenuItems(makeSession({ role: 'product' }))
+    expect(getMenuItemForPath(visible, '/inventory/suppliers')?.label).toBe('资料配置')
+    expect(getMenuItemForPath(visible, '/inventory/sku-mappings')?.href).toBe('/inventory/skus')
+    expect(getMenuItemForPath(visible, '/inventory/promotions')?.href).toBe('/inventory/skus')
+    expect(getMenuItemForPath(visible, '/inventory/procurement/PROC-1')?.href).toBe('/inventory/operations/store')
+  })
 
-  it("customer_mgr 看到顾客/卡包，且含生产扩权的预约/历史订单/库存", () => {
-    const labels = getMenuLabels(makeSession({ role: "customer_mgr" }));
-    expect(labels).toContain("顾客管理");
-    expect(labels).toContain("疗程卡管理");
-    expect(labels).toContain("预约管理"); // 生产扩权：customer_mgr 有 appointment:list
-    expect(labels).toContain("历史订单核对"); // 有 legacy_order:list
-    expect(labels).toContain("门店库存"); // 有 inventory:list
-    expect(labels).not.toContain("订单管理"); // 无 sale_order:list
-    expect(labels).not.toContain("充值卡流水");
-    expect(labels).not.toContain("系统配置");
-  });
+  it('库存业务按组织范围显示', () => {
+    expect(visibleLabels(makeSession({ role: 'admin', scopeType: '总部' }))).toEqual(expect.arrayContaining([
+      '供应链业务', '市场业务', '门店业务',
+    ]))
+    expect(visibleLabels(makeSession({ role: 'manager', scopeType: '市场' }))).toEqual(expect.arrayContaining([
+      '市场业务', '门店业务',
+    ]))
+    expect(visibleLabels(makeSession({ role: 'manager', scopeType: '门店' }))).not.toContain('市场业务')
+  })
 
-  it("操作日志对所有管理角色可见（生产给各角色配了 operation_log:list）", () => {
-    for (const role of ["admin", "manager", "finance", "hr", "product", "customer_mgr"] as RoleType[]) {
-      expect(getMenuLabels(makeSession({ role }))).toContain("操作日志");
+  it('多角色菜单取并集', () => {
+    const labels = visibleLabels(makeSession({ role: 'hr' }, { role: 'product' }))
+    expect(labels).toEqual(expect.arrayContaining(['组织架构', '商品管理', '权限管理', '资料配置']))
+  })
+
+  it('系统自检仅向持有专用权限的超级管理员展示', () => {
+    expect(visibleLabels(makeSession({ role: 'admin' }))).toContain('系统自检')
+    for (const role of ['manager', 'finance', 'hr', 'product', 'customer_mgr'] as RoleType[]) {
+      expect(visibleLabels(makeSession({ role }))).not.toContain('系统自检')
     }
-  });
+  })
 
-  it("多角色合并菜单（hr + product）", () => {
-    const labels = getMenuLabels(makeSession({ role: "hr" }, { role: "product" }));
-    expect(labels).toContain("组织架构"); // hr
-    expect(labels).toContain("商品管理"); // product
-    expect(labels).toContain("权限管理"); // hr
-  });
+  it('staff 和空权限均没有菜单', () => {
+    expect(visibleLabels(makeSession({ role: 'staff' as RoleType }))).toEqual([])
+    const empty = makeSession()
+    expect(visibleLabels({ ...empty, permissions: { actions: [], scopeStoreIds: [] } })).toEqual([])
+  })
+})
 
-  it("staff 无任何菜单（不可登录后台，矩阵为空）", () => {
-    const labels = getMenuLabels(makeSession({ role: "staff" as RoleType }));
-    expect(labels).toHaveLength(0);
-  });
+describe('MENU_CONFIG 完整性', () => {
+  const leaves = flattenMenuItems()
 
-  it("空角色无菜单", () => {
-    const session = makeSession();
-    const emptySession: AuthSession = {
-      ...session,
-      roles: [],
-      permissions: { actions: [], scopeStoreIds: [] },
-    };
-    expect(getMenuLabels(emptySession)).toHaveLength(0);
-  });
+  it('叶子菜单的 URL、图标和权限门槛完整', () => {
+    for (const item of leaves) {
+      expect(item.href.startsWith('/')).toBe(true)
+      expect(item.icon).toBeDefined()
+      expect(item.requiredActions.length).toBeGreaterThan(0)
+    }
+  })
 
-  it("过滤空分组", () => {
-    const groups = getVisibleMenuGroups(makeSession({ role: "product" }));
-    groups.forEach((g) => {
-      expect(g.items.length).toBeGreaterThan(0);
-    });
-  });
-});
+  it('每个业务域均有子页', () => {
+    for (const node of MENU_CONFIG.filter(isMenuParent)) {
+      expect(node.children.length, `${node.label} 缺少二级菜单`).toBeGreaterThan(0)
+    }
+  })
 
-describe("MENU_CONFIG 完整性", () => {
-  it("所有菜单项都有 href（以 / 开头）", () => {
-    MENU_CONFIG.forEach((group) => {
-      group.items.forEach((item) => {
-        expect(item.href).toBeTruthy();
-        expect(item.href.startsWith("/")).toBe(true);
-      });
-    });
-  });
-
-  it("所有菜单项都有图标", () => {
-    MENU_CONFIG.forEach((group) => {
-      group.items.forEach((item) => {
-        expect(item.icon).toBeDefined();
-      });
-    });
-  });
-
-  it("所有菜单项都有非空 requiredActions", () => {
-    MENU_CONFIG.forEach((group) => {
-      group.items.forEach((item) => {
-        expect(item.requiredActions.length).toBeGreaterThan(0);
-      });
-    });
-  });
-
-  it("门槛 action 均为 ALL_ACTIONS 内合法权限点（防 typo / 废弃）", () => {
-    // admin == ALL_ACTIONS（permissions.test 守护），故用 admin 矩阵作全集
-    const all = new Set(DEFAULT_PERMISSION_MATRIX.admin);
-    MENU_CONFIG.forEach((group) => {
-      group.items.forEach((item) => {
-        item.requiredActions.forEach((a) => {
-          expect(all.has(a), `菜单「${item.label}」门槛 ${a} 不在 ALL_ACTIONS`).toBe(true);
-        });
-      });
-    });
-  });
-});
+  it('所有菜单权限均来自权限目录', () => {
+    const all = new Set(DEFAULT_PERMISSION_MATRIX.admin)
+    for (const item of leaves) {
+      for (const action of [...item.requiredActions, ...(item.requiredAllActions ?? [])]) {
+        expect(all.has(action), `菜单「${item.label}」门槛 ${action} 不在 ALL_ACTIONS`).toBe(true)
+      }
+    }
+  })
+})

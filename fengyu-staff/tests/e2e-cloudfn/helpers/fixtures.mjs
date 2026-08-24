@@ -1053,7 +1053,22 @@ export async function cleanupTestData(prefix = NS) {
       [like],
     ],
 
-    // ─── 4) point_transactions ───
+    // ─── 4) point_batches / point_transactions ───
+    // point_batches 同时 FK 到交易、订单和顾客，必须先于三者清理。
+    [`DELETE FROM point_batches WHERE ref_order_id LIKE $1`, [like]],
+    [
+      `DELETE FROM point_batches
+         WHERE user_id IN (SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1)`,
+      [like],
+    ],
+    [
+      `DELETE FROM point_batches
+         WHERE ref_order_id IN (
+           SELECT sale_order_id FROM sale_orders
+             WHERE store_id LIKE $1 OR opened_by LIKE $1 OR client_user_id LIKE $1
+         )`,
+      [like],
+    ],
     [`DELETE FROM point_transactions WHERE ref_order_id LIKE $1`, [like]],
     [
       `DELETE FROM point_transactions
@@ -1072,36 +1087,105 @@ export async function cleanupTestData(prefix = NS) {
       [like],
     ],
 
-    // ─── 4.4) store_inventory v2（FK → stores/product_skus/sale_orders/sale_items）───
+    // ─── 4.4) inventory v3（FK → stores/org_nodes/product_skus/sale_orders/sale_items）───
+    // 先删流水和明细，随后删除单据、批次、SKU、主体，避免 v3 外键阻塞后续销售单/门店/商品夹具回收。
     [
-      `DELETE FROM store_inventory_movements
-        WHERE store_id LIKE $1
-           OR sale_order_id LIKE $1
-           OR sale_item_id LIKE $1
-           OR doc_id LIKE $1`,
-      [like],
-    ],
-    [
-      `DELETE FROM store_inventory_doc_items
-        WHERE doc_id LIKE $1
-           OR sale_item_id LIKE $1
+      `DELETE FROM inventory_movements
+        WHERE location_id LIKE $1
            OR sku_id LIKE $1
-           OR stock_id IN (SELECT id FROM store_inventory_stocks WHERE store_id LIKE $1 OR sku_id LIKE $1)`,
+           OR doc_id IN (
+             SELECT id FROM inventory_docs
+              WHERE id LIKE $1
+                 OR source_location_id LIKE $1
+                 OR target_location_id LIKE $1
+                 OR related_sale_order_id LIKE $1
+                 OR client_user_id LIKE $1
+                 OR created_by LIKE $1
+           )
+           OR doc_item_id IN (
+             SELECT id FROM inventory_doc_items
+              WHERE doc_id IN (
+                SELECT id FROM inventory_docs
+                 WHERE id LIKE $1
+                    OR source_location_id LIKE $1
+                    OR target_location_id LIKE $1
+                    OR related_sale_order_id LIKE $1
+                    OR client_user_id LIKE $1
+                    OR created_by LIKE $1
+              )
+           )`,
       [like],
     ],
     [
-      `DELETE FROM store_inventory_docs
+      `DELETE FROM inventory_doc_items
+        WHERE sku_id LIKE $1
+           OR sale_item_id LIKE $1
+           OR doc_id IN (
+             SELECT id FROM inventory_docs
+              WHERE id LIKE $1
+                 OR source_location_id LIKE $1
+                 OR target_location_id LIKE $1
+                 OR related_sale_order_id LIKE $1
+                 OR client_user_id LIKE $1
+                 OR created_by LIKE $1
+           )`,
+      [like],
+    ],
+    [
+      `DELETE FROM inventory_docs
         WHERE id LIKE $1
-           OR store_id LIKE $1
-           OR counterpart_store_id LIKE $1
+           OR source_location_id LIKE $1
+           OR target_location_id LIKE $1
            OR related_sale_order_id LIKE $1
            OR client_user_id LIKE $1
            OR created_by LIKE $1`,
       [like],
     ],
-    [`DELETE FROM store_inventory_stocks WHERE store_id LIKE $1 OR sku_id LIKE $1`, [like]],
+    [`DELETE FROM inventory_stock_lots WHERE location_id LIKE $1 OR sku_id LIKE $1`, [like]],
+    [
+      `DELETE FROM inventory_promotion_plan_items
+        WHERE sku_id LIKE $1
+           OR plan_id IN (
+             SELECT id FROM inventory_promotion_plans
+              WHERE id LIKE $1
+                 OR scope_market_id LIKE $1
+                 OR scope_store_id LIKE $1
+                 OR created_by LIKE $1
+           )`,
+      [like],
+    ],
+    [
+      `DELETE FROM inventory_promotion_plans
+        WHERE id LIKE $1
+           OR scope_market_id LIKE $1
+           OR scope_store_id LIKE $1
+           OR created_by LIKE $1`,
+      [like],
+    ],
+    [`DELETE FROM inventory_skus WHERE sku_id LIKE $1 OR product_code LIKE $1`, [like]],
+    [
+      `DELETE FROM inventory_locations
+        WHERE location_id LIKE $1 OR org_node_id LIKE $1 OR store_id LIKE $1`,
+      [like],
+    ],
 
-    // ─── 4.5) sale_payment_allocatable_items（回款级分配子表，FK→sale_order_payments + sale_items）───
+    // ─── 4.5) 逐项收款/分配子表（FK→sale_order_payments + sale_items）───
+    [
+      `DELETE FROM sale_payment_item_allocations
+         WHERE sale_payment_item_receipt_id IN (
+           SELECT id FROM sale_payment_item_receipts
+            WHERE sale_order_id IN (SELECT sale_order_id FROM sale_orders
+              WHERE sale_order_id LIKE $1 OR client_user_id LIKE $1 OR opened_by LIKE $1 OR store_id LIKE $1)
+         )`,
+      [like],
+    ],
+    [
+      `DELETE FROM sale_payment_item_receipts
+         WHERE sale_order_id IN (SELECT sale_order_id FROM sale_orders
+           WHERE sale_order_id LIKE $1 OR client_user_id LIKE $1 OR opened_by LIKE $1 OR store_id LIKE $1)`,
+      [like],
+    ],
+    // sale_payment_allocatable_items（回款级分配子表，FK→sale_order_payments + sale_items）
     // 必须先于 sale_order_payments（§5）和 sale_items（§7）删除，否则 FK 阻断父表删除，
     // 残留 sop 行又经 audit_employee_id / operator_employee_id 阻断 staff_wechat_users 删除 → 夹具污染级联。
     [`DELETE FROM sale_payment_allocatable_items WHERE sale_order_id LIKE $1 OR sale_item_id LIKE $1`, [like]],

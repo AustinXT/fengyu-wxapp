@@ -36,12 +36,14 @@ const COOKIE_MAX_AGE = 24 * 60 * 60 // 24h
 async function sessionCookieOptions() {
   const proto = (await headers()).get('x-forwarded-proto')?.split(',')[0]?.trim()
   const secure = process.env.COOKIE_SECURE === 'false' ? false : proto === 'https'
+  const domain = process.env.COOKIE_DOMAIN?.trim()
   return {
     httpOnly: true,
     secure,
     sameSite: 'lax' as const,
     path: '/',
     maxAge: COOKIE_MAX_AGE,
+    ...(domain ? { domain } : {}),
   }
 }
 
@@ -183,7 +185,10 @@ export async function login(
 
 export async function logout(): Promise<void> {
   const cookieStore = await cookies()
-  cookieStore.delete(COOKIE_NAME)
+  cookieStore.set(COOKIE_NAME, '', {
+    ...(await sessionCookieOptions()),
+    maxAge: 0,
+  })
 }
 
 export async function changePassword(

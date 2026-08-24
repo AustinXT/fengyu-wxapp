@@ -1,0 +1,58 @@
+# fengyu-analyst Next.js 15 production image.
+# Build context: monorepo root.
+
+FROM docker.m.daocloud.io/oven/bun:1-alpine AS base
+RUN sed -i 's#https\?://dl-cdn.alpinelinux.org/alpine#https://mirrors.aliyun.com/alpine#g' /etc/apk/repositories
+RUN apk add --no-cache nodejs npm
+
+FROM base AS deps
+WORKDIR /app
+
+COPY fengyu-analyst/package.json fengyu-analyst/package-lock.json ./
+RUN npm ci
+
+FROM base AS builder
+WORKDIR /app
+
+COPY --from=deps /app/node_modules ./node_modules
+COPY db/schema/ /db/schema/
+COPY fengyu-analyst/ .
+RUN mkdir -p public
+
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV NODE_ENV=production
+
+ARG APP_VERSION=dev
+ARG APP_COMMIT=
+ARG NEXT_PUBLIC_ADMIN_ORIGIN=http://localhost:3000
+ARG NEXT_PUBLIC_ANALYST_ORIGIN=http://localhost:3001
+ENV APP_VERSION=$APP_VERSION
+ENV APP_COMMIT=$APP_COMMIT
+ENV NEXT_PUBLIC_ADMIN_ORIGIN=$NEXT_PUBLIC_ADMIN_ORIGIN
+ENV NEXT_PUBLIC_ANALYST_ORIGIN=$NEXT_PUBLIC_ANALYST_ORIGIN
+
+RUN JWT_SECRET=build-time-placeholder-not-used-at-runtime npm run build
+RUN find .next/standalone .next/static -name '*.map' -type f -delete 2>/dev/null || true
+
+FROM base AS runner
+WORKDIR /app
+
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
+ENV TZ=Asia/Shanghai
+
+RUN apk add --no-cache tzdata
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 nextjs
+
+COPY --from=builder /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone/app ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+USER nextjs
+
+EXPOSE 3000
+
+CMD ["node", "server.js"]

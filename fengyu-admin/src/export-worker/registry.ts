@@ -17,7 +17,7 @@ import { exportCustomers } from '@/actions/customers'
 import { exportEmployees } from '@/actions/employees'
 import { exportPointTransactions } from '@/actions/points'
 import { exportCards } from '@/actions/cards'
-import { exportInventoryStocks } from '@/actions/inventory-v2'
+import { exportInventoryLots } from '@/actions/inventory/stocks'
 import { getSalesBoard } from '@/actions/data-center/sales'
 import { getCustomerBoard } from '@/actions/data-center/customer'
 import { getProductBoard } from '@/actions/data-center/product'
@@ -340,20 +340,26 @@ const cardColumns = mapColumns([
 ])
 
 const inventoryColumns = (canViewPrice: boolean) => mapColumns([
-  { header: '门店', width: 20, key: 'storeName', map: (row) => String(value(row, 'storeName') ?? value(row, 'storeId') ?? '') },
+  { header: '库存主体类型', width: 12, key: 'locationType' },
+  { header: '库存主体', width: 20, key: 'locationName', map: (row) => String(value(row, 'locationName') ?? value(row, 'locationId') ?? '') },
   { header: 'SKU', width: 24, key: 'skuId' },
   { header: '产品', width: 36, key: 'skuName' },
-  { header: '产品类型', width: 12, key: 'productType' },
+  { header: '规格', width: 16, key: 'specName' },
+  { header: '供应商', width: 20, key: 'supplier' },
+  { header: '产品系列', width: 16, key: 'productSeries' },
   { header: '批号', width: 16, key: 'batchNo' },
-  { header: '效期', width: 14, key: 'expiryDate' },
-  { header: '库存数量', width: 12, key: 'quantityOnHand' },
+  { header: '有效期', width: 14, key: 'expiryDate' },
+  { header: '赠品', width: 10, key: 'isGift', map: (row) => boolLabel(row, 'isGift') },
+  { header: '库存数量', width: 12, key: 'quantityOnHand', map: (row) => numberOrEmpty(row, 'quantityOnHand') },
   ...(canViewPrice
     ? [
-        { header: '最近单价', width: 12, key: 'lastUnitPrice' },
-        { header: '最近金额', width: 12, key: 'lastAmount' },
+        { header: '供应链单位成本', width: 14, key: 'supplyChainUnitCost', map: (row: Row) => numberOrEmpty(row, 'supplyChainUnitCost') },
+        { header: '市场实际单价', width: 14, key: 'marketActualUnitPrice', map: (row: Row) => numberOrEmpty(row, 'marketActualUnitPrice') },
+        { header: '门店实际单价', width: 14, key: 'storeActualUnitPrice', map: (row: Row) => numberOrEmpty(row, 'storeActualUnitPrice') },
       ]
     : []),
   { header: '备注', width: 24, key: 'remark' },
+  { header: '更新时间', width: 20, key: 'updatedAt', map: (row) => fmtDateTime(value(row, 'updatedAt') as string | Date | null) },
 ])
 
 function breakdownContent(
@@ -585,13 +591,13 @@ export async function createExportContent(
         sheetName: '疗程卡',
         columns: cardColumns,
         rows: pagedRows((options: ExportBatchOptions<number>) => exportCards(params, options)),
-      }
+    }
     case 'inventory-stocks': {
-      const firstPage = await exportInventoryStocks(params, { limit: EXPORT_WORKER_BATCH_SIZE })
+      const firstPage = await exportInventoryLots(params, { limit: EXPORT_WORKER_BATCH_SIZE })
       return {
-        sheetName: '门店库存',
+        sheetName: '库存批次',
         columns: inventoryColumns(firstPage.canViewPrice),
-        rows: pagedRows((options: ExportBatchOptions<number>) => exportInventoryStocks(params, options), firstPage),
+        rows: pagedRows((options: ExportBatchOptions<number>) => exportInventoryLots(params, options), firstPage),
       }
     }
     case 'products':

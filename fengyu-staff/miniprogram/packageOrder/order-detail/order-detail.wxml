@@ -33,6 +33,7 @@
       <van-cell wx:if="{{order.preferredStaffName}}" title="指定美容师" value="{{order.preferredStaffName}}" />
       <van-cell title="支付方式" value="{{order.payTypeLabel}}" />
       <van-cell wx:if="{{order.couponName || order.couponDiscount}}" title="优惠券" value="{{order.couponName}}{{order.couponDiscount ? ' -¥' + order.couponDiscount : ''}}" />
+      <van-cell wx:if="{{order.pointsDiscount}}" title="积分抵扣" value="{{order.pointsUsed}}积分 -¥{{order.pointsDiscount}}" />
       <van-cell wx:if="{{order.confirmedBy}}" title="确认人" value="{{order.confirmedBy}}" />
       <van-cell wx:if="{{order.confirmedAt}}" title="确认时间" value="{{order.confirmedAt}}" />
       <van-cell wx:if="{{order.allocationStatus}}" title="分配状态" value="{{order.allocationStatus}}" />

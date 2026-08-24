@@ -48,8 +48,7 @@ const EXPECTED_DIRECT_SALE_ITEM_REFS = new Set([
   'sale_payment_allocatable_items.sale_item_id',
   'sale_payment_item_receipts.sale_item_id',
   'service_items.sale_item_id',
-  'store_inventory_doc_items.sale_item_id',
-  'store_inventory_movements.sale_item_id',
+  'inventory_doc_items.sale_item_id',
 ])
 
 function log(message) {
@@ -350,10 +349,8 @@ async function inspectReferences(client, plan) {
          WHERE sale_item_id = ANY($1::varchar[])) AS payment_receipts,
        (SELECT COUNT(*)::int FROM pickup_records
          WHERE sale_item_id = ANY($1::varchar[])) AS pickup_records,
-       (SELECT COUNT(*)::int FROM store_inventory_doc_items
-         WHERE sale_item_id = ANY($1::varchar[])) AS inventory_doc_items,
-       (SELECT COUNT(*)::int FROM store_inventory_movements
-         WHERE sale_item_id = ANY($1::varchar[])) AS inventory_movements`,
+       (SELECT COUNT(*)::int FROM inventory_doc_items
+         WHERE sale_item_id = ANY($1::varchar[])) AS inventory_doc_items`,
     [ids],
   )
   const highRisk = highRiskRows[0]

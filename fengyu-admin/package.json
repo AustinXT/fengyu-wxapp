@@ -10,10 +10,10 @@
     "start": "next start",
     "lint": "next lint",
     "db:seed": "bun run src/db/seed.ts",
-    "cron": "node dist/cron-worker.mjs",
+    "cron": "node --conditions=react-server dist/cron-worker.mjs",
     "cron:dev": "bun --env-file=.env.local run src/cron/index.ts",
     "cron:once": "bun --env-file=.env.local run src/cron/index.ts --once",
-    "export-worker": "node dist/export-worker.mjs",
+    "export-worker": "node --conditions=react-server dist/export-worker.mjs",
     "export-worker:dev": "bun --env-file=.env.local run src/export-worker/index.ts",
     "export-worker:once": "bun --env-file=.env.local run src/export-worker/index.ts --once",
     "test": "vitest run",
@@ -28,6 +28,9 @@
     "test:all": "vitest run && playwright test"
   },
   "dependencies": {
+    "@alicloud/ocr-api20210707": "^3.1.3",
+    "@alicloud/openapi-client": "^0.4.15",
+    "@alicloud/tea-util": "^1.4.11",
     "@cloudbase/node-sdk": "^3.18.1",
     "@daypicker/react": "^10.0.1",
     "@dnd-kit/core": "^6.3.1",

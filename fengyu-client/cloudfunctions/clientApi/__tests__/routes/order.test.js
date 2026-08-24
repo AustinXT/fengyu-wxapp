@@ -173,7 +173,22 @@ describe('order.create', () => {
       session_count: null, product_name: '精华液', sales_category: null,
     }])
 
-    const clientQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 })
+    const clientQuery = vi.fn(async (sql) => {
+      if (/FROM inventory_sku_product_sku_mappings mapping/.test(sql)) {
+        return {
+          rows: [{
+            product_sku_id: 'sku-home',
+            inventory_sku_id: 'inventory-sku-001',
+            product_code: 'I001',
+            product_name: '库存精华液',
+            spec_name: null,
+            quantity_per_sale_unit: 2,
+          }],
+          rowCount: 1,
+        }
+      }
+      return { rows: [], rowCount: 0 }
+    })
     pg.transaction.mockImplementation(async (cb) => cb({ query: clientQuery }))
 
     const ctx = createBoundCtx({
@@ -188,7 +203,29 @@ describe('order.create', () => {
     expect(insertItemCalls[0][1][6]).toBeNull()
     expect(insertItemCalls[0][1][7]).toBeNull()
     expect(insertItemCalls[0][1][9]).toBe(5)
+    expect(JSON.parse(insertItemCalls[0][1][15]).components[0].quantityPerSaleUnit).toBe(2)
     expect(ctx.result.totalAmount).toBe(400)
+  })
+
+  test('家居产品未配置库存组成时阻断建单', async () => {
+    pg.query.mockResolvedValueOnce([{ store_id: 's1', store_name: '测试店', market_name: '华东' }])
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([{
+      sku_id: 'sku-home', product_id: 'p-home', product_type: '家居产品',
+      spec_name: '精华液', price: '80', special_price: null,
+      session_count: null, product_name: '精华液', sales_category: null,
+    }])
+    pg.transaction.mockImplementation(async (cb) => cb({
+      query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+    }))
+
+    const ctx = createBoundCtx({
+      storeId: 's1',
+      items: [{ skuId: 'sku-home', quantity: 1 }],
+      paymentMethod: '微信',
+    })
+    await expect(routes.create(ctx)).rejects.toThrow(/INVENTORY_COMPOSITION_MISSING/)
   })
 
   // PR #55 把 document_type 判定从「会员客→售后；否则若 total>=threshold→售后（分支 B）」
@@ -634,6 +671,62 @@ describe('order.create', () => {
     expect(ctx.result.totalAmount).toBe(400)
   })
 
+  test('积分抵扣按订单级抵扣摊到商品明细，尾差由最后一行吸收', async () => {
+    pg.query.mockResolvedValueOnce([{ store_id: 's1', store_name: '测试店', market_name: '华东' }])
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([
+      { sku_id: 'sku-a', product_id: 'pa', product_type: '服务', spec_name: '护理A', price: '33', special_price: null, session_count: null, product_name: '护理A', sales_category: null },
+      { sku_id: 'sku-b', product_id: 'pb', product_type: '服务', spec_name: '护理B', price: '68', special_price: null, session_count: null, product_name: '护理B', sales_category: null },
+    ])
+    pg.query.mockResolvedValueOnce([{ name: '张三', customer_type: null, member_level: null }])
+    pg.query.mockResolvedValueOnce([{ points_balance: 1000 }])
+
+    let orderInsertCall
+    const itemInsertCalls = []
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql, params) => {
+          const s = String(sql)
+          if (/INSERT INTO sale_orders/i.test(s)) {
+            orderInsertCall = [s, params]
+          }
+          if (/SELECT\s+COALESCE\(SUM\(remaining_amount\)/i.test(s) && /FROM point_batches/i.test(s)) {
+            return { rows: [{ balance: '1000' }], rowCount: 1 }
+          }
+          if (/INSERT INTO point_transactions/i.test(s)) {
+            return { rows: [{ id: 101 }], rowCount: 1 }
+          }
+          if (/INSERT INTO sale_items/i.test(s)) {
+            itemInsertCalls.push([s, params])
+          }
+          return { rows: [], rowCount: 0 }
+        }),
+      }
+      return cb(client)
+    })
+
+    const ctx = createBoundCtx({
+      storeId: 's1',
+      items: [{ skuId: 'sku-a', quantity: 1 }, { skuId: 'sku-b', quantity: 1 }],
+      paymentMethod: '微信',
+      usePoints: true,
+    })
+    await routes.create(ctx)
+
+    expect(ctx.result.totalAmount).toBe(97.97)
+    expect(ctx.result.pointsUsed).toBe(303)
+    expect(ctx.result.pointsDiscount).toBe(3.03)
+    expect(orderInsertCall[1][18]).toBe(303)
+    expect(orderInsertCall[1][19]).toBe(3.03)
+    expect(itemInsertCalls).toHaveLength(2)
+    expect(Number(itemInsertCalls[0][1][11])).toBe(32.01)
+    expect(Number(itemInsertCalls[1][1][11])).toBe(65.96)
+    expect(
+      Math.round(itemInsertCalls.reduce((sum, call) => sum + Number(call[1][11]), 0) * 100) / 100,
+    ).toBe(ctx.result.totalAmount)
+  })
+
   // ========== 折扣券路径 ==========
 
   test('折扣券无封顶：1000 × 8 折 → 抵扣 200', async () => {
@@ -974,6 +1067,9 @@ describe('order.pay', () => {
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql) => {
+          if (/SELECT\s+client_user_id/i.test(sql)) {
+            return { rows: [{ client_user_id: 'user-001', points_used: 0 }], rowCount: 1 }
+          }
           if (/UPDATE\s+sale_orders/i.test(sql)) return { rows: [], rowCount: 1 }
           return { rows: [], rowCount: 0 }
         }),

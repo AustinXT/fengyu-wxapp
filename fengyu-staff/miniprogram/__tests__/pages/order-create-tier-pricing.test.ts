@@ -305,4 +305,34 @@ describe('开单疗程卡阶梯价', () => {
       }),
     )
   })
+
+  test('积分抵扣上限为 0 时保留禁用语义', async () => {
+    const callStaffApiMock = vi.mocked(callStaffApi)
+    callStaffApiMock.mockReset()
+    callStaffApiMock.mockResolvedValueOnce({
+      balance: 100,
+      cardId: 'card-001',
+      pointsBalance: 10000,
+      pointsToYuanRate: 0.01,
+      pointsDeductionMaxRate: 0,
+    })
+    const recomputePrepaidAmounts = vi.fn()
+    const page = {
+      ...pageDefinition,
+      data: {
+        ...pageDefinition.data,
+        customerInfo: { clientUserId: 'client-001' },
+        prepaidCardLoaded: false,
+      },
+      setData(update: Record<string, unknown>) {
+        Object.assign(this.data, update)
+      },
+      recomputePrepaidAmounts,
+    }
+
+    await page.loadCustomerBalance()
+
+    expect(page.data.pointsDeductionMaxRate).toBe(0)
+    expect(recomputePrepaidAmounts).toHaveBeenCalledTimes(1)
+  })
 })

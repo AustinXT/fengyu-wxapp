@@ -5,6 +5,8 @@ vi.mock('@/db', () => ({
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
+    delete: vi.fn(),
+    transaction: vi.fn(),
   },
 }))
 
@@ -27,6 +29,74 @@ vi.mock('@db/user', () => ({
 
 vi.mock('@db/prepaid-card', () => ({
   prepaidCards: { cardId: 'card_id', userId: 'user_id', balance: 'balance' },
+}))
+
+vi.mock('@db/order', () => ({
+  saleOrders: {
+    saleOrderId: 'sale_order_id',
+    clientUserId: 'client_user_id',
+    storeId: 'store_id',
+    openedBy: 'opened_by',
+    saleOrderDatetime: 'sale_order_datetime',
+    status: 'status',
+    totalAmount: 'total_amount',
+    paidAt: 'paid_at',
+    saleOrderType: 'sale_order_type',
+  },
+  saleItems: {
+    saleOrderId: 'sale_order_id',
+    saleItemId: 'sale_item_id',
+    skuId: 'sku_id',
+    itemDirection: 'item_direction',
+    productName: 'product_name',
+    quantity: 'quantity',
+    received: 'received',
+  },
+  saleOrderPayments: {
+    saleOrderId: 'sale_order_id',
+    amount: 'amount',
+    status: 'status',
+    createdAt: 'created_at',
+    paidAt: 'paid_at',
+    refundReason: 'refund_reason',
+    note: 'note',
+    changeType: 'change_type',
+  },
+}))
+
+vi.mock('@db/coupon', () => ({
+  userCoupons: { userId: 'user_id' },
+  couponTemplates: { couponId: 'coupon_id' },
+}))
+
+vi.mock('@db/points', () => ({
+  pointTransactions: { userId: 'user_id' },
+  pointBatches: { userId: 'user_id', remainingAmount: 'remaining_amount', expireAt: 'expire_at' },
+}))
+
+vi.mock('@db/appointment', () => ({
+  appointments: { clientUserId: 'client_user_id' },
+}))
+
+vi.mock('@db/message', () => ({
+  messages: { recipientType: 'recipient_type', recipientId: 'recipient_id' },
+}))
+
+vi.mock('@db/service', () => ({
+  serviceOrders: {
+    serviceOrderId: 'service_order_id',
+    clientUserId: 'client_user_id',
+    status: 'status',
+    serviceDate: 'service_date',
+    createdAt: 'created_at',
+    storeId: 'store_id',
+    assignedEmployeeId: 'assigned_employee_id',
+  },
+  serviceItems: { serviceOrderId: 'service_order_id', saleItemId: 'sale_item_id' },
+}))
+
+vi.mock('@db/pickup', () => ({
+  pickupRecords: { clientUserId: 'client_user_id' },
 }))
 
 vi.mock('@db/org', () => ({
@@ -73,13 +143,14 @@ vi.mock('crypto', () => ({
   randomBytes: vi.fn(() => ({ toString: () => 'aabbcc112233' })),
 }))
 
-import { updateCustomer, createCustomer, getCustomersPaginated, getCustomers, getCustomerById, searchCustomerByPhone, searchCustomers, getCustomerRefundHistory, getCustomerServiceOrders, assignCustomer, getCustomerPrepaidBalance, exportCustomers } from './customers'
+import { updateCustomer, createCustomer, getCustomersPaginated, getCustomers, getCustomerById, searchCustomerByPhone, searchCustomers, getCustomerRefundHistory, getCustomerServiceOrders, assignCustomer, getCustomerPrepaidBalance, exportCustomers, mergeClientProfile } from './customers'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope, isAdminScope, requirePermission, scopeCondition } from '@/lib/permissions'
 import { hasRole } from '@/lib/auth'
 import { logUpdate } from '@/lib/operation-log'
 import { clientWechatUsers } from '@db/user'
+import { pointBatches } from '@db/points'
 import { eq, ilike, isNotNull } from 'drizzle-orm'
 
 const mockSession = {
@@ -941,6 +1012,68 @@ describe('getCustomerPrepaidBalance — 账户级、未绑定放行', () => {
     ;(db.select as any).mockImplementation(makeSelectChain([]))
     await getCustomerPrepaidBalance('user-1')
     expect(scopeCondition).not.toHaveBeenCalled()
+  })
+})
+
+// ── mergeClientProfile（孤儿档案合并）──────────────────────────────────────────
+
+describe('mergeClientProfile — 积分批次余额重算', () => {
+  function singleRowSelect(row: Record<string, unknown>) {
+    const limit = vi.fn().mockResolvedValue([row])
+    const where = vi.fn().mockReturnValue({ limit })
+    const from = vi.fn().mockReturnValue({ where })
+    return { from }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isAdminScope as any).mockReturnValue(true)
+    ;(hasRole as any).mockReturnValue(false)
+  })
+
+  it('迁移积分批次后，在同一事务内按批次重算目标顾客余额缓存', async () => {
+    ;(db.select as any)
+      .mockReturnValueOnce(singleRowSelect({
+        userId: 'active-user',
+        openid: 'openid-active',
+        boundStoreId: 'store-1',
+        pointsBalance: 100,
+      }))
+      .mockReturnValueOnce(singleRowSelect({
+        userId: 'orphan-user',
+        openid: null,
+        boundStoreId: 'store-1',
+        pointsBalance: 50,
+      }))
+
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = []
+    const tx = {
+      update: vi.fn((table: unknown) => ({
+        set: vi.fn((values: Record<string, unknown>) => {
+          updates.push({ table, values })
+          return { where: vi.fn().mockResolvedValue({ count: 1 }) }
+        }),
+      })),
+      delete: vi.fn(() => ({ where: vi.fn().mockResolvedValue({ count: 1 }) })),
+    }
+    ;(db.transaction as any).mockImplementation(async (fn: (arg: typeof tx) => Promise<void>) => fn(tx))
+
+    const result = await mergeClientProfile('active-user', 'orphan-user')
+
+    expect(result.success).toBe(true)
+    const pointBatchMove = updates.findIndex(
+      ({ table, values }) => table === pointBatches && values.userId === 'active-user',
+    )
+    const balanceRecompute = updates.findIndex(
+      ({ table, values }) => table === clientWechatUsers && 'pointsBalance' in values,
+    )
+    expect(pointBatchMove).toBeGreaterThanOrEqual(0)
+    expect(balanceRecompute).toBeGreaterThan(pointBatchMove)
+    expect(updates[balanceRecompute]?.values).toEqual(expect.objectContaining({
+      pointsBalance: expect.anything(),
+      pointsUpdatedAt: expect.anything(),
+    }))
   })
 })
 

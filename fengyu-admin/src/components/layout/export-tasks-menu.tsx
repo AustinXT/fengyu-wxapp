@@ -25,30 +25,80 @@ const STATUS_CLASS: Record<ExportJobListItem["status"], string> = {
   expired: "text-[#888888]",
 }
 
-export function ExportTasksMenu() {
+const COMPLETED_AT_STORAGE_KEY_PREFIX = "fengyu-admin:export-tasks:last-seen-ready-at:"
+
+function latestReadyCompletedAt(jobs: ExportJobListItem[]): number {
+  return jobs.reduce((latest, job) => {
+    if (job.status !== "ready" || !job.completedAt) return latest
+    const completedAt = Date.parse(job.completedAt)
+    return Number.isFinite(completedAt) ? Math.max(latest, completedAt) : latest
+  }, 0)
+}
+
+function readLastSeenReadyAt(storageKey: string): number {
+  try {
+    const storedValue = Number(window.localStorage.getItem(storageKey))
+    return Number.isFinite(storedValue) && storedValue > 0 ? storedValue : 0
+  } catch {
+    return 0
+  }
+}
+
+function persistLastSeenReadyAt(storageKey: string, timestamp: number): void {
+  try {
+    window.localStorage.setItem(storageKey, String(timestamp))
+  } catch {
+    // 浏览器禁用本地存储时，本次页面会话仍可用 ref 保留已查看状态。
+  }
+}
+
+interface ExportTasksMenuProps {
+  employeeId: string
+}
+
+export function ExportTasksMenu({ employeeId }: ExportTasksMenuProps) {
   const [open, setOpen] = useState(false)
   const [jobs, setJobs] = useState<ExportJobListItem[]>([])
+  const [hasUnreadReady, setHasUnreadReady] = useState(false)
   const [loading, setLoading] = useState(false)
   const [retrying, setRetrying] = useState<number | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
+  const lastSeenReadyAtRef = useRef<number | null>(null)
+  const lastSeenEmployeeIdRef = useRef<string | null>(null)
+  const completedAtStorageKey = `${COMPLETED_AT_STORAGE_KEY_PREFIX}${employeeId}`
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async ({ markReadyAsSeen = false }: { markReadyAsSeen?: boolean } = {}) => {
     setLoading(true)
     try {
-      setJobs(await listMyExportJobs())
+      const nextJobs = await listMyExportJobs()
+      setJobs(nextJobs)
+
+      const latestCompletedAt = latestReadyCompletedAt(nextJobs)
+      if (markReadyAsSeen) {
+        const lastSeenReadyAt = Math.max(lastSeenReadyAtRef.current ?? 0, latestCompletedAt)
+        lastSeenReadyAtRef.current = lastSeenReadyAt
+        persistLastSeenReadyAt(completedAtStorageKey, lastSeenReadyAt)
+        setHasUnreadReady(false)
+      } else if (lastSeenReadyAtRef.current !== null) {
+        setHasUnreadReady(latestCompletedAt > lastSeenReadyAtRef.current)
+      }
     } catch {
       // 无导出权限或网络临时失败时保持安静，避免顶栏轮询打断当前工作。
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [completedAtStorageKey])
 
   useEffect(() => {
-    if (!open) return
-    void refresh()
-    const timer = window.setInterval(() => void refresh(), 10_000)
+    if (lastSeenEmployeeIdRef.current !== employeeId) {
+      lastSeenEmployeeIdRef.current = employeeId
+      lastSeenReadyAtRef.current = readLastSeenReadyAt(completedAtStorageKey)
+    }
+
+    void refresh({ markReadyAsSeen: open })
+    const timer = window.setInterval(() => void refresh({ markReadyAsSeen: open }), 10_000)
     return () => window.clearInterval(timer)
-  }, [open, refresh])
+  }, [completedAtStorageKey, open, refresh])
 
   useEffect(() => {
     const onCreated = () => void refresh()
@@ -68,22 +118,35 @@ export function ExportTasksMenu() {
     setRetrying(id)
     try {
       await retryMyExportJob(id)
-      await refresh()
+      await refresh({ markReadyAsSeen: open })
     } finally {
       setRetrying(null)
     }
-  }, [refresh])
+  }, [open, refresh])
+
+  const toggleMenu = () => {
+    const nextOpen = !open
+    setOpen(nextOpen)
+    if (nextOpen) setHasUnreadReady(false)
+  }
 
   return (
     <div ref={rootRef} className="relative">
       <button
         type="button"
-        onClick={() => setOpen((value) => !value)}
+        onClick={toggleMenu}
         className="relative flex size-9 items-center justify-center rounded-[var(--radius)] text-[#666666] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
-        aria-label="导出任务"
+        aria-label={hasUnreadReady ? "导出任务，有新的已完成任务" : "导出任务"}
         title="导出任务"
       >
         <FileDown className="size-5" />
+        {hasUnreadReady && (
+          <span
+            data-testid="export-tasks-unread-indicator"
+            className="absolute right-1 top-1 size-2 rounded-full bg-[#C0322A] ring-2 ring-white"
+            aria-hidden="true"
+          />
+        )}
       </button>
       {open && (
         <div className="absolute right-0 top-full z-50 mt-1 w-[360px] overflow-hidden rounded-[var(--radius)] border border-[var(--border)] bg-white shadow-lg">
@@ -91,7 +154,7 @@ export function ExportTasksMenu() {
             <span className="text-sm font-medium text-[var(--foreground)]">导出任务</span>
             <button
               type="button"
-              onClick={() => void refresh()}
+              onClick={() => void refresh({ markReadyAsSeen: true })}
               className="flex size-7 items-center justify-center rounded-[var(--radius)] text-[#666666] hover:bg-[var(--muted)]"
               aria-label="刷新导出任务"
               title="刷新"

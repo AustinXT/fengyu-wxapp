@@ -363,16 +363,23 @@ test('0014 将整单最早的成功正向款标为唯一 initial，并同步重�
   assert.equal((migrationSql.match(/CREATE VIEW "public"\."sale_order_performance_events"/g) ?? []).length, 1)
 })
 
-test('0014 journal/snapshot 连续生成且仅追加新迁移', () => {
+test('0014 journal/snapshot 在合并迁移链中保持连续', () => {
   const journal = JSON.parse(read('migrations/meta/_journal.json'))
   const snapshot13 = JSON.parse(read('migrations/meta/0013_snapshot.json'))
   const snapshot14 = JSON.parse(read('migrations/meta/0014_snapshot.json'))
-  const last = journal.entries.at(-1)
+  const snapshot28 = JSON.parse(read('migrations/meta/0028_snapshot.json'))
+  const entry13 = journal.entries.find((entry) => entry.idx === 13)
+  const entry14 = journal.entries.find((entry) => entry.idx === 14)
+  const mergeEntry = journal.entries.find((entry) => entry.idx === 28)
 
-  assert.equal(last.idx, 14)
-  assert.equal(last.tag, '0014_sturdy_sentinels')
-  assert.ok(last.when > journal.entries.at(-2).when)
+  assert.equal(entry14?.tag, '0014_sturdy_sentinels')
+  assert.ok(entry14.when > entry13.when)
   assert.equal(snapshot14.prevId, snapshot13.id)
+  assert.equal(mergeEntry?.tag, '0028_merge-main-into-dev')
+  assert.equal(snapshot28.prevId, snapshot14.id)
+  journal.entries.forEach((entry, index) => {
+    assert.equal(entry.idx, index, 'journal 索引必须连续，不能重写已发布迁移')
+  })
 
   assert.notDeepEqual(
     snapshot14.views['public.sale_order_performance_events'],

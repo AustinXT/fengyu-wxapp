@@ -47,6 +47,7 @@
       "path": "/cloudfunctions/payNotify",
       "envVariables": {
         "PG_CONNECTION_STRING": "${PG_CONNECTION_STRING}",
+        "CLIENT_SECRET": "${CLIENT_SECRET}",
         "TZ": "Asia/Shanghai",
         "LAKALA_API_BASE": "${LAKALA_API_BASE}",
         "LAKALA_APPID": "${LAKALA_APPID}",

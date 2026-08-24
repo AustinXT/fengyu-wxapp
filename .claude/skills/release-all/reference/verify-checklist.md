@@ -1,6 +1,6 @@
 # 发版验证清单（dev/prod）
 
-配合 `SKILL.md` 的 Phase 0（预检）与 Phase 4（部署后验证）使用。所有「线上值」以 `getFunctionConfig` / `tcb fn detail` / `docker exec` 实测为准 —— 因为 `tcb fn code update` **不改 env 变量**，env 由首次 provisioning 决定。**按本次 ENV（dev/prod）核对对应期望列**。
+配合 `SKILL.md` 的 Phase 0（预检）与 Phase 6（部署后验证）使用。所有「线上值」以 `getFunctionConfig` / `tcb fn detail` / `docker exec` 实测为准 —— 因为 `tcb fn code update` **不改 env 变量**，env 由首次 provisioning 决定。**按本次 ENV（dev/prod）核对对应期望列**。
 
 ## 环境变量安全表（防 dev 值误入 prod / prod 值误入 dev）
 
@@ -10,10 +10,11 @@
 | `ALLOW_TEST_OPENID` | **`true`** | **`false`** | prod 误留 true = 任意伪造 openid 绕过真实鉴权；dev 误设 false = 测试不便 |
 | `WXACODE_ENV_VERSION` | **`develop`** | **`release`** | prod 误留 develop = 小程序码指向 dev 环境；dev 误设 release = 码指 prod |
 | `PG_CONNECTION_STRING` | `47.113.202.7:5433/fengyu_wxapp` | **`118.178.196.26:5433/fengyu_wxapp`** | 云函数写进错环境库 |
-| `ADMIN_DATABASE_URL` | `47.113.202.7:5433/fengyu_wxapp` | **`118.178.196.26:5433/fengyu_wxapp`** | admin 读错环境数据 |
+| `ADMIN_DATABASE_URL` | `47.113.202.7:5433/fengyu_wxapp` | **`118.178.196.26:5433/fengyu_wxapp`** | admin / analyst 读错环境数据 |
 | `CLIENT_SECRET` | dev secret | prod 独立 secret | staffApi↔clientApi HMAC 桥断裂（dev 内自洽、prod 内自洽，两端各自一致即可） |
 | `CLIENT_SERVICE_URL` | dev 域名 | prod 真实域名（**非 PLACEHOLDER**） | staffApi 跨函数 HTTP / lakala 回调失败 |
 | `ADMIN_JWT_SECRET` | dev jwt | prod 独立 jwt | 跨环境 session 互通（安全隐患） |
+| `ANALYST_PUBLIC_ORIGIN` | dev analyst 公网 URL | prod analyst 公网 URL | admin 顶栏跳转或 analyst 构建期 public origin 串环境 |
 | `LAKALA_*` | SIT 沙箱 | prod 真实商户凭证 | 支付不可用（dev 用 SIT 即可） |
 | `PAYNOTIFY_ENABLED` | `true` | `true` | 二者一致；prod 需配真实 lakala 凭证才真正可用 |
 
@@ -40,13 +41,16 @@ envId 实际值（核对 cloudbaserc.json / `tcb fn detail`）：
 tcb fn invoke staffApi          # 空 payload，期望 -401 UNAUTHORIZED（函数运行 + DB 鉴权生效）；-1 也算通过
 ssh $SSH_HOST "curl -sf http://localhost:3000/ >/dev/null && echo admin-ok"
 ssh $SSH_HOST "docker exec fengyu-admin sh -c 'echo \$DATABASE_URL'" | sed -E 's#://[^@]+@#://***@#'   # 含 $EXPECT_IP:5433/fengyu_wxapp
+ssh $SSH_HOST "curl -sSL -o /dev/null -w '%{http_code}\\n' --max-time 10 http://localhost:3001/"  # 期望 200 或 307
+ssh $SSH_HOST "docker exec fengyu-analyst sh -c 'printf \"%s|%s\\n\" \"\$DATABASE_URL\" \"\$NEXT_PUBLIC_ANALYST_ORIGIN\"'" | sed -E 's#://[^@]+@#://***@#'  # DB 含 $EXPECT_IP:5433，origin 与 envs/$ENV.env 一致
 ```
 （`$SSH_HOST`：prod=fengyu-prod / dev=ali-demo；`$EXPECT_IP`：prod=118.178.196.26 / dev=47.113.202.7。）
 
 ## 回滚指引
 
 - **admin**：上一版镜像仍在远程 → `ssh $SSH_HOST "docker images fengyu-admin"`，把旧 image tag 重打成 `:latest`，再 `ssh $SSH_HOST "cd $REMOTE_DIR && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d admin cron-worker"`。或本地 `git checkout <上一版>` 后重跑 `deploy-admin.sh $ENV`。
+- **analyst**：`.claude/skills/remote-deploy/deploy-analyst.sh --rollback $SSH_HOST` 回退上一个远程镜像；若没有上一版镜像，本地切回已验证提交后重跑 `deploy-analyst.sh $ENV`。
 - **云函数**：`git checkout <上一版>` 对应端代码 → 重新 `scripts/use-env.sh $ENV && scripts/deploy-cloudfunctions.sh`（仍 `code update`，env 不动）。
-- **DB**：本技能不动 DB，无 DB 回滚项。
+- **DB**：本技能会在代码上线前执行 `db:migrate`。迁移失败时不得继续部署；已成功应用的 migration 不自动回滚，须按 `db/CLAUDE.md` 新建向前修复 migration。仅在已批准的灾难恢复流程中使用已验证备份，禁止 `db:push`、手工改 journal 或回改已应用 migration。
 
 （`$REMOTE_DIR` 默认 prod=`/www/wwwroot/fengyu-admin/docker`、dev=`/root/proj.xt.com/fengyu-wxapp/docker`；远程路径不同时显式传入。）

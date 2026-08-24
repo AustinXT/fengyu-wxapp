@@ -26,22 +26,14 @@ fengyu-admin/
 │   ├── app/
 │   │   ├── (auth)/            # 登录/改密（无 Shell 布局）
 │   │   ├── (main)/            # 主布局（Sidebar + TopBar）
-│   │   │   ├── dashboard/     # 工作台（角色自适应看板）
-│   │   │   ├── orders/        # 订单管理 + 开单向导
-│   │   │   ├── allocations/   # 营业额分配（含提成比例自动参考）
-│   │   │   ├── services/      # 服务单（状态机+原子扣减）
-│   │   │   ├── appointments/  # 预约（URL Tabs + 筛选）
-│   │   │   ├── org/           # 组织架构（树形编辑）
-│   │   │   ├── stores/        # 门店
-│   │   │   ├── employees/     # 员工（含调店 scope 同步）
-│   │   │   ├── products/      # 商品 + 分类 + SKU
-│   │   │   ├── commission/    # 提成矩阵
-│   │   │   ├── customers/     # 顾客
-│   │   │   ├── coupons/       # 优惠券
-│   │   │   ├── permissions/   # 权限管理
-│   │   │   ├── sync/          # 数据同步
-│   │   │   ├── logs/          # 操作日志
-│   │   │   └── settings/      # 系统配置
+│   │   │   ├── (workspace)/dashboard/             # 工作台
+│   │   │   ├── (operations)/                      # 开单、订单、服务、预约、退款等经营业务
+│   │   │   ├── (customer-operations)/             # 顾客、卡券、会员权益与流水
+│   │   │   ├── (catalog)/                         # 商品与商城
+│   │   │   ├── (inventory)/inventory/             # 库存管理（库存、单据、资料、促销）
+│   │   │   ├── (organization)/                    # 组织、门店、商户、员工、提成
+│   │   │   ├── (analytics)/data-center/           # 数据中心
+│   │   │   └── (system)/                          # 权限、消息、日志、系统配置
 │   │   └── globals.css        # Tailwind + 品牌色 CSS 变量
 │   ├── actions/               # Server Actions（18 模块，全部接真实 PG）
 │   ├── components/
@@ -54,7 +46,7 @@ fengyu-admin/
 │       ├── operation-log.ts   # 审计日志写入
 │       ├── schemas.ts         # Zod 验证 schema
 │       ├── types.ts           # TypeScript 类型定义
-│       ├── menu.ts            # 角色驱动菜单可见性
+│       ├── menu.ts            # 权限驱动的业务域二级菜单
 │       ├── utils.ts           # cn() + 格式化工具
 │       └── hooks/             # useUrlFilters, useUnsavedChanges
 ├── tests/                     # 唯一测试入口（详见 tests/README.md）
@@ -64,6 +56,8 @@ fengyu-admin/
 │   └── e2e-chains/            # Playwright 跨页跨角色业务链路（link-1~23 + 独立 config）
 └── vitest.config.ts
 ```
+
+路由组仅用于源码组织，公开 URL 保持不变（如订单仍是 `/orders`）。侧边栏采用手风琴二级菜单：工作台、数据中心直达；经营业务、客户运营、商品商城、库存管理、组织管理、系统管理按叶子权限过滤。库存管理的“资料配置”由 `/inventory/skus`、`/inventory/suppliers`、`/inventory/sku-mappings` 三个保留深链的页签构成。
 
 ## 常用命令
 
@@ -140,6 +134,7 @@ export const getRefundDetail = withAnyPermission(
 | 模块 | 文件 | 职责 |
 |------|------|------|
 | 入口 | `src/cron/index.ts` | node-cron 调度（`0 3 * * *` Asia/Shanghai）+ `--once` 单次模式 |
+| 备份 | `src/cron/database-backup.ts` | 03:00 定时备份、手动队列、磁盘复检、完整性校验与 7/30 天清理 |
 | 调度 | `src/cron/run.ts` | 串行 13 STEP，每个 STEP 独立 try/catch（单 STEP 失败不阻塞下一个） |
 | 配置缓存 | `src/cron/config.ts` | `getMemberThreshold` 双层缓存（30s/5min TTL） |
 | STEP 1 | `steps/close-expired-appointments.ts` | 关闭超期未到店预约 |
@@ -165,6 +160,10 @@ bun run cron:dev    # 长驻调度（开发模式）
 **生产容器内手动触发**：`docker exec fengyu-cron-worker node cron-worker.js --once`
 
 **约定**：`operation_logs.source` 写 `'cronTask'`（保留语义，便于历史日志追溯）；`benefits` 类配置（含 `member_level_benefits` / `birthday_benefits` / `thanksgiving_benefits`）每次跑前重读 `system_configs`，不缓存。
+
+## 系统自检
+
+`/settings/diagnostics` 仅 `system:diagnostics` 可访问，包含子系统/拉卡拉双 Tab。cron/export worker 通过 `SYSTEM_RUNTIME_DIR` 上报心跳；Admin 与 cron 通过 `DATABASE_BACKUP_REQUEST_DIR` 交换备份请求和脱敏状态，真实 dump 仅存在 cron 可见的 `DATABASE_BACKUP_DIR`。不得把 dump 目录挂载到 admin web，也不得增加浏览器下载/删除/恢复入口。
 
 ## 测试覆盖率
 

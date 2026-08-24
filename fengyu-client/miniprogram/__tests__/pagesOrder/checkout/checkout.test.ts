@@ -12,7 +12,11 @@
  *  8. 浮点金额：prepaid+paid = netBeforeCard 精确闭合
  */
 
-import { recomputeAmounts, parseAgreement } from '../../../pagesOrder/checkout/checkout-helpers';
+import {
+  recomputeAmounts,
+  parseAgreement,
+  normalizePointsDeductionMaxRate,
+} from '../../../pagesOrder/checkout/checkout-helpers';
 
 describe('recomputeAmounts — 储值卡抵扣计算', () => {
   test('case 1: 余额充足（balance ≥ netBeforeCard）→ 全额抵扣，paid=0，支付方式区隐藏', () => {
@@ -112,7 +116,7 @@ describe('recomputeAmounts — 储值卡抵扣计算', () => {
     expect(r.showPayMethodGroup).toBe(true);
   });
 
-  test('取消后恢复既有订单：pending=80 时即使余额 500，也保持 80+220 原方案', () => {
+  test('取消后恢复既有订单时保留冻结的储值卡方案', () => {
     const r = recomputeAmounts({
       totalAmount: 300,
       couponDiscount: 0,
@@ -122,6 +126,65 @@ describe('recomputeAmounts — 储值卡抵扣计算', () => {
     });
     expect(r.prepaidCardAmount).toBe(80);
     expect(r.paidAmount).toBe(220);
+  });
+
+  test('case 10: 优惠券后先抵积分，再用储值卡抵扣剩余应付', () => {
+    const r = recomputeAmounts({
+      totalAmount: 300,
+      couponDiscount: 30,
+      pointsBalance: 10000,
+      usePoints: true,
+      pointsToYuanRate: 0.01,
+      pointsDeductionMaxRate: 0.03,
+      cardBalance: 100,
+      useCard: true,
+    });
+
+    expect(r.pointsUsed).toBe(900);
+    expect(r.pointsDiscount).toBe(9);
+    expect(r.maxPointsUsable).toBe(900);
+    expect(r.netBeforeCard).toBe(261);
+    expect(r.prepaidCardAmount).toBe(100);
+    expect(r.paidAmount).toBe(161);
+    expect(r.showPayMethodGroup).toBe(true);
+  });
+
+  test('case 11: 手动指定积分超过上限时按订单上限截断', () => {
+    const r = recomputeAmounts({
+      totalAmount: 100.05,
+      couponDiscount: 0,
+      pointsBalance: 10000,
+      pointsUsed: 9999,
+      usePoints: true,
+      pointsToYuanRate: 0.01,
+      pointsDeductionMaxRate: 0.03,
+      cardBalance: 0,
+      useCard: false,
+    });
+
+    expect(r.maxPointsUsable).toBe(300);
+    expect(r.pointsUsed).toBe(300);
+    expect(r.pointsDiscount).toBe(3);
+    expect(r.netBeforeCard).toBe(97.05);
+  });
+
+  test('case 12: 积分抵扣上限为 0 时保留禁用语义', () => {
+    const maxRate = normalizePointsDeductionMaxRate(0);
+    const r = recomputeAmounts({
+      totalAmount: 300,
+      couponDiscount: 0,
+      pointsBalance: 10000,
+      usePoints: true,
+      pointsToYuanRate: 0.01,
+      pointsDeductionMaxRate: maxRate,
+      cardBalance: 0,
+      useCard: false,
+    });
+
+    expect(maxRate).toBe(0);
+    expect(r.maxPointsUsable).toBe(0);
+    expect(r.pointsUsed).toBe(0);
+    expect(r.pointsDiscount).toBe(0);
   });
 });
 

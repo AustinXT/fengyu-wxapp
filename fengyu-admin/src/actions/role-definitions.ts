@@ -9,8 +9,8 @@ import { staffWechatUsers } from '@db/user'
 import { withAnyPermission, withPermission } from '@/lib/with-permission'
 import { requireAdmin, invalidatePermissionMatrixCache, KNOWN_PERMISSION_ACTIONS } from '@/lib/permissions'
 import {
-  getActionGrantability,
   getMissingUiDependencies,
+  isActionGrantableForRoleDefinition,
   sanitizeRoleDefinitionActions,
 } from '@/lib/permission-contract'
 import { logOperation, logUpdate } from '@/lib/operation-log'
@@ -19,6 +19,7 @@ import type { RoleDefinition } from '@/lib/types'
 
 const SUPER_ADMIN_REQUIRED_ACTIONS = [
   'system:config',
+  'system:diagnostics',
   'permission:assign_admin',
   'admin:reset_password',
 ] as const
@@ -69,17 +70,12 @@ function normalizeDescription(value?: string | null): string | null {
 function normalizeActions(actions: readonly string[], isSuperAdmin: boolean): string[] {
   const known = new Set(KNOWN_PERMISSION_ACTIONS)
   const normalized = [...new Set(actions.map((action) => String(action).trim()).filter(Boolean))].sort()
-  for (const action of normalized) {
-    const grantability = getActionGrantability(isSuperAdmin ? 'admin' : 'staff', action, known)
-    if (grantability === 'unknown') {
-      throw new Error(`INVALID_PARAMS: 未知权限项 ${action}`)
-    }
-    if (grantability === 'admin_only') {
-      throw new Error(`INVALID_PARAMS: ${action} 仅超级管理员角色可持有`)
-    }
-    if (grantability === 'undelivered') {
-      throw new Error(`INVALID_PARAMS: ${action} 暂未交付管理后台，不能授予`)
-    }
+  const unknown = normalized.find((action) => !known.has(action))
+  if (unknown) throw new Error(`INVALID_PARAMS: 未知权限项 ${unknown}`)
+
+  const notGrantable = normalized.find((action) => !isActionGrantableForRoleDefinition(action, isSuperAdmin))
+  if (notGrantable) {
+    throw new Error(`INVALID_PARAMS: ${notGrantable} 仅超级管理员角色可持有`)
   }
 
   for (const action of normalized) {
@@ -203,11 +199,7 @@ export const createRoleDefinition = withPermission(
         .where(eq(permissionRoleDefinitions.roleKey, input.copyFromRoleKey))
         .limit(1)
       if (!source) throw new Error('NOT_FOUND: 复制来源角色不存在')
-      sourceActions = sanitizeRoleDefinitionActions(
-        source.actions,
-        isSuperAdmin,
-        KNOWN_PERMISSION_ACTIONS,
-      )
+      sourceActions = sanitizeRoleDefinitionActions(source.actions, isSuperAdmin, KNOWN_PERMISSION_ACTIONS)
     }
 
     const roleKey = `role_${randomUUID()}`

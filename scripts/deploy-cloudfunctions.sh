@@ -13,7 +13,9 @@
 #    子项目目录（fengyu-staff / fengyu-client），再执行 `tcb fn code update <fn>`。
 #    → 重渲染 + envId 校验是关键安全闸：若 cloudbaserc.json 是 dev 渲染态（envId=dev），
 #      `fn code update` 会把代码部署到 dev 环境而非 prod。envId 错 = 代码进错环境。
-#    （注：`fn code update` 仅推送代码，不推送 envVariables；改 env 须用 `fn deploy --force`。）
+#    注意：`tcb fn code update` 会把 cloudbaserc.json 的 envVariables 一并推送覆盖。
+#    代码更新后，本脚本再通过 SCF API 对指定变量执行“读取→合并→回读验证”，
+#    避免 `tcb config update` 3.0.1 的键名损坏问题，也不会覆盖未纳入模板的变量。
 #
 # Usage: scripts/deploy-cloudfunctions.sh [client|staff|all] [--yes]
 #   client → 只部 clientApi + payNotify（client 账号 / CLIENT_ENV_ID）
@@ -176,6 +178,9 @@ if [[ "$DO_STAFF" == "1" ]]; then
   fi
   # envId 取自 cwd（已 cd fengyu-staff）的 cloudbaserc.json；tcb 3.x 不接受 --envId
   tcb fn code update staffApi
+  node "$ROOT/scripts/sync-cloudfunction-env.mjs" "$ROOT/fengyu-staff/cloudbaserc.json" staffApi \
+    --sync CLIENT_SECRET \
+    --require PG_CONNECTION_STRING,CLIENT_SECRET,CLIENT_APPSECRET,WXACODE_ENV_VERSION
   echo "  ✓ staffApi deployed"
 fi
 
@@ -199,11 +204,17 @@ if [[ "$DO_CLIENT" == "1" ]]; then
   STEP=$((STEP + 1))
   echo "==> [$STEP/$TOTAL] Deploy clientApi → $CLIENT_ENV_ID"
   tcb fn code update clientApi
+  node "$ROOT/scripts/sync-cloudfunction-env.mjs" "$ROOT/fengyu-client/cloudbaserc.json" clientApi \
+    --sync CLIENT_SECRET \
+    --require PG_CONNECTION_STRING,TMAP_KEY,TMAP_SECRET,CLIENT_SECRET
   echo "  ✓ clientApi deployed"
 
   STEP=$((STEP + 1))
   echo "==> [$STEP/$TOTAL] Deploy payNotify → $CLIENT_ENV_ID"
   tcb fn code update payNotify
+  node "$ROOT/scripts/sync-cloudfunction-env.mjs" "$ROOT/fengyu-client/cloudbaserc.json" payNotify \
+    --sync CLIENT_SECRET \
+    --require PG_CONNECTION_STRING,CLIENT_SECRET
   echo "  ✓ payNotify deployed"
 fi
 

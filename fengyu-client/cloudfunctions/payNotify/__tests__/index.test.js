@@ -12,6 +12,7 @@
  */
 
 // ====== Mock: pg ======
+const crypto = require('crypto')
 // pool.query 用于入口幂等检查；pool.connect() 返回事务 client
 const mockPoolQuery = vi.fn()
 const mockClientQuery = vi.fn()
@@ -113,6 +114,19 @@ function loadFreshIndex() {
   return require('../index')
 }
 
+function healthPayload(service) {
+  const timestamp = String(Date.now())
+  const nonce = '12345678-1234-1234-1234-123456789abc'
+  return {
+    service,
+    timestamp,
+    nonce,
+    signature: crypto.createHmac('sha256', process.env.CLIENT_SECRET)
+      .update(`${service}\n${timestamp}\n${nonce}`)
+      .digest('hex'),
+  }
+}
+
 /**
  * 构造基础订单快照（pool.query 返回的行）
  */
@@ -160,6 +174,10 @@ function defaultPaymentsRoutes({ cashPaidSum = '300', receivedSum = cashPaidSum 
       result: { rows: [{ id: 1 }], rowCount: 1 },
     },
     {
+      match: /UPDATE sale_order_payments SET allocation_status = '待分配'/,
+      result: { rows: [], rowCount: 1 },
+    },
+    {
       match: /UPDATE sale_orders[\s\S]*SET status = \$1::order_status/,
       result: { rows: [], rowCount: 1 },
     },
@@ -203,6 +221,7 @@ function setupClientQueryRouter(routes) {
 
 describe('payNotify index.js', () => {
   beforeEach(() => {
+    process.env.CLIENT_SECRET = 'health-test-secret'
     vi.clearAllMocks()
     mockPoolQuery.mockReset()
     mockClientQuery.mockReset()
@@ -211,6 +230,26 @@ describe('payNotify index.js', () => {
       query: mockClientQuery,
       release: mockClientRelease,
     }))
+  })
+
+  test('system.health 先于支付开关分流，仅执行 HMAC + SELECT 1', async () => {
+    const { main } = loadFreshIndex()
+    mockPoolQuery.mockResolvedValueOnce({ rows: [{ ok: 1 }], rowCount: 1 })
+    const result = await main({ action: 'system.health', payload: healthPayload('payNotify') })
+    expect(result.code).toBe(0)
+    expect(result.data.ok).toBe(true)
+    expect(mockPoolQuery).toHaveBeenCalledWith('SELECT 1 AS ok')
+  })
+
+  test('system.health 拒绝无效签名', async () => {
+    const { main } = loadFreshIndex()
+    const result = await main({
+      action: 'system.health',
+      payload: { ...healthPayload('payNotify'), signature: '0'.repeat(64) },
+    })
+    expect(result.code).toBe(-401)
+    expect(result.errorType).toBe('UNAUTHORIZED')
+    expect(mockPoolQuery).not.toHaveBeenCalled()
   })
 
   test('1. 无 prepaid 的普通订单 → 充值分支无记录 + 业绩分配正常 + 状态翻 已支付', async () => {
@@ -231,6 +270,14 @@ describe('payNotify index.js', () => {
       {
         match: /SELECT sale_order_type, legacy_source FROM sale_orders/,
         result: { rows: [{ sale_order_type: '销售单', legacy_source: null }], rowCount: 1 },
+      },
+      // 全额到账路径先读取退款感知的逐项可分配额。
+      {
+        match: /SELECT sale_item_id, sale_amount::numeric AS sale_amount, received::numeric AS received\s+FROM sale_items/,
+        result: {
+          rows: [{ sale_item_id: 'item-001', sale_amount: '300.00', received: '300.00' }],
+          rowCount: 1,
+        },
       },
       // sale_items 查询（业绩分配）——补齐 capturePaymentAllocatables 所需字段，走正常比例分摊而非兜底
       {

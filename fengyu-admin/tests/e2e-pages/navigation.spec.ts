@@ -7,11 +7,10 @@ test.describe('全局布局', () => {
     await expect(page.getByText('测试管理员').first()).toBeVisible()
   })
 
-  test('Sidebar 显示菜单分组', async ({ page }) => {
+  test('Sidebar 显示业务域二级菜单', async ({ page }) => {
     await page.goto('/dashboard')
-    // exact=true 避免 '系统管理' 误命中 '系统管理员' 角色显示
-    await expect(page.getByText('业务管理', { exact: true })).toBeVisible()
-    await expect(page.getByText('数据管理', { exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: '经营业务' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '库存管理' })).toBeVisible()
     await expect(page.getByText('系统管理', { exact: true })).toBeVisible()
   })
 
@@ -55,13 +54,14 @@ test.describe('页面路由可达性', () => {
 test.describe('侧边栏导航链接', () => {
   test('点击商品管理菜单项导航', async ({ page }) => {
     await page.goto('/dashboard')
-    // sidebar Link components render as <a> with <span> text
+    await page.getByRole('button', { name: '商品商城' }).click()
     await page.locator('aside').getByText('商品管理').click()
     await expect(page).toHaveURL(/\/products/)
   })
 
   test('点击系统配置菜单项导航', async ({ page }) => {
     await page.goto('/dashboard')
+    await page.getByRole('button', { name: '系统管理' }).click()
     await page.locator('aside').getByText('系统配置').click()
     // dev 模式下 /settings 首次访问需冷编译，客户端导航期间 URL 短暂停留 /dashboard，
     // 默认 5s 超时偶发不足 → 放宽到 15s 吸收冷编译，消除时序 flaky。

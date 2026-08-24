@@ -8,9 +8,13 @@ import type { PgColumn } from 'drizzle-orm/pg-core'
 import type { AuthSession, RoleType } from './types'
 import { collectDescendantNodeIds, findAncestorNodeIdByType } from './org-scope'
 import {
-  UNDELIVERED_ADMIN_ACTIONS,
+  KNOWN_PERMISSION_ACTIONS as CATALOG_ACTIONS,
   sanitizeRoleDefinitionActions,
 } from './permission-contract'
+
+/** 权限目录是唯一真相源；管理员默认持有目录中的全部权限。 */
+export const ALL_ACTIONS: string[] = [...CATALOG_ACTIONS]
+export const KNOWN_PERMISSION_ACTIONS: string[] = [...CATALOG_ACTIONS]
 
 /**
  * DEFAULT_PERMISSION_MATRIX: role → actions[]
@@ -31,49 +35,8 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
   // 2026-05-21 改：原先 admin 不带业务数据权限（订单/分配/服务/预约/顾客），
   // 导致 admin 单角色访问业务页 requirePermission 抛 PERMISSION_DENIED，
   // 生产构建脱敏 error.message 后误显示为 500。现 admin 全开，与 DB 覆盖矩阵对齐。
-  // 维护：本数组必须是所有其它角色的并集（ALL_ACTIONS）；
-  // permissions.test.ts 的 "admin == ALL_ACTIONS" 守护，新增 action 时勿漏。
-  admin: [
-    'dashboard:view',
-    // 基础数据 CRUD（组织/门店/员工/商品/提成/优惠券）
-    'org:list', 'org:create', 'org:update', 'org:delete',
-    'store:list', 'store:create', 'store:update',
-    'employee:list', 'employee:create', 'employee:update', 'employee:delete',
-    'product:list', 'product:create', 'product:update',
-    'commission:list', 'commission:create', 'commission:update', 'commission:delete',
-    'coupon:list', 'coupon:create', 'coupon:update',
-    // 业务数据（订单/明细/分配/服务/预约/顾客/疗程卡/提货/数据中心）
-    'sale_order:list', 'sale_order:create', 'sale_order:update', 'sale_order:performance_attribution_update', 'sale_order:record_payment', 'sale_order:deposit_approve', 'sale_order:delete',
-    'sale_item:list',
-    'allocation:list', 'allocation:save',
-    'service:list', 'service:create', 'service:update', 'service:delete',
-    'appointment:list', 'appointment:confirm', 'appointment:checkin', 'appointment:delete',
-    'customer:list', 'customer:create', 'customer:update', 'customer:delete',
-    'pickup_record:list', 'pickup_record:create', 'pickup_record:delete',
-    'data_center:dashboard',
-    'store_unbind:list', 'store_unbind:approve', 'store_unbind:reject', 'store_unbind:delete',
-    // 系统管理（权限/日志/消息/配置）
-    'permission:list', 'permission:assign', 'permission:revoke', 'permission:assign_admin',
-    'operation_log:list', 'operation_log:delete',
-    'point_transaction:list',
-    'card_transaction:list',
-    'message:list', 'message:delete', 'message:send',
-    'system:config',
-    // 重置员工密码（admin 专属，取代原 isAdmin 旁路）
-    'admin:reset_password',
-    // 退款管理（2026-05-17 PR-Z 职责拆分；2026-05-17 PR-Z2 admin 拿回 approve 权）
-    'sale_order:refund_create', 'sale_order:refund_approve',
-    // 历史订单核对（WorkFine 导入的 status='未审核' 订单）
-    'legacy_order:list', 'legacy_order:approve', 'legacy_order:reject',
-    'legacy_order:update_phone', 'legacy_order:update_amount', 'legacy_order:pull',
-    // 门店库存（4 类单据 v1；update 及 v2 写/审批/价格能力尚未交付 Admin UI）
-    'inventory:list', 'inventory:create', 'inventory:delete',
-    'inventory:stock_list', 'inventory:export',
-    // 门店拉卡拉收款配置（门店关联收款商户；admin 专属，涉及收款，hr 不开）
-    'store:lakala_config',
-    // 商户管理（拉卡拉收款商户档案 CRUD；独立模块 /merchants，admin + finance）
-    'merchant:list', 'merchant:create', 'merchant:update', 'merchant:delete',
-  ],
+  // 新增权限只登记目录，admin 自动同步拥有，无需手工维护第二份列表。
+  admin: [...ALL_ACTIONS],
   // 店长：门店业务的非物理删除操作。物理删除和收款配置仅系统管理员可授予。
   manager: [
     'allocation:list', 'allocation:save',
@@ -171,27 +134,6 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
   // staff（普通员工）专供小程序端，禁止登录 admin（canAccessAdmin 拦截）；矩阵留空。
   staff: [],
 }
-
-/**
- * ALL_ACTIONS：全仓所有 distinct 权限 action（各角色数组并集）。
- *
- * - admin 即持有 ALL_ACTIONS（系统管理员全开）。
- * - 供权限矩阵编辑器列全量、page-permission-coverage 测试、admin 完整性守护使用。
- * - 由于 admin 已是并集，这里 = sorted(unique(admin ∪ 其它角色))。
- */
-export const ALL_ACTIONS: string[] = [
-  ...new Set(Object.values(DEFAULT_PERMISSION_MATRIX).flat()),
-].sort()
-
-/**
- * 已知权限点 = 当前可授予项 + 未交付但仍存在后端实现的库存项。
- *
- * `ALL_ACTIONS` 是矩阵编辑器可见且可授予的全集；`KNOWN_PERMISSION_ACTIONS` 仅用于
- * 读取遗留矩阵和保存报错，使未交付 action 被精确识别为不可授予而非 unknown。
- */
-export const KNOWN_PERMISSION_ACTIONS: string[] = [
-  ...new Set([...ALL_ACTIONS, ...UNDELIVERED_ADMIN_ACTIONS]),
-].sort()
 
 /**
  * 进程级权限矩阵缓存

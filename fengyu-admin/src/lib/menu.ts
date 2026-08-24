@@ -1,130 +1,234 @@
 import {
-  LayoutDashboard,
-  ShoppingCart,
-  FileText,
-  PieChart,
-  Stethoscope,
+  Boxes,
   CalendarCheck,
-  Network,
-  Store,
+  ChartNoAxesCombined,
+  CreditCard,
+  FileText,
+  Gift,
+  Grid3x3,
+  History,
   Landmark,
-  Users,
+  LayoutDashboard,
+  LineChart,
+  MessageSquare,
+  Network,
   Package,
   PackageCheck,
-  ShoppingBag,
-  Grid3x3,
-  UserRound,
-  CreditCard,
-  Ticket,
-  Shield,
-  Coins,
-  Wallet,
-  Gift,
-  MessageSquare,
+  PieChart,
   ScrollText,
   Settings,
+  Shield,
+  ShoppingBag,
+  ShoppingCart,
   SlidersHorizontal,
-  Unlink,
-  History,
-  Boxes,
-  LineChart,
+  Stethoscope,
+  Activity,
+  Store,
+  Ticket,
   Undo2,
+  Unlink,
+  UserRound,
+  Users,
+  Wallet,
+  Coins,
+  Building2,
+  Factory,
   type LucideIcon,
-} from "lucide-react";
-import type { AuthSession } from "./types";
+} from 'lucide-react'
+import type { AuthSession } from './types'
 
 export interface MenuItem {
-  label: string;
-  icon: LucideIcon;
-  href: string;
-  /**
-   * 显示该菜单项所需的权限点（OR：持任一即显示）。
-   *
-   * 权限点驱动（2026-06-24，取代原 requiredRoles/readonlyRoles 角色驱动）：
-   * 菜单可见性 = 用户实际权限矩阵的直接体现，永久跟随 DB 矩阵（system_configs），不再硬编码角色。
-   * 门槛 action 选「能代表该页管理能力」的权限：
-   *   - 管理类页避开 org:list / store:list / employee:list 这类「引用读」（被多角色作筛选器持有），
-   *     改用 :create（如组织架构用 org:create、门店管理用 store:create）；
-   *   - 已逐项保证「持该 action 的角色必满足该页全部无条件 SSR 闸门」，故不会出现「可见却 403」，
-   *     由 page-permission-coverage.test.ts 守护。
-   * 只读由页面内 hasPermission(写 action) 自然决定，菜单层不再区分 readonly。
-   */
-  requiredActions: string[];
+  label: string
+  icon: LucideIcon
+  href: string
+  /** 持有其中任一权限即可显示。 */
+  requiredActions: string[]
+  /** 除 requiredActions 外，还必须同时具备的权限。 */
+  requiredAllActions?: string[]
+  /** 指向同一功能的历史深链，沿用该菜单项的高亮和父级展开状态。 */
+  matchPaths?: string[]
+  /** 仅向持有指定组织范围的账号显示；总部账号可按配置进入下级业务。 */
+  allowedScopeTypes?: Array<'总部' | '市场' | '门店'>
 }
 
-export interface MenuGroup {
-  label: string | null;
-  items: MenuItem[];
+export interface MenuParent {
+  label: string
+  icon: LucideIcon
+  children: MenuItem[]
 }
 
-export const MENU_CONFIG: MenuGroup[] = [
-  {
-    label: null,
-    items: [
-      { label: "工作台", icon: LayoutDashboard, href: "/dashboard", requiredActions: ["dashboard:view"] },
-    ],
-  },
-  {
-    label: "业务管理",
-    items: [
-      { label: "开单", icon: ShoppingCart, href: "/orders/create", requiredActions: ["sale_order:create"] },
-      { label: "订单管理", icon: FileText, href: "/orders", requiredActions: ["sale_order:list"] },
-      { label: "历史订单核对", icon: History, href: "/legacy-orders", requiredActions: ["legacy_order:list"] },
-      { label: "营业额分配", icon: PieChart, href: "/allocations", requiredActions: ["allocation:list"] },
-      // 退款管理：listRefunds 为 withAnyPermission([refund_create, refund_approve])，门槛同口径取 OR
-      { label: "退款管理", icon: Undo2, href: "/refunds", requiredActions: ["sale_order:refund_create", "sale_order:refund_approve"] },
-      { label: "服务单管理", icon: Stethoscope, href: "/services", requiredActions: ["service:list"] },
-      { label: "预约管理", icon: CalendarCheck, href: "/appointments", requiredActions: ["appointment:list"] },
-      { label: "提货记录", icon: PackageCheck, href: "/pickup-records", requiredActions: ["pickup_record:list"] },
-      { label: "门店解绑", icon: Unlink, href: "/store-unbind", requiredActions: ["store_unbind:list"] },
-      { label: "门店库存", icon: Boxes, href: "/inventory", requiredActions: ["inventory:list"] },
-    ],
-  },
-  {
-    label: "数据管理",
-    items: [
-      { label: "数据中心", icon: LineChart, href: "/data-center", requiredActions: ["data_center:dashboard"] },
-      // 管理类：避开引用读 org:list / store:list / employee:list，用 :create 代表管理能力
-      { label: "组织架构", icon: Network, href: "/org", requiredActions: ["org:create"] },
-      { label: "门店管理", icon: Store, href: "/stores", requiredActions: ["store:create"] },
-      // 商户管理：门槛 merchant:list，故 manager 等只读角色也可见列表（写权由页面内按钮控制）
-      { label: "商户管理", icon: Landmark, href: "/merchants", requiredActions: ["merchant:list"] },
-      { label: "员工管理", icon: Users, href: "/employees", requiredActions: ["employee:create"] },
-      { label: "商品管理", icon: Package, href: "/products", requiredActions: ["product:create"] },
-      { label: "商城管理", icon: ShoppingBag, href: "/mall", requiredActions: ["product:create"] },
-      { label: "提成矩阵", icon: Grid3x3, href: "/commission", requiredActions: ["commission:list"] },
-      { label: "顾客管理", icon: UserRound, href: "/customers", requiredActions: ["customer:list"] },
-      { label: "疗程卡管理", icon: CreditCard, href: "/cards", requiredActions: ["sale_item:list"] },
-      { label: "优惠券管理", icon: Ticket, href: "/coupons", requiredActions: ["coupon:list"] },
-      { label: "会员权益", icon: Gift, href: "/member-benefits", requiredActions: ["system:config"] },
-      { label: "积分流水", icon: Coins, href: "/points", requiredActions: ["point_transaction:list"] },
-      { label: "充值卡流水", icon: Wallet, href: "/card-transactions", requiredActions: ["card_transaction:list"] },
-    ],
-  },
-  {
-    label: "系统管理",
-    items: [
-      { label: "权限管理", icon: Shield, href: "/permissions", requiredActions: ["permission:list"] },
-      { label: "权限矩阵", icon: SlidersHorizontal, href: "/settings/permission-matrix", requiredActions: ["system:config"] },
-      { label: "消息中心", icon: MessageSquare, href: "/messages", requiredActions: ["message:list"] },
-      { label: "操作日志", icon: ScrollText, href: "/logs", requiredActions: ["operation_log:list"] },
-      { label: "系统配置", icon: Settings, href: "/settings", requiredActions: ["system:config"] },
-    ],
-  },
-];
+export type MenuNode = MenuItem | MenuParent
 
 /**
- * 按当前会话的权限点过滤出可见菜单。
+ * 侧边栏按业务域组织；URL 仍保持为原有扁平地址。
  *
- * 菜单项 requiredActions 与 session.permissions.actions 取交集（OR：持任一即显示）；
- * 空分组自动剔除。actions 已在 getSessionFromCookie 内由 computeActions 摊平（吃 DB 矩阵）。
+ * 父级不设独立权限：仅在其任一子页面可访问时才显示，避免权限矩阵变更后出现空分组。
  */
-export function getVisibleMenuGroups(session: AuthSession): MenuGroup[] {
-  const actions = session.permissions.actions;
-  return MENU_CONFIG.map((group) => ({
-    ...group,
-    items: group.items.filter((item) =>
-      item.requiredActions.some((a) => actions.includes(a))
-    ),
-  })).filter((group) => group.items.length > 0);
+export const MENU_CONFIG: MenuNode[] = [
+  { label: '工作台', icon: LayoutDashboard, href: '/dashboard', requiredActions: ['dashboard:view'] },
+  {
+    label: '经营业务',
+    icon: ChartNoAxesCombined,
+    children: [
+      { label: '开单', icon: ShoppingCart, href: '/orders/create', requiredActions: ['sale_order:create'] },
+      { label: '订单管理', icon: FileText, href: '/orders', requiredActions: ['sale_order:list'] },
+      { label: '历史订单核对', icon: History, href: '/legacy-orders', requiredActions: ['legacy_order:list'] },
+      { label: '营业额分配', icon: PieChart, href: '/allocations', requiredActions: ['allocation:list'] },
+      { label: '退款管理', icon: Undo2, href: '/refunds', requiredActions: ['sale_order:refund_create', 'sale_order:refund_approve'] },
+      { label: '服务单管理', icon: Stethoscope, href: '/services', requiredActions: ['service:list'] },
+      { label: '预约管理', icon: CalendarCheck, href: '/appointments', requiredActions: ['appointment:list'] },
+      { label: '提货记录', icon: PackageCheck, href: '/pickup-records', requiredActions: ['pickup_record:list'] },
+      { label: '门店解绑', icon: Unlink, href: '/store-unbind', requiredActions: ['store_unbind:list'] },
+    ],
+  },
+  {
+    label: '客户运营',
+    icon: UserRound,
+    children: [
+      { label: '顾客管理', icon: UserRound, href: '/customers', requiredActions: ['customer:list'] },
+      { label: '疗程卡管理', icon: CreditCard, href: '/cards', requiredActions: ['sale_item:list'] },
+      { label: '优惠券管理', icon: Ticket, href: '/coupons', requiredActions: ['coupon:list'] },
+      { label: '会员权益', icon: Gift, href: '/member-benefits', requiredActions: ['system:config'] },
+      { label: '积分流水', icon: Coins, href: '/points', requiredActions: ['point_transaction:list'] },
+      { label: '充值卡流水', icon: Wallet, href: '/card-transactions', requiredActions: ['card_transaction:list'] },
+    ],
+  },
+  {
+    label: '商品商城',
+    icon: ShoppingBag,
+    children: [
+      { label: '商品管理', icon: Package, href: '/products', requiredActions: ['product:create'] },
+      { label: '商城管理', icon: ShoppingBag, href: '/mall', requiredActions: ['product:create'] },
+    ],
+  },
+  {
+    label: '库存管理',
+    icon: Boxes,
+    children: [
+      { label: '库存查询', icon: PackageCheck, href: '/inventory/stocks', requiredActions: ['inventory:stock_list'] },
+      {
+        label: '供应链业务',
+        icon: Factory,
+        href: '/inventory/operations/supply-chain',
+        requiredActions: ['inventory:list', 'inventory:stock_list'],
+        requiredAllActions: ['inventory:list', 'inventory:stock_list'],
+        allowedScopeTypes: ['总部'],
+      },
+      {
+        label: '市场业务',
+        icon: Building2,
+        href: '/inventory/operations/market',
+        requiredActions: ['inventory:list', 'inventory:stock_list'],
+        requiredAllActions: ['inventory:list', 'inventory:stock_list'],
+        allowedScopeTypes: ['总部', '市场'],
+      },
+      {
+        label: '门店业务',
+        icon: Store,
+        href: '/inventory/operations/store',
+        requiredActions: ['inventory:list', 'inventory:stock_list'],
+        requiredAllActions: ['inventory:list', 'inventory:stock_list'],
+        allowedScopeTypes: ['总部', '市场', '门店'],
+        matchPaths: ['/inventory/procurement', '/inventory/sale', '/inventory/transfer', '/inventory/scrap'],
+      },
+      {
+        label: '单据中心',
+        icon: FileText,
+        href: '/inventory/docs',
+        requiredActions: ['inventory:list', 'inventory:stock_list'],
+        requiredAllActions: ['inventory:list', 'inventory:stock_list'],
+      },
+      {
+        label: '资料配置',
+        icon: Package,
+        href: '/inventory/skus',
+        requiredActions: ['inventory:stock_list'],
+        matchPaths: ['/inventory/suppliers', '/inventory/sku-mappings', '/inventory/promotions'],
+      },
+    ],
+  },
+  {
+    label: '组织管理',
+    icon: Network,
+    children: [
+      { label: '组织架构', icon: Network, href: '/org', requiredActions: ['org:create'] },
+      { label: '门店管理', icon: Store, href: '/stores', requiredActions: ['store:create'] },
+      { label: '商户管理', icon: Landmark, href: '/merchants', requiredActions: ['merchant:list'] },
+      { label: '员工管理', icon: Users, href: '/employees', requiredActions: ['employee:create'] },
+      { label: '提成矩阵', icon: Grid3x3, href: '/commission', requiredActions: ['commission:list'] },
+    ],
+  },
+  { label: '数据中心', icon: LineChart, href: '/data-center', requiredActions: ['data_center:dashboard'] },
+  {
+    label: '系统管理',
+    icon: Settings,
+    children: [
+      { label: '权限管理', icon: Shield, href: '/permissions', requiredActions: ['permission:list'] },
+      { label: '权限矩阵', icon: SlidersHorizontal, href: '/settings/permission-matrix', requiredActions: ['system:config'] },
+      { label: '消息中心', icon: MessageSquare, href: '/messages', requiredActions: ['message:list'] },
+      { label: '操作日志', icon: ScrollText, href: '/logs', requiredActions: ['operation_log:list'] },
+      { label: '系统配置', icon: Settings, href: '/settings', requiredActions: ['system:config'] },
+      {
+        label: '系统自检',
+        icon: Activity,
+        href: '/settings/diagnostics',
+        matchPaths: ['/settings/lakala-diagnostics'],
+        requiredActions: ['system:diagnostics'],
+      },
+    ],
+  },
+]
+
+export function isMenuParent(node: MenuNode): node is MenuParent {
+  return 'children' in node
 }
+
+export function hasMenuItemAccess(
+  item: MenuItem,
+  actions: readonly string[],
+  scopeTypes?: readonly ('总部' | '市场' | '门店')[],
+): boolean {
+  return item.requiredActions.some((action) => actions.includes(action))
+    && (item.requiredAllActions?.every((action) => actions.includes(action)) ?? true)
+    && (!item.allowedScopeTypes || !scopeTypes || item.allowedScopeTypes.some((scope) => scopeTypes.includes(scope)))
+}
+
+export function flattenMenuItems(nodes: readonly MenuNode[] = MENU_CONFIG): MenuItem[] {
+  return nodes.flatMap((node) => isMenuParent(node) ? node.children : [node])
+}
+
+export function itemMatchesPath(item: MenuItem, pathname: string): boolean {
+  return [item.href, ...(item.matchPaths ?? [])].some((path) => pathname === path || pathname.startsWith(`${path}/`))
+}
+
+export function getMenuItemForPath(nodes: readonly MenuNode[], pathname: string): MenuItem | null {
+  const matching = flattenMenuItems(nodes)
+    .filter((item) => itemMatchesPath(item, pathname))
+    .sort((a, b) => {
+      const aLength = Math.max(a.href.length, ...(a.matchPaths ?? []).map((path) => path.length))
+      const bLength = Math.max(b.href.length, ...(b.matchPaths ?? []).map((path) => path.length))
+      return bLength - aLength
+    })
+  return matching[0] ?? null
+}
+
+export function getMenuParentForPath(nodes: readonly MenuNode[], pathname: string): MenuParent | null {
+  return nodes.find((node): node is MenuParent => isMenuParent(node) && node.children.some((item) => itemMatchesPath(item, pathname))) ?? null
+}
+
+export function getVisibleMenuItems(session: AuthSession): MenuNode[] {
+  const actions = session.permissions.actions
+  const scopeTypes = session.roles.map((role) => role.scopeType)
+  return MENU_CONFIG.reduce<MenuNode[]>((visible, node) => {
+    if (!isMenuParent(node)) {
+      if (hasMenuItemAccess(node, actions, scopeTypes)) visible.push(node)
+      return visible
+    }
+    const children = node.children.filter((item) => hasMenuItemAccess(item, actions, scopeTypes))
+    if (children.length > 0) visible.push({ ...node, children })
+    return visible
+  }, [])
+}
+
+/** @deprecated 使用 getVisibleMenuItems；保留别名，便于渐进迁移调用方。 */
+export const getVisibleMenuGroups = getVisibleMenuItems

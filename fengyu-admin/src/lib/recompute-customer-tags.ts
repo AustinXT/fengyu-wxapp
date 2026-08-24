@@ -26,6 +26,7 @@ import { determineMemberLevel, isUpgrade, isDowngrade } from '@/cron/lib/member-
 import {
   processUpgrade,
   processDowngrade,
+  shouldGrantMemberUpgradeBenefits,
   type BenefitsConfig,
 } from '@/cron/steps/refresh-member-levels'
 
@@ -230,6 +231,7 @@ async function recomputeMemberLevelForUser(
       cwu.user_id,
       cwu.member_level,
       cwu.member_level_locked_until,
+      cwu.became_member_at,
       COALESCE(SUM(GREATEST((so.received::numeric) - (so.refunded_amount::numeric), 0)) FILTER (
         WHERE so.sale_order_type IN ('销售单','转换单')
           AND so.paid_at >= (NOW() - INTERVAL '12 months')
@@ -238,11 +240,12 @@ async function recomputeMemberLevelForUser(
     LEFT JOIN sale_orders so ON so.client_user_id = cwu.user_id
     WHERE cwu.user_id = ${clientUserId}
       AND cwu.customer_type = '会员客'
-    GROUP BY cwu.user_id, cwu.member_level, cwu.member_level_locked_until
+    GROUP BY cwu.user_id, cwu.member_level, cwu.member_level_locked_until, cwu.became_member_at
   `)) as Array<{
     user_id: string
     member_level: string | null
     member_level_locked_until: Date | string | null
+    became_member_at: Date | string | null
     spend: string | number
   }>
 
@@ -255,7 +258,10 @@ async function recomputeMemberLevelForUser(
   if (newLevel === oldLevel) return null
 
   if (isUpgrade(oldLevel as never, newLevel)) {
-    await processUpgrade(db, row.user_id, oldLevel, newLevel, spend, benefitsConfig)
+    await processUpgrade(db, row.user_id, oldLevel, newLevel, spend, benefitsConfig, undefined, {
+      becameMemberAt: row.became_member_at,
+      grantBenefits: shouldGrantMemberUpgradeBenefits(oldLevel, row.became_member_at),
+    })
     return { from: oldLevel, to: newLevel, action: 'upgrade' }
   }
   if (isDowngrade(oldLevel as never, newLevel)) {

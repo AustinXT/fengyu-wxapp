@@ -10,6 +10,8 @@
  *   3. history 默认倒序         — 插 3 条不同 type → 返回 3 条按 created_at DESC
  *   4. history 分页             — 插 5 条 → page=1 pageSize=2 → 返回 2 条
  *   5. history 空               — 无流水 → records=[]
+ *   6. 未注册 OPENID            — balance/history 均返回 PHONE_REQUIRED
+ *   7. history 非法分页         — page/pageSize 越界返回 INVALID_PARAMS
  *
  * 实测路由返回字段：{ balance, levelName, levelBenefits, nextLevel }（无 points / memberLevel）
  */
@@ -91,6 +93,38 @@ async function caseHistoryEmpty() {
   }
 }
 
+async function caseUnregisteredPhoneRequired() {
+  const openid = `${NS}_UNREGISTERED_OP`
+  for (const action of ['points.balance', 'points.history']) {
+    const res = await invokeAs(openid, action, {})
+    if (res.code !== -403 || res.errorType !== 'PHONE_REQUIRED') {
+      throw new Error(`${action} expect PHONE_REQUIRED/-403, got ${JSON.stringify(res)}`)
+    }
+  }
+}
+
+async function caseHistoryInvalidPagination() {
+  await createTestClient()
+  const invalidPayloads = [
+    { page: 0 },
+    { page: -1 },
+    { page: 1.5 },
+    { page: '1' },
+    { pageSize: 0 },
+    { pageSize: -1 },
+    { pageSize: 51 },
+    { pageSize: 1000 },
+    { pageSize: 1.5 },
+    { pageSize: '20' },
+  ]
+  for (const payload of invalidPayloads) {
+    const res = await invokeAs(TEST_CLIENT_OPENID, 'points.history', payload)
+    if (res.code !== -400 || res.errorType !== 'INVALID_PARAMS') {
+      throw new Error(`payload=${JSON.stringify(payload)} expect INVALID_PARAMS/-400, got ${JSON.stringify(res)}`)
+    }
+  }
+}
+
 // "外来"顾客：直接 INSERT client_wechat_users 而不走 auth.login（无积分流水、默认 points_balance=0）
 // 不能 throw，应返回默认值（balance=0, levelName=null, records=[]）
 async function caseAlienClientFallback() {
@@ -132,6 +166,8 @@ const CASES = [
   ['history pagination → page=1 pageSize=2 returns 2', caseHistoryPagination],
   ['history empty → []', caseHistoryEmpty],
   ['alien client (绕过 auth.login, 无流水) → balance=0/records=[]', caseAlienClientFallback],
+  ['unregistered OPENID → balance/history PHONE_REQUIRED', caseUnregisteredPhoneRequired],
+  ['history invalid pagination → INVALID_PARAMS', caseHistoryInvalidPagination],
 ]
 
 let pass = 0, fail = 0

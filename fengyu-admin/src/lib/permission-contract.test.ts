@@ -10,12 +10,16 @@ vi.mock('next/navigation', () => ({ notFound: notFoundMock }))
 
 import type { AuthSession } from './types'
 import {
+  addActionWithUiDependencies,
+  getMissingUiDependencies,
+  hasAllUiCapabilities,
   hasUiCapability,
+  removeActionWithDependents,
   sanitizePermissionMatrix,
   sanitizeRoleDefinitionActions,
   validatePermissionMatrix,
 } from './permission-contract'
-import { requireUiPageCapability } from './page-capability'
+import { requireAllUiPageCapabilities, requireUiPageCapability } from './page-capability'
 
 const knownActions = [
   'coupon:list', 'coupon:create',
@@ -59,7 +63,7 @@ describe('permission-contract', () => {
     ]))
   })
 
-  it('非 admin 不可授予物理删除、收款配置与未交付库存能力', () => {
+  it('非 admin 不可授予物理删除和收款配置；已交付库存能力按依赖校验', () => {
     const result = validatePermissionMatrix(matrix({
       manager: ['sale_order:delete', 'store:lakala_config', 'inventory:update'],
     }), knownActions)
@@ -67,17 +71,17 @@ describe('permission-contract', () => {
     expect(result.issues).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'not_grantable', action: 'sale_order:delete', grantability: 'admin_only' }),
       expect.objectContaining({ kind: 'not_grantable', action: 'store:lakala_config', grantability: 'admin_only' }),
-      expect.objectContaining({ kind: 'not_grantable', action: 'inventory:update', grantability: 'undelivered' }),
+      expect.objectContaining({ kind: 'missing_ui_dependency', action: 'inventory:update', missing: ['inventory:stock_list'] }),
     ]))
   })
 
-  it('读取历史矩阵时清洗未知、不可授予和未交付能力', () => {
+  it('读取历史矩阵时清洗未知和不可授予能力，保留已交付库存能力', () => {
     const result = sanitizePermissionMatrix(matrix({
       admin: ['coupon:list', 'unknown:action', 'inventory:update'],
       manager: ['coupon:list', 'sale_order:delete', 'store:lakala_config'],
     }), knownActions)
 
-    expect(result.admin).toEqual(['coupon:list'])
+    expect(result.admin).toEqual(['coupon:list', 'inventory:update'])
     expect(result.manager).toEqual(['coupon:list'])
   })
 
@@ -90,9 +94,10 @@ describe('permission-contract', () => {
       'lakala:onboarding:create',
     ]
 
-    expect(sanitizeRoleDefinitionActions(legacy, false, knownActions)).toEqual(['coupon:list'])
+    expect(sanitizeRoleDefinitionActions(legacy, false, knownActions)).toEqual(['coupon:list', 'inventory:update'])
     expect(sanitizeRoleDefinitionActions(legacy, true, knownActions)).toEqual([
       'coupon:list',
+      'inventory:update',
       'sale_order:delete',
       'store:lakala_config',
     ])
@@ -106,8 +111,28 @@ describe('permission-contract', () => {
     )).toBe(true)
   })
 
+  it('勾选库存特殊权限会递归补齐接口依赖，取消前置权限会撤销依赖项', () => {
+    const granted = addActionWithUiDependencies([], 'inventory:market_sku_manage')
+    expect(granted).toEqual(expect.arrayContaining([
+      'inventory:market_sku_manage', 'inventory:create', 'inventory:update',
+      'inventory:price_view', 'inventory:list', 'inventory:stock_list', 'store:list',
+    ]))
+    expect(getMissingUiDependencies(granted, 'inventory:market_sku_manage')).toEqual([])
+    expect(hasAllUiCapabilities(granted, ['inventory:create', 'inventory:update', 'inventory:price_view'])).toBe(true)
+    const removed = removeActionWithDependents(granted, 'inventory:stock_list')
+    expect(removed).toEqual(expect.arrayContaining(['inventory:list', 'store:list']))
+    expect(removed).not.toEqual(expect.arrayContaining([
+      'inventory:market_sku_manage', 'inventory:create', 'inventory:update', 'inventory:price_view', 'inventory:stock_list',
+    ]))
+  })
+
   it('SSR 直达页对无能力用户统一 notFound，并支持任一可达 action', () => {
     expect(() => requireUiPageCapability(session(['coupon:list']), 'coupon:create')).toThrow('NEXT_NOT_FOUND')
     expect(() => requireUiPageCapability(session(['coupon:list']), ['coupon:create', 'coupon:list'])).not.toThrow()
+  })
+
+  it('多个 SSR 接口是 AND 关系，缺任一项都不渲染页面', () => {
+    expect(() => requireAllUiPageCapabilities(session(['inventory:list']), ['inventory:list', 'inventory:stock_list'])).toThrow('NEXT_NOT_FOUND')
+    expect(() => requireAllUiPageCapabilities(session(['inventory:list', 'inventory:stock_list']), ['inventory:list', 'inventory:stock_list'])).not.toThrow()
   })
 })

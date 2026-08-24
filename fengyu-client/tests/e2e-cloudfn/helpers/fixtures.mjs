@@ -240,6 +240,13 @@ export async function cleanupTestData(prefix = NS) {
   const stmts = [
     // 1) 子表（依赖 sale_orders / sale_items）
     [`DELETE FROM card_transactions WHERE ref_order_id LIKE $1`, [like]],
+    // point_batches FK → point_transactions / sale_orders / client_wechat_users，必须先删批次。
+    [`DELETE FROM point_batches WHERE ref_order_id LIKE $1`, [like]],
+    [
+      `DELETE FROM point_batches
+         WHERE user_id IN (SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1)`,
+      [like],
+    ],
     [`DELETE FROM point_transactions WHERE ref_order_id LIKE $1`, [like]],
     [
       `DELETE FROM point_transactions

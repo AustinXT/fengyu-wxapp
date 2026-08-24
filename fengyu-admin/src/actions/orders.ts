@@ -9,10 +9,12 @@ import {
   salePaymentItemReceipts,
   salePaymentItemAllocations,
 } from '@db/order'
+import type { SaleItemInventoryCompositionSnapshotV1 } from '@db/order'
 import { userCoupons, couponTemplates } from '@db/coupon'
 import { stores, orgNodes } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { productSkus, productCategories, products, mallBundleGroups, mallProductSkus } from '@db/product'
+import { inventorySkuProductSkuMappings, inventorySkus } from '@db/inventory'
 import { prepaidCards, cardTransactions } from '@db/prepaid-card'
 import { eq, desc, asc, and, or, sql, ilike, gte, lt, gt, inArray, isNull } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
@@ -31,6 +33,7 @@ import { isMember, resolveUnitPrice } from '@/lib/member-pricing'
 import { calculateTreatmentTierLineAmounts } from '@/lib/treatment-tier-pricing'
 // TODO: 后续若 admin 需自建充值订单入口，从 '@/lib/recharge' 引入 loadRechargeConfig + matchTier
 import { settlePointsSafe } from '@/lib/points-settle'
+import { grantPointBatch, consumePointBatches } from '@/lib/points-batches'
 import { recalcPaidSessionsForOrder, paidUnusedSessionsExpr } from '@/lib/paid-sessions'
 import { capturePaymentAllocatables, refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
 import { getPerItemRefundedMap } from '@/lib/per-item-refund'
@@ -43,6 +46,7 @@ import {
   type ExportBatchResult,
 } from '@/lib/export-pagination'
 import { parseOrderFilters, parseAllocationOrderFilters } from '@/lib/list-filters'
+import { getPointsToYuanRate, getPointsDeductionMaxRate } from '@/lib/system-config'
 import {
   orderMarketScopeCondition,
   resolveCustomerOrderMarketScope,
@@ -67,6 +71,80 @@ const LEGACY_INFLOW_NOTE = '旧系统充值金转入'
 // 寄存单事务客户端类型（与 lib/paid-sessions.ts AdminTx 同义）
 type OrderTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
 type DepositTx = OrderTx
+
+type CompositionSkuRow = {
+  skuId: string
+  productType: '疗程卡' | '家居产品' | null
+  specName?: string | null
+  productName?: string | null
+}
+
+/**
+ * 冻结家居产品在下单当时的库存组成。新订单必须有有效组成；历史空快照只在提货时
+ * 兼容读取最新配置，不能继续产生新的空快照数据。
+ */
+async function loadInventoryCompositionSnapshots(
+  tx: OrderTx,
+  skuRows: CompositionSkuRow[],
+): Promise<Map<string, SaleItemInventoryCompositionSnapshotV1>> {
+  const homeRows = [...new Map(
+    skuRows
+      .filter((row) => row.productType === '家居产品')
+      .map((row) => [row.skuId, row]),
+  ).values()]
+  if (homeRows.length === 0) return new Map()
+
+  const componentRows = await tx
+    .select({
+      productSkuId: inventorySkuProductSkuMappings.productSkuId,
+      inventorySkuId: inventorySkuProductSkuMappings.inventorySkuId,
+      productCode: inventorySkus.productCode,
+      productName: inventorySkus.productName,
+      specName: inventorySkus.specName,
+      inventorySkuActive: inventorySkus.isActive,
+      quantityPerSaleUnit: inventorySkuProductSkuMappings.quantityPerSaleUnit,
+    })
+    .from(inventorySkuProductSkuMappings)
+    .innerJoin(inventorySkus, eq(inventorySkuProductSkuMappings.inventorySkuId, inventorySkus.skuId))
+    .where(and(
+      inArray(inventorySkuProductSkuMappings.productSkuId, homeRows.map((row) => row.skuId)),
+      eq(inventorySkuProductSkuMappings.isActive, true),
+    ))
+    .orderBy(asc(inventorySkus.productName), asc(inventorySkus.productCode))
+
+  const snapshots = new Map<string, SaleItemInventoryCompositionSnapshotV1>()
+  const invalidProductSkuIds = new Set<string>()
+  for (const component of componentRows) {
+    if (!component.inventorySkuActive) {
+      invalidProductSkuIds.add(component.productSkuId)
+      continue
+    }
+    const snapshot = snapshots.get(component.productSkuId) ?? { version: 1 as const, components: [] }
+    snapshot.components.push({
+      inventorySkuId: component.inventorySkuId,
+      productCode: component.productCode,
+      productName: component.productName,
+      specName: component.specName,
+      quantityPerSaleUnit: component.quantityPerSaleUnit,
+    })
+    snapshots.set(component.productSkuId, snapshot)
+  }
+  const invalid = homeRows.find((row) => invalidProductSkuIds.has(row.skuId))
+  if (invalid) {
+    throw new ApiError(
+      'INVALID_STATE',
+      `INVENTORY_COMPOSITION_INVALID: 商品「${invalid.specName || invalid.productName || invalid.skuId}」的库存组成含停用商品`,
+    )
+  }
+  const missing = homeRows.find((row) => !snapshots.has(row.skuId))
+  if (missing) {
+    throw new ApiError(
+      'INVALID_STATE',
+      `INVENTORY_COMPOSITION_MISSING: 商品「${missing.specName || missing.productName || missing.skuId}」尚未配置库存组成`,
+    )
+  }
+  return snapshots
+}
 
 type SkuPurchaseLimitRow = {
   skuId: string
@@ -99,6 +177,197 @@ function findPurchaseLimitViolation(
 function purchaseLimitExceededMessage(row: SkuPurchaseLimitRow): string {
   const name = row.specName || row.skuId
   return `商品「${name}」每单最多可购买 ${row.purchaseLimit} 件`
+}
+
+function roundMoney(value: number): number {
+  return Math.round((Number(value) || 0) * 100) / 100
+}
+
+function moneyToCents(value: number | string | null | undefined): number {
+  return Math.max(0, Math.round((Number(value) || 0) * 100))
+}
+
+function pointsToDiscountCents(points: number, rate: number): number {
+  return Math.floor(points * rate * 100 + 1e-6)
+}
+
+function computePointsDeduction(input: {
+  usePoints?: boolean
+  requestedPoints?: number | null
+  pointsBalance: number | string | null | undefined
+  rawTotal: number
+  currentAmount: number
+  pointsToYuanRate: number
+  pointsDeductionMaxRate: number
+}): { pointsUsed: number; pointsDiscount: number } {
+  const explicit = input.requestedPoints !== undefined && input.requestedPoints !== null
+  const enabled = input.usePoints === true || (explicit && Number(input.requestedPoints) > 0)
+  if (!enabled) return { pointsUsed: 0, pointsDiscount: 0 }
+
+  const balance = Math.floor(Number(input.pointsBalance) || 0)
+  const rate = Number(input.pointsToYuanRate) || 0
+  const maxRate = Number(input.pointsDeductionMaxRate) || 0
+  const capCents = Math.min(
+    Math.floor(Math.max(0, input.rawTotal) * maxRate * 100 + 1e-6),
+    moneyToCents(input.currentAmount),
+  )
+  if (balance <= 0 || rate <= 0 || maxRate <= 0 || capCents <= 0) {
+    if (explicit && Number(input.requestedPoints) > 0) {
+      throw new ApiError('INSUFFICIENT_BALANCE', '积分余额不足或当前订单不可抵扣')
+    }
+    return { pointsUsed: 0, pointsDiscount: 0 }
+  }
+
+  if (explicit) {
+    const points = Number(input.requestedPoints)
+    if (!Number.isInteger(points) || points < 0) {
+      throw new ApiError('INVALID_PARAMS', '积分抵扣数量必须为非负整数')
+    }
+    if (points === 0) return { pointsUsed: 0, pointsDiscount: 0 }
+    if (points > balance) {
+      throw new ApiError('INSUFFICIENT_BALANCE', '积分余额不足')
+    }
+    const discountCents = pointsToDiscountCents(points, rate)
+    if (discountCents <= 0) {
+      throw new ApiError('INVALID_PARAMS', '积分抵扣金额过小')
+    }
+    if (discountCents > capCents) {
+      throw new ApiError('INVALID_PARAMS', '积分抵扣金额超过本单上限')
+    }
+    return { pointsUsed: points, pointsDiscount: discountCents / 100 }
+  }
+
+  const maxPointsByCap = Math.floor(capCents / (rate * 100))
+  const pointsUsed = Math.max(0, Math.min(balance, maxPointsByCap))
+  const discountCents = Math.min(capCents, pointsToDiscountCents(pointsUsed, rate))
+  return discountCents > 0
+    ? { pointsUsed, pointsDiscount: discountCents / 100 }
+    : { pointsUsed: 0, pointsDiscount: 0 }
+}
+
+function applyOrderLevelDiscountToItems(
+  items: Array<{ saleAmount?: string; unitRealPrice: string; quantity: number; received?: string }>,
+  discountAmount: number,
+): void {
+  const discountCents = moneyToCents(discountAmount)
+  if (!discountCents || items.length === 0) return
+
+  const saleCentsList = items.map((item) =>
+    moneyToCents(item.saleAmount ?? Number(item.unitRealPrice) * item.quantity),
+  )
+  const totalCents = saleCentsList.reduce((sum, value) => sum + value, 0)
+  if (!totalCents) return
+
+  let distributedCents = 0
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]
+    const baseCents = saleCentsList[i]
+    const shareCents = i === items.length - 1
+      ? discountCents - distributedCents
+      : Math.min(baseCents, Math.round(discountCents * (baseCents / totalCents)))
+    distributedCents += shareCents
+
+    const newSale = Math.max(0, baseCents - shareCents) / 100
+    item.saleAmount = newSale.toFixed(2)
+    // 同步重算 unitRealPrice（与 staff 端 applyOrderLevelDiscountToItems 保持一致）
+    item.unitRealPrice = (item.quantity > 0 ? newSale / item.quantity : newSale).toFixed(2)
+    const inputReceived = item.received != null ? Number(item.received) : baseCents / 100
+    item.received = Math.min(inputReceived, newSale).toFixed(2)
+  }
+}
+
+async function availablePointsBalanceTx(tx: DepositTx, userId: string): Promise<number> {
+  const rows = await tx.execute(sql`
+    SELECT COALESCE(SUM(remaining_amount), 0)::bigint AS balance
+      FROM (
+        SELECT remaining_amount
+          FROM point_batches
+         WHERE user_id = ${userId}
+           AND remaining_amount > 0
+           AND expire_at > NOW()
+         FOR UPDATE
+      ) locked_batches
+  `) as unknown as Array<{ balance: string | number }>
+  return Number(rows[0]?.balance ?? 0)
+}
+
+async function recomputePointsBalanceTx(tx: DepositTx, userId: string): Promise<void> {
+  await tx.execute(sql`
+    UPDATE client_wechat_users c
+       SET points_balance = COALESCE((
+             SELECT SUM(pb.remaining_amount)
+               FROM point_batches pb
+              WHERE pb.user_id = c.user_id
+                AND pb.expire_at > NOW()
+           ), 0),
+           points_updated_at = NOW()
+     WHERE c.user_id = ${userId}
+  `)
+}
+
+async function deductPointsAtCreationTx(
+  tx: DepositTx,
+  input: { saleOrderId: string; userId: string; pointsUsed: number },
+): Promise<void> {
+  if (!input.pointsUsed || input.pointsUsed <= 0) return
+  // 积分相关锁序固定为 point_batches -> client_wechat_users，与过期任务一致。
+  const available = await availablePointsBalanceTx(tx, input.userId)
+  if (available < input.pointsUsed) {
+    throw new ApiError('INSUFFICIENT_BALANCE', '积分余额不足')
+  }
+  await tx.execute(sql`SELECT user_id FROM client_wechat_users WHERE user_id = ${input.userId} FOR UPDATE`)
+  const inserted = await tx.execute(sql`
+    INSERT INTO point_transactions (user_id, type, amount, ref_order_id, external_ref, created_at)
+    VALUES (${input.userId}, '消费抵扣', ${-input.pointsUsed}, ${input.saleOrderId}, ${`points-deduct-${input.saleOrderId}`}, NOW())
+    ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING
+    RETURNING id
+  `) as unknown as Array<{ id: number }>
+  const pointTransactionId = Number(inserted[0]?.id ?? 0)
+  if (pointTransactionId) {
+    await consumePointBatches(tx, {
+      userId: input.userId,
+      amount: -input.pointsUsed,
+      refOrderId: input.saleOrderId,
+    })
+    await recomputePointsBalanceTx(tx, input.userId)
+  }
+}
+
+async function releasePointsDeductionTx(
+  tx: DepositTx,
+  input: { saleOrderId: string; userId?: string | null; pointsUsed?: number | string | null },
+): Promise<void> {
+  if (!input.saleOrderId || !input.userId || Number(input.pointsUsed ?? 0) <= 0) return
+  await tx.execute(sql`SELECT user_id FROM client_wechat_users WHERE user_id = ${input.userId} FOR UPDATE`)
+  const rows = await tx.execute(sql`
+    SELECT
+      COALESCE(SUM(CASE WHEN type = '消费抵扣' THEN -amount ELSE 0 END), 0)::bigint AS deducted,
+      COALESCE(SUM(CASE WHEN type = '消费抵扣退回' THEN amount ELSE 0 END), 0)::bigint AS returned
+    FROM point_transactions
+    WHERE ref_order_id = ${input.saleOrderId}
+      AND user_id = ${input.userId}
+      AND type IN ('消费抵扣','消费抵扣退回')
+  `) as unknown as Array<{ deducted: string | number; returned: string | number }>
+  const pointsToRelease = Number(rows[0]?.deducted ?? 0) - Number(rows[0]?.returned ?? 0)
+  if (pointsToRelease <= 0) return
+
+  const inserted = await tx.execute(sql`
+    INSERT INTO point_transactions (user_id, type, amount, ref_order_id, external_ref, created_at)
+    VALUES (${input.userId}, '消费抵扣退回', ${pointsToRelease}, ${input.saleOrderId}, ${`points-deduct-rev-${input.saleOrderId}`}, NOW())
+    ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING
+    RETURNING id
+  `) as unknown as Array<{ id: number }>
+  const pointTransactionId = Number(inserted[0]?.id ?? 0)
+  if (pointTransactionId) {
+    await grantPointBatch(tx, {
+      userId: input.userId,
+      pointTransactionId,
+      type: '消费抵扣退回',
+      amount: pointsToRelease,
+      refOrderId: input.saleOrderId,
+    })
+    await recomputePointsBalanceTx(tx, input.userId)
+  }
 }
 
 function splitMoneyByCount(value: number | string, count: number): number[] {
@@ -485,6 +754,8 @@ export const getOrders = withPermission(
     customerName: r.custName || r.order.customerName || null,
     totalAmount: r.order.totalAmount,
     prepaidCardAmount: r.order.prepaidCardAmount ?? '0',
+    pointsUsed: r.order.pointsUsed ?? 0,
+    pointsDiscount: r.order.pointsDiscount ?? '0',
     pendingPrepaidCardAmount: r.order.pendingPrepaidCardAmount ?? '0',
     payableAmount: r.order.payableAmount ?? '0',
     received: r.order.received ?? '0',
@@ -674,6 +945,8 @@ export const getOrdersPaginated = withPermission(
     customerName: r.custName || r.order.customerName || null,
     totalAmount: r.order.totalAmount,
     prepaidCardAmount: r.order.prepaidCardAmount ?? '0',
+    pointsUsed: r.order.pointsUsed ?? 0,
+    pointsDiscount: r.order.pointsDiscount ?? '0',
     pendingPrepaidCardAmount: r.order.pendingPrepaidCardAmount ?? '0',
     payableAmount: r.order.payableAmount ?? '0',
     received: r.order.received ?? '0',
@@ -1739,6 +2012,8 @@ export const getOrderById = withAnyPermission(
     customerName: r.custName || r.order.customerName || null,
     totalAmount: r.order.totalAmount,
     prepaidCardAmount: r.order.prepaidCardAmount ?? '0',
+    pointsUsed: r.order.pointsUsed ?? 0,
+    pointsDiscount: r.order.pointsDiscount ?? '0',
     pendingPrepaidCardAmount: r.order.pendingPrepaidCardAmount ?? '0',
     payableAmount: r.order.payableAmount ?? '0',
     received: r.order.received ?? '0',
@@ -2287,6 +2562,8 @@ export const closeOrder = withPermission(
       totalAmount: saleOrders.totalAmount,
       saleOrderType: saleOrders.saleOrderType,
       storeId: saleOrders.storeId,
+      clientUserId: saleOrders.clientUserId,
+      pointsUsed: saleOrders.pointsUsed,
       lakalaOutOrderNo: saleOrders.lakalaOutOrderNo,
     })
     .from(saleOrders)
@@ -2352,6 +2629,12 @@ export const closeOrder = withPermission(
         .set({ status: '未使用', usedSaleOrderId: null, usedAt: null })
         .where(eq(userCoupons.usedSaleOrderId, saleOrderId))
 
+      await releasePointsDeductionTx(tx, {
+        saleOrderId,
+        userId: orderCtx?.clientUserId,
+        pointsUsed: orderCtx?.pointsUsed,
+      })
+
       return { matched: true }
     })
 
@@ -2363,7 +2646,8 @@ export const closeOrder = withPermission(
           : '订单状态已变更，无法关闭',
       }
     }
-  } catch {
+  } catch (e) {
+    console.error('closeOrder transaction failed:', saleOrderId, e instanceof Error ? e.message : String(e))
     return { success: false, message: '关闭订单失败，请稍后重试' }
   }
 
@@ -2436,6 +2720,7 @@ export const deleteOrder = withPermission(
         customerName: saleOrders.customerName,
         totalAmount: saleOrders.totalAmount,
         saleOrderType: saleOrders.saleOrderType,
+        storeId: saleOrders.storeId,
         // 历史已作废单的删除分支会读这个字段写入 audit snapshot；
         // 同时事务内 DELETE 守卫通过它识别"是否 WorkFine 历史单"以放行。
         legacySource: saleOrders.legacySource,
@@ -2511,6 +2796,11 @@ export const deleteOrder = withPermission(
     // 2. 事务级联删除（仅安全从属表 + 释放券；再删主单并复核可删条件）
     try {
       const txResult = await db.transaction(async (tx) => {
+        // 待支付/支付失败转换单：撤销创建时对源疗程卡 remaining_sessions 的即时扣减
+        if (order.saleOrderType === '转换单') {
+          await rollbackPendingConversionOnClose(tx, saleOrderId)
+        }
+
         await tx
           .update(userCoupons)
           .set({ status: '未使用', usedSaleOrderId: null, usedAt: null })
@@ -2791,6 +3081,10 @@ export const createOrder = withPermission(
   prepaidCardAmount?: number
   /** 组合套餐主商品 ID；套餐子项必须全部归属该套餐。 */
   bundleProductId?: string
+  /** 是否使用积分抵扣 */
+  usePoints?: boolean
+  /** 本次使用的积分数量；未传且 usePoints=true 时按可用上限自动计算 */
+  pointsUsed?: number
   items: Array<{
     skuId: string
     productName: string
@@ -2861,6 +3155,9 @@ export const createOrder = withPermission(
   // service_fee（手工费）不受影响，仍按 SKU 快照。
   if (data.saleOrderType === '内部单' && data.couponId) {
     return { success: false, message: '内部单不允许叠加优惠券' }
+  }
+  if (data.saleOrderType !== '销售单' && (data.usePoints || Number(data.pointsUsed ?? 0) > 0)) {
+    return { success: false, message: '仅销售单支持积分抵扣' }
   }
 
   const getCustomerMarketScope = createCustomerMarketScopeProvider(data.clientUserId)
@@ -3318,7 +3615,46 @@ export const createOrder = withPermission(
     }
   }
 
-  const totalAmount = Math.round(Math.max(0, rawTotal - couponDiscount) * 100) / 100
+  let pointsUsed = 0
+  let pointsDiscount = 0
+  if (data.usePoints || data.pointsUsed != null) {
+    try {
+      const [[pointsRow], pointsToYuanRate, pointsDeductionMaxRate] = await Promise.all([
+        db
+          .select({ pointsBalance: clientWechatUsers.pointsBalance })
+          .from(clientWechatUsers)
+          .where(eq(clientWechatUsers.userId, data.clientUserId))
+          .limit(1),
+        getPointsToYuanRate(),
+        getPointsDeductionMaxRate(),
+      ])
+      const deduction = computePointsDeduction({
+        usePoints: data.usePoints,
+        requestedPoints: data.pointsUsed ?? null,
+        pointsBalance: pointsRow?.pointsBalance,
+        rawTotal,
+        currentAmount: roundMoney(data.items.reduce((sum, item) => {
+          const itemSale = item.saleAmount ? Number(item.saleAmount) : Number(item.unitRealPrice) * item.quantity
+          return sum + Math.round(itemSale * 100) / 100
+        }, 0)),
+        pointsToYuanRate,
+        pointsDeductionMaxRate,
+      })
+      pointsUsed = deduction.pointsUsed
+      pointsDiscount = deduction.pointsDiscount
+      if (pointsDiscount > 0) {
+        data = { ...data, items: data.items.map((it) => ({ ...it })) }
+        applyOrderLevelDiscountToItems(data.items, pointsDiscount)
+      }
+    } catch (err) {
+      return { success: false, message: err instanceof Error ? err.message : '积分抵扣参数无效' }
+    }
+  }
+
+  const totalAmount = roundMoney(data.items.reduce((sum, item) => {
+    const itemSale = item.saleAmount ? Number(item.saleAmount) : Number(item.unitRealPrice) * item.quantity
+    return sum + Math.round(itemSale * 100) / 100
+  }, 0))
 
   // ── 款项流水 / 部分支付基础（ticket 2026-04-24 PR-3） ─────────────
   // 充值卡从本次逐行实付中抵扣。欠款场景下，不能把未来待收部分提前拿来抵扣；
@@ -3366,24 +3702,25 @@ export const createOrder = withPermission(
       ? Math.min(receivedAmount, payableAmount)
       : null
 
-  // 全额储值卡抵扣（payable==0 且 prepaid>0）：无现金可收，挂"待支付"会卡死
+  // 全额抵扣（payable==0）：无现金可收，挂"待支付"会卡死
   //   （payment_method='无' 走不了 confirmOfflinePayment），故创建事务内直接扣卡 + 结清。
   //   用户 2026-05-21 拍板：销售单/转换单全额抵扣均在提交订单时即时抵扣。
   const isFullCardCoverage = prepaidCardAmount > 0 && payableAmount === 0
+  const zeroPayable = payableAmount === 0
 
   // 决策树（三端对齐"先付款、后转态记账"不变量）：
-  //   - 全额储值卡抵扣：'已支付'（事务内即时扣卡 + 结算）
+  //   - 全额抵扣：'已支付'（含储值卡时事务内即时扣卡 + 结算）
   //   - 微信/支付宝：'待支付'（等 payNotify 回调入账，无论首付与否）
   //   - 线下：'待支付'（开单不记款；现金 + 部分储值卡抵扣都在「确认收款」confirmOfflinePayment 入账翻态）
-  // createOrder 仅全额抵扣场景产出 '已支付'，其余款项流水/状态机由确认收款 / 录入回款 / payNotify 驱动。
-  const initialStatus: typeof saleOrders.$inferInsert['status'] = isFullCardCoverage ? '已支付' : '待支付'
+  // createOrder 仅零应付场景产出 '已支付'，其余款项流水/状态机由确认收款 / 录入回款 / payNotify 驱动。
+  const initialStatus: typeof saleOrders.$inferInsert['status'] = zeroPayable ? '已支付' : '待支付'
 
   // 全额抵扣时 payment_method 落 '无'（现金通道无需使用，与 staff order.create 对齐）。
-  const effectivePaymentMethod = isFullCardCoverage ? '无' : data.paymentMethod
+  const effectivePaymentMethod = zeroPayable ? '无' : data.paymentMethod
 
-  // received 创建时：全额抵扣 = prepaid（已结清）；其余一律 0（线上等 payNotify，线下等 confirmOfflinePayment）。
+  // received 创建时：零应付 = prepaid（积分/券全额时为 0）；其余一律 0（线上等 payNotify，线下等 confirmOfflinePayment）。
   // （2026-04-26 sale-order-domain-refactor：paid_amount 列已 DROP，统一用 received）
-  const paidAmountSnapshot = isFullCardCoverage ? prepaidCardAmount : 0
+  const paidAmountSnapshot = zeroPayable ? prepaidCardAmount : 0
 
   // 计算 document_type（售前/售后快照）：仅按下单时会员身份判——售前=非会员客，售后=会员客。
   // 复用上方会员价分流已查得的 buyerCustomerType（省一次 client_wechat_users 查询）。
@@ -3400,6 +3737,8 @@ export const createOrder = withPermission(
   const skuFeeMap = new Map<string, string>()
   const skuSessionMap = new Map<string, number | null>()
   const skuExperienceMap = new Map<string, boolean>()
+  const skuProductTypeMap = new Map<string, '疗程卡' | '家居产品'>()
+  const skuSpecNameMap = new Map<string, string>()
   // 店长特别优惠行级快照源（is_manager_special 权威 = DB，不信前端）
   const skuManagerSpecialMap = new Map<string, boolean>()
   // 生美 / 销售分类行级快照源（权威 = DB，不信前端）：
@@ -3413,6 +3752,8 @@ export const createOrder = withPermission(
     const skuRows = await db
       .select({
         skuId: productSkus.skuId,
+        productType: productSkus.productType,
+        specName: productSkus.specName,
         serviceFee: productSkus.serviceFee,
         sessionCount: productSkus.sessionCount,
         isExperience: productSkus.isExperience,
@@ -3427,6 +3768,8 @@ export const createOrder = withPermission(
       skuFeeMap.set(r.skuId, r.serviceFee)
       skuSessionMap.set(r.skuId, r.sessionCount)
       skuExperienceMap.set(r.skuId, r.isExperience === true)
+      skuProductTypeMap.set(r.skuId, r.productType)
+      skuSpecNameMap.set(r.skuId, r.specName)
       skuManagerSpecialMap.set(r.skuId, r.isManagerSpecial === true)
       skuShengmeiMap.set(r.skuId, r.isShengmei)
       skuSalesCategoryMap.set(r.skuId, r.salesCategory)
@@ -3455,6 +3798,11 @@ export const createOrder = withPermission(
   let saleOrderId: string
   try {
     saleOrderId = await db.transaction(async (tx) => {
+      const compositionSnapshots = await loadInventoryCompositionSnapshots(tx, data.items.map((item) => ({
+        ...item,
+        productType: skuProductTypeMap.get(item.skuId) ?? item.productType,
+        specName: skuSpecNameMap.get(item.skuId) ?? item.productName,
+      })))
       // advisory lock 在事务内持有，直到 commit 才释放
       const idRows = await tx.execute(sql`
         WITH lock AS (
@@ -3526,13 +3874,15 @@ export const createOrder = withPermission(
         firstPaymentAmount: firstPaymentAmount != null ? firstPaymentAmount.toFixed(2) : null,
         couponId: data.couponId ?? null,
         couponDiscount: couponDiscount > 0 ? couponDiscount.toFixed(2) : '0',
+        pointsUsed,
+        pointsDiscount: pointsDiscount.toFixed(2),
         paymentMethod: effectivePaymentMethod,
         openedBy: data.openedBy || session.employeeId,
         preferredEmployeeId: data.preferredEmployeeId || null,
         allocationStatus: '待分配',
         remark: data.remark || null,
         isActivity: data.isActivity ?? false,
-        paidAt: isFullCardCoverage ? nowTs() : null,
+        paidAt: zeroPayable ? nowTs() : null,
       })
 
       // 开单时不写款项流水（统一"先付款、后记账"不变量）：
@@ -3551,6 +3901,14 @@ export const createOrder = withPermission(
         if ((voidResult as any).count === 0) {
           throw new ApiError('CONFLICT', '优惠券已被使用，请刷新后重试')
         }
+      }
+
+      if (pointsUsed > 0) {
+        await deductPointsAtCreationTx(tx, {
+          saleOrderId: id,
+          userId: data.clientUserId,
+          pointsUsed,
+        })
       }
 
       for (let i = 0; i < data.items.length; i++) {
@@ -3598,6 +3956,7 @@ export const createOrder = withPermission(
           skuId: item.skuId,
           productName: item.productName,
           productType: item.productType,
+          inventoryCompositionSnapshot: compositionSnapshots.get(item.skuId) ?? null,
           sessionCount,
           remainingSessions: sessionCount,
           unitPrice,
@@ -3649,8 +4008,8 @@ export const createOrder = withPermission(
       // 行级实付草稿现落 sale_items.pending_received，确认收款/payNotify 入账后才驱动 received→paid_sessions）。
       await recalcPaidSessionsForOrder(tx, id)
 
-      // 全额抵扣即结清：触发积分发放 + 客户分类跃迁（与 confirmOfflinePayment 已支付分支一致）。
-      if (isFullCardCoverage) {
+      // 零应付即结清：触发积分发放 + 客户分类跃迁（与 confirmOfflinePayment 已支付分支一致）。
+      if (zeroPayable) {
         await settlePointsSafe(tx, id, 'admin.createOrder')
         if (data.clientUserId) {
           await recalcCustomerType(tx, data.clientUserId)
@@ -3696,6 +4055,8 @@ export const createOrder = withPermission(
   await logOperation(session, 'order.create', 'sale_order', saleOrderId, {
     storeId: data.storeId, totalAmount: totalAmount.toFixed(2), itemCount: data.items.length,
     couponId: data.couponId ?? null, couponDiscount: couponDiscount > 0 ? couponDiscount.toFixed(2) : null,
+    pointsUsed: pointsUsed > 0 ? pointsUsed : null,
+    pointsDiscount: pointsDiscount > 0 ? pointsDiscount.toFixed(2) : null,
   })
 
   revalidatePath('/orders')
@@ -4053,6 +4414,10 @@ export const createConversionOrder = withPermission(
         const unitRealPrice = inDenom > 0 ? (amount / inDenom).toFixed(2) : amount.toFixed(2)
         inItems.push({ item: inItem, sku, amount, unitPrice, unitRealPrice, serviceFee, categoryId: sku.categoryId })
       }
+      const compositionSnapshots = await loadInventoryCompositionSnapshots(
+        tx,
+        inItems.map((row) => row.sku),
+      )
 
       // 疗程卡累计梯度价：按 category_id + spec_name 汇总本次全部转入次数，
       // 使用同组可命中的最高档位统一折算每次价格。必须先于体验转换覆盖和优惠券分摊执行。
@@ -4438,6 +4803,7 @@ export const createConversionOrder = withPermission(
             skuId: inRow.item.skuId,
             productName: inRow.item.productName,
             productType: inRow.item.productType,
+            inventoryCompositionSnapshot: compositionSnapshots.get(inRow.item.skuId) ?? null,
             sessionCount,
             remainingSessions: sessionCount,
             unitPrice: inRow.unitPrice,
@@ -4775,6 +5141,7 @@ export const createDepositOrder = withPermission(
     let saleOrderId: string
     try {
       saleOrderId = await db.transaction(async (tx) => {
+        const compositionSnapshots = await loadInventoryCompositionSnapshots(tx, skuRows)
         const idRows = await tx.execute(sql`
           WITH lock AS (
             SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen')::bigint)
@@ -4857,6 +5224,7 @@ export const createDepositOrder = withPermission(
             skuId: sku.skuId,
             productName: sku.specName,
             productType: sku.productType,
+            inventoryCompositionSnapshot: compositionSnapshots.get(sku.skuId) ?? null,
             sessionCount: item.sessionCount,
             remainingSessions: item.sessionCount,
             unitPrice: item.unitPrice,
