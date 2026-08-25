@@ -114,6 +114,7 @@ read_env_value() {
 # 避免 dev/prod 共用 docker 目录或残留 .env 时串桶。
 DEPLOY_CLOUDBASE_ENV_ID=$(read_env_value CLOUDBASE_ENV_ID)
 DEPLOY_CDN_BASE=$(read_env_value CDN_BASE)
+DEPLOY_CLIENT_SECRET=$(read_env_value CLIENT_SECRET)
 CONFIGURED_ANALYST_PUBLIC_ORIGIN=$(read_env_value ANALYST_PUBLIC_ORIGIN)
 CONFIGURED_ANALYST_ADMIN_ORIGIN=$(read_env_value ANALYST_ADMIN_ORIGIN)
 CONFIGURED_ANALYST_ADMIN_LOGIN_URL=$(read_env_value ANALYST_ADMIN_LOGIN_URL)
@@ -128,7 +129,12 @@ fi
 ANALYST_ADMIN_ORIGIN="${ANALYST_ADMIN_ORIGIN:-$CONFIGURED_ANALYST_ADMIN_ORIGIN}"
 ANALYST_ADMIN_LOGIN_URL="${ANALYST_ADMIN_LOGIN_URL:-$CONFIGURED_ANALYST_ADMIN_LOGIN_URL}"
 RUNTIME_ENV_FILE=$(mktemp "${TMPDIR:-/tmp}/fengyu-analyst-runtime.XXXXXX")
-bash scripts/render-admin-runtime-env.sh "$ENV" "$RUNTIME_ENV_FILE"
+# analyst 不调用 staff 云函数，不能复用 admin 的完整运行环境生成器；否则仅部署
+# 分析师时也会被无关的 staff 子账号凭据阻断。
+umask 077
+printf 'DEPLOY_CLOUDBASE_ENV_ID=%s\nDEPLOY_CDN_BASE=%s\nDEPLOY_CLIENT_SECRET=%s\n' \
+  "$DEPLOY_CLOUDBASE_ENV_ID" "$DEPLOY_CDN_BASE" "$DEPLOY_CLIENT_SECRET" > "$RUNTIME_ENV_FILE"
+chmod 600 "$RUNTIME_ENV_FILE"
 COMPOSE_OVERRIDE="docker-compose.remote.yml"
 
 if [[ "$ENV" == "prod" ]]; then
@@ -191,12 +197,16 @@ trap cleanup EXIT
 KEY_REGEX=$(awk -F= 'NF { print $1 }' "$TMP_ENV" | paste -sd'|' -)
 REMOTE_SNIPPET="/tmp/fengyu-analyst-env-$$"
 scp "$TMP_ENV" "$SSH_HOST:$REMOTE_SNIPPET"
-ssh "$SSH_HOST" "cd $REMOTE_DIR && touch .env && cp .env .env.bak.analyst-\$(date +%Y%m%d%H%M%S) && { grep -v -E '^($KEY_REGEX)=' .env || true; cat $REMOTE_SNIPPET; } > .env.tmp && mv .env.tmp .env && rm -f $REMOTE_SNIPPET"
-ssh "$SSH_HOST" "cd '$REMOTE_DIR' && docker compose --env-file .env --env-file .admin-runtime.env -f docker-compose.yml -f $COMPOSE_OVERRIDE config --quiet" || { echo "✗ Compose 配置校验失败，请检查远程 .env 与 .admin-runtime.env"; exit 1; }
+# 远程 .env 可能由容器用户或管理员创建，SSH 用户无写权限时用 sudo 保留原文件归属和权限更新。
+ssh "$SSH_HOST" "sudo sh -ceu \"cd '$REMOTE_DIR'; test -f .env || touch .env; cp -p .env .env.bak.analyst-\\\$(date +%Y%m%d%H%M%S); { grep -v -E '^($KEY_REGEX)=' .env || true; cat '$REMOTE_SNIPPET'; } > .env.tmp; chown --reference=.env .env.tmp; chmod --reference=.env .env.tmp; mv .env.tmp .env; rm -f '$REMOTE_SNIPPET'\""
+# Compose 会解析同文件中的 admin 服务；分析师单独部署时 staff 凭据不会被使用，
+# 仅在本次 compose 进程中传入占位值通过该服务的插值校验，绝不写入远程配置文件或容器。
+ANALYST_ONLY_COMPOSE_ENV='DEPLOY_STAFF_ENV_ID=analyst-not-used DEPLOY_STAFF_TENCENTCLOUD_SECRETID=analyst-not-used DEPLOY_STAFF_TENCENTCLOUD_SECRETKEY=analyst-not-used'
+ssh "$SSH_HOST" "cd '$REMOTE_DIR' && $ANALYST_ONLY_COMPOSE_ENV docker compose --env-file .env --env-file .admin-runtime.env -f docker-compose.yml -f $COMPOSE_OVERRIDE config --quiet" || { echo "✗ Compose 配置校验失败，请检查远程 .env 与 .admin-runtime.env"; exit 1; }
 echo "  ✓ compose 与 analyst 环境已同步"
 
 echo "=== 4/5 远程启动 analyst ==="
-ssh "$SSH_HOST" "cd '$REMOTE_DIR' && docker compose --env-file .env --env-file .admin-runtime.env -f docker-compose.yml -f $COMPOSE_OVERRIDE up -d analyst"
+ssh "$SSH_HOST" "cd '$REMOTE_DIR' && $ANALYST_ONLY_COMPOSE_ENV docker compose --env-file .env --env-file .admin-runtime.env -f docker-compose.yml -f $COMPOSE_OVERRIDE up -d analyst"
 
 echo "=== 5/5 健康检查 ==="
 sleep 5
