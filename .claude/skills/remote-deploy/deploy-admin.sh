@@ -263,10 +263,11 @@ ssh "$SSH_HOST" "cd '$REMOTE_DIR' && docker compose --env-file .env --env-file .
 echo "  ✓ 已同步 docker-compose.yml + $COMPOSE_OVERRIDE + .admin-runtime.env"
 
 echo "=== 4/5 远程重启服务（base + override）==="
-# cron-worker 日志挂载卷（容器内 uid=1001 nextjs 才能写入；目录不存在 docker 会以 root 自建并越权）
-if ! ssh "$SSH_HOST" "mkdir -p '$REMOTE_DIR/logs/cron-worker' '$REMOTE_DIR/logs/export-worker' '$REMOTE_DIR/data/runtime-status' && chown -R 1001:1001 '$REMOTE_DIR/logs/cron-worker' '$REMOTE_DIR/logs/export-worker' '$REMOTE_DIR/data/runtime-status'"; then
+# 所有宿主 bind mount 都要预先归属给容器内 uid=1001 的 nextjs 用户；否则 Docker 自动创建为 root，
+# admin 在保存拉卡拉私有附件时会因 EACCES 失败。
+if ! ssh "$SSH_HOST" "mkdir -p '$REMOTE_DIR/logs/cron-worker' '$REMOTE_DIR/logs/export-worker' '$REMOTE_DIR/data/runtime-status' '$REMOTE_DIR/data/private-uploads' && chown -R 1001:1001 '$REMOTE_DIR/logs/cron-worker' '$REMOTE_DIR/logs/export-worker' '$REMOTE_DIR/data/runtime-status' '$REMOTE_DIR/data/private-uploads'"; then
   echo "  当前 SSH 用户无日志目录写权限，尝试 sudo 修复既有目录归属。"
-  ssh "$SSH_HOST" "sudo mkdir -p '$REMOTE_DIR/logs/cron-worker' '$REMOTE_DIR/logs/export-worker' '$REMOTE_DIR/data/runtime-status' && sudo chown -R 1001:1001 '$REMOTE_DIR/logs/cron-worker' '$REMOTE_DIR/logs/export-worker' '$REMOTE_DIR/data/runtime-status'"
+  ssh "$SSH_HOST" "sudo mkdir -p '$REMOTE_DIR/logs/cron-worker' '$REMOTE_DIR/logs/export-worker' '$REMOTE_DIR/data/runtime-status' '$REMOTE_DIR/data/private-uploads' && sudo chown -R 1001:1001 '$REMOTE_DIR/logs/cron-worker' '$REMOTE_DIR/logs/export-worker' '$REMOTE_DIR/data/runtime-status' '$REMOTE_DIR/data/private-uploads'"
 fi
 ssh "$SSH_HOST" "cd '$REMOTE_DIR' && docker compose --env-file .env --env-file .admin-runtime.env -f docker-compose.yml -f $COMPOSE_OVERRIDE up -d admin cron-worker export-worker"
 
