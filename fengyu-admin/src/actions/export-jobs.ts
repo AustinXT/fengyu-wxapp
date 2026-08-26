@@ -12,8 +12,9 @@ import { withAnyPermission } from '@/lib/with-permission'
 import {
   EXPORT_LABEL_BY_TYPE,
   EXPORT_PERMISSION_ACTIONS,
-  EXPORT_PERMISSION_BY_TYPE,
+  EXPORT_PERMISSIONS_BY_TYPE,
   exportJobLabel,
+  findExportPermissionAction,
   type CreateExportJobInput,
   type ExportJobListItem,
   type ExportJobStatus,
@@ -86,7 +87,10 @@ export const createExportJob = withAnyPermission(
   EXPORT_PERMISSION_ACTIONS,
   async (session, rawInput: CreateExportJobInput) => {
     const input = normalizePayload(parseCreateExportJobInput(rawInput))
-    const permissionAction = EXPORT_PERMISSION_BY_TYPE[input.exportType]
+    const permissionAction = findExportPermissionAction(
+      input.exportType,
+      session.permissions.actions,
+    ) ?? EXPORT_PERMISSIONS_BY_TYPE[input.exportType][0]
     requirePermission(session, permissionAction)
 
     const hash = requestHash(input)
@@ -167,7 +171,11 @@ export const retryMyExportJob = withAnyPermission(
 
     const exportType = parseExportType(job.exportType)
     if (!exportType) throw new Error('INVALID_STATE: 导出任务类型异常')
-    requirePermission(session, EXPORT_PERMISSION_BY_TYPE[exportType])
+    const permissionAction = findExportPermissionAction(
+      exportType,
+      session.permissions.actions,
+    ) ?? EXPORT_PERMISSIONS_BY_TYPE[exportType][0]
+    requirePermission(session, permissionAction)
     if (!RETRYABLE_STATUSES.includes(job.status as (typeof RETRYABLE_STATUSES)[number])) {
       throw new Error('INVALID_STATE: 当前任务不能重新导出')
     }
@@ -201,7 +209,7 @@ export const retryMyExportJob = withAnyPermission(
       .set({
         status: 'queued',
         requestedByName: session.name,
-        permissionAction: EXPORT_PERMISSION_BY_TYPE[exportType],
+        permissionAction,
         scopeSnapshot: snapshotExportSession(session),
         attemptCount: 0,
         nextAttemptAt: new Date(),

@@ -528,6 +528,7 @@ Page({
       const customer = await callStaffApi<CustomerDetail>('customer.detail', this._query);
       // lastServiceDate 为原始 pg date（序列化成 UTC 串会偏移日期），格式化为 YYYY-MM-DD
       if (customer.lastServiceDate) customer.lastServiceDate = formatDate(customer.lastServiceDate);
+      if (customer.birthday) customer.birthday = customer.birthday.slice(0, 10);
       if (customer.invitedAt) customer.invitedAt = formatDateTime(customer.invitedAt);
       const canManage = isManager();
       this.setData({

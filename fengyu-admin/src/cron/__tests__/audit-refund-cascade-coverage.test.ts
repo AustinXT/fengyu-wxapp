@@ -109,7 +109,18 @@ describe('cron-worker STEP 9 — auditRefundCascadeCoverage', () => {
     expect(sqlTexts.some((s) =>
       s.includes('sale_payment_item_receipts') &&
       s.includes('sale_payment_item_allocations') &&
-      s.includes('allocated_amount < 0'),
+      s.includes('allocated_amount < 0') &&
+      s.includes('role_type') &&
+      s.includes('WITH RECURSIVE') &&
+      s.includes('refund_replay') &&
+      s.includes('remaining_receipt_cents') &&
+      s.includes('remaining_pool_cents') &&
+      s.includes('ORDER BY sop.paid_at NULLS LAST, sop.id, spir.id') &&
+      s.includes('re.refund_cents::numeric * replay.remaining_pool_cents') &&
+      s.includes('/ NULLIF(replay.remaining_receipt_cents, 0)') &&
+      s.includes('SUM(target_cents) AS expected_negative_cents') &&
+      s.includes('expected_negative') &&
+      s.includes('ABS(actual_negative_cents - expected_negative_cents) > 1'),
     )).toBe(true)
     // C2 service_commissions
     expect(sqlTexts.some((s) => s.includes('service_commissions') && s.includes('voided_at'))).toBe(true)

@@ -548,7 +548,9 @@ export default function OrderDetailPageClient({
             )}
             <div>
               <span className="text-[#999999]">支付方式</span>
-              <p className="font-medium mt-1">{paymentMethodMap[order.paymentMethod] || order.paymentMethod}</p>
+              <p className="font-medium mt-1">
+                {isLegacy ? "未知" : paymentMethodMap[order.paymentMethod] || order.paymentMethod}
+              </p>
             </div>
             {order.offlineConfirmedByName && (
               <div>

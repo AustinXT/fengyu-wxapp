@@ -797,7 +797,7 @@ export interface OrderFilters {
   /** 日期筛选口径：默认按下单时间；payment 按已入账款项发生时间。 */
   dateBasis?: 'order' | 'payment'
   search?: string
-  /** 支付方式筛选（含 `'无'` = 全额储值卡抵扣） */
+  /** 支付方式筛选（`'无'` = 原生全额抵扣；`'未知'` = WorkFine 历史单虚拟通道） */
   paymentMethod?: string
   /** 是否仅筛选"有储值卡抵扣"的订单（prepaid_card_amount > 0） */
   hasPrepaidDeduction?: boolean
@@ -877,14 +877,20 @@ function buildOrderConditions(
       ),
     )
   }
-  // 支付方式筛选（枚举已扩展为 4 值：微信/支付宝/线下/无）
-  if (
+  // WorkFine 历史单复用 DB 枚举值「无」，但业务语义是支付通道未知；
+  // 筛选时把两者拆开，避免「无（全额抵扣）」混入历史订单。
+  if (filters.paymentMethod === '未知') {
+    conditions.push(sql`${saleOrders.legacySource} = 'workfine'`)
+  } else if (
     filters.paymentMethod === '微信' ||
     filters.paymentMethod === '支付宝' ||
     filters.paymentMethod === '线下' ||
     filters.paymentMethod === '无'
   ) {
     conditions.push(eq(saleOrders.paymentMethod, filters.paymentMethod))
+    if (filters.paymentMethod === '无') {
+      conditions.push(sql`${saleOrders.legacySource} IS DISTINCT FROM 'workfine'`)
+    }
   }
   // 有储值卡抵扣（prepaid_card_amount > 0）
   if (filters.hasPrepaidDeduction) {
@@ -1008,7 +1014,8 @@ export const getOrdersPaginated = withPermission(
  * 金额列走「商品行口径」（与 exportAllocationOrders 对齐）：订单金额=sale_items.sale_amount（行应付）、
  *   实付=sale_items.received（行级净实收，已扣该行退款）；储值卡抵扣/现付分别直接取
  *   sale_items.prepaid_card_received / cash_received。充值单及无明细兜底行按订单级快照换算净实收，
- *   与商品行保持相同的退款后口径。
+ *   与商品行保持相同的退款后口径。WorkFine 历史单没有支付流水，实收仅作消费痕迹；导出时现付固定为 0、
+ *   支付方式展示为「未知」（底层 payment_method 复用枚举值「无」）。
  * 行级字段（商品类型/品质一二级/总次数/可用次数/单次价格/经营类型/商品明细）按 item 各自展示；充值单无 item 留空。
  * 寄存单 5 个销售口径金额列留空（exportOrders 内 isDeposit 分支：total=0 与 received>0 并存会误导）。
  * 历史订单（legacySource='workfine'）默认纳入，与列表分页口径一致。
@@ -1029,7 +1036,7 @@ export interface ExportOrderRow {
   totalAmount: string
   /** 储值卡抵扣：sale_items.prepaid_card_received（行级实付分摊） */
   prepaidCardAmount: string
-  /** 现付：sale_items.cash_received = received - prepaid_card_received */
+  /** 现付：通常为 sale_items.cash_received；WorkFine 历史单固定为 0 */
   cashAmount: string
   /** 实付：sale_items.received（行级净实收，已扣该行退款） */
   received: string
@@ -1149,6 +1156,7 @@ export const exportOrders = withPermission(
                AND sop.change_type = '退款'
           ), 0)`,
           paymentMethod: saleOrders.paymentMethod,
+          legacySource: saleOrders.legacySource,
           isMembershipUpgrade: saleOrders.isMembershipUpgrade,
           isActivity: saleOrders.isActivity,
           isExperienceConversion: saleOrders.isExperienceConversion,
@@ -1220,6 +1228,7 @@ export const exportOrders = withPermission(
           orderReceived: saleOrders.received,
           refundedAmount: saleOrders.refundedAmount,
           paymentMethod: saleOrders.paymentMethod,
+          legacySource: saleOrders.legacySource,
           isMembershipUpgrade: saleOrders.isMembershipUpgrade,
           isActivity: saleOrders.isActivity,
           isExperienceConversion: saleOrders.isExperienceConversion,
@@ -1386,6 +1395,7 @@ export const exportOrders = withPermission(
         // 与销售单口径的金额列不兼容（total=0 与 received>0 并存会误导）。导出时这 5 列对寄存单留空；
         // item 级列（商品明细/总次数/可用次数/单次价格/品类等）照常展示。
         const isDeposit = r.saleOrderType === '寄存单'
+        const isLegacy = r.legacySource === 'workfine'
         return {
           source: 'item' as const,
           sourceId: String(r.sourceId ?? r.saleOrderId),
@@ -1403,10 +1413,10 @@ export const exportOrders = withPermission(
           promoterEmployeeName: r.promoterEmployeeName ?? null,
           totalAmount: isDeposit ? '' : r.totalAmount,
           prepaidCardAmount: isDeposit ? '' : (r.prepaidCardAmount ?? '0.00'),
-          cashAmount: isDeposit ? '' : (r.cashAmount ?? '0.00'),
+          cashAmount: isDeposit ? '' : (isLegacy ? '0.00' : (r.cashAmount ?? '0.00')),
           received: isDeposit ? '' : (r.received ?? '0'),
           refundedAmount: isDeposit ? '' : (r.refundedAmount ?? '0'),
-          paymentMethod: r.paymentMethod,
+          paymentMethod: isLegacy ? '未知' : r.paymentMethod,
           isMembershipUpgrade: r.isMembershipUpgrade ?? false,
           isActivity: r.isActivity ?? false,
           isExperienceConversion: r.isExperienceConversion ?? false,
@@ -1439,6 +1449,7 @@ export const exportOrders = withPermission(
       }),
       ...rechargeOrders.map((r) => {
         const orderAmounts = resolveOrderLevelAmounts(r)
+        const isLegacy = r.legacySource === 'workfine'
         return {
           source: 'recharge' as const,
           sourceId: String(r.sourceId ?? r.saleOrderId),
@@ -1456,10 +1467,10 @@ export const exportOrders = withPermission(
           promoterEmployeeName: r.promoterEmployeeName ?? null,
           totalAmount: r.totalAmount,
           prepaidCardAmount: orderAmounts.prepaidCardAmount,
-          cashAmount: orderAmounts.cashAmount,
+          cashAmount: isLegacy ? '0.00' : orderAmounts.cashAmount,
           received: orderAmounts.received,
           refundedAmount: r.refundedAmount ?? '0',
-          paymentMethod: r.paymentMethod,
+          paymentMethod: isLegacy ? '未知' : r.paymentMethod,
           isMembershipUpgrade: r.isMembershipUpgrade ?? false,
           isActivity: r.isActivity ?? false,
           isExperienceConversion: r.isExperienceConversion ?? false,
@@ -1486,6 +1497,7 @@ export const exportOrders = withPermission(
       }),
       ...orderFallbackRows.map((r) => {
         const orderAmounts = resolveOrderLevelAmounts(r)
+        const isLegacy = r.legacySource === 'workfine'
         return {
           source: 'orderFallback' as const,
           sourceId: String(r.sourceId ?? r.saleOrderId),
@@ -1502,10 +1514,10 @@ export const exportOrders = withPermission(
             promoterEmployeeName: r.promoterEmployeeName ?? null,
             totalAmount: r.totalAmount,
             prepaidCardAmount: orderAmounts.prepaidCardAmount,
-            cashAmount: orderAmounts.cashAmount,
+            cashAmount: isLegacy ? '0.00' : orderAmounts.cashAmount,
             received: orderAmounts.received,
             refundedAmount: r.refundedAmount ?? '0',
-            paymentMethod: r.paymentMethod,
+            paymentMethod: isLegacy ? '未知' : r.paymentMethod,
             isMembershipUpgrade: r.isMembershipUpgrade ?? false,
             isActivity: r.isActivity ?? false,
             isExperienceConversion: r.isExperienceConversion ?? false,

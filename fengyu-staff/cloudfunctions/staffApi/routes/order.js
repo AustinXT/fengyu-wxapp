@@ -41,7 +41,7 @@ const {
   notifyRefundCreated,
   notifyRefundResult,
 } = require('../utils/refund')
-const { logOperation, logTransition } = require('../utils/operation-log')
+const { logOperation, logUpdate, logTransition } = require('../utils/operation-log')
 const { shanghaiDateStr, shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
 const { INVENTORY_LINKAGE_ENABLED } = require('../utils/feature-flags')
 const { assertEmployeesAssignableToStore } = require('../utils/employee-assignment')
@@ -2609,6 +2609,120 @@ async function list(ctx) {
   ctx.result = { orders: mapped, page, pageSize }
 }
 
+function isValidIsoDateOnly(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ''))
+  if (!match) return false
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const dateValue = new Date(Date.UTC(year, month - 1, day))
+  return dateValue.getUTCFullYear() === year
+    && dateValue.getUTCMonth() === month - 1
+    && dateValue.getUTCDate() === day
+}
+
+/**
+ * 一次性修改订单业绩归属日期（员工端店长入口）。
+ *
+ * 与 admin updatePerformanceAttributionDate 同口径：操作时间不限，目标日期必须在
+ * 原始订单上海自然日前后 7 天内；FOR UPDATE + adjusted_at + updated_at CAS 保证只成功一次。
+ */
+async function updatePerformanceAttribution(ctx) {
+  await requireManager()(ctx, async () => {})
+
+  const payload = ctx.event.payload || {}
+  const saleOrderId = String(payload.saleOrderId || '').trim()
+  const targetDate = String(payload.performanceAttributionDate || '').trim()
+  const expectedUpdatedAt = String(payload.expectedUpdatedAt || '').trim()
+  if (!saleOrderId || !isValidIsoDateOnly(targetDate)) {
+    throw new Error('INVALID_PARAMS: 订单号和有效的业绩归属日期必传')
+  }
+  if (!expectedUpdatedAt || Number.isNaN(new Date(expectedUpdatedAt).getTime())) {
+    throw new Error('INVALID_PARAMS: 订单版本时间无效，请刷新后重试')
+  }
+
+  const result = await pg.transaction(async (client) => {
+    const lockedRes = await client.query(
+      `SELECT
+         sale_order_id,
+         store_id,
+         performance_attribution_date::text AS performance_attribution_date,
+         performance_attribution_adjusted_at,
+         (sale_order_datetime AT TIME ZONE 'Asia/Shanghai')::date::text AS original_order_date,
+         ((sale_order_datetime AT TIME ZONE 'Asia/Shanghai')::date - 7)::text AS min_performance_date,
+         ((sale_order_datetime AT TIME ZONE 'Asia/Shanghai')::date + 7)::text AS max_performance_date
+       FROM sale_orders
+       WHERE sale_order_id = $1
+       FOR UPDATE`,
+      [saleOrderId],
+    )
+    const locked = lockedRes.rows[0]
+    if (!locked || !isStoreInScope(ctx.auth, locked.store_id)) {
+      throw new Error('NOT_FOUND: 订单不存在或不在当前门店权限范围内')
+    }
+    if (locked.performance_attribution_adjusted_at) {
+      throw new Error('CONFLICT: 该订单的业绩归属日期已经调整过，不能再次修改')
+    }
+    if (targetDate === locked.performance_attribution_date) {
+      throw new Error('INVALID_PARAMS: 新归属日期与当前日期相同，未消耗修改机会')
+    }
+    if (targetDate < locked.min_performance_date || targetDate > locked.max_performance_date) {
+      throw new Error(
+        `INVALID_PARAMS: 归属日期必须在原始订单日期 ${locked.original_order_date} 前后 7 天内（${locked.min_performance_date} 至 ${locked.max_performance_date}）`,
+      )
+    }
+
+    const updatedRes = await client.query(
+      `UPDATE sale_orders
+       SET performance_attribution_date = $1::date,
+           performance_attribution_adjusted_at = NOW(),
+           performance_attribution_adjusted_by = $2,
+           updated_at = NOW()
+       WHERE sale_order_id = $3
+         AND performance_attribution_adjusted_at IS NULL
+         AND date_trunc('milliseconds', updated_at)
+             = date_trunc('milliseconds', $4::timestamptz)
+       RETURNING
+         performance_attribution_date::text AS performance_attribution_date,
+         performance_attribution_adjusted_at,
+         performance_attribution_adjusted_by,
+         updated_at`,
+      [targetDate, ctx.auth.staffWfId, saleOrderId, expectedUpdatedAt],
+    )
+    const updated = updatedRes.rows[0]
+    if (!updated) {
+      throw new Error('CONFLICT: 订单已被其他人修改，请刷新后重试')
+    }
+
+    await logUpdate(
+      client,
+      ctx,
+      'order.performanceAttribution.update',
+      'sale_order',
+      saleOrderId,
+      { performanceAttributionDate: locked.performance_attribution_date },
+      {
+        performanceAttributionDate: updated.performance_attribution_date,
+        performanceAttributionAdjustedAt: new Date(updated.performance_attribution_adjusted_at).toISOString(),
+        performanceAttributionAdjustedBy: updated.performance_attribution_adjusted_by,
+      },
+    )
+
+    return {
+      performanceAttributionDate: updated.performance_attribution_date,
+      performanceAttributionAdjustedAt: new Date(updated.performance_attribution_adjusted_at).toISOString(),
+      performanceAttributionAdjustedBy: updated.performance_attribution_adjusted_by,
+      performanceAttributionAdjustedByName: ctx.auth.name || '',
+      updatedAt: new Date(updated.updated_at).toISOString(),
+    }
+  })
+
+  ctx.result = {
+    ...result,
+    message: '业绩归属日期已修改；该订单不可再次调整',
+  }
+}
+
 /**
  * 订单详情
  */
@@ -2624,7 +2738,15 @@ async function detail(ctx) {
   // 交易数据跟顾客走：先不限门店查订单，再分层判定可见性
   // （顾客档案的消费记录可跨门店查看任意订单详情；管理层模式 effectiveStoreId=null 时本就需放开）
   const orders = await pg.query(
-    'SELECT * FROM sale_orders WHERE sale_order_id = $1',
+    `SELECT o.*,
+            adjusted_by.name AS performance_attribution_adjusted_by_name,
+            (o.sale_order_datetime AT TIME ZONE 'Asia/Shanghai')::date::text AS original_order_date,
+            ((o.sale_order_datetime AT TIME ZONE 'Asia/Shanghai')::date - 7)::text AS min_performance_date,
+            ((o.sale_order_datetime AT TIME ZONE 'Asia/Shanghai')::date + 7)::text AS max_performance_date
+       FROM sale_orders o
+       LEFT JOIN staff_wechat_users adjusted_by
+         ON adjusted_by.employee_id = o.performance_attribution_adjusted_by
+      WHERE o.sale_order_id = $1`,
     [saleOrderId]
   )
 
@@ -6146,6 +6268,7 @@ module.exports = {
   resetFailed,
   list,
   detail,
+  updatePerformanceAttribution,
   createRefund,
   approveRefund,
   rejectRefund,

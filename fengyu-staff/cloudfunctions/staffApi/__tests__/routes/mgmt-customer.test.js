@@ -1113,6 +1113,8 @@ describe('mgmtCustomer 手机号脱敏策略', () => {
 
 describe('mgmtCustomer 出数完整路径', () => {
   test('detail 支持 clientUserId 入参 + 姓名回退 + 美容师解析 + scope 名称', async () => {
+    const pgBirthday = new Date(1990, 2, 15)
+    expect(pgBirthday.toISOString()).toBe('1990-03-14T16:00:00.000Z')
     setupCommonMocks({
       detailRows: [
         {
@@ -1128,7 +1130,7 @@ describe('mgmtCustomer 出数完整路径', () => {
           notes: '老顾客',
           bound_store_id: 'store-001',
           store_name: ' A 店 ',
-          birthday: '1990-03-15',
+          birthday: pgBirthday,
           customer_source: '老带新',
           promoter_employee_name: '员工甲',
           inviter_name: '顾客乙',

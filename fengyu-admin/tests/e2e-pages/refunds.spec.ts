@@ -13,14 +13,12 @@ import { readDetailFixtureIds } from './fixtures/seed-detail-fixtures'
 const REFUND_ID_SEED = readDetailFixtureIds().refundId || ''
 
 test.describe('退款管理页 — 列表 + 详情渲染（ticket 2026-04-24）', () => {
-  test('列表页可达，3 Tab 渲染', async ({ page }) => {
+  test('列表页可达，搜索、状态筛选与导出入口渲染', async ({ page }) => {
     await page.goto('/refunds')
     await expect(page.getByRole('heading', { name: /退款/ })).toBeVisible()
-    // 3 个状态 Tab —— 用 tab role 精确定位，避免与列表行内同名徽章（如 globalSetup
-    // 注入的待审批退款单行）发生 strict mode 命中多元素。
-    await expect(page.getByRole('tab', { name: '待审批' })).toBeVisible()
-    await expect(page.getByRole('tab', { name: /已通过|已支付/ })).toBeVisible()
-    await expect(page.getByRole('tab', { name: /已驳回|已关闭/ })).toBeVisible()
+    await expect(page.getByRole('combobox', { name: '退款状态' })).toBeVisible()
+    await expect(page.getByPlaceholder(/搜索退款单号/)).toBeVisible()
+    await expect(page.getByRole('button', { name: '导出' })).toBeVisible()
   })
 
   test('详情页：关键字段 + 审批按钮按状态渲染', async ({ page }) => {

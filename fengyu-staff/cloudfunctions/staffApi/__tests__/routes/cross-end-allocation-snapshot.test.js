@@ -46,6 +46,7 @@ const FILES = {
   overpayReceiptItemBackfill0086Sql: path.join(ARCHIVED_MIGRATIONS_DIR, '0086_overpay_receipt_item_backfill.sql'),
   overpayReceiptItemRemap0090Sql: path.join(ARCHIVED_MIGRATIONS_DIR, '0090_remap_overpay_receipts_by_item_excess.sql'),
   overpayReceiptDrain0029Sql: path.resolve(__dirname, '../../../../../db/migrations/0029_repair_overpay_item_receipts.sql'),
+  refundRolePoolRepair0036Sql: path.resolve(__dirname, '../../../../../db/migrations/0036_repair_refund_role_pool_allocations.sql'),
   refundAllocationMirrorBackfill0087Sql: path.join(ARCHIVED_MIGRATIONS_DIR, '0087_refund_allocation_mirror_backfill.sql'),
 
   payNotifyIndexJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/index.js'),
@@ -319,7 +320,7 @@ describe('断言6：0082 退款 receipt backfill 使用 note.items[].refundAmoun
 // 断言 7：0082 正向 receipt 按实际 payment.amount 重建逐笔归属
 // ─────────────────────────────────────────────────────────────────────────────
 describe('断言7：0082 正向 receipt backfill 修正逐笔支付归属', () => {
-  let src, incrementalSrc, clearFullRefundSrc, refundReceiptRepairSrc, overpayReceiptRepairSrc, overpayReceiptRemapSrc, overpayReceiptDrainSrc, refundAllocationMirrorSrc
+  let src, incrementalSrc, clearFullRefundSrc, refundReceiptRepairSrc, overpayReceiptRepairSrc, overpayReceiptRemapSrc, overpayReceiptDrainSrc, refundAllocationMirrorSrc, refundRolePoolRepairSrc
 
   beforeAll(() => {
     src = readFile(FILES.receiptMigration0082Sql)
@@ -330,6 +331,7 @@ describe('断言7：0082 正向 receipt backfill 修正逐笔支付归属', () =
     overpayReceiptRemapSrc = readFile(FILES.overpayReceiptItemRemap0090Sql)
     overpayReceiptDrainSrc = readFile(FILES.overpayReceiptDrain0029Sql)
     refundAllocationMirrorSrc = readFile(FILES.refundAllocationMirrorBackfill0087Sql)
+    refundRolePoolRepairSrc = readFile(FILES.refundRolePoolRepair0036Sql)
   })
 
   test('仅重建无旧分配/无新子分配且逐笔金额不一致的原生销售/转换单', () => {
@@ -448,5 +450,45 @@ describe('断言7：0082 正向 receipt backfill 修正逐笔支付归属', () =
     expect(refundAllocationMirrorSrc).toMatch(/UPDATE sale_orders so[\s\S]{0,120}SET allocation_status = NULL/)
     expect(refundAllocationMirrorSrc).toMatch(/datafix\.refundAllocationMirrorBackfill/)
     expect(refundAllocationMirrorSrc).toMatch(/datafix\.fullRefundAllocationStatusClear/)
+  })
+
+  test('0036 按 role_type 独立修复历史退款营业额与提成', () => {
+    const multipleRefundGuardAt = refundRolePoolRepairSrc.indexOf(
+      'refund role-pool repair does not support multiple paid refunds per sale item',
+    )
+    const singleRefundFilterAt = refundRolePoolRepairSrc.indexOf('rt.refund_count = 1')
+    const obsoleteDetectionAt = refundRolePoolRepairSrc.indexOf('obsolete_currents AS')
+    const obsoleteVoidAt = refundRolePoolRepairSrc.indexOf(
+      'UPDATE sale_payment_item_allocations current',
+    )
+    const targetUpsertAt = refundRolePoolRepairSrc.indexOf(
+      'INSERT INTO sale_payment_item_allocations (',
+    )
+    const obsoleteDetectionSrc = refundRolePoolRepairSrc.slice(obsoleteDetectionAt, obsoleteVoidAt)
+    const obsoleteVoidSrc = refundRolePoolRepairSrc.slice(obsoleteVoidAt, targetUpsertAt)
+
+    expect(refundRolePoolRepairSrc).toMatch(/_0035_refund_role_pool_receipts/)
+    expect(refundRolePoolRepairSrc).toMatch(/_0035_refund_role_pool_targets/)
+    expect(refundRolePoolRepairSrc).toMatch(/LOCK TABLE sale_order_payments, sale_payment_item_receipts IN SHARE MODE/)
+    expect(refundRolePoolRepairSrc).toMatch(/HAVING COUNT\(DISTINCT refund_receipt\.sale_payment_id\) > 1/)
+    expect(multipleRefundGuardAt).toBeGreaterThanOrEqual(0)
+    expect(singleRefundFilterAt).toBeGreaterThan(multipleRefundGuardAt)
+    expect(refundRolePoolRepairSrc).toMatch(/PARTITION BY refund_receipt_id, role_type/)
+    expect(refundRolePoolRepairSrc).toMatch(/positive_receipt_cents/)
+    expect(refundRolePoolRepairSrc).toMatch(/role_target_cents/)
+    expect(refundRolePoolRepairSrc).toMatch(/commission_cents/)
+    expect(obsoleteDetectionAt).toBeGreaterThanOrEqual(0)
+    expect(obsoleteVoidAt).toBeGreaterThan(obsoleteDetectionAt)
+    expect(targetUpsertAt).toBeGreaterThan(obsoleteVoidAt)
+    expect(obsoleteDetectionSrc).toMatch(/FROM _0035_refund_role_pool_receipts/)
+    expect(obsoleteVoidSrc).toMatch(/SET is_void = true,[\s\S]*voided_at = NOW\(\)/)
+    expect(obsoleteVoidSrc).toMatch(/FROM _0035_refund_role_pool_receipts/)
+    expect(obsoleteVoidSrc).toMatch(/NOT EXISTS \(/)
+    expect(obsoleteVoidSrc).toMatch(/target\.refund_receipt_id = current\.sale_payment_item_receipt_id/)
+    expect(obsoleteVoidSrc).toMatch(/target\.employee_id = current\.employee_id/)
+    expect(obsoleteVoidSrc).toMatch(/target\.role_type = current\.role_type/)
+    expect(refundRolePoolRepairSrc).toMatch(/ON CONFLICT \(sale_payment_item_receipt_id, employee_id, role_type\) WHERE is_void = false[\s\S]{0,220}DO UPDATE SET/)
+    expect(refundRolePoolRepairSrc).toMatch(/datafix\.refundRolePoolAllocation/)
+    expect(refundRolePoolRepairSrc).toMatch(/refund role-pool allocation invariant still mismatched after repair/)
   })
 })

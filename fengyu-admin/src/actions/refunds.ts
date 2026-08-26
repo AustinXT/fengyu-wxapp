@@ -6,7 +6,7 @@ import { saleOrders, saleItems, saleOrderPayments } from '@db/order'
 import { productSkus } from '@db/product'
 import { stores } from '@db/org'
 import { staffWechatUsers, clientWechatUsers } from '@db/user'
-import { and, desc, asc, eq, sql } from 'drizzle-orm'
+import { and, desc, asc, eq, ilike, or, sql } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
@@ -19,6 +19,12 @@ import { determineMemberLevel, isDowngrade, type MemberLevel } from '../../../db
 import { getMemberThreshold } from '@/lib/member-threshold'
 import { getPointsToYuanRate } from '@/lib/system-config'
 import { nowTs } from '@/lib/db-time'
+import {
+  offsetPageResult,
+  resolveExportOffsetPage,
+  type ExportBatchOptions,
+  type ExportBatchResult,
+} from '@/lib/export-pagination'
 import {
   buildRefundDetails,
   calculateUnusedQuantity,
@@ -161,6 +167,8 @@ export interface RefundListItem {
 export interface RefundListFilters {
   /** 兼容旧前端：'待审批' / '已支付'（已通过）/ '已关闭'（驳回 = '已作废'）*/
   status?: '待审批' | '已支付' | '已关闭'
+  /** 退款单号、原单号、顾客、手机号、原因或发起人。 */
+  q?: string
   page?: number
   pageSize?: number
 }
@@ -1338,44 +1346,54 @@ export const rejectRefund = withPermission(
 // listRefunds：退款流水列表（聚合 sale_order_payments[change_type='退款']）
 // ─────────────────────────────────────────────────────────────────────────────
 
-// 读：提单人和审批人都需要看流水
-export const listRefunds = withAnyPermission(
-  ['sale_order:refund_create', 'sale_order:refund_approve'],
-  async (session, filters: RefundListFilters = {}): Promise<RefundListResult> => {
-  const page = Math.max(1, filters.page || 1)
-  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? (filters.pageSize as number) : 20
-  const offset = (page - 1) * pageSize
+function parseRefundListFilters(params: Record<string, string | undefined>): RefundListFilters {
+  const status = params.status === '待审批' || params.status === '已支付' || params.status === '已关闭'
+    ? params.status
+    : undefined
+  return { status, q: params.q?.trim() || undefined }
+}
 
-  // 旧 UI 状态映射：'已关闭' → '已作废'（驳回）；其他原值透传
-  const sopStatus =
-    filters.status === '已关闭'
-      ? '已作废'
-      : filters.status === '已支付'
-        ? '已支付'
-        : filters.status === '待审批'
-          ? '待审批'
-          : null
-
-  const conditions: (SQL | undefined)[] = [
+function buildRefundListConditions(
+  session: Parameters<typeof scopeCondition>[0],
+  filters: RefundListFilters,
+): Array<SQL | undefined> {
+  const conditions: Array<SQL | undefined> = [
     eq(saleOrderPayments.changeType, '退款'),
     scopeCondition(session, saleOrders.storeId),
   ]
+
+  const sopStatus = filters.status === '已关闭' ? '已作废' : filters.status
   if (sopStatus) {
     conditions.push(
       eq(saleOrderPayments.status, sopStatus as typeof saleOrderPayments.status.enumValues[number]),
     )
   }
-  const whereClause = and(...conditions)
 
-  const [countRow] = await db
-    .select({ count: sql<number>`cast(count(*) as int)` })
-    .from(saleOrderPayments)
-    .leftJoin(saleOrders, eq(saleOrders.saleOrderId, saleOrderPayments.saleOrderId))
-    .where(whereClause)
-  const total = countRow?.count ?? 0
+  const keyword = filters.q?.trim()
+  if (keyword) {
+    const pattern = `%${keyword}%`
+    conditions.push(or(
+      sql`CAST(${saleOrderPayments.id} AS TEXT) ILIKE ${pattern}`,
+      ilike(saleOrderPayments.saleOrderId, pattern),
+      ilike(saleOrders.customerName, pattern),
+      ilike(saleOrders.clientPhone, pattern),
+      ilike(clientWechatUsers.name, pattern),
+      ilike(clientWechatUsers.phone, pattern),
+      ilike(operatorAlias.name, pattern),
+      ilike(saleOrderPayments.refundReason, pattern),
+    )!)
+  }
 
-  // 2026-07-08 修复 T1：与 orders.ts 对齐，left join clientWechatUsers 做 name/phone 兜底。
-  const rows = await db
+  return conditions
+}
+
+async function selectRefundRows(
+  session: Parameters<typeof scopeCondition>[0],
+  filters: RefundListFilters,
+  limit?: number,
+  offset = 0,
+) {
+  const query = db
     .select({
       payment: saleOrderPayments,
       order: saleOrders,
@@ -1395,14 +1413,56 @@ export const listRefunds = withAnyPermission(
     .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
     .leftJoin(saleItems, eq(saleOrderPayments.refSaleItemId, saleItems.saleItemId))
     .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+    .where(and(...buildRefundListConditions(session, filters)))
+    .orderBy(desc(saleOrderPayments.createdAt), desc(saleOrderPayments.id))
+  return limit == null ? query : query.limit(limit).offset(offset)
+}
+
+// 读：提单人和审批人都需要看流水
+export const listRefunds = withAnyPermission(
+  ['sale_order:refund_create', 'sale_order:refund_approve'],
+  async (session, filters: RefundListFilters = {}): Promise<RefundListResult> => {
+  const page = Math.max(1, filters.page || 1)
+  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? (filters.pageSize as number) : 20
+  const offset = (page - 1) * pageSize
+
+  const whereClause = and(...buildRefundListConditions(session, filters))
+
+  const [countRow] = await db
+    .select({ count: sql<number>`cast(count(*) as int)` })
+    .from(saleOrderPayments)
+    .leftJoin(saleOrders, eq(saleOrders.saleOrderId, saleOrderPayments.saleOrderId))
+    .leftJoin(operatorAlias, eq(saleOrderPayments.operatorEmployeeId, operatorAlias.employeeId))
+    .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
     .where(whereClause)
-    .orderBy(desc(saleOrderPayments.createdAt))
-    .limit(pageSize)
-    .offset(offset)
+  const total = countRow?.count ?? 0
+
+  // 2026-07-08 修复 T1：与 orders.ts 对齐，left join clientWechatUsers 做 name/phone 兜底。
+  const rows = await selectRefundRows(session, filters, pageSize, offset)
 
   const refunds: RefundListItem[] = rows.map((r) => mapRefundRow(r))
 
   return { refunds, total, page, pageSize }
+  },
+)
+
+/** 导出当前筛选命中的退款流水；worker 分批读取，避免大结果集占满内存。 */
+export const exportRefunds = withAnyPermission(
+  ['sale_order:refund_create', 'sale_order:refund_approve'],
+  async (
+    session,
+    params: Record<string, string | undefined>,
+    options?: ExportBatchOptions,
+  ): Promise<ExportBatchResult<RefundListItem>> => {
+    const filters = parseRefundListFilters(params)
+    const page = resolveExportOffsetPage(options)
+    const rows = await selectRefundRows(
+      session,
+      filters,
+      page ? page.limit + 1 : undefined,
+      page?.offset ?? 0,
+    )
+    return offsetPageResult(rows.map((row) => mapRefundRow(row)), page)
   },
 )
 

@@ -340,6 +340,7 @@ Page({
       const customer = {
         ...raw,
         invitedAt: raw.invitedAt ? formatDateTime(raw.invitedAt) : null,
+        birthday: raw.birthday ? raw.birthday.slice(0, 10) : null,
         totalConsumption: formatAmount(raw.totalConsumption),
         yearConsumption: formatAmount(raw.yearConsumption),
         totalActualConsumption: formatAmount(raw.totalActualConsumption),

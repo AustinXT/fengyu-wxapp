@@ -2729,6 +2729,96 @@ describe('order.list', () => {
   })
 })
 
+describe('order.updatePerformanceAttribution', () => {
+  const input = {
+    saleOrderId: 'FY-XSD-WX-2608260004',
+    performanceAttributionDate: '2026-09-02',
+    expectedUpdatedAt: '2026-08-26T05:39:21.991Z',
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  function mockAttributionTransaction({
+    adjustedAt = null,
+    currentDate = '2026-08-26',
+    updatedRows = [{
+      performance_attribution_date: '2026-09-02',
+      performance_attribution_adjusted_at: new Date('2026-08-26T06:00:00.000Z'),
+      performance_attribution_adjusted_by: 'emp-001',
+      updated_at: new Date('2026-08-26T06:00:00.000Z'),
+    }],
+  } = {}) {
+    const query = vi.fn()
+      .mockResolvedValueOnce({
+        rows: [{
+          sale_order_id: input.saleOrderId,
+          store_id: 'store-001',
+          performance_attribution_date: currentDate,
+          performance_attribution_adjusted_at: adjustedAt,
+          original_order_date: '2026-08-26',
+          min_performance_date: '2026-08-19',
+          max_performance_date: '2026-09-02',
+        }],
+        rowCount: 1,
+      })
+      .mockResolvedValueOnce({ rows: updatedRows, rowCount: updatedRows.length })
+      .mockResolvedValue({ rows: [], rowCount: 1 })
+    pg.transaction.mockImplementation(async (callback) => callback({ query }))
+    return query
+  }
+
+  test('店长可在原始订单日期 +7 天边界修改，并写一次性 CAS 与审计日志', async () => {
+    const ctx = createManagerCtx(input)
+    const query = mockAttributionTransaction()
+
+    await orderRoutes.updatePerformanceAttribution(ctx)
+
+    expect(ctx.result.performanceAttributionDate).toBe('2026-09-02')
+    expect(ctx.result.message).toMatch(/不可再次调整/)
+    expect(query.mock.calls[0][0]).toMatch(/FOR UPDATE/)
+    expect(query.mock.calls[1][0]).toMatch(/performance_attribution_adjusted_at IS NULL/)
+    expect(query.mock.calls[1][0]).toMatch(/date_trunc\('milliseconds', updated_at\)/)
+    expect(query.mock.calls.some(([sql]) => /INSERT INTO operation_logs/.test(sql))).toBe(true)
+  })
+
+  test('同日提交不消耗修改机会', async () => {
+    const ctx = createManagerCtx({ ...input, performanceAttributionDate: '2026-08-26' })
+    const query = mockAttributionTransaction()
+
+    await expect(orderRoutes.updatePerformanceAttribution(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*当前日期相同/)
+    expect(query).toHaveBeenCalledTimes(1)
+  })
+
+  test('超出原始订单日期前后 7 天时拒绝', async () => {
+    const ctx = createManagerCtx({ ...input, performanceAttributionDate: '2026-09-03' })
+    const query = mockAttributionTransaction()
+
+    await expect(orderRoutes.updatePerformanceAttribution(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*前后 7 天/)
+    expect(query).toHaveBeenCalledTimes(1)
+  })
+
+  test('已调整订单不能再次修改', async () => {
+    const ctx = createManagerCtx(input)
+    const query = mockAttributionTransaction({ adjustedAt: new Date('2026-08-26T05:50:00.000Z') })
+
+    await expect(orderRoutes.updatePerformanceAttribution(ctx))
+      .rejects.toThrow(/CONFLICT.*已经调整过/)
+    expect(query).toHaveBeenCalledTimes(1)
+  })
+
+  test('普通员工无权调用修改接口', async () => {
+    const ctx = createBeauticianCtx(input)
+
+    await expect(orderRoutes.updatePerformanceAttribution(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED.*仅店长/)
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+})
+
 describe('order.detail', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -3889,10 +3979,14 @@ describe.skip('order.approveRefund', () => {
         return { rows: [{ id: 9001 }], rowCount: 1 }
       }
       if (sql.includes('FROM sale_payment_item_allocations') && sql.includes('GROUP BY')) {
-        const positiveTotal = cascadeAllocs.reduce((s, r) => s + Number(r.sum_total || 0), 0)
+        const positiveReceiptTotal = cascadeAllocs.length > 0
+          ? Number(cascadeAllocs[0].positive_receipt_total ?? orderReceived)
+          : orderReceived
         const rows = cascadeAllocs.map((r) => ({
-          positive_total: positiveTotal.toFixed(2),
-          other_negative_total: '0',
+          prior_negative_total: '0',
+          prior_negative_comm: '0',
+          positive_receipt_total: positiveReceiptTotal.toFixed(2),
+          prior_refund_receipt_total: '0',
           ...r,
         }))
         return { rows, rowCount: rows.length }
@@ -4094,9 +4188,10 @@ describe.skip('order.approveRefund', () => {
     // 该 item（orig-item-1）有一条活跃正数子分配（emp-1 美容师，营业额 500）→ 退款 500 应记一条负数冲销行
     const { calls } = makeApproveTxnSpy({
       cascadeAllocs: [{
-        employee_id: 'emp-1', role_type: '美容师', ratio: '1.00',
+        employee_id: 'emp-1', role_type: '美容师',
         dept: null, sum_total: '500.00', rate: '0.1000', sum_comm: '50.00',
-        positive_total: '500.00', other_negative_total: '0',
+        prior_negative_total: '0', prior_negative_comm: '0',
+        positive_receipt_total: '500.00', prior_refund_receipt_total: '0',
       }],
     })
 
