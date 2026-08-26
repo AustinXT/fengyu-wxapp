@@ -64,7 +64,12 @@ function isMgmtFullPhone(auth) {
 /** 生日是纯日期字段，禁止把 pg Date 直接序列化为 ISO 时间串下发。 */
 function normalizeBirthdayForOutput(value) {
   if (value === undefined || value === null || value === '') return null
-  if (value instanceof Date) return value.toISOString().slice(0, 10)
+  if (value instanceof Date) {
+    const year = value.getFullYear()
+    const month = String(value.getMonth() + 1).padStart(2, '0')
+    const day = String(value.getDate()).padStart(2, '0')
+    return `${year}-${month}-${day}`
+  }
   return String(value).slice(0, 10)
 }
 
@@ -344,7 +349,7 @@ async function search(ctx) {
     phoneMasked: maskPhone(r.phone),
     memberLevel: r.member_level || null,
     storeName: r.store_name ? r.store_name.trim() : '',
-    birthday: r.birthday || null,
+    birthday: normalizeBirthdayForOutput(r.birthday),
     tier: null,
     lastServiceDate: null,
     lastPurchaseName: null,

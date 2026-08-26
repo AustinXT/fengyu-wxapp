@@ -1,3 +1,6 @@
+// 与 CloudBase 入口一致：pg 会把 date 解析为当前时区的本地零点 Date。
+process.env.TZ = 'Asia/Shanghai'
+
 const path = require('path')
 const { vi } = await import('vitest')
 const pgPath = require.resolve('../db/pg')

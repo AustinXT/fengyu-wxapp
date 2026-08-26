@@ -355,6 +355,8 @@ describe('customer.calendar', () => {
 // ============================================================
 describe('customer.detail', () => {
   test('按 customer_id 查找返回完整信息（含 gender/storeName/notes）', async () => {
+    const pgBirthday = new Date(1990, 2, 15)
+    expect(pgBirthday.toISOString()).toBe('1990-03-14T16:00:00.000Z')
     const ctx = createManagerCtx({ id: 'C001' })
     pg.query
       .mockResolvedValueOnce([{
@@ -364,7 +366,7 @@ describe('customer.detail', () => {
         customer_source: '老带新', promoter_employee_name: '员工甲', inviter_name: '顾客乙',
         inviter_phone: '13700002222', invited_at: '2026-01-02T03:04:05Z', customer_type: '会员客',
         spending_tier: '5000-9999', monthly_activity: '活跃', customer_status: '正常到店',
-        birthday: new Date('1990-03-15T00:00:00.000Z'), occupation: '教师', is_married: true, wechat_name: '小张', points_balance: '88',
+        birthday: pgBirthday, occupation: '教师', is_married: true, wechat_name: '小张', points_balance: '88',
         bound_store_id: 'store-001', store_name: '南昌旗舰店',
       }])
       .mockResolvedValueOnce([{ name: '李四' }])  // preferredStaffName
