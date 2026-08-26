@@ -5,6 +5,7 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
+import { useReturnContext } from "@/components/return-context"
 import type { Customer, SaleOrder, Appointment, SaleItem, Store, Employee, CustomerCoupon, CouponStatus } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -83,6 +84,7 @@ export default function CustomerDetailPage({
   canDelete = false,
 }: CustomerDetailPageProps) {
   const router = useRouter()
+  const { goToReturn } = useReturnContext('/customers')
   const [merging, setMerging] = useState<string | null>(null)
   const [pullLegacyOpen, setPullLegacyOpen] = useState(false)
   const [couponStatus, setCouponStatus] = useState<"" | CouponStatus>("")
@@ -513,7 +515,7 @@ export default function CustomerDetailPage({
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
-        <Button variant="outline" size="sm" onClick={() => router.back()}>
+        <Button variant="outline" size="sm" onClick={() => goToReturn()}>
           &larr; 返回
         </Button>
         <h1 className="text-2xl font-bold text-[var(--foreground)]">

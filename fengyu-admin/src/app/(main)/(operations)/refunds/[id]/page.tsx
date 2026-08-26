@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { ReturnContextLink } from '@/components/return-context'
 import { notFound } from 'next/navigation'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { StatusBadge } from '@/components/ui/badge'
@@ -41,11 +42,11 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Link href="/refunds" className="text-[#999999] hover:text-[var(--foreground)]">
+          <ReturnContextLink href="/refunds" className="text-[#999999] hover:text-[var(--foreground)]">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <polyline points="15 18 9 12 15 6" />
             </svg>
-          </Link>
+          </ReturnContextLink>
           <h1 className="text-2xl font-bold text-[var(--foreground)]">退款单详情</h1>
         </div>
         {refund.status === '待审批' && canApprove && <ApprovalActions refundPaymentId={refund.refundPaymentId} />}

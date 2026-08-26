@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
+import { PreserveListContextLink } from "@/components/return-context"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -99,11 +100,11 @@ export default function StoresPage({
       key: "actions",
       header: "操作",
       cell: (row) => canUpdate ? (
-          <Link href={`/stores/${row.storeId}/edit`}>
+          <PreserveListContextLink href={`/stores/${row.storeId}/edit`}>
             <Button variant="link" size="sm" className="h-auto p-0">
               编辑
             </Button>
-          </Link>
+          </PreserveListContextLink>
         ) : null,
     },
   ]

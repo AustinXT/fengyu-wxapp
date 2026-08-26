@@ -8,6 +8,7 @@ import type { ServiceItemDetail, ServiceReview } from "@/actions/services"
 import { formatDateTime as fmtDateTime } from "@/lib/utils"
 import { DangerZoneDelete } from "@/components/delete-action"
 import { deleteServiceOrder } from "@/actions/services"
+import { ReturnContextLink } from "@/components/return-context"
 
 function formatDateTime(dt: string | null) {
   if (!dt) return "—"
@@ -40,9 +41,9 @@ export default function ServiceDetailPageClient({
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
-        <Link href="/services" className="text-[#999999] hover:text-[var(--foreground)]">
+        <ReturnContextLink href="/services" className="text-[#999999] hover:text-[var(--foreground)]">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6" /></svg>
-        </Link>
+        </ReturnContextLink>
         <h1 className="text-2xl font-bold text-[var(--foreground)]">服务单详情</h1>
         {serviceOrder.readOnly && (
           <Badge variant="secondary" className="bg-[#F3F3F3] text-[#888888]">跨门店只读</Badge>

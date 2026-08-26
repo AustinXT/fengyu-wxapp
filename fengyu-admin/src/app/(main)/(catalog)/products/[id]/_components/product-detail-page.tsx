@@ -4,6 +4,7 @@ import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
+import { useReturnContext } from "@/components/return-context"
 import { actionErrorMessage } from "@/lib/action-error"
 import type { ProductSku, ProductCategory, ProjectSeries } from "@/lib/types"
 import { updateSku, deleteSku } from "@/actions/products"
@@ -39,6 +40,7 @@ export default function SkuDetailPageClient({
   projectSeriesOptions: ProjectSeries[]
 }) {
   const router = useRouter()
+  const { goToReturn } = useReturnContext('/products')
   const [saving, setSaving] = useState(false)
   const [formDirty, setFormDirty] = useState(false)
   useUnsavedChanges(formDirty)
@@ -159,7 +161,7 @@ export default function SkuDetailPageClient({
         return
       }
       toast.success("商品已删除")
-      router.push("/products")
+      goToReturn(true)
     } catch (err) {
       toast.error(actionErrorMessage(err, "删除失败，请稍后重试"))
     } finally {
@@ -171,7 +173,7 @@ export default function SkuDetailPageClient({
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Button type="button" variant="outline" size="sm" onClick={() => router.back()}>
+          <Button type="button" variant="outline" size="sm" onClick={() => goToReturn()}>
             &larr; 返回
           </Button>
           <h1 className="text-2xl font-bold text-[var(--foreground)]">
@@ -437,7 +439,7 @@ export default function SkuDetailPageClient({
         <Separator />
 
         <div className="flex items-center justify-end gap-3">
-          <Button type="button" variant="outline" onClick={() => router.back()}>
+          <Button type="button" variant="outline" onClick={() => goToReturn()}>
             取消
           </Button>
           <Button type="submit" loading={saving}>保存</Button>

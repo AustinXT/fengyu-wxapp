@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { formatDateTime } from "@/lib/utils"
 import { actionErrorMessage } from "@/lib/action-error"
+import { useReturnContext } from "@/components/return-context"
 
 function Field({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
@@ -39,6 +40,7 @@ export default function MerchantDetailPage({
   canDelete: boolean
 }) {
   const router = useRouter()
+  const { forwardHref, goToReturn } = useReturnContext('/merchants')
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const hasLinkedStores = merchant.linkedStores.length > 0
@@ -53,7 +55,7 @@ export default function MerchantDetailPage({
         return
       }
       toast.success(result.message)
-      router.push("/merchants")
+      goToReturn(true)
       router.refresh()
     } catch (err) {
       toast.error(actionErrorMessage(err, "删除失败"))
@@ -65,12 +67,12 @@ export default function MerchantDetailPage({
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
-        <Button type="button" variant="outline" size="sm" onClick={() => router.push("/merchants")}>
+        <Button type="button" variant="outline" size="sm" onClick={() => goToReturn()}>
           &larr; 返回
         </Button>
         <h1 className="text-2xl font-bold text-[var(--foreground)]">商户详情</h1>
         {canEdit && (
-          <Button className="ml-auto" onClick={() => router.push(`/merchants/${merchant.id}/edit`)}>
+          <Button className="ml-auto" onClick={() => router.push(forwardHref(`/merchants/${merchant.id}/edit`))}>
             编辑
           </Button>
         )}

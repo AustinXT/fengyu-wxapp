@@ -15,6 +15,7 @@ import { toast } from "sonner"
 import { toggleTemplateActive } from "@/actions/coupons"
 import { Select } from "@/components/ui/select"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
+import { PreserveListContextLink } from "@/components/return-context"
 import { ExportButton } from "@/components/ui/export-button"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
@@ -198,11 +199,11 @@ export default function CouponsPage({ templates, markets, canCreate, canUpdate }
       header: "操作",
       cell: (row) => (
         <div className="flex gap-2">
-          <Link href={`/coupons/${row.templateId}`}>
+          <PreserveListContextLink href={`/coupons/${row.templateId}`}>
             <Button variant="link" size="sm" className="h-auto p-0">
               详情
             </Button>
-          </Link>
+          </PreserveListContextLink>
           {canUpdate && (
             <Button
               variant="link"

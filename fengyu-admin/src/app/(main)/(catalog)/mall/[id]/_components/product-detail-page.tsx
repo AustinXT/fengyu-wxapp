@@ -4,6 +4,7 @@ import { useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes";
+import { useReturnContext } from "@/components/return-context";
 import type { Product, ProductSku, ProductCategory, MallCategory, MallBundleGroup } from "@/lib/types";
 import {
   updateProduct, deleteProduct, addSkuToProduct, removeSkuFromProduct,
@@ -54,6 +55,7 @@ export default function MallProductDetailPageClient({
   manageScope: { scopeId: string | null; scopeName: string };
 }) {
   const router = useRouter();
+  const { goToReturn } = useReturnContext('/mall');
   const [saving, setSaving] = useState(false);
   const [formDirty, setFormDirty] = useState(false);
   useUnsavedChanges(formDirty);
@@ -122,7 +124,7 @@ export default function MallProductDetailPageClient({
       toast.success("商品已删除");
       setDeleteProductDialogOpen(false);
       setFormDirty(false);
-      router.push("/mall");
+      goToReturn(true);
     } catch (err) {
       toast.error(actionErrorMessage(err, "删除失败，请稍后重试"));
     } finally {
@@ -436,7 +438,7 @@ export default function MallProductDetailPageClient({
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
-        <Button type="button" variant="outline" size="sm" onClick={() => router.back()}>
+        <Button type="button" variant="outline" size="sm" onClick={() => goToReturn()}>
           &larr; 返回
         </Button>
         <h1 className="text-2xl font-bold text-[var(--foreground)] flex-1">商品详情 - {product.name}</h1>
@@ -741,7 +743,7 @@ export default function MallProductDetailPageClient({
         <Separator />
 
         <div className="flex items-center justify-end gap-3">
-          <Button type="button" variant="outline" onClick={() => router.back()}>
+          <Button type="button" variant="outline" onClick={() => goToReturn()}>
             取消
           </Button>
           <Button type="submit" loading={saving}>
@@ -946,4 +948,3 @@ export default function MallProductDetailPageClient({
     </div>
   );
 }
-

@@ -10,6 +10,8 @@ import { Pagination } from "@/components/ui/pagination"
 import { MallCategoryCascader } from "@/components/ui/mall-category-cascader"
 import { ExportButton } from "@/components/ui/export-button"
 import { formatCurrency, formatDate } from "@/lib/utils"
+import { PreserveListContextLink } from "@/components/return-context"
+import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -24,22 +26,25 @@ export default function MallPageClient({
   canCreate: boolean
   canUpdate: boolean
 }) {
-  const [searchInput, setSearchInput] = useState("")
-  const [catFilter, setCatFilter] = useState("")
-  const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(20)
+  const { get, set, setMany } = useUrlFilters()
+  const [searchInput, setSearchInput] = useState(get("q"))
+  const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
+  const search = get("q")
+  const catFilter = get("category")
+  const page = Math.max(1, Number(get("page", "1")) || 1)
+  const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
   const filteredProducts = useMemo(() => {
     let result = products
-    if (searchInput.trim()) {
-      const q = searchInput.trim().toLowerCase()
+    if (search.trim()) {
+      const q = search.trim().toLowerCase()
       result = result.filter((p) => p.name.toLowerCase().includes(q))
     }
     if (catFilter) {
       result = result.filter((p) => p.categoryId === catFilter)
     }
     return result
-  }, [products, searchInput, catFilter])
+  }, [products, search, catFilter])
 
   const pagedProducts = useMemo(
     () => filteredProducts.slice((page - 1) * pageSize, page * pageSize),
@@ -48,8 +53,9 @@ export default function MallPageClient({
 
   const handleSearchChange = useCallback((value: string) => {
     setSearchInput(value)
-    setPage(1)
-  }, [])
+    if (debounceRef[0]) clearTimeout(debounceRef[0])
+    debounceRef[0] = setTimeout(() => setMany({ q: value, page: "" }), 300)
+  }, [debounceRef, setMany])
 
   const columns: Column<Product>[] = [
     {
@@ -124,11 +130,11 @@ export default function MallPageClient({
       header: "操作",
       cell: (row) => (
         canUpdate && (
-          <Link href={`/mall/${row.productId}`}>
+          <PreserveListContextLink href={`/mall/${row.productId}`}>
             <Button variant="link" size="sm" className="h-auto p-0">
               编辑
             </Button>
-          </Link>
+          </PreserveListContextLink>
         )
       ),
     },
@@ -156,7 +162,7 @@ export default function MallPageClient({
         <MallCategoryCascader
           categories={categories}
           value={catFilter}
-          onChange={(id) => { setCatFilter(id); setPage(1) }}
+          onChange={(id) => setMany({ category: id, page: "" })}
           allowEmpty
           placeholder="全部分类"
           className="w-56"
@@ -171,7 +177,7 @@ export default function MallPageClient({
           exportRequest={{
             exportType: "mall-products",
             payload: {
-              q: searchInput.trim(),
+              q: search.trim(),
               category: catFilter,
             },
           }}
@@ -184,9 +190,9 @@ export default function MallPageClient({
         total={filteredProducts.length}
         pageSize={pageSize}
         page={page}
-        onPageChange={setPage}
+        onPageChange={(next) => set("page", next === 1 ? "" : String(next))}
         pageSizeOptions={PAGE_SIZE_OPTIONS}
-        onPageSizeChange={(size) => { setPageSize(size); setPage(1) }}
+        onPageSizeChange={(size) => setMany({ size: String(size), page: "" })}
       />
     </div>
   )

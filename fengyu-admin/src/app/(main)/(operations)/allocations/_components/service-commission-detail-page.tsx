@@ -14,6 +14,7 @@ import { batchSaveServiceCommissions } from "@/actions/service-commissions"
 import type { ServiceOrder, ServiceCommission, AllocationEmployeeCandidate, CommissionRate, SkillTag } from "@/lib/types"
 import type { ServiceItemDetail } from "@/actions/services"
 import { getAllocationEmployeesForSkill, sortAllocationEmployeeCandidates } from "@/lib/allocation-employee"
+import { ReturnContextLink, useReturnContext } from "@/components/return-context"
 
 // --------------- 常量 ---------------
 
@@ -279,9 +280,9 @@ export default function ServiceCommissionDetailPageClient({
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
-        <Link href="/allocations?tab=service" className="text-[#999999] hover:text-[var(--foreground)]">
+        <ReturnContextLink href="/allocations?tab=service" className="text-[#999999] hover:text-[var(--foreground)]">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6" /></svg>
-        </Link>
+        </ReturnContextLink>
         <h1 className="text-2xl font-bold text-[var(--foreground)]">服务提成分配</h1>
       </div>
 
@@ -554,6 +555,7 @@ function SaveButton({
 }) {
   const [pending, startTransition] = useTransition()
   const router = useRouter()
+  const { goToReturn } = useReturnContext('/allocations?tab=service')
 
   const handleSave = () => {
     const flatCommissions: Array<{
@@ -621,7 +623,7 @@ function SaveButton({
       const res = await batchSaveServiceCommissions(serviceOrderId, flatCommissions)
       if (res.success) {
         toast.success(res.message)
-        router.push('/allocations?tab=service')
+        goToReturn(true)
       } else {
         toast.error(res.message)
       }
@@ -630,9 +632,9 @@ function SaveButton({
 
   return (
     <div className="flex justify-end gap-3">
-      <Link href="/allocations?tab=service">
+      <ReturnContextLink href="/allocations?tab=service">
         <Button variant="outline">取消</Button>
-      </Link>
+      </ReturnContextLink>
       <Button onClick={handleSave} loading={pending}>保存提成</Button>
     </div>
   )

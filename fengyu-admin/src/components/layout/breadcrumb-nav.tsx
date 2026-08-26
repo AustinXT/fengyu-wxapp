@@ -1,10 +1,11 @@
 "use client"
 
 import Link from "next/link"
-import { usePathname } from "next/navigation"
+import { usePathname, useSearchParams } from "next/navigation"
 import { ChevronRight } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { getMenuParentForPath, MENU_CONFIG } from '@/lib/menu'
+import { resolveReturnTo } from '@/lib/return-context'
 
 const ROUTE_LABELS: Record<string, string> = {
   "/dashboard": "工作台",
@@ -92,7 +93,12 @@ function buildBreadcrumbs(pathname: string): BreadcrumbItem[] {
 
 export function BreadcrumbNav() {
   const pathname = usePathname()
+  const searchParams = useSearchParams()
   const breadcrumbs = buildBreadcrumbs(pathname)
+  const contextIndex = breadcrumbs.reduce(
+    (last, item, index) => item.href && ROUTE_LABELS[item.href] && index < breadcrumbs.length - 1 ? index : last,
+    -1,
+  )
 
   if (breadcrumbs.length === 0) return null
 
@@ -108,7 +114,7 @@ export function BreadcrumbNav() {
               <span className="font-medium text-[var(--foreground)]">{item.label}</span>
             ) : item.href ? (
               <Link
-                href={item.href}
+                href={i === contextIndex ? resolveReturnTo(searchParams.get('returnTo'), item.href) : item.href}
                 className="text-[#999999] transition-colors hover:text-[var(--foreground)]"
               >
                 {item.label}
