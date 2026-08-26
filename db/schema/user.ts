@@ -72,6 +72,8 @@ export const clientWechatUsers = pgTable(
     improvementFocus: varchar('improvement_focus', { length: 200 }),
     skinIssue: varchar('skin_issue', { length: 200 }),
     wellnessPreference: varchar('wellness_preference', { length: 200 }),
+    /** 人工维护后不再接受 WorkFine 覆盖的档案字段名；显式清空同样计入覆盖 */
+    workfineOverrideFields: text('workfine_override_fields').array().notNull().default(sql`ARRAY[]::text[]`),
     notes: text('notes'),
     /** 积分余额缓存（权威源为 point_transactions，由 cronTask 每日重算写入） */
     pointsBalance: bigint('points_balance', { mode: 'number' }).notNull().default(0),

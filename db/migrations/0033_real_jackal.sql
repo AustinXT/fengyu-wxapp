@@ -1,0 +1,1 @@
+ALTER TABLE "client_wechat_users" ADD COLUMN "workfine_override_fields" text[] DEFAULT ARRAY[]::text[] NOT NULL;

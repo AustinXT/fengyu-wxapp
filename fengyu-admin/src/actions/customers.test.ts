@@ -274,6 +274,28 @@ describe('updateCustomer — 校验 + scope + 错误处理', () => {
     expect(result.message).toContain('已更新')
   })
 
+  it('人工修改 WorkFine 档案字段时追加覆盖标记，未改字段不标记', async () => {
+    mockSelectBefore([{
+      userId: 'user-1',
+      customerSource: '美团',
+      occupation: '教师',
+      workfineOverrideFields: ['birthday'],
+    }])
+    const where = vi.fn().mockResolvedValue({ count: 1 })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateCustomer('user-1', {
+      customerSource: '抖音',
+      occupation: '教师',
+    })
+
+    expect(result.success).toBe(true)
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({
+      workfineOverrideFields: ['birthday', 'customer_source'],
+    }))
+  })
+
   it('绑定推荐员工 → 只信任 employeeId，并写入服务端查询到的姓名快照', async () => {
     let selectCall = 0
     ;(db.select as any).mockImplementation(() => {

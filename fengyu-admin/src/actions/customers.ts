@@ -1050,6 +1050,25 @@ export const updateCustomer = withPermission(
     Object.entries(data).filter(([field, value]) => allowedUpdateFields.has(field) && value !== undefined),
   )
 
+  const workfineOverrideFieldMap = {
+    customerSource: 'customer_source',
+    birthday: 'birthday',
+    occupation: 'occupation',
+    isMarried: 'is_married',
+    skinIssue: 'skin_issue',
+    wellnessPreference: 'wellness_preference',
+  } as const
+  const newlyOverriddenFields = Object.entries(workfineOverrideFieldMap)
+    .filter(([field]) => Object.prototype.hasOwnProperty.call(data, field)
+      && JSON.stringify((before as Record<string, unknown>)[field]) !== JSON.stringify((data as Record<string, unknown>)[field]))
+    .map(([, dbField]) => dbField)
+  if (newlyOverriddenFields.length > 0) {
+    updateData.workfineOverrideFields = Array.from(new Set([
+      ...((before.workfineOverrideFields as string[] | null) ?? []),
+      ...newlyOverriddenFields,
+    ]))
+  }
+
   // boundEmployeeId 变更时同步写入冗余姓名
   if ('boundEmployeeId' in data) {
     if (data.boundEmployeeId) {
