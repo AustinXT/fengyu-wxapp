@@ -357,34 +357,54 @@ async function suggestPayment(ctx) {
   if (pay.store_id) {
     const empRows = await pg.query(`
       SELECT u.employee_id, u.name, u.store_id, u.skills, u.is_on_business_trip,
-             d.name AS department, s.store_name
+             d.name AS department, s.store_name, employee_market.name AS market_name,
+             CASE
+               WHEN u.store_id = $1 THEN 'local'
+               WHEN employee_market.id = target_market.id THEN 'same_market_trip'
+               ELSE 'cross_market_trip'
+             END AS assignment_scope
       FROM staff_wechat_users u
       LEFT JOIN stores s ON u.store_id = s.store_id
       LEFT JOIN org_nodes so ON s.org_node_id = so.id
       LEFT JOIN org_nodes d ON u.org_node_id = d.id
+      LEFT JOIN org_nodes employee_org_parent ON employee_org_parent.id = d.parent_id
+      LEFT JOIN org_nodes employee_market ON employee_market.id = COALESCE(
+        so.parent_id,
+        CASE
+          WHEN d.type = '市场' THEN d.id
+          WHEN d.type = '门店' THEN d.parent_id
+          WHEN d.type = '部门' AND employee_org_parent.type = '市场' THEN employee_org_parent.id
+          WHEN d.type = '部门' AND employee_org_parent.type = '门店' THEN employee_org_parent.parent_id
+          ELSE NULL
+        END
+      ) AND employee_market.type = '市场'
+      JOIN stores target_store ON target_store.store_id = $1
+      JOIN org_nodes target_store_node ON target_store_node.id = target_store.org_node_id
+      LEFT JOIN org_nodes target_market ON target_market.id = target_store_node.parent_id
       WHERE u.is_resigned = false
-        AND (
-          u.store_id = $1
-          OR (
-            u.is_on_business_trip = true
-            AND so.parent_id = (
-              SELECT target_store_node.parent_id
-              FROM stores target_store
-              JOIN org_nodes target_store_node ON target_store_node.id = target_store.org_node_id
-              WHERE target_store.store_id = $1
-            )
-          )
-        )
+        AND (u.store_id = $1 OR u.is_on_business_trip = true)
         AND u.employee_id IS NOT NULL
-      ORDER BY u.name`, [pay.store_id])
+      ORDER BY
+        CASE
+          WHEN u.store_id = $1 THEN 0
+          WHEN employee_market.id = target_market.id THEN 1
+          ELSE 2
+        END,
+        employee_market.name NULLS LAST,
+        s.store_name NULLS LAST,
+        d.name NULLS LAST,
+        u.name NULLS LAST,
+        u.employee_id`, [pay.store_id])
     candidateEmployees = empRows.map(r => ({
       staffWfId: r.employee_id,
       name: r.name || '',
       storeId: r.store_id || '',
       storeName: r.store_name || '',
+      marketName: r.market_name || '',
       skills: Array.isArray(r.skills) ? r.skills : [],
       department: r.department || '',
       isOnBusinessTrip: r.is_on_business_trip === true,
+      assignmentScope: r.assignment_scope,
     }))
   }
 
@@ -458,6 +478,7 @@ async function savePayment(ctx) {
     pg,
     allocations.map((allocation) => allocation.employeeId),
     pay.store_id,
+    { assignmentScope: 'allocationSupport' },
   )
 
   const allocItems = await pg.query(

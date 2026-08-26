@@ -18,7 +18,7 @@ describe('service.create', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     pg.query.mockImplementation(async (sql, params) => {
-      if (sql.includes('JOIN stores employee_store')) {
+      if (sql.includes('WHERE u.employee_id = ANY($1::text[])')) {
         return (params?.[0] || []).map(employee_id => ({ employee_id }))
       }
       return []
@@ -1910,7 +1910,7 @@ describe('service.create clientUserId 解析', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     pg.query.mockImplementation(async (sql, params) => {
-      if (sql.includes('JOIN stores employee_store')) {
+      if (sql.includes('WHERE u.employee_id = ANY($1::text[])')) {
         return (params?.[0] || []).map(employee_id => ({ employee_id }))
       }
       return []

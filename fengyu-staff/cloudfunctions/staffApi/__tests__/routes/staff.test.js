@@ -14,29 +14,28 @@ const staffRoutes = require('../../routes/staff')
 // staff.list
 // ============================================================
 describe('staff.list', () => {
-  test('返回本店及出差支援的在职员工列表，并透出所属门店', async () => {
+  test('仅返回本店在职员工', async () => {
     const ctx = createManagerCtx()
 
     pg.query.mockResolvedValueOnce([
       { employee_id: 'emp-001', name: '张三', position: '门店经理', store_id: 'store-001', is_on_business_trip: false, department: '美容部', store_name: '凤御A店', market_name: '华东市场' },
-      { employee_id: 'emp-002', name: '李四', position: '美容师', store_id: 'store-002', is_on_business_trip: true, department: '美容部', store_name: '凤御B店', market_name: '华东市场' },
+      { employee_id: 'emp-002', name: '李四', position: '美容师', store_id: 'store-001', is_on_business_trip: false, department: '美容部', store_name: '凤御A店', market_name: '华东市场' },
     ])
 
     await staffRoutes.list(ctx)
 
-    expect(pg.query.mock.calls[0][0]).toMatch(/u\.store_id\s+IS\s+NOT\s+NULL/)
-    expect(pg.query.mock.calls[0][0]).toMatch(/u\.is_on_business_trip\s*=\s*true/)
-    expect(pg.query.mock.calls[0][0]).toMatch(/so\.parent_id\s*=\s*\(\s*SELECT target_store_node\.parent_id/)
-    expect(pg.query.mock.calls[0][0]).toMatch(/ORDER BY\s+\(u\.store_id\s*=\s*\$1\)\s+DESC,\s+d\.name,\s+u\.name/)
+    expect(pg.query.mock.calls[0][0]).toMatch(/u\.store_id\s*=\s*\$1/)
+    expect(pg.query.mock.calls[0][0]).not.toMatch(/u\.is_on_business_trip\s*=\s*true/)
+    expect(pg.query.mock.calls[0][0]).toMatch(/ORDER BY\s+d\.name,\s+u\.name/)
     expect(ctx.result.staffList).toHaveLength(2)
     expect(ctx.result.staffList[0].staffWfId).toBe('emp-001')
     expect(ctx.result.staffList[0].name).toBe('张三')
     expect(ctx.result.staffList[0].isManager).toBe(true)
     expect(ctx.result.staffList[1].isManager).toBe(false)
     expect(ctx.result.staffList[1]).toMatchObject({
-      storeId: 'store-002',
-      storeName: '凤御B店',
-      isOnBusinessTrip: true,
+      storeId: 'store-001',
+      storeName: '凤御A店',
+      isOnBusinessTrip: false,
     })
   })
 
@@ -57,16 +56,15 @@ describe('staff.list', () => {
     expect(ctx.result.staffList[1].skills).toEqual(['养生师'])
   })
 
-  test('养生师与美容师共用本店或同市场出差范围', async () => {
+  test('养生师与美容师都仅限本店范围', async () => {
     const ctx = createManagerCtx()
     pg.query.mockResolvedValueOnce([])
 
     await staffRoutes.list(ctx)
 
     const sql = pg.query.mock.calls[0][0]
-    expect(sql).toMatch(/u\.store_id\s+IS\s+NOT\s+NULL/)
-    expect(sql).toMatch(/u\.is_on_business_trip\s*=\s*true/)
-    expect(sql).toMatch(/so\.parent_id\s*=\s*\(\s*SELECT target_store_node\.parent_id/)
+    expect(sql).toMatch(/u\.store_id\s*=\s*\$1/)
+    expect(sql).not.toMatch(/u\.is_on_business_trip\s*=\s*true/)
     expect(sql).toMatch(/u\.skills\s*&&\s*ARRAY\['美容师','养生师'\]::text\[\]/)
   })
 

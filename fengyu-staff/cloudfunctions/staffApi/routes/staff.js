@@ -107,25 +107,10 @@ async function list(ctx) {
     LEFT JOIN org_nodes m ON so.parent_id = m.id
     LEFT JOIN org_nodes d ON u.org_node_id = d.id
     WHERE u.is_resigned = false
-      AND u.store_id IS NOT NULL
-      AND (
-        u.store_id = $1
-        OR (
-          u.is_on_business_trip = true
-          AND so.parent_id = (
-            SELECT target_store_node.parent_id
-            FROM stores target_store
-            JOIN org_nodes target_store_node ON target_store_node.id = target_store.org_node_id
-            WHERE target_store.store_id = $1
-          )
-        )
-      )
+      AND u.store_id = $1
       AND u.employee_id IS NOT NULL
       AND u.skills && ARRAY['美容师','养生师']::text[]
-    ORDER BY
-      (u.store_id = $1) DESC,
-      d.name,
-      u.name
+    ORDER BY d.name, u.name
   `, [targetStoreId])
 
   ctx.result = {
