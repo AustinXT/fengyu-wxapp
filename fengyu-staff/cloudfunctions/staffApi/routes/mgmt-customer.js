@@ -61,6 +61,13 @@ function isMgmtFullPhone(auth) {
   return !!auth.hasDataCenterDashboard
 }
 
+/** 生日是纯日期字段，禁止把 pg Date 直接序列化为 ISO 时间串下发。 */
+function normalizeBirthdayForOutput(value) {
+  if (value === undefined || value === null || value === '') return null
+  if (value instanceof Date) return value.toISOString().slice(0, 10)
+  return String(value).slice(0, 10)
+}
+
 /** 解析 scope 名称（与 mgmt-product.js 保持一致） */
 async function resolveScopeName(scopeType, scopeId) {
   if (scopeType === 'all') return '全部市场'
@@ -563,7 +570,7 @@ async function detail(ctx) {
     yearConsumption,
     totalActualConsumption,
     yearActualConsumption,
-    birthday: pgUser.birthday || null,
+    birthday: normalizeBirthdayForOutput(pgUser.birthday),
     source: pgUser.customer_id ? 'both' : 'miniprogram',
   }
 }

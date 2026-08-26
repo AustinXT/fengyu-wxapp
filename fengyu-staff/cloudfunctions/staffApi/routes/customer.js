@@ -152,8 +152,8 @@ function normalizeProfileChanges(changes) {
 
 function normalizeDbProfileValue(field, value) {
   if (value === undefined || value === null) return null;
-  if (field === 'birthday' && value instanceof Date) {
-    return value.toISOString().slice(0, 10);
+  if (field === 'birthday') {
+    return (value instanceof Date ? value.toISOString() : String(value)).slice(0, 10);
   }
   return value;
 }
@@ -588,7 +588,7 @@ async function detail(ctx) {
     spendingTier: pgUser.spending_tier || null,
     monthlyActivity: pgUser.monthly_activity || null,
     customerStatus: pgUser.customer_status || null,
-    birthday: pgUser.birthday || null,
+    birthday: normalizeDbProfileValue('birthday', pgUser.birthday),
     occupation: pgUser.occupation || null,
     isMarried: pgUser.is_married,
     wechatName: pgUser.wechat_name || null,

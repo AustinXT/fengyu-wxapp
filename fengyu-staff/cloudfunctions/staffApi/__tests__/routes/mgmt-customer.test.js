@@ -1128,7 +1128,7 @@ describe('mgmtCustomer 出数完整路径', () => {
           notes: '老顾客',
           bound_store_id: 'store-001',
           store_name: ' A 店 ',
-          birthday: '1990-03-15',
+          birthday: new Date('1990-03-15T00:00:00.000Z'),
           customer_source: '老带新',
           promoter_employee_name: '员工甲',
           inviter_name: '顾客乙',
