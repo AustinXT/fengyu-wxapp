@@ -30,6 +30,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   wx.navigateTo = vi.fn()
   wx.showToast = vi.fn()
+  wx.showModal = vi.fn()
 })
 
 function createPage() {
@@ -308,5 +309,62 @@ describe('转换单订单级在线回款', () => {
     expect(page.data.showRepayPopup).toBe(true)
     expect(page.data.repayIdempKey).toBe('repay-key')
     expect(wx.navigateTo).not.toHaveBeenCalled()
+  })
+})
+
+describe('员工端业绩归属日期修改', () => {
+  test('详情加载后计算原始订单日前后 7 天，并展示调整记录', async () => {
+    vi.mocked(callStaffApi).mockResolvedValueOnce({
+      order: {
+        sale_order_id: 'FY-XSD-WX-2608260004',
+        sale_order_type: '销售单',
+        status: '已支付',
+        sale_order_datetime: '2026-08-26T05:38:10.486Z',
+        performance_attribution_date: '2026-09-02',
+        performance_attribution_adjusted_at: '2026-08-26T06:00:00.000Z',
+        performance_attribution_adjusted_by: 'emp-001',
+        performance_attribution_adjusted_by_name: '店长甲',
+        original_order_date: '2026-08-26',
+        min_performance_date: '2026-08-19',
+        max_performance_date: '2026-09-02',
+        updated_at: '2026-08-26T06:00:00.000Z',
+        total_amount: '1000.00',
+        received: '1000.00',
+      },
+      items: [],
+      payments: [],
+    } as never)
+    const page = createPage()
+
+    await page.loadDetail('FY-XSD-WX-2608260004')
+
+    expect(page.data.attributionMinDate).toBe('2026-08-19')
+    expect(page.data.attributionMaxDate).toBe('2026-09-02')
+    expect(page.data.order.performanceAttributionAdjusted).toBe(true)
+    expect(page.data.order.performanceAttributionAdjustedByName).toBe('店长甲')
+  })
+
+  test('确认后携带 updatedAt 调用一次性修改 action，并刷新详情', async () => {
+    vi.mocked(callStaffApi).mockResolvedValueOnce({ message: '业绩归属日期已修改；该订单不可再次调整' } as never)
+    const page = createPage()
+    page.setData({
+      order: {
+        ...page.data.order,
+        saleOrderId: 'FY-XSD-WX-2608260004',
+        performanceAttributionDate: '2026-08-26',
+        updatedAt: '2026-08-26T05:39:21.991Z',
+      },
+    })
+    page.loadDetail = vi.fn().mockResolvedValue(undefined)
+
+    await page._submitPerformanceAttributionDate('2026-09-02')
+
+    expect(vi.mocked(callStaffApi)).toHaveBeenCalledWith('order.updatePerformanceAttribution', {
+      saleOrderId: 'FY-XSD-WX-2608260004',
+      performanceAttributionDate: '2026-09-02',
+      expectedUpdatedAt: '2026-08-26T05:39:21.991Z',
+    })
+    expect(page.loadDetail).toHaveBeenCalledWith('FY-XSD-WX-2608260004')
+    expect(page.data.attributionSubmitting).toBe(false)
   })
 })
