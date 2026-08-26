@@ -1,7 +1,37 @@
 -- 修复 2026-06-24 至 2026-08-26 期间退款营业额跨角色共用目标额的问题。
 -- 旧算法把同一商品行所有 role_type 混成一个池；两个各 100% 的角色池会各退 50%。
 -- 本迁移仅重算“每个商品行恰好一笔成功退款”的历史行。上线前审计确认三环境不存在
--- 多笔退款商品行；若迁移时出现多笔且金额仍不匹配，末尾不变量会阻止迁移静默通过。
+-- 多笔退款商品行；迁移期间锁定支付与行级收款事实，并在发现多笔成功退款时显式中止。
+LOCK TABLE sale_order_payments, sale_payment_item_receipts IN SHARE MODE;
+--> statement-breakpoint
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM sale_payment_item_receipts refund_receipt
+      JOIN sale_order_payments refund_payment
+        ON refund_payment.id = refund_receipt.sale_payment_id
+     WHERE refund_receipt.amount < 0
+       AND refund_payment.status = '已支付'
+       AND refund_payment.change_type = '退款'
+       AND EXISTS (
+         SELECT 1
+           FROM sale_payment_item_receipts positive_receipt
+           JOIN sale_order_payments positive_payment
+             ON positive_payment.id = positive_receipt.sale_payment_id
+          WHERE positive_receipt.sale_order_id = refund_receipt.sale_order_id
+            AND positive_receipt.sale_item_id = refund_receipt.sale_item_id
+            AND positive_receipt.amount > 0
+            AND positive_payment.status = '已支付'
+            AND positive_payment.change_type IN ('首次支付','回款','储值卡抵扣')
+       )
+     GROUP BY refund_receipt.sale_order_id, refund_receipt.sale_item_id
+    HAVING COUNT(DISTINCT refund_receipt.sale_payment_id) > 1
+  ) THEN
+    RAISE EXCEPTION '0036 refund role-pool repair does not support multiple paid refunds per sale item';
+  END IF;
+END $$;
+--> statement-breakpoint
 CREATE TEMP TABLE _0035_refund_role_pool_targets (
   refund_receipt_id BIGINT NOT NULL,
   sale_order_id VARCHAR(30) NOT NULL,

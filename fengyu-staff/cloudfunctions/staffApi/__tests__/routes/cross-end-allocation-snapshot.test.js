@@ -453,7 +453,16 @@ describe('断言7：0082 正向 receipt backfill 修正逐笔支付归属', () =
   })
 
   test('0036 按 role_type 独立修复历史退款营业额与提成', () => {
+    const multipleRefundGuardAt = refundRolePoolRepairSrc.indexOf(
+      'refund role-pool repair does not support multiple paid refunds per sale item',
+    )
+    const singleRefundFilterAt = refundRolePoolRepairSrc.indexOf('rt.refund_count = 1')
+
     expect(refundRolePoolRepairSrc).toMatch(/_0035_refund_role_pool_targets/)
+    expect(refundRolePoolRepairSrc).toMatch(/LOCK TABLE sale_order_payments, sale_payment_item_receipts IN SHARE MODE/)
+    expect(refundRolePoolRepairSrc).toMatch(/HAVING COUNT\(DISTINCT refund_receipt\.sale_payment_id\) > 1/)
+    expect(multipleRefundGuardAt).toBeGreaterThanOrEqual(0)
+    expect(singleRefundFilterAt).toBeGreaterThan(multipleRefundGuardAt)
     expect(refundRolePoolRepairSrc).toMatch(/PARTITION BY refund_receipt_id, role_type/)
     expect(refundRolePoolRepairSrc).toMatch(/positive_receipt_cents/)
     expect(refundRolePoolRepairSrc).toMatch(/role_target_cents/)
