@@ -1,4 +1,4 @@
-import { useSearchParams, useRouter, usePathname } from 'next/navigation'
+import { useSearchParams, useRouter, usePathname, type ReadonlyURLSearchParams } from 'next/navigation'
 import { useCallback, useRef, useEffect } from 'react'
 
 /**
@@ -21,8 +21,9 @@ export function useUrlFilters() {
   const router = useRouter()
   const pathname = usePathname()
 
-  // 用 ref 保存最新 searchParams 避免闭包过期
-  const paramsRef = useRef(searchParams)
+  // 用 ref 保存最新 searchParams 避免闭包过期；联合类型兼容 effect 写回
+  // ReadonlyURLSearchParams 与 set/setMany 内立即写回的可变 URLSearchParams
+  const paramsRef = useRef<URLSearchParams | ReadonlyURLSearchParams>(searchParams)
   useEffect(() => {
     paramsRef.current = searchParams
   }, [searchParams])
@@ -42,6 +43,7 @@ export function useUrlFilters() {
       } else {
         params.delete(key)
       }
+      paramsRef.current = params
       const qs = params.toString()
       router.replace(`${pathname}${qs ? `?${qs}` : ''}`, { scroll: false })
     },
@@ -56,6 +58,7 @@ export function useUrlFilters() {
         if (value) params.set(key, value)
         else params.delete(key)
       }
+      paramsRef.current = params
       const qs = params.toString()
       router.replace(`${pathname}${qs ? `?${qs}` : ''}`, { scroll: false })
     },
