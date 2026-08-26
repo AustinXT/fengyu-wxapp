@@ -553,8 +553,9 @@ export const savePaymentAllocations = withPermission(
     if (await getInvalidEmployeeAssignmentId(
       allocations.map((allocation) => allocation.employeeId),
       pay.store_id as string,
+      { assignmentScope: 'allocationSupport' },
     )) {
-      return { success: false, message: '所选员工不属于本门店或同市场出差支援范围' }
+      return { success: false, message: '所选员工不属于本门店且未开启出差支援' }
     }
 
     // 可分配额快照（基数 amount + 销售类别）

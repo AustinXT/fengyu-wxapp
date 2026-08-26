@@ -10,8 +10,8 @@ import { Select } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { savePaymentAllocations } from "@/actions/allocations"
-import type { Employee, CommissionRate, SkillTag } from "@/lib/types"
-import { isEmployeeInStoreAssignmentScope } from "@/lib/employee-assignment"
+import type { AllocationEmployeeCandidate, CommissionRate, SkillTag } from "@/lib/types"
+import { getAllocationEmployeesForSkill, sortAllocationEmployeeCandidates } from "@/lib/allocation-employee"
 import {
   calculateGroupedAmounts,
   expandGroupedAllocationLines,
@@ -99,12 +99,6 @@ function findMatchingRate(
 }
 
 /** 员工按职位排序 */
-function sortByPosition(employees: Employee[]): Employee[] {
-  return [...employees].sort((a, b) =>
-    (a.positionName || '').localeCompare(b.positionName || '', 'zh-CN')
-  )
-}
-
 function calculateEntryAmounts(
   group: PaymentAllocationGroup,
   ratioPercent: string,
@@ -123,7 +117,7 @@ function calculateEntryAmounts(
 function initAllocations(
   groups: PaymentAllocationGroup[],
   allocations: PaymentExistingAllocation[],
-  employees: Employee[],
+  employees: AllocationEmployeeCandidate[],
   commissionRates: CommissionRate[],
   marketName: string,
   eventAmount: number,
@@ -186,7 +180,7 @@ export default function PaymentAllocationDetailPageClient({
   payment: PaymentAllocatables
   storeId: string | null
   customerName: string | null
-  employees: Employee[]
+  employees: AllocationEmployeeCandidate[]
   commissionRates?: CommissionRate[]
   skillTags?: SkillTag[]
   canSave?: boolean
@@ -195,18 +189,13 @@ export default function PaymentAllocationDetailPageClient({
   const skillTagNames = useMemo(() => skillTags.map((t) => t.name), [skillTags])
   // 所有在职员工（不区分门店，后续按 skillTag 动态筛选）
   const allActiveEmployees = useMemo(
-    () => sortByPosition(employees.filter((e) => !e.isResigned)),
+    () => sortAllocationEmployeeCandidates(employees.filter((e) => !e.isResigned)),
     [employees],
   )
 
-  // 外店出差员工仅能在订单所属市场内参与分配。
   const getFilteredEmployees = (skillTag: string) => {
-    if (!skillTag) return []
-    return allActiveEmployees.filter(
-      (e) => Boolean(storeId)
-        && isEmployeeInStoreAssignmentScope(e, storeId!, payment.marketName ?? undefined)
-        && e.skills?.includes(skillTag)
-    )
+    if (!storeId) return []
+    return getAllocationEmployeesForSkill(allActiveEmployees, skillTag)
   }
 
   const items = payment.items || []
@@ -396,7 +385,7 @@ function ItemAllocationCard({
 }: {
   item: PaymentAllocationGroup
   entries: AllocationEntry[]
-  getFilteredEmployees: (skillTag: string) => Employee[]
+  getFilteredEmployees: (skillTag: string) => AllocationEmployeeCandidate[]
   skillTagNames: string[]
   readOnly?: boolean
   onAdd: (groupId: string) => void

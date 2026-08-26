@@ -3286,7 +3286,7 @@ export const createOrder = withPermission(
     data.storeId,
     { requireServiceSkills: true },
   )) {
-    return { success: false, message: '所选美容师不属于本门店或同市场出差支援范围' }
+    return { success: false, message: '所选美容师不属于本门店' }
   }
 
   // 充值卡剥离 SKU 化（2026-05-20）：充值订单走独立 createRechargeOrder action，
@@ -4286,7 +4286,7 @@ export const createConversionOrder = withPermission(
     data.storeId,
     { requireServiceSkills: true },
   )) {
-    return { success: false, message: '所选美容师不属于本门店或同市场出差支援范围' }
+    return { success: false, message: '所选美容师不属于本门店' }
   }
   if (!data.clientUserId) {
     return { success: false, message: '转换单必须指定顾客' }
@@ -5182,7 +5182,7 @@ export const createDepositOrder = withPermission(
       data.storeId,
       { requireServiceSkills: true },
     )) {
-      return { success: false, message: '所选美容师不属于本门店或同市场出差支援范围' }
+      return { success: false, message: '所选美容师不属于本门店' }
     }
     if (!data.clientUserId) {
       return { success: false, message: '寄存单必须指定顾客' }

@@ -10,37 +10,40 @@ import { getInvalidEmployeeAssignmentId } from './employee-assignment-server'
 describe('getInvalidEmployeeAssignmentId', () => {
   beforeEach(() => mocks.execute.mockReset())
 
-  it('本店和同市场出差员工均有效', async () => {
+  it('默认仅本店员工有效', async () => {
     mocks.execute.mockResolvedValue([
       { employee_id: 'emp-local' },
-      { employee_id: 'emp-same-market-trip' },
     ])
 
     await expect(getInvalidEmployeeAssignmentId(
-      ['emp-local', 'emp-same-market-trip'],
+      ['emp-local'],
       'store-a',
       { requireServiceSkills: true },
     )).resolves.toBeNull()
     expect(mocks.execute).toHaveBeenCalledOnce()
 
     const query = new PgDialect().sqlToQuery(mocks.execute.mock.calls[0][0])
-    expect(query.sql).toContain('WHERE u.employee_id IN ($2, $3)')
-    expect(query.params).toEqual([
-      'store-a',
-      'emp-local',
-      'emp-same-market-trip',
-      'store-a',
-      true,
-    ])
-    expect(query.sql).not.toContain('ANY(($2, $3)::text[])')
+    expect(query.sql).toContain('WHERE u.employee_id IN ($1)')
+    expect(query.params).toEqual(['emp-local', 'store-a', true])
+    expect(query.sql).toContain('AND u.store_id = $2')
+    expect(query.sql).not.toContain('is_on_business_trip = true')
   })
 
-  it('查询未返回的跨市场员工判为无效', async () => {
-    mocks.execute.mockResolvedValue([{ employee_id: 'emp-local' }])
+  it('allocationSupport 允许任意市场及无门店的出差员工', async () => {
+    mocks.execute.mockResolvedValue([
+      { employee_id: 'emp-local' },
+      { employee_id: 'emp-cross-market-trip' },
+      { employee_id: 'emp-storeless-trip' },
+    ])
 
     await expect(getInvalidEmployeeAssignmentId(
-      ['emp-local', 'emp-cross-market'],
+      ['emp-local', 'emp-cross-market-trip', 'emp-storeless-trip'],
       'store-a',
-    )).resolves.toBe('emp-cross-market')
+      { assignmentScope: 'allocationSupport' },
+    )).resolves.toBeNull()
+
+    const query = new PgDialect().sqlToQuery(mocks.execute.mock.calls[0][0])
+    expect(query.sql).toContain('u.store_id = $4 OR u.is_on_business_trip = true')
+    expect(query.sql).not.toContain('parent_id')
   })
 })

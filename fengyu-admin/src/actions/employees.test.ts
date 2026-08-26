@@ -7,6 +7,7 @@ vi.mock('@/db', () => ({
     update: vi.fn(),
     delete: vi.fn(),
     transaction: vi.fn(),
+    execute: vi.fn(),
   },
 }))
 
@@ -98,7 +99,7 @@ vi.mock('@/actions/skill-tags', () => ({
   deleteSkillTag: vi.fn(),
 }))
 
-import { createEmployee, updateEmployee, getEmployees, getEmployeesPaginated, getOrgLevel2ForFilter, exportEmployees, searchEmployees } from './employees'
+import { createEmployee, updateEmployee, getAllocationEmployeeCandidates, getEmployees, getEmployeesPaginated, getOrgLevel2ForFilter, exportEmployees, searchEmployees } from './employees'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope } from '@/lib/permissions'
@@ -955,7 +956,7 @@ describe('getOrgLevel2ForFilter', () => {
   })
 })
 
-// 2026-05-18 picker LIMIT 截断回归：getEmployees() 是开单/服务单/分配/客户分配 picker
+// 2026-05-18 picker LIMIT 截断回归：getEmployees() 是开单/服务单/客户分配 picker
 // 共用数据源；曾经写死 .limit(500)，全库 2000+ 员工时按 name 排序后某店员工被截断，
 // 导致 admin /orders/create 选南昌万科店时下拉只显示 2 人（其余 14 人因 name 落在 500
 // 行之后被截）。这里断言链路不再调 limit，且 select 链路顺序为 from → leftJoin × 4 →
@@ -1017,6 +1018,45 @@ describe('getEmployees — picker 数据源不得有 LIMIT', () => {
     expect(orderBy).toHaveBeenCalledTimes(1)
     // 防止有人未来再加回 .limit() —— orderBy 返回的 promise 上不应有 .limit 被调
     expect((orderBy.mock.results[0]?.value as any).limit).toBeUndefined()
+  })
+})
+
+describe('getAllocationEmployeeCandidates — 分配专用最小候选', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(isInScope as any).mockReturnValue(true)
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      permissions: { actions: ['allocation:list'], scopeStoreIds: ['store-A'] },
+    })
+  })
+
+  it('返回三级范围字段且不暴露手机号、身份证等档案字段', async () => {
+    ;(db.execute as any).mockResolvedValue([
+      {
+        employee_id: 'EMP-CROSS',
+        name: '跨市场老师',
+        store_id: null,
+        position_name: '品项老师',
+        skills: ['品项老师'],
+        is_on_business_trip: true,
+        store_name: null,
+        department_name: '品项部',
+        market_name: null,
+        assignment_scope: 'cross_market_trip',
+      },
+    ])
+
+    const result = await getAllocationEmployeeCandidates('store-A')
+
+    expect(result).toEqual([expect.objectContaining({
+      employeeId: 'EMP-CROSS',
+      assignmentScope: 'cross_market_trip',
+      skills: ['品项老师'],
+    })])
+    expect(result[0]).not.toHaveProperty('phone')
+    expect(result[0]).not.toHaveProperty('idCard')
+    expect(isInScope).toHaveBeenCalledWith(expect.anything(), 'store-A')
   })
 })
 

@@ -4,29 +4,24 @@ import { sql } from 'drizzle-orm'
 export async function getInvalidEmployeeAssignmentId(
   employeeIds: string[],
   targetStoreId: string,
-  options: { requireServiceSkills?: boolean } = {},
+  options: {
+    requireServiceSkills?: boolean
+    assignmentScope?: 'localOnly' | 'allocationSupport'
+  } = {},
 ): Promise<string | null> {
   const ids = [...new Set(employeeIds.filter(Boolean))]
   if (ids.length === 0) return null
   const employeeIdParams = sql.join(ids.map((id) => sql`${id}`), sql`, `)
+  const assignmentCondition = options.assignmentScope === 'allocationSupport'
+    ? sql`(u.store_id = ${targetStoreId} OR u.is_on_business_trip = true)`
+    : sql`u.store_id = ${targetStoreId}`
 
   const rows = (await db.execute(sql`
     SELECT u.employee_id
     FROM staff_wechat_users u
-    JOIN stores employee_store ON employee_store.store_id = u.store_id
-    JOIN org_nodes employee_store_node ON employee_store_node.id = employee_store.org_node_id
-    JOIN stores target_store ON target_store.store_id = ${targetStoreId}
-    JOIN org_nodes target_store_node ON target_store_node.id = target_store.org_node_id
     WHERE u.employee_id IN (${employeeIdParams})
       AND u.is_resigned = false
-      AND u.store_id IS NOT NULL
-      AND (
-        u.store_id = ${targetStoreId}
-        OR (
-          u.is_on_business_trip = true
-          AND employee_store_node.parent_id = target_store_node.parent_id
-        )
-      )
+      AND ${assignmentCondition}
       AND (${options.requireServiceSkills === true} = false
         OR u.skills && ARRAY['美容师','养生师']::text[])
   `)) as unknown as Array<{ employee_id: string }>

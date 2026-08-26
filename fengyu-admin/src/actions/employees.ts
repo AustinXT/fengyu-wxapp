@@ -5,12 +5,12 @@ import { staffWechatUsers } from '@db/user'
 import { stores, orgNodes } from '@db/org'
 import { permissionRoles } from '@db/permission'
 import { adminPasswords } from '@db/admin-auth'
-import { eq, and, or, sql, ilike, inArray, desc, asc } from 'drizzle-orm'
+import { eq, and, or, sql, ilike, desc, asc } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
-import type { Employee } from '@/lib/types'
-import { scopeCondition, isInScope, requireAdmin, employeeScopeCondition, isAdminScope } from '@/lib/permissions'
+import type { AllocationEmployeeCandidate, Employee } from '@/lib/types'
+import { scopeCondition, isInScope, requireAdmin, employeeScopeCondition } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
@@ -31,8 +31,6 @@ import { maskPhone } from '@/lib/pii'
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
 const storeNode = alias(orgNodes, 'store_node') as unknown as typeof orgNodes
 const marketNode = alias(orgNodes, 'market_node') as unknown as typeof orgNodes
-const scopeStore = alias(stores, 'scope_store') as unknown as typeof stores
-const scopeStoreNode = alias(orgNodes, 'scope_store_node') as unknown as typeof orgNodes
 
 // drizzle 0.45 alias 后的 join row 被推断为宽松 { [x: string]: any }，
 // 严格类型签名跟实际不匹配 — 用 any 解锁 build；运行时行为不变
@@ -71,7 +69,7 @@ function rowToEmployee(row: any): Employee {
 }
 
 /**
- * 员工选择器数据源 — 用于顾客分配、分配营业额、开单选店员等 picker 场景。
+ * scope 内员工选择器数据源 — 用于顾客分配、开单、服务单等仅限本店的 picker 场景。
  * 主管理列表（含筛选 + 分页 + 乐观锁编辑）请使用 getEmployeesPaginated。
  *
  * 不加 LIMIT：picker 必须返回 scope 内全部员工，否则前端按 storeId 二次过滤
@@ -98,68 +96,90 @@ export const getEmployees = withPermission(
 )
 
 /**
- * 全公司在职「品项老师」员工 — 营业额/服务提成分配专用补充候选池。
- *
- * 品项老师可跨门店/跨市场被任意订单分配，故**不加 scopeCondition**，返回全部
- * 拥有「品项老师」技能的在职员工。调用方（分配详情页）需与 getEmployees 结果按
- * employeeId 去重合并，再交给前端按技能筛选。
+ * 营业额/服务提成分配候选：本门店员工 + 全公司已开启出差支援的员工。
+ * 这是目标门店级、最小字段接口；跨市场候选不复用员工档案列表，避免泄露 PII。
  */
-export const getItemTeachers = withPermission(
-  'employee:list',
-  async (): Promise<Employee[]> => {
-  const rows = await db
-    .select()
-    .from(staffWechatUsers)
-    .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
-    .leftJoin(orgNodes, eq(staffWechatUsers.orgNodeId, orgNodes.id))
-    .leftJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
-    .leftJoin(marketNode, eq(storeNode.parentId, marketNode.id))
-    .where(and(
-      eq(staffWechatUsers.isResigned, false),
-      sql`'品项老师' = ANY(${staffWechatUsers.skills})`,
-    ))
-    // 例外：picker 字母序（与 getEmployees 一致）
-    .orderBy(asc(staffWechatUsers.name))
+export const getAllocationEmployeeCandidates = withPermission(
+  'allocation:list',
+  async (session, targetStoreId: string): Promise<AllocationEmployeeCandidate[]> => {
+    if (!targetStoreId || !isInScope(session, targetStoreId)) {
+      throw new Error('PERMISSION_DENIED: 无权查看该门店的分配候选员工')
+    }
 
-  return rows.map(rowToEmployee)
-  },
-)
+    const rows = (await db.execute(sql`
+      SELECT
+        u.employee_id,
+        u.name,
+        u.store_id,
+        u.position_name,
+        u.skills,
+        u.is_on_business_trip,
+        s.store_name,
+        d.name AS department_name,
+        employee_market.name AS market_name,
+        CASE
+          WHEN u.store_id = ${targetStoreId} THEN 'local'
+          WHEN employee_market.id = target_market.id THEN 'same_market_trip'
+          ELSE 'cross_market_trip'
+        END AS assignment_scope
+      FROM staff_wechat_users u
+      LEFT JOIN stores s ON s.store_id = u.store_id
+      LEFT JOIN org_nodes store_node ON store_node.id = s.org_node_id
+      LEFT JOIN org_nodes d ON d.id = u.org_node_id
+      LEFT JOIN org_nodes employee_org_parent ON employee_org_parent.id = d.parent_id
+      LEFT JOIN org_nodes employee_market ON employee_market.id = COALESCE(
+        store_node.parent_id,
+        CASE
+          WHEN d.type = '市场' THEN d.id
+          WHEN d.type = '门店' THEN d.parent_id
+          WHEN d.type = '部门' AND employee_org_parent.type = '市场' THEN employee_org_parent.id
+          WHEN d.type = '部门' AND employee_org_parent.type = '门店' THEN employee_org_parent.parent_id
+          ELSE NULL
+        END
+      ) AND employee_market.type = '市场'
+      JOIN stores target_store ON target_store.store_id = ${targetStoreId}
+      JOIN org_nodes target_store_node ON target_store_node.id = target_store.org_node_id
+      LEFT JOIN org_nodes target_market ON target_market.id = target_store_node.parent_id
+      WHERE u.is_resigned = false
+        AND u.employee_id IS NOT NULL
+        AND (u.store_id = ${targetStoreId} OR u.is_on_business_trip = true)
+      ORDER BY
+        CASE
+          WHEN u.store_id = ${targetStoreId} THEN 0
+          WHEN employee_market.id = target_market.id THEN 1
+          ELSE 2
+        END,
+        employee_market.name NULLS LAST,
+        s.store_name NULLS LAST,
+        d.name NULLS LAST,
+        u.name NULLS LAST,
+        u.employee_id
+    `)) as unknown as Array<{
+      employee_id: string
+      name: string | null
+      store_id: string | null
+      position_name: string | null
+      skills: string[] | null
+      is_on_business_trip: boolean
+      store_name: string | null
+      department_name: string | null
+      market_name: string | null
+      assignment_scope: AllocationEmployeeCandidate['assignmentScope']
+    }>
 
-/**
- * 当前权限可见市场内的在职「出差支援」员工 — 跨门店开单 / 分配候选补充池。
- *
- * 外店出差员工仅能被同市场门店选中。这里先按登录用户可见市场收窄补充池，调用方再按
- * 目标门店市场精确过滤。出差标记长期保留直至 admin 手动改回（不再每日重置）。
- */
-export const getEmployeesOnBusinessTrip = withPermission(
-  'employee:list',
-  async (session): Promise<Employee[]> => {
-  const conditions = [
-    eq(staffWechatUsers.isResigned, false),
-    eq(staffWechatUsers.isOnBusinessTrip, true),
-  ]
-  if (!isAdminScope(session)) {
-    const scopeStoreIds = session.permissions.scopeStoreIds
-    if (scopeStoreIds.length === 0) return []
-    const visibleMarketIds = db
-      .select({ marketId: scopeStoreNode.parentId })
-      .from(scopeStore)
-      .innerJoin(scopeStoreNode, eq(scopeStoreNode.id, scopeStore.orgNodeId))
-      .where(inArray(scopeStore.storeId, scopeStoreIds))
-    conditions.push(inArray(marketNode.id, visibleMarketIds))
-  }
-  const rows = await db
-    .select()
-    .from(staffWechatUsers)
-    .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
-    .leftJoin(orgNodes, eq(staffWechatUsers.orgNodeId, orgNodes.id))
-    .leftJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
-    .leftJoin(marketNode, eq(storeNode.parentId, marketNode.id))
-    .where(and(...conditions))
-    // 例外：picker 字母序（与 getEmployees 一致）
-    .orderBy(asc(staffWechatUsers.name))
-
-  return rows.map(rowToEmployee)
+    return rows.map((row) => ({
+      employeeId: row.employee_id,
+      name: row.name,
+      storeId: row.store_id,
+      positionName: row.position_name,
+      skills: row.skills,
+      isResigned: false,
+      isOnBusinessTrip: row.is_on_business_trip,
+      storeName: row.store_name ?? undefined,
+      departmentName: row.department_name ?? undefined,
+      marketName: row.market_name ?? undefined,
+      assignmentScope: row.assignment_scope,
+    }))
   },
 )
 
@@ -590,7 +610,7 @@ export const updateEmployee = withPermission(
       leaveStart: string | null
       /** 请假结束时间（datetime-local YYYY-MM-DDTHH:mm） */
       leaveEnd: string | null
-      /** 是否出差支援（跨门店共享标记）；长期保留直至 admin 手动改回 false（不再每日重置） */
+      /** 是否出差支援（仅营业额/服务提成分配跨店使用）；长期保留直至 admin 手动改回 false */
       isOnBusinessTrip: boolean
       /** 离职日期（YYYY-MM-DD）；与 isResigned 双写一致，由 action 自动维护 */
       resignedAt: string | null

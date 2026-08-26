@@ -1670,7 +1670,7 @@ export const createServiceOrder = withPermission(
     data.storeId,
     { requireServiceSkills: true },
   )) {
-    return { success: false, message: '所选美容师不属于本门店或同市场出差支援范围' }
+    return { success: false, message: '所选美容师不属于本门店' }
   }
 
   // 根据顾客成为会员客的时间戳判定服务单类型：
