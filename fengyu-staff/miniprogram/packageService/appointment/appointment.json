@@ -2,9 +2,7 @@
   "navigationBarTitleText": "预约管理",
   "enablePullDownRefresh": true,
   "usingComponents": {
-    "van-search": "@vant/weapp/search/index",
-    "van-dropdown-menu": "@vant/weapp/dropdown-menu/index",
-    "van-dropdown-item": "@vant/weapp/dropdown-item/index",
+    "business-list-filter": "/components/business-list-filter/business-list-filter",
     "van-tag": "@vant/weapp/tag/index",
     "van-icon": "@vant/weapp/icon/index",
     "van-button": "@vant/weapp/button/index",

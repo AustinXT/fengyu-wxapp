@@ -3,23 +3,6 @@
 .loading-wrap { display: flex; justify-content: center; padding: 80rpx 0; }
 .loading-more { display: flex; justify-content: center; padding: 32rpx 0; }
 
-.filter-panel { background: #FFFFFF; }
-.filter-row {
-  display: flex;
-  align-items: center;
-  gap: 12rpx;
-  padding: 0 24rpx 16rpx;
-}
-.status-dropdown { flex: 1; min-width: 200rpx; }
-.date-chip {
-  padding: 14rpx 12rpx;
-  border-radius: 8rpx;
-  background: #F5F2EE;
-  color: #666;
-  font-size: 22rpx;
-  white-space: nowrap;
-}
-.filter-clear { color: var(--color-primary); font-size: 22rpx; white-space: nowrap; }
 .no-more { text-align: center; padding: 28rpx 0; color: #999; font-size: 24rpx; }
 
 .order-card {
