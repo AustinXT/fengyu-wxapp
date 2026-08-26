@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * One-time, explicit test -> prod import for the four confirmed Lakala onboarding records.
+ * Explicit, rerunnable test -> prod import for the four confirmed Lakala onboarding records.
  * Defaults to dry-run; production writes require --apply. The dry-run also verifies every
  * imported attachment on the test host. --apply copies those private files to the production
  * bind mount before committing their rewritten container paths to PostgreSQL.
@@ -122,7 +122,10 @@ function buildAttachmentPlan(attachment, testUploadRoot, legacyTestUploadRoot, p
 function validateSourceAttachments(plans, testSshHost) {
   if (!plans.length) return
   const command = plans
-    .map((plan) => `test -f ${shellQuote(plan.sourceHostPath)}; stat -c %s -- ${shellQuote(plan.sourceHostPath)}`)
+    .map((plan) => [
+      `if test ! -f ${shellQuote(plan.sourceHostPath)}; then printf '%s\n' ${shellQuote(`附件 ${plan.attachment.id} 的源文件不存在：${plan.sourceHostPath}`)} >&2; exit 1; fi`,
+      `stat -c %s -- ${shellQuote(plan.sourceHostPath)}`,
+    ].join('; '))
     .join('; ')
   const result = runSshWithSudoFallback(testSshHost, `set -eu; ${command}`)
   const actualSizes = String(result.stdout).trim().split(/\r?\n/).map(Number)
@@ -145,11 +148,25 @@ function copyAttachmentsToProd(plans, testSshHost, prodSshHost, copiedTargetPath
   const stageRoot = `/tmp/fengyu-lakala-import-${process.pid}-${Date.now()}`
   try {
     for (const plan of plans) {
-      const exists = runSsh(prodSshHost, `test ! -e ${shellQuote(plan.targetHostPath)}`, { allowFailure: true })
-      if (exists.error || exists.status !== 0) throw new Error(`生产附件目标已存在，拒绝覆盖：${plan.targetHostPath}`)
+      const result = runSshWithSudoFallback(prodSshHost, [
+        'set -eu',
+        `if test -f ${shellQuote(plan.targetHostPath)}; then stat -c %s -- ${shellQuote(plan.targetHostPath)}; elif test -e ${shellQuote(plan.targetHostPath)}; then exit 2; else echo MISSING; fi`,
+      ].join('; '))
+      const output = String(result.stdout).trim()
+      if (output === 'MISSING') {
+        plan.targetAlreadyExists = false
+        continue
+      }
+      const actualSize = Number(output)
+      const expectedSize = Number(plan.attachment.file_size)
+      if (!Number.isSafeInteger(actualSize) || actualSize !== expectedSize) {
+        throw new Error(`生产附件 ${plan.attachment.id} 已存在但大小不一致：数据库=${plan.attachment.file_size}，文件=${output}`)
+      }
+      plan.targetAlreadyExists = true
     }
 
     for (const [index, plan] of plans.entries()) {
+      if (plan.targetAlreadyExists) continue
       const content = readRemoteAttachment(testSshHost, plan.sourceHostPath)
       if (content.length !== Number(plan.attachment.file_size)) {
         throw new Error(`附件 ${plan.attachment.id} 在复制过程中大小发生变化`)
@@ -163,6 +180,7 @@ function copyAttachmentsToProd(plans, testSshHost, prodSshHost, copiedTargetPath
     }
 
     for (const plan of plans) {
+      if (plan.targetAlreadyExists) continue
       const targetDir = path.posix.dirname(plan.targetHostPath)
       const promote = [
         'set -eu',
@@ -255,9 +273,7 @@ async function main() {
       WHERE application_id = ANY($1::text[])
       ORDER BY created_at
     `, [appIds])
-    const portableAttachments = attachments.filter((row) => row.status === 'UPLOADED' && row.lakala_file_url)
-    const skippedAttachments = attachments.filter((row) => !portableAttachments.includes(row))
-    const attachmentPlans = portableAttachments.map((attachment) => (
+    const attachmentPlans = attachments.map((attachment) => (
       buildAttachmentPlan(attachment, testUploadRoot, legacyTestUploadRoot, prodUploadRoot)
     ))
     validateSourceAttachments(attachmentPlans, testSshHost)
@@ -282,7 +298,45 @@ async function main() {
       'SELECT id, order_no FROM lakala_onboarding_applications WHERE id = ANY($1::text[]) OR order_no = ANY($2::text[])',
       [appIds, ORDER_NOS],
     )
-    if (existingApplications.length) throw new Error('prod 已存在本次导入的申请，停止以避免重复导入')
+    const sourceApplicationById = new Map(applications.map((row) => [row.id, row]))
+    const sourceApplicationByOrderNo = new Map(applications.map((row) => [row.order_no, row]))
+    for (const existing of existingApplications) {
+      const sourceById = sourceApplicationById.get(existing.id)
+      const sourceByOrderNo = sourceApplicationByOrderNo.get(existing.order_no)
+      if (!sourceById || !sourceByOrderNo || sourceById !== sourceByOrderNo) {
+        throw new Error(`prod 申请与源数据冲突：id=${existing.id}，order_no=${existing.order_no}`)
+      }
+    }
+    const existingApplicationIds = new Set(existingApplications.map((row) => row.id))
+    const applicationsToCreate = applications.filter((row) => !existingApplicationIds.has(row.id))
+
+    const existingAttachments = await queryRows(target,
+      'SELECT id, application_id FROM lakala_onboarding_attachments WHERE id = ANY($1::text[])',
+      [attachments.map((row) => row.id)],
+    )
+    const sourceAttachmentById = new Map(attachments.map((row) => [row.id, row]))
+    for (const existing of existingAttachments) {
+      const sourceAttachment = sourceAttachmentById.get(existing.id)
+      if (!sourceAttachment || existing.application_id !== sourceAttachment.application_id) {
+        throw new Error(`prod 附件与源数据冲突：id=${existing.id}，application_id=${existing.application_id}`)
+      }
+    }
+    const existingAttachmentIds = new Set(existingAttachments.map((row) => row.id))
+    const attachmentPlansToCreate = attachmentPlans.filter(({ attachment }) => !existingAttachmentIds.has(attachment.id))
+
+    const existingLogs = await queryRows(target,
+      'SELECT id, application_id FROM lakala_onboarding_request_logs WHERE id = ANY($1::text[])',
+      [logs.map((row) => row.id)],
+    )
+    const sourceLogById = new Map(logs.map((row) => [row.id, row]))
+    for (const existing of existingLogs) {
+      const sourceLog = sourceLogById.get(existing.id)
+      if (!sourceLog || existing.application_id !== sourceLog.application_id) {
+        throw new Error(`prod 请求日志与源数据冲突：id=${existing.id}，application_id=${existing.application_id}`)
+      }
+    }
+    const existingLogIds = new Set(existingLogs.map((row) => row.id))
+    const logsToCreate = logs.filter((row) => !existingLogIds.has(row.id))
 
     const storeIds = [...new Set(applications.map((row) => row.store_id))]
     const targetStores = await queryRows(target,
@@ -319,9 +373,24 @@ async function main() {
 
     console.log(JSON.stringify({
       mode: apply ? 'apply' : 'dry-run',
-      applications: applications.length,
+      applications: {
+        source: applications.length,
+        toCreate: applicationsToCreate.length,
+        existing: existingApplications.length,
+      },
       merchantsToCreate: missingMerchants.length,
-      attachments: portableAttachments.length,
+      attachments: {
+        source: attachments.length,
+        toCreate: attachmentPlansToCreate.length,
+        existing: existingAttachments.length,
+        toCreateItems: attachmentPlansToCreate.map(({ attachment }) => ({
+          id: attachment.id,
+          applicationId: attachment.application_id,
+          applicationOrderNo: sourceApplicationById.get(attachment.application_id)?.order_no,
+          displayName: attachment.display_name,
+          status: attachment.status,
+        })),
+      },
       attachmentFiles: {
         sourceRoots: [
           `${testSshHost}:${testUploadRoot}`,
@@ -330,8 +399,11 @@ async function main() {
         target: `${prodSshHost}:${prodUploadRoot}`,
         validated: attachmentPlans.length,
       },
-      skippedAttachments: skippedAttachments.map((row) => ({ id: row.id, fileName: row.file_name, reason: '源文件未上传拉卡拉且已在 101 缺失' })),
-      requestLogs: logs.length,
+      requestLogs: {
+        source: logs.length,
+        toCreate: logsToCreate.length,
+        existing: existingLogs.length,
+      },
     }, null, 2))
     if (!apply) return
 
@@ -350,6 +422,9 @@ async function main() {
       for (const app of applications) {
         const merchantId = targetMerchantIdBySourceId.get(app.lakala_merchant_id)
         await target.query('UPDATE stores SET lakala_merchant_id=$1 WHERE store_id=$2', [merchantId, app.store_id])
+      }
+      for (const app of applicationsToCreate) {
+        const merchantId = targetMerchantIdBySourceId.get(app.lakala_merchant_id)
         await target.query(`
           INSERT INTO lakala_onboarding_applications (
             id, order_no, store_id, status, merchant_data, legal_person_data, contact_data, settlement_data, shop_data, terminal_data,
@@ -361,7 +436,7 @@ async function main() {
           )
         `, [app.id, app.order_no, app.store_id, app.status, jsonValue(app.merchant_data), jsonValue(app.legal_person_data), jsonValue(app.contact_data), jsonValue(app.settlement_data), jsonValue(app.shop_data), jsonValue(app.terminal_data), jsonValue(app.fee_data), jsonValue(app.lakala_request_data), app.e_contract_order_no, app.e_contract_apply_id, app.e_contract_result_url, app.e_contract_no, app.e_contract_status, app.e_contract_signed_at, app.contract_id, app.mer_inner_no, app.mer_cup_no, jsonValue(app.channel_data), app.sub_merchant_checked_at, merchantId, app.last_error_code, app.last_error_message, app.submitted_at, app.created_by, app.created_by_name, app.created_at, app.updated_at])
       }
-      for (const plan of attachmentPlans) {
+      for (const plan of attachmentPlansToCreate) {
         const { attachment } = plan
         await target.query(`
           INSERT INTO lakala_onboarding_attachments (
@@ -371,7 +446,14 @@ async function main() {
           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
         `, [attachment.id, attachment.application_id, attachment.att_type, attachment.display_name, plan.targetLocalPath, attachment.file_name, attachment.file_ext, attachment.file_size, attachment.mime_type, attachment.status, attachment.att_file_id, attachment.lakala_file_url, attachment.lakala_show_url, attachment.lakala_batch_no, attachment.lakala_ocr_status, attachment.uploaded_to_lakala_at, attachment.expires_at, attachment.last_error_message, attachment.created_at, attachment.updated_at])
       }
-      for (const log of logs) {
+      for (const plan of attachmentPlans) {
+        if (!existingAttachmentIds.has(plan.attachment.id)) continue
+        await target.query(
+          'UPDATE lakala_onboarding_attachments SET local_path=$1 WHERE id=$2 AND application_id=$3',
+          [plan.targetLocalPath, plan.attachment.id, plan.attachment.application_id],
+        )
+      }
+      for (const log of logsToCreate) {
         await target.query(`
           INSERT INTO lakala_onboarding_request_logs (
             id, application_id, api_name, request_id, request_payload_masked, response_payload, success, error_code, error_message, created_at
