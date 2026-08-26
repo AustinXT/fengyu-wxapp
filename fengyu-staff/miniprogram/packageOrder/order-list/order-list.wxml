@@ -1,15 +1,29 @@
 <!-- pages/order-list/order-list.wxml -->
 <view class="container">
-  <van-tabs active="{{tabActive}}" bind:change="onTabChange" color="#C0322A" sticky swipeable>
-    <van-tab name="全部" title="全部" />
-    <van-tab name="待支付" title="待支付" />
-    <van-tab name="待审批" title="待审批" />
-    <van-tab name="已支付" title="已支付" />
-    <van-tab name="已完成" title="已完成" />
-    <van-tab name="已退款" title="已退款" />
-    <van-tab name="支付失败" title="支付失败" />
-    <van-tab name="已关闭" title="已关闭" />
-  </van-tabs>
+  <view class="filter-panel">
+    <van-search
+      value="{{searchInput}}"
+      placeholder="搜索顾客姓名或手机号"
+      bind:change="onSearchChange"
+      bind:search="onSearch"
+      bind:clear="onSearchClear"
+      use-action-slot
+    >
+      <view slot="action" bindtap="onSearch">搜索</view>
+    </van-search>
+    <view class="filter-row">
+      <van-dropdown-menu active-color="#C0322A" custom-class="status-dropdown">
+        <van-dropdown-item value="{{status}}" options="{{statusOptions}}" bind:change="onStatusChange" />
+      </van-dropdown-menu>
+      <picker mode="date" value="{{startDate}}" end="{{endDate}}" bindchange="onStartDateChange">
+        <view class="date-chip">{{startDate || '开始日期'}}</view>
+      </picker>
+      <picker mode="date" value="{{endDate}}" start="{{startDate}}" bindchange="onEndDateChange">
+        <view class="date-chip">{{endDate || '结束日期'}}</view>
+      </picker>
+      <view wx:if="{{startDate || endDate}}" class="filter-clear" bindtap="clearDates">清除</view>
+    </view>
+  </view>
 
   <view wx:if="{{loading && list.length === 0}}" class="loading-wrap">
     <van-loading type="spinner" color="#C0322A" />
@@ -19,7 +33,7 @@
     <van-empty description="暂无订单" />
   </view>
 
-  <scroll-view wx:else scroll-y class="list-scroll" bindscrolltolower="onLoadMore">
+  <view wx:else class="list-wrap">
     <view class="order-card" wx:for="{{list}}" wx:key="id" bindtap="onItemTap" data-id="{{item.id}}">
       <view class="order-header">
         <text class="order-no">{{item.saleOrderId}}</text>
@@ -83,7 +97,7 @@
     <view wx:if="{{!hasMore && list.length > 0}}" class="no-more">
       <text class="no-more-text">没有更多了</text>
     </view>
-  </scroll-view>
+  </view>
 
   <view class="safe-area-bottom" />
 </view>

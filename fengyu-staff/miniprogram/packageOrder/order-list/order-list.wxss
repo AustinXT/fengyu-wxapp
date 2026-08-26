@@ -1,7 +1,24 @@
 /* pages/order-list/order-list.wxss */
 
-.list-scroll {
-  height: calc(100vh - 88rpx);
+.filter-panel { background: #FFFFFF; }
+.filter-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  padding: 0 24rpx 16rpx;
+}
+.status-dropdown { flex: 1; min-width: 200rpx; }
+.date-chip {
+  padding: 14rpx 12rpx;
+  border-radius: 8rpx;
+  background: #F5F2EE;
+  color: #666;
+  font-size: 22rpx;
+  white-space: nowrap;
+}
+.filter-clear { color: var(--color-primary); font-size: 22rpx; white-space: nowrap; }
+
+.list-wrap {
   padding: 24rpx 32rpx;
   padding-bottom: 120rpx;
   box-sizing: border-box;

@@ -1,29 +1,39 @@
 <!-- pages/service/service.wxml — 服务 Tab -->
 <view class="container">
 
-  <!-- Tab 筛选 -->
-  <van-tabs
-    active="{{tabActive}}"
-    bind:change="onTabChange"
-    color="#C0322A"
-    title-active-color="#C0322A"
-    title-inactive-color="#666666"
-    sticky
-  >
-    <van-tab name="pending" title="待服务{{tabs[0].badge > 0 ? '(' + tabs[0].badge + ')' : ''}}" />
-    <van-tab name="processing" title="服务中{{tabs[1].badge > 0 ? '(' + tabs[1].badge + ')' : ''}}" />
-    <van-tab name="awaiting" title="待确认{{tabs[2].badge > 0 ? '(' + tabs[2].badge + ')' : ''}}" />
-    <van-tab name="completed" title="已完成" />
-  </van-tabs>
+  <view class="filter-panel">
+    <van-search
+      value="{{searchInput}}"
+      placeholder="搜索顾客姓名或手机号"
+      bind:change="onSearchChange"
+      bind:search="onSearch"
+      bind:clear="onSearchClear"
+      use-action-slot
+    >
+      <view slot="action" bindtap="onSearch">搜索</view>
+    </van-search>
+    <view class="filter-row">
+      <van-dropdown-menu active-color="#C0322A" custom-class="status-dropdown">
+        <van-dropdown-item value="{{status}}" options="{{statusOptions}}" bind:change="onStatusChange" />
+      </van-dropdown-menu>
+      <picker mode="date" value="{{startDate}}" end="{{endDate}}" bindchange="onStartDateChange">
+        <view class="date-chip">{{startDate || '开始日期'}}</view>
+      </picker>
+      <picker mode="date" value="{{endDate}}" start="{{startDate}}" bindchange="onEndDateChange">
+        <view class="date-chip">{{endDate || '结束日期'}}</view>
+      </picker>
+      <view wx:if="{{startDate || endDate}}" class="filter-clear" bindtap="clearDates">清除</view>
+    </view>
+  </view>
 
   <!-- 加载中 -->
-  <view wx:if="{{loading}}" class="loading-wrap">
+  <view wx:if="{{loading && list.length === 0}}" class="loading-wrap">
     <van-loading type="spinner" color="#C0322A" />
   </view>
 
   <!-- 空态 -->
   <view wx:elif="{{list.length === 0}}" class="empty-wrap">
-    <van-empty description="暂无{{tabActive === 'pending' ? '待服务' : tabActive === 'processing' ? '服务中' : tabActive === 'awaiting' ? '待确认' : '已完成'}}的服务单" />
+    <van-empty description="暂无符合条件的服务单" />
   </view>
 
   <!-- 服务单列表 -->
@@ -106,6 +116,10 @@
         >查看详情</van-button>
       </view>
     </view>
+    <view wx:if="{{loading}}" class="loading-more">
+      <van-loading size="24px" color="#999">加载中...</van-loading>
+    </view>
+    <view wx:if="{{!hasMore && list.length > 0}}" class="no-more">没有更多了</view>
   </view>
 
   <!-- FAB: 新建服务单 -->

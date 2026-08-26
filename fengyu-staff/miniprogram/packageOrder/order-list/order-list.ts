@@ -34,12 +34,27 @@ interface RawOrderRow {
   payment_method: string | null;
   total_amount: string;
   created_at: string;
+  business_date?: string;
   paid_at: string | null;
   opened_by: string | null;
   has_refund?: boolean;
   has_pending_refund?: boolean;
   is_activity?: boolean;
 }
+
+const STATUS_OPTIONS = [
+  { text: '全部状态', value: '' },
+  { text: '待支付（含部分支付）', value: '待支付' },
+  { text: '部分支付', value: '部分支付' },
+  { text: '待审批', value: '待审批' },
+  { text: '已支付', value: '已支付' },
+  { text: '已完成', value: '已完成' },
+  { text: '已退款', value: '已退款' },
+  { text: '支付失败', value: '支付失败' },
+  { text: '已关闭', value: '已关闭' },
+  { text: '未审核', value: '未审核' },
+  { text: '已作废', value: '已作废' },
+];
 
 interface OrderListResponse {
   orders: RawOrderRow[];
@@ -51,7 +66,12 @@ Page({
   data: {
     loading: false,
     isManager: false,
-    tabActive: '全部',
+    status: '',
+    statusOptions: STATUS_OPTIONS,
+    searchInput: '',
+    keyword: '',
+    startDate: '',
+    endDate: '',
     list: [] as OrderItem[],
     page: 1,
     hasMore: true,
@@ -61,6 +81,7 @@ Page({
   },
 
   _loaded: false,
+  _loadToken: 0,
 
   onLoad(options) {
     this.setData({ isManager: isManager(), currentStaffId: app.globalData.staffWfId || '' });
@@ -69,8 +90,8 @@ Page({
         pendingOffline: '待支付',
         pendingCreate: '待支付',
       };
-      const tab = statusMap[options.status] || '全部';
-      this.setData({ tabActive: tab, presetStatus: options.status });
+      const status = statusMap[options.status] || '';
+      this.setData({ status, presetStatus: options.status });
     }
     this.resetAndLoad();
     this._loaded = true;
@@ -87,27 +108,71 @@ Page({
     this.resetAndLoad().finally(() => wx.stopPullDownRefresh());
   },
 
-  onTabChange(e: WechatMiniprogram.CustomEvent) {
-    this.setData({ tabActive: e.detail.name });
+  onStatusChange(e: WechatMiniprogram.CustomEvent) {
+    this.setData({ status: e.detail as unknown as string });
+    this.resetAndLoad();
+  },
+
+  onSearchChange(e: WechatMiniprogram.CustomEvent) {
+    this.setData({ searchInput: e.detail as unknown as string });
+  },
+
+  onSearch() {
+    this.setData({ keyword: this.data.searchInput.trim() });
+    this.resetAndLoad();
+  },
+
+  onSearchClear() {
+    this.setData({ searchInput: '', keyword: '' });
+    this.resetAndLoad();
+  },
+
+  onStartDateChange(e: WechatMiniprogram.PickerChange) {
+    const startDate = e.detail.value as string;
+    if (this.data.endDate && startDate > this.data.endDate) {
+      wx.showToast({ title: '开始日期不能晚于结束日期', icon: 'none' });
+      return;
+    }
+    this.setData({ startDate });
+    this.resetAndLoad();
+  },
+
+  onEndDateChange(e: WechatMiniprogram.PickerChange) {
+    const endDate = e.detail.value as string;
+    if (this.data.startDate && endDate < this.data.startDate) {
+      wx.showToast({ title: '结束日期不能早于开始日期', icon: 'none' });
+      return;
+    }
+    this.setData({ endDate });
+    this.resetAndLoad();
+  },
+
+  clearDates() {
+    this.setData({ startDate: '', endDate: '' });
     this.resetAndLoad();
   },
 
   resetAndLoad() {
-    this.setData({ list: [], page: 1, hasMore: true });
+    this._loadToken += 1;
+    this.setData({ list: [], page: 1, hasMore: true, loading: false });
     return this.loadList();
   },
 
   async loadList() {
     if (this.data.loading || !this.data.hasMore) return;
+    const loadToken = this._loadToken;
     this.setData({ loading: true });
     try {
-      const tabStatus = this.data.tabActive === '全部' ? undefined : this.data.tabActive;
       const res = await callStaffApi<OrderListResponse>('order.list', {
-        status: tabStatus,
+        status: this.data.status || undefined,
+        keyword: this.data.keyword || undefined,
+        startDate: this.data.startDate || undefined,
+        endDate: this.data.endDate || undefined,
         page: this.data.page,
         pageSize: 20,
       });
       const rows = res?.orders || [];
+      if (loadToken !== this._loadToken) return;
       const mapped: OrderItem[] = rows.map(r => ({
         id: r.sale_order_id,
         saleOrderId: r.sale_order_id,
@@ -117,7 +182,7 @@ Page({
         orderType: r.sale_order_type,
         payType: r.payment_method,
         totalAmount: r.total_amount,
-        createdAt: formatDateTime(r.created_at),
+        createdAt: formatDateTime(r.business_date || r.created_at),
         paidAt: r.paid_at ? formatDateTime(r.paid_at) : r.paid_at,
         statusClass: STATUS_CLASS[r.status] || 'pending',
         openedBy: r.opened_by || null,
@@ -131,14 +196,15 @@ Page({
         page: this.data.page + 1,
       });
     } catch (err: unknown) {
+      if (loadToken !== this._loadToken) return;
       const msg = err instanceof Error ? err.message : '加载失败';
       wx.showToast({ title: msg, icon: 'none' });
     } finally {
-      this.setData({ loading: false });
+      if (loadToken === this._loadToken) this.setData({ loading: false });
     }
   },
 
-  onLoadMore() {
+  onReachBottom() {
     this.loadList();
   },
 

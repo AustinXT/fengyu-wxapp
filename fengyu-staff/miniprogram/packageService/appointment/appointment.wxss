@@ -1,7 +1,24 @@
 /* pages/appointment/appointment.wxss */
 
-.list-scroll {
-  height: calc(100vh - 100rpx);
+.filter-panel { background: #FFFFFF; }
+.filter-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  padding: 0 24rpx 16rpx;
+}
+.status-dropdown { flex: 1; min-width: 200rpx; }
+.date-chip {
+  padding: 14rpx 12rpx;
+  border-radius: 8rpx;
+  background: #F5F2EE;
+  color: #666;
+  font-size: 22rpx;
+  white-space: nowrap;
+}
+.filter-clear { color: var(--color-primary); font-size: 22rpx; white-space: nowrap; }
+
+.list-wrap {
   padding: 16rpx 24rpx;
   box-sizing: border-box;
 }
@@ -44,4 +61,11 @@
   margin-top: 20rpx;
   padding-top: 16rpx;
   border-top: 1px solid #F0F0F0;
+}
+
+.loading-more, .no-more {
+  text-align: center;
+  padding: 28rpx 0;
+  color: #999;
+  font-size: 24rpx;
 }

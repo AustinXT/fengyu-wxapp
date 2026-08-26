@@ -20,6 +20,7 @@ const { assertNoPendingRefundByServiceOrder } = require('../utils/refund')
 const { resolveMarketNameByStore } = require('../utils/market')
 const { DEPOSIT_REFUND_REMARK } = require('../utils/consume-filter')
 const { assertEmployeesAssignableToStore } = require('../utils/employee-assignment')
+const { normalizeListFilters, addDateRange } = require('../utils/list-filters')
 
 // 与 allocation.js 同源校验范式：每池 = (serviceItemId, roleType)，池间互不约束
 // 分配比例校验：0~1 之间（精度 0.001，支持自定义小数比例）
@@ -45,11 +46,36 @@ function round2(n) {
 async function pendingList(ctx) {
   await requireManager()(ctx, async () => {})
 
-  const { page = 1, pageSize = 20, commissionStatus = '待分配' } = ctx.event.payload || {}
-  if (!['待分配', '已分配'].includes(commissionStatus)) {
-    throw new Error('INVALID_PARAMS: commissionStatus 必须为 待分配 或 已分配')
+  const payload = ctx.event.payload || {}
+  const { commissionStatus = '待分配' } = payload
+  if (!['全部', '待分配', '已分配'].includes(commissionStatus)) {
+    throw new Error('INVALID_PARAMS: commissionStatus 必须为 全部、待分配 或 已分配')
   }
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset, keyword, keywordPattern, phoneKeyword, startDate, endDate } = normalizeListFilters(payload)
+  const params = [ctx.auth.effectiveStoreId]
+  const conditions = ["so.store_id = $1", "so.status = '已完成'"]
+
+  if (commissionStatus !== '全部') {
+    params.push(commissionStatus)
+    conditions.push(`so.commission_status = $${params.length}`)
+  }
+
+  if (keyword) {
+    params.push(keywordPattern)
+    const searchParts = [`COALESCE(cu.name, '') ILIKE $${params.length} ESCAPE '\\'`]
+    if (phoneKeyword) {
+      params.push(`%${phoneKeyword}%`)
+      searchParts.push(`regexp_replace(COALESCE(cu.phone, ''), '[^0-9]', '', 'g') LIKE $${params.length}`)
+    }
+    conditions.push(`(${searchParts.join(' OR ')})`)
+  }
+
+  addDateRange(conditions, params, 'so.service_date', startDate, endDate)
+
+  params.push(pageSize)
+  const limitParam = params.length
+  params.push(offset)
+  const offsetParam = params.length
 
   const orders = await pg.query(`
     SELECT
@@ -60,12 +86,10 @@ async function pendingList(ctx) {
     FROM service_orders so
     LEFT JOIN client_wechat_users cu ON so.client_user_id = cu.user_id
     LEFT JOIN staff_wechat_users swu ON so.assigned_employee_id = swu.employee_id
-    WHERE so.store_id = $1
-      AND so.status = '已完成'
-      AND so.commission_status = $2
-    ORDER BY so.service_date DESC, so.updated_at DESC
-    LIMIT $3 OFFSET $4
-  `, [ctx.auth.effectiveStoreId, commissionStatus, pageSize, offset])
+    WHERE ${conditions.join('\n      AND ')}
+    ORDER BY so.service_date DESC, so.updated_at DESC, so.service_order_id DESC
+    LIMIT $${limitParam} OFFSET $${offsetParam}
+  `, params)
 
   ctx.result = { orders, page, pageSize }
 }

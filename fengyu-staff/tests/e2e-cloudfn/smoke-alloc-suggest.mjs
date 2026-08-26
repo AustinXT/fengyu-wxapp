@@ -343,6 +343,8 @@ async function main() {
   const pendR = await invokeStaffApi('allocation.pendingPayments', {
     _testOpenid: TEST_MANAGER_OPENID,
     allocationStatus: '待分配',
+    keyword: NS,
+    startDate: '2000-01-01', endDate: '2100-12-31',
     page: 1, pageSize: 50,
   })
   if (pendR.code !== 0) {

@@ -102,10 +102,22 @@ const MOCK_SERVICES = [
 export const serviceHandlers: Record<string, (payload: Record<string, any>) => any> = {
   'service.list': (payload) => {
     const { status } = payload
+    let list = [...MOCK_SERVICES]
     if (status) {
-      return MOCK_SERVICES.filter(s => s.status === status)
+      list = list.filter(s => s.status === status)
     }
-    return MOCK_SERVICES
+    const keyword = String(payload.keyword || '').trim().toLowerCase()
+    if (keyword) {
+      const phoneKeyword = keyword.replace(/\D/g, '')
+      list = list.filter(s => s.customerName.toLowerCase().includes(keyword)
+        || (!!phoneKeyword && s.customerPhone.replace(/\D/g, '').includes(phoneKeyword)))
+    }
+    if (payload.startDate) list = list.filter(s => s.serviceTime.slice(0, 10) >= payload.startDate)
+    if (payload.endDate) list = list.filter(s => s.serviceTime.slice(0, 10) <= payload.endDate)
+    list.sort((a, b) => b.serviceTime.localeCompare(a.serviceTime) || b.serviceOrderId.localeCompare(a.serviceOrderId))
+    const page = Math.max(1, Number(payload.page) || 1)
+    const pageSize = Math.max(1, Number(payload.pageSize) || 20)
+    return list.slice((page - 1) * pageSize, page * pageSize)
   },
 
   'service.detail': (payload) => {

@@ -9,7 +9,8 @@
 const pg = require('../db/pg')
 const { requireStaffBound, isCurrentStoreManager } = require('../middleware/auth')
 const { logOperation, logTransition } = require('../utils/operation-log')
-const { shanghaiDateStr } = require('../utils/datetime')
+const { maskPhoneForAuth } = require('../utils/phone-visibility')
+const { normalizeListFilters, addTimestampDateRange } = require('../utils/list-filters')
 
 /**
  * 格式化时间为北京时间可读格式：M月D日 HH:mm
@@ -46,29 +47,43 @@ for (const [cn, en] of Object.entries(STATUS_CN_TO_EN)) {
 async function list(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { status, todayOnly, page = 1, pageSize = 50 } = ctx.event.payload || {}
-  const offset = (page - 1) * pageSize
-
-  const params = [ctx.auth.effectiveStoreId, pageSize, offset]
-  let whereExtra = ''
+  const payload = ctx.event.payload || {}
+  const { status } = payload
+  const { pageSize, offset, keyword, keywordPattern, phoneKeyword, startDate, endDate } = normalizeListFilters(payload)
+  const params = [ctx.auth.effectiveStoreId]
+  const conditions = ['a.store_id = $1']
 
   if (status && status !== 'all') {
     const cnStatus = STATUS_EN_TO_CN[status] || status
+    if (!Object.prototype.hasOwnProperty.call(STATUS_CN_TO_EN, cnStatus)) {
+      throw new Error('INVALID_PARAMS: status 不是有效预约状态')
+    }
     params.push(cnStatus)
-    whereExtra += ` AND a.status = $${params.length}`
+    conditions.push(`a.status = $${params.length}`)
   }
 
-  if (todayOnly) {
-    const today = shanghaiDateStr()
-    params.push(today)
-    whereExtra += ` AND DATE(a.appointment_time) = $${params.length}::date`
+  if (keyword) {
+    params.push(keywordPattern)
+    const searchParts = [`COALESCE(a.client_name, wu.name, '') ILIKE $${params.length} ESCAPE '\\'`]
+    if (phoneKeyword) {
+      params.push(`%${phoneKeyword}%`)
+      searchParts.push(`regexp_replace(COALESCE(wu.phone, ''), '[^0-9]', '', 'g') LIKE $${params.length}`)
+    }
+    conditions.push(`(${searchParts.join(' OR ')})`)
   }
+
+  addTimestampDateRange(conditions, params, 'a.appointment_time', startDate, endDate)
 
   // 美容师只看指定自己的预约
   if (!isCurrentStoreManager(ctx.auth)) {
     params.push(ctx.auth.staffWfId)
-    whereExtra += ` AND a.employee_id = $${params.length}`
+    conditions.push(`a.employee_id = $${params.length}`)
   }
+
+  params.push(pageSize)
+  const limitParam = params.length
+  params.push(offset)
+  const offsetParam = params.length
 
   const appointments = await pg.query(`
     SELECT
@@ -89,16 +104,15 @@ async function list(ctx) {
     FROM appointments a
     LEFT JOIN sale_items si ON a.sale_item_id = si.sale_item_id
     LEFT JOIN client_wechat_users wu ON a.client_user_id = wu.user_id
-    WHERE a.store_id = $1
-    ${whereExtra}
-    ORDER BY a.appointment_time ASC
-    LIMIT $2 OFFSET $3
+    WHERE ${conditions.join('\n      AND ')}
+    ORDER BY a.appointment_time DESC, a.appointment_id DESC
+    LIMIT $${limitParam} OFFSET $${offsetParam}
   `, params)
 
   ctx.result = appointments.map(a => ({
     id: a.appointment_id,
     customerName: a.client_name,
-    customerPhone: a.customer_phone || '',
+    customerPhone: maskPhoneForAuth(a.customer_phone, ctx.auth),
     clientUserId: a.client_user_id,
     staffName: a.employee_name,
     appointmentTime: formatDateTime(a.appointment_time),

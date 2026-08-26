@@ -123,10 +123,36 @@ export const orderHandlers: Record<string, (payload: Record<string, any>) => any
       } else if (payload.status === 'pendingCreate') {
         list = list.filter(o => o.status === '待支付')
       } else {
-        list = list.filter(o => o.status === payload.status)
+        list = payload.status === '待支付'
+          ? list.filter(o => o.status === '待支付' || o.status === '部分支付')
+          : list.filter(o => o.status === payload.status)
       }
     }
-    return list
+    const keyword = String(payload.keyword || '').trim().toLowerCase()
+    if (keyword) {
+      const phoneKeyword = keyword.replace(/\D/g, '')
+      list = list.filter(o => o.customerName.toLowerCase().includes(keyword)
+        || (!!phoneKeyword && o.customerPhone.replace(/\D/g, '').includes(phoneKeyword)))
+    }
+    if (payload.startDate) list = list.filter(o => o.createdAt.slice(0, 10) >= payload.startDate)
+    if (payload.endDate) list = list.filter(o => o.createdAt.slice(0, 10) <= payload.endDate)
+    list.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.saleOrderId.localeCompare(a.saleOrderId))
+    const page = Math.max(1, Number(payload.page) || 1)
+    const pageSize = Math.max(1, Number(payload.pageSize) || 20)
+    const pageRows = list.slice((page - 1) * pageSize, page * pageSize).map(o => ({
+      sale_order_id: o.saleOrderId,
+      customer_name: o.customerName,
+      client_phone: o.customerPhoneMasked,
+      status: o.status,
+      sale_order_type: o.orderType,
+      payment_method: o.payType,
+      total_amount: o.totalAmount,
+      created_at: o.createdAt,
+      business_date: o.createdAt,
+      paid_at: o.paidAt,
+      opened_by: o.createdBy,
+    }))
+    return { orders: pageRows, page, pageSize }
   },
 
   'order.detail': (payload) => {

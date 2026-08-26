@@ -24,10 +24,24 @@ const STATUS_MAP: Record<ApptStatus, { text: string; type: string }> = {
   closed:    { text: '已关闭', type: 'default' },
 };
 
+const STATUS_OPTIONS = [
+  { text: '全部状态', value: 'all' },
+  { text: '待确认', value: 'pending' },
+  { text: '已确认', value: 'confirmed' },
+  { text: '已完成', value: 'completed' },
+  { text: '已取消', value: 'cancelled' },
+  { text: '已关闭', value: 'closed' },
+];
+
 Page({
   data: {
     loading: false,
-    tabActive: 'pending',
+    status: 'pending',
+    statusOptions: STATUS_OPTIONS,
+    searchInput: '',
+    keyword: '',
+    startDate: '',
+    endDate: '',
     list: [] as ApptItem[],
     page: 1,
     hasMore: true,
@@ -36,11 +50,12 @@ Page({
   },
 
   _inited: false,
+  _loadToken: 0,
 
   onLoad(options: Record<string, string>) {
     this.setData({ isReadOnly: isManagementMode() });
     if (options.tab) {
-      this.setData({ tabActive: options.tab });
+      this.setData({ status: options.tab });
     }
   },
 
@@ -53,24 +68,66 @@ Page({
     this.resetAndLoad().then(() => wx.stopPullDownRefresh()).catch(() => wx.stopPullDownRefresh());
   },
 
-  onTabChange(e: WechatMiniprogram.CustomEvent) {
-    this.setData({ tabActive: e.detail.name });
+  onStatusChange(e: WechatMiniprogram.CustomEvent) {
+    this.setData({ status: e.detail as unknown as string });
+    this.resetAndLoad();
+  },
+
+  onSearchChange(e: WechatMiniprogram.CustomEvent) {
+    this.setData({ searchInput: e.detail as unknown as string });
+  },
+
+  onSearch() {
+    this.setData({ keyword: this.data.searchInput.trim() });
+    this.resetAndLoad();
+  },
+
+  onSearchClear() {
+    this.setData({ searchInput: '', keyword: '' });
+    this.resetAndLoad();
+  },
+
+  onStartDateChange(e: WechatMiniprogram.PickerChange) {
+    const startDate = e.detail.value as string;
+    if (this.data.endDate && startDate > this.data.endDate) {
+      wx.showToast({ title: '开始日期不能晚于结束日期', icon: 'none' });
+      return;
+    }
+    this.setData({ startDate });
+    this.resetAndLoad();
+  },
+
+  onEndDateChange(e: WechatMiniprogram.PickerChange) {
+    const endDate = e.detail.value as string;
+    if (this.data.startDate && endDate < this.data.startDate) {
+      wx.showToast({ title: '结束日期不能早于开始日期', icon: 'none' });
+      return;
+    }
+    this.setData({ endDate });
+    this.resetAndLoad();
+  },
+
+  clearDates() {
+    this.setData({ startDate: '', endDate: '' });
     this.resetAndLoad();
   },
 
   resetAndLoad(): Promise<void> {
-    this.setData({ list: [], page: 1, hasMore: true });
+    this._loadToken += 1;
+    this.setData({ list: [], page: 1, hasMore: true, loading: false });
     return this.loadList();
   },
 
   async loadList() {
     if (this.data.loading || !this.data.hasMore) return;
+    const loadToken = this._loadToken;
     this.setData({ loading: true });
     try {
-      const tab = this.data.tabActive;
       const rawList = await callStaffApi<any[]>('appointment.list', {
-        status: (tab === 'all' || tab === 'today') ? undefined : tab,
-        todayOnly: tab === 'today',
+        status: this.data.status === 'all' ? undefined : this.data.status,
+        keyword: this.data.keyword || undefined,
+        startDate: this.data.startDate || undefined,
+        endDate: this.data.endDate || undefined,
         page: this.data.page,
         pageSize: 20,
       });
@@ -85,20 +142,22 @@ Page({
         statusType: STATUS_MAP[r.status as ApptStatus]?.type || 'default',
         checkinAt: r.checkinAt || null,
       }));
+      if (loadToken !== this._loadToken) return;
       this.setData({
         list: [...this.data.list, ...mapped],
         hasMore: mapped.length === 20,
         page: this.data.page + 1,
       });
     } catch (err: unknown) {
+      if (loadToken !== this._loadToken) return;
       const msg = err instanceof Error ? err.message : '加载失败';
       wx.showToast({ title: msg, icon: 'none' });
     } finally {
-      this.setData({ loading: false });
+      if (loadToken === this._loadToken) this.setData({ loading: false });
     }
   },
 
-  onLoadMore() {
+  onReachBottom() {
     this.loadList();
   },
 
