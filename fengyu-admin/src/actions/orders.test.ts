@@ -2509,12 +2509,25 @@ describe('getOrdersPaginated — 服务端分页', () => {
     expect(typeWhitelistCalls).toHaveLength(0)
   })
 
-  it('paymentMethod=无 筛选 → eq(payment_method, 无) 被调用', async () => {
+  it('paymentMethod=无 筛选 → 仅匹配非 WorkFine 的全额抵扣订单', async () => {
     mockPaginatedChain(0, [])
 
     await getOrdersPaginated({ paymentMethod: '无' })
 
     expect(eq).toHaveBeenCalledWith('payment_method', '无')
+    expect((sql as any).mock.calls.some(([strings]: any[]) =>
+      Array.isArray(strings?.raw) && strings.raw.join('').includes("IS DISTINCT FROM 'workfine'"),
+    )).toBe(true)
+  })
+
+  it('paymentMethod=未知 筛选 → 仅匹配 WorkFine 历史订单', async () => {
+    mockPaginatedChain(0, [])
+
+    await getOrdersPaginated({ paymentMethod: '未知' })
+
+    expect((sql as any).mock.calls.some(([strings]: any[]) =>
+      Array.isArray(strings?.raw) && strings.raw.join('').includes("= 'workfine'"),
+    )).toBe(true)
   })
 
   it('paymentMethod=微信 筛选 → eq(payment_method, 微信)', async () => {
@@ -6115,7 +6128,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       custName: null, custPhone: null, customerSource: null, promoterEmployeeName: null,
       fallbackName: '陈凤婷', fallbackPhone: '13800000000',
       totalAmount: '2682.00', prepaidCardAmount: '0.00', orderReceived: '2682.00',
-      received: '2682.00', refundedAmount: '0.00', paymentMethod: '线下',
+      received: '2682.00', refundedAmount: '0.00', paymentMethod: '无',
       isMembershipUpgrade: false, isActivity: false, isExperienceConversion: false,
       customerType: null, openedByName: null,
       saleOrderDatetime: new Date('2026-08-01T00:00:00.000Z'),
@@ -6137,7 +6150,8 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       customerName: '陈凤婷',
       totalAmount: '2682.00',
       received: '2682.00',
-      cashAmount: '2682.00',
+      cashAmount: '0.00',
+      paymentMethod: '未知',
       productName: '历史订单（无商品明细）',
       productType: null,
       sessionCount: null,
@@ -6159,7 +6173,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       refundedAmount: '20.00',
       saleOrderDatetime: new Date('2026-08-03T00:00:00.000Z'),
       createdAt: new Date('2026-08-03T00:00:00.000Z'),
-      legacySource: 'workfine',
+      legacySource: null,
     }
     ;(db.select as any)
       .mockReturnValueOnce(makeChain([]))

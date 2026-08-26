@@ -44,6 +44,7 @@ const PAYMENT_METHOD_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "支付宝", label: "支付宝" },
   { value: "线下", label: "线下" },
   { value: "无", label: "无（全额抵扣）" },
+  { value: "未知", label: "未知（历史单）" },
 ];
 
 // 2026-04-26 sale-order-domain-refactor：5→3 值
@@ -493,7 +494,11 @@ export default function OrdersPageClient({
                         </div>
                       )}
                     </td>
-                    <td className="px-4 py-3">{paymentMethodMap[order.paymentMethod] || order.paymentMethod}</td>
+                    <td className="px-4 py-3">
+                      {order.legacySource === "workfine"
+                        ? "未知"
+                        : paymentMethodMap[order.paymentMethod] || order.paymentMethod}
+                    </td>
                     <td className="px-4 py-3">{order.openedByName || "顾客自助"}</td>
                     <td className="px-4 py-3 text-[#999999]">{fmtDateTime(order.saleOrderDatetime)}</td>
                     <td className="px-4 py-3 whitespace-nowrap">
