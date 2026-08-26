@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo, useCallback } from "react"
+import { useState, useMemo, useCallback, useEffect, useRef } from "react"
 import Link from "next/link"
 import type { MallCategory, Product } from "@/lib/types"
 import { Button } from "@/components/ui/button"
@@ -28,7 +28,7 @@ export default function MallPageClient({
 }) {
   const { get, set, setMany } = useUrlFilters()
   const [searchInput, setSearchInput] = useState(get("q"))
-  const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const search = get("q")
   const catFilter = get("category")
   const page = Math.max(1, Number(get("page", "1")) || 1)
@@ -53,9 +53,16 @@ export default function MallPageClient({
 
   const handleSearchChange = useCallback((value: string) => {
     setSearchInput(value)
-    if (debounceRef[0]) clearTimeout(debounceRef[0])
-    debounceRef[0] = setTimeout(() => setMany({ q: value, page: "" }), 300)
-  }, [debounceRef, setMany])
+    if (debounceRef.current !== null) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      debounceRef.current = null
+      setMany({ q: value, page: "" })
+    }, 300)
+  }, [setMany])
+
+  useEffect(() => () => {
+    if (debounceRef.current !== null) clearTimeout(debounceRef.current)
+  }, [])
 
   const columns: Column<Product>[] = [
     {
