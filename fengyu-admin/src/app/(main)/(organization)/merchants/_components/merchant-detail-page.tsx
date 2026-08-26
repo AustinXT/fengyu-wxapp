@@ -1,11 +1,11 @@
 "use client"
 
 import { useState } from "react"
-import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import type { MerchantDetail } from "@/actions/merchants"
 import { deleteMerchant } from "@/actions/merchants"
+import { PreserveListContextLink, useReturnContext } from "@/components/return-context"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -19,7 +19,6 @@ import {
 } from "@/components/ui/alert-dialog"
 import { formatDateTime } from "@/lib/utils"
 import { actionErrorMessage } from "@/lib/action-error"
-import { useReturnContext } from "@/components/return-context"
 
 function Field({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
@@ -121,12 +120,12 @@ export default function MerchantDetailPage({
                   {merchant.linkedStores.map((s) => (
                     <tr key={s.storeId} className="border-b border-[var(--border)]">
                       <td className="px-3 py-2">
-                        <Link
+                        <PreserveListContextLink
                           href={`/stores/${s.storeId}/edit`}
                           className="text-[var(--primary)] hover:underline"
                         >
                           {s.storeName}
-                        </Link>
+                        </PreserveListContextLink>
                       </td>
                       <td className="px-3 py-2">{s.marketName ?? "—"}</td>
                     </tr>

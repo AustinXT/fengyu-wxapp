@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useUrlFilters } from "@/lib/hooks/use-url-filters";
 import { PreserveListContextLink } from "@/components/return-context";
@@ -83,9 +82,9 @@ export default function CardsPage({ cards, filterOptions, cardFilterOptions, tot
 			cell: (row) => (
 				<div className="flex flex-col">
 					{row.clientUserId ? (
-						<Link href={`/customers/${row.clientUserId}`} className="font-medium hover:underline">
+						<PreserveListContextLink href={`/customers/${row.clientUserId}`} className="font-medium hover:underline">
 							{row.clientName ?? "—"}
-						</Link>
+						</PreserveListContextLink>
 					) : (
 						<span>{row.clientName ?? "—"}</span>
 					)}
