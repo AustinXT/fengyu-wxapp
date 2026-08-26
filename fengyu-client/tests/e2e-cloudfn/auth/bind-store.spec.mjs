@@ -117,17 +117,24 @@ async function caseSwitchStore() {
 async function caseSourceChannel() {
   await ensureTestStore()
   await seedLoggedInUser()
+  await pgQuery(
+    'UPDATE client_wechat_users SET workfine_override_fields = ARRAY[]::text[] WHERE openid = $1',
+    [TEST_OPENID]
+  )
   const res = await invokeAs(TEST_OPENID, 'auth.bindStore', {
     storeId: TEST_STORE_ID,
     sourceChannel: '抖音',
   })
   if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
   const rows = await pgQuery(
-    'SELECT customer_source FROM client_wechat_users WHERE openid = $1',
+    'SELECT customer_source, workfine_override_fields FROM client_wechat_users WHERE openid = $1',
     [TEST_OPENID]
   )
   if (rows[0]?.customer_source !== '抖音') {
     throw new Error(`expect customer_source='抖音', got '${rows[0]?.customer_source}'`)
+  }
+  if (!rows[0]?.workfine_override_fields?.includes('customer_source')) {
+    throw new Error(`expect workfine_override_fields to include customer_source, got '${rows[0]?.workfine_override_fields}'`)
   }
 }
 
