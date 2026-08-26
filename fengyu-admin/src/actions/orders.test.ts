@@ -186,7 +186,14 @@ vi.mock('@db/prepaid-card', () => ({
   // 2026-04-24 prepaid_cards.store_id 已 DROP；2026-04-26 sale-order-domain-refactor 修复
   // P0-14-01：移除 mock 的 storeId 字段，避免反向锁死老代码引用
   prepaidCards: { cardId: 'card_id', userId: 'user_id', balance: 'balance' },
-  cardTransactions: { id: 'id', cardId: 'card_id', type: 'type', amount: 'amount', refOrderId: 'ref_order_id' },
+  cardTransactions: {
+    id: 'id',
+    cardId: 'card_id',
+    type: 'type',
+    amount: 'amount',
+    refOrderId: 'ref_order_id',
+    externalRef: 'external_ref',
+  },
 }))
 
 vi.mock('drizzle-orm', () => ({
@@ -6269,6 +6276,32 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       expect(Number(row.totalAmount)).toBe(channelAmount)
       expect(Number(row.received)).toBe(channelAmount)
     }
+  })
+
+  it('转换差额查询仅保留历史空来源或匹配订单号的 card-conv 流水，排除退款回冲', async () => {
+    await exportOrders({ q: 'FY-XSD-WX-2608130108' })
+
+    const cardCreditChain = (db.select as any).mock.results[2]?.value
+    const predicate = cardCreditChain.where.mock.calls[0]?.[0]
+    const sourceFilter = predicate.args.find((condition: any) =>
+      condition?.type === 'or'
+      && condition.args.some((part: any) => part?.type === 'isNull' && part.a === 'external_ref'),
+    )
+
+    expect(sourceFilter).toMatchObject({
+      type: 'or',
+      args: [
+        { type: 'isNull', a: 'external_ref' },
+        {
+          type: 'eq',
+          a: 'external_ref',
+          b: {
+            __sqlText: "'card-conv-' ||  ? ",
+            __sqlValues: ['sale_order_id'],
+          },
+        },
+      ],
+    })
   })
 
   it('待支付订单只有预选储值卡抵扣且无已入账流水时，储值卡抵扣和现付均为 0', async () => {
