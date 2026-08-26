@@ -8,6 +8,7 @@ import type {
 } from "@/lib/types"
 import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types"
 import MarketStoreFilter from "@/components/market-store-filter"
+import { PreserveListContextLink } from "@/components/return-context"
 import { Input } from "@/components/ui/input"
 import { DatePicker } from "@/components/ui/date-picker"
 import { Select } from "@/components/ui/select"
@@ -102,12 +103,12 @@ export default function CardTransactionsPage({
       cell: (row) => (
         <div className="flex flex-col">
           {row.customerName ? (
-            <a
+            <PreserveListContextLink
               href={`/customers/${row.userId}`}
               className="font-medium text-[#5E8BB3] hover:underline"
             >
               {row.customerName}
-            </a>
+            </PreserveListContextLink>
           ) : (
             <span className="font-medium">—</span>
           )}

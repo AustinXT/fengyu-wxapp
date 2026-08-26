@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
@@ -59,6 +59,10 @@ export default function MerchantsPage({
     },
     [setMany],
   )
+
+  useEffect(() => () => {
+    if (timerRef.current !== null) clearTimeout(timerRef.current)
+  }, [])
 
   const columns: Column<AdminMerchant>[] = [
     {

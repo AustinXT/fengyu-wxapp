@@ -1244,7 +1244,7 @@ export const exportOrders = withPermission(
     // 普通转换单旧卡价值高于转入商品时，差额会形成一笔 card_transactions 充值流水。
     // 该资产变动不属于储值卡抵扣；订单明细导出按业务记账口径归入正数现付。
     // 订单金额/实付同样保留正数，使转出、转入和储值金入账的各金额列均可勾稽为 0。
-    // 历史 admin 转换差额未写 external_ref；staff 正常路径固定写 card-conv-{订单号}。
+    // admin 转换差额路径（含现行 createConversionOrder）不写 external_ref；staff 正常路径固定写 card-conv-{订单号}。
     // 仅白名单这两类来源，避免退款/取消回冲（同为“充值”正数且关联原订单）被误导出为转换差额。
     const cardCreditQuery = db
       .select({

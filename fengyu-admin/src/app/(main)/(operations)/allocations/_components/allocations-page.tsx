@@ -1,7 +1,6 @@
 "use client"
 
 import { useCallback, useRef, useState, useTransition } from "react"
-import Link from "next/link"
 import { useSearchParams } from "next/navigation"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -268,9 +267,9 @@ function SaleAllocationTable({
                     <td className="px-4 py-3">{p.storeName || "—"}</td>
                     <td className="px-4 py-3">
                       {canViewOrders ? (
-                        <Link href={`/orders/${p.saleOrderId}`} className="text-[var(--primary)] hover:underline">
+                        <PreserveListContextLink href={`/orders/${p.saleOrderId}`} className="text-[var(--primary)] hover:underline">
                           {p.saleOrderId}
-                        </Link>
+                        </PreserveListContextLink>
                       ) : p.saleOrderId}
                     </td>
                     <td className="px-4 py-3">
@@ -339,9 +338,9 @@ function ServiceCommissionTable({
                   <tr key={so.serviceOrderId} className="hover:bg-[#FFF0EE] transition-colors">
                     <td className="px-4 py-3">
                       {canViewServices ? (
-                        <Link href={`/services/${so.serviceOrderId}`} className="text-[var(--primary)] hover:underline">
+                        <PreserveListContextLink href={`/services/${so.serviceOrderId}`} className="text-[var(--primary)] hover:underline">
                           {so.serviceOrderId}
-                        </Link>
+                        </PreserveListContextLink>
                       ) : so.serviceOrderId}
                     </td>
                     <td className="px-4 py-3">{so.customerName || "—"}</td>

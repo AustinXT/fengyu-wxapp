@@ -1,6 +1,5 @@
 "use client"
 
-import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -94,9 +93,9 @@ export default function RefundsPageClient({
                       </td>
                       <td className="px-4 py-3">
                         {r.refSaleOrderId ? (
-                          <Link href={`/orders/${r.refSaleOrderId}`} className="hover:underline">
+                          <PreserveListContextLink href={`/orders/${r.refSaleOrderId}`} className="hover:underline">
                             {r.refSaleOrderId}
-                          </Link>
+                          </PreserveListContextLink>
                         ) : '—'}
                       </td>
                       <td className="px-4 py-3">{r.customerName || '—'}</td>

@@ -1,7 +1,6 @@
 "use client"
 
 import { useState, useCallback } from "react"
-import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"

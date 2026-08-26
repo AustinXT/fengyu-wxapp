@@ -1,30 +1,21 @@
 <!-- pages/service/service.wxml — 服务 Tab -->
 <view class="container">
 
-  <view class="filter-panel">
-    <van-search
-      value="{{searchInput}}"
-      placeholder="搜索顾客姓名或手机号"
-      bind:change="onSearchChange"
-      bind:search="onSearch"
-      bind:clear="onSearchClear"
-      use-action-slot
-    >
-      <view slot="action" bindtap="onSearch">搜索</view>
-    </van-search>
-    <view class="filter-row">
-      <van-dropdown-menu active-color="#C0322A" custom-class="status-dropdown">
-        <van-dropdown-item value="{{status}}" options="{{statusOptions}}" bind:change="onStatusChange" />
-      </van-dropdown-menu>
-      <picker mode="date" value="{{startDate}}" end="{{endDate}}" bindchange="onStartDateChange">
-        <view class="date-chip">{{startDate || '开始日期'}}</view>
-      </picker>
-      <picker mode="date" value="{{endDate}}" start="{{startDate}}" bindchange="onEndDateChange">
-        <view class="date-chip">{{endDate || '结束日期'}}</view>
-      </picker>
-      <view wx:if="{{startDate || endDate}}" class="filter-clear" bindtap="clearDates">清除</view>
-    </view>
-  </view>
+  <business-list-filter
+    value="{{searchInput}}"
+    placeholder="搜索顾客姓名或手机号"
+    status="{{status}}"
+    status-options="{{statusOptions}}"
+    start-date="{{startDate}}"
+    end-date="{{endDate}}"
+    bind:keyword-change="onSearchChange"
+    bind:search="onSearch"
+    bind:search-clear="onSearchClear"
+    bind:status-change="onStatusChange"
+    bind:start-date-change="onStartDateChange"
+    bind:end-date-change="onEndDateChange"
+    bind:clear-dates="clearDates"
+  />
 
   <!-- 加载中 -->
   <view wx:if="{{loading && list.length === 0}}" class="loading-wrap">
