@@ -1,6 +1,6 @@
 // pages/order-detail/order-detail.ts
 import { callStaffApi } from '../../utils/cloud';
-import { isManager, getStaffWfId, isManagementMode } from '../../utils/role';
+import { isManager, getCurrentStoreId, getStaffWfId, isManagementMode } from '../../utils/role';
 import { STATUS_CLASS, ORDER_TYPE_LABEL, formatDateTime, formatDate } from '../../utils/formatters';
 import { getTreatmentCardBusinessIdentity, groupTreatmentCards, sumGroupValue } from '../../utils/treatment-card-group';
 
@@ -189,6 +189,7 @@ interface DisplayOrderItem {
 interface DisplayOrder {
   saleOrderId: string;
   status: string;
+  storeId: string;
   storeName: string;
   orderType: string;
   orderTypeLabel: string;
@@ -299,11 +300,16 @@ Page({
   },
 
   onShow() {
-    this.setData({ isManager: isManager(), isReadOnly: isManagementMode() });
+    this.setData({
+      isManager: isManager(),
+      isReadOnly: this._isReadOnly(),
+    });
   },
 
   _isReadOnly() {
-    return isManagementMode();
+    if (isManagementMode()) return true;
+    const orderStoreId = this.data.order?.storeId || '';
+    return !!orderStoreId && orderStoreId !== getCurrentStoreId();
   },
 
   async loadDetail(saleOrderId: string) {
@@ -488,11 +494,14 @@ Page({
         || (originalOrderDate ? addCalendarDays(originalOrderDate, -7) : '');
       const attributionMaxDate = o.max_performance_date
         || (originalOrderDate ? addCalendarDays(originalOrderDate, 7) : '');
+      const isReadOnly = isManagementMode()
+        || (!!o.store_id && o.store_id !== getCurrentStoreId());
 
       this.setData({
         order: {
           saleOrderId: o.sale_order_id,
           status: o.status,
+          storeId: o.store_id || '',
           storeName: o.store_name || '',
           orderType,
           orderTypeLabel: ORDER_TYPE_LABEL[orderType] || orderType,
@@ -556,6 +565,7 @@ Page({
         hasPendingRefund,
         attributionMinDate,
         attributionMaxDate,
+        isReadOnly,
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';

@@ -7,6 +7,7 @@ vi.mock('../../utils/cloud', () => ({
 
 vi.mock('../../utils/role', () => ({
   isManager: () => true,
+  getCurrentStoreId: () => 'store-001',
   getStaffWfId: () => 'emp-001',
   isManagementMode: () => false,
 }))

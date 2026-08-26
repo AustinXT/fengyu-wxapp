@@ -276,6 +276,33 @@ describe('管理层详情只读', () => {
     expect((globalThis as any).wx.showModal).not.toHaveBeenCalled()
     expect(callStaffApi).not.toHaveBeenCalled()
   })
+
+  test('本店店长查看外店订单时统一按只读处理', async () => {
+    setGlobalData({ managerStoreIds: ['store-1'] })
+    const page = createPage('orderDetail')
+    page.onLoad({})
+    vi.mocked(callStaffApi).mockResolvedValueOnce({
+      order: {
+        sale_order_id: 'order-store-2',
+        store_id: 'store-2',
+        status: '已支付',
+        performance_attribution_date: '2026-08-20',
+        total_amount: '100.00',
+        received: '100.00',
+        refunded_amount: '0.00',
+      },
+      items: [],
+      payments: [],
+    } as never)
+
+    await page.loadDetail('order-store-2')
+    page.onPerformanceAttributionChange({ detail: { value: '2026-08-21' } })
+
+    expect(page.data.isManager).toBe(true)
+    expect(page.data.isReadOnly).toBe(true)
+    expect((globalThis as any).wx.showModal).not.toHaveBeenCalled()
+    expect(callStaffApi).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('店长专属直达页门禁', () => {
