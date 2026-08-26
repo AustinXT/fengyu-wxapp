@@ -457,7 +457,17 @@ describe('断言7：0082 正向 receipt backfill 修正逐笔支付归属', () =
       'refund role-pool repair does not support multiple paid refunds per sale item',
     )
     const singleRefundFilterAt = refundRolePoolRepairSrc.indexOf('rt.refund_count = 1')
+    const obsoleteDetectionAt = refundRolePoolRepairSrc.indexOf('obsolete_currents AS')
+    const obsoleteVoidAt = refundRolePoolRepairSrc.indexOf(
+      'UPDATE sale_payment_item_allocations current',
+    )
+    const targetUpsertAt = refundRolePoolRepairSrc.indexOf(
+      'INSERT INTO sale_payment_item_allocations (',
+    )
+    const obsoleteDetectionSrc = refundRolePoolRepairSrc.slice(obsoleteDetectionAt, obsoleteVoidAt)
+    const obsoleteVoidSrc = refundRolePoolRepairSrc.slice(obsoleteVoidAt, targetUpsertAt)
 
+    expect(refundRolePoolRepairSrc).toMatch(/_0035_refund_role_pool_receipts/)
     expect(refundRolePoolRepairSrc).toMatch(/_0035_refund_role_pool_targets/)
     expect(refundRolePoolRepairSrc).toMatch(/LOCK TABLE sale_order_payments, sale_payment_item_receipts IN SHARE MODE/)
     expect(refundRolePoolRepairSrc).toMatch(/HAVING COUNT\(DISTINCT refund_receipt\.sale_payment_id\) > 1/)
@@ -467,6 +477,16 @@ describe('断言7：0082 正向 receipt backfill 修正逐笔支付归属', () =
     expect(refundRolePoolRepairSrc).toMatch(/positive_receipt_cents/)
     expect(refundRolePoolRepairSrc).toMatch(/role_target_cents/)
     expect(refundRolePoolRepairSrc).toMatch(/commission_cents/)
+    expect(obsoleteDetectionAt).toBeGreaterThanOrEqual(0)
+    expect(obsoleteVoidAt).toBeGreaterThan(obsoleteDetectionAt)
+    expect(targetUpsertAt).toBeGreaterThan(obsoleteVoidAt)
+    expect(obsoleteDetectionSrc).toMatch(/FROM _0035_refund_role_pool_receipts/)
+    expect(obsoleteVoidSrc).toMatch(/SET is_void = true,[\s\S]*voided_at = NOW\(\)/)
+    expect(obsoleteVoidSrc).toMatch(/FROM _0035_refund_role_pool_receipts/)
+    expect(obsoleteVoidSrc).toMatch(/NOT EXISTS \(/)
+    expect(obsoleteVoidSrc).toMatch(/target\.refund_receipt_id = current\.sale_payment_item_receipt_id/)
+    expect(obsoleteVoidSrc).toMatch(/target\.employee_id = current\.employee_id/)
+    expect(obsoleteVoidSrc).toMatch(/target\.role_type = current\.role_type/)
     expect(refundRolePoolRepairSrc).toMatch(/ON CONFLICT \(sale_payment_item_receipt_id, employee_id, role_type\) WHERE is_void = false[\s\S]{0,220}DO UPDATE SET/)
     expect(refundRolePoolRepairSrc).toMatch(/datafix\.refundRolePoolAllocation/)
     expect(refundRolePoolRepairSrc).toMatch(/refund role-pool allocation invariant still mismatched after repair/)

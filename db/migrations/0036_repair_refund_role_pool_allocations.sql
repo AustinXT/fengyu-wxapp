@@ -32,18 +32,12 @@ BEGIN
   END IF;
 END $$;
 --> statement-breakpoint
-CREATE TEMP TABLE _0035_refund_role_pool_targets (
-  refund_receipt_id BIGINT NOT NULL,
+CREATE TEMP TABLE _0035_refund_role_pool_receipts (
+  refund_receipt_id BIGINT PRIMARY KEY,
   sale_order_id VARCHAR(30) NOT NULL,
   sale_item_id VARCHAR(30) NOT NULL,
-  employee_id VARCHAR(30) NOT NULL,
-  role_type VARCHAR(20) NOT NULL,
-  department_name VARCHAR(100),
-  allocation_ratio NUMERIC(5, 3) NOT NULL,
-  allocated_cents BIGINT NOT NULL,
-  commission_rate NUMERIC(5, 4),
-  commission_cents BIGINT NOT NULL,
-  PRIMARY KEY (refund_receipt_id, employee_id, role_type)
+  refund_cents BIGINT NOT NULL,
+  positive_receipt_cents BIGINT NOT NULL
 ) ON COMMIT DROP;
 --> statement-breakpoint
 WITH receipt_totals AS (
@@ -61,31 +55,46 @@ WITH receipt_totals AS (
     FROM sale_payment_item_receipts spir
     JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
    GROUP BY spir.sale_order_id, spir.sale_item_id
-),
-refund_receipts AS (
-  SELECT spir.id AS refund_receipt_id, spir.sale_order_id, spir.sale_item_id,
-         ABS(ROUND(spir.amount::numeric * 100))::bigint AS refund_cents
-    FROM sale_payment_item_receipts spir
-    JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
-    JOIN receipt_totals rt
-      ON rt.sale_order_id = spir.sale_order_id AND rt.sale_item_id = spir.sale_item_id
-   WHERE spir.amount < 0
-     AND sop.status = '已支付'
-     AND sop.change_type = '退款'
-     AND rt.refund_count = 1
-     AND rt.positive_receipt_cents > 0
-),
-positive_groups AS (
+)
+INSERT INTO _0035_refund_role_pool_receipts (
+  refund_receipt_id, sale_order_id, sale_item_id, refund_cents, positive_receipt_cents
+)
+SELECT spir.id, spir.sale_order_id, spir.sale_item_id,
+       ABS(ROUND(spir.amount::numeric * 100))::bigint,
+       rt.positive_receipt_cents
+  FROM sale_payment_item_receipts spir
+  JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+  JOIN receipt_totals rt
+    ON rt.sale_order_id = spir.sale_order_id AND rt.sale_item_id = spir.sale_item_id
+ WHERE spir.amount < 0
+   AND sop.status = '已支付'
+   AND sop.change_type = '退款'
+   AND rt.refund_count = 1
+   AND rt.positive_receipt_cents > 0;
+--> statement-breakpoint
+CREATE TEMP TABLE _0035_refund_role_pool_targets (
+  refund_receipt_id BIGINT NOT NULL,
+  sale_order_id VARCHAR(30) NOT NULL,
+  sale_item_id VARCHAR(30) NOT NULL,
+  employee_id VARCHAR(30) NOT NULL,
+  role_type VARCHAR(20) NOT NULL,
+  department_name VARCHAR(100),
+  allocation_ratio NUMERIC(5, 3) NOT NULL,
+  allocated_cents BIGINT NOT NULL,
+  commission_rate NUMERIC(5, 4),
+  commission_cents BIGINT NOT NULL,
+  PRIMARY KEY (refund_receipt_id, employee_id, role_type)
+) ON COMMIT DROP;
+--> statement-breakpoint
+WITH positive_groups AS (
   SELECT rr.refund_receipt_id, rr.sale_order_id, rr.sale_item_id, rr.refund_cents,
-         rt.positive_receipt_cents,
+         rr.positive_receipt_cents,
          spia.employee_id, spia.role_type,
          MAX(spia.department_name) AS department_name,
          SUM(ROUND(spia.allocated_amount::numeric * 100))::bigint AS weight_cents,
          MAX(spia.commission_rate) AS commission_rate,
          SUM(ROUND(COALESCE(spia.commission_amount, 0)::numeric * 100))::bigint AS commission_cents
-    FROM refund_receipts rr
-    JOIN receipt_totals rt
-      ON rt.sale_order_id = rr.sale_order_id AND rt.sale_item_id = rr.sale_item_id
+    FROM _0035_refund_role_pool_receipts rr
     JOIN sale_payment_item_receipts positive_receipt
       ON positive_receipt.sale_order_id = rr.sale_order_id
      AND positive_receipt.sale_item_id = rr.sale_item_id
@@ -99,7 +108,7 @@ positive_groups AS (
      AND spia.is_void = false
      AND spia.allocated_amount > 0
    GROUP BY rr.refund_receipt_id, rr.sale_order_id, rr.sale_item_id, rr.refund_cents,
-            rt.positive_receipt_cents, spia.employee_id, spia.role_type
+            rr.positive_receipt_cents, spia.employee_id, spia.role_type
 ),
 role_totals AS (
   SELECT *, SUM(weight_cents) OVER (PARTITION BY refund_receipt_id, role_type) AS role_cents
@@ -157,16 +166,57 @@ CREATE TEMP TABLE _0035_touched_orders (
 ) ON COMMIT DROP;
 --> statement-breakpoint
 INSERT INTO _0035_touched_orders (sale_order_id)
-SELECT DISTINCT target.sale_order_id
-  FROM _0035_refund_role_pool_targets target
-  LEFT JOIN sale_payment_item_allocations current
-    ON current.sale_payment_item_receipt_id = target.refund_receipt_id
-   AND current.employee_id = target.employee_id
-   AND current.role_type = target.role_type
+WITH mismatched_targets AS (
+  SELECT DISTINCT target.sale_order_id
+    FROM _0035_refund_role_pool_targets target
+    LEFT JOIN sale_payment_item_allocations current
+      ON current.sale_payment_item_receipt_id = target.refund_receipt_id
+     AND current.employee_id = target.employee_id
+     AND current.role_type = target.role_type
+     AND current.is_void = false
+   WHERE current.id IS NULL
+      OR ABS(ROUND(current.allocated_amount::numeric * 100)::bigint + target.allocated_cents) > 1
+      OR ABS(ROUND(COALESCE(current.commission_amount, 0)::numeric * 100)::bigint + target.commission_cents) > 1
+),
+obsolete_currents AS (
+  SELECT DISTINCT scope.sale_order_id
+    FROM (
+      SELECT DISTINCT refund_receipt_id, sale_order_id
+        FROM _0035_refund_role_pool_receipts
+    ) scope
+    JOIN sale_payment_item_allocations current
+      ON current.sale_payment_item_receipt_id = scope.refund_receipt_id
+     AND current.is_void = false
+   WHERE NOT EXISTS (
+     SELECT 1
+       FROM _0035_refund_role_pool_targets target
+      WHERE target.refund_receipt_id = current.sale_payment_item_receipt_id
+        AND target.employee_id = current.employee_id
+        AND target.role_type = current.role_type
+   )
+)
+SELECT sale_order_id FROM mismatched_targets
+UNION
+SELECT sale_order_id FROM obsolete_currents;
+--> statement-breakpoint
+UPDATE sale_payment_item_allocations current
+   SET is_void = true,
+       voided_at = NOW(),
+       updated_at = NOW()
+  FROM (
+    SELECT DISTINCT refund_receipt_id, sale_order_id
+      FROM _0035_refund_role_pool_receipts
+  ) scope
+  JOIN _0035_touched_orders touched ON touched.sale_order_id = scope.sale_order_id
+ WHERE current.sale_payment_item_receipt_id = scope.refund_receipt_id
    AND current.is_void = false
- WHERE current.id IS NULL
-    OR ABS(ROUND(current.allocated_amount::numeric * 100)::bigint + target.allocated_cents) > 1
-    OR ABS(ROUND(COALESCE(current.commission_amount, 0)::numeric * 100)::bigint + target.commission_cents) > 1;
+   AND NOT EXISTS (
+     SELECT 1
+       FROM _0035_refund_role_pool_targets target
+      WHERE target.refund_receipt_id = current.sale_payment_item_receipt_id
+        AND target.employee_id = current.employee_id
+        AND target.role_type = current.role_type
+   );
 --> statement-breakpoint
 INSERT INTO sale_payment_item_allocations (
   sale_payment_item_receipt_id, employee_id, role_type, department_name, allocation_ratio,
