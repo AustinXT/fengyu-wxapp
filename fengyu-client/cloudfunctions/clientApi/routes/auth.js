@@ -339,6 +339,9 @@ async function bindStore(ctx) {
   if (sourceChannel) {
     params.push(sourceChannel)
     setClauses.push(`customer_source = $${params.length}`)
+    setClauses.push(`workfine_override_fields = ARRAY(
+      SELECT DISTINCT unnest(workfine_override_fields || ARRAY['customer_source']::text[])
+    )`)
   }
   if (normalizedPromoterName) {
     params.push(normalizedPromoterName)

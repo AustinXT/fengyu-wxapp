@@ -1,10 +1,9 @@
 import { notFound } from 'next/navigation'
 import { getOrderById } from '@/actions/orders'
 import { getOrderAllocations } from '@/actions/allocations'
-import { getEmployees, getEmployeesOnBusinessTrip } from '@/actions/employees'
+import { getAllocationEmployeeCandidates } from '@/actions/employees'
 import { getRates } from '@/actions/commission'
 import { getSkillTags } from '@/actions/skill-tags'
-import { mergeEmployeesById } from '@/lib/merge-employees'
 import { getSession } from '@/lib/auth'
 import { hasUiCapability } from '@/lib/permission-contract'
 import { requireUiPageCapability } from '@/lib/page-capability'
@@ -16,19 +15,15 @@ export default async function Page({ params }: { params: Promise<{ orderId: stri
   const { orderId } = await params
   const session = await getSession()
   requireUiPageCapability(session, 'allocation:list')
-  const [order, allocations, scopedEmployees, tripEmployees, commissionRates, skillTags] = await Promise.all([
-    getOrderById(orderId),
+  const order = await getOrderById(orderId)
+  if (!order) notFound()
+
+  const [allocations, employees, commissionRates, skillTags] = await Promise.all([
     getOrderAllocations(orderId),
-    getEmployees(),
-    getEmployeesOnBusinessTrip(),
+    getAllocationEmployeeCandidates(order.storeId),
     getRates().catch(() => []),
     getSkillTags(),
   ])
-
-  if (!order) notFound()
-
-  // 候选池按 employeeId 合并；前端仅保留订单门店员工或同市场出差员工，再按技能筛选。
-  const employees = mergeEmployeesById(scopedEmployees, tripEmployees)
 
   return (
     <AllocationDetailPageClient

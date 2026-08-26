@@ -18,6 +18,7 @@ import { actionErrorMessage } from "@/lib/action-error";
 import { approveDepositOrder, deleteOrder, rejectDepositOrder } from "@/actions/orders";
 import { getTreatmentCardBusinessIdentity, groupTreatmentCards, sumGroupValue } from "@/lib/treatment-card-group";
 import { PerformanceAttributionDialog } from "./performance-attribution-dialog";
+import { ReturnContextLink } from "@/components/return-context";
 
 /** ticket 2026-04-24 PR-3 §3.3 — change_type/status 中文展示，退款金额红色 */
 const paymentChangeTypeLabelMap: Record<string, string> = {
@@ -322,11 +323,11 @@ export default function OrderDetailPageClient({
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Link href="/orders" className="text-[#999999] hover:text-[var(--foreground)]">
+          <ReturnContextLink href="/orders" className="text-[#999999] hover:text-[var(--foreground)]">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <polyline points="15 18 9 12 15 6" />
             </svg>
-          </Link>
+          </ReturnContextLink>
           <h1 className="text-2xl font-bold text-[var(--foreground)]">订单详情</h1>
         </div>
         <div className="flex items-center gap-2">

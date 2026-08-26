@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Pagination } from './pagination'
 
@@ -115,12 +115,13 @@ describe('Pagination — 边界防护', () => {
     expect(screen.getByText('上一页')).toBeDisabled()
   })
 
-  it('page 超出范围 → 修正为最后一页', () => {
+  it('page 超出范围 → 修正为最后一页并通知调用方', async () => {
     const onChange = vi.fn()
     render(<Pagination total={60} page={100} pageSize={20} onPageChange={onChange} />)
 
     // 60/20 = 3 pages, page clamped to 3
     expect(screen.getByText('下一页')).toBeDisabled()
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(3))
   })
 
   it('pageSize=0 → 修正为 20，不除零', () => {

@@ -13,6 +13,7 @@ import { Pagination } from "@/components/ui/pagination"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { ExportButton } from "@/components/ui/export-button"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
+import { PreserveListContextLink } from "@/components/return-context"
 import type { ServiceOrder } from "@/lib/types"
 import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types"
 import MarketStoreFilter from "@/components/market-store-filter"
@@ -281,11 +282,11 @@ function SaleAllocationTable({
                     <td className="px-4 py-3">
                       {/* 转换单现已按回款逐笔产 receipt，与销售单统一走按回款分配页 */}
                       {canSave && (
-                        <Link href={`/allocations/payments/${p.salePaymentId}`}>
+                        <PreserveListContextLink href={`/allocations/payments/${p.salePaymentId}`}>
                           <Button size="sm" variant="outline">
                             {p.allocationStatus === "已分配" ? "查看分配" : "分配"}
                           </Button>
-                        </Link>
+                        </PreserveListContextLink>
                       )}
                     </td>
                   </tr>
@@ -354,11 +355,11 @@ function ServiceCommissionTable({
                     </td>
                     <td className="px-4 py-3">
                       {canSave && (
-                        <Link href={`/allocations/service/${so.serviceOrderId}`}>
+                        <PreserveListContextLink href={`/allocations/service/${so.serviceOrderId}`}>
                           <Button size="sm" variant="outline">
                             {so.commissionStatus === "已分配" ? "查看分配" : "分配"}
                           </Button>
-                        </Link>
+                        </PreserveListContextLink>
                       )}
                     </td>
                   </tr>

@@ -63,7 +63,10 @@ async function main() {
   const idsOf = (res) => (res.data?.orders || []).map(o => o.sale_order_id)
 
   // ─── 1. 待支付 tab（核心回归点：枚举合并 待支付+部分支付）───
-  const pending = await invokeStaffApi('order.list', { ...storeCtx, status: '待支付', page: 1, pageSize: 50 })
+  const pending = await invokeStaffApi('order.list', {
+    ...storeCtx, status: '待支付', keyword: NS,
+    startDate: '2000-01-01', endDate: '2100-12-31', page: 1, pageSize: 50,
+  })
   if (pending.code !== 0) {
     errors.push(`order.list(待支付) 应 code 0，实际 code=${pending.code} msg=${pending.message}（回归：::text[] vs 枚举列）`)
   } else {

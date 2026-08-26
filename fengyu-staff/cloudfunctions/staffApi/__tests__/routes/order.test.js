@@ -138,7 +138,7 @@ describe('order.create', () => {
     })
     pg.query.mockResolvedValueOnce([])
 
-    await expect(orderRoutes.create(ctx)).rejects.toThrow(/INVALID_PARAMS.*同市场出差支援范围/)
+    await expect(orderRoutes.create(ctx)).rejects.toThrow(/INVALID_PARAMS.*不属于本门店/)
   })
 
   test('店长开单成功 — 普通订单', async () => {

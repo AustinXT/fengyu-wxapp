@@ -157,7 +157,7 @@ module.exports.pct = function(rate) {
         bindtap="onEmployeeSelect"
       >
         <text class="picker-member-name">{{member.name}}</text>
-        <text wx:if="{{member.storeName}}" class="picker-member-store">{{member.storeName}}</text>
+        <text wx:if="{{member.storeName || member.marketName}}" class="picker-member-store">{{member.storeName || member.marketName}}</text>
       </view>
     </scroll-view>
   </van-popup>

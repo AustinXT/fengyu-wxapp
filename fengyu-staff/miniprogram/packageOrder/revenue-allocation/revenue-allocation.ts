@@ -46,15 +46,17 @@ interface BeauticianInfo {
   resolvedDept: string | null;
 }
 
-/** 候选员工（订单门店 ∪ 出差员工，供 admin 式按技能筛选） */
+/** 候选员工（本店 ∪ 任意市场出差员工，供按技能筛选） */
 interface CandidateEmployee {
   staffWfId: string;
   name: string;
   storeId: string;
   storeName: string;
+  marketName: string;
   skills: string[];
   department: string;
-  /** 是否出差支援（跨门店共享）；true 时可跨门店被选中 */
+  assignmentScope: 'local' | 'same_market_trip' | 'cross_market_trip';
+  /** 是否出差支援；仅在营业额/服务提成分配中允许跨店 */
   isOnBusinessTrip?: boolean;
 }
 
@@ -501,14 +503,12 @@ Page({
     });
   },
 
-  /** 按技能筛选候选员工（跨门店共享 2026-06-24）：统一「订单门店 ∪ 出差员工」+ 技能匹配（取消市场级与品项老师特例） */
+  /** 按技能过滤后保持「本店 → 本市场出差 → 跨市场出差」顺序。 */
   getFilteredEmployees(skillTag: string): CandidateEmployee[] {
-    const { candidateEmployees, orderStoreId } = this.data;
-    return candidateEmployees.filter(e => {
-      if (!e.skills || !e.skills.includes(skillTag)) return false;
-      // candidateEmployees 已由 staffApi 按订单市场收窄；此处只做门店/出差标记的展示层复核。
-      return e.storeId === orderStoreId || !!e.isOnBusinessTrip;
-    });
+    const rank = { local: 0, same_market_trip: 1, cross_market_trip: 2 };
+    return this.data.candidateEmployees
+      .filter(e => e.skills?.includes(skillTag))
+      .sort((a, b) => rank[a.assignmentScope] - rank[b.assignmentScope]);
   },
 
   onEmployeeSelect(e: WechatMiniprogram.TouchEvent) {

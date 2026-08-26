@@ -6,17 +6,29 @@
     <van-tab title="服务提成" name="service" />
   </van-tabs>
 
-  <view class="status-switch">
-    <view
-      class="status-btn {{(activeTab==='sale'?saleStatus:serviceStatus)==='待分配' ? 'active' : ''}}"
-      data-status="待分配"
-      bindtap="onStatusChange"
-    >待分配</view>
-    <view
-      class="status-btn {{(activeTab==='sale'?saleStatus:serviceStatus)==='已分配' ? 'active' : ''}}"
-      data-status="已分配"
-      bindtap="onStatusChange"
-    >已分配</view>
+  <view class="filter-panel">
+    <van-search
+      value="{{searchInput}}"
+      placeholder="搜索顾客姓名或手机号"
+      bind:change="onSearchChange"
+      bind:search="onSearch"
+      bind:clear="onSearchClear"
+      use-action-slot
+    >
+      <view slot="action" bindtap="onSearch">搜索</view>
+    </van-search>
+    <view class="filter-row">
+      <van-dropdown-menu active-color="#C0322A" custom-class="status-dropdown">
+        <van-dropdown-item value="{{status}}" options="{{statusOptions}}" bind:change="onStatusChange" />
+      </van-dropdown-menu>
+      <picker mode="date" value="{{startDate}}" end="{{endDate}}" bindchange="onStartDateChange">
+        <view class="date-chip">{{startDate || '开始日期'}}</view>
+      </picker>
+      <picker mode="date" value="{{endDate}}" start="{{startDate}}" bindchange="onEndDateChange">
+        <view class="date-chip">{{endDate || '结束日期'}}</view>
+      </picker>
+      <view wx:if="{{startDate || endDate}}" class="filter-clear" bindtap="clearDates">清除</view>
+    </view>
   </view>
 
   <view wx:if="{{loading && orders.length === 0}}" class="loading-wrap">
@@ -103,6 +115,7 @@
   <view wx:if="{{loading && orders.length > 0}}" class="loading-more">
     <van-loading size="24px" color="#999">加载中...</van-loading>
   </view>
+  <view wx:if="{{!hasMore && orders.length > 0}}" class="no-more">没有更多了</view>
 
   <view class="safe-area-bottom" />
 </view>

@@ -17,6 +17,7 @@ import { createExportJob } from "@/actions/export-jobs"
 import { ExportButton } from "@/components/ui/export-button"
 import { actionErrorMessage } from "@/lib/action-error"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
+import { PreserveListContextLink } from "@/components/return-context"
 import type { ServiceOrder } from "@/lib/types"
 import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types"
 import MarketStoreFilter from "@/components/market-store-filter"
@@ -237,9 +238,9 @@ export default function ServicesPageClient({
                 {serviceOrders.map((so) => (
                   <tr key={so.serviceOrderId} className="hover:bg-[#FFF0EE] transition-colors">
                     <td className="px-4 py-3">
-                      <Link href={`/services/${so.serviceOrderId}`} className="text-[var(--primary)] hover:underline">
+                      <PreserveListContextLink href={`/services/${so.serviceOrderId}`} className="text-[var(--primary)] hover:underline">
                         {so.serviceOrderId}
-                      </Link>
+                      </PreserveListContextLink>
                     </td>
                     <td className="px-4 py-3"><StatusBadge status={so.status} /></td>
                     <td className="px-4 py-3">

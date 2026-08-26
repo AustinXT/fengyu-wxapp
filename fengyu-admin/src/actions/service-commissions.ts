@@ -109,8 +109,9 @@ export const batchSaveServiceCommissions = withPermission(
   if (!svcRemark || await getInvalidEmployeeAssignmentId(
     commissions.map((commission) => commission.employeeId),
     svcRemark.storeId,
+    { assignmentScope: 'allocationSupport' },
   )) {
-    return { success: false, message: '所选员工不属于本门店或同市场出差支援范围' }
+    return { success: false, message: '所选员工不属于本门店且未开启出差支援' }
   }
 
   // 校验所有 serviceItemId 属于该服务单

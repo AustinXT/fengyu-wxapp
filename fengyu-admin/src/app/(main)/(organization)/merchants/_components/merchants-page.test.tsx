@@ -4,6 +4,8 @@ import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import type { OnboardingListItem } from '@/actions/lakala-onboarding'
 
+let activeTab = ''
+
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn() }),
 }))
@@ -12,8 +14,8 @@ vi.mock('next/link', () => ({
 }))
 vi.mock('@/lib/hooks/use-url-filters', () => ({
   useUrlFilters: () => ({
-    get: (_key: string, defaultValue = '') => defaultValue,
-    setMany: vi.fn(),
+    get: (key: string, defaultValue = '') => key === 'tab' ? activeTab : defaultValue,
+    setMany: (updates: Record<string, string>) => { activeTab = updates.tab ?? activeTab },
   }),
 }))
 vi.mock('../onboarding/_components/onboarding-page', () => ({
@@ -32,7 +34,7 @@ const filterOptions = { markets: [], stores: [] }
 describe('商户管理入网标签', () => {
   it('有 merchant:list 能力时可切换到内嵌入网列表', async () => {
     const user = userEvent.setup()
-    render(
+    const view = render(
       <MerchantsPage
         merchants={[]}
         total={0}
@@ -45,12 +47,24 @@ describe('商户管理入网标签', () => {
     )
 
     await user.click(screen.getByRole('tab', { name: '入网申请' }))
+    view.rerender(
+      <MerchantsPage
+        merchants={[]}
+        total={0}
+        markets={[]}
+        canCreate
+        canOnboard
+        onboardingApplications={onboardingApplications}
+        filterOptions={filterOptions}
+      />,
+    )
 
     expect(screen.getByTestId('onboarding-list')).toHaveTextContent('1:true:true')
     expect(screen.queryByRole('button', { name: '新建商户' })).not.toBeInTheDocument()
   })
 
   it('无入网查看能力时不渲染入网标签', () => {
+    activeTab = ''
     render(
       <MerchantsPage
         merchants={[]}

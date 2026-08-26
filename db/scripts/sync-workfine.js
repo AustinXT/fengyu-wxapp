@@ -623,11 +623,15 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
           ELSE c.phone
         END,
         name = s.name, bound_store_id = s.bound_store_id, bound_employee_id = s.bound_employee_id,
-        customer_source = s.customer_source,
-        category = s.category, birthday = s.birthday, occupation = s.occupation,
-        is_married = s.is_married, wechat_name = s.wechat_name,
+        customer_source = CASE WHEN 'customer_source' = ANY(c.workfine_override_fields) THEN c.customer_source ELSE s.customer_source END,
+        category = s.category,
+        birthday = CASE WHEN 'birthday' = ANY(c.workfine_override_fields) THEN c.birthday ELSE s.birthday END,
+        occupation = CASE WHEN 'occupation' = ANY(c.workfine_override_fields) THEN c.occupation ELSE s.occupation END,
+        is_married = CASE WHEN 'is_married' = ANY(c.workfine_override_fields) THEN c.is_married ELSE s.is_married END,
+        wechat_name = s.wechat_name,
         skin_type = s.skin_type, improvement_focus = s.improvement_focus,
-        skin_issue = s.skin_issue, wellness_preference = s.wellness_preference,
+        skin_issue = CASE WHEN 'skin_issue' = ANY(c.workfine_override_fields) THEN c.skin_issue ELSE s.skin_issue END,
+        wellness_preference = CASE WHEN 'wellness_preference' = ANY(c.workfine_override_fields) THEN c.wellness_preference ELSE s.wellness_preference END,
         updated_at = now()
       FROM (
         SELECT DISTINCT ON (customer_id) *
@@ -648,7 +652,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
 
     // 3a. 有手机号：UPSERT by phone（去重，不覆盖微信身份字段）
     const upsertByPhone = await client.query(`
-      INSERT INTO client_wechat_users (
+      INSERT INTO client_wechat_users AS c (
         user_id, phone, customer_id, name, bound_store_id, bound_employee_id,
         member_level, customer_source, category, birthday, occupation, is_married,
         wechat_name, skin_type, improvement_focus, skin_issue, wellness_preference
@@ -668,16 +672,16 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
         name = EXCLUDED.name,
         bound_store_id = EXCLUDED.bound_store_id,
         bound_employee_id = EXCLUDED.bound_employee_id,
-        customer_source = EXCLUDED.customer_source,
+        customer_source = CASE WHEN 'customer_source' = ANY(c.workfine_override_fields) THEN c.customer_source ELSE EXCLUDED.customer_source END,
         category = EXCLUDED.category,
-        birthday = EXCLUDED.birthday,
-        occupation = EXCLUDED.occupation,
-        is_married = EXCLUDED.is_married,
+        birthday = CASE WHEN 'birthday' = ANY(c.workfine_override_fields) THEN c.birthday ELSE EXCLUDED.birthday END,
+        occupation = CASE WHEN 'occupation' = ANY(c.workfine_override_fields) THEN c.occupation ELSE EXCLUDED.occupation END,
+        is_married = CASE WHEN 'is_married' = ANY(c.workfine_override_fields) THEN c.is_married ELSE EXCLUDED.is_married END,
         wechat_name = EXCLUDED.wechat_name,
         skin_type = EXCLUDED.skin_type,
         improvement_focus = EXCLUDED.improvement_focus,
-        skin_issue = EXCLUDED.skin_issue,
-        wellness_preference = EXCLUDED.wellness_preference,
+        skin_issue = CASE WHEN 'skin_issue' = ANY(c.workfine_override_fields) THEN c.skin_issue ELSE EXCLUDED.skin_issue END,
+        wellness_preference = CASE WHEN 'wellness_preference' = ANY(c.workfine_override_fields) THEN c.wellness_preference ELSE EXCLUDED.wellness_preference END,
         updated_at = now()
     `)
     log('CUSTOMERS', `UPSERT by phone: ${upsertByPhone.rowCount} 条`)
@@ -686,11 +690,15 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
     const updateByCustId = await client.query(`
       UPDATE client_wechat_users c SET
         name = s.name, bound_store_id = s.bound_store_id, bound_employee_id = s.bound_employee_id,
-        customer_source = s.customer_source,
-        category = s.category, birthday = s.birthday, occupation = s.occupation,
-        is_married = s.is_married, wechat_name = s.wechat_name,
+        customer_source = CASE WHEN 'customer_source' = ANY(c.workfine_override_fields) THEN c.customer_source ELSE s.customer_source END,
+        category = s.category,
+        birthday = CASE WHEN 'birthday' = ANY(c.workfine_override_fields) THEN c.birthday ELSE s.birthday END,
+        occupation = CASE WHEN 'occupation' = ANY(c.workfine_override_fields) THEN c.occupation ELSE s.occupation END,
+        is_married = CASE WHEN 'is_married' = ANY(c.workfine_override_fields) THEN c.is_married ELSE s.is_married END,
+        wechat_name = s.wechat_name,
         skin_type = s.skin_type, improvement_focus = s.improvement_focus,
-        skin_issue = s.skin_issue, wellness_preference = s.wellness_preference,
+        skin_issue = CASE WHEN 'skin_issue' = ANY(c.workfine_override_fields) THEN c.skin_issue ELSE s.skin_issue END,
+        wellness_preference = CASE WHEN 'wellness_preference' = ANY(c.workfine_override_fields) THEN c.wellness_preference ELSE s.wellness_preference END,
         updated_at = now()
       FROM (
         SELECT DISTINCT ON (customer_id) *

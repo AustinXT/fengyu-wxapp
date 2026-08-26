@@ -186,7 +186,14 @@ vi.mock('@db/prepaid-card', () => ({
   // 2026-04-24 prepaid_cards.store_id 已 DROP；2026-04-26 sale-order-domain-refactor 修复
   // P0-14-01：移除 mock 的 storeId 字段，避免反向锁死老代码引用
   prepaidCards: { cardId: 'card_id', userId: 'user_id', balance: 'balance' },
-  cardTransactions: { id: 'id', cardId: 'card_id', type: 'type', amount: 'amount', refOrderId: 'ref_order_id' },
+  cardTransactions: {
+    id: 'id',
+    cardId: 'card_id',
+    type: 'type',
+    amount: 'amount',
+    refOrderId: 'ref_order_id',
+    externalRef: 'external_ref',
+  },
 }))
 
 vi.mock('drizzle-orm', () => ({
@@ -6218,7 +6225,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     expect(rows[2].productName).toBe('储值卡充值')
   })
 
-  it('普通转换负差额：储值金入账行记入负数现付，订单金额与实付仍可勾稽', async () => {
+  it('普通转换负差额：储值金入账行记入正数现付，各金额列均可勾稽', async () => {
     const orderBase = {
       marketName: '九江', storeName: '南昌店', saleOrderId: 'FY-CONV-CREDIT', saleOrderType: '转换单',
       documentType: '售后', status: '已支付', custName: '李女士', custPhone: '13800000000',
@@ -6256,18 +6263,45 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       totalAmount: '2.00',
       received: '2.00',
       prepaidCardAmount: '0.00',
-      cashAmount: '-2.00',
+      cashAmount: '2.00',
       productType: null,
     })
     expect(rows.reduce((sum, row) => sum + Number(row.totalAmount), 0)).toBe(0)
     expect(rows.reduce((sum, row) => sum + Number(row.received), 0)).toBe(0)
-    // 真实商品行继续满足通道恒等式；储值金入账合成行按业务要求是明确例外：
-    // 它以负数现付表达资产转入，同时以正数订单金额/实付闭合转换金额。
-    for (const row of rows.slice(0, 2)) {
+    expect(rows.reduce((sum, row) => sum + Number(row.cashAmount), 0)).toBe(0)
+    expect(rows.reduce((sum, row) => sum + Number(row.prepaidCardAmount), 0)).toBe(0)
+    // 商品行和储值金入账合成行均满足通道恒等式。
+    for (const row of rows) {
       const channelAmount = Number(row.prepaidCardAmount) + Number(row.cashAmount)
       expect(Number(row.totalAmount)).toBe(channelAmount)
       expect(Number(row.received)).toBe(channelAmount)
     }
+  })
+
+  it('转换差额查询仅保留历史空来源或匹配订单号的 card-conv 流水，排除退款回冲', async () => {
+    await exportOrders({ q: 'FY-XSD-WX-2608130108' })
+
+    const cardCreditChain = (db.select as any).mock.results[2]?.value
+    const predicate = cardCreditChain.where.mock.calls[0]?.[0]
+    const sourceFilter = predicate.args.find((condition: any) =>
+      condition?.type === 'or'
+      && condition.args.some((part: any) => part?.type === 'isNull' && part.a === 'external_ref'),
+    )
+
+    expect(sourceFilter).toMatchObject({
+      type: 'or',
+      args: [
+        { type: 'isNull', a: 'external_ref' },
+        {
+          type: 'eq',
+          a: 'external_ref',
+          b: {
+            __sqlText: "'card-conv-' ||  ? ",
+            __sqlValues: ['sale_order_id'],
+          },
+        },
+      ],
+    })
   })
 
   it('待支付订单只有预选储值卡抵扣且无已入账流水时，储值卡抵扣和现付均为 0', async () => {

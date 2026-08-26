@@ -21,6 +21,19 @@ function Pagination({ total: rawTotal, page: rawPage, pageSize: rawPageSize, onP
   const pageSize = Math.max(1, Math.floor(rawPageSize) || 20)
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const page = Math.min(Math.max(1, Math.floor(rawPage) || 1), totalPages)
+  const correctedPageRef = React.useRef<string | null>(null)
+
+  React.useEffect(() => {
+    const correctionKey = `${rawPage}:${totalPages}`
+    if (Number.isFinite(rawPage) && rawPage > totalPages) {
+      if (correctedPageRef.current !== correctionKey) {
+        correctedPageRef.current = correctionKey
+        onPageChange(totalPages)
+      }
+      return
+    }
+    correctedPageRef.current = null
+  }, [onPageChange, rawPage, totalPages])
 
   if (totalPages <= 1 && total <= pageSize) {
     return (

@@ -14,6 +14,7 @@
 const pg = require('../db/pg')
 const { requireManager } = require('../middleware/auth')
 const { logOperation } = require('../utils/operation-log')
+const { normalizeListFilters, addTimestampDateRange } = require('../utils/list-filters')
 const { assertNoPendingRefund, assertNoSettledRefundForPayment } = require('../utils/refund')
 const { resolveMarketNameByStore } = require('../utils/market')
 const { refreshOrderAllocationRollup } = require('../utils/payment-allocatable')
@@ -186,22 +187,54 @@ async function checkNewCustomer(clientPhone, currentSaleOrderId) {
 async function pendingPayments(ctx) {
   await requireManager()(ctx, async () => {})
 
-  const { page = 1, pageSize = 20, allocationStatus = '待分配' } = ctx.event.payload || {}
-  if (!['待分配', '已分配'].includes(allocationStatus)) {
-    throw new Error('INVALID_PARAMS: allocationStatus 必须为 待分配 或 已分配')
+  const payload = ctx.event.payload || {}
+  const { allocationStatus = '待分配' } = payload
+  if (!['全部', '待分配', '已分配'].includes(allocationStatus)) {
+    throw new Error('INVALID_PARAMS: allocationStatus 必须为 全部、待分配 或 已分配')
   }
-  const offset = (page - 1) * pageSize
+  const { page, pageSize, offset, keyword, keywordPattern, phoneKeyword, startDate, endDate } = normalizeListFilters(payload)
+  const params = [ctx.auth.effectiveStoreId]
+  const conditions = [
+    'o.store_id = $1',
+    'p.allocation_status IS NOT NULL',
+    "o.sale_order_type IN ('销售单', '转换单')",
+    "o.legacy_source IS DISTINCT FROM 'workfine'",
+  ]
+
+  if (allocationStatus !== '全部') {
+    params.push(allocationStatus)
+    conditions.push(`p.allocation_status = $${params.length}`)
+  }
+
+  if (keyword) {
+    params.push(keywordPattern)
+    const searchParts = [`COALESCE(c.name, o.customer_name, '') ILIKE $${params.length} ESCAPE '\\'`]
+    if (phoneKeyword) {
+      params.push(`%${phoneKeyword}%`)
+      searchParts.push(`regexp_replace(COALESCE(c.phone, o.client_phone, ''), '[^0-9]', '', 'g') LIKE $${params.length}`)
+    }
+    conditions.push(`(${searchParts.join(' OR ')})`)
+  }
+
+  addTimestampDateRange(conditions, params, 'p.paid_at', startDate, endDate)
+
+  params.push(pageSize)
+  const limitParam = params.length
+  params.push(offset)
+  const offsetParam = params.length
 
   const payments = await pg.query(
     `SELECT p.id AS sale_payment_id, p.sale_order_id, p.change_type, p.amount, p.payment_method,
             p.paid_at, p.created_at, p.allocation_status,
-            o.customer_name, o.client_phone, o.sale_order_type, o.preferred_employee_id, o.total_amount
+            COALESCE(c.name, o.customer_name) AS customer_name,
+            COALESCE(c.phone, o.client_phone) AS client_phone,
+            o.sale_order_type, o.preferred_employee_id, o.total_amount
       FROM sale_order_payments p
       JOIN sale_orders o ON o.sale_order_id = p.sale_order_id
-     WHERE o.store_id = $1
-        AND p.allocation_status = $2
+      LEFT JOIN client_wechat_users c ON c.user_id = o.client_user_id
+     WHERE ${conditions.join('\n       AND ')}
         AND (
-          $2 <> '待分配'
+          p.allocation_status <> '待分配'
           OR EXISTS (
             SELECT 1
               FROM sale_payment_item_receipts spir
@@ -221,11 +254,9 @@ async function pendingPayments(ctx) {
             AND GREATEST(COALESCE(o.received::numeric, 0) - COALESCE(o.refunded_amount::numeric, 0), 0) > 0
           )
         )
-        AND o.sale_order_type IN ('销售单', '转换单')  -- 转换单现已按回款逐笔产 receipt，与销售单同流程
-        AND o.legacy_source IS DISTINCT FROM 'workfine'
       ORDER BY p.paid_at DESC NULLS LAST, p.id DESC
-      LIMIT $3 OFFSET $4`,
-    [ctx.auth.effectiveStoreId, allocationStatus, pageSize, offset]
+      LIMIT $${limitParam} OFFSET $${offsetParam}`,
+    params
   )
   ctx.result = { payments, page, pageSize }
 }
@@ -357,34 +388,54 @@ async function suggestPayment(ctx) {
   if (pay.store_id) {
     const empRows = await pg.query(`
       SELECT u.employee_id, u.name, u.store_id, u.skills, u.is_on_business_trip,
-             d.name AS department, s.store_name
+             d.name AS department, s.store_name, employee_market.name AS market_name,
+             CASE
+               WHEN u.store_id = $1 THEN 'local'
+               WHEN employee_market.id = target_market.id THEN 'same_market_trip'
+               ELSE 'cross_market_trip'
+             END AS assignment_scope
       FROM staff_wechat_users u
       LEFT JOIN stores s ON u.store_id = s.store_id
       LEFT JOIN org_nodes so ON s.org_node_id = so.id
       LEFT JOIN org_nodes d ON u.org_node_id = d.id
+      LEFT JOIN org_nodes employee_org_parent ON employee_org_parent.id = d.parent_id
+      LEFT JOIN org_nodes employee_market ON employee_market.id = COALESCE(
+        so.parent_id,
+        CASE
+          WHEN d.type = '市场' THEN d.id
+          WHEN d.type = '门店' THEN d.parent_id
+          WHEN d.type = '部门' AND employee_org_parent.type = '市场' THEN employee_org_parent.id
+          WHEN d.type = '部门' AND employee_org_parent.type = '门店' THEN employee_org_parent.parent_id
+          ELSE NULL
+        END
+      ) AND employee_market.type = '市场'
+      JOIN stores target_store ON target_store.store_id = $1
+      JOIN org_nodes target_store_node ON target_store_node.id = target_store.org_node_id
+      LEFT JOIN org_nodes target_market ON target_market.id = target_store_node.parent_id
       WHERE u.is_resigned = false
-        AND (
-          u.store_id = $1
-          OR (
-            u.is_on_business_trip = true
-            AND so.parent_id = (
-              SELECT target_store_node.parent_id
-              FROM stores target_store
-              JOIN org_nodes target_store_node ON target_store_node.id = target_store.org_node_id
-              WHERE target_store.store_id = $1
-            )
-          )
-        )
+        AND (u.store_id = $1 OR u.is_on_business_trip = true)
         AND u.employee_id IS NOT NULL
-      ORDER BY u.name`, [pay.store_id])
+      ORDER BY
+        CASE
+          WHEN u.store_id = $1 THEN 0
+          WHEN employee_market.id = target_market.id THEN 1
+          ELSE 2
+        END,
+        employee_market.name NULLS LAST,
+        s.store_name NULLS LAST,
+        d.name NULLS LAST,
+        u.name NULLS LAST,
+        u.employee_id`, [pay.store_id])
     candidateEmployees = empRows.map(r => ({
       staffWfId: r.employee_id,
       name: r.name || '',
       storeId: r.store_id || '',
       storeName: r.store_name || '',
+      marketName: r.market_name || '',
       skills: Array.isArray(r.skills) ? r.skills : [],
       department: r.department || '',
       isOnBusinessTrip: r.is_on_business_trip === true,
+      assignmentScope: r.assignment_scope,
     }))
   }
 
@@ -458,6 +509,7 @@ async function savePayment(ctx) {
     pg,
     allocations.map((allocation) => allocation.employeeId),
     pay.store_id,
+    { assignmentScope: 'allocationSupport' },
   )
 
   const allocItems = await pg.query(

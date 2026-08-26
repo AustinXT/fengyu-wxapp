@@ -11,9 +11,10 @@ import { Input } from "@/components/ui/input"
 import { StatusBadge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { batchSaveServiceCommissions } from "@/actions/service-commissions"
-import type { ServiceOrder, ServiceCommission, Employee, CommissionRate, SkillTag } from "@/lib/types"
+import type { ServiceOrder, ServiceCommission, AllocationEmployeeCandidate, CommissionRate, SkillTag } from "@/lib/types"
 import type { ServiceItemDetail } from "@/actions/services"
-import { isEmployeeInStoreAssignmentScope } from "@/lib/employee-assignment"
+import { getAllocationEmployeesForSkill, sortAllocationEmployeeCandidates } from "@/lib/allocation-employee"
+import { ReturnContextLink, useReturnContext } from "@/components/return-context"
 
 // --------------- 常量 ---------------
 
@@ -57,12 +58,6 @@ function findMatchingRate(
   ) ?? null
 }
 
-function sortByPosition(employees: Employee[]): Employee[] {
-  return [...employees].sort((a, b) =>
-    (a.positionName || '').localeCompare(b.positionName || '', 'zh-CN')
-  )
-}
-
 /**
  * 单次（per-session）价格。
  * service_items.unit_real_price 是 sale_items.unit_real_price 的快照，
@@ -96,7 +91,7 @@ function formatServiceItemName(item: Pick<ServiceItemDetail, 'productName' | 'sk
 // --------------- 初始化 ---------------
 
 /** 按员工 skills 推导技能标签（推广师 > 养生师 > 美容师 兜底）；无员工时回退美容师 */
-function deriveSkillTag(emp: Employee | undefined): string {
+function deriveSkillTag(emp: AllocationEmployeeCandidate | undefined): string {
   const skills = emp?.skills || []
   if (skills.includes('推广师')) return '推广师'
   if (skills.includes('养生师')) return '养生师'
@@ -131,10 +126,9 @@ function buildEntry(
 export function initCommissions(
   serviceItems: ServiceItemDetail[],
   commissions: ServiceCommission[],
-  employees: Employee[],
+  employees: AllocationEmployeeCandidate[],
   commissionRates: CommissionRate[],
   marketName: string,
-  targetStoreId: string,
   assignedEmployeeId?: string | null,
 ): Record<string, CommissionEntry[]> {
   const result: Record<string, CommissionEntry[]> = {}
@@ -158,7 +152,7 @@ export function initCommissions(
   // （用户可改/可加行；提交仍走 batchSaveServiceCommissions）
   if (assignedEmployeeId) {
     const assignedEmp = employees.find((e) => e.employeeId === assignedEmployeeId)
-    if (!assignedEmp || !isEmployeeInStoreAssignmentScope(assignedEmp, targetStoreId, marketName)) {
+    if (!assignedEmp) {
       return result
     }
     const assignedSkillTag = deriveSkillTag(assignedEmp)
@@ -188,26 +182,21 @@ export default function ServiceCommissionDetailPageClient({
   serviceOrder: ServiceOrder
   serviceItems: ServiceItemDetail[]
   commissions: ServiceCommission[]
-  employees: Employee[]
+  employees: AllocationEmployeeCandidate[]
   commissionRates?: CommissionRate[]
   skillTags?: SkillTag[]
   canSave?: boolean
 }) {
   const allActiveEmployees = useMemo(
-    () => sortByPosition(employees.filter((e) => !e.isResigned)),
+    () => sortAllocationEmployeeCandidates(employees.filter((e) => !e.isResigned)),
     [employees],
   )
   // 技能标签下拉选项：严格来自数据库 skill_tags（与 allocation-detail-page / payment-allocation-detail-page 一致，
   // 不再硬编码白名单——字典加新标签后此页立即可选）
   const skillTagNames = useMemo(() => skillTags.map((t) => t.name), [skillTags])
 
-  // 外店出差员工仅能在服务单所属市场内参与分配。
   const getFilteredEmployees = (skillTag: string) => {
-    if (!skillTag) return []
-    return allActiveEmployees.filter(
-      (e) => isEmployeeInStoreAssignmentScope(e, serviceOrder.storeId, serviceOrder.marketName ?? undefined)
-        && e.skills?.includes(skillTag)
-    )
+    return getAllocationEmployeesForSkill(allActiveEmployees, skillTag)
   }
 
   const marketName = serviceOrder.marketName
@@ -219,7 +208,6 @@ export default function ServiceCommissionDetailPageClient({
       employees,
       commissionRates,
       marketName,
-      serviceOrder.storeId,
       serviceOrder.assignedEmployeeId,
     )
   )
@@ -292,9 +280,9 @@ export default function ServiceCommissionDetailPageClient({
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
-        <Link href="/allocations?tab=service" className="text-[#999999] hover:text-[var(--foreground)]">
+        <ReturnContextLink href="/allocations?tab=service" className="text-[#999999] hover:text-[var(--foreground)]">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6" /></svg>
-        </Link>
+        </ReturnContextLink>
         <h1 className="text-2xl font-bold text-[var(--foreground)]">服务提成分配</h1>
       </div>
 
@@ -377,7 +365,7 @@ function ServiceItemCard({
   item: ServiceItemDetail
   entries: CommissionEntry[]
   skillTagOptions: string[]
-  getFilteredEmployees: (skillTag: string) => Employee[]
+  getFilteredEmployees: (skillTag: string) => AllocationEmployeeCandidate[]
   onAdd: (serviceItemId: string) => void
   onUpdate: (serviceItemId: string, entryId: number, field: 'skillTag' | 'employeeId' | 'ratioPercent', value: string) => void
   onRemove: (serviceItemId: string, entryId: number) => void
@@ -567,6 +555,7 @@ function SaveButton({
 }) {
   const [pending, startTransition] = useTransition()
   const router = useRouter()
+  const { goToReturn } = useReturnContext('/allocations?tab=service')
 
   const handleSave = () => {
     const flatCommissions: Array<{
@@ -634,7 +623,7 @@ function SaveButton({
       const res = await batchSaveServiceCommissions(serviceOrderId, flatCommissions)
       if (res.success) {
         toast.success(res.message)
-        router.push('/allocations?tab=service')
+        goToReturn(true)
       } else {
         toast.error(res.message)
       }
@@ -643,9 +632,9 @@ function SaveButton({
 
   return (
     <div className="flex justify-end gap-3">
-      <Link href="/allocations?tab=service">
+      <ReturnContextLink href="/allocations?tab=service">
         <Button variant="outline">取消</Button>
-      </Link>
+      </ReturnContextLink>
       <Button onClick={handleSave} loading={pending}>保存提成</Button>
     </div>
   )

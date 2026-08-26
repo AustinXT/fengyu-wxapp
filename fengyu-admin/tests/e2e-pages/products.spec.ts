@@ -25,6 +25,37 @@ test.describe('商品列表', () => {
     await page.getByRole('button', { name: '品项分类' }).click()
     await expect(page).toHaveURL(/\/products\/categories/)
   })
+
+  test('编辑后返回时保留二级分类和完整列表上下文', async ({ page }) => {
+    await page.goto('/products?status=all&size=50')
+    const firstRow = page.locator('tbody tr').first()
+    const editButton = firstRow.getByRole('button', { name: '编辑' })
+    test.skip(await editButton.count() === 0, '测试库没有可编辑商品')
+
+    const categoryText = (await firstRow.locator('td').nth(1).innerText()).trim()
+    const [kind, category] = categoryText.split('/').map((part) => part.trim())
+    test.skip(!kind || !category || category === '—', '测试商品没有二级分类')
+
+    await page.getByRole('button', { name: '品项筛选' }).click()
+    await page.getByRole('button', { name: kind, exact: true }).hover()
+    await page.getByRole('button', { name: category, exact: true }).click()
+    await expect(page).toHaveURL(/category=/)
+    await expect(page).toHaveURL(/kind=/)
+
+    const source = new URL(page.url())
+    await page.locator('tbody tr').first().getByRole('button', { name: '编辑' }).click()
+    const detail = new URL(page.url())
+    expect(detail.searchParams.get('returnTo')).toBe(`${source.pathname}${source.search}`)
+
+    await page.getByRole('button', { name: '保存', exact: true }).click()
+    await expect(page.getByText('保存成功')).toBeVisible()
+    await page.getByRole('button', { name: '返回', exact: true }).click()
+
+    await expect(page).toHaveURL(`${source.pathname}${source.search}`)
+    await expect(
+      page.getByRole('button').filter({ hasText: `${kind} / ${category}` }).first(),
+    ).toBeVisible()
+  })
 })
 
 test.describe('品项分类', () => {

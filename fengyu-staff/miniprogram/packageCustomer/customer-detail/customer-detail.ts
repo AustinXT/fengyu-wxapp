@@ -1,5 +1,5 @@
 // packageCustomer/customer-detail/customer-detail.ts — 7-Tab 顾客详情
-import { callStaffApi } from '../../utils/cloud';
+import { callStaffApi, StaffApiError } from '../../utils/cloud';
 import { getCurrentStoreId, isManager } from '../../utils/role';
 import { formatDateTime, formatDate, ORDER_TYPE_LABEL, formatDiscount } from '../../utils/formatters';
 import { MemberLevelBadgeData, withMemberLevelBadgeClass } from '../../utils/member-level-badge';
@@ -20,6 +20,7 @@ interface CustomerDetail extends MemberLevelBadgeData {
   source: string;
   preferredStaffName: string | null;
   customerSource: string | null;
+  promoterEmployeeId: string | null;
   promoterEmployeeName: string | null;
   inviterName: string | null;
   inviterPhone: string;
@@ -41,6 +42,8 @@ interface CustomerDetail extends MemberLevelBadgeData {
   focusAreas: string | null;
   skinIssue: string | null;
   wellnessPreference: string | null;
+  isCrossStoreTemp: boolean;
+  updatedAt: string;
   notes: string | null;
   pointsBalance: number;
   lastServiceDate: string | null;
@@ -69,6 +72,42 @@ interface StaffListResponse {
     department?: string;
     storeId?: string;
   }>;
+}
+
+interface PromoterEmployeeCandidate {
+  employeeId: string;
+  name: string;
+  phoneMasked: string;
+  storeName: string;
+}
+
+interface ProfileFormState {
+  promoterEmployeeId: string;
+  promoterEmployeeName: string;
+  customerSource: string;
+  birthday: string;
+  occupation: string;
+  isMarried: '' | 'true' | 'false';
+  skinIssue: string;
+  wellnessPreference: string;
+  isCrossStoreTemp: boolean;
+}
+
+interface ProfileChanges {
+  promoterEmployeeId?: string | null;
+  customerSource?: string | null;
+  birthday?: string | null;
+  occupation?: string | null;
+  isMarried?: boolean | null;
+  skinIssue?: string | null;
+  wellnessPreference?: string | null;
+  isCrossStoreTemp?: boolean;
+  promoterEmployeeName?: string | null;
+}
+
+interface UpdateProfileResponse {
+  updatedAt: string;
+  changes: ProfileChanges;
 }
 
 interface CustomerQuery {
@@ -185,6 +224,40 @@ const ORDER_STATUS_CLASS: Record<string, string> = {
   已退款: 'error',
   部分支付: 'progress',
 };
+
+const CUSTOMER_SOURCE_OPTIONS = [
+  { value: '', label: '未设置' },
+  { value: '美团', label: '美团' },
+  { value: '抖音', label: '抖音' },
+  { value: '小程序', label: '小程序' },
+  { value: '推广部', label: '推广部' },
+  { value: '全员地推', label: '全员地推' },
+  { value: '外请团队拓客', label: '外请团队拓客' },
+  { value: '老带新', label: '老带新' },
+  { value: '转让店', label: '转让店' },
+  { value: '自进店', label: '自进店' },
+  { value: '员工或家属', label: '员工或家属' },
+];
+
+const MARRIAGE_OPTIONS = [
+  { value: '', label: '未设置' },
+  { value: 'false', label: '未婚' },
+  { value: 'true', label: '已婚' },
+];
+
+function emptyProfileForm(): ProfileFormState {
+  return {
+    promoterEmployeeId: '',
+    promoterEmployeeName: '',
+    customerSource: '',
+    birthday: '',
+    occupation: '',
+    isMarried: '',
+    skinIssue: '',
+    wellnessPreference: '',
+    isCrossStoreTemp: false,
+  };
+}
 
 // Tab 3: 持卡汇总
 interface TreatmentCard {
@@ -347,6 +420,15 @@ Page({
     profileSaving: false,
     showAssignSheet: false,
     staffActions: [] as StaffAction[],
+    showProfileEditor: false,
+    profileForm: emptyProfileForm(),
+    customerSourceOptions: CUSTOMER_SOURCE_OPTIONS,
+    customerSourceLabel: '未设置',
+    marriageOptions: MARRIAGE_OPTIONS,
+    marriageLabel: '未设置',
+    promoterSearchKeyword: '',
+    promoterSearchLoading: false,
+    promoterCandidates: [] as PromoterEmployeeCandidate[],
     // Tab 1: 日历
     calendarYear: 0,
     calendarMonth: 0,
@@ -400,6 +482,7 @@ Page({
   _query: null as CustomerQuery | null,
   _loaded: false,
   _allTreatmentCards: [] as TreatmentCard[],
+  _profileOriginal: null as ProfileChanges | null,
 
   onLoad(options: Record<string, string>) {
     this.setData({ isManager: isManager() });
@@ -1063,6 +1146,225 @@ Page({
   },
 
   // ===== 基本档案编辑（仅当前门店有效店长） =====
+  _profileValuesFromCustomer(customer: CustomerDetail): ProfileChanges {
+    return {
+      promoterEmployeeId: customer.promoterEmployeeId || null,
+      customerSource: customer.customerSource || null,
+      birthday: customer.birthday || null,
+      occupation: customer.occupation || null,
+      isMarried: customer.isMarried,
+      skinIssue: customer.skinIssue || null,
+      wellnessPreference: customer.wellnessPreference || null,
+      isCrossStoreTemp: customer.isCrossStoreTemp === true,
+    };
+  },
+
+  onOpenProfileEditor() {
+    if (!isManager() || this.data.profileSaving) return;
+    const { customer } = this.data;
+    if (!customer?.clientUserId || !customer.updatedAt) return;
+
+    this._profileOriginal = this._profileValuesFromCustomer(customer);
+    const sourceIndex = CUSTOMER_SOURCE_OPTIONS.findIndex((item) => item.value === (customer.customerSource || ''));
+    const marriageValue = customer.isMarried === true ? 'true' : customer.isMarried === false ? 'false' : '';
+    const marriageIndex = MARRIAGE_OPTIONS.findIndex((item) => item.value === marriageValue);
+    this.setData({
+      showProfileEditor: true,
+      profileForm: {
+        promoterEmployeeId: customer.promoterEmployeeId || '',
+        promoterEmployeeName: customer.promoterEmployeeName || '',
+        customerSource: customer.customerSource || '',
+        birthday: customer.birthday || '',
+        occupation: customer.occupation || '',
+        isMarried: marriageValue,
+        skinIssue: customer.skinIssue || '',
+        wellnessPreference: customer.wellnessPreference || '',
+        isCrossStoreTemp: customer.isCrossStoreTemp === true,
+      },
+      customerSourceLabel: CUSTOMER_SOURCE_OPTIONS[sourceIndex >= 0 ? sourceIndex : 0].label,
+      marriageLabel: MARRIAGE_OPTIONS[marriageIndex >= 0 ? marriageIndex : 0].label,
+      promoterSearchKeyword: '',
+      promoterCandidates: [],
+      promoterSearchLoading: false,
+    });
+  },
+
+  onCloseProfileEditor() {
+    if (this.data.profileSaving) return;
+    this._profileOriginal = null;
+    this.setData({
+      showProfileEditor: false,
+      promoterSearchKeyword: '',
+      promoterCandidates: [],
+      promoterSearchLoading: false,
+    });
+  },
+
+  onProfileTextChange(e: WechatMiniprogram.CustomEvent) {
+    const field = String(e.currentTarget.dataset.field || '') as 'occupation' | 'skinIssue' | 'wellnessPreference';
+    if (!['occupation', 'skinIssue', 'wellnessPreference'].includes(field)) return;
+    this.setData({
+      profileForm: { ...this.data.profileForm, [field]: String(e.detail || '') },
+    });
+  },
+
+  onCustomerSourceChange(e: WechatMiniprogram.CustomEvent) {
+    const index = Number(e.detail.value) || 0;
+    const selected = CUSTOMER_SOURCE_OPTIONS[index] || CUSTOMER_SOURCE_OPTIONS[0];
+    this.setData({
+      profileForm: { ...this.data.profileForm, customerSource: selected.value },
+      customerSourceLabel: selected.label,
+    });
+  },
+
+  onBirthdayChange(e: WechatMiniprogram.CustomEvent) {
+    this.setData({
+      profileForm: { ...this.data.profileForm, birthday: String(e.detail.value || '') },
+    });
+  },
+
+  onClearBirthday() {
+    this.setData({
+      profileForm: { ...this.data.profileForm, birthday: '' },
+    });
+  },
+
+  onMarriageChange(e: WechatMiniprogram.CustomEvent) {
+    const index = Number(e.detail.value) || 0;
+    const selected = MARRIAGE_OPTIONS[index] || MARRIAGE_OPTIONS[0];
+    this.setData({
+      profileForm: { ...this.data.profileForm, isMarried: selected.value as '' | 'true' | 'false' },
+      marriageLabel: selected.label,
+    });
+  },
+
+  onCrossStoreTempChange(e: WechatMiniprogram.CustomEvent) {
+    this.setData({
+      profileForm: { ...this.data.profileForm, isCrossStoreTemp: e.detail as unknown as boolean },
+    });
+  },
+
+  onPromoterKeywordChange(e: WechatMiniprogram.CustomEvent) {
+    this.setData({ promoterSearchKeyword: String(e.detail || '') });
+  },
+
+  async onSearchPromoterEmployees() {
+    if (!isManager() || this.data.promoterSearchLoading) return;
+    const { customer, promoterSearchKeyword } = this.data;
+    if (!customer?.clientUserId) return;
+    const keyword = promoterSearchKeyword.trim();
+    if (keyword.length < 3) {
+      wx.showToast({ title: '请输入至少3个字符', icon: 'none' });
+      return;
+    }
+
+    this.setData({ promoterSearchLoading: true });
+    try {
+      const candidates = await callStaffApi<PromoterEmployeeCandidate[]>('customer.searchPromoterEmployees', {
+        clientUserId: customer.clientUserId,
+        keyword,
+      });
+      this.setData({ promoterCandidates: candidates || [] });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '搜索失败';
+      wx.showToast({ title: msg, icon: 'none' });
+    } finally {
+      this.setData({ promoterSearchLoading: false });
+    }
+  },
+
+  onSelectPromoterEmployee(e: WechatMiniprogram.BaseEvent) {
+    const employeeId = String(e.currentTarget.dataset.id || '');
+    const selected = this.data.promoterCandidates.find((item) => item.employeeId === employeeId);
+    if (!selected) return;
+    this.setData({
+      profileForm: {
+        ...this.data.profileForm,
+        promoterEmployeeId: selected.employeeId,
+        promoterEmployeeName: selected.name,
+      },
+      promoterSearchKeyword: '',
+      promoterCandidates: [],
+    });
+  },
+
+  onClearPromoterEmployee() {
+    this.setData({
+      profileForm: {
+        ...this.data.profileForm,
+        promoterEmployeeId: '',
+        promoterEmployeeName: '',
+      },
+      promoterSearchKeyword: '',
+      promoterCandidates: [],
+    });
+  },
+
+  async onSaveProfile() {
+    if (!isManager() || this.data.profileSaving) return;
+    const { customer, profileForm } = this.data;
+    if (!customer?.clientUserId || !customer.updatedAt || !this._profileOriginal) return;
+
+    const marriageValue = profileForm.isMarried === 'true'
+      ? true
+      : profileForm.isMarried === 'false'
+        ? false
+        : null;
+    const current: ProfileChanges = {
+      promoterEmployeeId: profileForm.promoterEmployeeId || null,
+      customerSource: profileForm.customerSource || null,
+      birthday: profileForm.birthday || null,
+      occupation: profileForm.occupation.trim() || null,
+      isMarried: marriageValue,
+      skinIssue: profileForm.skinIssue.trim() || null,
+      wellnessPreference: profileForm.wellnessPreference.trim() || null,
+      isCrossStoreTemp: profileForm.isCrossStoreTemp,
+    };
+    const changes: ProfileChanges = {};
+    for (const key of Object.keys(current) as Array<keyof ProfileChanges>) {
+      if (JSON.stringify(current[key]) !== JSON.stringify(this._profileOriginal[key])) {
+        (changes as Record<string, unknown>)[key] = current[key];
+      }
+    }
+    if (Object.keys(changes).length === 0) {
+      this.onCloseProfileEditor();
+      return;
+    }
+
+    this.setData({ profileSaving: true });
+    try {
+      const result = await callStaffApi<UpdateProfileResponse>('customer.updateProfile', {
+        clientUserId: customer.clientUserId,
+        expectedUpdatedAt: customer.updatedAt,
+        changes,
+      });
+      const mergedCustomer = {
+        ...customer,
+        ...result.changes,
+        updatedAt: result.updatedAt,
+      } as CustomerDetail;
+      this._profileOriginal = null;
+      this.setData({
+        customer: mergedCustomer,
+        showProfileEditor: false,
+        promoterCandidates: [],
+        promoterSearchKeyword: '',
+      });
+      wx.showToast({ title: '基本档案已更新', icon: 'success' });
+    } catch (err: unknown) {
+      const apiError = err as StaffApiError;
+      const msg = err instanceof Error ? err.message : '保存失败';
+      wx.showToast({ title: msg, icon: 'none' });
+      if (apiError.errorType === 'CONFLICT') {
+        this._profileOriginal = null;
+        this.setData({ showProfileEditor: false });
+        await this.loadCustomer();
+      }
+    } finally {
+      this.setData({ profileSaving: false });
+    }
+  },
+
   onEditCustomerName() {
     if (!isManager() || this.data.profileSaving) return;
     const { customer } = this.data;

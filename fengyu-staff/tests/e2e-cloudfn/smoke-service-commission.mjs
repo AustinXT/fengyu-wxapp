@@ -271,6 +271,8 @@ async function main() {
   const pendR = await invokeStaffApi('serviceCommission.pendingList', {
     _testOpenid: TEST_MANAGER_OPENID,
     commissionStatus: '已分配',
+    keyword: NS,
+    startDate: '2000-01-01', endDate: '2100-12-31',
     page: 1, pageSize: 50,
   })
   if (pendR.code !== 0) {

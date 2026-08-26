@@ -244,6 +244,12 @@ UDT_S_311（顾客档案主表）
 - **无 phone 匹配时**: 新建行，`user_id` 系统生成，`openid = null`
 - **注意**: 同步不修改 `bound_store_name`（顾客主动绑定的门店），仅更新 `store_id`（归属门店）
 
+**人工覆盖优先级**:
+- `client_wechat_users.workfine_override_fields` 记录已由新系统人工维护的 WorkFine 档案字段。
+- 支持覆盖的字段为 `customer_source`、`birthday`、`occupation`、`is_married`、`skin_issue`、`wellness_preference`；手机端或 Admin 实际修改（包括显式清空）后加入数组。
+- 按 `customer_id` 预更新、按 `phone` UPSERT、无手机号按 `customer_id` 更新三条路径均保留数组内字段，其余字段继续以 WorkFine 为准。
+- 新建顾客默认覆盖数组为空；迁移前的历史人工修改不推断、不回填覆盖标记。
+
 **store_id 映射**: 同步脚本读取 UDF_S_6443（所属分院），查找 stores.store_id 写入。
 
 #### 顾客消费明细子表 — UDT_M_312（不同步）

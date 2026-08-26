@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, useTransition } from "react"
 import Link from "next/link"
+import { PreserveListContextLink, ReturnContextLink } from "@/components/return-context"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import {
@@ -741,7 +742,7 @@ export function OnboardingList({
                           >
                             <Trash2 />删除
                           </Button>
-                          <Link href={`/merchants/onboarding/${application.id}`}><Button size="sm" variant="outline">办理<ChevronRight /></Button></Link>
+                          <PreserveListContextLink href={`/merchants/onboarding/${application.id}`}><Button size="sm" variant="outline">办理<ChevronRight /></Button></PreserveListContextLink>
                         </div>
                       </td>
                     </tr>
@@ -1066,7 +1067,7 @@ export function OnboardingEditor({
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center gap-3">
-        <Link href="/merchants"><Button variant="outline" size="sm"><ArrowLeft />返回商户管理</Button></Link>
+        <ReturnContextLink href="/merchants"><Button variant="outline" size="sm"><ArrowLeft />返回商户管理</Button></ReturnContextLink>
         <div>
           <div className="flex flex-wrap items-center gap-2"><h1 className="text-2xl font-bold">门店拉卡拉入网申请</h1><StatusBadge status={application.status} label={businessStatus.label} /><span className="font-mono text-xs text-[#999999]">{application.orderNo}</span></div>
           <p className="mt-1 text-xs text-[#999999]">{application.storeName} · 补齐主体、法人、联系人、结算账户和附件；审核成功后系统自动生成/绑定收款商户。</p>

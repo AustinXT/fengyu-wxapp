@@ -22,6 +22,15 @@ import {
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { deriveHomeProductStatus, type CustomerHomeProduct } from '@/lib/home-product'
 
+const WORKFINE_OVERRIDE_FIELD_MAP = {
+  customerSource: 'customer_source',
+  birthday: 'birthday',
+  occupation: 'occupation',
+  isMarried: 'is_married',
+  skinIssue: 'skin_issue',
+  wellnessPreference: 'wellness_preference',
+} as const
+
 // 标量子查询 — 替代 3 个 LEFT JOIN（stores → storeNode → marketNode）
 const storeName = sql<string | null>`(
   SELECT s.store_name FROM stores s WHERE s.store_id = ${clientWechatUsers.boundStoreId}
@@ -1050,6 +1059,17 @@ export const updateCustomer = withPermission(
     Object.entries(data).filter(([field, value]) => allowedUpdateFields.has(field) && value !== undefined),
   )
 
+  const newlyOverriddenFields = Object.entries(WORKFINE_OVERRIDE_FIELD_MAP)
+    .filter(([field]) => Object.prototype.hasOwnProperty.call(data, field)
+      && JSON.stringify((before as Record<string, unknown>)[field]) !== JSON.stringify((data as Record<string, unknown>)[field]))
+    .map(([, dbField]) => dbField)
+  if (newlyOverriddenFields.length > 0) {
+    updateData.workfineOverrideFields = Array.from(new Set([
+      ...((before.workfineOverrideFields as string[] | null) ?? []),
+      ...newlyOverriddenFields,
+    ]))
+  }
+
   // boundEmployeeId 变更时同步写入冗余姓名
   if ('boundEmployeeId' in data) {
     if (data.boundEmployeeId) {
@@ -1508,14 +1528,30 @@ export const mergeClientProfile = withPermission(
   ]
   const patch: Record<string, unknown> = {}
   const fieldsMigrated: string[] = []
+  const orphanOverrideFields = new Set((orphanRow.workfineOverrideFields as string[] | null) ?? [])
+  const transferredOverrideFields = new Set<string>()
   for (const field of migratable) {
     const currentVal = (sourceRow as Record<string, unknown>)[field as string]
     const orphanVal = (orphanRow as Record<string, unknown>)[field as string]
     const currentEmpty = currentVal === null || currentVal === undefined || currentVal === ''
+    const overrideField = WORKFINE_OVERRIDE_FIELD_MAP[field as keyof typeof WORKFINE_OVERRIDE_FIELD_MAP]
+    if (currentEmpty && overrideField && orphanOverrideFields.has(overrideField)) {
+      transferredOverrideFields.add(overrideField)
+    }
     if (currentEmpty && orphanVal !== null && orphanVal !== undefined && orphanVal !== '') {
       patch[field as string] = orphanVal
       fieldsMigrated.push(field as string)
     }
+  }
+  if (transferredOverrideFields.size > 0) {
+    const fieldsToTransfer = Array.from(transferredOverrideFields)
+    const fieldsToTransferSql = sql.join(
+      fieldsToTransfer.map((field) => sql`${field}`),
+      sql.raw(', '),
+    )
+    patch.workfineOverrideFields = sql<string[]>`ARRAY(
+      SELECT DISTINCT unnest(${clientWechatUsers.workfineOverrideFields} || ARRAY[${fieldsToTransferSql}]::text[])
+    )`
   }
 
   let ordersReassigned = 0

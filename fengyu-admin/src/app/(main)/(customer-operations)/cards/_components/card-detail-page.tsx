@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { ReturnContextLink } from "@/components/return-context";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { StatusBadge, Badge } from "@/components/ui/badge";
 import { formatPhone, formatDate, formatDateTime } from "@/lib/utils";
@@ -56,7 +57,7 @@ export default function CardDetailPageClient({
 	return (
 		<div className="space-y-6">
 			<div className="flex items-center gap-3">
-				<Link
+				<ReturnContextLink
 					href="/cards"
 					className="text-[#999999] hover:text-[var(--foreground)]"
 					aria-label="返回疗程卡列表"
@@ -64,7 +65,7 @@ export default function CardDetailPageClient({
 					<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
 						<polyline points="15 18 9 12 15 6" />
 					</svg>
-				</Link>
+				</ReturnContextLink>
 				<h1 className="text-2xl font-bold text-[var(--foreground)]">疗程卡详情</h1>
 			</div>
 

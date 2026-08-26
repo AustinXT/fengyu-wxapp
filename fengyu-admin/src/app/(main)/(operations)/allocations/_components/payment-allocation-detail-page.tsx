@@ -10,8 +10,8 @@ import { Select } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { savePaymentAllocations } from "@/actions/allocations"
-import type { Employee, CommissionRate, SkillTag } from "@/lib/types"
-import { isEmployeeInStoreAssignmentScope } from "@/lib/employee-assignment"
+import type { AllocationEmployeeCandidate, CommissionRate, SkillTag } from "@/lib/types"
+import { getAllocationEmployeesForSkill, sortAllocationEmployeeCandidates } from "@/lib/allocation-employee"
 import {
   calculateGroupedAmounts,
   expandGroupedAllocationLines,
@@ -20,6 +20,7 @@ import {
   type PaymentAllocationItem,
   type PaymentAllocationSignatureLine,
 } from "./payment-allocation-groups"
+import { ReturnContextLink, useReturnContext } from "@/components/return-context"
 
 // ============================================================================
 // 销售提成「回款维度」分配详情（2026-06 需求变更）：分配单元从订单下沉到一笔回款
@@ -99,12 +100,6 @@ function findMatchingRate(
 }
 
 /** 员工按职位排序 */
-function sortByPosition(employees: Employee[]): Employee[] {
-  return [...employees].sort((a, b) =>
-    (a.positionName || '').localeCompare(b.positionName || '', 'zh-CN')
-  )
-}
-
 function calculateEntryAmounts(
   group: PaymentAllocationGroup,
   ratioPercent: string,
@@ -123,7 +118,7 @@ function calculateEntryAmounts(
 function initAllocations(
   groups: PaymentAllocationGroup[],
   allocations: PaymentExistingAllocation[],
-  employees: Employee[],
+  employees: AllocationEmployeeCandidate[],
   commissionRates: CommissionRate[],
   marketName: string,
   eventAmount: number,
@@ -186,7 +181,7 @@ export default function PaymentAllocationDetailPageClient({
   payment: PaymentAllocatables
   storeId: string | null
   customerName: string | null
-  employees: Employee[]
+  employees: AllocationEmployeeCandidate[]
   commissionRates?: CommissionRate[]
   skillTags?: SkillTag[]
   canSave?: boolean
@@ -195,18 +190,13 @@ export default function PaymentAllocationDetailPageClient({
   const skillTagNames = useMemo(() => skillTags.map((t) => t.name), [skillTags])
   // 所有在职员工（不区分门店，后续按 skillTag 动态筛选）
   const allActiveEmployees = useMemo(
-    () => sortByPosition(employees.filter((e) => !e.isResigned)),
+    () => sortAllocationEmployeeCandidates(employees.filter((e) => !e.isResigned)),
     [employees],
   )
 
-  // 外店出差员工仅能在订单所属市场内参与分配。
   const getFilteredEmployees = (skillTag: string) => {
-    if (!skillTag) return []
-    return allActiveEmployees.filter(
-      (e) => Boolean(storeId)
-        && isEmployeeInStoreAssignmentScope(e, storeId!, payment.marketName ?? undefined)
-        && e.skills?.includes(skillTag)
-    )
+    if (!storeId) return []
+    return getAllocationEmployeesForSkill(allActiveEmployees, skillTag)
   }
 
   const items = payment.items || []
@@ -294,9 +284,9 @@ export default function PaymentAllocationDetailPageClient({
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
-        <Link href="/allocations" className="text-[#999999] hover:text-[var(--foreground)]">
+        <ReturnContextLink href="/allocations" className="text-[#999999] hover:text-[var(--foreground)]">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6" /></svg>
-        </Link>
+        </ReturnContextLink>
         <h1 className="text-2xl font-bold text-[var(--foreground)]">{isRefundAllocation ? '营业额分配（退款赤字）' : '营业额分配'}</h1>
       </div>
 
@@ -367,9 +357,9 @@ export default function PaymentAllocationDetailPageClient({
 
       {isRefundAllocation || !canSave ? (
         <div className="flex justify-end">
-          <Link href="/allocations">
+          <ReturnContextLink href="/allocations">
             <Button variant="outline">返回</Button>
-          </Link>
+          </ReturnContextLink>
         </div>
       ) : (
         <Card>
@@ -396,7 +386,7 @@ function ItemAllocationCard({
 }: {
   item: PaymentAllocationGroup
   entries: AllocationEntry[]
-  getFilteredEmployees: (skillTag: string) => Employee[]
+  getFilteredEmployees: (skillTag: string) => AllocationEmployeeCandidate[]
   skillTagNames: string[]
   readOnly?: boolean
   onAdd: (groupId: string) => void
@@ -590,6 +580,7 @@ function SaveButton({
 }) {
   const [pending, startTransition] = useTransition()
   const router = useRouter()
+  const { goToReturn } = useReturnContext('/allocations')
 
   const handleSave = () => {
     const flatAllocations: Array<{
@@ -653,7 +644,7 @@ function SaveButton({
       const res = await savePaymentAllocations(salePaymentId, flatAllocations)
       if (res.success) {
         toast.success(res.message)
-        router.push('/allocations')
+        goToReturn(true)
       } else {
         toast.error(res.message)
       }
@@ -662,9 +653,9 @@ function SaveButton({
 
   return (
     <div className="flex justify-end gap-3">
-      <Link href="/allocations">
+      <ReturnContextLink href="/allocations">
         <Button variant="outline">取消</Button>
-      </Link>
+      </ReturnContextLink>
       <Button onClick={handleSave} loading={pending}>保存分配</Button>
     </div>
   )

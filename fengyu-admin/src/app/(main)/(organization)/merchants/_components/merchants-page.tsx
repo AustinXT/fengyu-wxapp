@@ -17,6 +17,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { formatDateTime } from "@/lib/utils"
 import MarketStoreFilter from "@/components/market-store-filter"
 import { OnboardingList } from "../onboarding/_components/onboarding-page"
+import { PreserveListContextLink } from "@/components/return-context"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -40,7 +41,7 @@ export default function MerchantsPage({
   const router = useRouter()
   const { get, setMany } = useUrlFilters()
   const [searchInput, setSearchInput] = useState(get("q"))
-  const [activeTab, setActiveTab] = useState<"merchants" | "onboarding">("merchants")
+  const activeTab = get("tab") === "onboarding" ? "onboarding" : "merchants"
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const enabledFilter = get("enabled")
@@ -64,12 +65,12 @@ export default function MerchantsPage({
       key: "merchantName",
       header: "商户名称",
       cell: (row) => (
-        <Link
+        <PreserveListContextLink
           href={`/merchants/${row.id}`}
           className="font-medium text-[var(--primary)] hover:underline"
         >
           {row.merchantName}
-        </Link>
+        </PreserveListContextLink>
       ),
     },
     {
@@ -129,7 +130,7 @@ export default function MerchantsPage({
         </div>
       </div>
 
-      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as "merchants" | "onboarding")}>
+      <Tabs value={activeTab} onValueChange={(value) => setMany({ tab: value === "onboarding" ? value : "", page: "" })}>
         <TabsList>
           <TabsTrigger value="merchants">收款商户</TabsTrigger>
           {canOnboard && <TabsTrigger value="onboarding">入网申请</TabsTrigger>}

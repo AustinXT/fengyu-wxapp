@@ -80,7 +80,8 @@ async function main() {
 
   // 5. appointment.list — manager 可见 3 张 fixture
   const lr = await invokeStaffApi('appointment.list', {
-    _testOpenid: TEST_MANAGER_OPENID, page: 1, pageSize: 50,
+    _testOpenid: TEST_MANAGER_OPENID, keyword: NS,
+    startDate: '2000-01-01', endDate: '2100-12-31', page: 1, pageSize: 50,
   })
   if (lr.code !== 0) {
     errors.push(`appointment.list 应成功，实际 code=${lr.code} msg=${lr.message}`)
