@@ -78,6 +78,9 @@
     >
       <van-tab title="基本档案">
         <view class="tab-content">
+          <view wx:if="{{isManager}}" class="profile-edit-bar">
+            <van-button size="small" plain type="primary" loading="{{profileSaving}}" bindtap="onOpenProfileEditor">编辑基本档案</van-button>
+          </view>
           <van-cell-group class="card-group">
             <van-cell
               title="客户姓名"
@@ -87,7 +90,6 @@
               bind:click="onEditCustomerName"
             />
             <van-cell wx:if="{{customer.gender}}" title="客户性别" value="{{customer.gender}}" />
-            <van-cell title="手机号" value="{{isManager ? customer.phone : customer.phoneMasked}}" />
             <van-cell wx:if="{{customer.storeName}}" title="注册门店" value="{{customer.storeName}}" />
             <van-cell
               title="指定美容师"
@@ -119,6 +121,7 @@
             <van-cell wx:if="{{customer.focusAreas}}" title="改善重点" value="{{customer.focusAreas}}" />
             <van-cell title="肌肤问题" value="{{customer.skinIssue || '—'}}" />
             <van-cell title="养生偏好" value="{{customer.wellnessPreference || '—'}}" />
+            <van-cell title="临时跨门店" value="{{customer.isCrossStoreTemp ? '是（今日有效）' : '否'}}" />
             <van-cell title="积分余额" value="{{customer.pointsBalance}}" />
             <van-field
               wx:if="{{isManager}}"
@@ -455,6 +458,109 @@
     bind:cancel="onAssignClose"
     bind:select="onAssignSelect"
   />
+
+  <van-popup
+    wx:if="{{isManager}}"
+    show="{{showProfileEditor}}"
+    position="bottom"
+    round
+    closeable
+    custom-style="height: 88%;"
+    bind:close="onCloseProfileEditor"
+  >
+    <view class="profile-editor">
+      <view class="profile-editor__title">编辑基本档案</view>
+      <scroll-view scroll-y class="profile-editor__body">
+        <van-cell-group>
+          <van-cell title="员工推荐人" value="{{profileForm.promoterEmployeeName || '未设置'}}" />
+          <view class="profile-editor__search">
+            <van-search
+              value="{{promoterSearchKeyword}}"
+              placeholder="输入员工姓名或手机号（至少3位）"
+              show-action
+              use-action-slot
+              loading="{{promoterSearchLoading}}"
+              bind:change="onPromoterKeywordChange"
+              bind:search="onSearchPromoterEmployees"
+            >
+              <view slot="action" class="profile-editor__search-action" bindtap="onSearchPromoterEmployees">搜索</view>
+            </van-search>
+            <view
+              wx:for="{{promoterCandidates}}"
+              wx:key="employeeId"
+              class="promoter-candidate"
+              data-id="{{item.employeeId}}"
+              bindtap="onSelectPromoterEmployee"
+            >
+              <view class="promoter-candidate__main">
+                <text class="promoter-candidate__name">{{item.name}}</text>
+                <text class="promoter-candidate__meta">{{item.phoneMasked}} · {{item.storeName}}</text>
+              </view>
+              <van-icon name="arrow" color="#969799" />
+            </view>
+            <view wx:if="{{profileForm.promoterEmployeeId}}" class="profile-editor__clear-row">
+              <van-button size="small" plain bindtap="onClearPromoterEmployee">清空推荐员工</van-button>
+            </view>
+          </view>
+
+          <picker mode="selector" range="{{customerSourceOptions}}" range-key="label" bindchange="onCustomerSourceChange">
+            <van-cell title="顾客来源" value="{{customerSourceLabel}}" is-link />
+          </picker>
+
+          <view class="profile-editor__date-row">
+            <picker class="profile-editor__date-picker" mode="date" value="{{profileForm.birthday}}" bindchange="onBirthdayChange">
+              <van-cell title="生日" value="{{profileForm.birthday || '未设置'}}" is-link />
+            </picker>
+            <van-button wx:if="{{profileForm.birthday}}" size="small" plain bindtap="onClearBirthday">清空</van-button>
+          </view>
+
+          <van-field
+            label="职业"
+            maxlength="50"
+            value="{{profileForm.occupation}}"
+            placeholder="请输入职业"
+            data-field="occupation"
+            bind:change="onProfileTextChange"
+          />
+
+          <picker mode="selector" range="{{marriageOptions}}" range-key="label" bindchange="onMarriageChange">
+            <van-cell title="婚姻状况" value="{{marriageLabel}}" is-link />
+          </picker>
+
+          <van-field
+            label="肌肤问题"
+            type="textarea"
+            maxlength="200"
+            autosize
+            show-word-limit
+            value="{{profileForm.skinIssue}}"
+            placeholder="请输入肌肤问题"
+            data-field="skinIssue"
+            bind:change="onProfileTextChange"
+          />
+
+          <van-field
+            label="养生偏好"
+            type="textarea"
+            maxlength="200"
+            autosize
+            show-word-limit
+            value="{{profileForm.wellnessPreference}}"
+            placeholder="请输入养生偏好"
+            data-field="wellnessPreference"
+            bind:change="onProfileTextChange"
+          />
+
+          <van-cell title="临时跨门店" label="开启后今日可在其他门店开单；每日03:00自动关闭">
+            <van-switch slot="right-icon" checked="{{profileForm.isCrossStoreTemp}}" size="44rpx" active-color="#C0322A" bind:change="onCrossStoreTempChange" />
+          </van-cell>
+        </van-cell-group>
+      </scroll-view>
+      <view class="profile-editor__footer">
+        <van-button block type="primary" loading="{{profileSaving}}" disabled="{{profileSaving}}" bindtap="onSaveProfile">保存</van-button>
+      </view>
+    </view>
+  </van-popup>
 </view>
 
 <!-- 底部操作栏（持卡汇总选中时） -->

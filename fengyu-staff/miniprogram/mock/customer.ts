@@ -9,8 +9,18 @@ const MOCK_CUSTOMERS = [
     phoneMasked: '138****8000',
     memberLevel: 'VIP',
     preferredStaffName: '李芳芳',
+    promoterEmployeeId: 'emp-001',
+    promoterEmployeeName: '陈推广',
+    customerSource: '老带新',
+    birthday: '1990-05-18',
+    occupation: '教师',
+    isMarried: true,
     skinType: '干性',
     focusAreas: '色斑、细纹',
+    skinIssue: '干燥、细纹',
+    wellnessPreference: '艾灸',
+    isCrossStoreTemp: false,
+    updatedAt: '2026-08-26T00:00:00.000Z',
     totalConsumption: 128600,
     yearConsumption: 18500,
     totalActualConsumption: 72600,
@@ -24,8 +34,18 @@ const MOCK_CUSTOMERS = [
     phoneMasked: '139****5000',
     memberLevel: '普通',
     preferredStaffName: '李芳芳',
+    promoterEmployeeId: null,
+    promoterEmployeeName: null,
+    customerSource: '美团',
+    birthday: null,
+    occupation: null,
+    isMarried: null,
     skinType: '油性',
     focusAreas: '毛孔、痘印',
+    skinIssue: '毛孔、痘印',
+    wellnessPreference: null,
+    isCrossStoreTemp: false,
+    updatedAt: '2026-08-26T00:00:00.000Z',
     totalConsumption: 45200,
     yearConsumption: 8800,
     totalActualConsumption: 26700,
@@ -39,8 +59,18 @@ const MOCK_CUSTOMERS = [
     phoneMasked: '136****3000',
     memberLevel: '普通',
     preferredStaffName: null,
+    promoterEmployeeId: null,
+    promoterEmployeeName: null,
+    customerSource: '小程序',
+    birthday: null,
+    occupation: null,
+    isMarried: null,
     skinType: '混合性',
     focusAreas: '补水、嫩肤',
+    skinIssue: null,
+    wellnessPreference: null,
+    isCrossStoreTemp: false,
+    updatedAt: '2026-08-26T00:00:00.000Z',
     totalConsumption: 12000,
     yearConsumption: 12000,
     totalActualConsumption: 6400,
@@ -153,5 +183,27 @@ export const customerHandlers: Record<string, (payload: Record<string, any>) => 
 
   'customer.detail': (payload) => {
     return MOCK_CUSTOMERS.find(c => c.id === payload.id) || MOCK_CUSTOMERS[0]
+  },
+
+  'customer.searchPromoterEmployees': () => ([
+    { employeeId: 'emp-001', name: '陈推广', phoneMasked: '138****1001', storeName: '南昌旗舰店' },
+    { employeeId: 'emp-002', name: '李芳芳', phoneMasked: '139****1002', storeName: '南昌旗舰店' },
+  ]),
+
+  'customer.updateProfile': (payload) => {
+    const customer = MOCK_CUSTOMERS.find(c => c.clientUserId === payload.clientUserId) as any
+    const changes = { ...(payload.changes || {}) }
+    if (Object.prototype.hasOwnProperty.call(changes, 'promoterEmployeeId')) {
+      const promoter = changes.promoterEmployeeId === 'emp-001'
+        ? { name: '陈推广' }
+        : changes.promoterEmployeeId === 'emp-002'
+          ? { name: '李芳芳' }
+          : null
+      changes.promoterEmployeeName = promoter?.name || null
+    }
+    if (customer) Object.assign(customer, changes)
+    const updatedAt = new Date().toISOString()
+    if (customer) customer.updatedAt = updatedAt
+    return { updatedAt, changes }
   },
 }

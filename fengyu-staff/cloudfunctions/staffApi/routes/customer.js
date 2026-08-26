@@ -21,7 +21,7 @@ const {
 } = require("../utils/scope");
 const { maskPhone } = require("../utils/pii");
 const { maskPhoneForAuth } = require("../utils/phone-visibility");
-const { logOperation } = require("../utils/operation-log");
+const { logOperation, logUpdate } = require("../utils/operation-log");
 const { shanghaiDateStr } = require("../utils/datetime");
 const { excludeDepositRefundSql } = require("../utils/consume-filter");
 const { getPointsToYuanRate, getPointsDeductionMaxRate } = require("../utils/config");
@@ -49,6 +49,114 @@ const CUSTOMER_TYPE_VALUES = ['流量客', '体验客', '小美客', '会员客'
 const SPENDING_TIER_VALUES = ['10W+', '6-10W', '3-6W', '1-3W', '1990-1W', '<1990'];
 const MONTHLY_ACTIVITY_VALUES = ['二次客活', '一次客活', '0次客活'];
 const CUSTOMER_STATUS_VALUES = ['保有会员-稳定', '保有会员-有效', '沉睡', '冰冻', '休眠'];
+const CUSTOMER_SOURCE_VALUES = [
+  '美团', '抖音', '小程序', '推广部', '全员地推',
+  '外请团队拓客', '老带新', '转让店', '自进店', '员工或家属',
+];
+const WORKFINE_PROFILE_FIELD_MAP = {
+  customerSource: 'customer_source',
+  birthday: 'birthday',
+  occupation: 'occupation',
+  isMarried: 'is_married',
+  skinIssue: 'skin_issue',
+  wellnessPreference: 'wellness_preference',
+};
+const EDITABLE_PROFILE_FIELDS = new Set([
+  'promoterEmployeeId',
+  ...Object.keys(WORKFINE_PROFILE_FIELD_MAP),
+  'isCrossStoreTemp',
+]);
+const PROFILE_DB_FIELD_MAP = {
+  promoterEmployeeId: 'promoter_employee_id',
+  customerSource: 'customer_source',
+  birthday: 'birthday',
+  occupation: 'occupation',
+  isMarried: 'is_married',
+  skinIssue: 'skin_issue',
+  wellnessPreference: 'wellness_preference',
+  isCrossStoreTemp: 'is_cross_store_temp',
+};
+
+function nullableText(value, fieldLabel, maxLength) {
+  if (value === null || value === '') return null;
+  if (typeof value !== 'string') {
+    throw new Error(`INVALID_PARAMS: ${fieldLabel}必须为字符串或 null`);
+  }
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.length > maxLength) {
+    throw new Error(`INVALID_PARAMS: ${fieldLabel}不能超过${maxLength}个字符`);
+  }
+  return trimmed;
+}
+
+function normalizeBirthday(value) {
+  if (value === null || value === '') return null;
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error('INVALID_PARAMS: 生日格式必须为 YYYY-MM-DD');
+  }
+  const [year, month, day] = value.split('-').map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  if (parsed.getUTCFullYear() !== year
+    || parsed.getUTCMonth() !== month - 1
+    || parsed.getUTCDate() !== day) {
+    throw new Error('INVALID_PARAMS: 生日日期无效');
+  }
+  return value;
+}
+
+function normalizeProfileChanges(changes) {
+  if (!changes || typeof changes !== 'object' || Array.isArray(changes)) {
+    throw new Error('INVALID_PARAMS: changes 必须为对象');
+  }
+  const keys = Object.keys(changes);
+  if (keys.length === 0) throw new Error('INVALID_PARAMS: 没有需要保存的档案字段');
+  const unexpected = keys.filter((key) => !EDITABLE_PROFILE_FIELDS.has(key));
+  if (unexpected.length > 0) {
+    throw new Error(`INVALID_PARAMS: 包含不允许修改的字段：${unexpected.join('、')}`);
+  }
+
+  const normalized = {};
+  for (const key of keys) {
+    const value = changes[key];
+    if (key === 'promoterEmployeeId') {
+      normalized[key] = nullableText(value, '推荐员工', 30);
+    } else if (key === 'customerSource') {
+      const source = nullableText(value, '顾客来源', 30);
+      if (source !== null && !CUSTOMER_SOURCE_VALUES.includes(source)) {
+        throw new Error('INVALID_PARAMS: 顾客来源不在允许范围内');
+      }
+      normalized[key] = source;
+    } else if (key === 'birthday') {
+      normalized[key] = normalizeBirthday(value);
+    } else if (key === 'occupation') {
+      normalized[key] = nullableText(value, '职业', 50);
+    } else if (key === 'isMarried') {
+      if (value !== null && typeof value !== 'boolean') {
+        throw new Error('INVALID_PARAMS: 婚姻状况必须为布尔值或 null');
+      }
+      normalized[key] = value;
+    } else if (key === 'skinIssue') {
+      normalized[key] = nullableText(value, '肌肤问题', 200);
+    } else if (key === 'wellnessPreference') {
+      normalized[key] = nullableText(value, '养生偏好', 200);
+    } else if (key === 'isCrossStoreTemp') {
+      if (typeof value !== 'boolean') {
+        throw new Error('INVALID_PARAMS: 临时跨门店必须为布尔值');
+      }
+      normalized[key] = value;
+    }
+  }
+  return normalized;
+}
+
+function normalizeDbProfileValue(field, value) {
+  if (value === undefined || value === null) return null;
+  if (field === 'birthday' && value instanceof Date) {
+    return value.toISOString().slice(0, 10);
+  }
+  return value;
+}
 
 /**
  * 顾客档案拓展筛选条件构造（顾客 Tab 拓展筛选区用）。
@@ -361,6 +469,7 @@ async function detail(ctx) {
   const selectCols = `c.user_id, c.phone, c.name, c.customer_id, c.member_level,
     c.bound_employee_id, c.skin_type, c.improvement_focus,
     c.skin_issue, c.wellness_preference, c.gender, c.notes, c.customer_source,
+    c.promoter_employee_id, c.is_cross_store_temp, c.updated_at,
     COALESCE(promoter.name, c.promoter_employee_name) AS promoter_employee_name,
     c.inviter_user_id, c.invited_at, c.customer_type,
     c.spending_tier, c.monthly_activity, c.customer_status, c.birthday,
@@ -470,6 +579,7 @@ async function detail(ctx) {
     storeName: pgUser.store_name ? pgUser.store_name.trim() : "",
     preferredStaffName,
     customerSource: pgUser.customer_source || null,
+    promoterEmployeeId: pgUser.promoter_employee_id || null,
     promoterEmployeeName: pgUser.promoter_employee_name || null,
     inviterName: pgUser.inviter_name || null,
     inviterPhone: maskPhoneForAuth(pgUser.inviter_phone || '', ctx.auth),
@@ -486,6 +596,10 @@ async function detail(ctx) {
     focusAreas: pgUser.improvement_focus || null,
     skinIssue: pgUser.skin_issue || null,
     wellnessPreference: pgUser.wellness_preference || null,
+    isCrossStoreTemp: pgUser.is_cross_store_temp === true,
+    updatedAt: pgUser.updated_at instanceof Date
+      ? pgUser.updated_at.toISOString()
+      : String(pgUser.updated_at || ''),
     notes: pgUser.notes || null,
     pointsBalance: Number(pgUser.points_balance) || 0,
     lastServiceDate: visitInfo.lastServiceDate,
@@ -1487,6 +1601,166 @@ async function refundHistory(ctx) {
 }
 
 /**
+ * 搜索顾客的推荐员工候选（仅当前门店有效店长）。
+ */
+async function searchPromoterEmployees(ctx) {
+  await requireManager()(ctx, async () => {})
+
+  const { clientUserId, keyword } = ctx.event.payload || {}
+  if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
+  if (typeof keyword !== 'string' || keyword.trim().length < 3) {
+    throw new Error('INVALID_PARAMS: 请输入至少3个字符搜索员工')
+  }
+
+  const { boundStoreId } = await assertCustomerInScope(pg, ctx.auth, clientUserId)
+  const pattern = `%${keyword.trim()}%`
+  const rows = await pg.query(`
+    SELECT u.employee_id, u.name, u.phone, u.store_id, s.store_name
+    FROM staff_wechat_users u
+    LEFT JOIN stores s ON s.store_id = u.store_id
+    WHERE u.is_resigned = false
+      AND u.store_id = $1
+      AND (u.name ILIKE $2 OR u.phone ILIKE $2)
+    ORDER BY u.name
+    LIMIT 20
+  `, [boundStoreId, pattern])
+
+  ctx.result = rows.map((row) => ({
+    employeeId: row.employee_id,
+    name: row.name || '',
+    phoneMasked: maskPhone(row.phone || ''),
+    storeName: row.store_name || '',
+  }))
+}
+
+/**
+ * 更新顾客基本档案（仅当前门店有效店长）。
+ */
+async function updateProfile(ctx) {
+  await requireManager()(ctx, async () => {})
+
+  const { clientUserId, expectedUpdatedAt, changes } = ctx.event.payload || {}
+  if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
+  if (typeof expectedUpdatedAt !== 'string' || !expectedUpdatedAt.trim()) {
+    throw new Error('INVALID_PARAMS: 缺少 expectedUpdatedAt')
+  }
+  const normalized = normalizeProfileChanges(changes)
+
+  ctx.result = await pg.transaction(async (client) => {
+    const beforeResult = await client.query(`
+      SELECT user_id, bound_store_id, promoter_employee_id, promoter_employee_name,
+             customer_source, birthday, occupation, is_married, skin_issue,
+             wellness_preference, is_cross_store_temp, workfine_override_fields, updated_at
+      FROM client_wechat_users
+      WHERE user_id = $1
+      FOR UPDATE
+    `, [clientUserId])
+    const before = beforeResult.rows[0]
+    if (!before) throw new Error('PERMISSION_DENIED: 顾客不存在')
+    if (!isStoreInScope(ctx.auth, before.bound_store_id)) {
+      throw new Error('PERMISSION_DENIED: 顾客不在当前门店范围内')
+    }
+
+    let promoterName = before.promoter_employee_name || null
+    if (Object.prototype.hasOwnProperty.call(normalized, 'promoterEmployeeId')) {
+      const promoterId = normalized.promoterEmployeeId
+      if (promoterId) {
+        const promoterResult = await client.query(`
+          SELECT employee_id, name, store_id
+          FROM staff_wechat_users
+          WHERE employee_id = $1 AND is_resigned = false
+          LIMIT 1
+        `, [promoterId])
+        const promoter = promoterResult.rows[0]
+        if (!promoter || promoter.store_id !== before.bound_store_id) {
+          throw new Error('PERMISSION_DENIED: 推荐员工不存在、已离职或不在当前门店')
+        }
+        promoterName = promoter.name || null
+      } else {
+        promoterName = null
+      }
+    }
+
+    const actualChanges = {}
+    for (const [field, value] of Object.entries(normalized)) {
+      const oldValue = normalizeDbProfileValue(field, before[PROFILE_DB_FIELD_MAP[field]])
+      if (JSON.stringify(oldValue) !== JSON.stringify(value)) actualChanges[field] = value
+    }
+
+    if (Object.keys(actualChanges).length === 0) {
+      return {
+        updatedAt: before.updated_at instanceof Date
+          ? before.updated_at.toISOString()
+          : String(before.updated_at || ''),
+        changes: {},
+      }
+    }
+
+    const setClauses = []
+    const params = []
+    const param = (value) => {
+      params.push(value)
+      return `$${params.length}`
+    }
+    for (const [field, value] of Object.entries(actualChanges)) {
+      setClauses.push(`${PROFILE_DB_FIELD_MAP[field]} = ${param(value)}`)
+      if (field === 'promoterEmployeeId') {
+        setClauses.push(`promoter_employee_name = ${param(promoterName)}`)
+      }
+    }
+
+    const overrideFields = Object.keys(actualChanges)
+      .filter((field) => Object.prototype.hasOwnProperty.call(WORKFINE_PROFILE_FIELD_MAP, field))
+      .map((field) => WORKFINE_PROFILE_FIELD_MAP[field])
+    if (overrideFields.length > 0) {
+      const overrideParam = param(overrideFields)
+      setClauses.push(`workfine_override_fields = ARRAY(
+        SELECT DISTINCT unnest(workfine_override_fields || ${overrideParam}::text[])
+      )`)
+    }
+    setClauses.push('updated_at = NOW()')
+    params.push(clientUserId, expectedUpdatedAt)
+    const userIdParam = `$${params.length - 1}`
+    const updatedAtParam = `$${params.length}`
+
+    const updateResult = await client.query(`
+      UPDATE client_wechat_users
+      SET ${setClauses.join(', ')}
+      WHERE user_id = ${userIdParam}
+        AND date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', ${updatedAtParam}::timestamptz)
+      RETURNING updated_at
+    `, params)
+    if (updateResult.rows.length === 0) {
+      throw new Error('CONFLICT: 顾客档案已被其他人修改，请刷新后重试')
+    }
+
+    const auditBefore = {}
+    const auditAfter = {}
+    for (const [field, value] of Object.entries(actualChanges)) {
+      auditBefore[field] = normalizeDbProfileValue(field, before[PROFILE_DB_FIELD_MAP[field]])
+      auditAfter[field] = value
+    }
+    if (Object.prototype.hasOwnProperty.call(actualChanges, 'promoterEmployeeId')) {
+      auditBefore.promoterEmployeeName = before.promoter_employee_name || null
+      auditAfter.promoterEmployeeName = promoterName
+    }
+    await logUpdate(client, ctx, 'customer.update', 'customer', clientUserId, auditBefore, auditAfter)
+
+    return {
+      updatedAt: updateResult.rows[0].updated_at instanceof Date
+        ? updateResult.rows[0].updated_at.toISOString()
+        : String(updateResult.rows[0].updated_at || ''),
+      changes: {
+        ...actualChanges,
+        ...(Object.prototype.hasOwnProperty.call(actualChanges, 'promoterEmployeeId')
+          ? { promoterEmployeeName: promoterName }
+          : {}),
+      },
+    }
+  })
+}
+
+/**
  * 更新顾客备注
  */
 async function updateNotes(ctx) {
@@ -1890,4 +2164,4 @@ async function coupons(ctx) {
   };
 }
 
-module.exports = { search, calendar, detail, paidOrders, homeProducts, orderHistory, serviceHistory, stats, listByTag, refundHistory, updateName, updateNotes, assign, customerBalance, appointments, phoneChangeLogs, coupons };
+module.exports = { search, calendar, detail, paidOrders, homeProducts, orderHistory, serviceHistory, stats, listByTag, refundHistory, searchPromoterEmployees, updateProfile, updateName, updateNotes, assign, customerBalance, appointments, phoneChangeLogs, coupons };

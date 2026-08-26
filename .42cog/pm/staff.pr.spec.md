@@ -226,6 +226,8 @@
 
 **顾客详情**: 基本信息 + 消费统计；支持双入参（`id` / `clientUserId`）
 
+**基本档案编辑**: 门店模式下仅当前门店有效店长可编辑员工推荐人、顾客来源、生日、职业、婚姻状况、肌肤问题、养生偏好与临时跨门店；普通员工及管理层模式保持只读。员工推荐人必须从当前门店在职员工中按姓名/手机号搜索选择，不接受自由文本。临时跨门店每日 03:00 自动复位。手机号仅在顶部档案卡展示，不在基本档案中重复出现。
+
 **详情页签导航**: 基本档案、消费记录、疗程卡、家居产品、预约记录、服务记录、顾客优惠券、手机号变更、日历共 9 个入口固定展示为 5 列 × 2 排；进入页面即可看到全部入口，不提供也不依赖横向滑动。点击任一入口后，选中态立即更新并加载对应内容；第二排不足 5 项时保留空位，不产生第三排。
 
 **疗程卡列表**: 从已支付 `sale_items` 展示 `剩余 N/M 次`；可勾选批量创建服务单（通过 `globalData._serviceCreatePreload` 预加载）
@@ -237,7 +239,7 @@
 - **实时性**: 订单已支付后 **5 秒内** 日历出现标记；WebSocket 断开时轮询 **30 秒内** 保证一致
 - 同一订单仅计入一次（幂等）
 
-**API**: `customer.search` / `customer.detail` / `customer.calendar` / `customer.paidOrders` / `customer.homeProducts`
+**API**: `customer.search` / `customer.detail` / `customer.searchPromoterEmployees` / `customer.updateProfile` / `customer.calendar` / `customer.paidOrders` / `customer.homeProducts`
 
 ---
 

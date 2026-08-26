@@ -164,6 +164,61 @@ describe('顾客详情权限门禁', () => {
     expect(page.data.customer.preferredStaffName).toBe('美容师乙')
     expect(page.data.profileSaving).toBe(false)
   })
+
+  test('普通员工不能打开基本档案编辑器', () => {
+    const page = createPage('customerDetail')
+    page.data.customer = { clientUserId: 'customer-1', updatedAt: '2026-08-26T00:00:00.000Z' }
+
+    page.onOpenProfileEditor()
+
+    expect(page.data.showProfileEditor).toBe(false)
+  })
+
+  test('店长保存时只提交实际变化字段并即时回填', async () => {
+    setGlobalData({ managerStoreIds: ['store-1'] })
+    const page = createPage('customerDetail')
+    page.data.customer = {
+      clientUserId: 'customer-1', updatedAt: '2026-08-26T00:00:00.000Z',
+      promoterEmployeeId: null, promoterEmployeeName: null, customerSource: '美团', birthday: null,
+      occupation: null, isMarried: null, skinIssue: null, wellnessPreference: null, isCrossStoreTemp: false,
+    }
+    page.onOpenProfileEditor()
+    page.data.profileForm = { ...page.data.profileForm, occupation: '教师', isCrossStoreTemp: true }
+    vi.mocked(callStaffApi).mockResolvedValueOnce({
+      updatedAt: '2026-08-26T01:00:00.000Z',
+      changes: { occupation: '教师', isCrossStoreTemp: true },
+    })
+
+    await page.onSaveProfile()
+
+    expect(callStaffApi).toHaveBeenCalledWith('customer.updateProfile', {
+      clientUserId: 'customer-1',
+      expectedUpdatedAt: '2026-08-26T00:00:00.000Z',
+      changes: { occupation: '教师', isCrossStoreTemp: true },
+    })
+    expect(page.data.customer.occupation).toBe('教师')
+    expect(page.data.customer.isCrossStoreTemp).toBe(true)
+    expect(page.data.showProfileEditor).toBe(false)
+  })
+
+  test('推荐员工搜索结果只提交 employeeId', async () => {
+    setGlobalData({ managerStoreIds: ['store-1'] })
+    const page = createPage('customerDetail')
+    page.data.customer = { clientUserId: 'customer-1' }
+    page.data.promoterSearchKeyword = '138'
+    vi.mocked(callStaffApi).mockResolvedValueOnce([
+      { employeeId: 'EMP-1', name: '王员工', phoneMasked: '138****5678', storeName: '测试店' },
+    ])
+
+    await page.onSearchPromoterEmployees()
+    page.onSelectPromoterEmployee({ currentTarget: { dataset: { id: 'EMP-1' } } })
+
+    expect(callStaffApi).toHaveBeenCalledWith('customer.searchPromoterEmployees', {
+      clientUserId: 'customer-1', keyword: '138',
+    })
+    expect(page.data.profileForm.promoterEmployeeId).toBe('EMP-1')
+    expect(page.data.profileForm.promoterEmployeeName).toBe('王员工')
+  })
 })
 
 describe('顾客分配数据契约', () => {
