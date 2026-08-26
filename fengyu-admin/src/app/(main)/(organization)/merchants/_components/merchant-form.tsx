@@ -4,6 +4,7 @@ import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
+import { useReturnContext } from "@/components/return-context"
 import {
   createMerchant,
   updateMerchant,
@@ -28,6 +29,7 @@ export default function MerchantForm({
   markets: MerchantMarketOption[]
 }) {
   const router = useRouter()
+  const { forwardHref } = useReturnContext('/merchants')
   const isEdit = !!merchant
   const [saving, setSaving] = useState(false)
   const [formDirty, setFormDirty] = useState(false)
@@ -75,7 +77,7 @@ export default function MerchantForm({
       }
       setFormDirty(false)
       toast.success(result.message)
-      router.push(isEdit ? `/merchants/${merchant!.id}` : "/merchants")
+      router.push(isEdit ? forwardHref(`/merchants/${merchant!.id}`) : "/merchants")
       router.refresh()
     } catch {
       toast.error(isEdit ? "保存失败" : "创建失败")
@@ -87,7 +89,7 @@ export default function MerchantForm({
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
-        <Button type="button" variant="outline" size="sm" onClick={() => router.back()}>
+        <Button type="button" variant="outline" size="sm" onClick={() => isEdit ? router.push(forwardHref(`/merchants/${merchant!.id}`)) : router.back()}>
           &larr; 返回
         </Button>
         <h1 className="text-2xl font-bold text-[var(--foreground)]">
@@ -182,7 +184,7 @@ export default function MerchantForm({
       </Card>
 
       <div className="flex justify-end gap-3">
-        <Button type="button" variant="outline" onClick={() => router.back()}>
+        <Button type="button" variant="outline" onClick={() => isEdit ? router.push(forwardHref(`/merchants/${merchant!.id}`)) : router.back()}>
           取消
         </Button>
         <Button type="button" onClick={handleSubmit} disabled={saving}>

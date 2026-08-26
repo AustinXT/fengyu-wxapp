@@ -26,6 +26,7 @@ import { ExportButton } from "@/components/ui/export-button";
 import { fmtDate, fmtDateTime } from "@/lib/datetime";
 import { actionErrorMessage } from "@/lib/action-error";
 import { useUrlFilters } from "@/lib/hooks/use-url-filters";
+import { PreserveListContextLink } from "@/components/return-context";
 import { ORDER_STATUS_FILTER_OPTIONS, ORDER_TYPE_FILTER_OPTIONS, parseOrderStatusFilters, parseOrderTypeFilters } from "@/lib/list-filters";
 import type { SaleOrder } from "@/lib/types";
 import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types";
@@ -458,9 +459,9 @@ export default function OrdersPageClient({
                 {orders.map((order) => (
                   <tr key={order.saleOrderId} className="hover:bg-[#FFF0EE] transition-colors">
                     <td className="px-4 py-3">
-                      <Link href={`/orders/${order.saleOrderId}`} className="text-[var(--primary)] hover:underline">
+                      <PreserveListContextLink href={`/orders/${order.saleOrderId}`} className="text-[var(--primary)] hover:underline">
                         {order.saleOrderId}
-                      </Link>
+                      </PreserveListContextLink>
                     </td>
                     <td className="px-4 py-3">
                       <Badge variant="secondary" className={orderTypeColorMap[order.saleOrderType] || ""}>

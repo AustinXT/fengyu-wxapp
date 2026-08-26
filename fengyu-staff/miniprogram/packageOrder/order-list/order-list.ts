@@ -80,7 +80,7 @@ Page({
     presetStatus: '',
   },
 
-  _loaded: false,
+  _skipNextShowRefresh: false,
   _loadToken: 0,
 
   onLoad(options) {
@@ -93,15 +93,18 @@ Page({
       const status = statusMap[options.status] || '';
       this.setData({ status, presetStatus: options.status });
     }
+    // 微信首次进入页面时会在 onLoad 后紧接着触发 onShow；该次刷新由 onLoad 负责。
+    this._skipNextShowRefresh = true;
     this.resetAndLoad();
-    this._loaded = true;
   },
 
   onShow() {
-    // 首次由 onLoad 加载，后续 navigateBack 回来时刷新
-    if (this._loaded) {
-      this.resetAndLoad();
+    if (this._skipNextShowRefresh) {
+      this._skipNextShowRefresh = false;
+      return;
     }
+    // 从详情页 navigateBack 回来时刷新。
+    this.resetAndLoad();
   },
 
   onPullDownRefresh() {

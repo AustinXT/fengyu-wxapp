@@ -250,6 +250,26 @@ describe('auth.bindStore', () => {
     expect(ctx.result.boundStoreName).toBe('凤御测试店')
   })
 
+  test('来源渠道与 WorkFine 人工覆盖标记在同一条 UPDATE 中写入', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'store-bind-openid' })
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: '138' }])
+    pg.query.mockResolvedValueOnce([{
+      store_id: 'store-001',
+      store_name: '凤御测试店',
+      market_name: '华东市场',
+    }])
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createCtx({ payload: { storeId: 'store-001', sourceChannel: '抖音' } })
+    await routes.bindStore(ctx)
+
+    const [updateSql, updateParams] = pg.query.mock.calls[2]
+    expect(updateSql).toContain('customer_source')
+    expect(updateSql).toContain('workfine_override_fields = ARRAY')
+    expect(updateSql).toContain("ARRAY['customer_source']::text[]")
+    expect(updateParams).toContain('抖音')
+  })
+
   test('推荐人姓名写入 promoter_employee_name', async () => {
     cloud.getWXContext.mockReturnValue({ OPENID: 'store-bind-openid' })
     pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: '138' }])

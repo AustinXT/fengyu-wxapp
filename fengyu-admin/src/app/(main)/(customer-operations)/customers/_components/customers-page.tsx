@@ -5,6 +5,7 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
+import { PreserveListContextLink } from "@/components/return-context"
 import type { Customer, Store } from "@/lib/types"
 import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types"
 import MarketStoreFilter from "@/components/market-store-filter"
@@ -200,11 +201,11 @@ export default function CustomersPage({
       key: "actions",
       header: "操作",
       cell: (row) => (
-        <Link href={`/customers/${row.userId}`}>
+        <PreserveListContextLink href={`/customers/${row.userId}`}>
           <Button variant="link" size="sm" className="h-auto p-0">
             详情
           </Button>
-        </Link>
+        </PreserveListContextLink>
       ),
     },
   ]

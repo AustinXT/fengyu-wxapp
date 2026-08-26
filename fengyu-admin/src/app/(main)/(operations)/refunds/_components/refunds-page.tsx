@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/ui/badge"
 import type { RefundListItem } from "@/actions/refunds"
 import { formatDateTime as fmtDateTime } from "@/lib/utils"
+import { PreserveListContextLink } from "@/components/return-context"
 
 type RefundStatus = '待审批' | '已支付' | '已关闭'
 
@@ -87,9 +88,9 @@ export default function RefundsPageClient({
                   return (
                     <tr key={r.refundPaymentId} className="hover:bg-[#FFF0EE] transition-colors">
                       <td className="px-4 py-3 font-medium">
-                        <Link href={`/refunds/${r.refundPaymentId}`} className="text-[var(--primary)] hover:underline">
+                        <PreserveListContextLink href={`/refunds/${r.refundPaymentId}`} className="text-[var(--primary)] hover:underline">
                           #{r.refundPaymentId}
-                        </Link>
+                        </PreserveListContextLink>
                       </td>
                       <td className="px-4 py-3">
                         {r.refSaleOrderId ? (
@@ -111,11 +112,11 @@ export default function RefundsPageClient({
                       <td className="px-4 py-3">{r.operatorName || '—'}</td>
                       <td className="px-4 py-3 whitespace-nowrap">{formatDateTime(r.createdAt)}</td>
                       <td className="px-4 py-3 text-right">
-                        <Link href={`/refunds/${r.refundPaymentId}`}>
+                        <PreserveListContextLink href={`/refunds/${r.refundPaymentId}`}>
                           <Button size="sm" variant="outline">
                             {r.status === '待审批' ? '审批' : '查看'}
                           </Button>
-                        </Link>
+                        </PreserveListContextLink>
                       </td>
                     </tr>
                   )

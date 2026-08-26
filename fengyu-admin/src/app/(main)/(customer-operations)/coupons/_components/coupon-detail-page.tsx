@@ -4,6 +4,7 @@ import { useState, useMemo, useCallback, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
+import { useReturnContext } from "@/components/return-context"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { DatePicker } from "@/components/ui/date-picker"
@@ -65,6 +66,7 @@ interface Props {
 
 export default function CouponDetailPage({ template, markets, issuedCoupons, categories, canCreate, canUpdate }: Props) {
   const router = useRouter()
+  const { goToReturn } = useReturnContext('/coupons')
 
   // Edit mode state
   const [editing, setEditing] = useState(false)
@@ -402,7 +404,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
-        <Button variant="outline" size="sm" onClick={() => router.back()}>
+        <Button variant="outline" size="sm" onClick={() => goToReturn()}>
           &larr; 返回
         </Button>
         <h1 className="text-2xl font-bold text-[var(--foreground)]">

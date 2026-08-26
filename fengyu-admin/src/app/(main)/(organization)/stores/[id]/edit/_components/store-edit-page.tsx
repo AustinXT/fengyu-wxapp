@@ -4,6 +4,7 @@ import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
+import { useReturnContext } from "@/components/return-context"
 import { actionErrorMessage } from "@/lib/action-error"
 import type { Store } from "@/lib/types"
 import { updateStore } from "@/actions/stores"
@@ -29,6 +30,7 @@ export default function StoreEditPage({
   merchantOptions?: MerchantOption[]
 }) {
   const router = useRouter()
+  const { goToReturn } = useReturnContext('/stores')
   const [saving, setSaving] = useState(false)
   const [formDirty, setFormDirty] = useState(false)
   useUnsavedChanges(formDirty)
@@ -65,7 +67,7 @@ export default function StoreEditPage({
       }
       setFormDirty(false)
       toast.success("保存成功")
-      router.push("/stores")
+      goToReturn(true)
     } catch (err) {
       toast.error(actionErrorMessage(err, "保存失败"))
     } finally {
@@ -76,7 +78,7 @@ export default function StoreEditPage({
   return (
     <form action={handleSave} onInput={() => setFormDirty(true)} className="space-y-4">
       <div className="flex items-center gap-3">
-        <Button type="button" variant="outline" size="sm" onClick={() => router.back()}>
+        <Button type="button" variant="outline" size="sm" onClick={() => goToReturn()}>
           &larr; 返回
         </Button>
         <h1 className="text-2xl font-bold text-[var(--foreground)]">
@@ -256,7 +258,7 @@ export default function StoreEditPage({
       <Separator />
 
       <div className="flex justify-end gap-3">
-        <Button type="button" variant="outline" onClick={() => router.back()}>
+        <Button type="button" variant="outline" onClick={() => goToReturn()}>
           取消
         </Button>
         <Button type="submit" disabled={saving}>

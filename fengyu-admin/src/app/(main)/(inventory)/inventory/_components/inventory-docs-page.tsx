@@ -32,6 +32,7 @@ import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { useUrlFilters } from '@/lib/hooks/use-url-filters'
+import { PreserveListContextLink } from '@/components/return-context'
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
 const GENERIC_DOC_TYPE_SET = new Set<InventoryDocType>(INVENTORY_GENERIC_DOC_TYPES)
@@ -197,9 +198,9 @@ export default function InventoryDocsPage({
       header: '操作',
       cell: (r) => (
         <div className="flex gap-2">
-          <Button variant="ghost" size="sm" onClick={() => router.push(`/inventory/docs/${r.id}`)}>
-            详情
-          </Button>
+          <PreserveListContextLink href={`/inventory/docs/${r.id}`}>
+            <Button variant="ghost" size="sm">详情</Button>
+          </PreserveListContextLink>
           {!readOnly && GENERIC_DOC_TYPE_SET.has(r.docType) && canApprove && r.status === '待审批' && (
             <>
               <Button variant="ghost" size="sm" onClick={() => approve(r.id)}>

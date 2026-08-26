@@ -4,6 +4,8 @@ import type { InventoryDocRow, InventoryLocationFilterOptions } from '@/lib/inve
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
+  usePathname: () => '/inventory/docs',
+  useSearchParams: () => new URLSearchParams('status=待审批&page=2'),
 }))
 
 vi.mock('@/lib/hooks/use-url-filters', () => ({

@@ -20,6 +20,7 @@ import {
   type PaymentAllocationItem,
   type PaymentAllocationSignatureLine,
 } from "./payment-allocation-groups"
+import { ReturnContextLink, useReturnContext } from "@/components/return-context"
 
 // ============================================================================
 // 销售提成「回款维度」分配详情（2026-06 需求变更）：分配单元从订单下沉到一笔回款
@@ -283,9 +284,9 @@ export default function PaymentAllocationDetailPageClient({
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
-        <Link href="/allocations" className="text-[#999999] hover:text-[var(--foreground)]">
+        <ReturnContextLink href="/allocations" className="text-[#999999] hover:text-[var(--foreground)]">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6" /></svg>
-        </Link>
+        </ReturnContextLink>
         <h1 className="text-2xl font-bold text-[var(--foreground)]">{isRefundAllocation ? '营业额分配（退款赤字）' : '营业额分配'}</h1>
       </div>
 
@@ -356,9 +357,9 @@ export default function PaymentAllocationDetailPageClient({
 
       {isRefundAllocation || !canSave ? (
         <div className="flex justify-end">
-          <Link href="/allocations">
+          <ReturnContextLink href="/allocations">
             <Button variant="outline">返回</Button>
-          </Link>
+          </ReturnContextLink>
         </div>
       ) : (
         <Card>
@@ -579,6 +580,7 @@ function SaveButton({
 }) {
   const [pending, startTransition] = useTransition()
   const router = useRouter()
+  const { goToReturn } = useReturnContext('/allocations')
 
   const handleSave = () => {
     const flatAllocations: Array<{
@@ -642,7 +644,7 @@ function SaveButton({
       const res = await savePaymentAllocations(salePaymentId, flatAllocations)
       if (res.success) {
         toast.success(res.message)
-        router.push('/allocations')
+        goToReturn(true)
       } else {
         toast.error(res.message)
       }
@@ -651,9 +653,9 @@ function SaveButton({
 
   return (
     <div className="flex justify-end gap-3">
-      <Link href="/allocations">
+      <ReturnContextLink href="/allocations">
         <Button variant="outline">取消</Button>
-      </Link>
+      </ReturnContextLink>
       <Button onClick={handleSave} loading={pending}>保存分配</Button>
     </div>
   )

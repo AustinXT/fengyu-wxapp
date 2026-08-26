@@ -25,6 +25,7 @@ vi.mock('@db/user', () => ({
     spendingTier: 'spending_tier',
     monthlyActivity: 'monthly_activity',
     customerStatus: 'customer_status',
+    workfineOverrideFields: 'workfine_override_fields',
   },
   staffWechatUsers: {
     employeeId: 'employee_id', name: 'name', storeId: 'store_id',
@@ -116,7 +117,10 @@ vi.mock('drizzle-orm', () => ({
   desc: vi.fn((col) => ({ type: 'desc', col })),
   asc: vi.fn((col) => ({ type: 'asc', col })),
   inArray: vi.fn((col, vals) => ({ type: 'inArray', col, vals })),
-  sql: Object.assign(vi.fn(() => ({ as: vi.fn() })), { raw: vi.fn() }),
+  sql: Object.assign(vi.fn(() => ({ as: vi.fn() })), {
+    raw: vi.fn((value) => ({ type: 'raw', value })),
+    join: vi.fn((chunks, separator) => ({ type: 'join', chunks, separator })),
+  }),
   ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
   isNotNull: vi.fn((col) => ({ type: 'isNotNull', col })),
   getTableColumns: vi.fn(() => ({})),
@@ -157,7 +161,7 @@ import { hasRole } from '@/lib/auth'
 import { logUpdate } from '@/lib/operation-log'
 import { clientWechatUsers } from '@db/user'
 import { pointBatches } from '@db/points'
-import { eq, ilike, isNotNull } from 'drizzle-orm'
+import { eq, ilike, isNotNull, sql } from 'drizzle-orm'
 
 const mockSession = {
   employeeId: 'MGR-001',
@@ -1186,6 +1190,65 @@ describe('mergeClientProfile — 积分批次余额重算', () => {
       pointsBalance: expect.anything(),
       pointsUpdatedAt: expect.anything(),
     }))
+  })
+
+  it('迁移孤儿人工档案时传递对应覆盖标记，并保留显式清空标记', async () => {
+    ;(db.select as any)
+      .mockReturnValueOnce(singleRowSelect({
+        userId: 'active-user',
+        openid: 'openid-active',
+        boundStoreId: 'store-1',
+        customerSource: null,
+        occupation: null,
+        skinIssue: '活跃档案已有值',
+        workfineOverrideFields: ['birthday'],
+      }))
+      .mockReturnValueOnce(singleRowSelect({
+        userId: 'orphan-user',
+        openid: null,
+        boundStoreId: 'store-1',
+        customerSource: '抖音',
+        occupation: null,
+        skinIssue: '孤儿档案值',
+        workfineOverrideFields: ['customer_source', 'occupation', 'skin_issue'],
+      }))
+
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = []
+    const tx = {
+      update: vi.fn((table: unknown) => ({
+        set: vi.fn((values: Record<string, unknown>) => {
+          updates.push({ table, values })
+          return { where: vi.fn().mockResolvedValue({ count: 1 }) }
+        }),
+      })),
+      delete: vi.fn(() => ({ where: vi.fn().mockResolvedValue({ count: 1 }) })),
+    }
+    ;(db.transaction as any).mockImplementation(async (fn: (arg: typeof tx) => Promise<void>) => fn(tx))
+
+    const result = await mergeClientProfile('active-user', 'orphan-user')
+
+    expect(result.success).toBe(true)
+    const profilePatch = updates.find(
+      ({ table, values }) => table === clientWechatUsers && 'customerSource' in values,
+    )?.values
+    expect(profilePatch).toEqual(expect.objectContaining({
+      customerSource: '抖音',
+      workfineOverrideFields: expect.anything(),
+    }))
+    expect(profilePatch).not.toHaveProperty('skinIssue')
+    expect((sql as any).join).toHaveBeenCalledTimes(1)
+    expect((sql as any).join.mock.calls[0][0]).toHaveLength(2)
+    expect((sql as any).raw).toHaveBeenCalledWith(', ')
+    const transferValues = (sql as any).mock.calls
+      .map((call: unknown[]) => call[1])
+      .filter((value: unknown) => value === 'customer_source' || value === 'occupation')
+    expect(transferValues).toEqual(expect.arrayContaining(['customer_source', 'occupation']))
+    expect(transferValues).toHaveLength(2)
+    const markerUnionCall = (sql as any).mock.calls.find((call: unknown[]) =>
+      call[1] === clientWechatUsers.workfineOverrideFields
+      && call[2] === (sql as any).join.mock.results[0].value,
+    )
+    expect(markerUnionCall).toBeDefined()
   })
 })
 

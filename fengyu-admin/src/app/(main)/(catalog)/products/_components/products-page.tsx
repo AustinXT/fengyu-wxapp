@@ -13,6 +13,7 @@ import { CategoryCascader } from "@/components/ui/category-cascader"
 import { ExportButton } from "@/components/ui/export-button"
 import { formatCurrency, formatDate } from "@/lib/utils"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
+import { PreserveListContextLink } from "@/components/return-context"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -170,11 +171,11 @@ export default function ProductsPageClient({
       cell: (row) => (
         <div className="flex gap-2">
           {canUpdate && (
-            <Link href={`/products/${row.skuId}`}>
+            <PreserveListContextLink href={`/products/${row.skuId}`}>
               <Button variant="link" size="sm" className="h-auto p-0">
                 编辑
               </Button>
-            </Link>
+            </PreserveListContextLink>
           )}
         </div>
       ),

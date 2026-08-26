@@ -15,6 +15,7 @@ import { Pagination } from "@/components/ui/pagination";
 import { toHttpUrl } from "@/components/ui/image-upload";
 import { formatPhone, buildOrgPath } from "@/lib/utils";
 import { useUrlFilters } from "@/lib/hooks/use-url-filters";
+import { PreserveListContextLink } from "@/components/return-context";
 import { filterValidSkillValues } from "@/lib/list-filters";
 import { ExportButton } from "@/components/ui/export-button";
 import SkillTagManagementDialog from "./skill-tag-management-dialog";
@@ -178,11 +179,11 @@ export default function EmployeesPage({
       key: "actions",
       header: "操作",
       cell: (row) => (
-        <Link href={`/employees/${row.employeeId}`}>
+        <PreserveListContextLink href={`/employees/${row.employeeId}`}>
           <Button variant="link" size="sm" className="h-auto p-0">
             详情
           </Button>
-        </Link>
+        </PreserveListContextLink>
       ),
     },
   ];

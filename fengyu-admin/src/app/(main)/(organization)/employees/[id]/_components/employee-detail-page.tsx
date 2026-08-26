@@ -4,6 +4,7 @@ import { useState, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
+import { useReturnContext } from "@/components/return-context"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { DatePicker, DateTimePicker } from "@/components/ui/date-picker"
@@ -65,6 +66,7 @@ export default function EmployeeDetailPage({
   canDelete = false,
 }: Props) {
   const router = useRouter()
+  const { goToReturn } = useReturnContext('/employees')
 
   // Edit info state
   const [isEditing, setIsEditing] = useState(false)
@@ -292,7 +294,7 @@ export default function EmployeeDetailPage({
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
-        <Button variant="outline" size="sm" onClick={() => router.back()}>
+        <Button variant="outline" size="sm" onClick={() => goToReturn()}>
           &larr; 返回
         </Button>
         <h1 className="text-2xl font-bold text-[var(--foreground)]">

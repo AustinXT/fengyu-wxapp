@@ -13,6 +13,7 @@ import { Separator } from "@/components/ui/separator"
 import { batchSaveAllocations } from "@/actions/allocations"
 import type { SaleOrder, SaleItem, SaleAllocation, AllocationEmployeeCandidate, CommissionRate, SkillTag } from "@/lib/types"
 import { getAllocationEmployeesForSkill, sortAllocationEmployeeCandidates } from "@/lib/allocation-employee"
+import { ReturnContextLink, useReturnContext } from "@/components/return-context"
 
 // --------------- 常量 ---------------
 
@@ -227,9 +228,9 @@ export default function AllocationDetailPageClient({
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
-        <Link href="/allocations" className="text-[#999999] hover:text-[var(--foreground)]">
+        <ReturnContextLink href="/allocations" className="text-[#999999] hover:text-[var(--foreground)]">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6" /></svg>
-        </Link>
+        </ReturnContextLink>
         <h1 className="text-2xl font-bold text-[var(--foreground)]">营业额分配</h1>
       </div>
 
@@ -499,6 +500,7 @@ function SaveButton({
 }) {
   const [pending, startTransition] = useTransition()
   const router = useRouter()
+  const { goToReturn } = useReturnContext('/allocations')
 
   const handleSave = () => {
     const flatAllocations: Array<{
@@ -564,7 +566,7 @@ function SaveButton({
       const res = await batchSaveAllocations(orderId, flatAllocations)
       if (res.success) {
         toast.success(res.message)
-        router.push('/allocations')
+        goToReturn(true)
       } else {
         toast.error(res.message)
       }
@@ -573,9 +575,9 @@ function SaveButton({
 
   return (
     <div className="flex justify-end gap-3">
-      <Link href="/allocations">
+      <ReturnContextLink href="/allocations">
         <Button variant="outline">取消</Button>
-      </Link>
+      </ReturnContextLink>
       <Button onClick={handleSave} loading={pending}>保存分配</Button>
     </div>
   )

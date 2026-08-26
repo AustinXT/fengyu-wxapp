@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { ReturnContextLink } from '@/components/return-context'
 import { notFound } from 'next/navigation'
 import { ArrowLeft } from 'lucide-react'
 import { getInventoryCoreDocById } from '@/actions/inventory/docs'
@@ -93,12 +94,12 @@ export default async function Page({
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center gap-3">
-        <Link
+        <ReturnContextLink
           href="/inventory/docs"
           className="inline-flex items-center gap-1 text-sm text-[#666666] hover:text-[var(--foreground)]"
         >
           <ArrowLeft className="size-4" /> 返回
-        </Link>
+        </ReturnContextLink>
         <h1 className="text-xl font-medium">库存单据详情</h1>
       </div>
 

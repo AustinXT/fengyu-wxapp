@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useUrlFilters } from "@/lib/hooks/use-url-filters";
+import { PreserveListContextLink } from "@/components/return-context";
 import { type AdminCard, type CardFilterOptions } from "@/actions/cards";
 import { ExportButton } from "@/components/ui/export-button";
 import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types";
@@ -97,12 +98,12 @@ export default function CardsPage({ cards, filterOptions, cardFilterOptions, tot
 			header: "商品/规格",
 			cell: (row) => (
 				<div className="flex flex-col">
-					<Link
+					<PreserveListContextLink
 						href={`/cards/${row.saleItemId}`}
 						className="line-clamp-1 font-medium text-[var(--primary)] hover:underline"
 					>
 						{row.productName ?? "—"}
-					</Link>
+					</PreserveListContextLink>
 				</div>
 			),
 		},
