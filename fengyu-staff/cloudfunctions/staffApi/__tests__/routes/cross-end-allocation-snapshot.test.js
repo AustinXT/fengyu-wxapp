@@ -46,7 +46,7 @@ const FILES = {
   overpayReceiptItemBackfill0086Sql: path.join(ARCHIVED_MIGRATIONS_DIR, '0086_overpay_receipt_item_backfill.sql'),
   overpayReceiptItemRemap0090Sql: path.join(ARCHIVED_MIGRATIONS_DIR, '0090_remap_overpay_receipts_by_item_excess.sql'),
   overpayReceiptDrain0029Sql: path.resolve(__dirname, '../../../../../db/migrations/0029_repair_overpay_item_receipts.sql'),
-  refundRolePoolRepair0035Sql: path.resolve(__dirname, '../../../../../db/migrations/0035_repair_refund_role_pool_allocations.sql'),
+  refundRolePoolRepair0036Sql: path.resolve(__dirname, '../../../../../db/migrations/0036_repair_refund_role_pool_allocations.sql'),
   refundAllocationMirrorBackfill0087Sql: path.join(ARCHIVED_MIGRATIONS_DIR, '0087_refund_allocation_mirror_backfill.sql'),
 
   payNotifyIndexJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/index.js'),
@@ -331,7 +331,7 @@ describe('断言7：0082 正向 receipt backfill 修正逐笔支付归属', () =
     overpayReceiptRemapSrc = readFile(FILES.overpayReceiptItemRemap0090Sql)
     overpayReceiptDrainSrc = readFile(FILES.overpayReceiptDrain0029Sql)
     refundAllocationMirrorSrc = readFile(FILES.refundAllocationMirrorBackfill0087Sql)
-    refundRolePoolRepairSrc = readFile(FILES.refundRolePoolRepair0035Sql)
+    refundRolePoolRepairSrc = readFile(FILES.refundRolePoolRepair0036Sql)
   })
 
   test('仅重建无旧分配/无新子分配且逐笔金额不一致的原生销售/转换单', () => {
@@ -452,7 +452,7 @@ describe('断言7：0082 正向 receipt backfill 修正逐笔支付归属', () =
     expect(refundAllocationMirrorSrc).toMatch(/datafix\.fullRefundAllocationStatusClear/)
   })
 
-  test('0035 按 role_type 独立修复历史退款营业额与提成', () => {
+  test('0036 按 role_type 独立修复历史退款营业额与提成', () => {
     expect(refundRolePoolRepairSrc).toMatch(/_0035_refund_role_pool_targets/)
     expect(refundRolePoolRepairSrc).toMatch(/PARTITION BY refund_receipt_id, role_type/)
     expect(refundRolePoolRepairSrc).toMatch(/positive_receipt_cents/)

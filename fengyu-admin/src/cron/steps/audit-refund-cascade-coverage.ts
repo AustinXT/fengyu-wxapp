@@ -60,28 +60,37 @@ export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeC
 
   // ── C1: receipt 子分配按角色池完整冲销 ──
   // 不只检查“有没有负数行”，还按 (sale_item_id, role_type) 校验负数总额。
-  // 期望值 = min(角色池正向分配, 累计退款额, 累计退款额 × 角色池正向分配 / 正向实收)。
+  // 期望值逐笔回放运行态口径：min(本次退款, 剩余角色池,
+  // round(本次退款 × 剩余角色池 / 剩余实收))，每笔后再扣减剩余值。
   // 因此两个各 100% 的角色池必须各自冲销完整退款额，旧实现的各冲一半会被检出。
   const c1 = (await db.execute(sql`
-    WITH receipt_totals AS (
+    WITH RECURSIVE receipt_totals AS (
       SELECT spir.sale_order_id, spir.sale_item_id,
-             SUM(spir.amount::numeric) FILTER (
+             ROUND(SUM(spir.amount::numeric) FILTER (
                WHERE spir.amount > 0
                  AND sop.status = '已支付'
                  AND sop.change_type IN ('首次支付','回款','储值卡抵扣')
-             ) AS positive_receipt,
-             ABS(COALESCE(SUM(spir.amount::numeric) FILTER (
-               WHERE spir.amount < 0
-                 AND sop.status = '已支付'
-                 AND sop.change_type = '退款'
-             ), 0)) AS refund_receipt
+             ) * 100)::bigint AS positive_receipt_cents
         FROM sale_payment_item_receipts spir
         JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
        GROUP BY spir.sale_order_id, spir.sale_item_id
     ),
+    refund_events AS (
+      SELECT spir.sale_order_id, spir.sale_item_id,
+             ABS(ROUND(spir.amount::numeric * 100))::bigint AS refund_cents,
+             ROW_NUMBER() OVER (
+               PARTITION BY spir.sale_order_id, spir.sale_item_id
+               ORDER BY sop.paid_at NULLS LAST, sop.id, spir.id
+             ) AS refund_seq
+        FROM sale_payment_item_receipts spir
+        JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+       WHERE spir.amount < 0
+         AND sop.status = '已支付'
+         AND sop.change_type = '退款'
+    ),
     positive_pools AS (
       SELECT spir.sale_order_id, spir.sale_item_id, spia.role_type,
-             SUM(spia.allocated_amount::numeric) AS positive_allocated
+             ROUND(SUM(spia.allocated_amount::numeric) * 100)::bigint AS positive_allocated_cents
         FROM sale_payment_item_allocations spia
         JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
         JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
@@ -92,9 +101,74 @@ export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeC
          AND sop.change_type IN ('首次支付','回款','储值卡抵扣')
        GROUP BY spir.sale_order_id, spir.sale_item_id, spia.role_type
     ),
+    refund_replay AS (
+      SELECT pp.sale_order_id, pp.sale_item_id, pp.role_type,
+             pp.positive_allocated_cents, rt.positive_receipt_cents,
+             re.refund_seq, re.refund_cents,
+             GREATEST(rt.positive_receipt_cents - re.refund_cents, 0) AS remaining_receipt_cents,
+             GREATEST(pp.positive_allocated_cents - target.target_cents, 0) AS remaining_pool_cents,
+             target.target_cents
+        FROM positive_pools pp
+        JOIN receipt_totals rt
+          ON rt.sale_order_id = pp.sale_order_id AND rt.sale_item_id = pp.sale_item_id
+        JOIN refund_events re
+          ON re.sale_order_id = pp.sale_order_id
+         AND re.sale_item_id = pp.sale_item_id
+         AND re.refund_seq = 1
+        CROSS JOIN LATERAL (
+          SELECT LEAST(
+                   re.refund_cents,
+                   pp.positive_allocated_cents,
+                   GREATEST(
+                     0,
+                     ROUND(
+                       re.refund_cents::numeric * pp.positive_allocated_cents
+                       / NULLIF(rt.positive_receipt_cents, 0)
+                     )::bigint
+                   )
+                 ) AS target_cents
+        ) target
+       WHERE rt.positive_receipt_cents > 0
+
+      UNION ALL
+
+      SELECT replay.sale_order_id, replay.sale_item_id, replay.role_type,
+             replay.positive_allocated_cents, replay.positive_receipt_cents,
+             re.refund_seq, re.refund_cents,
+             GREATEST(replay.remaining_receipt_cents - re.refund_cents, 0) AS remaining_receipt_cents,
+             GREATEST(replay.remaining_pool_cents - target.target_cents, 0) AS remaining_pool_cents,
+             target.target_cents
+        FROM refund_replay replay
+        JOIN refund_events re
+          ON re.sale_order_id = replay.sale_order_id
+         AND re.sale_item_id = replay.sale_item_id
+         AND re.refund_seq = replay.refund_seq + 1
+        CROSS JOIN LATERAL (
+          SELECT LEAST(
+                   re.refund_cents,
+                   replay.remaining_pool_cents,
+                   GREATEST(
+                     0,
+                     ROUND(
+                       re.refund_cents::numeric * replay.remaining_pool_cents
+                       / NULLIF(replay.remaining_receipt_cents, 0)
+                     )::bigint
+                   )
+                 ) AS target_cents
+        ) target
+       WHERE replay.remaining_receipt_cents > 0
+    ),
+    expected_pools AS (
+      SELECT sale_order_id, sale_item_id, role_type,
+             MAX(positive_allocated_cents) AS positive_allocated_cents,
+             SUM(refund_cents) AS refund_receipt_cents,
+             SUM(target_cents) AS expected_negative_cents
+        FROM refund_replay
+       GROUP BY sale_order_id, sale_item_id, role_type
+    ),
     negative_pools AS (
       SELECT spir.sale_order_id, spir.sale_item_id, spia.role_type,
-             ABS(SUM(spia.allocated_amount::numeric)) AS negative_allocated
+             ABS(ROUND(SUM(spia.allocated_amount::numeric) * 100))::bigint AS negative_allocated_cents
         FROM sale_payment_item_allocations spia
         JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
         JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
@@ -106,28 +180,24 @@ export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeC
        GROUP BY spir.sale_order_id, spir.sale_item_id, spia.role_type
     ),
     expected AS (
-      SELECT pp.sale_order_id, pp.sale_item_id, pp.role_type,
-             pp.positive_allocated, rt.refund_receipt,
-             LEAST(
-               pp.positive_allocated,
-               rt.refund_receipt,
-               ROUND(rt.refund_receipt * pp.positive_allocated / NULLIF(rt.positive_receipt, 0), 2)
-             ) AS expected_negative,
-             COALESCE(np.negative_allocated, 0) AS actual_negative
-        FROM positive_pools pp
-        JOIN receipt_totals rt
-          ON rt.sale_order_id = pp.sale_order_id AND rt.sale_item_id = pp.sale_item_id
+      SELECT ep.sale_order_id, ep.sale_item_id, ep.role_type,
+             ep.positive_allocated_cents, ep.refund_receipt_cents,
+             ep.expected_negative_cents,
+             COALESCE(np.negative_allocated_cents, 0) AS actual_negative_cents
+        FROM expected_pools ep
         LEFT JOIN negative_pools np
-          ON np.sale_order_id = pp.sale_order_id
-         AND np.sale_item_id = pp.sale_item_id
-         AND np.role_type = pp.role_type
-       WHERE rt.positive_receipt > 0 AND rt.refund_receipt > 0
+          ON np.sale_order_id = ep.sale_order_id
+         AND np.sale_item_id = ep.sale_item_id
+         AND np.role_type = ep.role_type
     )
     SELECT sale_order_id, sale_item_id, role_type,
-           positive_allocated, refund_receipt, expected_negative, actual_negative
+           ROUND(positive_allocated_cents::numeric / 100, 2) AS positive_allocated,
+           ROUND(refund_receipt_cents::numeric / 100, 2) AS refund_receipt,
+           ROUND(expected_negative_cents::numeric / 100, 2) AS expected_negative,
+           ROUND(actual_negative_cents::numeric / 100, 2) AS actual_negative
       FROM expected
-     WHERE ABS(actual_negative - expected_negative) > 0.01
-        OR actual_negative > positive_allocated + 0.01
+     WHERE ABS(actual_negative_cents - expected_negative_cents) > 1
+        OR actual_negative_cents > positive_allocated_cents + 1
     LIMIT ${SAMPLE_LIMIT}
   `)) as Array<Record<string, unknown>>
   if (c1.length > 0) {
