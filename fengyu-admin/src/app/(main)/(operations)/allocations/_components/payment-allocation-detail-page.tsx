@@ -2,7 +2,6 @@
 
 import { useMemo, useState, useTransition } from "react"
 import Link from "next/link"
-import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -579,7 +578,6 @@ function SaveButton({
   groupAllocs: Record<string, AllocationEntry[]>
 }) {
   const [pending, startTransition] = useTransition()
-  const router = useRouter()
   const { goToReturn } = useReturnContext('/allocations')
 
   const handleSave = () => {
