@@ -1242,8 +1242,8 @@ export const exportOrders = withPermission(
       : await rechargeQuery.limit(limit + 1).offset(cursor.rechargeOffset)
 
     // 普通转换单旧卡价值高于转入商品时，差额会形成一笔 card_transactions 充值流水。
-    // 该资产变动不属于储值卡抵扣；订单明细导出按业务记账口径归入负数现付。
-    // 订单金额/实付仍保留正数，使转换单的转出、转入和储值金入账金额可勾稽为 0。
+    // 该资产变动不属于储值卡抵扣；订单明细导出按业务记账口径归入正数现付。
+    // 订单金额/实付同样保留正数，使转出、转入和储值金入账的各金额列均可勾稽为 0。
     const cardCreditQuery = db
       .select({
         marketName: saleOrders.marketName,
@@ -1538,7 +1538,7 @@ export const exportOrders = withPermission(
           promoterEmployeeName: r.promoterEmployeeName ?? null,
           totalAmount: r.amount,
           prepaidCardAmount: '0.00',
-          cashAmount: formatAmount(-toAmount(r.amount)),
+          cashAmount: formatAmount(toAmount(r.amount)),
           received: r.amount,
           refundedAmount: '0.00',
           paymentMethod: null,
@@ -3286,7 +3286,7 @@ export const createOrder = withPermission(
     data.storeId,
     { requireServiceSkills: true },
   )) {
-    return { success: false, message: '所选美容师不属于本门店或同市场出差支援范围' }
+    return { success: false, message: '所选美容师不属于本门店' }
   }
 
   // 充值卡剥离 SKU 化（2026-05-20）：充值订单走独立 createRechargeOrder action，
@@ -4286,7 +4286,7 @@ export const createConversionOrder = withPermission(
     data.storeId,
     { requireServiceSkills: true },
   )) {
-    return { success: false, message: '所选美容师不属于本门店或同市场出差支援范围' }
+    return { success: false, message: '所选美容师不属于本门店' }
   }
   if (!data.clientUserId) {
     return { success: false, message: '转换单必须指定顾客' }
@@ -5182,7 +5182,7 @@ export const createDepositOrder = withPermission(
       data.storeId,
       { requireServiceSkills: true },
     )) {
-      return { success: false, message: '所选美容师不属于本门店或同市场出差支援范围' }
+      return { success: false, message: '所选美容师不属于本门店' }
     }
     if (!data.clientUserId) {
       return { success: false, message: '寄存单必须指定顾客' }

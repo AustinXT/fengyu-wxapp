@@ -6218,7 +6218,7 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
     expect(rows[2].productName).toBe('储值卡充值')
   })
 
-  it('普通转换负差额：储值金入账行记入负数现付，订单金额与实付仍可勾稽', async () => {
+  it('普通转换负差额：储值金入账行记入正数现付，各金额列均可勾稽', async () => {
     const orderBase = {
       marketName: '九江', storeName: '南昌店', saleOrderId: 'FY-CONV-CREDIT', saleOrderType: '转换单',
       documentType: '售后', status: '已支付', custName: '李女士', custPhone: '13800000000',
@@ -6256,14 +6256,15 @@ describe('exportOrders — 订单明细导出（migration 0077 后）', () => {
       totalAmount: '2.00',
       received: '2.00',
       prepaidCardAmount: '0.00',
-      cashAmount: '-2.00',
+      cashAmount: '2.00',
       productType: null,
     })
     expect(rows.reduce((sum, row) => sum + Number(row.totalAmount), 0)).toBe(0)
     expect(rows.reduce((sum, row) => sum + Number(row.received), 0)).toBe(0)
-    // 真实商品行继续满足通道恒等式；储值金入账合成行按业务要求是明确例外：
-    // 它以负数现付表达资产转入，同时以正数订单金额/实付闭合转换金额。
-    for (const row of rows.slice(0, 2)) {
+    expect(rows.reduce((sum, row) => sum + Number(row.cashAmount), 0)).toBe(0)
+    expect(rows.reduce((sum, row) => sum + Number(row.prepaidCardAmount), 0)).toBe(0)
+    // 商品行和储值金入账合成行均满足通道恒等式。
+    for (const row of rows) {
       const channelAmount = Number(row.prepaidCardAmount) + Number(row.cashAmount)
       expect(Number(row.totalAmount)).toBe(channelAmount)
       expect(Number(row.received)).toBe(channelAmount)

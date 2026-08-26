@@ -478,7 +478,7 @@ export default function EmployeeDetailPage({
                   )}
                 </div>
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">出差支援（跨门店开单可选）</label>
+                  <label className="text-sm font-medium">出差支援（仅营业额/服务提成分配可选）</label>
                   {isEditing ? (
                     <Select
                       value={form.isOnBusinessTrip ? "true" : "false"}

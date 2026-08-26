@@ -8,6 +8,12 @@ export const allocationHandlers: Record<string, (payload: Record<string, any>) =
     pageSize: 20,
   }),
 
+  'serviceCommission.pendingList': () => ({
+    orders: [],
+    page: 1,
+    pageSize: 20,
+  }),
+
   // 某笔回款的分配建议
   'allocation.suggestPayment': (payload) => ({
     salePaymentId: payload.salePaymentId,

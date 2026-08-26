@@ -11,6 +11,7 @@
 const pg = require('../db/pg')
 const { requireStaffBound, requireManager, isCurrentStoreManager } = require('../middleware/auth')
 const { maskPhoneForAuth } = require('../utils/phone-visibility')
+const { normalizeListFilters, addDateRange } = require('../utils/list-filters')
 const { logOperation, logTransition } = require('../utils/operation-log')
 const { shanghaiDateStr, shanghaiYYMMDD } = require('../utils/datetime')
 const { assertNoPendingRefundByServiceOrder } = require('../utils/refund')
@@ -853,21 +854,49 @@ async function confirm(ctx) {
 async function list(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { status, page = 1, pageSize = 30 } = ctx.event.payload || {}
-  const offset = (page - 1) * pageSize
-
-  const params = [ctx.auth.effectiveStoreId, pageSize, offset]
-  let whereExtra = ''
+  const payload = ctx.event.payload || {}
+  const { status } = payload
+  const { pageSize, offset, keyword, keywordPattern, phoneKeyword, startDate, endDate } = normalizeListFilters(payload)
+  const params = [ctx.auth.effectiveStoreId]
+  const conditions = ['so.store_id = $1']
 
   if (status) {
+    if (!['待服务', '服务中', '待客户确认', '已完成', '已取消'].includes(status)) {
+      throw new Error('INVALID_PARAMS: status 不是有效服务单状态')
+    }
     params.push(status)
-    whereExtra += ` AND so.status = $${params.length}`
+    conditions.push(`so.status = $${params.length}`)
   }
+
+  if (keyword) {
+    params.push(keywordPattern)
+    const nameParam = params.length
+    const searchParts = [
+      `COALESCE(wu.name, '') ILIKE $${nameParam} ESCAPE '\\'`,
+      `EXISTS (
+        SELECT 1 FROM sale_orders search_o
+        WHERE search_o.client_user_id = so.client_user_id
+          AND COALESCE(search_o.customer_name, '') ILIKE $${nameParam} ESCAPE '\\'
+      )`,
+    ]
+    if (phoneKeyword) {
+      params.push(`%${phoneKeyword}%`)
+      searchParts.push(`regexp_replace(COALESCE(wu.phone, ''), '[^0-9]', '', 'g') LIKE $${params.length}`)
+    }
+    conditions.push(`(${searchParts.join(' OR ')})`)
+  }
+
+  addDateRange(conditions, params, 'so.service_date', startDate, endDate)
 
   if (!isCurrentStoreManager(ctx.auth)) {
     params.push(ctx.auth.staffWfId)
-    whereExtra += ` AND so.assigned_employee_id = $${params.length}`
+    conditions.push(`so.assigned_employee_id = $${params.length}`)
   }
+
+  params.push(pageSize)
+  const limitParam = params.length
+  params.push(offset)
+  const offsetParam = params.length
 
   const serviceOrders = await pg.query(`
     SELECT
@@ -881,13 +910,13 @@ async function list(ctx) {
       so.started_at,
       so.completed_at,
       so.created_at,
-      wu.phone AS client_phone
+      wu.phone AS client_phone,
+      wu.name AS client_name
     FROM service_orders so
     LEFT JOIN client_wechat_users wu ON so.client_user_id = wu.user_id
-    WHERE so.store_id = $1
-    ${whereExtra}
-    ORDER BY so.service_date DESC, so.created_at DESC
-    LIMIT $2 OFFSET $3
+    WHERE ${conditions.join('\n      AND ')}
+    ORDER BY so.service_date DESC, so.created_at DESC, so.service_order_id DESC
+    LIMIT $${limitParam} OFFSET $${offsetParam}
   `, params)
 
   // 批量查询服务明细摘要
@@ -941,6 +970,9 @@ async function list(ctx) {
   const clientUserIds = [...new Set(serviceOrders.map(s => s.client_user_id).filter(Boolean))]
   let customerNameMap = {}
   if (clientUserIds.length > 0) {
+    for (const serviceOrder of serviceOrders) {
+      if (serviceOrder.client_name) customerNameMap[serviceOrder.client_user_id] = serviceOrder.client_name
+    }
     const nameRows = await pg.query(
       `SELECT user_id, name FROM client_wechat_users WHERE user_id = ANY($1)`,
       [clientUserIds]

@@ -111,6 +111,34 @@ describe('serviceCommission.detail', () => {
     expect(ctx.result.rates[0].serviceRates['护理项目']).toBe(0.3)
   })
 
+  test('候选支持所有技能跨市场出差并按三级范围排序', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'SO-1' })
+    pg.query
+      .mockResolvedValueOnce([{ service_order_id: 'SO-1', status: '已完成', market_name: '市场A', commission_status: '待分配', store_id: 'store-001' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { employee_id: 'local', name: '本店', store_id: 'store-001', skills: ['推广部拓'], assignment_scope: 'local' },
+        { employee_id: 'same', name: '本市场出差', store_id: 'store-002', skills: ['养生师'], is_on_business_trip: true, assignment_scope: 'same_market_trip' },
+        { employee_id: 'cross', name: '跨市场出差', store_id: null, skills: ['品项老师'], is_on_business_trip: true, assignment_scope: 'cross_market_trip' },
+      ])
+
+    await routes.detail(ctx)
+
+    const candidateCall = pg.query.mock.calls.find(([sql]) => sql.includes('FROM staff_wechat_users u'))
+    const candidateSql = candidateCall[0]
+    expect(candidateSql).toMatch(/u\.store_id = \$1 OR u\.is_on_business_trip = true/)
+    expect(candidateSql).toMatch(/WHEN u\.store_id = \$1 THEN 0[\s\S]*WHEN employee_market\.id = target_market\.id THEN 1[\s\S]*ELSE 2/)
+    expect(candidateSql).not.toMatch(/ARRAY\['美容师','养生师'\]/)
+    expect(ctx.result.candidateEmployees.map((employee) => employee.assignmentScope)).toEqual([
+      'local',
+      'same_market_trip',
+      'cross_market_trip',
+    ])
+  })
+
   test('同名服务项目按 service_item_id 分开返回，不按商品名称合并', async () => {
     const ctx = createManagerCtx({ serviceOrderId: 'SO-1' })
     pg.query
@@ -155,7 +183,7 @@ describe('serviceCommission.save', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     pg.query.mockImplementation(async (sql, params) => {
-      if (sql.includes('JOIN stores employee_store')) {
+      if (sql.includes('WHERE u.employee_id = ANY($1::text[])')) {
         return (params?.[0] || []).map(employee_id => ({ employee_id }))
       }
       return []

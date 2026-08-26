@@ -153,6 +153,9 @@ async function main() {
     const lr = await invokeStaffApi('service.list', {
       _testOpenid: TEST_MANAGER_OPENID,
       status: filter,
+      keyword: NS,
+      startDate: '2000-01-01',
+      endDate: '2100-12-31',
       page: 1,
       pageSize: 50,
     })

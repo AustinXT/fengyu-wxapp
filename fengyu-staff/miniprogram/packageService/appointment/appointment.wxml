@@ -1,13 +1,31 @@
 <!-- pages/appointment/appointment.wxml — 预约管理 -->
 <view class="container">
-  <van-tabs active="{{tabActive}}" bind:change="onTabChange" color="#C0322A">
-    <van-tab title="待确认" name="pending" />
-    <van-tab title="已确认" name="confirmed" />
-    <van-tab title="今日到店" name="today" />
-    <van-tab title="全部" name="all" />
-  </van-tabs>
+  <view class="filter-panel">
+    <van-search
+      value="{{searchInput}}"
+      placeholder="搜索顾客姓名或手机号"
+      bind:change="onSearchChange"
+      bind:search="onSearch"
+      bind:clear="onSearchClear"
+      use-action-slot
+    >
+      <view slot="action" bindtap="onSearch">搜索</view>
+    </van-search>
+    <view class="filter-row">
+      <van-dropdown-menu active-color="#C0322A" custom-class="status-dropdown">
+        <van-dropdown-item value="{{status}}" options="{{statusOptions}}" bind:change="onStatusChange" />
+      </van-dropdown-menu>
+      <picker mode="date" value="{{startDate}}" end="{{endDate}}" bindchange="onStartDateChange">
+        <view class="date-chip">{{startDate || '开始日期'}}</view>
+      </picker>
+      <picker mode="date" value="{{endDate}}" start="{{startDate}}" bindchange="onEndDateChange">
+        <view class="date-chip">{{endDate || '结束日期'}}</view>
+      </picker>
+      <view wx:if="{{startDate || endDate}}" class="filter-clear" bindtap="clearDates">清除</view>
+    </view>
+  </view>
 
-  <view wx:if="{{loading}}" class="loading-wrap">
+  <view wx:if="{{loading && list.length === 0}}" class="loading-wrap">
     <van-loading type="spinner" color="#C0322A" />
   </view>
 
@@ -15,7 +33,7 @@
     <van-empty description="暂无预约记录" />
   </view>
 
-  <scroll-view wx:else scroll-y class="list-scroll" bindscrolltolower="onLoadMore">
+  <view wx:else class="list-wrap">
     <view class="appt-item" wx:for="{{list}}" wx:key="id" bindtap="onItemTap" data-id="{{item.id}}">
       <view class="appt-header">
         <text class="appt-customer">{{item.customerName || '未知顾客'}}</text>
@@ -48,5 +66,9 @@
         </van-button>
       </view>
     </view>
-  </scroll-view>
+    <view wx:if="{{loading}}" class="loading-more">
+      <van-loading size="24px" color="#999">加载中...</van-loading>
+    </view>
+    <view wx:if="{{!hasMore && list.length > 0}}" class="no-more">没有更多了</view>
+  </view>
 </view>

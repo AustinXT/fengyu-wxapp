@@ -46,6 +46,8 @@ const { shanghaiDateStr, shanghaiYMD, shanghaiYYMMDD } = require('../utils/datet
 const { INVENTORY_LINKAGE_ENABLED } = require('../utils/feature-flags')
 const { assertEmployeesAssignableToStore } = require('../utils/employee-assignment')
 const { classifySaleOrderDocumentType } = require('../utils/document-type')
+const { maskPhoneForAuth } = require('../utils/phone-visibility')
+const { normalizeListFilters, addTimestampDateRange } = require('../utils/list-filters')
 
 // 模块级缓存：saleOrderId → qrcodeUrl，避免轮询时重复生成
 const qrcodeCache = new Map()
@@ -2523,28 +2525,49 @@ async function resetFailed(ctx) {
 async function list(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { status, page = 1, pageSize = 20 } = ctx.event.payload || {}
-  const offset = (page - 1) * pageSize
-
-  const params = [ctx.auth.effectiveStoreId, pageSize, offset]
-  let whereExtra = ''
+  const payload = ctx.event.payload || {}
+  const { status } = payload
+  const { page, pageSize, offset, keyword, keywordPattern, phoneKeyword, startDate, endDate } = normalizeListFilters(payload)
+  const params = [ctx.auth.effectiveStoreId]
+  const conditions = ['o.store_id = $1']
 
   if (status) {
+    if (!['待支付', '已支付', '已完成', '已退款', '支付失败', '已关闭', '待审批', '部分支付', '未审核', '已作废'].includes(status)) {
+      throw new Error('INVALID_PARAMS: status 不是有效订单状态')
+    }
     // 「待支付」语义合并「部分支付」（与 staff.todoList 同步：未结清都算待店长收款）
     if (status === '待支付') {
       params.push(['待支付', '部分支付'])
-      whereExtra += ` AND o.status = ANY($${params.length}::order_status[])`
+      conditions.push(`o.status = ANY($${params.length}::order_status[])`)
     } else {
       params.push(status)
-      whereExtra += ` AND o.status = $${params.length}`
+      conditions.push(`o.status = $${params.length}`)
     }
   }
+
+  if (keyword) {
+    params.push(keywordPattern)
+    const nameParam = params.length
+    const searchParts = [`COALESCE(c.name, o.customer_name, '') ILIKE $${nameParam} ESCAPE '\\'`]
+    if (phoneKeyword) {
+      params.push(`%${phoneKeyword}%`)
+      searchParts.push(`regexp_replace(COALESCE(c.phone, o.client_phone, ''), '[^0-9]', '', 'g') LIKE $${params.length}`)
+    }
+    conditions.push(`(${searchParts.join(' OR ')})`)
+  }
+
+  addTimestampDateRange(conditions, params, 'o.sale_order_datetime', startDate, endDate)
 
   // 美容师只能看到指定自己的订单
   if (!ctx.auth.roles.includes('manager')) {
     params.push(ctx.auth.staffWfId)
-    whereExtra += ` AND o.preferred_employee_id = $${params.length}`
+    conditions.push(`o.preferred_employee_id = $${params.length}`)
   }
+
+  params.push(pageSize)
+  const limitParam = params.length
+  params.push(offset)
+  const offsetParam = params.length
 
   // 2026-07-08 修复 T1：与 admin orders.ts 对齐，LEFT JOIN client_wechat_users
   // 把 cust_name / cust_phone 作为权威；sale_orders.customer_name / client_phone 仅作 fallback。
@@ -2553,7 +2576,7 @@ async function list(ctx) {
     SELECT
       o.sale_order_id, o.status, o.sale_order_type, o.client_phone, o.customer_name,
       o.payment_method, o.preferred_employee_id,
-      o.paid_at, o.created_at, o.opened_by, o.total_amount,
+      o.paid_at, o.created_at, o.sale_order_datetime AS business_date, o.opened_by, o.total_amount,
       o.prepaid_card_amount, o.pending_prepaid_card_amount, o.payable_amount, o.is_activity,
       c.name AS cust_name, c.phone AS cust_phone,
       -- 营业额分配口径：仅销售单/转换单且非历史订单可分配（与 order.detail allocatable / allocation.js ALLOCATABLE_ORDER_TYPES 一致），控制列表页分配按钮显隐
@@ -2572,17 +2595,16 @@ async function list(ctx) {
       ) AS has_pending_refund
     FROM sale_orders o
     LEFT JOIN client_wechat_users c ON c.user_id = o.client_user_id
-    WHERE o.store_id = $1
-    ${whereExtra}
-    ORDER BY o.created_at DESC
-    LIMIT $2 OFFSET $3
+    WHERE ${conditions.join('\n      AND ')}
+    ORDER BY o.sale_order_datetime DESC, o.sale_order_id DESC
+    LIMIT $${limitParam} OFFSET $${offsetParam}
   `, params)
 
   // 顾客档案权威 > sale_orders 兜底
   const mapped = orders.map((o) => ({
     ...o,
     customer_name: o.cust_name || o.customer_name || null,
-    client_phone: o.cust_phone || o.client_phone || null,
+    client_phone: maskPhoneForAuth(o.cust_phone || o.client_phone, ctx.auth),
   }))
   ctx.result = { orders: mapped, page, pageSize }
 }

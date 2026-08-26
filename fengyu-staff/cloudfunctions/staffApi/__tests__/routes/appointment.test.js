@@ -302,15 +302,17 @@ describe('appointment.list', () => {
     expect(params).toContain('已确认')
   })
 
-  test('仅今日过滤', async () => {
-    const ctx = createManagerCtx({ todayOnly: true, page: 1 })
+  test('按预约日期范围过滤', async () => {
+    const ctx = createManagerCtx({ startDate: '2026-08-01', endDate: '2026-08-26', page: 1 })
 
     pg.query.mockResolvedValueOnce([])
 
     await appointmentRoutes.list(ctx)
 
-    const sql = pg.query.mock.calls[0][0]
-    expect(sql).toContain('DATE(a.appointment_time)')
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain("AT TIME ZONE 'Asia/Shanghai'")
+    expect(params).toContain('2026-08-01')
+    expect(params).toContain('2026-08-26')
   })
 })
 
@@ -493,8 +495,8 @@ describe('appointment.list 补充', () => {
     expect(ctx.result[0].appointmentTime).toBe('')
   })
 
-  test('status + todayOnly 组合过滤', async () => {
-    const ctx = createManagerCtx({ status: 'pending', todayOnly: true, page: 1 })
+  test('status + 日期组合过滤', async () => {
+    const ctx = createManagerCtx({ status: 'pending', startDate: '2026-08-26', endDate: '2026-08-26', page: 1 })
 
     pg.query.mockResolvedValueOnce([])
 
@@ -502,7 +504,7 @@ describe('appointment.list 补充', () => {
 
     const [sql, params] = pg.query.mock.calls[0]
     expect(sql).toContain('a.status =')
-    expect(sql).toContain('DATE(a.appointment_time)')
+    expect(sql).toContain("AT TIME ZONE 'Asia/Shanghai'")
     expect(params).toContain('待确认')
   })
 

@@ -1382,6 +1382,129 @@ describe('customer.refundHistory', () => {
 })
 
 // ============================================================
+// customer.searchPromoterEmployees / customer.updateProfile
+// ============================================================
+describe('customer.searchPromoterEmployees', () => {
+  test('店长仅搜索顾客当前门店在职员工并返回脱敏手机号', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1', keyword: '138' })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([{ employee_id: 'EMP-1', name: '王员工', phone: '13812345678', store_name: '测试店' }])
+
+    await customerRoutes.searchPromoterEmployees(ctx)
+
+    expect(ctx.result).toEqual([{
+      employeeId: 'EMP-1', name: '王员工', phoneMasked: '138****5678', storeName: '测试店',
+    }])
+    const [sql, params] = pg.query.mock.calls[1]
+    expect(sql).toContain('u.store_id = $1')
+    expect(sql).toContain('u.is_resigned = false')
+    expect(params).toEqual(['store-001', '%138%'])
+  })
+
+  test('少于3个字符或普通员工调用时拒绝', async () => {
+    await expect(customerRoutes.searchPromoterEmployees(createManagerCtx({ clientUserId: 'u1', keyword: '12' })))
+      .rejects.toThrow(/至少3个字符/)
+    await expect(customerRoutes.searchPromoterEmployees(createBeauticianCtx({ clientUserId: 'u1', keyword: '138' })))
+      .rejects.toThrow(/PERMISSION_DENIED/)
+  })
+})
+
+describe('customer.updateProfile', () => {
+  function mockProfileTransaction(beforeOverrides = {}, updateRows = [{ updated_at: new Date('2026-08-26T03:00:00.000Z') }]) {
+    const before = {
+      user_id: 'u1',
+      bound_store_id: 'store-001',
+      promoter_employee_id: null,
+      promoter_employee_name: null,
+      customer_source: '美团',
+      birthday: '1990-01-01',
+      occupation: null,
+      is_married: null,
+      skin_issue: null,
+      wellness_preference: null,
+      is_cross_store_temp: false,
+      workfine_override_fields: [],
+      updated_at: new Date('2026-08-26T02:00:00.000Z'),
+      ...beforeOverrides,
+    }
+    const clientQuery = vi.fn(async (sql) => {
+      if (sql.includes('FOR UPDATE')) return { rows: [before], rowCount: 1 }
+      if (sql.includes('FROM staff_wechat_users')) {
+        return { rows: [{ employee_id: 'EMP-1', name: '王员工', store_id: 'store-001' }], rowCount: 1 }
+      }
+      if (sql.includes('UPDATE client_wechat_users')) return { rows: updateRows, rowCount: updateRows.length }
+      return { rows: [], rowCount: 0 }
+    })
+    pg.transaction.mockImplementationOnce(async (cb) => await cb({ query: clientQuery }))
+    return clientQuery
+  }
+
+  test('批量更新档案并把实际变化的 WorkFine 字段加入人工覆盖列表', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'u1',
+      expectedUpdatedAt: '2026-08-26T02:00:00.000Z',
+      changes: { customerSource: '抖音', occupation: '教师', isCrossStoreTemp: true },
+    })
+    const clientQuery = mockProfileTransaction()
+
+    await customerRoutes.updateProfile(ctx)
+
+    expect(ctx.result.changes).toEqual({ customerSource: '抖音', occupation: '教师', isCrossStoreTemp: true })
+    const updateCall = clientQuery.mock.calls.find((call) => call[0].includes('UPDATE client_wechat_users'))
+    expect(updateCall[0]).toContain('workfine_override_fields = ARRAY')
+    expect(updateCall[0]).toContain("date_trunc('milliseconds', updated_at)")
+    expect(updateCall[1]).toContainEqual(['customer_source', 'occupation'])
+    const auditCall = clientQuery.mock.calls.find((call) => call[0].includes('operation_logs'))
+    expect(JSON.parse(auditCall[1][8]).changes.customerSource).toEqual({ from: '美团', to: '抖音' })
+  })
+
+  test('推荐员工必须是当前门店在职员工，并由服务端回填姓名', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'u1',
+      expectedUpdatedAt: '2026-08-26T02:00:00.000Z',
+      changes: { promoterEmployeeId: 'EMP-1' },
+    })
+    const clientQuery = mockProfileTransaction()
+
+    await customerRoutes.updateProfile(ctx)
+
+    expect(ctx.result.changes).toEqual({ promoterEmployeeId: 'EMP-1', promoterEmployeeName: '王员工' })
+    const updateCall = clientQuery.mock.calls.find((call) => call[0].includes('UPDATE client_wechat_users'))
+    expect(updateCall[0]).toContain('promoter_employee_name')
+    expect(updateCall[1]).toContain('王员工')
+  })
+
+  test('乐观锁冲突返回 CONFLICT', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'u1',
+      expectedUpdatedAt: '2026-08-25T00:00:00.000Z',
+      changes: { occupation: '教师' },
+    })
+    mockProfileTransaction({}, [])
+
+    await expect(customerRoutes.updateProfile(ctx)).rejects.toThrow(/CONFLICT.*已被其他人修改/)
+  })
+
+  test.each([
+    [{ occupation: 'a'.repeat(51) }, /职业不能超过50个字符/],
+    [{ customerSource: '未知渠道' }, /顾客来源不在允许范围/],
+    [{ birthday: '2026-02-30' }, /生日日期无效/],
+    [{ phone: '13800000000' }, /不允许修改的字段/],
+  ])('非法 changes 被拒绝：%o', async (changes, expected) => {
+    const ctx = createManagerCtx({ clientUserId: 'u1', expectedUpdatedAt: '2026-08-26T02:00:00.000Z', changes })
+    await expect(customerRoutes.updateProfile(ctx)).rejects.toThrow(expected)
+  })
+
+  test('普通员工无法更新基本档案', async () => {
+    const ctx = createBeauticianCtx({
+      clientUserId: 'u1', expectedUpdatedAt: '2026-08-26T02:00:00.000Z', changes: { occupation: '教师' },
+    })
+    await expect(customerRoutes.updateProfile(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+  })
+})
+
+// ============================================================
 // customer.updateName
 // ============================================================
 describe('customer.updateName', () => {
