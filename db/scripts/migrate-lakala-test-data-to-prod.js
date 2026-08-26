@@ -2,10 +2,13 @@
 
 /**
  * One-time, explicit test -> prod import for the four confirmed Lakala onboarding records.
- * Defaults to dry-run; production writes require --apply.
+ * Defaults to dry-run; production writes require --apply. The dry-run also verifies every
+ * imported attachment on the test host. --apply copies those private files to the production
+ * bind mount before committing their rewritten container paths to PostgreSQL.
  */
 const fs = require('node:fs')
 const path = require('node:path')
+const { spawnSync } = require('node:child_process')
 const { Client } = require('pg')
 
 const ORDER_NOS = [
@@ -13,6 +16,24 @@ const ORDER_NOS = [
   'ONB-20260724-4669',
   'ONB-20260731-2510',
   'ONB-20260822-3735',
+]
+
+const CONTAINER_PRIVATE_UPLOAD_ROOT = '/var/lib/fengyu/private-uploads'
+const SOURCE_CONTAINER_PRIVATE_UPLOAD_ROOTS = [
+  CONTAINER_PRIVATE_UPLOAD_ROOT,
+  '/var/lib/fengyu-admin/private-uploads',
+]
+const DEFAULT_TEST_SSH_HOST = 'sqlserver101'
+const DEFAULT_PROD_SSH_HOST = 'fengyu-prod'
+const DEFAULT_PRIVATE_UPLOAD_HOST_DIR = '/www/wwwroot/fengyu-admin/docker/data/private-uploads'
+const DEFAULT_LEGACY_TEST_PRIVATE_UPLOAD_HOST_DIR = '/www/wwwroot/fengyu-admin/docker/private-uploads'
+const MAX_SSH_BUFFER = 8 * 1024 * 1024
+const SSH_CONTROL_PATH = `/tmp/fengyu-lakala-ssh-${process.pid}-%C`
+const SSH_OPTIONS = [
+  '-o', 'BatchMode=yes',
+  '-o', 'ControlMaster=auto',
+  '-o', 'ControlPersist=60',
+  '-o', `ControlPath=${SSH_CONTROL_PATH}`,
 ]
 
 function envValue(file, key) {
@@ -36,6 +57,139 @@ function jsonValue(value) {
   return JSON.stringify(value)
 }
 
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`
+}
+
+function assertSshHost(host, label) {
+  if (!/^[A-Za-z0-9_.@-]+$/.test(host)) throw new Error(`${label} 不是安全的 SSH host：${host}`)
+}
+
+function normalizeHostUploadRoot(value, label) {
+  const normalized = path.posix.resolve(value)
+  if (normalized === '/') throw new Error(`${label} 不得为根目录`)
+  return normalized
+}
+
+function runSsh(host, command, { input, encoding = 'utf8', allowFailure = false } = {}) {
+  const result = spawnSync('ssh', [...SSH_OPTIONS, host, command], {
+    input,
+    encoding,
+    maxBuffer: MAX_SSH_BUFFER,
+  })
+  if (!allowFailure && (result.error || result.status !== 0)) {
+    const detail = result.error?.message || String(result.stderr || '').trim() || `exit ${result.status}`
+    throw new Error(`SSH ${host} 执行失败：${detail}`)
+  }
+  return result
+}
+
+function closeSshControl(host) {
+  spawnSync('ssh', [...SSH_OPTIONS, '-O', 'exit', host], { stdio: 'ignore' })
+}
+
+function runSshWithSudoFallback(host, command, options = {}) {
+  const direct = runSsh(host, command, { ...options, allowFailure: true })
+  if (!direct.error && direct.status === 0) return direct
+  return runSsh(host, `sudo -n sh -ceu ${shellQuote(command)}`, options)
+}
+
+function buildAttachmentPlan(attachment, testUploadRoot, legacyTestUploadRoot, prodUploadRoot) {
+  const sourceLocalPath = path.posix.resolve(attachment.local_path)
+  const sourceMappings = SOURCE_CONTAINER_PRIVATE_UPLOAD_ROOTS.map((containerRoot) => ({
+    containerRoot,
+    hostRoot: containerRoot === CONTAINER_PRIVATE_UPLOAD_ROOT ? testUploadRoot : legacyTestUploadRoot,
+  }))
+  const sourceMapping = sourceMappings.find(({ containerRoot }) => {
+    const expectedApplicationDir = path.posix.join(containerRoot, 'lakala-onboarding', attachment.application_id)
+    return sourceLocalPath.startsWith(`${expectedApplicationDir}/`)
+  })
+  if (!sourceMapping) {
+    throw new Error(`附件 ${attachment.id} 的 local_path 不在申请私有目录内：${attachment.local_path}`)
+  }
+  const relativePath = path.posix.relative(sourceMapping.containerRoot, sourceLocalPath)
+  if (!relativePath || relativePath.startsWith('../') || path.posix.isAbsolute(relativePath)) {
+    throw new Error(`附件 ${attachment.id} 的相对路径无效`)
+  }
+  return {
+    attachment,
+    sourceHostPath: path.posix.join(sourceMapping.hostRoot, relativePath),
+    targetHostPath: path.posix.join(prodUploadRoot, relativePath),
+    targetLocalPath: path.posix.join(CONTAINER_PRIVATE_UPLOAD_ROOT, relativePath),
+  }
+}
+
+function validateSourceAttachments(plans, testSshHost) {
+  if (!plans.length) return
+  const command = plans
+    .map((plan) => `test -f ${shellQuote(plan.sourceHostPath)}; stat -c %s -- ${shellQuote(plan.sourceHostPath)}`)
+    .join('; ')
+  const result = runSshWithSudoFallback(testSshHost, `set -eu; ${command}`)
+  const actualSizes = String(result.stdout).trim().split(/\r?\n/).map(Number)
+  if (actualSizes.length !== plans.length) throw new Error('测试机附件批量校验结果数量不一致')
+  for (const [index, plan] of plans.entries()) {
+    const actualSize = actualSizes[index]
+    const expectedSize = Number(plan.attachment.file_size)
+    if (!Number.isSafeInteger(actualSize) || actualSize < 0 || !Number.isSafeInteger(expectedSize) || expectedSize < 0 || actualSize !== expectedSize) {
+      throw new Error(`附件 ${plan.attachment.id} 大小不一致：数据库=${plan.attachment.file_size}，文件=${actualSize}`)
+    }
+  }
+}
+
+function readRemoteAttachment(host, remotePath) {
+  const command = `test -f ${shellQuote(remotePath)}; cat -- ${shellQuote(remotePath)}`
+  return runSshWithSudoFallback(host, command, { encoding: null }).stdout
+}
+
+function copyAttachmentsToProd(plans, testSshHost, prodSshHost, copiedTargetPaths) {
+  const stageRoot = `/tmp/fengyu-lakala-import-${process.pid}-${Date.now()}`
+  try {
+    for (const plan of plans) {
+      const exists = runSsh(prodSshHost, `test ! -e ${shellQuote(plan.targetHostPath)}`, { allowFailure: true })
+      if (exists.error || exists.status !== 0) throw new Error(`生产附件目标已存在，拒绝覆盖：${plan.targetHostPath}`)
+    }
+
+    for (const [index, plan] of plans.entries()) {
+      const content = readRemoteAttachment(testSshHost, plan.sourceHostPath)
+      if (content.length !== Number(plan.attachment.file_size)) {
+        throw new Error(`附件 ${plan.attachment.id} 在复制过程中大小发生变化`)
+      }
+      const stagePath = path.posix.join(stageRoot, `${index}-${path.posix.basename(plan.targetHostPath)}`)
+      runSsh(prodSshHost, `umask 077; mkdir -p ${shellQuote(stageRoot)}; cat > ${shellQuote(stagePath)}`, {
+        input: content,
+        encoding: null,
+      })
+      plan.stagePath = stagePath
+    }
+
+    for (const plan of plans) {
+      const targetDir = path.posix.dirname(plan.targetHostPath)
+      const promote = [
+        'set -eu',
+        `if test -e ${shellQuote(plan.targetHostPath)}; then test ! -e ${shellQuote(plan.stagePath)}; else mkdir -p ${shellQuote(targetDir)}; mv ${shellQuote(plan.stagePath)} ${shellQuote(plan.targetHostPath)}; fi`,
+      ].join('; ')
+      runSshWithSudoFallback(prodSshHost, promote)
+      copiedTargetPaths.push(plan.targetHostPath)
+      runSshWithSudoFallback(prodSshHost, [
+        'set -eu',
+        `chown 1001:1001 ${shellQuote(plan.targetHostPath)}`,
+        `chmod 600 ${shellQuote(plan.targetHostPath)}`,
+      ].join('; '))
+    }
+  } finally {
+    runSshWithSudoFallback(prodSshHost, `rm -rf -- ${shellQuote(stageRoot)}`, { allowFailure: true })
+  }
+}
+
+function cleanupCopiedAttachments(prodSshHost, copiedTargetPaths) {
+  if (!copiedTargetPaths.length) return
+  const files = copiedTargetPaths.map(shellQuote).join(' ')
+  const directories = [...new Set(copiedTargetPaths.map((item) => path.posix.dirname(item)))]
+    .map(shellQuote)
+    .join(' ')
+  runSshWithSudoFallback(prodSshHost, `set -eu; rm -f -- ${files}; rmdir -- ${directories} 2>/dev/null || true`, { allowFailure: true })
+}
+
 async function main() {
   const apply = process.argv.includes('--apply')
   const root = path.resolve(__dirname, '..', '..')
@@ -43,6 +197,22 @@ async function main() {
   const prodUrl = process.env.PROD_DATABASE_URL || envValue(path.join(root, 'envs/prod.env'), 'ADMIN_DATABASE_URL')
   assertTarget(testUrl, '101.34.242.103')
   assertTarget(prodUrl, '118.178.196.26')
+  const testSshHost = process.env.TEST_SSH_HOST || DEFAULT_TEST_SSH_HOST
+  const prodSshHost = process.env.PROD_SSH_HOST || DEFAULT_PROD_SSH_HOST
+  assertSshHost(testSshHost, 'TEST_SSH_HOST')
+  assertSshHost(prodSshHost, 'PROD_SSH_HOST')
+  const testUploadRoot = normalizeHostUploadRoot(
+    process.env.TEST_PRIVATE_UPLOAD_HOST_DIR || DEFAULT_PRIVATE_UPLOAD_HOST_DIR,
+    'TEST_PRIVATE_UPLOAD_HOST_DIR',
+  )
+  const legacyTestUploadRoot = normalizeHostUploadRoot(
+    process.env.TEST_LEGACY_PRIVATE_UPLOAD_HOST_DIR || DEFAULT_LEGACY_TEST_PRIVATE_UPLOAD_HOST_DIR,
+    'TEST_LEGACY_PRIVATE_UPLOAD_HOST_DIR',
+  )
+  const prodUploadRoot = normalizeHostUploadRoot(
+    process.env.PROD_PRIVATE_UPLOAD_HOST_DIR || DEFAULT_PRIVATE_UPLOAD_HOST_DIR,
+    'PROD_PRIVATE_UPLOAD_HOST_DIR',
+  )
 
   const source = new Client({ connectionString: testUrl })
   const target = new Client({ connectionString: prodUrl })
@@ -87,6 +257,10 @@ async function main() {
     `, [appIds])
     const portableAttachments = attachments.filter((row) => row.status === 'UPLOADED' && row.lakala_file_url)
     const skippedAttachments = attachments.filter((row) => !portableAttachments.includes(row))
+    const attachmentPlans = portableAttachments.map((attachment) => (
+      buildAttachmentPlan(attachment, testUploadRoot, legacyTestUploadRoot, prodUploadRoot)
+    ))
+    validateSourceAttachments(attachmentPlans, testSshHost)
 
     const logs = await queryRows(source, `
       SELECT id, application_id, api_name, request_id, request_payload_masked,
@@ -148,13 +322,25 @@ async function main() {
       applications: applications.length,
       merchantsToCreate: missingMerchants.length,
       attachments: portableAttachments.length,
+      attachmentFiles: {
+        sourceRoots: [
+          `${testSshHost}:${testUploadRoot}`,
+          `${testSshHost}:${legacyTestUploadRoot}`,
+        ],
+        target: `${prodSshHost}:${prodUploadRoot}`,
+        validated: attachmentPlans.length,
+      },
       skippedAttachments: skippedAttachments.map((row) => ({ id: row.id, fileName: row.file_name, reason: '源文件未上传拉卡拉且已在 101 缺失' })),
       requestLogs: logs.length,
     }, null, 2))
     if (!apply) return
 
-    await target.query('BEGIN')
+    const copiedTargetPaths = []
+    let transactionStarted = false
     try {
+      copyAttachmentsToProd(attachmentPlans, testSshHost, prodSshHost, copiedTargetPaths)
+      await target.query('BEGIN')
+      transactionStarted = true
       for (const merchant of missingMerchants) {
         await target.query(`
           INSERT INTO lakala_merchants (id, merchant_name, merchant_no, term_no, enabled, market_org_node_id, created_at, updated_at)
@@ -175,14 +361,15 @@ async function main() {
           )
         `, [app.id, app.order_no, app.store_id, app.status, jsonValue(app.merchant_data), jsonValue(app.legal_person_data), jsonValue(app.contact_data), jsonValue(app.settlement_data), jsonValue(app.shop_data), jsonValue(app.terminal_data), jsonValue(app.fee_data), jsonValue(app.lakala_request_data), app.e_contract_order_no, app.e_contract_apply_id, app.e_contract_result_url, app.e_contract_no, app.e_contract_status, app.e_contract_signed_at, app.contract_id, app.mer_inner_no, app.mer_cup_no, jsonValue(app.channel_data), app.sub_merchant_checked_at, merchantId, app.last_error_code, app.last_error_message, app.submitted_at, app.created_by, app.created_by_name, app.created_at, app.updated_at])
       }
-      for (const attachment of portableAttachments) {
+      for (const plan of attachmentPlans) {
+        const { attachment } = plan
         await target.query(`
           INSERT INTO lakala_onboarding_attachments (
             id, application_id, att_type, display_name, local_path, file_name, file_ext, file_size, mime_type, status,
             att_file_id, lakala_file_url, lakala_show_url, lakala_batch_no, lakala_ocr_status, uploaded_to_lakala_at,
             expires_at, last_error_message, created_at, updated_at
           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
-        `, [attachment.id, attachment.application_id, attachment.att_type, attachment.display_name, attachment.local_path, attachment.file_name, attachment.file_ext, attachment.file_size, attachment.mime_type, attachment.status, attachment.att_file_id, attachment.lakala_file_url, attachment.lakala_show_url, attachment.lakala_batch_no, attachment.lakala_ocr_status, attachment.uploaded_to_lakala_at, attachment.expires_at, attachment.last_error_message, attachment.created_at, attachment.updated_at])
+        `, [attachment.id, attachment.application_id, attachment.att_type, attachment.display_name, plan.targetLocalPath, attachment.file_name, attachment.file_ext, attachment.file_size, attachment.mime_type, attachment.status, attachment.att_file_id, attachment.lakala_file_url, attachment.lakala_show_url, attachment.lakala_batch_no, attachment.lakala_ocr_status, attachment.uploaded_to_lakala_at, attachment.expires_at, attachment.last_error_message, attachment.created_at, attachment.updated_at])
       }
       for (const log of logs) {
         await target.query(`
@@ -192,17 +379,29 @@ async function main() {
         `, [log.id, log.application_id, log.api_name, log.request_id, jsonValue(log.request_payload_masked), jsonValue(log.response_payload), log.success, log.error_code, log.error_message, log.created_at])
       }
       await target.query('COMMIT')
+      transactionStarted = false
     } catch (error) {
-      await target.query('ROLLBACK')
+      if (transactionStarted) await target.query('ROLLBACK')
+      cleanupCopiedAttachments(prodSshHost, copiedTargetPaths)
       throw error
     }
   } finally {
     await source.end()
     await target.end()
+    closeSshControl(testSshHost)
+    closeSshControl(prodSshHost)
   }
 }
 
-main().catch((error) => {
-  console.error(`迁移失败：${error.message}`)
-  process.exit(1)
-})
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(`迁移失败：${error.message}`)
+    process.exit(1)
+  })
+}
+
+module.exports = {
+  buildAttachmentPlan,
+  normalizeHostUploadRoot,
+  shellQuote,
+}
