@@ -1,8 +1,9 @@
 # docker-compose.remote.yml — 远程 admin / analyst 覆盖层（dev / prod 共用）
 #
-# 用法由 .claude/skills/remote-deploy/deploy-admin.sh 统一封装：
-# 它会从 envs/<env>.env 生成目标环境专属的 .admin-runtime.env，并以第二个
-# --env-file 传入。本文件禁止复用远程 .env 中可能残留的另一环境 CloudBase 配置。
+# 用法由 .claude/skills/remote-deploy 下的部署脚本封装：admin 生成
+# .admin-runtime.env，analyst 生成独立的 .analyst-runtime.env，并分别作为第二个
+# --env-file 传入。本文件禁止复用远程 .env 中可能残留的另一环境 CloudBase 配置，
+# analyst 部署也禁止覆盖 admin 的完整运行时凭据文件。
 
 name: fengyu-wxapp
 services:
