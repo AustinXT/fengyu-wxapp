@@ -603,11 +603,21 @@ describe('SUMMARY v3 §2 #14：refund-cascade 双端 5 通道覆盖守护', () =
       expect(adminSrc).toMatch(/change_type = '退款'/)
       expect(adminSrc).toMatch(/allocation_status = '已分配'/)
     })
-    test('两端 receipt upsert + 子分配 ON CONFLICT receipt_id/employee/role（幂等兜底）', () => {
+    test('两端 receipt upsert + 子分配 ON CONFLICT receipt_id/employee/role 目标态更新（幂等兜底）', () => {
       expect(staffSrc).toMatch(/ON CONFLICT \(sale_payment_id, sale_item_id\)[\s\S]{0,120}DO UPDATE SET amount = EXCLUDED\.amount/i)
       expect(adminSrc).toMatch(/ON CONFLICT \(sale_payment_id, sale_item_id\)[\s\S]{0,120}DO UPDATE SET amount = EXCLUDED\.amount/i)
-      expect(staffSrc).toMatch(/ON\s+CONFLICT\s*\(sale_payment_item_receipt_id,\s*employee_id,\s*role_type\)\s*WHERE\s+is_void\s*=\s*false\s+DO\s+NOTHING/i)
-      expect(adminSrc).toMatch(/ON\s+CONFLICT\s*\(sale_payment_item_receipt_id,\s*employee_id,\s*role_type\)\s*WHERE\s+is_void\s*=\s*false\s+DO\s+NOTHING/i)
+      expect(staffSrc).toMatch(/ON\s+CONFLICT\s*\(sale_payment_item_receipt_id,\s*employee_id,\s*role_type\)\s*WHERE\s+is_void\s*=\s*false[\s\S]{0,160}DO\s+UPDATE SET/i)
+      expect(adminSrc).toMatch(/ON\s+CONFLICT\s*\(sale_payment_item_receipt_id,\s*employee_id,\s*role_type\)\s*WHERE\s+is_void\s*=\s*false[\s\S]{0,160}DO\s+UPDATE SET/i)
+    })
+    test('两端退款分配必须按 role_type 独立分池，并扣除历史负数冲销', () => {
+      for (const [name, src] of [['staff', staffSrc], ['admin', adminSrc]]) {
+        expect(src, `${name} 缺角色池规划器`).toMatch(/planRolePoolRefundAllocations/)
+        expect(src, `${name} 缺角色池分组`).toMatch(/pools\.get\(source\.role_type\)/)
+        expect(src, `${name} 缺历史营业额冲销扣减`).toMatch(/prior_negative_total/)
+        expect(src, `${name} 缺历史提成冲销扣减`).toMatch(/prior_negative_comm/)
+        expect(src, `${name} 缺商品行实收覆盖率`).toMatch(/positive_receipt_total/)
+        expect(src, `${name} 仍在跨角色共用总额`).not.toMatch(/other_negative_total/)
+      }
     })
     test('两端必须按行级实收剩余容量映射历史 OVERPAY 哨兵 receipt', () => {
       for (const [name, src] of [['staff', staffSrc], ['admin', adminSrc]]) {

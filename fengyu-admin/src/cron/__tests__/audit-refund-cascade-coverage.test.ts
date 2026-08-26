@@ -109,7 +109,10 @@ describe('cron-worker STEP 9 — auditRefundCascadeCoverage', () => {
     expect(sqlTexts.some((s) =>
       s.includes('sale_payment_item_receipts') &&
       s.includes('sale_payment_item_allocations') &&
-      s.includes('allocated_amount < 0'),
+      s.includes('allocated_amount < 0') &&
+      s.includes('role_type') &&
+      s.includes('expected_negative') &&
+      s.includes('ABS(actual_negative - expected_negative) > 0.01'),
     )).toBe(true)
     // C2 service_commissions
     expect(sqlTexts.some((s) => s.includes('service_commissions') && s.includes('voided_at'))).toBe(true)

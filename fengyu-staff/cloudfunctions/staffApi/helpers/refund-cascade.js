@@ -57,6 +57,83 @@ function allocateCentsByWeight(totalCents, rows) {
   return parts.filter((p) => p.cents > 0)
 }
 
+/**
+ * 退款营业额按 role_type 独立成池，再在池内按员工尚未冲销的正向分配权重拆分。
+ * 跨角色池各自最多冲销一份退款额；例如美容师/品项老师各 100%，全退后两池均归零。
+ */
+function planRolePoolRefundAllocations(rows, refundAmount) {
+  const refundCents = Math.max(0, Math.round(Number(refundAmount || 0) * 100))
+  if (refundCents <= 0 || rows.length === 0) return []
+
+  const positiveReceiptCents = Math.round(Number(rows[0].positive_receipt_total || 0) * 100)
+  const priorRefundReceiptCents = Math.round(Number(rows[0].prior_refund_receipt_total || 0) * 100)
+  const availableReceiptCents = Math.max(0, positiveReceiptCents - priorRefundReceiptCents)
+  const pools = new Map()
+
+  for (const source of rows) {
+    const positiveCents = Math.max(0, Math.round(Number(source.sum_total || 0) * 100))
+    const priorNegativeCents = Math.max(0, Math.round(Number(source.prior_negative_total || 0) * 100))
+    const remainingCents = Math.max(0, positiveCents - priorNegativeCents)
+    if (remainingCents <= 0) continue
+    const positiveCommissionCents = Math.max(0, Math.round(Number(source.sum_comm || 0) * 100))
+    const priorNegativeCommissionCents = Math.max(0, Math.round(Number(source.prior_negative_comm || 0) * 100))
+    const entry = {
+      source,
+      remainingCents,
+      remainingCommissionCents: Math.max(0, positiveCommissionCents - priorNegativeCommissionCents),
+    }
+    const pool = pools.get(source.role_type)
+    if (pool) pool.push(entry)
+    else pools.set(source.role_type, [entry])
+  }
+
+  if (pools.size > 0 && availableReceiptCents <= 0) {
+    throw new Error('INVALID_STATE: 退款营业额分配缺少可冲销的商品行实收')
+  }
+
+  const targets = []
+  for (const roleType of Array.from(pools.keys()).sort()) {
+    const pool = pools.get(roleType) || []
+    const poolRemainingCents = pool.reduce((sum, row) => sum + row.remainingCents, 0)
+    if (poolRemainingCents <= 0) continue
+    const proportionalTarget = Math.round((refundCents * poolRemainingCents) / availableReceiptCents)
+    const targetCents = Math.min(refundCents, poolRemainingCents, Math.max(0, proportionalTarget))
+    if (targetCents <= 0) continue
+
+    const parts = pool.map((row) => {
+      const exact = (targetCents * row.remainingCents) / poolRemainingCents
+      const cents = Math.floor(exact)
+      return { ...row, cents, frac: exact - cents }
+    })
+    let remainder = targetCents - parts.reduce((sum, part) => sum + part.cents, 0)
+    parts.sort((a, b) => b.frac - a.frac || a.source.employee_id.localeCompare(b.source.employee_id))
+    for (let i = 0; remainder > 0 && parts.length > 0; i = (i + 1) % parts.length) {
+      if (parts[i].cents < parts[i].remainingCents) {
+        parts[i].cents += 1
+        remainder -= 1
+      }
+    }
+
+    for (const part of parts) {
+      if (part.cents <= 0) continue
+      const commissionCents = part.cents >= part.remainingCents
+        ? part.remainingCommissionCents
+        : Math.min(
+            part.remainingCommissionCents,
+            Math.round((part.remainingCommissionCents * part.cents) / part.remainingCents),
+          )
+      const ratio = Math.min(1, Math.max(0.001, part.cents / refundCents))
+      targets.push({
+        source: part.source,
+        allocatedCents: part.cents,
+        commissionCents,
+        allocationRatio: ratio.toFixed(3),
+      })
+    }
+  }
+  return targets
+}
+
 async function buildReceiptRefundItems(client, saleOrderId, refundPaymentId, effItems) {
   const requestedCentsByItem = new Map()
   let overpayCents = 0
@@ -196,9 +273,8 @@ async function cascadeRefund(client, params) {
     if (!refundReceiptId) continue
 
     const allocRows = (await client.query(
-      `WITH grouped AS (
+      `WITH positive_grouped AS (
          SELECT spia.employee_id, spia.role_type,
-                MAX(spia.allocation_ratio) AS ratio,
                 MAX(spia.department_name) AS dept,
                 SUM(spia.allocated_amount::numeric) AS sum_total,
                 MAX(spia.commission_rate) AS rate,
@@ -210,61 +286,76 @@ async function cascadeRefund(client, params) {
             AND spir.sale_item_id = $2
             AND spia.is_void = false
             AND spia.allocated_amount > 0
+            AND spir.amount > 0
             AND sop.status = '已支付'
             AND sop.change_type IN ('首次支付','回款','储值卡抵扣')
           GROUP BY spia.employee_id, spia.role_type
        ),
-       totals AS (
-         SELECT COALESCE(SUM(spia.allocated_amount::numeric) FILTER (WHERE spia.allocated_amount > 0), 0) AS positive_total,
-                COALESCE(ABS(SUM(spia.allocated_amount::numeric) FILTER (
-                  WHERE spia.allocated_amount < 0 AND spir.sale_payment_id IS DISTINCT FROM $3
-                )), 0) AS other_negative_total
+       prior_negative AS (
+         SELECT spia.employee_id, spia.role_type,
+                COALESCE(ABS(SUM(spia.allocated_amount::numeric)), 0) AS prior_negative_total,
+                COALESCE(ABS(SUM(spia.commission_amount::numeric)), 0) AS prior_negative_comm
            FROM sale_payment_item_allocations spia
            JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
+           JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
           WHERE spir.sale_order_id = $1
             AND spir.sale_item_id = $2
             AND spia.is_void = false
+            AND spia.allocated_amount < 0
+            AND spir.amount < 0
+            AND spir.sale_payment_id IS DISTINCT FROM $3
+            AND sop.status = '已支付'
+            AND sop.change_type = '退款'
+          GROUP BY spia.employee_id, spia.role_type
+       ),
+       receipt_totals AS (
+         SELECT COALESCE(SUM(CASE
+                  WHEN sop.status = '已支付'
+                   AND sop.change_type IN ('首次支付','回款','储值卡抵扣')
+                   AND spir.amount > 0
+                  THEN spir.amount::numeric ELSE 0 END), 0) AS positive_receipt_total,
+                COALESCE(ABS(SUM(CASE
+                  WHEN sop.status = '已支付'
+                   AND sop.change_type = '退款'
+                   AND spir.amount < 0
+                   AND spir.sale_payment_id IS DISTINCT FROM $3
+                  THEN spir.amount::numeric ELSE 0 END)), 0) AS prior_refund_receipt_total
+           FROM sale_payment_item_receipts spir
+           JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
+          WHERE spir.sale_order_id = $1
+            AND spir.sale_item_id = $2
        )
-       SELECT grouped.*, totals.positive_total, totals.other_negative_total
-         FROM grouped CROSS JOIN totals`,
+       SELECT pg.*, COALESCE(pn.prior_negative_total, 0) AS prior_negative_total,
+              COALESCE(pn.prior_negative_comm, 0) AS prior_negative_comm,
+              rt.positive_receipt_total, rt.prior_refund_receipt_total
+         FROM positive_grouped pg
+         LEFT JOIN prior_negative pn
+           ON pn.employee_id = pg.employee_id AND pn.role_type = pg.role_type
+         CROSS JOIN receipt_totals rt`,
       [saleOrderId, it.saleItemId, refundPaymentId],
     )).rows
     if (allocRows.length === 0) continue
-    const baseCents = allocRows.reduce((s, r) => s + Math.round(Number(r.sum_total) * 100), 0)
-    if (baseCents <= 0) continue
-    const positiveCents = Math.round(Number(allocRows[0].positive_total || 0) * 100)
-    const otherNegativeCents = Math.round(Number(allocRows[0].other_negative_total || 0) * 100)
-    const remainingCents = Math.max(0, positiveCents - otherNegativeCents)
-    const targetCents = Math.min(Math.round(refundAmt * 100), remainingCents)
-    // 最大余数法：按各组 total_amount 权重分摊 targetCents，余数逐分补给小数部分最大者（精确到分）
-    if (targetCents > 0) {
-      const parts = allocRows.map((r) => {
-        const wCents = Math.round(Number(r.sum_total) * 100)
-        const exact = (targetCents * wCents) / baseCents
-        const floorC = Math.floor(exact)
-        return { r, cents: floorC, frac: exact - floorC }
-      })
-      const rem = targetCents - parts.reduce((s, p) => s + p.cents, 0)
-      parts.sort((a, b) => b.frac - a.frac)
-      for (let i = 0; i < rem; i++) parts[i].cents += 1
-      for (const p of parts) {
-        if (p.cents <= 0) continue
-        const voidTotal = p.cents / 100
-        const sumTotal = Number(p.r.sum_total)
-        const sumComm = Number(p.r.sum_comm || 0)
-        // 提成按该组 total→comm 比例同步冲销（保持原提成率），精确到分
-        const voidComm = sumTotal > 0 ? Math.round((sumComm * voidTotal) / sumTotal * 100) / 100 : 0
-        const insertRes = await client.query(
+    const targets = planRolePoolRefundAllocations(allocRows, refundAmt)
+    for (const target of targets) {
+      const voidTotal = target.allocatedCents / 100
+      const voidComm = target.commissionCents / 100
+      const insertRes = await client.query(
           `INSERT INTO sale_payment_item_allocations
              (sale_payment_item_receipt_id, employee_id, role_type, department_name, allocation_ratio,
               allocated_amount, commission_rate, commission_amount, is_void, created_at, updated_at)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, $9, $9)
-           ON CONFLICT (sale_payment_item_receipt_id, employee_id, role_type) WHERE is_void = false DO NOTHING`,
-          [refundReceiptId, p.r.employee_id, p.r.role_type, p.r.dept, p.r.ratio,
-           (-voidTotal).toFixed(2), p.r.rate, (-voidComm).toFixed(2), now],
-        )
-        voidedAllocations += insertRes.rowCount || 0
-      }
+           ON CONFLICT (sale_payment_item_receipt_id, employee_id, role_type) WHERE is_void = false
+           DO UPDATE SET department_name = EXCLUDED.department_name,
+                         allocation_ratio = EXCLUDED.allocation_ratio,
+                         allocated_amount = EXCLUDED.allocated_amount,
+                         commission_rate = EXCLUDED.commission_rate,
+                         commission_amount = EXCLUDED.commission_amount,
+                         updated_at = EXCLUDED.updated_at`,
+        [refundReceiptId, target.source.employee_id, target.source.role_type, target.source.dept,
+         target.allocationRatio, (-voidTotal).toFixed(2), target.source.rate,
+         (-voidComm).toFixed(2), now],
+      )
+      voidedAllocations += insertRes.rowCount || 0
     }
     const currentRefundAlloc = await client.query(
       `SELECT COALESCE(ABS(SUM(spia.allocated_amount::numeric)), 0) AS refund_allocated
@@ -457,4 +548,4 @@ async function cascadeRefund(client, params) {
   }
 }
 
-module.exports = { cascadeRefund }
+module.exports = { cascadeRefund, planRolePoolRefundAllocations }

@@ -3979,10 +3979,14 @@ describe.skip('order.approveRefund', () => {
         return { rows: [{ id: 9001 }], rowCount: 1 }
       }
       if (sql.includes('FROM sale_payment_item_allocations') && sql.includes('GROUP BY')) {
-        const positiveTotal = cascadeAllocs.reduce((s, r) => s + Number(r.sum_total || 0), 0)
+        const positiveReceiptTotal = cascadeAllocs.length > 0
+          ? Number(cascadeAllocs[0].positive_receipt_total ?? orderReceived)
+          : orderReceived
         const rows = cascadeAllocs.map((r) => ({
-          positive_total: positiveTotal.toFixed(2),
-          other_negative_total: '0',
+          prior_negative_total: '0',
+          prior_negative_comm: '0',
+          positive_receipt_total: positiveReceiptTotal.toFixed(2),
+          prior_refund_receipt_total: '0',
           ...r,
         }))
         return { rows, rowCount: rows.length }
@@ -4184,9 +4188,10 @@ describe.skip('order.approveRefund', () => {
     // 该 item（orig-item-1）有一条活跃正数子分配（emp-1 美容师，营业额 500）→ 退款 500 应记一条负数冲销行
     const { calls } = makeApproveTxnSpy({
       cascadeAllocs: [{
-        employee_id: 'emp-1', role_type: '美容师', ratio: '1.00',
+        employee_id: 'emp-1', role_type: '美容师',
         dept: null, sum_total: '500.00', rate: '0.1000', sum_comm: '50.00',
-        positive_total: '500.00', other_negative_total: '0',
+        prior_negative_total: '0', prior_negative_comm: '0',
+        positive_receipt_total: '500.00', prior_refund_receipt_total: '0',
       }],
     })
 

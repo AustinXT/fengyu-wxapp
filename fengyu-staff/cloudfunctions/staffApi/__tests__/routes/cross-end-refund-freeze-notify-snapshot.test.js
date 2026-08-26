@@ -31,7 +31,7 @@ describe('退款级联守护（2026-06-24：通道1 记负数冲销逐被退 ite
     expect(staffCascade).toMatch(/for \(const it of effItems\)/)
     expect(staffCascade).toMatch(/INSERT INTO sale_payment_item_receipts/)
     expect(staffCascade).toMatch(/\(-refundAmt\)\.toFixed\(2\)/)
-    expect(staffCascade).toMatch(/INSERT INTO sale_payment_item_allocations[\s\S]{0,500}ON CONFLICT \(sale_payment_item_receipt_id, employee_id, role_type\) WHERE is_void = false DO NOTHING/)
+    expect(staffCascade).toMatch(/INSERT INTO sale_payment_item_allocations[\s\S]{0,700}ON CONFLICT \(sale_payment_item_receipt_id, employee_id, role_type\) WHERE is_void = false[\s\S]{0,120}DO UPDATE SET/)
     expect(staffCascade).toMatch(/\(-voidTotal\)\.toFixed\(2\)/)
     expect(staffCascade).toMatch(/refundPaymentId/)
     // 通道2 提成：经 service_items 子查询按 sale_item_id = ANY($3)（仅全退 item，保持软删）
@@ -46,7 +46,7 @@ describe('退款级联守护（2026-06-24：通道1 记负数冲销逐被退 ite
     expect(adminCascade).toMatch(/for \(const it of effItems\)/)
     expect(adminCascade).toMatch(/INSERT INTO sale_payment_item_receipts/)
     expect(adminCascade).toMatch(/\$\{\(-refundAmt\)\.toFixed\(2\)\}/)
-    expect(adminCascade).toMatch(/INSERT INTO sale_payment_item_allocations[\s\S]{0,500}ON CONFLICT \(sale_payment_item_receipt_id, employee_id, role_type\) WHERE is_void = false DO NOTHING/)
+    expect(adminCascade).toMatch(/INSERT INTO sale_payment_item_allocations[\s\S]{0,700}ON CONFLICT \(sale_payment_item_receipt_id, employee_id, role_type\) WHERE is_void = false[\s\S]{0,120}DO UPDATE SET/)
     expect(adminCascade).toMatch(/\$\{\(-voidTotal\)\.toFixed\(2\)\}/)
     expect(adminCascade).toMatch(/refundPaymentId/)
     // 通道2：service_commissions 软删按 fullItemIds——admin 用 IN(sql.join) 规避 drizzle ANY(array) 42809
