@@ -18,13 +18,13 @@ export default async function Page({
 
   const result = await listRefunds({
     status,
+    q: params.q,
     page: params.page ? Number(params.page) : undefined,
     pageSize: params.size ? Number(params.size) : undefined,
   })
 
   return (
     <RefundsPageClient
-      initialStatus={status ?? '待审批'}
       refunds={result.refunds}
       total={result.total}
       page={result.page}

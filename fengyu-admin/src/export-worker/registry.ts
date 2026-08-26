@@ -8,6 +8,7 @@ import {
   type ExportAllocationOrdersCursor,
   type ExportOrdersCursor,
 } from '@/actions/orders'
+import { exportRefunds } from '@/actions/refunds'
 import {
   exportServiceOrders,
   exportAllocationServiceOrders,
@@ -172,6 +173,33 @@ const orderColumns = mapColumns([
   { header: '业绩归属日期', width: 14, key: 'performanceAttributionDate', map: (row) => fmtDate(value(row, 'performanceAttributionDate') as string | Date | null) },
   { header: '创建时间', width: 20, key: 'createdAt', map: (row) => fmtDateTime(value(row, 'createdAt') as string | Date | null) },
   { header: '备注', width: 24, key: 'remark' },
+])
+
+const refundColumns = mapColumns([
+  { header: '退款单号', width: 14, key: 'refundPaymentId', map: (row) => `#${text(row, 'refundPaymentId')}` },
+  { header: '关联原单', width: 22, key: 'refSaleOrderId' },
+  { header: '市场', width: 12, key: 'marketName' },
+  { header: '门店', width: 16, key: 'storeName' },
+  { header: '顾客', width: 12, key: 'customerName' },
+  { header: '顾客手机', width: 14, key: 'clientPhone' },
+  { header: '退款金额', width: 12, key: 'amount', map: (row) => {
+    const amount = Number(value(row, 'amount'))
+    return Number.isFinite(amount) ? -Math.abs(amount) : ''
+  } },
+  { header: '状态', width: 10, key: 'status', map: (row) => {
+    const status = text(row, 'status')
+    return status === '已支付' ? '已通过' : status === '已作废' ? '已驳回' : status
+  } },
+  { header: '原因', width: 32, key: 'refundReason' },
+  { header: '退款方式', width: 12, key: 'paymentMethod', map: (row) => {
+    const method = String(value(row, 'paymentMethod') ?? '')
+    return paymentMethodMap[method] ?? method
+  } },
+  { header: '发起人', width: 12, key: 'operatorName' },
+  { header: '创建时间', width: 20, key: 'createdAt', map: (row) => fmtDateTime(value(row, 'createdAt') as string | Date | null) },
+  { header: '审批人', width: 12, key: 'auditorName' },
+  { header: '审批时间', width: 20, key: 'auditAt', map: (row) => fmtDateTime(value(row, 'auditAt') as string | Date | null) },
+  { header: '审批备注', width: 28, key: 'auditRemark' },
 ])
 
 const allocationSalesColumns = mapColumns([
@@ -531,6 +559,12 @@ export async function createExportContent(
           (row) => String(row.saleOrderId ?? row.__sourceId ?? ''),
           aggregateOrderExportRows,
         ),
+      }
+    case 'refunds':
+      return {
+        sheetName: '退款明细',
+        columns: refundColumns,
+        rows: pagedRows((options: ExportBatchOptions<number>) => exportRefunds(params, options)),
       }
     case 'allocation-sales':
       return {

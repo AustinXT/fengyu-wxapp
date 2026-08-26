@@ -12,11 +12,15 @@ vi.mock('@/actions/data-center/product', () => ({
 vi.mock('@/actions/data-center/efficiency', () => ({
   getEfficiencyBoard: vi.fn(),
 }))
+vi.mock('@/actions/refunds', () => ({
+  exportRefunds: vi.fn(),
+}))
 
 import { getSalesBoard } from '@/actions/data-center/sales'
 import { getCustomerBoard } from '@/actions/data-center/customer'
 import { getProductBoard } from '@/actions/data-center/product'
 import { getEfficiencyBoard } from '@/actions/data-center/efficiency'
+import { exportRefunds } from '@/actions/refunds'
 import {
   DATA_CENTER_VIEW_CONFIG,
   getDataCenterBreakdownConfig,
@@ -88,6 +92,37 @@ describe('服务单导出列', () => {
     expect(column?.value({ sessionUsed: 2, unit: '次' })).toBe(2)
     expect(column?.value({ sessionUsed: '3.5', unit: '疗程' })).toBe(3.5)
     expect(column?.value({ sessionUsed: null, unit: '次' })).toBe('')
+  })
+})
+
+describe('退款导出', () => {
+  it('透传筛选条件并输出业务状态与负数退款金额', async () => {
+    vi.mocked(exportRefunds).mockResolvedValue({
+      rows: [{
+        refundPaymentId: 211783,
+        refSaleOrderId: 'FY-XSD-WX-2608040106',
+        amount: '-500.00',
+        status: '已支付',
+        paymentMethod: '微信',
+      }],
+      truncated: false,
+      hasMore: false,
+    } as never)
+
+    const content = await createExportContent('refunds', { status: '已支付', q: '冯桂仙' })
+    const iterator = content.rows[Symbol.asyncIterator]()
+    const first = await iterator.next()
+    const columns = Object.fromEntries(content.columns.map((column) => [column.header, column]))
+
+    expect(exportRefunds).toHaveBeenCalledWith(
+      { status: '已支付', q: '冯桂仙' },
+      { limit: 500 },
+    )
+    expect(content.sheetName).toBe('退款明细')
+    expect(columns['退款单号']?.value(first.value!)).toBe('#211783')
+    expect(columns['退款金额']?.value(first.value!)).toBe(-500)
+    expect(columns['状态']?.value(first.value!)).toBe('已通过')
+    expect(columns['退款方式']?.value(first.value!)).toBe('微信支付')
   })
 })
 

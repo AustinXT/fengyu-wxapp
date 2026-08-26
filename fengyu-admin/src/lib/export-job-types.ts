@@ -6,6 +6,7 @@
 
 export const EXPORT_JOB_TYPES = [
   'orders',
+  'refunds',
   'allocation-sales',
   'allocation-services',
   'services',
@@ -90,6 +91,7 @@ export interface ExportJobListItem {
 
 export const EXPORT_PERMISSION_BY_TYPE: Record<ExportJobType, string> = {
   orders: 'sale_order:list',
+  refunds: 'sale_order:refund_create',
   'allocation-sales': 'sale_order:list',
   'allocation-services': 'service:list',
   services: 'service:list',
@@ -110,6 +112,7 @@ export const EXPORT_PERMISSION_ACTIONS = Array.from(
 
 export const EXPORT_LABEL_BY_TYPE: Record<ExportJobType, string> = {
   orders: '订单明细',
+  refunds: '退款明细',
   'allocation-sales': '营业额分配-销售提成',
   'allocation-services': '营业额分配-服务提成',
   services: '服务单明细',

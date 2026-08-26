@@ -1,12 +1,16 @@
 "use client"
 
-import { useRouter, useSearchParams } from "next/navigation"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { useSearchParams } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
+import { ExportButton } from "@/components/ui/export-button"
+import { Input } from "@/components/ui/input"
+import { Select } from "@/components/ui/select"
 import { StatusBadge } from "@/components/ui/badge"
 import type { RefundListItem } from "@/actions/refunds"
 import { formatDateTime as fmtDateTime } from "@/lib/utils"
+import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { PreserveListContextLink } from "@/components/return-context"
 
 type RefundStatus = '待审批' | '已支付' | '已关闭'
@@ -17,32 +21,42 @@ function formatDateTime(dt: string | null) {
 }
 
 export default function RefundsPageClient({
-  initialStatus,
   refunds,
   total,
   page,
   pageSize,
 }: {
-  initialStatus: RefundStatus
   refunds: RefundListItem[]
   total: number
   page: number
   pageSize: number
 }) {
-  const router = useRouter()
+  const { get, setMany } = useUrlFilters()
   const searchParams = useSearchParams()
+  const rawStatus = get('status')
+  const status: RefundStatus | '' = ['待审批', '已支付', '已关闭'].includes(rawStatus)
+    ? rawStatus as RefundStatus
+    : ''
+  const [searchInput, setSearchInput] = useState(get('q'))
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const setStatus = (status: RefundStatus) => {
-    const params = new URLSearchParams(searchParams?.toString() ?? '')
-    params.set('status', status)
-    params.delete('page')
-    router.push(`/refunds?${params.toString()}`)
-  }
+  useEffect(() => setSearchInput(get('q')), [get])
+  useEffect(() => () => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+  }, [])
+
+  const setFilter = useCallback((key: string, value: string) => {
+    setMany({ [key]: value, page: '' })
+  }, [setMany])
+
+  const handleSearchChange = useCallback((value: string) => {
+    setSearchInput(value)
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => setFilter('q', value.trim()), 300)
+  }, [setFilter])
 
   const setPage = (nextPage: number) => {
-    const params = new URLSearchParams(searchParams?.toString() ?? '')
-    params.set('page', String(nextPage))
-    router.push(`/refunds?${params.toString()}`)
+    setMany({ page: nextPage === 1 ? '' : String(nextPage) })
   }
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
@@ -57,13 +71,31 @@ export default function RefundsPageClient({
       <Card>
         <CardHeader>
           <CardTitle>退款申请</CardTitle>
-          <Tabs value={initialStatus} onValueChange={(v) => setStatus(v as RefundStatus)}>
-            <TabsList>
-              <TabsTrigger value="待审批">待审批</TabsTrigger>
-              <TabsTrigger value="已支付">已通过</TabsTrigger>
-              <TabsTrigger value="已关闭">已驳回</TabsTrigger>
-            </TabsList>
-          </Tabs>
+          <div className="flex flex-wrap items-center gap-3">
+            <Select
+              aria-label="退款状态"
+              className="w-36"
+              value={status}
+              onChange={(event) => setFilter('status', event.target.value)}
+            >
+              <option value="">全部状态</option>
+              <option value="待审批">待审批</option>
+              <option value="已支付">已通过</option>
+              <option value="已关闭">已驳回</option>
+            </Select>
+            <Input
+              className="w-72"
+              placeholder="搜索退款单号/原单号/顾客/手机号/发起人"
+              value={searchInput}
+              onChange={(event) => handleSearchChange(event.target.value)}
+            />
+            <ExportButton
+              exportRequest={{
+                exportType: 'refunds',
+                payload: Object.fromEntries(searchParams.entries()),
+              }}
+            />
+          </div>
         </CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
