@@ -18,6 +18,8 @@ services:
       # 登录密码 RSA 解密私钥（运行期）。缺失则 login server action fail-fast → 500。
       # 必须与构建期 inline 的 NEXT_PUBLIC_RSA_PUBLIC_KEY 同一对（见 envs/<env>.env）。
       RSA_PRIVATE_KEY: ${ADMIN_RSA_PRIVATE_KEY}
+      # 浏览器登录页在构建期内联该值；运行期仍显式注入，供 middleware 与部署终检核对。
+      NEXT_PUBLIC_ANALYST_ORIGIN: ${ANALYST_PUBLIC_ORIGIN:?deploy runtime env missing ANALYST_PUBLIC_ORIGIN}
       # 与目标环境一致：worker 写入、admin 换取临时 URL 必须使用同一个 CloudBase 桶。
       CLOUDBASE_ENV_ID: ${DEPLOY_CLOUDBASE_ENV_ID:?deploy runtime env missing CLOUDBASE_ENV_ID}
       CDN_BASE: ${DEPLOY_CDN_BASE:?deploy runtime env missing CDN_BASE}
