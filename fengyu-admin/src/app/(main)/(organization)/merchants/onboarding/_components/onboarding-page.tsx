@@ -286,14 +286,18 @@ function OpeningBankField({
   const [countyCode, setCountyCode] = useState(bankAreaPath.countyCode)
   const selectedBankName = form.settlementData.openningBankName ?? ""
   const hasSelectedBank = Boolean(selectedBankName && form.settlementData.openningBankCode && form.settlementData.bankAreaCode)
+  const storedBankDistCode = form.settlementData.bankDistCode ?? ""
 
   useEffect(() => {
-    const nextPath = getAreaPathByCode(effectiveBankDistCode)
+    // bankDistCode 只允许保存区县码。清空旧支行时不能再以注册地址回填，
+    // 否则会覆盖用户刚在省/市下拉框中的选择。
+    if (!storedBankDistCode) return
+    const nextPath = getAreaPathByCode(storedBankDistCode)
     setProvinceCode(nextPath.provinceCode)
     setCityCode(nextPath.cityCode)
     setCountyCode(nextPath.countyCode)
     if (!hasSelectedBank) setBankName(form.settlementData.openningBankName ?? "")
-  }, [effectiveBankDistCode, form.settlementData.openningBankName, hasSelectedBank])
+  }, [storedBankDistCode, form.settlementData.openningBankName, hasSelectedBank])
 
   const provinceOptions = getProvinceOptions()
   const cityOptions = getCityOptions(provinceCode)
@@ -906,6 +910,7 @@ export function OnboardingEditor({
       if (displayName === "营业执照") {
         const merRegDistCode = data.merRegDistCode || current.merchantData.merRegDistCode
         const subjectName = data.merRegName || data.merBlisName
+        const businessLicenseName = data.merBlisName || subjectName
         const previousSubjectNames = [
           current.merchantData.subjectName,
           current.merchantData.merRegName,
@@ -919,7 +924,8 @@ export function OnboardingEditor({
           ...current,
           merchantData: {
             ...current.merchantData,
-            ...(subjectName ? { subjectName, merRegName: subjectName, merBlisName: subjectName } : {}),
+            ...(subjectName ? { subjectName, merRegName: subjectName } : {}),
+            ...(businessLicenseName ? { merBlisName: businessLicenseName } : {}),
             ...(data.merBlis ? { merBlis: data.merBlis } : {}),
             ...(data.merRegAddr ? { merRegAddr: shortLakalaAddress(data.merRegAddr, merRegDistCode) } : {}),
             ...(merRegDistCode ? { merRegDistCode } : {}),
@@ -1117,7 +1123,8 @@ export function OnboardingEditor({
         <Card>
           <CardHeader className="flex-row items-center gap-2 space-y-0"><Building2 className="size-4 text-[var(--primary)]" /><div><CardTitle className="text-base">2. 主体资料、法人和联系人</CardTitle><p className="mt-1 text-xs font-normal text-[#999999]">页面只让你确认营业执照上的主体信息；提交时后端会自动映射为拉卡拉需要的商户注册名称、营业执照名称等接口字段。</p></div></CardHeader>
           <CardContent className="grid gap-4 sm:grid-cols-2">
-            <Field form={form} setForm={setForm} group="merchantData" name="subjectName" label="营业执照名称 / 主体名称" hint="来自营业执照 OCR；后端会同步用于拉卡拉的商户注册名称和营业执照名称" />
+            <Field form={form} setForm={setForm} group="merchantData" name="merRegName" label="主体名称" hint="营业执照 OCR 会预填；可按实际主体名称修改，提交时作为拉卡拉商户注册名称。" />
+            <Field form={form} setForm={setForm} group="merchantData" name="merBlisName" label="营业执照名称" hint="营业执照 OCR 会预填；可单独修改，提交时作为拉卡拉营业执照名称。" />
             <Field form={form} setForm={setForm} group="merchantData" name="merBlis" label="统一社会信用代码 / 营业执照号" />
             <AreaCodeField form={form} setForm={setForm} group="merchantData" name="merRegDistCode" label="注册地址地区" />
             <Field

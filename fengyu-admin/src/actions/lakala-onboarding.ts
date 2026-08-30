@@ -552,11 +552,14 @@ function mergeInput(input?: Partial<OnboardingApplicationInput>): OnboardingAppl
 }
 
 function normalizeApplicationInput(input: OnboardingApplicationInput): OnboardingApplicationInput {
-  const subjectName = input.merchantData.subjectName || input.merchantData.merBlisName || input.merchantData.merRegName;
+  // 历史草稿仅保存了 subjectName，须兼容回填；新草稿中的主体名称和营业执照名称可独立维护。
+  const subjectName = input.merchantData.merRegName || input.merchantData.subjectName || input.merchantData.merBlisName;
+  const businessLicenseName = input.merchantData.merBlisName || subjectName;
   const businessName = input.merchantData.merBizName || input.shopData.shopName;
   const merchantData: JsonRecord = {
     ...input.merchantData,
-    ...(subjectName ? { subjectName, merRegName: subjectName, merBlisName: subjectName } : {}),
+    ...(subjectName ? { subjectName, merRegName: subjectName } : {}),
+    ...(businessLicenseName ? { merBlisName: businessLicenseName } : {}),
     ...(businessName ? { merBizName: businessName } : {}),
   };
   const shopData = {
@@ -1505,7 +1508,7 @@ function buildEContractReqData(app: NonNullable<Awaited<ReturnType<typeof getOnb
     cert_no: data.legalPersonData.larIdcard,
     mobile: data.contactData.merContactMobile,
     business_license_no: data.merchantData.merBlis,
-    business_license_name: data.merchantData.merRegName,
+    business_license_name: data.merchantData.merBlisName || data.merchantData.merRegName,
     openning_bank_code: data.settlementData.openningBankCode,
     openning_bank_name: resolveOpeningBankName(data.settlementData),
     acct_type_code: DEFAULT_LAKALA_VALUES.acctTypeCode,

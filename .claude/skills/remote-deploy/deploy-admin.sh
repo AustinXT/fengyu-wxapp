@@ -66,6 +66,10 @@ read_staff_account_value() {
   local key="$1"
   local value
   value=$(grep -m1 "^STAFF_${key}=" "envs/$ENV.env" 2>/dev/null | cut -d= -f2- | tr -d '\r"' || true)
+  if [[ -z "$value" && "$IS_LAKALA_TEST_TARGET" == true ]]; then
+    # test 共用生产 CloudBase staff 环境，但不落地保存独立 test.env。
+    value=$(grep -m1 "^STAFF_${key}=" "envs/prod.env" 2>/dev/null | cut -d= -f2- | tr -d '\r"' || true)
+  fi
   if [[ -z "$value" ]]; then
     # 兼容历史配置，但只允许回退到 staff 子账号文件，绝不能读取 client 的通用凭据。
     value=$(grep -m1 "^${key}=" "fengyu-staff/.env" 2>/dev/null | cut -d= -f2- | tr -d '\r"' || true)
@@ -117,11 +121,18 @@ else
   DEPLOY_CLOUDBASE_ENV_ID=$(read_env_value CLOUDBASE_ENV_ID)
   DEPLOY_CDN_BASE=$(read_env_value CDN_BASE)
 fi
-DEPLOY_CLIENT_SECRET=$(read_env_value CLIENT_SECRET)
-DEPLOY_STAFF_ENV_ID=$(read_env_value STAFF_ENV_ID)
+if [[ "$IS_LAKALA_TEST_TARGET" == true ]]; then
+  # test 没有独立的本地 env 文件；运行时标识必须以 101 测试服当前 .env 为准。
+  DEPLOY_CLIENT_SECRET=$(read_remote_env_value CLIENT_SECRET)
+  DEPLOY_STAFF_ENV_ID=$(read_remote_env_value STAFF_ENV_ID)
+  ANALYST_PUBLIC_ORIGIN=$(read_remote_env_value ANALYST_PUBLIC_ORIGIN)
+else
+  DEPLOY_CLIENT_SECRET=$(read_env_value CLIENT_SECRET)
+  DEPLOY_STAFF_ENV_ID=$(read_env_value STAFF_ENV_ID)
+  ANALYST_PUBLIC_ORIGIN=$(read_env_value ANALYST_PUBLIC_ORIGIN)
+fi
 DEPLOY_STAFF_TENCENTCLOUD_SECRETID=$(read_staff_account_value TENCENTCLOUD_SECRETID)
 DEPLOY_STAFF_TENCENTCLOUD_SECRETKEY=$(read_staff_account_value TENCENTCLOUD_SECRETKEY)
-ANALYST_PUBLIC_ORIGIN=$(read_env_value ANALYST_PUBLIC_ORIGIN)
 if ! node -e 'const u = new URL(process.argv[1]); if (!/^https?:$/.test(u.protocol) || u.username || u.password) process.exit(1)' "$ANALYST_PUBLIC_ORIGIN"; then
   echo "✗ envs/$ENV.env 的 ANALYST_PUBLIC_ORIGIN 必须是无账号密码的 http(s) URL。" >&2
   exit 1
