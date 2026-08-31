@@ -24,6 +24,11 @@ vi.mock('@/generated/version', () => ({
   BUILD_TIME: 'test',
 }))
 
+vi.mock('@/lib/inventory-feature-flags', () => ({
+  INVENTORY_ENTRY_ENABLED: true,
+  INVENTORY_LINKAGE_ENABLED: true,
+}))
+
 const session: AuthSession = {
   employeeId: 'test',
   name: '测试管理员',
