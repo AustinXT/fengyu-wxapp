@@ -6406,6 +6406,7 @@ describe('order.createDeposit', () => {
         name: '顾客甲',
         customer_type: '会员客',
         bound_store_id: 'store-001',
+        is_cross_store_temp: false,
       }])
       .mockResolvedValueOnce([{
         sku_id: 'sku-001',
@@ -6455,7 +6456,7 @@ describe('order.createDeposit', () => {
     }, { effectiveStoreId: 'store-current', scopeStoreIds: ['store-other'] })
     pg.query
       .mockResolvedValueOnce([{
-        user_id: 'cu-001', phone: '138', name: '顾客甲', customer_type: '会员客', bound_store_id: 'store-current',
+        user_id: 'cu-001', phone: '138', name: '顾客甲', customer_type: '会员客', bound_store_id: 'store-current', is_cross_store_temp: false,
       }])
       .mockResolvedValueOnce([{
         sku_id: 'sku-other-market', product_type: '疗程卡', spec_name: '仅限其他市场商品',
@@ -6486,6 +6487,7 @@ describe('order.createDeposit', () => {
         name: '顾客甲',
         customer_type: '会员客',
         bound_store_id: 'store-001',
+        is_cross_store_temp: false,
       }])
       .mockResolvedValueOnce([{
         sku_id: 'sku-001',
@@ -6554,6 +6556,7 @@ describe('order.createDeposit', () => {
         name: '顾客甲',
         customer_type: '会员客',
         bound_store_id: 'store-001',
+        is_cross_store_temp: false,
       }])
       .mockResolvedValueOnce([{
         sku_id: 'sku-home',
@@ -6598,10 +6601,61 @@ describe('order.createDeposit', () => {
       paymentMethod: '线下',
     })
     pg.query.mockResolvedValueOnce([{
-      user_id: 'cu-999', phone: '138', name: '外店顾客', customer_type: '会员客', bound_store_id: 'store-999',
+      user_id: 'cu-999', phone: '138', name: '外店顾客', customer_type: '会员客', bound_store_id: 'store-999', is_cross_store_temp: false,
     }])
     await expect(orderRoutes.createDeposit(ctx))
       .rejects.toThrow(/PERMISSION_DENIED.*不属于当前门店/)
+  })
+
+  test('临时跨店顾客（绑定他店）允许开寄存单，订单仍按当前操作门店结算', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'cu-temp',
+      items: [{ skuId: 'sku-001', quantity: 1, received: 300 }],
+      remark: '临时跨店顾客寄存',
+    })
+    pg.query
+      .mockResolvedValueOnce([{
+        user_id: 'cu-temp',
+        phone: '13800002222',
+        name: '临时跨店顾客',
+        customer_type: '会员客',
+        bound_store_id: 'store-999',
+        is_cross_store_temp: true,
+      }])
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-001',
+        product_type: '疗程卡',
+        spec_name: '水光卡',
+        price: '500.00',
+        special_price: null,
+        session_count: 5,
+        service_fee: '0',
+        is_shengmei: false,
+        is_experience: false,
+        sales_category: '自销自耗',
+        product_kind: '护理项目',
+      }])
+
+    const txCalls = []
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql, params) => {
+          txCalls.push({ sql, params })
+          return defaultQueryResult(sql)
+        }),
+      }
+      return await cb(client)
+    })
+
+    await orderRoutes.createDeposit(ctx)
+
+    expect(ctx.result.status).toBe('待审批')
+    expect(ctx.result.message).toBe('寄存单已提交审批')
+    const orderInsert = txCalls.find(c => typeof c.sql === 'string' && c.sql.includes('INSERT INTO sale_orders'))
+    expect(orderInsert).toBeTruthy()
+    // INSERT 参数 $4 = storeId（effectiveStoreId），寄存单必须落在当前操作门店而非绑定门店
+    expect(orderInsert.params[3]).toBe('store-001')
+    expect(orderInsert.params).not.toContain('store-999')
   })
 })
 

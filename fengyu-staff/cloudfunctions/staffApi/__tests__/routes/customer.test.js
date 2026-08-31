@@ -1885,10 +1885,22 @@ describe('customer.customerBalance', () => {
   test('仍绑定他店（不在 scope）顾客余额仍拒绝（scope 隔离未破坏）', async () => {
     const ctx = createManagerCtx({ customerUserId: 'cu-otherstore' })
     // scope 检查 SELECT bound_store_id → 他店，不在 scopeStoreIds 内
-    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-999' }])
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-999', is_cross_store_temp: false }])
 
     await expect(customerRoutes.customerBalance(ctx))
       .rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('临时跨店顾客（绑定他店）余额仍可查（同 card.recharge/inflow 放行口径）', async () => {
+    const ctx = createManagerCtx({ customerUserId: 'cu-temp' })
+    // scope 检查 SELECT → 绑定他店但被标记临时跨店，应放行
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-999', is_cross_store_temp: true }])
+    pg.query.mockResolvedValueOnce([{ card_id: 'card-temp', balance: '500.00' }])
+
+    await customerRoutes.customerBalance(ctx)
+
+    expect(ctx.result.cardId).toBe('card-temp')
+    expect(ctx.result.balance).toBe(500)
   })
 
   test('顾客不存在拒绝', async () => {

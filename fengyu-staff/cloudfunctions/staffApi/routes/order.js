@@ -6036,7 +6036,7 @@ async function createDeposit(ctx) {
   // 查顾客（client_identity_rule：仅看 bound_store_id，不要求 openid，
   // 因 WorkFine 老顾客可能没绑微信）
   const clientRows = await pg.query(
-    `SELECT user_id, phone, name, customer_type, bound_store_id
+    `SELECT user_id, phone, name, customer_type, bound_store_id, is_cross_store_temp
      FROM client_wechat_users WHERE user_id = $1 LIMIT 1`,
     [clientUserId]
   )
@@ -6045,8 +6045,10 @@ async function createDeposit(ctx) {
   if (!client.bound_store_id) {
     throw new Error('CLIENT_NOT_REGISTERED: 顾客未绑定门店')
   }
-  // 非本店顾客禁止开寄存单（同 order.create 口径）
-  if (!isStoreInScope(ctx.auth, client.bound_store_id)) {
+  // 非本店顾客禁止开寄存单；例外：临时跨店顾客允许被外店开寄存单
+  // （同 order.create / createConversion 口径；寄存单仍按开单门店 effectiveStoreId 结算，
+  // 标记每日 03:00 cron 重置）。
+  if (!isStoreInScope(ctx.auth, client.bound_store_id) && !client.is_cross_store_temp) {
     throw new Error('PERMISSION_DENIED: 该顾客不属于当前门店，无法开单')
   }
 
