@@ -11,6 +11,7 @@ import {
   ROOT,
   analyzeMigrationState,
   buildServiceEnvs,
+  encodeEnvValue,
   parseEnv,
   reconcileLegacyConfigFiles,
   renderBundle,
@@ -112,6 +113,37 @@ test('env parser preserves quoted multiline values and rejects duplicate keys', 
   assert.throws(() => parseEnv('A=1\nA=2\n'), /duplicate environment key/)
 })
 
+test('env parser rejects unterminated quoted values with the opening line number', () => {
+  assert.throws(
+    () => parseEnv('# c\nA=1\nB="broken\n'),
+    (error) => /never closed|unterminated/.test(error.message) && /line 3/.test(error.message),
+  )
+  assert.throws(
+    () => parseEnv('A="value\nB=other\n'),
+    (error) => /never closed|unterminated/.test(error.message) && /line 1/.test(error.message),
+  )
+})
+
+test('env quoted values preserve backslashes through encode and parse', () => {
+  const tricky = ['a\\nb', '\\\\', '\\"', '$'].join('|')
+  assert.equal(parseEnv(`A=${encodeEnvValue(tricky)}\n`).A, tricky)
+  assert.equal(parseEnv('A="x\\\\ny"\n').A, 'x\\ny')
+})
+
+test('env parser distinguishes escaped quotes from literal backslashes before closing quotes', () => {
+  const unterminated = String.raw`A="tail\"` + '\nB=next\n'
+  const closed = String.raw`A="ok\\"` + '\nB=1\n'
+  assert.throws(() => parseEnv(unterminated), /never closed|unterminated/)
+  assert.deepEqual(parseEnv(closed), { A: 'ok\\', B: '1' })
+})
+
+test('compose env rendering escapes dollar signs without changing source env encoding', () => {
+  assert.equal(renderEnv({ A: 'pa$$word' }), 'A=pa$$$$word\n')
+  assert.equal(renderEnv({ A: 'x$y"z' }), 'A="x$$y\\"z"\n')
+  assert.equal(renderEnv({ B: 'plain' }), 'B=plain\n')
+  assert.equal(encodeEnvValue('pa$$word'), 'pa$$word')
+})
+
 test('all fixed environment targets validate and RSA mismatch fails closed', () => {
   for (const env of Object.keys(TARGETS)) assert.equal(validateConfig(env, validConfig(env)), TARGETS[env])
   const config = validConfig('prod')
@@ -195,6 +227,45 @@ test('legacy reconcile migrates all real env files before the strict gate', () =
   fs.rmSync(root, { recursive: true, force: true })
 })
 
+test('legacy reconcile preserves dollar signs in source env files', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-deploy-reconcile-dollar-'))
+  const envDir = path.join(root, 'envs')
+  const staffDir = path.join(root, 'fengyu-staff')
+  fs.mkdirSync(envDir, { recursive: true })
+  fs.mkdirSync(staffDir, { recursive: true })
+
+  const dev = validConfig('dev')
+  const testConfig = validConfig('test')
+  const prod = validConfig('prod')
+  for (const config of [dev, testConfig, prod]) config.ADMIN_JWT_SECRET = 'jwt-$ecret$'
+  dev.STAFF_TENCENTCLOUD_SECRETID = ''
+  dev.STAFF_TENCENTCLOUD_SECRETKEY = ''
+  testConfig.STAFF_TENCENTCLOUD_SECRETID = ''
+  testConfig.STAFF_TENCENTCLOUD_SECRETKEY = ''
+  prod.STAFF_TENCENTCLOUD_SECRETID = 'prod-staff-id'
+  prod.STAFF_TENCENTCLOUD_SECRETKEY = 'prod-staff-key'
+  prod.COOKIE_DOMAIN = ''
+
+  const renderRawEnv = (values) => `${Object.entries(values)
+    .map(([key, value]) => `${key}=${value}`)
+    .join('\n')}\n`
+  fs.writeFileSync(path.join(envDir, 'dev.env.example'), renderEnv(validConfig('dev')))
+  fs.writeFileSync(path.join(envDir, 'prod.env.example'), renderEnv(validConfig('prod')))
+  for (const [env, config] of [['dev', dev], ['test', testConfig], ['prod', prod]]) {
+    fs.writeFileSync(path.join(envDir, `${env}.env`), renderRawEnv(config), { mode: 0o644 })
+  }
+  fs.writeFileSync(path.join(staffDir, '.env'), 'TENCENTCLOUD_SECRETID=legacy-staff-id\nTENCENTCLOUD_SECRETKEY=legacy-staff-key\n')
+
+  reconcileLegacyConfigFiles({ root })
+
+  for (const env of ['dev', 'test', 'prod']) {
+    const text = fs.readFileSync(path.join(envDir, `${env}.env`), 'utf8')
+    assert.equal(text.includes('$$'), false)
+    assert.equal(parseEnv(text).ADMIN_JWT_SECRET, 'jwt-$ecret$')
+  }
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
 test('bundle files are mode 0600 and contain only the target service whitelist', () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-deploy-config-'))
   const source = path.join(temp, 'prod.env')
@@ -209,7 +280,13 @@ test('bundle files are mode 0600 and contain only the target service whitelist',
   fs.rmSync(temp, { recursive: true, force: true })
 })
 
-test('remote compose overrides base env_file and environment per service', () => {
+test('remote compose overrides base env_file and environment per service', (t) => {
+  const probe = spawnSync('docker', ['version', '--format', '{{.Server.Version}}'], { encoding: 'utf8' })
+  if (probe.error || probe.status !== 0) {
+    const reason = probe.error?.message || probe.stderr.trim() || `exit status ${probe.status}`
+    t.skip(`docker is not available: ${reason}`)
+    return
+  }
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-deploy-compose-'))
   const source = path.join(temp, 'prod.env')
   fs.writeFileSync(source, renderEnv(validConfig('prod')), { mode: 0o600 })
@@ -262,7 +339,15 @@ test('migration analysis follows latest created_at and hash instead of row count
     { hash: 'b', created_at: '200' },
     { hash: 'c', created_at: '300' },
   ], hashes)
-  assert.equal(currentWithHistoricalExtra.ok, true)
+  assert.equal(currentWithHistoricalExtra.ok, false)
+  assert.match(currentWithHistoricalExtra.reason, /local journal is missing/)
   assert.equal(currentWithHistoricalExtra.latestTag, '0002_c')
   assert.equal(currentWithHistoricalExtra.historicalRowDelta, 1)
+
+  const currentWithHistoricalGap = analyzeMigrationState(entries, [
+    { hash: 'c', created_at: '300' },
+  ], hashes)
+  assert.equal(currentWithHistoricalGap.ok, false)
+  assert.match(currentWithHistoricalGap.reason, /remote journal is missing/)
+  assert.equal(currentWithHistoricalGap.historicalRowDelta, -2)
 })
