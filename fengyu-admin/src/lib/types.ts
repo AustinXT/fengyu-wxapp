@@ -828,7 +828,7 @@ export interface SaleOrderPayment {
   note: string | null
   createdAt: string
   paidAt: string | null
-  /** 非首次支付款项的独立业绩归属日期；首次支付继续读取订单归属日期。 */
+  /** 非首次支付款项的业绩归属日期；混合支付卡流水跟随主流水，首次支付继续读取订单归属日期。 */
   performanceAttributionDate: string | null
   performanceAttributionAdjustedAt: string | null
   performanceAttributionAdjustedBy: string | null

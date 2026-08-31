@@ -475,7 +475,8 @@ export const saleOrderPayments = pgTable(
     paidAt: timestamp("paid_at", { withTimezone: true }),
     /**
      * 款项业绩归属日期（上海自然日）。首次支付继续跟随 sale_orders 的归属日期；
-     * 回款、储值卡抵扣和退款在入账时按 paid_at 初始化，并允许一次人工调整。
+     * 同次混合支付的储值卡抵扣跟随首次支付/回款主流水；纯储值卡支付、回款和退款
+     * 在入账时按 paid_at 初始化，并允许一次人工调整。
      */
     performanceAttributionDate: date("performance_attribution_date"),
     /** 首次人工调整时间；非 NULL 即表示该款项的一次修改机会已使用。 */
@@ -661,6 +662,7 @@ const saleOrderPerformanceEventsQuery = sql`
       sop.created_at,
       sop.performance_attribution_date AS payment_performance_attribution_date,
       so.performance_attribution_date AS order_performance_attribution_date,
+      paired_payment.performance_date AS paired_payment_performance_date,
       (
         sop.status = '已支付'
         AND sop.amount::numeric > 0
@@ -683,6 +685,28 @@ const saleOrderPerformanceEventsQuery = sql`
       ) AS is_initial_event
     FROM sale_order_payments sop
     JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
+    LEFT JOIN LATERAL (
+      SELECT
+        CASE
+          WHEN primary_payment.change_type = '首次支付'
+            THEN so.performance_attribution_date
+          ELSE COALESCE(
+            primary_payment.performance_attribution_date,
+            (primary_payment.paid_at AT TIME ZONE 'Asia/Shanghai')::date,
+            (primary_payment.created_at AT TIME ZONE 'Asia/Shanghai')::date
+          )
+        END AS performance_date
+      FROM sale_order_payments primary_payment
+      WHERE sop.change_type = '储值卡抵扣'
+        AND primary_payment.sale_order_id = sop.sale_order_id
+        AND primary_payment.change_type IN ('首次支付', '回款')
+        AND primary_payment.status = sop.status
+        AND primary_payment.paid_at IS NOT DISTINCT FROM sop.paid_at
+      ORDER BY
+        CASE WHEN primary_payment.change_type = '首次支付' THEN 0 ELSE 1 END,
+        primary_payment.id
+      LIMIT 1
+    ) paired_payment ON true
   )
   SELECT
     sale_payment_id,
@@ -697,6 +721,8 @@ const saleOrderPerformanceEventsQuery = sql`
     paid_at,
     CASE
       WHEN change_type = '首次支付' THEN order_performance_attribution_date
+      WHEN change_type = '储值卡抵扣' AND paired_payment_performance_date IS NOT NULL
+        THEN paired_payment_performance_date
       ELSE COALESCE(
         payment_performance_attribution_date,
         (paid_at AT TIME ZONE 'Asia/Shanghai')::date,
@@ -711,7 +737,8 @@ const saleOrderPerformanceEventsQuery = sql`
  * 订单款项业绩事件视图。
  *
  * - 首次支付使用订单业绩归属日期；
- * - 回款、储值卡抵扣和退款使用各自款项归属日期，未回填旧数据兼容回退 paid_at；
+ * - 同次混合支付的储值卡抵扣跟随首次支付/回款主流水；纯储值卡支付使用自身归属日期；
+ * - 回款和退款使用各自款项归属日期，未回填旧数据兼容回退 paid_at；
  * - 视图保留全部状态，报表必须继续限定 status='已支付'。
  */
 export const saleOrderPerformanceEvents = pgView(

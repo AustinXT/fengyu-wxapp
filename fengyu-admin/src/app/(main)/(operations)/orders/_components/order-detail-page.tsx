@@ -99,6 +99,39 @@ export function calculateConfirmOfflineAmounts(
   return { remainingPayable, suggestedAmount };
 }
 
+/**
+ * 同次混合支付只展示现付主流水；被合并的储值卡流水与主流水共用归属日期和调整机会。
+ * 以订单、精确 paid_at（缺失时回退 created_at）和状态识别同次支付，避免跨笔误合并。
+ */
+export function mergePaymentsForDisplay(payments: SaleOrderPayment[]): SaleOrderPayment[] {
+  const isMixedPaymentPrimary = (payment: SaleOrderPayment) =>
+    payment.changeType === "首次支付" || payment.changeType === "回款";
+  const samePaymentEvent = (left: SaleOrderPayment, right: SaleOrderPayment) =>
+    left.saleOrderId === right.saleOrderId
+    && (left.paidAt || left.createdAt) === (right.paidAt || right.createdAt)
+    && left.status === right.status;
+
+  return payments.flatMap((payment) => {
+    if (payment.changeType === "储值卡抵扣") {
+      const hasPrimary = payments.some((candidate) =>
+        isMixedPaymentPrimary(candidate) && samePaymentEvent(candidate, payment));
+      if (hasPrimary) return [];
+    }
+    if (!isMixedPaymentPrimary(payment)) return [payment];
+
+    const cardAmount = payments
+      .filter((candidate) =>
+        candidate.changeType === "储值卡抵扣" && samePaymentEvent(candidate, payment))
+      .reduce((sum, candidate) => sum + Number(candidate.amount), 0);
+    if (cardAmount === 0) return [payment];
+    return [{
+      ...payment,
+      amount: (Number(payment.amount) + cardAmount).toString(),
+      note: `${payment.note || ""}（其中储值卡 ¥${Math.abs(cardAmount).toLocaleString()}）`,
+    }];
+  });
+}
+
 function getDisplaySaleItems(order: SaleOrder, items: NonNullable<SaleOrder["items"]>): DisplaySaleItem[] {
   return groupTreatmentCards(items, {
     getId: (item) => item.saleItemId,
@@ -280,46 +313,7 @@ export default function OrderDetailPageClient({
     (p) => p.changeType === "退款" && (p.status === "待审批" || p.status === "待支付"),
   );
 
-  // 方案Y·轻量归并：同一次支付（现金+储值卡抵扣）按 paid_at 合并为一条展示
-  // 支持多笔卡支付同 paid_at 归并（for 循环收集所有匹配行，非单次 findIndex）
-  // paidAt 为 null 时 fallback 到 createdAt（与 staff 端对齐，防止 null===null 误合并）
-    const rawWithPaidAt = (payments ?? []).map((p) => ({
-      ...p,
-      paidAt: (p as { paidAt: string | null }).paidAt || (p as { createdAt: string | null }).createdAt,
-    }))
-  const mergedPayments = useMemo(() => {
-    const raw = rawWithPaidAt;
-    const result: typeof raw = [];
-    const mergedIndices = new Set<number>();
-    for (let i = 0; i < raw.length; i++) {
-      if (mergedIndices.has(i)) continue;
-      const p = raw[i];
-      if (p.changeType === "退款") {
-        result.push(p);
-        continue;
-      }
-      let totalCardAmount = 0;
-      for (let j = 0; j < raw.length; j++) {
-        if (j === i || mergedIndices.has(j)) continue;
-        const q = raw[j];
-        if (q.changeType === "储值卡抵扣" && q.paidAt === p.paidAt && q.status === p.status) {
-          totalCardAmount += Number(q.amount);
-          mergedIndices.add(j);
-        }
-      }
-      if (totalCardAmount !== 0) {
-        const mergedAmount = (Number(p.amount) + totalCardAmount).toString();
-        result.push({
-          ...p,
-          amount: mergedAmount,
-          note: `${p.note || ""}（其中储值卡 ¥${Math.abs(totalCardAmount).toLocaleString()}）`,
-        } as typeof p);
-      } else {
-        result.push(p);
-      }
-    }
-    return result;
-  }, [payments]);
+  const mergedPayments = useMemo(() => mergePaymentsForDisplay(payments ?? []), [payments]);
 
   return (
     <div className="space-y-6">

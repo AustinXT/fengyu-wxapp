@@ -2588,16 +2588,38 @@ export const updatePerformanceAttributionDate = withPermission(
         throw new ApiError('CONFLICT', '订单已被其他人修改，请刷新后重试')
       }
 
+      // 同次首次支付中被合并的储值卡流水与订单共用归属日期和一次调整机会。
+      const syncedCardRes = await tx.execute(sql`
+        UPDATE sale_order_payments card
+        SET performance_attribution_date = ${targetDate}::date,
+            performance_attribution_adjusted_at = ${updated.performance_attribution_adjusted_at}::timestamptz,
+            performance_attribution_adjusted_by = ${updated.performance_attribution_adjusted_by}
+        WHERE card.sale_order_id = ${saleOrderId}
+          AND card.change_type = '储值卡抵扣'
+          AND card.status = '已支付'
+          AND EXISTS (
+            SELECT 1
+            FROM sale_order_payments first_payment
+            WHERE first_payment.sale_order_id = card.sale_order_id
+              AND first_payment.change_type = '首次支付'
+              AND first_payment.status = card.status
+              AND first_payment.paid_at IS NOT DISTINCT FROM card.paid_at
+          )
+        RETURNING card.id
+      `)
+      const syncedPaymentIds = (syncedCardRes as unknown as Array<{ id: number }>).map((row) => row.id)
+
       await logUpdate(
         session,
         'order.performanceAttribution.update',
         'sale_order',
         saleOrderId,
-        { performanceAttributionDate: locked.performance_attribution_date },
+        { performanceAttributionDate: locked.performance_attribution_date, syncedPaymentIds: [] },
         {
           performanceAttributionDate: updated.performance_attribution_date,
           performanceAttributionAdjustedAt: new Date(updated.performance_attribution_adjusted_at).toISOString(),
           performanceAttributionAdjustedBy: updated.performance_attribution_adjusted_by,
+          syncedPaymentIds,
         },
         tx,
       )
@@ -2646,6 +2668,7 @@ export interface UpdatePaymentPerformanceAttributionDateResult {
  * 一次性修改非首次支付款项的业绩归属日期。
  *
  * 目标日期必须位于该款项 paid_at 上海自然日前后 7 天（含边界）；
+ * 同次回款中被合并的储值卡流水与主流水原子同步，共用一次调整机会；
  * FOR UPDATE + adjusted_at IS NULL + 当前归属日期 CAS 保证并发下仅一个请求成功。
  */
 export const updatePaymentPerformanceAttributionDate = withPermission(
@@ -2674,6 +2697,14 @@ export const updatePaymentPerformanceAttributionDate = withPermission(
           sop.paid_at,
           sop.performance_attribution_date::text AS performance_attribution_date,
           sop.performance_attribution_adjusted_at,
+          EXISTS (
+            SELECT 1
+            FROM sale_order_payments primary_payment
+            WHERE primary_payment.sale_order_id = sop.sale_order_id
+              AND primary_payment.change_type IN ('首次支付', '回款')
+              AND primary_payment.status = sop.status
+              AND primary_payment.paid_at IS NOT DISTINCT FROM sop.paid_at
+          ) AS has_mixed_payment_primary,
           so.store_id,
           (sop.paid_at AT TIME ZONE 'Asia/Shanghai')::date::text AS original_paid_date,
           ((sop.paid_at AT TIME ZONE 'Asia/Shanghai')::date - 7)::text AS min_performance_date,
@@ -2691,6 +2722,7 @@ export const updatePaymentPerformanceAttributionDate = withPermission(
         paid_at: Date | string | null
         performance_attribution_date: string | null
         performance_attribution_adjusted_at: Date | string | null
+        has_mixed_payment_primary: boolean
         store_id: string
         original_paid_date: string | null
         min_performance_date: string | null
@@ -2702,6 +2734,9 @@ export const updatePaymentPerformanceAttributionDate = withPermission(
       }
       if (locked.change_type === '首次支付') {
         throw new ApiError('INVALID_STATE', '首次支付跟随订单业绩归属日期，不能单独修改')
+      }
+      if (locked.change_type === '储值卡抵扣' && locked.has_mixed_payment_primary) {
+        throw new ApiError('INVALID_STATE', '该储值卡抵扣跟随同次现付归属日期，不能单独修改')
       }
       if (locked.status !== '已支付' || !locked.paid_at || !locked.original_paid_date) {
         throw new ApiError('INVALID_STATE', '仅已入账且存在支付时间的款项可以修改归属日期')
@@ -2724,28 +2759,44 @@ export const updatePaymentPerformanceAttributionDate = withPermission(
       }
 
       const updatedRes = await tx.execute(sql`
-        UPDATE sale_order_payments
+        UPDATE sale_order_payments payment
         SET performance_attribution_date = ${targetDate}::date,
             performance_attribution_adjusted_at = NOW(),
             performance_attribution_adjusted_by = ${session.employeeId}
-        WHERE id = ${paymentId}
-          AND performance_attribution_adjusted_at IS NULL
-          AND COALESCE(
-            performance_attribution_date,
-            (paid_at AT TIME ZONE 'Asia/Shanghai')::date
-          ) = ${expectedAttributionDate}::date
+        WHERE (
+            payment.id = ${paymentId}
+            OR (
+              ${locked.change_type} IN ('首次支付', '回款')
+              AND payment.sale_order_id = ${locked.sale_order_id}
+              AND payment.change_type = '储值卡抵扣'
+              AND payment.status = ${locked.status}
+              AND payment.paid_at IS NOT DISTINCT FROM ${locked.paid_at}::timestamptz
+            )
+          )
+          AND EXISTS (
+            SELECT 1
+            FROM sale_order_payments target
+            WHERE target.id = ${paymentId}
+              AND target.performance_attribution_adjusted_at IS NULL
+              AND COALESCE(
+                target.performance_attribution_date,
+                (target.paid_at AT TIME ZONE 'Asia/Shanghai')::date
+              ) = ${expectedAttributionDate}::date
+          )
         RETURNING
+          id,
           sale_order_id,
           performance_attribution_date::text AS performance_attribution_date,
           performance_attribution_adjusted_at,
           performance_attribution_adjusted_by
       `)
       const updated = (updatedRes as unknown as Array<{
+        id: number
         sale_order_id: string
         performance_attribution_date: string
         performance_attribution_adjusted_at: Date | string
         performance_attribution_adjusted_by: string
-      }>)[0]
+      }>).find((row) => row.id === paymentId)
       if (!updated) {
         throw new ApiError('CONFLICT', '款项已被其他人修改，请刷新后重试')
       }
@@ -2753,13 +2804,14 @@ export const updatePaymentPerformanceAttributionDate = withPermission(
       await logUpdate(
         session,
         'payment.performanceAttribution.update',
-        'sale_order',
-        updated.sale_order_id,
-        { performanceAttributionDate: currentDate },
+        'sale_order_payment',
+        String(paymentId),
+        { performanceAttributionDate: currentDate, affectedPaymentIds: [paymentId] },
         {
           performanceAttributionDate: updated.performance_attribution_date,
           performanceAttributionAdjustedAt: new Date(updated.performance_attribution_adjusted_at).toISOString(),
           performanceAttributionAdjustedBy: updated.performance_attribution_adjusted_by,
+          affectedPaymentIds: (updatedRes as unknown as Array<{ id: number }>).map((row) => row.id),
         },
         tx,
       )
@@ -2778,7 +2830,7 @@ export const updatePaymentPerformanceAttributionDate = withPermission(
     revalidatePath('/data-center')
     return {
       success: true,
-      message: '款项业绩归属日期已修改；该款项不可再次调整',
+      message: '款项业绩归属日期已修改；该次付款不可再次调整',
       data: {
         paymentId,
         ...result,
