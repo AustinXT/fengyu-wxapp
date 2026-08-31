@@ -1,7 +1,7 @@
 // pages/profile/profile.ts — 我的
 import { callStaffApi, toHttpUrl } from '../../utils/cloud';
 import { bindPhone } from '../../utils/auth';
-import { isManager, canSwitchLoginLevel, canAccessManagement } from '../../utils/role';
+import { canAccessInventory, isManager, canSwitchLoginLevel, canAccessManagement } from '../../utils/role';
 import { emit, on, EVENT_STORE_CHANGED } from '../../utils/event-bus';
 import { APP_VERSION } from '../../utils/version';
 import { INVENTORY_ENTRY_ENABLED } from '../../utils/feature-flags';
@@ -20,6 +20,7 @@ Page({
     avatarHttpUrl: '',
     isManager: false,
     inventoryEntryEnabled: INVENTORY_ENTRY_ENABLED,
+    canAccessInventory: false,
     // scope 范围内门店切换（与 workbench 一致语义）
     currentStoreName: '',
     currentStoreId: '',
@@ -54,6 +55,7 @@ Page({
       avatarUrl: avatarUrl || '',
       avatarHttpUrl: avatarUrl ? toHttpUrl(avatarUrl) : '',
       isManager: isManager(),
+      canAccessInventory: canAccessInventory(),
       canSwitchView: canSwitchLoginLevel() && canAccessManagement(),
     });
     this.syncStoreContext();

@@ -1,6 +1,6 @@
 // packageMy/inventory/form.ts — 门店库存业务办理
 import { callStaffApi } from '../../utils/cloud'
-import { getCurrentStoreId } from '../../utils/role'
+import { getCurrentStoreId, requireInventoryStoreOperate } from '../../utils/role'
 
 type OperateDocType = '门店报货' | '分院调货出库' | '院退货' | '院产品报损'
 type ItemMode = 'reportableSku' | 'stockLot'
@@ -119,6 +119,10 @@ Page({
   },
 
   onLoad(query: { docType?: string }) {
+    if (!requireInventoryStoreOperate()) {
+      setTimeout(() => wx.navigateBack(), 500)
+      return
+    }
     const docType = decodeURIComponent(query.docType || '')
     if (!validDocType(docType)) {
       wx.showToast({ title: '不支持的库存业务', icon: 'none' })

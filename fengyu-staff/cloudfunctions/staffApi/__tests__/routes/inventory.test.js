@@ -3,8 +3,25 @@
  */
 
 const pg = globalThis.__mocks__.pg
-const { createCtx } = require('../helpers')
+const { createCtx: createBaseCtx } = require('../helpers')
 const inventoryRoutes = require('../../routes/inventory')
+
+// 旧用例角色名改写为当前数据库角色定义下发的动作，测试重点仍是 action 与 scope 必须来自同一绑定。
+function createCtx(input = {}) {
+  const ctx = createBaseCtx(input)
+  const roleBindings = (ctx.auth.roleBindings || []).map((binding) => ({
+    ...binding,
+    isSuperAdmin: binding.role === 'admin',
+    actions: binding.role === 'manager'
+      ? ['inventory:store_operate']
+      : binding.role === 'finance' && ['总部', '市场'].includes(binding.scopeType)
+        ? ['inventory:market_approve']
+        : [],
+  }))
+  ctx.auth.roleBindings = roleBindings
+  ctx.auth.inventoryStoreIds = ctx.auth.inventoryStoreIds ?? ctx.auth.scopeStoreIds ?? []
+  return ctx
+}
 
 function cutoverQueryResult(sql, status = '已初始化') {
   if (!String(sql).includes('FROM inventory_cutover_states')) return null
@@ -973,8 +990,8 @@ describe('inventory.confirmReceive v3 收货', () => {
     ))
     expect(insertDocCall[1][1]).toBe('院入库')
     expect(insertDocCall[0]).not.toMatch(/related_doc_id|request_doc_id/)
-    expect(insertDocCall[1][6]).toBe('确认收货')
-    expect(insertDocCall[1][7]).toBe('emp-001')
+    expect(insertDocCall[1][8]).toBe('确认收货')
+    expect(insertDocCall[1][9]).toBe('emp-001')
     expect(ctx.result.inboundDocId).toMatch(/^YRK-/)
   })
 })

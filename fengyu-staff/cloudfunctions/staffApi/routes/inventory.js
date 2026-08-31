@@ -10,8 +10,6 @@ const { requireStaffBound } = require('../middleware/auth')
 const { expandScopeStoreIds } = require('../utils/scope')
 const cloud = require('wx-server-sdk')
 
-const INVENTORY_WRITE_ROLES = ['admin', 'manager', 'product']
-const INVENTORY_APPROVER_ROLES = ['admin', 'finance']
 const VALID_STORE_SCOPE_TYPES = new Set(['总部', '市场', '门店'])
 const WORKFINE_INVENTORY_CUTOVER_KEY = 'workfine_inventory'
 const WORKFINE_INVENTORY_INITIALIZED_STATUS = '已初始化'
@@ -33,6 +31,7 @@ const DOC_PREFIX = {
   '市场间调货出库': 'MTO',
   '市场间调货入库': 'MTI',
   '员工购出库': 'YGG',
+  '供应链员工购出库': 'GYG',
   '内部领用': 'NLY',
   '非凤御市场出库': 'FFY',
   '院顾客退货': 'GTH',
@@ -95,6 +94,7 @@ const INBOUND_DOC_TYPES = new Set([
 ])
 const OUTBOUND_DOC_TYPES = new Set([
   '员工购出库',
+  '供应链员工购出库',
   '内部领用',
   '非凤御市场出库',
   '市场退货',
@@ -209,11 +209,10 @@ function approvalMovementDirection(docType) {
   return APPROVAL_DOC_TYPES.has(docType) ? '出库' : null
 }
 
-function roleBindingsFor(auth, roles) {
-  const allowed = new Set(roles)
+function roleBindingsForAction(auth, action) {
   return (auth.roleBindings || []).filter((rb) => (
     rb
-    && allowed.has(rb.role)
+    && (rb.isSuperAdmin || (Array.isArray(rb.actions) && rb.actions.includes(action)))
     && VALID_STORE_SCOPE_TYPES.has(rb.scopeType)
     && rb.scopeId
   ))
@@ -229,7 +228,7 @@ async function assertStoreCoveredByBindings(client, bindings, storeId, message) 
 }
 
 async function assertInventoryWriteStoreScope(client, auth, storeId) {
-  const bindings = roleBindingsFor(auth, INVENTORY_WRITE_ROLES)
+  const bindings = roleBindingsForAction(auth, 'inventory:store_operate')
   if (bindings.length === 0) {
     throw new Error('PERMISSION_DENIED: 无库存写入权限')
   }
@@ -244,7 +243,7 @@ async function assertInventoryWriteStoreScope(client, auth, storeId) {
 async function assertAnyInventoryWriteStoreScope(client, auth, storeIds) {
   const requestedStoreIds = Array.from(new Set((storeIds || []).filter(Boolean)))
   if (requestedStoreIds.length === 0) throw new Error('INVALID_PARAMS: 缺少门店')
-  const bindings = roleBindingsFor(auth, INVENTORY_WRITE_ROLES)
+  const bindings = roleBindingsForAction(auth, 'inventory:store_operate')
   if (bindings.length === 0) {
     throw new Error('PERMISSION_DENIED: 无库存写入权限')
   }
@@ -262,10 +261,7 @@ function assertApprover(ctx) {
 }
 
 function approverBindingsFor(auth) {
-  return roleBindingsFor(auth, INVENTORY_APPROVER_ROLES).filter((binding) => (
-    binding.role === 'admin'
-    || (binding.role === 'finance' && ['总部', '市场'].includes(binding.scopeType))
-  ))
+  return roleBindingsForAction(auth, 'inventory:market_approve')
 }
 
 async function assertApproverStoreScope(client, auth, storeId) {
@@ -336,7 +332,7 @@ async function syncInventoryLocations() {
 }
 
 function scopedInventoryLocationIds(auth) {
-  return Array.from(new Set((auth.scopeStoreIds || []).filter(Boolean)))
+  return Array.from(new Set((auth.inventoryStoreIds || []).filter(Boolean)))
 }
 
 function buildInventoryLocationScope(auth, alias, startIndex) {
@@ -1763,7 +1759,7 @@ async function confirmReceive(ctx) {
     await assertWorkfineInventoryInitialized(client)
     const headRes = await client.query(
       `SELECT id, doc_type, status, source_location_id, target_location_id,
-              supplier_id, supplier_name, total_quantity, remark
+              supplier_id, supplier_name, total_quantity, total_amount, market_id, remark
          FROM inventory_docs
         WHERE id = $1
           AND doc_type = ANY($2::text[])
@@ -1782,9 +1778,9 @@ async function confirmReceive(ctx) {
     await client.query(
       `INSERT INTO inventory_docs (
          id, doc_type, status, source_location_id, target_location_id, doc_date, total_quantity,
-         remark, created_by, confirmed_by, confirmed_at
+         total_amount, market_id, remark, created_by, confirmed_by, confirmed_at
        )
-       VALUES ($1,$2,'已完成',$3,$4,$5,$6,$7,$8,$8,NOW())`,
+       VALUES ($1,$2,'已完成',$3,$4,$5,$6,$7,$8,$9,$10,$10,NOW())`,
       [
         inboundDocId,
         inboundType,
@@ -1792,6 +1788,8 @@ async function confirmReceive(ctx) {
         head.target_location_id,
         shanghaiToday(),
         head.total_quantity,
+        head.total_amount,
+        head.market_id,
         remark || head.remark || null,
         ctx.auth.staffWfId,
       ],

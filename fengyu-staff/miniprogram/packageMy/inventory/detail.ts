@@ -1,6 +1,7 @@
 // packageMy/inventory/detail.ts — 库存单据详情（只读）
 import { callStaffApi } from '../../utils/cloud'
 import { formatDateTime } from '../../utils/formatters'
+import { canAccessInventory } from '../../utils/role'
 
 const STATUS_KEY_MAP: Record<string, string> = {
   '已完成': 'done',
@@ -86,6 +87,8 @@ Page({
           }
         : detail
       const canReceive = Boolean(
+        canAccessInventory()
+        &&
         detail
         && detail.status === '待收货'
         && ['分院配货', '分院调货出库'].includes(detail.docType),

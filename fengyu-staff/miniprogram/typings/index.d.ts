@@ -10,6 +10,8 @@ interface RoleBinding {
   role: string
   roleName?: string
   isStoreManager?: boolean
+  isSuperAdmin?: boolean
+  actions?: string[]
   scopeId: string
   scopeType: string // 总部 / 市场 / 门店 / 部门
   scopeName: string
@@ -40,6 +42,7 @@ interface IAppOption {
     managerStores: ScopedStore[];
     /** manager 角色管辖门店的 id 列表；兼容部分 auth 缓存/响应。 */
     managerStoreIds: string[];
+    inventoryStoreIds: string[];
     // 运行时
     loginLevel: LoginLevel | null;
     currentStoreId: string;
@@ -68,6 +71,7 @@ interface IAppOption {
     scopedStores?: ScopedStore[];
     managerStores?: ScopedStore[];
     managerStoreIds?: string[];
+    inventoryStoreIds?: string[];
   }): void;
   setLoginLevel(level: LoginLevel): void;
   setCurrentStoreId(storeId: string): void;

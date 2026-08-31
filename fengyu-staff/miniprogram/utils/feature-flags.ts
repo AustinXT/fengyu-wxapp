@@ -1,8 +1,7 @@
 /**
- * 进销存临时停用开关。
+ * 进销存发布开关。
  *
- * 入口关闭时库存管理和提货核销不出现在导航中；深链仍保留。
- * 联动关闭时提货只登记提货账，不读取或扣减库存。
+ * 必须与 clientApi、staffApi、admin 的独立副本保持同步。
  */
-export const INVENTORY_ENTRY_ENABLED = false
-export const INVENTORY_LINKAGE_ENABLED = false
+export const INVENTORY_ENTRY_ENABLED = true
+export const INVENTORY_LINKAGE_ENABLED = true

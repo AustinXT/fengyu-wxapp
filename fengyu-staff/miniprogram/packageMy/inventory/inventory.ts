@@ -1,4 +1,5 @@
 // packageMy/inventory/inventory.ts — 库存管理首页
+import { requireInventoryStoreOperate } from '../../utils/role'
 
 type CategoryKey = 'stocks' | 'procurement' | 'sale' | 'transfer' | 'scrap'
 type OperateDocType = '门店报货' | '分院调货出库' | '院退货' | '院产品报损'
@@ -38,6 +39,9 @@ Page({
   data: {
     categories: CATEGORIES,
     operations: OPERATIONS,
+  },
+  onLoad() {
+    if (!requireInventoryStoreOperate()) setTimeout(() => wx.navigateBack(), 500)
   },
   onCategoryTap(e: WechatMiniprogram.CustomEvent) {
     const key = e.currentTarget.dataset.key as CategoryKey
