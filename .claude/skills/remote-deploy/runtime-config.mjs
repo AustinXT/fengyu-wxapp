@@ -86,6 +86,20 @@ const ADMIN_PASSTHROUGH = [
   'ALIYUN_ACCESS_KEY_SECRET',
   'ALIYUN_OCR_ENDPOINT',
   'ANALYST_INTERNAL_ORIGIN',
+  'MSSQL_CONNECTION_STRING',
+]
+
+// v2.0 首次启用严格配置门禁时允许从模板补齐的非秘密运行时默认值。
+// 秘密、数据库地址和环境标识绝不能从 example 猜测，必须沿用真实 env 或历史 staff 账号文件。
+const LEGACY_SAFE_DEFAULT_KEYS = [
+  'SYSTEM_RUNTIME_DIR',
+  'DATABASE_BACKUP_REQUEST_DIR',
+  'DATABASE_BACKUP_DIR',
+  'SCHEDULED_BACKUP_RETENTION_DAYS',
+  'MANUAL_BACKUP_RETENTION_DAYS',
+  'WECHAT_BOT_WEBHOOK_URL',
+  'COOKIE_DOMAIN',
+  'ANALYST_INTERNAL_ORIGIN',
 ]
 
 const CRON_PASSTHROUGH = [
@@ -148,6 +162,33 @@ function fail(message) {
   throw new Error(message)
 }
 
+function endsWithUnescapedQuote(text) {
+  if (!text.endsWith('"')) return false
+  let backslashCount = 0
+  for (let index = text.length - 2; index >= 0 && text[index] === '\\'; index -= 1) {
+    backslashCount += 1
+  }
+  return backslashCount % 2 === 0
+}
+
+function decodeQuoted(body) {
+  let decoded = ''
+  for (let index = 0; index < body.length; index += 1) {
+    const character = body[index]
+    if (character !== '\\' || index + 1 >= body.length) {
+      decoded += character
+      continue
+    }
+    const next = body[index + 1]
+    if (next === 'n') decoded += '\n'
+    else if (next === '"') decoded += '"'
+    else if (next === '\\') decoded += '\\'
+    else decoded += `\\${next}`
+    index += 1
+  }
+  return decoded
+}
+
 export function parseEnv(text) {
   const result = {}
   const lines = text.replace(/\r\n/g, '\n').split('\n')
@@ -157,24 +198,26 @@ export function parseEnv(text) {
     const key = match[1]
     if (Object.hasOwn(result, key)) fail(`duplicate environment key: ${key}`)
     let value = match[2]
-    if (value.startsWith('"') && !(value.length > 1 && value.endsWith('"'))) {
+    if (value.startsWith('"') && !endsWithUnescapedQuote(value)) {
+      const startLine = index + 1
       while (index + 1 < lines.length) {
         value += `\n${lines[++index]}`
-        if (lines[index].endsWith('"') && !lines[index].endsWith('\\"')) break
+        if (endsWithUnescapedQuote(value)) break
+      }
+      if (!endsWithUnescapedQuote(value)) {
+        fail(`env file line ${startLine}: KEY "${key}" has an unterminated double-quoted value (quote opened but never closed before end of file)`)
       }
     }
-    if (value.startsWith('"') && value.endsWith('"')) {
-      value = value.slice(1, -1)
-        .replace(/\\n/g, '\n')
-        .replace(/\\"/g, '"')
-        .replace(/\\\\/g, '\\')
+    if (value.startsWith('"') && endsWithUnescapedQuote(value)) {
+      value = decodeQuoted(value.slice(1, -1))
     }
     result[key] = value
   }
   return result
 }
 
-function encodeEnvValue(value) {
+// envs 源文件编码必须保留字面 $，绝不能转换为 compose 专用的 $$。
+export function encodeEnvValue(value) {
   const stringValue = String(value ?? '')
   if (!/[\n\r"#]|^\s|\s$/.test(stringValue)) return stringValue
   return `"${stringValue
@@ -183,10 +226,89 @@ function encodeEnvValue(value) {
     .replace(/\r?\n/g, '\\n')}"`
 }
 
+// compose env_file 消费侧会插值 $；双写为 $$ 才能保留字面值。
+function encodeComposeEnvValue(value) {
+  return encodeEnvValue(value).replace(/\$/g, () => '$$')
+}
+
 export function renderEnv(values) {
   return `${Object.entries(values)
-    .map(([key, value]) => `${key}=${encodeEnvValue(value)}`)
+    .map(([key, value]) => `${key}=${encodeComposeEnvValue(value)}`)
     .join('\n')}\n`
+}
+
+function templateKeys(text) {
+  return [...text.matchAll(/^([A-Za-z_][A-Za-z0-9_]*)=/gm)].map((match) => match[1])
+}
+
+function renderFromTemplate(template, values) {
+  return template.replace(
+    /^([A-Za-z_][A-Za-z0-9_]*)=.*$/gm,
+    (_, key) => `${key}=${encodeEnvValue(values[key])}`,
+  )
+}
+
+function readOptionalEnv(file) {
+  return fs.existsSync(file) ? parseEnv(fs.readFileSync(file, 'utf8')) : {}
+}
+
+/**
+ * 将 v2.0 之前的三个真实 env 原地迁移到严格门禁要求：
+ * - 保留各环境已有真值；
+ * - staff 独立账号沿用旧 fengyu-staff/.env（test 优先沿用 prod）；
+ * - 仅补齐明确列出的非秘密模板默认值；
+ * - 三份文件全部校验通过后再以 0600 写回。
+ */
+export function reconcileLegacyConfigFiles(options = {}) {
+  const root = options.root || ROOT
+  const templateRoot = options.templateRoot || root
+  const envDir = path.join(root, 'envs')
+  const templateEnvDir = path.join(templateRoot, 'envs')
+  const templates = {
+    dev: fs.readFileSync(path.join(templateEnvDir, 'dev.env.example'), 'utf8'),
+    test: fs.readFileSync(path.join(templateEnvDir, 'prod.env.example'), 'utf8'),
+    prod: fs.readFileSync(path.join(templateEnvDir, 'prod.env.example'), 'utf8'),
+  }
+  const templateValues = Object.fromEntries(
+    Object.entries(templates).map(([env, text]) => [env, parseEnv(text)]),
+  )
+  const current = Object.fromEntries(['dev', 'test', 'prod'].map((env) => [
+    env,
+    readOptionalEnv(path.join(envDir, `${env}.env`)),
+  ]))
+  const legacyStaff = readOptionalEnv(path.join(root, 'fengyu-staff/.env'))
+
+  const configs = Object.fromEntries(['dev', 'test', 'prod'].map((env) => {
+    const config = { ...current[env], ENV_PROFILE: env }
+    for (const key of LEGACY_SAFE_DEFAULT_KEYS) {
+      const templateDefault = key === 'COOKIE_DOMAIN' && env !== 'prod' ? '' : templateValues[env][key]
+      if (!Object.hasOwn(config, key) || (!config[key] && templateDefault)) {
+        config[key] = templateDefault
+      }
+    }
+    // dev/test 当前均以 IP 访问；注入生产父域会令浏览器拒收登录 Cookie。
+    if (env !== 'prod') config.COOKIE_DOMAIN = ''
+    const staffFallback = env === 'test' ? current.prod : {}
+    config.STAFF_TENCENTCLOUD_SECRETID ||= (
+      staffFallback.STAFF_TENCENTCLOUD_SECRETID || legacyStaff.TENCENTCLOUD_SECRETID
+    )
+    config.STAFF_TENCENTCLOUD_SECRETKEY ||= (
+      staffFallback.STAFF_TENCENTCLOUD_SECRETKEY || legacyStaff.TENCENTCLOUD_SECRETKEY
+    )
+    validateConfig(env, config)
+    return [env, config]
+  }))
+
+  for (const env of ['dev', 'test', 'prod']) {
+    const file = path.join(envDir, `${env}.env`)
+    const keys = templateKeys(templates[env])
+    const missing = keys.filter((key) => configs[env][key] === undefined)
+    if (missing.length) fail(`${path.relative(root, file)} missing keys after reconcile: ${missing.join(', ')}`)
+    fs.writeFileSync(file, renderFromTemplate(templates[env], configs[env]), { mode: 0o600 })
+    fs.chmodSync(file, 0o600)
+  }
+
+  return { environments: ['dev', 'test', 'prod'], keyCount: templateKeys(templates.prod).length }
 }
 
 function assertUrl(name, value) {
@@ -382,12 +504,32 @@ export function analyzeMigrationState(entries, remoteRows, hashes) {
     return { ok: false, reason: `latest migration hash mismatch: ${localAtLatest.tag}`, pending: [] }
   }
   const pending = entries.filter((entry) => Number(entry.when) > latestWhen).map((entry) => entry.tag)
+  const historicalRowDelta = remoteRows.length - entries.filter((entry) => Number(entry.when) <= latestWhen).length
+  // journal 完整性必须双向一致；任一侧缺历史行都可能让缺表缺列的版本被错误放行。
+  if (historicalRowDelta < 0) {
+    return {
+      ok: false,
+      reason: `remote journal is missing ${Math.abs(historicalRowDelta)} historical migration row(s)`,
+      pending,
+      latestTag: localAtLatest.tag,
+      historicalRowDelta,
+    }
+  }
+  if (historicalRowDelta > 0) {
+    return {
+      ok: false,
+      reason: `local journal is missing ${historicalRowDelta} historical migration row(s) present on remote`,
+      pending,
+      latestTag: localAtLatest.tag,
+      historicalRowDelta,
+    }
+  }
   return {
     ok: pending.length === 0,
     reason: pending.length ? `${pending.length} pending migration(s)` : '',
     pending,
     latestTag: localAtLatest.tag,
-    historicalRowDelta: remoteRows.length - entries.filter((entry) => Number(entry.when) <= latestWhen).length,
+    historicalRowDelta,
   }
 }
 
@@ -420,8 +562,18 @@ export async function checkMigrations(env, options = {}) {
 
 async function main() {
   const [command, env, outputDir] = process.argv.slice(2)
+  if (command === 'reconcile') {
+    try {
+      const result = reconcileLegacyConfigFiles()
+      console.log(`reconciled ${result.environments.join('/')} (${result.keyCount} keys, mode 0600)`)
+    } catch (error) {
+      console.error(`ERROR: ${error.message}`)
+      process.exit(1)
+    }
+    return
+  }
   if (!['dev', 'test', 'prod'].includes(env)) {
-    console.error('Usage: runtime-config.mjs <validate|render|migrations> <dev|test|prod> [output-dir]')
+    console.error('Usage: runtime-config.mjs reconcile | <validate|render|migrations> <dev|test|prod> [output-dir]')
     process.exit(1)
   }
   try {

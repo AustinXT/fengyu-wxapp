@@ -71,6 +71,10 @@ render_local_bundle() {
   chmod 600 "$bundle"/*.env "$bundle/build-manifest.json"
 }
 
+reconcile_local_configs() {
+  node "$RUNTIME_CONFIG" reconcile >/dev/null
+}
+
 check_migration_gate() {
   local env="$1"
   node "$RUNTIME_CONFIG" migrations "$env"

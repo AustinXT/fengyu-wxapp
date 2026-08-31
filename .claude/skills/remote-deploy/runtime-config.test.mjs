@@ -12,6 +12,7 @@ import {
   analyzeMigrationState,
   buildServiceEnvs,
   parseEnv,
+  reconcileLegacyConfigFiles,
   renderBundle,
   renderEnv,
   validateConfig,
@@ -102,6 +103,7 @@ function validConfig(env = 'dev') {
     OPENAI_API_KEY: '',
     OPENAI_BASE_URL: 'https://api.openai.com/v1',
     OPENAI_MODEL: '',
+    MSSQL_CONNECTION_STRING: 'Server=workfine.example.com;Database=workfine;User Id=readonly;Password=secret',
   }
 }
 
@@ -141,10 +143,56 @@ test('service environment rendering enforces isolation', () => {
   const services = buildServiceEnvs(validConfig('prod'))
   assert.equal(services.admin.STAFF_TENCENTCLOUD_SECRETID, 'staff-id')
   assert.equal(services.admin.NEXT_PUBLIC_ANALYST_ORIGIN, 'https://analyst.example.com')
+  assert.equal(services.admin.MSSQL_CONNECTION_STRING.includes('workfine.example.com'), true)
   assert.equal(services['cron-worker'].LAKALA_APPID, 'OP12345678')
+  assert.equal(services['cron-worker'].MSSQL_CONNECTION_STRING, undefined)
   assert.equal(services['export-worker'].RSA_PRIVATE_KEY, undefined)
   assert.equal(services.analyst.STAFF_TENCENTCLOUD_SECRETID, undefined)
   assert.equal(services.analyst.LAKALA_PRIVATE_KEY_PEM, undefined)
+  assert.equal(services.analyst.MSSQL_CONNECTION_STRING, undefined)
+})
+
+test('legacy reconcile migrates all real env files before the strict gate', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-deploy-reconcile-'))
+  const envDir = path.join(root, 'envs')
+  const staffDir = path.join(root, 'fengyu-staff')
+  fs.mkdirSync(envDir, { recursive: true })
+  fs.mkdirSync(staffDir, { recursive: true })
+
+  const dev = validConfig('dev')
+  const testConfig = validConfig('test')
+  const prod = validConfig('prod')
+  dev.STAFF_TENCENTCLOUD_SECRETID = ''
+  dev.STAFF_TENCENTCLOUD_SECRETKEY = ''
+  testConfig.STAFF_TENCENTCLOUD_SECRETID = ''
+  testConfig.STAFF_TENCENTCLOUD_SECRETKEY = ''
+  prod.STAFF_TENCENTCLOUD_SECRETID = 'prod-staff-id'
+  prod.STAFF_TENCENTCLOUD_SECRETKEY = 'prod-staff-key'
+  prod.COOKIE_DOMAIN = ''
+
+  fs.writeFileSync(path.join(envDir, 'dev.env.example'), renderEnv(validConfig('dev')))
+  fs.writeFileSync(path.join(envDir, 'prod.env.example'), renderEnv(validConfig('prod')))
+  for (const [env, config] of [['dev', dev], ['test', testConfig], ['prod', prod]]) {
+    fs.writeFileSync(path.join(envDir, `${env}.env`), renderEnv(config), { mode: 0o644 })
+  }
+  fs.writeFileSync(path.join(staffDir, '.env'), 'TENCENTCLOUD_SECRETID=legacy-staff-id\nTENCENTCLOUD_SECRETKEY=legacy-staff-key\n')
+
+  reconcileLegacyConfigFiles({ root })
+
+  const migratedDev = parseEnv(fs.readFileSync(path.join(envDir, 'dev.env'), 'utf8'))
+  const migratedTest = parseEnv(fs.readFileSync(path.join(envDir, 'test.env'), 'utf8'))
+  const migratedProd = parseEnv(fs.readFileSync(path.join(envDir, 'prod.env'), 'utf8'))
+  assert.equal(migratedDev.STAFF_TENCENTCLOUD_SECRETID, 'legacy-staff-id')
+  assert.equal(migratedTest.STAFF_TENCENTCLOUD_SECRETID, 'prod-staff-id')
+  assert.equal(migratedTest.COOKIE_DOMAIN, '')
+  assert.equal(migratedProd.COOKIE_DOMAIN, '.example.com')
+  for (const env of ['dev', 'test', 'prod']) {
+    assert.equal(fs.statSync(path.join(envDir, `${env}.env`)).mode & 0o777, 0o600)
+  }
+  const firstPass = fs.readFileSync(path.join(envDir, 'prod.env'), 'utf8')
+  reconcileLegacyConfigFiles({ root })
+  assert.equal(fs.readFileSync(path.join(envDir, 'prod.env'), 'utf8'), firstPass)
+  fs.rmSync(root, { recursive: true, force: true })
 })
 
 test('bundle files are mode 0600 and contain only the target service whitelist', () => {
