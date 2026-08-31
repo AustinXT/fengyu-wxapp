@@ -1279,13 +1279,14 @@ async function upsertInitialDocument(client, group, createdBy) {
   const docId = documentId(group.row, group.location.locationId)
   const result = await client.query(
     `INSERT INTO inventory_docs (
-       id, doc_type, status, target_location_id, market_id, doc_date,
+       id, doc_type, status, source_org_node_id, target_org_node_id, market_id, doc_date,
        total_quantity, total_amount, remark, created_by, confirmed_by, confirmed_at
-     ) VALUES ($1, '期初库存', '已完成', $2, $3, $4, $5, $6, $7, $8, $8, NOW())
+     ) VALUES ($1, '期初库存', '已完成', $2, $2, $3, $4, $5, $6, $7, $8, $8, NOW())
      ON CONFLICT (id) DO UPDATE SET
        doc_type = '期初库存',
        status = '已完成',
-       target_location_id = EXCLUDED.target_location_id,
+       source_org_node_id = EXCLUDED.source_org_node_id,
+       target_org_node_id = EXCLUDED.target_org_node_id,
        market_id = COALESCE(EXCLUDED.market_id, inventory_docs.market_id),
        doc_date = EXCLUDED.doc_date,
        total_quantity = EXCLUDED.total_quantity,
@@ -1295,7 +1296,7 @@ async function upsertInitialDocument(client, group, createdBy) {
      RETURNING id`,
     [
       docId,
-      group.location.locationId,
+      group.location.orgNodeId,
       group.row.marketId,
       group.row.snapshotDate,
       group.totalQuantity.toFixed(2),

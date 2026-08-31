@@ -201,9 +201,8 @@ export const inventorySkuProductSkuMappings = pgTable(
 /**
  * 库存主体：总部 / 市场 / 门店。
  *
- * location_id 使用组织树节点或门店主键，便于直接承接现有权限 scope：
- * - 总部、市场：org_nodes.id
- * - 门店：stores.store_id
+ * 库存余额仍以 location_id 作为内部主键；org_node_id 是单据、权限和页面接口
+ * 使用的统一组织节点标识。总部、市场、门店库存主体必须一一对应组织节点。
  */
 export const inventoryLocations = pgTable(
   'inventory_locations',
@@ -225,7 +224,7 @@ export const inventoryLocations = pgTable(
   },
   (table) => [
     index('idx_inventory_locations_type').on(table.locationType),
-    index('idx_inventory_locations_org').on(table.orgNodeId),
+    uniqueIndex('uq_inventory_locations_org').on(table.orgNodeId),
     index('idx_inventory_locations_store').on(table.storeId),
     check(
       'chk_inventory_locations_type',
@@ -416,11 +415,13 @@ export const inventoryDocs = pgTable(
     id: text('id').primaryKey(),
     docType: text('doc_type').notNull(),
     status: text('status').notNull().default('草稿'),
-    sourceLocationId: text('source_location_id').references(
-      () => inventoryLocations.locationId,
+    /** 实际发起/出库组织节点；外部供应商或顾客侧不写入此字段。 */
+    sourceOrgNodeId: text('source_org_node_id').references(
+      () => inventoryLocations.orgNodeId,
     ),
-    targetLocationId: text('target_location_id').references(
-      () => inventoryLocations.locationId,
+    /** 实际接收/入库组织节点；外部供应商或顾客侧不写入此字段。 */
+    targetOrgNodeId: text('target_org_node_id').references(
+      () => inventoryLocations.orgNodeId,
     ),
     /** 业务所属市场；不以文本名称推导，确保跨层单据可以按市场隔离。 */
     marketId: text('market_id').references(() => orgNodes.id),
@@ -483,8 +484,8 @@ export const inventoryDocs = pgTable(
     index('idx_inventory_docs_type').on(table.docType),
     index('idx_inventory_docs_status').on(table.status),
     index('idx_inventory_docs_date').on(table.docDate),
-    index('idx_inventory_docs_source').on(table.sourceLocationId),
-    index('idx_inventory_docs_target').on(table.targetLocationId),
+    index('idx_inventory_docs_source_org_node').on(table.sourceOrgNodeId),
+    index('idx_inventory_docs_target_org_node').on(table.targetOrgNodeId),
     index('idx_inventory_docs_market').on(table.marketId),
     index('idx_inventory_docs_supplier').on(table.supplierId),
     check(
@@ -504,10 +505,8 @@ export const inventoryDocs = pgTable(
       )`,
     ),
     check(
-      'chk_inventory_docs_location_pair',
-      sql`${table.sourceLocationId} IS NULL
-        OR ${table.targetLocationId} IS NULL
-        OR ${table.sourceLocationId} <> ${table.targetLocationId}`,
+      'chk_inventory_docs_org_endpoint',
+      sql`${table.sourceOrgNodeId} IS NOT NULL OR ${table.targetOrgNodeId} IS NOT NULL`,
     ),
   ],
 )
