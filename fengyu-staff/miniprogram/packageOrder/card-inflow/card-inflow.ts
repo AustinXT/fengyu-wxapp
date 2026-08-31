@@ -15,6 +15,8 @@ interface CustomerInfo {
   boundStoreId?: string | null;
   /** 顾客绑定门店名（展示「非本店」标签用） */
   storeName?: string;
+  /** 临时跨门店标记；true 时允许在外店充值/转入 */
+  isCrossStoreTemp?: boolean;
   /** 是否非本店顾客（boundStoreId 缺失时为 false，放行后端兜底） */
   crossStore?: boolean;
 }
@@ -88,6 +90,7 @@ Page({
           phoneMasked: query.customerPhone ? query.customerPhone.replace(/(\d{3})\d{4}(\d{4})/, '$1****$2') : '',
           boundStoreId: query.boundStoreId || null,
           storeName: query.storeName || '',
+          isCrossStoreTemp: query.isCrossStoreTemp === '1',
         }),
       });
       this.updateCta();
@@ -196,7 +199,7 @@ Page({
       wx.showToast({ title: '请选择顾客', icon: 'none' });
       return;
     }
-    if (customerInfo.crossStore) {
+    if (customerInfo.crossStore && !customerInfo.isCrossStoreTemp) {
       wx.showModal({
         title: '无法转入',
         content: `该顾客属于「${customerInfo.storeName || '其他'}」门店，非本店顾客无法转入。`,

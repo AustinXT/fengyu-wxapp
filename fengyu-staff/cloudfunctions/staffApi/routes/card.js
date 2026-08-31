@@ -85,13 +85,15 @@ async function recharge(ctx) {
 
   // 查顾客；document_type 在创建事务内按历史达标次数计算。
   const userRows = await pg.query(
-    `SELECT user_id, phone, name, bound_store_id FROM client_wechat_users WHERE user_id = $1`,
+    `SELECT user_id, phone, name, bound_store_id, is_cross_store_temp
+     FROM client_wechat_users WHERE user_id = $1`,
     [clientUserId]
   )
   if (userRows.length === 0) throw new Error('INVALID_PARAMS: 顾客不存在')
   const user = userRows[0]
-  // 非本店顾客禁止充值（同 order.create 口径：账户余额可跨店查看，但充值按门店结算）
-  if (!isStoreInScope(ctx.auth, user.bound_store_id)) {
+  // 临时跨店顾客允许在外店充值；订单仍按当前操作门店结算。
+  // 标记以数据库实时值为权威，前端跳转参数只用于 UI 提示。
+  if (!isStoreInScope(ctx.auth, user.bound_store_id) && !user.is_cross_store_temp) {
     throw new Error('PERMISSION_DENIED: 该顾客不属于当前门店，无法充值')
   }
   const clientPhone = user.phone || null
@@ -210,13 +212,15 @@ async function inflow(ctx) {
   if (!storeId) throw new Error('INVALID_PARAMS: 缺少门店信息')
 
   const userRows = await pg.query(
-    `SELECT user_id, phone, name, bound_store_id FROM client_wechat_users WHERE user_id = $1`,
+    `SELECT user_id, phone, name, bound_store_id, is_cross_store_temp
+     FROM client_wechat_users WHERE user_id = $1`,
     [clientUserId]
   )
   if (userRows.length === 0) throw new Error('INVALID_PARAMS: 顾客不存在')
   const user = userRows[0]
-  // 非本店顾客禁止转入（同 card.recharge 口径：账户余额跨店可见，但转入按门店结算）
-  if (!isStoreInScope(ctx.auth, user.bound_store_id)) {
+  // 临时跨店顾客允许在外店转入；转入单仍按当前操作门店结算。
+  // 标记以数据库实时值为权威，前端跳转参数只用于 UI 提示。
+  if (!isStoreInScope(ctx.auth, user.bound_store_id) && !user.is_cross_store_temp) {
     throw new Error('PERMISSION_DENIED: 该顾客不属于当前门店，无法转入')
   }
   const clientPhone = user.phone || null
