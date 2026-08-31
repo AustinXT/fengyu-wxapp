@@ -3004,13 +3004,39 @@ export const confirmOfflinePayment = withPermission(
           AND expire_date IS NULL
       `)
 
-      // ========== 储值卡抵扣扣款（ticket 2026-05-19）==========
-      // 锁余额 → 扣减 → 写 card_transactions(type='扣款') + 写 sale_order_payments(change_type='储值卡抵扣')
-      // 与 staff confirmOffline 字面对齐；幂等键 card-deduct-${id}。首次确认时扣全额预选卡。
       const clientUserId = locked.client_user_id as string | null
       // 回款事件主流水行 id（现金行优先；纯储值卡则取储值卡抵扣行）—— 按回款逐笔分配的归属键
       let cashPaymentId: number | string | null = null
       let cardPaymentId: number | string | null = null
+
+      // 混合支付统一按“现付后卡”写入：先写首次支付/回款主流水，再写储值卡抵扣。
+      // change_type 必须在任何本次流水写入前判定，避免刚写入的卡流水把首次现付误判成回款。
+      let cashChangeType: '首次支付' | '回款' | null = null
+      if (cashAmount > 0) {
+        const existRes = await tx.execute(sql`
+          SELECT 1 FROM sale_order_payments
+          WHERE sale_order_id = ${saleOrderId} AND status = '已支付'
+            AND amount::numeric > 0
+            AND change_type IN ('首次支付','回款','储值卡抵扣') LIMIT 1
+        `)
+        const existRows = existRes as unknown as any[]
+        cashChangeType = existRows.length > 0 ? '回款' : '首次支付'
+        const cashIns = await tx.execute(sql`
+          INSERT INTO sale_order_payments (
+            sale_order_id, change_type, payment_method, amount, status,
+            paid_at, source_end, operator_employee_id, note, created_at
+          ) VALUES (
+            ${saleOrderId}, ${cashChangeType}, '线下', ${cashAmount.toFixed(2)}::numeric, '已支付',
+            NOW(), 'admin', ${session.employeeId}, '管理后台确认线下收款', NOW()
+          )
+          RETURNING id
+        `)
+        cashPaymentId = (cashIns as unknown as Array<{ id: number | string }>)[0]?.id ?? null
+      }
+
+      // ========== 储值卡抵扣扣款（ticket 2026-05-19）==========
+      // 锁余额 → 扣减 → 写 card_transactions(type='扣款') + 写 sale_order_payments(change_type='储值卡抵扣')
+      // 与 staff confirmOffline 字面对齐；幂等键 card-deduct-${id}。首次确认时扣全额预选卡。
       if (orderPendingPrepaid > 0 && clientUserId) {
         const dupRes = await tx.execute(sql`
           SELECT 1 FROM card_transactions
@@ -3054,30 +3080,6 @@ export const confirmOfflinePayment = withPermission(
           `)
           cardPaymentId = (cardIns as unknown as Array<{ id: number | string }>)[0]?.id ?? null
         }
-      }
-
-      // 现金流水：confirmAmount > 0 时写 1 行（首次/回款）。
-      // change_type：整单已有更早成功正向款（含储值卡抵扣）→ '回款'，否则 '首次支付'。
-      if (cashAmount > 0) {
-        const existRes = await tx.execute(sql`
-          SELECT 1 FROM sale_order_payments
-          WHERE sale_order_id = ${saleOrderId} AND status = '已支付'
-            AND amount::numeric > 0
-            AND change_type IN ('首次支付','回款','储值卡抵扣') LIMIT 1
-        `)
-        const existRows = existRes as unknown as any[]
-        const cashChangeType = existRows.length > 0 ? '回款' : '首次支付'
-        const cashIns = await tx.execute(sql`
-          INSERT INTO sale_order_payments (
-            sale_order_id, change_type, payment_method, amount, status,
-            paid_at, source_end, operator_employee_id, note, created_at
-          ) VALUES (
-            ${saleOrderId}, ${cashChangeType}, '线下', ${cashAmount.toFixed(2)}::numeric, '已支付',
-            NOW(), 'admin', ${session.employeeId}, '管理后台确认线下收款', NOW()
-          )
-          RETURNING id
-        `)
-        cashPaymentId = (cashIns as unknown as Array<{ id: number | string }>)[0]?.id ?? null
       }
 
       // 重算 received / prepaid_card_amount（跨端字面对齐 staff confirmOffline / recordPayment）：

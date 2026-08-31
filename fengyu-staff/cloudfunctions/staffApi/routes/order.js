@@ -2056,13 +2056,35 @@ async function confirmOffline(ctx) {
       paymentChangeType = existingPaymentsRow.rows.length > 0 ? '回款' : '首次支付'
     }
 
-    // ========== 储值卡扣款（staffApi 唯一扣卡点）==========
-    // 预选值 > 0 且顾客已注册时，事务内锁余额 + 扣减 + 写 card_transactions + 写 '储值卡抵扣' payments 行
-    // （create 时只写 pending_prepaid_card_amount，此处才真正扣卡并进入 actual）
     const prepaidAmount = Number(order.pending_prepaid_card_amount || 0)
     // 回款事件主流水行 id（现金行优先；纯储值卡则取储值卡抵扣行）—— 按回款逐笔分配的归属键
     let cashPaymentId = null
     let cardPaymentId = null
+
+    // ========== PR-2: 现金流水（首次支付/回款）==========
+    // 混合支付统一按“现付后卡”写入；change_type 已在本次写入前判定。
+    // change_type='首次支付' 时由 uq_sop_first_payment 兜底 TOCTOU；'回款' 不受影响。
+    if (confirmAmount > 0) {
+      const insRes = await client.query(
+        `INSERT INTO sale_order_payments (
+          sale_order_id, change_type, amount, payment_method, external_txn_id,
+          status, source_end, operator_employee_id, note, created_at, paid_at
+        ) VALUES ($1, $2, $3, '线下', NULL, '已支付', 'staff', $4, $5, $6, $6)
+        ON CONFLICT (sale_order_id)
+          WHERE change_type = '首次支付' AND status = '已支付'
+        DO NOTHING
+        RETURNING id`,
+        [saleOrderId, paymentChangeType, confirmAmount, ctx.auth.staffWfId, '店长确认线下收款', now]
+      )
+      if (insRes.rows.length === 0) {
+        throw new Error('CONFLICT: 订单已收款，请勿重复提交')
+      }
+      cashPaymentId = insRes.rows[0].id
+    }
+
+    // ========== 储值卡扣款（staffApi 唯一扣卡点）==========
+    // 预选值 > 0 且顾客已注册时，事务内锁余额 + 扣减 + 写 card_transactions + 写 '储值卡抵扣' payments 行
+    // （create 时只写 pending_prepaid_card_amount，此处才真正扣卡并进入 actual）
     if (prepaidAmount > 0 && order.client_user_id) {
       // 幂等：已扣过则跳过扣卡 + payments（用 card_transactions.ref_order_id 判定）
       const dupCheck = await client.query(
@@ -2105,27 +2127,6 @@ async function confirmOffline(ctx) {
         )
         cardPaymentId = cardIns.rows[0].id
       }
-    }
-
-    // ========== PR-2: 现金流水（首次支付/回款）：先落流水，再由流水聚合 received（维护 I1）==========
-    // change_type='首次支付' 时由 uq_sop_first_payment 兜底 TOCTOU；'回款' 不受影响。
-    // 必须在「从流水重聚合 received」之前 INSERT，否则本次现金不进聚合。
-    if (confirmAmount > 0) {
-      const insRes = await client.query(
-        `INSERT INTO sale_order_payments (
-          sale_order_id, change_type, amount, payment_method, external_txn_id,
-          status, source_end, operator_employee_id, note, created_at, paid_at
-        ) VALUES ($1, $2, $3, '线下', NULL, '已支付', 'staff', $4, $5, $6, $6)
-        ON CONFLICT (sale_order_id)
-          WHERE change_type = '首次支付' AND status = '已支付'
-        DO NOTHING
-        RETURNING id`,
-        [saleOrderId, paymentChangeType, confirmAmount, ctx.auth.staffWfId, '店长确认线下收款', now]
-      )
-      if (insRes.rows.length === 0) {
-        throw new Error('CONFLICT: 订单已收款，请勿重复提交')
-      }
-      cashPaymentId = insRes.rows[0].id
     }
 
     // ========== 从流水重聚合 received / prepaid_card_amount（跨端字面对齐 admin confirmOfflinePayment + staff createRepayment）==========
