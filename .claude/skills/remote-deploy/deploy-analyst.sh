@@ -1,290 +1,76 @@
-#!/bin/bash
-# Deploy fengyu-analyst to remote docker host.
-#
-# Usage:
-#   .claude/skills/remote-deploy/deploy-analyst.sh <dev|test|prod> [ssh-host] [remote-dir] [public-host]
-#   .claude/skills/remote-deploy/deploy-analyst.sh --rollback <ssh-host> [remote-dir]
-#
-# Rollback:
-#   回滚到上一个镜像版本（需要先部署过至少两次）
+#!/usr/bin/env bash
 
 set -euo pipefail
 
-ANALYST_RUNTIME_ENV_NAME=".analyst-runtime.env"
-ANALYST_ONLY_COMPOSE_ENV='DEPLOY_STAFF_ENV_ID=analyst-not-used DEPLOY_STAFF_TENCENTCLOUD_SECRETID=analyst-not-used DEPLOY_STAFF_TENCENTCLOUD_SECRETKEY=analyst-not-used'
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=deploy-common.sh
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/deploy-common.sh"
+
+usage() {
+  echo "Usage: $0 <dev|test|prod> [--check]" >&2
+  echo "       $0 --rollback <dev|test|prod>" >&2
+}
 
 if [[ "${1:-}" == "--rollback" ]]; then
-  if [[ -z "${2:-}" ]]; then
-    echo "Usage: $0 --rollback <ssh-host> [remote-dir]" >&2
-    exit 1
+  [[ $# -eq 2 ]] || { usage; exit 1; }
+  ENV="$2"
+  load_target "$ENV"
+  remote_readonly_preflight
+  if [[ "$ENV" == "prod" ]]; then
+    read -r -p "输入 'rollback:prod' 确认生产回滚: " confirm
+    [[ "$confirm" == "rollback:prod" ]] || { echo "Aborted."; exit 1; }
   fi
-  SSH_HOST="$2"
-  case "$SSH_HOST" in
-    ali-demo|47.113.202.7)
-      ROLLBACK_REMOTE_DIR_DEFAULT="/root/proj.xt.com/fengyu-wxapp/docker"
-      ;;
-    sqlserver101|101.34.242.103|fengyu-prod|118.178.196.26)
-      ROLLBACK_REMOTE_DIR_DEFAULT="/www/wwwroot/fengyu-admin/docker"
-      ;;
-    *)
-      ROLLBACK_REMOTE_DIR_DEFAULT=""
-      ;;
-  esac
-  REMOTE_DIR="${REMOTE_DIR:-${3:-$ROLLBACK_REMOTE_DIR_DEFAULT}}"
-  if [[ -z "$REMOTE_DIR" ]]; then
-    echo "✗ 无法从 SSH host '$SSH_HOST' 推断远程目录，请传 [remote-dir] 或设置 REMOTE_DIR。" >&2
-    exit 1
-  fi
-
-  echo "=== 回滚 fengyu-analyst ==="
-  echo "SSH Host: $SSH_HOST"
-  echo "Remote dir: $REMOTE_DIR"
-  read -p "确认回滚到上一个镜像版本？(yes/no): " confirm
-  if [[ "$confirm" != "yes" ]]; then
-    echo "已取消"
-    exit 0
-  fi
-
-  # 获取当前运行的镜像 ID
-  CURRENT_IMAGE=$(ssh "$SSH_HOST" "docker inspect -f '{{.Image}}' fengyu-analyst 2>/dev/null" || echo "")
-  if [[ -z "$CURRENT_IMAGE" ]]; then
-    echo "❌ 无法获取当前镜像 ID" >&2
-    exit 1
-  fi
-
-  # 查找上一个 fengyu-analyst 镜像（旧镜像失去 latest 标签后变为 dangling）
-  PREVIOUS_IMAGE=$(ssh "$SSH_HOST" "docker images --filter 'dangling=true' --format '{{.ID}}' | head -1" || echo "")
-  if [[ -z "$PREVIOUS_IMAGE" ]]; then
-    echo "❌ 未找到上一个镜像版本" >&2
-    exit 1
-  fi
-
-  echo "当前镜像: ${CURRENT_IMAGE:0:12}"
-  echo "回滚目标: ${PREVIOUS_IMAGE:0:12}"
-
-  # 临时标记旧镜像
-  ssh "$SSH_HOST" "docker tag $PREVIOUS_IMAGE fengyu-analyst:rollback-temp"
-  ssh "$SSH_HOST" "docker tag fengyu-analyst:rollback-temp fengyu-analyst:latest"
-  # 新部署使用独立 analyst 文件；兼容尚未跑过新版脚本的既有主机做一次旧文件回滚。
-  ssh "$SSH_HOST" "cd '$REMOTE_DIR' || exit 1; runtime_env='$ANALYST_RUNTIME_ENV_NAME'; if [ ! -f \"\$runtime_env\" ]; then runtime_env='.admin-runtime.env'; fi; test -f \"\$runtime_env\" && $ANALYST_ONLY_COMPOSE_ENV docker compose --env-file .env --env-file \"\$runtime_env\" -f docker-compose.yml -f docker-compose.remote.yml up -d analyst"
-  ssh "$SSH_HOST" "docker rmi fengyu-analyst:rollback-temp 2>/dev/null || true"
-
-  echo "✓ 回滚完成"
+  manual_remote_rollback analyst "$ENV"
   exit 0
 fi
 
-if [[ -z "${1:-}" ]] || [[ ! "$1" =~ ^(dev|test|prod)$ ]]; then
-  echo "Usage: $0 <dev|test|prod> [ssh-host] [remote-dir] [public-host]" >&2
-  echo "       $0 --rollback <ssh-host> [remote-dir]" >&2
-  exit 1
-fi
-
+[[ $# -ge 1 && $# -le 2 ]] || { usage; exit 1; }
 ENV="$1"
-case "$ENV" in
-  dev) ENV_LABEL="DEV"; SSH_HOST_DEFAULT="ali-demo"; REMOTE_DIR_DEFAULT="/root/proj.xt.com/fengyu-wxapp/docker"; EXPECT_PG_HOST="47.113.202.7" ;;
-  test) ENV_LABEL="TEST"; SSH_HOST_DEFAULT="sqlserver101"; REMOTE_DIR_DEFAULT="/www/wwwroot/fengyu-admin/docker"; EXPECT_PG_HOST="101.34.242.103" ;;
-  prod) ENV_LABEL="PROD"; SSH_HOST_DEFAULT="fengyu-prod"; REMOTE_DIR_DEFAULT="/www/wwwroot/fengyu-admin/docker"; EXPECT_PG_HOST="118.178.196.26" ;;
-esac
-SSH_HOST="${SSH_HOST:-${2:-$SSH_HOST_DEFAULT}}"
-REMOTE_DIR="${REMOTE_DIR:-${3:-$REMOTE_DIR_DEFAULT}}"
-PUBLIC_HOST="${PUBLIC_HOST:-${4:-$EXPECT_PG_HOST}}"
-ANALYST_PORT="${ANALYST_PORT:-3001}"
-ADMIN_PORT="${ADMIN_PORT:-3000}"
-
-if [[ "$SSH_HOST" != "$SSH_HOST_DEFAULT" ]]; then
-  echo "⚠️  SSH_HOST ($SSH_HOST) ≠ ENV=$ENV 绑定默认 ($SSH_HOST_DEFAULT)。" >&2
-  echo "    疑似 shell 残留污染或显式跨环境部署；DB/Origin 断言仍会在部署后兜底。" >&2
-  read -r -p "Type 'yes' to confirm this target is intentional: " ssh_confirm
-  if [[ "$ssh_confirm" != "yes" ]]; then
-    echo "Aborted."
-    exit 1
-  fi
+CHECK_ONLY=false
+if [[ $# -eq 2 ]]; then
+  [[ "$2" == "--check" ]] || { usage; exit 1; }
+  CHECK_ONLY=true
 fi
 
-cd "$(dirname "$0")/../../.."
+load_target "$ENV"
+cd "$REPO_ROOT"
+assert_local_tools
+assert_clean_worktree
 
-read_env_value() {
-  local key="$1"
-  local value
-  value=$(grep -m1 "^${key}=" "envs/$ENV.env" 2>/dev/null | cut -d= -f2- | tr -d '\r"')
-  if [[ -z "$value" ]]; then
-    echo "✗ envs/$ENV.env 缺少 $key，无法部署。" >&2
-    exit 1
-  fi
-  printf '%s' "$value"
-}
-
-# 远程 .env 保存账号密钥等运行期秘密；运行期 CloudBase 标识从目标环境生成，
-# 避免 dev/prod 共用 docker 目录或残留 .env 时串桶。
-DEPLOY_CLOUDBASE_ENV_ID=$(read_env_value CLOUDBASE_ENV_ID)
-DEPLOY_CDN_BASE=$(read_env_value CDN_BASE)
-DEPLOY_CLIENT_SECRET=$(read_env_value CLIENT_SECRET)
-CONFIGURED_ANALYST_PUBLIC_ORIGIN=$(read_env_value ANALYST_PUBLIC_ORIGIN)
-CONFIGURED_ANALYST_ADMIN_ORIGIN=$(read_env_value ANALYST_ADMIN_ORIGIN)
-CONFIGURED_ANALYST_ADMIN_LOGIN_URL=$(read_env_value ANALYST_ADMIN_LOGIN_URL)
-# The public analyst address is shared with the admin build. Reading it from the
-# selected environment prevents a production release from silently falling back
-# to the database IP address.
-ANALYST_PUBLIC_ORIGIN="${ANALYST_PUBLIC_ORIGIN:-$CONFIGURED_ANALYST_PUBLIC_ORIGIN}"
-if ! node -e 'const u = new URL(process.argv[1]); if (!/^https?:$/.test(u.protocol) || u.username || u.password) process.exit(1)' "$ANALYST_PUBLIC_ORIGIN"; then
-  echo "✗ ANALYST_PUBLIC_ORIGIN 必须是无账号密码的 http(s) URL。" >&2
-  exit 1
-fi
-ANALYST_ADMIN_ORIGIN="${ANALYST_ADMIN_ORIGIN:-$CONFIGURED_ANALYST_ADMIN_ORIGIN}"
-ANALYST_ADMIN_LOGIN_URL="${ANALYST_ADMIN_LOGIN_URL:-$CONFIGURED_ANALYST_ADMIN_LOGIN_URL}"
-RUNTIME_ENV_FILE=$(mktemp "${TMPDIR:-/tmp}/fengyu-analyst-runtime.XXXXXX")
-TMP_ENV=""
+LOCAL_BUNDLE=$(mktemp -d "${TMPDIR:-/tmp}/fengyu-analyst-release.XXXXXX")
 cleanup() {
-  rm -f "$RUNTIME_ENV_FILE"
-  if [[ -n "$TMP_ENV" ]]; then
-    rm -f "$TMP_ENV"
-  fi
+  [[ -n "${LOCAL_BUNDLE:-}" && -d "$LOCAL_BUNDLE" ]] && rm -rf -- "$LOCAL_BUNDLE"
 }
 trap cleanup EXIT
-# analyst 不调用 staff 云函数，不能复用 admin 的完整运行环境生成器；否则仅部署
-# 分析师时也会被无关的 staff 子账号凭据阻断。
-umask 077
-printf 'DEPLOY_CLOUDBASE_ENV_ID=%s\nDEPLOY_CDN_BASE=%s\nDEPLOY_CLIENT_SECRET=%s\n' \
-  "$DEPLOY_CLOUDBASE_ENV_ID" "$DEPLOY_CDN_BASE" "$DEPLOY_CLIENT_SECRET" > "$RUNTIME_ENV_FILE"
-chmod 600 "$RUNTIME_ENV_FILE"
-COMPOSE_OVERRIDE="docker-compose.remote.yml"
 
-if [[ "$ENV" == "prod" ]]; then
-  echo "About to deploy analyst to PROD ($SSH_HOST) at $ANALYST_PUBLIC_ORIGIN"
-  read -p "Type 'yes' to confirm: " confirm
-  if [[ "$confirm" != "yes" ]]; then
-    echo "Aborted."
-    exit 1
-  fi
-else
-  echo "==> Deploy analyst to $ENV_LABEL ($SSH_HOST)"
-  echo "    public: $ANALYST_PUBLIC_ORIGIN"
-  echo "    admin:  $ANALYST_ADMIN_ORIGIN"
-  echo "    db:     $EXPECT_PG_HOST:5433/fengyu_wxapp"
-fi
+render_local_bundle "$ENV" "$LOCAL_BUNDLE"
+check_migration_gate "$ENV"
+remote_readonly_preflight
 
 APP_VERSION=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo dev)
-APP_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "")
+APP_COMMIT=$(git rev-parse --short=12 HEAD)
+BUILD_FINGERPRINT=$(shasum -a 256 "$LOCAL_BUNDLE/build-manifest.json" | awk '{print substr($1,1,12)}')
+CONFIG_FINGERPRINT=$(
+  for file in admin.env cron-worker.env export-worker.env analyst.env; do
+    shasum -a 256 "$LOCAL_BUNDLE/$file" | awk '{print $1}'
+  done | shasum -a 256 | awk '{print substr($1,1,12)}'
+)
+RELEASE_ID="${ENV}-${APP_COMMIT}-${CONFIG_FINGERPRINT}-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+IMAGE_REF="fengyu-analyst:${ENV}-${APP_COMMIT}-${BUILD_FINGERPRINT}"
+REMOTE_RELEASE_DIR="$REMOTE_DIR/.deploy/releases/analyst/$RELEASE_ID"
 
-echo "=== 1/5 本地构建 fengyu-analyst 镜像（linux/amd64）==="
-echo "版本号: $APP_VERSION${APP_COMMIT:+ · $APP_COMMIT}"
-docker buildx build \
-  --platform linux/amd64 \
-  --load \
-  --build-arg APP_VERSION="$APP_VERSION" \
-  --build-arg APP_COMMIT="$APP_COMMIT" \
-  --build-arg NEXT_PUBLIC_ADMIN_ORIGIN="$ANALYST_ADMIN_ORIGIN" \
-  --build-arg NEXT_PUBLIC_ANALYST_ORIGIN="$ANALYST_PUBLIC_ORIGIN" \
-  -f docker/Dockerfile.analyst \
-  -t fengyu-analyst:latest \
-  .
-
-echo "=== 2/5 传输镜像到 $SSH_HOST ==="
-docker save fengyu-analyst:latest | gzip | ssh "$SSH_HOST" "docker load"
-
-echo "=== 3/5 同步 compose 文件和 analyst 环境覆盖（base + remote override） ==="
-scp docker/docker-compose.yml "$SSH_HOST:$REMOTE_DIR/docker-compose.yml"
-scp "docker/$COMPOSE_OVERRIDE" "$SSH_HOST:$REMOTE_DIR/$COMPOSE_OVERRIDE"
-scp "$RUNTIME_ENV_FILE" "$SSH_HOST:$REMOTE_DIR/$ANALYST_RUNTIME_ENV_NAME"
-ssh "$SSH_HOST" "chmod 600 '$REMOTE_DIR/$ANALYST_RUNTIME_ENV_NAME'"
-
-TMP_ENV=$(mktemp "${TMPDIR:-/tmp}/fengyu-analyst-env.XXXXXX")
-
-{
-  printf 'ANALYST_ADMIN_LOGIN_URL=%s\n' "$ANALYST_ADMIN_LOGIN_URL"
-  printf 'ANALYST_ADMIN_ORIGIN=%s\n' "$ANALYST_ADMIN_ORIGIN"
-  printf 'ANALYST_PUBLIC_ORIGIN=%s\n' "$ANALYST_PUBLIC_ORIGIN"
-  printf 'ANALYST_VIEW_ACTION=%s\n' "${ANALYST_VIEW_ACTION:-data_center:dashboard}"
-  printf 'ANALYST_CHAT_ACTION=%s\n' "${ANALYST_CHAT_ACTION:-data_center:dashboard}"
-  printf 'ANALYST_EXPORT_ACTION=%s\n' "${ANALYST_EXPORT_ACTION:-data_center:dashboard}"
-  if [[ -f fengyu-analyst/.env.local ]]; then
-    grep -E '^(MINIMAX_API_KEY|MINIMAX_BASE_URL|MINIMAX_MODEL|OPENAI_API_KEY|OPENAI_BASE_URL|OPENAI_MODEL)=' fengyu-analyst/.env.local || true
-  fi
-} > "$TMP_ENV"
-
-KEY_REGEX=$(awk -F= 'NF { print $1 }' "$TMP_ENV" | paste -sd'|' -)
-REMOTE_SNIPPET="/tmp/fengyu-analyst-env-$$"
-scp "$TMP_ENV" "$SSH_HOST:$REMOTE_SNIPPET"
-# 远程 .env 可能由容器用户或管理员创建，SSH 用户无写权限时用 sudo 保留原文件归属和权限更新。
-if ! ssh "$SSH_HOST" "sh -ceu \"cd '$REMOTE_DIR'; test -f .env || touch .env; cp -p .env .env.bak.analyst-\\\$(date +%Y%m%d%H%M%S); { grep -v -E '^($KEY_REGEX)=' .env || true; cat '$REMOTE_SNIPPET'; } > .env.tmp; chown --reference=.env .env.tmp; chmod --reference=.env .env.tmp; mv .env.tmp .env; rm -f '$REMOTE_SNIPPET'\""; then
-  echo "  当前 SSH 用户无 .env 写权限，尝试 sudo 更新。"
-  ssh "$SSH_HOST" "sudo sh -ceu \"cd '$REMOTE_DIR'; test -f .env || touch .env; cp -p .env .env.bak.analyst-\\\$(date +%Y%m%d%H%M%S); { grep -v -E '^($KEY_REGEX)=' .env || true; cat '$REMOTE_SNIPPET'; } > .env.tmp; chown --reference=.env .env.tmp; chmod --reference=.env .env.tmp; mv .env.tmp .env; rm -f '$REMOTE_SNIPPET'\""
-fi
-# Compose 会解析同文件中的 admin 服务；分析师单独部署时 staff 凭据不会被使用，
-# 仅在本次 compose 进程中传入占位值通过该服务的插值校验，绝不写入远程配置文件或容器。
-ssh "$SSH_HOST" "cd '$REMOTE_DIR' && $ANALYST_ONLY_COMPOSE_ENV docker compose --env-file .env --env-file '$ANALYST_RUNTIME_ENV_NAME' -f docker-compose.yml -f $COMPOSE_OVERRIDE config --quiet" || { echo "✗ Compose 配置校验失败，请检查远程 .env 与 $ANALYST_RUNTIME_ENV_NAME"; exit 1; }
-echo "  ✓ compose 与 analyst 环境已同步"
-
-echo "=== 4/5 远程启动 analyst ==="
-ssh "$SSH_HOST" "cd '$REMOTE_DIR' && $ANALYST_ONLY_COMPOSE_ENV docker compose --env-file .env --env-file '$ANALYST_RUNTIME_ENV_NAME' -f docker-compose.yml -f $COMPOSE_OVERRIDE up -d analyst"
-
-echo "=== 5/5 健康检查 ==="
-sleep 5
-
-# 检查容器状态
-CONTAINER_STATUS=$(ssh "$SSH_HOST" "docker inspect -f '{{.State.Status}}' fengyu-analyst 2>/dev/null" || echo "not_found")
-if [[ "$CONTAINER_STATUS" != "running" ]]; then
-  echo "❌ 容器未运行 (状态: $CONTAINER_STATUS)" >&2
-  echo "查看容器日志:" >&2
-  ssh "$SSH_HOST" "docker logs --tail 50 fengyu-analyst 2>&1" || true
-  exit 1
+print_release_manifest analyst "$ENV" "$LOCAL_BUNDLE" "$APP_COMMIT" "$IMAGE_REF" "$RELEASE_ID"
+if [[ "$CHECK_ONLY" == true ]]; then
+  echo "CHECK_OK: 未构建、未上传、未修改远端状态。"
+  exit 0
 fi
 
-echo "  ✓ 容器状态: running"
-ssh "$SSH_HOST" "docker ps --filter name=fengyu-analyst --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
+confirm_prod_release "$ENV" "$APP_COMMIT"
+build_image analyst "$LOCAL_BUNDLE" "$IMAGE_REF" "$APP_VERSION" "$APP_COMMIT"
+prepare_release_files analyst "$LOCAL_BUNDLE" "$REMOTE_RELEASE_DIR" "fengyu-admin:latest" "$IMAGE_REF"
+IMAGE_ID=$(transfer_image "$IMAGE_REF")
+upload_release_files "$LOCAL_BUNDLE" "$REMOTE_RELEASE_DIR"
+switch_remote_release analyst "$ENV" "$RELEASE_ID" "$REMOTE_RELEASE_DIR" "$IMAGE_REF" "$IMAGE_ID" "$LOCAL_BUNDLE"
 
-# HTTP 健康检查（根路由）
-HTTP_STATUS=$(ssh "$SSH_HOST" "curl -sS -o /dev/null -w '%{http_code}' --max-time 10 http://localhost:$ANALYST_PORT/ 2>/dev/null" || echo "000")
-if [[ "$HTTP_STATUS" != "200" && "$HTTP_STATUS" != "307" ]]; then
-  echo "❌ HTTP 健康检查失败 (状态码: $HTTP_STATUS)" >&2
-  ssh "$SSH_HOST" "docker logs --tail 30 fengyu-analyst 2>&1" || true
-  exit 1
-fi
-echo "  ✓ HTTP 健康检查通过 (状态码: $HTTP_STATUS)"
-
-# API 端点检查
-API_STATUS=$(ssh "$SSH_HOST" "curl -sS -o /dev/null -w '%{http_code}' --max-time 10 http://localhost:$ANALYST_PORT/api/health 2>/dev/null" || echo "000")
-if [[ "$API_STATUS" == "200" ]]; then
-  echo "  ✓ API 健康检查通过"
-elif [[ "$API_STATUS" == "404" ]]; then
-  echo "  ⚠ /api/health 端点不存在（可忽略）"
-else
-  echo "  ⚠ API 健康检查异常 (状态码: $API_STATUS)"
-fi
-
-# 环境变量校验
-DB_URL=$(ssh "$SSH_HOST" "docker exec fengyu-analyst sh -c 'echo \"\$DATABASE_URL\"'" 2>/dev/null | head -1 || true)
-DB_REDACTED=$(node -e "const s=process.argv[1]||'';process.stdout.write(s.replace(/:\/\/[^@]+@/,'://***@'))" "$DB_URL" 2>/dev/null || echo "")
-GOT_HOST=$(node -e "const s=process.argv[1]||'';const m=s.match(/@([^:]+):\d+\//);process.stdout.write(m?m[1]:'')" "$DB_URL" 2>/dev/null || echo "")
-JWT_LEN=$(ssh "$SSH_HOST" "docker exec fengyu-analyst sh -c 'printf %s \"\${#JWT_SECRET}\"'" 2>/dev/null || true)
-ORIGIN=$(ssh "$SSH_HOST" "docker exec fengyu-analyst sh -c 'echo \"\$NEXT_PUBLIC_ANALYST_ORIGIN\"'" 2>/dev/null | head -1 || true)
-
-echo "  DATABASE_URL: ${DB_REDACTED:-not readable}"
-echo "  NEXT_PUBLIC_ANALYST_ORIGIN: ${ORIGIN:-not readable}"
-echo "  JWT_SECRET length: ${JWT_LEN:-0}"
-
-if [[ "$GOT_HOST" == "$EXPECT_PG_HOST" ]]; then
-  echo "  ✓ analyst DB host=$GOT_HOST 与 $ENV 一致"
-elif [[ "$ENV" == "test" && "$GOT_HOST" == "172.18.0.1" ]]; then
-  HOST_PUBLIC_IP=$(ssh "$SSH_HOST" "curl -s --max-time 5 ifconfig.me 2>/dev/null || curl -s --max-time 5 ip.sb 2>/dev/null" | head -1 || true)
-  PG_LISTENING=$(ssh "$SSH_HOST" "ss -tlnp 2>/dev/null | grep -q ':5433' && echo yes || echo no" || true)
-  if [[ "$HOST_PUBLIC_IP" != "$EXPECT_PG_HOST" || "$PG_LISTENING" != "yes" ]]; then
-    echo "Test DB bridge verification failed (public=${HOST_PUBLIC_IP:-empty}, pg5433=${PG_LISTENING:-no})" >&2
-    exit 1
-  fi
-  echo "  ✓ analyst DB host=172.18.0.1（Docker 网桥回连 101.34.242.103:5433）"
-else
-  echo "Expected DB host $EXPECT_PG_HOST, got ${GOT_HOST:-empty}" >&2
-  exit 1
-fi
-if [[ "$ORIGIN" != "$ANALYST_PUBLIC_ORIGIN" ]]; then
-  echo "Expected analyst origin $ANALYST_PUBLIC_ORIGIN, got ${ORIGIN:-empty}" >&2
-  exit 1
-fi
-if [[ -z "$JWT_LEN" || "$JWT_LEN" == "0" ]]; then
-  echo "JWT_SECRET is empty in analyst container" >&2
-  exit 1
-fi
-
-echo ""
-echo "部署完成: $ANALYST_PUBLIC_ORIGIN"
+echo "部署完成: analyst env=$ENV release=$RELEASE_ID"
