@@ -6,6 +6,7 @@ vi.mock('@/db', () => ({
     insert: vi.fn(),
     update: vi.fn(),
     transaction: vi.fn(),
+    execute: vi.fn().mockResolvedValue({ rows: [] }),
   },
 }))
 

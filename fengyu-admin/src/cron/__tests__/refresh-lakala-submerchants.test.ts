@@ -25,9 +25,10 @@ function makeDb(applications: unknown[], affectedRows = 1) {
 
   const insertValues = vi.fn().mockResolvedValue({ count: 1 })
   const insert = vi.fn(() => ({ values: insertValues }))
+  const execute = vi.fn().mockResolvedValue({ rows: [] })
 
   return {
-    db: { select, update, insert },
+    db: { select, update, insert, execute },
     select,
     orderBy,
     whereSelect,
@@ -36,6 +37,7 @@ function makeDb(applications: unknown[], affectedRows = 1) {
     updateWhere,
     insert,
     insertValues,
+    execute,
   }
 }
 
