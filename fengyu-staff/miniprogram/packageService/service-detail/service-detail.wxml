@@ -35,8 +35,8 @@
           </view>
           <view class="item-meta">
             <text wx:if="{{item.spec}}" class="item-spec">{{item.spec}}</text>
-            <text class="item-sessions" wx:if="{{item.totalSessions > 1}}">
-              本次核销 {{item.sessionCount}} {{item.unit || '次'}} · 剩余 {{item.remainingSessions}} / 已付 {{item.paidSessions}} / 共 {{item.totalSessions}} {{item.unit || '次'}}
+            <text class="item-sessions">
+              本次核销 {{item.sessionCount == null ? '—' : item.sessionCount}} {{item.unit || '次'}} · 剩余 {{item.remainingSessions == null ? '—' : item.remainingSessions}} / 已付 {{item.paidSessions == null ? '—' : item.paidSessions}} / 共 {{item.totalSessions == null ? '—' : item.totalSessions}} {{item.unit || '次'}}
             </text>
           </view>
           <text class="item-flow-no">流水号：{{item.saleItemId}}</text>
