@@ -12,7 +12,6 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-// @ts-expect-error: pg 类型在测试环境未声明（仅 e2e-pages seed 用，无需 admin runtime 类型）
 import { Pool } from 'pg'
 
 // Playwright 以 cwd=fengyu-admin/ 运行；不依赖 import.meta.url（Playwright 把本模块

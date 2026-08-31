@@ -21,7 +21,6 @@
  */
 
 import { test, expect } from '@playwright/test'
-// @ts-expect-error: pg 类型在测试环境未声明（仅 e2e-chains 用，无需 admin runtime 类型）
 import { Client } from 'pg'
 import {
   backupAndSetConfig,
