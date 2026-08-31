@@ -37,6 +37,7 @@ interface StockLot {
 
 interface StoreOption {
   storeId: string
+  orgNodeId: string
   storeName: string
 }
 
@@ -181,7 +182,7 @@ Page({
       }
       if (this.data.needsTargetStore) {
         const res = await callStaffApi<{ items: StoreOption[] }>('inventory.storeOptions', {
-          sourceLocationId: this.data.sourceStoreId,
+          sourceStoreId: this.data.sourceStoreId,
         })
         this.setData({ storeOptions: res.items || [] })
       }
@@ -319,8 +320,8 @@ Page({
     try {
       const result = await callStaffApi<{ id: string }>('inventory.createDoc', {
         docType: this.data.docType,
-        sourceLocationId: this.data.sourceStoreId,
-        targetLocationId: this.data.selectedStore?.storeId || undefined,
+        storeId: this.data.sourceStoreId,
+        targetOrgNodeId: this.data.selectedStore?.orgNodeId || undefined,
         remark: this.data.remark.trim() || undefined,
         items: this.data.items.map((item) => ({
           lotId: item.lotId,

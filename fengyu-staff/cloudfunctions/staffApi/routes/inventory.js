@@ -339,7 +339,14 @@ function buildInventoryLocationScope(auth, alias, startIndex) {
   const ids = scopedInventoryLocationIds(auth)
   if (ids.length === 0) return { sql: 'FALSE', params: [], nextIdx: startIndex }
   return {
-    sql: `(${alias}.source_location_id = ANY($${startIndex}::text[]) OR ${alias}.target_location_id = ANY($${startIndex}::text[]))`,
+    sql: `(
+      ${alias}.source_org_node_id IN (
+        SELECT org_node_id FROM inventory_locations WHERE location_id = ANY($${startIndex}::text[])
+      )
+      OR ${alias}.target_org_node_id IN (
+        SELECT org_node_id FROM inventory_locations WHERE location_id = ANY($${startIndex}::text[])
+      )
+    )`,
     params: [ids],
     nextIdx: startIndex + 1,
   }
@@ -365,9 +372,9 @@ function requireAnyInventoryLocationInScope(auth, locationIds) {
 async function ensureInventoryLocation(locationId, requiredType = null) {
   await syncInventoryLocations()
   const rows = await pg.query(
-    `SELECT location_id, location_type, parent_location_id, is_active
+    `SELECT location_id, location_type, parent_location_id, is_active, org_node_id
        FROM inventory_locations
-      WHERE location_id = $1
+      WHERE location_id = $1 OR org_node_id = $1
       LIMIT 1`,
     [locationId],
   )
@@ -377,15 +384,19 @@ async function ensureInventoryLocation(locationId, requiredType = null) {
   if (requiredType && row.location_type !== requiredType) {
     throw new Error(`INVALID_PARAMS: 库存主体必须是${requiredType}`)
   }
-  return row
+  return {
+    ...row,
+    location_id: row.location_id || locationId,
+    org_node_id: row.org_node_id || locationId,
+  }
 }
 
 async function ensureStoreLocation(locationId) {
   return ensureInventoryLocation(locationId, '门店')
 }
 
-async function ensureSameMarketStores(sourceLocationId, targetLocationId) {
-  if (sourceLocationId === targetLocationId) {
+async function ensureSameMarketStores(sourceOrgNodeId, targetOrgNodeId) {
+  if (sourceOrgNodeId === targetOrgNodeId) {
     throw new Error('INVALID_PARAMS: 调拨接收门店不能与发起门店相同')
   }
   const rows = await pg.query(
@@ -393,12 +404,12 @@ async function ensureSameMarketStores(sourceLocationId, targetLocationId) {
        FROM inventory_locations s
       WHERE s.location_id = ANY($1::text[])
       ORDER BY s.location_id`,
-    [[sourceLocationId, targetLocationId]],
+    [[sourceOrgNodeId, targetOrgNodeId]],
   )
   if (rows.length !== 2) throw new Error('NOT_FOUND: 调拨门店不存在')
   const byId = new Map(rows.map((row) => [row.location_id, row]))
-  const source = byId.get(sourceLocationId)
-  const target = byId.get(targetLocationId)
+  const source = byId.get(sourceOrgNodeId)
+  const target = byId.get(targetOrgNodeId)
   if (!source || !target) throw new Error('NOT_FOUND: 调拨门店不存在')
   if (source.location_type !== '门店' || target.location_type !== '门店') {
     throw new Error('INVALID_PARAMS: 调拨只能发生在门店之间')
@@ -422,71 +433,82 @@ async function resolveStaffCreateLocations(ctx, payload) {
     ctx.auth.effectiveStoreId ||
     (scopedStoreIds.length === 1 ? scopedStoreIds[0] : null)
 
-  let sourceLocationId = payload.sourceLocationId || null
-  let targetLocationId = payload.targetLocationId || null
+  let sourceEndpointId = payload.sourceOrgNodeId || null
+  let targetEndpointId = payload.targetOrgNodeId || null
   let marketId = null
 
   switch (payload.docType) {
     case '门店报货':
-      sourceLocationId = sourceLocationId || fallbackStoreId
+      sourceEndpointId = sourceEndpointId || fallbackStoreId
       // 门店报货的市场归属由发起门店的组织父级确定，不能相信客户端提交的主体。
-      // 市场汇总和分院配货均依赖该关联，故同时保存 target_location_id 与 market_id。
-      targetLocationId = null
+      // 市场汇总和分院配货均依赖该关联，故同时保存 target_org_node_id 与 market_id。
+      targetEndpointId = null
       break
     case '分院调货出库':
-      sourceLocationId = sourceLocationId || fallbackStoreId
-      if (!targetLocationId) throw new Error('INVALID_PARAMS: 调货出库缺少接收门店')
+      sourceEndpointId = sourceEndpointId || fallbackStoreId
+      if (!targetEndpointId) throw new Error('INVALID_PARAMS: 调货出库缺少接收门店')
       break
     case '院顾客退货':
-      sourceLocationId = null
-      targetLocationId = targetLocationId || fallbackStoreId
+      sourceEndpointId = null
+      targetEndpointId = targetEndpointId || fallbackStoreId
       break
     case '院退货':
     case '院顾客产品出库':
     case '院产品报损':
-      sourceLocationId = sourceLocationId || fallbackStoreId
-      targetLocationId = null
+      sourceEndpointId = sourceEndpointId || fallbackStoreId
+      targetEndpointId = null
       break
     case '分院库存盘点':
-      sourceLocationId = sourceLocationId || fallbackStoreId
-      targetLocationId = null
+      sourceEndpointId = sourceEndpointId || fallbackStoreId
+      targetEndpointId = null
       break
     default:
       throw new Error('INVALID_PARAMS: staff 端不支持创建该库存单据')
   }
 
-  const acting = sourceLocationId || targetLocationId
-  await assertInventoryWriteStoreScope(pg, ctx.auth, acting)
-  const sourceLocation = sourceLocationId ? await ensureStoreLocation(sourceLocationId) : null
+  const sourceLocation = sourceEndpointId ? await ensureStoreLocation(sourceEndpointId) : null
+  let targetLocation = targetEndpointId ? await ensureStoreLocation(targetEndpointId) : null
+  const actingLocationId = sourceLocation?.location_id || targetLocation?.location_id
+  await assertInventoryWriteStoreScope(pg, ctx.auth, actingLocationId)
   if (payload.docType === '门店报货') {
     marketId = sourceLocation?.parent_location_id || null
     if (!marketId) throw new Error('INVALID_STATE: 门店未归属市场，不能提交报货')
-    targetLocationId = marketId
-    await ensureInventoryLocation(marketId, '市场')
+    targetLocation = await ensureInventoryLocation(marketId, '市场')
   } else if (payload.docType === '院退货') {
     // 门店退货只能回到所属市场，客户端不能指定或伪造回库主体。
     marketId = sourceLocation?.parent_location_id || null
     if (!marketId) throw new Error('INVALID_STATE: 门店未归属市场，不能提交退货')
-    targetLocationId = marketId
-    await ensureInventoryLocation(marketId, '市场')
-  } else if (targetLocationId) {
-    await ensureStoreLocation(targetLocationId)
+    targetLocation = await ensureInventoryLocation(marketId, '市场')
   }
   if (payload.docType === '分院调货出库') {
-    await ensureSameMarketStores(sourceLocationId, targetLocationId)
+    await ensureSameMarketStores(sourceLocation.location_id, targetLocation.location_id)
   }
-  return { sourceLocationId, targetLocationId, marketId, acting }
+  let sourceOrgNodeId = sourceLocation?.org_node_id || null
+  let targetOrgNodeId = targetLocation?.org_node_id || null
+  if (['院产品报损', '分院库存盘点'].includes(payload.docType)) {
+    const orgNodeId = sourceOrgNodeId || targetOrgNodeId
+    sourceOrgNodeId = orgNodeId
+    targetOrgNodeId = orgNodeId
+  }
+  return {
+    sourceOrgNodeId,
+    targetOrgNodeId,
+    sourceLocationId: sourceLocation?.location_id || null,
+    targetLocationId: targetLocation?.location_id || null,
+    marketId,
+    actingLocationId,
+  }
 }
 
 function actingLocationId(payload) {
   const docType = payload.docType
   if (RECEIVE_REQUIRED_DOC_TYPES.has(docType) || OUTBOUND_DOC_TYPES.has(docType)) {
-    return payload.sourceLocationId || payload.locationId || payload.storeId || null
+    return payload.sourceOrgNodeId || payload.locationId || payload.storeId || null
   }
   if (INBOUND_DOC_TYPES.has(docType)) {
-    return payload.targetLocationId || payload.locationId || payload.storeId || null
+    return payload.targetOrgNodeId || payload.locationId || payload.storeId || null
   }
-  return payload.sourceLocationId || payload.targetLocationId || payload.locationId || payload.storeId || null
+  return payload.sourceOrgNodeId || payload.targetOrgNodeId || payload.locationId || payload.storeId || null
 }
 
 function movementPlan(docType, status) {
@@ -789,23 +811,23 @@ async function loadInventoryDocLineage(auth, docId) {
   }))
 }
 
-async function resolveStoreReturnTargetMarket(client, sourceLocationId, targetLocationId) {
+async function resolveStoreReturnTargetMarket(client, sourceOrgNodeId, targetOrgNodeId) {
   const result = await client.query(
-    `SELECT source.parent_location_id AS market_id
+    `SELECT market.org_node_id AS market_id
        FROM inventory_locations source
        JOIN inventory_locations market
          ON market.location_id = source.parent_location_id
         AND market.location_type = '市场'
         AND market.is_active = true
-      WHERE source.location_id = $1
+      WHERE source.org_node_id = $1
         AND source.location_type = '门店'
         AND source.is_active = true
       FOR UPDATE OF source, market`,
-    [sourceLocationId],
+    [sourceOrgNodeId],
   )
   const marketId = result.rows[0]?.market_id || null
   if (!marketId) throw new Error('INVALID_STATE: 门店未归属有效市场，不能审批退货')
-  if (targetLocationId && targetLocationId !== marketId) {
+  if (targetOrgNodeId && targetOrgNodeId !== marketId) {
     throw new Error('INVALID_STATE: 院退货回库主体与门店所属市场不一致')
   }
   return marketId
@@ -919,9 +941,9 @@ async function reportableSkuOptions(ctx) {
   } = ctx.event.payload || {}
 
   await syncInventoryLocations()
-  const sourceLocationId = locationId || ctx.auth.effectiveStoreId
-  await assertInventoryWriteStoreScope(pg, ctx.auth, sourceLocationId)
-  const source = await ensureStoreLocation(sourceLocationId)
+  const sourceOrgNodeId = locationId || ctx.auth.effectiveStoreId
+  await assertInventoryWriteStoreScope(pg, ctx.auth, sourceOrgNodeId)
+  const source = await ensureStoreLocation(sourceOrgNodeId)
   if (!source.parent_location_id) {
     throw new Error('INVALID_STATE: 当前门店未关联市场，无法查询可报货 SKU')
   }
@@ -933,7 +955,7 @@ async function reportableSkuOptions(ctx) {
     'sku.is_reportable = true',
     '(sku.owner_market_id IS NULL OR sku.owner_market_id = $2)',
   ]
-  const params = [sourceLocationId, source.parent_location_id]
+  const params = [sourceOrgNodeId, source.parent_location_id]
   let idx = 3
   if (keyword) {
     const escaped = String(keyword).replace(/[%_]/g, '\\$&')
@@ -1000,9 +1022,9 @@ async function reportableSkuOptions(ctx) {
  */
 async function storeOptions(ctx) {
   await requireStaffBound()(ctx, async () => {})
-  const { sourceLocationId } = ctx.event.payload || {}
+  const { sourceStoreId } = ctx.event.payload || {}
   await syncInventoryLocations()
-  const sourceId = sourceLocationId || ctx.auth.effectiveStoreId
+  const sourceId = sourceStoreId || ctx.auth.effectiveStoreId
   await assertInventoryWriteStoreScope(pg, ctx.auth, sourceId)
   const source = await ensureStoreLocation(sourceId)
   if (!source.parent_location_id) {
@@ -1010,7 +1032,7 @@ async function storeOptions(ctx) {
   }
 
   const rows = await pg.query(
-    `SELECT loc.location_id, loc.name
+    `SELECT loc.location_id, loc.org_node_id, loc.name
        FROM inventory_locations loc
        JOIN stores s ON s.store_id = loc.store_id
       WHERE loc.location_type = '门店'
@@ -1024,7 +1046,45 @@ async function storeOptions(ctx) {
   ctx.result = {
     items: rows.map((row) => ({
       storeId: row.location_id,
+      orgNodeId: row.org_node_id,
       storeName: row.name,
+    })),
+  }
+  return ctx.result
+}
+
+async function docOrgOptions(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+  await syncInventoryLocations()
+  const scopedStoreIds = scopedInventoryLocationIds(ctx.auth)
+  if (scopedStoreIds.length === 0) {
+    ctx.result = { items: [] }
+    return ctx.result
+  }
+  const rows = await pg.query(
+    `WITH RECURSIVE visible_nodes AS (
+       SELECT node.id, node.parent_id, node.type, node.name, node.is_active
+         FROM inventory_locations loc
+         JOIN org_nodes node ON node.id = loc.org_node_id
+        WHERE loc.location_id = ANY($1::text[])
+       UNION
+       SELECT parent.id, parent.parent_id, parent.type, parent.name, parent.is_active
+         FROM org_nodes parent
+         JOIN visible_nodes child ON child.parent_id = parent.id
+     )
+     SELECT DISTINCT id, parent_id, type, name, is_active
+       FROM visible_nodes
+      WHERE type IN ('总部','市场','门店')
+   ORDER BY CASE type WHEN '总部' THEN 1 WHEN '市场' THEN 2 ELSE 3 END, name, id`,
+    [scopedStoreIds],
+  )
+  ctx.result = {
+    items: rows.map((row) => ({
+      orgNodeId: row.id,
+      parentOrgNodeId: row.parent_id || null,
+      orgNodeType: row.type,
+      name: row.name,
+      isActive: row.is_active !== false,
     })),
   }
   return ctx.result
@@ -1033,7 +1093,7 @@ async function storeOptions(ctx) {
 async function docList(ctx) {
   await requireStaffBound()(ctx, async () => {})
   const {
-    locationId,
+    orgNodeId,
     docType,
     docTypes,
     status,
@@ -1044,7 +1104,6 @@ async function docList(ctx) {
     pageSize = 20,
   } = ctx.event.payload || {}
   await syncInventoryLocations()
-  if (locationId) requireInventoryLocationInScope(ctx.auth, locationId)
   if (docType && !isStaffVisibleDocType(docType)) {
     throw new Error('INVALID_PARAMS: staff 端不支持查询该库存单据')
   }
@@ -1083,9 +1142,24 @@ async function docList(ctx) {
     params.push(STAFF_VISIBLE_DOC_TYPE_LIST)
     idx++
   }
-  if (locationId) {
-    conditions.push(`(d.source_location_id = $${idx} OR d.target_location_id = $${idx})`)
-    params.push(locationId)
+  if (orgNodeId) {
+    conditions.push(`(
+      d.source_org_node_id IN (
+        WITH RECURSIVE selected AS (
+          SELECT id FROM org_nodes WHERE id = $${idx}
+          UNION ALL
+          SELECT child.id FROM org_nodes child JOIN selected parent ON child.parent_id = parent.id
+        ) SELECT id FROM selected WHERE id IN (SELECT org_node_id FROM inventory_locations)
+      )
+      OR d.target_org_node_id IN (
+        WITH RECURSIVE selected AS (
+          SELECT id FROM org_nodes WHERE id = $${idx}
+          UNION ALL
+          SELECT child.id FROM org_nodes child JOIN selected parent ON child.parent_id = parent.id
+        ) SELECT id FROM selected WHERE id IN (SELECT org_node_id FROM inventory_locations)
+      )
+    )`)
+    params.push(orgNodeId)
     idx++
   }
   if (status) {
@@ -1111,15 +1185,15 @@ async function docList(ctx) {
   }
   const whereSql = `WHERE ${conditions.join(' AND ')}`
   const rows = await pg.query(
-    `SELECT d.id, d.doc_type, d.status, d.source_location_id, d.target_location_id,
+    `SELECT d.id, d.doc_type, d.status, d.source_org_node_id, d.target_org_node_id,
             d.doc_date, d.related_sale_order_id,
             d.customer_name, d.employee_name, d.supplier_name, d.logistics_company,
             d.tracking_no, d.total_quantity, d.remark, d.created_at, d.updated_at,
             source_loc.name AS source_location_name, source_loc.location_type AS source_location_type,
             target_loc.name AS target_location_name, target_loc.location_type AS target_location_type
        FROM inventory_docs d
-  LEFT JOIN inventory_locations source_loc ON source_loc.location_id = d.source_location_id
-  LEFT JOIN inventory_locations target_loc ON target_loc.location_id = d.target_location_id
+  LEFT JOIN inventory_locations source_loc ON source_loc.org_node_id = d.source_org_node_id
+  LEFT JOIN inventory_locations target_loc ON target_loc.org_node_id = d.target_org_node_id
        ${whereSql}
    ORDER BY d.doc_date DESC, d.created_at DESC
       LIMIT ${limit} OFFSET ${offset}`,
@@ -1134,12 +1208,12 @@ async function docList(ctx) {
       id: r.id,
       docType: r.doc_type,
       status: r.status,
-      sourceLocationId: r.source_location_id || null,
-      sourceLocationName: r.source_location_name || null,
-      sourceLocationType: r.source_location_type || null,
-      targetLocationId: r.target_location_id || null,
-      targetLocationName: r.target_location_name || null,
-      targetLocationType: r.target_location_type || null,
+      sourceOrgNodeId: r.source_org_node_id || null,
+      sourceOrgNodeName: r.source_location_name || null,
+      sourceOrgNodeType: r.source_location_type || null,
+      targetOrgNodeId: r.target_org_node_id || null,
+      targetOrgNodeName: r.target_location_name || null,
+      targetOrgNodeType: r.target_location_type || null,
       docDate: r.doc_date,
       totalQuantity: Number(r.total_quantity || 0),
       relatedSaleOrderId: r.related_sale_order_id || null,
@@ -1167,7 +1241,7 @@ async function docDetail(ctx) {
   const scope = buildInventoryLocationScope(ctx.auth, 'd', 2)
   const docTypeParamIndex = scope.nextIdx
   const rows = await pg.query(
-    `SELECT d.id, d.doc_type, d.status, d.source_location_id, d.target_location_id,
+    `SELECT d.id, d.doc_type, d.status, d.source_org_node_id, d.target_org_node_id,
             d.doc_date, d.related_sale_order_id,
             d.customer_name, d.employee_name, d.supplier_name, d.logistics_company,
             d.tracking_no, d.total_quantity, d.remark, d.audit_remark,
@@ -1175,8 +1249,8 @@ async function docDetail(ctx) {
             source_loc.name AS source_location_name, source_loc.location_type AS source_location_type,
             target_loc.name AS target_location_name, target_loc.location_type AS target_location_type
        FROM inventory_docs d
-  LEFT JOIN inventory_locations source_loc ON source_loc.location_id = d.source_location_id
-  LEFT JOIN inventory_locations target_loc ON target_loc.location_id = d.target_location_id
+  LEFT JOIN inventory_locations source_loc ON source_loc.org_node_id = d.source_org_node_id
+  LEFT JOIN inventory_locations target_loc ON target_loc.org_node_id = d.target_org_node_id
       WHERE d.id = $1
         AND ${scope.sql}
         AND d.doc_type = ANY($${docTypeParamIndex}::text[])
@@ -1202,12 +1276,12 @@ async function docDetail(ctx) {
     id: r.id,
     docType: r.doc_type,
     status: r.status,
-    sourceLocationId: r.source_location_id || null,
-    sourceLocationName: r.source_location_name || null,
-    sourceLocationType: r.source_location_type || null,
-    targetLocationId: r.target_location_id || null,
-    targetLocationName: r.target_location_name || null,
-    targetLocationType: r.target_location_type || null,
+    sourceOrgNodeId: r.source_org_node_id || null,
+    sourceOrgNodeName: r.source_location_name || null,
+    sourceOrgNodeType: r.source_location_type || null,
+    targetOrgNodeId: r.target_org_node_id || null,
+    targetOrgNodeName: r.target_location_name || null,
+    targetOrgNodeType: r.target_location_type || null,
     docDate: r.doc_date,
     totalQuantity: Number(r.total_quantity || 0),
     relatedSaleOrderId: r.related_sale_order_id || null,
@@ -1262,7 +1336,13 @@ async function createDoc(ctx) {
     throw new Error('INVALID_PARAMS: 报损明细必须填写原因')
   }
   await syncInventoryLocations()
-  const { sourceLocationId, targetLocationId, marketId } = await resolveStaffCreateLocations(ctx, payload)
+  const {
+    sourceOrgNodeId,
+    targetOrgNodeId,
+    sourceLocationId,
+    targetLocationId,
+    marketId,
+  } = await resolveStaffCreateLocations(ctx, payload)
   const status = defaultDocStatus(docType)
   // 同一批次的待审批退货需按稳定顺序锁库存，降低多明细并发提交的死锁概率。
   const orderedItems = docType === '院退货'
@@ -1270,11 +1350,11 @@ async function createDoc(ctx) {
     : items
   const totalQuantity = orderedItems.reduce((acc, item) => acc + assertQty(item.quantity), 0)
   const plan = movementPlan(docType, status)
-  if (RECEIVE_REQUIRED_DOC_TYPES.has(docType) && !targetLocationId) {
+  if (RECEIVE_REQUIRED_DOC_TYPES.has(docType) && !targetOrgNodeId) {
     throw new Error('INVALID_PARAMS: 待收货单据缺少接收主体')
   }
-  if (plan?.role === 'source' && !sourceLocationId) throw new Error('INVALID_PARAMS: 出库类单据缺少出库主体')
-  if (plan?.role === 'target' && !targetLocationId) throw new Error('INVALID_PARAMS: 入库类单据缺少入库主体')
+  if (plan?.role === 'source' && !sourceOrgNodeId) throw new Error('INVALID_PARAMS: 出库类单据缺少出库主体')
+  if (plan?.role === 'target' && !targetOrgNodeId) throw new Error('INVALID_PARAMS: 入库类单据缺少入库主体')
   let docId
 
   await pg.transaction(async (client) => {
@@ -1282,7 +1362,7 @@ async function createDoc(ctx) {
     docId = await generateDocNo(client, docType)
     await client.query(
       `INSERT INTO inventory_docs (
-         id, doc_type, status, source_location_id, target_location_id, doc_date, total_quantity,
+         id, doc_type, status, source_org_node_id, target_org_node_id, doc_date, total_quantity,
          related_sale_order_id, client_user_id, customer_name,
          employee_id, employee_name, supplier_name, logistics_company, tracking_no,
          receipt_attachment_url, remark, created_by, confirmed_by, confirmed_at, market_id
@@ -1293,8 +1373,8 @@ async function createDoc(ctx) {
         docId,
         docType,
         status,
-        sourceLocationId,
-        targetLocationId,
+        sourceOrgNodeId,
+        targetOrgNodeId,
         payload.docDate || shanghaiToday(),
         totalQuantity,
         payload.relatedSaleOrderId || null,
@@ -1421,22 +1501,24 @@ async function createDoc(ctx) {
 }
 
 async function approveStoreReturnForRestock(client, head, ctx, auditRemark) {
-  if (!head.source_location_id) throw new Error('INVALID_STATE: 院退货单缺少门店退货主体')
-  const targetLocationId = await resolveStoreReturnTargetMarket(
+  if (!head.source_org_node_id) throw new Error('INVALID_STATE: 院退货单缺少门店退货主体')
+  const targetOrgNodeId = await resolveStoreReturnTargetMarket(
     client,
-    head.source_location_id,
-    head.target_location_id,
+    head.source_org_node_id,
+    head.target_org_node_id,
   )
-  if (head.target_location_id !== targetLocationId || head.market_id !== targetLocationId) {
+  if (head.target_org_node_id !== targetOrgNodeId || head.market_id !== targetOrgNodeId) {
     await client.query(
       `UPDATE inventory_docs
-          SET target_location_id = $2,
+          SET target_org_node_id = $2,
               market_id = $2,
               updated_at = NOW()
         WHERE id = $1`,
-      [head.id, targetLocationId],
+      [head.id, targetOrgNodeId],
     )
   }
+  const sourceLocation = await ensureStoreLocation(head.source_org_node_id)
+  const targetLocation = await ensureInventoryLocation(targetOrgNodeId, '市场')
 
   const itemRes = await client.query(
     `SELECT id, lot_id, sku_id, sale_item_id, sku_name, spec_name, supplier, product_series,
@@ -1456,14 +1538,14 @@ async function approveStoreReturnForRestock(client, head, ctx, auditRemark) {
   const inboundDocId = await generateDocNo(client, '市场退货入库')
   await client.query(
       `INSERT INTO inventory_docs (
-       id, doc_type, status, source_location_id, target_location_id, market_id,
+       id, doc_type, status, source_org_node_id, target_org_node_id, market_id,
        doc_date, total_quantity, remark, created_by, confirmed_by, confirmed_at
      )
      VALUES ($1,'市场退货入库','已完成',$2,$3,$3,$4,$5,$6,$7,$7,NOW())`,
     [
       inboundDocId,
-      head.source_location_id,
-      targetLocationId,
+      head.source_org_node_id,
+      targetOrgNodeId,
       shanghaiToday(),
       totalQuantity,
       auditRemark || null,
@@ -1477,7 +1559,7 @@ async function approveStoreReturnForRestock(client, head, ctx, auditRemark) {
     const sourceLot = await lockInventoryLotById(
       client,
       Number(item.lot_id),
-      head.source_location_id,
+      sourceLocation.location_id,
     )
     const reservationRes = await client.query(
       `SELECT id, quantity, fulfilled_quantity, released_quantity
@@ -1520,7 +1602,7 @@ async function approveStoreReturnForRestock(client, head, ctx, auditRemark) {
     }
     const targetLot = await ensureInventoryLotFromSku(
       client,
-      targetLocationId,
+      targetLocation.location_id,
       {
         skuId: sourceLot.skuId,
         batchNo: sourceLot.batchNo,
@@ -1642,7 +1724,7 @@ async function approveDoc(ctx) {
   await pg.transaction(async (client) => {
     await assertWorkfineInventoryInitialized(client)
     const headRes = await client.query(
-      `SELECT id, doc_type, status, source_location_id, target_location_id, market_id,
+      `SELECT id, doc_type, status, source_org_node_id, target_org_node_id, market_id,
               total_quantity, related_sale_order_id
          FROM inventory_docs
         WHERE id = $1
@@ -1652,8 +1734,9 @@ async function approveDoc(ctx) {
     )
     const head = headRes.rows[0]
     if (!head) throw new Error('NOT_FOUND: 单据不存在')
-    const acting = head.source_location_id || head.target_location_id
-    await assertApproverStoreScope(client, ctx.auth, acting)
+    const acting = head.source_org_node_id || head.target_org_node_id
+    const actingStore = await ensureStoreLocation(acting)
+    await assertApproverStoreScope(client, ctx.auth, actingStore.location_id)
     if (head.status !== '待审批') throw new Error('INVALID_STATE: 只有待审批单据可以审批')
     const direction = approvalMovementDirection(head.doc_type)
     if (!direction) throw new Error('INVALID_STATE: 该单据类型不需要审批')
@@ -1668,9 +1751,10 @@ async function approveDoc(ctx) {
      ORDER BY id`,
       [id],
     )
+    const sourceLocation = await ensureStoreLocation(head.source_org_node_id)
     for (const item of itemRes.rows) {
       if (!item.lot_id) throw new Error('INVALID_STATE: 审批出库明细缺少库存批次')
-      const lot = await lockInventoryLotById(client, Number(item.lot_id), head.source_location_id)
+      const lot = await lockInventoryLotById(client, Number(item.lot_id), sourceLocation.location_id)
       await applyInventoryMovement(client, {
         lot,
         docId: id,
@@ -1706,7 +1790,7 @@ async function rejectDoc(ctx) {
   await pg.transaction(async (client) => {
     await assertWorkfineInventoryInitialized(client)
     const headRes = await client.query(
-      `SELECT doc_type, source_location_id, target_location_id, status
+      `SELECT doc_type, source_org_node_id, target_org_node_id, status
          FROM inventory_docs
         WHERE id = $1
           AND doc_type = ANY($2::text[])
@@ -1715,8 +1799,9 @@ async function rejectDoc(ctx) {
     )
     const doc = headRes.rows[0]
     if (!doc) throw new Error('NOT_FOUND: 单据不存在')
-    const acting = doc.source_location_id || doc.target_location_id
-    await assertApproverStoreScope(client, ctx.auth, acting)
+    const acting = doc.source_org_node_id || doc.target_org_node_id
+    const actingStore = await ensureStoreLocation(acting)
+    await assertApproverStoreScope(client, ctx.auth, actingStore.location_id)
     if (doc.status !== '待审批') throw new Error('INVALID_STATE: 只有待审批单据可以驳回')
     if (!approvalMovementDirection(doc.doc_type)) throw new Error('INVALID_STATE: 该单据类型不需要审批')
     if (doc.doc_type === '院退货') {
@@ -1758,7 +1843,7 @@ async function confirmReceive(ctx) {
   await pg.transaction(async (client) => {
     await assertWorkfineInventoryInitialized(client)
     const headRes = await client.query(
-      `SELECT id, doc_type, status, source_location_id, target_location_id,
+      `SELECT id, doc_type, status, source_org_node_id, target_org_node_id,
               supplier_id, supplier_name, total_quantity, total_amount, market_id, remark
          FROM inventory_docs
         WHERE id = $1
@@ -1769,23 +1854,26 @@ async function confirmReceive(ctx) {
     const head = headRes.rows[0]
     if (!head) throw new Error('NOT_FOUND: 待收货单据不存在')
     if (head.status !== '待收货') throw new Error('INVALID_STATE: 该单据不是待收货状态')
-    if (!head.target_location_id) throw new Error('INVALID_STATE: 待收货单据缺少入库门店')
-    await assertInventoryWriteStoreScope(client, ctx.auth, head.target_location_id)
-    await ensureStoreLocation(head.target_location_id)
+    if (!head.target_org_node_id) throw new Error('INVALID_STATE: 待收货单据缺少入库门店')
+    const sourceLocation = head.source_org_node_id
+      ? await ensureInventoryLocation(head.source_org_node_id)
+      : null
+    const targetLocation = await ensureStoreLocation(head.target_org_node_id)
+    await assertInventoryWriteStoreScope(client, ctx.auth, targetLocation.location_id)
     const inboundType = RECEIVE_INBOUND_TYPE[head.doc_type]
     if (!inboundType) throw new Error('INVALID_STATE: 该单据不支持收货')
     inboundDocId = await generateDocNo(client, inboundType)
     await client.query(
       `INSERT INTO inventory_docs (
-         id, doc_type, status, source_location_id, target_location_id, doc_date, total_quantity,
+         id, doc_type, status, source_org_node_id, target_org_node_id, doc_date, total_quantity,
          total_amount, market_id, remark, created_by, confirmed_by, confirmed_at
        )
        VALUES ($1,$2,'已完成',$3,$4,$5,$6,$7,$8,$9,$10,$10,NOW())`,
       [
         inboundDocId,
         inboundType,
-        head.source_location_id,
-        head.target_location_id,
+        head.source_org_node_id,
+        head.target_org_node_id,
         shanghaiToday(),
         head.total_quantity,
         head.total_amount,
@@ -1809,8 +1897,8 @@ async function confirmReceive(ctx) {
     for (const item of itemRes.rows) {
       const sourceLot = item.lot_id == null
         ? null
-        : await lockInventoryLotById(client, Number(item.lot_id), head.source_location_id)
-      const lot = await ensureInventoryLotFromSku(client, head.target_location_id, {
+        : await lockInventoryLotById(client, Number(item.lot_id), sourceLocation.location_id)
+      const lot = await ensureInventoryLotFromSku(client, targetLocation.location_id, {
         skuId: item.sku_id,
         batchNo: item.batch_no,
         expiryDate: item.expiry_date,
@@ -1913,7 +2001,7 @@ async function uploadReceipt(ctx) {
   if (!id || !fileBase64) throw new Error('INVALID_PARAMS: 缺少单据号或附件内容')
   await syncInventoryLocations()
   const rows = await pg.query(
-    `SELECT source_location_id, target_location_id
+    `SELECT source_org_node_id, target_org_node_id
        FROM inventory_docs
       WHERE id = $1
         AND doc_type = ANY($2::text[])
@@ -1921,9 +2009,15 @@ async function uploadReceipt(ctx) {
     [id, STAFF_VISIBLE_DOC_TYPE_LIST],
   )
   if (rows.length === 0) throw new Error('NOT_FOUND: 单据不存在')
+  const storeLocations = await pg.query(
+    `SELECT location_id
+       FROM inventory_locations
+      WHERE location_type = '门店'
+        AND org_node_id = ANY($1::text[])`,
+    [[rows[0].source_org_node_id, rows[0].target_org_node_id].filter(Boolean)],
+  )
   await assertAnyInventoryWriteStoreScope(pg, ctx.auth, [
-    rows[0].source_location_id,
-    rows[0].target_location_id,
+    ...storeLocations.map((row) => row.location_id),
   ])
   const safeExt = String(ext).toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) || 'jpg'
   const buffer = Buffer.from(String(fileBase64).replace(/^data:image\/\w+;base64,/, ''), 'base64')
@@ -1945,6 +2039,7 @@ module.exports = {
   stockList,
   reportableSkuOptions,
   storeOptions,
+  docOrgOptions,
   docList,
   docDetail,
   createDoc,

@@ -5079,9 +5079,21 @@ async function createPickupInventoryDoc(client, ctx, updatedItem, requirements, 
   }
 
   const docId = await generatePickupInventoryDocNo(client)
+  const locationRows = await client.query(
+    `SELECT org_node_id
+       FROM inventory_locations
+      WHERE location_id = $1
+        AND is_active = true
+      LIMIT 1`,
+    [ctx.auth.effectiveStoreId],
+  )
+  const sourceOrgNodeId = locationRows.rows[0]?.org_node_id
+  if (!sourceOrgNodeId) {
+    throw new Error('INVALID_STATE: 提货门店没有有效组织节点')
+  }
   await client.query(
     `INSERT INTO inventory_docs (
-       id, doc_type, status, source_location_id, doc_date, total_quantity,
+       id, doc_type, status, source_org_node_id, doc_date, total_quantity,
        related_sale_order_id, client_user_id, customer_name,
        remark, created_by, confirmed_by, confirmed_at
      )
@@ -5089,7 +5101,7 @@ async function createPickupInventoryDoc(client, ctx, updatedItem, requirements, 
              $5, $6, $7, $8, $9, $9, NOW())`,
     [
       docId,
-      ctx.auth.effectiveStoreId,
+      sourceOrgNodeId,
       shanghaiDateStr(),
       requirements.reduce((sum, requirement) => sum + requirement.quantity, 0),
       updatedItem.sale_order_id,

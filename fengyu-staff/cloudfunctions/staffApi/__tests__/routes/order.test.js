@@ -6810,6 +6810,9 @@ describe('order.createPickup', () => {
           if (/SELECT id FROM inventory_docs/.test(sql)) {
             return { rows: [], rowCount: 0 }
           }
+          if (/SELECT org_node_id/.test(sql) && /FROM inventory_locations/.test(sql)) {
+            return { rows: [{ org_node_id: 'org-node-store-001' }], rowCount: 1 }
+          }
           if (/INSERT INTO inventory_doc_items/.test(sql)) {
             return { rows: [{ id: 10 }], rowCount: 1 }
           }

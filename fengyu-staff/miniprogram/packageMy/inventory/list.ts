@@ -30,14 +30,23 @@ interface InventoryRow {
   docType: string
   status: string
   statusKey?: string
-  sourceLocationId: string | null
-  sourceLocationName: string | null
-  targetLocationId: string | null
-  targetLocationName: string | null
+  sourceOrgNodeId: string | null
+  sourceOrgNodeName: string | null
+  targetOrgNodeId: string | null
+  targetOrgNodeName: string | null
   docDate: string
   totalQuantity: number
   customerName?: string | null
   employeeName?: string | null
+}
+
+interface OrgNodeOption {
+  orgNodeId: string
+  parentOrgNodeId: string | null
+  orgNodeType: '总部' | '市场' | '门店'
+  name: string
+  isActive: boolean
+  label: string
 }
 
 const STATUS_KEY_MAP: Record<string, string> = {
@@ -63,6 +72,9 @@ Page({
     subtypeFilter: '',
     statusFilter: '',
     keyword: '',
+    orgNodeOptions: [] as OrgNodeOption[],
+    selectedOrgNodeIndex: -1,
+    selectedOrgNodeId: '',
     items: [] as InventoryRow[],
     total: 0,
     page: 1,
@@ -86,7 +98,7 @@ Page({
       statusFilter: query.status ? decodeURIComponent(query.status) : '',
     })
     wx.setNavigationBarTitle({ title })
-    this.refresh()
+    this.initialize()
   },
 
   onShow() {
@@ -100,6 +112,20 @@ Page({
   async refresh() {
     this.setData({ items: [], page: 1, hasMore: true })
     await this.loadPage()
+  },
+
+  async initialize() {
+    try {
+      const res = await callStaffApi<{ items: Omit<OrgNodeOption, 'label'>[] }>('inventory.docOrgOptions')
+      const orgNodeOptions = (res.items || []).map((item) => ({
+        ...item,
+        label: `${item.orgNodeType} · ${item.name}${item.isActive ? '' : '（已停用）'}`,
+      }))
+      this.setData({ orgNodeOptions })
+    } catch (err: any) {
+      wx.showToast({ title: err?.message || '加载组织范围失败', icon: 'none' })
+    }
+    await this.refresh()
   },
 
   async loadPage() {
@@ -120,6 +146,7 @@ Page({
         ...typeFilter,
         status: this.data.statusFilter || undefined,
         keyword: this.data.keyword || undefined,
+        orgNodeId: this.data.selectedOrgNodeId || undefined,
       })
       const merged = [...this.data.items, ...((res.items || []).map(withStatusKey))]
       this.setData({
@@ -152,6 +179,21 @@ Page({
   },
 
   onSearchConfirm() {
+    this.refresh()
+  },
+
+  onOrgNodeChange(e: WechatMiniprogram.PickerChange) {
+    const index = Number(e.detail.value)
+    const selected = this.data.orgNodeOptions[index]
+    this.setData({
+      selectedOrgNodeIndex: Number.isInteger(index) ? index : -1,
+      selectedOrgNodeId: selected?.orgNodeId || '',
+    })
+    this.refresh()
+  },
+
+  onClearOrgNode() {
+    this.setData({ selectedOrgNodeIndex: -1, selectedOrgNodeId: '' })
     this.refresh()
   },
 

@@ -95,6 +95,7 @@ const routes = {
   'inventory.stockList':  () => require('./routes/inventory').stockList,
   'inventory.reportableSkuOptions': () => require('./routes/inventory').reportableSkuOptions,
   'inventory.storeOptions': () => require('./routes/inventory').storeOptions,
+  'inventory.docOrgOptions': () => require('./routes/inventory').docOrgOptions,
   'inventory.docList':    () => require('./routes/inventory').docList,
   'inventory.docDetail':  () => require('./routes/inventory').docDetail,
   'inventory.createDoc':  () => require('./routes/inventory').createDoc,

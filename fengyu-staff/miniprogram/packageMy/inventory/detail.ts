@@ -38,10 +38,10 @@ interface InventoryDetail {
   docType: string
   status: string
   statusKey?: string
-  sourceLocationId: string | null
-  sourceLocationName: string | null
-  targetLocationId: string | null
-  targetLocationName: string | null
+  sourceOrgNodeId: string | null
+  sourceOrgNodeName: string | null
+  targetOrgNodeId: string | null
+  targetOrgNodeName: string | null
   docDate: string
   totalQuantity: number
   remark: string | null

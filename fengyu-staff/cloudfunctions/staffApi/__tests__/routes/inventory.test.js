@@ -78,8 +78,8 @@ describe('inventory.createDoc 权限与状态', () => {
     const ctx = createCtx({
       payload: {
         docType: '分院调货出库',
-        sourceLocationId: 'store-B',
-        targetLocationId: 'store-A',
+        sourceOrgNodeId: 'store-B',
+        targetOrgNodeId: 'store-A',
         items: [{ lotId: 10, skuId: 'sku-1', quantity: 1 }],
       },
       auth: {
@@ -92,9 +92,17 @@ describe('inventory.createDoc 权限与状态', () => {
         effectiveStoreId: 'store-A',
       },
     })
-    pg.query.mockImplementation(async (query) => (
-      String(query).includes('WITH RECURSIVE descendants') ? [{ store_id: 'store-A' }] : []
-    ))
+    pg.query.mockImplementation(async (query, params) => {
+      const sql = String(query)
+      if (sql.includes('WITH RECURSIVE descendants')) return [{ store_id: 'store-A' }]
+      if (sql.includes('SELECT location_id, location_type, parent_location_id')) {
+        return [{
+          location_id: params[0], org_node_id: params[0], location_type: '门店',
+          parent_location_id: 'market-A', is_active: true,
+        }]
+      }
+      return []
+    })
 
     await expect(inventoryRoutes.createDoc(ctx)).rejects.toThrow(
       'PERMISSION_DENIED: 无权操作该门店库存',
@@ -115,6 +123,14 @@ describe('inventory.createDoc 权限与状态', () => {
         scopeStoreIds: ['store-001'],
       },
     })
+    pg.query.mockImplementation(async (query, params) => (
+      String(query).includes('SELECT location_id, location_type, parent_location_id')
+        ? [{
+            location_id: params[0], org_node_id: params[0], location_type: '门店',
+            parent_location_id: 'market-A', is_active: true,
+          }]
+        : []
+    ))
 
     await expect(inventoryRoutes.createDoc(ctx)).rejects.toThrow(
       'PERMISSION_DENIED: 无库存写入权限',
@@ -127,8 +143,8 @@ describe('inventory.createDoc 权限与状态', () => {
       payload: {
         docType: '分院调货出库',
         status: '已完成',
-        sourceLocationId: 'store-A',
-        targetLocationId: 'store-B',
+        sourceOrgNodeId: 'node-store-A',
+        targetOrgNodeId: 'node-store-B',
         items: [{ lotId: 10, skuId: 'sku-1', quantity: 2 }],
       },
       auth: {
@@ -138,13 +154,17 @@ describe('inventory.createDoc 权限与状态', () => {
         effectiveStoreId: null,
       },
     })
-    pg.query.mockImplementation(async (query) => {
+    pg.query.mockImplementation(async (query, params) => {
       const sql = String(query)
       if (sql.includes('SELECT store_id FROM stores')) {
         return [{ store_id: 'store-A' }, { store_id: 'store-B' }]
       }
       if (sql.includes('SELECT location_id, location_type, parent_location_id')) {
-        return [{ location_id: 'store-A', location_type: '门店', parent_location_id: 'market-A' }]
+        const storeId = params[0] === 'node-store-A' ? 'store-A' : 'store-B'
+        return [{
+          location_id: storeId, org_node_id: params[0], location_type: '门店',
+          parent_location_id: 'market-A', is_active: true,
+        }]
       }
       if (sql.includes('WHERE s.location_id = ANY')) {
         return [
@@ -199,8 +219,8 @@ describe('inventory.createDoc 权限与状态', () => {
     ))
     expect(insertDocCall[1][1]).toBe('分院调货出库')
     expect(insertDocCall[1][2]).toBe('待收货')
-    expect(insertDocCall[1][3]).toBe('store-A')
-    expect(insertDocCall[1][4]).toBe('store-B')
+    expect(insertDocCall[1][3]).toBe('node-store-A')
+    expect(insertDocCall[1][4]).toBe('node-store-B')
     expect(insertDocCall[1][17]).toBe('emp-001')
     expect(insertDocCall[1][19]).toBe(true)
 
@@ -217,8 +237,8 @@ describe('inventory.createDoc 权限与状态', () => {
     const ctx = createCtx({
       payload: {
         docType: '分院调货出库',
-        sourceLocationId: 'store-A',
-        targetLocationId: 'store-B',
+        sourceOrgNodeId: 'store-A',
+        targetOrgNodeId: 'store-B',
         items: [{ lotId: 10, skuId: 'sku-1', quantity: 2 }],
       },
       auth: {
@@ -228,13 +248,16 @@ describe('inventory.createDoc 权限与状态', () => {
         effectiveStoreId: null,
       },
     })
-    pg.query.mockImplementation(async (query) => {
+    pg.query.mockImplementation(async (query, params) => {
       const sql = String(query)
       if (sql.includes('SELECT store_id FROM stores')) {
         return [{ store_id: 'store-A' }, { store_id: 'store-B' }]
       }
       if (sql.includes('SELECT location_id, location_type, parent_location_id')) {
-        return [{ location_id: 'store-A', location_type: '门店', parent_location_id: 'market-A' }]
+        return [{
+          location_id: params[0], org_node_id: params[0], location_type: '门店',
+          parent_location_id: 'market-A', is_active: true,
+        }]
       }
       if (sql.includes('WHERE s.location_id = ANY')) {
         return [
@@ -296,8 +319,8 @@ describe('inventory.createDoc 权限与状态', () => {
     const ctx = createCtx({
       payload: {
         docType: '院退货',
-        sourceLocationId: 'store-A',
-        targetLocationId: 'market-spoofed',
+        sourceOrgNodeId: 'store-A',
+        targetOrgNodeId: 'market-spoofed',
         status: '已完成',
         items: [{ lotId: 10, skuId: 'sku-1', quantity: 2 }],
       },
@@ -375,7 +398,7 @@ describe('inventory.createDoc 权限与状态', () => {
     const ctx = createCtx({
       payload: {
         docType: '院顾客退货',
-        targetLocationId: 'store-B',
+        targetOrgNodeId: 'store-B',
         items: [{ skuId: 'self-sku-A', quantity: 1 }],
       },
       auth: {
@@ -442,9 +465,9 @@ describe('inventory.createDoc 权限与状态', () => {
     const ctx = createCtx({
       payload: {
         docType: '门店报货',
-        sourceLocationId: 'store-001',
+        sourceOrgNodeId: 'store-001',
         // 客户端即使带入错误接收主体，也必须以门店所属市场为准。
-        targetLocationId: 'market-spoofed',
+        targetOrgNodeId: 'market-spoofed',
         items: [{ skuId: 'sku-1', quantity: 2 }],
       },
     })
@@ -491,7 +514,7 @@ describe('inventory.createDoc 权限与状态', () => {
     const ctx = createCtx({
       payload: {
         docType: '分院调货出库',
-        sourceLocationId: 'store-001',
+        sourceOrgNodeId: 'store-001',
         items: [{ lotId: 10, skuId: 'sku-1', quantity: 1 }],
       },
     })
@@ -505,7 +528,7 @@ describe('inventory.createDoc 权限与状态', () => {
     const ctx = createCtx({
       payload: {
         docType: '院产品报损',
-        sourceLocationId: 'store-001',
+        sourceOrgNodeId: 'store-001',
         items: [{ lotId: 10, skuId: 'sku-1', quantity: 1 }],
       },
     })
@@ -520,7 +543,7 @@ describe('inventory.createDoc 权限与状态', () => {
     const ctx = createCtx({
       payload: {
         docType: '门店报货',
-        sourceLocationId: 'store-001',
+        sourceOrgNodeId: 'store-001',
         items: [{ skuId: 'sku-1', quantity: 1, actualUnitPrice: 99 }],
       },
     })
@@ -535,7 +558,7 @@ describe('inventory.createDoc 权限与状态', () => {
     const ctx = createCtx({
       payload: {
         docType: '门店报货',
-        sourceLocationId: 'store-001',
+        sourceOrgNodeId: 'store-001',
         items: [{
           skuId: 'sku-1',
           quantity: 1,
@@ -580,7 +603,7 @@ describe('inventory WorkFine 切流门禁', () => {
     const ctx = createCtx({
       payload: {
         docType: '门店报货',
-        sourceLocationId: 'store-001',
+        sourceOrgNodeId: 'store-001',
         items: [{ skuId: 'sku-1', quantity: 1 }],
       },
     })
@@ -675,7 +698,7 @@ describe('inventory 办理选项无金额响应', () => {
   })
 
   test('storeOptions 只允许有发起门店写权限的员工查询同市场接收门店', async () => {
-    const ctx = createCtx({ payload: { sourceLocationId: 'store-001' } })
+    const ctx = createCtx({ payload: { sourceStoreId: 'store-001' } })
     pg.query.mockImplementation(async (query) => {
       const sql = String(query)
       if (sql.includes('WITH RECURSIVE descendants')) return [{ store_id: 'store-001' }]
@@ -683,7 +706,7 @@ describe('inventory 办理选项无金额响应', () => {
         return [{ location_id: 'store-001', location_type: '门店', parent_location_id: 'market-A' }]
       }
       if (sql.includes('JOIN stores s ON s.store_id = loc.store_id')) {
-        return [{ location_id: 'store-002', name: '同市场门店' }]
+        return [{ location_id: 'store-002', org_node_id: 'node-store-002', name: '同市场门店' }]
       }
       return []
     })
@@ -691,7 +714,7 @@ describe('inventory 办理选项无金额响应', () => {
     await inventoryRoutes.storeOptions(ctx)
 
     expect(ctx.result).toEqual({
-      items: [{ storeId: 'store-002', storeName: '同市场门店' }],
+      items: [{ storeId: 'store-002', orgNodeId: 'node-store-002', storeName: '同市场门店' }],
     })
     const storeCall = pg.query.mock.calls.find(([sql]) => String(sql).includes('JOIN stores s ON s.store_id = loc.store_id'))
     expect(storeCall[0]).toMatch(/loc\.parent_location_id = \$1/)
@@ -734,12 +757,20 @@ describe('inventory.approveDoc / rejectDoc 审批一致性', () => {
           id: 'DOC-001',
           doc_type: '院退货',
           status: '待审批',
-          source_location_id: 'store-B',
-          target_location_id: null,
+          source_org_node_id: 'store-B',
+          target_org_node_id: null,
         }],
       },
       { rows: [{ store_id: 'store-A' }] },
     ])
+    pg.query.mockImplementation(async (query, params) => (
+      String(query).includes('SELECT location_id, location_type, parent_location_id')
+        ? [{
+            location_id: params[0], org_node_id: params[0], location_type: '门店',
+            parent_location_id: 'market-B', is_active: true,
+          }]
+        : []
+    ))
 
     await expect(inventoryRoutes.approveDoc(ctx)).rejects.toThrow(
       'PERMISSION_DENIED: 无权审批该门店库存单据',
@@ -759,9 +790,19 @@ describe('inventory.approveDoc / rejectDoc 审批一致性', () => {
         effectiveStoreId: null,
       },
     })
-    pg.query.mockImplementation(async (query) => (
-      String(query).includes('WITH RECURSIVE descendants') ? [{ store_id: 'store-A' }] : []
-    ))
+    pg.query.mockImplementation(async (query, params) => {
+      const sql = String(query)
+      if (sql.includes('WITH RECURSIVE descendants')) return [{ store_id: 'store-A' }]
+      if (sql.includes('SELECT location_id, location_type, parent_location_id')) {
+        const isMarket = params[0] === 'market-A'
+        return [{
+          location_id: params[0], org_node_id: params[0],
+          location_type: isMarket ? '市场' : '门店',
+          parent_location_id: isMarket ? 'HQ' : 'market-A', is_active: true,
+        }]
+      }
+      return []
+    })
     let client
     pg.transaction.mockImplementationOnce(async (cb) => {
       client = {
@@ -778,8 +819,8 @@ describe('inventory.approveDoc / rejectDoc 审批一致性', () => {
                 id: 'YTH-001',
                 doc_type: '院退货',
                 status: '待审批',
-                source_location_id: 'store-A',
-                target_location_id: 'market-A',
+                source_org_node_id: 'store-A',
+                target_org_node_id: 'market-A',
                 market_id: 'market-A',
                 total_quantity: '2',
               }],
@@ -903,11 +944,19 @@ describe('inventory.approveDoc / rejectDoc 审批一致性', () => {
       },
     })
     const client = mockTransactionClient([
-      { rows: [{ doc_type: '院退货', source_location_id: 'store-001', target_location_id: null, status: '待审批' }] },
+      { rows: [{ doc_type: '院退货', source_org_node_id: 'store-001', target_org_node_id: null, status: '待审批' }] },
       { rows: [{ store_id: 'store-001' }] },
       { rows: [], rowCount: 1 },
       { rows: [], rowCount: 1 },
     ])
+    pg.query.mockImplementation(async (query, params) => (
+      String(query).includes('SELECT location_id, location_type, parent_location_id')
+        ? [{
+            location_id: params[0], org_node_id: params[0], location_type: '门店',
+            parent_location_id: 'market-A', is_active: true,
+          }]
+        : []
+    ))
 
     await inventoryRoutes.rejectDoc(ctx)
 
@@ -934,9 +983,17 @@ describe('inventory.approveDoc / rejectDoc 审批一致性', () => {
       },
     })
     const client = mockTransactionClient([
-      { rows: [{ doc_type: '院退货', source_location_id: 'store-001', target_location_id: null, status: '已完成' }] },
+      { rows: [{ doc_type: '院退货', source_org_node_id: 'store-001', target_org_node_id: null, status: '已完成' }] },
       { rows: [{ store_id: 'store-001' }] },
     ])
+    pg.query.mockImplementation(async (query, params) => (
+      String(query).includes('SELECT location_id, location_type, parent_location_id')
+        ? [{
+            location_id: params[0], org_node_id: params[0], location_type: '门店',
+            parent_location_id: 'market-A', is_active: true,
+          }]
+        : []
+    ))
 
     await expect(inventoryRoutes.rejectDoc(ctx)).rejects.toThrow(
       'INVALID_STATE: 只有待审批单据可以驳回',
@@ -969,8 +1026,8 @@ describe('inventory.confirmReceive v3 收货', () => {
           id: 'OUT-001',
           doc_type: '分院配货',
           status: '待收货',
-          source_location_id: 'store-A',
-          target_location_id: 'store-B',
+          source_org_node_id: 'store-A',
+          target_org_node_id: 'store-B',
           total_quantity: '2',
           remark: '原单备注',
         }],
@@ -1008,8 +1065,8 @@ describe('inventory.docList / docDetail v3 契约', () => {
       if (sql.includes('FROM inventory_docs d')) {
         return [{
           id: 'DBH-260809-0001', doc_type: '门店报货', status: '草稿',
-          source_location_id: 'store-001', source_location_name: '测试店', source_location_type: '门店',
-          target_location_id: null, target_location_name: null, target_location_type: null,
+          source_org_node_id: 'store-001', source_location_name: '测试店', source_location_type: '门店',
+          target_org_node_id: null, target_location_name: null, target_location_type: null,
           doc_date: '2026-08-09', total_quantity: '2', related_sale_order_id: null, customer_name: null,
           employee_name: null, supplier_name: null, logistics_company: null,
           tracking_no: null, remark: null, created_at: '2026-08-09T00:00:00Z', updated_at: '2026-08-09T00:00:00Z',
@@ -1022,8 +1079,8 @@ describe('inventory.docList / docDetail v3 契约', () => {
 
     expect(ctx.result.items[0]).toMatchObject({
       docType: '门店报货',
-      sourceLocationName: '测试店',
-      targetLocationName: null,
+      sourceOrgNodeName: '测试店',
+      targetOrgNodeName: null,
     })
     expect(pg.query.mock.calls.some(([sql]) => /FROM inventory_docs d/.test(sql))).toBe(true)
   })
@@ -1045,8 +1102,8 @@ describe('inventory.docList / docDetail v3 契约', () => {
       if (sql.includes('FROM inventory_docs d')) {
         return [{
           id: 'DOC-004', doc_type: '院顾客产品出库', status: '已完成',
-          source_location_id: 'store-001', source_location_name: '测试店', source_location_type: '门店',
-          target_location_id: null, target_location_name: null, target_location_type: null,
+          source_org_node_id: 'store-001', source_location_name: '测试店', source_location_type: '门店',
+          target_org_node_id: null, target_location_name: null, target_location_type: null,
           doc_date: '2026-08-09', related_sale_order_id: 'FY-001', customer_name: '顾客A', employee_name: null,
           supplier_name: null, logistics_company: null, tracking_no: null, total_quantity: '2',
           remark: null, audit_remark: null, confirmed_at: null, approved_at: null,
@@ -1058,7 +1115,7 @@ describe('inventory.docList / docDetail v3 契约', () => {
 
     await inventoryRoutes.docDetail(ctx)
 
-    expect(ctx.result).toMatchObject({ docType: '院顾客产品出库', sourceLocationName: '测试店' })
+    expect(ctx.result).toMatchObject({ docType: '院顾客产品出库', sourceOrgNodeName: '测试店' })
     expect(ctx.result.items[0]).toMatchObject({ lotId: 11, skuId: 'sku-1', skuName: '测试商品' })
     expect(JSON.stringify(ctx.result)).not.toMatch(/actualUnitPrice|amount|price|cost/i)
   })
