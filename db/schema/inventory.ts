@@ -54,6 +54,10 @@ export const inventorySkus = pgTable(
       precision: 12,
       scale: 2,
     }),
+    /** 供应链 SKU 的市场进货价来源；非供应链 SKU 不使用该字段。 */
+    marketPurchasePriceMode: text('market_purchase_price_mode'),
+    /** 手工覆盖公式价时必填，历史/接口操作同时写入操作日志。 */
+    marketPurchasePriceOverrideReason: text('market_purchase_price_override_reason'),
     storePurchasePrice: numeric('store_purchase_price', {
       precision: 12,
       scale: 2,
@@ -106,6 +110,44 @@ export const inventorySkus = pgTable(
        AND COALESCE(${table.storePurchasePrice}, 0) >= 0
        AND COALESCE(${table.marketStaffPurchasePrice}, 0) >= 0
        AND COALESCE(${table.itemCompanyPurchasePrice}, 0) >= 0`,
+    ),
+    check(
+      'chk_inventory_skus_market_price_mode',
+      sql`(
+        ${table.sourceType} = '供应链'
+        AND ${table.marketPurchasePriceMode} IN ('公式','手工覆盖')
+      ) OR (
+        ${table.sourceType} <> '供应链'
+        AND ${table.marketPurchasePriceMode} IS NULL
+        AND ${table.marketPurchasePriceOverrideReason} IS NULL
+      )`,
+    ),
+    check(
+      'chk_inventory_skus_market_price_override',
+      sql`${table.marketPurchasePriceMode} <> '手工覆盖'
+        OR (
+          ${table.marketPurchasePrice} IS NOT NULL
+          AND NULLIF(BTRIM(${table.marketPurchasePriceOverrideReason}), '') IS NOT NULL
+        )`,
+    ),
+    check(
+      'chk_inventory_skus_market_price_formula',
+      sql`${table.marketPurchasePriceMode} <> '公式'
+        OR (
+          ${table.marketPurchasePriceOverrideReason} IS NULL
+          AND (
+            ${table.accountingPrice} IS NULL
+            OR ${table.marketPurchaseDiscount} IS NULL
+            OR ${table.marketPurchasePrice} = ROUND(
+              ${table.accountingPrice} * CASE
+                WHEN ${table.marketPurchaseDiscount} > 1
+                  THEN ${table.marketPurchaseDiscount} / 100
+                ELSE ${table.marketPurchaseDiscount}
+              END,
+              2
+            )
+          )
+        )`,
     ),
   ],
 )
@@ -455,7 +497,7 @@ export const inventoryDocs = pgTable(
         '门店报货','市场报货','品项公司报货需求','采购订单','供应链采购订单',
         '供应链采购入库','品项公司发货','市场采购入库','自采产品入库','分院配货',
         '院入库','分院调货出库','分院调货入库','市场间调货出库','市场间调货入库',
-        '员工购出库','内部领用','非凤御市场出库','市场退货','市场退货入库',
+        '员工购出库','供应链员工购出库','内部领用','非凤御市场出库','市场退货','市场退货入库',
         '供应链退货入库','院退货','院顾客产品出库','院顾客退货','市场产品报损',
         '院产品报损','市场产品盘溢','市场库存盘点','分院库存盘点','库存转换出库',
         '库存转换入库','期初库存'

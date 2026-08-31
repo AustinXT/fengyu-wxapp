@@ -4,6 +4,11 @@ export type InventoryLocationType = (typeof INVENTORY_LOCATION_TYPES)[number]
 export const INVENTORY_SKU_SOURCE_TYPES = ['供应链', '市场自采', '转让店'] as const
 export type InventorySkuSourceType = (typeof INVENTORY_SKU_SOURCE_TYPES)[number]
 
+export const INVENTORY_MARKET_PRICE_MODES = ['公式', '手工覆盖'] as const
+export type InventoryMarketPriceMode = (typeof INVENTORY_MARKET_PRICE_MODES)[number]
+
+export type InventoryPriceVisibility = 'all' | 'supply_chain' | 'market' | 'none'
+
 export const INVENTORY_PROMOTION_RULE_TYPES = ['单品阶梯', '组合'] as const
 export type InventoryPromotionRuleType = (typeof INVENTORY_PROMOTION_RULE_TYPES)[number]
 
@@ -24,6 +29,7 @@ export const INVENTORY_DOC_TYPES = [
   '市场间调货出库',
   '市场间调货入库',
   '员工购出库',
+  '供应链员工购出库',
   '内部领用',
   '非凤御市场出库',
   '市场退货',
@@ -85,6 +91,8 @@ export interface InventorySkuInput {
   accountingPrice?: number | null
   supplyChainPurchasePrice?: number | null
   marketPurchasePrice?: number | null
+  marketPurchasePriceMode?: InventoryMarketPriceMode | null
+  marketPurchasePriceOverrideReason?: string | null
   storePurchasePrice?: number | null
   marketStaffPurchasePrice?: number | null
   marketPurchaseDiscount?: number | null
@@ -112,6 +120,8 @@ export interface InventorySkuRow extends Required<Pick<InventorySkuInput, 'produ
   accountingPrice: number | null
   supplyChainPurchasePrice: number | null
   marketPurchasePrice: number | null
+  marketPurchasePriceMode: InventoryMarketPriceMode | null
+  marketPurchasePriceOverrideReason: string | null
   storePurchasePrice: number | null
   marketStaffPurchasePrice: number | null
   marketPurchaseDiscount: number | null

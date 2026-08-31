@@ -17,6 +17,7 @@ vi.mock('@/db', () => ({ db: mockDb }))
 vi.mock('@/lib/auth', () => ({ getSession: vi.fn() }))
 vi.mock('@/lib/permissions', () => ({
   isAdminScope: vi.fn((session) => session.roles.some((role: { role: string }) => role.role === 'admin')),
+  requireAnyPermission: vi.fn(),
   requirePermission: vi.fn(),
 }))
 vi.mock('@/lib/inventory/engine', () => mockEngine)

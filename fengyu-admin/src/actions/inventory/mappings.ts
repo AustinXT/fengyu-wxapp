@@ -21,11 +21,11 @@ export const listInventorySkuCompositionOptions = withPermission(
 )
 
 export const createInventorySkuComposition = withPermission(
-  'inventory:create',
+  'inventory:supply_chain_master_data_manage',
   async (_session, input: InventoryCompositionInput) => createInventorySkuCompositionImpl(input),
 )
 
 export const updateInventorySkuComposition = withPermission(
-  'inventory:update',
+  'inventory:supply_chain_master_data_manage',
   async (_session, input: InventoryCompositionInput) => updateInventorySkuCompositionImpl(input),
 )

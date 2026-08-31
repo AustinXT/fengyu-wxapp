@@ -28,6 +28,7 @@ import { DataTable, type Column } from '@/components/ui/data-table'
 import { Dialog, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import InventoryLocationFilter from '@/components/inventory-location-filter'
 import { Input } from '@/components/ui/input'
+import { DatePicker } from '@/components/ui/date-picker'
 import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
@@ -43,6 +44,7 @@ const SOURCE_LOT_DOC_TYPES = new Set<InventoryDocType>([
   '分院调货出库',
   '市场间调货出库',
   '员工购出库',
+  '供应链员工购出库',
   '内部领用',
   '非凤御市场出库',
   '市场退货',
@@ -421,7 +423,7 @@ function CreateDocDialog({
               <option key={type} value={type}>{type}</option>
             ))}
           </Select>
-          <Input type="date" value={docDate} onChange={(e) => setDocDate(e.target.value)} />
+          <DatePicker value={docDate} onValueChange={setDocDate} />
           <Select
             value={sourceLocationId}
             onChange={(e) => {
@@ -492,7 +494,7 @@ function CreateDocDialog({
                 ))}
               </Select>
               <Input placeholder="批号" value={item.batchNo} onChange={(e) => updateItem(index, { batchNo: e.target.value })} />
-              <Input type="date" value={item.expiryDate} onChange={(e) => updateItem(index, { expiryDate: e.target.value })} />
+              <DatePicker value={item.expiryDate} onValueChange={(value) => updateItem(index, { expiryDate: value })} />
               <Input placeholder="数量" value={item.quantity} onChange={(e) => updateItem(index, { quantity: e.target.value })} />
               <Input placeholder="原因" value={item.reason} onChange={(e) => updateItem(index, { reason: e.target.value })} />
               <Button

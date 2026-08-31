@@ -9,7 +9,7 @@ import {
   rejectInventoryCoreDoc as rejectInventoryCoreDocImpl,
 } from '@/lib/inventory/engine'
 import type { CreateInventoryDocInput, InventoryCoreDocStatus, InventoryDocType, InventoryLocationType } from '@/lib/inventory/types'
-import { withPermission } from '@/lib/with-permission'
+import { withAnyPermission, withPermission } from '@/lib/with-permission'
 
 export const listInventoryCoreDocs = withPermission(
   'inventory:list',
@@ -34,25 +34,25 @@ export const getInventoryCoreDocById = withPermission(
   async (_session, id: string) => getInventoryCoreDocByIdImpl(id),
 )
 
-export const createInventoryCoreDoc = withPermission(
-  'inventory:create_doc',
+export const createInventoryCoreDoc = withAnyPermission(
+  ['inventory:supply_chain_operate', 'inventory:market_operate', 'inventory:store_operate'],
   async (_session, input: CreateInventoryDocInput) => createInventoryCoreDocImpl(input),
 )
 
-export const approveInventoryCoreDoc = withPermission(
-  'inventory:approve',
+export const approveInventoryCoreDoc = withAnyPermission(
+  ['inventory:supply_chain_approve', 'inventory:market_approve'],
   async (_session, id: string, auditRemark?: string | null) =>
     approveInventoryCoreDocImpl(id, auditRemark),
 )
 
-export const rejectInventoryCoreDoc = withPermission(
-  'inventory:approve',
+export const rejectInventoryCoreDoc = withAnyPermission(
+  ['inventory:supply_chain_approve', 'inventory:market_approve'],
   async (_session, id: string, auditRemark?: string | null) =>
     rejectInventoryCoreDocImpl(id, auditRemark),
 )
 
-export const confirmInventoryCoreReceive = withPermission(
-  'inventory:create_doc',
+export const confirmInventoryCoreReceive = withAnyPermission(
+  ['inventory:market_operate', 'inventory:store_operate'],
   async (_session, outboundDocId: string, remark?: string | null) =>
     confirmInventoryCoreReceiveImpl(outboundDocId, remark),
 )

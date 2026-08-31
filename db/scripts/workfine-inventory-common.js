@@ -1203,11 +1203,12 @@ async function upsertSku(client, row) {
        sku_id, product_code, product_name, spec_name, supplier, manufacturer, brand,
        product_series, purchase_category, source_type, owner_market_id,
        retail_price, accounting_price, supply_chain_purchase_price, market_purchase_price,
+       market_purchase_price_mode, market_purchase_price_override_reason,
        store_purchase_price, market_staff_purchase_price, market_purchase_discount,
        store_purchase_discount, staff_purchase_discount, item_company_purchase_price,
        is_reportable, is_active, remark
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26
      )
      ON CONFLICT (product_code) DO UPDATE SET
        product_name = EXCLUDED.product_name,
@@ -1223,6 +1224,14 @@ async function upsertSku(client, row) {
        accounting_price = COALESCE(EXCLUDED.accounting_price, inventory_skus.accounting_price),
        supply_chain_purchase_price = COALESCE(EXCLUDED.supply_chain_purchase_price, inventory_skus.supply_chain_purchase_price),
        market_purchase_price = COALESCE(EXCLUDED.market_purchase_price, inventory_skus.market_purchase_price),
+       market_purchase_price_mode = CASE
+         WHEN EXCLUDED.source_type = '供应链' THEN EXCLUDED.market_purchase_price_mode
+         ELSE NULL
+       END,
+       market_purchase_price_override_reason = CASE
+         WHEN EXCLUDED.source_type = '供应链' THEN EXCLUDED.market_purchase_price_override_reason
+         ELSE NULL
+       END,
        store_purchase_price = COALESCE(EXCLUDED.store_purchase_price, inventory_skus.store_purchase_price),
        market_staff_purchase_price = COALESCE(EXCLUDED.market_staff_purchase_price, inventory_skus.market_staff_purchase_price),
        market_purchase_discount = COALESCE(EXCLUDED.market_purchase_discount, inventory_skus.market_purchase_discount),
@@ -1250,6 +1259,8 @@ async function upsertSku(client, row) {
       row.accountingPrice,
       row.supplyChainPurchasePrice,
       row.marketPurchasePrice,
+      row.sourceType === '供应链' && row.marketPurchasePrice !== null ? '手工覆盖' : row.sourceType === '供应链' ? '公式' : null,
+      row.sourceType === '供应链' && row.marketPurchasePrice !== null ? 'WorkFine 历史同步价格' : null,
       row.storePurchasePrice,
       row.marketStaffPurchasePrice,
       row.marketPurchaseDiscount,

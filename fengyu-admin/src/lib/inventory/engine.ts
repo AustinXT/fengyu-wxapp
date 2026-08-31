@@ -4,7 +4,7 @@ import { ApiError } from '@/lib/api-error'
 import { fmtDate, shanghaiToday, shanghaiYmd } from '@/lib/datetime'
 import { logOperation } from '@/lib/operation-log'
 import { hasPermission, isAdminScope } from '@/lib/permissions'
-import { withPermission } from '@/lib/with-permission'
+import { withAnyPermission, withPermission } from '@/lib/with-permission'
 import {
   offsetPageResult,
   resolveExportOffsetPage,
@@ -62,6 +62,7 @@ import {
   type InventorySupplierRow,
 } from './types'
 import { buildInventoryLocationFilterOptions } from './location-filter'
+import { inventoryPriceVisibility, inventoryScopedLocationIds } from './access'
 
 const sourceLocation = alias(inventoryLocations, 'source_loc')
 const targetLocation = alias(inventoryLocations, 'target_loc')
@@ -108,6 +109,7 @@ const DOC_PREFIX: Record<InventoryDocType, string> = {
   市场间调货出库: 'MTO',
   市场间调货入库: 'MTI',
   员工购出库: 'YGG',
+  供应链员工购出库: 'GYG',
   内部领用: 'NLY',
   非凤御市场出库: 'FFY',
   市场退货: 'MTH',
@@ -161,6 +163,7 @@ const INBOUND_DOC_TYPES = new Set<InventoryDocType>([
 ])
 const OUTBOUND_DOC_TYPES = new Set<InventoryDocType>([
   '员工购出库',
+  '供应链员工购出库',
   '内部领用',
   '非凤御市场出库',
   '市场退货',
@@ -195,6 +198,7 @@ const SPECIALIZED_DOC_TYPES = new Set<InventoryDocType>([
   '分院配货',
   '院入库',
   '员工购出库',
+  '供应链员工购出库',
   '非凤御市场出库',
   '市场退货',
   '市场退货入库',
@@ -293,7 +297,7 @@ function actingLocationIdForDoc(input: CreateInventoryDocInput): string | null {
 }
 
 function canViewPrice(session: AuthSession): boolean {
-  return hasPermission(session, 'inventory:price_view')
+  return inventoryPriceVisibility(session) !== 'none'
 }
 
 function assertPromotionPriceWritable(session: AuthSession): void {
@@ -321,14 +325,17 @@ function stripPriceInput(item: InventoryDocItemInput): InventoryDocItemInput {
 
 function skuPriceValues(
   input: Partial<InventorySkuInput>,
-  allowPriceInput: boolean,
+  priceVisibility: import('./types').InventoryPriceVisibility,
+  sourceType: InventorySkuSourceType,
   existing?: {
     accountingPrice: string | number | null
     marketPurchaseDiscount: string | number | null
     marketPurchasePrice: string | number | null
+    marketPurchasePriceMode: string | null
+    marketPurchasePriceOverrideReason: string | null
   },
 ) {
-  if (!allowPriceInput) {
+  if (priceVisibility === 'none') {
     return {
       retailPrice: undefined,
       accountingPrice: undefined,
@@ -340,6 +347,8 @@ function skuPriceValues(
       storePurchaseDiscount: undefined,
       staffPurchaseDiscount: undefined,
       itemCompanyPurchasePrice: undefined,
+      marketPurchasePriceMode: undefined,
+      marketPurchasePriceOverrideReason: undefined,
     }
   }
   const accountingPrice = input.accountingPrice === undefined ? undefined : numString(input.accountingPrice)
@@ -373,26 +382,52 @@ function skuPriceValues(
     }
   }
 
-  // 手填市场进货价优先；只有明确留空且公式完整时才使用派生值。
-  // 更新请求未包含市场进货价时保留历史值，避免编辑其他资料误覆盖 WorkFine 快照。
-  if (marketPurchasePriceInput !== undefined) {
-    marketPurchasePrice = marketPurchasePriceInput ?? calculatedMarketPurchasePrice
-  } else if (!existing) {
-    marketPurchasePrice = calculatedMarketPurchasePrice
-  } else if (existingMarketPurchasePrice === null && formulaChanged && calculatedMarketPurchasePrice !== null) {
-    marketPurchasePrice = calculatedMarketPurchasePrice
+  const marketPurchasePriceMode = sourceType === '供应链'
+    ? (input.marketPurchasePriceMode ?? existing?.marketPurchasePriceMode ?? '公式')
+    : null
+  if (sourceType === '供应链' && !['公式', '手工覆盖'].includes(String(marketPurchasePriceMode))) {
+    throw new ApiError('INVALID_PARAMS', '市场进货价来源必须是公式或手工覆盖')
   }
+  if (sourceType !== '供应链' && input.marketPurchasePriceMode != null) {
+    throw new ApiError('INVALID_PARAMS', '非供应链 SKU 不使用市场公式价模式')
+  }
+  const overrideReason = normalizeText(
+    input.marketPurchasePriceOverrideReason === undefined
+      ? existing?.marketPurchasePriceOverrideReason
+      : input.marketPurchasePriceOverrideReason,
+  )
+  if (sourceType === '供应链' && marketPurchasePriceMode === '手工覆盖') {
+    const manualPrice = marketPurchasePriceInput === undefined
+      ? existingMarketPurchasePrice
+      : numberOrNull(marketPurchasePriceInput)
+    if (manualPrice === null || !overrideReason) {
+      throw new ApiError('INVALID_PARAMS', '手工覆盖市场进货价必须填写价格和原因')
+    }
+    marketPurchasePrice = numString(manualPrice)
+  } else if (sourceType === '供应链') {
+    if (overrideReason) throw new ApiError('INVALID_PARAMS', '公式价不能填写手工覆盖原因')
+    marketPurchasePrice = calculatedMarketPurchasePrice
+      ?? (formulaChanged ? null : existingMarketPurchasePrice == null ? undefined : numString(existingMarketPurchasePrice))
+  } else if (marketPurchasePriceInput !== undefined) {
+    marketPurchasePrice = marketPurchasePriceInput
+  }
+  const supplyVisible = priceVisibility === 'all' || priceVisibility === 'supply_chain'
+  const marketVisible = priceVisibility === 'all' || priceVisibility === 'market'
   return {
-    retailPrice: input.retailPrice === undefined ? undefined : numString(input.retailPrice),
-    accountingPrice,
-    supplyChainPurchasePrice: input.supplyChainPurchasePrice === undefined ? undefined : numString(input.supplyChainPurchasePrice),
+    retailPrice: priceVisibility === 'all' ? (input.retailPrice === undefined ? undefined : numString(input.retailPrice)) : undefined,
+    accountingPrice: supplyVisible ? accountingPrice : undefined,
+    supplyChainPurchasePrice: supplyVisible && input.supplyChainPurchasePrice !== undefined ? numString(input.supplyChainPurchasePrice) : undefined,
     marketPurchasePrice,
-    storePurchasePrice: input.storePurchasePrice === undefined ? undefined : numString(input.storePurchasePrice),
-    marketStaffPurchasePrice: input.marketStaffPurchasePrice === undefined ? undefined : numString(input.marketStaffPurchasePrice),
+    storePurchasePrice: marketVisible && input.storePurchasePrice !== undefined ? numString(input.storePurchasePrice) : undefined,
+    marketStaffPurchasePrice: marketVisible && input.marketStaffPurchasePrice !== undefined ? numString(input.marketStaffPurchasePrice) : undefined,
     marketPurchaseDiscount,
-    storePurchaseDiscount: input.storePurchaseDiscount === undefined ? undefined : numString(input.storePurchaseDiscount),
-    staffPurchaseDiscount: input.staffPurchaseDiscount === undefined ? undefined : numString(input.staffPurchaseDiscount),
-    itemCompanyPurchasePrice: input.itemCompanyPurchasePrice === undefined ? undefined : numString(input.itemCompanyPurchasePrice),
+    storePurchaseDiscount: marketVisible && input.storePurchaseDiscount !== undefined ? numString(input.storePurchaseDiscount) : undefined,
+    staffPurchaseDiscount: marketVisible && input.staffPurchaseDiscount !== undefined ? numString(input.staffPurchaseDiscount) : undefined,
+    itemCompanyPurchasePrice: supplyVisible && input.itemCompanyPurchasePrice !== undefined ? numString(input.itemCompanyPurchasePrice) : undefined,
+    marketPurchasePriceMode: supplyVisible ? marketPurchasePriceMode : undefined,
+    marketPurchasePriceOverrideReason: supplyVisible && sourceType === '供应链' && marketPurchasePriceMode === '手工覆盖'
+      ? overrideReason
+      : supplyVisible ? null : undefined,
   }
 }
 
@@ -459,19 +494,7 @@ export async function syncInventoryLocations(): Promise<void> {
 }
 
 async function scopedLocationIds(session: AuthSession): Promise<string[] | null> {
-  if (isAdminScope(session) || session.roles.some((r) => r.scopeType === '总部')) {
-    return null
-  }
-
-  // withPermission 已按当前 action 收紧 roles 与 scopeStoreIds；库存直接消费同一份
-  // 组织 scope 解析结果，避免在库存域内再维护一套“市场直属门店”展开规则。
-  const ids = new Set(session.permissions.scopeStoreIds)
-  for (const role of session.roles) {
-    if (role.scopeType === '市场') {
-      ids.add(role.scopeId)
-    }
-  }
-  return Array.from(ids)
+  return inventoryScopedLocationIds(session)
 }
 
 async function assertLocationVisible(session: AuthSession, locationId: string): Promise<void> {
@@ -647,7 +670,10 @@ function assertGenericDocTransition(docType: InventoryDocType): void {
 }
 
 function assertSelfPurchasedSkuEditor(session: AuthSession, sourceType: InventorySkuSourceType): void {
-  if (sourceType === '供应链') return
+  if (sourceType === '供应链') {
+    if (hasPermission(session, 'inventory:supply_chain_master_data_manage')) return
+    throw new ApiError('PERMISSION_DENIED', '缺少供应链库存资料维护权限')
+  }
   if (hasPermission(session, 'inventory:market_sku_manage')) return
   throw new ApiError('PERMISSION_DENIED', '缺少市场自采或转让店产品资料维护权限')
 }
@@ -1004,9 +1030,12 @@ async function applyMovement(
 function skuRow(row: {
   sku: typeof inventorySkus.$inferSelect
   ownerMarketName: string | null
-  includePrice: boolean
+  priceVisibility: import('./types').InventoryPriceVisibility
 }): InventorySkuRow {
   const sku = row.sku
+  const supplyVisible = row.priceVisibility === 'all' || row.priceVisibility === 'supply_chain'
+  const marketVisible = row.priceVisibility === 'all' || row.priceVisibility === 'market'
+  const anyPriceVisible = supplyVisible || marketVisible
   return {
     skuId: sku.skuId,
     productCode: sku.productCode,
@@ -1020,16 +1049,18 @@ function skuRow(row: {
     sourceType: sku.sourceType as InventorySkuSourceType,
     ownerMarketId: sku.ownerMarketId,
     ownerMarketName: row.ownerMarketName,
-    retailPrice: row.includePrice ? numberOrNull(sku.retailPrice) : null,
-    accountingPrice: row.includePrice ? numberOrNull(sku.accountingPrice) : null,
-    supplyChainPurchasePrice: row.includePrice ? numberOrNull(sku.supplyChainPurchasePrice) : null,
-    marketPurchasePrice: row.includePrice ? numberOrNull(sku.marketPurchasePrice) : null,
-    storePurchasePrice: row.includePrice ? numberOrNull(sku.storePurchasePrice) : null,
-    marketStaffPurchasePrice: row.includePrice ? numberOrNull(sku.marketStaffPurchasePrice) : null,
-    marketPurchaseDiscount: row.includePrice ? numberOrNull(sku.marketPurchaseDiscount) : null,
-    storePurchaseDiscount: row.includePrice ? numberOrNull(sku.storePurchaseDiscount) : null,
-    staffPurchaseDiscount: row.includePrice ? numberOrNull(sku.staffPurchaseDiscount) : null,
-    itemCompanyPurchasePrice: row.includePrice ? numberOrNull(sku.itemCompanyPurchasePrice) : null,
+    retailPrice: row.priceVisibility === 'all' ? numberOrNull(sku.retailPrice) : null,
+    accountingPrice: supplyVisible ? numberOrNull(sku.accountingPrice) : null,
+    supplyChainPurchasePrice: supplyVisible ? numberOrNull(sku.supplyChainPurchasePrice) : null,
+    marketPurchasePrice: anyPriceVisible ? numberOrNull(sku.marketPurchasePrice) : null,
+    marketPurchasePriceMode: supplyVisible ? sku.marketPurchasePriceMode as InventorySkuRow['marketPurchasePriceMode'] : null,
+    marketPurchasePriceOverrideReason: supplyVisible ? sku.marketPurchasePriceOverrideReason : null,
+    storePurchasePrice: marketVisible ? numberOrNull(sku.storePurchasePrice) : null,
+    marketStaffPurchasePrice: marketVisible ? numberOrNull(sku.marketStaffPurchasePrice) : null,
+    marketPurchaseDiscount: anyPriceVisible ? numberOrNull(sku.marketPurchaseDiscount) : null,
+    storePurchaseDiscount: marketVisible ? numberOrNull(sku.storePurchaseDiscount) : null,
+    staffPurchaseDiscount: marketVisible ? numberOrNull(sku.staffPurchaseDiscount) : null,
+    itemCompanyPurchasePrice: supplyVisible ? numberOrNull(sku.itemCompanyPurchasePrice) : null,
     isReportable: sku.isReportable,
     isActive: sku.isActive,
     remark: sku.remark,
@@ -1092,8 +1123,10 @@ function lotRow(
     locationName: string | null
     locationType: string | null
   },
-  includePrice: boolean,
+  priceVisibility: import('./types').InventoryPriceVisibility,
 ): InventoryLotRow {
+  const supplyVisible = priceVisibility === 'all' || priceVisibility === 'supply_chain'
+  const marketVisible = priceVisibility === 'all' || priceVisibility === 'market'
   return {
     id: row.lot.id,
     locationId: row.lot.locationId,
@@ -1108,9 +1141,9 @@ function lotRow(
     expiryDate: row.lot.expiryDate,
     isGift: row.lot.isGift,
     quantityOnHand: Number(row.lot.quantityOnHand),
-    supplyChainUnitCost: includePrice ? numberOrNull(row.lot.supplyChainUnitCost) : undefined,
-    marketActualUnitPrice: includePrice ? numberOrNull(row.lot.marketActualUnitPrice) : undefined,
-    storeActualUnitPrice: includePrice ? numberOrNull(row.lot.storeActualUnitPrice) : undefined,
+    supplyChainUnitCost: supplyVisible ? numberOrNull(row.lot.supplyChainUnitCost) : undefined,
+    marketActualUnitPrice: supplyVisible || marketVisible ? numberOrNull(row.lot.marketActualUnitPrice) : undefined,
+    storeActualUnitPrice: marketVisible ? numberOrNull(row.lot.storeActualUnitPrice) : undefined,
     remark: row.lot.remark,
     updatedAt: row.lot.updatedAt.toISOString(),
   }
@@ -1232,13 +1265,13 @@ export const listInventorySkus = withPermission(
       .orderBy(asc(inventorySkus.productCode))
       .limit(pageSize)
       .offset(offset)
-    const priceVisible = canViewPrice(session)
-    return { data: rows.map((row) => skuRow({ ...row, includePrice: priceVisible })), total: countRow?.count ?? 0 }
+    const priceVisibility = inventoryPriceVisibility(session)
+    return { data: rows.map((row) => skuRow({ ...row, priceVisibility })), total: countRow?.count ?? 0 }
   },
 )
 
-export const createInventorySku = withPermission(
-  'inventory:create',
+export const createInventorySku = withAnyPermission(
+  ['inventory:supply_chain_master_data_manage', 'inventory:market_sku_manage'],
   async (session, input: InventorySkuInput): Promise<{ success: true; skuId: string }> => {
     const productName = normalizeRequired(input.productName, '产品名称')
     const sourceType = input.sourceType ?? '供应链'
@@ -1247,7 +1280,7 @@ export const createInventorySku = withPermission(
     }
     assertSelfPurchasedSkuEditor(session, sourceType)
     const ownerMarketId = await normalizeSkuOwnerMarket(session, sourceType, input.ownerMarketId)
-    const priceValues = skuPriceValues(input, canViewPrice(session))
+    const priceValues = skuPriceValues(input, inventoryPriceVisibility(session), sourceType)
     const skuId = await db.transaction(async (tx) => {
       const generatedNo = await generateInventorySkuNo(tx)
       await tx.insert(inventorySkus).values({
@@ -1276,8 +1309,8 @@ export const createInventorySku = withPermission(
   },
 )
 
-export const updateInventorySku = withPermission(
-  'inventory:update',
+export const updateInventorySku = withAnyPermission(
+  ['inventory:supply_chain_master_data_manage', 'inventory:market_sku_manage'],
   async (session, skuId: string, input: Partial<InventorySkuInput>): Promise<{ success: true }> => {
     const id = normalizeRequired(skuId, '库存 SKU')
     if (input.sourceType && !INVENTORY_SKU_SOURCE_TYPES.includes(input.sourceType)) {
@@ -1288,6 +1321,8 @@ export const updateInventorySku = withPermission(
         accountingPrice: inventorySkus.accountingPrice,
         marketPurchaseDiscount: inventorySkus.marketPurchaseDiscount,
         marketPurchasePrice: inventorySkus.marketPurchasePrice,
+        marketPurchasePriceMode: inventorySkus.marketPurchasePriceMode,
+        marketPurchasePriceOverrideReason: inventorySkus.marketPurchasePriceOverrideReason,
         sourceType: inventorySkus.sourceType,
         ownerMarketId: inventorySkus.ownerMarketId,
       })
@@ -1311,7 +1346,7 @@ export const updateInventorySku = withPermission(
       sourceType,
       requestedOwnerMarketId,
     )
-    const priceValues = skuPriceValues(input, canViewPrice(session), current)
+    const priceValues = skuPriceValues(input, inventoryPriceVisibility(session), sourceType, current)
     await db
       .update(inventorySkus)
       .set({
@@ -1546,12 +1581,12 @@ async function saveInventorySkuComposition(
 }
 
 export const createInventorySkuComposition = withPermission(
-  'inventory:create',
+  'inventory:supply_chain_master_data_manage',
   saveInventorySkuComposition,
 )
 
 export const updateInventorySkuComposition = withPermission(
-  'inventory:update',
+  'inventory:supply_chain_master_data_manage',
   saveInventorySkuComposition,
 )
 
@@ -1568,7 +1603,7 @@ export const listInventoryLots = withPermission(
       page?: number
       pageSize?: number
     } = {},
-  ): Promise<{ data: InventoryLotRow[]; total: number; canViewPrice: boolean }> => {
+  ): Promise<{ data: InventoryLotRow[]; total: number; canViewPrice: boolean; priceVisibility: import('./types').InventoryPriceVisibility }> => {
     await syncInventoryLocations()
     const scoped = await scopedLocationIds(session)
     const page = Math.max(1, filters.page || 1)
@@ -1608,11 +1643,12 @@ export const listInventoryLots = withPermission(
       .orderBy(asc(inventoryLocations.locationType), asc(inventoryLocations.name), asc(inventoryStockLots.skuName), asc(inventoryStockLots.batchNo))
       .limit(pageSize)
       .offset(offset)
-    const priceVisible = canViewPrice(session)
+    const priceVisibility = inventoryPriceVisibility(session)
     return {
-      data: rows.map((row) => lotRow(row, priceVisible)),
+      data: rows.map((row) => lotRow(row, priceVisibility)),
       total: countRow?.count ?? 0,
-      canViewPrice: priceVisible,
+      canViewPrice: priceVisibility !== 'none',
+      priceVisibility,
     }
   },
 )
@@ -1638,8 +1674,8 @@ export const listInventoryLotOptions = withPermission(
         sql`${inventoryStockLots.quantityOnHand} > 0`,
       ))
       .orderBy(asc(inventoryStockLots.expiryDate), asc(inventoryStockLots.batchNo), asc(inventoryStockLots.id))
-    const priceVisible = canViewPrice(session)
-    return rows.map((row) => lotRow(row, priceVisible))
+    const priceVisibility = inventoryPriceVisibility(session)
+    return rows.map((row) => lotRow(row, priceVisibility))
   },
 )
 
@@ -1649,7 +1685,7 @@ export const exportInventoryLots = withPermission(
     session,
     params: Record<string, string | undefined> = {},
     options?: ExportBatchOptions<number>,
-  ): Promise<ExportBatchResult<InventoryLotRow> & { canViewPrice: boolean }> => {
+  ): Promise<ExportBatchResult<InventoryLotRow> & { canViewPrice: boolean; priceVisibility: import('./types').InventoryPriceVisibility }> => {
     const LIMIT = 10000
     await syncInventoryLocations()
     const scoped = await scopedLocationIds(session)
@@ -1689,22 +1725,24 @@ export const exportInventoryLots = withPermission(
         asc(inventoryStockLots.batchNo),
         asc(inventoryStockLots.id),
       )
-    const priceVisible = canViewPrice(session)
+    const priceVisibility = inventoryPriceVisibility(session)
     const page = resolveExportOffsetPage(options)
     if (page) {
       const rows = await query.limit(page.limit + 1).offset(page.offset)
       return {
-        ...offsetPageResult(rows.map((row) => lotRow(row, priceVisible)), page),
-        canViewPrice: priceVisible,
+        ...offsetPageResult(rows.map((row) => lotRow(row, priceVisibility)), page),
+        canViewPrice: priceVisibility !== 'none',
+        priceVisibility,
       }
     }
     const rows = await query.limit(LIMIT + 1)
     const truncated = rows.length > LIMIT
     return {
-      rows: rows.slice(0, LIMIT).map((row) => lotRow(row, priceVisible)),
+      rows: rows.slice(0, LIMIT).map((row) => lotRow(row, priceVisibility)),
       truncated,
       hasMore: false,
-      canViewPrice: priceVisible,
+      canViewPrice: priceVisibility !== 'none',
+      priceVisibility,
     }
   },
 )
@@ -1724,7 +1762,7 @@ export const listInventoryCoreDocs = withPermission(
       page?: number
       pageSize?: number
     } = {},
-  ): Promise<{ data: InventoryDocRow[]; total: number; canViewPrice: boolean }> => {
+  ): Promise<{ data: InventoryDocRow[]; total: number; canViewPrice: boolean; priceVisibility: import('./types').InventoryPriceVisibility }> => {
     await syncInventoryLocations()
     const scoped = await scopedLocationIds(session)
     const page = Math.max(1, filters.page || 1)
@@ -1784,11 +1822,12 @@ export const listInventoryCoreDocs = withPermission(
       .orderBy(desc(inventoryDocs.docDate), desc(inventoryDocs.createdAt))
       .limit(pageSize)
       .offset(offset)
-    const priceVisible = canViewPrice(session)
+    const priceVisibility = inventoryPriceVisibility(session)
     return {
-      data: rows.map((row) => docRow({ ...row, includePrice: priceVisible })),
+      data: rows.map((row) => docRow({ ...row, includePrice: priceVisibility !== 'none' })),
       total: countRow?.count ?? 0,
-      canViewPrice: priceVisible,
+      canViewPrice: priceVisibility !== 'none',
+      priceVisibility,
     }
   },
 )
@@ -2298,7 +2337,7 @@ async function loadInventoryDocFulfillmentProgress(
 export const getInventoryCoreDocById = withPermission(
   'inventory:list',
   async (session, id: string): Promise<InventoryDocDetail | null> => {
-    const priceVisible = canViewPrice(session)
+    const priceVisibility = inventoryPriceVisibility(session)
     const scoped = await scopedLocationIds(session)
     const conditions: (SQL | undefined)[] = [eq(inventoryDocs.id, id)]
     if (scoped !== null) {
@@ -2320,7 +2359,7 @@ export const getInventoryCoreDocById = withPermission(
       .where(and(...conditions))
       .limit(1)
     if (!headRow) return null
-    const head = docRow({ ...headRow, includePrice: priceVisible })
+    const head = docRow({ ...headRow, includePrice: priceVisibility !== 'none' })
     const [items, lineage, fulfillmentProgress] = await Promise.all([
       db
         .select()
@@ -2349,13 +2388,13 @@ export const getInventoryCoreDocById = withPermission(
         stockSnapshot: numberOrNull(item.stockSnapshot),
         requestQuantity: numberOrNull(item.requestQuantity),
         fulfilledQuantity: numberOrNull(item.fulfilledQuantity),
-        standardUnitPrice: priceVisible ? numberOrNull(item.standardUnitPrice) : undefined,
-        unitDiscount: priceVisible ? numberOrNull(item.unitDiscount) : undefined,
-        actualUnitPrice: priceVisible ? numberOrNull(item.actualUnitPrice) : undefined,
-        amount: priceVisible ? numberOrNull(item.amount) : undefined,
-        supplyChainUnitCost: priceVisible ? numberOrNull(item.supplyChainUnitCost) : undefined,
-        marketActualUnitPrice: priceVisible ? numberOrNull(item.marketActualUnitPrice) : undefined,
-        storeActualUnitPrice: priceVisible ? numberOrNull(item.storeActualUnitPrice) : undefined,
+        standardUnitPrice: priceVisibility !== 'none' ? numberOrNull(item.standardUnitPrice) : undefined,
+        unitDiscount: priceVisibility !== 'none' ? numberOrNull(item.unitDiscount) : undefined,
+        actualUnitPrice: priceVisibility !== 'none' ? numberOrNull(item.actualUnitPrice) : undefined,
+        amount: priceVisibility !== 'none' ? numberOrNull(item.amount) : undefined,
+        supplyChainUnitCost: priceVisibility === 'all' || priceVisibility === 'supply_chain' ? numberOrNull(item.supplyChainUnitCost) : undefined,
+        marketActualUnitPrice: priceVisibility !== 'none' ? numberOrNull(item.marketActualUnitPrice) : undefined,
+        storeActualUnitPrice: priceVisibility === 'all' || priceVisibility === 'market' ? numberOrNull(item.storeActualUnitPrice) : undefined,
         promotionPlanId: item.promotionPlanId,
         promotionPlanNoSnapshot: item.promotionPlanNoSnapshot,
         promotionPlanNameSnapshot: item.promotionPlanNameSnapshot,
@@ -2371,8 +2410,8 @@ export const getInventoryCoreDocById = withPermission(
   },
 )
 
-export const createInventoryCoreDoc = withPermission(
-  'inventory:create_doc',
+export const createInventoryCoreDoc = withAnyPermission(
+  ['inventory:supply_chain_operate', 'inventory:market_operate', 'inventory:store_operate'],
   async (session, input: CreateInventoryDocInput): Promise<{ success: true; id: string }> => {
     if (!isValidDocType(input.docType)) throw new ApiError('INVALID_PARAMS', '无效库存单据类型')
     if (SPECIALIZED_DOC_TYPES.has(input.docType)) {
@@ -2420,7 +2459,8 @@ export const createInventoryCoreDoc = withPermission(
         status,
         sourceLocationId,
         targetLocationId,
-        marketId: normalizeText(input.marketId),
+        // 市场归属由数据库根据源/目标库存主体统一派生，禁止信任调用方传值。
+        marketId: null,
         supplierId: normalizeText(input.supplierId),
         docDate: normalizeText(input.docDate) ?? shanghaiToday(),
         relatedSaleOrderId: normalizeText(input.relatedSaleOrderId),
@@ -2565,8 +2605,8 @@ export const createInventoryCoreDoc = withPermission(
   },
 )
 
-export const approveInventoryCoreDoc = withPermission(
-  'inventory:approve',
+export const approveInventoryCoreDoc = withAnyPermission(
+  ['inventory:supply_chain_approve', 'inventory:market_approve'],
   async (session, id: string, auditRemark?: string | null): Promise<{ success: true }> => {
     const docId = normalizeRequired(id, '单据号')
     await db.transaction(async (tx) => {
@@ -2630,8 +2670,8 @@ export const approveInventoryCoreDoc = withPermission(
   },
 )
 
-export const rejectInventoryCoreDoc = withPermission(
-  'inventory:approve',
+export const rejectInventoryCoreDoc = withAnyPermission(
+  ['inventory:supply_chain_approve', 'inventory:market_approve'],
   async (session, id: string, auditRemark?: string | null): Promise<{ success: true }> => {
     const docId = normalizeRequired(id, '单据号')
     await db.transaction(async (tx) => {
@@ -2674,8 +2714,8 @@ export const rejectInventoryCoreDoc = withPermission(
   },
 )
 
-export const confirmInventoryCoreReceive = withPermission(
-  'inventory:create_doc',
+export const confirmInventoryCoreReceive = withAnyPermission(
+  ['inventory:market_operate', 'inventory:store_operate'],
   async (session, outboundDocId: string, remark?: string | null): Promise<{ success: true; inboundDocId: string }> => {
     const id = normalizeRequired(outboundDocId, '出库单号')
     let inboundDocId = ''
@@ -2895,7 +2935,7 @@ export const listInventorySuppliers = withPermission(
 )
 
 export const createInventorySupplier = withPermission(
-  'inventory:create',
+  'inventory:supply_chain_master_data_manage',
   async (session, input: InventorySupplierInput): Promise<{ supplierId: string }> => {
     const supplierId = `INV-SUP-${crypto.randomUUID()}`
     const name = normalizeRequired(input.name, '供应商名称')
@@ -2915,7 +2955,7 @@ export const createInventorySupplier = withPermission(
 )
 
 export const updateInventorySupplier = withPermission(
-  'inventory:update',
+  'inventory:supply_chain_master_data_manage',
   async (
     session,
     supplierIdInput: string,
@@ -3210,8 +3250,8 @@ export const getInventoryPromotionPlanById = withPermission(
   },
 )
 
-export const createInventoryPromotionPlan = withPermission(
-  'inventory:create',
+export const createInventoryPromotionPlan = withAnyPermission(
+  ['inventory:supply_chain_master_data_manage', 'inventory:market_operate'],
   async (session, input: InventoryPromotionPlanInput): Promise<{ id: string }> => {
     assertPromotionPriceWritable(session)
     const name = normalizeRequired(input.name, '方案名称')
@@ -3259,8 +3299,8 @@ export const createInventoryPromotionPlan = withPermission(
   },
 )
 
-export const updateInventoryPromotionPlan = withPermission(
-  'inventory:update',
+export const updateInventoryPromotionPlan = withAnyPermission(
+  ['inventory:supply_chain_master_data_manage', 'inventory:market_operate'],
   async (
     session,
     idInput: string,
@@ -3316,8 +3356,8 @@ export const updateInventoryPromotionPlan = withPermission(
   },
 )
 
-export const disableInventoryPromotionPlan = withPermission(
-  'inventory:update',
+export const disableInventoryPromotionPlan = withAnyPermission(
+  ['inventory:supply_chain_master_data_manage', 'inventory:market_operate'],
   async (session, idInput: string): Promise<{ success: true }> => {
     const id = normalizeRequired(idInput, '福利方案')
     const current = (await promotionPlanRows(session, id))[0]

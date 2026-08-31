@@ -51,6 +51,8 @@ const row: InventorySkuRow = {
   accountingPrice: null,
   supplyChainPurchasePrice: 24.9,
   marketPurchasePrice: 78,
+  marketPurchasePriceMode: '手工覆盖',
+  marketPurchasePriceOverrideReason: '测试数据',
   storePurchasePrice: 78,
   marketStaffPurchasePrice: 65,
   marketPurchaseDiscount: null,
@@ -74,6 +76,7 @@ function renderPage() {
       canUpdate
       canViewPrice
       canManageMarketSkus
+      canManageSupplySkus
     />,
   )
 }
@@ -88,7 +91,7 @@ describe('InventorySkusPage', () => {
     renderPage()
     fireEvent.click(screen.getByTitle('编辑库存商品'))
 
-    const input = screen.getByLabelText(/^市场进货价/)
+    const input = screen.getAllByLabelText(/^市场进货价/).find((element) => element.tagName === 'INPUT')!
     expect(input).toHaveValue('78')
     expect(input).not.toHaveAttribute('readonly')
 
@@ -97,7 +100,11 @@ describe('InventorySkusPage', () => {
 
     await waitFor(() => expect(mockUpdateInventorySku).toHaveBeenCalledWith(
       'SKU-1',
-      expect.objectContaining({ marketPurchasePrice: 79.5 }),
+      expect.objectContaining({
+        marketPurchasePrice: 79.5,
+        marketPurchasePriceMode: '手工覆盖',
+        marketPurchasePriceOverrideReason: '测试数据',
+      }),
     ))
     expect(mockToastSuccess).toHaveBeenCalledWith('库存商品已更新')
   })

@@ -4,7 +4,8 @@ import { db } from '@/db'
 import { ApiError } from '@/lib/api-error'
 import { shanghaiToday, shanghaiYmd } from '@/lib/datetime'
 import { logOperation } from '@/lib/operation-log'
-import { hasPermission, isAdminScope } from '@/lib/permissions'
+import { hasPermission } from '@/lib/permissions'
+import { assertInventoryLocationInScope, inventoryPriceVisibility } from './access'
 import type { AuthSession } from '@/lib/types'
 import { revalidatePath } from 'next/cache'
 import { sql } from 'drizzle-orm'
@@ -373,6 +374,14 @@ export interface CreateMarketStaffPurchaseInput {
   items: MarketStaffPurchaseLineInput[]
 }
 
+export interface CreateSupplyChainStaffPurchaseInput {
+  locationId: string
+  employeeId: string
+  docDate?: string | null
+  remark?: string | null
+  items: MarketStaffPurchaseLineInput[]
+}
+
 export interface SelfPurchasedReceiptLineInput {
   skuId: string
   quantity: number
@@ -402,7 +411,7 @@ export interface ExternalMarketOutboundLineInput {
 }
 
 export interface CreateExternalMarketOutboundInput {
-  marketId: string
+  locationId: string
   externalPartyName: string
   docDate?: string | null
   remark?: string | null
@@ -504,6 +513,7 @@ const DOC_PREFIX: Record<string, string> = {
   市场退货入库: 'MTR',
   供应链退货入库: 'GTR',
   员工购出库: 'YGG',
+  供应链员工购出库: 'GYG',
   自采产品入库: 'ZRK',
   非凤御市场出库: 'FFY',
   库存转换出库: 'ZHO',
@@ -650,16 +660,7 @@ async function locationForUpdate(tx: Tx, locationId: string): Promise<Location> 
 }
 
 function assertLocationWritable(session: AuthSession, location: Location): void {
-  if (isAdminScope(session) || session.roles.some((role) => role.scopeType === '总部')) return
-  if (
-    location.locationType === '市场' &&
-    session.roles.some((role) => role.scopeType === '市场' && role.scopeId === location.locationId)
-  ) return
-  if (
-    location.locationType === '门店' &&
-    session.permissions.scopeStoreIds.includes(location.locationId)
-  ) return
-  throw new ApiError('PERMISSION_DENIED', '无权操作该库存主体')
+  assertInventoryLocationInScope(session, location.locationId)
 }
 
 function assertType(location: Location, type: LocationType, label: string): void {
@@ -1176,6 +1177,45 @@ async function employeeForMarket(
   return { id: employee.employee_id, name: employee.name?.trim() || employee.employee_id }
 }
 
+async function employeeForSupplyChain(
+  tx: Tx,
+  employeeId: string,
+  locationId: string,
+): Promise<{ id: string; name: string }> {
+  const [employee] = rows<{ employee_id: string; name: string | null }>(await tx.execute(sql`
+    WITH RECURSIVE descendants AS (
+      SELECT id
+        FROM org_nodes
+       WHERE id = ${locationId}
+      UNION ALL
+      SELECT child.id
+        FROM org_nodes child
+        JOIN descendants parent ON child.parent_id = parent.id
+    ), employee_ancestors AS (
+      SELECT node.id, node.parent_id, node.type
+        FROM staff_wechat_users employee
+        JOIN org_nodes node ON node.id = employee.org_node_id
+       WHERE employee.employee_id = ${employeeId}
+      UNION ALL
+      SELECT node.id, node.parent_id, node.type
+        FROM org_nodes node
+        JOIN employee_ancestors ancestor ON ancestor.parent_id = node.id
+    )
+    SELECT employee.employee_id, employee.name
+      FROM staff_wechat_users employee
+     WHERE employee.employee_id = ${employeeId}
+       AND employee.is_resigned = false
+       AND employee.store_id IS NULL
+       AND employee.org_node_id IN (SELECT id FROM descendants)
+       AND NOT EXISTS (SELECT 1 FROM employee_ancestors WHERE type IN ('市场', '门店'))
+     LIMIT 1
+  `))
+  if (!employee) {
+    throw new ApiError('PERMISSION_DENIED', '员工不属于当前供应链总部或已经离职')
+  }
+  return { id: employee.employee_id, name: employee.name?.trim() || employee.employee_id }
+}
+
 export async function listMarketEmployeeOptions(
   session: AuthSession,
   marketIdInput: string,
@@ -1229,6 +1269,46 @@ export async function listMarketEmployeeOptions(
     employeeId: employee.employee_id,
     name: employee.name?.trim() || employee.employee_id,
   }))
+}
+
+export async function listSupplyChainEmployeeOptions(
+  session: AuthSession,
+  locationIdInput: string,
+): Promise<InventoryMarketEmployeeOption[]> {
+  const locationId = required(locationIdInput, '供应链库存主体')
+  await syncLocations()
+  const [row] = rows<{ location_id: string; location_type: LocationType; name: string; parent_location_id: string | null }>(await db.execute(sql`
+    SELECT location_id, location_type, name, parent_location_id
+      FROM inventory_locations
+     WHERE location_id = ${locationId} AND is_active = true
+     LIMIT 1
+  `))
+  if (!row) throw new ApiError('NOT_FOUND', '供应链库存主体不存在或已停用')
+  const location: Location = { locationId: row.location_id, locationType: row.location_type, name: row.name, parentLocationId: row.parent_location_id }
+  assertType(location, '总部', '供应链员工购出库主体')
+  assertLocationWritable(session, location)
+  const employees = rows<{ employee_id: string; name: string | null }>(await db.execute(sql`
+    WITH RECURSIVE descendants AS (
+      SELECT id FROM org_nodes WHERE id = ${locationId}
+      UNION ALL
+      SELECT child.id FROM org_nodes child JOIN descendants parent ON child.parent_id = parent.id
+    )
+    SELECT employee.employee_id, employee.name
+      FROM staff_wechat_users employee
+      JOIN descendants ON descendants.id = employee.org_node_id
+     WHERE employee.is_resigned = false
+       AND employee.store_id IS NULL
+       AND NOT EXISTS (
+         WITH RECURSIVE ancestors AS (
+           SELECT id, parent_id, type FROM org_nodes WHERE id = employee.org_node_id
+           UNION ALL
+           SELECT node.id, node.parent_id, node.type FROM org_nodes node JOIN ancestors ON ancestors.parent_id = node.id
+         )
+         SELECT 1 FROM ancestors WHERE type IN ('市场', '门店')
+       )
+     ORDER BY employee.name NULLS LAST, employee.employee_id
+  `))
+  return employees.map((employee) => ({ employeeId: employee.employee_id, name: employee.name?.trim() || employee.employee_id }))
 }
 
 function marketIdForLocation(location: Location): string | null {
@@ -1880,7 +1960,7 @@ export async function createMarketReplenishment(
   if (!Array.isArray(input.items) || input.items.length === 0) {
     throw new ApiError('INVALID_PARAMS', '市场报货至少需要一条明细')
   }
-  if ((input.promotionSelections?.length ?? 0) > 0 && !hasPermission(session, 'inventory:price_view')) {
+  if ((input.promotionSelections?.length ?? 0) > 0 && !hasPermission(session, 'inventory:market_price_view')) {
     throw new ApiError('PERMISSION_DENIED', '无权切换市场报货福利方案')
   }
   await syncLocations()
@@ -3033,7 +3113,7 @@ export async function createStoreAllocation(
   if (!Array.isArray(input.items) || input.items.length === 0) {
     throw new ApiError('INVALID_PARAMS', '分院配货至少需要一条明细')
   }
-  const canViewPrice = hasPermission(session, 'inventory:price_view')
+  const canViewPrice = inventoryPriceVisibility(session) === 'market' || inventoryPriceVisibility(session) === 'all'
   const storeUnitDiscounts = input.items.map((line) => {
     if (!canViewPrice) {
       const suppliedDiscount = line.storeUnitDiscount ?? 0
@@ -3809,6 +3889,101 @@ export async function createMarketStaffPurchase(
   return { id }
 }
 
+/**
+ * 供应链员工购只扣减所选总部库存，并使用供应链 SKU 的市场结算价计入单据金额。
+ * 总部员工必须位于该总部组织树内，且其祖先链不能经过市场或门店。
+ */
+export async function createSupplyChainStaffPurchase(
+  session: AuthSession,
+  input: CreateSupplyChainStaffPurchaseInput,
+): Promise<{ id: string }> {
+  const locationId = required(input.locationId, '供应链库存主体')
+  const employeeId = required(input.employeeId, '购买员工')
+  if (!Array.isArray(input.items) || input.items.length === 0) {
+    throw new ApiError('INVALID_PARAMS', '供应链员工购至少需要一条明细')
+  }
+  await syncLocations()
+  const id = await db.transaction(async (tx) => {
+    await assertInventoryBusinessWritable(tx)
+    const location = await locationForUpdate(tx, locationId)
+    assertType(location, '总部', '供应链员工购出库主体')
+    assertLocationWritable(session, location)
+    const employee = await employeeForSupplyChain(tx, employeeId, locationId)
+    const seenLots = new Set<number>()
+    const prepared: Array<{ lot: LotSnapshot; quantity: number; price: number; remark: string | null }> = []
+    for (const line of input.items) {
+      const lotId = Number(line.lotId)
+      if (!Number.isInteger(lotId) || lotId <= 0 || seenLots.has(lotId)) {
+        throw new ApiError('INVALID_PARAMS', '供应链员工购库存批次不能重复')
+      }
+      seenLots.add(lotId)
+      const lot = await lotForUpdate(tx, lotId, locationId)
+      const quantity = positive(line.quantity, '供应链员工购数量')
+      await assertLotAvailable(tx, lot, quantity)
+      const sku = await loadLotSkuForMarket(tx, lot, null)
+      assertSupplyChainSku(sku)
+      if (sku.marketPurchasePrice === null) {
+        throw new ApiError('INVALID_STATE', `SKU ${sku.productName} 未设置市场结算价`)
+      }
+      prepared.push({ lot, quantity, price: sku.marketPurchasePrice, remark: text(line.remark) })
+    }
+    const docId = await generateDocId(tx, '供应链员工购出库')
+    const totalQuantity = fixed(prepared.reduce((sum, item) => sum + item.quantity, 0))
+    const totalAmount = fixed(prepared.reduce((sum, item) => sum + item.quantity * item.price, 0))
+    await insertDocHeader(tx, {
+      id: docId,
+      docType: '供应链员工购出库',
+      status: '已完成',
+      sourceLocationId: locationId,
+      marketId: null,
+      employeeId: employee.id,
+      employeeName: employee.name,
+      docDate: input.docDate,
+      totalQuantity,
+      totalAmount,
+      remark: input.remark,
+      createdBy: session.employeeId,
+      confirmed: true,
+    })
+    for (const item of prepared) {
+      const docItemId = await insertDocItem(tx, {
+        docId,
+        lotId: item.lot.id,
+        skuId: item.lot.skuId,
+        skuName: item.lot.skuName,
+        specName: item.lot.specName,
+        supplier: item.lot.supplier,
+        productSeries: item.lot.productSeries,
+        batchNo: item.lot.batchNo,
+        expiryDate: item.lot.expiryDate,
+        isGift: false,
+        quantity: item.quantity,
+        stockSnapshot: item.lot.quantityOnHand,
+        standardUnitPrice: item.price,
+        unitDiscount: 0,
+        actualUnitPrice: item.price,
+        amount: fixed(item.quantity * item.price),
+        ...priceFromLot(item.lot),
+        remark: item.remark,
+      })
+      await applyLotDelta(tx, {
+        lot: item.lot,
+        docId,
+        docItemId,
+        direction: '出库',
+        quantityDelta: -item.quantity,
+        createdBy: session.employeeId,
+        movementKey: `supply-chain-staff-purchase:${docId}:item:${docItemId}`,
+        remark: input.remark,
+      })
+    }
+    return docId
+  })
+  await logOperation(session, 'inventory.supply_chain_staff_purchase.create', 'inventory_docs', id, { locationId, employeeId })
+  refreshInventoryPaths()
+  return { id }
+}
+
 /** 具备自采入库权限的用户登记入库；只接收归属当前市场的市场自采/转让店 SKU。 */
 export async function createSelfPurchasedReceipt(
   session: AuthSession,
@@ -3958,7 +4133,7 @@ export async function createExternalMarketOutbound(
   session: AuthSession,
   input: CreateExternalMarketOutboundInput,
 ): Promise<{ id: string }> {
-  const marketId = required(input.marketId, '市场')
+  const locationId = required(input.locationId, '供应链库存主体')
   const externalPartyName = required(input.externalPartyName, '外部对象')
   if (!Array.isArray(input.items) || input.items.length === 0) {
     throw new ApiError('INVALID_PARAMS', '非凤御市场出库至少需要一条明细')
@@ -3966,9 +4141,9 @@ export async function createExternalMarketOutbound(
   await syncLocations()
   const id = await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
-    const market = await locationForUpdate(tx, marketId)
-    assertType(market, '市场', '非凤御市场出库主体')
-    assertLocationWritable(session, market)
+    const location = await locationForUpdate(tx, locationId)
+    assertType(location, '总部', '非凤御市场出库主体')
+    assertLocationWritable(session, location)
     const seenLots = new Set<number>()
     const prepared: Array<{ lot: LotSnapshot; quantity: number; remark: string | null }> = []
     for (const line of input.items) {
@@ -3977,10 +4152,10 @@ export async function createExternalMarketOutbound(
         throw new ApiError('INVALID_PARAMS', '出库库存批次不能重复')
       }
       seenLots.add(lotId)
-      const lot = await lotForUpdate(tx, lotId, marketId)
+      const lot = await lotForUpdate(tx, lotId, locationId)
       const quantity = positive(line.quantity, '出库数量')
       await assertLotAvailable(tx, lot, quantity)
-      await loadLotSkuForMarket(tx, lot, marketId)
+      await loadLotSkuForMarket(tx, lot, null)
       prepared.push({ lot, quantity, remark: text(line.remark) })
     }
     const docId = await generateDocId(tx, '非凤御市场出库')
@@ -3988,8 +4163,8 @@ export async function createExternalMarketOutbound(
       id: docId,
       docType: '非凤御市场出库',
       status: '已完成',
-      sourceLocationId: marketId,
-      marketId,
+      sourceLocationId: locationId,
+      marketId: null,
       externalPartyName,
       docDate: input.docDate,
       totalQuantity: fixed(prepared.reduce((sum, item) => sum + item.quantity, 0)),
@@ -4032,7 +4207,7 @@ export async function createExternalMarketOutbound(
     }
     return docId
   })
-  await logOperation(session, 'inventory.external_market_outbound.create', 'inventory_docs', id, { marketId, externalPartyName })
+  await logOperation(session, 'inventory.external_market_outbound.create', 'inventory_docs', id, { locationId, externalPartyName })
   refreshInventoryPaths()
   return { id }
 }
@@ -4050,6 +4225,7 @@ export async function createInventoryConversion(
   const ids = await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
     const location = await locationForUpdate(tx, locationId)
+    assertType(location, '总部', '库存转换主体')
     assertLocationWritable(session, location)
     const seenLots = new Set<number>()
     const prepared: Array<{
@@ -4218,7 +4394,7 @@ export async function quoteMarketReplenishmentPrices(
   },
 ): Promise<MarketPromotionQuoteResult> {
   const marketId = required(input.marketId, '市场')
-  if (!hasPermission(session, 'inventory:price_view')) {
+  if (!hasPermission(session, 'inventory:market_price_view')) {
     throw new ApiError('PERMISSION_DENIED', '无权查看市场报货价格')
   }
   await syncLocations()

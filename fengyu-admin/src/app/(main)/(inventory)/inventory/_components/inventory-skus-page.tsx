@@ -40,6 +40,8 @@ type SkuForm = {
   accountingPrice: string
   supplyChainPurchasePrice: string
   marketPurchasePrice: string
+  marketPurchasePriceMode: '公式' | '手工覆盖'
+  marketPurchasePriceOverrideReason: string
   storePurchasePrice: string
   marketStaffPurchasePrice: string
   marketPurchaseDiscount: string
@@ -78,6 +80,8 @@ function emptyForm(): SkuForm {
     accountingPrice: '',
     supplyChainPurchasePrice: '',
     marketPurchasePrice: '',
+    marketPurchasePriceMode: '公式',
+    marketPurchasePriceOverrideReason: '',
     storePurchasePrice: '',
     marketStaffPurchasePrice: '',
     marketPurchaseDiscount: '',
@@ -103,6 +107,8 @@ function formFromRow(row: InventorySkuRow): SkuForm {
     accountingPrice: row.accountingPrice == null ? '' : String(row.accountingPrice),
     supplyChainPurchasePrice: row.supplyChainPurchasePrice == null ? '' : String(row.supplyChainPurchasePrice),
     marketPurchasePrice: row.marketPurchasePrice == null ? '' : String(row.marketPurchasePrice),
+    marketPurchasePriceMode: row.marketPurchasePriceMode ?? '公式',
+    marketPurchasePriceOverrideReason: text(row.marketPurchasePriceOverrideReason),
     storePurchasePrice: row.storePurchasePrice == null ? '' : String(row.storePurchasePrice),
     marketStaffPurchasePrice: row.marketStaffPurchasePrice == null ? '' : String(row.marketStaffPurchasePrice),
     marketPurchaseDiscount: row.marketPurchaseDiscount == null ? '' : String(row.marketPurchaseDiscount),
@@ -130,6 +136,7 @@ export default function InventorySkusPage({
   canUpdate,
   canViewPrice,
   canManageMarketSkus,
+  canManageSupplySkus,
 }: {
   rows: InventorySkuRow[]
   total: number
@@ -138,6 +145,7 @@ export default function InventorySkusPage({
   canUpdate: boolean
   canViewPrice: boolean
   canManageMarketSkus: boolean
+  canManageSupplySkus: boolean
 }) {
   const router = useRouter()
   const { get, setMany } = useUrlFilters()
@@ -199,7 +207,7 @@ export default function InventorySkusPage({
           size="sm"
           onClick={() => setEditing(row)}
           title={row.sourceType === '供应链' || canManageMarketSkus ? '编辑库存商品' : '缺少市场自采产品资料维护权限'}
-          disabled={row.sourceType !== '供应链' && !canManageMarketSkus}
+          disabled={row.sourceType === '供应链' ? !canManageSupplySkus : !canManageMarketSkus}
         >
           <Pencil className="size-4" />
         </Button>
@@ -259,6 +267,7 @@ export default function InventorySkusPage({
         markets={markets}
         canViewPrice={canViewPrice}
         canManageMarketSkus={canManageMarketSkus}
+        canManageSupplySkus={canManageSupplySkus}
         onOpenChange={(open) => { if (!open) setEditing(undefined) }}
         onSuccess={() => startTransition(() => router.refresh())}
       />
@@ -272,6 +281,7 @@ function SkuFormDialog({
   markets,
   canViewPrice,
   canManageMarketSkus,
+  canManageSupplySkus,
   onOpenChange,
   onSuccess,
 }: {
@@ -280,6 +290,7 @@ function SkuFormDialog({
   markets: InventoryLocationRow[]
   canViewPrice: boolean
   canManageMarketSkus: boolean
+  canManageSupplySkus: boolean
   onOpenChange: (open: boolean) => void
   onSuccess: () => void
 }) {
@@ -310,6 +321,10 @@ function SkuFormDialog({
     const marketPurchasePrice = hasManualMarketPrice
       ? manualMarketPrice
       : calculatedMarketPrice
+    if (form.sourceType === '供应链' && form.marketPurchasePriceMode === '手工覆盖' && !form.marketPurchasePriceOverrideReason.trim()) {
+      toast.error('手工覆盖市场进货价时必须填写原因')
+      return
+    }
     setSubmitting(true)
     try {
       const input: InventorySkuInput = {
@@ -326,6 +341,10 @@ function SkuFormDialog({
         accountingPrice: canViewPrice ? num(form.accountingPrice) : null,
         supplyChainPurchasePrice: canViewPrice ? num(form.supplyChainPurchasePrice) : null,
         marketPurchasePrice: canViewPrice ? marketPurchasePrice : null,
+        marketPurchasePriceMode: form.sourceType === '供应链' ? form.marketPurchasePriceMode : null,
+        marketPurchasePriceOverrideReason: form.sourceType === '供应链' && form.marketPurchasePriceMode === '手工覆盖'
+          ? form.marketPurchasePriceOverrideReason
+          : null,
         storePurchasePrice: canViewPrice ? num(form.storePurchasePrice) : null,
         marketStaffPurchasePrice: canViewPrice ? num(form.marketStaffPurchasePrice) : null,
         marketPurchaseDiscount: canViewPrice ? num(form.marketPurchaseDiscount) : null,
@@ -374,7 +393,7 @@ function SkuFormDialog({
             <Field label="来源 *">
               <Select value={form.sourceType} disabled={!!row} onChange={(event) => setField('sourceType', event.target.value as InventorySkuSourceType)}>
                 {INVENTORY_SKU_SOURCE_TYPES
-                  .filter((source) => source === '供应链' || canManageMarketSkus)
+                  .filter((source) => source === '供应链' ? canManageSupplySkus : canManageMarketSkus)
                   .map((source) => <option key={source} value={source}>{source}</option>)}
               </Select>
             </Field>
@@ -401,15 +420,25 @@ function SkuFormDialog({
               <Field label="市场折扣（25 表示 25%）"><Input inputMode="decimal" value={form.marketPurchaseDiscount} onChange={(event) => setField('marketPurchaseDiscount', event.target.value)} /></Field>
               <Field label="市场进货价">
                 <div className="space-y-1">
+                  {form.sourceType === '供应链' && (
+                    <Select value={form.marketPurchasePriceMode} onChange={(event) => setField('marketPurchasePriceMode', event.target.value as '公式' | '手工覆盖')}>
+                      <option value="公式">按公式计算</option>
+                      <option value="手工覆盖">手工覆盖</option>
+                    </Select>
+                  )}
                   <Input
                     inputMode="decimal"
                     value={form.marketPurchasePrice}
                     placeholder={calculatedMarketPrice == null ? undefined : String(calculatedMarketPrice)}
+                    disabled={form.sourceType === '供应链' && form.marketPurchasePriceMode === '公式'}
                     onChange={(event) => setField('marketPurchasePrice', event.target.value)}
                   />
-                  <p className="text-xs text-[#888888]">留空时按核算价 × 市场折扣自动计算</p>
+                  <p className="text-xs text-[#888888]">公式价 = 核算价 × 市场折扣；手工覆盖必须留痕原因</p>
                 </div>
               </Field>
+              {form.sourceType === '供应链' && form.marketPurchasePriceMode === '手工覆盖' && (
+                <Field label="手工覆盖原因 *"><Textarea value={form.marketPurchasePriceOverrideReason} onChange={(event) => setField('marketPurchasePriceOverrideReason', event.target.value)} /></Field>
+              )}
               <Field label="自采实际进货价"><Input inputMode="decimal" value={form.itemCompanyPurchasePrice} onChange={(event) => setField('itemCompanyPurchasePrice', event.target.value)} /></Field>
             </div>
           </section>

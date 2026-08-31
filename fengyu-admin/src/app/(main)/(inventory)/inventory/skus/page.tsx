@@ -30,10 +30,11 @@ export default async function Page({
     listInventoryLocations(),
   ])
   const actions = session.permissions.actions
-  const canCreate = hasUiCapability(actions, 'inventory:create')
-  const canUpdate = hasUiCapability(actions, 'inventory:update')
-  const canViewPrice = hasUiCapability(actions, 'inventory:price_view')
+  const canCreate = hasUiCapability(actions, 'inventory:supply_chain_master_data_manage') || hasUiCapability(actions, 'inventory:market_sku_manage')
+  const canUpdate = canCreate
+  const canViewPrice = hasUiCapability(actions, 'inventory:supply_chain_price_view') || hasUiCapability(actions, 'inventory:market_price_view')
   const canManageMarketSkus = hasUiCapability(actions, 'inventory:market_sku_manage')
+  const canManageSupplySkus = hasUiCapability(actions, 'inventory:supply_chain_master_data_manage')
 
   return (
     <div className="p-6">
@@ -47,6 +48,7 @@ export default async function Page({
           canUpdate={canUpdate}
           canViewPrice={canViewPrice}
           canManageMarketSkus={canManageMarketSkus}
+          canManageSupplySkus={canManageSupplySkus}
         />
       </Suspense>
     </div>

@@ -24,7 +24,9 @@ import {
   createSelfPurchasedReceipt,
   createStoreAllocation,
   createStoreReplenishmentRequest,
+  createSupplyChainStaffPurchase,
   listMarketEmployeeOptions,
+  listSupplyChainEmployeeOptions,
   quoteMarketReplenishmentPrice,
   quoteMarketReplenishmentPrices,
   receiveItemCompanyShipment,
@@ -42,12 +44,20 @@ const SESSION = {
   permissions: { actions: [], scopeStoreIds: [] },
 } as never
 
+const NO_PRICE_SESSION = {
+  employeeId: 'E-STORE',
+  name: '门店库存员',
+  phone: '13800000009',
+  roles: [{ role: 'inventory_store_operator', scopeId: 'S1', scopeType: '门店', actions: ['inventory:store_operate'], scopeStoreIds: ['S1'], scopeOrgNodeIds: ['S1'] }],
+  permissions: { actions: ['inventory:store_operate'], scopeStoreIds: ['S1'] },
+} as never
+
 const PRICE_SESSION = {
   employeeId: 'E001',
   name: '测试用户',
   phone: '13800000000',
-  roles: [{ role: 'admin', scopeId: 'HQ', scopeType: '总部' }],
-  permissions: { actions: ['inventory:price_view'], scopeStoreIds: [] },
+  roles: [{ role: 'inventory_market_finance', scopeId: 'M1', scopeType: '市场', actions: ['inventory:market_price_view'], scopeStoreIds: [], scopeOrgNodeIds: ['M1'] }],
+  permissions: { actions: ['inventory:market_price_view'], scopeStoreIds: [] },
 } as never
 
 const SELF_PURCHASE_SESSION = {
@@ -253,6 +263,9 @@ describe('inventory business action input guards', () => {
     await expect(createReturnForRestock(SESSION, {
       sourceLocationId: 'S1', targetLocationId: 'M1', items: [],
     })).rejects.toThrow('退货至少需要一条明细')
+    await expect(createSupplyChainStaffPurchase(SESSION, {
+      locationId: 'HQ', employeeId: 'E-HQ', items: [],
+    })).rejects.toThrow('供应链员工购至少需要一条明细')
   })
 
   it('拒绝空收货、零采购量和空撤回原因', async () => {
@@ -395,7 +408,7 @@ describe('inventory business action input guards', () => {
   it('无价格查看权限时拒绝门店配货折扣且不访问数据库', async () => {
     vi.clearAllMocks()
 
-    await expect(createStoreAllocation(SESSION, {
+    await expect(createStoreAllocation(NO_PRICE_SESSION, {
       storeRequestId: 'DBH-1',
       sourceMarketId: 'M1',
       items: [{ requestItemId: 1, lotId: 1, quantity: 1, storeUnitDiscount: 0.01 }],
@@ -406,7 +419,7 @@ describe('inventory business action input guards', () => {
   })
 
   it('福利报价要求价格查看权限', async () => {
-    await expect(quoteMarketReplenishmentPrice(SESSION, {
+    await expect(quoteMarketReplenishmentPrice(NO_PRICE_SESSION, {
       marketId: 'M1', skuId: 'SKU-1', quantity: 1,
     })).rejects.toThrow('无权查看市场报货价格')
   })
@@ -476,6 +489,23 @@ describe('inventory business action input guards', () => {
       { employeeId: 'E002', name: 'E002' },
     ])
     expect(renderSql(vi.mocked(db.execute).mock.calls[3][0])).toContain('employee.is_resigned = false')
+  })
+
+  it('供应链员工购候选项排除市场链路和门店员工', async () => {
+    vi.mocked(db.execute)
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([{
+        location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+      }] as never)
+      .mockResolvedValueOnce([{ employee_id: 'E-HQ', name: '总部员工' }] as never)
+
+    await expect(listSupplyChainEmployeeOptions(SESSION, 'HQ')).resolves.toEqual([
+      { employeeId: 'E-HQ', name: '总部员工' },
+    ])
+    const query = renderSql(vi.mocked(db.execute).mock.calls[3][0])
+    expect(query).toContain('employee.store_id IS NULL')
+    expect(query).toContain("type IN ('市场', '门店')")
   })
 
   it('自采入库必须引用有效且启用的供应商实体', async () => {

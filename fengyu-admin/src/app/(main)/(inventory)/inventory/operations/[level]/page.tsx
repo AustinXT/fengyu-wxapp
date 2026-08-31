@@ -59,6 +59,18 @@ export default async function Page({
     }),
   ])
   const actions = session.permissions.actions
+  const operateAction = level === 'supply-chain'
+    ? 'inventory:supply_chain_operate'
+    : level === 'market'
+      ? 'inventory:market_operate'
+      : 'inventory:store_operate'
+  const approveAction = level === 'supply-chain'
+    ? 'inventory:supply_chain_approve'
+    : level === 'market'
+      ? 'inventory:market_approve'
+      : null
+  const canCreate = hasUiCapability(actions, operateAction)
+  const canApprove = approveAction ? hasUiCapability(actions, approveAction) : false
   const allowedCreateDocTypes = INVENTORY_GENERIC_DOC_TYPES.filter(
     (docType) => genericDocBusinessLevel(docType) === level,
   )
@@ -90,8 +102,8 @@ export default async function Page({
             total={recordDocs.total}
             locations={locations}
             skuOptions={skus.data}
-            canCreate={hasUiCapability(actions, 'inventory:create_doc')}
-            canApprove={hasUiCapability(actions, 'inventory:approve')}
+            canCreate={canCreate}
+            canApprove={canApprove}
             canViewPrice={recordDocs.canViewPrice}
             initialDocType={validCreateType}
             lockedLevel={level}
@@ -104,8 +116,8 @@ export default async function Page({
             skuOptions={skus.data}
             suppliers={suppliers}
             workflowDocs={workflowDocs.data}
-            canCreate={hasUiCapability(actions, 'inventory:create_doc')}
-            canApprove={hasUiCapability(actions, 'inventory:approve')}
+            canCreate={canCreate}
+            canApprove={canApprove}
             canSelfPurchase={hasUiCapability(actions, 'inventory:self_purchase_receive')}
             canRequestShipmentCancellation={hasUiCapability(actions, 'inventory:shipment_cancel_request')}
             canApproveShipmentCancellation={hasUiCapability(actions, 'inventory:shipment_cancel_approve')}

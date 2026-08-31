@@ -15,12 +15,12 @@ export const listInventorySuppliers = withPermission(
 )
 
 export const createInventorySupplier = withPermission(
-  'inventory:create',
+  'inventory:supply_chain_master_data_manage',
   async (_session, input: InventorySupplierInput) => createInventorySupplierImpl(input),
 )
 
 export const updateInventorySupplier = withPermission(
-  'inventory:update',
+  'inventory:supply_chain_master_data_manage',
   async (_session, supplierId: string, input: Partial<InventorySupplierInput>) =>
     updateInventorySupplierImpl(supplierId, input),
 )

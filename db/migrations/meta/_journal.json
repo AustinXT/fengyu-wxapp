@@ -260,6 +260,13 @@
       "when": 1787758969427,
       "tag": "0036_repair_refund_role_pool_allocations",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1787901375973,
+      "tag": "0037_bright_the_liberteens",
+      "breakpoints": true
     }
   ]
 }

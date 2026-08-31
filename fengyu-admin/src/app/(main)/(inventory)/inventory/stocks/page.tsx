@@ -32,7 +32,7 @@ export default async function Page({
     : {
         data: [],
         total: 0,
-        canViewPrice: hasUiCapability(session.permissions.actions, 'inventory:price_view'),
+        canViewPrice: hasUiCapability(session.permissions.actions, 'inventory:supply_chain_price_view') || hasUiCapability(session.permissions.actions, 'inventory:market_price_view'),
       }
   const canExport = hasUiCapability(session.permissions.actions, 'inventory:export')
 

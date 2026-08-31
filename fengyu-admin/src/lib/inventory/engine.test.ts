@@ -472,6 +472,8 @@ describe('库存 SKU 来源与价格保护', () => {
       accountingPrice: null,
       marketPurchaseDiscount: null,
       marketPurchasePrice: '78',
+      marketPurchasePriceMode: '手工覆盖',
+      marketPurchasePriceOverrideReason: '历史维护',
       sourceType: '供应链',
       ownerMarketId: null,
     }]))
@@ -479,6 +481,8 @@ describe('库存 SKU 来源与价格保护', () => {
 
     await updateInventorySku('SKU-1', {
       marketPurchasePrice: 123,
+      marketPurchasePriceMode: '手工覆盖',
+      marketPurchasePriceOverrideReason: '供应商临时调价',
     })
 
     expect(set).toHaveBeenCalledWith(expect.objectContaining({
@@ -492,6 +496,8 @@ describe('库存 SKU 来源与价格保护', () => {
       accountingPrice: '4000',
       marketPurchaseDiscount: '0.25',
       marketPurchasePrice: '1000',
+      marketPurchasePriceMode: '手工覆盖',
+      marketPurchasePriceOverrideReason: '历史维护',
       sourceType: '供应链',
       ownerMarketId: null,
     }]))
@@ -501,6 +507,8 @@ describe('库存 SKU 来源与价格保护', () => {
       accountingPrice: 5000,
       marketPurchaseDiscount: 25,
       marketPurchasePrice: 1200,
+      marketPurchasePriceMode: '手工覆盖',
+      marketPurchasePriceOverrideReason: '合同结算价',
     })
 
     expect(set).toHaveBeenCalledWith(expect.objectContaining({
@@ -516,6 +524,7 @@ describe('库存 SKU 来源与价格保护', () => {
       accountingPrice: null,
       marketPurchaseDiscount: null,
       marketPurchasePrice: null,
+      marketPurchasePriceMode: '公式',
       sourceType: '供应链',
       ownerMarketId: null,
     }]))
@@ -538,6 +547,8 @@ describe('库存 SKU 来源与价格保护', () => {
       accountingPrice: null,
       marketPurchaseDiscount: null,
       marketPurchasePrice: '78',
+      marketPurchasePriceMode: '公式',
+      marketPurchasePriceOverrideReason: null,
       sourceType: '供应链',
       ownerMarketId: null,
     }]))
@@ -549,7 +560,7 @@ describe('库存 SKU 来源与价格保护', () => {
 
     expect(set).toHaveBeenCalledWith(expect.objectContaining({
       accountingPrice: '100',
-      marketPurchasePrice: undefined,
+      marketPurchasePrice: null,
     }))
   })
 
@@ -621,7 +632,8 @@ describe('库存 SKU 来源与价格保护', () => {
   })
 
   it('福利方案创建和更新必须具备价格查看权限', async () => {
-    vi.mocked(hasPermission).mockReturnValueOnce(false).mockReturnValueOnce(false)
+    vi.mocked(isAdminScope).mockReturnValue(false)
+    vi.mocked(hasPermission).mockReturnValue(false)
     const input = {
       name: '福利方案',
       startsAt: '2026-08-01',
@@ -1312,12 +1324,13 @@ describe('全局福利方案引擎权限', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(isAdminScope).mockReturnValue(false)
+    vi.mocked(hasPermission).mockReturnValue(true)
     mockGetSession.mockResolvedValue({
       employeeId: 'E002',
       name: '市场用户',
       phone: '13800000001',
       roles: [{ role: 'manager', scopeId: 'MARKET-1', scopeType: '市场' }],
-      permissions: { actions: ['inventory:update'], scopeStoreIds: [] },
+      permissions: { actions: ['inventory:market_operate', 'inventory:market_price_view'], scopeStoreIds: [] },
     })
     mockDb.select.mockReset()
     mockDb.transaction.mockReset()
