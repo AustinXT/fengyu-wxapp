@@ -79,8 +79,11 @@ Page({
       inflowReqId: `inflow-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
     });
 
-    // 可选：从 URL 参数预填顾客（如从顾客详情带入）
-    if (query?.clientUserId && query?.customerName) {
+    // 可选：从 URL 参数预填顾客（如从充值页/顾客详情带入）。
+    // 预填只以 clientUserId 为必要条件：无名顾客（walk-in 新客）customerName 允许为空，
+    // 否则空名会让整个预填被静默跳过，isCrossStoreTemp/boundStoreId 等上下文一并丢失。
+    // 展示层已有 name || '未命名' 兜底（wxml 与确认弹窗一致）。
+    if (query?.clientUserId) {
       this.setData({
         customerInfo: markCrossStore({
           id: null,
