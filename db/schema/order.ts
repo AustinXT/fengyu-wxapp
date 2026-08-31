@@ -474,6 +474,16 @@ export const saleOrderPayments = pgTable(
     /** status 翻 '已支付' 的时间；线下/储值卡与 created_at 一致 */
     paidAt: timestamp("paid_at", { withTimezone: true }),
     /**
+     * 款项业绩归属日期（上海自然日）。首次支付继续跟随 sale_orders 的归属日期；
+     * 回款、储值卡抵扣和退款在入账时按 paid_at 初始化，并允许一次人工调整。
+     */
+    performanceAttributionDate: date("performance_attribution_date"),
+    /** 首次人工调整时间；非 NULL 即表示该款项的一次修改机会已使用。 */
+    performanceAttributionAdjustedAt: timestamp("performance_attribution_adjusted_at", { withTimezone: true }),
+    /** 首次人工调整人；员工删除后置空，完整审计仍由 operation_logs 保留。 */
+    performanceAttributionAdjustedBy: varchar("performance_attribution_adjusted_by", { length: 30 })
+      .references(() => staffWechatUsers.employeeId, { onDelete: "set null" }),
+    /**
      * 营业额分配状态（仅"回款事件主流水行"有值；储值卡抵扣从行 / 退款 / 待支付行为 NULL）。
      * 待分配＝该笔回款待店长/后台逐笔分配；已分配＝已分配或线上自动分配完成。
      * 按回款逐笔分配的状态下沉位；sale_orders.allocation_status 为其汇总位。
@@ -487,6 +497,9 @@ export const saleOrderPayments = pgTable(
       .on(table.allocationStatus)
       .where(sql`allocation_status IS NOT NULL`),
     index("idx_sop_status_created").on(table.status, table.createdAt),
+    index("idx_sop_paid_at_id")
+      .on(table.paidAt, table.id)
+      .where(sql`paid_at IS NOT NULL`),
     /** 同订单同通道同三方流水号唯一：支付回调幂等键 */
     uniqueIndex("uq_sop_txn")
       .on(table.saleOrderId, table.paymentMethod, table.externalTxnId)
@@ -645,7 +658,9 @@ const saleOrderPerformanceEventsQuery = sql`
       sop.status,
       sop.amount,
       sop.paid_at,
-      so.performance_attribution_date,
+      sop.created_at,
+      sop.performance_attribution_date AS payment_performance_attribution_date,
+      so.performance_attribution_date AS order_performance_attribution_date,
       (
         sop.status = '已支付'
         AND sop.amount::numeric > 0
@@ -681,8 +696,12 @@ const saleOrderPerformanceEventsQuery = sql`
     amount,
     paid_at,
     CASE
-      WHEN is_initial_event THEN performance_attribution_date
-      ELSE (COALESCE(paid_at, CURRENT_TIMESTAMP) AT TIME ZONE 'Asia/Shanghai')::date
+      WHEN change_type = '首次支付' THEN order_performance_attribution_date
+      ELSE COALESCE(
+        payment_performance_attribution_date,
+        (paid_at AT TIME ZONE 'Asia/Shanghai')::date,
+        (created_at AT TIME ZONE 'Asia/Shanghai')::date
+      )
     END AS performance_date,
     is_initial_event
   FROM classified
@@ -691,8 +710,8 @@ const saleOrderPerformanceEventsQuery = sql`
 /**
  * 订单款项业绩事件视图。
  *
- * - 每单按支付时间、创建时间、ID 排序的首笔成功正向款项使用订单业绩归属日期；
- * - 后续回款、后续储值卡抵扣和退款使用各自真实 paid_at 的上海自然日；
+ * - 首次支付使用订单业绩归属日期；
+ * - 回款、储值卡抵扣和退款使用各自款项归属日期，未回填旧数据兼容回退 paid_at；
  * - 视图保留全部状态，报表必须继续限定 status='已支付'。
  */
 export const saleOrderPerformanceEvents = pgView(

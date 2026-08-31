@@ -240,7 +240,9 @@
 - admin 动作 `sale_order:performance_attribution_update` 仅默认授予系统管理员、店长、财务；必须通过 scope 校验。
 - 操作时间不限；目标日期必须在原始订单上海自然日前后 7 天内（含边界）。同日提交不消耗机会。
 - 更新使用 `FOR UPDATE` + `performance_attribution_adjusted_at IS NULL` + `updated_at` CAS，保证并发下仅一次成功，并在同一事务写 `operation_logs`。
-- `sale_order_performance_events`：首次支付，或没有更早成功正向款项的首笔纯储值卡抵扣，使用订单归属日；其他回款/退款使用流水 `paid_at` 的上海自然日。
+- `sale_order_payments` 为回款、储值卡抵扣和退款增加 `performance_attribution_date`、`performance_attribution_adjusted_at`、`performance_attribution_adjusted_by`；入账时由数据库按 `paid_at` 上海自然日初始化，待支付/待审批且无 `paid_at` 时保持 NULL。
+- admin 款项调整动作复用 `sale_order:performance_attribution_update`；仅已支付、非首次支付且有 `paid_at` 的流水可改一次，目标日期为 `paid_at` 上海自然日前后 7 天，同日不消耗机会。
+- `sale_order_performance_events`：首次支付使用订单归属日；回款、储值卡抵扣和退款使用各自款项归属日，旧数据缺值时回退流水 `paid_at`。
 - `sale_item_performance_events`：将已支付 receipt 按上述事件日期展开；旧数据无完整 receipt 时用订单归属日补齐 `sale_items.received` 差额。
 
 ### 2.9 sale_items（销售明细）

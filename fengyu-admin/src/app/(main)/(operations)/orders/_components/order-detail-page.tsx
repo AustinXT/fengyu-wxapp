@@ -18,6 +18,7 @@ import { actionErrorMessage } from "@/lib/action-error";
 import { approveDepositOrder, deleteOrder, rejectDepositOrder } from "@/actions/orders";
 import { getTreatmentCardBusinessIdentity, groupTreatmentCards, sumGroupValue } from "@/lib/treatment-card-group";
 import { PerformanceAttributionDialog } from "./performance-attribution-dialog";
+import { PaymentPerformanceAttributionDialog } from "./payment-performance-attribution-dialog";
 import { ReturnContextLink } from "@/components/return-context";
 
 /** ticket 2026-04-24 PR-3 §3.3 — change_type/status 中文展示，退款金额红色 */
@@ -62,6 +63,7 @@ const operationActionLabelMap: Record<string, string> = {
   "order.approveDeposit": "审批寄存单通过",
   "order.rejectDeposit": "驳回寄存单",
   "order.performanceAttribution.update": "修改业绩归属日期",
+  "payment.performanceAttribution.update": "修改款项业绩归属日期",
 };
 
 function formatDateTime(dt: string | null) {
@@ -223,6 +225,7 @@ export default function OrderDetailPageClient({
   const [refundFormOpen, setRefundFormOpen] = useState(false);
   const [depositApprovalPending, setDepositApprovalPending] = useState<"approve" | "reject" | null>(null);
   const [performanceAttributionDialogOpen, setPerformanceAttributionDialogOpen] = useState(false);
+  const [paymentAttributionTarget, setPaymentAttributionTarget] = useState<SaleOrderPayment | null>(null);
 
   // 退款按钮仅对销售单 + 非历史订单 + 已支付/已完成/部分支付 可见
   // （历史订单是 sale_order_type='销售单' 但 legacySource='workfine'，必须显式排除，否则按钮会露出）
@@ -737,6 +740,7 @@ export default function OrderDetailPageClient({
                   <th className="px-4 py-3 text-right font-medium text-gray-500">金额</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">通道</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">状态</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">归属日期</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">操作人</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">备注</th>
                 </tr>
@@ -745,6 +749,16 @@ export default function OrderDetailPageClient({
                 {(mergedPayments ?? []).map((p) => {
                   const amt = Number(p.amount);
                   const isRefund = p.changeType === "退款" || amt < 0;
+                  const isFirstPayment = p.changeType === "首次支付";
+                  const attributionDate = isFirstPayment
+                    ? order.performanceAttributionDate
+                    : p.performanceAttributionDate || (p.paidAt ? formatDate(p.paidAt) : null);
+                  const canEditPaymentAttribution =
+                    canAdjustPerformanceAttribution &&
+                    !isFirstPayment &&
+                    p.status === "已支付" &&
+                    !!p.paidAt &&
+                    !p.performanceAttributionAdjustedAt;
                   // 退款行展示退款专属字段（refundReason / auditEmployeeId / auditAt / auditRemark / refSaleItemId / sessionCount）
                   const refundDetailParts: string[] = [];
                   if (isRefund) {
@@ -793,6 +807,41 @@ export default function OrderDetailPageClient({
                           {p.status}
                         </span>
                       </td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <div className="flex items-center gap-2">
+                          <span>{attributionDate ? formatDate(attributionDate) : "—"}</span>
+                          <Badge
+                            variant="secondary"
+                            className={p.performanceAttributionAdjustedAt
+                              ? "bg-[#FFF7E6] text-[#D4820A]"
+                              : "bg-gray-100 text-[#666666]"}
+                          >
+                            {isFirstPayment
+                              ? "随订单"
+                              : !p.paidAt
+                                ? "未入账"
+                                : p.performanceAttributionAdjustedAt
+                                  ? "已调整"
+                                  : "系统默认"}
+                          </Badge>
+                          {canEditPaymentAttribution && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setPaymentAttributionTarget(p)}
+                            >
+                              修改
+                            </Button>
+                          )}
+                        </div>
+                        {p.performanceAttributionAdjustedAt && (
+                          <div className="mt-1 text-xs text-[#999999]">
+                            {p.performanceAttributionAdjustedByName || p.performanceAttributionAdjustedBy || "—"}
+                            <span className="ml-1">{formatDateTime(p.performanceAttributionAdjustedAt)}</span>
+                          </div>
+                        )}
+                      </td>
                       <td className="px-4 py-3">
                         {p.operatorName ||
                           (p.sourceEnd === "client" ? "顾客自助" : p.sourceEnd === "notify" ? "支付回调" : "—")}
@@ -809,7 +858,7 @@ export default function OrderDetailPageClient({
                 })}
                 {(mergedPayments ?? []).length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center text-[#999999]">
+                    <td colSpan={8} className="px-4 py-8 text-center text-[#999999]">
                       暂无款项流水
                     </td>
                   </tr>
@@ -942,6 +991,21 @@ export default function OrderDetailPageClient({
           originalOrderDate={formatDate(order.saleOrderDatetime)}
           currentAttributionDate={order.performanceAttributionDate}
           expectedUpdatedAt={order.updatedAt}
+        />
+      )}
+
+      {paymentAttributionTarget?.paidAt && (
+        <PaymentPerformanceAttributionDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setPaymentAttributionTarget(null)
+          }}
+          paymentId={paymentAttributionTarget.id}
+          originalPaidDate={formatDate(paymentAttributionTarget.paidAt)}
+          currentAttributionDate={
+            paymentAttributionTarget.performanceAttributionDate
+              || formatDate(paymentAttributionTarget.paidAt)
+          }
         />
       )}
 

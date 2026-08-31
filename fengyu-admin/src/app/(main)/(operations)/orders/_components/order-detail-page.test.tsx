@@ -10,6 +10,7 @@ vi.mock("@/components/delete-action", () => ({ DangerZoneDelete: () => null }));
 vi.mock("./record-payment-dialog", () => ({ RecordPaymentDialog: () => null }));
 vi.mock("./confirm-offline-dialog", () => ({ ConfirmOfflineDialog: () => null }));
 vi.mock("./performance-attribution-dialog", () => ({ PerformanceAttributionDialog: () => null }));
+vi.mock("./payment-performance-attribution-dialog", () => ({ PaymentPerformanceAttributionDialog: () => null }));
 
 import { calculateConfirmOfflineAmounts } from "./order-detail-page";
 
