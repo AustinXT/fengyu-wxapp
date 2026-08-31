@@ -423,11 +423,13 @@ describe('payNotify index.js', () => {
     const cardDeductInsert = sopInserts.find(([sql]) => /'储值卡抵扣'/.test(sql))
     expect(mainstreamInsert).toBeDefined()
     expect(cardDeductInsert).toBeDefined()
-    // 主流水 line 988：params = [orderNo, changeType, amount, paymentMethod, txnId, $8_external_trade_info, note, now]
-    // paid_at = $7 → params[7]
+    // 主流水 line 974-988：params 数组 [orderNo, changeType, amount, paymentMethod, txnId, note, now, tradeInfo]
+    // 占位符按数字升序映射：$1→[0], $2→[1], $3→[2], $4→[3], $5→[4], $6→[5]=note, $7→[6]=now, $8→[7]=tradeInfo
+    // paid_at = $7 → params[6]
     // 卡兑现 line 604：params = [orderNo, amount, note, now]
+    // 占位符 $1→[0]=orderNo, $2→[1]=amount, $3→[2]=note, $4→[3]=now
     // paid_at = $4 → params[3]
-    expect(mainstreamInsert[1][7]).toBe(cardDeductInsert[1][3])
+    expect(mainstreamInsert[1][6]).toBe(cardDeductInsert[1][3])
   })
 
   test('部分现金到账也先兑现本场次 pending 储值卡，再以现金+卡重算 received/部分支付状态', async () => {
