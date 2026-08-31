@@ -39,11 +39,11 @@ jobs:
           # claude-code-action 透传 env 给 Claude Code CLI：走 MiniMax Anthropic 兼容端点 + Bearer 认证。
           ANTHROPIC_BASE_URL: https://api.minimaxi.com/anthropic
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.MINIMAX_API_KEY }}
-          ANTHROPIC_MODEL: MiniMax-M2.7
-          # Claude Code 内部按场景调 sonnet/opus/haiku，全部映射到 MiniMax-M2.7，避免打到不存在的 model
-          ANTHROPIC_DEFAULT_SONNET_MODEL: MiniMax-M2.7
-          ANTHROPIC_DEFAULT_OPUS_MODEL: MiniMax-M2.7
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: MiniMax-M2.7
+          ANTHROPIC_MODEL: MiniMax-M3
+          # Claude Code 内部按场景调 sonnet/opus/haiku，全部映射到 MiniMax-M3，避免打到不存在的 model
+          ANTHROPIC_DEFAULT_SONNET_MODEL: MiniMax-M3
+          ANTHROPIC_DEFAULT_OPUS_MODEL: MiniMax-M3
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: MiniMax-M3
           API_TIMEOUT_MS: "3000000"
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
         with:
