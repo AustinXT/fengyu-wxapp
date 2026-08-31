@@ -659,7 +659,7 @@ function requiredData(app: NonNullable<Awaited<ReturnType<typeof getOnboardingAp
   return data;
 }
 
-async function getOnboardingApplicationForService(id: string) {
+async function getOnboardingApplicationForService(id: string): Promise<any> {
   await ensureOnboardingSchema();
   const [row] = await db
     .select()
@@ -674,7 +674,17 @@ async function getOnboardingApplicationForService(id: string) {
     storeName: (row as { storeName?: string }).storeName ?? null,
     marketName: (row as { marketName?: string }).marketName ?? null,
     lakalaMerchantEnabled: (row as { lakalaMerchantEnabled?: boolean }).lakalaMerchantEnabled ?? false,
-  } as NonNullable<Awaited<ReturnType<typeof getOnboardingApplicationForService>>>;
+  };
+}
+
+async function getOnboardingApplicationFromDb(id: string) {
+  await ensureOnboardingSchema();
+  const [app] = await db
+    .select()
+    .from(lakalaOnboardingApplications)
+    .where(eq(lakalaOnboardingApplications.id, id))
+    .limit(1);
+  return app ?? null;
 }
 
 async function writeLog(params: {
