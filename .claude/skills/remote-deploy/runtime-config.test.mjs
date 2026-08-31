@@ -185,6 +185,46 @@ test('shell deploy targets stay identical to the validated Node target table', (
   }
 })
 
+test('shell deploy provenance fingerprints dirty worktrees instead of rejecting them', () => {
+  const common = path.join(ROOT, '.claude/skills/remote-deploy/deploy-common.sh')
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-deploy-dirty-'))
+  const runGit = (...args) => {
+    const result = spawnSync('git', args, { cwd: repo, encoding: 'utf8' })
+    assert.equal(result.status, 0, result.stderr)
+  }
+  runGit('init', '-q')
+  runGit('config', 'user.email', 'test@example.com')
+  runGit('config', 'user.name', 'Remote Deploy Test')
+  fs.writeFileSync(path.join(repo, 'tracked.txt'), 'base\n')
+  runGit('add', 'tracked.txt')
+  runGit('commit', '-qm', 'base')
+
+  const capture = () => spawnSync('bash', ['-c', [
+    'set -euo pipefail',
+    'source "$1"',
+    'REPO_ROOT="$2"',
+    'capture_worktree_provenance',
+    'printf "%s|%s" "$WORKTREE_STATE" "$WORKTREE_FINGERPRINT"',
+  ].join('\n'), 'bash', common, repo], { encoding: 'utf8' })
+
+  const clean = capture()
+  assert.equal(clean.status, 0, clean.stderr)
+  assert.equal(clean.stdout, 'clean|clean')
+
+  fs.writeFileSync(path.join(repo, 'tracked.txt'), 'changed\n')
+  fs.writeFileSync(path.join(repo, 'untracked.txt'), 'one\n')
+  const dirty = capture()
+  assert.equal(dirty.status, 0, dirty.stderr)
+  assert.match(dirty.stdout, /^dirty\|[0-9a-f]{12}$/)
+  assert.match(dirty.stderr, /WARNING: deploying a dirty worktree as dirty\.[0-9a-f]{12}/)
+
+  const sameDirty = capture()
+  assert.equal(sameDirty.stdout, dirty.stdout)
+  fs.writeFileSync(path.join(repo, 'untracked.txt'), 'two\n')
+  const changedDirty = capture()
+  assert.notEqual(changedDirty.stdout, dirty.stdout)
+})
+
 test('service environment rendering enforces isolation', () => {
   const services = buildServiceEnvs(validConfig('prod'))
   assert.equal(services.admin.STAFF_TENCENTCLOUD_SECRETID, 'staff-id')
