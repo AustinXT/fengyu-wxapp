@@ -19,6 +19,7 @@ import { approveDepositOrder, deleteOrder, rejectDepositOrder } from "@/actions/
 import { getTreatmentCardBusinessIdentity, groupTreatmentCards, sumGroupValue } from "@/lib/treatment-card-group";
 import { PerformanceAttributionDialog } from "./performance-attribution-dialog";
 import { ReturnContextLink } from "@/components/return-context";
+import { isWorkfineLegacy, paymentMethodDisplay } from "@/lib/workfine-legacy";
 
 /** ticket 2026-04-24 PR-3 §3.3 — change_type/status 中文展示，退款金额红色 */
 const paymentChangeTypeLabelMap: Record<string, string> = {
@@ -193,7 +194,7 @@ export default function OrderDetailPageClient({
   const hasRefund = refundedAmount > 0 && order.status !== "已退款";
   const couponDiscount = Number(order.couponDiscount ?? "0");
   // 历史订单（WorkFine 导入）标记，订单信息卡展示"历史订单"角标
-  const isLegacy = order.legacySource === "workfine";
+  const isLegacy = isWorkfineLegacy(order.legacySource);
 
   const totalAmount = Number(order.totalAmount ?? "0");
   // 回款欠款（总额口径 = total − paidAmount，含储值卡，与 status 结清判定一致）：
@@ -213,7 +214,7 @@ export default function OrderDetailPageClient({
     canRecordPayment &&
     (order.saleOrderType === "销售单" || order.saleOrderType === "转换单") &&
     !order.isExperienceConversion &&
-    order.legacySource !== "workfine" &&
+    !isWorkfineLegacy(order.legacySource) &&
     repayRemaining > 0 &&
     (order.status === "部分支付" || order.status === "待支付") &&
     !canShowConfirmOffline;
@@ -229,7 +230,7 @@ export default function OrderDetailPageClient({
   const canShowRefund =
     canRefund &&
     order.saleOrderType === "销售单" &&
-    order.legacySource !== "workfine" &&
+    !isWorkfineLegacy(order.legacySource) &&
     (order.status === "已支付" || order.status === "已完成" || order.status === "部分支付");
 
   const canShowDepositApproval =
@@ -549,7 +550,10 @@ export default function OrderDetailPageClient({
             <div>
               <span className="text-[#999999]">支付方式</span>
               <p className="font-medium mt-1">
-                {isLegacy ? "未知" : paymentMethodMap[order.paymentMethod] || order.paymentMethod}
+                {paymentMethodDisplay(
+                  order.legacySource,
+                  paymentMethodMap[order.paymentMethod] || order.paymentMethod,
+                )}
               </p>
             </div>
             {order.offlineConfirmedByName && (

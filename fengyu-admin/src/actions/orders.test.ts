@@ -1179,7 +1179,7 @@ describe('createOrder — B2 拆行（疗程卡 quantity>1 → N 行）', () => 
     expect(saleItemInserts.map((c) => Number(c.values.pendingReceived))).toEqual([500, 500, 350])
   })
 
-  it('家居产品 ×10（productType=家居产品）→ 写入 1 行 sale_items（quantity=10，合行不拆）', async () => {
+  it('家居产品 ×10 → 合行写入并冻结库存组成', async () => {
     const inserts = mockTransactionCaptureInserts('FY-XSD-WX-260518103')
     const result = await createOrder({
       ...baseOrderData,
@@ -1202,7 +1202,16 @@ describe('createOrder — B2 拆行（疗程卡 quantity>1 → N 行）', () => 
     expect(saleItemInserts).toHaveLength(1)
     expect(saleItemInserts[0].values.quantity).toBe(10)
     expect(saleItemInserts[0].values.productType).toBe('家居产品')
-    expect(saleItemInserts[0].values.inventoryCompositionSnapshot).toBeNull()
+    expect(saleItemInserts[0].values.inventoryCompositionSnapshot).toEqual({
+      version: 1,
+      components: [{
+        inventorySkuId: 'inventory-sku-001',
+        productCode: 'I001',
+        productName: '库存商品',
+        specName: null,
+        quantityPerSaleUnit: 1,
+      }],
+    })
   })
 })
 
@@ -1280,7 +1289,7 @@ describe('createDepositOrder — 疗程卡逐张落库', () => {
     expect(paymentInserts.map((c) => Number(c.values.amount))).toEqual([500, 425, 425])
   })
 
-  it('家居产品 ×3 逐件落库，并共用同一显示行组', async () => {
+  it('家居产品 ×3 逐件落库，共用显示行组和库存组成快照', async () => {
     mockDepositOrderReads([{
       skuId: 'sku-home',
       productType: '家居产品',
@@ -1312,7 +1321,11 @@ describe('createDepositOrder — 疗程卡逐张落库', () => {
     expect(saleItemInserts.map((c) => c.values.sessionCount)).toEqual([null, null, null])
     expect(saleItemInserts.map((c) => c.values.remainingSessions)).toEqual([null, null, null])
     expect(new Set(saleItemInserts.map((c) => c.values.saleItemGroupId)).size).toBe(1)
-    expect(saleItemInserts.every((c) => c.values.inventoryCompositionSnapshot == null)).toBe(true)
+    expect(saleItemInserts.map((c) => c.values.inventoryCompositionSnapshot)).toEqual([
+      expect.objectContaining({ version: 1 }),
+      expect.objectContaining({ version: 1 }),
+      expect.objectContaining({ version: 1 }),
+    ])
   })
 
   it('受限普通 SKU 不匹配顾客绑定门店市场时拒绝提交', async () => {

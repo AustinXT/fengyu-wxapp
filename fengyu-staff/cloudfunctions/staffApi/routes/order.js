@@ -47,7 +47,7 @@ const { INVENTORY_LINKAGE_ENABLED } = require('../utils/feature-flags')
 const { assertEmployeesAssignableToStore } = require('../utils/employee-assignment')
 const { classifySaleOrderDocumentType } = require('../utils/document-type')
 const { maskPhoneForAuth } = require('../utils/phone-visibility')
-const { normalizeListFilters, addTimestampDateRange } = require('../utils/list-filters')
+const { isValidDate, normalizeListFilters, addTimestampDateRange } = require('../utils/list-filters')
 
 // 模块级缓存：saleOrderId → qrcodeUrl，避免轮询时重复生成
 const qrcodeCache = new Map()
@@ -2609,18 +2609,6 @@ async function list(ctx) {
   ctx.result = { orders: mapped, page, pageSize }
 }
 
-function isValidIsoDateOnly(value) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ''))
-  if (!match) return false
-  const year = Number(match[1])
-  const month = Number(match[2])
-  const day = Number(match[3])
-  const dateValue = new Date(Date.UTC(year, month - 1, day))
-  return dateValue.getUTCFullYear() === year
-    && dateValue.getUTCMonth() === month - 1
-    && dateValue.getUTCDate() === day
-}
-
 /**
  * 一次性修改订单业绩归属日期（员工端店长入口）。
  *
@@ -2634,7 +2622,7 @@ async function updatePerformanceAttribution(ctx) {
   const saleOrderId = String(payload.saleOrderId || '').trim()
   const targetDate = String(payload.performanceAttributionDate || '').trim()
   const expectedUpdatedAt = String(payload.expectedUpdatedAt || '').trim()
-  if (!saleOrderId || !isValidIsoDateOnly(targetDate)) {
+  if (!saleOrderId || !isValidDate(targetDate)) {
     throw new Error('INVALID_PARAMS: 订单号和有效的业绩归属日期必传')
   }
   if (!expectedUpdatedAt || Number.isNaN(new Date(expectedUpdatedAt).getTime())) {

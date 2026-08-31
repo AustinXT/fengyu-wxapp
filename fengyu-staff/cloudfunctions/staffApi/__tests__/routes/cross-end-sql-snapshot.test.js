@@ -650,6 +650,24 @@ describe('SUMMARY v3 §2 #14：refund-cascade 双端 5 通道覆盖守护', () =
       expect(adminSrc).toMatch(/service_commissions[\s\S]*?voided_at\s*=\s*NOW\(\)/i)
       expect(adminSrc).toMatch(/service_commissions[\s\S]*?voided_reason\s*=/i)
     })
+    test('两端通道 2 WHERE 谓词镜像为 sc.is_void = false，不再按裸 voided_at IS NULL 过滤', () => {
+      const staffSql = normalizeSql(staffSrc.slice(
+        staffSrc.indexOf('通道 2: service_commissions'),
+        staffSrc.indexOf('通道 3: user_coupons'),
+      ))
+      const adminSql = normalizeSql(adminSrc.slice(
+        adminSrc.indexOf('2) service_commissions'),
+        adminSrc.indexOf('3) user_coupons'),
+      ))
+      const activePredicate = /AND sc\.is_void = false/i
+      const legacyPredicate = /(?:WHERE|AND) (?:sc\.)?voided_at IS NULL/i
+
+      expect(staffSql).toMatch(activePredicate)
+      expect(adminSql).toMatch(activePredicate)
+      expect(staffSql.match(activePredicate)?.[0]).toBe(adminSql.match(activePredicate)?.[0])
+      expect(staffSql).not.toMatch(legacyPredicate)
+      expect(adminSql).not.toMatch(legacyPredicate)
+    })
   })
 
   // 通道 3：user_coupons 状态翻转（UPDATE ... SET status = '未使用'；部分退款不退券）

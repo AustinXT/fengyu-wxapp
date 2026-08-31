@@ -55,6 +55,7 @@ import {
 import { INVENTORY_LINKAGE_ENABLED } from '@/lib/inventory-feature-flags'
 import { getInvalidEmployeeAssignmentId } from '@/lib/employee-assignment-server'
 import { classifySaleOrderDocumentType } from '@/lib/document-type'
+import { cashAmountDisplay, isWorkfineLegacy, paymentMethodDisplay } from '@/lib/workfine-legacy'
 
 // drizzle 0.45 alias() 返回 PgTableWithColumns<Required<Update<any,...>>>，与 .leftJoin() 期望签名不兼容；cast 回原表类型解锁 build
 const opener = alias(staffWechatUsers, 'opener') as unknown as typeof staffWechatUsers
@@ -879,6 +880,7 @@ function buildOrderConditions(
   }
   // WorkFine 历史单复用 DB 枚举值「无」，但业务语义是支付通道未知；
   // 筛选时把两者拆开，避免「无（全额抵扣）」混入历史订单。
+  // SQL 字面量受筛选测试约束；支付方式与现付展示口径见 @/lib/workfine-legacy。
   if (filters.paymentMethod === '未知') {
     conditions.push(sql`${saleOrders.legacySource} = 'workfine'`)
   } else if (
@@ -1395,7 +1397,6 @@ export const exportOrders = withPermission(
         // 与销售单口径的金额列不兼容（total=0 与 received>0 并存会误导）。导出时这 5 列对寄存单留空；
         // item 级列（商品明细/总次数/可用次数/单次价格/品类等）照常展示。
         const isDeposit = r.saleOrderType === '寄存单'
-        const isLegacy = r.legacySource === 'workfine'
         return {
           source: 'item' as const,
           sourceId: String(r.sourceId ?? r.saleOrderId),
@@ -1413,10 +1414,10 @@ export const exportOrders = withPermission(
           promoterEmployeeName: r.promoterEmployeeName ?? null,
           totalAmount: isDeposit ? '' : r.totalAmount,
           prepaidCardAmount: isDeposit ? '' : (r.prepaidCardAmount ?? '0.00'),
-          cashAmount: isDeposit ? '' : (isLegacy ? '0.00' : (r.cashAmount ?? '0.00')),
+          cashAmount: isDeposit ? '' : cashAmountDisplay(r.legacySource, r.cashAmount ?? '0.00'),
           received: isDeposit ? '' : (r.received ?? '0'),
           refundedAmount: isDeposit ? '' : (r.refundedAmount ?? '0'),
-          paymentMethod: isLegacy ? '未知' : r.paymentMethod,
+          paymentMethod: paymentMethodDisplay(r.legacySource, r.paymentMethod),
           isMembershipUpgrade: r.isMembershipUpgrade ?? false,
           isActivity: r.isActivity ?? false,
           isExperienceConversion: r.isExperienceConversion ?? false,
@@ -1449,7 +1450,6 @@ export const exportOrders = withPermission(
       }),
       ...rechargeOrders.map((r) => {
         const orderAmounts = resolveOrderLevelAmounts(r)
-        const isLegacy = r.legacySource === 'workfine'
         return {
           source: 'recharge' as const,
           sourceId: String(r.sourceId ?? r.saleOrderId),
@@ -1467,10 +1467,10 @@ export const exportOrders = withPermission(
           promoterEmployeeName: r.promoterEmployeeName ?? null,
           totalAmount: r.totalAmount,
           prepaidCardAmount: orderAmounts.prepaidCardAmount,
-          cashAmount: isLegacy ? '0.00' : orderAmounts.cashAmount,
+          cashAmount: cashAmountDisplay(r.legacySource, orderAmounts.cashAmount),
           received: orderAmounts.received,
           refundedAmount: r.refundedAmount ?? '0',
-          paymentMethod: isLegacy ? '未知' : r.paymentMethod,
+          paymentMethod: paymentMethodDisplay(r.legacySource, r.paymentMethod),
           isMembershipUpgrade: r.isMembershipUpgrade ?? false,
           isActivity: r.isActivity ?? false,
           isExperienceConversion: r.isExperienceConversion ?? false,
@@ -1497,7 +1497,7 @@ export const exportOrders = withPermission(
       }),
       ...orderFallbackRows.map((r) => {
         const orderAmounts = resolveOrderLevelAmounts(r)
-        const isLegacy = r.legacySource === 'workfine'
+        const isLegacy = isWorkfineLegacy(r.legacySource)
         return {
           source: 'orderFallback' as const,
           sourceId: String(r.sourceId ?? r.saleOrderId),
@@ -1514,10 +1514,10 @@ export const exportOrders = withPermission(
             promoterEmployeeName: r.promoterEmployeeName ?? null,
             totalAmount: r.totalAmount,
             prepaidCardAmount: orderAmounts.prepaidCardAmount,
-            cashAmount: isLegacy ? '0.00' : orderAmounts.cashAmount,
+            cashAmount: cashAmountDisplay(r.legacySource, orderAmounts.cashAmount),
             received: orderAmounts.received,
             refundedAmount: r.refundedAmount ?? '0',
-            paymentMethod: isLegacy ? '未知' : r.paymentMethod,
+            paymentMethod: paymentMethodDisplay(r.legacySource, r.paymentMethod),
             isMembershipUpgrade: r.isMembershipUpgrade ?? false,
             isActivity: r.isActivity ?? false,
             isExperienceConversion: r.isExperienceConversion ?? false,
@@ -1530,7 +1530,7 @@ export const exportOrders = withPermission(
             productType: null,
             categoryL1: null,
             categoryL2: null,
-            productName: r.legacySource === 'workfine'
+            productName: isLegacy
               ? '历史订单（无商品明细）'
               : '订单（无商品明细）',
             sessionCount: null,

@@ -6760,7 +6760,7 @@ describe('order.createPickup', () => {
     expect(pg.query.mock.calls[1][1]).toEqual(['item-001', 'store-001'])
   })
 
-  test('取货成功', async () => {
+  test('取货成功并按库存组成出库', async () => {
     const ctx = createManagerCtx({ saleItemId: 'item-001', inventorySkuId: 'inventory-sku-001', pickupQuantity: 2 })
     let transactionClient
 
@@ -6825,9 +6825,12 @@ describe('order.createPickup', () => {
     expect(ctx.result.saleItemId).toBe('item-001')
     expect(ctx.result.pickedUp).toBe(2)
     expect(ctx.result.remaining).toBe(3) // 5 - 2
-    expect(ctx.result.inventoryMode).toBe('record-only')
+    expect(ctx.result.inventoryMode).toBe('composition')
     expect(ctx.result.message).toContain('取货成功')
-    expect(transactionClient.query.mock.calls.some(([sql]) => /inventory_cutover_states|inventory_stock_lots|inventory_docs|inventory_movements/.test(sql))).toBe(false)
+    expect(transactionClient.query.mock.calls.some(([sql]) => /FROM inventory_cutover_states/.test(sql))).toBe(true)
+    expect(transactionClient.query.mock.calls.some(([sql]) => /FROM inventory_stock_lots/.test(sql))).toBe(true)
+    expect(transactionClient.query.mock.calls.some(([sql]) => /INSERT INTO inventory_docs/.test(sql))).toBe(true)
+    expect(transactionClient.query.mock.calls.some(([sql]) => /INSERT INTO inventory_movements/.test(sql))).toBe(true)
     const pickupInsert = transactionClient.query.mock.calls.find(([sql]) => /INSERT INTO pickup_records/.test(sql))
     expect(pickupInsert[0]).toMatch(/VALUES \(\$1, NULL/)
   })
@@ -6835,6 +6838,7 @@ describe('order.createPickup', () => {
   test('超出可提货数量拒绝', async () => {
     const ctx = createManagerCtx({ saleItemId: 'item-001', inventorySkuId: 'inventory-sku-001', pickupQuantity: 10 })
     const clientResults = [
+      { rows: [{ status: '已初始化' }], rowCount: 1 },
       { rows: [{
         sale_item_id: 'item-001', sale_order_id: 'FY-001', store_id: 'store-001',
         product_type: '家居产品', item_direction: '购买', quantity: 5,
@@ -6852,6 +6856,7 @@ describe('order.createPickup', () => {
   test('跨店提货拒绝 — sale_items.store_id 与员工当前门店不一致', async () => {
     const ctx = createManagerCtx({ saleItemId: 'item-other-store', inventorySkuId: 'inventory-sku-001', pickupQuantity: 1 })
     const clientResults = [
+      { rows: [{ status: '已初始化' }], rowCount: 1 },
       { rows: [{
         sale_item_id: 'item-other-store', sale_order_id: 'FY-OTHER', store_id: 'store-999',
         product_type: '家居产品', item_direction: '购买', quantity: 5,
