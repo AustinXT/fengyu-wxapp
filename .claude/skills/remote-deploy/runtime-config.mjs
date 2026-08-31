@@ -16,6 +16,10 @@ export const TARGETS = Object.freeze({
     remoteDir: '/root/proj.xt.com/fengyu-wxapp/docker',
     migrationHost: '47.113.202.7',
     containerDbHost: '47.113.202.7',
+    // CloudBase 标识归属断言用（方案 A：envId 随 TARGETS 入库，与 PG host 断言同一防线）
+    cloudBaseEnvId: 'cloud1-3gpht4b01ff88838',
+    staffEnvId: 'cloud1-9g3ydpg512eecc99',
+    cdnBase: 'https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la',
   }),
   test: Object.freeze({
     sshHost: 'sqlserver101',
@@ -23,6 +27,10 @@ export const TARGETS = Object.freeze({
     remoteDir: '/www/wwwroot/fengyu-admin/docker',
     migrationHost: '101.34.242.103',
     containerDbHost: '172.18.0.1',
+    // test 与 prod 共用同一套 CloudBase 环境（test 仅 PG 落在独立机器）
+    cloudBaseEnvId: 'fengyu-client-prod-d1cga6909c0ba',
+    staffEnvId: 'fengyu-staff-prod-d4dtv6052992e9',
+    cdnBase: 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la',
   }),
   prod: Object.freeze({
     sshHost: 'fengyu-prod',
@@ -30,6 +38,9 @@ export const TARGETS = Object.freeze({
     remoteDir: '/www/wwwroot/fengyu-admin/docker',
     migrationHost: '118.178.196.26',
     containerDbHost: '118.178.196.26',
+    cloudBaseEnvId: 'fengyu-client-prod-d1cga6909c0ba',
+    staffEnvId: 'fengyu-staff-prod-d4dtv6052992e9',
+    cdnBase: 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la',
   }),
 })
 
@@ -370,7 +381,16 @@ export function validateConfig(env, config) {
 
   assertDatabaseUrl('PG_CONNECTION_STRING', config.PG_CONNECTION_STRING, target.migrationHost)
   assertDatabaseUrl('ADMIN_DATABASE_URL', config.ADMIN_DATABASE_URL, target.containerDbHost)
+  if (config.CLOUDBASE_ENV_ID !== target.cloudBaseEnvId) {
+    fail(`CLOUDBASE_ENV_ID does not belong to the ${env} target (expected ${target.cloudBaseEnvId}) — cross-environment config?`)
+  }
+  if (config.STAFF_ENV_ID !== target.staffEnvId) {
+    fail(`STAFF_ENV_ID does not belong to the ${env} target (expected ${target.staffEnvId}) — cross-environment config?`)
+  }
   assertUrl('CDN_BASE', config.CDN_BASE)
+  if (config.CDN_BASE !== target.cdnBase) {
+    fail(`CDN_BASE does not belong to the ${env} target (expected ${target.cdnBase}) — cross-environment config?`)
+  }
   assertUrl('ANALYST_ADMIN_LOGIN_URL', config.ANALYST_ADMIN_LOGIN_URL)
   assertUrl('ANALYST_ADMIN_ORIGIN', config.ANALYST_ADMIN_ORIGIN)
   assertUrl('ANALYST_PUBLIC_ORIGIN', config.ANALYST_PUBLIC_ORIGIN)

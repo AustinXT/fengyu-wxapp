@@ -34,11 +34,11 @@ function validConfig(env = 'dev') {
     ENV_PROFILE: env,
     PG_CONNECTION_STRING: `postgresql://user:pass@${target.migrationHost}:5433/fengyu_wxapp`,
     ADMIN_DATABASE_URL: `postgresql://user:pass@${target.containerDbHost}:5433/fengyu_wxapp`,
-    CLOUDBASE_ENV_ID: `${env}-client-env`,
-    CDN_BASE: 'https://cdn.example.com',
+    CLOUDBASE_ENV_ID: target.cloudBaseEnvId,
+    CDN_BASE: target.cdnBase,
     TENCENTCLOUD_SECRETID: 'client-id',
     TENCENTCLOUD_SECRETKEY: 'client-key',
-    STAFF_ENV_ID: `${env}-staff-env`,
+    STAFF_ENV_ID: target.staffEnvId,
     STAFF_TENCENTCLOUD_SECRETID: 'staff-id',
     STAFF_TENCENTCLOUD_SECRETKEY: 'staff-key',
     CLIENT_SECRET: 'shared-client-secret',
@@ -149,6 +149,19 @@ test('all fixed environment targets validate and RSA mismatch fails closed', () 
   const config = validConfig('prod')
   config.NEXT_PUBLIC_RSA_PUBLIC_KEY = validConfig('prod').NEXT_PUBLIC_RSA_PUBLIC_KEY
   assert.throws(() => validateConfig('prod', config), /do not match/)
+})
+
+test('cloudbase identity keys must belong to the target environment', () => {
+  const cases = [
+    ['CLOUDBASE_ENV_ID', 'cloudBaseEnvId'],
+    ['STAFF_ENV_ID', 'staffEnvId'],
+    ['CDN_BASE', 'cdnBase'],
+  ]
+  for (const [key, field] of cases) {
+    const config = validConfig('dev')
+    config[key] = TARGETS.prod[field]
+    assert.throws(() => validateConfig('dev', config), /does not belong/)
+  }
 })
 
 test('shell deploy targets stay identical to the validated Node target table', () => {
