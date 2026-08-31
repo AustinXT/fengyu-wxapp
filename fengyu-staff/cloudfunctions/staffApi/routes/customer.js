@@ -1620,8 +1620,8 @@ async function searchPromoterEmployees(ctx) {
 
   const { clientUserId, keyword } = ctx.event.payload || {}
   if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
-  if (typeof keyword !== 'string' || keyword.trim().length < 3) {
-    throw new Error('INVALID_PARAMS: 请输入至少3个字符搜索员工')
+  if (typeof keyword !== 'string' || keyword.trim().length < 2) {
+    throw new Error('INVALID_PARAMS: 请输入至少2个字符搜索员工')
   }
 
   const { boundStoreId } = await assertCustomerInScope(pg, ctx.auth, clientUserId)
