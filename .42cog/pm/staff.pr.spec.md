@@ -116,7 +116,7 @@
 
 **实现状态**: 已实现 | **权限**: 仅店长
 
-**核心语义**: 未覆盖全部应付的充值卡金额是"**预选**"，开单时不扣卡；仅当充值卡全额覆盖本单应付时，`order.create` / `order.createConversion` 才在创建事务内锁卡、扣卡并结清。其余扣卡发生在 clientApi（顾客端）/ payNotify（微信支付回调）/ staffApi.order.confirmOffline（线下确认）。
+**核心语义**: 未覆盖全部应付的充值卡金额是"**预选**"，开单时不扣卡；仅当充值卡全额覆盖本单应付时，`order.create` / `order.createConversion` 才在创建事务内锁卡、扣卡并结清。其余扣卡发生在 clientApi（顾客端）/ payNotify（微信支付回调）/ staffApi.order.confirmOffline（线下确认）。线下混合支付确认统一按“现付后卡”写入：先写首次支付/回款主流水，再扣卡并写储值卡抵扣流水，两行使用同一个 `paid_at`。
 
 **结算弹层 UI**:
 
