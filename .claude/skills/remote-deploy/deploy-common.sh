@@ -177,15 +177,24 @@ build_image() {
 
 transfer_image() {
   local image_ref="$1"
-  local local_id remote_id
-  local_id=$(docker image inspect -f '{{.Id}}' "$image_ref")
+  local local_config remote_config remote_id
+  # 校验标识用 config digest（docker save 导出 tar 里 manifest.json 的 Config blob）：
+  # 它在经典与 containerd 两种镜像存储下都按内容寻址、两端一致；而 .Id 在经典存储
+  # =config digest、containerd 存储=manifest digest，跨引擎比对必然假阳性
+  # （2026-09-01 test 部署：本地经典 overlay2 vs 远端 containerd snapshotter）。
+  local_config=$(docker save "$image_ref" | tar -xO manifest.json | sed -nE 's/.*"Config":"([^"]+)".*/\1/p' | sed -E 's#.*/##')
+  test -n "$local_config" || { echo "ERROR: cannot extract local image config digest" >&2; return 1; }
   docker save "$image_ref" | gzip | ssh "$SSH_HOST" docker load >&2
-  remote_id=$(ssh "$SSH_HOST" docker image inspect -f '{{.Id}}' "$image_ref")
-  [[ "$remote_id" == "$local_id" ]] || {
-    echo "ERROR: transferred image ID mismatch (local=$local_id remote=$remote_id)" >&2
+  remote_config=$(ssh "$SSH_HOST" "docker save '$image_ref' | tar -xO manifest.json" | sed -nE 's/.*"Config":"([^"]+)".*/\1/p' | sed -E 's#.*/##')
+  test -n "$remote_config" || { echo "ERROR: cannot extract remote image config digest" >&2; return 1; }
+  [[ "$remote_config" == "$local_config" ]] || {
+    echo "ERROR: transferred image config digest mismatch (local=$local_config remote=$remote_config)" >&2
     return 1
   }
-  printf '%s' "$local_id"
+  # 返回远端 .Id（远端 native 标识）：后续远端 docker tag 回滚 / inspect 漂移复核均按此解析
+  remote_id=$(ssh "$SSH_HOST" docker image inspect -f '{{.Id}}' "$image_ref")
+  test -n "$remote_id" || { echo "ERROR: cannot resolve remote image ID" >&2; return 1; }
+  printf '%s' "$remote_id"
 }
 
 prepare_release_files() {
