@@ -9,6 +9,7 @@ import test from 'node:test'
 import {
   TARGETS,
   ROOT,
+  KNOWN_PROD_HISTORICAL_MIGRATION_ROWS,
   analyzeMigrationState,
   buildServiceEnvs,
   encodeEnvValue,
@@ -356,6 +357,18 @@ test('migration analysis follows latest created_at and hash instead of row count
   assert.match(currentWithHistoricalExtra.reason, /local journal is missing/)
   assert.equal(currentWithHistoricalExtra.latestTag, '0002_c')
   assert.equal(currentWithHistoricalExtra.historicalRowDelta, 1)
+
+  const knownProdHistorical = KNOWN_PROD_HISTORICAL_MIGRATION_ROWS[0]
+  const currentWithKnownProdHistorical = analyzeMigrationState(entries, [
+    { hash: 'a', created_at: '100' },
+    knownProdHistorical,
+    { hash: 'b', created_at: '200' },
+    { hash: 'c', created_at: '300' },
+  ], hashes, { knownHistoricalRows: KNOWN_PROD_HISTORICAL_MIGRATION_ROWS })
+  assert.equal(currentWithKnownProdHistorical.ok, true)
+  assert.equal(currentWithKnownProdHistorical.latestTag, '0002_c')
+  assert.equal(currentWithKnownProdHistorical.historicalRowDelta, 0)
+  assert.equal(currentWithKnownProdHistorical.ignoredHistoricalRowCount, 1)
 
   const currentWithHistoricalGap = analyzeMigrationState(entries, [
     { hash: 'c', created_at: '300' },

@@ -507,9 +507,27 @@ export function renderBundle(env, outputDir, options = {}) {
   return manifest
 }
 
-export function analyzeMigrationState(entries, remoteRows, hashes) {
+export const KNOWN_PROD_HISTORICAL_MIGRATION_ROWS = Object.freeze([
+  {
+    // 生产库历史 0034 遗留行；2026-09-01 只读核验，非当前本地 journal 的迁移。
+    created_at: '1787637056739',
+    hash: 'd4549ec0237b8f4441af860a02c0905e59e382e3c07503063f6310ec95b896bd',
+  },
+])
+
+function migrationRowKey(row) {
+  return `${String(row.created_at)}|${row.hash}`
+}
+
+export function analyzeMigrationState(entries, remoteRows, hashes, options = {}) {
   if (!remoteRows.length) return { ok: false, reason: 'migration journal is empty', pending: [] }
-  const latestRemote = [...remoteRows].sort((a, b) => Number(b.created_at) - Number(a.created_at))[0]
+  const knownHistoricalKeys = new Set((options.knownHistoricalRows ?? []).map(migrationRowKey))
+  const ignoredHistoricalRows = remoteRows.filter((row) => knownHistoricalKeys.has(migrationRowKey(row)))
+  const effectiveRemoteRows = remoteRows.filter((row) => !knownHistoricalKeys.has(migrationRowKey(row)))
+  if (!effectiveRemoteRows.length) {
+    return { ok: false, reason: 'migration journal has no local-compatible rows', pending: [] }
+  }
+  const latestRemote = [...effectiveRemoteRows].sort((a, b) => Number(b.created_at) - Number(a.created_at))[0]
   const latestWhen = Number(latestRemote.created_at)
   const localAtLatest = entries.find((entry) => Number(entry.when) === latestWhen)
   if (!localAtLatest) {
@@ -524,7 +542,7 @@ export function analyzeMigrationState(entries, remoteRows, hashes) {
     return { ok: false, reason: `latest migration hash mismatch: ${localAtLatest.tag}`, pending: [] }
   }
   const pending = entries.filter((entry) => Number(entry.when) > latestWhen).map((entry) => entry.tag)
-  const historicalRowDelta = remoteRows.length - entries.filter((entry) => Number(entry.when) <= latestWhen).length
+  const historicalRowDelta = effectiveRemoteRows.length - entries.filter((entry) => Number(entry.when) <= latestWhen).length
   // journal 完整性必须双向一致；任一侧缺历史行都可能让缺表缺列的版本被错误放行。
   if (historicalRowDelta < 0) {
     return {
@@ -550,6 +568,7 @@ export function analyzeMigrationState(entries, remoteRows, hashes) {
     pending,
     latestTag: localAtLatest.tag,
     historicalRowDelta,
+    ignoredHistoricalRowCount: ignoredHistoricalRows.length,
   }
 }
 
@@ -569,7 +588,9 @@ export async function checkMigrations(env, options = {}) {
     const table = await client.query("SELECT to_regclass('drizzle.__drizzle_migrations')::text AS name")
     if (!table.rows[0]?.name) fail('target database has no drizzle migration journal')
     const result = await client.query('SELECT hash, created_at FROM drizzle.__drizzle_migrations ORDER BY created_at, id')
-    const state = analyzeMigrationState(journal.entries, result.rows, hashes)
+    const state = analyzeMigrationState(journal.entries, result.rows, hashes, {
+      knownHistoricalRows: env === 'prod' ? KNOWN_PROD_HISTORICAL_MIGRATION_ROWS : [],
+    })
     if (!state.ok) {
       const detail = state.pending.length ? `: ${state.pending.join(', ')}` : ''
       fail(`${state.reason}${detail}`)
