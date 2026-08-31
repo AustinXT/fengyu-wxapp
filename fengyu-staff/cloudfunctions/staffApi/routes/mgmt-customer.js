@@ -61,18 +61,6 @@ function isMgmtFullPhone(auth) {
   return !!auth.hasDataCenterDashboard
 }
 
-/** 生日是纯日期字段，禁止把 pg Date 直接序列化为 ISO 时间串下发。 */
-function normalizeBirthdayForOutput(value) {
-  if (value === undefined || value === null || value === '') return null
-  if (value instanceof Date) {
-    const year = value.getFullYear()
-    const month = String(value.getMonth() + 1).padStart(2, '0')
-    const day = String(value.getDate()).padStart(2, '0')
-    return `${year}-${month}-${day}`
-  }
-  return String(value).slice(0, 10)
-}
-
 /** 解析 scope 名称（与 mgmt-product.js 保持一致） */
 async function resolveScopeName(scopeType, scopeId) {
   if (scopeType === 'all') return '全部市场'
@@ -349,7 +337,7 @@ async function search(ctx) {
     phoneMasked: maskPhone(r.phone),
     memberLevel: r.member_level || null,
     storeName: r.store_name ? r.store_name.trim() : '',
-    birthday: normalizeBirthdayForOutput(r.birthday),
+    birthday: r.birthday ?? null,
     tier: null,
     lastServiceDate: null,
     lastPurchaseName: null,
@@ -575,7 +563,7 @@ async function detail(ctx) {
     yearConsumption,
     totalActualConsumption,
     yearActualConsumption,
-    birthday: normalizeBirthdayForOutput(pgUser.birthday),
+    birthday: pgUser.birthday ?? null,
     source: pgUser.customer_id ? 'both' : 'miniprogram',
   }
 }

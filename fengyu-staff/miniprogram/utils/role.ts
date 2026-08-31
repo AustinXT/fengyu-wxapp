@@ -79,6 +79,28 @@ export function hasRole(...roleNames: string[]): boolean {
   return roleNames.some(r => roles.includes(r));
 }
 
+/** 当前员工是否由同一角色绑定授予指定动作；库存权限不再按角色名推断。 */
+export function hasAction(action: string): boolean {
+  return (app().globalData.roleBindings || []).some((binding) => (
+    binding.isSuperAdmin || (Array.isArray(binding.actions) && binding.actions.includes(action))
+  ));
+}
+
+export function canAccessInventory(): boolean {
+  const currentStoreId = getCurrentStoreId();
+  return hasAction('inventory:store_operate')
+    && !!currentStoreId
+    && (app().globalData.inventoryStoreIds || []).includes(currentStoreId);
+}
+
+export function requireInventoryStoreOperate(tipMsg = '当前账号无门店库存办理权限'): boolean {
+  if (!canAccessInventory()) {
+    wx.showToast({ title: tipMsg, icon: 'none' });
+    return false;
+  }
+  return true;
+}
+
 /**
  * 要求店长身份，否则 toast 提示
  */

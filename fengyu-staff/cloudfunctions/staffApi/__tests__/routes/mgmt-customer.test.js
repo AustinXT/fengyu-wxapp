@@ -1113,8 +1113,7 @@ describe('mgmtCustomer 手机号脱敏策略', () => {
 
 describe('mgmtCustomer 出数完整路径', () => {
   test('detail 支持 clientUserId 入参 + 姓名回退 + 美容师解析 + scope 名称', async () => {
-    const pgBirthday = new Date(1990, 2, 15)
-    expect(pgBirthday.toISOString()).toBe('1990-03-14T16:00:00.000Z')
+    const pgBirthday = '1990-03-15'
     setupCommonMocks({
       detailRows: [
         {

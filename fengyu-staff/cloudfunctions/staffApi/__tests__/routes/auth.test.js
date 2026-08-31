@@ -132,8 +132,8 @@ describe('auth.login', () => {
     await authRoutes.login(ctx)
 
     expect(ctx.result.roleBindings).toEqual([
-      { role: 'admin', roleName: 'admin', isStoreManager: false, scopeId: 'org-hq', scopeType: '总部', scopeName: '凤御总部' },
-      { role: 'manager', roleName: 'manager', isStoreManager: true, scopeId: 'org-store-1', scopeType: '门店', scopeName: '龙岗店' },
+      { role: 'admin', roleName: 'admin', isStoreManager: false, isSuperAdmin: false, actions: [], scopeId: 'org-hq', scopeType: '总部', scopeName: '凤御总部' },
+      { role: 'manager', roleName: 'manager', isStoreManager: true, isSuperAdmin: false, actions: [], scopeId: 'org-store-1', scopeType: '门店', scopeName: '龙岗店' },
     ])
   })
 
