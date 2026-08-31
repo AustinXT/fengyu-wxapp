@@ -95,6 +95,7 @@ export default function AllocationsPageClient({
   const storeFilter = get("store")
   const dateFrom = get("from")
   const dateTo = get("to")
+  const dateBasis = get("dateBasis", "order") === "payment" ? "payment" : "order"
 
   // 搜索框防抖：本地 state 即时响应，URL 延迟更新
   const [searchInput, setSearchInput] = useState(get("q"))
@@ -147,17 +148,29 @@ export default function AllocationsPageClient({
               onStoreChange={(value) => setFilter("store", value)}
             />
             <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground whitespace-nowrap">
-                {tab === 'service' ? '服务日期' : '下单日期'}
-              </span>
+              {tab === 'sale' ? (
+                <Select
+                  className="w-40"
+                  aria-label="日期口径"
+                  value={dateBasis}
+                  onChange={(e) => setFilter("dateBasis", e.target.value === "payment" ? "payment" : "")}
+                >
+                  <option value="order">下单日期</option>
+                  <option value="payment">款项发生日期</option>
+                </Select>
+              ) : (
+                <span className="text-sm text-muted-foreground whitespace-nowrap">服务日期</span>
+              )}
               <DatePicker
                 className="w-36"
+                aria-label={tab === 'service' ? '服务开始日期' : `${dateBasis === 'payment' ? '款项发生' : '下单'}开始日期`}
                 value={dateFrom}
                 onValueChange={(value) => setFilter("from", value)}
               />
               <span className="text-[#999999]">-</span>
               <DatePicker
                 className="w-36"
+                aria-label={tab === 'service' ? '服务结束日期' : `${dateBasis === 'payment' ? '款项发生' : '下单'}结束日期`}
                 value={dateTo}
                 onValueChange={(value) => setFilter("to", value)}
               />

@@ -95,7 +95,7 @@ export function parseServiceOrderFilters(params: Record<string, string | undefin
 /**
  * 营业额分配「销售提成」页筛选解析。
  * 与 orders 列表不同：状态锁定「已支付」，分配状态走 allocStatus URL 参数
- * （与 page.tsx 的 getOrdersPaginated 入参口径一致，避免列表/导出漂移）。
+ * （供销售提成导出复用，并与 page.tsx 的 URL 映射保持同口径）。
  */
 export function parseAllocationOrderFilters(params: Record<string, string | undefined>): OrderFilters {
   return {
@@ -104,6 +104,7 @@ export function parseAllocationOrderFilters(params: Record<string, string | unde
     storeId: params.store,
     dateFrom: params.from,
     dateTo: params.to,
+    dateBasis: params.dateBasis === 'payment' ? 'payment' : 'order',
     search: params.q,
     allocationStatus: params.allocStatus,
     // 只保留参与营业额分配的订单类型（排除寄存单/充值单/内部单）

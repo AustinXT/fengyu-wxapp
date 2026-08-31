@@ -135,12 +135,13 @@ describe('订单/服务单列表筛选解析', () => {
     expect(parseServiceOrderFilters({ status: '待服务,服务中' }).statuses).toEqual(['待服务', '服务中'])
   })
 
-  it('营业额分配销售提成透传 market/store 并锁定已支付订单', () => {
+  it('营业额分配销售提成透传筛选并锁定已支付订单', () => {
     expect(
       parseAllocationOrderFilters({
         market: 'market-1',
         store: 'store-1',
         allocStatus: 'pending',
+        dateBasis: 'payment',
       }),
     ).toMatchObject({
       status: '已支付',
@@ -148,7 +149,10 @@ describe('订单/服务单列表筛选解析', () => {
       storeId: 'store-1',
       allocationStatus: 'pending',
       allocationEligibleOnly: true,
+      dateBasis: 'payment',
     })
+    expect(parseAllocationOrderFilters({ dateBasis: 'invalid' }).dateBasis).toBe('order')
+    expect(parseAllocationOrderFilters({}).dateBasis).toBe('order')
   })
 
   it('营业额分配服务提成透传 market/store 并锁定已完成服务单', () => {

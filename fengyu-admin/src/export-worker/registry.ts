@@ -4,6 +4,7 @@ import { exportMallProducts, exportProductSkus } from '@/actions/products'
 import { exportCouponTemplates, getMarkets } from '@/actions/coupons'
 import {
   exportOrders,
+  exportOrderPayments,
   exportAllocationOrders,
   type ExportAllocationOrdersCursor,
   type ExportOrdersCursor,
@@ -173,6 +174,33 @@ const orderColumns = mapColumns([
   { header: '业绩归属日期', width: 14, key: 'performanceAttributionDate', map: (row) => fmtDate(value(row, 'performanceAttributionDate') as string | Date | null) },
   { header: '创建时间', width: 20, key: 'createdAt', map: (row) => fmtDateTime(value(row, 'createdAt') as string | Date | null) },
   { header: '备注', width: 24, key: 'remark' },
+])
+
+const paymentColumns = mapColumns([
+  { header: '市场', width: 12, key: 'marketName' },
+  { header: '门店', width: 16, key: 'storeName' },
+  { header: '订单号', width: 22, key: 'saleOrderId' },
+  { header: '订单类型', width: 12, key: 'saleOrderType' },
+  { header: '单据类型', width: 10, key: 'documentType' },
+  { header: '订单状态', width: 10, key: 'orderStatus' },
+  { header: '顾客', width: 12, key: 'customerName' },
+  { header: '顾客手机', width: 14, key: 'clientPhone' },
+  { header: '款项流水号', width: 14, key: 'paymentId', map: (row) => `#${text(row, 'paymentId')}` },
+  { header: '款项类型', width: 12, key: 'changeType' },
+  { header: '款项状态', width: 10, key: 'paymentStatus' },
+  { header: '金额', width: 12, key: 'amount', map: (row) => numberOrEmpty(row, 'amount') },
+  { header: '支付方式', width: 12, key: 'paymentMethod', map: (row) => paymentMethodMap[String(value(row, 'paymentMethod') ?? '')] ?? text(row, 'paymentMethod') },
+  { header: '来源端', width: 10, key: 'sourceEnd' },
+  { header: '操作人', width: 12, key: 'operatorName' },
+  { header: '交易号', width: 24, key: 'externalTxnId' },
+  { header: '创建时间', width: 20, key: 'createdAt', map: (row) => fmtDateTime(value(row, 'createdAt') as string | Date | null) },
+  { header: '款项发生时间', width: 20, key: 'paidAt', map: (row) => fmtDateTime(value(row, 'paidAt') as string | Date | null) },
+  { header: '归属日期', width: 14, key: 'performanceAttributionDate', map: (row) => fmtDate(value(row, 'performanceAttributionDate') as string | Date | null) },
+  { header: '归属状态', width: 12, key: 'performanceAttributionStatus' },
+  { header: '归属调整人', width: 12, key: 'performanceAttributionAdjustedByName' },
+  { header: '归属调整时间', width: 20, key: 'performanceAttributionAdjustedAt', map: (row) => fmtDateTime(value(row, 'performanceAttributionAdjustedAt') as string | Date | null) },
+  { header: '退款原因', width: 28, key: 'refundReason' },
+  { header: '备注', width: 32, key: 'note' },
 ])
 
 const refundColumns = mapColumns([
@@ -559,6 +587,12 @@ export async function createExportContent(
           (row) => String(row.saleOrderId ?? row.__sourceId ?? ''),
           aggregateOrderExportRows,
         ),
+      }
+    case 'payments':
+      return {
+        sheetName: '回款明细',
+        columns: paymentColumns,
+        rows: pagedRows((options: ExportBatchOptions<number>) => exportOrderPayments(params, options)),
       }
     case 'refunds':
       return {

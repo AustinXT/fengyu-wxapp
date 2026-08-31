@@ -81,6 +81,21 @@ describe("OrdersPage — 订单类型筛选", () => {
     expect(mockSetMany).toHaveBeenCalledWith({ dateBasis: "payment", page: "" })
   })
 
+  it("同时提供订单明细和回款明细两个导出入口", () => {
+    render(
+      <OrdersPage
+        orders={[]}
+        filterOptions={{ markets: [], stores: [] }}
+        total={0}
+        canCreateOrder={false}
+        canUpdate={false}
+      />,
+    )
+
+    expect(screen.getByRole("button", { name: "导出订单明细" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "导出回款明细" })).toBeInTheDocument()
+  })
+
   it("WorkFine 历史单底层支付方式为无时展示为未知", () => {
     const order: SaleOrder = {
       saleOrderId: "FY-XSD2607260012",
