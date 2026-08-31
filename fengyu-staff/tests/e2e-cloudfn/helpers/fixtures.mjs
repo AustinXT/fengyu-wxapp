@@ -1096,8 +1096,8 @@ export async function cleanupTestData(prefix = NS) {
            OR doc_id IN (
              SELECT id FROM inventory_docs
               WHERE id LIKE $1
-                 OR source_location_id LIKE $1
-                 OR target_location_id LIKE $1
+                 OR source_org_node_id LIKE $1
+                 OR target_org_node_id LIKE $1
                  OR related_sale_order_id LIKE $1
                  OR client_user_id LIKE $1
                  OR created_by LIKE $1
@@ -1107,8 +1107,8 @@ export async function cleanupTestData(prefix = NS) {
               WHERE doc_id IN (
                 SELECT id FROM inventory_docs
                  WHERE id LIKE $1
-                    OR source_location_id LIKE $1
-                    OR target_location_id LIKE $1
+                    OR source_org_node_id LIKE $1
+                    OR target_org_node_id LIKE $1
                     OR related_sale_order_id LIKE $1
                     OR client_user_id LIKE $1
                     OR created_by LIKE $1
@@ -1123,8 +1123,8 @@ export async function cleanupTestData(prefix = NS) {
            OR doc_id IN (
              SELECT id FROM inventory_docs
               WHERE id LIKE $1
-                 OR source_location_id LIKE $1
-                 OR target_location_id LIKE $1
+                 OR source_org_node_id LIKE $1
+                 OR target_org_node_id LIKE $1
                  OR related_sale_order_id LIKE $1
                  OR client_user_id LIKE $1
                  OR created_by LIKE $1
@@ -1134,8 +1134,8 @@ export async function cleanupTestData(prefix = NS) {
     [
       `DELETE FROM inventory_docs
         WHERE id LIKE $1
-           OR source_location_id LIKE $1
-           OR target_location_id LIKE $1
+           OR source_org_node_id LIKE $1
+           OR target_org_node_id LIKE $1
            OR related_sale_order_id LIKE $1
            OR client_user_id LIKE $1
            OR created_by LIKE $1`,

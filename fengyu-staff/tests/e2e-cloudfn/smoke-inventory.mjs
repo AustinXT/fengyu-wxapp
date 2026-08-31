@@ -66,12 +66,12 @@ async function createInventoryFixture() {
   const lotId = lots[0]?.id
   await pgQuery(
     `INSERT INTO inventory_docs (
-       id, doc_type, status, target_location_id, doc_date, total_quantity,
+       id, doc_type, status, target_org_node_id, doc_date, total_quantity,
        remark, created_by, confirmed_by, confirmed_at
      )
      VALUES ($1, '院入库', '已完成', $2, CURRENT_DATE, 5, $3, $4, $4, NOW())
      ON CONFLICT (id) DO UPDATE
-       SET target_location_id = EXCLUDED.target_location_id,
+       SET target_org_node_id = EXCLUDED.target_org_node_id,
            total_quantity = EXCLUDED.total_quantity,
            status = EXCLUDED.status,
            updated_at = NOW()`,
@@ -112,12 +112,12 @@ async function main() {
     if (!found) {
       errors.push(`inventory.docList 应含本店单据 ${INV_DOC_ID}，实际 ${items.length} 项`)
     } else {
-      if (found.targetLocationId !== TEST_STORE_ID) {
-        errors.push(`list.targetLocationId=${found.targetLocationId}，期望 ${TEST_STORE_ID}`)
+      if (found.targetOrgNodeId !== TEST_STORE_ID) {
+        errors.push(`list.targetOrgNodeId=${found.targetOrgNodeId}，期望 ${TEST_STORE_ID}`)
       }
       if (found.docType !== '院入库') errors.push(`list.docType=${found.docType}，期望 院入库`)
       if (found.status !== '已完成') errors.push(`list.status=${found.status}，期望 已完成`)
-      if (errors.length === 0) rec(`  ✓ inventory.docList 含本店 v3 单据（接收主体=${found.targetLocationName}）`)
+      if (errors.length === 0) rec(`  ✓ inventory.docList 含本店 v3 单据（接收主体=${found.targetOrgNodeName}）`)
     }
   }
 
@@ -140,8 +140,8 @@ async function main() {
   } else {
     const detail = rDetail.data || {}
     if (detail.id !== INV_DOC_ID) errors.push(`detail.id=${detail.id}，期望 ${INV_DOC_ID}`)
-    if (detail.targetLocationId !== TEST_STORE_ID) {
-      errors.push(`detail.targetLocationId=${detail.targetLocationId}，期望 ${TEST_STORE_ID}`)
+    if (detail.targetOrgNodeId !== TEST_STORE_ID) {
+      errors.push(`detail.targetOrgNodeId=${detail.targetOrgNodeId}，期望 ${TEST_STORE_ID}`)
     }
     const item = (detail.items || []).find((row) => row.skuId === INV_SKU_ID)
     if (!item) {
