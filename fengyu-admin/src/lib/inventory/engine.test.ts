@@ -220,7 +220,7 @@ describe('库存通用建单边界', () => {
   it('专用单据不能经通用审批、驳回或收货入口绕过业务状态机', async () => {
     mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
       execute: initializedCutoverExecutor(vi.fn().mockResolvedValueOnce([{
-        id: 'YTH-260809-0001', doc_type: '院退货', status: '待审批', source_location_id: 'STORE-1',
+        id: 'YTH-260809-0001', doc_type: '院退货', status: '待审批', source_org_node_id: 'STORE-1',
       }])),
     }))
     await expect(approveInventoryCoreDoc('YTH-260809-0001'))
@@ -228,7 +228,7 @@ describe('库存通用建单边界', () => {
 
     mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
       execute: initializedCutoverExecutor(vi.fn().mockResolvedValueOnce([{
-        doc_type: '市场退货', status: '待审批', source_location_id: 'MARKET-1', target_location_id: 'HQ',
+        doc_type: '市场退货', status: '待审批', source_org_node_id: 'MARKET-1', target_org_node_id: 'HQ',
       }])),
     }))
     await expect(rejectInventoryCoreDoc('MTH-260809-0001'))
@@ -237,7 +237,7 @@ describe('库存通用建单边界', () => {
     mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
       execute: initializedCutoverExecutor(vi.fn().mockResolvedValueOnce([{
         id: 'FPH-260809-0001', doc_type: '分院配货', status: '待收货',
-        source_location_id: 'MARKET-1', target_location_id: 'STORE-1',
+        source_org_node_id: 'MARKET-1', target_org_node_id: 'STORE-1',
         total_quantity: '1', remark: null,
       }])),
     }))
@@ -249,16 +249,15 @@ describe('库存通用建单边界', () => {
     mockDb.select
       .mockReturnValueOnce(selectWithLimit([{ locationType: '门店' }]))
       .mockReturnValueOnce(selectWithLimit([{ locationType: '门店' }]))
-      .mockReturnValueOnce(selectWithLimit([{ locationType: '门店' }]))
       .mockReturnValueOnce(selectWithoutLimit([
-        { locationId: 'market-A', locationType: '市场', parentLocationId: 'HQ' },
-        { locationId: 'store-A', locationType: '门店', parentLocationId: 'market-A' },
+        { locationId: 'market-A', orgNodeId: 'market-A', locationType: '市场', parentLocationId: 'HQ' },
+        { locationId: 'store-A', orgNodeId: 'store-A', locationType: '门店', parentLocationId: 'market-A' },
       ]))
 
     await expect(createInventoryCoreDoc({
       docType: '分院调货出库',
-      sourceLocationId: 'market-A',
-      targetLocationId: 'store-A',
+      sourceOrgNodeId: 'market-A',
+      targetOrgNodeId: 'store-A',
       items: [{ skuId: 'SKU-1', quantity: 1 }],
     } as never)).rejects.toThrow('出入库主体必须均为门店')
   })
@@ -267,16 +266,15 @@ describe('库存通用建单边界', () => {
     mockDb.select
       .mockReturnValueOnce(selectWithLimit([{ locationType: '门店' }]))
       .mockReturnValueOnce(selectWithLimit([{ locationType: '门店' }]))
-      .mockReturnValueOnce(selectWithLimit([{ locationType: '门店' }]))
       .mockReturnValueOnce(selectWithoutLimit([
-        { locationId: 'store-A', locationType: '门店', parentLocationId: 'market-A' },
-        { locationId: 'store-B', locationType: '门店', parentLocationId: 'market-B' },
+        { locationId: 'store-A', orgNodeId: 'store-A', locationType: '门店', parentLocationId: 'market-A' },
+        { locationId: 'store-B', orgNodeId: 'store-B', locationType: '门店', parentLocationId: 'market-B' },
       ]))
 
     await expect(createInventoryCoreDoc({
       docType: '分院调货出库',
-      sourceLocationId: 'store-A',
-      targetLocationId: 'store-B',
+      sourceOrgNodeId: 'store-A',
+      targetOrgNodeId: 'store-B',
       items: [{ skuId: 'SKU-1', quantity: 1 }],
     } as never)).rejects.toThrow('同市场内部的门店才可调货')
   })
@@ -285,16 +283,15 @@ describe('库存通用建单边界', () => {
     mockDb.select
       .mockReturnValueOnce(selectWithLimit([{ locationType: '市场' }]))
       .mockReturnValueOnce(selectWithLimit([{ locationType: '市场' }]))
-      .mockReturnValueOnce(selectWithLimit([{ locationType: '门店' }]))
       .mockReturnValueOnce(selectWithoutLimit([
-        { locationId: 'market-A', locationType: '市场', parentLocationId: 'HQ' },
-        { locationId: 'store-A', locationType: '门店', parentLocationId: 'market-A' },
+        { locationId: 'market-A', orgNodeId: 'market-A', locationType: '市场', parentLocationId: 'HQ' },
+        { locationId: 'store-A', orgNodeId: 'store-A', locationType: '门店', parentLocationId: 'market-A' },
       ]))
 
     await expect(createInventoryCoreDoc({
       docType: '市场间调货出库',
-      sourceLocationId: 'market-A',
-      targetLocationId: 'store-A',
+      sourceOrgNodeId: 'market-A',
+      targetOrgNodeId: 'store-A',
       items: [{ skuId: 'SKU-1', quantity: 1 }],
     } as never)).rejects.toThrow('出入库主体必须均为市场')
   })
@@ -302,7 +299,7 @@ describe('库存通用建单边界', () => {
   it('供应链采购入库不能经通用入口绕过专用采购收货流程', async () => {
     await expect(createInventoryCoreDoc({
       docType: '供应链采购入库',
-      targetLocationId: 'market-A',
+      targetOrgNodeId: 'market-A',
       items: [{ skuId: 'SKU-1', quantity: 1 }],
     } as never)).rejects.toThrow('必须从对应的专用业务流程创建')
   })
@@ -336,20 +333,20 @@ describe('库存通用建单边界', () => {
 
     await expect(createInventoryCoreDoc({
       docType: '市场产品盘溢',
-      targetLocationId: 'MARKET-B',
+      targetOrgNodeId: 'MARKET-B',
       items: [{ skuId: 'SELF-SKU', quantity: 1 }],
     } as never)).rejects.toThrow('仅可在归属市场使用')
   })
 
   it.each([
-    ['内部领用', 'sourceLocationId', '市场', '内部领用出库主体必须是总部'],
-    ['院顾客产品出库', 'sourceLocationId', '市场', '院顾客产品出库出库主体必须是门店'],
-    ['院顾客退货', 'targetLocationId', '市场', '院顾客退货入库主体必须是门店'],
-    ['市场产品报损', 'sourceLocationId', '门店', '市场产品报损出库主体必须是市场'],
-    ['院产品报损', 'sourceLocationId', '市场', '院产品报损出库主体必须是门店'],
-    ['市场产品盘溢', 'targetLocationId', '门店', '市场产品盘溢入库主体必须是市场'],
-    ['市场库存盘点', 'sourceLocationId', '门店', '市场库存盘点主体必须是市场'],
-    ['分院库存盘点', 'sourceLocationId', '市场', '分院库存盘点主体必须是门店'],
+    ['内部领用', 'sourceOrgNodeId', '市场', '内部领用出库主体必须是总部'],
+    ['院顾客产品出库', 'sourceOrgNodeId', '市场', '院顾客产品出库出库主体必须是门店'],
+    ['院顾客退货', 'targetOrgNodeId', '市场', '院顾客退货入库主体必须是门店'],
+    ['市场产品报损', 'sourceOrgNodeId', '门店', '市场产品报损出库主体必须是市场'],
+    ['院产品报损', 'sourceOrgNodeId', '市场', '院产品报损出库主体必须是门店'],
+    ['市场产品盘溢', 'targetOrgNodeId', '门店', '市场产品盘溢入库主体必须是市场'],
+    ['市场库存盘点', 'sourceOrgNodeId', '门店', '市场库存盘点主体必须是市场'],
+    ['分院库存盘点', 'sourceOrgNodeId', '市场', '分院库存盘点主体必须是门店'],
   ] as const)('%s 限制库存主体类型', async (docType, locationField, actualType, expectedMessage) => {
     mockDb.select.mockImplementation(() => selectWithLimit([{ locationType: actualType }]))
     const input: Record<string, unknown> = {
@@ -696,7 +693,7 @@ describe('库存可用量与收货复核', () => {
 
     await createInventoryCoreDoc({
       docType: '内部领用',
-      sourceLocationId: 'HQ',
+      sourceOrgNodeId: 'HQ',
       totalAmount: 9999,
       items: [{
         skuId: 'SKU-1',
@@ -753,7 +750,7 @@ describe('库存可用量与收货复核', () => {
 
     await expect(createInventoryCoreDoc({
       docType: '内部领用',
-      sourceLocationId: 'HQ',
+      sourceOrgNodeId: 'HQ',
       items: [{ skuId: 'SKU-1', lotId: 1, quantity: 6 }],
     } as never)).rejects.toThrow('库存不足：测试 SKU 可用 5')
   })
@@ -764,7 +761,7 @@ describe('库存可用量与收货复核', () => {
         id: 'MBS-260809-0001',
         doc_type: '市场产品报损',
         status: '待审批',
-        source_location_id: 'MARKET-1',
+        source_org_node_id: 'MARKET-1',
       }])
       .mockResolvedValueOnce([{ id: 1, lot_id: 1, quantity: '6' }])
       .mockResolvedValueOnce([lotRow()])
@@ -782,8 +779,8 @@ describe('库存可用量与收货复核', () => {
       id: 'DTO-260809-0001',
       doc_type: '分院调货出库',
       status: '待收货',
-      source_location_id: 'MARKET-1',
-      target_location_id: 'STORE-1',
+      source_org_node_id: 'MARKET-1',
+      target_org_node_id: 'STORE-1',
       total_quantity: '1',
       remark: null,
     }])
@@ -791,8 +788,8 @@ describe('库存可用量与收货复核', () => {
       execute: initializedCutoverExecutor(txExecute),
     }))
     mockDb.select.mockImplementation(() => selectWithoutLimit([
-      { locationId: 'MARKET-1', locationType: '市场', parentLocationId: 'HQ' },
-      { locationId: 'STORE-1', locationType: '门店', parentLocationId: 'MARKET-1' },
+      { locationId: 'MARKET-1', orgNodeId: 'MARKET-1', locationType: '市场', parentLocationId: 'HQ' },
+      { locationId: 'STORE-1', orgNodeId: 'STORE-1', locationType: '门店', parentLocationId: 'MARKET-1' },
     ]))
 
     await expect(confirmInventoryCoreReceive('DTO-260809-0001'))
@@ -903,8 +900,8 @@ describe('库存单据详情履约进度', () => {
           id: 'MBH-260809-0001',
           docType: '市场报货',
           status: '已完成',
-          sourceLocationId: 'MARKET-1',
-          targetLocationId: 'HQ',
+          sourceOrgNodeId: 'MARKET-1',
+          targetOrgNodeId: 'HQ',
           marketId: 'MARKET-1',
           supplierId: null,
           docDate: '2026-08-09',
@@ -929,10 +926,10 @@ describe('库存单据详情履约进度', () => {
           createdAt: now,
           updatedAt: now,
         },
-        sourceLocationName: '测试市场',
-        sourceLocationType: '市场',
-        targetLocationName: '供应链总部',
-        targetLocationType: '总部',
+        sourceOrgNodeName: '测试市场',
+        sourceOrgNodeType: '市场',
+        targetOrgNodeName: '供应链总部',
+        targetOrgNodeType: '总部',
       }]))
       .mockReturnValueOnce(detailItemsSelect([{
         id: 101,
@@ -1010,10 +1007,10 @@ describe('库存单据详情履约进度', () => {
     const lineageSql = renderSql(lineageQuery)
     const fulfillmentSql = renderSql(fulfillmentQuery)
     expect(lineageSql).toContain('inventory_doc_links')
-    expect(sqlContains(lineageQuery, 'to_doc.source_location_id')).toBe(true)
-    expect(sqlContains(lineageQuery, 'from_doc.target_location_id')).toBe(true)
+    expect(sqlContains(lineageQuery, 'to_doc.source_org_node_id')).toBe(true)
+    expect(sqlContains(lineageQuery, 'from_doc.target_org_node_id')).toBe(true)
     expect(fulfillmentSql).toContain('visible_docs')
-    expect(sqlContains(fulfillmentQuery, 'visible_doc.source_location_id')).toBe(true)
+    expect(sqlContains(fulfillmentQuery, 'visible_doc.source_org_node_id')).toBe(true)
     expect(fulfillmentSql).toContain('采购订单赠送发货')
     expect(fulfillmentSql).toContain("receipt_doc.status = '已完成'")
   })
@@ -1026,8 +1023,8 @@ describe('库存单据详情履约进度', () => {
           id: 'PCG-260810-0001',
           docType: '供应链采购订单',
           status: '待收货',
-          sourceLocationId: null,
-          targetLocationId: 'HQ',
+          sourceOrgNodeId: null,
+          targetOrgNodeId: 'HQ',
           marketId: null,
           supplierId: 'SUP-1',
           docDate: '2026-08-10',
@@ -1052,10 +1049,10 @@ describe('库存单据详情履约进度', () => {
           createdAt: now,
           updatedAt: now,
         },
-        sourceLocationName: null,
-        sourceLocationType: null,
-        targetLocationName: '供应链总部',
-        targetLocationType: '总部',
+        sourceOrgNodeName: null,
+        sourceOrgNodeType: null,
+        targetOrgNodeName: '供应链总部',
+        targetOrgNodeType: '总部',
       }]))
       .mockReturnValueOnce(detailItemsSelect([{
         id: 201,
@@ -1133,8 +1130,8 @@ describe('库存单据详情履约进度', () => {
           id: 'GFH-260810-0001',
           docType: '品项公司发货',
           status: '已取消',
-          sourceLocationId: 'HQ',
-          targetLocationId: 'MARKET-1',
+          sourceOrgNodeId: 'HQ',
+          targetOrgNodeId: 'MARKET-1',
           marketId: 'MARKET-1',
           supplierId: null,
           docDate: '2026-08-10',
@@ -1159,10 +1156,10 @@ describe('库存单据详情履约进度', () => {
           createdAt: now,
           updatedAt: now,
         },
-        sourceLocationName: '供应链总部',
-        sourceLocationType: '总部',
-        targetLocationName: '测试市场',
-        targetLocationType: '市场',
+        sourceOrgNodeName: '供应链总部',
+        sourceOrgNodeType: '总部',
+        targetOrgNodeName: '测试市场',
+        targetOrgNodeType: '市场',
       }]))
       .mockReturnValueOnce(detailItemsSelect([{
         id: 401,
@@ -1224,8 +1221,8 @@ describe('库存单据详情履约进度', () => {
           id: 'ZBH-260810-0001',
           docType: '品项公司报货需求',
           status: '已完成',
-          sourceLocationId: null,
-          targetLocationId: 'HQ',
+          sourceOrgNodeId: null,
+          targetOrgNodeId: 'HQ',
           marketId: null,
           supplierId: null,
           docDate: '2026-08-10',
@@ -1250,10 +1247,10 @@ describe('库存单据详情履约进度', () => {
           createdAt: now,
           updatedAt: now,
         },
-        sourceLocationName: null,
-        sourceLocationType: null,
-        targetLocationName: '供应链总部',
-        targetLocationType: '总部',
+        sourceOrgNodeName: null,
+        sourceOrgNodeType: null,
+        targetOrgNodeName: '供应链总部',
+        targetOrgNodeType: '总部',
       }]))
       .mockReturnValueOnce(detailItemsSelect([{
         id: 301,

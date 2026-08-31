@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { inventoryPriceVisibility, inventoryScopedLocationIds } from './access'
+import {
+  inventoryPriceVisibility,
+  inventoryScopedLocationIds,
+  inventoryScopedOrgNodeIds,
+} from './access'
 
 function session(input: {
   role: string
   scopeId: string
   scopeType: '总部' | '市场' | '门店'
   scopeStoreIds?: string[]
+  scopeOrgNodeIds?: string[]
   actions?: string[]
 }) {
   const actions = input.actions ?? []
@@ -18,10 +23,14 @@ function session(input: {
       scopeId: input.scopeId,
       scopeType: input.scopeType,
       scopeStoreIds: input.scopeStoreIds ?? [],
-      scopeOrgNodeIds: [input.scopeId],
+      scopeOrgNodeIds: input.scopeOrgNodeIds ?? [input.scopeId],
       actions,
     }],
-    permissions: { actions, scopeStoreIds: input.scopeStoreIds ?? [] },
+    permissions: {
+      actions,
+      scopeStoreIds: input.scopeStoreIds ?? [],
+      scopeOrgNodeIds: input.scopeOrgNodeIds ?? [input.scopeId],
+    },
   } as never
 }
 
@@ -36,6 +45,29 @@ describe('进销存独立 scope 与价格层级', () => {
     expect(inventoryScopedLocationIds(session({
       role: 'inventory_store_operator', scopeId: 'S1', scopeType: '门店', scopeStoreIds: ['S1'],
     }))).toEqual(['S1'])
+  })
+
+  it('单据 scope 按组织树包含绑定节点及全部后代', () => {
+    expect(inventoryScopedOrgNodeIds(session({
+      role: 'inventory_supply_chain_operator',
+      scopeId: 'HQ',
+      scopeType: '总部',
+      scopeStoreIds: ['STORE-1'],
+      scopeOrgNodeIds: ['HQ', 'MARKET-1', 'NODE-STORE-1'],
+    }))).toEqual(['HQ', 'MARKET-1', 'NODE-STORE-1'])
+    expect(inventoryScopedOrgNodeIds(session({
+      role: 'inventory_market_finance',
+      scopeId: 'MARKET-1',
+      scopeType: '市场',
+      scopeStoreIds: ['STORE-1'],
+      scopeOrgNodeIds: ['MARKET-1', 'NODE-STORE-1'],
+    }))).toEqual(['MARKET-1', 'NODE-STORE-1'])
+    expect(inventoryScopedOrgNodeIds(session({
+      role: 'inventory_store_operator',
+      scopeId: 'NODE-STORE-1',
+      scopeType: '门店',
+      scopeStoreIds: ['STORE-1'],
+    }))).toEqual(['NODE-STORE-1'])
   })
 
   it('供应链和市场价格权限按持有权限合并，门店无价格', () => {

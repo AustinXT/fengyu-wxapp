@@ -19,6 +19,7 @@ type LocationType = '总部' | '市场' | '门店'
 
 interface Location {
   locationId: string
+  orgNodeId: string
   locationType: LocationType
   name: string
   parentLocationId: string | null
@@ -68,8 +69,8 @@ interface DocHeader {
   id: string
   docType: string
   status: string
-  sourceLocationId: string | null
-  targetLocationId: string | null
+  sourceOrgNodeId: string | null
+  targetOrgNodeId: string | null
   marketId: string | null
   supplierId: string | null
   supplierName: string | null
@@ -123,8 +124,8 @@ interface InsertDocHeaderInput {
   id: string
   docType: string
   status: string
-  sourceLocationId?: string | null
-  targetLocationId?: string | null
+  sourceOrgNodeId?: string | null
+  targetOrgNodeId?: string | null
   marketId?: string | null
   supplierId?: string | null
   supplierName?: string | null
@@ -307,7 +308,7 @@ export interface ShipmentLineInput {
 
 export interface CreateItemCompanyShipmentInput {
   purchaseOrderId: string
-  sourceLocationId: string
+  sourceOrgNodeId: string
   docDate?: string | null
   logisticsCompany?: string | null
   trackingNo?: string | null
@@ -353,8 +354,8 @@ export interface ReturnLineInput {
 }
 
 export interface CreateReturnForRestockInput {
-  sourceLocationId: string
-  targetLocationId: string
+  sourceOrgNodeId: string
+  targetOrgNodeId: string
   docDate?: string | null
   remark?: string | null
   items: ReturnLineInput[]
@@ -520,6 +521,21 @@ const DOC_PREFIX: Record<string, string> = {
   库存转换入库: 'ZHI',
 }
 
+const INTERNAL_SAME_NODE_DOC_TYPES = new Set([
+  '品项公司报货需求',
+  '员工购出库',
+  '供应链员工购出库',
+  '内部领用',
+  '市场产品报损',
+  '院产品报损',
+  '市场产品盘溢',
+  '市场库存盘点',
+  '分院库存盘点',
+  '库存转换出库',
+  '库存转换入库',
+  '期初库存',
+])
+
 function rows<T>(value: unknown): T[] {
   return value as T[]
 }
@@ -637,22 +653,24 @@ async function syncLocations(): Promise<void> {
   `)
 }
 
-async function locationForUpdate(tx: Tx, locationId: string): Promise<Location> {
+async function locationForUpdate(tx: Tx, endpointId: string): Promise<Location> {
   const [row] = rows<{
     location_id: string
+    org_node_id: string
     location_type: LocationType
     name: string
     parent_location_id: string | null
   }>(await tx.execute(sql`
-    SELECT location_id, location_type, name, parent_location_id
+    SELECT location_id, org_node_id, location_type, name, parent_location_id
       FROM inventory_locations
-     WHERE location_id = ${locationId}
+     WHERE (location_id = ${endpointId} OR org_node_id = ${endpointId})
        AND is_active = true
      FOR UPDATE
   `))
   if (!row) throw new ApiError('NOT_FOUND', '库存主体不存在或已停用')
   return {
     locationId: row.location_id,
+    orgNodeId: row.org_node_id,
     locationType: row.location_type,
     name: row.name,
     parentLocationId: row.parent_location_id,
@@ -892,15 +910,31 @@ async function upsertLot(
 }
 
 async function insertDocHeader(tx: Tx, input: InsertDocHeaderInput): Promise<void> {
+  const source = input.sourceOrgNodeId
+    ? await locationForUpdate(tx, input.sourceOrgNodeId)
+    : null
+  const target = input.targetOrgNodeId
+    ? await locationForUpdate(tx, input.targetOrgNodeId)
+    : null
+  let sourceOrgNodeId = source?.orgNodeId ?? null
+  let targetOrgNodeId = target?.orgNodeId ?? null
+  if (INTERNAL_SAME_NODE_DOC_TYPES.has(input.docType)) {
+    const orgNodeId = sourceOrgNodeId ?? targetOrgNodeId
+    sourceOrgNodeId = orgNodeId
+    targetOrgNodeId = orgNodeId
+  }
+  if (!sourceOrgNodeId && !targetOrgNodeId) {
+    throw new ApiError('INVALID_PARAMS', '库存单据至少需要一个组织节点端点')
+  }
   await tx.execute(sql`
     INSERT INTO inventory_docs (
-      id, doc_type, status, source_location_id, target_location_id, market_id, supplier_id,
+      id, doc_type, status, source_org_node_id, target_org_node_id, market_id, supplier_id,
       employee_id, employee_name, supplier_name, external_party_name, logistics_company, tracking_no,
       receipt_attachment_url, doc_date,
       total_quantity, total_amount, remark, created_by, confirmed_by, confirmed_at
     ) VALUES (
-      ${input.id}, ${input.docType}, ${input.status}, ${text(input.sourceLocationId)},
-      ${text(input.targetLocationId)}, ${text(input.marketId)}, ${text(input.supplierId)},
+      ${input.id}, ${input.docType}, ${input.status}, ${text(sourceOrgNodeId)},
+      ${text(targetOrgNodeId)}, ${text(input.marketId)}, ${text(input.supplierId)},
       ${text(input.employeeId)}, ${text(input.employeeName)}, ${text(input.supplierName)},
       ${text(input.externalPartyName)}, ${text(input.logisticsCompany)}, ${text(input.trackingNo)},
       ${text(input.receiptAttachmentUrl)}, ${dateOrToday(input.docDate)},
@@ -1029,8 +1063,8 @@ async function docForUpdate(tx: Tx, id: string): Promise<DocHeader> {
     id: string
     doc_type: string
     status: string
-    source_location_id: string | null
-    target_location_id: string | null
+    source_org_node_id: string | null
+    target_org_node_id: string | null
     market_id: string | null
     supplier_id: string | null
     supplier_name: string | null
@@ -1038,7 +1072,7 @@ async function docForUpdate(tx: Tx, id: string): Promise<DocHeader> {
     cancellation_requested_by: string | null
     cancellation_requested_at: string | Date | null
   }>(await tx.execute(sql`
-    SELECT id, doc_type, status, source_location_id, target_location_id, market_id,
+    SELECT id, doc_type, status, source_org_node_id, target_org_node_id, market_id,
            supplier_id, supplier_name,
            cancellation_request_reason, cancellation_requested_by, cancellation_requested_at
       FROM inventory_docs
@@ -1050,8 +1084,8 @@ async function docForUpdate(tx: Tx, id: string): Promise<DocHeader> {
     id: row.id,
     docType: row.doc_type,
     status: row.status,
-    sourceLocationId: row.source_location_id,
-    targetLocationId: row.target_location_id,
+    sourceOrgNodeId: row.source_org_node_id,
+    targetOrgNodeId: row.target_org_node_id,
     marketId: row.market_id,
     supplierId: row.supplier_id,
     supplierName: row.supplier_name,
@@ -1224,11 +1258,12 @@ export async function listMarketEmployeeOptions(
   await syncLocations()
   const [market] = rows<{
     location_id: string
+    org_node_id: string
     location_type: LocationType
     name: string
     parent_location_id: string | null
   }>(await db.execute(sql`
-    SELECT location_id, location_type, name, parent_location_id
+    SELECT location_id, org_node_id, location_type, name, parent_location_id
       FROM inventory_locations
      WHERE location_id = ${marketId}
        AND is_active = true
@@ -1237,6 +1272,7 @@ export async function listMarketEmployeeOptions(
   if (!market) throw new ApiError('NOT_FOUND', '市场库存主体不存在或已停用')
   const location: Location = {
     locationId: market.location_id,
+    orgNodeId: market.org_node_id,
     locationType: market.location_type,
     name: market.name,
     parentLocationId: market.parent_location_id,
@@ -1277,14 +1313,14 @@ export async function listSupplyChainEmployeeOptions(
 ): Promise<InventoryMarketEmployeeOption[]> {
   const locationId = required(locationIdInput, '供应链库存主体')
   await syncLocations()
-  const [row] = rows<{ location_id: string; location_type: LocationType; name: string; parent_location_id: string | null }>(await db.execute(sql`
-    SELECT location_id, location_type, name, parent_location_id
+  const [row] = rows<{ location_id: string; org_node_id: string; location_type: LocationType; name: string; parent_location_id: string | null }>(await db.execute(sql`
+    SELECT location_id, org_node_id, location_type, name, parent_location_id
       FROM inventory_locations
      WHERE location_id = ${locationId} AND is_active = true
      LIMIT 1
   `))
   if (!row) throw new ApiError('NOT_FOUND', '供应链库存主体不存在或已停用')
-  const location: Location = { locationId: row.location_id, locationType: row.location_type, name: row.name, parentLocationId: row.parent_location_id }
+  const location: Location = { locationId: row.location_id, orgNodeId: row.org_node_id, locationType: row.location_type, name: row.name, parentLocationId: row.parent_location_id }
   assertType(location, '总部', '供应链员工购出库主体')
   assertLocationWritable(session, location)
   const employees = rows<{ employee_id: string; name: string | null }>(await db.execute(sql`
@@ -1738,8 +1774,8 @@ export async function createStoreReplenishmentRequest(
       id: docId,
       docType: '门店报货',
       status: '已完成',
-      sourceLocationId: storeId,
-      targetLocationId: marketId,
+      sourceOrgNodeId: storeId,
+      targetOrgNodeId: marketId,
       marketId,
       docDate: input.docDate,
       totalQuantity: total,
@@ -1815,8 +1851,8 @@ export async function createItemCompanyReplenishment(
       id: docId,
       docType: '品项公司报货需求',
       status: '已完成',
-      sourceLocationId: null,
-      targetLocationId: supplyChainLocationId,
+      sourceOrgNodeId: null,
+      targetOrgNodeId: supplyChainLocationId,
       totalQuantity,
       totalAmount: fixed(totalAmount),
       docDate: input.docDate,
@@ -2054,8 +2090,8 @@ export async function createMarketReplenishment(
       id: docId,
       docType: '市场报货',
       status: '已完成',
-      sourceLocationId: marketId,
-      targetLocationId: supplyChainLocationId,
+      sourceOrgNodeId: marketId,
+      targetOrgNodeId: supplyChainLocationId,
       marketId,
       docDate,
       totalQuantity,
@@ -2148,10 +2184,10 @@ export async function createPurchaseOrderFromMarketReplenishment(
       throw new ApiError('INVALID_STATE', '采购订单必须引用有效的市场报货单')
     }
     const marketId = required(marketReport.marketId, '市场报货所属市场')
-    if (marketReport.sourceLocationId !== marketId) {
+    if (marketReport.sourceOrgNodeId !== marketId) {
       throw new ApiError('INVALID_STATE', '市场报货单的市场主体不一致')
     }
-    if (marketReport.targetLocationId !== supplyChainLocationId) {
+    if (marketReport.targetOrgNodeId !== supplyChainLocationId) {
       throw new ApiError('INVALID_STATE', '采购订单必须使用市场报货单指定的供应链主体')
     }
     const market = await locationForUpdate(tx, marketId)
@@ -2185,8 +2221,8 @@ export async function createPurchaseOrderFromMarketReplenishment(
       id: docId,
       docType: '采购订单',
       status: '已完成',
-      sourceLocationId: marketId,
-      targetLocationId: supplyChainLocationId,
+      sourceOrgNodeId: marketId,
+      targetOrgNodeId: supplyChainLocationId,
       marketId,
       supplierId: supplier.id,
       supplierName: supplier.name,
@@ -2258,7 +2294,7 @@ export async function createPurchaseOrderFromItemCompanyReplenishment(
     if (request.docType !== '品项公司报货需求' || request.status !== '已完成') {
       throw new ApiError('INVALID_STATE', '采购订单必须引用有效的品项公司报货需求单')
     }
-    if (request.marketId !== null || request.sourceLocationId !== null || request.targetLocationId !== supplyChainLocationId) {
+    if (request.marketId !== null || request.sourceOrgNodeId !== null || request.targetOrgNodeId !== supplyChainLocationId) {
       throw new ApiError('INVALID_STATE', '品项公司报货需求的供应链主体不一致')
     }
     const supplyChain = await locationForUpdate(tx, supplyChainLocationId)
@@ -2295,8 +2331,8 @@ export async function createPurchaseOrderFromItemCompanyReplenishment(
       id: docId,
       docType: '供应链采购订单',
       status: '待收货',
-      sourceLocationId: null,
-      targetLocationId: supplyChainLocationId,
+      sourceOrgNodeId: null,
+      targetOrgNodeId: supplyChainLocationId,
       marketId: null,
       supplierId: supplier.id,
       supplierName: supplier.name,
@@ -2401,7 +2437,7 @@ export async function createItemCompanyShipment(
   input: CreateItemCompanyShipmentInput,
 ): Promise<{ id: string }> {
   const purchaseOrderId = required(input.purchaseOrderId, '采购订单')
-  const sourceLocationId = required(input.sourceLocationId, '发货总部')
+  const sourceOrgNodeId = required(input.sourceOrgNodeId, '发货总部')
   if (!Array.isArray(input.items) || input.items.length === 0) {
     throw new ApiError('INVALID_PARAMS', '品项公司发货至少需要一条明细')
   }
@@ -2412,7 +2448,7 @@ export async function createItemCompanyShipment(
     if (order.docType !== '采购订单' || order.status === '已取消') {
       throw new ApiError('INVALID_STATE', '品项公司发货必须引用有效采购订单')
     }
-    if (!order.marketId || order.sourceLocationId !== order.marketId) {
+    if (!order.marketId || order.sourceOrgNodeId !== order.marketId) {
       throw new ApiError('INVALID_STATE', '品项公司发货仅支持市场报货生成的采购订单')
     }
     const marketReportId = await linkedSourceDocId(
@@ -2427,10 +2463,10 @@ export async function createItemCompanyShipment(
       throw new ApiError('INVALID_STATE', '品项公司发货仅支持市场报货生成的采购订单')
     }
     const marketId = order.marketId
-    if (order.targetLocationId !== sourceLocationId) {
+    if (order.targetOrgNodeId !== sourceOrgNodeId) {
       throw new ApiError('INVALID_STATE', '品项公司发货必须从采购订单指定的供应链主体发出')
     }
-    const source = await locationForUpdate(tx, sourceLocationId)
+    const source = await locationForUpdate(tx, sourceOrgNodeId)
     const market = await locationForUpdate(tx, marketId)
     assertType(source, '总部', '品项公司发货主体')
     assertType(market, '市场', '采购订单所属市场')
@@ -2453,7 +2489,7 @@ export async function createItemCompanyShipment(
       if (nearlyGreater(quantity, orderItem.quantity - shipped)) {
         throw new ApiError('CONFLICT', '正常发货数量不能超过采购订单未发数量')
       }
-      const lot = await lotForUpdate(tx, Number(line.lotId), sourceLocationId)
+      const lot = await lotForUpdate(tx, Number(line.lotId), source.locationId)
       if (lot.skuId !== orderItem.skuId) throw new ApiError('INVALID_PARAMS', '发货批次与采购订单 SKU 不一致')
       await loadLotSkuForMarket(tx, lot, marketIdForLocation(source))
       await assertLotAvailable(tx, lot, quantity + giftQuantity)
@@ -2465,8 +2501,8 @@ export async function createItemCompanyShipment(
       id: docId,
       docType: '品项公司发货',
       status: '待收货',
-      sourceLocationId,
-      targetLocationId: marketId,
+      sourceOrgNodeId,
+      targetOrgNodeId: marketId,
       marketId,
       supplierId: order.supplierId,
       supplierName: order.supplierName,
@@ -2511,7 +2547,7 @@ export async function createItemCompanyShipment(
           requestDocId: purchaseOrderId,
           requestItemId: line.orderItem.id,
           lotId: line.lot.id,
-          locationId: sourceLocationId,
+          locationId: source.locationId,
           skuId: line.lot.skuId,
           quantity: line.quantity,
           fulfilledQuantity: line.quantity,
@@ -2555,7 +2591,7 @@ export async function createItemCompanyShipment(
           requestDocId: purchaseOrderId,
           requestItemId: line.orderItem.id,
           lotId: line.lot.id,
-          locationId: sourceLocationId,
+          locationId: source.locationId,
           skuId: line.lot.skuId,
           quantity: line.giftQuantity,
           fulfilledQuantity: line.giftQuantity,
@@ -2628,9 +2664,9 @@ async function receivePhysicalShipment(
     if (shipment.docType !== expectedDocType || shipment.status !== '待收货') {
       throw new ApiError('INVALID_STATE', '当前单据不能收货')
     }
-    const source = await locationForUpdate(tx, required(shipment.sourceLocationId, '发货主体'))
-    const targetLocationId = required(shipment.targetLocationId, '收货主体')
-    const target = await locationForUpdate(tx, targetLocationId)
+    const source = await locationForUpdate(tx, required(shipment.sourceOrgNodeId, '发货主体'))
+    const targetOrgNodeId = required(shipment.targetOrgNodeId, '收货主体')
+    const target = await locationForUpdate(tx, targetOrgNodeId)
     assertLocationWritable(session, target)
     if (expectedDocType === '品项公司发货') {
       assertType(source, '总部', '品项公司发货主体')
@@ -2661,7 +2697,7 @@ async function receivePhysicalShipment(
         throw new ApiError('CONFLICT', '实收数量不能超过待收数量')
       }
       if (!shipmentItem.lotId) throw new ApiError('INVALID_STATE', '发货明细缺少来源批次')
-      const sourceLot = await lotForUpdate(tx, shipmentItem.lotId, shipment.sourceLocationId)
+      const sourceLot = await lotForUpdate(tx, shipmentItem.lotId, source.locationId)
       const price = expectedDocType === '品项公司发货'
         ? await linkedSourcePricing(tx, shipmentItem.id)
         : priceFromItem(shipmentItem)
@@ -2684,8 +2720,8 @@ async function receivePhysicalShipment(
       id: docId,
       docType: inboundDocType,
       status: '已完成',
-      sourceLocationId: shipment.sourceLocationId,
-      targetLocationId,
+      sourceOrgNodeId: shipment.sourceOrgNodeId,
+      targetOrgNodeId,
       marketId: shipment.marketId,
       supplierId: shipment.supplierId,
       supplierName: shipment.supplierName,
@@ -2698,7 +2734,7 @@ async function receivePhysicalShipment(
     })
     for (const item of prepared) {
       const targetLot = await upsertLot(tx, {
-        locationId: targetLocationId,
+        locationId: target.locationId,
         skuId: item.shipmentItem.skuId,
         skuName: item.shipmentItem.skuName,
         specName: item.shipmentItem.specName,
@@ -2819,7 +2855,7 @@ export async function receiveSupplyChainPurchaseOrder(
     if (order.docType !== '供应链采购订单' || order.status !== '待收货') {
       throw new ApiError('INVALID_STATE', '供应链采购入库必须引用待收货的供应链采购订单')
     }
-    if (order.sourceLocationId !== null || order.targetLocationId !== supplyChainLocationId || order.marketId !== null) {
+    if (order.sourceOrgNodeId !== null || order.targetOrgNodeId !== supplyChainLocationId || order.marketId !== null) {
       throw new ApiError('INVALID_STATE', '供应链采购订单的库存主体不一致')
     }
     const companyRequestId = await linkedSourceDocId(
@@ -2833,8 +2869,8 @@ export async function receiveSupplyChainPurchaseOrder(
     if (
       request.docType !== '品项公司报货需求' ||
       request.status !== '已完成' ||
-      request.sourceLocationId !== null ||
-      request.targetLocationId !== supplyChainLocationId ||
+      request.sourceOrgNodeId !== null ||
+      request.targetOrgNodeId !== supplyChainLocationId ||
       request.marketId !== null
     ) {
       throw new ApiError('INVALID_STATE', '供应链采购订单的品项公司报货来源无效')
@@ -2895,8 +2931,8 @@ export async function receiveSupplyChainPurchaseOrder(
       id: docId,
       docType: '供应链采购入库',
       status: '已完成',
-      sourceLocationId: null,
-      targetLocationId: supplyChainLocationId,
+      sourceOrgNodeId: null,
+      targetOrgNodeId: supplyChainLocationId,
       marketId: null,
       supplierId: order.supplierId,
       supplierName: order.supplierName,
@@ -2909,7 +2945,7 @@ export async function receiveSupplyChainPurchaseOrder(
     })
     for (const line of prepared) {
       const targetLot = await upsertLot(tx, {
-        locationId: supplyChainLocationId,
+        locationId: supplyChain.locationId,
         skuId: line.sku.skuId,
         skuName: line.sku.productName,
         specName: line.sku.specName,
@@ -3000,8 +3036,8 @@ export async function cancelSupplyChainPurchaseOrder(
     if (order.docType !== '供应链采购订单' || order.status !== '待收货') {
       throw new ApiError('INVALID_STATE', '只有待收货的供应链采购订单可以关闭')
     }
-    const supplyChainLocationId = required(order.targetLocationId, '供应链库存主体')
-    if (order.sourceLocationId !== null || order.marketId !== null) {
+    const supplyChainLocationId = required(order.targetOrgNodeId, '供应链库存主体')
+    if (order.sourceOrgNodeId !== null || order.marketId !== null) {
       throw new ApiError('INVALID_STATE', '供应链采购订单的库存主体不一致')
     }
     const supplyChain = await locationForUpdate(tx, supplyChainLocationId)
@@ -3019,8 +3055,8 @@ export async function cancelSupplyChainPurchaseOrder(
     if (
       request.docType !== '品项公司报货需求' ||
       request.status !== '已完成' ||
-      request.sourceLocationId !== null ||
-      request.targetLocationId !== supplyChainLocationId ||
+      request.sourceOrgNodeId !== null ||
+      request.targetOrgNodeId !== supplyChainLocationId ||
       request.marketId !== null
     ) {
       throw new ApiError('INVALID_STATE', '供应链采购订单的品项公司报货来源无效')
@@ -3135,10 +3171,10 @@ export async function createStoreAllocation(
     if (request.docType !== '门店报货' || request.status === '已取消') {
       throw new ApiError('INVALID_STATE', '分院配货必须引用有效门店报货单')
     }
-    const storeId = required(request.sourceLocationId, '门店报货主体')
+    const storeId = required(request.sourceOrgNodeId, '门店报货主体')
     const marketId = required(request.marketId, '门店报货所属市场')
     if (marketId !== sourceMarketId) throw new ApiError('INVALID_PARAMS', '配货市场必须与门店报货所属市场一致')
-    if (request.targetLocationId !== sourceMarketId) {
+    if (request.targetOrgNodeId !== sourceMarketId) {
       throw new ApiError('INVALID_STATE', '门店报货单的接收市场不一致')
     }
     const market = await locationForUpdate(tx, sourceMarketId)
@@ -3204,8 +3240,8 @@ export async function createStoreAllocation(
       id: docId,
       docType: '分院配货',
       status: '待收货',
-      sourceLocationId: sourceMarketId,
-      targetLocationId: storeId,
+      sourceOrgNodeId: sourceMarketId,
+      targetOrgNodeId: storeId,
       marketId: sourceMarketId,
       docDate: input.docDate,
       totalQuantity,
@@ -3346,16 +3382,16 @@ export async function createReturnForRestock(
   session: AuthSession,
   input: CreateReturnForRestockInput,
 ): Promise<{ id: string }> {
-  const sourceLocationId = required(input.sourceLocationId, '退货主体')
-  const targetLocationId = required(input.targetLocationId, '回库主体')
+  const sourceOrgNodeId = required(input.sourceOrgNodeId, '退货主体')
+  const targetOrgNodeId = required(input.targetOrgNodeId, '回库主体')
   if (!Array.isArray(input.items) || input.items.length === 0) {
     throw new ApiError('INVALID_PARAMS', '退货至少需要一条明细')
   }
   await syncLocations()
   const id = await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
-    const source = await locationForUpdate(tx, sourceLocationId)
-    const target = await locationForUpdate(tx, targetLocationId)
+    const source = await locationForUpdate(tx, sourceOrgNodeId)
+    const target = await locationForUpdate(tx, targetOrgNodeId)
     assertLocationWritable(session, source)
     let docType: '院退货' | '市场退货'
     let marketId: string
@@ -3381,7 +3417,7 @@ export async function createReturnForRestock(
         throw new ApiError('INVALID_PARAMS', '退货批次不能重复')
       }
       seenLots.add(lotId)
-      const lot = await lotForUpdate(tx, lotId, sourceLocationId)
+      const lot = await lotForUpdate(tx, lotId, source.locationId)
       const quantity = positive(line.quantity, '退货数量')
       await assertLotAvailable(tx, lot, quantity)
       const sku = await loadLotSkuForMarket(tx, lot, marketId)
@@ -3394,8 +3430,8 @@ export async function createReturnForRestock(
       id: docId,
       docType,
       status: '待审批',
-      sourceLocationId,
-      targetLocationId,
+      sourceOrgNodeId,
+      targetOrgNodeId,
       marketId,
       docDate: input.docDate,
       totalQuantity,
@@ -3430,7 +3466,7 @@ export async function createReturnForRestock(
         requestDocId: docId,
         requestItemId: docItemId,
         lotId: item.lot.id,
-        locationId: sourceLocationId,
+        locationId: source.locationId,
         skuId: item.lot.skuId,
         quantity: item.quantity,
         status: '已预留',
@@ -3439,7 +3475,7 @@ export async function createReturnForRestock(
     }
     return docId
   })
-  await logOperation(session, 'inventory.return.create', 'inventory_docs', id, { sourceLocationId, targetLocationId })
+  await logOperation(session, 'inventory.return.create', 'inventory_docs', id, { sourceOrgNodeId, targetOrgNodeId })
   refreshInventoryPaths()
   return { id }
 }
@@ -3472,10 +3508,10 @@ export async function approveReturnForRestock(
     if (!['院退货', '市场退货'].includes(returnDoc.docType) || returnDoc.status !== '待审批') {
       throw new ApiError('INVALID_STATE', '当前单据不能审批回库')
     }
-    const sourceLocationId = required(returnDoc.sourceLocationId, '退货主体')
-    const targetLocationId = required(returnDoc.targetLocationId, '回库主体')
-    const source = await locationForUpdate(tx, sourceLocationId)
-    const target = await locationForUpdate(tx, targetLocationId)
+    const sourceOrgNodeId = required(returnDoc.sourceOrgNodeId, '退货主体')
+    const targetOrgNodeId = required(returnDoc.targetOrgNodeId, '回库主体')
+    const source = await locationForUpdate(tx, sourceOrgNodeId)
+    const target = await locationForUpdate(tx, targetOrgNodeId)
     assertLocationWritable(session, target)
     const inboundDocType = returnDoc.docType === '院退货' ? '市场退货入库' : '供应链退货入库'
     const items = await allDocItemsForUpdate(tx, returnDocId)
@@ -3486,8 +3522,8 @@ export async function approveReturnForRestock(
       id: docId,
       docType: inboundDocType,
       status: '已完成',
-      sourceLocationId,
-      targetLocationId,
+      sourceOrgNodeId,
+      targetOrgNodeId,
       marketId: returnDoc.marketId,
       docDate: shanghaiToday(),
       totalQuantity,
@@ -3516,14 +3552,14 @@ export async function approveReturnForRestock(
       if (nearlyGreater(item.quantity, reservedAvailable)) {
         throw new ApiError('CONFLICT', '退货库存预留数量不足')
       }
-      const sourceLot = await lotForUpdate(tx, item.lotId, sourceLocationId)
+      const sourceLot = await lotForUpdate(tx, item.lotId, source.locationId)
       if (nearlyGreater(item.quantity, sourceLot.quantityOnHand)) {
         throw new ApiError('INVALID_STATE', '退货批次当前库存不足')
       }
       const sku = await loadLotSkuForMarket(tx, sourceLot, marketIdForLocation(source))
       assertSkuAvailableToMarket(sku, marketIdForLocation(target))
       const targetLot = await upsertLot(tx, {
-        locationId: targetLocationId,
+        locationId: target.locationId,
         skuId: item.skuId,
         skuName: item.skuName,
         specName: item.specName,
@@ -3627,7 +3663,7 @@ export async function rejectReturnForRestock(
     if (!['院退货', '市场退货'].includes(returnDoc.docType) || returnDoc.status !== '待审批') {
       throw new ApiError('INVALID_STATE', '当前单据不能驳回')
     }
-    const target = await locationForUpdate(tx, required(returnDoc.targetLocationId, '回库主体'))
+    const target = await locationForUpdate(tx, required(returnDoc.targetOrgNodeId, '回库主体'))
     assertLocationWritable(session, target)
     await tx.execute(sql`
       UPDATE inventory_stock_reservations
@@ -3664,9 +3700,9 @@ export async function requestItemCompanyShipmentCancellation(
     if (shipment.docType !== '品项公司发货' || shipment.status !== '待收货') {
       throw new ApiError('INVALID_STATE', '只有待收货的品项公司发货单可以申请撤回')
     }
-    const source = await locationForUpdate(tx, required(shipment.sourceLocationId, '发货主体'))
+    const source = await locationForUpdate(tx, required(shipment.sourceOrgNodeId, '发货主体'))
     assertType(source, '总部', '发货主体')
-    const target = await locationForUpdate(tx, required(shipment.targetLocationId, '收货市场'))
+    const target = await locationForUpdate(tx, required(shipment.targetOrgNodeId, '收货市场'))
     assertType(target, '市场', '收货主体')
     if (shipment.marketId !== target.locationId) {
       throw new ApiError('INVALID_STATE', '品项公司发货的市场归属不一致')
@@ -3704,7 +3740,7 @@ export async function approveItemCompanyShipmentCancellation(
       throw new ApiError('INVALID_STATE', '只有待审批的品项公司发货撤回申请可以审批')
     }
     const cancellationReason = required(shipment.cancellationRequestReason, '撤回申请原因')
-    const source = await locationForUpdate(tx, required(shipment.sourceLocationId, '发货主体'))
+    const source = await locationForUpdate(tx, required(shipment.sourceOrgNodeId, '发货主体'))
     assertType(source, '总部', '发货主体')
     assertLocationWritable(session, source)
     const items = await allDocItemsForUpdate(tx, shipmentId)
@@ -3767,7 +3803,7 @@ export async function rejectItemCompanyShipmentCancellation(
     if (shipment.docType !== '品项公司发货' || shipment.status !== '待审批') {
       throw new ApiError('INVALID_STATE', '只有待审批的品项公司发货撤回申请可以驳回')
     }
-    const source = await locationForUpdate(tx, required(shipment.sourceLocationId, '发货主体'))
+    const source = await locationForUpdate(tx, required(shipment.sourceOrgNodeId, '发货主体'))
     assertType(source, '总部', '发货主体')
     assertLocationWritable(session, source)
     await tx.execute(sql`
@@ -3839,7 +3875,7 @@ export async function createMarketStaffPurchase(
       id: docId,
       docType: '员工购出库',
       status: '已完成',
-      sourceLocationId: marketId,
+      sourceOrgNodeId: marketId,
       marketId,
       employeeId: employee.id,
       employeeName: employee.name,
@@ -3934,7 +3970,7 @@ export async function createSupplyChainStaffPurchase(
       id: docId,
       docType: '供应链员工购出库',
       status: '已完成',
-      sourceLocationId: locationId,
+      sourceOrgNodeId: locationId,
       marketId: null,
       employeeId: employee.id,
       employeeName: employee.name,
@@ -4057,7 +4093,7 @@ export async function createSelfPurchasedReceipt(
       id: docId,
       docType: '自采产品入库',
       status: '已完成',
-      targetLocationId: marketId,
+      targetOrgNodeId: marketId,
       marketId,
       supplierId: supplier.id,
       supplierName,
@@ -4163,7 +4199,7 @@ export async function createExternalMarketOutbound(
       id: docId,
       docType: '非凤御市场出库',
       status: '已完成',
-      sourceLocationId: locationId,
+      sourceOrgNodeId: locationId,
       marketId: null,
       externalPartyName,
       docDate: input.docDate,
@@ -4270,7 +4306,7 @@ export async function createInventoryConversion(
       id: outboundId,
       docType: '库存转换出库',
       status: '已完成',
-      sourceLocationId: locationId,
+      sourceOrgNodeId: locationId,
       marketId,
       docDate: input.docDate,
       totalQuantity: fixed(prepared.reduce((sum, item) => sum + item.sourceQuantity, 0)),
@@ -4283,7 +4319,7 @@ export async function createInventoryConversion(
       id: inboundId,
       docType: '库存转换入库',
       status: '已完成',
-      targetLocationId: locationId,
+      targetOrgNodeId: locationId,
       marketId,
       docDate: input.docDate,
       totalQuantity: fixed(prepared.reduce((sum, item) => sum + item.targetQuantity, 0)),
@@ -4459,8 +4495,8 @@ export async function getShipmentReceiptProgress(
     if (!['品项公司发货', '分院配货'].includes(shipment.docType)) {
       throw new ApiError('INVALID_PARAMS', '仅支持查询品项公司发货或分院配货进度')
     }
-    const source = shipment.sourceLocationId ? await locationForUpdate(tx, shipment.sourceLocationId) : null
-    const target = shipment.targetLocationId ? await locationForUpdate(tx, shipment.targetLocationId) : null
+    const source = shipment.sourceOrgNodeId ? await locationForUpdate(tx, shipment.sourceOrgNodeId) : null
+    const target = shipment.targetOrgNodeId ? await locationForUpdate(tx, shipment.targetOrgNodeId) : null
     const canSeeSource = source && (() => {
       try {
         assertLocationWritable(session, source)

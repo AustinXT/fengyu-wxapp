@@ -316,8 +316,8 @@ export interface InventoryDocItemInput {
 
 export interface CreateInventoryDocInput {
   docType: InventoryDocType
-  sourceLocationId?: string | null
-  targetLocationId?: string | null
+  sourceOrgNodeId?: string | null
+  targetOrgNodeId?: string | null
   marketId?: string | null
   supplierId?: string | null
   docDate?: string | null
@@ -341,12 +341,12 @@ export interface InventoryDocRow {
   id: string
   docType: InventoryDocType
   status: InventoryCoreDocStatus
-  sourceLocationId: string | null
-  sourceLocationName: string | null
-  sourceLocationType: InventoryLocationType | null
-  targetLocationId: string | null
-  targetLocationName: string | null
-  targetLocationType: InventoryLocationType | null
+  sourceOrgNodeId: string | null
+  sourceOrgNodeName: string | null
+  sourceOrgNodeType: InventoryLocationType | null
+  targetOrgNodeId: string | null
+  targetOrgNodeName: string | null
+  targetOrgNodeType: InventoryLocationType | null
   marketId: string | null
   supplierId: string | null
   docDate: string

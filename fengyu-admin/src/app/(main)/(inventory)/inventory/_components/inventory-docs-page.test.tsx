@@ -30,12 +30,12 @@ const row: InventoryDocRow = {
   id: 'MBS-260813-0001',
   docType: '市场产品报损',
   status: '待审批',
-  sourceLocationId: 'M1',
-  sourceLocationName: '南昌市场',
-  sourceLocationType: '市场',
-  targetLocationId: null,
-  targetLocationName: null,
-  targetLocationType: null,
+  sourceOrgNodeId: 'M1',
+  sourceOrgNodeName: '南昌市场',
+  sourceOrgNodeType: '市场',
+  targetOrgNodeId: null,
+  targetOrgNodeName: null,
+  targetOrgNodeType: null,
   marketId: 'M1',
   supplierId: null,
   docDate: '2026-08-13',
@@ -71,6 +71,7 @@ const baseProps = {
   skuOptions: [],
   canCreate: true,
   canApprove: true,
+  canReceive: true,
   canViewPrice: true,
 }
 
@@ -86,41 +87,35 @@ const locationFilterOptions: InventoryLocationFilterOptions = {
 }
 
 describe('InventoryDocsPage 职责边界', () => {
-  it('全局单据中心只提供检索和详情', () => {
+  it('单据中心统一提供检索和业务动作', () => {
     render(
       <InventoryDocsPage
         {...baseProps}
-        readOnly
         locationFilterOptions={locationFilterOptions}
-        selectedLocationId="HQ"
+        selectedOrgNodeId="HQ"
+        allowedCreateDocTypes={['市场产品报损', '市场产品盘溢']}
       />,
     )
 
     expect(screen.getByRole('heading', { name: '单据中心' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '详情' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '新建' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '通过' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '驳回' })).not.toBeInTheDocument()
-    expect(screen.getByDisplayValue('总部（供应链）')).toBeInTheDocument()
-    expect(screen.getByDisplayValue('供应链库存')).toBeInTheDocument()
-    expect(screen.queryByDisplayValue('全部层级')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '新建' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '通过' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '驳回' })).toBeInTheDocument()
   })
 
-  it('本级单据记录承接业务动作并锁定层级', () => {
+  it('新建窗口只展示当前权限允许的单据类型', () => {
     render(
       <InventoryDocsPage
         {...baseProps}
-        lockedLevel="market"
         allowedCreateDocTypes={['市场产品报损', '市场产品盘溢']}
       />,
     )
 
-    expect(screen.getByRole('heading', { name: '本级单据记录' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '单据中心' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '新建' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '通过' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '驳回' })).toBeInTheDocument()
-    expect(screen.queryByLabelText('库存市场层级')).not.toBeInTheDocument()
-
     fireEvent.click(screen.getByRole('button', { name: '新建' }))
     const dialog = screen.getByRole('dialog')
     expect(within(dialog).getByRole('option', { name: '市场产品报损' })).toBeInTheDocument()

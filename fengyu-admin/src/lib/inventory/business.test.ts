@@ -125,8 +125,8 @@ function itemCompanyShipmentRow(input: {
     id: 'GFH-1',
     doc_type: '品项公司发货',
     status: input.status,
-    source_location_id: 'HQ',
-    target_location_id: 'M1',
+    source_org_node_id: 'HQ',
+    target_org_node_id: 'M1',
     market_id: 'M1',
     supplier_id: 'SUP-1',
     supplier_name: '供应商',
@@ -252,7 +252,7 @@ describe('inventory business action input guards', () => {
       companyRequestId: 'ZBH-1', supplierId: 'SUP-1', supplyChainLocationId: 'HQ', items: [],
     })).rejects.toThrow('采购订单至少需要一条明细')
     await expect(createItemCompanyShipment(SESSION, {
-      purchaseOrderId: 'CGD-1', sourceLocationId: 'HQ', items: [],
+      purchaseOrderId: 'CGD-1', sourceOrgNodeId: 'HQ', items: [],
     })).rejects.toThrow('品项公司发货至少需要一条明细')
     await expect(receiveSupplyChainPurchaseOrder(SESSION, {
       purchaseOrderId: 'PCG-1', supplyChainLocationId: 'HQ', items: [],
@@ -261,7 +261,7 @@ describe('inventory business action input guards', () => {
       storeRequestId: 'DBH-1', sourceMarketId: 'M1', items: [],
     })).rejects.toThrow('分院配货至少需要一条明细')
     await expect(createReturnForRestock(SESSION, {
-      sourceLocationId: 'S1', targetLocationId: 'M1', items: [],
+      sourceOrgNodeId: 'S1', targetOrgNodeId: 'M1', items: [],
     })).rejects.toThrow('退货至少需要一条明细')
     await expect(createSupplyChainStaffPurchase(SESSION, {
       locationId: 'HQ', employeeId: 'E-HQ', items: [],
@@ -538,7 +538,7 @@ describe('inventory business action input guards', () => {
       .mockResolvedValueOnce([storeRequestItemRow('5')])
       .mockResolvedValueOnce([{
         id: 'DBH-1', doc_type: '门店报货', status: '已完成',
-        source_location_id: 'S1', target_location_id: 'M1', market_id: 'M1',
+        source_org_node_id: 'S1', target_org_node_id: 'M1', market_id: 'M1',
         supplier_id: null, supplier_name: null,
       }])
       .mockResolvedValueOnce([{ quantity: '0' }])
@@ -599,7 +599,7 @@ describe('inventory business action input guards', () => {
   it('品项公司采购订单只接受已完成的需求单', async () => {
     const txExecute = vi.fn().mockResolvedValueOnce([{
       id: 'ZBH-1', doc_type: '品项公司报货需求', status: '草稿',
-      source_location_id: null, target_location_id: 'HQ', market_id: null,
+      source_org_node_id: null, target_org_node_id: 'HQ', market_id: null,
       supplier_id: null, supplier_name: null,
     }])
     vi.mocked(db.execute).mockResolvedValue([] as never)
@@ -632,7 +632,7 @@ describe('inventory business action input guards', () => {
     const txExecute = vi.fn()
       .mockResolvedValueOnce([{
         id: 'PCG-1', doc_type: '供应链采购订单', status: '待收货',
-        source_location_id: null, target_location_id: 'HQ', market_id: null,
+        source_org_node_id: null, target_org_node_id: 'HQ', market_id: null,
         supplier_id: 'SUP-1', supplier_name: '供应商',
       }])
       .mockResolvedValueOnce([{
@@ -641,7 +641,7 @@ describe('inventory business action input guards', () => {
       .mockResolvedValueOnce([{ from_doc_id: 'ZBH-1' }])
       .mockResolvedValueOnce([{
         id: 'ZBH-1', doc_type: '品项公司报货需求', status: '已完成',
-        source_location_id: null, target_location_id: 'HQ', market_id: null,
+        source_org_node_id: null, target_org_node_id: 'HQ', market_id: null,
         supplier_id: null, supplier_name: null,
       }])
       .mockResolvedValueOnce([purchaseOrderItem])
@@ -662,7 +662,7 @@ describe('inventory business action input guards', () => {
   it('市场报货不能转换为供应链采购订单', async () => {
     const txExecute = vi.fn().mockResolvedValueOnce([{
       id: 'MBH-1', doc_type: '市场报货', status: '已完成',
-      source_location_id: 'M1', target_location_id: 'HQ', market_id: 'M1',
+      source_org_node_id: 'M1', target_org_node_id: 'HQ', market_id: 'M1',
       supplier_id: null, supplier_name: null,
     }])
     vi.mocked(db.execute).mockResolvedValue([] as never)
@@ -679,7 +679,7 @@ describe('inventory business action input guards', () => {
   it('供应链采购订单不能进入品项公司发货，市场采购订单不能直接供应链入库', async () => {
     const shipmentExecutor = vi.fn().mockResolvedValueOnce([{
       id: 'PCG-1', doc_type: '供应链采购订单', status: '待收货',
-      source_location_id: null, target_location_id: 'HQ', market_id: null,
+      source_org_node_id: null, target_org_node_id: 'HQ', market_id: null,
       supplier_id: 'SUP-1', supplier_name: '供应商',
     }])
     vi.mocked(db.execute).mockResolvedValue([] as never)
@@ -687,13 +687,13 @@ describe('inventory business action input guards', () => {
       execute: initializedCutoverExecutor(shipmentExecutor),
     } as never))
     await expect(createItemCompanyShipment(SESSION, {
-      purchaseOrderId: 'PCG-1', sourceLocationId: 'HQ',
+      purchaseOrderId: 'PCG-1', sourceOrgNodeId: 'HQ',
       items: [{ purchaseOrderItemId: 1, lotId: 1, quantity: 1 }],
     })).rejects.toThrow('品项公司发货必须引用有效采购订单')
 
     const receiptExecutor = vi.fn().mockResolvedValueOnce([{
       id: 'CGD-1', doc_type: '采购订单', status: '已完成',
-      source_location_id: 'M1', target_location_id: 'HQ', market_id: 'M1',
+      source_org_node_id: 'M1', target_org_node_id: 'HQ', market_id: 'M1',
       supplier_id: 'SUP-1', supplier_name: '供应商',
     }])
     vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({

@@ -16,7 +16,7 @@ export const listInventoryCoreDocs = withPermission(
   async (
     _session,
     filters: {
-      locationId?: string
+      orgNodeId?: string
       locationType?: InventoryLocationType
       docType?: InventoryDocType
       status?: InventoryCoreDocStatus

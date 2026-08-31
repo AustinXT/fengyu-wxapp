@@ -206,6 +206,16 @@ async function createPickupInventoryDoc(
           is_active = EXCLUDED.is_active,
           updated_at = NOW()
   `)
+  const [storeLocation] = (await tx.execute(sql`
+    SELECT org_node_id
+      FROM inventory_locations
+     WHERE location_id = ${data.storeId}
+       AND is_active = true
+     LIMIT 1
+  `)) as unknown as Array<{ org_node_id: string | null }>
+  if (!storeLocation?.org_node_id) {
+    throw new ApiError('INVALID_STATE', '提货门店没有有效组织节点')
+  }
 
   type LotRow = {
     id: number
@@ -268,12 +278,12 @@ async function createPickupInventoryDoc(
   const totalQuantity = data.requirements.reduce((sum, requirement) => sum + requirement.quantity, 0)
   await tx.execute(sql`
     INSERT INTO inventory_docs (
-      id, doc_type, status, source_location_id, doc_date, total_quantity,
+      id, doc_type, status, source_org_node_id, doc_date, total_quantity,
       related_sale_order_id, client_user_id, customer_name,
       remark, created_by, confirmed_by, confirmed_at
     )
     VALUES (
-      ${docId}, '院顾客产品出库', '已完成', ${data.storeId}, ${shanghaiToday()}, ${totalQuantity},
+      ${docId}, '院顾客产品出库', '已完成', ${storeLocation.org_node_id}, ${shanghaiToday()}, ${totalQuantity},
       ${data.saleOrderId}, ${data.clientUserId}, ${data.customerName},
       ${data.remark?.trim() || null}, ${session.employeeId}, ${session.employeeId}, NOW()
     )

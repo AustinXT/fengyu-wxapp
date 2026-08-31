@@ -96,13 +96,12 @@ export default function InventoryDocsPage({
   skuOptions,
   canCreate,
   canApprove,
+  canReceive,
   canViewPrice,
   initialDocType,
-  readOnly = false,
-  lockedLevel,
   allowedCreateDocTypes,
   locationFilterOptions,
-  selectedLocationId,
+  selectedOrgNodeId,
 }: {
   rows: InventoryDocRow[]
   total: number
@@ -110,13 +109,12 @@ export default function InventoryDocsPage({
   skuOptions: InventorySkuRow[]
   canCreate: boolean
   canApprove: boolean
+  canReceive: boolean
   canViewPrice: boolean
   initialDocType?: InventoryDocType
-  readOnly?: boolean
-  lockedLevel?: 'supply-chain' | 'market' | 'store'
   allowedCreateDocTypes?: readonly InventoryDocType[]
   locationFilterOptions?: InventoryLocationFilterOptions
-  selectedLocationId?: string | null
+  selectedOrgNodeId?: string | null
 }) {
   const router = useRouter()
   const { get, setMany } = useUrlFilters()
@@ -168,14 +166,14 @@ export default function InventoryDocsPage({
       ),
     },
     {
-      key: 'sourceLocationName',
+      key: 'sourceOrgNodeName',
       header: '出库/发起',
-      cell: (r) => r.sourceLocationName ?? '—',
+      cell: (r) => r.sourceOrgNodeName ?? '—',
     },
     {
-      key: 'targetLocationName',
+      key: 'targetOrgNodeName',
       header: '入库/接收',
-      cell: (r) => r.targetLocationName ?? '—',
+      cell: (r) => r.targetOrgNodeName ?? '—',
     },
     { key: 'docDate', header: '日期', cell: (r) => formatDate(r.docDate) },
     {
@@ -203,7 +201,7 @@ export default function InventoryDocsPage({
           <PreserveListContextLink href={`/inventory/docs/${r.id}`}>
             <Button variant="ghost" size="sm">详情</Button>
           </PreserveListContextLink>
-          {!readOnly && GENERIC_DOC_TYPE_SET.has(r.docType) && canApprove && r.status === '待审批' && (
+          {GENERIC_DOC_TYPE_SET.has(r.docType) && canApprove && r.status === '待审批' && (
             <>
               <Button variant="ghost" size="sm" onClick={() => approve(r.id)}>
                 通过
@@ -213,7 +211,7 @@ export default function InventoryDocsPage({
               </Button>
             </>
           )}
-          {!readOnly && GENERIC_DOC_TYPE_SET.has(r.docType) && canCreate && r.status === '待收货' && (
+          {GENERIC_DOC_TYPE_SET.has(r.docType) && canReceive && r.status === '待收货' && (
             <Button variant="ghost" size="sm" onClick={() => receive(r.id)}>
               收货
             </Button>
@@ -228,14 +226,14 @@ export default function InventoryDocsPage({
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <ClipboardList className="size-5 text-[var(--primary)]" />
-          <h1 className="text-xl font-medium">{readOnly ? '单据中心' : '本级单据记录'}</h1>
+          <h1 className="text-xl font-medium">单据中心</h1>
         </div>
         <div className="flex items-center gap-2">
           {locationFilterOptions && (
             <InventoryLocationFilter
               options={locationFilterOptions}
-              value={selectedLocationId ?? null}
-              onChange={(location) => setMany({ location, level: '', page: '' })}
+              value={selectedOrgNodeId ?? null}
+              onChange={(orgNodeId) => setMany({ orgNodeId, page: '' })}
             />
           )}
           <Select
@@ -268,8 +266,7 @@ export default function InventoryDocsPage({
             variant="outline"
             onClick={() => setMany({
               q: '',
-              location: locationFilterOptions?.defaultLocationId ?? '',
-              level: '',
+              orgNodeId: locationFilterOptions?.defaultLocationId ?? '',
               docType: '',
               status: '',
               create: '',
@@ -278,7 +275,7 @@ export default function InventoryDocsPage({
           >
             重置
           </Button>
-          {!readOnly && canCreate && (
+          {canCreate && (
             <Button onClick={() => setOpen(true)}>
               <Plus className="mr-1 size-4" /> 新建
             </Button>
@@ -296,7 +293,7 @@ export default function InventoryDocsPage({
         onPageSizeChange={(size) => setMany({ size: String(size), page: '' })}
       />
 
-      {!readOnly && (
+      {canCreate && (
         <CreateDocDialog
           open={open}
           onOpenChange={setOpen}
@@ -328,13 +325,13 @@ function CreateDocDialog({
   initialDocType?: InventoryDocType
   allowedDocTypes?: readonly InventoryDocType[]
 }) {
-  const availableDocTypes = allowedDocTypes?.length ? allowedDocTypes : INVENTORY_GENERIC_DOC_TYPES
+  const availableDocTypes = allowedDocTypes ?? INVENTORY_GENERIC_DOC_TYPES
   const [submitting, setSubmitting] = useState(false)
   const [docType, setDocType] = useState<InventoryDocType>(
     initialDocType && availableDocTypes.includes(initialDocType) ? initialDocType : availableDocTypes[0],
   )
-  const [sourceLocationId, setSourceLocationId] = useState('')
-  const [targetLocationId, setTargetLocationId] = useState('')
+  const [sourceOrgNodeId, setSourceOrgNodeId] = useState('')
+  const [targetOrgNodeId, setTargetOrgNodeId] = useState('')
   const [docDate, setDocDate] = useState(() => {
     return new Intl.DateTimeFormat('en-CA', {
       timeZone: 'Asia/Shanghai',
@@ -349,6 +346,7 @@ function CreateDocDialog({
   const [loadingLotKeys, setLoadingLotKeys] = useState<Record<string, boolean>>({})
   const requiresSourceLot = SOURCE_LOT_DOC_TYPES.has(docType)
   const isDocTypeLocked = Boolean(initialDocType && availableDocTypes.includes(initialDocType))
+  const sourceLocationId = locations.find((location) => location.orgNodeId === sourceOrgNodeId)?.locationId ?? ''
 
   function updateItem(index: number, patch: Partial<DraftItem>) {
     setItems((prev) => prev.map((item, i) => (i === index ? { ...item, ...patch } : item)))
@@ -386,8 +384,8 @@ function CreateDocDialog({
     try {
       const payload: CreateInventoryDocInput = {
         docType,
-        sourceLocationId: sourceLocationId || null,
-        targetLocationId: targetLocationId || null,
+        sourceOrgNodeId: sourceOrgNodeId || null,
+        targetOrgNodeId: targetOrgNodeId || null,
         docDate,
         remark,
         items: items.map<InventoryDocItemInput>((item) => ({
@@ -425,23 +423,23 @@ function CreateDocDialog({
           </Select>
           <DatePicker value={docDate} onValueChange={setDocDate} />
           <Select
-            value={sourceLocationId}
+            value={sourceOrgNodeId}
             onChange={(e) => {
-              setSourceLocationId(e.target.value)
+              setSourceOrgNodeId(e.target.value)
               setItems((prev) => prev.map((item) => ({ ...item, lotId: '' })))
             }}
           >
             <option value="">出库/发起主体</option>
-            {locations.map((location) => (
-              <option key={location.locationId} value={location.locationId}>
+            {locations.filter((location) => location.orgNodeId).map((location) => (
+              <option key={location.orgNodeId!} value={location.orgNodeId!}>
                 {location.locationType} · {location.name}
               </option>
             ))}
           </Select>
-          <Select value={targetLocationId} onChange={(e) => setTargetLocationId(e.target.value)}>
+          <Select value={targetOrgNodeId} onChange={(e) => setTargetOrgNodeId(e.target.value)}>
             <option value="">入库/接收主体</option>
-            {locations.map((location) => (
-              <option key={location.locationId} value={location.locationId}>
+            {locations.filter((location) => location.orgNodeId).map((location) => (
+              <option key={location.orgNodeId!} value={location.orgNodeId!}>
                 {location.locationType} · {location.name}
               </option>
             ))}

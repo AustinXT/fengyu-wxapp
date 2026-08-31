@@ -28,6 +28,24 @@ export function inventoryScopedLocationIds(session: AuthSession): string[] | nul
   return [...ids]
 }
 
+/**
+ * 单据按真实组织节点隔离。动作级 session.roles 已由 withPermission 收紧，
+ * scopeOrgNodeIds 包含绑定节点自身及全部后代；总部因此可见市场和门店单据，
+ * 市场可见门店单据，门店仅见自身。
+ */
+export function inventoryScopedOrgNodeIds(session: AuthSession): string[] | null {
+  if (isAdminScope(session)) return null
+  const ids = new Set<string>()
+  for (const role of session.roles) {
+    const expanded = role.scopeOrgNodeIds?.length ? role.scopeOrgNodeIds : [role.scopeId]
+    for (const orgNodeId of expanded) ids.add(orgNodeId)
+  }
+  if (ids.size === 0) {
+    for (const orgNodeId of session.permissions.scopeOrgNodeIds ?? []) ids.add(orgNodeId)
+  }
+  return [...ids]
+}
+
 export function inventoryPriceVisibility(session: AuthSession): InventoryPriceVisibility {
   if (isAdminScope(session)) return 'all'
   const supplyChain = hasPermission(session, 'inventory:supply_chain_price_view')

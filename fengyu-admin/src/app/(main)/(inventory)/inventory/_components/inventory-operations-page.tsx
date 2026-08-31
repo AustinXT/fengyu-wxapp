@@ -141,19 +141,19 @@ const OPERATIONS: OperationDefinition[] = [
 
 const GENERIC_OPERATIONS: Record<InventoryBusinessLevel, Array<Omit<OperationDefinition, 'id'> & { id: OperationId }>> = {
   'supply-chain': [
-    { id: 'supply-chain-conversion', level: 'supply-chain', title: '内部领用', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/operations/supply-chain?view=docs&create=内部领用' },
+    { id: 'supply-chain-conversion', level: 'supply-chain', title: '内部领用', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/docs?create=内部领用' },
   ],
   market: [
-    { id: 'market-conversion', level: 'market', title: '市场间调货', group: '市场特殊业务', icon: ArrowLeftRight, tone: 'text-[#5E8BB3] bg-[#F0F5FA]', href: '/inventory/operations/market?view=docs&create=市场间调货出库' },
-    { id: 'market-conversion', level: 'market', title: '市场产品报损', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/operations/market?view=docs&create=市场产品报损' },
-    { id: 'market-conversion', level: 'market', title: '市场盘点/盘溢', group: '市场特殊业务', icon: ClipboardCheck, tone: 'text-[#7B5E2B] bg-[#FFF8E6]', href: '/inventory/operations/market?view=docs&create=市场库存盘点' },
+    { id: 'market-conversion', level: 'market', title: '市场间调货', group: '市场特殊业务', icon: ArrowLeftRight, tone: 'text-[#5E8BB3] bg-[#F0F5FA]', href: '/inventory/docs?create=市场间调货出库' },
+    { id: 'market-conversion', level: 'market', title: '市场产品报损', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/docs?create=市场产品报损' },
+    { id: 'market-conversion', level: 'market', title: '市场盘点/盘溢', group: '市场特殊业务', icon: ClipboardCheck, tone: 'text-[#7B5E2B] bg-[#FFF8E6]', href: '/inventory/docs?create=市场库存盘点' },
   ],
   store: [
-    { id: 'store-conversion', level: 'store', title: '门店调拨', group: '发货、收货与退货', icon: ArrowLeftRight, tone: 'text-[#5E8BB3] bg-[#F0F5FA]', href: '/inventory/operations/store?view=docs&create=分院调货出库' },
-    { id: 'store-conversion', level: 'store', title: '顾客产品出库', group: '发货、收货与退货', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/operations/store?view=docs&create=院顾客产品出库' },
-    { id: 'store-conversion', level: 'store', title: '顾客产品退货', group: '发货、收货与退货', icon: RotateCcw, tone: 'text-[#3D8A5A] bg-[#F0F9F2]', href: '/inventory/operations/store?view=docs&create=院顾客退货' },
-    { id: 'store-conversion', level: 'store', title: '门店产品报损', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/operations/store?view=docs&create=院产品报损' },
-    { id: 'store-conversion', level: 'store', title: '门店库存盘点', group: '市场特殊业务', icon: ClipboardCheck, tone: 'text-[#7B5E2B] bg-[#FFF8E6]', href: '/inventory/operations/store?view=docs&create=分院库存盘点' },
+    { id: 'store-conversion', level: 'store', title: '门店调拨', group: '发货、收货与退货', icon: ArrowLeftRight, tone: 'text-[#5E8BB3] bg-[#F0F5FA]', href: '/inventory/docs?create=分院调货出库' },
+    { id: 'store-conversion', level: 'store', title: '顾客产品出库', group: '发货、收货与退货', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/docs?create=院顾客产品出库' },
+    { id: 'store-conversion', level: 'store', title: '顾客产品退货', group: '发货、收货与退货', icon: RotateCcw, tone: 'text-[#3D8A5A] bg-[#F0F9F2]', href: '/inventory/docs?create=院顾客退货' },
+    { id: 'store-conversion', level: 'store', title: '门店产品报损', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/docs?create=院产品报损' },
+    { id: 'store-conversion', level: 'store', title: '门店库存盘点', group: '市场特殊业务', icon: ClipboardCheck, tone: 'text-[#7B5E2B] bg-[#FFF8E6]', href: '/inventory/docs?create=分院库存盘点' },
   ],
 }
 
@@ -1180,7 +1180,7 @@ function PurchaseOrderForm({
       setLines([])
       return
     }
-    setSupplyChainLocationId(doc.targetLocationId ?? '')
+    setSupplyChainLocationId(doc.targetOrgNodeId ?? '')
     setLines(doc.items.filter(hasAvailableQuantity).map((item) => ({
       sourceItemId: item.id,
       skuName: item.skuName,
@@ -1297,7 +1297,7 @@ function SupplyChainPurchaseOrderForm({
       setLines([])
       return
     }
-    setSupplyChainLocationId(doc.targetLocationId ?? '')
+    setSupplyChainLocationId(doc.targetOrgNodeId ?? '')
     setLines(doc.items.filter(hasAvailableQuantity).map((item) => ({
       sourceItemId: item.id,
       skuName: item.skuName,
@@ -1406,7 +1406,7 @@ function CompanyShipmentForm({
 }) {
   const headquarters = locations.filter((location) => location.locationType === '总部' && location.isActive)
   const { docId, doc, loading, selectDocument } = useLoadedDocument()
-  const [sourceLocationId, setSourceLocationId] = useState('')
+  const [sourceOrgNodeId, setSourceOrgNodeId] = useState('')
   const [docDate, setDocDate] = useState(today)
   const [logisticsCompany, setLogisticsCompany] = useState('')
   const [trackingNo, setTrackingNo] = useState('')
@@ -1419,7 +1419,7 @@ function CompanyShipmentForm({
       setLines([])
       return
     }
-    setSourceLocationId(doc.targetLocationId ?? '')
+    setSourceOrgNodeId(doc.targetOrgNodeId ?? '')
     setLines(doc.items.map((item) => {
       const remaining = remainingQuantity(item)
       return {
@@ -1442,7 +1442,7 @@ function CompanyShipmentForm({
 
   async function submit() {
     if (saving) return
-    if (!doc || !sourceLocationId) {
+    if (!doc || !sourceOrgNodeId) {
       toast.error('请选择采购订单和发货总部')
       return
     }
@@ -1461,7 +1461,7 @@ function CompanyShipmentForm({
     try {
       const result = await createItemCompanyShipment({
         purchaseOrderId: doc.id,
-        sourceLocationId,
+        sourceOrgNodeId,
         docDate: optionalText(docDate),
         logisticsCompany: optionalText(logisticsCompany),
         trackingNo: optionalText(trackingNo),
@@ -1483,9 +1483,9 @@ function CompanyShipmentForm({
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
         <DocPicker label="采购订单" docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
         <FormField label="发货总部">
-          <Select value={sourceLocationId} onChange={(event) => setSourceLocationId(event.target.value)}>
+          <Select value={sourceOrgNodeId} onChange={(event) => setSourceOrgNodeId(event.target.value)}>
             <option value="">请选择总部</option>
-            {headquarters.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
+            {headquarters.filter((location) => location.orgNodeId).map((location) => <option key={location.orgNodeId!} value={location.orgNodeId!}>{location.name}</option>)}
           </Select>
         </FormField>
         <FormField label="发货日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
@@ -1504,7 +1504,7 @@ function CompanyShipmentForm({
                 <div className="text-xs text-[#888888]">{line.specName || line.skuId}</div>
                 {line.remainingQuantity <= 0.000001 && <div className="mt-1 text-xs text-[#888888]">正常已履约，仍可单独填写赠送数量</div>}
               </div>
-              <FormField label="发货批次"><LotPicker locationId={sourceLocationId} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateLine(index, { lotId })} /></FormField>
+              <FormField label="发货批次"><LotPicker locationId={headquarters.find((location) => location.orgNodeId === sourceOrgNodeId)?.locationId ?? ''} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateLine(index, { lotId })} /></FormField>
               <FormField label="正常发货"><Input inputMode="decimal" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
               <FormField label="赠送数量"><Input inputMode="decimal" value={line.giftQuantity} onChange={(event) => updateLine(index, { giftQuantity: event.target.value })} /></FormField>
               <FormField label="明细备注"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></FormField>
@@ -1673,7 +1673,7 @@ function SupplyChainPurchaseReceiptForm({
       setLines([])
       return
     }
-    setSupplyChainLocationId(doc.targetLocationId ?? '')
+    setSupplyChainLocationId(doc.targetOrgNodeId ?? '')
     setLines(doc.items.filter(hasAvailableQuantity).map((item) => ({
       purchaseOrderItemId: item.id,
       skuName: item.skuName,
@@ -1864,7 +1864,7 @@ function StoreAllocationForm({
       setLines([])
       return
     }
-    setSourceMarketId(doc.marketId ?? doc.targetLocationId ?? '')
+    setSourceMarketId(doc.marketId ?? doc.targetOrgNodeId ?? '')
     setLines(doc.items.map((item) => {
       const sku = skuById.get(item.skuId)
       const remaining = remainingQuantity(item)
@@ -2004,19 +2004,19 @@ function ReturnForm({
 }) {
   const sourceLocations = locations.filter((location) => location.locationType === sourceType && location.isActive)
   const headquarters = locations.filter((location) => location.locationType === '总部' && location.isActive)
-  const [sourceLocationId, setSourceLocationId] = useState('')
-  const [targetLocationId, setTargetLocationId] = useState('')
+  const [sourceOrgNodeId, setSourceOrgNodeId] = useState('')
+  const [targetOrgNodeId, setTargetOrgNodeId] = useState('')
   const [docDate, setDocDate] = useState(today)
   const [remark, setRemark] = useState('')
   const [lines, setLines] = useState<LotDraftLine[]>([{ skuId: '', lotId: '', quantity: '1', reason: '', remark: '' }])
   const [saving, setSaving] = useState(false)
-  const source = sourceLocations.find((location) => location.locationId === sourceLocationId)
+  const source = sourceLocations.find((location) => location.orgNodeId === sourceOrgNodeId)
 
   function selectSource(nextSourceId: string) {
-    setSourceLocationId(nextSourceId)
-    const nextSource = sourceLocations.find((location) => location.locationId === nextSourceId)
-    if (nextSource?.locationType === '门店') setTargetLocationId(nextSource.parentLocationId ?? '')
-    if (nextSource?.locationType === '市场') setTargetLocationId(headquarters[0]?.locationId ?? '')
+    setSourceOrgNodeId(nextSourceId)
+    const nextSource = sourceLocations.find((location) => location.orgNodeId === nextSourceId)
+    if (nextSource?.locationType === '门店') setTargetOrgNodeId(nextSource.parentLocationId ?? '')
+    if (nextSource?.locationType === '市场') setTargetOrgNodeId(headquarters[0]?.orgNodeId ?? '')
     setLines((previous) => previous.map((line) => ({ ...line, lotId: '' })))
   }
 
@@ -2026,7 +2026,7 @@ function ReturnForm({
 
   async function submit() {
     if (saving) return
-    if (!sourceLocationId || !targetLocationId) {
+    if (!sourceOrgNodeId || !targetOrgNodeId) {
       toast.error('请选择退货主体和回库主体')
       return
     }
@@ -2043,8 +2043,8 @@ function ReturnForm({
     setSaving(true)
     try {
       const result = await createReturnForRestock({
-        sourceLocationId,
-        targetLocationId,
+        sourceOrgNodeId,
+        targetOrgNodeId,
         docDate: optionalText(docDate),
         remark: optionalText(remark),
         items: items.map((item) => ({ ...item, quantity: item.quantity! })),
@@ -2059,21 +2059,21 @@ function ReturnForm({
   }
 
   const targets = source?.locationType === '门店'
-    ? locations.filter((location) => location.locationId === source.parentLocationId)
+    ? locations.filter((location) => location.orgNodeId === source.parentLocationId)
     : headquarters
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
         <FormField label="退货主体">
-          <Select value={sourceLocationId} onChange={(event) => selectSource(event.target.value)}>
+          <Select value={sourceOrgNodeId} onChange={(event) => selectSource(event.target.value)}>
             <option value="">请选择{sourceType}</option>
-            {sourceLocations.map((location) => <option key={location.locationId} value={location.locationId}>{location.locationType} · {location.name}</option>)}
+            {sourceLocations.filter((location) => location.orgNodeId).map((location) => <option key={location.orgNodeId!} value={location.orgNodeId!}>{location.locationType} · {location.name}</option>)}
           </Select>
         </FormField>
         <FormField label="回库主体">
-          <Select value={targetLocationId} onChange={(event) => setTargetLocationId(event.target.value)}>
+          <Select value={targetOrgNodeId} onChange={(event) => setTargetOrgNodeId(event.target.value)}>
             <option value="">请选择回库主体</option>
-            {targets.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
+            {targets.filter((location) => location.orgNodeId).map((location) => <option key={location.orgNodeId!} value={location.orgNodeId!}>{location.name}</option>)}
           </Select>
         </FormField>
         <FormField label="退货日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
@@ -2083,7 +2083,7 @@ function ReturnForm({
         {lines.map((line, index) => (
           <div key={index} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_8rem_minmax(0,1fr)_minmax(0,1fr)_2.5rem]">
             <FormField label="商品"><SkuPicker value={line.skuId} skus={skuOptions} onChange={(skuId) => updateLine(index, { skuId, lotId: '' })} /></FormField>
-            <FormField label="来源批次"><LotPicker locationId={sourceLocationId} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateLine(index, { lotId })} /></FormField>
+            <FormField label="来源批次"><LotPicker locationId={source?.locationId ?? ''} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateLine(index, { lotId })} /></FormField>
             <FormField label="数量"><Input inputMode="decimal" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
             <FormField label="退货原因"><Input value={line.reason} onChange={(event) => updateLine(index, { reason: event.target.value })} /></FormField>
             <FormField label="明细备注"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></FormField>
