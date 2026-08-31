@@ -7251,7 +7251,7 @@ describe('order.confirmOffline — 储值卡扣款（staffApi 唯一扣卡点）
     pg.transaction.mockImplementation(async (cb) => cb({ query: makeConfirmOfflineQuery() }))
   })
 
-  test('prepaid_card_amount > 0 确认收款：扣 balance + INSERT card_transactions + 置 已支付', async () => {
+  test('prepaid_card_amount > 0 确认收款：混合支付先写现付、再写储值卡抵扣', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-PD-001' })
 
     pg.query
@@ -7308,6 +7308,12 @@ describe('order.confirmOffline — 储值卡扣款（staffApi 唯一扣卡点）
     expect(insertCall).toBeDefined()
     expect(Number(insertCall.params[1])).toBe(-300)
     expect(insertCall.params[2]).toBe('FY-PD-001')
+    const paymentWrites = txCalls.filter(c => c.sql.includes('INSERT INTO sale_order_payments'))
+    expect(paymentWrites).toHaveLength(2)
+    expect(paymentWrites[0].params[1]).toBe('首次支付')
+    expect(paymentWrites[0].sql).not.toContain("'储值卡抵扣'")
+    expect(paymentWrites[1].sql).toContain("'储值卡抵扣'")
+    expect(paymentWrites[1].params[4]).toBe(paymentWrites[0].params[5])
   })
 
   test('prepaid_card_amount > 0 但已有扣款流水：幂等跳过不重复扣', async () => {

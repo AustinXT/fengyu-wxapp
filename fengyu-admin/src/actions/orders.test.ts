@@ -1853,7 +1853,7 @@ describe('confirmOfflinePayment — 储值卡抵扣扣款（ticket 2026-05-19）
     return captured
   }
 
-  it('prepaidAmount=100, balance=200 → 进入扣卡分支：UPDATE prepaid_cards + INSERT card_transactions + INSERT sale_order_payments', async () => {
+  it('prepaidAmount=100, balance=200 → 混合支付先写现付、再写储值卡抵扣', async () => {
     const captured = mockDeductTx({ prepaidAmount: 100, cardBalance: 200 })
     const result = await confirmOfflinePayment('order-deduct-1')
     expect(result.success).toBe(true)
@@ -1861,6 +1861,11 @@ describe('confirmOfflinePayment — 储值卡抵扣扣款（ticket 2026-05-19）
     expect(captured.executes.some((e) => /UPDATE\s+prepaid_cards/i.test(e.text))).toBe(true)
     expect(captured.executes.some((e) => /INSERT\s+INTO\s+card_transactions/i.test(e.text))).toBe(true)
     expect(captured.executes.some((e) => /INSERT\s+INTO\s+sale_order_payments/i.test(e.text))).toBe(true)
+    const paymentWrites = captured.executes.filter((e) => /INSERT\s+INTO\s+sale_order_payments/i.test(e.text))
+    expect(paymentWrites).toHaveLength(2)
+    expect(paymentWrites[0].text).not.toContain("'储值卡抵扣'")
+    expect(paymentWrites[0].raw?.__sqlValues).toContain('首次支付')
+    expect(paymentWrites[1].text).toContain("'储值卡抵扣'")
   })
 
   it('prepaidAmount=100, balance=50 → 抛 INSUFFICIENT_BALANCE，订单状态不变', async () => {
