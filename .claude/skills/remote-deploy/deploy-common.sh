@@ -71,6 +71,10 @@ render_local_bundle() {
   chmod 600 "$bundle"/*.env "$bundle/build-manifest.json"
 }
 
+reconcile_local_configs() {
+  node "$RUNTIME_CONFIG" reconcile >/dev/null
+}
+
 check_migration_gate() {
   local env="$1"
   node "$RUNTIME_CONFIG" migrations "$env"
@@ -80,6 +84,19 @@ remote_readonly_preflight() {
   ssh -o BatchMode=yes -o ConnectTimeout=10 "$SSH_HOST" sh -s -- \
     "$TARGET_PUBLIC_HOST" "$REMOTE_DIR" <<'REMOTE'
 set -eu
+
+detect_public_ip() {
+  for ip_url in https://ifconfig.me https://ip.sb https://myip.ipip.net https://cip.cc http://ip.3322.net; do
+    ip_body=$(curl -fsS --max-time 8 "$ip_url" 2>/dev/null || true)
+    ip_value=$(printf '%s\n' "$ip_body" | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 1)
+    if [ -n "$ip_value" ]; then
+      printf '%s' "$ip_value"
+      return 0
+    fi
+  done
+  return 1
+}
+
 expected_public_ip="$1"
 remote_dir="$2"
 
@@ -88,7 +105,7 @@ command -v docker >/dev/null 2>&1 || { echo "ERROR: remote docker is missing" >&
 command -v flock >/dev/null 2>&1 || { echo "ERROR: remote flock is missing" >&2; exit 1; }
 docker compose version >/dev/null 2>&1 || { echo "ERROR: remote docker compose is missing" >&2; exit 1; }
 test -d "$remote_dir" || { echo "ERROR: remote directory is missing: $remote_dir" >&2; exit 1; }
-public_ip=$(curl -fsS --max-time 8 https://ifconfig.me 2>/dev/null || curl -fsS --max-time 8 https://ip.sb 2>/dev/null || true)
+public_ip=$(detect_public_ip || true)
 test "$public_ip" = "$expected_public_ip" || {
   echo "ERROR: SSH target public IP is ${public_ip:-unreadable}, expected $expected_public_ip" >&2
   exit 1
@@ -160,15 +177,24 @@ build_image() {
 
 transfer_image() {
   local image_ref="$1"
-  local local_id remote_id
-  local_id=$(docker image inspect -f '{{.Id}}' "$image_ref")
+  local local_config remote_config remote_id
+  # 校验标识用 config digest（docker save 导出 tar 里 manifest.json 的 Config blob）：
+  # 它在经典与 containerd 两种镜像存储下都按内容寻址、两端一致；而 .Id 在经典存储
+  # =config digest、containerd 存储=manifest digest，跨引擎比对必然假阳性
+  # （2026-09-01 test 部署：本地经典 overlay2 vs 远端 containerd snapshotter）。
+  local_config=$(docker save "$image_ref" | tar -xO manifest.json | sed -nE 's/.*"Config":"([^"]+)".*/\1/p' | sed -E 's#.*/##')
+  test -n "$local_config" || { echo "ERROR: cannot extract local image config digest" >&2; return 1; }
   docker save "$image_ref" | gzip | ssh "$SSH_HOST" docker load >&2
-  remote_id=$(ssh "$SSH_HOST" docker image inspect -f '{{.Id}}' "$image_ref")
-  [[ "$remote_id" == "$local_id" ]] || {
-    echo "ERROR: transferred image ID mismatch (local=$local_id remote=$remote_id)" >&2
+  remote_config=$(ssh "$SSH_HOST" "docker save '$image_ref' | tar -xO manifest.json" | sed -nE 's/.*"Config":"([^"]+)".*/\1/p' | sed -E 's#.*/##')
+  test -n "$remote_config" || { echo "ERROR: cannot extract remote image config digest" >&2; return 1; }
+  [[ "$remote_config" == "$local_config" ]] || {
+    echo "ERROR: transferred image config digest mismatch (local=$local_config remote=$remote_config)" >&2
     return 1
   }
-  printf '%s' "$local_id"
+  # 返回远端 .Id（远端 native 标识）：后续远端 docker tag 回滚 / inspect 漂移复核均按此解析
+  remote_id=$(ssh "$SSH_HOST" docker image inspect -f '{{.Id}}' "$image_ref")
+  test -n "$remote_id" || { echo "ERROR: cannot resolve remote image ID" >&2; return 1; }
+  printf '%s' "$remote_id"
 }
 
 prepare_release_files() {
@@ -216,24 +242,31 @@ switch_remote_release() {
   analyst_origin=$(manifest_value "$manifest" analystPublicOrigin)
   analyst_host=$(node -e 'process.stdout.write(new URL(process.argv[1]).host)' "$analyst_origin")
 
-  ssh "$SSH_HOST" sh -s -- \
+  local -a encoded_params=()
+  local raw_param
+  for raw_param in \
     "$component" "$env" "$release_id" "$remote_release_dir" "$image_ref" "$image_id" \
     "$REMOTE_DIR" "$CONTAINER_DB_HOST" "$TARGET_PUBLIC_HOST" "$cloudbase" "$cdn" \
-    "$analyst_origin" "$analyst_host" <<'REMOTE'
+    "$analyst_origin" "$analyst_host"; do
+    # base64 字符集不含 shell 元字符，杜绝远端二次分词/展开/glob；tr 去 wrapping（GNU base64 默认换行）。
+    encoded_params+=("$(printf %s "$raw_param" | base64 | tr -d '\n')")
+  done
+
+  ssh "$SSH_HOST" sh -s -- "${encoded_params[@]}" <<'REMOTE'
 set -eu
-component="$1"
-env_name="$2"
-release_id="$3"
-release_dir="$4"
-image_ref="$5"
-image_id="$6"
-remote_dir="$7"
-expected_db_host="$8"
-expected_public_host="$9"
-expected_cloudbase="${10}"
-expected_cdn="${11}"
-expected_analyst_origin="${12}"
-expected_analyst_host="${13}"
+component=$(printf %s "$1" | base64 -d)
+env_name=$(printf %s "$2" | base64 -d)
+release_id=$(printf %s "$3" | base64 -d)
+release_dir=$(printf %s "$4" | base64 -d)
+image_ref=$(printf %s "$5" | base64 -d)
+image_id=$(printf %s "$6" | base64 -d)
+remote_dir=$(printf %s "$7" | base64 -d)
+expected_db_host=$(printf %s "$8" | base64 -d)
+expected_public_host=$(printf %s "$9" | base64 -d)
+expected_cloudbase=$(printf %s "${10}" | base64 -d)
+expected_cdn=$(printf %s "${11}" | base64 -d)
+expected_analyst_origin=$(printf %s "${12}" | base64 -d)
+expected_analyst_host=$(printf %s "${13}" | base64 -d)
 
 deploy_root="$remote_dir/.deploy"
 state_dir="$deploy_root/state"
@@ -244,9 +277,25 @@ exec 9>"$deploy_root/deploy.lock"
 flock -n 9 || { echo "ERROR: another remote deployment is active" >&2; exit 1; }
 
 # 历史秘密文件不再参与新版发布，只收紧权限并保留兼容回滚能力。
-test ! -f "$remote_dir/.env" || chmod 600 "$remote_dir/.env"
-test ! -f "$remote_dir/.admin-runtime.env" || chmod 600 "$remote_dir/.admin-runtime.env"
-test ! -f "$remote_dir/.analyst-runtime.env" || chmod 600 "$remote_dir/.analyst-runtime.env"
+# test 服务器 .env 属主 www-data 而 SSH 用户是 ubuntu，chmod 可能 EPERM，需 sudo -n 兜底。
+secure_legacy_env_file() {
+  secure_path="$1"
+  if [ ! -f "$secure_path" ]; then
+    return 0
+  fi
+  if chmod 600 "$secure_path" 2>/dev/null; then
+    return 0
+  fi
+  if command -v sudo >/dev/null 2>&1 && sudo -n chmod 600 "$secure_path" 2>/dev/null; then
+    return 0
+  fi
+  echo "ERROR: cannot chmod 600 $secure_path (owner differs from SSH user and passwordless sudo is unavailable)" >&2
+  echo "HINT: run 'sudo chmod 600 $secure_path' (or 'sudo chown <ssh-user> $secure_path') on the server, then retry" >&2
+  return 1
+}
+secure_legacy_env_file "$remote_dir/.env"
+secure_legacy_env_file "$remote_dir/.admin-runtime.env"
+secure_legacy_env_file "$remote_dir/.analyst-runtime.env"
 
 compose_release() {
   target_release="$1"
@@ -328,6 +377,34 @@ extract_db_host() {
   esac
 }
 
+detect_public_ip() {
+  for ip_url in https://ifconfig.me https://ip.sb https://myip.ipip.net https://cip.cc http://ip.3322.net; do
+    ip_body=$(curl -fsS --max-time 8 "$ip_url" 2>/dev/null || true)
+    ip_value=$(printf '%s\n' "$ip_body" | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 1)
+    if [ -n "$ip_value" ]; then
+      printf '%s' "$ip_value"
+      return 0
+    fi
+  done
+  return 1
+}
+
+worker_running() {
+  worker_container="$1"
+  worker_attempt=1
+  while [ "$worker_attempt" -le 6 ]; do
+    if [ "$(docker inspect -f '{{.State.Status}}' "$worker_container" 2>/dev/null || true)" = "running" ]; then
+      sleep 5
+      if [ "$(docker inspect -f '{{.State.Status}}' "$worker_container" 2>/dev/null || true)" = "running" ]; then
+        return 0
+      fi
+    fi
+    worker_attempt=$((worker_attempt + 1))
+    sleep 5
+  done
+  return 1
+}
+
 basic_health() {
   health_component="$1"
   if [ "$health_component" = "admin" ]; then
@@ -358,14 +435,14 @@ full_health() {
     return 1
   }
   if [ "$env_name" = "test" ]; then
-    public_ip=$(curl -fsS --max-time 8 https://ifconfig.me 2>/dev/null || curl -fsS --max-time 8 https://ip.sb 2>/dev/null || true)
+    public_ip=$(detect_public_ip || true)
     test "$public_ip" = "$expected_public_host" || return 1
     ss -tln 2>/dev/null | grep -q ':5433' || return 1
   fi
 
   if [ "$component" = "admin" ]; then
-    test "$(docker inspect -f '{{.State.Status}}' fengyu-cron-worker 2>/dev/null || true)" = "running" || return 1
-    test "$(docker inspect -f '{{.State.Status}}' fengyu-export-worker 2>/dev/null || true)" = "running" || return 1
+    worker_running fengyu-cron-worker || return 1
+    worker_running fengyu-export-worker || return 1
     actual=$(docker exec fengyu-admin sh -c 'printf "%s|%s|%s" "$CLOUDBASE_ENV_ID" "$CDN_BASE" "$NEXT_PUBLIC_ANALYST_ORIGIN"' 2>/dev/null || true)
     test "$actual" = "$expected_cloudbase|$expected_cdn|$expected_analyst_origin" || return 1
     docker exec fengyu-admin sh -c "grep -RqsF -- '$expected_analyst_host' /app/.next/static /app/.next/server" || return 1
@@ -389,8 +466,8 @@ rollback_health() {
   rollback_db_host=$(extract_db_host "$rollback_db_url" || true)
   test "$rollback_db_host" = "$expected_db_host" || return 1
   if [ "$component" = "admin" ]; then
-    test "$(docker inspect -f '{{.State.Status}}' fengyu-cron-worker 2>/dev/null || true)" = "running" || return 1
-    test "$(docker inspect -f '{{.State.Status}}' fengyu-export-worker 2>/dev/null || true)" = "running" || return 1
+    worker_running fengyu-cron-worker || return 1
+    worker_running fengyu-export-worker || return 1
   fi
 }
 
@@ -413,6 +490,15 @@ run_release_state() {
       test -f "$legacy_runtime" || legacy_runtime="$remote_dir/.admin-runtime.env"
     fi
     test -f "$remote_dir/.env" && test -f "$legacy_runtime" || return 1
+    # v1 遗留 compose 对 admin 服务声明 DEPLOY_STAFF_* :? 强制插值；analyst 独立 runtime env
+    # 只有 3 个 DEPLOY_* 键，缺键会让 compose 直接拒绝回滚。占位值仅用于插值校验（admin 服务
+    # 未被启动）；compose 插值中 shell env 优先于 env-file，故仅当 env-file 未提供该键时注入，
+    # 避免覆盖 admin legacy 回滚（.admin-runtime.env）中的真实 staff 凭据。
+    for legacy_key in DEPLOY_STAFF_ENV_ID DEPLOY_STAFF_TENCENTCLOUD_SECRETID DEPLOY_STAFF_TENCENTCLOUD_SECRETKEY; do
+      if ! grep -Eq "^${legacy_key}=." "$remote_dir/.env" "$legacy_runtime" 2>/dev/null; then
+        export "$legacy_key=legacy-not-used"
+      fi
+    done
     docker compose \
       --project-directory "$remote_dir" \
       --env-file "$remote_dir/.env" \
@@ -469,20 +555,42 @@ for candidate in $(ls -1dt "$release_root"/* 2>/dev/null || true); do
   if [ "$count" -gt 1 ]; then rm -rf -- "$candidate"; fi
 done
 
+# 保守清理本组件历史镜像：docker images 按精确镜像名过滤（fengyu-admin/fengyu-analyst，不会
+# 碰其它项目），保留最近 5 个 tag；当前/上一 release 引用与 latest（legacy 回滚目标）永不删；
+# rmi 失败仅告警不阻断发布。
+image_name="${image_ref%%:*}"
+protected_current_image="$image_ref"
+protected_previous_image=$(state_get "$previous_state" image_ref)
+image_rank=0
+for image_tag in $(docker images "$image_name" --format '{{.Tag}}'); do
+  [ "$image_tag" != "<none>" ] || continue
+  [ "$image_tag" != "latest" ] || continue
+  image_rank=$((image_rank + 1))
+  [ "$image_rank" -le 5 ] && continue
+  image_candidate="$image_name:$image_tag"
+  [ "$image_candidate" != "$protected_current_image" ] || continue
+  [ "$image_candidate" != "$protected_previous_image" ] || continue
+  docker rmi "$image_candidate" >/dev/null 2>&1 || \
+    echo "WARN: failed to prune old image $image_candidate (still referenced?); skipping" >&2
+done
+
 echo "RELEASE_OK: $component $release_id"
 REMOTE
 }
 
 manual_remote_rollback() {
   local component="$1" env="$2"
+  # F10 防呆覆盖开关：ROLLBACK_FORCE=1 允许回滚到上次回滚已放弃（已知坏）的版本。
+  local rollback_force="${ROLLBACK_FORCE:-0}"
   ssh "$SSH_HOST" sh -s -- \
-    "$component" "$env" "$REMOTE_DIR" "$CONTAINER_DB_HOST" "$TARGET_PUBLIC_HOST" <<'REMOTE'
+    "$component" "$env" "$REMOTE_DIR" "$CONTAINER_DB_HOST" "$TARGET_PUBLIC_HOST" "$rollback_force" <<'REMOTE'
 set -eu
 component="$1"
 env_name="$2"
 remote_dir="$3"
 expected_db_host="$4"
 expected_public_host="$5"
+rollback_force="$6"
 deploy_root="$remote_dir/.deploy"
 state_dir="$deploy_root/state"
 current_state="$state_dir/$component.current"
@@ -497,9 +605,39 @@ flock -n 9 || { echo "ERROR: another remote deployment is active" >&2; exit 1; }
 state_get() {
   awk -F= -v key="$2" '$1==key {sub(/^[^=]*=/, ""); print; exit}' "$1"
 }
+
+detect_public_ip() {
+  for ip_url in https://ifconfig.me https://ip.sb https://myip.ipip.net https://cip.cc http://ip.3322.net; do
+    ip_body=$(curl -fsS --max-time 8 "$ip_url" 2>/dev/null || true)
+    ip_value=$(printf '%s\n' "$ip_body" | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 1)
+    if [ -n "$ip_value" ]; then
+      printf '%s' "$ip_value"
+      return 0
+    fi
+  done
+  return 1
+}
+
+rollback_late_failure() {
+  rollback_reason="$1"
+  echo "ERROR: $rollback_reason" >&2
+  echo "NOTICE: containers were already switched to the previous release; current/previous state files were NOT swapped" >&2
+  echo "HINT: check 'docker logs --tail 100 <container>' on the server; rerunning --rollback retries the same previous release" >&2
+  exit 1
+}
+
 mode=$(state_get "$previous_state" mode)
 release_dir=$(state_get "$previous_state" release_dir)
 image_id=$(state_get "$previous_state" image_id)
+# 防呆：previous 若是上次回滚刚放弃的版本，再次回滚会重新拉起已知坏版本。
+rolled_back_marker="$state_dir/$component.rolled-back"
+abandoned_release_id=$(state_get "$rolled_back_marker" rolled_back_from 2>/dev/null || true)
+target_release_id=$(state_get "$previous_state" release_id)
+if [ -n "$abandoned_release_id" ] && [ "$abandoned_release_id" = "$target_release_id" ] && [ "$rollback_force" != "1" ]; then
+  echo "ERROR: rollback target '$target_release_id' was already abandoned by an earlier rollback; rolling back again would re-deploy that known-bad release" >&2
+  echo "HINT: set ROLLBACK_FORCE=1 to override, or deploy a fixed release instead" >&2
+  exit 1
+fi
 if [ "$component" = "admin" ]; then
   services="admin cron-worker export-worker"
   container="fengyu-admin"
@@ -523,6 +661,15 @@ elif [ "$mode" = "legacy" ]; then
     runtime="$remote_dir/.analyst-runtime.env"
     test -f "$runtime" || runtime="$remote_dir/.admin-runtime.env"
   fi
+  # v1 遗留 compose 对 admin 服务声明 DEPLOY_STAFF_* :? 强制插值；analyst 独立 runtime env
+  # 只有 3 个 DEPLOY_* 键，缺键会让 compose 直接拒绝回滚。占位值仅用于插值校验（admin 服务
+  # 未被启动）；compose 插值中 shell env 优先于 env-file，故仅当 env-file 未提供该键时注入，
+  # 避免覆盖 admin legacy 回滚（.admin-runtime.env）中的真实 staff 凭据。
+  for legacy_key in DEPLOY_STAFF_ENV_ID DEPLOY_STAFF_TENCENTCLOUD_SECRETID DEPLOY_STAFF_TENCENTCLOUD_SECRETKEY; do
+    if ! grep -Eq "^${legacy_key}=." "$remote_dir/.env" "$runtime" 2>/dev/null; then
+      export "$legacy_key=legacy-not-used"
+    fi
+  done
   docker compose --project-directory "$remote_dir" --env-file "$remote_dir/.env" --env-file "$runtime" \
     -f "$remote_dir/docker-compose.yml" -f "$remote_dir/docker-compose.remote.yml" \
     up -d --no-build $services
@@ -538,31 +685,30 @@ while [ "$attempt" -le 12 ]; do
   attempt=$((attempt + 1))
   sleep 5
 done
-test "$attempt" -le 12 || { echo "ERROR: rollback target is unhealthy; state files were not changed" >&2; exit 1; }
+test "$attempt" -le 12 || rollback_late_failure "rollback target is unhealthy"
 
 db_url=$(docker exec "$container" sh -c 'printf %s "$DATABASE_URL"' 2>/dev/null || true)
 case "$db_url" in
   *@*:*/*) db_tail=${db_url##*@}; db_host=${db_tail%%:*} ;;
   *) db_host="" ;;
 esac
-test "$db_host" = "$expected_db_host" || {
-  echo "ERROR: rollback DB host is ${db_host:-unreadable}, expected $expected_db_host; state files were not changed" >&2
-  exit 1
-}
+test "$db_host" = "$expected_db_host" || rollback_late_failure "rollback DB host is ${db_host:-unreadable}, expected $expected_db_host"
 if [ "$component" = "admin" ]; then
-  test "$(docker inspect -f '{{.State.Status}}' fengyu-cron-worker 2>/dev/null || true)" = "running" || exit 1
-  test "$(docker inspect -f '{{.State.Status}}' fengyu-export-worker 2>/dev/null || true)" = "running" || exit 1
+  test "$(docker inspect -f '{{.State.Status}}' fengyu-cron-worker 2>/dev/null || true)" = "running" || rollback_late_failure "cron-worker is not running after rollback"
+  test "$(docker inspect -f '{{.State.Status}}' fengyu-export-worker 2>/dev/null || true)" = "running" || rollback_late_failure "export-worker is not running after rollback"
 fi
 if [ "$env_name" = "test" ]; then
-  public_ip=$(curl -fsS --max-time 8 https://ifconfig.me 2>/dev/null || curl -fsS --max-time 8 https://ip.sb 2>/dev/null || true)
-  test "$public_ip" = "$expected_public_host" || exit 1
-  ss -tln 2>/dev/null | grep -q ':5433' || exit 1
+  public_ip=$(detect_public_ip || true)
+  test "$public_ip" = "$expected_public_host" || rollback_late_failure "test-env public IP check failed after rollback (got ${public_ip:-unreadable})"
+  ss -tln 2>/dev/null | grep -q ':5433' || rollback_late_failure "test-env PG 5433 listener check failed after rollback"
 fi
 
 swap="$state_dir/$component.swap.$$"
 cp "$current_state" "$swap"
 mv "$previous_state" "$current_state"
 mv "$swap" "$previous_state"
+printf 'rolled_back_from=%s\n' "$(state_get "$previous_state" release_id)" > "$rolled_back_marker"
+chmod 600 "$rolled_back_marker"
 echo "ROLLBACK_OK: $component -> $(state_get "$current_state" release_id)"
 REMOTE
 }

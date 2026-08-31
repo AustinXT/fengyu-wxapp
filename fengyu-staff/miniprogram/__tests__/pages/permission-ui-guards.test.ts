@@ -201,11 +201,11 @@ describe('顾客详情权限门禁', () => {
     expect(page.data.showProfileEditor).toBe(false)
   })
 
-  test('推荐员工搜索结果只提交 employeeId', async () => {
+  test('推荐员工输入2个字符即可搜索且结果只提交 employeeId', async () => {
     setGlobalData({ managerStoreIds: ['store-1'] })
     const page = createPage('customerDetail')
     page.data.customer = { clientUserId: 'customer-1' }
-    page.data.promoterSearchKeyword = '138'
+    page.data.promoterSearchKeyword = '王芳'
     vi.mocked(callStaffApi).mockResolvedValueOnce([
       { employeeId: 'EMP-1', name: '王员工', phoneMasked: '138****5678', storeName: '测试店' },
     ])
@@ -214,10 +214,24 @@ describe('顾客详情权限门禁', () => {
     page.onSelectPromoterEmployee({ currentTarget: { dataset: { id: 'EMP-1' } } })
 
     expect(callStaffApi).toHaveBeenCalledWith('customer.searchPromoterEmployees', {
-      clientUserId: 'customer-1', keyword: '138',
+      clientUserId: 'customer-1', keyword: '王芳',
     })
     expect(page.data.profileForm.promoterEmployeeId).toBe('EMP-1')
     expect(page.data.profileForm.promoterEmployeeName).toBe('王员工')
+  })
+
+  test('推荐员工输入少于2个字符时提示且不发起搜索', async () => {
+    setGlobalData({ managerStoreIds: ['store-1'] })
+    const page = createPage('customerDetail')
+    page.data.customer = { clientUserId: 'customer-1' }
+    page.data.promoterSearchKeyword = ' 王 '
+
+    await page.onSearchPromoterEmployees()
+
+    expect(callStaffApi).not.toHaveBeenCalled()
+    expect((globalThis as any).wx.showToast).toHaveBeenCalledWith({
+      title: '请输入至少2个字符', icon: 'none',
+    })
   })
 })
 

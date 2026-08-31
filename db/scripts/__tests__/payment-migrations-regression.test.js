@@ -401,3 +401,97 @@ test('0014 journal/snapshot 在合并迁移链中保持连续', () => {
   delete snapshot14.prevId
   assert.deepEqual(snapshot14, snapshot13, '0014 除两个业绩视图外不应夹带其他 schema 变化')
 })
+
+test('0037 款项归属日以 paid_at 初始化，首次支付继续跟随订单', () => {
+  const schemaSql = read('schema/order.ts')
+  const migrationSql = read('migrations/0037_abandoned_talisman.sql')
+  const snapshot37 = JSON.parse(read('migrations/meta/0037_snapshot.json'))
+  const definitions = [
+    schemaSql,
+    migrationSql,
+    snapshot37.views['public.sale_order_performance_events'].definition,
+    snapshot37.views['public.sale_item_performance_events'].definition,
+  ]
+
+  assert.match(migrationSql, /ADD COLUMN "performance_attribution_date" date/)
+  assert.match(migrationSql, /WHERE change_type <> '首次支付'[\s\S]*paid_at IS NOT NULL/)
+  assert.match(migrationSql, /CREATE TRIGGER trg_sale_order_payments_performance_attribution/)
+  assert.match(migrationSql, /BEFORE INSERT OR UPDATE OF status, paid_at, performance_attribution_date/)
+  assert.match(migrationSql, /NEW\.status = '已支付'/)
+  assert.match(migrationSql, /NEW\.performance_attribution_date := \(NEW\.paid_at AT TIME ZONE 'Asia\/Shanghai'\)::date/)
+
+  for (const definition of definitions) {
+    assert.match(definition, /WHEN change_type = '首次支付' THEN order_performance_attribution_date/)
+    assert.match(definition, /payment_performance_attribution_date/)
+    assert.match(definition, /\(paid_at AT TIME ZONE 'Asia\/Shanghai'\)::date/)
+  }
+})
+
+test('0037 journal 与 snapshot 保持连续且只新增款项归属字段和索引', () => {
+  const journal = JSON.parse(read('migrations/meta/_journal.json'))
+  const snapshot36 = JSON.parse(read('migrations/meta/0036_snapshot.json'))
+  const snapshot37 = JSON.parse(read('migrations/meta/0037_snapshot.json'))
+  const entry37 = journal.entries.find((entry) => entry.idx === 37)
+
+  assert.equal(entry37?.tag, '0037_abandoned_talisman')
+  assert.equal(snapshot37.prevId, snapshot36.id)
+  journal.entries.forEach((entry, index) => {
+    assert.equal(entry.idx, index, 'journal 索引必须连续，不能重写已发布迁移')
+  })
+  const columns = snapshot37.tables['public.sale_order_payments'].columns
+  assert.equal(columns.performance_attribution_date.type, 'date')
+  assert.equal(columns.performance_attribution_adjusted_at.type, 'timestamp with time zone')
+  assert.equal(columns.performance_attribution_adjusted_by.type, 'varchar(30)')
+  assert.ok(snapshot37.tables['public.sale_order_payments'].indexes.idx_sop_paid_at_id)
+})
+
+test('0038 前向同步混合支付卡流水并让业绩视图跟随现付主流水', () => {
+  const schemaSql = read('schema/order.ts')
+  const migrationSql = read('migrations/0038_sync_mixed_payment_attribution.sql')
+  const snapshot38 = JSON.parse(read('migrations/meta/0038_snapshot.json'))
+  const definitions = [
+    schemaSql,
+    migrationSql,
+    snapshot38.views['public.sale_order_performance_events'].definition,
+    snapshot38.views['public.sale_item_performance_events'].definition,
+  ]
+
+  assert.match(migrationSql, /WITH paired_cards AS/)
+  assert.match(migrationSql, /primary_payment\.paid_at IS NOT DISTINCT FROM card\.paid_at/)
+  assert.match(migrationSql, /CREATE OR REPLACE FUNCTION initialize_payment_performance_attribution_date/)
+  assert.match(migrationSql, /NEW\.change_type = '储值卡抵扣'/)
+  assert.match(migrationSql, /primary_payment\.paid_at IS NOT DISTINCT FROM NEW\.paid_at/)
+  assert.match(migrationSql, /NEW\.change_type IN \('首次支付', '回款'\)/)
+  assert.match(migrationSql, /card\.paid_at IS NOT DISTINCT FROM NEW\.paid_at/)
+
+  for (const definition of definitions) {
+    assert.match(definition, /LEFT JOIN LATERAL/)
+    assert.match(definition, /sop\.change_type = '储值卡抵扣'/)
+    assert.match(definition, /primary_payment\.change_type IN \('首次支付', '回款'\)/)
+    assert.match(definition, /paired_payment_performance_date/)
+  }
+})
+
+test('0038 journal 与 snapshot 连续且除两个业绩视图外无 schema 漂移', () => {
+  const journal = JSON.parse(read('migrations/meta/_journal.json'))
+  const snapshot37 = JSON.parse(read('migrations/meta/0037_snapshot.json'))
+  const snapshot38 = JSON.parse(read('migrations/meta/0038_snapshot.json'))
+  const entry38 = journal.entries.find((entry) => entry.idx === 38)
+
+  assert.equal(entry38?.tag, '0038_sync_mixed_payment_attribution')
+  assert.equal(snapshot38.prevId, snapshot37.id)
+  journal.entries.forEach((entry, index) => {
+    assert.equal(entry.idx, index, 'journal 索引必须连续，不能重写已发布迁移')
+  })
+  for (const viewName of [
+    'public.sale_order_performance_events',
+    'public.sale_item_performance_events',
+  ]) {
+    snapshot38.views[viewName] = snapshot37.views[viewName]
+  }
+  delete snapshot37.id
+  delete snapshot37.prevId
+  delete snapshot38.id
+  delete snapshot38.prevId
+  assert.deepEqual(snapshot38, snapshot37, '0038 除两个业绩视图外不应夹带其他 schema 变化')
+})

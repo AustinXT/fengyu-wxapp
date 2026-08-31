@@ -1254,8 +1254,8 @@ Page({
     const { customer, promoterSearchKeyword } = this.data;
     if (!customer?.clientUserId) return;
     const keyword = promoterSearchKeyword.trim();
-    if (keyword.length < 3) {
-      wx.showToast({ title: '请输入至少3个字符', icon: 'none' });
+    if (keyword.length < 2) {
+      wx.showToast({ title: '请输入至少2个字符', icon: 'none' });
       return;
     }
 

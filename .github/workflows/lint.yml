@@ -9,6 +9,8 @@ on:
       - 'fengyu-staff/cloudfunctions/**/*.js'
       - 'fengyu-client/cloudfunctions/**/*.js'
       - 'scripts/lint-cas-guards.mjs'
+      - '.claude/skills/remote-deploy/**'
+      - 'docker/docker-compose*.yml'
       - '.github/workflows/lint.yml'
 
 jobs:
@@ -23,6 +25,18 @@ jobs:
           node-version: '22'
       - name: Run CAS guard lint
         run: node scripts/lint-cas-guards.mjs
+
+  remote-deploy-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run remote deploy config tests
+        run: node --test .claude/skills/remote-deploy/runtime-config.test.mjs
 
   cross-end-snapshots-staff:
     runs-on: ubuntu-latest

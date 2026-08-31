@@ -38,7 +38,7 @@ import { recalcPaidSessionsForOrder, paidUnusedSessionsExpr } from '@/lib/paid-s
 import { capturePaymentAllocatables, refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
 import { getPerItemRefundedMap } from '@/lib/per-item-refund'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
-import { shanghaiYmd } from '@/lib/datetime'
+import { fmtDate, shanghaiYmd } from '@/lib/datetime'
 import { nowTs, beijingBoundaryTs, beijingNextDayBoundaryTs } from '@/lib/db-time'
 import {
   resolveExportBatchLimit,
@@ -63,6 +63,7 @@ const preferredStaff = alias(staffWechatUsers, 'preferredStaff') as unknown as t
 const offlineConfirmer = alias(staffWechatUsers, 'offlineConfirmer') as unknown as typeof staffWechatUsers
 const auditor = alias(staffWechatUsers, 'auditor') as unknown as typeof staffWechatUsers
 const performanceAttributionAdjuster = alias(staffWechatUsers, 'performanceAttributionAdjuster') as unknown as typeof staffWechatUsers
+const paymentPerformanceAttributionAdjuster = alias(staffWechatUsers, 'paymentPerformanceAttributionAdjuster') as unknown as typeof staffWechatUsers
 
 // 寄存单历史实收流水的 note 标记（change_type='回款' 行）。
 // 编辑寄存单实收时按此标记删重建；与 staff 端 routes/order.js 字面量保持一致。
@@ -1086,11 +1087,49 @@ export interface ExportOrderRow {
   __itemRefundedAmount?: string | number | null
 }
 
+/** 回款明细导出行：一行对应一条 sale_order_payments，保留正负金额与全部状态。 */
+export interface ExportPaymentRow {
+  paymentId: number
+  marketName: string
+  storeName: string | null
+  saleOrderId: string
+  saleOrderType: string
+  documentType: string | null
+  orderStatus: string
+  customerName: string | null
+  clientPhone: string | null
+  changeType: string
+  paymentStatus: string
+  amount: string
+  paymentMethod: string
+  sourceEnd: string
+  operatorName: string | null
+  externalTxnId: string | null
+  createdAt: string
+  paidAt: string | null
+  performanceAttributionDate: string | null
+  performanceAttributionStatus: '随订单' | '系统默认' | '已人工调整' | '未入账'
+  performanceAttributionAdjustedByName: string | null
+  performanceAttributionAdjustedAt: string | null
+  refundReason: string | null
+  note: string | null
+}
+
+type ExportOrderSource = 'item' | 'recharge' | 'orderFallback' | 'cardCredit'
+
+const EXPORT_ORDER_SOURCE_PRIORITY: Record<ExportOrderSource, number> = {
+  item: 0,
+  recharge: 1,
+  orderFallback: 2,
+  cardCredit: 3,
+}
+
+/** Worker 内部使用的全局键集游标；时间保留 PG 原始精度，避免 Date 毫秒截断导致跨页漏行。 */
 export interface ExportOrdersCursor {
-  itemOffset: number
-  rechargeOffset: number
-  cardCreditOffset: number
-  orderFallbackOffset: number
+  sortDatetime: string
+  saleOrderId: string
+  source: ExportOrderSource
+  sourceId: string
 }
 
 export interface ExportAllocationOrdersCursor {
@@ -1101,6 +1140,179 @@ export interface ExportAllocationOrdersCursor {
 function nonNegativeOffset(value: unknown): number {
   return Math.max(0, Math.floor(Number(value) || 0))
 }
+
+function normalizeExportOrdersCursor(cursor: ExportOrdersCursor | undefined): ExportOrdersCursor | null {
+  if (!cursor) return null
+  if (
+    !cursor.sortDatetime ||
+    !Number.isFinite(Date.parse(cursor.sortDatetime)) ||
+    !cursor.saleOrderId ||
+    !cursor.sourceId ||
+    !(cursor.source in EXPORT_ORDER_SOURCE_PRIORITY)
+  ) {
+    throw new ApiError('INVALID_STATE', '导出分页游标无效')
+  }
+  if (cursor.source === 'cardCredit') {
+    const id = Number(cursor.sourceId)
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      throw new ApiError('INVALID_STATE', '导出分页游标无效')
+    }
+  }
+  return cursor
+}
+
+/**
+ * 四类来源共享同一个全局排序游标。sourceIdAfter 仅在游标与当前来源相同时求值，
+ * 避免把其他来源的字符串主键误当成 card_transactions bigint。
+ */
+function exportOrderSeekCondition(
+  cursor: ExportOrdersCursor | null,
+  source: ExportOrderSource,
+  sourceIdAfter: () => SQL,
+): SQL | undefined {
+  if (!cursor) return undefined
+  const sourcePriority = EXPORT_ORDER_SOURCE_PRIORITY[source]
+  const cursorPriority = EXPORT_ORDER_SOURCE_PRIORITY[cursor.source]
+  const sameOrderTail = sourcePriority > cursorPriority
+    ? sql`TRUE`
+    : sourcePriority === cursorPriority
+      ? sourceIdAfter()
+      : sql`FALSE`
+  const cursorDatetime = sql`${cursor.sortDatetime}::timestamptz`
+  return or(
+    lt(saleOrders.saleOrderDatetime, cursorDatetime),
+    and(
+      eq(saleOrders.saleOrderDatetime, cursorDatetime),
+      or(
+        gt(saleOrders.saleOrderId, cursor.saleOrderId),
+        and(eq(saleOrders.saleOrderId, cursor.saleOrderId), sameOrderTail),
+      ),
+    ),
+  )
+}
+
+/** 导出当前订单列表筛选命中的全部款项流水；款项日期口径按当前行 paid_at 逐笔筛选。 */
+export const exportOrderPayments = withPermission(
+  'sale_order:list',
+  async (
+    session,
+    params: Record<string, string | undefined>,
+    options?: ExportBatchOptions<number>,
+  ): Promise<ExportBatchResult<ExportPaymentRow, number>> => {
+    const filters = parseOrderFilters(params)
+    const usesPaymentDate = filters.dateBasis === 'payment' && Boolean(filters.dateFrom || filters.dateTo)
+    const orderFilters = usesPaymentDate
+      ? { ...filters, dateFrom: undefined, dateTo: undefined }
+      : filters
+    const limit = resolveExportBatchLimit(options?.limit)
+    const cursor = options?.cursor == null ? null : Number(options.cursor)
+    if (cursor != null && (!Number.isSafeInteger(cursor) || cursor <= 0)) {
+      throw new ApiError('INVALID_STATE', '导出分页游标无效')
+    }
+
+    const query = db
+      .select({
+        payment: saleOrderPayments,
+        marketName: saleOrders.marketName,
+        storeName: stores.storeName,
+        saleOrderType: saleOrders.saleOrderType,
+        documentType: saleOrders.documentType,
+        orderStatus: saleOrders.status,
+        orderCustomerName: saleOrders.customerName,
+        orderClientPhone: saleOrders.clientPhone,
+        customerName: clientWechatUsers.name,
+        clientPhone: clientWechatUsers.phone,
+        orderPerformanceAttributionDate: saleOrders.performanceAttributionDate,
+        orderPerformanceAttributionAdjustedAt: saleOrders.performanceAttributionAdjustedAt,
+        orderPerformanceAttributionAdjustedByName: performanceAttributionAdjuster.name,
+        paymentPerformanceAttributionAdjustedByName: paymentPerformanceAttributionAdjuster.name,
+        operatorName: staffWechatUsers.name,
+      })
+      .from(saleOrderPayments)
+      .innerJoin(saleOrders, eq(saleOrderPayments.saleOrderId, saleOrders.saleOrderId))
+      .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
+      .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
+      .leftJoin(staffWechatUsers, eq(saleOrderPayments.operatorEmployeeId, staffWechatUsers.employeeId))
+      .leftJoin(
+        performanceAttributionAdjuster,
+        eq(saleOrders.performanceAttributionAdjustedBy, performanceAttributionAdjuster.employeeId),
+      )
+      .leftJoin(
+        paymentPerformanceAttributionAdjuster,
+        eq(saleOrderPayments.performanceAttributionAdjustedBy, paymentPerformanceAttributionAdjuster.employeeId),
+      )
+      .where(and(
+        ...buildOrderConditions(session, orderFilters),
+        usesPaymentDate && filters.dateFrom
+          ? gte(saleOrderPayments.paidAt, beijingBoundaryTs(filters.dateFrom, '00:00:00'))
+          : undefined,
+        usesPaymentDate && filters.dateTo
+          ? lt(saleOrderPayments.paidAt, beijingNextDayBoundaryTs(filters.dateTo))
+          : undefined,
+        cursor == null ? undefined : lt(saleOrderPayments.id, cursor),
+      ))
+      // 例外：款项流水按不可变主键倒序做 keyset 分页，覆盖 paid_at 为空的未入账状态。
+      .orderBy(desc(saleOrderPayments.id))
+
+    const candidates = limit == null ? await query : await query.limit(limit + 1)
+    const selected = limit == null ? candidates : candidates.slice(0, limit)
+    const rows: ExportPaymentRow[] = selected.map((row) => {
+      const isFirstPayment = row.payment.changeType === '首次支付'
+      const attributionDate = isFirstPayment
+        ? row.orderPerformanceAttributionDate
+        : row.payment.performanceAttributionDate
+          ?? (row.payment.paidAt ? fmtDate(row.payment.paidAt) : null)
+      const adjustedAt = isFirstPayment
+        ? row.orderPerformanceAttributionAdjustedAt
+        : row.payment.performanceAttributionAdjustedAt
+      const adjustedByName = isFirstPayment
+        ? row.orderPerformanceAttributionAdjustedByName
+        : row.paymentPerformanceAttributionAdjustedByName
+      return {
+        paymentId: row.payment.id,
+        marketName: row.marketName,
+        storeName: row.storeName ?? null,
+        saleOrderId: row.payment.saleOrderId,
+        saleOrderType: row.saleOrderType,
+        documentType: row.documentType,
+        orderStatus: row.orderStatus,
+        customerName: row.customerName || row.orderCustomerName || null,
+        clientPhone: row.clientPhone || row.orderClientPhone || null,
+        changeType: row.payment.changeType,
+        paymentStatus: row.payment.status,
+        amount: row.payment.amount,
+        paymentMethod: row.payment.paymentMethod,
+        sourceEnd: row.payment.sourceEnd,
+        operatorName: row.operatorName ?? null,
+        externalTxnId: row.payment.externalTxnId,
+        createdAt: row.payment.createdAt.toISOString(),
+        paidAt: row.payment.paidAt?.toISOString() ?? null,
+        performanceAttributionDate: attributionDate,
+        performanceAttributionStatus: isFirstPayment
+          ? '随订单'
+          : !row.payment.paidAt
+            ? '未入账'
+            : adjustedAt
+              ? '已人工调整'
+              : '系统默认',
+        performanceAttributionAdjustedByName: adjustedByName ?? null,
+        performanceAttributionAdjustedAt: adjustedAt?.toISOString() ?? null,
+        refundReason: row.payment.refundReason,
+        note: row.payment.note,
+      }
+    })
+
+    if (limit == null) return { rows, truncated: false, hasMore: false }
+    const hasMore = candidates.length > limit
+    const last = selected.at(-1)
+    return {
+      rows,
+      truncated: false,
+      hasMore,
+      ...(hasMore && last ? { nextCursor: last.payment.id } : {}),
+    }
+  },
+)
 
 /** 导出订单（明细级，一行一 sale_items 行；按筛选条件导出全量）。 */
 export const exportOrders = withPermission(
@@ -1113,12 +1325,7 @@ export const exportOrders = withPermission(
     const filters = parseOrderFilters(params)
     const whereClause = and(...buildOrderConditions(session, filters))
     const limit = resolveExportBatchLimit(options?.limit)
-    const cursor: ExportOrdersCursor = {
-      itemOffset: nonNegativeOffset(options?.cursor?.itemOffset),
-      rechargeOffset: nonNegativeOffset(options?.cursor?.rechargeOffset),
-      cardCreditOffset: nonNegativeOffset(options?.cursor?.cardCreditOffset),
-      orderFallbackOffset: nonNegativeOffset(options?.cursor?.orderFallbackOffset),
-    }
+    const cursor = limit == null ? null : normalizeExportOrdersCursor(options?.cursor)
 
     // 从 sale_items 出发（明细级）；innerJoin sale_orders 保证每行有归属订单
     // leftJoin 客户/员工/门店/商品三级：NULL 安全，缺失分类/skus 历史订单仍可导出
@@ -1147,14 +1354,6 @@ export const exportOrders = withPermission(
           cashAmount: saleItems.cashReceived,
           received: saleItems.received,             // 行级净实收（商品行口径）
           refundedAmount: saleOrders.refundedAmount,
-          itemRefundedAmount: sql<string>`COALESCE((
-            SELECT ABS(SUM(spir.amount::numeric))
-              FROM sale_payment_item_receipts spir
-              JOIN sale_order_payments sop ON sop.id = spir.sale_payment_id
-             WHERE spir.sale_item_id = ${saleItems.saleItemId}
-               AND sop.status = '已支付'
-               AND sop.change_type = '退款'
-          ), 0)`,
           paymentMethod: saleOrders.paymentMethod,
           legacySource: saleOrders.legacySource,
           isMembershipUpgrade: saleOrders.isMembershipUpgrade,
@@ -1182,6 +1381,7 @@ export const exportOrders = withPermission(
           categoryL1: productCategories.productKind,
           categoryL2: productCategories.categoryName,
           sourceId: saleItems.saleItemId,
+          sortDatetime: sql<string>`${saleOrders.saleOrderDatetime}::text`,
       })
       .from(saleItems)
       .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
@@ -1199,11 +1399,12 @@ export const exportOrders = withPermission(
             inArray(saleItems.itemDirection, ['转出', '转入']),
           ),
         ),
+        exportOrderSeekCondition(cursor, 'item', () => gt(saleItems.saleItemId, cursor!.sourceId)),
       ))
       .orderBy(desc(saleOrders.saleOrderDatetime), saleOrders.saleOrderId, saleItems.saleItemId)
     const itemRows = limit == null
       ? await itemQuery
-      : await itemQuery.limit(limit + 1).offset(cursor.itemOffset)
+      : await itemQuery.limit(limit + 1)
 
     const num = (v: string | null) => (v == null ? null : Number(v))
 
@@ -1239,16 +1440,21 @@ export const exportOrders = withPermission(
           createdAt: saleOrders.createdAt,
           remark: saleOrders.remark,
           sourceId: saleOrders.saleOrderId,
+          sortDatetime: sql<string>`${saleOrders.saleOrderDatetime}::text`,
       })
       .from(saleOrders)
       .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
       .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
       .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
-      .where(and(whereClause, eq(saleOrders.saleOrderType, '充值单')))
+      .where(and(
+        whereClause,
+        eq(saleOrders.saleOrderType, '充值单'),
+        exportOrderSeekCondition(cursor, 'recharge', () => gt(saleOrders.saleOrderId, cursor!.sourceId)),
+      ))
       .orderBy(desc(saleOrders.saleOrderDatetime), saleOrders.saleOrderId)
     const rechargeOrders = limit == null
       ? await rechargeQuery
-      : await rechargeQuery.limit(limit + 1).offset(cursor.rechargeOffset)
+      : await rechargeQuery.limit(limit + 1)
 
     // 普通转换单旧卡价值高于转入商品时，差额会形成一笔 card_transactions 充值流水。
     // 该资产变动不属于储值卡抵扣；订单明细导出按业务记账口径归入正数现付。
@@ -1281,6 +1487,7 @@ export const exportOrders = withPermission(
         createdAt: cardTransactions.createdAt,
         remark: saleOrders.remark,
         sourceId: cardTransactions.id,
+        sortDatetime: sql<string>`${saleOrders.saleOrderDatetime}::text`,
       })
       .from(cardTransactions)
       .innerJoin(saleOrders, eq(cardTransactions.refOrderId, saleOrders.saleOrderId))
@@ -1299,11 +1506,12 @@ export const exportOrders = withPermission(
             sql<string>`'card-conv-' || ${saleOrders.saleOrderId}`,
           ),
         ),
+        exportOrderSeekCondition(cursor, 'cardCredit', () => gt(cardTransactions.id, Number(cursor!.sourceId))),
       ))
       .orderBy(desc(saleOrders.saleOrderDatetime), saleOrders.saleOrderId, cardTransactions.id)
     const cardCreditRows = limit == null
       ? await cardCreditQuery
-      : await cardCreditQuery.limit(limit + 1).offset(cursor.cardCreditOffset)
+      : await cardCreditQuery.limit(limit + 1)
 
     // WorkFine 历史销售单没有 sale_items；未来若出现同类异常原生单，也不能从订单导出中静默消失。
     // 仅为完全没有可导出明细的非充值订单造一条订单级兜底行，正常商品行不会重复。
@@ -1337,6 +1545,7 @@ export const exportOrders = withPermission(
         remark: saleOrders.remark,
         legacySource: saleOrders.legacySource,
         sourceId: saleOrders.saleOrderId,
+        sortDatetime: sql<string>`${saleOrders.saleOrderDatetime}::text`,
       })
       .from(saleOrders)
       .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
@@ -1354,11 +1563,41 @@ export const exportOrders = withPermission(
               OR (${saleOrders.saleOrderType} = '转换单' AND export_item.item_direction IN ('转出', '转入'))
             )
         )`,
+        exportOrderSeekCondition(cursor, 'orderFallback', () => gt(saleOrders.saleOrderId, cursor!.sourceId)),
       ))
       .orderBy(desc(saleOrders.saleOrderDatetime), saleOrders.saleOrderId)
     const orderFallbackRows = limit == null
       ? await orderFallbackQuery
-      : await orderFallbackQuery.limit(limit + 1).offset(cursor.orderFallbackOffset)
+      : await orderFallbackQuery.limit(limit + 1)
+
+    // 退款 receipt 按当前批次一次性聚合，避免 item 主查询对每条明细重复全表扫描。
+    // legacy 无分页调用可能返回很多 item，此时直接聚合全量退款 receipt，避免超大 IN 参数列表。
+    const itemRefundRows = itemRows.length === 0
+      ? []
+      : await db
+          .select({
+            saleItemId: salePaymentItemReceipts.saleItemId,
+            amount: sql<string>`ABS(SUM(${salePaymentItemReceipts.amount}::numeric))`,
+          })
+          .from(salePaymentItemReceipts)
+          .innerJoin(
+            saleOrderPayments,
+            eq(saleOrderPayments.id, salePaymentItemReceipts.salePaymentId),
+          )
+          .where(and(
+            eq(saleOrderPayments.status, '已支付'),
+            eq(saleOrderPayments.changeType, '退款'),
+            limit == null
+              ? undefined
+              : inArray(
+                  salePaymentItemReceipts.saleItemId,
+                  itemRows.map((row) => row.sourceId),
+                ),
+          ))
+          .groupBy(salePaymentItemReceipts.saleItemId)
+    const itemRefundedAmountById = new Map(
+      itemRefundRows.map((row) => [row.saleItemId, row.amount]),
+    )
 
     const toAmount = (value: string | number | null | undefined) => {
       const amount = Number(value ?? 0)
@@ -1387,8 +1626,9 @@ export const exportOrders = withPermission(
     // 导出按筛选条件返回全量，合并后仅做整体排序。
     const combined: Array<{
       row: ExportOrderRow
-      source: 'item' | 'recharge' | 'cardCredit' | 'orderFallback'
+      source: ExportOrderSource
       sourceId: string
+      sortDatetime: string
     }> = [
       ...itemRows.map((r) => {
         // 寄存单 total_amount 设计为 0、received 为真金实付（「寄存单初始化实收」回款行），
@@ -1399,6 +1639,7 @@ export const exportOrders = withPermission(
         return {
           source: 'item' as const,
           sourceId: String(r.sourceId ?? r.saleOrderId),
+          sortDatetime: r.sortDatetime ?? r.saleOrderDatetime.toISOString(),
           row: {
           // 订单级
           marketName: r.marketName,
@@ -1443,7 +1684,7 @@ export const exportOrders = withPermission(
           __quantity: r.quantity ?? 1,
           __remainingSessions: r.remainingSessions ?? null,
           __paidSessions: r.paidSessions ?? null,
-          __itemRefundedAmount: r.itemRefundedAmount ?? null,
+          __itemRefundedAmount: itemRefundedAmountById.get(String(r.sourceId ?? r.saleOrderId)) ?? '0',
           },
         }
       }),
@@ -1453,6 +1694,7 @@ export const exportOrders = withPermission(
         return {
           source: 'recharge' as const,
           sourceId: String(r.sourceId ?? r.saleOrderId),
+          sortDatetime: r.sortDatetime ?? r.saleOrderDatetime.toISOString(),
           row: {
           // 订单级
           marketName: r.marketName,
@@ -1501,6 +1743,7 @@ export const exportOrders = withPermission(
         return {
           source: 'orderFallback' as const,
           sourceId: String(r.sourceId ?? r.saleOrderId),
+          sortDatetime: r.sortDatetime ?? r.saleOrderDatetime.toISOString(),
           row: {
             marketName: r.marketName,
             storeName: r.storeName,
@@ -1546,6 +1789,7 @@ export const exportOrders = withPermission(
       ...cardCreditRows.map((r) => ({
         source: 'cardCredit' as const,
         sourceId: String(r.sourceId),
+        sortDatetime: r.sortDatetime ?? r.saleOrderDatetime.toISOString(),
         row: {
           marketName: r.marketName,
           storeName: r.storeName,
@@ -1588,42 +1832,40 @@ export const exportOrders = withPermission(
     ]
 
     combined.sort((left, right) => {
-      const byTime = left.row.saleOrderDatetime < right.row.saleOrderDatetime
+      const byTime = left.sortDatetime < right.sortDatetime
         ? 1
-        : left.row.saleOrderDatetime > right.row.saleOrderDatetime
+        : left.sortDatetime > right.sortDatetime
           ? -1
           : 0
       if (byTime !== 0) return byTime
       const byOrder = left.row.saleOrderId.localeCompare(right.row.saleOrderId)
       if (byOrder !== 0) return byOrder
-      const sourcePriority = { item: 0, recharge: 1, orderFallback: 2, cardCredit: 3 } as const
-      const bySource = sourcePriority[left.source] - sourcePriority[right.source]
-      return bySource || left.sourceId.localeCompare(right.sourceId)
+      const bySource = EXPORT_ORDER_SOURCE_PRIORITY[left.source]
+        - EXPORT_ORDER_SOURCE_PRIORITY[right.source]
+      if (bySource !== 0) return bySource
+      if (left.source === 'cardCredit' && right.source === 'cardCredit') {
+        return Number(left.sourceId) - Number(right.sourceId)
+      }
+      return left.sourceId.localeCompare(right.sourceId)
     })
 
     const selected = limit == null ? combined : combined.slice(0, limit)
     const rows = selected.map((item) => item.row)
     if (limit == null) return { rows, truncated: false, hasMore: false }
 
-    const itemCount = selected.filter((item) => item.source === 'item').length
-    const rechargeCount = selected.filter((item) => item.source === 'recharge').length
-    const cardCreditCount = selected.filter((item) => item.source === 'cardCredit').length
-    const orderFallbackCount = selected.filter((item) => item.source === 'orderFallback').length
-    const hasMore = itemRows.length > itemCount
-      || rechargeOrders.length > rechargeCount
-      || cardCreditRows.length > cardCreditCount
-      || orderFallbackRows.length > orderFallbackCount
+    const hasMore = combined.length > limit
+    const lastSelected = selected.at(-1)
     return {
       rows,
       truncated: false,
       hasMore,
-      ...(hasMore
+      ...(hasMore && lastSelected
         ? {
             nextCursor: {
-              itemOffset: cursor.itemOffset + itemCount,
-              rechargeOffset: cursor.rechargeOffset + rechargeCount,
-              cardCreditOffset: cursor.cardCreditOffset + cardCreditCount,
-              orderFallbackOffset: cursor.orderFallbackOffset + orderFallbackCount,
+              sortDatetime: lastSelected.sortDatetime,
+              saleOrderId: lastSelected.row.saleOrderId,
+              source: lastSelected.source,
+              sourceId: lastSelected.sourceId,
             },
           }
         : {}),
@@ -1720,6 +1962,22 @@ export const exportAllocationOrders = withPermission(
     const filters = parseAllocationOrderFilters(params)
     filters.status = undefined
     filters.allocationStatus = undefined
+    // 销售提成以回款为列表粒度，款项日期必须约束当前 JOIN 到的 payment；
+    // 不能复用订单管理的 EXISTS 口径，否则会带出同订单范围外的其他回款。
+    const usesPaymentDate = filters.dateBasis === 'payment' && Boolean(filters.dateFrom || filters.dateTo)
+    const orderFilters = usesPaymentDate
+      ? { ...filters, dateFrom: undefined, dateTo: undefined }
+      : filters
+    const paymentDateConditions = usesPaymentDate
+      ? [
+          filters.dateFrom
+            ? gte(saleOrderPayments.paidAt, beijingBoundaryTs(filters.dateFrom, '00:00:00'))
+            : undefined,
+          filters.dateTo
+            ? lt(saleOrderPayments.paidAt, beijingNextDayBoundaryTs(filters.dateTo))
+            : undefined,
+        ]
+      : []
     const allocStatus = params.allocStatus
     const limit = resolveExportBatchLimit(options?.limit)
     const cursor: ExportAllocationOrdersCursor = {
@@ -1743,7 +2001,12 @@ export const exportAllocationOrders = withPermission(
 
     // 已分配明细段（一行 = 一条有效 sale_payment_item_allocations，每被分配员工一行）
     if (allocStatus !== '待分配') {
-      const whereClause = and(eq(salePaymentItemAllocations.isVoid, false), ...buildOrderConditions(session, filters))
+      const whereClause = and(
+        eq(salePaymentItemAllocations.isVoid, false),
+        ...buildOrderConditions(session, orderFilters),
+        usesPaymentDate ? eq(saleOrderPayments.status, '已支付') : undefined,
+        ...paymentDateConditions,
+      )
       const query = db
         .select({
           market: saleOrders.marketName,
@@ -1899,7 +2162,8 @@ export const exportAllocationOrders = withPermission(
       const whereClause = and(
         eq(saleOrderPayments.allocationStatus, '待分配'),
         eq(saleOrderPayments.status, '已支付'),
-        ...buildOrderConditions(session, filters),
+        ...buildOrderConditions(session, orderFilters),
+        ...paymentDateConditions,
       )
       const query = db
         .select({
@@ -2324,16 +2588,38 @@ export const updatePerformanceAttributionDate = withPermission(
         throw new ApiError('CONFLICT', '订单已被其他人修改，请刷新后重试')
       }
 
+      // 同次首次支付中被合并的储值卡流水与订单共用归属日期和一次调整机会。
+      const syncedCardRes = await tx.execute(sql`
+        UPDATE sale_order_payments card
+        SET performance_attribution_date = ${targetDate}::date,
+            performance_attribution_adjusted_at = ${updated.performance_attribution_adjusted_at}::timestamptz,
+            performance_attribution_adjusted_by = ${updated.performance_attribution_adjusted_by}
+        WHERE card.sale_order_id = ${saleOrderId}
+          AND card.change_type = '储值卡抵扣'
+          AND card.status = '已支付'
+          AND EXISTS (
+            SELECT 1
+            FROM sale_order_payments first_payment
+            WHERE first_payment.sale_order_id = card.sale_order_id
+              AND first_payment.change_type = '首次支付'
+              AND first_payment.status = card.status
+              AND first_payment.paid_at IS NOT DISTINCT FROM card.paid_at
+          )
+        RETURNING card.id
+      `)
+      const syncedPaymentIds = (syncedCardRes as unknown as Array<{ id: number }>).map((row) => row.id)
+
       await logUpdate(
         session,
         'order.performanceAttribution.update',
         'sale_order',
         saleOrderId,
-        { performanceAttributionDate: locked.performance_attribution_date },
+        { performanceAttributionDate: locked.performance_attribution_date, syncedPaymentIds: [] },
         {
           performanceAttributionDate: updated.performance_attribution_date,
           performanceAttributionAdjustedAt: new Date(updated.performance_attribution_adjusted_at).toISOString(),
           performanceAttributionAdjustedBy: updated.performance_attribution_adjusted_by,
+          syncedPaymentIds,
         },
         tx,
       )
@@ -2352,6 +2638,201 @@ export const updatePerformanceAttributionDate = withPermission(
       success: true,
       message: '业绩归属日期已修改；该订单不可再次调整',
       data: {
+        ...result,
+        performanceAttributionAdjustedByName: session.name,
+      },
+    }
+  },
+)
+
+export interface UpdatePaymentPerformanceAttributionDateInput {
+  paymentId: number
+  performanceAttributionDate: string
+  expectedAttributionDate: string
+}
+
+export interface UpdatePaymentPerformanceAttributionDateResult {
+  success: true
+  message: string
+  data: {
+    paymentId: number
+    saleOrderId: string
+    performanceAttributionDate: string
+    performanceAttributionAdjustedAt: string
+    performanceAttributionAdjustedBy: string
+    performanceAttributionAdjustedByName: string
+  }
+}
+
+/**
+ * 一次性修改非首次支付款项的业绩归属日期。
+ *
+ * 目标日期必须位于该款项 paid_at 上海自然日前后 7 天（含边界）；
+ * 同次回款中被合并的储值卡流水与主流水原子同步，共用一次调整机会；
+ * FOR UPDATE + adjusted_at IS NULL + 当前归属日期 CAS 保证并发下仅一个请求成功。
+ */
+export const updatePaymentPerformanceAttributionDate = withPermission(
+  'sale_order:performance_attribution_update',
+  async (
+    session,
+    input: UpdatePaymentPerformanceAttributionDateInput,
+  ): Promise<UpdatePaymentPerformanceAttributionDateResult> => {
+    const paymentId = Number(input.paymentId)
+    const targetDate = input.performanceAttributionDate?.trim()
+    const expectedAttributionDate = input.expectedAttributionDate?.trim()
+    if (!Number.isSafeInteger(paymentId) || paymentId <= 0 || !isValidIsoDateOnly(targetDate)) {
+      throw new ApiError('INVALID_PARAMS', '款项流水号和有效的业绩归属日期必传')
+    }
+    if (!isValidIsoDateOnly(expectedAttributionDate)) {
+      throw new ApiError('INVALID_PARAMS', '款项归属日期版本无效，请刷新后重试')
+    }
+
+    const result = await db.transaction(async (tx) => {
+      const lockedRes = await tx.execute(sql`
+        SELECT
+          sop.id,
+          sop.sale_order_id,
+          sop.change_type,
+          sop.status,
+          sop.paid_at,
+          sop.performance_attribution_date::text AS performance_attribution_date,
+          sop.performance_attribution_adjusted_at,
+          EXISTS (
+            SELECT 1
+            FROM sale_order_payments primary_payment
+            WHERE primary_payment.sale_order_id = sop.sale_order_id
+              AND primary_payment.change_type IN ('首次支付', '回款')
+              AND primary_payment.status = sop.status
+              AND primary_payment.paid_at IS NOT DISTINCT FROM sop.paid_at
+          ) AS has_mixed_payment_primary,
+          so.store_id,
+          (sop.paid_at AT TIME ZONE 'Asia/Shanghai')::date::text AS original_paid_date,
+          ((sop.paid_at AT TIME ZONE 'Asia/Shanghai')::date - 7)::text AS min_performance_date,
+          ((sop.paid_at AT TIME ZONE 'Asia/Shanghai')::date + 7)::text AS max_performance_date
+        FROM sale_order_payments sop
+        JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
+        WHERE sop.id = ${paymentId}
+        FOR UPDATE OF sop
+      `)
+      const locked = (lockedRes as unknown as Array<{
+        id: number
+        sale_order_id: string
+        change_type: string
+        status: string
+        paid_at: Date | string | null
+        performance_attribution_date: string | null
+        performance_attribution_adjusted_at: Date | string | null
+        has_mixed_payment_primary: boolean
+        store_id: string
+        original_paid_date: string | null
+        min_performance_date: string | null
+        max_performance_date: string | null
+      }>)[0]
+
+      if (!locked || !isInScope(session, locked.store_id)) {
+        throw new ApiError('NOT_FOUND', '款项流水不存在或不在当前数据权限范围内')
+      }
+      if (locked.change_type === '首次支付') {
+        throw new ApiError('INVALID_STATE', '首次支付跟随订单业绩归属日期，不能单独修改')
+      }
+      if (locked.change_type === '储值卡抵扣' && locked.has_mixed_payment_primary) {
+        throw new ApiError('INVALID_STATE', '该储值卡抵扣跟随同次现付归属日期，不能单独修改')
+      }
+      if (locked.status !== '已支付' || !locked.paid_at || !locked.original_paid_date) {
+        throw new ApiError('INVALID_STATE', '仅已入账且存在支付时间的款项可以修改归属日期')
+      }
+      if (locked.performance_attribution_adjusted_at) {
+        throw new ApiError('CONFLICT', '该款项的业绩归属日期已经调整过，不能再次修改')
+      }
+      const currentDate = locked.performance_attribution_date ?? locked.original_paid_date
+      if (currentDate !== expectedAttributionDate) {
+        throw new ApiError('CONFLICT', '款项归属日期已变化，请刷新后重试')
+      }
+      if (targetDate === currentDate) {
+        throw new ApiError('INVALID_PARAMS', '新归属日期与当前日期相同，未消耗修改机会')
+      }
+      if (targetDate < locked.min_performance_date! || targetDate > locked.max_performance_date!) {
+        throw new ApiError(
+          'INVALID_PARAMS',
+          `归属日期必须在款项发生日期 ${locked.original_paid_date} 前后 7 天内（${locked.min_performance_date} 至 ${locked.max_performance_date}）`,
+        )
+      }
+
+      const updatedRes = await tx.execute(sql`
+        UPDATE sale_order_payments payment
+        SET performance_attribution_date = ${targetDate}::date,
+            performance_attribution_adjusted_at = NOW(),
+            performance_attribution_adjusted_by = ${session.employeeId}
+        WHERE (
+            payment.id = ${paymentId}
+            OR (
+              ${locked.change_type} IN ('首次支付', '回款')
+              AND payment.sale_order_id = ${locked.sale_order_id}
+              AND payment.change_type = '储值卡抵扣'
+              AND payment.status = ${locked.status}
+              AND payment.paid_at IS NOT DISTINCT FROM ${locked.paid_at}::timestamptz
+            )
+          )
+          AND EXISTS (
+            SELECT 1
+            FROM sale_order_payments target
+            WHERE target.id = ${paymentId}
+              AND target.performance_attribution_adjusted_at IS NULL
+              AND COALESCE(
+                target.performance_attribution_date,
+                (target.paid_at AT TIME ZONE 'Asia/Shanghai')::date
+              ) = ${expectedAttributionDate}::date
+          )
+        RETURNING
+          id,
+          sale_order_id,
+          performance_attribution_date::text AS performance_attribution_date,
+          performance_attribution_adjusted_at,
+          performance_attribution_adjusted_by
+      `)
+      const updated = (updatedRes as unknown as Array<{
+        id: number
+        sale_order_id: string
+        performance_attribution_date: string
+        performance_attribution_adjusted_at: Date | string
+        performance_attribution_adjusted_by: string
+      }>).find((row) => row.id === paymentId)
+      if (!updated) {
+        throw new ApiError('CONFLICT', '款项已被其他人修改，请刷新后重试')
+      }
+
+      await logUpdate(
+        session,
+        'payment.performanceAttribution.update',
+        'sale_order_payment',
+        String(paymentId),
+        { performanceAttributionDate: currentDate, affectedPaymentIds: [paymentId] },
+        {
+          performanceAttributionDate: updated.performance_attribution_date,
+          performanceAttributionAdjustedAt: new Date(updated.performance_attribution_adjusted_at).toISOString(),
+          performanceAttributionAdjustedBy: updated.performance_attribution_adjusted_by,
+          affectedPaymentIds: (updatedRes as unknown as Array<{ id: number }>).map((row) => row.id),
+        },
+        tx,
+      )
+
+      return {
+        saleOrderId: updated.sale_order_id,
+        performanceAttributionDate: updated.performance_attribution_date,
+        performanceAttributionAdjustedAt: new Date(updated.performance_attribution_adjusted_at).toISOString(),
+        performanceAttributionAdjustedBy: updated.performance_attribution_adjusted_by,
+      }
+    })
+
+    revalidatePath('/orders')
+    revalidatePath(`/orders/${result.saleOrderId}`)
+    revalidatePath('/allocations')
+    revalidatePath('/data-center')
+    return {
+      success: true,
+      message: '款项业绩归属日期已修改；该次付款不可再次调整',
+      data: {
+        paymentId,
         ...result,
         performanceAttributionAdjustedByName: session.name,
       },
@@ -2384,11 +2865,16 @@ export const getOrderPayments = withAnyPermission(
     .select({
       payment: saleOrderPayments,
       operatorName: staffWechatUsers.name,
+      performanceAttributionAdjustedByName: paymentPerformanceAttributionAdjuster.name,
       skuUnit: productSkus.unit,
       refundProductType: saleItems.productType,
     })
     .from(saleOrderPayments)
     .leftJoin(staffWechatUsers, eq(saleOrderPayments.operatorEmployeeId, staffWechatUsers.employeeId))
+    .leftJoin(
+      paymentPerformanceAttributionAdjuster,
+      eq(saleOrderPayments.performanceAttributionAdjustedBy, paymentPerformanceAttributionAdjuster.employeeId),
+    )
     .leftJoin(saleItems, eq(saleOrderPayments.refSaleItemId, saleItems.saleItemId))
     .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
     .where(eq(saleOrderPayments.saleOrderId, saleOrderId))
@@ -2408,7 +2894,11 @@ export const getOrderPayments = withAnyPermission(
     note: r.payment.note ?? null,
     createdAt: r.payment.createdAt.toISOString(),
     paidAt: r.payment.paidAt?.toISOString() ?? null,
+    performanceAttributionDate: r.payment.performanceAttributionDate ?? null,
+    performanceAttributionAdjustedAt: r.payment.performanceAttributionAdjustedAt?.toISOString() ?? null,
+    performanceAttributionAdjustedBy: r.payment.performanceAttributionAdjustedBy ?? null,
     operatorName: r.operatorName ?? null,
+    performanceAttributionAdjustedByName: r.performanceAttributionAdjustedByName ?? null,
     refundReason: r.payment.refundReason ?? null,
     refSaleItemId: r.payment.refSaleItemId ?? null,
     sessionCount: r.payment.sessionCount ?? null,
@@ -2514,13 +3004,39 @@ export const confirmOfflinePayment = withPermission(
           AND expire_date IS NULL
       `)
 
-      // ========== 储值卡抵扣扣款（ticket 2026-05-19）==========
-      // 锁余额 → 扣减 → 写 card_transactions(type='扣款') + 写 sale_order_payments(change_type='储值卡抵扣')
-      // 与 staff confirmOffline 字面对齐；幂等键 card-deduct-${id}。首次确认时扣全额预选卡。
       const clientUserId = locked.client_user_id as string | null
       // 回款事件主流水行 id（现金行优先；纯储值卡则取储值卡抵扣行）—— 按回款逐笔分配的归属键
       let cashPaymentId: number | string | null = null
       let cardPaymentId: number | string | null = null
+
+      // 混合支付统一按“现付后卡”写入：先写首次支付/回款主流水，再写储值卡抵扣。
+      // change_type 必须在任何本次流水写入前判定，避免刚写入的卡流水把首次现付误判成回款。
+      let cashChangeType: '首次支付' | '回款' | null = null
+      if (cashAmount > 0) {
+        const existRes = await tx.execute(sql`
+          SELECT 1 FROM sale_order_payments
+          WHERE sale_order_id = ${saleOrderId} AND status = '已支付'
+            AND amount::numeric > 0
+            AND change_type IN ('首次支付','回款','储值卡抵扣') LIMIT 1
+        `)
+        const existRows = existRes as unknown as any[]
+        cashChangeType = existRows.length > 0 ? '回款' : '首次支付'
+        const cashIns = await tx.execute(sql`
+          INSERT INTO sale_order_payments (
+            sale_order_id, change_type, payment_method, amount, status,
+            paid_at, source_end, operator_employee_id, note, created_at
+          ) VALUES (
+            ${saleOrderId}, ${cashChangeType}, '线下', ${cashAmount.toFixed(2)}::numeric, '已支付',
+            NOW(), 'admin', ${session.employeeId}, '管理后台确认线下收款', NOW()
+          )
+          RETURNING id
+        `)
+        cashPaymentId = (cashIns as unknown as Array<{ id: number | string }>)[0]?.id ?? null
+      }
+
+      // ========== 储值卡抵扣扣款（ticket 2026-05-19）==========
+      // 锁余额 → 扣减 → 写 card_transactions(type='扣款') + 写 sale_order_payments(change_type='储值卡抵扣')
+      // 与 staff confirmOffline 字面对齐；幂等键 card-deduct-${id}。首次确认时扣全额预选卡。
       if (orderPendingPrepaid > 0 && clientUserId) {
         const dupRes = await tx.execute(sql`
           SELECT 1 FROM card_transactions
@@ -2564,30 +3080,6 @@ export const confirmOfflinePayment = withPermission(
           `)
           cardPaymentId = (cardIns as unknown as Array<{ id: number | string }>)[0]?.id ?? null
         }
-      }
-
-      // 现金流水：confirmAmount > 0 时写 1 行（首次/回款）。
-      // change_type：整单已有更早成功正向款（含储值卡抵扣）→ '回款'，否则 '首次支付'。
-      if (cashAmount > 0) {
-        const existRes = await tx.execute(sql`
-          SELECT 1 FROM sale_order_payments
-          WHERE sale_order_id = ${saleOrderId} AND status = '已支付'
-            AND amount::numeric > 0
-            AND change_type IN ('首次支付','回款','储值卡抵扣') LIMIT 1
-        `)
-        const existRows = existRes as unknown as any[]
-        const cashChangeType = existRows.length > 0 ? '回款' : '首次支付'
-        const cashIns = await tx.execute(sql`
-          INSERT INTO sale_order_payments (
-            sale_order_id, change_type, payment_method, amount, status,
-            paid_at, source_end, operator_employee_id, note, created_at
-          ) VALUES (
-            ${saleOrderId}, ${cashChangeType}, '线下', ${cashAmount.toFixed(2)}::numeric, '已支付',
-            NOW(), 'admin', ${session.employeeId}, '管理后台确认线下收款', NOW()
-          )
-          RETURNING id
-        `)
-        cashPaymentId = (cashIns as unknown as Array<{ id: number | string }>)[0]?.id ?? null
       }
 
       // 重算 received / prepaid_card_amount（跨端字面对齐 staff confirmOffline / recordPayment）：

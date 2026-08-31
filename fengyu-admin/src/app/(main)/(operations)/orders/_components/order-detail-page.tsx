@@ -18,6 +18,7 @@ import { actionErrorMessage } from "@/lib/action-error";
 import { approveDepositOrder, deleteOrder, rejectDepositOrder } from "@/actions/orders";
 import { getTreatmentCardBusinessIdentity, groupTreatmentCards, sumGroupValue } from "@/lib/treatment-card-group";
 import { PerformanceAttributionDialog } from "./performance-attribution-dialog";
+import { PaymentPerformanceAttributionDialog } from "./payment-performance-attribution-dialog";
 import { ReturnContextLink } from "@/components/return-context";
 
 /** ticket 2026-04-24 PR-3 §3.3 — change_type/status 中文展示，退款金额红色 */
@@ -62,6 +63,7 @@ const operationActionLabelMap: Record<string, string> = {
   "order.approveDeposit": "审批寄存单通过",
   "order.rejectDeposit": "驳回寄存单",
   "order.performanceAttribution.update": "修改业绩归属日期",
+  "payment.performanceAttribution.update": "修改款项业绩归属日期",
 };
 
 function formatDateTime(dt: string | null) {
@@ -95,6 +97,39 @@ export function calculateConfirmOfflineAmounts(
       ),
     );
   return { remainingPayable, suggestedAmount };
+}
+
+/**
+ * 同次混合支付只展示现付主流水；被合并的储值卡流水与主流水共用归属日期和调整机会。
+ * 以订单、精确 paid_at（缺失时回退 created_at）和状态识别同次支付，避免跨笔误合并。
+ */
+export function mergePaymentsForDisplay(payments: SaleOrderPayment[]): SaleOrderPayment[] {
+  const isMixedPaymentPrimary = (payment: SaleOrderPayment) =>
+    payment.changeType === "首次支付" || payment.changeType === "回款";
+  const samePaymentEvent = (left: SaleOrderPayment, right: SaleOrderPayment) =>
+    left.saleOrderId === right.saleOrderId
+    && (left.paidAt || left.createdAt) === (right.paidAt || right.createdAt)
+    && left.status === right.status;
+
+  return payments.flatMap((payment) => {
+    if (payment.changeType === "储值卡抵扣") {
+      const hasPrimary = payments.some((candidate) =>
+        isMixedPaymentPrimary(candidate) && samePaymentEvent(candidate, payment));
+      if (hasPrimary) return [];
+    }
+    if (!isMixedPaymentPrimary(payment)) return [payment];
+
+    const cardAmount = payments
+      .filter((candidate) =>
+        candidate.changeType === "储值卡抵扣" && samePaymentEvent(candidate, payment))
+      .reduce((sum, candidate) => sum + Number(candidate.amount), 0);
+    if (cardAmount === 0) return [payment];
+    return [{
+      ...payment,
+      amount: (Number(payment.amount) + cardAmount).toString(),
+      note: `${payment.note || ""}（其中储值卡 ¥${Math.abs(cardAmount).toLocaleString()}）`,
+    }];
+  });
 }
 
 function getDisplaySaleItems(order: SaleOrder, items: NonNullable<SaleOrder["items"]>): DisplaySaleItem[] {
@@ -223,6 +258,7 @@ export default function OrderDetailPageClient({
   const [refundFormOpen, setRefundFormOpen] = useState(false);
   const [depositApprovalPending, setDepositApprovalPending] = useState<"approve" | "reject" | null>(null);
   const [performanceAttributionDialogOpen, setPerformanceAttributionDialogOpen] = useState(false);
+  const [paymentAttributionTarget, setPaymentAttributionTarget] = useState<SaleOrderPayment | null>(null);
 
   // 退款按钮仅对销售单 + 非历史订单 + 已支付/已完成/部分支付 可见
   // （历史订单是 sale_order_type='销售单' 但 legacySource='workfine'，必须显式排除，否则按钮会露出）
@@ -277,46 +313,7 @@ export default function OrderDetailPageClient({
     (p) => p.changeType === "退款" && (p.status === "待审批" || p.status === "待支付"),
   );
 
-  // 方案Y·轻量归并：同一次支付（现金+储值卡抵扣）按 paid_at 合并为一条展示
-  // 支持多笔卡支付同 paid_at 归并（for 循环收集所有匹配行，非单次 findIndex）
-  // paidAt 为 null 时 fallback 到 createdAt（与 staff 端对齐，防止 null===null 误合并）
-    const rawWithPaidAt = (payments ?? []).map((p) => ({
-      ...p,
-      paidAt: (p as { paidAt: string | null }).paidAt || (p as { createdAt: string | null }).createdAt,
-    }))
-  const mergedPayments = useMemo(() => {
-    const raw = rawWithPaidAt;
-    const result: typeof raw = [];
-    const mergedIndices = new Set<number>();
-    for (let i = 0; i < raw.length; i++) {
-      if (mergedIndices.has(i)) continue;
-      const p = raw[i];
-      if (p.changeType === "退款") {
-        result.push(p);
-        continue;
-      }
-      let totalCardAmount = 0;
-      for (let j = 0; j < raw.length; j++) {
-        if (j === i || mergedIndices.has(j)) continue;
-        const q = raw[j];
-        if (q.changeType === "储值卡抵扣" && q.paidAt === p.paidAt && q.status === p.status) {
-          totalCardAmount += Number(q.amount);
-          mergedIndices.add(j);
-        }
-      }
-      if (totalCardAmount !== 0) {
-        const mergedAmount = (Number(p.amount) + totalCardAmount).toString();
-        result.push({
-          ...p,
-          amount: mergedAmount,
-          note: `${p.note || ""}（其中储值卡 ¥${Math.abs(totalCardAmount).toLocaleString()}）`,
-        } as typeof p);
-      } else {
-        result.push(p);
-      }
-    }
-    return result;
-  }, [payments]);
+  const mergedPayments = useMemo(() => mergePaymentsForDisplay(payments ?? []), [payments]);
 
   return (
     <div className="space-y-6">
@@ -737,6 +734,7 @@ export default function OrderDetailPageClient({
                   <th className="px-4 py-3 text-right font-medium text-gray-500">金额</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">通道</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">状态</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">归属日期</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">操作人</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">备注</th>
                 </tr>
@@ -745,6 +743,16 @@ export default function OrderDetailPageClient({
                 {(mergedPayments ?? []).map((p) => {
                   const amt = Number(p.amount);
                   const isRefund = p.changeType === "退款" || amt < 0;
+                  const isFirstPayment = p.changeType === "首次支付";
+                  const attributionDate = isFirstPayment
+                    ? order.performanceAttributionDate
+                    : p.performanceAttributionDate || (p.paidAt ? formatDate(p.paidAt) : null);
+                  const canEditPaymentAttribution =
+                    canAdjustPerformanceAttribution &&
+                    !isFirstPayment &&
+                    p.status === "已支付" &&
+                    !!p.paidAt &&
+                    !p.performanceAttributionAdjustedAt;
                   // 退款行展示退款专属字段（refundReason / auditEmployeeId / auditAt / auditRemark / refSaleItemId / sessionCount）
                   const refundDetailParts: string[] = [];
                   if (isRefund) {
@@ -793,6 +801,41 @@ export default function OrderDetailPageClient({
                           {p.status}
                         </span>
                       </td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <div className="flex items-center gap-2">
+                          <span>{attributionDate ? formatDate(attributionDate) : "—"}</span>
+                          <Badge
+                            variant="secondary"
+                            className={p.performanceAttributionAdjustedAt
+                              ? "bg-[#FFF7E6] text-[#D4820A]"
+                              : "bg-gray-100 text-[#666666]"}
+                          >
+                            {isFirstPayment
+                              ? "随订单"
+                              : !p.paidAt
+                                ? "未入账"
+                                : p.performanceAttributionAdjustedAt
+                                  ? "已调整"
+                                  : "系统默认"}
+                          </Badge>
+                          {canEditPaymentAttribution && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setPaymentAttributionTarget(p)}
+                            >
+                              修改
+                            </Button>
+                          )}
+                        </div>
+                        {p.performanceAttributionAdjustedAt && (
+                          <div className="mt-1 text-xs text-[#999999]">
+                            {p.performanceAttributionAdjustedByName || p.performanceAttributionAdjustedBy || "—"}
+                            <span className="ml-1">{formatDateTime(p.performanceAttributionAdjustedAt)}</span>
+                          </div>
+                        )}
+                      </td>
                       <td className="px-4 py-3">
                         {p.operatorName ||
                           (p.sourceEnd === "client" ? "顾客自助" : p.sourceEnd === "notify" ? "支付回调" : "—")}
@@ -809,7 +852,7 @@ export default function OrderDetailPageClient({
                 })}
                 {(mergedPayments ?? []).length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center text-[#999999]">
+                    <td colSpan={8} className="px-4 py-8 text-center text-[#999999]">
                       暂无款项流水
                     </td>
                   </tr>
@@ -942,6 +985,21 @@ export default function OrderDetailPageClient({
           originalOrderDate={formatDate(order.saleOrderDatetime)}
           currentAttributionDate={order.performanceAttributionDate}
           expectedUpdatedAt={order.updatedAt}
+        />
+      )}
+
+      {paymentAttributionTarget?.paidAt && (
+        <PaymentPerformanceAttributionDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setPaymentAttributionTarget(null)
+          }}
+          paymentId={paymentAttributionTarget.id}
+          originalPaidDate={formatDate(paymentAttributionTarget.paidAt)}
+          currentAttributionDate={
+            paymentAttributionTarget.performanceAttributionDate
+              || formatDate(paymentAttributionTarget.paidAt)
+          }
         />
       )}
 

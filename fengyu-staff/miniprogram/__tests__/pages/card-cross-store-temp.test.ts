@@ -183,6 +183,24 @@ describe('充值卡提交', () => {
       url: expect.stringMatching(/card-inflow\?clientUserId=cu-temp.*isCrossStoreTemp=1/),
     })
   })
+
+  test('空名顾客进入转入页仍携带完整上下文', () => {
+    const page = createPage('cardRecharge')
+    page.data.customerInfo = {
+      clientUserId: 'cu-temp',
+      name: '',
+      phone: '13800000000',
+      boundStoreId: 'store-bound',
+      storeName: '绑定门店',
+      isCrossStoreTemp: true,
+    }
+
+    page.goInflow()
+
+    expect((globalThis as any).wx.navigateTo).toHaveBeenCalledWith({
+      url: expect.stringMatching(/card-inflow\?clientUserId=cu-temp.*isCrossStoreTemp=1/),
+    })
+  })
 })
 
 describe('旧系统充值金转入', () => {
@@ -216,6 +234,26 @@ describe('旧系统充值金转入', () => {
       amount: 500,
       requestId: expect.any(String),
     }))
+  })
+
+  test('空名顾客（customerName 为空串）仍预填，isCrossStoreTemp 不丢失', () => {
+    const page = createPage('cardInflow')
+    page.onLoad({
+      clientUserId: 'cu-temp',
+      customerName: '',
+      customerPhone: '13800000000',
+      boundStoreId: 'store-bound',
+      storeName: '绑定门店',
+      isCrossStoreTemp: '1',
+    })
+
+    expect(page.data.customerInfo).toMatchObject({
+      clientUserId: 'cu-temp',
+      name: '',
+      crossStore: true,
+      isCrossStoreTemp: true,
+      boundStoreId: 'store-bound',
+    })
   })
 
   test('普通外店顾客仍在提交时被拒绝', async () => {

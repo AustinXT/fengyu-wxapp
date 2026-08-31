@@ -37,6 +37,7 @@ load_target "$ENV"
 cd "$REPO_ROOT"
 assert_local_tools
 assert_clean_worktree
+reconcile_local_configs
 
 LOCAL_BUNDLE=$(mktemp -d "${TMPDIR:-/tmp}/fengyu-admin-release.XXXXXX")
 cleanup() {

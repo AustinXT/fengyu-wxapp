@@ -260,6 +260,20 @@
       "when": 1787758969427,
       "tag": "0036_repair_refund_role_pool_allocations",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1788196514087,
+      "tag": "0037_abandoned_talisman",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1788202395781,
+      "tag": "0038_sync_mixed_payment_attribution",
+      "breakpoints": true
     }
   ]
 }

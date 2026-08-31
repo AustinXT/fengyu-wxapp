@@ -54,6 +54,17 @@ Admin/Analyst 远程部署用 `docker/docker-compose.remote.yml` override。部�
 运行环境，并和不可变镜像 tag 一起保存在版本化 release 目录。远端历史 `.env` 不再参与
 新版 compose 解析，也不会整包注入容器。
 
+首次从旧版部署脚本升级时，Admin/Analyst 入口会先幂等执行本地配置迁移，再进入严格门禁。
+也可提前手动执行：
+
+```bash
+node .claude/skills/remote-deploy/runtime-config.mjs reconcile
+```
+
+迁移会保留三个真实 env 的已有值，从旧 `fengyu-staff/.env`（test 优先沿用 prod）补齐 staff
+独立账号凭据，只从 example 补齐白名单内的非秘密运行时默认值，并将三个文件统一为 `0600`。
+全部配置通过与发布相同的严格校验后才会写回；不会读取远端配置，也不会打印任何秘密。
+
 拉卡拉门店入网测试必须显式选择 test，部署到 `101.34.242.103`（SSH 别名
 `sqlserver101`）：
 

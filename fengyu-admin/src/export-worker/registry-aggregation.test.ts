@@ -2,10 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/actions/orders', () => ({
   exportOrders: vi.fn(),
+  exportOrderPayments: vi.fn(),
   exportAllocationOrders: vi.fn(),
 }))
 
-import { exportAllocationOrders, exportOrders } from '@/actions/orders'
+import { exportAllocationOrders, exportOrderPayments, exportOrders } from '@/actions/orders'
 import { createExportContent } from './registry'
 
 async function collect(rows: AsyncIterable<Record<string, unknown>>) {
@@ -47,7 +48,12 @@ describe('异步导出 worker 聚合接线', () => {
         rows: [sourceOrderRow('ITEM-1')],
         truncated: false,
         hasMore: true,
-        nextCursor: { itemOffset: 1, rechargeOffset: 0 },
+        nextCursor: {
+          sortDatetime: '2026-08-01 10:00:00+08',
+          saleOrderId: 'ORDER-1',
+          source: 'item',
+          sourceId: 'ITEM-1',
+        },
       } as never)
       .mockResolvedValueOnce({
         rows: [sourceOrderRow('ITEM-2')],
@@ -116,5 +122,34 @@ describe('异步导出 worker 聚合接线', () => {
       allocationAmount: '200.00',
       commissionAmount: '20.00',
     })
+  })
+
+  it('回款明细透传列表筛选并保留负数金额', async () => {
+    vi.mocked(exportOrderPayments).mockResolvedValue({
+      rows: [{
+        paymentId: 42,
+        saleOrderId: 'ORDER-1',
+        changeType: '退款',
+        paymentStatus: '已支付',
+        amount: '-120.00',
+        paymentMethod: '微信',
+        performanceAttributionDate: '2026-08-17',
+        performanceAttributionStatus: '系统默认',
+      }],
+      truncated: false,
+      hasMore: false,
+    } as never)
+
+    const params = { status: '已支付', type: '销售单', dateBasis: 'payment', from: '2026-08-01' }
+    const content = await createExportContent('payments', params)
+    const rows = await collect(content.rows)
+    const columns = Object.fromEntries(content.columns.map((column) => [column.header, column]))
+
+    expect(exportOrderPayments).toHaveBeenCalledWith(params, { limit: 500 })
+    expect(content.sheetName).toBe('回款明细')
+    expect(rows).toHaveLength(1)
+    expect(columns['款项流水号']?.value(rows[0])).toBe('#42')
+    expect(columns['金额']?.value(rows[0])).toBe(-120)
+    expect(columns['归属日期']?.value(rows[0])).toBe('2026-08-17')
   })
 })
