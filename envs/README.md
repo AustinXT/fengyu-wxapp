@@ -49,9 +49,10 @@ cat envs/.active
 
 之后 `scripts/deploy-cloudfunctions.sh` 会按 active env 选 envId + 自动切 tcb 双账号部署。
 
-admin 远程部署用 `docker/docker-compose.remote.yml` override。`deploy-admin.sh` 会从
-`envs/<env>.env` 生成权限为 0600 的远程运行时覆盖文件；client/staff 标识及账号凭据使用独立
-变量，禁止手工把另一端账号或另一环境的值写死到 compose。
+Admin/Analyst 远程部署用 `docker/docker-compose.remote.yml` override。部署脚本以
+`envs/<env>.env` 为唯一权威源，分别生成 Admin、cron、export、Analyst 的 `0600` 白名单
+运行环境，并和不可变镜像 tag 一起保存在版本化 release 目录。远端历史 `.env` 不再参与
+新版 compose 解析，也不会整包注入容器。
 
 拉卡拉门店入网测试必须显式选择 test，部署到 `101.34.242.103`（SSH 别名
 `sqlserver101`）：
@@ -60,10 +61,13 @@ admin 远程部署用 `docker/docker-compose.remote.yml` override。`deploy-admi
 .claude/skills/remote-deploy/deploy-admin.sh test
 ```
 
-该命令不上传或覆盖远程 `.env`、证书、私钥、SM4Key、OCR 密钥和门店附件；它只从目标服务器
-的现有 `.env` 读取构建所需的公钥及非敏感存储标识，并在部署前检查拉卡拉共享凭据与
-`LAKALA_ONBOARDING_API_BASE`。`dev` 始终指向 `ali-demo`，`test` 始终指向 `sqlserver101`，
-`prod` 始终指向 `fengyu-prod`，不得再依赖分支名隐式改写目标。
+test 的公网服务器和 SSH 目标是 `101.34.242.103`；Admin/Analyst 容器通过
+`172.18.0.1:5433` 回连同机 PostgreSQL，本地迁移则连接 `101.34.242.103:5433`。部署前会同时
+断言宿主公网 IP、5433 监听和容器 DB host。`dev` 始终指向 `ali-demo`，`test` 始终指向
+`sqlserver101`，`prod` 始终指向 `fengyu-prod`，不允许参数、环境变量或分支名改写目标。
+
+部署脚本不执行迁移：只读比对 Drizzle 最新 migration 的 `created_at + hash`，发现 pending、
+hash 漂移或数据库领先本地代码即停止。先通过 `release-all` 或数据库专项流程完成迁移，再重跑部署。
 
 拉卡拉支付与门店入网统一复用 `LAKALA_*` 的模式、环境、APPID、证书、SM4、机构号、用户号、
 活动 ID、MCC、结算类型和来源。`LAKALA_ONBOARDING_*` 只保留入网 API 地址及业务参数，电子合同
@@ -85,16 +89,18 @@ admin 远程部署用 `docker/docker-compose.remote.yml` override。`deploy-admi
 1. 同步加入 `dev.env.example` + `prod.env.example`（含说明注释）
 2. 同步加入 `dev.env` + `test.env` + `prod.env`（真实值）
 3. 如果云函数需要：在 `fengyu-{client,staff}/cloudbaserc.example.json` 的 envVariables 加 `"NEW_VAR": "${NEW_VAR}"`
-4. 如果 admin 需要：在 `docker/docker-compose.remote.yml` 的 environment 加 `NEW_VAR`，并决定它应由远程 `.env` 还是部署脚本生成的运行时覆盖文件注入
-5. 远程 `docker/.env` 同步追加（prod=`ssh fengyu-prod` / test=`ssh sqlserver101` / dev=`ssh ali-demo` 后手工改）
+4. 如果 Admin/Analyst/worker 需要：把 `NEW_VAR` 加入 `runtime-config.mjs` 对应服务的白名单；不要恢复远端 `.env` 整包注入
 
 修改后运行 `node scripts/check-env-shape.mjs`，确保 `prod.env.example`、`dev.env.example` 以及本地
 `prod.env` / `test.env` / `dev.env` 的键集合与顺序完全一致。`prod.env.example` 是唯一结构基准，
-真实生产值仍应以 prod 容器运行态和 CloudBase 函数配置为准。
+Admin/Analyst 的真实生产值只以本地 `prod.env` 为准；远端容器运行态只用于发布后的只读一致性核验，
+不得反向补齐或覆盖本地配置。CloudBase 函数变量仍由云函数部署流程单独只读核验。
 
 ## 安全
 
 - `envs/{dev,test,prod}.env` 已 `.gitignore`
+- 三个真值文件必须为 `0600`；部署生成的所有服务 env 同样为 `0600`
+- build args 只允许版本号及 `NEXT_PUBLIC_*` 公共值，秘密只进入运行期服务 env
 - 切到 prod 时 `use-env.sh` 打印 ⚠️ 横幅，避免误部署
 - `deploy-cloudfunctions.sh` 强制 confirm
 - e2e 入口只允许连接 dev IP `47.113.202.7`，不得连接 test `101.34.242.103` 或 prod `118.178.196.26`；三个环境均用 5433 端口，仅靠 IP 区分

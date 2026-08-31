@@ -1274,6 +1274,31 @@ async function serviceHistory(ctx) {
 }
 
 /**
+ * 返回顾客档案顶部状态卡片对应的 tag。
+ * 会员客按每日重算的 customer_status 分类；非会员客按最近服务日期实时分类。
+ * stats 和 listByTag 必须共用此函数，否则会出现卡片数量与点击后列表不一致。
+ */
+function customerActivityTag(row, today) {
+  if (row.customer_type === '会员客' && row.customer_status) {
+    switch (row.customer_status) {
+      case '保有会员-稳定':
+      case '保有会员-有效': return 'active';
+      case '沉睡': return 'atRisk';
+      case '冰冻': return 'lost';
+      case '休眠':
+      default: return 'sleeping';
+    }
+  }
+
+  if (!row.last_service_date) return 'sleeping';
+  const diffDays = Math.floor((new Date(today) - new Date(row.last_service_date)) / 86400000);
+  if (diffDays <= 30) return 'active';
+  if (diffDays <= 60) return 'atRisk';
+  if (diffDays <= 90) return 'lost';
+  return 'sleeping';
+}
+
+/**
  * 顾客分类统计（基于最近服务日期 + 生日）
  * 返回各状态的顾客数量
  */
@@ -1315,28 +1340,11 @@ async function stats(ctx) {
   let active = 0, atRisk = 0, lost = 0, sleeping = 0, birthday = 0, birthdayNext = 0
 
   for (const r of rows) {
-    // 活跃度分类
-    // 会员客：按 admin cron 预算的 customer_status 映射（与后台数据中心对齐）：
-    //   保有会员-稳定/有效→活跃, 沉睡→即将流失, 冰冻→流失, 休眠→沉睡
-    //   customer_status 为空（cron 未跑 / 刚升级会员）时兜底走时间衰减，避免漏桶
-    // 流量客及其它：按 last_service_date 30/60/90 天实时分桶
-    if (r.customer_type === '会员客' && r.customer_status) {
-      switch (r.customer_status) {
-        case '保有会员-稳定':
-        case '保有会员-有效': active++; break
-        case '沉睡': atRisk++; break
-        case '冰冻': lost++; break
-        case '休眠': sleeping++; break
-        default: sleeping++
-      }
-    } else if (r.last_service_date) {
-      const diffDays = Math.floor((new Date(today) - new Date(r.last_service_date)) / 86400000)
-      if (diffDays <= 30) active++
-      else if (diffDays <= 60) atRisk++
-      else if (diffDays <= 90) lost++
-      else sleeping++
-    } else {
-      sleeping++
+    switch (customerActivityTag(r, today)) {
+      case 'active': active++; break
+      case 'atRisk': atRisk++; break
+      case 'lost': lost++; break
+      case 'sleeping': sleeping++; break
     }
     // 生日
     if (r.birthday) {
@@ -1399,6 +1407,7 @@ async function listByTag(ctx) {
   const allRows = await pg.query(`
     SELECT
       c.user_id, c.name, c.phone, c.birthday, c.member_level,
+      c.customer_type, c.customer_status,
       MAX(so.service_date) AS last_service_date
     FROM client_wechat_users c
     LEFT JOIN service_orders so
@@ -1406,7 +1415,8 @@ async function listByTag(ctx) {
       AND so.status = '已完成'
       AND ${soScope.sql}
     WHERE ${cWhere}
-    GROUP BY c.user_id, c.name, c.phone, c.birthday, c.member_level
+    GROUP BY c.user_id, c.name, c.phone, c.birthday, c.member_level,
+             c.customer_type, c.customer_status
   `, [...cParams, ...soScope.params])
 
   // 按 tag 过滤
@@ -1417,13 +1427,9 @@ async function listByTag(ctx) {
     if (tag === 'birthdayNext') {
       return r.birthday && (new Date(r.birthday).getMonth() + 1) === nextMonth
     }
-    const diffDays = r.last_service_date
-      ? Math.floor((new Date(today) - new Date(r.last_service_date)) / 86400000)
-      : Infinity
-    if (tag === 'active') return diffDays <= 30
-    if (tag === 'atRisk') return diffDays > 30 && diffDays <= 60
-    if (tag === 'lost') return diffDays > 60 && diffDays <= 90
-    if (tag === 'sleeping') return diffDays > 90
+    if (['active', 'atRisk', 'lost', 'sleeping'].includes(tag)) {
+      return customerActivityTag(r, today) === tag
+    }
     return true
   })
 
