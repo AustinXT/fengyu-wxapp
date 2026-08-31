@@ -102,8 +102,7 @@ export async function refreshLakalaSubMerchants(db: Db): Promise<RefreshLakalaSu
       apiName: "tkbs.open_merchant_submer",
       requestId: randomUUID(),
       requestPayloadMasked: { merchant_no: maskedMerchantNo },
-      responsePayload: {},
-      responsePayloadMasked: {
+      responsePayload: {
         success: result.success,
         wechatCount: result.wechat?.length ?? 0,
         alipayCount: result.alipay?.length ?? 0,
