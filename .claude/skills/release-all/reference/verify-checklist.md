@@ -50,8 +50,8 @@ ssh $SSH_HOST "docker exec fengyu-analyst sh -c 'printf \"%s|%s\\n\" \"\$DATABAS
 
 ## 回滚指引
 
-- **admin**：上一版镜像仍在远程 → `ssh $SSH_HOST "docker images fengyu-admin"`，把旧 image tag 重打成 `:latest`，再 `ssh $SSH_HOST "cd $REMOTE_DIR && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d admin cron-worker"`。或本地 `git checkout <上一版>` 后重跑 `deploy-admin.sh $ENV`。
-- **analyst**：`.claude/skills/remote-deploy/deploy-analyst.sh --rollback $SSH_HOST` 回退上一个远程镜像；脚本按 host 推断目录（test/prod=`/www/wwwroot/fengyu-admin/docker`、dev=`/root/proj.xt.com/fengyu-wxapp/docker`）。自定义 host 需追加 `[remote-dir]`；若没有上一版镜像，本地切回已验证提交后重跑 `deploy-analyst.sh $ENV`。
+- **admin**：发布健康检查失败时会自动回滚；人工切换上一成功 release 使用 `.claude/skills/remote-deploy/deploy-admin.sh --rollback $ENV`。
+- **analyst**：发布健康检查失败时会自动回滚；人工切换上一成功 release 使用 `.claude/skills/remote-deploy/deploy-analyst.sh --rollback $ENV`。
 - **云函数（仅 dev/prod）**：`git checkout <上一版>` 对应端代码 → 重新 `scripts/use-env.sh $ENV && scripts/deploy-cloudfunctions.sh`。test 禁止执行。
 - **DB**：本技能会在代码上线前执行 `db:migrate`。迁移失败时不得继续部署；已成功应用的 migration 不自动回滚，须按 `db/CLAUDE.md` 新建向前修复 migration。仅在已批准的灾难恢复流程中使用已验证备份，禁止 `db:push`、手工改 journal 或回改已应用 migration。
 

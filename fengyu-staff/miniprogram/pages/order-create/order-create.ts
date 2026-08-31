@@ -801,6 +801,9 @@ Page({
         params.push(`clientUserId=${encodeURIComponent(customer.clientUserId)}`);
         if (customer.name) params.push(`customerName=${encodeURIComponent(customer.name)}`);
         if (customer.phone) params.push(`customerPhone=${encodeURIComponent(customer.phone)}`);
+        if (customer.boundStoreId) params.push(`boundStoreId=${encodeURIComponent(customer.boundStoreId)}`);
+        if (customer.storeName) params.push(`storeName=${encodeURIComponent(customer.storeName)}`);
+        if (customer.isCrossStoreTemp) params.push('isCrossStoreTemp=1');
       }
       const qs = params.length > 0 ? `?${params.join('&')}` : '';
       wx.navigateTo({ url: `/packageOrder/card-recharge/card-recharge${qs}` });

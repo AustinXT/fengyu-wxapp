@@ -1100,6 +1100,30 @@ describe('customer.listByTag', () => {
     expect(ctx.result.total).toBe(1)
   })
 
+  test('按 sleeping 标签时与 stats 共用会员 customer_status 口径', async () => {
+    const now = new Date()
+    const daysAgo = (n) => {
+      const d = new Date(now)
+      d.setDate(d.getDate() - n)
+      return d.toISOString().slice(0, 10)
+    }
+    const ctx = createManagerCtx({ tag: 'sleeping', page: 1, pageSize: 10 })
+
+    pg.query.mockResolvedValueOnce([
+      // 会员客以 customer_status 为准，休眠应进 sleeping 桶。
+      { user_id: 'u1', name: '休眠会员', phone: '13800001111', birthday: null, member_level: 'VIP', customer_type: '会员客', customer_status: '休眠', last_service_date: daysAgo(100) },
+      // 会员客 customer_status 已归入 active，不应因当前门店的最近服务超过 90 天被旧逻辑误放入 sleeping。
+      { user_id: 'u2', name: '活跃会员', phone: '13900002222', birthday: null, member_level: 'VIP', customer_type: '会员客', customer_status: '保有会员-有效', last_service_date: daysAgo(100) },
+      // 非会员客继续按最近服务日期实时分桶。
+      { user_id: 'u3', name: '沉睡流量客', phone: '13700003333', birthday: null, member_level: null, customer_type: '流量客', customer_status: null, last_service_date: daysAgo(100) },
+    ])
+
+    await customerRoutes.listByTag(ctx)
+
+    expect(ctx.result.total).toBe(2)
+    expect(ctx.result.customers.map((customer) => customer.name)).toEqual(['休眠会员', '沉睡流量客'])
+  })
+
   test('按 birthday 标签筛选当月生日', async () => {
     const now = new Date()
     const currentMonth = now.getMonth() + 1

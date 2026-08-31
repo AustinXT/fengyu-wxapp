@@ -1,66 +1,41 @@
-# docker-compose.remote.yml — 远程 admin / analyst 覆盖层（dev / prod 共用）
+# docker-compose.remote.yml — 远程 admin / analyst 覆盖层（dev / test / prod 共用）
 #
-# 用法由 .claude/skills/remote-deploy 下的部署脚本封装：admin 生成
-# .admin-runtime.env，analyst 生成独立的 .analyst-runtime.env，并分别作为第二个
-# --env-file 传入。本文件禁止复用远程 .env 中可能残留的另一环境 CloudBase 配置，
-# analyst 部署也禁止覆盖 admin 的完整运行时凭据文件。
+# 用法由 .claude/skills/remote-deploy 下的部署脚本封装。部署脚本从本地
+# envs/<env>.env 生成按服务白名单隔离的 0600 env 文件，保存在不可变 release 目录。
+# 远端历史 .env 不参与新版 compose 解析，也不再整包注入任何容器。
 
 name: fengyu-wxapp
 services:
   admin:
-    environment:
-      DATABASE_URL: ${ADMIN_DATABASE_URL}
-      # 留空 = 由 server action 按请求 x-forwarded-proto 自动判定 Secure：
-      # 当前纯 HTTP 部署 → 不加 Secure（否则浏览器丢弃 cookie → 登录后误报「未登录」）；
-      # 将来接入 TLS 反代（x-forwarded-proto=https）→ 自动加 Secure，无需改配置。
-      COOKIE_SECURE: ""
-      JWT_SECRET: ${ADMIN_JWT_SECRET:?remote .env missing ADMIN_JWT_SECRET}
-      # 登录密码 RSA 解密私钥（运行期）。缺失则 login server action fail-fast → 500。
-      # 必须与构建期 inline 的 NEXT_PUBLIC_RSA_PUBLIC_KEY 同一对（见 envs/<env>.env）。
-      RSA_PRIVATE_KEY: ${ADMIN_RSA_PRIVATE_KEY}
-      # 浏览器登录页在构建期内联该值；运行期仍显式注入，供 middleware 与部署终检核对。
-      NEXT_PUBLIC_ANALYST_ORIGIN: ${ANALYST_PUBLIC_ORIGIN:?deploy runtime env missing ANALYST_PUBLIC_ORIGIN}
-      # 与目标环境一致：worker 写入、admin 换取临时 URL 必须使用同一个 CloudBase 桶。
-      CLOUDBASE_ENV_ID: ${DEPLOY_CLOUDBASE_ENV_ID:?deploy runtime env missing CLOUDBASE_ENV_ID}
-      CDN_BASE: ${DEPLOY_CDN_BASE:?deploy runtime env missing CDN_BASE}
-      CLIENT_SECRET: ${DEPLOY_CLIENT_SECRET:?deploy runtime env missing CLIENT_SECRET}
-      STAFF_ENV_ID: ${DEPLOY_STAFF_ENV_ID:?deploy runtime env missing STAFF_ENV_ID}
-      STAFF_TENCENTCLOUD_SECRETID: ${DEPLOY_STAFF_TENCENTCLOUD_SECRETID:?deploy runtime env missing staff SECRETID}
-      STAFF_TENCENTCLOUD_SECRETKEY: ${DEPLOY_STAFF_TENCENTCLOUD_SECRETKEY:?deploy runtime env missing staff SECRETKEY}
-      PRIVATE_UPLOAD_DIR: ${PRIVATE_UPLOAD_DIR:-/var/lib/fengyu/private-uploads}
+    image: ${ADMIN_IMAGE:-fengyu-admin:latest}
+    env_file: !override
+      - ${ADMIN_ENV_FILE:-.admin-service.env}
+    environment: !override
+      TZ: Asia/Shanghai
     depends_on: !reset []
 
   analyst:
-    environment:
-      DATABASE_URL: ${ADMIN_DATABASE_URL}
-      JWT_SECRET: ${ADMIN_JWT_SECRET:?remote .env missing ADMIN_JWT_SECRET}
-      ADMIN_LOGIN_URL: ${ANALYST_ADMIN_LOGIN_URL:-http://localhost:3000/login}
-      NEXT_PUBLIC_ADMIN_ORIGIN: ${ANALYST_ADMIN_ORIGIN:-http://localhost:3000}
-      NEXT_PUBLIC_ANALYST_ORIGIN: ${ANALYST_PUBLIC_ORIGIN:-http://localhost:3001}
-      ANALYST_VIEW_ACTION: ${ANALYST_VIEW_ACTION:-data_center:dashboard}
-      ANALYST_CHAT_ACTION: ${ANALYST_CHAT_ACTION:-data_center:dashboard}
-      ANALYST_EXPORT_ACTION: ${ANALYST_EXPORT_ACTION:-data_center:dashboard}
-      MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
-      MINIMAX_BASE_URL: ${MINIMAX_BASE_URL:-https://api.minimaxi.com/v1}
-      MINIMAX_MODEL: ${MINIMAX_MODEL:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
-      OPENAI_MODEL: ${OPENAI_MODEL:-}
+    image: ${ANALYST_IMAGE:-fengyu-analyst:latest}
+    env_file: !override
+      - ${ANALYST_ENV_FILE:-.analyst-service.env}
+    environment: !override
+      TZ: Asia/Shanghai
     depends_on: !reset []
 
   cron-worker:
-    environment:
-      DATABASE_URL: ${ADMIN_DATABASE_URL}
-      PRIVATE_UPLOAD_DIR: ${PRIVATE_UPLOAD_DIR:-/var/lib/fengyu/private-uploads}
+    image: ${ADMIN_IMAGE:-fengyu-admin:latest}
+    env_file: !override
+      - ${CRON_ENV_FILE:-.cron-worker-service.env}
+    environment: !override
+      TZ: Asia/Shanghai
     depends_on: !reset []
 
   export-worker:
-    environment:
-      DATABASE_URL: ${ADMIN_DATABASE_URL}
-      # worker 会加载导出权限校验模块，必须使用与 admin 相同的 JWT 密钥。
-      JWT_SECRET: ${ADMIN_JWT_SECRET:?remote .env missing ADMIN_JWT_SECRET}
-      CLOUDBASE_ENV_ID: ${DEPLOY_CLOUDBASE_ENV_ID:?deploy runtime env missing CLOUDBASE_ENV_ID}
-      CDN_BASE: ${DEPLOY_CDN_BASE:?deploy runtime env missing CDN_BASE}
+    image: ${ADMIN_IMAGE:-fengyu-admin:latest}
+    env_file: !override
+      - ${EXPORT_ENV_FILE:-.export-worker-service.env}
+    environment: !override
+      TZ: Asia/Shanghai
     depends_on: !reset []
 
   # 远程 admin 连接宿主业务库 5433，不启动 compose 内的本地 PostgreSQL。

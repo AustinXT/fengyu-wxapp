@@ -128,12 +128,7 @@ metadata:
    ```
    （`$ENV` / `$EXPECT_IP` 执行时按上方事实表代入实际值。）
 
-6. **【DB assert ②】admin / analyst 远程库**：两者均经 compose remote override 读取 `$SSH_HOST` 的 `docker/.env` 中 `ADMIN_DATABASE_URL`，不是本地。
-   ```bash
-   # prod/test=/www/wwwroot/fengyu-admin/docker; dev=/root/proj.xt.com/fengyu-wxapp/docker
-   ssh $SSH_HOST "grep ADMIN_DATABASE_URL $REMOTE_DIR/.env" | sed -E 's#://[^@]+@#://***@#'
-   ```
-   - dev/prod 必须含对应公网 IP；test 必须含 `172.18.0.1:5433/fengyu_wxapp`，并额外验证 101 宿主公网 IP和 5433 监听。远程目录见环境表。
+6. **【DB assert ②】admin / analyst 容器库**：remote-deploy 以本地 `envs/$ENV.env` 为唯一权威生成服务白名单 env；远端历史 `.env` 不再参与发布。`ADMIN_DATABASE_URL` 的容器目标必须为 dev/prod 对应公网 IP，test 必须为 `172.18.0.1:5433/fengyu_wxapp`，并额外验证 test SSH 宿主公网 IP=`101.34.242.103` 且 5433 正在监听。
 
 7. **环境就绪**：
    ```bash
@@ -150,7 +145,7 @@ metadata:
 node scripts/gen-version.js
 git --no-pager diff fengyu-client/miniprogram/utils/version.ts fengyu-staff/miniprogram/utils/version.ts
 ```
-- 展示 diff，确认两端 `APP_VERSION` == Phase 0 的 tag。**不 commit**。
+- 展示 diff，确认两端 `APP_VERSION` == Phase 0 的 tag。remote-deploy 只接受干净工作树；若本步产生修改，停止发版并先按项目提交流程提交版本号，再从 Phase 0 重新开始。不得用脏工作树绕过镜像可追溯门禁。
 
 ---
 
@@ -182,11 +177,10 @@ unset MIGRATE_DATABASE_URL
 ```bash
 .claude/skills/remote-deploy/deploy-admin.sh $ENV
 ```
-- `$ENV=prod` 时脚本有**交互式二次确认**（输入 `yes`）+ 生产库迁移状态预检；`$ENV=dev` 无 confirm（测试环境）。
-- Phase 2 已完成后，prod 预检应显示无 pending migration；若仍提示待迁移，视为工作树在发版中变化或迁移未成功，选择中止并从 Phase 0 重跑，不依赖该脚本的兜底迁移。若仅因本机缺少 `psql` 进入“跳过迁移预检”询问，只有在 Phase 2 已成功且目标断言通过时才允许跳过。
-- 脚本内部：prod 迁移状态预检（仅 prod）→ buildx → 镜像传输 → compose up → 健康检查 → DB 目标断言。test 使用 `deploy-admin.sh test`，读取 101 服务器既有密钥并验证网桥回连。
-- 复述 `✓ HTTP 健康检查通过`、RSA 公钥来源、DATABASE_URL 脱敏回显、`✓ admin DB host=... 与 $ENV 一致`。
-- ⚠️ dev admin 首跑前确认 ali-demo 远程 `docker/.env` 已配 `ADMIN_DATABASE_URL`/`ADMIN_JWT_SECRET`/`ADMIN_RSA_PRIVATE_KEY`（实测已配，连 47.113.202.7）；旧 trick `deploy-admin.sh prod ali-demo` 已被 DB 断言淘汰，发 ali-demo 一律用 `deploy-admin.sh dev`。
+- `$ENV=prod` 时脚本要求输入 `prod:<commit>`；dev/test 无交互确认。三个环境的 host、目录和端口均固定，不允许覆盖。
+- Phase 2 完成后，脚本会只读复核最新 Drizzle `created_at + hash`；仍有 pending、漂移或数据库领先本地代码时直接停止，不提供迁移或跳过入口。
+- 脚本内部：本地配置/RSA/工作树门禁 → 只读迁移门禁 → buildx → 不可变镜像传输与 ID 校验 → 版本化 compose → 健康检查；test 同时验证 `101.34.242.103` 宿主和 `172.18.0.1` 容器网桥。
+- 失败时脚本自动恢复上一成功 release；复述 release ID、镜像 tag、HTTP、DB、CloudBase 和 Analyst origin 验证结果。
 
 ## §5 Phase 4 — analyst 交叉编译 + 发布（除非 `skip-analyst`）
 
@@ -195,9 +189,9 @@ unset MIGRATE_DATABASE_URL
 ```
 
 - 正常全量发布时在 admin 发布之后执行，使 admin 顶栏与 analyst 容器使用同一 `ANALYST_PUBLIC_ORIGIN`。
-- `$ENV=prod` 时脚本有交互式二次确认（输入 `yes`）；`$ENV=dev|test` 无 confirm。
-- 脚本内部：本地 buildx `--platform linux/amd64` → 镜像传输 → 同步 compose + analyst 运行期配置 → `compose up -d analyst` → 容器、HTTP、DB IP、`NEXT_PUBLIC_ANALYST_ORIGIN`、JWT 终检。
-- 复述 `✓ HTTP 健康检查通过`、DATABASE_URL 脱敏回显、`NEXT_PUBLIC_ANALYST_ORIGIN` 与 Phase 0 的值一致，以及 analyst DB host 与 `$ENV` 一致。失败时停止，按脚本输出使用 `deploy-analyst.sh --rollback $SSH_HOST` 回滚；脚本会为 `sqlserver101` / `fengyu-prod` 选择 `/www/wwwroot/fengyu-admin/docker`，为 `ali-demo` 选择 `/root/proj.xt.com/fengyu-wxapp/docker`。
+- `$ENV=prod` 时脚本要求输入 `prod:<commit>`；dev/test 无交互确认。
+- 脚本复用与 Admin 相同的本地配置、迁移、固定目标、不可变镜像和版本化回滚核心。
+- 复述 release ID、HTTP、DB host 与 `NEXT_PUBLIC_ANALYST_ORIGIN`。失败会自动回滚；需要人工切换上一成功版本时使用 `deploy-analyst.sh --rollback $ENV`。
 
 ---
 
