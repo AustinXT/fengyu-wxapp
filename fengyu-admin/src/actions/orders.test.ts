@@ -4176,10 +4176,12 @@ describe('updatePerformanceAttributionDate — 一次性业绩归属日期调整
       performance_attribution_adjusted_by: 'EMP-001',
       updated_at: new Date('2026-08-17T03:00:00.000Z'),
     }],
+    syncedCardRows = [{ id: 43 }],
   }: {
     adjustedAt?: Date | null
     currentDate?: string
     updatedRows?: any[]
+    syncedCardRows?: any[]
   } = {}) {
     const execute = vi.fn()
       .mockResolvedValueOnce([{
@@ -4192,6 +4194,7 @@ describe('updatePerformanceAttributionDate — 一次性业绩归属日期调整
         max_performance_date: '2026-08-24',
       }])
       .mockResolvedValueOnce(updatedRows)
+      .mockResolvedValueOnce(syncedCardRows)
     const tx = { execute, select: vi.fn(), insert: vi.fn() }
     ;(db.transaction as any).mockImplementation(async (fn: any) => fn(tx))
     return { tx, execute }
@@ -4211,15 +4214,17 @@ describe('updatePerformanceAttributionDate — 一次性业绩归属日期调整
     expect(execute.mock.calls[0][0].__sqlText).toMatch(/FOR UPDATE/)
     expect(execute.mock.calls[1][0].__sqlText).toMatch(/performance_attribution_adjusted_at IS NULL/)
     expect(execute.mock.calls[1][0].__sqlText).toMatch(/date_trunc\('milliseconds', updated_at\)/)
+    expect(execute.mock.calls[2][0].__sqlText).toMatch(/first_payment\.change_type = '首次支付'/)
     expect(logUpdate).toHaveBeenCalledWith(
       expect.anything(),
       'order.performanceAttribution.update',
       'sale_order',
       input.saleOrderId,
-      { performanceAttributionDate: '2026-08-17' },
+      { performanceAttributionDate: '2026-08-17', syncedPaymentIds: [] },
       expect.objectContaining({
         performanceAttributionDate: '2026-08-24',
         performanceAttributionAdjustedBy: 'EMP-001',
+        syncedPaymentIds: [43],
       }),
       tx,
     )
@@ -4287,11 +4292,19 @@ describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日�
     currentDate = '2026-08-17',
     adjustedAt = null,
     updatedRows = [{
+      id: 42,
+      sale_order_id: 'FY-XSD-WX-2608170001',
+      performance_attribution_date: '2026-08-24',
+      performance_attribution_adjusted_at: new Date('2026-08-17T03:00:00.000Z'),
+      performance_attribution_adjusted_by: 'EMP-001',
+    }, {
+      id: 43,
       sale_order_id: 'FY-XSD-WX-2608170001',
       performance_attribution_date: '2026-08-24',
       performance_attribution_adjusted_at: new Date('2026-08-17T03:00:00.000Z'),
       performance_attribution_adjusted_by: 'EMP-001',
     }],
+    hasMixedPaymentPrimary = false,
   }: {
     changeType?: string
     status?: string
@@ -4299,6 +4312,7 @@ describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日�
     currentDate?: string | null
     adjustedAt?: Date | null
     updatedRows?: any[]
+    hasMixedPaymentPrimary?: boolean
   } = {}) {
     const execute = vi.fn()
       .mockResolvedValueOnce([{
@@ -4309,6 +4323,7 @@ describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日�
         paid_at: paidAt,
         performance_attribution_date: currentDate,
         performance_attribution_adjusted_at: adjustedAt,
+        has_mixed_payment_primary: hasMixedPaymentPrimary,
         store_id: 'store-1',
         original_paid_date: paidAt ? '2026-08-17' : null,
         min_performance_date: paidAt ? '2026-08-10' : null,
@@ -4334,13 +4349,14 @@ describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日�
     })
     expect(execute.mock.calls[0][0].__sqlText).toMatch(/FOR UPDATE OF sop/)
     expect(execute.mock.calls[1][0].__sqlText).toMatch(/performance_attribution_adjusted_at IS NULL/)
+    expect(execute.mock.calls[1][0].__sqlText).toMatch(/payment\.change_type = '储值卡抵扣'/)
     expect(logUpdate).toHaveBeenCalledWith(
       expect.anything(),
       'payment.performanceAttribution.update',
-      'sale_order',
-      'FY-XSD-WX-2608170001',
-      { performanceAttributionDate: '2026-08-17' },
-      expect.objectContaining({ performanceAttributionDate: '2026-08-24' }),
+      'sale_order_payment',
+      '42',
+      { performanceAttributionDate: '2026-08-17', affectedPaymentIds: [42] },
+      expect.objectContaining({ performanceAttributionDate: '2026-08-24', affectedPaymentIds: [42, 43] }),
       tx,
     )
   })
@@ -4350,6 +4366,17 @@ describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日�
 
     await expect(updatePaymentPerformanceAttributionDate(input))
       .rejects.toThrow(/INVALID_STATE.*首次支付跟随订单/)
+    expect(execute).toHaveBeenCalledTimes(1)
+  })
+
+  it('混合支付中被合并的储值卡流水不能绕过主流水单独调整', async () => {
+    const { execute } = mockPaymentAttributionTransaction({
+      changeType: '储值卡抵扣',
+      hasMixedPaymentPrimary: true,
+    })
+
+    await expect(updatePaymentPerformanceAttributionDate(input))
+      .rejects.toThrow(/INVALID_STATE.*跟随同次现付/)
     expect(execute).toHaveBeenCalledTimes(1)
   })
 
