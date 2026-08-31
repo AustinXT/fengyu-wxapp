@@ -2,7 +2,7 @@ import {
   requirePermission,
   requireAnyPermission,
 } from '@/lib/permissions'
-import { scopeSessionToActions } from '@/lib/action-scope'
+import { scopeSessionToActions, scopeSessionToAllActions } from '@/lib/action-scope'
 import { parseErrorPrefix } from '@/lib/api-error'
 import type { AuthSession } from '@/lib/types'
 import { getExportSession } from '@/lib/export-session-context'
@@ -114,7 +114,11 @@ export function withAllPermissions<Args extends unknown[], R>(
     requirePermission(session, firstAction)
     for (const action of remainingActions) requirePermission(session, action)
     try {
-      return await fn(session, ...args)
+      const scopedSession = scopeSessionToAllActions(session, actions)
+      if (scopedSession.roles.length === 0) {
+        throw new Error('PERMISSION_DENIED: 多项权限必须由同一角色授权范围同时提供')
+      }
+      return await fn(scopedSession, ...args)
     } catch (err) {
       rethrowWithDigest(err)
     }

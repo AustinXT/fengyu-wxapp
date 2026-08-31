@@ -47,7 +47,6 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'dashboard:view',
     'data_center:dashboard',
     'employee:create', 'employee:list', 'employee:update',
-    'inventory:create', 'inventory:list', 'inventory:stock_list',
     'legacy_order:approve', 'legacy_order:list', 'legacy_order:pull', 'legacy_order:reject', 'legacy_order:update_amount', 'legacy_order:update_phone',
     'merchant:list',
     'message:list', 'message:send',
@@ -75,7 +74,6 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'dashboard:view',
     'data_center:dashboard',
     'employee:list',
-    'inventory:export', 'inventory:list', 'inventory:stock_list',
     'legacy_order:approve', 'legacy_order:list', 'legacy_order:pull', 'legacy_order:reject', 'legacy_order:update_amount', 'legacy_order:update_phone',
     'merchant:create', 'merchant:list', 'merchant:update',
     'operation_log:list',
@@ -107,7 +105,6 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
   product: [
     'coupon:create', 'coupon:list', 'coupon:update',
     'dashboard:view',
-    'inventory:create', 'inventory:export', 'inventory:list', 'inventory:stock_list',
     'operation_log:list',
     'org:list',
     'product:create', 'product:list', 'product:update',
@@ -121,7 +118,6 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'customer:create', 'customer:list', 'customer:update',
     'dashboard:view',
     'employee:list',
-    'inventory:list', 'inventory:stock_list',
     'legacy_order:approve', 'legacy_order:list', 'legacy_order:pull', 'legacy_order:reject', 'legacy_order:update_amount', 'legacy_order:update_phone',
     'operation_log:list',
     'org:list',
@@ -133,6 +129,21 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
   ],
   // staff（普通员工）专供小程序端，禁止登录 admin（canAccessAdmin 拦截）；矩阵留空。
   staff: [],
+  inventory_supply_chain_operator: [
+    'inventory:export', 'inventory:list', 'inventory:shipment_cancel_approve',
+    'inventory:stock_list', 'inventory:supply_chain_approve',
+    'inventory:supply_chain_master_data_manage', 'inventory:supply_chain_operate',
+    'inventory:supply_chain_price_view',
+  ],
+  inventory_market_finance: [
+    'inventory:export', 'inventory:list', 'inventory:market_approve',
+    'inventory:market_operate', 'inventory:market_price_view',
+    'inventory:market_sku_manage', 'inventory:self_purchase_receive',
+    'inventory:shipment_cancel_request', 'inventory:stock_list',
+  ],
+  inventory_store_operator: [
+    'inventory:list', 'inventory:stock_list', 'inventory:store_operate',
+  ],
 }
 
 /**

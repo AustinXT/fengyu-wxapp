@@ -143,8 +143,11 @@ const SUBPAGES: Array<{ href: string; parent: string; entryGate?: string; clause
   { href: '/inventory/promotions', parent: '/inventory/skus', clauses: ['inventory:stock_list'] },
 ]
 
-const ALL_ROLES: RoleType[] = ['admin', 'manager', 'finance', 'hr', 'product', 'customer_mgr']
-const NON_ADMIN_ROLES: RoleType[] = ['manager', 'finance', 'hr', 'product', 'customer_mgr']
+const ALL_ROLES: RoleType[] = [
+  'admin', 'manager', 'finance', 'hr', 'product', 'customer_mgr',
+  'inventory_supply_chain_operator', 'inventory_market_finance', 'inventory_store_operator',
+]
+const NON_ADMIN_ROLES: RoleType[] = ALL_ROLES.filter((role) => role !== 'admin')
 
 const holds = (role: RoleType, action: string) => DEFAULT_PERMISSION_MATRIX[role].includes(action)
 

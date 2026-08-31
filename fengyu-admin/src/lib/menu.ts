@@ -37,6 +37,7 @@ import {
 } from 'lucide-react'
 import type { AuthSession } from './types'
 import { INVENTORY_ENTRY_ENABLED } from './inventory-feature-flags'
+import { isAdminScope } from './permissions'
 
 export interface MenuItem {
   label: string
@@ -116,25 +117,22 @@ export const MENU_CONFIG: MenuNode[] = [
         label: '供应链业务',
         icon: Factory,
         href: '/inventory/operations/supply-chain',
-        requiredActions: ['inventory:list', 'inventory:stock_list'],
-        requiredAllActions: ['inventory:list', 'inventory:stock_list'],
+        requiredActions: ['inventory:supply_chain_operate', 'inventory:supply_chain_approve'],
         allowedScopeTypes: ['总部'],
       },
       {
         label: '市场业务',
         icon: Building2,
         href: '/inventory/operations/market',
-        requiredActions: ['inventory:list', 'inventory:stock_list'],
-        requiredAllActions: ['inventory:list', 'inventory:stock_list'],
-        allowedScopeTypes: ['总部', '市场'],
+        requiredActions: ['inventory:market_operate', 'inventory:market_approve'],
+        allowedScopeTypes: ['市场'],
       },
       {
         label: '门店业务',
         icon: Store,
         href: '/inventory/operations/store',
-        requiredActions: ['inventory:list', 'inventory:stock_list'],
-        requiredAllActions: ['inventory:list', 'inventory:stock_list'],
-        allowedScopeTypes: ['总部', '市场', '门店'],
+        requiredActions: ['inventory:store_operate'],
+        allowedScopeTypes: ['门店'],
         matchPaths: ['/inventory/procurement', '/inventory/sale', '/inventory/transfer', '/inventory/scrap'],
       },
       {
@@ -225,7 +223,9 @@ export function getMenuParentForPath(nodes: readonly MenuNode[], pathname: strin
 
 export function getVisibleMenuItems(session: AuthSession): MenuNode[] {
   const actions = session.permissions.actions
-  const scopeTypes = session.roles.map((role) => role.scopeType)
+  const scopeTypes = isAdminScope(session)
+    ? (['总部', '市场', '门店'] as const)
+    : session.roles.map((role) => role.scopeType)
   return MENU_CONFIG.reduce<MenuNode[]>((visible, node) => {
     if (!isMenuParent(node)) {
       if (hasMenuItemAccess(node, actions, scopeTypes)) visible.push(node)

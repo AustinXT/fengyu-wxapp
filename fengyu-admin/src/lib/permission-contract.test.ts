@@ -114,15 +114,15 @@ describe('permission-contract', () => {
   it('勾选库存特殊权限会递归补齐接口依赖，取消前置权限会撤销依赖项', () => {
     const granted = addActionWithUiDependencies([], 'inventory:market_sku_manage')
     expect(granted).toEqual(expect.arrayContaining([
-      'inventory:market_sku_manage', 'inventory:create', 'inventory:update',
-      'inventory:price_view', 'inventory:list', 'inventory:stock_list', 'store:list',
+      'inventory:market_sku_manage', 'inventory:market_price_view',
+      'inventory:list', 'inventory:stock_list',
     ]))
     expect(getMissingUiDependencies(granted, 'inventory:market_sku_manage')).toEqual([])
-    expect(hasAllUiCapabilities(granted, ['inventory:create', 'inventory:update', 'inventory:price_view'])).toBe(true)
+    expect(hasAllUiCapabilities(granted, ['inventory:market_sku_manage', 'inventory:market_price_view'])).toBe(true)
     const removed = removeActionWithDependents(granted, 'inventory:stock_list')
-    expect(removed).toEqual(expect.arrayContaining(['inventory:list', 'store:list']))
+    expect(removed).toEqual(expect.arrayContaining(['inventory:list']))
     expect(removed).not.toEqual(expect.arrayContaining([
-      'inventory:market_sku_manage', 'inventory:create', 'inventory:update', 'inventory:price_view', 'inventory:stock_list',
+      'inventory:market_sku_manage', 'inventory:market_price_view', 'inventory:stock_list',
     ]))
   })
 

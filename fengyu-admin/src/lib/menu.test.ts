@@ -36,12 +36,9 @@ function visibleLabels(session: AuthSession) {
 describe('业务域菜单（权限点驱动）', () => {
   it('admin 可见全部叶子菜单和全部业务域', () => {
     const nodes = getVisibleMenuItems(makeSession({ role: 'admin' }))
-    const labels = visibleLabels(makeSession({ role: 'admin' }))
-    for (const hidden of ['提货记录', '库存查询', '供应链业务', '市场业务', '门店业务', '单据中心', '资料配置']) {
-      expect(labels).not.toContain(hidden)
-    }
+    expect(visibleLeaves(makeSession({ role: 'admin' }))).toHaveLength(flattenMenuItems().length)
     expect(nodes.filter(isMenuParent).map((node) => node.label)).toEqual([
-      '经营业务', '客户运营', '商品商城', '组织管理', '系统管理',
+      '经营业务', '客户运营', '商品商城', '库存管理', '组织管理', '系统管理',
     ])
   })
 
@@ -51,10 +48,11 @@ describe('业务域菜单（权限点驱动）', () => {
     expect(nodes.some((node) => isMenuParent(node) && node.label === '商品商城')).toBe(true)
   })
 
-  it('各角色仍取得既有可访问页面', () => {
+  it('既有角色不再自动取得进销存入口', () => {
     expect(visibleLabels(makeSession({ role: 'manager' }))).toEqual(expect.arrayContaining([
       '开单', '订单管理', '顾客管理',
     ]))
+    expect(visibleLabels(makeSession({ role: 'manager' }))).not.toContain('门店业务')
     expect(visibleLabels(makeSession({ role: 'finance' }))).toEqual(expect.arrayContaining([
       '订单管理', '营业额分配',
     ]))
@@ -69,12 +67,12 @@ describe('业务域菜单（权限点驱动）', () => {
     ]))
   })
 
-  it('库存业务与单据中心需要同时具备两项读取权限', () => {
+  it('门店业务必须具备门店库存办理动作', () => {
     const item = flattenMenuItems().find((entry) => entry.href === '/inventory/operations/store')
     expect(item).toBeDefined()
-    expect(hasMenuItemAccess(item!, ['inventory:list'])).toBe(false)
-    expect(hasMenuItemAccess(item!, ['inventory:stock_list'])).toBe(false)
-    expect(hasMenuItemAccess(item!, ['inventory:list', 'inventory:stock_list'])).toBe(true)
+    expect(hasMenuItemAccess(item!, ['inventory:list'], ['门店'])).toBe(false)
+    expect(hasMenuItemAccess(item!, ['inventory:store_operate'], ['门店'])).toBe(true)
+    expect(hasMenuItemAccess(item!, ['inventory:store_operate'], ['市场'])).toBe(false)
   })
 
   it('资料配置的历史深链沿用同一菜单项', () => {
@@ -84,23 +82,19 @@ describe('业务域菜单（权限点驱动）', () => {
     expect(getMenuItemForPath(MENU_CONFIG, '/inventory/procurement/PROC-1')?.href).toBe('/inventory/operations/store')
   })
 
-  it('进销存和提货入口对所有组织范围隐藏', () => {
-    for (const session of [
-      makeSession({ role: 'admin', scopeType: '总部' }),
-      makeSession({ role: 'manager', scopeType: '市场' }),
-      makeSession({ role: 'manager', scopeType: '门店' }),
-    ]) {
-      const labels = visibleLabels(session)
-      for (const hidden of ['提货记录', '供应链业务', '市场业务', '门店业务']) {
-        expect(labels).not.toContain(hidden)
-      }
-    }
+  it('库存业务按组织范围显示', () => {
+    expect(visibleLabels(makeSession({ role: 'admin', scopeType: '总部' }))).toEqual(expect.arrayContaining([
+      '供应链业务', '市场业务', '门店业务',
+    ]))
+    expect(visibleLabels(makeSession({ role: 'inventory_supply_chain_operator' as RoleType, scopeType: '总部' }))).toContain('供应链业务')
+    expect(visibleLabels(makeSession({ role: 'inventory_market_finance' as RoleType, scopeType: '市场' }))).toContain('市场业务')
+    expect(visibleLabels(makeSession({ role: 'inventory_store_operator' as RoleType, scopeType: '门店' }))).toContain('门店业务')
+    expect(visibleLabels(makeSession({ role: 'inventory_market_finance' as RoleType, scopeType: '市场' }))).not.toContain('门店业务')
   })
 
   it('多角色菜单取并集', () => {
-    const labels = visibleLabels(makeSession({ role: 'hr' }, { role: 'product' }))
-    expect(labels).toEqual(expect.arrayContaining(['组织架构', '商品管理', '权限管理']))
-    expect(labels).not.toContain('资料配置')
+    const labels = visibleLabels(makeSession({ role: 'hr' }, { role: 'inventory_supply_chain_operator' as RoleType, scopeType: '总部' }))
+    expect(labels).toEqual(expect.arrayContaining(['组织架构', '权限管理', '资料配置', '供应链业务']))
   })
 
   it('系统自检仅向持有专用权限的超级管理员展示', () => {

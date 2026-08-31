@@ -18,9 +18,10 @@ async function loadRoleDefinition(roleKey: string): Promise<{
   roleKey: string
   name: string
   isSuperAdmin: boolean
+  allowedScopeTypes: Array<'总部' | '市场' | '门店'>
 } | null> {
   const rows = await db.execute(sql`
-    SELECT role_key, name, is_super_admin
+    SELECT role_key, name, is_super_admin, allowed_scope_types
       FROM permission_role_definitions
      WHERE role_key = ${roleKey}
      LIMIT 1
@@ -29,12 +30,15 @@ async function loadRoleDefinition(roleKey: string): Promise<{
     role_key: string
     name: string
     is_super_admin: boolean
+    allowed_scope_types: Array<'总部' | '市场' | '门店'>
   }>)[0]
   if (!row) return null
+  const isSuperAdmin = row.is_super_admin ?? roleKey === 'admin'
   return {
     roleKey: row.role_key || roleKey,
     name: row.name || roleKey,
-    isSuperAdmin: row.is_super_admin ?? roleKey === 'admin',
+    isSuperAdmin,
+    allowedScopeTypes: row.allowed_scope_types ?? (isSuperAdmin ? ['总部'] : ['总部', '市场', '门店']),
   }
 }
 
@@ -68,6 +72,7 @@ export const getRoles = withPermission(
       canAccessAdmin: permissionRoleDefinitions.canAccessAdmin,
       isSuperAdmin: permissionRoleDefinitions.isSuperAdmin,
       isStoreManager: permissionRoleDefinitions.isStoreManager,
+      allowedScopeTypes: permissionRoleDefinitions.allowedScopeTypes,
       scopeId: permissionRoles.scopeId,
       createdBy: permissionRoles.createdBy,
       createdAt: permissionRoles.createdAt,
@@ -91,6 +96,7 @@ export const getRoles = withPermission(
     canAccessAdmin: r.canAccessAdmin,
     isSuperAdmin: r.isSuperAdmin,
     isStoreManager: r.isStoreManager,
+    allowedScopeTypes: r.allowedScopeTypes as Array<'总部' | '市场' | '门店'>,
     scopeId: r.scopeId,
     createdBy: r.createdBy,
     createdAt: r.createdAt.toISOString(),
@@ -120,6 +126,7 @@ export const getRolesByScope = withPermission(
       canAccessAdmin: permissionRoleDefinitions.canAccessAdmin,
       isSuperAdmin: permissionRoleDefinitions.isSuperAdmin,
       isStoreManager: permissionRoleDefinitions.isStoreManager,
+      allowedScopeTypes: permissionRoleDefinitions.allowedScopeTypes,
       scopeId: permissionRoles.scopeId,
       createdBy: permissionRoles.createdBy,
       createdAt: permissionRoles.createdAt,
@@ -143,6 +150,7 @@ export const getRolesByScope = withPermission(
     canAccessAdmin: r.canAccessAdmin,
     isSuperAdmin: r.isSuperAdmin,
     isStoreManager: r.isStoreManager,
+    allowedScopeTypes: r.allowedScopeTypes as Array<'总部' | '市场' | '门店'>,
     scopeId: r.scopeId,
     createdBy: r.createdBy,
     createdAt: r.createdAt.toISOString(),
@@ -198,6 +206,7 @@ export const getEmployeeRoles = withPermission(
       canAccessAdmin: permissionRoleDefinitions.canAccessAdmin,
       isSuperAdmin: permissionRoleDefinitions.isSuperAdmin,
       isStoreManager: permissionRoleDefinitions.isStoreManager,
+      allowedScopeTypes: permissionRoleDefinitions.allowedScopeTypes,
       scopeId: permissionRoles.scopeId,
       createdBy: permissionRoles.createdBy,
       createdAt: permissionRoles.createdAt,
@@ -219,6 +228,7 @@ export const getEmployeeRoles = withPermission(
     canAccessAdmin: r.canAccessAdmin,
     isSuperAdmin: r.isSuperAdmin,
     isStoreManager: r.isStoreManager,
+    allowedScopeTypes: r.allowedScopeTypes as Array<'总部' | '市场' | '门店'>,
     scopeId: r.scopeId,
     createdBy: r.createdBy,
     createdAt: r.createdAt.toISOString(),
@@ -254,7 +264,7 @@ export const assignRole = withAnyPermission(
     }
   }
 
-  // 超级管理员仅总部；其他动态角色统一允许总部/市场/门店。
+  // 每个角色只允许绑定定义中声明的组织层级；数据库触发器还有最终兜底。
   const [node] = await db
     .select({ type: orgNodes.type })
     .from(orgNodes)
@@ -266,11 +276,10 @@ export const assignRole = withAnyPermission(
   if (node.type === '部门') {
     throw new Error('INVALID_PARAMS: 角色不能绑定到部门型 scope')
   }
-  if (definition.isSuperAdmin) {
-    if (node.type !== '总部') {
-      return { success: false, message: '系统管理员角色必须绑定总部节点' }
-    }
-  } else if (!['总部', '市场', '门店'].includes(node.type)) {
+  if (!definition.allowedScopeTypes.includes(node.type as '总部' | '市场' | '门店')) {
+    return { success: false, message: `角色“${definition.name}”只能绑定到${definition.allowedScopeTypes.join('、')}节点，不能绑定到${node.type}节点` }
+  }
+  if (!['总部', '市场', '门店'].includes(node.type)) {
     throw new Error(`INVALID_PARAMS: 角色 ${data.role} 不能绑定到 ${node.type} 型 scope`)
   }
 

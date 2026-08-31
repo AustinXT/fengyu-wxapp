@@ -134,6 +134,7 @@ export const getDashboardStats = withPermission('dashboard:view', async (session
         FROM sale_order_performance_events spe
         WHERE spe.store_id IN (${sql.join(scopeIds.map(id => sql`${id}`), sql`, `)})
           -- 历史订单（WorkFine 核对补登）不计入经营营收（仅供会员体系重算）
+          -- WorkFine 历史单业务排除；展示口径见 @/lib/workfine-legacy
           AND spe.legacy_source IS DISTINCT FROM 'workfine'
       ),
       order_metrics AS (
@@ -155,6 +156,7 @@ export const getDashboardStats = withPermission('dashboard:view', async (session
           END) AS pending_allocations
         FROM sale_orders so
         WHERE so.store_id IN (${sql.join(scopeIds.map(id => sql`${id}`), sql`, `)})
+          -- WorkFine 历史单业务排除；展示口径见 @/lib/workfine-legacy
           AND so.legacy_source IS DISTINCT FROM 'workfine'
       )
       SELECT

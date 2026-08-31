@@ -266,6 +266,7 @@ export interface RoleDefinition {
   name: string
   description: string | null
   actions: string[]
+  allowedScopeTypes: Array<'总部' | '市场' | '门店'>
   canAccessAdmin: boolean
   isSuperAdmin: boolean
   isStoreManager: boolean
@@ -601,6 +602,7 @@ export interface PermissionRole {
   canAccessAdmin?: boolean
   isSuperAdmin?: boolean
   isStoreManager?: boolean
+  allowedScopeTypes?: Array<'总部' | '市场' | '门店'>
 }
 
 export interface CommissionRate {

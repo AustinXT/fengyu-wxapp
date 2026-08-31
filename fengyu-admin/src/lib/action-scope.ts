@@ -36,3 +36,43 @@ export function scopeSessionToActions(
     },
   }
 }
+
+/**
+ * AND 权限必须落在同一条角色授权上，不能把市场 A 的基础动作与市场 B 的特殊动作拼接。
+ * 当前 withAllPermissions 仅用于进销存敏感操作；同一专职角色会同时持有这组动作。
+ */
+export function scopeSessionToAllActions(
+  session: AuthSession,
+  actions: readonly string[],
+): AuthSession {
+  const hasRoleScopeMetadata = session.roles.every((role) =>
+    Array.isArray(role.actions)
+    && Array.isArray(role.scopeStoreIds)
+    && Array.isArray(role.scopeOrgNodeIds),
+  )
+  if (!hasRoleScopeMetadata) return session
+
+  const roles = session.roles.filter((role) =>
+    actions.every((action) => role.actions!.includes(action)),
+  )
+  if (roles.length === 0) {
+    return {
+      ...session,
+      roles: [],
+      permissions: {
+        ...session.permissions,
+        scopeStoreIds: [],
+        scopeOrgNodeIds: [],
+      },
+    }
+  }
+  return {
+    ...session,
+    roles,
+    permissions: {
+      ...session.permissions,
+      scopeStoreIds: Array.from(new Set(roles.flatMap((role) => role.scopeStoreIds!))),
+      scopeOrgNodeIds: Array.from(new Set(roles.flatMap((role) => role.scopeOrgNodeIds!))),
+    },
+  }
+}

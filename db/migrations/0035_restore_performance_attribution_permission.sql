@@ -7,7 +7,7 @@ SET actions = ARRAY(
       ORDER BY action
     ),
     updated_at = NOW(),
-    updated_by = 'migration:0034_restore_performance_attribution_permission'
+    updated_by = 'migration:0035_restore_performance_attribution_permission'
 WHERE (is_super_admin = true OR is_store_manager = true OR role_key = 'finance')
   AND NOT (actions @> ARRAY['sale_order:performance_attribution_update']::text[]);
 
