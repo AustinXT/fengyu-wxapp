@@ -13,7 +13,11 @@ vi.mock("./performance-attribution-dialog", () => ({ PerformanceAttributionDialo
 vi.mock("./payment-performance-attribution-dialog", () => ({ PaymentPerformanceAttributionDialog: () => null }));
 
 import type { SaleOrderPayment } from "@/lib/types";
-import { calculateConfirmOfflineAmounts, mergePaymentsForDisplay } from "./order-detail-page";
+import {
+  calculateConfirmOfflineAmounts,
+  canEditPaymentPerformanceAttribution,
+  mergePaymentsForDisplay,
+} from "./order-detail-page";
 
 describe("calculateConfirmOfflineAmounts", () => {
   it("预选储值卡时按持久化 payableAmount 初始化并限制确认金额", () => {
@@ -89,5 +93,18 @@ describe("mergePaymentsForDisplay", () => {
   it("纯储值卡支付没有现付主流水时仍独立展示", () => {
     const card = payment({ id: 2, changeType: "储值卡抵扣", paymentMethod: "储值卡" });
     expect(mergePaymentsForDisplay([card])).toEqual([card]);
+  });
+
+  it("混合支付配对刷卡流水不能显示归属修改入口", () => {
+    const primary = payment({ id: 1 });
+    const card = payment({ id: 2, changeType: "储值卡抵扣", paymentMethod: "储值卡" });
+
+    expect(canEditPaymentPerformanceAttribution(true, primary, [primary, card])).toBe(true);
+    expect(canEditPaymentPerformanceAttribution(true, card, [primary, card])).toBe(false);
+  });
+
+  it("纯储值卡流水仍可单独修改归属日期", () => {
+    const card = payment({ id: 2, changeType: "储值卡抵扣", paymentMethod: "储值卡" });
+    expect(canEditPaymentPerformanceAttribution(true, card, [card])).toBe(true);
   });
 });

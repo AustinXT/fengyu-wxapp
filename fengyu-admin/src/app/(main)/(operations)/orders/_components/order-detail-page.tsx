@@ -73,6 +73,34 @@ function formatDateTime(dt: string | null) {
 
 type DisplaySaleItem = SaleItem & { cardCount: number };
 
+function isMixedPaymentPrimary(payment: SaleOrderPayment): boolean {
+  return payment.changeType === "首次支付" || payment.changeType === "回款";
+}
+
+function isSamePaymentEvent(left: SaleOrderPayment, right: SaleOrderPayment): boolean {
+  return left.saleOrderId === right.saleOrderId
+    && (left.paidAt || left.createdAt) === (right.paidAt || right.createdAt)
+    && left.status === right.status;
+}
+
+function hasMixedPaymentPrimary(payment: SaleOrderPayment, payments: SaleOrderPayment[]): boolean {
+  return payment.changeType === "储值卡抵扣"
+    && payments.some((candidate) => isMixedPaymentPrimary(candidate) && isSamePaymentEvent(candidate, payment));
+}
+
+export function canEditPaymentPerformanceAttribution(
+  allowed: boolean,
+  payment: SaleOrderPayment,
+  payments: SaleOrderPayment[],
+): boolean {
+  return allowed
+    && payment.changeType !== "首次支付"
+    && !hasMixedPaymentPrimary(payment, payments)
+    && payment.status === "已支付"
+    && !!payment.paidAt
+    && !payment.performanceAttributionAdjustedAt;
+}
+
 export function calculateConfirmOfflineAmounts(
   order: Pick<SaleOrder, "payableAmount" | "received" | "saleOrderType" | "firstPaymentAmount">,
   items: Array<Pick<SaleItem, "pendingReceived">>,
@@ -104,24 +132,13 @@ export function calculateConfirmOfflineAmounts(
  * 以订单、精确 paid_at（缺失时回退 created_at）和状态识别同次支付，避免跨笔误合并。
  */
 export function mergePaymentsForDisplay(payments: SaleOrderPayment[]): SaleOrderPayment[] {
-  const isMixedPaymentPrimary = (payment: SaleOrderPayment) =>
-    payment.changeType === "首次支付" || payment.changeType === "回款";
-  const samePaymentEvent = (left: SaleOrderPayment, right: SaleOrderPayment) =>
-    left.saleOrderId === right.saleOrderId
-    && (left.paidAt || left.createdAt) === (right.paidAt || right.createdAt)
-    && left.status === right.status;
-
   return payments.flatMap((payment) => {
-    if (payment.changeType === "储值卡抵扣") {
-      const hasPrimary = payments.some((candidate) =>
-        isMixedPaymentPrimary(candidate) && samePaymentEvent(candidate, payment));
-      if (hasPrimary) return [];
-    }
+    if (hasMixedPaymentPrimary(payment, payments)) return [];
     if (!isMixedPaymentPrimary(payment)) return [payment];
 
     const cardAmount = payments
       .filter((candidate) =>
-        candidate.changeType === "储值卡抵扣" && samePaymentEvent(candidate, payment))
+        candidate.changeType === "储值卡抵扣" && isSamePaymentEvent(candidate, payment))
       .reduce((sum, candidate) => sum + Number(candidate.amount), 0);
     if (cardAmount === 0) return [payment];
     return [{
@@ -747,12 +764,11 @@ export default function OrderDetailPageClient({
                   const attributionDate = isFirstPayment
                     ? order.performanceAttributionDate
                     : p.performanceAttributionDate || (p.paidAt ? formatDate(p.paidAt) : null);
-                  const canEditPaymentAttribution =
-                    canAdjustPerformanceAttribution &&
-                    !isFirstPayment &&
-                    p.status === "已支付" &&
-                    !!p.paidAt &&
-                    !p.performanceAttributionAdjustedAt;
+                  const canEditPaymentAttribution = canEditPaymentPerformanceAttribution(
+                    canAdjustPerformanceAttribution,
+                    p,
+                    payments ?? [],
+                  );
                   // 退款行展示退款专属字段（refundReason / auditEmployeeId / auditAt / auditRemark / refSaleItemId / sessionCount）
                   const refundDetailParts: string[] = [];
                   if (isRefund) {

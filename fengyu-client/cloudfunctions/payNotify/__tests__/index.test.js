@@ -415,6 +415,19 @@ describe('payNotify index.js', () => {
     // 事务应 COMMIT
     expect(calls.map((c) => c[0])).toContain('COMMIT')
     expect(calls.map((c) => c[0])).not.toContain('ROLLBACK')
+
+    // Bug A 修复断言：在线首次混合支付的卡兑现分支必须复用同事务主流水的 `now`，
+    // 让 0038 trigger Branch A 用 `paid_at IS NOT DISTINCT FROM` 能配对两条流水。
+    const sopInserts = calls.filter(([sql]) => /INSERT INTO sale_order_payments/.test(sql))
+    const mainstreamInsert = sopInserts.find(([sql]) => /ON CONFLICT \(sale_order_id, payment_method, external_txn_id\)/.test(sql))
+    const cardDeductInsert = sopInserts.find(([sql]) => /'储值卡抵扣'/.test(sql))
+    expect(mainstreamInsert).toBeDefined()
+    expect(cardDeductInsert).toBeDefined()
+    // 主流水 line 988：params = [orderNo, changeType, amount, paymentMethod, txnId, $8_external_trade_info, note, now]
+    // paid_at = $7 → params[7]
+    // 卡兑现 line 604：params = [orderNo, amount, note, now]
+    // paid_at = $4 → params[3]
+    expect(mainstreamInsert[1][7]).toBe(cardDeductInsert[1][3])
   })
 
   test('部分现金到账也先兑现本场次 pending 储值卡，再以现金+卡重算 received/部分支付状态', async () => {
