@@ -346,11 +346,12 @@ export function buildScopeWhere(session: AuthSession, storeIdColumn = 'store_id'
 }
 
 /**
- * 判断 session 是否拥有 admin 角色（不受 scope 限制）
+ * 判断 session 是否拥有 admin 角色（不受 scope 限制）。
+ * 实现移至 session-role-guards.ts（client 组件经 menu.ts 引用，不得拖入 @/db）；
+ * 此处 re-export 保持 server 调用方与 vi.mock('@/lib/permissions') 关系不变。
  */
-export function isAdminScope(session: AuthSession): boolean {
-  return session.roles.some(r => r.isSuperAdmin ?? r.role === 'admin')
-}
+import { isAdminScope } from './session-role-guards'
+export { isAdminScope }
 
 /**
  * 是否允许登录管理后台：持有任一非 staff 角色即可。

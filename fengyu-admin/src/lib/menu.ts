@@ -37,7 +37,7 @@ import {
 } from 'lucide-react'
 import type { AuthSession } from './types'
 import { INVENTORY_ENTRY_ENABLED } from './inventory-feature-flags'
-import { isAdminScope } from './permissions'
+import { isAdminScope } from './session-role-guards'
 
 export interface MenuItem {
   label: string
