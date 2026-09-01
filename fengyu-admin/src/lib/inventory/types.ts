@@ -268,6 +268,32 @@ export interface InventoryPromotionPlanRow {
   updatedAt: string
 }
 
+/** 货款结算汇总行：市场结算＝(市场→供应链)，分院结算＝(市场→门店)。 */
+export interface InventorySettlementRow {
+  /** 出库/发起主体（市场结算=市场；分院结算=配货市场）。 */
+  sourceOrgNodeId: string | null
+  sourceOrgNodeName: string | null
+  /** 接收主体（市场结算=供应链总部；分院结算=门店）。 */
+  targetOrgNodeId: string | null
+  targetOrgNodeName: string | null
+  docCount: number
+  totalQuantity: number
+  /** 应付货款合计；仅在对应结算段价格档可见时返回。 */
+  payableAmount: number
+}
+
+export interface InventorySettlementReport {
+  startDate: string
+  endDate: string
+  priceVisibility: InventoryPriceVisibility
+  /** 市场应付供应链（供应链档 / 市场档 / 全档可见）。 */
+  canViewMarketSettlement: boolean
+  /** 门店应付市场（仅市场档 / 全档可见）。 */
+  canViewStoreSettlement: boolean
+  marketRows: InventorySettlementRow[]
+  storeRows: InventorySettlementRow[]
+}
+
 export interface InventoryLotRow {
   id: number
   locationId: string

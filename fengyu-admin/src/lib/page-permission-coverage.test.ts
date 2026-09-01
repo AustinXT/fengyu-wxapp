@@ -52,6 +52,9 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   '/inventory/operations/market': ['inventory:list', 'inventory:stock_list'],
   '/inventory/operations/store': ['inventory:list', 'inventory:stock_list'],
   '/inventory/docs': ['inventory:list', 'inventory:stock_list'],
+  // 货款结算：SSR 闸门为 inventory:list；页面对无价格档（none）按 404 收口，
+  // menu 以价格查看权限 OR 组约束可见角色，这里同步建模防止入口/页面漂移。
+  '/inventory/settlements': ['inventory:list', ['inventory:supply_chain_price_view', 'inventory:market_price_view']],
   '/inventory/skus': ['inventory:stock_list'],
   '/inventory/promotions': ['inventory:stock_list'],
   '/legacy-orders': ['legacy_order:list', 'store:list'],

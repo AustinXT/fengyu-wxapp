@@ -25,6 +25,7 @@ const ROUTE_LABELS: Record<string, string> = {
   "/inventory/operations/market": "市场业务",
   "/inventory/operations/store": "门店业务",
   "/inventory/docs": "单据中心",
+  "/inventory/settlements": "货款结算",
   "/inventory/skus": "资料配置",
   "/inventory/suppliers": "资料配置",
   "/inventory/sku-mappings": "资料配置",

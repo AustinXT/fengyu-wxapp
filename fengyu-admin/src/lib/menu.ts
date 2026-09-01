@@ -142,6 +142,14 @@ export const MENU_CONFIG: MenuNode[] = [
         requiredAllActions: ['inventory:list', 'inventory:stock_list'],
       },
       {
+        label: '货款结算',
+        icon: Landmark,
+        href: '/inventory/settlements',
+        // 只读报表全部是金额字段：门店价格档（无任一价格查看权限）不暴露入口。
+        requiredActions: ['inventory:supply_chain_price_view', 'inventory:market_price_view'],
+        requiredAllActions: ['inventory:list'],
+      },
+      {
         label: '资料配置',
         icon: Package,
         href: '/inventory/skus',
