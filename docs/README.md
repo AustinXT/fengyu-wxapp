@@ -24,11 +24,16 @@ docs/
 | 编号 | 日期 | 标题 |
 |------|------|------|
 | [001](changes/arch/001_legacy-orders-manual-pull-pivot.md) | 2026-05-19 | admin /legacy-orders 改为按顾客手动拉取（弃用全量 bulk 导入） |
+| [002](changes/arch/002_inventory-domain-v1.md) | 2026-05-19 | 门店库存域 v1（PG 4 对表 + admin 主写 + 员工端只读 + 提货流程 UI）**（已被 011 推翻）** |
+| [003](changes/arch/003_lakala-payment-integration.md) | 2026-05-20 | 拉卡拉聚合支付接入（收银台 SDK + payNotify 启用 + 统一退货预留） |
 | [004](changes/arch/004_merge-danpin-into-liaochengka.md) | 2026-05-21 | 单品合并入疗程卡（product_type 枚举 3→2 值） |
 | [005](changes/arch/005_beautician-picker-include-wellness.md) | 2026-05-21 | 开单/下单/服务单的美容师选择列表放开养生师 |
 | [006](changes/arch/006_service-order-customer-confirmation.md) | 2026-05-23 | 服务单新增「顾客确认」步骤（待客户确认 中间态） |
 | [007](changes/arch/007_store-unbind-to-transfer-flow.md) | 2026-05-23 | 门店解绑流程改为「转店」（前置选新门店）+ 修复审批缓存陈旧 bug |
 | [008](changes/arch/008_lakala-preorder-migration.md) | 2026-05-29 | 拉卡拉支付从收银台模式整体迁移到聚合主扫模式（+ 支付宝吱口令） |
+| [009](changes/arch/009_lakala-merchant-onboarding.md) | 2026-05-29 | 拉卡拉商户入网模块（admin 14 步 OpenAPI 流程 + N:1 商户绑定 + 费率全 admin 不可见） |
+| [010](changes/arch/010_fengyu-analyst-independent-site.md) | 2026-07-21 | fengyu-analyst 独立分析站点技术方案（Next.js 独立部署 + 复用业务主库与 admin 账号权限） |
+| [011](changes/arch/011_inventory-domain-v3.md) | 2026-09-02 | 进销存域 v3（三级统一 14+1 表 + 33 单据类型 + 独立角色三重 scope 强制 + 金额触发器单源 + 四档价格裁剪） |
 
 ### ops — 生产操作
 

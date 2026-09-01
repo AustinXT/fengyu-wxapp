@@ -110,6 +110,26 @@ describe('进销存独立 scope 与价格层级', () => {
     }))).toBe(false)
   })
 
+  it('说明.md §9.2：总部会话对下辖市场/门店主体一律 PERMISSION_DENIED（scope 不下钻）', () => {
+    // 总部绑定即使带完整组织树元数据（含市场/门店后代），库存 scope 也只保留总部自身；
+    // 对任何市场或门店主体的操作必须被拒，防止父级关系自动放权。
+    const hqSession = session({
+      role: 'inventory_supply_chain_operator',
+      scopeId: 'HQ',
+      scopeType: '总部',
+      scopeStoreIds: ['STORE-1'],
+      scopeOrgNodeIds: ['HQ', 'MARKET-1', 'NODE-STORE-1'],
+    })
+    expect(() => assertInventoryLocationInScope(hqSession, 'MARKET-1'))
+      .toThrow(new ApiError('PERMISSION_DENIED', '无权操作该库存主体'))
+    expect(() => assertInventoryLocationInScope(hqSession, 'STORE-1'))
+      .toThrow(new ApiError('PERMISSION_DENIED', '无权操作该库存主体'))
+    expect(() => assertInventoryLocationInScope(hqSession, 'HQ')).not.toThrow()
+    // 单据 scope 同口径：总部不含任何后代节点。
+    expect(inventoryScopedOrgNodeIds(hqSession)).not.toContain('MARKET-1')
+    expect(inventoryScopedOrgNodeIds(hqSession)).not.toContain('NODE-STORE-1')
+  })
+
   it('库存主体越权抛出结构化 ApiError 而非裸 Error', () => {
     const storeSession = session({
       role: 'inventory_store_operator', scopeId: 'S1', scopeType: '门店', scopeStoreIds: ['S1'],
