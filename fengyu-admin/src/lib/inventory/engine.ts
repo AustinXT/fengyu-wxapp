@@ -496,7 +496,7 @@ export async function syncInventoryLocations(): Promise<void> {
         LEFT JOIN inventory_locations loc ON loc.location_id = o.id
        WHERE o.type IN ('总部','市场')
          AND (loc.location_id IS NULL
-           OR loc.location_type IS DISTINCT FROM o.type
+           OR loc.location_type IS DISTINCT FROM o.type::text
            OR loc.name IS DISTINCT FROM o.name
            OR loc.org_node_id IS DISTINCT FROM o.id
            OR loc.parent_location_id IS DISTINCT FROM o.parent_id

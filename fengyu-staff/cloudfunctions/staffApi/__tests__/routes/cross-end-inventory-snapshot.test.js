@@ -179,7 +179,8 @@ describe('PR #113 进销存单据组织端点跨端守护（staff / admin / sche
     // 否则一端认为无漂移跳过自愈、另一端反复全表 UPSERT，两端库存主体口径分叉。
     const PROBE_FRAGMENTS = [
       'loc.location_id IS NULL',
-      'loc.location_type IS DISTINCT FROM o.type',
+      // org_nodes.type 是 pgEnum，text 比较语境无隐式转换，必须显式 ::text（42883）
+      'loc.location_type IS DISTINCT FROM o.type::text',
       'loc.name IS DISTINCT FROM o.name',
       'loc.org_node_id IS DISTINCT FROM o.id',
       'loc.parent_location_id IS DISTINCT FROM o.parent_id',

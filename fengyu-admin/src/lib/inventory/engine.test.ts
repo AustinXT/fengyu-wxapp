@@ -939,7 +939,8 @@ describe('库存主体启停同步', () => {
     const probeSql = renderSql(mockDb.execute.mock.calls[0][0])
     // 反连接缺失检测 + 每个同步列的 IS DISTINCT FROM 漂移检测缺一不可。
     expect(probeSql).toContain('loc.location_id IS NULL')
-    expect(probeSql).toContain('loc.location_type IS DISTINCT FROM o.type')
+    // org_nodes.type 是 pgEnum，text 比较语境无隐式转换，必须显式 ::text（42883）
+    expect(probeSql).toContain('loc.location_type IS DISTINCT FROM o.type::text')
     expect(probeSql).toContain('loc.name IS DISTINCT FROM o.name')
     expect(probeSql).toContain('loc.parent_location_id IS DISTINCT FROM o.parent_id')
     expect(probeSql).toContain('loc.is_active IS DISTINCT FROM o.is_active')
