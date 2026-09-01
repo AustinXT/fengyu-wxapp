@@ -60,6 +60,9 @@ delivery/
 .tree/
 .claude/worktrees/*
 
+# 本地临时文件存放地（所有临时文件统一放 _tmp/）
+_tmp/
+
 # 42plugin externally-installed skills (machine-local symlinks; break CI/other machines)
 .claude/skills/agent-team-architect
 .claude/skills/md-to-docx
