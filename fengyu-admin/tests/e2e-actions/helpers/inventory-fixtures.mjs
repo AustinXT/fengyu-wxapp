@@ -33,6 +33,7 @@ export const EMP_MARKET_A = `${INS}_MAF`
 export const EMP_MARKET_B = `${INS}_MBF`
 export const EMP_STORE_A1 = `${INS}_S1C`
 export const EMP_STORE_A2 = `${INS}_S2C`
+export const EMP_STORE_B1 = `${INS}_SB1C`
 
 export const SUPPLIER_ID = `${INS}_SUP1`
 export const SKU_SUPPLY = `${INS}_SKU_SC`
@@ -137,6 +138,18 @@ export function storeA2Session() {
   })
 }
 
+export function storeB1Session() {
+  return session({
+    employeeId: EMP_STORE_B1,
+    role: 'inventory_store_operator',
+    scopeId: STB1_ORG,
+    scopeType: '门店',
+    actions: STORE_OPERATOR_ACTIONS,
+    scopeStoreIds: [STB1_ID],
+    scopeOrgNodeIds: [STB1_ORG],
+  })
+}
+
 async function upsertOrgNode(id, name, type, parentId) {
   await pgQuery(
     `INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
@@ -227,6 +240,7 @@ export async function ensureInventoryFixture() {
   await upsertStaff(EMP_MARKET_B, `${INS}_市场B财务`, null, MKB_ORG, '9003')
   await upsertStaff(EMP_STORE_A1, `${INS}_门店A1库存员`, STA1_ID, STA1_ORG, '9004')
   await upsertStaff(EMP_STORE_A2, `${INS}_门店A2库存员`, STA2_ID, STA2_ORG, '9005')
+  await upsertStaff(EMP_STORE_B1, `${INS}_门店B1库存员`, STB1_ID, STB1_ORG, '9006')
   await syncInventoryLocationsFixture()
 
   await pgQuery(
@@ -285,7 +299,11 @@ export async function ensureInventoryFixture() {
   }
 }
 
-/** 直插批次余额（退货/调货链的种子库存；正向链自身经业务动作生成批次）。 */
+/**
+ * 种子批次（退货/调货链的初始库存；正向链自身经业务动作生成批次）。
+ * DB 触发器强制批次从零余额开始且余额只能经 inventory_movements 写入
+ * （migration 0009 guard），因此走「零余额建批次 + 追加一条入库流水」的合法路径。
+ */
 export async function insertSeedLot({
   locationId,
   skuId,
@@ -308,18 +326,32 @@ export async function insertSeedLot({
        quantity_on_hand, supply_chain_unit_cost,
        market_standard_unit_price, market_unit_discount, market_actual_unit_price,
        store_standard_unit_price, store_unit_discount, store_actual_unit_price
-     ) VALUES ($1, $2, $3, $4, $5, '', $6, $7, $8, $9, $10, $11, $12, $13, $14)
-     ON CONFLICT (location_id, lot_key) DO UPDATE
-       SET quantity_on_hand = EXCLUDED.quantity_on_hand, updated_at = NOW()
-     RETURNING id`,
+     ) VALUES ($1, $2, $3, $4, $5, '', $6, 0, $7, $8, $9, $10, $11, $12, $13)
+     ON CONFLICT (location_id, lot_key) DO UPDATE SET updated_at = NOW()
+     RETURNING id, quantity_on_hand`,
     [
-      locationId, skuId, lotKey, skuName, batchNo, isGift, quantity,
+      locationId, skuId, lotKey, skuName, batchNo, isGift,
       supplyChainUnitCost, marketStandardUnitPrice, marketUnitDiscount,
       marketActualUnitPrice, storeStandardUnitPrice, storeUnitDiscount,
       storeActualUnitPrice,
     ],
   )
-  return Number(rows[0].id)
+  const lotId = Number(rows[0].id)
+  const current = Number(rows[0].quantity_on_hand)
+  const delta = quantity - current
+  if (Math.abs(delta) > 1e-9) {
+    await pgQuery(
+      `INSERT INTO inventory_movements (
+         movement_key, lot_id, location_id, sku_id, direction,
+         quantity_delta, quantity_before, quantity_after, remark
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'e2e 种子库存')`,
+      [
+        `${INS}-seed:${lotId}:${Date.now()}`, lotId, locationId, skuId,
+        delta > 0 ? '入库' : '出库', delta, current, quantity,
+      ],
+    )
+  }
+  return lotId
 }
 
 export async function lotQuantity(lotId) {
