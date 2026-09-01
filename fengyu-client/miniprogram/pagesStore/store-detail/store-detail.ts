@@ -207,8 +207,16 @@ Page({
       Toast.success('门店已绑定');
       setTimeout(() => wx.navigateBack(), 1200);
     } catch (err: any) {
-      // 未授权手机号 → 弹绑手机号弹窗（保留已选来源渠道/推荐人，绑完后重提交）
+      // 未授权手机号 → 先尝试免费 OPENID 恢复会话，失败才弹绑手机号弹窗（保留已选来源渠道/推荐人，绑完后重提交）
       if (err?.errorType === 'PHONE_REQUIRED') {
+        if (app.isLoggedOut()) {
+          const status = await app.syncLoginState(true);
+          if (status === 'authenticated') {
+            Toast.success('已恢复登录');
+            setTimeout(() => this.onConfirmBind(), 0);
+            return;
+          }
+        }
         this.setData({ showPhoneBind: true });
         return;
       }

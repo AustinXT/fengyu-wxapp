@@ -116,7 +116,12 @@ interface BindPhoneResult {
  * 封装 loading → API 调用 → 错误处理 → localStorage 持久化 → hideLoading
  * 注：客户端不再提供自助换绑，已绑定用户如需修改手机号需联系门店由管理后台操作
  */
-export async function bindPhoneWithCloudID(
+
+// single-flight：并发调用复用同一 in-flight 请求。getPhoneNumber 是付费能力，
+// 双击/竞态触发两次请求会双消耗额度且第二个 cloudID 即刻过期必然失败
+let bindPhoneInFlight: Promise<BindPhoneResult> | null = null
+
+async function doBindPhoneWithCloudID(
   cloudID: string,
   payload: Record<string, any> = {}
 ): Promise<BindPhoneResult> {
@@ -158,5 +163,18 @@ export async function bindPhoneWithCloudID(
     return { userId, phone, updatedOrdersCount }
   } finally {
     wx.hideLoading()
+  }
+}
+
+export async function bindPhoneWithCloudID(
+  cloudID: string,
+  payload: Record<string, any> = {}
+): Promise<BindPhoneResult> {
+  if (bindPhoneInFlight) return bindPhoneInFlight
+  bindPhoneInFlight = doBindPhoneWithCloudID(cloudID, payload)
+  try {
+    return await bindPhoneInFlight
+  } finally {
+    bindPhoneInFlight = null
   }
 }

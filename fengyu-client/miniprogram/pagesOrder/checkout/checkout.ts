@@ -789,6 +789,16 @@ Page({
       }
     } catch (err: any) {
       if (err?.errorType === 'PHONE_REQUIRED') {
+        // 登出态先免费 OPENID 恢复会话（同号老账号免消耗付费手机号验证），失败才弹付费授权
+        if (app.isLoggedOut()) {
+          const status = await app.syncLoginState(true);
+          if (status === 'authenticated') {
+            Toast.success('已恢复登录');
+            // setTimeout 等 finally 释放 submitting 后再重试，避免撞提交守卫
+            setTimeout(() => this.onSubmitOrder(), 0);
+            return;
+          }
+        }
         this.setData({ showPhoneBind: true });
       } else if (err?.data?.pendingOrderNo) {
         const pendingId = err.data.pendingOrderNo;
