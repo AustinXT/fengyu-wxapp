@@ -2705,6 +2705,16 @@ export const updatePaymentPerformanceAttributionDate = withPermission(
               AND primary_payment.status = sop.status
               AND primary_payment.paid_at IS NOT DISTINCT FROM sop.paid_at
           ) AS has_mixed_payment_primary,
+          ARRAY(
+            SELECT card.id
+            FROM sale_order_payments card
+            WHERE sop.change_type IN ('首次支付', '回款')
+              AND card.sale_order_id = sop.sale_order_id
+              AND card.change_type = '储值卡抵扣'
+              AND card.status = sop.status
+              AND card.paid_at IS NOT DISTINCT FROM sop.paid_at
+            ORDER BY card.id
+          ) AS paired_card_payment_ids,
           so.store_id,
           (sop.paid_at AT TIME ZONE 'Asia/Shanghai')::date::text AS original_paid_date,
           ((sop.paid_at AT TIME ZONE 'Asia/Shanghai')::date - 7)::text AS min_performance_date,
@@ -2723,6 +2733,7 @@ export const updatePaymentPerformanceAttributionDate = withPermission(
         performance_attribution_date: string | null
         performance_attribution_adjusted_at: Date | string | null
         has_mixed_payment_primary: boolean
+        paired_card_payment_ids: number[]
         store_id: string
         original_paid_date: string | null
         min_performance_date: string | null
@@ -2763,16 +2774,7 @@ export const updatePaymentPerformanceAttributionDate = withPermission(
         SET performance_attribution_date = ${targetDate}::date,
             performance_attribution_adjusted_at = NOW(),
             performance_attribution_adjusted_by = ${session.employeeId}
-        WHERE (
-            payment.id = ${paymentId}
-            OR (
-              ${locked.change_type} IN ('首次支付', '回款')
-              AND payment.sale_order_id = ${locked.sale_order_id}
-              AND payment.change_type = '储值卡抵扣'
-              AND payment.status = ${locked.status}
-              AND payment.paid_at IS NOT DISTINCT FROM ${locked.paid_at}::timestamptz
-            )
-          )
+        WHERE payment.id = ${paymentId}
           AND EXISTS (
             SELECT 1
             FROM sale_order_payments target
@@ -2811,7 +2813,7 @@ export const updatePaymentPerformanceAttributionDate = withPermission(
           performanceAttributionDate: updated.performance_attribution_date,
           performanceAttributionAdjustedAt: new Date(updated.performance_attribution_adjusted_at).toISOString(),
           performanceAttributionAdjustedBy: updated.performance_attribution_adjusted_by,
-          affectedPaymentIds: (updatedRes as unknown as Array<{ id: number }>).map((row) => row.id),
+          affectedPaymentIds: [paymentId, ...locked.paired_card_payment_ids],
         },
         tx,
       )

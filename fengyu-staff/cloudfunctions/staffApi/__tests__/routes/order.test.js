@@ -2749,6 +2749,7 @@ describe('order.updatePerformanceAttribution', () => {
       performance_attribution_adjusted_by: 'emp-001',
       updated_at: new Date('2026-08-26T06:00:00.000Z'),
     }],
+    syncedCardRows = [{ id: 43 }],
   } = {}) {
     const query = vi.fn()
       .mockResolvedValueOnce({
@@ -2764,6 +2765,7 @@ describe('order.updatePerformanceAttribution', () => {
         rowCount: 1,
       })
       .mockResolvedValueOnce({ rows: updatedRows, rowCount: updatedRows.length })
+      .mockResolvedValueOnce({ rows: syncedCardRows, rowCount: syncedCardRows.length })
       .mockResolvedValue({ rows: [], rowCount: 1 })
     pg.transaction.mockImplementation(async (callback) => callback({ query }))
     return query
@@ -2780,7 +2782,17 @@ describe('order.updatePerformanceAttribution', () => {
     expect(query.mock.calls[0][0]).toMatch(/FOR UPDATE/)
     expect(query.mock.calls[1][0]).toMatch(/performance_attribution_adjusted_at IS NULL/)
     expect(query.mock.calls[1][0]).toMatch(/date_trunc\('milliseconds', updated_at\)/)
+    expect(query.mock.calls[2][0]).toMatch(/UPDATE sale_order_payments card/)
+    expect(query.mock.calls[2][0]).toMatch(/first_payment\.change_type = '首次支付'/)
+    expect(query.mock.calls[2][1]).toEqual([
+      '2026-09-02',
+      new Date('2026-08-26T06:00:00.000Z'),
+      'emp-001',
+      input.saleOrderId,
+    ])
     expect(query.mock.calls.some(([sql]) => /INSERT INTO operation_logs/.test(sql))).toBe(true)
+    const auditInsert = query.mock.calls.find(([sql]) => /INSERT INTO operation_logs/.test(sql))
+    expect(JSON.parse(auditInsert[1][8]).changes.syncedPaymentIds).toEqual({ from: [], to: [43] })
   })
 
   test('同日提交不消耗修改机会', async () => {

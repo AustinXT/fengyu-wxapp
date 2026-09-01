@@ -4302,14 +4302,9 @@ describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日�
       performance_attribution_date: '2026-08-24',
       performance_attribution_adjusted_at: new Date('2026-08-17T03:00:00.000Z'),
       performance_attribution_adjusted_by: 'EMP-001',
-    }, {
-      id: 43,
-      sale_order_id: 'FY-XSD-WX-2608170001',
-      performance_attribution_date: '2026-08-24',
-      performance_attribution_adjusted_at: new Date('2026-08-17T03:00:00.000Z'),
-      performance_attribution_adjusted_by: 'EMP-001',
     }],
     hasMixedPaymentPrimary = false,
+    pairedCardPaymentIds = [43],
   }: {
     changeType?: string
     status?: string
@@ -4318,6 +4313,7 @@ describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日�
     adjustedAt?: Date | null
     updatedRows?: any[]
     hasMixedPaymentPrimary?: boolean
+    pairedCardPaymentIds?: number[]
   } = {}) {
     const execute = vi.fn()
       .mockResolvedValueOnce([{
@@ -4329,6 +4325,7 @@ describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日�
         performance_attribution_date: currentDate,
         performance_attribution_adjusted_at: adjustedAt,
         has_mixed_payment_primary: hasMixedPaymentPrimary,
+        paired_card_payment_ids: pairedCardPaymentIds,
         store_id: 'store-1',
         original_paid_date: paidAt ? '2026-08-17' : null,
         min_performance_date: paidAt ? '2026-08-10' : null,
@@ -4353,8 +4350,10 @@ describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日�
       performanceAttributionAdjustedByName: '店长甲',
     })
     expect(execute.mock.calls[0][0].__sqlText).toMatch(/FOR UPDATE OF sop/)
+    expect(execute.mock.calls[0][0].__sqlText).toMatch(/paired_card_payment_ids/)
     expect(execute.mock.calls[1][0].__sqlText).toMatch(/performance_attribution_adjusted_at IS NULL/)
-    expect(execute.mock.calls[1][0].__sqlText).toMatch(/payment\.change_type = '储值卡抵扣'/)
+    expect(execute.mock.calls[1][0].__sqlText).toMatch(/WHERE payment\.id/)
+    expect(execute.mock.calls[1][0].__sqlText).not.toMatch(/payment\.change_type = '储值卡抵扣'/)
     expect(logUpdate).toHaveBeenCalledWith(
       expect.anything(),
       'payment.performanceAttribution.update',

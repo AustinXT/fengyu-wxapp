@@ -37,14 +37,29 @@ load_target() {
   esac
 }
 
-assert_clean_worktree() {
-  local status
+capture_worktree_provenance() {
+  local status untracked_path
   status=$(git -C "$REPO_ROOT" status --porcelain --untracked-files=all)
-  if [[ -n "$status" ]]; then
-    echo "ERROR: deployment requires a clean worktree; commit or remove all non-ignored changes first." >&2
-    echo "$status" >&2
-    return 1
-  fi
+  WORKTREE_STATE="clean"
+  WORKTREE_FINGERPRINT="clean"
+  [[ -n "$status" ]] || return 0
+
+  WORKTREE_STATE="dirty"
+  WORKTREE_FINGERPRINT=$(
+    {
+      printf '%s\n' '--- tracked diff ---'
+      git -C "$REPO_ROOT" diff --binary HEAD --
+      printf '%s\n' '--- untracked files ---'
+      git -C "$REPO_ROOT" ls-files --others --exclude-standard | LC_ALL=C sort | while IFS= read -r untracked_path; do
+        [[ -n "$untracked_path" ]] || continue
+        printf 'path:%s\nsha256:' "$untracked_path"
+        shasum -a 256 < "$REPO_ROOT/$untracked_path" | awk '{print $1}'
+      done
+    } | shasum -a 256 | awk '{print substr($1,1,12)}'
+  )
+
+  echo "WARNING: deploying a dirty worktree as dirty.$WORKTREE_FINGERPRINT" >&2
+  echo "$status" >&2
 }
 
 assert_local_tools() {
@@ -114,7 +129,7 @@ REMOTE
 }
 
 print_release_manifest() {
-  local component="$1" env="$2" bundle="$3" commit="$4" image_ref="$5" release_id="$6"
+  local component="$1" env="$2" bundle="$3" revision="$4" image_ref="$5" release_id="$6"
   local manifest="$bundle/build-manifest.json"
   echo "=== 脱敏发布清单 ==="
   echo "组件: $component"
@@ -124,7 +139,8 @@ print_release_manifest() {
   echo "迁移连接目标: $MIGRATION_HOST:5433/fengyu_wxapp"
   echo "容器 DB 目标: $CONTAINER_DB_HOST:5433/fengyu_wxapp"
   echo "Analyst: $(manifest_value "$manifest" analystPublicOrigin)"
-  echo "Git commit: $commit"
+  echo "工作树: $WORKTREE_STATE"
+  echo "Git revision: $revision"
   echo "镜像: $image_ref"
   echo "Release: $release_id"
 }

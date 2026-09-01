@@ -601,8 +601,8 @@ async function settlePendingPrepaidForPayment(client, {
           external_txn_id, status, source_end, operator_employee_id,
           note, created_at, paid_at
         ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'notify', NULL,
-          $3, NOW(), NOW())`,
-        [targetOrderNo, initialPendingCardAmount, `储值卡抵扣 订单 ${targetOrderNo}`]
+          $3, $4, $4)`,
+        [targetOrderNo, initialPendingCardAmount, `储值卡抵扣 订单 ${targetOrderNo}`, now]
       )
       await client.query(
         `UPDATE sale_orders

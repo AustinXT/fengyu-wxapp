@@ -17,7 +17,7 @@ user-invocable: true
 allowed-tools: 'Bash, Read, Grep'
 metadata:
   author: NightVoyager
-  version: 2.3.0
+  version: 2.4.0
   title: 代码发版（dev/test/prod）
   description_zh: 预检门禁 + 目标库 db:migrate + admin/analyst 交叉编译发布 + CloudBase 云函数发布 + 版本号更新（dev/test/prod 三环境参数化）
   license: 42plugin-personal
@@ -70,7 +70,7 @@ metadata:
 - 本技能是**代码更新发版，不是初始化**。只允许用 `DATABASE_URL=<目标库> npm --prefix db run db:migrate` 应用本次发版工作树中已 review 的 Drizzle migration；**禁止**：清库、`db:push`、手写 DDL、`db:baseline:reset`、`tcb fn deploy --force`。
 - **云函数部署必须串行**：tcb 鉴权是全局单例（`~/.cloudbase-cli/auth.json`），staff 与 client 是**两个不同腾讯子账号**。**绝不**为这步开并行 agent —— 会中途互相踢登录。`deploy-cloudfunctions.sh` 已内部串行处理。
 - **永不用 `--force`**：env 变量会被清空（2026-04-02 事故）。只用 `tcb fn code update`（脚本已遵守）。
-- 技能**完全不碰 git**（不 commit / 不 push）。版本文件改动留给用户用 `/smart-commit`。
+- 技能**完全不碰 git**（不 commit / 不 push）。允许携带未提交改动发版；Admin/Analyst 镜像必须用 `<commit>-dirty.<fingerprint>` 标记脏状态，CloudBase 则按当前工作树上传。不得把脏发布表述为已提交或仅由 commit 可复现。
 - **目标 DB 硬约束**：迁移目标必须为 dev=`47.113.202.7`、test=`101.34.242.103`、prod=`118.178.196.26` 的 `:5433/fengyu_wxapp`。test 远程容器允许 `172.18.0.1`，但必须同时验证宿主公网 IP=101.34.242.103 且宿主 5433 正在监听。
 - **发 prod 后必须恢复 dev env（§8）**；发 test 不调用 `use-env.sh`，不得改变当前 active CloudBase 环境。
 - `db:migrate` 出错、连接目标不符，或本地 migration journal 比目标库旧时，立即停止；不得继续 admin 或云函数发布。已成功应用的 migration 不做回滚，按 `db/CLAUDE.md` 新建向前修复 migration。
@@ -136,6 +136,7 @@ metadata:
    ssh $SSH_HOST true && echo "$SSH_HOST 可达 ✓"
    cat envs/.active   # 记录当前 env；发 prod 时 Phase 7 须恢复回此值
    ```
+8. **工作树状态**：`git status --short`。脏工作树不再阻断，但必须展示文件清单；后续 Admin/Analyst 发布清单必须显示 `dirty.<fingerprint>`，prod 确认文本也必须包含该指纹。
 
 ---
 
@@ -145,7 +146,7 @@ metadata:
 node scripts/gen-version.js
 git --no-pager diff fengyu-client/miniprogram/utils/version.ts fengyu-staff/miniprogram/utils/version.ts
 ```
-- 展示 diff，确认两端 `APP_VERSION` == Phase 0 的 tag。remote-deploy 只接受干净工作树；若本步产生修改，停止发版并先按项目提交流程提交版本号，再从 Phase 0 重新开始。不得用脏工作树绕过镜像可追溯门禁。
+- 展示 diff，确认两端 `APP_VERSION` == Phase 0 的 tag。若本步产生修改，保留改动并继续；将其作为脏工作树的一部分纳入部署指纹。无需为了发版先提交，但收尾时必须明确列出仍未提交的文件。
 
 ---
 
@@ -177,9 +178,9 @@ unset MIGRATE_DATABASE_URL
 ```bash
 .claude/skills/remote-deploy/deploy-admin.sh $ENV
 ```
-- `$ENV=prod` 时脚本要求输入 `prod:<commit>`；dev/test 无交互确认。三个环境的 host、目录和端口均固定，不允许覆盖。
+- `$ENV=prod` 时脚本要求输入 `prod:<revision>`；干净工作树的 revision 是 commit，脏工作树是 `<commit>-dirty.<fingerprint>`。dev/test 无交互确认。三个环境的 host、目录和端口均固定，不允许覆盖。
 - Phase 2 完成后，脚本会只读复核最新 Drizzle `created_at + hash`；仍有 pending、漂移或数据库领先本地代码时直接停止，不提供迁移或跳过入口。
-- 脚本内部：本地配置/RSA/工作树门禁 → 只读迁移门禁 → buildx → 不可变镜像传输与 ID 校验 → 版本化 compose → 健康检查；test 同时验证 `101.34.242.103` 宿主和 `172.18.0.1` 容器网桥。
+- 脚本内部：本地配置/RSA/工作树指纹 → 只读迁移门禁 → buildx → 不可变镜像传输与 ID 校验 → 版本化 compose → 健康检查；test 同时验证 `101.34.242.103` 宿主和 `172.18.0.1` 容器网桥。
 - 失败时脚本自动恢复上一成功 release；复述 release ID、镜像 tag、HTTP、DB、CloudBase 和 Analyst origin 验证结果。
 
 ## §5 Phase 4 — analyst 交叉编译 + 发布（除非 `skip-analyst`）
@@ -189,7 +190,7 @@ unset MIGRATE_DATABASE_URL
 ```
 
 - 正常全量发布时在 admin 发布之后执行，使 admin 顶栏与 analyst 容器使用同一 `ANALYST_PUBLIC_ORIGIN`。
-- `$ENV=prod` 时脚本要求输入 `prod:<commit>`；dev/test 无交互确认。
+- `$ENV=prod` 时脚本要求输入与 Admin 同规则的 `prod:<revision>`；dev/test 无交互确认。
 - 脚本复用与 Admin 相同的本地配置、迁移、固定目标、不可变镜像和版本化回滚核心。
 - 复述 release ID、HTTP、DB host 与 `NEXT_PUBLIC_ANALYST_ORIGIN`。失败会自动回滚；需要人工切换上一成功版本时使用 `deploy-analyst.sh --rollback $ENV`。
 
@@ -259,7 +260,7 @@ scripts/use-env.sh dev
    - prod → 正式版；dev → 开发版。test 没有独立小程序/CloudBase 通道，不上传 test 版小程序。
    - 无 miniprogram-ci 通道，纯手工。新 `APP_VERSION` 及任何前端改动**只有重传后才生效**，旧体验版不会自动切。两端都要传。
 2. （仅**首次** provisioning，常规更新发版 N/A）CloudBase 控制台手建 HTTP 访问服务（`/cloudfunctions/clientApi`、`/lakala/notify`，enableAuth: false）；若 `CLIENT_SERVICE_URL` 之前是 PLACEHOLDER，需在控制台补 staffApi 的 `CLIENT_API_HTTP_URL` env 变量。
-3. 提示用户用 `/smart-commit` 提交 `version.ts` 改动（技能不碰 git）。
+3. 列出发版结束时仍未提交的文件；可提示用户之后用 `/smart-commit`，但未提交状态本身不阻断本次发版。
 
 ---
 

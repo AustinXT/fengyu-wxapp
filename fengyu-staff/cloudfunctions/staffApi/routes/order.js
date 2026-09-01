@@ -2695,17 +2695,44 @@ async function updatePerformanceAttribution(ctx) {
       throw new Error('CONFLICT: 订单已被其他人修改，请刷新后重试')
     }
 
+    const syncedCardRes = await client.query(
+      `UPDATE sale_order_payments card
+       SET performance_attribution_date = $1::date,
+           performance_attribution_adjusted_at = $2::timestamptz,
+           performance_attribution_adjusted_by = $3
+       WHERE card.sale_order_id = $4
+         AND card.change_type = '储值卡抵扣'
+         AND card.status = '已支付'
+         AND EXISTS (
+           SELECT 1
+           FROM sale_order_payments first_payment
+           WHERE first_payment.sale_order_id = card.sale_order_id
+             AND first_payment.change_type = '首次支付'
+             AND first_payment.status = card.status
+             AND first_payment.paid_at IS NOT DISTINCT FROM card.paid_at
+         )
+       RETURNING card.id`,
+      [
+        updated.performance_attribution_date,
+        updated.performance_attribution_adjusted_at,
+        updated.performance_attribution_adjusted_by,
+        saleOrderId,
+      ],
+    )
+    const syncedPaymentIds = syncedCardRes.rows.map((row) => row.id)
+
     await logUpdate(
       client,
       ctx,
       'order.performanceAttribution.update',
       'sale_order',
       saleOrderId,
-      { performanceAttributionDate: locked.performance_attribution_date },
+      { performanceAttributionDate: locked.performance_attribution_date, syncedPaymentIds: [] },
       {
         performanceAttributionDate: updated.performance_attribution_date,
         performanceAttributionAdjustedAt: new Date(updated.performance_attribution_adjusted_at).toISOString(),
         performanceAttributionAdjustedBy: updated.performance_attribution_adjusted_by,
+        syncedPaymentIds,
       },
     )
 

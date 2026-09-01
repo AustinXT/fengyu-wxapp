@@ -36,8 +36,8 @@ fi
 load_target "$ENV"
 cd "$REPO_ROOT"
 assert_local_tools
-assert_clean_worktree
 reconcile_local_configs
+capture_worktree_provenance
 
 LOCAL_BUNDLE=$(mktemp -d "${TMPDIR:-/tmp}/fengyu-analyst-release.XXXXXX")
 cleanup() {
@@ -51,24 +51,28 @@ remote_readonly_preflight
 
 APP_VERSION=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo dev)
 APP_COMMIT=$(git rev-parse --short=12 HEAD)
+APP_REVISION="$APP_COMMIT"
+if [[ "$WORKTREE_STATE" == "dirty" ]]; then
+  APP_REVISION="${APP_COMMIT}-dirty.${WORKTREE_FINGERPRINT}"
+fi
 BUILD_FINGERPRINT=$(shasum -a 256 "$LOCAL_BUNDLE/build-manifest.json" | awk '{print substr($1,1,12)}')
 CONFIG_FINGERPRINT=$(
   for file in admin.env cron-worker.env export-worker.env analyst.env; do
     shasum -a 256 "$LOCAL_BUNDLE/$file" | awk '{print $1}'
   done | shasum -a 256 | awk '{print substr($1,1,12)}'
 )
-RELEASE_ID="${ENV}-${APP_COMMIT}-${CONFIG_FINGERPRINT}-$(date -u +%Y%m%dT%H%M%SZ)-$$"
-IMAGE_REF="fengyu-analyst:${ENV}-${APP_COMMIT}-${BUILD_FINGERPRINT}"
+RELEASE_ID="${ENV}-${APP_REVISION}-${CONFIG_FINGERPRINT}-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+IMAGE_REF="fengyu-analyst:${ENV}-${APP_REVISION}-${BUILD_FINGERPRINT}"
 REMOTE_RELEASE_DIR="$REMOTE_DIR/.deploy/releases/analyst/$RELEASE_ID"
 
-print_release_manifest analyst "$ENV" "$LOCAL_BUNDLE" "$APP_COMMIT" "$IMAGE_REF" "$RELEASE_ID"
+print_release_manifest analyst "$ENV" "$LOCAL_BUNDLE" "$APP_REVISION" "$IMAGE_REF" "$RELEASE_ID"
 if [[ "$CHECK_ONLY" == true ]]; then
   echo "CHECK_OK: 未构建、未上传、未修改远端状态。"
   exit 0
 fi
 
-confirm_prod_release "$ENV" "$APP_COMMIT"
-build_image analyst "$LOCAL_BUNDLE" "$IMAGE_REF" "$APP_VERSION" "$APP_COMMIT"
+confirm_prod_release "$ENV" "$APP_REVISION"
+build_image analyst "$LOCAL_BUNDLE" "$IMAGE_REF" "$APP_VERSION" "$APP_REVISION"
 prepare_release_files analyst "$LOCAL_BUNDLE" "$REMOTE_RELEASE_DIR" "fengyu-admin:latest" "$IMAGE_REF"
 IMAGE_ID=$(transfer_image "$IMAGE_REF")
 upload_release_files "$LOCAL_BUNDLE" "$REMOTE_RELEASE_DIR"

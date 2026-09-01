@@ -123,7 +123,7 @@ describe('cron-worker STEP - refreshLakalaSubMerchants', () => {
     const logPayload = (fixture.insertValues.mock.calls as unknown as Array<[Record<string, unknown>]>)[0][0]
     expect(JSON.stringify(logPayload)).not.toContain('merchant-should-not-be-logged')
     expect(JSON.stringify(logPayload)).not.toContain('must-not-be-persisted')
-    expect(logPayload.responsePayloadMasked).toMatchObject({
+    expect(logPayload.responsePayload).toMatchObject({
       success: true,
       wechatCount: 1,
       alipayCount: 1,
