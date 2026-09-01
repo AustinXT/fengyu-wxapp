@@ -800,23 +800,23 @@ export function detectAssistantMetricIntents(question: string): AssistantMetricI
 function isDirectTimeQuestion(question: string): boolean {
   const text = question.replace(/\s+/g, "").trim()
   return [
-    /(今年|当前|现在).*(哪|几|多少).*年/,
-    /今年是(?:哪|几|多少|什么)?年/,
-    /(当前|现在).*(几点|时间|时刻)/,
+    /今年是(?:哪一|哪|几|多少|什么)?年/,
+    /(当前|现在).{0,3}(几点|时刻|时间)[了啊呢呀吗吧]?[?？]?$/,
     /今天.*(几号|日期|星期|周几|礼拜)/,
     /(当前|现在|今天).*(几月几日|哪一天)/,
-    /(北京时间|上海时间).*(多少|几点|现在|当前)?/,
+    /(北京时间|上海时间).{0,2}(多少|几点)(点|了)?[?？]?$/,
   ].some((pattern) => pattern.test(text))
 }
 
 function hasBusinessDomainHint(question: string): boolean {
-  return /(经营|数据|指标|复购|回购|普及|持卡|新客|漏斗|品项|项目|商品|市场|门店|顾客|会员|到店|成交|排名|趋势|科颜美|安吉丽|功能养生)/.test(question)
+  return /(经营|数据|指标|复购|回购|普及|持卡|新客|漏斗|品项|项目|商品|市场|门店|顾客|会员|到店|成交|排名|趋势|走势|月度|每月|科颜美|安吉丽|功能养生)/.test(question)
 }
 
 export function classifyAssistantQuestion(question: string): AssistantQuestionKind {
   if (detectAssistantMetricIntents(question).length > 0) return "business"
   if (isDirectTimeQuestion(question)) return "time"
-  if (hasBusinessDomainHint(question)) return "clarification"
+  // 有业务领域词但未命中明确指标时走 business 复购兜底（与旧版一致，保住排名/名单/趋势类问题），不再前置反问
+  if (hasBusinessDomainHint(question)) return "business"
   return "unsupported"
 }
 
