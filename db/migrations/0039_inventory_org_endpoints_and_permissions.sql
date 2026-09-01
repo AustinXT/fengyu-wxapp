@@ -14,9 +14,9 @@ ALTER TABLE "inventory_skus" ADD COLUMN "market_purchase_price_mode" text;--> st
 ALTER TABLE "inventory_skus" ADD COLUMN "market_purchase_price_override_reason" text;--> statement-breakpoint
 -- 顺序经手工调整：被 FK 引用的列必须先建唯一索引（drizzle-kit 默认把 ADD FK 排在 CREATE UNIQUE INDEX 之前，空库按序执行会报
 -- "there is no unique constraint matching given keys"；与归档 0023 同类的语句级重排）。
+-- 另：source/target 两列 rename 后仍存旧 location_id 值，须等末尾的翻译回填段执行完才能加 FK
+--（存量库数据全部可翻译：unmappable=0 / orphan_org=0，见 2026-09-01 dev 迁 sqlserver101 现场核验）。
 CREATE UNIQUE INDEX "uq_inventory_locations_org" ON "inventory_locations" USING btree ("org_node_id");--> statement-breakpoint
-ALTER TABLE "inventory_docs" ADD CONSTRAINT "inventory_docs_source_org_node_id_inventory_locations_org_node_id_fk" FOREIGN KEY ("source_org_node_id") REFERENCES "public"."inventory_locations"("org_node_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "inventory_docs" ADD CONSTRAINT "inventory_docs_target_org_node_id_inventory_locations_org_node_id_fk" FOREIGN KEY ("target_org_node_id") REFERENCES "public"."inventory_locations"("org_node_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "idx_inventory_docs_source_org_node" ON "inventory_docs" USING btree ("source_org_node_id");--> statement-breakpoint
 CREATE INDEX "idx_inventory_docs_target_org_node" ON "inventory_docs" USING btree ("target_org_node_id");--> statement-breakpoint
 ALTER TABLE "inventory_docs" ADD CONSTRAINT "chk_inventory_docs_org_endpoint" CHECK ("inventory_docs"."source_org_node_id" IS NOT NULL OR "inventory_docs"."target_org_node_id" IS NOT NULL);--> statement-breakpoint
@@ -457,6 +457,11 @@ UPDATE "inventory_docs"
    SET "source_org_node_id" = COALESCE("source_org_node_id", "target_org_node_id"),
        "target_org_node_id" = COALESCE("source_org_node_id", "target_org_node_id")
  WHERE "doc_type" IN ('品项公司报货需求', '市场库存盘点', '分院库存盘点');
+--> statement-breakpoint
+-- FK 必须位于翻译回填段之后：rename 后存量值仍是旧 location_id，先加 FK 会报
+-- ri_ReportViolation（2026-09-01 dev 迁 sqlserver101 时在 0039 pending 应用现场复现）。
+ALTER TABLE "inventory_docs" ADD CONSTRAINT "inventory_docs_source_org_node_id_inventory_locations_org_node_id_fk" FOREIGN KEY ("source_org_node_id") REFERENCES "public"."inventory_locations"("org_node_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "inventory_docs" ADD CONSTRAINT "inventory_docs_target_org_node_id_inventory_locations_org_node_id_fk" FOREIGN KEY ("target_org_node_id") REFERENCES "public"."inventory_locations"("org_node_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 
 -- 单据端点已经切换为 org_nodes.id；市场归属必须从组织节点而非库存内部主键派生。
 -- 0037 版函数沿用 location_id 参数命名，此处按 org_node 语义重建并统一参数名，
@@ -516,38 +521,16 @@ ON inventory_docs
 FOR EACH ROW EXECUTE FUNCTION inventory_set_doc_market_id();
 --> statement-breakpoint
 -- 存量单据 market_id 回填改为分批提交：避免单事务全表 UPDATE 长持锁与 WAL 膨胀。
--- 当前试运营期表为空，一笔即可完成；正式运营后重放（或新环境导入数据后补跑）也不会锁表过久。
--- PROCEDURE 内 COMMIT 需要独立调用（drizzle-kit 逐条 statement 执行，满足该前提）。
-CREATE OR REPLACE PROCEDURE inventory_backfill_doc_market_id(batch_size int DEFAULT 2000)
-LANGUAGE plpgsql
-AS $$
-DECLARE
-  rows_updated int;
-BEGIN
-  LOOP
-    UPDATE inventory_docs
-       SET market_id = inventory_expected_doc_market_id(
+-- 前版用分批 PROCEDURE（循环内 COMMIT），但 drizzle-kit migrate 将整个 migration 文件包在单个事务里执行，
+-- 循环首次 COMMIT 即报 2D000 invalid transaction termination（2026-09-01 dev 迁 sqlserver101 现场复现；
+-- 空库验证不会触发——无行可更新时 EXIT 先于 COMMIT）。inventory_docs 为单据表，单条 UPDATE 无锁表压力。
+UPDATE inventory_docs
+   SET market_id = inventory_expected_doc_market_id(
          doc_type, source_org_node_id, target_org_node_id
        )
-     WHERE ctid IN (
-       SELECT ctid
-         FROM inventory_docs
-        WHERE market_id IS DISTINCT FROM inventory_expected_doc_market_id(
-                doc_type, source_org_node_id, target_org_node_id
-              )
-        LIMIT batch_size
-        FOR UPDATE SKIP LOCKED
-     );
-    GET DIAGNOSTICS rows_updated = ROW_COUNT;
-    EXIT WHEN rows_updated = 0;
-    COMMIT;
-  END LOOP;
-END;
-$$;
---> statement-breakpoint
-CALL inventory_backfill_doc_market_id();
---> statement-breakpoint
-DROP PROCEDURE inventory_backfill_doc_market_id(int);
+ WHERE market_id IS DISTINCT FROM inventory_expected_doc_market_id(
+         doc_type, source_org_node_id, target_org_node_id
+       );
 
 -- 0035 已发布版本的审计标记沿用了重排前的 0034 名称；通过前向迁移修正，避免改写历史 migration hash。
 UPDATE permission_role_definitions
