@@ -1,6 +1,6 @@
 // pages/workbench/workbench.ts — 工作台
 import { callStaffApi } from '../../utils/cloud';
-import { canAccessInventory, isManagementMode, isManager, requireInventoryStoreOperate, requireManager } from '../../utils/role';
+import { canAccessInventory, isManagementMode, isManager, requireManager } from '../../utils/role';
 import { emit, on, EVENT_STORE_CHANGED } from '../../utils/event-bus';
 import { INVENTORY_ENTRY_ENABLED } from '../../utils/feature-flags';
 
@@ -259,7 +259,11 @@ Page({
   },
 
   goInventory() {
-    if (!requireInventoryStoreOperate()) return;
+    // 入口三动作并集（对齐云端白名单）；页面内的写操作入口各自再校验 store_operate。
+    if (!canAccessInventory()) {
+      wx.showToast({ title: '当前账号无库存访问权限', icon: 'none' });
+      return;
+    }
     wx.navigateTo({ url: '/packageMy/inventory/inventory' });
   },
 

@@ -1,5 +1,5 @@
 // packageMy/inventory/inventory.ts — 库存管理首页
-import { requireInventoryStoreOperate } from '../../utils/role'
+import { canAccessInventory } from '../../utils/role'
 
 type CategoryKey = 'stocks' | 'procurement' | 'sale' | 'transfer' | 'scrap'
 type OperateDocType = '门店报货' | '分院调货出库' | '院退货' | '院产品报损'
@@ -41,7 +41,12 @@ Page({
     operations: OPERATIONS,
   },
   onLoad() {
-    if (!requireInventoryStoreOperate()) setTimeout(() => wx.navigateBack(), 500)
+    // 入口按云端白名单三动作并集（canAccessInventory）放行浏览；
+    // 写操作页（form）与收货按钮仍仅认 inventory:store_operate。
+    if (!canAccessInventory()) {
+      wx.showToast({ title: '当前账号无库存访问权限', icon: 'none' });
+      setTimeout(() => wx.navigateBack(), 500);
+    }
   },
   onCategoryTap(e: WechatMiniprogram.CustomEvent) {
     const key = e.currentTarget.dataset.key as CategoryKey

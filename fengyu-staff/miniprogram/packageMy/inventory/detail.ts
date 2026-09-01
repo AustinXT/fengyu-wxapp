@@ -1,7 +1,7 @@
 // packageMy/inventory/detail.ts — 库存单据详情（只读）
 import { callStaffApi } from '../../utils/cloud'
 import { formatDateTime } from '../../utils/formatters'
-import { canAccessInventory } from '../../utils/role'
+import { canOperateStoreInventory } from '../../utils/role'
 
 const STATUS_KEY_MAP: Record<string, string> = {
   '已完成': 'done',
@@ -87,7 +87,9 @@ Page({
           }
         : detail
       const canReceive = Boolean(
-        canAccessInventory()
+        // 收货确认是门店写操作，云端 confirmReceive 仅认 inventory:store_operate，
+        // 不能随入口（canAccessInventory 三动作并集）放宽。
+        canOperateStoreInventory()
         &&
         detail
         && detail.status === '待收货'
