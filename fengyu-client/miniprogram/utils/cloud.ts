@@ -9,6 +9,8 @@ const ACTIONS_ALLOWED_WHEN_LOGGED_OUT = new Set([
   'store.list',
   'store.detail',
   'store.geocode',
+  // 门店详情页 Promise.all 与 store.detail 并发请求；服务端对访客返回 {request:null}，本地拦截会导致整页 fail-fast
+  'store.getUnbindRequest',
   'staff.list',
   'staff.detail',
   'appointment.staffSchedule',

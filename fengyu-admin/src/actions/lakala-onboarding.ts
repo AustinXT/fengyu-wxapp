@@ -557,9 +557,13 @@ async function refreshChannelSubMerchantsForApplication(applicationId: string, m
   const current = (currentApp?.channelData as Record<string, unknown>) ?? {};
   const currentWechat = getChannelItems(current, "wechat");
   const currentAlipay = getChannelItems(current, "alipay");
-  const wechat = result.wechat.length > 0 ? result.wechat : currentWechat;
-  const alipay = result.alipay.length > 0 ? result.alipay : currentAlipay;
+  const wechatReturnedEmpty = result.wechat.length === 0;
+  const alipayReturnedEmpty = result.alipay.length === 0;
+  const wechat = wechatReturnedEmpty ? currentWechat : result.wechat;
+  const alipay = alipayReturnedEmpty ? currentAlipay : result.alipay;
   const bothReady = wechat.length > 0 && alipay.length > 0;
+  // 拉卡拉查询成功但某渠道空返回、旧号只是被沿用兜底：可能已被撤销，须提示核实而非静默保留
+  const possiblyRevoked = (wechatReturnedEmpty && currentWechat.length > 0) || (alipayReturnedEmpty && currentAlipay.length > 0);
   await db.update(lakalaOnboardingApplications).set({
     channelData: {
       ...current,
@@ -568,7 +572,9 @@ async function refreshChannelSubMerchantsForApplication(applicationId: string, m
     },
     subMerchantCheckedAt: new Date(),
     lastErrorCode: null,
-    lastErrorMessage: bothReady ? null : "尚有渠道未返回子商户号，请稍后手动查询",
+    lastErrorMessage: possiblyRevoked
+      ? "拉卡拉本次查询未返回部分子商户号，原有子商户号可能已被撤销，请与拉卡拉核实"
+      : bothReady ? null : "尚有渠道未返回子商户号，请稍后手动查询",
   }).where(eq(lakalaOnboardingApplications.id, applicationId));
   return { ...result, wechat, alipay };
 }
@@ -1913,7 +1919,11 @@ export const refreshOnboardingSubMerchants = withPermission(
     if (!app) return { success: false, message: "申请不存在" };
     if (app.status !== "SUCCESS" || !app.merCupNo?.startsWith("82")) return { success: false, message: "请先等待拉卡拉审核通过并取得银联商户号" };
     const result = await refreshChannelSubMerchantsForApplication(applicationId, app.merCupNo);
-    if (!result.success) return { success: false, message: result.errorMessage || "子商户号查询失败" };
+    if (!result.success) {
+      // 失败也已写库 subMerchantCheckedAt/lastError，须刷新页面让"上次查询"与错误提示可见
+      revalidatePath(`/merchants/onboarding-prototype/${applicationId}`);
+      return { success: false, message: result.errorMessage || "子商户号查询失败" };
+    }
     revalidatePath(`/merchants/onboarding-prototype/${applicationId}`);
     const messages = [
       result.wechat.length ? `微信子商户号：${result.wechat.map((item) => item.subMerchantNo).join("、")}` : "微信子商户号暂未返回",

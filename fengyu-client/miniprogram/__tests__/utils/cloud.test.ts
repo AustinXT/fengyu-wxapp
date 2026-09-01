@@ -226,6 +226,25 @@ describe('callClientApi 网络错误防护', () => {
     })
   })
 
+  test('退出态允许 store.getUnbindRequest，门店详情页并发请求不 fail-fast', async () => {
+    ;(globalThis as any).wx.setStorageSync('clientLoggedOut', true)
+    ;(globalThis as any).wx.cloud.callFunction.mockResolvedValue({
+      result: { code: 0, message: 'success', data: { request: null } },
+    })
+
+    const data = await callClientApi<{ request: unknown }>('store.getUnbindRequest', { storeId: 'store-1' })
+
+    // 服务端对访客返回 {request:null}，本地白名单放行后整页 Promise.all 不再被拦截
+    expect(data.request).toBeNull()
+    expect((globalThis as any).wx.cloud.callFunction).toHaveBeenCalledWith({
+      name: 'clientApi',
+      data: {
+        action: 'store.getUnbindRequest',
+        payload: expect.objectContaining({ storeId: 'store-1' }),
+      },
+    })
+  })
+
   // ===== errorType 透传：白名单业务错误信任后端文案，跳过 sanitize =====
 
   test('白名单业务错误（errorType 非空）长文案原样透传，不被 sanitize 截断', async () => {

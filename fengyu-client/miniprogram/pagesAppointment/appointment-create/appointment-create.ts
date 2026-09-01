@@ -52,6 +52,8 @@ Page({
     submitting: false,
     showPhoneBind: false,
     phoneBinding: false,
+    // 绑定成功后延迟自动重提期间锁定提交入口，防止手点+定时器双触发重复提交
+    autoResubmitPending: false,
   },
 
   onLoad(options) {
@@ -474,7 +476,7 @@ Page({
         return;
       }
     }
-    if (this.data.submitting) return;
+    if (this.data.submitting || this.data.autoResubmitPending) return;
     this.setData({ submitting: true });
     try {
       await callClientApi('appointment.create', {
@@ -517,8 +519,12 @@ Page({
       await bindPhoneWithCloudID(cloudID as string);
       this.setData({ showPhoneBind: false });
       Toast.success('绑定成功');
-      // 绑定成功后自动重新提交预约
-      setTimeout(() => this.onSubmit(), 800);
+      // 绑定成功后自动重新提交预约；延迟窗口内锁住提交入口防手点+定时器双触发
+      this.setData({ autoResubmitPending: true });
+      setTimeout(() => {
+        this.setData({ autoResubmitPending: false });
+        this.onSubmit();
+      }, 800);
     } catch (err: any) {
       Toast.fail(err.message || '绑定失败，请重试');
     } finally {

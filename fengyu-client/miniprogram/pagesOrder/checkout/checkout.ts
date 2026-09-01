@@ -64,6 +64,8 @@ Page({
     // 手机号绑定弹窗
     showPhoneBind: false,
     phoneBinding: false,
+    // 绑定成功后延迟自动重提期间锁定提交入口，防止手点+定时器双触发重复下单
+    autoResubmitPending: false,
     // 美容师选择
     staffList: [] as Staff[],
     showStaffPopup: false,
@@ -647,7 +649,7 @@ Page({
       Toast.fail('请先同意消费协议');
       return;
     }
-    if (this.data.submitting) return;
+    if (this.data.submitting || this.data.autoResubmitPending) return;
 
     // 自助下单须先绑定门店（扫码收款已有门店，跳过）；云函数也会兜底，前端先拦免一次往返
     if (!this.data.existingOrderNo && !app.globalData.boundStoreId) {
@@ -829,8 +831,12 @@ Page({
       this.setData({ showPhoneBind: false });
 
       Toast.success('绑定成功');
-      // 绑定成功后自动重新提交订单
-      setTimeout(() => this.onSubmitOrder(), 800);
+      // 绑定成功后自动重新提交订单；延迟窗口内锁住提交入口防手点+定时器双触发
+      this.setData({ autoResubmitPending: true });
+      setTimeout(() => {
+        this.setData({ autoResubmitPending: false });
+        this.onSubmitOrder();
+      }, 800);
     } catch (err: any) {
       Toast.fail(err.message || '绑定失败，请重试');
     } finally {
