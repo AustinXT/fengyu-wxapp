@@ -1134,6 +1134,13 @@ function skuRow(row: {
   }
 }
 
+/**
+ * 品项公司发货单业务响应不携带金额（说明.md §5.3/§10.4）：明细价格快照本就为空，
+ * 但赠送行金额被 DB 触发器按赠品规则置 0，会让单头 total_amount 汇总出 0.00 的假金额。
+ * DB 保留该快照供审计追溯，响应层对此单据类型统一遮蔽。
+ */
+const AMOUNTLESS_DOC_TYPES = new Set<InventoryDocType>(['品项公司发货'])
+
 function docRow(row: {
   doc: typeof inventoryDocs.$inferSelect
   sourceOrgNodeName: string | null
@@ -1143,6 +1150,7 @@ function docRow(row: {
   includePrice: boolean
 }): InventoryDocRow {
   const doc = row.doc
+  const includeAmount = row.includePrice && !AMOUNTLESS_DOC_TYPES.has(doc.docType as InventoryDocType)
   return {
     id: doc.id,
     docType: doc.docType as InventoryDocType,
@@ -1165,7 +1173,7 @@ function docRow(row: {
     trackingNo: doc.trackingNo,
     receiptAttachmentUrl: doc.receiptAttachmentUrl,
     totalQuantity: Number(doc.totalQuantity),
-    totalAmount: row.includePrice ? numberOrNull(doc.totalAmount) : undefined,
+    totalAmount: includeAmount ? numberOrNull(doc.totalAmount) : undefined,
     remark: doc.remark,
     auditRemark: doc.auditRemark,
     createdBy: doc.createdBy,
@@ -2379,9 +2387,12 @@ async function loadShipmentReceiptProgress(
   const rows = await db.execute(sql`
     WITH visible_docs AS (${visibleInventoryDocsSql(scoped)}),
     shipment_items AS (
+      -- visible_docs 只暴露 id；status 必须回表 inventory_docs 取
+      -- （曾直接 JOIN visible_docs 取 status 导致发货/配货单详情 42703 全量报错）。
       SELECT item.id AS item_id, item.quantity, shipment_doc.status AS shipment_status
         FROM inventory_doc_items item
-        JOIN visible_docs shipment_doc ON shipment_doc.id = item.doc_id
+        JOIN inventory_docs shipment_doc ON shipment_doc.id = item.doc_id
+        JOIN visible_docs visible_shipment ON visible_shipment.id = shipment_doc.id
        WHERE item.doc_id = ${docId}
     ),
     receipt_totals AS (
@@ -2473,6 +2484,8 @@ export const getInventoryCoreDocById = withPermission(
       .limit(1)
     if (!headRow) return null
     const head = docRow({ ...headRow, includePrice: priceVisibility !== 'none' })
+    // 无金额单据类型（§5.3/§10.4）连明细金额也不返回：赠送行的触发器 0 值不进业务响应。
+    const includeItemAmount = priceVisibility !== 'none' && !AMOUNTLESS_DOC_TYPES.has(head.docType)
     const [items, lineage, fulfillmentProgress] = await Promise.all([
       db
         .select()
@@ -2504,7 +2517,7 @@ export const getInventoryCoreDocById = withPermission(
         standardUnitPrice: priceVisibility !== 'none' ? numberOrNull(item.standardUnitPrice) : undefined,
         unitDiscount: priceVisibility !== 'none' ? numberOrNull(item.unitDiscount) : undefined,
         actualUnitPrice: priceVisibility !== 'none' ? numberOrNull(item.actualUnitPrice) : undefined,
-        amount: priceVisibility !== 'none' ? numberOrNull(item.amount) : undefined,
+        amount: includeItemAmount ? numberOrNull(item.amount) : undefined,
         supplyChainUnitCost: priceVisibility === 'all' || priceVisibility === 'supply_chain' ? numberOrNull(item.supplyChainUnitCost) : undefined,
         marketActualUnitPrice: priceVisibility !== 'none' ? numberOrNull(item.marketActualUnitPrice) : undefined,
         storeActualUnitPrice: priceVisibility === 'all' || priceVisibility === 'market' ? numberOrNull(item.storeActualUnitPrice) : undefined,
