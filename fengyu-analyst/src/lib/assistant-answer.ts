@@ -61,6 +61,20 @@ import {
 
 type AssistantMetricIntent = "repurchase" | "penetration" | "newCustomerFunnel"
 
+export type AssistantQuestionKind = "business" | "time" | "clarification" | "unsupported"
+
+export interface ShanghaiCurrentTime {
+  timeZone: "Asia/Shanghai"
+  utcOffset: "+08:00"
+  date: string
+  time: string
+  dateTime: string
+  year: number
+  month: number
+  day: number
+  weekday: string
+}
+
 export interface AssistantDataContext {
   question: string
   toolResult: string
@@ -109,6 +123,39 @@ const newCustomerFiltersSchema = z.object({
 const newCustomerListTypeSchema = z.enum(["all", "arrived", "not_arrived", "member"]).nullable().optional()
 
 type NewCustomerFilterInput = z.infer<typeof newCustomerFiltersSchema>
+
+export function getShanghaiCurrentTime(now: Date = new Date()): ShanghaiCurrentTime {
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    weekday: "long",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now)
+  const readPart = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((part) => part.type === type)?.value ?? ""
+  const year = Number(readPart("year"))
+  const month = Number(readPart("month"))
+  const day = Number(readPart("day"))
+  const date = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`
+  const time = `${readPart("hour")}:${readPart("minute")}:${readPart("second")}`
+
+  return {
+    timeZone: "Asia/Shanghai",
+    utcOffset: "+08:00",
+    date,
+    time,
+    dateTime: `${date} ${time}`,
+    year,
+    month,
+    day,
+    weekday: readPart("weekday"),
+  }
+}
 
 function compactDate(value: string | null | undefined): string | undefined {
   const text = value?.trim()
@@ -214,7 +261,7 @@ async function resolvePenetrationAssistantFilters(
   }
 }
 
-export function createRepurchaseTools(session: AuthSession, question = "") {
+export function createRepurchaseTools(session: AuthSession, question = "", now: Date = new Date()) {
   return {
     queryRepurchaseRate: tool({
       description: "查询复购率 KPI，包括进入人数、复购人数、复购率和上一年对比。",
@@ -412,16 +459,21 @@ export function createRepurchaseTools(session: AuthSession, question = "") {
       }),
       execute: async (input) => getNewCustomerFunnelFilterOptions(session, await scopeFromToolInput(session, input)),
     }),
+    getCurrentDateTime: tool({
+      description: "获取当前上海时间，包括年月日、时分秒、星期和当前年份。回答现在几点、今天几号、星期几、今年是哪年时使用。",
+      inputSchema: z.object({}),
+      execute: async () => getShanghaiCurrentTime(now),
+    }),
     resolveTimeExpression: tool({
       description: "把最近半年、上个月、去年下半年、2025年至2026年等自然语言时间转成明确年份、月份和日期区间。",
       inputSchema: z.object({ expression: z.string().min(1) }),
-      execute: async ({ expression }) => resolveTimeExpression(expression),
+      execute: async ({ expression }) => resolveTimeExpression(expression, now),
     }),
   }
 }
 
-export function createAssistantSystemPrompt(): string {
-  const resolved = resolveTimeExpression("今天")
+export function createAssistantSystemPrompt(now: Date = new Date()): string {
+  const resolved = resolveTimeExpression("今天", now)
   return `你是凤御经营分析智能助手，只回答和复购率、普及率、新客漏斗、品项、市场、门店经营分析有关的问题。
 
 当前日期：${resolved.currentDate}。
@@ -452,7 +504,7 @@ export function createAssistantSystemPrompt(): string {
 - 数据为空时说明当前筛选无数据，并建议调整筛选。`
 }
 
-export function resolveTimeExpression(expression: string): {
+export function resolveTimeExpression(expression: string, now: Date = new Date()): {
   currentDate: string
   expression: string
   year: number | null
@@ -463,17 +515,10 @@ export function resolveTimeExpression(expression: string): {
   endDate: string | null
   description: string
 } {
-  const now = new Date()
-  const parts = new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(now)
-  const currentYear = Number(parts.find((part) => part.type === "year")?.value ?? now.getFullYear())
-  const currentMonth = Number(parts.find((part) => part.type === "month")?.value ?? now.getMonth() + 1)
-  const currentDay = Number(parts.find((part) => part.type === "day")?.value ?? now.getDate())
-  const currentDate = `${currentYear}-${String(currentMonth).padStart(2, "0")}-${String(currentDay).padStart(2, "0")}`
+  const current = getShanghaiCurrentTime(now)
+  const currentYear = current.year
+  const currentMonth = current.month
+  const currentDate = current.date
 
   function monthStr(year: number, month: number): string {
     return `${year}-${String(month).padStart(2, "0")}`
@@ -642,16 +687,16 @@ function formatSignedRate(value: number | null): string {
   return `${sign}${(value * 100).toFixed(1)}pct`
 }
 
-function inferYear(question: string): number | undefined {
+function inferYear(question: string, now: Date): number | undefined {
   const explicit = question.match(/20\d{2}/)?.[0]
   if (explicit) return Number(explicit)
-  const currentYear = resolveTimeExpression("今天").year ?? new Date().getFullYear()
+  const currentYear = getShanghaiCurrentTime(now).year
   if (question.includes("今年")) return currentYear
   if (question.includes("去年")) return currentYear - 1
   return undefined
 }
 
-function inferTimeFilters(question: string): Pick<RepurchaseFilters, "year" | "startDate" | "endDate"> {
+function inferTimeFilters(question: string, now: Date): Pick<RepurchaseFilters, "year" | "startDate" | "endDate"> {
   const years = Array.from(question.matchAll(/20\d{2}/g), (match) => Number(match[0]))
   if (years.length >= 2) {
     const startYear = Math.min(years[0], years[1])
@@ -660,7 +705,7 @@ function inferTimeFilters(question: string): Pick<RepurchaseFilters, "year" | "s
   }
   const needsDateRange = /(最近|近|过去|上个月|上月|上半年|下半年|至今|到现在|到当前|截至当前)/.test(question)
   if (needsDateRange) {
-    const resolved = resolveTimeExpression(question)
+    const resolved = resolveTimeExpression(question, now)
     return {
       year: resolved.startDate || resolved.endDate ? undefined : resolved.year ?? undefined,
       startDate: resolved.startDate ?? undefined,
@@ -670,7 +715,7 @@ function inferTimeFilters(question: string): Pick<RepurchaseFilters, "year" | "s
   if (years.length === 1) {
     return { year: years[0] }
   }
-  return { year: inferYear(question) }
+  return { year: inferYear(question, now) }
 }
 
 function findMention(question: string, options: string[]): string | undefined {
@@ -736,6 +781,7 @@ export function detectAssistantMetricIntents(question: string): AssistantMetricI
   const text = question.trim()
   const allMetricsPattern = /(三个指标|三项指标|三大指标|全部指标|所有指标|整体经营|经营全貌|综合经营)/
   const openEndedCrossPattern = /(交叉|联动|一起看|综合看|综合分析)/
+  const businessContextPattern = /(经营|指标|复购|回购|普及|持卡|新客|漏斗|品项|市场|门店|顾客|会员|到店|成交)/
 
   if (allMetricsPattern.test(text)) return ["repurchase", "penetration", "newCustomerFunnel"]
 
@@ -744,11 +790,34 @@ export function detectAssistantMetricIntents(question: string): AssistantMetricI
   if (isPenetrationQuestion(text)) intents.push("penetration")
   if (isNewCustomerFunnelQuestion(text)) intents.push("newCustomerFunnel")
 
-  if (intents.length === 0 && openEndedCrossPattern.test(text)) {
+  if (intents.length === 0 && openEndedCrossPattern.test(text) && businessContextPattern.test(text)) {
     return ["repurchase", "penetration", "newCustomerFunnel"]
   }
 
   return intents
+}
+
+function isDirectTimeQuestion(question: string): boolean {
+  const text = question.replace(/\s+/g, "").trim()
+  return [
+    /今年是(?:哪一|哪|几|多少|什么)?年/,
+    /(当前|现在).{0,3}(几点|时刻|时间)[了啊呢呀吗吧]?[?？]?$/,
+    /今天.*(几号|日期|星期|周几|礼拜)/,
+    /(当前|现在|今天).*(几月几日|哪一天)/,
+    /(北京时间|上海时间).{0,2}(多少|几点)(点|了)?[?？]?$/,
+  ].some((pattern) => pattern.test(text))
+}
+
+function hasBusinessDomainHint(question: string): boolean {
+  return /(经营|数据|指标|复购|回购|普及|持卡|新客|漏斗|品项|项目|商品|市场|门店|顾客|会员|到店|成交|排名|趋势|走势|月度|每月|科颜美|安吉丽|功能养生)/.test(question)
+}
+
+export function classifyAssistantQuestion(question: string): AssistantQuestionKind {
+  if (detectAssistantMetricIntents(question).length > 0) return "business"
+  if (isDirectTimeQuestion(question)) return "time"
+  // 有业务领域词但未命中明确指标时走 business 复购兜底（与旧版一致，保住排名/名单/趋势类问题），不再前置反问
+  if (hasBusinessDomainHint(question)) return "business"
+  return "unsupported"
 }
 
 function renderRows(rows: RepurchaseRankingRow[], label: string, limit = 10): string {
@@ -1018,7 +1087,7 @@ function newCustomerListTitle(listType: NewCustomerFunnelListType): string {
   return "新客名单"
 }
 
-function inferNewCustomerTimeFilters(question: string): Pick<NewCustomerFunnelFilters, "startMonth" | "endMonth"> {
+function inferNewCustomerTimeFilters(question: string, now: Date): Pick<NewCustomerFunnelFilters, "startMonth" | "endMonth"> {
   const explicitMonths = Array.from(
     question.matchAll(/(20\d{2})[-年](0?[1-9]|1[0-2])月?/g),
     (match) => `${match[1]}-${String(Number(match[2])).padStart(2, "0")}`,
@@ -1028,7 +1097,7 @@ function inferNewCustomerTimeFilters(question: string): Pick<NewCustomerFunnelFi
     return { startMonth: sorted[0], endMonth: sorted[sorted.length - 1] }
   }
   if (explicitMonths.length === 1) return { startMonth: explicitMonths[0], endMonth: explicitMonths[0] }
-  const resolved = resolveTimeExpression(question)
+  const resolved = resolveTimeExpression(question, now)
   return {
     startMonth: resolved.startMonth ?? undefined,
     endMonth: resolved.endMonth,
@@ -1218,12 +1287,13 @@ async function resolveCombinedMetricContext(
   session: AuthSession,
   question: string,
   intents: AssistantMetricIntent[],
+  now: Date,
 ): Promise<CombinedMetricContext> {
   const scopeOptions = await getAnalystScopeOptions(session)
   const scope = scopeFromQuestion(scopeOptions, question)
   const scopeLabel = scopeText(scope, scopeOptions)
   const repurchasePeriod = hasMetricIntent(intents, "repurchase")
-    ? formatPeriodText(inferTimeFilters(question))
+    ? formatPeriodText(inferTimeFilters(question, now))
     : undefined
 
   const [repurchaseFilters, penetrationFilters, newCustomerOptions] = await Promise.all([
@@ -1240,7 +1310,7 @@ async function resolveCombinedMetricContext(
 
   const newCustomerFilters = newCustomerOptions
     ? ({
-        ...inferNewCustomerTimeFilters(question),
+        ...inferNewCustomerTimeFilters(question, now),
         unitLevel: unitLevelFromQuestion(question),
         tableMode: wantsUnitMetricComparison(question) ? "units" : "months",
         source: findMention(question, newCustomerOptions.sources),
@@ -1593,8 +1663,9 @@ async function answerCombinedMetricQuestion(
   session: AuthSession,
   question: string,
   intents: AssistantMetricIntent[],
+  now: Date,
 ): Promise<AssistantChatResponse> {
-  const context = await resolveCombinedMetricContext(session, question, intents)
+  const context = await resolveCombinedMetricContext(session, question, intents, now)
 
   if (wantsCombinedCustomerList(question, intents)) {
     return answerCombinedCustomerListQuestion(session, question, context)
@@ -1659,11 +1730,15 @@ ${combinedMetricNote(context)}`,
   }
 }
 
-async function answerNewCustomerFunnelQuestion(session: AuthSession, question: string): Promise<AssistantChatResponse> {
+async function answerNewCustomerFunnelQuestion(
+  session: AuthSession,
+  question: string,
+  now: Date,
+): Promise<AssistantChatResponse> {
   const scopeOptions = await getAnalystScopeOptions(session)
   const scope = scopeFromQuestion(scopeOptions, question)
   const options = await getNewCustomerFunnelFilterOptions(session, scope)
-  const timeFilters = inferNewCustomerTimeFilters(question)
+  const timeFilters = inferNewCustomerTimeFilters(question, now)
   const filters: NewCustomerFunnelFilters = {
     ...timeFilters,
     unitLevel: question.includes("门店") ? "store" : "market",
@@ -1829,17 +1904,45 @@ async function answerPenetrationQuestion(session: AuthSession, question: string)
   }
 }
 
+function answerCurrentTime(now: Date): AssistantChatResponse {
+  const current = getShanghaiCurrentTime(now)
+  return {
+    content: `当前上海时间是 ${current.date} ${current.time}（${current.weekday}），今年是 ${current.year} 年。`,
+    visualizations: [],
+  }
+}
+
+function answerClarification(): AssistantChatResponse {
+  return {
+    content: "这个问题没有明确要分析的指标，我不能据此推断。请明确要看复购率、普及率还是新客漏斗。",
+    visualizations: [],
+  }
+}
+
+function answerUnsupportedQuestion(): AssistantChatResponse {
+  return {
+    content: "这个问题超出当前经营分析助手的能力范围，我无法给出可靠答案。当前仅支持上海时间、复购率、普及率和新客漏斗。",
+    visualizations: [],
+  }
+}
+
 export async function answerQuestionWithVisualizations(
   session: AuthSession,
   question: string,
+  now: Date = new Date(),
 ): Promise<AssistantChatResponse> {
+  const questionKind = classifyAssistantQuestion(question)
+  if (questionKind === "time") return answerCurrentTime(now)
+  if (questionKind === "clarification") return answerClarification()
+  if (questionKind === "unsupported") return answerUnsupportedQuestion()
+
   const intents = detectAssistantMetricIntents(question)
   if (intents.length >= 2) {
-    return answerCombinedMetricQuestion(session, question, intents)
+    return answerCombinedMetricQuestion(session, question, intents, now)
   }
 
   if (isNewCustomerFunnelQuestion(question)) {
-    return answerNewCustomerFunnelQuestion(session, question)
+    return answerNewCustomerFunnelQuestion(session, question, now)
   }
 
   if (isPenetrationQuestion(question)) {
@@ -1848,7 +1951,7 @@ export async function answerQuestionWithVisualizations(
 
   const scopeOptions = await getAnalystScopeOptions(session)
   const scope = scopeFromQuestion(scopeOptions, question)
-  const timeFilters = inferTimeFilters(question)
+  const timeFilters = inferTimeFilters(question, now)
   const filters: RepurchaseFilters = {
     ...timeFilters,
     ...(await resolveRepurchaseAssistantFilters(session, scope, {}, question)),

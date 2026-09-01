@@ -137,6 +137,8 @@
           class="phone-bind-btn"
           open-type="getPhoneNumber"
           bindgetphonenumber="onGetPhoneNumber"
+          disabled="{{phoneBinding}}"
+          loading="{{phoneBinding}}"
         >授权手机号</button>
       </view>
     </view>

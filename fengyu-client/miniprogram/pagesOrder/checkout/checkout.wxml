@@ -197,6 +197,8 @@ module.exports.date = function(s) {
       class="phone-bind-btn"
       open-type="getPhoneNumber"
       bindgetphonenumber="onGetPhoneNumber"
+      disabled="{{phoneBinding}}"
+      loading="{{phoneBinding}}"
     >绑定手机号并下单</button>
   </view>
 

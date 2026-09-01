@@ -70,8 +70,11 @@ vi.mock("@/lib/new-customer-funnel", () => ({
 const {
   answerQuestionWithVisualizations,
   buildAssistantDataContext,
+  classifyAssistantQuestion,
   detectAssistantMetricIntents,
+  getShanghaiCurrentTime,
   normalizeAssistantResponseForDisplay,
+  resolveTimeExpression,
 } = await import("../assistant-answer")
 
 const session: AuthSession = {
@@ -320,6 +323,121 @@ const assistantEvaluationCases = [
 ]
 
 describe("assistant answer 20-question evaluation", () => {
+  it("uses a complete Shanghai clock across the UTC date boundary", () => {
+    const now = new Date("2026-08-31T16:05:06.000Z")
+
+    expect(getShanghaiCurrentTime(now)).toEqual({
+      timeZone: "Asia/Shanghai",
+      utcOffset: "+08:00",
+      date: "2026-09-01",
+      time: "00:05:06",
+      dateTime: "2026-09-01 00:05:06",
+      year: 2026,
+      month: 9,
+      day: 1,
+      weekday: "星期二",
+    })
+    expect(resolveTimeExpression("今年", now)).toMatchObject({
+      currentDate: "2026-09-01",
+      year: 2026,
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+    })
+  })
+
+  it.each(["今年是哪年", "现在几点", "今天星期几"])("answers time question without querying business data: %s", async (question) => {
+    const response = await answerQuestionWithVisualizations(
+      session,
+      question,
+      new Date("2026-08-31T16:05:06.000Z"),
+    )
+
+    expect(classifyAssistantQuestion(question)).toBe("time")
+    expect(response.content).toBe("当前上海时间是 2026-09-01 00:05:06（星期二），今年是 2026 年。")
+    expect(response.visualizations).toEqual([])
+    expect(mocks.getAnalystScopeOptions).not.toHaveBeenCalled()
+    expect(mocks.getRepurchaseKpi).not.toHaveBeenCalled()
+    expect(mocks.getPenetrationKpi).not.toHaveBeenCalled()
+    expect(mocks.getNewCustomerFunnelKpi).not.toHaveBeenCalled()
+  })
+
+  it("falls back to repurchase KPI for vague business questions, keeping legacy answerability", async () => {
+    const response = await answerQuestionWithVisualizations(session, "科颜美怎么样？")
+
+    expect(classifyAssistantQuestion("科颜美怎么样？")).toBe("business")
+    expect(response.content).toContain("复购率分析")
+    expect(response.content).toContain("科颜美")
+    expect(response.visualizations.length).toBeGreaterThan(0)
+    expect(mocks.getRepurchaseKpi).toHaveBeenCalled()
+  })
+
+  it.each([
+    "现在哪个门店年卡卖得最好",
+    "当前门店客流时间分布",
+    "现在还有多少个会员是2025年办的卡",
+  ])("keeps time-flavored business questions out of the time bucket: %s", async (question) => {
+    const response = await answerQuestionWithVisualizations(session, question)
+
+    expect(classifyAssistantQuestion(question)).toBe("business")
+    expect(response.content).not.toContain("当前上海时间")
+  })
+
+  it("does not treat 'Shanghai time caliber' phrasing as a time question", () => {
+    expect(classifyAssistantQuestion("按上海时间口径统计的数据准吗")).not.toBe("time")
+    expect(classifyAssistantQuestion("按上海时间口径统计的数据准吗")).toBe("business")
+  })
+
+  it.each([
+    "现在几点",
+    "现在几点了",
+    "现在几点了？",
+    "北京时间几点",
+  ])("still answers direct clock questions: %s", (question) => {
+    expect(classifyAssistantQuestion(question)).toBe("time")
+  })
+
+  it("answers store-comparison questions via ranking instead of asking for clarification", async () => {
+    const response = await answerQuestionWithVisualizations(session, "各门店对比一下怎么样")
+
+    expect(classifyAssistantQuestion("各门店对比一下怎么样")).toBe("business")
+    expect(response.content).toContain("门店复购率排名")
+    expect(response.visualizations.length).toBeGreaterThan(0)
+    expect(mocks.getStoreRanking).toHaveBeenCalled()
+  })
+
+  it("answers customer-list questions instead of asking for clarification", async () => {
+    const response = await answerQuestionWithVisualizations(session, "顾客名单有哪些")
+
+    expect(classifyAssistantQuestion("顾客名单有哪些")).toBe("business")
+    expect(response.content).toContain("顾客名单")
+    expect(response.visualizations.some((visualization) => visualization.kind === "table")).toBe(true)
+    expect(mocks.getRepurchaseCustomerList).toHaveBeenCalledWith(
+      session,
+      expect.anything(),
+      expect.anything(),
+      "all",
+      30,
+    )
+  })
+
+  it("routes monthly-trend synonyms to the repurchase trend answer", async () => {
+    const response = await answerQuestionWithVisualizations(session, "看下今年的月度走势")
+
+    expect(classifyAssistantQuestion("看下今年的月度走势")).toBe("business")
+    expect(response.content).toContain("复购率趋势")
+    expect(mocks.getRepurchaseTrend).toHaveBeenCalled()
+    expect(response.visualizations.length).toBeGreaterThan(0)
+  })
+
+  it.each(["明天天气怎么样？", "量子纠缠综合分析"])("states when a question is unsupported: %s", async (question) => {
+    const response = await answerQuestionWithVisualizations(session, question)
+
+    expect(classifyAssistantQuestion(question)).toBe("unsupported")
+    expect(response.content).toBe("这个问题超出当前经营分析助手的能力范围，我无法给出可靠答案。当前仅支持上海时间、复购率、普及率和新客漏斗。")
+    expect(response.visualizations).toEqual([])
+    expect(mocks.getAnalystScopeOptions).not.toHaveBeenCalled()
+  })
+
   it("classifies multi-metric cross questions before single-metric routes", () => {
     expect(detectAssistantMetricIntents("今年复购率和普及率一起看")).toEqual(["repurchase", "penetration"])
     expect(detectAssistantMetricIntents("三个指标按市场综合看")).toEqual([

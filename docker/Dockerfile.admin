@@ -74,7 +74,7 @@ RUN find .next/standalone .next/static -name '*.map' -type f -delete 2>/dev/null
 
 # 构建 cron-worker bundle 单文件（Next.js standalone 不含 src/cron/）
 # postgres-js 默认尝试 require pg-native（alpine 无该原生模块），用 --external 跳过。
-# cron 会复用带 server-only 标记的拉卡拉 / 上传模块；保留 server-only 为外部依赖，
+# cron 会复用带 server-only 标记的上传模块；保留 server-only 为外部依赖，
 # 由 Node 的 react-server 条件加载空模块，避免把默认抛错分支内联进 bundle。
 # 用 .mjs 后缀让 node 18 按 ESM 解析（drizzle / postgres-js 都是 ESM-only）
 RUN bun build src/cron/index.ts \

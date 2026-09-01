@@ -143,6 +143,8 @@ const LAKALA_KEYS = [
   'LAKALA_CLIENT_MODE',
   'LAKALA_API_BASE',
   'LAKALA_TEST_BASE_URL',
+  // admin 退款下单 (lakala-client.ts refund) 会把 notify_url 送给拉卡拉；漏传则回调地址为空。
+  'LAKALA_NOTIFY_URL',
   'LAKALA_APPID',
   'LAKALA_SERIAL_NO',
   'LAKALA_CALLBACK_IP_WHITELIST',
@@ -445,7 +447,6 @@ export function buildServiceEnvs(config) {
       TZ: 'Asia/Shanghai',
       DATABASE_URL: config.ADMIN_DATABASE_URL,
       ...pick(config, CRON_PASSTHROUGH),
-      ...lakala,
     },
     'export-worker': {
       NODE_ENV: 'production',

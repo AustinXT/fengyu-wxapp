@@ -99,27 +99,35 @@ App<IAppOption>({
   },
 
   async syncLoginState(force = false) {
-    if (this.isLoggedOut() && !force) return;
+    if (this.isLoggedOut() && !force) return 'skipped' as const;
 
     try {
       const data = await callClientApi<{
-        userId: string; phone: string; name: string; avatarUrl: string;
-        memberLevel: string; customerType?: string; isMember?: boolean;
-        boundStoreId: string; boundStoreName: string; boundMarketName: string;
+        userId: string | null; phone: string | null; name: string | null; avatarUrl: string | null;
+        memberLevel: string | null; customerType?: string | null; isMember?: boolean;
+        boundStoreId: string | null; boundStoreName: string | null; boundMarketName: string | null;
       }>('auth.login', {});
       wx.removeStorageSync(LOGGED_OUT_KEY);
+      this.globalData.userId = data.userId || '';
       if (data.userId) {
-        this.globalData.userId = data.userId;
         wx.setStorageSync('userId', data.userId);
+      } else {
+        wx.removeStorageSync('userId');
       }
       if (data.phone) {
         wx.setStorageSync('phone', data.phone);
+      } else {
+        wx.removeStorageSync('phone');
       }
       if (data.name) {
         wx.setStorageSync('userName', data.name);
+      } else {
+        wx.removeStorageSync('userName');
       }
       if (data.avatarUrl) {
         wx.setStorageSync('avatarUrl', data.avatarUrl);
+      } else {
+        wx.removeStorageSync('avatarUrl');
       }
       // 会员价分流缓存：统一经 setMemberFlag 写入（与后端 member-pricing isMember 同口径），
       // memberLevel/customerType 一并刷新（降级/退会时写空，清掉旧值）。任何拿到最新会员资料处复用本 helper。
@@ -131,8 +139,10 @@ App<IAppOption>({
       wx.setStorageSync('boundStoreName', data.boundStoreName || '');
       this.globalData.boundMarketName = data.boundMarketName || '';
       wx.setStorageSync('boundMarketName', data.boundMarketName || '');
+      return data.userId && data.phone ? 'authenticated' as const : 'phone_required' as const;
     } catch (err) {
       console.error('[syncLoginState] failed:', err);
+      return 'failed' as const;
     }
   },
 

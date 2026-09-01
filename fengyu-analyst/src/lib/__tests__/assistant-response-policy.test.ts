@@ -14,7 +14,7 @@ describe("assistant response policy", () => {
     expect(shouldGenerateAiAssistantContent({ visualizations: [] }, null)).toBe(false)
   })
 
-  it("uses AI wording even when deterministic visualizations are available", () => {
+  it("keeps deterministic wording even when visualizations and AI are available", () => {
     expect(
       shouldGenerateAiAssistantContent(
         {
@@ -33,10 +33,10 @@ describe("assistant response policy", () => {
         },
         aiConfig,
       ),
-    ).toBe(true)
+    ).toBe(false)
   })
 
-  it("allows AI wording whenever AI is configured", () => {
-    expect(shouldGenerateAiAssistantContent({ visualizations: [] }, aiConfig)).toBe(true)
+  it("does not allow AI to replace a deterministic text-only answer", () => {
+    expect(shouldGenerateAiAssistantContent({ visualizations: [] }, aiConfig)).toBe(false)
   })
 })

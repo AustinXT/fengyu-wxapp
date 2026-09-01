@@ -1414,7 +1414,7 @@ describe('customer.searchPromoterEmployees', () => {
   test.each([
     ['姓名', ' 王芳 ', '%王芳%'],
     ['手机号', '13', '%13%'],
-  ])('店长可按%s模糊搜索顾客当前门店在职员工', async (_searchType, keyword, expectedPattern) => {
+  ])('店长可按%s模糊搜索全部在职员工（本店优先）', async (_searchType, keyword, expectedPattern) => {
     const ctx = createManagerCtx({ clientUserId: 'u1', keyword })
     pg.query
       .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
@@ -1426,10 +1426,24 @@ describe('customer.searchPromoterEmployees', () => {
       employeeId: 'EMP-1', name: '王芳', phoneMasked: '138****5678', storeName: '测试店',
     }])
     const [sql, params] = pg.query.mock.calls[1]
-    expect(sql).toContain('u.store_id = $1')
+    expect(sql).not.toContain('AND u.store_id = $1')
+    expect(sql).toContain('(u.store_id = $1) DESC')
     expect(sql).toContain('u.is_resigned = false')
     expect(sql).toContain('u.name ILIKE $2 OR u.phone ILIKE $2')
     expect(params).toEqual(['store-001', expectedPattern])
+  })
+
+  test('跨店员工也在候选中并携带门店名', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1', keyword: '王芳' })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([{ employee_id: 'EMP-9', name: '王芳', phone: '13900000000', store_name: '其他门店' }])
+
+    await customerRoutes.searchPromoterEmployees(ctx)
+
+    expect(ctx.result).toEqual([{
+      employeeId: 'EMP-9', name: '王芳', phoneMasked: '139****0000', storeName: '其他门店',
+    }])
   })
 
   test('去除首尾空格后少于2个字符或普通员工调用时拒绝', async () => {
@@ -1489,13 +1503,21 @@ describe('customer.updateProfile', () => {
     expect(JSON.parse(auditCall[1][8]).changes.customerSource).toEqual({ from: '美团', to: '抖音' })
   })
 
-  test('推荐员工必须是当前门店在职员工，并由服务端回填姓名', async () => {
+  test('推荐员工可为跨店在职员工，并由服务端回填姓名', async () => {
     const ctx = createManagerCtx({
       clientUserId: 'u1',
       expectedUpdatedAt: '2026-08-26T02:00:00.000Z',
       changes: { promoterEmployeeId: 'EMP-1' },
     })
     const clientQuery = mockProfileTransaction()
+    // mock 返回跨店员工，验证保存不再被本店校验拦截
+    const originalQuery = clientQuery.getMockImplementation()
+    clientQuery.mockImplementation(async (sql) => {
+      if (sql.includes('FROM staff_wechat_users')) {
+        return { rows: [{ employee_id: 'EMP-1', name: '王员工', store_id: 'store-999' }], rowCount: 1 }
+      }
+      return originalQuery(sql)
+    })
 
     await customerRoutes.updateProfile(ctx)
 

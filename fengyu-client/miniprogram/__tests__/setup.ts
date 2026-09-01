@@ -18,6 +18,9 @@ const wx = {
   clearStorageSync() {
     storage.clear()
   },
+  // bindPhoneWithCloudID 等工具用到 loading UI，测试环境静默
+  showLoading(_options?: { title?: string; mask?: boolean }) {},
+  hideLoading() {},
   // 用于测试间清理
   __resetStorage() {
     storage.clear()

@@ -3,7 +3,7 @@
  * 覆盖：sanitizeErrorMessage（技术性错误过滤）、callClientApi（网络错误防护）
  */
 
-import { sanitizeErrorMessage, callClientApi } from '../../utils/cloud'
+import { sanitizeErrorMessage, callClientApi, bindPhoneWithCloudID } from '../../utils/cloud'
 
 describe('sanitizeErrorMessage', () => {
   test('空字符串 → 默认 fallback', () => {
@@ -202,6 +202,83 @@ describe('callClientApi 网络错误防护', () => {
         payload: expect.objectContaining({ _appVersion: expect.any(String) }),
       },
     })
+  })
+
+  test('退出态允许 auth.login 通过 OPENID 恢复已有账户', async () => {
+    ;(globalThis as any).wx.setStorageSync('clientLoggedOut', true)
+    ;(globalThis as any).wx.cloud.callFunction.mockResolvedValue({
+      result: {
+        code: 0,
+        message: 'success',
+        data: { userId: 'FYGK-20260901-00001', phone: '13800000000' },
+      },
+    })
+
+    const data = await callClientApi<{ userId: string; phone: string }>('auth.login', {})
+
+    expect(data.phone).toBe('13800000000')
+    expect((globalThis as any).wx.cloud.callFunction).toHaveBeenCalledWith({
+      name: 'clientApi',
+      data: {
+        action: 'auth.login',
+        payload: expect.objectContaining({ _appVersion: expect.any(String) }),
+      },
+    })
+  })
+
+  test('退出态允许 store.getUnbindRequest，门店详情页并发请求不 fail-fast', async () => {
+    ;(globalThis as any).wx.setStorageSync('clientLoggedOut', true)
+    ;(globalThis as any).wx.cloud.callFunction.mockResolvedValue({
+      result: { code: 0, message: 'success', data: { request: null } },
+    })
+
+    const data = await callClientApi<{ request: unknown }>('store.getUnbindRequest', { storeId: 'store-1' })
+
+    // 服务端对访客返回 {request:null}，本地白名单放行后整页 Promise.all 不再被拦截
+    expect(data.request).toBeNull()
+    expect((globalThis as any).wx.cloud.callFunction).toHaveBeenCalledWith({
+      name: 'clientApi',
+      data: {
+        action: 'store.getUnbindRequest',
+        payload: expect.objectContaining({ storeId: 'store-1' }),
+      },
+    })
+  })
+
+  // ===== bindPhoneWithCloudID single-flight：付费手机号验证防双消耗 =====
+
+  test('并发调用复用同一 in-flight 请求，只发一次云函数调用', async () => {
+    let resolveFirst!: (value: unknown) => void
+    const slowFirst = new Promise((resolve) => { resolveFirst = resolve })
+    const callFn = (globalThis as any).wx.cloud.callFunction
+    callFn.mockImplementationOnce(() => slowFirst)
+
+    const p1 = bindPhoneWithCloudID('CLOUD-1')
+    const p2 = bindPhoneWithCloudID('CLOUD-2') // 第二次调用应直接复用 p1，不消耗第二个 cloudID
+
+    resolveFirst({
+      result: { code: 0, message: 'success', data: { userId: 'u-1', phone: '13800000000', updatedOrdersCount: 0 } },
+    })
+
+    const [r1, r2] = await Promise.all([p1, p2])
+    expect(r1.userId).toBe('u-1')
+    expect(r2.userId).toBe('u-1')
+    expect(callFn).toHaveBeenCalledTimes(1)
+    // 成功后清登出标记并持久化 phone
+    expect((globalThis as any).wx.getStorageSync('clientLoggedOut')).toBe('')
+    expect((globalThis as any).wx.getStorageSync('phone')).toBe('13800000000')
+  })
+
+  test('in-flight 结束后再次调用发起全新请求（锁不粘滞）', async () => {
+    const callFn = (globalThis as any).wx.cloud.callFunction
+    callFn.mockResolvedValue({
+      result: { code: 0, message: 'success', data: { userId: 'u-2', phone: '13900000000', updatedOrdersCount: 0 } },
+    })
+
+    await bindPhoneWithCloudID('CLOUD-A')
+    await bindPhoneWithCloudID('CLOUD-B')
+
+    expect(callFn).toHaveBeenCalledTimes(2)
   })
 
   // ===== errorType 透传：白名单业务错误信任后端文案，跳过 sanitize =====

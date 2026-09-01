@@ -37,7 +37,7 @@ cp .env.example .env.local
 ANALYST_VIEW_ACTION=analyst:view
 ```
 
-问答接口优先使用 Minimax OpenAI-compatible API。把 key 填到 `.env.local`：
+问答接口当前以服务端确定性查询结果为唯一事实来源，不调用模型改写最终答案。以下 Minimax OpenAI-compatible 配置仅作为保留配置，不参与当前回答链路：
 
 ```text
 MINIMAX_API_KEY=你的 Minimax API Key
@@ -45,7 +45,7 @@ MINIMAX_BASE_URL=https://api.minimaxi.com/v1
 MINIMAX_MODEL=MiniMax-M3
 ```
 
-未配置 `MINIMAX_API_KEY` 时会兼容读取旧的 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`；完全未配置 key 时使用本地规则解析兜底，仍可回答常见复购率、趋势和排名问题。
+无论是否配置 `MINIMAX_API_KEY` 或旧的 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`，当前均由本地规则和数据库查询回答复购率、普及率、新客漏斗及上海时间问题；能力范围外的问题会明确拒答。
 
 助手会话历史保存在浏览器本地存储中，单浏览器最多保留 30 个会话。问答接口返回结构化 JSON：
 

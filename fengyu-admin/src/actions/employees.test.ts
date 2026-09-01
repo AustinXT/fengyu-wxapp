@@ -114,7 +114,7 @@ const mockSession = {
   permissions: { actions: ['employee:create', 'employee:update'], scopeStoreIds: [] },
 }
 
-describe('searchEmployees — 推荐员工受权限 scope 约束', () => {
+describe('searchEmployees — 推荐员工检索（全部在职员工，可跨店）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue({

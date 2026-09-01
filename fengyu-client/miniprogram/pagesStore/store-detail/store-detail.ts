@@ -67,6 +67,9 @@ Page({
     promoterEmployeeName: '',
     // 绑手机号弹窗（绑门店前若未授权手机号则弹出）
     showPhoneBind: false,
+    phoneBinding: false,
+    // 绑定成功后延迟自动重提期间锁定确认入口，防止手点+定时器双触发重复绑定
+    autoResubmitPending: false,
     sourceGroups: [
       { label: '线上来源', channels: ['美团', '抖音', '小程序'] },
       { label: '线下来源', channels: ['推广部', '全员地推', '外请团队拓客', '老带新', '转让店', '自进店', '员工或家属'] },
@@ -185,6 +188,7 @@ Page({
       Toast.fail('请选择来源渠道');
       return;
     }
+    if (this.data.autoResubmitPending) return;
     // 分享礼：读取在 App.onLaunch / onShow 中捕获的邀请人 userId
     const inviterUserId = app.globalData.pendingInviter;
     try {
@@ -203,8 +207,16 @@ Page({
       Toast.success('门店已绑定');
       setTimeout(() => wx.navigateBack(), 1200);
     } catch (err: any) {
-      // 未授权手机号 → 弹绑手机号弹窗（保留已选来源渠道/推荐人，绑完后重提交）
+      // 未授权手机号 → 先尝试免费 OPENID 恢复会话，失败才弹绑手机号弹窗（保留已选来源渠道/推荐人，绑完后重提交）
       if (err?.errorType === 'PHONE_REQUIRED') {
+        if (app.isLoggedOut()) {
+          const status = await app.syncLoginState(true);
+          if (status === 'authenticated') {
+            Toast.success('已恢复登录');
+            setTimeout(() => this.onConfirmBind(), 0);
+            return;
+          }
+        }
         this.setData({ showPhoneBind: true });
         return;
       }
@@ -217,6 +229,7 @@ Page({
   },
 
   async onGetPhoneNumber(e: WechatMiniprogram.CustomEvent<{ cloudID?: string; errMsg?: string }>) {
+    if (this.data.phoneBinding) return;
     const { cloudID, errMsg } = e.detail || {};
     if (!cloudID) {
       if (errMsg?.includes('auth deny')) {
@@ -224,6 +237,7 @@ Page({
       }
       return;
     }
+    this.setData({ phoneBinding: true });
     try {
       const inviterUserId = app.globalData.pendingInviter;
       await bindPhoneWithCloudID(cloudID, inviterUserId ? { inviterUserId } : {});
@@ -232,10 +246,16 @@ Page({
         wx.removeStorageSync('pendingInviter');
       }
       this.setData({ showPhoneBind: false });
-      // 绑定手机号成功后自动重提交绑门店
-      setTimeout(() => this.onConfirmBind(), 600);
+      // 绑定手机号成功后自动重提交绑门店；延迟窗口内锁住确认入口防手点+定时器双触发
+      this.setData({ autoResubmitPending: true });
+      setTimeout(() => {
+        this.setData({ autoResubmitPending: false });
+        this.onConfirmBind();
+      }, 600);
     } catch (err: any) {
       Toast.fail(err?.message || '绑定失败，请重试');
+    } finally {
+      this.setData({ phoneBinding: false });
     }
   },
 

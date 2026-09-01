@@ -266,6 +266,8 @@
       class="phone-bind-popup__btn"
       open-type="getPhoneNumber"
       bindgetphonenumber="onGetPhoneNumber"
+      disabled="{{phoneBinding}}"
+      loading="{{phoneBinding}}"
     >授权并继续绑定</button>
   </view>
 </van-popup>
