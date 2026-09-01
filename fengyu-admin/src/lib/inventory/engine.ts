@@ -1182,11 +1182,23 @@ function docRow(row: {
   }
 }
 
+/**
+ * 未完成预留（提货预约等）标量子查询：与 activeReservedQuantity / pickup-records
+ * 的 GREATEST 口径一致，可用量 = 在手数量 − SUM(quantity − fulfilled − released)。
+ */
+const activeReservedQuantitySql = sql<string | number | null>`(
+  SELECT COALESCE(SUM(reservation.quantity - reservation.fulfilled_quantity - reservation.released_quantity), 0)
+    FROM inventory_stock_reservations reservation
+   WHERE reservation.lot_id = ${inventoryStockLots.id}
+     AND reservation.status = '已预留'
+)`
+
 function lotRow(
   row: {
     lot: typeof inventoryStockLots.$inferSelect
     locationName: string | null
     locationType: string | null
+    reservedQuantity?: string | number | null
   },
   priceVisibility: import('./types').InventoryPriceVisibility,
 ): InventoryLotRow {
@@ -1206,6 +1218,7 @@ function lotRow(
     expiryDate: row.lot.expiryDate,
     isGift: row.lot.isGift,
     quantityOnHand: Number(row.lot.quantityOnHand),
+    availableQuantity: Math.max(0, Number((Number(row.lot.quantityOnHand) - Number(row.reservedQuantity ?? 0)).toFixed(2))),
     supplyChainUnitCost: supplyVisible ? numberOrNull(row.lot.supplyChainUnitCost) : undefined,
     marketActualUnitPrice: supplyVisible || marketVisible ? numberOrNull(row.lot.marketActualUnitPrice) : undefined,
     storeActualUnitPrice: marketVisible ? numberOrNull(row.lot.storeActualUnitPrice) : undefined,
@@ -1726,7 +1739,12 @@ export const listInventoryLots = withPermission(
       .leftJoin(inventoryLocations, eq(inventoryStockLots.locationId, inventoryLocations.locationId))
       .where(whereClause)
     const rows = await db
-      .select({ lot: inventoryStockLots, locationName: inventoryLocations.name, locationType: inventoryLocations.locationType })
+      .select({
+        lot: inventoryStockLots,
+        locationName: inventoryLocations.name,
+        locationType: inventoryLocations.locationType,
+        reservedQuantity: activeReservedQuantitySql,
+      })
       .from(inventoryStockLots)
       .leftJoin(inventoryLocations, eq(inventoryStockLots.locationId, inventoryLocations.locationId))
       .where(whereClause)
@@ -1755,6 +1773,7 @@ export const listInventoryLotOptions = withPermission(
         lot: inventoryStockLots,
         locationName: inventoryLocations.name,
         locationType: inventoryLocations.locationType,
+        reservedQuantity: activeReservedQuantitySql,
       })
       .from(inventoryStockLots)
       .leftJoin(inventoryLocations, eq(inventoryStockLots.locationId, inventoryLocations.locationId))
@@ -1804,7 +1823,12 @@ export const exportInventoryLots = withPermission(
     }
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined
     const query = db
-      .select({ lot: inventoryStockLots, locationName: inventoryLocations.name, locationType: inventoryLocations.locationType })
+      .select({
+        lot: inventoryStockLots,
+        locationName: inventoryLocations.name,
+        locationType: inventoryLocations.locationType,
+        reservedQuantity: activeReservedQuantitySql,
+      })
       .from(inventoryStockLots)
       .leftJoin(inventoryLocations, eq(inventoryStockLots.locationId, inventoryLocations.locationId))
       .where(whereClause)

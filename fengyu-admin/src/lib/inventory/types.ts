@@ -282,6 +282,8 @@ export interface InventoryLotRow {
   expiryDate: string | null
   isGift: boolean
   quantityOnHand: number
+  /** 可用量 = 在手数量 − 未完成预留（已预留 − 已履约 − 已释放），下限 0。 */
+  availableQuantity: number
   supplyChainUnitCost?: number | null
   marketActualUnitPrice?: number | null
   storeActualUnitPrice?: number | null
