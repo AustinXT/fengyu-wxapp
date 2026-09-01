@@ -139,6 +139,8 @@ function getPg() {
     // 全局 OID 解析：numeric/bigint → JS Number（详见 db/pg.js 注释）
     pg.types.setTypeParser(20, (val) => (val === null ? null : parseInt(val, 10)))
     pg.types.setTypeParser(1700, (val) => (val === null ? null : parseFloat(val)))
+    // date 保持 YYYY-MM-DD 文本（与 staffApi/clientApi 的 db/pg.js 三端一致，snapshot 守护）
+    pg.types.setTypeParser(1082, (val) => val)
     // timestamp 列自 migration 0076 起统一为 timestamptz（1184）：pg 内置 parser 按字面偏移正确解析，无需自定义 1114 parser。
     pgPool = new pg.Pool({
       connectionString: process.env.PG_CONNECTION_STRING,
