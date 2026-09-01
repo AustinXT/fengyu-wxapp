@@ -179,7 +179,7 @@ if [[ "$DO_STAFF" == "1" ]]; then
   # envId 取自 cwd（已 cd fengyu-staff）的 cloudbaserc.json；tcb 3.x 不接受 --envId
   tcb fn code update staffApi
   node "$ROOT/scripts/sync-cloudfunction-env.mjs" "$ROOT/fengyu-staff/cloudbaserc.json" staffApi \
-    --sync CLIENT_SECRET \
+    --sync CLIENT_SECRET,PG_CONNECTION_STRING \
     --require PG_CONNECTION_STRING,CLIENT_SECRET,CLIENT_APPSECRET,WXACODE_ENV_VERSION
   echo "  ✓ staffApi deployed"
 fi
@@ -205,7 +205,7 @@ if [[ "$DO_CLIENT" == "1" ]]; then
   echo "==> [$STEP/$TOTAL] Deploy clientApi → $CLIENT_ENV_ID"
   tcb fn code update clientApi
   node "$ROOT/scripts/sync-cloudfunction-env.mjs" "$ROOT/fengyu-client/cloudbaserc.json" clientApi \
-    --sync CLIENT_SECRET \
+    --sync CLIENT_SECRET,PG_CONNECTION_STRING \
     --require PG_CONNECTION_STRING,TMAP_KEY,TMAP_SECRET,CLIENT_SECRET
   echo "  ✓ clientApi deployed"
 
@@ -213,7 +213,7 @@ if [[ "$DO_CLIENT" == "1" ]]; then
   echo "==> [$STEP/$TOTAL] Deploy payNotify → $CLIENT_ENV_ID"
   tcb fn code update payNotify
   node "$ROOT/scripts/sync-cloudfunction-env.mjs" "$ROOT/fengyu-client/cloudbaserc.json" payNotify \
-    --sync CLIENT_SECRET \
+    --sync CLIENT_SECRET,PG_CONNECTION_STRING \
     --require PG_CONNECTION_STRING,CLIENT_SECRET
   echo "  ✓ payNotify deployed"
 fi
