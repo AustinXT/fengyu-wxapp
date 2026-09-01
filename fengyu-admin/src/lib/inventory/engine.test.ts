@@ -33,6 +33,7 @@ import {
   createInventorySupplier,
   disableInventoryPromotionPlan,
   getInventoryCoreDocById,
+  listInventoryCoreDocs,
   listInventoryLocationFilterOptions,
   rejectInventoryCoreDoc,
   syncInventoryLocations,
@@ -1537,5 +1538,280 @@ describe('全局福利方案引擎权限', () => {
       scopeMarketId: 'MARKET-1',
       items: [{ skuId: 'SKU-1', marketUnitDiscount: 0 }],
     })).rejects.toThrow('市场用户不能修改或停用全局福利方案')
+  })
+})
+
+/**
+ * 说明.md §9.4 负向矩阵：单据按实际参与主体可见——跨市场单据互不可见，
+ * 总部不因父级关系自动看到市场/门店单据。断言落在单据列表的 WHERE 条件上：
+ * 收紧后的 scope 之外不允许出现任何组织节点参数。
+ */
+describe('§9.4 单据可见范围（跨市场隔离 + 总部不下钻）', () => {
+  function capturingCountSelect(rows: unknown[], sink: { where?: unknown }) {
+    return {
+      from: () => ({
+        where: async (cond: unknown) => {
+          sink.where = cond
+          return rows
+        },
+      }),
+    }
+  }
+
+  function capturingDocsListSelect(rows: unknown[], sink: { where?: unknown }) {
+    return {
+      from: () => ({
+        leftJoin: () => ({
+          leftJoin: () => ({
+            where: (cond: unknown) => {
+              sink.where = cond
+              return { orderBy: () => ({ limit: () => ({ offset: async () => rows }) }) }
+            },
+          }),
+        }),
+      }),
+    }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockDb.select.mockReset()
+    mockDb.execute.mockReset()
+    vi.mocked(isAdminScope).mockReturnValue(false)
+    // sync 短路：探测无漂移，聚焦 scope 条件本身。
+    mockDb.execute.mockResolvedValue([{ drifted: false }] as never)
+  })
+
+  it('市场会话的单据条件仅含本市场树节点，其它市场节点绝不出现', async () => {
+    mockGetSession.mockResolvedValue({
+      employeeId: 'E-MKT-A',
+      name: '市场A库存财务',
+      phone: '13800000000',
+      roles: [{
+        role: 'inventory_market_finance', scopeId: 'MKT-A', scopeType: '市场',
+        actions: ['inventory:list'],
+        scopeStoreIds: ['STORE-A1'],
+        scopeOrgNodeIds: ['MKT-A', 'NODE-A1'],
+      }],
+      permissions: {
+        actions: ['inventory:list'],
+        scopeStoreIds: ['STORE-A1'],
+        scopeOrgNodeIds: ['MKT-A', 'NODE-A1'],
+      },
+    } as never)
+    const sink: { where?: unknown } = {}
+    mockDb.select
+      .mockReturnValueOnce(capturingCountSelect([{ count: 0 }], sink))
+      .mockReturnValueOnce(capturingDocsListSelect([], sink))
+
+    await listInventoryCoreDocs({})
+
+    // 双端点 OR：来源/目标任一命中本市场树才可见。
+    expect(sqlContains(sink.where, 'source_org_node_id')).toBe(true)
+    expect(sqlContains(sink.where, 'target_org_node_id')).toBe(true)
+    expect(sqlContains(sink.where, 'MKT-A')).toBe(true)
+    expect(sqlContains(sink.where, 'NODE-A1')).toBe(true)
+    // 跨市场隔离：条件中不得出现其它市场的任何节点。
+    expect(sqlContains(sink.where, 'MKT-B')).toBe(false)
+    expect(sqlContains(sink.where, 'NODE-B1')).toBe(false)
+  })
+
+  it('总部会话的单据条件只含总部节点，不因父级关系携带市场/门店节点', async () => {
+    mockGetSession.mockResolvedValue({
+      employeeId: 'E-HQ',
+      name: '供应链库存员',
+      phone: '13800000000',
+      roles: [{
+        role: 'inventory_supply_chain_operator', scopeId: 'HQ-NODE', scopeType: '总部',
+        actions: ['inventory:list'],
+        scopeStoreIds: ['STORE-A1'],
+        // 即使会话元数据带全组织树（含市场/门店后代），库存单据 scope 也只保留总部自身。
+        scopeOrgNodeIds: ['HQ-NODE', 'MKT-A', 'NODE-A1'],
+      }],
+      permissions: {
+        actions: ['inventory:list'],
+        scopeStoreIds: ['STORE-A1'],
+        scopeOrgNodeIds: ['HQ-NODE', 'MKT-A', 'NODE-A1'],
+      },
+    } as never)
+    const sink: { where?: unknown } = {}
+    mockDb.select
+      .mockReturnValueOnce(capturingCountSelect([{ count: 0 }], sink))
+      .mockReturnValueOnce(capturingDocsListSelect([], sink))
+
+    await listInventoryCoreDocs({})
+
+    expect(sqlContains(sink.where, 'HQ-NODE')).toBe(true)
+    expect(sqlContains(sink.where, 'MKT-A')).toBe(false)
+    expect(sqlContains(sink.where, 'NODE-A1')).toBe(false)
+  })
+})
+
+/**
+ * 说明.md §9.5 负向矩阵：价格按层级分隔，未获对应价格权限时接口不返回被遮蔽字段。
+ * none 档（门店）逐字段断言无任何金额；market 档看不到供应链成本；
+ * supply_chain 档看不到门店结算价。
+ */
+describe('§9.5 单据详情价格档位逐字段遮蔽', () => {
+  const now = new Date('2026-09-01T09:00:00.000Z')
+
+  function mockDocDetailOnce() {
+    mockDb.select
+      .mockReturnValueOnce(detailHeadSelect([{
+        doc: {
+          id: 'DTO-260901-0001',
+          docType: '分院调货出库',
+          status: '已完成',
+          sourceOrgNodeId: 'NODE-A1',
+          targetOrgNodeId: 'NODE-A2',
+          marketId: 'MKT-A',
+          supplierId: null,
+          docDate: '2026-09-01',
+          relatedSaleOrderId: null,
+          customerName: null,
+          employeeName: null,
+          supplierName: null,
+          externalPartyName: null,
+          logisticsCompany: null,
+          trackingNo: null,
+          receiptAttachmentUrl: null,
+          totalQuantity: '2',
+          totalAmount: '198.00',
+          remark: null,
+          auditRemark: null,
+          createdBy: 'E001',
+          confirmedAt: null,
+          approvedAt: null,
+          rejectedAt: null,
+          cancellationRequestReason: null,
+          cancellationRequestedBy: null,
+          cancellationRequestedAt: null,
+          cancellationReason: null,
+          cancelledAt: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+        sourceOrgNodeName: '门店一',
+        sourceOrgNodeType: '门店',
+        targetOrgNodeName: '门店二',
+        targetOrgNodeType: '门店',
+      }]))
+      .mockReturnValueOnce(detailItemsSelect([{
+        id: 1,
+        docId: 'DTO-260901-0001',
+        lotId: 11,
+        skuId: 'SKU-1',
+        saleItemId: null,
+        skuName: '测试产品',
+        specName: null,
+        supplier: null,
+        productSeries: null,
+        batchNo: 'B001',
+        expiryDate: null,
+        isGift: false,
+        quantity: '2',
+        stockSnapshot: '5',
+        requestQuantity: null,
+        fulfilledQuantity: null,
+        standardUnitPrice: '99.00',
+        unitDiscount: '1.00',
+        actualUnitPrice: '98.00',
+        amount: '196.00',
+        supplyChainUnitCost: '30.00',
+        marketActualUnitPrice: '45.00',
+        storeActualUnitPrice: '66.00',
+        promotionPlanId: null,
+        promotionPlanNoSnapshot: null,
+        promotionPlanNameSnapshot: null,
+        promotionRuleTypeSnapshot: null,
+        promotionSelectionMode: null,
+        reason: null,
+        remark: null,
+        createdAt: now,
+      }]))
+  }
+
+  function sessionWithActions(actions: string[], scopeOrgNodeIds: string[]) {
+    return {
+      employeeId: 'E-PRICE',
+      name: '价格档位测试',
+      phone: '13800000000',
+      roles: [{
+        role: 'inventory_role', scopeId: scopeOrgNodeIds[0], scopeType: '市场',
+        actions,
+        scopeStoreIds: [],
+        scopeOrgNodeIds,
+      }],
+      permissions: { actions, scopeStoreIds: [], scopeOrgNodeIds },
+    }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockDb.select.mockReset()
+    mockDb.execute.mockReset()
+    vi.mocked(isAdminScope).mockReturnValue(false)
+    // 价格档位按会话真实持有的动作判定，不再默认放行。
+    vi.mocked(hasPermission).mockImplementation(
+      (session, action) => (session.permissions.actions ?? []).includes(action),
+    )
+    mockDb.execute.mockResolvedValue([] as never)
+  })
+
+  it('none 档（门店）：单头与明细逐字段无任何金额，序列化后不出现金额键', async () => {
+    mockGetSession.mockResolvedValue(sessionWithActions(
+      ['inventory:list', 'inventory:store_operate'],
+      ['NODE-A1'],
+    ) as never)
+    mockDocDetailOnce()
+
+    const detail = await getInventoryCoreDocById('DTO-260901-0001')
+
+    expect(detail).not.toBeNull()
+    expect(detail!.totalAmount).toBeUndefined()
+    const item = detail!.items[0]
+    expect(item.standardUnitPrice).toBeUndefined()
+    expect(item.unitDiscount).toBeUndefined()
+    expect(item.actualUnitPrice).toBeUndefined()
+    expect(item.amount).toBeUndefined()
+    expect(item.supplyChainUnitCost).toBeUndefined()
+    expect(item.marketActualUnitPrice).toBeUndefined()
+    expect(item.storeActualUnitPrice).toBeUndefined()
+    // 响应序列化后不允许出现任何金额键（undefined 字段会被 JSON 丢弃）。
+    expect(JSON.stringify(detail)).not.toMatch(/price|amount|cost|discount/i)
+  })
+
+  it('market 档：看不到供应链成本，市场/门店结算价与金额可见', async () => {
+    mockGetSession.mockResolvedValue(sessionWithActions(
+      ['inventory:list', 'inventory:market_price_view'],
+      ['MKT-A', 'NODE-A1', 'NODE-A2'],
+    ) as never)
+    mockDocDetailOnce()
+
+    const detail = await getInventoryCoreDocById('DTO-260901-0001')
+
+    const item = detail!.items[0]
+    expect(item.supplyChainUnitCost).toBeUndefined()
+    expect(item.marketActualUnitPrice).toBe(45)
+    expect(item.storeActualUnitPrice).toBe(66)
+    expect(item.amount).toBe(196)
+    expect(detail!.totalAmount).toBe(198)
+    expect(JSON.stringify(detail)).not.toMatch(/supplyChainUnitCost/)
+  })
+
+  it('supply_chain 档：可见供应成本与市场结算价，看不到门店结算价', async () => {
+    mockGetSession.mockResolvedValue(sessionWithActions(
+      ['inventory:list', 'inventory:supply_chain_price_view'],
+      ['HQ-NODE'],
+    ) as never)
+    mockDocDetailOnce()
+
+    const detail = await getInventoryCoreDocById('DTO-260901-0001')
+
+    const item = detail!.items[0]
+    expect(item.supplyChainUnitCost).toBe(30)
+    expect(item.marketActualUnitPrice).toBe(45)
+    expect(item.storeActualUnitPrice).toBeUndefined()
+    expect(JSON.stringify(detail)).not.toMatch(/storeActualUnitPrice/)
   })
 })

@@ -504,8 +504,67 @@ describe('inventory business action input guards', () => {
       { employeeId: 'E-HQ', name: '总部员工' },
     ])
     const query = renderSql(vi.mocked(db.execute).mock.calls[3][0])
+    expect(query).toContain('employee.is_resigned = false')
     expect(query).toContain('employee.store_id IS NULL')
     expect(query).toContain("type IN ('市场', '门店')")
+  })
+
+  it('说明.md §11.1：供应链员工购拒绝非总部直属或离职员工，且校验三要素齐全', async () => {
+    const txExecute = vi.fn()
+      .mockResolvedValueOnce([{
+        location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+      }])
+      // employeeForSupplyChain：员工挂在市场链路 / 有门店 / 已离职时 CTE 均查不到行。
+      .mockResolvedValueOnce([])
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+    } as never))
+
+    await expect(createSupplyChainStaffPurchase(SESSION, {
+      locationId: 'HQ', employeeId: 'E-MARKET', items: [{ lotId: 1, quantity: 1 }],
+    })).rejects.toThrow('员工不属于当前供应链总部或已经离职')
+
+    const employeeQuery = renderSql(txExecute.mock.calls[1][0])
+    // 三要素缺一即越权：在职 + 无门店归属 + 祖先链不经过市场/门店（总部直属）。
+    expect(employeeQuery).toContain('employee.is_resigned = false')
+    expect(employeeQuery).toContain('employee.store_id IS NULL')
+    expect(employeeQuery).toContain("type IN ('市场', '门店')")
+    expect(employeeQuery).toContain('WITH RECURSIVE descendants')
+    // 校验失败必须发生在任何库存扣减之前。
+    const queries = txExecute.mock.calls.map(([query]) => renderSql(query)).join('\n')
+    expect(queries).not.toContain('inventory_stock_lots')
+    expect(queries).not.toContain('inventory_movements')
+  })
+
+  it('说明.md §11.1：供应链员工购出库主体必须是总部库存', async () => {
+    const txExecute = vi.fn()
+      .mockResolvedValueOnce([{
+        location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
+      }])
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+    } as never))
+
+    await expect(createSupplyChainStaffPurchase(SESSION, {
+      locationId: 'M1', employeeId: 'E-HQ', items: [{ lotId: 1, quantity: 1 }],
+    })).rejects.toThrow('供应链员工购出库主体必须是总部库存主体')
+  })
+
+  it('说明.md §11.1：无总部权限的门店会话不能从总部库存做供应链员工购', async () => {
+    const txExecute = vi.fn()
+      .mockResolvedValueOnce([{
+        location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+      }])
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+    } as never))
+
+    await expect(createSupplyChainStaffPurchase(NO_PRICE_SESSION, {
+      locationId: 'HQ', employeeId: 'E-HQ', items: [{ lotId: 1, quantity: 1 }],
+    })).rejects.toThrow('无权操作该库存主体')
   })
 
   it('自采入库必须引用有效且启用的供应商实体', async () => {
