@@ -683,6 +683,25 @@ async function ensureOrgNodeLocation(orgNodeId: string): Promise<{
   }
 }
 
+/**
+ * 事务内按组织节点取库存主体 location_id。
+ * 与 ensureOrgNodeLocation 的区别：走 tx 连接（不触发 syncInventoryLocations 抢全局池
+ * 第二连接，避免事务持锁期间池自锁），且单据端点列有 FK 保证行必存在，无需「无则建」。
+ * FOR UPDATE 顺带锁主体行，与 approveDoc/confirm 的 doc→location 锁序一致。
+ */
+async function orgNodeLocationIdForUpdate(tx: Tx, orgNodeId: string): Promise<string> {
+  const rows = await tx.execute(sql`
+    SELECT location_id
+      FROM inventory_locations
+     WHERE org_node_id = ${orgNodeId}
+       AND is_active = true
+     FOR UPDATE
+  `)
+  const row = (rows as unknown as Array<{ location_id: string }>)[0]
+  if (!row) throw new ApiError('NOT_FOUND', '组织节点没有对应库存主体')
+  return row.location_id
+}
+
 async function normalizeSkuOwnerMarket(
   session: AuthSession,
   sourceType: InventorySkuSourceType,
@@ -2736,7 +2755,7 @@ export const approveInventoryCoreDoc = withAnyPermission(
       }
       if (!head.source_org_node_id) throw new ApiError('INVALID_STATE', '审批单据缺少出库主体')
       await assertOrgNodeVisible(session, head.source_org_node_id)
-      const sourceLocationRow = await ensureOrgNodeLocation(head.source_org_node_id)
+      const sourceLocationId = await orgNodeLocationIdForUpdate(tx, head.source_org_node_id)
 
       const items = await tx.execute(sql`
         SELECT id, lot_id, quantity
@@ -2746,7 +2765,7 @@ export const approveInventoryCoreDoc = withAnyPermission(
       `)
       for (const item of items as unknown as Array<{ id: number; lot_id: number | null; quantity: string | number }>) {
         if (!item.lot_id) throw new ApiError('INVALID_STATE', '单据明细缺少库存批次')
-        const lot = await lockLotById(tx, Number(item.lot_id), sourceLocationRow.locationId)
+        const lot = await lockLotById(tx, Number(item.lot_id), sourceLocationId)
         await applyMovement(tx, {
           lot,
           docId,
@@ -2855,7 +2874,7 @@ export const confirmInventoryCoreReceive = withAnyPermission(
         await assertMarketTransferLocations(head.source_org_node_id, head.target_org_node_id)
       }
       await assertOrgNodeVisible(session, head.target_org_node_id)
-      const targetLocationRow = await ensureOrgNodeLocation(head.target_org_node_id)
+      const targetLocationId = await orgNodeLocationIdForUpdate(tx, head.target_org_node_id)
 
       inboundDocId = await generateDocNo(tx, inboundType)
       await tx.insert(inventoryDocs).values({
@@ -2910,7 +2929,7 @@ export const confirmInventoryCoreReceive = withAnyPermission(
         source_doc_id: string | null
         source_supplier: string | null
       }>) {
-        const lot = await ensureLotFromSku(tx, targetLocationRow.locationId, {
+        const lot = await ensureLotFromSku(tx, targetLocationId, {
           skuId: item.sku_id,
           batchNo: item.batch_no,
           expiryDate: item.expiry_date,

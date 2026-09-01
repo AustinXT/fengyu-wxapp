@@ -875,6 +875,7 @@ describe('库存可用量与收货复核', () => {
         status: '待审批',
         source_org_node_id: 'MARKET-1',
       }])
+      .mockResolvedValueOnce([{ location_id: 'MARKET-1' }])
       .mockResolvedValueOnce([{ id: 1, lot_id: 1, quantity: '6' }])
       .mockResolvedValueOnce([lotRow()])
       .mockResolvedValueOnce([{ quantity: '5' }])
