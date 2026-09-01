@@ -1,3 +1,4 @@
+import { ApiError } from '@/lib/api-error'
 import type { AuthSession } from '@/lib/types'
 import { hasPermission, isAdminScope } from '@/lib/permissions'
 import type { InventoryPriceVisibility } from './types'
@@ -30,13 +31,17 @@ export function inventoryScopedLocationIds(session: AuthSession): string[] | nul
 
 /**
  * 单据按真实组织节点隔离。动作级 session.roles 已由 withPermission 收紧，
- * scopeOrgNodeIds 包含绑定节点自身及全部后代；总部因此可见市场和门店单据，
+ * scopeOrgNodeIds 包含绑定节点自身及全部后代；库存总部不展开后代，
  * 市场可见门店单据，门店仅见自身。
  */
 export function inventoryScopedOrgNodeIds(session: AuthSession): string[] | null {
   if (isAdminScope(session)) return null
   const ids = new Set<string>()
   for (const role of session.roles) {
+    if (role.scopeType === '总部') {
+      ids.add(role.scopeId)
+      continue
+    }
     const expanded = role.scopeOrgNodeIds?.length ? role.scopeOrgNodeIds : [role.scopeId]
     for (const orgNodeId of expanded) ids.add(orgNodeId)
   }
@@ -63,6 +68,7 @@ export function canViewInventoryAmount(session: AuthSession): boolean {
 export function assertInventoryLocationInScope(session: AuthSession, locationId: string): void {
   const scoped = inventoryScopedLocationIds(session)
   if (scoped !== null && !scoped.includes(locationId)) {
-    throw new Error('PERMISSION_DENIED: 无权操作该库存主体')
+    // ApiError 保证 runWithApiResponse 按 errorType 序列化为 -403，而非降级 -1。
+    throw new ApiError('PERMISSION_DENIED', '无权操作该库存主体')
   }
 }

@@ -463,6 +463,92 @@ describe('库存 SKU 来源与价格保护', () => {
     })).rejects.toThrow('来源和归属市场创建后不可修改')
   })
 
+  it('非供应链 SKU 未提交市场进货价时保留历史值，不覆盖 WorkFine 快照', async () => {
+    const set = vi.fn((_values: Record<string, unknown>) => ({ where: vi.fn().mockResolvedValue(undefined) }))
+    mockDb.select.mockImplementation(() => selectWithLimit([{
+      accountingPrice: '100',
+      marketPurchaseDiscount: '0.8',
+      marketPurchasePrice: '88',
+      marketPurchasePriceMode: null,
+      marketPurchasePriceOverrideReason: null,
+      sourceType: '市场自采',
+      ownerMarketId: 'MARKET-1',
+    }]))
+    mockDb.update.mockReturnValue({ set })
+
+    // 只改零售价、不提交进货价 —— Drizzle 对 undefined 值列不生成 SET 子句，历史快照得以保留。
+    await updateInventorySku('SKU-1', { retailPrice: 200 })
+
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ retailPrice: '200' }))
+    expect(set.mock.calls[0]?.[0]?.marketPurchasePrice).toBeUndefined()
+  })
+
+  it('非供应链 SKU 显式清空市场进货价时回退公式派生值', async () => {
+    const set = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }))
+    mockDb.select.mockImplementation(() => selectWithLimit([{
+      accountingPrice: '100',
+      marketPurchaseDiscount: '0.8',
+      marketPurchasePrice: '88',
+      marketPurchasePriceMode: null,
+      marketPurchasePriceOverrideReason: null,
+      sourceType: '市场自采',
+      ownerMarketId: 'MARKET-1',
+    }]))
+    mockDb.update.mockReturnValue({ set })
+
+    await updateInventorySku('SKU-1', { marketPurchasePrice: null })
+
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({
+      marketPurchasePrice: '80',
+    }))
+  })
+
+  it('非供应链 SKU 历史值为空且公式输入变化时补算派生值', async () => {
+    const set = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }))
+    mockDb.select.mockImplementation(() => selectWithLimit([{
+      accountingPrice: '100',
+      marketPurchaseDiscount: '0.8',
+      marketPurchasePrice: null,
+      marketPurchasePriceMode: null,
+      marketPurchasePriceOverrideReason: null,
+      sourceType: '市场自采',
+      ownerMarketId: 'MARKET-1',
+    }]))
+    mockDb.update.mockReturnValue({ set })
+
+    await updateInventorySku('SKU-1', { accountingPrice: 200, marketPurchaseDiscount: 0.5 })
+
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({
+      marketPurchasePrice: '100',
+    }))
+  })
+
+  it('新建非供应链 SKU 未提交市场进货价时按公式初始化', async () => {
+    // normalizeSkuOwnerMarket 会先同步库存主体（db.execute）再查归属市场（db.select）。
+    mockDb.execute.mockResolvedValue(undefined)
+    mockDb.select.mockImplementation(() => selectWithLimit([{ id: 'MARKET-1' }]))
+    const values = vi.fn().mockResolvedValue(undefined)
+    const txExecute = vi.fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ value: 'INV-SKU-20260813-0009' }])
+    mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
+      execute: txExecute,
+      insert: vi.fn(() => ({ values })),
+    }))
+
+    await createInventorySku({
+      productName: '市场自采商品',
+      sourceType: '市场自采',
+      ownerMarketId: 'MARKET-1',
+      accountingPrice: 100,
+      marketPurchaseDiscount: 0.8,
+    })
+
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      marketPurchasePrice: '80',
+    }))
+  })
+
   it('允许手工填写市场进货价且不要求核算价和市场折扣', async () => {
     const set = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }))
     mockDb.select.mockImplementation(() => selectWithLimit([{

@@ -419,7 +419,15 @@ function skuPriceValues(
     marketPurchasePrice = calculatedMarketPurchasePrice
       ?? (formulaChanged ? null : existingMarketPurchasePrice == null ? undefined : numString(existingMarketPurchasePrice))
   } else if (marketPurchasePriceInput !== undefined) {
-    marketPurchasePrice = marketPurchasePriceInput
+    // 手填市场进货价优先；显式传 null（清空）时回退公式完整时的派生值。
+    marketPurchasePrice = marketPurchasePriceInput ?? calculatedMarketPurchasePrice
+  } else if (!existing) {
+    // 新建非供应链 SKU 未提交进货价时按公式初始化。
+    marketPurchasePrice = calculatedMarketPurchasePrice
+  } else if (existingMarketPurchasePrice === null && formulaChanged && calculatedMarketPurchasePrice !== null) {
+    // 历史值为空且公式输入发生变化时补算派生值；其余情况保持 undefined，
+    // 调用方不更新该列，避免编辑其他资料误覆盖 WorkFine 快照。
+    marketPurchasePrice = calculatedMarketPurchasePrice
   }
   const supplyVisible = priceVisibility === 'all' || priceVisibility === 'supply_chain'
   const marketVisible = priceVisibility === 'all' || priceVisibility === 'market'

@@ -14,6 +14,7 @@ vi.mock('@db/permission', () => ({
     name: 'name',
     description: 'description',
     actions: 'actions',
+    allowedScopeTypes: 'allowed_scope_types',
     canAccessAdmin: 'can_access_admin',
     isSuperAdmin: 'is_super_admin',
     isStoreManager: 'is_store_manager',
@@ -46,6 +47,10 @@ vi.mock('@/lib/permissions', () => ({
     'system:diagnostics',
     'permission:assign_admin',
     'admin:reset_password',
+    // 进销存三层级动作样例：总部 / 市场 / 门店。
+    'inventory:supply_chain_operate',
+    'inventory:market_operate',
+    'inventory:store_operate',
   ],
 }))
 
@@ -83,6 +88,25 @@ function mockSelectOnce(rows: unknown[]) {
   const where = vi.fn().mockReturnValue({ limit })
   const from = vi.fn().mockReturnValue({ where })
   return { from }
+}
+
+/** 记录 update().set() 入参的事务桩，便于断言 allowedScopeTypes 的归一化结果。 */
+function mockTxCapturingSet(): { setValues: () => Record<string, unknown> } {
+  let captured: Record<string, unknown> = {}
+  const set = vi.fn((values: Record<string, unknown>) => {
+    captured = values
+    return {
+      where: vi.fn(() => ({
+        returning: vi.fn().mockResolvedValue([{ roleKey: 'role-custom' }]),
+      })),
+    }
+  })
+  ;(db.transaction as ReturnType<typeof vi.fn>).mockImplementationOnce(async (callback: Function) => callback({
+    update: vi.fn(() => ({ set })),
+    select: vi.fn(() => ({ from: vi.fn().mockResolvedValue([]) })),
+    execute: vi.fn().mockResolvedValue(undefined),
+  }))
+  return { setValues: () => captured }
 }
 
 describe('updateRoleDefinition', () => {
@@ -149,5 +173,94 @@ describe('updateRoleDefinition', () => {
       String(strings).includes("date_trunc('milliseconds'")
     ))
     expect(lockCall?.[2]).toBe(expectedUpdatedAt)
+  })
+})
+
+describe('normalizeAllowedScopeTypes — 进销存层级与可绑定范围', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  function beforeRow(overrides: Record<string, unknown> = {}) {
+    return {
+      roleKey: 'role-custom',
+      name: '测试角色',
+      description: null,
+      actions: ['dashboard:view'],
+      allowedScopeTypes: ['总部', '市场', '门店'],
+      canAccessAdmin: true,
+      isSuperAdmin: false,
+      isStoreManager: false,
+      updatedAt: new Date('2026-08-12T08:00:00.000Z'),
+      ...overrides,
+    }
+  }
+
+  it('持市场层级进销存动作的角色可绑定层级被锁定为市场，忽略传入的多层级', async () => {
+    const before = beforeRow({ actions: ['dashboard:view', 'inventory:market_operate'] })
+    ;(db.select as ReturnType<typeof vi.fn>).mockReturnValueOnce(mockSelectOnce([before]))
+    const tx = mockTxCapturingSet()
+
+    await expect(updateRoleDefinition(before.roleKey, {
+      name: before.name,
+      actions: before.actions,
+      allowedScopeTypes: ['总部', '市场', '门店'],
+    })).resolves.toEqual({ success: true, message: '角色已保存' })
+
+    expect((tx.setValues().allowedScopeTypes as string[])).toEqual(['市场'])
+  })
+
+  it('普通角色同时勾选多个进销存层级的动作被拒绝', async () => {
+    const before = beforeRow()
+    ;(db.select as ReturnType<typeof vi.fn>).mockReturnValueOnce(mockSelectOnce([before]))
+
+    await expect(updateRoleDefinition(before.roleKey, {
+      name: before.name,
+      actions: ['inventory:supply_chain_operate', 'inventory:store_operate'],
+    })).rejects.toThrow(/INVALID_PARAMS.*不能混合多个进销存层级/)
+
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('超级管理员角色的可绑定层级恒为总部，即使传入市场', async () => {
+    const before = beforeRow({
+      isSuperAdmin: true,
+      actions: ['system:config', 'system:diagnostics', 'permission:assign_admin', 'admin:reset_password'],
+      allowedScopeTypes: ['总部'],
+    })
+    ;(db.select as ReturnType<typeof vi.fn>).mockReturnValueOnce(mockSelectOnce([before]))
+    const tx = mockTxCapturingSet()
+
+    await expect(updateRoleDefinition(before.roleKey, {
+      name: before.name,
+      isSuperAdmin: true,
+      actions: before.actions,
+      allowedScopeTypes: ['市场'],
+    })).resolves.toEqual({ success: true, message: '角色已保存' })
+
+    expect(tx.setValues().allowedScopeTypes).toEqual(['总部'])
+  })
+
+  it('无进销存动作时保留传入层级（去重），空数组或非法层级报错', async () => {
+    const keep = beforeRow()
+    ;(db.select as ReturnType<typeof vi.fn>).mockReturnValueOnce(mockSelectOnce([keep]))
+    const tx = mockTxCapturingSet()
+    await expect(updateRoleDefinition(keep.roleKey, {
+      name: keep.name,
+      actions: keep.actions,
+      allowedScopeTypes: ['门店', '门店'],
+    })).resolves.toEqual({ success: true, message: '角色已保存' })
+    expect(tx.setValues().allowedScopeTypes).toEqual(['门店'])
+
+    for (const invalid of [[], ['区域']] as string[][]) {
+      const before = beforeRow()
+      ;(db.select as ReturnType<typeof vi.fn>).mockReturnValueOnce(mockSelectOnce([before]))
+      await expect(updateRoleDefinition(before.roleKey, {
+        name: before.name,
+        actions: before.actions,
+        allowedScopeTypes: invalid as never,
+      })).rejects.toThrow(/INVALID_PARAMS.*至少需要一个有效的可绑定层级/)
+    }
+    expect(db.transaction).toHaveBeenCalledTimes(1)
   })
 })
