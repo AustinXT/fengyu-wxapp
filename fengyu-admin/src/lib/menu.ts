@@ -133,7 +133,6 @@ export const MENU_CONFIG: MenuNode[] = [
         href: '/inventory/operations/store',
         requiredActions: ['inventory:store_operate'],
         allowedScopeTypes: ['门店'],
-        matchPaths: ['/inventory/procurement', '/inventory/sale', '/inventory/transfer', '/inventory/scrap'],
       },
       {
         label: '单据中心',
