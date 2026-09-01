@@ -202,7 +202,10 @@ try {
   const gfhDetail = await docs.getInventoryCoreDocById(gfhId)
   check('品项公司发货业务响应不展示货款金额(§5.3/§10.4)',
     gfhDetail !== null && gfhDetail.totalAmount === undefined
-      && gfhDetail.items.every((item) => item.amount === undefined),
+      && gfhDetail.items.every((item) => item.amount === undefined
+        && item.standardUnitPrice === undefined && item.unitDiscount === undefined
+        && item.actualUnitPrice === undefined && item.supplyChainUnitCost === undefined
+        && item.marketActualUnitPrice === undefined && item.storeActualUnitPrice === undefined),
     JSON.stringify({ headTotal: gfhDetail?.totalAmount, dbTotal: gfhHead?.total_amount }))
   const hqAfterShip = await locationLots(HQ_ORG, SKU_SUPPLY)
   check('发货扣减总部库存 100-8=92', num(hqAfterShip[0]?.quantity_on_hand) === 92,

@@ -1821,6 +1821,119 @@ describe('§9.5 单据详情价格档位逐字段遮蔽', () => {
 })
 
 /**
+ * 说明.md §5.3/§10.4 回归（F2）：品项公司发货单业务响应不展示单价和货款。
+ * 明细可能残留非空历史价格快照（DB 保留供入库/退货/审计追溯），响应层必须
+ * 对该单据类型的所有价格/折扣/成本/金额字段整体遮蔽——即使是最高价格档位。
+ */
+describe('§5.3/§10.4 无金额单据类型（品项公司发货）全字段遮蔽', () => {
+  const now = new Date('2026-09-01T09:00:00.000Z')
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockDb.select.mockReset()
+    mockDb.execute.mockReset()
+    // admin 全量档位：连最高档也不得见无金额单据的价格快照。
+    vi.mocked(isAdminScope).mockReturnValue(true)
+    vi.mocked(hasPermission).mockReturnValue(true)
+    mockGetSession.mockResolvedValue(SESSION)
+    mockDb.execute.mockResolvedValue([] as never)
+  })
+
+  it('明细含非空历史价格快照仍被整体遮蔽（admin 档）', async () => {
+    mockDb.select
+      .mockReturnValueOnce(detailHeadSelect([{
+        doc: {
+          id: 'GFH-260901-0001',
+          docType: '品项公司发货',
+          status: '待收货',
+          sourceOrgNodeId: 'HQ',
+          targetOrgNodeId: 'MKT-A',
+          marketId: 'MKT-A',
+          supplierId: null,
+          docDate: '2026-09-01',
+          relatedSaleOrderId: null,
+          customerName: null,
+          employeeName: null,
+          supplierName: null,
+          externalPartyName: null,
+          logisticsCompany: null,
+          trackingNo: null,
+          receiptAttachmentUrl: null,
+          totalQuantity: '8',
+          totalAmount: '0.00',
+          remark: null,
+          auditRemark: null,
+          createdBy: 'E001',
+          confirmedAt: now,
+          approvedAt: null,
+          rejectedAt: null,
+          cancellationRequestReason: null,
+          cancellationRequestedBy: null,
+          cancellationRequestedAt: null,
+          cancellationReason: null,
+          cancelledAt: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+        sourceOrgNodeName: '供应链总部',
+        sourceOrgNodeType: '总部',
+        targetOrgNodeName: '市场A',
+        targetOrgNodeType: '市场',
+      }]))
+      .mockReturnValueOnce(detailItemsSelect([{
+        id: 1,
+        docId: 'GFH-260901-0001',
+        lotId: 11,
+        skuId: 'SKU-1',
+        saleItemId: null,
+        skuName: '供应链产品',
+        specName: null,
+        supplier: null,
+        productSeries: null,
+        batchNo: 'B001',
+        expiryDate: null,
+        isGift: false,
+        quantity: '8',
+        stockSnapshot: null,
+        requestQuantity: '6',
+        fulfilledQuantity: '0',
+        // 非空历史价格快照：一律不得进入业务响应。
+        standardUnitPrice: '1000.00',
+        unitDiscount: '50.00',
+        actualUnitPrice: '950.00',
+        amount: '0.00',
+        supplyChainUnitCost: '800.00',
+        marketActualUnitPrice: '950.00',
+        storeActualUnitPrice: '1200.00',
+        promotionPlanId: null,
+        promotionPlanNoSnapshot: null,
+        promotionPlanNameSnapshot: null,
+        promotionRuleTypeSnapshot: null,
+        promotionSelectionMode: null,
+        reason: null,
+        remark: null,
+        createdAt: now,
+      }]))
+
+    const detail = await getInventoryCoreDocById('GFH-260901-0001')
+
+    expect(detail).not.toBeNull()
+    expect(detail!.totalAmount).toBeUndefined()
+    const item = detail!.items[0]
+    expect(item.standardUnitPrice).toBeUndefined()
+    expect(item.unitDiscount).toBeUndefined()
+    expect(item.actualUnitPrice).toBeUndefined()
+    expect(item.amount).toBeUndefined()
+    expect(item.supplyChainUnitCost).toBeUndefined()
+    expect(item.marketActualUnitPrice).toBeUndefined()
+    expect(item.storeActualUnitPrice).toBeUndefined()
+    // 数量/进度字段照常返回。
+    expect(item.quantity).toBe(8)
+    expect(item.requestQuantity).toBe(6)
+  })
+})
+
+/**
  * 说明.md §9.3 回归（F1 跨绑定价格泄漏）：一次会话持有多条角色绑定时，
  * 价格权限只对授予它的那条绑定覆盖的 org 生效。失败场景：账号在市场 B 绑
  * inventory_market_finance（含 market_price_view）、在门店 A 绑

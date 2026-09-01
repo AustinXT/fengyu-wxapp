@@ -2570,8 +2570,11 @@ export const getInventoryCoreDocById = withPermission(
       [headRow.doc.sourceOrgNodeId, headRow.doc.targetOrgNodeId],
     )
     const head = docRow({ ...headRow, includePrice: priceVisibility !== 'none' })
-    // 无金额单据类型（§5.3/§10.4）连明细金额也不返回：赠送行的触发器 0 值不进业务响应。
-    const includeItemAmount = priceVisibility !== 'none' && !AMOUNTLESS_DOC_TYPES.has(head.docType)
+    // 无金额单据类型（§5.3/§10.4）所有价格/折扣/成本/金额字段一律遮蔽（含 admin）：
+    // 明细可能残留历史价格快照（DB 保留供入库/退货/审计追溯），业务响应统一不返回。
+    const itemPriceVisibility: import('./types').InventoryPriceVisibility =
+      AMOUNTLESS_DOC_TYPES.has(head.docType) ? 'none' : priceVisibility
+    const includeItemAmount = itemPriceVisibility !== 'none'
     const [items, lineage, fulfillmentProgress] = await Promise.all([
       db
         .select()
@@ -2600,13 +2603,13 @@ export const getInventoryCoreDocById = withPermission(
         stockSnapshot: numberOrNull(item.stockSnapshot),
         requestQuantity: numberOrNull(item.requestQuantity),
         fulfilledQuantity: numberOrNull(item.fulfilledQuantity),
-        standardUnitPrice: priceVisibility !== 'none' ? numberOrNull(item.standardUnitPrice) : undefined,
-        unitDiscount: priceVisibility !== 'none' ? numberOrNull(item.unitDiscount) : undefined,
-        actualUnitPrice: priceVisibility !== 'none' ? numberOrNull(item.actualUnitPrice) : undefined,
+        standardUnitPrice: itemPriceVisibility !== 'none' ? numberOrNull(item.standardUnitPrice) : undefined,
+        unitDiscount: itemPriceVisibility !== 'none' ? numberOrNull(item.unitDiscount) : undefined,
+        actualUnitPrice: itemPriceVisibility !== 'none' ? numberOrNull(item.actualUnitPrice) : undefined,
         amount: includeItemAmount ? numberOrNull(item.amount) : undefined,
-        supplyChainUnitCost: priceVisibility === 'all' || priceVisibility === 'supply_chain' ? numberOrNull(item.supplyChainUnitCost) : undefined,
-        marketActualUnitPrice: priceVisibility !== 'none' ? numberOrNull(item.marketActualUnitPrice) : undefined,
-        storeActualUnitPrice: priceVisibility === 'all' || priceVisibility === 'market' ? numberOrNull(item.storeActualUnitPrice) : undefined,
+        supplyChainUnitCost: itemPriceVisibility === 'all' || itemPriceVisibility === 'supply_chain' ? numberOrNull(item.supplyChainUnitCost) : undefined,
+        marketActualUnitPrice: itemPriceVisibility !== 'none' ? numberOrNull(item.marketActualUnitPrice) : undefined,
+        storeActualUnitPrice: itemPriceVisibility === 'all' || itemPriceVisibility === 'market' ? numberOrNull(item.storeActualUnitPrice) : undefined,
         promotionPlanId: item.promotionPlanId,
         promotionPlanNoSnapshot: item.promotionPlanNoSnapshot,
         promotionPlanNameSnapshot: item.promotionPlanNameSnapshot,
