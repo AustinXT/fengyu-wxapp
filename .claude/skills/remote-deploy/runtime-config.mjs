@@ -11,26 +11,16 @@ export const ROOT = path.resolve(HERE, '../../..')
 
 export const TARGETS = Object.freeze({
   dev: Object.freeze({
-    sshHost: 'ali-demo',
-    publicHost: '47.113.202.7',
-    remoteDir: '/root/proj.xt.com/fengyu-wxapp/docker',
-    migrationHost: '47.113.202.7',
-    containerDbHost: '47.113.202.7',
-    // CloudBase 标识归属断言用（方案 A：envId 随 TARGETS 入库，与 PG host 断言同一防线）
-    cloudBaseEnvId: 'cloud1-3gpht4b01ff88838',
-    staffEnvId: 'cloud1-9g3ydpg512eecc99',
-    cdnBase: 'https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la',
-  }),
-  test: Object.freeze({
     sshHost: 'sqlserver101',
     publicHost: '101.34.242.103',
     remoteDir: '/www/wwwroot/fengyu-admin/docker',
     migrationHost: '101.34.242.103',
     containerDbHost: '172.18.0.1',
-    // test 与 prod 共用同一套 CloudBase 环境（test 仅 PG 落在独立机器）
-    cloudBaseEnvId: 'fengyu-client-prod-d1cga6909c0ba',
-    staffEnvId: 'fengyu-staff-prod-d4dtv6052992e9',
-    cdnBase: 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la',
+    // CloudBase 标识归属断言用（方案 A：envId 随 TARGETS 入库，与 PG host 断言同一防线）
+    // dev 仍用独立 dev CloudBase 环境（cloud1-*）；2026-09-01 起仅 PG 随部署迁至 sqlserver101
+    cloudBaseEnvId: 'cloud1-3gpht4b01ff88838',
+    staffEnvId: 'cloud1-9g3ydpg512eecc99',
+    cdnBase: 'https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la',
   }),
   prod: Object.freeze({
     sshHost: 'fengyu-prod',
@@ -277,19 +267,18 @@ export function reconcileLegacyConfigFiles(options = {}) {
   const templateEnvDir = path.join(templateRoot, 'envs')
   const templates = {
     dev: fs.readFileSync(path.join(templateEnvDir, 'dev.env.example'), 'utf8'),
-    test: fs.readFileSync(path.join(templateEnvDir, 'prod.env.example'), 'utf8'),
     prod: fs.readFileSync(path.join(templateEnvDir, 'prod.env.example'), 'utf8'),
   }
   const templateValues = Object.fromEntries(
     Object.entries(templates).map(([env, text]) => [env, parseEnv(text)]),
   )
-  const current = Object.fromEntries(['dev', 'test', 'prod'].map((env) => [
+  const current = Object.fromEntries(['dev', 'prod'].map((env) => [
     env,
     readOptionalEnv(path.join(envDir, `${env}.env`)),
   ]))
   const legacyStaff = readOptionalEnv(path.join(root, 'fengyu-staff/.env'))
 
-  const configs = Object.fromEntries(['dev', 'test', 'prod'].map((env) => {
+  const configs = Object.fromEntries(['dev', 'prod'].map((env) => {
     const config = { ...current[env], ENV_PROFILE: env }
     for (const key of LEGACY_SAFE_DEFAULT_KEYS) {
       const templateDefault = key === 'COOKIE_DOMAIN' && env !== 'prod' ? '' : templateValues[env][key]
@@ -297,20 +286,15 @@ export function reconcileLegacyConfigFiles(options = {}) {
         config[key] = templateDefault
       }
     }
-    // dev/test 当前均以 IP 访问；注入生产父域会令浏览器拒收登录 Cookie。
+    // dev 以 IP 访问；注入生产父域会令浏览器拒收登录 Cookie。
     if (env !== 'prod') config.COOKIE_DOMAIN = ''
-    const staffFallback = env === 'test' ? current.prod : {}
-    config.STAFF_TENCENTCLOUD_SECRETID ||= (
-      staffFallback.STAFF_TENCENTCLOUD_SECRETID || legacyStaff.TENCENTCLOUD_SECRETID
-    )
-    config.STAFF_TENCENTCLOUD_SECRETKEY ||= (
-      staffFallback.STAFF_TENCENTCLOUD_SECRETKEY || legacyStaff.TENCENTCLOUD_SECRETKEY
-    )
+    config.STAFF_TENCENTCLOUD_SECRETID ||= legacyStaff.TENCENTCLOUD_SECRETID
+    config.STAFF_TENCENTCLOUD_SECRETKEY ||= legacyStaff.TENCENTCLOUD_SECRETKEY
     validateConfig(env, config)
     return [env, config]
   }))
 
-  for (const env of ['dev', 'test', 'prod']) {
+  for (const env of ['dev', 'prod']) {
     const file = path.join(envDir, `${env}.env`)
     const keys = templateKeys(templates[env])
     const missing = keys.filter((key) => configs[env][key] === undefined)
@@ -319,7 +303,7 @@ export function reconcileLegacyConfigFiles(options = {}) {
     fs.chmodSync(file, 0o600)
   }
 
-  return { environments: ['dev', 'test', 'prod'], keyCount: templateKeys(templates.prod).length }
+  return { environments: ['dev', 'prod'], keyCount: templateKeys(templates.prod).length }
 }
 
 function assertUrl(name, value) {
@@ -399,14 +383,14 @@ export function validateConfig(env, config) {
   assertOptionalProvider(config, 'OPENAI')
 
   if (env === 'prod' && !config.COOKIE_DOMAIN) fail('prod COOKIE_DOMAIN must be explicit')
-  if (env === 'test') {
+  if (env === 'dev') {
     if (!['release', 'prod', 'production'].includes(config.LAKALA_ENV)) {
-      fail('test LAKALA_ENV must use the approved production onboarding channel')
+      fail('dev LAKALA_ENV must use the approved production onboarding channel')
     }
     if (config.LAKALA_ONBOARDING_API_BASE !== 'https://s2.lakala.com') {
-      fail('test LAKALA_ONBOARDING_API_BASE must be https://s2.lakala.com')
+      fail('dev LAKALA_ONBOARDING_API_BASE must be https://s2.lakala.com')
     }
-    if (config.LAKALA_APPID === 'OP00000003') fail('test LAKALA_APPID must not use the SIT credential')
+    if (config.LAKALA_APPID === 'OP00000003') fail('dev LAKALA_APPID must not use the SIT credential')
   }
 
   return target
@@ -574,7 +558,8 @@ export function analyzeMigrationState(entries, remoteRows, hashes, options = {})
 
 export async function checkMigrations(env, options = {}) {
   const { config, target } = readConfig(env, options)
-  const url = env === 'test' ? config.PG_CONNECTION_STRING : config.ADMIN_DATABASE_URL
+  // 统一走公网 PG_CONNECTION_STRING：dev 容器网桥 172.18.0.1 仅远端可达，prod 两键本就同 host
+  const url = config.PG_CONNECTION_STRING
   const requireFromDb = createRequire(path.join(ROOT, 'db/package.json'))
   const { Client } = requireFromDb('pg')
   const client = new Client({ connectionString: url, connectionTimeoutMillis: 10_000 })
@@ -613,8 +598,8 @@ async function main() {
     }
     return
   }
-  if (!['dev', 'test', 'prod'].includes(env)) {
-    console.error('Usage: runtime-config.mjs reconcile | <validate|render|migrations> <dev|test|prod> [output-dir]')
+  if (!['dev', 'prod'].includes(env)) {
+    console.error('Usage: runtime-config.mjs reconcile | <validate|render|migrations> <dev|prod> [output-dir]')
     process.exit(1)
   }
   try {

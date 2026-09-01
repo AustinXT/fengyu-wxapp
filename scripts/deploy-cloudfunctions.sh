@@ -123,9 +123,9 @@ echo "==> Re-rendering cloudbaserc from .active=$ACTIVE （保证 envId 指向�
 node "$ROOT/scripts/render-cloudbaserc.mjs" "$ACTIVE"
 
 # ── 一致性校验：envId 必须匹配 .active 的 env-id；PG host(IP) 必须匹配环境
-#    （2026-07-17 起 dev/测试与 prod 均用 5433 端口，环境改靠 IP 区分：
-#     prod=118.178.196.26 / dev=47.113.202.7）──
-EXPECT_PG_HOST=$([[ "$ACTIVE" == "prod" ]] && echo "118.178.196.26" || echo "47.113.202.7")
+#    （2026-09-01 起 dev 永久迁至 sqlserver101，环境靠 IP 区分：
+#     prod=118.178.196.26 / dev=101.34.242.103）──
+EXPECT_PG_HOST=$([[ "$ACTIVE" == "prod" ]] && echo "118.178.196.26" || echo "101.34.242.103")
 assert_rc() {  # $1=side 目录  $2=期望 envId
   local f="$ROOT/$1/cloudbaserc.json"
   [[ -f "$f" ]] || { echo "ERROR: $f 缺失（渲染失败）。中止。" >&2; exit 1; }
@@ -179,7 +179,7 @@ if [[ "$DO_STAFF" == "1" ]]; then
   # envId 取自 cwd（已 cd fengyu-staff）的 cloudbaserc.json；tcb 3.x 不接受 --envId
   tcb fn code update staffApi
   node "$ROOT/scripts/sync-cloudfunction-env.mjs" "$ROOT/fengyu-staff/cloudbaserc.json" staffApi \
-    --sync CLIENT_SECRET \
+    --sync CLIENT_SECRET,PG_CONNECTION_STRING \
     --require PG_CONNECTION_STRING,CLIENT_SECRET,CLIENT_APPSECRET,WXACODE_ENV_VERSION
   echo "  ✓ staffApi deployed"
 fi
@@ -205,7 +205,7 @@ if [[ "$DO_CLIENT" == "1" ]]; then
   echo "==> [$STEP/$TOTAL] Deploy clientApi → $CLIENT_ENV_ID"
   tcb fn code update clientApi
   node "$ROOT/scripts/sync-cloudfunction-env.mjs" "$ROOT/fengyu-client/cloudbaserc.json" clientApi \
-    --sync CLIENT_SECRET \
+    --sync CLIENT_SECRET,PG_CONNECTION_STRING \
     --require PG_CONNECTION_STRING,TMAP_KEY,TMAP_SECRET,CLIENT_SECRET
   echo "  ✓ clientApi deployed"
 
@@ -213,7 +213,7 @@ if [[ "$DO_CLIENT" == "1" ]]; then
   echo "==> [$STEP/$TOTAL] Deploy payNotify → $CLIENT_ENV_ID"
   tcb fn code update payNotify
   node "$ROOT/scripts/sync-cloudfunction-env.mjs" "$ROOT/fengyu-client/cloudbaserc.json" payNotify \
-    --sync CLIENT_SECRET \
+    --sync CLIENT_SECRET,PG_CONNECTION_STRING \
     --require PG_CONNECTION_STRING,CLIENT_SECRET
   echo "  ✓ payNotify deployed"
 fi

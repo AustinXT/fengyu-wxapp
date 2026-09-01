@@ -18,7 +18,7 @@ import { sql } from 'drizzle-orm'
 process.env.DATABASE_URL =
   process.env.PG_CONNECTION_STRING ||
   process.env.DATABASE_URL ||
-  'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
+  'postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp'
 
 const { db } = await import('../../src/db')
 const { saleOrders } = await import('../../../db/schema/order')
