@@ -134,9 +134,8 @@ describe('手机号快速验证防重复守卫', () => {
       }
 
       const tsContent = fs.readFileSync(tsPath, 'utf-8')
-      if (!/phoneBinding:\s*false/.test(tsContent)) {
-        violations.push(`${target}: data 缺少 phoneBinding 初始态`)
-      }
+      // 注：不检查 "data 缺少 phoneBinding 初始态"——finally 块的 setData({ phoneBinding: false })
+      // 同样命中该正则，断言恒真；真契约只有 disabled/loading 与重入守卫两项
       if (!/if\s*\(this\.data\.phoneBinding\)\s*return/.test(tsContent)) {
         violations.push(`${target}: handler 缺少 phoneBinding 重入守卫`)
       }
