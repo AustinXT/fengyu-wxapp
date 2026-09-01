@@ -1196,8 +1196,29 @@ function initialPriceForItem(row) {
   }
 }
 
+/**
+ * 判定供应链 SKU 的市场进货价来源模式。
+ * 价格可由「核算价 × 市场折扣（round 2 位）」推导时视为公式价（reason 留空，
+ * 满足 chk_inventory_skus_market_price_formula）；否则标记手工覆盖并留痕原因。
+ * 口径与 admin engine.ts 的公式重算（rawAccounting * ratio → Math.round(*100)/100）
+ * 及 0039 的 CHECK 约束（ROUND(...,2)）一致。
+ */
+function marketPriceModeFor(row) {
+  if (row.sourceType !== '供应链') return { mode: null, reason: null }
+  if (row.marketPurchasePrice === null) return { mode: '公式', reason: null }
+  const accounting = row.accountingPrice
+  const discount = row.marketPurchaseDiscount
+  if (accounting !== null && discount !== null) {
+    const ratio = discount > 1 ? discount / 100 : discount
+    const derived = String(Math.round(accounting * ratio * 100) / 100)
+    if (String(row.marketPurchasePrice) === derived) return { mode: '公式', reason: null }
+  }
+  return { mode: '手工覆盖', reason: 'WorkFine 历史同步价格' }
+}
+
 async function upsertSku(client, row) {
   const id = skuId(row.productCode)
+  const priceMode = marketPriceModeFor(row)
   const result = await client.query(
     `INSERT INTO inventory_skus (
        sku_id, product_code, product_name, spec_name, supplier, manufacturer, brand,
@@ -1259,8 +1280,8 @@ async function upsertSku(client, row) {
       row.accountingPrice,
       row.supplyChainPurchasePrice,
       row.marketPurchasePrice,
-      row.sourceType === '供应链' && row.marketPurchasePrice !== null ? '手工覆盖' : row.sourceType === '供应链' ? '公式' : null,
-      row.sourceType === '供应链' && row.marketPurchasePrice !== null ? 'WorkFine 历史同步价格' : null,
+      priceMode.mode,
+      priceMode.reason,
       row.storePurchasePrice,
       row.marketStaffPurchasePrice,
       row.marketPurchaseDiscount,
@@ -1494,6 +1515,7 @@ module.exports = {
   movementKey,
   markWorkfineInventoryInitialized,
   markWorkfineInventoryPendingVerification,
+  marketPriceModeFor,
   normalizePhysicalTableName,
   normalizePriceRow,
   normalizeSnapshotRow,
