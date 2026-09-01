@@ -70,8 +70,11 @@ vi.mock("@/lib/new-customer-funnel", () => ({
 const {
   answerQuestionWithVisualizations,
   buildAssistantDataContext,
+  classifyAssistantQuestion,
   detectAssistantMetricIntents,
+  getShanghaiCurrentTime,
   normalizeAssistantResponseForDisplay,
+  resolveTimeExpression,
 } = await import("../assistant-answer")
 
 const session: AuthSession = {
@@ -320,6 +323,62 @@ const assistantEvaluationCases = [
 ]
 
 describe("assistant answer 20-question evaluation", () => {
+  it("uses a complete Shanghai clock across the UTC date boundary", () => {
+    const now = new Date("2026-08-31T16:05:06.000Z")
+
+    expect(getShanghaiCurrentTime(now)).toEqual({
+      timeZone: "Asia/Shanghai",
+      utcOffset: "+08:00",
+      date: "2026-09-01",
+      time: "00:05:06",
+      dateTime: "2026-09-01 00:05:06",
+      year: 2026,
+      month: 9,
+      day: 1,
+      weekday: "星期二",
+    })
+    expect(resolveTimeExpression("今年", now)).toMatchObject({
+      currentDate: "2026-09-01",
+      year: 2026,
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+    })
+  })
+
+  it.each(["今年是哪年", "现在几点", "今天星期几"])("answers time question without querying business data: %s", async (question) => {
+    const response = await answerQuestionWithVisualizations(
+      session,
+      question,
+      new Date("2026-08-31T16:05:06.000Z"),
+    )
+
+    expect(classifyAssistantQuestion(question)).toBe("time")
+    expect(response.content).toBe("当前上海时间是 2026-09-01 00:05:06（星期二），今年是 2026 年。")
+    expect(response.visualizations).toEqual([])
+    expect(mocks.getAnalystScopeOptions).not.toHaveBeenCalled()
+    expect(mocks.getRepurchaseKpi).not.toHaveBeenCalled()
+    expect(mocks.getPenetrationKpi).not.toHaveBeenCalled()
+    expect(mocks.getNewCustomerFunnelKpi).not.toHaveBeenCalled()
+  })
+
+  it("asks for a metric instead of guessing a business question", async () => {
+    const response = await answerQuestionWithVisualizations(session, "科颜美怎么样？")
+
+    expect(classifyAssistantQuestion("科颜美怎么样？")).toBe("clarification")
+    expect(response.content).toBe("这个问题没有明确要分析的指标，我不能据此推断。请明确要看复购率、普及率还是新客漏斗。")
+    expect(response.visualizations).toEqual([])
+    expect(mocks.getAnalystScopeOptions).not.toHaveBeenCalled()
+  })
+
+  it.each(["明天天气怎么样？", "量子纠缠综合分析"])("states when a question is unsupported: %s", async (question) => {
+    const response = await answerQuestionWithVisualizations(session, question)
+
+    expect(classifyAssistantQuestion(question)).toBe("unsupported")
+    expect(response.content).toBe("这个问题超出当前经营分析助手的能力范围，我无法给出可靠答案。当前仅支持上海时间、复购率、普及率和新客漏斗。")
+    expect(response.visualizations).toEqual([])
+    expect(mocks.getAnalystScopeOptions).not.toHaveBeenCalled()
+  })
+
   it("classifies multi-metric cross questions before single-metric routes", () => {
     expect(detectAssistantMetricIntents("今年复购率和普及率一起看")).toEqual(["repurchase", "penetration"])
     expect(detectAssistantMetricIntents("三个指标按市场综合看")).toEqual([

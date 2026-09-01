@@ -5,5 +5,7 @@ export function shouldGenerateAiAssistantContent(
   _localResponse: Pick<AssistantChatResponse, "visualizations">,
   aiConfig: AnalystAiConfig | null,
 ): aiConfig is AnalystAiConfig {
-  return Boolean(aiConfig)
+  // Analyst answers are authoritative server-side query results. An LLM may not
+  // replace them because even a well-grounded rewrite can alter business facts.
+  return false
 }
