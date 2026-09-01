@@ -2177,4 +2177,33 @@ describe('§9.3 混合绑定行级价格档位（跨绑定借权回归）', () =
     expect(storeBLot.storeActualUnitPrice).toBe(66)
     expect(storeBLot.supplyChainUnitCost).toBeUndefined()
   })
+
+  it('可用量口径：预留扣减子查询含「已预留」状态与 fulfilled/released 差额表达式', async () => {
+    const countSelect = { from: () => ({ leftJoin: () => ({ where: async () => [{ count: 0 }] }) }) }
+    const listSelect = {
+      from: () => ({
+        leftJoin: () => ({
+          where: () => ({
+            orderBy: () => ({ limit: () => ({ offset: async () => [] }) }),
+          }),
+        }),
+      }),
+    }
+    let capturedFields: Record<string, unknown> | undefined
+    mockDb.select
+      .mockReturnValueOnce(countSelect as never)
+      .mockImplementationOnce(((fields: Record<string, unknown>) => {
+        capturedFields = fields
+        return listSelect
+      }) as never)
+
+    await listInventoryLots({})
+
+    // 断言 engine 实际生成的预留标量子查询：与 pickup-records 的 GREATEST 口径一致，
+    // 未完成预留 = 已预留状态的 quantity − fulfilled − released。
+    const reservedSql = renderSql(capturedFields?.reservedQuantity)
+    expect(reservedSql).toContain('inventory_stock_reservations')
+    expect(reservedSql).toContain("reservation.status = '已预留'")
+    expect(reservedSql).toContain('reservation.quantity - reservation.fulfilled_quantity - reservation.released_quantity')
+  })
 })

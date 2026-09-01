@@ -6,7 +6,7 @@
  * （inventory_set_doc_item_amount + inventory_refresh_doc_totals + set_doc_market_id）。
  */
 import path from 'node:path'
-import { closePool } from './setup.mjs'
+import { closePool, pgQuery } from './setup.mjs'
 import {
   HQ_ORG, MKA_ORG, STA1_ID, STA1_ORG,
   SKU_SUPPLY, SUPPLIER_ID, PROMO_ID,
@@ -351,6 +351,57 @@ try {
     (await docs.getInventoryCoreDocById(yrkId)) === null, yrkId)
   setSession(marketBSession())
   check('跨市场单据互不可见(§9.4)', (await docs.getInventoryCoreDocById(mbhId)) === null, mbhId)
+
+  // ════ 阶段 9.5：货款结算真库口径 + 预留后可用量（F4）════
+  const settle = await import(A('src', 'actions', 'inventory', 'settlements.ts'))
+  const stocks = await import(A('src', 'actions', 'inventory', 'stocks.ts'))
+
+  setSession(marketASession())
+  const settlementAsMarket = await settle.listInventorySettlements({})
+  const marketPayableRow = settlementAsMarket.marketRows.find((row) =>
+    [row.sourceOrgNodeId, row.targetOrgNodeId].includes(MKA_ORG))
+  const storePayableRow = settlementAsMarket.storeRows.find((row) =>
+    [row.sourceOrgNodeId, row.targetOrgNodeId].some((id) => id === STA1_ORG || id === STA1_ID))
+  check('市场结算=市场报货应付货款 5700(§3.4)',
+    settlementAsMarket.canViewMarketSettlement === true
+      && marketPayableRow?.payableAmount === 5700 && marketPayableRow?.docCount === 1,
+    JSON.stringify(settlementAsMarket.marketRows))
+  check('分院结算=分院配货应付货款 5500(§7.3)',
+    settlementAsMarket.canViewStoreSettlement === true
+      && storePayableRow?.payableAmount === 5500 && storePayableRow?.docCount === 1,
+    JSON.stringify(settlementAsMarket.storeRows))
+
+  setSession(supplyChainSession())
+  const settlementAsSupply = await settle.listInventorySettlements({})
+  check('供应链档见市场结算、不见分院结算(§9.5)',
+    settlementAsSupply.canViewStoreSettlement === false && settlementAsSupply.storeRows.length === 0
+      && settlementAsSupply.marketRows.some((row) => row.payableAmount === 5700),
+    JSON.stringify({ market: settlementAsSupply.marketRows.length, store: settlementAsSupply.storeRows.length }))
+
+  setSession(storeA1Session())
+  const settlementAsStore = await settle.listInventorySettlements({})
+  check('门店档结算报表不返回任何金额行(§9.5)',
+    settlementAsStore.canViewMarketSettlement === false && settlementAsStore.canViewStoreSettlement === false
+      && settlementAsStore.marketRows.length === 0 && settlementAsStore.storeRows.length === 0,
+    JSON.stringify(settlementAsStore.marketRows))
+
+  // 建预留（quantity 3 − fulfilled 1 − released 1 = 活动预留 1）后查可用量 = 5 − 1 = 4
+  await pgQuery(
+    `INSERT INTO inventory_stock_reservations (
+       request_doc_id, request_item_id, lot_id, location_id, sku_id,
+       quantity, fulfilled_quantity, released_quantity, status
+     ) VALUES ($1, $2, $3, $4, $5, 3, 1, 1, '已预留')`,
+    [dbhId, dbhItem.id, storeNormalLot.id, STA1_ID, SKU_SUPPLY],
+  )
+  const stockList = await stocks.listInventoryLots({ locationId: STA1_ID, skuId: SKU_SUPPLY })
+  const reservedLotRow = stockList.data.find((row) => row.id === Number(storeNormalLot.id))
+  check('建预留后可用量=在手−未完成预留(5−(3−1−1)=4)',
+    reservedLotRow?.quantityOnHand === 5 && reservedLotRow?.availableQuantity === 4,
+    JSON.stringify({ onHand: reservedLotRow?.quantityOnHand, avail: reservedLotRow?.availableQuantity }))
+  check('门店档批次行无任何价格字段(§9.5)',
+    reservedLotRow !== undefined && reservedLotRow.supplyChainUnitCost === undefined
+      && reservedLotRow.marketActualUnitPrice === undefined && reservedLotRow.storeActualUnitPrice === undefined,
+    JSON.stringify({ cost: reservedLotRow?.supplyChainUnitCost }))
 
   // ════ 阶段 10：品项公司发货撤回（§6.2 市场只申请、供应链审批）════
   setSession(storeA1Session())

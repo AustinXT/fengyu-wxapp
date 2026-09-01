@@ -112,6 +112,7 @@ describe('货款结算只读报表', () => {
 
   it('供应链价格档只见市场结算，不见门店结算', async () => {
     mockGetSession.mockResolvedValue(SUPPLY_CHAIN_SESSION)
+    const sink: { where?: unknown } = {}
     mockDb.select.mockReturnValue(groupedSelect([
       {
         sourceOrgNodeId: 'M1',
@@ -122,12 +123,22 @@ describe('货款结算只读报表', () => {
         totalQuantity: '30.00',
         payableAmount: '1234.50',
       },
-    ]))
+    ], sink))
 
     const report = await listInventorySettlements({ startDate: '2026-09-01', endDate: '2026-09-02' })
 
     expect(report.canViewMarketSettlement).toBe(true)
     expect(report.canViewStoreSettlement).toBe(false)
+    // where 条件不许放宽：单据类型 + 状态白名单 + 日期范围 + scope 双端点。
+    expect(sqlContains(sink.where, '市场报货')).toBe(true)
+    expect(sqlContains(sink.where, '已完成')).toBe(true)
+    expect(sqlContains(sink.where, '2026-09-01')).toBe(true)
+    expect(sqlContains(sink.where, '2026-09-02')).toBe(true)
+    expect(sqlContains(sink.where, 'source_org_node_id')).toBe(true)
+    expect(sqlContains(sink.where, 'target_org_node_id')).toBe(true)
+    expect(sqlContains(sink.where, 'HQ')).toBe(true)
+    // 供应链总部 scope 不下钻：条件中不得出现任何市场/门店节点。
+    expect(sqlContains(sink.where, 'M1')).toBe(false)
     expect(report.marketRows).toEqual([
       {
         sourceOrgNodeId: 'M1',
@@ -146,6 +157,8 @@ describe('货款结算只读报表', () => {
 
   it('市场价格档同时汇总市场结算与门店结算', async () => {
     mockGetSession.mockResolvedValue(MARKET_SESSION)
+    const marketSink: { where?: unknown } = {}
+    const storeSink: { where?: unknown } = {}
     mockDb.select
       .mockReturnValueOnce(groupedSelect([
         {
@@ -157,7 +170,7 @@ describe('货款结算只读报表', () => {
           totalQuantity: '10.00',
           payableAmount: '500.00',
         },
-      ]))
+      ], marketSink))
       .mockReturnValueOnce(groupedSelect([
         {
           sourceOrgNodeId: 'M1',
@@ -168,12 +181,28 @@ describe('货款结算只读报表', () => {
           totalQuantity: '12.00',
           payableAmount: '888.00',
         },
-      ]))
+      ], storeSink))
 
     const report = await listInventorySettlements({ startDate: '2026-09-01', endDate: '2026-09-02' })
 
     expect(report.canViewMarketSettlement).toBe(true)
     expect(report.canViewStoreSettlement).toBe(true)
+    // 市场段：市场报货 + 已完成白名单；分院段：分院配货 + 待收货/已完成两态。
+    expect(sqlContains(marketSink.where, '市场报货')).toBe(true)
+    expect(sqlContains(marketSink.where, '已完成')).toBe(true)
+    expect(sqlContains(storeSink.where, '分院配货')).toBe(true)
+    expect(sqlContains(storeSink.where, '待收货')).toBe(true)
+    expect(sqlContains(storeSink.where, '已完成')).toBe(true)
+    // 两段都必须带日期范围与本市场 scope（含门店节点），双端点任一命中。
+    for (const sink of [marketSink, storeSink]) {
+      expect(sqlContains(sink.where, '2026-09-01')).toBe(true)
+      expect(sqlContains(sink.where, '2026-09-02')).toBe(true)
+      expect(sqlContains(sink.where, 'source_org_node_id')).toBe(true)
+      expect(sqlContains(sink.where, 'target_org_node_id')).toBe(true)
+      expect(sqlContains(sink.where, 'M1')).toBe(true)
+      expect(sqlContains(sink.where, 'S1')).toBe(true)
+      expect(sqlContains(sink.where, 'S2')).toBe(true)
+    }
     expect(report.marketRows[0].payableAmount).toBe(500)
     expect(report.storeRows[0]).toMatchObject({
       targetOrgNodeId: 'S1',
@@ -256,4 +285,5 @@ describe('货款结算只读报表', () => {
       .rejects.toThrow('INVALID_PARAMS: 结算开始日期不能晚于结束日期')
     expect(mockDb.select).not.toHaveBeenCalled()
   })
+
 })
