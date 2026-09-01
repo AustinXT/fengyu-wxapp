@@ -1189,14 +1189,15 @@ async function employeeForMarket(
   let employeeMarketId = employee.store_market_id
   if (!employeeMarketId && employee.org_node_id) {
     const [market] = rows<{ id: string }>(await tx.execute(sql`
-      WITH RECURSIVE ancestors AS (
-        SELECT id, parent_id, type
+      WITH RECURSIVE ancestors(id, parent_id, type, path) AS (
+        SELECT id, parent_id, type, ARRAY[id]
           FROM org_nodes
          WHERE id = ${employee.org_node_id}
         UNION ALL
-        SELECT node.id, node.parent_id, node.type
+        SELECT node.id, node.parent_id, node.type, ancestors.path || node.id
           FROM org_nodes node
           JOIN ancestors ancestor ON ancestor.parent_id = node.id
+         WHERE NOT node.id = ANY(ancestors.path)
       )
       SELECT id
         FROM ancestors
@@ -1217,23 +1218,25 @@ async function employeeForSupplyChain(
   locationId: string,
 ): Promise<{ id: string; name: string }> {
   const [employee] = rows<{ employee_id: string; name: string | null }>(await tx.execute(sql`
-    WITH RECURSIVE descendants AS (
-      SELECT id
+    WITH RECURSIVE descendants(id, path) AS (
+      SELECT id, ARRAY[id]
         FROM org_nodes
        WHERE id = ${locationId}
       UNION ALL
-      SELECT child.id
+      SELECT child.id, descendants.path || child.id
         FROM org_nodes child
         JOIN descendants parent ON child.parent_id = parent.id
-    ), employee_ancestors AS (
-      SELECT node.id, node.parent_id, node.type
+       WHERE NOT child.id = ANY(descendants.path)
+    ), employee_ancestors(id, parent_id, type, path) AS (
+      SELECT node.id, node.parent_id, node.type, ARRAY[node.id]
         FROM staff_wechat_users employee
         JOIN org_nodes node ON node.id = employee.org_node_id
        WHERE employee.employee_id = ${employeeId}
       UNION ALL
-      SELECT node.id, node.parent_id, node.type
+      SELECT node.id, node.parent_id, node.type, employee_ancestors.path || node.id
         FROM org_nodes node
         JOIN employee_ancestors ancestor ON ancestor.parent_id = node.id
+       WHERE NOT node.id = ANY(employee_ancestors.path)
     )
     SELECT employee.employee_id, employee.name
       FROM staff_wechat_users employee
@@ -1281,14 +1284,15 @@ export async function listMarketEmployeeOptions(
   assertLocationWritable(session, location)
 
   const employees = rows<{ employee_id: string; name: string | null }>(await db.execute(sql`
-    WITH RECURSIVE descendants AS (
-      SELECT id
+    WITH RECURSIVE descendants(id, path) AS (
+      SELECT id, ARRAY[id]
         FROM org_nodes
        WHERE id = ${marketId}
       UNION ALL
-      SELECT child.id
+      SELECT child.id, descendants.path || child.id
         FROM org_nodes child
         JOIN descendants parent ON child.parent_id = parent.id
+       WHERE NOT child.id = ANY(descendants.path)
     )
     SELECT DISTINCT employee.employee_id, employee.name
       FROM staff_wechat_users employee
@@ -1324,10 +1328,11 @@ export async function listSupplyChainEmployeeOptions(
   assertType(location, '总部', '供应链员工购出库主体')
   assertLocationWritable(session, location)
   const employees = rows<{ employee_id: string; name: string | null }>(await db.execute(sql`
-    WITH RECURSIVE descendants AS (
-      SELECT id FROM org_nodes WHERE id = ${locationId}
+    WITH RECURSIVE descendants(id, path) AS (
+      SELECT id, ARRAY[id] FROM org_nodes WHERE id = ${locationId}
       UNION ALL
-      SELECT child.id FROM org_nodes child JOIN descendants parent ON child.parent_id = parent.id
+      SELECT child.id, descendants.path || child.id FROM org_nodes child JOIN descendants parent ON child.parent_id = parent.id
+       WHERE NOT child.id = ANY(descendants.path)
     )
     SELECT employee.employee_id, employee.name
       FROM staff_wechat_users employee
@@ -1335,10 +1340,11 @@ export async function listSupplyChainEmployeeOptions(
      WHERE employee.is_resigned = false
        AND employee.store_id IS NULL
        AND NOT EXISTS (
-         WITH RECURSIVE ancestors AS (
-           SELECT id, parent_id, type FROM org_nodes WHERE id = employee.org_node_id
+         WITH RECURSIVE ancestors(id, parent_id, type, path) AS (
+           SELECT id, parent_id, type, ARRAY[id] FROM org_nodes WHERE id = employee.org_node_id
            UNION ALL
-           SELECT node.id, node.parent_id, node.type FROM org_nodes node JOIN ancestors ON ancestors.parent_id = node.id
+           SELECT node.id, node.parent_id, node.type, ancestors.path || node.id FROM org_nodes node JOIN ancestors ON ancestors.parent_id = node.id
+            WHERE NOT node.id = ANY(ancestors.path)
          )
          SELECT 1 FROM ancestors WHERE type IN ('市场', '门店')
        )
