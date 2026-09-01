@@ -300,8 +300,11 @@ async function generateDocNo(client, docType) {
   return `${prefix}-${ymd}-${String(seq).padStart(4, '0')}`
 }
 
-async function syncInventoryLocations() {
-  await pg.query(`
+// client 可选：事务内必须传入 tx client——否则 UPSERT 走全局池第二连接，
+// 会与事务已锁的 inventory_locations 行互相等待（自锁挂到云函数超时）。
+async function syncInventoryLocations(client = null) {
+  const q = client || pg
+  await q.query(`
     INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, parent_location_id, is_active)
     SELECT id, type, name, id, parent_id, is_active
       FROM org_nodes
@@ -314,7 +317,7 @@ async function syncInventoryLocations() {
           is_active = EXCLUDED.is_active,
           updated_at = NOW()
   `)
-  await pg.query(`
+  await q.query(`
     INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, store_id, parent_location_id, is_active)
     SELECT s.store_id, '门店', s.store_name, s.org_node_id, s.store_id, o.parent_id,
            COALESCE(o.is_active, false) AND NOT s.is_closed
@@ -333,6 +336,23 @@ async function syncInventoryLocations() {
 
 function scopedInventoryLocationIds(auth) {
   return Array.from(new Set((auth.inventoryStoreIds || []).filter(Boolean)))
+}
+
+// 组织树后代展开（带 path 环守卫，写法对齐 utils/scope.js 的 descendants CTE）。
+// 返回可内联的 IN (...) 片段；调用方按 startIndex 顺序追加 orgNodeId 参数。
+// org_nodes 万一成环时靠 NOT id = ANY(path) 终止，而不是无限递归拖死云函数。
+function descendantOrgNodeIdsSql(startIndex) {
+  return `(
+    WITH RECURSIVE selected(id, path) AS (
+      SELECT id, ARRAY[id] FROM org_nodes WHERE id = $${startIndex}
+      UNION ALL
+      SELECT child.id, selected.path || child.id
+        FROM org_nodes child
+        JOIN selected ON child.parent_id = selected.id
+       WHERE NOT child.id = ANY(selected.path)
+    )
+    SELECT id FROM selected WHERE id IN (SELECT org_node_id FROM inventory_locations)
+  )`
 }
 
 function buildInventoryLocationScope(auth, alias, startIndex) {
@@ -369,9 +389,15 @@ function requireAnyInventoryLocationInScope(auth, locationIds) {
   }
 }
 
-async function ensureInventoryLocation(locationId, requiredType = null) {
-  await syncInventoryLocations()
-  const rows = await pg.query(
+// pg.query 返回 rows 数组、tx client.query 返回完整 result——统一取 rows。
+function queryRows(client, sql, params) {
+  return client ? client.query(sql, params).then((res) => res.rows) : pg.query(sql, params)
+}
+
+async function ensureInventoryLocation(locationId, requiredType = null, client = null) {
+  await syncInventoryLocations(client)
+  const rows = await queryRows(
+    client,
     `SELECT location_id, location_type, parent_location_id, is_active, org_node_id
        FROM inventory_locations
       WHERE location_id = $1 OR org_node_id = $1
@@ -391,8 +417,8 @@ async function ensureInventoryLocation(locationId, requiredType = null) {
   }
 }
 
-async function ensureStoreLocation(locationId) {
-  return ensureInventoryLocation(locationId, '门店')
+async function ensureStoreLocation(locationId, client = null) {
+  return ensureInventoryLocation(locationId, '门店', client)
 }
 
 async function ensureSameMarketStores(sourceOrgNodeId, targetOrgNodeId) {
@@ -1144,20 +1170,8 @@ async function docList(ctx) {
   }
   if (orgNodeId) {
     conditions.push(`(
-      d.source_org_node_id IN (
-        WITH RECURSIVE selected AS (
-          SELECT id FROM org_nodes WHERE id = $${idx}
-          UNION ALL
-          SELECT child.id FROM org_nodes child JOIN selected parent ON child.parent_id = parent.id
-        ) SELECT id FROM selected WHERE id IN (SELECT org_node_id FROM inventory_locations)
-      )
-      OR d.target_org_node_id IN (
-        WITH RECURSIVE selected AS (
-          SELECT id FROM org_nodes WHERE id = $${idx}
-          UNION ALL
-          SELECT child.id FROM org_nodes child JOIN selected parent ON child.parent_id = parent.id
-        ) SELECT id FROM selected WHERE id IN (SELECT org_node_id FROM inventory_locations)
-      )
+      d.source_org_node_id IN ${descendantOrgNodeIdsSql(idx)}
+      OR d.target_org_node_id IN ${descendantOrgNodeIdsSql(idx)}
     )`)
     params.push(orgNodeId)
     idx++
@@ -1517,8 +1531,8 @@ async function approveStoreReturnForRestock(client, head, ctx, auditRemark) {
       [head.id, targetOrgNodeId],
     )
   }
-  const sourceLocation = await ensureStoreLocation(head.source_org_node_id)
-  const targetLocation = await ensureInventoryLocation(targetOrgNodeId, '市场')
+  const sourceLocation = await ensureStoreLocation(head.source_org_node_id, client)
+  const targetLocation = await ensureInventoryLocation(targetOrgNodeId, '市场', client)
 
   const itemRes = await client.query(
     `SELECT id, lot_id, sku_id, sale_item_id, sku_name, spec_name, supplier, product_series,
@@ -1735,7 +1749,7 @@ async function approveDoc(ctx) {
     const head = headRes.rows[0]
     if (!head) throw new Error('NOT_FOUND: 单据不存在')
     const acting = head.source_org_node_id || head.target_org_node_id
-    const actingStore = await ensureStoreLocation(acting)
+    const actingStore = await ensureStoreLocation(acting, client)
     await assertApproverStoreScope(client, ctx.auth, actingStore.location_id)
     if (head.status !== '待审批') throw new Error('INVALID_STATE: 只有待审批单据可以审批')
     const direction = approvalMovementDirection(head.doc_type)
@@ -1751,7 +1765,7 @@ async function approveDoc(ctx) {
      ORDER BY id`,
       [id],
     )
-    const sourceLocation = await ensureStoreLocation(head.source_org_node_id)
+    const sourceLocation = await ensureStoreLocation(head.source_org_node_id, client)
     for (const item of itemRes.rows) {
       if (!item.lot_id) throw new Error('INVALID_STATE: 审批出库明细缺少库存批次')
       const lot = await lockInventoryLotById(client, Number(item.lot_id), sourceLocation.location_id)
@@ -1800,7 +1814,7 @@ async function rejectDoc(ctx) {
     const doc = headRes.rows[0]
     if (!doc) throw new Error('NOT_FOUND: 单据不存在')
     const acting = doc.source_org_node_id || doc.target_org_node_id
-    const actingStore = await ensureStoreLocation(acting)
+    const actingStore = await ensureStoreLocation(acting, client)
     await assertApproverStoreScope(client, ctx.auth, actingStore.location_id)
     if (doc.status !== '待审批') throw new Error('INVALID_STATE: 只有待审批单据可以驳回')
     if (!approvalMovementDirection(doc.doc_type)) throw new Error('INVALID_STATE: 该单据类型不需要审批')
@@ -1856,9 +1870,9 @@ async function confirmReceive(ctx) {
     if (head.status !== '待收货') throw new Error('INVALID_STATE: 该单据不是待收货状态')
     if (!head.target_org_node_id) throw new Error('INVALID_STATE: 待收货单据缺少入库门店')
     const sourceLocation = head.source_org_node_id
-      ? await ensureInventoryLocation(head.source_org_node_id)
+      ? await ensureInventoryLocation(head.source_org_node_id, null, client)
       : null
-    const targetLocation = await ensureStoreLocation(head.target_org_node_id)
+    const targetLocation = await ensureStoreLocation(head.target_org_node_id, client)
     await assertInventoryWriteStoreScope(client, ctx.auth, targetLocation.location_id)
     const inboundType = RECEIVE_INBOUND_TYPE[head.doc_type]
     if (!inboundType) throw new Error('INVALID_STATE: 该单据不支持收货')

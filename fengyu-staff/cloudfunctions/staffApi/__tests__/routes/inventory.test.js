@@ -30,13 +30,23 @@ function cutoverQueryResult(sql, status = '已初始化') {
     : { rows: [{ status }], rowCount: 1 }
 }
 
-function mockTransactionClient(responses, { cutoverStatus = '已初始化' } = {}) {
+function mockTransactionClient(responses, { cutoverStatus = '已初始化', locationRow = null } = {}) {
   const client = {
-    query: vi.fn(async (sql) => (
-      cutoverQueryResult(sql, cutoverStatus)
-      || responses.shift()
-      || { rows: [], rowCount: 0 }
-    )),
+    query: vi.fn(async (sql, params = []) => {
+      const text = String(sql)
+      // F5 修复后 sync UPSERT 与库存主体查询走事务连接（tx client）：
+      // 这两类不消耗 responses 队列；主体行默认按入参回显门店行，可传 locationRow 覆盖。
+      if (text.includes('INSERT INTO inventory_locations')) return { rows: [], rowCount: 0 }
+      if (text.includes('SELECT location_id, location_type, parent_location_id')) {
+        return { rows: [locationRow ?? {
+          location_id: params[0], org_node_id: params[0], location_type: '门店',
+          parent_location_id: 'market-A', is_active: true,
+        }] }
+      }
+      return cutoverQueryResult(sql, cutoverStatus)
+        || responses.shift()
+        || { rows: [], rowCount: 0 }
+    }),
   }
   pg.transaction.mockImplementationOnce(async (cb) => cb(client))
   return client
@@ -810,6 +820,15 @@ describe('inventory.approveDoc / rejectDoc 审批一致性', () => {
           const text = String(sql)
           const cutover = cutoverQueryResult(text)
           if (cutover) return cutover
+          // F5 修复后主体查询走事务连接，与上方 pg mock 同款回显。
+          if (text.includes('SELECT location_id, location_type, parent_location_id')) {
+            const isMarket = params[0] === 'market-A'
+            return { rows: [{
+              location_id: params[0], org_node_id: params[0],
+              location_type: isMarket ? '市场' : '门店',
+              parent_location_id: isMarket ? 'HQ' : 'market-A', is_active: true,
+            }] }
+          }
           if (text.includes('SELECT DISTINCT s.store_id') && text.includes('WITH RECURSIVE descendants')) {
             return { rows: [{ store_id: 'store-A' }] }
           }
@@ -998,7 +1017,12 @@ describe('inventory.approveDoc / rejectDoc 审批一致性', () => {
     await expect(inventoryRoutes.rejectDoc(ctx)).rejects.toThrow(
       'INVALID_STATE: 只有待审批单据可以驳回',
     )
-    expect(client.query.mock.calls).toHaveLength(3)
+    // cutover 检查 + 锁单据 + F5 后走事务连接的 sync×2 与主体查询 + scope 校验，
+    // 状态不符即抛出，不产生驳回 UPDATE。
+    expect(client.query.mock.calls).toHaveLength(6)
+    expect(client.query.mock.calls.some(([sql]) => (
+      /UPDATE inventory_docs/.test(sql) && /已驳回/.test(sql)
+    ))).toBe(false)
   })
 })
 

@@ -89,9 +89,13 @@ describe('PR #113 进销存单据组织端点跨端守护（staff / admin / sche
       // 形态一：buildInventoryLocationScope helper（location_id → org_node_id 子查询映射）
       expect(staffSrc).toMatch(/source_org_node_id IN \(\s*SELECT org_node_id FROM inventory_locations WHERE location_id = ANY\(/)
       expect(staffSrc).toMatch(/target_org_node_id IN \(\s*SELECT org_node_id FROM inventory_locations WHERE location_id = ANY\(/)
-      // 形态二：列表查询按 org 树递归展开（WITH RECURSIVE）过滤单据端点
-      expect(staffSrc).toMatch(/d\.source_org_node_id IN \(\s*WITH RECURSIVE/)
-      expect(staffSrc).toMatch(/d\.target_org_node_id IN \(\s*WITH RECURSIVE/)
+      // 形态二：列表查询按 org 树递归展开（descendantOrgNodeIdsSql helper）过滤单据端点
+      expect(staffSrc).toMatch(/d\.source_org_node_id IN \$\{descendantOrgNodeIdsSql\(idx\)\}/)
+      expect(staffSrc).toMatch(/d\.target_org_node_id IN \$\{descendantOrgNodeIdsSql\(idx\)\}/)
+      // helper 本体：带 path 环守卫的递归 CTE + 限定已建库存主体的组织节点
+      expect(staffSrc).toMatch(/WITH RECURSIVE selected\(id, path\)/)
+      expect(staffSrc).toMatch(/WHERE NOT child\.id = ANY\(selected\.path\)/)
+      expect(staffSrc).toMatch(/SELECT id FROM selected WHERE id IN \(SELECT org_node_id FROM inventory_locations\)/)
     })
 
     test('staff 不得残留 source_location_id / target_location_id（0038 已 RENAME，残留即运行时报错）', () => {
