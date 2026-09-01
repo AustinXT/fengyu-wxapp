@@ -344,7 +344,7 @@ describe('updateCustomer — 校验 + scope + 错误处理', () => {
     expect(db.update).not.toHaveBeenCalled()
   })
 
-  it('不存在、离职或越权推荐员工 → 拒绝且不更新顾客', async () => {
+  it('不存在或离职推荐员工 → 拒绝且不更新顾客', async () => {
     let selectCall = 0
     ;(db.select as any).mockImplementation(() => {
       selectCall++
@@ -358,7 +358,7 @@ describe('updateCustomer — 校验 + scope + 错误处理', () => {
 
     const result = await updateCustomer('user-1', { promoterEmployeeId: 'INVALID' })
 
-    expect(result).toEqual({ success: false, message: '推荐员工不存在、已离职或不在权限范围内' })
+    expect(result).toEqual({ success: false, message: '推荐员工不存在或已离职' })
     expect(db.update).not.toHaveBeenCalled()
   })
 

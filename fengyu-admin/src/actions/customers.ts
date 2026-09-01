@@ -7,7 +7,7 @@ import { stores, orgNodes } from '@db/org'
 import { eq, and, or, desc, asc, inArray, sql, ilike, isNotNull, getTableColumns } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import type { Customer, SaleOrder, SaleItem, Appointment, AuthSession, CustomerCoupon, CouponType, CouponStatus } from '@/lib/types'
-import { scopeCondition, employeeScopeCondition, isAdminScope, isInScope, requireAdmin } from '@/lib/permissions'
+import { scopeCondition, isAdminScope, isInScope, requireAdmin } from '@/lib/permissions'
 import { hasRole } from '@/lib/auth'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
@@ -1082,6 +1082,7 @@ export const updateCustomer = withPermission(
   }
 
   // admin 只提交 employeeId；服务端解析当前姓名并同步写 ID + 姓名快照。
+  // 推荐人可跨店（与员工端小程序口径一致），仅校验在职，不受账号 scope 限制。
   if ('promoterEmployeeId' in data) {
     if (data.promoterEmployeeId) {
       const [promoter] = await db
@@ -1093,11 +1094,10 @@ export const updateCustomer = withPermission(
         .where(and(
           eq(staffWechatUsers.employeeId, data.promoterEmployeeId),
           eq(staffWechatUsers.isResigned, false),
-          employeeScopeCondition(session, staffWechatUsers.storeId, staffWechatUsers.orgNodeId),
         ))
         .limit(1)
       if (!promoter) {
-        return { success: false, message: '推荐员工不存在、已离职或不在权限范围内' }
+        return { success: false, message: '推荐员工不存在或已离职' }
       }
       updateData.promoterEmployeeId = promoter.employeeId
       updateData.promoterEmployeeName = promoter.name

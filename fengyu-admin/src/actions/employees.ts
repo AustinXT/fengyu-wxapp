@@ -184,7 +184,7 @@ export const getAllocationEmployeeCandidates = withPermission(
 )
 
 /**
- * 搜索当前 scope 内的在职员工，用于推荐人选择等场景。
+ * 搜索全部在职员工，用于推荐人选择等场景（推荐人可跨店，不受账号 scope 限制）。
  * 手机号仅返回脱敏值，避免选择器接口泄露完整 PII。
  */
 export const searchEmployees = withPermission(
@@ -216,7 +216,6 @@ export const searchEmployees = withPermission(
     .where(
       and(
         eq(staffWechatUsers.isResigned, false),
-        employeeScopeCondition(session, staffWechatUsers.storeId, staffWechatUsers.orgNodeId),
         or(
           ilike(staffWechatUsers.name, pattern),
           ilike(staffWechatUsers.phone, pattern),
