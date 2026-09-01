@@ -622,7 +622,44 @@ function lotKey(input: {
   ].join('|')
 }
 
+/**
+ * 热路径短路：migration 0009 的 org_nodes / stores 触发器（INSERT + 相关列 UPDATE）
+ * 已实时维护 inventory_locations，本函数只是漂移自愈兜底。先跑只读反连接探测，
+ * 无缺失/漂移时跳过两条全表 UPSERT（采购/发货/收货等业务动作每次都会调用本函数，
+ * 是比 engine.ts 更热的真实路径）。探测无结果或结果异常时保守回退旧行为。
+ * ⚠ 探测片段与 engine.ts syncInventoryLocations 保持字面一致（各自副本，由本文件
+ * business.test.ts 的守护测试 + staff cross-end-inventory-snapshot.test.js 守护）。
+ * 所有调用点均在 db.transaction 之外，探测与 UPSERT 一律走 db 顶层连接。
+ */
 async function syncLocations(): Promise<void> {
+  const probe = await db.execute(sql`
+    SELECT EXISTS (
+      SELECT 1
+        FROM org_nodes o
+        LEFT JOIN inventory_locations loc ON loc.location_id = o.id
+       WHERE o.type IN ('总部','市场')
+         AND (loc.location_id IS NULL
+           OR loc.location_type IS DISTINCT FROM o.type::text
+           OR loc.name IS DISTINCT FROM o.name
+           OR loc.org_node_id IS DISTINCT FROM o.id
+           OR loc.parent_location_id IS DISTINCT FROM o.parent_id
+           OR loc.is_active IS DISTINCT FROM o.is_active)
+      UNION ALL
+      SELECT 1
+        FROM stores s
+        LEFT JOIN org_nodes o ON o.id = s.org_node_id
+        LEFT JOIN inventory_locations loc ON loc.location_id = s.store_id
+       WHERE loc.location_id IS NULL
+         OR loc.location_type IS DISTINCT FROM '门店'
+         OR loc.name IS DISTINCT FROM s.store_name
+         OR loc.org_node_id IS DISTINCT FROM s.org_node_id
+         OR loc.store_id IS DISTINCT FROM s.store_id
+         OR loc.parent_location_id IS DISTINCT FROM o.parent_id
+         OR loc.is_active IS DISTINCT FROM (COALESCE(o.is_active, false) AND NOT s.is_closed)
+    ) AS drifted
+  `)
+  const drifted = (probe as unknown as Array<{ drifted: boolean | null }> | undefined)?.[0]?.drifted
+  if (drifted === false) return
   await db.execute(sql`
     INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, parent_location_id, is_active)
     SELECT id, type, name, id, parent_id, is_active

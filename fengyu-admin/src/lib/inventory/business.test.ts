@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/db', () => ({
@@ -210,6 +212,15 @@ function renderSql(query: unknown): string {
       return Array.isArray(chunk.value) ? chunk.value.join('') : String(chunk)
     })
     .join('')
+}
+
+/**
+ * syncLocations 漂移探测短路补位：位置化 db.execute mock 的用例在链头统一
+ * 排入一条「无漂移」探测响应（跳过两条全表 UPSERT），后续 mock 序号即为
+ * 业务查询本身。改动 syncLocations 的探测/自愈次序时只需调整此处。
+ */
+function mockSyncLocationsShortCircuit() {
+  return vi.mocked(db.execute).mockResolvedValueOnce([{ drifted: false }] as never)
 }
 
 function initializedCutoverExecutor(txExecute: (query: unknown) => Promise<unknown>) {
@@ -474,9 +485,7 @@ describe('inventory business action input guards', () => {
   })
 
   it('员工购候选项只返回所选市场组织树中的在职员工', async () => {
-    vi.mocked(db.execute)
-      .mockResolvedValueOnce([] as never)
-      .mockResolvedValueOnce([] as never)
+    mockSyncLocationsShortCircuit()
       .mockResolvedValueOnce([{
         location_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
       }] as never)
@@ -489,13 +498,25 @@ describe('inventory business action input guards', () => {
       { employeeId: 'E001', name: '员工甲' },
       { employeeId: 'E002', name: 'E002' },
     ])
-    expect(renderSql(vi.mocked(db.execute).mock.calls[3][0])).toContain('employee.is_resigned = false')
+    // 漂移探测短路：无漂移时不再发起两条全表 UPSERT（probe + 主体查询 + 员工查询 = 3 条）。
+    expect(db.execute).toHaveBeenCalledTimes(3)
+    expect(renderSql(vi.mocked(db.execute).mock.calls[0][0])).toContain('AS drifted')
+    expect(renderSql(vi.mocked(db.execute).mock.calls[2][0])).toContain('employee.is_resigned = false')
+  })
+
+  it('探测到漂移时照常执行两条全表 UPSERT 自愈', async () => {
+    vi.mocked(db.execute)
+      .mockResolvedValueOnce([{ drifted: true }] as never)
+      .mockResolvedValue([] as never)
+
+    await listMarketEmployeeOptions(SESSION, 'M1').catch(() => {})
+
+    const queries = vi.mocked(db.execute).mock.calls.map(([query]) => renderSql(query))
+    expect(queries.filter((query) => query.includes('INSERT INTO inventory_locations'))).toHaveLength(2)
   })
 
   it('供应链员工购候选项排除市场链路和门店员工', async () => {
-    vi.mocked(db.execute)
-      .mockResolvedValueOnce([] as never)
-      .mockResolvedValueOnce([] as never)
+    mockSyncLocationsShortCircuit()
       .mockResolvedValueOnce([{
         location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
       }] as never)
@@ -504,7 +525,7 @@ describe('inventory business action input guards', () => {
     await expect(listSupplyChainEmployeeOptions(SESSION, 'HQ')).resolves.toEqual([
       { employeeId: 'E-HQ', name: '总部员工' },
     ])
-    const query = renderSql(vi.mocked(db.execute).mock.calls[3][0])
+    const query = renderSql(vi.mocked(db.execute).mock.calls[2][0])
     expect(query).toContain('employee.is_resigned = false')
     expect(query).toContain('employee.store_id IS NULL')
     expect(query).toContain("type IN ('市场', '门店')")
@@ -1023,5 +1044,34 @@ describe('createPurchaseOrderFromMarketReplenishment 供应链 scope 归属', ()
       marketReportId: 'MBH-1', supplierId: 'SUP-404', supplyChainLocationId: 'HQ',
       items: [{ marketReportItemId: 1, quantity: 1 }],
     })).rejects.toThrow('PERMISSION_DENIED')
+  })
+})
+
+/**
+ * F3 守护：business.ts syncLocations 与 engine.ts syncInventoryLocations 是同一
+ * 漂移探测的两份副本（禁跨端/跨文件共享抽取，与 staff 副本同策略）。任何一份改探测
+ * 条件（少列/改列/改语义）必须同步另一份，否则一份认为无漂移跳过自愈、另一份反复
+ * 全表 UPSERT，主体口径分叉。staff 端另有 cross-end-inventory-snapshot.test.js 守护。
+ */
+describe('syncLocations 漂移探测与 engine.ts 字面一致（副本守护）', () => {
+  const PROBE_RE = /SELECT EXISTS \([\s\S]*?\) AS drifted/
+
+  it('探测 SQL 片段逐字一致', () => {
+    const businessSrc = readFileSync(resolve(process.cwd(), 'src/lib/inventory/business.ts'), 'utf8')
+    const engineSrc = readFileSync(resolve(process.cwd(), 'src/lib/inventory/engine.ts'), 'utf8')
+    const businessProbe = businessSrc.match(PROBE_RE)?.[0]
+    const engineProbe = engineSrc.match(PROBE_RE)?.[0]
+    expect(businessProbe, 'business.ts 缺少漂移探测片段').toBeTruthy()
+    expect(engineProbe, 'engine.ts 缺少漂移探测片段').toBeTruthy()
+    expect(businessProbe).toBe(engineProbe)
+  })
+
+  it('两份副本均保留保守短路语义（仅显式 false 才跳过）与两条 UPSERT 自愈路径', () => {
+    for (const file of ['src/lib/inventory/business.ts', 'src/lib/inventory/engine.ts']) {
+      const src = readFileSync(resolve(process.cwd(), file), 'utf8')
+      expect(src, `${file} 短路语义漂移`).toMatch(/drifted === false\) return/)
+      const upserts = src.match(/INSERT INTO inventory_locations[\s\S]*?ON CONFLICT \(location_id\) DO UPDATE/g)
+      expect(upserts?.length ?? 0, `${file} UPSERT 自愈路径缺失`).toBeGreaterThanOrEqual(2)
+    }
   })
 })
