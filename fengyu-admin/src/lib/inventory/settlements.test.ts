@@ -285,5 +285,27 @@ describe('货款结算只读报表', () => {
       .rejects.toThrow('INVALID_PARAMS: 结算开始日期不能晚于结束日期')
     expect(mockDb.select).not.toHaveBeenCalled()
   })
+  it('F6：形状合法但日历非法的日期在入口抛 INVALID_PARAMS，不打到 PG（22008）', async () => {
+    mockGetSession.mockResolvedValue(MARKET_SESSION)
+
+    // 月末越界：2 月没有 31 号。
+    await expect(listInventorySettlements({ startDate: '2026-02-31' }))
+      .rejects.toThrow('INVALID_PARAMS: 结算开始日期不是有效的日历日期')
+    // 非闰年没有 2 月 29 号；结束日期同样校验。
+    await expect(listInventorySettlements({ startDate: '2026-02-01', endDate: '2026-02-29' }))
+      .rejects.toThrow('INVALID_PARAMS: 结算结束日期不是有效的日历日期')
+    // 4 月只有 30 天 / 月份越界。
+    await expect(listInventorySettlements({ startDate: '2026-04-31' }))
+      .rejects.toThrow('INVALID_PARAMS: 结算开始日期不是有效的日历日期')
+    await expect(listInventorySettlements({ startDate: '2026-13-01' }))
+      .rejects.toThrow('INVALID_PARAMS: 结算开始日期不是有效的日历日期')
+    expect(mockDb.select).not.toHaveBeenCalled()
+
+    // 闰年 2 月 29 号是合法日期，正常放行到查询。
+    mockDb.select.mockReturnValue(groupedSelect([]))
+    const report = await listInventorySettlements({ startDate: '2024-02-29', endDate: '2024-03-01' })
+    expect(report.startDate).toBe('2024-02-29')
+    expect(mockDb.select).toHaveBeenCalled()
+  })
 
 })

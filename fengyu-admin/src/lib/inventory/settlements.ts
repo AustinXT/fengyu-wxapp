@@ -35,6 +35,18 @@ const STORE_SETTLEMENT_STATUSES = ['待收货', '已完成'] as const
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 
+/**
+ * 严格日历校验：形状校验挡不住 '2026-02-31' 这类假日期，直传 PG 会以 22008
+ * （date/time field value out of range）变成服务器错误。解析为 UTC 日期后回写
+ * 比对，闰年/月末越界（2月29/30/31、4月31 等）一律在入口抛 INVALID_PARAMS。
+ */
+function assertRealCalendarDate(value: string, label: string): void {
+  const parsed = new Date(`${value}T00:00:00Z`)
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {
+    throw new ApiError('INVALID_PARAMS', `${label}不是有效的日历日期`)
+  }
+}
+
 function normalizeSettlementPeriod(filters: { startDate?: string | null; endDate?: string | null }) {
   const today = shanghaiToday()
   const startDate = filters.startDate?.trim() || `${today.slice(0, 8)}01`
@@ -42,6 +54,8 @@ function normalizeSettlementPeriod(filters: { startDate?: string | null; endDate
   if (!DATE_PATTERN.test(startDate) || !DATE_PATTERN.test(endDate)) {
     throw new ApiError('INVALID_PARAMS', '结算期间日期格式必须为 YYYY-MM-DD')
   }
+  assertRealCalendarDate(startDate, '结算开始日期')
+  assertRealCalendarDate(endDate, '结算结束日期')
   if (startDate > endDate) {
     throw new ApiError('INVALID_PARAMS', '结算开始日期不能晚于结束日期')
   }
