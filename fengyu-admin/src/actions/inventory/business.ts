@@ -227,8 +227,8 @@ export const createExternalMarketOutbound = withPermission(
     createExternalMarketOutboundImpl(session, input),
 )
 
-export const createInventoryConversion = withPermission(
-  'inventory:supply_chain_operate',
+export const createInventoryConversion = withAnyPermission(
+  ['inventory:supply_chain_operate', 'inventory:market_operate', 'inventory:store_operate'],
   async (session, input: CreateInventoryConversionInput) =>
     createInventoryConversionImpl(session, input),
 )

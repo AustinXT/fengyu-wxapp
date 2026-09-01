@@ -4269,7 +4269,8 @@ export async function createInventoryConversion(
   const ids = await db.transaction(async (tx) => {
     await assertInventoryBusinessWritable(tx)
     const location = await locationForUpdate(tx, locationId)
-    assertType(location, '总部', '库存转换主体')
+    // 转换是主体内部 SKU↔SKU 动作，总部/市场/门店皆可发起（engine SPECIALIZED 注释亦归为
+    // 通用库存动作）；主体归属由 assertLocationWritable 按 session scope 校验，不再限总部。
     assertLocationWritable(session, location)
     const seenLots = new Set<number>()
     const prepared: Array<{
