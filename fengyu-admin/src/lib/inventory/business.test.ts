@@ -613,6 +613,44 @@ describe('inventory business action input guards', () => {
     })).rejects.toThrow('采购订单必须引用有效的品项公司报货需求单')
   })
 
+  it('品项公司报货需求同节点归一化形态（source=target=总部）可通过供应链主体校验', async () => {
+    // insertDocHeader 对同节点单据类型做 source=target 归一化，落库 source 不是 null；
+    // 第二个响应留给 locationForUpdate 并返回空，用于证明已越过血缘守卫。
+    const txExecute = vi.fn()
+      .mockResolvedValueOnce([{
+        id: 'ZBH-1', doc_type: '品项公司报货需求', status: '已完成',
+        source_org_node_id: 'HQ', target_org_node_id: 'HQ', market_id: null,
+        supplier_id: null, supplier_name: null,
+      }])
+      .mockResolvedValueOnce([])
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+    } as never))
+
+    await expect(createPurchaseOrderFromItemCompanyReplenishment(SESSION, {
+      companyRequestId: 'ZBH-1', supplierId: 'SUP-1', supplyChainLocationId: 'HQ',
+      items: [{ companyRequestItemId: 1, quantity: 1 }],
+    })).rejects.toThrow('库存主体不存在或已停用')
+  })
+
+  it('品项公司报货需求 source 指向非总部主体仍被血缘守卫拒绝', async () => {
+    const txExecute = vi.fn().mockResolvedValueOnce([{
+      id: 'ZBH-1', doc_type: '品项公司报货需求', status: '已完成',
+      source_org_node_id: 'M1', target_org_node_id: 'HQ', market_id: null,
+      supplier_id: null, supplier_name: null,
+    }])
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+    } as never))
+
+    await expect(createPurchaseOrderFromItemCompanyReplenishment(SESSION, {
+      companyRequestId: 'ZBH-1', supplierId: 'SUP-1', supplyChainLocationId: 'HQ',
+      items: [{ companyRequestItemId: 1, quantity: 1 }],
+    })).rejects.toThrow('品项公司报货需求的供应链主体不一致')
+  })
+
   it('关闭部分收货的供应链采购订单会释放未收需求数量', async () => {
     const purchaseOrderItem = {
       ...storeRequestItemRow(),

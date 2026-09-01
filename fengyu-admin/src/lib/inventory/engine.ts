@@ -611,7 +611,7 @@ async function assertGenericDocLocationRules(
   input: CreateInventoryDocInput,
   sourceOrgNodeId: string | null,
   targetOrgNodeId: string | null,
-  actingLocationId: string,
+  actingOrgNodeId: string,
 ): Promise<void> {
   switch (input.docType) {
     case '供应链采购入库':
@@ -646,10 +646,10 @@ async function assertGenericDocLocationRules(
       await assertLocationType(targetOrgNodeId, '市场', '市场产品盘溢入库主体')
       return
     case '市场库存盘点':
-      await assertLocationType(actingLocationId, '市场', '市场库存盘点主体')
+      await assertLocationType(actingOrgNodeId, '市场', '市场库存盘点主体')
       return
     case '分院库存盘点':
-      await assertLocationType(actingLocationId, '门店', '分院库存盘点主体')
+      await assertLocationType(actingOrgNodeId, '门店', '分院库存盘点主体')
       return
   }
 }
@@ -2548,7 +2548,7 @@ export const createInventoryCoreDoc = withAnyPermission(
     if (plan?.locationRole === 'target' && !targetOrgNodeId) {
       throw new ApiError('INVALID_PARAMS', '入库类单据缺少入库主体')
     }
-    await assertGenericDocLocationRules(input, sourceOrgNodeId, targetOrgNodeId, actingLocationId)
+    await assertGenericDocLocationRules(input, sourceOrgNodeId, targetOrgNodeId, actingOrgNodeId)
 
     const totalQuantity = input.items.reduce((sum, item) => sum + assertPositiveQuantity(item.quantity), 0)
 

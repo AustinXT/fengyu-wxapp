@@ -357,6 +357,32 @@ describe('库存通用建单边界', () => {
 
     await expect(createInventoryCoreDoc(input as never)).rejects.toThrow(expectedMessage)
   })
+
+  it('分院库存盘点按组织节点 id 校验主体，不误用门店行的 location_id', async () => {
+    // 门店库存行的 location_id=store_id 与 org_node_id 不同值；盘点校验必须按 org_node_id 命中，
+    // 否则门店行必抛 NOT_FOUND（修复回归守卫）。
+    const LOCATION_ROWS = [{ locationId: 'STORE-S1', orgNodeId: 'ORG-S1', locationType: '门店', parentLocationId: 'MARKET-1', isActive: true }]
+    mockDb.select.mockImplementation(() => ({
+      from: () => ({
+        where: (condition: unknown) => ({
+          limit: async () => (sqlContains(condition, 'org_node_id') && sqlContains(condition, 'ORG-S1') ? LOCATION_ROWS : []),
+        }),
+      }),
+    }) as never)
+    vi.mocked(mockDb.execute).mockResolvedValueOnce([] as never)
+    vi.mocked(mockDb.execute).mockResolvedValueOnce([] as never)
+    mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
+      execute: vi.fn().mockRejectedValue(new Error('STOP-AFTER-VALIDATION')),
+    } as never))
+
+    const err = await createInventoryCoreDoc({
+      docType: '分院库存盘点',
+      sourceOrgNodeId: 'ORG-S1',
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    } as never).then(() => null, (error: Error) => error)
+    // 走到事务说明全部前置校验（含盘点主体校验）通过；回归时这里会是「分院库存盘点主体不存在」。
+    expect(err?.message).toBe('STOP-AFTER-VALIDATION')
+  })
 })
 
 describe('库存 SKU 来源与价格保护', () => {

@@ -2294,7 +2294,13 @@ export async function createPurchaseOrderFromItemCompanyReplenishment(
     if (request.docType !== '品项公司报货需求' || request.status !== '已完成') {
       throw new ApiError('INVALID_STATE', '采购订单必须引用有效的品项公司报货需求单')
     }
-    if (request.marketId !== null || request.sourceOrgNodeId !== null || request.targetOrgNodeId !== supplyChainLocationId) {
+    // 同节点归一化（insertDocHeader）后 source=target=总部主体，0039 存量回填同为该形态；
+    // source 为 null 是 insertDocHeader 之前的历史形态。两种形态都是总部自报需求单。
+    if (
+      request.marketId !== null
+      || (request.sourceOrgNodeId !== null && request.sourceOrgNodeId !== supplyChainLocationId)
+      || request.targetOrgNodeId !== supplyChainLocationId
+    ) {
       throw new ApiError('INVALID_STATE', '品项公司报货需求的供应链主体不一致')
     }
     const supplyChain = await locationForUpdate(tx, supplyChainLocationId)
@@ -2866,10 +2872,11 @@ export async function receiveSupplyChainPurchaseOrder(
       '供应链采购入库',
     )
     const request = await docForUpdate(tx, companyRequestId)
+    // source 兼容 null（历史形态）与总部主体（同节点归一化形态），见 createPurchaseOrderFromItemCompanyReplenishment 注释。
     if (
       request.docType !== '品项公司报货需求' ||
       request.status !== '已完成' ||
-      request.sourceOrgNodeId !== null ||
+      (request.sourceOrgNodeId !== null && request.sourceOrgNodeId !== supplyChainLocationId) ||
       request.targetOrgNodeId !== supplyChainLocationId ||
       request.marketId !== null
     ) {
@@ -3052,10 +3059,11 @@ export async function cancelSupplyChainPurchaseOrder(
       '供应链采购订单取消',
     )
     const request = await docForUpdate(tx, companyRequestId)
+    // source 兼容 null（历史形态）与总部主体（同节点归一化形态），见 createPurchaseOrderFromItemCompanyReplenishment 注释。
     if (
       request.docType !== '品项公司报货需求' ||
       request.status !== '已完成' ||
-      request.sourceOrgNodeId !== null ||
+      (request.sourceOrgNodeId !== null && request.sourceOrgNodeId !== supplyChainLocationId) ||
       request.targetOrgNodeId !== supplyChainLocationId ||
       request.marketId !== null
     ) {
