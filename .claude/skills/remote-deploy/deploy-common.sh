@@ -10,13 +10,6 @@ load_target() {
   local env="$1"
   case "$env" in
     dev)
-      SSH_HOST="ali-demo"
-      TARGET_PUBLIC_HOST="47.113.202.7"
-      REMOTE_DIR="/root/proj.xt.com/fengyu-wxapp/docker"
-      MIGRATION_HOST="47.113.202.7"
-      CONTAINER_DB_HOST="47.113.202.7"
-      ;;
-    test)
       SSH_HOST="sqlserver101"
       TARGET_PUBLIC_HOST="101.34.242.103"
       REMOTE_DIR="/www/wwwroot/fengyu-admin/docker"
@@ -31,7 +24,7 @@ load_target() {
       CONTAINER_DB_HOST="118.178.196.26"
       ;;
     *)
-      echo "ERROR: environment must be dev, test, or prod" >&2
+      echo "ERROR: environment must be dev or prod" >&2
       return 1
       ;;
   esac
@@ -450,7 +443,7 @@ full_health() {
     echo "ERROR: $component DB host is ${got_db_host:-unreadable}, expected $expected_db_host" >&2
     return 1
   }
-  if [ "$env_name" = "test" ]; then
+  if [ "$env_name" = "dev" ]; then
     public_ip=$(detect_public_ip || true)
     test "$public_ip" = "$expected_public_host" || return 1
     ss -tln 2>/dev/null | grep -q ':5433' || return 1
@@ -713,10 +706,10 @@ if [ "$component" = "admin" ]; then
   test "$(docker inspect -f '{{.State.Status}}' fengyu-cron-worker 2>/dev/null || true)" = "running" || rollback_late_failure "cron-worker is not running after rollback"
   test "$(docker inspect -f '{{.State.Status}}' fengyu-export-worker 2>/dev/null || true)" = "running" || rollback_late_failure "export-worker is not running after rollback"
 fi
-if [ "$env_name" = "test" ]; then
+if [ "$env_name" = "dev" ]; then
   public_ip=$(detect_public_ip || true)
-  test "$public_ip" = "$expected_public_host" || rollback_late_failure "test-env public IP check failed after rollback (got ${public_ip:-unreadable})"
-  ss -tln 2>/dev/null | grep -q ':5433' || rollback_late_failure "test-env PG 5433 listener check failed after rollback"
+  test "$public_ip" = "$expected_public_host" || rollback_late_failure "dev-env public IP check failed after rollback (got ${public_ip:-unreadable})"
+  ss -tln 2>/dev/null | grep -q ':5433' || rollback_late_failure "dev-env PG 5433 listener check failed after rollback"
 fi
 
 swap="$state_dir/$component.swap.$$"

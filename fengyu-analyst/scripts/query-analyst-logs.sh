@@ -10,7 +10,7 @@ ENV="${2:-dev}"
 if [[ "$ENV" == "prod" ]]; then
   PG_CONNECTION_STRING="postgresql://fengyu:fengyu123@118.178.196.26:5433/fengyu_wxapp"
 elif [[ "$ENV" == "dev" ]]; then
-  PG_CONNECTION_STRING="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp"
+  PG_CONNECTION_STRING="postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp"
 else
   echo "错误：ENV 必须是 dev 或 prod" >&2
   exit 1

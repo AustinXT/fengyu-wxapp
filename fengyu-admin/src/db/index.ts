@@ -10,7 +10,7 @@ const globalForDb = globalThis as unknown as {
 const connectionString =
   process.env.E2E_DATABASE_URL ??
   process.env.DATABASE_URL ??
-  'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
+  'postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp'
 
 // timestamp 列自 migration 0076 起统一为 `timestamp with time zone`（OID 1184）。PG 在 server
 // timezone=Asia/Shanghai（migration 0028 锁定）下发送带 +08 偏移字面，postgres.js 内置 date parser

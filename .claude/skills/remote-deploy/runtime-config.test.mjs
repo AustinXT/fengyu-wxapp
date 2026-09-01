@@ -55,7 +55,7 @@ function validConfig(env = 'dev') {
     LAKALA_APPID: 'OP12345678',
     LAKALA_SERIAL_NO: 'serial',
     LAKALA_CALLBACK_IP_WHITELIST: '',
-    LAKALA_ENV: env === 'dev' ? 'test' : 'release',
+    LAKALA_ENV: 'release',
     LAKALA_PRIVATE_KEY_PEM: 'private-key',
     LAKALA_PLATFORM_CERT_PEM: 'platform-cert',
     LAKALA_SM4_KEY: 'sm4-key',
@@ -67,7 +67,7 @@ function validConfig(env = 'dev') {
     LAKALA_SOURCE: 'source',
     LAKALA_SUB_APPID: 'sub-app',
     LAKALA_ALIPAY_SHARE_SOURCE: '',
-    LAKALA_ONBOARDING_API_BASE: env === 'dev' ? 'https://test.wsmsd.cn/sit' : 'https://s2.lakala.com',
+    LAKALA_ONBOARDING_API_BASE: 'https://s2.lakala.com',
     LAKALA_ECONTRACT_CALLBACK_URL: '',
     LAKALA_ECONTRACT_TYPE: 'EC015',
     LAKALA_ONBOARDING_EMAIL: 'ops@example.com',
@@ -246,19 +246,16 @@ test('legacy reconcile migrates all real env files before the strict gate', () =
   fs.mkdirSync(staffDir, { recursive: true })
 
   const dev = validConfig('dev')
-  const testConfig = validConfig('test')
   const prod = validConfig('prod')
   dev.STAFF_TENCENTCLOUD_SECRETID = ''
   dev.STAFF_TENCENTCLOUD_SECRETKEY = ''
-  testConfig.STAFF_TENCENTCLOUD_SECRETID = ''
-  testConfig.STAFF_TENCENTCLOUD_SECRETKEY = ''
   prod.STAFF_TENCENTCLOUD_SECRETID = 'prod-staff-id'
   prod.STAFF_TENCENTCLOUD_SECRETKEY = 'prod-staff-key'
   prod.COOKIE_DOMAIN = ''
 
   fs.writeFileSync(path.join(envDir, 'dev.env.example'), renderEnv(validConfig('dev')))
   fs.writeFileSync(path.join(envDir, 'prod.env.example'), renderEnv(validConfig('prod')))
-  for (const [env, config] of [['dev', dev], ['test', testConfig], ['prod', prod]]) {
+  for (const [env, config] of [['dev', dev], ['prod', prod]]) {
     fs.writeFileSync(path.join(envDir, `${env}.env`), renderEnv(config), { mode: 0o644 })
   }
   fs.writeFileSync(path.join(staffDir, '.env'), 'TENCENTCLOUD_SECRETID=legacy-staff-id\nTENCENTCLOUD_SECRETKEY=legacy-staff-key\n')
@@ -266,13 +263,11 @@ test('legacy reconcile migrates all real env files before the strict gate', () =
   reconcileLegacyConfigFiles({ root })
 
   const migratedDev = parseEnv(fs.readFileSync(path.join(envDir, 'dev.env'), 'utf8'))
-  const migratedTest = parseEnv(fs.readFileSync(path.join(envDir, 'test.env'), 'utf8'))
   const migratedProd = parseEnv(fs.readFileSync(path.join(envDir, 'prod.env'), 'utf8'))
   assert.equal(migratedDev.STAFF_TENCENTCLOUD_SECRETID, 'legacy-staff-id')
-  assert.equal(migratedTest.STAFF_TENCENTCLOUD_SECRETID, 'prod-staff-id')
-  assert.equal(migratedTest.COOKIE_DOMAIN, '')
+  assert.equal(migratedDev.COOKIE_DOMAIN, '')
   assert.equal(migratedProd.COOKIE_DOMAIN, '.example.com')
-  for (const env of ['dev', 'test', 'prod']) {
+  for (const env of ['dev', 'prod']) {
     assert.equal(fs.statSync(path.join(envDir, `${env}.env`)).mode & 0o777, 0o600)
   }
   const firstPass = fs.readFileSync(path.join(envDir, 'prod.env'), 'utf8')
@@ -289,13 +284,10 @@ test('legacy reconcile preserves dollar signs in source env files', () => {
   fs.mkdirSync(staffDir, { recursive: true })
 
   const dev = validConfig('dev')
-  const testConfig = validConfig('test')
   const prod = validConfig('prod')
-  for (const config of [dev, testConfig, prod]) config.ADMIN_JWT_SECRET = 'jwt-$ecret$'
+  for (const config of [dev, prod]) config.ADMIN_JWT_SECRET = 'jwt-$ecret$'
   dev.STAFF_TENCENTCLOUD_SECRETID = ''
   dev.STAFF_TENCENTCLOUD_SECRETKEY = ''
-  testConfig.STAFF_TENCENTCLOUD_SECRETID = ''
-  testConfig.STAFF_TENCENTCLOUD_SECRETKEY = ''
   prod.STAFF_TENCENTCLOUD_SECRETID = 'prod-staff-id'
   prod.STAFF_TENCENTCLOUD_SECRETKEY = 'prod-staff-key'
   prod.COOKIE_DOMAIN = ''
@@ -305,14 +297,14 @@ test('legacy reconcile preserves dollar signs in source env files', () => {
     .join('\n')}\n`
   fs.writeFileSync(path.join(envDir, 'dev.env.example'), renderEnv(validConfig('dev')))
   fs.writeFileSync(path.join(envDir, 'prod.env.example'), renderEnv(validConfig('prod')))
-  for (const [env, config] of [['dev', dev], ['test', testConfig], ['prod', prod]]) {
+  for (const [env, config] of [['dev', dev], ['prod', prod]]) {
     fs.writeFileSync(path.join(envDir, `${env}.env`), renderRawEnv(config), { mode: 0o644 })
   }
   fs.writeFileSync(path.join(staffDir, '.env'), 'TENCENTCLOUD_SECRETID=legacy-staff-id\nTENCENTCLOUD_SECRETKEY=legacy-staff-key\n')
 
   reconcileLegacyConfigFiles({ root })
 
-  for (const env of ['dev', 'test', 'prod']) {
+  for (const env of ['dev', 'prod']) {
     const text = fs.readFileSync(path.join(envDir, `${env}.env`), 'utf8')
     assert.equal(text.includes('$$'), false)
     assert.equal(parseEnv(text).ADMIN_JWT_SECRET, 'jwt-$ecret$')

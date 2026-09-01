@@ -53,5 +53,5 @@ else
   echo "╚════════════════════════════════════════════════════════════════╝"
   echo ""
   echo "Next: scripts/deploy-cloudfunctions.sh   # 部署云函数到 dev"
-  echo "      .claude/skills/remote-deploy/deploy-admin.sh dev   # admin 远程连测试库 47.113.202.7"
+  echo "      .claude/skills/remote-deploy/deploy-admin.sh dev   # admin 远程连测试库 101.34.242.103"
 fi

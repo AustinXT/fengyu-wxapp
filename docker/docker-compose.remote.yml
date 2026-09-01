@@ -1,4 +1,4 @@
-# docker-compose.remote.yml — 远程 admin / analyst 覆盖层（dev / test / prod 共用）
+# docker-compose.remote.yml — 远程 admin / analyst 覆盖层（dev / prod 共用）
 #
 # 用法由 .claude/skills/remote-deploy 下的部署脚本封装。部署脚本从本地
 # envs/<env>.env 生成按服务白名单隔离的 0600 env 文件，保存在不可变 release 目录。

@@ -137,5 +137,5 @@ git worktree remove .tree/feat/xxx      # 完成后清理
 管理后台使用本地构建 Docker 镜像 + 远程部署（远程服务器不 build）：
 
 ```bash
-.claude/skills/remote-deploy/deploy-admin.sh <dev|test|prod>    # 本地 build → 传输 → compose up（dev→ali-demo / test→sqlserver101 / prod→fengyu-prod）
+.claude/skills/remote-deploy/deploy-admin.sh <dev|prod>    # 本地 build → 传输 → compose up（dev→sqlserver101 / prod→fengyu-prod）
 ```

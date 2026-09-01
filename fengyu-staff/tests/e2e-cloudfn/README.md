@@ -27,7 +27,7 @@ tests/e2e-cloudfn/
 ## 前置条件
 
 - bun 已安装（项目根 `bun --version` 应有输出，本仓库基线 1.3.x）
-- 能访问业务主库：`postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp`（默认）
+- 能访问业务主库：`postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp`（默认）
 - 不需要在 cloudbase 远端云函数上设置 `ALLOW_TEST_OPENID=true`：本地 require 模式下，
   脚本进程的 `process.env.ALLOW_TEST_OPENID` 直接被云函数 `auth.js` 读到
 
