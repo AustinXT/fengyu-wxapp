@@ -70,7 +70,7 @@ export function inventoryPriceVisibility(session: AuthSession): InventoryPriceVi
  * supply_chain_price_view / market_price_view 时，仅把该**单一绑定**按
  * inventoryScopedOrgNodeIds 同规则展开的 org 集合并入对应档位。
  *
- * `null` = 该档位不受 org 限制（admin 全量，或旧会话兼容路径）；
+ * `null` = 该档位不受 org 限制（仅 admin 全量）；
  * `Set` = 该档位仅对集合内 org 节点参与的行生效（空集 = 完全不生效）。
  */
 export interface InventoryPriceTierScopes {
@@ -89,12 +89,18 @@ export function inventoryPriceScopeByTier(session: AuthSession): InventoryPriceT
   const hasRoleMetadata = session.roles.length > 0
     && session.roles.every((role) => Array.isArray(role.actions))
   if (!hasRoleMetadata) {
-    // 兼容旧测试/导出会话（无角色级 actions 元数据）：退回会话级动作并集判定，
-    // 与既有单绑定行为保持完全一致。
-    return {
-      supplyChain: hasPermission(session, 'inventory:supply_chain_price_view') ? null : new Set(),
-      market: hasPermission(session, 'inventory:market_price_view') ? null : new Set(),
+    // 旧会话（无角色级 actions 元数据）无法把价格权归属到具体绑定：
+    // 单绑定会话用该绑定自身的 org 范围（与行可见范围同构，效果与修复前一致）；
+    // 多绑定会话拒绝跨绑定拼接（§9.3），一律 fail-closed 空集——重新登录携带
+    // 元数据后恢复。除 admin 外绝不返回 null（null = 全局放行）。
+    if (session.roles.length === 1) {
+      const scope: ReadonlySet<string> = new Set(roleOrgNodeIds(session.roles[0]))
+      return {
+        supplyChain: hasPermission(session, 'inventory:supply_chain_price_view') ? scope : new Set(),
+        market: hasPermission(session, 'inventory:market_price_view') ? scope : new Set(),
+      }
     }
+    return { supplyChain: new Set(), market: new Set() }
   }
   const supplyChain = new Set<string>()
   const market = new Set<string>()

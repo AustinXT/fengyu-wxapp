@@ -299,6 +299,9 @@ describe('货款结算只读报表', () => {
       .rejects.toThrow('INVALID_PARAMS: 结算开始日期不是有效的日历日期')
     await expect(listInventorySettlements({ startDate: '2026-13-01' }))
       .rejects.toThrow('INVALID_PARAMS: 结算开始日期不是有效的日历日期')
+    // year zero：toISOString 回写比对拦不住，PG date 不接受 0000 年（22008）。
+    await expect(listInventorySettlements({ startDate: '0000-01-01' }))
+      .rejects.toThrow('INVALID_PARAMS: 结算开始日期不是有效的日历日期')
     expect(mockDb.select).not.toHaveBeenCalled()
 
     // 闰年 2 月 29 号是合法日期，正常放行到查询。

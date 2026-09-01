@@ -41,6 +41,11 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
  * 比对，闰年/月末越界（2月29/30/31、4月31 等）一律在入口抛 INVALID_PARAMS。
  */
 function assertRealCalendarDate(value: string, label: string): void {
+  // PG date 不接受 year zero（0000 会过 toISOString 回写比对但落库 22008），年份显式限 1..9999
+  const year = Number(value.slice(0, 4))
+  if (year < 1 || year > 9999) {
+    throw new ApiError('INVALID_PARAMS', `${label}不是有效的日历日期`)
+  }
   const parsed = new Date(`${value}T00:00:00Z`)
   if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {
     throw new ApiError('INVALID_PARAMS', `${label}不是有效的日历日期`)

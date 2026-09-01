@@ -192,14 +192,29 @@ describe('进销存独立 scope 与价格层级', () => {
     const admin = inventoryPriceScopeByTier(session({ role: 'admin', scopeId: 'HQ', scopeType: '总部' }))
     expect(admin).toEqual({ supplyChain: null, market: null })
     expect(inventoryPriceVisibilityForOrgNodes(admin, ['ANY'])).toBe('all')
-    // 旧会话兼容（无角色级 actions 元数据）：退回会话级动作并集，全局生效。
+    // 旧会话兼容（无角色级 actions 元数据）：单绑定收敛到该绑定自身 org 范围。
     const legacy = inventoryPriceScopeByTier({
       employeeId: 'E-L', name: '旧会话', phone: '13800000002',
       roles: [{ role: 'finance', scopeId: 'M1', scopeType: '市场' }],
       permissions: { actions: ['inventory:market_price_view'], scopeStoreIds: [] },
     } as never)
-    expect(legacy.market).toBeNull()
-    expect(inventoryPriceVisibilityForOrgNodes(legacy, ['ANY'])).toBe('market')
+    expect(legacy.market).toEqual(new Set(['M1']))
+    expect(inventoryPriceVisibilityForOrgNodes(legacy, ['M1'])).toBe('market')
+    expect(inventoryPriceVisibilityForOrgNodes(legacy, ['ANY'])).toBe('none')
+    // 旧多绑定会话无法归属价格权 → fail-closed 空集，禁止跨绑定拼接（§9.3）。
+    const legacyMulti = inventoryPriceScopeByTier({
+      employeeId: 'E-L2', name: '旧多绑定', phone: '13800000003',
+      roles: [
+        { role: 'inventory_market_finance', scopeId: 'M1', scopeType: '市场' },
+        { role: 'inventory_supply_chain_operator', scopeId: 'HQ', scopeType: '总部' },
+      ],
+      permissions: {
+        actions: ['inventory:market_price_view', 'inventory:supply_chain_price_view'],
+        scopeStoreIds: [],
+      },
+    } as never)
+    expect(legacyMulti).toEqual({ supplyChain: new Set(), market: new Set() })
+    expect(inventoryPriceVisibilityForOrgNodes(legacyMulti, ['M1', 'HQ'])).toBe('none')
   })
 
   it('inventoryTierRestrictedOrgNodeIds：scope 与档位集合取交，档位无限制时原样返回', () => {
