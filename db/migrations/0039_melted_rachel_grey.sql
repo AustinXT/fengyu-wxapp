@@ -1,2 +1,0 @@
-ALTER TABLE "inventory_docs" ADD CONSTRAINT "inventory_docs_source_org_node_id_inventory_locations_org_node_id_fk" FOREIGN KEY ("source_org_node_id") REFERENCES "public"."inventory_locations"("org_node_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "inventory_docs" ADD CONSTRAINT "inventory_docs_target_org_node_id_inventory_locations_org_node_id_fk" FOREIGN KEY ("target_org_node_id") REFERENCES "public"."inventory_locations"("org_node_id") ON DELETE no action ON UPDATE no action;

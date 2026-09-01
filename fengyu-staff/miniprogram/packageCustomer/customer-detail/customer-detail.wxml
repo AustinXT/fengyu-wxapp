@@ -476,7 +476,7 @@
           <view class="profile-editor__search">
             <van-search
               value="{{promoterSearchKeyword}}"
-              placeholder="输入员工姓名或手机号（至少3位）"
+              placeholder="输入员工姓名或手机号（至少2个字符）"
               show-action
               use-action-slot
               loading="{{promoterSearchLoading}}"

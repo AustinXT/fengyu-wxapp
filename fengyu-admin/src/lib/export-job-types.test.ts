@@ -22,3 +22,11 @@ describe('退款导出权限', () => {
     expect(EXPORT_PERMISSION_ACTIONS).toContain('sale_order:refund_approve')
   })
 })
+
+describe('回款明细导出权限', () => {
+  it('复用订单查看权限并注册任务类型', () => {
+    expect(EXPORT_PERMISSIONS_BY_TYPE.payments).toEqual(['sale_order:list'])
+    expect(findExportPermissionAction('payments', ['sale_order:list']))
+      .toBe('sale_order:list')
+  })
+})

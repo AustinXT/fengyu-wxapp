@@ -27,8 +27,8 @@ import { Button } from '@/components/ui/button'
 import { DataTable, type Column } from '@/components/ui/data-table'
 import { Dialog, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import InventoryLocationFilter from '@/components/inventory-location-filter'
-import { Input } from '@/components/ui/input'
 import { DatePicker } from '@/components/ui/date-picker'
+import { Input } from '@/components/ui/input'
 import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
@@ -421,7 +421,7 @@ function CreateDocDialog({
               <option key={type} value={type}>{type}</option>
             ))}
           </Select>
-          <DatePicker value={docDate} onValueChange={setDocDate} />
+          <DatePicker value={docDate} onValueChange={setDocDate} aria-label="单据日期" />
           <Select
             value={sourceOrgNodeId}
             onChange={(e) => {
@@ -492,7 +492,7 @@ function CreateDocDialog({
                 ))}
               </Select>
               <Input placeholder="批号" value={item.batchNo} onChange={(e) => updateItem(index, { batchNo: e.target.value })} />
-              <DatePicker value={item.expiryDate} onValueChange={(value) => updateItem(index, { expiryDate: value })} />
+              <DatePicker value={item.expiryDate} onValueChange={(value) => updateItem(index, { expiryDate: value })} aria-label={`明细 ${index + 1} 效期`} />
               <Input placeholder="数量" value={item.quantity} onChange={(e) => updateItem(index, { quantity: e.target.value })} />
               <Input placeholder="原因" value={item.reason} onChange={(e) => updateItem(index, { reason: e.target.value })} />
               <Button

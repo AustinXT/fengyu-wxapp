@@ -264,29 +264,15 @@
     {
       "idx": 37,
       "version": "7",
-      "when": 1787901375973,
-      "tag": "0037_bright_the_liberteens",
+      "when": 1788196514087,
+      "tag": "0037_abandoned_talisman",
       "breakpoints": true
     },
     {
       "idx": 38,
       "version": "7",
-      "when": 1788190511611,
-      "tag": "0038_mixed_stellaris",
-      "breakpoints": true
-    },
-    {
-      "idx": 39,
-      "version": "7",
-      "when": 1788190544205,
-      "tag": "0039_melted_rachel_grey",
-      "breakpoints": true
-    },
-    {
-      "idx": 40,
-      "version": "7",
-      "when": 1788191241011,
-      "tag": "0040_inventory_doc_org_endpoints",
+      "when": 1788202395781,
+      "tag": "0038_sync_mixed_payment_attribution",
       "breakpoints": true
     }
   ]

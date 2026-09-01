@@ -21,8 +21,8 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DataTable, type Column } from '@/components/ui/data-table'
 import { Dialog, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
 import { DatePicker } from '@/components/ui/date-picker'
+import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 
@@ -502,11 +502,11 @@ export default function InventoryPromotionsPage({
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">开始日期 *</label>
-              <DatePicker value={form.startsAt} disabled={readOnly || saving} onValueChange={(value) => setField('startsAt', value)} />
+              <DatePicker value={form.startsAt} disabled={readOnly || saving} onValueChange={(value) => setField('startsAt', value)} aria-label="开始日期" />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">结束日期 *</label>
-              <DatePicker value={form.endsAt} disabled={readOnly || saving} onValueChange={(value) => setField('endsAt', value)} />
+              <DatePicker value={form.endsAt} disabled={readOnly || saving} onValueChange={(value) => setField('endsAt', value)} aria-label="结束日期" />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">状态</label>

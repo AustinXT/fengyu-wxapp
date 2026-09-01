@@ -426,8 +426,16 @@ export default function OrdersPageClient({
               onChange={(e) => handleSearchChange(e.target.value)}
             />
             <ExportButton
+              label="导出订单明细"
               exportRequest={{
                 exportType: "orders",
+                payload: Object.fromEntries(searchParams.entries()),
+              }}
+            />
+            <ExportButton
+              label="导出回款明细"
+              exportRequest={{
+                exportType: "payments",
                 payload: Object.fromEntries(searchParams.entries()),
               }}
             />

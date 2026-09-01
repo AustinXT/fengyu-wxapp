@@ -30,4 +30,16 @@ test.describe('营业额分配列表', () => {
     await expect(page).toHaveURL(/allocStatus=%E5%BE%85%E5%88%86%E9%85%8D|allocStatus=待分配/)
     await expect(page.getByRole('columnheader', { name: '服务单号' })).toBeVisible()
   })
+
+  test('销售提成支持款项发生日期，服务提成仍固定按服务日期', async ({ page }) => {
+    await page.goto('/allocations')
+
+    await page.getByRole('combobox', { name: '日期口径' }).selectOption('payment')
+    await expect(page).toHaveURL(/dateBasis=payment/)
+    await expect(page.getByLabel('款项发生开始日期')).toBeVisible()
+
+    await page.getByRole('tab', { name: '服务提成' }).click()
+    await expect(page.getByRole('combobox', { name: '日期口径' })).toHaveCount(0)
+    await expect(page.getByLabel('服务开始日期')).toBeVisible()
+  })
 })

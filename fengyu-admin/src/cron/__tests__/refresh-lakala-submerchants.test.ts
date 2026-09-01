@@ -25,9 +25,10 @@ function makeDb(applications: unknown[], affectedRows = 1) {
 
   const insertValues = vi.fn().mockResolvedValue({ count: 1 })
   const insert = vi.fn(() => ({ values: insertValues }))
+  const execute = vi.fn().mockResolvedValue({ rows: [] })
 
   return {
-    db: { select, update, insert },
+    db: { select, update, insert, execute },
     select,
     orderBy,
     whereSelect,
@@ -36,6 +37,7 @@ function makeDb(applications: unknown[], affectedRows = 1) {
     updateWhere,
     insert,
     insertValues,
+    execute,
   }
 }
 
@@ -121,7 +123,7 @@ describe('cron-worker STEP - refreshLakalaSubMerchants', () => {
     const logPayload = (fixture.insertValues.mock.calls as unknown as Array<[Record<string, unknown>]>)[0][0]
     expect(JSON.stringify(logPayload)).not.toContain('merchant-should-not-be-logged')
     expect(JSON.stringify(logPayload)).not.toContain('must-not-be-persisted')
-    expect(logPayload.responsePayloadMasked).toMatchObject({
+    expect(logPayload.responsePayload).toMatchObject({
       success: true,
       wechatCount: 1,
       alipayCount: 1,

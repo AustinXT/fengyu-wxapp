@@ -1610,8 +1610,8 @@ async function searchPromoterEmployees(ctx) {
 
   const { clientUserId, keyword } = ctx.event.payload || {}
   if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
-  if (typeof keyword !== 'string' || keyword.trim().length < 3) {
-    throw new Error('INVALID_PARAMS: 请输入至少3个字符搜索员工')
+  if (typeof keyword !== 'string' || keyword.trim().length < 2) {
+    throw new Error('INVALID_PARAMS: 请输入至少2个字符搜索员工')
   }
 
   const { boundStoreId } = await assertCustomerInScope(pg, ctx.auth, clientUserId)
@@ -1847,17 +1847,19 @@ async function customerBalance(ctx) {
   }
 
   // scope 守卫：储值卡余额是账户级资产（prepaid_cards 跨店共享，无 store_id 列），
-  // 不跟门店绑定。放行「scope 内 OR 已解绑（bound_store_id IS NULL）」——
-  // 解绑顾客的余额仍可查；仅「仍绑定他店」的活跃顾客继续 PERMISSION_DENIED。
+  // 不跟门店绑定。放行「scope 内 OR 已解绑（bound_store_id IS NULL）OR 临时跨店
+  // （is_cross_store_temp）」——解绑/临时跨店顾客的余额仍可查（同 card.recharge/card.inflow
+  // 放行口径：外店可给临时跨店顾客充值，开单结算层必须能看到余额）；
+  // 仅「仍绑定他店」的普通顾客继续 PERMISSION_DENIED。
   const scopeRows = await pg.query(
-    'SELECT bound_store_id FROM client_wechat_users WHERE user_id = $1',
+    'SELECT bound_store_id, is_cross_store_temp FROM client_wechat_users WHERE user_id = $1',
     [customerUserId]
   )
   if (scopeRows.length === 0) {
     throw new Error('PERMISSION_DENIED: 顾客不存在')
   }
   const boundStoreId = scopeRows[0].bound_store_id
-  if (boundStoreId !== null && !isStoreInScope(ctx.auth, boundStoreId)) {
+  if (boundStoreId !== null && !isStoreInScope(ctx.auth, boundStoreId) && !scopeRows[0].is_cross_store_temp) {
     throw new Error('PERMISSION_DENIED: 顾客不在当前门店范围内')
   }
 

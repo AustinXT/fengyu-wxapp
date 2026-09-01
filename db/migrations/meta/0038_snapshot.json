@@ -1,6 +1,6 @@
 {
-  "id": "8209c442-797c-47e3-942d-a2f660e3c046",
-  "prevId": "1d915470-3caa-42df-a334-1dc130dba980",
+  "id": "7f0334b3-3e03-4f24-b5e6-9e3880763baf",
+  "prevId": "eed59a8f-b508-407f-9ea7-08395cadd67b",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2485,6 +2485,24 @@
           "primaryKey": false,
           "notNull": false
         },
+        "performance_attribution_date": {
+          "name": "performance_attribution_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "performance_attribution_adjusted_at": {
+          "name": "performance_attribution_adjusted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "performance_attribution_adjusted_by": {
+          "name": "performance_attribution_adjusted_by",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "allocation_status": {
           "name": "allocation_status",
           "type": "allocation_status",
@@ -2542,6 +2560,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_sop_paid_at_id": {
+          "name": "idx_sop_paid_at_id",
+          "columns": [
+            {
+              "expression": "paid_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "paid_at IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -2664,6 +2704,19 @@
             "employee_id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "sale_order_payments_performance_attribution_adjusted_by_staff_wechat_users_employee_id_fk": {
+          "name": "sale_order_payments_performance_attribution_adjusted_by_staff_wechat_users_employee_id_fk",
+          "tableFrom": "sale_order_payments",
+          "tableTo": "staff_wechat_users",
+          "columnsFrom": [
+            "performance_attribution_adjusted_by"
+          ],
+          "columnsTo": [
+            "employee_id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -4616,13 +4669,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "ARRAY[]::text[]"
-        },
-        "allowed_scope_types": {
-          "name": "allowed_scope_types",
-          "type": "text[]",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "ARRAY['总部','市场','门店']::text[]"
         },
         "can_access_admin": {
           "name": "can_access_admin",
@@ -7800,14 +7846,14 @@
           "notNull": true,
           "default": "'草稿'"
         },
-        "source_org_node_id": {
-          "name": "source_org_node_id",
+        "source_location_id": {
+          "name": "source_location_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false
         },
-        "target_org_node_id": {
-          "name": "target_org_node_id",
+        "target_location_id": {
+          "name": "target_location_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -8054,11 +8100,11 @@
           "method": "btree",
           "with": {}
         },
-        "idx_inventory_docs_source_org_node": {
-          "name": "idx_inventory_docs_source_org_node",
+        "idx_inventory_docs_source": {
+          "name": "idx_inventory_docs_source",
           "columns": [
             {
-              "expression": "source_org_node_id",
+              "expression": "source_location_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -8069,11 +8115,11 @@
           "method": "btree",
           "with": {}
         },
-        "idx_inventory_docs_target_org_node": {
-          "name": "idx_inventory_docs_target_org_node",
+        "idx_inventory_docs_target": {
+          "name": "idx_inventory_docs_target",
           "columns": [
             {
-              "expression": "target_org_node_id",
+              "expression": "target_location_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -8116,6 +8162,32 @@
         }
       },
       "foreignKeys": {
+        "inventory_docs_source_location_id_inventory_locations_location_id_fk": {
+          "name": "inventory_docs_source_location_id_inventory_locations_location_id_fk",
+          "tableFrom": "inventory_docs",
+          "tableTo": "inventory_locations",
+          "columnsFrom": [
+            "source_location_id"
+          ],
+          "columnsTo": [
+            "location_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "inventory_docs_target_location_id_inventory_locations_location_id_fk": {
+          "name": "inventory_docs_target_location_id_inventory_locations_location_id_fk",
+          "tableFrom": "inventory_docs",
+          "tableTo": "inventory_locations",
+          "columnsFrom": [
+            "target_location_id"
+          ],
+          "columnsTo": [
+            "location_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
         "inventory_docs_market_id_org_nodes_id_fk": {
           "name": "inventory_docs_market_id_org_nodes_id_fk",
           "tableFrom": "inventory_docs",
@@ -8270,11 +8342,11 @@
         },
         "chk_inventory_docs_type": {
           "name": "chk_inventory_docs_type",
-          "value": "\"inventory_docs\".\"doc_type\" IN (\n        '门店报货','市场报货','品项公司报货需求','采购订单','供应链采购订单',\n        '供应链采购入库','品项公司发货','市场采购入库','自采产品入库','分院配货',\n        '院入库','分院调货出库','分院调货入库','市场间调货出库','市场间调货入库',\n        '员工购出库','供应链员工购出库','内部领用','非凤御市场出库','市场退货','市场退货入库',\n        '供应链退货入库','院退货','院顾客产品出库','院顾客退货','市场产品报损',\n        '院产品报损','市场产品盘溢','市场库存盘点','分院库存盘点','库存转换出库',\n        '库存转换入库','期初库存'\n      )"
+          "value": "\"inventory_docs\".\"doc_type\" IN (\n        '门店报货','市场报货','品项公司报货需求','采购订单','供应链采购订单',\n        '供应链采购入库','品项公司发货','市场采购入库','自采产品入库','分院配货',\n        '院入库','分院调货出库','分院调货入库','市场间调货出库','市场间调货入库',\n        '员工购出库','内部领用','非凤御市场出库','市场退货','市场退货入库',\n        '供应链退货入库','院退货','院顾客产品出库','院顾客退货','市场产品报损',\n        '院产品报损','市场产品盘溢','市场库存盘点','分院库存盘点','库存转换出库',\n        '库存转换入库','期初库存'\n      )"
         },
-        "chk_inventory_docs_org_endpoint": {
-          "name": "chk_inventory_docs_org_endpoint",
-          "value": "\"inventory_docs\".\"source_org_node_id\" IS NOT NULL OR \"inventory_docs\".\"target_org_node_id\" IS NOT NULL"
+        "chk_inventory_docs_location_pair": {
+          "name": "chk_inventory_docs_location_pair",
+          "value": "\"inventory_docs\".\"source_location_id\" IS NULL\n        OR \"inventory_docs\".\"target_location_id\" IS NULL\n        OR \"inventory_docs\".\"source_location_id\" <> \"inventory_docs\".\"target_location_id\""
         }
       },
       "isRLSEnabled": false
@@ -8494,8 +8566,8 @@
           "method": "btree",
           "with": {}
         },
-        "uq_inventory_locations_org": {
-          "name": "uq_inventory_locations_org",
+        "idx_inventory_locations_org": {
+          "name": "idx_inventory_locations_org",
           "columns": [
             {
               "expression": "org_node_id",
@@ -8504,7 +8576,7 @@
               "nulls": "last"
             }
           ],
-          "isUnique": true,
+          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -9509,18 +9581,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "market_purchase_price_mode": {
-          "name": "market_purchase_price_mode",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "market_purchase_price_override_reason": {
-          "name": "market_purchase_price_override_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "store_purchase_price": {
           "name": "store_purchase_price",
           "type": "numeric(12, 2)",
@@ -9695,18 +9755,6 @@
         "chk_inventory_skus_prices_nonnegative": {
           "name": "chk_inventory_skus_prices_nonnegative",
           "value": "COALESCE(\"inventory_skus\".\"retail_price\", 0) >= 0\n       AND COALESCE(\"inventory_skus\".\"accounting_price\", 0) >= 0\n       AND COALESCE(\"inventory_skus\".\"supply_chain_purchase_price\", 0) >= 0\n       AND COALESCE(\"inventory_skus\".\"market_purchase_price\", 0) >= 0\n       AND COALESCE(\"inventory_skus\".\"store_purchase_price\", 0) >= 0\n       AND COALESCE(\"inventory_skus\".\"market_staff_purchase_price\", 0) >= 0\n       AND COALESCE(\"inventory_skus\".\"item_company_purchase_price\", 0) >= 0"
-        },
-        "chk_inventory_skus_market_price_mode": {
-          "name": "chk_inventory_skus_market_price_mode",
-          "value": "(\n        \"inventory_skus\".\"source_type\" = '供应链'\n        AND \"inventory_skus\".\"market_purchase_price_mode\" IN ('公式','手工覆盖')\n      ) OR (\n        \"inventory_skus\".\"source_type\" <> '供应链'\n        AND \"inventory_skus\".\"market_purchase_price_mode\" IS NULL\n        AND \"inventory_skus\".\"market_purchase_price_override_reason\" IS NULL\n      )"
-        },
-        "chk_inventory_skus_market_price_override": {
-          "name": "chk_inventory_skus_market_price_override",
-          "value": "\"inventory_skus\".\"market_purchase_price_mode\" <> '手工覆盖'\n        OR (\n          \"inventory_skus\".\"market_purchase_price\" IS NOT NULL\n          AND NULLIF(BTRIM(\"inventory_skus\".\"market_purchase_price_override_reason\"), '') IS NOT NULL\n        )"
-        },
-        "chk_inventory_skus_market_price_formula": {
-          "name": "chk_inventory_skus_market_price_formula",
-          "value": "\"inventory_skus\".\"market_purchase_price_mode\" <> '公式'\n        OR (\n          \"inventory_skus\".\"market_purchase_price_override_reason\" IS NULL\n          AND (\n            \"inventory_skus\".\"accounting_price\" IS NULL\n            OR \"inventory_skus\".\"market_purchase_discount\" IS NULL\n            OR \"inventory_skus\".\"market_purchase_price\" = ROUND(\n              \"inventory_skus\".\"accounting_price\" * CASE\n                WHEN \"inventory_skus\".\"market_purchase_discount\" > 1\n                  THEN \"inventory_skus\".\"market_purchase_discount\" / 100\n                ELSE \"inventory_skus\".\"market_purchase_discount\"\n              END,\n              2\n            )\n          )\n        )"
         }
       },
       "isRLSEnabled": false
@@ -11859,7 +11907,7 @@
           "notNull": true
         }
       },
-      "definition": "\n  WITH performance_events AS (\n    \n  WITH classified AS (\n    SELECT\n      sop.id AS sale_payment_id,\n      sop.sale_order_id,\n      so.store_id,\n      so.sale_order_type,\n      so.legacy_source,\n      sop.change_type,\n      sop.payment_method,\n      sop.status,\n      sop.amount,\n      sop.paid_at,\n      so.performance_attribution_date,\n      (\n        sop.status = '已支付'\n        AND sop.amount::numeric > 0\n        AND sop.change_type IN ('首次支付', '回款', '储值卡抵扣')\n        AND NOT EXISTS (\n          SELECT 1\n          FROM sale_order_payments prior\n          WHERE prior.sale_order_id = sop.sale_order_id\n            AND prior.status = '已支付'\n            AND prior.amount::numeric > 0\n            AND prior.change_type IN ('首次支付', '回款', '储值卡抵扣')\n            AND (\n              COALESCE(prior.paid_at, prior.created_at),\n              prior.id\n            ) < (\n              COALESCE(sop.paid_at, sop.created_at),\n              sop.id\n            )\n        )\n      ) AS is_initial_event\n    FROM sale_order_payments sop\n    JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id\n  )\n  SELECT\n    sale_payment_id,\n    sale_order_id,\n    store_id,\n    sale_order_type,\n    legacy_source,\n    change_type,\n    payment_method,\n    status,\n    amount,\n    paid_at,\n    CASE\n      WHEN is_initial_event THEN performance_attribution_date\n      ELSE (COALESCE(paid_at, CURRENT_TIMESTAMP) AT TIME ZONE 'Asia/Shanghai')::date\n    END AS performance_date,\n    is_initial_event\n  FROM classified\n\n  ),\n  paid_receipts AS (\n    SELECT\n      spir.id,\n      spir.sale_payment_id,\n      spir.sale_order_id,\n      spir.sale_item_id,\n      spir.amount,\n      spir.sales_category,\n      spe.store_id,\n      spe.change_type,\n      spe.performance_date,\n      spe.is_initial_event\n    FROM sale_payment_item_receipts spir\n    JOIN performance_events spe\n      ON spe.sale_payment_id = spir.sale_payment_id\n     AND spe.status = '已支付'\n  ),\n  receipt_totals AS (\n    SELECT sale_item_id, SUM(amount)::numeric(10, 2) AS amount\n    FROM paid_receipts\n    GROUP BY sale_item_id\n  ),\n  residuals AS (\n    SELECT\n      si.sale_item_id,\n      si.sale_order_id,\n      so.store_id,\n      ROUND(si.received::numeric - COALESCE(rt.amount, 0)::numeric, 2)::numeric(10, 2) AS amount,\n      si.sales_category,\n      so.performance_attribution_date\n    FROM sale_items si\n    JOIN sale_orders so ON so.sale_order_id = si.sale_order_id\n    LEFT JOIN receipt_totals rt ON rt.sale_item_id = si.sale_item_id\n    WHERE ROUND(si.received::numeric - COALESCE(rt.amount, 0)::numeric, 2) <> 0\n  )\n  SELECT\n    'receipt:' || pr.id::text AS event_key,\n    pr.id AS receipt_id,\n    pr.sale_payment_id,\n    pr.sale_order_id,\n    pr.sale_item_id,\n    pr.store_id,\n    pr.amount,\n    pr.sales_category,\n    pr.change_type,\n    pr.performance_date,\n    pr.is_initial_event,\n    false AS is_legacy_residual\n  FROM paid_receipts pr\n  UNION ALL\n  SELECT\n    'residual:' || r.sale_item_id AS event_key,\n    NULL::bigint AS receipt_id,\n    NULL::bigint AS sale_payment_id,\n    r.sale_order_id,\n    r.sale_item_id,\n    r.store_id,\n    r.amount,\n    r.sales_category,\n    '首次支付'::payment_change_type AS change_type,\n    r.performance_attribution_date AS performance_date,\n    true AS is_initial_event,\n    true AS is_legacy_residual\n  FROM residuals r\n",
+      "definition": "\n  WITH performance_events AS (\n    \n  WITH classified AS (\n    SELECT\n      sop.id AS sale_payment_id,\n      sop.sale_order_id,\n      so.store_id,\n      so.sale_order_type,\n      so.legacy_source,\n      sop.change_type,\n      sop.payment_method,\n      sop.status,\n      sop.amount,\n      sop.paid_at,\n      sop.created_at,\n      sop.performance_attribution_date AS payment_performance_attribution_date,\n      so.performance_attribution_date AS order_performance_attribution_date,\n      paired_payment.performance_date AS paired_payment_performance_date,\n      (\n        sop.status = '已支付'\n        AND sop.amount::numeric > 0\n        AND sop.change_type IN ('首次支付', '回款', '储值卡抵扣')\n        AND NOT EXISTS (\n          SELECT 1\n          FROM sale_order_payments prior\n          WHERE prior.sale_order_id = sop.sale_order_id\n            AND prior.status = '已支付'\n            AND prior.amount::numeric > 0\n            AND prior.change_type IN ('首次支付', '回款', '储值卡抵扣')\n            AND (\n              COALESCE(prior.paid_at, prior.created_at),\n              prior.id\n            ) < (\n              COALESCE(sop.paid_at, sop.created_at),\n              sop.id\n            )\n        )\n      ) AS is_initial_event\n    FROM sale_order_payments sop\n    JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id\n    LEFT JOIN LATERAL (\n      SELECT\n        CASE\n          WHEN primary_payment.change_type = '首次支付'\n            THEN so.performance_attribution_date\n          ELSE COALESCE(\n            primary_payment.performance_attribution_date,\n            (primary_payment.paid_at AT TIME ZONE 'Asia/Shanghai')::date,\n            (primary_payment.created_at AT TIME ZONE 'Asia/Shanghai')::date\n          )\n        END AS performance_date\n      FROM sale_order_payments primary_payment\n      WHERE sop.change_type = '储值卡抵扣'\n        AND primary_payment.sale_order_id = sop.sale_order_id\n        AND primary_payment.change_type IN ('首次支付', '回款')\n        AND primary_payment.status = sop.status\n        AND primary_payment.paid_at IS NOT DISTINCT FROM sop.paid_at\n      ORDER BY\n        CASE WHEN primary_payment.change_type = '首次支付' THEN 0 ELSE 1 END,\n        primary_payment.id\n      LIMIT 1\n    ) paired_payment ON true\n  )\n  SELECT\n    sale_payment_id,\n    sale_order_id,\n    store_id,\n    sale_order_type,\n    legacy_source,\n    change_type,\n    payment_method,\n    status,\n    amount,\n    paid_at,\n    CASE\n      WHEN change_type = '首次支付' THEN order_performance_attribution_date\n      WHEN change_type = '储值卡抵扣' AND paired_payment_performance_date IS NOT NULL\n        THEN paired_payment_performance_date\n      ELSE COALESCE(\n        payment_performance_attribution_date,\n        (paid_at AT TIME ZONE 'Asia/Shanghai')::date,\n        (created_at AT TIME ZONE 'Asia/Shanghai')::date\n      )\n    END AS performance_date,\n    is_initial_event\n  FROM classified\n\n  ),\n  paid_receipts AS (\n    SELECT\n      spir.id,\n      spir.sale_payment_id,\n      spir.sale_order_id,\n      spir.sale_item_id,\n      spir.amount,\n      spir.sales_category,\n      spe.store_id,\n      spe.change_type,\n      spe.performance_date,\n      spe.is_initial_event\n    FROM sale_payment_item_receipts spir\n    JOIN performance_events spe\n      ON spe.sale_payment_id = spir.sale_payment_id\n     AND spe.status = '已支付'\n  ),\n  receipt_totals AS (\n    SELECT sale_item_id, SUM(amount)::numeric(10, 2) AS amount\n    FROM paid_receipts\n    GROUP BY sale_item_id\n  ),\n  residuals AS (\n    SELECT\n      si.sale_item_id,\n      si.sale_order_id,\n      so.store_id,\n      ROUND(si.received::numeric - COALESCE(rt.amount, 0)::numeric, 2)::numeric(10, 2) AS amount,\n      si.sales_category,\n      so.performance_attribution_date\n    FROM sale_items si\n    JOIN sale_orders so ON so.sale_order_id = si.sale_order_id\n    LEFT JOIN receipt_totals rt ON rt.sale_item_id = si.sale_item_id\n    WHERE ROUND(si.received::numeric - COALESCE(rt.amount, 0)::numeric, 2) <> 0\n  )\n  SELECT\n    'receipt:' || pr.id::text AS event_key,\n    pr.id AS receipt_id,\n    pr.sale_payment_id,\n    pr.sale_order_id,\n    pr.sale_item_id,\n    pr.store_id,\n    pr.amount,\n    pr.sales_category,\n    pr.change_type,\n    pr.performance_date,\n    pr.is_initial_event,\n    false AS is_legacy_residual\n  FROM paid_receipts pr\n  UNION ALL\n  SELECT\n    'residual:' || r.sale_item_id AS event_key,\n    NULL::bigint AS receipt_id,\n    NULL::bigint AS sale_payment_id,\n    r.sale_order_id,\n    r.sale_item_id,\n    r.store_id,\n    r.amount,\n    r.sales_category,\n    '首次支付'::payment_change_type AS change_type,\n    r.performance_attribution_date AS performance_date,\n    true AS is_initial_event,\n    true AS is_legacy_residual\n  FROM residuals r\n",
       "name": "sale_item_performance_events",
       "schema": "public",
       "isExisting": false,
@@ -11944,7 +11992,7 @@
           "notNull": true
         }
       },
-      "definition": "\n  WITH classified AS (\n    SELECT\n      sop.id AS sale_payment_id,\n      sop.sale_order_id,\n      so.store_id,\n      so.sale_order_type,\n      so.legacy_source,\n      sop.change_type,\n      sop.payment_method,\n      sop.status,\n      sop.amount,\n      sop.paid_at,\n      so.performance_attribution_date,\n      (\n        sop.status = '已支付'\n        AND sop.amount::numeric > 0\n        AND sop.change_type IN ('首次支付', '回款', '储值卡抵扣')\n        AND NOT EXISTS (\n          SELECT 1\n          FROM sale_order_payments prior\n          WHERE prior.sale_order_id = sop.sale_order_id\n            AND prior.status = '已支付'\n            AND prior.amount::numeric > 0\n            AND prior.change_type IN ('首次支付', '回款', '储值卡抵扣')\n            AND (\n              COALESCE(prior.paid_at, prior.created_at),\n              prior.id\n            ) < (\n              COALESCE(sop.paid_at, sop.created_at),\n              sop.id\n            )\n        )\n      ) AS is_initial_event\n    FROM sale_order_payments sop\n    JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id\n  )\n  SELECT\n    sale_payment_id,\n    sale_order_id,\n    store_id,\n    sale_order_type,\n    legacy_source,\n    change_type,\n    payment_method,\n    status,\n    amount,\n    paid_at,\n    CASE\n      WHEN is_initial_event THEN performance_attribution_date\n      ELSE (COALESCE(paid_at, CURRENT_TIMESTAMP) AT TIME ZONE 'Asia/Shanghai')::date\n    END AS performance_date,\n    is_initial_event\n  FROM classified\n",
+      "definition": "\n  WITH classified AS (\n    SELECT\n      sop.id AS sale_payment_id,\n      sop.sale_order_id,\n      so.store_id,\n      so.sale_order_type,\n      so.legacy_source,\n      sop.change_type,\n      sop.payment_method,\n      sop.status,\n      sop.amount,\n      sop.paid_at,\n      sop.created_at,\n      sop.performance_attribution_date AS payment_performance_attribution_date,\n      so.performance_attribution_date AS order_performance_attribution_date,\n      paired_payment.performance_date AS paired_payment_performance_date,\n      (\n        sop.status = '已支付'\n        AND sop.amount::numeric > 0\n        AND sop.change_type IN ('首次支付', '回款', '储值卡抵扣')\n        AND NOT EXISTS (\n          SELECT 1\n          FROM sale_order_payments prior\n          WHERE prior.sale_order_id = sop.sale_order_id\n            AND prior.status = '已支付'\n            AND prior.amount::numeric > 0\n            AND prior.change_type IN ('首次支付', '回款', '储值卡抵扣')\n            AND (\n              COALESCE(prior.paid_at, prior.created_at),\n              prior.id\n            ) < (\n              COALESCE(sop.paid_at, sop.created_at),\n              sop.id\n            )\n        )\n      ) AS is_initial_event\n    FROM sale_order_payments sop\n    JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id\n    LEFT JOIN LATERAL (\n      SELECT\n        CASE\n          WHEN primary_payment.change_type = '首次支付'\n            THEN so.performance_attribution_date\n          ELSE COALESCE(\n            primary_payment.performance_attribution_date,\n            (primary_payment.paid_at AT TIME ZONE 'Asia/Shanghai')::date,\n            (primary_payment.created_at AT TIME ZONE 'Asia/Shanghai')::date\n          )\n        END AS performance_date\n      FROM sale_order_payments primary_payment\n      WHERE sop.change_type = '储值卡抵扣'\n        AND primary_payment.sale_order_id = sop.sale_order_id\n        AND primary_payment.change_type IN ('首次支付', '回款')\n        AND primary_payment.status = sop.status\n        AND primary_payment.paid_at IS NOT DISTINCT FROM sop.paid_at\n      ORDER BY\n        CASE WHEN primary_payment.change_type = '首次支付' THEN 0 ELSE 1 END,\n        primary_payment.id\n      LIMIT 1\n    ) paired_payment ON true\n  )\n  SELECT\n    sale_payment_id,\n    sale_order_id,\n    store_id,\n    sale_order_type,\n    legacy_source,\n    change_type,\n    payment_method,\n    status,\n    amount,\n    paid_at,\n    CASE\n      WHEN change_type = '首次支付' THEN order_performance_attribution_date\n      WHEN change_type = '储值卡抵扣' AND paired_payment_performance_date IS NOT NULL\n        THEN paired_payment_performance_date\n      ELSE COALESCE(\n        payment_performance_attribution_date,\n        (paid_at AT TIME ZONE 'Asia/Shanghai')::date,\n        (created_at AT TIME ZONE 'Asia/Shanghai')::date\n      )\n    END AS performance_date,\n    is_initial_event\n  FROM classified\n",
       "name": "sale_order_performance_events",
       "schema": "public",
       "isExisting": false,

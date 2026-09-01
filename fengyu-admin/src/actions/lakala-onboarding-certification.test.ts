@@ -6,6 +6,7 @@ vi.mock('@/db', () => ({
     insert: vi.fn(),
     update: vi.fn(),
     transaction: vi.fn(),
+    execute: vi.fn().mockResolvedValue({ rows: [] }),
   },
 }))
 
@@ -109,7 +110,7 @@ vi.mock('@/lib/lakala-onboarding', () => ({
   getEContractOrgId: vi.fn(),
   getEContractType: vi.fn(),
   getOnboardingActivityId: vi.fn(),
-  getOnboardingOrgCode: vi.fn(),
+  getOrgCode: vi.fn().mockReturnValue('TEST_ORG_CODE'),
   getOnboardingUserNo: vi.fn(),
   getServerOnboardingFeePolicy: vi.fn(),
   lakalaAddMerchant: vi.fn(),

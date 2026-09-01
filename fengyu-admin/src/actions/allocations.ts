@@ -13,7 +13,7 @@ import { logOperation } from '@/lib/operation-log'
 import { hasPendingRefund, hasSettledRefundForPayment } from '@/lib/refund-cascade'
 import { rowsAffected } from '@/lib/pg-rows'
 import { refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
-import { nowTs, beijingBoundaryTs } from '@/lib/db-time'
+import { nowTs, beijingBoundaryTs, beijingNextDayBoundaryTs } from '@/lib/db-time'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { getInvalidEmployeeAssignmentId } from '@/lib/employee-assignment-server'
 
@@ -269,7 +269,8 @@ export const getPendingPayments = withPermission(
       marketId?: string
       storeId?: string
       search?: string
-      /** 按下单日期（sale_order_datetime）过滤的日期区间，'YYYY-MM-DD' 串；匹配 UI『下单日期』标签，与导出 buildOrderConditions 同口径 */
+      /** 日期筛选口径：默认按下单时间；payment 按当前回款行的发生时间。 */
+      dateBasis?: 'order' | 'payment'
       dateFrom?: string
       dateTo?: string
     } = {},
@@ -297,6 +298,9 @@ export const getPendingPayments = withPermission(
     const offset = (page - 1) * pageSize
 
     const scopeIds = session.permissions.scopeStoreIds
+    const dateColumn = params.dateBasis === 'payment'
+      ? saleOrderPayments.paidAt
+      : saleOrders.saleOrderDatetime
     const conds = [
       params.allocationStatus
         ? eq(saleOrderPayments.allocationStatus, params.allocationStatus)
@@ -331,11 +335,10 @@ export const getPendingPayments = withPermission(
         : inArray(saleOrders.storeId, scopeIds.length > 0 ? scopeIds : ['__none__']),
       params.marketId ? storeInMarketCondition(saleOrders.storeId, params.marketId) : undefined,
       params.storeId ? eq(saleOrders.storeId, params.storeId) : undefined,
-      // 按下单日期过滤（匹配 UI「下单日期」标签；与导出 buildOrderConditions 用 sale_order_datetime 同口径）
       params.dateFrom
-        ? gte(saleOrders.saleOrderDatetime, beijingBoundaryTs(params.dateFrom, '00:00:00'))
+        ? gte(dateColumn, beijingBoundaryTs(params.dateFrom, '00:00:00'))
         : undefined,
-      params.dateTo ? lt(saleOrders.saleOrderDatetime, beijingBoundaryTs(params.dateTo, '23:59:59')) : undefined,
+      params.dateTo ? lt(dateColumn, beijingNextDayBoundaryTs(params.dateTo)) : undefined,
       params.search
         ? or(
             ilike(saleOrders.customerName, `%${params.search}%`),

@@ -16,6 +16,10 @@ export const TARGETS = Object.freeze({
     remoteDir: '/root/proj.xt.com/fengyu-wxapp/docker',
     migrationHost: '47.113.202.7',
     containerDbHost: '47.113.202.7',
+    // CloudBase 标识归属断言用（方案 A：envId 随 TARGETS 入库，与 PG host 断言同一防线）
+    cloudBaseEnvId: 'cloud1-3gpht4b01ff88838',
+    staffEnvId: 'cloud1-9g3ydpg512eecc99',
+    cdnBase: 'https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la',
   }),
   test: Object.freeze({
     sshHost: 'sqlserver101',
@@ -23,6 +27,10 @@ export const TARGETS = Object.freeze({
     remoteDir: '/www/wwwroot/fengyu-admin/docker',
     migrationHost: '101.34.242.103',
     containerDbHost: '172.18.0.1',
+    // test 与 prod 共用同一套 CloudBase 环境（test 仅 PG 落在独立机器）
+    cloudBaseEnvId: 'fengyu-client-prod-d1cga6909c0ba',
+    staffEnvId: 'fengyu-staff-prod-d4dtv6052992e9',
+    cdnBase: 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la',
   }),
   prod: Object.freeze({
     sshHost: 'fengyu-prod',
@@ -30,6 +38,9 @@ export const TARGETS = Object.freeze({
     remoteDir: '/www/wwwroot/fengyu-admin/docker',
     migrationHost: '118.178.196.26',
     containerDbHost: '118.178.196.26',
+    cloudBaseEnvId: 'fengyu-client-prod-d1cga6909c0ba',
+    staffEnvId: 'fengyu-staff-prod-d4dtv6052992e9',
+    cdnBase: 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la',
   }),
 })
 
@@ -85,6 +96,20 @@ const ADMIN_PASSTHROUGH = [
   'ALIYUN_ACCESS_KEY_ID',
   'ALIYUN_ACCESS_KEY_SECRET',
   'ALIYUN_OCR_ENDPOINT',
+  'ANALYST_INTERNAL_ORIGIN',
+  'MSSQL_CONNECTION_STRING',
+]
+
+// v2.0 首次启用严格配置门禁时允许从模板补齐的非秘密运行时默认值。
+// 秘密、数据库地址和环境标识绝不能从 example 猜测，必须沿用真实 env 或历史 staff 账号文件。
+const LEGACY_SAFE_DEFAULT_KEYS = [
+  'SYSTEM_RUNTIME_DIR',
+  'DATABASE_BACKUP_REQUEST_DIR',
+  'DATABASE_BACKUP_DIR',
+  'SCHEDULED_BACKUP_RETENTION_DAYS',
+  'MANUAL_BACKUP_RETENTION_DAYS',
+  'WECHAT_BOT_WEBHOOK_URL',
+  'COOKIE_DOMAIN',
   'ANALYST_INTERNAL_ORIGIN',
 ]
 
@@ -148,6 +173,33 @@ function fail(message) {
   throw new Error(message)
 }
 
+function endsWithUnescapedQuote(text) {
+  if (!text.endsWith('"')) return false
+  let backslashCount = 0
+  for (let index = text.length - 2; index >= 0 && text[index] === '\\'; index -= 1) {
+    backslashCount += 1
+  }
+  return backslashCount % 2 === 0
+}
+
+function decodeQuoted(body) {
+  let decoded = ''
+  for (let index = 0; index < body.length; index += 1) {
+    const character = body[index]
+    if (character !== '\\' || index + 1 >= body.length) {
+      decoded += character
+      continue
+    }
+    const next = body[index + 1]
+    if (next === 'n') decoded += '\n'
+    else if (next === '"') decoded += '"'
+    else if (next === '\\') decoded += '\\'
+    else decoded += `\\${next}`
+    index += 1
+  }
+  return decoded
+}
+
 export function parseEnv(text) {
   const result = {}
   const lines = text.replace(/\r\n/g, '\n').split('\n')
@@ -157,24 +209,26 @@ export function parseEnv(text) {
     const key = match[1]
     if (Object.hasOwn(result, key)) fail(`duplicate environment key: ${key}`)
     let value = match[2]
-    if (value.startsWith('"') && !(value.length > 1 && value.endsWith('"'))) {
+    if (value.startsWith('"') && !endsWithUnescapedQuote(value)) {
+      const startLine = index + 1
       while (index + 1 < lines.length) {
         value += `\n${lines[++index]}`
-        if (lines[index].endsWith('"') && !lines[index].endsWith('\\"')) break
+        if (endsWithUnescapedQuote(value)) break
+      }
+      if (!endsWithUnescapedQuote(value)) {
+        fail(`env file line ${startLine}: KEY "${key}" has an unterminated double-quoted value (quote opened but never closed before end of file)`)
       }
     }
-    if (value.startsWith('"') && value.endsWith('"')) {
-      value = value.slice(1, -1)
-        .replace(/\\n/g, '\n')
-        .replace(/\\"/g, '"')
-        .replace(/\\\\/g, '\\')
+    if (value.startsWith('"') && endsWithUnescapedQuote(value)) {
+      value = decodeQuoted(value.slice(1, -1))
     }
     result[key] = value
   }
   return result
 }
 
-function encodeEnvValue(value) {
+// envs 源文件编码必须保留字面 $，绝不能转换为 compose 专用的 $$。
+export function encodeEnvValue(value) {
   const stringValue = String(value ?? '')
   if (!/[\n\r"#]|^\s|\s$/.test(stringValue)) return stringValue
   return `"${stringValue
@@ -183,10 +237,89 @@ function encodeEnvValue(value) {
     .replace(/\r?\n/g, '\\n')}"`
 }
 
+// compose env_file 消费侧会插值 $；双写为 $$ 才能保留字面值。
+function encodeComposeEnvValue(value) {
+  return encodeEnvValue(value).replace(/\$/g, () => '$$')
+}
+
 export function renderEnv(values) {
   return `${Object.entries(values)
-    .map(([key, value]) => `${key}=${encodeEnvValue(value)}`)
+    .map(([key, value]) => `${key}=${encodeComposeEnvValue(value)}`)
     .join('\n')}\n`
+}
+
+function templateKeys(text) {
+  return [...text.matchAll(/^([A-Za-z_][A-Za-z0-9_]*)=/gm)].map((match) => match[1])
+}
+
+function renderFromTemplate(template, values) {
+  return template.replace(
+    /^([A-Za-z_][A-Za-z0-9_]*)=.*$/gm,
+    (_, key) => `${key}=${encodeEnvValue(values[key])}`,
+  )
+}
+
+function readOptionalEnv(file) {
+  return fs.existsSync(file) ? parseEnv(fs.readFileSync(file, 'utf8')) : {}
+}
+
+/**
+ * 将 v2.0 之前的三个真实 env 原地迁移到严格门禁要求：
+ * - 保留各环境已有真值；
+ * - staff 独立账号沿用旧 fengyu-staff/.env（test 优先沿用 prod）；
+ * - 仅补齐明确列出的非秘密模板默认值；
+ * - 三份文件全部校验通过后再以 0600 写回。
+ */
+export function reconcileLegacyConfigFiles(options = {}) {
+  const root = options.root || ROOT
+  const templateRoot = options.templateRoot || root
+  const envDir = path.join(root, 'envs')
+  const templateEnvDir = path.join(templateRoot, 'envs')
+  const templates = {
+    dev: fs.readFileSync(path.join(templateEnvDir, 'dev.env.example'), 'utf8'),
+    test: fs.readFileSync(path.join(templateEnvDir, 'prod.env.example'), 'utf8'),
+    prod: fs.readFileSync(path.join(templateEnvDir, 'prod.env.example'), 'utf8'),
+  }
+  const templateValues = Object.fromEntries(
+    Object.entries(templates).map(([env, text]) => [env, parseEnv(text)]),
+  )
+  const current = Object.fromEntries(['dev', 'test', 'prod'].map((env) => [
+    env,
+    readOptionalEnv(path.join(envDir, `${env}.env`)),
+  ]))
+  const legacyStaff = readOptionalEnv(path.join(root, 'fengyu-staff/.env'))
+
+  const configs = Object.fromEntries(['dev', 'test', 'prod'].map((env) => {
+    const config = { ...current[env], ENV_PROFILE: env }
+    for (const key of LEGACY_SAFE_DEFAULT_KEYS) {
+      const templateDefault = key === 'COOKIE_DOMAIN' && env !== 'prod' ? '' : templateValues[env][key]
+      if (!Object.hasOwn(config, key) || (!config[key] && templateDefault)) {
+        config[key] = templateDefault
+      }
+    }
+    // dev/test 当前均以 IP 访问；注入生产父域会令浏览器拒收登录 Cookie。
+    if (env !== 'prod') config.COOKIE_DOMAIN = ''
+    const staffFallback = env === 'test' ? current.prod : {}
+    config.STAFF_TENCENTCLOUD_SECRETID ||= (
+      staffFallback.STAFF_TENCENTCLOUD_SECRETID || legacyStaff.TENCENTCLOUD_SECRETID
+    )
+    config.STAFF_TENCENTCLOUD_SECRETKEY ||= (
+      staffFallback.STAFF_TENCENTCLOUD_SECRETKEY || legacyStaff.TENCENTCLOUD_SECRETKEY
+    )
+    validateConfig(env, config)
+    return [env, config]
+  }))
+
+  for (const env of ['dev', 'test', 'prod']) {
+    const file = path.join(envDir, `${env}.env`)
+    const keys = templateKeys(templates[env])
+    const missing = keys.filter((key) => configs[env][key] === undefined)
+    if (missing.length) fail(`${path.relative(root, file)} missing keys after reconcile: ${missing.join(', ')}`)
+    fs.writeFileSync(file, renderFromTemplate(templates[env], configs[env]), { mode: 0o600 })
+    fs.chmodSync(file, 0o600)
+  }
+
+  return { environments: ['dev', 'test', 'prod'], keyCount: templateKeys(templates.prod).length }
 }
 
 function assertUrl(name, value) {
@@ -248,7 +381,16 @@ export function validateConfig(env, config) {
 
   assertDatabaseUrl('PG_CONNECTION_STRING', config.PG_CONNECTION_STRING, target.migrationHost)
   assertDatabaseUrl('ADMIN_DATABASE_URL', config.ADMIN_DATABASE_URL, target.containerDbHost)
+  if (config.CLOUDBASE_ENV_ID !== target.cloudBaseEnvId) {
+    fail(`CLOUDBASE_ENV_ID does not belong to the ${env} target (expected ${target.cloudBaseEnvId}) — cross-environment config?`)
+  }
+  if (config.STAFF_ENV_ID !== target.staffEnvId) {
+    fail(`STAFF_ENV_ID does not belong to the ${env} target (expected ${target.staffEnvId}) — cross-environment config?`)
+  }
   assertUrl('CDN_BASE', config.CDN_BASE)
+  if (config.CDN_BASE !== target.cdnBase) {
+    fail(`CDN_BASE does not belong to the ${env} target (expected ${target.cdnBase}) — cross-environment config?`)
+  }
   assertUrl('ANALYST_ADMIN_LOGIN_URL', config.ANALYST_ADMIN_LOGIN_URL)
   assertUrl('ANALYST_ADMIN_ORIGIN', config.ANALYST_ADMIN_ORIGIN)
   assertUrl('ANALYST_PUBLIC_ORIGIN', config.ANALYST_PUBLIC_ORIGIN)
@@ -365,9 +507,27 @@ export function renderBundle(env, outputDir, options = {}) {
   return manifest
 }
 
-export function analyzeMigrationState(entries, remoteRows, hashes) {
+export const KNOWN_PROD_HISTORICAL_MIGRATION_ROWS = Object.freeze([
+  {
+    // 生产库历史 0034 遗留行；2026-09-01 只读核验，非当前本地 journal 的迁移。
+    created_at: '1787637056739',
+    hash: 'd4549ec0237b8f4441af860a02c0905e59e382e3c07503063f6310ec95b896bd',
+  },
+])
+
+function migrationRowKey(row) {
+  return `${String(row.created_at)}|${row.hash}`
+}
+
+export function analyzeMigrationState(entries, remoteRows, hashes, options = {}) {
   if (!remoteRows.length) return { ok: false, reason: 'migration journal is empty', pending: [] }
-  const latestRemote = [...remoteRows].sort((a, b) => Number(b.created_at) - Number(a.created_at))[0]
+  const knownHistoricalKeys = new Set((options.knownHistoricalRows ?? []).map(migrationRowKey))
+  const ignoredHistoricalRows = remoteRows.filter((row) => knownHistoricalKeys.has(migrationRowKey(row)))
+  const effectiveRemoteRows = remoteRows.filter((row) => !knownHistoricalKeys.has(migrationRowKey(row)))
+  if (!effectiveRemoteRows.length) {
+    return { ok: false, reason: 'migration journal has no local-compatible rows', pending: [] }
+  }
+  const latestRemote = [...effectiveRemoteRows].sort((a, b) => Number(b.created_at) - Number(a.created_at))[0]
   const latestWhen = Number(latestRemote.created_at)
   const localAtLatest = entries.find((entry) => Number(entry.when) === latestWhen)
   if (!localAtLatest) {
@@ -382,12 +542,33 @@ export function analyzeMigrationState(entries, remoteRows, hashes) {
     return { ok: false, reason: `latest migration hash mismatch: ${localAtLatest.tag}`, pending: [] }
   }
   const pending = entries.filter((entry) => Number(entry.when) > latestWhen).map((entry) => entry.tag)
+  const historicalRowDelta = effectiveRemoteRows.length - entries.filter((entry) => Number(entry.when) <= latestWhen).length
+  // journal 完整性必须双向一致；任一侧缺历史行都可能让缺表缺列的版本被错误放行。
+  if (historicalRowDelta < 0) {
+    return {
+      ok: false,
+      reason: `remote journal is missing ${Math.abs(historicalRowDelta)} historical migration row(s)`,
+      pending,
+      latestTag: localAtLatest.tag,
+      historicalRowDelta,
+    }
+  }
+  if (historicalRowDelta > 0) {
+    return {
+      ok: false,
+      reason: `local journal is missing ${historicalRowDelta} historical migration row(s) present on remote`,
+      pending,
+      latestTag: localAtLatest.tag,
+      historicalRowDelta,
+    }
+  }
   return {
     ok: pending.length === 0,
     reason: pending.length ? `${pending.length} pending migration(s)` : '',
     pending,
     latestTag: localAtLatest.tag,
-    historicalRowDelta: remoteRows.length - entries.filter((entry) => Number(entry.when) <= latestWhen).length,
+    historicalRowDelta,
+    ignoredHistoricalRowCount: ignoredHistoricalRows.length,
   }
 }
 
@@ -407,7 +588,9 @@ export async function checkMigrations(env, options = {}) {
     const table = await client.query("SELECT to_regclass('drizzle.__drizzle_migrations')::text AS name")
     if (!table.rows[0]?.name) fail('target database has no drizzle migration journal')
     const result = await client.query('SELECT hash, created_at FROM drizzle.__drizzle_migrations ORDER BY created_at, id')
-    const state = analyzeMigrationState(journal.entries, result.rows, hashes)
+    const state = analyzeMigrationState(journal.entries, result.rows, hashes, {
+      knownHistoricalRows: env === 'prod' ? KNOWN_PROD_HISTORICAL_MIGRATION_ROWS : [],
+    })
     if (!state.ok) {
       const detail = state.pending.length ? `: ${state.pending.join(', ')}` : ''
       fail(`${state.reason}${detail}`)
@@ -420,8 +603,18 @@ export async function checkMigrations(env, options = {}) {
 
 async function main() {
   const [command, env, outputDir] = process.argv.slice(2)
+  if (command === 'reconcile') {
+    try {
+      const result = reconcileLegacyConfigFiles()
+      console.log(`reconciled ${result.environments.join('/')} (${result.keyCount} keys, mode 0600)`)
+    } catch (error) {
+      console.error(`ERROR: ${error.message}`)
+      process.exit(1)
+    }
+    return
+  }
   if (!['dev', 'test', 'prod'].includes(env)) {
-    console.error('Usage: runtime-config.mjs <validate|render|migrations> <dev|test|prod> [output-dir]')
+    console.error('Usage: runtime-config.mjs reconcile | <validate|render|migrations> <dev|test|prod> [output-dir]')
     process.exit(1)
   }
   try {

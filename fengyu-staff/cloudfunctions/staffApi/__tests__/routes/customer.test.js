@@ -1412,27 +1412,31 @@ describe('customer.refundHistory', () => {
 // customer.searchPromoterEmployees / customer.updateProfile
 // ============================================================
 describe('customer.searchPromoterEmployees', () => {
-  test('店长仅搜索顾客当前门店在职员工并返回脱敏手机号', async () => {
-    const ctx = createManagerCtx({ clientUserId: 'u1', keyword: '138' })
+  test.each([
+    ['姓名', ' 王芳 ', '%王芳%'],
+    ['手机号', '13', '%13%'],
+  ])('店长可按%s模糊搜索顾客当前门店在职员工', async (_searchType, keyword, expectedPattern) => {
+    const ctx = createManagerCtx({ clientUserId: 'u1', keyword })
     pg.query
       .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
-      .mockResolvedValueOnce([{ employee_id: 'EMP-1', name: '王员工', phone: '13812345678', store_name: '测试店' }])
+      .mockResolvedValueOnce([{ employee_id: 'EMP-1', name: '王芳', phone: '13812345678', store_name: '测试店' }])
 
     await customerRoutes.searchPromoterEmployees(ctx)
 
     expect(ctx.result).toEqual([{
-      employeeId: 'EMP-1', name: '王员工', phoneMasked: '138****5678', storeName: '测试店',
+      employeeId: 'EMP-1', name: '王芳', phoneMasked: '138****5678', storeName: '测试店',
     }])
     const [sql, params] = pg.query.mock.calls[1]
     expect(sql).toContain('u.store_id = $1')
     expect(sql).toContain('u.is_resigned = false')
-    expect(params).toEqual(['store-001', '%138%'])
+    expect(sql).toContain('u.name ILIKE $2 OR u.phone ILIKE $2')
+    expect(params).toEqual(['store-001', expectedPattern])
   })
 
-  test('少于3个字符或普通员工调用时拒绝', async () => {
-    await expect(customerRoutes.searchPromoterEmployees(createManagerCtx({ clientUserId: 'u1', keyword: '12' })))
-      .rejects.toThrow(/至少3个字符/)
-    await expect(customerRoutes.searchPromoterEmployees(createBeauticianCtx({ clientUserId: 'u1', keyword: '138' })))
+  test('去除首尾空格后少于2个字符或普通员工调用时拒绝', async () => {
+    await expect(customerRoutes.searchPromoterEmployees(createManagerCtx({ clientUserId: 'u1', keyword: ' 王 ' })))
+      .rejects.toThrow(/至少2个字符/)
+    await expect(customerRoutes.searchPromoterEmployees(createBeauticianCtx({ clientUserId: 'u1', keyword: '13' })))
       .rejects.toThrow(/PERMISSION_DENIED/)
   })
 })
@@ -1882,10 +1886,22 @@ describe('customer.customerBalance', () => {
   test('仍绑定他店（不在 scope）顾客余额仍拒绝（scope 隔离未破坏）', async () => {
     const ctx = createManagerCtx({ customerUserId: 'cu-otherstore' })
     // scope 检查 SELECT bound_store_id → 他店，不在 scopeStoreIds 内
-    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-999' }])
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-999', is_cross_store_temp: false }])
 
     await expect(customerRoutes.customerBalance(ctx))
       .rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('临时跨店顾客（绑定他店）余额仍可查（同 card.recharge/inflow 放行口径）', async () => {
+    const ctx = createManagerCtx({ customerUserId: 'cu-temp' })
+    // scope 检查 SELECT → 绑定他店但被标记临时跨店，应放行
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-999', is_cross_store_temp: true }])
+    pg.query.mockResolvedValueOnce([{ card_id: 'card-temp', balance: '500.00' }])
+
+    await customerRoutes.customerBalance(ctx)
+
+    expect(ctx.result.cardId).toBe('card-temp')
+    expect(ctx.result.balance).toBe(500)
   })
 
   test('顾客不存在拒绝', async () => {

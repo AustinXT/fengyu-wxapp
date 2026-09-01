@@ -22,6 +22,7 @@ export default async function Page({
   const storeId = params.store || undefined
   const dateFrom = params.from || undefined
   const dateTo = params.to || undefined
+  const dateBasis = params.dateBasis === 'payment' ? 'payment' : 'order'
   const search = params.q || undefined
 
   const [filterOptions, session] = await Promise.all([getMarketStoreFilterOptions(), getSession()])
@@ -64,6 +65,7 @@ export default async function Page({
     storeId,
     dateFrom,
     dateTo,
+    dateBasis,
     search,
     page,
     pageSize,

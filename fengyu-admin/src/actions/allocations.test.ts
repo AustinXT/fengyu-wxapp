@@ -98,6 +98,7 @@ vi.mock('next/cache', () => ({
 vi.mock('@/lib/db-time', () => ({
   nowTs: vi.fn(),
   beijingBoundaryTs: vi.fn((d: string, t: string) => ({ type: 'boundary', d, t })),
+  beijingNextDayBoundaryTs: vi.fn((d: string) => ({ type: 'next-day-boundary', d })),
 }))
 
 import {
@@ -345,7 +346,7 @@ describe('getPendingPayments — 全部状态/日期筛选', () => {
     expect(hit).toHaveLength(1)
   })
 
-  it('dateFrom/dateTo → 触发 gte/lt on sale_order_datetime（修复日期筛选失效）', async () => {
+  it('下单日期口径 → 触发 sale_order_datetime 的上海自然日半开区间', async () => {
     await getPendingPayments({ dateFrom: '2026-07-01', dateTo: '2026-07-31' })
 
     expect((gte as any).mock.calls.some(([col]: any[]) => col === saleOrders.saleOrderDatetime)).toBe(true)
@@ -355,7 +356,20 @@ describe('getPendingPayments — 全部状态/日期筛选', () => {
     const gteCall = (gte as any).mock.calls.find(([col]: any[]) => col === saleOrders.saleOrderDatetime)
     expect(gteCall?.[1]).toEqual({ type: 'boundary', d: '2026-07-01', t: '00:00:00' })
     const ltCall = (lt as any).mock.calls.find(([col]: any[]) => col === saleOrders.saleOrderDatetime)
-    expect(ltCall?.[1]).toEqual({ type: 'boundary', d: '2026-07-31', t: '23:59:59' })
+    expect(ltCall?.[1]).toEqual({ type: 'next-day-boundary', d: '2026-07-31' })
+  })
+
+  it('款项发生日期口径 → 仅筛当前回款行 paid_at', async () => {
+    await getPendingPayments({
+      dateBasis: 'payment',
+      dateFrom: '2026-07-01',
+      dateTo: '2026-07-31',
+    })
+
+    expect((gte as any).mock.calls.some(([col]: any[]) => col === saleOrderPayments.paidAt)).toBe(true)
+    expect((lt as any).mock.calls.some(([col]: any[]) => col === saleOrderPayments.paidAt)).toBe(true)
+    expect((gte as any).mock.calls.some(([col]: any[]) => col === saleOrders.saleOrderDatetime)).toBe(false)
+    expect((lt as any).mock.calls.some(([col]: any[]) => col === saleOrders.saleOrderDatetime)).toBe(false)
   })
 
   it('无日期 → 不触发 gte/lt on sale_order_datetime', async () => {
