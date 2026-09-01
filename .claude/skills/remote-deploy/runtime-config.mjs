@@ -288,13 +288,8 @@ export function reconcileLegacyConfigFiles(options = {}) {
     }
     // dev 以 IP 访问；注入生产父域会令浏览器拒收登录 Cookie。
     if (env !== 'prod') config.COOKIE_DOMAIN = ''
-    const staffFallback = {}
-    config.STAFF_TENCENTCLOUD_SECRETID ||= (
-      staffFallback.STAFF_TENCENTCLOUD_SECRETID || legacyStaff.TENCENTCLOUD_SECRETID
-    )
-    config.STAFF_TENCENTCLOUD_SECRETKEY ||= (
-      staffFallback.STAFF_TENCENTCLOUD_SECRETKEY || legacyStaff.TENCENTCLOUD_SECRETKEY
-    )
+    config.STAFF_TENCENTCLOUD_SECRETID ||= legacyStaff.TENCENTCLOUD_SECRETID
+    config.STAFF_TENCENTCLOUD_SECRETKEY ||= legacyStaff.TENCENTCLOUD_SECRETKEY
     validateConfig(env, config)
     return [env, config]
   }))

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# sync-prod-to-dev.sh — 用生产库数据覆盖开发/测试库
+# sync-prod-to-dev.sh — 用生产库数据覆盖开发库（sqlserver101）
 #
 # 来源 prod : envs/prod.env  PG_CONNECTION_STRING  → 118.178.196.26:5433
 # 目标 dev  : envs/dev.env   PG_CONNECTION_STRING  → 101.34.242.103:5433（sqlserver101）
