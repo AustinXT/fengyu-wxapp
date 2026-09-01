@@ -916,16 +916,50 @@ describe('库存主体启停同步', () => {
     mockDb.execute.mockResolvedValue([])
   })
 
-  it('运行时同步继承组织停用与门店闭店状态', async () => {
+  it('运行时同步继承组织停用与门店闭店状态（探测无结果时保守执行 UPSERT）', async () => {
     await syncInventoryLocations()
 
-    const [orgSql, storeSql] = mockDb.execute.mock.calls.map(([query]) => renderSql(query))
+    const [probeSql, orgSql, storeSql] = mockDb.execute.mock.calls.map(([query]) => renderSql(query))
+    expect(probeSql).toContain('AS drifted')
     expect(orgSql).toContain('parent_location_id, is_active')
     expect(orgSql).toContain('SELECT id, type, name, id, parent_id, is_active')
     expect(orgSql).toContain('is_active = EXCLUDED.is_active')
     expect(storeSql).toContain('parent_location_id, is_active')
     expect(storeSql).toContain('COALESCE(o.is_active, false) AND NOT s.is_closed')
     expect(storeSql).toContain('is_active = EXCLUDED.is_active')
+  })
+
+  it('漂移探测覆盖全部同步列，无漂移时跳过全表 UPSERT', async () => {
+    mockDb.execute.mockResolvedValue([{ drifted: false }])
+
+    await syncInventoryLocations()
+
+    expect(mockDb.execute).toHaveBeenCalledTimes(1)
+    const probeSql = renderSql(mockDb.execute.mock.calls[0][0])
+    // 反连接缺失检测 + 每个同步列的 IS DISTINCT FROM 漂移检测缺一不可。
+    expect(probeSql).toContain('loc.location_id IS NULL')
+    expect(probeSql).toContain('loc.location_type IS DISTINCT FROM o.type')
+    expect(probeSql).toContain('loc.name IS DISTINCT FROM o.name')
+    expect(probeSql).toContain('loc.parent_location_id IS DISTINCT FROM o.parent_id')
+    expect(probeSql).toContain('loc.is_active IS DISTINCT FROM o.is_active')
+    expect(probeSql).toContain("loc.location_type IS DISTINCT FROM '门店'")
+    expect(probeSql).toContain('loc.name IS DISTINCT FROM s.store_name')
+    expect(probeSql).toContain('loc.org_node_id IS DISTINCT FROM s.org_node_id')
+    expect(probeSql).toContain('loc.store_id IS DISTINCT FROM s.store_id')
+    expect(probeSql).toContain('loc.is_active IS DISTINCT FROM (COALESCE(o.is_active, false) AND NOT s.is_closed)')
+    expect(probeSql).not.toContain('INSERT INTO inventory_locations')
+  })
+
+  it('探测到漂移时照常执行两条全表 UPSERT', async () => {
+    mockDb.execute.mockResolvedValue([{ drifted: true }])
+
+    await syncInventoryLocations()
+
+    expect(mockDb.execute).toHaveBeenCalledTimes(3)
+    const upserts = mockDb.execute.mock.calls
+      .map(([query]) => renderSql(query))
+      .filter((query) => query.includes('INSERT INTO inventory_locations'))
+    expect(upserts).toHaveLength(2)
   })
 
   it('库存主体加固迁移使用与运行时相同的库存主体启停规则', () => {
