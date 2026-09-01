@@ -601,4 +601,67 @@ describe('拉卡拉入网渠道认证闭环', () => {
     }))
     expect(logOperation).not.toHaveBeenCalled()
   })
+
+  it('商户号持有者市场为 NULL（市场节点被删残留）时收编到门店市场', async () => {
+    ;(db.select as any).mockReturnValueOnce(scopedSelection([approvedApplication()]))
+    const transaction = setupTransaction([
+      [{ storeId: 'store-1', lakalaMerchantId: null, orgNodeId: 'store-node-1' }],
+      [{ marketOrgNodeId: 'market-1' }],
+      [{ id: 'merchant-orphan', marketOrgNodeId: null }],
+    ])
+
+    const result = await confirmOnboardingExternalCertification('onb-cert')
+
+    expect(result.success).toBe(true)
+    expect(transaction.inserts).toHaveLength(0)
+    expect(transaction.writes).toContainEqual(expect.objectContaining({
+      table: lakalaMerchants,
+      values: expect.objectContaining({ marketOrgNodeId: 'market-1', enabled: false }),
+    }))
+    expect(transaction.writes).toContainEqual(expect.objectContaining({
+      table: stores,
+      values: expect.objectContaining({ lakalaMerchantId: 'merchant-orphan' }),
+    }))
+  })
+
+  it('门店未归属市场时不能把已归属市场的商户抹成无市场', async () => {
+    ;(db.select as any).mockReturnValueOnce(scopedSelection([approvedApplication()]))
+    const transaction = setupTransaction([
+      [{ storeId: 'store-1', lakalaMerchantId: null, orgNodeId: 'store-node-1' }],
+      [],
+      [{ id: 'merchant-1', marketOrgNodeId: 'market-1' }],
+    ])
+
+    const result = await confirmOnboardingExternalCertification('onb-cert')
+
+    expect(result).toEqual({ success: false, message: '门店未归属市场，无法变更已归属市场的收款商户' })
+    expect(transaction.inserts).toHaveLength(0)
+    expect(transaction.writes).not.toContainEqual(expect.objectContaining({
+      table: lakalaMerchants,
+      values: expect.objectContaining({ marketOrgNodeId: null }),
+    }))
+    expect(logOperation).not.toHaveBeenCalled()
+  })
+
+  it('商户号无持有者时复用申请单旧关联商户，须校验其市场归属', async () => {
+    ;(db.select as any).mockReturnValueOnce(scopedSelection([
+      approvedApplication({ lakalaMerchantId: 'merchant-stale' }),
+    ]))
+    const transaction = setupTransaction([
+      [{ storeId: 'store-1', lakalaMerchantId: 'merchant-stale', orgNodeId: 'store-node-1' }],
+      [{ marketOrgNodeId: 'market-1' }],
+      [],
+      [{ merchantNo: '821234567890', marketOrgNodeId: 'market-2' }],
+    ])
+
+    const result = await confirmOnboardingExternalCertification('onb-cert')
+
+    expect(result).toEqual({ success: false, message: '拉卡拉商户已属于其他市场，不能跨市场绑定' })
+    expect(transaction.inserts).toHaveLength(0)
+    expect(transaction.writes).not.toContainEqual(expect.objectContaining({
+      table: stores,
+      values: expect.objectContaining({ lakalaMerchantId: 'merchant-stale' }),
+    }))
+    expect(logOperation).not.toHaveBeenCalled()
+  })
 })
