@@ -174,6 +174,44 @@ describe('PR #113 进销存单据组织端点跨端守护（staff / admin / sche
     })
   })
 
+  describe('§4 syncInventoryLocations 短路探测两端一致（migration 0009 触发器兜底）', () => {
+    // 反连接探测的关键片段两端必须逐字一致：任何一端改探测条件（少列/改列）另一端必须同步，
+    // 否则一端认为无漂移跳过自愈、另一端反复全表 UPSERT，两端库存主体口径分叉。
+    const PROBE_FRAGMENTS = [
+      'loc.location_id IS NULL',
+      // org_nodes.type 是 pgEnum，text 比较语境无隐式转换，必须显式 ::text（42883）
+      'loc.location_type IS DISTINCT FROM o.type::text',
+      'loc.name IS DISTINCT FROM o.name',
+      'loc.org_node_id IS DISTINCT FROM o.id',
+      'loc.parent_location_id IS DISTINCT FROM o.parent_id',
+      'loc.is_active IS DISTINCT FROM o.is_active',
+      "loc.location_type IS DISTINCT FROM '门店'",
+      'loc.name IS DISTINCT FROM s.store_name',
+      'loc.org_node_id IS DISTINCT FROM s.org_node_id',
+      'loc.store_id IS DISTINCT FROM s.store_id',
+      'loc.is_active IS DISTINCT FROM (COALESCE(o.is_active, false) AND NOT s.is_closed)',
+      ') AS drifted',
+    ]
+
+    test('staff 与 admin 的漂移探测条件逐项存在', () => {
+      for (const fragment of PROBE_FRAGMENTS) {
+        expect(staffSrc.includes(fragment), `staff 缺少探测片段：${fragment}`).toBe(true)
+        expect(adminSrc.includes(fragment), `admin 缺少探测片段：${fragment}`).toBe(true)
+      }
+    })
+
+    test('两端探测后仍保留两条全表 UPSERT 自愈路径', () => {
+      const upsertRe = /INSERT INTO inventory_locations[\s\S]*?ON CONFLICT \(location_id\) DO UPDATE/g
+      expect(staffSrc.match(upsertRe)?.length ?? 0).toBeGreaterThanOrEqual(2)
+      expect(adminSrc.match(upsertRe)?.length ?? 0).toBeGreaterThanOrEqual(2)
+    })
+
+    test('两端短路判定均为保守语义（仅显式 false 才跳过）', () => {
+      expect(staffSrc).toMatch(/drifted === false\) return/)
+      expect(adminSrc).toMatch(/drifted === false\) return/)
+    })
+  })
+
   describe('Snapshot 守护（提交后任一项漂移立即可见）', () => {
     test('单据类型集合与端点口径文本快照', () => {
       expect({

@@ -63,7 +63,9 @@ import {
 } from './types'
 import { buildInventoryLocationFilterOptions } from './location-filter'
 import {
+  inventoryPriceScopeByTier,
   inventoryPriceVisibility,
+  inventoryPriceVisibilityForOrgNodes,
   inventoryScopedLocationIds,
   inventoryScopedOrgNodeIds,
 } from './access'
@@ -480,7 +482,43 @@ function makeLotKey(
   ].join('|')
 }
 
+/**
+ * 热路径短路：migration 0009 的 org_nodes / stores 触发器（INSERT + 相关列 UPDATE）
+ * 已实时维护 inventory_locations，本函数只是漂移自愈兜底。先跑只读反连接探测，
+ * 无缺失/漂移时跳过两条全表 UPSERT（原实现每次调用都重写全部主体行 + updated_at churn）。
+ * 探测无结果或结果异常时保守回退旧行为（照常 UPSERT）。
+ * ⚠ 与 staff routes/inventory.js 的 syncInventoryLocations 保持字面一致（各自副本，
+ * 由 cross-end-inventory-snapshot.test.js 守护）。
+ */
 export async function syncInventoryLocations(): Promise<void> {
+  const probe = await db.execute(sql`
+    SELECT EXISTS (
+      SELECT 1
+        FROM org_nodes o
+        LEFT JOIN inventory_locations loc ON loc.location_id = o.id
+       WHERE o.type IN ('总部','市场')
+         AND (loc.location_id IS NULL
+           OR loc.location_type IS DISTINCT FROM o.type::text
+           OR loc.name IS DISTINCT FROM o.name
+           OR loc.org_node_id IS DISTINCT FROM o.id
+           OR loc.parent_location_id IS DISTINCT FROM o.parent_id
+           OR loc.is_active IS DISTINCT FROM o.is_active)
+      UNION ALL
+      SELECT 1
+        FROM stores s
+        LEFT JOIN org_nodes o ON o.id = s.org_node_id
+        LEFT JOIN inventory_locations loc ON loc.location_id = s.store_id
+       WHERE loc.location_id IS NULL
+         OR loc.location_type IS DISTINCT FROM '门店'
+         OR loc.name IS DISTINCT FROM s.store_name
+         OR loc.org_node_id IS DISTINCT FROM s.org_node_id
+         OR loc.store_id IS DISTINCT FROM s.store_id
+         OR loc.parent_location_id IS DISTINCT FROM o.parent_id
+         OR loc.is_active IS DISTINCT FROM (COALESCE(o.is_active, false) AND NOT s.is_closed)
+    ) AS drifted
+  `)
+  const drifted = (probe as unknown as Array<{ drifted: boolean | null }> | undefined)?.[0]?.drifted
+  if (drifted === false) return
   await db.execute(sql`
     INSERT INTO inventory_locations (location_id, location_type, name, org_node_id, parent_location_id, is_active)
     SELECT id, type, name, id, parent_id, is_active
@@ -1134,6 +1172,13 @@ function skuRow(row: {
   }
 }
 
+/**
+ * 品项公司发货单业务响应不携带金额（说明.md §5.3/§10.4）：明细价格快照本就为空，
+ * 但赠送行金额被 DB 触发器按赠品规则置 0，会让单头 total_amount 汇总出 0.00 的假金额。
+ * DB 保留该快照供审计追溯，响应层对此单据类型统一遮蔽。
+ */
+const AMOUNTLESS_DOC_TYPES = new Set<InventoryDocType>(['品项公司发货'])
+
 function docRow(row: {
   doc: typeof inventoryDocs.$inferSelect
   sourceOrgNodeName: string | null
@@ -1143,6 +1188,7 @@ function docRow(row: {
   includePrice: boolean
 }): InventoryDocRow {
   const doc = row.doc
+  const includeAmount = row.includePrice && !AMOUNTLESS_DOC_TYPES.has(doc.docType as InventoryDocType)
   return {
     id: doc.id,
     docType: doc.docType as InventoryDocType,
@@ -1165,7 +1211,7 @@ function docRow(row: {
     trackingNo: doc.trackingNo,
     receiptAttachmentUrl: doc.receiptAttachmentUrl,
     totalQuantity: Number(doc.totalQuantity),
-    totalAmount: row.includePrice ? numberOrNull(doc.totalAmount) : undefined,
+    totalAmount: includeAmount ? numberOrNull(doc.totalAmount) : undefined,
     remark: doc.remark,
     auditRemark: doc.auditRemark,
     createdBy: doc.createdBy,
@@ -1182,14 +1228,30 @@ function docRow(row: {
   }
 }
 
+/**
+ * 未完成预留（提货预约等）标量子查询：与 activeReservedQuantity / pickup-records
+ * 的 GREATEST 口径一致，可用量 = 在手数量 − SUM(quantity − fulfilled − released)。
+ */
+const activeReservedQuantitySql = sql<string | number | null>`(
+  SELECT COALESCE(SUM(reservation.quantity - reservation.fulfilled_quantity - reservation.released_quantity), 0)
+    FROM inventory_stock_reservations reservation
+   WHERE reservation.lot_id = ${inventoryStockLots.id}
+     AND reservation.status = '已预留'
+)`
+
 function lotRow(
   row: {
     lot: typeof inventoryStockLots.$inferSelect
     locationName: string | null
     locationType: string | null
+    locationOrgNodeId?: string | null
+    reservedQuantity?: string | number | null
   },
-  priceVisibility: import('./types').InventoryPriceVisibility,
+  priceTiers: import('./access').InventoryPriceTierScopes,
 ): InventoryLotRow {
+  // 行级档位（§9.3/§9.5）：价格权限只对授予它的那条角色绑定覆盖的 org 生效，
+  // 批次行按其 location 对应 org 判定，防混合绑定会话跨绑定借权看价。
+  const priceVisibility = inventoryPriceVisibilityForOrgNodes(priceTiers, [row.locationOrgNodeId])
   const supplyVisible = priceVisibility === 'all' || priceVisibility === 'supply_chain'
   const marketVisible = priceVisibility === 'all' || priceVisibility === 'market'
   return {
@@ -1206,6 +1268,7 @@ function lotRow(
     expiryDate: row.lot.expiryDate,
     isGift: row.lot.isGift,
     quantityOnHand: Number(row.lot.quantityOnHand),
+    availableQuantity: Math.max(0, Number((Number(row.lot.quantityOnHand) - Number(row.reservedQuantity ?? 0)).toFixed(2))),
     supplyChainUnitCost: supplyVisible ? numberOrNull(row.lot.supplyChainUnitCost) : undefined,
     marketActualUnitPrice: supplyVisible || marketVisible ? numberOrNull(row.lot.marketActualUnitPrice) : undefined,
     storeActualUnitPrice: marketVisible ? numberOrNull(row.lot.storeActualUnitPrice) : undefined,
@@ -1726,7 +1789,13 @@ export const listInventoryLots = withPermission(
       .leftJoin(inventoryLocations, eq(inventoryStockLots.locationId, inventoryLocations.locationId))
       .where(whereClause)
     const rows = await db
-      .select({ lot: inventoryStockLots, locationName: inventoryLocations.name, locationType: inventoryLocations.locationType })
+      .select({
+        lot: inventoryStockLots,
+        locationName: inventoryLocations.name,
+        locationType: inventoryLocations.locationType,
+        locationOrgNodeId: inventoryLocations.orgNodeId,
+        reservedQuantity: activeReservedQuantitySql,
+      })
       .from(inventoryStockLots)
       .leftJoin(inventoryLocations, eq(inventoryStockLots.locationId, inventoryLocations.locationId))
       .where(whereClause)
@@ -1734,8 +1803,9 @@ export const listInventoryLots = withPermission(
       .limit(pageSize)
       .offset(offset)
     const priceVisibility = inventoryPriceVisibility(session)
+    const priceTiers = inventoryPriceScopeByTier(session)
     return {
-      data: rows.map((row) => lotRow(row, priceVisibility)),
+      data: rows.map((row) => lotRow(row, priceTiers)),
       total: countRow?.count ?? 0,
       canViewPrice: priceVisibility !== 'none',
       priceVisibility,
@@ -1755,6 +1825,8 @@ export const listInventoryLotOptions = withPermission(
         lot: inventoryStockLots,
         locationName: inventoryLocations.name,
         locationType: inventoryLocations.locationType,
+        locationOrgNodeId: inventoryLocations.orgNodeId,
+        reservedQuantity: activeReservedQuantitySql,
       })
       .from(inventoryStockLots)
       .leftJoin(inventoryLocations, eq(inventoryStockLots.locationId, inventoryLocations.locationId))
@@ -1764,8 +1836,8 @@ export const listInventoryLotOptions = withPermission(
         sql`${inventoryStockLots.quantityOnHand} > 0`,
       ))
       .orderBy(asc(inventoryStockLots.expiryDate), asc(inventoryStockLots.batchNo), asc(inventoryStockLots.id))
-    const priceVisibility = inventoryPriceVisibility(session)
-    return rows.map((row) => lotRow(row, priceVisibility))
+    const priceTiers = inventoryPriceScopeByTier(session)
+    return rows.map((row) => lotRow(row, priceTiers))
   },
 )
 
@@ -1804,7 +1876,13 @@ export const exportInventoryLots = withPermission(
     }
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined
     const query = db
-      .select({ lot: inventoryStockLots, locationName: inventoryLocations.name, locationType: inventoryLocations.locationType })
+      .select({
+        lot: inventoryStockLots,
+        locationName: inventoryLocations.name,
+        locationType: inventoryLocations.locationType,
+        locationOrgNodeId: inventoryLocations.orgNodeId,
+        reservedQuantity: activeReservedQuantitySql,
+      })
       .from(inventoryStockLots)
       .leftJoin(inventoryLocations, eq(inventoryStockLots.locationId, inventoryLocations.locationId))
       .where(whereClause)
@@ -1816,11 +1894,12 @@ export const exportInventoryLots = withPermission(
         asc(inventoryStockLots.id),
       )
     const priceVisibility = inventoryPriceVisibility(session)
+    const priceTiers = inventoryPriceScopeByTier(session)
     const page = resolveExportOffsetPage(options)
     if (page) {
       const rows = await query.limit(page.limit + 1).offset(page.offset)
       return {
-        ...offsetPageResult(rows.map((row) => lotRow(row, priceVisibility)), page),
+        ...offsetPageResult(rows.map((row) => lotRow(row, priceTiers)), page),
         canViewPrice: priceVisibility !== 'none',
         priceVisibility,
       }
@@ -1828,7 +1907,7 @@ export const exportInventoryLots = withPermission(
     const rows = await query.limit(LIMIT + 1)
     const truncated = rows.length > LIMIT
     return {
-      rows: rows.slice(0, LIMIT).map((row) => lotRow(row, priceVisibility)),
+      rows: rows.slice(0, LIMIT).map((row) => lotRow(row, priceTiers)),
       truncated,
       hasMore: false,
       canViewPrice: priceVisibility !== 'none',
@@ -1936,8 +2015,17 @@ export const listInventoryCoreDocs = withPermission(
       .limit(pageSize)
       .offset(offset)
     const priceVisibility = inventoryPriceVisibility(session)
+    // 行级档位（§9.3/§9.5）：金额可见性按单据参与主体（source/target 端点任一命中
+    // 该档位绑定的 org 集合）判定，与单据可见性同构；防混合绑定会话跨绑定借权看价。
+    const priceTiers = inventoryPriceScopeByTier(session)
     return {
-      data: rows.map((row) => docRow({ ...row, includePrice: priceVisibility !== 'none' })),
+      data: rows.map((row) => docRow({
+        ...row,
+        includePrice: inventoryPriceVisibilityForOrgNodes(
+          priceTiers,
+          [row.doc.sourceOrgNodeId, row.doc.targetOrgNodeId],
+        ) !== 'none',
+      })),
       total: countRow?.count ?? 0,
       canViewPrice: priceVisibility !== 'none',
       priceVisibility,
@@ -2379,9 +2467,12 @@ async function loadShipmentReceiptProgress(
   const rows = await db.execute(sql`
     WITH visible_docs AS (${visibleInventoryDocsSql(scoped)}),
     shipment_items AS (
+      -- visible_docs 只暴露 id；status 必须回表 inventory_docs 取
+      -- （曾直接 JOIN visible_docs 取 status 导致发货/配货单详情 42703 全量报错）。
       SELECT item.id AS item_id, item.quantity, shipment_doc.status AS shipment_status
         FROM inventory_doc_items item
-        JOIN visible_docs shipment_doc ON shipment_doc.id = item.doc_id
+        JOIN inventory_docs shipment_doc ON shipment_doc.id = item.doc_id
+        JOIN visible_docs visible_shipment ON visible_shipment.id = shipment_doc.id
        WHERE item.doc_id = ${docId}
     ),
     receipt_totals AS (
@@ -2450,7 +2541,7 @@ async function loadInventoryDocFulfillmentProgress(
 export const getInventoryCoreDocById = withPermission(
   'inventory:list',
   async (session, id: string): Promise<InventoryDocDetail | null> => {
-    const priceVisibility = inventoryPriceVisibility(session)
+    const priceTiers = inventoryPriceScopeByTier(session)
     const scoped = inventoryScopedOrgNodeIds(session)
     const conditions: (SQL | undefined)[] = [eq(inventoryDocs.id, id)]
     if (scoped !== null) {
@@ -2472,7 +2563,18 @@ export const getInventoryCoreDocById = withPermission(
       .where(and(...conditions))
       .limit(1)
     if (!headRow) return null
+    // 行级档位（§9.3/§9.5）：金额可见性按单据 source/target 端点命中该档位绑定的
+    // org 集合判定（与单据可见性同构），防混合绑定会话跨绑定借权看价。
+    const priceVisibility = inventoryPriceVisibilityForOrgNodes(
+      priceTiers,
+      [headRow.doc.sourceOrgNodeId, headRow.doc.targetOrgNodeId],
+    )
     const head = docRow({ ...headRow, includePrice: priceVisibility !== 'none' })
+    // 无金额单据类型（§5.3/§10.4）所有价格/折扣/成本/金额字段一律遮蔽（含 admin）：
+    // 明细可能残留历史价格快照（DB 保留供入库/退货/审计追溯），业务响应统一不返回。
+    const itemPriceVisibility: import('./types').InventoryPriceVisibility =
+      AMOUNTLESS_DOC_TYPES.has(head.docType) ? 'none' : priceVisibility
+    const includeItemAmount = itemPriceVisibility !== 'none'
     const [items, lineage, fulfillmentProgress] = await Promise.all([
       db
         .select()
@@ -2501,13 +2603,13 @@ export const getInventoryCoreDocById = withPermission(
         stockSnapshot: numberOrNull(item.stockSnapshot),
         requestQuantity: numberOrNull(item.requestQuantity),
         fulfilledQuantity: numberOrNull(item.fulfilledQuantity),
-        standardUnitPrice: priceVisibility !== 'none' ? numberOrNull(item.standardUnitPrice) : undefined,
-        unitDiscount: priceVisibility !== 'none' ? numberOrNull(item.unitDiscount) : undefined,
-        actualUnitPrice: priceVisibility !== 'none' ? numberOrNull(item.actualUnitPrice) : undefined,
-        amount: priceVisibility !== 'none' ? numberOrNull(item.amount) : undefined,
-        supplyChainUnitCost: priceVisibility === 'all' || priceVisibility === 'supply_chain' ? numberOrNull(item.supplyChainUnitCost) : undefined,
-        marketActualUnitPrice: priceVisibility !== 'none' ? numberOrNull(item.marketActualUnitPrice) : undefined,
-        storeActualUnitPrice: priceVisibility === 'all' || priceVisibility === 'market' ? numberOrNull(item.storeActualUnitPrice) : undefined,
+        standardUnitPrice: itemPriceVisibility !== 'none' ? numberOrNull(item.standardUnitPrice) : undefined,
+        unitDiscount: itemPriceVisibility !== 'none' ? numberOrNull(item.unitDiscount) : undefined,
+        actualUnitPrice: itemPriceVisibility !== 'none' ? numberOrNull(item.actualUnitPrice) : undefined,
+        amount: includeItemAmount ? numberOrNull(item.amount) : undefined,
+        supplyChainUnitCost: itemPriceVisibility === 'all' || itemPriceVisibility === 'supply_chain' ? numberOrNull(item.supplyChainUnitCost) : undefined,
+        marketActualUnitPrice: itemPriceVisibility !== 'none' ? numberOrNull(item.marketActualUnitPrice) : undefined,
+        storeActualUnitPrice: itemPriceVisibility === 'all' || itemPriceVisibility === 'market' ? numberOrNull(item.storeActualUnitPrice) : undefined,
         promotionPlanId: item.promotionPlanId,
         promotionPlanNoSnapshot: item.promotionPlanNoSnapshot,
         promotionPlanNameSnapshot: item.promotionPlanNameSnapshot,

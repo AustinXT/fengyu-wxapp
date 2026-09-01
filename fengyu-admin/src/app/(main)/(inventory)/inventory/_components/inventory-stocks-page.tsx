@@ -80,6 +80,7 @@ export default function InventoryStocksPage({
         { header: '效期', width: 12, accessor: (r) => formatDate(r.expiryDate) },
         { header: '赠送', width: 8, accessor: (r) => (r.isGift ? '是' : '否') },
         { header: '库存', width: 10, accessor: (r) => r.quantityOnHand },
+        { header: '可用量', width: 10, accessor: (r) => r.availableQuantity },
         ...(exportCanViewPrice
           ? [
               { header: '供应链成本', width: 14, accessor: (r: InventoryLotRow) => r.supplyChainUnitCost },
@@ -129,6 +130,15 @@ export default function InventoryStocksPage({
       key: 'quantityOnHand',
       header: '库存',
       cell: (r) => <span className="font-semibold text-[var(--primary)]">{r.quantityOnHand}</span>,
+    },
+    {
+      key: 'availableQuantity',
+      header: '可用量',
+      cell: (r) => (
+        <span className={r.availableQuantity < r.quantityOnHand ? 'font-semibold text-[#D4820A]' : 'font-semibold'}>
+          {r.availableQuantity}
+        </span>
+      ),
     },
     ...(canViewPrice
       ? [

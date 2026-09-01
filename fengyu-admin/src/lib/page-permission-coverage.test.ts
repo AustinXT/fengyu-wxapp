@@ -52,6 +52,9 @@ const LIST_PAGE_GATES: Record<string, Clause[]> = {
   '/inventory/operations/market': ['inventory:list', 'inventory:stock_list'],
   '/inventory/operations/store': ['inventory:list', 'inventory:stock_list'],
   '/inventory/docs': ['inventory:list', 'inventory:stock_list'],
+  // 货款结算：SSR 闸门为 inventory:list；页面对无价格档（none）按 404 收口，
+  // menu 以价格查看权限 OR 组约束可见角色，这里同步建模防止入口/页面漂移。
+  '/inventory/settlements': ['inventory:list', ['inventory:supply_chain_price_view', 'inventory:market_price_view']],
   '/inventory/skus': ['inventory:stock_list'],
   '/inventory/promotions': ['inventory:stock_list'],
   '/legacy-orders': ['legacy_order:list', 'store:list'],
@@ -123,15 +126,6 @@ const SUBPAGES: Array<{ href: string; parent: string; entryGate?: string; clause
   { href: '/merchants/[id]', parent: '/merchants', clauses: ['merchant:list'] },
   { href: '/merchants/[id]/edit', parent: '/merchants', entryGate: 'merchant:update', clauses: ['merchant:list'] },
   { href: '/merchants/create', parent: '/merchants', entryGate: 'merchant:create', clauses: ['merchant:create', 'merchant:list'] },
-  // V1 历史深链只做兼容跳转，不再查询旧模型。
-  { href: '/inventory/procurement', parent: '/inventory', clauses: [] },
-  { href: '/inventory/procurement/[id]', parent: '/inventory', clauses: [] },
-  { href: '/inventory/sale', parent: '/inventory', clauses: [] },
-  { href: '/inventory/sale/[id]', parent: '/inventory', clauses: [] },
-  { href: '/inventory/transfer', parent: '/inventory', clauses: [] },
-  { href: '/inventory/transfer/[id]', parent: '/inventory', clauses: [] },
-  { href: '/inventory/scrap', parent: '/inventory', clauses: [] },
-  { href: '/inventory/scrap/[id]', parent: '/inventory', clauses: [] },
   { href: '/inventory/skus', parent: '/inventory', clauses: ['inventory:stock_list'] },
   { href: '/inventory/stocks', parent: '/inventory', clauses: ['inventory:stock_list'] },
   { href: '/inventory/docs', parent: '/inventory', clauses: ['inventory:list', 'inventory:stock_list'] },

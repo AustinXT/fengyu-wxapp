@@ -79,7 +79,6 @@ describe('业务域菜单（权限点驱动）', () => {
     expect(getMenuItemForPath(MENU_CONFIG, '/inventory/suppliers')?.label).toBe('资料配置')
     expect(getMenuItemForPath(MENU_CONFIG, '/inventory/sku-mappings')?.href).toBe('/inventory/skus')
     expect(getMenuItemForPath(MENU_CONFIG, '/inventory/promotions')?.href).toBe('/inventory/skus')
-    expect(getMenuItemForPath(MENU_CONFIG, '/inventory/procurement/PROC-1')?.href).toBe('/inventory/operations/store')
   })
 
   it('库存业务按组织范围显示', () => {

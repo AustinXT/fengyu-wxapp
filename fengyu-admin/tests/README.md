@@ -25,6 +25,9 @@ bun run test:all            # vitest + playwright（不含 manual chains）
 # Server Action smoke（直接走 bun，不进 Playwright）
 bun tests/e2e-actions/smoke-record-payment.mjs
 bun tests/e2e-actions/cleanup.mjs
+
+# 进销存链路冒烟门禁（正向全链 + 退货双链 + 调货/自采链；本地 docker 一次性库，逢跑即建）
+bun run test:e2e:inventory
 ```
 
 ## 入口文档

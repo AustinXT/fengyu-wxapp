@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/db', () => ({
@@ -20,6 +22,7 @@ import {
   createMarketStaffPurchase,
   createMarketReplenishment,
   createPurchaseOrderFromItemCompanyReplenishment,
+  createPurchaseOrderFromMarketReplenishment,
   createReturnForRestock,
   createSelfPurchasedReceipt,
   createStoreAllocation,
@@ -209,6 +212,15 @@ function renderSql(query: unknown): string {
       return Array.isArray(chunk.value) ? chunk.value.join('') : String(chunk)
     })
     .join('')
+}
+
+/**
+ * syncLocations 漂移探测短路补位：位置化 db.execute mock 的用例在链头统一
+ * 排入一条「无漂移」探测响应（跳过两条全表 UPSERT），后续 mock 序号即为
+ * 业务查询本身。改动 syncLocations 的探测/自愈次序时只需调整此处。
+ */
+function mockSyncLocationsShortCircuit() {
+  return vi.mocked(db.execute).mockResolvedValueOnce([{ drifted: false }] as never)
 }
 
 function initializedCutoverExecutor(txExecute: (query: unknown) => Promise<unknown>) {
@@ -473,9 +485,7 @@ describe('inventory business action input guards', () => {
   })
 
   it('员工购候选项只返回所选市场组织树中的在职员工', async () => {
-    vi.mocked(db.execute)
-      .mockResolvedValueOnce([] as never)
-      .mockResolvedValueOnce([] as never)
+    mockSyncLocationsShortCircuit()
       .mockResolvedValueOnce([{
         location_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
       }] as never)
@@ -488,13 +498,25 @@ describe('inventory business action input guards', () => {
       { employeeId: 'E001', name: '员工甲' },
       { employeeId: 'E002', name: 'E002' },
     ])
-    expect(renderSql(vi.mocked(db.execute).mock.calls[3][0])).toContain('employee.is_resigned = false')
+    // 漂移探测短路：无漂移时不再发起两条全表 UPSERT（probe + 主体查询 + 员工查询 = 3 条）。
+    expect(db.execute).toHaveBeenCalledTimes(3)
+    expect(renderSql(vi.mocked(db.execute).mock.calls[0][0])).toContain('AS drifted')
+    expect(renderSql(vi.mocked(db.execute).mock.calls[2][0])).toContain('employee.is_resigned = false')
+  })
+
+  it('探测到漂移时照常执行两条全表 UPSERT 自愈', async () => {
+    vi.mocked(db.execute)
+      .mockResolvedValueOnce([{ drifted: true }] as never)
+      .mockResolvedValue([] as never)
+
+    await listMarketEmployeeOptions(SESSION, 'M1').catch(() => {})
+
+    const queries = vi.mocked(db.execute).mock.calls.map(([query]) => renderSql(query))
+    expect(queries.filter((query) => query.includes('INSERT INTO inventory_locations'))).toHaveLength(2)
   })
 
   it('供应链员工购候选项排除市场链路和门店员工', async () => {
-    vi.mocked(db.execute)
-      .mockResolvedValueOnce([] as never)
-      .mockResolvedValueOnce([] as never)
+    mockSyncLocationsShortCircuit()
       .mockResolvedValueOnce([{
         location_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
       }] as never)
@@ -503,9 +525,68 @@ describe('inventory business action input guards', () => {
     await expect(listSupplyChainEmployeeOptions(SESSION, 'HQ')).resolves.toEqual([
       { employeeId: 'E-HQ', name: '总部员工' },
     ])
-    const query = renderSql(vi.mocked(db.execute).mock.calls[3][0])
+    const query = renderSql(vi.mocked(db.execute).mock.calls[2][0])
+    expect(query).toContain('employee.is_resigned = false')
     expect(query).toContain('employee.store_id IS NULL')
     expect(query).toContain("type IN ('市场', '门店')")
+  })
+
+  it('说明.md §11.1：供应链员工购拒绝非总部直属或离职员工，且校验三要素齐全', async () => {
+    const txExecute = vi.fn()
+      .mockResolvedValueOnce([{
+        location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+      }])
+      // employeeForSupplyChain：员工挂在市场链路 / 有门店 / 已离职时 CTE 均查不到行。
+      .mockResolvedValueOnce([])
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+    } as never))
+
+    await expect(createSupplyChainStaffPurchase(SESSION, {
+      locationId: 'HQ', employeeId: 'E-MARKET', items: [{ lotId: 1, quantity: 1 }],
+    })).rejects.toThrow('员工不属于当前供应链总部或已经离职')
+
+    const employeeQuery = renderSql(txExecute.mock.calls[1][0])
+    // 三要素缺一即越权：在职 + 无门店归属 + 祖先链不经过市场/门店（总部直属）。
+    expect(employeeQuery).toContain('employee.is_resigned = false')
+    expect(employeeQuery).toContain('employee.store_id IS NULL')
+    expect(employeeQuery).toContain("type IN ('市场', '门店')")
+    expect(employeeQuery).toContain('WITH RECURSIVE descendants')
+    // 校验失败必须发生在任何库存扣减之前。
+    const queries = txExecute.mock.calls.map(([query]) => renderSql(query)).join('\n')
+    expect(queries).not.toContain('inventory_stock_lots')
+    expect(queries).not.toContain('inventory_movements')
+  })
+
+  it('说明.md §11.1：供应链员工购出库主体必须是总部库存', async () => {
+    const txExecute = vi.fn()
+      .mockResolvedValueOnce([{
+        location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
+      }])
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+    } as never))
+
+    await expect(createSupplyChainStaffPurchase(SESSION, {
+      locationId: 'M1', employeeId: 'E-HQ', items: [{ lotId: 1, quantity: 1 }],
+    })).rejects.toThrow('供应链员工购出库主体必须是总部库存主体')
+  })
+
+  it('说明.md §11.1：无总部权限的门店会话不能从总部库存做供应链员工购', async () => {
+    const txExecute = vi.fn()
+      .mockResolvedValueOnce([{
+        location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+      }])
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+    } as never))
+
+    await expect(createSupplyChainStaffPurchase(NO_PRICE_SESSION, {
+      locationId: 'HQ', employeeId: 'E-HQ', items: [{ lotId: 1, quantity: 1 }],
+    })).rejects.toThrow('无权操作该库存主体')
   })
 
   it('自采入库必须引用有效且启用的供应商实体', async () => {
@@ -886,5 +967,111 @@ describe('inventory business action input guards', () => {
       items: [{ skuId: 'SKU-1', quantity: 1 }, { skuId: 'SKU-2', quantity: 1 }],
       selections: [{ skuId: 'SKU-1', promotionPlanId: 'SINGLE-1' }],
     })).rejects.toThrow('组合福利必须整组选择')
+  })
+})
+
+/**
+ * 采购订单位于流程图供应链泳道（市场报货单汇总 → 采购订单 → 品项公司发货），
+ * 由供应链库存员按总部 scope 创建；市场 scope 不能替总部下采购订单。
+ * 回归背景：曾误按市场 scope 校验（assertLocationWritable(session, market)），
+ * 导致供应链库存员（总部 scope）被 PERMISSION_DENIED 卡死，三级主链路中断。
+ */
+describe('createPurchaseOrderFromMarketReplenishment 供应链 scope 归属', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+  })
+
+  const SUPPLY_CHAIN_OPERATOR_SESSION = {
+    employeeId: 'E-SC',
+    name: '供应链库存员',
+    phone: '13800000010',
+    roles: [{
+      role: 'inventory_supply_chain_operator', scopeId: 'HQ', scopeType: '总部',
+      actions: ['inventory:supply_chain_operate'], scopeStoreIds: [], scopeOrgNodeIds: ['HQ'],
+    }],
+    permissions: { actions: ['inventory:supply_chain_operate'], scopeStoreIds: [] },
+  } as never
+
+  const MARKET_ONLY_SESSION = {
+    employeeId: 'E-M1',
+    name: '市场库存财务',
+    phone: '13800000011',
+    roles: [{
+      role: 'inventory_market_finance', scopeId: 'M1', scopeType: '市场',
+      actions: ['inventory:market_operate'], scopeStoreIds: ['S1'], scopeOrgNodeIds: ['M1', 'S1'],
+    }],
+    permissions: { actions: ['inventory:market_operate'], scopeStoreIds: ['S1'] },
+  } as never
+
+  function mockPurchaseOrderTransaction() {
+    const txExecute = vi.fn()
+      // docForUpdate(市场报货单)
+      .mockResolvedValueOnce([{
+        id: 'MBH-1', doc_type: '市场报货', status: '已完成',
+        source_org_node_id: 'M1', target_org_node_id: 'HQ', market_id: 'M1',
+        supplier_id: null, supplier_name: null,
+        cancellation_request_reason: null, cancellation_requested_by: null,
+        cancellation_requested_at: null,
+      }])
+      // locationForUpdate(市场)
+      .mockResolvedValueOnce([{
+        location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
+      }])
+      // locationForUpdate(供应链总部)
+      .mockResolvedValueOnce([{
+        location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+      }])
+      // ensureSupplier → 空（哨兵：走到供应商校验说明 scope 已放行）
+      .mockResolvedValueOnce([])
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+    } as never))
+    return txExecute
+  }
+
+  it('供应链库存员（总部 scope）创建采购订单不被市场 scope 拦截', async () => {
+    mockPurchaseOrderTransaction()
+    await expect(createPurchaseOrderFromMarketReplenishment(SUPPLY_CHAIN_OPERATOR_SESSION, {
+      marketReportId: 'MBH-1', supplierId: 'SUP-404', supplyChainLocationId: 'HQ',
+      items: [{ marketReportItemId: 1, quantity: 1 }],
+    })).rejects.toThrow('供应商不存在或已停用')
+  })
+
+  it('仅有市场 scope 的会话不能替总部创建采购订单', async () => {
+    mockPurchaseOrderTransaction()
+    await expect(createPurchaseOrderFromMarketReplenishment(MARKET_ONLY_SESSION, {
+      marketReportId: 'MBH-1', supplierId: 'SUP-404', supplyChainLocationId: 'HQ',
+      items: [{ marketReportItemId: 1, quantity: 1 }],
+    })).rejects.toThrow('PERMISSION_DENIED')
+  })
+})
+
+/**
+ * F3 守护：business.ts syncLocations 与 engine.ts syncInventoryLocations 是同一
+ * 漂移探测的两份副本（禁跨端/跨文件共享抽取，与 staff 副本同策略）。任何一份改探测
+ * 条件（少列/改列/改语义）必须同步另一份，否则一份认为无漂移跳过自愈、另一份反复
+ * 全表 UPSERT，主体口径分叉。staff 端另有 cross-end-inventory-snapshot.test.js 守护。
+ */
+describe('syncLocations 漂移探测与 engine.ts 字面一致（副本守护）', () => {
+  const PROBE_RE = /SELECT EXISTS \([\s\S]*?\) AS drifted/
+
+  it('探测 SQL 片段逐字一致', () => {
+    const businessSrc = readFileSync(resolve(process.cwd(), 'src/lib/inventory/business.ts'), 'utf8')
+    const engineSrc = readFileSync(resolve(process.cwd(), 'src/lib/inventory/engine.ts'), 'utf8')
+    const businessProbe = businessSrc.match(PROBE_RE)?.[0]
+    const engineProbe = engineSrc.match(PROBE_RE)?.[0]
+    expect(businessProbe, 'business.ts 缺少漂移探测片段').toBeTruthy()
+    expect(engineProbe, 'engine.ts 缺少漂移探测片段').toBeTruthy()
+    expect(businessProbe).toBe(engineProbe)
+  })
+
+  it('两份副本均保留保守短路语义（仅显式 false 才跳过）与两条 UPSERT 自愈路径', () => {
+    for (const file of ['src/lib/inventory/business.ts', 'src/lib/inventory/engine.ts']) {
+      const src = readFileSync(resolve(process.cwd(), file), 'utf8')
+      expect(src, `${file} 短路语义漂移`).toMatch(/drifted === false\) return/)
+      const upserts = src.match(/INSERT INTO inventory_locations[\s\S]*?ON CONFLICT \(location_id\) DO UPDATE/g)
+      expect(upserts?.length ?? 0, `${file} UPSERT 自愈路径缺失`).toBeGreaterThanOrEqual(2)
+    }
   })
 })

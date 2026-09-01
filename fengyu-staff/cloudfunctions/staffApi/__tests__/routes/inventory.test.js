@@ -36,6 +36,8 @@ function mockTransactionClient(responses, { cutoverStatus = '已初始化', loca
       const text = String(sql)
       // F5 修复后 sync UPSERT 与库存主体查询走事务连接（tx client）：
       // 这两类不消耗 responses 队列；主体行默认按入参回显门店行，可传 locationRow 覆盖。
+      // sync 漂移探测（AS drifted）同样不消耗队列；无结果 → 保守执行 UPSERT 旧路径。
+      if (text.includes('AS drifted')) return { rows: [], rowCount: 0 }
       if (text.includes('INSERT INTO inventory_locations')) return { rows: [], rowCount: 0 }
       if (text.includes('SELECT location_id, location_type, parent_location_id')) {
         return { rows: [locationRow ?? {
@@ -1017,9 +1019,9 @@ describe('inventory.approveDoc / rejectDoc 审批一致性', () => {
     await expect(inventoryRoutes.rejectDoc(ctx)).rejects.toThrow(
       'INVALID_STATE: 只有待审批单据可以驳回',
     )
-    // cutover 检查 + 锁单据 + F5 后走事务连接的 sync×2 与主体查询 + scope 校验，
+    // cutover 检查 + 锁单据 + F5 后走事务连接的 sync 漂移探测与 sync×2 + 主体查询 + scope 校验，
     // 状态不符即抛出，不产生驳回 UPDATE。
-    expect(client.query.mock.calls).toHaveLength(6)
+    expect(client.query.mock.calls).toHaveLength(7)
     expect(client.query.mock.calls.some(([sql]) => (
       /UPDATE inventory_docs/.test(sql) && /已驳回/.test(sql)
     ))).toBe(false)
@@ -1142,5 +1144,41 @@ describe('inventory.docList / docDetail v3 契约', () => {
     expect(ctx.result).toMatchObject({ docType: '院顾客产品出库', sourceOrgNodeName: '测试店' })
     expect(ctx.result.items[0]).toMatchObject({ lotId: 11, skuId: 'sku-1', skuName: '测试商品' })
     expect(JSON.stringify(ctx.result)).not.toMatch(/actualUnitPrice|amount|price|cost/i)
+  })
+})
+
+describe('inventory 库存主体同步短路（migration 0009 触发器兜底）', () => {
+  test('漂移探测返回无漂移时跳过全表 UPSERT', async () => {
+    const ctx = createCtx({ payload: { page: 1, pageSize: 20 } })
+    pg.query.mockImplementation(async (query) => {
+      const sql = String(query)
+      if (sql.includes('AS drifted')) return [{ drifted: false }]
+      if (sql.includes('COUNT(*)::int AS cnt')) return [{ cnt: 0 }]
+      return []
+    })
+
+    await inventoryRoutes.stockList(ctx)
+
+    const probeCall = pg.query.mock.calls.find(([sql]) => String(sql).includes('AS drifted'))
+    expect(String(probeCall[0])).toContain('loc.location_id IS NULL')
+    expect(String(probeCall[0])).toContain('loc.is_active IS DISTINCT FROM (COALESCE(o.is_active, false) AND NOT s.is_closed)')
+    expect(pg.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO inventory_locations'))).toBe(false)
+  })
+
+  test('探测到漂移时照常执行两条全表 UPSERT 自愈', async () => {
+    const ctx = createCtx({ payload: { page: 1, pageSize: 20 } })
+    pg.query.mockImplementation(async (query) => {
+      const sql = String(query)
+      if (sql.includes('AS drifted')) return [{ drifted: true }]
+      if (sql.includes('COUNT(*)::int AS cnt')) return [{ cnt: 0 }]
+      return []
+    })
+
+    await inventoryRoutes.stockList(ctx)
+
+    const upserts = pg.query.mock.calls
+      .map(([sql]) => String(sql))
+      .filter((sql) => sql.includes('INSERT INTO inventory_locations'))
+    expect(upserts).toHaveLength(2)
   })
 })
