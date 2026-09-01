@@ -75,7 +75,7 @@ export async function consumePointBatches(
         AND expire_at > NOW()
       ORDER BY
         CASE
-          WHEN ${input.refOrderId ?? null} IS NOT NULL
+          WHEN ${input.refOrderId ?? null}::text IS NOT NULL
                AND ref_order_id = ${input.refOrderId ?? null}
             THEN 0
           ELSE 1
@@ -91,7 +91,7 @@ export async function consumePointBatches(
         SUM(remaining_amount) OVER (
           ORDER BY
             CASE
-              WHEN ${input.refOrderId ?? null} IS NOT NULL
+              WHEN ${input.refOrderId ?? null}::text IS NOT NULL
                    AND ref_order_id = ${input.refOrderId ?? null}
                 THEN 0
               ELSE 1
