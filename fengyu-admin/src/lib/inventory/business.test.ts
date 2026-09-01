@@ -20,6 +20,7 @@ import {
   createMarketStaffPurchase,
   createMarketReplenishment,
   createPurchaseOrderFromItemCompanyReplenishment,
+  createPurchaseOrderFromMarketReplenishment,
   createReturnForRestock,
   createSelfPurchasedReceipt,
   createStoreAllocation,
@@ -886,5 +887,82 @@ describe('inventory business action input guards', () => {
       items: [{ skuId: 'SKU-1', quantity: 1 }, { skuId: 'SKU-2', quantity: 1 }],
       selections: [{ skuId: 'SKU-1', promotionPlanId: 'SINGLE-1' }],
     })).rejects.toThrow('组合福利必须整组选择')
+  })
+})
+
+/**
+ * 采购订单位于流程图供应链泳道（市场报货单汇总 → 采购订单 → 品项公司发货），
+ * 由供应链库存员按总部 scope 创建；市场 scope 不能替总部下采购订单。
+ * 回归背景：曾误按市场 scope 校验（assertLocationWritable(session, market)），
+ * 导致供应链库存员（总部 scope）被 PERMISSION_DENIED 卡死，三级主链路中断。
+ */
+describe('createPurchaseOrderFromMarketReplenishment 供应链 scope 归属', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+  })
+
+  const SUPPLY_CHAIN_OPERATOR_SESSION = {
+    employeeId: 'E-SC',
+    name: '供应链库存员',
+    phone: '13800000010',
+    roles: [{
+      role: 'inventory_supply_chain_operator', scopeId: 'HQ', scopeType: '总部',
+      actions: ['inventory:supply_chain_operate'], scopeStoreIds: [], scopeOrgNodeIds: ['HQ'],
+    }],
+    permissions: { actions: ['inventory:supply_chain_operate'], scopeStoreIds: [] },
+  } as never
+
+  const MARKET_ONLY_SESSION = {
+    employeeId: 'E-M1',
+    name: '市场库存财务',
+    phone: '13800000011',
+    roles: [{
+      role: 'inventory_market_finance', scopeId: 'M1', scopeType: '市场',
+      actions: ['inventory:market_operate'], scopeStoreIds: ['S1'], scopeOrgNodeIds: ['M1', 'S1'],
+    }],
+    permissions: { actions: ['inventory:market_operate'], scopeStoreIds: ['S1'] },
+  } as never
+
+  function mockPurchaseOrderTransaction() {
+    const txExecute = vi.fn()
+      // docForUpdate(市场报货单)
+      .mockResolvedValueOnce([{
+        id: 'MBH-1', doc_type: '市场报货', status: '已完成',
+        source_org_node_id: 'M1', target_org_node_id: 'HQ', market_id: 'M1',
+        supplier_id: null, supplier_name: null,
+        cancellation_request_reason: null, cancellation_requested_by: null,
+        cancellation_requested_at: null,
+      }])
+      // locationForUpdate(市场)
+      .mockResolvedValueOnce([{
+        location_id: 'M1', org_node_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
+      }])
+      // locationForUpdate(供应链总部)
+      .mockResolvedValueOnce([{
+        location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null,
+      }])
+      // ensureSupplier → 空（哨兵：走到供应商校验说明 scope 已放行）
+      .mockResolvedValueOnce([])
+    vi.mocked(db.execute).mockResolvedValue([] as never)
+    vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+    } as never))
+    return txExecute
+  }
+
+  it('供应链库存员（总部 scope）创建采购订单不被市场 scope 拦截', async () => {
+    mockPurchaseOrderTransaction()
+    await expect(createPurchaseOrderFromMarketReplenishment(SUPPLY_CHAIN_OPERATOR_SESSION, {
+      marketReportId: 'MBH-1', supplierId: 'SUP-404', supplyChainLocationId: 'HQ',
+      items: [{ marketReportItemId: 1, quantity: 1 }],
+    })).rejects.toThrow('供应商不存在或已停用')
+  })
+
+  it('仅有市场 scope 的会话不能替总部创建采购订单', async () => {
+    mockPurchaseOrderTransaction()
+    await expect(createPurchaseOrderFromMarketReplenishment(MARKET_ONLY_SESSION, {
+      marketReportId: 'MBH-1', supplierId: 'SUP-404', supplyChainLocationId: 'HQ',
+      items: [{ marketReportItemId: 1, quantity: 1 }],
+    })).rejects.toThrow('PERMISSION_DENIED')
   })
 })

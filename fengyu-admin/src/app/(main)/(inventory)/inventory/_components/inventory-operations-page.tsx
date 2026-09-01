@@ -124,7 +124,9 @@ const OPERATIONS: OperationDefinition[] = [
   { id: 'external-outbound', level: 'supply-chain', title: '非凤御市场出库', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]' },
   { id: 'supply-chain-staff-purchase', level: 'supply-chain', title: '供应链员工购', group: '市场特殊业务', icon: UserRoundCheck, tone: 'text-[#8A4B7A] bg-[#FCF1F9]' },
   { id: 'market-report', level: 'market', title: '市场汇总报货', group: '需求与采购', icon: PackageSearch, tone: 'text-[#5E8BB3] bg-[#F0F5FA]' },
-  { id: 'purchase-order', level: 'market', title: '创建采购订单', group: '需求与采购', icon: ShoppingCart, tone: 'text-[#7B5E2B] bg-[#FFF8E6]' },
+  // 采购订单位于流程图供应链泳道（市场报货单汇总 → 采购订单），归供应链办理台；
+  // action 权限 inventory:supply_chain_operate 与 business.ts 的总部 scope 校验同源。
+  { id: 'purchase-order', level: 'supply-chain', title: '创建采购订单', group: '需求与采购', icon: ShoppingCart, tone: 'text-[#7B5E2B] bg-[#FFF8E6]' },
   { id: 'market-receipt', level: 'market', title: '市场采购入库', group: '发货、收货与退货', icon: PackageCheck, tone: 'text-[#3D8A5A] bg-[#F0F9F2]' },
   { id: 'store-allocation', level: 'market', title: '分院配货', group: '发货、收货与退货', icon: Send, tone: 'text-[#8B5A2B] bg-[#FFF5E8]' },
   { id: 'store-return-approval', level: 'market', title: '审批门店退货', group: '发货、收货与退货', icon: RotateCcw, tone: 'text-[#D4820A] bg-[#FFF8E6]', approvalOnly: true },

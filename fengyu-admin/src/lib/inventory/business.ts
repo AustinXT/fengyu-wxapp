@@ -2200,7 +2200,9 @@ export async function createPurchaseOrderFromMarketReplenishment(
     const supplyChain = await locationForUpdate(tx, supplyChainLocationId)
     assertType(market, '市场', '市场报货所属市场')
     assertType(supplyChain, '总部', '供应链库存主体')
-    assertLocationWritable(session, market)
+    // 采购订单位于流程图供应链泳道，由供应链按总部 scope 提取市场报货并选择供应商下单；
+    // 市场 scope 不能替总部下采购订单（曾误校验 market 导致供应链库存员被拒、主链路中断）。
+    assertLocationWritable(session, supplyChain)
     const supplier = await ensureSupplier(tx, supplierId)
     const seen = new Set<number>()
     const prepared: Array<{ source: DocItemSnapshot; quantity: number }> = []
