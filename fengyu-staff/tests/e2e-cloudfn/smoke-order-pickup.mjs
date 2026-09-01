@@ -128,6 +128,21 @@ async function main() {
     [TEST_STORE_ID, product.skuId, product.specName],
   )
 
+  // F9：INVENTORY_LINKAGE_ENABLED=true 下 createPickup 依赖期初切点已初始化 +
+  // 销售 SKU→库存 SKU 组成映射（resolvePickupComposition 无快照时回退映射表）。
+  await pgQuery(
+    `INSERT INTO inventory_cutover_states (cutover_key, status)
+     VALUES ('workfine_inventory', '已初始化')
+     ON CONFLICT (cutover_key) DO UPDATE SET status = '已初始化'`,
+  )
+  await pgQuery(
+    `INSERT INTO inventory_sku_product_sku_mappings (product_sku_id, inventory_sku_id, quantity_per_sale_unit, is_active)
+     VALUES ($1, $1, 1, true)
+     ON CONFLICT (product_sku_id, inventory_sku_id)
+     DO UPDATE SET quantity_per_sale_unit = 1, is_active = true, updated_at = NOW()`,
+    [product.skuId],
+  )
+
   // 前置：一张"已支付"销售单 + 1 行家居产品（quantity=3，sessionCount=null）
   await createTestSaleOrder({
     saleOrderId: SALE_ORDER_ID,

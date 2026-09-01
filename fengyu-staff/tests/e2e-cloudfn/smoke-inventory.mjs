@@ -75,7 +75,7 @@ async function createInventoryFixture() {
            total_quantity = EXCLUDED.total_quantity,
            status = EXCLUDED.status,
            updated_at = NOW()`,
-    [INV_DOC_ID, TEST_STORE_ID, `${NS}_采购备注`, TEST_MANAGER_EMP_ID],
+    [INV_DOC_ID, TEST_STORE_ORG_ID, `${NS}_采购备注`, TEST_MANAGER_EMP_ID],
   )
   await pgQuery(
     `INSERT INTO inventory_doc_items (
@@ -112,8 +112,8 @@ async function main() {
     if (!found) {
       errors.push(`inventory.docList 应含本店单据 ${INV_DOC_ID}，实际 ${items.length} 项`)
     } else {
-      if (found.targetOrgNodeId !== TEST_STORE_ID) {
-        errors.push(`list.targetOrgNodeId=${found.targetOrgNodeId}，期望 ${TEST_STORE_ID}`)
+      if (found.targetOrgNodeId !== TEST_STORE_ORG_ID) {
+        errors.push(`list.targetOrgNodeId=${found.targetOrgNodeId}，期望 ${TEST_STORE_ORG_ID}`)
       }
       if (found.docType !== '院入库') errors.push(`list.docType=${found.docType}，期望 院入库`)
       if (found.status !== '已完成') errors.push(`list.status=${found.status}，期望 已完成`)
@@ -140,8 +140,8 @@ async function main() {
   } else {
     const detail = rDetail.data || {}
     if (detail.id !== INV_DOC_ID) errors.push(`detail.id=${detail.id}，期望 ${INV_DOC_ID}`)
-    if (detail.targetOrgNodeId !== TEST_STORE_ID) {
-      errors.push(`detail.targetOrgNodeId=${detail.targetOrgNodeId}，期望 ${TEST_STORE_ID}`)
+    if (detail.targetOrgNodeId !== TEST_STORE_ORG_ID) {
+      errors.push(`detail.targetOrgNodeId=${detail.targetOrgNodeId}，期望 ${TEST_STORE_ORG_ID}`)
     }
     const item = (detail.items || []).find((row) => row.skuId === INV_SKU_ID)
     if (!item) {
