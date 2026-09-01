@@ -11,7 +11,12 @@ import type {
   InventorySettlementReport,
   InventorySettlementRow,
 } from './types'
-import { inventoryPriceVisibility, inventoryScopedOrgNodeIds } from './access'
+import {
+  inventoryPriceScopeByTier,
+  inventoryPriceVisibility,
+  inventoryScopedOrgNodeIds,
+  inventoryTierRestrictedOrgNodeIds,
+} from './access'
 
 const settlementSourceLocation = alias(inventoryLocations, 'settlement_source_loc')
 const settlementTargetLocation = alias(inventoryLocations, 'settlement_target_loc')
@@ -125,6 +130,18 @@ export const listInventorySettlements = withPermission(
       }
     }
     const scopedOrgNodeIds = inventoryScopedOrgNodeIds(session)
+    // 行级档位（§9.3/§9.5）：结算行整行即金额，按「scope ∩ 对应档位绑定的 org 集合」
+    // 收紧查询范围——混合绑定会话（门店 A + 市场 B 财务）不得借市场 B 的价格权
+    // 汇总门店 A 所在市场的货款。单绑定会话两集合一致，行为与现状相同。
+    const priceTiers = inventoryPriceScopeByTier(session)
+    const marketScopedOrgNodeIds = inventoryTierRestrictedOrgNodeIds(
+      scopedOrgNodeIds,
+      [priceTiers.supplyChain, priceTiers.market],
+    )
+    const storeScopedOrgNodeIds = inventoryTierRestrictedOrgNodeIds(
+      scopedOrgNodeIds,
+      [priceTiers.market],
+    )
     const [marketRows, storeRows] = await Promise.all([
       canViewMarketSettlement
         ? summarizeSettlementDocs({
@@ -132,7 +149,7 @@ export const listInventorySettlements = withPermission(
             statuses: MARKET_SETTLEMENT_STATUSES,
             startDate,
             endDate,
-            scopedOrgNodeIds,
+            scopedOrgNodeIds: marketScopedOrgNodeIds,
           })
         : Promise.resolve([]),
       canViewStoreSettlement
@@ -141,7 +158,7 @@ export const listInventorySettlements = withPermission(
             statuses: STORE_SETTLEMENT_STATUSES,
             startDate,
             endDate,
-            scopedOrgNodeIds,
+            scopedOrgNodeIds: storeScopedOrgNodeIds,
           })
         : Promise.resolve([]),
     ])

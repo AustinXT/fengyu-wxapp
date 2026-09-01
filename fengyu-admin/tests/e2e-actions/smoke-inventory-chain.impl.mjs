@@ -317,6 +317,32 @@ try {
     marketItem?.storeActualUnitPrice === 1100 && marketItem?.supplyChainUnitCost === undefined,
     JSON.stringify({ storeAct: marketItem?.storeActualUnitPrice, cost: marketItem?.supplyChainUnitCost }))
 
+  // §9.3/F1 回归：混合绑定（市场B财务 + 门店A1库存员）读门店A 单据，
+  // 不得借市场 B 的价格权看到金额；价格档位必须按行级参与主体判定。
+  {
+    const mbRole = marketBSession().roles[0]
+    const saRole = storeA1Session().roles[0]
+    setSession({
+      employeeId: saRole.scopeId,
+      name: 'TE2AI_混合绑定',
+      phone: '19999089000',
+      roles: [mbRole, saRole],
+      permissions: {
+        actions: [...new Set([...mbRole.actions, ...saRole.actions])],
+        scopeStoreIds: [...mbRole.scopeStoreIds, ...saRole.scopeStoreIds],
+        scopeOrgNodeIds: [...mbRole.scopeOrgNodeIds, ...saRole.scopeOrgNodeIds],
+      },
+    })
+    const yrkAsMixed = await docs.getInventoryCoreDocById(yrkId)
+    const mixedItem = yrkAsMixed?.items?.find((item) => !item.isGift)
+    check('混合绑定读门店A单据不得借市场B价格权(§9.3/F1)',
+      yrkAsMixed !== null && yrkAsMixed.totalAmount === undefined
+        && mixedItem?.standardUnitPrice === undefined && mixedItem?.actualUnitPrice === undefined
+        && mixedItem?.amount === undefined && mixedItem?.storeActualUnitPrice === undefined
+        && mixedItem?.marketActualUnitPrice === undefined && mixedItem?.supplyChainUnitCost === undefined,
+      JSON.stringify({ total: yrkAsMixed?.totalAmount, act: mixedItem?.actualUnitPrice }))
+  }
+
   setSession(supplyChainSession())
   check('总部 scope 不因父级关系看到市场↔门店单据(§9.2/§9.4)',
     (await docs.getInventoryCoreDocById(yrkId)) === null, yrkId)

@@ -63,7 +63,9 @@ import {
 } from './types'
 import { buildInventoryLocationFilterOptions } from './location-filter'
 import {
+  inventoryPriceScopeByTier,
   inventoryPriceVisibility,
+  inventoryPriceVisibilityForOrgNodes,
   inventoryScopedLocationIds,
   inventoryScopedOrgNodeIds,
 } from './access'
@@ -1242,10 +1244,14 @@ function lotRow(
     lot: typeof inventoryStockLots.$inferSelect
     locationName: string | null
     locationType: string | null
+    locationOrgNodeId?: string | null
     reservedQuantity?: string | number | null
   },
-  priceVisibility: import('./types').InventoryPriceVisibility,
+  priceTiers: import('./access').InventoryPriceTierScopes,
 ): InventoryLotRow {
+  // 行级档位（§9.3/§9.5）：价格权限只对授予它的那条角色绑定覆盖的 org 生效，
+  // 批次行按其 location 对应 org 判定，防混合绑定会话跨绑定借权看价。
+  const priceVisibility = inventoryPriceVisibilityForOrgNodes(priceTiers, [row.locationOrgNodeId])
   const supplyVisible = priceVisibility === 'all' || priceVisibility === 'supply_chain'
   const marketVisible = priceVisibility === 'all' || priceVisibility === 'market'
   return {
@@ -1787,6 +1793,7 @@ export const listInventoryLots = withPermission(
         lot: inventoryStockLots,
         locationName: inventoryLocations.name,
         locationType: inventoryLocations.locationType,
+        locationOrgNodeId: inventoryLocations.orgNodeId,
         reservedQuantity: activeReservedQuantitySql,
       })
       .from(inventoryStockLots)
@@ -1796,8 +1803,9 @@ export const listInventoryLots = withPermission(
       .limit(pageSize)
       .offset(offset)
     const priceVisibility = inventoryPriceVisibility(session)
+    const priceTiers = inventoryPriceScopeByTier(session)
     return {
-      data: rows.map((row) => lotRow(row, priceVisibility)),
+      data: rows.map((row) => lotRow(row, priceTiers)),
       total: countRow?.count ?? 0,
       canViewPrice: priceVisibility !== 'none',
       priceVisibility,
@@ -1817,6 +1825,7 @@ export const listInventoryLotOptions = withPermission(
         lot: inventoryStockLots,
         locationName: inventoryLocations.name,
         locationType: inventoryLocations.locationType,
+        locationOrgNodeId: inventoryLocations.orgNodeId,
         reservedQuantity: activeReservedQuantitySql,
       })
       .from(inventoryStockLots)
@@ -1827,8 +1836,8 @@ export const listInventoryLotOptions = withPermission(
         sql`${inventoryStockLots.quantityOnHand} > 0`,
       ))
       .orderBy(asc(inventoryStockLots.expiryDate), asc(inventoryStockLots.batchNo), asc(inventoryStockLots.id))
-    const priceVisibility = inventoryPriceVisibility(session)
-    return rows.map((row) => lotRow(row, priceVisibility))
+    const priceTiers = inventoryPriceScopeByTier(session)
+    return rows.map((row) => lotRow(row, priceTiers))
   },
 )
 
@@ -1871,6 +1880,7 @@ export const exportInventoryLots = withPermission(
         lot: inventoryStockLots,
         locationName: inventoryLocations.name,
         locationType: inventoryLocations.locationType,
+        locationOrgNodeId: inventoryLocations.orgNodeId,
         reservedQuantity: activeReservedQuantitySql,
       })
       .from(inventoryStockLots)
@@ -1884,11 +1894,12 @@ export const exportInventoryLots = withPermission(
         asc(inventoryStockLots.id),
       )
     const priceVisibility = inventoryPriceVisibility(session)
+    const priceTiers = inventoryPriceScopeByTier(session)
     const page = resolveExportOffsetPage(options)
     if (page) {
       const rows = await query.limit(page.limit + 1).offset(page.offset)
       return {
-        ...offsetPageResult(rows.map((row) => lotRow(row, priceVisibility)), page),
+        ...offsetPageResult(rows.map((row) => lotRow(row, priceTiers)), page),
         canViewPrice: priceVisibility !== 'none',
         priceVisibility,
       }
@@ -1896,7 +1907,7 @@ export const exportInventoryLots = withPermission(
     const rows = await query.limit(LIMIT + 1)
     const truncated = rows.length > LIMIT
     return {
-      rows: rows.slice(0, LIMIT).map((row) => lotRow(row, priceVisibility)),
+      rows: rows.slice(0, LIMIT).map((row) => lotRow(row, priceTiers)),
       truncated,
       hasMore: false,
       canViewPrice: priceVisibility !== 'none',
@@ -2004,8 +2015,17 @@ export const listInventoryCoreDocs = withPermission(
       .limit(pageSize)
       .offset(offset)
     const priceVisibility = inventoryPriceVisibility(session)
+    // 行级档位（§9.3/§9.5）：金额可见性按单据参与主体（source/target 端点任一命中
+    // 该档位绑定的 org 集合）判定，与单据可见性同构；防混合绑定会话跨绑定借权看价。
+    const priceTiers = inventoryPriceScopeByTier(session)
     return {
-      data: rows.map((row) => docRow({ ...row, includePrice: priceVisibility !== 'none' })),
+      data: rows.map((row) => docRow({
+        ...row,
+        includePrice: inventoryPriceVisibilityForOrgNodes(
+          priceTiers,
+          [row.doc.sourceOrgNodeId, row.doc.targetOrgNodeId],
+        ) !== 'none',
+      })),
       total: countRow?.count ?? 0,
       canViewPrice: priceVisibility !== 'none',
       priceVisibility,
@@ -2521,7 +2541,7 @@ async function loadInventoryDocFulfillmentProgress(
 export const getInventoryCoreDocById = withPermission(
   'inventory:list',
   async (session, id: string): Promise<InventoryDocDetail | null> => {
-    const priceVisibility = inventoryPriceVisibility(session)
+    const priceTiers = inventoryPriceScopeByTier(session)
     const scoped = inventoryScopedOrgNodeIds(session)
     const conditions: (SQL | undefined)[] = [eq(inventoryDocs.id, id)]
     if (scoped !== null) {
@@ -2543,6 +2563,12 @@ export const getInventoryCoreDocById = withPermission(
       .where(and(...conditions))
       .limit(1)
     if (!headRow) return null
+    // 行级档位（§9.3/§9.5）：金额可见性按单据 source/target 端点命中该档位绑定的
+    // org 集合判定（与单据可见性同构），防混合绑定会话跨绑定借权看价。
+    const priceVisibility = inventoryPriceVisibilityForOrgNodes(
+      priceTiers,
+      [headRow.doc.sourceOrgNodeId, headRow.doc.targetOrgNodeId],
+    )
     const head = docRow({ ...headRow, includePrice: priceVisibility !== 'none' })
     // 无金额单据类型（§5.3/§10.4）连明细金额也不返回：赠送行的触发器 0 值不进业务响应。
     const includeItemAmount = priceVisibility !== 'none' && !AMOUNTLESS_DOC_TYPES.has(head.docType)

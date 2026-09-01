@@ -35,6 +35,7 @@ import {
   getInventoryCoreDocById,
   listInventoryCoreDocs,
   listInventoryLocationFilterOptions,
+  listInventoryLots,
   rejectInventoryCoreDoc,
   syncInventoryLocations,
   updateInventorySku,
@@ -1801,9 +1802,11 @@ describe('§9.5 单据详情价格档位逐字段遮蔽', () => {
   })
 
   it('supply_chain 档：可见供应成本与市场结算价，看不到门店结算价', async () => {
+    // F1 行级档位后价格权只对绑定覆盖的 org 生效：绑定范围须覆盖单据端点
+    // （真实会话中不覆盖端点的单据本就过不了 scope，头查询直接返回 null）。
     mockGetSession.mockResolvedValue(sessionWithActions(
       ['inventory:list', 'inventory:supply_chain_price_view'],
-      ['HQ-NODE'],
+      ['HQ-NODE', 'NODE-A1', 'NODE-A2'],
     ) as never)
     mockDocDetailOnce()
 
@@ -1814,5 +1817,251 @@ describe('§9.5 单据详情价格档位逐字段遮蔽', () => {
     expect(item.marketActualUnitPrice).toBe(45)
     expect(item.storeActualUnitPrice).toBeUndefined()
     expect(JSON.stringify(detail)).not.toMatch(/storeActualUnitPrice/)
+  })
+})
+
+/**
+ * 说明.md §9.3 回归（F1 跨绑定价格泄漏）：一次会话持有多条角色绑定时，
+ * 价格权限只对授予它的那条绑定覆盖的 org 生效。失败场景：账号在市场 B 绑
+ * inventory_market_finance（含 market_price_view）、在门店 A 绑
+ * inventory_store_operator，读门店 A 单据时不得借市场 B 的价格权看到金额。
+ */
+describe('§9.3 混合绑定行级价格档位（跨绑定借权回归）', () => {
+  const now = new Date('2026-09-01T09:00:00.000Z')
+
+  const MIXED_SESSION = {
+    employeeId: 'E-MIX',
+    name: '混合绑定员工',
+    phone: '13800000001',
+    roles: [{
+      role: 'inventory_market_finance', scopeId: 'MKT-B', scopeType: '市场',
+      actions: ['inventory:list', 'inventory:stock_list', 'inventory:market_price_view'],
+      scopeStoreIds: ['STORE-B1'],
+      scopeOrgNodeIds: ['MKT-B', 'NODE-B1'],
+    }, {
+      role: 'inventory_store_operator', scopeId: 'NODE-A1', scopeType: '门店',
+      actions: ['inventory:list', 'inventory:stock_list', 'inventory:store_operate'],
+      scopeStoreIds: ['STORE-A1'],
+      scopeOrgNodeIds: ['NODE-A1'],
+    }],
+    permissions: {
+      actions: ['inventory:list', 'inventory:stock_list', 'inventory:market_price_view', 'inventory:store_operate'],
+      scopeStoreIds: ['STORE-B1', 'STORE-A1'],
+      scopeOrgNodeIds: ['MKT-B', 'NODE-B1', 'NODE-A1'],
+    },
+  } as never
+
+  function docFixture(id: string, sourceOrgNodeId: string, targetOrgNodeId: string) {
+    return {
+      doc: {
+        id,
+        docType: '分院调货出库',
+        status: '已完成',
+        sourceOrgNodeId,
+        targetOrgNodeId,
+        marketId: 'MKT-X',
+        supplierId: null,
+        docDate: '2026-09-01',
+        relatedSaleOrderId: null,
+        customerName: null,
+        employeeName: null,
+        supplierName: null,
+        externalPartyName: null,
+        logisticsCompany: null,
+        trackingNo: null,
+        receiptAttachmentUrl: null,
+        totalQuantity: '2',
+        totalAmount: '198.00',
+        remark: null,
+        auditRemark: null,
+        createdBy: 'E001',
+        confirmedAt: null,
+        approvedAt: null,
+        rejectedAt: null,
+        cancellationRequestReason: null,
+        cancellationRequestedBy: null,
+        cancellationRequestedAt: null,
+        cancellationReason: null,
+        cancelledAt: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+      sourceOrgNodeName: '来源',
+      sourceOrgNodeType: '门店',
+      targetOrgNodeName: '目标',
+      targetOrgNodeType: '门店',
+    }
+  }
+
+  function itemFixture(docId: string) {
+    return {
+      id: 1,
+      docId,
+      lotId: 11,
+      skuId: 'SKU-1',
+      saleItemId: null,
+      skuName: '测试产品',
+      specName: null,
+      supplier: null,
+      productSeries: null,
+      batchNo: 'B001',
+      expiryDate: null,
+      isGift: false,
+      quantity: '2',
+      stockSnapshot: '5',
+      requestQuantity: null,
+      fulfilledQuantity: null,
+      standardUnitPrice: '99.00',
+      unitDiscount: '1.00',
+      actualUnitPrice: '98.00',
+      amount: '196.00',
+      supplyChainUnitCost: '30.00',
+      marketActualUnitPrice: '45.00',
+      storeActualUnitPrice: '66.00',
+      promotionPlanId: null,
+      promotionPlanNoSnapshot: null,
+      promotionPlanNameSnapshot: null,
+      promotionRuleTypeSnapshot: null,
+      promotionSelectionMode: null,
+      reason: null,
+      remark: null,
+      createdAt: now,
+    }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockDb.select.mockReset()
+    mockDb.execute.mockReset()
+    vi.mocked(isAdminScope).mockReturnValue(false)
+    vi.mocked(hasPermission).mockImplementation(
+      (session, action) => (session.permissions.actions ?? []).includes(action),
+    )
+    mockDb.execute.mockResolvedValue([] as never)
+    mockGetSession.mockResolvedValue(MIXED_SESSION)
+  })
+
+  it('读门店 A 单据：不得借市场 B 的价格权，逐金额字段 undefined', async () => {
+    mockDb.select
+      .mockReturnValueOnce(detailHeadSelect([docFixture('DTO-260901-0001', 'NODE-A1', 'NODE-A2')]))
+      .mockReturnValueOnce(detailItemsSelect([itemFixture('DTO-260901-0001')]))
+
+    const detail = await getInventoryCoreDocById('DTO-260901-0001')
+
+    expect(detail).not.toBeNull()
+    expect(detail!.totalAmount).toBeUndefined()
+    const item = detail!.items[0]
+    expect(item.standardUnitPrice).toBeUndefined()
+    expect(item.unitDiscount).toBeUndefined()
+    expect(item.actualUnitPrice).toBeUndefined()
+    expect(item.amount).toBeUndefined()
+    expect(item.supplyChainUnitCost).toBeUndefined()
+    expect(item.marketActualUnitPrice).toBeUndefined()
+    expect(item.storeActualUnitPrice).toBeUndefined()
+    expect(JSON.stringify(detail)).not.toMatch(/price|amount|cost|discount/i)
+  })
+
+  it('同一会话读市场 B 自己的单据：市场档金额照常返回', async () => {
+    mockDb.select
+      .mockReturnValueOnce(detailHeadSelect([docFixture('DTO-260901-0002', 'NODE-B1', 'MKT-B')]))
+      .mockReturnValueOnce(detailItemsSelect([itemFixture('DTO-260901-0002')]))
+
+    const detail = await getInventoryCoreDocById('DTO-260901-0002')
+
+    expect(detail!.totalAmount).toBe(198)
+    const item = detail!.items[0]
+    expect(item.amount).toBe(196)
+    expect(item.marketActualUnitPrice).toBe(45)
+    expect(item.storeActualUnitPrice).toBe(66)
+    // 市场档依旧看不到供应链成本。
+    expect(item.supplyChainUnitCost).toBeUndefined()
+  })
+
+  it('单据列表按行遮蔽：门店 A 行无金额、市场 B 行有金额', async () => {
+    const countSelect = { from: () => ({ where: async () => [{ count: 2 }] }) }
+    const listSelect = {
+      from: () => ({
+        leftJoin: () => ({
+          leftJoin: () => ({
+            where: () => ({
+              orderBy: () => ({
+                limit: () => ({
+                  offset: async () => [
+                    docFixture('DTO-260901-0001', 'NODE-A1', 'NODE-A2'),
+                    docFixture('DTO-260901-0002', 'NODE-B1', 'MKT-B'),
+                  ],
+                }),
+              }),
+            }),
+          }),
+        }),
+      }),
+    }
+    mockDb.select
+      .mockReturnValueOnce(countSelect as never)
+      .mockReturnValueOnce(listSelect as never)
+
+    const result = await listInventoryCoreDocs({})
+
+    expect(result.data).toHaveLength(2)
+    expect(result.data[0].totalAmount).toBeUndefined()
+    expect(result.data[1].totalAmount).toBe(198)
+  })
+
+  it('库存批次按 location 归属 org 行级遮蔽：门店 A 批次无价、市场 B 批次有价', async () => {
+    function stockLot(id: number, locationId: string) {
+      return {
+        lot: {
+          id,
+          locationId,
+          skuId: 'SKU-1',
+          skuName: '测试产品',
+          specName: null,
+          supplier: null,
+          productSeries: null,
+          batchNo: 'B001',
+          expiryDate: null,
+          isGift: false,
+          quantityOnHand: '5',
+          supplyChainUnitCost: '30.00',
+          marketActualUnitPrice: '45.00',
+          storeActualUnitPrice: '66.00',
+          remark: null,
+          updatedAt: now,
+        },
+        locationName: locationId,
+        locationType: '门店',
+        locationOrgNodeId: locationId === 'STORE-A1' ? 'NODE-A1' : 'NODE-B1',
+        reservedQuantity: '1',
+      }
+    }
+    const countSelect = { from: () => ({ leftJoin: () => ({ where: async () => [{ count: 2 }] }) }) }
+    const listSelect = {
+      from: () => ({
+        leftJoin: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: () => ({
+                offset: async () => [stockLot(1, 'STORE-A1'), stockLot(2, 'STORE-B1')],
+              }),
+            }),
+          }),
+        }),
+      }),
+    }
+    mockDb.select
+      .mockReturnValueOnce(countSelect as never)
+      .mockReturnValueOnce(listSelect as never)
+
+    const result = await listInventoryLots({})
+
+    const [storeALot, storeBLot] = result.data
+    expect(storeALot.availableQuantity).toBe(4)
+    expect(storeALot.supplyChainUnitCost).toBeUndefined()
+    expect(storeALot.marketActualUnitPrice).toBeUndefined()
+    expect(storeALot.storeActualUnitPrice).toBeUndefined()
+    expect(storeBLot.marketActualUnitPrice).toBe(45)
+    expect(storeBLot.storeActualUnitPrice).toBe(66)
+    expect(storeBLot.supplyChainUnitCost).toBeUndefined()
   })
 })

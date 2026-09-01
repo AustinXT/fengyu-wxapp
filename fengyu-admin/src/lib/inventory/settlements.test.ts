@@ -59,20 +59,37 @@ const STORE_SESSION = session({
   actions: ['inventory:list', 'inventory:store_operate'],
 })
 
-function groupedSelect(rows: unknown[]) {
+function groupedSelect(rows: unknown[], sink?: { where?: unknown }) {
   return {
     from: () => ({
       leftJoin: () => ({
         leftJoin: () => ({
-          where: () => ({
-            groupBy: () => ({
-              orderBy: async () => rows,
-            }),
-          }),
+          where: (condition: unknown) => {
+            if (sink) sink.where = condition
+            return {
+              groupBy: () => ({
+                orderBy: async () => rows,
+              }),
+            }
+          },
         }),
       }),
     }),
   }
+}
+
+/** 递归遍历 Drizzle 条件对象，断言参数/片段是否出现（与 engine.test.ts 同构）。 */
+function sqlContains(query: unknown, fragment: string): boolean {
+  const seen = new Set<object>()
+  const visit = (value: unknown): boolean => {
+    if (typeof value === 'string') return value.includes(fragment)
+    if (!value || typeof value !== 'object') return false
+    if (seen.has(value)) return false
+    seen.add(value)
+    if (Array.isArray(value)) return value.some(visit)
+    return Object.values(value as Record<string, unknown>).some(visit)
+  }
+  return visit(query)
 }
 
 describe('货款结算只读报表', () => {
@@ -166,6 +183,47 @@ describe('货款结算只读报表', () => {
       payableAmount: 888,
     })
     expect(mockDb.select).toHaveBeenCalledTimes(2)
+  })
+
+  it('说明.md §9.3 回归：混合绑定不得借市场 B 价格权汇总门店 A 所在市场货款', async () => {
+    // 市场 B 绑库存财务（market_price_view）+ 门店 A 绑门店库存员（无价格权）。
+    mockGetSession.mockResolvedValue({
+      employeeId: 'E-MIX',
+      name: '混合绑定员工',
+      phone: '13800000001',
+      roles: [{
+        role: 'inventory_market_finance', scopeId: 'MKT-B', scopeType: '市场',
+        actions: ['inventory:list', 'inventory:market_price_view'],
+        scopeStoreIds: ['STORE-B1'],
+        scopeOrgNodeIds: ['MKT-B', 'NODE-B1'],
+      }, {
+        role: 'inventory_store_operator', scopeId: 'NODE-A1', scopeType: '门店',
+        actions: ['inventory:list', 'inventory:store_operate'],
+        scopeStoreIds: ['STORE-A1'],
+        scopeOrgNodeIds: ['NODE-A1'],
+      }],
+      permissions: {
+        actions: ['inventory:list', 'inventory:market_price_view', 'inventory:store_operate'],
+        scopeStoreIds: ['STORE-B1', 'STORE-A1'],
+        scopeOrgNodeIds: ['MKT-B', 'NODE-B1', 'NODE-A1'],
+      },
+    } as never)
+    const marketSink: { where?: unknown } = {}
+    const storeSink: { where?: unknown } = {}
+    mockDb.select
+      .mockReturnValueOnce(groupedSelect([], marketSink))
+      .mockReturnValueOnce(groupedSelect([], storeSink))
+
+    await listInventorySettlements({ startDate: '2026-09-01', endDate: '2026-09-02' })
+
+    // 两段结算查询的 scope 都必须收敛到市场 B 绑定覆盖的 org；
+    // 门店 A 节点绝不允许进入金额聚合条件（整行即金额）。
+    for (const sink of [marketSink, storeSink]) {
+      expect(sqlContains(sink.where, 'MKT-B')).toBe(true)
+      expect(sqlContains(sink.where, 'NODE-B1')).toBe(true)
+      expect(sqlContains(sink.where, 'NODE-A1')).toBe(false)
+      expect(sqlContains(sink.where, 'STORE-A1')).toBe(false)
+    }
   })
 
   it('scope 为空的会话不触发查询直接返回空行', async () => {

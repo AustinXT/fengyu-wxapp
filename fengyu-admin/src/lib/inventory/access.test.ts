@@ -3,9 +3,12 @@ import { ApiError } from '@/lib/api-error'
 import {
   assertInventoryLocationInScope,
   canViewInventoryAmount,
+  inventoryPriceScopeByTier,
   inventoryPriceVisibility,
+  inventoryPriceVisibilityForOrgNodes,
   inventoryScopedLocationIds,
   inventoryScopedOrgNodeIds,
+  inventoryTierRestrictedOrgNodeIds,
 } from './access'
 
 function session(input: {
@@ -128,6 +131,84 @@ describe('进销存独立 scope 与价格层级', () => {
     // 单据 scope 同口径：总部不含任何后代节点。
     expect(inventoryScopedOrgNodeIds(hqSession)).not.toContain('MARKET-1')
     expect(inventoryScopedOrgNodeIds(hqSession)).not.toContain('NODE-STORE-1')
+  })
+
+  it('说明.md §9.3/§9.5：价格档位按角色绑定收敛生效范围（防跨绑定借权）', () => {
+    // 失败场景：市场 B 绑库存财务（market_price_view）+ 门店 A 绑门店库存员。
+    const mixed = {
+      employeeId: 'E-MIX',
+      name: '混合绑定员工',
+      phone: '13800000001',
+      roles: [{
+        role: 'inventory_market_finance',
+        scopeId: 'MKT-B',
+        scopeType: '市场',
+        scopeStoreIds: ['STORE-B1'],
+        scopeOrgNodeIds: ['MKT-B', 'NODE-B1'],
+        actions: ['inventory:list', 'inventory:market_price_view'],
+      }, {
+        role: 'inventory_store_operator',
+        scopeId: 'NODE-A1',
+        scopeType: '门店',
+        scopeStoreIds: ['STORE-A1'],
+        scopeOrgNodeIds: ['NODE-A1'],
+        actions: ['inventory:list', 'inventory:store_operate'],
+      }],
+      permissions: {
+        actions: ['inventory:list', 'inventory:market_price_view', 'inventory:store_operate'],
+        scopeStoreIds: ['STORE-B1', 'STORE-A1'],
+        scopeOrgNodeIds: ['MKT-B', 'NODE-B1', 'NODE-A1'],
+      },
+    } as never
+    const tiers = inventoryPriceScopeByTier(mixed)
+    // 市场档只在市场 B 绑定展开的 org 上生效；门店绑定不注入任何价格档位。
+    expect(tiers.market).toEqual(new Set(['MKT-B', 'NODE-B1']))
+    expect(tiers.supplyChain).toEqual(new Set())
+    // 门店 A 的单据（端点 NODE-A1）不得借市场 B 的价格权看金额。
+    expect(inventoryPriceVisibilityForOrgNodes(tiers, ['NODE-A1', 'MKT-A'])).toBe('none')
+    // 市场 B 自己的单据金额照常可见。
+    expect(inventoryPriceVisibilityForOrgNodes(tiers, ['MKT-B', 'HQ'])).toBe('market')
+    expect(inventoryPriceVisibilityForOrgNodes(tiers, ['NODE-B1'])).toBe('market')
+  })
+
+  it('价格档位行级判定：单绑定与 admin/兼容会话行为与现状一致', () => {
+    // 单绑定市场会话：档位集合 = 该绑定 org 集合 = scope 集合，任何可见行都命中。
+    const single = inventoryPriceScopeByTier(session({
+      role: 'inventory_market_finance', scopeId: 'M1', scopeType: '市场',
+      scopeOrgNodeIds: ['M1', 'NODE-S1'],
+      actions: ['inventory:list', 'inventory:market_price_view'],
+    }))
+    expect(inventoryPriceVisibilityForOrgNodes(single, ['M1', 'HQ'])).toBe('market')
+    expect(inventoryPriceVisibilityForOrgNodes(single, ['NODE-S1'])).toBe('market')
+    // 总部供应链绑定：不展开后代，仅总部端点命中（可见单据必有总部端点）。
+    const hq = inventoryPriceScopeByTier(session({
+      role: 'inventory_supply_chain_operator', scopeId: 'HQ', scopeType: '总部',
+      scopeOrgNodeIds: ['HQ', 'M1'],
+      actions: ['inventory:supply_chain_price_view'],
+    }))
+    expect(hq.supplyChain).toEqual(new Set(['HQ']))
+    expect(inventoryPriceVisibilityForOrgNodes(hq, ['M1', 'HQ'])).toBe('supply_chain')
+    // admin 全量：两档均不受 org 限制。
+    const admin = inventoryPriceScopeByTier(session({ role: 'admin', scopeId: 'HQ', scopeType: '总部' }))
+    expect(admin).toEqual({ supplyChain: null, market: null })
+    expect(inventoryPriceVisibilityForOrgNodes(admin, ['ANY'])).toBe('all')
+    // 旧会话兼容（无角色级 actions 元数据）：退回会话级动作并集，全局生效。
+    const legacy = inventoryPriceScopeByTier({
+      employeeId: 'E-L', name: '旧会话', phone: '13800000002',
+      roles: [{ role: 'finance', scopeId: 'M1', scopeType: '市场' }],
+      permissions: { actions: ['inventory:market_price_view'], scopeStoreIds: [] },
+    } as never)
+    expect(legacy.market).toBeNull()
+    expect(inventoryPriceVisibilityForOrgNodes(legacy, ['ANY'])).toBe('market')
+  })
+
+  it('inventoryTierRestrictedOrgNodeIds：scope 与档位集合取交，档位无限制时原样返回', () => {
+    expect(inventoryTierRestrictedOrgNodeIds(['A', 'B', 'C'], [new Set(['B', 'D']), new Set(['C'])]))
+      .toEqual(['B', 'C'])
+    expect(inventoryTierRestrictedOrgNodeIds(['A', 'B'], [null, new Set(['B'])])).toEqual(['A', 'B'])
+    expect(inventoryTierRestrictedOrgNodeIds(null, [new Set(['A'])])).toEqual(['A'])
+    expect(inventoryTierRestrictedOrgNodeIds(null, [null])).toBeNull()
+    expect(inventoryTierRestrictedOrgNodeIds(['A'], [new Set<string>()])).toEqual([])
   })
 
   it('库存主体越权抛出结构化 ApiError 而非裸 Error', () => {
