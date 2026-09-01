@@ -146,7 +146,8 @@ const GENERIC_OPERATIONS: Record<InventoryBusinessLevel, Array<Omit<OperationDef
   market: [
     { id: 'market-conversion', level: 'market', title: '市场间调货', group: '市场特殊业务', icon: ArrowLeftRight, tone: 'text-[#5E8BB3] bg-[#F0F5FA]', href: '/inventory/docs?create=市场间调货出库' },
     { id: 'market-conversion', level: 'market', title: '市场产品报损', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/docs?create=市场产品报损' },
-    { id: 'market-conversion', level: 'market', title: '市场盘点/盘溢', group: '市场特殊业务', icon: ClipboardCheck, tone: 'text-[#7B5E2B] bg-[#FFF8E6]', href: '/inventory/docs?create=市场库存盘点' },
+    { id: 'market-conversion', level: 'market', title: '市场库存盘点', group: '市场特殊业务', icon: ClipboardCheck, tone: 'text-[#7B5E2B] bg-[#FFF8E6]', href: '/inventory/docs?create=市场库存盘点' },
+    { id: 'market-conversion', level: 'market', title: '市场产品盘溢', group: '市场特殊业务', icon: PackagePlus, tone: 'text-[#3D8A5A] bg-[#F0F9F2]', href: '/inventory/docs?create=市场产品盘溢' },
   ],
   store: [
     { id: 'store-conversion', level: 'store', title: '门店调拨', group: '发货、收货与退货', icon: ArrowLeftRight, tone: 'text-[#5E8BB3] bg-[#F0F5FA]', href: '/inventory/docs?create=分院调货出库' },
