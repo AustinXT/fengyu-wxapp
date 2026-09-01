@@ -445,7 +445,6 @@ export function buildServiceEnvs(config) {
       TZ: 'Asia/Shanghai',
       DATABASE_URL: config.ADMIN_DATABASE_URL,
       ...pick(config, CRON_PASSTHROUGH),
-      ...lakala,
     },
     'export-worker': {
       NODE_ENV: 'production',

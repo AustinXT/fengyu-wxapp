@@ -27,6 +27,8 @@ vi.mock('@db/lakala-onboarding', () => ({
     status: 'application_status',
     updatedAt: 'updated_at',
     lakalaMerchantId: 'application_lakala_merchant_id',
+    channelData: 'channel_data',
+    subMerchantCheckedAt: 'sub_merchant_checked_at',
   },
   lakalaOnboardingAttachments: {
     id: 'attachment_id',
@@ -109,6 +111,7 @@ vi.mock('@/lib/lakala-onboarding', () => ({
   getEContractCallbackUrl: vi.fn(),
   getEContractOrgId: vi.fn(),
   getEContractType: vi.fn(),
+  getLakalaOnboardingApiFamily: vi.fn().mockReturnValue('tkbs'),
   getOnboardingActivityId: vi.fn(),
   getOrgCode: vi.fn().mockReturnValue('TEST_ORG_CODE'),
   getOnboardingUserNo: vi.fn(),
@@ -129,13 +132,19 @@ vi.mock('@/lib/lakala-onboarding', () => ({
 
 import {
   confirmOnboardingExternalCertification,
+  queryOnboardingApplication,
   refreshOnboardingCertificationStatus,
+  refreshOnboardingSubMerchants,
 } from './lakala-onboarding'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { requirePermission, scopeCondition } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
-import { lakalaQueryRegisterStatus } from '@/lib/lakala-onboarding'
+import {
+  lakalaQueryChannelSubMerchants,
+  lakalaQueryRegisterStatus,
+  lakalaQuerySubMerchant,
+} from '@/lib/lakala-onboarding'
 import { lakalaMerchants } from '@db/lakala'
 import { lakalaOnboardingApplications } from '@db/lakala-onboarding'
 import { stores } from '@db/org'
@@ -280,6 +289,12 @@ describe('拉卡拉入网渠道认证闭环', () => {
     const result = await refreshOnboardingCertificationStatus('onb-cert')
 
     expect(result).toEqual({ success: true, message: '微信认证已通过，办理完成，收款商户已启用' })
+    expect(db.select).toHaveBeenCalledWith(expect.objectContaining({
+      app: lakalaOnboardingApplications,
+      storeName: stores.storeName,
+      marketName: expect.anything(),
+      lakalaMerchantEnabled: expect.anything(),
+    }))
     expect(transaction.inserts).toContainEqual(expect.objectContaining({
       table: lakalaMerchants,
       values: expect.objectContaining({ merchantNo: '821234567890', termNo: 'TERM-1', enabled: true }),
@@ -432,5 +447,158 @@ describe('拉卡拉入网渠道认证闭环', () => {
 
     await expect(refreshOnboardingCertificationStatus('onb-cert')).rejects.toThrow('PERMISSION_DENIED')
     expect(db.select).not.toHaveBeenCalled()
+  })
+
+  it('手动查询子商户号失败时只记录错误，不覆盖已有渠道数据', async () => {
+    ;(db.select as any).mockReturnValueOnce(scopedSelection([approvedApplication()]))
+    ;(lakalaQueryChannelSubMerchants as any).mockResolvedValue({
+      success: false,
+      wechat: [],
+      alipay: [],
+      errorCode: 'TEMPORARY_ERROR',
+      errorMessage: '临时查询失败',
+      raw: {},
+    })
+
+    const result = await refreshOnboardingSubMerchants('onb-cert')
+
+    expect(result).toEqual({ success: false, message: '临时查询失败' })
+    expect(writes).toContainEqual(expect.objectContaining({
+      table: lakalaOnboardingApplications,
+      values: expect.objectContaining({
+        lastErrorCode: 'TEMPORARY_ERROR',
+        lastErrorMessage: '临时查询失败',
+      }),
+    }))
+    expect(writes.some((write) => Object.hasOwn(write.values, 'channelData'))).toBe(false)
+  })
+
+  it('手动查询只返回部分渠道时保留此前已取得的渠道号', async () => {
+    const existingWechat = [{ subMerchantNo: 'WX-EXISTING' }]
+    const returnedAlipay = [{
+      subMerchantNo: 'ALI-NEW',
+      registerType: 'ZFBZF',
+      channelId: 'alipay',
+      registerChannelName: '支付宝',
+    }]
+    ;(db.select as any)
+      .mockReturnValueOnce(scopedSelection([approvedApplication()]))
+      .mockReturnValueOnce(limitedSelection([{ channelData: { wechat: existingWechat, alipay: [] } }]))
+    ;(lakalaQueryChannelSubMerchants as any).mockResolvedValue({
+      success: true,
+      wechat: [],
+      alipay: returnedAlipay,
+      raw: {},
+    })
+
+    const result = await refreshOnboardingSubMerchants('onb-cert')
+
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('WX-EXISTING')
+    expect(result.message).toContain('ALI-NEW')
+    expect(writes).toContainEqual(expect.objectContaining({
+      table: lakalaOnboardingApplications,
+      values: expect.objectContaining({
+        channelData: expect.objectContaining({
+          wechat: [expect.objectContaining({ subMerchantNo: 'WX-EXISTING' })],
+          alipay: returnedAlipay,
+        }),
+      }),
+    }))
+  })
+
+  it('非 82 前缀商户号不能手动查询子商户号', async () => {
+    ;(db.select as any).mockReturnValueOnce(scopedSelection([
+      approvedApplication({ merCupNo: 'MOCK-MERCHANT' }),
+    ]))
+
+    const result = await refreshOnboardingSubMerchants('onb-cert')
+
+    expect(result.success).toBe(false)
+    expect(lakalaQueryChannelSubMerchants).not.toHaveBeenCalled()
+  })
+
+  it('手动查询进件状态不会联动查询子商户号', async () => {
+    ;(db.select as any).mockReturnValueOnce(scopedSelection([approvedApplication()]))
+    ;(lakalaQuerySubMerchant as any).mockResolvedValue({
+      success: true,
+      status: 'SUCCESS',
+      merchantNo: '821234567890',
+      terminalNo: 'TERM-1',
+      raw: {},
+    })
+
+    const result = await queryOnboardingApplication('onb-cert')
+
+    expect(result).toEqual({ success: true, message: '状态已更新：成功' })
+    expect(lakalaQueryChannelSubMerchants).not.toHaveBeenCalled()
+  })
+
+  it('自动启用时申请关联商户与商户号持有者不一致，以商户号持有者为准并同步关联', async () => {
+    ;(db.select as any).mockReturnValueOnce(scopedSelection([
+      approvedApplication({ lakalaMerchantId: 'merchant-stale' }),
+    ]))
+    setupExternalResults()
+    const transaction = setupTransaction([
+      [{ storeId: 'store-1', lakalaMerchantId: 'merchant-stale', orgNodeId: 'store-node-1' }],
+      [{ marketOrgNodeId: 'market-1' }],
+      [{ id: 'merchant-live', marketOrgNodeId: 'market-1' }],
+    ])
+
+    const result = await refreshOnboardingCertificationStatus('onb-cert')
+
+    expect(result.success).toBe(true)
+    expect(transaction.inserts).toHaveLength(0)
+    expect(transaction.writes).toContainEqual(expect.objectContaining({
+      table: lakalaOnboardingApplications,
+      values: expect.objectContaining({ lakalaMerchantId: 'merchant-live' }),
+    }))
+    expect(transaction.writes).toContainEqual(expect.objectContaining({
+      table: stores,
+      values: expect.objectContaining({ lakalaMerchantId: 'merchant-live' }),
+    }))
+  })
+
+  it('人工确认时申请关联商户与商户号持有者不一致，改绑到商户号持有者', async () => {
+    ;(db.select as any).mockReturnValueOnce(scopedSelection([
+      approvedApplication({ lakalaMerchantId: 'merchant-stale' }),
+    ]))
+    const transaction = setupTransaction([
+      [{ storeId: 'store-1', lakalaMerchantId: 'merchant-stale', orgNodeId: 'store-node-1' }],
+      [{ marketOrgNodeId: 'market-1' }],
+      [{ id: 'merchant-live', marketOrgNodeId: 'market-1' }],
+    ])
+
+    const result = await confirmOnboardingExternalCertification('onb-cert')
+
+    expect(result).toEqual({ success: true, message: '已关联收款商户，状态为未启用；请到“收款商户”页手动启用' })
+    expect(transaction.inserts).toHaveLength(0)
+    expect(transaction.writes).toContainEqual(expect.objectContaining({
+      table: lakalaOnboardingApplications,
+      values: expect.objectContaining({ lakalaMerchantId: 'merchant-live' }),
+    }))
+    expect(transaction.writes).toContainEqual(expect.objectContaining({
+      table: stores,
+      values: expect.objectContaining({ lakalaMerchantId: 'merchant-live' }),
+    }))
+  })
+
+  it('人工确认时已属于其他市场的商户不能被改绑市场', async () => {
+    ;(db.select as any).mockReturnValueOnce(scopedSelection([approvedApplication()]))
+    const transaction = setupTransaction([
+      [{ storeId: 'store-1', lakalaMerchantId: null, orgNodeId: 'store-node-1' }],
+      [{ marketOrgNodeId: 'market-1' }],
+      [{ id: 'merchant-other-market', marketOrgNodeId: 'market-2' }],
+    ])
+
+    const result = await confirmOnboardingExternalCertification('onb-cert')
+
+    expect(result).toEqual({ success: false, message: '拉卡拉商户已属于其他市场，不能跨市场绑定' })
+    expect(transaction.inserts).toHaveLength(0)
+    expect(transaction.writes).not.toContainEqual(expect.objectContaining({
+      table: lakalaMerchants,
+      values: expect.objectContaining({ marketOrgNodeId: 'market-1' }),
+    }))
+    expect(logOperation).not.toHaveBeenCalled()
   })
 })
