@@ -26,8 +26,8 @@ export default async function Page({
     listInventorySkuCompositions({ keyword: params.q, status }),
     listInventorySkuCompositionOptions(),
   ])
-  const canCreate = hasUiCapability(session.permissions.actions, 'inventory:create')
-  const canUpdate = hasUiCapability(session.permissions.actions, 'inventory:update')
+  const canCreate = hasUiCapability(session.permissions.actions, 'inventory:supply_chain_master_data_manage')
+  const canUpdate = canCreate
 
   return (
     <div className="p-6">

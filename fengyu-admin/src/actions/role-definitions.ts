@@ -130,16 +130,23 @@ function normalizeActions(actions: readonly string[], isSuperAdmin: boolean): st
 }
 
 /**
- * 超级管理员会绕过数据 scope，因此已在市场、门店等非总部节点分配的角色
- * 不得直接升级。调用方必须先撤销这些分配，再创建或升级总部范围的角色。
+ * 复核存量分配与层级白名单的冲突：permission_roles 的 DB 触发器只在分配行自身
+ * INSERT/UPDATE 时校验 scope 节点类型，编辑角色定义（收窄 allowedScopeTypes 或
+ * 加入进销存层级动作触发 normalize 收敛）不会触发复核；staffApi 鉴权也不读
+ * allowed_scope_types，矛盾分配会在小程序端持续生效。因此创建/升级/编辑前按
+ * 目标层级集合检查存量分配，有冲突先拒绝（口径同 0039 迁移期 DO 守卫）。
+ * 超级管理员绕过数据 scope，只允许绑定总部节点，等价于白名单 ['总部']。
  */
-async function hasNonHeadquartersAssignment(roleKey: string): Promise<boolean> {
+async function hasConflictingScopeAssignment(
+  roleKey: string,
+  allowedScopeTypes: readonly ('总部' | '市场' | '门店')[],
+): Promise<boolean> {
   const rows = await db.execute(sql`
     SELECT 1
       FROM permission_roles pr
       JOIN org_nodes node ON node.id = pr.scope_id
      WHERE pr.role = ${roleKey}
-       AND node.type <> '总部'
+       AND NOT (node.type = ANY(${allowedScopeTypes}::text[]))
      LIMIT 1
   `)
   return (rows as unknown as unknown[]).length > 0
@@ -296,7 +303,7 @@ export const updateRoleDefinition = withPermission(
       || nextAdminAccess !== before.canAccessAdmin
     if (capabilityChanged) requireAdmin(session)
 
-    if (!before.isSuperAdmin && nextSuper && await hasNonHeadquartersAssignment(roleKey)) {
+    if (!before.isSuperAdmin && nextSuper && await hasConflictingScopeAssignment(roleKey, ['总部'])) {
       throw new Error('INVALID_STATE: 已在非总部范围分配的角色不能直接升级为超级管理员，请先撤销相关授权')
     }
 
@@ -327,6 +334,11 @@ export const updateRoleDefinition = withPermission(
       actions,
       nextSuper,
     )
+    // 编辑可能收窄层级（含 normalize 对进销存层级动作的强制收敛）；按目标层级复核
+    // 存量分配，矛盾时拒绝，防止小程序端继续按旧绑定放行。
+    if (await hasConflictingScopeAssignment(roleKey, allowedScopeTypes)) {
+      throw new Error('INVALID_STATE: 存在与新可绑定层级冲突的角色分配，请先撤销相关授权后再保存')
+    }
     // PostgreSQL 的 timestamptz 可保留微秒，而 JavaScript Date 只能保留毫秒。
     // 页面拿到的是 ISO 毫秒值，直接等值比较会让刚创建的角色也误判为并发冲突。
     const expectedUpdatedAt = input.expectedUpdatedAt ?? before.updatedAt.toISOString()

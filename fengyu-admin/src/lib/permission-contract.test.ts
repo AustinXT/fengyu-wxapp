@@ -25,7 +25,7 @@ const knownActions = [
   'coupon:list', 'coupon:create',
   'employee:list', 'employee:create',
   'sale_order:list', 'sale_order:delete',
-  'store:lakala_config', 'inventory:update',
+  'store:lakala_config', 'inventory:market_operate', 'inventory:list',
 ]
 
 function matrix(overrides: Partial<Record<'admin' | 'manager', string[]>> = {}) {
@@ -65,23 +65,23 @@ describe('permission-contract', () => {
 
   it('非 admin 不可授予物理删除和收款配置；已交付库存能力按依赖校验', () => {
     const result = validatePermissionMatrix(matrix({
-      manager: ['sale_order:delete', 'store:lakala_config', 'inventory:update'],
+      manager: ['sale_order:delete', 'store:lakala_config', 'inventory:market_operate'],
     }), knownActions)
 
     expect(result.issues).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'not_grantable', action: 'sale_order:delete', grantability: 'admin_only' }),
       expect.objectContaining({ kind: 'not_grantable', action: 'store:lakala_config', grantability: 'admin_only' }),
-      expect.objectContaining({ kind: 'missing_ui_dependency', action: 'inventory:update', missing: ['inventory:stock_list'] }),
+      expect.objectContaining({ kind: 'missing_ui_dependency', action: 'inventory:market_operate', missing: ['inventory:list', 'inventory:stock_list'] }),
     ]))
   })
 
   it('读取历史矩阵时清洗未知和不可授予能力，保留已交付库存能力', () => {
     const result = sanitizePermissionMatrix(matrix({
-      admin: ['coupon:list', 'unknown:action', 'inventory:update'],
+      admin: ['coupon:list', 'unknown:action', 'inventory:market_operate'],
       manager: ['coupon:list', 'sale_order:delete', 'store:lakala_config'],
     }), knownActions)
 
-    expect(result.admin).toEqual(['coupon:list', 'inventory:update'])
+    expect(result.admin).toEqual(['coupon:list', 'inventory:market_operate'])
     expect(result.manager).toEqual(['coupon:list'])
   })
 
@@ -90,14 +90,14 @@ describe('permission-contract', () => {
       'coupon:list',
       'sale_order:delete',
       'store:lakala_config',
-      'inventory:update',
+      'inventory:market_operate',
       'lakala:onboarding:create',
     ]
 
-    expect(sanitizeRoleDefinitionActions(legacy, false, knownActions)).toEqual(['coupon:list', 'inventory:update'])
+    expect(sanitizeRoleDefinitionActions(legacy, false, knownActions)).toEqual(['coupon:list', 'inventory:market_operate'])
     expect(sanitizeRoleDefinitionActions(legacy, true, knownActions)).toEqual([
       'coupon:list',
-      'inventory:update',
+      'inventory:market_operate',
       'sale_order:delete',
       'store:lakala_config',
     ])

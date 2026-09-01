@@ -112,6 +112,9 @@ function mockTxCapturingSet(): { setValues: () => Record<string, unknown> } {
 describe('updateRoleDefinition', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // 编辑路径的存量分配复核（hasConflictingScopeAssignment）默认无冲突；
+    // 个别用例用 mockResolvedValueOnce 覆盖为有冲突。
+    vi.mocked(db.execute).mockResolvedValue([] as never)
   })
 
   it('拒绝将已有非总部授权的角色升级为超级管理员', async () => {
@@ -179,6 +182,7 @@ describe('updateRoleDefinition', () => {
 describe('normalizeAllowedScopeTypes — 进销存层级与可绑定范围', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.mocked(db.execute).mockResolvedValue([] as never)
   })
 
   function beforeRow(overrides: Record<string, unknown> = {}) {
