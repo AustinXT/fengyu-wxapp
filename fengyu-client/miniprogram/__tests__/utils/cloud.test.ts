@@ -204,6 +204,28 @@ describe('callClientApi 网络错误防护', () => {
     })
   })
 
+  test('退出态允许 auth.login 通过 OPENID 恢复已有账户', async () => {
+    ;(globalThis as any).wx.setStorageSync('clientLoggedOut', true)
+    ;(globalThis as any).wx.cloud.callFunction.mockResolvedValue({
+      result: {
+        code: 0,
+        message: 'success',
+        data: { userId: 'FYGK-20260901-00001', phone: '13800000000' },
+      },
+    })
+
+    const data = await callClientApi<{ userId: string; phone: string }>('auth.login', {})
+
+    expect(data.phone).toBe('13800000000')
+    expect((globalThis as any).wx.cloud.callFunction).toHaveBeenCalledWith({
+      name: 'clientApi',
+      data: {
+        action: 'auth.login',
+        payload: expect.objectContaining({ _appVersion: expect.any(String) }),
+      },
+    })
+  })
+
   // ===== errorType 透传：白名单业务错误信任后端文案，跳过 sanitize =====
 
   test('白名单业务错误（errorType 非空）长文案原样透传，不被 sanitize 截断', async () => {

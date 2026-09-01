@@ -67,6 +67,7 @@ Page({
     promoterEmployeeName: '',
     // 绑手机号弹窗（绑门店前若未授权手机号则弹出）
     showPhoneBind: false,
+    phoneBinding: false,
     sourceGroups: [
       { label: '线上来源', channels: ['美团', '抖音', '小程序'] },
       { label: '线下来源', channels: ['推广部', '全员地推', '外请团队拓客', '老带新', '转让店', '自进店', '员工或家属'] },
@@ -217,6 +218,7 @@ Page({
   },
 
   async onGetPhoneNumber(e: WechatMiniprogram.CustomEvent<{ cloudID?: string; errMsg?: string }>) {
+    if (this.data.phoneBinding) return;
     const { cloudID, errMsg } = e.detail || {};
     if (!cloudID) {
       if (errMsg?.includes('auth deny')) {
@@ -224,6 +226,7 @@ Page({
       }
       return;
     }
+    this.setData({ phoneBinding: true });
     try {
       const inviterUserId = app.globalData.pendingInviter;
       await bindPhoneWithCloudID(cloudID, inviterUserId ? { inviterUserId } : {});
@@ -236,6 +239,8 @@ Page({
       setTimeout(() => this.onConfirmBind(), 600);
     } catch (err: any) {
       Toast.fail(err?.message || '绑定失败，请重试');
+    } finally {
+      this.setData({ phoneBinding: false });
     }
   },
 

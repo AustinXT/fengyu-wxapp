@@ -102,6 +102,8 @@
       class="phone-bind-btn"
       open-type="getPhoneNumber"
       bindgetphonenumber="onGetPhoneNumber"
+      disabled="{{phoneBinding}}"
+      loading="{{phoneBinding}}"
     >
       获取手机号
     </button>

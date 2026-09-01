@@ -49,6 +49,7 @@ Page({
 
     // 手机绑定
     showPhoneBind: false,
+    phoneBinding: false,
   },
 
   _config: null as RechargeConfig | null,
@@ -290,11 +291,13 @@ Page({
   },
 
   async onGetPhoneNumber(e: WechatMiniprogram.CustomEvent<{ cloudID?: string; errMsg?: string }>) {
+    if (this.data.phoneBinding) return;
     const { cloudID, errMsg } = e.detail;
     if (!cloudID) {
       if (errMsg?.includes('auth deny')) Toast.fail('您拒绝了授权');
       return;
     }
+    this.setData({ phoneBinding: true });
     try {
       await bindPhoneWithCloudID(cloudID);
       this.setData({ showPhoneBind: false });
@@ -305,6 +308,8 @@ Page({
       }
     } catch (err: any) {
       Toast.fail(err?.message || '绑定失败，请重试');
+    } finally {
+      this.setData({ phoneBinding: false });
     }
   },
 });

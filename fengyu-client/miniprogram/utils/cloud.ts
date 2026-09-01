@@ -4,6 +4,7 @@ import { APP_VERSION } from './version'
 const LOGGED_OUT_KEY = 'clientLoggedOut'
 
 const ACTIONS_ALLOWED_WHEN_LOGGED_OUT = new Set([
+  'auth.login',
   'auth.bindPhone',
   'store.list',
   'store.detail',
@@ -109,7 +110,7 @@ interface BindPhoneResult {
 }
 
 /**
- * CloudID 方式手机号授权登录（首次绑定或退出后重新授权）
+ * CloudID 方式绑定手机号（仅首次绑定或服务端手机号缺失时使用）
  * 封装 loading → API 调用 → 错误处理 → localStorage 持久化 → hideLoading
  * 注：客户端不再提供自助换绑，已绑定用户如需修改手机号需联系门店由管理后台操作
  */

@@ -107,6 +107,46 @@ describe('WXML 事件绑定完整性', () => {
   }
 })
 
+describe('手机号快速验证防重复守卫', () => {
+  test('所有 getPhoneNumber 按钮均有禁用态，且页面 handler 有同步锁', () => {
+    const violations: string[] = []
+    let buttonCount = 0
+
+    for (const target of getAllTargets()) {
+      const wxmlPath = path.join(ROOT, target + '.wxml')
+      const tsPath = path.join(ROOT, target + '.ts')
+      if (!fs.existsSync(wxmlPath) || !fs.existsSync(tsPath)) continue
+
+      const wxmlContent = fs.readFileSync(wxmlPath, 'utf-8')
+      const phoneButtons = wxmlContent.match(
+        /<button\b(?=[^>]*\bopen-type=["']getPhoneNumber["'])[^>]*>/g
+      ) || []
+      if (phoneButtons.length === 0) continue
+
+      buttonCount += phoneButtons.length
+      for (const tag of phoneButtons) {
+        if (!/\bdisabled=["']\{\{\s*phoneBinding\s*\}\}["']/.test(tag)) {
+          violations.push(`${target}: getPhoneNumber 按钮缺少 phoneBinding disabled`)
+        }
+        if (!/\bloading=["']\{\{\s*phoneBinding\s*\}\}["']/.test(tag)) {
+          violations.push(`${target}: getPhoneNumber 按钮缺少 phoneBinding loading`)
+        }
+      }
+
+      const tsContent = fs.readFileSync(tsPath, 'utf-8')
+      if (!/phoneBinding:\s*false/.test(tsContent)) {
+        violations.push(`${target}: data 缺少 phoneBinding 初始态`)
+      }
+      if (!/if\s*\(this\.data\.phoneBinding\)\s*return/.test(tsContent)) {
+        violations.push(`${target}: handler 缺少 phoneBinding 重入守卫`)
+      }
+    }
+
+    expect(buttonCount).toBeGreaterThan(0)
+    expect(violations).toEqual([])
+  })
+})
+
 describe('WXML 语法基础验证', () => {
   const targets = getAllTargets()
 

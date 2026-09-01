@@ -63,6 +63,7 @@ Page({
     alipayOrderNo: '',
     // 手机号绑定弹窗
     showPhoneBind: false,
+    phoneBinding: false,
     // 美容师选择
     staffList: [] as Staff[],
     showStaffPopup: false,
@@ -812,6 +813,7 @@ Page({
   },
 
   async onGetPhoneNumber(e: WechatMiniprogram.TouchEvent) {
+    if (this.data.phoneBinding) return;
     const { cloudID, errMsg } = e.detail;
 
     if (!cloudID) {
@@ -821,6 +823,7 @@ Page({
       return;
     }
 
+    this.setData({ phoneBinding: true });
     try {
       await bindPhoneWithCloudID(cloudID as string);
       this.setData({ showPhoneBind: false });
@@ -830,6 +833,8 @@ Page({
       setTimeout(() => this.onSubmitOrder(), 800);
     } catch (err: any) {
       Toast.fail(err.message || '绑定失败，请重试');
+    } finally {
+      this.setData({ phoneBinding: false });
     }
   },
 

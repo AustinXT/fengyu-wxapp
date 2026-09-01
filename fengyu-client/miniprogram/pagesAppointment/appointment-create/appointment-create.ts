@@ -51,6 +51,7 @@ Page({
     timeSlots: TIME_SLOTS,
     submitting: false,
     showPhoneBind: false,
+    phoneBinding: false,
   },
 
   onLoad(options) {
@@ -503,6 +504,7 @@ Page({
   },
 
   async onGetPhoneNumber(e: WechatMiniprogram.TouchEvent) {
+    if (this.data.phoneBinding) return;
     const { cloudID, errMsg } = e.detail;
     if (!cloudID) {
       if (errMsg?.includes('auth deny')) {
@@ -510,6 +512,7 @@ Page({
       }
       return;
     }
+    this.setData({ phoneBinding: true });
     try {
       await bindPhoneWithCloudID(cloudID as string);
       this.setData({ showPhoneBind: false });
@@ -518,6 +521,8 @@ Page({
       setTimeout(() => this.onSubmit(), 800);
     } catch (err: any) {
       Toast.fail(err.message || '绑定失败，请重试');
+    } finally {
+      this.setData({ phoneBinding: false });
     }
   },
 
