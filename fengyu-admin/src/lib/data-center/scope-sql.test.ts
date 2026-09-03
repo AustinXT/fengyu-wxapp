@@ -8,7 +8,7 @@ vi.mock('@db/org', () => ({
 }))
 
 import { PgDialect } from 'drizzle-orm/pg-core'
-import { scopeFilterSql, scopeStoreSkeletonSql } from './scope-sql'
+import { scopeFilterSql, scopeStoreSkeletonSql, orgAnchorScopeSql } from './scope-sql'
 import type { AuthSession, RoleType } from '@/lib/types'
 import type { DataCenterScope } from './types'
 
@@ -125,5 +125,45 @@ describe('scopeStoreSkeletonSql — 关系骨架（store→market）', () => {
     const { sql, params } = render(scopeStoreSkeletonSql(session, ALL))
     expect(sql).toContain('s.store_id in')
     expect(params).toEqual(['S1', 'S2'])
+  })
+})
+
+describe('orgAnchorScopeSql — 无门店员工（直挂组织节点）的可见性', () => {
+  const MARKET: DataCenterScope = { type: 'market', id: 'mkt-A' }
+  const STORE: DataCenterScope = { type: 'store', id: 'S1' }
+
+  it('UI 选具体门店 → FALSE（无门店员工不归属任何单店）', () => {
+    const session = makeSession([{ role: 'admin', scopeType: '总部' }], [])
+    const { raw } = render(orgAnchorScopeSql(session, STORE))
+    expect(raw.trim().toUpperCase()).toBe('FALSE')
+  })
+
+  it('UI 选市场 → 锚定市场须等于该市场', () => {
+    const session = makeSession([{ role: 'admin', scopeType: '总部' }], [])
+    const { sql, params } = render(orgAnchorScopeSql(session, MARKET))
+    expect(sql).toContain('pb.anchor_market_id =')
+    expect(params).toEqual(['mkt-A'])
+  })
+
+  it('admin + scope=all → TRUE（品项公司等总部直属节点仅此路径可见）', () => {
+    const session = makeSession([{ role: 'admin', scopeType: '总部' }], [])
+    const { raw } = render(orgAnchorScopeSql(session, ALL))
+    expect(raw.trim().toUpperCase()).toBe('TRUE')
+  })
+
+  it('非 admin + scope=all → EXISTS(锚定市场下有本账号可见的在营门店)', () => {
+    const session = makeSession([{ role: 'manager', scopeType: '市场' }], ['S1', 'S2'])
+    const { sql, params } = render(orgAnchorScopeSql(session, ALL))
+    expect(sql).toContain('exists (')
+    expect(sql).toContain('vn.parent_id = pb.anchor_market_id')
+    expect(sql).toContain('vn.is_active = true')
+    expect(sql).toContain('vs.store_id in')
+    expect(params).toEqual(['S1', 'S2'])
+  })
+
+  it('非 admin + 空 scopeStoreIds → FALSE', () => {
+    const session = makeSession([{ role: 'manager', scopeType: '门店' }], [])
+    const { raw } = render(orgAnchorScopeSql(session, ALL))
+    expect(raw.trim().toUpperCase()).toBe('FALSE')
   })
 })
