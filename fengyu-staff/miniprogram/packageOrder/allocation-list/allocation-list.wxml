@@ -78,7 +78,7 @@
         <view class="card-header">
           <text class="order-no">{{item.service_order_id}}</text>
           <view class="tag-group">
-            <van-tag color="{{item.commission_status === '已分配' ? '#3D8A5A' : '#D4820A'}}" plain>{{item.commission_status}}</van-tag>
+            <van-tag color="{{item.commission_status === '已分配' ? '#3D8A5A' : '#D4820A'}}" plain>{{item.commission_status || '待分配'}}</van-tag>
           </view>
         </view>
         <view class="card-body">

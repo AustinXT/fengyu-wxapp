@@ -24,7 +24,8 @@ interface ServiceOrder {
   client_phone: string;
   employee_name: string;
   service_date: string;
-  commission_status: string;
+  // 历史数据可能为 null（建单初值无 DB default）；云函数已 COALESCE 成「待分配」，wxml 仍做兜底
+  commission_status: string | null;
   time_display?: string;
 }
 
