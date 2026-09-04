@@ -17,14 +17,14 @@ load_target() {
       CONTAINER_DB_HOST="47.113.202.7"
       ;;
     test)
-      SSH_HOST="sqlserver101"
+      SSH_HOST="lx-test"   # ~/.ssh/config 别名（原 sqlserver101，2026-09-04 改名）
       TARGET_PUBLIC_HOST="101.34.242.103"
       REMOTE_DIR="/www/wwwroot/fengyu-admin/docker"
       MIGRATION_HOST="101.34.242.103"
       CONTAINER_DB_HOST="172.18.0.1"
       ;;
     prod)
-      SSH_HOST="fengyu-prod"
+      SSH_HOST="lx-prod"   # ~/.ssh/config 别名（原 fengyu-prod，2026-09-04 改名）
       TARGET_PUBLIC_HOST="118.178.196.26"
       REMOTE_DIR="/www/wwwroot/fengyu-admin/docker"
       MIGRATION_HOST="118.178.196.26"
