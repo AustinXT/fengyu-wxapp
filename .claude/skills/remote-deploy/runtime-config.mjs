@@ -22,7 +22,7 @@ export const TARGETS = Object.freeze({
     cdnBase: 'https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la',
   }),
   test: Object.freeze({
-    sshHost: 'sqlserver101',
+    sshHost: 'lx-test', // ~/.ssh/config 别名（原 sqlserver101，2026-09-04 改名）
     publicHost: '101.34.242.103',
     remoteDir: '/www/wwwroot/fengyu-admin/docker',
     migrationHost: '101.34.242.103',
@@ -33,7 +33,7 @@ export const TARGETS = Object.freeze({
     cdnBase: 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la',
   }),
   prod: Object.freeze({
-    sshHost: 'fengyu-prod',
+    sshHost: 'lx-prod', // ~/.ssh/config 别名（原 fengyu-prod，2026-09-04 改名）
     publicHost: '118.178.196.26',
     remoteDir: '/www/wwwroot/fengyu-admin/docker',
     migrationHost: '118.178.196.26',

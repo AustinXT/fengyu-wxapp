@@ -33,8 +33,8 @@ metadata:
 | 环境 | SSH / 公网服务器 | 远端目录 | 容器数据库 | 本地迁移连接 |
 |---|---|---|---|---|
 | dev | `ali-demo` / `47.113.202.7` | `/root/proj.xt.com/fengyu-wxapp/docker` | `47.113.202.7:5433` | `47.113.202.7:5433` |
-| test | `sqlserver101` / `101.34.242.103` | `/www/wwwroot/fengyu-admin/docker` | `172.18.0.1:5433` | `101.34.242.103:5433` |
-| prod | `fengyu-prod` / `118.178.196.26` | `/www/wwwroot/fengyu-admin/docker` | `118.178.196.26:5433` | `118.178.196.26:5433` |
+| test | `lx-test` / `101.34.242.103` | `/www/wwwroot/fengyu-admin/docker` | `172.18.0.1:5433` | `101.34.242.103:5433` |
+| prod | `lx-prod` / `118.178.196.26` | `/www/wwwroot/fengyu-admin/docker` | `118.178.196.26:5433` | `118.178.196.26:5433` |
 
 `172.18.0.1` 是 test 容器回连 `101.34.242.103` 宿主 PostgreSQL 的 Docker 网桥，不是另一台服务器。禁止用参数、环境变量或分支名覆盖上述目标。
 
