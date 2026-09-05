@@ -15,6 +15,7 @@ import {
   resolveAiConfig,
   type AnalystAiConfig,
 } from "@/lib/assistant-ai-config"
+import { shouldGenerateAiAssistantContent } from "@/lib/assistant-response-policy"
 import { getAuthorizedAssistantChatSession } from "@/lib/assistant-chat-auth"
 import {
   AssistantChatSessionNotFoundError,
@@ -85,6 +86,7 @@ async function generateAiContent(
   dataContext: AssistantDataContext,
   session: AuthSession,
   question: string,
+  now: Date,
 ) {
   normalizeOpenAiSdkEnvironment()
   const { createOpenAI } = await import("@ai-sdk/openai")
@@ -101,7 +103,7 @@ async function generateAiContent(
 
   const result = await generateText({
     model,
-    system: `${createAssistantSystemPrompt()}
+    system: `${createAssistantSystemPrompt(now)}
 
 额外要求：
 - 你收到的 JSON 是数据查询工具函数的输出，优先使用其中 deterministicAnswer 和 visualizations 的数值。
@@ -110,7 +112,7 @@ async function generateAiContent(
 - 如果某个筛选只适用于其中一个指标，必须明确指出，避免暗示所有指标都套用了同一筛选。`,
     messages: toModelMessages(messages, dataContext),
     temperature: 0.2,
-    tools: createRepurchaseTools(session, question),
+    tools: createRepurchaseTools(session, question, now),
   })
 
   return result.text.trim()
@@ -132,11 +134,12 @@ export async function POST(request: Request) {
     return noStoreJson({ error: "NOT_FOUND", message: "聊天会话不存在" }, { status: 404 })
   }
   const messages: IncomingMessage[] = [...history, { role: "user", content: question }]
+  const requestTime = new Date()
 
   let localResponse
   try {
     localResponse = normalizeAssistantResponseForDisplay(
-      await answerQuestionWithVisualizations(auth, question),
+      await answerQuestionWithVisualizations(auth, question, requestTime),
     )
   } catch (error) {
     console.error("[analyst.chat] local answer failed", error)
@@ -148,9 +151,16 @@ export async function POST(request: Request) {
   let hasAiAnswer = false
   let errorType: string | undefined
 
-  if (aiConfig) {
+  if (shouldGenerateAiAssistantContent(localResponse, aiConfig)) {
     try {
-      const aiContent = await generateAiContent(aiConfig, messages, buildAssistantDataContext(question, localResponse), auth, question)
+      const aiContent = await generateAiContent(
+        aiConfig,
+        messages,
+        buildAssistantDataContext(question, localResponse),
+        auth,
+        question,
+        requestTime,
+      )
       response = normalizeAssistantResponseForDisplay({
         ...localResponse,
         content: aiContent || localResponse.content,

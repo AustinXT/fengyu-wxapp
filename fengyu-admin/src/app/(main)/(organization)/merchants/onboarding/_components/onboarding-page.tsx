@@ -863,10 +863,6 @@ export function OnboardingEditor({
   const hasWechatSubMerchant = Boolean(wechatSubMerchantText)
   const hasAlipaySubMerchant = Boolean(alipaySubMerchantText)
   const lastSubMerchantCheckedAt = application.subMerchantCheckedAt ? formatDateTime(application.subMerchantCheckedAt) : null
-  const subMerchantPolling = application.channelData.subMerchantPolling && typeof application.channelData.subMerchantPolling === "object"
-    ? application.channelData.subMerchantPolling as { status?: string; reason?: string; stoppedAt?: string; lastCheckedAt?: string }
-    : null
-  const subMerchantPollingTimedOut = subMerchantPolling?.status === "TIMEOUT"
   const terminalNo = getTerminalNo(application)
   const requiredCollectionNumbers = [
     { label: "银联商户号", value: application.merCupNo },
@@ -875,6 +871,15 @@ export function OnboardingEditor({
     { label: "支付宝子商户号", value: alipaySubMerchantText },
   ]
   const missingCollectionNumbers = requiredCollectionNumbers.filter((item) => !item.value).map((item) => item.label)
+  // 双号齐后仍保留重查入口：缺银联商户号/终端号、或上次查询留下错误提示（如子商户号疑被撤销）时按钮不隐藏
+  const showSubMerchantQueryButton =
+    !hasWechatSubMerchant || !hasAlipaySubMerchant || missingCollectionNumbers.length > 0 || Boolean(application.lastErrorMessage)
+  const missingQueryStatusNumbers = missingCollectionNumbers.filter((item) => item === "银联商户号" || item === "终端号")
+  const missingSubMerchantNumbers = missingCollectionNumbers.filter((item) => item === "微信子商户号" || item === "支付宝子商户号")
+  const missingNumbersGuide = [
+    missingQueryStatusNumbers.length ? "“查询状态”" : null,
+    missingSubMerchantNumbers.length ? "“查询子商户号”" : null,
+  ].filter(Boolean).join("或")
   const canConfirmCollectionMerchant = application.status === "SUCCESS" && missingCollectionNumbers.length === 0 && !application.lakalaMerchantId
   const showTopError = Boolean(application.lastErrorMessage && application.status !== "SUCCESS")
   const attachments = new Map<string, OnboardingDetail["attachments"][number]>()
@@ -1173,7 +1178,7 @@ export function OnboardingEditor({
               <p className="mt-1 text-xs font-normal text-[#999999]">入网审核通过后展示收款编号；请法人按指南在微信/支付宝外部页面完成认证，再人工确认关联收款商户。</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              {(!hasWechatSubMerchant || !hasAlipaySubMerchant) && <Button variant="outline" size="sm" disabled={pending} onClick={() => runAction(refreshOnboardingSubMerchants, "子商户号查询失败")}><RefreshCw />查询子商户号</Button>}
+              {showSubMerchantQueryButton && <Button variant="outline" size="sm" disabled={pending} onClick={() => runAction(refreshOnboardingSubMerchants, "子商户号查询失败")}><RefreshCw />查询子商户号</Button>}
               <Link href="/merchants/lakala-guides/wechat" target="_blank"><Button variant="outline" size="sm">微信实名认证指南</Button></Link>
               <Link href="/merchants/lakala-guides/alipay" target="_blank"><Button variant="outline" size="sm">支付宝实名认证指南</Button></Link>
             </div>
@@ -1199,10 +1204,10 @@ export function OnboardingEditor({
             </div>
             <div className="rounded-[var(--radius)] border border-[#D9D2F0] bg-[#F7F4FC] px-3 py-2 text-xs text-[#62508B]">
               {missingCollectionNumbers.length > 0
-                ? subMerchantPollingTimedOut
-                  ? `${subMerchantPolling?.reason || "子商户号 72 小时未全部返回"}${subMerchantPolling?.stoppedAt ? `，停止时间：${formatDateTime(subMerchantPolling.stoppedAt)}` : ""}。请联系拉卡拉确认渠道报备结果。`
-                  : `还缺：${missingCollectionNumbers.join("、")}。${lastSubMerchantCheckedAt ? `上次查询：${lastSubMerchantCheckedAt}；` : ""}系统会每小时自动查询渠道报备，页面可以关闭。`
-                : "请使用营业执照对应法人本人账号/身份，按微信和支付宝指南完成外部认证。完成后点击下方按钮关联收款商户。"}
+                ? `还缺：${missingCollectionNumbers.join("、")}。${lastSubMerchantCheckedAt ? `上次查询：${lastSubMerchantCheckedAt}；` : ""}请点击${missingNumbersGuide}获取。`
+                : application.lastErrorMessage
+                  ? `上次查询提示：${application.lastErrorMessage}${lastSubMerchantCheckedAt ? `（上次查询：${lastSubMerchantCheckedAt}）` : ""}`
+                  : "请使用营业执照对应法人本人账号/身份，按微信和支付宝指南完成外部认证。完成后点击下方按钮关联收款商户。"}
             </div>
             <div className="flex flex-col justify-between gap-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--muted)] p-4 sm:flex-row sm:items-center">
               <div>

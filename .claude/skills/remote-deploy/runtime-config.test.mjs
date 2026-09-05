@@ -230,7 +230,7 @@ test('service environment rendering enforces isolation', () => {
   assert.equal(services.admin.STAFF_TENCENTCLOUD_SECRETID, 'staff-id')
   assert.equal(services.admin.NEXT_PUBLIC_ANALYST_ORIGIN, 'https://analyst.example.com')
   assert.equal(services.admin.MSSQL_CONNECTION_STRING.includes('workfine.example.com'), true)
-  assert.equal(services['cron-worker'].LAKALA_APPID, 'OP12345678')
+  assert.equal(services['cron-worker'].LAKALA_APPID, undefined)
   assert.equal(services['cron-worker'].MSSQL_CONNECTION_STRING, undefined)
   assert.equal(services['export-worker'].RSA_PRIVATE_KEY, undefined)
   assert.equal(services.analyst.STAFF_TENCENTCLOUD_SECRETID, undefined)

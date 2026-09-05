@@ -4,10 +4,13 @@ import { APP_VERSION } from './version'
 const LOGGED_OUT_KEY = 'clientLoggedOut'
 
 const ACTIONS_ALLOWED_WHEN_LOGGED_OUT = new Set([
+  'auth.login',
   'auth.bindPhone',
   'store.list',
   'store.detail',
   'store.geocode',
+  // 门店详情页 Promise.all 与 store.detail 并发请求；服务端对访客返回 {request:null}，本地拦截会导致整页 fail-fast
+  'store.getUnbindRequest',
   'staff.list',
   'staff.detail',
   'appointment.staffSchedule',
@@ -109,11 +112,16 @@ interface BindPhoneResult {
 }
 
 /**
- * CloudID 方式手机号授权登录（首次绑定或退出后重新授权）
+ * CloudID 方式绑定手机号（仅首次绑定或服务端手机号缺失时使用）
  * 封装 loading → API 调用 → 错误处理 → localStorage 持久化 → hideLoading
  * 注：客户端不再提供自助换绑，已绑定用户如需修改手机号需联系门店由管理后台操作
  */
-export async function bindPhoneWithCloudID(
+
+// single-flight：并发调用复用同一 in-flight 请求。getPhoneNumber 是付费能力，
+// 双击/竞态触发两次请求会双消耗额度且第二个 cloudID 即刻过期必然失败
+let bindPhoneInFlight: Promise<BindPhoneResult> | null = null
+
+async function doBindPhoneWithCloudID(
   cloudID: string,
   payload: Record<string, any> = {}
 ): Promise<BindPhoneResult> {
@@ -155,5 +163,18 @@ export async function bindPhoneWithCloudID(
     return { userId, phone, updatedOrdersCount }
   } finally {
     wx.hideLoading()
+  }
+}
+
+export async function bindPhoneWithCloudID(
+  cloudID: string,
+  payload: Record<string, any> = {}
+): Promise<BindPhoneResult> {
+  if (bindPhoneInFlight) return bindPhoneInFlight
+  bindPhoneInFlight = doBindPhoneWithCloudID(cloudID, payload)
+  try {
+    return await bindPhoneInFlight
+  } finally {
+    bindPhoneInFlight = null
   }
 }

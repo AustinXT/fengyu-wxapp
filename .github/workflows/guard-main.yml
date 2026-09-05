@@ -1,8 +1,10 @@
 name: Guard main branch
 
 # main 分支守护：私有库 + GitHub 免费版无原生分支保护（API 403）。
-# TEMP：当前允许任意来源分支向 main 提 PR；恢复 dev-only 流程时将下方值改回 'false'。
-#   - enforce-dev-source：非 dev 来源仅在开关关闭时自动关闭 + 评论
+# TEMP：当前允许任意来源分支向 main 提 PR；恢复白名单流程时将下方值改回 'false'。
+#   - enforce-dev-source：来源不在白名单（dev / test）时才自动关闭 + 评论
+#     · dev  = 常规开发主线
+#     · test = 发布线（版本对齐 + 热修，如 PR#115/#116 均由 test → main）
 #   - detect-direct-push：push 到 main 且该 commit 不属于已合并 PR → 开 issue 报警
 # 免费库无法在物理层阻止直推 main，detect 仅事后报警（默认不自动 revert）。
 
@@ -26,18 +28,21 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - name: Reject PR to main not coming from dev
-        if: github.event.pull_request.head.ref != 'dev' && env.ALLOW_NON_DEV_PR_TO_MAIN != 'true'
+      - name: Reject PR to main not coming from dev/test
+        if: >-
+          github.event.pull_request.head.ref != 'dev'
+          && github.event.pull_request.head.ref != 'test'
+          && env.ALLOW_NON_DEV_PR_TO_MAIN != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD: ${{ github.event.pull_request.head.ref }}
         run: |
-          echo "Reject: PR -> main, but head is '$HEAD' (expected dev)."
-          gh pr comment "$PR_NUMBER" --body "main 仅接受来自 dev 的 PR（当前 head: $HEAD）。
+          echo "Reject: PR -> main, but head is '$HEAD' (expected dev or test)."
+          gh pr comment "$PR_NUMBER" --body "main 仅接受来自 dev 或 test 的 PR（当前 head: $HEAD）。
 
-          请先把改动合入 dev，再从 dev 向 main 提 PR。此 PR 将被自动关闭。"
+          请先把改动合入 dev（常规开发）或 test（发布线），再向 main 提 PR。此 PR 将被自动关闭。"
           gh pr close "$PR_NUMBER"
           exit 1
 

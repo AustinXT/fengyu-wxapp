@@ -1604,6 +1604,7 @@ async function refundHistory(ctx) {
 
 /**
  * 搜索顾客的推荐员工候选（仅当前门店有效店长）。
+ * 可检索全部在职员工（跨店），本店员工优先展示。
  */
 async function searchPromoterEmployees(ctx) {
   await requireManager()(ctx, async () => {})
@@ -1621,9 +1622,8 @@ async function searchPromoterEmployees(ctx) {
     FROM staff_wechat_users u
     LEFT JOIN stores s ON s.store_id = u.store_id
     WHERE u.is_resigned = false
-      AND u.store_id = $1
       AND (u.name ILIKE $2 OR u.phone ILIKE $2)
-    ORDER BY u.name
+    ORDER BY (u.store_id = $1) DESC, u.name
     LIMIT 20
   `, [boundStoreId, pattern])
 
@@ -1668,14 +1668,14 @@ async function updateProfile(ctx) {
       const promoterId = normalized.promoterEmployeeId
       if (promoterId) {
         const promoterResult = await client.query(`
-          SELECT employee_id, name, store_id
+          SELECT employee_id, name
           FROM staff_wechat_users
           WHERE employee_id = $1 AND is_resigned = false
           LIMIT 1
         `, [promoterId])
         const promoter = promoterResult.rows[0]
-        if (!promoter || promoter.store_id !== before.bound_store_id) {
-          throw new Error('PERMISSION_DENIED: 推荐员工不存在、已离职或不在当前门店')
+        if (!promoter) {
+          throw new Error('PERMISSION_DENIED: 推荐员工不存在或已离职')
         }
         promoterName = promoter.name || null
       } else {

@@ -192,7 +192,7 @@ export default function CustomerDetailPage({
     setForm((prev) => ({ ...prev, [field]: value }))
   }
 
-  // 推荐员工只能通过受权限和 scope 约束的异步搜索选择，不接受自由文本提交。
+  // 推荐员工只能通过受权限约束的异步搜索选择（可跨店），不接受自由文本提交。
   type PromoterOption = {
     employeeId: string
     name: string | null

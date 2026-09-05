@@ -14,6 +14,28 @@ Page({
     isEditing: false,
     editName: '',
     submitting: false,
+    restoringLogin: false,
+    phoneBinding: false,
+  },
+
+  async onRestoreLogin() {
+    if (this.data.restoringLogin) return;
+    this.setData({ restoringLogin: true });
+
+    const app = getApp<IAppOption>();
+    try {
+      const status = await app.syncLoginState(true);
+      this.refreshData();
+      if (status === 'authenticated') {
+        Toast.success('登录成功');
+      } else if (status === 'phone_required') {
+        Toast('请授权手机号完成登录');
+      } else {
+        Toast.fail('登录失败，请稍后重试');
+      }
+    } finally {
+      this.setData({ restoringLogin: false });
+    }
   },
 
   onLoad() {
@@ -144,10 +166,11 @@ Page({
   },
 
   /**
-   * 微信手机号授权回调（首次绑定或退出后重新授权）
+   * 微信手机号授权回调（仅首次绑定或服务端手机号缺失时使用）
    * 已绑定用户的换绑由管理后台操作，前端不再提供入口
    */
   async onGetPhoneNumber(e: WechatMiniprogram.TouchEvent) {
+    if (this.data.phoneBinding) return;
     const { cloudID, errMsg } = e.detail;
 
     if (!cloudID) {
@@ -159,9 +182,9 @@ Page({
       return;
     }
 
+    this.setData({ phoneBinding: true });
     const app = getApp<IAppOption>();
 
-    const wasLoggedOut = this.data.isLoggedOut;
     try {
       const { phone } = await bindPhoneWithCloudID(cloudID as string);
       await app.syncLoginState();
@@ -172,9 +195,11 @@ Page({
       }
       this.refreshData();
       this.setData({ maskedPhone: newMasked });
-      Toast.success(wasLoggedOut ? '登录成功' : '绑定成功');
+      Toast.success('绑定成功');
     } catch (err: any) {
       Toast.fail(err.message || '绑定失败');
+    } finally {
+      this.setData({ phoneBinding: false });
     }
   },
 });
