@@ -224,10 +224,6 @@ export default function InventoryDocsPage({
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <ClipboardList className="size-5 text-[var(--primary)]" />
-          <h1 className="text-xl font-medium">单据中心</h1>
-        </div>
         <div className="flex items-center gap-2">
           {locationFilterOptions && (
             <InventoryLocationFilter
