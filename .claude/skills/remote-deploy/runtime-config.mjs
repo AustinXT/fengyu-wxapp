@@ -500,6 +500,14 @@ export const KNOWN_PROD_HISTORICAL_MIGRATION_ROWS = Object.freeze([
   },
 ])
 
+export const KNOWN_DEV_HISTORICAL_MIGRATION_ROWS = Object.freeze([
+  {
+    // 测试库 0034 重复登记；同一 SQL 已由后续记录完整覆盖，仅核验时忽略此历史行。
+    created_at: '1787637056739',
+    hash: 'd4549ec0237b8f4441af860a02c0905e59e382e3c07503063f6310ec95b896bd',
+  },
+])
+
 function migrationRowKey(row) {
   return `${String(row.created_at)}|${row.hash}`
 }
@@ -575,7 +583,9 @@ export async function checkMigrations(env, options = {}) {
     if (!table.rows[0]?.name) fail('target database has no drizzle migration journal')
     const result = await client.query('SELECT hash, created_at FROM drizzle.__drizzle_migrations ORDER BY created_at, id')
     const state = analyzeMigrationState(journal.entries, result.rows, hashes, {
-      knownHistoricalRows: env === 'prod' ? KNOWN_PROD_HISTORICAL_MIGRATION_ROWS : [],
+      knownHistoricalRows: env === 'prod'
+        ? KNOWN_PROD_HISTORICAL_MIGRATION_ROWS
+        : KNOWN_DEV_HISTORICAL_MIGRATION_ROWS,
     })
     if (!state.ok) {
       const detail = state.pending.length ? `: ${state.pending.join(', ')}` : ''
