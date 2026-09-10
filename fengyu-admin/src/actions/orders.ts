@@ -46,7 +46,11 @@ import {
   type ExportBatchResult,
 } from '@/lib/export-pagination'
 import { parseOrderFilters, parseAllocationOrderFilters } from '@/lib/list-filters'
-import { amountToCents, derivePaymentChannelSplit } from '@/lib/export-row-aggregation'
+import {
+  amountToCents,
+  derivePaymentChannelSplit,
+  splitCentsWithLastRemainder,
+} from '@/lib/export-row-aggregation'
 import { getPointsToYuanRate, getPointsDeductionMaxRate } from '@/lib/system-config'
 import {
   orderMarketScopeCondition,
@@ -1265,15 +1269,12 @@ function resolvePaymentAttributionDate(
   return paymentAttributionDate ?? (paidAt ? fmtDate(paidAt) : null)
 }
 
-/** 二阶段按订单号批量捞 receipt 时的分块大小，避免 limit==null 全量导出把 IN 参数撑爆。 */
+/** 二/三阶段按订单号批量捞明细时的分块大小，避免 limit==null 全量导出把 IN 参数撑爆。 */
 const PAYMENT_RECEIPT_LOOKUP_CHUNK = 500
 
-/** 一笔款项落到单个商品子项的实收明细 + 该商品行的展示快照。 */
-interface PaymentReceiptDetail {
-  salePaymentId: number
+/** 商品行的展示快照；回款导出的商品明细列一律取自这里，与订单明细导出同源。 */
+interface PaymentProductSnapshot {
   saleItemId: string
-  amount: string
-  receiptSalesCategory: string | null
   productType: string | null
   productName: string | null
   categoryL1: string | null
@@ -1286,13 +1287,46 @@ interface PaymentReceiptDetail {
   itemSalesCategory: string | null
 }
 
+/** 一笔款项落到单个商品子项的实收明细 + 该商品行的展示快照。 */
+interface PaymentReceiptDetail extends PaymentProductSnapshot {
+  salePaymentId: number
+  amount: string
+  receiptSalesCategory: string | null
+}
+
+/**
+ * 商品明细列取值，**逐字沿用订单明细导出 exportOrders 的 item 行口径**（含 unit 按商品
+ * 类型的回退），使两段导出粘成一张表后同一商品的这些列完全一致（2026-09-10 用户反馈）。
+ * 改这里必须同步 exportOrders 的 item 行 map。
+ */
+function paymentProductColumns(item: PaymentProductSnapshot) {
+  return {
+    productType: item.productType,
+    categoryL1: item.categoryL1,
+    categoryL2: item.categoryL2,
+    productName: item.productName,
+    sessionCount: item.sessionCount ?? null,
+    unit: item.skuUnit ?? (item.productType === '家居产品' ? '盒' : '次'),
+    paidUnusedSessions: item.paidUnusedSessions ?? null,
+    // 行应付；同一商品会在该订单的每笔款项里重复出现，不可跨行求和
+    totalAmount: item.saleAmount ?? '',
+    unitRealPrice: item.unitRealPrice == null ? null : Number(item.unitRealPrice),
+  }
+}
+
 /**
  * 导出当前订单列表筛选命中的全部款项流水，下沉到商品子项维度。
  * 款项日期口径按当前行 paid_at 逐笔筛选。
  *
- * 两阶段查询：一阶段按 payment 做 keyset 分页（cursor 仍是 payment.id），二阶段按本批
- * 订单号批量捞 sale_payment_item_receipts 并在内存展开。这样一笔款项的 N 行永远落在
- * 同一页，不需要复合游标，也不会把混合支付的通道推导劈成两半。
+ * 三阶段查询：一阶段按 payment 做 keyset 分页（cursor 仍是 payment.id），二阶段按本批
+ * 订单号批量捞 sale_payment_item_receipts，三阶段为「无 receipt 且非寄存单」的款项补捞
+ * sale_items。这样一笔款项的 N 行永远落在同一页，不需要复合游标，也不会把混合支付的
+ * 通道推导劈成两半。
+ *
+ * 每笔款项按以下三条路径之一展开（见下方 rows.push 处的注释）：
+ *   1. 有 receipt      → 按 receipt 展开，金额精确到该次回款落在该子项上的实收；
+ *   2. 无 receipt 有 items → 按 sale_items 展开，金额按行应付权重分摊；
+ *   3. 其余            → 一行占位（寄存单 / 充值单 / 无明细历史单）。
  *
  * 注意 limit 语义：它限制的是「每页款项数」而非「每页 Excel 行数」，实际行数是扇出后的结果。
  */
@@ -1420,6 +1454,60 @@ export const exportOrderPayments = withPermission(
       }
     }
 
+    // ── 三阶段：无 receipt 的款项按 sale_items 补商品明细 ──────────────────
+    // 内部单、receipt 机制上线前的历史销售单/转换单在库里没有 receipt，但订单仍有完整
+    // sale_items。若照旧只输出占位行，商品明细列就整段留空、与订单明细导出对不上
+    // （2026-09-10 用户反馈）。这里按订单号补捞商品行，取值与 exportOrders 的 itemQuery 同源。
+    //
+    // 寄存单**故意排除**：它平均 57.55 个商品行 ×  人均 12.7 笔回款，展开后约 486 万行，
+    // 既超 Excel 上限（104 万）又因 4 个金额列本就留空而对「按品项求和」毫无贡献 —— 仍走占位行。
+    const itemsByOrder = new Map<string, PaymentProductSnapshot[]>()
+    const fallbackOrderIds = Array.from(new Set(
+      selected
+        .filter((row) => !receiptsByPayment.has(row.payment.id) && row.saleOrderType !== '寄存单')
+        .map((row) => row.payment.saleOrderId),
+    ))
+    for (let offset = 0; offset < fallbackOrderIds.length; offset += PAYMENT_RECEIPT_LOOKUP_CHUNK) {
+      const chunk = fallbackOrderIds.slice(offset, offset + PAYMENT_RECEIPT_LOOKUP_CHUNK)
+      const itemRows = await db
+        .select({
+          saleOrderId: saleItems.saleOrderId,
+          saleItemId: saleItems.saleItemId,
+          productType: saleItems.productType,
+          productName: saleItems.productName,
+          categoryL1: productCategories.productKind,
+          categoryL2: productCategories.categoryName,
+          sessionCount: saleItems.sessionCount,
+          skuUnit: productSkus.unit,
+          paidUnusedSessions: paidUnusedSessionsExpr,
+          saleAmount: saleItems.saleAmount,
+          unitRealPrice: saleItems.unitRealPrice,
+          itemSalesCategory: saleItems.salesCategory,
+        })
+        .from(saleItems)
+        .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
+        .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+        .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+        .where(and(
+          inArray(saleItems.saleOrderId, chunk),
+          // 与 exportOrders 的 itemQuery 同一套方向过滤：转换单无「购买」行，
+          // 必须把转出+转入两行一并带上，否则这类款项会退回占位行。
+          or(
+            eq(saleItems.itemDirection, '购买'),
+            and(
+              eq(saleOrders.saleOrderType, '转换单'),
+              inArray(saleItems.itemDirection, ['转出', '转入']),
+            ),
+          ),
+        ))
+        .orderBy(saleItems.saleItemId)
+      for (const item of itemRows) {
+        const bucket = itemsByOrder.get(item.saleOrderId)
+        if (bucket) bucket.push(item)
+        else itemsByOrder.set(item.saleOrderId, [item])
+      }
+    }
+
     const money = (amountCents: number) => (amountCents / 100).toFixed(2)
     const rows: ExportPaymentRow[] = []
     for (const row of selected) {
@@ -1479,19 +1567,31 @@ export const exportOrderPayments = withPermission(
       }
 
       const receipts = receiptsByPayment.get(payment.id) ?? []
-      if (receipts.length === 0) {
-        // 兜底行。禁止删除：内部单/寄存单/充值单/历史单/未入账款项在库里就没有 receipt，
-        // 丢掉它们既是相对旧导出的数据回归，也会让 iterateExportPages 在整页都是这类款项时报错。
-        const paymentAmountCents = amountToCents(payment.amount) ?? 0
-        // 三类金额必须留空，否则会与别处重复计数或与订单明细口径冲突：
-        // 1) 未入账/已作废的钱还没到账；2) 寄存单 total=0 与 received>0 并存，与销售单口径不兼容；
-        // 3) 混合支付被折叠的储值卡从行，其金额已经算在同事件现金主流水的 receipt 里。
-        const suppressAmount =
-          payment.status !== '已支付' ||
-          row.saleOrderType === '寄存单' ||
-          (payment.changeType === '储值卡抵扣' && ordersWithReceipts.has(payment.saleOrderId))
-        const netCents = suppressAmount ? null : paymentAmountCents
-        const viaPrepaidCard = payment.changeType === '储值卡抵扣'
+      const fallbackItems = receipts.length === 0
+        ? (itemsByOrder.get(payment.saleOrderId) ?? [])
+        : []
+
+      // 三条金额留空规则，两条无 receipt 路径共用；漏掉任何一条都会造成重复计数：
+      // 1) 未入账/已作废的钱还没到账；2) 寄存单 total=0 与 received>0 并存，与销售单口径不兼容；
+      // 3) 混合支付被折叠的储值卡从行，其金额已经算在同事件现金主流水的 receipt 里。
+      const suppressAmount =
+        payment.status !== '已支付' ||
+        row.saleOrderType === '寄存单' ||
+        (payment.changeType === '储值卡抵扣' && ordersWithReceipts.has(payment.saleOrderId))
+      const viaPrepaidCard = payment.changeType === '储值卡抵扣'
+      const channelAmounts = (netCents: number | null) => ({
+        prepaidCardAmount: netCents == null ? '' : money(viaPrepaidCard ? netCents : 0),
+        cashAmount: netCents == null ? '' : money(viaPrepaidCard ? 0 : netCents),
+        received: netCents == null ? '' : money(netCents),
+        refundedAmount: netCents == null
+          ? ''
+          : money(payment.changeType === '退款' ? Math.abs(netCents) : 0),
+      })
+
+      if (receipts.length === 0 && fallbackItems.length === 0) {
+        // 占位行。禁止删除：寄存单/充值单/无明细历史单在库里既没有 receipt 也没有可展开的
+        // 商品行，丢掉它们既是相对旧导出的数据回归，也会让 iterateExportPages 在整页都是
+        // 这类款项时报「导出分页未返回数据」。
         rows.push({
           ...shared,
           productType: null,
@@ -1499,21 +1599,36 @@ export const exportOrderPayments = withPermission(
           categoryL2: null,
           productName: row.saleOrderType === '充值单'
             ? '储值卡充值'
-            : row.legacySource === 'workfine'
-              ? '历史订单（无商品明细）'
-              : '款项未拆分到商品',
+            : row.saleOrderType === '寄存单'
+              ? '寄存回款（未按商品拆分）'
+              : row.legacySource === 'workfine'
+                ? '历史订单（无商品明细）'
+                : '款项未拆分到商品',
           sessionCount: null,
           unit: null,
           paidUnusedSessions: null,
           totalAmount: '',
-          prepaidCardAmount: netCents == null ? '' : money(viaPrepaidCard ? netCents : 0),
-          cashAmount: netCents == null ? '' : money(viaPrepaidCard ? 0 : netCents),
-          received: netCents == null ? '' : money(netCents),
-          refundedAmount: netCents == null
-            ? ''
-            : money(payment.changeType === '退款' ? Math.abs(netCents) : 0),
+          ...channelAmounts(suppressAmount ? null : (amountToCents(payment.amount) ?? 0)),
           unitRealPrice: null,
           salesCategory: null,
+        })
+        continue
+      }
+
+      if (receipts.length === 0) {
+        // 无 receipt 但订单有商品行：商品列按订单明细口径填满，款项金额按各行应付权重分摊，
+        // 使「实付」列跨行求和仍等于款项金额（splitCentsWithLastRemainder 保证分摊守恒）。
+        const parts = splitCentsWithLastRemainder(
+          amountToCents(payment.amount) ?? 0,
+          fallbackItems.map((item) => Math.abs(amountToCents(item.saleAmount) ?? 0)),
+        )
+        fallbackItems.forEach((item, index) => {
+          rows.push({
+            ...shared,
+            ...paymentProductColumns(item),
+            ...channelAmounts(suppressAmount ? null : (parts[index] ?? 0)),
+            salesCategory: item.itemSalesCategory,
+          })
         })
         continue
       }
@@ -1529,19 +1644,11 @@ export const exportOrderPayments = withPermission(
         const prepaidCardCents = prepaidCents[index] ?? 0
         rows.push({
           ...shared,
-          productType: receipt.productType,
-          categoryL1: receipt.categoryL1,
-          categoryL2: receipt.categoryL2,
-          productName: receipt.productName,
-          sessionCount: receipt.sessionCount ?? null,
-          unit: receipt.skuUnit ?? (receipt.productType === '家居产品' ? '盒' : '次'),
-          paidUnusedSessions: receipt.paidUnusedSessions ?? null,
-          totalAmount: receipt.saleAmount ?? '',
+          ...paymentProductColumns(receipt),
           prepaidCardAmount: money(prepaidCardCents),
           cashAmount: money(receivedCents - prepaidCardCents),
           received: money(receivedCents),
           refundedAmount: money(payment.changeType === '退款' ? Math.abs(receivedCents) : 0),
-          unitRealPrice: receipt.unitRealPrice == null ? null : Number(receipt.unitRealPrice),
           salesCategory: receipt.receiptSalesCategory ?? receipt.itemSalesCategory,
         })
       })

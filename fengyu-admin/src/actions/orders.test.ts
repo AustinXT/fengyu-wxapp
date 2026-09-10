@@ -5812,13 +5812,38 @@ describe('exportOrderPayments — 回款明细导出（款项 × 商品子项）
     return chain
   }
 
-  /** 一阶段按款项分页，二阶段按订单号捞 receipt；后续所有 db.select 都返回 receipt 链。 */
-  function mockStages(payments: any[], receipts: any[] = []) {
+  /**
+   * 一阶段按款项分页，二阶段按订单号捞 receipt，三阶段为无 receipt 的款项补捞 sale_items。
+   * 第三阶段只在存在「无 receipt 且非寄存单」的款项时才发起，因此第 3 次起才返回 item 链。
+   */
+  function mockStages(payments: any[], receipts: any[] = [], items: any[] = []) {
     const paymentChain = makeChain(payments)
     const receiptChain = makeChain(receipts)
+    const itemChain = makeChain(items)
     ;(db.select as any).mockReset()
-    ;(db.select as any).mockReturnValueOnce(paymentChain).mockReturnValue(receiptChain)
-    return { paymentChain, receiptChain }
+    ;(db.select as any)
+      .mockReturnValueOnce(paymentChain)
+      .mockReturnValueOnce(receiptChain)
+      .mockReturnValue(itemChain)
+    return { paymentChain, receiptChain, itemChain }
+  }
+
+  function itemRow(overrides: Record<string, any> = {}) {
+    return {
+      saleOrderId: 'FY-XSD-WX-2608170001',
+      saleItemId: 'ITEM-1',
+      productType: '疗程卡',
+      productName: '肩颈护理10次',
+      categoryL1: '护理',
+      categoryL2: '肩颈',
+      sessionCount: 10,
+      skuUnit: '次',
+      paidUnusedSessions: 8,
+      saleAmount: '3000.00',
+      unitRealPrice: '300.00',
+      itemSalesCategory: '自销',
+      ...overrides,
+    }
   }
 
   function paymentRow(overrides: Record<string, any> = {}) {
@@ -6005,6 +6030,35 @@ describe('exportOrderPayments — 回款明细导出（款项 × 商品子项）
     }
   })
 
+  it('混合支付被折叠的储值卡从行：商品列照常填满，只有金额列留空', async () => {
+    const cashPrimary = paymentRow({
+      payment: { id: 90, saleOrderId: 'FY-HH-9', changeType: '回款', amount: '100.00', paymentMethod: '线下' },
+    })
+    const cardSecondary = paymentRow({
+      payment: { id: 89, saleOrderId: 'FY-HH-9', changeType: '储值卡抵扣', amount: '50.00', paymentMethod: '无', externalTxnId: null },
+    })
+    mockStages(
+      [cashPrimary, cardSecondary],
+      [receiptRow({ salePaymentId: 90, saleOrderId: 'FY-HH-9', saleItemId: 'ITEM-1', amount: '150.00' })],
+      [itemRow({ saleOrderId: 'FY-HH-9', saleItemId: 'ITEM-1' })],
+    )
+
+    const { rows } = await exportOrderPayments({})
+
+    expect(rows).toHaveLength(2)
+    // 从行现在也有商品明细了，但金额已计在主流水的 receipt 上 → 必须留空，否则总额变 200
+    expect(rows[1]).toMatchObject({
+      paymentId: 89,
+      changeType: '储值卡抵扣',
+      productName: '肩颈护理10次',
+      totalAmount: '3000.00',
+      received: '',
+      prepaidCardAmount: '',
+      cashAmount: '',
+    })
+    expect(rows.reduce((total, row) => total + Number(row.received || 0), 0)).toBeCloseTo(150, 2)
+  })
+
   it('receipt 机制上线前的历史款项没有任何 receipt，储值卡抵扣照常回填金额', async () => {
     const legacyCard = paymentRow({
       payment: { id: 61, saleOrderId: 'FY-OLD-1', changeType: '储值卡抵扣', amount: '300.00', paymentMethod: '无', externalTxnId: null },
@@ -6068,6 +6122,102 @@ describe('exportOrderPayments — 回款明细导出（款项 × 商品子项）
     })
   })
 
+  // 寄存单人均 12.7 笔回款 × 平均 57.55 个商品行 ≈ 486 万行，超 Excel 上限且金额列本就留空。
+  // 这条守住「寄存单绝不按 sale_items 扇出」，防止有人顺手把它并进 fallbackOrderIds。
+  it('寄存单不按商品扇出：仍是一行 + 专属占位文案，且不发起 sale_items 查询', async () => {
+    const deposit = paymentRow({
+      saleOrderType: '寄存单',
+      payment: { id: 72, saleOrderId: 'FY-JC-2', amount: '900.00' },
+    })
+    mockStages([deposit], [], [itemRow({ saleOrderId: 'FY-JC-2' }), itemRow({ saleOrderId: 'FY-JC-2', saleItemId: 'ITEM-2' })])
+
+    const { rows } = await exportOrderPayments({})
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ productName: '寄存回款（未按商品拆分）', productType: null, received: '' })
+    // 整批只有寄存单 → fallbackOrderIds 为空 → 第三阶段查询根本不该发起
+    expect((db.select as any).mock.calls).toHaveLength(2)
+  })
+
+  it('无 receipt 但订单有商品行：按 sale_items 展开，商品列取值与订单明细同源', async () => {
+    const internal = paymentRow({
+      saleOrderType: '内部单',
+      payment: { id: 80, saleOrderId: 'FY-NB-9', amount: '600.00', paymentMethod: '线下' },
+    })
+    mockStages([internal], [], [
+      itemRow({ saleOrderId: 'FY-NB-9', saleItemId: 'ITEM-1', saleAmount: '100.00' }),
+      itemRow({
+        saleOrderId: 'FY-NB-9', saleItemId: 'ITEM-2', saleAmount: '200.00',
+        productName: '家居面膜', productType: '家居产品', skuUnit: null,
+        categoryL2: '面部', sessionCount: null, paidUnusedSessions: null, unitRealPrice: '99.00',
+        itemSalesCategory: '他销',
+      }),
+      itemRow({ saleOrderId: 'FY-NB-9', saleItemId: 'ITEM-3', saleAmount: '300.00' }),
+    ])
+
+    const { rows } = await exportOrderPayments({})
+
+    expect(rows).toHaveLength(3)
+    expect(rows.every((row) => row.paymentId === 80)).toBe(true)
+    expect(rows[0]).toMatchObject({
+      productName: '肩颈护理10次',
+      productType: '疗程卡',
+      categoryL1: '护理',
+      categoryL2: '肩颈',
+      sessionCount: 10,
+      unit: '次',
+      paidUnusedSessions: 8,
+      totalAmount: '100.00',
+      unitRealPrice: 300,
+      salesCategory: '自销',
+      // 订单级字段照常重复
+      promoterEmployeeName: '推荐人甲',
+    })
+    // 单位回退与订单明细一致：SKU 缺 unit 时家居产品落「盒」
+    expect(rows[1]).toMatchObject({ productName: '家居面膜', unit: '盒', sessionCount: null, paidUnusedSessions: null, salesCategory: '他销' })
+  })
+
+  it('无 receipt 展开时款项金额按行应付权重分摊，实付跨行求和守恒', async () => {
+    const payment = paymentRow({
+      payment: { id: 81, saleOrderId: 'FY-OLD-9', amount: '600.00', paymentMethod: '线下' },
+    })
+    mockStages([payment], [], [
+      itemRow({ saleOrderId: 'FY-OLD-9', saleItemId: 'ITEM-1', saleAmount: '100.00' }),
+      itemRow({ saleOrderId: 'FY-OLD-9', saleItemId: 'ITEM-2', saleAmount: '200.00' }),
+      itemRow({ saleOrderId: 'FY-OLD-9', saleItemId: 'ITEM-3', saleAmount: '300.00' }),
+    ])
+
+    const { rows } = await exportOrderPayments({})
+
+    expect(rows.map((row) => row.received)).toEqual(['100.00', '200.00', '300.00'])
+    expect(rows.reduce((total, row) => total + Number(row.received), 0)).toBeCloseTo(600, 2)
+    // 每行仍满足 实付 = 储值卡抵扣 + 现付
+    for (const row of rows) {
+      expect(Number(row.received)).toBeCloseTo(Number(row.prepaidCardAmount) + Number(row.cashAmount), 2)
+    }
+  })
+
+  it('无 receipt 展开时未入账/被折叠的储值卡从行仍填商品列但金额留空', async () => {
+    const unsettled = paymentRow({
+      payment: { id: 82, saleOrderId: 'FY-WD-9', amount: '500.00', status: '待支付', paidAt: null },
+    })
+    mockStages([unsettled], [], [itemRow({ saleOrderId: 'FY-WD-9', saleItemId: 'ITEM-1' })])
+
+    const { rows } = await exportOrderPayments({})
+
+    expect(rows).toHaveLength(1)
+    // 商品列填满（这正是本次改动的目的），但钱还没到账 → 4 个金额列留空
+    expect(rows[0]).toMatchObject({
+      productName: '肩颈护理10次',
+      sessionCount: 10,
+      totalAmount: '3000.00',
+      received: '',
+      prepaidCardAmount: '',
+      cashAmount: '',
+      refundedAmount: '',
+    })
+  })
+
   it('归属日期三分支：首次支付随订单、回款取款项级、未入账为空', async () => {
     const repayment = paymentRow()
     const first = paymentRow({
@@ -6124,7 +6274,7 @@ describe('exportOrderPayments — 回款明细导出（款项 × 商品子项）
     expect(result.rows.every((row) => row.paymentId === 42)).toBe(true)
   })
 
-  it('limit==null 全量导出时按 500 个订单号分块查 receipt', async () => {
+  it('limit==null 全量导出时 receipt 与 sale_items 两阶段都按 500 个订单号分块', async () => {
     const payments = Array.from({ length: 1200 }, (_, index) =>
       paymentRow({ payment: { id: 10_000 - index, saleOrderId: `FY-BULK-${index}` } }))
     mockStages(payments, [])
@@ -6132,8 +6282,9 @@ describe('exportOrderPayments — 回款明细导出（款项 × 商品子项）
     await exportOrderPayments({ status: '已支付' })
 
     const chunkCalls = (inArray as any).mock.calls.filter(([column]: any[]) => column === 'sale_order_id')
-    expect(chunkCalls).toHaveLength(3)
-    expect(chunkCalls.map(([, ids]: any[]) => ids.length)).toEqual([500, 500, 200])
+    // 二阶段 receipt 3 块 + 三阶段 sale_items 3 块（1200 笔款项全部无 receipt 且非寄存单）
+    expect(chunkCalls).toHaveLength(6)
+    expect(chunkCalls.map(([, ids]: any[]) => ids.length)).toEqual([500, 500, 200, 500, 500, 200])
   })
 })
 
