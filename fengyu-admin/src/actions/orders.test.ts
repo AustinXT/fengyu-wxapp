@@ -4181,7 +4181,8 @@ describe('updatePerformanceAttributionDate — 一次性业绩归属日期调整
       performance_attribution_adjusted_by: 'EMP-001',
       updated_at: new Date('2026-08-17T03:00:00.000Z'),
     }],
-    syncedCardRows = [{ id: 43 }],
+    // bigint id 经 tx.execute 由 postgres.js 原样返回 string，审计日志须归一成 number
+    syncedCardRows = [{ id: '43' }],
   }: {
     adjustedAt?: Date | null
     currentDate?: string
@@ -4296,15 +4297,18 @@ describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日�
     paidAt = new Date('2026-08-17T02:03:04.567Z'),
     currentDate = '2026-08-17',
     adjustedAt = null,
+    // ⚠ id / paired_card_payment_ids 必须是字符串：tx.execute 走原生 SQL 不经 drizzle 列映射，
+    // postgres.js 对 bigint(int8) 与 bigint[](_int8) 无 parser，原样返回 string / string[]。
+    // 改回 number 会让 mock 与真实驱动漂移，重新掩盖「Number(row.id) === paymentId」这个修复点。
     updatedRows = [{
-      id: 42,
+      id: '42',
       sale_order_id: 'FY-XSD-WX-2608170001',
       performance_attribution_date: '2026-08-24',
       performance_attribution_adjusted_at: new Date('2026-08-17T03:00:00.000Z'),
       performance_attribution_adjusted_by: 'EMP-001',
     }],
     hasMixedPaymentPrimary = false,
-    pairedCardPaymentIds = [43],
+    pairedCardPaymentIds = ['43'],
   }: {
     changeType?: string
     status?: string
@@ -4313,11 +4317,11 @@ describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日�
     adjustedAt?: Date | null
     updatedRows?: any[]
     hasMixedPaymentPrimary?: boolean
-    pairedCardPaymentIds?: number[]
+    pairedCardPaymentIds?: Array<number | string>
   } = {}) {
     const execute = vi.fn()
       .mockResolvedValueOnce([{
-        id: input.paymentId,
+        id: String(input.paymentId),
         sale_order_id: 'FY-XSD-WX-2608170001',
         change_type: changeType,
         status,
@@ -4337,7 +4341,7 @@ describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日�
     return { tx, execute }
   }
 
-  it('以 paid_at 上海自然日为基点，允许 +7 天边界并记录审计', async () => {
+  it('以 paid_at 上海自然日为基点，允许 +7 天边界并记录审计（RETURNING 的 bigint id 是 string 也须匹配）', async () => {
     const { tx, execute } = mockPaymentAttributionTransaction()
 
     const result = await updatePaymentPerformanceAttributionDate(input)
@@ -5576,6 +5580,7 @@ describe('exportAllocationOrders — 销售提成三态导出（已分配明细 
     isActivity: false, isMembershipUpgrade: false,
     salesCategory: '自销自耗', customerType: '会员客', openedByName: '张凯',
     payPaidAt: new Date('2026-06-08T16:59:49.000Z'), orderPaidAt: null, remark: null,
+    paymentChangeType: '回款', payAttributionDate: '2026-06-10', orderAttributionDate: '2026-06-08',
     sortDatetime: new Date('2026-06-08T16:59:49.000Z'),
   }
 
@@ -5592,6 +5597,7 @@ describe('exportAllocationOrders — 销售提成三态导出（已分配明细 
     isActivity: false, isMembershipUpgrade: false,
     salesCategory: '自销自耗', customerType: '流量客', openedByName: '某某',
     payPaidAt: new Date('2026-07-10T21:30:57.000Z'), orderPaidAt: null, remark: null,
+    paymentChangeType: '首次支付', payAttributionDate: null, orderAttributionDate: '2026-07-10',
     sortDatetime: new Date('2026-07-10T21:30:57.000Z'),
   }
 
@@ -5631,6 +5637,29 @@ describe('exportAllocationOrders — 销售提成三态导出（已分配明细 
     expect(r.allocationRatio).toBe('0.30')
     expect(r.customerSource).toBe('老带新')
     expect(r.promoterEmployeeName).toBe('王推荐')
+  })
+
+  it('回款归属日期：回款取款项级、首次支付随订单、旧订单维度分配回退订单级', async () => {
+    // 旧的订单维度分配没有 sale_payment_id，leftJoin 后 paymentChangeType / payAttributionDate 均为 NULL
+    const legacyAllocation = {
+      ...allocatedRaw,
+      saleOrderId: 'ALLOC-LEGACY',
+      paymentChangeType: null,
+      payAttributionDate: null,
+      payPaidAt: null,
+    }
+    let call = 0
+    ;(db.select as any).mockImplementation(() => {
+      call++
+      return makeChain(call === 1 ? [allocatedRaw, legacyAllocation] : [pendingRaw])
+    })
+
+    const { rows } = await exportAllocationOrders({})
+
+    const byOrder = Object.fromEntries(rows.map((row) => [row.saleOrderId, row.performanceAttributionDate]))
+    expect(byOrder['FY-XSD-WX-2606080027']).toBe('2026-06-10') // 回款 → 款项级
+    expect(byOrder['ALLOC-LEGACY']).toBe('2026-06-08')          // 无款项 → 订单级
+    expect(byOrder['FY-XSD-WX-2607100038']).toBe('2026-07-10')  // 首次支付 → 订单级
   })
 
   it('「全部」(缺省) → 两段都查，按下单时间 desc 合并（待分配 07-10 在前，已分配 06-08 在后）', async () => {
@@ -5770,7 +5799,7 @@ describe('exportAllocationOrders — 销售提成三态导出（已分配明细 
   })
 })
 
-describe('exportOrderPayments — 回款明细导出', () => {
+describe('exportOrderPayments — 回款明细导出（款项 × 商品子项）', () => {
   function makeChain(rows: any[]) {
     const chain: any = Object.assign(Promise.resolve(rows), {
       from: vi.fn(() => chain),
@@ -5781,6 +5810,15 @@ describe('exportOrderPayments — 回款明细导出', () => {
       limit: vi.fn().mockResolvedValue(rows),
     })
     return chain
+  }
+
+  /** 一阶段按款项分页，二阶段按订单号捞 receipt；后续所有 db.select 都返回 receipt 链。 */
+  function mockStages(payments: any[], receipts: any[] = []) {
+    const paymentChain = makeChain(payments)
+    const receiptChain = makeChain(receipts)
+    ;(db.select as any).mockReset()
+    ;(db.select as any).mockReturnValueOnce(paymentChain).mockReturnValue(receiptChain)
+    return { paymentChain, receiptChain }
   }
 
   function paymentRow(overrides: Record<string, any> = {}) {
@@ -5794,6 +5832,16 @@ describe('exportOrderPayments — 回款明细导出', () => {
       orderClientPhone: '13800000000',
       customerName: '档案顾客',
       clientPhone: '13900000000',
+      customerSource: '转介绍',
+      promoterEmployeeName: '推荐人甲',
+      customerType: '会员',
+      isMembershipUpgrade: false,
+      isActivity: true,
+      isExperienceConversion: false,
+      legacySource: null,
+      saleOrderDatetime: new Date('2026-08-16T01:00:00.000Z'),
+      remark: '订单备注',
+      openedByName: '开单人丁',
       orderPerformanceAttributionDate: '2026-08-16',
       orderPerformanceAttributionAdjustedAt: null,
       orderPerformanceAttributionAdjustedByName: null,
@@ -5822,69 +5870,244 @@ describe('exportOrderPayments — 回款明细导出', () => {
     }
   }
 
+  function receiptRow(overrides: Record<string, any> = {}) {
+    return {
+      salePaymentId: 42,
+      saleOrderId: 'FY-XSD-WX-2608170001',
+      saleItemId: 'ITEM-1',
+      amount: '500.00',
+      receiptSalesCategory: '自销',
+      productType: '疗程卡',
+      productName: '肩颈护理10次',
+      categoryL1: '护理',
+      categoryL2: '肩颈',
+      sessionCount: 10,
+      skuUnit: '次',
+      paidUnusedSessions: 8,
+      saleAmount: '3000.00',
+      unitRealPrice: '300.00',
+      itemSalesCategory: '自销',
+      ...overrides,
+    }
+  }
+
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
     ;(scopeCondition as any).mockReturnValue(undefined)
   })
 
-  it('一行一条款项，保留全部类型/状态和退款负数，并输出各自归属日', async () => {
-    const refund = paymentRow({
-      payment: {
-        id: 41,
-        changeType: '退款',
-        amount: '-120.00',
-        status: '待审核',
-        paidAt: null,
-        performanceAttributionDate: null,
-        performanceAttributionAdjustedAt: null,
-        refundReason: '顾客申请',
-      },
-      paymentPerformanceAttributionAdjustedByName: null,
+  it('一笔款项展开成多行商品子项，商品列与订单明细同源，实付按 receipt 逐行落', async () => {
+    mockStages(
+      [paymentRow()],
+      [
+        receiptRow({ saleItemId: 'ITEM-1', amount: '300.00', productName: '肩颈护理10次' }),
+        receiptRow({ saleItemId: 'ITEM-2', amount: '200.00', productName: '面部补水5次', categoryL2: '面部', sessionCount: 5, saleAmount: '800.00', unitRealPrice: '160.00' }),
+      ],
+    )
+
+    const { rows } = await exportOrderPayments({ status: '部分支付' })
+
+    expect(rows).toHaveLength(2)
+    expect(rows.every((row) => row.paymentId === 42)).toBe(true)
+    expect(rows[0]).toMatchObject({
+      saleOrderId: 'FY-XSD-WX-2608170001',
+      productName: '肩颈护理10次',
+      productType: '疗程卡',
+      categoryL1: '护理',
+      categoryL2: '肩颈',
+      sessionCount: 10,
+      unit: '次',
+      paidUnusedSessions: 8,
+      totalAmount: '3000.00',
+      received: '300.00',
+      unitRealPrice: 300,
+      salesCategory: '自销',
+      // 订单级字段在每行重复，与订单明细骨架一致
+      customerSource: '转介绍',
+      promoterEmployeeName: '推荐人甲',
+      openedByName: '开单人丁',
+      remark: '订单备注',
+      isActivity: true,
+      status: '部分支付',
+      // 款项专属列
+      paymentAmount: '500.00',
+      changeType: '回款',
+      note: '第二笔回款',
     })
+    expect(rows[1]).toMatchObject({ productName: '面部补水5次', received: '200.00', unitRealPrice: 160 })
+    // 纯现金回款：整笔落现付，储值卡列为 0
+    expect(rows.map((row) => row.cashAmount)).toEqual(['300.00', '200.00'])
+    expect(rows.map((row) => row.prepaidCardAmount)).toEqual(['0.00', '0.00'])
+  })
+
+  it('无 receipt 的款项仍各输出一行并带占位文案（防 INNER JOIN 回归）', async () => {
+    const internal = paymentRow({
+      saleOrderType: '内部单',
+      payment: { id: 50, saleOrderId: 'FY-NB-1', amount: '80.00' },
+    })
+    const recharge = paymentRow({
+      saleOrderType: '充值单',
+      payment: { id: 49, saleOrderId: 'FY-CZ-1', amount: '1000.00', changeType: '首次支付' },
+    })
+    const legacy = paymentRow({
+      legacySource: 'workfine',
+      payment: { id: 48, saleOrderId: 'FY-LS-1', amount: '600.00' },
+    })
+    const unsettled = paymentRow({
+      payment: { id: 47, saleOrderId: 'FY-WD-1', amount: '200.00', status: '待支付', paidAt: null, performanceAttributionDate: null, performanceAttributionAdjustedAt: null },
+    })
+    mockStages([internal, recharge, legacy, unsettled], [])
+
+    const { rows } = await exportOrderPayments({})
+
+    expect(rows).toHaveLength(4)
+    expect(rows.map((row) => row.productName)).toEqual([
+      '款项未拆分到商品',
+      '储值卡充值',
+      '历史订单（无商品明细）',
+      '款项未拆分到商品',
+    ])
+    // 已支付的兜底行金额回填到实付，仍可求和；未入账的留空
+    expect(rows.map((row) => row.received)).toEqual(['80.00', '1000.00', '600.00', ''])
+    expect(rows.map((row) => row.cashAmount)).toEqual(['80.00', '1000.00', '600.00', ''])
+    expect(rows.every((row) => row.totalAmount === '')).toBe(true)
+  })
+
+  it('混合支付：储值卡额只算一次，不因从行兜底而重复计数', async () => {
+    const cashPrimary = paymentRow({
+      payment: { id: 60, saleOrderId: 'FY-HH-1', changeType: '回款', amount: '100.00', paymentMethod: '线下' },
+    })
+    const cardSecondary = paymentRow({
+      payment: { id: 59, saleOrderId: 'FY-HH-1', changeType: '储值卡抵扣', amount: '50.00', paymentMethod: '无', externalTxnId: null },
+    })
+    mockStages(
+      [cashPrimary, cardSecondary],
+      [
+        receiptRow({ salePaymentId: 60, saleOrderId: 'FY-HH-1', saleItemId: 'ITEM-1', amount: '100.00' }),
+        receiptRow({ salePaymentId: 60, saleOrderId: 'FY-HH-1', saleItemId: 'ITEM-2', amount: '50.00' }),
+      ],
+    )
+
+    const { rows } = await exportOrderPayments({})
+
+    expect(rows).toHaveLength(3)
+    const sum = (key: 'received' | 'prepaidCardAmount' | 'cashAmount') =>
+      rows.reduce((total, row) => total + Number(row[key] || 0), 0)
+    // receipt 挂在现金主流水上、合计 150；储值卡从行必须留空，否则总额会变成 200
+    expect(sum('received')).toBeCloseTo(150, 2)
+    expect(sum('prepaidCardAmount')).toBeCloseTo(50, 2)
+    expect(sum('cashAmount')).toBeCloseTo(100, 2)
+    expect(rows[2]).toMatchObject({ paymentId: 59, changeType: '储值卡抵扣', received: '', prepaidCardAmount: '', cashAmount: '' })
+    // 每行仍满足 实付 = 储值卡抵扣 + 现付
+    for (const row of rows.slice(0, 2)) {
+      expect(Number(row.received)).toBeCloseTo(Number(row.prepaidCardAmount) + Number(row.cashAmount), 2)
+    }
+  })
+
+  it('receipt 机制上线前的历史款项没有任何 receipt，储值卡抵扣照常回填金额', async () => {
+    const legacyCard = paymentRow({
+      payment: { id: 61, saleOrderId: 'FY-OLD-1', changeType: '储值卡抵扣', amount: '300.00', paymentMethod: '无', externalTxnId: null },
+    })
+    mockStages([legacyCard], [])
+
+    const { rows } = await exportOrderPayments({})
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ received: '300.00', prepaidCardAmount: '300.00', cashAmount: '0.00' })
+  })
+
+  it('退款款项落负数实付并把绝对值写进已退', async () => {
+    const refund = paymentRow({
+      payment: { id: 41, changeType: '退款', amount: '-120.00', refundReason: '顾客申请' },
+    })
+    mockStages([refund], [receiptRow({ salePaymentId: 41, amount: '-120.00' })])
+
+    const { rows } = await exportOrderPayments({})
+
+    expect(rows[0]).toMatchObject({
+      changeType: '退款',
+      received: '-120.00',
+      refundedAmount: '120.00',
+      refundReason: '顾客申请',
+    })
+  })
+
+  it('转换单一笔款项展开出转出负行与转入正行，合计等于款项金额', async () => {
+    const conversion = paymentRow({
+      saleOrderType: '转换单',
+      payment: { id: 70, saleOrderId: 'FY-ZH-1', amount: '300.00' },
+    })
+    mockStages([conversion], [
+      receiptRow({ salePaymentId: 70, saleOrderId: 'FY-ZH-1', saleItemId: 'OUT-1', amount: '-500.00', productName: '旧卡转出' }),
+      receiptRow({ salePaymentId: 70, saleOrderId: 'FY-ZH-1', saleItemId: 'IN-1', amount: '800.00', productName: '新卡转入' }),
+    ])
+
+    const { rows } = await exportOrderPayments({})
+
+    expect(rows.map((row) => row.received)).toEqual(['-500.00', '800.00'])
+    expect(rows.reduce((total, row) => total + Number(row.received), 0)).toBeCloseTo(300, 2)
+  })
+
+  it('寄存单金额列全部留空，与订单明细口径一致', async () => {
+    const deposit = paymentRow({
+      saleOrderType: '寄存单',
+      payment: { id: 71, saleOrderId: 'FY-JC-1', amount: '900.00', note: '寄存单初始化实收' },
+    })
+    mockStages([deposit], [])
+
+    const { rows } = await exportOrderPayments({})
+
+    expect(rows[0]).toMatchObject({
+      totalAmount: '',
+      prepaidCardAmount: '',
+      cashAmount: '',
+      received: '',
+      refundedAmount: '',
+      paymentAmount: '900.00',
+    })
+  })
+
+  it('归属日期三分支：首次支付随订单、回款取款项级、未入账为空', async () => {
+    const repayment = paymentRow()
     const first = paymentRow({
-      payment: {
-        id: 40,
-        changeType: '首次支付',
-        performanceAttributionDate: null,
-        performanceAttributionAdjustedAt: null,
-      },
+      payment: { id: 40, changeType: '首次支付', performanceAttributionDate: null, performanceAttributionAdjustedAt: null },
       orderPerformanceAttributionDate: '2026-08-16',
       orderPerformanceAttributionAdjustedAt: new Date('2026-08-16T04:00:00.000Z'),
       orderPerformanceAttributionAdjustedByName: '店长丙',
     })
-    ;(db.select as any).mockReturnValue(makeChain([paymentRow(), refund, first]))
+    const unsettled = paymentRow({
+      payment: { id: 39, status: '待支付', paidAt: null, performanceAttributionDate: null, performanceAttributionAdjustedAt: null },
+      paymentPerformanceAttributionAdjustedByName: null,
+    })
+    mockStages([repayment, first, unsettled], [])
 
-    const result = await exportOrderPayments({ status: '部分支付', type: '销售单' })
+    const { rows } = await exportOrderPayments({})
 
-    expect(result.rows).toHaveLength(3)
-    expect(result.rows[0]).toMatchObject({
-      paymentId: 42,
-      amount: '500.00',
+    expect(rows[0]).toMatchObject({
       performanceAttributionDate: '2026-08-18',
       performanceAttributionStatus: '已人工调整',
       performanceAttributionAdjustedByName: '店长甲',
     })
-    expect(result.rows[1]).toMatchObject({
-      paymentId: 41,
-      changeType: '退款',
-      paymentStatus: '待审核',
-      amount: '-120.00',
-      performanceAttributionDate: null,
-      performanceAttributionStatus: '未入账',
-      refundReason: '顾客申请',
-    })
-    expect(result.rows[2]).toMatchObject({
-      paymentId: 40,
+    expect(rows[1]).toMatchObject({
       performanceAttributionDate: '2026-08-16',
       performanceAttributionStatus: '随订单',
       performanceAttributionAdjustedByName: '店长丙',
     })
+    expect(rows[2]).toMatchObject({
+      performanceAttributionDate: null,
+      performanceAttributionStatus: '未入账',
+    })
   })
 
-  it('款项日期口径直接筛当前流水 paid_at，并使用 payment id keyset 分页', async () => {
-    const chain = makeChain([paymentRow(), paymentRow({ payment: { id: 40 } })])
-    ;(db.select as any).mockReturnValue(chain)
+  it('款项日期口径直接筛当前流水 paid_at，keyset 分页不把同一笔款项劈成两页', async () => {
+    const { paymentChain } = mockStages(
+      [paymentRow(), paymentRow({ payment: { id: 40 } })],
+      [
+        receiptRow({ saleItemId: 'ITEM-1', amount: '300.00' }),
+        receiptRow({ saleItemId: 'ITEM-2', amount: '200.00' }),
+      ],
+    )
 
     const result = await exportOrderPayments(
       { dateBasis: 'payment', from: '2026-08-01', to: '2026-08-31', q: '顾客' },
@@ -5894,9 +6117,23 @@ describe('exportOrderPayments — 回款明细导出', () => {
     expect(gte).toHaveBeenCalledWith('paid_at', expect.anything())
     expect(lt).toHaveBeenCalledWith('paid_at', expect.anything())
     expect(lt).toHaveBeenCalledWith('id', 50)
-    expect(chain.limit).toHaveBeenCalledWith(2)
+    expect(paymentChain.limit).toHaveBeenCalledWith(2)
     expect(result).toMatchObject({ hasMore: true, nextCursor: 42 })
-    expect(result.rows).toHaveLength(1)
+    // limit 限制的是款项数（1 笔），扇出后的行数可以大于 limit
+    expect(result.rows).toHaveLength(2)
+    expect(result.rows.every((row) => row.paymentId === 42)).toBe(true)
+  })
+
+  it('limit==null 全量导出时按 500 个订单号分块查 receipt', async () => {
+    const payments = Array.from({ length: 1200 }, (_, index) =>
+      paymentRow({ payment: { id: 10_000 - index, saleOrderId: `FY-BULK-${index}` } }))
+    mockStages(payments, [])
+
+    await exportOrderPayments({ status: '已支付' })
+
+    const chunkCalls = (inArray as any).mock.calls.filter(([column]: any[]) => column === 'sale_order_id')
+    expect(chunkCalls).toHaveLength(3)
+    expect(chunkCalls.map(([, ids]: any[]) => ids.length)).toEqual([500, 500, 200])
   })
 })
 

@@ -46,6 +46,7 @@ import {
   type ExportBatchResult,
 } from '@/lib/export-pagination'
 import { parseOrderFilters, parseAllocationOrderFilters } from '@/lib/list-filters'
+import { amountToCents, derivePaymentChannelSplit } from '@/lib/export-row-aggregation'
 import { getPointsToYuanRate, getPointsDeductionMaxRate } from '@/lib/system-config'
 import {
   orderMarketScopeCondition,
@@ -1087,31 +1088,88 @@ export interface ExportOrderRow {
   __itemRefundedAmount?: string | number | null
 }
 
-/** 回款明细导出行：一行对应一条 sale_order_payments，保留正负金额与全部状态。 */
+/**
+ * 回款明细导出行：一行 = 一笔 sale_order_payments × 一个商品子项（sale_payment_item_receipts）。
+ *
+ * 粒度与列顺序：前 34 个字段按 registry.ts 的 orderColumns 逐列对齐（表头/顺序完全一致），
+ * 款项专属字段全部排在其后，使回款块可直接粘贴到订单明细导出下方按品项/顾客求和
+ * （2026-09-05 需求沟通会「回款导出与订单明细合并」决议）。
+ *
+ * 覆盖保证（禁止改成 INNER JOIN）：capturePaymentAllocatables 只对
+ * sale_order_type ∈ ('销售单','转换单') 且 legacy_source <> 'workfine' 写 receipt，
+ * 因此内部单 / 寄存单 / 充值单 / WorkFine 历史单 / 未入账款项没有 receipt 行，
+ * 一律输出 1 条商品列留空 + 占位文案的兜底行。这同时是 iterateExportPages
+ * 「hasMore 时 rows 不得为空」的前提，去掉兜底会让整个导出任务失败。
+ *
+ * 金额口径：
+ * - received（实付）＝ receipt.amount（有符号：转换单转出为负、退款为负），
+ *   是唯一可跨行求和的金额列；
+ * - prepaidCardAmount / cashAmount 由 derivePaymentChannelSplit 从
+ *   (Σreceipt, payment.amount) 还原后按实付比例分摊到各行，恒满足 实付 = 储值卡抵扣 + 现付；
+ * - 兜底行：未入账 / 寄存单 / 被折叠的储值卡抵扣从行留空，避免与主流水重复计数；
+ * - totalAmount / sessionCount / paidUnusedSessions / unitRealPrice 是 sale_items 快照，
+ *   同一商品的多笔款项行上重复出现，不可求和；
+ * - paymentAmount（款项金额）是整笔值，同一款项的多行重复，不可求和，仅供兜底与对账。
+ */
 export interface ExportPaymentRow {
-  paymentId: number
+  // ── 对齐段 1-9：订单 / 顾客 ──
   marketName: string
   storeName: string | null
   saleOrderId: string
   saleOrderType: string
   documentType: string | null
-  orderStatus: string
   customerName: string | null
   clientPhone: string | null
+  customerSource: string | null
+  promoterEmployeeName: string | null
+  // ── 对齐段 10-16：商品维度（兜底行为空） ──
+  productType: string | null
+  categoryL1: string | null
+  categoryL2: string | null
+  /** 兜底行写占位文案：储值卡充值 / 历史订单（无商品明细）/ 款项未拆分到商品 */
+  productName: string | null
+  sessionCount: number | null
+  unit: string | null
+  paidUnusedSessions: number | null
+  // ── 对齐段 17-22：金额（'' 表示该列留空，与 ExportOrderRow 同为 string） ──
+  totalAmount: string
+  prepaidCardAmount: string
+  cashAmount: string
+  received: string
+  refundedAmount: string
+  unitRealPrice: number | null
+  // ── 对齐段 23-34：订单属性与时间 ──
+  status: string
+  /** 款项级支付方式（比订单级快照更贴近这笔钱的真实通道） */
+  paymentMethod: string
+  isMembershipUpgrade: boolean
+  isActivity: boolean
+  isExperienceConversion: boolean
+  salesCategory: string | null
+  customerType: string | null
+  openedByName: string | null
+  saleOrderDatetime: string
+  /** 款项业绩归属日期：首次支付随订单，其余取款项级 ?? fmtDate(paid_at) */
+  performanceAttributionDate: string | null
+  /** 款项创建时间 */
+  createdAt: string
+  /** 订单备注（款项备注见 note） */
+  remark: string | null
+  // ── 款项专属段 35-47 ──
+  paymentId: number
   changeType: string
   paymentStatus: string
-  amount: string
-  paymentMethod: string
+  /** 款项金额（整笔，同款项多行重复，不可求和） */
+  paymentAmount: string
   sourceEnd: string
   operatorName: string | null
   externalTxnId: string | null
-  createdAt: string
   paidAt: string | null
-  performanceAttributionDate: string | null
   performanceAttributionStatus: '随订单' | '系统默认' | '已人工调整' | '未入账'
   performanceAttributionAdjustedByName: string | null
   performanceAttributionAdjustedAt: string | null
   refundReason: string | null
+  /** 款项备注 */
   note: string | null
 }
 
@@ -1191,7 +1249,53 @@ function exportOrderSeekCondition(
   )
 }
 
-/** 导出当前订单列表筛选命中的全部款项流水；款项日期口径按当前行 paid_at 逐笔筛选。 */
+/**
+ * 款项业绩归属日期口径（回款明细导出与营业额分配导出共用，防两处漂移）：
+ * 首次支付跟随订单级归属日期；其余款项取款项级 performance_attribution_date，
+ * 缺失时按 paid_at 折算上海自然日。changeType 为空（旧的订单维度分配没有
+ * sale_payment_id）时同样回退订单级。
+ */
+function resolvePaymentAttributionDate(
+  changeType: string | null | undefined,
+  orderAttributionDate: string | null,
+  paymentAttributionDate: string | null | undefined,
+  paidAt: Date | null | undefined,
+): string | null {
+  if (!changeType || changeType === '首次支付') return orderAttributionDate
+  return paymentAttributionDate ?? (paidAt ? fmtDate(paidAt) : null)
+}
+
+/** 二阶段按订单号批量捞 receipt 时的分块大小，避免 limit==null 全量导出把 IN 参数撑爆。 */
+const PAYMENT_RECEIPT_LOOKUP_CHUNK = 500
+
+/** 一笔款项落到单个商品子项的实收明细 + 该商品行的展示快照。 */
+interface PaymentReceiptDetail {
+  salePaymentId: number
+  saleItemId: string
+  amount: string
+  receiptSalesCategory: string | null
+  productType: string | null
+  productName: string | null
+  categoryL1: string | null
+  categoryL2: string | null
+  sessionCount: number | null
+  skuUnit: string | null
+  paidUnusedSessions: number | null
+  saleAmount: string | null
+  unitRealPrice: string | null
+  itemSalesCategory: string | null
+}
+
+/**
+ * 导出当前订单列表筛选命中的全部款项流水，下沉到商品子项维度。
+ * 款项日期口径按当前行 paid_at 逐笔筛选。
+ *
+ * 两阶段查询：一阶段按 payment 做 keyset 分页（cursor 仍是 payment.id），二阶段按本批
+ * 订单号批量捞 sale_payment_item_receipts 并在内存展开。这样一笔款项的 N 行永远落在
+ * 同一页，不需要复合游标，也不会把混合支付的通道推导劈成两半。
+ *
+ * 注意 limit 语义：它限制的是「每页款项数」而非「每页 Excel 行数」，实际行数是扇出后的结果。
+ */
 export const exportOrderPayments = withPermission(
   'sale_order:list',
   async (
@@ -1210,11 +1314,14 @@ export const exportOrderPayments = withPermission(
       throw new ApiError('INVALID_STATE', '导出分页游标无效')
     }
 
+    // ── 一阶段：按款项分页 ────────────────────────────────────────────────
+    // 门店取 sale_orders.storeName 快照（不是 JOIN 实时 stores），与订单明细导出同源，
+    // 门店改名后两段粘一起仍能按同一个门店名求和。
     const query = db
       .select({
         payment: saleOrderPayments,
         marketName: saleOrders.marketName,
-        storeName: stores.storeName,
+        storeName: saleOrders.storeName,
         saleOrderType: saleOrders.saleOrderType,
         documentType: saleOrders.documentType,
         orderStatus: saleOrders.status,
@@ -1222,6 +1329,16 @@ export const exportOrderPayments = withPermission(
         orderClientPhone: saleOrders.clientPhone,
         customerName: clientWechatUsers.name,
         clientPhone: clientWechatUsers.phone,
+        customerSource: clientWechatUsers.customerSource,
+        promoterEmployeeName: clientWechatUsers.promoterEmployeeName,
+        customerType: clientWechatUsers.customerType,
+        isMembershipUpgrade: saleOrders.isMembershipUpgrade,
+        isActivity: saleOrders.isActivity,
+        isExperienceConversion: saleOrders.isExperienceConversion,
+        legacySource: saleOrders.legacySource,
+        saleOrderDatetime: saleOrders.saleOrderDatetime,
+        remark: saleOrders.remark,
+        openedByName: opener.name,
         orderPerformanceAttributionDate: saleOrders.performanceAttributionDate,
         orderPerformanceAttributionAdjustedAt: saleOrders.performanceAttributionAdjustedAt,
         orderPerformanceAttributionAdjustedByName: performanceAttributionAdjuster.name,
@@ -1230,9 +1347,9 @@ export const exportOrderPayments = withPermission(
       })
       .from(saleOrderPayments)
       .innerJoin(saleOrders, eq(saleOrderPayments.saleOrderId, saleOrders.saleOrderId))
-      .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
       .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
       .leftJoin(staffWechatUsers, eq(saleOrderPayments.operatorEmployeeId, staffWechatUsers.employeeId))
+      .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
       .leftJoin(
         performanceAttributionAdjuster,
         eq(saleOrders.performanceAttributionAdjustedBy, performanceAttributionAdjuster.employeeId),
@@ -1256,51 +1373,179 @@ export const exportOrderPayments = withPermission(
 
     const candidates = limit == null ? await query : await query.limit(limit + 1)
     const selected = limit == null ? candidates : candidates.slice(0, limit)
-    const rows: ExportPaymentRow[] = selected.map((row) => {
-      const isFirstPayment = row.payment.changeType === '首次支付'
-      const attributionDate = isFirstPayment
-        ? row.orderPerformanceAttributionDate
-        : row.payment.performanceAttributionDate
-          ?? (row.payment.paidAt ? fmtDate(row.payment.paidAt) : null)
+
+    // ── 二阶段：按订单号捞商品子项实收 ──────────────────────────────────────
+    // 按订单号（不是款项 id）捞的原因：除了本页各款项自己的 receipt，还需要知道
+    // 「该订单是否存在任何 receipt」，用来区分「混合支付里被折叠的储值卡从行」
+    // （其兄弟现金主流水可能不在本页）与「receipt 机制上线前的历史款项」。
+    const receiptsByPayment = new Map<number, PaymentReceiptDetail[]>()
+    const ordersWithReceipts = new Set<string>()
+    const selectedPaymentIds = new Set(selected.map((row) => row.payment.id))
+    const orderIds = Array.from(new Set(selected.map((row) => row.payment.saleOrderId)))
+    for (let offset = 0; offset < orderIds.length; offset += PAYMENT_RECEIPT_LOOKUP_CHUNK) {
+      const chunk = orderIds.slice(offset, offset + PAYMENT_RECEIPT_LOOKUP_CHUNK)
+      const receiptRows = await db
+        .select({
+          salePaymentId: salePaymentItemReceipts.salePaymentId,
+          saleOrderId: salePaymentItemReceipts.saleOrderId,
+          saleItemId: salePaymentItemReceipts.saleItemId,
+          amount: salePaymentItemReceipts.amount,
+          receiptSalesCategory: salePaymentItemReceipts.salesCategory,
+          productType: saleItems.productType,
+          productName: saleItems.productName,
+          categoryL1: productCategories.productKind,
+          categoryL2: productCategories.categoryName,
+          sessionCount: saleItems.sessionCount,
+          skuUnit: productSkus.unit,
+          paidUnusedSessions: paidUnusedSessionsExpr,
+          saleAmount: saleItems.saleAmount,
+          unitRealPrice: saleItems.unitRealPrice,
+          itemSalesCategory: saleItems.salesCategory,
+        })
+        .from(salePaymentItemReceipts)
+        .innerJoin(saleItems, eq(salePaymentItemReceipts.saleItemId, saleItems.saleItemId))
+        .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+        .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+        .where(inArray(salePaymentItemReceipts.saleOrderId, chunk))
+        .orderBy(salePaymentItemReceipts.salePaymentId, salePaymentItemReceipts.saleItemId)
+      for (const receipt of receiptRows) {
+        // 同订单其他款项的 receipt 只用于「该订单是否有 receipt」判定，不展开成导出行
+        ordersWithReceipts.add(receipt.saleOrderId)
+        const paymentId = Number(receipt.salePaymentId)
+        if (!selectedPaymentIds.has(paymentId)) continue
+        const bucket = receiptsByPayment.get(paymentId)
+        const detail: PaymentReceiptDetail = { ...receipt, salePaymentId: paymentId }
+        if (bucket) bucket.push(detail)
+        else receiptsByPayment.set(paymentId, [detail])
+      }
+    }
+
+    const money = (amountCents: number) => (amountCents / 100).toFixed(2)
+    const rows: ExportPaymentRow[] = []
+    for (const row of selected) {
+      const payment = row.payment
+      const isFirstPayment = payment.changeType === '首次支付'
       const adjustedAt = isFirstPayment
         ? row.orderPerformanceAttributionAdjustedAt
-        : row.payment.performanceAttributionAdjustedAt
+        : payment.performanceAttributionAdjustedAt
       const adjustedByName = isFirstPayment
         ? row.orderPerformanceAttributionAdjustedByName
         : row.paymentPerformanceAttributionAdjustedByName
-      return {
-        paymentId: row.payment.id,
+      const shared = {
         marketName: row.marketName,
         storeName: row.storeName ?? null,
-        saleOrderId: row.payment.saleOrderId,
+        saleOrderId: payment.saleOrderId,
         saleOrderType: row.saleOrderType,
         documentType: row.documentType,
-        orderStatus: row.orderStatus,
         customerName: row.customerName || row.orderCustomerName || null,
         clientPhone: row.clientPhone || row.orderClientPhone || null,
-        changeType: row.payment.changeType,
-        paymentStatus: row.payment.status,
-        amount: row.payment.amount,
-        paymentMethod: row.payment.paymentMethod,
-        sourceEnd: row.payment.sourceEnd,
+        customerSource: row.customerSource ?? null,
+        promoterEmployeeName: row.promoterEmployeeName ?? null,
+        status: row.orderStatus,
+        paymentMethod: payment.paymentMethod,
+        isMembershipUpgrade: row.isMembershipUpgrade ?? false,
+        isActivity: row.isActivity ?? false,
+        isExperienceConversion: row.isExperienceConversion ?? false,
+        customerType: row.customerType ?? null,
+        openedByName: row.openedByName ?? null,
+        saleOrderDatetime: row.saleOrderDatetime.toISOString(),
+        performanceAttributionDate: resolvePaymentAttributionDate(
+          payment.changeType,
+          row.orderPerformanceAttributionDate,
+          payment.performanceAttributionDate,
+          payment.paidAt,
+        ),
+        createdAt: payment.createdAt.toISOString(),
+        remark: row.remark,
+        paymentId: payment.id,
+        changeType: payment.changeType,
+        paymentStatus: payment.status,
+        paymentAmount: payment.amount,
+        sourceEnd: payment.sourceEnd,
         operatorName: row.operatorName ?? null,
-        externalTxnId: row.payment.externalTxnId,
-        createdAt: row.payment.createdAt.toISOString(),
-        paidAt: row.payment.paidAt?.toISOString() ?? null,
-        performanceAttributionDate: attributionDate,
-        performanceAttributionStatus: isFirstPayment
+        externalTxnId: payment.externalTxnId,
+        paidAt: payment.paidAt?.toISOString() ?? null,
+        performanceAttributionStatus: (isFirstPayment
           ? '随订单'
-          : !row.payment.paidAt
+          : !payment.paidAt
             ? '未入账'
             : adjustedAt
               ? '已人工调整'
-              : '系统默认',
+              : '系统默认') as ExportPaymentRow['performanceAttributionStatus'],
         performanceAttributionAdjustedByName: adjustedByName ?? null,
         performanceAttributionAdjustedAt: adjustedAt?.toISOString() ?? null,
-        refundReason: row.payment.refundReason,
-        note: row.payment.note,
+        refundReason: payment.refundReason,
+        note: payment.note,
       }
-    })
+
+      const receipts = receiptsByPayment.get(payment.id) ?? []
+      if (receipts.length === 0) {
+        // 兜底行。禁止删除：内部单/寄存单/充值单/历史单/未入账款项在库里就没有 receipt，
+        // 丢掉它们既是相对旧导出的数据回归，也会让 iterateExportPages 在整页都是这类款项时报错。
+        const paymentAmountCents = amountToCents(payment.amount) ?? 0
+        // 三类金额必须留空，否则会与别处重复计数或与订单明细口径冲突：
+        // 1) 未入账/已作废的钱还没到账；2) 寄存单 total=0 与 received>0 并存，与销售单口径不兼容；
+        // 3) 混合支付被折叠的储值卡从行，其金额已经算在同事件现金主流水的 receipt 里。
+        const suppressAmount =
+          payment.status !== '已支付' ||
+          row.saleOrderType === '寄存单' ||
+          (payment.changeType === '储值卡抵扣' && ordersWithReceipts.has(payment.saleOrderId))
+        const netCents = suppressAmount ? null : paymentAmountCents
+        const viaPrepaidCard = payment.changeType === '储值卡抵扣'
+        rows.push({
+          ...shared,
+          productType: null,
+          categoryL1: null,
+          categoryL2: null,
+          productName: row.saleOrderType === '充值单'
+            ? '储值卡充值'
+            : row.legacySource === 'workfine'
+              ? '历史订单（无商品明细）'
+              : '款项未拆分到商品',
+          sessionCount: null,
+          unit: null,
+          paidUnusedSessions: null,
+          totalAmount: '',
+          prepaidCardAmount: netCents == null ? '' : money(viaPrepaidCard ? netCents : 0),
+          cashAmount: netCents == null ? '' : money(viaPrepaidCard ? 0 : netCents),
+          received: netCents == null ? '' : money(netCents),
+          refundedAmount: netCents == null
+            ? ''
+            : money(payment.changeType === '退款' ? Math.abs(netCents) : 0),
+          unitRealPrice: null,
+          salesCategory: null,
+        })
+        continue
+      }
+
+      const amountCents = receipts.map((receipt) => amountToCents(receipt.amount) ?? 0)
+      const { prepaidCents } = derivePaymentChannelSplit(amountCents, {
+        changeType: payment.changeType,
+        paymentMethod: payment.paymentMethod,
+        paymentAmountCents: amountToCents(payment.amount),
+      })
+      receipts.forEach((receipt, index) => {
+        const receivedCents = amountCents[index]
+        const prepaidCardCents = prepaidCents[index] ?? 0
+        rows.push({
+          ...shared,
+          productType: receipt.productType,
+          categoryL1: receipt.categoryL1,
+          categoryL2: receipt.categoryL2,
+          productName: receipt.productName,
+          sessionCount: receipt.sessionCount ?? null,
+          unit: receipt.skuUnit ?? (receipt.productType === '家居产品' ? '盒' : '次'),
+          paidUnusedSessions: receipt.paidUnusedSessions ?? null,
+          totalAmount: receipt.saleAmount ?? '',
+          prepaidCardAmount: money(prepaidCardCents),
+          cashAmount: money(receivedCents - prepaidCardCents),
+          received: money(receivedCents),
+          refundedAmount: money(payment.changeType === '退款' ? Math.abs(receivedCents) : 0),
+          unitRealPrice: receipt.unitRealPrice == null ? null : Number(receipt.unitRealPrice),
+          salesCategory: receipt.receiptSalesCategory ?? receipt.itemSalesCategory,
+        })
+      })
+    }
 
     if (limit == null) return { rows, truncated: false, hasMore: false }
     const hasMore = candidates.length > limit
@@ -1917,6 +2162,8 @@ export interface ExportAllocationOrderRow {
   customerType: string | null
   openedByName: string | null
   paidAt: string | null
+  /** 回款归属日期：首次支付随订单，其余取款项级 ?? fmtDate(paid_at)（与回款明细导出同源） */
+  performanceAttributionDate: string | null
   remark: string | null
   /** 以下字段仅供异步导出 worker 按完整回款聚合，不映射到 Excel 列。 */
   __sourceId?: string
@@ -2054,6 +2301,8 @@ export const exportAllocationOrders = withPermission(
           customerType: clientWechatUsers.customerType,
           openedByName: opener.name,
           payPaidAt: saleOrderPayments.paidAt,
+          payAttributionDate: saleOrderPayments.performanceAttributionDate,
+          orderAttributionDate: saleOrders.performanceAttributionDate,
           salePaymentId: salePaymentItemReceipts.salePaymentId,
           receiptId: salePaymentItemReceipts.id,
           saleItemId: salePaymentItemReceipts.saleItemId,
@@ -2131,6 +2380,13 @@ export const exportAllocationOrders = withPermission(
             customerType: r.customerType,
             openedByName: r.openedByName,
             paidAt: r.payPaidAt?.toISOString() ?? r.orderPaidAt?.toISOString() ?? null,
+            // 旧的订单维度分配没有 sale_payment_id，paymentChangeType 为空 → 回退订单级归属日期
+            performanceAttributionDate: resolvePaymentAttributionDate(
+              r.paymentChangeType,
+              r.orderAttributionDate ?? null,
+              r.payAttributionDate,
+              r.payPaidAt,
+            ),
             remark: r.remark,
             __sourceId: String(r.sourceId),
             __salePaymentId: r.salePaymentId,
@@ -2204,6 +2460,8 @@ export const exportAllocationOrders = withPermission(
           customerType: clientWechatUsers.customerType,
           openedByName: opener.name,
           payPaidAt: saleOrderPayments.paidAt,
+          payAttributionDate: saleOrderPayments.performanceAttributionDate,
+          orderAttributionDate: saleOrders.performanceAttributionDate,
           salePaymentId: salePaymentItemReceipts.salePaymentId,
           receiptId: salePaymentItemReceipts.id,
           saleItemId: salePaymentItemReceipts.saleItemId,
@@ -2279,6 +2537,13 @@ export const exportAllocationOrders = withPermission(
             customerType: r.customerType,
             openedByName: r.openedByName,
             paidAt: r.payPaidAt?.toISOString() ?? r.orderPaidAt?.toISOString() ?? null,
+            // 旧的订单维度分配没有 sale_payment_id，paymentChangeType 为空 → 回退订单级归属日期
+            performanceAttributionDate: resolvePaymentAttributionDate(
+              r.paymentChangeType,
+              r.orderAttributionDate ?? null,
+              r.payAttributionDate,
+              r.payPaidAt,
+            ),
             remark: r.remark,
             __sourceId: String(r.sourceId),
             __salePaymentId: r.salePaymentId,
@@ -2607,7 +2872,9 @@ export const updatePerformanceAttributionDate = withPermission(
           )
         RETURNING card.id
       `)
-      const syncedPaymentIds = (syncedCardRes as unknown as Array<{ id: number }>).map((row) => row.id)
+      // tx.execute 走原生 SQL，不经 drizzle 列映射：bigint(int8) 由 postgres.js 原样返回 string，须显式 Number()
+      const syncedPaymentIds = (syncedCardRes as unknown as Array<{ id: number | string }>)
+        .map((row) => Number(row.id))
 
       await logUpdate(
         session,
@@ -2733,7 +3000,8 @@ export const updatePaymentPerformanceAttributionDate = withPermission(
         performance_attribution_date: string | null
         performance_attribution_adjusted_at: Date | string | null
         has_mixed_payment_primary: boolean
-        paired_card_payment_ids: number[]
+        /** bigint[]（OID 1016）同样不经 drizzle 映射，postgres.js 回 string[] */
+        paired_card_payment_ids: Array<number | string>
         store_id: string
         original_paid_date: string | null
         min_performance_date: string | null
@@ -2792,13 +3060,15 @@ export const updatePaymentPerformanceAttributionDate = withPermission(
           performance_attribution_adjusted_at,
           performance_attribution_adjusted_by
       `)
+      // tx.execute 走原生 SQL，不经 drizzle 列映射：id 是 bigint(int8)，postgres.js 原样返回 string，
+      // 直接 `row.id === paymentId` 恒为 false，会把成功的 UPDATE 误判成并发冲突并回滚（2026-09-10 修复）。
       const updated = (updatedRes as unknown as Array<{
-        id: number
+        id: number | string
         sale_order_id: string
         performance_attribution_date: string
         performance_attribution_adjusted_at: Date | string
         performance_attribution_adjusted_by: string
-      }>).find((row) => row.id === paymentId)
+      }>).find((row) => Number(row.id) === paymentId)
       if (!updated) {
         throw new ApiError('CONFLICT', '款项已被其他人修改，请刷新后重试')
       }
@@ -2813,7 +3083,7 @@ export const updatePaymentPerformanceAttributionDate = withPermission(
           performanceAttributionDate: updated.performance_attribution_date,
           performanceAttributionAdjustedAt: new Date(updated.performance_attribution_adjusted_at).toISOString(),
           performanceAttributionAdjustedBy: updated.performance_attribution_adjusted_by,
-          affectedPaymentIds: [paymentId, ...locked.paired_card_payment_ids],
+          affectedPaymentIds: [paymentId, ...locked.paired_card_payment_ids.map((id) => Number(id))],
         },
         tx,
       )
