@@ -1101,9 +1101,9 @@ export interface ExportOrderRow {
  *
  * 覆盖保证（禁止改成 INNER JOIN）：capturePaymentAllocatables 只对
  * sale_order_type ∈ ('销售单','转换单') 且 legacy_source <> 'workfine' 写 receipt，
- * 因此内部单 / 寄存单 / 充值单 / WorkFine 历史单 / 未入账款项没有 receipt 行，
- * 一律输出 1 条商品列留空 + 占位文案的兜底行。这同时是 iterateExportPages
- * 「hasMore 时 rows 不得为空」的前提，去掉兜底会让整个导出任务失败。
+ * 因此内部单 / 充值单 / 未入账款项没有 receipt 行。这类款项改由 sale_items 补出商品明细
+ * （内部单等）或输出占位行（充值单），绝不能丢：那既是相对旧导出的数据回归，也会破坏
+ * iterateExportPages「hasMore 时 rows 不得为空」的前提，让整个导出任务失败。
  *
  * 金额口径：
  * - received（实付）＝ receipt.amount（有符号：转换单转出为负、退款为负），
@@ -1318,15 +1318,16 @@ function paymentProductColumns(item: PaymentProductSnapshot) {
  * 导出当前订单列表筛选命中的全部款项流水，下沉到商品子项维度。
  * 款项日期口径按当前行 paid_at 逐笔筛选。
  *
+ * **寄存单与 WorkFine 历史单整类排除**：它们不存在真实回款，见下方 WHERE 处的注释。
+ *
  * 三阶段查询：一阶段按 payment 做 keyset 分页（cursor 仍是 payment.id），二阶段按本批
- * 订单号批量捞 sale_payment_item_receipts，三阶段为「无 receipt 且非寄存单」的款项补捞
- * sale_items。这样一笔款项的 N 行永远落在同一页，不需要复合游标，也不会把混合支付的
- * 通道推导劈成两半。
+ * 订单号批量捞 sale_payment_item_receipts，三阶段为无 receipt 的款项补捞 sale_items。
+ * 这样一笔款项的 N 行永远落在同一页，不需要复合游标，也不会把混合支付的通道推导劈成两半。
  *
  * 每笔款项按以下三条路径之一展开（见下方 rows.push 处的注释）：
- *   1. 有 receipt      → 按 receipt 展开，金额精确到该次回款落在该子项上的实收；
+ *   1. 有 receipt          → 按 receipt 展开，金额精确到该次回款落在该子项上的实收；
  *   2. 无 receipt 有 items → 按 sale_items 展开，金额按行应付权重分摊；
- *   3. 其余            → 一行占位（寄存单 / 充值单 / 无明细历史单）。
+ *   3. 无商品明细          → 一行占位（充值单不写 sale_items）。
  *
  * 注意 limit 语义：它限制的是「每页款项数」而非「每页 Excel 行数」，实际行数是扇出后的结果。
  */
@@ -1369,7 +1370,6 @@ export const exportOrderPayments = withPermission(
         isMembershipUpgrade: saleOrders.isMembershipUpgrade,
         isActivity: saleOrders.isActivity,
         isExperienceConversion: saleOrders.isExperienceConversion,
-        legacySource: saleOrders.legacySource,
         saleOrderDatetime: saleOrders.saleOrderDatetime,
         remark: saleOrders.remark,
         openedByName: opener.name,
@@ -1394,6 +1394,13 @@ export const exportOrderPayments = withPermission(
       )
       .where(and(
         ...buildOrderConditions(session, orderFilters),
+        // 寄存单与 WorkFine 历史单不存在真实回款，一律排除在回款明细之外（2026-09-10 决议）：
+        // - 寄存单的 sale_order_payments 是历史寄存初始化的记账痕迹，金额列本就按 isDeposit
+        //   口径全部留空，留着只是 8.4 万行空金额噪音，对任何求和贡献为零；
+        // - 历史单没有支付流水（prod 17,766 单全部 0 笔款项），这里是防御性排除。
+        // 注意：订单明细导出**不做**此排除，两份导出的订单类型覆盖面本就不同。
+        sql`${saleOrders.saleOrderType} <> '寄存单'`,
+        sql`${saleOrders.legacySource} IS DISTINCT FROM 'workfine'`,
         usesPaymentDate && filters.dateFrom
           ? gte(saleOrderPayments.paidAt, beijingBoundaryTs(filters.dateFrom, '00:00:00'))
           : undefined,
@@ -1459,12 +1466,11 @@ export const exportOrderPayments = withPermission(
     // sale_items。若照旧只输出占位行，商品明细列就整段留空、与订单明细导出对不上
     // （2026-09-10 用户反馈）。这里按订单号补捞商品行，取值与 exportOrders 的 itemQuery 同源。
     //
-    // 寄存单**故意排除**：它平均 57.55 个商品行 ×  人均 12.7 笔回款，展开后约 486 万行，
-    // 既超 Excel 上限（104 万）又因 4 个金额列本就留空而对「按品项求和」毫无贡献 —— 仍走占位行。
+    // 寄存单已在上面的 WHERE 里整类排除，这里不必再防它扇出成 486 万行。
     const itemsByOrder = new Map<string, PaymentProductSnapshot[]>()
     const fallbackOrderIds = Array.from(new Set(
       selected
-        .filter((row) => !receiptsByPayment.has(row.payment.id) && row.saleOrderType !== '寄存单')
+        .filter((row) => !receiptsByPayment.has(row.payment.id))
         .map((row) => row.payment.saleOrderId),
     ))
     for (let offset = 0; offset < fallbackOrderIds.length; offset += PAYMENT_RECEIPT_LOOKUP_CHUNK) {
@@ -1571,12 +1577,12 @@ export const exportOrderPayments = withPermission(
         ? (itemsByOrder.get(payment.saleOrderId) ?? [])
         : []
 
-      // 三条金额留空规则，两条无 receipt 路径共用；漏掉任何一条都会造成重复计数：
-      // 1) 未入账/已作废的钱还没到账；2) 寄存单 total=0 与 received>0 并存，与销售单口径不兼容；
-      // 3) 混合支付被折叠的储值卡从行，其金额已经算在同事件现金主流水的 receipt 里。
+      // 两条金额留空规则，两条无 receipt 路径共用；漏掉任一条都会造成重复计数：
+      // 1) 未入账/已作废的钱还没到账；
+      // 2) 混合支付被折叠的储值卡从行，其金额已经算在同事件现金主流水的 receipt 里。
+      // （原先的「寄存单」规则已上移为 WHERE 层整类排除。）
       const suppressAmount =
         payment.status !== '已支付' ||
-        row.saleOrderType === '寄存单' ||
         (payment.changeType === '储值卡抵扣' && ordersWithReceipts.has(payment.saleOrderId))
       const viaPrepaidCard = payment.changeType === '储值卡抵扣'
       const channelAmounts = (netCents: number | null) => ({
@@ -1589,21 +1595,15 @@ export const exportOrderPayments = withPermission(
       })
 
       if (receipts.length === 0 && fallbackItems.length === 0) {
-        // 占位行。禁止删除：寄存单/充值单/无明细历史单在库里既没有 receipt 也没有可展开的
-        // 商品行，丢掉它们既是相对旧导出的数据回归，也会让 iterateExportPages 在整页都是
-        // 这类款项时报「导出分页未返回数据」。
+        // 占位行。禁止删除：充值单不写 sale_items，它既没有 receipt 也没有可展开的商品行；
+        // 丢掉它既是相对旧导出的数据回归，也会让 iterateExportPages 在整页都是这类款项时
+        // 报「导出分页未返回数据」。
         rows.push({
           ...shared,
           productType: null,
           categoryL1: null,
           categoryL2: null,
-          productName: row.saleOrderType === '充值单'
-            ? '储值卡充值'
-            : row.saleOrderType === '寄存单'
-              ? '寄存回款（未按商品拆分）'
-              : row.legacySource === 'workfine'
-                ? '历史订单（无商品明细）'
-                : '款项未拆分到商品',
+          productName: row.saleOrderType === '充值单' ? '储值卡充值' : '款项未拆分到商品',
           sessionCount: null,
           unit: null,
           paidUnusedSessions: null,

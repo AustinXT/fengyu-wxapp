@@ -5966,7 +5966,7 @@ describe('exportOrderPayments — 回款明细导出（款项 × 商品子项）
     expect(rows.map((row) => row.prepaidCardAmount)).toEqual(['0.00', '0.00'])
   })
 
-  it('无 receipt 的款项仍各输出一行并带占位文案（防 INNER JOIN 回归）', async () => {
+  it('无 receipt 且无商品明细的款项仍各输出一行占位（防 INNER JOIN 回归）', async () => {
     const internal = paymentRow({
       saleOrderType: '内部单',
       payment: { id: 50, saleOrderId: 'FY-NB-1', amount: '80.00' },
@@ -5975,27 +5975,22 @@ describe('exportOrderPayments — 回款明细导出（款项 × 商品子项）
       saleOrderType: '充值单',
       payment: { id: 49, saleOrderId: 'FY-CZ-1', amount: '1000.00', changeType: '首次支付' },
     })
-    const legacy = paymentRow({
-      legacySource: 'workfine',
-      payment: { id: 48, saleOrderId: 'FY-LS-1', amount: '600.00' },
-    })
     const unsettled = paymentRow({
       payment: { id: 47, saleOrderId: 'FY-WD-1', amount: '200.00', status: '待支付', paidAt: null, performanceAttributionDate: null, performanceAttributionAdjustedAt: null },
     })
-    mockStages([internal, recharge, legacy, unsettled], [])
+    mockStages([internal, recharge, unsettled], [])
 
     const { rows } = await exportOrderPayments({})
 
-    expect(rows).toHaveLength(4)
+    expect(rows).toHaveLength(3)
     expect(rows.map((row) => row.productName)).toEqual([
       '款项未拆分到商品',
       '储值卡充值',
-      '历史订单（无商品明细）',
       '款项未拆分到商品',
     ])
-    // 已支付的兜底行金额回填到实付，仍可求和；未入账的留空
-    expect(rows.map((row) => row.received)).toEqual(['80.00', '1000.00', '600.00', ''])
-    expect(rows.map((row) => row.cashAmount)).toEqual(['80.00', '1000.00', '600.00', ''])
+    // 已支付的占位行金额回填到实付，仍可求和；未入账的留空
+    expect(rows.map((row) => row.received)).toEqual(['80.00', '1000.00', ''])
+    expect(rows.map((row) => row.cashAmount)).toEqual(['80.00', '1000.00', ''])
     expect(rows.every((row) => row.totalAmount === '')).toBe(true)
   })
 
@@ -6103,40 +6098,16 @@ describe('exportOrderPayments — 回款明细导出（款项 × 商品子项）
     expect(rows.reduce((total, row) => total + Number(row.received), 0)).toBeCloseTo(300, 2)
   })
 
-  it('寄存单金额列全部留空，与订单明细口径一致', async () => {
-    const deposit = paymentRow({
-      saleOrderType: '寄存单',
-      payment: { id: 71, saleOrderId: 'FY-JC-1', amount: '900.00', note: '寄存单初始化实收' },
-    })
-    mockStages([deposit], [])
+  // 寄存单的款项是历史寄存初始化的记账痕迹（prod 8.4 万笔，金额列本就全空），
+  // 历史单则根本没有支付流水 —— 两者都不是真实回款，必须在 SQL 层整类排除。
+  it('寄存单与 WorkFine 历史单在 WHERE 层整类排除，不进回款明细', async () => {
+    mockStages([paymentRow()], [receiptRow()])
 
-    const { rows } = await exportOrderPayments({})
+    await exportOrderPayments({})
 
-    expect(rows[0]).toMatchObject({
-      totalAmount: '',
-      prepaidCardAmount: '',
-      cashAmount: '',
-      received: '',
-      refundedAmount: '',
-      paymentAmount: '900.00',
-    })
-  })
-
-  // 寄存单人均 12.7 笔回款 × 平均 57.55 个商品行 ≈ 486 万行，超 Excel 上限且金额列本就留空。
-  // 这条守住「寄存单绝不按 sale_items 扇出」，防止有人顺手把它并进 fallbackOrderIds。
-  it('寄存单不按商品扇出：仍是一行 + 专属占位文案，且不发起 sale_items 查询', async () => {
-    const deposit = paymentRow({
-      saleOrderType: '寄存单',
-      payment: { id: 72, saleOrderId: 'FY-JC-2', amount: '900.00' },
-    })
-    mockStages([deposit], [], [itemRow({ saleOrderId: 'FY-JC-2' }), itemRow({ saleOrderId: 'FY-JC-2', saleItemId: 'ITEM-2' })])
-
-    const { rows } = await exportOrderPayments({})
-
-    expect(rows).toHaveLength(1)
-    expect(rows[0]).toMatchObject({ productName: '寄存回款（未按商品拆分）', productType: null, received: '' })
-    // 整批只有寄存单 → fallbackOrderIds 为空 → 第三阶段查询根本不该发起
-    expect((db.select as any).mock.calls).toHaveLength(2)
+    const sqlTexts = (sql as any).mock.results.map((result: any) => result.value?.__sqlText ?? '')
+    expect(sqlTexts.some((text: string) => text.includes("<> '寄存单'"))).toBe(true)
+    expect(sqlTexts.some((text: string) => text.includes("IS DISTINCT FROM 'workfine'"))).toBe(true)
   })
 
   it('无 receipt 但订单有商品行：按 sale_items 展开，商品列取值与订单明细同源', async () => {
