@@ -86,6 +86,7 @@ bunx playwright test --config=tests/e2e-chains/playwright.manual.config.ts tests
 ## 架构要点
 
 - **Server Actions 直连 PG**：19 个 action 模块通过 Drizzle ORM 操作 PostgreSQL，无 mock
+- **原生 SQL 的 bigint 返回 string**：`db.execute(sql\`\`)` / `tx.execute(sql\`\`)` 不经 drizzle 列映射，schema 里的 `bigserial({mode:'number'})` 对它无效；postgres.js 对 `int8`(OID 20) 与 `bigint[]`(OID 1016) 无 parser，原样返回 `string` / `string[]`。**禁止**把这类列与 number 直接 `===` 比较、做算术、或当 `Map`/`Set` 的 key 与 number key 混用，一律显式 `Number()`；行类型也别裸标 `id: number`（TS 断言撒谎不会报警）。走 drizzle query builder（`db.select()`）时才是真 number。同理，单测 mock 这类 RETURNING 行必须用字符串 id，否则 mock 漂移会掩盖真实缺陷
 - **JWT 认证**：middleware.ts 校验 `fy-admin-token` cookie → 查 `permission_roles` → 构造 `ctx.auth`
 - **6 角色权限**：admin/manager/finance/hr/product/customer_mgr，PERMISSION_MATRIX 代码常量
 - **统一鉴权 HOF**：`src/actions/**/*.ts` 的每个 export 必经 `withPermission(action, fn)` / `withAnyPermission(actions[], fn)`（`@/lib/with-permission`），ESLint `no-restricted-syntax` AST 规则强制（`auth.ts` 公共入口除外）。详见下方"Server Actions 写法范式"
