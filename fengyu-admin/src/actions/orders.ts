@@ -19,7 +19,7 @@ import { prepaidCards, cardTransactions } from '@db/prepaid-card'
 import { eq, desc, asc, and, or, sql, ilike, gte, lt, gt, inArray, isNull } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
-import type { AuthSession, SaleOrder, SaleItem, OrderStatus, SaleOrderType } from '@/lib/types'
+import type { AuthSession, SaleOrder, SaleItem, DateBasis, OrderStatus, SaleOrderType } from '@/lib/types'
 import { revalidatePath } from 'next/cache'
 import { scopeCondition, isInScope, requireAdmin, isDepositOrderApprover } from '@/lib/permissions'
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
@@ -38,7 +38,7 @@ import { recalcPaidSessionsForOrder, paidUnusedSessionsExpr } from '@/lib/paid-s
 import { capturePaymentAllocatables, refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
 import { getPerItemRefundedMap } from '@/lib/per-item-refund'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
-import { fmtDate, shanghaiYmd } from '@/lib/datetime'
+import { shanghaiYmd } from '@/lib/datetime'
 import { nowTs, beijingBoundaryTs, beijingNextDayBoundaryTs } from '@/lib/db-time'
 import {
   resolveExportBatchLimit,
@@ -46,6 +46,10 @@ import {
   type ExportBatchResult,
 } from '@/lib/export-pagination'
 import { parseOrderFilters, parseAllocationOrderFilters } from '@/lib/list-filters'
+import {
+  paymentAttributionRangeConditions,
+  resolvePaymentAttributionDate,
+} from '@/lib/performance-attribution'
 import {
   amountToCents,
   derivePaymentChannelSplit,
@@ -800,8 +804,11 @@ export interface OrderFilters {
   storeId?: string
   dateFrom?: string
   dateTo?: string
-  /** 日期筛选口径：默认按下单时间；payment 按已入账款项发生时间。 */
-  dateBasis?: 'order' | 'payment'
+  /**
+   * 日期筛选口径：默认 attribution（款项业绩归属日期）；
+   * payment 按已入账款项发生时间；order 按下单时间。
+   */
+  dateBasis?: DateBasis
   search?: string
   /** 支付方式筛选（`'无'` = 原生全额抵扣；`'未知'` = WorkFine 历史单虚拟通道） */
   paymentMethod?: string
@@ -828,6 +835,8 @@ function buildOrderConditions(
   const conditions: (SQL | undefined)[] = [
     scopeCondition(session, saleOrders.storeId),
   ]
+  // 缺省口径与 URL 解析（parseDateBasis）保持一致，避免「页面默认归属、直调默认下单」的双口径
+  const dateBasis: DateBasis = filters.dateBasis ?? 'attribution'
 
   if (filters.status) {
     conditions.push(eq(saleOrders.status, filters.status as typeof saleOrders.status.enumValues[number]))
@@ -849,7 +858,7 @@ function buildOrderConditions(
   if (filters.storeId) {
     conditions.push(eq(saleOrders.storeId, filters.storeId))
   }
-  if (filters.dateBasis === 'payment' && (filters.dateFrom || filters.dateTo)) {
+  if (dateBasis === 'payment' && (filters.dateFrom || filters.dateTo)) {
     // 款项日期只决定订单是否入选，导出金额仍是订单当前累计快照。
     // status='已支付' 同时覆盖首次支付、回款、储值卡抵扣和已完成退款。
     conditions.push(sql`EXISTS (
@@ -863,6 +872,24 @@ function buildOrderConditions(
         ${filters.dateTo
           ? sql`AND payment_date_filter.paid_at < ${beijingNextDayBoundaryTs(filters.dateTo)}`
           : sql``}
+    )`)
+  } else if (dateBasis === 'attribution' && (filters.dateFrom || filters.dateTo)) {
+    // 默认口径：订单只要存在任一笔「业绩归属日期」落在区间内的款项就入选
+    // （与 payment 口径同为 EXISTS 半连接：命中的是订单，导出金额仍是订单累计快照）。
+    // 归属日期为 NULL 的未入账款项不会命中，所以这里的 status 条件只是为了走
+    // sale_order_id 索引后尽早剪枝，不是语义所需。
+    const [fromCond, toCond] = paymentAttributionRangeConditions(
+      filters.dateFrom,
+      filters.dateTo,
+      'payment_attribution_filter',
+    )
+    conditions.push(sql`EXISTS (
+      SELECT 1
+      FROM ${saleOrderPayments} AS payment_attribution_filter
+      WHERE payment_attribution_filter.sale_order_id = ${saleOrders.saleOrderId}
+        AND payment_attribution_filter.status = '已支付'
+        ${fromCond ? sql`AND ${fromCond}` : sql``}
+        ${toCond ? sql`AND ${toCond}` : sql``}
     )`)
   } else {
     if (filters.dateFrom) {
@@ -1253,22 +1280,6 @@ function exportOrderSeekCondition(
   )
 }
 
-/**
- * 款项业绩归属日期口径（回款明细导出与营业额分配导出共用，防两处漂移）：
- * 首次支付跟随订单级归属日期；其余款项取款项级 performance_attribution_date，
- * 缺失时按 paid_at 折算上海自然日。changeType 为空（旧的订单维度分配没有
- * sale_payment_id）时同样回退订单级。
- */
-function resolvePaymentAttributionDate(
-  changeType: string | null | undefined,
-  orderAttributionDate: string | null,
-  paymentAttributionDate: string | null | undefined,
-  paidAt: Date | null | undefined,
-): string | null {
-  if (!changeType || changeType === '首次支付') return orderAttributionDate
-  return paymentAttributionDate ?? (paidAt ? fmtDate(paidAt) : null)
-}
-
 /** 二/三阶段按订单号批量捞明细时的分块大小，避免 limit==null 全量导出把 IN 参数撑爆。 */
 const PAYMENT_RECEIPT_LOOKUP_CHUNK = 500
 
@@ -1339,10 +1350,17 @@ export const exportOrderPayments = withPermission(
     options?: ExportBatchOptions<number>,
   ): Promise<ExportBatchResult<ExportPaymentRow, number>> => {
     const filters = parseOrderFilters(params)
-    const usesPaymentDate = filters.dateBasis === 'payment' && Boolean(filters.dateFrom || filters.dateTo)
-    const orderFilters = usesPaymentDate
+    // 回款明细以款项为粒度，日期必须约束当前这一行款项；不能沿用订单管理的 EXISTS 口径，
+    // 否则命中订单的**全部**款项都会被带出来（区间外的也在内）。
+    const hasDateRange = Boolean(filters.dateFrom || filters.dateTo)
+    const usesPaymentDate = filters.dateBasis === 'payment' && hasDateRange
+    const usesAttributionDate = filters.dateBasis === 'attribution' && hasDateRange
+    const orderFilters = usesPaymentDate || usesAttributionDate
       ? { ...filters, dateFrom: undefined, dateTo: undefined }
       : filters
+    const attributionDateConditions = usesAttributionDate
+      ? paymentAttributionRangeConditions(filters.dateFrom, filters.dateTo)
+      : []
     const limit = resolveExportBatchLimit(options?.limit)
     const cursor = options?.cursor == null ? null : Number(options.cursor)
     if (cursor != null && (!Number.isSafeInteger(cursor) || cursor <= 0)) {
@@ -1407,6 +1425,7 @@ export const exportOrderPayments = withPermission(
         usesPaymentDate && filters.dateTo
           ? lt(saleOrderPayments.paidAt, beijingNextDayBoundaryTs(filters.dateTo))
           : undefined,
+        ...attributionDateConditions,
         cursor == null ? undefined : lt(saleOrderPayments.id, cursor),
       ))
       // 例外：款项流水按不可变主键倒序做 keyset 分页，覆盖 paid_at 为空的未入账状态。
@@ -2318,8 +2337,10 @@ export const exportAllocationOrders = withPermission(
     filters.allocationStatus = undefined
     // 销售提成以回款为列表粒度，款项日期必须约束当前 JOIN 到的 payment；
     // 不能复用订单管理的 EXISTS 口径，否则会带出同订单范围外的其他回款。
-    const usesPaymentDate = filters.dateBasis === 'payment' && Boolean(filters.dateFrom || filters.dateTo)
-    const orderFilters = usesPaymentDate
+    const hasDateRange = Boolean(filters.dateFrom || filters.dateTo)
+    const usesPaymentDate = filters.dateBasis === 'payment' && hasDateRange
+    const usesAttributionDate = filters.dateBasis === 'attribution' && hasDateRange
+    const orderFilters = usesPaymentDate || usesAttributionDate
       ? { ...filters, dateFrom: undefined, dateTo: undefined }
       : filters
     const paymentDateConditions = usesPaymentDate
@@ -2331,7 +2352,11 @@ export const exportAllocationOrders = withPermission(
             ? lt(saleOrderPayments.paidAt, beijingNextDayBoundaryTs(filters.dateTo))
             : undefined,
         ]
-      : []
+      : usesAttributionDate
+        // 旧的订单维度分配 sale_payment_id 为 NULL，LEFT JOIN 出来的归属日期同样为 NULL
+        // → 与 paid_at 口径一致地落选，不需要额外分支。
+        ? paymentAttributionRangeConditions(filters.dateFrom, filters.dateTo)
+        : []
     const allocStatus = params.allocStatus
     const limit = resolveExportBatchLimit(options?.limit)
     const cursor: ExportAllocationOrdersCursor = {
@@ -2358,7 +2383,7 @@ export const exportAllocationOrders = withPermission(
       const whereClause = and(
         eq(salePaymentItemAllocations.isVoid, false),
         ...buildOrderConditions(session, orderFilters),
-        usesPaymentDate ? eq(saleOrderPayments.status, '已支付') : undefined,
+        usesPaymentDate || usesAttributionDate ? eq(saleOrderPayments.status, '已支付') : undefined,
         ...paymentDateConditions,
       )
       const query = db
@@ -2979,9 +3004,24 @@ export const updatePerformanceAttributionDate = withPermission(
           )
         RETURNING card.id
       `)
+      // 首次支付流水的归属日期恒等于订单级（迁移 0039 起该列不再留 NULL）。
+      // 必须排在卡流水同步**之后**：首次支付行的 BEFORE UPDATE trigger 会反向同步同次卡流水，
+      // 若与卡流水在同一条语句里更新，PG 会报「tuple already modified by an operation
+      // triggered by the current command」。
+      // 调整机会标记（adjusted_at/by）仍只记在 sale_orders 上：首次支付行不可被单独修改。
+      const syncedFirstRes = await tx.execute(sql`
+        UPDATE sale_order_payments first_payment
+        SET performance_attribution_date = ${targetDate}::date
+        WHERE first_payment.sale_order_id = ${saleOrderId}
+          AND first_payment.change_type = '首次支付'
+          AND first_payment.performance_attribution_date IS DISTINCT FROM ${targetDate}::date
+        RETURNING first_payment.id
+      `)
       // tx.execute 走原生 SQL，不经 drizzle 列映射：bigint(int8) 由 postgres.js 原样返回 string，须显式 Number()
-      const syncedPaymentIds = (syncedCardRes as unknown as Array<{ id: number | string }>)
-        .map((row) => Number(row.id))
+      const syncedPaymentIds = [
+        ...(syncedCardRes as unknown as Array<{ id: number | string }>),
+        ...(syncedFirstRes as unknown as Array<{ id: number | string }>),
+      ].map((row) => Number(row.id))
 
       await logUpdate(
         session,

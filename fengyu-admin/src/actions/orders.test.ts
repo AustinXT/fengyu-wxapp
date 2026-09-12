@@ -2369,18 +2369,18 @@ describe('getOrdersPaginated — 服务端分页', () => {
     expect(ilike).toHaveBeenCalledWith('client_phone', '%李女士%')
   })
 
-  it('dateFrom 筛选 → gte 被调用', async () => {
+  it('下单日期口径 dateFrom 筛选 → gte 被调用', async () => {
     mockPaginatedChain(0, [])
 
-    await getOrdersPaginated({ dateFrom: '2026-03-01' })
+    await getOrdersPaginated({ dateBasis: 'order', dateFrom: '2026-03-01' })
 
     expect(gte).toHaveBeenCalled()
   })
 
-  it('dateTo 筛选 → lt 被调用', async () => {
+  it('下单日期口径 dateTo 筛选 → lt 被调用', async () => {
     mockPaginatedChain(0, [])
 
-    await getOrdersPaginated({ dateTo: '2026-03-31' })
+    await getOrdersPaginated({ dateBasis: 'order', dateTo: '2026-03-31' })
 
     expect(lt).toHaveBeenCalled()
     expect((sql as any).mock.calls.some(([strings]: any[]) =>
@@ -2404,6 +2404,26 @@ describe('getOrdersPaginated — 服务端分页', () => {
     expect((sql as any).mock.calls.some(([strings]: any[]) =>
       Array.isArray(strings?.raw) && strings.raw.join('').includes('payment_date_filter'),
     )).toBe(true)
+  })
+
+  it('缺省口径（款项归属日期）走 EXISTS 半连接，且带上首次支付跟随订单级那一支', async () => {
+    mockPaginatedChain(0, [])
+    ;(gte as any).mockClear()
+    ;(lt as any).mockClear()
+
+    await getOrdersPaginated({ dateFrom: '2026-08-01', dateTo: '2026-08-31' })
+
+    // 订单级下单时间不再参与过滤
+    expect(gte).not.toHaveBeenCalled()
+    expect(lt).not.toHaveBeenCalled()
+    const rendered = (sql as any).mock.calls
+      .map(([strings]: any[]) => (Array.isArray(strings?.raw) ? strings.raw.join(' ') : ''))
+      .join('\n')
+    expect(rendered).toContain('payment_attribution_filter')
+    expect(rendered).toContain("= '首次支付' THEN")
+    expect(rendered).toContain("AT TIME ZONE 'Asia/Shanghai'")
+    // 不能同时落到款项发生日期口径
+    expect(rendered).not.toContain('payment_date_filter')
   })
 
   it('paidAt 为 null → 序列化为 null', async () => {
@@ -4183,11 +4203,13 @@ describe('updatePerformanceAttributionDate — 一次性业绩归属日期调整
     }],
     // bigint id 经 tx.execute 由 postgres.js 原样返回 string，审计日志须归一成 number
     syncedCardRows = [{ id: '43' }],
+    syncedFirstPaymentRows = [{ id: '41' }],
   }: {
     adjustedAt?: Date | null
     currentDate?: string
     updatedRows?: any[]
     syncedCardRows?: any[]
+    syncedFirstPaymentRows?: any[]
   } = {}) {
     const execute = vi.fn()
       .mockResolvedValueOnce([{
@@ -4201,6 +4223,7 @@ describe('updatePerformanceAttributionDate — 一次性业绩归属日期调整
       }])
       .mockResolvedValueOnce(updatedRows)
       .mockResolvedValueOnce(syncedCardRows)
+      .mockResolvedValueOnce(syncedFirstPaymentRows)
     const tx = { execute, select: vi.fn(), insert: vi.fn() }
     ;(db.transaction as any).mockImplementation(async (fn: any) => fn(tx))
     return { tx, execute }
@@ -4221,6 +4244,9 @@ describe('updatePerformanceAttributionDate — 一次性业绩归属日期调整
     expect(execute.mock.calls[1][0].__sqlText).toMatch(/performance_attribution_adjusted_at IS NULL/)
     expect(execute.mock.calls[1][0].__sqlText).toMatch(/date_trunc\('milliseconds', updated_at\)/)
     expect(execute.mock.calls[2][0].__sqlText).toMatch(/first_payment\.change_type = '首次支付'/)
+    // 首次支付行必须排在卡流水同步之后，且只改归属日期、不碰调整机会标记
+    expect(execute.mock.calls[3][0].__sqlText).toMatch(/UPDATE sale_order_payments first_payment/)
+    expect(execute.mock.calls[3][0].__sqlText).not.toMatch(/performance_attribution_adjusted_at =/)
     expect(logUpdate).toHaveBeenCalledWith(
       expect.anything(),
       'order.performanceAttribution.update',
@@ -4230,7 +4256,7 @@ describe('updatePerformanceAttributionDate — 一次性业绩归属日期调整
       expect.objectContaining({
         performanceAttributionDate: '2026-08-24',
         performanceAttributionAdjustedBy: 'EMP-001',
-        syncedPaymentIds: [43],
+        syncedPaymentIds: [43, 41],
       }),
       tx,
     )
@@ -5702,6 +5728,27 @@ describe('exportAllocationOrders — 销售提成三态导出（已分配明细 
     )).toBe(false)
   })
 
+  it('缺省口径按当前回款行的业绩归属日期筛，并同步锁定已支付', async () => {
+    let call = 0
+    ;(db.select as any).mockImplementation(() => {
+      call++
+      return makeChain(call === 1 ? [allocatedRaw] : [pendingRaw])
+    })
+    ;(gte as any).mockClear()
+    ;(lt as any).mockClear()
+
+    await exportAllocationOrders({ from: '2026-07-01', to: '2026-07-31' })
+
+    expect((gte as any).mock.calls.some(([col]: any[]) => col === 'paid_at')).toBe(false)
+    expect((gte as any).mock.calls.some(([col]: any[]) => col === 'sale_order_datetime')).toBe(false)
+    expect((eq as any).mock.calls.some(([col, val]: any[]) => col === 'status' && val === '已支付')).toBe(true)
+    const rendered = (sql as any).mock.calls
+      .map(([strings]: any[]) => (Array.isArray(strings?.raw) ? strings.raw.join(' ') : ''))
+      .join('\n')
+    expect(rendered).toContain("= '首次支付' THEN")
+    expect(rendered).not.toContain('payment_attribution_filter')
+  })
+
   it('worker 分页跨两段来源推进独立游标，不重复也不遗漏', async () => {
     const allocatedNewest = {
       ...allocatedRaw,
@@ -6243,6 +6290,26 @@ describe('exportOrderPayments — 回款明细导出（款项 × 商品子项）
     // limit 限制的是款项数（1 笔），扇出后的行数可以大于 limit
     expect(result.rows).toHaveLength(2)
     expect(result.rows.every((row) => row.paymentId === 42)).toBe(true)
+  })
+
+  it('缺省口径按当前流水的业绩归属日期闭区间筛，不退化成订单级 EXISTS', async () => {
+    mockStages([paymentRow()], [receiptRow()])
+    ;(gte as any).mockClear()
+    ;(lt as any).mockClear()
+
+    await exportOrderPayments({ from: '2026-08-01', to: '2026-08-31' })
+
+    // 归属日期是 date 列，走 sql 闭区间；不得落到 paid_at / sale_order_datetime 的半开区间
+    expect(gte).not.toHaveBeenCalled()
+    expect(lt).not.toHaveBeenCalled()
+    const rendered = (sql as any).mock.calls
+      .map(([strings]: any[]) => (Array.isArray(strings?.raw) ? strings.raw.join(' ') : ''))
+      .join('\n')
+    expect(rendered).toContain("= '首次支付' THEN")
+    expect(rendered).toContain('::date')
+    // 款项粒度导出必须约束当前这一行，命中订单再全量带出款项就重复计数了
+    expect(rendered).not.toContain('payment_attribution_filter')
+    expect(rendered).not.toContain('payment_date_filter')
   })
 
   it('limit==null 全量导出时 receipt 与 sale_items 两阶段都按 500 个订单号分块', async () => {

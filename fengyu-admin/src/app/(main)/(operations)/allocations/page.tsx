@@ -1,6 +1,7 @@
 import { getPendingPayments } from '@/actions/allocations'
 import { getServiceOrdersPaginated } from '@/actions/services'
 import { getMarketStoreFilterOptions } from '@/actions/stores'
+import { parseDateBasis } from '@/lib/list-filters'
 import { getSession } from '@/lib/auth'
 import { hasUiCapability } from '@/lib/permission-contract'
 import AllocationsPageClient from './_components/allocations-page'
@@ -22,7 +23,7 @@ export default async function Page({
   const storeId = params.store || undefined
   const dateFrom = params.from || undefined
   const dateTo = params.to || undefined
-  const dateBasis = params.dateBasis === 'payment' ? 'payment' : 'order'
+  const dateBasis = parseDateBasis(params.dateBasis)
   const search = params.q || undefined
 
   const [filterOptions, session] = await Promise.all([getMarketStoreFilterOptions(), getSession()])

@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
+  DATE_BASIS_FILTER_OPTIONS,
+  dateBasisShortLabel,
   parseAllocationOrderFilters,
   parseAllocationServiceFilters,
   parseEmployeeFilters,
@@ -118,10 +120,23 @@ describe('订单/服务单列表筛选解析', () => {
     expect(parseOrderFilters({ status: '待支付,待审批' }).statuses).toEqual(['待支付', '待审批'])
   })
 
-  it('订单日期口径仅接受 payment，其余值回落为 order', () => {
+  it('订单日期口径缺省为款项归属日期，order/payment 需显式指定', () => {
     expect(parseOrderFilters({ dateBasis: 'payment' }).dateBasis).toBe('payment')
-    expect(parseOrderFilters({ dateBasis: 'invalid' }).dateBasis).toBe('order')
-    expect(parseOrderFilters({}).dateBasis).toBe('order')
+    expect(parseOrderFilters({ dateBasis: 'order' }).dateBasis).toBe('order')
+    expect(parseOrderFilters({ dateBasis: 'attribution' }).dateBasis).toBe('attribution')
+    expect(parseOrderFilters({ dateBasis: 'invalid' }).dateBasis).toBe('attribution')
+    expect(parseOrderFilters({}).dateBasis).toBe('attribution')
+  })
+
+  it('日期口径下拉以款项归属日期打头，short 标签供 DatePicker aria-label 复用', () => {
+    expect(DATE_BASIS_FILTER_OPTIONS.map((option) => option.value)).toEqual([
+      'attribution',
+      'payment',
+      'order',
+    ])
+    expect(dateBasisShortLabel('attribution')).toBe('款项归属')
+    expect(dateBasisShortLabel('payment')).toBe('款项发生')
+    expect(dateBasisShortLabel('order')).toBe('下单')
   })
 
   it('服务单列表透传 market/store URL 参数', () => {
@@ -151,8 +166,8 @@ describe('订单/服务单列表筛选解析', () => {
       allocationEligibleOnly: true,
       dateBasis: 'payment',
     })
-    expect(parseAllocationOrderFilters({ dateBasis: 'invalid' }).dateBasis).toBe('order')
-    expect(parseAllocationOrderFilters({}).dateBasis).toBe('order')
+    expect(parseAllocationOrderFilters({ dateBasis: 'invalid' }).dateBasis).toBe('attribution')
+    expect(parseAllocationOrderFilters({}).dateBasis).toBe('attribution')
   })
 
   it('营业额分配服务提成透传 market/store 并锁定已完成服务单', () => {

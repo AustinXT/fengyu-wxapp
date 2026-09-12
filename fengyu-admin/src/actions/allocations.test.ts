@@ -109,7 +109,7 @@ import {
 } from './allocations'
 import { db } from '@/db'
 import { saleOrderPayments, saleOrders } from '@db/order'
-import { eq, gte, lt } from 'drizzle-orm'
+import { eq, gte, lt, sql } from 'drizzle-orm'
 import { getSession } from '@/lib/auth'
 import { isAdminScope, isInScope } from '@/lib/permissions'
 import { hasSettledRefund, hasSettledRefundForPayment } from '@/lib/refund-cascade'
@@ -347,7 +347,7 @@ describe('getPendingPayments — 全部状态/日期筛选', () => {
   })
 
   it('下单日期口径 → 触发 sale_order_datetime 的上海自然日半开区间', async () => {
-    await getPendingPayments({ dateFrom: '2026-07-01', dateTo: '2026-07-31' })
+    await getPendingPayments({ dateBasis: 'order', dateFrom: '2026-07-01', dateTo: '2026-07-31' })
 
     expect((gte as any).mock.calls.some(([col]: any[]) => col === saleOrders.saleOrderDatetime)).toBe(true)
     expect((lt as any).mock.calls.some(([col]: any[]) => col === saleOrders.saleOrderDatetime)).toBe(true)
@@ -370,6 +370,22 @@ describe('getPendingPayments — 全部状态/日期筛选', () => {
     expect((lt as any).mock.calls.some(([col]: any[]) => col === saleOrderPayments.paidAt)).toBe(true)
     expect((gte as any).mock.calls.some(([col]: any[]) => col === saleOrders.saleOrderDatetime)).toBe(false)
     expect((lt as any).mock.calls.some(([col]: any[]) => col === saleOrders.saleOrderDatetime)).toBe(false)
+  })
+
+  it('缺省口径 → 按款项业绩归属日期闭区间筛，不落到 sale_order_datetime/paid_at', async () => {
+    await getPendingPayments({ dateFrom: '2026-07-01', dateTo: '2026-07-31' })
+
+    expect((gte as any).mock.calls.some(([col]: any[]) => col === saleOrders.saleOrderDatetime)).toBe(false)
+    expect((lt as any).mock.calls.some(([col]: any[]) => col === saleOrders.saleOrderDatetime)).toBe(false)
+    expect((gte as any).mock.calls.some(([col]: any[]) => col === saleOrderPayments.paidAt)).toBe(false)
+    expect((lt as any).mock.calls.some(([col]: any[]) => col === saleOrderPayments.paidAt)).toBe(false)
+    // 首次支付跟随订单级那一支必须在，否则 1900+ 笔首次支付会整段落选
+    const rendered = (sql as any).mock.calls
+      .map(([strings]: any[]) => (Array.isArray(strings?.raw) ? strings.raw.join(' ') : ''))
+      .join('\n')
+    expect(rendered).toContain("= '首次支付' THEN")
+    expect(rendered).toContain("AT TIME ZONE 'Asia/Shanghai'")
+    expect(rendered).toContain('::date')
   })
 
   it('无日期 → 不触发 gte/lt on sale_order_datetime', async () => {
