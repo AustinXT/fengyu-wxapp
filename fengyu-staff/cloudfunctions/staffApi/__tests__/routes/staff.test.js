@@ -609,9 +609,10 @@ describe('staff.performanceDetail', () => {
 
     await staffRoutes.performanceDetail(ctx)
 
-    // 明细归类口径与 categorySummary 一致，NULL 不会漏筛
+    // 明细归类口径与 categorySummary 一致，NULL 不会漏筛；
+    // 明细装配时已归一，前端卡片底部才能显示「未分类」标签（原样透传 null 会让标签隐藏）
     expect(ctx.result.items).toHaveLength(1)
-    expect(ctx.result.items[0].salesCategory).toBeNull()
+    expect(ctx.result.items[0].salesCategory).toBe('未分类')
     expect(ctx.result.categorySummary['未分类'].sales).toBe(80)
   })
 
@@ -631,10 +632,10 @@ describe('staff.performanceDetail', () => {
     expect(ctx.result.categorySummary['未分类']).toEqual({ sales: 80, service: 0 })
   })
 
-  test('categorySummary 逐类 round2 归一，保证 4 分类之和 === 顶部提成', async () => {
+  test('categorySummary 逐类 round2 归一（分类内部累加不带 IEEE754 尾巴）', async () => {
     const ctx = createManagerCtx({ startDate: '2024-06-01', endDate: '2024-06-30' })
 
-    // 0.1 + 0.2 = 0.30000000000000004（IEEE754），不归一则格子之和 !== 顶部
+    // 0.1 + 0.2 = 0.30000000000000004（IEEE754），不归一则格子显示为 0.30000000000000004
     pg.query.mockResolvedValueOnce([mkAlloc('自销自耗', '0.1'), mkAlloc('自销自耗', '0.2')])
     pg.query.mockResolvedValueOnce([mkSvc('他销自耗', '0.1'), mkSvc('他销自耗', '0.2')])
 
@@ -642,10 +643,80 @@ describe('staff.performanceDetail', () => {
 
     expect(ctx.result.categorySummary['自销自耗'].sales).toBe(0.3)
     expect(ctx.result.categorySummary['他销自耗'].service).toBe(0.3)
+  })
+
+  test('勾稽：顶部由归一后的分桶派生，跨分类求和在两位小数展示层面恒等', async () => {
+    const ctx = createManagerCtx({ startDate: '2024-06-01', endDate: '2024-06-30' })
+
+    // 跨分类：0.1 + 0.2 的浮点尾巴只有在顶部独立累加原始行时才会与格子之和分叉
+    pg.query.mockResolvedValueOnce([mkAlloc('自销自耗', '0.1'), mkAlloc('他销自耗', '0.2')])
+    pg.query.mockResolvedValueOnce([mkSvc('他销他耗', '0.1'), mkSvc('生态合作', '0.2')])
+
+    await staffRoutes.performanceDetail(ctx)
 
     const cats = Object.values(ctx.result.categorySummary)
-    expect(cats.reduce((s, c) => s + c.sales, 0)).toBe(ctx.result.totalSalesAlloc)
-    expect(cats.reduce((s, c) => s + c.service, 0)).toBe(ctx.result.totalServiceCommission)
+    const sumSales = cats.reduce((s, c) => s + c.sales, 0)
+    const sumService = cats.reduce((s, c) => s + c.service, 0)
+
+    // 用户可见口径是两位小数展示 —— JS 浮点下 0.1+0.2 永远带尾巴，
+    // 严格 === 做不到（顶部再 round 也只是换一条路径），故按展示层面断言
+    expect(sumSales.toFixed(2)).toBe(ctx.result.totalSalesAlloc.toFixed(2))
+    expect(sumService.toFixed(2)).toBe(ctx.result.totalServiceCommission.toFixed(2))
+    expect((sumSales + sumService).toFixed(2)).toBe(ctx.result.totalCommission.toFixed(2))
+    expect(ctx.result.totalCommission).toBe(0.6)
+  })
+
+  test('alloc SQL 取 spia.allocated_amount 而非旧列 total_amount（明细「业绩」口径守护）', async () => {
+    const ctx = createManagerCtx({ startDate: '2024-06-01', endDate: '2024-06-30' })
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    // mock 直接喂 alloc_amount 别名，守不住列名回归 —— 必须对 SQL 文本断言。
+    // total_amount 是旧表 sale_allocations 的列，取错会让「业绩(我的分配)」虚高 1/ratio 倍
+    const allocSql = pg.query.mock.calls[0][0]
+    expect(allocSql).toContain('spia.allocated_amount AS alloc_amount')
+    expect(allocSql).not.toContain('total_amount')
+  })
+
+  test('filterType=service 与 salesCategory 组合筛选', async () => {
+    const ctx = createManagerCtx({
+      startDate: '2024-06-01',
+      endDate: '2024-06-30',
+      filterType: 'service',
+      salesCategory: '他销他耗',
+    })
+
+    pg.query.mockResolvedValueOnce([mkAlloc('他销他耗', '100')])
+    pg.query.mockResolvedValueOnce([mkSvc('他销他耗', '30'), mkSvc('自销自耗', '40')])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    // 同为「他销他耗」的销售行被 filterType=service 排除
+    expect(ctx.result.items).toHaveLength(1)
+    expect(ctx.result.items[0].type).toBe('service')
+    expect(ctx.result.items[0].salesCategory).toBe('他销他耗')
+    expect(ctx.result.totalSalesAlloc).toBe(100)
+  })
+
+  test('salesCategory 传不存在的值：明细空，但汇总仍是全量', async () => {
+    const ctx = createManagerCtx({
+      startDate: '2024-06-01',
+      endDate: '2024-06-30',
+      salesCategory: '不存在的分类',
+    })
+
+    pg.query.mockResolvedValueOnce([mkAlloc('自销自耗', '100')])
+    pg.query.mockResolvedValueOnce([mkSvc('他销自耗', '30')])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    expect(ctx.result.items).toEqual([])
+    expect(ctx.result.total).toBe(0)
+    // 汇总不受影响 —— 筛一个不存在的分类返回空列表是合理行为，不报错
+    expect(ctx.result.totalSalesAlloc).toBe(100)
+    expect(ctx.result.categorySummary['自销自耗'].sales).toBe(100)
   })
 
   test('分页入参加固：page/pageSize 非法值不落进 slice', async () => {

@@ -97,7 +97,8 @@
 
   <van-empty wx:elif="{{!loading && items.length === 0}}" description="暂无提成记录" />
 
-  <view wx:else class="perf-list">
+  <!-- 切筛选在途时淡化旧列表：否则新 chip 已高亮、下面还挂着上一条件的明细 -->
+  <view wx:else class="perf-list {{loading ? 'perf-list--switching' : ''}}">
     <view class="perf-item" wx:for="{{items}}" wx:key="index">
       <view class="perf-item-header">
         <text class="perf-item-name">{{item.productName}}</text>

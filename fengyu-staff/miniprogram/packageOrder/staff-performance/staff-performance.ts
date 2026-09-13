@@ -142,6 +142,11 @@ Page({
     }
   },
 
+  // 页面销毁后推进代次，丢弃晚到的响应，避免对已卸载页面 setData
+  onUnload() {
+    this._seq++;
+  },
+
   async loadStaffList() {
     try {
       const data = await callStaffApi<StaffListResponse>('staff.list');
@@ -170,10 +175,13 @@ Page({
     const staff = this.data.staffList[picked];
     if (!staff) return;
     // page 由 loadData(reset=true) 内部归 1，调用方不再各自维护
+    // 换员工 = 数据主体变了，先清空旧员工的金额快照再拉数（见 blankSummary）
     this.setData({
       showStaffPicker: false,
       selectedStaffIndex: picked,
       staffName: staff.name,
+      items: [],
+      ...this.blankSummary(),
     });
     this.loadData(true);
   },
@@ -200,7 +208,8 @@ Page({
       display = `${lastMonth.getFullYear()}年${lastMonth.getMonth() + 1}月`;
     }
 
-    this.setData({ rangeType: type, startDate: start, endDate: end, displayDate: display });
+    // 换时间段同样是数据主体变化：先清汇总，避免请求在途时旧时段金额顶着新时段标题
+    this.setData({ rangeType: type, startDate: start, endDate: end, displayDate: display, ...this.blankSummary() });
     this.loadData(true);
   },
 
@@ -278,7 +287,7 @@ Page({
         totalSalesAlloc: money(res.totalSalesAlloc),
         totalServiceCommission: money(serviceCommission),
         totalCommission: money(res.totalCommission),
-        ...this.buildCategoryPanel(res, activeMainTab),
+        ...this.buildCategoryPanel(res, activeMainTab, activeSubCategory),
         items: newItems,
         total,
         page,
@@ -289,30 +298,58 @@ Page({
       if (seq !== this._seq) return;
       const msg = err instanceof Error ? err.message : '加载失败';
       wx.showToast({ title: msg, icon: 'none' });
-      // 切筛选失败时必须清空列表：否则新筛选条件高亮着，下面挂的却是上一次条件的明细
-      if (reset) this.setData({ items: [], total: 0, hasMore: false });
+      // 失败时必须连汇总一起清：否则「员工 A 的金额」会挂在已切换到的员工 B 名下，
+      // 或新筛选条件高亮着、下面却挂着上一次条件的明细
+      if (reset) this.setData({ items: [], total: 0, hasMore: false, ...this.blankSummary() });
     } finally {
       if (seq === this._seq) this.setData({ loading: false });
     }
   },
 
   /**
+   * 汇总区空白态：换员工 / 换时间段这类「数据主体变了」的场景，必须先把旧主体的金额清掉
+   * 再发请求 —— 否则请求在途期间（慢网络下最长一个 RTT）页面会把 A 的提成标在 B 名下，
+   * 请求失败时更会永久停在那个错配状态。筛选切换不用清（汇总恒全量、本就不随筛选变）。
+   */
+  blankSummary() {
+    return {
+      totalSalesAlloc: '0.00',
+      totalServiceCommission: '0.00',
+      totalCommission: '0.00',
+      categoryCells: [] as CategoryCell[],
+      cellsCaption: '',
+      hasCategoryPanel: false,
+    };
+  },
+
+  /**
    * 由响应推导二级分类面板（格子 + 口径标题 + 显隐）。
    *
-   * 纯函数（`mainTab` 从 loadData 传入而非读 this.data）：响应回来时 this.data 可能已被
-   * 下一次点击改掉，读它会渲染出「格子按服务口径、明细却是销售行」的错配。
+   * 纯函数（`mainTab` / `activeSub` 均由 loadData 传入而非读 this.data）：口径必须跟随
+   * **发起这次请求时**的选中态，与响应里的明细同源，否则会渲染出「格子按服务口径、
+   * 明细却是销售行」的错配。
    *
-   * 分类清单与零填充都由后端 `categories` / `categorySummary` 负责，前端不持硬编码副本；
-   * 旧版云函数不返回 categorySummary → 整块隐藏，避免 4 个假 ¥0.00 与顶部真实金额并列。
+   * 分类清单与零填充都由后端 `categories` / `categorySummary` 负责，前端不持硬编码副本。
+   *
+   * ⚠️ 版本闸门必须同时要求 `categories` 存在，不能只判 `categorySummary`：
+   * **旧版云函数也返回 categorySummary**，只是不零填充、且会被 salesCategory 入参过滤。
+   * 若在缺 `categories` 时回退 `Object.keys(summary)`，旧云函数下会表现为「零金额分类消失、
+   * 点某分类后其余格子全部消失」——正是本 issue 要修的老毛病。缺字段一律隐藏整块降级。
    */
-  buildCategoryPanel(res: PerformanceResponse, mainTab: number) {
+  buildCategoryPanel(res: PerformanceResponse, mainTab: number, activeSub: string) {
     const summary = res.categorySummary;
-    if (!summary) return { hasCategoryPanel: false, categoryCells: [] as CategoryCell[], cellsCaption: '' };
+    const categories = res.categories;
+    if (!summary || !categories || !categories.length) {
+      return { hasCategoryPanel: false, categoryCells: [] as CategoryCell[], cellsCaption: '' };
+    }
 
-    const categories = res.categories && res.categories.length
-      ? res.categories
-      : Object.keys(summary);
-    const cells = categories.map((name) => {
+    // 当前选中分类若不在本期清单里（如选中「未分类」后切到无 NULL 行的月份），补进来：
+    // 否则 chip 与格子都不高亮、「全部」也不高亮，用户面对空列表却找不到过滤器在哪
+    const shown = !activeSub || categories.indexOf(activeSub) >= 0
+      ? categories
+      : categories.concat([activeSub]);
+
+    const cells = shown.map((name) => {
       const row = summary[name] || { sales: 0, service: 0 };
       const sales = Number(row.sales) || 0;
       const service = Number(row.service) || 0;

@@ -191,6 +191,11 @@
   padding: 16rpx 24rpx;
 }
 
+/* 筛选切换在途：淡化旧数据，避免与已更新的选中态看着像同一批 */
+.perf-list--switching {
+  opacity: 0.45;
+}
+
 .perf-item {
   background: #FFFFFF;
   border-radius: 16rpx;
