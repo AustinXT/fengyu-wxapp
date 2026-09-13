@@ -247,6 +247,13 @@ export type AllocationStatus = '待分配' | '已分配'
 export type ItemDirection = '购买' | '转出' | '转入' | '退出'
 export type CouponType = '现金券' | '品项券' | '折扣券'
 export type CouponStatus = '未使用' | '已使用' | '已过期'
+/**
+ * 订单/营业额分配列表的日期筛选口径。
+ * - `attribution` 款项业绩归属日期（**默认**，2026-09-11 起；业绩月份的权威口径）
+ * - `payment` 款项发生日期（paid_at，钱实际到账的时刻）
+ * - `order` 下单日期（sale_order_datetime）
+ */
+export type DateBasis = 'order' | 'payment' | 'attribution'
 /** 角色稳定标识。系统角色沿用旧 key，自定义角色由服务端生成。 */
 export type RoleType = string
 

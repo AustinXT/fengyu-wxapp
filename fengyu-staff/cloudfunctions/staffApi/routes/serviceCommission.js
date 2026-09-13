@@ -55,9 +55,12 @@ async function pendingList(ctx) {
   const params = [ctx.auth.effectiveStoreId]
   const conditions = ["so.store_id = $1", "so.status = '已完成'"]
 
+  // NULL ≡「待分配」：commission_status 无 DB default，建单初值为 NULL，筛选与展示统一 COALESCE，
+  // 避免 NULL 单在「待分配」「已分配」两个筛选下都查不到、只在「全部」里露出并渲染成 "null"。
   if (commissionStatus !== '全部') {
     params.push(commissionStatus)
-    conditions.push(`so.commission_status = $${params.length}`)
+    // ::text 显式转型：枚举列 COALESCE 后与 $n 绑定参数比较，避免 42P18 could not determine data type
+    conditions.push(`COALESCE(so.commission_status::text, '待分配') = $${params.length}`)
   }
 
   if (keyword) {
@@ -79,7 +82,8 @@ async function pendingList(ctx) {
 
   const orders = await pg.query(`
     SELECT
-      so.service_order_id, so.status, so.service_date, so.commission_status,
+      so.service_order_id, so.status, so.service_date,
+      COALESCE(so.commission_status::text, '待分配') AS commission_status,
       so.assigned_employee_id, so.client_user_id,
       cu.name AS customer_name, cu.phone AS client_phone,
       swu.name AS employee_name
@@ -110,7 +114,8 @@ async function detail(ctx) {
   // 1. 服务单（scope 校验：限本门店）
   const orders = await pg.query(`
     SELECT so.service_order_id, so.status, so.service_date, so.market_name, so.store_id,
-           so.commission_status, so.client_user_id, so.assigned_employee_id, so.completed_at,
+           COALESCE(so.commission_status::text, '待分配') AS commission_status,
+           so.client_user_id, so.assigned_employee_id, so.completed_at,
            cu.name AS customer_name,
            swu.name AS employee_name
     FROM service_orders so
@@ -275,7 +280,9 @@ async function save(ctx) {
   if (order.status !== '已完成') {
     throw new Error('INVALID_STATE: 仅已完成服务单可分配提成')
   }
-  if (!['待分配', '已分配'].includes(order.commission_status)) {
+  // commission_status 无 DB default，建单初值为 NULL；NULL ≡「待分配」（尚未产生分配结果）。
+  // 历史上 admin 代确认因 CAS 漏 IS NULL 会把已完成单留在 NULL，这里必须放行，否则店长无法调整提成。
+  if (order.commission_status != null && !['待分配', '已分配'].includes(order.commission_status)) {
     throw new Error('INVALID_STATE: 服务单提成状态异常')
   }
   // 完成超 FREEZE_DAYS 天后冻结分配结果（含清空场景；admin 后台不受此限）
@@ -309,8 +316,9 @@ async function save(ctx) {
            AND is_void = false`,
         [serviceOrderId]
       )
+      // CAS 守卫：NULL（建单初值，见 save 开头注释）视同「待分配」一并放行，挡其它脏态
       const upd = await client.query(
-        "UPDATE service_orders SET commission_status = '待分配', updated_at = NOW() WHERE service_order_id = $1 AND commission_status IN ('待分配', '已分配')",
+        "UPDATE service_orders SET commission_status = '待分配', updated_at = NOW() WHERE service_order_id = $1 AND (commission_status IS NULL OR commission_status IN ('待分配', '已分配'))",
         [serviceOrderId]
       )
       if (upd.rowCount === 0) {
@@ -439,8 +447,9 @@ async function save(ctx) {
       )
     }
 
+    // CAS 守卫：同上，NULL（建单初值）视同「待分配」一并放行
     const upd = await client.query(
-      "UPDATE service_orders SET commission_status = '已分配', updated_at = $1 WHERE service_order_id = $2 AND commission_status IN ('待分配', '已分配')",
+      "UPDATE service_orders SET commission_status = '已分配', updated_at = $1 WHERE service_order_id = $2 AND (commission_status IS NULL OR commission_status IN ('待分配', '已分配'))",
       [now, serviceOrderId]
     )
     if (upd.rowCount === 0) {

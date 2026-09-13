@@ -6,7 +6,8 @@ import { saleOrders, saleItems, saleOrderPayments, salePaymentItemAllocations } 
 import { clientWechatUsers } from '@db/user'
 import { eq, sql, and, or, inArray, desc, ilike, gte, lt } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
-import type { SaleAllocation, AuthSession } from '@/lib/types'
+import type { SaleAllocation, AuthSession, DateBasis } from '@/lib/types'
+import { paymentAttributionRangeConditions } from '@/lib/performance-attribution'
 import { isAdminScope, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
@@ -269,8 +270,11 @@ export const getPendingPayments = withPermission(
       marketId?: string
       storeId?: string
       search?: string
-      /** 日期筛选口径：默认按下单时间；payment 按当前回款行的发生时间。 */
-      dateBasis?: 'order' | 'payment'
+      /**
+       * 日期筛选口径：默认 attribution（当前回款行的业绩归属日期）；
+       * payment 按当前回款行的发生时间；order 按下单时间。
+       */
+      dateBasis?: DateBasis
       dateFrom?: string
       dateTo?: string
     } = {},
@@ -298,9 +302,26 @@ export const getPendingPayments = withPermission(
     const offset = (page - 1) * pageSize
 
     const scopeIds = session.permissions.scopeStoreIds
-    const dateColumn = params.dateBasis === 'payment'
-      ? saleOrderPayments.paidAt
-      : saleOrders.saleOrderDatetime
+    // 缺省口径与 URL 解析（parseDateBasis）保持一致，避免「页面默认归属、直调默认下单」的双口径
+    const dateBasis: DateBasis = params.dateBasis ?? 'attribution'
+    const dateRangeConditions = (() => {
+      // 默认口径「款项业绩归属日期」是 date 表达式，走闭区间比较。
+      if (dateBasis === 'attribution') {
+        return paymentAttributionRangeConditions(params.dateFrom, params.dateTo)
+      }
+      // 另两个口径是 timestamptz，走北京半开区间。dateColumn 只在这条分支里有意义，
+      // 故意留在块内：提到外面算的话，attribution 下它会静默取到 saleOrderDatetime，
+      // 日后简化这段（或给 dateColumn 加排序等新用途）会让默认口径退化成下单日期筛选。
+      const dateColumn = dateBasis === 'payment'
+        ? saleOrderPayments.paidAt
+        : saleOrders.saleOrderDatetime
+      return [
+        params.dateFrom
+          ? gte(dateColumn, beijingBoundaryTs(params.dateFrom, '00:00:00'))
+          : undefined,
+        params.dateTo ? lt(dateColumn, beijingNextDayBoundaryTs(params.dateTo)) : undefined,
+      ]
+    })()
     const conds = [
       params.allocationStatus
         ? eq(saleOrderPayments.allocationStatus, params.allocationStatus)
@@ -335,10 +356,7 @@ export const getPendingPayments = withPermission(
         : inArray(saleOrders.storeId, scopeIds.length > 0 ? scopeIds : ['__none__']),
       params.marketId ? storeInMarketCondition(saleOrders.storeId, params.marketId) : undefined,
       params.storeId ? eq(saleOrders.storeId, params.storeId) : undefined,
-      params.dateFrom
-        ? gte(dateColumn, beijingBoundaryTs(params.dateFrom, '00:00:00'))
-        : undefined,
-      params.dateTo ? lt(dateColumn, beijingNextDayBoundaryTs(params.dateTo)) : undefined,
+      ...dateRangeConditions,
       params.search
         ? or(
             ilike(saleOrders.customerName, `%${params.search}%`),

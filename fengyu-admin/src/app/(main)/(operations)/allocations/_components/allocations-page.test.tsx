@@ -56,6 +56,21 @@ describe('AllocationsPageClient — 日期口径', () => {
     expect(mockSetMany).toHaveBeenCalledWith({ dateBasis: 'payment', page: '' })
   })
 
+  it('销售提成日期口径默认款项归属日期，默认值不写进 URL', async () => {
+    const user = userEvent.setup()
+    render(<AllocationsPageClient {...commonProps} tab="sale" />)
+
+    const combobox = screen.getByRole('combobox', { name: '日期口径' })
+    expect(combobox).toHaveValue('attribution')
+    expect(screen.getByLabelText('款项归属开始日期')).toBeInTheDocument()
+    expect(screen.getByLabelText('款项归属结束日期')).toBeInTheDocument()
+
+    await user.selectOptions(combobox, 'order')
+    expect(mockSetMany).toHaveBeenCalledWith({ dateBasis: 'order', page: '' })
+    await user.selectOptions(combobox, 'attribution')
+    expect(mockSetMany).toHaveBeenCalledWith({ dateBasis: '', page: '' })
+  })
+
   it('服务提成不显示款项日期口径并保留服务日期标签', () => {
     render(<AllocationsPageClient {...commonProps} tab="service" />)
 

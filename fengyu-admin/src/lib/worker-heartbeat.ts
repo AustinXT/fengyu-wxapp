@@ -1,4 +1,5 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 export type WorkerName = 'cron-worker' | 'export-worker'
@@ -27,7 +28,11 @@ export async function writeWorkerHeartbeat(
   const dir = runtimeStatusDir()
   await mkdir(dir, { recursive: true, mode: 0o700 })
   const target = heartbeatPath(worker)
-  const temp = `${target}.${process.pid}.tmp`
+  // 临时名必须带随机量：只带 pid 时，同进程并发的两次心跳会共用同一个 temp，
+  // 先完成的 rename 把它移走，后一个直接 ENOENT。cron-worker 启动时正好会并发写两次
+  // （空闲心跳 + 备份 tick 的 busy 心跳），2026-09-12 因此 crash-loop 触发了发布回滚。
+  // 与 database-backup.ts 的 atomicJson 同一套命名规则。
+  const temp = `${target}.${process.pid}.${randomUUID()}.tmp`
   const heartbeat: WorkerHeartbeat = {
     worker,
     pid: process.pid,
@@ -35,8 +40,14 @@ export async function writeWorkerHeartbeat(
     state,
     ...(detail ? { detail: detail.slice(0, 120) } : {}),
   }
-  await writeFile(temp, `${JSON.stringify(heartbeat)}\n`, { mode: 0o600 })
-  await rename(temp, target)
+  try {
+    await writeFile(temp, `${JSON.stringify(heartbeat)}\n`, { mode: 0o600 })
+    await rename(temp, target)
+  } catch (error) {
+    // 失败时别把半截 temp 留在卷上，否则日积月累塞满 runtime-status
+    await rm(temp, { force: true }).catch(() => undefined)
+    throw error
+  }
 }
 
 export async function readWorkerHeartbeat(worker: WorkerName): Promise<WorkerHeartbeat | null> {

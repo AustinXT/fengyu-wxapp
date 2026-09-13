@@ -959,31 +959,78 @@ async function storeRanking(ctx) {
 
 /**
  * 拼接 producer_employees CTE 头部（所有 metric 共享）。
- * @param {{sql: string, params: any[]}} storeFilter buildStoreFilter('sw', startIdx) 的结果
+ *
+ * ★ 2026-09-03 放宽：候选池不再要求 `store_id ∈ 在营门店`，改为「门店员工 ∪ 直挂组织节点员工」。
+ *   缘由：品项公司的品项老师、各市场养生部的养生师 store_id 为空（直挂市场/部门节点），
+ *   实耗归属改按服务提成分配后他们能拿到分配额，却被旧候选池整体挡在榜外
+ *   （2026-09 生产实测 22 人 / 约 2.6 万元落榜）。
+ *
+ * 三段口径：
+ *   1. store_id 兜底 —— 档案 store_id 为空但直挂的是**门店**节点时，反查该门店（修 1 例档案缺失）；
+ *   2. 展示名兜底 —— store_name 为空时显示直挂节点名（如「品项公司」「养生部」），不留空白列；
+ *   3. 可见性锚 —— 无门店员工按其**所属市场**判断可见性：直挂节点自身是市场则取自身，
+ *      否则取父节点（部门→市场，org 树最多一层）。品项公司是总部直属市场节点、其下无门店，
+ *      故只有总部 scope 能看到；养生部锚到南昌凤御，该市场管理层可见。
+ *
+ * @param {{sql: string, params: any[]}} storeFilter buildStoreFilter('pb', startIdx) 的结果
+ * @param {{sql: string}} orgScope buildOrgAnchorScope(visibleStoreIds, startIdx) 的结果（无门店员工分支）
  */
-function producerEmployeesCte(storeFilter) {
-  return `WITH producer_employees AS (
+function producerEmployeesCte(storeFilter, orgScope) {
+  return `WITH producer_base AS (
   SELECT
     sw.employee_id,
-    sw.name        AS employee_name,
-    sw.store_id,
-    s.store_name
+    sw.name                                              AS employee_name,
+    COALESCE(sw.store_id, ds.store_id)                   AS store_id,
+    COALESCE(s.store_name, ds.store_name, o.name)        AS store_name,
+    CASE WHEN o.type = '市场' THEN o.id
+         WHEN op.type = '市场' THEN op.id
+         ELSE NULL END                                   AS anchor_market_id
   FROM staff_wechat_users sw
-  LEFT JOIN stores s ON s.store_id = sw.store_id
+  LEFT JOIN stores s     ON s.store_id     = sw.store_id
+  LEFT JOIN org_nodes o  ON o.id           = sw.org_node_id
+  LEFT JOIN org_nodes op ON op.id          = o.parent_id
+  LEFT JOIN stores ds    ON ds.org_node_id = sw.org_node_id
   WHERE sw.hired_at IS NOT NULL
     AND sw.hired_at::date <= NOW()::date
     AND (sw.resigned_at IS NULL OR sw.resigned_at::date > NOW()::date)
-    AND ${storeFilter.sql}
+),
+producer_employees AS (
+  SELECT pb.employee_id, pb.employee_name, pb.store_id, pb.store_name
+  FROM producer_base pb
+  WHERE (pb.store_id IS NOT NULL AND ${storeFilter.sql})
+     OR (pb.store_id IS NULL AND ${orgScope.sql})
 )`
+}
+
+/**
+ * 无门店员工（直挂组织节点）的可见性片段，与 buildStoreFilter 配对使用。
+ * 总部（visibleStoreIds=null）全可见；其余按「锚定市场下是否有本账号可见门店」判定。
+ * @param {string[]|null} visibleStoreIds null=总部不过滤；[]=空集
+ * @param {number} startIdx 复用 buildStoreFilter 的同一个 $n（两处引用同一份门店 ID 数组）
+ */
+function buildOrgAnchorScope(visibleStoreIds, startIdx) {
+  if (!visibleStoreIds) return { sql: 'TRUE' }
+  if (visibleStoreIds.length === 0) return { sql: 'FALSE' }
+  return {
+    sql: `EXISTS (
+      SELECT 1
+      FROM stores vs
+      JOIN org_nodes vn ON vs.org_node_id = vn.id
+      WHERE vn.type = '门店'
+        AND vn.is_active = TRUE
+        AND vn.parent_id = pb.anchor_market_id
+        AND vs.store_id = ANY($${startIdx}::text[])
+    )`,
+  }
 }
 
 const STAFF_ORDER_BY = `ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC`
 
 /* ----- 6 个员工排行榜 metric 子查询 ----- */
 
-async function staffRankingRevenue(period, storeFilter) {
+async function staffRankingRevenue(period, storeFilter, orgScope) {
   return pg.query(
-    `${producerEmployeesCte(storeFilter)},
+    `${producerEmployeesCte(storeFilter, orgScope)},
 revenue_by_emp AS (
   SELECT
     spia.employee_id,
@@ -1012,20 +1059,39 @@ ${STAFF_ORDER_BY}`,
   )
 }
 
-async function staffRankingConsume(period, storeFilter) {
+/**
+ * 实耗排名（2026-09-03 起改按服务提成分配归属，与「营业额分配-服务提成」导出同源）
+ *
+ * 旧口径（已废弃）：SUM(service_items.unit_real_price × session_used) 归 service_items.employee_id。
+ *   service_items.employee_id 是开单时选定的负责美容师，全仓无任何路径可修改；门店事后用
+ *   「营业额分配」改提成归属时改不动它，导致实耗长期记在没拿这单提成的人头上
+ *   （2026-09 生产实测：103 项 / 7.7 万元错位，占当月实耗 23%）。
+ *
+ * 新口径：SUM(unit_real_price × session_used × service_commissions.allocation_ratio)
+ *   归 service_commissions.employee_id ∩ is_void = FALSE。与 staff.js performanceDetail
+ *   个人绩效页（早已按 service_commissions 归属）、admin 服务提成导出三处同源。
+ *
+ * ⚠️ 所有 role_type 各算一份（2026-09-03 用户拍板，不做角色去重）：同一项目同时挂
+ *   美容师 + 品项老师时两人各按自己的 allocation_ratio 全额计入，故**员工榜合计会大于
+ *   门店实耗**（2026-09 实测高约 25%）。这是刻意选择——品项老师的工作量要能上榜；
+ *   门店榜 / 大卡实耗（rankingConsume / queryConsume）仍走 service_items 原口径，不受影响。
+ */
+async function staffRankingConsume(period, storeFilter, orgScope) {
   return pg.query(
-    `${producerEmployeesCte(storeFilter)},
+    `${producerEmployeesCte(storeFilter, orgScope)},
 consume_by_emp AS (
   SELECT
-    sit.employee_id,
-    COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
-  FROM service_items sit
+    sc.employee_id,
+    COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used * sc.allocation_ratio), 0) AS v
+  FROM service_commissions sc
+  JOIN service_items sit ON sit.service_item_id = sc.service_item_id
   JOIN service_orders so2 ON so2.service_order_id = sit.service_order_id
   JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
-  WHERE so2.status = '已完成'
+  WHERE sc.is_void = FALSE
+    AND so2.status = '已完成'
     AND ${timeWindowPeriod('so2.service_date', period, true)}
     AND ${excludeDepositRefundSql('so2')}
-  GROUP BY sit.employee_id
+  GROUP BY sc.employee_id
 )
 SELECT
   pe.employee_id,
@@ -1048,9 +1114,9 @@ ${STAFF_ORDER_BY}`,
  * 归属字段：client_wechat_users.bound_employee_id（绑定美容师）
  * bound_employee_id IS NULL 的新会员不归属任何员工（"无归属新会员"由监控关注，本接口不展示）
  */
-async function staffRankingNewMember(period, storeFilter) {
+async function staffRankingNewMember(period, storeFilter, orgScope) {
   return pg.query(
-    `${producerEmployeesCte(storeFilter)},
+    `${producerEmployeesCte(storeFilter, orgScope)},
 new_member_by_emp AS (
   SELECT
     c.bound_employee_id AS employee_id,
@@ -1075,19 +1141,25 @@ ${STAFF_ORDER_BY}`,
   )
 }
 
-async function staffRankingFootfall(period, storeFilter) {
+/**
+ * 客流排名（2026-09-03 起归属改 service_commissions，口径依据见 staffRankingConsume 头注释）
+ * COUNT(DISTINCT client_user_id) 天然对同一顾客去重，多角色不会重复计人。
+ */
+async function staffRankingFootfall(period, storeFilter, orgScope) {
   return pg.query(
-    `${producerEmployeesCte(storeFilter)},
+    `${producerEmployeesCte(storeFilter, orgScope)},
 footfall_by_emp AS (
   SELECT
-    sit.employee_id,
+    sc.employee_id,
     COUNT(DISTINCT so2.client_user_id) AS v
-  FROM service_items sit
+  FROM service_commissions sc
+  JOIN service_items sit ON sit.service_item_id = sc.service_item_id
   JOIN service_orders so2 ON so2.service_order_id = sit.service_order_id
-  WHERE so2.status = '已完成'
+  WHERE sc.is_void = FALSE
+    AND so2.status = '已完成'
     AND so2.client_user_id IS NOT NULL
     AND ${timeWindowPeriod('so2.service_date', period, true)}
-  GROUP BY sit.employee_id
+  GROUP BY sc.employee_id
 )
 SELECT
   pe.employee_id,
@@ -1103,20 +1175,32 @@ ${STAFF_ORDER_BY}`,
   )
 }
 
-async function staffRankingProjectCount(period, storeFilter) {
+/**
+ * 项目数排名（2026-09-03 起归属改 service_commissions，口径依据见 staffRankingConsume 头注释）
+ *
+ * 次数是计数指标，不按 allocation_ratio 拆分（不存在 0.5 次项目）：被分配到的员工各记完整次数，
+ * 与「多角色各算一份」一致。内层 DISTINCT 防同一员工在同一项目挂多个 role_type 时重复累加
+ * （uq_svc_comm_item_emp_role 允许该组合，当前生产为 0 例）。
+ */
+async function staffRankingProjectCount(period, storeFilter, orgScope) {
   return pg.query(
-    `${producerEmployeesCte(storeFilter)},
+    `${producerEmployeesCte(storeFilter, orgScope)},
 project_by_emp AS (
   SELECT
-    sit.employee_id,
-    COALESCE(SUM(sit.session_used), 0) AS v
-  FROM service_items sit
-  JOIN service_orders so2 ON so2.service_order_id = sit.service_order_id
-  WHERE so2.status = '已完成'
-    AND sit.sales_category IN ('自销自耗','他销自耗')
-    AND ${timeWindowPeriod('so2.service_date', period, true)}
-    AND ${excludeDepositRefundSql('so2')}
-  GROUP BY sit.employee_id
+    employee_id,
+    COALESCE(SUM(session_used), 0) AS v
+  FROM (
+    SELECT DISTINCT sc.employee_id, sit.service_item_id, sit.session_used
+    FROM service_commissions sc
+    JOIN service_items sit ON sit.service_item_id = sc.service_item_id
+    JOIN service_orders so2 ON so2.service_order_id = sit.service_order_id
+    WHERE sc.is_void = FALSE
+      AND so2.status = '已完成'
+      AND sit.sales_category IN ('自销自耗','他销自耗')
+      AND ${timeWindowPeriod('so2.service_date', period, true)}
+      AND ${excludeDepositRefundSql('so2')}
+  ) t
+  GROUP BY employee_id
 )
 SELECT
   pe.employee_id,
@@ -1139,9 +1223,9 @@ ${STAFF_ORDER_BY}`,
  *   - 与 querySalesCommissionIncome / staff.js performanceDetail 三处自洽
  * is_void=FALSE，不按 role_type 白名单截断
  */
-async function staffRankingIncome(period, storeFilter) {
+async function staffRankingIncome(period, storeFilter, orgScope) {
   return pg.query(
-    `${producerEmployeesCte(storeFilter)},
+    `${producerEmployeesCte(storeFilter, orgScope)},
 sales_comm AS (
   SELECT
     spia.employee_id,
@@ -1212,10 +1296,13 @@ async function staffRanking(ctx) {
 
   const visibleStoreIds = getVisibleStoreIds(ctx.auth)
   // 注意：员工查询 store filter 别名是 sw（staff_wechat_users）
-  const storeFilter = buildStoreFilter(visibleStoreIds, 'sw', 1)
+  // 候选池别名改 pb（producer_base）：门店员工走 storeFilter，直挂组织节点员工走 orgScope，
+  // 两者共用同一个 $1 门店 ID 数组，故 orgScope 不再追加 params。
+  const storeFilter = buildStoreFilter(visibleStoreIds, 'pb', 1)
+  const orgScope = buildOrgAnchorScope(visibleStoreIds, 1)
 
   const t0 = Date.now()
-  const rawRows = await STAFF_METRIC_DISPATCH[metric](period, storeFilter)
+  const rawRows = await STAFF_METRIC_DISPATCH[metric](period, storeFilter, orgScope)
   const elapsed = Date.now() - t0
 
   const unit = (metric === 'revenue' || metric === 'consume' || metric === 'income') ? 'amount' : 'count'

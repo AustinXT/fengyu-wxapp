@@ -20,6 +20,7 @@ import { hasPendingRefund } from '@/lib/refund-cascade'
 import { revalidatePath } from 'next/cache'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { INVENTORY_LINKAGE_ENABLED } from '@/lib/inventory-feature-flags'
+import { computeAvailableByLot } from '@/lib/inventory/lot-availability'
 
 export interface AdminPickupRecord {
   id: number
@@ -238,7 +239,7 @@ async function createPickupInventoryDoc(
   }> = []
   // 固定锁顺序，避免两个不同销售商品包含相同库存 SKU 时形成交叉死锁。
   for (const requirement of data.requirements) {
-    const lotRows = (await tx.execute(sql`
+    const rawLotRows = (await tx.execute(sql`
       SELECT lot.id, lot.location_id, lot.sku_id, lot.sku_name, lot.spec_name,
              lot.supplier, lot.product_series, lot.batch_no, lot.expiry_date,
              lot.is_gift, lot.quantity_on_hand
@@ -248,7 +249,10 @@ async function createPickupInventoryDoc(
          AND lot.quantity_on_hand > 0
     ORDER BY lot.expiry_date NULLS LAST, lot.id
        FOR UPDATE
-    `)) as unknown as LotRow[]
+    `)) as unknown as Array<Omit<LotRow, 'id'> & { id: number | string }>
+    // tx.execute 走原生 SQL 不经 drizzle 列映射：lot.id 是 bigint(int8)，postgres.js 原样返回 string。
+    // 在入口一次性归一为 number，否则下游 Map key（number vs string）混用会让已预留量被静默忽略。
+    const lotRows: LotRow[] = rawLotRows.map((row) => ({ ...row, id: Number(row.id) }))
     const lotIds = lotRows.map((row) => row.id)
     const reservationRows = lotIds.length === 0
       ? []
@@ -259,11 +263,8 @@ async function createPickupInventoryDoc(
            WHERE lot_id = ANY(${lotIds}::bigint[])
              AND status = '已预留'
         GROUP BY lot_id
-        `)) as unknown as Array<{ lot_id: number; quantity: string | number }>
-    const reservedByLot = new Map(reservationRows.map((row) => [Number(row.lot_id), Number(row.quantity)]))
-    const availableByLot = new Map(
-      lotRows.map((row) => [row.id, Math.max(0, Number(row.quantity_on_hand) - (reservedByLot.get(row.id) ?? 0))]),
-    )
+        `)) as unknown as Array<{ lot_id: number | string; quantity: string | number }>
+    const availableByLot = computeAvailableByLot(lotRows, reservationRows)
     const available = [...availableByLot.values()].reduce((acc, quantity) => acc + quantity, 0)
     if (available < requirement.quantity) {
       throw new ApiError(
@@ -310,8 +311,8 @@ async function createPickupInventoryDoc(
         ${deduct}, ${before}, ${data.remark?.trim() || null}
       )
       RETURNING id
-      `)) as unknown as Array<{ id: number }>
-      const docItemId = inserted[0].id
+      `)) as unknown as Array<{ id: number | string }>
+      const docItemId = Number(inserted[0].id)
       await tx.execute(sql`
       INSERT INTO inventory_movements (
         movement_key, lot_id, location_id, sku_id, doc_id, doc_item_id,

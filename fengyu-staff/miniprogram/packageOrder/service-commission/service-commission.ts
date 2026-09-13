@@ -40,7 +40,8 @@ interface OrderInfo {
   status: string;
   service_date: string;
   market_name: string;
-  commission_status: string;
+  // 历史数据可能为 null（建单初值无 DB default）；云函数已 COALESCE 成「待分配」
+  commission_status: string | null;
   customer_name: string | null;
   employee_name: string | null;
   frozen?: boolean; // 完成超 3 天冻结

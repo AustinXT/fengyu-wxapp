@@ -2707,7 +2707,25 @@ async function updatePerformanceAttribution(ctx) {
         saleOrderId,
       ],
     )
-    const syncedPaymentIds = syncedCardRes.rows.map((row) => row.id)
+    // 首次支付流水的归属日期恒等于订单级（迁移 0039 起该列不再留 NULL）。
+    // 必须排在卡流水同步**之后**：首次支付行的 BEFORE UPDATE trigger 会反向同步同次卡流水，
+    // 若与卡流水在同一条语句里更新，PG 会报「tuple already modified by an operation
+    // triggered by the current command」。
+    // 调整机会标记（adjusted_at/by）仍只记在 sale_orders 上：首次支付行不可被单独修改。
+    // 与 admin orders.ts updatePerformanceAttributionDate 同语义独立副本，改一端必同步另一端。
+    const syncedFirstRes = await client.query(
+      `UPDATE sale_order_payments first_payment
+       SET performance_attribution_date = $1::date
+       WHERE first_payment.sale_order_id = $2
+         AND first_payment.change_type = '首次支付'
+         AND first_payment.performance_attribution_date IS DISTINCT FROM $1::date
+       RETURNING first_payment.id`,
+      [updated.performance_attribution_date, saleOrderId],
+    )
+    // node-pg 对 int8(OID 20) 不做转换、原样返回 string。admin orders.ts 的同语义副本已显式
+    // Number()，这里不归一会让 operation_logs 里 staff 写 ["12","34"]、admin 写 [12,34]，
+    // 后续按 id 对账/去重的脚本两端行为不一致。
+    const syncedPaymentIds = [...syncedCardRes.rows, ...syncedFirstRes.rows].map((row) => Number(row.id))
 
     await logUpdate(
       client,

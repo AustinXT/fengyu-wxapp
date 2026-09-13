@@ -11,6 +11,8 @@
  *   1. 业绩(员工) = SUM(sale_payment_item_allocations.allocated_amount) 归 employee_id
  *   2. 不按 role_type 白名单截断 ∩ is_void = FALSE
  *   3. 实耗 = unit_real_price * session_used ∩ status='已完成'
+ *      3b. 员工维度归属 = service_commissions.employee_id ∩ is_void=FALSE，实耗乘 allocation_ratio
+ *          （2026-09-03 变更；门店榜/大卡仍走 service_items.employee_id）
  *   4. 收入 服务部分 = service_commissions.commission_amount
  *   5. 新会员 = became_member_at 归 bound_employee_id
  *   6. 项目数 = session_used ∩ sales_category IN ('自销自耗','他销自耗')
@@ -112,6 +114,50 @@ describe('数据中心人效板块两端口径一致性守护', () => {
     })
   })
 
+  /**
+   * 2026-09-03 口径变更守护：员工维度的实耗 / 项目数 / 客流(客量) 归属改
+   * service_commissions.employee_id（is_void=FALSE），实耗额外乘 allocation_ratio。
+   * 变更缘由：service_items.employee_id 开单后不可修改，门店改「营业额分配-服务提成」
+   * 纠正归属时改不动它 → 实耗长期记在没拿这单提成的人头上。
+   * 门店榜 / 全局大卡实耗仍走 service_items，不在本守护范围。
+   */
+  describe('员工归属 = service_commissions.employee_id（2026-09-03 起）', () => {
+    it('admin efficiency.ts 员工实耗按 allocation_ratio 归 sc.employee_id', () => {
+      expect(adminBody).toMatch(
+        /SUM\(\s*sit\.unit_real_price::numeric\s*\*\s*sit\.session_used\s*\*\s*sc\.allocation_ratio\s*\)/i,
+      )
+      expect(adminBody).toMatch(/GROUP BY\s+sc\.employee_id/i)
+      expect(adminBody).toMatch(/FROM\s+service_commissions\s+sc\s+JOIN\s+service_items\s+sit\s+ON\s+sit\.service_item_id\s*=\s*sc\.service_item_id/i)
+    })
+    it('staff mgmt-dashboard.js 员工实耗按 allocation_ratio 归 sc.employee_id', () => {
+      expect(staffBody).toMatch(
+        /SUM\(\s*sit\.unit_real_price::numeric\s*\*\s*sit\.session_used\s*\*\s*sc\.allocation_ratio\s*\)/i,
+      )
+      expect(staffBody).toMatch(/GROUP BY\s+sc\.employee_id/i)
+      expect(staffBody).toMatch(/FROM\s+service_commissions\s+sc\s+JOIN\s+service_items\s+sit\s+ON\s+sit\.service_item_id\s*=\s*sc\.service_item_id/i)
+    })
+    it('两端员工实耗/项目数不再挂 service_items.employee_id（旧口径已废弃）', () => {
+      // 员工榜 CTE 名 consume_by_emp / project_by_emp / consume_by_emp_cat 内不得再出现
+      // GROUP BY sit.employee_id（门店榜按 store_id 聚合，不受影响）。
+      expect(adminBody).not.toMatch(/consume_by_emp[a-z_]*\s+AS\s*\([^)]*GROUP BY\s+sit\.employee_id/i)
+      expect(adminBody).not.toMatch(/project_by_emp\s+AS\s*\([^)]*GROUP BY\s+sit\.employee_id/i)
+      expect(staffBody).not.toMatch(/consume_by_emp\s+AS\s*\([^)]*GROUP BY\s+sit\.employee_id/i)
+      expect(staffBody).not.toMatch(/project_by_emp\s+AS\s*\([^)]*GROUP BY\s+sit\.employee_id/i)
+    })
+    it('项目数为计数指标：不乘 allocation_ratio，用 DISTINCT 防同员工多角色重复累加', () => {
+      expect(adminBody).toMatch(/SELECT DISTINCT\s+sc\.employee_id\s*,\s*sit\.service_item_id\s*,\s*sit\.session_used/i)
+      expect(staffBody).toMatch(/SELECT DISTINCT\s+sc\.employee_id\s*,\s*sit\.service_item_id\s*,\s*sit\.session_used/i)
+      expect(adminBody).not.toMatch(/SUM\(\s*sit\.session_used\s*\*\s*sc\.allocation_ratio\s*\)/i)
+      expect(staffBody).not.toMatch(/SUM\(\s*sit\.session_used\s*\*\s*sc\.allocation_ratio\s*\)/i)
+    })
+    it('所有 role_type 各算一份 — 员工归属侧不得按角色白名单截断', () => {
+      expect(adminBody).not.toMatch(/sc\.role_type\s+IN\s*\(/i)
+      expect(adminBody).not.toMatch(/sc\.role_type\s*=\s*'美容师'/i)
+      expect(staffBody).not.toMatch(/sc\.role_type\s+IN\s*\(/i)
+      expect(staffBody).not.toMatch(/sc\.role_type\s*=\s*'美容师'/i)
+    })
+  })
+
   describe('收入 服务部分 = service_commissions.commission_amount', () => {
     it('admin efficiency.ts 含 SUM(sc.commission_amount) FROM service_commissions', () => {
       expect(adminBody).toMatch(/SUM\(\s*sc\.commission_amount::numeric\s*\)/i)
@@ -156,6 +202,34 @@ describe('数据中心人效板块两端口径一致性守护', () => {
       expect(staffBody).toMatch(/producer_employees\s+AS\s*\(/i)
       expect(staffBody).toMatch(/sw\.hired_at\s+IS\s+NOT\s+NULL/i)
       expect(staffBody).toMatch(/sw\.resigned_at\s+IS\s+NULL\s+OR\s+sw\.resigned_at::date\s*>/i)
+    })
+    /**
+     * 2026-09-03 放宽：候选池 = 门店员工 ∪ 直挂组织节点员工（store_id 为空的品项老师/养生师）。
+     * 三段兜底必须两端字面镜像，否则同一个人在 staff 榜和 admin 榜的门店名/可见性会不一致。
+     */
+    it('候选池含直挂组织节点员工：store_id / store_name / anchor_market_id 三段兜底（两端镜像）', () => {
+      for (const body of [adminBody, staffBody]) {
+        expect(body).toMatch(/producer_base\s+AS\s*\(/i)
+        // 1. store_id 兜底：直挂门店节点时反查该门店
+        expect(body).toMatch(/COALESCE\(sw\.store_id,\s*ds\.store_id\)/i)
+        expect(body).toMatch(/LEFT JOIN stores ds\s+ON ds\.org_node_id\s*=\s*sw\.org_node_id/i)
+        // 2. 展示名兜底到直挂节点名（不留空白「所属门店」列）
+        expect(body).toMatch(/COALESCE\(s\.store_name,\s*ds\.store_name,\s*o\.name\)/i)
+        // 3. 可见性锚：直挂节点自身是市场则取自身，否则取父节点
+        expect(body).toMatch(/CASE WHEN o\.type\s*=\s*'市场' THEN o\.id/i)
+        expect(body).toMatch(/WHEN op\.type\s*=\s*'市场' THEN op\.id/i)
+        expect(body).toMatch(/AS anchor_market_id/i)
+        // 两分支：有门店走 store scope，无门店走 anchor scope
+        expect(body).toMatch(/pb\.store_id IS NOT NULL AND/i)
+        expect(body).toMatch(/pb\.store_id IS NULL AND/i)
+      }
+    })
+    it('无门店员工的可见性锚定到「市场下的在营门店」（两端镜像）', () => {
+      // staff 端内联 EXISTS；admin 端走 orgAnchorScopeSql（src/lib/data-center/scope-sql.ts，
+      // 由 scope-sql.test.ts 单独守护），此处只校验 admin 确实调用了该 helper。
+      expect(staffBody).toMatch(/vn\.parent_id\s*=\s*pb\.anchor_market_id/i)
+      expect(staffBody).toMatch(/vn\.is_active\s*=\s*TRUE/i)
+      expect(adminBody).toMatch(/orgAnchorScopeSql\(session,\s*scope\)/i)
     })
     it('产能员工不再用 skills 过滤（2026-05-20 起，两端一致）', () => {
       // producer_employees CTE 内不应出现 skills 过滤（员工榜候选池口径）。

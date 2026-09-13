@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ============================================================================
-# sync-prod-to-dev.sh — 用生产库数据覆盖开发库（sqlserver101）
+# sync-prod-to-dev.sh — 用生产库数据覆盖开发/测试库
 #
 # 来源 prod : envs/prod.env  PG_CONNECTION_STRING  → 118.178.196.26:5433
-# 目标 dev  : envs/dev.env   PG_CONNECTION_STRING  → 101.34.242.103:5433（sqlserver101）
+# 目标 dev  : envs/dev.env   PG_CONNECTION_STRING  → 101.34.242.103:5433（2026-09-10 从 47.113.202.7 迁入）
 #
 # 流程：dump prod（排除无 SELECT 权限的外部表如 codex_*）→ yes 二次确认 →
 #       pg_restore --clean --if-exists --no-owner --no-acl 覆盖 dev → 关键表行数校验。

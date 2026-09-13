@@ -11,7 +11,32 @@ import type { EmployeeFilters } from '@/actions/employees'
 import type { PointTransactionFilters } from '@/actions/points'
 import type { CardFilters } from '@/actions/cards'
 import type { CustomerFilters } from '@/actions/customers'
-import type { OrderStatus, SaleOrderType, ServiceOrderStatus } from '@/lib/types'
+import type { DateBasis, OrderStatus, SaleOrderType, ServiceOrderStatus } from '@/lib/types'
+
+/**
+ * 日期口径解析：**缺省即「款项业绩归属日期」**（2026-09-11 需求变更）。
+ *
+ * URL 编码沿用「默认值不入 URL」约定，因此 `attribution` 不写进 searchParams，
+ * `order` / `payment` 必须显式写入。老链接只带 `from`/`to` 不带 `dateBasis` 时，
+ * 口径会随之从下单日期切到归属日期——这正是本次需求要的默认值语义。
+ */
+export function parseDateBasis(raw: string | undefined): DateBasis {
+  return raw === 'order' || raw === 'payment' ? raw : 'attribution'
+}
+
+/**
+ * 日期口径下拉选项（订单管理 / 营业额分配销售提成共用）。
+ * 顺序即 UI 顺序，默认项排第一；`short` 用于拼 DatePicker 的 aria-label。
+ */
+export const DATE_BASIS_FILTER_OPTIONS = [
+  { value: 'attribution', label: '款项归属日期', short: '款项归属' },
+  { value: 'payment', label: '款项发生日期', short: '款项发生' },
+  { value: 'order', label: '下单日期', short: '下单' },
+] as const satisfies ReadonlyArray<{ value: DateBasis; label: string; short: string }>
+
+export function dateBasisShortLabel(basis: DateBasis): string {
+  return DATE_BASIS_FILTER_OPTIONS.find((option) => option.value === basis)?.short ?? '款项归属'
+}
 
 export const ORDER_STATUS_FILTER_OPTIONS = [
   '待支付', '待审批', '已支付', '部分支付', '已完成',
@@ -70,7 +95,7 @@ export function parseOrderFilters(params: Record<string, string | undefined>): O
     storeId: params.store,
     dateFrom: params.from,
     dateTo: params.to,
-    dateBasis: params.dateBasis === 'payment' ? 'payment' : 'order',
+    dateBasis: parseDateBasis(params.dateBasis),
     search: params.q,
     paymentMethod: params.payment,
     hasPrepaidDeduction: params.hasPrepaid === '1',
@@ -104,7 +129,7 @@ export function parseAllocationOrderFilters(params: Record<string, string | unde
     storeId: params.store,
     dateFrom: params.from,
     dateTo: params.to,
-    dateBasis: params.dateBasis === 'payment' ? 'payment' : 'order',
+    dateBasis: parseDateBasis(params.dateBasis),
     search: params.q,
     allocationStatus: params.allocStatus,
     // 只保留参与营业额分配的订单类型（排除寄存单/充值单/内部单）

@@ -79,6 +79,17 @@ describe('serviceCommission.pendingList', () => {
     expect(params).toContain('store-001')
   })
 
+  // 回归守护（2026-09-04）：NULL ≡「待分配」，否则历史 NULL 单在两个状态筛选下都查不到，
+  // 只能从「全部」露出且标签渲染成 "null"。
+  test('筛选与返回按 COALESCE(commission_status, 待分配) 归一', async () => {
+    const ctx = createManagerCtx({ commissionStatus: '待分配' })
+    pg.query.mockResolvedValueOnce([{ service_order_id: 'SO-N', commission_status: '待分配' }])
+    await routes.pendingList(ctx)
+    const sql = pg.query.mock.calls[0][0]
+    expect(sql).toContain("COALESCE(so.commission_status::text, '待分配') = $2")
+    expect(sql).toContain("COALESCE(so.commission_status::text, '待分配') AS commission_status")
+  })
+
   test('非法 commissionStatus 拒绝', async () => {
     const ctx = createManagerCtx({ commissionStatus: '乱填' })
     await expect(routes.pendingList(ctx)).rejects.toThrow(/INVALID_PARAMS.*commissionStatus/)
@@ -284,6 +295,51 @@ describe('serviceCommission.save', () => {
       .mockResolvedValueOnce([{ ...COMPLETED_ORDER, remark: DEPOSIT_REFUND_REMARK }])
       .mockResolvedValueOnce([]) // assertNoPendingRefund
     await expect(routes.save(ctx)).rejects.toThrow(/寄存单退款专用服务单不参与提成分配/)
+  })
+
+  // 回归守护（2026-09-04）：commission_status 无 DB default，建单初值为 NULL；admin 代确认的
+  // CAS 曾漏 IS NULL 导致已完成单状态留 NULL，店长端保存直接报「服务单提成状态异常」。
+  test('commission_status=null 的已完成单允许分配（NULL ≡ 待分配）', async () => {
+    const ctx = createManagerCtx({
+      serviceOrderId: 'SO-1',
+      commissions: [{ serviceItemId: 'si-1', employeeId: 'emp-1', roleType: '美容师', allocationRatio: 1.0 }],
+    })
+    mockOrderAndItems({ ...COMPLETED_ORDER, commission_status: null }, [
+      { service_item_id: 'si-1', session_used: 1, unit_real_price: '700', sales_category: '护理项目', service_fee: '0', session_count: 5, quantity: 1 },
+    ])
+    const captured = mockTxnCapture('0.3000')
+
+    await routes.save(ctx)
+
+    expect(ctx.result.commissionCount).toBe(1)
+    expect(captured).toHaveLength(1)
+  })
+
+  test("commission_status→已分配 的 CAS 放行 NULL 初值", async () => {
+    const ctx = createManagerCtx({
+      serviceOrderId: 'SO-1',
+      commissions: [{ serviceItemId: 'si-1', employeeId: 'emp-1', roleType: '美容师', allocationRatio: 1.0 }],
+    })
+    mockOrderAndItems({ ...COMPLETED_ORDER, commission_status: null }, [
+      { service_item_id: 'si-1', session_used: 1, unit_real_price: '700', sales_category: '护理项目', service_fee: '0', session_count: 5, quantity: 1 },
+    ])
+    const sqls = []
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql) => {
+          sqls.push(sql)
+          if (sql.includes('commission_rate_matrix')) return { rows: [{ commission_rate: '0.3000' }], rowCount: 1 }
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      return await cb(client)
+    })
+
+    await routes.save(ctx)
+
+    const cas = sqls.find(s => s.includes("commission_status = '已分配'"))
+    expect(cas).toContain('commission_status IS NULL')
+    expect(cas).toContain("commission_status IN ('待分配', '已分配')")
   })
 
   test('非已完成服务单拒绝', async () => {

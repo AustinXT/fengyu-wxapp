@@ -474,9 +474,12 @@ export const saleOrderPayments = pgTable(
     /** status 翻 '已支付' 的时间；线下/储值卡与 created_at 一致 */
     paidAt: timestamp("paid_at", { withTimezone: true }),
     /**
-     * 款项业绩归属日期（上海自然日）。首次支付继续跟随 sale_orders 的归属日期；
-     * 同次混合支付的储值卡抵扣跟随首次支付/回款主流水；纯储值卡支付、回款和退款
-     * 在入账时按 paid_at 初始化，并允许一次人工调整。
+     * 款项业绩归属日期（上海自然日）。**迁移 0039 起恒有值**，由
+     * `initialize_payment_performance_attribution_date()` trigger 保证：
+     * 首次支付镜像 sale_orders 的归属日期（不可单独修改，调整机会仍记在订单上）；
+     * 同次混合支付的储值卡抵扣跟随首次支付/回款主流水；其余款项入账时按 paid_at 初始化
+     * 并允许一次人工调整，未入账期间先按 created_at 占位、入账那一刻按 paid_at 重算。
+     * 暂未加 NOT NULL：三端云函数的 INSERT 都不带这一列，先由 trigger 收敛。
      */
     performanceAttributionDate: date("performance_attribution_date"),
     /** 首次人工调整时间；非 NULL 即表示该款项的一次修改机会已使用。 */

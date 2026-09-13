@@ -1686,12 +1686,14 @@ describe('mgmtDashboard.staffRanking', () => {
       await staffRanking(ctx)
 
       const sql = pg.query.mock.calls[0][0]
-      // 产能员工 CTE 保留启用门店条件。
+      // 产能员工 CTE 保留启用门店条件（门店员工分支，2026-09-03 起别名 pb）。
       // 2026-05-20 P0-4 修复：去掉 sw.skills 过滤（漏算 33% 业绩），由 metric SQL 自然过滤
-      expect(sql).toMatch(/resigned_at::date\s*>\s*NOW\(\)::date\)?[\s\S]*?AND\s+\(TRUE\)\s+AND\s+sw\.store_id\s+IN/)
+      expect(sql).toMatch(/pb\.store_id IS NOT NULL AND \(TRUE\) AND pb\.store_id\s+IN/)
       expect(sql).toMatch(/active_node\.is_active\s*=\s*TRUE/)
       expect(sql).not.toMatch(/sw\.skills\s*&&\s*ARRAY/)
-      expect(sql).not.toMatch(/sw\.store_id\s*=\s*ANY/)
+      expect(sql).not.toMatch(/pb\.store_id\s*=\s*ANY/)
+      // 2026-09-03：总部对无门店员工（直挂组织节点）不过滤
+      expect(sql).toMatch(/pb\.store_id IS NULL AND TRUE/)
       expect(pg.query.mock.calls[0][1]).toEqual([])
     })
 
@@ -1704,8 +1706,12 @@ describe('mgmtDashboard.staffRanking', () => {
 
       const sql = pg.query.mock.calls[0][0]
       const params = pg.query.mock.calls[0][1]
-      expect(sql).toMatch(/sw\.store_id\s*=\s*ANY\(\$1::text\[\]\)/)
+      expect(sql).toMatch(/pb\.store_id\s*=\s*ANY\(\$1::text\[\]\)/)
       expect(sql).toMatch(/active_node\.is_active\s*=\s*TRUE/)
+      // 2026-09-03：无门店员工按锚定市场下的可见门店判定，复用同一个 $1（不新增参数）
+      expect(sql).toMatch(/pb\.store_id IS NULL AND\s+EXISTS \(/)
+      expect(sql).toMatch(/vn\.parent_id = pb\.anchor_market_id/)
+      expect(sql).toMatch(/vs\.store_id = ANY\(\$1::text\[\]\)/)
       expect(params).toEqual([['store-001']])
     })
 
@@ -1732,7 +1738,7 @@ describe('mgmtDashboard.staffRanking', () => {
 
       const sql = pg.query.mock.calls[0][0]
       const params = pg.query.mock.calls[0][1]
-      expect(sql).toMatch(/sw\.store_id\s*=\s*ANY\(\$1::text\[\]\)/)
+      expect(sql).toMatch(/pb\.store_id\s*=\s*ANY\(\$1::text\[\]\)/)
       expect(sql).toMatch(/active_node\.is_active\s*=\s*TRUE/)
       expect(params).toEqual([['store-001', 'store-002']])
     })
@@ -1770,9 +1776,17 @@ describe('mgmtDashboard.staffRanking', () => {
         await staffRanking(ctx)
 
         const sql = pg.query.mock.calls[0][0]
-        expect(sql).toMatch(/WITH producer_employees AS/)
+        // 2026-09-03：候选池拆成 producer_base（含直挂组织节点员工）+ producer_employees（scope 过滤）
+        expect(sql).toMatch(/WITH producer_base AS/)
+        expect(sql).toMatch(/producer_employees AS \(/)
         expect(sql).toMatch(/FROM staff_wechat_users sw/)
-        expect(sql).toMatch(/LEFT JOIN stores s ON s\.store_id = sw\.store_id/)
+        expect(sql).toMatch(/LEFT JOIN stores s\s+ON s\.store_id\s+= sw\.store_id/)
+        // store_id / store_name 兜底：直挂门店节点反查门店；展示名兜底到直挂节点名
+        expect(sql).toMatch(/COALESCE\(sw\.store_id, ds\.store_id\)/)
+        expect(sql).toMatch(/COALESCE\(s\.store_name, ds\.store_name, o\.name\)/)
+        // 可见性锚：直挂节点自身是市场则取自身，否则取父节点
+        expect(sql).toMatch(/CASE WHEN o\.type = '市场' THEN o\.id/)
+        expect(sql).toMatch(/WHEN op\.type = '市场' THEN op\.id/)
         expect(sql).toMatch(/sw\.hired_at\s+IS\s+NOT\s+NULL/)
         expect(sql).toMatch(/sw\.hired_at::date\s*<=\s*NOW\(\)::date/)
         expect(sql).toMatch(/sw\.resigned_at\s+IS\s+NULL\s+OR\s+sw\.resigned_at::date\s*>\s*NOW\(\)::date/)
@@ -1839,19 +1853,27 @@ describe('mgmtDashboard.staffRanking', () => {
   })
 
   describe('SQL 形态断言：consume（实耗）', () => {
-    test('FROM service_items sit JOIN service_orders so2 + sale_items si；status=已完成 + service_date period', async () => {
+    // 2026-09-03 口径变更：员工归属从 service_items.employee_id 改 service_commissions.employee_id
+    // （开单时选定的负责美容师事后不可改，门店改「营业额分配-服务提成」纠正归属时改不动它）。
+    // 金额按 allocation_ratio 拆分，与 admin 服务提成导出 / staff.js 个人绩效页三处同源。
+    test('FROM service_commissions sc JOIN service_items sit + service_orders so2 + sale_items si；按 allocation_ratio 归 sc.employee_id', async () => {
       setupDefaultStaffMocks()
       const ctx = makeHqCtx({ period: 'month', metric: 'consume' })
       await staffRanking(ctx)
 
       const sql = pg.query.mock.calls[0][0]
-      expect(sql).toMatch(/FROM service_items sit/)
+      expect(sql).toMatch(/FROM service_commissions sc/)
+      expect(sql).toMatch(/JOIN service_items sit ON sit\.service_item_id = sc\.service_item_id/)
       expect(sql).toMatch(/JOIN service_orders so2/)
       expect(sql).toMatch(/JOIN sale_items si/)
+      expect(sql).toMatch(/sc\.is_void = FALSE/)
       expect(sql).toContain("so2.status = '已完成'")
-      // consume 公式（2026-06 简化）：unit_real_price（已是单次价）× session_used
-      expect(sql).toMatch(/SUM\(sit\.unit_real_price::numeric \* sit\.session_used\)/)
+      // consume 公式：unit_real_price（已是单次价）× session_used × 分配占比
+      expect(sql).toMatch(/SUM\(sit\.unit_real_price::numeric \* sit\.session_used \* sc\.allocation_ratio\)/)
+      expect(sql).toMatch(/GROUP BY sc\.employee_id/)
       expect(sql).toMatch(/so2\.service_date/)
+      // 所有 role_type 各算一份（用户 2026-09-03 拍板），不得按角色白名单截断
+      expect(sql).not.toMatch(/sc\.role_type/)
     })
   })
 
@@ -1879,13 +1901,16 @@ describe('mgmtDashboard.staffRanking', () => {
       await staffRanking(ctx)
 
       const sql = pg.query.mock.calls[0][0]
-      expect(sql).toMatch(/FROM service_items sit/)
+      expect(sql).toMatch(/FROM service_commissions sc/)
+      expect(sql).toMatch(/JOIN service_items sit ON sit\.service_item_id = sc\.service_item_id/)
       expect(sql).toMatch(/JOIN service_orders so2/)
       expect(sql).toMatch(/COUNT\(DISTINCT so2\.client_user_id\)/)
+      expect(sql).toMatch(/sc\.is_void = FALSE/)
       expect(sql).toContain("so2.status = '已完成'")
       expect(sql).toMatch(/so2\.client_user_id\s+IS\s+NOT\s+NULL/)
-      // 按员工分组（service_items.employee_id）
-      expect(sql).toMatch(/GROUP BY sit\.employee_id/)
+      // 2026-09-03：按提成分配对象分组（service_commissions.employee_id），见 consume 段说明。
+      // COUNT(DISTINCT) 天然对同一顾客去重，多角色不重复计人。
+      expect(sql).toMatch(/GROUP BY sc\.employee_id/)
     })
   })
 
@@ -1896,14 +1921,20 @@ describe('mgmtDashboard.staffRanking', () => {
       await staffRanking(ctx)
 
       const sql = pg.query.mock.calls[0][0]
-      expect(sql).toMatch(/FROM service_items sit/)
+      expect(sql).toMatch(/FROM service_commissions sc/)
+      expect(sql).toMatch(/JOIN service_items sit ON sit\.service_item_id = sc\.service_item_id/)
       expect(sql).toMatch(/JOIN service_orders so2/)
-      expect(sql).toMatch(/SUM\(sit\.session_used\)/)
+      expect(sql).toMatch(/sc\.is_void = FALSE/)
+      expect(sql).toMatch(/SUM\(session_used\)/)
       expect(sql).toMatch(/sit\.sales_category\s+IN/)
       expect(sql).toContain('自销自耗')
       expect(sql).toContain('他销自耗')
       expect(sql).toContain("so2.status = '已完成'")
-      expect(sql).toMatch(/GROUP BY sit\.employee_id/)
+      // 2026-09-03：归属改 service_commissions.employee_id（见 consume 段说明）。
+      // 次数是计数指标不乘 allocation_ratio；内层 DISTINCT 防同员工同项目多 role_type 重复累加。
+      expect(sql).toMatch(/SELECT DISTINCT sc\.employee_id, sit\.service_item_id, sit\.session_used/)
+      expect(sql).toMatch(/GROUP BY employee_id/)
+      expect(sql).not.toMatch(/SUM\(sit\.session_used \* sc\.allocation_ratio\)/)
     })
   })
 

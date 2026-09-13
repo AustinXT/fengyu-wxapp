@@ -176,31 +176,71 @@ const orderColumns = mapColumns([
   { header: '备注', width: 24, key: 'remark' },
 ])
 
+/**
+ * 回款明细导出列（一行 = 一笔款项 × 一个商品子项）。
+ *
+ * 前 34 列的表头与顺序**逐字等于** orderColumns，使回款块可直接粘贴到订单明细导出下方
+ * 合成一张表按品项/顾客求和（2026-09-05 需求沟通会决议）。因此：
+ * - 款项专属列一律追加在尾部，**禁止往对齐段中间插列**；
+ * - 对齐段的 5 个金额列必须与 orderColumns 一样走默认 text()（文本单元格），
+ *   改成 numberOrEmpty 会让上下两段单元格类型不同，Excel 求和漏掉一段。
+ * registry-aggregation.test.ts 有列顺序守卫用例，改动 orderColumns 时会一并失败。
+ */
 const paymentColumns = mapColumns([
+  // ── 对齐段：与 orderColumns 逐列同名同序 ──
   { header: '市场', width: 12, key: 'marketName' },
   { header: '门店', width: 16, key: 'storeName' },
   { header: '订单号', width: 22, key: 'saleOrderId' },
-  { header: '订单类型', width: 12, key: 'saleOrderType' },
+  { header: '类型', width: 10, key: 'saleOrderType' },
   { header: '单据类型', width: 10, key: 'documentType' },
-  { header: '订单状态', width: 10, key: 'orderStatus' },
   { header: '顾客', width: 12, key: 'customerName' },
   { header: '顾客手机', width: 14, key: 'clientPhone' },
+  { header: '顾客来源', width: 12, key: 'customerSource' },
+  { header: '推荐人', width: 12, key: 'promoterEmployeeName' },
+  { header: '商品类型', width: 10, key: 'productType' },
+  { header: '品质(一级)', width: 14, key: 'categoryL1' },
+  { header: '品质(二级)', width: 14, key: 'categoryL2' },
+  { header: '商品明细', width: 28, key: 'productName' },
+  { header: '总数量', width: 8, key: 'sessionCount', map: (row) => cellOr(value(row, 'sessionCount'), '—') },
+  { header: '单位', width: 8, key: 'unit' },
+  { header: '可用数量', width: 10, key: 'paidUnusedSessions', map: (row) => cellOr(value(row, 'paidUnusedSessions'), '—') },
+  { header: '订单金额', width: 10, key: 'totalAmount' },
+  { header: '储值卡抵扣', width: 10, key: 'prepaidCardAmount' },
+  { header: '现付', width: 10, key: 'cashAmount' },
+  { header: '实付', width: 10, key: 'received' },
+  { header: '已退', width: 10, key: 'refundedAmount' },
+  { header: '单价', width: 10, key: 'unitRealPrice', map: (row) => numberOrEmpty(row, 'unitRealPrice') },
+  { header: '状态', width: 10, key: 'status' },
+  { header: '支付方式', width: 12, key: 'paymentMethod', map: (row) => paymentMethodMap[String(value(row, 'paymentMethod') ?? '')] ?? text(row, 'paymentMethod') },
+  { header: '是否纳客', width: 8, key: 'isMembershipUpgrade', map: (row) => boolLabel(row, 'isMembershipUpgrade') },
+  { header: '是否活动', width: 8, key: 'isActivity', map: (row) => boolLabel(row, 'isActivity') },
+  { header: '是否体验转换', width: 12, key: 'isExperienceConversion', map: (row) => boolLabel(row, 'isExperienceConversion') },
+  { header: '经营类型', width: 10, key: 'salesCategory' },
+  { header: '顾客类型', width: 10, key: 'customerType', map: (row) => cellOr(value(row, 'customerType'), '未注册') },
+  { header: '开单人', width: 10, key: 'openedByName' },
+  { header: '下单时间', width: 20, key: 'saleOrderDatetime', map: (row) => fmtDateTime(value(row, 'saleOrderDatetime') as string | Date | null) },
+  // 回款行取「款项归属日期」，订单行取订单归属日期：两段粘一起后按这一列 group 即为正确的业绩月份
+  { header: '业绩归属日期', width: 14, key: 'performanceAttributionDate', map: (row) => fmtDate(value(row, 'performanceAttributionDate') as string | Date | null) },
+  // ⚠ 同样是双语义列，但与上一列不同：这一列**不适合**跨两段分组。回款行取
+  // sale_order_payments.created_at（款项建单时间），订单明细行取 sale_orders.created_at
+  // （订单建单时间）；按它统计「当天新建单据」会把回款行错归到款项发生那天。
+  // 表头不能改名——规范要求前 34 列与订单明细导出逐字一致（admin.pr.spec.md §回款明细导出）。
+  { header: '创建时间', width: 20, key: 'createdAt', map: (row) => fmtDateTime(value(row, 'createdAt') as string | Date | null) },
+  { header: '备注', width: 24, key: 'remark' },
+  // ── 款项专属段：只能追加，不能插进上面 ──
   { header: '款项流水号', width: 14, key: 'paymentId', map: (row) => `#${text(row, 'paymentId')}` },
   { header: '款项类型', width: 12, key: 'changeType' },
   { header: '款项状态', width: 10, key: 'paymentStatus' },
-  { header: '金额', width: 12, key: 'amount', map: (row) => numberOrEmpty(row, 'amount') },
-  { header: '支付方式', width: 12, key: 'paymentMethod', map: (row) => paymentMethodMap[String(value(row, 'paymentMethod') ?? '')] ?? text(row, 'paymentMethod') },
+  { header: '款项金额', width: 12, key: 'paymentAmount', map: (row) => numberOrEmpty(row, 'paymentAmount') },
   { header: '来源端', width: 10, key: 'sourceEnd' },
   { header: '操作人', width: 12, key: 'operatorName' },
   { header: '交易号', width: 24, key: 'externalTxnId' },
-  { header: '创建时间', width: 20, key: 'createdAt', map: (row) => fmtDateTime(value(row, 'createdAt') as string | Date | null) },
   { header: '款项发生时间', width: 20, key: 'paidAt', map: (row) => fmtDateTime(value(row, 'paidAt') as string | Date | null) },
-  { header: '归属日期', width: 14, key: 'performanceAttributionDate', map: (row) => fmtDate(value(row, 'performanceAttributionDate') as string | Date | null) },
   { header: '归属状态', width: 12, key: 'performanceAttributionStatus' },
   { header: '归属调整人', width: 12, key: 'performanceAttributionAdjustedByName' },
   { header: '归属调整时间', width: 20, key: 'performanceAttributionAdjustedAt', map: (row) => fmtDateTime(value(row, 'performanceAttributionAdjustedAt') as string | Date | null) },
   { header: '退款原因', width: 28, key: 'refundReason' },
-  { header: '备注', width: 32, key: 'note' },
+  { header: '款项备注', width: 32, key: 'note' },
 ])
 
 const refundColumns = mapColumns([
@@ -266,6 +306,7 @@ const allocationSalesColumns = mapColumns([
   { header: '顾客类型', width: 12, key: 'customerType' },
   { header: '开单人', key: 'openedByName' },
   { header: '支付时间', width: 20, key: 'paidAt', map: (row) => fmtDateTime(value(row, 'paidAt') as string | Date | null) },
+  { header: '回款归属日期', width: 14, key: 'performanceAttributionDate', map: (row) => fmtDate(value(row, 'performanceAttributionDate') as string | Date | null) },
   { header: '备注', width: 20, key: 'remark' },
 ])
 
