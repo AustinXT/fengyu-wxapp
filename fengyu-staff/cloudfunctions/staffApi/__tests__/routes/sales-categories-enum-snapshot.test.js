@@ -19,9 +19,17 @@ const { SALES_CATEGORIES, UNCATEGORIZED } = require('../../utils/sales-categorie
 const REPO = path.resolve(__dirname, '../../../../..')
 const ENUMS_TS = path.join(REPO, 'db/schema/enums.ts')
 
-/** 抽出一组引号字面量，顺序保留 */
+/** 抽出一组引号字面量，顺序保留（用于数组 / 联合类型 / z.enum） */
 const pickLiterals = (text) =>
   (text.match(/['"]([^'"]+)['"]/g) || []).map((s) => s.slice(1, -1))
+
+/**
+ * 抽出对象字面量的键，顺序保留。
+ * 引号可有可无 —— admin `allocations.ts` 写的是 `{ 自销自耗: 0 }`（无引号），
+ * 云函数侧写的是 `{ '自销自耗': 0 }`，用 pickLiterals 会漏掉前者。
+ */
+const pickObjectKeys = (text) =>
+  [...text.matchAll(/['"]?([^\s'",:{}]+)['"]?\s*:/g)].map((m) => m[1])
 
 /**
  * 运行时硬编码副本清单 —— 每一处都是「枚举加值时会漏同步」的真实风险点。
@@ -33,31 +41,50 @@ const COPIES = [
     file: path.join(REPO, 'fengyu-admin/src/lib/types.ts'),
     // 跨行捕获：枚举加值后 prettier 可能把联合类型折行，单行正则会只抓到首行而误报
     pattern: /type\s+SalesCategory\s*=\s*([\s\S]*?)(?:\n\n|\nexport|\ninterface|$)/g,
+    extract: pickLiterals,
   },
   {
     label: 'fengyu-admin schemas.ts — salesCategory z.enum',
     file: path.join(REPO, 'fengyu-admin/src/lib/schemas.ts'),
     pattern: /salesCategory:\s*z\.enum\(\s*\[([^\]]+)\]/g,
+    extract: pickLiterals,
   },
   {
     label: 'fengyu-admin 品项分类页 — SALES_CATEGORY_OPTIONS 下拉',
     file: path.join(REPO, 'fengyu-admin/src/app/(main)/(catalog)/products/categories/_components/categories-page.tsx'),
     pattern: /SALES_CATEGORY_OPTIONS\s*:\s*SalesCategory\[\]\s*=\s*\[([^\]]+)\]/g,
+    extract: pickLiterals,
   },
   {
     label: 'fengyu-admin 提成配置页 — SALES_CATEGORY_OPTIONS 下拉',
     file: path.join(REPO, 'fengyu-admin/src/app/(main)/(organization)/commission/_components/commission-page.tsx'),
     pattern: /SALES_CATEGORY_OPTIONS\s*=\s*\[([^\]]+)\]/g,
+    extract: pickLiterals,
+  },
+  // 以下是提成率骨架：漏同步不会报错，只会让新分类的零值键缺席，静默算不出提成
+  {
+    label: 'fengyu-admin allocations.ts — orderRates 骨架（无引号键）',
+    file: path.join(REPO, 'fengyu-admin/src/actions/allocations.ts'),
+    pattern: /orderRates:\s*\{([^}]+)\}/g,
+    extract: pickObjectKeys,
   },
   {
-    label: 'staffApi allocation.js — orderRates 提成率骨架',
+    label: 'staffApi allocation.js — orderRates / serviceRates 骨架',
     file: path.join(REPO, 'fengyu-staff/cloudfunctions/staffApi/routes/allocation.js'),
-    pattern: /orderRates:\s*\{([^}]+)\}/g,
+    pattern: /(?:orderRates|serviceRates):\s*\{([^}]+)\}/g,
+    extract: pickObjectKeys,
   },
   {
-    label: 'payNotify index.js — orderRates 提成率骨架',
+    label: 'staffApi serviceCommission.js — serviceRates 骨架',
+    file: path.join(REPO, 'fengyu-staff/cloudfunctions/staffApi/routes/serviceCommission.js'),
+    pattern: /serviceRates:\s*\{([^}]+)\}/g,
+    extract: pickObjectKeys,
+  },
+  {
+    label: 'payNotify index.js — orderRates / serviceRates 骨架',
     file: path.join(REPO, 'fengyu-client/cloudfunctions/payNotify/index.js'),
-    pattern: /orderRates:\s*\{([^}]+)\}/g,
+    pattern: /(?:orderRates|serviceRates):\s*\{([^}]+)\}/g,
+    extract: pickObjectKeys,
   },
 ]
 
@@ -86,17 +113,16 @@ describe('sales_category 跨端字面量一致性', () => {
   })
 
   // 以下各端保留独立副本（用户已 veto shared 目录），只能靠本测试守护
-  test.each(COPIES)('$label 与单源一致', ({ file, pattern }) => {
+  test.each(COPIES)('$label 与单源一致', ({ file, pattern, extract }) => {
     const source = fs.readFileSync(file, 'utf8')
     const matches = [...source.matchAll(pattern)]
 
     expect(matches.length, `未能在 ${file} 定位目标声明，格式可能已改写`).toBeGreaterThan(0)
 
     // 校验**每一处**命中而非只看第一处：allocation.js 内部就有 3 份同样的骨架，
-    // 只验第一处会让「改了一处漏了另两处」静默通过；注释里残留的旧声明也会在此响亮失败。
-    // 键值对里的数字不带引号，pickLiterals 只抽到分类名
+    // 只验第一处会让「改了一处漏了另两处」静默通过；注释里残留的旧声明也会在此响亮失败
     matches.forEach((m, i) => {
-      expect(pickLiterals(m[1]), `${file} 第 ${i + 1} 处命中与单源不一致`).toEqual([...SALES_CATEGORIES])
+      expect(extract(m[1]), `${file} 第 ${i + 1} 处命中与单源不一致`).toEqual([...SALES_CATEGORIES])
     })
   })
 })

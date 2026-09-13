@@ -191,6 +191,7 @@ Page({
     if (!staff) return;
     // page 由 loadData(reset=true) 内部归 1，调用方不再各自维护
     // 换员工 = 数据主体变了，先清空旧员工的金额快照再拉数（见 blankSummary）
+    this.clearSubjectCache();
     this.setData({
       showStaffPicker: false,
       selectedStaffIndex: picked,
@@ -227,6 +228,7 @@ Page({
 
     // 换时间段同样是数据主体变化：先清汇总与明细，避免请求在途时
     // 出现「新时段标题 + 旧时段明细」的拼接（与 onStaffConfirm 的清理范围保持一致）
+    this.clearSubjectCache();
     this.setData({ rangeType: type, startDate: start, endDate: end, displayDate: display, items: [], loadFailed: false, ...this.blankSummary() });
     if (fetch) this.loadData(true);
   },
@@ -346,7 +348,9 @@ Page({
       const errorType = (err as { errorType?: string } | null)?.errorType;
       const authError = errorType === 'UNAUTHORIZED' || errorType === 'PERMISSION_DENIED';
       const sameSource = queryKey === this._lastKey;
-      if (reset && (!keepStaleOnError || !sameSource || authError)) {
+      // 鉴权失败必须**独立于 reset/分页模式**清屏：触底分页（reset=false）时权限被撤销，
+      // 若受 reset 限制就只弹个 toast，撤权后的绩效数据继续留在屏幕上
+      if (authError || (reset && (!keepStaleOnError || !sameSource))) {
         this._lastKey = '';
         this._summaryCache = null;
         this.setData({ items: [], total: 0, hasMore: false, loadFailed: true, ...this.blankSummary() });
@@ -361,6 +365,16 @@ Page({
    * 再发请求 —— 否则请求在途期间（慢网络下最长一个 RTT）页面会把 A 的提成标在 B 名下，
    * 请求失败时更会永久停在那个错配状态。筛选切换不用清（汇总恒全量、本就不随筛选变）。
    */
+  /**
+   * 主体变更时失效缓存。**必须与 blankSummary() 同时调用** —— 只清 data 不清缓存的话，
+   * 请求在途期间点一级 Tab 会用 `_summaryCache` 本地重算，把上一个员工/时段的分类提成
+   * 重新显示出来（且挂在新员工姓名下）。
+   */
+  clearSubjectCache() {
+    this._summaryCache = null;
+    this._lastKey = '';
+  },
+
   blankSummary() {
     return {
       // 用 '--' 而非 '0.00'：合法零值无法与「尚未加载 / 加载失败」区分，
