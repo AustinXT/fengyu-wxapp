@@ -289,8 +289,11 @@ Page({
       const employeeId = (isMgr && staffList.length > 0) ? staffList[selectedStaffIndex]?.staffWfId : undefined;
 
       // 查询键：标识「屏幕上这批数据属于谁的哪个时段哪个筛选」。
-      // 失败保留旧数据的前提是旧数据与本次请求同源，否则保留的就是别人/别的条件的数据
-      queryKey = [employeeId || '', this.data.startDate, this.data.endDate, filterType || '', salesCategory || ''].join('|');
+      // 失败保留旧数据的前提是旧数据与本次请求同源，否则保留的就是别人/别的条件的数据。
+      // 员工段回落到本人 staffWfId：店长首屏时 staffList 尚未加载完，employeeId 为 undefined，
+      // 加载完后变成自己的 id —— 数据其实同源，键却漂移，会造成无谓的清屏
+      const keyEmployee = employeeId || app.globalData.staffWfId || '';
+      queryKey = [keyEmployee, this.data.startDate, this.data.endDate, filterType || '', salesCategory || ''].join('|');
 
       const res = await callStaffApi<PerformanceResponse>('staff.performanceDetail', {
         startDate: this.data.startDate,
