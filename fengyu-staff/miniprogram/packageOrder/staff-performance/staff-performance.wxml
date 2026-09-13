@@ -50,10 +50,41 @@
     </view>
   </view>
 
-  <!-- 分类 Tab -->
-  <van-tabs active="{{activeCategoryTab}}" bind:change="onCategoryTabChange" color="#C0322A" line-width="40rpx">
-    <van-tab wx:for="{{categoryOptions}}" wx:key="*this" title="{{item}}" />
+  <!-- 一级 Tab：业务类型（合计 / 销售 / 服务） -->
+  <van-tabs active="{{activeMainTab}}" bind:change="onMainTabChange" color="#C0322A" line-width="40rpx">
+    <van-tab wx:for="{{mainTabs}}" wx:key="*this" title="{{item}}" />
   </van-tabs>
+
+  <!-- 二级：归属分类筛选 + 当前口径下的分类金额（chip 与格子联动，点哪个都等价） -->
+  <view class="perf-category-panel">
+    <view class="perf-chip-row">
+      <view
+        class="perf-chip {{activeSubCategory === '' ? 'perf-chip--active' : ''}}"
+        bindtap="onSubCategoryTap"
+        data-name=""
+      >全部</view>
+      <view
+        wx:for="{{subCategories}}"
+        wx:key="*this"
+        class="perf-chip {{activeSubCategory === item ? 'perf-chip--active' : ''}}"
+        bindtap="onSubCategoryTap"
+        data-name="{{item}}"
+      >{{item}}</view>
+    </view>
+
+    <view class="perf-cell-grid">
+      <view
+        wx:for="{{categoryCells}}"
+        wx:key="name"
+        class="perf-cell {{activeSubCategory === item.name ? 'perf-cell--active' : ''}}"
+        bindtap="onSubCategoryTap"
+        data-name="{{item.name}}"
+      >
+        <text class="perf-cell-name">{{item.name}}</text>
+        <text class="perf-cell-amount">¥{{item.amount}}</text>
+      </view>
+    </view>
+  </view>
 
   <!-- 明细列表 -->
   <view wx:if="{{loading && items.length === 0}}" class="loading-wrap">
@@ -74,9 +105,10 @@
         <text class="perf-item-label">提成</text>
         <text class="perf-item-amount">¥{{item.amount}}</text>
       </view>
+      <!-- 业绩 = 该员工的营业额分配份额，不是订单行总额 -->
       <view wx:if="{{item.type === 'sale'}}" class="perf-item-row">
-        <text class="perf-item-label">业绩</text>
-        <text class="perf-item-value">¥{{item.businessAmount}}</text>
+        <text class="perf-item-label">业绩(我的分配)</text>
+        <text class="perf-item-value">¥{{item.allocAmount}}</text>
       </view>
       <!-- 服务提成双字段拆分：固定手工费 + 消耗提成 -->
       <view wx:if="{{item.type === 'service'}}" class="perf-item-row">
