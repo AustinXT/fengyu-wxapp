@@ -500,13 +500,13 @@ describe('staff.performanceDetail', () => {
 
   // issue #123：salesCategory 只过滤明细，汇总恒全量（4 分类 × {sales, service} = 8 维度总览）
   // 旧实现把过滤写进取数 SQL，导致切二级 chip 后其余维度归零、勾稽断裂
-  const mkAlloc = (cat, commission, allocAmount = '1000') => ({
+  const mkAlloc = (cat, commission, allocAmount = '1000', changeType = '首次支付') => ({
     alloc_amount: allocAmount, commission_amount: commission, commission_rate: '0.1000',
     allocation_ratio: 0.5, department_name: '美容部',
     product_name: `S-${cat}`, sales_category: cat,
     unit_real_price: '2000', received: '2000',
     sale_order_id: `FY-${cat}`, customer_name: 'C1', client_phone: '138',
-    paid_at: '2024-06-10', store_id: 'store-001',
+    paid_at: '2024-06-10', change_type: changeType, store_id: 'store-001',
   })
   const mkSvc = (cat, commission) => ({
     commission_amount: commission, fixed_fee: commission, consume_amount: '0.00',
@@ -664,6 +664,29 @@ describe('staff.performanceDetail', () => {
     expect(sumService.toFixed(2)).toBe(ctx.result.totalServiceCommission.toFixed(2))
     expect((sumSales + sumService).toFixed(2)).toBe(ctx.result.totalCommission.toFixed(2))
     expect(ctx.result.totalCommission).toBe(0.6)
+  })
+
+  test('isRefund 取款项 change_type，不从金额符号推断', async () => {
+    const ctx = createManagerCtx({ startDate: '2024-06-01', endDate: '2024-06-30' })
+
+    pg.query.mockResolvedValueOnce([
+      // 转换单转出行：分配额为负但不是退款 —— 按金额符号推断会误打「退款」标签
+      mkAlloc('自销自耗', '-10', '-100', '首次支付'),
+      // 提成率 0 的真实退款：commission_amount 为 0 —— 按金额符号推断会漏打标签
+      mkAlloc('他销自耗', '0', '-100', '退款'),
+    ])
+    pg.query.mockResolvedValueOnce([mkSvc('他销他耗', '30')])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    const byProduct = Object.fromEntries(ctx.result.items.map(i => [i.productName, i]))
+    expect(byProduct['S-自销自耗'].isRefund).toBe(false)
+    expect(byProduct['S-他销自耗'].isRefund).toBe(true)
+    // 服务侧退款是删除式（is_void 排除），明细中不会出现退款行
+    expect(byProduct['V-他销他耗'].isRefund).toBe(false)
+
+    // SQL 必须把 change_type 取出来
+    expect(pg.query.mock.calls[0][0]).toContain('spe.change_type')
   })
 
   test('alloc SQL 取 spia.allocated_amount 而非旧列 total_amount（明细「业绩」口径守护）', async () => {

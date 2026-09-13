@@ -659,6 +659,9 @@ async function performanceDetail(ctx) {
       o.customer_name,
       o.client_phone,
       spe.performance_date AS paid_at,
+      -- 退款标识取款项类型，不靠金额符号推断：转换单转出行的分配额同样为负，
+      -- 而提成率为 0 的退款行 commission_amount 是 0，两头都会判错
+      spe.change_type,
       o.store_id
     FROM sale_payment_item_allocations spia
     JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
@@ -756,6 +759,7 @@ async function performanceDetail(ctx) {
     commissionRate: Number(r.commission_rate || 0), // 提成率快照
     ratio: Number(r.allocation_ratio),
     businessAmount: Number(r.received), // 整行实收 — 已弃用，仅兼容线上老版本前端（见函数头注释）
+    isRefund: r.change_type === '退款', // 退款冲销行（负数镜像分配），前端据此打标识
     customerName: r.customer_name,
     clientPhone: r.client_phone,
     orderId: r.sale_order_id,
@@ -770,6 +774,8 @@ async function performanceDetail(ctx) {
     specName: null,
     salesCategory: r.sales_category || UNCATEGORIZED,
     roleType: r.role_type,
+    // 服务侧退款是删除式（is_void 置真后直接排除，见函数头注释），故明细中不会出现退款行
+    isRefund: false,
     amount: Number(r.commission_amount),
     fixedFee: Number(r.fixed_fee || 0),
     consumeAmount: Number(r.consume_amount || 0),

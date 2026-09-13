@@ -27,7 +27,7 @@ interface PerformanceItem {
   allocAmount?: number | string;
   /** @deprecated 整行实收，后端仅为兼容老版本保留，新版不再展示 */
   businessAmount?: number | string;
-  /** 退款冲销行（amount < 0）——在 .ts 预算好，wxml 内不做判断 */
+  /** 退款冲销行 —— 后端按款项 `change_type='退款'` 判定，非金额符号推断 */
   isRefund?: boolean;
   // sale 独有
   department?: string;
@@ -91,10 +91,10 @@ Page({
     startDate: '',
     endDate: '',
     displayDate: '',
-    // 汇总数据
-    totalSalesAlloc: '0.00',
-    totalServiceCommission: '0.00',
-    totalCommission: '0.00',
+    // 汇总数据（'--' = 尚未加载；首屏与切换主体期间都走这个态，避免与真实零值混淆）
+    totalSalesAlloc: '--',
+    totalServiceCommission: '--',
+    totalCommission: '--',
     // 一级 Tab：业务类型（合计 / 销售 / 服务）
     activeMainTab: 0,
     mainTabs: ['合计', '销售', '服务'],
@@ -122,6 +122,8 @@ Page({
   _loaded: false,
   /** 请求代次：只有最新一次发起的响应才允许写回 data（见 loadData 并发策略） */
   _seq: 0,
+  /** 页面已卸载：async 回调写回前的存活检查（_seq 只护 loadData） */
+  _disposed: false,
 
   onLoad(options: Record<string, string>) {
     const mgr = isManager();
@@ -132,19 +134,24 @@ Page({
     if (mgr) this.loadStaffList();
     const validRanges: RangeType[] = ['today', 'month', 'lastMonth'];
     const range = validRanges.includes(options.range as RangeType) ? options.range as RangeType : 'today';
-    this.setRange(range);
+    // 只设日期不取数：紧随其后的 onShow 会发起首次请求。
+    // 去掉 loading 早退后，两处各发一次会让每次进页面的云函数调用翻倍，
+    // 且「首次成功 + 第二次失败」时成功结果会被代次判过期丢弃，页面反而落到错误态
+    this.setRange(range, false);
     this._loaded = true;
   },
 
   onShow() {
     if (this._loaded && this.data.startDate) {
-      this.loadData(true);
+      // 同主体的被动刷新：失败保留旧数据（见 loadData 的 keepStaleOnError）
+      this.loadData(true, true);
     }
   },
 
   // 页面销毁后推进代次，丢弃晚到的响应，避免对已卸载页面 setData
   onUnload() {
     this._seq++;
+    this._disposed = true;
   },
 
   async loadStaffList() {
@@ -158,6 +165,7 @@ Page({
         { staffWfId: app.globalData.staffWfId || '', name: self },
         ...list.filter(s => s.staffWfId !== app.globalData.staffWfId),
       ];
+      if (this._disposed) return; // 店长进页面后立刻返回时，别对已销毁页面 setData
       this.setData({ staffList: allStaff, staffColumns: columns });
     } catch (_) {}
   },
@@ -187,7 +195,8 @@ Page({
   },
 
   // ===== 时间范围切换 =====
-  setRange(type: RangeType) {
+  // fetch=false 供 onLoad 使用：只落日期，取数交给紧随的 onShow，避免首屏双发
+  setRange(type: RangeType, fetch = true) {
     const now = new Date();
     let start: string, end: string, display: string;
 
@@ -208,9 +217,10 @@ Page({
       display = `${lastMonth.getFullYear()}年${lastMonth.getMonth() + 1}月`;
     }
 
-    // 换时间段同样是数据主体变化：先清汇总，避免请求在途时旧时段金额顶着新时段标题
-    this.setData({ rangeType: type, startDate: start, endDate: end, displayDate: display, ...this.blankSummary() });
-    this.loadData(true);
+    // 换时间段同样是数据主体变化：先清汇总与明细，避免请求在途时
+    // 出现「新时段标题 + 旧时段明细」的拼接（与 onStaffConfirm 的清理范围保持一致）
+    this.setData({ rangeType: type, startDate: start, endDate: end, displayDate: display, items: [], ...this.blankSummary() });
+    if (fetch) this.loadData(true);
   },
 
   onRangeTap(e: WechatMiniprogram.TouchEvent) {
@@ -240,7 +250,11 @@ Page({
   // 并发策略：**不靠 loading 布尔早退**。筛选靶点有 9 个（3 Tab + 5 chip + 4 格），
   // 早退会静默吞掉后一次点击 —— 选中态已 setData、请求却没发，导致「UI 选中 X / 列表是 Y」
   // 永久不一致且不会自愈。改用请求代次：每次发起自增 _seq，响应回来时不是最新代次就整个丢弃。
-  async loadData(reset: boolean) {
+  //
+  // keepStaleOnError：同主体的被动刷新（onShow）失败时保留旧数据 —— 旧值是「正确主体的
+  // 最后已知值」，抹成 ¥0.00 + 空列表属信息丢失，且页面没有重试入口。只有主体变更
+  // （换员工/换时段）与筛选切换失败才需要清，否则新选中态会挂着旧条件的明细。
+  async loadData(reset: boolean, keepStaleOnError = false) {
     const seq = ++this._seq;
     // page 作为局部量推导：失败时不会像「先 setData 自增」那样留下永久跳页
     const page = reset ? 1 : this.data.page + 1;
@@ -271,8 +285,7 @@ Page({
       const formattedItems = (res.items || []).map((it) => ({
         ...it,
         date: formatDateTimeShort(it.date),
-        // 退款冲销行的提成/分配额是负数，预算成布尔供 wxml 打标识（wxml 内不做判断）
-        isRefund: Number(it.amount) < 0,
+        // isRefund 由后端按款项 change_type 判定，不在此从金额符号推断
         amount: money(it.amount),
         allocAmount: money(it.allocAmount),
         fixedFee: money(it.fixedFee),
@@ -291,16 +304,19 @@ Page({
         items: newItems,
         total,
         page,
-        // 用后端回带的 page 判断，不比累计长度 —— 长度一旦被过期响应污染，比较逻辑会崩
+        // 用本次请求的 page 判断，不比累计长度 —— 长度一旦被过期响应污染，比较逻辑会崩
         hasMore: page * PAGE_SIZE < total,
       });
     } catch (err: unknown) {
       if (seq !== this._seq) return;
       const msg = err instanceof Error ? err.message : '加载失败';
       wx.showToast({ title: msg, icon: 'none' });
-      // 失败时必须连汇总一起清：否则「员工 A 的金额」会挂在已切换到的员工 B 名下，
-      // 或新筛选条件高亮着、下面却挂着上一次条件的明细
-      if (reset) this.setData({ items: [], total: 0, hasMore: false, ...this.blankSummary() });
+      // 主动切换（换员工/换时段/切筛选）失败时必须连汇总一起清：否则「员工 A 的金额」
+      // 会挂在已切换到的员工 B 名下，或新筛选条件高亮着、下面却挂着上一次条件的明细。
+      // 被动刷新（onShow）失败不清 —— 旧值是同一主体的最后已知值，抹掉是信息丢失
+      if (reset && !keepStaleOnError) {
+        this.setData({ items: [], total: 0, hasMore: false, ...this.blankSummary() });
+      }
     } finally {
       if (seq === this._seq) this.setData({ loading: false });
     }
@@ -313,9 +329,11 @@ Page({
    */
   blankSummary() {
     return {
-      totalSalesAlloc: '0.00',
-      totalServiceCommission: '0.00',
-      totalCommission: '0.00',
+      // 用 '--' 而非 '0.00'：合法零值无法与「尚未加载 / 加载失败」区分，
+      // 切到提成非零的员工时那 1~2 秒的 ¥0.00 会被当成真实业绩为零
+      totalSalesAlloc: '--',
+      totalServiceCommission: '--',
+      totalCommission: '--',
       categoryCells: [] as CategoryCell[],
       cellsCaption: '',
       hasCategoryPanel: false,

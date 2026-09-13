@@ -24,10 +24,11 @@
   <!-- 提成汇总卡片 -->
   <view class="perf-summary-card">
     <view class="summary-row">
+      <!-- '--' = 未加载/加载失败，此时连 ¥ 一起隐藏，不伪装成合法零金额 -->
       <view class="summary-item">
         <text class="summary-label">销售提成</text>
         <view class="price-group">
-          <text class="price-symbol">¥</text>
+          <text wx:if="{{totalSalesAlloc !== '--'}}" class="price-symbol">¥</text>
           <text class="price-integer">{{totalSalesAlloc}}</text>
         </view>
       </view>
@@ -35,7 +36,7 @@
       <view class="summary-item">
         <text class="summary-label">服务提成</text>
         <view class="price-group">
-          <text class="price-symbol">¥</text>
+          <text wx:if="{{totalServiceCommission !== '--'}}" class="price-symbol">¥</text>
           <text class="price-integer">{{totalServiceCommission}}</text>
         </view>
       </view>
@@ -43,7 +44,7 @@
       <view class="summary-item summary-item--total">
         <text class="summary-label">合计</text>
         <view class="price-group">
-          <text class="price-symbol">¥</text>
+          <text wx:if="{{totalCommission !== '--'}}" class="price-symbol">¥</text>
           <text class="price-integer">{{totalCommission}}</text>
         </view>
       </view>
