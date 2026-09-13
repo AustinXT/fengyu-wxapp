@@ -3,7 +3,7 @@
 # sync-prod-to-dev.sh — 用生产库数据覆盖开发/测试库
 #
 # 来源 prod : envs/prod.env  PG_CONNECTION_STRING  → 118.178.196.26:5433
-# 目标 dev  : envs/dev.env   PG_CONNECTION_STRING  → 47.113.202.7:5433
+# 目标 dev  : envs/dev.env   PG_CONNECTION_STRING  → 101.34.242.103:5433（2026-09-10 从 47.113.202.7 迁入）
 #
 # 流程：dump prod（排除无 SELECT 权限的外部表如 codex_*）→ yes 二次确认 →
 #       pg_restore --clean --if-exists --no-owner --no-acl 覆盖 dev → 关键表行数校验。
@@ -53,8 +53,8 @@ DEV_CS="$(read_cs "$DEV_ENV")"
 case "$PROD_CS" in *"118.178.196.26"*) : ;; *)
   echo "${RED}✗ prod 连接串未指向生产库 118.178.196.26，拒绝执行${RST}" >&2
   echo "  目标：$(mask "$PROD_CS")" >&2; exit 1 ;; esac
-case "$DEV_CS" in *"47.113.202.7"*) : ;; *)
-  echo "${RED}✗ dev 连接串未指向开发库 47.113.202.7，拒绝执行（防反向覆盖）${RST}" >&2
+case "$DEV_CS" in *"101.34.242.103"*) : ;; *)
+  echo "${RED}✗ dev 连接串未指向开发库 101.34.242.103，拒绝执行（防反向覆盖）${RST}" >&2
   echo "  目标：$(mask "$DEV_CS")" >&2; exit 1 ;; esac
 [ "$PROD_CS" != "$DEV_CS" ] || { echo "${RED}✗ prod 与 dev 连接串相同，拒绝执行${RST}" >&2; exit 1; }
 
@@ -110,7 +110,7 @@ echo "    ✓ TOC ${ENTRIES} 条目，含数据表 ${DATATBL} 张"
 # --- [2/4] 二次确认 ---
 echo ""
 echo "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RST}"
-echo "${RED}⚠  即将用 prod 数据覆盖 dev 库（47.113.202.7:5433/fengyu_wxapp）${RST}"
+echo "${RED}⚠  即将用 prod 数据覆盖 dev 库（101.34.242.103:5433/fengyu_wxapp）${RST}"
 echo "${RED}⚠  dev 现有数据（含开发中手造数据）将全部丢失，不可恢复！${RST}"
 echo "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RST}"
 if [ "${SKIP_CONFIRM:-0}" != "1" ]; then

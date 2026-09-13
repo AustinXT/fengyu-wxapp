@@ -10,11 +10,13 @@ load_target() {
   local env="$1"
   case "$env" in
     dev)
-      SSH_HOST="ali-demo"
-      TARGET_PUBLIC_HOST="47.113.202.7"
-      REMOTE_DIR="/root/proj.xt.com/fengyu-wxapp/docker"
-      MIGRATION_HOST="47.113.202.7"
-      CONTAINER_DB_HOST="47.113.202.7"
+      # 2026-09-10 对齐 origin/dev：dev 的 PG 迁入 lx-test（101.34.242.103），ali-demo 弃用。
+      # ⚠ 与下方 test 同机同库同目录，仅 CloudBase 环境不同（dev 用 cloud1-*）。
+      SSH_HOST="lx-test"   # ~/.ssh/config 别名（原 sqlserver101，2026-09-04 改名）
+      TARGET_PUBLIC_HOST="101.34.242.103"
+      REMOTE_DIR="/www/wwwroot/fengyu-admin/docker"
+      MIGRATION_HOST="101.34.242.103"
+      CONTAINER_DB_HOST="172.18.0.1"
       ;;
     test)
       SSH_HOST="lx-test"   # ~/.ssh/config 别名（原 sqlserver101，2026-09-04 改名）
