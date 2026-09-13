@@ -709,6 +709,23 @@ async function paidOrders(ctx) {
        si.session_count, si.remaining_sessions, si.paid_sessions,
        si.sku_id, si.product_type, si.product_name,
        si.unit_real_price,
+       -- 行级欠款：仅「订单确实未付清」且「该卡未买满次数」时才算。
+       -- 订单已付清但行 received 不足的是行级分摊缺口（已知数据问题），不是顾客欠款；
+       -- 寄存单 total_amount<=0 → paid_sessions=session_count，天然不进此分支（其 sale_amount 只是原价快照）。
+       CASE
+         WHEN o.status = '部分支付'
+          AND si.paid_sessions IS NOT NULL
+          AND si.paid_sessions < si.session_count
+          AND NOT EXISTS (
+            SELECT 1 FROM sale_order_payments sop
+            WHERE sop.sale_order_id = si.sale_order_id
+              AND sop.change_type = '退款' AND sop.status = '已支付'
+          )
+          -- 1 元阈值：瀑布分摊的 ROUND 尾差会造出 ¥0.01 的假欠款，不值得推给顾客
+          AND (si.sale_amount::numeric - si.received::numeric) >= 1
+         THEN GREATEST(0, si.sale_amount::numeric - si.received::numeric)::numeric(12, 2)
+         ELSE NULL
+       END AS unpaid_amount,
        COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
        ps.category_id,
        pc.category_name, pc.product_kind,
@@ -724,8 +741,21 @@ async function paidOrders(ctx) {
          si.item_direction = '购买'
          OR (o.sale_order_type = '转换单' AND si.item_direction = '转入')
        )
+       -- issue #122：改按物理剩余次数下发，与门店视图 customer.paidOrders 同口径。
+       -- 部分支付导致 paid_sessions=0 的卡以前被整行剔除，管理层同样看不到这张卡。
        AND (
          si.paid_sessions IS NULL
+         OR si.remaining_sessions > 0
+       )
+       -- ⚠ 退款不减 remaining_sessions（Model X）：paid_sessions 是"已退卡从卡包消失"的唯一机制，
+       -- 放宽展示门槛必须补回这条守卫，否则已退款的卡会重新出现。
+       AND (
+         NOT EXISTS (
+           SELECT 1 FROM sale_order_payments sop
+           WHERE sop.sale_order_id = si.sale_order_id
+             AND sop.change_type = '退款' AND sop.status = '已支付'
+         )
+         OR si.paid_sessions IS NULL
          OR si.paid_sessions > (si.session_count - si.remaining_sessions)
        )
      ORDER BY si.sale_item_id`,
@@ -747,6 +777,8 @@ async function paidOrders(ctx) {
       productType: item.product_type || '',
       unit: item.unit || (item.product_type === '家居产品' ? '盒' : '次'),
       unitRealPrice: item.unit_real_price != null ? Number(item.unit_real_price).toFixed(2) : '',
+      // 仅订单未付清且该卡未买满次数时有值；已付清/寄存单/NULL 卡一律 null
+      unpaidAmount: item.unpaid_amount != null ? Number(item.unpaid_amount) : null,
       categoryId: item.category_id || '',
       categoryName: item.category_name || '',
       category: item.category_name || '',

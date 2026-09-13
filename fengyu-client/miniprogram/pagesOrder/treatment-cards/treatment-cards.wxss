@@ -158,6 +158,16 @@
 }
 
 /* 订单备注 */
+.tc-card__unpaid {
+  margin-bottom: 20rpx;
+  padding: 12rpx 18rpx;
+  background: #fff8e6;
+  border-radius: 12rpx;
+  color: #d4820a;
+  font-size: 24rpx;
+  font-weight: 600;
+}
+
 .tc-card__remark {
   display: flex;
   align-items: flex-start;

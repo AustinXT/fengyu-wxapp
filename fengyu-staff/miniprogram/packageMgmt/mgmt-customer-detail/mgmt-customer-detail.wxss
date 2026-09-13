@@ -540,3 +540,22 @@
   color: #aaa;
   font-size: 20rpx;
 }
+
+/* 待付清 / 不可核销说明（issue #122）：可用次数 0 的卡现在也展示，
+   必须给出原因，否则只看到「剩余 0」像是一张坏卡。 */
+.tc-unpaid {
+  display: inline-block;
+  margin-top: 10rpx;
+  padding: 4rpx 12rpx;
+  border-radius: 8rpx;
+  background: #fff8e6;
+  color: #d4820a;
+  font-size: 24rpx;
+  font-weight: 600;
+}
+
+.tc-unpaid--plain {
+  background: #f5f5f5;
+  color: #888888;
+  font-weight: 400;
+}
