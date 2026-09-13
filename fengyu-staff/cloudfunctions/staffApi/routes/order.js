@@ -2734,7 +2734,10 @@ async function updatePerformanceAttribution(ctx) {
        RETURNING first_payment.id`,
       [updated.performance_attribution_date, saleOrderId],
     )
-    const syncedPaymentIds = [...syncedCardRes.rows, ...syncedFirstRes.rows].map((row) => row.id)
+    // node-pg 对 int8(OID 20) 不做转换、原样返回 string。admin orders.ts 的同语义副本已显式
+    // Number()，这里不归一会让 operation_logs 里 staff 写 ["12","34"]、admin 写 [12,34]，
+    // 后续按 id 对账/去重的脚本两端行为不一致。
+    const syncedPaymentIds = [...syncedCardRes.rows, ...syncedFirstRes.rows].map((row) => Number(row.id))
 
     await logUpdate(
       client,
