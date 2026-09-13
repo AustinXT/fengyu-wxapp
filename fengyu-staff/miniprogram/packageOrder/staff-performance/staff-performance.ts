@@ -81,6 +81,14 @@ function money(v: number | string | undefined | null): string {
 /** 每页条数：请求入参与 hasMore 判定共用同一常量，勿各写各的 */
 const PAGE_SIZE = 20;
 
+/**
+ * 访问被拒类错误 —— 一旦发生就不得继续展示屏幕上的既有数据（可能是他人薪酬）。
+ * `PHONE_REQUIRED` 必须在列：`requireStaffBound` 在手机号失效时抛它（admin 改员工资料
+ * 时手机号可被置空，路径实际可达），且它与 `PERMISSION_DENIED` 共享 -403，
+ * 只能按 errorType 区分、不能按 code 判。
+ */
+const ACCESS_DENIED_ERRORS = ['UNAUTHORIZED', 'PERMISSION_DENIED', 'PHONE_REQUIRED'];
+
 Page({
   data: {
     loading: false,
@@ -349,11 +357,11 @@ Page({
       //      保留下来的就是「新 Tab 高亮 + 旧条件明细」）
       //   ③ 不是身份/权限类错误（员工调店、权限撤销后仍把原数据留在屏幕上是越权展示）
       const errorType = (err as { errorType?: string } | null)?.errorType;
-      const authError = errorType === 'UNAUTHORIZED' || errorType === 'PERMISSION_DENIED';
+      const accessDenied = !!errorType && ACCESS_DENIED_ERRORS.indexOf(errorType) >= 0;
       const sameSource = queryKey === this._lastKey;
-      // 鉴权失败必须**独立于 reset/分页模式**清屏：触底分页（reset=false）时权限被撤销，
+      // 访问被拒必须**独立于 reset/分页模式**清屏：触底分页（reset=false）时权限被撤销，
       // 若受 reset 限制就只弹个 toast，撤权后的绩效数据继续留在屏幕上
-      if (authError || (reset && (!keepStaleOnError || !sameSource))) {
+      if (accessDenied || (reset && (!keepStaleOnError || !sameSource))) {
         this._lastKey = '';
         this._summaryCache = null;
         this.setData({ items: [], total: 0, hasMore: false, loadFailed: true, ...this.blankSummary() });
