@@ -304,19 +304,24 @@ export const getPendingPayments = withPermission(
     const scopeIds = session.permissions.scopeStoreIds
     // 缺省口径与 URL 解析（parseDateBasis）保持一致，避免「页面默认归属、直调默认下单」的双口径
     const dateBasis: DateBasis = params.dateBasis ?? 'attribution'
-    const dateColumn = dateBasis === 'payment'
-      ? saleOrderPayments.paidAt
-      : saleOrders.saleOrderDatetime
-    // 默认口径「款项业绩归属日期」是 date 表达式，走闭区间比较；
-    // 另两个口径是 timestamptz，仍走北京半开区间。
-    const dateRangeConditions = dateBasis === 'attribution'
-      ? paymentAttributionRangeConditions(params.dateFrom, params.dateTo)
-      : [
-          params.dateFrom
-            ? gte(dateColumn, beijingBoundaryTs(params.dateFrom, '00:00:00'))
-            : undefined,
-          params.dateTo ? lt(dateColumn, beijingNextDayBoundaryTs(params.dateTo)) : undefined,
-        ]
+    const dateRangeConditions = (() => {
+      // 默认口径「款项业绩归属日期」是 date 表达式，走闭区间比较。
+      if (dateBasis === 'attribution') {
+        return paymentAttributionRangeConditions(params.dateFrom, params.dateTo)
+      }
+      // 另两个口径是 timestamptz，走北京半开区间。dateColumn 只在这条分支里有意义，
+      // 故意留在块内：提到外面算的话，attribution 下它会静默取到 saleOrderDatetime，
+      // 日后简化这段（或给 dateColumn 加排序等新用途）会让默认口径退化成下单日期筛选。
+      const dateColumn = dateBasis === 'payment'
+        ? saleOrderPayments.paidAt
+        : saleOrders.saleOrderDatetime
+      return [
+        params.dateFrom
+          ? gte(dateColumn, beijingBoundaryTs(params.dateFrom, '00:00:00'))
+          : undefined,
+        params.dateTo ? lt(dateColumn, beijingNextDayBoundaryTs(params.dateTo)) : undefined,
+      ]
+    })()
     const conds = [
       params.allocationStatus
         ? eq(saleOrderPayments.allocationStatus, params.allocationStatus)

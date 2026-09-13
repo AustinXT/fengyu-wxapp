@@ -221,6 +221,10 @@ const paymentColumns = mapColumns([
   { header: '下单时间', width: 20, key: 'saleOrderDatetime', map: (row) => fmtDateTime(value(row, 'saleOrderDatetime') as string | Date | null) },
   // 回款行取「款项归属日期」，订单行取订单归属日期：两段粘一起后按这一列 group 即为正确的业绩月份
   { header: '业绩归属日期', width: 14, key: 'performanceAttributionDate', map: (row) => fmtDate(value(row, 'performanceAttributionDate') as string | Date | null) },
+  // ⚠ 同样是双语义列，但与上一列不同：这一列**不适合**跨两段分组。回款行取
+  // sale_order_payments.created_at（款项建单时间），订单明细行取 sale_orders.created_at
+  // （订单建单时间）；按它统计「当天新建单据」会把回款行错归到款项发生那天。
+  // 表头不能改名——规范要求前 34 列与订单明细导出逐字一致（admin.pr.spec.md §回款明细导出）。
   { header: '创建时间', width: 20, key: 'createdAt', map: (row) => fmtDateTime(value(row, 'createdAt') as string | Date | null) },
   { header: '备注', width: 24, key: 'remark' },
   // ── 款项专属段：只能追加，不能插进上面 ──
