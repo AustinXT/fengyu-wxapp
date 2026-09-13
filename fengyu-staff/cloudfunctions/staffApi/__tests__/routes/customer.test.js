@@ -957,6 +957,113 @@ describe('customer.homeProducts', () => {
     ])
   })
 
+  // issue #120：买 1 件未付清 → FLOOR(received*1/sale_amount)=0 → pending=0，
+  // 旧 WHERE 把整行剔除，顾客档案显示"暂无家居产品"。
+  test('未付清整件的行仍返回，状态为待付清并带欠款金额', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-unpaid-home' })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([{
+        sale_item_id: 'SI-UNPAID', sale_order_id: 'SO-UNPAID', product_name: '舒缓精华液',
+        unit: '盒', purchased_quantity: 1, paid_quantity: 0, picked_quantity: 0,
+        refunded_quantity: 0, remaining_quantity: 1, pending_pickup_quantity: 0,
+        unpaid_amount: '380.00',
+        store_id: 'store-001', store_name: '本店', purchased_at: '2026-09-13T10:00:00Z',
+        refund_pending: false,
+      }])
+
+    await customerRoutes.homeProducts(ctx)
+
+    expect(ctx.result).toEqual([
+      expect.objectContaining({
+        saleItemId: 'SI-UNPAID',
+        purchasedQuantity: 1,
+        paidQuantity: 0,
+        pendingPickupQuantity: 0,
+        unpaidAmount: 380,
+        status: '待付清',
+      }),
+    ])
+  })
+
+  test('退款过的行不下发欠款金额，避免净实收口径虚增', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-refunded-home' })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([{
+        sale_item_id: 'SI-REFUNDED', sale_order_id: 'SO-REFUNDED', product_name: '面膜',
+        unit: '盒', purchased_quantity: 2, paid_quantity: 2, picked_quantity: 1,
+        refunded_quantity: 1, remaining_quantity: 0, pending_pickup_quantity: 0,
+        unpaid_amount: '120.00',
+        store_id: 'store-001', purchased_at: '2026-08-20T10:00:00Z',
+        refund_pending: false,
+      }])
+
+    await customerRoutes.homeProducts(ctx)
+
+    expect(ctx.result[0]).toEqual(
+      expect.objectContaining({ unpaidAmount: null, status: '已完成' }),
+    )
+  })
+
+  // 寄存单的 sale_amount 只是原价快照、received 是历史值，相减不是欠款（SQL 置 NULL）。
+  // 放行后若按金额差报欠款，会向顾客伪造一笔不存在的债务（dev 实测 86 行 / ¥44834.30）。
+  test('寄存单行不报欠款，状态为待提货而非待付清', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-deposit-home' })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([{
+        sale_item_id: 'SI-DEPOSIT', sale_order_id: 'SO-DEPOSIT', product_name: '生物胶原修复面膜',
+        unit: '盒', purchased_quantity: 27, paid_quantity: 0, picked_quantity: 0,
+        refunded_quantity: 0, remaining_quantity: 27, pending_pickup_quantity: 0,
+        unpaid_amount: null,
+        store_id: 'store-001', purchased_at: '2026-08-03T10:00:00Z', refund_pending: false,
+      }])
+
+    await customerRoutes.homeProducts(ctx)
+
+    expect(ctx.result[0]).toEqual(
+      expect.objectContaining({ unpaidAmount: null, status: '待提货', purchasedQuantity: 27 }),
+    )
+  })
+
+  test('退款后仍有剩余份额的行标待提货，不标已完成', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-partial-refund-home' })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([{
+        sale_item_id: 'SI-PART-REFUND', sale_order_id: 'SO-PART-REFUND', product_name: '面膜',
+        unit: '盒', purchased_quantity: 3, paid_quantity: 0, picked_quantity: 0,
+        refunded_quantity: 1, remaining_quantity: 2, pending_pickup_quantity: 0,
+        unpaid_amount: '200.00',
+        store_id: 'store-001', purchased_at: '2026-08-20T10:00:00Z', refund_pending: false,
+      }])
+
+    await customerRoutes.homeProducts(ctx)
+
+    // refunded>0 → 欠款口径不可靠，金额留空；但 2 件未交付，不能叫「已完成」
+    expect(ctx.result[0]).toEqual(
+      expect.objectContaining({ unpaidAmount: null, status: '待提货', remainingQuantity: 2 }),
+    )
+  })
+
+  test('放行口径按剩余份额，不再用待提数量整行过滤', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-home' })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([])
+
+    await customerRoutes.homeProducts(ctx)
+
+    const sql = pg.query.mock.calls[1][0]
+    expect(sql).toContain('WHERE picked_quantity > 0 OR remaining_quantity > 0')
+    expect(sql).not.toContain('WHERE picked_quantity > 0 OR pending_pickup_quantity > 0')
+    expect(sql).toContain('AS unpaid_amount')
+    // 寄存单必须在 SQL 层就把金额列置空，不能只靠前端不显示
+    expect(sql).toContain("(o.sale_order_type = '寄存单') AS is_deposit")
+    expect(sql).toContain('CASE WHEN is_deposit THEN NULL')
+  })
+
   test('缺少顾客标识时拒绝', async () => {
     const ctx = createManagerCtx({})
     await expect(customerRoutes.homeProducts(ctx)).rejects.toThrow(/INVALID_PARAMS/)

@@ -2563,9 +2563,18 @@ function mapHomeProductRow(row) {
   const remainingQuantity = Number(row.remaining_quantity || 0)
   const paidQuantity = Number(row.paid_quantity || 0)
   const pendingPickupQuantity = Number(row.pending_pickup_quantity || 0)
+  // 待付清行的欠款金额：received 是行级净实收（已扣该行退款），故对退过款的行
+  // sale_amount - received 会把"退掉的钱"误算成欠款；寄存单行 SQL 已置 NULL。
+  const unpaidAmount =
+    refundedQuantity > 0 || row.unpaid_amount == null ? null : Number(row.unpaid_amount)
   let status
   if (row.refund_pending) status = '退款处理中'
   else if (pendingPickupQuantity > 0) status = pickedQuantity > 0 ? '部分提货' : '待提货'
+  // 「待付清」必须与欠款金额绑定：只有真的算得出欠款才这么标。
+  // 否则寄存单（金额列留空）和退款后仍有剩余的行会被误标成待付清/已完成。
+  else if (unpaidAmount > 0) status = '待付清'
+  // 还有未交付份额但算不出欠款（寄存单、退款后剩余）——是待提，不是已完成。
+  else if (remainingQuantity > 0) status = '待提货'
   else status = refundedQuantity > 0 ? '已完成' : '已提货'
 
   return {
@@ -2580,6 +2589,7 @@ function mapHomeProductRow(row) {
     refundedQuantity,
     remainingQuantity,
     pendingPickupQuantity,
+    unpaidAmount,
     status,
     storeId: row.store_id,
     storeName: row.store_name || null,
@@ -2614,6 +2624,9 @@ async function homeProducts(ctx) {
                   FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
                 )
               END AS paid_quantity,
+              si.sale_amount::numeric AS row_sale_amount,
+              GREATEST(0, si.received::numeric) AS row_received,
+              (o.sale_order_type = '寄存单') AS is_deposit,
               o.store_id,
               s.store_name,
               COALESCE(o.paid_at, o.sale_order_datetime, o.created_at) AS purchased_at,
@@ -2642,6 +2655,9 @@ async function homeProducts(ctx) {
               SUM(si.settled_quantity)::int AS settled_quantity,
               SUM(si.picked_quantity)::int AS picked_quantity,
               SUM(si.paid_quantity)::int AS paid_quantity,
+              SUM(si.row_sale_amount) AS sale_amount_total,
+              SUM(si.row_received) AS received_total,
+              BOOL_OR(si.is_deposit) AS is_deposit,
               MIN(si.store_id) AS store_id,
               MIN(si.store_name) AS store_name,
               MAX(si.purchased_at) AS purchased_at,
@@ -2655,12 +2671,17 @@ async function homeProducts(ctx) {
               LEAST(
                 purchased_quantity - settled_quantity,
                 GREATEST(paid_quantity - picked_quantity, 0)
-              )::int AS pending_pickup_quantity
+              )::int AS pending_pickup_quantity,
+              -- 寄存单的 sale_amount 只是原价快照、received 恒为历史值，两者相减不是欠款
+              -- （寄存的货本就属于顾客）。金额列一律留空，与导出口径一致。
+              CASE WHEN is_deposit THEN NULL
+                   ELSE GREATEST(0, sale_amount_total - received_total)::numeric(12, 2)
+              END AS unpaid_amount
          FROM home_products
      )
      SELECT *
        FROM home_product_balances
-      WHERE picked_quantity > 0 OR pending_pickup_quantity > 0
+      WHERE picked_quantity > 0 OR remaining_quantity > 0
    ORDER BY (pending_pickup_quantity > 0) DESC,
             purchased_at DESC,
             sale_item_id`,
