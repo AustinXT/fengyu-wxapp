@@ -6113,6 +6113,48 @@ describe('exportOrderPayments — 回款明细导出（款项 × 商品子项）
     expect(rows[0]).toMatchObject({ received: '300.00', prepaidCardAmount: '300.00', cashAmount: '0.00' })
   })
 
+  it('已作废但有 receipt 的款项：金额列留空，没到账的钱不进求和', async () => {
+    const voided = paymentRow({
+      payment: { id: 71, saleOrderId: 'FY-VOID-1', status: '已作废', changeType: '首次支付', amount: '300.00' },
+    })
+    mockStages(
+      [voided],
+      [receiptRow({ salePaymentId: 71, saleOrderId: 'FY-VOID-1', saleItemId: 'ITEM-1', amount: '300.00' })],
+    )
+
+    const { rows } = await exportOrderPayments({})
+
+    // 留空规则 1（未入账）三条路径都适用；此前只有两条无 receipt 路径实现了它，
+    // 有 receipt 的这条把作废金额原样输出（prod 实测 1 笔 3 行）。
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      paymentId: 71,
+      productName: '肩颈护理10次', // 商品列照常填满，只有金额列留空
+      received: '',
+      prepaidCardAmount: '',
+      cashAmount: '',
+      refundedAmount: '',
+    })
+  })
+
+  it('已支付的储值卡抵扣自带 receipt：金额照常输出，不被「折叠从行」规则误清空', async () => {
+    const cardWithOwnReceipt = paymentRow({
+      payment: { id: 77, saleOrderId: 'FY-CARD-7', changeType: '储值卡抵扣', amount: '500.00', paymentMethod: '无', externalTxnId: null },
+    })
+    mockStages(
+      [cardWithOwnReceipt],
+      [receiptRow({ salePaymentId: 77, saleOrderId: 'FY-CARD-7', saleItemId: 'ITEM-1', amount: '500.00' })],
+    )
+
+    const { rows } = await exportOrderPayments({})
+
+    // 留空规则 2 判的是「订单有 receipt」，对自带 receipt 的储值卡行恒为真——若把整个
+    // suppressAmount 套到有 receipt 路径上，这类行会被全部清空（prod 实测 21 笔）。
+    expect(rows).toHaveLength(1)
+    expect(rows[0].received).not.toBe('')
+    expect(rows[0].prepaidCardAmount).not.toBe('')
+  })
+
   it('退款款项落负数实付并把绝对值写进已退', async () => {
     const refund = paymentRow({
       payment: { id: 41, changeType: '退款', amount: '-120.00', refundReason: '顾客申请' },

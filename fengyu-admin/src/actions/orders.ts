@@ -1608,9 +1608,10 @@ export const exportOrderPayments = withPermission(
         ? (itemsByOrder.get(payment.saleOrderId) ?? [])
         : []
 
-      // 两条金额留空规则，两条无 receipt 路径共用；漏掉任一条都会造成重复计数：
-      // 1) 未入账/已作废的钱还没到账；
-      // 2) 混合支付被折叠的储值卡从行，其金额已经算在同事件现金主流水的 receipt 里。
+      // 两条金额留空规则，漏掉任一条都会造成重复计数：
+      // 1) 未入账/已作废的钱还没到账 —— **三条路径都适用**；
+      // 2) 混合支付被折叠的储值卡从行，其金额已经算在同事件现金主流水的 receipt 里
+      //    —— 只适用于两条**无 receipt** 路径，有 receipt 那条见下方 suppressReceiptAmount。
       // （原先的「寄存单」规则已上移为 WHERE 层整类排除。）
       const suppressAmount =
         payment.status !== '已支付' ||
@@ -1670,16 +1671,23 @@ export const exportOrderPayments = withPermission(
         paymentMethod: payment.paymentMethod,
         paymentAmountCents: amountToCents(payment.amount),
       })
+      // 有 receipt 路径只共用规则 1（未入账）。规则 2 在这里**必须不生效**：能走到这里说明
+      // 该款项自己有 receipt，金额是独立记录的，并非已计入兄弟现金主流水——而 suppressAmount
+      // 的规则 2 判的是「订单有 receipt」，对这类行恒为真。照搬会把它们的金额全部清空
+      // （prod 实测 21 笔已支付储值卡抵扣自带 receipt，而漏掉规则 1 的只有 1 笔已作废款项）。
+      const suppressReceiptAmount = payment.status !== '已支付'
       receipts.forEach((receipt, index) => {
         const receivedCents = amountCents[index]
         const prepaidCardCents = prepaidCents[index] ?? 0
         rows.push({
           ...shared,
           ...paymentProductColumns(receipt),
-          prepaidCardAmount: money(prepaidCardCents),
-          cashAmount: money(receivedCents - prepaidCardCents),
-          received: money(receivedCents),
-          refundedAmount: money(payment.changeType === '退款' ? Math.abs(receivedCents) : 0),
+          prepaidCardAmount: suppressReceiptAmount ? '' : money(prepaidCardCents),
+          cashAmount: suppressReceiptAmount ? '' : money(receivedCents - prepaidCardCents),
+          received: suppressReceiptAmount ? '' : money(receivedCents),
+          refundedAmount: suppressReceiptAmount
+            ? ''
+            : money(payment.changeType === '退款' ? Math.abs(receivedCents) : 0),
           salesCategory: receipt.receiptSalesCategory ?? receipt.itemSalesCategory,
         })
       })
