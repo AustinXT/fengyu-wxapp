@@ -9,6 +9,20 @@
  *      —— 漏同步时，performanceDetail 会先零填充出一个「幽灵旧分类」（永远 ¥0.00、点了筛不出东西），
  *         再把有数据的新分类追加到末尾；本期无新分类数据时新分类甚至完全不显示。
  *   2. 数组顺序固定 —— 顺序即绩效页 4 个格子的展示顺序。
+ *
+ * ── 覆盖边界（issue #123 划线，勿误以为已全仓闭环）────────────────────────────
+ * 全仓生产源码中出现该四元组的位置有 20+ 处（禁 shared 目录的既有代价）。本测试覆盖
+ * 下方 COPIES 列出的**运行时骨架与类型/选项定义**——它们漏同步不会报错，只会静默降级
+ * （下拉少一项、提成率骨架缺键、报表少算一类）。
+ *
+ * 已知**未**覆盖、留待「全仓 sales_category 副本收敛」专项处理的：
+ *   - fengyu-admin/src/actions/data-center/efficiency.ts 的四分类 FILTER SQL
+ *     （同文件还混有多处**有意的子集**副本，如只统计自销自耗+他销自耗的口径，
+ *       精确锚定易误伤，需连同口径一起梳理）
+ *   - fengyu-admin/src/actions/{orders,products}.ts 的内联联合类型
+ *     （类型注解有 tsc 编译期保护，改名会直接报错，风险低于运行时字面量）
+ *   - 各端测试 fixture 里的分类名（不影响生产行为）
+ * ─────────────────────────────────────────────────────────────────────────
  */
 
 const fs = require('node:fs')
@@ -86,6 +100,20 @@ const COPIES = [
     pattern: /(?:orderRates|serviceRates):\s*\{([^}]+)\}/g,
     extract: pickObjectKeys,
   },
+  {
+    label: 'fengyu-admin 品项分类页 — 本地 SalesCategory 联合类型',
+    file: path.join(REPO, 'fengyu-admin/src/app/(main)/(catalog)/products/categories/_components/categories-page.tsx'),
+    pattern: /type\s+SalesCategory\s*=\s*([^\n]+)/g,
+    extract: pickLiterals,
+  },
+  {
+    // 数据中心员工效率表的 4 个分类列（口径是 allocated_amount，与绩效页的提成不同，勿混）
+    // 4 处命中各出一个 label，合起来才是完整四元组 → collect
+    label: 'fengyu-admin data-center/columns.ts — 员工效率表分类列',
+    file: path.join(REPO, 'fengyu-admin/src/lib/data-center/columns.ts'),
+    pattern: /key:\s*['"]sale(?:Zxzh|Txzh|Txth|Eco)['"],\s*label:\s*['"]([^'"]+)['"]/g,
+    collect: true,
+  },
 ]
 
 describe('sales_category 跨端字面量一致性', () => {
@@ -113,11 +141,19 @@ describe('sales_category 跨端字面量一致性', () => {
   })
 
   // 以下各端保留独立副本（用户已 veto shared 目录），只能靠本测试守护
-  test.each(COPIES)('$label 与单源一致', ({ file, pattern, extract }) => {
+  test.each(COPIES)('$label 与单源一致', ({ file, pattern, extract, collect }) => {
     const source = fs.readFileSync(file, 'utf8')
     const matches = [...source.matchAll(pattern)]
 
     expect(matches.length, `未能在 ${file} 定位目标声明，格式可能已改写`).toBeGreaterThan(0)
+
+    if (collect) {
+      // 每处命中只贡献一个分类（如 columns.ts 的 4 个列定义），捕获组即分类名本身，
+      // 合起来才是完整四元组
+      const all = matches.map((m) => m[1])
+      expect(all, `${file} 合并后的分类集合与单源不一致`).toEqual([...SALES_CATEGORIES])
+      return
+    }
 
     // 校验**每一处**命中而非只看第一处：allocation.js 内部就有 3 份同样的骨架，
     // 只验第一处会让「改了一处漏了另两处」静默通过；注释里残留的旧声明也会在此响亮失败
