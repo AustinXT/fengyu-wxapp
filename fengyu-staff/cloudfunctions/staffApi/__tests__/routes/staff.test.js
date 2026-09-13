@@ -498,22 +498,136 @@ describe('staff.performanceDetail', () => {
     await expect(staffRoutes.performanceDetail(ctx)).rejects.toThrow(/INVALID_PARAMS.*endDate/)
   })
 
-  test('salesCategory 过滤生效', async () => {
+  // issue #123：salesCategory 只过滤明细，汇总恒全量（4 分类 × {sales, service} = 8 维度总览）
+  // 旧实现把过滤写进取数 SQL，导致切二级 chip 后其余维度归零、勾稽断裂
+  const mkAlloc = (cat, commission, allocAmount = '1000') => ({
+    alloc_amount: allocAmount, commission_amount: commission, commission_rate: '0.1000',
+    allocation_ratio: 0.5, department_name: '美容部',
+    product_name: `S-${cat}`, sales_category: cat,
+    unit_real_price: '2000', received: '2000',
+    sale_order_id: `FY-${cat}`, customer_name: 'C1', client_phone: '138',
+    paid_at: '2024-06-10', store_id: 'store-001',
+  })
+  const mkSvc = (cat, commission) => ({
+    commission_amount: commission, fixed_fee: commission, consume_amount: '0.00',
+    role_type: '美容师', commission_rate: '0.1000',
+    session_used: 1, service_unit_price: '500.00',
+    product_name: `V-${cat}`, sales_category: cat,
+    service_order_id: `SVC-${cat}`, service_date: '2024-06-20',
+    store_id: 'store-001', customer_name: 'C2', client_phone: '139',
+  })
+
+  test('salesCategory 只过滤明细，不进取数 SQL', async () => {
     const ctx = createManagerCtx({
       startDate: '2024-06-01',
       endDate: '2024-06-30',
       salesCategory: '他销自耗',
     })
 
-    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([mkAlloc('自销自耗', '100'), mkAlloc('他销自耗', '200')])
+    pg.query.mockResolvedValueOnce([mkSvc('他销他耗', '30'), mkSvc('他销自耗', '40')])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    // 取数 SQL 与入参都不得携带 salesCategory 过滤
+    expect(pg.query.mock.calls[0][1]).not.toContain('他销自耗')
+    expect(pg.query.mock.calls[0][0]).not.toMatch(/si\.sales_category\s*=\s*\$/)
+    expect(pg.query.mock.calls[1][1]).not.toContain('他销自耗')
+    expect(pg.query.mock.calls[1][0]).not.toMatch(/si\.sales_category\s*=\s*\$/)
+
+    // 明细只剩目标分类
+    expect(ctx.result.items).toHaveLength(2)
+    expect(ctx.result.items.every(i => i.salesCategory === '他销自耗')).toBe(true)
+    expect(ctx.result.total).toBe(2)
+  })
+
+  test('categorySummary 与顶部汇总不受 salesCategory 影响（8 维度恒全量 + 勾稽成立）', async () => {
+    const ctx = createManagerCtx({
+      startDate: '2024-06-01',
+      endDate: '2024-06-30',
+      salesCategory: '生态合作',
+    })
+
+    pg.query.mockResolvedValueOnce([mkAlloc('自销自耗', '100'), mkAlloc('他销自耗', '200'), mkAlloc('他销他耗', '50')])
+    pg.query.mockResolvedValueOnce([mkSvc('自销自耗', '30'), mkSvc('生态合作', '70')])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    // 汇总覆盖全部 4 分类，未被 '生态合作' 入参裁剪
+    expect(ctx.result.categorySummary['自销自耗']).toEqual({ sales: 100, service: 30 })
+    expect(ctx.result.categorySummary['他销自耗']).toEqual({ sales: 200, service: 0 })
+    expect(ctx.result.categorySummary['他销他耗']).toEqual({ sales: 50, service: 0 })
+    expect(ctx.result.categorySummary['生态合作']).toEqual({ sales: 0, service: 70 })
+
+    // 顶部三联卡恒全量
+    expect(ctx.result.totalSalesAlloc).toBe(350)
+    expect(ctx.result.totalServiceCommission).toBe(100)
+    expect(ctx.result.totalCommission).toBe(450)
+
+    // 勾稽：4 子类之和 === 顶部
+    const cats = Object.values(ctx.result.categorySummary)
+    expect(cats.reduce((s, c) => s + c.sales, 0)).toBe(ctx.result.totalSalesAlloc)
+    expect(cats.reduce((s, c) => s + c.service, 0)).toBe(ctx.result.totalServiceCommission)
+
+    // 明细仍按入参裁剪（生态合作仅一条服务行）
+    expect(ctx.result.items).toHaveLength(1)
+    expect(ctx.result.items[0].type).toBe('service')
+    expect(ctx.result.items[0].salesCategory).toBe('生态合作')
+  })
+
+  test('filterType + salesCategory 两级组合筛选明细', async () => {
+    const ctx = createManagerCtx({
+      startDate: '2024-06-01',
+      endDate: '2024-06-30',
+      filterType: 'sale',
+      salesCategory: '自销自耗',
+    })
+
+    pg.query.mockResolvedValueOnce([mkAlloc('自销自耗', '100'), mkAlloc('他销他耗', '200')])
+    pg.query.mockResolvedValueOnce([mkSvc('自销自耗', '30')])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    // 同为「自销自耗」的服务行被 filterType=sale 排除
+    expect(ctx.result.items).toHaveLength(1)
+    expect(ctx.result.items[0].type).toBe('sale')
+    expect(ctx.result.items[0].salesCategory).toBe('自销自耗')
+    // 汇总不受两级筛选影响
+    expect(ctx.result.totalSalesAlloc).toBe(300)
+    expect(ctx.result.totalServiceCommission).toBe(30)
+  })
+
+  test("salesCategory='未分类' 能筛出 sales_category 为 NULL 的明细", async () => {
+    const ctx = createManagerCtx({
+      startDate: '2024-06-01',
+      endDate: '2024-06-30',
+      salesCategory: '未分类',
+    })
+
+    pg.query.mockResolvedValueOnce([mkAlloc(null, '80'), mkAlloc('自销自耗', '100')])
     pg.query.mockResolvedValueOnce([])
 
     await staffRoutes.performanceDetail(ctx)
 
-    // SQL 应包含 salesCategory 过滤
-    const allocSql = pg.query.mock.calls[0][0]
-    expect(allocSql).toContain('sales_category')
-    expect(pg.query.mock.calls[0][1]).toContain('他销自耗')
+    // 明细归类口径与 categorySummary 一致，NULL 不会漏筛
+    expect(ctx.result.items).toHaveLength(1)
+    expect(ctx.result.items[0].salesCategory).toBeNull()
+    expect(ctx.result.categorySummary['未分类'].sales).toBe(80)
+  })
+
+  test('saleItems 同时返回 allocAmount（员工分配份额）与 businessAmount（整行实收）', async () => {
+    const ctx = createManagerCtx({ startDate: '2024-06-01', endDate: '2024-06-30' })
+
+    pg.query.mockResolvedValueOnce([mkAlloc('自销自耗', '68', '680')])
+    pg.query.mockResolvedValueOnce([])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    const sale = ctx.result.items[0]
+    // 新版前端「业绩」展示 allocAmount；businessAmount 保留兼容线上老版本，两者不可混用
+    expect(sale.allocAmount).toBe(680)
+    expect(sale.businessAmount).toBe(2000)
+    expect(sale.amount).toBe(68)
   })
 
   test('分页功能正确', async () => {
