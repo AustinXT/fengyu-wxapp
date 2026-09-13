@@ -1,15 +1,22 @@
 name: Guard main branch
 
 # main 分支守护：私有库 + GitHub 免费版无原生分支保护（API 403）。
-# TEMP：当前允许任意来源分支向 main 提 PR；恢复白名单流程时将下方值改回 'false'。
-#   - enforce-dev-source：来源不在白名单（dev / test）时才自动关闭 + 评论
+# 白名单：main 只接受来自 dev / test 的 PR，其余来源自动关闭 + 评论。
+#   - enforce-dev-source：来源不在白名单时关闭 PR
 #     · dev  = 常规开发主线
-#     · test = 发布线（版本对齐 + 热修，如 PR#115/#116 均由 test → main）
+#     · test = 发布线（版本对齐 + 热修，如 PR#115/#116/#119 均由 test → main）
 #   - detect-direct-push：push 到 main 且该 commit 不属于已合并 PR → 开 issue 报警
+#     （只验「是否走了 PR」，不限来源分支——来源合法性已由 enforce 在 PR 阶段把关）
 # 免费库无法在物理层阻止直推 main，detect 仅事后报警（默认不自动 revert）。
+#
+# 2026-09-13：ALLOW_NON_DEV_PR_TO_MAIN 由 'true' 改回 'false'。该开关是 6de42fac
+# (2026-08-10) 为让 test 发布线能提 PR 而临时全放开的应急措施；6591799a (2026-09-01)
+# 已把 test 正式纳入白名单，但应急态未同步撤销，致守护空转 34 天（任意分支均可提 PR）。
 
 env:
-  ALLOW_NON_DEV_PR_TO_MAIN: 'true'
+  # 'true' = 完全跳过来源校验（应急逃生门）。常态保持 'false'，由上方 dev/test 白名单把关。
+  # 若因新增合法来源分支而想改 'true'，优先改白名单条件，别再动这个开关。
+  ALLOW_NON_DEV_PR_TO_MAIN: 'false'
 
 on:
   pull_request:
