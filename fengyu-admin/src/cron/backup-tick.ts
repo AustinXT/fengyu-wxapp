@@ -35,7 +35,10 @@ export function isBackupInFlight(): boolean {
 export function runBackupTick(): Promise<void> {
   if (inFlight) return inFlight
   inFlight = (async () => {
-    await writeWorkerHeartbeat('cron-worker', 'busy', '检查数据库备份队列')
+    // 心跳纯属可观测性，**绝不能挡住备份本身**：它写的是 SYSTEM_RUNTIME_DIR 下的临时文件，
+    // 卷满 / 权限变更 / mkdir-rename 抖动都会抛。不吞掉的话这里一抛，下面两行连跑都不跑，
+    // 自动备份再次静默失效——正是本模块头注释要防的那类回归。收尾那次心跳早已这样保护。
+    await writeWorkerHeartbeat('cron-worker', 'busy', '检查数据库备份队列').catch(() => undefined)
     await runScheduledBackupIfDue()
     await processManualBackupRequests()
   })()
