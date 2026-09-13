@@ -578,7 +578,10 @@ export function analyzeMigrationState(entries, remoteRows, hashes, options = {})
 
 export async function checkMigrations(env, options = {}) {
   const { config, target } = readConfig(env, options)
-  // 统一走公网 PG_CONNECTION_STRING：dev/test 容器网桥 172.18.0.1 仅远端可达，prod 两键本就同 host
+  // 统一走公网 PG_CONNECTION_STRING：dev/test 容器网桥 172.18.0.1 仅远端可达。
+  // prod 上该键与 ADMIN_DATABASE_URL 同 host、**同账号、同库**（2026-09-13 实测 user=fengyu，
+  // 可正常读 drizzle.__drizzle_migrations），故切换不涉及权限差异。若将来把云函数拆成独立
+  // 低权账号，这里要改回 ADMIN_DATABASE_URL —— validateConfig 只断言 host/port/dbname，不查账号。
   const url = config.PG_CONNECTION_STRING
   const requireFromDb = createRequire(path.join(ROOT, 'db/package.json'))
   const { Client } = requireFromDb('pg')
