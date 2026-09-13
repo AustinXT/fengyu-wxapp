@@ -874,10 +874,13 @@ function buildOrderConditions(
           : sql``}
     )`)
   } else if (dateBasis === 'attribution' && (filters.dateFrom || filters.dateTo)) {
-    // 默认口径：订单只要存在任一笔「业绩归属日期」落在区间内的款项就入选
+    // 默认口径：订单只要存在任一笔「业绩归属日期」落在区间内的**已入账**款项就入选
     // （与 payment 口径同为 EXISTS 半连接：命中的是订单，导出金额仍是订单累计快照）。
-    // 归属日期为 NULL 的未入账款项不会命中，所以这里的 status 条件只是为了走
-    // sale_order_id 索引后尽早剪枝，不是语义所需。
+    // ⚠ 下面的 status 条件是语义闸门，不是索引优化，删掉会改变结果集：
+    // 迁移 0039 起未入账行的 performance_attribution_date 由 created_at 占位（不再是 NULL），
+    // 首次支付那一支又恒取订单级归属日期，两者都会让未入账款项把订单带进结果。
+    // 规范要求「按已入账的首次支付/回款/储值卡抵扣/退款判断订单是否入选」（admin.pr.spec.md §订单管理）。
+    // 附带后果（非缺陷）：0 笔款项的 WorkFine 历史单在款项口径下不入选，要看它们须切「下单日期」。
     const [fromCond, toCond] = paymentAttributionRangeConditions(
       filters.dateFrom,
       filters.dateTo,
@@ -1359,7 +1362,16 @@ export const exportOrderPayments = withPermission(
       ? { ...filters, dateFrom: undefined, dateTo: undefined }
       : filters
     const attributionDateConditions = usesAttributionDate
-      ? paymentAttributionRangeConditions(filters.dateFrom, filters.dateTo)
+      ? [
+          // 「无 paid_at 的未入账流水在这两种款项口径下都不命中」（admin.pr.spec.md §回款明细导出）。
+          // payment 口径靠 paid_at 比较天然落选（NULL 比较恒为 NULL）；attribution 口径必须显式挡：
+          // 迁移 0039 起未入账行的 performance_attribution_date 由 created_at 占位，首次支付那一支
+          // 又恒取订单级归属日期（与本行是否入账无关），两者都会让未入账流水错误命中。
+          // 用 paid_at IS NOT NULL 而非 status='已支付'：前者才是规范的字面判据，且不会连带把
+          // 「已作废但有 paid_at」的流水从 payment 口径里剔掉（那类流水应出现、金额留空，见 §金额留空规则）。
+          sql`${saleOrderPayments.paidAt} IS NOT NULL`,
+          ...paymentAttributionRangeConditions(filters.dateFrom, filters.dateTo),
+        ]
       : []
     const limit = resolveExportBatchLimit(options?.limit)
     const cursor = options?.cursor == null ? null : Number(options.cursor)

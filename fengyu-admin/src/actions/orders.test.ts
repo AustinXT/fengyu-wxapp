@@ -6312,6 +6312,35 @@ describe('exportOrderPayments — 回款明细导出（款项 × 商品子项）
     expect(rendered).not.toContain('payment_date_filter')
   })
 
+  /** 归属日期区间**挡不住**未入账流水，必须另有 paid_at 闸门——见下方两例的成对断言。 */
+  const hasPaidAtNotNullGate = () =>
+    (sql as any).mock.calls.some(([strings, ...vals]: any[]) =>
+      Array.isArray(strings?.raw)
+      && strings.raw.join('').includes('IS NOT NULL')
+      && vals.includes('paid_at'),
+    )
+
+  it('缺省口径同时锁定 paid_at IS NOT NULL，未入账流水不因占位归属日期而命中', async () => {
+    mockStages([paymentRow()], [receiptRow()])
+
+    await exportOrderPayments({ from: '2026-08-01', to: '2026-08-31' })
+
+    // 规范：无 paid_at 的未入账流水在两种款项口径下都不命中（admin.pr.spec.md §回款明细导出）。
+    // 迁移 0039 起未入账行的 performance_attribution_date 由 created_at 占位（不再是 NULL），
+    // 首次支付那一支又恒取订单级归属日期（与本行是否入账无关），只靠区间比较两者都会漏进来。
+    expect(hasPaidAtNotNullGate()).toBe(true)
+  })
+
+  it('款项发生日期口径不额外加 paid_at 闸门：已作废但有 paid_at 的流水照常入选（金额留空由展开层负责）', async () => {
+    mockStages([paymentRow()], [receiptRow()])
+
+    await exportOrderPayments({ dateBasis: 'payment', from: '2026-08-01', to: '2026-08-31' })
+
+    // payment 口径靠 paid_at 的区间比较天然排除 NULL（NULL 比较恒为 NULL），无需也不应再加闸门：
+    // 多加会把「已作废但有 paid_at」的流水一并剔掉，而它们应当出现、仅金额列留空。
+    expect(hasPaidAtNotNullGate()).toBe(false)
+  })
+
   it('limit==null 全量导出时 receipt 与 sale_items 两阶段都按 500 个订单号分块', async () => {
     const payments = Array.from({ length: 1200 }, (_, index) =>
       paymentRow({ payment: { id: 10_000 - index, saleOrderId: `FY-BULK-${index}` } }))
