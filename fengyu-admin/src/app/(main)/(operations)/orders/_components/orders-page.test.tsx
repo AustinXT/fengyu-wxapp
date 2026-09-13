@@ -81,6 +81,30 @@ describe("OrdersPage — 订单类型筛选", () => {
     expect(mockSetMany).toHaveBeenCalledWith({ dateBasis: "payment", page: "" })
   })
 
+  it("日期口径默认选中款项归属日期，且默认值不写进 URL", async () => {
+    const user = userEvent.setup()
+    render(
+      <OrdersPage
+        orders={[]}
+        filterOptions={{ markets: [], stores: [] }}
+        total={0}
+        canCreateOrder={false}
+        canUpdate={false}
+      />,
+    )
+
+    const combobox = screen.getByRole("combobox", { name: "日期口径" })
+    expect(combobox).toHaveValue("attribution")
+    expect(screen.getByLabelText("款项归属开始日期")).toBeInTheDocument()
+    expect(screen.getByLabelText("款项归属结束日期")).toBeInTheDocument()
+
+    // 切到下单日期需显式落 URL；切回默认项则清空参数
+    await user.selectOptions(combobox, "order")
+    expect(mockSetMany).toHaveBeenCalledWith({ dateBasis: "order", page: "" })
+    await user.selectOptions(combobox, "attribution")
+    expect(mockSetMany).toHaveBeenCalledWith({ dateBasis: "", page: "" })
+  })
+
   it("同时提供订单明细和回款明细两个导出入口", () => {
     render(
       <OrdersPage

@@ -95,6 +95,19 @@ describe('settleServiceCommissions — 寄存退款单跳过提成（M8 镜像 s
     expect(sent(exec.calls, "commission_status = '已分配'")).toBe(true)
   })
 
+  // 回归守护（2026-09-04）：CAS 曾写成 `AND commission_status = '待分配'`，而建单初值是 NULL
+  // （无 DB default，三端 INSERT 都不写），导致 admin 代确认永远 0 行、状态留 NULL —— staff 端
+  // 列表渲染 "null"、保存报「服务单提成状态异常」，admin 服务提成导出两段双双漏单。
+  it('commission_status CAS 必须放行 NULL 初值（IS NULL OR = 待分配）', async () => {
+    const exec = makeExecutor({ remark: null, rate: '0.1' })
+
+    await settleServiceCommissions(exec as unknown as Parameters<typeof settleServiceCommissions>[0], 'svc-null-status', OPERATOR)
+
+    const casSql = exec.calls.map(textOf).find((t) => t.includes("commission_status = '已分配'")) ?? ''
+    expect(casSql).toContain('commission_status IS NULL')
+    expect(casSql).toContain("commission_status = '待分配'")
+  })
+
   it('rate=0 且有消耗金额（正常单）→ 写 rate_missing 告警 + 仍写 service_commissions（rate=0 行）', async () => {
     const exec = makeExecutor({ remark: null, rate: '0' })
 

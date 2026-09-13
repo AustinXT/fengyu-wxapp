@@ -159,11 +159,14 @@ async function recordBackupOutcome(status: BackupStatus, requestedBy?: string): 
       ${status.state === 'succeeded' ? 'database_backup.succeeded' : 'database_backup.failed'},
       'database_backup',
       ${status.id},
+      -- jsonb_build_object 的形参是 variadic "any"，PG 无法从上下文推断绑定参数类型，
+      -- 不显式转型就报 42P18「could not determine data type of parameter」。
+      -- 2026-09-12 实测：备份本身成功、这条审计日志每次静默失败（外层有 catch 兜着）。
       jsonb_build_object(
-        'kind', ${status.kind},
-        'state', ${status.state},
-        'sizeBytes', ${status.sizeBytes || null},
-        'errorCode', ${status.errorCode || null}
+        'kind', ${status.kind}::text,
+        'state', ${status.state}::text,
+        'sizeBytes', ${status.sizeBytes || null}::bigint,
+        'errorCode', ${status.errorCode || null}::text
       ),
       'cronTask',
       NOW()

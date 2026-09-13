@@ -12,6 +12,7 @@ import { Pagination } from "@/components/ui/pagination"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { ExportButton } from "@/components/ui/export-button"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
+import { DATE_BASIS_FILTER_OPTIONS, dateBasisShortLabel, parseDateBasis } from "@/lib/list-filters"
 import { PreserveListContextLink } from "@/components/return-context"
 import type { ServiceOrder } from "@/lib/types"
 import type { MarketStoreFilterOptions } from "@/lib/market-store-filter-types"
@@ -95,7 +96,9 @@ export default function AllocationsPageClient({
   const storeFilter = get("store")
   const dateFrom = get("from")
   const dateTo = get("to")
-  const dateBasis = get("dateBasis", "order") === "payment" ? "payment" : "order"
+  // 缺省即「款项归属日期」，因此默认值不写进 URL（与其他筛选的默认值编码一致）
+  const dateBasis = parseDateBasis(get("dateBasis"))
+  const dateBasisLabel = dateBasisShortLabel(dateBasis)
 
   // 搜索框防抖：本地 state 即时响应，URL 延迟更新
   const [searchInput, setSearchInput] = useState(get("q"))
@@ -153,24 +156,27 @@ export default function AllocationsPageClient({
                   className="w-40"
                   aria-label="日期口径"
                   value={dateBasis}
-                  onChange={(e) => setFilter("dateBasis", e.target.value === "payment" ? "payment" : "")}
+                  onChange={(e) => setFilter("dateBasis", e.target.value === "attribution" ? "" : e.target.value)}
                 >
-                  <option value="order">下单日期</option>
-                  <option value="payment">款项发生日期</option>
+                  {DATE_BASIS_FILTER_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
                 </Select>
               ) : (
                 <span className="text-sm text-muted-foreground whitespace-nowrap">服务日期</span>
               )}
               <DatePicker
                 className="w-36"
-                aria-label={tab === 'service' ? '服务开始日期' : `${dateBasis === 'payment' ? '款项发生' : '下单'}开始日期`}
+                aria-label={tab === 'service' ? '服务开始日期' : `${dateBasisLabel}开始日期`}
                 value={dateFrom}
                 onValueChange={(value) => setFilter("from", value)}
               />
               <span className="text-[#999999]">-</span>
               <DatePicker
                 className="w-36"
-                aria-label={tab === 'service' ? '服务结束日期' : `${dateBasis === 'payment' ? '款项发生' : '下单'}结束日期`}
+                aria-label={tab === 'service' ? '服务结束日期' : `${dateBasisLabel}结束日期`}
                 value={dateTo}
                 onValueChange={(value) => setFilter("to", value)}
               />

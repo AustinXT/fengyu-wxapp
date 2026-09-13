@@ -44,6 +44,8 @@ vi.mock('@/lib/permissions', () => ({
 vi.mock('@/lib/data-center/scope-sql', () => ({
   scopeFilterSql: vi.fn(() => ({})),
   scopeStoreSkeletonSql: vi.fn(() => ({})),
+  // 2026-09-03 产能员工池放宽：无门店（直挂组织节点）员工分支的可见性片段
+  orgAnchorScopeSql: vi.fn(() => ({})),
 }))
 
 const mockCtx = {

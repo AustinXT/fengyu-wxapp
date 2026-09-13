@@ -146,8 +146,12 @@ export async function settleServiceCommissions(
   }
 
   // 5. 同步 commission_status（与 staff/client finalize 一致）。⚠ CAS 守卫
-  // （commission_status='待分配' → '已分配' 状态机翻转）：
-  //   - 首次调用时 commission_status 为 '待分配' → 命中守卫 → UPDATE 1 行
+  // （commission_status NULL|'待分配' → '已分配' 状态机翻转）：
+  //   - service_orders.commission_status 无 DB default，三端 INSERT 均不写 → 建单初值是
+  //     **NULL**（不是 '待分配'；'待分配' 只在 staff serviceCommission.save 清空重分配时出现）。
+  //     故守卫必须含 IS NULL，否则 admin 代确认永远 0 行、状态留 NULL：
+  //     staff 端列表渲染成 "null"、serviceCommission.save 报「服务单提成状态异常」，
+  //     admin 服务提成导出两段（待分配/已分配）双双漏单。（2026-09-04 修复）
   //   - 重入/重试时已为 '已分配' → 0 行 no-op（仍有幂等性与 M1 寄存退款无副作用）
   // staff/client 等效机制在状态翻转 UPDATE（status='待客户确认'→'已完成'）中捆绑
   // commission_status；admin 此更新独立于 CTE，故须自有 CAS 防并发/重入错位。
@@ -155,6 +159,6 @@ export async function settleServiceCommissions(
     UPDATE service_orders
        SET commission_status = '已分配', updated_at = NOW()
      WHERE service_order_id = ${serviceOrderId}
-       AND commission_status = '待分配'
+       AND (commission_status IS NULL OR commission_status = '待分配')
   `)
 }

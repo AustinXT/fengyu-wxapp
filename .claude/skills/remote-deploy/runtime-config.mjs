@@ -11,18 +11,21 @@ export const ROOT = path.resolve(HERE, '../../..')
 
 export const TARGETS = Object.freeze({
   dev: Object.freeze({
-    sshHost: 'ali-demo',
-    publicHost: '47.113.202.7',
-    remoteDir: '/root/proj.xt.com/fengyu-wxapp/docker',
-    migrationHost: '47.113.202.7',
-    containerDbHost: '47.113.202.7',
+    // 2026-09-10 对齐 origin/dev：dev 的 PG 迁入 lx-test（101.34.242.103），ali-demo(47.113.202.7) 弃用。
+    // ⚠ 与下方 test 同机同库同目录 —— 本分支两个 target 只是 CloudBase 环境不同（dev 用 cloud1-*）。
+    sshHost: 'lx-test', // ~/.ssh/config 别名（原 sqlserver101，2026-09-04 改名）
+    publicHost: '101.34.242.103',
+    remoteDir: '/www/wwwroot/fengyu-admin/docker',
+    migrationHost: '101.34.242.103',
+    containerDbHost: '172.18.0.1',
     // CloudBase 标识归属断言用（方案 A：envId 随 TARGETS 入库，与 PG host 断言同一防线）
+    // dev 仍用独立 dev CloudBase 环境（cloud1-*）；2026-09-01 起仅 PG 随部署迁至 lx-test
     cloudBaseEnvId: 'cloud1-3gpht4b01ff88838',
     staffEnvId: 'cloud1-9g3ydpg512eecc99',
     cdnBase: 'https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la',
   }),
   test: Object.freeze({
-    sshHost: 'sqlserver101',
+    sshHost: 'lx-test', // ~/.ssh/config 别名（原 sqlserver101，2026-09-04 改名）
     publicHost: '101.34.242.103',
     remoteDir: '/www/wwwroot/fengyu-admin/docker',
     migrationHost: '101.34.242.103',
@@ -33,7 +36,7 @@ export const TARGETS = Object.freeze({
     cdnBase: 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la',
   }),
   prod: Object.freeze({
-    sshHost: 'fengyu-prod',
+    sshHost: 'lx-prod', // ~/.ssh/config 别名（原 fengyu-prod，2026-09-04 改名）
     publicHost: '118.178.196.26',
     remoteDir: '/www/wwwroot/fengyu-admin/docker',
     migrationHost: '118.178.196.26',
@@ -575,7 +578,11 @@ export function analyzeMigrationState(entries, remoteRows, hashes, options = {})
 
 export async function checkMigrations(env, options = {}) {
   const { config, target } = readConfig(env, options)
-  const url = env === 'test' ? config.PG_CONNECTION_STRING : config.ADMIN_DATABASE_URL
+  // 统一走公网 PG_CONNECTION_STRING：dev/test 容器网桥 172.18.0.1 仅远端可达。
+  // prod 上该键与 ADMIN_DATABASE_URL 同 host、**同账号、同库**（2026-09-13 实测 user=fengyu，
+  // 可正常读 drizzle.__drizzle_migrations），故切换不涉及权限差异。若将来把云函数拆成独立
+  // 低权账号，这里要改回 ADMIN_DATABASE_URL —— validateConfig 只断言 host/port/dbname，不查账号。
+  const url = config.PG_CONNECTION_STRING
   const requireFromDb = createRequire(path.join(ROOT, 'db/package.json'))
   const { Client } = requireFromDb('pg')
   const client = new Client({ connectionString: url, connectionTimeoutMillis: 10_000 })

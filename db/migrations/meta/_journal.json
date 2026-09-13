@@ -274,6 +274,13 @@
       "when": 1788202395781,
       "tag": "0038_sync_mixed_payment_attribution",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1789117632431,
+      "tag": "0039_payment_attribution_date_always_set",
+      "breakpoints": true
     }
   ]
 }

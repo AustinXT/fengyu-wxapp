@@ -54,15 +54,38 @@
 | 指标（员工层） | 公式 | 归属字段 | 时间窗口 | 备注 |
 |------|------|---------|---------|------|
 | 业绩 | `SUM(spia.allocated_amount)` | `sale_payment_item_allocations.employee_id` | `[spe.performance_date_period]` | JOIN receipt + `sale_order_performance_events`；`is_void=FALSE` ∩ `sale_order_type IN ('销售单','转换单')` ∩ `spe.status='已支付'` |
-| 实耗 | `SUM(service_items.unit_real_price * service_items.session_used)` | `service_items.employee_id` | `[service_date_period]` | `service_orders.status='已完成'` |
-| 客流 | `COUNT(DISTINCT service_orders.client_user_id)` | `service_items.employee_id` | `[service_date_period]` | 员工内去重，跨员工不去重；`status='已完成'` ∩ `client_user_id IS NOT NULL` |
-| 项目数 | `SUM(service_items.session_used)` | `service_items.employee_id` | `[service_date_period]` | `sales_category IN ('自销自耗','他销自耗')` ∩ `status='已完成'` |
+| 实耗 | `SUM(service_items.unit_real_price * service_items.session_used * service_commissions.allocation_ratio)` | `service_commissions.employee_id` | `[service_date_period]` | `sc.is_void=FALSE` ∩ `service_orders.status='已完成'`；2026-09-03 归属变更见下 |
+| 客流 | `COUNT(DISTINCT service_orders.client_user_id)` | `service_commissions.employee_id` | `[service_date_period]` | 员工内去重，跨员工不去重；`sc.is_void=FALSE` ∩ `status='已完成'` ∩ `client_user_id IS NOT NULL` |
+| 项目数 | `SUM(session_used)`（先按 `(sc.employee_id, service_item_id)` DISTINCT） | `service_commissions.employee_id` | `[service_date_period]` | `sc.is_void=FALSE` ∩ `sales_category IN ('自销自耗','他销自耗')` ∩ `status='已完成'`；计数指标**不乘** `allocation_ratio` |
 | 新会员 | `COUNT(*)` | `client_wechat_users.bound_employee_id` | `[became_member_at_period]` | `became_member_at IS NOT NULL`；`bound_employee_id IS NULL` 的新会员不归属任何员工（与"无归属新会员"差额由监控关注） |
 | 收入 | 销售提成 + 服务提成 | 销售=`sale_payment_item_allocations.employee_id`；服务=`service_commissions.employee_id` | 销售按 `[spe.performance_date_period]`；服务按 `[service_date_period]` | `is_void=FALSE`；销售使用 `commission_amount`；服务使用 `service_commissions.commission_amount` |
 
 > **业绩 vs 收入区别**：业绩仅含销售部分（`sale_allocations`）；收入 = 销售 + 服务提成（`service_commissions`）。两者销售部分公式相同；收入因加服务提成而 ≥ 业绩。
 >
-> **产能员工范围**（`staff_wechat_users`）：`hired_at IS NOT NULL ∩ hired_at::date <= NOW()::date ∩ (resigned_at IS NULL OR resigned_at::date > NOW()::date) ∩ skills && ARRAY['美容师','养生师']` ∩ scope（`store_id`）。锚点为 **NOW()**（员工排行榜本就是"当前在职产能员工"的 period 业绩，不随 selectedDate 历史化；与 employeeCount selectedDate 历史化口径**字段一致但锚点不同**）。
+> **2026-09-03 员工归属口径变更（实耗 / 客流 / 项目数）**：归属字段从 `service_items.employee_id`
+> 改为 `service_commissions.employee_id`（`is_void=FALSE`），实耗额外乘 `allocation_ratio`。
+> 缘由：`service_items.employee_id` 是开单时选定的负责美容师，**全仓无任何路径可修改**；门店事后用
+> 「营业额分配-服务提成」纠正归属时改不动它，导致实耗长期记在没拿这单提成的人头上
+> （2026-09 生产实测 103 项 / 7.7 万元错位，占当月实耗 23%）。改后与 admin 服务提成导出
+> （`exportAllocationServiceOrders`）、`staff.js performanceDetail` 个人绩效页三处同源。
+> - **所有 `role_type` 各算一份**（用户拍板，不做角色去重）：同一项目同时挂美容师 + 品项老师时两人各全额计入。
+> - **门店榜 / 全局大卡实耗仍走 `service_items` 原口径**，不在本次变更范围；因此员工榜合计与门店实耗不再恒等。
+>
+> **2026-09-03 产能员工池同步放宽**（配套上条，两端镜像）：候选池由「`store_id ∈ 在营门店`」
+> 改为「门店员工 ∪ 直挂组织节点员工」。否则品项公司的品项老师、各市场养生部的养生师
+> （`store_id` 为空）拿到分配额却整体落榜（实测 22 人 / 约 2.6 万元）。三段口径：
+> 1. **`store_id` 兜底** — 档案 `store_id` 为空但直挂的是**门店**节点时反查该门店（修 1 例档案缺失）；
+> 2. **展示名兜底** — 「所属门店」列为空时显示直挂节点名（如「品项公司」「养生部」），不留空白；
+> 3. **可见性锚 `anchor_market_id`** — 直挂节点自身是市场则取自身，否则取父节点（部门→市场，org 树最多一层）。
+>    无门店员工按「锚定市场下是否有本账号可见的在营门店」判定可见性：
+>    - 品项公司是总部直属市场节点、其下无门店 → **仅总部 / admin 可见**；
+>    - 养生部 / 推广部 / 财智部锚到所属市场 → 该市场范围的账号可见（实测南昌凤御视角可见养生部 9 人、推广部 14 人，看不到品项公司）；
+>    - admin 侧 UI 选具体门店时无门店员工一律不出现（不归属任何单店）。
+>
+> 实现：staff `producerEmployeesCte` + `buildOrgAnchorScope`；admin `producerCte` + `orgAnchorScopeSql`
+> （`src/lib/data-center/scope-sql.ts`）。跨端字面量由 `consistency.efficiency.test.ts` 守护。
+>
+> **产能员工范围**（`staff_wechat_users`）：`hired_at IS NOT NULL ∩ hired_at::date <= NOW()::date ∩ (resigned_at IS NULL OR resigned_at::date > NOW()::date)` ∩ scope（2026-09-03 起 = 门店员工按 `store_id` ∪ 直挂组织节点员工按 `anchor_market_id`，见下）。<br>_历史：曾含 `skills && ARRAY['美容师','养生师']`（2026-05-20 去除）；曾强制 `store_id ∈ 在营门店`（2026-09-03 放宽）。_锚点为 **NOW()**（员工排行榜本就是"当前在职产能员工"的 period 业绩，不随 selectedDate 历史化；与 employeeCount selectedDate 历史化口径**字段一致但锚点不同**）。
 > 排行榜不含推广师（无产能技能）和管理者（虽可能 skills 命中但通常实际开单/服务记录少），与人均口径分母对齐。
 > `is_resigned` 列在 staffApi 查询路径已退役（仅保留作档案当前态冗余字段），与 §"门店状况" T3 决议一致。
 >

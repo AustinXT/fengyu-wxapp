@@ -34,6 +34,11 @@ test.describe('营业额分配列表', () => {
   test('销售提成支持款项发生日期，服务提成仍固定按服务日期', async ({ page }) => {
     await page.goto('/allocations')
 
+    // 缺省口径是款项归属日期，且不写进 URL
+    await expect(page.getByRole('combobox', { name: '日期口径' })).toHaveValue('attribution')
+    await expect(page.getByLabel('款项归属开始日期')).toBeVisible()
+    await expect(page).not.toHaveURL(/dateBasis=/)
+
     await page.getByRole('combobox', { name: '日期口径' }).selectOption('payment')
     await expect(page).toHaveURL(/dateBasis=payment/)
     await expect(page.getByLabel('款项发生开始日期')).toBeVisible()
