@@ -32,11 +32,13 @@ metadata:
 
 | 环境 | SSH / 公网服务器 | 远端目录 | 容器数据库 | 本地迁移连接 |
 |---|---|---|---|---|
-| dev | `ali-demo` / `47.113.202.7` | `/root/proj.xt.com/fengyu-wxapp/docker` | `47.113.202.7:5433` | `47.113.202.7:5433` |
+| dev | `lx-test` / `101.34.242.103` | `/www/wwwroot/fengyu-admin/docker` | `172.18.0.1:5433` | `101.34.242.103:5433` |
 | test | `lx-test` / `101.34.242.103` | `/www/wwwroot/fengyu-admin/docker` | `172.18.0.1:5433` | `101.34.242.103:5433` |
 | prod | `lx-prod` / `118.178.196.26` | `/www/wwwroot/fengyu-admin/docker` | `118.178.196.26:5433` | `118.178.196.26:5433` |
 
-`172.18.0.1` 是 test 容器回连 `101.34.242.103` 宿主 PostgreSQL 的 Docker 网桥，不是另一台服务器。禁止用参数、环境变量或分支名覆盖上述目标。
+`172.18.0.1` 是容器回连 `101.34.242.103` 宿主 PostgreSQL 的 Docker 网桥，不是另一台服务器。禁止用参数、环境变量或分支名覆盖上述目标。
+
+⚠ **dev 与 test 是同一台机、同一个远端目录、同一个库**（2026-09-10 dev 的 PG 从 ali-demo `47.113.202.7` 迁来，该机已弃用；两者仅 CloudBase 环境不同）。因此 `deploy-admin.sh dev` 与 `deploy-admin.sh test` 部署的是**同一套 admin 容器**，后跑的覆盖先跑的；`validateConfig` 的 host 断言也区分不了两者。要独立验收 dev / test，须先把两者拆到不同远端目录或不同机器。
 
 ## 配置权威与门禁
 
