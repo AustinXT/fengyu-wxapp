@@ -229,6 +229,29 @@ interface ServiceRecord {
   items: Array<{ itemName: string; spec: string }>;
 }
 
+interface HomeProduct {
+  saleItemId: string;
+  saleItemGroupId?: string | null;
+  saleOrderId: string;
+  productName: string;
+  unit: string;
+  purchasedQuantity: number;
+  paidQuantity: number;
+  pickedQuantity: number;
+  refundedQuantity: number;
+  remainingQuantity: number;
+  pendingPickupQuantity: number;
+  /** 行级欠款；仅 refundedQuantity=0 时有值，退过款的行为 null（received 是净实收，相减会虚增欠款） */
+  unpaidAmount: number | null;
+  status: string;
+  storeId: string;
+  storeName: string | null;
+  purchasedAt: string;
+  purchasedAtFmt?: string;
+  statusClass?: string;
+  unpaidAmountFmt?: string;
+}
+
 // ===== 页面逻辑 =====
 
 Page({
@@ -269,6 +292,9 @@ Page({
     // Tab 5: 服务记录
     serviceRecords: [] as ServiceRecord[],
     serviceLoaded: false,
+    // Tab 6: 家居产品
+    homeProducts: [] as HomeProduct[],
+    homeProductsLoaded: false,
   },
 
   _clientUserId: '' as string,
@@ -387,6 +413,9 @@ Page({
     } else if (tab === 5) {
       this.setData({ serviceLoaded: false });
       task = Promise.all([task, this.loadServiceHistory()]);
+    } else if (tab === 6) {
+      this.setData({ homeProductsLoaded: false });
+      task = Promise.all([task, this.loadHomeProducts()]);
     }
     task.finally(finish);
   },
@@ -404,6 +433,8 @@ Page({
       this.loadGiftHistory();
     } else if (index === 5 && !this.data.serviceLoaded) {
       this.loadServiceHistory();
+    } else if (index === 6 && !this.data.homeProductsLoaded) {
+      this.loadHomeProducts();
     }
   },
 
@@ -713,5 +744,41 @@ Page({
   onServiceOrderTap(e: WechatMiniprogram.TouchEvent) {
     const id = e.currentTarget.dataset.id as string;
     wx.navigateTo({ url: `/packageService/service-detail/service-detail?id=${id}` });
+  },
+
+  // 与门店视图 customer.homeProducts 同口径：跨店全量展示，未付清的行也要显示（issue #120）
+  async loadHomeProducts() {
+    // 没有顾客 id 时也要落 loaded，否则 Tab 永远停在 loading 转圈
+    if (!this._clientUserId) {
+      this.setData({ homeProducts: [], homeProductsLoaded: true });
+      return;
+    }
+    try {
+      const data = await callStaffApi<{ homeProducts: HomeProduct[] }>('mgmtCustomer.homeProducts', {
+        clientUserId: this._clientUserId,
+        ...this._scopePayload(),
+      });
+      const statusClassMap: Record<string, string> = {
+        退款处理中: 'pending',
+        待提货: 'pending',
+        部分提货: 'progress',
+        已提货: 'success',
+        已完成: 'done',
+        待付清: 'pending',
+      };
+      this.setData({
+        homeProducts: (data?.homeProducts || []).map((item) => ({
+          ...item,
+          purchasedAtFmt: item.purchasedAt ? formatDate(item.purchasedAt) : '',
+          statusClass: statusClassMap[item.status] || 'done',
+          // 仅未付清的行展示欠款；已付清/退过款的行留空，wxml 按空串判显隐
+          unpaidAmountFmt:
+            item.unpaidAmount != null && item.unpaidAmount > 0 ? formatAmount(item.unpaidAmount) : '',
+        })),
+        homeProductsLoaded: true,
+      });
+    } catch (_) {
+      this.setData({ homeProducts: [], homeProductsLoaded: true });
+    }
   },
 });

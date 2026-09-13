@@ -54,6 +54,8 @@ const FILES = {
   adminPointsSettleTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/points-settle.ts'),
   staffCustomerJs: path.resolve(__dirname, '../../routes/customer.js'),
   adminCustomersTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/customers.ts'),
+  adminHomeProductTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/home-product.ts'),
+  staffMgmtCustomerJs: path.resolve(__dirname, '../../routes/mgmt-customer.js'),
   adminPickupRecordsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/pickup-records.ts'),
   staffPaymentAllocatableJs: path.resolve(__dirname, '../../utils/payment-allocatable.js'),
   clientPaymentAllocatableJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/payment-allocatable.js'),
@@ -2005,6 +2007,7 @@ describe('cross-end-sql-snapshot 反模式守护（防镜像 bug 字面锁定失
 describe('家居产品部分支付权益跨端守护', () => {
   const ASSET_FILES = [
     ['staff 顾客档案', FILES.staffCustomerJs],
+    ['staff 管理层顾客档案', FILES.staffMgmtCustomerJs],
     ['client 我的家居产品', FILES.clientOrderJs],
     ['admin 顾客详情', FILES.adminCustomersTs],
   ]
@@ -2013,14 +2016,95 @@ describe('家居产品部分支付权益跨端守护', () => {
     ['admin 提货', FILES.adminPickupRecordsTs],
   ]
 
+  // 断言必须跑在「家居产品资产查询」这一条 SQL 上，不能跑在整份文件上：
+  // o.status IN (...) / item_direction 这类串在同文件其它查询里也出现，
+  // 文件级 toContain 会被兄弟查询兜底，单端漂移测不出来（变异测试实证）。
+  const homeProductSql = (file) =>
+    normalizeSql(extractBacktickStringContaining(readFile(file), 'home_product_balances'))
+
   test.each(ASSET_FILES)('%s 纳入部分支付并按实收比例计算已付整件数', (_name, file) => {
-    const src = normalizeSql(readFile(file))
+    const src = homeProductSql(file)
     expect(src).toContain("o.status IN ('已支付', '部分支付', '已完成')")
     expect(src).toContain(
       'FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int',
     )
     expect(src).toContain('GREATEST(paid_quantity - picked_quantity, 0)')
     expect(src).toContain('pending_pickup_quantity')
+    expect(src).toContain("si.item_direction = '购买'")
+    expect(src).toContain("si.product_type = '家居产品'")
+  })
+
+  // issue #120：部分支付且不足一整件时 paid_quantity=0 → pending_pickup_quantity=0，
+  // 旧过滤 `picked > 0 OR pending > 0` 会把整行剔除，顾客档案看不到已购与欠款。
+  // 改为按物理剩余份额放行；提货拦截仍走 PICKUP_FILES 那套，口径不变。
+  test.each(ASSET_FILES)('%s 按剩余份额放行，未付清的行不被整行过滤', (_name, file) => {
+    const src = homeProductSql(file)
+    expect(src).toContain('WHERE picked_quantity > 0 OR remaining_quantity > 0')
+    expect(src, '不得回退到会吞掉未付清行的旧过滤').not.toContain(
+      'WHERE picked_quantity > 0 OR pending_pickup_quantity > 0',
+    )
+  })
+
+  // 寄存单 sale_amount 是原价快照、received 是历史值，相减不是欠款。
+  // 放行后若不置空，会向顾客伪造债务（dev 实测 86 行 / ¥44834.30），必须四端一起锁死。
+  test.each(ASSET_FILES)('%s 寄存单不参与欠款计算', (_name, file) => {
+    const src = homeProductSql(file)
+    expect(src).toContain("(o.sale_order_type = '寄存单') AS is_deposit")
+    expect(src).toContain('CASE WHEN is_deposit THEN NULL')
+    expect(src).toContain('ELSE GREATEST(0, sale_amount_total - received_total)::numeric(12, 2)')
+    expect(src).toContain('END AS unpaid_amount')
+    // 不得退回到无条件相减的写法
+    expect(src).not.toMatch(
+      /GREATEST\(0, sale_amount_total - received_total\)::numeric\(12, 2\) AS unpaid_amount/,
+    )
+  })
+
+  test.each(ASSET_FILES)('%s 按 sale_item_group_id 合并，四端行粒度一致', (_name, file) => {
+    const src = homeProductSql(file)
+    expect(src).toContain('COALESCE(si.sale_item_group_id, si.sale_item_id) AS sale_item_group_id')
+    expect(src).toContain('GROUP BY sale_item_group_id')
+    expect(src).toContain('BOOL_OR(si.is_deposit) AS is_deposit')
+  })
+
+  // 状态派生：staff/client 内联在各自 mapHomeProductRow，admin 抽在 lib/home-product.ts
+  const STATUS_FILES = [
+    ['staff 顾客档案', FILES.staffCustomerJs],
+    ['staff 管理层顾客档案', FILES.staffMgmtCustomerJs],
+    ['client 我的家居产品', FILES.clientOrderJs],
+    ['admin 状态派生', FILES.adminHomeProductTs],
+  ]
+
+  // 断言必须把「条件 + label」绑成整句：只 toContain('待付清') 会被同文件的注释满足，
+  // 只 toMatch 条件表达式则测不出 label 被改、分支被挪位或变成死代码（变异测试实证）。
+  test.each(STATUS_FILES)('%s 待付清与欠款金额绑定，且排在已提货兜底之前', (_name, file) => {
+    const src = readFile(file)
+    const isAdmin = /\.ts$/.test(file)
+    if (isAdmin) {
+      expect(src).toContain("if (unpaidAmount != null && unpaidAmount > 0) return '待付清'")
+      expect(src).toContain("if (remainingQuantity > 0) return '待提货'")
+      expect(src).toContain("return refundedQuantity > 0 ? '已完成' : '已提货'")
+    } else {
+      expect(src).toContain("else if (unpaidAmount > 0) status = '待付清'")
+      expect(src).toContain("else if (remainingQuantity > 0) status = '待提货'")
+      expect(src).toContain("else status = refundedQuantity > 0 ? '已完成' : '已提货'")
+    }
+    // 分支顺序：待付清 → 待提货 → 已完成/已提货 兜底。顺序错了语义就反了。
+    const idxUnpaid = src.indexOf('待付清')
+    const idxRemaining = src.lastIndexOf('待提货')
+    const idxFallback = src.indexOf("'已完成' : '已提货'")
+    expect(idxUnpaid).toBeGreaterThan(-1)
+    expect(idxFallback).toBeGreaterThan(-1)
+    expect(idxUnpaid, '待付清必须先于已提货兜底判断').toBeLessThan(idxFallback)
+    expect(idxRemaining, '待提货兜底必须先于已完成判断').toBeLessThan(idxFallback)
+  })
+
+  // 「算不出欠款」必须短路成 null：退款行（received 是净实收）与寄存单（SQL 置 NULL）都走这条。
+  // 跑在 mapper 所在文件上（admin 的短路在 customers.ts，不在 lib/home-product.ts）。
+  test.each(ASSET_FILES)('%s 退款行与金额缺失行不下发欠款', (_name, file) => {
+    const src = readFile(file)
+    expect(src).toMatch(
+      /refundedQuantity > 0 \|\| row\.unpaid_amount == null \? null : Number\(row\.unpaid_amount\)/,
+    )
   })
 
   test.each(PICKUP_FILES)('%s 在事务锁内复算已付可提上限', (_name, file) => {
