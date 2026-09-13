@@ -77,3 +77,7 @@ _tmp/
 reports/
 .claude/last-report.json
 .claude/scheduled_tasks.lock
+
+# 双谱系评审 harness 配置（因机器而异，本机专属）
+.claude/dev-launch.review.md
+.claude/notes/pr-ready/
