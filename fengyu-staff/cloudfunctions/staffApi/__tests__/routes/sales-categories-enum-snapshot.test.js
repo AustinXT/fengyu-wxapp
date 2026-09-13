@@ -18,13 +18,48 @@ const { SALES_CATEGORIES, UNCATEGORIZED } = require('../../utils/sales-categorie
 
 const REPO = path.resolve(__dirname, '../../../../..')
 const ENUMS_TS = path.join(REPO, 'db/schema/enums.ts')
-const ADMIN_TYPES = path.join(REPO, 'fengyu-admin/src/lib/types.ts')
-const ADMIN_SCHEMAS = path.join(REPO, 'fengyu-admin/src/lib/schemas.ts')
-const PAYNOTIFY = path.join(REPO, 'fengyu-client/cloudfunctions/payNotify/index.js')
 
 /** 抽出一组引号字面量，顺序保留 */
 const pickLiterals = (text) =>
   (text.match(/['"]([^'"]+)['"]/g) || []).map((s) => s.slice(1, -1))
+
+/**
+ * 运行时硬编码副本清单 —— 每一处都是「枚举加值时会漏同步」的真实风险点。
+ * 漏同步的后果不是报错，而是静默降级：admin 下拉少一个选项、提成率骨架少一个键。
+ */
+const COPIES = [
+  {
+    label: 'fengyu-admin types.ts — SalesCategory 联合类型',
+    file: path.join(REPO, 'fengyu-admin/src/lib/types.ts'),
+    // 跨行捕获：枚举加值后 prettier 可能把联合类型折行，单行正则会只抓到首行而误报
+    pattern: /type\s+SalesCategory\s*=\s*([\s\S]*?)(?:\n\n|\nexport|\ninterface|$)/g,
+  },
+  {
+    label: 'fengyu-admin schemas.ts — salesCategory z.enum',
+    file: path.join(REPO, 'fengyu-admin/src/lib/schemas.ts'),
+    pattern: /salesCategory:\s*z\.enum\(\s*\[([^\]]+)\]/g,
+  },
+  {
+    label: 'fengyu-admin 品项分类页 — SALES_CATEGORY_OPTIONS 下拉',
+    file: path.join(REPO, 'fengyu-admin/src/app/(main)/(catalog)/products/categories/_components/categories-page.tsx'),
+    pattern: /SALES_CATEGORY_OPTIONS\s*:\s*SalesCategory\[\]\s*=\s*\[([^\]]+)\]/g,
+  },
+  {
+    label: 'fengyu-admin 提成配置页 — SALES_CATEGORY_OPTIONS 下拉',
+    file: path.join(REPO, 'fengyu-admin/src/app/(main)/(organization)/commission/_components/commission-page.tsx'),
+    pattern: /SALES_CATEGORY_OPTIONS\s*=\s*\[([^\]]+)\]/g,
+  },
+  {
+    label: 'staffApi allocation.js — orderRates 提成率骨架',
+    file: path.join(REPO, 'fengyu-staff/cloudfunctions/staffApi/routes/allocation.js'),
+    pattern: /orderRates:\s*\{([^}]+)\}/g,
+  },
+  {
+    label: 'payNotify index.js — orderRates 提成率骨架',
+    file: path.join(REPO, 'fengyu-client/cloudfunctions/payNotify/index.js'),
+    pattern: /orderRates:\s*\{([^}]+)\}/g,
+  },
+]
 
 describe('sales_category 跨端字面量一致性', () => {
   test('utils/sales-categories.js 与 db/schema/enums.ts::salesCategoryEnum 逐字一致', () => {
@@ -50,26 +85,18 @@ describe('sales_category 跨端字面量一致性', () => {
     expect(UNCATEGORIZED).toBe('未分类')
   })
 
-  // 以下三端各自保留独立副本（用户已 veto shared 目录），只能靠本测试守护
-  test('fengyu-admin types.ts 的 SalesCategory 联合类型与之一致', () => {
-    const source = fs.readFileSync(ADMIN_TYPES, 'utf8')
-    const match = source.match(/type\s+SalesCategory\s*=\s*([^\n]+)/)
-    expect(match, `未能在 ${ADMIN_TYPES} 定位 SalesCategory 类型`).toBeTruthy()
-    expect(pickLiterals(match[1])).toEqual([...SALES_CATEGORIES])
-  })
+  // 以下各端保留独立副本（用户已 veto shared 目录），只能靠本测试守护
+  test.each(COPIES)('$label 与单源一致', ({ file, pattern }) => {
+    const source = fs.readFileSync(file, 'utf8')
+    const matches = [...source.matchAll(pattern)]
 
-  test('fengyu-admin schemas.ts 的 salesCategory z.enum 与之一致', () => {
-    const source = fs.readFileSync(ADMIN_SCHEMAS, 'utf8')
-    const match = source.match(/salesCategory:\s*z\.enum\(\s*\[([^\]]+)\]/)
-    expect(match, `未能在 ${ADMIN_SCHEMAS} 定位 salesCategory z.enum`).toBeTruthy()
-    expect(pickLiterals(match[1])).toEqual([...SALES_CATEGORIES])
-  })
+    expect(matches.length, `未能在 ${file} 定位目标声明，格式可能已改写`).toBeGreaterThan(0)
 
-  test('payNotify 的 orderRates 骨架键与之一致', () => {
-    const source = fs.readFileSync(PAYNOTIFY, 'utf8')
-    const match = source.match(/orderRates:\s*\{([^}]+)\}/)
-    expect(match, `未能在 ${PAYNOTIFY} 定位 orderRates 骨架`).toBeTruthy()
-    // 键值对里数字不带引号，pickLiterals 只会抽到分类名
-    expect(pickLiterals(match[1])).toEqual([...SALES_CATEGORIES])
+    // 校验**每一处**命中而非只看第一处：allocation.js 内部就有 3 份同样的骨架，
+    // 只验第一处会让「改了一处漏了另两处」静默通过；注释里残留的旧声明也会在此响亮失败。
+    // 键值对里的数字不带引号，pickLiterals 只抽到分类名
+    matches.forEach((m, i) => {
+      expect(pickLiterals(m[1]), `${file} 第 ${i + 1} 处命中与单源不一致`).toEqual([...SALES_CATEGORIES])
+    })
   })
 })

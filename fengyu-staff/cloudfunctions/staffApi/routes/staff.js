@@ -602,7 +602,9 @@ async function bindStore(ctx) {
  *
  * ⚠️ 退款在销售侧与服务侧的口径不对称（既有，非本次引入，勿误以为 bug）：
  *   销售侧 = **冲销式**：refund-cascade INSERT 负数镜像子分配，`is_void` 仍为 false →
- *     负数行进入 allocRows，明细会出现负提成/负分配额（前端按 amount < 0 打「退款」标识）。
+ *     负数行进入 allocRows，明细会出现负提成/负分配额。退款标识由本函数按款项
+ *     `spe.change_type === '退款'` 下发 `isRefund`，前端只读该字段 —— **不可用金额符号推断**：
+ *     转换单转出行的分配额同样为负，而提成率 0 的退款行提成额是 0，两头都会判错。
  *   服务侧 = **删除式**：退款把 service_commissions.is_void 置 true → 本查询直接排除 →
  *     已过去月份的服务提成会**回溯变小**，员工事后查看历史月份与当时所见不一致。
  *   两侧统一为冲销式需要改 refund-cascade + 历史数据回填，超出绩效页范围。

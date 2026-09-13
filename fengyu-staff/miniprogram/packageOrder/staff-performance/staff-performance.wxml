@@ -96,7 +96,11 @@
     <van-loading type="spinner" color="#C0322A" />
   </view>
 
-  <van-empty wx:elif="{{!loading && items.length === 0}}" description="暂无提成记录" />
+  <!-- 区分「加载失败」与「本期无记录」：顶部显示 '--' 时列表若说「暂无记录」会被当成零业绩 -->
+  <van-empty
+    wx:elif="{{!loading && items.length === 0}}"
+    description="{{loadFailed ? '加载失败，请稍后重试' : '暂无提成记录'}}"
+  />
 
   <!-- 切筛选在途时淡化旧列表：否则新 chip 已高亮、下面还挂着上一条件的明细 -->
   <view wx:else class="perf-list {{loading ? 'perf-list--switching' : ''}}">

@@ -117,6 +117,9 @@ Page({
     total: 0,
     page: 1,
     hasMore: false,
+    // 空列表的成因：加载失败 vs 本期确实没有记录 —— 两者文案必须分开，
+    // 否则顶部显示 '--'（失败）、列表却说「暂无提成记录」，员工会把失败当成零业绩
+    loadFailed: false,
   },
 
   _loaded: false,
@@ -124,6 +127,10 @@ Page({
   _seq: 0,
   /** 页面已卸载：async 回调写回前的存活检查（_seq 只护 loadData） */
   _disposed: false,
+  /** 最后一次成功渲染的查询键（员工+时段+两级筛选）；失败时据此判断旧数据是否还同源 */
+  _lastKey: '',
+  /** 最后一次成功的全量分类汇总：切一级 Tab 时本地即时换口径，不必等请求返回 */
+  _summaryCache: null as { summary: CategorySummary; categories: string[] } | null,
 
   onLoad(options: Record<string, string>) {
     const mgr = isManager();
@@ -189,6 +196,7 @@ Page({
       selectedStaffIndex: picked,
       staffName: staff.name,
       items: [],
+      loadFailed: false,
       ...this.blankSummary(),
     });
     this.loadData(true);
@@ -219,7 +227,7 @@ Page({
 
     // 换时间段同样是数据主体变化：先清汇总与明细，避免请求在途时
     // 出现「新时段标题 + 旧时段明细」的拼接（与 onStaffConfirm 的清理范围保持一致）
-    this.setData({ rangeType: type, startDate: start, endDate: end, displayDate: display, items: [], ...this.blankSummary() });
+    this.setData({ rangeType: type, startDate: start, endDate: end, displayDate: display, items: [], loadFailed: false, ...this.blankSummary() });
     if (fetch) this.loadData(true);
   },
 
@@ -231,7 +239,15 @@ Page({
   // 只换汇总口径与明细的 type 过滤，二级分类选中态保留
   onMainTabChange(e: WechatMiniprogram.CustomEvent) {
     const index = e.detail.index as number;
-    this.setData({ activeMainTab: index });
+    const cached = this._summaryCache;
+    this.setData({
+      activeMainTab: index,
+      // 分类汇总恒全量、不随筛选变，切一级 Tab 只是换口径 —— 用缓存本地即时重算，
+      // 否则慢网下会出现「服务 Tab 已高亮，面板还挂着销售标题和销售金额」
+      ...(cached
+        ? this.buildCategoryPanel(cached.summary, cached.categories, index, this.data.activeSubCategory)
+        : {}),
+    });
     this.loadData(true);
   },
 
@@ -258,6 +274,7 @@ Page({
     const seq = ++this._seq;
     // page 作为局部量推导：失败时不会像「先 setData 自增」那样留下永久跳页
     const page = reset ? 1 : this.data.page + 1;
+    let queryKey = '';
     this.setData({ loading: true });
     try {
       const { activeMainTab, activeSubCategory, staffList, selectedStaffIndex, isManager: isMgr } = this.data;
@@ -268,6 +285,10 @@ Page({
 
       // 店长可查看指定员工
       const employeeId = (isMgr && staffList.length > 0) ? staffList[selectedStaffIndex]?.staffWfId : undefined;
+
+      // 查询键：标识「屏幕上这批数据属于谁的哪个时段哪个筛选」。
+      // 失败保留旧数据的前提是旧数据与本次请求同源，否则保留的就是别人/别的条件的数据
+      queryKey = [employeeId || '', this.data.startDate, this.data.endDate, filterType || '', salesCategory || ''].join('|');
 
       const res = await callStaffApi<PerformanceResponse>('staff.performanceDetail', {
         startDate: this.data.startDate,
@@ -296,11 +317,16 @@ Page({
       // 优先用新字段 totalServiceCommission，回退到旧字段 totalServiceFee（向后兼容）
       const serviceCommission = res.totalServiceCommission ?? res.totalServiceFee ?? 0;
       const total = res.total || 0;
+      this._lastKey = queryKey;
+      this._summaryCache = res.categorySummary && res.categories && res.categories.length
+        ? { summary: res.categorySummary, categories: res.categories }
+        : null;
       this.setData({
+        loadFailed: false,
         totalSalesAlloc: money(res.totalSalesAlloc),
         totalServiceCommission: money(serviceCommission),
         totalCommission: money(res.totalCommission),
-        ...this.buildCategoryPanel(res, activeMainTab, activeSubCategory),
+        ...this.buildCategoryPanel(res.categorySummary, res.categories, activeMainTab, activeSubCategory),
         items: newItems,
         total,
         page,
@@ -311,11 +337,19 @@ Page({
       if (seq !== this._seq) return;
       const msg = err instanceof Error ? err.message : '加载失败';
       wx.showToast({ title: msg, icon: 'none' });
-      // 主动切换（换员工/换时段/切筛选）失败时必须连汇总一起清：否则「员工 A 的金额」
-      // 会挂在已切换到的员工 B 名下，或新筛选条件高亮着、下面却挂着上一次条件的明细。
-      // 被动刷新（onShow）失败不清 —— 旧值是同一主体的最后已知值，抹掉是信息丢失
-      if (reset && !keepStaleOnError) {
-        this.setData({ items: [], total: 0, hasMore: false, ...this.blankSummary() });
+
+      // 保留旧数据只在三个条件同时成立时才安全：
+      //   ① 是被动刷新（onShow），不是用户主动切换
+      //   ② 本次请求与屏幕上已渲染的那批数据同源（否则 onShow 可能覆盖了一次在途的筛选切换，
+      //      保留下来的就是「新 Tab 高亮 + 旧条件明细」）
+      //   ③ 不是身份/权限类错误（员工调店、权限撤销后仍把原数据留在屏幕上是越权展示）
+      const errorType = (err as { errorType?: string } | null)?.errorType;
+      const authError = errorType === 'UNAUTHORIZED' || errorType === 'PERMISSION_DENIED';
+      const sameSource = queryKey === this._lastKey;
+      if (reset && (!keepStaleOnError || !sameSource || authError)) {
+        this._lastKey = '';
+        this._summaryCache = null;
+        this.setData({ items: [], total: 0, hasMore: false, loadFailed: true, ...this.blankSummary() });
       }
     } finally {
       if (seq === this._seq) this.setData({ loading: false });
@@ -354,9 +388,12 @@ Page({
    * 若在缺 `categories` 时回退 `Object.keys(summary)`，旧云函数下会表现为「零金额分类消失、
    * 点某分类后其余格子全部消失」——正是本 issue 要修的老毛病。缺字段一律隐藏整块降级。
    */
-  buildCategoryPanel(res: PerformanceResponse, mainTab: number, activeSub: string) {
-    const summary = res.categorySummary;
-    const categories = res.categories;
+  buildCategoryPanel(
+    summary: CategorySummary | undefined,
+    categories: string[] | undefined,
+    mainTab: number,
+    activeSub: string,
+  ) {
     if (!summary || !categories || !categories.length) {
       return { hasCategoryPanel: false, categoryCells: [] as CategoryCell[], cellsCaption: '' };
     }
