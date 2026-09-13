@@ -143,6 +143,13 @@
   font-weight: 600;
 }
 
+.perf-cells-caption {
+  display: block;
+  font-size: 20rpx;
+  color: var(--color-text-hint);
+  margin: 4rpx 0 8rpx;
+}
+
 .perf-cell-grid {
   display: flex;
   flex-wrap: wrap;
@@ -226,6 +233,12 @@
 .type-tag--service {
   background: #E3F0FF;
   color: #5E8BB3;
+}
+
+/* 退款冲销行（提成/业绩为负）——品牌红，与 ui.spec §4.19 退款色一致 */
+.type-tag--refund {
+  background: #FFF0EE;
+  color: var(--color-primary);
 }
 
 .perf-item-row {

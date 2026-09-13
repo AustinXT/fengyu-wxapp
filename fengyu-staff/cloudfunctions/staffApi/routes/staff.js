@@ -13,6 +13,7 @@ const pg = require('../db/pg')
 const { requireStaffBound, invalidateAuthCache, isCurrentStoreManager } = require('../middleware/auth')
 const { assertEmployeeInScope, isStoreInScope, buildStoreScopeCondition } = require('../utils/scope')
 const { shanghaiDateStr } = require('../utils/datetime')
+const { SALES_CATEGORIES, UNCATEGORIZED } = require('../utils/sales-categories')
 
 // 跨 env 转上传相关 env vars：
 // - CLIENT_API_HTTP_URL：clientApi 的 HTTP 触发器 URL（部署 clientApi 后 tcb fn detail 拿）
@@ -597,12 +598,25 @@ async function bindStore(ctx) {
  *   categorySummary（4 归属分类 × {sales, service} = 绩效页 8 维度总览）与 totalSalesAlloc /
  *   totalServiceCommission / totalCommission 恒按本期全量计算，否则前端切二级 chip 后其余维度会归零，
  *   且「4 子类之和 = 顶部销售提成」的勾稽关系断裂。
+ *   categorySummary 固定 4 类零填充 + 逐类 round2，categories 下发有序分类清单（前端不再自持硬编码）。
+ *
+ * ⚠️ 退款在销售侧与服务侧的口径不对称（既有，非本次引入，勿误以为 bug）：
+ *   销售侧 = **冲销式**：refund-cascade INSERT 负数镜像子分配，`is_void` 仍为 false →
+ *     负数行进入 allocRows，明细会出现负提成/负分配额（前端按 amount < 0 打「退款」标识）。
+ *   服务侧 = **删除式**：退款把 service_commissions.is_void 置 true → 本查询直接排除 →
+ *     已过去月份的服务提成会**回溯变小**，员工事后查看历史月份与当时所见不一致。
+ *   两侧统一为冲销式需要改 refund-cascade + 历史数据回填，超出绩效页范围。
  */
 async function performanceDetail(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
   const { startDate, endDate, employeeId: queryEmployeeId, salesCategory, filterType, page = 1, pageSize = 20 } = ctx.event.payload || {}
   const isManager = isCurrentStoreManager(ctx.auth)
+
+  // 分页入参加固：非法值会让 slice 走进负索引（page=-1 静默返回列表尾部的错误数据）
+  // 或字符串拼接（pageSize='20' 时 offset + pageSize → '2020'，一次吐 2000 条）
+  const safePage = Math.max(1, Math.floor(Number(page)) || 1)
+  const safePageSize = Math.min(100, Math.max(1, Math.floor(Number(pageSize)) || 20))
 
   // 美容师只能查自己
   const targetEmployeeId = (isManager && queryEmployeeId) ? queryEmployeeId : ctx.auth.staffWfId
@@ -698,22 +712,36 @@ async function performanceDetail(ctx) {
   // 汇总
   let totalSalesAlloc = 0
   let totalServiceCommission = 0
+
+  // 固定 4 分类零填充打底：即使本期某分类无数据，前端也要能渲染 ¥0.00 的格子；
+  // 运行时出现的额外分类（sales_category 为 NULL → UNCATEGORIZED）追加在固定 4 类之后。
   const categorySummary = {}
+  for (const cat of SALES_CATEGORIES) categorySummary[cat] = { sales: 0, service: 0 }
+  const bucketOf = (rawCategory) => {
+    const key = rawCategory || UNCATEGORIZED
+    if (!categorySummary[key]) categorySummary[key] = { sales: 0, service: 0 }
+    return categorySummary[key]
+  }
 
   for (const r of allocRows) {
-    // 销售侧汇总用真实提成 commission_amount（§3.15），不再用营业额份额 total_amount
-    totalSalesAlloc += Number(r.commission_amount)
-    const cat = r.sales_category || '未分类'
-    if (!categorySummary[cat]) categorySummary[cat] = { sales: 0, service: 0 }
-    categorySummary[cat].sales += Number(r.commission_amount)
+    // 销售侧汇总用真实提成 commission_amount（§3.15），不再用营业额份额
+    const amount = Number(r.commission_amount)
+    totalSalesAlloc += amount
+    bucketOf(r.sales_category).sales += amount
   }
 
   for (const r of svcRows) {
     const amount = Number(r.commission_amount)
     totalServiceCommission += amount
-    const cat = r.sales_category || '未分类'
-    if (!categorySummary[cat]) categorySummary[cat] = { sales: 0, service: 0 }
-    categorySummary[cat].service += amount
+    bucketOf(r.sales_category).service += amount
+  }
+
+  // 浮点累加归一：顶部三联卡走了 round，分类格子也必须走，否则「4 分类之和 = 顶部提成」
+  // 的勾稽会在 IEEE754 误差下差 0.01（该勾稽是本接口对前端的承诺，见函数头注释）
+  const round2 = (v) => Math.round(v * 100) / 100
+  for (const key of Object.keys(categorySummary)) {
+    categorySummary[key].sales = round2(categorySummary[key].sales)
+    categorySummary[key].service = round2(categorySummary[key].service)
   }
 
   // 合并为时间线，按 filterType 过滤，分页
@@ -723,7 +751,7 @@ async function performanceDetail(ctx) {
     specName: null,
     salesCategory: r.sales_category,
     amount: Number(r.commission_amount), // 该行真实销售提成（§3.15）
-    allocAmount: Number(r.alloc_amount), // 营业额份额（total_amount）
+    allocAmount: Number(r.alloc_amount), // 该员工营业额分配份额（spia.allocated_amount）
     commissionRate: Number(r.commission_rate || 0), // 提成率快照
     ratio: Number(r.allocation_ratio),
     businessAmount: Number(r.received), // 整行实收 — 已弃用，仅兼容线上老版本前端（见函数头注释）
@@ -762,14 +790,15 @@ async function performanceDetail(ctx) {
   else allItems = [...saleItems, ...serviceItems]
 
   if (salesCategory) {
-    // 与 categorySummary 归类口径对齐：NULL 分类统一落 '未分类'，保证可被筛出
-    allItems = allItems.filter(i => (i.salesCategory || '未分类') === salesCategory)
+    // 与 categorySummary 归类口径对齐：NULL 分类统一落 UNCATEGORIZED，保证可被筛出
+    // （旧实现的 SQL `si.sales_category = $4` 筛不出 NULL 行，这是本次的净修复）
+    allItems = allItems.filter(i => (i.salesCategory || UNCATEGORIZED) === salesCategory)
   }
 
   allItems.sort((a, b) => new Date(b.date) - new Date(a.date))
 
-  const offset = (page - 1) * pageSize
-  const paged = allItems.slice(offset, offset + pageSize)
+  const offset = (safePage - 1) * safePageSize
+  const paged = allItems.slice(offset, offset + safePageSize)
 
   const roundedServiceCommission = Math.round(totalServiceCommission * 100) / 100
 
@@ -780,10 +809,13 @@ async function performanceDetail(ctx) {
     totalServiceFee: roundedServiceCommission,
     totalCommission: Math.round((totalSalesAlloc + totalServiceCommission) * 100) / 100,
     categorySummary,
+    // 有序分类清单（固定 4 类在前 + 运行时出现的额外分类）——前端据此渲染格子与 chip，
+    // 不再自持硬编码副本，枚举改名/新增时不会出现「幽灵格子 + 真实分类并存」
+    categories: Object.keys(categorySummary),
     items: paged,
     total: allItems.length,
-    page,
-    pageSize,
+    page: safePage,
+    pageSize: safePageSize,
   }
 }
 

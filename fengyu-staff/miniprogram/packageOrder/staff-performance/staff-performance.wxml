@@ -56,7 +56,8 @@
   </van-tabs>
 
   <!-- 二级：归属分类筛选 + 当前口径下的分类金额（chip 与格子联动，点哪个都等价） -->
-  <view class="perf-category-panel">
+  <!-- 旧版云函数不返回 categorySummary 时整块隐藏，避免 4 个假 ¥0.00 与顶部真实金额并列 -->
+  <view wx:if="{{hasCategoryPanel}}" class="perf-category-panel">
     <view class="perf-chip-row">
       <view
         class="perf-chip {{activeSubCategory === '' ? 'perf-chip--active' : ''}}"
@@ -64,13 +65,16 @@
         data-name=""
       >全部</view>
       <view
-        wx:for="{{subCategories}}"
-        wx:key="*this"
-        class="perf-chip {{activeSubCategory === item ? 'perf-chip--active' : ''}}"
+        wx:for="{{categoryCells}}"
+        wx:key="name"
+        class="perf-chip {{activeSubCategory === item.name ? 'perf-chip--active' : ''}}"
         bindtap="onSubCategoryTap"
-        data-name="{{item}}"
-      >{{item}}</view>
+        data-name="{{item.name}}"
+      >{{item.name}}</view>
     </view>
+
+    <!-- 口径标题不可省：admin 数据中心员工效率表有同名 4 列但口径是营业额分配额 -->
+    <text class="perf-cells-caption">{{cellsCaption}}</text>
 
     <view class="perf-cell-grid">
       <view
@@ -97,6 +101,8 @@
     <view class="perf-item" wx:for="{{items}}" wx:key="index">
       <view class="perf-item-header">
         <text class="perf-item-name">{{item.productName}}</text>
+        <!-- 退款冲销行的提成/业绩是负数，不打标识会被当成数据错误上报 -->
+        <text wx:if="{{item.isRefund}}" class="perf-item-type-tag type-tag--refund">退款</text>
         <text class="perf-item-type-tag {{item.type === 'sale' ? 'type-tag--sale' : 'type-tag--service'}}">
           {{item.type === 'sale' ? '销售' : '服务'}}
         </text>

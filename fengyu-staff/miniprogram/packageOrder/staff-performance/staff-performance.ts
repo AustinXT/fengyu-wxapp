@@ -2,6 +2,7 @@
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
 import { formatDateTimeShort } from '../../utils/formatters';
+import { formatAmount } from '../../utils/number';
 
 const app = getApp<IAppOption>();
 
@@ -16,9 +17,6 @@ interface StaffListResponse {
   staffList: StaffMember[];
 }
 
-/** 归属分类固定顺序（= db/schema/enums.ts salesCategoryEnum），恒展示 4 格，无数据补 0 */
-const FIXED_CATEGORIES = ['自销自耗', '他销自耗', '他销他耗', '生态合作'];
-
 interface PerformanceItem {
   type: 'sale' | 'service';
   productName: string;
@@ -29,6 +27,8 @@ interface PerformanceItem {
   allocAmount?: number | string;
   /** @deprecated 整行实收，后端仅为兼容老版本保留，新版不再展示 */
   businessAmount?: number | string;
+  /** 退款冲销行（amount < 0）——在 .ts 预算好，wxml 内不做判断 */
+  isRefund?: boolean;
   // sale 独有
   department?: string;
   // service 独有（服务提成双字段拆分）
@@ -57,6 +57,8 @@ interface PerformanceResponse {
   totalServiceFee?: number;
   totalCommission: number;
   categorySummary?: CategorySummary;
+  /** 有序分类清单（固定 4 类 + 运行时额外分类），由后端下发，前端不再硬编码 */
+  categories?: string[];
   items: PerformanceItem[];
   total: number;
 }
@@ -67,10 +69,17 @@ interface CategoryCell {
   amount: string;
 }
 
-/** 金额统一两位小数；空值按 0 处理 */
+/**
+ * 金额展示：复用全局 formatAmount（千分位 + Math.round(v+EPSILON) 预舍入，修 1.005→"1.01"）。
+ * 先 `Number(v) || 0` 把 null/undefined/NaN 压成 0 —— formatAmount 对无效值返回 '--'，
+ * 而 wxml 模板是 `¥{{...}}`，直接透传会渲染出 `¥--`。
+ */
 function money(v: number | string | undefined | null): string {
-  return (Number(v) || 0).toFixed(2);
+  return formatAmount(Number(v) || 0);
 }
+
+/** 每页条数：请求入参与 hasMore 判定共用同一常量，勿各写各的 */
+const PAGE_SIZE = 20;
 
 Page({
   data: {
@@ -91,9 +100,13 @@ Page({
     mainTabs: ['合计', '销售', '服务'],
     // 二级筛选：归属分类（'' = 全部）；与 categoryCells 联动，点格子等价于点 chip
     activeSubCategory: '',
-    subCategories: [...FIXED_CATEGORIES],
-    // 当前一级 Tab 口径下的 4 个分类金额（合计 = 销售 + 服务）
-    categoryCells: FIXED_CATEGORIES.map((name) => ({ name, amount: '0.00' })) as CategoryCell[],
+    // 当前一级 Tab 口径下的各分类金额；分类清单由后端 categories 下发
+    categoryCells: [] as CategoryCell[],
+    // 格子口径标题 —— 必须标明是「提成」：admin 数据中心的员工效率表有同名 4 列但口径是
+    // 营业额分配额，两者差一个费率量级，不标注会被跨端对比成数据错误
+    cellsCaption: '',
+    // 后端未下发 categorySummary（旧版云函数）时整块隐藏，而不是渲染 4 个假 ¥0.00
+    hasCategoryPanel: false,
     // 员工筛选（仅店长）
     staffList: [] as StaffMember[],
     selectedStaffIndex: 0,
@@ -107,6 +120,8 @@ Page({
   },
 
   _loaded: false,
+  /** 请求代次：只有最新一次发起的响应才允许写回 data（见 loadData 并发策略） */
+  _seq: 0,
 
   onLoad(options: Record<string, string>) {
     const mgr = isManager();
@@ -154,11 +169,11 @@ Page({
     const picked = e.detail.index as number;
     const staff = this.data.staffList[picked];
     if (!staff) return;
+    // page 由 loadData(reset=true) 内部归 1，调用方不再各自维护
     this.setData({
       showStaffPicker: false,
       selectedStaffIndex: picked,
       staffName: staff.name,
-      page: 1,
     });
     this.loadData(true);
   },
@@ -185,7 +200,7 @@ Page({
       display = `${lastMonth.getFullYear()}年${lastMonth.getMonth() + 1}月`;
     }
 
-    this.setData({ rangeType: type, startDate: start, endDate: end, displayDate: display, page: 1 });
+    this.setData({ rangeType: type, startDate: start, endDate: end, displayDate: display });
     this.loadData(true);
   },
 
@@ -197,7 +212,7 @@ Page({
   // 只换汇总口径与明细的 type 过滤，二级分类选中态保留
   onMainTabChange(e: WechatMiniprogram.CustomEvent) {
     const index = e.detail.index as number;
-    this.setData({ activeMainTab: index, page: 1 });
+    this.setData({ activeMainTab: index });
     this.loadData(true);
   },
 
@@ -206,13 +221,20 @@ Page({
   onSubCategoryTap(e: WechatMiniprogram.TouchEvent) {
     const name = (e.currentTarget.dataset.name as string) || '';
     const next = name === this.data.activeSubCategory ? '' : name;
-    this.setData({ activeSubCategory: next, page: 1 });
+    if (next === this.data.activeSubCategory) return; // 已是「全部」时再点「全部」，无需重新请求
+    this.setData({ activeSubCategory: next });
     this.loadData(true);
   },
 
   // ===== 加载数据 =====
+  //
+  // 并发策略：**不靠 loading 布尔早退**。筛选靶点有 9 个（3 Tab + 5 chip + 4 格），
+  // 早退会静默吞掉后一次点击 —— 选中态已 setData、请求却没发，导致「UI 选中 X / 列表是 Y」
+  // 永久不一致且不会自愈。改用请求代次：每次发起自增 _seq，响应回来时不是最新代次就整个丢弃。
   async loadData(reset: boolean) {
-    if (this.data.loading) return;
+    const seq = ++this._seq;
+    // page 作为局部量推导：失败时不会像「先 setData 自增」那样留下永久跳页
+    const page = reset ? 1 : this.data.page + 1;
     this.setData({ loading: true });
     try {
       const { activeMainTab, activeSubCategory, staffList, selectedStaffIndex, isManager: isMgr } = this.data;
@@ -230,14 +252,18 @@ Page({
         salesCategory,
         filterType,
         employeeId,
-        page: this.data.page,
-        pageSize: 20,
+        page,
+        pageSize: PAGE_SIZE,
       });
 
-      // 金额统一两位小数（小程序 toLocaleString 不可靠，一律 toFixed）
+      if (seq !== this._seq) return; // 过期响应：期间用户已切换筛选，丢弃避免覆盖新结果
+
+      // 金额统一走 formatAmount（千分位 + EPSILON 预舍入），禁 toLocaleString
       const formattedItems = (res.items || []).map((it) => ({
         ...it,
         date: formatDateTimeShort(it.date),
+        // 退款冲销行的提成/分配额是负数，预算成布尔供 wxml 打标识（wxml 内不做判断）
+        isRefund: Number(it.amount) < 0,
         amount: money(it.amount),
         allocAmount: money(it.allocAmount),
         fixedFee: money(it.fixedFee),
@@ -247,57 +273,60 @@ Page({
       const newItems = reset ? formattedItems : [...this.data.items, ...formattedItems];
       // 优先用新字段 totalServiceCommission，回退到旧字段 totalServiceFee（向后兼容）
       const serviceCommission = res.totalServiceCommission ?? res.totalServiceFee ?? 0;
-      const { cells, categories } = this.buildCategoryCells(res.categorySummary || {});
+      const total = res.total || 0;
       this.setData({
-        totalSalesAlloc: (res.totalSalesAlloc || 0).toFixed(2),
-        totalServiceCommission: serviceCommission.toFixed(2),
-        totalCommission: (res.totalCommission || 0).toFixed(2),
-        categoryCells: cells,
-        subCategories: categories,
+        totalSalesAlloc: money(res.totalSalesAlloc),
+        totalServiceCommission: money(serviceCommission),
+        totalCommission: money(res.totalCommission),
+        ...this.buildCategoryPanel(res, activeMainTab),
         items: newItems,
-        total: res.total || 0,
-        hasMore: newItems.length < (res.total || 0),
+        total,
+        page,
+        // 用后端回带的 page 判断，不比累计长度 —— 长度一旦被过期响应污染，比较逻辑会崩
+        hasMore: page * PAGE_SIZE < total,
       });
     } catch (err: unknown) {
+      if (seq !== this._seq) return;
       const msg = err instanceof Error ? err.message : '加载失败';
       wx.showToast({ title: msg, icon: 'none' });
+      // 切筛选失败时必须清空列表：否则新筛选条件高亮着，下面挂的却是上一次条件的明细
+      if (reset) this.setData({ items: [], total: 0, hasMore: false });
     } finally {
-      this.setData({ loading: false });
+      if (seq === this._seq) this.setData({ loading: false });
     }
   },
 
   /**
-   * 由 categorySummary 推导二级分类格子。
-   * - 固定 4 类恒在（无数据显示 ¥0.00），保证 8 维度随时可达
-   * - 后端出现固定表之外的分类（如 sales_category 为 NULL 归入的「未分类」）时动态追加，
-   *   否则这部分金额凭空消失，「4 子类之和 = 顶部提成」的勾稽会断裂
-   * - 当前选中项即使本期无数据也保留在列表里，避免切换时间范围后选中态失焦
+   * 由响应推导二级分类面板（格子 + 口径标题 + 显隐）。
+   *
+   * 纯函数（`mainTab` 从 loadData 传入而非读 this.data）：响应回来时 this.data 可能已被
+   * 下一次点击改掉，读它会渲染出「格子按服务口径、明细却是销售行」的错配。
+   *
+   * 分类清单与零填充都由后端 `categories` / `categorySummary` 负责，前端不持硬编码副本；
+   * 旧版云函数不返回 categorySummary → 整块隐藏，避免 4 个假 ¥0.00 与顶部真实金额并列。
    */
-  buildCategoryCells(summary: CategorySummary): { cells: CategoryCell[]; categories: string[] } {
-    const extras: string[] = [];
-    const seen = (name: string) => FIXED_CATEGORIES.indexOf(name) >= 0 || extras.indexOf(name) >= 0;
-    Object.keys(summary).forEach((name) => {
-      if (!seen(name)) extras.push(name);
-    });
-    const current = this.data.activeSubCategory;
-    if (current && !seen(current)) extras.push(current);
+  buildCategoryPanel(res: PerformanceResponse, mainTab: number) {
+    const summary = res.categorySummary;
+    if (!summary) return { hasCategoryPanel: false, categoryCells: [] as CategoryCell[], cellsCaption: '' };
 
-    const categories = [...FIXED_CATEGORIES, ...extras];
-    const mainTab = this.data.activeMainTab;
+    const categories = res.categories && res.categories.length
+      ? res.categories
+      : Object.keys(summary);
     const cells = categories.map((name) => {
       const row = summary[name] || { sales: 0, service: 0 };
       const sales = Number(row.sales) || 0;
       const service = Number(row.service) || 0;
       // 一级 Tab 决定格子口径：销售 / 服务 / 合计（两者相加）
       const value = mainTab === 1 ? sales : mainTab === 2 ? service : sales + service;
-      return { name, amount: value.toFixed(2) };
+      return { name, amount: money(value) };
     });
-    return { cells, categories };
+    const caption = mainTab === 1 ? '销售提成构成' : mainTab === 2 ? '服务提成构成' : '提成构成（销售+服务）';
+    return { hasCategoryPanel: true, categoryCells: cells, cellsCaption: caption };
   },
 
   onReachBottom() {
+    // 触底仍用 loading 守卫（避免连续触底重复请求同一页）；筛选切换不走这里
     if (this.data.hasMore && !this.data.loading) {
-      this.setData({ page: this.data.page + 1 });
       this.loadData(false);
     }
   },
