@@ -47,7 +47,7 @@ export function SalesBoard() {
       })
       .catch((e: unknown) => {
         // 生产构建会脱敏 throw 出来的 message（scope 解析失败等业务拦截理由都在 digest 里），issue #133
-        if (!cancelled) setError(actionErrorMessage(e, "加载失败"))
+        if (!cancelled) setError(actionErrorMessage(e, "请稍后重试"))
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
