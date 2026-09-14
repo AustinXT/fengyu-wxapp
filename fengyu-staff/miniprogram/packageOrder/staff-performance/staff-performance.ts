@@ -699,7 +699,9 @@ Page({
   // ===== 一级 Tab（合计/销售/服务）切换 =====
   // 只换汇总口径与明细的 type 过滤，二级分类选中态保留
   onMainTabChange(e: WechatMiniprogram.CustomEvent) {
-    const index = e.detail.index as number;
+    // Number() 兜底：口径判断用的是 `mainTab === 1` 严格比较，万一 van-tabs 回传字符串，
+    // 三个分支会全不命中、悄悄退回「合计」口径
+    const index = Number(e.detail.index);
     // 只在屏幕身份**已落地**时才消费缓存：`_summaryCache` 要等 setData 完成回调才换新，
     // 而新响应的分类金额在 setData 那一刻就已经写进 data 了。中间这段窗口里拿旧缓存
     // 本地重算，会把刚写进去的新金额覆盖掉，而回调只更新缓存、不会回头修正渲染错的面板。

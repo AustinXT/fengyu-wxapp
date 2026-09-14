@@ -2428,3 +2428,24 @@ describe('绩效页 · 翻批次滚动定位（评审 round-40 codex P3）', () 
     expect((globalThis as any).wx.pageScrollTo).not.toHaveBeenCalled()
   })
 })
+
+describe('绩效页 · 一级 Tab 口径判断的类型兜底（降级谱系 P3）', () => {
+  test('van-tabs 万一回传字符串 index，口径也不能悄悄退回「合计」', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    vi.mocked(callStaffApi).mockResolvedValue({
+      totalSalesAlloc: 100, totalServiceCommission: 50, totalCommission: 150,
+      items: [makeItem('张三', '13800000001', 1)], total: 1,
+      categorySummary: { 自销自耗: { sales: 100, service: 50 } },
+      categories: ['自销自耗'],
+    } as never)
+    await page.loadData(true)
+
+    vi.mocked(callStaffApi).mockImplementation(() => new Promise(() => {}))
+    page.onMainTabChange({ detail: { index: '2' } }) // 字符串
+
+    expect(page.data.activeMainTab).toBe(2)
+    expect(page.data.cellsCaption).toBe('服务提成构成') // 不是「提成构成（销售+服务）」
+    expect(page.data.categoryCells[0].amount).toBe('50.00')
+  })
+})
