@@ -356,18 +356,28 @@ function CreateDocDialog({
   /**
    * 缓存代次。原生 <dialog> 关闭不卸载组件，`lotCacheRef` 与每行的 `loaded` 都会常驻 ——
    * 只 clear() 缓存是不够的：子组件的 `loaded.key` 没变，effect 根本不会重跑。
-   * 把代次编进 key，「重开弹窗」和「提交成功」就能强制所有批次下拉重新取数，
-   * 避免拿几分钟前的批次数量去建下一张单（提交必被服务端 FOR UPDATE + 可用量校验拒掉）。
+   * 把代次编进 key，重开弹窗时所有批次下拉就会重新取数，不会拿几分钟前的数量去建下一张单
+   * （提交必被服务端 FOR UPDATE + 可用量校验拒掉）。
+   *
+   * 代次在**关闭时**推进，不是打开时：
+   * - 打开时推进的话，open→true 的首帧 `loaded.key` 仍等于旧 cacheKey，会闪一下旧批次；
+   * - 关闭时推进，重开的第一帧渲染期就判定为过期 → 直接进加载态。
+   * 配合下面传给 DocLotSelect 的 `active={open}`（关闭态只 cleanup 不取数），
+   * 保证「关着不发请求、一次重开只产生一个新代次」—— 否则提交成功后弹窗已关，
+   * N 个不同 SKU 的明细行会各发一次无用请求，排在重开后的可见请求前面，
+   * 把批次框重新拖成长时间 disabled（正是 #129 的观感）。
    */
   const [lotEpoch, setLotEpoch] = useState(0)
-  const invalidateLots = useCallback(() => {
-    lotCacheRef.current.clear()
-    setLotEpoch((n) => n + 1)
-  }, [])
 
   useEffect(() => {
-    if (open) invalidateLots()
-  }, [open, invalidateLots])
+    if (open) return
+    lotCacheRef.current.clear()
+    setLotEpoch((n) => n + 1)
+    // 代次一换，已选的 lotId 可能指向下一代里已经不存在的批次：受控 select 会显示空白，
+    // state 却还留着旧值，直接提交就只能靠服务端 lockLotById 兜底报错。换主体/换 SKU
+    // 都清了 lotId，这条路径也要清。
+    setItems((prev) => (prev.some((item) => item.lotId) ? prev.map((item) => ({ ...item, lotId: '' })) : prev))
+  }, [open])
   const isDocTypeLocked = Boolean(initialDocType && availableDocTypes.includes(initialDocType))
   const sourceLocationId = locations.find((location) => location.orgNodeId === sourceOrgNodeId)?.locationId ?? ''
 
@@ -397,9 +407,8 @@ function CreateDocDialog({
         })),
       }
       await createInventoryCoreDoc(payload)
-      // 这张单已经扣过库存，缓存里的可用量立刻过期 —— 不失效的话，
-      // 同一个弹窗连着建第二张单时会拿旧数量，提交才被服务端拒绝
-      invalidateLots()
+      // 不在这里手工失效缓存：onOpenChange(false) 会走上面那个「关闭即推进代次」的 effect，
+      // 下次打开自然重新取数。在这里再推一次只会在弹窗已关的状态下白发一轮请求。
       onOpenChange(false)
       onSuccess()
     } catch (err) {
@@ -461,6 +470,7 @@ function CreateDocDialog({
                   onChange={(lotId) => updateItem(index, { lotId })}
                   cache={lotCacheRef.current}
                   epoch={lotEpoch}
+                  active={open}
                   label={`明细 ${index + 1} 来源批次`}
                 />
               )}
@@ -527,6 +537,7 @@ function DocLotSelect({
   onChange,
   cache,
   epoch,
+  active,
   label,
 }: {
   locationId: string
@@ -535,8 +546,10 @@ function DocLotSelect({
   onChange: (lotId: string) => void
   /** 弹窗级 (库位,SKU) → Promise 缓存，见 CreateDocDialog 的 lotCacheRef */
   cache: Map<string, Promise<InventoryLotRow[]>>
-  /** 缓存代次，随「重开弹窗 / 提交成功」递增，用来强制重新取数 */
+  /** 缓存代次，弹窗关闭时递增，用来强制下次打开重新取数 */
   epoch: number
+  /** 弹窗是否打开。原生 <dialog> 关闭不卸载 children，关着时绝不能取数 */
+  active: boolean
   label: string
 }) {
   // 用 JSON 数组当 key，避免 ('a:b','c') 与 ('a','b:c') 这类分隔符歧义撞进同一个缓存槽
@@ -545,7 +558,7 @@ function DocLotSelect({
   const [loaded, setLoaded] = useState<LotLoadState | null>(null)
 
   useEffect(() => {
-    if (!cacheKey) return
+    if (!active || !cacheKey) return
     let cancelled = false
     let pending = cache.get(cacheKey)
     if (!pending) {
@@ -574,7 +587,7 @@ function DocLotSelect({
     return () => {
       cancelled = true
     }
-  }, [cacheKey, locationId, skuId, cache, retryToken])
+  }, [active, cacheKey, locationId, skuId, cache, retryToken])
 
   const isCurrent = loaded?.key === cacheKey
   const lots = isCurrent ? loaded.lots : []

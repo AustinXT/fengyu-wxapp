@@ -354,6 +354,24 @@ describe('InventoryDocsPage 来源批次下拉（#129 回归）', () => {
     expect(toast.error).toHaveBeenCalled()
   })
 
+  it('弹窗关闭后不再取数，重开时每个 (主体,SKU) 恰好重拉一次', async () => {
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([lot(11, 'SKU-1', 'B-001', 30)])
+
+    openDialogAndPickSource()
+    await waitFor(() => expect(lotSelect()).not.toBeDisabled())
+    expect(listInventoryLotOptions).toHaveBeenCalledTimes(1)
+
+    // 关闭：原生 <dialog> 不卸载 children，关着时绝不能因为代次推进而白发请求
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '取消' }))
+    await waitFor(() => expect(listInventoryLotOptions).toHaveBeenCalledTimes(1))
+
+    // 重开：代次已在关闭时推进，渲染期即判为过期 → 恰好重拉一次，不闪旧批次
+    fireEvent.click(screen.getByRole('button', { name: '新建' }))
+    expect(lotSelect()).toBeDisabled()
+    await waitFor(() => expect(lotSelect()).not.toBeDisabled())
+    expect(listInventoryLotOptions).toHaveBeenCalledTimes(2)
+  })
+
   it('同一 (主体, SKU) 被多行选中时只发一次请求（弹窗级 Promise 缓存）', async () => {
     vi.mocked(listInventoryLotOptions).mockResolvedValue([lot(11, 'SKU-1', 'B-001', 30)])
 
@@ -457,20 +475,35 @@ describe('通用建单入口里需要来源批次的单据类型', () => {
     expect([...SOURCE_LOT_DOC_TYPES].sort()).toEqual([...expected].sort())
   })
 
-  it('服务端 OUTBOUND_DOC_TYPES 里的通用类型必须全在前端 SOURCE_LOT_DOC_TYPES 中', () => {
-    // 不 import engine.ts（它是 server-only，会把 @/db 拖进来），改读源码字面量
-    const engineSrc = readFileSync(
-      resolve(process.cwd(), 'src/lib/inventory/engine.ts'),
-      'utf8',
-    )
-    const block = engineSrc.match(/const OUTBOUND_DOC_TYPES = new Set<InventoryDocType>\(\[([\s\S]*?)\]\)/)?.[1]
-    expect(block, 'engine.ts 里找不到 OUTBOUND_DOC_TYPES').toBeTruthy()
-    const serverOutbound = [...block!.matchAll(/'([^']+)'/g)].map((m) => m[1])
-    expect(serverOutbound.length).toBeGreaterThan(0)
+  it('与服务端「需要来源批次」的判定逐项等值', () => {
+    // 不 import engine.ts（它是 server-only，会把 @/db 拖进来），改读源码字面量。
+    //
+    // 服务端真实判定（engine.ts:2715）：
+    //   shouldCaptureSourceLot = plan?.locationRole === 'source'
+    //                            || (status === '待审批' && OUTBOUND_DOC_TYPES.has(docType))
+    // 而 movementPlan 判 locationRole='source' 的来源有两处：
+    //   RECEIVE_REQUIRED_DOC_TYPES（分院调货出库 / 市场间调货出库走的正是这条）与 OUTBOUND_DOC_TYPES。
+    // 只守 OUTBOUND 会漏掉前者 —— 往 RECEIVE_REQUIRED + GENERIC 同时加类型却漏加前端集合时，
+    // 交集仍是 6、形状仍是 14，三条断言全绿，弹窗却不渲染批次框。
+    const engineSrc = readFileSync(resolve(process.cwd(), 'src/lib/inventory/engine.ts'), 'utf8')
+    const readSet = (name: string): string[] => {
+      const block = engineSrc.match(
+        new RegExp(`const ${name} = new Set<InventoryDocType>\\(\\[([\\s\\S]*?)\\]\\)`),
+      )?.[1]
+      expect(block, `engine.ts 里找不到 ${name}`).toBeTruthy()
+      return [...block!.matchAll(/'([^']+)'/g)].map((m) => m[1])
+    }
 
-    const missing = serverOutbound
-      .filter((t) => (INVENTORY_GENERIC_DOC_TYPES as readonly string[]).includes(t))
-      .filter((t) => !SOURCE_LOT_DOC_TYPES.has(t as never))
-    expect(missing, '服务端会采集来源批次、前端却不渲染批次下拉的类型').toEqual([])
+    const serverNeedsSourceLot = new Set([
+      ...readSet('RECEIVE_REQUIRED_DOC_TYPES'),
+      ...readSet('OUTBOUND_DOC_TYPES'),
+    ])
+    expect(serverNeedsSourceLot.size).toBeGreaterThan(0)
+
+    const generic = INVENTORY_GENERIC_DOC_TYPES as readonly string[]
+    expect(
+      generic.filter((t) => serverNeedsSourceLot.has(t)).sort(),
+      '前端 SOURCE_LOT_DOC_TYPES 与服务端 shouldCaptureSourceLot 在通用建单类型上漂移了',
+    ).toEqual(generic.filter((t) => SOURCE_LOT_DOC_TYPES.has(t as never)).sort())
   })
 })
