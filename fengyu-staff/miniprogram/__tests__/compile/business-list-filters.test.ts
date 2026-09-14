@@ -86,3 +86,18 @@ describe('绩效页检索栏（#159）', () => {
     expect(json.usingComponents['van-search']).toBe('@vant/weapp/search/index')
   })
 })
+
+describe('绩效页命中窗口导航（#159）', () => {
+  const PERF = 'packageOrder/staff-performance/staff-performance'
+
+  test('导航排在明细列表之前——翻批次滚回顶部后要正好在视野里', () => {
+    const wxml = fs.readFileSync(path.join(ROOT, `${PERF}.wxml`), 'utf8')
+    const navAt = wxml.indexOf('perf-match-nav')
+    const listAt = wxml.indexOf('wx:for="{{filterActive ? displayItems : items}}"')
+    expect(navAt).toBeGreaterThan(-1)
+    expect(listAt).toBeGreaterThan(-1)
+    // 挂在最多 500 条明细末尾的话，每翻一批都得重新滚到底（sticky bottom 也救不了：
+    // 元素还没进视口时不会吸附）
+    expect(navAt).toBeLessThan(listAt)
+  })
+})

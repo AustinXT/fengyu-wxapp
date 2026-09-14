@@ -2345,8 +2345,8 @@ describe('绩效页 · 评审 round-37 闭环（codex）', () => {
   })
 })
 
-describe('绩效页 · onShow 被动刷新也要去重（评审 round-38 glm P2）', () => {
-  test('同区间重查在途时切后台再回来，不重复发一次全区间扫描', () => {
+describe('绩效页 · onShow 一律复验权限（评审 round-39 codex P1）', () => {
+  test('即使同区间重查在途，回前台也要重新发一次——那一次承担的是权限复验', () => {
     const page = createPage()
     page.onLoad({ range: 'month' })
     vi.mocked(callStaffApi).mockImplementation(() => new Promise(() => {}))
@@ -2356,10 +2356,12 @@ describe('绩效页 · onShow 被动刷新也要去重（评审 round-38 glm P2�
     vi.mocked(callStaffApi).mockClear()
     page.onShow()                       // 切去微信抄手机号再回来
 
-    expect(callStaffApi).not.toHaveBeenCalled()
+    // 在途那次是隐藏**之前**发的，鉴权也在隐藏之前 —— 期间员工可能已被撤权，
+    // 拿它顶替复验就等于把无权查看的薪酬继续留在屏幕上。多一次扫描是这条安全线的代价
+    expect(callStaffApi).toHaveBeenCalledTimes(1)
   })
 
-  test('翻页在途时 onShow 仍照常被动刷新（那不是重查）', async () => {
+  test('翻页在途时 onShow 同样照常刷新', async () => {
     const page = createPage()
     page.onLoad({ range: 'month' })
     mockPage(Array.from({ length: 20 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i)), 200)

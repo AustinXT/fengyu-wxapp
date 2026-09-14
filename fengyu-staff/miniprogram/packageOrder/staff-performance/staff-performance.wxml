@@ -158,6 +158,24 @@
       <van-empty description="{{searchHint}}" />
     </view>
 
+    <!-- 命中太多时窗口化展示。窗口撑到硬顶后改为整段前后滑动——钉死在前 N 条的话，
+         后面的命中（含翻页新取回的）就永远没有可达路径。
+         放在列表**之前**：翻批次会把页面滚回顶部，导航若挂在最多 500 条明细的末尾，
+         用户每翻一批都得重新滚到底（sticky bottom 也救不了——元素还没进视口时不吸附） -->
+    <view wx:if="{{hasPrevMatches || hasMoreMatches}}" class="perf-match-nav">
+      <van-button
+        wx:if="{{hasPrevMatches}}"
+        size="mini" plain
+        bindtap="onPrevMatches"
+      >上一批</van-button>
+      <text class="perf-match-label">{{matchWindowLabel}}</text>
+      <van-button
+        wx:if="{{hasMoreMatches}}"
+        size="mini" plain
+        bindtap="onShowMoreMatches"
+      >{{moreMatchesLabel}}</van-button>
+    </view>
+
     <!-- 未搜索时直接渲染 items，不另传一份同样的数组（否则 setData payload 翻倍） -->
     <view class="perf-item" wx:for="{{filterActive ? displayItems : items}}" wx:key="rowKey">
       <view class="perf-item-header">
@@ -203,22 +221,6 @@
         <text class="perf-item-date">{{item.date}}</text>
         <text wx:if="{{item.salesCategory}}" class="perf-item-category">{{item.salesCategory}}</text>
       </view>
-    </view>
-
-    <!-- 命中太多时窗口化展示。窗口撑到硬顶后改为整段前后滑动——钉死在前 N 条的话，
-         后面的命中（含翻页新取回的）就永远没有可达路径 -->
-    <view wx:if="{{hasPrevMatches || hasMoreMatches}}" class="perf-match-nav">
-      <van-button
-        wx:if="{{hasPrevMatches}}"
-        size="mini" plain
-        bindtap="onPrevMatches"
-      >上一批</van-button>
-      <text class="perf-match-label">{{matchWindowLabel}}</text>
-      <van-button
-        wx:if="{{hasMoreMatches}}"
-        size="mini" plain
-        bindtap="onShowMoreMatches"
-      >{{moreMatchesLabel}}</van-button>
     </view>
 
     <!-- 搜索态常驻的翻页入口（不限命中 0 条）：过滤后往往只剩几行、够不到触底，
