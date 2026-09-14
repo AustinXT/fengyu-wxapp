@@ -127,27 +127,28 @@ describe('业务列表统一筛选', () => {
    * 或把函数名写错，这些用例统统照常绿，而空的 0038 库会再次被永久缓存成 ready。
    * 所以这里直接守护探针 SQL 的实质内容。
    */
-  test('探针 SQL 必须真的检测 0039 能力与存量缺口', async () => {
+  /**
+   * 对**实际传给数据库**的探针 SQL 做逐字精确快照（codex round-5 P2）。
+   *
+   * 为什么不能只快照源码里的 `PROBE_SQL` 常量：那条断言提取的是「源码中第一个含 has_gap
+   * 的反引号字符串」，可以保留原常量让它命中，另建一个恶意探针传给 pg.query。
+   * 断言这里的 `mock.calls[0][0]` 才真正绑定到执行路径。
+   *
+   * 与 cross-end-sql-snapshot 那条源码快照互补：这条管「执行的是什么」，
+   * 那条管「源码常量有没有被悄悄改」。实现一变两条同时红，不存在一绿一红的漂移。
+   */
+  test('实际执行的探针 SQL 精确快照', async () => {
     mockAttributionReady()
     pg.query.mockResolvedValueOnce([])
     await orderRoutes.list(createManagerCtx({ startDate: '2026-08-01' }))
-    const probeSql = pg.query.mock.calls[0][0]
-    const flat = probeSql.replace(/\s+/g, ' ')
-    // ① 存量缺口：首次支付 + 已支付 + 归属日期为空
-    expect(flat, '探针丢了存量缺口检测').toContain(
-      "FROM sale_order_payments WHERE change_type = '首次支付' AND status = '已支付'"
-        + ' AND performance_attribution_date IS NULL',
+    const executed = pg.query.mock.calls[0][0].replace(/\s+/g, ' ').replace(/\( /g, '(').replace(/ \)/g, ')').trim()
+    expect(executed).toBe(
+      "SELECT EXISTS (SELECT 1 FROM sale_order_payments WHERE change_type = '首次支付'"
+      + " AND status = '已支付' AND performance_attribution_date IS NULL) AS has_gap,"
+      + " COALESCE((SELECT pg_get_functiondef(p.oid) LIKE '%IF NEW.change_type = ''首次支付'' THEN%'"
+      + " FROM pg_proc p WHERE p.proname = 'initialize_payment_performance_attribution_date'"
+      + ' LIMIT 1), false) AS trigger_ready',
     )
-    // ② 0039 能力：必须查那个 trigger 函数的定义，且比对的是 0039 才有的正面分支
-    expect(flat, '探针丢了 trigger 能力检测（pg_proc 子查询被删或函数名写错）').toContain(
-      "FROM pg_proc p WHERE p.proname = 'initialize_payment_performance_attribution_date'",
-    )
-    expect(flat, '探针比对串漂移：必须是 0039 引入的正面分支，不能是 0038 的排除式写法').toContain(
-      "pg_get_functiondef(p.oid) LIKE '%IF NEW.change_type = ''首次支付'' THEN%'",
-    )
-    // ③ 两个字段都要真的从 SQL 取，不能被写死成常量
-    expect(flat, 'trigger_ready 被写死').not.toMatch(/\btrue AS trigger_ready\b/)
-    expect(flat, 'has_gap 被写死').not.toMatch(/\bfalse AS has_gap\b/)
   })
 
   // GLM round-2 P3：异常路径（探针 reject → finally 清 inflight → 下次重探成功）无用例守护，
