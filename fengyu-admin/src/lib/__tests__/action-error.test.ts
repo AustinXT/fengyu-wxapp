@@ -201,7 +201,11 @@ describe('actionErrorMessage', () => {
     it.each([
       // actions/lakala-onboarding.ts:1492 的真实文案：中文包着环境变量名
       // 全角冒号仍然算「被隔开」，配置名照杀（括号豁免不能顺带把冒号也豁免了）
+      // 配置名 = 形状（全大写下划线）+ 配置语境词（缺少 / 未配置 / 环境变量 …）双条件
       'INVALID_STATE: 缺少电子合同回调地址：LAKALA_ECONTRACT_CALLBACK_URL',
+      'INVALID_STATE: 未配置 WX_CLIENT_SECRET 环境变量',
+      'INVALID_STATE: 密码加密未配置（缺少 RSA_PRIVATE_KEY）',
+      'INVALID_STATE: 缺少后台入网配置：LAKALA_SM4_KEY',
       // 主机名:端口（IPv4 之外的形态）
       'INVALID_STATE: 数据库连接失败：postgres.internal:5433 不可达',
       // IPv6:端口
@@ -221,8 +225,6 @@ describe('actionErrorMessage', () => {
       'INVALID_STATE: 服务连接失败：[fd00::5] 不可达',
       // 带引号的库表/约束名
       'INVALID_STATE: 数据库错误：duplicate key value violates unique constraint "uq_sop_txn"',
-      // 尾巴带小写单位的内部标识（SCREAMING_SNAKE 规则吃不到，靠结构兜底）
-      'INVALID_STATE: 请求失败：LAKALA_TIMEOUT_30000ms',
       // 裸 Error / Exception（类名前缀可有可无），且被中文包着
       'INVALID_STATE: 操作失败：Error:boom',
       'INVALID_STATE: 营业执照：Exception:boom',
@@ -258,6 +260,11 @@ describe('actionErrorMessage', () => {
         '商品「ABC_DEF」每单最多可购买 2 件',
       ],
       ['NOT_FOUND: 库存商品（ABC_DEF）不足', '库存商品（ABC_DEF）不足'],
+      // 空格隔开的商品编码：`business.ts:3915` 的真实模板，没有配置语境词就不算配置名
+      [
+        'INVALID_STATE: SKU ABC_DEF 未设置市场员工购价格',
+        'SKU ABC_DEF 未设置市场员工购价格',
+      ],
       ['INVALID_PARAMS: 仅 PC/H5 端支持该操作', '仅 PC/H5 端支持该操作'],
       ['INVALID_PARAMS: 支持 iOS/Android 双端', '支持 iOS/Android 双端'],
       ['INVALID_PARAMS: 门店 sku:10086 已停用', '门店 sku:10086 已停用'],
@@ -291,6 +298,14 @@ describe('actionErrorMessage', () => {
       expect(actionErrorMessage({ digest: 'CONFLICT: VIP 客户不可合并' }, FALLBACK)).toBe(
         'VIP 客户不可合并',
       )
+    })
+
+    it('已知取舍：没有配置语境词的内部常量挡不住（治本在抛错处，已登记跟进）', () => {
+      // 光凭形状区分不了「配置名」与「商品编码」——前几轮试过紧贴中文/中式括号豁免，
+      // 每加一层都被举出新的真实反例。现在用「配置语境词」做第二条件，代价就是这一条。
+      expect(
+        actionErrorMessage({ digest: 'INVALID_STATE: 请求失败：LAKALA_TIMEOUT_30000ms' }, FALLBACK),
+      ).toBe('请求失败：LAKALA_TIMEOUT_30000ms')
     })
 
     it('正常中文业务文案不受技术痕迹规则影响', () => {
@@ -791,7 +806,7 @@ describe('Next digest 形态漂移守护（#133）', () => {
     ).toEqual([])
   })
 
-  it('Next 的内部错误码形态仍是 E+数字（@E 正则的前提）', () => {
+  it('Next 的内部错误码仍是无空白标识符（digest 后缀匹配的前提）', () => {
     // 不截断样本数、不限目录深度：早先取到 41 个就停、只走三层，第 42 个之后变形态照样绿。
     const samples = new Set<string>()
     const unparsed: string[] = []

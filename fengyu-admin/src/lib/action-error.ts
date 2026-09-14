@@ -177,6 +177,26 @@ const CJK_RE = /[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF66-\uFF
  * （`INVALID_STATE` 等）与二级子标签就是 SCREAMING_SNAKE 形态，
  * 在整串上跑会把每一条业务错误都杀掉。
  */
+/**
+ * 配置名 / 环境变量名（SCREAMING_SNAKE），**只在「配置语境」里才算**。
+ *
+ * 光看形状区分不了 `缺少后台入网配置：LAKALA_ECONTRACT_CALLBACK_URL` 与
+ * `SKU ABC_DEF 未设置市场员工购价格`（`business.ts:3915`，商品名是无格式限制的 text）——
+ * 前几轮试过「紧贴中文豁免」「中式括号豁免」，每加一层就被评审举出新的真实反例。
+ * 改判据：整句里出现「未配置 / 缺少 / 配置项 / 环境变量 / config / env」这类**配置语境词**时，
+ * 才把全大写下划线 token 当配置名。仓内 5 条真实配置错误全部命中，
+ * 而 `未设置市场员工购价格`、`商品「ABC_DEF」每单最多…`、`ABC_DEF款精华液` 全部放行。
+ *
+ * 代价（已登记跟进）：没有配置语境词的内部常量（`请求失败：LAKALA_TIMEOUT_30000ms`）挡不住。
+ * 那属于「服务端把技术细节拼进用户文案」，治本在抛错处。
+ */
+const CONFIG_CONTEXT_RE = /未配置|缺少|配置项|环境变量|请配置|\bconfig\b|\benv\b/i
+const CONFIG_NAME_RE = /\b(?=[A-Z][A-Z0-9_]{5,}[a-z]*\b)[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+[a-z]*\b/
+
+function hasConfigName(text: string): boolean {
+  return CONFIG_CONTEXT_RE.test(text) && CONFIG_NAME_RE.test(text)
+}
+
 const TECH_ARTIFACT_RES: readonly RegExp[] = [
   /\bhttps?:\/\/\S/i, // 接口地址
   /(?:^|[\s（(:：])\/(?:[A-Za-z0-9_.@-]+\/)+[A-Za-z0-9_.@-]+/, // Unix 绝对路径
@@ -189,16 +209,6 @@ const TECH_ARTIFACT_RES: readonly RegExp[] = [
   // 环境变量名 / 内部常量这类 SCREAMING_SNAKE token（必须含下划线，
   // 免得误杀 SKU、OEM 这类单词型业务缩写）。真实来源：
   // `actions/lakala-onboarding.ts:1492` 的「缺少电子合同回调地址：LAKALA_ECONTRACT_CALLBACK_URL」
-  // 尾巴允许挂小写单位（`LAKALA_TIMEOUT_30000ms`）；整体 ≥6 字符。
-  // **前后不能紧贴中日韩、也不能被中式括号裹着**：商品名是无格式限制的 text 且会被直接
-  // 拼进错误文案 —— `ABC_DEF款精华液`（`business.ts:1535`）与 `商品「ABC_DEF」每单最多…`
-  // （`orders.ts:194` 的 `purchaseLimitExceededMessage`、`pickup-records.ts:272` 等）都不是配置名。
-  // 括号单独列而不并进 `CJK_RE`：后者刻意排除全角标点（否则 `（position 0）` 会被放行），
-  // 且 `地址：LAKALA_ECONTRACT_CALLBACK_URL` 的全角冒号必须仍然算「被隔开」。
-  new RegExp(
-    `(?<![\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF66-\uFF9F\u300C\u300D\u300E\u300F\uFF08\uFF09\u3010\u3011\u300A\u300B\u3008\u3009\u3014\u3015])\\b(?=[A-Z][A-Z0-9_]{5,}[a-z]*\\b)[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+[a-z]*\\b(?![\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF66-\uFF9F\u300C\u300D\u300E\u300F\uFF08\uFF09\u3010\u3011\u300A\u300B\u3008\u3009\u3014\u3015])`,
-    'u',
-  ),
   // 单标签主机:端口（`postgres:5433` / `redis:6379`）。要求小写字母开头 + 主机名 ≥5 字符：
   // 前者避开「稀释比例 1.5:30」这类小数，后者避开「门店 sku:10086 已停用」这类短业务标签
   /\b[a-z][a-z0-9-]{4,}:\d{2,5}\b/,
@@ -354,7 +364,12 @@ function readableMessage(raw: unknown): string | null {
   // 剥完再判一次：剥出来的残串可能又是编号 / 裸 token，也可能是「中文包着的技术痕迹」
   const text = stripBusinessPrefix(value).trim()
   if (!text || isOpaque(text)) return null
-  if (TECH_ARTIFACT_RES.some((re) => re.test(text)) || hasTechnicalRun(text) || hasHostname(text))
+  if (
+    TECH_ARTIFACT_RES.some((re) => re.test(text)) ||
+    hasTechnicalRun(text) ||
+    hasHostname(text) ||
+    hasConfigName(text)
+  )
     return null
   return text
 }
