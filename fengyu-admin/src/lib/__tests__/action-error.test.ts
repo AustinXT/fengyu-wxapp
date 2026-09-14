@@ -51,6 +51,17 @@ const FRAGMENT_SAMPLES: readonly [string, string][] = [
   ['epipe', 'INVALID_STATE: LAKALA_REQUEST_FAILED: write EPIPE'],
   ['the network connection was lost', 'The network connection was lost.'],
   ['connection appears to be offline', 'The Internet connection appears to be offline.'],
+  // 「中文字段名 + 上游原始 message」的拼装（lakala-onboarding.ts:1130 是真实来源），
+  // 中文包装会让结构规则放行，只能按句式认
+  ['syntax error at or near', 'INVALID_STATE: 营业执照：syntax error at or near "SELECT"'],
+  ['duplicate key value', 'INVALID_STATE: 保存失败：duplicate key value'],
+  ['violates unique constraint', 'INVALID_STATE: 保存失败：violates unique constraint'],
+  ['violates foreign key constraint', 'INVALID_STATE: 保存失败：violates foreign key constraint'],
+  ['relation does not exist', 'INVALID_STATE: 查询失败：relation does not exist'],
+  ['column does not exist', 'INVALID_STATE: 查询失败：column does not exist'],
+  ['cannot read properties of', 'INVALID_STATE: 营业执照：Cannot read properties of undefined'],
+  ['is not a function', 'INVALID_STATE: 营业执照：x is not a function'],
+  ['is not defined', 'INVALID_STATE: 营业执照：x is not defined'],
 ]
 
 
@@ -215,6 +226,36 @@ describe('actionErrorMessage', () => {
       'INVALID_STATE: 操作失败：TypeError: Cannot read properties of undefined',
     ])('中文包着的第二批技术痕迹也挡住：%s', (digest) => {
       expect(actionErrorMessage({ digest }, FALLBACK)).toBe(FALLBACK)
+    })
+
+    it.each([
+      // 内网域名（不带端口）
+      'INVALID_STATE: 营业执照：upstream.internal connection timeout',
+      'INVALID_STATE: 数据库连接失败：db-primary.internal 不可达',
+      'INVALID_STATE: 网关返回 merchant.example.com 无响应',
+      // 裸 IPv6（无端口无方括号）
+      'INVALID_STATE: 营业执照：fd00::5 不可达',
+    ])('内网主机名 / 裸 IPv6 也挡住：%s', (digest) => {
+      expect(actionErrorMessage({ digest }, FALLBACK)).toBe(FALLBACK)
+    })
+
+    it.each([
+      // 仓内真实文案（merchants/onboarding）
+      ['INVALID_PARAMS: 身份证仅支持 JPG/PNG 图片', '身份证仅支持 JPG/PNG 图片'],
+      // 商品名会被直接插进错误文案（business.ts:1535），规格里带 / 和 _ 都是合法写法
+      ['INVALID_STATE: SKU 洗发水500ml/瓶 未设置市场进货价', 'SKU 洗发水500ml/瓶 未设置市场进货价'],
+      ['INVALID_STATE: A_B款精华液 未设置市场进货价', 'A_B款精华液 未设置市场进货价'],
+      ['INVALID_PARAMS: 仅 PC/H5 端支持该操作', '仅 PC/H5 端支持该操作'],
+      ['INVALID_PARAMS: 支持 iOS/Android 双端', '支持 iOS/Android 双端'],
+      ['INVALID_PARAMS: 门店 sku:10086 已停用', '门店 sku:10086 已停用'],
+      // 版本号不是域名
+      ['INVALID_STATE: 版本 v1.2.3 不受支持', '版本 v1.2.3 不受支持'],
+      // 文件名不是域名
+      ['INVALID_STATE: 报表 report.xlsx 生成失败', '报表 report.xlsx 生成失败'],
+      // 时间不是 IPv6
+      ['INVALID_PARAMS: 预约时间 09:00:00 已过期', '预约时间 09:00:00 已过期'],
+    ])('这些真实业务写法一个都不能误杀：%s', (digest, expected) => {
+      expect(actionErrorMessage({ digest }, FALLBACK)).toBe(expected)
     })
 
     it.each([
@@ -654,7 +695,6 @@ describe('Next digest 形态漂移守护（#133）', () => {
     const bareTokens = new Set<string>()
     for (const file of files) {
       const text = stripComments(readFileSync(file, 'utf8'))
-      // 写入形态：`x.digest = …` / `readonly digest = …` / 对象字面量 `digest: …`
       // 写入形态：`x.digest = …` / `readonly digest = …` / `digest = …`（无 readonly 的字段）
       // / 对象字面量里任意位置的 `digest:` / `['digest'] =` / `defineProperty(…, 'digest', …)`
       if (
@@ -749,8 +789,10 @@ describe('Next digest 形态漂移守护（#133）', () => {
         }
       }
     }
-    for (const dir of ['dist/server', 'dist/client', 'dist/shared', 'dist/lib']) walk(`${nextRoot}${dir}`)
-    expect(samples.size, '没在 next/dist 里找到 __NEXT_ERROR_CODE 样本').toBeGreaterThan(100)
+    // 扫 dist 根：全树 573 个文件含 __NEXT_ERROR_CODE，分布在 13 个顶层目录，
+    // 其中 dist/esm 就占 269 个（库入口，最可能先变形态）。只挑几个子目录会守不住。
+    walk(`${nextRoot}dist`)
+    expect(samples.size, '没在 next/dist 里找到 __NEXT_ERROR_CODE 样本').toBeGreaterThan(300)
     // 每个写入点都要能被解析出错误码 —— 否则「新写法不匹配 → 不计入失败 → 照样绿」
     expect(unparsed, `有 ${unparsed.length} 个 __NEXT_ERROR_CODE 写入点没能解析出错误码`).toEqual([])
     for (const code of samples) {

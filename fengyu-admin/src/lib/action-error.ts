@@ -51,6 +51,17 @@ const UNREADABLE_FRAGMENTS = [
   // Safari 的 fetch 失败文案（Chrome 走上面的 failed to fetch）
   'the network connection was lost',
   'connection appears to be offline',
+  // PG / JS 引擎原文。这类「中文字段名 + 上游原始 message」的拼装在仓内真实存在
+  // （如 lakala-onboarding.ts:1130），中文包装会让结构规则放行，只能按句式认。
+  'syntax error at or near',
+  'duplicate key value',
+  'violates unique constraint',
+  'violates foreign key constraint',
+  'relation does not exist',
+  'column does not exist',
+  'cannot read properties of',
+  'is not a function',
+  'is not defined',
 ] as const
 
 
@@ -175,14 +186,42 @@ const TECH_ARTIFACT_RES: readonly RegExp[] = [
   // 环境变量名 / 内部常量这类 SCREAMING_SNAKE token（必须含下划线，
   // 免得误杀 SKU、OEM 这类单词型业务缩写）。真实来源：
   // `actions/lakala-onboarding.ts:1492` 的「缺少电子合同回调地址：LAKALA_ECONTRACT_CALLBACK_URL」
-  /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/,
-  // 单标签主机:端口（`postgres:5433`）。要求小写字母开头，避开「稀释比例 1.5:30」这类小数写法
-  /\b[a-z][a-z0-9-]{2,}:\d{2,5}\b/,
+  // 尾巴允许挂小写单位（`LAKALA_TIMEOUT_30000ms`）；整体 ≥6 字符，
+  // 免得把 `A_B款精华液` 里的 `A_B` 这种商品名片段当成配置名
+  /\b(?=[A-Z][A-Z0-9_]{5,}[a-z]*\b)[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+[a-z]*\b/,
+  // 单标签主机:端口（`postgres:5433` / `redis:6379`）。要求小写字母开头 + 主机名 ≥5 字符：
+  // 前者避开「稀释比例 1.5:30」这类小数，后者避开「门店 sku:10086 已停用」这类短业务标签
+  /\b[a-z][a-z0-9-]{4,}:\d{2,5}\b/,
+  // 裸 IPv6（无端口无方括号）。要求出现 `::`，免得把 `09:00:00` 这类时间写法当地址
+  /\b[0-9a-f]{0,4}(?::[0-9a-f]{0,4})*::[0-9a-f]{0,4}(?::[0-9a-f]{0,4})*\b/i,
   // URI scheme（`file:///srv/…`、`postgres://…`、`redis://…`）
   /\b[a-z][a-z0-9+.-]*:\/\//i,
-  // 句中出现的内建异常名（`操作失败：TypeError: Cannot read …`），不只句首
-  /\b[A-Z][A-Za-z]*(?:Error|Exception):\s/,
+  // 句中出现的内建异常名（`操作失败：TypeError: Cannot read …`），不只句首。
+  // 冒号后空格可选：`String(err)` 几乎都带空格，但 `Error:boom` 这种拼法也要认
+  /\b[A-Z][A-Za-z]*(?:Error|Exception):\s?/,
 ]
+
+/**
+ * 内网主机名 / 域名（**不带端口**的那一半攻击面）。
+ *
+ * 只认两类，避开真实业务写法：
+ * - 三段以上且不是纯数字尾巴：`merchant.lakala.com` ✅，而版本号 `v1.2.3` 的尾段全是数字 → 放行
+ * - 二段但后缀是内网惯用域：`postgres.internal` / `db-primary.local` ✅，
+ *   而 `报表 report.xlsx 生成失败` 的 `.xlsx` 不在名单里 → 放行
+ */
+const INTERNAL_TLD_RE = /\.(?:internal|local|svc|lan|intranet|corp)$/i
+const DOMAIN_LIKE_RE = /\b[A-Za-z][\w-]*(?:\.[A-Za-z0-9][\w-]*)+\b/g
+
+function hasHostname(text: string): boolean {
+  for (const m of text.matchAll(DOMAIN_LIKE_RE)) {
+    const token = m[0]
+    if (INTERNAL_TLD_RE.test(token)) return true
+    const parts = token.split('.')
+    // 三段以上，且不是「首段 + 全数字尾段」的版本号形态
+    if (parts.length >= 3 && !parts.slice(1).every((p) => /^\d+$/.test(p))) return true
+  }
+  return false
+}
 
 /**
  * 「整串一个空白都没有、且不含中日韩」= 它不是人话，是标识符/编号/技术串。
@@ -242,21 +281,26 @@ const NATIVE_ERROR_NAMES: ReadonlySet<string> = new Set([
 ])
 
 /**
- * 兜底结构判定：把文案按「空白 + 中日韩」切开，看有没有哪一段**长度 ≥4 且含
- * `_ / \ " [ ]`** —— 那是路径、IPv6、带引号的库表/约束名、内部标识符的形状，不是人话。
+ * 兜底结构判定：把文案按「空白 + 中日韩」切开，看有没有哪一段长得像技术串。
  *
- * 长度门槛与字符集都是为了放过真实业务写法：订单号 `FY-XSD-WX-2609140001`（只有连字符）、
- * `0.1~1.0`、`SKU: FY-001 库存不足`、`单价/数量 不匹配`（`/` 两侧是中文，切出来只有一个字符）
- * 都不命中；而 `"uq_sop_txn"`、`file:///srv/backups/db.dump`、`[fd00::5]`、
- * `LAKALA_TIMEOUT_30000ms` 全部命中。
+ * - 含 `_ \ " [ ]` 之一且长度 ≥4：带引号的库表/约束名、IPv6、内部标识符
+ * - **斜杠要求出现 ≥2 次**：路径与 URI 天然多段（`file:///srv/backups/db.dump`）。
+ *   只要求一个的话，`仅 PC/H5 端支持`、`支持 iOS/Android 双端` 这类产品文案会被误杀 ——
+ *   仓内现在没有这种写法，但新文案一写就踩。
+ *
+ * 放行的真实业务写法：订单号 `FY-XSD-WX-2609140001`（只有连字符）、`0.1~1.0`、
+ * `SKU: FY-001 库存不足`、`单价/数量 不匹配`、`PC/H5`、
+ * `身份证仅支持 JPG/PNG 图片`（仓内真实文案）、`洗发水500ml/瓶`（商品名直接插进错误文案）。
  */
 const PROSE_SEPARATOR_RE = /[\s\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF66-\uFF9F]+/u
-const TECHNICAL_RUN_CHARS_RE = /[_/\\"[\]]/
+const TECHNICAL_RUN_CHARS_RE = /[\\"[\]]/
 
 function hasTechnicalRun(text: string): boolean {
-  return text
-    .split(PROSE_SEPARATOR_RE)
-    .some((token) => token.length >= 4 && TECHNICAL_RUN_CHARS_RE.test(token))
+  return text.split(PROSE_SEPARATOR_RE).some((token) => {
+    if (token.length < 4) return false
+    if (TECHNICAL_RUN_CHARS_RE.test(token)) return true
+    return (token.match(/\//g)?.length ?? 0) >= 2
+  })
 }
 
 /** 纯判定：这一串是不是「技术串而非文案」。不负责翻译，翻译只在整串原值那一层做。 */
@@ -299,7 +343,8 @@ function readableMessage(raw: unknown): string | null {
   // 剥完再判一次：剥出来的残串可能又是编号 / 裸 token，也可能是「中文包着的技术痕迹」
   const text = stripBusinessPrefix(value).trim()
   if (!text || isOpaque(text)) return null
-  if (TECH_ARTIFACT_RES.some((re) => re.test(text)) || hasTechnicalRun(text)) return null
+  if (TECH_ARTIFACT_RES.some((re) => re.test(text)) || hasTechnicalRun(text) || hasHostname(text))
+    return null
   return text
 }
 
