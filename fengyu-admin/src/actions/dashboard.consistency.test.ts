@@ -43,6 +43,10 @@ function stripComments(src: string): string {
   return src
     .replace(/\/\*[\s\S]*?\*\//g, ' ') // 块注释
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ') // 行注释（避开 URL 的 //）
+    // SQL 行注释：被测文本是 TS 里的 SQL 模板串，`--` 注释此前会原样留在里面。
+    // 若某条 CASE 内的 `--` 注释恰好写着 `(SELECT today FROM bounds)` 之类字样，
+    // 就能骗过基于文本的断言（GLM 评审指出的对抗路径）。
+    .replace(/--[^\n]*/g, ' ')
 }
 
 function between(src: string, start: string, end: string): string {
