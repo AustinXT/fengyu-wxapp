@@ -1300,6 +1300,8 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
     'ON', 'AS', 'WHERE', 'GROUP', 'ORDER', 'LIMIT', 'UNION', 'JOIN', 'LEFT', 'RIGHT', 'INNER',
     'OUTER', 'CROSS', 'FULL', 'USING', 'HAVING', 'WINDOW', 'OFFSET', 'FETCH', 'RETURNING',
     'LATERAL', 'NATURAL', 'TABLESAMPLE', 'WITH', 'SELECT', 'FROM', 'AND', 'OR', 'SET', 'FOR',
+    // 集合运算：`FROM x EXCEPT SELECT x.id FROM x` 里 EXCEPT 会被当成 x 的别名 → 假红
+    'EXCEPT', 'INTERSECT', 'MINUS',
   ])
   // JOIN/FROM 后给 CTE 起别名；`x alias`、`x AS alias`、`FROM a, x alias` 都算
   const aliasRe = (name: string) =>
