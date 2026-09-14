@@ -21,6 +21,8 @@ export interface DialogProps {
    * 读屏只会念一句「对话框」。
    */
   ariaLabel?: string
+  /** 弹窗的可及描述（单据号、不可撤销后果等），指向内容里某个元素的 id。 */
+  ariaDescribedBy?: string
 }
 
 function Dialog({
@@ -30,6 +32,7 @@ function Dialog({
   className,
   dismissible = true,
   ariaLabel,
+  ariaDescribedBy,
 }: DialogProps) {
   const dialogRef = React.useRef<HTMLDialogElement>(null)
   const onOpenChangeRef = React.useRef(onOpenChange)
@@ -106,6 +109,7 @@ function Dialog({
         className,
       )}
       aria-label={ariaLabel}
+      aria-describedby={ariaDescribedBy}
       onClick={handleBackdropClick}
       // ESC 触发的是 cancel。用 DOM 事件属性而不是 addEventListener + ref：
       // ref 在 passive effect 里更新，点完「确认」立刻按 ESC 时监听可能还读着旧值。

@@ -838,31 +838,46 @@ describe('弹窗在异常与并发下的出路（#134 评审补）', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 
-  it('降级路径下 A 在途时切到 B：A 先返回也不会解掉 B 的提交锁', async () => {
-    const gateA = deferred<void>()
-    const gateB = deferred<void>()
-    vi.mocked(rejectInventoryCoreDoc).mockReturnValueOnce(gateA.promise as never)
-    vi.mocked(approveInventoryCoreDoc).mockReturnValueOnce(gateB.promise as never)
+  /**
+   * 真机上 `showModal()` 会让背景 inert，行按钮点不到；只有 dialog.tsx 降级到 `.show()`
+   * 那条退路才可达。让 `showModal` 抛错，把降级路径真正打开 —— 否则用例名声称的
+   * 「降级路径」其实只是 fireEvent 不遵守 inert 而已，删掉 fallback 分支照样绿。
+   */
+  function forceNonModalFallback() {
+    const showModal = vi
+      .spyOn(HTMLDialogElement.prototype, 'showModal')
+      .mockImplementation(function (this: HTMLDialogElement) {
+        throw new Error('showModal unsupported')
+      })
+    const show = vi.spyOn(HTMLDialogElement.prototype, 'show')
+    return { showModal, show }
+  }
+
+  it('降级路径确实走到了 .show()（前置条件自检）', () => {
+    const { show } = forceNonModalFallback()
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    expect(show).toHaveBeenCalled()
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('降级路径下提交在途时，背景的行操作按钮被锁住', async () => {
+    forceNonModalFallback()
+    const gate = deferred<void>()
+    vi.mocked(rejectInventoryCoreDoc).mockReturnValue(gate.promise as never)
     const rowB: InventoryDocRow = { ...row, id: 'MBS-260813-0009' }
     renderDocs([row, rowB])
 
     fireEvent.click(screen.getAllByRole('button', { name: '驳回' })[0])
     fireEvent.change(remarkBox('驳回原因'), { target: { value: '数量不符' } })
     fireEvent.click(screen.getByRole('button', { name: '确认驳回' }))
-    await waitFor(() => expect(rejectInventoryCoreDoc).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByRole('button', { name: '处理中…' })).toBeDisabled())
 
-    // 切到 B（真机上 showModal 会 inert 挡住，这里模拟 .show() 降级路径）
-    fireEvent.click(screen.getAllByRole('button', { name: '通过' })[1])
-    fireEvent.click(screen.getByRole('button', { name: '确认通过' }))
-    await waitFor(() => expect(approveInventoryCoreDoc).toHaveBeenCalledTimes(1))
+    // 背景里 B 单的「通过」必须点不动，否则 A 的「处理中」界面会被顶掉，用户以为 A 取消了
+    for (const btn of screen.getAllByRole('button', { name: '通过' })) expect(btn).toBeDisabled()
+    for (const btn of screen.getAllByRole('button', { name: '驳回' })) expect(btn).toBeDisabled()
 
-    // A 先回来 —— 它的 finally 不该把 B 的锁解开
-    await act(async () => { gateA.resolve(); await gateA.promise })
-    expect(screen.getByRole('button', { name: '处理中…' })).toBeDisabled()
-    fireEvent.click(screen.getByRole('button', { name: '处理中…' }))
-    expect(approveInventoryCoreDoc).toHaveBeenCalledTimes(1)
-
-    await act(async () => { gateB.resolve(); await gateB.promise })
+    await act(async () => { gate.resolve(); await gate.promise })
   })
 
   it('提交的是用户原样输入，不因必填校验顺手改写正文', async () => {
@@ -916,6 +931,39 @@ describe('弹窗在异常与并发下的出路（#134 评审补）', () => {
     renderDocs()
     fireEvent.click(screen.getByRole('button', { name: '驳回' }))
     await waitFor(() => expect(remarkBox('驳回原因')).toHaveFocus())
+  })
+
+  it('关掉再打开（含换动作）焦点仍然落在输入框 —— 常驻挂载后这才是真正的风险点', async () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    await waitFor(() => expect(remarkBox('驳回原因')).toHaveFocus())
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    // 把焦点挪走，确保下面断言的是「重新聚焦」而不是「焦点恰好还在原处」
+    screen.getByRole('button', { name: '新建' }).focus()
+
+    fireEvent.click(screen.getByRole('button', { name: '通过' }))
+    await waitFor(() => expect(remarkBox('审批备注')).toHaveFocus())
+  })
+
+  it('弹窗把单据号与不可撤销后果作为可及描述播报出来', () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '通过' }))
+    expect(screen.getByRole('dialog', { name: '确认审批通过？' })).toHaveAccessibleDescription(
+      /实扣库存/,
+    )
+  })
+
+  it('权限被收回（PERMISSION_DENIED）也给出路：关窗 + 刷新', async () => {
+    vi.mocked(approveInventoryCoreDoc).mockRejectedValue(
+      Object.assign(new Error('sanitized'), { digest: 'PERMISSION_DENIED: 无权审批该单据' }),
+    )
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '通过' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认通过' }))
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('无权审批该单据'))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() => expect(mockRefresh).toHaveBeenCalled())
   })
 
   it('字数计数随输入更新', () => {

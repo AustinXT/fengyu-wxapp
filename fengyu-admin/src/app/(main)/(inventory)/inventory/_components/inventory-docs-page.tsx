@@ -147,6 +147,9 @@ export default function InventoryDocsPage({
   const [pendingAction, setPendingAction] = useState<{ kind: DocActionKind; docId: string } | null>(
     null,
   )
+  // 提交在途时不接受任何行操作。真机上模态背景本就 inert 点不到，但 dialog.tsx 有降级到
+  // .show() 的退路 —— 那条路下背景可点，A 的「处理中」界面会被 B 顶掉，用户以为 A 取消了。
+  const [actionBusy, setActionBusy] = useState(false)
 
   const columns: Column<InventoryDocRow>[] = [
     {
@@ -204,6 +207,7 @@ export default function InventoryDocsPage({
               <Button
                 variant="ghost"
                 size="sm"
+                disabled={actionBusy}
                 onClick={() => setPendingAction({ kind: 'approve', docId: r.id })}
               >
                 通过
@@ -211,6 +215,7 @@ export default function InventoryDocsPage({
               <Button
                 variant="ghost"
                 size="sm"
+                disabled={actionBusy}
                 onClick={() => setPendingAction({ kind: 'reject', docId: r.id })}
               >
                 驳回
@@ -221,6 +226,7 @@ export default function InventoryDocsPage({
             <Button
               variant="ghost"
               size="sm"
+              disabled={actionBusy}
               onClick={() => setPendingAction({ kind: 'receive', docId: r.id })}
             >
               收货
@@ -313,6 +319,7 @@ export default function InventoryDocsPage({
 
       <DocActionDialog
         pending={pendingAction}
+        onBusyChange={setActionBusy}
         onOpenChange={(next) => {
           if (!next) setPendingAction(null)
         }}
@@ -410,7 +417,14 @@ const DOC_ACTION_REMARK_MAX = 300
 const INVISIBLE_FORMAT_RE = /\p{Cf}/gu
 
 /** 状态型错误：说明单据已被别人改过，弹窗留着也没用，直接关掉 + 刷新列表给出路。 */
-const STALE_STATE_PREFIXES: readonly string[] = ['CONFLICT', 'INVALID_STATE', 'NOT_FOUND']
+const STALE_STATE_PREFIXES: readonly string[] = [
+  'CONFLICT',
+  'INVALID_STATE',
+  'NOT_FOUND',
+  // 权限被收回后，页面上按旧权限渲染的按钮还在，留着弹窗只会让人反复点必失败的按钮 ——
+  // 与状态被改是同构的死胡同，刷新后按钮会随权限消失。
+  'PERMISSION_DENIED',
+]
 
 function isStaleStateError(err: unknown): boolean {
   const digest = (err as { digest?: unknown } | null | undefined)?.digest
@@ -423,16 +437,22 @@ function DocActionDialog({
   pending,
   onOpenChange,
   onDone,
+  onBusyChange,
 }: {
   pending: { kind: DocActionKind; docId: string } | null
   onOpenChange: (open: boolean) => void
   onDone: (finished: { kind: DocActionKind; docId: string }) => void
+  /** 把「有动作在途」上报给父组件，用来把行操作按钮一起锁住 */
+  onBusyChange: (busy: boolean) => void
 }) {
   const remarkId = useId()
   const errorId = `${remarkId}-error`
+  const descriptionId = `${remarkId}-desc`
   const remarkRef = useRef<HTMLTextAreaElement>(null)
-  // 每个提交自己持有一张「凭证」，只有凭证还是自己的那次才有资格解锁。
-  // 否则降级到 .show() 后：A 在途 → 切到 B → B 提交 → A 先回来 → A 的 finally 把 B 的锁解了。
+  // 每个提交自己持有一张「凭证」，只有凭证还是自己的那次才有资格解锁 ——
+  // 防的是「A 在途 → 换到 B → B 提交 → A 先回来，A 的 finally 把 B 的锁解了」。
+  // 第一道闸在父组件（在途时行操作按钮全 disabled，见 actionBusy），这里是第二道：
+  // 万一将来有人拆了那道闸，至少锁的归属还是对的。
   const submitTokenRef = useRef(0)
   const [remark, setRemark] = useState('')
   const [touched, setTouched] = useState(false)
@@ -462,6 +482,10 @@ function DocActionDialog({
   useEffect(() => {
     if (pending) remarkRef.current?.focus()
   }, [resetKey, pending])
+
+  useEffect(() => {
+    onBusyChange(submitting)
+  }, [submitting, onBusyChange])
 
   const active = pending ?? snapshot
   if (!active) return null
@@ -503,11 +527,12 @@ function DocActionDialog({
       onOpenChange={onOpenChange}
       dismissible={!submitting}
       ariaLabel={config.title}
+      ariaDescribedBy={descriptionId}
     >
       {!submitting && <DialogClose onOpenChange={onOpenChange} />}
       <DialogHeader>
         <DialogTitle>{config.title}</DialogTitle>
-        <DialogDescription>
+        <DialogDescription id={descriptionId}>
           单据号 {active.docId}
           {config.consequence && (
             <>
@@ -523,7 +548,8 @@ function DocActionDialog({
           {config.remarkRequired && <span className="text-[var(--primary)]"> *</span>}
         </label>
         <Textarea
-          // key 用 resetKey：换单据时渲染期就是全新的输入框，不会闪一帧上一张单的备注
+          // key 用 resetKey：换单据时把 textarea 整个重挂，丢掉滚动位置、选区这些 DOM 内部状态
+          // （value 本身是受控的，靠 state 复位，不靠 key）
           key={resetKey}
           id={remarkId}
           ref={remarkRef}
