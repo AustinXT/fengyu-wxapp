@@ -413,10 +413,9 @@ describe('绩效页 · 自定义区间跨度上限（评审补漏 P1）', () => 
     page.onLoad({})
 
     expect(page.data.customMaxDate).toBe('2026-09-14')
-    // 5 年前——不是 371 天。查 2024 年某个 7 天区间既合理又不增加后端开销，
-    // 不该被跨度上限连坐挡住（评审 round-1 codex P1）
-    expect(page.data.customMinDate).toBe('2021-09-15')
-    expect(page.data.customMinDate < '2024-01-01').toBe(true)
+    // 固定业务数据起点，不是「今天往前 N 天」的滚动窗口：查 2020 年某个 7 天区间
+    // 既合理又不增加后端开销，不该被跨度上限连坐挡住（评审 codex round-1 P1 / round-2 P2）
+    expect(page.data.customMinDate).toBe('2020-01-01')
   })
 
   test('上界每次 onShow 重算：页面过夜后当天必须可选（评审 round-1 codex P3）', () => {
@@ -504,5 +503,100 @@ describe('绩效页 · 切「自定义」不做无谓重拉（评审 round-1 cod
 
     await vi.waitFor(() => expect(callStaffApi).toHaveBeenCalled())
     expect(page.data.startDate).toBe('2026-08-20')
+  })
+})
+
+describe('绩效页 · 过夜/跨月后区间必须跟着今天走（评审 round-2 codex P1）', () => {
+  test('页面在页面栈过夜：onShow 把「今日」推进到新的今天并重拉', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'today' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+    expect(page.data.startDate).toBe('2026-09-14')
+
+    vi.setSystemTime(new Date(2026, 8, 15, 9, 0, 0)) // 隔夜
+    vi.mocked(callStaffApi).mockClear()
+    page.onShow()
+
+    expect(page.data.startDate).toBe('2026-09-15')
+    expect(page.data.endDate).toBe('2026-09-15')
+    expect(page.data.displayDate).toBe('2026-09-15')
+    expect(vi.mocked(callStaffApi).mock.calls[0][1]).toMatchObject({ startDate: '2026-09-15' })
+    // 区间变了 = 主体变了，旧数据不能留在屏幕上冒充新一天的业绩
+    expect(page.data.items).toHaveLength(0)
+  })
+
+  test('跨月：「本月」不再停留在上个月', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+    expect(page.data.startDate).toBe('2026-09-01')
+
+    vi.setSystemTime(new Date(2026, 9, 3, 9, 0, 0)) // 跨到 10 月
+    vi.mocked(callStaffApi).mockClear()
+    page.onShow()
+
+    expect(page.data.startDate).toBe('2026-10-01')
+    expect(page.data.endDate).toBe('2026-10-03')
+    expect(page.data.displayDate).toBe('2026年10月')
+  })
+
+  test('同一天内 onShow 仍走原来的被动刷新（不清屏）', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'today' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+
+    vi.mocked(callStaffApi).mockClear()
+    page.onShow()
+
+    expect(page.data.items).toHaveLength(1) // 主体没变，旧数据保留
+    expect(callStaffApi).toHaveBeenCalledTimes(1)
+  })
+
+  test('custom 是用户手选的区间，onShow 不擅自改动', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'custom' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    page.onCustomStartChange({ detail: { value: '2026-08-20' } })
+    await vi.waitFor(() => expect(callStaffApi).toHaveBeenCalled())
+
+    vi.setSystemTime(new Date(2026, 8, 15, 9, 0, 0))
+    page.onShow()
+
+    expect(page.data.startDate).toBe('2026-08-20')
+    expect(page.data.endDate).toBe('2026-09-14')
+  })
+})
+
+describe('绩效页 · 「成功查到 0 条」不等于「还没加载」（评审 round-2 codex P3）', () => {
+  test('本期 0 条时切「自定义」同样不重复扫描', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage([], 0) // 成功返回，但本期确实没有记录
+    await page.loadData(true)
+    expect(page.data.items).toHaveLength(0)
+    expect(page.data.loadFailed).toBe(false)
+
+    vi.mocked(callStaffApi).mockClear()
+    page.onRangeTap({ currentTarget: { dataset: { type: 'custom' } } })
+
+    expect(page.data.rangeType).toBe('custom')
+    expect(callStaffApi).not.toHaveBeenCalled()
+  })
+
+  test('加载失败后切「自定义」仍要重拉（_lastKey 已被清空）', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    vi.mocked(callStaffApi).mockRejectedValue(new Error('网络开小差'))
+    await page.loadData(true)
+    expect(page.data.loadFailed).toBe(true)
+
+    vi.mocked(callStaffApi).mockClear()
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    page.onRangeTap({ currentTarget: { dataset: { type: 'custom' } } })
+
+    expect(callStaffApi).toHaveBeenCalledTimes(1)
   })
 })

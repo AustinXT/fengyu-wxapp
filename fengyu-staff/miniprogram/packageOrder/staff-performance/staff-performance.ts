@@ -100,11 +100,14 @@ const PAGE_SIZE = 20;
 const RANGE_MAX_DAYS = 371;
 
 /**
- * picker 能滚到的最早日期（天）。**与 RANGE_MAX_DAYS 是两回事**：
- * 这条只防止用户把滚轮甩到 1900 年，不限制能查多久以前——查 2024 年的某 7 天区间
- * 既合理又不会让后端多扫一行，不该被跨度上限连坐挡掉。
+ * picker 能滚到的最早日期。取业务数据本身的起点——WorkFine 历史订单迁移进来的最早年份，
+ * 再往前滚只会得到空列表。
+ *
+ * **与 RANGE_MAX_DAYS 是两回事**：这条只防止把滚轮甩到 1900 年，**不限制能查多久以前**。
+ * 查 2020 年的某 7 天区间既合理、又不会让后端多扫一行，不该被跨度上限连坐挡掉，
+ * 所以这里刻意用固定下界而非「今天往前 N 天」的滚动窗口。
  */
-const HISTORY_MIN_DAYS = 365 * 5;
+const HISTORY_MIN_DATE = '2020-01-01';
 
 /**
  * 访问被拒类错误 —— 一旦发生就不得继续展示屏幕上的既有数据（可能是他人薪酬）。
@@ -196,25 +199,36 @@ Page({
     // 边界每次重算：页面留在页面栈里过夜后，onLoad 那次算出的上界还停在昨天，
     // 当天反而选不进去
     this.setData(this.dateBounds());
-    if (this._loaded && this.data.startDate) {
-      // 同主体的被动刷新：失败保留旧数据（见 loadData 的 keepStaleOnError）
-      this.loadData(true, true);
+    if (!this._loaded || !this.data.startDate) return;
+
+    // 预置档位的区间也必须跟着「今天」重算：页面在页面栈里过夜后，「今日」会一直查进页面
+    // 那一天；跨月时「本月」甚至还在查上个月，而按钮高亮和标题都显示得像是当期。
+    // custom 是用户手选的区间，不动。
+    if (this.data.rangeType !== 'custom') {
+      const next = this.presetRange(this.data.rangeType);
+      if (next.start !== this.data.startDate || next.end !== this.data.endDate) {
+        // 区间变了 = 数据主体变了，走完整的清缓存 + 清明细 + 重拉流程，
+        // 不能用 keepStaleOnError 把昨天的数据留在屏幕上
+        this.setRange(this.data.rangeType);
+        return;
+      }
     }
+
+    // 同主体的被动刷新：失败保留旧数据（见 loadData 的 keepStaleOnError）
+    this.loadData(true, true);
   },
 
   /**
    * 自定义 picker 的**绝对**上下界。
    *
    * 上界 = 今天：未来日期永远查不出绩效，只会得到一个与「本期无记录」无法区分的空列表。
-   * 下界 = HISTORY_MIN_DAYS 之前：纯粹防止用户把滚轮甩到 1900 年，**不是**跨度限制——
+   * 下界 = 业务数据起点（固定），纯粹防止把滚轮甩到 1900 年，**不是**跨度限制——
    * 跨度由 `applyCustomRange` 的 `daysBetween <= RANGE_MAX_DAYS` 单独把关。
-   * 两者必须分开：否则「只能查最近 371 天」会把「查 2024 年某 7 天」这种完全无害的
+   * 两者必须分开：否则「只能查最近 371 天」会把「查 2020 年某 7 天」这种完全无害的
    * 区间也一起挡掉，而它并不会让后端多扫一行。
    */
   dateBounds() {
-    const now = new Date();
-    const earliest = new Date(now.getFullYear(), now.getMonth(), now.getDate() - HISTORY_MIN_DAYS);
-    return { customMinDate: this.formatDate(earliest), customMaxDate: this.formatDate(now) };
+    return { customMinDate: HISTORY_MIN_DATE, customMaxDate: this.formatDate(new Date()) };
   },
 
   // 页面销毁后推进代次，丢弃晚到的响应，避免对已卸载页面 setData
@@ -268,30 +282,15 @@ Page({
   // ===== 时间范围切换 =====
   // fetch=false 供 onLoad 使用：只落日期，取数交给紧随的 onShow，避免首屏双发
   setRange(type: RangeType, fetch = true) {
-    const now = new Date();
-    let start: string, end: string, display: string;
-
-    if (type === 'today') {
-      start = end = this.formatDate(now);
-      display = start;
-    } else if (type === 'month') {
-      const first = new Date(now.getFullYear(), now.getMonth(), 1);
-      start = this.formatDate(first);
-      end = this.formatDate(now);
-      display = `${now.getFullYear()}年${now.getMonth() + 1}月`;
-    } else {
-      // custom：沿用切换前那一段作为起点（从「今日」进来就是今天，从「本月」进来就是本月），
-      // 再由两个 picker 微调 —— 避免展开时出现「无区间」的空态。
-      // onLoad 直接收到 ?range=custom 时 data 里还没有日期，回落本月
-      start = this.data.startDate || this.formatDate(new Date(now.getFullYear(), now.getMonth(), 1));
-      end = this.data.endDate || this.formatDate(now);
-      display = `${start} ~ ${end}`;
-    }
+    const { start, end, display } = this.presetRange(type);
 
     // 点「自定义」时区间就是从上一个档位沿用来的，通常与屏幕上这批数据完全同源 ——
     // 此时只展开 picker、换个标题即可，不必清屏重拉：后端每次请求都是全区间扫描，
     // 白跑一趟既费云函数又让用户干等一次闪烁。真正改了日期再由 applyCustomRange 刷新。
-    if (fetch && start === this.data.startDate && end === this.data.endDate && this.data.items.length > 0) {
+    //
+    // 用 `_lastKey`（上一次**成功**渲染的查询键）而不是 `items.length > 0` 判断屏幕上有没有
+    // 同源数据：后者会把「本期成功查到 0 条」误判成「还没加载」，白白多跑一次全区间扫描。
+    if (fetch && start === this.data.startDate && end === this.data.endDate && this._lastKey) {
       this.setData({ rangeType: type, displayDate: display });
       return;
     }
@@ -305,6 +304,32 @@ Page({
 
   onRangeTap(e: WechatMiniprogram.TouchEvent) {
     this.setRange(e.currentTarget.dataset.type as RangeType);
+  },
+
+  /**
+   * 档位 → 区间（纯函数，不写 data）。抽出来是因为 `onShow` 也要用它判断「今天是不是已经
+   * 不是进页面那天了」—— 页面留在页面栈里过夜/跨月时，「今日」必须跟着变成新的今天。
+   */
+  presetRange(type: RangeType): { start: string; end: string; display: string } {
+    const now = new Date();
+    if (type === 'today') {
+      const d = this.formatDate(now);
+      return { start: d, end: d, display: d };
+    }
+    if (type === 'month') {
+      const first = new Date(now.getFullYear(), now.getMonth(), 1);
+      return {
+        start: this.formatDate(first),
+        end: this.formatDate(now),
+        display: `${now.getFullYear()}年${now.getMonth() + 1}月`,
+      };
+    }
+    // custom：沿用切换前那一段作为起点（从「今日」进来就是今天，从「本月」进来就是本月），
+    // 再由两个 picker 微调 —— 避免展开时出现「无区间」的空态。
+    // onLoad 直接收到 ?range=custom 时 data 里还没有日期，回落本月
+    const start = this.data.startDate || this.formatDate(new Date(now.getFullYear(), now.getMonth(), 1));
+    const end = this.data.endDate || this.formatDate(now);
+    return { start, end, display: `${start} ~ ${end}` };
   },
 
   // ===== 自定义区间：两个 picker =====
