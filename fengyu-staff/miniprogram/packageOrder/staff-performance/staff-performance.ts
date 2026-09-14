@@ -186,10 +186,16 @@ Page({
     // 顾客检索：**只过滤已加载的 items，不查服务器、不额外翻页**（2026-09-14 甲方拍板口径）
     keyword: '',
     displayItems: [] as PerformanceItem[],
-    /** 当前渲染窗口大小；关键词一变就复位（见 buildSearchView / onShowMoreMatches） */
+    /** 渲染窗口大小；关键词一变就复位（见 buildSearchView / onShowMoreMatches） */
     displayLimit: DISPLAY_PAGE_SIZE,
-    /** 还有命中项没渲染出来 —— wxml 据此显示「显示更多匹配」 */
+    /** 渲染窗口起点：窗口撑到硬顶后改为整段往后滑，保证任何命中项都有路可达 */
+    displayOffset: 0,
+    /** 窗口后面还有命中 —— wxml 据此显示「显示更多 / 下一批」 */
     hasMoreMatches: false,
+    /** 窗口前面还有命中（只有滑过窗口才会出现） */
+    hasPrevMatches: false,
+    /** 「第 A-B 条」的区间文案，wxml 不支持算式，在 ts 里拼好 */
+    matchWindowLabel: '',
     // wxml 不支持方法调用，过滤结果与提示文案都必须在 ts 里算好
     filterActive: false,
     searchHint: '',
@@ -557,10 +563,30 @@ Page({
    * 翻页新取回的命中项就永远露不出来了，和「搜索激活时新条目立即参与过滤」直接冲突。
    */
   onShowMoreMatches() {
-    const next = Math.min(this.data.displayLimit + DISPLAY_PAGE_SIZE, HARD_DISPLAY_CAP);
-    if (next === this.data.displayLimit) return;
+    const { displayLimit, displayOffset } = this.data;
     this._filteredKeyword = this.data.keyword;
-    this.setData(this.buildSearchView(this.data.items, this.data.keyword, this.data.total, next));
+    if (displayLimit < HARD_DISPLAY_CAP) {
+      // 还没撑到硬顶：把窗口拉大，已经看到的内容留在原位
+      const nextLimit = Math.min(displayLimit + DISPLAY_PAGE_SIZE, HARD_DISPLAY_CAP);
+      this.setData(this.buildSearchView(this.data.items, this.data.keyword, this.data.total, nextLimit, displayOffset));
+      return;
+    }
+    // 已经到硬顶：整段往后滑一屏。窗口若钉死在前 N 条，后面的命中就永远没有可达路径
+    this.setData(this.buildSearchView(
+      this.data.items, this.data.keyword, this.data.total, displayLimit, displayOffset + displayLimit,
+    ));
+    wx.pageScrollTo({ scrollTop: 0, duration: 200 });
+  },
+
+  /** 窗口往前滑一屏（滑过头了要能回来） */
+  onPrevMatches() {
+    const { displayLimit, displayOffset } = this.data;
+    if (displayOffset <= 0) return;
+    this._filteredKeyword = this.data.keyword;
+    this.setData(this.buildSearchView(
+      this.data.items, this.data.keyword, this.data.total, displayLimit, Math.max(displayOffset - displayLimit, 0),
+    ));
+    wx.pageScrollTo({ scrollTop: 0, duration: 200 });
   },
 
   /**
@@ -668,10 +694,6 @@ Page({
       // 优先用新字段 totalServiceCommission，回退到旧字段 totalServiceFee（向后兼容）
       const serviceCommission = res.totalServiceCommission ?? res.totalServiceFee ?? 0;
       const total = res.total || 0;
-      this._lastKey = queryKey;
-      this._summaryCache = res.categorySummary && res.categories && res.categories.length
-        ? { summary: res.categorySummary, categories: res.categories }
-        : null;
       // 翻页只传**新增那一页**，不把已累积的几百上千条重新序列化一遍：
       // setData 单次有 1MB 上限，超了整次调用直接失败（表现是「继续加载」点了没反应，
       // 还会和「没加载够」的提示混在一起，员工根本分不清）。
@@ -702,20 +724,25 @@ Page({
           this.data.keyword,
           total,
           this.data.keyword === this._filteredKeyword ? this.data.displayLimit : undefined,
+          this.data.keyword === this._filteredKeyword ? this.data.displayOffset : undefined,
         ),
         total,
         page,
         // 用本次请求的 page 判断，不比累计长度 —— 长度一旦被过期响应污染，比较逻辑会崩
         hasMore: page * PAGE_SIZE < total,
+      }, () => {
+        // 这三个是「屏幕上那批数据的身份证」，必须等数据真的过桥落到视图层才提交：
+        // 提前写的话，setData 万一失败（比如撞 1MB 上限）它们就和实际渲染的内容对不上，
+        // 会把 catch 分支里 keepStaleOnError 的 sameSource 判断、以及切一级 Tab 时
+        // 用 _summaryCache 本地重算的分类金额一起带偏。
+        // 迟到的回调也要认代次：期间用户可能已经切走了
+        if (seq !== this._seq) return;
+        this._lastKey = queryKey;
+        this._filteredKeyword = this.data.keyword;
+        this._summaryCache = res.categorySummary && res.categories && res.categories.length
+          ? { summary: res.categorySummary, categories: res.categories }
+          : null;
       });
-      // 写在 setData **之后**：这两个是「屏幕上那批数据的身份证」，
-      // 先写的话，setData 万一失败（比如撞 1MB 上限）就会和实际渲染的内容对不上，
-      // 把 catch 分支里 keepStaleOnError 的 sameSource 判断带偏
-      this._lastKey = queryKey;
-      this._filteredKeyword = this.data.keyword;
-      this._summaryCache = res.categorySummary && res.categories && res.categories.length
-        ? { summary: res.categorySummary, categories: res.categories }
-        : null;
     } catch (err: unknown) {
       if (seq !== this._seq) return;
       const msg = err instanceof Error ? err.message : '加载失败';
@@ -788,7 +815,7 @@ Page({
    * `filterActive` 为假时 `displayItems` 刻意留空，由 wxml 的 `filterActive ? displayItems : items`
    * 决定数据源 —— 否则未搜索时同一份明细会被 setData 序列化两遍，列表 payload 白白翻倍。
    */
-  buildSearchView(items: PerformanceItem[], keyword: string, total: number, limit?: number) {
+  buildSearchView(items: PerformanceItem[], keyword: string, total: number, limit?: number, offset?: number) {
     // 关键词变了就把窗口收回第一屏；翻页/「显示更多」时由调用方显式传入当前窗口
     const windowSize = limit ?? DISPLAY_PAGE_SIZE;
     const kw = (keyword || '').trim().toLowerCase();
@@ -798,7 +825,10 @@ Page({
         filterActive: false,
         searchHint: '',
         displayLimit: DISPLAY_PAGE_SIZE,
+        displayOffset: 0,
         hasMoreMatches: false,
+        hasPrevMatches: false,
+        matchWindowLabel: '',
       };
     }
 
@@ -817,14 +847,20 @@ Page({
     const loaded = `已加载 ${items.length}/共 ${total} 条`;
     // 关键词进文案前截断：整段粘贴进搜索框时，原样内插会把 van-empty 的 description 撑爆
     const shown = kw.length > 12 ? `${keyword.trim().slice(0, 12)}…` : keyword.trim();
-    const capped = matched.length > windowSize;
-    const atHardCap = windowSize >= HARD_DISPLAY_CAP;
+    // 窗口起点不能越过命中总数（翻页后命中变多/变少时都要收回合法区间）
+    const start = Math.min(Math.max(offset ?? 0, 0), Math.max(matched.length - 1, 0));
+    const end = Math.min(start + windowSize, matched.length);
+    const capped = matched.length > windowSize || start > 0;
     return {
-      displayItems: capped ? matched.slice(0, windowSize) : matched,
+      displayItems: capped ? matched.slice(start, end) : matched,
       filterActive: true,
       displayLimit: windowSize,
-      // 还能再推窗口才给按钮；到硬顶就只能让用户收窄关键词
-      hasMoreMatches: capped && !atHardCap,
+      displayOffset: start,
+      // 窗口后面还有命中就给「显示更多 / 下一批」——**不因为撑到硬顶就关掉**，
+      // 否则超过硬顶的命中项永远露不出来，跟「新条目立即参与过滤」直接冲突
+      hasMoreMatches: end < matched.length,
+      hasPrevMatches: start > 0,
+      matchWindowLabel: capped ? `第 ${start + 1}-${end} 条 / 共 ${matched.length} 条命中` : '',
       // 三种文案各有各的必要性：
       // ① total===0：本期一条记录都没有，跟关键词无关。说「未找到张三」会让员工以为
       //    张三的单被分给了别人；但计数仍要带上，否则又退回无信息空态
@@ -833,7 +869,7 @@ Page({
       searchHint: total === 0
         ? `本时段暂无提成记录（${loaded}，搜索「${shown}」仍生效）`
         : capped
-          ? `${loaded}，匹配 ${matched.length} 条，已显示前 ${windowSize} 条（顶部汇总为全量，不随搜索变化）${atHardCap ? ' —— 命中太多，关键词请再具体些' : ''}`
+          ? `${loaded}，匹配 ${matched.length} 条，当前显示第 ${start + 1}-${end} 条（顶部汇总为全量，不随搜索变化）`
           : matched.length
             ? `${loaded}，匹配 ${matched.length} 条（顶部汇总为全量，不随搜索变化）`
             : `${loaded}中未找到「${shown}」`,

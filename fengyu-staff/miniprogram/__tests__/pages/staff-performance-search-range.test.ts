@@ -46,6 +46,7 @@ beforeEach(() => {
   vi.clearAllTimers()
   vi.setSystemTime(new Date(2026, 8, 14, 10, 0, 0)) // 2026-09-14 本地时间
   ;(globalThis as any).wx.showToast = vi.fn()
+  ;(globalThis as any).wx.pageScrollTo = vi.fn() // 滑窗后回顶，setup.ts 只 mock 了 storage
 })
 
 function createPage() {
@@ -54,7 +55,7 @@ function createPage() {
     data: JSON.parse(JSON.stringify(pageDefinition.data)),
     // 支持 `items[3]` 这种路径 setData —— 翻页走增量追加以避开 1MB 上限，
     // mock 不认路径的话测试会假绿（this.data.items 永远停在第一页）
-    setData(update: Record<string, unknown>) {
+    setData(update: Record<string, unknown>, cb?: () => void) {
       for (const [key, value] of Object.entries(update)) {
         const m = key.match(/^(\w+)\[(\d+)\]$/)
         if (m) {
@@ -65,6 +66,9 @@ function createPage() {
           this.data[key] = value
         }
       }
+      // 真机上 setData 的第二参在数据落到视图层后回调；`_lastKey` 这类
+      // 「屏幕数据身份证」就挂在这里提交，mock 必须一并支持
+      cb?.()
     },
   }
   return page
@@ -962,7 +966,7 @@ describe('绩效页 · 过滤结果渲染上限（评审 round-8 codex P1）', (
     search(page, '顾客') // 500 条全中
     expect(page.data.displayItems).toHaveLength(200)
     expect(page.data.searchHint).toContain('匹配 500 条')
-    expect(page.data.searchHint).toContain('已显示前 200 条')
+    expect(page.data.searchHint).toContain('当前显示第 1-200 条')
     expect(page.data.hasMoreMatches).toBe(true)
   })
 
@@ -1024,7 +1028,7 @@ describe('绩效页 · 姓名空格归一与手动刷新入口（评审 round-9 
     await page.loadData(true)
 
     search(page, '顾客')
-    expect(page.data.searchHint).toContain('已显示前 200 条')
+    expect(page.data.searchHint).toContain('当前显示第 1-200 条')
     expect(page.data.searchHint).toContain('顶部汇总为全量')
   })
 })
@@ -1101,25 +1105,65 @@ describe('绩效页 · 渲染窗口可推进（评审 round-12 codex P2）', () 
 
     page.onShowMoreMatches()
     expect(page.data.displayItems).toHaveLength(400)
-    expect(page.data.searchHint).toContain('已显示前 400 条')
+    expect(page.data.searchHint).toContain('当前显示第 1-400 条')
 
     page.onShowMoreMatches()
-    expect(page.data.displayItems).toHaveLength(500) // 命中只有 500，窗口 600 但取完即止
+    expect(page.data.displayItems).toHaveLength(500) // 命中只有 500，取完即止
     expect(page.data.hasMoreMatches).toBe(false)
   })
 
-  test('推到硬顶就不再给按钮，改提示收窄关键词', async () => {
+  test('窗口撑到硬顶后改为整段往后滑——钉死的话后面的命中永远露不出来', async () => {
     const page = createPage()
     page.onLoad({})
     loadMany(page, 1500)
     await page.loadData(true)
 
     search(page, '顾客')
-    for (let i = 0; i < 10; i++) page.onShowMoreMatches()
+    // 200 → 400 → 500(硬顶)
+    page.onShowMoreMatches()
+    page.onShowMoreMatches()
+    expect(page.data.displayLimit).toBe(500)
+    expect(page.data.displayOffset).toBe(0)
+    expect(page.data.displayItems[0].customerName).toBe('顾客0')
 
-    expect(page.data.displayItems).toHaveLength(500) // HARD_DISPLAY_CAP
+    // 到顶后再点 = 下一批
+    page.onShowMoreMatches()
+    expect(page.data.displayOffset).toBe(500)
+    expect(page.data.displayItems[0].customerName).toBe('顾客500')
+    expect(page.data.matchWindowLabel).toBe('第 501-1000 条 / 共 1500 条命中')
+    expect(page.data.hasPrevMatches).toBe(true)
+    expect(page.data.hasMoreMatches).toBe(true)
+
+    // 一直滑到最后一批
+    page.onShowMoreMatches()
+    expect(page.data.displayOffset).toBe(1000)
+    expect(page.data.displayItems[page.data.displayItems.length - 1].customerName).toBe('顾客1499')
     expect(page.data.hasMoreMatches).toBe(false)
-    expect(page.data.searchHint).toContain('关键词请再具体些')
+
+    // 还能滑回去
+    page.onPrevMatches()
+    expect(page.data.displayOffset).toBe(500)
+    expect(page.data.displayItems[0].customerName).toBe('顾客500')
+  })
+
+  test('翻页取回的新命中落在窗口之后也仍可达', async () => {
+    const page = createPage()
+    page.onLoad({})
+    loadMany(page, 500, 1000)
+    await page.loadData(true)
+    search(page, '顾客')
+    page.onShowMoreMatches()
+    page.onShowMoreMatches()
+    expect(page.data.displayLimit).toBe(500)
+    expect(page.data.hasMoreMatches).toBe(false) // 目前只加载了 500 条，全在窗口里
+
+    // 再翻一页，新命中排在 500 之后
+    mockPage([makeItem('顾客500', '13800000500', 500)], 1000)
+    await page.loadData(false)
+
+    expect(page.data.hasMoreMatches).toBe(true) // 有了可达路径
+    page.onShowMoreMatches()
+    expect(page.data.displayItems[0].customerName).toBe('顾客500')
   })
 
   test('换关键词把窗口收回第一屏', async () => {

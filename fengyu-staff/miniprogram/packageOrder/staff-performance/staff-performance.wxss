@@ -132,6 +132,22 @@
   padding-bottom: 24rpx;
 }
 
+/* 命中窗口导航（上一批 / 第 A-B 条 / 下一批） */
+.perf-match-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12rpx;
+  padding: 8rpx 0 16rpx;
+}
+
+.perf-match-label {
+  flex: 1;
+  text-align: center;
+  font-size: 20rpx;
+  color: var(--color-text-hint);
+}
+
 /* 搜索态常驻的翻页入口 */
 .perf-search-more {
   display: flex;
