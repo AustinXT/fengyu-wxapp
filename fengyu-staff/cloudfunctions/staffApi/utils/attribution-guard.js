@@ -19,17 +19,25 @@
  * 无需等云函数容器回收就能立刻恢复；而未就绪时本来就要报错，多一次查询无所谓。
  * 并发的冷请求共享同一个在途 Promise（`inflight`），避免 max=5 的连接池被重复探针占满。
  *
- * ## 为什么探数据而不探 `chk_sop_attribution_date_present` 约束（0040 的产物）
+ * ## 为什么不探 `chk_sop_attribution_date_present` 约束（0040 的产物）
  *
  * 因为**只 apply 了 0039 的库是可以正常工作的**——0039 的回填①已补齐首次支付行，
  * 它的 BEFORE trigger 也保证新行恒有值，查询侧直读该列不会出错。
  * prod 当前正是这个状态（0039 已 apply、0040 未 apply）。
  * 若改探 0040 的约束，会把这类**健康的库**误判成未就绪而全面报错。
- * 数据探针的语义更贴近我们真正关心的失败模式：「首次支付行有没有归属日期」。
  *
- * 已知取舍（codex 评审提出）：探针为真不等价于「0040 已执行」。缺 0040 时少了 CHECK 兜底，
- * 理论上可能再产生 NULL 行——但 0039 的 BEFORE trigger 已覆盖全部写入路径，
- * 该风险由 0040 的迁移计划承接，不由本守卫承接。
+ * ## 为什么光探数据不够（codex 两轮评审，round-2 收敛到这个结论）
+ *
+ * 「当前没有 NULL 行」不等于「0039 已执行」：一个几乎空的 0038 库同样没有 NULL 行，
+ * 探针会放行并永久缓存 `ready=true`；而 0038 的 trigger 仍不给新首次支付行赋值，
+ * 之后新增的订单又会静默漏数。
+ *
+ * 所以探针查两件事，**任一不满足即拦**：
+ *   ① 存量数据没有缺口（首次支付行都有归属日期）
+ *   ② trigger **具备** 0039 的能力——函数体里有 `IF NEW.change_type = '首次支付' THEN` 分支。
+ *      这是 0038→0039 的分水岭：0038 及之前的版本是 `IF NEW.change_type <> '首次支付'`
+ *      （把首次支付**排除**在外，所以那些行才会是 NULL），0039 起改成正面处理。
+ *      检查「能力」而非「0040 约束」，既堵住空库漏洞、又不误伤只有 0039 的 prod。
  */
 
 let ready = false
@@ -47,13 +55,20 @@ let inflight = null
  * 因每个冷容器只执行一次（就绪即缓存），稳态开销≈0。
  */
 const PROBE_SQL = `
-  SELECT EXISTS (
-    SELECT 1
-      FROM sale_order_payments
-     WHERE change_type = '首次支付'
-       AND status = '已支付'
-       AND performance_attribution_date IS NULL
-  ) AS has_gap`
+  SELECT
+    EXISTS (
+      SELECT 1
+        FROM sale_order_payments
+       WHERE change_type = '首次支付'
+         AND status = '已支付'
+         AND performance_attribution_date IS NULL
+    ) AS has_gap,
+    COALESCE((
+      SELECT pg_get_functiondef(p.oid) LIKE '%IF NEW.change_type = ''首次支付'' THEN%'
+        FROM pg_proc p
+       WHERE p.proname = 'initialize_payment_performance_attribution_date'
+       LIMIT 1
+    ), false) AS trigger_ready`
 
 /**
  * @param {{ query: (sql: string, params?: unknown[]) => Promise<any[]> }} pg
@@ -66,7 +81,9 @@ async function assertPaymentAttributionReady(pg) {
     inflight = pg.query(PROBE_SQL).finally(() => { inflight = null })
   }
   const rows = await inflight
-  if (rows[0] && rows[0].has_gap) {
+  const probe = rows[0]
+  // 探针行拿不到时按未就绪处理（fail-closed）：宁可报错也不放行可能漏数的查询
+  if (!probe || probe.has_gap || !probe.trigger_ready) {
     throw new Error(
       'INVALID_STATE: MIGRATION_REQUIRED: 业绩归属日期迁移（0039/0040）尚未执行，'
       + '按日期筛选会漏掉绝大多数订单，已阻止返回错误数据。请先执行数据库迁移。',

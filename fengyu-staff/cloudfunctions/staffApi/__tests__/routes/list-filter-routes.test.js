@@ -12,7 +12,8 @@ const { __resetAttributionGuardCache } = require('../../utils/attribution-guard'
  * 每个用例显式 mock 探针 + 重置模块级缓存，保证断言不依赖用例执行顺序
  * （guard 只缓存"已就绪"，若靠缓存跳过探针，改测试顺序就会漂）。
  */
-const mockAttributionReady = () => pg.query.mockResolvedValueOnce([{ has_gap: false }])
+const mockAttributionReady = () =>
+  pg.query.mockResolvedValueOnce([{ has_gap: false, trigger_ready: true }])
 /** 探针之后那一次 query 才是被测列表 SQL */
 const listCall = () => pg.query.mock.calls[1]
 
@@ -90,11 +91,43 @@ describe('业务列表统一筛选', () => {
   })
 
   test('order.list 未迁移库（首次支付行归属日期为 NULL）拒绝返回空结果', async () => {
-    pg.query.mockResolvedValueOnce([{ has_gap: true }])
+    pg.query.mockResolvedValueOnce([{ has_gap: true, trigger_ready: false }])
     const ctx = createManagerCtx({ startDate: '2026-08-01' })
     await expect(orderRoutes.list(ctx)).rejects.toThrow(/INVALID_STATE: MIGRATION_REQUIRED/)
     // 只跑了探针，没发出列表查询——宁可报错也不出错数据
     expect(pg.query).toHaveBeenCalledTimes(1)
+  })
+
+  // codex round-2 P2：光看数据会漏判——一个几乎空的 0038 库同样没有 NULL 行，
+  // 探针会放行并永久缓存 ready，而 0038 的 trigger 仍不给新首次支付行赋值。
+  test('order.list 数据无缺口但 trigger 仍是 0038 版本时照样拦截', async () => {
+    pg.query.mockResolvedValueOnce([{ has_gap: false, trigger_ready: false }])
+    const ctx = createManagerCtx({ startDate: '2026-08-01' })
+    await expect(orderRoutes.list(ctx)).rejects.toThrow(/INVALID_STATE: MIGRATION_REQUIRED/)
+    expect(pg.query).toHaveBeenCalledTimes(1)
+  })
+
+  test('探针返回空行时 fail-closed，不放行可能漏数的查询', async () => {
+    pg.query.mockResolvedValueOnce([])
+    const ctx = createManagerCtx({ startDate: '2026-08-01' })
+    await expect(orderRoutes.list(ctx)).rejects.toThrow(/INVALID_STATE: MIGRATION_REQUIRED/)
+  })
+
+  // GLM round-2 P3：异常路径（探针 reject → finally 清 inflight → 下次重探成功）无用例守护，
+  // 将来有人把 .finally 「简化」掉，回归不会被任何测试抓住。
+  test('探针瞬时故障后不会钉死后续请求', async () => {
+    pg.query.mockRejectedValueOnce(new Error('connection terminated'))
+    const ctxFail = createManagerCtx({ startDate: '2026-08-01' })
+    await expect(orderRoutes.list(ctxFail)).rejects.toThrow(/connection terminated/)
+
+    mockAttributionReady()
+    pg.query.mockResolvedValueOnce([])
+    const ctxOk = createManagerCtx({ startDate: '2026-08-01' })
+    await orderRoutes.list(ctxOk)
+    expect(ctxOk.result.orders).toEqual([])
+    // 第一次故障 + 第二次重探 = 2 次探针（失败不缓存，也不复用 rejected promise）
+    const probeCalls = pg.query.mock.calls.filter(([sql]) => sql.includes('has_gap'))
+    expect(probeCalls).toHaveLength(2)
   })
 
   test('order.list 不带日期时不触发迁移探针', async () => {
@@ -161,7 +194,7 @@ describe('业务列表统一筛选', () => {
   // 此前 allocation 侧只有 snapshot 的「文件里出现过这行调用」字面断言兜底，
   // 把守卫弱化成空操作不会有任何功能测试变红。
   test('allocation.pendingPayments 未迁移库拒绝返回空结果', async () => {
-    pg.query.mockResolvedValueOnce([{ has_gap: true }])
+    pg.query.mockResolvedValueOnce([{ has_gap: true, trigger_ready: false }])
     const ctx = createManagerCtx({ startDate: '2026-08-01' })
     await expect(allocationRoutes.pendingPayments(ctx)).rejects.toThrow(/INVALID_STATE: MIGRATION_REQUIRED/)
     expect(pg.query).toHaveBeenCalledTimes(1)
@@ -177,8 +210,11 @@ describe('业务列表统一筛选', () => {
 
   test('并发冷请求共享同一次迁移探针，不重复占用连接池', async () => {
     // codex 评审 P3：两个请求都在第一个 await 前看到 ready=false
-    pg.query.mockResolvedValueOnce([{ has_gap: false }])
-    pg.query.mockResolvedValue([])
+    // 用三个 Once 精确覆盖（探针 1 次 + 两个 list 各 1 次）——
+    // 持久的 mockResolvedValue 只被 clearAllMocks 清调用记录、不清实现，会悄悄改本文件的 mock 契约
+    mockAttributionReady()
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([])
     const ctxA = createManagerCtx({ startDate: '2026-08-01' })
     const ctxB = createManagerCtx({ startDate: '2026-08-01' })
     await Promise.all([orderRoutes.list(ctxA), orderRoutes.list(ctxB)])

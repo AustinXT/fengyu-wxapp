@@ -2477,10 +2477,12 @@ describe('疗程卡可用次数为 0 时仍展示的跨端守护（issue #122）
       )
       // codex 评审 P2：上面只证明"helper 被调用并赋给局部变量"，不证明它接进了最终 WHERE。
       // 删掉展开处，条件就静默失效而断言仍绿——所以这里必须钉住展开位置。
+      // GLM 复评又指出：`toContain` 吃注释化（`// ...dateRangeConditions,` 仍能通过），
+      // 故改行形锚点——注释行的行首是 `//` 而非 `...`，匹配不上。
       expect(
         adminAllocationsSrc,
-        'admin 分配列表的日期条件未接入最终查询（dateRangeConditions 未展开进 conds）',
-      ).toContain('...dateRangeConditions')
+        'admin 分配列表的日期条件未接入最终查询（dateRangeConditions 未展开进 conds，或被注释掉）',
+      ).toMatch(/^\s*\.\.\.dateRangeConditions,$/m)
     })
 
     // GLM 评审 P2：上面四条只守护「attribution 分支的代码形态还在」，
