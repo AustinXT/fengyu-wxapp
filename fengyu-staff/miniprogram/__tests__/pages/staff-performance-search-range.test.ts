@@ -1620,11 +1620,54 @@ describe('绩效页 · 评审 round-20 闭环（glm）', () => {
     expect(page.data.page).toBe(4)
     expect(page.data.items).toHaveLength(80)
 
-    vi.mocked(callStaffApi).mockClear()
-    page.onShow() // 从微信聊天切回来
+    // onShow 在深翻页时改走「只刷汇总、保留明细」的模式（不用 vi.waitFor：
+    // 它在 fake timers 下会推进定时器，把跨零点回调提前引爆，测出来的不是真实时序）
+    const spy = vi.spyOn(page, 'loadData').mockResolvedValue(undefined as never)
+    page.onShow()
+    expect(spy).toHaveBeenCalledWith(true, true, true) // 第三参 = preserveItems
+    spy.mockRestore()
 
-    expect(callStaffApi).not.toHaveBeenCalled()
-    expect(page.data.items).toHaveLength(80) // 进度还在
+    // 直接验 preserveItems 的语义
+    vi.mocked(callStaffApi).mockClear()
+    mockPage([makeItem('新单', '13700000000', 999)], 210)
+    await page.loadData(true, true, true)
+
+    expect(callStaffApi).toHaveBeenCalledTimes(1) // 请求照发 → 权限得到重验
+    expect(page.data.items).toHaveLength(80)      // 明细与分页游标原样保留
+    expect(page.data.page).toBe(4)
+    expect(page.data.items[0].customerName).toBe('顾客0')
+    expect(page.data.total).toBe(210)             // 汇总口径仍然刷新
+  })
+
+  test('只有第一页时 onShow 走完整刷新（preserveItems=false）', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+
+    const spy = vi.spyOn(page, 'loadData').mockResolvedValue(undefined as never)
+    page.onShow()
+    expect(spy).toHaveBeenCalledWith(true, true, false)
+    spy.mockRestore()
+  })
+
+  test('保留明细的那次刷新如果撞上撤权，照样清屏', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage(Array.from({ length: 20 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i)), 200)
+    await page.loadData(true)
+    await page.loadData(false)
+    expect(page.data.items).toHaveLength(40)
+
+    const denied = Object.assign(new Error('无权查看'), { errorType: 'PERMISSION_DENIED' })
+    vi.mocked(callStaffApi).mockRejectedValue(denied)
+    await page.loadData(true, true, true)
+
+    // 访问被拒独立于 reset/preserve 模式清屏——否则撤权后他人薪酬会一直挂在屏幕上
+    expect(page.data.items).toHaveLength(0)
+    expect(page.data.displayItems).toHaveLength(0)
+    expect(page.data.totalCommission).toBe('--')
+    expect(page._lastKey).toBe('')
   })
 
   test('只有第一页时 onShow 仍照常被动刷新', async () => {

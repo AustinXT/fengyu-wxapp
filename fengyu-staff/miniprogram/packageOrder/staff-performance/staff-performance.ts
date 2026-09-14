@@ -254,15 +254,14 @@ Page({
 
     if (this.syncRangeToToday()) return; // 已经走了完整的重拉流程
 
-    // 已经翻过好几页就不要被动重拉了：`loadData(true, …)` 是 reset 语义，会把几百条塌回
-    // 第一页 20 条。而「去微信里抄个手机号再切回来」恰恰是用这个检索功能时的高频动作，
-    // 几十次「继续加载下一页」的进度不该就这么没了（后端每页还都是全区间扫描）。
-    // 绩效数据不是实时结算的，晚刷一次无碍；换时段/换员工仍走完整重拉，
-    // 想手动刷新点一下当前档位按钮即可。
-    if (this.data.page > 1 && this._lastKey) return;
-
-    // 同主体的被动刷新：失败保留旧数据（见 loadData 的 keepStaleOnError）
-    this.loadData(true, true);
+    // 已经翻过好几页时，被动刷新只刷汇总、**不重建明细**：`loadData(true, …)` 的 reset 语义
+    // 会把几百条塌回第一页 20 条，而「去微信里抄个手机号再切回来」恰恰是用检索功能时的
+    // 高频动作，几十次「继续加载下一页」的进度不该就这么没了（后端每页还都是全区间扫描）。
+    //
+    // ⚠️ 但**请求必须照发**：隐藏期间员工可能被撤权、被调店、手机号被 admin 置空，
+    // 跳过请求就等于跳过权限重验，屏幕上会继续挂着已经无权查看的薪酬数据。
+    // 失败路径（尤其 -403 清屏）与完整重拉共用同一套逻辑。
+    this.loadData(true, true, this.data.page > 1 && !!this._lastKey);
   },
 
   /**
@@ -661,7 +660,7 @@ Page({
   // keepStaleOnError：同主体的被动刷新（onShow）失败时保留旧数据 —— 旧值是「正确主体的
   // 最后已知值」，抹成 ¥0.00 + 空列表属信息丢失，且页面没有重试入口。只有主体变更
   // （换员工/换时段）与筛选切换失败才需要清，否则新选中态会挂着旧条件的明细。
-  async loadData(reset: boolean, keepStaleOnError = false) {
+  async loadData(reset: boolean, keepStaleOnError = false, preserveItems = false) {
     const seq = ++this._seq;
     // page 作为局部量推导：失败时不会像「先 setData 自增」那样留下永久跳页
     const page = reset ? 1 : this.data.page + 1;
@@ -728,7 +727,9 @@ Page({
       // 本次写回已经带了最新的 buildSearchView 结果，在途防抖再跑一遍纯属重复过桥
       this.cancelFilter();
       const itemsPatch: Record<string, unknown> = {};
-      if (reset) {
+      if (preserveItems) {
+        // 明细不动，什么都不用拼
+      } else if (reset) {
         itemsPatch.items = formattedItems;
       } else {
         const base = this.data.items.length;
@@ -742,24 +743,39 @@ Page({
         totalServiceCommission: money(serviceCommission),
         totalCommission: money(res.totalCommission),
         ...this.buildCategoryPanel(res.categorySummary, res.categories, activeMainTab, activeSubCategory),
-        ...itemsPatch,
-        // 关键词跨翻页存活：触底取回的新条目立刻参与过滤，不必重新输入一遍。
-        // 未搜索时 displayItems 恒为空数组（wxml 直接渲染 items），不会再传一份全量
-        // 关键词变了就不带旧窗口（复位回第一屏）—— 改完词 200ms 内正好有响应回来时，
-        // 上面的 cancelFilter 会吞掉防抖，窗口复位就只剩这一条路
-        // 关键词没变才沿用窗口；reset（换时段/换员工/被动刷新）时 items 整批换掉，
-        // 旧窗口的起点就没意义了 —— 沿用会让页面停在一个前面还有大段命中的位置
-        ...this.buildSearchView(
-          newItems,
-          this.data.keyword,
-          total,
-          !reset && keywordAtBuild === this._filteredKeyword ? this.data.displayLimit : undefined,
-          !reset && keywordAtBuild === this._filteredKeyword ? this.data.displayOffset : undefined,
-        ),
         total,
-        page,
-        // 用本次请求的 page 判断，不比累计长度 —— 长度一旦被过期响应污染，比较逻辑会崩
-        hasMore: page * PAGE_SIZE < total,
+        // preserveItems：这次请求只为刷汇总 + 重验权限（onShow 深翻页场景），
+        // 明细与分页游标原样保留。hasMore 仍按**已加载页数**对新 total 重算：
+        // 隐藏期间可能新增了单，翻页还得能继续
+        ...(preserveItems
+          ? {
+              hasMore: this.data.page * PAGE_SIZE < total,
+              ...this.buildSearchView(
+                this.data.items,
+                this.data.keyword,
+                total,
+                keywordAtBuild === this._filteredKeyword ? this.data.displayLimit : undefined,
+                keywordAtBuild === this._filteredKeyword ? this.data.displayOffset : undefined,
+              ),
+            }
+          : {
+              ...itemsPatch,
+              // 关键词跨翻页存活：触底取回的新条目立刻参与过滤，不必重新输入一遍。
+              // 未搜索时 displayItems 恒为空数组（wxml 直接渲染 items），不会再传一份全量。
+              // 关键词变了就不带旧窗口（复位回第一屏）—— 改完词 200ms 内正好有响应回来时，
+              // 上面的 cancelFilter 会吞掉防抖，窗口复位就只剩这一条路；
+              // reset（换时段/换员工）时 items 整批换掉，旧窗口起点同样没意义了
+              ...this.buildSearchView(
+                newItems,
+                this.data.keyword,
+                total,
+                !reset && keywordAtBuild === this._filteredKeyword ? this.data.displayLimit : undefined,
+                !reset && keywordAtBuild === this._filteredKeyword ? this.data.displayOffset : undefined,
+              ),
+              page,
+              // 用本次请求的 page 判断，不比累计长度 —— 长度一旦被过期响应污染，比较逻辑会崩
+              hasMore: page * PAGE_SIZE < total,
+            }),
       }, () => {
         // 这三个是「屏幕上那批数据的身份证」，必须等数据真的过桥落到视图层才提交：
         // 提前写的话，setData 万一失败（比如撞 1MB 上限）它们就和实际渲染的内容对不上，
