@@ -55,6 +55,12 @@ function createPage() {
   return page
 }
 
+/** 输入关键词并推进防抖窗口（过滤延后 SEARCH_DEBOUNCE_MS 生效，见 scheduleFilter） */
+function search(page: Record<string, any>, keyword: string) {
+  page.onKeywordChange({ detail: keyword })
+  vi.advanceTimersByTime(250)
+}
+
 function makeItem(customerName: string, clientPhone: string, seq: number) {
   return {
     type: 'sale',
@@ -92,7 +98,7 @@ describe('绩效页 · 顾客检索（前端过滤已加载明细）', () => {
     expect(page.data.filterActive).toBe(false)
     expect(page.data.displayItems).toHaveLength(0)
 
-    page.onKeywordChange({ detail: '张三' })
+    search(page, '张三')
     expect(page.data.filterActive).toBe(true)
     expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['张三'])
 
@@ -111,10 +117,10 @@ describe('绩效页 · 顾客检索（前端过滤已加载明细）', () => {
     // 卡片上展示的是 138****5678，若拿脱敏串去匹配，输入 1234 会命中 0 条
     expect(page.data.items[0].customerPhoneMasked).toBe('138****5678')
 
-    page.onKeywordChange({ detail: '1234' })
+    search(page, '1234')
     expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['张三', '李四'])
 
-    page.onKeywordChange({ detail: '5678' })
+    search(page, '5678')
     expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['张三'])
   })
 
@@ -124,7 +130,7 @@ describe('绩效页 · 顾客检索（前端过滤已加载明细）', () => {
     mockPage([makeItem('张三', '13800000001', 1)], 58) // 共 58 条，只加载了 1 条
     await page.loadData(true)
 
-    page.onKeywordChange({ detail: '王五' })
+    search(page, '王五')
     expect(page.data.displayItems).toHaveLength(0)
     expect(page.data.searchHint).toContain('已加载 1/共 58 条')
     expect(page.data.searchHint).toContain('王五')
@@ -138,7 +144,7 @@ describe('绩效页 · 顾客检索（前端过滤已加载明细）', () => {
     mockPage([makeItem('张三', '13800000001', 1), makeItem('李四', '13900000002', 2)], 2)
     await page.loadData(true)
 
-    page.onKeywordChange({ detail: '张' })
+    search(page, '张')
     expect(page.data.searchHint).toContain('匹配 1 条')
     expect(page.data.searchHint).toContain('顶部汇总为全量')
   })
@@ -149,7 +155,7 @@ describe('绩效页 · 顾客检索（前端过滤已加载明细）', () => {
     mockPage([makeItem('李四', '13900000002', 1)], 2)
     await page.loadData(true)
 
-    page.onKeywordChange({ detail: '张三' })
+    search(page, '张三')
     expect(page.data.displayItems).toHaveLength(0)
 
     mockPage([makeItem('张三', '13800000001', 2)], 2)
@@ -165,7 +171,7 @@ describe('绩效页 · 顾客检索（前端过滤已加载明细）', () => {
     page.onLoad({})
     mockPage([makeItem('张三', '13800000001', 1)], 1)
     await page.loadData(true)
-    page.onKeywordChange({ detail: '张三' })
+    search(page, '张三')
     expect(page.data.displayItems).toHaveLength(1)
 
     vi.mocked(callStaffApi).mockImplementation(() => new Promise(() => {})) // 请求挂起，停在清空态
@@ -185,7 +191,7 @@ describe('绩效页 · 顾客检索（前端过滤已加载明细）', () => {
     await page.loadData(true)
     const before = page.data.totalCommission
 
-    page.onKeywordChange({ detail: '张三' })
+    search(page, '张三')
     expect(page.data.totalCommission).toBe(before)
   })
 })
@@ -340,7 +346,7 @@ describe('绩效页 · 搜索态翻页入口（评审补漏 P1）', () => {
     mockPage([makeItem('张三', '13800000001', 1)], 40)
     await page.loadData(true)
 
-    page.onKeywordChange({ detail: '张三' })
+    search(page, '张三')
     expect(page.data.displayItems).toHaveLength(1)
     expect(page.data.filterActive).toBe(true)
     // wxml 的按钮条件是 filterActive && hasMore —— 与命中条数无关
@@ -364,13 +370,13 @@ describe('绩效页 · 手机号脏数据归一（评审补漏 P2）', () => {
     ], 3)
     await page.loadData(true)
 
-    page.onKeywordChange({ detail: '13800138000' })
+    search(page, '13800138000')
     expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['张三'])
 
-    page.onKeywordChange({ detail: '13900139000' })
+    search(page, '13900139000')
     expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['李四'])
 
-    page.onKeywordChange({ detail: '1360013' })
+    search(page, '1360013')
     expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['王五'])
   })
 
@@ -380,7 +386,7 @@ describe('绩效页 · 手机号脏数据归一（评审补漏 P2）', () => {
     mockPage([makeItem('张三', '13800000001', 1), makeItem('李四', '13900000002', 2)], 2)
     await page.loadData(true)
 
-    page.onKeywordChange({ detail: '张' })
+    search(page, '张')
     expect(page.data.displayItems).toHaveLength(1)
   })
 
@@ -390,7 +396,7 @@ describe('绩效页 · 手机号脏数据归一（评审补漏 P2）', () => {
     mockPage([makeItem('张三', '13800000001', 1)], 1)
     await page.loadData(true)
 
-    page.onKeywordChange({ detail: '   ' })
+    search(page, '   ')
     expect(page.data.keyword).toBe('')
     expect(page.data.filterActive).toBe(false)
   })
@@ -401,7 +407,7 @@ describe('绩效页 · 手机号脏数据归一（评审补漏 P2）', () => {
     mockPage([makeItem('张三', '13800000001', 1)], 1)
     await page.loadData(true)
 
-    page.onKeywordChange({ detail: '阿'.repeat(200) })
+    search(page, '阿'.repeat(200))
     expect(page.data.searchHint).toContain('…')
     expect(page.data.searchHint.length).toBeLessThan(60)
   })
@@ -439,7 +445,7 @@ describe('绩效页 · 自定义区间跨度上限（评审补漏 P1）', () => 
     await vi.waitFor(() => expect(callStaffApi).toHaveBeenCalled())
 
     expect((globalThis as any).wx.showToast).toHaveBeenCalledWith(
-      expect.objectContaining({ title: expect.stringContaining('最长') })
+      expect.objectContaining({ title: expect.stringContaining('跨度最多') })
     )
     expect(page.data.startDate).toBe('2024-01-01')          // 用户的意图原样保留
     expect(page.data.endDate).toBe('2025-01-06')            // 2024-01-01 + 371 天
@@ -694,5 +700,66 @@ describe('绩效页 · picker 边界刷新时机（评审 round-4 glm P3）', ()
     page.onRangeTap({ currentTarget: { dataset: { type: 'custom' } } })
 
     expect(page.data.customMaxDate).toBe('2026-09-15')
+  })
+})
+
+describe('绩效页 · 检索防抖（评审 round-5 glm P2）', () => {
+  test('关键词立即回显，过滤延后一拍——上千条明细时逐字全量过滤会掉帧', () => {
+    const page = createPage()
+    page.onLoad({})
+    page.data.items = [makeItem('张三', '13800000001', 1), makeItem('李四', '13900000002', 2)]
+    page.data.total = 2
+
+    page.onKeywordChange({ detail: '张三' })
+    expect(page.data.keyword).toBe('张三')      // 输入框受控，回显不能等
+    expect(page.data.filterActive).toBe(false)  // 过滤还没跑
+
+    vi.advanceTimersByTime(250)
+    expect(page.data.filterActive).toBe(true)
+    expect(page.data.displayItems).toHaveLength(1)
+  })
+
+  test('连打多个字符只过滤一次', () => {
+    const page = createPage()
+    page.onLoad({})
+    page.data.items = [makeItem('张三', '13800000001', 1)]
+    page.data.total = 1
+    const spy = vi.spyOn(page, 'buildSearchView')
+
+    page.onKeywordChange({ detail: '张' })
+    page.onKeywordChange({ detail: '张三' })
+    page.onKeywordChange({ detail: '张三丰' })
+    expect(spy).not.toHaveBeenCalled()
+
+    vi.advanceTimersByTime(250)
+    expect(spy).toHaveBeenCalledTimes(1)
+    spy.mockRestore()
+  })
+
+  test('清空立即生效，不等防抖', () => {
+    const page = createPage()
+    page.onLoad({})
+    page.data.items = [makeItem('张三', '13800000001', 1)]
+    page.data.total = 1
+    search(page, '李四')
+    expect(page.data.filterActive).toBe(true)
+
+    page.onKeywordClear()
+    expect(page.data.filterActive).toBe(false) // 没有 advanceTimers
+    expect(page.data.keyword).toBe('')
+  })
+
+  test('防抖窗口里页面被关掉，不对已销毁页面 setData', () => {
+    const page = createPage()
+    page.onLoad({})
+    page.data.items = [makeItem('张三', '13800000001', 1)]
+
+    page.onKeywordChange({ detail: '张三' })
+    page.onUnload()
+    const spy = vi.spyOn(page, 'setData')
+    vi.advanceTimersByTime(250)
+
+    expect(spy).not.toHaveBeenCalled()
+    spy.mockRestore()
   })
 })

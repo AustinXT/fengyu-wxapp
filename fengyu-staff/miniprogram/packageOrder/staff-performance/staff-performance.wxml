@@ -206,7 +206,8 @@
       <van-button size="small" plain loading="{{loading}}" bindtap="onLoadMoreTap">继续加载下一页</van-button>
     </view>
 
-    <view wx:if="{{loading}}" class="loading-more">
+    <!-- 搜索态的加载指示已由按钮自己的 loading 表达，不再叠一个 spinner -->
+    <view wx:if="{{loading && !filterActive}}" class="loading-more">
       <van-loading size="24rpx" />
     </view>
     <!-- 搜索态下不说「已加载全部」：它紧跟在「…中未找到 X」后面读着自相矛盾，

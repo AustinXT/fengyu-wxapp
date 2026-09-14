@@ -109,6 +109,9 @@ const RANGE_MAX_DAYS = 371;
  */
 const HISTORY_MIN_DATE = '2020-01-01';
 
+/** 检索防抖（毫秒）。只防过滤计算，关键词回显不延迟 */
+const SEARCH_DEBOUNCE_MS = 200;
+
 /**
  * 访问被拒类错误 —— 一旦发生就不得继续展示屏幕上的既有数据（可能是他人薪酬）。
  * `PHONE_REQUIRED` 必须在列：`requireStaffBound` 在手机号失效时抛它（admin 改员工资料
@@ -177,6 +180,8 @@ Page({
   _lastKey: '',
   /** 最后一次成功的全量分类汇总：切一级 Tab 时本地即时换口径，不必等请求返回 */
   _summaryCache: null as { summary: CategorySummary; categories: string[] } | null,
+  /** 检索防抖定时器（onUnload 必须清，否则回调会打到已销毁的页面上） */
+  _searchTimer: null as ReturnType<typeof setTimeout> | null,
 
   onLoad(options: Record<string, string>) {
     const mgr = isManager();
@@ -243,6 +248,7 @@ Page({
   onUnload() {
     this._seq++;
     this._disposed = true;
+    this.cancelFilter();
   },
 
   async loadStaffList() {
@@ -388,7 +394,7 @@ Page({
         const capped = this.shiftDate(end, -RANGE_MAX_DAYS);
         start = capped > HISTORY_MIN_DATE ? capped : HISTORY_MIN_DATE;
       }
-      wx.showToast({ title: `区间最长 ${RANGE_MAX_DAYS} 天，另一端已自动调整`, icon: 'none' });
+      wx.showToast({ title: `区间跨度最多 ${RANGE_MAX_DAYS} 天，另一端已自动调整`, icon: 'none' });
     }
     if (start === this.data.startDate && end === this.data.endDate) return; // 选了同一天，无需重拉
 
@@ -407,14 +413,40 @@ Page({
   },
 
   // ===== 顾客检索（纯前端过滤已加载明细）=====
+  /**
+   * 关键词立即回显、过滤延后一拍。
+   *
+   * 自定义区间放开到 371 天后，一个时段累积上千条明细是正常的（员工翻页核对本就是这功能的
+   * 设计用法）。若每敲一个字符都全量过滤再把整个结果数组序列化过桥，低端真机上输入会明显掉帧。
+   * `keyword` 本身不防抖——输入框是受控的，晚一拍回显就是卡字。
+   */
   onKeywordChange(e: WechatMiniprogram.CustomEvent) {
     // 纯空格不算检索：写回 trim 后的值，避免出现「框里有内容、列表却是全量」的哑态
     const keyword = ((e.detail as unknown as string) || '').trim();
-    this.setData({ keyword, ...this.buildSearchView(this.data.items, keyword, this.data.total) });
+    this.setData({ keyword });
+    this.scheduleFilter();
   },
 
   onKeywordClear() {
+    // 清空是明确意图，立即生效，不等防抖
+    this.cancelFilter();
     this.setData({ keyword: '', ...this.buildSearchView(this.data.items, '', this.data.total) });
+  },
+
+  scheduleFilter() {
+    this.cancelFilter();
+    this._searchTimer = setTimeout(() => {
+      this._searchTimer = null;
+      if (this._disposed) return; // 防抖窗口里页面被关掉，别对已销毁页面 setData
+      this.setData(this.buildSearchView(this.data.items, this.data.keyword, this.data.total));
+    }, SEARCH_DEBOUNCE_MS);
+  },
+
+  cancelFilter() {
+    if (this._searchTimer) {
+      clearTimeout(this._searchTimer);
+      this._searchTimer = null;
+    }
   },
 
   /**
