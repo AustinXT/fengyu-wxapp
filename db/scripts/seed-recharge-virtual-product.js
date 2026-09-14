@@ -25,16 +25,18 @@
 
 const { Client } = require('pg')
 
+const DB_TARGET_RE = /^postgres(?:ql)?:\/\/[^@/]*@(101\.34\.242\.103|118\.178\.196\.26):5433\/fengyu_wxapp(?:\?(?![^#]*\b(?:host|hostaddr|port|dbname|database|options|service|passfile)=)[^#]*)?$/
+
 const PRODUCT_ID = 'prod-recharge-virtual'
 const SKU_ID = 'sku-recharge-virtual'
 const MALL_CATEGORY_ID = 'mall-cat-cz-01'   // 储值卡
 const PRODUCT_CATEGORY_ID = 'cat-cz-01'     // 储值卡 / product_kind=充值卡
 
 async function main() {
-  // DATABASE_URL 必填：不提供默认值，避免忘传时静默连到已弃用的旧 dev 库（见 db/CLAUDE.md）
+  // DATABASE_URL 必填且必须精确指向业务库（db/CLAUDE.md 硬规则）。
   const databaseUrl = process.env.DATABASE_URL?.trim()
-  if (!databaseUrl) {
-    console.error('✗ 必须显式传 DATABASE_URL（dev=101.34.242.103:5433/fengyu_wxapp / prod=118.178.196.26:5433/fengyu_wxapp）')
+  if (!DB_TARGET_RE.test(databaseUrl || '')) {
+    console.error('✗ DATABASE_URL 必须显式指向 dev=101.34.242.103:5433/fengyu_wxapp 或 prod=118.178.196.26:5433/fengyu_wxapp')
     process.exit(1)
   }
   const client = new Client({ connectionString: databaseUrl })

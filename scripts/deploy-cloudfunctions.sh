@@ -150,22 +150,34 @@ assert_rc() {  # $1=side 目录  $2=期望 envId
   node -e '
     const f = process.argv[1], expectHost = process.argv[2]
     const c = require(f)
-    const fn = (c.functions || []).find((x) => (x.envVariables || {}).PG_CONNECTION_STRING)
-    if (!fn) process.exit(0)
-    const s = fn.envVariables.PG_CONNECTION_STRING
+    // 逐个函数校验——不能只看第一个：client 侧有 clientApi + payNotify 两个函数，
+    // 任一条串指错库都会被 `fn code update` 一并推上去。
+    const fns = (c.functions || []).filter((x) => x.envVariables && "PG_CONNECTION_STRING" in x.envVariables)
+    if (fns.length === 0) {
+      console.error("  未找到任何带 PG_CONNECTION_STRING 的函数——渲染异常，fail-closed 中止"); process.exit(1)
+    }
     const mask = (v) => String(v).replace(/:\/\/[^@]*@/, "://***@")
-    if (!s || /PLACEHOLDER|待用户提供/.test(s)) {
-      console.error("  PG_CONNECTION_STRING 缺失或仍是占位符"); process.exit(1)
+    const allErrs = []
+    for (const fn of fns) {
+      const name = fn.name || "(未命名函数)"
+      const s = fn.envVariables.PG_CONNECTION_STRING
+      if (!s || /PLACEHOLDER|待用户提供/.test(s)) {
+        allErrs.push(`${name}: PG_CONNECTION_STRING 缺失或仍是占位符`); continue
+      }
+      let u
+      try { u = new URL(s) } catch {
+        allErrs.push(`${name}: 无法解析 ${mask(s)}`); continue
+      }
+      const errs = []
+      if (u.hostname !== expectHost) errs.push(`host=${u.hostname} ≠ ${expectHost}`)
+      if (u.port !== "5433") errs.push(`port=${u.port || "(空)"} ≠ 5433`)
+      if (u.pathname !== "/fengyu_wxapp") errs.push(`dbname=${u.pathname || "(空)"} ≠ /fengyu_wxapp`)
+      // query 可覆盖 authority 的 host/port/dbname（libpq 语义），只比 authority 会被 ?host=<旧库> 绕过
+      const overriding = ["host","hostaddr","port","dbname","database","options","service","passfile"].filter((k) => u.searchParams.has(k))
+      if (overriding.length) errs.push(`query 试图覆盖连接目标：${overriding.join(",")}`)
+      if (errs.length) allErrs.push(`${name}: ${errs.join("；")}`)
     }
-    let u
-    try { u = new URL(s) } catch {
-      console.error(`  PG_CONNECTION_STRING 无法解析：${mask(s)}`); process.exit(1)
-    }
-    const errs = []
-    if (u.hostname !== expectHost) errs.push(`host=${u.hostname} ≠ ${expectHost}`)
-    if (u.port !== "5433") errs.push(`port=${u.port || "(空)"} ≠ 5433`)
-    if (u.pathname !== "/fengyu_wxapp") errs.push(`dbname=${u.pathname || "(空)"} ≠ /fengyu_wxapp`)
-    if (errs.length) { console.error("  " + errs.join("；")); process.exit(1) }
+    if (allErrs.length) { console.error("  " + allErrs.join("\n  ")); process.exit(1) }
   ' "$f" "$EXPECT_PG_HOST" || {
     echo "ERROR: $1 的 PG_CONNECTION_STRING 与 ${ACTIVE} 环境不符（详见上行），疑似跨环境污染。中止。" >&2
     exit 1

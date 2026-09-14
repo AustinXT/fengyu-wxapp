@@ -52,9 +52,10 @@ async function updateFunctionEnv() {
     // （ali-demo 47.113.202.7 于 2026-09-01 停用，但仍可连通、数据陈旧）。没有断言就会把旧库
     // 连接串直接推进 dev 云函数。只放行当前两套业务库，其余一律拒绝。
     // 权威拓扑见 db/CLAUDE.md；正式部署请走 scripts/deploy-cloudfunctions.sh（以 envs/ 为唯一权威源）。
+    // ⚠️ 本脚本的 Namespace 写死为 dev CloudBase（cloud1-3gpht4b01ff88838），
+    // 所以只能放行 dev 库——放行 prod 串会把 dev 的 clientApi 直接改连生产库。
     const ALLOWED_PG = {
       "101.34.242.103": "dev",
-      "118.178.196.26": "prod",
     };
     let pgUrl;
     try {
@@ -63,9 +64,16 @@ async function updateFunctionEnv() {
       console.error("错误: PG_CONNECTION_STRING 无法解析为 URL，拒绝推送");
       process.exit(1);
     }
+    // query 参数可覆盖 authority 里的 host/port/dbname（libpq 语义），只比 authority 会被绕过
+    const OVERRIDING = ["host", "hostaddr", "port", "dbname", "database", "options", "service", "passfile"];
+    const overriding = OVERRIDING.filter((k) => pgUrl.searchParams.has(k));
+    if (overriding.length) {
+      console.error(`错误: PG_CONNECTION_STRING 的 query 试图覆盖连接目标（${overriding.join(", ")}），拒绝推送。`);
+      process.exit(1);
+    }
     if (!ALLOWED_PG[pgUrl.hostname] || pgUrl.port !== "5433" || pgUrl.pathname !== "/fengyu_wxapp") {
       console.error(`错误: PG_CONNECTION_STRING 指向 ${pgUrl.hostname}:${pgUrl.port}${pgUrl.pathname}，不在白名单内，拒绝推送。`);
-      console.error("  允许: 101.34.242.103:5433/fengyu_wxapp (dev) / 118.178.196.26:5433/fengyu_wxapp (prod)");
+      console.error("  允许: 仅 101.34.242.103:5433/fengyu_wxapp (dev) —— 本脚本只更新 dev CloudBase");
       console.error("  请先更新 fengyu-client/.env；若是旧的 47.113.202.7，该机已于 2026-09-01 全面弃用（见 issue #151）。");
       process.exit(1);
     }

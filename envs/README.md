@@ -72,7 +72,11 @@ node .claude/skills/remote-deploy/runtime-config.mjs reconcile
 全部配置通过与发布相同的严格校验后才会写回；不会读取远端配置，也不会打印任何秘密。
 
 拉卡拉门店入网测试部署到 dev（`101.34.242.103`，SSH 别名 `lx-test`）——
-原先挂在独立 test 环境上，test 退役后改挂 dev：
+原先挂在独立 test 环境上，test 退役后改挂 dev。
+⚠ 走哪条拉卡拉通道由 `envs/dev.env` 的 `LAKALA_*` 取值决定，**不由环境名决定**：
+模板默认是 SIT 沙箱（`LAKALA_ENV=test` / `LAKALA_CLIENT_MODE=mock`）。
+真实门店入网需临时换成生产通道值（`release` / `https://s2.lakala.com` 等），用完记得改回，
+且改动只落在 gitignore 的 `dev.env`，不要提交进 example 模板：
 
 ```bash
 .claude/skills/remote-deploy/deploy-admin.sh dev

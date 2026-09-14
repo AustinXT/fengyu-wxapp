@@ -66,15 +66,29 @@ function validatePhone(phone) {
   }
 }
 
+// 目标断言：本脚本会回落读取本机 db/.env，那份文件很容易残留已弃用的旧地址
+// （ali-demo 47.113.202.7 仍可连通、数据陈旧），不断言就会静默 seed 到错库。
+const DB_TARGET_RE = /^postgres(?:ql)?:\/\/[^@/]*@(101\.34\.242\.103|118\.178\.196\.26):5433\/fengyu_wxapp(?:\?(?![^#]*\b(?:host|hostaddr|port|dbname|database|options|service|passfile)=)[^#]*)?$/
+
 function loadDbUrl() {
-  if (process.env.DATABASE_URL) return process.env.DATABASE_URL
-  const envPath = path.join(__dirname, '..', '.env')
-  if (fs.existsSync(envPath)) {
-    const m = fs.readFileSync(envPath, 'utf8').match(/^DATABASE_URL=(.+)$/m)
-    if (m) return m[1].trim()
+  let url = process.env.DATABASE_URL?.trim()
+  if (!url) {
+    const envPath = path.join(__dirname, '..', '.env')
+    if (fs.existsSync(envPath)) {
+      const m = fs.readFileSync(envPath, 'utf8').match(/^DATABASE_URL=(.+)$/m)
+      if (m) url = m[1].trim()
+    }
   }
-  console.error('ERROR: DATABASE_URL not set and db/.env not found.')
-  process.exit(1)
+  if (!url) {
+    console.error('ERROR: DATABASE_URL not set and db/.env not found.')
+    process.exit(1)
+  }
+  if (!DB_TARGET_RE.test(url)) {
+    console.error('ERROR: DATABASE_URL 必须显式指向 dev=101.34.242.103:5433/fengyu_wxapp 或 prod=118.178.196.26:5433/fengyu_wxapp')
+    console.error('       （若来源是 db/.env，请先更新那份文件——旧的 47.113.202.7 已于 2026-09-01 弃用）')
+    process.exit(1)
+  }
+  return url
 }
 
 async function main() {

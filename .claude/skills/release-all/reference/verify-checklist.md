@@ -44,15 +44,17 @@ tcb fn invoke staffApi          # 空 payload，期望 -401 UNAUTHORIZED（函�
 ssh $SSH_HOST "curl -sf http://localhost:3000/ >/dev/null && echo admin-ok"
 ssh $SSH_HOST "docker exec fengyu-admin sh -c 'echo \$DATABASE_URL'" | sed -E 's#://[^@]+@#://***@#'   # 含 $EXPECT_IP:5433/fengyu_wxapp
 ssh $SSH_HOST "curl -sSL -o /dev/null -w '%{http_code}\\n' --max-time 10 http://localhost:3001/"  # 期望 200 或 307
-ssh $SSH_HOST "docker exec fengyu-analyst sh -c 'printf \"%s|%s\\n\" \"\$DATABASE_URL\" \"\$NEXT_PUBLIC_ANALYST_ORIGIN\"'" | sed -E 's#://[^@]+@#://***@#'  # dev/prod DB 含 $EXPECT_IP:5433；test 可为 172.18.0.1:5433；origin 与 envs/$ENV.env 一致
+ssh $SSH_HOST "docker exec fengyu-analyst sh -c 'printf \"%s|%s\\n\" \"\$DATABASE_URL\" \"\$NEXT_PUBLIC_ANALYST_ORIGIN\"'" | sed -E 's#://[^@]+@#://***@#'  # prod DB 含 $EXPECT_IP:5433；dev 为容器网桥 172.18.0.1:5433；origin 与 envs/$ENV.env 一致
 ```
-（`$SSH_HOST`：prod=fengyu-prod / test=sqlserver101 / dev=ali-demo。test 执行 admin + analyst 冒烟，但跳过云函数冒烟。）
+（`$SSH_HOST`：prod=`lx-prod`（118.178.196.26）/ dev=`lx-test`（101.34.242.103）。
+⚠ 旧别名 `fengyu-prod`/`sqlserver101` 已于 2026-09-04 改名，`ali-demo`(47.113.202.7) 已于 2026-09-01 全面弃用——
+该机仍可 ssh、服务可能还在跑，照旧配置冒烟会对着弃用机器验出「通过」，误判发版成功。）
 
 ## 回滚指引
 
 - **admin**：发布健康检查失败时会自动回滚；人工切换上一成功 release 使用 `.claude/skills/remote-deploy/deploy-admin.sh --rollback $ENV`。
 - **analyst**：发布健康检查失败时会自动回滚；人工切换上一成功 release 使用 `.claude/skills/remote-deploy/deploy-analyst.sh --rollback $ENV`。
-- **云函数（仅 dev/prod）**：`git checkout <上一版>` 对应端代码 → 重新 `scripts/use-env.sh $ENV && scripts/deploy-cloudfunctions.sh`。test 禁止执行。
+- **云函数**：`git checkout <上一版>` 对应端代码 → 重新 `scripts/use-env.sh $ENV && scripts/deploy-cloudfunctions.sh`。
 - **DB**：本技能会在代码上线前执行 `db:migrate`。迁移失败时不得继续部署；已成功应用的 migration 不自动回滚，须按 `db/CLAUDE.md` 新建向前修复 migration。仅在已批准的灾难恢复流程中使用已验证备份，禁止 `db:push`、手工改 journal 或回改已应用 migration。
 
-（`$REMOTE_DIR` 默认 prod/test=`/www/wwwroot/fengyu-admin/docker`、dev=`/root/proj.xt.com/fengyu-wxapp/docker`。）
+（`$REMOTE_DIR` 两个环境同为 `/www/wwwroot/fengyu-admin/docker`，与 `deploy-common.sh` 的 `load_target` 一致。）

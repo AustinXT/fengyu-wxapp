@@ -22,45 +22,48 @@ const ROOT = path.resolve(__dirname, '../../..')
 
 // 权威字面量：改这里必须同时改所有副本，否则本测试失败。
 const CANONICAL =
-  "/^postgres(?:ql)?:\\/\\/[^@/]*@(101\\.34\\.242\\.103|118\\.178\\.196\\.26):5433\\/fengyu_wxapp(\\?.*)?$/"
+  "/^postgres(?:ql)?:\\/\\/[^@/]*@(101\\.34\\.242\\.103|118\\.178\\.196\\.26):5433\\/fengyu_wxapp(?:\\?(?![^#]*\\b(?:host|hostaddr|port|dbname|database|options|service|passfile)=)[^#]*)?$/"
 
-const SCAN_DIRS = [
-  'db/scripts',
-  'fengyu-staff/scripts/manual-e2e',
-  'fengyu-admin/src/db',
+// 预期持有守卫的入口清单（显式列举，不用「数量 ≥ N」——那样漏改一个也不会失败）。
+// 新增连库入口时请一并加进来；删除入口时同步删除。
+const EXPECTED_HOLDERS = [
+  'db/scripts/calc-monthly-activity.js',
+  'db/scripts/import-workfine-legacy.js',
+  'db/scripts/migrate-active-cards.js',
+  'db/scripts/migrate-allocations.js',
+  'db/scripts/migrate-history-orders.js',
+  'db/scripts/migrate-jclsh-items.js',
+  'db/scripts/migrate-missing-customers.js',
+  'db/scripts/migrate-phantom-items.js',
+  'db/scripts/migrate-prepaid-cards.js',
+  'db/scripts/migrate-presale-services.js',
+  'db/scripts/migrate-service-records.js',
+  'db/scripts/seed-first-admin.js',
+  'db/scripts/seed-recharge-virtual-product.js',
+  'db/scripts/sync-workfine.js',
+  'db/scripts/test-d4-trigger.mjs',
+  'fengyu-admin/src/db/seed.ts',
+  'fengyu-staff/scripts/manual-e2e/monitor-pk-conflicts.mjs',
 ]
 
-function collectFiles() {
-  const out = []
-  for (const dir of SCAN_DIRS) {
-    const abs = path.join(ROOT, dir)
-    if (!fs.existsSync(abs)) continue
-    for (const name of fs.readdirSync(abs)) {
-      if (!/\.(js|mjs|ts)$/.test(name)) continue
-      const file = path.join(abs, name)
-      if (!fs.statSync(file).isFile()) continue
-      out.push(file)
-    }
-  }
-  return out
+function literalIn(relPath) {
+  const abs = path.join(ROOT, relPath)
+  if (!fs.existsSync(abs)) return null
+  // 行尾可能带分号（ESM/TS 文件风格不同），一并容忍
+  const m = fs.readFileSync(abs, 'utf8').match(/const DB_TARGET_RE = (\/.*\/);?\s*$/m)
+  return m ? m[1] : null
 }
 
-test('DB_TARGET_RE 在所有副本中字面量一致（防漂移）', () => {
-  const holders = []
-  for (const file of collectFiles()) {
-    const text = fs.readFileSync(file, 'utf8')
-    const m = text.match(/const DB_TARGET_RE = (\/.*\/)\s*$/m)
-    if (m) holders.push([path.relative(ROOT, file), m[1]])
+test('每个预期入口都持有守卫，且字面量逐字节一致（防漏改 / 防漂移）', () => {
+  const missing = []
+  const drifted = []
+  for (const rel of EXPECTED_HOLDERS) {
+    const literal = literalIn(rel)
+    if (literal === null) missing.push(rel)
+    else if (literal !== CANONICAL) drifted.push(rel)
   }
-
-  assert.ok(
-    holders.length >= 14,
-    `只找到 ${holders.length} 处 DB_TARGET_RE，预期 ≥14；若确实删减了脚本请同步调整本断言`,
-  )
-
-  for (const [rel, literal] of holders) {
-    assert.equal(literal, CANONICAL, `${rel} 的 DB_TARGET_RE 与权威字面量不一致`)
-  }
+  assert.deepEqual(missing, [], `以下入口缺少 DB_TARGET_RE 守卫（或文件被删/改名）：\n  ${missing.join('\n  ')}`)
+  assert.deepEqual(drifted, [], `以下入口的 DB_TARGET_RE 与权威字面量不一致：\n  ${drifted.join('\n  ')}`)
 })
 
 test('DB_TARGET_RE 的行为符合预期（正负例）', () => {
@@ -71,6 +74,7 @@ test('DB_TARGET_RE 的行为符合预期（正负例）', () => {
     'postgres://fengyu:pw@101.34.242.103:5433/fengyu_wxapp',
     'postgresql://fengyu:pw@118.178.196.26:5433/fengyu_wxapp',
     'postgresql://fengyu:p%40ss@118.178.196.26:5433/fengyu_wxapp?sslmode=require',
+    'postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?connect_timeout=8&application_name=x',
   ]) {
     assert.ok(re.test(ok), `应放行但被拒：${ok}`)
   }
@@ -81,6 +85,15 @@ test('DB_TARGET_RE 的行为符合预期（正负例）', () => {
     'postgresql://fengyu:pw@47.113.202.7:5433/fengyu_wxapp', // 已弃用的旧库
     'postgresql://fengyu:pw@101.34.242.103:5434/fengyu', // 旧端口 + 旧库名
     'postgresql://fengyu:pw@101.34.242.103:5433/fengyu_e2e', // e2e 独立库，不是业务库
+    // ⚠ libpq/pg 的 query 参数会**覆盖** URL authority 里的 host/port/dbname
+    //（pg-connection-string 源码：Only set the host if there is no equivalent query param）。
+    // 只比 authority 会被这类串整个绕过——实测 ?host= 后真实连的是 47.113.202.7。
+    'postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?host=47.113.202.7',
+    'postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?sslmode=require&host=47.113.202.7',
+    'postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?hostaddr=1.2.3.4',
+    'postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?port=5434',
+    'postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?dbname=other',
+    'postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?options=-csearch_path%3Dx',
     'postgresql://fengyu:pw@101.34.242.103:5432/fengyu_wxapp', // 错端口
     'postgresql://fengyu:pw@localhost:5433/fengyu_wxapp',
     'not-a-url',

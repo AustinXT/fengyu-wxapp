@@ -26,7 +26,7 @@ load_target() {
       CONTAINER_DB_HOST="118.178.196.26"
       ;;
     *)
-      echo "ERROR: environment must be dev, test, or prod" >&2
+      echo "ERROR: environment must be dev or prod" >&2
       return 1
       ;;
   esac
