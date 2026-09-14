@@ -1149,6 +1149,41 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
   }
 
   /**
+   * 在已确认是 SQL 的区间里按 SQL 词法就地遮罩：行注释、块注释与字符串字面量内容。
+   * 字符串定界符两种形态都要认：模板串里是 `'`，宿主单引号串里是转义过的 `\'`（占 2 字符）。
+   * 只遮内容、保留定界符与长度，位置不变（「WITH 头自一致性」按下标核对，必须保长度）。
+   */
+  function maskSqlSpan(out: string[], from: number, to: number, blank: (a: number, b: number) => void): void {
+    const at = (k: number) => out.slice(k, k + 2).join('')
+    let k = from
+    while (k < to) {
+      if (at(k) === '--') {
+        let e = k
+        while (e < to && out[e] !== '\n') e += 1
+        blank(k, e); k = e; continue
+      }
+      if (at(k) === '/*') {
+        let e = k + 2
+        while (e < to && at(e) !== '*/') e += 1
+        blank(k, Math.min(e + 2, to)); k = Math.min(e + 2, to); continue
+      }
+      const esc = at(k) === "\\'"
+      if (esc || out[k] === "'") {
+        const w = esc ? 2 : 1
+        let e = k + w
+        while (e < to) {
+          const closeEsc = at(e) === "\\'"
+          if ((esc && closeEsc) || (!esc && out[e] === "'")) break
+          e += closeEsc ? 2 : 1
+        }
+        blank(k + w, e)           // 只抹内容，定界符留着
+        k = Math.min(e + w, to); continue
+      }
+      k += 1
+    }
+  }
+
+  /**
    * 抹掉注释与各类引号里的内容（保留长度，行号不变），再做括号/正则匹配。
    * 不这么做的话，字符串里的 `)` 会让 CTE 定义体提前结束（漏报），
    * 注释里的 `descendants.path` 会被当成真引用（误报）。
@@ -1203,9 +1238,11 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
         while (j < src.length && src[j] !== "'") j += (src[j] === '\\' ? 2 : 1)
         const inner = src.slice(i + 1, j)
         if (/\bWITH\s+(?:RECURSIVE\s+)?[A-Za-z_]\w*\s*(?:\([^()]*\))?\s+AS\s*\(/i.test(inner)) {
-          // 是 SQL：**整段跳过、内容原样保留、不再进扫描器**。
-          // 不能只 i += 1 让它重新过一遍 —— 宿主语言里写成 pg.query('… \\'https://x\\' …')
-          // 时，里面转义的 \' 会被当成新字符串的起点，把后半段 SQL 整个遮掉（静默漏报）。
+          // 是 SQL：内容保留，但要按 **SQL 词法**就地遮一遍（注释 + SQL 字符串字面量）。
+          // 不能整段跳过不遮 —— 里面的 `\')\'`（SQL 数据里的右括号）会提前截断 CTE 体（静默漏报）、
+          // `-- … d.path` 这类注释又会对合法 SQL 假红。
+          // 也不能只 i += 1 重新过宿主扫描器 —— 转义的 \' 会被当成新宿主字符串的起点。
+          maskSqlSpan(out, i + 1, j, blank)
           i = j + 1
         } else {
           blank(i, j + 1); i = j + 1
@@ -1444,6 +1481,20 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
     const src = `pg.query('${inner}', [])`
     expect(violations(src), '串内转义引号把后半段 SQL 遮掉了，守护静默漏报').not.toEqual([])
     expect(unrecognizedWithHeads(src)).toBe(0)
+  })
+
+  // 宿主单引号串里的 SQL，其**内部**的字面量与注释仍必须按 SQL 词法遮掉：
+  // 不遮的话，SQL 数据里的右括号会提前截断 CTE 体（静默漏报），注释里的限定符会造成假红
+  it('宿主 SQL 串内部的字面量与注释按 SQL 词法遮罩', () => {
+    const BQ = String.fromCharCode(92) + "'"   // 宿主里被转义的 SQL 单引号
+    // 数据里的右括号不能截断 CTE 体 —— 截断了就查不出后面的别名混用
+    const truncating = `pg.query('WITH RECURSIVE d(id, path) AS (SELECT ${BQ})${BQ}, ARRAY[1] UNION ALL SELECT d.path FROM t JOIN d alias ON true)', [])`
+    expect(violations(truncating), '数据里的右括号截断了 CTE 体，守护静默漏报').not.toEqual([])
+    expect(unrecognizedWithHeads(truncating)).toBe(0)
+
+    // 注释里的限定符不算数 —— 算了就是对合法 SQL 假红
+    const commented = `pg.query('WITH RECURSIVE d(id, path) AS (SELECT 1, ARRAY[1] UNION ALL -- 别写 d.path\n SELECT alias.path FROM t JOIN d alias ON true)', [])`
+    expect(violations(commented), '注释里的 d.path 被当成真引用，对合法 SQL 假红').toEqual([])
   })
 
   // SQL 字符串字面量里的 `//` `--` `/*` 不能被当成注释起点，否则会把后面的真 SQL 吞掉
