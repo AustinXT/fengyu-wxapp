@@ -3201,6 +3201,33 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     expect(executeSql.some((t) => t.includes('remaining_sessions ='))).toBe(false)
   })
 
+  it('#125 部分支付订单的家居行可折抵（订单级状态已放开）', async () => {
+    const inserted: any[] = []
+    mockConvTx({
+      heldRows: [homeHeldRow({ order_status: '部分支付' })],
+      skuRows: homeSkuRows,
+      onInsertItem: (v) => inserted.push(v),
+    })
+
+    const result = await createConversionOrder(homeConvData)
+
+    expect(result.success).toBe(true)
+    const outRow = inserted.find((v) => v.itemDirection === '转出')
+    expect(outRow?.quantity).toBe(7)
+  })
+
+  it('#125 已关闭订单仍不可折抵（只放开部分支付）', async () => {
+    mockConvTx({
+      heldRows: [homeHeldRow({ order_status: '已关闭' })],
+      skuRows: homeSkuRows,
+    })
+
+    const result = await createConversionOrder(homeConvData)
+
+    expect(result.success).toBe(false)
+    expect(JSON.stringify(result)).toContain('原订单状态不允许转换')
+  })
+
   it('#125 已无未提货数量的家居行拒绝折抵', async () => {
     mockConvTx({
       heldRows: [homeHeldRow({ quantity: 4, picked_up_quantity: 4 })],

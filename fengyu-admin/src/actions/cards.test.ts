@@ -511,6 +511,15 @@ describe('getCustomerHeldCards — 数据映射', () => {
     expect(rows).toEqual([])
   })
 
+  it('#125 候选订单状态含「部分支付」（与卡包列表共用常量）', async () => {
+    mockSelectRows([])
+
+    await getCustomerHeldCards('user-1', 'store-1')
+
+    // 甲方 2026-09-14 拍板放开订单级部分支付；用 inArray 复用 CARD_ENTITLEMENT_ORDER_STATUSES
+    expect(inArray).toHaveBeenCalledWith('status', ['已支付', '部分支付', '已完成'])
+  })
+
   it('查询条件同时纳入购买权益与转换单转入权益', async () => {
     mockSelectRows([])
 

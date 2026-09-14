@@ -121,6 +121,17 @@ async function main() {
     check(homeCard.unit === '盒', `unit 应=盒，实际=${homeCard.unit}`)
   }
 
+  // ── 1b. 订单级「部分支付」同样可折抵（#125 甲方 2026-09-14 拍板放开）──
+  await pgQuery(`UPDATE sale_orders SET status = '部分支付' WHERE sale_order_id = $1`, [srcOrderId])
+  const heldPartial = await invokeStaffApi('order.customerHeldCards', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    clientUserId: TEST_CLIENT_USER_ID,
+  })
+  check(heldPartial.code === 0, `部分支付态 customerHeldCards code=${heldPartial.code}`)
+  check((heldPartial.data?.cards || []).some((c) => c.saleItemId === srcItemId),
+    '部分支付订单的家居行应出现在折抵候选中')
+  await pgQuery(`UPDATE sale_orders SET status = '已支付' WHERE sale_order_id = $1`, [srcOrderId])
+
   // ── 2. 建转换单（折抵 700 − 转入 300 = −400，走储值卡补差 → 已支付）──
   const conv = await invokeStaffApi('order.createConversion', {
     _testOpenid: TEST_MANAGER_OPENID,

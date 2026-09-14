@@ -4293,7 +4293,8 @@ async function createConversion(ctx) {
       if (!isConvertibleEntitlementRow(row)) {
         throw new Error('INVALID_PARAMS: 所选行不是有效权益，不可折抵')
       }
-      if (row.order_status !== '已支付' && row.order_status !== '已完成') {
+      // 订单级「部分支付」同样放行（#125 甲方拍板），与候选查询的 WHERE 保持一致
+      if (row.order_status !== '已支付' && row.order_status !== '部分支付' && row.order_status !== '已完成') {
         throw new Error('INVALID_PARAMS: 原订单状态不允许转换')
       }
       // 冻结闭环（Bug I）：源卡所属订单有待审批退款时禁止折抵转换（转换会置 remaining_sessions=0，与在途退款冲突）
@@ -5045,7 +5046,10 @@ async function customerHeldCards(ctx) {
          si.item_direction = '购买'
          OR (so.sale_order_type = '转换单' AND si.item_direction = '转入')
        )
-       AND so.status IN ('已支付', '已完成')
+       -- 2026-09-14 #125 甲方拍板：订单级「部分支付」也可折抵。与卡包列表口径统一
+       -- （admin cards.ts 的 CARD_ENTITLEMENT_ORDER_STATUSES 本就含「部分支付」），
+       -- 疗程卡与家居同时放开；欠款按方案 A 留在原单继续催收，折抵不按实收比例折算。
+       AND so.status IN ('已支付', '部分支付', '已完成')
        -- 2026-09-14 #125：家居产品未提货数量同样可作为折抵来源（整行折抵，不看付款进度）
        AND (
          (si.product_type = '疗程卡' AND COALESCE(si.remaining_sessions, 0) > 0)

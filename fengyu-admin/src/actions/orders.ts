@@ -5458,7 +5458,8 @@ export const createConversionOrder = withPermission(
         const isEntitlement = row.item_direction === '购买'
           || (row.sale_order_type === '转换单' && row.item_direction === '转入')
         if (!isEntitlement) throw new ApiError('INVALID_STATE', 'CARD_DIRECTION_INVALID: 所选行不是有效权益，不可折抵')
-        if (row.order_status !== '已支付' && row.order_status !== '已完成') {
+        // 订单级「部分支付」同样放行（#125 甲方拍板），与 getCustomerHeldCards 的 WHERE 保持一致
+        if (row.order_status !== '已支付' && row.order_status !== '部分支付' && row.order_status !== '已完成') {
           throw new ApiError('INVALID_STATE', 'CARD_ORDER_STATUS_INVALID: 原订单状态不允许转换')
         }
         // 冻结闭环（Bug I）：源卡所属订单有待审批退款时禁止折抵（与 staff createConversion 对齐）

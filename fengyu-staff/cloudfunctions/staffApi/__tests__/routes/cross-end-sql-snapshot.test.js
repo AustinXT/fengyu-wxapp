@@ -2122,6 +2122,24 @@ describe('#125 家居转换折抵跨端守护', () => {
     })
   })
 
+  // 折抵候选的订单状态闸门：甲方 2026-09-14 拍板放开「部分支付」，两端必须同步，
+  // 否则 admin 能选中的行在 staff 提交时会被拒（或反之）。
+  describe('折抵候选订单状态闸门两端一致', () => {
+    test('staff customerHeldCards + createConversion 均含「部分支付」', () => {
+      const src = normalizeSql(readFile(FILES.staffOrderJs))
+      expect(src).toContain("so.status IN ('已支付', '部分支付', '已完成')")
+      expect(src).toContain("row.order_status !== '已支付' && row.order_status !== '部分支付' && row.order_status !== '已完成'")
+    })
+    test('admin getCustomerHeldCards 复用 CARD_ENTITLEMENT_ORDER_STATUSES，createConversionOrder 同步放开', () => {
+      const cardsSrc = readFile(path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/cards.ts'))
+      // 与卡包列表共用同一组状态常量，避免两处硬编码漂移
+      expect(cardsSrc).toContain("const CARD_ENTITLEMENT_ORDER_STATUSES = ['已支付', '部分支付', '已完成']")
+      expect(cardsSrc).toMatch(/inArray\(saleOrders\.status, \[\.\.\.CARD_ENTITLEMENT_ORDER_STATUSES\]\)[\s\S]{0,600}疗程卡/)
+      const ordersSrc = readFile(FILES.adminOrdersTs)
+      expect(ordersSrc).toContain("row.order_status !== '已支付' && row.order_status !== '部分支付' && row.order_status !== '已完成'")
+    })
+  })
+
   // 退款审批侧：createRefund 无锁定额 + cascade 的 LEAST 静默封顶 = 同一批货可能既折抵又退现金。
   // 资金流出前必须在锁内复核家居可退数量。
   describe('退款审批锁内复校家居可退数量', () => {

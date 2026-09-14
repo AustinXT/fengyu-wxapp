@@ -6748,14 +6748,16 @@ describe('order.customerHeldCards', () => {
     expect(sql).toMatch(/si\.item_direction\s*=\s*'转入'/)
   })
 
-  test('SQL 守卫：status 必须 IN (已支付, 已完成)', async () => {
+  test('SQL 守卫：status 必须 IN (已支付, 部分支付, 已完成)（#125 放开订单级部分支付）', async () => {
     const ctx = createManagerCtx({ clientUserId: 'cu-001' })
     pg.query.mockResolvedValueOnce([])
 
     await orderRoutes.customerHeldCards(ctx)
 
     const sql = pg.query.mock.calls[0][0]
-    expect(sql).toMatch(/so\.status IN \('已支付', '已完成'\)/)
+    // 甲方 2026-09-14 拍板：订单级「部分支付」也可折抵（疗程卡与家居同时放开），
+    // 与 admin 卡包列表 CARD_ENTITLEMENT_ORDER_STATUSES 口径统一；欠款按方案 A 留原单
+    expect(sql).toMatch(/so\.status IN \('已支付', '部分支付', '已完成'\)/)
   })
 
   test('SQL 守卫：疗程卡 remaining_sessions=0 不出现（> 0 过滤）', async () => {
@@ -7871,6 +7873,27 @@ describe('order.createConversion — 家居产品折抵（#125）', () => {
     const sessionDeduct = calls.find(({ sql }) =>
       sql.includes('SET remaining_sessions = remaining_sessions -'))
     expect(sessionDeduct).toBeUndefined()
+  })
+
+  test('#125 部分支付订单的家居行可折抵（订单级状态已放开）', async () => {
+    const ctx = homeConversionCtx()
+    const calls = mockHomeProductConversion({ order_status: '部分支付' })
+
+    await orderRoutes.createConversion(ctx)
+
+    // 未被 order_status 闸门拦下，正常产出转出行
+    const outInsert = calls.find(({ sql }) =>
+      sql.includes('INSERT INTO sale_items') && sql.includes("'转出'"))
+    expect(outInsert).toBeDefined()
+    expect(outInsert.params).toEqual(expect.arrayContaining([7, -700]))
+  })
+
+  test('#125 已关闭订单仍不可折抵（只放开部分支付，不是放开全部状态）', async () => {
+    const ctx = homeConversionCtx()
+    mockHomeProductConversion({ order_status: '已关闭' })
+
+    await expect(orderRoutes.createConversion(ctx))
+      .rejects.toThrow(/INVALID_PARAMS: 原订单状态不允许转换/)
   })
 
   test('已无未提货数量的家居行拒绝折抵', async () => {
