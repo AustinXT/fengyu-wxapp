@@ -21,7 +21,7 @@
  *  10. visitPointsRetry         — 重试服务完成时失败的到店积分（仅失败日志，不扫历史）
  *  11. pointsAudit              — 积分余额一致性校验（只读告警）
  *  12. roleTypeNullsAudit       — sa/sc role_type NULL 监控（只读告警）
- *  13. paymentInvariants        — 5 项资金不变量守护（只读告警；新增 2026-04-26）
+ *  13. paymentInvariants        — 6 项资金不变量守护（只读告警；新增 2026-04-26）
  *  14. refundCascadeCoverage    — 退款 5 通道级联巡检（只读告警；新增 2026-05-18）
  *  15. storeUnbindOrphans       — store_unbind_requests 孤儿巡检（只读告警；新增 2026-05-18）
  *

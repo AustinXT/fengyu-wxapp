@@ -148,7 +148,7 @@ export const getRefundDetail = withAnyPermission(
 | STEP 8 | `steps/reset-cross-store-flags.ts` | 仅重置顾客临时跨店标记（写入清扫；员工出差已改为长期保留，2026-07-13） |
 | STEP 9 | `steps/audit-points-balance.ts` | 积分余额校验（仅告警不修复） |
 | STEP 10 | `steps/audit-role-type-nulls.ts` | sa/sc role_type NULL 监控（只读告警） |
-| STEP 11 | `steps/audit-payment-invariants.ts` | 5 项资金不变量守护（只读告警） |
+| STEP 11 | `steps/audit-payment-invariants.ts` | 6 项资金不变量守护（只读告警） |
 | STEP 12 | `steps/audit-refund-cascade-coverage.ts` | 退款 5 通道级联巡检（只读告警） |
 | STEP 13 | `steps/audit-store-unbind-orphans.ts` | 门店解绑孤儿巡检（只读告警） |
 

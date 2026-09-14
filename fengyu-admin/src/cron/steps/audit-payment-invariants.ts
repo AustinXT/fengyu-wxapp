@@ -1,23 +1,26 @@
 /**
- * STEP 7 — 5 项资金不变量守护（2026-04-26 sale-order-domain-refactor §4.6 + audit-CC1 §7）
+ * STEP 7 — 6 项资金不变量守护（I2b / I6b 为附加监控项，共 8 条 SELECT）（2026-04-26 sale-order-domain-refactor §4.6 + audit-CC1 §7）
  *
  * 背景：
  *   重构后 sale_orders.received / refunded_amount / prepaid_card_amount 均为
  *   sale_order_payments 的冗余快照；client_wechat_users.points_balance 是未过期积分批次
  *   剩余量缓存；prepaid_cards.balance 是流水冗余快照。任何应用层双写漏写、并发写偏、
- *   或人为脱拍都会让冗余值与真值漂移。本 STEP 每日只读校验 5 项不变量，发现偏差仅告警不修复（与 STEP 5
+ *   或人为脱拍都会让冗余值与真值漂移。本 STEP 每日只读校验 6 项不变量，发现偏差仅告警不修复（与 STEP 5
  *   auditPointsBalance / STEP 6 auditRoleTypeNulls 决策一致 — 自动修补会掩盖上游 bug）。
  *
- * 5 项不变量（详见 ticket §1.2 + audit-CC1 §7）：
+ * 6 项不变量（详见 ticket §1.2 + audit-CC1 §7）：
  *   I1: sale_orders.received        = Σ sop[已支付, 首次支付/回款/储值卡抵扣].amount
  *       （豁免 legacy_source='workfine'：历史单 received 为旧系统平移值、无支付流水）
  *   I2: sale_orders.refunded_amount = -Σ sop[已支付, 退款].amount
  *   I3: client_wechat_users.points_balance = Σ 未过期 point_batches.remaining_amount
  *   I4: prepaid_cards.balance       = Σ card_transactions.amount
  *   I5: sale_orders.payable_amount  = total_amount - prepaid_card_amount
+ *   I6 : sop[首次支付].performance_attribution_date = sale_orders.performance_attribution_date
+ *   I6b: sop[已支付,储值卡抵扣].performance_attribution_date = 同次配对主流水的归属日期
+ *       （issue #137：查询侧直读款项级归属日期后，这两条镜像脱拍都会让业绩静默落错日子）
  *
  * 容差：金额不变量（I1/I2/I4/I5）容忍 0.01 元（NUMERIC(10,2) 累加边界），
- *       积分不变量（I3）严格相等（integer，无舍入误差）。
+ *       积分不变量（I3）与归属日期（I6）严格相等。
  *
  * 告警机制（与 STEP 5/6 一致）：
  *   - operation_logs(action='cron.audit_invariants', target_type='invariant_violation')
@@ -54,16 +57,19 @@ export async function auditPaymentInvariants(db: Db): Promise<PaymentInvariantsR
 
   // ── I1: received = Σ sop[已支付, 首次支付/回款/储值卡抵扣].amount
   //        豁免 legacy_source='workfine'（历史单无支付流水，received 为平移值） ──
+  // ⚠ WHERE 必须排在 LEFT JOIN **之后**：2026-07-20 加 legacy 豁免时把它插到了 JOIN 前面，
+  // 那是 PG 语法错误（`syntax error at or near "LEFT"`）。r1 在本函数最前面，一抛就整步退出，
+  // 被 run.ts 的 per-STEP try/catch 吞掉 —— I1~I5 全部静默停摆了近两个月，2026-09-14 修复。
   const r1 = (await db.execute(sql`
     SELECT so.sale_order_id,
            so.received::numeric                  AS received,
            COALESCE(SUM(sop.amount::numeric), 0) AS computed
     FROM sale_orders so
-    WHERE so.legacy_source IS DISTINCT FROM 'workfine'
     LEFT JOIN sale_order_payments sop
       ON sop.sale_order_id = so.sale_order_id
      AND sop.status = '已支付'
      AND sop.change_type IN ('首次支付','回款','储值卡抵扣')
+    WHERE so.legacy_source IS DISTINCT FROM 'workfine'
     GROUP BY so.sale_order_id, so.received
     HAVING ABS(so.received::numeric - COALESCE(SUM(sop.amount::numeric), 0)) > ${MONEY_EPSILON}
     LIMIT ${SAMPLE_LIMIT}
@@ -104,7 +110,7 @@ export async function auditPaymentInvariants(db: Db): Promise<PaymentInvariantsR
   }
 
   // ── I3: client_wechat_users.points_balance = Σ 未过期 point_batches.remaining_amount ──
-  // 与 STEP 5 (audit-points-balance) 重叠，但语义独立：本处作为"5 项不变量"统一报表的一项。
+  // 与 STEP 5 (audit-points-balance) 重叠，但语义独立：本处作为"6 项不变量"统一报表的一项。
   // 容差严格相等（integer 无浮点误差）。
   const r3 = (await db.execute(sql`
     WITH sums AS (
@@ -165,6 +171,68 @@ export async function auditPaymentInvariants(db: Db): Promise<PaymentInvariantsR
     details.push({ invariant: 'payable_eq_total_minus_prepaid', count: r5.length, samples: r5 as unknown as Array<Record<string, unknown>> })
   }
 
+  // ── I6: 首次支付款项的业绩归属日期 = 所属订单的业绩归属日期 ──
+  // 迁移 0040 起各端报表直读 sale_order_payments.performance_attribution_date（不再有 CASE 回退），
+  // 首次支付那一行是 sale_orders 的镜像。镜像一旦脱拍，那笔业绩会静默落到错误的日子，
+  // 金额不变量（I1/I2）也查不出来 —— 它们只看总额，不看归属日。
+  // 写入侧由两个 trigger 保证：initialize_payment_performance_attribution_date（BEFORE，0039）
+  // 与 sync_order_performance_attribution_to_payments（sale_orders AFTER UPDATE，0040）。
+  // 本项守护的是"trigger 被绕过"（禁用触发器的批量导入 / session_replication_role=replica）。
+  const r6 = (await db.execute(sql`
+    SELECT p.id::text AS id,
+           p.sale_order_id,
+           p.performance_attribution_date::text  AS payment_attribution_date,
+           so.performance_attribution_date::text AS order_attribution_date
+    FROM sale_order_payments p
+    JOIN sale_orders so ON so.sale_order_id = p.sale_order_id
+    WHERE p.change_type = '首次支付'
+      AND p.performance_attribution_date IS DISTINCT FROM so.performance_attribution_date
+    LIMIT ${SAMPLE_LIMIT}
+  `)) as Array<{
+    id: string
+    sale_order_id: string
+    payment_attribution_date: string | null
+    order_attribution_date: string | null
+  }>
+  if (r6.length > 0) {
+    details.push({ invariant: 'first_payment_attribution_eq_order', count: r6.length, samples: r6 as unknown as Array<Record<string, unknown>> })
+  }
+
+  // ── I6b: 同次混合支付的储值卡抵扣行的归属日期 = 配对主流水的归属日期 ──
+  // I6 只守首次支付↔订单那条镜像；卡行↔主流水这条同样是直读列之后才变得致命，
+  // 而迁移 0040 的自检只管迁移那一刻。谓词与 trigger / 迁移自检的配对条件保持一致：
+  // 同单、同 status、paid_at 精确相同，首次支付优先于回款。
+  const r6b = (await db.execute(sql`
+    SELECT card.id::text AS id,
+           card.sale_order_id,
+           card.performance_attribution_date::text    AS card_attribution_date,
+           primary_payment.performance_attribution_date::text AS primary_attribution_date
+    FROM sale_order_payments card
+    JOIN LATERAL (
+      SELECT p.performance_attribution_date
+      FROM sale_order_payments p
+      WHERE p.sale_order_id = card.sale_order_id
+        AND p.change_type IN ('首次支付', '回款')
+        AND p.status = card.status
+        AND p.paid_at IS NOT DISTINCT FROM card.paid_at
+      ORDER BY CASE WHEN p.change_type = '首次支付' THEN 0 ELSE 1 END, p.id
+      LIMIT 1
+    ) primary_payment ON true
+    WHERE card.change_type = '储值卡抵扣'
+      AND card.status = '已支付'
+      AND card.performance_attribution_date
+          IS DISTINCT FROM primary_payment.performance_attribution_date
+    LIMIT ${SAMPLE_LIMIT}
+  `)) as Array<{
+    id: string
+    sale_order_id: string
+    card_attribution_date: string | null
+    primary_attribution_date: string | null
+  }>
+  if (r6b.length > 0) {
+    details.push({ invariant: 'card_attribution_eq_paired_primary', count: r6b.length, samples: r6b as unknown as Array<Record<string, unknown>> })
+  }
+
   if (details.length > 0) {
     // operation_logs 单条聚合写入（避免 N 条小写）。target_id 用日期戳便于查询。
     const dateStamp = new Date().toISOString().slice(0, 10)
@@ -186,7 +254,7 @@ export async function auditPaymentInvariants(db: Db): Promise<PaymentInvariantsR
     await notifyOps(
       [
         '⚠️ [cron-worker] cron.audit_invariants',
-        '5 项资金不变量违规：',
+        '6 项资金不变量违规：',
         ...lines,
         '',
         `时间：${new Date().toISOString()}`,

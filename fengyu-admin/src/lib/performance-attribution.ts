@@ -2,60 +2,64 @@
  * 款项业绩归属日期的单一口径（JS 版与 SQL 版并置，禁止任一侧单独漂移）。
  *
  * 口径定义（与 DB 视图 `sale_item_performance_events.performance_date` 同源）：
- * - `首次支付` → 跟随订单级 `sale_orders.performance_attribution_date`；
- * - 其余款项 → `sale_order_payments.performance_attribution_date`，缺失时按 `paid_at`
- *   折算上海自然日（迁移 0038 的 trigger 会在入账时写入，历史行靠 COALESCE 兜底）。
+ * **查询侧一律直读 `sale_order_payments.performance_attribution_date`，没有任何回退分支。**
  *
- * 迁移 0039 起，`sale_order_payments.performance_attribution_date` 由 trigger 保证恒有值
- * （首次支付镜像订单级，未入账按 created_at 占位）。这里仍保留 CASE/COALESCE 而不是直接读列，
- * 理由有二：
- * 1. 代码部署与 migration apply 是两步，回款筛选必须在迁移落地前就语义正确；
- * 2. 首次支付那一支恒以**订单级**为准，即使镜像列因故漂移，读出来的仍是权威值。
- * 迁移落地后两者恒等，任何一侧改动都必须让两者继续恒等。
+ * 回退只发生在写入侧，由两个 trigger 保证该列恒有值（迁移 0039 + 0040）：
+ * - `initialize_payment_performance_attribution_date()`（BEFORE INSERT/UPDATE on sale_order_payments）
+ *   —— 首次支付镜像 `sale_orders.performance_attribution_date`、同次混合支付卡行跟随主流水、
+ *   其余 `paid_at` → `created_at` 兜底；
+ * - `sync_order_performance_attribution_to_payments()`（AFTER UPDATE on sale_orders）
+ *   —— 订单级归属日期被调整时同步首次支付行与同次卡行。
+ * 迁移 0040 起该列是 NOT NULL。
  *
- * prod 实测（2026-09-11，迁移 0039 之前）：首次支付行的款项级列 100% 为 NULL，
- * 未入账（已作废 / 待审批）行 `paid_at` 与款项级列同为 NULL。
+ * ⚠ 不要把 `resolvePaymentAttributionDate` 的订单级分支当成"残留回退"删掉 —— 见该函数注释，
+ * 它处理的是**根本不存在款项行**的场景，与"有款项行但列为空"是两回事。
  */
 import { sql, type SQL } from 'drizzle-orm'
-import { saleOrderPayments, saleOrders } from '@db/order'
-import { fmtDate } from '@/lib/datetime'
+import { saleOrderPayments } from '@db/order'
 
 /**
  * 款项业绩归属日期（JS 版；回款明细导出与营业额分配导出共用，防两处漂移）。
  *
- * changeType 为空（旧的订单维度分配没有 sale_payment_id）时同样回退订单级。
+ * 有款项行 → 直读款项级列（trigger 保证恒有值，首次支付那一支即订单级的镜像）。
+ *
+ * 无款项行 → 用订单级。这**不是**查询侧回退：旧的订单维度营业额分配没有 `sale_payment_id`，
+ * 压根没有款项实体可读（`orders.ts` 的 `exportAllocationOrders` 两处调用点），
+ * 此时唯一存在的归属事实就在 `sale_orders` 上。
+ *
+ * 用具名对象而非位置参数：两个参数同为 `string | null`，位置写反时 tsc 一声不吭，
+ * 运行期又只在"款项列为空"时才显形 —— 而 0040 之后该列非空，等于永远不显形。
+ *
+ * ⚠ 调用约定：`payment` 为空 **⟺** 该行根本没有款项实体。
+ * 款项粒度的导出（`exportOrderPayments`）恒有款项行，因此它**不调用本函数**、直读列并保留空值
+ * —— 那里的空值是数据异常，补订单级兜底会把它伪装成正常。两处 NULL 策略不同是有意的。
  */
-export function resolvePaymentAttributionDate(
-  changeType: string | null | undefined,
-  orderAttributionDate: string | null,
-  paymentAttributionDate: string | null | undefined,
-  paidAt: Date | null | undefined,
-): string | null {
-  if (!changeType || changeType === '首次支付') return orderAttributionDate
-  return paymentAttributionDate ?? (paidAt ? fmtDate(paidAt) : null)
+export function resolvePaymentAttributionDate({
+  payment,
+  order,
+}: {
+  /** 款项级 `sale_order_payments.performance_attribution_date`；无款项行时为 null/undefined */
+  payment: string | null | undefined
+  /** 订单级 `sale_orders.performance_attribution_date` */
+  order: string | null
+}): string | null {
+  return payment ?? order
 }
 
 /**
- * 款项业绩归属日期（SQL 版）。返回 `date` 类型表达式，无归属事实时为 NULL。
+ * 款项业绩归属日期（SQL 版）。返回 `date` 类型表达式。
+ *
+ * 收敛后只剩一个列引用，但仍保留函数壳：它是口径锚点（`paymentAttributionRangeConditions`
+ * 的上下界各引用一次），且 alias 分支要走 `sql.raw`，内联会让那三行逻辑重复两遍。
  *
  * @param paymentAlias 款项表在当前查询里的别名；EXISTS 子查询按别名引用时必传。
  *   省略则引用 drizzle 的 `sale_order_payments` 表本身。
- *   **订单级那一支恒引用外层 `sale_orders`**，因此调用点必须已 JOIN（或外层已有）sale_orders。
+ *   收敛后本表达式**不再引用 `sale_orders`**，调用点无需事先 JOIN 订单表。
  */
 export function paymentAttributionDateSql(paymentAlias?: string): SQL {
-  const changeType = paymentAlias
-    ? sql.raw(`${paymentAlias}.change_type`)
-    : sql`${saleOrderPayments.changeType}`
-  const attributionDate = paymentAlias
+  return paymentAlias
     ? sql.raw(`${paymentAlias}.performance_attribution_date`)
     : sql`${saleOrderPayments.performanceAttributionDate}`
-  const paidAt = paymentAlias
-    ? sql.raw(`${paymentAlias}.paid_at`)
-    : sql`${saleOrderPayments.paidAt}`
-  return sql`CASE
-    WHEN ${changeType} = '首次支付' THEN ${saleOrders.performanceAttributionDate}
-    ELSE COALESCE(${attributionDate}, (${paidAt} AT TIME ZONE 'Asia/Shanghai')::date)
-  END`
 }
 
 /**
