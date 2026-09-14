@@ -4,9 +4,11 @@
  */
 import { Client } from 'pg';
 
-// DATABASE_URL 必填：不提供默认值，避免忘传时静默连到已弃用的旧 dev 库（见 db/CLAUDE.md）
-if (!process.env.DATABASE_URL?.trim()) {
-  console.error('✗ 必须显式传 DATABASE_URL（dev=101.34.242.103:5433/fengyu_wxapp / prod=118.178.196.26:5433/fengyu_wxapp）');
+// DATABASE_URL 必填且必须精确指向业务库（db/CLAUDE.md 硬规则）。
+// 已弃用的旧库 47.113.202.7 仍可连通，只查非空挡不住手滑。
+const DB_TARGET_RE = /^postgresql:\/\/[^@/]*@(101\.34\.242\.103|118\.178\.196\.26):5433\/fengyu_wxapp(\?.*)?$/;
+if (!DB_TARGET_RE.test(process.env.DATABASE_URL?.trim() || '')) {
+  console.error('✗ DATABASE_URL 必须显式指向 dev=101.34.242.103:5433/fengyu_wxapp 或 prod=118.178.196.26:5433/fengyu_wxapp');
   process.exit(1);
 }
 

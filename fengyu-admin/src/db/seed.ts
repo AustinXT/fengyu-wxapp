@@ -19,8 +19,14 @@ import { commissionRateMatrix } from '@db/commission'
 import { couponTemplates } from '@db/coupon'
 import { operationLogs } from '@db/operation-log'
 
-const connectionString =
-  process.env.DATABASE_URL ?? 'postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp'
+// 手动 seed 脚本：必须显式指定目标库，绝不回落。
+// （与 src/db/index.ts 不同——那里在 next build 期会被求值，不能直接退出。）
+const DB_TARGET_RE = /^postgresql:\/\/[^@/]*@(101\.34\.242\.103|118\.178\.196\.26):5433\/fengyu_wxapp(\?.*)?$/
+const connectionString = process.env.DATABASE_URL?.trim() ?? ''
+if (!DB_TARGET_RE.test(connectionString)) {
+  console.error('✗ DATABASE_URL 必须显式指向 dev=101.34.242.103:5433/fengyu_wxapp 或 prod=118.178.196.26:5433/fengyu_wxapp')
+  process.exit(1)
+}
 
 const client = postgres(connectionString, { max: 1 })
 const db = drizzle(client)

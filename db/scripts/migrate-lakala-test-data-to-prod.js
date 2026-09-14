@@ -211,7 +211,8 @@ function cleanupCopiedAttachments(prodSshHost, copiedTargetPaths) {
 async function main() {
   const apply = process.argv.includes('--apply')
   const root = path.resolve(__dirname, '..', '..')
-  const testUrl = process.env.TEST_DATABASE_URL || envValue(path.join(root, 'envs/test.env'), 'PG_CONNECTION_STRING')
+  // 来源是 dev 环境的库（原 envs/test.env 随独立 test 环境于 2026-09-01 退役；两者本就同一个库）。
+  const testUrl = process.env.TEST_DATABASE_URL || envValue(path.join(root, 'envs/dev.env'), 'PG_CONNECTION_STRING')
   const prodUrl = process.env.PROD_DATABASE_URL || envValue(path.join(root, 'envs/prod.env'), 'ADMIN_DATABASE_URL')
   assertTarget(testUrl, '101.34.242.103')
   assertTarget(prodUrl, '118.178.196.26')

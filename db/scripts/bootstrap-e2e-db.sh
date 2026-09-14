@@ -28,18 +28,29 @@ DB_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ADMIN_DIR="$(cd "$DB_DIR/../fengyu-admin" && pwd)"
 PSQL() { env -u http_proxy -u https_proxy -u all_proxy psql "$@"; }
 
-echo "[1/4] 建库 ${E2E_DB_NAME}（若不存在）"
-# fengyu 需有 CREATEDB 权限才能建独立 e2e 库。
-# ⚠️ 2026-09-14 实测：101.34.242.103:5433 上 fengyu 的 rolcreatedb=false，需 DBA 一次性授权：
-#   psql -U <superuser> -h 101.34.242.103 -p 5433 -d postgres -c 'ALTER ROLE fengyu CREATEDB'
-# 授权后本脚本才能建库；在此之前 admin e2e 无库可连（旧 e2e 库随 47.113.202.7 一起弃用）。
-if ! PSQL "$PG_BASE/postgres" -tAc "SELECT rolcreatedb FROM pg_roles WHERE rolname='fengyu'" | grep -q 't'; then
-  echo "✗ fengyu 角色无 CREATEDB 权限，无法建独立 e2e 库。" >&2
-  echo "  请由 DBA（superuser）执行：ALTER ROLE fengyu CREATEDB  (101.34.242.103:5433)" >&2
+# 库名只允许 [a-z0-9_]，避免拼进 psql -c 的 CREATE DATABASE 语句里被截断或构造出畸形库名。
+# 注意 `${VAR:-default}` 只对 unset/空串兜底，纯空格视为已设置，故这里显式校验。
+if [[ ! "$E2E_DB_NAME" =~ ^[a-z][a-z0-9_]*$ ]]; then
+  echo "✗ E2E_DB_NAME='${E2E_DB_NAME}' 非法：只允许小写字母开头的 [a-z0-9_]。" >&2
   exit 1
 fi
-PSQL "$PG_BASE/postgres" -tAc "SELECT 1 FROM pg_database WHERE datname='$E2E_DB_NAME'" | grep -q 1 \
-  || PSQL "$PG_BASE/postgres" -c "CREATE DATABASE $E2E_DB_NAME OWNER fengyu;"
+
+echo "[1/4] 建库 ${E2E_DB_NAME}（若不存在）"
+# 先看库在不在——DBA 可能已手工建好（`CREATE DATABASE <db> OWNER fengyu;`）。
+# 只有确实需要新建时才要求 CREATEDB，避免为了跑一次 e2e 而给业务账号永久建库权限。
+if PSQL "$PG_BASE/postgres" -tAc "SELECT 1 FROM pg_database WHERE datname='$E2E_DB_NAME'" | grep -q 1; then
+  echo "  ✓ 库已存在，跳过创建"
+else
+  # ⚠️ 2026-09-14 实测：101.34.242.103:5433 上 fengyu 的 rolcreatedb=false。
+  # 旧 e2e 库随 ali-demo 47.113.202.7 一并弃用，新机上尚未建库（见 issue #151 / db/CLAUDE.md）。
+  if ! PSQL "$PG_BASE/postgres" -tAc "SELECT rolcreatedb FROM pg_roles WHERE rolname='fengyu'" | grep -q 't'; then
+    echo "✗ 库 ${E2E_DB_NAME} 不存在，且 fengyu 角色无 CREATEDB 权限。二选一（由 DBA/superuser 执行）：" >&2
+    echo "    a) 直接建库（推荐，不放大权限）：CREATE DATABASE ${E2E_DB_NAME} OWNER fengyu;   -- 在 101.34.242.103:5433" >&2
+    echo "    b) 授权后由本脚本自建：ALTER ROLE fengyu CREATEDB;                              -- 在 101.34.242.103:5433" >&2
+    exit 1
+  fi
+  PSQL "$PG_BASE/postgres" -c "CREATE DATABASE $E2E_DB_NAME OWNER fengyu;"
+fi
 
 echo "[2/4] push schema 到 ${E2E_DB_NAME}（drizzle-kit push --force）"
 ( cd "$DB_DIR" && env -u http_proxy -u https_proxy -u all_proxy DATABASE_URL="$E2E_URL" bunx drizzle-kit push --force >/dev/null )
