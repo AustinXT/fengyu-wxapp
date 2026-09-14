@@ -42,6 +42,7 @@ vi.mock('@db/order', () => ({
     saleOrderDatetime: 'sale_order_datetime',
     received: 'received',
     refundedAmount: 'refunded_amount',
+      performanceAttributionDate: 'so.performance_attribution_date',
   },
   saleItems: {
     saleOrderId: 'sale_order_id',
@@ -57,6 +58,9 @@ vi.mock('@db/order', () => ({
     changeType: 'change_type',
     amount: 'amount',
     paymentMethod: 'payment_method',
+    // 与 saleOrders 刻意用**不同**的 mock 串：两者同名的话，
+    // "读款项级列"与"读订单级列"在断言里就分不开，而这正是 issue #137 的全部行为变更。
+    performanceAttributionDate: 'sop.performance_attribution_date',
   },
   clientWechatUsers: {
     userId: 'user_id',
@@ -74,7 +78,7 @@ vi.mock('drizzle-orm', () => ({
   lt: vi.fn((a, b) => ({ type: 'lt', a, b })),
   desc: vi.fn((a) => ({ type: 'desc', a })),
   ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
-  sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn() }),
+  sql: Object.assign(vi.fn((_strings: any, ...values: any[]) => ({ __sqlValues: values })), { raw: vi.fn() }),
 }))
 
 vi.mock('@/lib/auth', () => ({
@@ -109,6 +113,21 @@ import {
 } from './allocations'
 import { db } from '@/db'
 import { saleOrderPayments, saleOrders } from '@db/order'
+
+/**
+ * 归属日期口径断言助手（迁移 0040 收敛后）：查询侧直读
+ * sale_order_payments.performance_attribution_date，不再拼 CASE/COALESCE。
+ */
+const usedAttributionColumn = () =>
+  (sql as any).mock.calls.some(([, ...values]: any[]) =>
+    values.includes('sop.performance_attribution_date'),
+  )
+
+/** 反向守卫：口径被改回订单级时，只有这条会红。 */
+const usedOrderLevelColumn = () =>
+  (sql as any).mock.calls.some(([, ...values]: any[]) =>
+    values.includes('so.performance_attribution_date'),
+  )
 import { eq, gte, lt, sql } from 'drizzle-orm'
 import { getSession } from '@/lib/auth'
 import { isAdminScope, isInScope } from '@/lib/permissions'
@@ -379,12 +398,14 @@ describe('getPendingPayments — 全部状态/日期筛选', () => {
     expect((lt as any).mock.calls.some(([col]: any[]) => col === saleOrders.saleOrderDatetime)).toBe(false)
     expect((gte as any).mock.calls.some(([col]: any[]) => col === saleOrderPayments.paidAt)).toBe(false)
     expect((lt as any).mock.calls.some(([col]: any[]) => col === saleOrderPayments.paidAt)).toBe(false)
-    // 首次支付跟随订单级那一支必须在，否则 1900+ 笔首次支付会整段落选
+    // 直读款项级归属日期列（迁移 0040 收敛：不再有首次支付→订单级的 CASE 分支，
+    // 该行的列值由 trigger 写成订单级的镜像）
+    expect(usedAttributionColumn()).toBe(true)
+    expect(usedOrderLevelColumn()).toBe(false)
     const rendered = (sql as any).mock.calls
       .map(([strings]: any[]) => (Array.isArray(strings?.raw) ? strings.raw.join(' ') : ''))
       .join('\n')
-    expect(rendered).toContain("= '首次支付' THEN")
-    expect(rendered).toContain("AT TIME ZONE 'Asia/Shanghai'")
+    expect(rendered).not.toContain("= '首次支付' THEN")
     expect(rendered).toContain('::date')
   })
 

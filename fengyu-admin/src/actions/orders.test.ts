@@ -104,7 +104,10 @@ vi.mock('@db/order', () => ({
     createdAt: 'created_at',
     paidAt: 'paid_at',
     allocationStatus: 'allocation_status',
-    performanceAttributionDate: 'performance_attribution_date',
+    // 与 saleOrders.performanceAttributionDate 刻意用**不同**的 mock 串：
+    // 两者同名的话，"读款项级列"与"读订单级列"在断言里无法区分，
+    // 而这正是本 PR 的全部行为变更所在。
+    performanceAttributionDate: 'sop.performance_attribution_date',
     performanceAttributionAdjustedAt: 'performance_attribution_adjusted_at',
     performanceAttributionAdjustedBy: 'performance_attribution_adjusted_by',
     refundReason: 'refund_reason',
@@ -295,6 +298,22 @@ import { eq, ilike, gte, lt, gt, inArray, isNull, sql } from 'drizzle-orm'
 import { requirePermission } from '@/lib/permissions'
 import { ApiError } from '@/lib/api-error'
 import { logUpdate } from '@/lib/operation-log'
+
+/**
+ * 归属日期口径断言助手（迁移 0040 收敛后）：查询侧直读
+ * sale_order_payments.performance_attribution_date，不再拼 CASE/COALESCE。
+ * 无别名时该列作为插值进 sql`` 的 values；带别名时走 sql.raw，见各调用点的单独断言。
+ */
+const usedAttributionColumn = () =>
+  (sql as any).mock.calls.some(([, ...values]: any[]) =>
+    values.includes('sop.performance_attribution_date'),
+  )
+
+/** 反向守卫：口径一旦被改回订单级，上面的 usedAttributionColumn 仍为真，只有这条能红。 */
+const usedOrderLevelColumn = () =>
+  (sql as any).mock.calls.some(([, ...values]: any[]) =>
+    values.includes('performance_attribution_date'),
+  )
 import { hasPendingRefund } from '@/lib/refund-cascade'
 
 const mockSession = {
@@ -2420,8 +2439,18 @@ describe('getOrdersPaginated — 服务端分页', () => {
       .map(([strings]: any[]) => (Array.isArray(strings?.raw) ? strings.raw.join(' ') : ''))
       .join('\n')
     expect(rendered).toContain('payment_attribution_filter')
-    expect(rendered).toContain("= '首次支付' THEN")
-    expect(rendered).toContain("AT TIME ZONE 'Asia/Shanghai'")
+    // 迁移 0040 收敛：直读款项级归属日期列，不再有首次支付→订单级的 CASE 分支
+    expect(rendered).not.toContain("= '首次支付' THEN")
+    // 带别名时走 sql.raw，不进 strings.raw，要单独查
+    expect((sql as any).raw.mock.calls.some(
+      ([text]: any[]) => text === 'payment_attribution_filter.performance_attribution_date',
+    )).toBe(true)
+    // 别名必须指向款项表（EXISTS 子查询里的 sale_order_payments），不能是外层 sale_orders
+    expect((sql as any).raw.mock.calls.some(
+      ([text]: any[]) => text === 'sale_orders.performance_attribution_date',
+    )).toBe(false)
+    // 也不能以非 raw 的方式把订单级列混进日期条件
+    expect(usedOrderLevelColumn()).toBe(false)
     // 不能同时落到款项发生日期口径
     expect(rendered).not.toContain('payment_date_filter')
   })
@@ -4202,14 +4231,15 @@ describe('updatePerformanceAttributionDate — 一次性业绩归属日期调整
       updated_at: new Date('2026-08-17T03:00:00.000Z'),
     }],
     // bigint id 经 tx.execute 由 postgres.js 原样返回 string，审计日志须归一成 number
-    syncedCardRows = [{ id: '43' }],
-    syncedFirstPaymentRows = [{ id: '41' }],
+    // 顺序按真实 SQL 的 ORDER BY id 升序
+    syncedRows = [{ id: '41' }, { id: '43' }],
+    staleRows = [{ stale: 0 }],
   }: {
     adjustedAt?: Date | null
     currentDate?: string
     updatedRows?: any[]
-    syncedCardRows?: any[]
-    syncedFirstPaymentRows?: any[]
+    syncedRows?: any[]
+    staleRows?: any[]
   } = {}) {
     const execute = vi.fn()
       .mockResolvedValueOnce([{
@@ -4222,8 +4252,8 @@ describe('updatePerformanceAttributionDate — 一次性业绩归属日期调整
         max_performance_date: '2026-08-24',
       }])
       .mockResolvedValueOnce(updatedRows)
-      .mockResolvedValueOnce(syncedCardRows)
-      .mockResolvedValueOnce(syncedFirstPaymentRows)
+      .mockResolvedValueOnce(syncedRows)
+      .mockResolvedValueOnce(staleRows) // 部署顺序闸门的回读：stale=0 表示 trigger 已同步
     const tx = { execute, select: vi.fn(), insert: vi.fn() }
     ;(db.transaction as any).mockImplementation(async (fn: any) => fn(tx))
     return { tx, execute }
@@ -4243,10 +4273,16 @@ describe('updatePerformanceAttributionDate — 一次性业绩归属日期调整
     expect(execute.mock.calls[0][0].__sqlText).toMatch(/FOR UPDATE/)
     expect(execute.mock.calls[1][0].__sqlText).toMatch(/performance_attribution_adjusted_at IS NULL/)
     expect(execute.mock.calls[1][0].__sqlText).toMatch(/date_trunc\('milliseconds', updated_at\)/)
-    expect(execute.mock.calls[2][0].__sqlText).toMatch(/first_payment\.change_type = '首次支付'/)
-    // 首次支付行必须排在卡流水同步之后，且只改归属日期、不碰调整机会标记
-    expect(execute.mock.calls[3][0].__sqlText).toMatch(/UPDATE sale_order_payments first_payment/)
-    expect(execute.mock.calls[3][0].__sqlText).not.toMatch(/performance_attribution_adjusted_at =/)
+    // 款项行同步已下沉为 sale_orders 的 AFTER UPDATE trigger（迁移 0040），
+    // 应用层只回读受影响的行用于审计日志，不再自己发 UPDATE
+    expect(execute.mock.calls[2][0].__sqlText).toMatch(/SELECT id/)
+    // 回读集合 = trigger 覆盖的行（首次支付 + 同次已支付卡行），不按日期比
+    expect(execute.mock.calls[2][0].__sqlText).toMatch(/p\.change_type = '首次支付'/)
+    expect(execute.mock.calls[2][0].__sqlText).toMatch(/p\.change_type = '储值卡抵扣'/)
+    expect(execute.mock.calls[2][0].__sqlText).toMatch(/first_payment\.paid_at IS NOT DISTINCT FROM p\.paid_at/)
+    expect(
+      execute.mock.calls.some(([q]: any[]) => /UPDATE sale_order_payments/.test(q?.__sqlText ?? '')),
+    ).toBe(false)
     expect(logUpdate).toHaveBeenCalledWith(
       expect.anything(),
       'order.performanceAttribution.update',
@@ -4256,10 +4292,17 @@ describe('updatePerformanceAttributionDate — 一次性业绩归属日期调整
       expect.objectContaining({
         performanceAttributionDate: '2026-08-24',
         performanceAttributionAdjustedBy: 'EMP-001',
-        syncedPaymentIds: [43, 41],
+        syncedPaymentIds: [41, 43],
       }),
       tx,
     )
+  })
+
+  it('迁移 0040 未落地（trigger 缺席）→ 响亮失败而不是静默出错数', async () => {
+    // 款项行没被同步 → 回读发现首次支付行日期仍是旧值
+    mockAttributionTransaction({ staleRows: [{ stale: 1 }] })
+
+    await expect(updatePerformanceAttributionDate(input)).rejects.toThrow(/迁移 0040/)
   })
 
   it('同日提交不消耗修改机会', async () => {
@@ -4346,6 +4389,8 @@ describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日�
     pairedCardPaymentIds?: Array<number | string>
   } = {}) {
     const execute = vi.fn()
+      // ① 先锁订单行（把锁序钉成 sale_orders → sale_order_payments），不返回业务数据
+      .mockResolvedValueOnce([{ '?column?': 1 }])
       .mockResolvedValueOnce([{
         id: String(input.paymentId),
         sale_order_id: 'FY-XSD-WX-2608170001',
@@ -4379,11 +4424,16 @@ describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日�
       performanceAttributionAdjustedBy: 'EMP-001',
       performanceAttributionAdjustedByName: '店长甲',
     })
-    expect(execute.mock.calls[0][0].__sqlText).toMatch(/FOR UPDATE OF sop/)
-    expect(execute.mock.calls[0][0].__sqlText).toMatch(/paired_card_payment_ids/)
-    expect(execute.mock.calls[1][0].__sqlText).toMatch(/performance_attribution_adjusted_at IS NULL/)
-    expect(execute.mock.calls[1][0].__sqlText).toMatch(/WHERE payment\.id/)
-    expect(execute.mock.calls[1][0].__sqlText).not.toMatch(/payment\.change_type = '储值卡抵扣'/)
+    // 第 0 条必须是「先锁订单行」：物理锁序 sale_orders → sale_order_payments，
+    // 否则与订单级改期（先锁订单、AFTER trigger 再回写款项行）撞成 40P01
+    expect(execute.mock.calls[0][0].__sqlText).toMatch(/FROM sale_orders/)
+    expect(execute.mock.calls[0][0].__sqlText).toMatch(/FOR UPDATE/)
+    expect(execute.mock.calls[0][0].__sqlText).not.toMatch(/FOR UPDATE OF sop/)
+    expect(execute.mock.calls[1][0].__sqlText).toMatch(/FOR UPDATE OF sop/)
+    expect(execute.mock.calls[1][0].__sqlText).toMatch(/paired_card_payment_ids/)
+    expect(execute.mock.calls[2][0].__sqlText).toMatch(/performance_attribution_adjusted_at IS NULL/)
+    expect(execute.mock.calls[2][0].__sqlText).toMatch(/WHERE payment\.id/)
+    expect(execute.mock.calls[2][0].__sqlText).not.toMatch(/payment\.change_type = '储值卡抵扣'/)
     expect(logUpdate).toHaveBeenCalledWith(
       expect.anything(),
       'payment.performanceAttribution.update',
@@ -4400,7 +4450,8 @@ describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日�
 
     await expect(updatePaymentPerformanceAttributionDate(input))
       .rejects.toThrow(/INVALID_STATE.*首次支付跟随订单/)
-    expect(execute).toHaveBeenCalledTimes(1)
+    // 2 = 先锁订单行 + 锁款项行；校验失败发生在锁之后，不会再发第三条
+    expect(execute).toHaveBeenCalledTimes(2)
   })
 
   it('混合支付中被合并的储值卡流水不能绕过主流水单独调整', async () => {
@@ -4411,7 +4462,8 @@ describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日�
 
     await expect(updatePaymentPerformanceAttributionDate(input))
       .rejects.toThrow(/INVALID_STATE.*跟随同次现付/)
-    expect(execute).toHaveBeenCalledTimes(1)
+    // 2 = 先锁订单行 + 锁款项行；校验失败发生在锁之后，不会再发第三条
+    expect(execute).toHaveBeenCalledTimes(2)
   })
 
   it('未入账款项没有 paid_at 时拒绝调整', async () => {
@@ -4419,7 +4471,8 @@ describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日�
 
     await expect(updatePaymentPerformanceAttributionDate(input))
       .rejects.toThrow(/INVALID_STATE.*仅已入账/)
-    expect(execute).toHaveBeenCalledTimes(1)
+    // 2 = 先锁订单行 + 锁款项行；校验失败发生在锁之后，不会再发第三条
+    expect(execute).toHaveBeenCalledTimes(2)
   })
 
   it('超出 paid_at 前后 7 天时拒绝且不消耗机会', async () => {
@@ -4429,7 +4482,8 @@ describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日�
       ...input,
       performanceAttributionDate: '2026-08-25',
     })).rejects.toThrow(/INVALID_PARAMS.*前后 7 天/)
-    expect(execute).toHaveBeenCalledTimes(1)
+    // 2 = 先锁订单行 + 锁款项行；校验失败发生在锁之后，不会再发第三条
+    expect(execute).toHaveBeenCalledTimes(2)
     expect(logUpdate).not.toHaveBeenCalled()
   })
 
@@ -5745,7 +5799,10 @@ describe('exportAllocationOrders — 销售提成三态导出（已分配明细 
     const rendered = (sql as any).mock.calls
       .map(([strings]: any[]) => (Array.isArray(strings?.raw) ? strings.raw.join(' ') : ''))
       .join('\n')
-    expect(rendered).toContain("= '首次支付' THEN")
+    // 迁移 0040 收敛：直读**款项级**列；订单级列不得再出现在日期条件里
+    expect(usedAttributionColumn()).toBe(true)
+    expect(usedOrderLevelColumn()).toBe(false)
+    expect(rendered).not.toContain("= '首次支付' THEN")
     expect(rendered).not.toContain('payment_attribution_filter')
   })
 
@@ -6278,10 +6335,14 @@ describe('exportOrderPayments — 回款明细导出（款项 × 商品子项）
     })
   })
 
-  it('归属日期三分支：首次支付随订单、回款取款项级、未入账为空', async () => {
+  // 迁移 0040 收敛：款项粒度导出直读款项级归属日期列，不再按 changeType 分支。
+  // fixture 刻意让首次支付行的**款项级列 ≠ 订单级列**（库里由 I6 巡检守护不会出现，
+  // 但单测必须造得出来）—— 否则两值相等，断言无法区分读的是哪一列。
+  // 列真为空时保持空：**不**补订单级兜底，否则约束上线前的残留会伪装成有归属日期。
+  it('归属日期直读款项级列：款项级与订单级不一致时取款项级、列为空则留空', async () => {
     const repayment = paymentRow()
     const first = paymentRow({
-      payment: { id: 40, changeType: '首次支付', performanceAttributionDate: null, performanceAttributionAdjustedAt: null },
+      payment: { id: 40, changeType: '首次支付', performanceAttributionDate: '2026-08-19', performanceAttributionAdjustedAt: null },
       orderPerformanceAttributionDate: '2026-08-16',
       orderPerformanceAttributionAdjustedAt: new Date('2026-08-16T04:00:00.000Z'),
       orderPerformanceAttributionAdjustedByName: '店长丙',
@@ -6300,7 +6361,8 @@ describe('exportOrderPayments — 回款明细导出（款项 × 商品子项）
       performanceAttributionAdjustedByName: '店长甲',
     })
     expect(rows[1]).toMatchObject({
-      performanceAttributionDate: '2026-08-16',
+      // 取款项级 08-19 而**不是**订单级 08-16：读错列这里就红
+      performanceAttributionDate: '2026-08-19',
       performanceAttributionStatus: '随订单',
       performanceAttributionAdjustedByName: '店长丙',
     })
@@ -6347,7 +6409,10 @@ describe('exportOrderPayments — 回款明细导出（款项 × 商品子项）
     const rendered = (sql as any).mock.calls
       .map(([strings]: any[]) => (Array.isArray(strings?.raw) ? strings.raw.join(' ') : ''))
       .join('\n')
-    expect(rendered).toContain("= '首次支付' THEN")
+    // 迁移 0040 收敛：直读**款项级**列；订单级列不得再出现在日期条件里
+    expect(usedAttributionColumn()).toBe(true)
+    expect(usedOrderLevelColumn()).toBe(false)
+    expect(rendered).not.toContain("= '首次支付' THEN")
     expect(rendered).toContain('::date')
     // 款项粒度导出必须约束当前这一行，命中订单再全量带出款项就重复计数了
     expect(rendered).not.toContain('payment_attribution_filter')
