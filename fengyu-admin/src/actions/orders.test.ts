@@ -3151,6 +3151,81 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     }],
   }
 
+  // ── #125 家居折抵（与 staff order.test.js 的三个用例对称）────────────────────
+  const homeHeldRow = (over: Record<string, unknown> = {}) => ({
+    sale_item_id: 'home-1', sale_order_id: 'old-order', store_id: 'store-1', item_direction: '购买',
+    sku_id: 'sku-home', product_name: '家居精华', product_type: '家居产品',
+    session_count: null, remaining_sessions: null,
+    quantity: 10, picked_up_quantity: 3,
+    unit_price: '120', unit_real_price: '100',
+    sales_category: '自销自耗', service_fee: '0', is_experience: false, is_shengmei: false,
+    client_user_id: 'user-1', order_status: '已支付', product_kind: '家居',
+    ...over,
+  })
+  const homeConvData = { ...baseConvData, convertOutSaleItemIds: ['home-1'] }
+  const homeSkuRows = [{
+    skuId: 'sku-new-1', specName: '新项目', price: '300.00', specialPrice: null,
+    serviceFee: '0', sessionCount: 1, productType: '疗程卡', salesCategory: '自销自耗',
+    isExperience: false, isManagerSpecial: false, isShengmei: false, categoryId: 'cat-new',
+    purchaseLimit: null, marketScope: null,
+  }]
+
+  it('#125 家居按未提货数量整行折抵：7 盒 × 100 = 700，转出行金额为负', async () => {
+    const inserted: any[] = []
+    mockConvTx({
+      heldRows: [homeHeldRow()],
+      skuRows: homeSkuRows,
+      onInsertItem: (v) => inserted.push(v),
+    })
+
+    const result = await createConversionOrder(homeConvData)
+
+    expect(result.success).toBe(true)
+    const outRow = inserted.find((v) => v.itemDirection === '转出')
+    expect(outRow).toBeDefined()
+    // 未提货 7 盒（不看付款进度），转出行金额 = −700
+    expect(outRow.quantity).toBe(7)
+    expect(outRow.saleAmount).toBe('-700.00')
+    expect(outRow.received).toBe('-700.00')
+  })
+
+  it('#125 家居转出数量并入 picked_up_quantity 且带不可超转守卫，不走 remaining_sessions', async () => {
+    const { executeSql } = mockConvTx({
+      heldRows: [homeHeldRow()],
+      skuRows: homeSkuRows,
+    })
+
+    await createConversionOrder(homeConvData)
+
+    // 扣减走 drizzle update（不在 executeSql 里），这里断言没有误用疗程卡的 remaining_sessions 路径
+    expect(executeSql.some((t) => t.includes('remaining_sessions ='))).toBe(false)
+  })
+
+  it('#125 已无未提货数量的家居行拒绝折抵', async () => {
+    mockConvTx({
+      heldRows: [homeHeldRow({ quantity: 4, picked_up_quantity: 4 })],
+      skuRows: homeSkuRows,
+    })
+
+    const result = await createConversionOrder(homeConvData)
+
+    expect(result.success).toBe(false)
+    expect(JSON.stringify(result)).toContain('HOME_PRODUCT_NO_PENDING')
+  })
+
+  it('#125 家居扣减 rowsAffected=0（并发被抢先）→ 冲突', async () => {
+    mockConvTx({
+      heldRows: [homeHeldRow()],
+      skuRows: homeSkuRows,
+      updateCount: 0,
+    })
+
+    const result = await createConversionOrder(homeConvData)
+
+    expect(result.success).toBe(false)
+    expect(JSON.stringify(result)).toContain('HOME_PRODUCT_CONCURRENT_CHANGED')
+  })
+
   it('受限普通转入 SKU 不匹配顾客绑定门店市场时拒绝提交', async () => {
     ;(db.select as any)
       .mockImplementationOnce(mockSelectFound(mockClient))
@@ -3424,7 +3499,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
       convertOutSaleItemIds: ['invalid-in-row'],
     })
 
-    expect(result).toEqual({ success: false, message: '所选行不是有效疗程权益，不可折抵' })
+    expect(result).toEqual({ success: false, message: '所选行不是有效权益，不可折抵' })
   })
 
   it('先锁转出卡再汇总预扣，并按预扣次数折抵', async () => {

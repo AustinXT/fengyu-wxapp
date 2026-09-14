@@ -3548,17 +3548,22 @@ async function approveRefund(ctx) {
       if (qty > 0) homeRefundQty.set(it.saleItemId, (homeRefundQty.get(it.saleItemId) || 0) + qty)
     }
     if (homeRefundQty.size > 0) {
-      const homeRows = await client.query(
-        `SELECT sale_item_id, quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity
+      // 锁集必须覆盖本单**全部购买行**而非只锁家居子集：后续 cascadeRefund /
+      // recalcPaidSessionsForOrder 会更新同单的疗程卡行，只锁家居会与「先锁疗程卡、再等家居」
+      // 的混选转换事务形成反向锁序而死锁。按 sale_item_id 升序，与 createConversion 的锁序一致。
+      const lockedRows = await client.query(
+        `SELECT sale_item_id, product_type, quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity
            FROM sale_items
-          WHERE sale_item_id = ANY($1::text[])
-            AND product_type = '家居产品'
+          WHERE sale_order_id = $1
+            AND item_direction = '购买'
           ORDER BY sale_item_id
             FOR UPDATE`,
-        [[...homeRefundQty.keys()]],
+        [refSaleOrderId],
       )
-      for (const r of homeRows.rows) {
+      for (const r of lockedRows.rows) {
+        if (r.product_type !== '家居产品') continue
         const requested = homeRefundQty.get(r.sale_item_id) || 0
+        if (requested <= 0) continue
         const refundable = Number(r.quantity || 0) - Number(r.picked_up_quantity || 0)
         if (requested > refundable) {
           throw new Error('CONFLICT: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
@@ -4283,7 +4288,7 @@ async function createConversion(ctx) {
         throw new Error('INVALID_PARAMS: 部分折抵项不属于该顾客')
       }
       if (!isConvertibleEntitlementRow(row)) {
-        throw new Error('INVALID_PARAMS: 所选行不是有效疗程权益，不可折抵')
+        throw new Error('INVALID_PARAMS: 所选行不是有效权益，不可折抵')
       }
       if (row.order_status !== '已支付' && row.order_status !== '已完成') {
         throw new Error('INVALID_PARAMS: 原订单状态不允许转换')

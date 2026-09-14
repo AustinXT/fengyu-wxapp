@@ -1166,19 +1166,21 @@ export const approveRefund = withPermission(
         if (qty > 0) homeRefundQty.set(it.saleItemId, (homeRefundQty.get(it.saleItemId) ?? 0) + qty)
       }
       if (homeRefundQty.size > 0) {
-        const homeRows = await tx.execute(sql`
-          SELECT sale_item_id, quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity
+        // 锁集必须覆盖本单**全部购买行**而非只锁家居子集：后续 cascadeRefund /
+        // recalcPaidSessionsForOrder 会更新同单的疗程卡行，只锁家居会与「先锁疗程卡、再等家居」
+        // 的混选转换事务形成反向锁序而死锁。按 sale_item_id 升序，与 createConversionOrder 的锁序一致。
+        const lockedRows = await tx.execute(sql`
+          SELECT sale_item_id, product_type, quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity
             FROM sale_items
-           WHERE sale_item_id IN (${sql.join(
-             [...homeRefundQty.keys()].map((id) => sql`${id}`),
-             sql`, `,
-           )})
-             AND product_type = '家居产品'
+           WHERE sale_order_id = ${refSaleOrderId}
+             AND item_direction = '购买'
            ORDER BY sale_item_id
              FOR UPDATE
         `)
-        for (const r of Array.from(homeRows as unknown as Iterable<Record<string, unknown>>)) {
+        for (const r of Array.from(lockedRows as unknown as Iterable<Record<string, unknown>>)) {
+          if (r.product_type !== '家居产品') continue
           const requested = homeRefundQty.get(r.sale_item_id as string) ?? 0
+          if (requested <= 0) continue
           const refundable = Number(r.quantity ?? 0) - Number(r.picked_up_quantity ?? 0)
           if (requested > refundable) {
             throw new ApiError('CONFLICT', 'HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
@@ -1234,6 +1236,11 @@ export const approveRefund = withPermission(
     }
     if (msg.includes('退款金额无法完整映射到商品行实收')) {
       return { success: false, error: { code: 'INVALID_STATE', message: '商品行实收数据异常，本次退款已回滚，请联系管理员处理' } }
+    }
+    // #125 G2：家居可退数量在审批前被转换折抵/提货吃掉。必须单独成分支——落到下面的
+    // UNKNOWN「请稍后重试」会误导审批员反复重试同一笔（picked_up 抬高是持久状态，重试必然再失败）。
+    if (msg.includes('HOME_PRODUCT_REFUNDABLE_CHANGED')) {
+      return { success: false, error: { code: 'CONFLICT', message: '家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款' } }
     }
     console.error('[approveRefund] unexpected error:', err)
     return { success: false, error: { code: 'UNKNOWN', message: '审批退款失败，请稍后重试' } }

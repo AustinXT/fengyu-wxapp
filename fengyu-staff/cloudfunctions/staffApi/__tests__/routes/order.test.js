@@ -5284,7 +5284,7 @@ describe('order.createConversion', () => {
     mockPositiveDifferenceConversion(null, { itemDirection: '转入', saleOrderType: '销售单' })
 
     await expect(orderRoutes.createConversion(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*有效疗程权益/)
+      .rejects.toThrow(/INVALID_PARAMS.*不是有效权益/)
   })
 
   test('转换转入疗程卡 quantity=2 按两张独立权益落库并共享分组号', async () => {

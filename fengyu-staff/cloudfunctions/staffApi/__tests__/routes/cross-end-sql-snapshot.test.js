@@ -2131,8 +2131,11 @@ describe('#125 家居转换折抵跨端守护', () => {
     test.each(APPROVE_FILES)('%s 在 cascadeRefund 前锁行复核', (_name, file) => {
       const src = normalizeSql(readFile(file))
       expect(src).toContain('homeRefundQty')
-      expect(src).toContain("AND product_type = '家居产品' ORDER BY sale_item_id FOR UPDATE")
-      expect(src).toMatch(/homeRefundQty[\s\S]{0,2000}cascadeRefund/)
+      // 锁集必须覆盖本单全部购买行（不能只锁家居子集），否则与混选转换事务反向加锁；
+      // 且必须按 sale_item_id 升序，与 createConversion(Order) 的锁序一致
+      expect(src).toContain("AND item_direction = '购买' ORDER BY sale_item_id FOR UPDATE")
+      expect(src).not.toContain("AND product_type = '家居产品' ORDER BY sale_item_id FOR UPDATE")
+      expect(src).toMatch(/homeRefundQty[\s\S]{0,2500}cascadeRefund/)
     })
   })
 

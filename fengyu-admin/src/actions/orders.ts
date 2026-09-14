@@ -5457,7 +5457,7 @@ export const createConversionOrder = withPermission(
         if (row.client_user_id !== data.clientUserId) throw new ApiError('INVALID_STATE', 'CARD_OWNER_MISMATCH: 所选卡不属于该顾客')
         const isEntitlement = row.item_direction === '购买'
           || (row.sale_order_type === '转换单' && row.item_direction === '转入')
-        if (!isEntitlement) throw new ApiError('INVALID_STATE', 'CARD_DIRECTION_INVALID: 所选行不是有效疗程权益，不可折抵')
+        if (!isEntitlement) throw new ApiError('INVALID_STATE', 'CARD_DIRECTION_INVALID: 所选行不是有效权益，不可折抵')
         if (row.order_status !== '已支付' && row.order_status !== '已完成') {
           throw new ApiError('INVALID_STATE', 'CARD_ORDER_STATUS_INVALID: 原订单状态不允许转换')
         }
@@ -6100,7 +6100,7 @@ export const createConversionOrder = withPermission(
     if (m?.includes('CARD_NOT_FOUND')) return { success: false, message: '部分卡不存在或已失效' }
     if (m?.includes('CARD_STORE_MISMATCH')) return { success: false, message: '所选卡不属于当前门店' }
     if (m?.includes('CARD_OWNER_MISMATCH')) return { success: false, message: '所选卡不属于该顾客' }
-    if (m?.includes('CARD_DIRECTION_INVALID')) return { success: false, message: '所选行不是有效疗程权益，不可折抵' }
+    if (m?.includes('CARD_DIRECTION_INVALID')) return { success: false, message: '所选行不是有效权益，不可折抵' }
     if (m?.includes('CARD_ORDER_STATUS_INVALID')) return { success: false, message: '原订单状态不允许转换' }
     if (m?.includes('CARD_EXHAUSTED')) return { success: false, message: '所选卡已耗尽，无法折抵' }
     if (m?.includes('CARD_RESERVED')) return { success: false, message: '所选卡可用次数不足（存在服务中预留）' }
