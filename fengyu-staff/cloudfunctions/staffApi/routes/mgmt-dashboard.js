@@ -1380,7 +1380,8 @@ async function salesData(ctx) {
   const t0 = Date.now()
   const [revRows, custRevRows, consRows, custConsRows, prodOutRows, catRows, kindRows, nameRows, skeletonRows] =
     await Promise.all([
-      // SQL 1: 总业绩（首次收款按订单归属日，后续回款/退款按真实发生日）
+      // SQL 1: 总业绩（一律按款项业绩归属日期 spe.performance_date；
+      //        原注释「后续回款/退款按真实发生日」自 #137 收敛后已失效，见文件头）
       pg.query(
         `SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
            FROM sale_order_performance_events spe
