@@ -8,15 +8,28 @@ export interface DialogProps {
   onOpenChange: (open: boolean) => void
   children: React.ReactNode
   className?: string
+  /**
+   * 是否允许「点遮罩 / 按 ESC」关闭，默认允许。
+   *
+   * 置 false 时两条路径都被拦住（ESC 走原生 `cancel` 事件的 preventDefault），
+   * 用于提交在途这类「关掉了但事情还在办」会造成误解的时刻 —— 否则只给确认/取消
+   * 按钮加 disabled 是拦不住的，遮罩与 ESC 会绕过去。
+   */
+  dismissible?: boolean
 }
 
-function Dialog({ open, onOpenChange, children, className }: DialogProps) {
+function Dialog({ open, onOpenChange, children, className, dismissible = true }: DialogProps) {
   const dialogRef = React.useRef<HTMLDialogElement>(null)
   const onOpenChangeRef = React.useRef(onOpenChange)
+  const dismissibleRef = React.useRef(dismissible)
 
   React.useEffect(() => {
     onOpenChangeRef.current = onOpenChange
   }, [onOpenChange])
+
+  React.useEffect(() => {
+    dismissibleRef.current = dismissible
+  }, [dismissible])
 
   // Drive native <dialog> open state from the React prop. useLayoutEffect
   // ensures showModal() runs before paint, avoiding the React 19 concurrent
@@ -52,8 +65,19 @@ function Dialog({ open, onOpenChange, children, className }: DialogProps) {
     if (!dialog) return
 
     const handleClose = () => onOpenChangeRef.current(false)
+    // ESC 触发的是 cancel；不可关闭时在这里拦下，光靠按钮 disabled 拦不住键盘。
+    const handleCancel = (e: Event) => {
+      if (!dismissibleRef.current) e.preventDefault()
+    }
     dialog.addEventListener("close", handleClose)
-    return () => dialog.removeEventListener("close", handleClose)
+    dialog.addEventListener("cancel", handleCancel)
+    return () => {
+      dialog.removeEventListener("close", handleClose)
+      dialog.removeEventListener("cancel", handleCancel)
+      // 「卸载式关闭」（组件被移出 DOM，而不是 open 翻 false）时原生 close() 不会被调用，
+      // 焦点也就不会还给触发它的按钮。这里补一次；监听已摘除，不会再回调 onOpenChange。
+      if (dialog.open) dialog.close()
+    }
   }, [])
 
   const handleBackdropClick = (e: React.MouseEvent<HTMLDialogElement>) => {
@@ -62,6 +86,7 @@ function Dialog({ open, onOpenChange, children, className }: DialogProps) {
     // not close the dialog (regression fix: old code would close on inner
     // clicks when the dialog rect hadn't committed yet).
     if (e.target !== e.currentTarget) return
+    if (!dismissible) return
     const dialog = dialogRef.current
     if (!dialog) return
     const rect = dialog.getBoundingClientRect()

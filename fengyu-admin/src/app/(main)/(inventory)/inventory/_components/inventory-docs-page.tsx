@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState, useTransition } from 'react'
+import { useCallback, useEffect, useId, useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { ClipboardList, Plus } from 'lucide-react'
 import { toast } from 'sonner'
@@ -28,6 +28,7 @@ import { Button } from '@/components/ui/button'
 import { DataTable, type Column } from '@/components/ui/data-table'
 import {
   Dialog,
+  DialogClose,
   DialogDescription,
   DialogFooter,
   DialogHeader,
@@ -315,8 +316,14 @@ export default function InventoryDocsPage({
         onOpenChange={(next) => {
           if (!next) setPendingAction(null)
         }}
-        onDone={() => {
-          setPendingAction(null)
+        onDone={(finished) => {
+          // 只关「当初发起的那一张」。若期间已经切到别的单据，别把人家开着的弹窗和
+          // 刚敲进去的备注一起抹掉（列表刷新则无条件做）。
+          setPendingAction((current) =>
+            current && current.docId === finished.docId && current.kind === finished.kind
+              ? null
+              : current,
+          )
           startTransition(() => router.refresh())
         }}
       />
@@ -341,21 +348,25 @@ const DOC_ACTION_CONFIG: Readonly<
       label: string
       placeholder: string
       remarkRequired: boolean
+      /** 提交后不可撤销的后果，渲染在标题下方。没有后果的动作留空。 */
+      consequence?: string
       confirmText: string
       confirmVariant?: 'destructive'
-      successMessage: string
+      successMessage: (result: unknown) => string
       errorFallback: string
       run: (docId: string, remark: string) => Promise<unknown>
     }
   >
 > = {
   approve: {
-    title: '审批通过',
+    title: '确认审批通过？',
     label: '审批备注',
     placeholder: '选填，将记录在单据的审批信息中',
     remarkRequired: false,
+    // 三个动作里只有它真的动库存：逐条锁批次 + 出库流水，状态直接推到「已完成」
+    consequence: '通过后将按明细批次实扣库存，单据状态变为「已完成」，不可撤销。',
     confirmText: '确认通过',
-    successMessage: '单据已审批通过',
+    successMessage: () => '单据已通过，库存已扣减',
     errorFallback: '审批失败',
     run: (docId, remark) => approveInventoryCoreDoc(docId, remark),
   },
@@ -366,7 +377,7 @@ const DOC_ACTION_CONFIG: Readonly<
     remarkRequired: true,
     confirmText: '确认驳回',
     confirmVariant: 'destructive',
-    successMessage: '单据已驳回',
+    successMessage: () => '单据已驳回',
     errorFallback: '驳回失败',
     run: (docId, remark) => rejectInventoryCoreDoc(docId, remark),
   },
@@ -375,14 +386,34 @@ const DOC_ACTION_CONFIG: Readonly<
     label: '收货备注',
     placeholder: '选填，如实收与单据有差异请在此说明',
     remarkRequired: false,
+    consequence: '确认后将生成对应的入库单并增加在手库存。',
     confirmText: '确认收货',
-    successMessage: '收货已确认',
+    // 收货会生成入库单，单号是用户下一步要找的东西，别丢
+    successMessage: (result) => {
+      const inboundDocId = (result as { inboundDocId?: unknown } | null)?.inboundDocId
+      return typeof inboundDocId === 'string' && inboundDocId
+        ? `收货已确认，已生成入库单 ${inboundDocId}`
+        : '收货已确认'
+    },
     errorFallback: '收货确认失败',
     run: (docId, remark) => confirmInventoryCoreReceive(docId, remark),
   },
 }
 
 const DOC_ACTION_REMARK_MAX = 300
+
+/** 零宽字符：肉眼看不见，`trim()` 也吃不掉。粘贴来的文本常带，不清掉就能绕过必填。 */
+const ZERO_WIDTH_RE = /[\u200B-\u200D\u2060\uFEFF\u180E]/g
+
+/** 状态型错误：说明单据已被别人改过，弹窗留着也没用，直接关掉 + 刷新列表给出路。 */
+const STALE_STATE_PREFIXES: readonly string[] = ['CONFLICT', 'INVALID_STATE', 'NOT_FOUND']
+
+function isStaleStateError(err: unknown): boolean {
+  const digest = (err as { digest?: unknown } | null | undefined)?.digest
+  const raw =
+    (typeof digest === 'string' && digest) || (err instanceof Error ? err.message : '') || ''
+  return STALE_STATE_PREFIXES.some((prefix) => raw.startsWith(`${prefix}:`))
+}
 
 function DocActionDialog({
   pending,
@@ -391,13 +422,15 @@ function DocActionDialog({
 }: {
   pending: { kind: DocActionKind; docId: string } | null
   onOpenChange: (open: boolean) => void
-  onDone: () => void
+  onDone: (finished: { kind: DocActionKind; docId: string }) => void
 }) {
+  const remarkId = useId()
+  const errorId = `${remarkId}-error`
   const [remark, setRemark] = useState('')
   const [touched, setTouched] = useState(false)
   const [submitting, setSubmitting] = useState(false)
-  const open = pending !== null
-  // 每次换单据/换动作都从空备注重新开始，避免上一次的输入串到下一张单上
+  // 正常路径下弹窗是「开=挂载 / 关=卸载」，重置靠卸载即可；这个 effect 守的是
+  // showModal() 失败降级成 .show() 的退路——那时背景不 inert，能从 A 单直接点到 B 单。
   const resetKey = pending ? `${pending.kind}:${pending.docId}` : ''
   useEffect(() => {
     setRemark('')
@@ -406,7 +439,7 @@ function DocActionDialog({
 
   if (!pending) return null
   const config = DOC_ACTION_CONFIG[pending.kind]
-  const trimmed = remark.trim()
+  const trimmed = remark.replace(ZERO_WIDTH_RE, '').trim()
   const missing = config.remarkRequired && !trimmed
 
   async function submit() {
@@ -418,45 +451,64 @@ function DocActionDialog({
     }
     setSubmitting(true)
     try {
-      await config.run(pending.docId, trimmed)
-      toast.success(config.successMessage)
-      onDone()
+      const result = await config.run(pending.docId, trimmed)
+      toast.success(config.successMessage(result))
+      onDone(pending)
     } catch (err) {
       toast.error(actionErrorMessage(err, config.errorFallback))
+      // 单据已被别人改过时，留着弹窗只会让人反复点同一个必失败的按钮：
+      // 列表也还是旧状态，按钮照样在。关掉 + 刷新，才是有出路的处理。
+      if (isStaleStateError(err)) onDone(pending)
     } finally {
       setSubmitting(false)
     }
   }
 
   return (
-    // 提交中也允许关闭：Server Action 本来就不能中止，硬拦 onOpenChange 会让 ESC 关掉原生
-    // <dialog> 之后 React 侧仍以为开着，造成「看不见但关不掉」的死态。
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    // 提交在途时禁止遮罩/ESC 关闭：Server Action 无法中止，「关掉了」≠「取消了」，
+    // 而审批通过是实扣库存且不可撤销的。三条关闭路径必须同一口径。
+    <Dialog open onOpenChange={onOpenChange} dismissible={!submitting}>
+      {!submitting && <DialogClose onOpenChange={onOpenChange} />}
       <DialogHeader>
         <DialogTitle>{config.title}</DialogTitle>
-        <DialogDescription>单据号 {pending.docId}</DialogDescription>
+        <DialogDescription>
+          单据号 {pending.docId}
+          {config.consequence && (
+            <>
+              <br />
+              {config.consequence}
+            </>
+          )}
+        </DialogDescription>
       </DialogHeader>
       <div className="mt-4">
-        <label className="mb-1 block text-sm font-medium" htmlFor="doc-action-remark">
+        <label className="mb-1 block text-sm font-medium" htmlFor={remarkId}>
           {config.label}
           {config.remarkRequired && <span className="text-[var(--primary)]"> *</span>}
         </label>
         <Textarea
-          id="doc-action-remark"
-          aria-label={config.label}
+          id={remarkId}
           aria-required={config.remarkRequired}
           aria-invalid={touched && missing}
+          aria-describedby={touched && missing ? errorId : undefined}
           value={remark}
           onChange={(e) => setRemark(e.target.value)}
           rows={4}
           maxLength={DOC_ACTION_REMARK_MAX}
           placeholder={config.placeholder}
         />
-        {touched && missing && (
-          <p role="alert" className="mt-1 text-xs text-[#D94040]">
-            请填写{config.label}
-          </p>
-        )}
+        <div className="mt-1 flex items-start justify-between gap-2">
+          {touched && missing ? (
+            <p id={errorId} role="alert" className="text-xs text-[var(--destructive)]">
+              请填写{config.label}
+            </p>
+          ) : (
+            <span />
+          )}
+          <span className="shrink-0 text-xs text-[#999999]">
+            {remark.length}/{DOC_ACTION_REMARK_MAX}
+          </span>
+        </div>
       </div>
       <DialogFooter>
         <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>

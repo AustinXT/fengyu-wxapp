@@ -583,16 +583,50 @@ function stubNativeDialogs() {
 }
 
 const actionDialog = () => screen.getByRole('dialog')
-const remarkBox = (label: string) => screen.getByLabelText(label) as HTMLTextAreaElement
+/**
+ * 走 `<label htmlFor>` ↔ `id` 的真实配对（组件上已去掉 aria-label —— 它优先级高于
+ * label，留着的话把 htmlFor 或 id 写错都测不出来）。必填项的可及名带着 `*`，故用正则。
+ */
+const remarkBox = (label: string) =>
+  screen.getByLabelText(new RegExp(`^${label}`)) as HTMLTextAreaElement
 
 describe('审批 / 驳回 / 收货的备注弹窗（#134）', () => {
+  // 守护正则必须连**带接收者**的写法一起认：仓内域外残留的 6 处用的全是
+  // `window.confirm(` / `window.prompt(` 这种形式，只认裸调用的守护恰好看不见
+  // 最可能长出来的那种回归。
+  const NATIVE_DIALOG_RE =
+    /(?:^|[^.\w$])(?:(?:window|globalThis|self|top|parent)\s*\??\s*\.\s*)?(?:alert|prompt|confirm)\s*\(|\[\s*['"](?:alert|prompt|confirm)['"]\s*\]\s*\(/
+
   it('源码里不再出现任何原生弹窗调用', () => {
-    // 静态守护：改动本文件时若有人顺手写回 alert/prompt/confirm，这条立刻红
     const src = readFileSync(
-      resolve(process.cwd(), 'src/app/(main)/(inventory)/inventory/_components/inventory-docs-page.tsx'),
+      resolve(import.meta.dirname, './inventory-docs-page.tsx'),
       'utf8',
     )
-    expect(src).not.toMatch(/(?<![.\w])(alert|prompt|confirm)\s*\(/)
+    expect(src).not.toMatch(NATIVE_DIALOG_RE)
+  })
+
+  it('守护正则本身盖得住带接收者的写法（元测试）', () => {
+    const shouldCatch = [
+      "alert('x')",
+      "prompt('驳回原因')",
+      "window.alert('x')",
+      "window.prompt('驳回原因')",
+      "window.confirm('确定?')",
+      "globalThis.prompt('x')",
+      "self.alert('x')",
+      "window?.alert('x')",
+      "window['alert']('x')",
+      'alert\n(\'x\')',
+    ]
+    const shouldPass = [
+      'confirmInventoryCoreReceive(docId, remark)',
+      'onConfirm()',
+      'setAlert(true)',
+      'this.alert(',
+      'foo.confirm2(',
+    ]
+    for (const bad of shouldCatch) expect(bad, `应命中：${bad}`).toMatch(NATIVE_DIALOG_RE)
+    for (const ok of shouldPass) expect(ok, `不应命中：${ok}`).not.toMatch(NATIVE_DIALOG_RE)
   })
 
   it('点「驳回」开的是页内弹窗，不是原生 prompt', () => {
@@ -648,11 +682,14 @@ describe('审批 / 驳回 / 收货的备注弹窗（#134）', () => {
     fireEvent.click(screen.getByRole('button', { name: '确认通过' }))
 
     await waitFor(() => expect(approveInventoryCoreDoc).toHaveBeenCalledWith(row.id, ''))
-    expect(toast.success).toHaveBeenCalledWith('单据已审批通过')
+    expect(toast.success).toHaveBeenCalledWith('单据已通过，库存已扣减')
   })
 
   it('收货备注选填，且调的是收货 action', async () => {
-    vi.mocked(confirmInventoryCoreReceive).mockResolvedValue(undefined as never)
+    vi.mocked(confirmInventoryCoreReceive).mockResolvedValue({
+      success: true,
+      inboundDocId: 'CGRK-260813-0007',
+    } as never)
     renderDocs([receivableRow])
     fireEvent.click(screen.getByRole('button', { name: '收货' }))
     fireEvent.change(remarkBox('收货备注'), { target: { value: '少收 1 件' } })
@@ -661,7 +698,8 @@ describe('审批 / 驳回 / 收货的备注弹窗（#134）', () => {
     await waitFor(() =>
       expect(confirmInventoryCoreReceive).toHaveBeenCalledWith(receivableRow.id, '少收 1 件'),
     )
-    expect(toast.success).toHaveBeenCalledWith('收货已确认')
+    // 收货会生成入库单，单号要带进提示里 —— 那是用户下一步要找的东西
+    expect(toast.success).toHaveBeenCalledWith('收货已确认，已生成入库单 CGRK-260813-0007')
   })
 
   it('取消就是取消：不调用任何 action', () => {
@@ -709,6 +747,99 @@ describe('审批 / 驳回 / 收货的备注弹窗（#134）', () => {
     fireEvent.click(screen.getByRole('button', { name: '处理中…' }))
     await act(async () => { gate.resolve(); await gate.promise })
     expect(rejectInventoryCoreDoc).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('弹窗在异常与并发下的出路（#134 评审补）', () => {
+  it('状态型错误（单据已被别人改过）→ 关弹窗 + 刷新列表，不把人困在必失败的按钮上', async () => {
+    vi.mocked(approveInventoryCoreDoc).mockRejectedValue(
+      Object.assign(new Error('sanitized'), { digest: 'INVALID_STATE: 只有待审批单据可以审批' }),
+    )
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '通过' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认通过' }))
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('只有待审批单据可以审批'))
+    // 留着弹窗只会让人反复点同一个必失败的按钮 —— 列表也还是旧状态，按钮照样在
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('非状态型错误（网络抖动）→ 弹窗留着让人重试', async () => {
+    vi.mocked(approveInventoryCoreDoc).mockRejectedValue(new Error('Failed to fetch'))
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '通过' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认通过' }))
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('审批失败'))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('提交在途时遮罩与 ESC 都关不掉（「关掉了」≠「取消了」）', async () => {
+    const gate = deferred<void>()
+    vi.mocked(approveInventoryCoreDoc).mockReturnValue(gate.promise as never)
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '通过' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认通过' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '处理中…' })).toBeDisabled())
+
+    const dialog = screen.getByRole('dialog')
+    fireEvent.click(dialog) // 点遮罩
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    // ESC 走原生 cancel；不可关闭时应被 preventDefault
+    const cancelEvent = new Event('cancel', { cancelable: true })
+    dialog.dispatchEvent(cancelEvent)
+    expect(cancelEvent.defaultPrevented).toBe(true)
+
+    await act(async () => { gate.resolve(); await gate.promise })
+  })
+
+  it('零宽字符不算数：只粘一个零宽空格照样判空', async () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    fireEvent.change(remarkBox('驳回原因'), { target: { value: '\u200B\uFEFF' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认驳回' }))
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('请填写驳回原因'))
+    expect(rejectInventoryCoreDoc).not.toHaveBeenCalled()
+  })
+
+  it('审批弹窗写明不可撤销的后果（它是三个动作里唯一实扣库存的）', () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '通过' }))
+    expect(within(actionDialog()).getByText(/实扣库存/)).toBeInTheDocument()
+    expect(within(actionDialog()).getByText(/不可撤销/)).toBeInTheDocument()
+  })
+
+  it('错误提示与输入框用 aria-describedby 关联（焦点在框里时读屏才念得到）', async () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认驳回' }))
+
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+    const box = remarkBox('驳回原因')
+    expect(box).toHaveAttribute('aria-describedby', screen.getByRole('alert').id)
+  })
+
+  it('字数计数随输入更新', () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    expect(within(actionDialog()).getByText('0/300')).toBeInTheDocument()
+    fireEvent.change(remarkBox('驳回原因'), { target: { value: '数量不符' } })
+    expect(within(actionDialog()).getByText('4/300')).toBeInTheDocument()
+  })
+
+  it('从 A 单的驳回直接切到 B 单的通过：备注清空、标题与单据号都跟着换', () => {
+    // 真机上 showModal() 会让背景 inert 点不到行按钮，但 dialog.tsx 有降级到 .show() 的退路，
+    // 那条路下这个直切是可达的 —— 组件不卸载，全靠 resetKey effect 兜。
+    const rowB: InventoryDocRow = { ...row, id: 'MBS-260813-0009' }
+    renderDocs([row, rowB])
+    fireEvent.click(screen.getAllByRole('button', { name: '驳回' })[0])
+    fireEvent.change(remarkBox('驳回原因'), { target: { value: '写给 A 的原因' } })
+    fireEvent.click(screen.getAllByRole('button', { name: '通过' })[1])
+
+    expect(within(actionDialog()).getByText('确认审批通过？')).toBeInTheDocument()
+    expect(actionDialog()).toHaveTextContent(`单据号 ${rowB.id}`)
+    expect(remarkBox('审批备注')).toHaveValue('')
   })
 })
 
