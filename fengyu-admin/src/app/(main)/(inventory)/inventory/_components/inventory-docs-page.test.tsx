@@ -876,6 +876,11 @@ describe('弹窗在异常与并发下的出路（#134 评审补）', () => {
     // 背景里 B 单的「通过」必须点不动，否则 A 的「处理中」界面会被顶掉，用户以为 A 取消了
     for (const btn of screen.getAllByRole('button', { name: '通过' })) expect(btn).toBeDisabled()
     for (const btn of screen.getAllByRole('button', { name: '驳回' })) expect(btn).toBeDisabled()
+    // 「新建」同理：否则建单弹窗会叠在「处理中」的动作弹窗之上
+    expect(screen.getByRole('button', { name: '新建' })).toBeDisabled()
+    // 「详情」是链接，光给按钮加 disabled 拦不住导航 —— 在途时整个换成禁用按钮
+    for (const btn of screen.getAllByRole('button', { name: '详情' })) expect(btn).toBeDisabled()
+    expect(screen.queryByRole('link', { name: '详情' })).not.toBeInTheDocument()
 
     await act(async () => { gate.resolve(); await gate.promise })
   })
@@ -953,15 +958,21 @@ describe('弹窗在异常与并发下的出路（#134 评审补）', () => {
     )
   })
 
-  it('权限被收回（PERMISSION_DENIED）也给出路：关窗 + 刷新', async () => {
+  it.each([
+    // 业务层抛的 ApiError：digest 是带冒号的完整 message
+    ['PERMISSION_DENIED: 无权审批该单据', 'ApiError 形态'],
+    // HOF 层 requireAnyPermission 抛的 PermissionError：digest 是**裸前缀**，无冒号无文案。
+    // 这才是「权限被收回」最直接的那条路径，只认带冒号的话恰好判不出来。
+    ['PERMISSION_DENIED', 'PermissionError 裸前缀形态'],
+  ])('权限被收回也给出路：关窗 + 刷新（%s / %s）', async (digest) => {
     vi.mocked(approveInventoryCoreDoc).mockRejectedValue(
-      Object.assign(new Error('sanitized'), { digest: 'PERMISSION_DENIED: 无权审批该单据' }),
+      Object.assign(new Error('sanitized'), { digest }),
     )
     renderDocs()
     fireEvent.click(screen.getByRole('button', { name: '通过' }))
     fireEvent.click(screen.getByRole('button', { name: '确认通过' }))
 
-    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('无权审批该单据'))
+    await waitFor(() => expect(toast.error).toHaveBeenCalled())
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     await waitFor(() => expect(mockRefresh).toHaveBeenCalled())
   })
@@ -975,14 +986,16 @@ describe('弹窗在异常与并发下的出路（#134 评审补）', () => {
   })
 
   it('从 A 单的驳回直接切到 B 单的通过：备注清空、标题与单据号都跟着换', () => {
-    // 真机上 showModal() 会让背景 inert 点不到行按钮，但 dialog.tsx 有降级到 .show() 的退路，
-    // 那条路下这个直切是可达的 —— 组件不卸载，全靠 resetKey effect 兜。
+    // 这个直切只有 dialog.tsx 降级到 .show() 那条退路才可达（真机上 showModal 会让背景 inert）。
+    // 必须真把 showModal 打成抛错，否则删掉 fallback 分支这条用例照样绿。
+    const { show } = forceNonModalFallback()
     const rowB: InventoryDocRow = { ...row, id: 'MBS-260813-0009' }
     renderDocs([row, rowB])
     fireEvent.click(screen.getAllByRole('button', { name: '驳回' })[0])
     fireEvent.change(remarkBox('驳回原因'), { target: { value: '写给 A 的原因' } })
     fireEvent.click(screen.getAllByRole('button', { name: '通过' })[1])
 
+    expect(show).toHaveBeenCalled()
     expect(within(actionDialog()).getByText('确认审批通过？')).toBeInTheDocument()
     expect(actionDialog()).toHaveTextContent(`单据号 ${rowB.id}`)
     expect(remarkBox('审批备注')).toHaveValue('')

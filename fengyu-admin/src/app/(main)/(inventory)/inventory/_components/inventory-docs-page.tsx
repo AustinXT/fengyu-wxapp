@@ -199,9 +199,17 @@ export default function InventoryDocsPage({
       header: '操作',
       cell: (r) => (
         <div className="flex gap-2">
-          <PreserveListContextLink href={`/inventory/docs/${r.id}`}>
-            <Button variant="ghost" size="sm">详情</Button>
-          </PreserveListContextLink>
+          {actionBusy ? (
+            // 在途时不能让人点走：详情是个链接，光给里面的按钮加 disabled 拦不住导航，
+            // 直接换成一个禁用按钮（降级到 .show() 时背景可点才会走到这里）
+            <Button variant="ghost" size="sm" disabled>
+              详情
+            </Button>
+          ) : (
+            <PreserveListContextLink href={`/inventory/docs/${r.id}`}>
+              <Button variant="ghost" size="sm">详情</Button>
+            </PreserveListContextLink>
+          )}
           {GENERIC_DOC_TYPE_SET.has(r.docType) && canApprove && r.status === '待审批' && (
             <>
               <Button
@@ -288,7 +296,8 @@ export default function InventoryDocsPage({
             重置
           </Button>
           {canCreate && (
-            <Button onClick={() => setOpen(true)}>
+            // 降级到 .show() 时背景可点，别让「新建」弹窗叠在「处理中」的动作弹窗之上
+            <Button disabled={actionBusy} onClick={() => setOpen(true)}>
               <Plus className="mr-1 size-4" /> 新建
             </Button>
           )}
@@ -430,7 +439,11 @@ function isStaleStateError(err: unknown): boolean {
   const digest = (err as { digest?: unknown } | null | undefined)?.digest
   const raw =
     (typeof digest === 'string' && digest) || (err instanceof Error ? err.message : '') || ''
-  return STALE_STATE_PREFIXES.some((prefix) => raw.startsWith(`${prefix}:`))
+  // 要同时认「带冒号的完整 message」与「裸前缀」：HOF 层的 requireAnyPermission 抛的是
+  // `PermissionError`，它的 digest 是字段常量 `'PERMISSION_DENIED'`（无冒号无文案），
+  // 而 rethrowWithDigest 见 digest 已存在就跳过、不会补写 —— 只认带冒号的话，
+  // 「权限被收回」这条最直接的路径恰好判不出来。
+  return STALE_STATE_PREFIXES.some((prefix) => raw === prefix || raw.startsWith(`${prefix}:`))
 }
 
 function DocActionDialog({
