@@ -1499,3 +1499,37 @@ describe('绩效页 · 评审 round-17 闭环（codex）', () => {
     expect(page.data.displayItems).toHaveLength(300)
   })
 })
+
+describe('绩效页 · 号码格式交叉匹配（评审 round-18 codex P2）', () => {
+  // 关键词与明细各自都可能带或不带 86，四种组合都得通
+  const CASES: Array<[string, string, string]> = [
+    ['明细带86 / 词带86 完整', '+8613900139000', '+86 13900139000'],
+    ['明细带86 / 词不带86 完整', '+8613900139000', '13900139000'],
+    ['明细不带86 / 词带86 完整', '13900139000', '+86 13900139000'],
+    ['明细不带86 / 词不带86 完整', '13900139000', '13900139000'],
+    ['明细带86 / 词带86 片段', '+8613900139000', '+86 139'],
+    ['明细不带86 / 词带86 片段', '13900139000', '+86 139'],
+    ['明细带86 / 词不带86 片段', '+8613900139000', '139001'],
+    ['明细不带86 / 词不带86 片段', '13900139000', '139001'],
+  ]
+
+  test.each(CASES)('%s', async (_label, phone, keyword) => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([makeItem('李四', phone, 1), makeItem('张三', '13800138000', 2)], 2)
+    await page.loadData(true)
+
+    search(page, keyword)
+    expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['李四'])
+  })
+
+  test('不相干的号不会因为摊候选而被误命中', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([makeItem('李四', '13900139000', 1), makeItem('张三', '13800138000', 2)], 2)
+    await page.loadData(true)
+
+    search(page, '+86 138')
+    expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['张三'])
+  })
+})

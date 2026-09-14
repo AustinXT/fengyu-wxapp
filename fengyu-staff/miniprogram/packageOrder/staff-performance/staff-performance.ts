@@ -856,19 +856,25 @@ Page({
     // 员工搜一个名字，结果冒出几十个不相干的顾客，比搜不到还难用
     const kwHalfWidth = kw.replace(/[\uFF10-\uFF19]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
     const looksLikePhone = /^[\d\s\-+()]+$/.test(kwHalfWidth);
-    // 关键词这边**只剥非数字、不做 86 归一**：输入的往往是片段（`+86 139` → `86139`），
-    // 归一规则只认完整 13 位，片段会被原样留下。匹配时拿它同时去比对明细的
-    // 「原始数字串」和「去 86 的国内串」，两条路任一命中即可
+    // 号码有「带 86」和「不带 86」两种写法，**关键词和明细各自都可能是任意一种**，
+    // 所以两边都摊成候选串做交叉匹配，否则同一个号会因为存储格式不同而时灵时不灵：
+    //   明细 +8613900139000 + 关键词 139001   → 要靠明细侧的国内串
+    //   明细 13900139000    + 关键词 +86 139  → 要靠关键词侧去掉 86 的候选
+    // 关键词是片段，所以这里按前缀判断而不是完整 13 位的 normalizePhone
     const kwDigits = looksLikePhone ? kwHalfWidth.replace(/\D/g, '') : '';
+    const kwCandidates = kwDigits
+      ? (/^861[3-9]/.test(kwDigits) ? [kwDigits, kwDigits.slice(2)] : [kwDigits])
+      : [];
     // 姓名两侧都剥空白：关键词写回时已 trim（避免「框里有内容、列表是全量」的哑态），
     // 但词**中间**的空格留着 —— 顾客姓名里也可能有（「张 三」/ 全角空格），
     // 两边都归一才不会出现「看着一模一样却搜不到」
     const kwName = kw.replace(/\s+/g, '');
     const matched = items.filter((it) => {
       if (kwName && String(it.customerName || '').replace(/\s+/g, '').toLowerCase().indexOf(kwName) >= 0) return true;
-      if (!kwDigits) return false;
+      if (!kwCandidates.length) return false;
       const raw = String(it.clientPhone || '').replace(/\D/g, '');
-      return raw.indexOf(kwDigits) >= 0 || this.normalizePhone(it.clientPhone).indexOf(kwDigits) >= 0;
+      const norm = this.normalizePhone(it.clientPhone);
+      return kwCandidates.some((c) => raw.indexOf(c) >= 0 || norm.indexOf(c) >= 0);
     });
     const loaded = `已加载 ${items.length}/共 ${total} 条`;
     // 关键词进文案前截断：整段粘贴进搜索框时，原样内插会把 van-empty 的 description 撑爆
