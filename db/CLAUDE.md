@@ -36,7 +36,11 @@ PostgreSQL 数据库层，使用 Drizzle ORM 管理 schema 定义与迁移。
 npm run db:generate   # 生成迁移文件（schema 变更后）
 npm run db:migrate    # 执行迁移
 npm run db:studio     # Drizzle Studio 可视化管理
+npm run db:test       # node:test 套件（migration 字面量回归等，不连库）
+npm run db:check:attribution   # 款项归属日期迁移前体检（只读，须显式传 DATABASE_URL）
 ```
+
+⚠ `npm run db:test` **不在** admin / staffApi 的 vitest 基线里，"单测全绿"不覆盖它，发版前要单独跑。
 
 迁移前需设置环境变量 `DATABASE_URL`（或在 `.env` 中配置）。Drizzle 配置见 `drizzle.config.ts`，启用了 strict 模式（破坏性变更需确认）。
 
@@ -51,10 +55,57 @@ npm run db:studio     # Drizzle Studio 可视化管理
 3. **本地验证**：起一个临时 docker PG，用 `DATABASE_URL=postgresql://postgres:...@localhost:54399/test npx drizzle-kit migrate` 在空库上跑一次，确认新 migration 能从零 apply 起整个 schema
 4. **提交 PR**：必须同时包含 `schema/*.ts` + `migrations/00NN_*.sql` + `migrations/meta/` 三者的改动，缺一不可
 5. **部署**：PR merge 后，**dev / test / prod 三个业务库都要迁**（都在使用，不是生产 + 冷备）：
-   - dev：`npm run db:migrate` 默认打 **47.113.202.7:5433/fengyu_wxapp**（`db/.env` 的 URL）
+   - dev：⚠ 目标以 `envs/dev.env` 为准（实测 **101.34.242.103**，与 test 同库）；`db/.env` 里可能还是旧的 47.113.202.7，收敛见 issue #151
    - test：从 `envs/test.env` 的 `PG_CONNECTION_STRING` 显式迁 **101.34.242.103:5433/fengyu_wxapp**；不得使用容器网桥地址 `172.18.0.1`
    - prod：从 `envs/prod.env` 的 `ADMIN_DATABASE_URL` 显式迁 **118.178.196.26:5433/fengyu_wxapp**
    - 详见下文「dev / test / prod 三套业务库」小节；完整发版优先使用 `/release-all <env>` 的目标断言与迁移门禁
+
+### 写 sale_order_payments 的硬约束（迁移 0039 / 0040）
+
+`sale_order_payments.performance_attribution_date` 由 BEFORE trigger
+`initialize_payment_performance_attribution_date()` 赋值，并由 CHECK 约束
+`chk_sop_attribution_date_present` 兜底非空。各端报表直读这一列，没有任何查询侧回退。
+
+因此：**任何绕过 trigger 写这张表的路径都必须显式提供 `performance_attribution_date`**。
+`pg_restore --disable-triggers`、`session_replication_role = replica`（逻辑复制订阅端）、
+`ALTER TABLE ... DISABLE TRIGGER` 下的批量导入都属于这类路径 —— CHECK 约束不随 trigger 一起被关掉，
+不带这一列会直接报 `violates check constraint`。
+
+同理，`sale_orders.performance_attribution_date` 变更由 AFTER UPDATE trigger
+`sync_order_performance_attribution_to_payments()` 同步到首次支付行与同次储值卡行；
+手工改这一列时不要顺手 DISABLE 它，否则镜像脱拍、业绩会静默落到错误的日子
+（cron STEP 11 的 I6 / I6b 巡检会在次日告警，但那是安全网不是修复）。
+
+**锁序约定：`sale_orders` → `sale_order_payments`，新代码不得反向。**
+
+迁移 0040 给 BEFORE trigger 的两处 `SELECT ... FROM sale_orders` 补了 `FOR SHARE`
+（**不能降回 `FOR KEY SHARE`**：归属日期不是键列，普通 `UPDATE sale_orders` 取 FOR NO KEY UPDATE，
+与 FOR KEY SHARE 不冲突 —— 实测挡不住）。
+
+该共享锁的**实际触发面只有两类写入**，不是"写这张表就会锁订单"：
+1. `change_type = '首次支付'` 行的 INSERT，或它的 `status` / `paid_at` / `performance_attribution_date` UPDATE；
+2. 归属日期列为空、且能配对到同 `status`、同精确 `paid_at` 主流水的 `储值卡抵扣` 行的 INSERT / 入账重算。
+
+回款与退款走 ELSE 分支，不读 `sale_orders`；`allocation_status` 之类的 UPDATE 不在
+`UPDATE OF status, paid_at, performance_attribution_date` 列表里，根本不触发 trigger。
+
+⚠ **已知的反向锁序（既有，非 0040 引入）**：手工营业额分配
+（`fengyu-admin/src/actions/allocations.ts` 的 `refreshOrderAllocationRollup` 链路、
+staffApi `routes/allocation.js` 的保存/删除）是「先改款项行、再刷新订单汇总」。
+它与「订单级改期」（先锁订单、再回写款项行）并发时会 40P01 —— 已在临时 PG 实测复现，
+且**把 0040 的 AFTER trigger 禁用、改用改造前的应用层 UPDATE 同样复现**，
+说明这个环在 0040 之前就存在，只是同步动作下沉后不再能从应用代码里一眼看出锁足迹。修它属于 allocation 模块的独立课题。
+
+另有两条路径（clientApi `routes/order.js` 的 repay 纯卡/混合分支、admin `orders.ts` 的
+`deductPrepaidCardAtCreation`）不先锁订单，但它们写的是配对不上主流水的卡行，压根不触发上面的共享锁，
+且被 `prepaid_cards` 行锁串行化 —— **无环是因为不触发，不是因为顺序对**。改动这两处时要重新评估。
+
+跑 0040 之前先执行 `npm run db:check:attribution` 确认没有真阻塞项：该迁移的
+`ADD CONSTRAINT` 取 ACCESS EXCLUSIVE 并持有到事务提交，回填与自检的全表扫描都落在这个窗口里，
+应避开营业高峰。迁移首条已加 `SET LOCAL lock_timeout = '3s'`，拿不到锁会直接失败而不是把业务卡住。
+
+⚠ drizzle 把**所有**待应用迁移放进同一个事务（已核 drizzle-orm 0.45.1 的 `pg-core/dialect.cjs`），
+所以积压越多、锁窗口越长。别攒一堆迁移一起上。
 
 ### 严格禁止
 
@@ -82,15 +133,16 @@ npm run db:studio     # Drizzle Studio 可视化管理
 |------|------|--------|
 | **prod 业务库** | `postgresql://fengyu:***@118.178.196.26:5433/fengyu_wxapp`（fengyu-prod） | 线上 admin、prod CloudBase 的 staffApi / clientApi / payNotify、**trial + release 版小程序** |
 | **test 业务库** | 本地迁移：`postgresql://fengyu:***@101.34.242.103:5433/fengyu_wxapp`；101 容器：`postgresql://fengyu:***@172.18.0.1:5433/fengyu_wxapp` | sqlserver101 上的 test admin / analyst；test 没有独立 CloudBase，禁止部署云函数 |
-| **dev 业务库** | `postgresql://fengyu:***@47.113.202.7:5433/fengyu_wxapp`（ali-demo） | 本地/远程 dev admin、dev CloudBase 云函数、**仅 develop 版小程序**、`db/.env` 默认迁移目标 |
+| **dev 业务库** | ⚠ `envs/dev.env` 实测是 **`101.34.242.103:5433/fengyu_wxapp`（与 test 同库）**，但 `scripts/deploy-cloudfunctions.sh` 与 env 模板仍写 `47.113.202.7` —— 两处不一致，**以 `envs/dev.env` 为准**，收敛工作见 issue #151 | 本地/远程 dev admin、dev CloudBase 云函数、**仅 develop 版小程序** |
 
 ⚠ 三套库**均用 5433 端口 + `fengyu_wxapp` 库名**，本地迁移仅靠 **IP** 区分：
-dev=`47.113.202.7`、test=`101.34.242.103`、prod=`118.178.196.26`。`172.18.0.1` 只允许
+test=`101.34.242.103`、prod=`118.178.196.26`、dev=**以 `envs/dev.env` 为准**（实测也是 101，与 test 同库；
+旧文档写的 `47.113.202.7` 已不准，见 issue #151）。`172.18.0.1` 只允许
 sqlserver101 上的容器回连宿主，禁止作为本地 migration / backfill 目标。
 
 **schema 变更三个库都要迁**：
 
-- dev：`npm run db:migrate` 默认打 **47.113.202.7:5433/fengyu_wxapp**。
+- dev：目标以 `envs/dev.env` 为准（实测 101.34.242.103，与 test 同库）。⚠ 别照抄旧文档里的 47.113.202.7（#151）。
 - test：必须从 `../envs/test.env` 读取 `PG_CONNECTION_STRING`，并在执行前断言公网 host 是
   **101.34.242.103**。
 - prod：必须从 `../envs/prod.env` 读取 `ADMIN_DATABASE_URL`，并在执行前断言 host 是
@@ -107,8 +159,8 @@ DATABASE_URL="$TARGET_DATABASE_URL" npm run db:migrate
 unset TARGET_DATABASE_URL
 ```
 
-**数据修复 / backfill**：先分清目标环境——dev=`47.113.202.7:5433`、test=`101.34.242.103:5433`、
-prod=`118.178.196.26:5433`，**永远显式传 `DATABASE_URL` 并断言 host/port/dbname**。仅修某环境的数据时只跑
+**数据修复 / backfill**：先分清目标环境——test=`101.34.242.103:5433`、prod=`118.178.196.26:5433`、
+dev=以 `envs/dev.env` 为准（实测也是 101，#151），**永远显式传 `DATABASE_URL` 并断言 host/port/dbname**。仅修某环境的数据时只跑
 目标库；需要三环境一致的修复必须三库分别执行并记录结果。**e2e 只允许使用 dev，绝不碰 test 或 prod。**
 
 ## Baseline reset 历史
@@ -174,7 +226,7 @@ docker rm -f pg-from-zero
 - 幂等：再跑一次会全 SKIP
 - 与后续 `npm run db:migrate` 完全兼容
 
-**prod 118.178.196.26:5433 / test 101.34.242.103:5433 / dev 47.113.202.7:5433 都不要跑此脚本**（业务库应直接运行目标断言后的 `db:migrate`）。
+**任何业务库（prod 118.178.196.26 / test 与 dev 共用的 101.34.242.103，均 5433）都不要跑此脚本**（业务库应直接运行目标断言后的 `db:migrate`）。
 
 ## 同步脚本
 
