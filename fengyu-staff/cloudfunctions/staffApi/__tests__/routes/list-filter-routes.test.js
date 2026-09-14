@@ -157,6 +157,35 @@ describe('业务列表统一筛选', () => {
     expect(params).toContain('2026-08-26')
   })
 
+  // 与 order.list 的未迁移库用例对称（GLM 评审 P3）：
+  // 此前 allocation 侧只有 snapshot 的「文件里出现过这行调用」字面断言兜底，
+  // 把守卫弱化成空操作不会有任何功能测试变红。
+  test('allocation.pendingPayments 未迁移库拒绝返回空结果', async () => {
+    pg.query.mockResolvedValueOnce([{ has_gap: true }])
+    const ctx = createManagerCtx({ startDate: '2026-08-01' })
+    await expect(allocationRoutes.pendingPayments(ctx)).rejects.toThrow(/INVALID_STATE: MIGRATION_REQUIRED/)
+    expect(pg.query).toHaveBeenCalledTimes(1)
+  })
+
+  test('allocation.pendingPayments 不带日期时不触发迁移探针', async () => {
+    pg.query.mockResolvedValueOnce([])
+    const ctx = createManagerCtx({ allocationStatus: '待分配' })
+    await allocationRoutes.pendingPayments(ctx)
+    expect(pg.query).toHaveBeenCalledTimes(1)
+    expect(pg.query.mock.calls[0][0]).not.toContain('has_gap')
+  })
+
+  test('并发冷请求共享同一次迁移探针，不重复占用连接池', async () => {
+    // codex 评审 P3：两个请求都在第一个 await 前看到 ready=false
+    pg.query.mockResolvedValueOnce([{ has_gap: false }])
+    pg.query.mockResolvedValue([])
+    const ctxA = createManagerCtx({ startDate: '2026-08-01' })
+    const ctxB = createManagerCtx({ startDate: '2026-08-01' })
+    await Promise.all([orderRoutes.list(ctxA), orderRoutes.list(ctxB)])
+    const probeCalls = pg.query.mock.calls.filter(([sql]) => sql.includes('has_gap'))
+    expect(probeCalls, '并发冷请求重复发探针').toHaveLength(1)
+  })
+
   test('serviceCommission.pendingList 支持全部状态与服务日期', async () => {
     pg.query.mockResolvedValueOnce([])
     const ctx = createManagerCtx({ commissionStatus: '全部', keyword: '王', endDate: '2026-08-26' })

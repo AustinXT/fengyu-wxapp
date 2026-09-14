@@ -2466,7 +2466,8 @@ describe('疗程卡可用次数为 0 时仍展示的跨端守护（issue #122）
         'staff 分配列表的归属日期引用次数漂移（疑似退化成 EXISTS）',
       ).toHaveLength(1)
 
-      const adminPending = readFile(FILES.adminAllocationsTs).match(
+      const adminAllocationsSrc = readFile(FILES.adminAllocationsTs)
+      const adminPending = adminAllocationsSrc.match(
         /const dateRangeConditions = \(\(\) => \{[\s\S]*?\}\)\(\)/,
       )?.[0]
       expect(adminPending, '未能定位 admin 分配列表日期条件块').toBeTruthy()
@@ -2474,6 +2475,27 @@ describe('疗程卡可用次数为 0 时仍展示的跨端守护（issue #122）
       expect(adminPending, 'admin 分配列表必须行级约束（不得传 alias 变成 EXISTS 形态）').toContain(
         'paymentAttributionRangeConditions(params.dateFrom, params.dateTo)',
       )
+      // codex 评审 P2：上面只证明"helper 被调用并赋给局部变量"，不证明它接进了最终 WHERE。
+      // 删掉展开处，条件就静默失效而断言仍绿——所以这里必须钉住展开位置。
+      expect(
+        adminAllocationsSrc,
+        'admin 分配列表的日期条件未接入最终查询（dateRangeConditions 未展开进 conds）',
+      ).toContain('...dateRangeConditions')
+    })
+
+    // GLM 评审 P2：上面四条只守护「attribution 分支的代码形态还在」，
+    // 不守护「默认就走这个分支」。把 admin 的 `?? 'attribution'` 改成 `?? 'payment'` 一个词，
+    // 默认口径即退回 paid_at 半开区间，而所有形态断言仍然全绿——
+    // 而「staff 与 admin 默认口径一致」正是 #139 的头号验收标准。
+    test('admin 两处默认口径锚点仍是 attribution（staff 无下拉，只能对齐默认值）', () => {
+      expect(
+        readFile(FILES.adminOrdersTs),
+        'admin 订单管理默认口径漂移，staff 侧无下拉可切，会与 staff 出数不一致',
+      ).toContain("filters.dateBasis ?? 'attribution'")
+      expect(
+        readFile(FILES.adminAllocationsTs),
+        'admin 营业额分配默认口径漂移，staff 侧无下拉可切，会与 staff 出数不一致',
+      ).toContain("params.dateBasis ?? 'attribution'")
     })
 
     test('两端归属日期一律 date 闭区间，无 timestamptz 半开区间', () => {
