@@ -240,6 +240,13 @@ Page({
   _filteredKeyword: '',
   /** 跨零点定时器：页面停在前台过午夜时把 picker 上界推到新的今天 */
   _midnightTimer: null as ReturnType<typeof setTimeout> | null,
+  /**
+   * 在途请求是不是「重查第一页」。
+   * 去重只能拿它跟重查比：翻页（`loadData(false)`）在途时用户点档位要求重查，
+   * 那是**另一件事** —— 分页走的还是可能漂移的 offset，替代不了完整 reset，
+   * 吞掉的话用户会以为点了没反应。
+   */
+  _inflightReset: false,
 
   onLoad(options: Record<string, string>) {
     const mgr = isManager();
@@ -422,11 +429,13 @@ Page({
     const sameRange = start === this.data.startDate && end === this.data.endDate;
     const switchingIntoCustom = this.data.rangeType !== 'custom';
 
-    // 去重①：同一区间的请求**正在路上**，哪个档位都别再发一次。
+    // 去重①：同一区间的**重查**正在路上，哪个档位都别再发一次。
+    // 只认重查（`_inflightReset`）：翻页在途时点档位是要求重新查，
+    // 分页走的还是旧 offset、替代不了完整 reset，吞掉会让用户觉得点了没反应。
     // `_seq` 只丢弃响应，拦不住已经进了云函数的查询；更糟的是连点两下「今日」时，
     // 先发那次成功会被判过期丢掉、后发那次一失败页面就显示「加载失败」——
     // 明明有一次是成功的。区间不同（真的在切靶点）则照常抢占，不受这里影响。
-    if (fetch && sameRange && this.data.loading) {
+    if (fetch && sameRange && this.data.loading && this._inflightReset) {
       this.setData({ rangeType: type, displayDate: display });
       return;
     }
@@ -520,12 +529,15 @@ Page({
     // 非法串会让 daysBetween 返回 NaN，而 `NaN > RANGE_MAX_DAYS` 是 false ——
     // 跨度校验会被静默绕过，一个坏区间就这么发到后端去了
     if (!this.isValidDate(start) || !this.isValidDate(end)) return;
-    start = this.clampDate(start);
-    end = this.clampDate(end);
+    // 顺序要按**原始输入**判：先钳的话，「未来的开始日期 + 今天的结束日期」会被双双
+    // 钳成今天，倒置被悄悄抹平，验收要求的 toast 也就不出现了。
+    // clampDate 是单调的，钳完不会产生新的倒置，所以这里判一次就够
     if (start > end) {
       wx.showToast({ title: '开始日期不能晚于结束日期', icon: 'none' });
       return;
     }
+    start = this.clampDate(start);
+    end = this.clampDate(end);
     // 跨度上限：后端 performanceDetail 是「SQL 全量取回 → 内存 sort → slice 分页」，
     // **每翻一页都重跑一次全区间扫描 + 全量排序**。改自定义区间前最大跨度只有「本月」(≤31 天)，
     // 这条路径够不着；放开后选个跨年区间就能把云函数拖垮，所以上限在前端就得卡死。
@@ -712,6 +724,7 @@ Page({
   // （换员工/换时段）与筛选切换失败才需要清，否则新选中态会挂着旧条件的明细。
   async loadData(reset: boolean, keepStaleOnError = false) {
     const seq = ++this._seq;
+    this._inflightReset = reset;
     // page 作为局部量推导：失败时不会像「先 setData 自增」那样留下永久跳页
     const page = reset ? 1 : this.data.page + 1;
     let queryKey = '';
@@ -864,7 +877,10 @@ Page({
         this.setData({ loadFailed: true, ...this.blankItems(), ...this.blankSummary() });
       }
     } finally {
-      if (seq === this._seq) this.setData({ loading: false });
+      if (seq === this._seq) {
+        this._inflightReset = false;
+        this.setData({ loading: false });
+      }
     }
   },
 

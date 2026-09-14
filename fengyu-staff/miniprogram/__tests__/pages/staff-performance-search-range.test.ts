@@ -2287,3 +2287,60 @@ describe('绩效页 · 过桥期间切 Tab 的两个方向都有终态（评审 
     spy.mockRestore()
   })
 })
+
+describe('绩效页 · 评审 round-37 闭环（codex）', () => {
+  test('翻页在途时点档位要求重查，不能被当成「重复请求」吞掉', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'today' })
+    mockPage(Array.from({ length: 20 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i)), 200)
+    await page.loadData(true)
+
+    vi.mocked(callStaffApi).mockImplementation(() => new Promise(() => {}))
+    page.loadData(false)                 // 「继续加载下一页」在途
+    expect(page.data.loading).toBe(true)
+
+    vi.mocked(callStaffApi).mockClear()
+    page.onRangeTap({ currentTarget: { dataset: { type: 'today' } } }) // 手动重查
+
+    // 分页走的是可能漂移的 offset，替代不了完整 reset
+    expect(callStaffApi).toHaveBeenCalledTimes(1)
+  })
+
+  test('重查在途时连点同档位仍然去重', () => {
+    const page = createPage()
+    page.onLoad({ range: 'today' })
+    vi.mocked(callStaffApi).mockImplementation(() => new Promise(() => {}))
+    page.loadData(true)                  // 重查在途
+    expect(page.data.loading).toBe(true)
+
+    vi.mocked(callStaffApi).mockClear()
+    page.onRangeTap({ currentTarget: { dataset: { type: 'today' } } })
+    page.onRangeTap({ currentTarget: { dataset: { type: 'today' } } })
+
+    expect(callStaffApi).not.toHaveBeenCalled()
+  })
+
+  test('倒置区间先被 toast 拦下，不会被绝对边界钳成同一天而静默放行', () => {
+    const page = createPage()
+    page.onLoad({ range: 'custom' })
+
+    // 未来的开始日期 + 今天的结束日期：先钳的话双双变成今天，倒置就被抹平了
+    page.applyCustomRange('2030-01-01', '2026-09-15', 'start')
+
+    expect((globalThis as any).wx.showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: '开始日期不能晚于结束日期' })
+    )
+    expect(callStaffApi).not.toHaveBeenCalled()
+  })
+
+  test('顺序合法但越界的区间仍照常钳制放行', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'custom' })
+    mockPage([], 0)
+
+    page.applyCustomRange('1990-01-01', '2026-09-15', 'start')
+    await vi.waitFor(() => expect(callStaffApi).toHaveBeenCalled())
+
+    expect(page.data.startDate).toBe('2020-01-01')
+  })
+})
