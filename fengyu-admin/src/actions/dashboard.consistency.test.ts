@@ -122,6 +122,22 @@ describe('dashboard 组织层级现金流业绩一致性守护', () => {
       ))
       // between() 找不到起止标记时返回空串，会让下面所有负向断言恒真（假绿）
       expect(paymentMetrics, '未能截取 payment_metrics 片段，后续断言将失去意义').not.toBe('')
+
+      /**
+       * 聚合块数量与别名唯一性（GLM 评审）。
+       *
+       * 下面所有快照都锚定「第一个可达的同名块」。若在 SELECT 尾部再追加一个同名
+       * `AS total_paid_amount` 的日期化聚合，快照会命中前面那个干净块而全绿，
+       * 但 node-postgres 的行对象**后列覆盖前列**，运行时实际取到的是日期化的值。
+       * 先锁死「恰好 6 个聚合、别名两两不同」，这条路就断了。
+       */
+      const aggregates = paymentMetrics.match(/COALESCE\(SUM\(CASE/g) ?? []
+      expect(aggregates, 'payment_metrics 的聚合数量变了（新增/删除指标需同步本测试）')
+        .toHaveLength(6)
+      const aliases = [...paymentMetrics.matchAll(/END\), 0\) AS ([a-z_]+)/g)].map((m) => m[1])
+      expect(aliases, '聚合别名数量与聚合块数量不符').toHaveLength(6)
+      expect(new Set(aliases).size, `聚合别名重复（后列会覆盖前列）：${aliases.join(', ')}`)
+        .toBe(6)
       /**
        * 六个指标**完整 `CASE ... END`** 的逐字快照。
        *
@@ -222,7 +238,7 @@ describe('dashboard 组织层级现金流业绩一致性守护', () => {
       const paymentMetrics = normalize(stripComments(
         between(adminSrc, 'payment_metrics AS (', 'order_metrics AS ('),
       ))
-      // 截取最后一个 COALESCE(SUM(CASE ... AS total_paid_amount 片段
+      // 截取 total_paid_amount 所属的那个聚合块（tempered greedy 保证不越到前一个聚合）
       const totalBlock = paymentMetrics.match(
         /COALESCE\(SUM\(CASE(?:(?!COALESCE\(SUM\(CASE)[\s\S])*?AS total_paid_amount(?![A-Za-z0-9_])/,
       )
