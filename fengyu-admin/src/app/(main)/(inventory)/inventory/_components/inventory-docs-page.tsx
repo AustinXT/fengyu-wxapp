@@ -371,9 +371,14 @@ function CreateDocDialog({
 
   useEffect(() => {
     if (open) return
-    // 只推进代次，不在这里清缓存 —— 淘汰交给取数侧按 settled + epoch 判定（见 LotCache 注释）。
-    // 在这里按「关闭当刻是否 settled」一刀切会漏掉「关闭后、重开前才返回」的那批：
-    // 它们关闭当刻还在途、躲过清理，重开时又已完成，于是被当成新鲜结果复用。
+    // 正确性由取数侧的 settled + epoch 判定负责（见 LotCache 注释）—— 在这里按
+    // 「关闭当刻是否 settled」一刀切会漏掉「关闭后、重开前才返回」的那批：它们关闭当刻还在途、
+    // 躲过清理，重开时又已完成，于是被当成新鲜结果复用。
+    // 这里只做内存清扫：当刻已完成的条目下次取数必被代次淘汰，留着也只是占内存
+    // （用户翻过很多 SKU 又一直不关页面时会累积）。在途的必须留着给下一代过继。
+    for (const [key, entry] of lotCacheRef.current) {
+      if (entry.settled) lotCacheRef.current.delete(key)
+    }
     setLotEpoch((n) => n + 1)
     // 代次一换，已选的 lotId 可能指向下一代里已经不存在的批次：受控 select 会显示空白，
     // state 却还留着旧值，直接提交就只能靠服务端 lockLotById 兜底报错。换主体/换 SKU
