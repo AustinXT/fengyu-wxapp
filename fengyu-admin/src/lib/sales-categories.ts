@@ -11,9 +11,19 @@
  *      fengyu-staff/cloudfunctions/staffApi/utils/sales-categories.js
  *      fengyu-client/cloudfunctions/payNotify/index.js            orderRates / serviceRates 骨架
  *      fengyu-admin/src/actions/data-center/efficiency.ts         员工人效 4 列 FILTER SQL（见下方说明）
+ *
+ * ⚠️ 本文件**禁 import 任何 app 内模块**（当前零 import）。`data-center/columns.ts` 在模块初始化期
+ *    就解引用 `SALES_CATEGORY_COLUMN_KEYS`，一旦形成环，TDZ 下会在模块加载期抛
+ *    「Cannot read properties of undefined」，直接打死 export-worker 进程。
  */
 
-export const SALES_CATEGORIES = ['自销自耗', '他销自耗', '他销他耗', '生态合作'] as const
+/**
+ * `Object.freeze` 而非仅 `as const`：`as const` 只有**编译期**只读。admin 是长驻 Node 进程，
+ * 且 zod 的 `z.enum(SALES_CATEGORIES)` 会把本数组**按引用**存进 `createOrderSchema` 的 `_def.values`，
+ * 使它经 schema 图对外可达 —— 任一未来消费者一次 `.sort()` 就会同时污染下拉顺序、
+ * z.enum 白名单和后续所有请求。与同目录 `api-error.ts:31` 对同构单源的处理保持一致。
+ */
+export const SALES_CATEGORIES = Object.freeze(['自销自耗', '他销自耗', '他销他耗', '生态合作'] as const)
 
 export type SalesCategory = (typeof SALES_CATEGORIES)[number]
 
@@ -25,13 +35,17 @@ export type SalesCategory = (typeof SALES_CATEGORIES)[number]
  *
  * ⚠️ 该表口径是 `spia.allocated_amount`（**营业额份额**），与 staff 绩效页同名 4 格的
  *    `commission_amount`（**提成**）差一个费率量级，两者不应相等，勿顺手统一。
+ *
+ * freeze 的必要性不止于防篡改：`columns.ts` 在模块初始化期就把值 snapshot 进了
+ * `salesCategoryMetricColumns`，事后改本表**根本不生效** —— 「改了没反应」比直接报错更难查，
+ * freeze 让这类误用在 strict mode 下当场抛错。同 `api-error.ts:45` 对 CODE_MAP 的处理。
  */
-export const SALES_CATEGORY_COLUMN_KEYS: Record<SalesCategory, string> = {
+export const SALES_CATEGORY_COLUMN_KEYS: Readonly<Record<SalesCategory, string>> = Object.freeze({
   自销自耗: 'saleZxzh',
   他销自耗: 'saleTxzh',
   他销他耗: 'saleTxth',
   生态合作: 'saleEco',
-}
+})
 
 /**
  * 生成以四分类为键、值全 0 的**可变**费率骨架。
