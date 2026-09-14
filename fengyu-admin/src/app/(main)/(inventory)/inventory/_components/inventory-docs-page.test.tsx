@@ -863,7 +863,11 @@ describe('弹窗在异常与并发下的出路（#134 评审补）', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
-  it('降级路径下提交在途时，背景的行操作按钮被锁住', async () => {
+  // ⚠️ 这条（以及下面两条）真正钉住的是 `actionBusy` 里的 `pendingAction !== null` / `open`，
+  // 不是 `submitting` 专属的 `actionDialogBusy` / `createDialogBusy` —— 把后两个整个删掉，
+  // 这些用例照样全绿（组件注释里也这么写了）。那两个是「拆掉不许并存约束」时的第二道闸，
+  // 有意保留、有意无独立断言。
+  it('降级路径下弹窗开着（含提交在途）时，背景的行操作按钮被锁住', async () => {
     forceNonModalFallback()
     const gate = deferred<void>()
     vi.mocked(rejectInventoryCoreDoc).mockReturnValue(gate.promise as never)
@@ -875,12 +879,14 @@ describe('弹窗在异常与并发下的出路（#134 评审补）', () => {
     fireEvent.click(screen.getByRole('button', { name: '确认驳回' }))
     await waitFor(() => expect(screen.getByRole('button', { name: '处理中…' })).toBeDisabled())
 
-    // 背景里 B 单的「通过」必须点不动，否则 A 的「处理中」界面会被顶掉，用户以为 A 取消了
-    for (const btn of screen.getAllByRole('button', { name: '通过' })) expect(btn).toBeDisabled()
-    for (const btn of screen.getAllByRole('button', { name: '驳回' })) expect(btn).toBeDisabled()
-    // 「新建」同理：否则建单弹窗会叠在「处理中」的动作弹窗之上
-    expect(screen.getByRole('button', { name: '新建' })).toBeDisabled()
-    // 「详情」是链接，光给按钮加 disabled 拦不住导航 —— 在途时整个换成禁用按钮
+    // 背景里 B 单的「通过」点了必须没反应，否则 A 的「处理中」界面会被顶掉，用户以为 A 取消了。
+    // 断言的是**行为**不是 disabled 属性 —— 开窗入口刻意不用 disabled（见组件注释：
+    // 那样会让 showModal 记不到可聚焦的触发元素，关闭后焦点回不去）。
+    fireEvent.click(screen.getAllByRole('button', { name: '通过' })[1])
+    fireEvent.click(screen.getByRole('button', { name: '新建' }))
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+    expect(within(actionDialog()).getByText('驳回单据')).toBeInTheDocument()
+    // 「详情」是链接，光给按钮加 disabled 拦不住导航 —— 这时整个换成禁用按钮
     for (const btn of screen.getAllByRole('button', { name: '详情' })) expect(btn).toBeDisabled()
     expect(screen.queryByRole('link', { name: '详情' })).not.toBeInTheDocument()
 
@@ -1005,13 +1011,16 @@ describe('弹窗在异常与并发下的出路（#134 评审补）', () => {
     expect(show).toHaveBeenCalled()
     expect(screen.getAllByRole('dialog')).toHaveLength(1)
 
-    for (const btn of screen.getAllByRole('button', { name: '通过' })) expect(btn).toBeDisabled()
-    for (const btn of screen.getAllByRole('button', { name: '驳回' })) expect(btn).toBeDisabled()
-    expect(screen.getByRole('button', { name: '新建' })).toBeDisabled()
+    // 点了没反应，而且始终只有一个 dialog
+    fireEvent.click(screen.getAllByRole('button', { name: '通过' })[1])
+    fireEvent.click(screen.getByRole('button', { name: '新建' }))
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+    expect(within(actionDialog()).getByText('驳回单据')).toBeInTheDocument()
 
     // 关掉之后入口恢复
     fireEvent.click(screen.getByRole('button', { name: '取消' }))
-    expect(screen.getByRole('button', { name: '新建' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: '新建' }))
+    expect(within(actionDialog()).getByText('新建库存单据')).toBeInTheDocument()
   })
 
   it('建单弹窗开着时，行操作入口同样锁住', () => {
@@ -1019,8 +1028,20 @@ describe('弹窗在异常与并发下的出路（#134 评审补）', () => {
     renderDocs()
     fireEvent.click(screen.getByRole('button', { name: '新建' }))
     expect(screen.getAllByRole('dialog')).toHaveLength(1)
-    for (const btn of screen.getAllByRole('button', { name: '通过' })) expect(btn).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: '通过' }))
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+    expect(within(actionDialog()).getByText('新建库存单据')).toBeInTheDocument()
     for (const btn of screen.getAllByRole('button', { name: '详情' })) expect(btn).toBeDisabled()
+  })
+
+  it('开窗入口不能用 disabled —— 那会让原生 dialog 记不到可聚焦的触发元素', () => {
+    // codex 第 8 轮抓到的回归：点「驳回」那一刻按钮就变 disabled，而 showModal() 在随后的
+    // layout effect 里才记录「打开前的焦点」，记到的已经不是可聚焦元素，关闭后焦点回不去。
+    renderDocs()
+    const opener = screen.getByRole('button', { name: '驳回' })
+    fireEvent.click(opener)
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(opener).toBeEnabled()
   })
 })
 

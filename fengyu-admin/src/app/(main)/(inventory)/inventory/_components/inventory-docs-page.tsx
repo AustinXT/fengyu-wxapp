@@ -156,7 +156,19 @@ export default function InventoryDocsPage({
   // 把另一个仍在途的锁提前解开」。它们当前被后两项覆盖，删掉测试不会红 —— 这是有意保留。
   const [actionDialogBusy, setActionDialogBusy] = useState(false)
   const [createDialogBusy, setCreateDialogBusy] = useState(false)
-  const actionBusy = actionDialogBusy || createDialogBusy || pendingAction !== null || open
+  const actionBusy = actionDialogBusy || createDialogBusy
+  /**
+   * 「已经有弹窗开着」不能用 `disabled` 来拦 —— 点「驳回」的那一刻按钮就会变 disabled，
+   * 而 `showModal()` 在随后的 layout effect 里才记录「打开前的焦点」，记到的已经不是一个
+   * 可聚焦元素了，关闭后焦点就回不到触发按钮上（键盘/读屏用户直接丢上下文）。
+   * 所以这一层改成**点击闸**：按钮保持可聚焦，点了不响应。
+   * 提交在途仍然用 `disabled`（那时 showModal 早已记录完焦点，且需要视觉反馈）。
+   */
+  const anyDialogOpen = pendingAction !== null || open
+  const openAction = (next: { kind: DocActionKind; docId: string }) => {
+    if (anyDialogOpen || actionBusy) return
+    setPendingAction(next)
+  }
 
   const columns: Column<InventoryDocRow>[] = [
     {
@@ -206,9 +218,10 @@ export default function InventoryDocsPage({
       header: '操作',
       cell: (r) => (
         <div className="flex gap-2">
-          {actionBusy ? (
-            // 在途时不能让人点走：详情是个链接，光给里面的按钮加 disabled 拦不住导航，
-            // 直接换成一个禁用按钮（降级到 .show() 时背景可点才会走到这里）
+          {anyDialogOpen || actionBusy ? (
+            // 弹窗开着/在途时不能让人点走：详情是个链接，光给里面的按钮加 disabled 拦不住导航，
+            // 直接换成一个禁用按钮（降级到 .show() 时背景可点才会走到这里）。
+            // 这个按钮不是「打开弹窗」的入口，disable 它不影响焦点归还。
             <Button variant="ghost" size="sm" disabled>
               详情
             </Button>
@@ -222,16 +235,14 @@ export default function InventoryDocsPage({
               <Button
                 variant="ghost"
                 size="sm"
-                disabled={actionBusy}
-                onClick={() => setPendingAction({ kind: 'approve', docId: r.id })}
+                onClick={() => openAction({ kind: 'approve', docId: r.id })}
               >
                 通过
               </Button>
               <Button
                 variant="ghost"
                 size="sm"
-                disabled={actionBusy}
-                onClick={() => setPendingAction({ kind: 'reject', docId: r.id })}
+                onClick={() => openAction({ kind: 'reject', docId: r.id })}
               >
                 驳回
               </Button>
@@ -241,8 +252,7 @@ export default function InventoryDocsPage({
             <Button
               variant="ghost"
               size="sm"
-              disabled={actionBusy}
-              onClick={() => setPendingAction({ kind: 'receive', docId: r.id })}
+              onClick={() => openAction({ kind: 'receive', docId: r.id })}
             >
               收货
             </Button>
@@ -303,8 +313,14 @@ export default function InventoryDocsPage({
             重置
           </Button>
           {canCreate && (
-            // 降级到 .show() 时背景可点，别让「新建」弹窗叠在「处理中」的动作弹窗之上
-            <Button disabled={actionBusy} onClick={() => setOpen(true)}>
+            // 降级到 .show() 时背景可点，别让「新建」弹窗叠在另一个弹窗之上。
+            // 同样走点击闸而不是 disabled，理由见 anyDialogOpen 的注释。
+            <Button
+              onClick={() => {
+                if (anyDialogOpen || actionBusy) return
+                setOpen(true)
+              }}
+            >
               <Plus className="mr-1 size-4" /> 新建
             </Button>
           )}
@@ -511,9 +527,10 @@ function DocActionDialog({
   const [touched, setTouched] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   // 关闭时**不卸载**，走 open=false 让原生 dialog.close() 正常执行 —— 焦点才会还给
-  // 触发它的那个按钮，也才不会踩「卸载期补 close()、排队的 close 事件在 StrictMode
-  // 重挂监听后才到达」那个坑。代价是关闭后还要拿着上一次的配置渲染（隐藏态），
-  // 故留一份快照。同文件的 CreateDocDialog 用的也是常驻挂载。
+  // 触发它的那个按钮（前提是那个按钮在 showModal() 时仍可聚焦，所以开窗入口用点击闸
+  // 而不是 disabled，见 anyDialogOpen 的注释），也才不会踩「卸载期补 close()、排队的
+  // close 事件在 StrictMode 重挂监听后才到达」那个坑。代价是关闭后还要拿着上一次的配置
+  // 渲染（隐藏态），故留一份快照。同文件的 CreateDocDialog 用的也是常驻挂载。
   const [snapshot, setSnapshot] = useState(pending)
   useEffect(() => {
     if (pending) setSnapshot(pending)
