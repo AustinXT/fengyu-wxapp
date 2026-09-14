@@ -883,6 +883,10 @@ describe('弹窗在异常与并发下的出路（#134 评审补）', () => {
     expect(screen.queryByRole('link', { name: '详情' })).not.toBeInTheDocument()
 
     await act(async () => { gate.resolve(); await gate.promise })
+    // 解锁那条腿也要钉住：在途结束后入口必须恢复，否则页面就永久锁死了
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: '新建' })).toBeEnabled()
+    for (const btn of screen.getAllByRole('button', { name: '通过' })) expect(btn).toBeEnabled()
   })
 
   it('提交的是用户原样输入，不因必填校验顺手改写正文', async () => {

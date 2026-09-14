@@ -341,6 +341,8 @@ export default function InventoryDocsPage({
         onDone={(finished) => {
           // 只关「当初发起的那一张」。若期间已经切到别的单据，别把人家开着的弹窗和
           // 刚敲进去的备注一起抹掉（列表刷新则无条件做）。
+          // 注：`actionBusy` 已经从状态上禁止「在途时切走」，这条身份校验是第二道防线，
+          // 因此没有专门的用例覆盖 —— 拆掉那道闸门时记得把它一起想清楚。
           setPendingAction((current) =>
             current && current.docId === finished.docId && current.kind === finished.kind
               ? null
