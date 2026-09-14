@@ -158,7 +158,7 @@
     </view>
 
     <!-- 未搜索时直接渲染 items，不另传一份同样的数组（否则 setData payload 翻倍） -->
-    <view class="perf-item" wx:for="{{filterActive ? displayItems : items}}" wx:key="index">
+    <view class="perf-item" wx:for="{{filterActive ? displayItems : items}}" wx:key="rowKey">
       <view class="perf-item-header">
         <text class="perf-item-name">{{item.productName}}</text>
         <!-- 退款冲销行的提成/业绩是负数，不打标识会被当成数据错误上报 -->

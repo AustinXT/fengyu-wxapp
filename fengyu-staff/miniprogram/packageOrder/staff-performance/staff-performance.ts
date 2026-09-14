@@ -48,6 +48,8 @@ interface PerformanceItem {
   clientPhone?: string;
   /** 展示用脱敏号（前端派生，后端不下发）；检索仍走原始 clientPhone */
   customerPhoneMasked?: string;
+  /** wx:key 用的稳定唯一键（前端派生）：列表只追加不插队，全局序号即可 */
+  rowKey?: string;
   orderId?: string;
   date: string;
   salesCategory: string;
@@ -424,7 +426,11 @@ Page({
         const capped = this.shiftDate(end, -RANGE_MAX_DAYS);
         start = capped > HISTORY_MIN_DATE ? capped : HISTORY_MIN_DATE;
       }
-      wx.showToast({ title: `区间跨度最多 ${RANGE_MAX_DAYS} 天，另一端已自动调整`, icon: 'none' });
+      // 收敛结果若与屏幕上的区间完全一致，就不要说「已自动调整」——
+      // 下面的同值早退会让页面毫无变化，用户会以为点击丢了
+      if (start !== this.data.startDate || end !== this.data.endDate) {
+        wx.showToast({ title: `区间跨度最多 ${RANGE_MAX_DAYS} 天，另一端已自动调整`, icon: 'none' });
+      }
     }
     if (start === this.data.startDate && end === this.data.endDate) return; // 选了同一天，无需重拉
 
@@ -451,8 +457,10 @@ Page({
    * `keyword` 本身不防抖——输入框是受控的，晚一拍回显就是卡字。
    */
   onKeywordChange(e: WechatMiniprogram.CustomEvent) {
-    // 纯空格不算检索：写回 trim 后的值，避免出现「框里有内容、列表却是全量」的哑态
-    const keyword = ((e.detail as unknown as string) || '').trim();
+    // 原样回显，**不要** trim 后写回：van-search 是受控组件，打「张 三」时那个空格正好落在
+    // 词尾，trim 会当场把它吃掉，用户根本输不进带空格的姓名。
+    // 纯空格不触发过滤由 buildSearchView 里的 `if (!kw) return` 负责，姓名匹配时两侧都剥空白
+    const keyword = (e.detail as unknown as string) || '';
     this.setData({ keyword });
     this.scheduleFilter();
   },
@@ -568,7 +576,7 @@ Page({
       if (seq !== this._seq) return; // 过期响应：期间用户已切换筛选，丢弃避免覆盖新结果
 
       // 金额统一走 formatAmount（千分位 + EPSILON 预舍入），禁 toLocaleString
-      const formattedItems = (res.items || []).map((it) => ({
+      const formattedItems = (res.items || []).map((it, i) => ({
         ...it,
         date: formatDateTimeShort(it.date),
         // isRefund 由后端按款项 change_type 判定，不在此从金额符号推断
@@ -579,6 +587,10 @@ Page({
         servicePrice: money(it.servicePrice),
         // 按手机号搜出来的结果得能核对，所以卡片上要展示；原始 clientPhone 原样留着供检索
         customerPhoneMasked: maskPhone(it.clientPhone || ''),
+        // wx:key 用它：item 上本来没有 `index` 属性，`wx:key="index"` 是无效键（devtools 告警 +
+        // diff 退化成按序比对）。列表只追加不插队，全局序号就是稳定唯一键，
+        // displayItems 作为子集也继承同一套键
+        rowKey: `${reset ? 0 : this.data.items.length}-${i}`,
       }));
       const newItems = reset ? formattedItems : [...this.data.items, ...formattedItems];
       // 优先用新字段 totalServiceCommission，回退到旧字段 totalServiceFee（向后兼容）
@@ -593,6 +605,8 @@ Page({
       // 还会和「没加载够」的提示混在一起，员工根本分不清）。
       // 每条明细 ~600B，全量重传在 1500 条上下就触线 —— 而「自定义」把跨度从「本月」
       // 放宽到 371 天后，高频员工一年上万条，翻到底核对恰恰是本功能的设计用法。
+      // 本次写回已经带了最新的 buildSearchView 结果，在途防抖再跑一遍纯属重复过桥
+      this.cancelFilter();
       const itemsPatch: Record<string, unknown> = {};
       if (reset) {
         itemsPatch.items = formattedItems;

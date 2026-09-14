@@ -408,15 +408,16 @@ describe('绩效页 · 手机号脏数据归一（评审补漏 P2）', () => {
     expect(page.data.displayItems).toHaveLength(1)
   })
 
-  test('纯空格关键词不算检索，也不留在输入框里造成哑态', async () => {
+  test('纯空格关键词不触发过滤（但原样回显——trim 回写会让含空格姓名输不进去）', async () => {
     const page = createPage()
     page.onLoad({})
     mockPage([makeItem('张三', '13800000001', 1)], 1)
     await page.loadData(true)
 
     search(page, '   ')
-    expect(page.data.keyword).toBe('')
-    expect(page.data.filterActive).toBe(false)
+    expect(page.data.keyword).toBe('   ')     // 受控回显不改用户输入（评审 r11 glm P3）
+    expect(page.data.filterActive).toBe(false) // 但不当作检索，列表仍是全量
+    expect(page.data.searchHint).toBe('')
   })
 
   test('超长关键词在提示文案里被截断，不撑爆空状态', async () => {
@@ -1020,5 +1021,60 @@ describe('绩效页 · 姓名空格归一与手动刷新入口（评审 round-9 
     search(page, '顾客')
     expect(page.data.searchHint).toContain('仅显示前 200 条')
     expect(page.data.searchHint).toContain('顶部汇总为全量')
+  })
+})
+
+describe('绩效页 · 评审 round-11 闭环（glm）', () => {
+  test('打字中途的空格不被吃掉——受控回写 trim 会让「张 三」永远输不进去', () => {
+    const page = createPage()
+    page.onLoad({})
+    page.data.items = [makeItem('张 三', '13800000001', 1)]
+    page.data.total = 1
+
+    page.onKeywordChange({ detail: '张 ' }) // 打完「张」再打空格
+    expect(page.data.keyword).toBe('张 ')    // 空格必须留着，否则下一个字接不上
+
+    search(page, '张 三')
+    expect(page.data.displayItems).toHaveLength(1)
+  })
+
+  test('纯空格仍不触发过滤（哑态由 buildSearchView 的空串早退兜住）', () => {
+    const page = createPage()
+    page.onLoad({})
+    page.data.items = [makeItem('张三', '13800000001', 1)]
+    page.data.total = 1
+
+    search(page, '   ')
+    expect(page.data.filterActive).toBe(false)
+  })
+
+  test('明细带稳定 rowKey：wx:key="index" 在对象列表上是无效键', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([makeItem('张三', '13800000001', 1), makeItem('李四', '13900000002', 2)], 4)
+    await page.loadData(true)
+    expect(page.data.items.map((i: any) => i.rowKey)).toEqual(['0-0', '0-1'])
+
+    mockPage([makeItem('王五', '13700000003', 3)], 4)
+    await page.loadData(false)
+    // 翻页追加的键不与第一页冲突
+    expect(page.data.items.map((i: any) => i.rowKey)).toEqual(['0-0', '0-1', '2-0'])
+    expect(new Set(page.data.items.map((i: any) => i.rowKey)).size).toBe(3)
+  })
+
+  test('加载成功时取消在途防抖，不重复过滤一遍', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+
+    page.onKeywordChange({ detail: '张三' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true) // 成功路径里已经带了最新的 buildSearchView 结果
+
+    const spy = vi.spyOn(page, 'buildSearchView')
+    vi.advanceTimersByTime(250)
+    expect(spy).not.toHaveBeenCalled()
+    spy.mockRestore()
   })
 })
