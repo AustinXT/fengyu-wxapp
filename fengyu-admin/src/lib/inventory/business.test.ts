@@ -1097,7 +1097,7 @@ describe('syncLocations 漂移探测与 engine.ts 字面一致（副本守护）
 })
 
 /**
- * #130 全仓守护：递归 CTE 起了别名就**不许再用原名**引用。
+ * #130 全仓守护：CTE 起了别名就**不许再用原名**引用。
  *
  * `JOIN descendants parent ON …` 之后继续写 `descendants.path`，PostgreSQL 直接报
  *   ERROR: invalid reference to FROM-clause entry for table "descendants"
@@ -1105,23 +1105,33 @@ describe('syncLocations 漂移探测与 engine.ts 字面一致（副本守护）
  * 而 business.ts 的单测全部 mock 掉 db.execute，SQL 永远不会真的送进 PG ——
  * 于是这 5 处错误潜伏到了 UI 端到端测试才暴露（市场员工购 / 供应链员工购整个功能不可用）。
  *
- * 不变量选的是「别名与原名不得混用」而不是「不许起别名」：后者过严，会把
- * `LEFT JOIN market_descendants d ON d.market_id = m.id`（staffApi/routes/mgmt-dashboard.js）
- * 这类完全合法的写法判违规，也堵死 CTE 自连接这种只能靠别名的场景 ——
- * 一条会对正确代码报红的规则，最后只会被人从清单里删掉。
+ * 三个设计取舍，都是评审逼出来的：
+ * 1. 不变量是「别名与原名不得混用」，不是「不许起别名」。后者过严，会把
+ *    `LEFT JOIN market_descendants d ON d.market_id = m.id`（staffApi/routes/mgmt-dashboard.js）
+ *    这类合法写法判违规，也堵死 CTE 自连接 —— 一条会对正确代码报红的规则，最后只会被人删掉。
+ * 2. 按 CTE **定义体**判定，外层尾查询单独判。同一个 CTE 在递归项里裸自引用、在外层
+ *    `LEFT JOIN cte d` 带别名引用，是两个不同的 range-table entry，两者都合法；
+ *    整文件 grep 会把它误报成违规（实测 mgmt-dashboard 会中招）。
+ * 3. 不限于 `WITH RECURSIVE`。非递归 CTE 犯同样的错，PG 报的是同一个错误。
  *
- * 文件清单**自动发现**，不硬编码：新写一个含递归 CTE 的文件会自动纳入，
- * 不会因为没人记得加清单而静默逃逸（本 bug 的诱因恰恰是「新写的 SQL 第一次没跑过 PG」）。
+ * ⚠️ 这仍是**词法级**静态检查，不是 SQL parser。已知边界：
+ * - 挡不住写错列名、CTE 列清单与 SELECT 列数不符等其它语法错
+ * - `AS "parent"` 这种双引号别名认不出（双引号内容被当字面量抹掉了 —— 这是为了让
+ *   .ts/.js 里字符串中的括号不至于截断 CTE 体；仓内无此写法）
+ * 这些只能靠真库执行来兜 —— 本 issue 的真库回归由 `tests/e2e-inventory-ui/inv-07` 提供（PR #144）。
  */
-describe('递归 CTE 的别名与原名不得混用（#130）', () => {
-  const SCAN_ROOTS: Array<{ label: string; dir: string; exts: string[] }> = [
-    { label: 'admin', dir: resolve(process.cwd(), 'src'), exts: ['.ts'] },
-    // 云函数各端保留独立副本（CLAUDE.md 明令禁止抽 shared），一致性只能靠测试兜
-    { label: 'staffApi', dir: resolve(process.cwd(), '../fengyu-staff/cloudfunctions/staffApi'), exts: ['.js'] },
-    { label: 'clientApi', dir: resolve(process.cwd(), '../fengyu-client/cloudfunctions/clientApi'), exts: ['.js'] },
+describe('CTE 的别名与原名不得混用（#130）', () => {
+  const repoRoot = resolve(process.cwd(), '..')
+  const SCAN_ROOTS: Array<{ label: string; dir: string; exts: string[]; expectCte: boolean }> = [
+    { label: 'admin', dir: resolve(process.cwd(), 'src'), exts: ['.ts', '.tsx'], expectCte: true },
+    // 云函数各端保留独立副本（CLAUDE.md 禁止抽 shared），一致性只能靠测试兜
+    { label: 'staffApi', dir: join(repoRoot, 'fengyu-staff/cloudfunctions/staffApi'), exts: ['.js'], expectCte: true },
+    { label: 'clientApi', dir: join(repoRoot, 'fengyu-client/cloudfunctions/clientApi'), exts: ['.js'], expectCte: false },
+    { label: 'payNotify', dir: join(repoRoot, 'fengyu-client/cloudfunctions/payNotify'), exts: ['.js'], expectCte: false },
+    // 迁移里的触发器是线上热路径（0009 的库存主体防环就含递归 CTE）
+    { label: 'migrations', dir: join(repoRoot, 'db/migrations'), exts: ['.sql'], expectCte: true },
   ]
 
-  /** 递归列目录下的源码文件，跳过 node_modules / 测试 / 构建产物 */
   function listSourceFiles(dir: string, exts: string[]): string[] {
     if (!existsSync(dir)) return []
     const out: string[] = []
@@ -1139,99 +1149,167 @@ describe('递归 CTE 的别名与原名不得混用（#130）', () => {
   }
 
   /**
-   * 取出每个 CTE 的**定义体**（`name [(cols)] AS ( … )` 括号内的文本）。
-   *
-   * 必须按块判定而不是整文件 grep：同一个 CTE 在递归项里被不带别名地自引用、
-   * 在外层查询里被 `LEFT JOIN cte d` 带别名引用，是两个不同的 range-table entry，
-   * **两者都合法**（staffApi/routes/mgmt-dashboard.js 就是这样写的）。
-   * 整文件判定会把它误报成违规。
+   * 抹掉注释与各类引号里的内容（保留长度，行号不变），再做括号/正则匹配。
+   * 不这么做的话，字符串里的 `)` 会让 CTE 定义体提前结束（漏报），
+   * 注释里的 `descendants.path` 会被当成真引用（误报）。
+   * `$$…$$` 对迁移里的 PL/pgSQL 函数体是必需的。
    */
-  function cteBlocks(src: string): Array<{ name: string; body: string }> {
-    const blocks: Array<{ name: string; body: string }> = []
-    // `WITH [RECURSIVE] name [(cols)] AS (` 与并列的 `), name [(cols)] AS (` 两种写法都要认；
-    // 列清单可有可无（`WITH RECURSIVE scoped AS (` 是仓里实际存在的风格）。
-    const head = /(?:\bWITH\s+(?:RECURSIVE\s+)?|[),]\s*)([A-Za-z_]\w*)\s*(?:\([^()]*\))?\s+AS\s*\(/gi
-    for (const m of src.matchAll(head)) {
-      const name = m[1]
-      let depth = 1
-      let i = m.index! + m[0].length
-      for (; i < src.length && depth > 0; i += 1) {
-        if (src[i] === '(') depth += 1
-        else if (src[i] === ')') depth -= 1
-      }
-      blocks.push({ name, body: src.slice(m.index! + m[0].length, i - 1) })
+  function maskLiterals(src: string): string {
+    const out = src.split('')
+    let i = 0
+    const blank = (from: number, to: number) => {
+      for (let k = from; k < to && k < out.length; k += 1) if (out[k] !== '\n') out[k] = ' '
     }
-    return blocks
+    while (i < src.length) {
+      if (src.startsWith('--', i)) {
+        const end = src.indexOf('\n', i); const stop = end === -1 ? src.length : end
+        blank(i, stop); i = stop; continue
+      }
+      if (src.startsWith('/*', i)) {
+        const end = src.indexOf('*/', i + 2); const stop = end === -1 ? src.length : end + 2
+        blank(i, stop); i = stop; continue
+      }
+      const dollar = /^\$[A-Za-z_]*\$/.exec(src.slice(i, i + 40))
+      if (dollar) {
+        const tag = dollar[0]
+        const end = src.indexOf(tag, i + tag.length)
+        const stop = end === -1 ? src.length : end + tag.length
+        blank(i, stop); i = stop; continue
+      }
+      // ⚠️ 绝不能把反引号也算进来：.ts/.js 里 SQL 正是写在模板字符串里的，
+      // 抹掉反引号内容等于把要检查的 SQL 整段抹掉，守护会静默失效（实测会漏掉全部 5 处）。
+      if (src[i] === "'" || src[i] === '"') {
+        const quote = src[i]
+        let j = i + 1
+        while (j < src.length && src[j] !== quote) j += (src[j] === '\\' ? 2 : 1)
+        blank(i, j + 1); i = j + 1; continue
+      }
+      i += 1
+    }
+    return out.join('')
   }
 
-  // JOIN / FROM 后给 CTE 起别名（`x alias` 与 `x AS alias` 都算）。
-  // 排除 SQL 关键字，否则 `FROM descendants WHERE` 里的 WHERE 会被当成别名。
-  const SQL_KEYWORDS = new Set([
-    'ON', 'AS', 'WHERE', 'GROUP', 'ORDER', 'LIMIT', 'UNION', 'JOIN', 'LEFT', 'RIGHT',
-    'INNER', 'OUTER', 'CROSS', 'FULL', 'USING', 'HAVING', 'WINDOW', 'OFFSET', 'FETCH', 'RETURNING',
-  ])
-  const aliasRe = (name: string) =>
-    new RegExp(`\\b(?:JOIN|FROM)\\s+${name}\\s+(?:AS\\s+)?([A-Za-z_]\\w*)`, 'gi')
+  /** 每个 CTE 的定义体（`name [(cols)] AS ( … )` 括号内），外加末尾的「非 CTE 体」残余文本 */
+  function cteBlocks(masked: string): { blocks: Array<{ name: string; body: string }>; outside: string } {
+    const blocks: Array<{ name: string; body: string }> = []
+    const ranges: Array<[number, number]> = []
+    const head = /(?:\bWITH\s+(?:RECURSIVE\s+)?|[),]\s*)([A-Za-z_]\w*)\s*(?:\([^()]*\))?\s+AS\s*\(/gi
+    for (const m of masked.matchAll(head)) {
+      const from = m.index! + m[0].length
+      let depth = 1
+      let i = from
+      for (; i < masked.length && depth > 0; i += 1) {
+        if (masked[i] === '(') depth += 1
+        else if (masked[i] === ')') depth -= 1
+      }
+      blocks.push({ name: m[1], body: masked.slice(from, i - 1) })
+      ranges.push([m.index!, i])
+    }
+    // 外层/尾查询：把所有 CTE 体挖掉后剩下的文本（`WITH a AS (…) SELECT a.x FROM a al` 这类混用也要查）
+    let outside = masked
+    for (const [from, to] of ranges) outside = outside.slice(0, from) + ' '.repeat(to - from) + outside.slice(to)
+    return { blocks, outside }
+  }
 
-  function violations(src: string): string[] {
+  const SQL_KEYWORDS = new Set([
+    'ON', 'AS', 'WHERE', 'GROUP', 'ORDER', 'LIMIT', 'UNION', 'JOIN', 'LEFT', 'RIGHT', 'INNER',
+    'OUTER', 'CROSS', 'FULL', 'USING', 'HAVING', 'WINDOW', 'OFFSET', 'FETCH', 'RETURNING',
+    'LATERAL', 'NATURAL', 'TABLESAMPLE', 'WITH', 'SELECT', 'FROM', 'AND', 'OR', 'SET',
+  ])
+  // JOIN/FROM 后给 CTE 起别名；`x alias`、`x AS alias`、`FROM a, x alias` 都算
+  const aliasRe = (name: string) =>
+    new RegExp(`\\b(?:JOIN|FROM|,)\\s*${name}\\s+(?:AS\\s+)?"?([A-Za-z_]\\w*)"?`, 'gi')
+  const qualifierRe = (name: string) => new RegExp(`\\b${name}\\s*\\.`, 'i')
+
+  function aliasesOf(name: string, text: string): string[] {
+    return [...text.matchAll(aliasRe(name))]
+      .map((m) => m[1])
+      .filter((alias) => !SQL_KEYWORDS.has(alias.toUpperCase()))
+  }
+
+  function violations(rawSrc: string): string[] {
+    const masked = maskLiterals(rawSrc)
+    const { blocks, outside } = cteBlocks(masked)
     const hits: string[] = []
-    for (const { name, body } of cteBlocks(src)) {
-      const aliases = [...body.matchAll(aliasRe(name))]
-        .map((m) => m[1])
-        .filter((alias) => !SQL_KEYWORDS.has(alias.toUpperCase()))
-      if (aliases.length === 0) continue
-      // 在同一个 CTE 体里既起了别名、又用原名当限定符 —— 这就是 #130
-      if (new RegExp(`\\b${name}\\s*\\.`).test(body)) {
-        hits.push(`${name}（别名 ${[...new Set(aliases)].join('/')}，却仍出现 ${name}.）`)
+    const check = (scope: string, text: string, names: string[]) => {
+      for (const name of names) {
+        const aliases = aliasesOf(name, text)
+        if (aliases.length === 0) continue
+        if (qualifierRe(name).test(text)) {
+          hits.push(`${name}@${scope}（别名 ${[...new Set(aliases)].join('/')}，却仍出现 ${name}.）`)
+        }
       }
     }
+    blocks.forEach(({ name, body }, index) => {
+      // 体内既要查自己（递归自引用），也要查所有**先于它定义**的兄弟 CTE
+      check('body', body, [name, ...blocks.slice(0, index).map((b) => b.name)])
+    })
+    check('outer', outside, [...new Set(blocks.map((b) => b.name))])
     return hits
   }
 
-  it('全仓（admin + 云函数）无一处混用递归 CTE 的别名与原名', () => {
+  it('全仓（admin + 三个云函数端 + 迁移）无一处混用 CTE 的别名与原名', () => {
     const offenders: string[] = []
-    let scanned = 0
+    const perRoot = new Map<string, number>()
     for (const root of SCAN_ROOTS) {
+      expect(existsSync(root.dir), `扫描根不存在，守护已静默缩水：${root.dir}`).toBe(true)
+      let n = 0
       for (const file of listSourceFiles(root.dir, root.exts)) {
-        const src = readFileSync(file, 'utf8')
-        if (!/\bWITH\s+RECURSIVE\b/i.test(src)) continue
-        scanned += 1
-        for (const hit of violations(src)) offenders.push(`${root.label}:${file.split('/').slice(-2).join('/')}: ${hit}`)
+        const raw = readFileSync(file, 'utf8')
+        if (!/\bWITH\b/i.test(raw)) continue
+        n += 1
+        for (const hit of violations(raw)) {
+          offenders.push(`${root.label}:${file.split('/').slice(-2).join('/')}: ${hit}`)
+        }
+      }
+      perRoot.set(root.label, n)
+      // 「本来就该有 CTE」的根扫到 0 个 = 路径/扩展名写错，必须红，不能伪装成「干净」
+      if (root.expectCte) {
+        expect(n, `${root.label} 一个含 WITH 的文件都没扫到，守护形同虚设`).toBeGreaterThan(0)
       }
     }
-    // 扫到 0 个文件 = 规则空跑，必须红，不能伪装成「没有违规」
-    expect(scanned, '一个含 WITH RECURSIVE 的文件都没扫到，守护形同虚设').toBeGreaterThanOrEqual(4)
     expect(offenders, 'CTE 起了别名就必须全程用别名，不能再用原名当限定符').toEqual([])
   })
 
-  // 元测试：必须复用上面那个 violations()，不能手抄一份正则 —— 手抄的那份改坏了也照样绿，
+  // 元测试必须复用生产用的 violations()，不能手抄一份正则 —— 手抄的那份改坏了也照样绿，
   // 正是本文件「syncLocations 副本守护」明令禁止的模式。
   it('守护规则本身有效：认得出各种等价的错误写法，也不冤枉合法写法', () => {
-    // 违规形态：**递归项内部**既给 CTE 起了别名、又用原名当限定符
     const bad = [
-      // 就是 #130 的原样
+      // #130 原样
       'WITH RECURSIVE descendants(id, path) AS (SELECT id, ARRAY[id] FROM t UNION ALL SELECT child.id, descendants.path || child.id FROM org_nodes child JOIN descendants parent ON child.parent_id = parent.id WHERE NOT child.id = ANY(descendants.path))',
-      // AS 形式的别名 —— 等价的错误，旧规则对它完全失明
-      'WITH RECURSIVE descendants(id, path) AS (SELECT id, ARRAY[id] FROM t UNION ALL SELECT child.id, descendants.path || child.id FROM org_nodes child JOIN descendants AS parent ON child.parent_id = parent.id)',
-      // 无列清单的 CTE 命名风格 —— 旧规则连名字都提取不到
+      // AS 形式的别名
+      'WITH RECURSIVE descendants(id, path) AS (SELECT 1 UNION ALL SELECT child.id, descendants.path FROM org_nodes child JOIN descendants AS parent ON child.parent_id = parent.id)',
+      // 无列清单的命名风格
       'WITH RECURSIVE scoped AS (SELECT 1 UNION ALL SELECT scoped.id FROM x JOIN scoped s ON s.id = x.id)',
-      // 逗号连接同样能触发
-      'WITH RECURSIVE descendants(id, path) AS (SELECT id, ARRAY[id] FROM t UNION ALL SELECT child.id, descendants.path FROM descendants parent, org_nodes child)',
+      // 逗号连接
+      'WITH RECURSIVE descendants(id, path) AS (SELECT 1 UNION ALL SELECT child.id, descendants.path FROM org_nodes child, descendants parent)',
       // 小写
-      'with recursive descendants(id, path) as (select id, array[id] from t union all select child.id, descendants.path || child.id from org_nodes child join descendants parent on child.parent_id = parent.id)',
-      // 并列的第二个 CTE（`), name AS (` 形式）同样要被扫到
+      'with recursive descendants(id, path) as (select 1 union all select child.id, descendants.path from org_nodes child join descendants parent on child.parent_id = parent.id)',
+      // 大小写混用的限定符
+      'WITH RECURSIVE descendants(id, path) AS (SELECT 1 UNION ALL SELECT DESCENDANTS.path FROM org_nodes child JOIN descendants parent ON child.parent_id = parent.id)',
+      // 并列的第二个 CTE
       'WITH RECURSIVE a(id) AS (SELECT 1), employee_ancestors(id, path) AS (SELECT 1 UNION ALL SELECT node.id, employee_ancestors.path FROM org_nodes node JOIN employee_ancestors ancestor ON ancestor.parent_id = node.id)',
+      // **外层尾查询**里的混用（不在任何 CTE 体内）
+      'WITH d(id, path) AS (SELECT 1) SELECT d.path FROM d alias WHERE alias.id = 1',
+      // 后一个 CTE 体里引用**前一个** CTE 时混用
+      'WITH a(x, y) AS (SELECT 1, 2), b AS (SELECT a.x FROM a al WHERE al.y = 1) SELECT * FROM b',
+      // 非递归 CTE 犯同样的错 —— PG 报的是同一个错
+      'WITH plain(id) AS (SELECT 1) SELECT plain.id FROM plain p WHERE p.id > 0',
     ]
     for (const sql of bad) expect(violations(sql), `漏报：${sql.slice(0, 70)}…`).not.toEqual([])
 
     const good = [
-      // 修复后的写法：不起别名，全程用原名
-      'WITH RECURSIVE descendants(id, path) AS (SELECT id, ARRAY[id] FROM t UNION ALL SELECT child.id, descendants.path || child.id FROM org_nodes child JOIN descendants ON child.parent_id = descendants.id)',
-      // 起了别名就全程用别名 —— 同样合法，不该报
-      'WITH RECURSIVE descendants(id, path) AS (SELECT id, ARRAY[id] FROM t UNION ALL SELECT child.id, parent.path || child.id FROM org_nodes child JOIN descendants parent ON child.parent_id = parent.id)',
-      // 递归项内不带别名自引用 + **外层查询**带别名引用：两个不同的 range-table entry，都合法。
-      // staffApi/routes/mgmt-dashboard.js 就是这样写的，整文件 grep 会误报成违规。
-      'WITH RECURSIVE market_descendants(market_id, node_id, path) AS (SELECT 1 UNION ALL SELECT market_descendants.market_id, child.id FROM org_nodes child JOIN market_descendants ON child.parent_id = market_descendants.node_id) SELECT * FROM markets m LEFT JOIN market_descendants d ON d.market_id = m.id',
+      // 修复后：不起别名，全程用原名
+      'WITH RECURSIVE descendants(id, path) AS (SELECT 1 UNION ALL SELECT child.id, descendants.path || child.id FROM org_nodes child JOIN descendants ON child.parent_id = descendants.id)',
+      // 起了别名就全程用别名
+      'WITH RECURSIVE descendants(id, path) AS (SELECT 1 UNION ALL SELECT child.id, parent.path FROM org_nodes child JOIN descendants parent ON child.parent_id = parent.id)',
+      // 递归项裸自引用 + 外层带别名引用：两个不同的 range-table entry，都合法
+      // （staffApi/routes/mgmt-dashboard.js 就是这样写的，整文件 grep 会误报）
+      'WITH RECURSIVE market_descendants(market_id, node_id) AS (SELECT 1 UNION ALL SELECT market_descendants.market_id, child.id FROM org_nodes child JOIN market_descendants ON child.parent_id = market_descendants.node_id) SELECT * FROM markets m LEFT JOIN market_descendants d ON d.market_id = m.id',
+      // 注释里出现原名限定符不算数
+      "WITH RECURSIVE descendants(id, path) AS (SELECT 1 UNION ALL /* 别写 descendants.path */ SELECT parent.path FROM org_nodes child JOIN descendants parent ON child.parent_id = parent.id)",
+      // 字符串里的右括号不能提前截断定义体
+      "WITH RECURSIVE descendants(id, path) AS (SELECT ')' AS s UNION ALL SELECT parent.path FROM org_nodes child JOIN descendants parent ON child.parent_id = parent.id) SELECT * FROM descendants",
     ]
     for (const sql of good) expect(violations(sql), `误报：${sql.slice(0, 70)}…`).toEqual([])
   })

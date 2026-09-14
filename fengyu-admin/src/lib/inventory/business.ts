@@ -1233,7 +1233,7 @@ async function employeeForMarket(
         UNION ALL
         SELECT node.id, node.parent_id, node.type, ancestors.path || node.id
           FROM org_nodes node
-          JOIN ancestors ON ancestors.parent_id = node.id
+          JOIN ancestors ancestor ON ancestor.parent_id = node.id
          WHERE NOT node.id = ANY(ancestors.path)
       )
       SELECT id
@@ -1262,7 +1262,7 @@ async function employeeForSupplyChain(
       UNION ALL
       SELECT child.id, descendants.path || child.id
         FROM org_nodes child
-        JOIN descendants ON child.parent_id = descendants.id
+        JOIN descendants parent ON child.parent_id = parent.id
        WHERE NOT child.id = ANY(descendants.path)
     ), employee_ancestors(id, parent_id, type, path) AS (
       SELECT node.id, node.parent_id, node.type, ARRAY[node.id]
@@ -1272,7 +1272,7 @@ async function employeeForSupplyChain(
       UNION ALL
       SELECT node.id, node.parent_id, node.type, employee_ancestors.path || node.id
         FROM org_nodes node
-        JOIN employee_ancestors ON employee_ancestors.parent_id = node.id
+        JOIN employee_ancestors ancestor ON ancestor.parent_id = node.id
        WHERE NOT node.id = ANY(employee_ancestors.path)
     )
     SELECT employee.employee_id, employee.name
@@ -1328,7 +1328,7 @@ export async function listMarketEmployeeOptions(
       UNION ALL
       SELECT child.id, descendants.path || child.id
         FROM org_nodes child
-        JOIN descendants ON child.parent_id = descendants.id
+        JOIN descendants parent ON child.parent_id = parent.id
        WHERE NOT child.id = ANY(descendants.path)
     )
     SELECT DISTINCT employee.employee_id, employee.name
@@ -1368,7 +1368,7 @@ export async function listSupplyChainEmployeeOptions(
     WITH RECURSIVE descendants(id, path) AS (
       SELECT id, ARRAY[id] FROM org_nodes WHERE id = ${locationId}
       UNION ALL
-      SELECT child.id, descendants.path || child.id FROM org_nodes child JOIN descendants ON child.parent_id = descendants.id
+      SELECT child.id, descendants.path || child.id FROM org_nodes child JOIN descendants parent ON child.parent_id = parent.id
        WHERE NOT child.id = ANY(descendants.path)
     )
     SELECT employee.employee_id, employee.name
