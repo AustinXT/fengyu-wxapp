@@ -16,8 +16,9 @@
 //   node db/scripts/seed-first-admin.js --phone 13800000001 --name 张三 --password 'TempPass#2026'
 //   node db/scripts/seed-first-admin.js --phone 13800000001 --name 张三 --password 'TempPass#2026' --dry-run
 //
-//   DATABASE_URL 默认读 db/.env（5434/fengyu），prod 请显式传：
-//   DATABASE_URL=postgresql://...:5433/fengyu_wxapp node db/scripts/seed-first-admin.js ...
+//   DATABASE_URL 默认读 db/.env；务必显式传目标库，避免连到非预期环境：
+//   dev : DATABASE_URL=postgresql://...@101.34.242.103:5433/fengyu_wxapp node db/scripts/seed-first-admin.js ...
+//   prod: DATABASE_URL=postgresql://...@118.178.196.26:5433/fengyu_wxapp node db/scripts/seed-first-admin.js ...
 
 const path = require('node:path')
 const fs = require('node:fs')

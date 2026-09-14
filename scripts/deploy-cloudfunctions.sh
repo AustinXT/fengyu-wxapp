@@ -133,7 +133,7 @@ node "$ROOT/scripts/render-cloudbaserc.mjs" "$ACTIVE"
 
 # ── 一致性校验：envId 必须匹配 .active 的 env-id；PG host(IP) 必须匹配环境
 #    （所有环境均用 5433 端口 + fengyu_wxapp 库名，只能靠 IP 区分。
-#     2026-09-01 起 dev 迁入 sqlserver101，与 test 同库：dev=test=101.34.242.103；
+#     2026-09-01 起 dev 迁入 lx-test（原 sqlserver101）：dev=101.34.242.103；
 #     prod=118.178.196.26。旧的 ali-demo 47.113.202.7 已弃用，不再是任何环境的目标。）──
 EXPECT_PG_HOST=$([[ "$ACTIVE" == "prod" ]] && echo "118.178.196.26" || echo "101.34.242.103")
 assert_rc() {  # $1=side 目录  $2=期望 envId
@@ -144,10 +144,32 @@ assert_rc() {  # $1=side 目录  $2=期望 envId
   if [[ "$got_env" != "$2" ]]; then
     echo "ERROR: $1/cloudbaserc.json envId=$got_env ≠ 期望 $2（.active=$ACTIVE 渲染异常）。中止。" >&2; exit 1
   fi
-  got_host=$(node -e "const c=require('$f');const fn=(c.functions||[]).find(x=>(x.envVariables||{}).PG_CONNECTION_STRING);const s=fn&&fn.envVariables.PG_CONNECTION_STRING;const m=s&&s.match(/@([^:]+):\d+\//);console.log(m?m[1]:'')")
-  if [[ -n "$got_host" && "$got_host" != "$EXPECT_PG_HOST" ]]; then
-    echo "ERROR: $1 的 PG host=$got_host ≠ ${ACTIVE} 期望 ${EXPECT_PG_HOST}（env 值与环境不符，疑似跨环境污染）。中止。" >&2; exit 1
-  fi
+  # PG 连接串完整断言：host / port / dbname 三者全中才放行。
+  # 只比 host 是不够的——同一台 101 上还有 :5433/fengyu_e2e（e2e 独立库）与历史的 :5434，
+  # 只要 host 对就放行会把 e2e 库或错端口的串推进云函数。解析失败/缺值一律拒绝（fail-closed）。
+  node -e '
+    const f = process.argv[1], expectHost = process.argv[2]
+    const c = require(f)
+    const fn = (c.functions || []).find((x) => (x.envVariables || {}).PG_CONNECTION_STRING)
+    if (!fn) process.exit(0)
+    const s = fn.envVariables.PG_CONNECTION_STRING
+    const mask = (v) => String(v).replace(/:\/\/[^@]*@/, "://***@")
+    if (!s || /PLACEHOLDER|待用户提供/.test(s)) {
+      console.error("  PG_CONNECTION_STRING 缺失或仍是占位符"); process.exit(1)
+    }
+    let u
+    try { u = new URL(s) } catch {
+      console.error(`  PG_CONNECTION_STRING 无法解析：${mask(s)}`); process.exit(1)
+    }
+    const errs = []
+    if (u.hostname !== expectHost) errs.push(`host=${u.hostname} ≠ ${expectHost}`)
+    if (u.port !== "5433") errs.push(`port=${u.port || "(空)"} ≠ 5433`)
+    if (u.pathname !== "/fengyu_wxapp") errs.push(`dbname=${u.pathname || "(空)"} ≠ /fengyu_wxapp`)
+    if (errs.length) { console.error("  " + errs.join("；")); process.exit(1) }
+  ' "$f" "$EXPECT_PG_HOST" || {
+    echo "ERROR: $1 的 PG_CONNECTION_STRING 与 ${ACTIVE} 环境不符（详见上行），疑似跨环境污染。中止。" >&2
+    exit 1
+  }
 }
 [[ "$DO_STAFF"  == "1" ]] && assert_rc fengyu-staff  "$STAFF_ENV_ID"
 [[ "$DO_CLIENT" == "1" ]] && assert_rc fengyu-client "$CLIENT_ENV_ID"

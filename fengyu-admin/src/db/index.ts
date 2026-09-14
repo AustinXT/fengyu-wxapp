@@ -5,8 +5,13 @@ const globalForDb = globalThis as unknown as {
   pgClient: ReturnType<typeof postgres> | undefined
 }
 
-// E2E_DATABASE_URL 优先：e2e 测试跑在独立库（fengyu_e2e），与开发/staff 测试共用的 fengyu 库隔离，
+// E2E_DATABASE_URL 优先：e2e 测试跑在独立库（fengyu_e2e），与 dev 业务库隔离，
 // 根除多会话/worktree 共享同一 PG 互相清库的干扰（2026-06-08）。开发时不设该变量，回落到 DATABASE_URL。
+//
+// ⚠️ 末尾这个写死的回落值**仅供本地开发与 `next build` 期求值**（build 机器没有 DB 变量，
+// 这里直接退出会打断构建），**不是**部署配置：生产/预发部署必须显式注入 DATABASE_URL。
+// 与 `db/scripts/` 的 fail-closed 范式（缺变量即退出）不同是有意为之，别照搬过去。
+// 迁移数据库时这个字面量也要跟着改——它是 dev 库地址，不是"默认库"（见 db/CLAUDE.md）。
 const connectionString =
   process.env.E2E_DATABASE_URL ??
   process.env.DATABASE_URL ??

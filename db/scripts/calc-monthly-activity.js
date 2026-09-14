@@ -273,4 +273,5 @@ async function calcCustomerStatus(client, dryRun) {
   console.log('\n✓ 到店状态已更新')
 }
 
-main()
+// 仅在直接执行时运行：被 require 时不得有副作用（顶层校验同理，见文件头部）
+if (require.main === module) main()

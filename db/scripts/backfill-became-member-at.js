@@ -13,12 +13,12 @@
  *   - fengyu-client/cloudfunctions/payNotify/index.js       重算路径（confirmOrder 后）
  *
  * 用法：
- *   # 5434 / fengyu（测试库）
+ *   # dev（先跑验证）
  *   DATABASE_URL="postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp" \
  *     node db/scripts/backfill-became-member-at.js
  *
- *   # 5433 / fengyu_wxapp（开发库）
- *   DATABASE_URL="postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp" \
+ *   # prod（必跑）
+ *   DATABASE_URL="postgresql://fengyu:fengyu123@118.178.196.26:5433/fengyu_wxapp" \
  *     node db/scripts/backfill-became-member-at.js
  *
  *   # 预览（不写入）

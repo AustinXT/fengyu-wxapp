@@ -16,18 +16,18 @@
  *   2. '美容师'                     — 兜底默认值
  *
  * 用法：
- *   # 5434 / fengyu（生产业务库，admin + 全部云函数共用，必跑）
- *   PG_CONNECTION_STRING="postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp" \
+ *   # prod（必跑）
+ *   PG_CONNECTION_STRING="postgresql://fengyu:fengyu123@118.178.196.26:5433/fengyu_wxapp" \
  *     node db/scripts/backfill-service-commissions-roletype.js --commit
  *
- *   # 5433 / fengyu_wxapp（冷备库，可选）
+ *   # dev（先跑验证）
  *   PG_CONNECTION_STRING="postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp" \
  *     node db/scripts/backfill-service-commissions-roletype.js --commit
  *
  *   # dry-run 模式（仅预览统计，不执行 UPDATE）
  *   node db/scripts/backfill-service-commissions-roletype.js
  *
- * 重要：5434 是生产业务库（必跑）；5433 是冷备（可选，参见 db/CLAUDE.md「生产库与冷备库」）。
+ * 重要：prod 118.178.196.26 必跑；dev 101.34.242.103 先跑验证。两库均 5433/fengyu_wxapp，仅 IP 区分。
  *
  * 自检：执行后 `role_type IS NULL AND is_void = FALSE` 应等于 0。
  *
@@ -96,7 +96,7 @@ async function main() {
 
   log(`目标库: ${PG_CONFIG.connectionString.replace(/:[^:@]+@/, ':***@')}`)
   log(`模式: ${commit ? 'COMMIT（实际写入）' : 'DRY-RUN（仅预览，不写入；加 --commit 才执行 UPDATE）'}`)
-  log('提醒: 生产业务库 118.178.196.26:5433/fengyu_wxapp（必跑）；开发/测试库 101.34.242.103:5433/fengyu_wxapp 先验证（两端均 5433/fengyu_wxapp，仅 IP 区分）')
+  log('提醒: 生产业务库 118.178.196.26:5433/fengyu_wxapp（必跑）；dev 库 101.34.242.103:5433/fengyu_wxapp 先验证（两端均 5433/fengyu_wxapp，仅 IP 区分）')
 
   const pool = new Pool(PG_CONFIG)
   try {

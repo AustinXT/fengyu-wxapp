@@ -23,7 +23,7 @@ const SOURCE_CONTAINER_PRIVATE_UPLOAD_ROOTS = [
   CONTAINER_PRIVATE_UPLOAD_ROOT,
   '/var/lib/fengyu-admin/private-uploads',
 ]
-const DEFAULT_TEST_SSH_HOST = 'sqlserver101'
+const DEFAULT_TEST_SSH_HOST = 'lx-test'   // ~/.ssh/config 别名（原 sqlserver101，2026-09-04 改名）
 const DEFAULT_PROD_SSH_HOST = 'fengyu-prod'
 const DEFAULT_PRIVATE_UPLOAD_HOST_DIR = '/www/wwwroot/fengyu-admin/docker/data/private-uploads'
 const DEFAULT_LEGACY_TEST_PRIVATE_UPLOAD_HOST_DIR = '/www/wwwroot/fengyu-admin/docker/private-uploads'

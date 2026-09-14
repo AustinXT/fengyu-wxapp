@@ -17,8 +17,8 @@
  *   - commission_amount = ROUND(total_amount × commission_rate, 2)，退款行 total_amount 为负随之为负。
  *
  * 用法：
- *   # 5434 / fengyu（当前唯一生产业务库，必跑）
- *   PG_CONNECTION_STRING="postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp" \
+ *   # prod（必跑）
+ *   PG_CONNECTION_STRING="postgresql://fengyu:fengyu123@118.178.196.26:5433/fengyu_wxapp" \
  *     node db/scripts/backfill-allocations-commission.js            # dry-run 预览
  *   PG_CONNECTION_STRING="..." node db/scripts/backfill-allocations-commission.js --commit  # 实际写入
  *
@@ -112,7 +112,7 @@ async function main() {
 
   log(`目标库: ${PG_CONFIG.connectionString.replace(/:[^:@]+@/, ':***@')}`)
   log(`模式: ${commit ? 'COMMIT（实际写入）' : 'DRY-RUN（仅预览，不写入；加 --commit 才执行 UPDATE）'}`)
-  log('提醒: 生产业务库 118.178.196.26:5433/fengyu_wxapp（必跑）；开发/测试库 101.34.242.103:5433/fengyu_wxapp 先验证。两端均 5433/fengyu_wxapp，仅 IP 区分；务必先 db:migrate 加列、再发读取端代码')
+  log('提醒: 生产业务库 118.178.196.26:5433/fengyu_wxapp（必跑）；dev 库 101.34.242.103:5433/fengyu_wxapp 先验证。两端均 5433/fengyu_wxapp，仅 IP 区分；务必先 db:migrate 加列、再发读取端代码')
 
   const pool = new Pool(PG_CONFIG)
   try {
