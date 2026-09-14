@@ -1923,3 +1923,66 @@ describe('绩效页 · 重查指引必须真的可用（评审 round-28 codex P2
     expect(callStaffApi).not.toHaveBeenCalled()
   })
 })
+
+describe('绩效页 · 评审 round-29 闭环（glm）', () => {
+  test('清空态不断言「本时段暂无提成记录」——那时 total=0 只代表还不知道', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+    search(page, '张三')
+
+    vi.mocked(callStaffApi).mockImplementation(() => new Promise(() => {})) // 请求挂起
+    page.setRange('today')
+
+    expect(page.data.filterActive).toBe(true)
+    expect(page.data.searchHint).toBe('') // 不能挂着未经验证的断言
+  })
+
+  test('成功返回 0 条时才断言本期无记录', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage([], 0)
+    await page.loadData(true)
+    search(page, '张三')
+
+    expect(page.data.searchHint).toContain('本时段暂无提成记录')
+  })
+
+  test('picker 同值确认撞上在途请求，不重复扫描', () => {
+    const page = createPage()
+    page.onLoad({ range: 'custom' })
+    vi.mocked(callStaffApi).mockImplementation(() => new Promise(() => {}))
+    page.loadData(true)
+    expect(page.data.loading).toBe(true)
+
+    vi.mocked(callStaffApi).mockClear()
+    page.applyCustomRange(page.data.startDate, page.data.endDate, 'start')
+
+    expect(callStaffApi).not.toHaveBeenCalled()
+  })
+
+  test('明细侧存全角数字的手机号也能被半角关键词搜到', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([makeItem('张三', '１３８００１３８０００', 1), makeItem('李四', '13900139000', 2)], 2)
+    await page.loadData(true)
+
+    search(page, '13800138000')
+    expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['张三'])
+    // 脱敏展示也走同一条归一化，不会因为全角而错位
+    expect(page.data.items[0].customerPhoneMasked).toBe('138****8000')
+  })
+
+  test('档位按钮 dataset 取空时直接忽略，不把 rangeType 写成 undefined', () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage([], 0)
+
+    vi.mocked(callStaffApi).mockClear()
+    page.onRangeTap({ currentTarget: { dataset: {} } })
+
+    expect(page.data.rangeType).toBe('month')
+    expect(callStaffApi).not.toHaveBeenCalled()
+  })
+})

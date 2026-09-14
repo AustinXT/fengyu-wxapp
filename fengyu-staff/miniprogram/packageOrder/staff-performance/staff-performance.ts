@@ -147,6 +147,9 @@ const HARD_DISPLAY_CAP = 500;
  */
 const ACCESS_DENIED_ERRORS = ['UNAUTHORIZED', 'PERMISSION_DENIED', 'PHONE_REQUIRED'];
 
+/** 合法档位。deeplink 入参与按钮 dataset 共用同一份，避免两处漂移 */
+const VALID_RANGES: RangeType[] = ['today', 'month', 'custom'];
+
 Page({
   data: {
     loading: false,
@@ -248,8 +251,7 @@ Page({
       ...this.dateBounds(),
     });
     if (mgr) this.loadStaffList();
-    const validRanges: RangeType[] = ['today', 'month', 'custom'];
-    const range = validRanges.includes(options.range as RangeType) ? options.range as RangeType : 'today';
+    const range = VALID_RANGES.includes(options.range as RangeType) ? options.range as RangeType : 'today';
     // 只设日期不取数：紧随其后的 onShow 会发起首次请求。
     // 去掉 loading 早退后，两处各发一次会让每次进页面的云函数调用翻倍，
     // 且「首次成功 + 第二次失败」时成功结果会被代次判过期丢弃，页面反而落到错误态
@@ -436,6 +438,9 @@ Page({
 
   onRangeTap(e: WechatMiniprogram.TouchEvent) {
     const type = e.currentTarget.dataset.type as RangeType;
+    // 和 onLoad 的 deeplink 一样校验白名单：dataset 取空时会落进 presetRange 的 custom
+    // 兜底分支，却因为 `type === 'custom'` 不成立而走全量重拉，把 rangeType 写成 undefined
+    if (!VALID_RANGES.includes(type)) return;
     // 页面长时间停在前台跨过午夜时收不到 onShow，picker 上界会落后一天。
     // 用户点「自定义」正是要用 picker 的那一刻，在这里补一次刷新
     if (type === 'custom') this.refreshDateBounds();
@@ -528,9 +533,13 @@ Page({
         wx.showToast({ title: `起止最多相差 ${RANGE_MAX_DAYS} 天，另一端已自动调整`, icon: 'none' });
       }
     }
-    // 选了同一天通常无需重拉；但**加载失败时例外** —— 在 picker 里重选一遍当前日期
-    // 是失败态下最自然的重试手势，早退会让屏幕一直停在「加载失败」、点什么都没反应
-    if (start === this.data.startDate && end === this.data.endDate && !this.data.loadFailed) return;
+    // 选了同一天通常无需重拉；两个例外方向：
+    //  · 加载失败时要放行 —— 在 picker 里重选一遍当前日期是失败态下最自然的重试手势，
+    //    一律早退会让屏幕停在「加载失败」、点什么都没反应
+    //  · 但同区间请求**正在路上**时仍要早退 —— picker 确认同一天也会触发 change，
+    //    放行就是对同一区间再发一次全区间扫描（与 setRange 按钮入口的去重对称）
+    if (start === this.data.startDate && end === this.data.endDate
+        && (!this.data.loadFailed || this.data.loading)) return;
 
     // 与 setRange 同级的主体变更：清汇总 + 清明细，避免「新区间标题 + 旧区间明细」
     this.clearSubjectCache();
@@ -861,6 +870,10 @@ Page({
       total: 0,
       hasMore: false,
       ...this.buildSearchView([], this.data.keyword, 0),
+      // 清空态下的 `total=0` 只代表「还不知道」，不是「确认本期没有」——
+      // 主体刚切换、请求在途或失败时都会走到这里。把「本时段暂无提成记录」这句断言
+      // 留给成功响应那条路径。wxml 目前靠 loadFailed 优先级挡着，但不该依赖那一层
+      searchHint: '',
     };
   },
 
@@ -907,10 +920,7 @@ Page({
     // 全角数字**和分隔符**都要转：从微信聊天/通讯录粘贴过来的号码常带全角括号或减号
     // （`（138）0013－8000`），漏转的话 looksLikePhone 判否 → 退化成姓名匹配 → 显示「未找到」，
     // 而粘贴正是手机号输入的主要来源
-    const kwHalfWidth = kw.replace(
-      /[\uFF10-\uFF19\uFF08\uFF09\uFF0B\uFF0D\uFF0E\u3000]/g,
-      (c) => (c === '\u3000' ? ' ' : String.fromCharCode(c.charCodeAt(0) - 0xFEE0)),
-    );
+    const kwHalfWidth = this.toHalfWidth(kw);
     // 白名单要含 `.` 与 `/`：上面刚把全角句点 `．` 转成了 ASCII `.`，白名单漏了它的话，
     // `138.0013.8000` 这种写法会被判成非号码、退化去匹配姓名，必然「未找到」
     const looksLikePhone = /^[\d\s\-+()./]+$/.test(kwHalfWidth);
@@ -933,7 +943,7 @@ Page({
     const matched = items.filter((it) => {
       if (kwName && String(it.customerName || '').replace(/\s+/g, '').toLowerCase().indexOf(kwName) >= 0) return true;
       if (!kwCandidates.length) return false;
-      const raw = String(it.clientPhone || '').replace(/\D/g, '');
+      const raw = this.toHalfWidth(String(it.clientPhone || '')).replace(/\D/g, '');
       const norm = this.normalizePhone(it.clientPhone);
       return kwCandidates.some((c) => raw.indexOf(c) >= 0 || norm.indexOf(c) >= 0);
     });
@@ -968,11 +978,10 @@ Page({
       // ③ 没命中：带「已加载 N/共 M」，让员工能分辨「真没有」和「没加载够」
       searchHint: total === 0
         ? `本时段暂无提成记录（${loaded}，搜索「${shown}」仍生效）`
-        // 具体显示到第几条交给底部的 matchWindowLabel，这里不重复播报
-        : capped
+        // 具体显示到第几条交给底部的 matchWindowLabel，这里不重复播报，
+        // 所以命中与「命中过多被窗口截断」两种情况文案相同，合成一个分支
+        : matched.length
           ? `${loaded}，匹配 ${matched.length} 条（顶部汇总为全量，不随搜索变化）`
-          : matched.length
-            ? `${loaded}，匹配 ${matched.length} 条（顶部汇总为全量，不随搜索变化）`
             // 「已加载 = 总数」看着像查全了，但后端是 offset 分页且每次重新排序，
           // 翻页期间只要有新单或退款，就可能重复一行、漏掉另一行 —— 而这个功能的结论
           // 恰恰是「这个顾客到底有没有分配给我」，说死了会直接导出相反判断
@@ -991,10 +1000,21 @@ Page({
    * `sale_orders.client_phone` 是 varchar(30) 且没有格式 CHECK，这类写法在 WorkFine 历史数据里真实存在。
    */
   normalizePhone(v: unknown): string {
-    const digits = String(v ?? '').replace(/\D/g, '');
+    // 先全角转半角再剥非数字：直接剥的话，DB 里若存着全角数字会被整位删掉
+    // （而不是转成半角），那条记录的手机号就永远搜不到 —— 关键词侧已经做了同样的转换，
+    // 两侧必须共用一条归一化路径
+    const digits = this.toHalfWidth(String(v ?? '')).replace(/\D/g, '');
     // 剥 86 前要确认剩下的是合法国内手机号段（1[3-9] 开头的 11 位），
     // 否则 `8612345678901` 这种不明号码会被削成 `12345678901`，反而更难对上
     return /^861[3-9]\d{9}$/.test(digits) ? digits.slice(2) : digits;
+  },
+
+  /** 全角数字与常见全角分隔符转半角（检索两侧共用） */
+  toHalfWidth(v: string): string {
+    return v.replace(
+      /[\uFF10-\uFF19\uFF08\uFF09\uFF0B\uFF0D\uFF0E\u3000]/g,
+      (c) => (c === '\u3000' ? ' ' : String.fromCharCode(c.charCodeAt(0) - 0xFEE0)),
+    );
   },
 
   /** 两个 `YYYY-MM-DD` 之间的天数（含头不含尾）。用 UTC 构造避开夏令时/时区偏移 */
