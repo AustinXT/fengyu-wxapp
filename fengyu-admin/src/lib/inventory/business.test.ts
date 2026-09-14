@@ -529,6 +529,24 @@ describe('inventory business action input guards', () => {
     expect(query).toContain('employee.is_resigned = false')
     expect(query).toContain('employee.store_id IS NULL')
     expect(query).toContain("type IN ('市场', '门店')")
+    // #130：递归项必须 JOIN 不起别名，否则 PG 报 invalid reference to FROM-clause entry
+    expect(query).toContain('JOIN descendants ON child.parent_id = descendants.id')
+    expect(query).toContain('JOIN ancestors ON ancestors.parent_id = node.id')
+  })
+
+  it('市场员工购候选项的递归 CTE 可被 PG 接受（#130 别名回归）', async () => {
+    mockSyncLocationsShortCircuit()
+      .mockResolvedValueOnce([{
+        location_id: 'M1', location_type: '市场', name: '市场一', parent_location_id: 'HQ',
+      }] as never)
+      .mockResolvedValueOnce([] as never)
+
+    await listMarketEmployeeOptions(SESSION, 'M1')
+
+    const query = renderSql(vi.mocked(db.execute).mock.calls[2][0])
+    expect(query).toContain('JOIN descendants ON child.parent_id = descendants.id')
+    // 修复前是 `JOIN descendants parent ON …` 却仍引用 descendants.path
+    expect(query).not.toMatch(/JOIN\s+descendants\s+parent\s+ON/)
   })
 
   it('说明.md §11.1：供应链员工购拒绝非总部直属或离职员工，且校验三要素齐全', async () => {
@@ -1073,5 +1091,54 @@ describe('syncLocations 漂移探测与 engine.ts 字面一致（副本守护）
       const upserts = src.match(/INSERT INTO inventory_locations[\s\S]*?ON CONFLICT \(location_id\) DO UPDATE/g)
       expect(upserts?.length ?? 0, `${file} UPSERT 自愈路径缺失`).toBeGreaterThanOrEqual(2)
     }
+  })
+})
+
+/**
+ * #130 全仓守护：递归 CTE 的 JOIN 一律**不起别名**。
+ *
+ * 起了别名（`JOIN descendants parent ON …`）却在 SELECT/WHERE 里继续用原名
+ * （`descendants.path`），PostgreSQL 直接报
+ *   ERROR: invalid reference to FROM-clause entry for table "descendants"
+ *   HINT:  Perhaps you meant to reference the table alias "parent".
+ * 而 business.ts 的单测全部 mock 掉 db.execute，SQL 永远不会真的送进 PG ——
+ * 于是这 5 处错误潜伏到了 UI 端到端测试才暴露（市场员工购 / 供应链员工购整个功能不可用）。
+ *
+ * 本仓其余 7 处递归 CTE（org.ts / market-store-sql.ts / cron 巡检 / staffApi scope.js）
+ * 一直都是不起别名的写法。这条断言把这个约定钉死，让同类错误在单测阶段就红。
+ */
+describe('递归 CTE 不得给 JOIN 起别名（#130）', () => {
+  const FILES_WITH_RECURSIVE_CTE = [
+    'src/lib/inventory/business.ts',
+    'src/actions/org.ts',
+    'src/lib/market-store-sql.ts',
+    'src/cron/steps/audit-refund-cascade-coverage.ts',
+  ]
+
+  it('全仓无一处给递归 CTE 的 JOIN 起别名', () => {
+    const offenders: string[] = []
+    for (const file of FILES_WITH_RECURSIVE_CTE) {
+      const src = readFileSync(resolve(process.cwd(), file), 'utf8')
+      const names = new Set<string>([
+        // WITH RECURSIVE descendants(id, path) AS (
+        ...[...src.matchAll(/WITH RECURSIVE\s+(\w+)\s*\(/g)].map((m) => m[1]),
+        // ), employee_ancestors(id, parent_id, type, path) AS (   —— 并列的第二个 CTE
+        ...[...src.matchAll(/\)\s*,\s*(\w+)\s*\([^()]*\)\s*AS\s*\(/g)].map((m) => m[1]),
+      ])
+      for (const name of names) {
+        const aliased = new RegExp(`JOIN\\s+${name}\\s+(?!ON\\b)(\\w+)\\s+ON`, 'g')
+        for (const hit of src.matchAll(aliased)) {
+          offenders.push(`${file}: JOIN ${name} ${hit[1]} ON …`)
+        }
+      }
+    }
+    expect(offenders, '递归 CTE 起了别名；请改成 JOIN <cte> ON <cte>.<列> = …').toEqual([])
+  })
+
+  it('守护规则本身有效（能识别出错误写法）', () => {
+    const bad = 'WITH RECURSIVE descendants(id, path) AS (SELECT 1) JOIN descendants parent ON x = parent.id'
+    expect(bad).toMatch(/JOIN\s+descendants\s+(?!ON\b)(\w+)\s+ON/)
+    const good = 'WITH RECURSIVE descendants(id, path) AS (SELECT 1) JOIN descendants ON x = descendants.id'
+    expect(good).not.toMatch(/JOIN\s+descendants\s+(?!ON\b)(\w+)\s+ON/)
   })
 })
