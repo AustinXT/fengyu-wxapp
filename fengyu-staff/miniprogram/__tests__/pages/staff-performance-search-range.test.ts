@@ -2235,3 +2235,55 @@ describe('绩效页 · 分类缓存只在落地后消费（评审 round-35 codex
     expect(page.data.categoryCells[0].amount).toBe('50.00') // 立刻换成服务口径，不等请求
   })
 })
+
+describe('绩效页 · 过桥期间切 Tab 的两个方向都有终态（评审 round-36 codex P2）', () => {
+  function respWith(sales: number, service: number) {
+    return {
+      totalSalesAlloc: sales, totalServiceCommission: service, totalCommission: sales + service,
+      items: [makeItem('张三', '13800000001', 1)], total: 1,
+      categorySummary: { 自销自耗: { sales, service } },
+      categories: ['自销自耗'],
+    }
+  }
+
+  test('过桥期间切 Tab：缓存落地后按当前选中态补算，不停在旧口径', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    vi.mocked(callStaffApi).mockResolvedValue(respWith(100, 50) as never)
+    await page.loadData(true)
+
+    const pending: Array<() => void> = []
+    const realSetData = page.setData.bind(page)
+    page.setData = (u: Record<string, unknown>, cb?: () => void) => {
+      realSetData(u)
+      if (cb) pending.push(cb)
+    }
+    vi.mocked(callStaffApi).mockResolvedValue(respWith(300, 80) as never)
+    await page.loadData(true, true)          // 新响应上屏，回调挂起
+    expect(page.data.cellsCaption).toBe('提成构成（销售+服务）')
+
+    vi.mocked(callStaffApi).mockImplementation(() => new Promise(() => {}))
+    page.onMainTabChange({ detail: { index: 2 } }) // 切到「服务」，此刻缓存未落地
+    expect(page.data.activeMainTab).toBe(2)
+
+    pending.forEach((cb) => cb())            // 缓存落地
+    page.setData = realSetData
+
+    // 不能停在「服务 Tab 高亮、金额还是合计口径」
+    expect(page.data.cellsCaption).toBe('服务提成构成')
+    expect(page.data.categoryCells[0].amount).toBe('80.00')
+  })
+
+  test('选中态没变时回调不多发一次 setData', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    vi.mocked(callStaffApi).mockResolvedValue(respWith(100, 50) as never)
+    await page.loadData(true)
+
+    const spy = vi.spyOn(page, 'buildCategoryPanel')
+    await page.loadData(true, true)
+    // 一次来自 setData 的构建即可，回调不该再补一次
+    expect(spy).toHaveBeenCalledTimes(1)
+    spy.mockRestore()
+  })
+})

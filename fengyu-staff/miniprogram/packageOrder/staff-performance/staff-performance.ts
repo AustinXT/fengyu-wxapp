@@ -824,6 +824,17 @@ Page({
         this._summaryCache = res.categorySummary && res.categories && res.categories.length
           ? { summary: res.categorySummary, categories: res.categories }
           : null;
+        // 过桥期间用户可能切过 Tab / chip：那一刻缓存还没落地，`onMainTabChange` 只换了
+        // 选中态、没换金额口径（拿未落地的旧缓存重算会把新金额盖掉，见那里的注释）。
+        // 缓存一落地就按**当前**选中态补算一次，把「服务 Tab 高亮、金额还是合计口径」
+        // 这个错配收掉 —— 否则要等下一个请求回来才自愈，慢网下就是明晃晃的错数。
+        const cache = this._summaryCache;
+        if (cache && (this.data.activeMainTab !== activeMainTab
+                   || this.data.activeSubCategory !== activeSubCategory)) {
+          this.setData(this.buildCategoryPanel(
+            cache.summary, cache.categories, this.data.activeMainTab, this.data.activeSubCategory,
+          ));
+        }
         // 关键词只在**还是当初那个词**时才回写：过桥期间用户可能已经改了词，
         // 而新词的防抖过滤会先跑完；这时候把标记回滚成旧词，
         // 下一次点「显示更多/上一批」就会误判成「过滤还没完成」，复位窗口并吞掉这次点击
