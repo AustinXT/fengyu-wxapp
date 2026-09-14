@@ -808,8 +808,7 @@ Page({
       // 访问被拒必须**独立于 reset/分页模式**清屏：触底分页（reset=false）时权限被撤销，
       // 若受 reset 限制就只弹个 toast，撤权后的绩效数据继续留在屏幕上
       if (accessDenied || (reset && (!keepStaleOnError || !sameSource))) {
-        this._lastKey = '';
-        this._summaryCache = null;
+        this.clearSubjectCache(); // 含作废渲染世代，挡住迟到回调把旧缓存写回
         this.setData({ loadFailed: true, ...this.blankItems(), ...this.blankSummary() });
       }
     } finally {
@@ -825,6 +824,11 @@ Page({
   clearSubjectCache() {
     this._summaryCache = null;
     this._lastKey = '';
+    // 同时作废渲染世代：在途的 setData 回调可能在清屏**之后**才跑，
+    // 那时 `seq === _renderedSeq` 依然成立，会把刚清掉的旧主体缓存原样写回去。
+    // -403 之后尤其危险 —— 切一下一级 Tab 就能用 `_summaryCache` 本地重算出
+    // 上一个员工的分类薪酬，直接破掉「访问被拒必须彻底清屏」这条。
+    this._renderedSeq = -1;
   },
 
   /**

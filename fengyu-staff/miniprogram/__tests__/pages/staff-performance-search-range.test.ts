@@ -1787,3 +1787,63 @@ describe('绩效页 · 评审 round-25 闭环（codex）', () => {
     expect(callStaffApi).not.toHaveBeenCalled() // 等在途那次就行
   })
 })
+
+describe('绩效页 · 清屏后迟到回调不得复活旧缓存（评审 round-26 codex P1）', () => {
+  test('-403 清屏后，此前成功响应的迟到回调不能把旧主体缓存写回来', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    vi.mocked(callStaffApi).mockResolvedValue({
+      totalSalesAlloc: 100, totalServiceCommission: 50, totalCommission: 150,
+      items: [makeItem('张三', '13800000001', 1)], total: 1,
+      categorySummary: { 自销自耗: { sales: 100, service: 50 } },
+      categories: ['自销自耗'],
+    } as never)
+
+    // 压住回调，制造「成功已上屏、回调未跑」的时序
+    const pending: Array<() => void> = []
+    const realSetData = page.setData.bind(page)
+    page.setData = (u: Record<string, unknown>, cb?: () => void) => {
+      realSetData(u)
+      if (cb) pending.push(cb)
+    }
+    await page.loadData(true)
+    page.setData = realSetData
+
+    // 此时被撤权
+    const denied = Object.assign(new Error('无权查看'), { errorType: 'PERMISSION_DENIED' })
+    vi.mocked(callStaffApi).mockRejectedValue(denied)
+    await page.loadData(true, true)
+    expect(page._summaryCache).toBeNull()
+    expect(page._lastKey).toBe('')
+
+    // 迟到的成功回调此刻才落地
+    pending.forEach((cb) => cb())
+
+    // 不能复活：否则切一级 Tab 就能用 _summaryCache 重算出已撤权员工的分类薪酬
+    expect(page._summaryCache).toBeNull()
+    expect(page._lastKey).toBe('')
+    page.onMainTabChange({ detail: { index: 1 } })
+    expect(page.data.hasCategoryPanel).toBe(false)
+  })
+
+  test('换员工后迟到回调同样不能把上一个员工的缓存写回', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+
+    const pending: Array<() => void> = []
+    const realSetData = page.setData.bind(page)
+    page.setData = (u: Record<string, unknown>, cb?: () => void) => {
+      realSetData(u)
+      if (cb) pending.push(cb)
+    }
+    await page.loadData(true)
+    page.setData = realSetData
+
+    page.clearSubjectCache() // 换员工/换时段都会先做这件事
+    pending.forEach((cb) => cb())
+
+    expect(page._lastKey).toBe('')
+    expect(page._summaryCache).toBeNull()
+  })
+})
