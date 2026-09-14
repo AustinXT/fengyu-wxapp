@@ -371,12 +371,9 @@ function CreateDocDialog({
 
   useEffect(() => {
     if (open) return
-    // 只丢弃**已完成**的结果：在途请求留着给下一代复用。
-    // Server Action 不可 abort，关闭时无条件 clear 等于把还在 FIFO 队列里排队的 N 个请求
-    // 白白作废；用户秒关秒开就会再发 N 个，新请求还排在旧请求后面，等待时间翻倍。
-    for (const [key, entry] of lotCacheRef.current) {
-      if (entry.settled) lotCacheRef.current.delete(key)
-    }
+    // 只推进代次，不在这里清缓存 —— 淘汰交给取数侧按 settled + epoch 判定（见 LotCache 注释）。
+    // 在这里按「关闭当刻是否 settled」一刀切会漏掉「关闭后、重开前才返回」的那批：
+    // 它们关闭当刻还在途、躲过清理，重开时又已完成，于是被当成新鲜结果复用。
     setLotEpoch((n) => n + 1)
     // 代次一换，已选的 lotId 可能指向下一代里已经不存在的批次：受控 select 会显示空白，
     // state 却还留着旧值，直接提交就只能靠服务端 lockLotById 兜底报错。换主体/换 SKU
@@ -539,9 +536,15 @@ type LotLoadState = { key: string; lots: InventoryLotRow[]; failed?: boolean }
  * 弹窗级批次取数缓存：(库位, SKU) → 在途/已完成的 Promise。
  *
  * key **不含代次** —— 代次只管「结果算不算新鲜」（编在 DocLotSelect 的 cacheKey 里），
- * 在途去重是另一回事。关闭弹窗时只清 `settled` 的条目，在途的留给下一代复用。
+ * 在途去重是另一回事。
+ *
+ * 取数时按 `settled` + `epoch` 决定复用还是重取：
+ * - 还在途（`settled === false`）→ 无条件复用，并把它「过继」给当前代次
+ *   （Server Action 不可 abort，作废等于白等一轮）
+ * - 已完成且属于**旧代次** → 淘汰重取（可用量可能已经过期）
+ * - 已完成且属于当前代次 → 复用（同一弹窗内多行去重）
  */
-type LotCache = Map<string, { promise: Promise<InventoryLotRow[]>; settled: boolean }>
+type LotCache = Map<string, { promise: Promise<InventoryLotRow[]>; settled: boolean; epoch: number }>
 
 function DocLotSelect({
   locationId,
@@ -576,6 +579,11 @@ function DocLotSelect({
     if (!active || !cacheKey) return
     let cancelled = false
     let entry = cache.get(requestKey)
+    // 已完成且属于旧代次 → 结果可能过期，淘汰重取（在途的不动，见 LotCache 注释）
+    if (entry && entry.settled && entry.epoch !== epoch) {
+      cache.delete(requestKey)
+      entry = undefined
+    }
     if (!entry) {
       const promise = listInventoryLotOptions(locationId, skuId).then((lots) => {
         // 契约异常（灰度不一致 / action 回归返回了非数组）必须走失败路径，
@@ -583,13 +591,16 @@ function DocLotSelect({
         if (!Array.isArray(lots)) throw new Error('批次接口返回格式异常')
         return lots
       })
-      entry = { promise, settled: false }
+      entry = { promise, settled: false, epoch }
       cache.set(requestKey, entry)
       const created = entry
       void promise.then(
         () => { created.settled = true },
         () => { created.settled = true },
       )
+    } else {
+      // 在途条目被新代次接手：它落地后，同代次的其它明细行直接复用，不再多发一次
+      entry.epoch = epoch
     }
     entry.promise
       .then((lots) => {
@@ -608,7 +619,7 @@ function DocLotSelect({
     return () => {
       cancelled = true
     }
-  }, [active, cacheKey, requestKey, locationId, skuId, cache, retryToken])
+  }, [active, cacheKey, requestKey, epoch, locationId, skuId, cache, retryToken])
 
   const isCurrent = loaded?.key === cacheKey
   const lots = isCurrent ? loaded.lots : []

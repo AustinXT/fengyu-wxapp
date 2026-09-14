@@ -393,6 +393,29 @@ describe('InventoryDocsPage 来源批次下拉（#129 回归）', () => {
     expect(within(screen.getByRole('dialog')).getByRole('option', { name: /B-001/ })).toBeInTheDocument()
   })
 
+  it('请求在「关闭后、重开前」落地的，重开时不当新鲜结果复用', async () => {
+    // 上一条的反面：按「关闭当刻是否 settled」一刀切会漏掉这批 —— 关闭当刻还在途、躲过清理，
+    // 重开时又已完成，于是被当成新鲜结果复用，展示的是可能已经过期的可用量。
+    const first = deferred<InventoryLotRow[]>()
+    vi.mocked(listInventoryLotOptions)
+      .mockReturnValueOnce(first.promise as never)
+      .mockResolvedValue([lot(22, 'SKU-1', 'B-NEW', 5)] as never)
+
+    openDialogAndPickSource()
+    expect(listInventoryLotOptions).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '取消' }))
+    // 关闭期间落地
+    await act(async () => { first.resolve([lot(11, 'SKU-1', 'B-OLD', 30)]) })
+
+    fireEvent.click(screen.getByRole('button', { name: '新建' }))
+    await waitFor(() => expect(lotSelect()).not.toBeDisabled())
+
+    expect(listInventoryLotOptions).toHaveBeenCalledTimes(2)
+    expect(within(screen.getByRole('dialog')).getByRole('option', { name: /B-NEW/ })).toBeInTheDocument()
+    expect(within(screen.getByRole('dialog')).queryByRole('option', { name: /B-OLD/ })).not.toBeInTheDocument()
+  })
+
   it('同一 (主体, SKU) 被多行选中时只发一次请求（弹窗级 Promise 缓存）', async () => {
     vi.mocked(listInventoryLotOptions).mockResolvedValue([lot(11, 'SKU-1', 'B-001', 30)])
 
