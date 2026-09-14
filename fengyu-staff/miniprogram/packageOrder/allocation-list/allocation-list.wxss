@@ -41,3 +41,12 @@
   padding-top: 16rpx;
 }
 .action-hint { font-size: 24rpx; color: #D4820A; }
+
+/* 归属日期口径下的空态补充说明（仅销售提成 Tab + 有日期筛选时出现） */
+.empty-hint {
+  padding: 0 64rpx 24rpx;
+  color: #999999;
+  font-size: 24rpx;
+  line-height: 34rpx;
+  text-align: center;
+}

@@ -67,6 +67,12 @@ const FILES = {
   payNotifyIndexJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/index.js'),
   adminOrdersTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/orders.ts'),
 
+  // issue #139 — 款项业绩归属日期筛选的两种粒度，staff / admin 各两处共四个站点
+  staffAllocationJs: path.resolve(__dirname, '../../routes/allocation.js'),
+  adminPerformanceAttributionTs: path.resolve(
+    __dirname, '../../../../../fengyu-admin/src/lib/performance-attribution.ts',
+  ),
+
   // ticket 2026-05-19-sale-items-paid-sessions — paid_sessions 重算 SQL 四端字节同义
   staffPaidSessionsJs: path.resolve(__dirname, '../../utils/paid-sessions.js'),
   clientPaidSessionsJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/paid-sessions.js'),
@@ -2410,5 +2416,100 @@ describe('疗程卡可用次数为 0 时仍展示的跨端守护（issue #122）
     const src = readFile(FILES.staffServiceJs)
     expect(src).toContain('INSUFFICIENT_BALANCE')
     expect(src).toMatch(/COALESCE\(paid_sessions, session_count\)/)
+  })
+
+  /**
+   * issue #139 — 款项业绩归属日期筛选的跨端形态守护。
+   *
+   * 两端实现语言不同（staff 原生 SQL / admin Drizzle），不能做字面 snapshot 相等，
+   * 守护的是**三条口径不变量**在四个站点上同时成立：
+   *   ① 订单粒度用 EXISTS 半连接，且带 `status='已支付'` 语义闸门
+   *   ② 款项粒度直接约束当前行，**不得**套 EXISTS（否则带出同订单区间外的款项）
+   *   ③ 归属日期是 date，一律闭区间 `::date`，不得混入 timestamptz 半开区间
+   * 任一端单边漂移都会在这里断掉。
+   */
+  describe('款项业绩归属日期筛选（#139，四站点形态一致）', () => {
+    test('订单粒度两端都是 EXISTS 半连接 + 已入账闸门', () => {
+      const staffList = readFile(FILES.staffOrderJs).match(
+        /async function list\(ctx\)[\s\S]*?\n\}/,
+      )?.[0]
+      expect(staffList, '未能定位 staff order.list 函数体').toBeTruthy()
+      // normalizeSql 会清掉括号内侧空白，故断言串里 `EXISTS (SELECT` 之间无空格
+      const staffFlat = normalizeSql(staffList)
+      expect(staffFlat, 'staff 订单列表必须走 EXISTS 半连接').toContain(
+        "EXISTS (SELECT 1 FROM sale_order_payments pf WHERE pf.sale_order_id = o.sale_order_id AND pf.status = '已支付'",
+      )
+
+      const adminConds = readFile(FILES.adminOrdersTs).match(
+        /function buildOrderConditions\b[\s\S]*?\n\}/,
+      )?.[0]
+      expect(adminConds, '未能定位 admin buildOrderConditions 函数体').toBeTruthy()
+      expect(adminConds, 'admin 订单管理必须走 EXISTS 半连接').toContain(
+        'FROM ${saleOrderPayments} AS payment_attribution_filter',
+      )
+      expect(adminConds, 'admin 侧 status 语义闸门不得删').toContain(
+        "payment_attribution_filter.status = '已支付'",
+      )
+    })
+
+    test('款项粒度两端都约束当前行，不退化成 EXISTS', () => {
+      const staffPending = readFile(FILES.staffAllocationJs).match(
+        /async function pendingPayments\(ctx\)[\s\S]*?\n\}/,
+      )?.[0]
+      expect(staffPending, '未能定位 staff allocation.pendingPayments 函数体').toBeTruthy()
+      expect(staffPending, 'staff 分配列表必须行级约束归属日期').toContain(
+        "addDateRange(conditions, params, 'p.performance_attribution_date', startDate, endDate)",
+      )
+      // 归属日期在该函数体内只许出现这一次；套进任何 EXISTS 子查询都会引入第二次引用或换别名
+      expect(
+        staffPending.match(/performance_attribution_date/g),
+        'staff 分配列表的归属日期引用次数漂移（疑似退化成 EXISTS）',
+      ).toHaveLength(1)
+
+      const adminPending = readFile(FILES.adminAllocationsTs).match(
+        /const dateRangeConditions = \(\(\) => \{[\s\S]*?\}\)\(\)/,
+      )?.[0]
+      expect(adminPending, '未能定位 admin 分配列表日期条件块').toBeTruthy()
+      // 不传 paymentAlias == 引用 sale_order_payments 表本身 == 行级约束
+      expect(adminPending, 'admin 分配列表必须行级约束（不得传 alias 变成 EXISTS 形态）').toContain(
+        'paymentAttributionRangeConditions(params.dateFrom, params.dateTo)',
+      )
+    })
+
+    test('两端归属日期一律 date 闭区间，无 timestamptz 半开区间', () => {
+      const staffOrder = readFile(FILES.staffOrderJs).match(
+        /async function list\(ctx\)[\s\S]*?\n\}/,
+      )?.[0]
+      // staff 两处都走 list-filters 的 addDateRange（`>= $n::date` / `<= $n::date`）
+      expect(staffOrder).toContain(
+        "addDateRange(attributionParts, params, 'pf.performance_attribution_date', startDate, endDate)",
+      )
+      const addDateRange = readFile(
+        path.resolve(__dirname, '../../utils/list-filters.js'),
+      ).match(/function addDateRange\([\s\S]*?\n\}/)?.[0]
+      expect(addDateRange, '未能定位 addDateRange').toBeTruthy()
+      expect(addDateRange, 'staff 侧闭区间形态漂移').toContain('>= $${params.length}::date')
+      expect(addDateRange, 'staff 侧闭区间形态漂移').toContain('<= $${params.length}::date')
+      expect(addDateRange, 'staff 侧不得混入半开区间').not.toContain('+ 1)')
+
+      const adminHelper = readFile(FILES.adminPerformanceAttributionTs)
+      const rangeFn = adminHelper.match(
+        /export function paymentAttributionRangeConditions[\s\S]*?\n\}/,
+      )?.[0]
+      expect(rangeFn, '未能定位 paymentAttributionRangeConditions').toBeTruthy()
+      expect(rangeFn, 'admin 侧闭区间形态漂移').toContain('>= ${dateFrom}::date')
+      expect(rangeFn, 'admin 侧闭区间形态漂移').toContain('<= ${dateTo}::date')
+      expect(rangeFn, 'admin 侧不得退回北京半开区间').not.toContain('beijingNextDayBoundaryTs')
+    })
+
+    test('staff 带日期筛选前必须过迁移就绪守卫（未迁库时宁可报错也不出空数据）', () => {
+      for (const key of ['staffOrderJs', 'staffAllocationJs']) {
+        const src = readFile(FILES[key])
+        expect(src, `${key} 未接入 attribution-guard`).toContain(
+          "require('../utils/attribution-guard')",
+        )
+        expect(src, `${key} 未在日期分支调用守卫`).toContain('assertPaymentAttributionReady(pg)')
+      }
+    })
   })
 })

@@ -7,6 +7,7 @@
     status-options="{{statusOptions}}"
     start-date="{{startDate}}"
     end-date="{{endDate}}"
+    date-hint="日期按预约时间筛选"
     bind:keyword-change="onSearchChange"
     bind:search="onSearch"
     bind:search-clear="onSearchClear"
