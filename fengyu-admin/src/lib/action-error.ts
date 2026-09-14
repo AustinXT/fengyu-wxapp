@@ -58,10 +58,11 @@ const UNREADABLE_FRAGMENTS = [
  *
  * 客户端组件自己抛的异常**不经 Next 脱敏**——`await action()` 之后的解构、日期转换、
  * router.push 抛错时，`err.message` 会原样到用户面前。这类是给开发看控制台的，不是文案。
- * 注意形状要求「驼峰 + Error + 冒号 + 空白」：业务里的 `throw new Error('顾客不存在')`
+ * 形状要求「(可选驼峰前缀) + Error/Exception + 冒号 + 空白」：裸 `Error: `（`new Error(String(e))`
+ * 这类写法会产生）与 `DOMException: ` 都要认。业务里的 `throw new Error('顾客不存在')`
  * message 是 `顾客不存在`（不带 `Error: ` 头），不会被误伤。
  */
-const JS_ERROR_NAME_RE = /^[A-Z][A-Za-z]*Error:\s/
+const JS_ERROR_NAME_RE = /^(?:[A-Z][A-Za-z]*)?(?:Error|Exception):\s/
 
 /**
  * Next.js 自动生成的**错误编号**（不是文案）。
@@ -122,30 +123,49 @@ const OPAQUE_TOKEN_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
  *
  * 用 9 项白名单精确匹配而非形状匹配：`ID: 123` / `URL: https://…` / `SKU: FY-001 库存不足`
  * 这类业务语义标签不是错误前缀，剥掉会丢上下文。白名单从 `api-error.ts` 取单源，
- * 不在本文件留副本（增删白名单会自动跟着走）。
+ * 不在本文件留副本（增删白名单会自动跟着走）；拼进正则前做转义，免得将来白名单里
+ * 出现正则元字符时静默改变匹配语义。
  */
-const LEVEL1_PREFIX_RE = new RegExp(`^(?:${ERROR_PREFIXES.join('|')}):\\s*`)
+const LEVEL1_PREFIX_RE = new RegExp(
+  `^(?:${ERROR_PREFIXES.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')}):\\s*`,
+)
 
 /**
  * 二级子标签串，形如 `REFERENCE_EXISTS: ` / `OVERPAY:123.45: ` /
  * `OVERPAY_ITEM:SI-8801:NOT_FOUND: `（标签后可挂若干段无空格载荷，以「冒号+空白」收尾）。
  *
  * 根 CLAUDE.md 约定子标签「仅供日志归类，不计入白名单」→ 展示侧一律剥掉。
- * 收尾必须是 `:\s+`：`OVERPAY:123.45:` 中间那个冒号后面紧跟数字，不能被当成结束，
+ * 收尾必须是「冒号 + 空白」或**行尾**（行尾那支用于把 `REFERENCE_EXISTS:` 这种无正文的
+ * 裸子标签整段剥干净后判空回退）：`OVERPAY:123.45:` 中间那个冒号后面紧跟数字，不能被当成结束，
  * 否则会剥成「123.45: 本次回款金额超过订单欠款」，比不剥还难看。
+ *
+ * 首段允许是**纯数字**：`INSUFFICIENT_BALANCE:${余额}: 顾客储值卡余额不足…`（orders.ts:3496，
+ * `confirmOfflinePayment` 直抛、无服务端预解析，客户端真能看到）与 `NO_CARD` 是同族写法。
  *
  * **只在一级前缀真的被剥掉之后才尝试**：二级子标签按定义就只存在于一级前缀之后。
  * 标签本身要求 ≥5 字符：仓内真实子标签最短的是 `NO_CARD` / `OVERPAY`（7 字符），
  * 而 `ID:` / `SKU:` / `URL:` 这类业务语义标签都 ≤3 —— 用长度把两者分开，
  * 免得 `NOT_FOUND: SKU: S-001 不存在` 被剥成「S-001 不存在」丢掉上下文。
  */
-const LEVEL2_SUBTAG_RE = /^[A-Z][A-Z0-9_]{4,}(?::[^\s:]+)*:(?:\s+|$)/
+const TAG_RUN_SOURCE = String.raw`(?:[A-Z][A-Z0-9_]{4,}|\d+(?:\.\d+)?)(?::[^\s:]+)*`
+const LEVEL2_SUBTAG_RE = new RegExp(`^${TAG_RUN_SOURCE}:(?:\\s+|$)`)
+
+/**
+ * 整串从头到尾都是标签、没有正文（`OVERPAY:123` / `12.50` / `INSUFFICIENT_BALANCE:NO_CARD`）。
+ * 这种串对用户零信息量，和纯数字编号是一回事 —— 判不可读。
+ */
+const TAG_ONLY_RE = new RegExp(`^${TAG_RUN_SOURCE}$`)
+
+/** 纯数字（可带小数、可冒号分段）：`401` / `12.50` / `1200:300`。任何情况下都不是业务文案。 */
+const NUMERIC_ONLY_RE = /^\d+(?:\.\d+)?(?::\d+(?:\.\d+)?)*$/
 
 /** 纯判定：这一串是不是「技术串而非文案」。不负责翻译，翻译只在整串原值那一层做。 */
 function isOpaque(value: string): boolean {
   if (NEXT_AUTO_DIGEST_RE.test(value)) return true
   if (NEXT_ROUTER_SIGNAL_RE.test(value)) return true
   if (OPAQUE_TOKEN_RE.test(value)) return true
+  if (NUMERIC_ONLY_RE.test(value)) return true
+  if (TAG_ONLY_RE.test(value)) return true
   if (JS_ERROR_NAME_RE.test(value)) return true
   const lower = value.toLowerCase()
   return UNREADABLE_FRAGMENTS.some((f) => lower.includes(f))

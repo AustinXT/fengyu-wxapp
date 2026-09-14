@@ -100,8 +100,10 @@ describe('actionErrorMessage', () => {
       expect(actionErrorMessage(err, FALLBACK)).toBe('该分类下还有 3 个 SKU，无法删除；请先停用')
     })
 
-    // 仓内真实写法（orders.ts:7030/7043/7047/7456）：子标签后面挂着无空格载荷，
+    // 仓内真实**抛出形态**（orders.ts:7030/7043/7047/7456 等）：子标签后面挂着无空格载荷，
     // 以「冒号+空格」收尾。必须整段剥掉，只剥到第一个冒号会把载荷剩在句首。
+    // 注：OVERPAY 族那几条在 recordPayment 里被服务端预解析收敛成返回值，走不到 toast；
+    // 此处测的是剥壳逻辑本身。真正客户端可达的是下面 confirmOfflinePayment 的数字族。
     it.each([
       [
         'CONFLICT: OVERPAY:123.45: 本次回款金额超过订单欠款',
@@ -117,6 +119,13 @@ describe('actionErrorMessage', () => {
       ],
       // 一级前缀后面不带空格（orders.ts:700 的真实写法）
       ['INSUFFICIENT_BALANCE:NO_CARD: 顾客无储值卡账户', '顾客无储值卡账户'],
+      // 子标签首段是**纯数字**的同族写法（orders.ts:3496，confirmOfflinePayment 直抛、
+      // 无服务端预解析 → 客户端真能看到）。大写族修了、数字族漏了就是修了一半。
+      [
+        'INSUFFICIENT_BALANCE:123.45: 顾客储值卡余额不足，期望扣 150，实际 123.45',
+        '顾客储值卡余额不足，期望扣 150，实际 123.45',
+      ],
+      ['INSUFFICIENT_BALANCE:0: 顾客储值卡余额不足', '顾客储值卡余额不足'],
     ])('带载荷的子标签整段剥掉：%s', (digest, expected) => {
       expect(actionErrorMessage({ digest }, FALLBACK)).toBe(expected)
     })
@@ -181,8 +190,12 @@ describe('actionErrorMessage', () => {
       expect(actionErrorMessage(err, FALLBACK)).toBe('该分院不在你的管辖范围内')
     })
 
-    it('11 位以上的数字串不是 Next digest（32 位无符号上限 4294967295），按文案处理', () => {
-      expect(actionErrorMessage({ digest: '12345678901' }, FALLBACK)).toBe('12345678901')
+    it('纯数字串一律不是文案：超出 Next digest 上限的长数字同样回退', () => {
+      // 早先的期望是「11 位以上按文案处理」。评审指出这自相矛盾：`ANALYST_UNAUTHORIZED: 401`
+      // 剥完剩的 401 要挡，凭什么整串 12345678901 就能端给用户？一串裸数字对用户零信息量。
+      expect(actionErrorMessage({ digest: '12345678901' }, FALLBACK)).toBe(FALLBACK)
+      expect(actionErrorMessage({ digest: '12.50' }, FALLBACK)).toBe(FALLBACK)
+      expect(actionErrorMessage({ digest: '1200:300' }, FALLBACK)).toBe(FALLBACK)
     })
 
     // Next 把带 __NEXT_ERROR_CODE 的内部错误 digest 拼成 `<hash>@E<code>`
@@ -203,6 +216,8 @@ describe('actionErrorMessage', () => {
       'ReferenceError: x is not defined',
       'AbortError: signal is aborted without reason',
       'RangeError: Invalid time value',
+      'Error: boom',
+      "DOMException: Failed to execute 'fetch' on 'Window'",
     ])('%s → 回退 fallback', (message) => {
       expect(actionErrorMessage(new Error(message), FALLBACK)).toBe(FALLBACK)
     })
@@ -248,6 +263,10 @@ describe('actionErrorMessage', () => {
       // lakala-onboarding.ts:1590/1637 把网关的 errorMessage 直通进前缀，可能是纯码
       ['INVALID_STATE: SYSTEM_ERROR', '剥完剩裸 token SYSTEM_ERROR'],
       ['INVALID_STATE: LAKALA_RESPONSE_SIGNATURE_MISMATCH', '剥完剩裸 token'],
+      // 整串从头到尾都是标签、没有正文
+      ['INSUFFICIENT_BALANCE:12.50', '剥完剩纯金额 12.50'],
+      ['CONFLICT: OVERPAY:123', '剥完剩标签串 OVERPAY:123'],
+      ['CONFLICT: OVERPAY_ITEM:SI-8801:12.00', '剥完剩标签串（无正文）'],
     ])('%s（%s）→ 回退 fallback', (digest) => {
       const err = Object.assign(new Error(NEXT_SANITIZED_MESSAGE), { digest })
       expect(actionErrorMessage(err, FALLBACK)).toBe(FALLBACK)
