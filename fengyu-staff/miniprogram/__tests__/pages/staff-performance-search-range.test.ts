@@ -472,11 +472,11 @@ describe('绩效页 · 自定义区间跨度上限（评审补漏 P1）', () => 
     await vi.waitFor(() => expect(callStaffApi).toHaveBeenCalled())
 
     expect((globalThis as any).wx.showToast).toHaveBeenCalledWith(
-      expect.objectContaining({ title: expect.stringContaining('相差') })
+      expect.objectContaining({ title: expect.stringContaining('最长') })
     )
     expect(page.data.startDate).toBe('2024-01-01')          // 用户的意图原样保留
-    expect(page.data.endDate).toBe('2025-01-06')            // 2024-01-01 + 371 天
-    expect(page.daysBetween(page.data.startDate, page.data.endDate)).toBe(371)
+    expect(page.data.endDate).toBe('2025-01-05')            // 含首尾共 371 天
+    expect(page.daysBetween(page.data.startDate, page.data.endDate) + 1).toBe(371)
   })
 
   test('改结束日期超限时收敛的是开始日期（锚定用户动的那端）', async () => {
@@ -490,7 +490,7 @@ describe('绩效页 · 自定义区间跨度上限（评审补漏 P1）', () => 
     await vi.waitFor(() => expect(callStaffApi).toHaveBeenCalled())
 
     expect(page.data.endDate).toBe('2023-06-01')            // 用户的意图原样保留
-    expect(page.data.startDate).toBe('2022-05-26')          // 2023-06-01 - 371 天
+    expect(page.data.startDate).toBe('2022-05-27')          // 含首尾共 371 天
   })
 
   test('两步可达任意历史短区间——单端即时提交不能把用户锁死（评审 round-3 codex P1）', async () => {
@@ -543,6 +543,8 @@ describe('绩效页 · 自定义区间跨度上限（评审补漏 P1）', () => 
     expect(page.shiftDate('2024-02-28', 2)).toBe('2024-03-01') // 闰年
     expect(page.shiftDate('2020-01-01', 371)).toBe('2021-01-06')
     expect(page.daysBetween('2020-01-01', page.shiftDate('2020-01-01', 371))).toBe(371)
+    // 跨度上限按自然日数（含首尾）算，所以收敛落点是 +370
+    expect(page.shiftDate('2020-01-01', 370)).toBe('2021-01-05')
   })
 
   test('上限之内的长区间正常放行', async () => {

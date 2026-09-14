@@ -97,7 +97,9 @@ const PAGE_SIZE = 20;
  * 内存里 sort 之后再 `slice()` 分页，也就是**每翻一页都重跑一次全区间扫描 + 全量排序**。
  * 「自定义」之前本页最大跨度就是「本月」(≤31 天)，这条路径够不着；一旦放开，
  * 选个 2020 年至今的区间就能把云函数拖到超时。上限卡在前端，picker 同时给绝对上下界。
- * 371 天 = 一年多一点，够覆盖「去年同月」这类真实诉求。
+ * 口径是**自然日数（含首尾）**，和 toast 文案「最长 N 天」一致 ——
+ * `daysBetween` 算的是差值（含头不含尾），所以判断与收敛都要 ±1，别直接拿差值比。
+ * 371 天 ≈ 一年多几天，够覆盖「去年同月」这类真实诉求。
  */
 const RANGE_MAX_DAYS = 371;
 
@@ -547,18 +549,19 @@ Page({
     // 跨度上限：后端 performanceDetail 是「SQL 全量取回 → 内存 sort → slice 分页」，
     // **每翻一页都重跑一次全区间扫描 + 全量排序**。改自定义区间前最大跨度只有「本月」(≤31 天)，
     // 这条路径够不着；放开后选个跨年区间就能把云函数拖垮，所以上限在前端就得卡死。
-    if (this.daysBetween(start, end) > RANGE_MAX_DAYS) {
+    // +1 换成自然日数（含首尾）再比，与常量和文案同口径
+    if (this.daysBetween(start, end) + 1 > RANGE_MAX_DAYS) {
       if (anchor === 'start') {
-        const capped = this.shiftDate(start, RANGE_MAX_DAYS);
+        const capped = this.shiftDate(start, RANGE_MAX_DAYS - 1);
         end = capped < this.data.customMaxDate ? capped : this.data.customMaxDate;
       } else {
-        const capped = this.shiftDate(end, -RANGE_MAX_DAYS);
-        start = capped > HISTORY_MIN_DATE ? capped : HISTORY_MIN_DATE;
+        const capped = this.shiftDate(end, -(RANGE_MAX_DAYS - 1));
+        start = capped > this.data.customMinDate ? capped : this.data.customMinDate;
       }
       // 收敛结果若与屏幕上的区间完全一致，就不要说「已自动调整」——
       // 下面的同值早退会让页面毫无变化，用户会以为点击丢了
       if (start !== this.data.startDate || end !== this.data.endDate) {
-        wx.showToast({ title: `起止最多相差 ${RANGE_MAX_DAYS} 天，另一端已自动调整`, icon: 'none' });
+        wx.showToast({ title: `查询区间最长 ${RANGE_MAX_DAYS} 天，另一端已自动调整`, icon: 'none' });
       }
     }
     // 选了同一天通常无需重拉；两个例外方向：
@@ -993,9 +996,9 @@ Page({
       : intlPrefix
         ? (kwDigits.length >= 5 ? [kwDigits, kwDigits.slice(2)] : [])
         : [kwDigits];
-    // 姓名两侧都剥空白：关键词写回时已 trim（避免「框里有内容、列表是全量」的哑态），
-    // 但词**中间**的空格留着 —— 顾客姓名里也可能有（「张 三」/ 全角空格），
-    // 两边都归一才不会出现「看着一模一样却搜不到」
+    // 姓名匹配时**关键词与姓名都把所有空白剥掉**（含词中间的）：顾客姓名里可能带空格
+    // （「张 三」、全角空格），员工打字时也可能带 —— 两边同样归一，才不会出现
+    // 「看着一模一样却搜不到」。注意关键词本身不 trim 回写（那会让空格根本输不进去）
     const kwName = kw.replace(/\s+/g, '');
     const matched = items.filter((it) => {
       if (kwName && String(it.customerName || '').replace(/\s+/g, '').toLowerCase().indexOf(kwName) >= 0) return true;
