@@ -163,6 +163,17 @@ describe('业务文案提取', () => {
     ).toBe('储值卡剩余次数为 0')
   })
 
+  it('前缀合法但正文是裸 token（lib/lakala-client.ts 那批）→ 回退兜底，不端内部枚举', () => {
+    expect(actionErrorMessage(digestOf('INVALID_STATE: LAKALA_NOT_CONFIGURED'), '拉卡拉暂不可用')).toBe(
+      '拉卡拉暂不可用',
+    )
+    expect(
+      actionErrorMessage(digestOf('INVALID_PARAMS: REFUND_NEEDS_ORIGIN_REFERENCE'), '退款参数有误'),
+    ).toBe('退款参数有误')
+    // 但类型判定不受影响：正文不可读 ≠ 类型不可知
+    expect(actionErrorType(digestOf('INVALID_STATE: LAKALA_NOT_CONFIGURED'))).toBe('INVALID_STATE')
+  })
+
   it('裸 token 换成中文说法，不把内部枚举端给用户', () => {
     // lib/permissions.ts 的 PermissionError：digest 是给 error.tsx 判 403 用的信号量
     expect(actionErrorMessage(digestOf('PERMISSION_DENIED'), '兜底')).toBe('无权执行该操作')

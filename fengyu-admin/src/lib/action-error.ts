@@ -75,12 +75,16 @@ const OPAQUE_TOKEN_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
 
 /**
  * 命中 9 项白名单前缀则返回剥完前缀（含可选二级子标签）的用户文案，否则 null。
+ *
+ * 剥完只剩裸 token 的（`INVALID_STATE: LAKALA_NOT_CONFIGURED` 这类，仓内 7 处）同样判为
+ * 不可读 —— 前缀合法不代表正文是给人看的，放行就等于把内部枚举端给用户（issue #133）。
  */
 function businessMessage(value: string): string | null {
   const parsed = parseErrorPrefix(value)
   if (!parsed) return null
   const text = parsed.displayMessage.replace(SUB_LABEL_RE, '').trim()
-  return text || null
+  if (!text || OPAQUE_TOKEN_RE.test(text)) return null
+  return text
 }
 
 function nonEmptyString(value: unknown): string | null {
