@@ -430,6 +430,10 @@ function DocActionDialog({
 }) {
   const remarkId = useId()
   const errorId = `${remarkId}-error`
+  const remarkRef = useRef<HTMLTextAreaElement>(null)
+  // 每个提交自己持有一张「凭证」，只有凭证还是自己的那次才有资格解锁。
+  // 否则降级到 .show() 后：A 在途 → 切到 B → B 提交 → A 先回来 → A 的 finally 把 B 的锁解了。
+  const submitTokenRef = useRef(0)
   const [remark, setRemark] = useState('')
   const [touched, setTouched] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -446,14 +450,26 @@ function DocActionDialog({
   useEffect(() => {
     setRemark('')
     setTouched(false)
+    // 换单据/换动作 = 换一次提交周期：作废上一张凭证，上一次的 finally 就管不到这一次了
+    submitTokenRef.current += 1
     setSubmitting(false)
   }, [resetKey])
+
+  // showModal() 在 layout effect 里跑，那之前 <dialog> 还是 display:none，React 的
+  // autoFocus 会静默失败；而常驻挂载后 textarea 从第二次打开起也不会再重挂。
+  // 所以焦点得在 passive effect 里自己给 —— 否则焦点停在右上角的 X 上，
+  // 键盘用户一个 Enter 就把弹窗关了。
+  useEffect(() => {
+    if (pending) remarkRef.current?.focus()
+  }, [resetKey, pending])
 
   const active = pending ?? snapshot
   if (!active) return null
   const config = DOC_ACTION_CONFIG[active.kind]
-  const trimmed = remark.replace(INVISIBLE_FORMAT_RE, '').trim()
-  const missing = config.remarkRequired && !trimmed
+  // 提交的是用户原样输入（只 trim 首尾空白）；清 Cf 字符只用来判「看起来是不是空的」——
+  // 否则 ZWJ 组合 emoji、阿拉伯语方向控制符会在落库时被悄悄改写。
+  const submittedRemark = remark.trim()
+  const missing = config.remarkRequired && !remark.replace(INVISIBLE_FORMAT_RE, '').trim()
 
   async function submit() {
     if (!pending || submitting) return
@@ -463,8 +479,9 @@ function DocActionDialog({
       return
     }
     setSubmitting(true)
+    const token = ++submitTokenRef.current
     try {
-      const result = await config.run(pending.docId, trimmed)
+      const result = await config.run(pending.docId, submittedRemark)
       toast.success(config.successMessage(result))
       onDone(pending)
     } catch (err) {
@@ -473,7 +490,8 @@ function DocActionDialog({
       // 列表也还是旧状态，按钮照样在。关掉 + 刷新，才是有出路的处理。
       if (isStaleStateError(err)) onDone(pending)
     } finally {
-      setSubmitting(false)
+      // 凭证被换单据/换动作作废过的话，这次的 finally 无权解锁
+      if (submitTokenRef.current === token) setSubmitting(false)
     }
   }
 
@@ -505,10 +523,10 @@ function DocActionDialog({
           {config.remarkRequired && <span className="text-[var(--primary)]"> *</span>}
         </label>
         <Textarea
+          // key 用 resetKey：换单据时渲染期就是全新的输入框，不会闪一帧上一张单的备注
+          key={resetKey}
           id={remarkId}
-          // 弹窗的核心操作就是填这里；不给 autoFocus 的话焦点停在右上角的 X 上，
-          // 键盘用户多一次 Tab，误触 Enter 还会直接关窗丢输入
-          autoFocus
+          ref={remarkRef}
           aria-required={config.remarkRequired}
           aria-invalid={touched && missing}
           aria-describedby={touched && missing ? errorId : undefined}
@@ -520,7 +538,10 @@ function DocActionDialog({
         />
         <div className="mt-1 flex items-start justify-between gap-2">
           {touched && missing ? (
-            <p id={errorId} role="alert" className="text-xs text-[var(--destructive)]">
+            // 不加 role="alert"：同文案的 toast 已经在 live region 里播报过一次，
+            // 这里再挂一个 alert 会让读屏把同一句念两遍。视觉红字 + aria-invalid +
+            // aria-describedby 已经把「哪里错了」说清楚。
+            <p id={errorId} className="text-xs text-[var(--destructive)]">
               请填写{config.label}
             </p>
           ) : (

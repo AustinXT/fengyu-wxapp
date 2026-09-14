@@ -606,7 +606,9 @@ describe('审批 / 驳回 / 收货的备注弹窗（#134）', () => {
     // 只守单个文件的话，同目录的 inventory-operations-page.tsx / inventory-skus-page.tsx
     // 新写一个 window.confirm 照样过 —— 而域外残留的 7 处恰好证明这种写法是会自然长出来的。
     const dir = import.meta.dirname
-    const files = readdirSync(dir).filter((f) => f.endsWith('.tsx') && !f.endsWith('.test.tsx'))
+    const files = readdirSync(dir).filter(
+      (f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f),
+    )
     expect(files.length).toBeGreaterThan(3)
     for (const file of files) {
       const src = readFileSync(resolve(dir, file), 'utf8')
@@ -654,7 +656,11 @@ describe('审批 / 驳回 / 收货的备注弹窗（#134）', () => {
     fireEvent.click(screen.getByRole('button', { name: '驳回' }))
     fireEvent.click(screen.getByRole('button', { name: '确认驳回' }))
 
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('请填写驳回原因'))
+    // 行内红字故意不带 role="alert"：同文案的 toast 已经在 live region 里播报过一次
+    await waitFor(() =>
+      expect(within(actionDialog()).getByText('请填写驳回原因')).toBeInTheDocument(),
+    )
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(rejectInventoryCoreDoc).not.toHaveBeenCalled()
     expect(toast.error).toHaveBeenCalledWith('请填写驳回原因')
     expect(remarkBox('驳回原因')).toHaveAttribute('aria-invalid', 'true')
@@ -823,8 +829,53 @@ describe('弹窗在异常与并发下的出路（#134 评审补）', () => {
     const cancelEvent = new Event('cancel', { cancelable: true, bubbles: true })
     fireEvent(dialog, cancelEvent)
     expect(cancelEvent.defaultPrevented).toBe(true)
+    // 光断言 defaultPrevented 不够：万一将来有人既 preventDefault 又 onOpenChange(false)，
+    // 这条用例照样绿。把「弹窗仍在 + action 没被重复调」也钉住。
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(approveInventoryCoreDoc).toHaveBeenCalledTimes(1)
 
     await act(async () => { gate.resolve(); await gate.promise })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('降级路径下 A 在途时切到 B：A 先返回也不会解掉 B 的提交锁', async () => {
+    const gateA = deferred<void>()
+    const gateB = deferred<void>()
+    vi.mocked(rejectInventoryCoreDoc).mockReturnValueOnce(gateA.promise as never)
+    vi.mocked(approveInventoryCoreDoc).mockReturnValueOnce(gateB.promise as never)
+    const rowB: InventoryDocRow = { ...row, id: 'MBS-260813-0009' }
+    renderDocs([row, rowB])
+
+    fireEvent.click(screen.getAllByRole('button', { name: '驳回' })[0])
+    fireEvent.change(remarkBox('驳回原因'), { target: { value: '数量不符' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认驳回' }))
+    await waitFor(() => expect(rejectInventoryCoreDoc).toHaveBeenCalledTimes(1))
+
+    // 切到 B（真机上 showModal 会 inert 挡住，这里模拟 .show() 降级路径）
+    fireEvent.click(screen.getAllByRole('button', { name: '通过' })[1])
+    fireEvent.click(screen.getByRole('button', { name: '确认通过' }))
+    await waitFor(() => expect(approveInventoryCoreDoc).toHaveBeenCalledTimes(1))
+
+    // A 先回来 —— 它的 finally 不该把 B 的锁解开
+    await act(async () => { gateA.resolve(); await gateA.promise })
+    expect(screen.getByRole('button', { name: '处理中…' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: '处理中…' }))
+    expect(approveInventoryCoreDoc).toHaveBeenCalledTimes(1)
+
+    await act(async () => { gateB.resolve(); await gateB.promise })
+  })
+
+  it('提交的是用户原样输入，不因必填校验顺手改写正文', async () => {
+    vi.mocked(rejectInventoryCoreDoc).mockResolvedValue(undefined as never)
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    // ZWJ 组合 emoji：清 Cf 只能用于「看起来是不是空的」，不能拿去落库
+    fireEvent.change(remarkBox('驳回原因'), { target: { value: '  已联系 👩\u200D⚕️ 复核  ' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认驳回' }))
+
+    await waitFor(() =>
+      expect(rejectInventoryCoreDoc).toHaveBeenCalledWith(row.id, '已联系 👩\u200D⚕️ 复核'),
+    )
   })
 
   it('弹窗有可及名称，读屏不会只念一句「对话框」', () => {
@@ -855,9 +906,16 @@ describe('弹窗在异常与并发下的出路（#134 评审补）', () => {
     fireEvent.click(screen.getByRole('button', { name: '驳回' }))
     fireEvent.click(screen.getByRole('button', { name: '确认驳回' }))
 
-    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+    const errorText = await waitFor(() => within(actionDialog()).getByText('请填写驳回原因'))
     const box = remarkBox('驳回原因')
-    expect(box).toHaveAttribute('aria-describedby', screen.getByRole('alert').id)
+    expect(errorText.id).toBeTruthy()
+    expect(box).toHaveAttribute('aria-describedby', errorText.id)
+  })
+
+  it('打开弹窗时焦点直接落在备注输入框，而不是右上角的关闭按钮', async () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    await waitFor(() => expect(remarkBox('驳回原因')).toHaveFocus())
   })
 
   it('字数计数随输入更新', () => {
