@@ -130,10 +130,14 @@ const ALLOWED_QUADRUPLE_FILES = [
   'fengyu-staff/cloudfunctions/staffApi/utils/sales-categories.js',
 ]
 
-/** 负向扫描的搜索根（生产源码；运维脚本 / 种子 / 迁移不在内） */
+/**
+ * 负向扫描的搜索根 —— **全部**生产项目（运维脚本 / 种子 / 迁移不在内）。
+ * ⚠️ 仓库新增子项目时必须同步这张表，否则新项目是扫描盲区。
+ */
 const PRODUCTION_ROOTS = [
   'db/schema',
   'fengyu-admin/src',
+  'fengyu-analyst/src', // Next.js 分析端；当前无分类字面量，但不能是盲区
   'fengyu-client/cloudfunctions',
   'fengyu-client/miniprogram',
   'fengyu-staff/cloudfunctions',
@@ -143,16 +147,34 @@ const PRODUCTION_ROOTS = [
 /** 非生产代码：测试、依赖、构建产物、种子数据 */
 const NON_PRODUCTION = /(^|\/)(node_modules|__tests__|tests|dist|\.next|miniprogram_npm)(\/|$)|\.test\.[jt]sx?$|(^|\/)seed\.ts$/
 
+/** 小程序的 wxml/wxs 与配置 json 同样能承载静态选项，一并纳入 */
+const SOURCE_EXT = /\.(js|mjs|ts|tsx|wxml|wxs|json)$/
+
 const collectSourceFiles = (dir, acc = []) => {
   if (!fs.existsSync(dir)) return acc
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name)
     if (NON_PRODUCTION.test(path.relative(REPO, full))) continue
     if (entry.isDirectory()) collectSourceFiles(full, acc)
-    else if (/\.(js|mjs|ts|tsx)$/.test(entry.name)) acc.push(full)
+    else if (SOURCE_EXT.test(entry.name)) acc.push(full)
   }
   return acc
 }
+
+/**
+ * 剥掉块注释与整行行注释后再做词法判断。
+ *
+ * 两个作用：
+ *   1. **防假阴性**：把 `saleEco: Number(r.sale_eco ?? 0),` 整行注释掉，字符串仍在文件里，
+ *      链路断言会命中而放行，可运行时该列已空。剥注释后这类"注释掉即失效"的改动会响亮失败。
+ *   2. **防假阳性**：生产文件仅在说明文字里列举四个分类名（正常的文档演进），
+ *      不该被负向扫描判成新副本。
+ *
+ * 只剥**行首**的 `//`（去空白后），不碰行内 `//`，避免误伤 URL 之类；
+ * 行尾注释（如 `Number(r.sale_zxzh ?? 0), // 自销自耗`）保留，因为那行代码本身还在。
+ */
+const stripComments = (source) =>
+  source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
 
 describe('生产源码副本面封闭（负向扫描）', () => {
   /**
@@ -170,7 +192,7 @@ describe('生产源码副本面封闭（负向扫描）', () => {
     const hits = PRODUCTION_ROOTS
       .flatMap((root) => collectSourceFiles(path.join(REPO, root)))
       .filter((file) => {
-        const source = fs.readFileSync(file, 'utf8')
+        const source = stripComments(fs.readFileSync(file, 'utf8'))
         return SALES_CATEGORIES.every((category) => source.includes(category))
       })
       .map((file) => path.relative(REPO, file))
@@ -272,7 +294,9 @@ describe('efficiency.ts 员工人效四分类列链路完整性', () => {
    */
   const toSnake = (camel) => camel.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)
 
-  const efficiencySource = read(EFFICIENCY_TS)
+  // 剥注释后再断言：否则把 `saleEco: Number(r.sale_eco ?? 0),` 整行注释掉，
+  // 字符串仍在文件里、断言照样命中，而运行时该列已经空了
+  const efficiencySource = stripComments(read(EFFICIENCY_TS))
 
   /**
    * 只在 `SALES_CATEGORY_COLUMN_KEYS = {…}` 块**内部**提取，不扫全文件 ——
