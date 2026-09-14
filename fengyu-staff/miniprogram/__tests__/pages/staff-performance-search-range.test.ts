@@ -66,7 +66,7 @@ function createPage() {
           this.data[key] = value
         }
       }
-      // 真机上 setData 的第二参在数据落到视图层后回调；`_lastKey` 这类
+      // 真机上 setData 的第二参在数据落到视图层后回调；`_screen.settled` 这类
       // 「屏幕数据身份证」就挂在这里提交，mock 必须一并支持
       cb?.()
     },
@@ -688,7 +688,7 @@ describe('绩效页 · 「成功查到 0 条」不等于「还没加载」（评
     expect(callStaffApi).not.toHaveBeenCalled()
   })
 
-  test('加载失败后切「自定义」仍要重拉（_lastKey 已被清空）', async () => {
+  test('加载失败后切「自定义」仍要重拉（屏幕身份已被清空）', async () => {
     const page = createPage()
     page.onLoad({ range: 'month' })
     vi.mocked(callStaffApi).mockRejectedValue(new Error('网络开小差'))
@@ -1297,18 +1297,18 @@ describe('绩效页 · 评审 round-14 闭环（glm）', () => {
     expect(page.data.displayItems).toHaveLength(1)
   })
 
-  test('_lastKey 在 setData 之后才写——失败时不能和屏幕上的数据漂移', async () => {
+  test('屏幕身份整体替换：失败时不能和屏幕上的数据漂移', async () => {
     const page = createPage()
     page.onLoad({ range: 'month' })
     mockPage([makeItem('张三', '13800000001', 1)], 1)
     await page.loadData(true)
-    expect(page._lastKey).toContain('2026-09-01')
+    expect(page._screen?.key).toContain('2026-09-01')
 
-    // 主体变更后请求失败：_lastKey 必须已被清空，否则 keepStaleOnError 会误判同源
+    // 主体变更后请求失败：屏幕身份必须已被清空，否则 keepStaleOnError 会误判同源
     vi.mocked(callStaffApi).mockRejectedValue(new Error('网络开小差'))
     page.setRange('today')
     await vi.waitFor(() => expect(page.data.loadFailed).toBe(true))
-    expect(page._lastKey).toBe('')
+    expect(page._screen).toBeNull()
   })
 
   test('改完关键词 200ms 内正好有响应回来，渲染窗口仍复位回第一屏', async () => {
@@ -1656,7 +1656,7 @@ describe('绩效页 · 评审 round-20 闭环（glm）', () => {
     expect(page.data.items).toHaveLength(0)
     expect(page.data.displayItems).toHaveLength(0)
     expect(page.data.totalCommission).toBe('--')
-    expect(page._lastKey).toBe('')
+    expect(page._screen).toBeNull()
   })
 
 
@@ -1757,8 +1757,8 @@ describe('绩效页 · 评审 round-25 闭环（codex）', () => {
     pending.forEach((cb) => cb())
     page.setData = realSetData
 
-    // 屏幕上挂的还是那批数据，_lastKey 就该反映这个事实
-    expect(page._lastKey).not.toBe('')
+    // 屏幕上挂的还是那批数据，身份就该反映这个事实
+    expect(page._screen?.settled).toBe(true)
 
     // 于是紧随其后的被动刷新失败时，同源数据得以保留（keepStaleOnError 生效）
     vi.mocked(callStaffApi).mockRejectedValue(new Error('网络开小差'))
@@ -1782,12 +1782,12 @@ describe('绩效页 · 评审 round-25 闭环（codex）', () => {
     await page.loadData(true)          // B 上屏
     page.setData = realSetData
     pending.forEach((cb) => cb())      // B 的回调正常落地
-    const keyAfterB = page._lastKey
+    const keyAfterB = page._screen?.key
     expect(keyAfterB).not.toBe('')
 
     staleCb() // A 的回调此刻才迟到
-    expect(page._lastKey).toBe(keyAfterB) // 没被 A 倒退覆盖
-    expect(page._renderedSeq).toBe(2)
+    expect(page._screen?.key).toBe(keyAfterB) // 没被 A 倒退覆盖
+    expect(page._screen?.seq).toBe(2)
   })
 
   test('同区间请求在途时连点「自定义」，不并发启动多个全区间扫描', () => {
@@ -1796,7 +1796,7 @@ describe('绩效页 · 评审 round-25 闭环（codex）', () => {
     vi.mocked(callStaffApi).mockImplementation(() => new Promise(() => {})) // 请求挂起
     page.loadData(true)
     expect(page.data.loading).toBe(true)
-    expect(page._lastKey).toBe('') // 首屏还没成功过
+    expect(page._screen).toBeNull() // 首屏还没成功过
 
     vi.mocked(callStaffApi).mockClear()
     page.onRangeTap({ currentTarget: { dataset: { type: 'custom' } } })
@@ -1832,14 +1832,14 @@ describe('绩效页 · 清屏后迟到回调不得复活旧缓存（评审 round
     vi.mocked(callStaffApi).mockRejectedValue(denied)
     await page.loadData(true, true)
     expect(page._summaryCache).toBeNull()
-    expect(page._lastKey).toBe('')
+    expect(page._screen).toBeNull()
 
     // 迟到的成功回调此刻才落地
     pending.forEach((cb) => cb())
 
     // 不能复活：否则切一级 Tab 就能用 _summaryCache 重算出已撤权员工的分类薪酬
     expect(page._summaryCache).toBeNull()
-    expect(page._lastKey).toBe('')
+    expect(page._screen).toBeNull()
     page.onMainTabChange({ detail: { index: 1 } })
     expect(page.data.hasCategoryPanel).toBe(false)
   })
@@ -1861,7 +1861,7 @@ describe('绩效页 · 清屏后迟到回调不得复活旧缓存（评审 round
     page.clearSubjectCache() // 换员工/换时段都会先做这件事
     pending.forEach((cb) => cb())
 
-    expect(page._lastKey).toBe('')
+    expect(page._screen).toBeNull()
     expect(page._summaryCache).toBeNull()
   })
 })
@@ -2002,8 +2002,8 @@ describe('绩效页 · 评审 round-30 闭环（codex）', () => {
     }
     await page.loadData(true)
     expect(page.data.items).toHaveLength(1)
-    expect(page._lastKey).toBe('')        // 回调还没跑
-    expect(page._pendingKey).not.toBe('') // 但数据已经过桥了
+    expect(page._screen?.settled).toBe(false) // 回调还没跑
+    expect(page._screen?.key).not.toBe('')    // 但数据已经过桥、身份已经立住
 
     // B：同源被动刷新，先失败
     vi.mocked(callStaffApi).mockRejectedValue(new Error('网络开小差'))
@@ -2037,5 +2037,77 @@ describe('绩效页 · 评审 round-30 闭环（codex）', () => {
 
     search(page, '１３８／００１３／８０００')
     expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['张三'])
+  })
+})
+
+describe('绩效页 · 屏幕身份整体替换（评审 round-31 codex P2 的根因收敛）', () => {
+  /** 把 setData 回调扣下来，手工控制落地时机 */
+  function holdCallbacks(page: Record<string, any>) {
+    const pending: Array<() => void> = []
+    const real = page.setData.bind(page)
+    page.setData = (u: Record<string, unknown>, cb?: () => void) => {
+      real(u)
+      if (cb) pending.push(cb)
+    }
+    return { pending, restore: () => { page.setData = real } }
+  }
+
+  test('A 的回调落在 B 的 setData 与 B 的回调之间：不能清掉 B 的身份', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+
+    const held = holdCallbacks(page)
+    await page.loadData(true)                 // A 上屏
+    const aCb = held.pending.shift()!
+    await page.loadData(true)                 // B 上屏（身份整体换成 B）
+    const bCb = held.pending.shift()!
+    const bKey = page._screen?.key
+
+    aCb()                                     // A 的回调迟到，正好夹在 B 的 setData 与回调之间
+    expect(page._screen?.key).toBe(bKey)      // B 的身份不受影响
+    expect(page._screen?.seq).toBe(2)
+    expect(page._screen?.settled).toBe(false) // 更不能被 A 标记成已落地
+
+    bCb()
+    expect(page._screen?.settled).toBe(true)
+    held.restore()
+  })
+
+  test('这个交错下 B 若失败，同源数据仍要保住', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+
+    const held = holdCallbacks(page)
+    await page.loadData(true)
+    const aCb = held.pending.shift()!
+    await page.loadData(true, true)   // B：同源被动刷新
+    aCb()                             // A 的回调迟到
+    held.restore()
+
+    vi.mocked(callStaffApi).mockRejectedValue(new Error('网络开小差'))
+    await page.loadData(true, true)   // C：同源，失败
+
+    expect(page.data.items).toHaveLength(1) // keepStaleOnError 生效
+    expect(page.data.loadFailed).toBe(false)
+  })
+
+  test('清屏把身份整体抹成 null，之后任何迟到回调都不生效', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+
+    const held = holdCallbacks(page)
+    await page.loadData(true)
+    const aCb = held.pending.shift()!
+    held.restore()
+
+    page.clearSubjectCache()
+    expect(page._screen).toBeNull()
+
+    aCb()
+    expect(page._screen).toBeNull()      // 不复活
+    expect(page._summaryCache).toBeNull()
   })
 })

@@ -218,15 +218,20 @@ Page({
   _seq: 0,
   /** 页面已卸载：async 回调写回前的存活检查（_seq 只护 loadData） */
   _disposed: false,
-  /** 最后一次成功渲染的查询键（员工+时段+两级筛选）；失败时据此判断旧数据是否还同源 */
-  _lastKey: '',
   /**
-   * 已经 `setData` 出去、但完成回调还没落地的查询键。
-   * `loadData` 不等回调，被动刷新完全可能抢在回调之前失败 —— 那一刻 `_lastKey` 还是空的，
-   * catch 里的 sameSource 就会把屏幕上那批同源数据误判成异源清掉，
-   * keepStaleOnError 形同虚设。
+   * 屏幕上那批数据的身份。**整体替换，不做逐字段更新** —— 之前用四个独立标志位
+   * （lastKey / pendingKey / renderedSeq / epoch）管这件事，每修一个交错场景就冒出下一个：
+   * 迟到回调清掉新请求的 pending、清屏后旧回调复活缓存、被动刷新抢在回调前失败被误判异源……
+   * 根因都是「几个字段分别属于不同请求」。合成一个对象后这类错配在结构上就不成立了。
+   *
+   * - `key`   查询键（员工+时段+两级筛选），catch 里据它判断旧数据是否还同源
+   * - `seq`   写这批数据的请求代次，迟到回调据它判断自己是不是已被顶掉
+   * - `epoch` 主体世代，清屏时推进；据它判断这批数据是不是早被抹掉了
+   * - `settled` setData 的完成回调是否已落地（`null` 表示屏幕上没有可信数据）
    */
-  _pendingKey: '',
+  _screen: null as { key: string; seq: number; epoch: number; settled: boolean } | null,
+  /** 主体世代：换员工 / 换时段 / 清屏时 +1 */
+  _subjectEpoch: 0,
   /** 最后一次成功的全量分类汇总：切一级 Tab 时本地即时换口径，不必等请求返回 */
   _summaryCache: null as { summary: CategorySummary; categories: string[] } | null,
   /** 检索防抖定时器（onUnload 必须清，否则回调会打到已销毁的页面上） */
@@ -235,20 +240,6 @@ Page({
   _filteredKeyword: '',
   /** 跨零点定时器：页面停在前台过午夜时把 picker 上界推到新的今天 */
   _midnightTimer: null as ReturnType<typeof setTimeout> | null,
-  /**
-   * 最后一次**确认渲染完成**的请求代次（只在 setData 回调里推进）。
-   * `_seq` 管的是「谁的响应还算数」，这个管的是「屏幕上现在挂的是谁的数据」——
-   * 两者会错开：响应 A 已经上屏，紧接着被动刷新把 `_seq` 推到 B，
-   * 这时 A 的回调若拿 `_seq` 判断就会放弃提交 `_lastKey`，
-   * 后面 B 一失败，catch 里的 sameSource 就会把屏幕上那批同源数据误判成异源清掉。
-   */
-  _renderedSeq: 0,
-  /**
-   * 主体世代：换员工 / 换时段 / 清屏时 +1。
-   * 迟到的 setData 回调靠它判断「我这批数据是不是已经被抹掉了」——
-   * 光比代次不够：清屏并不推进 `_renderedSeq`，旧回调仍会命中相等而把缓存复活回来。
-   */
-  _subjectEpoch: 0,
 
   onLoad(options: Record<string, string>) {
     const mgr = isManager();
@@ -416,7 +407,7 @@ Page({
 
     // 什么时候只切 UI、不重拉（后端每次请求都是全区间扫描，白跑一趟既费云函数又闪一下）：
     //
-    // ① 同区间的请求正在路上 —— 首屏或失败重试在途时 `_lastKey` 还是空的，连点几下
+    // ① 同区间的请求正在路上 —— 首屏或失败重试在途时屏幕身份还是空的，连点几下
     //    「自定义」会并发启动多个一模一样的全区间扫描（`_seq` 只丢弃响应，拦不住已经
     //    进了云函数的查询）。在途那次查的本就是这个区间，等它就行。
     // ② **从别的档位切进** custom，且屏幕上已有同源数据 —— 区间是从上一档沿用来的，
@@ -426,12 +417,12 @@ Page({
     // 用户在手动刷新，而且无结果文案里「点上方时段按钮可重查」指的就是这个动作，
     // 吞掉它会让那句指引变成空话。
     //
-    // 用 `_lastKey`（上一次**成功**渲染的查询键）而不是 `items.length > 0` 判断有没有同源
+    // 用屏幕身份（上一次**成功**渲染的查询键）而不是 `items.length > 0` 判断有没有同源
     // 数据：后者会把「本期成功查到 0 条」误判成「还没加载」，白白多跑一次全区间扫描。
     const sameRange = start === this.data.startDate && end === this.data.endDate;
     const switchingIntoCustom = this.data.rangeType !== 'custom';
     if (fetch && type === 'custom' && sameRange
-        && (this.data.loading || (switchingIntoCustom && this._lastKey))) {
+        && (this.data.loading || (switchingIntoCustom && this._screen?.settled))) {
       this.setData({ rangeType: type, displayDate: display });
       return;
     }
@@ -778,10 +769,9 @@ Page({
       }
       // 过桥期间用户还能继续打字，回调里读 this.data.keyword 就把「新词已过滤完」错记成事实
       const keywordAtBuild = this.data.keyword;
-      // 发起时的主体世代：回调里据此判断这批数据是否已被清屏抹掉
-      const epochAtSend = this._subjectEpoch;
-      // 数据这一刻就过桥了，回调只是稍后确认 —— 中间这段窗口靠它认同源
-      this._pendingKey = queryKey;
+      // 数据这一刻就过桥了，回调只是稍后确认落地。整体替换身份，
+      // 中间这段「已 setData、回调未回」的窗口同样要能被认作同源
+      this._screen = { key: queryKey, seq, epoch: this._subjectEpoch, settled: false };
       this.setData({
         loadFailed: false,
         totalSalesAlloc: money(res.totalSalesAlloc),
@@ -806,21 +796,15 @@ Page({
         // 用本次请求的 page 判断，不比累计长度 —— 长度一旦被过期响应污染，比较逻辑会崩
         hasMore: page * PAGE_SIZE < total,
       }, () => {
-        // 这三个是「屏幕上那批数据的身份证」，必须等数据真的过桥落到视图层才提交：
-        // 提前写的话，setData 万一失败（比如撞 1MB 上限）它们就和实际渲染的内容对不上，
-        // 会把 catch 分支里 keepStaleOnError 的 sameSource 判断、以及切一级 Tab 时
-        // 用 _summaryCache 本地重算的分类金额一起带偏。
+        // 分类缓存必须等数据真的过桥落到视图层才提交：提前写的话，setData 万一失败
+        // （比如撞 1MB 上限）它就和实际渲染的内容对不上，切一级 Tab 时会用它本地重算出
+        // 一份跟屏幕对不上的分类金额。
         if (this._disposed) return;
-        // 清屏 / 换主体之后迟到的回调：这批数据早不在屏幕上了，不能复活它的缓存
-        if (epochAtSend !== this._subjectEpoch) return;
-        // 已经有更新的响应写过屏幕了，旧回调不许倒退覆盖
-        if (seq < this._renderedSeq) return;
-        // 渲染代次只在这里推进 —— setData 之前就推进的话，
-        // 一旦这次写入失败（比如撞 1MB），屏幕上其实还是旧数据，
-        // 旧回调却已经被判过期、提交不了它自己的 `_lastKey`
-        this._renderedSeq = seq;
-        this._lastKey = queryKey;
-        this._pendingKey = '';
+        // 只认自己写的那一份：屏幕身份若已被更新的响应整体替换、或被清屏抹成 null，
+        // 这个回调就什么都不该做（既不标记落地，也不复活分类缓存）
+        const screen = this._screen;
+        if (!screen || screen.seq !== seq || screen.epoch !== this._subjectEpoch) return;
+        screen.settled = true;
         this._summaryCache = res.categorySummary && res.categories && res.categories.length
           ? { summary: res.categorySummary, categories: res.categories }
           : null;
@@ -841,9 +825,11 @@ Page({
       //   ③ 不是身份/权限类错误（员工调店、权限撤销后仍把原数据留在屏幕上是越权展示）
       const errorType = (err as { errorType?: string } | null)?.errorType;
       const accessDenied = !!errorType && ACCESS_DENIED_ERRORS.indexOf(errorType) >= 0;
-      // 同源判断要连「已 setData、回调未落地」的那批一起认，否则被动刷新抢跑失败时
-      // 会把屏幕上同源的数据清掉
-      const sameSource = queryKey === this._lastKey || (!!this._pendingKey && queryKey === this._pendingKey);
+      // 同源 = 屏幕上那批数据的查询键与本次相同，且期间没被清屏换过主体。
+      // 不要求 settled：`loadData` 不等回调，被动刷新完全可能抢在回调之前失败，
+      // 那时数据其实已经过桥上屏了，按异源清掉就把 keepStaleOnError 废了
+      const screen = this._screen;
+      const sameSource = !!screen && screen.key === queryKey && screen.epoch === this._subjectEpoch;
       // 访问被拒必须**独立于 reset/分页模式**清屏：触底分页（reset=false）时权限被撤销，
       // 若受 reset 限制就只弹个 toast，撤权后的绩效数据继续留在屏幕上
       if (accessDenied || (reset && (!keepStaleOnError || !sameSource))) {
@@ -862,8 +848,7 @@ Page({
    */
   clearSubjectCache() {
     this._summaryCache = null;
-    this._lastKey = '';
-    this._pendingKey = '';
+    this._screen = null;
     // 推进主体世代：在途的 setData 回调可能在清屏**之后**才跑，
     // 那时光比代次会命中相等，把刚清掉的旧主体缓存原样写回去。
     // -403 之后尤其危险 —— 切一下一级 Tab 就能用 `_summaryCache` 本地重算出
