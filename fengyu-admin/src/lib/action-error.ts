@@ -156,7 +156,8 @@ const TAG_RUN_SOURCE = String.raw`(?:[A-Z][A-Z0-9_]{4,}|\d+(?:\.\d+)?)(?::[^\s:]
 const LEVEL2_SUBTAG_RE = new RegExp(`^${TAG_RUN_SOURCE}:(?:\\s+|$)`)
 
 /**
- * 中日韩**表意文字/假名**。业务文案必含，技术串必不含 —— 这是本模块做结构判定的地基。
+ * 中日韩**表意文字/假名**。本模块的地基：一整串一个都没有，它就不是给用户看的文案。
+ * （反过来不成立 —— 中文包着技术痕迹的串照样要挡，那由下面的 `TECH_ARTIFACT_RES` 负责。）
  *
  * 刻意**不含**全角标点（U+3000-303F 的「：」「（」等、U+FF00-FFEF 的全角形式）：
  * 那些只是标点，不构成「这是人话」的证据。否则
@@ -178,24 +179,18 @@ const CJK_RE = /[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF66-\uFF
  * 在整串上跑会把每一条业务错误都杀掉。
  */
 /**
- * 配置名 / 环境变量名（SCREAMING_SNAKE），**只在「配置语境」里才算**。
+ * ⚠️ 这里**没有**「配置名 / 环境变量名」规则，是有意的。
  *
- * 光看形状区分不了 `缺少后台入网配置：LAKALA_ECONTRACT_CALLBACK_URL` 与
- * `SKU ABC_DEF 未设置市场员工购价格`（`business.ts:3915`，商品名是无格式限制的 text）——
- * 前几轮试过「紧贴中文豁免」「中式括号豁免」，每加一层就被评审举出新的真实反例。
- * 改判据：整句里出现「未配置 / 缺少 / 配置项 / 环境变量 / config / env」这类**配置语境词**时，
- * 才把全大写下划线 token 当配置名。仓内 5 条真实配置错误全部命中，
- * 而 `未设置市场员工购价格`、`商品「ABC_DEF」每单最多…`、`ABC_DEF款精华液` 全部放行。
+ * `缺少后台入网配置：LAKALA_ECONTRACT_CALLBACK_URL` 与 `SKU ABC_DEF 未设置市场员工购价格`
+ * （`business.ts:3915`，商品名是**无格式限制的 text**）在语法上完全同形。评审里连栽五轮：
+ * 加长度门槛 → 加「紧贴中文」豁免 → 加「中式括号」豁免 → 加「配置语境词」第二条件，
+ * 每一次都被举出新的真实反例（最后一次是 `商品「ABC_DEF」尚未配置库存组成`，
+ * `orders.ts:158` —— 「尚未配置」正好撞上语境词）。
  *
- * 代价（已登记跟进）：没有配置语境词的内部常量（`请求失败：LAKALA_TIMEOUT_30000ms`）挡不住。
- * 那属于「服务端把技术细节拼进用户文案」，治本在抛错处。
+ * 权衡后撤掉整条规则：它挡的是**环境变量的名字**（不是值）出现在内部管理后台的 toast 里 ——
+ * 对运维人员反而是可操作信息；而它误杀的是真实业务文案，用户会丢掉「哪件商品出了什么问题」。
+ * 「别把技术细节拼进用户文案」这件事治本在抛错处（已登记跟进），不该由收口点的黑名单硬猜。
  */
-const CONFIG_CONTEXT_RE = /未配置|缺少|配置项|环境变量|请配置|\bconfig\b|\benv\b/i
-const CONFIG_NAME_RE = /\b(?=[A-Z][A-Z0-9_]{5,}[a-z]*\b)[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+[a-z]*\b/
-
-function hasConfigName(text: string): boolean {
-  return CONFIG_CONTEXT_RE.test(text) && CONFIG_NAME_RE.test(text)
-}
 
 const TECH_ARTIFACT_RES: readonly RegExp[] = [
   /\bhttps?:\/\/\S/i, // 接口地址
@@ -206,9 +201,6 @@ const TECH_ARTIFACT_RES: readonly RegExp[] = [
   // 主机名:端口 —— 要求含点**且首段以字母开头**。只要求含点的话，
   // 「稀释比例 1.5:30 不合法」「工时 0.5:15 记录异常」这类小数写法会被误杀。
   /\b[A-Za-z][\w-]*(?:\.[A-Za-z0-9][\w-]*)+:\d{2,5}\b/,
-  // 环境变量名 / 内部常量这类 SCREAMING_SNAKE token（必须含下划线，
-  // 免得误杀 SKU、OEM 这类单词型业务缩写）。真实来源：
-  // `actions/lakala-onboarding.ts:1492` 的「缺少电子合同回调地址：LAKALA_ECONTRACT_CALLBACK_URL」
   // 单标签主机:端口（`postgres:5433` / `redis:6379`）。要求小写字母开头 + 主机名 ≥5 字符：
   // 前者避开「稀释比例 1.5:30」这类小数，后者避开「门店 sku:10086 已停用」这类短业务标签
   /\b[a-z][a-z0-9-]{4,}:\d{2,5}\b/,
@@ -291,9 +283,9 @@ const NATIVE_ERROR_NAMES: ReadonlySet<string> = new Set([
  * 兜底结构判定：把文案按「空白 + 中日韩」切开，看有没有哪一段长得像技术串。
  *
  * - 含 `\ " [ ]` 之一且长度 ≥4：带引号的库表/约束名、IPv6、内部标识符。
- *   **不含 `_`** —— 商品名带下划线是合法写法（`A_B款精华液`）。全大写下划线的配置名由
- *   `hasConfigName`（形状 + 配置语境词）单独认；**小写下划线标识符**（`access_token`）
- *   两条都认不到，是已登记的口子（治本在抛错处别拼上游原文）。
+ *   **不含 `_`** —— 商品名带下划线是合法写法（`A_B款精华液`、`ABC_DEF款精华液`）。
+ *   带下划线的标识符（无论 `LAKALA_X` 还是 `access_token`）一律不在这里挡，
+ *   理由见上面「为什么没有配置名规则」。
  * - **斜杠要求出现 ≥2 次**：路径与 URI 天然多段（`file:///srv/backups/db.dump`）。
  *   只要求一个的话，`仅 PC/H5 端支持`、`支持 iOS/Android 双端` 这类产品文案会被误杀 ——
  *   仓内现在没有这种写法，但新文案一写就踩。
@@ -355,8 +347,7 @@ function readableMessage(raw: unknown): string | null {
   if (
     TECH_ARTIFACT_RES.some((re) => re.test(text)) ||
     hasTechnicalRun(text) ||
-    hasHostname(text) ||
-    hasConfigName(text)
+    hasHostname(text)
   )
     return null
   return text

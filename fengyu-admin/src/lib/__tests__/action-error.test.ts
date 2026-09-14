@@ -201,11 +201,6 @@ describe('actionErrorMessage', () => {
     it.each([
       // actions/lakala-onboarding.ts:1492 的真实文案：中文包着环境变量名
       // 全角冒号仍然算「被隔开」，配置名照杀（括号豁免不能顺带把冒号也豁免了）
-      // 配置名 = 形状（全大写下划线）+ 配置语境词（缺少 / 未配置 / 环境变量 …）双条件
-      'INVALID_STATE: 缺少电子合同回调地址：LAKALA_ECONTRACT_CALLBACK_URL',
-      'INVALID_STATE: 未配置 WX_CLIENT_SECRET 环境变量',
-      'INVALID_STATE: 密码加密未配置（缺少 RSA_PRIVATE_KEY）',
-      'INVALID_STATE: 缺少后台入网配置：LAKALA_SM4_KEY',
       // 主机名:端口（IPv4 之外的形态）
       'INVALID_STATE: 数据库连接失败：postgres.internal:5433 不可达',
       // IPv6:端口
@@ -251,20 +246,14 @@ describe('actionErrorMessage', () => {
       // 商品名会被直接插进错误文案（business.ts:1535），规格里带 / 和 _ 都是合法写法
       ['INVALID_STATE: SKU 洗发水500ml/瓶 未设置市场进货价', 'SKU 洗发水500ml/瓶 未设置市场进货价'],
       ['INVALID_STATE: A_B款精华液 未设置市场进货价', 'A_B款精华液 未设置市场进货价'],
-      // 商品名是无格式限制的 text，英文型号 + 下划线是合法写法；紧贴中文即不算配置名
+      // 商品名是无格式限制的 text，英文型号 + 下划线是合法写法
       ['INVALID_STATE: SKU ABC_DEF款精华液 未设置市场进货价', 'SKU ABC_DEF款精华液 未设置市场进货价'],
-      // 中式括号裹着的业务标识符同理 —— orders.ts:194 的 purchaseLimitExceededMessage、
-      // pickup-records.ts:272 都是这种写法
+      // orders.ts:194 的 purchaseLimitExceededMessage、pickup-records.ts:272 的真实写法
       [
         'INVALID_PARAMS: PURCHASE_LIMIT_EXCEEDED: 商品「ABC_DEF」每单最多可购买 2 件',
         '商品「ABC_DEF」每单最多可购买 2 件',
       ],
       ['NOT_FOUND: 库存商品（ABC_DEF）不足', '库存商品（ABC_DEF）不足'],
-      // 空格隔开的商品编码：`business.ts:3915` 的真实模板，没有配置语境词就不算配置名
-      [
-        'INVALID_STATE: SKU ABC_DEF 未设置市场员工购价格',
-        'SKU ABC_DEF 未设置市场员工购价格',
-      ],
       ['INVALID_PARAMS: 仅 PC/H5 端支持该操作', '仅 PC/H5 端支持该操作'],
       ['INVALID_PARAMS: 支持 iOS/Android 双端', '支持 iOS/Android 双端'],
       ['INVALID_PARAMS: 门店 sku:10086 已停用', '门店 sku:10086 已停用'],
@@ -300,12 +289,20 @@ describe('actionErrorMessage', () => {
       )
     })
 
-    it('已知取舍：没有配置语境词的内部常量挡不住（治本在抛错处，已登记跟进）', () => {
-      // 光凭形状区分不了「配置名」与「商品编码」——前几轮试过紧贴中文/中式括号豁免，
-      // 每加一层都被举出新的真实反例。现在用「配置语境词」做第二条件，代价就是这一条。
-      expect(
-        actionErrorMessage({ digest: 'INVALID_STATE: 请求失败：LAKALA_TIMEOUT_30000ms' }, FALLBACK),
-      ).toBe('请求失败：LAKALA_TIMEOUT_30000ms')
+    // 有意不挡的一类：带下划线的标识符（环境变量名 / 内部常量）。
+    // 语法上它与商品编码完全同形（`SKU ABC_DEF 未设置…`、`商品「ABC_DEF」尚未配置库存组成`），
+    // 五轮评审证明「加豁免」永远能被举出新反例。挡它的收益是「环境变量的**名字**别出现在
+    // 内部管理后台的 toast 里」——对运维反而是可操作信息；代价却是丢掉真实业务文案。
+    // 治本在抛错处（已登记跟进）。这组用例把当前行为钉死，将来要改得先改这里。
+    it.each([
+      ['INVALID_STATE: 缺少电子合同回调地址：LAKALA_ECONTRACT_CALLBACK_URL', '缺少电子合同回调地址：LAKALA_ECONTRACT_CALLBACK_URL'],
+      ['INVALID_STATE: 未配置 WX_CLIENT_SECRET 环境变量', '未配置 WX_CLIENT_SECRET 环境变量'],
+      ['INVALID_STATE: 请求失败：LAKALA_TIMEOUT_30000ms', '请求失败：LAKALA_TIMEOUT_30000ms'],
+      // 同形的业务文案（真实抛错点 orders.ts:158 / business.ts:3915）—— 这才是要保住的
+      ['INVALID_STATE: 商品「ABC_DEF」尚未配置库存组成', '商品「ABC_DEF」尚未配置库存组成'],
+      ['INVALID_STATE: SKU ABC_DEF 未设置市场员工购价格', 'SKU ABC_DEF 未设置市场员工购价格'],
+    ])('带下划线的标识符一律不挡（有意取舍）：%s', (digest, expected) => {
+      expect(actionErrorMessage({ digest }, FALLBACK)).toBe(expected)
     })
 
     it('正常中文业务文案不受技术痕迹规则影响', () => {
