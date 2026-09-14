@@ -519,7 +519,7 @@ async function cascadeRefund(client, params) {
   // 修复（家居提货账 schema-free 止血 2026-06-08）：退家居退的是「未提货」数量，
   // 原 `GREATEST(0, picked_up - qty)` 错把退款数从已提货里减 → 损坏提货账 + refundable
   // (=quantity-picked_up) 回升致可重复退（资损）。改为把已退数计入 picked_up（语义升级为
-  // 「已结算」= 已提货 + 已退 + 已转换（2026-09-14 #125）），LEAST(quantity) 封顶，使 refundable 正确归零、不可超退。
+  // 「已结算」= 已提货 + 已退 + 已转换（2026-09-14 #125），LEAST(quantity) 封顶，使 refundable 正确归零、不可超退。
   // 代价：picked_up 不再纯指已物理提货（pickup_records 仍是真实提货源）；彻底分离待 refunded_quantity 列。
   // 字段名 rolledBackPickups 保留（跨端 snapshot 守护），语义现为「计入已结算的家居退款行数」。
   let rolledBackPickups = 0

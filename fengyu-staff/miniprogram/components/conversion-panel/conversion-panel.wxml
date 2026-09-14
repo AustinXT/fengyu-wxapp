@@ -121,7 +121,7 @@
               bind:change="onCardQuantityChange"
               data-id="{{item.saleItemId}}"
             />
-            <text class="conv-card-quantity-label">张</text>
+            <text class="conv-card-quantity-label">{{item.productType === '疗程卡' ? '张' : '行'}}</text>
           </block>
           <text wx:else class="conv-card-quantity-label">整行转换</text>
         </view>

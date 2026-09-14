@@ -202,13 +202,15 @@ async function _closeExpiredPendingByUser(client, userId) {
     `SELECT sale_order_id FROM sale_orders
      WHERE client_user_id = $1 AND status = '待支付'
      AND opened_by IS NULL
+     AND sale_order_type <> '转换单'
      AND sale_order_datetime < NOW() - INTERVAL '10 minutes'`,
     [userId]
   )
   for (const row of expired.rows) {
     await client.query(
       `UPDATE sale_orders SET status = '已关闭', updated_at = NOW()
-       WHERE sale_order_id = $1 AND status = '待支付' AND opened_by IS NULL`,
+       WHERE sale_order_id = $1 AND status = '待支付' AND opened_by IS NULL
+         AND sale_order_type <> '转换单'`,
       [row.sale_order_id]
     )
     await client.query(

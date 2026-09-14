@@ -641,7 +641,7 @@ export const getCustomerHomeProducts = withPermission(
          GROUP BY sale_item_id
       ), conversion_totals AS (
         -- 2026-09-14 #125：家居转出数量并入 picked_up_quantity（"已结算"），这里单独聚合出来，
-        -- 避免把"已转换"算进"已退款"。已关闭/失败的转换单已被 rollback 退回数量，须排除。
+        -- 避免把"已转换"算进"已退款"。只有「已关闭」完成过 rollback（数量已退回），故只排除它。
         SELECT out_item.ref_sale_item_id AS sale_item_id,
                SUM(out_item.quantity)::int AS converted_quantity
           FROM sale_items out_item

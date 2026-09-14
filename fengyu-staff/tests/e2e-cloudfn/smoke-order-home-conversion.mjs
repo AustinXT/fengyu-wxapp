@@ -81,6 +81,27 @@ async function main() {
     `INSERT INTO pickup_records (sale_item_id, inventory_sku_id, pickup_quantity, store_id, client_user_id, confirmed_by, remark, idempotency_key)
      VALUES ($1, NULL, 3, $2, $3, $4, 'e2e-home-conv-fixture', $5)`,
     [srcItemId, TEST_STORE_ID, TEST_CLIENT_USER_ID, TEST_MANAGER_EMP_ID, `${NS}_HCONV_PICKUP`])
+  // 家居 SKU 单位显式设为「盒」——夹具默认 unit='次'，不设则 unit 断言无意义
+  await pgQuery(`UPDATE product_skus SET unit = '盒' WHERE sku_id = $1`, [homeSku.skuId])
+
+  // 同组第二行（共享 sale_item_group_id）：验证分组聚合不算重不算漏
+  const siblingItemId = `${srcItemId}_G2`
+  await pgQuery(
+    `INSERT INTO sale_items (
+       sale_item_id, sale_item_group_id, sale_order_id, store_id, item_direction,
+       sku_id, product_name, product_type, quantity,
+       unit_price, unit_real_price, sale_amount, received, sales_category
+     )
+     SELECT $1, COALESCE(sale_item_group_id, sale_item_id), sale_order_id, store_id, item_direction,
+            sku_id, product_name, product_type, 5,
+            unit_price, unit_real_price, 500, 500, sales_category
+       FROM sale_items WHERE sale_item_id = $2`,
+    [siblingItemId, srcItemId])
+  // 手插的第二行不会自动进订单总额，这里补齐订单口径（A 1000 + B 500），
+  // 否则 createRefund 的「可退余额」闸门会按旧的 1000 判定
+  await pgQuery(
+    `UPDATE sale_orders SET total_amount = 1500, payable_amount = 1500, received = 1500
+      WHERE sale_order_id = $1`, [srcOrderId])
   rec(`  ✓ fixture: 家居行 ${srcItemId} 10 盒 × ¥100，已提 3 → 未提货 7`)
 
   // ── 1. 折抵候选 ──
@@ -97,7 +118,7 @@ async function main() {
     check(Number(homeCard.deductibleAmount) === 700, `deductibleAmount 应=700，实际=${homeCard.deductibleAmount}`)
     // unit 取 COALESCE(product_skus.unit, 家居回落'盒')；夹具 SKU 未设 unit 时以 SKU 值为准，
     // 这里只断言字段有下发（生产家居 SKU 的 unit 为「盒」）
-    check(!!homeCard.unit, 'unit 字段未下发')
+    check(homeCard.unit === '盒', `unit 应=盒，实际=${homeCard.unit}`)
   }
 
   // ── 2. 建转换单（折抵 700 − 转入 300 = −400，走储值卡补差 → 已支付）──
@@ -137,13 +158,18 @@ async function main() {
     clientUserId: TEST_CLIENT_USER_ID,
   })
   check(home1.code === 0, `customer.homeProducts code=${home1.code}`)
-  const row1 = (home1.data || []).find((r) => r.saleItemId === srcItemId)
+  const homeRows1 = (home1.data || []).filter((r) => r.saleItemGroupId === srcItemId || r.saleItemId === srcItemId)
+  check(homeRows1.length === 1, `同组两行应聚合为 1 条，实际=${homeRows1.length}`)
+  const row1 = homeRows1[0]
   check(!!row1, '折抵后家居行不应从档案里消失（存在性过滤须放行 converted）')
   if (row1) {
-    check(Number(row1.pendingPickupQuantity) === 0, `待提应=0，实际=${row1.pendingPickupQuantity}`)
-    check(Number(row1.convertedQuantity) === 7, `已转换应=7，实际=${row1.convertedQuantity}`)
+    // 组内：A 10 盒（提 3 + 转 7）、B 5 盒（全未提）→ purchased 15 / settled 10 / picked 3 / converted 7
+    check(Number(row1.purchasedQuantity) === 15, `组内购买合计应=15，实际=${row1.purchasedQuantity}`)
+    check(Number(row1.convertedQuantity) === 7, `已转换应=7（只算 A 行，不得跨组算重），实际=${row1.convertedQuantity}`)
     check(Number(row1.refundedQuantity) === 0, `已退款应=0（不得把转换算成退款），实际=${row1.refundedQuantity}`)
     check(Number(row1.pickedQuantity) === 3, `已提应=3，实际=${row1.pickedQuantity}`)
+    // A 已全部结算，B 的 5 盒仍可提
+    check(Number(row1.pendingPickupQuantity) === 5, `待提应=5（B 行未动），实际=${row1.pendingPickupQuantity}`)
   }
 
   // ── 4. 提货候选不再放行 ──
@@ -151,10 +177,14 @@ async function main() {
     _testOpenid: TEST_MANAGER_OPENID,
     clientUserId: TEST_CLIENT_USER_ID,
   })
-  if (pickup.code === 0) {
-    const stillPickable = (pickup.data?.items || pickup.data || []).some?.(
-      (it) => it.saleItemId === srcItemId && Number(it.remaining ?? it.pendingPickupQuantity ?? 0) > 0)
-    check(!stillPickable, '折抵后该行仍出现在可提货候选中')
+  check(pickup.code === 0, `availablePickupItems code=${pickup.code} msg=${pickup.message}`)
+  const pickupList = pickup.data?.items ?? pickup.data ?? []
+  check(Array.isArray(pickupList), 'availablePickupItems 未返回数组')
+  if (Array.isArray(pickupList)) {
+    const stillPickable = pickupList.some(
+      (it) => (it.sourceSaleItemIds ?? [it.saleItemId]).includes(srcItemId)
+        && Number(it.remaining ?? it.pendingPickupQuantity ?? 0) > 0)
+    check(!stillPickable, '折抵后该行仍出现在可提货候选中（已转走的数量不得可提）')
   }
 
   // ── 5. 关闭转换单 → 数量完整复原（回滚段闭环）──
@@ -175,15 +205,49 @@ async function main() {
     _testOpenid: TEST_MANAGER_OPENID,
     clientUserId: TEST_CLIENT_USER_ID,
   })
-  const row2 = (home2.data || []).find((r) => r.saleItemId === srcItemId)
+  const row2 = (home2.data || []).find((r) => r.saleItemGroupId === srcItemId || r.saleItemId === srcItemId)
   check(!!row2, '回滚后家居行应重新可见')
   if (row2) {
-    check(Number(row2.pendingPickupQuantity) === 7, `回滚后待提应=7，实际=${row2.pendingPickupQuantity}`)
+    check(Number(row2.pendingPickupQuantity) === 12, `回滚后待提应=12（A 复原 7 + B 5），实际=${row2.pendingPickupQuantity}`)
     check(Number(row2.convertedQuantity) === 0, `回滚后已转换应=0（已关闭单不计入），实际=${row2.convertedQuantity}`)
     check(Number(row2.refundedQuantity) === 0, `回滚后已退款应=0，实际=${row2.refundedQuantity}`)
   }
 
-  // ── 6. 全部结算的家居行不进候选 ──
+  // ── 6. G2 闸门：退款审批前可退量被折抵吃掉 → 拒绝审批（资损守卫的核心防线）──
+  // 用同组 B 行（5 盒未提）建退款申请，再模拟并发转换把这 5 盒折抵走，审批必须 CONFLICT 而非放行。
+  const ref = await invokeStaffApi('order.createRefund', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    refSaleOrderId: srcOrderId,
+    items: [{ saleItemId: siblingItemId, refundQuantity: 5 }],
+    refundReason: 'e2e_home_g2',
+  })
+  check(ref.code === 0, `createRefund 应成功，实际 code=${ref.code} msg=${ref.message}`)
+  if (ref.code === 0) {
+    // 模拟并发转换折抵：把 B 行整行结算掉（等价于转换事务先提交）
+    await pgQuery(
+      `UPDATE sale_items SET picked_up_quantity = quantity WHERE sale_item_id = $1`, [siblingItemId])
+
+    const apr = await invokeStaffApi('order.approveRefund', {
+      _testOpenid: TEST_MANAGER_OPENID, paymentId: ref.data.paymentId, auditRemark: 'e2e-g2',
+    })
+    check(apr.code === -409, `G2 应拒绝审批（CONFLICT/-409），实际 code=${apr.code} msg=${apr.message}`)
+    check(String(apr.message || '').includes('家居产品可退数量已变化'),
+      `G2 拒绝文案应可指引店员重发起，实际='${apr.message}'`)
+
+    // 事务必须整体回滚：流水仍待审批、订单 refunded_amount 未动
+    const sop = await pgQuery(
+      `SELECT status FROM sale_order_payments WHERE id = $1`, [ref.data.paymentId])
+    check(sop[0]?.status === '待审批', `被拒后退款流水应仍为待审批，实际='${sop[0]?.status}'`)
+    const ordAfter = await pgQuery(
+      `SELECT refunded_amount FROM sale_orders WHERE sale_order_id = $1`, [srcOrderId])
+    check(Number(ordAfter[0]?.refunded_amount || 0) === 0,
+      `被拒后 refunded_amount 应=0，实际=${ordAfter[0]?.refunded_amount}`)
+
+    // 清掉这笔待审批流水，避免干扰后续候选断言（待审批退款会冻结整单折抵）
+    await pgQuery(`DELETE FROM sale_order_payments WHERE id = $1`, [ref.data.paymentId])
+  }
+
+  // ── 7. 全部结算的家居行不进候选 ──
   await pgQuery(`UPDATE sale_items SET picked_up_quantity = quantity WHERE sale_item_id = $1`, [srcItemId])
   const held2 = await invokeStaffApi('order.customerHeldCards', {
     _testOpenid: TEST_MANAGER_OPENID,

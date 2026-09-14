@@ -3547,7 +3547,10 @@ async function approveRefund(ctx) {
       const qty = Number(it.sessionCount || 0)
       if (qty > 0) homeRefundQty.set(it.saleItemId, (homeRefundQty.get(it.saleItemId) || 0) + qty)
     }
-    if (homeRefundQty.size > 0) {
+    {
+      // 无条件锁：老退款单（无 note.items 且 ref_sale_item_id 为空）会让 homeRefundQty 为空，
+      // 若因此跳过加锁就退回「createRefund 无锁定额 + cascade LEAST 静默封顶」的旧缺口。
+      // 行锁本身即可把并发折抵挡在审批之外，成本也只是一条即将被更新的行的锁。
       // 锁集必须覆盖本单**全部购买行**而非只锁家居子集：后续 cascadeRefund /
       // recalcPaidSessionsForOrder 会更新同单的疗程卡行，只锁家居会与「先锁疗程卡、再等家居」
       // 的混选转换事务形成反向锁序而死锁。按 sale_item_id 升序，与 createConversion 的锁序一致。

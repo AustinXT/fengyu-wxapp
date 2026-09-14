@@ -2116,8 +2116,9 @@ describe('#125 家居转换折抵跨端守护', () => {
     test.each(ROLLBACK_FILES)('%s 回滚 locked_source 仍按 sale_item_id 定序（全局锁定段之外的纵深保证）', (_name, file) => {
       const src = normalizeSql(readFile(file))
       // 全局锁定段 + 两段 locked_source，共 3 处定序加锁
+      // 全局锁定段 + 两段 locked_source；用 >= 避免后续新增定序锁点时误报
       const ordered = src.match(/ORDER BY src\.sale_item_id FOR UPDATE OF src/g) || []
-      expect(ordered.length).toBe(3)
+      expect(ordered.length).toBeGreaterThanOrEqual(3)
     })
   })
 

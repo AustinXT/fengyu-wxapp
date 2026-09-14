@@ -300,7 +300,7 @@ export function ConversionPanel({
                                 onChange={(e) => setGroupSelection(c, Number(e.target.value))}
                                 className="h-7 w-16 px-1 text-center text-xs"
                               />
-                              <span>/ {c.sourceItems.length} 张</span>
+                              <span>/ {c.sourceItems.length} {c.productType === '疗程卡' ? '张' : '行'}</span>
                             </>
                           ) : (
                             <span>整行转换</span>
