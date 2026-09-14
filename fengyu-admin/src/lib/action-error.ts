@@ -99,8 +99,39 @@ function pick(err: unknown, key: 'digest' | 'message'): string | null {
   return value.trim() || null
 }
 
-/** 噪声扫描上限：message 通道长度无上界，不能对整串做 toLowerCase + 子串扫描。 */
-const NOISE_SCAN_LIMIT = 2000
+/**
+ * 首行长度硬上限：超过即 fail-closed。
+ *
+ * 一行 2000 字以上的「错误信息」不可能是给人看的业务提示，只会是 SQL / 堆栈 / dump。
+ * 直接判死而不是「扫前 2000 字」——后者会被「噪声词放在 2000 字之后」绕过（评审 round 2）。
+ * 同时它也给下面的码点迭代兜住了上界。
+ */
+const MAX_SCANNABLE_LENGTH = 2000
+
+/**
+ * 技术细节特征：命中即判不可读。
+ *
+ * 补这一组是因为「含中文」这道判据挡不住**中文包裹的技术细节**——
+ * `INVALID_STATE: 数据库错误：relation "x" does not exist` 前缀合法、含中文、不命中噪声词表，
+ * 旧版会完整放行（评审 round 2 指出）。
+ *
+ * 每条都按「只在技术语境出现、不会出现在中文业务文案里」挑选，并由
+ * `action-error.test.ts` 的正负例用例钉住（正例=真实业务文案不得被误吞）。
+ */
+const TECHNICAL_DETAIL_PATTERNS: readonly RegExp[] = [
+  // SQL 与 PG 报错术语
+  /\b(?:select|insert into|update\s+\w+\s+set|delete from|relation|constraint|duplicate key|violates|syntax error at)\b/i,
+  // 文件路径（两段以上）与 URL
+  /(?:\/[\w.-]+){2,}/,
+  /https?:\/\//i,
+  // IPv4[:端口]
+  /\b\d{1,3}(?:\.\d{1,3}){3}\b/,
+  // 配置键 / 内部枚举形态的长大写 token（CLIENT_SECRET、LAKALA_NOT_CONFIGURED…）。
+  // 订单号 FY-XSD-WX-… 含连字符、API/SKU/ID 等缩写不足 6 字符，均不会命中。
+  /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/,
+  // 堆栈帧
+  /\bat\s+\w+\s*\(/,
+]
 
 /**
  * 内容闸门：把一段候选正文收敛成「能端给用户的话」，收敛不出来返回 null。
@@ -108,9 +139,9 @@ const NOISE_SCAN_LIMIT = 2000
  * 顺序有讲究：
  * 1. 取首行 —— 多行错误从第二行起通常是 SQL / 堆栈 / 文件路径
  * 2. 剥日志子标签
- * 3. **噪声判定在截断之前**做 —— 若先截断，「内网地址在第 50 字、ETIMEDOUT 在第 150 字」
- *    这种串会把地址露出去而噪声词检测不到（双谱系评审 round 1 指出）。对无上界输入
- *    设 NOISE_SCAN_LIMIT 扫描上限兜住开销
+ * 3. **噪声与技术特征判定在截断之前**做 —— 若先截断，「内网地址在第 50 字、ETIMEDOUT 在第 150 字」
+ *    这种串会把地址露出去而噪声词检测不到（评审 round 1）；超长首行直接判死而不是
+ *    「只扫前 N 字」，否则噪声词挪到 N 之后照样绕过（评审 round 2）
  * 4. 码点安全截断 —— `slice` 会切断 emoji 代理对
  * 5. **中文判定在「展示文本」上**做 —— 中文若只出现在截断点之后，露出去的仍是英文技术串
  */
@@ -118,10 +149,12 @@ function presentable(raw: string): string | null {
   const newline = raw.indexOf('\n')
   const line = (newline === -1 ? raw : raw.slice(0, newline)).replace(LOG_TAG_RE, '').trim()
   if (!line) return null
+  // 超长首行直接判死（见 MAX_SCANNABLE_LENGTH），顺带给下面的码点迭代兜住上界
+  if (line.length > MAX_SCANNABLE_LENGTH) return null
 
-  const scanned = line.length > NOISE_SCAN_LIMIT ? line.slice(0, NOISE_SCAN_LIMIT) : line
-  const lower = scanned.toLowerCase()
+  const lower = line.toLowerCase()
   if (UNREADABLE_FRAGMENTS.some((f) => lower.includes(f))) return null
+  if (TECHNICAL_DETAIL_PATTERNS.some((re) => re.test(line))) return null
 
   const chars = Array.from(line)
   const truncated = chars.length > MAX_DISPLAY_LENGTH

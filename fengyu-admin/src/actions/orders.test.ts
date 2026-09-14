@@ -1655,7 +1655,8 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
     const result = await confirmOfflinePayment('order-active-intent')
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain('PAYMENT_INTENT_ACTIVE')
+    // 子标签（PAYMENT_INTENT_ACTIVE）只进日志不展示给用户；机器可读部分在 code 字段（issue #133）
+    expect(result.message).toBe('在线支付处理中，暂不能确认线下收款')
     expect(statements).toHaveLength(1)
   })
 
@@ -4812,7 +4813,8 @@ describe('recordPayment — 管理后台录入回款', () => {
       success: false,
       error: {
         code: 'CONFLICT',
-        message: 'PAYMENT_INTENT_ACTIVE: 订单存在进行中的在线支付，请等待支付结果或先取消在线支付',
+        // 子标签只进日志不给用户看，机器可读部分在 code 字段（issue #133）
+        message: '订单存在进行中的在线支付，请等待支付结果或先取消在线支付',
       },
     })
     expect(captured.insertValues).toHaveLength(0)
@@ -5273,7 +5275,8 @@ describe('freezeConversionRepaymentAmount — admin 在线转换回款金额冻�
     expect(result.success).toBe(false)
     if (!result.success) {
       expect(result.error.code).toBe('CONFLICT')
-      expect(result.error.message).toContain('PAYMENT_INTENT_ACTIVE')
+      // 子标签只进日志不给用户看，机器可读部分在 code 字段（issue #133）
+      expect(result.error.message).toBe('订单已有进行中的在线支付，请等待支付结果后重试')
     }
     expect(statements).toHaveLength(1)
   })

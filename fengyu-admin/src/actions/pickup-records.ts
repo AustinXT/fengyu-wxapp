@@ -21,6 +21,7 @@ import { revalidatePath } from 'next/cache'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { INVENTORY_LINKAGE_ENABLED } from '@/lib/inventory-feature-flags'
 import { computeAvailableByLot } from '@/lib/inventory/lot-availability'
+import { businessErrorMessage } from '@/lib/action-error'
 
 export interface AdminPickupRecord {
   id: number
@@ -915,7 +916,9 @@ export const createPickupRecord = withPermission(
         createdId: created.pickupRecordId,
       }
     } catch (err) {
-      return { success: false, message: err instanceof Error ? err.message : '创建失败' }
+      // fail-closed：本函数的 throw 全是白名单 ApiError，会照常透传；
+      // 未知异常（PG 约束名 / TypeError）走兜底，不回传给前端（issue #133）
+      return { success: false, message: businessErrorMessage(err, '创建失败') }
     }
   }
 
@@ -1092,7 +1095,8 @@ export const createPickupRecord = withPermission(
     if (msg.startsWith('PERMISSION_DENIED:')) {
       throw err
     }
-    return { success: false, message: msg }
+    // fail-closed：同上（issue #133）
+    return { success: false, message: businessErrorMessage(err, '创建失败') }
   }
   },
 )

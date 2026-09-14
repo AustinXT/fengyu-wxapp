@@ -3691,11 +3691,8 @@ export const confirmOfflinePayment = withPermission(
       }
     })
   } catch (err: any) {
-    if (err instanceof ApiError && err.prefix === 'INVALID_PARAMS') {
-      return { success: false, message: err.message.replace(/^INVALID_PARAMS:\s*/, '') }
-    }
-    if (err instanceof ApiError && err.prefix === 'CONFLICT') {
-      return { success: false, message: err.message.replace(/^CONFLICT:\s*/, '') }
+    if (err instanceof ApiError && (err.prefix === 'INVALID_PARAMS' || err.prefix === 'CONFLICT')) {
+      return { success: false, message: businessErrorMessage(err, '确认收款失败，请稍后重试') }
     }
     // 透传 INSUFFICIENT_BALANCE（储值卡余额不足 / 无卡）
     const msg: string = err?.message || ''
@@ -4840,7 +4837,8 @@ export const createOrder = withPermission(
         applyOrderLevelDiscountToItems(data.items, pointsDiscount)
       }
     } catch (err) {
-      return { success: false, message: err instanceof Error ? err.message : '积分抵扣参数无效' }
+      // fail-closed：积分抵扣的业务拒绝带白名单前缀会照常透传，未知异常走兜底（issue #133）
+      return { success: false, message: businessErrorMessage(err, '积分抵扣参数无效') }
     }
   }
 
@@ -7403,7 +7401,9 @@ export const recordPayment = withPermission(
         success: false,
         error: {
           code: 'CONFLICT',
-          message: 'PAYMENT_INTENT_ACTIVE: 订单存在进行中的在线支付，请等待支付结果或先取消在线支付',
+          // 子标签只进日志不给用户看（根 CLAUDE.md），机器可读部分已在 code 字段；
+          // 与上面 REF_ORDER_NOT_FOUND 分支的口径对齐（issue #133）
+          message: '订单存在进行中的在线支付，请等待支付结果或先取消在线支付',
         },
       }
     }
@@ -7620,7 +7620,12 @@ export const freezeConversionRepaymentAmount = withPermission(
       const message = err instanceof Error ? err.message : String(err)
       const parsed = parseErrorPrefix(message)
       if (parsed) {
-        return { success: false, error: { code: parsed.prefix, message: parsed.displayMessage } }
+        // code 承载机器可读部分；message 走 businessErrorMessage 顺带剥掉二级子标签，
+        // 与 recordPayment 的同类分支口径一致（issue #133）
+        return {
+          success: false,
+          error: { code: parsed.prefix, message: businessErrorMessage(err, '冻结在线回款金额失败，请刷新后重试') },
+        }
       }
       console.error('[freezeConversionRepaymentAmount] unexpected error:', err)
       return { success: false, error: { code: 'UNKNOWN', message: '冻结在线回款金额失败，请刷新后重试' } }

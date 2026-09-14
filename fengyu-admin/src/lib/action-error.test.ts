@@ -188,10 +188,43 @@ describe('闸门二 · 内容：前缀合法 ≠ 正文能给人看', () => {
     expect(shown).not.toContain('node_modules')
   })
 
-  it('超长文案截断，不把 toast / 内联红字撑爆', () => {
-    const shown = actionErrorMessage(withDigest(`CONFLICT: ${'这是一条很长的业务错误文案'.repeat(500)}`), '兜底')
+  it('中等长度文案截断，不把 toast / 内联红字撑爆', () => {
+    // 120 < 长度 < 2000：截断展示
+    const shown = actionErrorMessage(withDigest(`CONFLICT: ${'这是一条很长的业务错误文案'.repeat(20)}`), '兜底')
     expect(shown.length).toBeLessThanOrEqual(121)
     expect(shown.endsWith('…')).toBe(true)
+  })
+
+  it('首行超 2000 字直接判死，不是「只扫前 N 字」（否则噪声词挪到 N 之后即可绕过）', () => {
+    const shown = actionErrorMessage(
+      withDigest(`CONFLICT: ${'很长的内容'.repeat(500)} connect ETIMEDOUT 10.0.0.1:1433`),
+      '兜底',
+    )
+    expect(shown).toBe('兜底')
+  })
+
+  it.each([
+    ['PG relation 报错（中文包裹）', 'INVALID_STATE: 数据库错误：relation "client_profile_tmp" does not exist'],
+    ['约束冲突（中文包裹）', 'CONFLICT: 合并失败：duplicate key value violates unique constraint "uq_sku"'],
+    ['SQL 片段（中文包裹）', 'NOT_FOUND: 查询失败：select * from sale_orders where id=$1'],
+    ['文件路径（中文包裹）', 'INVALID_STATE: 读取失败：/app/node_modules/pg/lib/client.js'],
+    ['URL（中文包裹）', 'INVALID_STATE: 网关调用失败：https://api.lakala.com/v3/ccss'],
+    ['内网地址（中文包裹）', 'INVALID_STATE: 同步失败，目标 10.0.0.1:1433 无响应'],
+    ['配置键（中文包裹）', 'INVALID_STATE: 缺少配置：CLIENT_SECRET'],
+    ['堆栈帧（中文包裹）', 'INVALID_STATE: 崩溃于 at Board (/app/main.js:1:2)'],
+  ])('中文包裹的技术细节仍判不可读：%s', (_label, digest) => {
+    expect(actionErrorMessage(withDigest(digest), '操作失败')).toBe('操作失败')
+  })
+
+  it.each([
+    ['订单号', 'CONFLICT: 订单 FY-XSD-WX-2609140001 已支付，无法重复操作', '订单 FY-XSD-WX-2609140001 已支付，无法重复操作'],
+    ['金额与单位', 'INSUFFICIENT_BALANCE: 储值卡余额不足，需 ¥1,280.00 实有 ¥320.50', '储值卡余额不足，需 ¥1,280.00 实有 ¥320.50'],
+    ['含英文缩写', 'INVALID_PARAMS: 请先为该 SKU 配置市场进货价', '请先为该 SKU 配置市场进货价'],
+    ['含 API 字样', 'PERMISSION_DENIED: 请联系管理员开通 API 权限', '请联系管理员开通 API 权限'],
+    ['含权限动作名', 'PERMISSION_DENIED: 无权执行 employee:update', '无权执行 employee:update'],
+    ['含日期时间', 'INVALID_STATE: 活动已于 2026-09-14 23:59:59 结束', '活动已于 2026-09-14 23:59:59 结束'],
+  ])('真实业务文案不被技术特征误吞：%s', (_label, digest, expected) => {
+    expect(actionErrorMessage(withDigest(digest), '兜底')).toBe(expected)
   })
 
   it('正文是内部枚举时，类型判定不受影响（类型可知 ≠ 正文可读）', () => {
@@ -432,7 +465,9 @@ describe('businessErrorMessage：服务端返回值通道（message 也 fail-clo
     ['英文 PG 报错', 'duplicate key value violates unique constraint "uq_sku"'],
     ['中文 PG 报错（fail-open 会漏，fail-closed 挡住）', '数据库错误：约束 uq_sku 校验未通过'],
     ['TypeError 内部信息', "Cannot read properties of undefined (reading 'saleItemId')"],
-    ['中文包装的技术细节', `合并失败：relation "client_profile_tmp" does not exist`],
+    ['中文包装的技术细节（无前缀 → 来源闸门挡）', `合并失败：relation "client_profile_tmp" does not exist`],
+    // ⚠️ 上面那条其实是被**来源闸门**挡的；下面这条带合法前缀，才真正走到**内容闸门**
+    ['中文包装的技术细节（带前缀 → 内容闸门挡）', `CONFLICT: 合并失败：relation "client_profile_tmp" does not exist`],
   ])('%s → 兜底', (_label, message) => {
     expect(businessErrorMessage(new Error(message), '操作失败，请稍后重试')).toBe(
       '操作失败，请稍后重试',
