@@ -1203,7 +1203,10 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
         while (j < src.length && src[j] !== "'") j += (src[j] === '\\' ? 2 : 1)
         const inner = src.slice(i + 1, j)
         if (/\bWITH\s+(?:RECURSIVE\s+)?[A-Za-z_]\w*\s*(?:\([^()]*\))?\s+AS\s*\(/i.test(inner)) {
-          i += 1   // 是 SQL：跳过开引号，内容照常参与解析
+          // 是 SQL：**整段跳过、内容原样保留、不再进扫描器**。
+          // 不能只 i += 1 让它重新过一遍 —— 宿主语言里写成 pg.query('… \\'https://x\\' …')
+          // 时，里面转义的 \' 会被当成新字符串的起点，把后半段 SQL 整个遮掉（静默漏报）。
+          i = j + 1
         } else {
           blank(i, j + 1); i = j + 1
         }
@@ -1433,6 +1436,14 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
       expect(violations(src), `SQL 被抹没了，守护对这种源码形态是盲的：${src.slice(0, 50)}…`).not.toEqual([])
       expect(unrecognizedWithHeads(src), `WITH 头没被识别：${src.slice(0, 50)}…`).toBe(0)
     }
+  })
+
+  // 宿主语言里 SQL 写成单引号串时，串内转义的 \' 不能把后半段 SQL 遮掉
+  it('pg.query 单引号形态里带转义引号，后半段 SQL 仍被检查', () => {
+    const inner = "WITH RECURSIVE d(id, path) AS (SELECT 1, ARRAY[1] UNION ALL SELECT \\'https://x\\', d.path FROM t JOIN d alias ON true)"
+    const src = `pg.query('${inner}', [])`
+    expect(violations(src), '串内转义引号把后半段 SQL 遮掉了，守护静默漏报').not.toEqual([])
+    expect(unrecognizedWithHeads(src)).toBe(0)
   })
 
   // SQL 字符串字面量里的 `//` `--` `/*` 不能被当成注释起点，否则会把后面的真 SQL 吞掉
