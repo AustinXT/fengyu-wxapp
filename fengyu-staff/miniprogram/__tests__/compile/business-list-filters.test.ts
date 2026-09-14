@@ -61,3 +61,28 @@ describe('业务列表统一筛选与分页', () => {
     expect(allocation).not.toContain('status-switch')
   })
 })
+
+describe('绩效页检索栏（#159）', () => {
+  const PERF = 'packageOrder/staff-performance/staff-performance'
+
+  test('搜索框常驻，不以「已有明细」为前置条件', () => {
+    const wxml = fs.readFileSync(path.join(ROOT, `${PERF}.wxml`), 'utf8')
+    const bar = wxml.match(/<view[^>]*class="perf-search-bar"[^>]*>/)!
+    // 条件渲染会让「本期 0 条」时连输入框都看不到，想换个时段再搜都没有入口
+    expect(bar[0]).not.toContain('wx:if')
+    expect(wxml).toContain('placeholder="搜索顾客姓名或手机号"')
+  })
+
+  test('检索栏与 business-list-filter 一样吸顶（ui.spec §3）', () => {
+    const wxss = fs.readFileSync(path.join(ROOT, `${PERF}.wxss`), 'utf8')
+    const block = wxss.slice(wxss.indexOf('.perf-search-bar'))
+    expect(block).toContain('position: sticky')
+    expect(block).toContain('top: 0')
+  })
+
+  test('该页没有复用 business-list-filter（无状态维度，差异见 PR 说明）', () => {
+    const json = JSON.parse(fs.readFileSync(path.join(ROOT, `${PERF}.json`), 'utf8'))
+    expect(json.usingComponents['business-list-filter']).toBeUndefined()
+    expect(json.usingComponents['van-search']).toBe('@vant/weapp/search/index')
+  })
+})

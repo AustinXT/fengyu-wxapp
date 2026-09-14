@@ -120,8 +120,9 @@
   </view>
 
   <!-- 顾客检索：只过滤已加载的明细，不查服务器、不额外翻页（见 ts buildSearchView 的口径说明） -->
-  <!-- 搜到 0 条时输入框必须还在，否则用户没有清空关键词的入口 -->
-  <view wx:if="{{items.length > 0 || keyword}}" class="perf-search-bar">
+  <!-- 常驻，和订单管理的 business-list-filter 一致：条件渲染会让「本期 0 条」时
+       连输入框都看不到（想换个时段再搜都没有入口），搜到 0 条时也必须还能清空关键词 -->
+  <view class="perf-search-bar">
     <van-search
       value="{{keyword}}"
       placeholder="搜索顾客姓名或手机号"
