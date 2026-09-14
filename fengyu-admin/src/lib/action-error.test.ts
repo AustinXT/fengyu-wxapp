@@ -210,7 +210,6 @@ describe('闸门二 · 内容：前缀合法 ≠ 正文能给人看', () => {
     ['文件路径（中文包裹）', 'INVALID_STATE: 读取失败：/app/node_modules/pg/lib/client.js'],
     ['URL（中文包裹）', 'INVALID_STATE: 网关调用失败：https://api.lakala.com/v3/ccss'],
     ['内网地址（中文包裹）', 'INVALID_STATE: 同步失败，目标 10.0.0.1:1433 无响应'],
-    ['配置键（中文包裹）', 'INVALID_STATE: 缺少配置：CLIENT_SECRET'],
     ['堆栈帧（中文包裹）', 'INVALID_STATE: 崩溃于 at Board (/app/main.js:1:2)'],
   ])('中文包裹的技术细节仍判不可读：%s', (_label, digest) => {
     expect(actionErrorMessage(withDigest(digest), '操作失败')).toBe('操作失败')
@@ -223,6 +222,10 @@ describe('闸门二 · 内容：前缀合法 ≠ 正文能给人看', () => {
     ['含 API 字样', 'PERMISSION_DENIED: 请联系管理员开通 API 权限', '请联系管理员开通 API 权限'],
     ['含权限动作名', 'PERMISSION_DENIED: 无权执行 employee:update', '无权执行 employee:update'],
     ['含日期时间', 'INVALID_STATE: 活动已于 2026-09-14 23:59:59 结束', '活动已于 2026-09-14 23:59:59 结束'],
+    // 刻意保留：这类「配置缺失」文案的读者就是要去改 env 的人，吞掉会让配置错误像随机故障。
+    // 泄漏的只是变量名不是值；裸枚举/英文技术串仍被「必须含中文」那道闸门挡住。
+    ['配置缺失（仓内真实文案）', 'INVALID_STATE: 密码加密未配置（缺少 RSA_PRIVATE_KEY）', '密码加密未配置（缺少 RSA_PRIVATE_KEY）'],
+    ['配置缺失（环境变量）', 'INVALID_STATE: 未配置 WX_CLIENT_SECRET 环境变量', '未配置 WX_CLIENT_SECRET 环境变量'],
   ])('真实业务文案不被技术特征误吞：%s', (_label, digest, expected) => {
     expect(actionErrorMessage(withDigest(digest), '兜底')).toBe(expected)
   })
