@@ -353,6 +353,21 @@ function CreateDocDialog({
    * ⚠️ 用 ref 不用 state：它**绝不能进任何 useEffect 的依赖数组**（#129 的成因正是如此）。
    */
   const lotCacheRef = useRef<Map<string, Promise<InventoryLotRow[]>>>(new Map())
+  /**
+   * 缓存代次。原生 <dialog> 关闭不卸载组件，`lotCacheRef` 与每行的 `loaded` 都会常驻 ——
+   * 只 clear() 缓存是不够的：子组件的 `loaded.key` 没变，effect 根本不会重跑。
+   * 把代次编进 key，「重开弹窗」和「提交成功」就能强制所有批次下拉重新取数，
+   * 避免拿几分钟前的批次数量去建下一张单（提交必被服务端 FOR UPDATE + 可用量校验拒掉）。
+   */
+  const [lotEpoch, setLotEpoch] = useState(0)
+  const invalidateLots = useCallback(() => {
+    lotCacheRef.current.clear()
+    setLotEpoch((n) => n + 1)
+  }, [])
+
+  useEffect(() => {
+    if (open) invalidateLots()
+  }, [open, invalidateLots])
   const isDocTypeLocked = Boolean(initialDocType && availableDocTypes.includes(initialDocType))
   const sourceLocationId = locations.find((location) => location.orgNodeId === sourceOrgNodeId)?.locationId ?? ''
 
@@ -382,6 +397,9 @@ function CreateDocDialog({
         })),
       }
       await createInventoryCoreDoc(payload)
+      // 这张单已经扣过库存，缓存里的可用量立刻过期 —— 不失效的话，
+      // 同一个弹窗连着建第二张单时会拿旧数量，提交才被服务端拒绝
+      invalidateLots()
       onOpenChange(false)
       onSuccess()
     } catch (err) {
@@ -442,6 +460,7 @@ function CreateDocDialog({
                   value={item.lotId}
                   onChange={(lotId) => updateItem(index, { lotId })}
                   cache={lotCacheRef.current}
+                  epoch={lotEpoch}
                   label={`明细 ${index + 1} 来源批次`}
                 />
               )}
@@ -507,6 +526,7 @@ function DocLotSelect({
   value,
   onChange,
   cache,
+  epoch,
   label,
 }: {
   locationId: string
@@ -515,10 +535,12 @@ function DocLotSelect({
   onChange: (lotId: string) => void
   /** 弹窗级 (库位,SKU) → Promise 缓存，见 CreateDocDialog 的 lotCacheRef */
   cache: Map<string, Promise<InventoryLotRow[]>>
+  /** 缓存代次，随「重开弹窗 / 提交成功」递增，用来强制重新取数 */
+  epoch: number
   label: string
 }) {
   // 用 JSON 数组当 key，避免 ('a:b','c') 与 ('a','b:c') 这类分隔符歧义撞进同一个缓存槽
-  const cacheKey = locationId && skuId ? JSON.stringify([locationId, skuId]) : ''
+  const cacheKey = locationId && skuId ? JSON.stringify([epoch, locationId, skuId]) : ''
   const [retryToken, setRetryToken] = useState(0)
   const [loaded, setLoaded] = useState<LotLoadState | null>(null)
 
@@ -527,20 +549,26 @@ function DocLotSelect({
     let cancelled = false
     let pending = cache.get(cacheKey)
     if (!pending) {
-      pending = listInventoryLotOptions(locationId, skuId)
+      pending = listInventoryLotOptions(locationId, skuId).then((lots) => {
+        // 契约异常（灰度不一致 / action 回归返回了非数组）必须走失败路径，
+        // 不能吞成「正常的空列表」—— 那会和 #129 一样让用户误判为「没货」
+        if (!Array.isArray(lots)) throw new Error('批次接口返回格式异常')
+        return lots
+      })
       cache.set(cacheKey, pending)
     }
     pending
       .then((lots) => {
-        if (!cancelled) setLoaded({ key: cacheKey, lots: Array.isArray(lots) ? lots : [] })
+        if (!cancelled) setLoaded({ key: cacheKey, lots })
       })
       .catch((error) => {
         // 失败的 Promise 不能留在缓存里，否则重试会拿到同一个已 reject 的 Promise
         cache.delete(cacheKey)
-        // 失败必须让用户看见：静默吞掉会和「该批次真的没货」长得一模一样
+        // 失败必须让用户看见：静默吞掉会和「该批次真的没货」长得一模一样。
+        // 多行共用同一个 key 时会各自 catch，用 cacheKey 当 toast id 去重，避免弹 N 条一样的。
         if (!cancelled) {
           setLoaded({ key: cacheKey, lots: [], failed: true })
-          toast.error(actionErrorMessage(error, '加载可用批次失败'))
+          toast.error(actionErrorMessage(error, '加载可用批次失败'), { id: cacheKey })
         }
       })
     return () => {
@@ -581,7 +609,12 @@ function DocLotSelect({
       </option>
       {lots.map((lot) => (
         <option key={lot.id} value={String(lot.id)}>
-          {`${lot.batchNo || '无批号'} · 可用 ${lot.quantityOnHand}${lot.expiryDate ? ` · ${formatDate(lot.expiryDate)}` : ''}`}
+          {/*
+            用 availableQuantity（在手 − 未完成预留）而不是 quantityOnHand：
+            服务端扣减时校验的就是可用量，显示在手量会出现「界面写着可用 30、提交却报库存不足」
+            的自相矛盾。接口本来就把这个字段算好返回了，之前只是没用上。
+          */}
+          {`${lot.batchNo || '无批号'} · 可用 ${lot.availableQuantity}${lot.expiryDate ? ` · ${formatDate(lot.expiryDate)}` : ''}`}
         </option>
       ))}
     </Select>

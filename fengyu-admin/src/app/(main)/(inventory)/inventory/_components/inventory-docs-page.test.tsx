@@ -1,5 +1,7 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type {
   InventoryDocRow,
   InventoryLocationFilterOptions,
@@ -34,12 +36,13 @@ vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
 
 import { toast } from 'sonner'
 import { listInventoryLotOptions } from '@/actions/inventory/stocks'
+import { createInventoryCoreDoc } from '@/actions/inventory/docs'
 import InventoryDocsPage, { SOURCE_LOT_DOC_TYPES } from './inventory-docs-page'
 import { INVENTORY_GENERIC_DOC_TYPES } from '@/lib/inventory/types'
 
-// vitest.config.ts 没开 clearMocks，不显式清会让调用记录跨用例累积、
-// 也会让忘记设 mock 的新用例继承上一个用例的 mockRejectedValue。
-beforeEach(() => vi.clearAllMocks())
+// vitest.config.ts 没开 clearMocks/restoreMocks。这里必须用 resetAllMocks 而不是 clearAllMocks ——
+// 后者只清调用记录、不清 implementation，忘记设 mock 的新用例会静默继承上一条的 mockRejectedValue。
+beforeEach(() => vi.resetAllMocks())
 
 const row: InventoryDocRow = {
   id: 'MBS-260813-0001',
@@ -184,7 +187,13 @@ function sku(skuId: string, productCode: string, productName: string): Inventory
 
 const skuOptions = [sku('SKU-1', 'P001', '精华液'), sku('SKU-2', 'P002', '面膜')]
 
-function lot(id: number, skuId: string, batchNo: string, quantityOnHand: number): InventoryLotRow {
+function lot(
+  id: number,
+  skuId: string,
+  batchNo: string,
+  quantityOnHand: number,
+  availableQuantity = quantityOnHand,
+): InventoryLotRow {
   return {
     id,
     locationId: 'LOC-M1',
@@ -199,10 +208,18 @@ function lot(id: number, skuId: string, batchNo: string, quantityOnHand: number)
     expiryDate: null,
     isGift: false,
     quantityOnHand,
-    availableQuantity: quantityOnHand,
+    availableQuantity,
     remark: null,
     updatedAt: '2026-08-13T00:00:00.000Z',
   }
+}
+
+/** 手工可控的 Promise，用来制造「请求尚未返回」的在途窗口 */
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
 }
 
 /**
@@ -274,7 +291,7 @@ describe('InventoryDocsPage 来源批次下拉（#129 回归）', () => {
 
     openDialogAndPickSource()
 
-    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('无权查看该主体库存'))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('无权查看该主体库存', expect.objectContaining({ id: expect.any(String) })))
     // 失败态必须和「该主体该 SKU 真的没批次」在文案上区分开，否则用户会误判为「没货」
     await waitFor(() => expect(lotPlaceholder()).toBe('批次加载失败，点此重试'))
   })
@@ -292,6 +309,49 @@ describe('InventoryDocsPage 来源批次下拉（#129 回归）', () => {
     await waitFor(() => expect(lotPlaceholder()).toBe('选择库存批次'))
     expect(listInventoryLotOptions).toHaveBeenCalledTimes(2)
     expect(within(screen.getByRole('dialog')).getByRole('option', { name: /B-001/ })).toBeInTheDocument()
+  })
+
+  it('旧请求还在途时切 SKU，先到的旧结果不会覆盖当前选项', async () => {
+    const first = deferred<InventoryLotRow[]>()
+    const second = deferred<InventoryLotRow[]>()
+    vi.mocked(listInventoryLotOptions).mockImplementation(async (_locationId, skuId) =>
+      skuId === 'SKU-1' ? first.promise : second.promise,
+    )
+
+    openDialogAndPickSource()
+    // SKU-1 的请求尚未 resolve 就切到 SKU-2 —— 这才是真正的在途竞态
+    expect(lotSelect()).toBeDisabled()
+    fireEvent.change(skuSelect(), { target: { value: 'SKU-2' } })
+
+    // 旧请求后到：cleanup 已把它的 cancelled 置 true，结果必须被丢弃
+    await act(async () => { first.resolve([lot(11, 'SKU-1', 'B-001', 30)]) })
+    expect(within(screen.getByRole('dialog')).queryByRole('option', { name: /B-001/ })).not.toBeInTheDocument()
+    expect(lotSelect()).toBeDisabled()
+
+    await act(async () => { second.resolve([lot(22, 'SKU-2', 'B-002', 7)]) })
+    await waitFor(() => expect(lotSelect()).not.toBeDisabled())
+    expect(within(screen.getByRole('dialog')).getByRole('option', { name: /B-002/ })).toBeInTheDocument()
+    expect(within(screen.getByRole('dialog')).queryByRole('option', { name: /B-001/ })).not.toBeInTheDocument()
+  })
+
+  it('展示的是可用量（扣掉未完成预留）而不是在手量', async () => {
+    // 在手 30、预留 10 → 可用 20。显示在手量会出现「界面写着 30、提交却报库存不足」
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([lot(11, 'SKU-1', 'B-001', 30, 20)])
+
+    openDialogAndPickSource()
+
+    await waitFor(() => expect(lotSelect()).not.toBeDisabled())
+    expect(within(screen.getByRole('dialog')).getByRole('option', { name: /B-001 · 可用 20/ })).toBeInTheDocument()
+    expect(within(screen.getByRole('dialog')).queryByRole('option', { name: /可用 30/ })).not.toBeInTheDocument()
+  })
+
+  it('批次接口返回非数组时走失败路径，而不是伪装成空列表', async () => {
+    vi.mocked(listInventoryLotOptions).mockResolvedValue(undefined as never)
+
+    openDialogAndPickSource()
+
+    await waitFor(() => expect(lotPlaceholder()).toBe('批次加载失败，点此重试'))
+    expect(toast.error).toHaveBeenCalled()
   })
 
   it('同一 (主体, SKU) 被多行选中时只发一次请求（弹窗级 Promise 缓存）', async () => {
@@ -319,14 +379,51 @@ describe('InventoryDocsPage 来源批次下拉（#129 回归）', () => {
 
     openDialogAndPickSource()
 
-    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('加载可用批次失败'))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('加载可用批次失败', expect.objectContaining({ id: expect.any(String) })))
+  })
+})
+
+// issue #129 的验收标准之一是「6 种单据类型均能在单据中心成功创建并落库」。
+// 只断言「批次加载出来了」挡不住后续回归：onChange 不再写 item.lotId、
+// 或 payload 映射漏掉 lotId，批次照样能加载，6 种出库单却全部撞服务端必填校验。
+// 所以这里对 6 种类型逐个走完整提交，断言 action 收到的是**数值型** lotId。
+describe('6 种需选来源批次的通用单据都能走完提交（#129 验收）', () => {
+  const NEED_LOT_GENERIC = INVENTORY_GENERIC_DOC_TYPES.filter((t) => SOURCE_LOT_DOC_TYPES.has(t))
+
+  it.each(NEED_LOT_GENERIC)('%s：选批次后提交，payload 带数值 lotId', async (docType) => {
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([lot(77, 'SKU-1', 'B-777', 30)])
+    vi.mocked(createInventoryCoreDoc).mockResolvedValue(undefined as never)
+
+    render(
+      <InventoryDocsPage
+        {...baseProps}
+        locations={locations}
+        skuOptions={skuOptions}
+        allowedCreateDocTypes={[docType]}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '新建' }))
+    fireEvent.change(sourceSelect(), { target: { value: 'M1' } })
+    fireEvent.change(skuSelect(), { target: { value: 'SKU-1' } })
+    await waitFor(() => expect(lotSelect()).not.toBeDisabled())
+
+    fireEvent.change(lotSelect(), { target: { value: '77' } })
+    fireEvent.change(within(screen.getByRole('dialog')).getByPlaceholderText('数量'), { target: { value: '3' } })
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '提交' }))
+
+    await waitFor(() => expect(createInventoryCoreDoc).toHaveBeenCalledTimes(1))
+    const payload = vi.mocked(createInventoryCoreDoc).mock.calls[0][0]
+    expect(payload.docType).toBe(docType)
+    expect(payload.items[0].lotId).toBe(77)
+    expect(payload.items[0].quantity).toBe(3)
   })
 })
 
 // 前端的 SOURCE_LOT_DOC_TYPES 与服务端 engine.ts 的 shouldCaptureSourceLot 是两份真相。
-// 今天一致（交集正好这 6 项），但给 OUTBOUND_DOC_TYPES + INVENTORY_GENERIC_DOC_TYPES 加了类型
-// 却漏加 SOURCE_LOT_DOC_TYPES 时，弹窗不渲染批次下拉 → 提交必撞
-// 「出库类明细必须选择库存批次」且用户无法补救。这条断言就是拿来卡住那次漂移的。
+// 光断言交集是 6 项挡不住真正的漏加：给 OUTBOUND_DOC_TYPES + INVENTORY_GENERIC_DOC_TYPES
+// 同时加一个新类型、却漏加前端 SOURCE_LOT_DOC_TYPES，交集仍是原来的 6 项，测试照样绿，
+// 而弹窗不渲染批次框 → 提交必撞「出库类明细必须选择库存批次」且用户无法补救。
+// 所以这里还要直接读 engine.ts 的字面量做单向包含检查。
 describe('通用建单入口里需要来源批次的单据类型', () => {
   it('恰好是 SOURCE_LOT × 通用类型的这 6 项', () => {
     const intersection = INVENTORY_GENERIC_DOC_TYPES.filter((t) => SOURCE_LOT_DOC_TYPES.has(t))
@@ -338,5 +435,42 @@ describe('通用建单入口里需要来源批次的单据类型', () => {
       '市场产品报损',
       '院产品报损',
     ])
+  })
+
+  it('前端集合的形状本身不漂移（全集 14 项）', () => {
+    const expected = [
+      '品项公司发货',
+      '分院配货',
+      '分院调货出库',
+      '市场间调货出库',
+      '员工购出库',
+      '供应链员工购出库',
+      '内部领用',
+      '非凤御市场出库',
+      '市场退货',
+      '院退货',
+      '院顾客产品出库',
+      '市场产品报损',
+      '院产品报损',
+      '库存转换出库',
+    ]
+    expect([...SOURCE_LOT_DOC_TYPES].sort()).toEqual([...expected].sort())
+  })
+
+  it('服务端 OUTBOUND_DOC_TYPES 里的通用类型必须全在前端 SOURCE_LOT_DOC_TYPES 中', () => {
+    // 不 import engine.ts（它是 server-only，会把 @/db 拖进来），改读源码字面量
+    const engineSrc = readFileSync(
+      resolve(process.cwd(), 'src/lib/inventory/engine.ts'),
+      'utf8',
+    )
+    const block = engineSrc.match(/const OUTBOUND_DOC_TYPES = new Set<InventoryDocType>\(\[([\s\S]*?)\]\)/)?.[1]
+    expect(block, 'engine.ts 里找不到 OUTBOUND_DOC_TYPES').toBeTruthy()
+    const serverOutbound = [...block!.matchAll(/'([^']+)'/g)].map((m) => m[1])
+    expect(serverOutbound.length).toBeGreaterThan(0)
+
+    const missing = serverOutbound
+      .filter((t) => (INVENTORY_GENERIC_DOC_TYPES as readonly string[]).includes(t))
+      .filter((t) => !SOURCE_LOT_DOC_TYPES.has(t as never))
+    expect(missing, '服务端会采集来源批次、前端却不渲染批次下拉的类型').toEqual([])
   })
 })
