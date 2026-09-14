@@ -669,3 +669,30 @@ describe('绩效页 · 「成功查到 0 条」不等于「还没加载」（评
     expect(callStaffApi).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('绩效页 · picker 边界刷新时机（评审 round-4 glm P3）', () => {
+  test('值没变时不白发一次 setData', () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([], 0)
+
+    const spy = vi.spyOn(page, 'setData')
+    page.refreshDateBounds()
+
+    expect(spy).not.toHaveBeenCalled()
+    spy.mockRestore()
+  })
+
+  test('长时间停在前台跨午夜：点「自定义」时补刷上界', () => {
+    const page = createPage()
+    page.onLoad({ range: 'today' })
+    mockPage([], 0)
+    expect(page.data.customMaxDate).toBe('2026-09-14')
+
+    // 一直停在页面上跨过午夜 —— 收不到 onShow
+    vi.setSystemTime(new Date(2026, 8, 15, 0, 30, 0))
+    page.onRangeTap({ currentTarget: { dataset: { type: 'custom' } } })
+
+    expect(page.data.customMaxDate).toBe('2026-09-15')
+  })
+})

@@ -198,7 +198,7 @@ Page({
   onShow() {
     // 边界每次重算：页面留在页面栈里过夜后，onLoad 那次算出的上界还停在昨天，
     // 当天反而选不进去
-    this.setData(this.dateBounds());
+    this.refreshDateBounds();
     if (!this._loaded || !this.data.startDate) return;
 
     // 预置档位的区间也必须跟着「今天」重算：页面在页面栈里过夜后，「今日」会一直查进页面
@@ -229,6 +229,14 @@ Page({
    */
   dateBounds() {
     return { customMinDate: HISTORY_MIN_DATE, customMaxDate: this.formatDate(new Date()) };
+  },
+
+  /** 只在真的变了才 setData，避免每次 onShow 都往渲染层白发一次通信 */
+  refreshDateBounds() {
+    const next = this.dateBounds();
+    if (next.customMaxDate !== this.data.customMaxDate || next.customMinDate !== this.data.customMinDate) {
+      this.setData(next);
+    }
   },
 
   // 页面销毁后推进代次，丢弃晚到的响应，避免对已卸载页面 setData
@@ -303,12 +311,17 @@ Page({
   },
 
   onRangeTap(e: WechatMiniprogram.TouchEvent) {
-    this.setRange(e.currentTarget.dataset.type as RangeType);
+    const type = e.currentTarget.dataset.type as RangeType;
+    // 页面长时间停在前台跨过午夜时收不到 onShow，picker 上界会落后一天。
+    // 用户点「自定义」正是要用 picker 的那一刻，在这里补一次刷新
+    if (type === 'custom') this.refreshDateBounds();
+    this.setRange(type);
   },
 
   /**
-   * 档位 → 区间（纯函数，不写 data）。抽出来是因为 `onShow` 也要用它判断「今天是不是已经
-   * 不是进页面那天了」—— 页面留在页面栈里过夜/跨月时，「今日」必须跟着变成新的今天。
+   * 档位 → 区间。不写 data，但 custom 分支会**读** `data.startDate/endDate`（沿用当前区间）。
+   * 抽出来是因为 `onShow` 也要用它判断「今天是不是已经不是进页面那天了」——
+   * 页面留在页面栈里过夜/跨月时，「今日」必须跟着变成新的今天。
    */
   presetRange(type: RangeType): { start: string; end: string; display: string } {
     const now = new Date();
