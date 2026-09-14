@@ -105,10 +105,16 @@
   flex-shrink: 0;
 }
 
-/* 顾客检索 */
+/* 顾客检索 —— sticky 是 ui.spec §3「搜索框容器长列表滚动时持续可见」的硬要求：
+   这个搜索框的用途就是边翻明细边核对，滚下去就没了等于白做。
+   白底 + 细分割线 + 轻投影抄 business-list-filter，与订单管理观感一致 */
 .perf-search-bar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
   background: #FFFFFF;
   border-bottom: 1rpx solid var(--color-border);
+  box-shadow: 0 4rpx 12rpx rgba(45, 32, 23, 0.04);
 }
 
 /* 搜索命中提示：说明「已加载 N/共 M」与顶部汇总仍为全量 */
