@@ -53,16 +53,6 @@ const UNREADABLE_FRAGMENTS = [
   'connection appears to be offline',
 ] as const
 
-/**
- * JS 内建错误名前缀（`TypeError: …` / `AbortError: …` / `RangeError: …`）。
- *
- * 客户端组件自己抛的异常**不经 Next 脱敏**——`await action()` 之后的解构、日期转换、
- * router.push 抛错时，`err.message` 会原样到用户面前。这类是给开发看控制台的，不是文案。
- * 形状要求「(可选驼峰前缀) + Error/Exception + 冒号 + 空白」：裸 `Error: `（`new Error(String(e))`
- * 这类写法会产生）与 `DOMException: ` 都要认。业务里的 `throw new Error('顾客不存在')`
- * message 是 `顾客不存在`（不带 `Error: ` 头），不会被误伤。
- */
-const JS_ERROR_NAME_RE = /^(?:[A-Z][A-Za-z]*)?(?:Error|Exception):\s/
 
 /**
  * Next.js 自动生成的**错误编号**（不是文案）。
@@ -151,24 +141,81 @@ const TAG_RUN_SOURCE = String.raw`(?:[A-Z][A-Z0-9_]{4,}|\d+(?:\.\d+)?)(?::[^\s:]
 const LEVEL2_SUBTAG_RE = new RegExp(`^${TAG_RUN_SOURCE}:(?:\\s+|$)`)
 
 /**
- * 整串从头到尾都是标签、没有正文（`OVERPAY:123` / `12.50` / `INSUFFICIENT_BALANCE:NO_CARD`）。
- * 这种串对用户零信息量，和纯数字编号是一回事 —— 判不可读。
+ * 中日韩字符。业务文案 100% 含中文，技术串 100% 不含 —— 这是本模块能做结构判定的地基。
  */
-const TAG_ONLY_RE = new RegExp(`^${TAG_RUN_SOURCE}$`)
+const CJK_RE = /[\u3000-\u303F\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/
 
-/** 纯数字（可带小数、可冒号分段）：`401` / `12.50` / `1200:300`。任何情况下都不是业务文案。 */
-const NUMERIC_ONLY_RE = /^\d+(?:\.\d+)?(?::\d+(?:\.\d+)?)*$/
+/**
+ * 「整串一个空白都没有、且不含中日韩」= 它不是人话，是标识符/编号/技术串。
+ *
+ * 这一条替代了原先按形态逐类枚举的做法（纯数字、裸标签串、`OVERPAY:123`…），
+ * 顺带覆盖了枚举不完的那些：`LAKALA_TIMEOUT_30000ms`、`SYSTEM_ERROR`、`12.50`、
+ * `1956068727@E263`、`NEXT_HTTP_ERROR_FALLBACK;404`。
+ *
+ * 误伤面只有「整条文案就是一个 ASCII 标识符」，例如剥完只剩一个订单号 —— 那种串本来
+ * 对用户也零信息量，回退到调用方 fallback 反而更有用。真业务文案必含中文或空格。
+ */
+function isProseless(value: string): boolean {
+  return /^\S+$/.test(value) && !CJK_RE.test(value)
+}
+
+/**
+ * Node errno 的成句形态：`connect ECONNREFUSED 10.0.0.5:443` / `getaddrinfo EAI_AGAIN api.x.com`。
+ * 这类有空格、逃得过 `isProseless`，而 errno 种类枚举不完（`lakala-client.ts:222` 会把
+ * `err.message` 原文拼进白名单前缀），所以按结构认而不是按清单认。
+ */
+const NODE_ERRNO_RE = /\b(?:connect|getaddrinfo|read|write|listen|bind|socket)\s+E[A-Z_]{2,}\b/
+
+/**
+ * 原生异常被字符串化后的形态（`String(err)` / `new Error(String(e))`）。
+ *
+ * ⚠️ 真正的原生异常**不长这样**：`new TypeError('x').message` 就是 `'x'`，错误名只在
+ * `err.name` 里。所以光靠这条正则拦不住 `(undefined).id` 抛出的
+ * `Cannot read properties of undefined (reading 'id')` —— 那条走下面的 `NATIVE_ERROR_NAMES`。
+ */
+const JS_ERROR_NAME_RE = /^(?:[A-Z][A-Za-z]*)?(?:Error|Exception):\s/
+
+/**
+ * JS / Web 平台内建异常的 `name`。命中即说明这是**客户端自己的编程错误或平台错误**，
+ * message 是给开发看控制台的（属性名、变量名、英文技术句），不能端给用户。
+ *
+ * 只列内建名：本项目自己的 `ApiError`（name 仍是 `Error`）、`PermissionError`、
+ * `LegacyOrderError` 等都不在其中，业务文案照常透出。
+ */
+const NATIVE_ERROR_NAMES: ReadonlySet<string> = new Set([
+  'TypeError',
+  'RangeError',
+  'ReferenceError',
+  'SyntaxError',
+  'EvalError',
+  'URIError',
+  'AggregateError',
+  'DOMException',
+  'AbortError',
+  'TimeoutError',
+  'NetworkError',
+  'NotAllowedError',
+  'SecurityError',
+  'QuotaExceededError',
+  'InvalidStateError',
+  'NotFoundError',
+])
 
 /** 纯判定：这一串是不是「技术串而非文案」。不负责翻译，翻译只在整串原值那一层做。 */
 function isOpaque(value: string): boolean {
   if (NEXT_AUTO_DIGEST_RE.test(value)) return true
   if (NEXT_ROUTER_SIGNAL_RE.test(value)) return true
   if (OPAQUE_TOKEN_RE.test(value)) return true
-  if (NUMERIC_ONLY_RE.test(value)) return true
-  if (TAG_ONLY_RE.test(value)) return true
+  if (isProseless(value)) return true
+  if (NODE_ERRNO_RE.test(value)) return true
   if (JS_ERROR_NAME_RE.test(value)) return true
   const lower = value.toLowerCase()
-  return UNREADABLE_FRAGMENTS.some((f) => lower.includes(f))
+  if (UNREADABLE_FRAGMENTS.some((f) => lower.includes(f))) return true
+  // 兜底：本项目所有面向用户的文案都是中文（根 CLAUDE.md 的硬规定）。一整串一个中日韩
+  // 字符都没有，它就不是给用户看的 —— 无论是 `Unexpected token < at position 0` 这种解析
+  // 细节，还是没来得及枚举进上面规则的新形态。上面那些具体规则不因此冗余：它们负责
+  // **带中文但仍不可读**的情形（如「连接失败 Failed to fetch」），也把已知病因写在了明处。
+  return !CJK_RE.test(value)
 }
 
 function stripBusinessPrefix(value: string): string {
@@ -202,9 +249,13 @@ export function actionErrorMessage(err: unknown, fallback: string): string {
   // 整体兜一层：本函数是全站 200+ 处 catch 的文案出口，自身一旦抛异常就会把原始错误
   // 顶掉、连 toast 都出不来。`err` 可能是 Proxy / throwing getter，读 digest 就可能抛。
   try {
+    // 内建异常（TypeError / RangeError / DOMException…）的 message 是纯技术细节，
+    // 而且**不带错误名**（`new TypeError('x').message === 'x'`），只能按 name 判。
+    const fromMessage =
+      err instanceof Error && !NATIVE_ERROR_NAMES.has(err.name) ? err.message : null
     return (
       readableMessage((err as { digest?: unknown } | null | undefined)?.digest) ??
-      readableMessage(err instanceof Error ? err.message : null) ??
+      readableMessage(fromMessage) ??
       safeFallback
     )
   } catch {

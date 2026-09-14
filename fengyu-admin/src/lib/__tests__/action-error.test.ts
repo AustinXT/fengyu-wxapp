@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createRequire } from 'node:module'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type { AuthSession } from '../types'
 
@@ -131,13 +131,20 @@ describe('actionErrorMessage', () => {
     })
 
     it.each([
-      ['ID: 123', 'ID: 123'],
-      ['URL: https://example.com/a', 'URL: https://example.com/a'],
       ['SKU: FY-001 库存不足', 'SKU: FY-001 库存不足'],
+      ['ID: 123 的订单不存在', 'ID: 123 的订单不存在'],
+      ['URL: https://example.com/a 打不开', 'URL: https://example.com/a 打不开'],
     ])('非白名单的业务语义标签不剥（%s）', (message, expected) => {
       // 一级前缀走 9 项白名单精确匹配，不做形状匹配 —— 否则 ID/URL/SKU 这类标签会被误吃
       expect(actionErrorMessage(new Error(message), FALLBACK)).toBe(expected)
     })
+
+    it.each(['ID: 123', 'URL: https://example.com/a'])(
+      '但整串没有一个中文字的，一律不是给用户看的文案（%s）',
+      (message) => {
+        expect(actionErrorMessage(new Error(message), FALLBACK)).toBe(FALLBACK)
+      },
+    )
 
     it.each([
       ['NOT_FOUND: SKU: S-001 不存在', 'SKU: S-001 不存在'],
@@ -211,14 +218,55 @@ describe('actionErrorMessage', () => {
   })
 
   describe('客户端自抛的异常不经 Next 脱敏，同样不能端给用户', () => {
+    // ⚠️ 真实的原生异常 message **不含错误名**（`new TypeError('x').message === 'x'`），
+    // 所以「拿 new Error('TypeError: …') 当 fixture」是假的 —— 它只覆盖了被 String() 过的形态。
+    // 下面这组是真抛出来的。
+    it('真实 TypeError：属性名不会被端给用户', () => {
+      let caught: unknown
+      try {
+        ;(undefined as unknown as { id: string }).id
+      } catch (e) {
+        caught = e
+      }
+      expect((caught as Error).message).toContain('Cannot read properties of undefined')
+      expect(actionErrorMessage(caught, FALLBACK)).toBe(FALLBACK)
+    })
+
+    it('真实 RangeError：Invalid time value 不会被端给用户', () => {
+      let caught: unknown
+      try {
+        new Date('x').toISOString()
+      } catch (e) {
+        caught = e
+      }
+      expect(actionErrorMessage(caught, FALLBACK)).toBe(FALLBACK)
+    })
+
+    it.each([
+      new TypeError('x is not a function'),
+      new ReferenceError('x is not defined'),
+      new SyntaxError('Unexpected token <'),
+      new RangeError('Invalid array length'),
+      Object.assign(new Error('signal is aborted without reason'), { name: 'AbortError' }),
+      Object.assign(new Error("Failed to execute 'fetch'"), { name: 'DOMException' }),
+    ])('内建异常 $name → 回退 fallback', (err) => {
+      expect(actionErrorMessage(err, FALLBACK)).toBe(FALLBACK)
+    })
+
+    it('项目自己的错误类不受影响（name 不在内建集合里）', () => {
+      const permissionLike = Object.assign(new Error('NOT_FOUND: 该分院不存在'), {
+        name: 'PermissionError',
+      })
+      expect(actionErrorMessage(permissionLike, FALLBACK)).toBe('该分院不存在')
+      // ApiError 没改 name，仍是 'Error'
+      expect(new ApiError('NOT_FOUND', 'x').name).toBe('ApiError')
+    })
+
     it.each([
       "TypeError: Cannot read properties of undefined (reading 'id')",
-      'ReferenceError: x is not defined',
-      'AbortError: signal is aborted without reason',
-      'RangeError: Invalid time value',
       'Error: boom',
       "DOMException: Failed to execute 'fetch' on 'Window'",
-    ])('%s → 回退 fallback', (message) => {
+    ])('被字符串化过的形态 %s 也回退', (message) => {
       expect(actionErrorMessage(new Error(message), FALLBACK)).toBe(FALLBACK)
     })
   })
@@ -340,6 +388,27 @@ describe('actionErrorMessage', () => {
     ])('errno / 浏览器网络文案不泄露内网信息：%s', (digest) => {
       expect(actionErrorMessage({ digest }, FALLBACK)).toBe(FALLBACK)
     })
+
+    // errno 种类枚举不完（lakala-client.ts:222 把 err.message 原文拼进白名单前缀），
+    // 所以按结构认：`connect|getaddrinfo|read|write + E大写码`。下面这批**不在**片段表里。
+    it.each([
+      'INVALID_STATE: LAKALA_REQUEST_FAILED: connect ENETUNREACH 10.0.0.5:443',
+      'INVALID_STATE: LAKALA_REQUEST_FAILED: read ECONNABORTED',
+      'INVALID_STATE: LAKALA_REQUEST_FAILED: getaddrinfo ENODATA api.example.com',
+    ])('未列入片段表的 errno 也被结构规则挡住：%s', (digest) => {
+      expect(actionErrorMessage({ digest }, FALLBACK)).toBe(FALLBACK)
+    })
+
+    it.each([
+      // 无空白无中文 → 不是人话
+      'INVALID_STATE: LAKALA_TIMEOUT_30000ms',
+      'INVALID_STATE: LAKALA_RESPONSE_SIGNATURE_MISMATCH',
+      'INVALID_STATE: SYSTEM_ERROR',
+      // 解析错误的英文技术句
+      'INVALID_STATE: LAKALA_RESPONSE_NOT_JSON: Unexpected token < at position 0',
+    ])('内部标识与解析细节不外泄：%s', (digest) => {
+      expect(actionErrorMessage({ digest }, FALLBACK)).toBe(FALLBACK)
+    })
   })
 
   describe('入参防御', () => {
@@ -417,14 +486,16 @@ describe('actionErrorMessage', () => {
       expect(actionErrorMessage(new Error(`${prefix}: ${copy}`), FALLBACK)).toBe(copy)
     })
 
-    it('非白名单系统错误：生产下回退 fallback，开发下保留原文便于排查', async () => {
+    it('非白名单系统错误：prod 与 dev 都回退 fallback，技术原文只留给控制台', async () => {
+      // 取舍：早先让 dev 透出英文原文「便于排查」，评审指出这条在 prod 同样生效
+      //（客户端自抛的异常不经 Next 脱敏），等于把 SQL 约束名之类的细节端给用户。
+      // 现在统一按「无中文即非用户文案」回退 —— 开发排查走浏览器控制台与 Next 错误浮层，
+      // 那两处拿到的是完整原文，信息并没有丢。
       const thrown = await throwThroughWithPermission(() => {
         throw new Error('invalid reference to FROM-clause entry for table "parent"')
       })
       expect(actionErrorMessage(asProductionError(thrown), FALLBACK)).toBe(FALLBACK)
-      expect(actionErrorMessage(asDevError(thrown), FALLBACK)).toBe(
-        'invalid reference to FROM-clause entry for table "parent"',
-      )
+      expect(actionErrorMessage(asDevError(thrown), FALLBACK)).toBe(FALLBACK)
     })
 
     it('#133 场景 A：期初门禁的 ApiError 在生产构建下原样到达用户', async () => {
@@ -465,6 +536,103 @@ describe('Next digest 形态漂移守护（#133）', () => {
     expect(createDigestWithErrorCode(new Error('boom'), 'CONFLICT: 单据已被他人处理')).toBe(
       'CONFLICT: 单据已被他人处理',
     )
+  })
+
+  it('全仓的裸 token digest 生产者都在中文说法表里（真扫描，不是列清单）', () => {
+    // 之前这条只是把 ERROR_PREFIXES 过滤后跟一个硬编码数组比 —— 新增一个
+    // `class PhoneRequiredError { readonly digest = 'PHONE_REQUIRED' }` 它照样全绿。
+    // 现在真去扫源码里的 digest 字面量。
+    const srcRoot = resolve(process.cwd(), 'src')
+    const files: string[] = []
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = resolve(dir, entry.name)
+        if (entry.isDirectory()) walk(full)
+        else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) files.push(full)
+      }
+    }
+    walk(srcRoot)
+    expect(files.length).toBeGreaterThan(100)
+
+    const bareTokens = new Set<string>()
+    for (const file of files) {
+      const text = readFileSync(file, 'utf8')
+      for (const m of text.matchAll(/\bdigest\s*[=:]\s*['"`]([^'"`]+)['"`]/g)) {
+        if (/^[A-Z][A-Z0-9_]*$/.test(m[1])) bareTokens.add(m[1])
+      }
+    }
+    // 今天只有 permissions.ts 的 PermissionError 这一个生产者
+    expect([...bareTokens].sort()).toEqual(['PERMISSION_DENIED'])
+
+    const src = readFileSync(resolve(process.cwd(), 'src/lib/action-error.ts'), 'utf8')
+    const mapped = [
+      ...(src.match(/const OPAQUE_TOKEN_MESSAGES[\s\S]*?\}\)/)?.[0] ?? '').matchAll(
+        /^\s{2}([A-Z][A-Z0-9_]*):/gm,
+      ),
+    ].map((m) => m[1])
+    for (const token of bareTokens) {
+      expect(mapped, `裸 token digest ${token} 没有对应的中文说法，用户会拿到通用兜底文案`).toContain(
+        token,
+      )
+    }
+  })
+
+  it('仓内真实二级子标签都 ≥5 字符（长度启发式的前提，破了就要改判定）', () => {
+    // LEVEL2_SUBTAG_RE 用「标签 ≥5 字符」把日志子标签与 ID:/SKU:/URL: 这类展示标签分开。
+    // 这是启发式不是协议 —— 语法上二者没法区分。所以把前提本身钉住：一旦有人写出
+    // `CONFLICT: LOCK: …` 这种短子标签，这条立刻红，逼着重新决定判定方式。
+    const actionsRoot = resolve(process.cwd(), 'src')
+    const found = new Map<string, string>()
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = resolve(dir, entry.name)
+        if (entry.isDirectory()) walk(full)
+        // 跳过本模块自身：它的注释里举了 `NOT_FOUND: SKU: …` 这种反例，那是文档不是抛点
+        else if (
+          /\.tsx?$/.test(entry.name) &&
+          !/\.test\.tsx?$/.test(entry.name) &&
+          !full.endsWith('/lib/action-error.ts')
+        ) {
+          const text = readFileSync(full, 'utf8')
+          const prefixes = (ERROR_PREFIXES as readonly string[]).join('|')
+          const re = new RegExp(`(?:${prefixes})['"\`]?\\s*[,:]\\s*['"\`]?\\s*([A-Z][A-Z0-9_]*):`, 'g')
+          for (const m of text.matchAll(re)) found.set(m[1], full)
+        }
+      }
+    }
+    walk(actionsRoot)
+    expect(found.size).toBeGreaterThan(5)
+    const tooShort = [...found].filter(([tag]) => tag.length < 5)
+    expect(
+      tooShort,
+      `这些二级子标签短于 5 字符，会被 LEVEL2_SUBTAG_RE 漏剥：${JSON.stringify(tooShort)}`,
+    ).toEqual([])
+  })
+
+  it('Next 的内部错误码形态仍是 E+数字（@E 正则的前提）', () => {
+    const dist = `${nextRoot}dist`
+    const samples: string[] = []
+    const walk = (dir: string, depth: number) => {
+      if (depth > 3 || samples.length > 40) return
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (samples.length > 40) return
+        const full = resolve(dir, entry.name)
+        if (entry.isDirectory()) walk(full, depth + 1)
+        else if (entry.name.endsWith('.js')) {
+          const text = readFileSync(full, 'utf8')
+          for (const m of text.matchAll(/__NEXT_ERROR_CODE[\s\S]{0,80}?value:\s*"([^"]+)"/g)) {
+            samples.push(m[1])
+          }
+        }
+      }
+    }
+    walk(`${dist}/server`, 0)
+    expect(samples.length, '没在 next/dist 里找到 __NEXT_ERROR_CODE 样本').toBeGreaterThan(0)
+    for (const code of samples) {
+      expect(code, `Next 错误码形态变了：${code}，NEXT_AUTO_DIGEST_RE 的 @E\\d+ 需要跟着改`).toMatch(
+        /^E\d+$/,
+      )
+    }
   })
 
   it('9 项白名单里每个前缀，要么有裸 token 中文说法，要么确认不会以裸 token 出现', () => {
