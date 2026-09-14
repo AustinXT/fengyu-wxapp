@@ -159,8 +159,13 @@ dev=`101.34.242.103`、prod=`118.178.196.26`。`172.18.0.1` 只允许 lx-test �
 | **admin e2e 库** | `postgresql://fengyu:***@101.34.242.103:5433/fengyu_e2e` | 与 dev 业务库**同机不同库**，靠库名隔离，避免多会话/worktree 并行跑 e2e 互相清库 |
 
 - 引用点只有两处，改一处必须同步另一处：`db/scripts/bootstrap-e2e-db.sh`（建库）与
-  `fengyu-admin/package.json` 的 `test:e2e*`（跑测试）。两者都以 `E2E_DB_NAME` 为库名来源，
+  `fengyu-admin/package.json` 的 `test:e2e` / `test:e2e:ui`（跑测试）。两者都以 `E2E_DB_NAME` 为库名来源，
   自定义隔离库（如 `fengyu_e2e_wt1`）时**两边都要设同一个 `E2E_DB_NAME`**，否则建了隔离库而测试仍连默认库。
+- ⚠️ **`test:e2e:manual`（e2e-chains 跨页链路）不走这个独立库**，它按设计跑在 **dev 业务库**上：
+  35 个 spec 的 psql helper（`_helpers/cron-runner.ts`、`_helpers/scope-helpers.ts`、各 `link-*.spec.ts`）
+  硬编码连 `fengyu_wxapp`，`playwright.manual.config.ts` 也注明「server 也须连 fengyu_wxapp」，
+  靠 `FY-FIX-*` / `FY-TEST-*` 命名空间与日常数据共存。给它注入 `E2E_DATABASE_URL` 会造成
+  dev server 连 e2e 库、而夹具 SQL 连业务库的**分裂**，所以该脚本刻意不注入。
 - ⚠️ **待办（需 DBA）**：`101.34.242.103` 上 `fengyu` 角色当前 `rolcreatedb=false`，
   `bootstrap-e2e-db.sh` 建不了库。需先执行 `ALTER ROLE fengyu CREATEDB`，再跑 bootstrap 建库灌 schema。
   在此之前 admin e2e 无库可连（旧 e2e 库随 `47.113.202.7` 一并弃用）。
