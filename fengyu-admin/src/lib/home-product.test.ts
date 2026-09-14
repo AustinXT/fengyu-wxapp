@@ -60,4 +60,25 @@ describe('deriveHomeProductStatus', () => {
   it('份额已结清且未提未退时兜底为已提货', () => {
     expect(deriveHomeProductStatus(false, 0, 0, 0, 0, null)).toBe('已提货')
   })
+
+  // #125：转换折抵与退款同源于 picked_up_quantity。整行折抵后 settled=purchased，
+  // 于是 pending=0、remaining=0、refunded=0 —— 若不看 convertedQuantity 会误判成「已提货」。
+  it.each([
+    // refundPending, picked, refunded, pendingPickup, remaining, unpaid, converted, expected
+    [false, 0, 0, 0, 0, null, 7, '已完成'],    // 从未提货、整行折抵
+    [false, 3, 0, 0, 0, null, 7, '已完成'],    // 提 3 + 转 7
+    [false, 2, 0, 0, 0, null, 0, '已提货'],    // 无转换无退款 → 仍是已提货
+    [false, 1, 0, 1, 1, null, 5, '部分提货'],  // 还有待提时，待提优先于已完成
+    [true, 0, 0, 0, 0, null, 5, '退款处理中'], // 在途退款最高优先级
+    // 方案 A：整行折抵后原单 received 不变，欠款仍挂原单 → 照常标「待付清」，优先于已完成
+    [false, 0, 0, 0, 0, 300, 7, '待付清'],
+  ] as const)('已转换数量参与状态派生', (refundPending, picked, refunded, pendingPickup, remaining, unpaid, converted, expected) => {
+    expect(
+      deriveHomeProductStatus(refundPending, picked, refunded, pendingPickup, remaining, unpaid, converted),
+    ).toBe(expected)
+  })
+
+  it('第 7 参缺省时保持旧行为（既有调用点不受影响）', () => {
+    expect(deriveHomeProductStatus(false, 2, 0, 0, 0, null)).toBe('已提货')
+  })
 })

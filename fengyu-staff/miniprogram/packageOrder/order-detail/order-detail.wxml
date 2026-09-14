@@ -97,7 +97,9 @@
           <text wx:if="{{item.hasDiscount}}" class="item-extra-tag">单价 <text class="item-origin-price">¥{{item.unitPrice}}</text> ¥{{item.unitRealPrice}}</text>
           <text wx:if="{{item.salesCategory}}" class="item-extra-tag">{{item.salesCategory}}</text>
           <text wx:if="{{item.expireDate}}" class="item-extra-tag">有效期至 {{item.expireDate}}</text>
-          <text wx:if="{{item.pickedUpQuantity > 0}}" class="item-extra-tag">已提 {{item.pickedUpQuantity}}</text>
+          <!-- picked_up_quantity 是「已结算」= 已提货 + 已退款 + 已转换（#125），不等于物理提货量；
+               物理提货量的权威来源是 pickup_records，此处不作「已提」解读以免误导 -->
+          <text wx:if="{{item.pickedUpQuantity > 0}}" class="item-extra-tag">已结算 {{item.pickedUpQuantity}}</text>
         </view>
         <text class="item-flow-no">{{item.saleItemId}}</text>
       </view>

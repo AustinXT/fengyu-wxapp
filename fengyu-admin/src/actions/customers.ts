@@ -639,6 +639,19 @@ export const getCustomerHomeProducts = withPermission(
         SELECT sale_item_id, SUM(pickup_quantity)::int AS picked_quantity
           FROM pickup_records
          GROUP BY sale_item_id
+      ), conversion_totals AS (
+        -- 2026-09-14 #125：家居转出数量并入 picked_up_quantity（"已结算"），这里单独聚合出来，
+        -- 避免把"已转换"算进"已退款"。只有「已关闭」完成过 rollback（数量已退回），故只排除它；
+        -- 其余状态（含"支付失败"）扣减仍然生效，必须计入已转换。删除订单的转出行已随主单消失。
+        SELECT out_item.ref_sale_item_id AS sale_item_id,
+               SUM(out_item.quantity)::int AS converted_quantity
+          FROM sale_items out_item
+          JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+         WHERE out_item.item_direction = '转出'
+           AND out_item.product_type = '家居产品'
+           AND out_item.ref_sale_item_id IS NOT NULL
+           AND conv_order.status <> '已关闭'
+         GROUP BY out_item.ref_sale_item_id
       ), home_product_rows AS (
         SELECT
           COALESCE(si.sale_item_group_id, si.sale_item_id) AS sale_item_group_id,
@@ -655,6 +668,10 @@ export const getCustomerHomeProducts = withPermission(
             LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0))),
             GREATEST(0, COALESCE(pt.picked_quantity, 0))
           )::int AS picked_quantity,
+          LEAST(
+            LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0))),
+            GREATEST(0, COALESCE(ct.converted_quantity, 0))
+          )::int AS converted_quantity,
           CASE
             -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
             -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
@@ -683,6 +700,7 @@ export const getCustomerHomeProducts = withPermission(
         LEFT JOIN stores s ON s.store_id = o.store_id
         LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
         LEFT JOIN pickup_totals pt ON pt.sale_item_id = si.sale_item_id
+        LEFT JOIN conversion_totals ct ON ct.sale_item_id = si.sale_item_id
         WHERE o.client_user_id = ${userId}
           AND o.status IN ('已支付', '部分支付', '已完成')
           AND si.item_direction = '购买'
@@ -698,6 +716,7 @@ export const getCustomerHomeProducts = withPermission(
                SUM(si.purchased_quantity)::int AS purchased_quantity,
                SUM(si.settled_quantity)::int AS settled_quantity,
                SUM(si.picked_quantity)::int AS picked_quantity,
+               SUM(si.converted_quantity)::int AS converted_quantity,
                SUM(si.paid_quantity)::int AS paid_quantity,
                SUM(si.row_sale_amount) AS sale_amount_total,
                SUM(si.row_received) AS received_total,
@@ -710,7 +729,7 @@ export const getCustomerHomeProducts = withPermission(
       GROUP BY sale_item_group_id
       ), home_product_balances AS (
         SELECT *,
-               (settled_quantity - picked_quantity)::int AS refunded_quantity,
+               GREATEST(0, settled_quantity - picked_quantity - converted_quantity)::int AS refunded_quantity,
                (purchased_quantity - settled_quantity)::int AS remaining_quantity,
                LEAST(
                  purchased_quantity - settled_quantity,
@@ -725,7 +744,7 @@ export const getCustomerHomeProducts = withPermission(
       )
       SELECT *
         FROM home_product_balances
-       WHERE picked_quantity > 0 OR remaining_quantity > 0
+       WHERE picked_quantity > 0 OR remaining_quantity > 0 OR converted_quantity > 0
     ORDER BY (pending_pickup_quantity > 0) DESC,
              purchased_at DESC,
              sale_item_id
@@ -737,6 +756,7 @@ export const getCustomerHomeProducts = withPermission(
       const remainingQuantity = Number(row.remaining_quantity ?? 0)
       const paidQuantity = Number(row.paid_quantity ?? 0)
       const pendingPickupQuantity = Number(row.pending_pickup_quantity ?? 0)
+      const convertedQuantity = Number(row.converted_quantity ?? 0)
       // 待付清行的欠款金额：received 是行级净实收（已扣该行退款），故对退过款的行
       // sale_amount - received 会把"退掉的钱"误算成欠款；寄存单行 SQL 已置 NULL。
       const unpaidAmount =
@@ -751,6 +771,7 @@ export const getCustomerHomeProducts = withPermission(
         paidQuantity,
         pickedQuantity,
         refundedQuantity,
+        convertedQuantity,
         remainingQuantity,
         pendingPickupQuantity,
         unpaidAmount,
@@ -761,6 +782,7 @@ export const getCustomerHomeProducts = withPermission(
           pendingPickupQuantity,
           remainingQuantity,
           unpaidAmount,
+          convertedQuantity,
         ),
         storeId: String(row.store_id),
         storeName: (row.store_name as string | null) ?? null,

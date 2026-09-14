@@ -438,10 +438,34 @@ function assertCanApproveDepositOrder(session: AuthSession): void {
 }
 
 /**
- * 待支付/支付失败转换单被关闭时撤销创建时的即时资产变更。
+ * 待支付/支付失败转换单被关闭时撤销创建时的即时资产变更：
+ * - 恢复被转出的原卡 remaining_sessions；
+ * - 恢复被转出的家居产品 picked_up_quantity（2026-09-14 #125）；
+ * - 作废本转换单的转入/转出权益计数。
+ *
+ * **只可对「待支付 / 支付失败」的转换单调用一次**：疗程卡侧靠 LEAST 封顶天然幂等，
+ * 家居侧是等量减法，重复调用会把数量多退一次（顾客凭空多出可提量）。
+ *
  * staffApi/routes/order.js 有同义 SQL 副本；修改时保持语义一致。
  */
 async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string): Promise<void> {
+  // 0. 先用一条语句按全局 sale_item_id 顺序锁住本单引用的**全部**源行。
+  //    createConversionOrder 折抵时是单语句 ORDER BY si.sale_item_id ... FOR UPDATE OF si（不分类型），
+  //    若这里分「疗程卡段→家居段」两次加锁，混选转换单在家居行 id < 疗程卡行 id 时会形成反向锁序而死锁。
+  await tx.execute(sql`
+    SELECT src.sale_item_id
+      FROM sale_items src
+      JOIN (
+        SELECT DISTINCT ref_sale_item_id
+          FROM sale_items
+         WHERE sale_order_id = ${saleOrderId}
+           AND item_direction = '转出'
+           AND ref_sale_item_id IS NOT NULL
+      ) refs ON refs.ref_sale_item_id = src.sale_item_id
+     ORDER BY src.sale_item_id
+     FOR UPDATE OF src
+  `)
+
   await tx.execute(sql`
     WITH restore AS (
       SELECT ref_sale_item_id, SUM(quantity)::integer AS restore_sessions
@@ -459,12 +483,45 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
              restore.restore_sessions
         FROM sale_items src
         JOIN restore ON restore.ref_sale_item_id = src.sale_item_id
+       -- 按 sale_item_id 升序加锁，与 createConversionOrder 折抵时的加锁顺序保持一致；
+       -- 两段回滚是独立语句，不定序会与开单事务反向加锁而死锁。
+       ORDER BY src.sale_item_id
        FOR UPDATE OF src
     )
     UPDATE sale_items src
        SET remaining_sessions = LEAST(
              COALESCE(src.session_count, src.remaining_sessions, 0),
              COALESCE(src.remaining_sessions, 0) + locked_source.restore_sessions
+           ),
+           updated_at = NOW()
+      FROM locked_source
+     WHERE src.sale_item_id = locked_source.sale_item_id
+  `)
+
+  // 家居产品转出把数量并进了 picked_up_quantity，撤销时必须等量退回；
+  // 否则订单一关这批货既提不出（pending 恒 0）也退不掉（refundable 恒 0）。
+  await tx.execute(sql`
+    WITH restore AS (
+      SELECT ref_sale_item_id, SUM(quantity)::integer AS restore_quantity
+        FROM sale_items
+       WHERE sale_order_id = ${saleOrderId}
+         AND item_direction = '转出'
+         AND product_type = '家居产品'
+         AND ref_sale_item_id IS NOT NULL
+       GROUP BY ref_sale_item_id
+    ),
+    locked_source AS (
+      SELECT src.sale_item_id,
+             restore.restore_quantity
+        FROM sale_items src
+        JOIN restore ON restore.ref_sale_item_id = src.sale_item_id
+       ORDER BY src.sale_item_id
+       FOR UPDATE OF src
+    )
+    UPDATE sale_items src
+       SET picked_up_quantity = GREATEST(
+             0,
+             COALESCE(src.picked_up_quantity, 0) - locked_source.restore_quantity
            ),
            updated_at = NOW()
       FROM locked_source
@@ -3713,7 +3770,10 @@ export const closeOrder = withPermission(
         return { matched: false }
       }
 
-      if (orderCtx?.saleOrderType === '转换单' && orderCtx.storeId) {
+      // rollbackPendingConversionOnClose 只按 saleOrderId 定位转出行（跨店转换单修复 PR #74 起
+      // 不再按 store_id 过滤源卡），因此这里不得再附加 storeId 条件——否则 orderCtx.storeId
+      // 缺失时会静默跳过回滚，与 staff routes/order.js:2462 的判定也不等价。
+      if (orderCtx?.saleOrderType === '转换单') {
         await rollbackPendingConversionOnClose(tx, saleOrderId)
       }
 
@@ -3913,9 +3973,20 @@ export const deleteOrder = withPermission(
     // 2. 事务级联删除（仅安全从属表 + 释放券；再删主单并复核可删条件）
     try {
       const txResult = await db.transaction(async (tx) => {
-        // 待支付/支付失败转换单：撤销创建时对源疗程卡 remaining_sessions 的即时扣减
+        // 待支付/支付失败转换单：撤销创建时对源疗程卡 remaining_sessions / 家居 picked_up_quantity 的即时扣减。
+        //
+        // 状态闸门不可省，且**必须在事务内锁单后读新鲜状态**：外层 `order.status` 是事务外读的，
+        // closeOrder‖deleteOrder 交错时（close 先提交并已回滚）这里会拿陈旧的 '待支付' 再回滚一次，
+        // 把家居 picked_up_quantity 多减一遍 → 已提货/已退款的数量凭空复活成可提可退。
+        // DELETE 复检允许 '已关闭'，所以那笔 delete 仍会提交，错误不会被任何守卫拦下。
         if (order.saleOrderType === '转换单') {
-          await rollbackPendingConversionOnClose(tx, saleOrderId)
+          const freshRows = await tx.execute(sql`
+            SELECT status FROM sale_orders WHERE sale_order_id = ${saleOrderId} FOR UPDATE
+          `) as unknown as Array<{ status?: string }> | undefined
+          const freshStatus = freshRows?.[0]?.status
+          if (freshStatus === '待支付' || freshStatus === '支付失败') {
+            await rollbackPendingConversionOnClose(tx, saleOrderId)
+          }
         }
 
         await tx
@@ -5411,8 +5482,9 @@ export const createConversionOrder = withPermission(
         if (row.client_user_id !== data.clientUserId) throw new ApiError('INVALID_STATE', 'CARD_OWNER_MISMATCH: 所选卡不属于该顾客')
         const isEntitlement = row.item_direction === '购买'
           || (row.sale_order_type === '转换单' && row.item_direction === '转入')
-        if (!isEntitlement) throw new ApiError('INVALID_STATE', 'CARD_DIRECTION_INVALID: 所选行不是有效疗程权益，不可折抵')
-        if (row.order_status !== '已支付' && row.order_status !== '已完成') {
+        if (!isEntitlement) throw new ApiError('INVALID_STATE', 'CARD_DIRECTION_INVALID: 所选行不是有效权益，不可折抵')
+        // 订单级「部分支付」同样放行（#125 甲方拍板），与 getCustomerHeldCards 的 WHERE 保持一致
+        if (row.order_status !== '已支付' && row.order_status !== '部分支付' && row.order_status !== '已完成') {
           throw new ApiError('INVALID_STATE', 'CARD_ORDER_STATUS_INVALID: 原订单状态不允许转换')
         }
         // 冻结闭环（Bug I）：源卡所属订单有待审批退款时禁止折抵（与 staff createConversion 对齐）
@@ -5423,8 +5495,9 @@ export const createConversionOrder = withPermission(
         const unit = Number(row.unit_real_price)
         const productType = row.product_type as string
 
-        // 2026-05-21 单品合并：折抵统一按 remaining_sessions（含原"体验卡单品"=1 次卡）；家居产品不可折抵
+        // 2026-05-21 单品合并：折抵统一按 remaining_sessions（含原"体验卡单品"=1 次卡）
         // 2026-08-06 预扣机制：可折抵数量 = remaining_sessions - 服务预扣（total_reserved）
+        // 2026-09-14 #125：家居产品按未提货数量整行折抵（quantity − picked_up_quantity，不看付款进度）
         let qty = 0
         if (productType === '疗程卡') {
           const rem = Number(row.remaining_sessions ?? 0)
@@ -5437,6 +5510,12 @@ export const createConversionOrder = withPermission(
             throw new ApiError('INVALID_STATE', 'CARD_RESERVED: 所选卡可用次数不足（存在服务中预留）')
           }
           qty = available  // 折抵数量改为可用次数（扣除预扣）
+        } else if (productType === '家居产品') {
+          const pending = Number(row.quantity ?? 0) - Number(row.picked_up_quantity ?? 0)
+          if (pending <= 0) {
+            throw new ApiError('INVALID_STATE', 'HOME_PRODUCT_NO_PENDING: 所选家居产品已无未提货数量，不可折抵')
+          }
+          qty = pending
         } else {
           throw new ApiError('INVALID_PARAMS', 'CARD_TYPE_INVALID: 所选行类型不支持折抵')
         }
@@ -5877,7 +5956,7 @@ export const createConversionOrder = withPermission(
         if (out.productType === '疗程卡') {
           const upd = await tx
             .update(saleItems)
-            .set({ remainingSessions: sql`${saleItems.remainingSessions} - ${out.quantity}` })
+            .set({ remainingSessions: sql`${saleItems.remainingSessions} - ${out.quantity}`, updatedAt: sql`NOW()` })
             .where(
               and(
                 eq(saleItems.saleItemId, out.refSaleItemId),
@@ -5885,7 +5964,25 @@ export const createConversionOrder = withPermission(
                 sql`COALESCE(${saleItems.remainingSessions}, 0) >= ${out.quantity}`,
               ),
             )
-          if ((upd as any).count === 0) throw new ApiError('CONFLICT', 'CARD_CONCURRENT_CHANGED: 卡状态变化，请重试')
+          if (rowsAffected(upd) === 0) throw new ApiError('CONFLICT', 'CARD_CONCURRENT_CHANGED: 卡状态变化，请重试')
+        } else if (out.productType === '家居产品') {
+          // 2026-09-14 #125：家居转出数量并入 picked_up_quantity（该列语义已是"已结算"=已提货+已退款，
+          // 见 refund-cascade 通道 5），提货与退款两侧的可用量随之归零。守卫式加法与 createPickup 一致，
+          // 并发双开转换单时第二笔 count=0 直接冲突，不会静默超转。
+          const upd = await tx
+            .update(saleItems)
+            .set({ pickedUpQuantity: sql`COALESCE(${saleItems.pickedUpQuantity}, 0) + ${out.quantity}`, updatedAt: sql`NOW()` })
+            .where(
+              and(
+                eq(saleItems.saleItemId, out.refSaleItemId),
+                eq(saleItems.storeId, data.storeId),
+                eq(saleItems.productType, '家居产品'),
+                sql`(COALESCE(${saleItems.pickedUpQuantity}, 0) + ${out.quantity}) <= ${saleItems.quantity}`,
+              ),
+            )
+          // 影响行数必须走 rowsAffected：postgres.js 的 RowList 只有 .count，
+          // 裸 `.count === 0` 在 driver 变更/mock 漂移时会 undefined === 0 → 静默放行守卫。
+          if (rowsAffected(upd) === 0) throw new ApiError('CONFLICT', 'HOME_PRODUCT_CONCURRENT_CHANGED: 家居产品可提数量变化，请重试')
         }
       }
 
@@ -6029,7 +6126,7 @@ export const createConversionOrder = withPermission(
     if (m?.includes('CARD_NOT_FOUND')) return { success: false, message: '部分卡不存在或已失效' }
     if (m?.includes('CARD_STORE_MISMATCH')) return { success: false, message: '所选卡不属于当前门店' }
     if (m?.includes('CARD_OWNER_MISMATCH')) return { success: false, message: '所选卡不属于该顾客' }
-    if (m?.includes('CARD_DIRECTION_INVALID')) return { success: false, message: '所选行不是有效疗程权益，不可折抵' }
+    if (m?.includes('CARD_DIRECTION_INVALID')) return { success: false, message: '所选行不是有效权益，不可折抵' }
     if (m?.includes('CARD_ORDER_STATUS_INVALID')) return { success: false, message: '原订单状态不允许转换' }
     if (m?.includes('CARD_EXHAUSTED')) return { success: false, message: '所选卡已耗尽，无法折抵' }
     if (m?.includes('CARD_RESERVED')) return { success: false, message: '所选卡可用次数不足（存在服务中预留）' }

@@ -2137,6 +2137,41 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
     expect(result.success).toBe(true)
   })
 
+  it('关闭待支付转换单 → 家居转出数量等量退回 picked_up_quantity（#125）', async () => {
+    mockSelectBefore([{
+      status: '待支付',
+      customerName: '顾客甲',
+      totalAmount: '200.00',
+      saleOrderType: '转换单',
+      storeId: 'store-1',
+    }])
+
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue({ count: 1 }),
+          }),
+        }),
+        execute: vi.fn().mockResolvedValue({}),
+      }
+      const result = await fn(tx)
+      const sqlTexts = tx.execute.mock.calls.map((call: any[]) => call[0]?.__sqlText || '')
+      // 家居回滚段：不退回则关单后这批货既提不出（pending 恒 0）也退不掉（refundable 恒 0）
+      expect(sqlTexts.some((text: string) =>
+        text.includes('restore_quantity') &&
+        text.includes("product_type = '家居产品'") &&
+        text.includes('picked_up_quantity = GREATEST'),
+      )).toBe(true)
+      // 疗程卡回滚段必须仍在
+      expect(sqlTexts.some((text: string) => text.includes('restore_sessions'))).toBe(true)
+      return result
+    })
+
+    const result = await closeOrder('order-1')
+    expect(result.success).toBe(true)
+  })
+
   it('事务异常 → 返回友好错误', async () => {
     ;(db.transaction as any).mockRejectedValue(new Error('connection lost'))
     const result = await closeOrder('order-1')
@@ -3145,6 +3180,108 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     }],
   }
 
+  // ── #125 家居折抵（与 staff order.test.js 的三个用例对称）────────────────────
+  const homeHeldRow = (over: Record<string, unknown> = {}) => ({
+    sale_item_id: 'home-1', sale_order_id: 'old-order', store_id: 'store-1', item_direction: '购买',
+    sku_id: 'sku-home', product_name: '家居精华', product_type: '家居产品',
+    session_count: null, remaining_sessions: null,
+    quantity: 10, picked_up_quantity: 3,
+    unit_price: '120', unit_real_price: '100',
+    sales_category: '自销自耗', service_fee: '0', is_experience: false, is_shengmei: false,
+    client_user_id: 'user-1', order_status: '已支付', product_kind: '家居',
+    ...over,
+  })
+  const homeConvData = { ...baseConvData, convertOutSaleItemIds: ['home-1'] }
+  const homeSkuRows = [{
+    skuId: 'sku-new-1', specName: '新项目', price: '300.00', specialPrice: null,
+    serviceFee: '0', sessionCount: 1, productType: '疗程卡', salesCategory: '自销自耗',
+    isExperience: false, isManagerSpecial: false, isShengmei: false, categoryId: 'cat-new',
+    purchaseLimit: null, marketScope: null,
+  }]
+
+  it('#125 家居按未提货数量整行折抵：7 盒 × 100 = 700，转出行金额为负', async () => {
+    const inserted: any[] = []
+    mockConvTx({
+      heldRows: [homeHeldRow()],
+      skuRows: homeSkuRows,
+      onInsertItem: (v) => inserted.push(v),
+    })
+
+    const result = await createConversionOrder(homeConvData)
+
+    expect(result.success).toBe(true)
+    const outRow = inserted.find((v) => v.itemDirection === '转出')
+    expect(outRow).toBeDefined()
+    // 未提货 7 盒（不看付款进度），转出行金额 = −700
+    expect(outRow.quantity).toBe(7)
+    expect(outRow.saleAmount).toBe('-700.00')
+    expect(outRow.received).toBe('-700.00')
+  })
+
+  it('#125 家居转出数量并入 picked_up_quantity 且带不可超转守卫，不走 remaining_sessions', async () => {
+    const { executeSql } = mockConvTx({
+      heldRows: [homeHeldRow()],
+      skuRows: homeSkuRows,
+    })
+
+    await createConversionOrder(homeConvData)
+
+    // 扣减走 drizzle update（不在 executeSql 里），这里断言没有误用疗程卡的 remaining_sessions 路径
+    expect(executeSql.some((t) => t.includes('remaining_sessions ='))).toBe(false)
+  })
+
+  it('#125 部分支付订单的家居行可折抵（订单级状态已放开）', async () => {
+    const inserted: any[] = []
+    mockConvTx({
+      heldRows: [homeHeldRow({ order_status: '部分支付' })],
+      skuRows: homeSkuRows,
+      onInsertItem: (v) => inserted.push(v),
+    })
+
+    const result = await createConversionOrder(homeConvData)
+
+    expect(result.success).toBe(true)
+    const outRow = inserted.find((v) => v.itemDirection === '转出')
+    expect(outRow?.quantity).toBe(7)
+  })
+
+  it('#125 已关闭订单仍不可折抵（只放开部分支付）', async () => {
+    mockConvTx({
+      heldRows: [homeHeldRow({ order_status: '已关闭' })],
+      skuRows: homeSkuRows,
+    })
+
+    const result = await createConversionOrder(homeConvData)
+
+    expect(result.success).toBe(false)
+    expect(JSON.stringify(result)).toContain('原订单状态不允许转换')
+  })
+
+  it('#125 已无未提货数量的家居行拒绝折抵', async () => {
+    mockConvTx({
+      heldRows: [homeHeldRow({ quantity: 4, picked_up_quantity: 4 })],
+      skuRows: homeSkuRows,
+    })
+
+    const result = await createConversionOrder(homeConvData)
+
+    expect(result.success).toBe(false)
+    expect(JSON.stringify(result)).toContain('HOME_PRODUCT_NO_PENDING')
+  })
+
+  it('#125 家居扣减 rowsAffected=0（并发被抢先）→ 冲突', async () => {
+    mockConvTx({
+      heldRows: [homeHeldRow()],
+      skuRows: homeSkuRows,
+      updateCount: 0,
+    })
+
+    const result = await createConversionOrder(homeConvData)
+
+    expect(result.success).toBe(false)
+    expect(JSON.stringify(result)).toContain('HOME_PRODUCT_CONCURRENT_CHANGED')
+  })
+
   it('受限普通转入 SKU 不匹配顾客绑定门店市场时拒绝提交', async () => {
     ;(db.select as any)
       .mockImplementationOnce(mockSelectFound(mockClient))
@@ -3418,7 +3555,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
       convertOutSaleItemIds: ['invalid-in-row'],
     })
 
-    expect(result).toEqual({ success: false, message: '所选行不是有效疗程权益，不可折抵' })
+    expect(result).toEqual({ success: false, message: '所选行不是有效权益，不可折抵' })
   })
 
   it('先锁转出卡再汇总预扣，并按预扣次数折抵', async () => {
@@ -5454,6 +5591,53 @@ describe('deleteOrder — 守卫 + 级联删除', () => {
     expect(result.success).toBe(false)
     expect(result.message).toContain('单据')
     expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  // #125：转换单删除前必须在事务内锁单读新鲜状态，否则 closeOrder‖deleteOrder 交错时
+  // 会拿事务外的陈旧 '待支付' 二次回滚，把家居 picked_up_quantity 多减一遍。
+  function setupConversionTx(freshStatus: string | undefined) {
+    const executed: string[] = []
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }) }),
+        execute: vi.fn().mockImplementation(async (q: any) => {
+          const text = q?.__sqlText || ''
+          executed.push(text)
+          if (text.includes('SELECT status FROM sale_orders') && text.includes('FOR UPDATE')) {
+            return freshStatus === undefined ? [] : [{ status: freshStatus }]
+          }
+          return undefined
+        }),
+        delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+      }
+      await fn(tx)
+      return { deleted: true }
+    })
+    return executed
+  }
+
+  it('删除待支付转换单 → 事务内锁单读到待支付，执行回滚（#125）', async () => {
+    enqueueSelect([[{ ...okOrder, saleOrderType: '转换单' }], [], []])
+    enqueueExecute([[], [], []])
+    const executed = setupConversionTx('待支付')
+
+    await deleteOrder('FY-CONV-DEL-1')
+
+    expect(executed.some((t) => t.includes('SELECT status FROM sale_orders') && t.includes('FOR UPDATE'))).toBe(true)
+    expect(executed.some((t) => t.includes('restore_sessions'))).toBe(true)
+    expect(executed.some((t) => t.includes('restore_quantity') && t.includes("product_type = '家居产品'"))).toBe(true)
+  })
+
+  it('删除已关闭转换单 → 锁单读到已关闭，跳过回滚（closeOrder 已回滚过，二次会多退家居数量）', async () => {
+    enqueueSelect([[{ ...okOrder, status: '已关闭', saleOrderType: '转换单' }], [], []])
+    enqueueExecute([[], [], []])
+    const executed = setupConversionTx('已关闭')
+
+    await deleteOrder('FY-CONV-DEL-2')
+
+    expect(executed.some((t) => t.includes('SELECT status FROM sale_orders') && t.includes('FOR UPDATE'))).toBe(true)
+    expect(executed.some((t) => t.includes('restore_sessions'))).toBe(false)
+    expect(executed.some((t) => t.includes('restore_quantity'))).toBe(false)
   })
 
   it('干净测试单 → 级联删除成功 + 审计', async () => {

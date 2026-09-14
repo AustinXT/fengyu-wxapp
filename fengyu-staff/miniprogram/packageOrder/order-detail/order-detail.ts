@@ -170,7 +170,7 @@ interface DisplayOrderItem {
   remainPct: number;
   paidUnusedPct: number;
   unpaidPct: number;
-  /** 详情扩展：销售分类 / 过期日期（formatDate 后，空串=无）/ 已提货数量（家居，0=不展示） */
+  /** 详情扩展：销售分类 / 过期日期（formatDate 后，空串=无）/ 已结算数量（已提货+已退款+已转换，#125）（家居，0=不展示） */
   salesCategory: string;
   expireDate: string;
   pickedUpQuantity: number;

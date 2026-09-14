@@ -343,6 +343,8 @@ interface HomeProduct {
   paidQuantity: number;
   pickedQuantity: number;
   refundedQuantity: number;
+  /** 已通过转换单折抵转走的数量（#125，与已退款分列） */
+  convertedQuantity: number;
   remainingQuantity: number;
   pendingPickupQuantity: number;
   /** 行级欠款；仅 refundedQuantity=0 时有值，退过款的行为 null（received 是净实收，相减会虚增欠款） */

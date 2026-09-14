@@ -511,6 +511,15 @@ describe('getCustomerHeldCards — 数据映射', () => {
     expect(rows).toEqual([])
   })
 
+  it('#125 候选订单状态含「部分支付」（与卡包列表共用常量）', async () => {
+    mockSelectRows([])
+
+    await getCustomerHeldCards('user-1', 'store-1')
+
+    // 甲方 2026-09-14 拍板放开订单级部分支付；用 inArray 复用 CARD_ENTITLEMENT_ORDER_STATUSES
+    expect(inArray).toHaveBeenCalledWith('status', ['已支付', '部分支付', '已完成'])
+  })
+
   it('查询条件同时纳入购买权益与转换单转入权益', async () => {
     mockSelectRows([])
 
@@ -519,6 +528,42 @@ describe('getCustomerHeldCards — 数据映射', () => {
     expect(eq).toHaveBeenCalledWith('item_direction', '购买')
     expect(eq).toHaveBeenCalledWith('sale_order_type', '转换单')
     expect(eq).toHaveBeenCalledWith('item_direction', '转入')
+  })
+
+  it('家居产品（#125）：按未提货数量折抵，remainingSessions=null、单位回退盒', async () => {
+    mockSelectRows([{
+      saleItemId: 'si-home-1',
+      productName: '家居精华',
+      productType: '家居产品',
+      remainingSessions: null,
+      quantity: 10,
+      pickedUpQuantity: 3,
+      unitRealPrice: '100.00',
+      productKind: '家居',
+    }])
+    const [row] = await getCustomerHeldCards('user-1', 'store-1')
+    expect(row.productType).toBe('家居产品')
+    // 未提货 7 盒 × 100 = 700；不看付款进度
+    expect(row.remainingQty).toBe(7)
+    expect(row.remainingSessions).toBeNull()
+    expect(row.deductibleAmount).toBe('700.00')
+    expect(row.unit).toBe('盒')
+  })
+
+  it('家居产品全部结算（提货+退款）时 remainingQty 归零不为负', async () => {
+    mockSelectRows([{
+      saleItemId: 'si-home-2',
+      productName: '家居精华',
+      productType: '家居产品',
+      remainingSessions: null,
+      quantity: 4,
+      pickedUpQuantity: 6,
+      unitRealPrice: '100.00',
+      productKind: '家居',
+    }])
+    const [row] = await getCustomerHeldCards('user-1', 'store-1')
+    expect(row.remainingQty).toBe(0)
+    expect(row.deductibleAmount).toBe('0.00')
   })
 
   it('remainingSessions = null 时按 0 处理（deductibleAmount=0.00）', async () => {

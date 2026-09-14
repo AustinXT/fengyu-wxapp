@@ -256,7 +256,7 @@ Component({
         this.recalcDiff();
       } catch (err: unknown) {
         if (seq !== this._requestSeq) return;
-        const msg = err instanceof Error ? err.message : '加载折抵卡失败';
+        const msg = err instanceof Error ? err.message : '加载折抵项失败';
         this._allCards = [];
         this.setData({
           cards: [],
@@ -542,7 +542,7 @@ Component({
     onToggleExperienceConversion(this: any, e: WechatMiniprogram.CustomEvent) {
       const next = !!e.detail;
       if (next && (this.data.selectedIds.length === 0 || !Array.isArray(this.properties.cartItems) || this.properties.cartItems.length === 0)) {
-        wx.showToast({ title: '请先选择折抵卡和转入项目', icon: 'none' });
+        wx.showToast({ title: '请先选择折抵项和转入项目', icon: 'none' });
         return;
       }
       this._receivedTouched = false;

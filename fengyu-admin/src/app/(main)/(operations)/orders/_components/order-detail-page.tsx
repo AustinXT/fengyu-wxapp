@@ -684,7 +684,9 @@ export default function OrderDetailPageClient({
                           <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-[#999999]">
                             {item.salesCategory && <span>{item.salesCategory}</span>}
                             {item.expireDate && <span>有效期至 {formatDate(item.expireDate)}</span>}
-                            {(item.pickedUpQuantity ?? 0) > 0 && <span>已提 {item.pickedUpQuantity}</span>}
+                            {/* picked_up_quantity 是「已结算」= 已提货 + 已退款 + 已转换（#125），
+                                不等于物理提货量（权威来源是 pickup_records） */}
+                            {(item.pickedUpQuantity ?? 0) > 0 && <span>已结算 {item.pickedUpQuantity}</span>}
                           </div>
                         )}
                       </td>

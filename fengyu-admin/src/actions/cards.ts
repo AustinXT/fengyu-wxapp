@@ -712,8 +712,10 @@ export const getCardTransactions = withPermission(
  * 折抵对象（2026-05-21 单品合并后放开）：
  *   疗程卡 (product_type='疗程卡') AND remaining_sessions > 0
  *   —— 原"体验卡单品"已并入疗程卡（session_count=1），不再要求 is_experience。
+ *   家居产品 (product_type='家居产品') AND quantity − picked_up_quantity > 0（2026-09-14 #125）
+ *   —— 未提货数量整行折抵，不看付款进度；已退数量已由 refund-cascade 并入 picked_up_quantity。
  *
- * 不包含：充值卡（走 prepaid_cards 账户，不在 sale_items 行）、家居产品（不在业务口径内）
+ * 不包含：充值卡（走 prepaid_cards 账户，不在 sale_items 行）
  */
 export interface HeldCardCandidate {
   saleItemId: string
@@ -746,7 +748,7 @@ export interface HeldCardCandidate {
   saleAmount: string
   received: string
   pendingReceived: string
-  /** 折抵金额 = unitRealPrice × remainingSessions */
+  /** 折抵金额：疗程卡 = unitRealPrice × remainingSessions；家居产品 = unitRealPrice × remainingQty（未提货数量，#125） */
   deductibleAmount: string
   expireDate: string | null
   remark: string | null
@@ -816,21 +818,36 @@ export const getCustomerHeldCards = withPermission(
         eq(saleItems.storeId, storeId),
         eq(saleOrders.clientUserId, clientUserId),
         cardEntitlementDirectionCondition(),
-        or(eq(saleOrders.status, '已支付'), eq(saleOrders.status, '已完成')),
+        // 2026-09-14 #125 甲方拍板：订单级「部分支付」也可折抵；与卡包列表共用同一组状态，
+        // 疗程卡与家居同时放开，欠款按方案 A 留原单
+        inArray(saleOrders.status, [...CARD_ENTITLEMENT_ORDER_STATUSES]),
         // 2026-05-21 单品合并：折抵对象统一为 疗程卡 + 剩余次数>0（含原"体验卡单品"=1 次卡）
-        eq(saleItems.productType, '疗程卡'),
-        sql`COALESCE(${saleItems.remainingSessions}, 0) > 0`,
+        // 2026-09-14 #125：家居产品未提货数量同样可作为折抵来源（整行折抵，不看付款进度）
+        or(
+          and(
+            eq(saleItems.productType, '疗程卡'),
+            sql`COALESCE(${saleItems.remainingSessions}, 0) > 0`,
+          ),
+          and(
+            eq(saleItems.productType, '家居产品'),
+            sql`(${saleItems.quantity} - COALESCE(${saleItems.pickedUpQuantity}, 0)) > 0`,
+          ),
+        ),
         // 在途退款冻结：原订单存在 '待审批' 退款时排除整单的卡（与 staff customerHeldCards 对齐）
         sql`NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '待审批')`,
         // 审批后隐藏已退完的卡：仅当订单存在已审批退款时按 paid_sessions 有效余量判定（不影响无退款的分期卡）
-        sql`(NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付') OR ${saleItems.paidSessions} IS NULL OR ${saleItems.paidSessions} > (${saleItems.sessionCount} - ${saleItems.remainingSessions}))`,
+        // 家居产品不适用：已退数量由 refund-cascade 并入 picked_up_quantity，未提货数量已天然扣除
+        sql`(${saleItems.productType} <> '疗程卡' OR NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付') OR ${saleItems.paidSessions} IS NULL OR ${saleItems.paidSessions} > (${saleItems.sessionCount} - ${saleItems.remainingSessions}))`,
       ),
     )
 
-  // 单品合并后 WHERE 仅返回疗程卡行，统一按 remaining_sessions 折抵
+  // 疗程卡按 remaining_sessions 折抵；家居产品按未提货数量 quantity − picked_up_quantity 折抵
   return rows.map((r) => {
     const unit = Number(r.unitRealPrice)
+    const isHomeProduct = r.productType === '家居产品'
     const remSess = r.remainingSessions ?? 0
+    const remainingQty = Math.max(0, (r.quantity ?? 0) - (r.pickedUpQuantity ?? 0))
+    const deductibleQty = isHomeProduct ? remainingQty : remSess
     return {
       saleItemId: r.saleItemId,
       saleItemGroupId: r.saleItemGroupId ?? null,
@@ -847,19 +864,19 @@ export const getCustomerHeldCards = withPermission(
       itemDirection: r.itemDirection,
       refSaleItemId: r.refSaleItemId ?? null,
       productName: r.productName,
-      productType: '疗程卡' as const,
-      unit: r.unit ?? '次',
+      productType: isHomeProduct ? ('家居产品' as const) : ('疗程卡' as const),
+      unit: r.unit ?? (isHomeProduct ? '盒' : '次'),
       quantity: r.quantity ?? 1,
       sessionCount: r.sessionCount ?? null,
-      remainingSessions: remSess,
+      remainingSessions: isHomeProduct ? null : remSess,
       paidSessions: r.paidSessions ?? null,
-      remainingQty: null,
+      remainingQty: isHomeProduct ? remainingQty : null,
       unitPrice: r.unitPrice,
       unitRealPrice: r.unitRealPrice,
       saleAmount: r.saleAmount,
       received: r.received,
       pendingReceived: r.pendingReceived,
-      deductibleAmount: (unit * remSess).toFixed(2),
+      deductibleAmount: (unit * deductibleQty).toFixed(2),
       expireDate: r.expireDate ?? null,
       remark: r.remark ?? null,
       salesCategory: r.salesCategory ?? null,
