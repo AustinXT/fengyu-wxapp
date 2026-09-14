@@ -132,13 +132,20 @@
   padding-bottom: 24rpx;
 }
 
-/* 命中窗口导航（上一批 / 第 A-B 条 / 下一批） */
+/* 命中窗口导航（上一批 / 第 A-B 条 / 下一批）。
+   吸底：翻批次会把页面滚回顶部，导航若钉在列表末尾，连续翻几批就得来回滚 */
 .perf-match-nav {
+  position: sticky;
+  bottom: 0;
+  z-index: 9;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12rpx;
-  padding: 8rpx 0 16rpx;
+  padding: 12rpx 16rpx;
+  background: rgba(255, 255, 255, 0.96);
+  border-radius: 12rpx;
+  box-shadow: 0 -2rpx 12rpx rgba(45, 32, 23, 0.06);
 }
 
 .perf-match-label {

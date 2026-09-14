@@ -2344,3 +2344,45 @@ describe('绩效页 · 评审 round-37 闭环（codex）', () => {
     expect(page.data.startDate).toBe('2020-01-01')
   })
 })
+
+describe('绩效页 · onShow 被动刷新也要去重（评审 round-38 glm P2）', () => {
+  test('同区间重查在途时切后台再回来，不重复发一次全区间扫描', () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    vi.mocked(callStaffApi).mockImplementation(() => new Promise(() => {}))
+    page.loadData(true)                 // 首屏还在路上
+    expect(page.data.loading).toBe(true)
+
+    vi.mocked(callStaffApi).mockClear()
+    page.onShow()                       // 切去微信抄手机号再回来
+
+    expect(callStaffApi).not.toHaveBeenCalled()
+  })
+
+  test('翻页在途时 onShow 仍照常被动刷新（那不是重查）', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage(Array.from({ length: 20 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i)), 200)
+    await page.loadData(true)
+
+    vi.mocked(callStaffApi).mockImplementation(() => new Promise(() => {}))
+    page.loadData(false)                // 分页在途
+    vi.mocked(callStaffApi).mockClear()
+    page.onShow()
+
+    expect(callStaffApi).toHaveBeenCalledTimes(1)
+  })
+
+  test('请求结束后 onShow 正常刷新', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+    expect(page.data.loading).toBe(false)
+
+    vi.mocked(callStaffApi).mockClear()
+    page.onShow()
+
+    expect(callStaffApi).toHaveBeenCalledTimes(1)
+  })
+})
