@@ -15,15 +15,15 @@
  * 幂等：基于固定 product_id / sku_id，重复运行只 SELECT 不写。
  *
  * 使用：
- *   DATABASE_URL=postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp node db/scripts/seed-recharge-virtual-product.js
- *   DATABASE_URL=postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp node db/scripts/seed-recharge-virtual-product.js
+ *   # dev
+ *   DATABASE_URL=postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp node db/scripts/seed-recharge-virtual-product.js
+ *   # prod
+ *   DATABASE_URL=postgresql://fengyu:fengyu123@118.178.196.26:5433/fengyu_wxapp node db/scripts/seed-recharge-virtual-product.js
  *
- * 双库执行：先后用两个 DATABASE_URL 各跑一次。未指定 DATABASE_URL 时默认 5433。
+ * 双库执行：先后用两个 DATABASE_URL 各跑一次。DATABASE_URL 必填，无默认值。
  */
 
 const { Client } = require('pg')
-
-const DEFAULT_PG = 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
 
 const PRODUCT_ID = 'prod-recharge-virtual'
 const SKU_ID = 'sku-recharge-virtual'
@@ -31,7 +31,12 @@ const MALL_CATEGORY_ID = 'mall-cat-cz-01'   // 储值卡
 const PRODUCT_CATEGORY_ID = 'cat-cz-01'     // 储值卡 / product_kind=充值卡
 
 async function main() {
-  const databaseUrl = process.env.DATABASE_URL || DEFAULT_PG
+  // DATABASE_URL 必填：不提供默认值，避免忘传时静默连到已弃用的旧 dev 库（见 db/CLAUDE.md）
+  const databaseUrl = process.env.DATABASE_URL
+  if (!databaseUrl) {
+    console.error('✗ 必须显式传 DATABASE_URL（dev=101.34.242.103:5433/fengyu_wxapp / prod=118.178.196.26:5433/fengyu_wxapp）')
+    process.exit(1)
+  }
   const client = new Client({ connectionString: databaseUrl })
   await client.connect()
 

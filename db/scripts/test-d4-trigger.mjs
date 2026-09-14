@@ -3,7 +3,14 @@
  * 用一次性事务 ROLLBACK，不留任何数据。
  */
 import { Client } from 'pg';
-const c = new Client({ connectionString: 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp' });
+
+// DATABASE_URL 必填：不提供默认值，避免忘传时静默连到已弃用的旧 dev 库（见 db/CLAUDE.md）
+if (!process.env.DATABASE_URL) {
+  console.error('✗ 必须显式传 DATABASE_URL（dev=101.34.242.103:5433/fengyu_wxapp / prod=118.178.196.26:5433/fengyu_wxapp）');
+  process.exit(1);
+}
+
+const c = new Client({ connectionString: process.env.DATABASE_URL });
 await c.connect();
 
 // 找一个真实存在的 sale_order_id 用于测试（避免 FK 失败）
