@@ -113,9 +113,87 @@
   background: var(--color-border);
 }
 
+/* 二级分类面板（chip 筛选 + 分类金额格子） */
+.perf-category-panel {
+  background: #FFFFFF;
+  padding: 16rpx 24rpx 20rpx;
+  border-bottom: 1rpx solid var(--color-border);
+}
+
+/* 固定 5 项（全部 + 4 分类）一行放得下；出现「未分类」等额外分类时自动换行 */
+.perf-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  margin-bottom: 4rpx;
+}
+
+.perf-chip {
+  font-size: 22rpx;
+  line-height: 1;
+  padding: 12rpx 20rpx;
+  margin: 0 12rpx 12rpx 0;
+  border-radius: 24rpx;
+  background: #F5F5F5;
+  color: var(--color-text-secondary);
+}
+
+.perf-chip--active {
+  background: var(--color-primary);
+  color: #FFFFFF;
+  font-weight: 600;
+}
+
+.perf-cells-caption {
+  display: block;
+  font-size: 20rpx;
+  color: var(--color-text-hint);
+  margin: 4rpx 0 8rpx;
+}
+
+.perf-cell-grid {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+/* 4 列等宽；出现「未分类」等额外分类时自动换行 */
+.perf-cell {
+  width: 25%;
+  box-sizing: border-box;
+  padding: 12rpx 4rpx;
+  text-align: center;
+  border-radius: 12rpx;
+}
+
+.perf-cell--active {
+  background: var(--color-primary-light);
+}
+
+.perf-cell-name {
+  display: block;
+  font-size: 20rpx;
+  color: var(--color-text-hint);
+  margin-bottom: 6rpx;
+}
+
+.perf-cell-amount {
+  display: block;
+  font-size: 26rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.perf-cell--active .perf-cell-amount {
+  color: var(--color-primary);
+}
+
 /* 明细列表 */
 .perf-list {
   padding: 16rpx 24rpx;
+}
+
+/* 筛选切换在途：淡化旧数据，避免与已更新的选中态看着像同一批 */
+.perf-list--switching {
+  opacity: 0.45;
 }
 
 .perf-item {
@@ -160,6 +238,12 @@
 .type-tag--service {
   background: #E3F0FF;
   color: #5E8BB3;
+}
+
+/* 退款冲销行（提成/业绩为负）——品牌红，与 ui.spec §4.19 退款色一致 */
+.type-tag--refund {
+  background: #FFF0EE;
+  color: var(--color-primary);
 }
 
 .perf-item-row {

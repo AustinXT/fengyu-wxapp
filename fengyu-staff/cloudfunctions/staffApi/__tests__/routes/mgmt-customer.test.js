@@ -19,6 +19,7 @@ const {
   paidOrders,
   giftHistory,
   refundHistory,
+  homeProducts,
 } = require('../../routes/mgmt-customer')
 
 // ---- ctx 构造 ----
@@ -87,6 +88,7 @@ function setupCommonMocks(opts = {}) {
     refundPaymentRows = [],   // 2026-04-26 sale_order_payments[change_type='退款'] JOIN spd 行
     refundConvOrderRows = [], // 2026-04-26 sale_orders[type='转换单'] 行
     refundConvItemRows = [],  // 2026-04-26 转换单的 sale_items 明细
+    homeProductRows = [],     // 2026-09-13 家居产品资产（mgmtCustomer.homeProducts）
     marketName = '华东市场',
     storeName = '凤御A店',
   } = opts
@@ -113,6 +115,11 @@ function setupCommonMocks(opts = {}) {
     // resolveCustomerInScope（子 Tab）：SELECT user_id, bound_store_id FROM client_wechat_users WHERE user_id|phone = $1
     if (/SELECT\s+user_id,\s+bound_store_id\s+FROM\s+client_wechat_users/.test(sql)) {
       return resolveCustomerRow
+    }
+
+    // homeProducts：家居产品资产 CTE 链
+    if (/FROM\s+home_product_balances/.test(sql)) {
+      return homeProductRows
     }
 
     // search 最近购买（仅 search 在用）
@@ -1451,5 +1458,93 @@ describe('mgmtCustomer 出数完整路径', () => {
     const ctx = makeHqCtx({ clientPhone: '13800001111', scopeType: 'all' })
     await refundHistory(ctx)
     expect(ctx.result.orders).toEqual([])
+  })
+})
+
+// issue #121：管理层视图此前没有 homeProducts action，管理层模式下永远看不到家居产品。
+// 口径必须与门店视图 customer.homeProducts 一致（含 #120 的未付清放行）。
+describe('mgmtCustomer.homeProducts', () => {
+  const unpaidRow = {
+    sale_item_id: 'SI-UNPAID', sale_order_id: 'SO-UNPAID', product_name: '舒缓精华液',
+    unit: '盒', purchased_quantity: 1, paid_quantity: 0, picked_quantity: 0,
+    refunded_quantity: 0, remaining_quantity: 1, pending_pickup_quantity: 0,
+    unpaid_amount: '380.00', store_id: 'store-002', store_name: '外店',
+    purchased_at: '2026-09-13T10:00:00Z', refund_pending: false,
+  }
+
+  test('返回 {scope, homeProducts}，未付清行带待付清状态与欠款', async () => {
+    setupCommonMocks({ homeProductRows: [unpaidRow] })
+    const ctx = makeHqCtx({ clientUserId: 'u1', scopeType: 'store', scopeId: 'store-001' })
+    await homeProducts(ctx)
+
+    expect(ctx.result.scope.name).toBe('凤御A店')
+    expect(ctx.result.homeProducts).toEqual([
+      expect.objectContaining({
+        saleItemId: 'SI-UNPAID',
+        purchasedQuantity: 1,
+        paidQuantity: 0,
+        pendingPickupQuantity: 0,
+        unpaidAmount: 380,
+        status: '待付清',
+      }),
+    ])
+  })
+
+  test('寄存单行不报欠款，状态为待提货', async () => {
+    setupCommonMocks({
+      homeProductRows: [{
+        ...unpaidRow,
+        sale_item_id: 'SI-DEPOSIT', purchased_quantity: 27, remaining_quantity: 27,
+        unpaid_amount: null,
+      }],
+    })
+    const ctx = makeHqCtx({ clientUserId: 'u1', scopeType: 'all' })
+    await homeProducts(ctx)
+
+    expect(ctx.result.homeProducts[0]).toEqual(
+      expect.objectContaining({ unpaidAmount: null, status: '待提货' }),
+    )
+  })
+
+  test('交易数据跟顾客走：SQL 不按订单门店过滤，按 client_user_id 查', async () => {
+    setupCommonMocks({ homeProductRows: [] })
+    const ctx = makeHqCtx({ clientUserId: 'u1', scopeType: 'market', scopeId: 'mkt-A' })
+    await homeProducts(ctx)
+
+    const sql = pg.query.mock.calls.map((c) => c[0]).find((s) => /FROM\s+home_product_balances/.test(s))
+    expect(sql).toMatch(/o\.client_user_id\s*=\s*\$1/)
+    expect(sql).not.toMatch(/o\.store_id\s+IN/)
+    expect(sql).toContain("si.product_type = '家居产品'")
+    expect(sql).toContain('WHERE picked_quantity > 0 OR remaining_quantity > 0')
+    expect(sql).toContain("(o.sale_order_type = '寄存单') AS is_deposit")
+    expect(ctx.result.homeProducts).toEqual([])
+  })
+
+  test('顾客 bound_store_id 不在 store scope 内时拒绝', async () => {
+    setupCommonMocks({
+      resolveCustomerRow: [{ user_id: 'u1', bound_store_id: 'store-999' }],
+      homeProductRows: [unpaidRow],
+    })
+    const ctx = makeHqCtx({ clientUserId: 'u1', scopeType: 'store', scopeId: 'store-001' })
+    await expect(homeProducts(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('顾客不在 market 组织树内时拒绝', async () => {
+    setupCommonMocks({ customerInScope: false, homeProductRows: [unpaidRow] })
+    const ctx = makeHqCtx({ clientUserId: 'u1', scopeType: 'market', scopeId: 'mkt-A' })
+    await expect(homeProducts(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('缺少顾客标识时拒绝', async () => {
+    setupCommonMocks()
+    const ctx = makeHqCtx({ scopeType: 'all' })
+    await expect(homeProducts(ctx)).rejects.toThrow(/INVALID_PARAMS/)
+  })
+
+  test('支持 clientPhone 入参', async () => {
+    setupCommonMocks({ homeProductRows: [] })
+    const ctx = makeHqCtx({ clientPhone: '13800001111', scopeType: 'all' })
+    await homeProducts(ctx)
+    expect(ctx.result.homeProducts).toEqual([])
   })
 })

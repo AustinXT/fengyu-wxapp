@@ -13,6 +13,7 @@ const pg = require('../db/pg')
 const { requireStaffBound, invalidateAuthCache, isCurrentStoreManager } = require('../middleware/auth')
 const { assertEmployeeInScope, isStoreInScope, buildStoreScopeCondition } = require('../utils/scope')
 const { shanghaiDateStr } = require('../utils/datetime')
+const { SALES_CATEGORIES, UNCATEGORIZED } = require('../utils/sales-categories')
 
 // 跨 env 转上传相关 env vars：
 // - CLIENT_API_HTTP_URL：clientApi 的 HTTP 触发器 URL（部署 clientApi 后 tcb fn detail 拿）
@@ -585,17 +586,44 @@ async function bindStore(ctx) {
  *   totalSalesAlloc       = SUM(sale_payment_item_allocations.commission_amount) — 真实【销售提成】（= 营业额份额 × 提成率快照）
  *   totalServiceCommission = SUM(service_commissions.commission_amount) — 真实【服务提成】
  *   totalCommission（合计）= 两者相加 —— 销售/服务两侧均为真实提成收入。
- *   item.amount = 该行销售提成（commission_amount）；item.allocAmount = 营业额份额（total_amount）；
- *   item.businessAmount = 整行实收（si.received，按产品决策保持不变）。
+ *   item.amount = 该行销售提成（commission_amount）；item.allocAmount = 该员工营业额分配份额（spia.allocated_amount）。
+ *   item.businessAmount = 整行实收（si.received）— **已弃用**，仅保留兼容线上老版本小程序；
+ *     新版前端「业绩」展示 allocAmount（issue #123：员工看到的应是自己的分配额，不是订单行总额）。
  *   提成率快照在 allocation.save / admin / payNotify 写入时固化（commission_rate），历史不随改率变化。
  *   与 mgmt staffRankingIncome / querySalesCommissionIncome 同口径（销售部分均 = commission_amount），三处自洽。
  *   ⚠️ 销售提成是【提成收入】维度，与首卡「今日分成（营业额）」（= staffRankingRevenue，营业额份额维度）本就不等，勿强行对齐。
+ *
+ * 筛选与汇总解耦（issue #123，勿回退）：
+ *   salesCategory / filterType 入参**只过滤 items 明细**，不影响任何汇总字段。
+ *   categorySummary（4 归属分类 × {sales, service} = 绩效页 8 维度总览）与 totalSalesAlloc /
+ *   totalServiceCommission / totalCommission 恒按本期全量计算，否则前端切二级 chip 后其余维度会归零，
+ *   且「4 子类之和 = 顶部销售提成」的勾稽关系断裂。
+ *   categorySummary 固定 4 类零填充 + 逐类 round2，categories 下发有序分类清单（前端不再自持硬编码）。
+ *
+ * ⚠️ 退款在销售侧与服务侧的口径不对称（既有，非本次引入，勿误以为 bug）：
+ *   销售侧 = **冲销式**：refund-cascade INSERT 负数镜像子分配，`is_void` 仍为 false →
+ *     负数行进入 allocRows，明细会出现负提成/负分配额。退款标识由本函数按款项
+ *     `spe.change_type === '退款'` 下发 `isRefund`，前端只读该字段 —— **不可用金额符号推断**：
+ *     转换单转出行的分配额同样为负，而提成率 0 的退款行提成额是 0，两头都会判错。
+ *   服务侧 = **删除式**：退款把 service_commissions.is_void 置 true → 本查询直接排除 →
+ *     已过去月份的服务提成会**回溯变小**，员工事后查看历史月份与当时所见不一致。
+ *   两侧统一为冲销式需要改 refund-cascade + 历史数据回填，超出绩效页范围。
  */
 async function performanceDetail(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
   const { startDate, endDate, employeeId: queryEmployeeId, salesCategory, filterType, page = 1, pageSize = 20 } = ctx.event.payload || {}
   const isManager = isCurrentStoreManager(ctx.auth)
+
+  // 分页入参加固：非法值会让 slice 走进负索引（page=-1 静默返回列表尾部的错误数据）
+  // 或字符串拼接（pageSize='20' 时 offset + pageSize → '2020'，一次吐 2000 条）；
+  // Infinity / NaN 能穿透 Math.floor+Math.max，必须先过 isFinite
+  const toPositiveInt = (v, fallback) => {
+    const n = Math.floor(Number(v))
+    return Number.isFinite(n) && n >= 1 ? n : fallback
+  }
+  const safePage = toPositiveInt(page, 1)
+  const safePageSize = Math.min(100, toPositiveInt(pageSize, 20))
 
   // 美容师只能查自己
   const targetEmployeeId = (isManager && queryEmployeeId) ? queryEmployeeId : ctx.auth.staffWfId
@@ -613,12 +641,9 @@ async function performanceDetail(ctx) {
   end.setDate(end.getDate() + 1)
 
   // 销售提成明细（基于 sale_payment_item_allocations）
+  // ⚠️ 不在 SQL 里按 salesCategory 过滤：汇总必须覆盖全量 4 分类（见函数头注释「筛选与汇总解耦」），
+  //    明细筛选在下方内存阶段完成（本就全量取回内存分页，无额外 DB 往返）。
   const allocParams = [targetEmployeeId, start, end]
-  let allocWhere = ''
-  if (salesCategory) {
-    allocParams.push(salesCategory)
-    allocWhere = ` AND si.sales_category = $${allocParams.length}`
-  }
 
   const allocRows = await pg.query(`
     SELECT
@@ -636,6 +661,9 @@ async function performanceDetail(ctx) {
       o.customer_name,
       o.client_phone,
       spe.performance_date AS paid_at,
+      -- 退款标识取款项类型，不靠金额符号推断：转换单转出行的分配额同样为负，
+      -- 而提成率为 0 的退款行 commission_amount 是 0，两头都会判错
+      spe.change_type,
       o.store_id
     FROM sale_payment_item_allocations spia
     JOIN sale_payment_item_receipts spir ON spir.id = spia.sale_payment_item_receipt_id
@@ -646,7 +674,6 @@ async function performanceDetail(ctx) {
     WHERE spia.employee_id = $1
       AND spia.is_void = false
       AND ${performanceEventWindow('spe', 2, 3)}
-      ${allocWhere}
     ORDER BY spe.performance_date DESC, spia.id DESC
   `, allocParams)
 
@@ -656,12 +683,8 @@ async function performanceDetail(ctx) {
   //       consume_amount = unit_real_price × session_used × commission_rate （消耗提成）
   // 旧实现曾用 unit_real_price × session_used 作为"服务提成"，这是消耗业绩金额口径，
   // 导致员工看到的数字虚高 3-5 倍，已修复。
+  // 同上：salesCategory 不进 SQL，汇总恒全量
   const svcParams = [targetEmployeeId, startDate, endDate.replace(/-/g, '/')]
-  let svcWhere = ''
-  if (salesCategory) {
-    svcParams.push(salesCategory)
-    svcWhere = ` AND si.sales_category = $${svcParams.length}`
-  }
 
   const svcRows = await pg.query(`
     SELECT
@@ -693,42 +716,52 @@ async function performanceDetail(ctx) {
       AND so.status = '已完成'
       AND so.service_date >= $2
       AND so.service_date <= $3
-      ${svcWhere}
     ORDER BY so.service_date DESC
   `, svcParams)
 
-  // 汇总
+  // 固定 4 分类零填充打底：即使本期某分类无数据，前端也要能渲染 ¥0.00 的格子；
+  // 运行时出现的额外分类（sales_category 为 NULL → UNCATEGORIZED）追加在固定 4 类之后。
+  const categorySummary = {}
+  for (const cat of SALES_CATEGORIES) categorySummary[cat] = { sales: 0, service: 0 }
+  const bucketOf = (rawCategory) => {
+    const key = rawCategory || UNCATEGORIZED
+    if (!categorySummary[key]) categorySummary[key] = { sales: 0, service: 0 }
+    return categorySummary[key]
+  }
+
+  // 销售侧汇总用真实提成 commission_amount（§3.15），不再用营业额份额
+  for (const r of allocRows) bucketOf(r.sales_category).sales += Number(r.commission_amount)
+  for (const r of svcRows) bucketOf(r.sales_category).service += Number(r.commission_amount)
+
+  // 顶部三联卡**由归一后的分桶派生**，而不是独立累加原始行：
+  // 两条独立路径下 round(Σraw) 与 Σround(raw_cat) 在亚分精度上会不等，
+  // 「各分类之和 = 顶部提成」的勾稽就不再是构造性恒等（本接口对前端的承诺，见函数头注释）。
+  const round2 = (v) => Math.round(v * 100) / 100
   let totalSalesAlloc = 0
   let totalServiceCommission = 0
-  const categorySummary = {}
-
-  for (const r of allocRows) {
-    // 销售侧汇总用真实提成 commission_amount（§3.15），不再用营业额份额 total_amount
-    totalSalesAlloc += Number(r.commission_amount)
-    const cat = r.sales_category || '未分类'
-    if (!categorySummary[cat]) categorySummary[cat] = { sales: 0, service: 0 }
-    categorySummary[cat].sales += Number(r.commission_amount)
+  for (const key of Object.keys(categorySummary)) {
+    const bucket = categorySummary[key]
+    bucket.sales = round2(bucket.sales)
+    bucket.service = round2(bucket.service)
+    totalSalesAlloc += bucket.sales
+    totalServiceCommission += bucket.service
   }
-
-  for (const r of svcRows) {
-    const amount = Number(r.commission_amount)
-    totalServiceCommission += amount
-    const cat = r.sales_category || '未分类'
-    if (!categorySummary[cat]) categorySummary[cat] = { sales: 0, service: 0 }
-    categorySummary[cat].service += amount
-  }
+  totalSalesAlloc = round2(totalSalesAlloc)
+  totalServiceCommission = round2(totalServiceCommission)
 
   // 合并为时间线，按 filterType 过滤，分页
   const saleItems = allocRows.map(r => ({
     type: 'sale',
     productName: r.product_name,
     specName: null,
-    salesCategory: r.sales_category,
+    // 与 categorySummary 同口径归一：否则点「未分类」筛出的卡片底部不显示分类标签
+    salesCategory: r.sales_category || UNCATEGORIZED,
     amount: Number(r.commission_amount), // 该行真实销售提成（§3.15）
-    allocAmount: Number(r.alloc_amount), // 营业额份额（total_amount）
+    allocAmount: Number(r.alloc_amount), // 该员工营业额分配份额（spia.allocated_amount）
     commissionRate: Number(r.commission_rate || 0), // 提成率快照
     ratio: Number(r.allocation_ratio),
-    businessAmount: Number(r.received), // 整行实收（产品决策：保持不变）
+    businessAmount: Number(r.received), // 整行实收 — 已弃用，仅兼容线上老版本前端（见函数头注释）
+    isRefund: r.change_type === '退款', // 退款冲销行（负数镜像分配），前端据此打标识
     customerName: r.customer_name,
     clientPhone: r.client_phone,
     orderId: r.sale_order_id,
@@ -741,8 +774,10 @@ async function performanceDetail(ctx) {
     type: 'service',
     productName: r.product_name,
     specName: null,
-    salesCategory: r.sales_category,
+    salesCategory: r.sales_category || UNCATEGORIZED,
     roleType: r.role_type,
+    // 服务侧退款是删除式（is_void 置真后直接排除，见函数头注释），故明细中不会出现退款行
+    isRefund: false,
     amount: Number(r.commission_amount),
     fixedFee: Number(r.fixed_fee || 0),
     consumeAmount: Number(r.consume_amount || 0),
@@ -756,29 +791,39 @@ async function performanceDetail(ctx) {
     date: r.service_created_at || r.service_date,
   }))
 
+  // 明细筛选：一级 filterType（sale/service）+ 二级 salesCategory，两级任意组合
+  // 汇总已在上方按全量算完，此处过滤不会回写汇总（issue #123）
   let allItems
   if (filterType === 'sale') allItems = saleItems
   else if (filterType === 'service') allItems = serviceItems
   else allItems = [...saleItems, ...serviceItems]
 
+  if (salesCategory) {
+    // items 的 salesCategory 在装配时已归一为 UNCATEGORIZED，可直接比较
+    // （旧实现的 SQL `si.sales_category = $4` 筛不出 NULL 行，这是本次的净修复）
+    allItems = allItems.filter(i => i.salesCategory === salesCategory)
+  }
+
   allItems.sort((a, b) => new Date(b.date) - new Date(a.date))
 
-  const offset = (page - 1) * pageSize
-  const paged = allItems.slice(offset, offset + pageSize)
+  const offset = (safePage - 1) * safePageSize
+  const paged = allItems.slice(offset, offset + safePageSize)
 
-  const roundedServiceCommission = Math.round(totalServiceCommission * 100) / 100
-
+  // totalSalesAlloc / totalServiceCommission 已在分桶派生阶段 round2，此处不再二次舍入
   ctx.result = {
-    totalSalesAlloc: Math.round(totalSalesAlloc * 100) / 100,
-    totalServiceCommission: roundedServiceCommission,
+    totalSalesAlloc,
+    totalServiceCommission,
     // 向后兼容：保留 totalServiceFee 字段名供老版本前端使用（1-2 发布周期后下线）
-    totalServiceFee: roundedServiceCommission,
-    totalCommission: Math.round((totalSalesAlloc + totalServiceCommission) * 100) / 100,
+    totalServiceFee: totalServiceCommission,
+    totalCommission: round2(totalSalesAlloc + totalServiceCommission),
     categorySummary,
+    // 有序分类清单（固定 4 类在前 + 运行时出现的额外分类）——前端据此渲染格子与 chip，
+    // 不再自持硬编码副本，枚举改名/新增时不会出现「幽灵格子 + 真实分类并存」
+    categories: Object.keys(categorySummary),
     items: paged,
     total: allItems.length,
-    page,
-    pageSize,
+    page: safePage,
+    pageSize: safePageSize,
   }
 }
 

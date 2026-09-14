@@ -2,6 +2,7 @@
 import { callStaffApi, StaffApiError } from '../../utils/cloud';
 import { getCurrentStoreId, isManager } from '../../utils/role';
 import { formatDateTime, formatDate, ORDER_TYPE_LABEL, formatDiscount } from '../../utils/formatters';
+import { formatAmount } from '../../utils/number';
 import { MemberLevelBadgeData, withMemberLevelBadgeClass } from '../../utils/member-level-badge';
 import { collectSourceOrderRemarks, expandGroupServiceSessions, getTreatmentCardBusinessIdentity, groupTreatmentCards, SourceOrderRemark, sumGroupValue } from '../../utils/treatment-card-group';
 
@@ -338,12 +339,15 @@ interface HomeProduct {
   refundedQuantity: number;
   remainingQuantity: number;
   pendingPickupQuantity: number;
+  /** 行级欠款；仅 refundedQuantity=0 时有值，退过款的行为 null（received 是净实收，相减会虚增欠款） */
+  unpaidAmount: number | null;
   status: string;
   storeId: string;
   storeName: string | null;
   purchasedAt: string;
   purchasedAtFmt?: string;
   statusClass?: string;
+  unpaidAmountFmt?: string;
 }
 
 // Tab 4: 服务记录
@@ -915,12 +919,16 @@ Page({
         部分提货: 'progress',
         已提货: 'success',
         已完成: 'done',
+        待付清: 'pending',
       };
       this.setData({
         homeProducts: rows.map((item) => ({
           ...item,
           purchasedAtFmt: item.purchasedAt ? formatDate(item.purchasedAt) : '',
           statusClass: statusClassMap[item.status] || 'done',
+          // 仅未付清的行展示欠款；已付清/退过款的行留空，wxml 按空串判显隐
+          unpaidAmountFmt:
+            item.unpaidAmount != null && item.unpaidAmount > 0 ? formatAmount(item.unpaidAmount) : '',
         })),
         homeProductsLoaded: true,
       });

@@ -24,10 +24,11 @@
   <!-- 提成汇总卡片 -->
   <view class="perf-summary-card">
     <view class="summary-row">
+      <!-- '--' = 未加载/加载失败，此时连 ¥ 一起隐藏，不伪装成合法零金额 -->
       <view class="summary-item">
         <text class="summary-label">销售提成</text>
         <view class="price-group">
-          <text class="price-symbol">¥</text>
+          <text wx:if="{{totalSalesAlloc !== '--'}}" class="price-symbol">¥</text>
           <text class="price-integer">{{totalSalesAlloc}}</text>
         </view>
       </view>
@@ -35,7 +36,7 @@
       <view class="summary-item">
         <text class="summary-label">服务提成</text>
         <view class="price-group">
-          <text class="price-symbol">¥</text>
+          <text wx:if="{{totalServiceCommission !== '--'}}" class="price-symbol">¥</text>
           <text class="price-integer">{{totalServiceCommission}}</text>
         </view>
       </view>
@@ -43,29 +44,71 @@
       <view class="summary-item summary-item--total">
         <text class="summary-label">合计</text>
         <view class="price-group">
-          <text class="price-symbol">¥</text>
+          <text wx:if="{{totalCommission !== '--'}}" class="price-symbol">¥</text>
           <text class="price-integer">{{totalCommission}}</text>
         </view>
       </view>
     </view>
   </view>
 
-  <!-- 分类 Tab -->
-  <van-tabs active="{{activeCategoryTab}}" bind:change="onCategoryTabChange" color="#C0322A" line-width="40rpx">
-    <van-tab wx:for="{{categoryOptions}}" wx:key="*this" title="{{item}}" />
+  <!-- 一级 Tab：业务类型（合计 / 销售 / 服务） -->
+  <van-tabs active="{{activeMainTab}}" bind:change="onMainTabChange" color="#C0322A" line-width="40rpx">
+    <van-tab wx:for="{{mainTabs}}" wx:key="*this" title="{{item}}" />
   </van-tabs>
+
+  <!-- 二级：归属分类筛选 + 当前口径下的分类金额（chip 与格子联动，点哪个都等价） -->
+  <!-- 旧版云函数不返回 categorySummary 时整块隐藏，避免 4 个假 ¥0.00 与顶部真实金额并列 -->
+  <view wx:if="{{hasCategoryPanel}}" class="perf-category-panel">
+    <view class="perf-chip-row">
+      <view
+        class="perf-chip {{activeSubCategory === '' ? 'perf-chip--active' : ''}}"
+        bindtap="onSubCategoryTap"
+        data-name=""
+      >全部</view>
+      <view
+        wx:for="{{categoryCells}}"
+        wx:key="name"
+        class="perf-chip {{activeSubCategory === item.name ? 'perf-chip--active' : ''}}"
+        bindtap="onSubCategoryTap"
+        data-name="{{item.name}}"
+      >{{item.name}}</view>
+    </view>
+
+    <!-- 口径标题不可省：admin 数据中心员工效率表有同名 4 列但口径是营业额分配额 -->
+    <text class="perf-cells-caption">{{cellsCaption}}</text>
+
+    <view class="perf-cell-grid">
+      <view
+        wx:for="{{categoryCells}}"
+        wx:key="name"
+        class="perf-cell {{activeSubCategory === item.name ? 'perf-cell--active' : ''}}"
+        bindtap="onSubCategoryTap"
+        data-name="{{item.name}}"
+      >
+        <text class="perf-cell-name">{{item.name}}</text>
+        <text class="perf-cell-amount">¥{{item.amount}}</text>
+      </view>
+    </view>
+  </view>
 
   <!-- 明细列表 -->
   <view wx:if="{{loading && items.length === 0}}" class="loading-wrap">
     <van-loading type="spinner" color="#C0322A" />
   </view>
 
-  <van-empty wx:elif="{{!loading && items.length === 0}}" description="暂无提成记录" />
+  <!-- 区分「加载失败」与「本期无记录」：顶部显示 '--' 时列表若说「暂无记录」会被当成零业绩 -->
+  <van-empty
+    wx:elif="{{!loading && items.length === 0}}"
+    description="{{loadFailed ? '加载失败，请稍后重试' : '暂无提成记录'}}"
+  />
 
-  <view wx:else class="perf-list">
+  <!-- 切筛选在途时淡化旧列表：否则新 chip 已高亮、下面还挂着上一条件的明细 -->
+  <view wx:else class="perf-list {{loading ? 'perf-list--switching' : ''}}">
     <view class="perf-item" wx:for="{{items}}" wx:key="index">
       <view class="perf-item-header">
         <text class="perf-item-name">{{item.productName}}</text>
+        <!-- 退款冲销行的提成/业绩是负数，不打标识会被当成数据错误上报 -->
+        <text wx:if="{{item.isRefund}}" class="perf-item-type-tag type-tag--refund">退款</text>
         <text class="perf-item-type-tag {{item.type === 'sale' ? 'type-tag--sale' : 'type-tag--service'}}">
           {{item.type === 'sale' ? '销售' : '服务'}}
         </text>
@@ -74,9 +117,10 @@
         <text class="perf-item-label">提成</text>
         <text class="perf-item-amount">¥{{item.amount}}</text>
       </view>
+      <!-- 业绩 = 该员工的营业额分配份额，不是订单行总额 -->
       <view wx:if="{{item.type === 'sale'}}" class="perf-item-row">
-        <text class="perf-item-label">业绩</text>
-        <text class="perf-item-value">¥{{item.businessAmount}}</text>
+        <text class="perf-item-label">业绩(我的分配)</text>
+        <text class="perf-item-value">¥{{item.allocAmount}}</text>
       </view>
       <!-- 服务提成双字段拆分：固定手工费 + 消耗提成 -->
       <view wx:if="{{item.type === 'service'}}" class="perf-item-row">
