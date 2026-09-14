@@ -2118,6 +2118,41 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
     expect(result.success).toBe(true)
   })
 
+  it('关闭待支付转换单 → 家居转出数量等量退回 picked_up_quantity（#125）', async () => {
+    mockSelectBefore([{
+      status: '待支付',
+      customerName: '顾客甲',
+      totalAmount: '200.00',
+      saleOrderType: '转换单',
+      storeId: 'store-1',
+    }])
+
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue({ count: 1 }),
+          }),
+        }),
+        execute: vi.fn().mockResolvedValue({}),
+      }
+      const result = await fn(tx)
+      const sqlTexts = tx.execute.mock.calls.map((call: any[]) => call[0]?.__sqlText || '')
+      // 家居回滚段：不退回则关单后这批货既提不出（pending 恒 0）也退不掉（refundable 恒 0）
+      expect(sqlTexts.some((text: string) =>
+        text.includes('restore_quantity') &&
+        text.includes("product_type = '家居产品'") &&
+        text.includes('picked_up_quantity = GREATEST'),
+      )).toBe(true)
+      // 疗程卡回滚段必须仍在
+      expect(sqlTexts.some((text: string) => text.includes('restore_sessions'))).toBe(true)
+      return result
+    })
+
+    const result = await closeOrder('order-1')
+    expect(result.success).toBe(true)
+  })
+
   it('事务异常 → 返回友好错误', async () => {
     ;(db.transaction as any).mockRejectedValue(new Error('connection lost'))
     const result = await closeOrder('order-1')

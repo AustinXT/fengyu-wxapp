@@ -2058,3 +2058,64 @@ describe('转换单在线回款意图事务守护', () => {
     expect(repaymentBody).not.toContain('lakala_out_order_no = CASE')
   })
 })
+
+// ============================================================
+// #125 家居产品转换折抵 — 双端语义同义 + 展示层三端拆分
+// ============================================================
+describe('#125 家居转换折抵跨端守护', () => {
+  const staffOrderSrc = readFile(FILES.staffOrderJs)
+  const adminOrdersSrc = readFile(FILES.adminOrdersTs)
+  const HOME_ASSET_FILES = [
+    ['staff 顾客档案', FILES.staffCustomerJs],
+    ['client 我的家居产品', FILES.clientOrderJs],
+    ['admin 顾客详情', FILES.adminCustomersTs],
+  ]
+
+  // 扣减侧：必须落 picked_up_quantity 且带「加完不得超过 quantity」守卫。
+  // 用 LEAST 静默封顶会让并发双开的第二笔转换单悄悄少转，不报错 → 必须是守卫式加法。
+  describe('转出数量并入 picked_up_quantity 且不可超转', () => {
+    test('staff createConversion 守卫式加法', () => {
+      expect(staffOrderSrc).toMatch(
+        /SET picked_up_quantity = COALESCE\(picked_up_quantity, 0\) \+ \$4[\s\S]*?\(COALESCE\(picked_up_quantity, 0\) \+ \$4\) <= quantity/,
+      )
+    })
+    test('admin createConversionOrder 守卫式加法', () => {
+      expect(adminOrdersSrc).toMatch(
+        /pickedUpQuantity: sql`COALESCE\(\$\{saleItems\.pickedUpQuantity\}, 0\) \+ \$\{out\.quantity\}`/,
+      )
+      expect(adminOrdersSrc).toMatch(
+        /sql`\(COALESCE\(\$\{saleItems\.pickedUpQuantity\}, 0\) \+ \$\{out\.quantity\}\) <= \$\{saleItems\.quantity\}`/,
+      )
+    })
+  })
+
+  // 回滚侧：转换单被关闭/删除时家居数量必须等量退回，否则货既提不出也退不掉。
+  describe('撤销转换单时家居数量等量退回', () => {
+    const ROLLBACK_FILES = [
+      ['staff', FILES.staffOrderJs],
+      ['admin', FILES.adminOrdersTs],
+    ]
+    test.each(ROLLBACK_FILES)('%s rollbackPendingConversionOnClose 含家居回滚段', (_name, file) => {
+      const src = normalizeSql(readFile(file))
+      expect(src).toContain('SUM(quantity)::integer AS restore_quantity')
+      expect(src).toContain("item_direction = '转出' AND product_type = '家居产品'")
+      expect(src).toContain('SET picked_up_quantity = GREATEST(0, COALESCE(src.picked_up_quantity, 0) - locked_source.restore_quantity)')
+      // 疗程卡回滚段不得被顺手删掉
+      expect(src).toContain('restore_sessions')
+    })
+    test('admin deleteOrder 只对待支付/支付失败转换单回滚（已关闭单已回滚过，二次会多退家居数量）', () => {
+      expect(adminOrdersSrc).toMatch(
+        /order\.saleOrderType === '转换单'[\s\S]{0,160}order\.status === '待支付'[\s\S]{0,60}order\.status === '支付失败'/,
+      )
+    })
+  })
+
+  // 展示侧：picked_up_quantity 同时承载「已提货 / 已退款 / 已转换」，
+  // 三端必须把已转换拆出来，否则转出会被读成退款。
+  test.each(HOME_ASSET_FILES)('%s 把已转换从已退款里拆出来', (_name, file) => {
+    const src = normalizeSql(readFile(file))
+    expect(src).toContain('conversion_totals')
+    expect(src).toContain("conv_order.status NOT IN ('已关闭', '支付失败', '已作废')")
+    expect(src).toContain('settled_quantity - picked_quantity - converted_quantity')
+  })
+})

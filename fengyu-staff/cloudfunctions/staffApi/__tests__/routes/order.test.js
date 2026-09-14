@@ -7774,3 +7774,149 @@ describe('order.createConversion — schema 变更：UPSERT 按 user_id、不含
     expect(hasDeduct).toBe(false)
   })
 })
+
+// ============================================================
+// #125 家居产品参与转换折抵
+// ============================================================
+describe('order.createConversion — 家居产品折抵（#125）', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  /**
+   * 源行：家居产品 10 盒、已结算（提货+退款）3 盒 → 未提货 7 盒，单价 100 → 折抵 700。
+   * 转入：sku-new 疗程卡 1 次 300 → 差额 -400（旧值高，走储值卡补差）。
+   */
+  function mockHomeProductConversion(overrides = {}) {
+    const calls = []
+    pg.transaction.mockImplementationOnce(async (cb) => cb({
+      query: vi.fn(async (sql, params) => {
+        calls.push({ sql, params })
+        if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
+        if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
+        if (sql.includes('FROM sale_items si') && sql.includes('FOR UPDATE OF si')) {
+          return {
+            rows: [{
+              sale_item_id: 'item-home-1', sale_order_id: 'order-old', store_id: 'store-001',
+              item_direction: '购买',
+              sku_id: 'sku-home', product_name: '家居精华', product_type: '家居产品',
+              session_count: null, remaining_sessions: null,
+              quantity: 10, picked_up_quantity: 3,
+              unit_price: '120', unit_real_price: '100', sales_category: '自销自耗', service_fee: '0',
+              client_user_id: 'cu-001', sale_order_type: '销售单',
+              order_status: '已支付', product_kind: '家居',
+              ...overrides,
+            }],
+            rowCount: 1,
+          }
+        }
+        if (sql.includes('FROM service_items sit')) return { rows: [], rowCount: 0 }
+        if (sql.includes('FROM product_skus')) {
+          return {
+            rows: [{
+              sku_id: 'sku-new', product_type: '疗程卡', spec_name: '新项目',
+              price: '300', special_price: null, session_count: 1, service_fee: '0',
+              sales_category: '自销自耗', is_manager_special: false,
+            }],
+            rowCount: 1,
+          }
+        }
+        if (sql.includes('SELECT balance FROM prepaid_cards')) return { rows: [], rowCount: 0 }
+        return defaultQueryResult(sql, params)
+      }),
+    }))
+    return calls
+  }
+
+  function homeConversionCtx() {
+    const ctx = createManagerCtx({
+      clientUserId: 'cu-001',
+      convertOutSaleItemIds: ['item-home-1'],
+      convertInItems: [{ skuId: 'sku-new', quantity: 1 }],
+      paymentMethod: '线下',
+    })
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'cu-001', phone: '138', name: '张三', customer_type: '会员客', bound_store_id: 'store-001',
+    }])
+    return ctx
+  }
+
+  test('按未提货数量整行折抵：7 盒 × 100 = 700，转出行金额为负', async () => {
+    const ctx = homeConversionCtx()
+    const calls = mockHomeProductConversion()
+
+    await orderRoutes.createConversion(ctx)
+
+    // 折抵 700 − 转入 300 = −400（旧值高于新值，差额入储值卡）
+    expect(ctx.result.priceDiff).toBe(-400)
+
+    const outInsert = calls.find(({ sql }) =>
+      sql.includes('INSERT INTO sale_items') && sql.includes("'转出'"))
+    expect(outInsert).toBeDefined()
+    // quantity 落未提货数量 7；sale_amount / received 均为 −700
+    expect(outInsert.params).toEqual(expect.arrayContaining([7, -700]))
+  })
+
+  test('转出数量并入 picked_up_quantity，带不可超转守卫', async () => {
+    const ctx = homeConversionCtx()
+    const calls = mockHomeProductConversion()
+
+    await orderRoutes.createConversion(ctx)
+
+    const deduct = calls.find(({ sql }) =>
+      sql.includes('UPDATE sale_items') && sql.includes('picked_up_quantity = COALESCE(picked_up_quantity, 0) +'))
+    expect(deduct).toBeDefined()
+    // 守卫：加完不得超过 quantity，并发第二笔 rowCount=0 → 抛冲突
+    expect(deduct.sql).toContain('(COALESCE(picked_up_quantity, 0) + $4) <= quantity')
+    expect(deduct.params).toEqual(expect.arrayContaining(['item-home-1', 'store-001', 7]))
+    // 家居不得走疗程卡的 remaining_sessions 扣减
+    const sessionDeduct = calls.find(({ sql }) =>
+      sql.includes('SET remaining_sessions = remaining_sessions -'))
+    expect(sessionDeduct).toBeUndefined()
+  })
+
+  test('已无未提货数量的家居行拒绝折抵', async () => {
+    const ctx = homeConversionCtx()
+    mockHomeProductConversion({ quantity: 4, picked_up_quantity: 4 })
+
+    await expect(orderRoutes.createConversion(ctx))
+      .rejects.toThrow(/INVALID_PARAMS: 部分家居产品已无未提货数量/)
+  })
+})
+
+describe('order.close — 家居转出回滚（#125）', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  // assertOrderInScope helper 先 SELECT store_id FROM sale_orders
+  const mockScopeOk = (storeId = 'store-001') =>
+    pg.query.mockResolvedValueOnce([{ store_id: storeId }])
+
+  test('关闭待支付转换单时把家居转出数量退回 picked_up_quantity', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-CONV-HOME-001' })
+
+    mockScopeOk()
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-CONV-HOME-001',
+      status: '待支付',
+      sale_order_type: '转换单',
+      store_id: 'store-001',
+      opened_by: 'emp-other',
+    }])
+
+    const closeEffectsQuery = vi.fn(async (sql) => defaultQueryResult(sql))
+    const clientQueryMock = makeCloseQuery(closeEffectsQuery)
+    pg.transaction.mockImplementation(async (cb) => cb({ query: clientQueryMock }))
+
+    await orderRoutes.close(ctx)
+
+    const homeRestore = clientQueryMock.mock.calls.find(([sql]) =>
+      String(sql).includes('restore_quantity') &&
+      String(sql).includes("product_type = '家居产品'"))
+    expect(homeRestore).toBeTruthy()
+    expect(String(homeRestore[0])).toContain('picked_up_quantity = GREATEST')
+    expect(homeRestore[1]).toEqual(expect.arrayContaining(['FY-CONV-HOME-001']))
+
+    // 疗程卡回滚段必须仍在（两类资产各回各的）
+    const sessionRestore = clientQueryMock.mock.calls.find(([sql]) =>
+      String(sql).includes('restore_sessions'))
+    expect(sessionRestore).toBeTruthy()
+  })
+})
