@@ -42,6 +42,10 @@
             <text class="count-value">{{item.convertedQuantity}}</text>
             <text class="count-label">已转换{{item.unit}}</text>
           </view>
+          <view wx:if="{{item.refundedQuantity > 0}}" class="count-item">
+            <text class="count-value">{{item.refundedQuantity}}</text>
+            <text class="count-label">已退款{{item.unit}}</text>
+          </view>
         </view>
 
         <view class="product-meta">

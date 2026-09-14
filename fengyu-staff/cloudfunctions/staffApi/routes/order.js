@@ -2317,6 +2317,24 @@ async function confirmOffline(ctx) {
  * admin actions/orders.ts 有同义 SQL 副本；修改时保持语义一致。
  */
 async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
+  // 0. 先用一条语句按全局 sale_item_id 顺序锁住本单引用的**全部**源行。
+  //    createConversion 折抵时是单语句 `ORDER BY si.sale_item_id ... FOR UPDATE OF si`（不分类型），
+  //    若这里分「疗程卡段→家居段」两次加锁，混选转换单在家居行 id < 疗程卡行 id 时会形成反向锁序而死锁。
+  await client.query(
+    `SELECT src.sale_item_id
+       FROM sale_items src
+       JOIN (
+         SELECT DISTINCT ref_sale_item_id
+           FROM sale_items
+          WHERE sale_order_id = $1
+            AND item_direction = '转出'
+            AND ref_sale_item_id IS NOT NULL
+       ) refs ON refs.ref_sale_item_id = src.sale_item_id
+      ORDER BY src.sale_item_id
+      FOR UPDATE OF src`,
+    [saleOrderId],
+  )
+
   await client.query(
     `WITH restore AS (
         SELECT ref_sale_item_id, SUM(quantity)::integer AS restore_sessions
@@ -3518,6 +3536,36 @@ async function approveRefund(ctx) {
     if (cascadeItems.length === 0 && sopRow.ref_sale_item_id) {
       cascadeItems = [{ saleItemId: sopRow.ref_sale_item_id, sessionCount: sopRow.session_count, refundAmount: refundAbs, isFullItemRefund: true }]
     }
+    // G2 复校（2026-09-14 #125）：家居行可退数量必须在锁内复算。
+    // createRefund 是事务外、无行锁读 picked_up_quantity 定额的；其间若有转换单把这批货折抵走
+    // （picked_up_quantity 被抬高），cascade 通道 5 的 LEAST(quantity, picked_up + qty) 会把冲突
+    // 静默封顶吞掉 —— 同一批货既进了转换单又退了现金，且家居账面 refunded_quantity 归 0 查无实据。
+    // 这里按 sale_item_id 定序锁行复核，不足即拒绝审批（店员刷新后重新发起即可）。
+    const homeRefundQty = new Map()
+    for (const it of cascadeItems) {
+      if (!it.saleItemId || it.isOverpay) continue
+      const qty = Number(it.sessionCount || 0)
+      if (qty > 0) homeRefundQty.set(it.saleItemId, (homeRefundQty.get(it.saleItemId) || 0) + qty)
+    }
+    if (homeRefundQty.size > 0) {
+      const homeRows = await client.query(
+        `SELECT sale_item_id, quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity
+           FROM sale_items
+          WHERE sale_item_id = ANY($1::text[])
+            AND product_type = '家居产品'
+          ORDER BY sale_item_id
+            FOR UPDATE`,
+        [[...homeRefundQty.keys()]],
+      )
+      for (const r of homeRows.rows) {
+        const requested = homeRefundQty.get(r.sale_item_id) || 0
+        const refundable = Number(r.quantity || 0) - Number(r.picked_up_quantity || 0)
+        if (requested > refundable) {
+          throw new Error('CONFLICT: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
+        }
+      }
+    }
+
     const cascadeResult = await cascadeRefund(client, {
       saleOrderId: refSaleOrderId,
       refundPaymentId: paymentId,
@@ -4227,11 +4275,12 @@ async function createConversion(ctx) {
     // 先完成与预扣无关的归属/状态校验，避免无效请求额外扫描 service_items。
     for (const row of held) {
       // 归属校验
+      // 家居产品行复用同一分支，文案用中性表述避免「卡」字样误导员工
       if (row.store_id !== storeId) {
-        throw new Error('INVALID_PARAMS: 部分卡不属于当前门店或已耗尽')
+        throw new Error('INVALID_PARAMS: 部分折抵项不属于当前门店或已耗尽')
       }
       if (row.client_user_id !== clientUserId) {
-        throw new Error('INVALID_PARAMS: 部分卡不属于该顾客')
+        throw new Error('INVALID_PARAMS: 部分折抵项不属于该顾客')
       }
       if (!isConvertibleEntitlementRow(row)) {
         throw new Error('INVALID_PARAMS: 所选行不是有效疗程权益，不可折抵')

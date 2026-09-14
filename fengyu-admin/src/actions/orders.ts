@@ -449,6 +449,23 @@ function assertCanApproveDepositOrder(session: AuthSession): void {
  * staffApi/routes/order.js 有同义 SQL 副本；修改时保持语义一致。
  */
 async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string): Promise<void> {
+  // 0. 先用一条语句按全局 sale_item_id 顺序锁住本单引用的**全部**源行。
+  //    createConversionOrder 折抵时是单语句 ORDER BY si.sale_item_id ... FOR UPDATE OF si（不分类型），
+  //    若这里分「疗程卡段→家居段」两次加锁，混选转换单在家居行 id < 疗程卡行 id 时会形成反向锁序而死锁。
+  await tx.execute(sql`
+    SELECT src.sale_item_id
+      FROM sale_items src
+      JOIN (
+        SELECT DISTINCT ref_sale_item_id
+          FROM sale_items
+         WHERE sale_order_id = ${saleOrderId}
+           AND item_direction = '转出'
+           AND ref_sale_item_id IS NOT NULL
+      ) refs ON refs.ref_sale_item_id = src.sale_item_id
+     ORDER BY src.sale_item_id
+     FOR UPDATE OF src
+  `)
+
   await tx.execute(sql`
     WITH restore AS (
       SELECT ref_sale_item_id, SUM(quantity)::integer AS restore_sessions
@@ -5913,7 +5930,7 @@ export const createConversionOrder = withPermission(
         if (out.productType === '疗程卡') {
           const upd = await tx
             .update(saleItems)
-            .set({ remainingSessions: sql`${saleItems.remainingSessions} - ${out.quantity}` })
+            .set({ remainingSessions: sql`${saleItems.remainingSessions} - ${out.quantity}`, updatedAt: sql`NOW()` })
             .where(
               and(
                 eq(saleItems.saleItemId, out.refSaleItemId),
@@ -5928,7 +5945,7 @@ export const createConversionOrder = withPermission(
           // 并发双开转换单时第二笔 count=0 直接冲突，不会静默超转。
           const upd = await tx
             .update(saleItems)
-            .set({ pickedUpQuantity: sql`COALESCE(${saleItems.pickedUpQuantity}, 0) + ${out.quantity}` })
+            .set({ pickedUpQuantity: sql`COALESCE(${saleItems.pickedUpQuantity}, 0) + ${out.quantity}`, updatedAt: sql`NOW()` })
             .where(
               and(
                 eq(saleItems.saleItemId, out.refSaleItemId),

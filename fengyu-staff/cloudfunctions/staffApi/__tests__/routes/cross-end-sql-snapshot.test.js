@@ -2113,12 +2113,37 @@ describe('#125 家居转换折抵跨端守护', () => {
       )
     })
 
-    test.each(ROLLBACK_FILES)('%s 回滚 locked_source 按 sale_item_id 定序加锁（防与开单事务反向加锁死锁）', (_name, file) => {
+    test.each(ROLLBACK_FILES)('%s 回滚 locked_source 仍按 sale_item_id 定序（全局锁定段之外的纵深保证）', (_name, file) => {
       const src = normalizeSql(readFile(file))
-      // 两段回滚是独立语句，若不定序会与 createConversion 的 ORDER BY si.sale_item_id 形成相反锁顺序
+      // 全局锁定段 + 两段 locked_source，共 3 处定序加锁
       const ordered = src.match(/ORDER BY src\.sale_item_id FOR UPDATE OF src/g) || []
-      expect(ordered.length).toBe(2)
+      expect(ordered.length).toBe(3)
     })
+  })
+
+  // 退款审批侧：createRefund 无锁定额 + cascade 的 LEAST 静默封顶 = 同一批货可能既折抵又退现金。
+  // 资金流出前必须在锁内复核家居可退数量。
+  describe('退款审批锁内复校家居可退数量', () => {
+    const APPROVE_FILES = [
+      ['staff approveRefund', FILES.staffOrderJs],
+      ['admin approveRefund', path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/refunds.ts')],
+    ]
+    test.each(APPROVE_FILES)('%s 在 cascadeRefund 前锁行复核', (_name, file) => {
+      const src = normalizeSql(readFile(file))
+      expect(src).toContain('homeRefundQty')
+      expect(src).toContain("AND product_type = '家居产品' ORDER BY sale_item_id FOR UPDATE")
+      expect(src).toMatch(/homeRefundQty[\s\S]{0,2000}cascadeRefund/)
+    })
+  })
+
+  // 回滚加锁必须是「一次性全局定序」而非分类型两段，否则混选转换单会与开单事务反向加锁
+  test.each([
+    ['staff', FILES.staffOrderJs],
+    ['admin', FILES.adminOrdersTs],
+  ])('%s 回滚前先按全局 sale_item_id 顺序锁住全部源行', (_name, file) => {
+    const src = normalizeSql(readFile(file))
+    expect(src).toContain('SELECT DISTINCT ref_sale_item_id')
+    expect(src).toMatch(/refs ON refs\.ref_sale_item_id = src\.sale_item_id ORDER BY src\.sale_item_id FOR UPDATE OF src/)
   })
 
   // 展示侧：picked_up_quantity 同时承载「已提货 / 已退款 / 已转换」，

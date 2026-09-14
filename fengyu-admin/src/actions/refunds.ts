@@ -1154,6 +1154,38 @@ export const approveRefund = withPermission(
       if (cascadeItems.length === 0 && refSaleItemId) {
         cascadeItems = [{ saleItemId: refSaleItemId, sessionCount, refundAmount, isFullItemRefund: true }]
       }
+      // G2 复校（2026-09-14 #125）：家居行可退数量必须在锁内复算。
+      // createRefund 是事务外、无行锁读 picked_up_quantity 定额的；其间若有转换单把这批货折抵走
+      // （picked_up_quantity 被抬高），cascade 通道 5 的 LEAST(quantity, picked_up + qty) 会把冲突
+      // 静默封顶吞掉 —— 同一批货既进了转换单又退了现金，且家居账面 refunded_quantity 归 0 查无实据。
+      // 这里按 sale_item_id 定序锁行复核，不足即拒绝审批。staff routes/order.js 有同义副本。
+      const homeRefundQty = new Map<string, number>()
+      for (const it of cascadeItems) {
+        if (!it.saleItemId || (it as { isOverpay?: boolean }).isOverpay) continue
+        const qty = Number(it.sessionCount ?? 0)
+        if (qty > 0) homeRefundQty.set(it.saleItemId, (homeRefundQty.get(it.saleItemId) ?? 0) + qty)
+      }
+      if (homeRefundQty.size > 0) {
+        const homeRows = await tx.execute(sql`
+          SELECT sale_item_id, quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity
+            FROM sale_items
+           WHERE sale_item_id IN (${sql.join(
+             [...homeRefundQty.keys()].map((id) => sql`${id}`),
+             sql`, `,
+           )})
+             AND product_type = '家居产品'
+           ORDER BY sale_item_id
+             FOR UPDATE
+        `)
+        for (const r of Array.from(homeRows as unknown as Iterable<Record<string, unknown>>)) {
+          const requested = homeRefundQty.get(r.sale_item_id as string) ?? 0
+          const refundable = Number(r.quantity ?? 0) - Number(r.picked_up_quantity ?? 0)
+          if (requested > refundable) {
+            throw new ApiError('CONFLICT', 'HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
+          }
+        }
+      }
+
       const result = await cascadeRefund(tx, {
         saleOrderId: refSaleOrderId,
         refundPaymentId: idNum,
