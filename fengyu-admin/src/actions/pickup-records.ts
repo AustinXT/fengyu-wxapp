@@ -497,7 +497,7 @@ export const getPickupRecordById = withPermission(
  *
  * 筛选条件：
  * - 订单已支付
- * - item_direction = '购买'
+ * - item_direction = '购买'，或转换单的 item_direction = '转入'（#145/#153）
  * - product_type = '家居产品'
  * - 可提数量 = quantity - COALESCE(picked_up_quantity, 0) > 0
  */
@@ -515,6 +515,19 @@ export interface AvailablePickupItem {
   unitRealPrice: string
   storeId: string
   storeName: string | null
+}
+
+/**
+ * 可提货方向判据（#145/#153）：购买行，或转换单换入行。
+ * 与 staffApi routes/order.js `isConvertibleEntitlementRow` 跨端同义，
+ * 亦与疗程卡侧 `item_direction='购买' OR (sale_order_type='转换单' AND item_direction='转入')` 同源。
+ */
+function isConvertibleEntitlementRow(row: {
+  item_direction: string
+  sale_order_type: string
+}): boolean {
+  return row.item_direction === '购买'
+    || (row.sale_order_type === '转换单' && row.item_direction === '转入')
 }
 
 function pendingHomeProductQuantity(row: {
@@ -569,7 +582,15 @@ export const getAvailablePickupItems = withPermission(
         LEFT JOIN pickup_totals pt ON pt.sale_item_id = si.sale_item_id
        WHERE o.client_user_id = ${clientUserId}
          AND o.status IN ('已支付', '部分支付', '已完成')
-         AND si.item_direction = '购买'
+         -- #145/#153：转换单换入的家居与购买行同权（与疗程卡侧放行写法同源）。
+         -- sale_amount>0 的转入行，received 已由 paid-sessions STEP 1.6 重建为「转出旧卡
+         -- 价值 + 本单净到账」，FLOOR(received × qty / sale_amount) 天然成立；sale_amount<=0
+         -- 的转入行走上方赠品分支全额可提（STEP 1.6 带 sale_amount>0 过滤，刻意不碰 0 元行，
+         -- 与购买侧 0 元赠品行同口径）。两类都不需要为「转入」另加满付分支。
+         AND (
+           si.item_direction = '购买'
+           OR (o.sale_order_type = '转换单' AND si.item_direction = '转入')
+         )
          AND si.product_type = '家居产品'
     ), pickup_balances AS (
       SELECT *,
@@ -644,8 +665,15 @@ export const getPickupInventorySkuOptions = withPermission(
         FROM sale_items sale_item
         JOIN sale_orders sale_order ON sale_order.sale_order_id = sale_item.sale_order_id
        WHERE sale_item.sale_item_id = ${saleItemId}
-         AND sale_order.status = '已支付'
-         AND sale_item.item_direction = '购买'
+         -- 状态白名单必须与 getAvailablePickupItems / createPickupRecord 一致：本查询是提货
+         -- 出库清单预览，卡在 '已支付' 会让「列表可见 → 预览报 NOT_FOUND」——部分支付订单
+         -- （含差额未结清的转换单，正是按比例逐件释放的场景）首当其冲。
+         AND sale_order.status IN ('已支付', '部分支付', '已完成')
+         -- #145/#153：转换单换入的家居与购买行同权（与疗程卡侧放行写法同源）
+         AND (
+           sale_item.item_direction = '购买'
+           OR (sale_order.sale_order_type = '转换单' AND sale_item.item_direction = '转入')
+         )
          AND sale_item.product_type = '家居产品'
          AND sale_item.quantity > COALESCE(sale_item.picked_up_quantity, 0)
        LIMIT 1
@@ -750,13 +778,25 @@ async function createGroupedPickupRecord(
                  FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
                )
              END AS paid_quantity,
-             si.product_type, si.item_direction,
+             si.product_type, si.item_direction, o.sale_order_type,
              o.client_user_id, o.customer_name, o.status AS order_status
         FROM sale_items si
         JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
        WHERE si.sale_item_id IN (${sourceIdList})
          AND si.product_type = '家居产品'
-         AND si.item_direction = '购买'
+         -- #145/#153：转换单换入的家居与购买行同权（与疗程卡侧放行写法同源）。
+         -- sale_amount>0 的转入行，received 已由 paid-sessions STEP 1.6 重建为「转出旧卡
+         -- 价值 + 本单净到账」，FLOOR(received × qty / sale_amount) 天然成立；sale_amount<=0
+         -- 的转入行走上方赠品分支全额可提（STEP 1.6 带 sale_amount>0 过滤，刻意不碰 0 元行，
+         -- 与购买侧 0 元赠品行同口径）。两类都不需要为「转入」另加满付分支。
+         AND (
+           si.item_direction = '购买'
+           OR (o.sale_order_type = '转换单' AND si.item_direction = '转入')
+         )
+       -- 锁序必须与 createConversion 折抵、staff createGroupedPickup、退款 G2 复校一致
+       -- （全部按 sale_item_id 升序）。本次把「转入」行纳入锁集，而转入行正是折抵的主力源，
+       -- 不定序会让执行计划（bitmap/seq scan 非升序）与折抵事务形成反向锁序而死锁。
+       ORDER BY si.sale_item_id
        FOR UPDATE OF si
     `)) as unknown as Array<{
       sale_item_id: string
@@ -772,6 +812,7 @@ async function createGroupedPickupRecord(
       paid_quantity: number
       product_type: string
       item_direction: string
+      sale_order_type: string
       client_user_id: string | null
       customer_name: string | null
       order_status: string
@@ -786,7 +827,7 @@ async function createGroupedPickupRecord(
       || (row.sale_item_group_id || row.sale_item_id) !== (first.sale_item_group_id || first.sale_item_id)
       || Number(row.quantity) !== 1
       || row.product_type !== '家居产品'
-      || row.item_direction !== '购买'
+      || !isConvertibleEntitlementRow(row)
       || !['已支付', '部分支付', '已完成'].includes(row.order_status),
     )) {
       throw new ApiError('CONFLICT', '家居产品状态已更新，请刷新后重试')
@@ -963,6 +1004,7 @@ export const createPickupRecord = withPermission(
                    FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
                  )
                END AS paid_quantity,
+               o.sale_order_type,
                o.status AS order_status, o.client_user_id, o.customer_name
           FROM sale_items si
           JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
@@ -975,6 +1017,7 @@ export const createPickupRecord = withPermission(
         product_name: string | null
         product_type: string
         item_direction: string
+        sale_order_type: string
         quantity: number
         settled_quantity: number
         picked_quantity: number
@@ -985,7 +1028,8 @@ export const createPickupRecord = withPermission(
       }>
       const lockedItem = locked[0]
       if (!lockedItem) throw new ApiError('NOT_FOUND', '销售明细不存在')
-      if (lockedItem.product_type !== '家居产品' || lockedItem.item_direction !== '购买') {
+      // #145/#153：转换单换入的家居可提（与 staff createPickup 同一判据）
+      if (lockedItem.product_type !== '家居产品' || !isConvertibleEntitlementRow(lockedItem)) {
         throw new ApiError('INVALID_PARAMS', '销售明细不是可提货家居产品')
       }
       if (!['已支付', '部分支付', '已完成'].includes(lockedItem.order_status)) {
@@ -1006,7 +1050,19 @@ export const createPickupRecord = withPermission(
                updated_at = NOW()
          WHERE sale_item_id = ${data.saleItemId}
            AND product_type = '家居产品'
-           AND item_direction = '购买'
+           -- #145/#153：转换单换入的家居与购买行同权。单表 UPDATE 无法 JOIN，
+           -- 用 EXISTS 保持与其它站点等价的严格性（不退化成 item_direction IN (...)）。
+           -- EXISTS 读 sale_orders 未与 si 行锁同步，不构成 TOCTOU：sale_order_type
+           -- 建单后不可变（全仓仅 INSERT 时写入，无任何 UPDATE ... SET sale_order_type）。
+           -- ⚠ 若将来出现订正订单类型的脚本，这里必须改为锁内取值。
+           AND (
+             item_direction = '购买'
+             OR (item_direction = '转入' AND EXISTS (
+               SELECT 1 FROM sale_orders o
+                WHERE o.sale_order_id = sale_items.sale_order_id
+                  AND o.sale_order_type = '转换单'
+             ))
+           )
            AND (COALESCE(picked_up_quantity, 0) + ${data.pickupQuantity}) <= quantity
         RETURNING sale_item_id, sale_order_id, sku_id, product_name, quantity, picked_up_quantity,
                   inventory_composition_snapshot

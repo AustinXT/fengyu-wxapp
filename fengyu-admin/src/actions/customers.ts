@@ -703,7 +703,15 @@ export const getCustomerHomeProducts = withPermission(
         LEFT JOIN conversion_totals ct ON ct.sale_item_id = si.sale_item_id
         WHERE o.client_user_id = ${userId}
           AND o.status IN ('已支付', '部分支付', '已完成')
-          AND si.item_direction = '购买'
+          -- #145/#153：转换单换入的家居与购买行同权（与疗程卡侧放行写法同源）。
+          -- sale_amount>0 的转入行，received 已由 paid-sessions STEP 1.6 重建为「转出旧卡
+          -- 价值 + 本单净到账」，FLOOR(received × qty / sale_amount) 天然成立；sale_amount<=0
+          -- 的转入行走上方赠品分支全额可提（STEP 1.6 带 sale_amount>0 过滤，刻意不碰 0 元行，
+          -- 与购买侧 0 元赠品行同口径）。两类都不需要为「转入」另加满付分支。
+          AND (
+            si.item_direction = '购买'
+            OR (o.sale_order_type = '转换单' AND si.item_direction = '转入')
+          )
           AND si.product_type = '家居产品'
       ), home_products AS (
         -- 家居产品逐件落库（quantity 恒为 1），必须按 sale_item_group_id 合并，

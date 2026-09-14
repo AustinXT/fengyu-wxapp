@@ -35,6 +35,7 @@ import { calculateTreatmentTierLineAmounts } from '@/lib/treatment-tier-pricing'
 import { settlePointsSafe } from '@/lib/points-settle'
 import { grantPointBatch, consumePointBatches } from '@/lib/points-batches'
 import { recalcPaidSessionsForOrder, paidUnusedSessionsExpr } from '@/lib/paid-sessions'
+import { homeDeductible } from '@/lib/home-product'
 import { capturePaymentAllocatables, refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
 import { getPerItemRefundedMap } from '@/lib/per-item-refund'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
@@ -5411,6 +5412,8 @@ export const createConversionOrder = withPermission(
           si.picked_up_quantity,
           si.unit_price,
           si.unit_real_price,
+          si.sale_amount,
+          si.received,
           si.sales_category,
           COALESCE(si.is_shengmei, psk.is_shengmei) AS is_shengmei,
           si.service_fee,
@@ -5497,8 +5500,11 @@ export const createConversionOrder = withPermission(
 
         // 2026-05-21 单品合并：折抵统一按 remaining_sessions（含原"体验卡单品"=1 次卡）
         // 2026-08-06 预扣机制：可折抵数量 = remaining_sessions - 服务预扣（total_reserved）
-        // 2026-09-14 #125：家居产品按未提货数量整行折抵（quantity − picked_up_quantity，不看付款进度）
+        // 2026-09-14 #125：家居产品可作为折抵来源
+        // ⚠ #145/#153 收紧：家居改按「已付未结算」折抵（件数向下取整、金额含余数，见 homeDeductible）。
+        //   旧的「未提货数量全额折抵」会把未兑现价值洗成全额可提（dev 真库实证）。疗程卡口径不变。
         let qty = 0
+        let lineAmount: number | null = null   // 非空时覆盖 unit × qty（家居金额含不足一件的已付余数）
         if (productType === '疗程卡') {
           const rem = Number(row.remaining_sessions ?? 0)
           const reserved = reservedBySaleItemId.get(row.sale_item_id as string) ?? 0
@@ -5511,16 +5517,25 @@ export const createConversionOrder = withPermission(
           }
           qty = available  // 折抵数量改为可用次数（扣除预扣）
         } else if (productType === '家居产品') {
-          const pending = Number(row.quantity ?? 0) - Number(row.picked_up_quantity ?? 0)
-          if (pending <= 0) {
-            throw new ApiError('INVALID_STATE', 'HOME_PRODUCT_NO_PENDING: 所选家居产品已无未提货数量，不可折抵')
+          // 锁内复算（候选列表可能已过期），与 staff createConversion 同源
+          const home = homeDeductible({
+            saleOrderType: row.sale_order_type as string,
+            quantity: Number(row.quantity ?? 0),
+            pickedUpQuantity: Number(row.picked_up_quantity ?? 0),
+            saleAmount: row.sale_amount as string,
+            received: row.received as string,
+            unitRealPrice: row.unit_real_price as string,
+          })
+          if (home.quantity <= 0) {
+            throw new ApiError('INVALID_STATE', 'HOME_PRODUCT_NO_PENDING: 所选家居产品没有已付清的整件可折抵')
           }
-          qty = pending
+          qty = home.quantity
+          lineAmount = Math.round(home.amount * 100) / 100
         } else {
           throw new ApiError('INVALID_PARAMS', 'CARD_TYPE_INVALID: 所选行类型不支持折抵')
         }
 
-        const amount = Math.round(unit * qty * 100) / 100
+        const amount = lineAmount != null ? lineAmount : Math.round(unit * qty * 100) / 100
         totalOut += amount
         // 按折抵数量比例扣减 service_fee（负值）
         const origServiceFee = Number(row.service_fee ?? 0)

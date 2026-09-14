@@ -42,3 +42,46 @@ export function deriveHomeProductStatus(
   if (remainingQuantity > 0) return '待提货'
   return (refundedQuantity > 0 || convertedQuantity > 0) ? '已完成' : '已提货'
 }
+
+/**
+ * 家居产品的「可折抵件数 / 可折抵金额」（#145 / #153 收紧口径）
+ *
+ * #125 原口径按「未提货件数 × 单价」整行折抵、不看付款进度，可以把未兑现价值洗成全额可提：
+ * 10 件 ¥1000 只付 ¥400（欠 ¥600）→ 折 ¥1000 换等额家居 → 新行 10 件全可提，欠款仍留原单
+ * （dev 真库实证）。改为以「已付未结算」为准：
+ *
+ * - **件数**向下取整到整件：`已付整件数 − 已结算件数`。转出行受 `chk_item_quantity > 0` 约束，
+ *   不足一整件时没有载体可折，整行不可折抵（顾客付清后即可）。
+ * - **金额**含不足一整件的已付余数：`行实收 − 已结算件数 × 单价`（用户 2026-09-14 拍板
+ *   「件数向下取整、金额含余数」，顾客付的钱一分不丢）。
+ * - 寄存单与 0 元赠品行没有「实收」可言，维持原口径 `单价 × 未结算件数`。
+ *
+ * 已付整件数的 CASE 与提货闸门 `paid_quantity` 字面同源；疗程卡不走本函数（维持 #125 口径）。
+ * 与 staffApi routes/order.js 的 `home_deductible_quantity` / `home_deductible_amount` 跨端同义。
+ */
+export function homeDeductible(row: {
+  saleOrderType: string | null
+  quantity: number
+  pickedUpQuantity: number | null
+  saleAmount: string | number | null
+  received: string | number | null
+  unitRealPrice: string | number | null
+}): { quantity: number; amount: number } {
+  const qty = Number(row.quantity ?? 0)
+  const settled = Math.max(0, Number(row.pickedUpQuantity ?? 0))
+  const saleAmount = Number(row.saleAmount ?? 0)
+  const received = Number(row.received ?? 0)
+  const unit = Number(row.unitRealPrice ?? 0)
+  const isDepositOrGift = row.saleOrderType === '寄存单' || saleAmount <= 0
+
+  const paidQuantity = isDepositOrGift
+    ? qty
+    : Math.min(qty, Math.floor((Math.max(0, received) * qty) / saleAmount))
+
+  return {
+    quantity: Math.max(0, paidQuantity - settled),
+    amount: isDepositOrGift
+      ? unit * Math.max(0, qty - settled)
+      : Math.max(0, received - settled * unit),
+  }
+}

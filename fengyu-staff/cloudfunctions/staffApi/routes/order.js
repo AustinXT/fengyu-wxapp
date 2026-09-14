@@ -4263,6 +4263,25 @@ async function createConversion(ctx) {
               si.picked_up_quantity,
               si.unit_price,
               si.unit_real_price,
+              si.sale_amount,
+              si.received,
+              -- #145/#153：家居折抵以「已付未结算」为准，锁内复算（候选列表可能已过期）。
+              -- 件数向下取整（转出行受 chk_item_quantity > 0 约束，不足一整件即无载体可折）；
+              -- 金额含不足一件的已付余数。两个表达式与 customerHeldCards 字面同源。
+              GREATEST(0, CASE
+                WHEN so.sale_order_type = '寄存单' THEN si.quantity
+                WHEN si.sale_amount <= 0 THEN si.quantity
+                ELSE LEAST(
+                  si.quantity,
+                  FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
+                )
+              END - COALESCE(si.picked_up_quantity, 0)) AS home_deductible_quantity,
+              CASE
+                WHEN so.sale_order_type = '寄存单' OR si.sale_amount <= 0
+                  THEN si.unit_real_price * GREATEST(0, si.quantity - COALESCE(si.picked_up_quantity, 0))
+                ELSE GREATEST(0, si.received::numeric
+                  - COALESCE(si.picked_up_quantity, 0) * si.unit_real_price::numeric)
+              END AS home_deductible_amount,
               si.sales_category,
               si.service_fee,
               si.is_shengmei,
@@ -4334,8 +4353,13 @@ async function createConversion(ctx) {
       const productType = row.product_type
       // 2026-05-21 单品合并：折抵统一按 remaining_sessions（含原"体验卡单品"=1 次卡）
       // 2026-08-06 预扣机制：可折抵数量 = remaining_sessions - 服务预扣（total_reserved）
-      // 2026-09-14 #125：家居产品按未提货数量整行折抵（quantity − picked_up_quantity，不看付款进度）
+      // 2026-09-14 #125：家居产品可作为折抵来源
+      // ⚠ #145/#153 收紧：家居改按「已付未结算」折抵（件数向下取整、金额含余数），
+      //   旧的「未提货数量全额折抵」会把未兑现价值洗成全额可提（dev 真库实证：
+      //   10 件 ¥1000 只付 ¥400 → 折 ¥1000 换等额家居 → 新行 10 件全可提，欠款仍留原单）。
+      //   疗程卡维持 #125 口径不变。
       let qty = 0
+      let lineAmount = null   // 非空时覆盖 unit × qty（家居的金额含不足一件的已付余数）
       if (productType === '疗程卡') {
         const rem = Number(row.remaining_sessions || 0)
         const reserved = reservedBySaleItemId.get(row.sale_item_id) || 0
@@ -4345,16 +4369,16 @@ async function createConversion(ctx) {
         }
         qty = available  // 折抵数量改为可用次数（扣除预扣）
       } else if (productType === '家居产品') {
-        const pending = Number(row.quantity || 0) - Number(row.picked_up_quantity || 0)
-        if (pending <= 0) {
-          throw new Error('INVALID_PARAMS: 部分家居产品已无未提货数量，不可折抵')
+        qty = Number(row.home_deductible_quantity || 0)
+        if (qty <= 0) {
+          throw new Error('INVALID_PARAMS: 部分家居产品没有已付清的整件可折抵')
         }
-        qty = pending
+        lineAmount = Math.round(Number(row.home_deductible_amount || 0) * 100) / 100
       } else {
         throw new Error('INVALID_PARAMS: 所选行类型不支持折抵')
       }
 
-      const amount = Math.round(unit * qty * 100) / 100
+      const amount = lineAmount != null ? lineAmount : Math.round(unit * qty * 100) / 100
       totalOut += amount
 
       // 按折抵数量占原单比例扣减 service_fee（转出行为负数）
@@ -5023,7 +5047,18 @@ async function customerHeldCards(ctx) {
             si.remaining_sessions,
             si.paid_sessions,
             si.unit_price,
-            GREATEST(0, si.quantity - COALESCE(si.picked_up_quantity, 0)) AS remaining_quantity,
+            -- #145/#153 收紧：家居可折抵件数 = 已付整件数 − 已结算件数，不再是「未提货件数」。
+            -- 旧口径（未提数量全额折抵，不看付款进度）可以把未兑现价值洗成全额可提：
+            -- 10 件 ¥1000 只付 ¥400 → 折 ¥1000 换等额家居 → 新行 10 件全可提，欠款仍留原单
+            -- （dev 真库实证）。paid_quantity 的 CASE 与提货闸门字面同源。
+            GREATEST(0, CASE
+              WHEN so.sale_order_type = '寄存单' THEN si.quantity
+              WHEN si.sale_amount <= 0 THEN si.quantity
+              ELSE LEAST(
+                si.quantity,
+                FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
+              )
+            END - COALESCE(si.picked_up_quantity, 0)) AS remaining_quantity,
             si.unit_real_price,
             si.sale_amount,
             si.received,
@@ -5039,8 +5074,16 @@ async function customerHeldCards(ctx) {
             CASE
               WHEN si.product_type = '疗程卡'
                 THEN si.unit_real_price * COALESCE(si.remaining_sessions, 0)
+              -- #145/#153 收紧：家居折抵金额 = 该行已付且未结算的全部金额，**含不足一整件的余数**
+              -- （用户 2026-09-14 拍板：件数向下取整、金额含余数，顾客付的钱一分不丢）。
+              -- 寄存单与 0 元赠品行没有"实收"可言，维持原口径按单价 × 未结算件数。
               WHEN si.product_type = '家居产品'
-                THEN si.unit_real_price * GREATEST(0, si.quantity - COALESCE(si.picked_up_quantity, 0))
+                THEN CASE
+                  WHEN so.sale_order_type = '寄存单' OR si.sale_amount <= 0
+                    THEN si.unit_real_price * GREATEST(0, si.quantity - COALESCE(si.picked_up_quantity, 0))
+                  ELSE GREATEST(0, si.received::numeric
+                    - COALESCE(si.picked_up_quantity, 0) * si.unit_real_price::numeric)
+                END
               ELSE 0
             END AS deductible_amount
      FROM sale_items si
@@ -5055,12 +5098,20 @@ async function customerHeldCards(ctx) {
        )
        -- 2026-09-14 #125 甲方拍板：订单级「部分支付」也可折抵。与卡包列表口径统一
        -- （admin cards.ts 的 CARD_ENTITLEMENT_ORDER_STATUSES 本就含「部分支付」），
-       -- 疗程卡与家居同时放开；欠款按方案 A 留在原单继续催收，折抵不按实收比例折算。
+       -- 疗程卡与家居同时放开；欠款按方案 A 留在原单继续催收。
+       -- ⚠ #145/#153 对**家居**收紧：折抵以「已付未结算」为准（见 remaining_quantity 表达式），
+       --   疗程卡维持 #125 的 remaining_sessions 口径不变。
        AND so.status IN ('已支付', '部分支付', '已完成')
-       -- 2026-09-14 #125：家居产品未提货数量同样可作为折抵来源（整行折抵，不看付款进度）
        AND (
          (si.product_type = '疗程卡' AND COALESCE(si.remaining_sessions, 0) > 0)
-         OR (si.product_type = '家居产品' AND (si.quantity - COALESCE(si.picked_up_quantity, 0)) > 0)
+         OR (si.product_type = '家居产品' AND GREATEST(0, CASE
+               WHEN so.sale_order_type = '寄存单' THEN si.quantity
+               WHEN si.sale_amount <= 0 THEN si.quantity
+               ELSE LEAST(
+                 si.quantity,
+                 FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
+               )
+             END - COALESCE(si.picked_up_quantity, 0)) > 0)
        )
        -- 在途退款冻结：原订单存在 '待审批' 退款时排除整单的卡
        AND NOT EXISTS (
@@ -5415,13 +5466,21 @@ async function createGroupedPickup(ctx, saleItemIds, pickupQuantity, remark, ide
                   FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
                 )
               END AS paid_quantity,
-              si.product_type, si.item_direction,
+              si.product_type, si.item_direction, o.sale_order_type,
               o.client_user_id, o.customer_name, o.status AS order_status
          FROM sale_items si
          JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
         WHERE si.sale_item_id = ANY($1)
           AND si.product_type = '家居产品'
-          AND si.item_direction = '购买'
+          -- #145/#153：转换单换入的家居与购买行同权（与疗程卡侧放行写法同源）。
+          -- sale_amount>0 的转入行，received 已由 paid-sessions STEP 1.6 重建为「转出旧卡
+          -- 价值 + 本单净到账」，FLOOR(received × qty / sale_amount) 天然成立；sale_amount<=0
+          -- 的转入行走上方赠品分支全额可提（STEP 1.6 带 sale_amount>0 过滤，刻意不碰 0 元行，
+          -- 与购买侧 0 元赠品行同口径）。两类都不需要为「转入」另加满付分支。
+          AND (
+            si.item_direction = '购买'
+            OR (o.sale_order_type = '转换单' AND si.item_direction = '转入')
+          )
         ORDER BY si.sale_item_id
         FOR UPDATE OF si`,
       [ids],
@@ -5434,7 +5493,7 @@ async function createGroupedPickup(ctx, saleItemIds, pickupQuantity, remark, ide
       || row.sale_order_id !== first.sale_order_id
       || row.sku_id !== first.sku_id
       || (row.sale_item_group_id || row.sale_item_id) !== (first.sale_item_group_id || first.sale_item_id)
-      || row.product_type !== '家居产品' || row.item_direction !== '购买'
+      || row.product_type !== '家居产品' || !isConvertibleEntitlementRow(row)
       || !['已支付', '部分支付', '已完成'].includes(row.order_status)
       || Number(row.quantity) !== 1)) {
       throw new Error('CONFLICT: 家居产品状态已更新，请刷新后重试')
@@ -5585,6 +5644,7 @@ async function createPickup(ctx) {
                 WHEN si.sale_amount <= 0 THEN si.quantity
                 ELSE LEAST(si.quantity, FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int)
               END AS paid_quantity,
+              o.sale_order_type,
               o.status AS order_status, o.client_user_id, o.customer_name
          FROM sale_items si
          JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
@@ -5597,7 +5657,8 @@ async function createPickup(ctx) {
     if (row.store_id !== ctx.auth.effectiveStoreId) {
       throw new Error(`INVALID_PARAMS: 该商品仅在 ${row.store_id} 可提货，当前门店无法操作`)
     }
-    if (row.product_type !== '家居产品' || row.item_direction !== '购买') {
+    // #145/#153：转换单换入的家居可提（与疗程卡侧 isConvertibleEntitlementRow 同一判据）
+    if (row.product_type !== '家居产品' || !isConvertibleEntitlementRow(row)) {
       throw new Error('INVALID_PARAMS: 该商品类型不支持提货')
     }
     if (!['已支付', '部分支付', '已完成'].includes(row.order_status)) {
@@ -5731,7 +5792,15 @@ async function availablePickupItems(ctx) {
         WHERE o.client_user_id = $1
           AND o.store_id = $2
           AND o.status IN ('已支付', '部分支付', '已完成')
-          AND si.item_direction = '购买'
+          -- #145/#153：转换单换入的家居与购买行同权（与疗程卡侧放行写法同源）。
+          -- sale_amount>0 的转入行，received 已由 paid-sessions STEP 1.6 重建为「转出旧卡
+          -- 价值 + 本单净到账」，FLOOR(received × qty / sale_amount) 天然成立；sale_amount<=0
+          -- 的转入行走上方赠品分支全额可提（STEP 1.6 带 sale_amount>0 过滤，刻意不碰 0 元行，
+          -- 与购买侧 0 元赠品行同口径）。两类都不需要为「转入」另加满付分支。
+          AND (
+            si.item_direction = '购买'
+            OR (o.sale_order_type = '转换单' AND si.item_direction = '转入')
+          )
           AND si.product_type = '家居产品'
      ), pickup_balances AS (
        SELECT *,
@@ -5799,8 +5868,15 @@ async function pickupInventorySkuOptions(ctx) {
        JOIN sale_orders sale_order ON sale_order.sale_order_id = sale_item.sale_order_id
       WHERE sale_item.sale_item_id = $1
         AND sale_order.store_id = $2
-        AND sale_order.status = '已支付'
-        AND sale_item.item_direction = '购买'
+        -- 状态白名单必须与 availablePickupItems / createPickup 一致：本查询是提货弹窗的
+        -- 出库清单预览，卡在 '已支付' 会让「列表可见 → 弹窗报 NOT_FOUND」——部分支付订单
+        -- （含差额未结清的转换单，正是按比例逐件释放的场景）首当其冲。
+        AND sale_order.status IN ('已支付', '部分支付', '已完成')
+        -- #145/#153：转换单换入的家居与购买行同权（与疗程卡侧放行写法同源）
+        AND (
+          sale_item.item_direction = '购买'
+          OR (sale_order.sale_order_type = '转换单' AND sale_item.item_direction = '转入')
+        )
         AND sale_item.product_type = '家居产品'
         AND sale_item.quantity > COALESCE(sale_item.picked_up_quantity, 0)
       LIMIT 1`,

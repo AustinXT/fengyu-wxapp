@@ -250,6 +250,18 @@
 > **复用说明**：sale_items 用于**销售单 / 内部单 / 转换单**三类的明细行；退款 / 回款已下沉至 `sale_order_payments`，部分退款时通过 `sale_order_payments.ref_sale_item_id` 关联原明细行。`item_direction` 标识行的方向语义：
 
 家居产品购买/转入行使用 `inventory_composition_snapshot`（JSONB）冻结下单时的库存组成，格式为 `{ version: 1, components: [{ inventorySkuId, productCode, productName, specName, quantityPerSaleUnit }] }`。新订单的家居行必须有非空有效快照；疗程卡为 NULL。历史空快照不回填，提货时读取最新有效组成。
+
+**家居产品「转入行」的可见性与可提性（#145 / #153）**：转换单换入的家居行（`item_direction='转入'`）与购买行**同权**——四端顾客档案可见、可提货、可被再次折抵转出，放行判据与疗程卡侧同源：`item_direction = '购买' OR (sale_order_type = '转换单' AND item_direction = '转入')`。可提数量沿用 `FLOOR(received × quantity / sale_amount)`：`sale_amount > 0` 的转入行 `received` 由 paid-sessions STEP 1.6 重建为「转出旧卡价值 + 本单净到账，封顶转入总价」，因而差额未结清时按比例逐件释放、结清后恢复满额；`sale_amount <= 0` 的转入行走赠品分支全额可提（STEP 1.6 带 `sale_amount > 0` 过滤，刻意不碰 0 元行），与购买侧 0 元赠品行同口径。**不得为转入行另加满付分支**——那会让差额未结清的货被提前解锁。
+
+**家居产品作为折抵来源的口径（#145 / #153 收紧 #125）**：可折抵**件数** = `已付整件数 − 已结算件数`（`已付整件数` 的 CASE 与提货闸门 `paid_quantity` 字面同源）；可折抵**金额** = `行实收 − 已结算件数 × 单价`，**含不足一整件的已付余数**（顾客付的钱一分不丢）。寄存单与 0 元赠品行没有「实收」可言，维持 `单价 × 未结算件数`。
+
+> 件数向下取整而金额含余数，是因为转出行受 `chk_item_quantity > 0` 约束：**不足一整件时没有载体可折，整行不可折抵**，已付款留在原单，付清后即可折抵或提货。
+>
+> ⚠️ **不得回退到 #125 的「未提货件数 × 单价、不看付款进度」**：那会把未兑现价值洗成全额可提——dev 真库实证，10 件 ¥1000 只付 ¥400（欠 ¥600）时，旧口径可折 ¥1000 换入等额家居，新行 10 件全部可提，而欠款仍留原单，资金缺口 ¥600。收紧后同一场景折 4 件 / ¥400，新单差额 ¥600 待支付，实付 ¥400 + 两单欠款 ¥1200 = 货值 ¥1600，完全守恒。
+>
+> 疗程卡侧维持 #125 的 `remaining_sessions` 口径不变（权益是服务次数而非实物，甲方 2026-09-14 方案 A）。
+
+> ⚠️ **转入行「可提不可退」是既定语义**：转换单整单禁止退款（仅销售单支持），退款候选与 `refund-cascade` 的 effItems 取数均只取 `item_direction='购买'` 行。换入的货只能沿源头销售单退，而源头此时 `refundable = quantity − picked_up_quantity` 已因折抵归零。**若将来放开转换单退款，必须同步让 `refund-cascade` 的 effItems 覆盖转入行**，否则转入家居行的 `picked_up_quantity` 不会被抬、`refundable` 不归零，即成可重复退的资损。
 > - `购买`（默认）：正常购买行
 > - `转出`：转换退出行，`quantity` = 退次数，`received` = 负数
 > - `转入`：转换转入行，创建新的 sale_item

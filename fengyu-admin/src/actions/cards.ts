@@ -13,6 +13,7 @@ import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { parseCardFilters } from '@/lib/list-filters'
 import { nowTs } from '@/lib/db-time'
+import { homeDeductible } from '@/lib/home-product'
 import {
   offsetPageResult,
   resolveExportOffsetPage,
@@ -830,7 +831,16 @@ export const getCustomerHeldCards = withPermission(
           ),
           and(
             eq(saleItems.productType, '家居产品'),
-            sql`(${saleItems.quantity} - COALESCE(${saleItems.pickedUpQuantity}, 0)) > 0`,
+            // #145/#153 收紧：家居可折抵件数 = 已付整件数 − 已结算件数，不再是「未提货件数」。
+            // 与 staff customerHeldCards 的 remaining_quantity 表达式字面同源。
+            sql`GREATEST(0, CASE
+              WHEN ${saleOrders.saleOrderType} = '寄存单' THEN ${saleItems.quantity}
+              WHEN ${saleItems.saleAmount} <= 0 THEN ${saleItems.quantity}
+              ELSE LEAST(
+                ${saleItems.quantity},
+                FLOOR(GREATEST(0, ${saleItems.received}::numeric) * ${saleItems.quantity} / NULLIF(${saleItems.saleAmount}::numeric, 0))::int
+              )
+            END - COALESCE(${saleItems.pickedUpQuantity}, 0)) > 0`,
           ),
         ),
         // 在途退款冻结：原订单存在 '待审批' 退款时排除整单的卡（与 staff customerHeldCards 对齐）
@@ -841,12 +851,20 @@ export const getCustomerHeldCards = withPermission(
       ),
     )
 
-  // 疗程卡按 remaining_sessions 折抵；家居产品按未提货数量 quantity − picked_up_quantity 折抵
+  // 疗程卡按 remaining_sessions 折抵；家居按「已付未结算」折抵（#145/#153 收紧，见 homeDeductible）
   return rows.map((r) => {
     const unit = Number(r.unitRealPrice)
     const isHomeProduct = r.productType === '家居产品'
     const remSess = r.remainingSessions ?? 0
-    const remainingQty = Math.max(0, (r.quantity ?? 0) - (r.pickedUpQuantity ?? 0))
+    const home = homeDeductible({
+      saleOrderType: r.saleOrderType,
+      quantity: r.quantity ?? 0,
+      pickedUpQuantity: r.pickedUpQuantity ?? 0,
+      saleAmount: r.saleAmount,
+      received: r.received,
+      unitRealPrice: r.unitRealPrice,
+    })
+    const remainingQty = home.quantity
     const deductibleQty = isHomeProduct ? remainingQty : remSess
     return {
       saleItemId: r.saleItemId,
@@ -876,7 +894,7 @@ export const getCustomerHeldCards = withPermission(
       saleAmount: r.saleAmount,
       received: r.received,
       pendingReceived: r.pendingReceived,
-      deductibleAmount: (unit * deductibleQty).toFixed(2),
+      deductibleAmount: isHomeProduct ? home.amount.toFixed(2) : (unit * deductibleQty).toFixed(2),
       expireDate: r.expireDate ?? null,
       remark: r.remark ?? null,
       salesCategory: r.salesCategory ?? null,

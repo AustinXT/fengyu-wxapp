@@ -2173,6 +2173,268 @@ describe('家居产品部分支付权益跨端守护', () => {
     const unique = [...new Set(all)]
     expect(unique, `11 处 CASE 块出现 ${unique.length} 种写法，跨端已漂移`).toHaveLength(1)
   })
+
+  // issue #145/#153：转换单转入行的 received 已由 paid-sessions STEP 1.6
+  // (CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL) 重建为「转出旧卡价值 + 本单净到账，封顶转入总价」，
+  // FLOOR(received × qty / sale_amount) 因而天然正确：部分支付按比例可提，结清后恰好恢复满额。
+  // 若有人比照 #128 寄存单给转入行补一条 `WHEN ... '转入' THEN si.quantity` 满付分支，
+  // 差额未结清的货会被提前全额解锁（顾客只付一部分就能把货提空）——明令禁止。
+  test.each(PAID_QUANTITY_SITES)('%s 不得给转换单转入行开满付后门', (_name, file) => {
+    const blocks = extractPaidQuantityCases(file)
+    blocks.forEach((block, i) => {
+      expect(block, `第 ${i + 1} 处 paid_quantity 给转入行加了满付分支`).not.toMatch(/'转入'/)
+      expect(block, `第 ${i + 1} 处 paid_quantity 给转换单加了满付分支`).not.toMatch(/'转换单'/)
+    })
+  })
+})
+
+describe('转换单换入家居产品可见可提跨端守护', () => {
+  // issue #145 / #153：转换单「转入」的家居行原先被 `item_direction = '购买'` 一律排除，
+  // 顾客换到手的货在四端看不见、也提不出来（dev 实证 14 行 / 17 件 / ¥11,730.00 / 3 位顾客，
+  // 全部已支付，picked_up_quantity 与 pickup_records 皆为 0）。
+  // 放行判据与疗程卡侧同源：`购买` OR (转换单 AND `转入`)。
+  //
+  // ⚠ 必须按「家居查询站点」逐处校验，不能跑整份文件：同一文件里疗程卡侧早就有字面完全
+  //   相同的转入分支（staff customer.js / staff mgmt-customer.js / client order.js /
+  //   staff order.js 都是疗程卡一处 + 家居若干处），文件级 toContain 会被疗程卡那处兜底，
+  //   家居侧漏改或被改回单一「购买」一律测不出来。
+  const HOME_DIRECTION_SITES = [
+    ['staff 顾客档案', FILES.staffCustomerJs, 1],
+    ['staff 管理层顾客档案', FILES.staffMgmtCustomerJs, 1],
+    ['client 我的家居产品', FILES.clientOrderJs, 1],
+    ['admin 顾客详情', FILES.adminCustomersTs, 1],
+    // staff 提货 3 处：createGroupedPickup 锁行 / availablePickupItems / pickupInventorySkuOptions
+    ['staff 提货', FILES.staffOrderJs, 3],
+    // admin 提货 4 处：getAvailablePickupItems / getPickupInventorySkuOptions /
+    //                  分组提货锁行 / createPickupRecord 兜底 UPDATE
+    ['admin 提货', FILES.adminPickupRecordsTs, 4],
+  ]
+
+  // 归一化后仅允许两种写法：
+  //   JOIN 形  —— 查询已 JOIN sale_orders，直接读订单类型
+  //   EXISTS 形 —— admin createPickupRecord 的兜底 UPDATE 是单表语句，无从 JOIN
+  const FORM_JOIN = "ITEM.item_direction = '购买' OR (ORDER.sale_order_type = '转换单' AND ITEM.item_direction = '转入'"
+  const FORM_EXISTS = "item_direction = '购买' OR (item_direction = '转入'"
+
+  /**
+   * 剥掉 SQL(`--`)、JS 行(`//`) 与块注释续行(` *`)。
+   * 注释里复述判据或引用锁语句是本项目常态（#125 就加了一处讲锁序的 `FOR UPDATE OF si`），
+   * 不剥会把说明文字当成真实站点统计进去。
+   */
+  function stripComments(src) {
+    return src
+      .replace(/--[^\n]*/g, '')
+      .replace(/^[ \t]*\/\/.*$/gm, '')
+      .replace(/^[ \t]*\*.*$/gm, '')
+  }
+
+  /**
+   * 取出文件内每一处「家居产品查询」的方向过滤块（剥 SQL/JSDoc 注释 → 压空白 → 抹别名）。
+   * 家居块与疗程卡块字面同形，只能靠邻近的 `AND <别名>.product_type = '家居产品'` 区分，
+   * 故取方向块前后各 400 字符窗口做归属判据；`COALESCE(ps.unit, CASE WHEN si.product_type =
+   * '家居产品' THEN '盒' ...)` 这类单位派生不带 `AND` 前缀，天然不参与判定。
+   */
+  function extractHomeDirectionFilters(file) {
+    const src = stripComments(readFile(file))
+    const blocks = []
+    const re = /(?:\w+\.)?item_direction = '购买'[\s\S]{0,160}?(?:\w+\.)?item_direction = '转入'/g
+    for (const m of src.matchAll(re)) {
+      const near = src.slice(Math.max(0, m.index - 400), m.index + m[0].length + 400)
+      const kinds = [...near.matchAll(/AND (?:\w+\.)?product_type = '(家居产品|疗程卡)'/g)].map((x) => x[1])
+      if (!kinds.includes('家居产品')) continue
+      blocks.push(
+        normalizeSql(m[0])
+          .replace(/\b(si|sale_item)\./g, 'ITEM.')
+          .replace(/\b(o|sale_order)\./g, 'ORDER.'),
+      )
+    }
+    return blocks
+  }
+
+  test.each(HOME_DIRECTION_SITES)(
+    '%s 每一处家居查询都放行转换单转入行',
+    (_name, file, expectedSites) => {
+      const blocks = extractHomeDirectionFilters(file)
+      expect(
+        blocks.length,
+        '家居方向过滤站点数变化：新增/删除了家居查询，或某处被改回单一「购买」过滤，需同步本断言',
+      ).toBe(expectedSites)
+      blocks.forEach((block, i) => {
+        expect([FORM_JOIN, FORM_EXISTS], `第 ${i + 1} 处家居方向过滤写法漂移`).toContain(block)
+      })
+    },
+  )
+
+  test('家居方向过滤 11 处站点跨端同义（JOIN 形 10 处 + 兜底 UPDATE 的 EXISTS 形 1 处）', () => {
+    const all = HOME_DIRECTION_SITES.flatMap(([, file]) => extractHomeDirectionFilters(file))
+    expect(all.length).toBe(11)
+    expect(all.filter((b) => b === FORM_JOIN), 'JOIN 形站点数漂移').toHaveLength(10)
+    expect(all.filter((b) => b === FORM_EXISTS), 'EXISTS 形站点数漂移').toHaveLength(1)
+  })
+
+  // admin createPickupRecord 的兜底 UPDATE 是单表语句。图省事写成 item_direction IN ('购买','转入')
+  // 会把「非转换单的转入行」也放进来——目前这种数据不存在，但守卫强度不能靠数据现状兜底。
+  test('admin 兜底 UPDATE 用 EXISTS 校验订单类型，不退化成方向白名单', () => {
+    const src = normalizeSql(readFile(FILES.adminPickupRecordsTs))
+    expect(src).toContain(
+      "item_direction = '转入' AND EXISTS (SELECT 1 FROM sale_orders o WHERE o.sale_order_id = sale_items.sale_order_id AND o.sale_order_type = '转换单')",
+    )
+    expect(src, '不得放宽成方向白名单').not.toMatch(/item_direction IN \('购买', ?'转入'\)/)
+  })
+
+  // 事务闸门里的方向判据走 JS helper，两端必须同义。
+  const HELPER_RETURN = "return row.item_direction === '购买' || (row.sale_order_type === '转换单' && row.item_direction === '转入')"
+
+  test('方向判据 helper 双端同义', () => {
+    for (const file of [FILES.staffOrderJs, FILES.adminPickupRecordsTs]) {
+      const src = readFile(file).replace(/\s+/g, ' ')
+      expect(src, `${file} 的 isConvertibleEntitlementRow 判据漂移`).toContain(HELPER_RETURN)
+    }
+  })
+
+  // 判据与「家居产品」绑成整句计数：staff order.js 里 createConversion 选卡处也调用同一 helper，
+  // 只数 helper 调用会把它算进来，掩盖提货侧少改一处。
+  const HOME_PICKUP_GUARD = /product_type !== '家居产品' \|\| !isConvertibleEntitlementRow\((?:row|lockedItem)\)/g
+
+  test('提货事务闸门都走 helper，不得写死「购买」', () => {
+    // staff：createGroupedPickup + createPickup；admin：分组提货 + createPickupRecord
+    for (const [end, file] of [['staff', FILES.staffOrderJs], ['admin', FILES.adminPickupRecordsTs]]) {
+      const src = readFile(file).replace(/\s+/g, ' ')
+      expect(src.match(HOME_PICKUP_GUARD) || [], `${end} 提货事务闸门数量漂移`).toHaveLength(2)
+      // 不得回退到写死「购买」的旧判据
+      expect(src, `${end} 提货校验回退成写死购买`).not.toMatch(
+        /product_type !== '家居产品' \|\| (?:row|lockedItem)\.item_direction !== '购买'/,
+      )
+    }
+  })
+
+  // helper 读 row.sale_order_type：锁行查询漏 select 这一列会让判据恒为 false，
+  // 转入行在最关键的事务闸门处被静默拒绝，且报成「该商品类型不支持提货」难以排查。
+  const LOCK_SITES = [
+    ['staff 提货与转换选卡', FILES.staffOrderJs, 3],
+    ['admin 提货', FILES.adminPickupRecordsTs, 2],
+  ]
+
+  test.each(LOCK_SITES)(
+    '%s 每个 FOR UPDATE OF si 锁行查询都取到 sale_order_type',
+    (_name, file, expectedSites) => {
+      const src = stripComments(readFile(file))
+      const blocks = []
+      let idx = 0
+      for (;;) {
+        const at = src.indexOf('FOR UPDATE OF si', idx)
+        if (at === -1) break
+        blocks.push(normalizeSql(src.slice(src.lastIndexOf('SELECT', at), at)))
+        idx = at + 1
+      }
+      expect(blocks.length, '锁行查询数量变化，需同步本断言').toBe(expectedSites)
+      blocks.forEach((block, i) => {
+        // 必须作为独立输出列取出（后跟逗号）。裸 /sale_order_type/ 会被同块 paid_quantity
+        // 里的 `WHEN o.sale_order_type = '寄存单'` 满足，删掉 SELECT 列也测不出来（变异实证）。
+        expect(block, `第 ${i + 1} 处锁行查询漏取 sale_order_type 列，方向判据会恒为 false`).toMatch(
+          /\w+\.sale_order_type(?:\s+AS\s+\w+)?\s*,/,
+        )
+        // 多行锁必须定序。本项目所有多行 `FOR UPDATE OF si` 一律按 sale_item_id 升序
+        // （createConversion 折抵、两端分组提货、退款 G2 复校），不定序会与折抵事务反向加锁而死锁。
+        // 转入行正是折抵的主力源，放行后 admin 分组提货的锁集才开始与折抵重叠（对抗审查实证）。
+        if (/sale_item_id\s*(?:=\s*ANY|IN)\s*\(/.test(block)) {
+          expect(block, `第 ${i + 1} 处多行锁缺 ORDER BY si.sale_item_id，与折抵事务反向锁序会死锁`)
+            .toMatch(/ORDER BY si\.sale_item_id/)
+        }
+      })
+    },
+  )
+
+  // 提货链路的三处订单状态白名单必须一致：可提列表放行 `部分支付` 却让出库清单预览卡在
+  // `已支付`，会造成「列表看得见、点提货报 NOT_FOUND」——差额未结清的转换单首当其冲，
+  // 正是本 PR 承诺「按比例逐件释放」的场景（对抗审查实证，两个谱系独立命中）。
+  const PICKUP_STATUS_FILES = [
+    ['staff 提货', FILES.staffOrderJs],
+    ['admin 提货', FILES.adminPickupRecordsTs],
+  ]
+
+  test.each(PICKUP_STATUS_FILES)('%s 提货链路订单状态白名单三处一致', (_name, file) => {
+    const src = stripComments(readFile(file))
+    expect(src, '出库清单预览回退成只认「已支付」').not.toMatch(
+      /sale_order\.status = '已支付'/,
+    )
+    expect(src).toContain("sale_order.status IN ('已支付', '部分支付', '已完成')")
+    // 事务闸门侧的 JS 白名单同源
+    expect(src).toContain("['已支付', '部分支付', '已完成'].includes")
+  })
+
+  // #145/#153 收紧家居折抵口径：旧的「未提货件数 × 单价，不看付款进度」可以把未兑现价值
+  // 洗成全额可提（dev 真库实证：10 件 ¥1000 只付 ¥400 → 折 ¥1000 换等额家居 → 新行 10 件全可提，
+  // 欠款仍留原单）。改为「已付整件数 − 已结算件数」件 + 「行实收 − 已结算件数 × 单价」金额。
+  // 三处站点（staff 候选 / staff 锁内复算 / admin）必须同源，否则候选与闸门分叉。
+  test('家居折抵件数三处站点同源（已付整件数 − 已结算件数）', () => {
+    const staff = normalizeSql(stripComments(readFile(FILES.staffOrderJs)))
+    const staffSites = staff.split(
+      "GREATEST(0, CASE WHEN so.sale_order_type = '寄存单' THEN si.quantity WHEN si.sale_amount <= 0 THEN si.quantity ELSE LEAST(si.quantity, FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int) END - COALESCE(si.picked_up_quantity, 0))",
+    ).length - 1
+    // customerHeldCards 的 SELECT 列 + 同查询 WHERE + createConversion 锁内复算
+    expect(staffSites, 'staff 家居可折抵件数表达式站点数漂移').toBe(3)
+    expect(staff, '折抵不得回退到「未提货件数」口径').not.toContain(
+      "OR (si.product_type = '家居产品' AND (si.quantity - COALESCE(si.picked_up_quantity, 0)) > 0)",
+    )
+
+    // admin 用 JS helper（Drizzle 侧无法复用 SQL 字面量），判据须与 staff 同义
+    const adminHelper = readFile(FILES.adminHomeProductTs).replace(/\s+/g, ' ')
+    expect(adminHelper).toContain(
+      'const paidQuantity = isDepositOrGift ? qty : Math.min(qty, Math.floor((Math.max(0, received) * qty) / saleAmount))',
+    )
+    expect(adminHelper).toContain('quantity: Math.max(0, paidQuantity - settled)')
+  })
+
+  test('家居折抵金额含不足一整件的已付余数，寄存单/0 元行维持单价口径', () => {
+    const staff = normalizeSql(stripComments(readFile(FILES.staffOrderJs)))
+    const AMOUNT_EXPR = "CASE WHEN so.sale_order_type = '寄存单' OR si.sale_amount <= 0 THEN si.unit_real_price * GREATEST(0, si.quantity - COALESCE(si.picked_up_quantity, 0)) ELSE GREATEST(0, si.received::numeric - COALESCE(si.picked_up_quantity, 0) * si.unit_real_price::numeric) END"
+    expect(staff.split(AMOUNT_EXPR).length - 1, 'staff 家居折抵金额表达式站点数漂移').toBe(2)
+    // 不得退回「单价 × 未提件数」——那会把没付清的货按全价折走
+    expect(staff, '折抵金额不得回退到单价 × 未提件数').not.toContain(
+      "WHEN si.product_type = '家居产品' THEN si.unit_real_price * GREATEST(0, si.quantity - COALESCE(si.picked_up_quantity, 0)) ELSE 0 END AS deductible_amount",
+    )
+
+    const adminHelper = readFile(FILES.adminHomeProductTs).replace(/\s+/g, ' ')
+    expect(adminHelper).toContain(
+      'amount: isDepositOrGift ? unit * Math.max(0, qty - settled) : Math.max(0, received - settled * unit)',
+    )
+    // 两端的折抵闸门都必须走同一 helper / 同一表达式，不得各自内联
+    expect(readFile(FILES.adminCardsTs), 'admin 折抵候选未走 homeDeductible').toContain('homeDeductible(')
+    expect(readFile(FILES.adminOrdersTs), 'admin 折抵锁内复算未走 homeDeductible').toContain('homeDeductible(')
+  })
+
+  // 0 元转入行（优惠券削平 / 店长特价填 0 / 体验转换尾差）不被 paid-sessions STEP 1.6 覆盖
+  // ——该 SQL 两处都带 `sale_amount > 0` 过滤，其 received 停在建单值。此时生效的是
+  // 上游赠品分支 `WHEN si.sale_amount <= 0 THEN si.quantity`，与购买侧 0 元赠品行同口径
+  // （dev 实测 166 行 0 元家居购买行、71 行 0 元疗程卡转入行都走这条）。
+  // 若有人把赠品分支删掉或挪到转入判据之后，0 元转入行会变成不可提。
+  test('paid-sessions STEP 1.6 明确跳过 0 元转入行，赠品分支必须兜住', () => {
+    for (const file of [
+      FILES.staffPaidSessionsJs, FILES.clientPaidSessionsJs,
+      FILES.payNotifyPaidSessionsJs, FILES.adminPaidSessionsTs,
+    ]) {
+      const sql = normalizeSql(readFile(file))
+      expect(sql, `${file} 的 STEP 1.6 丢了 sale_amount > 0 过滤`).toContain(
+        "AND in_item.sale_amount::numeric > 0",
+      )
+    }
+    // 11 处 paid_quantity CASE 里，赠品分支必须排在 ELSE 之前（已由既有断言覆盖数量），
+    // 这里额外锁死它相对寄存单分支的位置，保证 0 元行在任何订单类型下都命中
+    for (const [, file] of HOME_DIRECTION_SITES) {
+      const src = stripComments(readFile(file))
+      let idx = 0
+      for (;;) {
+        const endAt = src.indexOf('END AS paid_quantity', idx)
+        if (endAt === -1) break
+        const block = normalizeSql(src.slice(src.lastIndexOf('CASE', endAt), endAt))
+        expect(block, `${file} 的 paid_quantity 缺 0 元行兜底分支`).toContain(
+          'WHEN si.sale_amount <= 0 THEN si.quantity',
+        )
+        idx = endAt + 1
+      }
+    }
+  })
 })
 
 describe('转换单在线回款意图事务守护', () => {
