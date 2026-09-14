@@ -36,7 +36,7 @@ import { Pool } from 'pg'
 
 // 连接串必填且必须精确指向业务库（db/CLAUDE.md 硬规则：显式传值 + 断言 host/port/dbname）。
 // 只提供默认值或只查非空都不够：已弃用的旧库 47.113.202.7 至今仍可连通，会给出看似正常的陈旧结果。
-const DB_TARGET_RE = /^postgres(?:ql)?:\/\/[^@/]*@(101\.34\.242\.103|118\.178\.196\.26):5433\/fengyu_wxapp(\?.*)?$/
+const DB_TARGET_RE = /^postgres(?:ql)?:\/\/[^@/]*@(101\.34\.242\.103|118\.178\.196\.26):5433\/fengyu_wxapp(?:\?(?![^#]*\b(?:host|hostaddr|port|dbname|database|options|service|passfile)=)[^#]*)?$/
 const PG_CONNECTION_STRING =
   process.env.PG_CONNECTION_STRING?.trim() || process.env.DATABASE_URL?.trim()
 if (!DB_TARGET_RE.test(PG_CONNECTION_STRING || '')) {
