@@ -1017,7 +1017,10 @@ async function homeProducts(ctx) {
         WHERE out_item.item_direction = '转出'
           AND out_item.product_type = '家居产品'
           AND out_item.ref_sale_item_id IS NOT NULL
-          AND conv_order.status NOT IN ('已关闭', '支付失败', '已作废')
+          -- 只排除 '已关闭'：那是 rollbackPendingConversionOnClose 的唯一触发状态（数量已退回）。
+          -- 其余状态（含 '支付失败'）扣减仍然生效，必须计入已转换，否则会被读成"已退款"。
+          -- 删除订单的转出行已随主单消失，天然不计入。
+          AND conv_order.status <> '已关闭'
         GROUP BY out_item.ref_sale_item_id
      ), home_product_rows AS (
        SELECT COALESCE(si.sale_item_group_id, si.sale_item_id) AS sale_item_group_id,
@@ -1090,7 +1093,7 @@ async function homeProducts(ctx) {
      )
      SELECT *
        FROM home_product_balances
-      WHERE picked_quantity > 0 OR pending_pickup_quantity > 0
+      WHERE picked_quantity > 0 OR pending_pickup_quantity > 0 OR converted_quantity > 0
    ORDER BY (pending_pickup_quantity > 0) DESC,
             purchased_at DESC,
             sale_item_id`,

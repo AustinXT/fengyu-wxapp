@@ -5437,6 +5437,53 @@ describe('deleteOrder — 守卫 + 级联删除', () => {
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
+  // #125：转换单删除前必须在事务内锁单读新鲜状态，否则 closeOrder‖deleteOrder 交错时
+  // 会拿事务外的陈旧 '待支付' 二次回滚，把家居 picked_up_quantity 多减一遍。
+  function setupConversionTx(freshStatus: string | undefined) {
+    const executed: string[] = []
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }) }),
+        execute: vi.fn().mockImplementation(async (q: any) => {
+          const text = q?.__sqlText || ''
+          executed.push(text)
+          if (text.includes('SELECT status FROM sale_orders') && text.includes('FOR UPDATE')) {
+            return freshStatus === undefined ? [] : [{ status: freshStatus }]
+          }
+          return undefined
+        }),
+        delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+      }
+      await fn(tx)
+      return { deleted: true }
+    })
+    return executed
+  }
+
+  it('删除待支付转换单 → 事务内锁单读到待支付，执行回滚（#125）', async () => {
+    enqueueSelect([[{ ...okOrder, saleOrderType: '转换单' }], [], []])
+    enqueueExecute([[], [], []])
+    const executed = setupConversionTx('待支付')
+
+    await deleteOrder('FY-CONV-DEL-1')
+
+    expect(executed.some((t) => t.includes('SELECT status FROM sale_orders') && t.includes('FOR UPDATE'))).toBe(true)
+    expect(executed.some((t) => t.includes('restore_sessions'))).toBe(true)
+    expect(executed.some((t) => t.includes('restore_quantity') && t.includes("product_type = '家居产品'"))).toBe(true)
+  })
+
+  it('删除已关闭转换单 → 锁单读到已关闭，跳过回滚（closeOrder 已回滚过，二次会多退家居数量）', async () => {
+    enqueueSelect([[{ ...okOrder, status: '已关闭', saleOrderType: '转换单' }], [], []])
+    enqueueExecute([[], [], []])
+    const executed = setupConversionTx('已关闭')
+
+    await deleteOrder('FY-CONV-DEL-2')
+
+    expect(executed.some((t) => t.includes('SELECT status FROM sale_orders') && t.includes('FOR UPDATE'))).toBe(true)
+    expect(executed.some((t) => t.includes('restore_sessions'))).toBe(false)
+    expect(executed.some((t) => t.includes('restore_quantity'))).toBe(false)
+  })
+
   it('干净测试单 → 级联删除成功 + 审计', async () => {
     enqueueSelect([[okOrder], [], []]) // order, paidPayment, childOrder
     enqueueExecute([[], [], []])

@@ -2103,10 +2103,21 @@ describe('#125 家居转换折抵跨端守护', () => {
       // 疗程卡回滚段不得被顺手删掉
       expect(src).toContain('restore_sessions')
     })
-    test('admin deleteOrder 只对待支付/支付失败转换单回滚（已关闭单已回滚过，二次会多退家居数量）', () => {
+    test('admin deleteOrder 在事务内锁单读新鲜状态后才回滚（防 close‖delete 交错双回滚）', () => {
+      // 事务外读到的 order.status 可能已被并发的 closeOrder 改掉，用陈旧值会把家居数量多退一遍
       expect(adminOrdersSrc).toMatch(
-        /order\.saleOrderType === '转换单'[\s\S]{0,160}order\.status === '待支付'[\s\S]{0,60}order\.status === '支付失败'/,
+        /SELECT status FROM sale_orders WHERE sale_order_id = \$\{saleOrderId\} FOR UPDATE/,
       )
+      expect(adminOrdersSrc).toMatch(
+        /order\.saleOrderType === '转换单'[\s\S]{0,400}freshStatus === '待支付'[\s\S]{0,60}freshStatus === '支付失败'/,
+      )
+    })
+
+    test.each(ROLLBACK_FILES)('%s 回滚 locked_source 按 sale_item_id 定序加锁（防与开单事务反向加锁死锁）', (_name, file) => {
+      const src = normalizeSql(readFile(file))
+      // 两段回滚是独立语句，若不定序会与 createConversion 的 ORDER BY si.sale_item_id 形成相反锁顺序
+      const ordered = src.match(/ORDER BY src\.sale_item_id FOR UPDATE OF src/g) || []
+      expect(ordered.length).toBe(2)
     })
   })
 
@@ -2115,7 +2126,12 @@ describe('#125 家居转换折抵跨端守护', () => {
   test.each(HOME_ASSET_FILES)('%s 把已转换从已退款里拆出来', (_name, file) => {
     const src = normalizeSql(readFile(file))
     expect(src).toContain('conversion_totals')
-    expect(src).toContain("conv_order.status NOT IN ('已关闭', '支付失败', '已作废')")
+    // 只排除 '已关闭'：唯一会触发 rollbackPendingConversionOnClose 的状态。
+    // 用 NOT IN 多值排除会把「扣减仍生效」的状态（如 '支付失败'）误记成已退款。
+    expect(src).toContain("conv_order.status <> '已关闭'")
+    expect(src).not.toContain("conv_order.status NOT IN")
     expect(src).toContain('settled_quantity - picked_quantity - converted_quantity')
+    // 整行折抵（从未物理提货）后 picked=0、pending=0，不放行 converted 就会整行消失
+    expect(src).toContain('WHERE picked_quantity > 0 OR pending_pickup_quantity > 0 OR converted_quantity > 0')
   })
 })

@@ -77,7 +77,7 @@
     </view>
 
     <view wx:if="{{cards.length === 0}}" class="conv-empty">
-      <van-empty description="未找到匹配的疗程卡" />
+      <van-empty description="未找到匹配的折抵项" />
     </view>
 
     <view wx:else class="conv-card-list">
@@ -101,6 +101,7 @@
             <text wx:if="{{item.productType === '疗程卡'}}" class="conv-card-remain">剩余 {{item.remainingSessions}} {{item.unit || '次'}}</text>
             <text wx:else class="conv-card-remain">未提货 {{item.remainingQuantity}} {{item.unit || '盒'}}</text>
             <text wx:if="{{item.productType === '疗程卡'}}" class="conv-card-remain">· 共 {{item.cardCount || 1}} 张</text>
+            <text wx:elif="{{item.sourceItems.length > 1}}" class="conv-card-remain">· 可拆 {{item.sourceItems.length}} 行</text>
             <text class="conv-card-unit">· 单{{item.unit || '次'}}价 ¥{{item.unitRealPrice}}</text>
           </view>
         </view>

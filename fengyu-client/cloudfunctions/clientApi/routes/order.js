@@ -826,6 +826,9 @@ async function closeExpiredOrder(orderNo) {
         WHERE sale_order_id = $1
           AND status = '待支付'
           AND opened_by IS NULL
+          -- 转换单撤销必须走 staff/admin 的 rollbackPendingConversionOnClose（#125）。
+          -- opened_by 已隐式挡住（转换单恒由员工开），这里显式声明，避免依赖隐式不变量。
+          AND sale_order_type <> '转换单'
         FOR UPDATE`,
       [orderNo],
     )
@@ -844,6 +847,7 @@ async function closeExpiredOrder(orderNo) {
        WHERE sale_order_id = $1
          AND status = '待支付'
          AND opened_by IS NULL
+         AND sale_order_type <> '转换单'
          AND lakala_out_order_no IS NULL`,
       [orderNo]
     )
@@ -2250,6 +2254,14 @@ async function cancel(ctx) {
 
   const order = orders[0]
 
+  // 转换单禁止顾客端自助取消（2026-09-14 #125）：
+  // 建单时已即时扣减源卡资产（疗程卡 remaining_sessions / 家居 picked_up_quantity），
+  // 撤销必须走 staff order.close 或 admin closeOrder —— 只有那两端带 rollbackPendingConversionOnClose。
+  // 这里若放行，资产永久失踪：家居既提不出（pending 恒 0）也退不掉（refundable 恒 0）。
+  if (order.sale_order_type === '转换单') {
+    throw new Error('INVALID_STATE: CONVERSION_ORDER_CLIENT_CANCEL_BLOCKED: 转换单请联系门店处理，暂不支持自助取消')
+  }
+
   if (order.lakala_out_order_no) {
     // wx.requestPayment 失败/取消只发生在小程序侧，云函数不会自动获知；预下单时写入的
     // lakala_out_order_no 因此仍可能残留。取消前必须以渠道状态为准：仅 FAIL/CLOSE 是
@@ -2607,7 +2619,10 @@ async function homeProducts(ctx) {
         WHERE out_item.item_direction = '转出'
           AND out_item.product_type = '家居产品'
           AND out_item.ref_sale_item_id IS NOT NULL
-          AND conv_order.status NOT IN ('已关闭', '支付失败', '已作废')
+          -- 只排除 '已关闭'：那是 rollbackPendingConversionOnClose 的唯一触发状态（数量已退回）。
+          -- 其余状态（含 '支付失败'）扣减仍然生效，必须计入已转换，否则会被读成"已退款"。
+          -- 删除订单的转出行已随主单消失，天然不计入。
+          AND conv_order.status <> '已关闭'
         GROUP BY out_item.ref_sale_item_id
      ), home_product_rows AS (
        SELECT COALESCE(si.sale_item_group_id, si.sale_item_id) AS sale_item_group_id,
@@ -2680,7 +2695,7 @@ async function homeProducts(ctx) {
      )
      SELECT *
        FROM home_product_balances
-      WHERE picked_quantity > 0 OR pending_pickup_quantity > 0
+      WHERE picked_quantity > 0 OR pending_pickup_quantity > 0 OR converted_quantity > 0
    ORDER BY (pending_pickup_quantity > 0) DESC,
             purchased_at DESC,
             sale_item_id`,

@@ -2334,6 +2334,9 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
                restore.restore_sessions
           FROM sale_items src
           JOIN restore ON restore.ref_sale_item_id = src.sale_item_id
+         -- 按 sale_item_id 升序加锁，与 createConversion 折抵时的加锁顺序保持一致；
+         -- 两段回滚是独立语句，不定序会与开单事务反向加锁而死锁。
+         ORDER BY src.sale_item_id
          FOR UPDATE OF src
       )
       UPDATE sale_items src
@@ -2364,6 +2367,7 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
                restore.restore_quantity
           FROM sale_items src
           JOIN restore ON restore.ref_sale_item_id = src.sale_item_id
+         ORDER BY src.sale_item_id
          FOR UPDATE OF src
       )
       UPDATE sale_items src
@@ -4735,6 +4739,7 @@ async function createConversion(ctx) {
              SET picked_up_quantity = COALESCE(picked_up_quantity, 0) + $4, updated_at = $1
            WHERE sale_item_id = $2
              AND store_id = $3
+             AND product_type = '家居产品'
              AND (COALESCE(picked_up_quantity, 0) + $4) <= quantity`,
           [now, d.refSaleItemId, storeId, d.quantity]
         )
@@ -4953,7 +4958,7 @@ async function customerHeldCards(ctx) {
             si.remaining_sessions,
             si.paid_sessions,
             si.unit_price,
-            (si.quantity - COALESCE(si.picked_up_quantity, 0)) AS remaining_quantity,
+            GREATEST(0, si.quantity - COALESCE(si.picked_up_quantity, 0)) AS remaining_quantity,
             si.unit_real_price,
             si.sale_amount,
             si.received,

@@ -466,6 +466,9 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
              restore.restore_sessions
         FROM sale_items src
         JOIN restore ON restore.ref_sale_item_id = src.sale_item_id
+       -- 按 sale_item_id 升序加锁，与 createConversionOrder 折抵时的加锁顺序保持一致；
+       -- 两段回滚是独立语句，不定序会与开单事务反向加锁而死锁。
+       ORDER BY src.sale_item_id
        FOR UPDATE OF src
     )
     UPDATE sale_items src
@@ -495,6 +498,7 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
              restore.restore_quantity
         FROM sale_items src
         JOIN restore ON restore.ref_sale_item_id = src.sale_item_id
+       ORDER BY src.sale_item_id
        FOR UPDATE OF src
     )
     UPDATE sale_items src
@@ -3724,7 +3728,10 @@ export const closeOrder = withPermission(
         return { matched: false }
       }
 
-      if (orderCtx?.saleOrderType === '转换单' && orderCtx.storeId) {
+      // rollbackPendingConversionOnClose 只按 saleOrderId 定位转出行（跨店转换单修复 PR #74 起
+      // 不再按 store_id 过滤源卡），因此这里不得再附加 storeId 条件——否则 orderCtx.storeId
+      // 缺失时会静默跳过回滚，与 staff routes/order.js:2462 的判定也不等价。
+      if (orderCtx?.saleOrderType === '转换单') {
         await rollbackPendingConversionOnClose(tx, saleOrderId)
       }
 
@@ -3925,10 +3932,19 @@ export const deleteOrder = withPermission(
     try {
       const txResult = await db.transaction(async (tx) => {
         // 待支付/支付失败转换单：撤销创建时对源疗程卡 remaining_sessions / 家居 picked_up_quantity 的即时扣减。
-        // 状态闸门不可省：已关闭的转换单在 closeOrder 时已回滚过，这里再来一次会把家居数量多退一遍。
-        if (order.saleOrderType === '转换单'
-            && (order.status === '待支付' || order.status === '支付失败')) {
-          await rollbackPendingConversionOnClose(tx, saleOrderId)
+        //
+        // 状态闸门不可省，且**必须在事务内锁单后读新鲜状态**：外层 `order.status` 是事务外读的，
+        // closeOrder‖deleteOrder 交错时（close 先提交并已回滚）这里会拿陈旧的 '待支付' 再回滚一次，
+        // 把家居 picked_up_quantity 多减一遍 → 已提货/已退款的数量凭空复活成可提可退。
+        // DELETE 复检允许 '已关闭'，所以那笔 delete 仍会提交，错误不会被任何守卫拦下。
+        if (order.saleOrderType === '转换单') {
+          const freshRows = await tx.execute(sql`
+            SELECT status FROM sale_orders WHERE sale_order_id = ${saleOrderId} FOR UPDATE
+          `) as unknown as Array<{ status?: string }> | undefined
+          const freshStatus = freshRows?.[0]?.status
+          if (freshStatus === '待支付' || freshStatus === '支付失败') {
+            await rollbackPendingConversionOnClose(tx, saleOrderId)
+          }
         }
 
         await tx
@@ -5905,7 +5921,7 @@ export const createConversionOrder = withPermission(
                 sql`COALESCE(${saleItems.remainingSessions}, 0) >= ${out.quantity}`,
               ),
             )
-          if ((upd as any).count === 0) throw new ApiError('CONFLICT', 'CARD_CONCURRENT_CHANGED: 卡状态变化，请重试')
+          if (rowsAffected(upd) === 0) throw new ApiError('CONFLICT', 'CARD_CONCURRENT_CHANGED: 卡状态变化，请重试')
         } else if (out.productType === '家居产品') {
           // 2026-09-14 #125：家居转出数量并入 picked_up_quantity（该列语义已是"已结算"=已提货+已退款，
           // 见 refund-cascade 通道 5），提货与退款两侧的可用量随之归零。守卫式加法与 createPickup 一致，
@@ -5917,10 +5933,13 @@ export const createConversionOrder = withPermission(
               and(
                 eq(saleItems.saleItemId, out.refSaleItemId),
                 eq(saleItems.storeId, data.storeId),
+                eq(saleItems.productType, '家居产品'),
                 sql`(COALESCE(${saleItems.pickedUpQuantity}, 0) + ${out.quantity}) <= ${saleItems.quantity}`,
               ),
             )
-          if ((upd as any).count === 0) throw new ApiError('CONFLICT', 'HOME_PRODUCT_CONCURRENT_CHANGED: 家居产品可提数量变化，请重试')
+          // 影响行数必须走 rowsAffected：postgres.js 的 RowList 只有 .count，
+          // 裸 `.count === 0` 在 driver 变更/mock 漂移时会 undefined === 0 → 静默放行守卫。
+          if (rowsAffected(upd) === 0) throw new ApiError('CONFLICT', 'HOME_PRODUCT_CONCURRENT_CHANGED: 家居产品可提数量变化，请重试')
         }
       }
 

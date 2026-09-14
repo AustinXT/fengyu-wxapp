@@ -245,7 +245,7 @@ export function ConversionPanel({
             )}
             {!loading && groupedHeldCards.length > 0 && filteredHeldCards.length === 0 && (
               <p className="text-xs text-[#999999] py-4 text-center">
-                {hasCardFilters ? "未找到匹配的疗程卡" : "该顾客在当前门店无可折抵卡"}
+                {hasCardFilters ? "未找到匹配的折抵项" : "该顾客在当前门店无可折抵卡"}
               </p>
             )}
             <div className="space-y-1 max-h-72 overflow-y-auto">
@@ -284,6 +284,7 @@ export function ConversionPanel({
                         <span>{c.productType}</span>
                         <span>{remainLabel}</span>
                         {c.productType === '疗程卡' && c.cardCount > 1 && <span>共 {c.cardCount} 张</span>}
+                        {c.productType !== '疗程卡' && c.sourceItems.length > 1 && <span>可拆 {c.sourceItems.length} 行</span>}
                         <span>单{c.unit}价 ¥{c.unitRealPrice}</span>
                       </div>
                       {checked && (
