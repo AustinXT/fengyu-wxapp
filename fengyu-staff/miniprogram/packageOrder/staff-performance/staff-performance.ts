@@ -405,19 +405,24 @@ Page({
   setRange(type: RangeType, fetch = true) {
     const { start, end, display } = this.presetRange(type);
 
-    // 点「自定义」时区间就是从上一个档位沿用来的，通常与屏幕上这批数据完全同源 ——
-    // 此时只展开 picker、换个标题即可，不必清屏重拉：后端每次请求都是全区间扫描，
-    // 白跑一趟既费云函数又让用户干等一次闪烁。真正改了日期再由 applyCustomRange 刷新。
+    // 什么时候只切 UI、不重拉（后端每次请求都是全区间扫描，白跑一趟既费云函数又闪一下）：
     //
-    // 用 `_lastKey`（上一次**成功**渲染的查询键）而不是 `items.length > 0` 判断屏幕上有没有
-    // 同源数据：后者会把「本期成功查到 0 条」误判成「还没加载」，白白多跑一次全区间扫描。
-    // 只对 custom 早退：点「今日」「本月」时区间同样没变，但那是用户在**手动刷新**，
-    // 一并吃掉会让页面失去唯一的主动重拉入口
-    // `loading` 也算「已经有同区间的数据在路上」：首屏或失败重试在途时 `_lastKey` 还是空的，
-    // 连点几下「自定义」会并发启动多个一模一样的全区间扫描 —— `_seq` 只丢弃响应，
-    // 拦不住已经进了云函数的查询。在途那次本就是同一个区间，等它就行。
-    if (fetch && type === 'custom' && start === this.data.startDate && end === this.data.endDate
-        && (this._lastKey || this.data.loading)) {
+    // ① 同区间的请求正在路上 —— 首屏或失败重试在途时 `_lastKey` 还是空的，连点几下
+    //    「自定义」会并发启动多个一模一样的全区间扫描（`_seq` 只丢弃响应，拦不住已经
+    //    进了云函数的查询）。在途那次查的本就是这个区间，等它就行。
+    // ② **从别的档位切进** custom，且屏幕上已有同源数据 —— 区间是从上一档沿用来的，
+    //    数据本就对得上，展开 picker 换个标题即可。
+    //
+    // 反过来，**已经是 custom 了还点「自定义」** 必须重拉：那和点「今日」「本月」一样是
+    // 用户在手动刷新，而且无结果文案里「点上方时段按钮可重查」指的就是这个动作，
+    // 吞掉它会让那句指引变成空话。
+    //
+    // 用 `_lastKey`（上一次**成功**渲染的查询键）而不是 `items.length > 0` 判断有没有同源
+    // 数据：后者会把「本期成功查到 0 条」误判成「还没加载」，白白多跑一次全区间扫描。
+    const sameRange = start === this.data.startDate && end === this.data.endDate;
+    const switchingIntoCustom = this.data.rangeType !== 'custom';
+    if (fetch && type === 'custom' && sameRange
+        && (this.data.loading || (switchingIntoCustom && this._lastKey))) {
       this.setData({ rangeType: type, displayDate: display });
       return;
     }

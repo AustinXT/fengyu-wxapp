@@ -1010,16 +1010,31 @@ describe('绩效页 · 姓名空格归一与手动刷新入口（评审 round-9 
     expect(callStaffApi).toHaveBeenCalledTimes(1)
   })
 
-  test('点已选中的「自定义」仍然不重拉（后端是全区间扫描，白跑一趟纯浪费）', async () => {
+  test('从别的档位切进「自定义」不重拉（区间是沿用来的，数据本就同源）', async () => {
     const page = createPage()
-    page.onLoad({ range: 'custom' })
+    page.onLoad({ range: 'month' })
     mockPage([makeItem('张三', '13800000001', 1)], 1)
     await page.loadData(true)
 
     vi.mocked(callStaffApi).mockClear()
     page.onRangeTap({ currentTarget: { dataset: { type: 'custom' } } })
 
+    expect(page.data.rangeType).toBe('custom')
     expect(callStaffApi).not.toHaveBeenCalled()
+  })
+
+  test('已经是「自定义」了再点一次 = 手动刷新，必须重拉', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'custom' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+    expect(page.data.rangeType).toBe('custom')
+
+    vi.mocked(callStaffApi).mockClear()
+    page.onRangeTap({ currentTarget: { dataset: { type: 'custom' } } })
+
+    // 无结果文案里「点上方时段按钮可重查」指的就是这个动作，吞掉它那句指引就成了空话
+    expect(callStaffApi).toHaveBeenCalledTimes(1)
   })
 
   test('命中过多被截断时同样标注顶部汇总口径（此时明细与汇总差距最大）', async () => {
@@ -1874,5 +1889,37 @@ describe('绩效页 · 「看似查全」不把话说死（评审 round-27 codex
     search(page, '王五')
     expect(page.data.searchHint).toContain('已加载 1/共 58 条')
     expect(page.data.searchHint).not.toContain('可重查')
+  })
+})
+
+describe('绩效页 · 重查指引必须真的可用（评审 round-28 codex P2）', () => {
+  test('自定义区间下搜不到 → 按文案点「自定义」能真的重查', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'custom' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+
+    search(page, '王五')
+    expect(page.data.searchHint).toContain('可重查')
+
+    vi.mocked(callStaffApi).mockClear()
+    mockPage([makeItem('张三', '13800000001', 1), makeItem('王五', '13700000005', 2)], 2)
+    page.onRangeTap({ currentTarget: { dataset: { type: 'custom' } } })
+
+    expect(callStaffApi).toHaveBeenCalledTimes(1)
+  })
+
+  test('在途时连点仍然不并发（去重优先于手动刷新）', () => {
+    const page = createPage()
+    page.onLoad({ range: 'custom' })
+    vi.mocked(callStaffApi).mockImplementation(() => new Promise(() => {}))
+    page.loadData(true)
+    expect(page.data.loading).toBe(true)
+
+    vi.mocked(callStaffApi).mockClear()
+    page.onRangeTap({ currentTarget: { dataset: { type: 'custom' } } })
+    page.onRangeTap({ currentTarget: { dataset: { type: 'custom' } } })
+
+    expect(callStaffApi).not.toHaveBeenCalled()
   })
 })
