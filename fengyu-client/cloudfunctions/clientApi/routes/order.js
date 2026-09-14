@@ -876,6 +876,8 @@ async function closeExpiredOrdersByUser(userId) {
   const expired = await pg.query(
     `SELECT sale_order_id FROM sale_orders
      WHERE client_user_id = $1 AND status = '待支付' AND opened_by IS NULL
+     -- closeExpiredOrder 内部已有同样守卫，这里显式声明保持纵深对称（#125）
+     AND sale_order_type <> '转换单'
      AND sale_order_datetime < NOW() - INTERVAL '10 minutes'`,
     [userId]
   )

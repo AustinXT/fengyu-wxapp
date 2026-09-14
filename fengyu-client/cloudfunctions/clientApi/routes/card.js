@@ -203,6 +203,7 @@ async function _closeExpiredPendingByUser(client, userId) {
      WHERE client_user_id = $1 AND status = '待支付'
      AND opened_by IS NULL
      AND sale_order_type <> '转换单'
+     AND lakala_out_order_no IS NULL
      AND sale_order_datetime < NOW() - INTERVAL '10 minutes'`,
     [userId]
   )
@@ -210,7 +211,10 @@ async function _closeExpiredPendingByUser(client, userId) {
     await client.query(
       `UPDATE sale_orders SET status = '已关闭', updated_at = NOW()
        WHERE sale_order_id = $1 AND status = '待支付' AND opened_by IS NULL
-         AND sale_order_type <> '转换单'`,
+         AND sale_order_type <> '转换单'
+         -- 与 order.closeExpiredOrder 对齐：有活跃在线支付意图的单不可强关，
+         -- 否则第 9 分钟发起支付、第 11 分钟进充值会把单关掉，payNotify 落到已关闭单
+         AND lakala_out_order_no IS NULL`,
       [row.sale_order_id]
     )
     await client.query(

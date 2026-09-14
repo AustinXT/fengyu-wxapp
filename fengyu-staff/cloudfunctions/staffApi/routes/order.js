@@ -3569,7 +3569,7 @@ async function approveRefund(ctx) {
         if (requested <= 0) continue
         const refundable = Number(r.quantity || 0) - Number(r.picked_up_quantity || 0)
         if (requested > refundable) {
-          throw new Error('CONFLICT: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
+          throw new Error('CONFLICT: HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
         }
       }
     }
