@@ -186,9 +186,13 @@ const TECH_ARTIFACT_RES: readonly RegExp[] = [
   // 环境变量名 / 内部常量这类 SCREAMING_SNAKE token（必须含下划线，
   // 免得误杀 SKU、OEM 这类单词型业务缩写）。真实来源：
   // `actions/lakala-onboarding.ts:1492` 的「缺少电子合同回调地址：LAKALA_ECONTRACT_CALLBACK_URL」
-  // 尾巴允许挂小写单位（`LAKALA_TIMEOUT_30000ms`）；整体 ≥6 字符，
-  // 免得把 `A_B款精华液` 里的 `A_B` 这种商品名片段当成配置名
-  /\b(?=[A-Z][A-Z0-9_]{5,}[a-z]*\b)[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+[a-z]*\b/,
+  // 尾巴允许挂小写单位（`LAKALA_TIMEOUT_30000ms`）；整体 ≥6 字符。
+  // **前后不能紧贴中日韩**：商品名是无格式限制的 text 且会被直接拼进错误文案
+  // （`business.ts:1535`），`ABC_DEF款精华液` 这种写法不是配置名。
+  new RegExp(
+    `(?<![\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF66-\uFF9F])\\b(?=[A-Z][A-Z0-9_]{5,}[a-z]*\\b)[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+[a-z]*\\b(?![\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF66-\uFF9F])`,
+    'u',
+  ),
   // 单标签主机:端口（`postgres:5433` / `redis:6379`）。要求小写字母开头 + 主机名 ≥5 字符：
   // 前者避开「稀释比例 1.5:30」这类小数，后者避开「门店 sku:10086 已停用」这类短业务标签
   /\b[a-z][a-z0-9-]{4,}:\d{2,5}\b/,
@@ -198,7 +202,8 @@ const TECH_ARTIFACT_RES: readonly RegExp[] = [
   /\b[a-z][a-z0-9+.-]*:\/\//i,
   // 句中出现的内建异常名（`操作失败：TypeError: Cannot read …`），不只句首。
   // 冒号后空格可选：`String(err)` 几乎都带空格，但 `Error:boom` 这种拼法也要认
-  /\b[A-Z][A-Za-z]*(?:Error|Exception):\s?/,
+  // 类名前缀可有可无：裸 `Error:boom` / `Exception:boom` 也要认
+  /\b(?:[A-Z][A-Za-z]*)?(?:Error|Exception):\s?/,
 ]
 
 /**

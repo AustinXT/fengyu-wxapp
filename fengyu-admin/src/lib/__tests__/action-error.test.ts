@@ -222,6 +222,9 @@ describe('actionErrorMessage', () => {
       'INVALID_STATE: 数据库错误：duplicate key value violates unique constraint "uq_sop_txn"',
       // 尾巴带小写单位的内部标识（SCREAMING_SNAKE 规则吃不到，靠结构兜底）
       'INVALID_STATE: 请求失败：LAKALA_TIMEOUT_30000ms',
+      // 裸 Error / Exception（类名前缀可有可无），且被中文包着
+      'INVALID_STATE: 操作失败：Error:boom',
+      'INVALID_STATE: 营业执照：Exception:boom',
       // 句中而非句首的内建异常名
       'INVALID_STATE: 操作失败：TypeError: Cannot read properties of undefined',
     ])('中文包着的第二批技术痕迹也挡住：%s', (digest) => {
@@ -245,6 +248,8 @@ describe('actionErrorMessage', () => {
       // 商品名会被直接插进错误文案（business.ts:1535），规格里带 / 和 _ 都是合法写法
       ['INVALID_STATE: SKU 洗发水500ml/瓶 未设置市场进货价', 'SKU 洗发水500ml/瓶 未设置市场进货价'],
       ['INVALID_STATE: A_B款精华液 未设置市场进货价', 'A_B款精华液 未设置市场进货价'],
+      // 商品名是无格式限制的 text，英文型号 + 下划线是合法写法；紧贴中文即不算配置名
+      ['INVALID_STATE: SKU ABC_DEF款精华液 未设置市场进货价', 'SKU ABC_DEF款精华液 未设置市场进货价'],
       ['INVALID_PARAMS: 仅 PC/H5 端支持该操作', '仅 PC/H5 端支持该操作'],
       ['INVALID_PARAMS: 支持 iOS/Android 双端', '支持 iOS/Android 双端'],
       ['INVALID_PARAMS: 门店 sku:10086 已停用', '门店 sku:10086 已停用'],
@@ -703,6 +708,17 @@ describe('Next digest 形态漂移守护（#133）', () => {
         )
       ) {
         producers.add(file.slice(adminSrc.length + 1))
+      }
+      // 同文件里的一层常量间接（`const D = 'PHONE_REQUIRED'; readonly digest = D`）——
+      // 两个谱系都点名说这是「最自然的新增位置」，所以至少把这一层解开。
+      // 更深的间接（跨文件、helper 返回值）仍需 AST，已登记跟进。
+      const consts = new Map<string, string>()
+      for (const m of text.matchAll(/\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*['"`]([^'"`]+)['"`]/g)) {
+        consts.set(m[1], m[2])
+      }
+      for (const m of text.matchAll(/\bdigest\s*[=:]\s*([A-Za-z_$][\w$]*)\b/g)) {
+        const resolved = consts.get(m[1])
+        if (resolved && /^[A-Z][A-Z0-9_]*$/.test(resolved)) bareTokens.add(resolved)
       }
       // 取值形态要与上面的写入形态一一对应，否则「文件集不变、新增一个裸 token」会静默放过
       const valuePatterns = [
