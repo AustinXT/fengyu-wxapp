@@ -2184,3 +2184,54 @@ describe('绩效页 · 在途去重覆盖所有档位（评审 round-34 codex P2
     expect(callStaffApi).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('绩效页 · 分类缓存只在落地后消费（评审 round-35 codex P2）', () => {
+  function respWith(sales: number, service: number) {
+    return {
+      totalSalesAlloc: sales, totalServiceCommission: service, totalCommission: sales + service,
+      items: [makeItem('张三', '13800000001', 1)], total: 1,
+      categorySummary: { 自销自耗: { sales, service } },
+      categories: ['自销自耗'],
+    }
+  }
+
+  test('过桥期间切 Tab 不拿旧缓存覆盖刚写入的新分类金额', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    vi.mocked(callStaffApi).mockResolvedValue(respWith(100, 50) as never)
+    await page.loadData(true)
+    expect(page._screen?.settled).toBe(true)
+
+    // 被动刷新取回新金额；压住回调，模拟「已 setData、回调未回」
+    const pending: Array<() => void> = []
+    const realSetData = page.setData.bind(page)
+    page.setData = (u: Record<string, unknown>, cb?: () => void) => {
+      realSetData(u)
+      if (cb) pending.push(cb)
+    }
+    vi.mocked(callStaffApi).mockResolvedValue(respWith(999, 1) as never)
+    await page.loadData(true, true)
+    page.setData = realSetData
+    expect(page.data.categoryCells[0].amount).toBe('1,000.00') // 新金额已上屏
+    expect(page._screen?.settled).toBe(false)
+
+    // 此刻切 Tab：不能用还是旧值的 _summaryCache 把它盖回 150
+    page.onMainTabChange({ detail: { index: 0 } })
+    expect(page.data.categoryCells[0]?.amount).not.toBe('150.00')
+
+    pending.forEach((cb) => cb())
+  })
+
+  test('落地之后切 Tab 仍走本地即时重算（慢网下不留旧口径）', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    vi.mocked(callStaffApi).mockResolvedValue(respWith(100, 50) as never)
+    await page.loadData(true)
+
+    vi.mocked(callStaffApi).mockImplementation(() => new Promise(() => {})) // 新请求挂住
+    page.onMainTabChange({ detail: { index: 2 } }) // 服务口径
+
+    expect(page.data.cellsCaption).toBe('服务提成构成')
+    expect(page.data.categoryCells[0].amount).toBe('50.00') // 立刻换成服务口径，不等请求
+  })
+})

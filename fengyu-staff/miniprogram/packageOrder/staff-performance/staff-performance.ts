@@ -675,7 +675,11 @@ Page({
   // 只换汇总口径与明细的 type 过滤，二级分类选中态保留
   onMainTabChange(e: WechatMiniprogram.CustomEvent) {
     const index = e.detail.index as number;
-    const cached = this._summaryCache;
+    // 只在屏幕身份**已落地**时才消费缓存：`_summaryCache` 要等 setData 完成回调才换新，
+    // 而新响应的分类金额在 setData 那一刻就已经写进 data 了。中间这段窗口里拿旧缓存
+    // 本地重算，会把刚写进去的新金额覆盖掉，而回调只更新缓存、不会回头修正渲染错的面板。
+    // 拿不到缓存时退化成「等这次 loadData 返回」——最多慢一拍，不会显示错的数。
+    const cached = this._screen?.settled ? this._summaryCache : null;
     this.setData({
       activeMainTab: index,
       // 分类汇总恒全量、不随筛选变，切一级 Tab 只是换口径 —— 用缓存本地即时重算，
