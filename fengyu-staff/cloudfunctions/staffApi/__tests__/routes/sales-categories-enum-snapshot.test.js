@@ -140,7 +140,9 @@ describe('createSalesCategoryRates 费率骨架', () => {
   test('键集合 = 单源四分类，值全 0', () => {
     const rates = createSalesCategoryRates()
     expect(Object.keys(rates)).toEqual([...SALES_CATEGORIES])
-    expect(Object.values(rates)).toEqual([0, 0, 0, 0])
+    // 跟随单源而非硬编码 [0,0,0,0]：本用例守的是「每个键初始值为 0」，
+    // 枚举加值时它应自动适配，不该跟着变红——红的必须都是真需要人工同步的点
+    expect(Object.values(rates)).toEqual(SALES_CATEGORIES.map(() => 0))
   })
 
   test('每次调用返回全新可变对象 —— 调用方会原地写入，共享实例会跨请求串数据', () => {
