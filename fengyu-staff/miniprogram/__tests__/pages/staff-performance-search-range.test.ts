@@ -2140,3 +2140,47 @@ describe('绩效页 · 半截国际前缀两种存法结果一致（评审 round
     expect(page.data.displayItems).toHaveLength(1)
   })
 })
+
+describe('绩效页 · 在途去重覆盖所有档位（评审 round-34 codex P2）', () => {
+  test('连点两下「今日」不并发——否则后发失败会盖掉先发的成功', () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage([], 0)
+    vi.mocked(callStaffApi).mockImplementation(() => new Promise(() => {}))
+
+    page.onRangeTap({ currentTarget: { dataset: { type: 'today' } } })
+    expect(page.data.loading).toBe(true)
+    vi.mocked(callStaffApi).mockClear()
+
+    page.onRangeTap({ currentTarget: { dataset: { type: 'today' } } })
+    page.onRangeTap({ currentTarget: { dataset: { type: 'today' } } })
+    expect(callStaffApi).not.toHaveBeenCalled()
+  })
+
+  test('在途时切到**不同**区间照常抢占（别把真正换靶点的操作也吞了）', () => {
+    const page = createPage()
+    page.onLoad({ range: 'today' })
+    vi.mocked(callStaffApi).mockImplementation(() => new Promise(() => {}))
+    page.loadData(true)
+    expect(page.data.loading).toBe(true)
+
+    vi.mocked(callStaffApi).mockClear()
+    page.onRangeTap({ currentTarget: { dataset: { type: 'month' } } })
+
+    expect(callStaffApi).toHaveBeenCalledTimes(1)
+    expect(page.data.rangeType).toBe('month')
+  })
+
+  test('请求结束后再点同一档位，仍然是手动刷新入口', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'today' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+    expect(page.data.loading).toBe(false)
+
+    vi.mocked(callStaffApi).mockClear()
+    page.onRangeTap({ currentTarget: { dataset: { type: 'today' } } })
+
+    expect(callStaffApi).toHaveBeenCalledTimes(1)
+  })
+})

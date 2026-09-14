@@ -421,8 +421,20 @@ Page({
     // 数据：后者会把「本期成功查到 0 条」误判成「还没加载」，白白多跑一次全区间扫描。
     const sameRange = start === this.data.startDate && end === this.data.endDate;
     const switchingIntoCustom = this.data.rangeType !== 'custom';
-    if (fetch && type === 'custom' && sameRange
-        && (this.data.loading || (switchingIntoCustom && this._screen?.settled))) {
+
+    // 去重①：同一区间的请求**正在路上**，哪个档位都别再发一次。
+    // `_seq` 只丢弃响应，拦不住已经进了云函数的查询；更糟的是连点两下「今日」时，
+    // 先发那次成功会被判过期丢掉、后发那次一失败页面就显示「加载失败」——
+    // 明明有一次是成功的。区间不同（真的在切靶点）则照常抢占，不受这里影响。
+    if (fetch && sameRange && this.data.loading) {
+      this.setData({ rangeType: type, displayDate: display });
+      return;
+    }
+
+    // 去重②：从别的档位**切进** custom 且屏幕上已有同源数据 —— 区间是从上一档沿用来的，
+    // 数据本就对得上，展开 picker 换个标题即可。
+    // 注意不含「已经是 custom 了再点一次」：那是手动刷新，必须重拉。
+    if (fetch && type === 'custom' && sameRange && switchingIntoCustom && this._screen?.settled) {
       this.setData({ rangeType: type, displayDate: display });
       return;
     }
