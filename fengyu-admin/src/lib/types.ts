@@ -1,3 +1,9 @@
+import type { SalesCategory } from './sales-categories'
+
+// 销售归属分类单源在 `./sales-categories`（同时导出运行时有序数组）。
+// 此处 re-export 仅为保持既有 `from '@/lib/types'` 的 import 路径不变。
+export type { SalesCategory }
+
 // Organization
 export interface OrgNode {
   id: string
@@ -242,7 +248,6 @@ export type PaymentMethod = '微信' | '支付宝' | '线下' | '无'
 export type ServiceOrderStatus = '待服务' | '服务中' | '待客户确认' | '已完成' | '已取消'
 export type ServiceOrderType = '售前' | '售后'
 export type AppointmentStatus = '待确认' | '已确认' | '已完成' | '已取消' | '已关闭'
-export type SalesCategory = '自销自耗' | '他销自耗' | '他销他耗' | '生态合作'
 export type AllocationStatus = '待分配' | '已分配'
 export type ItemDirection = '购买' | '转出' | '转入' | '退出'
 export type CouponType = '现金券' | '品项券' | '折扣券'

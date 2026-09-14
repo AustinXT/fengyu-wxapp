@@ -23,9 +23,9 @@ import { actionErrorMessage } from "@/lib/action-error"
 import { createRate, updateRate, deleteRate, type MarketOption } from "@/actions/commission"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { SkillTag } from "@/lib/types"
+import { SALES_CATEGORIES } from "@/lib/sales-categories"
 
 const ORDER_TYPE_OPTIONS = ["销售单", "服务单"]
-const SALES_CATEGORY_OPTIONS = ["自销自耗", "他销自耗", "他销他耗", "生态合作"]
 
 interface RateFormData {
   orgId: string
@@ -268,7 +268,7 @@ const salesCategories = useMemo(
   )
   const allRoleTypes = useMemo(() => skillTags.map((t) => t.name), [skillTags])
   const allSalesCategories = useMemo(
-    () => [...new Set([...SALES_CATEGORY_OPTIONS, ...salesCategories])],
+    () => [...new Set([...SALES_CATEGORIES, ...salesCategories])],
     [salesCategories]
   )
 
@@ -392,7 +392,7 @@ const salesCategories = useMemo(
               onChange={(e) => setForm({ ...form, salesCategory: e.target.value })}
             >
               <option value="">请选择销售分类</option>
-              {SALES_CATEGORY_OPTIONS.map((t) => (
+              {SALES_CATEGORIES.map((t) => (
                 <option key={t} value={t}>{t}</option>
               ))}
             </Select>

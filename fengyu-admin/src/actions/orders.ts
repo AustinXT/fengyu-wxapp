@@ -19,7 +19,7 @@ import { prepaidCards, cardTransactions } from '@db/prepaid-card'
 import { eq, desc, asc, and, or, sql, ilike, gte, lt, gt, inArray, isNull } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
-import type { AuthSession, SaleOrder, SaleItem, DateBasis, OrderStatus, SaleOrderType } from '@/lib/types'
+import type { AuthSession, SaleOrder, SaleItem, DateBasis, OrderStatus, SaleOrderType, SalesCategory } from '@/lib/types'
 import { revalidatePath } from 'next/cache'
 import { scopeCondition, isInScope, requireAdmin, isDepositOrderApprover } from '@/lib/permissions'
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
@@ -4189,7 +4189,7 @@ export const createOrder = withPermission(
     saleAmount?: string
     /** 手动实付金额（可选，覆盖 saleAmount） */
     received?: string
-    salesCategory?: '自销自耗' | '他销自耗' | '他销他耗' | '生态合作' | null
+    salesCategory?: SalesCategory | null
     /**
      * 套餐子项标记（前端 BundlePicker 加购时置 true）：套餐价是独立机制，
      * 后端「会员价分流权威定价」对其豁免（维持现状，沿用前端套餐价）。
@@ -5202,7 +5202,7 @@ export const createConversionOrder = withPermission(
     /** 店长特价行手填应付金额（转换单同销售单，后端按 DB is_manager_special 采纳） */
     saleAmount?: string
     quantity: number
-    salesCategory?: '自销自耗' | '他销自耗' | '他销他耗' | '生态合作' | null
+    salesCategory?: SalesCategory | null
   }>
   /** 充值卡抵扣金额（仅正补差额 priceDiff > 0 时有效） */
   prepaidCardAmount?: number
