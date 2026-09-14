@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react"
 import { Card } from "@/components/ui/card"
+import { actionErrorMessage } from "@/lib/action-error"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { parseBoardParams } from "@/lib/data-center/params"
 import { getEfficiencyBoard } from "@/actions/data-center/efficiency"
@@ -42,7 +43,8 @@ export function EfficiencyBoard() {
         if (!cancelled) setData(res)
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : "加载失败")
+        // 生产构建会脱敏 throw 出来的 message（scope 解析失败等业务拦截理由都在 digest 里），issue #133
+        if (!cancelled) setError(actionErrorMessage(e, "加载失败"))
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
