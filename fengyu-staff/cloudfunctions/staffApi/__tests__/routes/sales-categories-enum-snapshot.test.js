@@ -49,6 +49,16 @@
  *     快照里的分类名（不影响生产行为）。
  *   - `fengyu-admin/dist/export-worker.mjs`：git 跟踪的**构建产物**，内含一份四元组且已过期。
  *     生产走 `docker/Dockerfile.admin` 重新 build，不影响线上；守护构建产物无意义，故不纳入。
+ *     （更干净的做法是 `git rm --cached` + gitignore，属仓库卫生，另开 issue 处理。）
+ *   - `scripts/` 与 `db/scripts/`：不在负向扫描根内。已逐文件核实当前无漏网副本 ——
+ *     `db/scripts/sync-workfine.js` 虽属生产同步链路，但只有 3 处**单值** `'自销自耗'`
+ *     写入默认值（即上面豁免的第二类，不随枚举加值而变）；唯一含四元组的
+ *     `db/scripts/seed-test-commission-matrix.sql` 是**测试种子**。这两类都不构成运行时副本，
+ *     故按目录整体豁免，而非逐个进白名单。⚠️ 若将来往 `db/scripts/` 放入真正的运行时分类逻辑，
+ *     应把该目录加进 PRODUCTION_ROOTS。
+ *   - **消费环的最后一跳**：`export-worker/registry.ts` 与数据中心页面若改为不再从
+ *     `DATA_CENTER_VIEW_CONFIG` 读列（例如硬编码表头），配置侧与本测试都会全绿而导出走旧列。
+ *     这一跳属 e2e 范畴，超出词法守护能力，登记备忘。
  *
  * ── collect 模式的两个前提（将来撞上了就该改测试，不是 bug）─────────────────
  *   a. 假定每个 pattern 在目标文件里**只有一处** 4 列块。若将来 efficiency.ts 新增环比 / 去年同期
@@ -147,8 +157,8 @@ const PRODUCTION_ROOTS = [
 /** 非生产代码：测试、依赖、构建产物、种子数据 */
 const NON_PRODUCTION = /(^|\/)(node_modules|__tests__|tests|dist|\.next|miniprogram_npm)(\/|$)|\.test\.[jt]sx?$|(^|\/)seed\.ts$/
 
-/** 小程序的 wxml/wxs 与配置 json 同样能承载静态选项，一并纳入 */
-const SOURCE_EXT = /\.(js|mjs|ts|tsx|wxml|wxs|json)$/
+/** 小程序的 wxml/wxs 与配置 json 同样能承载静态选项，一并纳入；`.cjs` 补齐 CommonJS 变体 */
+const SOURCE_EXT = /\.(js|cjs|mjs|ts|tsx|wxml|wxs|json)$/
 
 const collectSourceFiles = (dir, acc = []) => {
   if (!fs.existsSync(dir)) return acc
