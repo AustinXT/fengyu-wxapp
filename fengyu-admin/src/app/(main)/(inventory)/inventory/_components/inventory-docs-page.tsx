@@ -402,8 +402,12 @@ const DOC_ACTION_CONFIG: Readonly<
 
 const DOC_ACTION_REMARK_MAX = 300
 
-/** 零宽字符：肉眼看不见，`trim()` 也吃不掉。粘贴来的文本常带，不清掉就能绕过必填。 */
-const ZERO_WIDTH_RE = /[\u200B-\u200D\u2060\uFEFF\u180E]/g
+/**
+ * Unicode 格式字符（`Cf` 类）：零宽空格、LRM/RLM 方向标记、方向隔离符等。
+ * 肉眼看不见，`trim()` 也吃不掉。从聊天软件/表格/富文本复制过来的文本常带，
+ * 不清掉就能拿「看起来是空的」的输入绕过必填。
+ */
+const INVISIBLE_FORMAT_RE = /\p{Cf}/gu
 
 /** 状态型错误：说明单据已被别人改过，弹窗留着也没用，直接关掉 + 刷新列表给出路。 */
 const STALE_STATE_PREFIXES: readonly string[] = ['CONFLICT', 'INVALID_STATE', 'NOT_FOUND']
@@ -429,17 +433,26 @@ function DocActionDialog({
   const [remark, setRemark] = useState('')
   const [touched, setTouched] = useState(false)
   const [submitting, setSubmitting] = useState(false)
-  // 正常路径下弹窗是「开=挂载 / 关=卸载」，重置靠卸载即可；这个 effect 守的是
-  // showModal() 失败降级成 .show() 的退路——那时背景不 inert，能从 A 单直接点到 B 单。
+  // 关闭时**不卸载**，走 open=false 让原生 dialog.close() 正常执行 —— 焦点才会还给
+  // 触发它的那个按钮，也才不会踩「卸载期补 close()、排队的 close 事件在 StrictMode
+  // 重挂监听后才到达」那个坑。代价是关闭后还要拿着上一次的配置渲染（隐藏态），
+  // 故留一份快照。同文件的 CreateDocDialog 用的也是常驻挂载。
+  const [snapshot, setSnapshot] = useState(pending)
+  useEffect(() => {
+    if (pending) setSnapshot(pending)
+  }, [pending])
+  // 换单据/换动作、以及关闭，都把输入与在途态清干净
   const resetKey = pending ? `${pending.kind}:${pending.docId}` : ''
   useEffect(() => {
     setRemark('')
     setTouched(false)
+    setSubmitting(false)
   }, [resetKey])
 
-  if (!pending) return null
-  const config = DOC_ACTION_CONFIG[pending.kind]
-  const trimmed = remark.replace(ZERO_WIDTH_RE, '').trim()
+  const active = pending ?? snapshot
+  if (!active) return null
+  const config = DOC_ACTION_CONFIG[active.kind]
+  const trimmed = remark.replace(INVISIBLE_FORMAT_RE, '').trim()
   const missing = config.remarkRequired && !trimmed
 
   async function submit() {
@@ -467,12 +480,17 @@ function DocActionDialog({
   return (
     // 提交在途时禁止遮罩/ESC 关闭：Server Action 无法中止，「关掉了」≠「取消了」，
     // 而审批通过是实扣库存且不可撤销的。三条关闭路径必须同一口径。
-    <Dialog open onOpenChange={onOpenChange} dismissible={!submitting}>
+    <Dialog
+      open={pending !== null}
+      onOpenChange={onOpenChange}
+      dismissible={!submitting}
+      ariaLabel={config.title}
+    >
       {!submitting && <DialogClose onOpenChange={onOpenChange} />}
       <DialogHeader>
         <DialogTitle>{config.title}</DialogTitle>
         <DialogDescription>
-          单据号 {pending.docId}
+          单据号 {active.docId}
           {config.consequence && (
             <>
               <br />
@@ -488,6 +506,9 @@ function DocActionDialog({
         </label>
         <Textarea
           id={remarkId}
+          // 弹窗的核心操作就是填这里；不给 autoFocus 的话焦点停在右上角的 X 上，
+          // 键盘用户多一次 Tab，误触 Enter 还会直接关窗丢输入
+          autoFocus
           aria-required={config.remarkRequired}
           aria-invalid={touched && missing}
           aria-describedby={touched && missing ? errorId : undefined}
@@ -640,7 +661,14 @@ function CreateDocDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange} className="max-w-5xl">
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+      className="max-w-5xl"
+      dismissible={!submitting}
+      ariaLabel="新建库存单据"
+    >
+      {!submitting && <DialogClose onOpenChange={onOpenChange} />}
       <DialogHeader>
         <DialogTitle>新建库存单据</DialogTitle>
       </DialogHeader>

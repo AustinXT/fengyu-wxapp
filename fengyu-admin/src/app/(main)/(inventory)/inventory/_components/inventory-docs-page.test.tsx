@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -10,8 +10,11 @@ import type {
   InventorySkuRow,
 } from '@/lib/inventory/types'
 
+// refresh 必须是共享引用：原先每次调用 useRouter 都新建一个 vi.fn()，测试拿不到它，
+// 于是「关弹窗 + **刷新列表**」这条修复只有前半截被守住（同目录 inventory-skus-page.test.tsx 已是此写法）。
+const { mockRefresh } = vi.hoisted(() => ({ mockRefresh: vi.fn() }))
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
+  useRouter: () => ({ push: vi.fn(), refresh: mockRefresh }),
   usePathname: () => '/inventory/docs',
   useSearchParams: () => new URLSearchParams('status=待审批&page=2'),
 }))
@@ -50,6 +53,8 @@ import { INVENTORY_GENERIC_DOC_TYPES } from '@/lib/inventory/types'
 beforeEach(() => {
   vi.resetAllMocks()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+  mockRefresh.mockClear()
 })
 
 const row: InventoryDocRow = {
@@ -597,12 +602,16 @@ describe('审批 / 驳回 / 收货的备注弹窗（#134）', () => {
   const NATIVE_DIALOG_RE =
     /(?:^|[^.\w$])(?:(?:window|globalThis|self|top|parent)\s*\??\s*\.\s*)?(?:alert|prompt|confirm)\s*\(|\[\s*['"](?:alert|prompt|confirm)['"]\s*\]\s*\(/
 
-  it('源码里不再出现任何原生弹窗调用', () => {
-    const src = readFileSync(
-      resolve(import.meta.dirname, './inventory-docs-page.tsx'),
-      'utf8',
-    )
-    expect(src).not.toMatch(NATIVE_DIALOG_RE)
+  it('整个库存域组件目录都不再出现原生弹窗调用', () => {
+    // 只守单个文件的话，同目录的 inventory-operations-page.tsx / inventory-skus-page.tsx
+    // 新写一个 window.confirm 照样过 —— 而域外残留的 7 处恰好证明这种写法是会自然长出来的。
+    const dir = import.meta.dirname
+    const files = readdirSync(dir).filter((f) => f.endsWith('.tsx') && !f.endsWith('.test.tsx'))
+    expect(files.length).toBeGreaterThan(3)
+    for (const file of files) {
+      const src = readFileSync(resolve(dir, file), 'utf8')
+      expect(src, `${file} 里出现了原生弹窗调用`).not.toMatch(NATIVE_DIALOG_RE)
+    }
   })
 
   it('守护正则本身盖得住带接收者的写法（元测试）', () => {
@@ -672,6 +681,7 @@ describe('审批 / 驳回 / 收货的备注弹窗（#134）', () => {
       expect(rejectInventoryCoreDoc).toHaveBeenCalledWith(row.id, '数量与实物不符'),
     )
     expect(toast.success).toHaveBeenCalledWith('单据已驳回')
+    await waitFor(() => expect(mockRefresh).toHaveBeenCalled())
   })
 
   it('审批备注选填：留空也能提交', async () => {
@@ -762,6 +772,8 @@ describe('弹窗在异常与并发下的出路（#134 评审补）', () => {
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('只有待审批单据可以审批'))
     // 留着弹窗只会让人反复点同一个必失败的按钮 —— 列表也还是旧状态，按钮照样在
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    // 「刷新」是这条修复的另一半：不刷的话回到列表看到的还是「待审批」
+    await waitFor(() => expect(mockRefresh).toHaveBeenCalled())
   })
 
   it('非状态型错误（网络抖动）→ 弹窗留着让人重试', async () => {
@@ -772,6 +784,28 @@ describe('弹窗在异常与并发下的出路（#134 评审补）', () => {
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('审批失败'))
     expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(mockRefresh).not.toHaveBeenCalled()
+  })
+
+  /**
+   * happy-dom 的 `getBoundingClientRect()` 恒为全 0，而组件在判「点击落点是否在框外」之前
+   * 就会因 `rect.width === 0` 提前 return —— 不打桩的话，把 `if (!dismissible) return`
+   * 整行删掉测试照样绿。这里给它一个真实矩形，并从框外坐标点下去。
+   */
+  function clickBackdrop(dialog: HTMLElement) {
+    vi.spyOn(dialog, 'getBoundingClientRect').mockReturnValue({
+      x: 100, y: 100, width: 400, height: 300,
+      top: 100, left: 100, right: 500, bottom: 400,
+      toJSON: () => ({}),
+    } as DOMRect)
+    fireEvent.click(dialog, { clientX: 10, clientY: 10 })
+  }
+
+  it('空闲时点遮罩能关（对照组：证明上面那条确实走到了 dismissible 分支）', () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '通过' }))
+    clickBackdrop(screen.getByRole('dialog'))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
   it('提交在途时遮罩与 ESC 都关不掉（「关掉了」≠「取消了」）', async () => {
@@ -783,14 +817,20 @@ describe('弹窗在异常与并发下的出路（#134 评审补）', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: '处理中…' })).toBeDisabled())
 
     const dialog = screen.getByRole('dialog')
-    fireEvent.click(dialog) // 点遮罩
+    clickBackdrop(dialog)
     expect(screen.getByRole('dialog')).toBeInTheDocument()
-    // ESC 走原生 cancel；不可关闭时应被 preventDefault
-    const cancelEvent = new Event('cancel', { cancelable: true })
-    dialog.dispatchEvent(cancelEvent)
+    // ESC 走 cancel；不可关闭时应被 preventDefault
+    const cancelEvent = new Event('cancel', { cancelable: true, bubbles: true })
+    fireEvent(dialog, cancelEvent)
     expect(cancelEvent.defaultPrevented).toBe(true)
 
     await act(async () => { gate.resolve(); await gate.promise })
+  })
+
+  it('弹窗有可及名称，读屏不会只念一句「对话框」', () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    expect(screen.getByRole('dialog', { name: '驳回单据' })).toBeInTheDocument()
   })
 
   it('零宽字符不算数：只粘一个零宽空格照样判空', async () => {
