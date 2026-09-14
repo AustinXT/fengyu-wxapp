@@ -530,7 +530,7 @@ describe('inventory business action input guards', () => {
     expect(query).toContain('employee.store_id IS NULL')
     expect(query).toContain("type IN ('市场', '门店')")
       // #130：递归项里 JOIN 不起别名，起了别名就必须全程用别名；混用会让 PG 报
-    // invalid reference to FROM-clause entry。注意这仍是**字符串比对**，SQL 没有真的送进 PG ——
+    // invalid reference to FROM-clause entry。注意这仍是字符串比对，SQL 没有真的送进 PG ——
     // 真库回归由 tests/e2e-inventory-ui/inv-07 提供（见 PR 说明）
     expect(query).toContain('JOIN descendants ON child.parent_id = descendants.id')
     expect(query).toContain('JOIN ancestors ON ancestors.parent_id = node.id')
@@ -1234,7 +1234,7 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
   const SQL_KEYWORDS = new Set([
     'ON', 'AS', 'WHERE', 'GROUP', 'ORDER', 'LIMIT', 'UNION', 'JOIN', 'LEFT', 'RIGHT', 'INNER',
     'OUTER', 'CROSS', 'FULL', 'USING', 'HAVING', 'WINDOW', 'OFFSET', 'FETCH', 'RETURNING',
-    'LATERAL', 'NATURAL', 'TABLESAMPLE', 'WITH', 'SELECT', 'FROM', 'AND', 'OR', 'SET',
+    'LATERAL', 'NATURAL', 'TABLESAMPLE', 'WITH', 'SELECT', 'FROM', 'AND', 'OR', 'SET', 'FOR',
   ])
   // JOIN/FROM 后给 CTE 起别名；`x alias`、`x AS alias`、`FROM a, x alias` 都算
   const aliasRe = (name: string) =>
@@ -1310,7 +1310,6 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
   it('全仓（admin + 三个云函数端 + 迁移）无一处混用 CTE 的别名与原名', () => {
     const offenders: string[] = []
     const blind: string[] = []
-    const perRoot = new Map<string, number>()
     for (const root of SCAN_ROOTS) {
       expect(existsSync(root.dir), `扫描根不存在，守护已静默缩水：${root.dir}`).toBe(true)
       let n = 0
@@ -1323,7 +1322,6 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
         if (missed > 0) blind.push(`${short}: ${missed} 个 WITH 头没被识别`)
         for (const hit of violations(raw)) offenders.push(`${short}: ${hit}`)
       }
-      perRoot.set(root.label, n)
       // 「本来就该有 CTE」的根扫到 0 个 = 路径/扩展名写错，必须红，不能伪装成「干净」
       if (root.expectCte) {
         expect(n, `${root.label} 一个含 WITH 的文件都没扫到，守护形同虚设`).toBeGreaterThan(0)
