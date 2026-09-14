@@ -162,8 +162,9 @@ export default function InventoryDocsPage({
    * 「已经有弹窗开着」不能用 `disabled` 来拦 —— 点「驳回」的那一刻按钮就会变 disabled，
    * 而 `showModal()` 在随后的 layout effect 里才记录「打开前的焦点」，记到的已经不是一个
    * 可聚焦元素了，关闭后焦点就回不到触发按钮上（键盘/读屏用户直接丢上下文）。
-   * 所以这一层改成**点击闸**：按钮保持可聚焦，点了不响应。
-   * 提交在途仍然用 `disabled`（那时 showModal 早已记录完焦点，且需要视觉反馈）。
+   * 所以**开窗入口**（通过 / 驳回 / 收货 / 新建）一律走点击闸：按钮保持可聚焦、点了不响应。
+   * 用 `disabled` 的只有两类：不开窗的「详情」（它是链接，必须整个换成禁用按钮才拦得住导航）、
+   * 以及弹窗内部的按钮（那时 showModal 早已记录完焦点，且需要视觉反馈）。
    */
   const anyDialogOpen = pendingAction !== null || open
   const openAction = (next: { kind: DocActionKind; docId: string }) => {
@@ -533,7 +534,7 @@ function DocActionDialog({
   const remarkRef = useRef<HTMLTextAreaElement>(null)
   // 每个提交自己持有一张「凭证」，只有凭证还是自己的那次才有资格解锁 ——
   // 防的是「A 在途 → 换到 B → B 提交 → A 先回来，A 的 finally 把 B 的锁解了」。
-  // 第一道闸在父组件（在途时行操作按钮全 disabled，见 actionBusy），这里是第二道：
+  // 第一道闸在父组件（弹窗开着 / 在途时，开窗入口走点击闸拦住，见 anyDialogOpen），这里是第二道：
   // 万一将来有人拆了那道闸，至少锁的归属还是对的。
   const submitTokenRef = useRef(0)
   const [remark, setRemark] = useState('')
@@ -541,7 +542,9 @@ function DocActionDialog({
   const [submitting, setSubmitting] = useState(false)
   // 关闭时**不卸载**，走 open=false 让原生 dialog.close() 正常执行 —— 焦点才会还给
   // 触发它的那个按钮（前提是那个按钮在 showModal() 时仍可聚焦，所以开窗入口用点击闸
-  // 而不是 disabled，见 anyDialogOpen 的注释），也才不会踩「卸载期补 close()、排队的
+  // 而不是 disabled，见 anyDialogOpen 的注释）
+  //（历史：曾在 dialog.tsx 的卸载 cleanup 里补一次 close() 来救焦点，后因 StrictMode 下
+  //  排队的 close 事件会在监听重挂后到达、反向关掉刚开的弹窗而撤销，改成现在这套。），也才不会踩「卸载期补 close()、排队的
   // close 事件在 StrictMode 重挂监听后才到达」那个坑。代价是关闭后还要拿着上一次的配置
   // 渲染（隐藏态），故留一份快照。同文件的 CreateDocDialog 用的也是常驻挂载。
   const [snapshot, setSnapshot] = useState(pending)
@@ -570,8 +573,8 @@ function DocActionDialog({
   useEffect(() => {
     onBusyChange(submitting)
   }, [submitting, onBusyChange])
-  // 卸载时把在途态归还给父组件：条件渲染（如权限翻转）把组件摘掉时，
-  // 父组件的 busy 不能永远挂着
+  // 卸载时把在途态归还给父组件。DocActionDialog 在父组件里是无条件渲染的，这条只在整页
+  // 卸载时触发，属纯防御；真正会被条件渲染摘掉的是下面的 CreateDocDialog。
   useEffect(() => () => onBusyChange(false), [onBusyChange])
 
   const active = pending ?? snapshot

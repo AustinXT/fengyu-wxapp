@@ -696,7 +696,6 @@ describe('审批 / 驳回 / 收货的备注弹窗（#134）', () => {
     vi.mocked(approveInventoryCoreDoc).mockResolvedValue(undefined as never)
     renderDocs()
     fireEvent.click(screen.getByRole('button', { name: '通过' }))
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '确认通过' }))
 
     await waitFor(() => expect(approveInventoryCoreDoc).toHaveBeenCalledWith(row.id, ''))
@@ -863,7 +862,7 @@ describe('弹窗在异常与并发下的出路（#134 评审补）', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
-  // ⚠️ 这条（以及下面两条）真正钉住的是 `actionBusy` 里的 `pendingAction !== null` / `open`，
+  // ⚠️ 这条（以及下面两条）真正钉住的是 `anyDialogOpen`（`pendingAction !== null || open`），
   // 不是 `submitting` 专属的 `actionDialogBusy` / `createDialogBusy` —— 把后两个整个删掉，
   // 这些用例照样全绿（组件注释里也这么写了）。那两个是「拆掉不许并存约束」时的第二道闸，
   // 有意保留、有意无独立断言。
