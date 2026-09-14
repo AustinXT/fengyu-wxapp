@@ -44,12 +44,12 @@
     </view>
   </view>
 
-  <text class="conv-title">折抵卡选择</text>
+  <text class="conv-title">折抵项选择</text>
 
   <!-- 加载中 -->
   <view wx:if="{{loading}}" class="conv-loading">
     <van-loading size="36rpx" />
-    <text class="conv-loading-text">加载顾客折抵卡</text>
+    <text class="conv-loading-text">加载顾客折抵项</text>
   </view>
 
   <!-- 错误 -->
@@ -59,7 +59,7 @@
 
   <!-- 空态 -->
   <view wx:elif="{{allCardCount === 0}}" class="conv-empty">
-    <van-empty description="该顾客暂无可折抵卡" />
+    <van-empty description="该顾客暂无可折抵项" />
   </view>
 
   <!-- 卡列表 -->
@@ -73,11 +73,11 @@
           <view class="conv-card-filter-picker">{{cardCategoryLabel}}</view>
         </picker>
       </view>
-      <van-search value="{{cardNameQuery}}" placeholder="搜索疗程卡名称" bind:change="onCardNameChange" />
+      <van-search value="{{cardNameQuery}}" placeholder="搜索折抵项名称" bind:change="onCardNameChange" />
     </view>
 
     <view wx:if="{{cards.length === 0}}" class="conv-empty">
-      <van-empty description="未找到匹配的疗程卡" />
+      <van-empty description="未找到匹配的折抵项" />
     </view>
 
     <view wx:else class="conv-card-list">
@@ -99,8 +99,9 @@
           <text class="conv-card-name">{{item.productName}}</text>
           <view class="conv-card-meta">
             <text wx:if="{{item.productType === '疗程卡'}}" class="conv-card-remain">剩余 {{item.remainingSessions}} {{item.unit || '次'}}</text>
-            <text wx:else class="conv-card-remain">剩余 {{item.remainingQuantity}} 个</text>
-            <text class="conv-card-remain">· 共 {{item.cardCount || 1}} 张</text>
+            <text wx:else class="conv-card-remain">未提货 {{item.remainingQuantity}} {{item.unit || '盒'}}</text>
+            <text wx:if="{{item.productType === '疗程卡'}}" class="conv-card-remain">· 共 {{item.cardCount || 1}} 张</text>
+            <text wx:elif="{{item.sourceItems.length > 1}}" class="conv-card-remain">· 可拆 {{item.sourceItems.length}} 行</text>
             <text class="conv-card-unit">· 单{{item.unit || '次'}}价 ¥{{item.unitRealPrice}}</text>
           </view>
         </view>
@@ -120,7 +121,7 @@
               bind:change="onCardQuantityChange"
               data-id="{{item.saleItemId}}"
             />
-            <text class="conv-card-quantity-label">张</text>
+            <text class="conv-card-quantity-label">{{item.productType === '疗程卡' ? '张' : '行'}}</text>
           </block>
           <text wx:else class="conv-card-quantity-label">整行转换</text>
         </view>

@@ -2083,11 +2083,12 @@ describe('家居产品部分支付权益跨端守护', () => {
     if (isAdmin) {
       expect(src).toContain("if (unpaidAmount != null && unpaidAmount > 0) return '待付清'")
       expect(src).toContain("if (remainingQuantity > 0) return '待提货'")
-      expect(src).toContain("return refundedQuantity > 0 ? '已完成' : '已提货'")
+      // #125：已转换与已退款同判「已完成」，二者同源于 picked_up_quantity
+      expect(src).toContain("return (refundedQuantity > 0 || convertedQuantity > 0) ? '已完成' : '已提货'")
     } else {
       expect(src).toContain("else if (unpaidAmount > 0) status = '待付清'")
       expect(src).toContain("else if (remainingQuantity > 0) status = '待提货'")
-      expect(src).toContain("else status = refundedQuantity > 0 ? '已完成' : '已提货'")
+      expect(src).toContain("else status = (refundedQuantity > 0 || convertedQuantity > 0) ? '已完成' : '已提货'")
     }
     // 分支顺序：待付清 → 待提货 → 已完成/已提货 兜底。顺序错了语义就反了。
     const idxUnpaid = src.indexOf('待付清')
@@ -2196,6 +2197,135 @@ describe('转换单在线回款意图事务守护', () => {
     expect(repaymentBody).toContain("String(locked.lakala_out_order_no || '').trim()")
     expect(repaymentBody).toContain('lakala_out_order_no IS NULL')
     expect(repaymentBody).not.toContain('lakala_out_order_no = CASE')
+  })
+})
+
+// ============================================================
+// #125 家居产品转换折抵 — 双端语义同义 + 展示层三端拆分
+// ============================================================
+describe('#125 家居转换折抵跨端守护', () => {
+  const staffOrderSrc = readFile(FILES.staffOrderJs)
+  const adminOrdersSrc = readFile(FILES.adminOrdersTs)
+  // 四份副本：#121 给 staff 管理层新增了第四份家居查询，改一处必须四处同步
+  const HOME_ASSET_FILES = [
+    ['staff 顾客档案', FILES.staffCustomerJs],
+    ['staff 管理层顾客档案', FILES.staffMgmtCustomerJs],
+    ['client 我的家居产品', FILES.clientOrderJs],
+    ['admin 顾客详情', FILES.adminCustomersTs],
+  ]
+
+  // 扣减侧：必须落 picked_up_quantity 且带「加完不得超过 quantity」守卫。
+  // 用 LEAST 静默封顶会让并发双开的第二笔转换单悄悄少转，不报错 → 必须是守卫式加法。
+  describe('转出数量并入 picked_up_quantity 且不可超转', () => {
+    test('staff createConversion 守卫式加法', () => {
+      expect(staffOrderSrc).toMatch(
+        /SET picked_up_quantity = COALESCE\(picked_up_quantity, 0\) \+ \$4[\s\S]*?\(COALESCE\(picked_up_quantity, 0\) \+ \$4\) <= quantity/,
+      )
+    })
+    test('admin createConversionOrder 守卫式加法', () => {
+      expect(adminOrdersSrc).toMatch(
+        /pickedUpQuantity: sql`COALESCE\(\$\{saleItems\.pickedUpQuantity\}, 0\) \+ \$\{out\.quantity\}`/,
+      )
+      expect(adminOrdersSrc).toMatch(
+        /sql`\(COALESCE\(\$\{saleItems\.pickedUpQuantity\}, 0\) \+ \$\{out\.quantity\}\) <= \$\{saleItems\.quantity\}`/,
+      )
+    })
+  })
+
+  // 回滚侧：转换单被关闭/删除时家居数量必须等量退回，否则货既提不出也退不掉。
+  describe('撤销转换单时家居数量等量退回', () => {
+    const ROLLBACK_FILES = [
+      ['staff', FILES.staffOrderJs],
+      ['admin', FILES.adminOrdersTs],
+    ]
+    test.each(ROLLBACK_FILES)('%s rollbackPendingConversionOnClose 含家居回滚段', (_name, file) => {
+      const src = normalizeSql(readFile(file))
+      expect(src).toContain('SUM(quantity)::integer AS restore_quantity')
+      expect(src).toContain("item_direction = '转出' AND product_type = '家居产品'")
+      expect(src).toContain('SET picked_up_quantity = GREATEST(0, COALESCE(src.picked_up_quantity, 0) - locked_source.restore_quantity)')
+      // 疗程卡回滚段不得被顺手删掉
+      expect(src).toContain('restore_sessions')
+    })
+    test('admin deleteOrder 在事务内锁单读新鲜状态后才回滚（防 close‖delete 交错双回滚）', () => {
+      // 事务外读到的 order.status 可能已被并发的 closeOrder 改掉，用陈旧值会把家居数量多退一遍
+      expect(adminOrdersSrc).toMatch(
+        /SELECT status FROM sale_orders WHERE sale_order_id = \$\{saleOrderId\} FOR UPDATE/,
+      )
+      expect(adminOrdersSrc).toMatch(
+        /order\.saleOrderType === '转换单'[\s\S]{0,400}freshStatus === '待支付'[\s\S]{0,60}freshStatus === '支付失败'/,
+      )
+    })
+
+    test.each(ROLLBACK_FILES)('%s 回滚 locked_source 仍按 sale_item_id 定序（全局锁定段之外的纵深保证）', (_name, file) => {
+      const src = normalizeSql(readFile(file))
+      // 全局锁定段 + 两段 locked_source，共 3 处定序加锁
+      // 全局锁定段 + 两段 locked_source；用 >= 避免后续新增定序锁点时误报
+      const ordered = src.match(/ORDER BY src\.sale_item_id FOR UPDATE OF src/g) || []
+      expect(ordered.length).toBeGreaterThanOrEqual(3)
+    })
+  })
+
+  // 折抵候选的订单状态闸门：甲方 2026-09-14 拍板放开「部分支付」，两端必须同步，
+  // 否则 admin 能选中的行在 staff 提交时会被拒（或反之）。
+  describe('折抵候选订单状态闸门两端一致', () => {
+    test('staff customerHeldCards + createConversion 均含「部分支付」', () => {
+      const src = normalizeSql(readFile(FILES.staffOrderJs))
+      expect(src).toContain("so.status IN ('已支付', '部分支付', '已完成')")
+      expect(src).toContain("row.order_status !== '已支付' && row.order_status !== '部分支付' && row.order_status !== '已完成'")
+    })
+    test('admin getCustomerHeldCards 复用 CARD_ENTITLEMENT_ORDER_STATUSES，createConversionOrder 同步放开', () => {
+      const cardsSrc = readFile(path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/cards.ts'))
+      // 与卡包列表共用同一组状态常量，避免两处硬编码漂移
+      expect(cardsSrc).toContain("const CARD_ENTITLEMENT_ORDER_STATUSES = ['已支付', '部分支付', '已完成']")
+      expect(cardsSrc).toMatch(/inArray\(saleOrders\.status, \[\.\.\.CARD_ENTITLEMENT_ORDER_STATUSES\]\)[\s\S]{0,600}疗程卡/)
+      const ordersSrc = readFile(FILES.adminOrdersTs)
+      expect(ordersSrc).toContain("row.order_status !== '已支付' && row.order_status !== '部分支付' && row.order_status !== '已完成'")
+    })
+  })
+
+  // 退款审批侧：createRefund 无锁定额 + cascade 的 LEAST 静默封顶 = 同一批货可能既折抵又退现金。
+  // 资金流出前必须在锁内复核家居可退数量。
+  describe('退款审批锁内复校家居可退数量', () => {
+    const APPROVE_FILES = [
+      ['staff approveRefund', FILES.staffOrderJs],
+      ['admin approveRefund', path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/refunds.ts')],
+    ]
+    test.each(APPROVE_FILES)('%s 在 cascadeRefund 前锁行复核', (_name, file) => {
+      const src = normalizeSql(readFile(file))
+      expect(src).toContain('homeRefundQty')
+      // 锁集必须覆盖本单全部购买行（不能只锁家居子集），否则与混选转换事务反向加锁；
+      // 且必须按 sale_item_id 升序，与 createConversion(Order) 的锁序一致
+      expect(src).toContain("AND item_direction = '购买' ORDER BY sale_item_id FOR UPDATE")
+      expect(src).not.toContain("AND product_type = '家居产品' ORDER BY sale_item_id FOR UPDATE")
+      expect(src).toMatch(/homeRefundQty[\s\S]{0,2500}cascadeRefund/)
+      // 加锁必须无条件：老退款单（无 note.items 且 ref_sale_item_id 空）会让 homeRefundQty 为空，
+      // 用 `if (homeRefundQty.size > 0)` 包裹加锁就退回「不锁不校验」的旧缺口
+      expect(src).not.toContain('homeRefundQty.size > 0')
+    })
+  })
+
+  // 回滚加锁必须是「一次性全局定序」而非分类型两段，否则混选转换单会与开单事务反向加锁
+  test.each([
+    ['staff', FILES.staffOrderJs],
+    ['admin', FILES.adminOrdersTs],
+  ])('%s 回滚前先按全局 sale_item_id 顺序锁住全部源行', (_name, file) => {
+    const src = normalizeSql(readFile(file))
+    expect(src).toContain('SELECT DISTINCT ref_sale_item_id')
+    expect(src).toMatch(/refs ON refs\.ref_sale_item_id = src\.sale_item_id ORDER BY src\.sale_item_id FOR UPDATE OF src/)
+  })
+
+  // 展示侧：picked_up_quantity 同时承载「已提货 / 已退款 / 已转换」，
+  // 三端必须把已转换拆出来，否则转出会被读成退款。
+  test.each(HOME_ASSET_FILES)('%s 把已转换从已退款里拆出来', (_name, file) => {
+    const src = normalizeSql(readFile(file))
+    expect(src).toContain('conversion_totals')
+    // 只排除 '已关闭'：唯一会触发 rollbackPendingConversionOnClose 的状态。
+    // 用 NOT IN 多值排除会把「扣减仍生效」的状态（如 '支付失败'）误记成已退款。
+    expect(src).toContain("conv_order.status <> '已关闭'")
+    expect(src).not.toContain("conv_order.status NOT IN")
+    expect(src).toContain('settled_quantity - picked_quantity - converted_quantity')
+    // 整行折抵（从未物理提货）后 picked=0、pending=0，不放行 converted 就会整行消失
+    expect(src).toContain('WHERE picked_quantity > 0 OR remaining_quantity > 0 OR converted_quantity > 0')
   })
 })
 

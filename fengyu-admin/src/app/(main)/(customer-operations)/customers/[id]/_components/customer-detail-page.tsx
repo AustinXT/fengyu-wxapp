@@ -488,6 +488,9 @@ export default function CustomerDetailPage({
     { key: "pickedQuantity", header: "已提", cell: (row) => <span>{row.pickedQuantity} {row.unit}</span> },
     { key: "paidQuantity", header: "已付", cell: (row) => <span>{row.paidQuantity} {row.unit}</span> },
     { key: "purchasedQuantity", header: "购买", cell: (row) => <span>{row.purchasedQuantity} {row.unit}</span> },
+    // #125：转换折抵与退款同源于 picked_up_quantity，这里分两列，避免把"已转换"读成"已退款"
+    { key: "convertedQuantity", header: "已转换", cell: (row) => row.convertedQuantity > 0 ? <span>{row.convertedQuantity} {row.unit}</span> : <span className="text-[#999999]">—</span> },
+    { key: "refundedQuantity", header: "已退款", cell: (row) => row.refundedQuantity > 0 ? <span>{row.refundedQuantity} {row.unit}</span> : <span className="text-[#999999]">—</span> },
     {
       key: "unpaidAmount",
       header: "待付清",

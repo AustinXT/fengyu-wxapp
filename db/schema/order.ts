@@ -319,7 +319,11 @@ export const saleItems = pgTable(
      */
     pendingReceived: numeric("pending_received", { precision: 10, scale: 2 }).notNull().default("0"),
     expireDate: date("expire_date"),
-    /** 已提货数量（家居产品用，原子累加，可提 = quantity - picked_up_quantity） */
+    /**
+     * 已**结算**数量（家居产品用，原子累加）= 已提货 + 已退款(2026-06-08) + 已转换折抵(2026-09-14 #125)。
+     * 可提 = quantity - picked_up_quantity；**物理提货量的权威来源是 pickup_records**，
+     * 不要把本列当作「已提货」解读。
+     */
     pickedUpQuantity: integer("picked_up_quantity").default(0),
     remark: text("remark"),
     salesCategory: salesCategoryEnum("sales_category"),
