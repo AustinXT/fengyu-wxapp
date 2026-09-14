@@ -12,6 +12,12 @@ on:
       - '.claude/skills/remote-deploy/**'
       - 'docker/docker-compose*.yml'
       - '.github/workflows/lint.yml'
+      # 依赖清单也要触发：action-error 的漂移守护盯的正是 Next 的 digest 形态，
+      # 而「只升 Next」的 PR 恰恰只动这几个文件 —— 不加进来的话，最该跑守护的那次跑不到。
+      - 'fengyu-admin/package.json'
+      - 'fengyu-admin/package-lock.json'
+      - 'fengyu-admin/bun.lock'
+      - 'fengyu-admin/bun.lockb'
 
 jobs:
   cas-guards:

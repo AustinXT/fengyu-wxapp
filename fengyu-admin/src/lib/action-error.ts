@@ -157,10 +157,23 @@ const CJK_RE = /[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF66-\uFF
  * → actions/lakala-onboarding.ts:1130），中文包装 + 接口地址 + HTTP 状态一起端给用户；
  * 备份失败的 `open EACCES /srv/backups/db.dump` 同理。
  */
+/**
+ * ⚠️ 这组规则**只作用在剥完业务前缀之后的正文**上：一级前缀本身
+ * （`INVALID_STATE` 等）与二级子标签就是 SCREAMING_SNAKE 形态，
+ * 在整串上跑会把每一条业务错误都杀掉。
+ */
 const TECH_ARTIFACT_RES: readonly RegExp[] = [
   /\bhttps?:\/\/\S/i, // 接口地址
-  /(?:^|[\s（(:：])\/(?:[A-Za-z0-9_.@-]+\/)+[A-Za-z0-9_.@-]+/, // 绝对文件路径
-  /\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{2,5})?\b/, // 内网 IP（可带端口）
+  /(?:^|[\s（(:：])\/(?:[A-Za-z0-9_.@-]+\/)+[A-Za-z0-9_.@-]+/, // Unix 绝对路径
+  /(?:^|[\s（(:：])[A-Za-z]:\\[^\s]/, // Windows 绝对路径
+  /\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{2,5})?\b/, // IPv4（可带端口）
+  /\[[0-9a-fA-F:]{2,}\]:\d{2,5}/, // IPv6:端口
+  // 主机名:端口 —— 要求主机名里至少有一个点，避开「配比 2:10」「FY001:22」这类无点写法
+  /\b[A-Za-z0-9][\w-]*(?:\.[A-Za-z0-9][\w-]*)+:\d{2,5}\b/,
+  // 环境变量名 / 内部常量这类 SCREAMING_SNAKE token（必须含下划线，
+  // 免得误杀 SKU、OEM 这类单词型业务缩写）。真实来源：
+  // `actions/lakala-onboarding.ts:1492` 的「缺少电子合同回调地址：LAKALA_ECONTRACT_CALLBACK_URL」
+  /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/,
 ]
 
 /**
@@ -227,7 +240,6 @@ function isOpaque(value: string): boolean {
   if (OPAQUE_TOKEN_RE.test(value)) return true
   if (isProseless(value)) return true
   if (NODE_ERRNO_RE.test(value)) return true
-  if (TECH_ARTIFACT_RES.some((re) => re.test(value))) return true
   if (JS_ERROR_NAME_RE.test(value)) return true
   const lower = value.toLowerCase()
   if (UNREADABLE_FRAGMENTS.some((f) => lower.includes(f))) return true
@@ -258,9 +270,10 @@ function readableMessage(raw: unknown): string | null {
     return Object.hasOwn(OPAQUE_TOKEN_MESSAGES, value) ? OPAQUE_TOKEN_MESSAGES[value] : null
   }
   if (isOpaque(value)) return null
-  // 剥完再判一次：剥出来的残串可能又是编号 / 裸 token
+  // 剥完再判一次：剥出来的残串可能又是编号 / 裸 token，也可能是「中文包着的技术痕迹」
   const text = stripBusinessPrefix(value).trim()
   if (!text || isOpaque(text)) return null
+  if (TECH_ARTIFACT_RES.some((re) => re.test(text))) return null
   return text
 }
 
@@ -268,16 +281,19 @@ export function actionErrorMessage(err: unknown, fallback: string): string {
   const safeFallback = typeof fallback === 'string' && fallback.trim() ? fallback : '操作失败'
   // 整体兜一层：本函数是全站 200+ 处 catch 的文案出口，自身一旦抛异常就会把原始错误
   // 顶掉、连 toast 都出不来。`err` 可能是 Proxy / throwing getter，读 digest 就可能抛。
+  // 内建异常（TypeError / RangeError / DOMException…）的 message 是纯技术细节，
+  // 而且**不带错误名**（`new TypeError('x').message === 'x'`），只能按 name 判。
+  let fromDigest: string | null = null
   try {
-    // 内建异常（TypeError / RangeError / DOMException…）的 message 是纯技术细节，
-    // 而且**不带错误名**（`new TypeError('x').message === 'x'`），只能按 name 判。
+    // digest 可能是 Proxy / throwing getter；单独兜一层，别把 message 通道一起拖下水
+    fromDigest = readableMessage((err as { digest?: unknown } | null | undefined)?.digest)
+  } catch {
+    fromDigest = null
+  }
+  try {
     const fromMessage =
       err instanceof Error && !NATIVE_ERROR_NAMES.has(err.name) ? err.message : null
-    return (
-      readableMessage((err as { digest?: unknown } | null | undefined)?.digest) ??
-      readableMessage(fromMessage) ??
-      safeFallback
-    )
+    return fromDigest ?? readableMessage(fromMessage) ?? safeFallback
   } catch {
     return safeFallback
   }

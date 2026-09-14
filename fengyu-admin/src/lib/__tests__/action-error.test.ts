@@ -15,7 +15,7 @@ const { mockGetSession } = vi.hoisted(() => ({ mockGetSession: vi.fn() }))
 vi.mock('@/lib/auth', () => ({ getSession: mockGetSession }))
 
 import { actionErrorMessage } from '../action-error'
-import { ApiError, ERROR_PREFIXES } from '../api-error'
+import { ApiError, CODE_MAP, ERROR_PREFIXES } from '../api-error'
 import { withPermission } from '../with-permission'
 
 const FALLBACK = '加载市场员工失败'
@@ -25,6 +25,32 @@ const NEXT_SANITIZED_MESSAGE =
   'An error occurred in the Server Components render. The specific message is omitted in ' +
   'production builds to avoid leaking sensitive details. A digest property is included on this ' +
   'error instance which may provide additional details about the nature of the error.'
+
+/**
+ * `UNREADABLE_FRAGMENTS` 的逐条实测样本：`[片段, 该片段在真实世界里的文案形态]`。
+ * 顺序必须与实现里的表一致 —— 下面有一条守护用例拿它跟源码比对。
+ */
+const FRAGMENT_SAMPLES: readonly [string, string][] = [
+  ['server components render', 'An error occurred in the Server Components render.'],
+  ['omitted in production', 'The specific message is omitted in production builds.'],
+  ['unexpected response', 'An unexpected response was received from the server.'],
+  ['failed to fetch', 'Failed to fetch'],
+  ['network request failed', 'Network request failed'],
+  ['networkerror', 'NetworkError when attempting to fetch resource.'],
+  ['econnreset', 'read ECONNRESET'],
+  ['esocket', 'Error: connect ESOCKET 10.0.0.1:1433'],
+  ['etimedout', 'connect ETIMEDOUT 10.0.0.1:1433'],
+  ['econnrefused', 'INVALID_STATE: LAKALA_REQUEST_FAILED: connect ECONNREFUSED 10.0.0.5:443'],
+  ['enotfound', 'INVALID_STATE: LAKALA_REQUEST_FAILED: getaddrinfo ENOTFOUND api.example.com'],
+  ['ehostunreach', 'INVALID_STATE: LAKALA_REQUEST_FAILED: connect EHOSTUNREACH 10.0.0.5:443'],
+  ['eai_again', 'INVALID_STATE: LAKALA_REQUEST_FAILED: getaddrinfo EAI_AGAIN api.example.com'],
+  ['epipe', 'INVALID_STATE: LAKALA_REQUEST_FAILED: write EPIPE'],
+  ['the network connection was lost', 'The network connection was lost.'],
+  ['connection appears to be offline', 'The Internet connection appears to be offline.'],
+]
+
+/** Next 生产构建对 Server Action / Server Component 错误 message 的脱敏话术。 */
+
 
 /**
  * `next/dist/compiled/string-hash` 的本地副本 —— 只用于「造出与线上同形的自动 digest」。
@@ -156,6 +182,29 @@ describe('actionErrorMessage', () => {
       'INVALID_STATE: PARSE_FAILED: Unexpected token <（position 0）',
     ])('中文包着的技术痕迹照样挡住：%s', (digest) => {
       expect(actionErrorMessage({ digest }, FALLBACK)).toBe(FALLBACK)
+    })
+
+    it.each([
+      // actions/lakala-onboarding.ts:1492 的真实文案：中文包着环境变量名
+      'INVALID_STATE: 缺少电子合同回调地址：LAKALA_ECONTRACT_CALLBACK_URL',
+      // 主机名:端口（IPv4 之外的形态）
+      'INVALID_STATE: 数据库连接失败：postgres.internal:5433 不可达',
+      // IPv6:端口
+      'INVALID_STATE: 数据库连接失败：[fd00::5]:5433 不可达',
+      // Windows 绝对路径
+      'INVALID_STATE: 备份文件 C:\\srv\\backups\\db.dump 写入失败',
+    ])('内网拓扑 / 环境变量名不随中文一起漏出：%s', (digest) => {
+      expect(actionErrorMessage({ digest }, FALLBACK)).toBe(FALLBACK)
+    })
+
+    it('SCREAMING_SNAKE 规则不误杀单词型业务缩写', () => {
+      // 要求至少一个下划线 —— SKU / OEM / VIP 这类单词不受影响
+      expect(actionErrorMessage({ digest: 'NOT_FOUND: SKU 编码 FY-001 不存在' }, FALLBACK)).toBe(
+        'SKU 编码 FY-001 不存在',
+      )
+      expect(actionErrorMessage({ digest: 'CONFLICT: VIP 客户不可合并' }, FALLBACK)).toBe(
+        'VIP 客户不可合并',
+      )
     })
 
     it('正常中文业务文案不受技术痕迹规则影响', () => {
@@ -358,41 +407,21 @@ describe('actionErrorMessage', () => {
     // ⚠️ fixture 必须用「带小写/空格的真实文案」，不能用裸的 ESOCKET / ETIMEDOUT ——
     // 那种形态会先被「裸技术 token」规则短路，`UNREADABLE_FRAGMENTS` 里对应的片段
     // 其实一行没跑到（删掉这三条片段测试照样全绿）。下面这批才真的守着片段表。
-    it.each([
-      ['failed to fetch', 'Failed to fetch'],
-      ['network request failed', 'Network request failed'],
-      ['networkerror', 'NetworkError when attempting to fetch resource.'],
-      ['unexpected response', 'An unexpected response was received from the server.'],
-      ['econnreset', 'read ECONNRESET'],
-      ['esocket', 'Error: connect ESOCKET 10.0.0.1:1433'],
-      ['etimedout', 'connect ETIMEDOUT 10.0.0.1:1433'],
-    ])('片段 %s（实测文案「%s」）→ 回退 fallback（大小写不敏感）', (_fragment, message) => {
-      expect(actionErrorMessage(new Error(message), FALLBACK)).toBe(FALLBACK)
-    })
+    it.each(FRAGMENT_SAMPLES)(
+      '片段 %s（实测文案「%s」）→ 回退 fallback（大小写不敏感）',
+      (_fragment, message) => {
+        expect(actionErrorMessage(new Error(message), FALLBACK)).toBe(FALLBACK)
+      },
+    )
 
     it('片段表逐条都有真红检守着（改坏任一条都会有用例转红）', () => {
       const src = readFileSync(resolve(import.meta.dirname, '../action-error.ts'), 'utf8')
       const block = src.match(/const UNREADABLE_FRAGMENTS = \[([\s\S]*?)\] as const/)?.[1]
       expect(block, '找不到 UNREADABLE_FRAGMENTS').toBeTruthy()
       const fragments = [...block!.matchAll(/'([^']+)'/g)].map((m) => m[1])
-      const covered = [
-        'server components render',
-        'omitted in production',
-        'unexpected response',
-        'failed to fetch',
-        'network request failed',
-        'networkerror',
-        'econnreset',
-        'esocket',
-        'etimedout',
-        'econnrefused',
-        'enotfound',
-        'ehostunreach',
-        'eai_again',
-        'epipe',
-        'the network connection was lost',
-        'connection appears to be offline',
-      ]
+      // covered 直接取自上面 it.each 的实测样本，不再手抄一份 —— 否则往表里加一条
+      // 再同步加进硬编码数组，测试照样绿，而那一条其实一个用例都没跑到。
+      const covered = FRAGMENT_SAMPLES.map(([fragment]) => fragment)
       expect(fragments, '片段表变了但本文件的实测文案没跟上').toEqual(covered)
     })
 
@@ -470,7 +499,7 @@ describe('actionErrorMessage', () => {
       expect(actionErrorMessage(input, FALLBACK)).toBe(FALLBACK)
     })
 
-    it('digest 是会抛异常的 getter → 吞掉并回退，绝不把原始错误顶掉', () => {
+    it('digest 是会抛异常的 getter → 只丢 digest 这一格，message 照常用', () => {
       const err = new Error('余额不足')
       Object.defineProperty(err, 'digest', {
         get() {
@@ -478,7 +507,8 @@ describe('actionErrorMessage', () => {
         },
       })
       expect(() => actionErrorMessage(err, FALLBACK)).not.toThrow()
-      expect(actionErrorMessage(err, FALLBACK)).toBe(FALLBACK)
+      // digest 读不到就只放弃 digest 这一格，不该把明明可读的 message 一起拖下水
+      expect(actionErrorMessage(err, FALLBACK)).toBe('余额不足')
     })
 
     it('原型链上的键不算映射命中', () => {
@@ -495,8 +525,10 @@ describe('actionErrorMessage', () => {
 
   describe('9 项错误前缀白名单整链路透出（服务端 throw → 生产脱敏 → 客户端展示）', () => {
     // 前缀清单从 api-error.ts 直接取，不在此处硬编码副本：白名单增删会自动带进本用例。
+    // 文案里不能带 prefix 本身：那是 SCREAMING_SNAKE 形态，会被「技术痕迹」规则正确杀掉，
+    // 但那是 fixture 的问题不是实现的问题（真实业务文案不会把错误前缀写进正文）。
     it.each([...ERROR_PREFIXES])('%s：生产构建下文案仍原样到达用户', async (prefix) => {
-      const copy = `${prefix} 的业务文案`
+      const copy = `这是一条需要原样透出的业务说明（${CODE_MAP[prefix]}）`
       const thrown = await throwThroughWithPermission(() => {
         throw new ApiError(prefix, copy)
       })
@@ -591,14 +623,21 @@ describe('Next digest 形态漂移守护（#133）', () => {
     for (const file of files) {
       const text = stripComments(readFileSync(file, 'utf8'))
       // 写入形态：`x.digest = …` / `readonly digest = …` / 对象字面量 `digest: …`
-      // 只认「写入 digest」：`x.digest = …` / `readonly digest = …` / 对象字面量里的 `digest:`
-      if (/\.digest\s*=(?!=)|readonly\s+digest\s*=|^\s*digest:\s*\S/m.test(text)) {
+      // 写入形态：`x.digest = …` / `readonly digest = …` / `digest = …`（无 readonly 的字段）
+      // / 对象字面量里任意位置的 `digest:` / `['digest'] =` / `defineProperty(…, 'digest', …)`
+      if (
+        /\.digest\s*=(?!=)|(?:readonly\s+)?\bdigest\s*=(?!=)|\bdigest\s*:\s*\S|\[\s*['"`]digest['"`]\s*\]\s*=|defineProperty\s*\([^,]+,\s*['"`]digest['"`]/.test(
+          text,
+        )
+      ) {
         producers.add(file.slice(adminSrc.length + 1))
       }
       for (const m of text.matchAll(/\bdigest\s*[=:]\s*['"`]([^'"`]+)['"`]/g)) {
         if (/^[A-Z][A-Z0-9_]*$/.test(m[1])) bareTokens.add(m[1])
       }
     }
+    // 覆盖边界（诚实声明）：认的是「直接写 digest」的几种常见形态。
+    // 彻底闭合（`Object.assign(err, {digest: D})` 之类的间接写法）需要 AST/ESLint，已登记跟进。
     expect([...producers].sort(), 'digest 生产者变了').toEqual([
       'actions/legacy-orders.ts',
       'lib/permissions.ts',
