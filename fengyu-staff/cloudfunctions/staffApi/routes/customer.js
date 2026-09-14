@@ -854,6 +854,23 @@ async function paidOrders(ctx) {
       si.remark,
       si.sales_category,
       si.picked_up_quantity,
+      -- 行级欠款：仅「订单确实未付清」且「该卡未买满次数」时才算。
+      -- 订单已付清但行 received 不足的是行级分摊缺口（已知数据问题），不是顾客欠款；
+      -- 寄存单 total_amount<=0 → paid_sessions=session_count，天然不进此分支（其 sale_amount 只是原价快照）。
+      CASE
+        WHEN o.status = '部分支付'
+         AND si.paid_sessions IS NOT NULL
+         AND si.paid_sessions < si.session_count
+         AND NOT EXISTS (
+           SELECT 1 FROM sale_order_payments sop
+           WHERE sop.sale_order_id = si.sale_order_id
+             AND sop.change_type = '退款' AND sop.status = '已支付'
+         )
+         -- 1 元阈值：瀑布分摊的 ROUND 尾差会造出 ¥0.01 的假欠款，不值得推给顾客
+         AND (si.sale_amount::numeric - si.received::numeric) >= 1
+        THEN GREATEST(0, si.sale_amount::numeric - si.received::numeric)::numeric(12, 2)
+        ELSE NULL
+      END AS unpaid_amount,
       o.remark AS order_remark,
       COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
       ps.category_id,
@@ -879,9 +896,24 @@ async function paidOrders(ctx) {
         WHERE sop.sale_order_id = si.sale_order_id
           AND sop.change_type = '退款' AND sop.status = '待审批'
       )
-      -- 只下发还有已付未用次数的卡；历史 NULL 行保留为 disabled 灰显（legacy workfine NULL 已在上方排除）。
+      -- issue #122：改按物理剩余次数下发。部分支付导致 paid_sessions=0 的卡以前被整行剔除，
+      -- 顾客档案看不到这张卡；现在照常展示（可用次数 0 + 待付清标注），核销限额仍走 paid_sessions
+      -- （service.create/start/finalize 三处独立校验，不受本过滤影响）。
+      -- 历史 NULL 行保留为 disabled 灰显（legacy workfine NULL 已在上方排除）。
       AND (
         si.paid_sessions IS NULL
+        OR si.remaining_sessions > 0
+      )
+      -- ⚠ 退款不减 remaining_sessions（Model X，见 utils/refund.js）：paid_sessions 是"已退卡从卡包
+      -- 消失"的唯一机制。放宽展示门槛时必须把这条守卫补回来，否则已退款的卡会重新出现在卡包里。
+      -- 与 clientApi/routes/order.js 的 appointableItems 同款守卫。
+      AND (
+        NOT EXISTS (
+          SELECT 1 FROM sale_order_payments sop
+          WHERE sop.sale_order_id = si.sale_order_id
+            AND sop.change_type = '退款' AND sop.status = '已支付'
+        )
+        OR si.paid_sessions IS NULL
         OR si.paid_sessions > (si.session_count - si.remaining_sessions)
       )
     ORDER BY si.sale_item_id`,
@@ -912,6 +944,8 @@ async function paidOrders(ctx) {
       saleAmount: item.sale_amount != null ? Number(item.sale_amount).toFixed(2) : "",
       received: item.received != null ? Number(item.received).toFixed(2) : "",
       pendingReceived: item.pending_received != null ? Number(item.pending_received).toFixed(2) : "",
+      // 仅订单未付清且该卡未买满次数时有值；已付清/寄存单/NULL 卡一律 null
+      unpaidAmount: item.unpaid_amount != null ? Number(item.unpaid_amount) : null,
       expireDate: item.expire_date || null,
       remark: item.remark || null,
       salesCategory: item.sales_category || null,
@@ -1028,6 +1062,10 @@ async function homeProducts(ctx) {
                 GREATEST(0, COALESCE(pt.picked_quantity, 0))
               )::int AS picked_quantity,
               CASE
+                -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
+                -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
+                -- 转换单/零总额单，且 total_amount 无 CHECK 约束，负值会静默放行。
+                WHEN o.sale_order_type = '寄存单' THEN si.quantity
                 WHEN si.sale_amount <= 0 THEN si.quantity
                 ELSE LEAST(
                   si.quantity,

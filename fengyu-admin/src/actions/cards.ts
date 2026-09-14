@@ -66,7 +66,7 @@ export interface AdminCard {
   remainingSessions: number | null
   /** 已付次数（按付款比例 floor） */
   paidSessions: number | null
-  /** 可用次数（已付未用）；paid_sessions 为 NULL 时退回物理剩余，否则 max(paid − used, 0)；列表仅含 paid_sessions>0 的卡 */
+  /** 可用次数（已付未用）；paid_sessions 为 NULL 时退回物理剩余，否则 max(paid − used, 0)；可用 0 的欠款卡也在列表内（issue #122） */
   paidUnusedSessions: number | null
   /** 可退的行级多收余数金额。 */
   remainingRemainder: number
@@ -209,9 +209,11 @@ function buildCardBaseConditions(
     inArray(saleOrders.status, [...CARD_ENTITLEMENT_ORDER_STATUSES]),
     eq(saleItems.productType, '疗程卡'),
     isNotNull(saleItems.remainingSessions),
-    // #4：过滤完全未付款的欠款卡（paid_sessions=0/NULL）——可用卡列表只展示有已付次数的卡，
-    // 避免欠款卡误显「剩余 0 / 已用完」红色进度条（历史 NULL 行同样视作未付款排除）
-    sql`${saleItems.paidSessions} > 0`,
+    // issue #122：移除原本的 `paid_sessions > 0` —— 它会把部分支付的欠款卡整行隐藏，
+    // 顾客买了卡却在卡包里查无此卡。基础集不再按次数过滤（"是否已用完"交给 status 分支，
+    // exhausted 要的正是 remaining_sessions = 0，基础集若先排掉它会让该筛选恒空、卡详情 404）。
+    // 可用次数仍由 paidUnusedSessionsExpr 算出并展示为 0，核销限额走 service 侧独立校验。
+    // 已退款的卡由 paid_sessions 口径在 service 侧挡住，不在本列表口径内。
     // scope 过滤（admin 返回 undefined；非 admin 按 scopeStoreIds）
     scopeCondition(session, saleItems.storeId),
   ]
@@ -219,7 +221,7 @@ function buildCardBaseConditions(
 
 /**
  * 构建卡包 WHERE 条件（列表分页与导出共用，单一真源防漂移）。
- * 基础过滤：权益方向 + 有效订单状态 + 疗程卡 + 余次不为空 + 已付次数>0 + scope。
+ * 基础过滤：权益方向 + 有效订单状态 + 疗程卡 + 余次不为空 + scope（不按次数过滤，见 issue #122）。
  * market 分支用子查询（不预查节点类型），故为同步函数。
  */
 function buildCardConditions(

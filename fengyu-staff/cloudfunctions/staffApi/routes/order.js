@@ -2695,49 +2695,56 @@ async function updatePerformanceAttribution(ctx) {
       throw new Error('CONFLICT: 订单已被其他人修改，请刷新后重试')
     }
 
-    const syncedCardRes = await client.query(
-      `UPDATE sale_order_payments card
-       SET performance_attribution_date = $1::date,
-           performance_attribution_adjusted_at = $2::timestamptz,
-           performance_attribution_adjusted_by = $3
-       WHERE card.sale_order_id = $4
-         AND card.change_type = '储值卡抵扣'
-         AND card.status = '已支付'
-         AND EXISTS (
-           SELECT 1
-           FROM sale_order_payments first_payment
-           WHERE first_payment.sale_order_id = card.sale_order_id
-             AND first_payment.change_type = '首次支付'
-             AND first_payment.status = card.status
-             AND first_payment.paid_at IS NOT DISTINCT FROM card.paid_at
-         )
-       RETURNING card.id`,
-      [
-        updated.performance_attribution_date,
-        updated.performance_attribution_adjusted_at,
-        updated.performance_attribution_adjusted_by,
-        saleOrderId,
-      ],
-    )
-    // 首次支付流水的归属日期恒等于订单级（迁移 0039 起该列不再留 NULL）。
-    // 必须排在卡流水同步**之后**：首次支付行的 BEFORE UPDATE trigger 会反向同步同次卡流水，
-    // 若与卡流水在同一条语句里更新，PG 会报「tuple already modified by an operation
-    // triggered by the current command」。
-    // 调整机会标记（adjusted_at/by）仍只记在 sale_orders 上：首次支付行不可被单独修改。
+    // 款项行的同步由 DB trigger `sync_order_performance_attribution_to_payments()`
+    // （sale_orders 的 AFTER UPDATE，迁移 0040）完成，应用层不再各写一份 UPDATE：
+    // 查询侧已改为直读 sale_order_payments.performance_attribution_date，
+    // 任何漏同步的写入路径都会直接出错数，同步动作必须由 DB 保证而不是靠每个入口记得写。
+    // 这里只回读受影响的行用于审计日志。
     // 与 admin orders.ts updatePerformanceAttributionDate 同语义独立副本，改一端必同步另一端。
-    const syncedFirstRes = await client.query(
-      `UPDATE sale_order_payments first_payment
-       SET performance_attribution_date = $1::date
-       WHERE first_payment.sale_order_id = $2
-         AND first_payment.change_type = '首次支付'
-         AND first_payment.performance_attribution_date IS DISTINCT FROM $1::date
-       RETURNING first_payment.id`,
-      [updated.performance_attribution_date, saleOrderId],
+    // 回读条件与 trigger 的两条 UPDATE **同一个集合**（首次支付行 + 同次已支付卡行），
+    // 不是"日期等于目标值的行" —— 后者会把碰巧同日、但不归本次同步管的卡行也记进日志。
+    const syncedRes = await client.query(
+      `SELECT id
+         FROM sale_order_payments p
+        WHERE p.sale_order_id = $1
+          AND (
+            p.change_type = '首次支付'
+            OR (
+              p.change_type = '储值卡抵扣'
+              AND p.status = '已支付'
+              AND EXISTS (
+                SELECT 1
+                FROM sale_order_payments first_payment
+                WHERE first_payment.sale_order_id = p.sale_order_id
+                  AND first_payment.change_type = '首次支付'
+                  AND first_payment.status = p.status
+                  AND first_payment.paid_at IS NOT DISTINCT FROM p.paid_at
+              )
+            )
+          )
+        ORDER BY p.id`,
+      [saleOrderId],
     )
     // node-pg 对 int8(OID 20) 不做转换、原样返回 string。admin orders.ts 的同语义副本已显式
     // Number()，这里不归一会让 operation_logs 里 staff 写 ["12","34"]、admin 写 [12,34]，
     // 后续按 id 对账/去重的脚本两端行为不一致。
-    const syncedPaymentIds = [...syncedCardRes.rows, ...syncedFirstRes.rows].map((row) => Number(row.id))
+    const syncedPaymentIds = syncedRes.rows.map((row) => Number(row.id))
+
+    // 部署顺序闸门：本函数依赖迁移 0040 的 trigger 完成同步。若云函数先于迁移上线，
+    // 上面的 UPDATE 只改了 sale_orders、款项行纹丝不动，而查询侧已直读款项列
+    // —— 那是静默出错数。这里花一次廉价回读把它变成响亮失败并回滚整个事务。
+    // 与 admin orders.ts updatePerformanceAttributionDate 同语义独立副本。
+    const staleRes = await client.query(
+      `SELECT COUNT(*)::int AS stale
+         FROM sale_order_payments
+        WHERE sale_order_id = $1
+          AND change_type = '首次支付'
+          AND performance_attribution_date IS DISTINCT FROM $2::date`,
+      [saleOrderId, updated.performance_attribution_date],
+    )
+    if (Number(staleRes.rows[0]?.stale || 0) > 0) {
+      throw new Error('INVALID_STATE: 业绩归属日期未能同步到款项流水，请确认数据库迁移 0040 已执行后重试')
+    }
 
     await logUpdate(
       client,
@@ -5269,6 +5276,10 @@ async function createGroupedPickup(ctx, saleItemIds, pickupQuantity, remark, ide
                  WHERE pr.sale_item_id = si.sale_item_id
               ), 0)::int AS picked_quantity,
               CASE
+                -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
+                -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
+                -- 转换单/零总额单，且 total_amount 无 CHECK 约束，负值会静默放行。
+                WHEN o.sale_order_type = '寄存单' THEN si.quantity
                 WHEN si.sale_amount <= 0 THEN si.quantity
                 ELSE LEAST(
                   si.quantity,
@@ -5394,10 +5405,15 @@ async function createPickup(ctx) {
                 LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
                 COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id), 0)::int AS picked_quantity,
                 CASE
+                  -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
+                  -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
+                  -- 转换单/零总额单，且 total_amount 无 CHECK 约束，负值会静默放行。
+                  WHEN o.sale_order_type = '寄存单' THEN si.quantity
                   WHEN si.sale_amount <= 0 THEN si.quantity
                   ELSE LEAST(si.quantity, FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int)
                 END AS paid_quantity
            FROM sale_items si
+           JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
           WHERE si.sale_item_id = $1
             AND si.store_id = $2`,
         [saleItemId, ctx.auth.effectiveStoreId]
@@ -5433,6 +5449,10 @@ async function createPickup(ctx) {
               LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
               COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id), 0)::int AS picked_quantity,
               CASE
+                -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
+                -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
+                -- 转换单/零总额单，且 total_amount 无 CHECK 约束，负值会静默放行。
+                WHEN o.sale_order_type = '寄存单' THEN si.quantity
                 WHEN si.sale_amount <= 0 THEN si.quantity
                 ELSE LEAST(si.quantity, FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int)
               END AS paid_quantity,
@@ -5561,6 +5581,10 @@ async function availablePickupItems(ctx) {
               LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
               GREATEST(0, COALESCE(pt.picked_quantity, 0))::int AS picked_quantity,
               CASE
+                -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
+                -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
+                -- 转换单/零总额单，且 total_amount 无 CHECK 约束，负值会静默放行。
+                WHEN o.sale_order_type = '寄存单' THEN si.quantity
                 WHEN si.sale_amount <= 0 THEN si.quantity
                 ELSE LEAST(
                   si.quantity,

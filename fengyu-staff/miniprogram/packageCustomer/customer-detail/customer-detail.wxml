@@ -232,6 +232,7 @@
                     <view class="session-bar__seg session-bar__seg--paid-unused" style="width:{{item.paidUnusedPct}}%"></view>
                     <view class="session-bar__seg session-bar__seg--unpaid" style="width:{{item.unpaidPct}}%"></view>
                   </view>
+                  <text wx:if="{{item.unpaidAmountFmt}}" class="tc-unpaid">待付清 ¥{{item.unpaidAmountFmt}}</text>
                 </view>
               </view>
               <view wx:if="{{item.selected}}" class="tc-stepper-row" catchtap="preventBubble">

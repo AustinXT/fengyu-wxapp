@@ -50,6 +50,13 @@ Page({
             usedPct,
             paidUnusedPct,
             unpaidPct,
+            // 仅订单未付清且该卡未买满次数时有值；小程序 toLocaleString 不可靠，千分位用 toFixed + 正则
+            unpaidAmountFmt:
+              item.unpaidAmount != null && Number(item.unpaidAmount) > 0
+                ? Number(item.unpaidAmount)
+                    .toFixed(2)
+                    .replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+                : '',
             expireFmt: item.expireDate ? item.expireDate.slice(0, 10) : '',
           });
         }
