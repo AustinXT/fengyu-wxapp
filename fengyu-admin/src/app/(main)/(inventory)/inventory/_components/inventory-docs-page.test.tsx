@@ -988,20 +988,33 @@ describe('弹窗在异常与并发下的出路（#134 评审补）', () => {
     expect(within(actionDialog()).getByText('4/300')).toBeInTheDocument()
   })
 
-  it('从 A 单的驳回直接切到 B 单的通过：备注清空、标题与单据号都跟着换', () => {
-    // 这个直切只有 dialog.tsx 降级到 .show() 那条退路才可达（真机上 showModal 会让背景 inert）。
-    // 必须真把 showModal 打成抛错，否则删掉 fallback 分支这条用例照样绿。
+  it('降级路径下同时只能开一个弹窗：弹窗开着时所有开窗入口都锁住', () => {
+    // 共用一个布尔 busy 的话，先结束的请求会把另一个仍在途的锁提前解开；
+    // 而两个非模态弹窗叠开又会让焦点与输入归属混乱。所以从状态上就禁止并存。
     const { show } = forceNonModalFallback()
     const rowB: InventoryDocRow = { ...row, id: 'MBS-260813-0009' }
     renderDocs([row, rowB])
-    fireEvent.click(screen.getAllByRole('button', { name: '驳回' })[0])
-    fireEvent.change(remarkBox('驳回原因'), { target: { value: '写给 A 的原因' } })
-    fireEvent.click(screen.getAllByRole('button', { name: '通过' })[1])
 
+    fireEvent.click(screen.getAllByRole('button', { name: '驳回' })[0])
     expect(show).toHaveBeenCalled()
-    expect(within(actionDialog()).getByText('确认审批通过？')).toBeInTheDocument()
-    expect(actionDialog()).toHaveTextContent(`单据号 ${rowB.id}`)
-    expect(remarkBox('审批备注')).toHaveValue('')
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+
+    for (const btn of screen.getAllByRole('button', { name: '通过' })) expect(btn).toBeDisabled()
+    for (const btn of screen.getAllByRole('button', { name: '驳回' })) expect(btn).toBeDisabled()
+    expect(screen.getByRole('button', { name: '新建' })).toBeDisabled()
+
+    // 关掉之后入口恢复
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    expect(screen.getByRole('button', { name: '新建' })).toBeEnabled()
+  })
+
+  it('建单弹窗开着时，行操作入口同样锁住', () => {
+    forceNonModalFallback()
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '新建' }))
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+    for (const btn of screen.getAllByRole('button', { name: '通过' })) expect(btn).toBeDisabled()
+    for (const btn of screen.getAllByRole('button', { name: '详情' })) expect(btn).toBeDisabled()
   })
 })
 

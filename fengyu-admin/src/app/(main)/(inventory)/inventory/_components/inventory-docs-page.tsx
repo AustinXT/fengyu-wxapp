@@ -149,7 +149,12 @@ export default function InventoryDocsPage({
   )
   // 提交在途时不接受任何行操作。真机上模态背景本就 inert 点不到，但 dialog.tsx 有降级到
   // .show() 的退路 —— 那条路下背景可点，A 的「处理中」界面会被 B 顶掉，用户以为 A 取消了。
-  const [actionBusy, setActionBusy] = useState(false)
+  //
+  // 两个弹窗**各记各的在途态**：共用一个布尔的话，先结束的那个会把另一个仍在途的锁提前解开。
+  const [actionDialogBusy, setActionDialogBusy] = useState(false)
+  const [createDialogBusy, setCreateDialogBusy] = useState(false)
+  // 降级路径下还要防「两个弹窗同时开着」：任一弹窗开着时就锁住开另一个的入口
+  const actionBusy = actionDialogBusy || createDialogBusy || pendingAction !== null || open
 
   const columns: Column<InventoryDocRow>[] = [
     {
@@ -321,7 +326,7 @@ export default function InventoryDocsPage({
           locations={locations}
           skuOptions={skuOptions}
           onSuccess={() => startTransition(() => router.refresh())}
-          onBusyChange={setActionBusy}
+          onBusyChange={setCreateDialogBusy}
           initialDocType={initialDocType}
           allowedDocTypes={allowedCreateDocTypes}
         />
@@ -329,7 +334,7 @@ export default function InventoryDocsPage({
 
       <DocActionDialog
         pending={pendingAction}
-        onBusyChange={setActionBusy}
+        onBusyChange={setActionDialogBusy}
         onOpenChange={(next) => {
           if (!next) setPendingAction(null)
         }}
@@ -494,7 +499,8 @@ function DocActionDialog({
   useEffect(() => {
     if (pending) setSnapshot(pending)
   }, [pending])
-  // 换单据/换动作、以及关闭，都把输入与在途态清干净
+  // 关闭（以及理论上的换单据）都把输入与在途态清干净 —— 弹窗常驻挂载，state 不会随卸载消失。
+  // 注：现在父组件保证「同时只开一个弹窗」，A→B 直切已不可达，这里主要覆盖的是关闭路径。
   const resetKey = pending ? `${pending.kind}:${pending.docId}` : ''
   useEffect(() => {
     setRemark('')
