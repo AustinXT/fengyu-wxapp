@@ -1335,7 +1335,8 @@ async function staffRanking(ctx) {
 
 // 销售数据页骨架常量（仅经营类型 — 与 db/schema/enums.ts::salesCategoryEnum 同源）
 // 一级/二级品项骨架不在此写死，运行时从 product_categories 表读取（见 SQL 9）
-const SALES_CATEGORY_SKELETON = ['自销自耗', '他销自耗', '他销他耗', '生态合作']
+// 单源收敛到 utils/sales-categories.js（issue #123），与 staff.performanceDetail 共用同一份
+const { SALES_CATEGORIES: SALES_CATEGORY_SKELETON } = require('../utils/sales-categories')
 
 /**
  * mgmtDashboard.salesData
