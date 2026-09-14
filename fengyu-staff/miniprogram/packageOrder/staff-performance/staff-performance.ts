@@ -100,6 +100,13 @@ const PAGE_SIZE = 20;
 const RANGE_MAX_DAYS = 371;
 
 /**
+ * picker 能滚到的最早日期（天）。**与 RANGE_MAX_DAYS 是两回事**：
+ * 这条只防止用户把滚轮甩到 1900 年，不限制能查多久以前——查 2024 年的某 7 天区间
+ * 既合理又不会让后端多扫一行，不该被跨度上限连坐挡掉。
+ */
+const HISTORY_MIN_DAYS = 365 * 5;
+
+/**
  * 访问被拒类错误 —— 一旦发生就不得继续展示屏幕上的既有数据（可能是他人薪酬）。
  * `PHONE_REQUIRED` 必须在列：`requireStaffBound` 在手机号失效时抛它（admin 改员工资料
  * 时手机号可被置空，路径实际可达），且它与 `PERMISSION_DENIED` 共享 -403，
@@ -170,15 +177,10 @@ Page({
 
   onLoad(options: Record<string, string>) {
     const mgr = isManager();
-    // picker 的绝对上下界：最晚只能选到今天（未来日期永远查不出绩效，只会得到一个
-    // 与「本期无记录」无法区分的空列表），最早卡在 RANGE_MAX_DAYS 之前
-    const now = new Date();
-    const earliest = new Date(now.getFullYear(), now.getMonth(), now.getDate() - RANGE_MAX_DAYS);
     this.setData({
       isManager: mgr,
       staffName: app.globalData.staffName || '',
-      customMinDate: this.formatDate(earliest),
-      customMaxDate: this.formatDate(now),
+      ...this.dateBounds(),
     });
     if (mgr) this.loadStaffList();
     const validRanges: RangeType[] = ['today', 'month', 'custom'];
@@ -191,10 +193,28 @@ Page({
   },
 
   onShow() {
+    // 边界每次重算：页面留在页面栈里过夜后，onLoad 那次算出的上界还停在昨天，
+    // 当天反而选不进去
+    this.setData(this.dateBounds());
     if (this._loaded && this.data.startDate) {
       // 同主体的被动刷新：失败保留旧数据（见 loadData 的 keepStaleOnError）
       this.loadData(true, true);
     }
+  },
+
+  /**
+   * 自定义 picker 的**绝对**上下界。
+   *
+   * 上界 = 今天：未来日期永远查不出绩效，只会得到一个与「本期无记录」无法区分的空列表。
+   * 下界 = HISTORY_MIN_DAYS 之前：纯粹防止用户把滚轮甩到 1900 年，**不是**跨度限制——
+   * 跨度由 `applyCustomRange` 的 `daysBetween <= RANGE_MAX_DAYS` 单独把关。
+   * 两者必须分开：否则「只能查最近 371 天」会把「查 2024 年某 7 天」这种完全无害的
+   * 区间也一起挡掉，而它并不会让后端多扫一行。
+   */
+  dateBounds() {
+    const now = new Date();
+    const earliest = new Date(now.getFullYear(), now.getMonth(), now.getDate() - HISTORY_MIN_DAYS);
+    return { customMinDate: this.formatDate(earliest), customMaxDate: this.formatDate(now) };
   },
 
   // 页面销毁后推进代次，丢弃晚到的响应，避免对已卸载页面 setData
@@ -266,6 +286,14 @@ Page({
       start = this.data.startDate || this.formatDate(new Date(now.getFullYear(), now.getMonth(), 1));
       end = this.data.endDate || this.formatDate(now);
       display = `${start} ~ ${end}`;
+    }
+
+    // 点「自定义」时区间就是从上一个档位沿用来的，通常与屏幕上这批数据完全同源 ——
+    // 此时只展开 picker、换个标题即可，不必清屏重拉：后端每次请求都是全区间扫描，
+    // 白跑一趟既费云函数又让用户干等一次闪烁。真正改了日期再由 applyCustomRange 刷新。
+    if (fetch && start === this.data.startDate && end === this.data.endDate && this.data.items.length > 0) {
+      this.setData({ rangeType: type, displayDate: display });
+      return;
     }
 
     // 换时间段同样是数据主体变化：先清汇总与明细，避免请求在途时

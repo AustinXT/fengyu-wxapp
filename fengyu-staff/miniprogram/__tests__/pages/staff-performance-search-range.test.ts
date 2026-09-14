@@ -408,12 +408,27 @@ describe('绩效页 · 手机号脏数据归一（评审补漏 P2）', () => {
 })
 
 describe('绩效页 · 自定义区间跨度上限（评审补漏 P1）', () => {
-  test('picker 给出绝对上下界：最晚今天、最早一年余', () => {
+  test('picker 上界是今天；下界只防滚轮甩到 1900，不当跨度限制用', () => {
     const page = createPage()
     page.onLoad({})
 
     expect(page.data.customMaxDate).toBe('2026-09-14')
-    expect(page.data.customMinDate).toBe('2025-09-08') // 今天往前 371 天
+    // 5 年前——不是 371 天。查 2024 年某个 7 天区间既合理又不增加后端开销，
+    // 不该被跨度上限连坐挡住（评审 round-1 codex P1）
+    expect(page.data.customMinDate).toBe('2021-09-15')
+    expect(page.data.customMinDate < '2024-01-01').toBe(true)
+  })
+
+  test('上界每次 onShow 重算：页面过夜后当天必须可选（评审 round-1 codex P3）', () => {
+    const page = createPage()
+    page.onLoad({})
+    expect(page.data.customMaxDate).toBe('2026-09-14')
+
+    vi.setSystemTime(new Date(2026, 8, 15, 9, 0, 0)) // 隔夜
+    vi.mocked(callStaffApi).mockImplementation(() => new Promise(() => {}))
+    page.onShow()
+
+    expect(page.data.customMaxDate).toBe('2026-09-15')
   })
 
   test('超过上限的区间被拦截且不发请求——后端是全量取回+内存分页，跨年区间会拖垮云函数', () => {
@@ -446,5 +461,48 @@ describe('绩效页 · 自定义区间跨度上限（评审补漏 P1）', () => 
     expect(page.daysBetween('2025-12-31', '2026-01-01')).toBe(1)
     expect(page.daysBetween('2024-02-28', '2024-03-01')).toBe(2) // 2024 闰年
     expect(page.daysBetween('2026-09-14', '2026-09-14')).toBe(0)
+  })
+})
+
+describe('绩效页 · 切「自定义」不做无谓重拉（评审 round-1 codex P2）', () => {
+  test('区间与当前一致时只展开 picker，不清屏也不发请求', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+    expect(page.data.items).toHaveLength(1)
+
+    vi.mocked(callStaffApi).mockClear()
+    page.onRangeTap({ currentTarget: { dataset: { type: 'custom' } } })
+
+    expect(page.data.rangeType).toBe('custom')
+    expect(page.data.displayDate).toBe('2026-09-01 ~ 2026-09-14')
+    expect(callStaffApi).not.toHaveBeenCalled()   // 后端是全区间扫描，白跑一趟就是纯浪费
+    expect(page.data.items).toHaveLength(1)       // 屏幕上的数据同源，不该被清掉
+    expect(page.data.totalCommission).not.toBe('--')
+  })
+
+  test('首屏 onLoad(range=custom) 仍照常交给 onShow 取数，不被早退吃掉', () => {
+    const page = createPage()
+    page.onLoad({ range: 'custom' })
+
+    expect(page.data.rangeType).toBe('custom')
+    expect(page.data.startDate).toBe('2026-09-01')
+    expect(callStaffApi).not.toHaveBeenCalled() // onLoad 本就 fetch=false
+    expect(page.data.items).toHaveLength(0)
+  })
+
+  test('真改了日期照常刷新', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+
+    page.onRangeTap({ currentTarget: { dataset: { type: 'custom' } } })
+    vi.mocked(callStaffApi).mockClear()
+    page.onCustomStartChange({ detail: { value: '2026-08-20' } })
+
+    await vi.waitFor(() => expect(callStaffApi).toHaveBeenCalled())
+    expect(page.data.startDate).toBe('2026-08-20')
   })
 })
