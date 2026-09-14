@@ -959,12 +959,13 @@ describe('弹窗在异常与并发下的出路（#134 评审补）', () => {
   })
 
   it.each([
-    // 业务层抛的 ApiError：digest 是带冒号的完整 message
-    ['PERMISSION_DENIED: 无权审批该单据', 'ApiError 形态'],
+    // 业务层抛的 ApiError：digest 是带冒号的完整 message，剥前缀后原样透出
+    ['PERMISSION_DENIED: 无权审批该单据', 'ApiError 形态', '无权审批该单据'],
     // HOF 层 requireAnyPermission 抛的 PermissionError：digest 是**裸前缀**，无冒号无文案。
-    // 这才是「权限被收回」最直接的那条路径，只认带冒号的话恰好判不出来。
-    ['PERMISSION_DENIED', 'PermissionError 裸前缀形态'],
-  ])('权限被收回也给出路：关窗 + 刷新（%s / %s）', async (digest) => {
+    // 这才是「权限被收回」最直接的那条路径；交给 actionErrorMessage 会原样吐英文 token，
+    // 所以这里要给统一说法。
+    ['PERMISSION_DENIED', 'PermissionError 裸前缀形态', '单据状态或权限已变化，已为你刷新列表'],
+  ])('权限被收回也给出路：关窗 + 刷新（%s / %s）', async (digest, _label, expectedToast) => {
     vi.mocked(approveInventoryCoreDoc).mockRejectedValue(
       Object.assign(new Error('sanitized'), { digest }),
     )
@@ -972,7 +973,9 @@ describe('弹窗在异常与并发下的出路（#134 评审补）', () => {
     fireEvent.click(screen.getByRole('button', { name: '通过' }))
     fireEvent.click(screen.getByRole('button', { name: '确认通过' }))
 
-    await waitFor(() => expect(toast.error).toHaveBeenCalled())
+    // 文案必须断死：只断言「调过 toast」的话，裸前缀形态下显示什么完全放空 ——
+    // 而那正好是会把英文 PERMISSION_DENIED 甩给用户的那条路径
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expectedToast))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     await waitFor(() => expect(mockRefresh).toHaveBeenCalled())
   })
