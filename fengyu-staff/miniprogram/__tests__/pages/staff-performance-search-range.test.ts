@@ -966,7 +966,8 @@ describe('绩效页 · 过滤结果渲染上限（评审 round-8 codex P1）', (
     search(page, '顾客') // 500 条全中
     expect(page.data.displayItems).toHaveLength(200)
     expect(page.data.searchHint).toContain('匹配 500 条')
-    expect(page.data.searchHint).toContain('当前显示第 1-200 条')
+    expect(page.data.matchWindowLabel).toBe('第 1-200 条 / 共 500 条命中')
+    expect(page.data.searchHint).not.toContain('第 1-200 条') // 区间只由底部导航播报一次
     expect(page.data.hasMoreMatches).toBe(true)
   })
 
@@ -1028,7 +1029,7 @@ describe('绩效页 · 姓名空格归一与手动刷新入口（评审 round-9 
     await page.loadData(true)
 
     search(page, '顾客')
-    expect(page.data.searchHint).toContain('当前显示第 1-200 条')
+    expect(page.data.matchWindowLabel).toContain('第 1-200 条')
     expect(page.data.searchHint).toContain('顶部汇总为全量')
   })
 })
@@ -1105,7 +1106,7 @@ describe('绩效页 · 渲染窗口可推进（评审 round-12 codex P2）', () 
 
     page.onShowMoreMatches()
     expect(page.data.displayItems).toHaveLength(400)
-    expect(page.data.searchHint).toContain('当前显示第 1-400 条')
+    expect(page.data.matchWindowLabel).toBe('第 1-400 条 / 共 500 条命中')
 
     page.onShowMoreMatches()
     expect(page.data.displayItems).toHaveLength(500) // 命中只有 500，取完即止
@@ -1690,5 +1691,35 @@ describe('绩效页 · 号码分隔符白名单（评审 round-22 codex P2）', 
 
     search(page, keyword)
     expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['张三'])
+  })
+})
+
+describe('绩效页 · 评审 round-24 闭环（glm）', () => {
+  test('加载失败后在 picker 里重选同一天要能重试，不被同值早退吞掉', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'custom' })
+    vi.mocked(callStaffApi).mockRejectedValue(new Error('网络开小差'))
+    await page.loadData(true)
+    expect(page.data.loadFailed).toBe(true)
+    const { startDate, endDate } = page.data
+
+    vi.mocked(callStaffApi).mockClear()
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    page.applyCustomRange(startDate, endDate, 'start') // 重选当前这一天
+
+    expect(callStaffApi).toHaveBeenCalledTimes(1)
+  })
+
+  test('成功态下重选同一天仍然不重拉（后端每页都是全区间扫描）', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'custom' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+    expect(page.data.loadFailed).toBe(false)
+
+    vi.mocked(callStaffApi).mockClear()
+    page.applyCustomRange(page.data.startDate, page.data.endDate, 'start')
+
+    expect(callStaffApi).not.toHaveBeenCalled()
   })
 })

@@ -505,7 +505,9 @@ Page({
         wx.showToast({ title: `起止最多相差 ${RANGE_MAX_DAYS} 天，另一端已自动调整`, icon: 'none' });
       }
     }
-    if (start === this.data.startDate && end === this.data.endDate) return; // 选了同一天，无需重拉
+    // 选了同一天通常无需重拉；但**加载失败时例外** —— 在 picker 里重选一遍当前日期
+    // 是失败态下最自然的重试手势，早退会让屏幕一直停在「加载失败」、点什么都没反应
+    if (start === this.data.startDate && end === this.data.endDate && !this.data.loadFailed) return;
 
     // 与 setRange 同级的主体变更：清汇总 + 清明细，避免「新区间标题 + 旧区间明细」
     this.clearSubjectCache();
@@ -802,11 +804,6 @@ Page({
   },
 
   /**
-   * 汇总区空白态：换员工 / 换时间段这类「数据主体变了」的场景，必须先把旧主体的金额清掉
-   * 再发请求 —— 否则请求在途期间（慢网络下最长一个 RTT）页面会把 A 的提成标在 B 名下，
-   * 请求失败时更会永久停在那个错配状态。筛选切换不用清（汇总恒全量、本就不随筛选变）。
-   */
-  /**
    * 主体变更时失效缓存。**必须与 blankSummary() 同时调用** —— 只清 data 不清缓存的话，
    * 请求在途期间点一级 Tab 会用 `_summaryCache` 本地重算，把上一个员工/时段的分类提成
    * 重新显示出来（且挂在新员工姓名下）。
@@ -935,8 +932,9 @@ Page({
       // ③ 没命中：带「已加载 N/共 M」，让员工能分辨「真没有」和「没加载够」
       searchHint: total === 0
         ? `本时段暂无提成记录（${loaded}，搜索「${shown}」仍生效）`
+        // 具体显示到第几条交给底部的 matchWindowLabel，这里不重复播报
         : capped
-          ? `${loaded}，匹配 ${matched.length} 条，当前显示第 ${start + 1}-${end} 条（顶部汇总为全量，不随搜索变化）`
+          ? `${loaded}，匹配 ${matched.length} 条（顶部汇总为全量，不随搜索变化）`
           : matched.length
             ? `${loaded}，匹配 ${matched.length} 条（顶部汇总为全量，不随搜索变化）`
             : `${loaded}中未找到「${shown}」`,
@@ -988,6 +986,11 @@ Page({
     return `${t.getUTCFullYear()}-${pad(t.getUTCMonth() + 1)}-${pad(t.getUTCDate())}`;
   },
 
+  /**
+   * 汇总区空白态：换员工 / 换时间段这类「数据主体变了」的场景，必须先把旧主体的金额清掉
+   * 再发请求 —— 否则请求在途期间（慢网络下最长一个 RTT）页面会把 A 的提成标在 B 名下，
+   * 请求失败时更会永久停在那个错配状态。筛选切换不用清（汇总恒全量、本就不随筛选变）。
+   */
   blankSummary() {
     return {
       // 用 '--' 而非 '0.00'：合法零值无法与「尚未加载 / 加载失败」区分，
