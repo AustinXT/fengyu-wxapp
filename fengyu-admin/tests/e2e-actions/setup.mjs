@@ -25,7 +25,7 @@ process.env.PG_CONNECTION_STRING =
   process.env.E2E_DATABASE_URL ||
   process.env.PG_CONNECTION_STRING ||
   process.env.DATABASE_URL ||
-  'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
+  'postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp'
 process.env.DATABASE_URL = process.env.DATABASE_URL || process.env.PG_CONNECTION_STRING
 
 // 命名空间常量 — 所有 fixture 数据必须以此为前缀，方便清理

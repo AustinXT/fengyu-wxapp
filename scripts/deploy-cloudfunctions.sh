@@ -123,9 +123,10 @@ echo "==> Re-rendering cloudbaserc from .active=$ACTIVE （保证 envId 指向�
 node "$ROOT/scripts/render-cloudbaserc.mjs" "$ACTIVE"
 
 # ── 一致性校验：envId 必须匹配 .active 的 env-id；PG host(IP) 必须匹配环境
-#    （2026-07-17 起 dev/测试与 prod 均用 5433 端口，环境改靠 IP 区分：
-#     prod=118.178.196.26 / dev=47.113.202.7）──
-EXPECT_PG_HOST=$([[ "$ACTIVE" == "prod" ]] && echo "118.178.196.26" || echo "47.113.202.7")
+#    （所有环境均用 5433 端口 + fengyu_wxapp 库名，只能靠 IP 区分。
+#     2026-09-01 起 dev 迁入 sqlserver101，与 test 同库：dev=test=101.34.242.103；
+#     prod=118.178.196.26。旧的 ali-demo 47.113.202.7 已弃用，不再是任何环境的目标。）──
+EXPECT_PG_HOST=$([[ "$ACTIVE" == "prod" ]] && echo "118.178.196.26" || echo "101.34.242.103")
 assert_rc() {  # $1=side 目录  $2=期望 envId
   local f="$ROOT/$1/cloudbaserc.json"
   [[ -f "$f" ]] || { echo "ERROR: $f 缺失（渲染失败）。中止。" >&2; exit 1; }

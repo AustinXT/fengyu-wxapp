@@ -22,7 +22,7 @@ process.env.ALLOW_TEST_OPENID = 'true'
 // 默认 e2e 库 fengyu_wxapp 当前缺 store_name/is_activity 列（schema drift，待对其单独跑 db:migrate 同步）。
 process.env.PG_CONNECTION_STRING =
   process.env.PG_CONNECTION_STRING ||
-  'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
+  'postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp'
 process.env.DATABASE_URL = process.env.PG_CONNECTION_STRING
 
 const setup = await import('file://' + path.join(TESTS_DIR, 'setup.mjs'))

@@ -15,8 +15,13 @@
 # ============================================================================
 set -euo pipefail
 
+# ⚠️ 自定义库名时，跑测试也必须让 fengyu-admin 的 test:e2e* 用同一个库名：
+#    要么同样导出 E2E_DB_NAME（package.json 的默认值已读它），要么显式导出完整 E2E_DATABASE_URL。
+#    只建库而不同步库名，测试会连回默认的 fengyu_e2e，隔离形同虚设。
 E2E_DB_NAME="${E2E_DB_NAME:-fengyu_e2e}"
-PG_BASE="postgresql://fengyu:fengyu123@47.113.202.7:5433"
+# e2e 库与 dev 业务库同机（101.34.242.103:5433，SSH 别名 lx-test）但**不同库**，
+# 靠库名 fengyu_e2e 与业务库 fengyu_wxapp 隔离。旧的 ali-demo 47.113.202.7 已于 2026-09-01 全面弃用。
+PG_BASE="postgresql://fengyu:fengyu123@101.34.242.103:5433"
 E2E_URL="$PG_BASE/$E2E_DB_NAME"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DB_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -24,12 +29,13 @@ ADMIN_DIR="$(cd "$DB_DIR/../fengyu-admin" && pwd)"
 PSQL() { env -u http_proxy -u https_proxy -u all_proxy psql "$@"; }
 
 echo "[1/4] 建库 ${E2E_DB_NAME}（若不存在）"
-# fengyu 需有 CREATEDB 权限才能建独立 e2e 库。双机迁移（2026-07-17）后新拓扑
-# 47.113.202.7:5433 上 fengyu 默认无此权限（旧 5434 有，迁移时遗漏），需 DBA 一次性授权：
-#   psql -U <superuser> -h 47.113.202.7 -p 5433 -d postgres -c 'ALTER ROLE fengyu CREATEDB'
+# fengyu 需有 CREATEDB 权限才能建独立 e2e 库。
+# ⚠️ 2026-09-14 实测：101.34.242.103:5433 上 fengyu 的 rolcreatedb=false，需 DBA 一次性授权：
+#   psql -U <superuser> -h 101.34.242.103 -p 5433 -d postgres -c 'ALTER ROLE fengyu CREATEDB'
+# 授权后本脚本才能建库；在此之前 admin e2e 无库可连（旧 e2e 库随 47.113.202.7 一起弃用）。
 if ! PSQL "$PG_BASE/postgres" -tAc "SELECT rolcreatedb FROM pg_roles WHERE rolname='fengyu'" | grep -q 't'; then
   echo "✗ fengyu 角色无 CREATEDB 权限，无法建独立 e2e 库。" >&2
-  echo "  请由 DBA（superuser）执行：ALTER ROLE fengyu CREATEDB  (47.113.202.7:5433)" >&2
+  echo "  请由 DBA（superuser）执行：ALTER ROLE fengyu CREATEDB  (101.34.242.103:5433)" >&2
   exit 1
 fi
 PSQL "$PG_BASE/postgres" -tAc "SELECT 1 FROM pg_database WHERE datname='$E2E_DB_NAME'" | grep -q 1 \

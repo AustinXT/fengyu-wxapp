@@ -20,9 +20,9 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e:db": "bash ../db/scripts/bootstrap-e2e-db.sh",
-    "test:e2e": "E2E_DATABASE_URL=${E2E_DATABASE_URL:-postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu_e2e} playwright test",
-    "test:e2e:ui": "E2E_DATABASE_URL=${E2E_DATABASE_URL:-postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu_e2e} playwright test --ui",
-    "test:e2e:manual": "E2E_DATABASE_URL=${E2E_DATABASE_URL:-postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu_e2e} playwright test --config=tests/e2e-chains/playwright.manual.config.ts --project=chromium --reporter=list",
+    "test:e2e": "E2E_DATABASE_URL=${E2E_DATABASE_URL:-postgresql://fengyu:fengyu123@101.34.242.103:5433/${E2E_DB_NAME:-fengyu_e2e}} playwright test",
+    "test:e2e:ui": "E2E_DATABASE_URL=${E2E_DATABASE_URL:-postgresql://fengyu:fengyu123@101.34.242.103:5433/${E2E_DB_NAME:-fengyu_e2e}} playwright test --ui",
+    "test:e2e:manual": "E2E_DATABASE_URL=${E2E_DATABASE_URL:-postgresql://fengyu:fengyu123@101.34.242.103:5433/${E2E_DB_NAME:-fengyu_e2e}} playwright test --config=tests/e2e-chains/playwright.manual.config.ts --project=chromium --reporter=list",
     "test:visual": "playwright test tests/e2e-pages/visual",
     "test:visual:update": "playwright test tests/e2e-pages/visual --update-snapshots",
     "test:all": "vitest run && playwright test"

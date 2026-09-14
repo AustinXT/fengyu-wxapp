@@ -17,9 +17,9 @@
  *   0040 内部有同样的自检并会 RAISE 回滚，所以本脚本只是**提前**知道结果，
  *   免得在维护窗口里才发现要人工判读。
  *
- * 用法（三库都要各跑一遍，必须显式传 DATABASE_URL）：
+ * 用法（两个业务库都要各跑一遍，必须显式传 DATABASE_URL）：
  *   DATABASE_URL="postgresql://fengyu:***@101.34.242.103:5433/fengyu_wxapp" \
- *     node db/scripts/check-attribution-drift.js          # test
+ *     node db/scripts/check-attribution-drift.js          # dev
  *   DATABASE_URL="postgresql://fengyu:***@118.178.196.26:5433/fengyu_wxapp" \
  *     node db/scripts/check-attribution-drift.js          # prod
  *
@@ -35,9 +35,9 @@ const CONNECTION_STRING = process.env.DATABASE_URL || process.env.PG_CONNECTION_
 
 /** 已知业务库，仅用于在输出里标明打的是哪一套，防止对着错的库下结论。 */
 const KNOWN_HOSTS = {
-  '118.178.196.26': 'prod',
-  '101.34.242.103': 'test（dev 自 2026-09-01 起也迁到这台，两者同库）',
-  '47.113.202.7': 'dev（旧拓扑；db/CLAUDE.md 仍记为在用，以 envs/ 的实际连接串为准）',
+  '118.178.196.26': 'prod（lx-prod）',
+  '101.34.242.103': 'dev（lx-test）',
+  '47.113.202.7': '⚠ 已弃用的旧库（ali-demo，2026-09-01 起停用，数据停在 2026-08-24）——不应再作为任何目标',
 }
 
 const SAMPLE_LIMIT = 20

@@ -1,14 +1,14 @@
 /**
  * 「按回款逐笔分配」真实库集成测试（capture 链路）
  *
- * 默认直连测试库（postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp）。
+ * 默认直连测试库（postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp）。
  * 可通过 PAYMENT_ALLOCATABLE_INT_DATABASE_URL 覆盖到临时 PG 做迁移验证。
  * 全程 BEGIN ... ROLLBACK 包裹，绝不 COMMIT —— 不在库里留任何痕迹。
  *
  * 直接调用 utils/payment-allocatable 的 capturePaymentAllocatables /
  * refreshOrderAllocationRollup，传入真实 pg Client 事务句柄。
  *
- * ⚠️ 仅对测试库（47.113.202.7:5433）；绝不碰生产 IP 118.178.196.26。
+ * ⚠️ 仅对测试库（101.34.242.103:5433）；绝不碰生产 IP 118.178.196.26。
  *
  * 运行：
  *   env -u http_proxy -u https_proxy -u all_proxy \
@@ -24,7 +24,7 @@ const {
   reconcileAllocationStatusAfterRefund,
 } = require('../../utils/payment-allocatable')
 
-const DEFAULT_CONN = 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
+const DEFAULT_CONN = 'postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp'
 const CONN = process.env.PAYMENT_ALLOCATABLE_INT_DATABASE_URL || DEFAULT_CONN
 
 // 唯一后缀，避免与并发数据撞主键（虽然全程 ROLLBACK，仍取唯一值更稳）

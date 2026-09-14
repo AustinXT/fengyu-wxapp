@@ -72,10 +72,8 @@ const prodTemplateValues = parseEnv(prodTemplate)
 const devTemplateValues = parseEnv(devTemplate)
 
 const prodPath = path.join(root, 'envs/prod.env')
-const testPath = path.join(root, 'envs/test.env')
 const devPath = path.join(root, 'envs/dev.env')
 const currentProd = readEnv(prodPath)
-const currentTest = readEnv(testPath)
 const currentDev = readEnv(devPath)
 const staffAccount = readEnv(path.join(root, 'fengyu-staff/.env'))
 const admin = readEnv(path.join(auditDir, 'admin.env'))
@@ -113,12 +111,10 @@ Object.assign(prod, {
 // PG_CONNECTION_STRING 以三个线上云函数共同使用的 PG 为准，远程 admin 的同名遗留值不参与。
 prod.PG_CONNECTION_STRING = clientApi.PG_CONNECTION_STRING
 
-const test = { ...prodTemplateValues, ...currentTest, ENV_PROFILE: 'test' }
-const dev = { ...devTemplateValues, ...currentTest, ...currentDev, ENV_PROFILE: 'dev' }
+const dev = { ...devTemplateValues, ...currentDev, ENV_PROFILE: 'dev' }
 
 for (const [file, template, values] of [
   [prodPath, prodTemplate, prod],
-  [testPath, prodTemplate, test],
   [devPath, devTemplate, dev],
 ]) {
   const keys = templateKeys(template)
@@ -127,4 +123,4 @@ for (const [file, template, values] of [
   fs.writeFileSync(file, render(template, values), { mode: 0o600 })
 }
 
-console.log(`Reconciled ${templateKeys(prodTemplate).length} keys across prod/test/dev without printing values.`)
+console.log(`Reconciled ${templateKeys(prodTemplate).length} keys across prod/dev without printing values.`)
