@@ -121,6 +121,22 @@ function readFile(p) {
   return fs.readFileSync(p, 'utf8')
 }
 
+/**
+ * 剥掉 JS/TS 注释后再做「某行代码是否存在」的断言。
+ *
+ * 不剥的话，把目标行注释掉就能骗过断言而代码已失效——这是 snapshot 守护的经典漏网：
+ * `toContain` 吃行注释，行形锚点 `/^\s*x$/m` 吃块注释（整行包进 /* *\/ 后行首仍是空白+代码）。
+ * 块注释整体置空而非逐行删，是为了保持行结构不塌陷，行形锚点才不会误命中相邻行。
+ *
+ * 只用于这类存在性断言，不追求完备的词法分析（字符串字面量里的 `//` 会被误伤，
+ * 但那只会让断言更严格，方向是 fail-closed）。
+ */
+function stripJsComments(src) {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+    .replace(/(^|[^:])\/\/.*$/gm, '$1')
+}
+
 function normalizeSql(sql) {
   return sql
     .replace(/\$\d+/g, '?')
@@ -2477,10 +2493,13 @@ describe('疗程卡可用次数为 0 时仍展示的跨端守护（issue #122）
       )
       // codex 评审 P2：上面只证明"helper 被调用并赋给局部变量"，不证明它接进了最终 WHERE。
       // 删掉展开处，条件就静默失效而断言仍绿——所以这里必须钉住展开位置。
-      // GLM 复评又指出：`toContain` 吃注释化（`// ...dateRangeConditions,` 仍能通过），
-      // 故改行形锚点——注释行的行首是 `//` 而非 `...`，匹配不上。
+      //
+      // 这条断言被两轮评审各打穿一次，逐级加固到现在：
+      //   toContain          → 吃行注释 `// ...dateRangeConditions,`（GLM round-2 指出）
+      //   行形锚点 /^\s*\.\.\./m → 吃块注释（codex round-3 实际变异验证：把整行包进 /* */ 仍匹配）
+      //   现在：先剥注释再匹配，两种注释形态都失效
       expect(
-        adminAllocationsSrc,
+        stripJsComments(adminAllocationsSrc),
         'admin 分配列表的日期条件未接入最终查询（dateRangeConditions 未展开进 conds，或被注释掉）',
       ).toMatch(/^\s*\.\.\.dateRangeConditions,$/m)
     })

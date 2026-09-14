@@ -113,6 +113,43 @@ describe('业务列表统一筛选', () => {
     await expect(orderRoutes.list(ctx)).rejects.toThrow(/INVALID_STATE: MIGRATION_REQUIRED/)
   })
 
+  // codex round-3 P2：缺这条真值用例，删掉 `probe.has_gap` 判断不会被任何测试抓住
+  test('trigger 已就绪但存量仍有缺口时照样拦截', async () => {
+    pg.query.mockResolvedValueOnce([{ has_gap: true, trigger_ready: true }])
+    const ctx = createManagerCtx({ startDate: '2026-08-01' })
+    await expect(orderRoutes.list(ctx)).rejects.toThrow(/INVALID_STATE: MIGRATION_REQUIRED/)
+    expect(pg.query).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * codex round-3 P2：上面所有用例都直接 mock `trigger_ready`，等于只测了 guard 的 JS 分支，
+   * 没测 SQL 本身——把 PROBE_SQL 改成 `true AS trigger_ready`、删掉 pg_proc 子查询、
+   * 或把函数名写错，这些用例统统照常绿，而空的 0038 库会再次被永久缓存成 ready。
+   * 所以这里直接守护探针 SQL 的实质内容。
+   */
+  test('探针 SQL 必须真的检测 0039 能力与存量缺口', async () => {
+    mockAttributionReady()
+    pg.query.mockResolvedValueOnce([])
+    await orderRoutes.list(createManagerCtx({ startDate: '2026-08-01' }))
+    const probeSql = pg.query.mock.calls[0][0]
+    const flat = probeSql.replace(/\s+/g, ' ')
+    // ① 存量缺口：首次支付 + 已支付 + 归属日期为空
+    expect(flat, '探针丢了存量缺口检测').toContain(
+      "FROM sale_order_payments WHERE change_type = '首次支付' AND status = '已支付'"
+        + ' AND performance_attribution_date IS NULL',
+    )
+    // ② 0039 能力：必须查那个 trigger 函数的定义，且比对的是 0039 才有的正面分支
+    expect(flat, '探针丢了 trigger 能力检测（pg_proc 子查询被删或函数名写错）').toContain(
+      "FROM pg_proc p WHERE p.proname = 'initialize_payment_performance_attribution_date'",
+    )
+    expect(flat, '探针比对串漂移：必须是 0039 引入的正面分支，不能是 0038 的排除式写法').toContain(
+      "pg_get_functiondef(p.oid) LIKE '%IF NEW.change_type = ''首次支付'' THEN%'",
+    )
+    // ③ 两个字段都要真的从 SQL 取，不能被写死成常量
+    expect(flat, 'trigger_ready 被写死').not.toMatch(/\btrue AS trigger_ready\b/)
+    expect(flat, 'has_gap 被写死').not.toMatch(/\bfalse AS has_gap\b/)
+  })
+
   // GLM round-2 P3：异常路径（探针 reject → finally 清 inflight → 下次重探成功）无用例守护，
   // 将来有人把 .finally 「简化」掉，回归不会被任何测试抓住。
   test('探针瞬时故障后不会钉死后续请求', async () => {
