@@ -81,10 +81,13 @@ const UNREADABLE_FRAGMENTS = [
  * ⚠️ 送到客户端的不是 `err.digest` 本身，而是
  * `createDigestWithErrorCode(thrownValue, err.digest)`（`next/dist/lib/error-telemetry-utils.js`）：
  * 抛出物带 `__NEXT_ERROR_CODE` 时会拼成 `1956068727@E263`。Next 内部错误（如 render phase 里
- * 调 `revalidatePath`）几乎都打了这个码，所以 `@E###` 后缀必须一起认。
+ * 调 `revalidatePath`）几乎都打了这个码，所以后缀必须一起认。
  * 我们自己补的业务 digest 不带 `__NEXT_ERROR_CODE`，不会被加后缀。
+ *
+ * 后缀不限于 `E+数字`：Next 里还有 `__NEXT_ERROR_CODE = 'TurbopackInternalError'` 这种
+ * 直接赋值的标识符形态（漂移守护扫出来的，不是猜的），所以按「@ + 标识符」认。
  */
-const NEXT_AUTO_DIGEST_RE = /^\d{1,10}(?:@E\d+)?$/
+const NEXT_AUTO_DIGEST_RE = /^\d{1,10}(?:@[A-Za-z][\w-]*)?$/
 
 /**
  * Next 内部路由/渲染信号，以 `NEXT_` 开头且可带分号载荷
@@ -187,10 +190,13 @@ const TECH_ARTIFACT_RES: readonly RegExp[] = [
   // 免得误杀 SKU、OEM 这类单词型业务缩写）。真实来源：
   // `actions/lakala-onboarding.ts:1492` 的「缺少电子合同回调地址：LAKALA_ECONTRACT_CALLBACK_URL」
   // 尾巴允许挂小写单位（`LAKALA_TIMEOUT_30000ms`）；整体 ≥6 字符。
-  // **前后不能紧贴中日韩**：商品名是无格式限制的 text 且会被直接拼进错误文案
-  // （`business.ts:1535`），`ABC_DEF款精华液` 这种写法不是配置名。
+  // **前后不能紧贴中日韩、也不能被中式括号裹着**：商品名是无格式限制的 text 且会被直接
+  // 拼进错误文案 —— `ABC_DEF款精华液`（`business.ts:1535`）与 `商品「ABC_DEF」每单最多…`
+  // （`orders.ts:194` 的 `purchaseLimitExceededMessage`、`pickup-records.ts:272` 等）都不是配置名。
+  // 括号单独列而不并进 `CJK_RE`：后者刻意排除全角标点（否则 `（position 0）` 会被放行），
+  // 且 `地址：LAKALA_ECONTRACT_CALLBACK_URL` 的全角冒号必须仍然算「被隔开」。
   new RegExp(
-    `(?<![\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF66-\uFF9F])\\b(?=[A-Z][A-Z0-9_]{5,}[a-z]*\\b)[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+[a-z]*\\b(?![\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF66-\uFF9F])`,
+    `(?<![\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF66-\uFF9F\u300C\u300D\u300E\u300F\uFF08\uFF09\u3010\u3011\u300A\u300B\u3008\u3009\u3014\u3015])\\b(?=[A-Z][A-Z0-9_]{5,}[a-z]*\\b)[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+[a-z]*\\b(?![\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF66-\uFF9F\u300C\u300D\u300E\u300F\uFF08\uFF09\u3010\u3011\u300A\u300B\u3008\u3009\u3014\u3015])`,
     'u',
   ),
   // 单标签主机:端口（`postgres:5433` / `redis:6379`）。要求小写字母开头 + 主机名 ≥5 字符：

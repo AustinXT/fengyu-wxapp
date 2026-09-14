@@ -200,6 +200,7 @@ describe('actionErrorMessage', () => {
 
     it.each([
       // actions/lakala-onboarding.ts:1492 的真实文案：中文包着环境变量名
+      // 全角冒号仍然算「被隔开」，配置名照杀（括号豁免不能顺带把冒号也豁免了）
       'INVALID_STATE: 缺少电子合同回调地址：LAKALA_ECONTRACT_CALLBACK_URL',
       // 主机名:端口（IPv4 之外的形态）
       'INVALID_STATE: 数据库连接失败：postgres.internal:5433 不可达',
@@ -250,6 +251,13 @@ describe('actionErrorMessage', () => {
       ['INVALID_STATE: A_B款精华液 未设置市场进货价', 'A_B款精华液 未设置市场进货价'],
       // 商品名是无格式限制的 text，英文型号 + 下划线是合法写法；紧贴中文即不算配置名
       ['INVALID_STATE: SKU ABC_DEF款精华液 未设置市场进货价', 'SKU ABC_DEF款精华液 未设置市场进货价'],
+      // 中式括号裹着的业务标识符同理 —— orders.ts:194 的 purchaseLimitExceededMessage、
+      // pickup-records.ts:272 都是这种写法
+      [
+        'INVALID_PARAMS: PURCHASE_LIMIT_EXCEEDED: 商品「ABC_DEF」每单最多可购买 2 件',
+        '商品「ABC_DEF」每单最多可购买 2 件',
+      ],
+      ['NOT_FOUND: 库存商品（ABC_DEF）不足', '库存商品（ABC_DEF）不足'],
       ['INVALID_PARAMS: 仅 PC/H5 端支持该操作', '仅 PC/H5 端支持该操作'],
       ['INVALID_PARAMS: 支持 iOS/Android 双端', '支持 iOS/Android 双端'],
       ['INVALID_PARAMS: 门店 sku:10086 已停用', '门店 sku:10086 已停用'],
@@ -356,7 +364,7 @@ describe('actionErrorMessage', () => {
     // Next 把带 __NEXT_ERROR_CODE 的内部错误 digest 拼成 `<hash>@E<code>`
     // （createDigestWithErrorCode，error-telemetry-utils.js）。admin 19 个 action 模块大量
     // 调 revalidatePath，这条支路是真的会走到的。
-    it.each(['1956068727@E263', '0@E1', '4294967295@E999'])(
+    it.each(['1956068727@E263', '0@E1', '4294967295@E999', '1956068727@TurbopackInternalError'])(
       '带 Next 错误码后缀的自动 digest %s 也判为编号',
       (digest) => {
         const err = Object.assign(new Error(NEXT_SANITIZED_MESSAGE), { digest })
@@ -703,7 +711,7 @@ describe('Next digest 形态漂移守护（#133）', () => {
       // 写入形态：`x.digest = …` / `readonly digest = …` / `digest = …`（无 readonly 的字段）
       // / 对象字面量里任意位置的 `digest:` / `['digest'] =` / `defineProperty(…, 'digest', …)`
       if (
-        /\.digest\s*=(?!=)|(?:readonly\s+)?\bdigest\s*=(?!=)|\bdigest\s*:\s*\S|\[\s*['"`]digest['"`]\s*\]\s*=|defineProperty\s*\([^,]+,\s*['"`]digest['"`]/.test(
+        /\.digest\s*=(?!=)|(?:readonly\s+)?\bdigest\s*(?::\s*[\w<>[\]|\s]+)?=(?!=)|\bdigest\s*:\s*\S|\[\s*['"`]digest['"`]\s*\]\s*=|defineProperty\s*\([^,]+,\s*['"`]digest['"`]/.test(
           text,
         )
       ) {
@@ -722,7 +730,7 @@ describe('Next digest 形态漂移守护（#133）', () => {
       }
       // 取值形态要与上面的写入形态一一对应，否则「文件集不变、新增一个裸 token」会静默放过
       const valuePatterns = [
-        /\bdigest\s*[=:]\s*['"`]([^'"`]+)['"`]/g,
+        /\bdigest\s*(?::\s*[\w<>[\]|\s]+)?[=:]\s*['"`]([^'"`]+)['"`]/g,
         /\[\s*['"`]digest['"`]\s*\]\s*=\s*['"`]([^'"`]+)['"`]/g,
         /defineProperty\s*\([^,]+,\s*['"`]digest['"`]\s*,\s*\{[^}]*value\s*:\s*['"`]([^'"`]+)['"`]/g,
       ]
@@ -756,13 +764,13 @@ describe('Next digest 形态漂移守护（#133）', () => {
     }
   })
 
-  it('仓内真实二级子标签（字母型）都 ≥5 字符（长度启发式的前提，破了就要改判定）', () => {
+  it('仓内真实二级子标签（字母型、连续字面量）都 ≥5 字符（长度启发式的前提，破了就要改判定）', () => {
     // LEVEL2_SUBTAG_RE 用「标签 ≥5 字符」把日志子标签与 ID:/SKU:/URL: 这类展示标签分开。
     // 这是启发式不是协议 —— 语法上二者没法区分。所以把前提本身钉住：一旦有人写出
     // `CONFLICT: LOCK: …` 这种短子标签，这条立刻红，逼着重新决定判定方式。
     //
-    // 已知覆盖边界（诚实声明）：扫的是**源码里直接写出来的字面量**。把子标签先赋给常量
-    // 再拼（`const d = 'LOCK: …'; throw new ApiError('CONFLICT', d)`）绕得过去 ——
+    // 已知覆盖边界（诚实声明）：扫的是**源码里连续写出来的字面量**。先赋常量再拼
+    // （`const d = 'LOCK: …'`）、或字面量相加（`'CONFLICT: ' + 'LOCK: …'`）都绕得过去 ——
     // 要闭合这个口子得上 AST/ESLint 规则，已登记为跟进项。
     const escaped = (ERROR_PREFIXES as readonly string[]).map((p) =>
       p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
@@ -791,13 +799,21 @@ describe('Next digest 形态漂移守护（#133）', () => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         const full = resolve(dir, entry.name)
         if (entry.isDirectory()) walk(full)
-        else if (entry.name.endsWith('.js')) {
+        else if (/\.(?:js|mjs|cjs)$/.test(entry.name)) {
           const text = readFileSync(full, 'utf8')
           if (!text.includes('__NEXT_ERROR_CODE')) continue
           // 形态是 `Object.defineProperty(err, "__NEXT_ERROR_CODE", {\n  value: "E263", …})`
           // 只统计「定义点」（后面紧跟 descriptor 的那种），跳过纯读取用法
-          const defs = [...text.matchAll(/__NEXT_ERROR_CODE["']?\s*,\s*\{/g)]
-          const parsed = [...text.matchAll(/__NEXT_ERROR_CODE[\s\S]{0,120}?value:\s*["']([^"']+)["']/g)]
+          // 两种定义形态：`defineProperty(err, "__NEXT_ERROR_CODE", { value: "E263" })`
+          // 与直接赋值 `err.__NEXT_ERROR_CODE = "E263"`
+          const defs = [
+            ...text.matchAll(/__NEXT_ERROR_CODE["']?\s*,\s*\{/g),
+            ...text.matchAll(/__NEXT_ERROR_CODE\s*=\s*["']/g),
+          ]
+          const parsed = [
+            ...text.matchAll(/__NEXT_ERROR_CODE[\s\S]{0,120}?value:\s*["']([^"']+)["']/g),
+            ...text.matchAll(/__NEXT_ERROR_CODE\s*=\s*["']([^"']+)["']/g),
+          ]
           for (const m of parsed) samples.add(m[1])
           if (parsed.length < defs.length) {
             unparsed.push(`${full.slice(nextRoot.length)}（${defs.length - parsed.length} 处）`)
@@ -811,11 +827,16 @@ describe('Next digest 形态漂移守护（#133）', () => {
     expect(samples.size, '没在 next/dist 里找到 __NEXT_ERROR_CODE 样本').toBeGreaterThan(300)
     // 每个写入点都要能被解析出错误码 —— 否则「新写法不匹配 → 不计入失败 → 照样绿」
     expect(unparsed, `有 ${unparsed.length} 个 __NEXT_ERROR_CODE 写入点没能解析出错误码`).toEqual([])
+    // 错误码会被原样拼进 digest（`<hash>@<code>`），所以真正的前提是「码里没有空白、
+    // 是个标识符」。绝大多数是 `E+数字`，但直接赋值那一支有 `TurbopackInternalError` ——
+    // 这条断言写成 `^E\d+$` 的话会被真实数据打红（本守护第一次跑就逮到了）。
     for (const code of samples) {
-      expect(code, `Next 错误码形态变了：${code}，NEXT_AUTO_DIGEST_RE 的 @E\\d+ 需要跟着改`).toMatch(
-        /^E\d+$/,
-      )
+      expect(
+        code,
+        `Next 错误码形态变了：${code}，NEXT_AUTO_DIGEST_RE 的后缀匹配需要跟着改`,
+      ).toMatch(/^[A-Za-z][\w-]*$/)
     }
+    expect([...samples].filter((c) => /^E\d+$/.test(c)).length).toBeGreaterThan(300)
   })
 
   it('9 项白名单里每个前缀，要么有裸 token 中文说法，要么确认不会以裸 token 出现', () => {
