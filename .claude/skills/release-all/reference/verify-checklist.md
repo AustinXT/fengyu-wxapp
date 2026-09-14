@@ -1,31 +1,31 @@
-# 发版验证清单（dev/test/prod）
+# 发版验证清单（dev/prod）
 
-配合 `SKILL.md` 的 Phase 0 与 Phase 6 使用。dev/prod 的 CloudBase 线上值以 `getFunctionConfig` / `tcb fn detail` 实测为准；test 没有独立 CloudBase，禁止部署或验证云函数，只验证 101 上的 admin、analyst 和测试库。
+配合 `SKILL.md` 的 Phase 0 与 Phase 6 使用。CloudBase 线上值以 `getFunctionConfig` / `tcb fn detail` 实测为准。
+
+⚠ 环境只有 dev / prod 两套：`dev` 分支→dev 环境（lx-test / 101.34.242.103），`test` 与 `main` 分支→prod 环境（lx-prod / 118.178.196.26）。早期独立 test 环境已于 2026-09-01 退役。
 
 ## 环境变量安全表（防 dev 值误入 prod / prod 值误入 dev）
 
-| 变量 | dev 期望 | test 期望 | prod 期望 | 误用风险 |
-|------|----------|-----------|-----------|----------|
-| `ENV_PROFILE` | `dev` | `test` | `prod` | 环境选择错误 |
-| `ALLOW_TEST_OPENID` | `true` | `false` | `false` | 鉴权策略串环境 |
-| `WXACODE_ENV_VERSION` | `develop` | `release` | `release` | 小程序码指错环境 |
-| `PG_CONNECTION_STRING` | `47.113.202.7:5433/fengyu_wxapp` | `101.34.242.103:5433/fengyu_wxapp`（仅迁移） | `118.178.196.26:5433/fengyu_wxapp` | 数据写错库 |
-| `ADMIN_DATABASE_URL` | `47.113.202.7:5433/fengyu_wxapp` | `172.18.0.1:5433/fengyu_wxapp`（101 容器） | `118.178.196.26:5433/fengyu_wxapp` 或已验证同机网桥 | admin 读错库 |
-| `CLIENT_SECRET` | dev secret | 101 现有配置 | prod 独立 secret | HMAC 桥断裂或跨环境互通 |
-| `CLIENT_SERVICE_URL` | dev 域名 | 101 现有配置 | prod 真实域名 | 跨服务调用指错环境 |
-| `ADMIN_JWT_SECRET` | dev jwt | test 独立 jwt | prod 独立 jwt | 跨环境 session 互通 |
-| `ANALYST_PUBLIC_ORIGIN` | dev analyst URL | `http://101.34.242.103:3001` | prod analyst URL | analyst 入口串环境 |
-| `LAKALA_*` | SIT 沙箱 | 101 既有测试配置 | prod 真实商户凭证 | 支付或入网不可用 |
-| `PAYNOTIFY_ENABLED` | `true` | N/A（不部署云函数） | `true` | 支付通知不可用 |
+| 变量 | dev 期望 | prod 期望 | 误用风险 |
+|------|----------|-----------|----------|
+| `ENV_PROFILE` | `dev` | `prod` | 环境选择错误 |
+| `ALLOW_TEST_OPENID` | `true` | `false` | 鉴权策略串环境 |
+| `WXACODE_ENV_VERSION` | `develop` | `release` | 小程序码指错环境 |
+| `PG_CONNECTION_STRING` | `101.34.242.103:5433/fengyu_wxapp` | `118.178.196.26:5433/fengyu_wxapp` | 数据写错库 |
+| `ADMIN_DATABASE_URL` | `172.18.0.1:5433/fengyu_wxapp`（101 容器） | `118.178.196.26:5433/fengyu_wxapp` 或已验证同机网桥 | admin 读错库 |
+| `CLIENT_SECRET` | dev secret | prod 独立 secret | HMAC 桥断裂或跨环境互通 |
+| `CLIENT_SERVICE_URL` | dev 域名 | prod 真实域名 | 跨服务调用指错环境 |
+| `ADMIN_JWT_SECRET` | dev jwt | prod 独立 jwt | 跨环境 session 互通 |
+| `ANALYST_PUBLIC_ORIGIN` | dev analyst URL | prod analyst URL | analyst 入口串环境 |
+| `LAKALA_*` | SIT 沙箱 | prod 真实商户凭证 | 支付或入网不可用 |
+| `PAYNOTIFY_ENABLED` | `true` | `true` | 支付通知不可用 |
 
 DB 目标口径：
-- `118.178.196.26:5433/fengyu_wxapp` = **prod**（fengyu-prod 服务器）
-- `101.34.242.103:5433/fengyu_wxapp` = **test**（sqlserver101；容器内经 `172.18.0.1` 回连）
-- `47.113.202.7:5433/fengyu_wxapp` = **dev**（ali-demo）
+- `118.178.196.26:5433/fengyu_wxapp` = **prod**（lx-prod 服务器）
+- `101.34.242.103:5433/fengyu_wxapp` = **dev**（lx-test；容器内经 `172.18.0.1` 回连）
+- `47.113.202.7:5433/fengyu_wxapp` = **已弃用**（ali-demo，2026-09-01 起停用；仍可连通但数据停在 2026-08-24，误连不报错）
 
-## 各云函数 getFunctionConfig 必检项（仅 dev/prod）
-
-test 必须跳过本节。其 `test.env` 暂时复用 prod envId，只供 admin 访问资源，绝不能执行云函数 code update。
+## 各云函数 getFunctionConfig 必检项
 
 | 函数 | env | 账号 |
 |------|-----|------|

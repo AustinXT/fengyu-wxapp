@@ -46,6 +46,15 @@ if [[ ! -f "$ROOT/envs/.active" ]]; then
 fi
 ACTIVE=$(cat "$ROOT/envs/.active")
 
+# ── .active 白名单：只允许 dev / prod ──
+# 独立 test 环境已于 2026-09-01 退役。若 .active 残留 'test' 且本地仍有 envs/test.env，
+# 由于 test.env 的 PG host 与 dev 同为 101，PG 校验会误判通过，而它的 envId 复用 prod ——
+# 结果是把 dev 的 PG 变量推进 prod CloudBase（2026-05-26 跨环境污染事故的同族路径）。
+if [[ ! "$ACTIVE" =~ ^(dev|prod)$ ]]; then
+  echo "ERROR: envs/.active='$ACTIVE' 不在白名单（只允许 dev / prod）。请先执行 scripts/use-env.sh <dev|prod>。" >&2
+  exit 1
+fi
+
 if [[ ! -f "$ROOT/envs/$ACTIVE.env" ]]; then
   echo "ERROR: envs/$ACTIVE.env not found." >&2
   exit 1

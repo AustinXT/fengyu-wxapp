@@ -2,11 +2,11 @@
 name: remote-deploy
 description: |
   在本地交叉编译 fengyu-admin 或 fengyu-analyst 的 linux/amd64 Docker 镜像，
-  传输到固定的 dev、test、prod 服务器并以版本化配置启动。用于“部署到服务器”、
+  传输到固定的 dev、prod 服务器并以版本化配置启动。用于“部署到服务器”、
   “更新服务器”、“上线 admin/analyst”、“remote deploy”等请求；不负责执行数据库迁移。
 disable-model-invocation: true
 user-invocable: true
-argument-hint: '[admin|analyst] [dev|test|prod]'
+argument-hint: '[admin|analyst] [dev|prod]'
 metadata:
   title: 远程部署（本地交叉编译）
   description_zh: 本地 buildx → 镜像传输 → 版本化 compose → 自动回滚
@@ -19,11 +19,11 @@ metadata:
 部署入口：
 
 ```bash
-.claude/skills/remote-deploy/deploy-admin.sh <dev|test|prod> [--check]
-.claude/skills/remote-deploy/deploy-analyst.sh <dev|test|prod> [--check]
+.claude/skills/remote-deploy/deploy-admin.sh <dev|prod> [--check]
+.claude/skills/remote-deploy/deploy-analyst.sh <dev|prod> [--check]
 
-.claude/skills/remote-deploy/deploy-admin.sh --rollback <dev|test|prod>
-.claude/skills/remote-deploy/deploy-analyst.sh --rollback <dev|test|prod>
+.claude/skills/remote-deploy/deploy-admin.sh --rollback <dev|prod>
+.claude/skills/remote-deploy/deploy-analyst.sh --rollback <dev|prod>
 ```
 
 `--check` 只运行脱敏预检，不构建、不上传、不修改远端。实际 prod 发布或回滚必须按提示输入包含环境的确认文本。
@@ -38,7 +38,12 @@ metadata:
 
 `172.18.0.1` 是容器回连 `101.34.242.103` 宿主 PostgreSQL 的 Docker 网桥，不是另一台服务器。禁止用参数、环境变量或分支名覆盖上述目标。
 
-⚠ **dev 与 test 是同一台机、同一个远端目录、同一个库**（2026-09-10 dev 的 PG 从 ali-demo `47.113.202.7` 迁来，该机已弃用；两者仅 CloudBase 环境不同）。因此 `deploy-admin.sh dev` 与 `deploy-admin.sh test` 部署的是**同一套 admin 容器**，后跑的覆盖先跑的；`validateConfig` 的 host 断言也区分不了两者。要独立验收 dev / test，须先把两者拆到不同远端目录或不同机器。
+⚠ **独立 test 环境已退役**（2026-09-01 dev 的 PG 从 ali-demo `47.113.202.7` 迁入本机，该机全面弃用）。
+退役前 dev 与 test 是同一台机、同一个远端目录、同一个库，`deploy-admin.sh dev` 与 `deploy-admin.sh test`
+部署的是同一套 admin 容器、后跑的覆盖先跑的——这正是取消 test 目标的原因。现在 `load_target` 只接受
+`dev` / `prod`，传 `test` 会直接报错。
+
+注意分支名与环境名不同：`dev` 分支→dev 环境；`test` 与 `main` 分支→**prod 环境**。
 
 ## 配置权威与门禁
 
