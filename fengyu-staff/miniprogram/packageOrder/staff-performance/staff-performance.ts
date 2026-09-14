@@ -234,21 +234,27 @@ Page({
     this.scheduleMidnightRefresh();
     if (!this._loaded || !this.data.startDate) return;
 
-    // 预置档位的区间也必须跟着「今天」重算：页面在页面栈里过夜后，「今日」会一直查进页面
-    // 那一天；跨月时「本月」甚至还在查上个月，而按钮高亮和标题都显示得像是当期。
-    // custom 是用户手选的区间，不动。
-    if (this.data.rangeType !== 'custom') {
-      const next = this.presetRange(this.data.rangeType);
-      if (next.start !== this.data.startDate || next.end !== this.data.endDate) {
-        // 区间变了 = 数据主体变了，走完整的清缓存 + 清明细 + 重拉流程，
-        // 不能用 keepStaleOnError 把昨天的数据留在屏幕上
-        this.setRange(this.data.rangeType);
-        return;
-      }
-    }
+    if (this.syncRangeToToday()) return; // 已经走了完整的重拉流程
 
     // 同主体的被动刷新：失败保留旧数据（见 loadData 的 keepStaleOnError）
     this.loadData(true, true);
+  },
+
+  /**
+   * 把预置档位的区间对齐到「今天」，变了就走完整重拉。返回是否真的重拉了。
+   *
+   * 页面在页面栈里过夜（onShow）或一直停在前台跨零点（定时器）后，「今日」会一直查进页面
+   * 那一天；跨月时「本月」甚至还在查上个月，而按钮高亮和标题都显示得像是当期。
+   * custom 是用户手选的区间，不动。
+   */
+  syncRangeToToday(): boolean {
+    if (this.data.rangeType === 'custom') return false;
+    const next = this.presetRange(this.data.rangeType);
+    if (next.start === this.data.startDate && next.end === this.data.endDate) return false;
+    // 区间变了 = 数据主体变了，走完整的清缓存 + 清明细 + 重拉流程，
+    // 不能用 keepStaleOnError 把昨天的数据留在屏幕上
+    this.setRange(this.data.rangeType);
+    return true;
   },
 
   /**
@@ -281,6 +287,9 @@ Page({
       this._midnightTimer = null;
       if (this._disposed) return;
       this.refreshDateBounds();
+      // 过了零点，「今日」「本月」的区间同样过期了 —— 只刷 picker 上界的话，
+      // 页面会顶着「今日」的高亮继续展示昨天的提成
+      this.syncRangeToToday();
       this.scheduleMidnightRefresh();
     }, next.getTime() - now.getTime());
   },

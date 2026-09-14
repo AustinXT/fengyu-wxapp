@@ -40,6 +40,10 @@ afterAll(() => {
 beforeEach(() => {
   vi.clearAllMocks()
   vi.useFakeTimers()
+  // 必须显式清队列：useFakeTimers 不会丢掉上一个用例遗留的定时器，
+  // 而本页有跨零点定时器（每个 page 实例一个），累积下来会让后续用例里
+  // 一次 advanceTimersByTime 引爆七八个旧实例的回调，测出莫名其妙的重复请求
+  vi.clearAllTimers()
   vi.setSystemTime(new Date(2026, 8, 14, 10, 0, 0)) // 2026-09-14 本地时间
   ;(globalThis as any).wx.showToast = vi.fn()
 })
@@ -1177,5 +1181,44 @@ describe('绩效页 · 跨零点自动刷新 picker 上界（评审 round-12 cod
     expect(page._midnightTimer).not.toBeNull()
     page.onUnload()
     expect(page._midnightTimer).toBeNull()
+  })
+})
+
+describe('绩效页 · 跨零点同步区间（评审 round-13 codex P2）', () => {
+  // 注：这些用例不用 vi.waitFor —— 它在 fake timers 下会自行推进定时器，
+  // 会把跨零点回调提前引爆，测出来的时序不是真实的
+  test('停前台跨午夜：「今日」必须跟着推进，不能只刷 picker 上界', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'today' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+    page.scheduleMidnightRefresh() // onShow 会做这件事，这里只挂定时器，隔离掉它的异步部分
+    expect(page.data.startDate).toBe('2026-09-14')
+    expect(page.data.items).toHaveLength(1)
+
+    vi.mocked(callStaffApi).mockClear()
+    mockPage([], 0)
+    vi.advanceTimersByTime(14 * 3600 * 1000 + 10 * 1000) // 走过 0:00:05
+
+    expect(page.data.customMaxDate).toBe('2026-09-15')
+    expect(page.data.startDate).toBe('2026-09-15') // 区间也得推进
+    expect(page.data.displayDate).toBe('2026-09-15')
+    expect(callStaffApi).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(callStaffApi).mock.calls[0][1]).toMatchObject({ startDate: '2026-09-15' })
+    expect(page.data.items).toHaveLength(0) // 主体变了，昨天的数据不能留
+  })
+
+  test('custom 是用户手选的区间，跨零点不擅自改', () => {
+    const page = createPage()
+    page.onLoad({ range: 'custom' })
+    mockPage([], 0)
+    page.applyCustomRange('2026-08-20', '2026-09-14', 'start')
+    page.scheduleMidnightRefresh()
+    expect(page.data.startDate).toBe('2026-08-20')
+
+    vi.advanceTimersByTime(14 * 3600 * 1000 + 10 * 1000)
+
+    expect(page.data.startDate).toBe('2026-08-20')
+    expect(page.data.customMaxDate).toBe('2026-09-15') // 上界推进，区间不动
   })
 })
