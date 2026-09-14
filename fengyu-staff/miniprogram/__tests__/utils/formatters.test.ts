@@ -1,4 +1,4 @@
-import { safeParseDate, formatDate, formatDateTime, formatDateTimeShort, formatTime, getElapsedTime, STATUS_CLASS, ORDER_TYPE_LABEL, formatDiscount, buildCouponDisplay } from '../../utils/formatters'
+import { safeParseDate, formatDate, formatDateTime, formatDateTimeShort, formatTime, getElapsedTime, maskPhone, STATUS_CLASS, ORDER_TYPE_LABEL, formatDiscount, buildCouponDisplay } from '../../utils/formatters'
 
 describe('优惠券展示格式化', () => {
   test('折扣券 0.85 显示 8.5 折', () => {
@@ -158,6 +158,26 @@ describe('formatTime', () => {
 
   test('短字符串返回原值', () => {
     expect(formatTime('10:30')).toBe('10:30')
+  })
+})
+
+describe('maskPhone', () => {
+  test('11 位手机号遮中间 4 位', () => {
+    expect(maskPhone('13812345678')).toBe('138****5678')
+  })
+
+  test('前 3 位与后 4 位保留原样（据此核对是不是同一个人）', () => {
+    expect(maskPhone('18600000001')).toBe('186****0001')
+  })
+
+  test('短于 7 位原样返回，不拼出比原值还长的怪串', () => {
+    expect(maskPhone('123456')).toBe('123456')
+    expect(maskPhone('1234567')).toBe('123****4567') // 7 位起才遮，此时前后段有重叠属预期
+  })
+
+  test('空值不炸', () => {
+    expect(maskPhone('')).toBe('')
+    expect(maskPhone(undefined as unknown as string)).toBe(undefined as unknown as string)
   })
 })
 
