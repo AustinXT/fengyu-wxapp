@@ -116,6 +116,8 @@ describe('dashboard 组织层级现金流业绩一致性守护', () => {
       const paymentMetrics = normalize(stripComments(
         between(adminSrc, 'payment_metrics AS (', 'order_metrics AS ('),
       ))
+      // between() 找不到起止标记时返回空串，会让下面所有负向断言恒真（假绿）
+      expect(paymentMetrics, '未能截取 payment_metrics 片段，后续断言将失去意义').not.toBe('')
       const dated: Array<[string, string]> = [
         ['today_revenue', 'today'],
         ['today_paid_amount', 'today'],
@@ -123,13 +125,29 @@ describe('dashboard 组织层级现金流业绩一致性守护', () => {
         ['yesterday_revenue', 'yesterday'],
         ['yesterday_paid_amount', 'yesterday'],
       ]
+      /**
+       * ⚠ 必须**先切出本指标自己的 CASE 块，再在块内查日期绑定**。
+       *
+       * 曾经写成 `spe\.performance_date = \(SELECT ${bound} FROM bounds\)[\s\S]*?AS ${metric}`，
+       * 裸 `[\s\S]*?` 会跨过前面的指标：today_revenue 是第一个且自带
+       * `= (SELECT today FROM bounds)`，于是它替 today_paid_amount / today_refunded_amount
+       * 永远兜底；yesterday_revenue 同理替 yesterday_paid_amount 兜底。
+       * 实际效果是 5 条断言里只有 2 条（两个 revenue）真正生效——
+       * 把另外三个指标的日期条件删掉、绑错 bound、甚至塞回 paid_at，断言全绿。
+       * pr-ready 的 sibling-auditor 与 boundary-critic **各自独立变异验证**打穿了它。
+       *
+       * tempered greedy `(?:(?!COALESCE\(SUM\(CASE)[\s\S])*?` 保证匹配不越过下一个
+       * `COALESCE(SUM(CASE` 边界，即锁在本指标块内。
+       */
       for (const [metric, bound] of dated) {
-        expect(
-          paymentMetrics,
-          `${metric} 的日期口径漂移（必须是 spe.performance_date = ${bound}）`,
-        ).toMatch(
-          new RegExp(`spe\\.performance_date = \\(SELECT ${bound} FROM bounds\\)[\\s\\S]*?AS ${metric}`),
+        const block = paymentMetrics.match(
+          new RegExp(`COALESCE\\(SUM\\(CASE(?:(?!COALESCE\\(SUM\\(CASE)[\\s\\S])*?AS ${metric}`),
         )
+        expect(block, `未能定位 ${metric} 的 CASE 块`).toBeTruthy()
+        expect(
+          block![0],
+          `${metric} 的日期口径漂移（必须是 spe.performance_date = ${bound}）`,
+        ).toContain(`spe.performance_date = (SELECT ${bound} FROM bounds)`)
       }
       // 资金发生日不得作为任何日期条件回到工作台——那会重新制造「业绩按归属、实付按 paid_at」的双口径。
       // 若财务确实需要资金发生日口径，应另开报表入口而不是改这里（见 dashboard.ts 注释）。
@@ -144,6 +162,12 @@ describe('dashboard 组织层级现金流业绩一致性守护', () => {
       const totalBlock = paymentMetrics.match(/COALESCE\(SUM\(CASE(?:(?!COALESCE\(SUM\(CASE)[\s\S])*?AS total_paid_amount/)
       expect(totalBlock, '未能定位 total_paid_amount 片段').toBeTruthy()
       expect(totalBlock![0], 'total_paid_amount 被加上了日期条件').not.toMatch(/FROM bounds/)
+      // boundary-critic P2：上面只看 CASE 块内部。若把日期条件加到 CTE 自己的 WHERE，
+      // total_paid_amount 会被静默日期化而块内断言照过 —— 所以 WHERE 子句也要挡。
+      const cteWhere = paymentMetrics.slice(paymentMetrics.indexOf('FROM sale_order_performance_events'))
+      expect(cteWhere, '未能定位 payment_metrics 的 WHERE 子句').toContain('WHERE')
+      expect(cteWhere, 'payment_metrics 的 WHERE 被加上了日期条件，会波及 total_paid_amount')
+        .not.toMatch(/FROM bounds|performance_date|CURRENT_DATE|NOW\(\)/)
     })
 
     it('订单数量和待办仍在独立的 sale_orders CTE 中统计', () => {
