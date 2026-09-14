@@ -1762,14 +1762,17 @@ describe('绩效页 · 评审 round-25 闭环（codex）', () => {
       realSetData(u)
       if (cb) pending.push(cb)
     }
-    await page.loadData(true)          // A 上屏，回调挂起
-    const staleCb = pending.splice(0, 1)[0]
-    await page.loadData(true)          // B 上屏（_renderedSeq 前进）
+    await page.loadData(true)          // A 上屏
+    const staleCb = pending.shift()!   // 扣下 A 的回调，先不执行
+    await page.loadData(true)          // B 上屏
     page.setData = realSetData
+    pending.forEach((cb) => cb())      // B 的回调正常落地
     const keyAfterB = page._lastKey
+    expect(keyAfterB).not.toBe('')
 
-    staleCb() // A 的回调此刻才到
-    expect(page._lastKey).toBe(keyAfterB) // 没被 A 覆盖
+    staleCb() // A 的回调此刻才迟到
+    expect(page._lastKey).toBe(keyAfterB) // 没被 A 倒退覆盖
+    expect(page._renderedSeq).toBe(2)
   })
 
   test('同区间请求在途时连点「自定义」，不并发启动多个全区间扫描', () => {
@@ -1845,5 +1848,31 @@ describe('绩效页 · 清屏后迟到回调不得复活旧缓存（评审 round
 
     expect(page._lastKey).toBe('')
     expect(page._summaryCache).toBeNull()
+  })
+})
+
+describe('绩效页 · 「看似查全」不把话说死（评审 round-27 codex P1 前端侧）', () => {
+  test('已加载数等于总数时，未命中文案要给出重查入口', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+    expect(page.data.items.length).toBe(page.data.total)
+
+    search(page, '王五')
+    // 后端是 offset 分页 + 每次重排，翻页期间的新单可能根本没进过这批数据；
+    // 而这个功能的结论恰恰是「这顾客到底有没有分配给我」，说死了会导出相反判断
+    expect(page.data.searchHint).toContain('可重查')
+  })
+
+  test('还有没加载的页时不加这句（信息已经由「已加载 N/共 M」表达）', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([makeItem('张三', '13800000001', 1)], 58)
+    await page.loadData(true)
+
+    search(page, '王五')
+    expect(page.data.searchHint).toContain('已加载 1/共 58 条')
+    expect(page.data.searchHint).not.toContain('可重查')
   })
 })

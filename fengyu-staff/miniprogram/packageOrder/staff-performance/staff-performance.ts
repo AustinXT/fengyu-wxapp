@@ -226,13 +226,19 @@ Page({
   /** 跨零点定时器：页面停在前台过午夜时把 picker 上界推到新的今天 */
   _midnightTimer: null as ReturnType<typeof setTimeout> | null,
   /**
-   * 最后一次**真正写回屏幕**的请求代次。
+   * 最后一次**确认渲染完成**的请求代次（只在 setData 回调里推进）。
    * `_seq` 管的是「谁的响应还算数」，这个管的是「屏幕上现在挂的是谁的数据」——
-   * 两者会错开：响应 A 已经 setData 上屏，紧接着被动刷新把 `_seq` 推到 B，
-   * 这时 A 的 setData 回调若拿 `_seq` 判断就会放弃提交 `_lastKey`，
+   * 两者会错开：响应 A 已经上屏，紧接着被动刷新把 `_seq` 推到 B，
+   * 这时 A 的回调若拿 `_seq` 判断就会放弃提交 `_lastKey`，
    * 后面 B 一失败，catch 里的 sameSource 就会把屏幕上那批同源数据误判成异源清掉。
    */
   _renderedSeq: 0,
+  /**
+   * 主体世代：换员工 / 换时段 / 清屏时 +1。
+   * 迟到的 setData 回调靠它判断「我这批数据是不是已经被抹掉了」——
+   * 光比代次不够：清屏并不推进 `_renderedSeq`，旧回调仍会命中相等而把缓存复活回来。
+   */
+  _subjectEpoch: 0,
 
   onLoad(options: Record<string, string>) {
     const mgr = isManager();
@@ -751,7 +757,8 @@ Page({
       }
       // 过桥期间用户还能继续打字，回调里读 this.data.keyword 就把「新词已过滤完」错记成事实
       const keywordAtBuild = this.data.keyword;
-      this._renderedSeq = seq; // 这一刻起，屏幕上挂的就是本次响应的数据
+      // 发起时的主体世代：回调里据此判断这批数据是否已被清屏抹掉
+      const epochAtSend = this._subjectEpoch;
       this.setData({
         loadFailed: false,
         totalSalesAlloc: money(res.totalSalesAlloc),
@@ -780,9 +787,15 @@ Page({
         // 提前写的话，setData 万一失败（比如撞 1MB 上限）它们就和实际渲染的内容对不上，
         // 会把 catch 分支里 keepStaleOnError 的 sameSource 判断、以及切一级 Tab 时
         // 用 _summaryCache 本地重算的分类金额一起带偏。
-        // 认的是**渲染代次**不是请求代次：只要之后没有别的响应再写过屏幕，
-        // 这批数据就还挂在上面，身份证就该照常提交（哪怕此刻已有更新的请求在途）
-        if (seq !== this._renderedSeq) return;
+        if (this._disposed) return;
+        // 清屏 / 换主体之后迟到的回调：这批数据早不在屏幕上了，不能复活它的缓存
+        if (epochAtSend !== this._subjectEpoch) return;
+        // 已经有更新的响应写过屏幕了，旧回调不许倒退覆盖
+        if (seq < this._renderedSeq) return;
+        // 渲染代次只在这里推进 —— setData 之前就推进的话，
+        // 一旦这次写入失败（比如撞 1MB），屏幕上其实还是旧数据，
+        // 旧回调却已经被判过期、提交不了它自己的 `_lastKey`
+        this._renderedSeq = seq;
         this._lastKey = queryKey;
         this._summaryCache = res.categorySummary && res.categories && res.categories.length
           ? { summary: res.categorySummary, categories: res.categories }
@@ -824,11 +837,11 @@ Page({
   clearSubjectCache() {
     this._summaryCache = null;
     this._lastKey = '';
-    // 同时作废渲染世代：在途的 setData 回调可能在清屏**之后**才跑，
-    // 那时 `seq === _renderedSeq` 依然成立，会把刚清掉的旧主体缓存原样写回去。
+    // 推进主体世代：在途的 setData 回调可能在清屏**之后**才跑，
+    // 那时光比代次会命中相等，把刚清掉的旧主体缓存原样写回去。
     // -403 之后尤其危险 —— 切一下一级 Tab 就能用 `_summaryCache` 本地重算出
     // 上一个员工的分类薪酬，直接破掉「访问被拒必须彻底清屏」这条。
-    this._renderedSeq = -1;
+    this._subjectEpoch++;
   },
 
   /**
@@ -955,6 +968,11 @@ Page({
           ? `${loaded}，匹配 ${matched.length} 条（顶部汇总为全量，不随搜索变化）`
           : matched.length
             ? `${loaded}，匹配 ${matched.length} 条（顶部汇总为全量，不随搜索变化）`
+            // 「已加载 = 总数」看着像查全了，但后端是 offset 分页且每次重新排序，
+          // 翻页期间只要有新单或退款，就可能重复一行、漏掉另一行 —— 而这个功能的结论
+          // 恰恰是「这个顾客到底有没有分配给我」，说死了会直接导出相反判断
+          : items.length >= total
+            ? `${loaded}中未找到「${shown}」（翻页期间若有新单可能未纳入，点上方时段按钮可重查）`
             : `${loaded}中未找到「${shown}」`,
     };
   },
