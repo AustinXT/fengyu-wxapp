@@ -113,6 +113,16 @@ const HISTORY_MIN_DATE = '2020-01-01';
 const SEARCH_DEBOUNCE_MS = 200;
 
 /**
+ * 过滤结果的渲染上限。
+ *
+ * `items` 走路径式增量 setData 绕开了 1MB 上限，但 `displayItems` 是每次过滤整体重建的——
+ * 宽泛关键词（比如只打一个「1」）能命中上千条，一次传过去照样超限，
+ * 表现是「新页和过滤结果一起更新失败」，正好砸在「搜索激活时继续翻页」这条验收上。
+ * 命中几百条本来也不是有效检索（这功能是用来找**某一个**顾客的），截断 + 提示更实用。
+ */
+const MAX_DISPLAY_ITEMS = 200;
+
+/**
  * 访问被拒类错误 —— 一旦发生就不得继续展示屏幕上的既有数据（可能是他人薪酬）。
  * `PHONE_REQUIRED` 必须在列：`requireStaffBound` 在手机号失效时抛它（admin 改员工资料
  * 时手机号可被置空，路径实际可达），且它与 `PERMISSION_DENIED` 共享 -403，
@@ -244,9 +254,12 @@ Page({
     }
   },
 
-  // 跳下级页时防抖回调没必要再打到隐藏页面上（keyword 已落 data，回来照常重建视图）
+  // 跳下级页时把在途的防抖**跑完**再走，不能只 cancel：
+  // 用户改完关键词 200ms 内就离开的话，回来时输入框显示新词、displayItems 还对应旧词，
+  // 而 onShow 的被动刷新一旦失败会保留旧数据 —— 这个错配会一直挂着，
+  // 直接让员工对「这个顾客是不是我的」得出错误结论
   onHide() {
-    this.cancelFilter();
+    this.flushFilter();
   },
 
   // 页面销毁后推进代次，丢弃晚到的响应，避免对已卸载页面 setData
@@ -462,6 +475,13 @@ Page({
       clearTimeout(this._searchTimer);
       this._searchTimer = null;
     }
+  },
+
+  /** 有在途防抖就立即结算，保证 keyword 与 displayItems 永远同源 */
+  flushFilter() {
+    if (!this._searchTimer) return;
+    this.cancelFilter();
+    this.setData(this.buildSearchView(this.data.items, this.data.keyword, this.data.total));
   },
 
   /**
@@ -680,18 +700,22 @@ Page({
     const loaded = `已加载 ${items.length}/共 ${total} 条`;
     // 关键词进文案前截断：整段粘贴进搜索框时，原样内插会把 van-empty 的 description 撑爆
     const shown = kw.length > 12 ? `${keyword.trim().slice(0, 12)}…` : keyword.trim();
+    const capped = matched.length > MAX_DISPLAY_ITEMS;
     return {
-      displayItems: matched,
+      displayItems: capped ? matched.slice(0, MAX_DISPLAY_ITEMS) : matched,
       filterActive: true,
-      // 命中时也要提示：顶部三项汇总是后端全量口径、不随前端过滤缩水，
-      // 不标注会被当成「明细只剩 3 条、汇总却还是几千块」的数据错误上报
-      // total===0 说明本期一条记录都没有，跟关键词无关 —— 说「未找到张三」会让员工
-      // 以为张三的单被分给别人了，实际是整个时段空的
+      // 三种文案各有各的必要性：
+      // ① total===0：本期一条记录都没有，跟关键词无关。说「未找到张三」会让员工以为
+      //    张三的单被分给了别人；但计数仍要带上，否则又退回无信息空态
+      // ② 命中：必须标「顶部汇总为全量」，否则「明细只剩 3 条、汇总还是几千块」会被当成数据错误
+      // ③ 没命中：带「已加载 N/共 M」，让员工能分辨「真没有」和「没加载够」
       searchHint: total === 0
-        ? `本时段暂无提成记录（搜索「${shown}」仍生效）`
-        : matched.length
-          ? `${loaded}，匹配 ${matched.length} 条（顶部汇总为全量，不随搜索变化）`
-          : `${loaded}中未找到「${shown}」`,
+        ? `本时段暂无提成记录（${loaded}，搜索「${shown}」仍生效）`
+        : capped
+          ? `${loaded}，匹配 ${matched.length} 条，仅显示前 ${MAX_DISPLAY_ITEMS} 条 —— 关键词再具体些`
+          : matched.length
+            ? `${loaded}，匹配 ${matched.length} 条（顶部汇总为全量，不随搜索变化）`
+            : `${loaded}中未找到「${shown}」`,
     };
   },
 

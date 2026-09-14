@@ -803,6 +803,7 @@ describe('绩效页 · 关键词还在但新主体零记录（评审 round-6 cod
     // 后者会让员工以为张三的单被分给了别人（codex r6 P2 要求不退回无信息空态、
     // glm r7 P3 要求归因准确，这条文案同时满足两者）
     expect(page.data.searchHint).toContain('本时段暂无提成记录')
+    expect(page.data.searchHint).toContain('已加载 0/共 0 条') // 验收 3 要求计数
     expect(page.data.searchHint).toContain('张三')
     expect(page.data.searchHint).not.toContain('未找到')
     expect(page.data.loadFailed).toBe(false)
@@ -908,18 +909,66 @@ describe('绩效页 · 全角数字与防抖清理（评审 round-7 glm P3）', 
     expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['张三'])
   })
 
-  test('onHide 取消在途的防抖过滤', () => {
+  test('onHide 把在途防抖结算掉，不留「输入框新词 / 列表旧词」的错配', () => {
+    const page = createPage()
+    page.onLoad({})
+    page.data.items = [makeItem('张三', '13800000001', 1), makeItem('李四', '13900000002', 2)]
+    page.data.total = 2
+
+    page.onKeywordChange({ detail: '张三' })
+    expect(page.data.filterActive).toBe(false) // 防抖还没到
+
+    page.onHide() // 用户 200ms 内就跳走了
+
+    // 关键：离开时必须结算，否则回来时 keyword='张三' 而 displayItems 还是上一轮的
+    expect(page.data.filterActive).toBe(true)
+    expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['张三'])
+
+    const spy = vi.spyOn(page, 'setData')
+    vi.advanceTimersByTime(250)
+    expect(spy).not.toHaveBeenCalled() // 定时器已清，不会再来一次
+    spy.mockRestore()
+  })
+
+  test('onUnload 只取消不结算（页面要销毁了，setData 无意义）', () => {
     const page = createPage()
     page.onLoad({})
     page.data.items = [makeItem('张三', '13800000001', 1)]
     page.data.total = 1
 
     page.onKeywordChange({ detail: '张三' })
-    page.onHide()
+    page.onUnload()
     const spy = vi.spyOn(page, 'setData')
     vi.advanceTimersByTime(250)
 
     expect(spy).not.toHaveBeenCalled()
     spy.mockRestore()
+  })
+})
+
+describe('绩效页 · 过滤结果渲染上限（评审 round-8 codex P1）', () => {
+  test('宽泛关键词命中上千条时截断到 200 并提示——整体重建 displayItems 同样会撞 1MB', async () => {
+    const page = createPage()
+    page.onLoad({})
+    const many = Array.from({ length: 500 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i))
+    mockPage(many, 500)
+    await page.loadData(true)
+
+    search(page, '顾客') // 500 条全中
+    expect(page.data.displayItems).toHaveLength(200)
+    expect(page.data.searchHint).toContain('匹配 500 条')
+    expect(page.data.searchHint).toContain('仅显示前 200 条')
+  })
+
+  test('正常检索（命中少量）不受上限影响，文案照旧带汇总口径说明', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([makeItem('张三', '13800000001', 1), makeItem('李四', '13900000002', 2)], 2)
+    await page.loadData(true)
+
+    search(page, '张三')
+    expect(page.data.displayItems).toHaveLength(1)
+    expect(page.data.searchHint).toContain('顶部汇总为全量')
+    expect(page.data.searchHint).not.toContain('仅显示前')
   })
 })
