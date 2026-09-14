@@ -245,22 +245,8 @@ function hasHostname(text: string): boolean {
 }
 
 /**
- * 「整串一个空白都没有、且不含中日韩」= 它不是人话，是标识符/编号/技术串。
- *
- * 这一条替代了原先按形态逐类枚举的做法（纯数字、裸标签串、`OVERPAY:123`…），
- * 顺带覆盖了枚举不完的那些：`LAKALA_TIMEOUT_30000ms`、`SYSTEM_ERROR`、`12.50`、
- * `1956068727@E263`、`NEXT_HTTP_ERROR_FALLBACK;404`。
- *
- * 误伤面只有「整条文案就是一个 ASCII 标识符」，例如剥完只剩一个订单号 —— 那种串本来
- * 对用户也零信息量，回退到调用方 fallback 反而更有用。真业务文案必含中文或空格。
- */
-function isProseless(value: string): boolean {
-  return /^\S+$/.test(value) && !CJK_RE.test(value)
-}
-
-/**
  * Node errno 的成句形态：`connect ECONNREFUSED 10.0.0.5:443` / `getaddrinfo EAI_AGAIN api.x.com`。
- * 这类有空格、逃得过 `isProseless`，而 errno 种类枚举不完（`lakala-client.ts:222` 会把
+ * 这类有空格、逃得过「无中文即不可读」的兜底，而 errno 种类枚举不完（`lakala-client.ts:222` 会把
  * `err.message` 原文拼进白名单前缀），所以按结构认而不是按清单认。
  */
 const NODE_ERRNO_RE =
@@ -304,7 +290,10 @@ const NATIVE_ERROR_NAMES: ReadonlySet<string> = new Set([
 /**
  * 兜底结构判定：把文案按「空白 + 中日韩」切开，看有没有哪一段长得像技术串。
  *
- * - 含 `_ \ " [ ]` 之一且长度 ≥4：带引号的库表/约束名、IPv6、内部标识符
+ * - 含 `\ " [ ]` 之一且长度 ≥4：带引号的库表/约束名、IPv6、内部标识符。
+ *   **不含 `_`** —— 商品名带下划线是合法写法（`A_B款精华液`）。全大写下划线的配置名由
+ *   `hasConfigName`（形状 + 配置语境词）单独认；**小写下划线标识符**（`access_token`）
+ *   两条都认不到，是已登记的口子（治本在抛错处别拼上游原文）。
  * - **斜杠要求出现 ≥2 次**：路径与 URI 天然多段（`file:///srv/backups/db.dump`）。
  *   只要求一个的话，`仅 PC/H5 端支持`、`支持 iOS/Android 双端` 这类产品文案会被误杀 ——
  *   仓内现在没有这种写法，但新文案一写就踩。
@@ -329,7 +318,6 @@ function isOpaque(value: string): boolean {
   if (NEXT_AUTO_DIGEST_RE.test(value)) return true
   if (NEXT_ROUTER_SIGNAL_RE.test(value)) return true
   if (OPAQUE_TOKEN_RE.test(value)) return true
-  if (isProseless(value)) return true
   if (NODE_ERRNO_RE.test(value)) return true
   if (JS_ERROR_NAME_RE.test(value)) return true
   const lower = value.toLowerCase()
