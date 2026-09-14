@@ -1034,6 +1034,29 @@ describe('弹窗在异常与并发下的出路（#134 评审补）', () => {
     for (const btn of screen.getAllByRole('button', { name: '详情' })) expect(btn).toBeDisabled()
   })
 
+  it('建单弹窗开着时权限被收回：弹窗不消失、输入还在、关掉后页面自行解锁', () => {
+    // `{canCreate && <CreateDocDialog/>}` 在 canCreate 翻 false 时会把正开着的弹窗整个卸载：
+    // 用户填的表单没了，而父组件的 `open` 仍是 true → 所有入口被点击闸锁死，只能整页重载。
+    const { rerender } = render(
+      <InventoryDocsPage {...baseProps} allowedCreateDocTypes={['市场产品报损']} />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '新建' }))
+    const remark = within(actionDialog()).getByPlaceholderText('备注')
+    fireEvent.change(remark, { target: { value: '填了一半' } })
+
+    rerender(
+      <InventoryDocsPage {...baseProps} canCreate={false} allowedCreateDocTypes={['市场产品报损']} />,
+    )
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(within(actionDialog()).getByPlaceholderText('备注')).toHaveValue('填了一半')
+
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    // 解锁：行操作入口恢复可用（点得开动作弹窗）
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    expect(within(actionDialog()).getByText('驳回单据')).toBeInTheDocument()
+  })
+
   it('开窗入口不能用 disabled —— 那会让原生 dialog 记不到可聚焦的触发元素', () => {
     // codex 第 8 轮抓到的回归：点「驳回」那一刻按钮就变 disabled，而 showModal() 在随后的
     // layout effect 里才记录「打开前的焦点」，记到的已经不是可聚焦元素，关闭后焦点回不去。

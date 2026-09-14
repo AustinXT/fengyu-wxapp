@@ -41,6 +41,7 @@ import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { actionErrorMessage } from '@/lib/action-error'
+import { ERROR_PREFIXES } from '@/lib/api-error'
 import { useUrlFilters } from '@/lib/hooks/use-url-filters'
 import { PreserveListContextLink } from '@/components/return-context'
 
@@ -337,7 +338,13 @@ export default function InventoryDocsPage({
         onPageSizeChange={(size) => setMany({ size: String(size), page: '' })}
       />
 
-      {canCreate && (
+      {/*
+        条件里要带上 `open`：权限被收回时 `canCreate` 会翻 false，若此时弹窗正开着，
+        组件直接卸载 → 用户填的表单没了，而父组件的 `open` 仍是 true →
+        `anyDialogOpen` 永远为真 → 所有入口被点击闸锁死，只能整页重载。
+        挂着它，用户还能正常关掉弹窗、页面自行解锁。
+      */}
+      {(canCreate || open) && (
         <CreateDocDialog
           open={open}
           onOpenChange={setOpen}
@@ -490,7 +497,13 @@ function rawErrorSignal(err: unknown): string {
  */
 function isUnreadableSignal(err: unknown): boolean {
   const raw = rawErrorSignal(err)
-  return STALE_STATE_PREFIXES.includes(raw) || /^\d{1,10}(?:@[A-Za-z][\w-]*)?$/.test(raw)
+  // 裸前缀按 9 项白名单判，而不是只认这里的 4 个状态型前缀 —— 今天只有 `PermissionError`
+  // 会产裸前缀 digest（恰好是 `PERMISSION_DENIED`），但将来谁手工塞个 `digest='INVALID_PARAMS'`，
+  // 走窄名单就会漏过去、被原样吐成英文 token。
+  return (
+    (ERROR_PREFIXES as readonly string[]).includes(raw) ||
+    /^\d{1,10}(?:@[A-Za-z][\w-]*)?$/.test(raw)
+  )
 }
 
 function isStaleStateError(err: unknown): boolean {
@@ -557,6 +570,9 @@ function DocActionDialog({
   useEffect(() => {
     onBusyChange(submitting)
   }, [submitting, onBusyChange])
+  // 卸载时把在途态归还给父组件：条件渲染（如权限翻转）把组件摘掉时，
+  // 父组件的 busy 不能永远挂着
+  useEffect(() => () => onBusyChange(false), [onBusyChange])
 
   const active = pending ?? snapshot
   if (!active) return null
@@ -689,6 +705,9 @@ function CreateDocDialog({
   useEffect(() => {
     onBusyChange(submitting)
   }, [submitting, onBusyChange])
+  // 卸载时把在途态归还给父组件：条件渲染（如权限翻转）把组件摘掉时，
+  // 父组件的 busy 不能永远挂着
+  useEffect(() => () => onBusyChange(false), [onBusyChange])
   const [docType, setDocType] = useState<InventoryDocType>(
     initialDocType && availableDocTypes.includes(initialDocType) ? initialDocType : availableDocTypes[0],
   )
