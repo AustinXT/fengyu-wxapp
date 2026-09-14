@@ -132,6 +132,13 @@
   padding-bottom: 24rpx;
 }
 
+/* 搜索态常驻的翻页入口 */
+.perf-search-more {
+  display: flex;
+  justify-content: center;
+  padding: 8rpx 0 16rpx;
+}
+
 /* 汇总卡片 */
 .perf-summary-card {
   margin: 24rpx 24rpx 0;

@@ -170,14 +170,18 @@ describe('maskPhone', () => {
     expect(maskPhone('18600000001')).toBe('186****0001')
   })
 
-  test('短于 7 位原样返回，不拼出比原值还长的怪串', () => {
-    expect(maskPhone('123456')).toBe('123456')
-    expect(maskPhone('1234567')).toBe('123****4567') // 7 位起才遮，此时前后段有重叠属预期
+  test('短号按长度分档脱敏，不留原文（对齐 staffApi/utils/pii.js）', () => {
+    expect(maskPhone('1234')).toBe('****')       // <=4 全遮
+    expect(maskPhone('12345')).toBe('1***5')     // <=7 首尾各留一位
+    expect(maskPhone('123456')).toBe('1****6')
+    expect(maskPhone('8812345')).toBe('8*****5') // 7 位座机不再变成 881****2345
   })
 
-  test('空值不炸', () => {
+  test('空值归一为空串，不把 undefined 吐回去渲染到页面上', () => {
     expect(maskPhone('')).toBe('')
-    expect(maskPhone(undefined as unknown as string)).toBe(undefined as unknown as string)
+    expect(maskPhone('   ')).toBe('')
+    expect(maskPhone(undefined as unknown as string)).toBe('')
+    expect(maskPhone(null as unknown as string)).toBe('')
   })
 })
 

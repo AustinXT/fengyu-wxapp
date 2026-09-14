@@ -88,8 +88,9 @@ describe('绩效页 · 顾客检索（前端过滤已加载明细）', () => {
     await page.loadData(true)
 
     expect(page.data.items).toHaveLength(2)
-    expect(page.data.displayItems).toHaveLength(2)
+    // 未搜索时 displayItems 刻意留空，wxml 走 `filterActive ? displayItems : items`
     expect(page.data.filterActive).toBe(false)
+    expect(page.data.displayItems).toHaveLength(0)
 
     page.onKeywordChange({ detail: '张三' })
     expect(page.data.filterActive).toBe(true)
@@ -97,7 +98,8 @@ describe('绩效页 · 顾客检索（前端过滤已加载明细）', () => {
 
     page.onKeywordClear()
     expect(page.data.filterActive).toBe(false)
-    expect(page.data.displayItems).toHaveLength(2)
+    expect(page.data.displayItems).toHaveLength(0) // 回到「渲染 items」模式
+    expect(page.data.items).toHaveLength(2)
   })
 
   test('按手机号过滤走原始号，被脱敏遮掉的中间 4 位也能搜到', async () => {
@@ -325,5 +327,124 @@ describe('绩效页 · 搜不到时的翻页入口', () => {
 
     page.onLoadMoreTap()
     expect(callStaffApi).not.toHaveBeenCalled()
+  })
+})
+
+// ===== pr-ready 闸门补漏（#159 评审轮次）=====
+
+describe('绩效页 · 搜索态翻页入口（评审补漏 P1）', () => {
+  test('命中少量但不足一屏时仍给翻页入口——不能只靠 onReachBottom', async () => {
+    const page = createPage()
+    page.onLoad({})
+    // 40 条里只加载了 1 条，且这 1 条正好命中：页面高度不足一屏，触底事件永远不会来
+    mockPage([makeItem('张三', '13800000001', 1)], 40)
+    await page.loadData(true)
+
+    page.onKeywordChange({ detail: '张三' })
+    expect(page.data.displayItems).toHaveLength(1)
+    expect(page.data.filterActive).toBe(true)
+    // wxml 的按钮条件是 filterActive && hasMore —— 与命中条数无关
+    expect(page.data.hasMore).toBe(true)
+
+    vi.mocked(callStaffApi).mockClear()
+    page.onLoadMoreTap()
+    expect(callStaffApi).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('绩效页 · 手机号脏数据归一（评审补漏 P2）', () => {
+  test('带分隔符/国际前缀的号也能被纯数字关键词搜到', async () => {
+    const page = createPage()
+    page.onLoad({})
+    // sale_orders.client_phone 是 varchar(30) 无格式 CHECK，WorkFine 历史数据里这些写法真实存在
+    mockPage([
+      makeItem('张三', '138-0013-8000', 1),
+      makeItem('李四', '+8613900139000', 2),
+      makeItem('王五', '136 0013 6000', 3),
+    ], 3)
+    await page.loadData(true)
+
+    page.onKeywordChange({ detail: '13800138000' })
+    expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['张三'])
+
+    page.onKeywordChange({ detail: '13900139000' })
+    expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['李四'])
+
+    page.onKeywordChange({ detail: '1360013' })
+    expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['王五'])
+  })
+
+  test('纯文字关键词不会因为剥数字而误命中所有人', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([makeItem('张三', '13800000001', 1), makeItem('李四', '13900000002', 2)], 2)
+    await page.loadData(true)
+
+    page.onKeywordChange({ detail: '张' })
+    expect(page.data.displayItems).toHaveLength(1)
+  })
+
+  test('纯空格关键词不算检索，也不留在输入框里造成哑态', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+
+    page.onKeywordChange({ detail: '   ' })
+    expect(page.data.keyword).toBe('')
+    expect(page.data.filterActive).toBe(false)
+  })
+
+  test('超长关键词在提示文案里被截断，不撑爆空状态', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+
+    page.onKeywordChange({ detail: '阿'.repeat(200) })
+    expect(page.data.searchHint).toContain('…')
+    expect(page.data.searchHint.length).toBeLessThan(60)
+  })
+})
+
+describe('绩效页 · 自定义区间跨度上限（评审补漏 P1）', () => {
+  test('picker 给出绝对上下界：最晚今天、最早一年余', () => {
+    const page = createPage()
+    page.onLoad({})
+
+    expect(page.data.customMaxDate).toBe('2026-09-14')
+    expect(page.data.customMinDate).toBe('2025-09-08') // 今天往前 371 天
+  })
+
+  test('超过上限的区间被拦截且不发请求——后端是全量取回+内存分页，跨年区间会拖垮云函数', () => {
+    const page = createPage()
+    page.onLoad({ range: 'custom' })
+
+    page.onCustomStartChange({ detail: { value: '2024-01-01' } })
+
+    expect((globalThis as any).wx.showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: expect.stringContaining('最长') })
+    )
+    expect(callStaffApi).not.toHaveBeenCalled()
+    expect(page.data.startDate).toBe('2026-09-01')
+  })
+
+  test('上限之内的长区间正常放行', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'custom' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+
+    page.onCustomStartChange({ detail: { value: '2025-10-01' } })
+    await vi.waitFor(() => expect(callStaffApi).toHaveBeenCalled())
+
+    expect(page.data.startDate).toBe('2025-10-01')
+  })
+
+  test('daysBetween 跨年跨闰月算得准', () => {
+    const page = createPage()
+    expect(page.daysBetween('2026-09-01', '2026-09-14')).toBe(13)
+    expect(page.daysBetween('2025-12-31', '2026-01-01')).toBe(1)
+    expect(page.daysBetween('2024-02-28', '2024-03-01')).toBe(2) // 2024 闰年
+    expect(page.daysBetween('2026-09-14', '2026-09-14')).toBe(0)
   })
 })

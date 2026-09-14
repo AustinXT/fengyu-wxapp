@@ -89,6 +89,17 @@ function money(v: number | string | undefined | null): string {
 const PAGE_SIZE = 20;
 
 /**
+ * 自定义区间的跨度上限（天）。
+ *
+ * 后端 `staff.performanceDetail` 没有 SQL LIMIT —— 它把区间内的销售 + 服务行**全量**取回，
+ * 内存里 sort 之后再 `slice()` 分页，也就是**每翻一页都重跑一次全区间扫描 + 全量排序**。
+ * 「自定义」之前本页最大跨度就是「本月」(≤31 天)，这条路径够不着；一旦放开，
+ * 选个 2020 年至今的区间就能把云函数拖到超时。上限卡在前端，picker 同时给绝对上下界。
+ * 371 天 = 一年多一点，够覆盖「去年同月」这类真实诉求。
+ */
+const RANGE_MAX_DAYS = 371;
+
+/**
  * 访问被拒类错误 —— 一旦发生就不得继续展示屏幕上的既有数据（可能是他人薪酬）。
  * `PHONE_REQUIRED` 必须在列：`requireStaffBound` 在手机号失效时抛它（admin 改员工资料
  * 时手机号可被置空，路径实际可达），且它与 `PERMISSION_DENIED` 共享 -403，
@@ -106,6 +117,10 @@ Page({
     startDate: '',
     endDate: '',
     displayDate: '',
+    // 自定义 picker 的绝对上下界（onLoad 算一次）：未来日期不可能有绩效，
+    // 过早的起点会让后端全量扫描（见 RANGE_MAX_DAYS）
+    customMinDate: '',
+    customMaxDate: '',
     // 汇总数据（'--' = 尚未加载；首屏与切换主体期间都走这个态，避免与真实零值混淆）
     totalSalesAlloc: '--',
     totalServiceCommission: '--',
@@ -155,9 +170,15 @@ Page({
 
   onLoad(options: Record<string, string>) {
     const mgr = isManager();
+    // picker 的绝对上下界：最晚只能选到今天（未来日期永远查不出绩效，只会得到一个
+    // 与「本期无记录」无法区分的空列表），最早卡在 RANGE_MAX_DAYS 之前
+    const now = new Date();
+    const earliest = new Date(now.getFullYear(), now.getMonth(), now.getDate() - RANGE_MAX_DAYS);
     this.setData({
       isManager: mgr,
       staffName: app.globalData.staffName || '',
+      customMinDate: this.formatDate(earliest),
+      customMaxDate: this.formatDate(now),
     });
     if (mgr) this.loadStaffList();
     const validRanges: RangeType[] = ['today', 'month', 'custom'];
@@ -259,8 +280,9 @@ Page({
   },
 
   // ===== 自定义区间：两个 picker =====
-  // 刻意**不**给 picker 加 start/end 交叉约束（business-list-filter 里有）：本页两个日期恒非空，
+  // 刻意**不**给 picker 加 start/end **交叉**约束（business-list-filter 里有）：本页两个日期恒非空，
   // 交叉约束会让「起晚于止」根本选不出来，下面的校验与其对应的验收项就永远不可达、不可测。
+  // 但**绝对**上下界（customMinDate / customMaxDate）必须给，理由见 RANGE_MAX_DAYS。
   onCustomStartChange(e: WechatMiniprogram.PickerChange) {
     this.applyCustomRange(String(e.detail.value), this.data.endDate);
   },
@@ -278,6 +300,13 @@ Page({
     if (!start || !end) return;
     if (start > end) {
       wx.showToast({ title: '开始日期不能晚于结束日期', icon: 'none' });
+      return;
+    }
+    // 跨度上限：后端 performanceDetail 是「SQL 全量取回 → 内存 sort → slice 分页」，
+    // **每翻一页都重跑一次全区间扫描 + 全量排序**。改自定义区间前最大跨度只有「本月」(≤31 天)，
+    // 这条路径够不着；放开后选个跨年区间就能把云函数拖垮，所以上限在前端就得卡死。
+    if (this.daysBetween(start, end) > RANGE_MAX_DAYS) {
+      wx.showToast({ title: `查询区间最长 ${RANGE_MAX_DAYS} 天`, icon: 'none' });
       return;
     }
     if (start === this.data.startDate && end === this.data.endDate) return; // 选了同一天，无需重拉
@@ -298,7 +327,8 @@ Page({
 
   // ===== 顾客检索（纯前端过滤已加载明细）=====
   onKeywordChange(e: WechatMiniprogram.CustomEvent) {
-    const keyword = (e.detail as unknown as string) || '';
+    // 纯空格不算检索：写回 trim 后的值，避免出现「框里有内容、列表却是全量」的哑态
+    const keyword = ((e.detail as unknown as string) || '').trim();
     this.setData({ keyword, ...this.buildSearchView(this.data.items, keyword, this.data.total) });
   },
 
@@ -307,9 +337,11 @@ Page({
   },
 
   /**
-   * 搜索命中为空时的「继续加载下一页」。
-   * 不能只让用户下滑：过滤后列表为空时页面高度不足一屏，`onReachBottom` 根本不会触发，
-   * 「下滑加载更多再试」会成为点不动的空头承诺。
+   * 搜索态下的「继续加载下一页」。
+   *
+   * 不能只让用户下滑：过滤后列表往往只剩几行甚至 0 行，页面高度不足一屏，
+   * `onReachBottom` **根本不会触发**——「下滑加载更多再试」会成为点不动的空头承诺。
+   * 所以只要还有未加载的页，搜索态就常驻这个入口（不限于命中 0 条）。
    */
   onLoadMoreTap() {
     if (this.data.hasMore && !this.data.loading) this.loadData(false);
@@ -483,18 +515,28 @@ Page({
    * 「某顾客有没有分配给自己」，若把「没加载够」显示成干净的「无结果」，得到的正是
    * 这功能本要防的那个错误结论。
    *
-   * 手机号用**原始** clientPhone 匹配而非卡片上的脱敏串，否则输入中间 4 位永远搜不到。
-   * 统一 indexOf(...) >= 0，与本文件既有写法一致（不依赖 String.prototype.includes）。
+   * 手机号用**原始** clientPhone 匹配而非卡片上的脱敏串（否则输入被遮掉的几位永远搜不到），
+   * 且两侧都先剥非数字再比：`sale_orders.client_phone` 是 varchar(30) **没有格式 CHECK**
+   * （对比 `client_wechat_users.phone` 有 `chk_cwu_phone_format`），WorkFine 历史数据里
+   * `138-0013-8000` / `+8613800138000` 这类写法真实存在。不归一的话，同一个号
+   * 搜销售行搜不到、搜服务行搜得到，而页面还会告诉员工「未找到」。
+   *
+   * `filterActive` 为假时 `displayItems` 刻意留空，由 wxml 的 `filterActive ? displayItems : items`
+   * 决定数据源 —— 否则未搜索时同一份明细会被 setData 序列化两遍，列表 payload 白白翻倍。
    */
   buildSearchView(items: PerformanceItem[], keyword: string, total: number) {
     const kw = (keyword || '').trim().toLowerCase();
-    if (!kw) return { displayItems: items, filterActive: false, searchHint: '' };
+    if (!kw) return { displayItems: [] as PerformanceItem[], filterActive: false, searchHint: '' };
 
-    const matched = items.filter((it) =>
-      String(it.customerName || '').toLowerCase().indexOf(kw) >= 0 ||
-      String(it.clientPhone || '').indexOf(kw) >= 0
-    );
+    const kwDigits = kw.replace(/\D/g, '');
+    const matched = items.filter((it) => {
+      if (String(it.customerName || '').toLowerCase().indexOf(kw) >= 0) return true;
+      if (!kwDigits) return false;
+      return String(it.clientPhone || '').replace(/\D/g, '').indexOf(kwDigits) >= 0;
+    });
     const loaded = `已加载 ${items.length}/共 ${total} 条`;
+    // 关键词进文案前截断：整段粘贴进搜索框时，原样内插会把 van-empty 的 description 撑爆
+    const shown = kw.length > 12 ? `${keyword.trim().slice(0, 12)}…` : keyword.trim();
     return {
       displayItems: matched,
       filterActive: true,
@@ -502,8 +544,15 @@ Page({
       // 不标注会被当成「明细只剩 3 条、汇总却还是几千块」的数据错误上报
       searchHint: matched.length
         ? `${loaded}，匹配 ${matched.length} 条（顶部汇总为全量，不随搜索变化）`
-        : `${loaded}中未找到「${keyword.trim()}」`,
+        : `${loaded}中未找到「${shown}」`,
     };
+  },
+
+  /** 两个 `YYYY-MM-DD` 之间的天数（含头不含尾）。用 UTC 构造避开夏令时/时区偏移 */
+  daysBetween(start: string, end: string): number {
+    const [sy, sm, sd] = start.split('-').map(Number);
+    const [ey, em, ed] = end.split('-').map(Number);
+    return Math.round((Date.UTC(ey, em - 1, ed) - Date.UTC(sy, sm - 1, sd)) / 86400000);
   },
 
   blankSummary() {

@@ -21,14 +21,29 @@
     </view>
 
     <!-- 自定义区间：选中才展开。常驻会再吃掉一行，而本页纵向已被汇总卡 + 两级筛选占满 -->
-    <!-- 两个 picker 刻意不互相约束（起可选到止之后），否则 ts 里的区间校验永远不可达 -->
+    <!-- 两个 picker 刻意不**互相**约束（起可选到止之后），否则 ts 里的区间校验永远不可达； -->
+    <!-- 但绝对上下界必须给：未来日期查不出绩效，过早的起点会让后端全量扫描（见 RANGE_MAX_DAYS） -->
     <view wx:if="{{rangeType === 'custom'}}" class="perf-custom-range">
       <van-icon name="calendar-o" size="28rpx" color="#C0322A" />
-      <picker class="perf-date-picker" mode="date" value="{{startDate}}" bindchange="onCustomStartChange">
+      <picker
+        class="perf-date-picker"
+        mode="date"
+        value="{{startDate}}"
+        start="{{customMinDate}}"
+        end="{{customMaxDate}}"
+        bindchange="onCustomStartChange"
+      >
         <view class="perf-date-cell">{{startDate || '开始日期'}}</view>
       </picker>
       <view class="perf-date-sep">—</view>
-      <picker class="perf-date-picker" mode="date" value="{{endDate}}" bindchange="onCustomEndChange">
+      <picker
+        class="perf-date-picker"
+        mode="date"
+        value="{{endDate}}"
+        start="{{customMinDate}}"
+        end="{{customMaxDate}}"
+        bindchange="onCustomEndChange"
+      >
         <view class="perf-date-cell">{{endDate || '结束日期'}}</view>
       </picker>
     </view>
@@ -133,20 +148,13 @@
     <!-- 命中时也要标口径：顶部三项汇总恒全量、不随前端过滤缩水 -->
     <view wx:if="{{filterActive && displayItems.length > 0}}" class="perf-search-hint">{{searchHint}}</view>
 
-    <!-- 搜不到 ≠ 没分配给你：给出「已加载 N/共 M 条」和一个能点的翻页入口。 -->
-    <!-- 过滤后列表为空时页面不足一屏，onReachBottom 不会触发，只说「下滑再试」等于没说 -->
+    <!-- 搜不到 ≠ 没分配给你：把「已加载 N/共 M 条」摆出来，让员工知道还有没翻到的 -->
     <view wx:if="{{filterActive && displayItems.length === 0}}" class="perf-search-empty">
       <van-empty description="{{searchHint}}" />
-      <van-button
-        wx:if="{{hasMore}}"
-        size="small"
-        plain
-        loading="{{loading}}"
-        bindtap="onLoadMoreTap"
-      >继续加载下一页</van-button>
     </view>
 
-    <view class="perf-item" wx:for="{{displayItems}}" wx:key="index">
+    <!-- 未搜索时直接渲染 items，不另传一份同样的数组（否则 setData payload 翻倍） -->
+    <view class="perf-item" wx:for="{{filterActive ? displayItems : items}}" wx:key="index">
       <view class="perf-item-header">
         <text class="perf-item-name">{{item.productName}}</text>
         <!-- 退款冲销行的提成/业绩是负数，不打标识会被当成数据错误上报 -->
@@ -192,10 +200,18 @@
       </view>
     </view>
 
+    <!-- 搜索态常驻的翻页入口（不限命中 0 条）：过滤后往往只剩几行、够不到触底，
+         onReachBottom 不会触发，没有这个按钮员工就没法确认「是不是还有没加载到的」 -->
+    <view wx:if="{{filterActive && hasMore}}" class="perf-search-more">
+      <van-button size="small" plain loading="{{loading}}" bindtap="onLoadMoreTap">继续加载下一页</van-button>
+    </view>
+
     <view wx:if="{{loading}}" class="loading-more">
       <van-loading size="24rpx" />
     </view>
-    <view wx:elif="{{!hasMore && items.length > 0}}" class="no-more">
+    <!-- 搜索态下不说「已加载全部」：它紧跟在「…中未找到 X」后面读着自相矛盾，
+         该场景的完整信息已经在 searchHint 的「已加载 M/共 M 条」里了 -->
+    <view wx:elif="{{!hasMore && items.length > 0 && !filterActive}}" class="no-more">
       <text class="no-more-text">已加载全部</text>
     </view>
   </view>

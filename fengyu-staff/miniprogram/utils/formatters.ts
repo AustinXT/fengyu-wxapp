@@ -79,14 +79,24 @@ export function formatTime(timeStr: string | null): string {
 }
 
 /**
- * 手机号脱敏：138****5678（镜像 client utils/format.ts 的 maskPhone，按项目规范各端独立副本）
+ * 手机号脱敏：138****5678
  *
- * 只作用于展示。按手机号检索时必须拿**原始号**去匹配，否则用户输入中间 4 位永远搜不到。
- * 短于 7 位的值原样返回（座机、脏数据），避免 slice 拼出比原值还长的怪串。
+ * ⚠️ **字面镜像 `fengyu-staff/cloudfunctions/staffApi/utils/pii.js` 的 maskPhone**——那份是三端
+ * （staffApi / clientApi / admin）由 `cross-end-pii-snapshot.test.js` 守护的权威实现，不要照抄
+ * `fengyu-client/miniprogram/utils/format.ts` 的那份：它只有 `length < 7` 一道守卫，
+ * 7~10 位输入会拼出**比原值更长的假号**（`8812345` → `881****2345`，尾部 4 位既声称被遮又完整露出），
+ * ≤6 位则原样全显完全不脱敏。本文件与 pii.js 的一致性由
+ * `__tests__/utils/pii-cross-end.test.ts` 按同一组 fixture 守护。
+ *
+ * 只作用于展示。按手机号检索必须拿**原始号**匹配，否则用户输入被遮掉的中间几位永远搜不到。
  */
 export function maskPhone(phone: string): string {
-  if (!phone || phone.length < 7) return phone
-  return phone.slice(0, 3) + '****' + phone.slice(-4)
+  if (!phone || typeof phone !== 'string') return ''
+  const s = phone.trim()
+  if (s.length === 0) return ''
+  if (s.length <= 4) return '*'.repeat(s.length)
+  if (s.length <= 7) return s[0] + '*'.repeat(s.length - 2) + s[s.length - 1]
+  return s.slice(0, 3) + '*'.repeat(Math.max(4, s.length - 7)) + s.slice(-4)
 }
 
 /**
