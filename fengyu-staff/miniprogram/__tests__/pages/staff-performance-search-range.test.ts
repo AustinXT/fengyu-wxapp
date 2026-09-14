@@ -1576,3 +1576,83 @@ describe('绩效页 · 评审 round-19 闭环（codex）', () => {
     expect(page.data.moreMatchesLabel).toBe('下一批')   // 到硬顶，改为整段滑动
   })
 })
+
+describe('绩效页 · 评审 round-20 闭环（glm）', () => {
+  test('全角括号/减号粘贴的号码也能搜——粘贴是手机号输入的主要来源', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([makeItem('张三', '13800138000', 1), makeItem('李四', '13900139000', 2)], 2)
+    await page.loadData(true)
+
+    search(page, '（138）0013－8000')
+    expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['张三'])
+
+    search(page, '１３８００１３８０００') // 全角数字
+    expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['张三'])
+  })
+
+  test('输到一半的 8613 不把所有含 13 的号涌进来', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([
+      makeItem('张三', '13800138000', 1),
+      makeItem('李四', '15913000000', 2), // 号里含 13，但不是 861 开头
+    ], 2)
+    await page.loadData(true)
+
+    search(page, '8613')
+    // 候选只有 8613 本身（剥完只剩 2 位，不纳入），两条都不该命中
+    expect(page.data.displayItems).toHaveLength(0)
+
+    search(page, '+86 138') // 剥完剩 3 位，正常纳入
+    expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['张三'])
+  })
+
+  test('深翻页后切后台再回来，不把几十次「继续加载」的进度塌掉', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage(Array.from({ length: 20 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i)), 200)
+    await page.loadData(true)
+    for (let p = 0; p < 3; p++) {
+      mockPage(Array.from({ length: 20 }, (_, i) => makeItem(`顾客${i}`, `1390000${String(i).padStart(4, '0')}`, i)), 200)
+      await page.loadData(false)
+    }
+    expect(page.data.page).toBe(4)
+    expect(page.data.items).toHaveLength(80)
+
+    vi.mocked(callStaffApi).mockClear()
+    page.onShow() // 从微信聊天切回来
+
+    expect(callStaffApi).not.toHaveBeenCalled()
+    expect(page.data.items).toHaveLength(80) // 进度还在
+  })
+
+  test('只有第一页时 onShow 仍照常被动刷新', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+    expect(page.data.page).toBe(1)
+
+    vi.mocked(callStaffApi).mockClear()
+    page.onShow()
+
+    expect(callStaffApi).toHaveBeenCalledTimes(1)
+  })
+
+  test('深翻页后换时段仍走完整重拉（主体变更不受影响）', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage(Array.from({ length: 20 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i)), 200)
+    await page.loadData(true)
+    await page.loadData(false)
+    expect(page.data.page).toBe(2)
+
+    vi.mocked(callStaffApi).mockClear()
+    mockPage([], 0)
+    page.setRange('today')
+
+    expect(callStaffApi).toHaveBeenCalledTimes(1)
+    expect(page.data.items).toHaveLength(0)
+  })
+})

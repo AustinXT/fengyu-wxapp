@@ -114,6 +114,10 @@ const HISTORY_MIN_DATE = '2020-01-01';
 /** 检索防抖（毫秒）。只防过滤计算，关键词回显不延迟 */
 const SEARCH_DEBOUNCE_MS = 200;
 
+/** 命中窗口按钮文案：窗口还能变大 / 已到硬顶只能整段滑动 */
+const LABEL_GROW_WINDOW = '显示更多';
+const LABEL_SLIDE_WINDOW = '下一批';
+
 /**
  * 过滤结果的渲染上限。
  *
@@ -249,6 +253,13 @@ Page({
     if (!this._loaded || !this.data.startDate) return;
 
     if (this.syncRangeToToday()) return; // 已经走了完整的重拉流程
+
+    // 已经翻过好几页就不要被动重拉了：`loadData(true, …)` 是 reset 语义，会把几百条塌回
+    // 第一页 20 条。而「去微信里抄个手机号再切回来」恰恰是用这个检索功能时的高频动作，
+    // 几十次「继续加载下一页」的进度不该就这么没了（后端每页还都是全区间扫描）。
+    // 绩效数据不是实时结算的，晚刷一次无碍；换时段/换员工仍走完整重拉，
+    // 想手动刷新点一下当前档位按钮即可。
+    if (this.data.page > 1 && this._lastKey) return;
 
     // 同主体的被动刷新：失败保留旧数据（见 loadData 的 keepStaleOnError）
     this.loadData(true, true);
@@ -851,7 +862,7 @@ Page({
         hasMoreMatches: false,
         hasPrevMatches: false,
         matchWindowLabel: '',
-        moreMatchesLabel: '显示更多',
+        moreMatchesLabel: LABEL_GROW_WINDOW,
       };
     }
 
@@ -860,7 +871,13 @@ Page({
     // 全角转半角后，只有**整串都像号码**才走手机号匹配。
     // 否则「顾客12」的数字部分 `12` 会被拿去匹配手机号，把所有号里含 12 的人全捞出来 ——
     // 员工搜一个名字，结果冒出几十个不相干的顾客，比搜不到还难用
-    const kwHalfWidth = kw.replace(/[\uFF10-\uFF19]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+    // 全角数字**和分隔符**都要转：从微信聊天/通讯录粘贴过来的号码常带全角括号或减号
+    // （`（138）0013－8000`），漏转的话 looksLikePhone 判否 → 退化成姓名匹配 → 显示「未找到」，
+    // 而粘贴正是手机号输入的主要来源
+    const kwHalfWidth = kw.replace(
+      /[\uFF10-\uFF19\uFF08\uFF09\uFF0B\uFF0D\uFF0E\u3000]/g,
+      (c) => (c === '\u3000' ? ' ' : String.fromCharCode(c.charCodeAt(0) - 0xFEE0)),
+    );
     const looksLikePhone = /^[\d\s\-+()]+$/.test(kwHalfWidth);
     // 号码有「带 86」和「不带 86」两种写法，**关键词和明细各自都可能是任意一种**，
     // 所以两边都摊成候选串做交叉匹配，否则同一个号会因为存储格式不同而时灵时不灵：
@@ -868,8 +885,11 @@ Page({
     //   明细 13900139000    + 关键词 +86 139  → 要靠关键词侧去掉 86 的候选
     // 关键词是片段，所以这里按前缀判断而不是完整 13 位的 normalizePhone
     const kwDigits = looksLikePhone ? kwHalfWidth.replace(/\D/g, '') : '';
+    // 剥 86 的候选要求剥完至少剩 3 位（完整号段前缀）：
+    //   `+86 139` → `139`  ✓ 用户明确指定了号段，该匹配
+    //   `8613`    → `13`   ✗ 输到一半的中间态，拿它匹配会把所有号里含 13 的人涌进来
     const kwCandidates = kwDigits
-      ? (/^861[3-9]/.test(kwDigits) ? [kwDigits, kwDigits.slice(2)] : [kwDigits])
+      ? (/^861[3-9]/.test(kwDigits) && kwDigits.length >= 5 ? [kwDigits, kwDigits.slice(2)] : [kwDigits])
       : [];
     // 姓名两侧都剥空白：关键词写回时已 trim（避免「框里有内容、列表是全量」的哑态），
     // 但词**中间**的空格留着 —— 顾客姓名里也可能有（「张 三」/ 全角空格），
@@ -904,7 +924,7 @@ Page({
       hasPrevMatches: start > 0,
       // 文案在这里算：wxml 里写 `displayLimit < 500` 会和 HARD_DISPLAY_CAP 形成双源，
       // 改了常量就对不上（本仓 memory 里「字段族跨文件漂移」踩过的同类坑）
-      moreMatchesLabel: windowSize < HARD_DISPLAY_CAP ? '显示更多' : '下一批',
+      moreMatchesLabel: windowSize < HARD_DISPLAY_CAP ? LABEL_GROW_WINDOW : LABEL_SLIDE_WINDOW,
       matchWindowLabel: capped ? `第 ${start + 1}-${end} 条 / 共 ${matched.length} 条命中` : '',
       // 三种文案各有各的必要性：
       // ① total===0：本期一条记录都没有，跟关键词无关。说「未找到张三」会让员工以为
