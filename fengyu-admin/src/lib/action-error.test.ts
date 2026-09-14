@@ -12,7 +12,7 @@ vi.mock('next/navigation', () => ({ redirect: mockRedirect }))
 const { mockGetSession } = vi.hoisted(() => ({ mockGetSession: vi.fn() }))
 vi.mock('@/lib/auth', () => ({ getSession: mockGetSession }))
 
-import { actionErrorMessage, actionErrorType } from './action-error'
+import { actionErrorMessage, actionErrorType, businessErrorMessage } from './action-error'
 import { ApiError, ERROR_PREFIXES } from './api-error'
 import { withPermission } from './with-permission'
 
@@ -229,10 +229,46 @@ describe('业务文案提取', () => {
     expect(actionErrorMessage(withDigest('UNAUTHORIZED'), '兜底')).toBe('登录已过期，请重新登录')
   })
 
-  it.each([...ERROR_PREFIXES])('白名单前缀 %s 走得通（遍历而非写死，加第 10 项会报警）', (prefix) => {
-    const shown = actionErrorMessage(withDigest(`${prefix}: 这是一条业务提示`), '兜底')
-    expect(shown).toBe('这是一条业务提示')
+  // 写死九项而非遍历 ERROR_PREFIXES：用被测链路依赖的常量同时生成输入和期望，
+  // 加/删/改前缀时测试会跟着自适应，等于没守护（双谱系评审 round 1 两个谱系都指了出来）。
+  const WHITELIST_PREFIXES = [
+    'UNAUTHORIZED',
+    'PHONE_REQUIRED',
+    'INVALID_PARAMS',
+    'PERMISSION_DENIED',
+    'NOT_FOUND',
+    'INSUFFICIENT_BALANCE',
+    'CONFLICT',
+    'INVALID_STATE',
+    'CLIENT_NOT_REGISTERED',
+  ] as const
+
+  it('九项白名单与 api-error.ts 的 ERROR_PREFIXES 完全一致', () => {
+    expect([...ERROR_PREFIXES].sort()).toEqual([...WHITELIST_PREFIXES].sort())
+  })
+
+  it.each(WHITELIST_PREFIXES)('白名单前缀 %s 走得通', (prefix) => {
+    expect(actionErrorMessage(withDigest(`${prefix}: 这是一条业务提示`), '兜底')).toBe('这是一条业务提示')
     expect(actionErrorType(withDigest(`${prefix}: 这是一条业务提示`))).toBe(prefix)
+  })
+})
+
+describe('子标签形状：长描述性标签剥掉，正文里的短缩写前缀保留', () => {
+  it.each([
+    ['含下划线', 'INVALID_STATE: CARD_EXHAUSTED: 储值卡剩余次数为 0', '储值卡剩余次数为 0'],
+    ['含下划线（短）', 'INSUFFICIENT_BALANCE: NO_CARD: 顾客无储值卡账户', '顾客无储值卡账户'],
+    // actions/orders.ts:7153 的真实形态：无下划线但是 7 字符长标签
+    ['无下划线但够长', 'CONFLICT: OVERPAY: 本次回款金额超过订单欠款', '本次回款金额超过订单欠款'],
+  ])('%s → 剥掉', (_label, digest, expected) => {
+    expect(actionErrorMessage(withDigest(digest), '兜底')).toBe(expected)
+  })
+
+  it.each([
+    ['ID', 'NOT_FOUND: ID: 123 的订单不存在', 'ID: 123 的订单不存在'],
+    ['SKU', 'INVALID_PARAMS: SKU: 缺货', 'SKU: 缺货'],
+    ['HTTP', 'INVALID_STATE: HTTP: 网关返回异常', 'HTTP: 网关返回异常'],
+  ])('%s（短缩写）→ 保留，不吃正文', (_label, digest, expected) => {
+    expect(actionErrorMessage(withDigest(digest), '兜底')).toBe(expected)
   })
 })
 
@@ -341,6 +377,10 @@ describe('actionErrorType：按业务类型分支渲染', () => {
     expect(actionErrorType(new Error('NOT_FOUND: 订单不存在'))).toBe('NOT_FOUND')
     expect(actionErrorType(withDigest('1956068727'))).toBeNull()
     expect(actionErrorType(new Error('普通崩溃'))).toBeNull()
+    // message 整串是裸 token 时 actionErrorMessage 会给中文说法，类型判定必须同样判得出，
+    // 否则 error.tsx 会把该判 403 的渲染成 500（评审 round 1）
+    expect(actionErrorType(new Error('PERMISSION_DENIED'))).toBe('PERMISSION_DENIED')
+    expect(actionErrorMessage(new Error('PERMISSION_DENIED'), '兜底')).toBe('无权执行该操作')
     expect(actionErrorType(null)).toBeNull()
   })
 })
@@ -357,13 +397,56 @@ describe('Next 行为漂移守护', () => {
     }
   })
 
-  it('rethrowWithDigest 写的 digest 不被 Next 覆盖（整条穿透链路的前提）', async () => {
-    // 行为守护而非源码 tripwire：Next 内部文件路径/标识符重命名不该让本用例假红，
-    // 真正要盯的是「我们写进 digest 的业务文案还在不在」。
-    const thrown = (await throwFromAction(
-      new ApiError('CONFLICT', '订单已被审核，请刷新后重试'),
-    )) as ClientError
-    expect(thrown.digest).toBe('CONFLICT: 订单已被审核，请刷新后重试')
-    expect(actionErrorMessage(asProductionError(thrown), '兜底')).toBe('订单已被审核，请刷新后重试')
+  it('rethrowWithDigest 写的业务文案，经客户端形态后仍能被消费侧取回', () => {
+    // ⚠️ 本用例守护的是**我方**生产侧 + 消费侧的契约，**不**证明「Next 不会覆盖已有 digest」——
+    //   asClientError 自己实现了 `source.digest ?? 自动编号`，Next 若改行为这里照样绿
+    //   （双谱系评审 round 1 指出的自证其说）。那条前提写在 action-error.ts 的模块注释里，
+    //   属于文档化假设；真要证伪需要生产构建集成测试，成本不在本 issue 范围内。
+    return throwFromAction(new ApiError('CONFLICT', '订单已被审核，请刷新后重试')).then((thrown) => {
+      expect((thrown as ClientError).digest).toBe('CONFLICT: 订单已被审核，请刷新后重试')
+      expect(actionErrorMessage(asProductionError(thrown), '兜底')).toBe('订单已被审核，请刷新后重试')
+    })
+  })
+
+  it('噪声词落在截断点之后也挡得住（不能先截断再判噪声）', () => {
+    const digest = `INVALID_STATE: 同步失败，${'详细说明'.repeat(40)} connect ETIMEDOUT 10.0.0.1:1433`
+    expect(actionErrorMessage(withDigest(digest), '同步失败')).toBe('同步失败')
+  })
+
+  it('截断按码点走，不切断 emoji 代理对', () => {
+    const shown = actionErrorMessage(withDigest(`CONFLICT: 订单冲突${'🎈'.repeat(200)}`), '兜底')
+    expect(shown.endsWith('…')).toBe(true)
+    // 切断代理对会产生孤立的 \uD83C/\uDF88
+    expect(/[\uD800-\uDFFF](?![\uDC00-\uDFFF])/.test(shown.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, ''))).toBe(false)
+  })
+})
+
+describe('businessErrorMessage：服务端返回值通道（message 也 fail-closed）', () => {
+  it('带白名单前缀的业务错误照常透出', () => {
+    expect(businessErrorMessage(new Error('INVALID_PARAMS: 最低充值金额 ¥100'), '兜底')).toBe(
+      '最低充值金额 ¥100',
+    )
+  })
+
+  it.each([
+    ['英文 PG 报错', 'duplicate key value violates unique constraint "uq_sku"'],
+    ['中文 PG 报错（fail-open 会漏，fail-closed 挡住）', '数据库错误：约束 uq_sku 校验未通过'],
+    ['TypeError 内部信息', "Cannot read properties of undefined (reading 'saleItemId')"],
+    ['中文包装的技术细节', `合并失败：relation "client_profile_tmp" does not exist`],
+  ])('%s → 兜底', (_label, message) => {
+    expect(businessErrorMessage(new Error(message), '操作失败，请稍后重试')).toBe(
+      '操作失败，请稍后重试',
+    )
+  })
+
+  it('与 actionErrorMessage 的差异只在 message 通道的无前缀中文', () => {
+    const err = new Error('该组合福利没有完整的单品替代方案')
+    expect(actionErrorMessage(err, '兜底')).toBe('该组合福利没有完整的单品替代方案')
+    expect(businessErrorMessage(err, '兜底')).toBe('兜底')
+  })
+
+  it('digest 通道两者一致', () => {
+    const err = withDigest('CONFLICT: 订单已被审核')
+    expect(businessErrorMessage(err, '兜底')).toBe(actionErrorMessage(err, '兜底'))
   })
 })

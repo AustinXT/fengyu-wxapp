@@ -25,7 +25,7 @@ import { scopeCondition, isInScope, requireAdmin, isDepositOrderApprover } from 
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
 import { logOperation, logTransition, logUpdate } from '@/lib/operation-log'
 import { ApiError, parseErrorPrefix } from '@/lib/api-error'
-import { actionErrorMessage } from '@/lib/action-error'
+import { businessErrorMessage } from '@/lib/action-error'
 import { hasPendingRefund } from '@/lib/refund-cascade'
 import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { calcCouponDiscount } from '@/lib/utils'
@@ -6837,7 +6837,7 @@ export const createPrepaidInflow = withPermission(
       })
     } catch (err: any) {
       // fail-closed：非白名单前缀的原始 PG 报错（SQL 片段 / 约束名）绝不回传给前端 toast（issue #133）
-      return { success: false, message: actionErrorMessage(err, '转入失败') }
+      return { success: false, message: businessErrorMessage(err, '转入失败') }
     }
 
     await logOperation(session, 'sale_order.prepaid_inflow', 'sale_order', saleOrderId, {
@@ -7481,7 +7481,8 @@ export const recordPayment = withPermission(
     if (pgErrorCode(err)) {
       return { success: false, error: { code: 'UNKNOWN', message: '录入回款失败：数据冲突或约束校验未通过，请刷新后重试' } }
     }
-    return { success: false, error: { code: 'UNKNOWN', message: `录入回款失败：${err?.message || String(err)}` } }
+    // fail-closed：非白名单前缀的异常（含 TypeError 的内部信息）不回传给前端（issue #133）
+    return { success: false, error: { code: 'UNKNOWN', message: businessErrorMessage(err, '录入回款失败，请稍后重试') } }
   }
 
   // 幂等命中：首次回款已处理（余额已扣、操作日志已记），本次为重复提交 → 直接返回当前状态，

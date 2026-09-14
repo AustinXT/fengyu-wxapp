@@ -21,6 +21,7 @@ import {
 } from '@/lib/export-pagination'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { deriveHomeProductStatus, type CustomerHomeProduct } from '@/lib/home-product'
+import { businessErrorMessage } from '@/lib/action-error'
 
 const WORKFINE_OVERRIDE_FIELD_MAP = {
   customerSource: 'customer_source',
@@ -1672,7 +1673,8 @@ export const mergeClientProfile = withPermission(
       await tx.delete(clientWechatUsers).where(eq(clientWechatUsers.userId, orphanUserId))
     })
   } catch (err: any) {
-    return { success: false, message: `合并失败：${err?.message ?? 'unknown'}` }
+    // fail-closed：原始 PG 报错（约束名 / SQL 片段）不回传给前端 toast（issue #133）
+    return { success: false, message: businessErrorMessage(err, '合并失败，请稍后重试') }
   }
 
   await logOperation(session, 'admin.mergeClientProfile', 'client_user', sourceUserId, {

@@ -3,7 +3,14 @@
 import { useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
-import { actionErrorType } from "@/lib/action-error"
+import { actionErrorMessage, actionErrorType } from "@/lib/action-error"
+
+/**
+ * Next 自动生成的错误编号形态：`stringHash(message+stack).toString()`（无符号 32 位十进制），
+ * 15.5 起对带 `__NEXT_ERROR_CODE` 的错误会追加 `@E<码>`（lib/error-telemetry-utils.js）。
+ * 只有这种形态才是「给客服定位用的编号」，其余 digest 是业务/技术文案，不得原样渲染。
+ */
+const NEXT_AUTO_DIGEST_RE = /^\d{1,10}(?:@E\d+)?$/
 
 export default function ErrorPage({
   error,
@@ -60,15 +67,21 @@ export default function ErrorPage({
     )
   }
 
-  // 通用 500
+  // 通用 500。业务拦截理由（若有）优先于通用话术展示，让守护的理由能传达到人（issue #133）。
+  const reason = actionErrorMessage(error, "")
   return (
     <div className="flex min-h-[60vh] items-center justify-center">
       <Card className="w-full max-w-md">
         <CardContent className="p-8 text-center space-y-4">
           <div className="text-5xl text-[#D94040]">500</div>
           <h2 className="text-xl font-semibold text-[var(--foreground)]">服务异常</h2>
-          <p className="text-sm text-[#666666]">抱歉，页面加载出现问题，请稍后重试</p>
-          {error.digest && (
+          <p className="text-sm text-[#666666]">
+            {reason || "抱歉，页面加载出现问题，请稍后重试"}
+          </p>
+          {/* 只展示 Next 自动生成的错误编号（供客服定位）。digest 也可能是完整业务 / 技术文案
+              （如 `INVALID_STATE: CLIENT_SECRET is not configured`），原样渲染会绕过
+              actionErrorMessage 的全部闸门把技术细节泄漏出去（评审 round 1 指出）。 */}
+          {error.digest && NEXT_AUTO_DIGEST_RE.test(error.digest) && (
             <p className="text-xs text-[#999999]">错误编号: {error.digest}</p>
           )}
           <div className="flex justify-center gap-3 mt-4">

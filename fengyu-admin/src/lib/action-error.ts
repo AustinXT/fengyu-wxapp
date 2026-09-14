@@ -59,12 +59,16 @@ const UNREADABLE_FRAGMENTS = [
  * `INVALID_STATE: CARD_EXHAUSTED: 储值卡剩余次数为 0` 里的 `CARD_EXHAUSTED:`。
  * 按根 CLAUDE.md「子标签仅供日志归类，不计入白名单」，展示侧剥掉不给用户看。
  *
- * **必须含下划线**：否则 `NOT_FOUND: ID: 123 的订单不存在`、`INVALID_PARAMS: SKU: 缺货`
- * 这类「看着像标签、其实是正文」的串会被吃掉半句。仓内 20+ 个真实子标签
- * （`CARD_EXHAUSTED` / `OUT_OF_SCOPE` / `STATE_TRANSITION_BLOCKED` / `NO_CARD` …）全部含下划线。
+ * **形状要求「含下划线 或 长度 ≥6」**，而不是宽泛的 `[A-Z_]+:`：否则
+ * `NOT_FOUND: ID: 123 的订单不存在`、`INVALID_PARAMS: SKU: 缺货`、`HTTP: 500` 这类
+ * 「看着像标签、其实是正文」的串会被吃掉半句。仓内真实子标签要么含下划线
+ * （`CARD_EXHAUSTED` / `OUT_OF_SCOPE` / `STATE_TRANSITION_BLOCKED` / `NO_CARD`…），
+ * 要么是长描述性单词（`OVERPAY`，见 actions/orders.ts:7153）；正文里的缩写前缀则都很短。
+ * 这是**外观启发式**不是契约，判错的代价上限是多显示/少显示一个标签，不构成泄漏
+ * （安全性由下面的中文闸门与噪声表保证）。
  * 全角冒号一并认，防中文输入法写错一个冒号就把 token 漏给用户。
  */
-const LOG_TAG_RE = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\s*[:：]\s*/
+const LOG_TAG_RE = /^(?:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+|[A-Z][A-Z0-9]{5,})\s*[:：]\s*/
 
 /** 中日韩统一表意文字。本产品所有面向用户的文案都是中文，这是最稳的「给人看的」判据。 */
 const CJK_RE = /[一-鿿]/
@@ -95,24 +99,36 @@ function pick(err: unknown, key: 'digest' | 'message'): string | null {
   return value.trim() || null
 }
 
+/** 噪声扫描上限：message 通道长度无上界，不能对整串做 toLowerCase + 子串扫描。 */
+const NOISE_SCAN_LIMIT = 2000
+
 /**
  * 内容闸门：把一段候选正文收敛成「能端给用户的话」，收敛不出来返回 null。
  *
- * 顺序有讲究：先取首行（多行错误从第二行起通常是 SQL / 堆栈 / 文件路径）→ 剥日志子标签 →
- * **先截断再判定**（message 通道长度无上界，不能对整串做 toLowerCase + 11 次子串扫描；
- * 且中文只出现在 120 字之后时退化成兜底文案，方向更保守）→ 判中文 → 判技术噪声片段。
+ * 顺序有讲究：
+ * 1. 取首行 —— 多行错误从第二行起通常是 SQL / 堆栈 / 文件路径
+ * 2. 剥日志子标签
+ * 3. **噪声判定在截断之前**做 —— 若先截断，「内网地址在第 50 字、ETIMEDOUT 在第 150 字」
+ *    这种串会把地址露出去而噪声词检测不到（双谱系评审 round 1 指出）。对无上界输入
+ *    设 NOISE_SCAN_LIMIT 扫描上限兜住开销
+ * 4. 码点安全截断 —— `slice` 会切断 emoji 代理对
+ * 5. **中文判定在「展示文本」上**做 —— 中文若只出现在截断点之后，露出去的仍是英文技术串
  */
 function presentable(raw: string): string | null {
   const newline = raw.indexOf('\n')
-  let value = (newline === -1 ? raw : raw.slice(0, newline)).replace(LOG_TAG_RE, '').trim()
-  if (!value) return null
-  const truncated = value.length > MAX_DISPLAY_LENGTH
-  if (truncated) value = value.slice(0, MAX_DISPLAY_LENGTH)
-  // 不含中文 ⇒ 错误编号 / 内部枚举 / HTTP 码 / 英文技术串，一律不给看
-  if (!CJK_RE.test(value)) return null
-  const lower = value.toLowerCase()
+  const line = (newline === -1 ? raw : raw.slice(0, newline)).replace(LOG_TAG_RE, '').trim()
+  if (!line) return null
+
+  const scanned = line.length > NOISE_SCAN_LIMIT ? line.slice(0, NOISE_SCAN_LIMIT) : line
+  const lower = scanned.toLowerCase()
   if (UNREADABLE_FRAGMENTS.some((f) => lower.includes(f))) return null
-  return truncated ? `${value}…` : value
+
+  const chars = Array.from(line)
+  const truncated = chars.length > MAX_DISPLAY_LENGTH
+  const display = truncated ? chars.slice(0, MAX_DISPLAY_LENGTH).join('') : line
+  // 不含中文 ⇒ 错误编号 / 内部枚举 / HTTP 码 / 英文技术串，一律不给看
+  if (!CJK_RE.test(display)) return null
+  return truncated ? `${display}…` : display
 }
 
 /**
@@ -130,18 +146,44 @@ function readable(value: string, failOpen: boolean): string | null {
   return OPAQUE_TOKEN_MESSAGES.get(value) ?? (failOpen ? presentable(value) : null)
 }
 
-export function actionErrorMessage(err: unknown, fallback: string): string {
-  // 本函数被 200+ 个 catch 块调用，自己绝不能抛：digest/message 可能是抛异常的 getter 或 Proxy，
-  // 一次逃逸就是整页白屏。
+/**
+ * digest → message → fallback 三级取值。
+ *
+ * 本函数绝不能抛：它被 200+ 个 catch 块调用，digest/message 可能是抛异常的 getter 或 Proxy，
+ * 一次逃逸就是整页白屏。
+ */
+function extract(err: unknown, fallback: string, failOpenMessage: boolean): string {
   try {
     const digest = pick(err, 'digest')
     const fromDigest = digest ? readable(digest, false) : null
     if (fromDigest) return fromDigest
     const message = pick(err, 'message')
-    return (message ? readable(message, true) : null) ?? fallback
+    return (message ? readable(message, failOpenMessage) : null) ?? fallback
   } catch {
     return fallback
   }
+}
+
+/**
+ * 【客户端展示用】从 Server Action 抛出的错误里取用户文案。
+ *
+ * message 通道 fail-open：客户端 catch 里也会接到前端本地 throw（如 `lib/recharge-tier.ts`
+ * 的 `matchTier`），那些 message 没有前缀但完全可读。
+ */
+export function actionErrorMessage(err: unknown, fallback: string): string {
+  return extract(err, fallback, true)
+}
+
+/**
+ * 【服务端返回值用】同上，但 message 通道也 fail-closed。
+ *
+ * Server Action 的**返回值**不经 Next 脱敏，`catch { return { message: err.message } }` 会把
+ * 原始 PG 报错（约束名 / SQL 片段）原样送到前端 toast —— 这是 digest 之外的**第二条泄漏通道**，
+ * 双谱系评审 round 1 两个谱系都指了出来。服务端 catch 到的错误没有「本地可读 throw」这一类，
+ * 因此这里要求必须带 9 项白名单前缀，不带就一律用调用方的中文兜底文案。
+ */
+export function businessErrorMessage(err: unknown, fallback: string): string {
+  return extract(err, fallback, false)
 }
 
 /**
@@ -164,7 +206,12 @@ export function actionErrorType(err: unknown): ErrorPrefix | null {
       if (OPAQUE_TOKEN_MESSAGES.has(digest)) return digest as ErrorPrefix
     }
     const message = pick(err, 'message')
-    return message ? (parseErrorPrefix(message)?.prefix ?? null) : null
+    if (!message) return null
+    const parsed = parseErrorPrefix(message)
+    if (parsed) return parsed.prefix
+    // 与 actionErrorMessage 的可达面对齐：message 整串是裸 token 时它会给出中文说法，
+    // 这里也必须判得出类型，否则 error.tsx 会把该判 403 的渲染成 500（评审 round 1）
+    return OPAQUE_TOKEN_MESSAGES.has(message) ? (message as ErrorPrefix) : null
   } catch {
     return null
   }

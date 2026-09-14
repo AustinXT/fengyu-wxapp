@@ -51,8 +51,29 @@ describe('(main)/error.tsx 错误分级', () => {
     expect(screen.getByText('错误编号: 1956068727')).toBeTruthy()
   })
 
-  it('其它业务错误（非 401/403）→ 500，不误判', () => {
+  it('其它业务错误（非 401/403）→ 500，展示业务理由而非通用话术', () => {
     render(<ErrorPage error={errorWith({ message: SANITIZED, digest: 'CONFLICT: 数据已被修改' })} reset={vi.fn()} />)
     expect(screen.getByText('500')).toBeTruthy()
+    expect(screen.getByText('数据已被修改')).toBeTruthy()
+    // 业务文案型 digest 绝不能再被当成「错误编号」原样渲染（评审 round 1 的 P1）
+    expect(screen.queryByText(/错误编号/)).toBeNull()
+  })
+
+  it('技术细节型 digest 既不当编号展示、也不当业务理由展示', () => {
+    render(
+      <ErrorPage
+        error={errorWith({ message: SANITIZED, digest: 'INVALID_STATE: CLIENT_SECRET is not configured' })}
+        reset={vi.fn()}
+      />,
+    )
+    expect(screen.getByText('500')).toBeTruthy()
+    expect(screen.queryByText(/CLIENT_SECRET/)).toBeNull()
+    expect(screen.queryByText(/错误编号/)).toBeNull()
+    expect(screen.getByText('抱歉，页面加载出现问题，请稍后重试')).toBeTruthy()
+  })
+
+  it('带 @E 错误码后缀的 Next 自动编号也认', () => {
+    render(<ErrorPage error={errorWith({ message: SANITIZED, digest: '1956068727@E394' })} reset={vi.fn()} />)
+    expect(screen.getByText('错误编号: 1956068727@E394')).toBeTruthy()
   })
 })
