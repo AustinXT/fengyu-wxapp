@@ -225,6 +225,14 @@ Page({
   _filteredKeyword: '',
   /** 跨零点定时器：页面停在前台过午夜时把 picker 上界推到新的今天 */
   _midnightTimer: null as ReturnType<typeof setTimeout> | null,
+  /**
+   * 最后一次**真正写回屏幕**的请求代次。
+   * `_seq` 管的是「谁的响应还算数」，这个管的是「屏幕上现在挂的是谁的数据」——
+   * 两者会错开：响应 A 已经 setData 上屏，紧接着被动刷新把 `_seq` 推到 B，
+   * 这时 A 的 setData 回调若拿 `_seq` 判断就会放弃提交 `_lastKey`，
+   * 后面 B 一失败，catch 里的 sameSource 就会把屏幕上那批同源数据误判成异源清掉。
+   */
+  _renderedSeq: 0,
 
   onLoad(options: Record<string, string>) {
     const mgr = isManager();
@@ -399,7 +407,11 @@ Page({
     // 同源数据：后者会把「本期成功查到 0 条」误判成「还没加载」，白白多跑一次全区间扫描。
     // 只对 custom 早退：点「今日」「本月」时区间同样没变，但那是用户在**手动刷新**，
     // 一并吃掉会让页面失去唯一的主动重拉入口
-    if (fetch && type === 'custom' && start === this.data.startDate && end === this.data.endDate && this._lastKey) {
+    // `loading` 也算「已经有同区间的数据在路上」：首屏或失败重试在途时 `_lastKey` 还是空的，
+    // 连点几下「自定义」会并发启动多个一模一样的全区间扫描 —— `_seq` 只丢弃响应，
+    // 拦不住已经进了云函数的查询。在途那次本就是同一个区间，等它就行。
+    if (fetch && type === 'custom' && start === this.data.startDate && end === this.data.endDate
+        && (this._lastKey || this.data.loading)) {
       this.setData({ rangeType: type, displayDate: display });
       return;
     }
@@ -739,6 +751,7 @@ Page({
       }
       // 过桥期间用户还能继续打字，回调里读 this.data.keyword 就把「新词已过滤完」错记成事实
       const keywordAtBuild = this.data.keyword;
+      this._renderedSeq = seq; // 这一刻起，屏幕上挂的就是本次响应的数据
       this.setData({
         loadFailed: false,
         totalSalesAlloc: money(res.totalSalesAlloc),
@@ -767,8 +780,9 @@ Page({
         // 提前写的话，setData 万一失败（比如撞 1MB 上限）它们就和实际渲染的内容对不上，
         // 会把 catch 分支里 keepStaleOnError 的 sameSource 判断、以及切一级 Tab 时
         // 用 _summaryCache 本地重算的分类金额一起带偏。
-        // 迟到的回调也要认代次：期间用户可能已经切走了
-        if (seq !== this._seq) return;
+        // 认的是**渲染代次**不是请求代次：只要之后没有别的响应再写过屏幕，
+        // 这批数据就还挂在上面，身份证就该照常提交（哪怕此刻已有更新的请求在途）
+        if (seq !== this._renderedSeq) return;
         this._lastKey = queryKey;
         this._summaryCache = res.categorySummary && res.categories && res.categories.length
           ? { summary: res.categorySummary, categories: res.categories }

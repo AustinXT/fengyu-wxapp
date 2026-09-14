@@ -1723,3 +1723,67 @@ describe('绩效页 · 评审 round-24 闭环（glm）', () => {
     expect(callStaffApi).not.toHaveBeenCalled()
   })
 })
+
+describe('绩效页 · 评审 round-25 闭环（codex）', () => {
+  test('回调迟到但屏幕仍是它的数据时，身份证照常提交——否则下次失败会误清屏', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+
+    // 把 setData 回调压住，模拟「A 已上屏、回调还没跑，B 已经发起」的真机时序
+    const pending: Array<() => void> = []
+    const realSetData = page.setData.bind(page)
+    page.setData = (u: Record<string, unknown>, cb?: () => void) => {
+      realSetData(u)
+      if (cb) pending.push(cb)
+    }
+    await page.loadData(true)
+    page._seq++ // 期间又发起了一次请求，请求代次已经往前走了
+    pending.forEach((cb) => cb())
+    page.setData = realSetData
+
+    // 屏幕上挂的还是那批数据，_lastKey 就该反映这个事实
+    expect(page._lastKey).not.toBe('')
+
+    // 于是紧随其后的被动刷新失败时，同源数据得以保留（keepStaleOnError 生效）
+    vi.mocked(callStaffApi).mockRejectedValue(new Error('网络开小差'))
+    await page.loadData(true, true)
+    expect(page.data.items).toHaveLength(1)
+  })
+
+  test('更新的响应写过屏幕后，旧回调不再提交身份证', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+
+    const pending: Array<() => void> = []
+    const realSetData = page.setData.bind(page)
+    page.setData = (u: Record<string, unknown>, cb?: () => void) => {
+      realSetData(u)
+      if (cb) pending.push(cb)
+    }
+    await page.loadData(true)          // A 上屏，回调挂起
+    const staleCb = pending.splice(0, 1)[0]
+    await page.loadData(true)          // B 上屏（_renderedSeq 前进）
+    page.setData = realSetData
+    const keyAfterB = page._lastKey
+
+    staleCb() // A 的回调此刻才到
+    expect(page._lastKey).toBe(keyAfterB) // 没被 A 覆盖
+  })
+
+  test('同区间请求在途时连点「自定义」，不并发启动多个全区间扫描', () => {
+    const page = createPage()
+    page.onLoad({ range: 'custom' })
+    vi.mocked(callStaffApi).mockImplementation(() => new Promise(() => {})) // 请求挂起
+    page.loadData(true)
+    expect(page.data.loading).toBe(true)
+    expect(page._lastKey).toBe('') // 首屏还没成功过
+
+    vi.mocked(callStaffApi).mockClear()
+    page.onRangeTap({ currentTarget: { dataset: { type: 'custom' } } })
+    page.onRangeTap({ currentTarget: { dataset: { type: 'custom' } } })
+
+    expect(callStaffApi).not.toHaveBeenCalled() // 等在途那次就行
+  })
+})
