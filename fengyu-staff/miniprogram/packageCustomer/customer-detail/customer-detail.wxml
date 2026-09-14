@@ -265,9 +265,11 @@
                 </view>
                 <view class="home-product-counts">
                   <text class="home-product-remaining">待提 {{item.pendingPickupQuantity}}{{item.unit}}</text>
+                  <text>已提 {{item.pickedQuantity}}{{item.unit}}</text>
                   <text>已付 {{item.paidQuantity}}{{item.unit}}</text>
                   <text>购买 {{item.purchasedQuantity}}{{item.unit}}</text>
                 </view>
+                <view wx:if="{{item.unpaidAmountFmt}}" class="home-product-unpaid">待付清 ¥{{item.unpaidAmountFmt}}</view>
                 <view class="home-product-meta">
                   <text>{{item.storeName || item.storeId}}</text>
                   <text wx:if="{{item.purchasedAtFmt}}">{{item.purchasedAtFmt}}</text>

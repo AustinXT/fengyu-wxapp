@@ -282,6 +282,36 @@
             </view>
           </view>
         </van-tab>
+
+        <van-tab title="家居产品">
+          <view class="tab-content">
+            <view class="tab-hint">展示顾客跨门店已购家居产品，提货在员工端门店视图操作</view>
+            <view wx:if="{{!homeProductsLoaded}}" class="loading-wrap">
+              <van-loading type="spinner" color="#C0322A" />
+            </view>
+            <van-empty wx:elif="{{homeProducts.length === 0}}" description="暂无家居产品" />
+            <view wx:else class="home-product-list">
+              <view class="home-product-card" wx:for="{{homeProducts}}" wx:key="saleItemId">
+                <view class="home-product-head">
+                  <text class="home-product-name">{{item.productName}}</text>
+                  <text class="status-tag status-tag--{{item.statusClass}}">{{item.status}}</text>
+                </view>
+                <view class="home-product-counts">
+                  <text class="home-product-remaining">待提 {{item.pendingPickupQuantity}}{{item.unit}}</text>
+                  <text>已提 {{item.pickedQuantity}}{{item.unit}}</text>
+                  <text>已付 {{item.paidQuantity}}{{item.unit}}</text>
+                  <text>购买 {{item.purchasedQuantity}}{{item.unit}}</text>
+                </view>
+                <view wx:if="{{item.unpaidAmountFmt}}" class="home-product-unpaid">待付清 ¥{{item.unpaidAmountFmt}}</view>
+                <view class="home-product-meta">
+                  <text>{{item.storeName || item.storeId}}</text>
+                  <text wx:if="{{item.purchasedAtFmt}}">{{item.purchasedAtFmt}}</text>
+                </view>
+                <text class="home-product-order">{{item.saleOrderId}}</text>
+              </view>
+            </view>
+          </view>
+        </van-tab>
       </van-tabs>
     </view>
   </mgmt-data-state>

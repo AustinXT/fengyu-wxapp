@@ -83,6 +83,15 @@
   color: var(--color-primary);
 }
 
+.unpaid-hint {
+  margin-top: 16rpx;
+  padding: 12rpx 20rpx;
+  border-radius: 8rpx;
+  background: #fff8e6;
+  color: #d4820a;
+  font-size: 24rpx;
+}
+
 .product-meta {
   display: flex;
   flex-wrap: wrap;

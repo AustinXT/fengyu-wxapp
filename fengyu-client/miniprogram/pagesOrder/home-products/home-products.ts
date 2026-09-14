@@ -14,12 +14,15 @@ interface HomeProduct {
   refundedQuantity: number;
   remainingQuantity: number;
   pendingPickupQuantity: number;
+  /** 行级欠款；仅 refundedQuantity=0 时有值，退过款的行为 null（received 是净实收，相减会虚增欠款） */
+  unpaidAmount: number | null;
   status: string;
   storeId: string;
   storeName: string | null;
   purchasedAt: string;
   purchasedAtFmt?: string;
   statusClass?: string;
+  unpaidAmountFmt?: string;
 }
 
 Page({
@@ -55,12 +58,21 @@ Page({
         部分提货: 'progress',
         已提货: 'success',
         已完成: 'done',
+        待付清: 'pending',
       };
       this.setData({
         products: (data?.items || []).map((item) => ({
           ...item,
           purchasedAtFmt: item.purchasedAt ? formatDate(item.purchasedAt) : '',
           statusClass: statusClassMap[item.status] || 'done',
+          // 仅未付清的行展示欠款；寄存单/退过款的行后端下发 null，留空由 wxml 判显隐。
+          // 小程序 toLocaleString 不可靠（ICU 精简），千分位用 toFixed + 正则。
+          unpaidAmountFmt:
+            item.unpaidAmount != null && Number(item.unpaidAmount) > 0
+              ? Number(item.unpaidAmount)
+                  .toFixed(2)
+                  .replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+              : '',
         })),
       });
     } catch (_) {

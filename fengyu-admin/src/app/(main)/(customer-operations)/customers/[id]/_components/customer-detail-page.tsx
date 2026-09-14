@@ -485,8 +485,20 @@ export default function CustomerDetailPage({
     },
     { key: "status", header: "状态", cell: (row) => <StatusBadge status={row.status} /> },
     { key: "pendingPickupQuantity", header: "待提", cell: (row) => <span className="font-medium text-[#C0322A]">{row.pendingPickupQuantity} {row.unit}</span> },
+    { key: "pickedQuantity", header: "已提", cell: (row) => <span>{row.pickedQuantity} {row.unit}</span> },
     { key: "paidQuantity", header: "已付", cell: (row) => <span>{row.paidQuantity} {row.unit}</span> },
     { key: "purchasedQuantity", header: "购买", cell: (row) => <span>{row.purchasedQuantity} {row.unit}</span> },
+    {
+      key: "unpaidAmount",
+      header: "待付清",
+      // 欠款算不出来的行（寄存单原价快照、退过款的行）后端已下发 null，这里留空而非显示 0
+      cell: (row) =>
+        row.unpaidAmount != null && row.unpaidAmount > 0 ? (
+          <span className="font-medium text-[#D4820A]">{formatCurrency(row.unpaidAmount)}</span>
+        ) : (
+          <span className="text-[#888888]">—</span>
+        ),
+    },
     { key: "storeName", header: "购买门店", cell: (row) => <span>{row.storeName || "—"}</span> },
     { key: "purchasedAt", header: "购买日期", cell: (row) => <span>{formatDate(row.purchasedAt) || "—"}</span> },
     { key: "saleOrderId", header: "订单号", cell: (row) => <span className="font-mono text-xs">{row.saleOrderId}</span> },

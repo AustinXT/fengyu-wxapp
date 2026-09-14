@@ -3,13 +3,16 @@
  *
  * 入口：mgmt-dashboard 首页"顾客档案"卡片（entry === 'customers'）
  *
- * 6 个 action：
- *   mgmtCustomer.search        — 默认列表 / 关键字 / 手机号（scope=bound_store_id；50/页分页）
- *   mgmtCustomer.detail        — 顾客档案详情（含越权防护：bound_store_id ∈ scope）
- *   mgmtCustomer.calendar      — 月度消费日历（scope=sale_orders.store_id）
- *   mgmtCustomer.paidOrders    — 已支付订单含明细（scope=sale_orders.store_id）
- *   mgmtCustomer.giftHistory   — 赠送记录（scope=sale_orders.store_id）
- *   mgmtCustomer.refundHistory — 退换记录(scope=sale_orders.store_id)
+ * 9 个 action：
+ *   mgmtCustomer.search         — 默认列表 / 关键字 / 手机号（scope=bound_store_id；50/页分页）
+ *   mgmtCustomer.detail         — 顾客档案详情（含越权防护：bound_store_id ∈ scope）
+ *   mgmtCustomer.calendar       — 月度消费日历（scope=sale_orders.store_id）
+ *   mgmtCustomer.paidOrders     — 已支付订单含明细（scope=sale_orders.store_id）
+ *   mgmtCustomer.orderHistory   — 消费记录（全状态，仅展示不参与核销）
+ *   mgmtCustomer.serviceHistory — 服务记录
+ *   mgmtCustomer.giftHistory    — 赠送记录（scope=sale_orders.store_id）
+ *   mgmtCustomer.refundHistory  — 退换记录(scope=sale_orders.store_id)
+ *   mgmtCustomer.homeProducts   — 家居产品资产（跟顾客走，跨店全量；与 customer.homeProducts 同口径）
  *
  * 决策点：
  *   D-mgmt-phone-mask     — 拥有数据中心权限的管理层手机号不脱敏
@@ -1156,6 +1159,162 @@ async function refundHistory(ctx) {
   }
 }
 
+// ====================================================================
+// homeProducts — 顾客已购家居产品资产（管理层视图）
+//
+// 与 customer.homeProducts 的关系：SQL 主体字节同义（跨端 snapshot 守护），
+// 差异仅在入口鉴权 —— 门店版走 assertCustomerProfileVisible（顾客分配关系），
+// 本版走 requireManagementLevel + resolveCustomerInScope（bound_store_id ∈ scope）。
+// 交易数据跟顾客走：解析出顾客后不再按订单门店过滤，跨店家居资产全量展示。
+// ====================================================================
+
+function mapHomeProductRow(row) {
+  const pickedQuantity = Number(row.picked_quantity || 0)
+  const refundedQuantity = Number(row.refunded_quantity || 0)
+  const remainingQuantity = Number(row.remaining_quantity || 0)
+  const paidQuantity = Number(row.paid_quantity || 0)
+  const pendingPickupQuantity = Number(row.pending_pickup_quantity || 0)
+  // 待付清行的欠款金额：received 是行级净实收（已扣该行退款），故对退过款的行
+  // sale_amount - received 会把"退掉的钱"误算成欠款；寄存单行 SQL 已置 NULL。
+  const unpaidAmount =
+    refundedQuantity > 0 || row.unpaid_amount == null ? null : Number(row.unpaid_amount)
+  let status
+  if (row.refund_pending) status = '退款处理中'
+  else if (pendingPickupQuantity > 0) status = pickedQuantity > 0 ? '部分提货' : '待提货'
+  // 「待付清」必须与欠款金额绑定：只有真的算得出欠款才这么标。
+  // 否则寄存单（金额列留空）和退款后仍有剩余的行会被误标成待付清/已完成。
+  else if (unpaidAmount > 0) status = '待付清'
+  // 还有未交付份额但算不出欠款（寄存单、退款后剩余）——是待提，不是已完成。
+  else if (remainingQuantity > 0) status = '待提货'
+  else status = refundedQuantity > 0 ? '已完成' : '已提货'
+
+  return {
+    saleItemId: row.sale_item_id,
+    saleItemGroupId: row.sale_item_group_id || null,
+    saleOrderId: row.sale_order_id,
+    productName: row.product_name || '家居产品',
+    unit: row.unit || '盒',
+    purchasedQuantity: Number(row.purchased_quantity || 0),
+    paidQuantity,
+    pickedQuantity,
+    refundedQuantity,
+    remainingQuantity,
+    pendingPickupQuantity,
+    unpaidAmount,
+    status,
+    storeId: row.store_id,
+    storeName: row.store_name || null,
+    purchasedAt: row.purchased_at,
+  }
+}
+
+async function homeProducts(ctx) {
+  await requireManagementLevel()(ctx, async () => {})
+
+  const { clientUserId, clientPhone, scopeType, scopeId } = ctx.event.payload || {}
+  if (!clientUserId && !clientPhone) {
+    throw new Error('INVALID_PARAMS: 缺少 clientUserId 或 clientPhone')
+  }
+  validateScopeParams(scopeType, scopeId)
+  validateManagementScope(ctx.auth, scopeType, scopeId)
+
+  const resolvedUserId = await resolveCustomerInScope(clientUserId, clientPhone, scopeType, scopeId)
+
+  const rows = await pg.query(
+    `WITH pickup_totals AS (
+       SELECT sale_item_id, SUM(pickup_quantity)::int AS picked_quantity
+         FROM pickup_records
+        GROUP BY sale_item_id
+     ), home_product_rows AS (
+       SELECT COALESCE(si.sale_item_group_id, si.sale_item_id) AS sale_item_group_id,
+              si.sale_item_id,
+              si.sale_order_id,
+              COALESCE(si.product_name, '家居产品') AS product_name,
+              COALESCE(ps.unit, '盒') AS unit,
+              si.quantity::int AS purchased_quantity,
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
+              LEAST(
+                LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0))),
+                GREATEST(0, COALESCE(pt.picked_quantity, 0))
+              )::int AS picked_quantity,
+              CASE
+                WHEN si.sale_amount <= 0 THEN si.quantity
+                ELSE LEAST(
+                  si.quantity,
+                  FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
+                )
+              END AS paid_quantity,
+              si.sale_amount::numeric AS row_sale_amount,
+              GREATEST(0, si.received::numeric) AS row_received,
+              (o.sale_order_type = '寄存单') AS is_deposit,
+              o.store_id,
+              s.store_name,
+              COALESCE(o.paid_at, o.sale_order_datetime, o.created_at) AS purchased_at,
+              EXISTS (
+                SELECT 1 FROM sale_order_payments sop
+                 WHERE sop.sale_order_id = o.sale_order_id
+                   AND sop.change_type = '退款'
+                   AND sop.status = '待审批'
+              ) AS refund_pending
+         FROM sale_items si
+         JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+         LEFT JOIN stores s ON s.store_id = o.store_id
+         LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
+         LEFT JOIN pickup_totals pt ON pt.sale_item_id = si.sale_item_id
+        WHERE o.client_user_id = $1
+          AND o.status IN ('已支付', '部分支付', '已完成')
+          AND si.item_direction = '购买'
+          AND si.product_type = '家居产品'
+     ), home_products AS (
+       SELECT sale_item_group_id,
+              MIN(si.sale_item_id) AS sale_item_id,
+              MIN(si.sale_order_id) AS sale_order_id,
+              MIN(COALESCE(si.product_name, '家居产品')) AS product_name,
+              MIN(si.unit) AS unit,
+              SUM(si.purchased_quantity)::int AS purchased_quantity,
+              SUM(si.settled_quantity)::int AS settled_quantity,
+              SUM(si.picked_quantity)::int AS picked_quantity,
+              SUM(si.paid_quantity)::int AS paid_quantity,
+              SUM(si.row_sale_amount) AS sale_amount_total,
+              SUM(si.row_received) AS received_total,
+              BOOL_OR(si.is_deposit) AS is_deposit,
+              MIN(si.store_id) AS store_id,
+              MIN(si.store_name) AS store_name,
+              MAX(si.purchased_at) AS purchased_at,
+              BOOL_OR(si.refund_pending) AS refund_pending
+         FROM home_product_rows si
+      GROUP BY sale_item_group_id
+     ), home_product_balances AS (
+       SELECT *,
+              (settled_quantity - picked_quantity)::int AS refunded_quantity,
+              (purchased_quantity - settled_quantity)::int AS remaining_quantity,
+              LEAST(
+                purchased_quantity - settled_quantity,
+                GREATEST(paid_quantity - picked_quantity, 0)
+              )::int AS pending_pickup_quantity,
+              -- 寄存单的 sale_amount 只是原价快照、received 恒为历史值，两者相减不是欠款
+              -- （寄存的货本就属于顾客）。金额列一律留空，与导出口径一致。
+              CASE WHEN is_deposit THEN NULL
+                   ELSE GREATEST(0, sale_amount_total - received_total)::numeric(12, 2)
+              END AS unpaid_amount
+         FROM home_products
+     )
+     SELECT *
+       FROM home_product_balances
+      WHERE picked_quantity > 0 OR remaining_quantity > 0
+   ORDER BY (pending_pickup_quantity > 0) DESC,
+            purchased_at DESC,
+            sale_item_id`,
+    [resolvedUserId],
+  )
+
+  const scopeName = await resolveScopeName(scopeType, scopeId)
+  ctx.result = {
+    scope: { type: scopeType, id: scopeId || null, name: scopeName },
+    homeProducts: rows.map(mapHomeProductRow),
+  }
+}
+
 module.exports = {
   search,
   detail,
@@ -1165,4 +1324,5 @@ module.exports = {
   serviceHistory,
   giftHistory,
   refundHistory,
+  homeProducts,
 }
