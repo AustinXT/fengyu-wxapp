@@ -13,7 +13,10 @@
  *   1. 营业额公式 = SUM(sale_order_performance_events.amount)
  *   2. 付款类型 = 首次支付 / 回款 / 退款，排除储值卡抵扣
  *   3. 订单类型 = 销售单 / 转换单 / 充值单
- *   4. 归期 = performance_date：首次收款跟随订单归属日，后续流水按 paid_at
+ *   4. 归期 = performance_date：**查询侧一律直读款项归属日期，没有回退分支**
+ *      （#137 收敛 / 迁移 0040；回退只发生在写入侧 trigger）。
+ *      2026-09-14 起工作台的实付/退款也按归属日期（#140），
+ *      不再有「业绩按归属日、资金按 paid_at」的双口径。
  *
  * 任一端公式变更必须双端同步，否则数据中心首页与 admin dashboard 数字对不上。
  */
@@ -100,6 +103,47 @@ describe('dashboard 组织层级现金流业绩一致性守护', () => {
       ))
       expect(paymentMetrics).toMatch(/spe\.change_type IN \('首次支付', '回款'\)[\s\S]*?AS today_paid_amount/)
       expect(paymentMetrics).toMatch(/spe\.change_type = '退款'[\s\S]*?ABS\(spe\.amount::numeric\)[\s\S]*?AS today_refunded_amount/)
+    })
+
+    /**
+     * #140 口径守护。
+     *
+     * ⚠ 本条是补的历史欠账：在它之前，把这三个指标的日期条件从 `paid_at` 换成
+     * `performance_date`（或换回去）**整个 admin 测试套件全绿**，无人会发现。
+     * 上面那两条断言只管「实付统计哪些 change_type」，压根不看日期口径。
+     */
+    it('工作台五个日期相关指标一律按业绩归属日期，不得回退到 paid_at', () => {
+      const paymentMetrics = normalize(stripComments(
+        between(adminSrc, 'payment_metrics AS (', 'order_metrics AS ('),
+      ))
+      const dated: Array<[string, string]> = [
+        ['today_revenue', 'today'],
+        ['today_paid_amount', 'today'],
+        ['today_refunded_amount', 'today'],
+        ['yesterday_revenue', 'yesterday'],
+        ['yesterday_paid_amount', 'yesterday'],
+      ]
+      for (const [metric, bound] of dated) {
+        expect(
+          paymentMetrics,
+          `${metric} 的日期口径漂移（必须是 spe.performance_date = ${bound}）`,
+        ).toMatch(
+          new RegExp(`spe\\.performance_date = \\(SELECT ${bound} FROM bounds\\)[\\s\\S]*?AS ${metric}`),
+        )
+      }
+      // 资金发生日不得作为任何日期条件回到工作台——那会重新制造「业绩按归属、实付按 paid_at」的双口径。
+      // 若财务确实需要资金发生日口径，应另开报表入口而不是改这里（见 dashboard.ts 注释）。
+      expect(paymentMetrics, 'paid_at 不得作为工作台的日期口径').not.toMatch(/spe\.paid_at/)
+    })
+
+    it('total_paid_amount 是累计值，不得被加上日期条件', () => {
+      const paymentMetrics = normalize(stripComments(
+        between(adminSrc, 'payment_metrics AS (', 'order_metrics AS ('),
+      ))
+      // 截取最后一个 COALESCE(SUM(CASE ... AS total_paid_amount 片段
+      const totalBlock = paymentMetrics.match(/COALESCE\(SUM\(CASE(?:(?!COALESCE\(SUM\(CASE)[\s\S])*?AS total_paid_amount/)
+      expect(totalBlock, '未能定位 total_paid_amount 片段').toBeTruthy()
+      expect(totalBlock![0], 'total_paid_amount 被加上了日期条件').not.toMatch(/FROM bounds/)
     })
 
     it('订单数量和待办仍在独立的 sale_orders CTE 中统计', () => {
