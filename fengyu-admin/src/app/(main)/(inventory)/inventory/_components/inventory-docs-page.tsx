@@ -26,7 +26,13 @@ import {
 } from '@/lib/inventory/types'
 import { Button } from '@/components/ui/button'
 import { DataTable, type Column } from '@/components/ui/data-table'
-import { Dialog, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+  Dialog,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import InventoryLocationFilter from '@/components/inventory-location-filter'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Input } from '@/components/ui/input'
@@ -136,23 +142,10 @@ export default function InventoryDocsPage({
     debounceRef[0] = setTimeout(() => setMany({ q: value, page: '' }), 300)
   }, [debounceRef, setMany])
 
-  async function approve(id: string) {
-    const auditRemark = prompt('审批备注') || ''
-    await approveInventoryCoreDoc(id, auditRemark)
-    startTransition(() => router.refresh())
-  }
-
-  async function reject(id: string) {
-    const auditRemark = prompt('驳回原因') || ''
-    await rejectInventoryCoreDoc(id, auditRemark)
-    startTransition(() => router.refresh())
-  }
-
-  async function receive(id: string) {
-    const remark = prompt('收货备注') || ''
-    await confirmInventoryCoreReceive(id, remark)
-    startTransition(() => router.refresh())
-  }
+  // 审批 / 驳回 / 收货共用同一个备注弹窗，只有当前挂着的这一项决定标题、校验与调用哪个 action
+  const [pendingAction, setPendingAction] = useState<{ kind: DocActionKind; docId: string } | null>(
+    null,
+  )
 
   const columns: Column<InventoryDocRow>[] = [
     {
@@ -207,16 +200,28 @@ export default function InventoryDocsPage({
           </PreserveListContextLink>
           {GENERIC_DOC_TYPE_SET.has(r.docType) && canApprove && r.status === '待审批' && (
             <>
-              <Button variant="ghost" size="sm" onClick={() => approve(r.id)}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setPendingAction({ kind: 'approve', docId: r.id })}
+              >
                 通过
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => reject(r.id)}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setPendingAction({ kind: 'reject', docId: r.id })}
+              >
                 驳回
               </Button>
             </>
           )}
           {GENERIC_DOC_TYPE_SET.has(r.docType) && canReceive && r.status === '待收货' && (
-            <Button variant="ghost" size="sm" onClick={() => receive(r.id)}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setPendingAction({ kind: 'receive', docId: r.id })}
+            >
               收货
             </Button>
           )}
@@ -304,7 +309,164 @@ export default function InventoryDocsPage({
           allowedDocTypes={allowedCreateDocTypes}
         />
       )}
+
+      <DocActionDialog
+        pending={pendingAction}
+        onOpenChange={(next) => {
+          if (!next) setPendingAction(null)
+        }}
+        onDone={() => {
+          setPendingAction(null)
+          startTransition(() => router.refresh())
+        }}
+      />
     </div>
+  )
+}
+
+type DocActionKind = 'approve' | 'reject' | 'receive'
+
+/**
+ * 审批 / 驳回 / 收货的备注弹窗配置。
+ *
+ * `remarkRequired` 目前只有驳回为 true —— 驳回原因是制单人唯一能看到的解释，
+ * 空着等于让人猜。服务端 `rejectInventoryCoreDoc` 暂未强制非空（改它是接口契约变更，
+ * 见 PR 说明），故这里是**前端闸门**：拦住手滑，而不是拦住恶意调用。
+ */
+const DOC_ACTION_CONFIG: Readonly<
+  Record<
+    DocActionKind,
+    {
+      title: string
+      label: string
+      placeholder: string
+      remarkRequired: boolean
+      confirmText: string
+      confirmVariant?: 'destructive'
+      successMessage: string
+      errorFallback: string
+      run: (docId: string, remark: string) => Promise<unknown>
+    }
+  >
+> = {
+  approve: {
+    title: '审批通过',
+    label: '审批备注',
+    placeholder: '选填，将记录在单据的审批信息中',
+    remarkRequired: false,
+    confirmText: '确认通过',
+    successMessage: '单据已审批通过',
+    errorFallback: '审批失败',
+    run: (docId, remark) => approveInventoryCoreDoc(docId, remark),
+  },
+  reject: {
+    title: '驳回单据',
+    label: '驳回原因',
+    placeholder: '请说明驳回原因，制单人可查看此说明',
+    remarkRequired: true,
+    confirmText: '确认驳回',
+    confirmVariant: 'destructive',
+    successMessage: '单据已驳回',
+    errorFallback: '驳回失败',
+    run: (docId, remark) => rejectInventoryCoreDoc(docId, remark),
+  },
+  receive: {
+    title: '确认收货',
+    label: '收货备注',
+    placeholder: '选填，如实收与单据有差异请在此说明',
+    remarkRequired: false,
+    confirmText: '确认收货',
+    successMessage: '收货已确认',
+    errorFallback: '收货确认失败',
+    run: (docId, remark) => confirmInventoryCoreReceive(docId, remark),
+  },
+}
+
+const DOC_ACTION_REMARK_MAX = 300
+
+function DocActionDialog({
+  pending,
+  onOpenChange,
+  onDone,
+}: {
+  pending: { kind: DocActionKind; docId: string } | null
+  onOpenChange: (open: boolean) => void
+  onDone: () => void
+}) {
+  const [remark, setRemark] = useState('')
+  const [touched, setTouched] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const open = pending !== null
+  // 每次换单据/换动作都从空备注重新开始，避免上一次的输入串到下一张单上
+  const resetKey = pending ? `${pending.kind}:${pending.docId}` : ''
+  useEffect(() => {
+    setRemark('')
+    setTouched(false)
+  }, [resetKey])
+
+  if (!pending) return null
+  const config = DOC_ACTION_CONFIG[pending.kind]
+  const trimmed = remark.trim()
+  const missing = config.remarkRequired && !trimmed
+
+  async function submit() {
+    if (!pending || submitting) return
+    setTouched(true)
+    if (missing) {
+      toast.error(`请填写${config.label}`)
+      return
+    }
+    setSubmitting(true)
+    try {
+      await config.run(pending.docId, trimmed)
+      toast.success(config.successMessage)
+      onDone()
+    } catch (err) {
+      toast.error(actionErrorMessage(err, config.errorFallback))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    // 提交中也允许关闭：Server Action 本来就不能中止，硬拦 onOpenChange 会让 ESC 关掉原生
+    // <dialog> 之后 React 侧仍以为开着，造成「看不见但关不掉」的死态。
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogHeader>
+        <DialogTitle>{config.title}</DialogTitle>
+        <DialogDescription>单据号 {pending.docId}</DialogDescription>
+      </DialogHeader>
+      <div className="mt-4">
+        <label className="mb-1 block text-sm font-medium" htmlFor="doc-action-remark">
+          {config.label}
+          {config.remarkRequired && <span className="text-[var(--primary)]"> *</span>}
+        </label>
+        <Textarea
+          id="doc-action-remark"
+          aria-label={config.label}
+          aria-required={config.remarkRequired}
+          aria-invalid={touched && missing}
+          value={remark}
+          onChange={(e) => setRemark(e.target.value)}
+          rows={4}
+          maxLength={DOC_ACTION_REMARK_MAX}
+          placeholder={config.placeholder}
+        />
+        {touched && missing && (
+          <p role="alert" className="mt-1 text-xs text-[#D94040]">
+            请填写{config.label}
+          </p>
+        )}
+      </div>
+      <DialogFooter>
+        <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+          取消
+        </Button>
+        <Button onClick={submit} disabled={submitting} variant={config.confirmVariant}>
+          {submitting ? '处理中…' : config.confirmText}
+        </Button>
+      </DialogFooter>
+    </Dialog>
   )
 }
 
@@ -419,7 +581,7 @@ function CreateDocDialog({
       onOpenChange(false)
       onSuccess()
     } catch (err) {
-      alert((err as Error).message || '创建失败')
+      toast.error(actionErrorMessage(err, '创建单据失败'))
     } finally {
       setSubmitting(false)
     }

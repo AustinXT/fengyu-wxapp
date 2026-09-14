@@ -36,13 +36,21 @@ vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
 
 import { toast } from 'sonner'
 import { listInventoryLotOptions } from '@/actions/inventory/stocks'
-import { createInventoryCoreDoc } from '@/actions/inventory/docs'
+import {
+  approveInventoryCoreDoc,
+  confirmInventoryCoreReceive,
+  createInventoryCoreDoc,
+  rejectInventoryCoreDoc,
+} from '@/actions/inventory/docs'
 import InventoryDocsPage, { SOURCE_LOT_DOC_TYPES } from './inventory-docs-page'
 import { INVENTORY_GENERIC_DOC_TYPES } from '@/lib/inventory/types'
 
 // vitest.config.ts 没开 clearMocks/restoreMocks。这里必须用 resetAllMocks 而不是 clearAllMocks ——
 // 后者只清调用记录、不清 implementation，忘记设 mock 的新用例会静默继承上一条的 mockRejectedValue。
-beforeEach(() => vi.resetAllMocks())
+beforeEach(() => {
+  vi.resetAllMocks()
+  vi.unstubAllGlobals()
+})
 
 const row: InventoryDocRow = {
   id: 'MBS-260813-0001',
@@ -549,5 +557,179 @@ describe('通用建单入口里需要来源批次的单据类型', () => {
       generic.filter((t) => serverNeedsSourceLot.has(t)).sort(),
       '前端 SOURCE_LOT_DOC_TYPES 与服务端 shouldCaptureSourceLot 在通用建单类型上漂移了',
     ).toEqual(generic.filter((t) => SOURCE_LOT_DOC_TYPES.has(t as never)).sort())
+  })
+})
+
+// ── #134：原生 alert / prompt 换成页内组件 ────────────────────────────────
+// 原实现用 prompt('驳回原因') 收集备注：不可样式化、阻塞 JS、**且无法做必填校验**
+// （prompt 取消或留空都得到 ''，代码 `|| ''` 直接放过，空驳回原因就这么提交了）。
+
+const receivableRow: InventoryDocRow = { ...row, id: 'DTO-260813-0002', docType: '内部领用', status: '待收货' }
+
+function renderDocs(rows: InventoryDocRow[] = [row]) {
+  render(<InventoryDocsPage {...baseProps} rows={rows} allowedCreateDocTypes={['市场产品报损']} />)
+}
+
+/**
+ * happy-dom 不实现 window.alert / prompt / confirm（`vi.spyOn` 会报
+ * 「can only spy on a function」）—— 顺带说明原实现的 `alert(...)` / `prompt(...)`
+ * 在单测里根本跑不起来，这也是这几条路径此前零覆盖的原因之一。
+ * 这里显式塞进去，好让「不再被调用」这件事真的可断言。
+ */
+function stubNativeDialogs() {
+  const spies = { alert: vi.fn(), prompt: vi.fn(() => ''), confirm: vi.fn(() => true) }
+  for (const [name, fn] of Object.entries(spies)) vi.stubGlobal(name, fn)
+  return spies
+}
+
+const actionDialog = () => screen.getByRole('dialog')
+const remarkBox = (label: string) => screen.getByLabelText(label) as HTMLTextAreaElement
+
+describe('审批 / 驳回 / 收货的备注弹窗（#134）', () => {
+  it('源码里不再出现任何原生弹窗调用', () => {
+    // 静态守护：改动本文件时若有人顺手写回 alert/prompt/confirm，这条立刻红
+    const src = readFileSync(
+      resolve(process.cwd(), 'src/app/(main)/(inventory)/inventory/_components/inventory-docs-page.tsx'),
+      'utf8',
+    )
+    expect(src).not.toMatch(/(?<![.\w])(alert|prompt|confirm)\s*\(/)
+  })
+
+  it('点「驳回」开的是页内弹窗，不是原生 prompt', () => {
+    const { prompt: promptSpy } = stubNativeDialogs()
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+
+    expect(promptSpy).not.toHaveBeenCalled()
+    expect(within(actionDialog()).getByText('驳回单据')).toBeInTheDocument()
+    // 单据号要出现在弹窗里 —— 原生 prompt 只给一句「驳回原因」，操作员不知道在驳哪张单
+    expect(within(actionDialog()).getByText(`单据号 ${row.id}`)).toBeInTheDocument()
+  })
+
+  it('驳回原因为空时阻止提交，并给出可见校验提示', async () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认驳回' }))
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('请填写驳回原因'))
+    expect(rejectInventoryCoreDoc).not.toHaveBeenCalled()
+    expect(toast.error).toHaveBeenCalledWith('请填写驳回原因')
+    expect(remarkBox('驳回原因')).toHaveAttribute('aria-invalid', 'true')
+  })
+
+  it('只填空白字符同样算空', async () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    fireEvent.change(remarkBox('驳回原因'), { target: { value: '   \n  ' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认驳回' }))
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('请填写驳回原因'))
+    expect(rejectInventoryCoreDoc).not.toHaveBeenCalled()
+  })
+
+  it('填了原因才提交，且传给 action 的是 trim 后的值', async () => {
+    vi.mocked(rejectInventoryCoreDoc).mockResolvedValue(undefined as never)
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    fireEvent.change(remarkBox('驳回原因'), { target: { value: '  数量与实物不符  ' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认驳回' }))
+
+    await waitFor(() =>
+      expect(rejectInventoryCoreDoc).toHaveBeenCalledWith(row.id, '数量与实物不符'),
+    )
+    expect(toast.success).toHaveBeenCalledWith('单据已驳回')
+  })
+
+  it('审批备注选填：留空也能提交', async () => {
+    vi.mocked(approveInventoryCoreDoc).mockResolvedValue(undefined as never)
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '通过' }))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '确认通过' }))
+
+    await waitFor(() => expect(approveInventoryCoreDoc).toHaveBeenCalledWith(row.id, ''))
+    expect(toast.success).toHaveBeenCalledWith('单据已审批通过')
+  })
+
+  it('收货备注选填，且调的是收货 action', async () => {
+    vi.mocked(confirmInventoryCoreReceive).mockResolvedValue(undefined as never)
+    renderDocs([receivableRow])
+    fireEvent.click(screen.getByRole('button', { name: '收货' }))
+    fireEvent.change(remarkBox('收货备注'), { target: { value: '少收 1 件' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认收货' }))
+
+    await waitFor(() =>
+      expect(confirmInventoryCoreReceive).toHaveBeenCalledWith(receivableRow.id, '少收 1 件'),
+    )
+    expect(toast.success).toHaveBeenCalledWith('收货已确认')
+  })
+
+  it('取消就是取消：不调用任何 action', () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    fireEvent.change(remarkBox('驳回原因'), { target: { value: '写了一半又反悔' } })
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+
+    expect(rejectInventoryCoreDoc).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('换一个动作重开，上一次输入不会串味', () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    fireEvent.change(remarkBox('驳回原因'), { target: { value: '写了一半又反悔' } })
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+
+    fireEvent.click(screen.getByRole('button', { name: '通过' }))
+    expect(remarkBox('审批备注')).toHaveValue('')
+  })
+
+  it('服务端报错走 toast + actionErrorMessage，不再是原生 alert', async () => {
+    const { alert: alertSpy } = stubNativeDialogs()
+    vi.mocked(approveInventoryCoreDoc).mockRejectedValue(
+      Object.assign(new Error('sanitized'), { digest: 'INVALID_STATE: 只有待审批单据可以审批' }),
+    )
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '通过' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认通过' }))
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('只有待审批单据可以审批'))
+    expect(alertSpy).not.toHaveBeenCalled()
+  })
+
+  it('提交期间按钮禁用，点第二下不会重复调 action', async () => {
+    const gate = deferred<void>()
+    vi.mocked(rejectInventoryCoreDoc).mockReturnValue(gate.promise as never)
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    fireEvent.change(remarkBox('驳回原因'), { target: { value: '数量不符' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认驳回' }))
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '处理中…' })).toBeDisabled())
+    fireEvent.click(screen.getByRole('button', { name: '处理中…' }))
+    await act(async () => { gate.resolve(); await gate.promise })
+    expect(rejectInventoryCoreDoc).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('建单失败的提示（#134）', () => {
+  it('用 toast + actionErrorMessage，不再弹原生 alert，也不再吐脱敏英文', async () => {
+    const { alert: alertSpy } = stubNativeDialogs()
+    vi.mocked(createInventoryCoreDoc).mockRejectedValue(
+      Object.assign(
+        new Error(
+          'An error occurred in the Server Components render. The specific message is omitted in production builds.',
+        ),
+        { digest: 'INVALID_STATE: 库存期初尚未导入并核验完成，暂不可办理库存业务' },
+      ),
+    )
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '新建' }))
+    fireEvent.click(screen.getByRole('button', { name: '提交' }))
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith('库存期初尚未导入并核验完成，暂不可办理库存业务'),
+    )
+    expect(alertSpy).not.toHaveBeenCalled()
   })
 })
