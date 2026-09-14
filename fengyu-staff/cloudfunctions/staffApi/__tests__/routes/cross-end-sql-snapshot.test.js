@@ -2545,6 +2545,29 @@ describe('疗程卡可用次数为 0 时仍展示的跨端守护（issue #122）
       expect(rangeFn, 'admin 侧不得退回北京半开区间').not.toContain('beijingNextDayBoundaryTs')
     })
 
+    /**
+     * 迁移就绪探针 SQL 的**精确快照**（codex round-4 P2）。
+     *
+     * 为什么不能只断言「关键片段存在」：那样可以一边保留原片段（塞进 SQL 块注释或一个
+     * 没被引用的 CTE）、一边用 `(1 = 0) AS has_gap, (1 = 1) AS trigger_ready` 供值，
+     * 所有正向片段断言仍命中、常量黑名单也拦不住，而空的 0038 库会被永久缓存成 ready。
+     * codex 实测演示过这条绕过路径。
+     *
+     * 逐字快照把「改探针」变成必须显式更新本断言的有意识动作。
+     * 改动本 SQL 时请同步确认：① 存量缺口谓词 ② 0039 正面分支比对串 ③ 两个字段真的由子查询供值。
+     */
+    test('迁移就绪探针 SQL 精确快照', () => {
+      const src = readFile(path.resolve(__dirname, '../../utils/attribution-guard.js'))
+      const probeSql = extractBacktickStringContaining(src, 'has_gap')
+      expect(normalizeSql(probeSql)).toBe(
+        "SELECT EXISTS (SELECT 1 FROM sale_order_payments WHERE change_type = '首次支付'"
+        + " AND status = '已支付' AND performance_attribution_date IS NULL) AS has_gap,"
+        + " COALESCE((SELECT pg_get_functiondef(p.oid) LIKE '%IF NEW.change_type = ''首次支付'' THEN%'"
+        + " FROM pg_proc p WHERE p.proname = 'initialize_payment_performance_attribution_date'"
+        + ' LIMIT 1), false) AS trigger_ready',
+      )
+    })
+
     test('staff 带日期筛选前必须过迁移就绪守卫（未迁库时宁可报错也不出空数据）', () => {
       for (const key of ['staffOrderJs', 'staffAllocationJs']) {
         const src = readFile(FILES[key])
