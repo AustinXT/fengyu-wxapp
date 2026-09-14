@@ -6491,10 +6491,8 @@ export const createDepositOrder = withPermission(
         return id
       })
     } catch (err: any) {
-      if (err instanceof ApiError) {
-        return { success: false, message: err.message }
-      }
-      return { success: false, message: err?.message || '寄存单创建失败' }
+      // fail-closed：ApiError 剥前缀透出业务文案，非白名单错误（原始 PG 报错等）走兜底（issue #133）
+      return { success: false, message: businessErrorMessage(err, '寄存单创建失败') }
     }
 
     await logOperation(
@@ -7690,7 +7688,8 @@ export const generateOrderWxacode = withPermission(
     const base64 = Buffer.from(buffer).toString('base64')
     return { success: true, dataUrl: `data:image/png;base64,${base64}` }
   } catch (err: any) {
-    return { success: false, message: err.message || '生成小程序码失败' }
+    // fail-closed：微信接口/网络层的英文错误不回传给前端（issue #133）
+    return { success: false, message: businessErrorMessage(err, '生成小程序码失败') }
   }
   },
 )
