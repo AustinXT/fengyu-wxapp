@@ -336,6 +336,8 @@ interface HomeProduct {
   paidQuantity: number;
   pickedQuantity: number;
   refundedQuantity: number;
+  /** 已通过转换单折抵转走的数量（#125，与已退款分列） */
+  convertedQuantity: number;
   remainingQuantity: number;
   pendingPickupQuantity: number;
   status: string;

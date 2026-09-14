@@ -267,6 +267,7 @@
                   <text class="home-product-remaining">待提 {{item.pendingPickupQuantity}}{{item.unit}}</text>
                   <text>已付 {{item.paidQuantity}}{{item.unit}}</text>
                   <text>购买 {{item.purchasedQuantity}}{{item.unit}}</text>
+                  <text wx:if="{{item.convertedQuantity > 0}}">已转换 {{item.convertedQuantity}}{{item.unit}}</text>
                 </view>
                 <view class="home-product-meta">
                   <text>{{item.storeName || item.storeId}}</text>

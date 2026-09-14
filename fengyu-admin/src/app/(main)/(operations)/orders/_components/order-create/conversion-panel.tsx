@@ -255,7 +255,7 @@ export function ConversionPanel({
                 const remainLabel =
                   c.productType === '疗程卡'
                     ? `剩 ${c.remainingSessions ?? 0} ${c.unit}`
-                    : `剩 ${c.remainingQty ?? 0} ${c.unit}`
+                    : `未提货 ${c.remainingQty ?? 0} ${c.unit}`
                 return (
                   <label
                     key={c.groupKey}
@@ -283,7 +283,7 @@ export function ConversionPanel({
                       <div className="text-[#999999] mt-0.5 flex items-center gap-2">
                         <span>{c.productType}</span>
                         <span>{remainLabel}</span>
-                        {c.cardCount > 1 && <span>共 {c.cardCount} 张</span>}
+                        {c.productType === '疗程卡' && c.cardCount > 1 && <span>共 {c.cardCount} 张</span>}
                         <span>单{c.unit}价 ¥{c.unitRealPrice}</span>
                       </div>
                       {checked && (
