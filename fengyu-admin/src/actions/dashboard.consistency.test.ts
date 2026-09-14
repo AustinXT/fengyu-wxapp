@@ -118,6 +118,43 @@ describe('dashboard 组织层级现金流业绩一致性守护', () => {
       ))
       // between() 找不到起止标记时返回空串，会让下面所有负向断言恒真（假绿）
       expect(paymentMetrics, '未能截取 payment_metrics 片段，后续断言将失去意义').not.toBe('')
+      /**
+       * 六个指标 `WHEN ... THEN` 条件的**逐字快照**。
+       *
+       * 只断言「块内包含正确的日期条件」不够（codex 评审）：追加 `OR TRUE`、
+       * 再挂一个日期条件、或放宽 change_type，断言都看不出来——它只证明期望的字符串**存在**，
+       * 不证明它**限定了**这个指标。逐字快照把任何条件变动都变成必须显式更新本表的动作。
+       *
+       * 改这张表前先确认：日期口径（#140 统一为 performance_date）、
+       * 付款类型、订单类型、金额符号四项是不是真的要改。
+       */
+      const EXPECTED_WHEN: Record<string, string> = {
+        today_revenue:
+          "spe.performance_date = (SELECT today FROM bounds) AND spe.status = '已支付'"
+          + " AND spe.change_type IN ('首次支付', '回款', '退款')"
+          + " AND spe.sale_order_type IN ('销售单', '转换单', '充值单')",
+        today_paid_amount:
+          "spe.performance_date = (SELECT today FROM bounds) AND spe.status = '已支付'"
+          + " AND spe.change_type IN ('首次支付', '回款') AND spe.amount::numeric > 0"
+          + " AND spe.sale_order_type IN ('销售单', '转换单', '充值单')",
+        today_refunded_amount:
+          "spe.performance_date = (SELECT today FROM bounds) AND spe.status = '已支付'"
+          + " AND spe.change_type = '退款'"
+          + " AND spe.sale_order_type IN ('销售单', '转换单', '充值单')",
+        yesterday_revenue:
+          "spe.performance_date = (SELECT yesterday FROM bounds) AND spe.status = '已支付'"
+          + " AND spe.change_type IN ('首次支付', '回款', '退款')"
+          + " AND spe.sale_order_type IN ('销售单', '转换单', '充值单')",
+        yesterday_paid_amount:
+          "spe.performance_date = (SELECT yesterday FROM bounds) AND spe.status = '已支付'"
+          + " AND spe.change_type IN ('首次支付', '回款') AND spe.amount::numeric > 0"
+          + " AND spe.sale_order_type IN ('销售单', '转换单', '充值单')",
+        // 累计值：**不带任何日期条件**，这也是快照的一部分
+        total_paid_amount:
+          "spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款')"
+          + " AND spe.amount::numeric > 0"
+          + " AND spe.sale_order_type IN ('销售单', '转换单', '充值单')",
+      }
       const dated: Array<[string, string]> = [
         ['today_revenue', 'today'],
         ['today_paid_amount', 'today'],
@@ -139,15 +176,27 @@ describe('dashboard 组织层级现金流业绩一致性守护', () => {
        * tempered greedy `(?:(?!COALESCE\(SUM\(CASE)[\s\S])*?` 保证匹配不越过下一个
        * `COALESCE(SUM(CASE` 边界，即锁在本指标块内。
        */
+      // `(?![A-Za-z0-9_])` 是别名终止边界：没有它，`AS today_paid_amount_broken`
+      // 也会被当成 `today_paid_amount` 命中（codex 评审指出）。
+      const caseBlockOf = (metric: string) => paymentMetrics.match(
+        new RegExp(`COALESCE\\(SUM\\(CASE(?:(?!COALESCE\\(SUM\\(CASE)[\\s\\S])*?AS ${metric}(?![A-Za-z0-9_])`),
+      )
       for (const [metric, bound] of dated) {
-        const block = paymentMetrics.match(
-          new RegExp(`COALESCE\\(SUM\\(CASE(?:(?!COALESCE\\(SUM\\(CASE)[\\s\\S])*?AS ${metric}`),
-        )
+        const block = caseBlockOf(metric)
         expect(block, `未能定位 ${metric} 的 CASE 块`).toBeTruthy()
         expect(
           block![0],
           `${metric} 的日期口径漂移（必须是 spe.performance_date = ${bound}）`,
         ).toContain(`spe.performance_date = (SELECT ${bound} FROM bounds)`)
+      }
+      // 逐字快照：条件被追加 `OR TRUE`、多挂一个日期条件、放宽 change_type 等都会红
+      for (const metric of Object.keys(EXPECTED_WHEN)) {
+        const block = caseBlockOf(metric)
+        expect(block, `未能定位 ${metric} 的 CASE 块`).toBeTruthy()
+        const when = block![0].match(/WHEN ([\s\S]*?) THEN/)
+        expect(when, `未能提取 ${metric} 的 WHEN 条件`).toBeTruthy()
+        expect(when![1], `${metric} 的 WHEN 条件漂移（改口径必须显式更新 EXPECTED_WHEN）`)
+          .toBe(EXPECTED_WHEN[metric])
       }
       // 资金发生日不得作为任何日期条件回到工作台——那会重新制造「业绩按归属、实付按 paid_at」的双口径。
       // 若财务确实需要资金发生日口径，应另开报表入口而不是改这里（见 dashboard.ts 注释）。
@@ -159,9 +208,14 @@ describe('dashboard 组织层级现金流业绩一致性守护', () => {
         between(adminSrc, 'payment_metrics AS (', 'order_metrics AS ('),
       ))
       // 截取最后一个 COALESCE(SUM(CASE ... AS total_paid_amount 片段
-      const totalBlock = paymentMetrics.match(/COALESCE\(SUM\(CASE(?:(?!COALESCE\(SUM\(CASE)[\s\S])*?AS total_paid_amount/)
+      const totalBlock = paymentMetrics.match(
+        /COALESCE\(SUM\(CASE(?:(?!COALESCE\(SUM\(CASE)[\s\S])*?AS total_paid_amount(?![A-Za-z0-9_])/,
+      )
       expect(totalBlock, '未能定位 total_paid_amount 片段').toBeTruthy()
-      expect(totalBlock![0], 'total_paid_amount 被加上了日期条件').not.toMatch(/FROM bounds/)
+      // 只禁 `FROM bounds` 不够（codex 评审）：`spe.performance_date = CURRENT_DATE`
+      // 绕过该断言却同样把累计值日期化。这里把所有日期来源一并封死。
+      expect(totalBlock![0], 'total_paid_amount 被加上了日期条件')
+        .not.toMatch(/FROM bounds|performance_date|paid_at|CURRENT_DATE|NOW\(\)|LOCALTIMESTAMP|\d{4}-\d{2}-\d{2}/)
       // boundary-critic P2：上面只看 CASE 块内部。若把日期条件加到 CTE 自己的 WHERE，
       // total_paid_amount 会被静默日期化而块内断言照过 —— 所以 WHERE 子句也要挡。
       const cteWhere = paymentMetrics.slice(paymentMetrics.indexOf('FROM sale_order_performance_events'))
