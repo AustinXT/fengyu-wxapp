@@ -37,7 +37,7 @@ const MSSQL_CONFIG = {
 // DATABASE_URL 必填且必须精确指向两个业务库之一（db/CLAUDE.md 硬规则：显式传值 + 断言 host/port/dbname）。
 // 只查"非空"不够：已弃用的旧库 47.113.202.7 至今仍可连通，手滑传进来会静默写错库。
 // 仅在直接执行时校验——本目录部分脚本的导出函数被 __tests__ require，顶层 exit 会打断测试进程。
-const DB_TARGET_RE = /^postgresql:\/\/[^@/]*@(101\.34\.242\.103|118\.178\.196\.26):5433\/fengyu_wxapp(\?.*)?$/
+const DB_TARGET_RE = /^postgres(?:ql)?:\/\/[^@/]*@(101\.34\.242\.103|118\.178\.196\.26):5433\/fengyu_wxapp(\?.*)?$/
 if (require.main === module && !DB_TARGET_RE.test(process.env.DATABASE_URL?.trim() || '')) {
   console.error('✗ DATABASE_URL 必须显式指向 dev=101.34.242.103:5433/fengyu_wxapp 或 prod=118.178.196.26:5433/fengyu_wxapp')
   process.exit(1)
