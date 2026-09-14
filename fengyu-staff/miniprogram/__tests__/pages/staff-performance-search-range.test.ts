@@ -1441,3 +1441,61 @@ describe('绩效页 · 混合关键词不误当号码用（round-16 测试逼出
     expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['3号店王五'])
   })
 })
+
+describe('绩效页 · 评审 round-17 闭环（codex）', () => {
+  test('国际前缀的号码片段也能命中（关键词侧不做 86 归一）', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([makeItem('李四', '+8613900139000', 1), makeItem('张三', '13800138000', 2)], 2)
+    await page.loadData(true)
+
+    search(page, '+86 139') // 片段，归一规则只认完整 13 位
+    expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['李四'])
+
+    search(page, '139001')  // 国内串片段
+    expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['李四'])
+  })
+
+  test('被动刷新把 items 打回第一页时，窗口不能停在前面还有大段命中的位置', async () => {
+    const page = createPage()
+    page.onLoad({})
+    const many = Array.from({ length: 1500 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i))
+    mockPage(many, 1500)
+    await page.loadData(true)
+    search(page, '顾客')
+    page.onShowMoreMatches()
+    page.onShowMoreMatches()
+    page.onShowMoreMatches()
+    expect(page.data.displayOffset).toBe(500)
+
+    // onShow 的被动刷新：reset=true，items 只剩第一页
+    mockPage(many.slice(0, 20), 1500)
+    await page.loadData(true, true)
+
+    expect(page.data.displayOffset).toBe(0)
+    expect(page.data.displayItems).toHaveLength(20)
+    expect(page.data.hasPrevMatches).toBe(false)
+  })
+
+  test('命中数缩水时窗口收回最后一个完整窗口，不是只剩 1 条', async () => {
+    const page = createPage()
+    page.onLoad({})
+    const many = Array.from({ length: 1500 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i))
+    mockPage(many, 1500)
+    await page.loadData(true)
+    search(page, '顾客')
+    page.onShowMoreMatches()
+    page.onShowMoreMatches()
+    page.onShowMoreMatches()
+    expect(page.data.displayOffset).toBe(500)
+
+    // 直接按更小的命中集重建（模拟翻页后命中变少），窗口起点须收到 500 以内的窗口边界
+    page.setData(page.buildSearchView(page.data.items.slice(0, 600), '顾客', 1500, 500, 500))
+    expect(page.data.displayOffset).toBe(500)
+    expect(page.data.displayItems).toHaveLength(100)
+
+    page.setData(page.buildSearchView(page.data.items.slice(0, 300), '顾客', 1500, 500, 500))
+    expect(page.data.displayOffset).toBe(0)   // 300 条只够一个窗口
+    expect(page.data.displayItems).toHaveLength(300)
+  })
+})

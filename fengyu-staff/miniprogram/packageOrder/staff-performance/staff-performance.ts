@@ -734,12 +734,14 @@ Page({
         // 未搜索时 displayItems 恒为空数组（wxml 直接渲染 items），不会再传一份全量
         // 关键词变了就不带旧窗口（复位回第一屏）—— 改完词 200ms 内正好有响应回来时，
         // 上面的 cancelFilter 会吞掉防抖，窗口复位就只剩这一条路
+        // 关键词没变才沿用窗口；reset（换时段/换员工/被动刷新）时 items 整批换掉，
+        // 旧窗口的起点就没意义了 —— 沿用会让页面停在一个前面还有大段命中的位置
         ...this.buildSearchView(
           newItems,
           this.data.keyword,
           total,
-          keywordAtBuild === this._filteredKeyword ? this.data.displayLimit : undefined,
-          keywordAtBuild === this._filteredKeyword ? this.data.displayOffset : undefined,
+          !reset && keywordAtBuild === this._filteredKeyword ? this.data.displayLimit : undefined,
+          !reset && keywordAtBuild === this._filteredKeyword ? this.data.displayOffset : undefined,
         ),
         total,
         page,
@@ -854,7 +856,10 @@ Page({
     // 员工搜一个名字，结果冒出几十个不相干的顾客，比搜不到还难用
     const kwHalfWidth = kw.replace(/[\uFF10-\uFF19]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
     const looksLikePhone = /^[\d\s\-+()]+$/.test(kwHalfWidth);
-    const kwDigits = looksLikePhone ? this.normalizePhone(kwHalfWidth) : '';
+    // 关键词这边**只剥非数字、不做 86 归一**：输入的往往是片段（`+86 139` → `86139`），
+    // 归一规则只认完整 13 位，片段会被原样留下。匹配时拿它同时去比对明细的
+    // 「原始数字串」和「去 86 的国内串」，两条路任一命中即可
+    const kwDigits = looksLikePhone ? kwHalfWidth.replace(/\D/g, '') : '';
     // 姓名两侧都剥空白：关键词写回时已 trim（避免「框里有内容、列表是全量」的哑态），
     // 但词**中间**的空格留着 —— 顾客姓名里也可能有（「张 三」/ 全角空格），
     // 两边都归一才不会出现「看着一模一样却搜不到」
@@ -862,13 +867,18 @@ Page({
     const matched = items.filter((it) => {
       if (kwName && String(it.customerName || '').replace(/\s+/g, '').toLowerCase().indexOf(kwName) >= 0) return true;
       if (!kwDigits) return false;
-      return this.normalizePhone(it.clientPhone).indexOf(kwDigits) >= 0;
+      const raw = String(it.clientPhone || '').replace(/\D/g, '');
+      return raw.indexOf(kwDigits) >= 0 || this.normalizePhone(it.clientPhone).indexOf(kwDigits) >= 0;
     });
     const loaded = `已加载 ${items.length}/共 ${total} 条`;
     // 关键词进文案前截断：整段粘贴进搜索框时，原样内插会把 van-empty 的 description 撑爆
     const shown = kw.length > 12 ? `${keyword.trim().slice(0, 12)}…` : keyword.trim();
-    // 窗口起点不能越过命中总数（翻页后命中变多/变少时都要收回合法区间）
-    const start = Math.min(Math.max(offset ?? 0, 0), Math.max(matched.length - 1, 0));
+    // 窗口起点越界时收回**最后一个完整窗口的起点**，不是 matched.length-1 ——
+    // 后者会退化成「只显示最后 1 条，其余全藏在『上一批』后面」
+    const lastWindowStart = matched.length > 0
+      ? Math.floor((matched.length - 1) / windowSize) * windowSize
+      : 0;
+    const start = Math.min(Math.max(offset ?? 0, 0), lastWindowStart);
     const end = Math.min(start + windowSize, matched.length);
     const capped = matched.length > windowSize || start > 0;
     return {
