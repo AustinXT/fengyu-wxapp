@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { ClipboardList, Plus } from 'lucide-react'
+import { toast } from 'sonner'
 import {
   approveInventoryCoreDoc,
   confirmInventoryCoreReceive,
@@ -32,6 +33,7 @@ import { Input } from '@/components/ui/input'
 import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { actionErrorMessage } from '@/lib/action-error'
 import { useUrlFilters } from '@/lib/hooks/use-url-filters'
 import { PreserveListContextLink } from '@/components/return-context'
 
@@ -338,8 +340,6 @@ function CreateDocDialog({
   })
   const [remark, setRemark] = useState('')
   const [items, setItems] = useState<DraftItem[]>([defaultItem()])
-  const [lotOptionsByKey, setLotOptionsByKey] = useState<Record<string, InventoryLotRow[]>>({})
-  const [loadingLotKeys, setLoadingLotKeys] = useState<Record<string, boolean>>({})
   const requiresSourceLot = SOURCE_LOT_DOC_TYPES.has(docType)
   const isDocTypeLocked = Boolean(initialDocType && availableDocTypes.includes(initialDocType))
   const sourceLocationId = locations.find((location) => location.orgNodeId === sourceOrgNodeId)?.locationId ?? ''
@@ -347,32 +347,6 @@ function CreateDocDialog({
   function updateItem(index: number, patch: Partial<DraftItem>) {
     setItems((prev) => prev.map((item, i) => (i === index ? { ...item, ...patch } : item)))
   }
-
-  useEffect(() => {
-    if (!requiresSourceLot || !sourceLocationId) return
-    const skuIds = Array.from(new Set(items.map((item) => item.skuId).filter(Boolean)))
-    let cancelled = false
-    for (const skuId of skuIds) {
-      const key = `${sourceLocationId}:${skuId}`
-      if (lotOptionsByKey[key] || loadingLotKeys[key]) continue
-      setLoadingLotKeys((prev) => ({ ...prev, [key]: true }))
-      void listInventoryLotOptions(sourceLocationId, skuId)
-        .then((lots) => {
-          if (!cancelled) setLotOptionsByKey((prev) => ({ ...prev, [key]: lots }))
-        })
-        .catch(() => {
-          if (!cancelled) setLotOptionsByKey((prev) => ({ ...prev, [key]: [] }))
-        })
-        .finally(() => {
-          if (!cancelled) {
-            setLoadingLotKeys((prev) => ({ ...prev, [key]: false }))
-          }
-        })
-    }
-    return () => {
-      cancelled = true
-    }
-  }, [items, loadingLotKeys, lotOptionsByKey, requiresSourceLot, sourceLocationId])
 
   async function submit() {
     if (submitting) return
@@ -449,33 +423,14 @@ function CreateDocDialog({
               key={index}
               className={`${requiresSourceLot ? 'grid-cols-7' : 'grid-cols-6'} grid gap-2 rounded-md border border-[var(--border)] p-2`}
             >
-              {requiresSourceLot && (() => {
-                const key = item.skuId ? `${sourceLocationId}:${item.skuId}` : ''
-                const lots = key ? lotOptionsByKey[key] || [] : []
-                const isLoadingLots = key ? loadingLotKeys[key] : false
-                return (
-                  <Select
-                    value={item.lotId}
-                    disabled={!sourceLocationId || !item.skuId || isLoadingLots}
-                    onChange={(e) => updateItem(index, { lotId: e.target.value })}
-                  >
-                    <option value="">
-                      {!sourceLocationId
-                        ? '先选择出库主体'
-                        : !item.skuId
-                          ? '先选择库存 SKU'
-                          : isLoadingLots
-                            ? '加载库存批次...'
-                            : '选择库存批次'}
-                    </option>
-                    {lots.map((lot) => (
-                      <option key={lot.id} value={String(lot.id)}>
-                        {`${lot.batchNo || '无批号'} · 可用 ${lot.quantityOnHand}${lot.expiryDate ? ` · ${formatDate(lot.expiryDate)}` : ''}`}
-                      </option>
-                    ))}
-                  </Select>
-                )
-              })()}
+              {requiresSourceLot && (
+                <DocLotSelect
+                  locationId={sourceLocationId}
+                  skuId={item.skuId}
+                  value={item.lotId}
+                  onChange={(lotId) => updateItem(index, { lotId })}
+                />
+              )}
               <Select
                 value={item.skuId}
                 onChange={(e) => updateItem(index, { skuId: e.target.value, lotId: '' })}
@@ -509,5 +464,79 @@ function CreateDocDialog({
         <Button onClick={submit} disabled={submitting}>提交</Button>
       </DialogFooter>
     </Dialog>
+  )
+}
+
+/**
+ * 来源批次下拉：每行一个实例、自带 state，按 (locationId, skuId) 拉取。
+ *
+ * ⚠️ 依赖数组只能放**真实输入**（locationId / skuId），绝不能放这个 effect 自己 set 的 state。
+ * 曾经的写法是父层共享 `lotOptionsByKey` / `loadingLotKeys` 两个 Record 再把它们塞进依赖数组：
+ * setState → re-render → 依赖变 → effect 重跑 → cleanup 把上一轮 `cancelled` 置 true →
+ * 首次请求的 then/catch/finally 全被跳过 → loading 永远停在 true → 下拉永久 disabled，
+ * 6 种需选来源批次的单据全部建不出来（#129）。办理台的 LotPicker 同理。
+ *
+ * 用 `loaded.key === key` 判定「这份数据是不是当前这对入参的」，而不是单独的 loading 布尔：
+ * 入参一变，渲染期立刻判定为加载中，不会闪出上一对入参的批次（删除明细行时尤其重要 ——
+ * 明细用 index 当 React key，删行会让实例拿到下一行的 props）。
+ */
+function DocLotSelect({
+  locationId,
+  skuId,
+  value,
+  onChange,
+}: {
+  locationId: string
+  skuId: string
+  value: string
+  onChange: (lotId: string) => void
+}) {
+  const key = locationId && skuId ? `${locationId}:${skuId}` : ''
+  const [loaded, setLoaded] = useState<{ key: string; lots: InventoryLotRow[] } | null>(null)
+
+  useEffect(() => {
+    if (!key) return
+    let cancelled = false
+    listInventoryLotOptions(locationId, skuId)
+      .then((lots) => {
+        if (!cancelled) setLoaded({ key, lots })
+      })
+      .catch((error) => {
+        // 失败必须让用户看见：静默吞掉会和「该批次真的没货」长得一模一样
+        if (!cancelled) {
+          setLoaded({ key, lots: [] })
+          toast.error(actionErrorMessage(error, '加载可用批次失败'))
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [key, locationId, skuId])
+
+  const isCurrent = loaded?.key === key
+  const lots = isCurrent ? loaded.lots : []
+  const isLoadingLots = Boolean(key) && !isCurrent
+
+  return (
+    <Select
+      value={value}
+      disabled={!locationId || !skuId || isLoadingLots}
+      onChange={(e) => onChange(e.target.value)}
+    >
+      <option value="">
+        {!locationId
+          ? '先选择出库主体'
+          : !skuId
+            ? '先选择库存 SKU'
+            : isLoadingLots
+              ? '加载库存批次...'
+              : '选择库存批次'}
+      </option>
+      {lots.map((lot) => (
+        <option key={lot.id} value={String(lot.id)}>
+          {`${lot.batchNo || '无批号'} · 可用 ${lot.quantityOnHand}${lot.expiryDate ? ` · ${formatDate(lot.expiryDate)}` : ''}`}
+        </option>
+      ))}
+    </Select>
   )
 }
