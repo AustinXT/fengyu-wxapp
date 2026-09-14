@@ -133,9 +133,10 @@ const LEVEL1_PREFIX_RE = new RegExp(
  * `confirmOfflinePayment` 直抛、无服务端预解析，客户端真能看到）与 `NO_CARD` 是同族写法。
  *
  * **只在一级前缀真的被剥掉之后才尝试**：二级子标签按定义就只存在于一级前缀之后。
- * 标签本身要求 ≥5 字符：仓内真实子标签最短的是 `NO_CARD` / `OVERPAY`（7 字符），
+ * **字母型**标签要求 ≥5 字符：仓内真实子标签最短的是 `NO_CARD` / `OVERPAY`（7 字符），
  * 而 `ID:` / `SKU:` / `URL:` 这类业务语义标签都 ≤3 —— 用长度把两者分开，
  * 免得 `NOT_FOUND: SKU: S-001 不存在` 被剥成「S-001 不存在」丢掉上下文。
+ * **数字载荷段不受这条长度限制**（`INSUFFICIENT_BALANCE:0: …` 里的 `0` 是金额位）。
  */
 const TAG_RUN_SOURCE = String.raw`(?:[A-Z][A-Z0-9_]{4,}|\d+(?:\.\d+)?)(?::[^\s:]+)*`
 const LEVEL2_SUBTAG_RE = new RegExp(`^${TAG_RUN_SOURCE}:(?:\\s+|$)`)
@@ -168,12 +169,19 @@ const TECH_ARTIFACT_RES: readonly RegExp[] = [
   /(?:^|[\s（(:：])[A-Za-z]:\\[^\s]/, // Windows 绝对路径
   /\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{2,5})?\b/, // IPv4（可带端口）
   /\[[0-9a-fA-F:]{2,}\]:\d{2,5}/, // IPv6:端口
-  // 主机名:端口 —— 要求主机名里至少有一个点，避开「配比 2:10」「FY001:22」这类无点写法
-  /\b[A-Za-z0-9][\w-]*(?:\.[A-Za-z0-9][\w-]*)+:\d{2,5}\b/,
+  // 主机名:端口 —— 要求含点**且首段以字母开头**。只要求含点的话，
+  // 「稀释比例 1.5:30 不合法」「工时 0.5:15 记录异常」这类小数写法会被误杀。
+  /\b[A-Za-z][\w-]*(?:\.[A-Za-z0-9][\w-]*)+:\d{2,5}\b/,
   // 环境变量名 / 内部常量这类 SCREAMING_SNAKE token（必须含下划线，
   // 免得误杀 SKU、OEM 这类单词型业务缩写）。真实来源：
   // `actions/lakala-onboarding.ts:1492` 的「缺少电子合同回调地址：LAKALA_ECONTRACT_CALLBACK_URL」
   /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/,
+  // 单标签主机:端口（`postgres:5433`）。要求小写字母开头，避开「稀释比例 1.5:30」这类小数写法
+  /\b[a-z][a-z0-9-]{2,}:\d{2,5}\b/,
+  // URI scheme（`file:///srv/…`、`postgres://…`、`redis://…`）
+  /\b[a-z][a-z0-9+.-]*:\/\//i,
+  // 句中出现的内建异常名（`操作失败：TypeError: Cannot read …`），不只句首
+  /\b[A-Z][A-Za-z]*(?:Error|Exception):\s/,
 ]
 
 /**
@@ -233,6 +241,24 @@ const NATIVE_ERROR_NAMES: ReadonlySet<string> = new Set([
   'NotFoundError',
 ])
 
+/**
+ * 兜底结构判定：把文案按「空白 + 中日韩」切开，看有没有哪一段**长度 ≥4 且含
+ * `_ / \ " [ ]`** —— 那是路径、IPv6、带引号的库表/约束名、内部标识符的形状，不是人话。
+ *
+ * 长度门槛与字符集都是为了放过真实业务写法：订单号 `FY-XSD-WX-2609140001`（只有连字符）、
+ * `0.1~1.0`、`SKU: FY-001 库存不足`、`单价/数量 不匹配`（`/` 两侧是中文，切出来只有一个字符）
+ * 都不命中；而 `"uq_sop_txn"`、`file:///srv/backups/db.dump`、`[fd00::5]`、
+ * `LAKALA_TIMEOUT_30000ms` 全部命中。
+ */
+const PROSE_SEPARATOR_RE = /[\s\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF66-\uFF9F]+/u
+const TECHNICAL_RUN_CHARS_RE = /[_/\\"[\]]/
+
+function hasTechnicalRun(text: string): boolean {
+  return text
+    .split(PROSE_SEPARATOR_RE)
+    .some((token) => token.length >= 4 && TECHNICAL_RUN_CHARS_RE.test(token))
+}
+
 /** 纯判定：这一串是不是「技术串而非文案」。不负责翻译，翻译只在整串原值那一层做。 */
 function isOpaque(value: string): boolean {
   if (NEXT_AUTO_DIGEST_RE.test(value)) return true
@@ -273,7 +299,7 @@ function readableMessage(raw: unknown): string | null {
   // 剥完再判一次：剥出来的残串可能又是编号 / 裸 token，也可能是「中文包着的技术痕迹」
   const text = stripBusinessPrefix(value).trim()
   if (!text || isOpaque(text)) return null
-  if (TECH_ARTIFACT_RES.some((re) => re.test(text))) return null
+  if (TECH_ARTIFACT_RES.some((re) => re.test(text)) || hasTechnicalRun(text)) return null
   return text
 }
 

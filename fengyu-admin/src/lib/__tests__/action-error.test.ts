@@ -28,7 +28,11 @@ const NEXT_SANITIZED_MESSAGE =
 
 /**
  * `UNREADABLE_FRAGMENTS` 的逐条实测样本：`[片段, 该片段在真实世界里的文案形态]`。
- * 顺序必须与实现里的表一致 —— 下面有一条守护用例拿它跟源码比对。
+ * 顺序必须与实现里的表一致 —— 下面有一条守护用例拿它跟源码逐项比对。
+ *
+ * ⚠️ 别高估这组 `it.each` 的守护力：其中 errno 族（ECONNRESET / ESOCKET / ETIMEDOUT
+ * 与 5 条 LAKALA 样本）在 `isOpaque` 里会先被 `NODE_ERRNO_RE` / `JS_ERROR_NAME_RE` 短路，
+ * 把对应片段从表里删掉这几条照样绿。真正钉住片段表的是下面那条「列表逐项相等」守护。
  */
 const FRAGMENT_SAMPLES: readonly [string, string][] = [
   ['server components render', 'An error occurred in the Server Components render.'],
@@ -49,7 +53,6 @@ const FRAGMENT_SAMPLES: readonly [string, string][] = [
   ['connection appears to be offline', 'The Internet connection appears to be offline.'],
 ]
 
-/** Next 生产构建对 Server Action / Server Component 错误 message 的脱敏话术。 */
 
 
 /**
@@ -195,6 +198,35 @@ describe('actionErrorMessage', () => {
       'INVALID_STATE: 备份文件 C:\\srv\\backups\\db.dump 写入失败',
     ])('内网拓扑 / 环境变量名不随中文一起漏出：%s', (digest) => {
       expect(actionErrorMessage({ digest }, FALLBACK)).toBe(FALLBACK)
+    })
+
+    it.each([
+      // 单标签主机（Docker 服务名）
+      'INVALID_STATE: 服务连接失败：postgres:5433 不可达',
+      // URI scheme
+      'INVALID_STATE: 读取失败：file:///srv/backups/db.dump',
+      // 无端口的 IPv6
+      'INVALID_STATE: 服务连接失败：[fd00::5] 不可达',
+      // 带引号的库表/约束名
+      'INVALID_STATE: 数据库错误：duplicate key value violates unique constraint "uq_sop_txn"',
+      // 尾巴带小写单位的内部标识（SCREAMING_SNAKE 规则吃不到，靠结构兜底）
+      'INVALID_STATE: 请求失败：LAKALA_TIMEOUT_30000ms',
+      // 句中而非句首的内建异常名
+      'INVALID_STATE: 操作失败：TypeError: Cannot read properties of undefined',
+    ])('中文包着的第二批技术痕迹也挡住：%s', (digest) => {
+      expect(actionErrorMessage({ digest }, FALLBACK)).toBe(FALLBACK)
+    })
+
+    it.each([
+      // 小数比例：单标签主机规则要求字母开头，不会误伤
+      ['INVALID_PARAMS: 稀释比例 1.5:30 不合法', '稀释比例 1.5:30 不合法'],
+      ['INVALID_PARAMS: 工时 0.5:15 记录异常', '工时 0.5:15 记录异常'],
+      ['INVALID_PARAMS: 预约时段 09:00-18:00 不可用', '预约时段 09:00-18:00 不可用'],
+      // 结构兜底按「空白+中日韩」切段，`/` 两侧是中文时切出来只有一个字符
+      ['INVALID_PARAMS: 单价/数量 不匹配', '单价/数量 不匹配'],
+      ['CONFLICT: 订单 FY-XSD-WX-2609140001 已被他人处理', '订单 FY-XSD-WX-2609140001 已被他人处理'],
+    ])('这批真实业务写法不能被误杀：%s', (digest, expected) => {
+      expect(actionErrorMessage({ digest }, FALLBACK)).toBe(expected)
     })
 
     it('SCREAMING_SNAKE 规则不误杀单词型业务缩写', () => {
@@ -405,8 +437,8 @@ describe('actionErrorMessage', () => {
     })
 
     // ⚠️ fixture 必须用「带小写/空格的真实文案」，不能用裸的 ESOCKET / ETIMEDOUT ——
-    // 那种形态会先被「裸技术 token」规则短路，`UNREADABLE_FRAGMENTS` 里对应的片段
-    // 其实一行没跑到（删掉这三条片段测试照样全绿）。下面这批才真的守着片段表。
+    // 那种形态会先被「裸技术 token」规则短路。（errno 族另有 NODE_ERRNO_RE 兜着，
+    // 片段表本身由下面那条列表相等守护钉死，见 FRAGMENT_SAMPLES 的说明。）
     it.each(FRAGMENT_SAMPLES)(
       '片段 %s（实测文案「%s」）→ 回退 fallback（大小写不敏感）',
       (_fragment, message) => {
@@ -632,8 +664,16 @@ describe('Next digest 形态漂移守护（#133）', () => {
       ) {
         producers.add(file.slice(adminSrc.length + 1))
       }
-      for (const m of text.matchAll(/\bdigest\s*[=:]\s*['"`]([^'"`]+)['"`]/g)) {
-        if (/^[A-Z][A-Z0-9_]*$/.test(m[1])) bareTokens.add(m[1])
+      // 取值形态要与上面的写入形态一一对应，否则「文件集不变、新增一个裸 token」会静默放过
+      const valuePatterns = [
+        /\bdigest\s*[=:]\s*['"`]([^'"`]+)['"`]/g,
+        /\[\s*['"`]digest['"`]\s*\]\s*=\s*['"`]([^'"`]+)['"`]/g,
+        /defineProperty\s*\([^,]+,\s*['"`]digest['"`]\s*,\s*\{[^}]*value\s*:\s*['"`]([^'"`]+)['"`]/g,
+      ]
+      for (const re of valuePatterns) {
+        for (const m of text.matchAll(re)) {
+          if (/^[A-Z][A-Z0-9_]*$/.test(m[1])) bareTokens.add(m[1])
+        }
       }
     }
     // 覆盖边界（诚实声明）：认的是「直接写 digest」的几种常见形态。
@@ -660,7 +700,7 @@ describe('Next digest 形态漂移守护（#133）', () => {
     }
   })
 
-  it('仓内真实二级子标签都 ≥5 字符（长度启发式的前提，破了就要改判定）', () => {
+  it('仓内真实二级子标签（字母型）都 ≥5 字符（长度启发式的前提，破了就要改判定）', () => {
     // LEVEL2_SUBTAG_RE 用「标签 ≥5 字符」把日志子标签与 ID:/SKU:/URL: 这类展示标签分开。
     // 这是启发式不是协议 —— 语法上二者没法区分。所以把前提本身钉住：一旦有人写出
     // `CONFLICT: LOCK: …` 这种短子标签，这条立刻红，逼着重新决定判定方式。
@@ -690,6 +730,7 @@ describe('Next digest 形态漂移守护（#133）', () => {
   it('Next 的内部错误码形态仍是 E+数字（@E 正则的前提）', () => {
     // 不截断样本数、不限目录深度：早先取到 41 个就停、只走三层，第 42 个之后变形态照样绿。
     const samples = new Set<string>()
+    const unparsed: string[] = []
     const walk = (dir: string) => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         const full = resolve(dir, entry.name)
@@ -698,14 +739,20 @@ describe('Next digest 形态漂移守护（#133）', () => {
           const text = readFileSync(full, 'utf8')
           if (!text.includes('__NEXT_ERROR_CODE')) continue
           // 形态是 `Object.defineProperty(err, "__NEXT_ERROR_CODE", {\n  value: "E263", …})`
-          for (const m of text.matchAll(/__NEXT_ERROR_CODE[\s\S]{0,80}?value:\s*["']([^"']+)["']/g)) {
-            samples.add(m[1])
+          // 只统计「定义点」（后面紧跟 descriptor 的那种），跳过纯读取用法
+          const defs = [...text.matchAll(/__NEXT_ERROR_CODE["']?\s*,\s*\{/g)]
+          const parsed = [...text.matchAll(/__NEXT_ERROR_CODE[\s\S]{0,120}?value:\s*["']([^"']+)["']/g)]
+          for (const m of parsed) samples.add(m[1])
+          if (parsed.length < defs.length) {
+            unparsed.push(`${full.slice(nextRoot.length)}（${defs.length - parsed.length} 处）`)
           }
         }
       }
     }
-    walk(`${nextRoot}dist/server`)
-    expect(samples.size, '没在 next/dist/server 里找到 __NEXT_ERROR_CODE 样本').toBeGreaterThan(100)
+    for (const dir of ['dist/server', 'dist/client', 'dist/shared', 'dist/lib']) walk(`${nextRoot}${dir}`)
+    expect(samples.size, '没在 next/dist 里找到 __NEXT_ERROR_CODE 样本').toBeGreaterThan(100)
+    // 每个写入点都要能被解析出错误码 —— 否则「新写法不匹配 → 不计入失败 → 照样绿」
+    expect(unparsed, `有 ${unparsed.length} 个 __NEXT_ERROR_CODE 写入点没能解析出错误码`).toEqual([])
     for (const code of samples) {
       expect(code, `Next 错误码形态变了：${code}，NEXT_AUTO_DIGEST_RE 的 @E\\d+ 需要跟着改`).toMatch(
         /^E\d+$/,
