@@ -48,8 +48,19 @@ function createPage() {
   const page: Record<string, any> = {
     ...pageDefinition,
     data: JSON.parse(JSON.stringify(pageDefinition.data)),
+    // 支持 `items[3]` 这种路径 setData —— 翻页走增量追加以避开 1MB 上限，
+    // mock 不认路径的话测试会假绿（this.data.items 永远停在第一页）
     setData(update: Record<string, unknown>) {
-      Object.assign(this.data, update)
+      for (const [key, value] of Object.entries(update)) {
+        const m = key.match(/^(\w+)\[(\d+)\]$/)
+        if (m) {
+          const [, arr, idx] = m
+          if (!Array.isArray(this.data[arr])) this.data[arr] = []
+          this.data[arr][Number(idx)] = value
+        } else {
+          this.data[key] = value
+        }
+      }
     },
   }
   return page
@@ -787,9 +798,13 @@ describe('绩效页 · 关键词还在但新主体零记录（评审 round-6 cod
 
     expect(page.data.keyword).toBe('张三')
     expect(page.data.filterActive).toBe(true)
-    // wxml 的空态 description 走 `filterActive ? searchHint : '暂无提成记录'`
-    expect(page.data.searchHint).toContain('已加载 0/共 0 条')
+    // wxml 的空态 description 走 `filterActive ? searchHint : '暂无提成记录'`。
+    // total===0 时归因必须落在「本时段没有任何记录」上，不能说成「未找到张三」——
+    // 后者会让员工以为张三的单被分给了别人（codex r6 P2 要求不退回无信息空态、
+    // glm r7 P3 要求归因准确，这条文案同时满足两者）
+    expect(page.data.searchHint).toContain('本时段暂无提成记录')
     expect(page.data.searchHint).toContain('张三')
+    expect(page.data.searchHint).not.toContain('未找到')
     expect(page.data.loadFailed).toBe(false)
   })
 
@@ -838,5 +853,73 @@ describe('绩效页 · applyCustomRange 自己守边界（评审 round-6 codex P
     expect(page.isValidDate('2025-02-29')).toBe(false) // 2025 平年
     expect(page.isValidDate('2026-04-31')).toBe(false)
     expect(page.isValidDate('2026-12-31')).toBe(true)
+  })
+})
+
+describe('绩效页 · 翻页增量 setData（评审 round-7 glm P1）', () => {
+  test('翻页只传新增那一页，不把已累积的全量重新序列化——单次 setData 有 1MB 上限', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage(Array.from({ length: 20 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i)), 60)
+    await page.loadData(true)
+    expect(page.data.items).toHaveLength(20)
+
+    const spy = vi.spyOn(page, 'setData')
+    mockPage(Array.from({ length: 20 }, (_, i) => makeItem(`顾客${20 + i}`, `1390000${String(i).padStart(4, '0')}`, 20 + i)), 60)
+    await page.loadData(false)
+
+    const payload = spy.mock.calls.find((c) => Object.keys(c[0] as object).some((k) => k.startsWith('items')))![0] as Record<string, unknown>
+    // 路径式追加，不是整个 items 数组
+    expect(payload.items).toBeUndefined()
+    expect(payload['items[20]']).toBeDefined()
+    expect(payload['items[39]']).toBeDefined()
+    expect(payload['items[0]']).toBeUndefined() // 第一页不该被重传
+    spy.mockRestore()
+
+    expect(page.data.items).toHaveLength(40)
+    expect(page.data.items[0].customerName).toBe('顾客0')
+    expect(page.data.items[39].customerName).toBe('顾客39')
+  })
+
+  test('reset 仍整体替换（换时段/换员工不能留上一批的尾巴）', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage(Array.from({ length: 20 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i)), 60)
+    await page.loadData(true)
+    await page.loadData(false)
+    expect(page.data.items).toHaveLength(40)
+
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+
+    expect(page.data.items).toHaveLength(1) // 不是 40 条里替换掉 1 条
+    expect(page.data.items[0].customerName).toBe('张三')
+  })
+})
+
+describe('绩效页 · 全角数字与防抖清理（评审 round-7 glm P3）', () => {
+  test('全角数字关键词也能匹配半角手机号', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([makeItem('张三', '13812345678', 1), makeItem('李四', '13900001234', 2)], 2)
+    await page.loadData(true)
+
+    search(page, '１３８')
+    expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['张三'])
+  })
+
+  test('onHide 取消在途的防抖过滤', () => {
+    const page = createPage()
+    page.onLoad({})
+    page.data.items = [makeItem('张三', '13800000001', 1)]
+    page.data.total = 1
+
+    page.onKeywordChange({ detail: '张三' })
+    page.onHide()
+    const spy = vi.spyOn(page, 'setData')
+    vi.advanceTimersByTime(250)
+
+    expect(spy).not.toHaveBeenCalled()
+    spy.mockRestore()
   })
 })

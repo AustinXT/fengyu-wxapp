@@ -244,6 +244,11 @@ Page({
     }
   },
 
+  // 跳下级页时防抖回调没必要再打到隐藏页面上（keyword 已落 data，回来照常重建视图）
+  onHide() {
+    this.cancelFilter();
+  },
+
   // 页面销毁后推进代次，丢弃晚到的响应，避免对已卸载页面 setData
   onUnload() {
     this._seq++;
@@ -355,11 +360,15 @@ Page({
   // 刻意**不**给 picker 加 start/end **交叉**约束（business-list-filter 里有）：本页两个日期恒非空，
   // 交叉约束会让「起晚于止」根本选不出来，下面的校验与其对应的验收项就永远不可达、不可测。
   // 但**绝对**上下界（customMinDate / customMaxDate）必须给，理由见 RANGE_MAX_DAYS。
+  // 两个入口都补刷边界：页面停在前台跨午夜且 picker 已展开时，用户不会再点「自定义」按钮，
+  // 上界会一直停在昨天。这里刷新虽救不了当次（picker 已按旧上界弹出），但下一次点就是对的
   onCustomStartChange(e: WechatMiniprogram.PickerChange) {
+    this.refreshDateBounds();
     this.applyCustomRange(String(e.detail.value), this.data.endDate, 'start');
   },
 
   onCustomEndChange(e: WechatMiniprogram.PickerChange) {
+    this.refreshDateBounds();
     this.applyCustomRange(this.data.startDate, String(e.detail.value), 'end');
   },
 
@@ -557,14 +566,27 @@ Page({
       this._summaryCache = res.categorySummary && res.categories && res.categories.length
         ? { summary: res.categorySummary, categories: res.categories }
         : null;
+      // 翻页只传**新增那一页**，不把已累积的几百上千条重新序列化一遍：
+      // setData 单次有 1MB 上限，超了整次调用直接失败（表现是「继续加载」点了没反应，
+      // 还会和「没加载够」的提示混在一起，员工根本分不清）。
+      // 每条明细 ~600B，全量重传在 1500 条上下就触线 —— 而「自定义」把跨度从「本月」
+      // 放宽到 371 天后，高频员工一年上万条，翻到底核对恰恰是本功能的设计用法。
+      const itemsPatch: Record<string, unknown> = {};
+      if (reset) {
+        itemsPatch.items = formattedItems;
+      } else {
+        const base = this.data.items.length;
+        formattedItems.forEach((it, i) => { itemsPatch[`items[${base + i}]`] = it; });
+      }
       this.setData({
         loadFailed: false,
         totalSalesAlloc: money(res.totalSalesAlloc),
         totalServiceCommission: money(serviceCommission),
         totalCommission: money(res.totalCommission),
         ...this.buildCategoryPanel(res.categorySummary, res.categories, activeMainTab, activeSubCategory),
-        items: newItems,
-        // 关键词跨翻页存活：触底取回的新条目立刻参与过滤，不必重新输入一遍
+        ...itemsPatch,
+        // 关键词跨翻页存活：触底取回的新条目立刻参与过滤，不必重新输入一遍。
+        // 未搜索时 displayItems 恒为空数组（wxml 直接渲染 items），不会再传一份全量
         ...this.buildSearchView(newItems, this.data.keyword, total),
         total,
         page,
@@ -647,7 +669,9 @@ Page({
     const kw = (keyword || '').trim().toLowerCase();
     if (!kw) return { displayItems: [] as PerformanceItem[], filterActive: false, searchHint: '' };
 
-    const kwDigits = kw.replace(/\D/g, '');
+    // 先全角转半角：中文输入法偶发全角数字（１３８），直接剥 \D 会把它们整个吃掉，
+    // kwDigits 变空 → 手机号匹配被静默跳过，员工只看到「未找到」
+    const kwDigits = kw.replace(/[\uFF10-\uFF19]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)).replace(/\D/g, '');
     const matched = items.filter((it) => {
       if (String(it.customerName || '').toLowerCase().indexOf(kw) >= 0) return true;
       if (!kwDigits) return false;
@@ -661,9 +685,13 @@ Page({
       filterActive: true,
       // 命中时也要提示：顶部三项汇总是后端全量口径、不随前端过滤缩水，
       // 不标注会被当成「明细只剩 3 条、汇总却还是几千块」的数据错误上报
-      searchHint: matched.length
-        ? `${loaded}，匹配 ${matched.length} 条（顶部汇总为全量，不随搜索变化）`
-        : `${loaded}中未找到「${shown}」`,
+      // total===0 说明本期一条记录都没有，跟关键词无关 —— 说「未找到张三」会让员工
+      // 以为张三的单被分给别人了，实际是整个时段空的
+      searchHint: total === 0
+        ? `本时段暂无提成记录（搜索「${shown}」仍生效）`
+        : matched.length
+          ? `${loaded}，匹配 ${matched.length} 条（顶部汇总为全量，不随搜索变化）`
+          : `${loaded}中未找到「${shown}」`,
     };
   },
 
