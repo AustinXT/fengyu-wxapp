@@ -205,6 +205,8 @@
                       <view class="session-bar__seg session-bar__seg--paid-unused" style="width:{{item.paidUnusedPct}}%"></view>
                       <view class="session-bar__seg session-bar__seg--unpaid" style="width:{{item.unpaidPct}}%"></view>
                     </view>
+                    <text wx:if="{{item.unpaidAmountFmt}}" class="tc-unpaid">待付清 ¥{{item.unpaidAmountFmt}}</text>
+                    <text wx:elif="{{item.notConsumable}}" class="tc-unpaid tc-unpaid--plain">可用次数为 0，付清后可核销</text>
                   </view>
                 </view>
               </view>

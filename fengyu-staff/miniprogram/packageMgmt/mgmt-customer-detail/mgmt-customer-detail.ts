@@ -108,6 +108,8 @@ interface PaidOrderItem {
   categoryId?: string;
   /** 二级品项名称（保留 category 兼容字段） */
   categoryName?: string;
+  /** 行级欠款；仅订单未付清且该卡未买满次数时有值，否则 null */
+  unpaidAmount?: number | null;
 }
 
 interface PaidOrder {
@@ -152,6 +154,10 @@ interface TreatmentCard {
   usedPct: number;
   paidUnusedPct: number;
   unpaidPct: number;
+  /** 预格式化欠款文案（千分位）；空串表示不展示 */
+  unpaidAmountFmt?: string;
+  /** 可用次数为 0（部分支付未买满次数）；仅用于展示说明，管理层视图本就只读 */
+  notConsumable?: boolean;
   saleOrderId: string;
   paidAt: string;
   storeId?: string;
@@ -576,6 +582,13 @@ Page({
               categoryId: item.categoryId || '',
               categoryName: item.categoryName || item.category || '',
               saleOrderTypeLabel: ORDER_TYPE_LABEL[order.saleOrderType || ''] || order.saleOrderType || '',
+              // issue #122：可用次数 0 的卡现在也展示，必须同时给出原因，
+              // 否则管理层只看到「剩余 0」像是一张坏卡。与门店视图口径一致。
+              unpaidAmountFmt:
+                item.unpaidAmount != null && item.unpaidAmount > 0
+                  ? formatAmount(item.unpaidAmount)
+                  : '',
+              notConsumable: item.paidSessions != null && Math.min(remain, paid - used) <= 0,
             });
           }
         }

@@ -735,6 +735,82 @@ describe('customer.paidOrders', () => {
     })
   })
 
+  // issue #122：部分支付且实收不足一次单价 → paid_sessions=0，旧过滤把整张卡剔除，
+  // 顾客买了卡却在档案里查无此卡。现在照常下发，可用次数由前端算作 0。
+  test('可用次数为 0 的卡仍下发，并带行级欠款', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-unpaid-card' })
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+    pg.query.mockResolvedValueOnce([
+      { sale_order_id: 'SO-UNPAID', status: '部分支付', paid_at: '2026-09-13T10:00:00Z' },
+    ])
+    pg.query.mockResolvedValueOnce([
+      {
+        sale_order_id: 'SO-UNPAID', sale_item_id: 'item-unpaid',
+        session_count: 15, remaining_sessions: 15, paid_sessions: 0,
+        sku_id: 'sku-1', product_type: '疗程卡', product_name: '深层补水',
+        sale_amount: '3000.00', received: '150.00', unpaid_amount: '2850.00',
+      },
+    ])
+
+    await customerRoutes.paidOrders(ctx)
+
+    expect(ctx.result[0].items[0]).toEqual(
+      expect.objectContaining({
+        saleItemId: 'item-unpaid',
+        paidSessions: 0,
+        remainingSessions: 15,
+        unpaidAmount: 2850,
+      }),
+    )
+  })
+
+  // 订单已付清但行 received 不足 → 行级分摊缺口（已知数据问题），不是顾客欠款。
+  // dev 实测 78 行属此类，若按金额差报欠款会伪造债务。
+  test('订单已付清的行不下发欠款（行级分摊缺口不算欠款）', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-settled-gap' })
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+    pg.query.mockResolvedValueOnce([
+      { sale_order_id: 'SO-PAID', status: '已支付', paid_at: '2026-07-25T10:00:00Z' },
+    ])
+    pg.query.mockResolvedValueOnce([
+      {
+        sale_order_id: 'SO-PAID', sale_item_id: 'item-gap',
+        session_count: 10, remaining_sessions: 8, paid_sessions: 2,
+        sku_id: 'sku-1', product_type: '疗程卡', product_name: '面部护理',
+        sale_amount: '3980.00', received: '796.00', unpaid_amount: null,
+      },
+    ])
+
+    await customerRoutes.paidOrders(ctx)
+
+    expect(ctx.result[0].items[0]).toEqual(
+      expect.objectContaining({ saleItemId: 'item-gap', unpaidAmount: null }),
+    )
+  })
+
+  // ⚠ 退款不减 remaining_sessions（Model X）：paid_sessions 是「已退卡从卡包消失」的唯一机制。
+  // 放宽展示门槛时若不保留这条守卫，已退款的卡会重新出现并被标成待付清（实测 87 行 / ¥118605）。
+  test('SQL 保留已审批退款守卫，已退卡不因放宽展示而复现', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1' })
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+    pg.query.mockResolvedValueOnce([
+      { sale_order_id: 'SO-1', status: '部分支付', paid_at: '2026-09-13T10:00:00Z' },
+    ])
+    pg.query.mockResolvedValueOnce([])
+
+    await customerRoutes.paidOrders(ctx)
+
+    const itemSql = pg.query.mock.calls[2][0]
+    expect(itemSql).toContain("AND sop.change_type = '退款' AND sop.status = '已支付'")
+    expect(itemSql).toContain('OR si.paid_sessions > (si.session_count - si.remaining_sessions)')
+    // 欠款也不得落在已退款的单上（received 是净实收，相减必然虚增）：
+    // 断言退款短路出现在 unpaid_amount 的 CASE 内部，而非文件别处
+    const caseExpr = itemSql.match(/CASE\s+WHEN o\.status = '部分支付'[\s\S]*?END AS unpaid_amount/)?.[0]
+    expect(caseExpr).toBeTruthy()
+    expect(caseExpr).toContain("AND sop.change_type = '退款' AND sop.status = '已支付'")
+    expect(caseExpr).toContain('AND (si.sale_amount::numeric - si.received::numeric) >= 1')
+  })
+
   test('无已支付订单时返回空数组', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u-empty' })
     // assertCustomerInScope 先 SELECT bound_store_id
@@ -869,7 +945,13 @@ describe('customer.paidOrders', () => {
     expect(itemSql).toContain("si.item_direction = '转入'")
     expect(itemSql).not.toContain("si.item_direction = '转出'")
     expect(itemSql).toContain('si.paid_sessions IS NULL')
-    expect(itemSql).toContain('si.paid_sessions > (si.session_count - si.remaining_sessions)')
+    // issue #122：改按物理剩余次数下发，可用次数 0 的卡不再整行隐藏。
+    // 核销限额仍走 paid_sessions，但由 service.create/start/finalize 独立校验，不在此查询。
+    expect(itemSql).toContain('si.remaining_sessions > 0')
+    // ⚠ 退款不减 remaining_sessions：paid_sessions 是「已退卡从卡包消失」的唯一机制，
+    // 放宽展示后这条守卫必须保留（已审批退款时回退到已付未用口径）。
+    expect(itemSql).toContain("AND sop.change_type = '退款' AND sop.status = '已支付'")
+    expect(itemSql).toContain('OR si.paid_sessions > (si.session_count - si.remaining_sessions)')
   })
 })
 
