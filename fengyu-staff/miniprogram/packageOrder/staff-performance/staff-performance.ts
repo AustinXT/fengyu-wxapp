@@ -661,7 +661,9 @@ Page({
     this.setData(this.buildSearchView(
       this.data.items, this.data.keyword, this.data.total, displayLimit, displayOffset + displayLimit,
     ));
-    wx.pageScrollTo({ scrollTop: 0, duration: 200 });
+    // 滚到导航本身，不是页面顶部 —— 它上面还压着时段按钮、汇总卡、分类面板和搜索栏，
+    // 滚到 0 反而看不见这批命中的开头
+    wx.pageScrollTo({ selector: '.perf-match-nav', duration: 200 });
   },
 
   /** 窗口往前滑一屏（滑过头了要能回来） */
@@ -675,7 +677,9 @@ Page({
     this.setData(this.buildSearchView(
       this.data.items, this.data.keyword, this.data.total, displayLimit, Math.max(displayOffset - displayLimit, 0),
     ));
-    wx.pageScrollTo({ scrollTop: 0, duration: 200 });
+    // 滚到导航本身，不是页面顶部 —— 它上面还压着时段按钮、汇总卡、分类面板和搜索栏，
+    // 滚到 0 反而看不见这批命中的开头
+    wx.pageScrollTo({ selector: '.perf-match-nav', duration: 200 });
   },
 
   /**

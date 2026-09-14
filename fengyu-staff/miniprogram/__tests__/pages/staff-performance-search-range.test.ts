@@ -46,7 +46,7 @@ beforeEach(() => {
   vi.clearAllTimers()
   vi.setSystemTime(new Date(2026, 8, 14, 10, 0, 0)) // 2026-09-14 本地时间
   ;(globalThis as any).wx.showToast = vi.fn()
-  ;(globalThis as any).wx.pageScrollTo = vi.fn() // 滑窗后回顶，setup.ts 只 mock 了 storage
+  ;(globalThis as any).wx.pageScrollTo = vi.fn() // 滑窗后定位导航，setup.ts 只 mock 了 storage
 })
 
 function createPage() {
@@ -2386,5 +2386,43 @@ describe('绩效页 · onShow 一律复验权限（评审 round-39 codex P1）',
     page.onShow()
 
     expect(callStaffApi).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('绩效页 · 翻批次滚动定位（评审 round-40 codex P3）', () => {
+  test('滚到导航本身，不是页面顶部（上面还压着汇总卡和筛选面板）', async () => {
+    const page = createPage()
+    page.onLoad({})
+    const many = Array.from({ length: 1500 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i))
+    mockPage(many, 1500)
+    await page.loadData(true)
+    search(page, '顾客')
+    page.onShowMoreMatches()
+    page.onShowMoreMatches()            // 撑到硬顶
+    ;(globalThis as any).wx.pageScrollTo.mockClear()
+
+    page.onShowMoreMatches()            // 下一批
+    expect((globalThis as any).wx.pageScrollTo).toHaveBeenCalledWith(
+      expect.objectContaining({ selector: '.perf-match-nav' })
+    )
+
+    ;(globalThis as any).wx.pageScrollTo.mockClear()
+    page.onPrevMatches()
+    expect((globalThis as any).wx.pageScrollTo).toHaveBeenCalledWith(
+      expect.objectContaining({ selector: '.perf-match-nav' })
+    )
+  })
+
+  test('窗口只是变大（不换批次）时不滚动，视线留在原处', async () => {
+    const page = createPage()
+    page.onLoad({})
+    const many = Array.from({ length: 1500 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i))
+    mockPage(many, 1500)
+    await page.loadData(true)
+    search(page, '顾客')
+    ;(globalThis as any).wx.pageScrollTo.mockClear()
+
+    page.onShowMoreMatches()            // 200 → 400，只是往下续，不该跳走
+    expect((globalThis as any).wx.pageScrollTo).not.toHaveBeenCalled()
   })
 })
