@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState, useTransition } from 'react'
+import { useCallback, useEffect, useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { ClipboardList, Plus } from 'lucide-react'
 import { toast } from 'sonner'
@@ -40,7 +40,9 @@ import { PreserveListContextLink } from '@/components/return-context'
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
 const GENERIC_DOC_TYPE_SET = new Set<InventoryDocType>(INVENTORY_GENERIC_DOC_TYPES)
 
-const SOURCE_LOT_DOC_TYPES = new Set<InventoryDocType>([
+// 导出供测试锁定：它与 INVENTORY_GENERIC_DOC_TYPES 的交集就是「通用建单入口里需要选来源批次」
+// 的全集，必须与服务端 engine.ts 的 shouldCaptureSourceLot 判定保持一致（见同目录测试的守护用例）。
+export const SOURCE_LOT_DOC_TYPES = new Set<InventoryDocType>([
   '品项公司发货',
   '分院配货',
   '分院调货出库',
@@ -341,6 +343,16 @@ function CreateDocDialog({
   const [remark, setRemark] = useState('')
   const [items, setItems] = useState<DraftItem[]>([defaultItem()])
   const requiresSourceLot = SOURCE_LOT_DOC_TYPES.has(docType)
+  /**
+   * 批次取数的弹窗级缓存：按 (库位, SKU) 存**Promise**，既去重在途请求也复用已取结果。
+   * 没有它的话，N 条明细选同一个 SKU 就发 N 次；更隐蔽的是明细行用 index 当 React key，
+   * 删掉中间一行会让其后每一行的 (库位,SKU) 组合整体平移，触发一连串重复请求 ——
+   * 而 Server Action 走的是全局 FIFO 队列，这些请求串行排队，下拉会一起变灰，
+   * 观感和 #129 的卡死几乎一样。
+   *
+   * ⚠️ 用 ref 不用 state：它**绝不能进任何 useEffect 的依赖数组**（#129 的成因正是如此）。
+   */
+  const lotCacheRef = useRef<Map<string, Promise<InventoryLotRow[]>>>(new Map())
   const isDocTypeLocked = Boolean(initialDocType && availableDocTypes.includes(initialDocType))
   const sourceLocationId = locations.find((location) => location.orgNodeId === sourceOrgNodeId)?.locationId ?? ''
 
@@ -429,6 +441,8 @@ function CreateDocDialog({
                   skuId={item.skuId}
                   value={item.lotId}
                   onChange={(lotId) => updateItem(index, { lotId })}
+                  cache={lotCacheRef.current}
+                  label={`明细 ${index + 1} 来源批次`}
                 />
               )}
               <Select
@@ -468,60 +482,91 @@ function CreateDocDialog({
 }
 
 /**
- * 来源批次下拉：每行一个实例、自带 state，按 (locationId, skuId) 拉取。
+ * 来源批次下拉：每行一个实例、自带 state，按 (locationId, skuId) 拉取，取数走弹窗级 Promise 缓存。
  *
- * ⚠️ 依赖数组只能放**真实输入**（locationId / skuId），绝不能放这个 effect 自己 set 的 state。
- * 曾经的写法是父层共享 `lotOptionsByKey` / `loadingLotKeys` 两个 Record 再把它们塞进依赖数组：
- * setState → re-render → 依赖变 → effect 重跑 → cleanup 把上一轮 `cancelled` 置 true →
- * 首次请求的 then/catch/finally 全被跳过 → loading 永远停在 true → 下拉永久 disabled，
- * 6 种需选来源批次的单据全部建不出来（#129）。办理台的 LotPicker 同理。
+ * ⚠️ 依赖数组只能放**真实输入**（locationId / skuId / 显式的重试计数），
+ * 绝不能放这个 effect 自己 set 的 state。曾经的写法是父层共享 `lotOptionsByKey` /
+ * `loadingLotKeys` 两个 Record 再把它们塞进依赖数组：setState → re-render → 依赖变 →
+ * effect 重跑 → cleanup 把上一轮 `cancelled` 置 true → 首次请求的 then/catch/finally
+ * 全被跳过 → loading 永远停在 true → 下拉永久 disabled，6 种需选来源批次的单据
+ * 全部建不出来（#129）。
+ * （`retryToken` 虽然也是本组件的 state，但它只在 onFocus 里 set、不在 effect 体内 set，
+ *   不构成自触发环 —— 区别就在这里。）
  *
- * 用 `loaded.key === key` 判定「这份数据是不是当前这对入参的」，而不是单独的 loading 布尔：
- * 入参一变，渲染期立刻判定为加载中，不会闪出上一对入参的批次（删除明细行时尤其重要 ——
- * 明细用 index 当 React key，删行会让实例拿到下一行的 props）。
+ * 办理台 `inventory-operations-page.tsx` 的 `LotPicker` **不存在**这个 bug（它的依赖数组
+ * 干净地只有 `[locationId, skuId]`），可作正例参照；但它在加载期间不清旧数据，
+ * 本组件用 `loaded.key === cacheKey` 顺带解决了 —— 入参一变，渲染期立刻判定为加载中，
+ * 不会闪出上一对入参的批次（删除明细行时尤其重要：明细用 index 当 React key，
+ * 删行会让实例拿到下一行的 props）。
  */
+type LotLoadState = { key: string; lots: InventoryLotRow[]; failed?: boolean }
+
 function DocLotSelect({
   locationId,
   skuId,
   value,
   onChange,
+  cache,
+  label,
 }: {
   locationId: string
   skuId: string
   value: string
   onChange: (lotId: string) => void
+  /** 弹窗级 (库位,SKU) → Promise 缓存，见 CreateDocDialog 的 lotCacheRef */
+  cache: Map<string, Promise<InventoryLotRow[]>>
+  label: string
 }) {
-  const key = locationId && skuId ? `${locationId}:${skuId}` : ''
-  const [loaded, setLoaded] = useState<{ key: string; lots: InventoryLotRow[] } | null>(null)
+  // 用 JSON 数组当 key，避免 ('a:b','c') 与 ('a','b:c') 这类分隔符歧义撞进同一个缓存槽
+  const cacheKey = locationId && skuId ? JSON.stringify([locationId, skuId]) : ''
+  const [retryToken, setRetryToken] = useState(0)
+  const [loaded, setLoaded] = useState<LotLoadState | null>(null)
 
   useEffect(() => {
-    if (!key) return
+    if (!cacheKey) return
     let cancelled = false
-    listInventoryLotOptions(locationId, skuId)
+    let pending = cache.get(cacheKey)
+    if (!pending) {
+      pending = listInventoryLotOptions(locationId, skuId)
+      cache.set(cacheKey, pending)
+    }
+    pending
       .then((lots) => {
-        if (!cancelled) setLoaded({ key, lots })
+        if (!cancelled) setLoaded({ key: cacheKey, lots: Array.isArray(lots) ? lots : [] })
       })
       .catch((error) => {
+        // 失败的 Promise 不能留在缓存里，否则重试会拿到同一个已 reject 的 Promise
+        cache.delete(cacheKey)
         // 失败必须让用户看见：静默吞掉会和「该批次真的没货」长得一模一样
         if (!cancelled) {
-          setLoaded({ key, lots: [] })
+          setLoaded({ key: cacheKey, lots: [], failed: true })
           toast.error(actionErrorMessage(error, '加载可用批次失败'))
         }
       })
     return () => {
       cancelled = true
     }
-  }, [key, locationId, skuId])
+  }, [cacheKey, locationId, skuId, cache, retryToken])
 
-  const isCurrent = loaded?.key === key
+  const isCurrent = loaded?.key === cacheKey
   const lots = isCurrent ? loaded.lots : []
-  const isLoadingLots = Boolean(key) && !isCurrent
+  const failed = isCurrent && loaded.failed === true
+  const isLoadingLots = Boolean(cacheKey) && !isCurrent
 
   return (
     <Select
+      aria-label={label}
       value={value}
       disabled={!locationId || !skuId || isLoadingLots}
       onChange={(e) => onChange(e.target.value)}
+      onFocus={() => {
+        // 失败态是唯一的重试入口：关掉弹窗再打开不会重挂载（原生 <dialog>），
+        // 不给入口的话用户只能靠「切到别的 SKU 再切回来」猜出来。
+        if (failed) {
+          setLoaded(null)
+          setRetryToken((n) => n + 1)
+        }
+      }}
     >
       <option value="">
         {!locationId
@@ -530,7 +575,9 @@ function DocLotSelect({
             ? '先选择库存 SKU'
             : isLoadingLots
               ? '加载库存批次...'
-              : '选择库存批次'}
+              : failed
+                ? '批次加载失败，点此重试'
+                : '选择库存批次'}
       </option>
       {lots.map((lot) => (
         <option key={lot.id} value={String(lot.id)}>

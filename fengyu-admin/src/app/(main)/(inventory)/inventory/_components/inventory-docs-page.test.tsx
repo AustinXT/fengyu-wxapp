@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type {
   InventoryDocRow,
@@ -34,7 +34,12 @@ vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
 
 import { toast } from 'sonner'
 import { listInventoryLotOptions } from '@/actions/inventory/stocks'
-import InventoryDocsPage from './inventory-docs-page'
+import InventoryDocsPage, { SOURCE_LOT_DOC_TYPES } from './inventory-docs-page'
+import { INVENTORY_GENERIC_DOC_TYPES } from '@/lib/inventory/types'
+
+// vitest.config.ts 没开 clearMocks，不显式清会让调用记录跨用例累积、
+// 也会让忘记设 mock 的新用例继承上一个用例的 mockRejectedValue。
+beforeEach(() => vi.clearAllMocks())
 
 const row: InventoryDocRow = {
   id: 'MBS-260813-0001',
@@ -203,6 +208,7 @@ function lot(id: number, skuId: string, batchNo: string, quantityOnHand: number)
 /**
  * 按「首个 option 的文案」定位弹窗里的下拉，而不是按索引 ——
  * 索引会随 DatePicker 等组件的内部结构变化而错位，且错位后断言会静默地打在别的控件上。
+ * 批次下拉例外：它有 aria-label（多明细行时文案完全相同，只有 label 能区分），走 getByLabelText。
  */
 function dialogSelect(firstOptionText: RegExp): HTMLSelectElement {
   const selects = Array.from(screen.getByRole('dialog').querySelectorAll('select'))
@@ -211,7 +217,8 @@ function dialogSelect(firstOptionText: RegExp): HTMLSelectElement {
   return hit
 }
 
-const lotSelect = () => dialogSelect(/先选择出库主体|先选择库存 SKU|加载库存批次|选择库存批次/)
+const lotSelect = (index = 1) => screen.getByLabelText(`明细 ${index} 来源批次`) as HTMLSelectElement
+const lotPlaceholder = (index = 1) => lotSelect(index).options[0]?.textContent?.trim() ?? ''
 const skuSelect = () => dialogSelect(/^库存 SKU$/)
 const sourceSelect = () => dialogSelect(/^出库\/发起主体$/)
 
@@ -268,7 +275,41 @@ describe('InventoryDocsPage 来源批次下拉（#129 回归）', () => {
     openDialogAndPickSource()
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('无权查看该主体库存'))
-    expect(lotSelect()).not.toBeDisabled()
+    // 失败态必须和「该主体该 SKU 真的没批次」在文案上区分开，否则用户会误判为「没货」
+    await waitFor(() => expect(lotPlaceholder()).toBe('批次加载失败，点此重试'))
+  })
+
+  it('失败后点一下批次框即可重试，不必靠「切到别的 SKU 再切回来」', async () => {
+    vi.mocked(listInventoryLotOptions)
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValue([lot(11, 'SKU-1', 'B-001', 30)])
+
+    openDialogAndPickSource()
+    await waitFor(() => expect(lotPlaceholder()).toBe('批次加载失败，点此重试'))
+
+    fireEvent.focus(lotSelect())
+
+    await waitFor(() => expect(lotPlaceholder()).toBe('选择库存批次'))
+    expect(listInventoryLotOptions).toHaveBeenCalledTimes(2)
+    expect(within(screen.getByRole('dialog')).getByRole('option', { name: /B-001/ })).toBeInTheDocument()
+  })
+
+  it('同一 (主体, SKU) 被多行选中时只发一次请求（弹窗级 Promise 缓存）', async () => {
+    vi.mocked(listInventoryLotOptions).mockResolvedValue([lot(11, 'SKU-1', 'B-001', 30)])
+
+    openDialogAndPickSource()
+    await waitFor(() => expect(lotSelect(1)).not.toBeDisabled())
+
+    fireEvent.click(screen.getByRole('button', { name: '添加明细' }))
+    fireEvent.change(within(screen.getByRole('dialog')).getAllByRole('combobox')
+      .filter((el) => (el as HTMLSelectElement).options[0]?.textContent === '库存 SKU')[1], {
+      target: { value: 'SKU-1' },
+    })
+
+    await waitFor(() => expect(lotSelect(2)).not.toBeDisabled())
+    // 去掉共享缓存会在这里变成 2 次；明细多、又删过中间行时会放大成一串串行请求
+    expect(listInventoryLotOptions).toHaveBeenCalledTimes(1)
+    expect(within(lotSelect(2)).getByRole('option', { name: /B-001/ })).toBeInTheDocument()
   })
 
   it('脱敏/框架级异常退回业务兜底文案，不把英文技术话术甩给用户', async () => {
@@ -279,5 +320,23 @@ describe('InventoryDocsPage 来源批次下拉（#129 回归）', () => {
     openDialogAndPickSource()
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('加载可用批次失败'))
+  })
+})
+
+// 前端的 SOURCE_LOT_DOC_TYPES 与服务端 engine.ts 的 shouldCaptureSourceLot 是两份真相。
+// 今天一致（交集正好这 6 项），但给 OUTBOUND_DOC_TYPES + INVENTORY_GENERIC_DOC_TYPES 加了类型
+// 却漏加 SOURCE_LOT_DOC_TYPES 时，弹窗不渲染批次下拉 → 提交必撞
+// 「出库类明细必须选择库存批次」且用户无法补救。这条断言就是拿来卡住那次漂移的。
+describe('通用建单入口里需要来源批次的单据类型', () => {
+  it('恰好是 SOURCE_LOT × 通用类型的这 6 项', () => {
+    const intersection = INVENTORY_GENERIC_DOC_TYPES.filter((t) => SOURCE_LOT_DOC_TYPES.has(t))
+    expect(intersection).toEqual([
+      '分院调货出库',
+      '市场间调货出库',
+      '内部领用',
+      '院顾客产品出库',
+      '市场产品报损',
+      '院产品报损',
+    ])
   })
 })
