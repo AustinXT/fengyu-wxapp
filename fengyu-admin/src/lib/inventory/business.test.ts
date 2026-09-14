@@ -1161,6 +1161,21 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
       for (let k = from; k < to && k < out.length; k += 1) if (out[k] !== '\n') out[k] = ' '
     }
     while (i < src.length) {
+      // JS 行注释。SQL 没有 `//` 词法，统一抹掉是安全的；不抹的话注释里的撇号
+      //（中文注释爱写 '消费口径' 这种）会让后续引号配对整体错位、滚雪球吞掉真 SQL。
+      if (src.startsWith('//', i)) {
+        const end = src.indexOf('\n', i); const stop = end === -1 ? src.length : end
+        blank(i, stop); i = stop; continue
+      }
+      // 模板插值 ${...}：里面是 JS 表达式，可能带引号/括号，留着会干扰括号平衡与引号配对
+      if (src.startsWith('${', i)) {
+        let depth = 1; let j = i + 2
+        for (; j < src.length && depth > 0; j += 1) {
+          if (src[j] === '{') depth += 1
+          else if (src[j] === '}') depth -= 1
+        }
+        blank(i, j); i = j; continue
+      }
       if (src.startsWith('--', i)) {
         const end = src.indexOf('\n', i); const stop = end === -1 ? src.length : end
         blank(i, stop); i = stop; continue
@@ -1169,16 +1184,21 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
         const end = src.indexOf('*/', i + 2); const stop = end === -1 ? src.length : end + 2
         blank(i, stop); i = stop; continue
       }
-      const dollar = /^\$[A-Za-z_]*\$/.exec(src.slice(i, i + 40))
+      // `$tag$…$tag$`（PL/pgSQL 函数体）。注意排除 `$${` —— 那是「PG 参数占位 $ + 模板插值」，
+      // 误判成 dollar-quote 会一路吞到下一个 $$ 之间的全部真 SQL。
+      const dollar = src.startsWith('$${', i) ? null : /^\$[A-Za-z_]*\$/.exec(src.slice(i, i + 40))
       if (dollar) {
         const tag = dollar[0]
         const end = src.indexOf(tag, i + tag.length)
         const stop = end === -1 ? src.length : end + tag.length
         blank(i, stop); i = stop; continue
       }
-      // ⚠️ 绝不能把反引号也算进来：.ts/.js 里 SQL 正是写在模板字符串里的，
-      // 抹掉反引号内容等于把要检查的 SQL 整段抹掉，守护会静默失效（实测会漏掉全部 5 处）。
-      if (src[i] === "'" || src[i] === '"') {
+      // ⚠️ 只抹双引号，**不抹反引号、也不抹单引号**：
+      // - 反引号：.ts/.js 里 SQL 正写在模板字符串里，抹掉等于把要检查的 SQL 整段抹掉
+      // - 单引号：云函数有 `pg.query('WITH RECURSIVE …')` 这种写法，抹掉同样整段丢失
+      // 代价是 SQL 字符串字面量里若有不配对的括号（如 SELECT ')' ），会让 CTE 体提前收尾；
+      // 仓内无此写法，且真出现时会被下面的「WITH 头自一致性」断言逮到（识别不出块 → 红）。
+      if (src[i] === '"') {
         const quote = src[i]
         let j = i + 1
         while (j < src.length && src[j] !== quote) j += (src[j] === '\\' ? 2 : 1)
@@ -1227,7 +1247,25 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
       .filter((alias) => !SQL_KEYWORDS.has(alias.toUpperCase()))
   }
 
+  /** 取出所有 `$tag$ … $tag$` 函数体。它们是 **SQL 的载体**，不是字面量，必须递归检查 */
+  function dollarBodies(rawSrc: string): string[] {
+    const bodies: string[] = []
+    const re = /\$([A-Za-z_]*)\$/g
+    let m: RegExpExecArray | null
+    while ((m = re.exec(rawSrc)) !== null) {
+      if (rawSrc.startsWith('$${', m.index)) continue
+      const close = rawSrc.indexOf(m[0], m.index + m[0].length)
+      if (close === -1) break
+      bodies.push(rawSrc.slice(m.index + m[0].length, close))
+      re.lastIndex = close + m[0].length
+    }
+    return bodies
+  }
+
   function violations(rawSrc: string): string[] {
+    // 函数体单独递归跑一遍 —— maskLiterals 会把 $$…$$ 当字面量抹掉（为的是不让体内引号
+    // 干扰外层配对），若不在这里补回来，0009 触发器里的递归 CTE（线上热路径）就永远扫不到。
+    const nested = dollarBodies(rawSrc).flatMap((body) => violations(body))
     const masked = maskLiterals(rawSrc)
     const { blocks, outside } = cteBlocks(masked)
     const hits: string[] = []
@@ -1245,11 +1283,33 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
       check('body', body, [name, ...blocks.slice(0, index).map((b) => b.name)])
     })
     check('outer', outside, [...new Set(blocks.map((b) => b.name))])
-    return hits
+    return [...nested, ...hits]
+  }
+
+  /**
+   * 自一致性：文件里每一个 `WITH <名字>` 头，都必须被 cteBlocks 识别成至少一个块
+   * （或落进 `$$` 函数体由递归那一路接手）。
+   *
+   * 没有这条，词法一旦出错就是**静默失效** —— 抹错一段就整片不检查，而
+   * 「没有违规」和「压根没检查」在断言上长得一模一样。反引号那次就是这么差点溜过去的。
+   */
+  function unrecognizedWithHeads(rawSrc: string): number {
+    // 只数「引入 CTE 的 WITH」：`WITH name [(cols)] AS (`。
+    // 不能只数 `\bWITH\b` —— DDL 里 `timestamp WITH TIME ZONE`、`CREATE INDEX … WITH (…)`
+    // 一抓一大把（光 0000_baseline 就 126 个），全是噪音。
+    const HEAD_RE = /\bWITH\s+(?:RECURSIVE\s+)?[A-Za-z_]\w*\s*(?:\([^()]*\))?\s+AS\s*\(/gi
+    // 关键：头在**原文**里数，块在**抹过字面量的文本**里数。
+    // 词法要是把真 SQL 抹掉了，两边就对不上 → 红。这正是反引号那次该红却没红的地方。
+    const heads = (rawSrc.match(HEAD_RE) ?? []).length
+    let blocks = cteBlocks(maskLiterals(rawSrc)).blocks.length
+    // $$ 函数体里的头已经算进 heads（它们是 rawSrc 的子串），块要单独补上
+    for (const body of dollarBodies(rawSrc)) blocks += cteBlocks(maskLiterals(body)).blocks.length
+    return Math.max(0, heads - blocks)
   }
 
   it('全仓（admin + 三个云函数端 + 迁移）无一处混用 CTE 的别名与原名', () => {
     const offenders: string[] = []
+    const blind: string[] = []
     const perRoot = new Map<string, number>()
     for (const root of SCAN_ROOTS) {
       expect(existsSync(root.dir), `扫描根不存在，守护已静默缩水：${root.dir}`).toBe(true)
@@ -1258,9 +1318,10 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
         const raw = readFileSync(file, 'utf8')
         if (!/\bWITH\b/i.test(raw)) continue
         n += 1
-        for (const hit of violations(raw)) {
-          offenders.push(`${root.label}:${file.split('/').slice(-2).join('/')}: ${hit}`)
-        }
+        const short = `${root.label}:${file.split('/').slice(-2).join('/')}`
+        const missed = unrecognizedWithHeads(raw)
+        if (missed > 0) blind.push(`${short}: ${missed} 个 WITH 头没被识别`)
+        for (const hit of violations(raw)) offenders.push(`${short}: ${hit}`)
       }
       perRoot.set(root.label, n)
       // 「本来就该有 CTE」的根扫到 0 个 = 路径/扩展名写错，必须红，不能伪装成「干净」
@@ -1268,6 +1329,9 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
         expect(n, `${root.label} 一个含 WITH 的文件都没扫到，守护形同虚设`).toBeGreaterThan(0)
       }
     }
+    // 先断言「都检查到了」，再断言「没有违规」—— 顺序很重要：盲区先暴露，
+    // 否则一片没检查的文件会伪装成「干净」
+    expect(blind, '这些文件里有 WITH 头没被解析出来，守护对它们是盲的').toEqual([])
     expect(offenders, 'CTE 起了别名就必须全程用别名，不能再用原名当限定符').toEqual([])
   })
 
@@ -1308,9 +1372,42 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
       'WITH RECURSIVE market_descendants(market_id, node_id) AS (SELECT 1 UNION ALL SELECT market_descendants.market_id, child.id FROM org_nodes child JOIN market_descendants ON child.parent_id = market_descendants.node_id) SELECT * FROM markets m LEFT JOIN market_descendants d ON d.market_id = m.id',
       // 注释里出现原名限定符不算数
       "WITH RECURSIVE descendants(id, path) AS (SELECT 1 UNION ALL /* 别写 descendants.path */ SELECT parent.path FROM org_nodes child JOIN descendants parent ON child.parent_id = parent.id)",
-      // 字符串里的右括号不能提前截断定义体
-      "WITH RECURSIVE descendants(id, path) AS (SELECT ')' AS s UNION ALL SELECT parent.path FROM org_nodes child JOIN descendants parent ON child.parent_id = parent.id) SELECT * FROM descendants",
     ]
     for (const sql of good) expect(violations(sql), `误报：${sql.slice(0, 70)}…`).toEqual([])
+  })
+
+  // 上面的夹具都是纯 SQL 字符串，防不住「词法把源码抹错了」这类退化 ——
+  // 真实文件里 SQL 是裹在模板字符串/单引号里、旁边还有 JS 注释与 ${} 插值的。
+  it('源码形态的夹具：JS 注释 / 模板插值 / 引号交错都不会把 SQL 抹没', () => {
+    const BT = '\u0060'  // 反引号，直接写会打断本文件的模板字符串
+    const BAD_SQL = 'WITH RECURSIVE d(id, path) AS (SELECT 1 UNION ALL SELECT d.path FROM t child JOIN d parent ON child.pid = parent.id)'
+    const sources = [
+      // 模板字符串里的 SQL（admin / 云函数的常态）
+      `const q = sql${BT}${BAD_SQL}${BT}`,
+      // 行注释里带撇号 —— 不识别 // 的话，撇号会让后续引号配对整体错位、吞掉真 SQL
+      `// 这里按 'Ada' 的口径算\nconst q = sql${BT}${BAD_SQL}${BT}`,
+      // 动态参数占位 $${n}：误判成 dollar-quote 会一路吞到下一个 $$
+      `const q = sql${BT}${BAD_SQL} AND x = $` + '${params.length}' + `${BT}`,
+      // 单引号字符串形态（pg.query('…', [...])）
+      `pg.query('${BAD_SQL}', [])`,
+    ]
+    for (const src of sources) {
+      expect(violations(src), `SQL 被抹没了，守护对这种源码形态是盲的：${src.slice(0, 50)}…`).not.toEqual([])
+      expect(unrecognizedWithHeads(src), `WITH 头没被识别：${src.slice(0, 50)}…`).toBe(0)
+    }
+  })
+
+  it('$$ 函数体里的 CTE 也在守护范围（0009 的库存主体防环触发器就住在里面）', () => {
+    const src = [
+      'CREATE FUNCTION f() RETURNS trigger AS $$',
+      'BEGIN',
+      "  IF EXISTS (WITH RECURSIVE ancestors(id, pid) AS (SELECT 1 UNION ALL SELECT ancestors.id FROM t x JOIN ancestors a ON x.pid = a.id) SELECT 1 FROM ancestors) THEN",
+      "    RAISE EXCEPTION 'boom';",
+      '  END IF;',
+      'END;',
+      '$$ LANGUAGE plpgsql;',
+    ].join('\n')
+    expect(violations(src), '函数体被当字面量抹掉了，热路径 SQL 从未被检查').not.toEqual([])
+    expect(unrecognizedWithHeads(src)).toBe(0)
   })
 })
