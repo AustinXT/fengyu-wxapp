@@ -25,6 +25,7 @@ import { scopeCondition, isInScope, requireAdmin, isDepositOrderApprover } from 
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
 import { logOperation, logTransition, logUpdate } from '@/lib/operation-log'
 import { ApiError, parseErrorPrefix } from '@/lib/api-error'
+import { actionErrorMessage } from '@/lib/action-error'
 import { hasPendingRefund } from '@/lib/refund-cascade'
 import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { calcCouponDiscount } from '@/lib/utils'
@@ -6835,8 +6836,8 @@ export const createPrepaidInflow = withPermission(
         return id
       })
     } catch (err: any) {
-      const msg = err?.message || '转入失败'
-      return { success: false, message: msg.replace(/^[A-Z_]+:\s*/, '') }
+      // fail-closed：非白名单前缀的原始 PG 报错（SQL 片段 / 约束名）绝不回传给前端 toast（issue #133）
+      return { success: false, message: actionErrorMessage(err, '转入失败') }
     }
 
     await logOperation(session, 'sale_order.prepaid_inflow', 'sale_order', saleOrderId, {

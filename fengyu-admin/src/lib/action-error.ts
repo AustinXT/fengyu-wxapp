@@ -9,21 +9,26 @@
  *
  * 但 digest 这一格是**两用**的：业务侧往里写可读文案，Next 自己也往里写错误编号与
  * 内部信号。所以取值必须逐级判定「这一格到底是文案还是编号」，判不出来就往下一格走，
- * 全都判不出来才回退调用方给的业务兜底文案 —— 绝不把编号 / 内部枚举 / 英文脱敏话术
+ * 全都判不出来才回退调用方给的业务兜底文案 —— 绝不把编号 / 内部枚举 / 英文技术串
  * 端给用户（issue #133）。
  *
  * 取值顺序：`err.digest` → `err.message` → `fallback`。
  *
- * 两条通道的判定策略**刻意不对称**：
- * - **digest 走白名单（fail-closed）**：我们自己产出的 digest 全部带 9 项白名单前缀
- *   （唯一例外是 `PermissionError` 的裸 token，下面显式映射），所以「不带前缀 = 不是我们写的
- *   = 不给看」零损失，且对 Next 未来新增的 digest 形态天然免疫。黑名单做不到这点：
- *   Next 15.5 已经会把 digest 拼成 `1956068727@E394`（见 `lib/error-telemetry-utils.js`），
- *   只挡纯数字就会漏。
- * - **message 走黑名单（fail-open）**：它是 dev 构建与前端本地 throw（如 `lib/recharge-tier.ts`
- *   的 `matchTier`）的通道，改成白名单会把没带前缀的可读中文误降级成兜底文案。
+ * ## 两道闸门
+ *
+ * **闸门一 · 来源**：digest 只认带 9 项白名单前缀的串，外加 `PERMISSION_DENIED` /
+ * `UNAUTHORIZED` 两个裸 token（`PermissionError` 专用）。这是 fail-closed —— 我们自己写的
+ * digest 一定带前缀，所以「不带前缀 = 不是我们写的 = 不给看」零损失，且对 Next 未来新增的
+ * digest 形态天然免疫（15.5 已出 `<数字>@E<码>` 变体，黑名单枚举不全）。
+ * message 则是 fail-open：它是 dev 构建与前端本地 throw（如 `lib/recharge-tier.ts` 的
+ * `matchTier`）的通道，要求带前缀会把可读中文误降级成兜底文案。
+ *
+ * **闸门二 · 内容**（`presentable`）：**前缀合法 ≠ 正文能给人看**。剥完前缀后还要过
+ * 内容闸门——这是本模块最关键的一条，`INVALID_STATE: ANALYST_UNAUTHORIZED: 401`、
+ * `INVALID_STATE: LAKALA_NOT_CONFIGURED`、`INVALID_STATE: 同步失败 connect ETIMEDOUT 10.0.0.1:1433`
+ * 三者前缀都合法，正文却分别是 HTTP 码 / 内部枚举 / 内网地址。
  */
-import { ERROR_PREFIXES, parseErrorPrefix, type ErrorPrefix } from '@/lib/api-error'
+import { parseErrorPrefix, type ErrorPrefix } from '@/lib/api-error'
 
 /**
  * Next.js / 网络层"不可读"文案片段（大小写不敏感匹配）。
@@ -41,51 +46,47 @@ const UNREADABLE_FRAGMENTS = [
   'failed to fetch',
   'network request failed',
   'networkerror',
-  // 底层网络错（通常在服务端日志，偶现于脱敏 message 时兜底）
+  // 底层网络错（与 lib/workfine-mssql.ts 的瞬态码表保持同一套）
   'econnreset',
+  'econnrefused',
   'esocket',
   'etimedout',
+  'epipe',
 ] as const
 
 /**
- * 二级子标签，如 `INVALID_STATE: CARD_EXHAUSTED: 储值卡剩余次数为 0` 里的 `CARD_EXHAUSTED:`。
- * 按根 CLAUDE.md 的约定「子标签仅供日志归类，不计入白名单」，展示侧剥掉不给用户看。
- * 形状限定全大写+数字+下划线，`TypeError: …` 这类驼峰不会被误剥。
- */
-const SUB_LABEL_RE = /^[A-Z][A-Z0-9_]*:\s*/
-
-/**
- * 裸技术 token：全大写、无冒号无空格的标识符，是**信号量不是文案**。
- * 典型来源是 `lib/permissions.ts` 的 `PermissionError`（`digest = 'PERMISSION_DENIED'`，
- * 供 `(main)/error.tsx` 判 403 用），以及 Next 的 `DYNAMIC_SERVER_USAGE` 等。
- */
-const OPAQUE_TOKEN_RE = /^[A-Z][A-Z0-9_]*$/
-
-/**
- * 裸 token 里有公认中文说法的，给说法；其余一律回退调用方 fallback。
+ * 日志子标签：**含下划线**的全大写 token + 冒号，如
+ * `INVALID_STATE: CARD_EXHAUSTED: 储值卡剩余次数为 0` 里的 `CARD_EXHAUSTED:`。
+ * 按根 CLAUDE.md「子标签仅供日志归类，不计入白名单」，展示侧剥掉不给用户看。
  *
- * 只收录「确实会以裸 token 形态出现在 digest 里」的两个 —— 与 `(main)/error.tsx`
- * 判 401/403 用的那两个常量同源。业务侧抛的 `ApiError('PERMISSION_DENIED', '具体原因')`
- * 走的是 `rethrowWithDigest`，digest 是**带前缀的完整 message**，不会落到这里。
+ * **必须含下划线**：否则 `NOT_FOUND: ID: 123 的订单不存在`、`INVALID_PARAMS: SKU: 缺货`
+ * 这类「看着像标签、其实是正文」的串会被吃掉半句。仓内 20+ 个真实子标签
+ * （`CARD_EXHAUSTED` / `OUT_OF_SCOPE` / `STATE_TRANSITION_BLOCKED` / `NO_CARD` …）全部含下划线。
+ * 全角冒号一并认，防中文输入法写错一个冒号就把 token 漏给用户。
  */
-const OPAQUE_TOKEN_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
-  PERMISSION_DENIED: '无权执行该操作',
-  UNAUTHORIZED: '登录已过期，请重新登录',
-})
+const LOG_TAG_RE = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\s*[:：]\s*/
+
+/** 中日韩统一表意文字。本产品所有面向用户的文案都是中文，这是最稳的「给人看的」判据。 */
+const CJK_RE = /[一-鿿]/
+
+/** 展示长度上限：toast / alert / 内联红字都撑不住长文本，超出截断。 */
+const MAX_DISPLAY_LENGTH = 120
 
 /**
- * 命中 9 项白名单前缀则返回剥完前缀（含可选二级子标签）的用户文案，否则 null。
+ * 裸 token → 中文说法。只收录**确实会以裸 token 形态出现在 digest 里**的两个：
+ * `lib/permissions.ts` 的 `PermissionError`（`digest = 'PERMISSION_DENIED'`，
+ * 供 `(main)/error.tsx` 判 403 用）与其 401 对应物。
  *
- * 剥完只剩裸 token 的（`INVALID_STATE: LAKALA_NOT_CONFIGURED` 这类，仓内 7 处）同样判为
- * 不可读 —— 前缀合法不代表正文是给人看的，放行就等于把内部枚举端给用户（issue #133）。
+ * ⚠️ 与 `(main)/error.tsx:24,27` 的同名字面量是**同一套约定的两份硬编码**，改一处必改另一处。
+ * 用 Map 而非对象字面量：对象查表会命中 `Object.prototype`，`digest='toString'` 会返回函数而非字符串。
+ *
+ * 业务侧抛的 `ApiError('PERMISSION_DENIED', '具体原因')` 走 `rethrowWithDigest`，
+ * digest 是**带前缀的完整 message**，不会落到这里。
  */
-function businessMessage(value: string): string | null {
-  const parsed = parseErrorPrefix(value)
-  if (!parsed) return null
-  const text = parsed.displayMessage.replace(SUB_LABEL_RE, '').trim()
-  if (!text || OPAQUE_TOKEN_RE.test(text)) return null
-  return text
-}
+const OPAQUE_TOKEN_MESSAGES: ReadonlyMap<string, string> = new Map([
+  ['PERMISSION_DENIED', '无权执行该操作'],
+  ['UNAUTHORIZED', '登录已过期，请重新登录'],
+])
 
 function nonEmptyString(value: unknown): string | null {
   if (typeof value !== 'string') return null
@@ -93,32 +94,59 @@ function nonEmptyString(value: unknown): string | null {
   return trimmed || null
 }
 
-/** digest 通道：只认白名单前缀与两个裸 token，其余（Next 的错误编号/内部信号）一律判为不可读。 */
+/**
+ * 内容闸门：把一段候选正文收敛成「能端给用户的话」，收敛不出来返回 null。
+ *
+ * 顺序有讲究：先取首行（多行错误从第二行起通常是 SQL / 堆栈 / 文件路径）→ 剥日志子标签 →
+ * 判中文 → 判技术噪声片段 → 截断。
+ */
+function presentable(raw: string): string | null {
+  const value = raw.split('\n')[0].replace(LOG_TAG_RE, '').trim()
+  if (!value) return null
+  // 不含中文 ⇒ 错误编号 / 内部枚举 / HTTP 码 / 英文技术串，一律不给看
+  if (!CJK_RE.test(value)) return null
+  const lower = value.toLowerCase()
+  if (UNREADABLE_FRAGMENTS.some((f) => lower.includes(f))) return null
+  return value.length > MAX_DISPLAY_LENGTH ? `${value.slice(0, MAX_DISPLAY_LENGTH)}…` : value
+}
+
+/** 命中 9 项白名单前缀 → 剥前缀后过内容闸门；没命中返回 null。 */
+function businessMessage(value: string): string | null {
+  const parsed = parseErrorPrefix(value)
+  return parsed ? presentable(parsed.displayMessage) : null
+}
+
+/** digest 通道：来源 fail-closed（必须带白名单前缀或是那两个裸 token）。 */
 function readableFromDigest(digest: unknown): string | null {
   const value = nonEmptyString(digest)
   if (!value) return null
-  return businessMessage(value) ?? OPAQUE_TOKEN_MESSAGES[value] ?? null
+  return businessMessage(value) ?? OPAQUE_TOKEN_MESSAGES.get(value) ?? null
 }
 
-/** message 通道：先按业务前缀解析，再挡脱敏话术/网络错/裸 token，剩下的按可读文案放行。 */
+/** message 通道：来源 fail-open（无前缀的可读中文照常展示），内容闸门一样要过。 */
 function readableFromMessage(message: unknown): string | null {
   const value = nonEmptyString(message)
   if (!value) return null
-  const business = businessMessage(value)
-  if (business) return business
-  const lower = value.toLowerCase()
-  if (UNREADABLE_FRAGMENTS.some((f) => lower.includes(f))) return null
-  if (OPAQUE_TOKEN_RE.test(value)) return OPAQUE_TOKEN_MESSAGES[value] ?? null
-  return value
+  return businessMessage(value) ?? OPAQUE_TOKEN_MESSAGES.get(value) ?? presentable(value)
+}
+
+/** 从 unknown 里取 message，不要求 `instanceof Error`（跨 RSC 边界的错误可能只是普通对象）。 */
+function messageOf(err: unknown): unknown {
+  return (err as { message?: unknown } | null | undefined)?.message
+}
+
+function digestOf(err: unknown): unknown {
+  return (err as { digest?: unknown } | null | undefined)?.digest
 }
 
 export function actionErrorMessage(err: unknown, fallback: string): string {
-  const digest = (err as { digest?: unknown } | null | undefined)?.digest
-  return (
-    readableFromDigest(digest) ??
-    readableFromMessage(err instanceof Error ? err.message : null) ??
-    fallback
-  )
+  // 本函数被 200+ 个 catch 块调用，自己绝不能抛：digest/message 可能是抛异常的 getter 或 Proxy，
+  // 一次逃逸就是整页白屏。
+  try {
+    return readableFromDigest(digestOf(err)) ?? readableFromMessage(messageOf(err)) ?? fallback
+  } catch {
+    return fallback
+  }
 }
 
 /**
@@ -126,15 +154,22 @@ export function actionErrorMessage(err: unknown, fallback: string): string {
  *
  * 生产构建下 `err.message` 已被脱敏，`msg.startsWith('PERMISSION_DENIED:')` 这类判断线上
  * 恒不成立；本函数从 digest 侧取，dev / prod 行为一致。
+ *
+ * 注意与 `actionErrorMessage` 的可达面刻意保持一致：裸 token 只认
+ * `OPAQUE_TOKEN_MESSAGES` 里那两个（= 实际会被产出的那两个），不放行其余 7 项前缀的裸形态。
  */
 export function actionErrorType(err: unknown): ErrorPrefix | null {
-  const digest = nonEmptyString((err as { digest?: unknown } | null | undefined)?.digest)
-  if (digest) {
-    const parsed = parseErrorPrefix(digest)
-    if (parsed) return parsed.prefix
-    // `PermissionError` 的裸 token 形态：digest 整串就是类型本身
-    if ((ERROR_PREFIXES as readonly string[]).includes(digest)) return digest as ErrorPrefix
+  try {
+    const digest = nonEmptyString(digestOf(err))
+    if (digest) {
+      const parsed = parseErrorPrefix(digest)
+      if (parsed) return parsed.prefix
+      // `PermissionError` 的裸 token 形态：digest 整串就是类型本身
+      if (OPAQUE_TOKEN_MESSAGES.has(digest)) return digest as ErrorPrefix
+    }
+    const message = nonEmptyString(messageOf(err))
+    return message ? (parseErrorPrefix(message)?.prefix ?? null) : null
+  } catch {
+    return null
   }
-  const message = nonEmptyString(err instanceof Error ? err.message : null)
-  return message ? (parseErrorPrefix(message)?.prefix ?? null) : null
 }

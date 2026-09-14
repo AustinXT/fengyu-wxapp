@@ -163,21 +163,21 @@ describe('actionErrorMessage（框架级异常脱敏扩展）', () => {
   it('"An unexpected response was received from the server." → 回退 fallback（本次元凶）', () => {
     expect(
       actionErrorMessage(
-        { message: 'An unexpected response was received from the server.' },
+        new Error('An unexpected response was received from the server.'),
         WORKFINE_CONNECT_ERROR_MSG,
       ),
     ).toBe(WORKFINE_CONNECT_ERROR_MSG)
   })
 
   it('"Failed to fetch" / "NetworkError..." → 回退 fallback', () => {
-    expect(actionErrorMessage({ message: 'Failed to fetch' }, 'fb')).toBe('fb')
+    expect(actionErrorMessage(new Error('Failed to fetch'), 'fb')).toBe('fb')
     expect(
-      actionErrorMessage({ message: 'NetworkError when attempting to fetch resource' }, 'fb'),
+      actionErrorMessage(new Error('NetworkError when attempting to fetch resource'), 'fb'),
     ).toBe('fb')
   })
 
   it('大小写不敏感（"UNEXPECTED RESPONSE" 也命中）', () => {
-    expect(actionErrorMessage({ message: 'UNEXPECTED RESPONSE' }, 'fb')).toBe('fb')
+    expect(actionErrorMessage(new Error('UNEXPECTED RESPONSE'), 'fb')).toBe('fb')
   })
 
   it('可读业务文案仍正常透传（不被误脱敏）', () => {

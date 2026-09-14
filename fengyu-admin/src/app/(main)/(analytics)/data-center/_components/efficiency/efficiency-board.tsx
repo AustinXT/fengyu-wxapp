@@ -43,7 +43,10 @@ export function EfficiencyBoard() {
         if (!cancelled) setData(res)
       })
       .catch((e: unknown) => {
-        // 生产构建会脱敏 throw 出来的 message（scope 解析失败等业务拦截理由都在 digest 里），issue #133
+        // 生产构建会脱敏 throw 出来的 message，必须走 actionErrorMessage 取 digest（issue #133）。
+        // ⚠️ 已知限制：validateScope 抛的 PermissionError 其 digest 是裸 token，4 条具体理由
+        // （无授权门店 / 无权查看全部 / 越权市场 / 越权门店）只在被脱敏的 message 里，
+        // 线上一律退化成「无权执行该操作」。修它要动全局 403 渲染链路，另开 issue。
         if (!cancelled) setError(actionErrorMessage(e, "请稍后重试"))
       })
       .finally(() => {

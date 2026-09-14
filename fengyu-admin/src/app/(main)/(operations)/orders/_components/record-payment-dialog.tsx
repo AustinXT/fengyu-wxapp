@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectOption } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
+import { actionErrorMessage } from "@/lib/action-error"
 import {
   recordPayment,
   getRepayable,
@@ -104,7 +105,8 @@ export function RecordPaymentDialog({
         setPaymentMethod("线下")
         setNote("")
       })
-      .catch((e) => toast.error(e?.message || "加载可回款明细失败"))
+      // 生产构建下 e.message 是**非空**的英文脱敏话术，`||` 短路不触发 → 必须走 actionErrorMessage（issue #133）
+      .catch((e) => toast.error(actionErrorMessage(e, "加载可回款明细失败")))
       .finally(() => !cancelled && setLoading(false))
     return () => {
       cancelled = true
