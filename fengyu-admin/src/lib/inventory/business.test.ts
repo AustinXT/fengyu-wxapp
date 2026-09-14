@@ -529,7 +529,7 @@ describe('inventory business action input guards', () => {
     expect(query).toContain('employee.is_resigned = false')
     expect(query).toContain('employee.store_id IS NULL')
     expect(query).toContain("type IN ('市场', '门店')")
-      // #130：递归项里 JOIN 不起别名，起了别名就必须全程用别名；混用会让 PG 报
+    // #130：递归项里 JOIN 不起别名，起了别名就必须全程用别名；混用会让 PG 报
     // invalid reference to FROM-clause entry。注意这仍是字符串比对，SQL 没有真的送进 PG ——
     // 真库回归由 tests/e2e-inventory-ui/inv-07 提供（见 PR 说明）
     expect(query).toContain('JOIN descendants ON child.parent_id = descendants.id')
@@ -1221,12 +1221,18 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
     return out.join('')
   }
 
+  /**
+   * CTE 定义头：`WITH [RECURSIVE] name [(cols)] AS (` 与并列的 `), name [(cols)] AS (`。
+   * cteBlocks 与「WITH 头自一致性」断言**共用这一份** —— 两边口径必须完全一致，
+   * 否则比较出来的差值没有意义（见 unrecognizedWithHeads 的注释）。
+   */
+  const CTE_HEAD_RE = /(?:\bWITH\s+(?:RECURSIVE\s+)?|[),]\s*)([A-Za-z_]\w*)\s*(?:\([^()]*\))?\s+AS\s*\(/gi
+
   /** 每个 CTE 的定义体（`name [(cols)] AS ( … )` 括号内），外加末尾的「非 CTE 体」残余文本 */
   function cteBlocks(masked: string): { blocks: Array<{ name: string; body: string }>; outside: string } {
     const blocks: Array<{ name: string; body: string }> = []
     const ranges: Array<[number, number]> = []
-    const head = /(?:\bWITH\s+(?:RECURSIVE\s+)?|[),]\s*)([A-Za-z_]\w*)\s*(?:\([^()]*\))?\s+AS\s*\(/gi
-    for (const m of masked.matchAll(head)) {
+    for (const m of masked.matchAll(new RegExp(CTE_HEAD_RE.source, 'gi'))) {
       const from = m.index! + m[0].length
       let depth = 1
       let i = from
@@ -1306,17 +1312,39 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
    * 「没有违规」和「压根没检查」在断言上长得一模一样。反引号那次就是这么差点溜过去的。
    */
   function unrecognizedWithHeads(rawSrc: string): number {
-    // 只数「引入 CTE 的 WITH」：`WITH name [(cols)] AS (`。
-    // 不能只数 `\bWITH\b` —— DDL 里 `timestamp WITH TIME ZONE`、`CREATE INDEX … WITH (…)`
-    // 一抓一大把（光 0000_baseline 就 126 个），全是噪音。
-    const HEAD_RE = /\bWITH\s+(?:RECURSIVE\s+)?[A-Za-z_]\w*\s*(?:\([^()]*\))?\s+AS\s*\(/gi
-    // 关键：头在**原文**里数，块在**抹过字面量的文本**里数。
-    // 词法要是把真 SQL 抹掉了，两边就对不上 → 红。这正是反引号那次该红却没红的地方。
-    const heads = (rawSrc.match(HEAD_RE) ?? []).length
-    let blocks = cteBlocks(maskLiterals(rawSrc)).blocks.length
-    // $$ 函数体里的头已经算进 heads（它们是 rawSrc 的子串），块要单独补上
-    for (const body of dollarBodies(rawSrc)) blocks += cteBlocks(maskLiterals(body)).blocks.length
-    return Math.max(0, heads - blocks)
+    // 按**位置**逐个核对，不数数量。
+    //
+    // 数数量不行：早先版本一边只数每条语句的第一个 CTE、另一边连并列 CTE 一起数，
+    // 提交树实测 196 : 487，富余大到一个文件被遮掉好几段 SQL 也照样是 0。
+    // 改成同口径计数后仍有 blocks > heads 的文件（遮罩把字符变成空格，可能凑出新的匹配），
+    // 富余一样是盲区。
+    //
+    // maskLiterals 保长度不改位置，所以原文里每个 CTE 头的**下标**，在抹过的文本里
+    // 必须还能匹配到同一个下标 —— 匹配不到就说明这段被遮罩吃掉了，红。
+    const headOffsets = (text: string) =>
+      [...text.matchAll(new RegExp(CTE_HEAD_RE.source, 'gi'))].map((m) => m.index ?? -1)
+
+    // $$ 函数体整段被当字面量抹掉（正确：体内引号不该干扰外层配对），
+    // 体内的头由 dollarBodies 那一路递归接手，这里要把它们排除掉，否则会假红。
+    const spans: Array<[number, number]> = []
+    const dq = /\$([A-Za-z_]*)\$/g
+    let m: RegExpExecArray | null
+    while ((m = dq.exec(rawSrc)) !== null) {
+      if (rawSrc.startsWith('$${', m.index)) continue
+      const close = rawSrc.indexOf(m[0], m.index + m[0].length)
+      if (close === -1) break
+      spans.push([m.index, close + m[0].length])
+      dq.lastIndex = close + m[0].length
+    }
+    const inDollarSpan = (i: number) => spans.some(([a, b]) => i >= a && i < b)
+
+    const recognized = new Set(headOffsets(maskLiterals(rawSrc)))
+    let missed = headOffsets(rawSrc).filter((i) => !inDollarSpan(i) && !recognized.has(i)).length
+    for (const body of dollarBodies(rawSrc)) {
+      const bodyRecognized = new Set(headOffsets(maskLiterals(body)))
+      missed += headOffsets(body).filter((i) => !bodyRecognized.has(i)).length
+    }
+    return missed
   }
 
   it('全仓（admin + 三个云函数端 + 迁移）无一处混用 CTE 的别名与原名', () => {
