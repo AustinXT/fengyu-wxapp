@@ -127,9 +127,13 @@ const DISPLAY_PAGE_SIZE = 200;
 
 /**
  * 渲染窗口的硬顶。到这儿就只能靠收窄关键词了——再往上单次 setData 会撞 1MB。
- * （1000 × ~600B ≈ 600KB，留足余量给同一次 setData 里的汇总、分类格子等字段）
+ *
+ * 按**服务类**明细估：roleType / fixedFee / consumeAmount / servicePrice / sessionUsed / unit
+ * 加长中文商品名与分类名，单条序列化可达 ~1KB（销售类轻些）。500 × 1KB ≈ 500KB，
+ * 给同一次 setData 里的 items 新页、三项汇总、分类格子留足一倍余量。
+ * 别按销售类的均值去放大这个数——超限是**整次 setData 静默失败**，代价远大于少显示几百条。
  */
-const HARD_DISPLAY_CAP = 1000;
+const HARD_DISPLAY_CAP = 500;
 
 /**
  * 访问被拒类错误 —— 一旦发生就不得继续展示屏幕上的既有数据（可能是他人薪酬）。
@@ -205,6 +209,8 @@ Page({
   _summaryCache: null as { summary: CategorySummary; categories: string[] } | null,
   /** 检索防抖定时器（onUnload 必须清，否则回调会打到已销毁的页面上） */
   _searchTimer: null as ReturnType<typeof setTimeout> | null,
+  /** 上一次真正参与过滤的关键词：用来判断渲染窗口该不该复位 */
+  _filteredKeyword: '',
   /** 跨零点定时器：页面停在前台过午夜时把 picker 上界推到新的今天 */
   _midnightTimer: null as ReturnType<typeof setTimeout> | null,
 
@@ -476,7 +482,7 @@ Page({
       // 收敛结果若与屏幕上的区间完全一致，就不要说「已自动调整」——
       // 下面的同值早退会让页面毫无变化，用户会以为点击丢了
       if (start !== this.data.startDate || end !== this.data.endDate) {
-        wx.showToast({ title: `区间跨度最多 ${RANGE_MAX_DAYS} 天，另一端已自动调整`, icon: 'none' });
+        wx.showToast({ title: `起止最多相差 ${RANGE_MAX_DAYS} 天，另一端已自动调整`, icon: 'none' });
       }
     }
     if (start === this.data.startDate && end === this.data.endDate) return; // 选了同一天，无需重拉
@@ -515,6 +521,7 @@ Page({
   onKeywordClear() {
     // 清空是明确意图，立即生效，不等防抖
     this.cancelFilter();
+    this._filteredKeyword = '';
     this.setData({ keyword: '', ...this.buildSearchView(this.data.items, '', this.data.total) });
   },
 
@@ -523,6 +530,7 @@ Page({
     this._searchTimer = setTimeout(() => {
       this._searchTimer = null;
       if (this._disposed) return; // 防抖窗口里页面被关掉，别对已销毁页面 setData
+      this._filteredKeyword = this.data.keyword;
       this.setData(this.buildSearchView(this.data.items, this.data.keyword, this.data.total));
     }, SEARCH_DEBOUNCE_MS);
   },
@@ -538,6 +546,7 @@ Page({
   flushFilter() {
     if (!this._searchTimer) return;
     this.cancelFilter();
+    this._filteredKeyword = this.data.keyword;
     this.setData(this.buildSearchView(this.data.items, this.data.keyword, this.data.total));
   },
 
@@ -550,6 +559,7 @@ Page({
   onShowMoreMatches() {
     const next = Math.min(this.data.displayLimit + DISPLAY_PAGE_SIZE, HARD_DISPLAY_CAP);
     if (next === this.data.displayLimit) return;
+    this._filteredKeyword = this.data.keyword;
     this.setData(this.buildSearchView(this.data.items, this.data.keyword, this.data.total, next));
   },
 
@@ -644,8 +654,11 @@ Page({
         fixedFee: money(it.fixedFee),
         consumeAmount: money(it.consumeAmount),
         servicePrice: money(it.servicePrice),
-        // 按手机号搜出来的结果得能核对，所以卡片上要展示；原始 clientPhone 原样留着供检索
-        customerPhoneMasked: maskPhone(it.clientPhone || ''),
+        // 按手机号搜出来的结果得能核对，所以卡片上要展示。
+        // **必须和检索侧同口径剥非数字**：`138-0013-8000` 直接喂给 maskPhone 会脱敏错位
+        // （出来 `138******8000`），而员工搜的是 `13800138000` —— 搜得到却核对不上，
+        // 等于把验收 2 废掉一半。原始 clientPhone 原样留在 item 上供检索
+        customerPhoneMasked: maskPhone(String(it.clientPhone || '').replace(/\D/g, '')),
         // wx:key 用它：item 上本来没有 `index` 属性，`wx:key="index"` 是无效键（devtools 告警 +
         // diff 退化成按序比对）。列表只追加不插队，全局序号就是稳定唯一键，
         // displayItems 作为子集也继承同一套键
@@ -682,12 +695,27 @@ Page({
         ...itemsPatch,
         // 关键词跨翻页存活：触底取回的新条目立刻参与过滤，不必重新输入一遍。
         // 未搜索时 displayItems 恒为空数组（wxml 直接渲染 items），不会再传一份全量
-        ...this.buildSearchView(newItems, this.data.keyword, total, this.data.displayLimit),
+        // 关键词变了就不带旧窗口（复位回第一屏）—— 改完词 200ms 内正好有响应回来时，
+        // 上面的 cancelFilter 会吞掉防抖，窗口复位就只剩这一条路
+        ...this.buildSearchView(
+          newItems,
+          this.data.keyword,
+          total,
+          this.data.keyword === this._filteredKeyword ? this.data.displayLimit : undefined,
+        ),
         total,
         page,
         // 用本次请求的 page 判断，不比累计长度 —— 长度一旦被过期响应污染，比较逻辑会崩
         hasMore: page * PAGE_SIZE < total,
       });
+      // 写在 setData **之后**：这两个是「屏幕上那批数据的身份证」，
+      // 先写的话，setData 万一失败（比如撞 1MB 上限）就会和实际渲染的内容对不上，
+      // 把 catch 分支里 keepStaleOnError 的 sameSource 判断带偏
+      this._lastKey = queryKey;
+      this._filteredKeyword = this.data.keyword;
+      this._summaryCache = res.categorySummary && res.categories && res.categories.length
+        ? { summary: res.categorySummary, categories: res.categories }
+        : null;
     } catch (err: unknown) {
       if (seq !== this._seq) return;
       const msg = err instanceof Error ? err.message : '加载失败';

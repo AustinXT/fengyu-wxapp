@@ -468,7 +468,7 @@ describe('绩效页 · 自定义区间跨度上限（评审补漏 P1）', () => 
     await vi.waitFor(() => expect(callStaffApi).toHaveBeenCalled())
 
     expect((globalThis as any).wx.showToast).toHaveBeenCalledWith(
-      expect.objectContaining({ title: expect.stringContaining('跨度最多') })
+      expect.objectContaining({ title: expect.stringContaining('相差') })
     )
     expect(page.data.startDate).toBe('2024-01-01')          // 用户的意图原样保留
     expect(page.data.endDate).toBe('2025-01-06')            // 2024-01-01 + 371 天
@@ -1117,7 +1117,7 @@ describe('绩效页 · 渲染窗口可推进（评审 round-12 codex P2）', () 
     search(page, '顾客')
     for (let i = 0; i < 10; i++) page.onShowMoreMatches()
 
-    expect(page.data.displayItems).toHaveLength(1000) // HARD_DISPLAY_CAP
+    expect(page.data.displayItems).toHaveLength(500) // HARD_DISPLAY_CAP
     expect(page.data.hasMoreMatches).toBe(false)
     expect(page.data.searchHint).toContain('关键词请再具体些')
   })
@@ -1220,5 +1220,70 @@ describe('绩效页 · 跨零点同步区间（评审 round-13 codex P2）', () 
 
     expect(page.data.startDate).toBe('2026-08-20')
     expect(page.data.customMaxDate).toBe('2026-09-15') // 上界推进，区间不动
+  })
+})
+
+describe('绩效页 · 评审 round-14 闭环（glm）', () => {
+  test('脱敏与检索同口径：带分隔符的号搜得到、也核对得上', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([makeItem('张三', '138-0013-8000', 1)], 1)
+    await page.loadData(true)
+
+    // 直接喂原始值会脱敏错位成 138******8000，与员工输入的 13800138000 对不上
+    expect(page.data.items[0].customerPhoneMasked).toBe('138****8000')
+
+    search(page, '13800138000')
+    expect(page.data.displayItems).toHaveLength(1)
+  })
+
+  test('_lastKey 在 setData 之后才写——失败时不能和屏幕上的数据漂移', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+    expect(page._lastKey).toContain('2026-09-01')
+
+    // 主体变更后请求失败：_lastKey 必须已被清空，否则 keepStaleOnError 会误判同源
+    vi.mocked(callStaffApi).mockRejectedValue(new Error('网络开小差'))
+    page.setRange('today')
+    await vi.waitFor(() => expect(page.data.loadFailed).toBe(true))
+    expect(page._lastKey).toBe('')
+  })
+
+  test('改完关键词 200ms 内正好有响应回来，渲染窗口仍复位回第一屏', async () => {
+    const page = createPage()
+    page.onLoad({})
+    const many = Array.from({ length: 500 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i))
+    mockPage(many, 500)
+    await page.loadData(true)
+
+    search(page, '顾客')
+    page.onShowMoreMatches()
+    expect(page.data.displayLimit).toBe(400)
+
+    // 改词后不推进定时器，直接让一次请求回来（cancelFilter 会吞掉在途防抖）
+    page.onKeywordChange({ detail: '顾客1' })
+    mockPage(many, 500)
+    await page.loadData(true)
+
+    expect(page.data.displayLimit).toBe(200) // 复位，不是沿用 400
+  })
+
+  test('关键词没变时翻页不复位窗口', async () => {
+    const page = createPage()
+    page.onLoad({})
+    const many = Array.from({ length: 500 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i))
+    mockPage(many, 1000)
+    await page.loadData(true)
+
+    search(page, '顾客')
+    page.onShowMoreMatches()
+    expect(page.data.displayLimit).toBe(400)
+
+    mockPage([makeItem('顾客999', '13800009999', 999)], 1000)
+    await page.loadData(false)
+
+    expect(page.data.displayLimit).toBe(400)
   })
 })
