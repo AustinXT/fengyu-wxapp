@@ -2116,6 +2116,61 @@ describe('家居产品部分支付权益跨端守护', () => {
     expect(src).toContain('FOR UPDATE OF si')
     expect(src).toContain("['已支付', '部分支付', '已完成'].includes")
   })
+
+  // issue #128：家居 paid_quantity 原先只有行级 `sale_amount <= 0` 满付分支。寄存单
+  // sale_amount=原价快照>0 而 received=0 → FLOOR 恒 0 → 可提恒 0，顾客寄存的货提不出来。
+  //
+  // ⚠ 断言必须**逐个 CASE 块**校验，不能跑整份文件：staffApi/routes/order.js 有 4 处、
+  // admin/actions/pickup-records.ts 有 3 处 paid_quantity 站点，文件级 toContain 只要
+  // 命中任意一处就通过——删掉 createPickup 事务锁内那处最关键闸门也测不出来（变异实证）。
+  const PAID_QUANTITY_SITES = [
+    ['staff 顾客档案', FILES.staffCustomerJs, 1],
+    ['staff 管理层顾客档案', FILES.staffMgmtCustomerJs, 1],
+    ['client 我的家居产品', FILES.clientOrderJs, 1],
+    ['admin 顾客详情', FILES.adminCustomersTs, 1],
+    ['staff 提货', FILES.staffOrderJs, 4],
+    ['admin 提货', FILES.adminPickupRecordsTs, 3],
+  ]
+
+  /** 取出文件内每一个 `CASE ... END AS paid_quantity` 块（剥注释 + 压空白） */
+  function extractPaidQuantityCases(file) {
+    const src = readFile(file).replace(/--[^\n]*/g, '')
+    const blocks = []
+    let idx = 0
+    while (true) {
+      const endAt = src.indexOf('END AS paid_quantity', idx)
+      if (endAt === -1) break
+      const caseAt = src.lastIndexOf('CASE', endAt)
+      blocks.push(normalizeSql(src.slice(caseAt, endAt + 'END AS paid_quantity'.length)))
+      idx = endAt + 1
+    }
+    return blocks
+  }
+
+  test.each(PAID_QUANTITY_SITES)(
+    '%s 每一处家居已付整件数都含寄存单满付分支',
+    (_name, file, expectedSites) => {
+      const blocks = extractPaidQuantityCases(file)
+      expect(blocks.length, '站点数变化：新增/删除了 paid_quantity 查询，需同步本断言').toBe(
+        expectedSites,
+      )
+      blocks.forEach((block, i) => {
+        expect(block, `第 ${i + 1} 处 paid_quantity 缺寄存单满付分支`).toContain(
+          "WHEN o.sale_order_type = '寄存单' THEN si.quantity",
+        )
+        expect(block, `第 ${i + 1} 处 paid_quantity 缺行级赠品分支`).toContain(
+          'WHEN si.sale_amount <= 0 THEN si.quantity',
+        )
+      })
+    },
+  )
+
+  test('家居已付整件数 11 处站点跨端逐字同义', () => {
+    const all = PAID_QUANTITY_SITES.flatMap(([, file]) => extractPaidQuantityCases(file))
+    expect(all.length).toBe(11)
+    const unique = [...new Set(all)]
+    expect(unique, `11 处 CASE 块出现 ${unique.length} 种写法，跨端已漂移`).toHaveLength(1)
+  })
 })
 
 describe('转换单在线回款意图事务守护', () => {
