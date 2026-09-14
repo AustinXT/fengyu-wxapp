@@ -17,7 +17,20 @@
     <view class="perf-range-btns">
       <view class="range-btn {{rangeType === 'today' ? 'range-btn--active' : ''}}" bindtap="onRangeTap" data-type="today">今日</view>
       <view class="range-btn {{rangeType === 'month' ? 'range-btn--active' : ''}}" bindtap="onRangeTap" data-type="month">本月</view>
-      <view class="range-btn {{rangeType === 'lastMonth' ? 'range-btn--active' : ''}}" bindtap="onRangeTap" data-type="lastMonth">上月</view>
+      <view class="range-btn {{rangeType === 'custom' ? 'range-btn--active' : ''}}" bindtap="onRangeTap" data-type="custom">自定义</view>
+    </view>
+
+    <!-- 自定义区间：选中才展开。常驻会再吃掉一行，而本页纵向已被汇总卡 + 两级筛选占满 -->
+    <!-- 两个 picker 刻意不互相约束（起可选到止之后），否则 ts 里的区间校验永远不可达 -->
+    <view wx:if="{{rangeType === 'custom'}}" class="perf-custom-range">
+      <van-icon name="calendar-o" size="28rpx" color="#C0322A" />
+      <picker class="perf-date-picker" mode="date" value="{{startDate}}" bindchange="onCustomStartChange">
+        <view class="perf-date-cell">{{startDate || '开始日期'}}</view>
+      </picker>
+      <view class="perf-date-sep">—</view>
+      <picker class="perf-date-picker" mode="date" value="{{endDate}}" bindchange="onCustomEndChange">
+        <view class="perf-date-cell">{{endDate || '结束日期'}}</view>
+      </picker>
     </view>
   </view>
 
@@ -91,6 +104,19 @@
     </view>
   </view>
 
+  <!-- 顾客检索：只过滤已加载的明细，不查服务器、不额外翻页（见 ts buildSearchView 的口径说明） -->
+  <!-- 搜到 0 条时输入框必须还在，否则用户没有清空关键词的入口 -->
+  <view wx:if="{{items.length > 0 || keyword}}" class="perf-search-bar">
+    <van-search
+      value="{{keyword}}"
+      placeholder="搜索顾客姓名或手机号"
+      shape="round"
+      background="transparent"
+      bind:change="onKeywordChange"
+      bind:clear="onKeywordClear"
+    />
+  </view>
+
   <!-- 明细列表 -->
   <view wx:if="{{loading && items.length === 0}}" class="loading-wrap">
     <van-loading type="spinner" color="#C0322A" />
@@ -104,7 +130,23 @@
 
   <!-- 切筛选在途时淡化旧列表：否则新 chip 已高亮、下面还挂着上一条件的明细 -->
   <view wx:else class="perf-list {{loading ? 'perf-list--switching' : ''}}">
-    <view class="perf-item" wx:for="{{items}}" wx:key="index">
+    <!-- 命中时也要标口径：顶部三项汇总恒全量、不随前端过滤缩水 -->
+    <view wx:if="{{filterActive && displayItems.length > 0}}" class="perf-search-hint">{{searchHint}}</view>
+
+    <!-- 搜不到 ≠ 没分配给你：给出「已加载 N/共 M 条」和一个能点的翻页入口。 -->
+    <!-- 过滤后列表为空时页面不足一屏，onReachBottom 不会触发，只说「下滑再试」等于没说 -->
+    <view wx:if="{{filterActive && displayItems.length === 0}}" class="perf-search-empty">
+      <van-empty description="{{searchHint}}" />
+      <van-button
+        wx:if="{{hasMore}}"
+        size="small"
+        plain
+        loading="{{loading}}"
+        bindtap="onLoadMoreTap"
+      >继续加载下一页</van-button>
+    </view>
+
+    <view class="perf-item" wx:for="{{displayItems}}" wx:key="index">
       <view class="perf-item-header">
         <text class="perf-item-name">{{item.productName}}</text>
         <!-- 退款冲销行的提成/业绩是负数，不打标识会被当成数据错误上报 -->
@@ -139,9 +181,10 @@
         <text class="perf-item-label">角色</text>
         <text class="perf-item-value">{{item.roleType}}</text>
       </view>
+      <!-- 手机号（脱敏）必须同行展示：否则按手机号搜出来的结果无从核对是不是同一个人 -->
       <view class="perf-item-row">
         <text class="perf-item-label">顾客</text>
-        <text class="perf-item-value">{{item.customerName || '—'}}</text>
+        <text class="perf-item-value">{{item.customerName || '—'}}{{item.customerPhoneMasked ? ' · ' + item.customerPhoneMasked : ''}}</text>
       </view>
       <view class="perf-item-footer">
         <text class="perf-item-date">{{item.date}}</text>

@@ -1,12 +1,17 @@
 // packageOrder/staff-performance/staff-performance.ts — 员工绩效
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
-import { formatDateTimeShort } from '../../utils/formatters';
+import { formatDateTimeShort, maskPhone } from '../../utils/formatters';
 import { formatAmount } from '../../utils/number';
 
 const app = getApp<IAppOption>();
 
-type RangeType = 'today' | 'month' | 'lastMonth';
+/**
+ * 时间范围。`custom` 取代了原先的 `lastMonth`：页面纵向已被一级 Tab + 二级 chip + 4 格
+ * 分类金额占满，放不下第四个按钮；且服务单不能改归属日期，「本月」经常少掉月初几天，
+ * 用任意区间比固定「上月」更管用。旧 deeplink `?range=lastMonth` 由 onLoad 白名单挡下回落 today。
+ */
+type RangeType = 'today' | 'month' | 'custom';
 
 interface StaffMember {
   staffWfId: string;
@@ -41,6 +46,8 @@ interface PerformanceItem {
   unit?: string;
   customerName: string;
   clientPhone?: string;
+  /** 展示用脱敏号（前端派生，后端不下发）；检索仍走原始 clientPhone */
+  customerPhoneMasked?: string;
   orderId?: string;
   date: string;
   salesCategory: string;
@@ -120,11 +127,17 @@ Page({
     selectedStaffIndex: 0,
     staffColumns: [] as string[],
     showStaffPicker: false,
-    // 明细列表
+    // 明细列表（items = 已加载的原始明细，displayItems = 过滤后实际渲染的）
     items: [] as PerformanceItem[],
     total: 0,
     page: 1,
     hasMore: false,
+    // 顾客检索：**只过滤已加载的 items，不查服务器、不额外翻页**（2026-09-14 甲方拍板口径）
+    keyword: '',
+    displayItems: [] as PerformanceItem[],
+    // wxml 不支持方法调用，过滤结果与提示文案都必须在 ts 里算好
+    filterActive: false,
+    searchHint: '',
     // 空列表的成因：加载失败 vs 本期确实没有记录 —— 两者文案必须分开，
     // 否则顶部显示 '--'（失败）、列表却说「暂无提成记录」，员工会把失败当成零业绩
     loadFailed: false,
@@ -147,7 +160,7 @@ Page({
       staffName: app.globalData.staffName || '',
     });
     if (mgr) this.loadStaffList();
-    const validRanges: RangeType[] = ['today', 'month', 'lastMonth'];
+    const validRanges: RangeType[] = ['today', 'month', 'custom'];
     const range = validRanges.includes(options.range as RangeType) ? options.range as RangeType : 'today';
     // 只设日期不取数：紧随其后的 onShow 会发起首次请求。
     // 去掉 loading 早退后，两处各发一次会让每次进页面的云函数调用翻倍，
@@ -204,8 +217,8 @@ Page({
       showStaffPicker: false,
       selectedStaffIndex: picked,
       staffName: staff.name,
-      items: [],
       loadFailed: false,
+      ...this.blankItems(),
       ...this.blankSummary(),
     });
     this.loadData(true);
@@ -226,23 +239,80 @@ Page({
       end = this.formatDate(now);
       display = `${now.getFullYear()}年${now.getMonth() + 1}月`;
     } else {
-      // lastMonth
-      const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-      const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
-      start = this.formatDate(lastMonth);
-      end = this.formatDate(lastMonthEnd);
-      display = `${lastMonth.getFullYear()}年${lastMonth.getMonth() + 1}月`;
+      // custom：沿用切换前那一段作为起点（从「今日」进来就是今天，从「本月」进来就是本月），
+      // 再由两个 picker 微调 —— 避免展开时出现「无区间」的空态。
+      // onLoad 直接收到 ?range=custom 时 data 里还没有日期，回落本月
+      start = this.data.startDate || this.formatDate(new Date(now.getFullYear(), now.getMonth(), 1));
+      end = this.data.endDate || this.formatDate(now);
+      display = `${start} ~ ${end}`;
     }
 
     // 换时间段同样是数据主体变化：先清汇总与明细，避免请求在途时
     // 出现「新时段标题 + 旧时段明细」的拼接（与 onStaffConfirm 的清理范围保持一致）
     this.clearSubjectCache();
-    this.setData({ rangeType: type, startDate: start, endDate: end, displayDate: display, items: [], loadFailed: false, ...this.blankSummary() });
+    this.setData({ rangeType: type, startDate: start, endDate: end, displayDate: display, loadFailed: false, ...this.blankItems(), ...this.blankSummary() });
     if (fetch) this.loadData(true);
   },
 
   onRangeTap(e: WechatMiniprogram.TouchEvent) {
     this.setRange(e.currentTarget.dataset.type as RangeType);
+  },
+
+  // ===== 自定义区间：两个 picker =====
+  // 刻意**不**给 picker 加 start/end 交叉约束（business-list-filter 里有）：本页两个日期恒非空，
+  // 交叉约束会让「起晚于止」根本选不出来，下面的校验与其对应的验收项就永远不可达、不可测。
+  onCustomStartChange(e: WechatMiniprogram.PickerChange) {
+    this.applyCustomRange(String(e.detail.value), this.data.endDate);
+  },
+
+  onCustomEndChange(e: WechatMiniprogram.PickerChange) {
+    this.applyCustomRange(this.data.startDate, String(e.detail.value));
+  },
+
+  /**
+   * 落自定义区间。非法区间只 toast、**不写 data** —— picker 是受控组件，value 仍绑旧值，
+   * 显示会自动回退，用户不会停在一个看着已生效、实则没查的区间上。
+   * 日期都是 `YYYY-MM-DD` 定宽格式，字典序即时间序，可直接比较。
+   */
+  applyCustomRange(start: string, end: string) {
+    if (!start || !end) return;
+    if (start > end) {
+      wx.showToast({ title: '开始日期不能晚于结束日期', icon: 'none' });
+      return;
+    }
+    if (start === this.data.startDate && end === this.data.endDate) return; // 选了同一天，无需重拉
+
+    // 与 setRange 同级的主体变更：清汇总 + 清明细，避免「新区间标题 + 旧区间明细」
+    this.clearSubjectCache();
+    this.setData({
+      rangeType: 'custom' as RangeType,
+      startDate: start,
+      endDate: end,
+      displayDate: `${start} ~ ${end}`,
+      loadFailed: false,
+      ...this.blankItems(),
+      ...this.blankSummary(),
+    });
+    this.loadData(true);
+  },
+
+  // ===== 顾客检索（纯前端过滤已加载明细）=====
+  onKeywordChange(e: WechatMiniprogram.CustomEvent) {
+    const keyword = (e.detail as unknown as string) || '';
+    this.setData({ keyword, ...this.buildSearchView(this.data.items, keyword, this.data.total) });
+  },
+
+  onKeywordClear() {
+    this.setData({ keyword: '', ...this.buildSearchView(this.data.items, '', this.data.total) });
+  },
+
+  /**
+   * 搜索命中为空时的「继续加载下一页」。
+   * 不能只让用户下滑：过滤后列表为空时页面高度不足一屏，`onReachBottom` 根本不会触发，
+   * 「下滑加载更多再试」会成为点不动的空头承诺。
+   */
+  onLoadMoreTap() {
+    if (this.data.hasMore && !this.data.loading) this.loadData(false);
   },
 
   // ===== 一级 Tab（合计/销售/服务）切换 =====
@@ -325,6 +395,8 @@ Page({
         fixedFee: money(it.fixedFee),
         consumeAmount: money(it.consumeAmount),
         servicePrice: money(it.servicePrice),
+        // 按手机号搜出来的结果得能核对，所以卡片上要展示；原始 clientPhone 原样留着供检索
+        customerPhoneMasked: maskPhone(it.clientPhone || ''),
       }));
       const newItems = reset ? formattedItems : [...this.data.items, ...formattedItems];
       // 优先用新字段 totalServiceCommission，回退到旧字段 totalServiceFee（向后兼容）
@@ -341,6 +413,8 @@ Page({
         totalCommission: money(res.totalCommission),
         ...this.buildCategoryPanel(res.categorySummary, res.categories, activeMainTab, activeSubCategory),
         items: newItems,
+        // 关键词跨翻页存活：触底取回的新条目立刻参与过滤，不必重新输入一遍
+        ...this.buildSearchView(newItems, this.data.keyword, total),
         total,
         page,
         // 用本次请求的 page 判断，不比累计长度 —— 长度一旦被过期响应污染，比较逻辑会崩
@@ -364,7 +438,7 @@ Page({
       if (accessDenied || (reset && (!keepStaleOnError || !sameSource))) {
         this._lastKey = '';
         this._summaryCache = null;
-        this.setData({ items: [], total: 0, hasMore: false, loadFailed: true, ...this.blankSummary() });
+        this.setData({ loadFailed: true, ...this.blankItems(), ...this.blankSummary() });
       }
     } finally {
       if (seq === this._seq) this.setData({ loading: false });
@@ -384,6 +458,52 @@ Page({
   clearSubjectCache() {
     this._summaryCache = null;
     this._lastKey = '';
+  },
+
+  /**
+   * 明细区空白态。**每一处清空 items 都必须走它** —— `displayItems` 是 wxml 实际遍历的数组，
+   * 只清 items 不清它，屏幕上会继续挂着上一个员工/时段的过滤结果。
+   * 同时归零 total / hasMore：否则清空后残留的 hasMore 会让触底去请求一个不存在的第 2 页。
+   * 关键词刻意保留 —— 员工的典型用法是「查张三在我这有没有单」，换时段接着查张三是自然的。
+   */
+  blankItems() {
+    return {
+      items: [] as PerformanceItem[],
+      total: 0,
+      hasMore: false,
+      ...this.buildSearchView([], this.data.keyword, 0),
+    };
+  },
+
+  /**
+   * 由「已加载明细 + 关键词」推导渲染列表与提示文案（WXML 不支持方法调用，必须预先算好）。
+   *
+   * 口径：**只过滤已 setData 的 items，不查服务器、不额外翻页**（2026-09-14 甲方拍板）。
+   * 正因为如此，提示文案必须带「已加载 N / 共 M 条」—— 员工用这个功能就是为了核对
+   * 「某顾客有没有分配给自己」，若把「没加载够」显示成干净的「无结果」，得到的正是
+   * 这功能本要防的那个错误结论。
+   *
+   * 手机号用**原始** clientPhone 匹配而非卡片上的脱敏串，否则输入中间 4 位永远搜不到。
+   * 统一 indexOf(...) >= 0，与本文件既有写法一致（不依赖 String.prototype.includes）。
+   */
+  buildSearchView(items: PerformanceItem[], keyword: string, total: number) {
+    const kw = (keyword || '').trim().toLowerCase();
+    if (!kw) return { displayItems: items, filterActive: false, searchHint: '' };
+
+    const matched = items.filter((it) =>
+      String(it.customerName || '').toLowerCase().indexOf(kw) >= 0 ||
+      String(it.clientPhone || '').indexOf(kw) >= 0
+    );
+    const loaded = `已加载 ${items.length}/共 ${total} 条`;
+    return {
+      displayItems: matched,
+      filterActive: true,
+      // 命中时也要提示：顶部三项汇总是后端全量口径、不随前端过滤缩水，
+      // 不标注会被当成「明细只剩 3 条、汇总却还是几千块」的数据错误上报
+      searchHint: matched.length
+        ? `${loaded}，匹配 ${matched.length} 条（顶部汇总为全量，不随搜索变化）`
+        : `${loaded}中未找到「${keyword.trim()}」`,
+    };
   },
 
   blankSummary() {

@@ -79,6 +79,17 @@ export function formatTime(timeStr: string | null): string {
 }
 
 /**
+ * 手机号脱敏：138****5678（镜像 client utils/format.ts 的 maskPhone，按项目规范各端独立副本）
+ *
+ * 只作用于展示。按手机号检索时必须拿**原始号**去匹配，否则用户输入中间 4 位永远搜不到。
+ * 短于 7 位的值原样返回（座机、脏数据），避免 slice 拼出比原值还长的怪串。
+ */
+export function maskPhone(phone: string): string {
+  if (!phone || phone.length < 7) return phone
+  return phone.slice(0, 3) + '****' + phone.slice(-4)
+}
+
+/**
  * 计算服务进行中的耗时描述
  * @param startTime 开始时间字符串
  * @param now 可选，覆盖"当前时间"（测试用）
