@@ -27,6 +27,7 @@ playwright-report/
 test-results/
 .auth/
 .last-test-context.json
+.last-inventory-context.json
 # Playwright e2e-pages globalSetup 详情夹具 id 临时文件（运行期生成，globalTeardown 删除）
 .e2e-detail-fixtures.json
 
