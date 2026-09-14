@@ -551,6 +551,11 @@ Page({
   /** 有在途防抖就立即结算，保证 keyword 与 displayItems 永远同源 */
   flushFilter() {
     if (!this._searchTimer) return;
+    this.flushFilterNow();
+  },
+
+  /** 立即按第一屏重新过滤（窗口一并复位） */
+  flushFilterNow() {
     this.cancelFilter();
     this._filteredKeyword = this.data.keyword;
     this.setData(this.buildSearchView(this.data.items, this.data.keyword, this.data.total));
@@ -563,8 +568,13 @@ Page({
    * 翻页新取回的命中项就永远露不出来了，和「搜索激活时新条目立即参与过滤」直接冲突。
    */
   onShowMoreMatches() {
+    // 关键词刚改、过滤还没跑完就点按钮：沿用旧 offset/limit 会让新搜索从错误的位置开窗，
+    // 前面的命中直接被跳过。这种情况先老老实实按第一屏重新过滤
+    if (this.data.keyword !== this._filteredKeyword) {
+      this.flushFilterNow();
+      return;
+    }
     const { displayLimit, displayOffset } = this.data;
-    this._filteredKeyword = this.data.keyword;
     if (displayLimit < HARD_DISPLAY_CAP) {
       // 还没撑到硬顶：把窗口拉大，已经看到的内容留在原位
       const nextLimit = Math.min(displayLimit + DISPLAY_PAGE_SIZE, HARD_DISPLAY_CAP);
@@ -580,9 +590,12 @@ Page({
 
   /** 窗口往前滑一屏（滑过头了要能回来） */
   onPrevMatches() {
+    if (this.data.keyword !== this._filteredKeyword) {
+      this.flushFilterNow();
+      return;
+    }
     const { displayLimit, displayOffset } = this.data;
     if (displayOffset <= 0) return;
-    this._filteredKeyword = this.data.keyword;
     this.setData(this.buildSearchView(
       this.data.items, this.data.keyword, this.data.total, displayLimit, Math.max(displayOffset - displayLimit, 0),
     ));
@@ -684,7 +697,7 @@ Page({
         // **必须和检索侧同口径剥非数字**：`138-0013-8000` 直接喂给 maskPhone 会脱敏错位
         // （出来 `138******8000`），而员工搜的是 `13800138000` —— 搜得到却核对不上，
         // 等于把验收 2 废掉一半。原始 clientPhone 原样留在 item 上供检索
-        customerPhoneMasked: maskPhone(String(it.clientPhone || '').replace(/\D/g, '')),
+        customerPhoneMasked: maskPhone(this.normalizePhone(it.clientPhone)),
         // wx:key 用它：item 上本来没有 `index` 属性，`wx:key="index"` 是无效键（devtools 告警 +
         // diff 退化成按序比对）。列表只追加不插队，全局序号就是稳定唯一键，
         // displayItems 作为子集也继承同一套键
@@ -708,6 +721,8 @@ Page({
         const base = this.data.items.length;
         formattedItems.forEach((it, i) => { itemsPatch[`items[${base + i}]`] = it; });
       }
+      // 过桥期间用户还能继续打字，回调里读 this.data.keyword 就把「新词已过滤完」错记成事实
+      const keywordAtBuild = this.data.keyword;
       this.setData({
         loadFailed: false,
         totalSalesAlloc: money(res.totalSalesAlloc),
@@ -723,8 +738,8 @@ Page({
           newItems,
           this.data.keyword,
           total,
-          this.data.keyword === this._filteredKeyword ? this.data.displayLimit : undefined,
-          this.data.keyword === this._filteredKeyword ? this.data.displayOffset : undefined,
+          keywordAtBuild === this._filteredKeyword ? this.data.displayLimit : undefined,
+          keywordAtBuild === this._filteredKeyword ? this.data.displayOffset : undefined,
         ),
         total,
         page,
@@ -738,7 +753,7 @@ Page({
         // 迟到的回调也要认代次：期间用户可能已经切走了
         if (seq !== this._seq) return;
         this._lastKey = queryKey;
-        this._filteredKeyword = this.data.keyword;
+        this._filteredKeyword = keywordAtBuild;
         this._summaryCache = res.categorySummary && res.categories && res.categories.length
           ? { summary: res.categorySummary, categories: res.categories }
           : null;
@@ -834,7 +849,12 @@ Page({
 
     // 先全角转半角：中文输入法偶发全角数字（１３８），直接剥 \D 会把它们整个吃掉，
     // kwDigits 变空 → 手机号匹配被静默跳过，员工只看到「未找到」
-    const kwDigits = kw.replace(/[\uFF10-\uFF19]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)).replace(/\D/g, '');
+    // 全角转半角后，只有**整串都像号码**才走手机号匹配。
+    // 否则「顾客12」的数字部分 `12` 会被拿去匹配手机号，把所有号里含 12 的人全捞出来 ——
+    // 员工搜一个名字，结果冒出几十个不相干的顾客，比搜不到还难用
+    const kwHalfWidth = kw.replace(/[\uFF10-\uFF19]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+    const looksLikePhone = /^[\d\s\-+()]+$/.test(kwHalfWidth);
+    const kwDigits = looksLikePhone ? this.normalizePhone(kwHalfWidth) : '';
     // 姓名两侧都剥空白：关键词写回时已 trim（避免「框里有内容、列表是全量」的哑态），
     // 但词**中间**的空格留着 —— 顾客姓名里也可能有（「张 三」/ 全角空格），
     // 两边都归一才不会出现「看着一模一样却搜不到」
@@ -842,7 +862,7 @@ Page({
     const matched = items.filter((it) => {
       if (kwName && String(it.customerName || '').replace(/\s+/g, '').toLowerCase().indexOf(kwName) >= 0) return true;
       if (!kwDigits) return false;
-      return String(it.clientPhone || '').replace(/\D/g, '').indexOf(kwDigits) >= 0;
+      return this.normalizePhone(it.clientPhone).indexOf(kwDigits) >= 0;
     });
     const loaded = `已加载 ${items.length}/共 ${total} 条`;
     // 关键词进文案前截断：整段粘贴进搜索框时，原样内插会把 van-empty 的 description 撑爆
@@ -874,6 +894,21 @@ Page({
             ? `${loaded}，匹配 ${matched.length} 条（顶部汇总为全量，不随搜索变化）`
             : `${loaded}中未找到「${shown}」`,
     };
+  },
+
+  /**
+   * 号码归一：剥掉所有非数字，再去掉国内手机号的 `86` 国际前缀。
+   *
+   * **检索侧与展示侧必须共用它**，否则同一条记录会「搜得到但核对不上」：
+   * `+8613900139000` 只剥非数字会得到 13 位的 `8613900139000`，脱敏出来是 `861******9000`，
+   * 员工看不到自己输入的那个 `139` 开头，等于白核对。
+   * `sale_orders.client_phone` 是 varchar(30) 且没有格式 CHECK，这类写法在 WorkFine 历史数据里真实存在。
+   */
+  normalizePhone(v: unknown): string {
+    const digits = String(v ?? '').replace(/\D/g, '');
+    // 剥 86 前要确认剩下的是合法国内手机号段（1[3-9] 开头的 11 位），
+    // 否则 `8612345678901` 这种不明号码会被削成 `12345678901`，反而更难对上
+    return /^861[3-9]\d{9}$/.test(digits) ? digits.slice(2) : digits;
   },
 
   /** 两个 `YYYY-MM-DD` 之间的天数（含头不含尾）。用 UTC 构造避开夏令时/时区偏移 */

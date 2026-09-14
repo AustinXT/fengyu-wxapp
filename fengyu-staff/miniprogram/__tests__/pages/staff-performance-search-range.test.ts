@@ -1331,3 +1331,113 @@ describe('绩效页 · 评审 round-14 闭环（glm）', () => {
     expect(page.data.displayLimit).toBe(400)
   })
 })
+
+describe('绩效页 · 评审 round-16 闭环（codex）', () => {
+  test('国际前缀号：搜得到，也要能核对——脱敏必须归一到国内 11 位', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([makeItem('李四', '+8613900139000', 1)], 1)
+    await page.loadData(true)
+
+    // 只剥非数字会得到 861******9000，员工看不到自己输入的 139 开头
+    expect(page.data.items[0].customerPhoneMasked).toBe('139****9000')
+
+    search(page, '13900139000')
+    expect(page.data.displayItems).toHaveLength(1)
+    // 连着 86 一起输入也应命中（两侧同一条归一规则）
+    search(page, '8613900139000')
+    expect(page.data.displayItems).toHaveLength(1)
+  })
+
+  test('normalizePhone 只吃掉 86 国际前缀，不误伤本身以 86 开头的号段', () => {
+    const page = createPage()
+    expect(page.normalizePhone('+86 138-0013-8000')).toBe('13800138000')
+    expect(page.normalizePhone('8613900139000')).toBe('13900139000')
+    expect(page.normalizePhone('13800138000')).toBe('13800138000') // 11 位不动
+    expect(page.normalizePhone('8612345678901')).toBe('8612345678901') // 861 之后不是手机号段也不动
+    expect(page.normalizePhone(null)).toBe('')
+  })
+
+  test('过桥期间继续打字：不能把「新词已过滤完」错记成事实', async () => {
+    const page = createPage()
+    page.onLoad({})
+    const many = Array.from({ length: 500 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i))
+    mockPage(many, 500)
+    await page.loadData(true)
+    search(page, '顾客')
+    page.onShowMoreMatches()
+    expect(page.data.displayLimit).toBe(400)
+
+    // 改词但不推进防抖 —— 此刻 keyword 已是新词、displayItems 还是旧词的结果
+    page.onKeywordChange({ detail: '顾客12' })
+    expect(page.data.keyword).not.toBe(page._filteredKeyword)
+
+    // 这时点窗口按钮：不能沿用旧 offset/limit 从错误位置开窗
+    page.onShowMoreMatches()
+    expect(page._filteredKeyword).toBe('顾客12')
+    expect(page.data.displayLimit).toBe(200)   // 复位到第一屏
+    expect(page.data.displayOffset).toBe(0)
+    expect(page.data.displayItems.every((i: any) => i.customerName.indexOf('顾客12') === 0)).toBe(true)
+  })
+
+  test('onPrevMatches 同样先复位再走', async () => {
+    const page = createPage()
+    page.onLoad({})
+    const many = Array.from({ length: 1500 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i))
+    mockPage(many, 1500)
+    await page.loadData(true)
+    search(page, '顾客')
+    page.onShowMoreMatches()
+    page.onShowMoreMatches()
+    page.onShowMoreMatches()
+    expect(page.data.displayOffset).toBe(500)
+
+    page.onKeywordChange({ detail: '顾客7' })
+    page.onPrevMatches()
+
+    expect(page.data.displayOffset).toBe(0)
+    expect(page._filteredKeyword).toBe('顾客7')
+  })
+})
+
+describe('绩效页 · 混合关键词不误当号码用（round-16 测试逼出的真 bug）', () => {
+  test('搜「顾客12」不该把所有手机号含 12 的人捞出来', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([
+      makeItem('顾客12', '13900000000', 1),
+      makeItem('张三', '13800000012', 2),   // 号里含 12，但姓名不含关键词
+      makeItem('李四', '13812345678', 3),   // 同上
+    ], 3)
+    await page.loadData(true)
+
+    search(page, '顾客12')
+    expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['顾客12'])
+  })
+
+  test('纯号码关键词仍照常匹配（含分隔符与全角）', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([makeItem('张三', '13800000012', 1), makeItem('李四', '13900009999', 2)], 2)
+    await page.loadData(true)
+
+    search(page, '0012')
+    expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['张三'])
+
+    search(page, '138 0000 0012')
+    expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['张三'])
+
+    search(page, '００１２') // 全角
+    expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['张三'])
+  })
+
+  test('姓名里本来就带数字时按姓名匹配，不退化成号码搜索', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([makeItem('3号店王五', '13700000000', 1), makeItem('赵六', '13700000003', 2)], 2)
+    await page.loadData(true)
+
+    search(page, '3号店')
+    expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['3号店王五'])
+  })
+})
