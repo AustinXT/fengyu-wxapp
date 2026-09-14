@@ -207,7 +207,7 @@ describe('actionErrorMessage', () => {
       'INVALID_STATE: 数据库连接失败：[fd00::5]:5433 不可达',
       // Windows 绝对路径
       'INVALID_STATE: 备份文件 C:\\srv\\backups\\db.dump 写入失败',
-    ])('内网拓扑 / 环境变量名不随中文一起漏出：%s', (digest) => {
+    ])('内网拓扑不随中文一起漏出：%s', (digest) => {
       expect(actionErrorMessage({ digest }, FALLBACK)).toBe(FALLBACK)
     })
 
@@ -279,8 +279,9 @@ describe('actionErrorMessage', () => {
       expect(actionErrorMessage({ digest }, FALLBACK)).toBe(expected)
     })
 
-    it('SCREAMING_SNAKE 规则不误杀单词型业务缩写', () => {
-      // 要求至少一个下划线 —— SKU / OEM / VIP 这类单词不受影响
+    it('单词型业务缩写照常透出', () => {
+      // 带下划线的标识符整体不挡（见 action-error.ts 里「为什么没有配置名规则」），
+      // 这里顺带钉住 SKU / VIP 这类单词型缩写也不受任何规则影响
       expect(actionErrorMessage({ digest: 'NOT_FOUND: SKU 编码 FY-001 不存在' }, FALLBACK)).toBe(
         'SKU 编码 FY-001 不存在',
       )
@@ -299,7 +300,11 @@ describe('actionErrorMessage', () => {
       ['INVALID_STATE: 未配置 WX_CLIENT_SECRET 环境变量', '未配置 WX_CLIENT_SECRET 环境变量'],
       ['INVALID_STATE: 请求失败：LAKALA_TIMEOUT_30000ms', '请求失败：LAKALA_TIMEOUT_30000ms'],
       // 同形的业务文案（真实抛错点 orders.ts:158 / business.ts:3915）—— 这才是要保住的
-      ['INVALID_STATE: 商品「ABC_DEF」尚未配置库存组成', '商品「ABC_DEF」尚未配置库存组成'],
+      // orders.ts:158 的逐字形态（含二级子标签，会被剥掉）
+      [
+        'INVALID_STATE: INVENTORY_COMPOSITION_MISSING: 商品「ABC_DEF」尚未配置库存组成',
+        '商品「ABC_DEF」尚未配置库存组成',
+      ],
       ['INVALID_STATE: SKU ABC_DEF 未设置市场员工购价格', 'SKU ABC_DEF 未设置市场员工购价格'],
     ])('带下划线的标识符一律不挡（有意取舍）：%s', (digest, expected) => {
       expect(actionErrorMessage({ digest }, FALLBACK)).toBe(expected)
@@ -426,7 +431,7 @@ describe('actionErrorMessage', () => {
         name: 'PermissionError',
       })
       expect(actionErrorMessage(permissionLike, FALLBACK)).toBe('该分院不存在')
-      // ApiError 没改 name，仍是 'Error'
+      // ApiError 的 name 是 'ApiError'，不在内建异常名集合里，所以业务文案照常透出
       expect(new ApiError('NOT_FOUND', 'x').name).toBe('ApiError')
     })
 
@@ -623,8 +628,8 @@ describe('actionErrorMessage', () => {
 
   describe('9 项错误前缀白名单整链路透出（服务端 throw → 生产脱敏 → 客户端展示）', () => {
     // 前缀清单从 api-error.ts 直接取，不在此处硬编码副本：白名单增删会自动带进本用例。
-    // 文案里不能带 prefix 本身：那是 SCREAMING_SNAKE 形态，会被「技术痕迹」规则正确杀掉，
-    // 但那是 fixture 的问题不是实现的问题（真实业务文案不会把错误前缀写进正文）。
+    // 文案用 CODE_MAP 的错误码编号做区分，不把 prefix 本身写进正文 ——
+    // 真实业务文案也不会这么写，fixture 贴近真实形态更有意义。
     it.each([...ERROR_PREFIXES])('%s：生产构建下文案仍原样到达用户', async (prefix) => {
       const copy = `这是一条需要原样透出的业务说明（${CODE_MAP[prefix]}）`
       const thrown = await throwThroughWithPermission(() => {

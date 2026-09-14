@@ -174,9 +174,10 @@ const CJK_RE = /[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF66-\uFF
  * 备份失败的 `open EACCES /srv/backups/db.dump` 同理。
  */
 /**
- * ⚠️ 这组规则**只作用在剥完业务前缀之后的正文**上：一级前缀本身
- * （`INVALID_STATE` 等）与二级子标签就是 SCREAMING_SNAKE 形态，
- * 在整串上跑会把每一条业务错误都杀掉。
+ * ⚠️ 这组规则**只作用在剥完业务前缀之后的正文**上 —— 它们描述的是「正文里不该出现什么」，
+ * 而一级前缀与二级子标签本来就是技术标识，放进来一起判没有意义。
+ * （历史上这里还有一条按形状认配置名的规则，那条**必须**在剥完之后跑，否则一级前缀
+ * 自己就是 SCREAMING_SNAKE、每条业务错误都会被杀掉；那条规则已在第 10 轮撤掉，见下。）
  */
 /**
  * ⚠️ 这里**没有**「配置名 / 环境变量名」规则，是有意的。
@@ -355,7 +356,7 @@ function readableMessage(raw: unknown): string | null {
 
 export function actionErrorMessage(err: unknown, fallback: string): string {
   const safeFallback = typeof fallback === 'string' && fallback.trim() ? fallback : '操作失败'
-  // 整体兜一层：本函数是全站 200+ 处 catch 的文案出口，自身一旦抛异常就会把原始错误
+  // 整体兜一层：本函数是全站 141 处 catch（51 个文件）的文案出口，自身一旦抛异常就会把原始错误
   // 顶掉、连 toast 都出不来。`err` 可能是 Proxy / throwing getter，读 digest 就可能抛。
   // 内建异常（TypeError / RangeError / DOMException…）的 message 是纯技术细节，
   // 而且**不带错误名**（`new TypeError('x').message === 'x'`），只能按 name 判。

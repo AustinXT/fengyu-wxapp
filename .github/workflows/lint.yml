@@ -17,7 +17,6 @@ on:
       - 'fengyu-admin/package.json'
       - 'fengyu-admin/package-lock.json'
       - 'fengyu-admin/bun.lock'
-      - 'fengyu-admin/bun.lockb'
 
 jobs:
   cas-guards:
