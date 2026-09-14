@@ -1986,3 +1986,56 @@ describe('绩效页 · 评审 round-29 闭环（glm）', () => {
     expect(callStaffApi).not.toHaveBeenCalled()
   })
 })
+
+describe('绩效页 · 评审 round-30 闭环（codex）', () => {
+  test('被动刷新抢在成功回调之前失败时，同源数据必须保住', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+
+    // 压住 A 的完成回调：loadData 不等它，B 完全可能抢先
+    const pending: Array<() => void> = []
+    const realSetData = page.setData.bind(page)
+    page.setData = (u: Record<string, unknown>, cb?: () => void) => {
+      realSetData(u)
+      if (cb) pending.push(cb)
+    }
+    await page.loadData(true)
+    expect(page.data.items).toHaveLength(1)
+    expect(page._lastKey).toBe('')        // 回调还没跑
+    expect(page._pendingKey).not.toBe('') // 但数据已经过桥了
+
+    // B：同源被动刷新，先失败
+    vi.mocked(callStaffApi).mockRejectedValue(new Error('网络开小差'))
+    await page.loadData(true, true)
+    page.setData = realSetData
+
+    // keepStaleOnError：同源就该保住，不能因为 A 的回调还没落地就当异源清掉
+    expect(page.data.items).toHaveLength(1)
+    expect(page.data.loadFailed).toBe(false)
+  })
+
+  test('异源失败仍然照常清屏（别把守卫放得太宽）', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+
+    // 换时段 = 异源，失败必须清
+    vi.mocked(callStaffApi).mockRejectedValue(new Error('网络开小差'))
+    page.setRange('today')
+    await vi.waitFor(() => expect(page.data.loadFailed).toBe(true))
+
+    expect(page.data.items).toHaveLength(0)
+  })
+
+  test('全角斜杠分隔的号码也能搜到（ASCII 斜杠已在白名单里）', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([makeItem('张三', '13800138000', 1), makeItem('李四', '13900139000', 2)], 2)
+    await page.loadData(true)
+
+    search(page, '１３８／００１３／８０００')
+    expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['张三'])
+  })
+})

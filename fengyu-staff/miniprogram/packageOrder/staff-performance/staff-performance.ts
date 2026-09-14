@@ -220,6 +220,13 @@ Page({
   _disposed: false,
   /** 最后一次成功渲染的查询键（员工+时段+两级筛选）；失败时据此判断旧数据是否还同源 */
   _lastKey: '',
+  /**
+   * 已经 `setData` 出去、但完成回调还没落地的查询键。
+   * `loadData` 不等回调，被动刷新完全可能抢在回调之前失败 —— 那一刻 `_lastKey` 还是空的，
+   * catch 里的 sameSource 就会把屏幕上那批同源数据误判成异源清掉，
+   * keepStaleOnError 形同虚设。
+   */
+  _pendingKey: '',
   /** 最后一次成功的全量分类汇总：切一级 Tab 时本地即时换口径，不必等请求返回 */
   _summaryCache: null as { summary: CategorySummary; categories: string[] } | null,
   /** 检索防抖定时器（onUnload 必须清，否则回调会打到已销毁的页面上） */
@@ -773,6 +780,8 @@ Page({
       const keywordAtBuild = this.data.keyword;
       // 发起时的主体世代：回调里据此判断这批数据是否已被清屏抹掉
       const epochAtSend = this._subjectEpoch;
+      // 数据这一刻就过桥了，回调只是稍后确认 —— 中间这段窗口靠它认同源
+      this._pendingKey = queryKey;
       this.setData({
         loadFailed: false,
         totalSalesAlloc: money(res.totalSalesAlloc),
@@ -811,6 +820,7 @@ Page({
         // 旧回调却已经被判过期、提交不了它自己的 `_lastKey`
         this._renderedSeq = seq;
         this._lastKey = queryKey;
+        this._pendingKey = '';
         this._summaryCache = res.categorySummary && res.categories && res.categories.length
           ? { summary: res.categorySummary, categories: res.categories }
           : null;
@@ -831,7 +841,9 @@ Page({
       //   ③ 不是身份/权限类错误（员工调店、权限撤销后仍把原数据留在屏幕上是越权展示）
       const errorType = (err as { errorType?: string } | null)?.errorType;
       const accessDenied = !!errorType && ACCESS_DENIED_ERRORS.indexOf(errorType) >= 0;
-      const sameSource = queryKey === this._lastKey;
+      // 同源判断要连「已 setData、回调未落地」的那批一起认，否则被动刷新抢跑失败时
+      // 会把屏幕上同源的数据清掉
+      const sameSource = queryKey === this._lastKey || (!!this._pendingKey && queryKey === this._pendingKey);
       // 访问被拒必须**独立于 reset/分页模式**清屏：触底分页（reset=false）时权限被撤销，
       // 若受 reset 限制就只弹个 toast，撤权后的绩效数据继续留在屏幕上
       if (accessDenied || (reset && (!keepStaleOnError || !sameSource))) {
@@ -851,6 +863,7 @@ Page({
   clearSubjectCache() {
     this._summaryCache = null;
     this._lastKey = '';
+    this._pendingKey = '';
     // 推进主体世代：在途的 setData 回调可能在清屏**之后**才跑，
     // 那时光比代次会命中相等，把刚清掉的旧主体缓存原样写回去。
     // -403 之后尤其危险 —— 切一下一级 Tab 就能用 `_summaryCache` 本地重算出
@@ -1012,7 +1025,7 @@ Page({
   /** 全角数字与常见全角分隔符转半角（检索两侧共用） */
   toHalfWidth(v: string): string {
     return v.replace(
-      /[\uFF10-\uFF19\uFF08\uFF09\uFF0B\uFF0D\uFF0E\u3000]/g,
+      /[\uFF10-\uFF19\uFF08\uFF09\uFF0B\uFF0D\uFF0E\uFF0F\u3000]/g,
       (c) => (c === '\u3000' ? ' ' : String.fromCharCode(c.charCodeAt(0) - 0xFEE0)),
     );
   },
