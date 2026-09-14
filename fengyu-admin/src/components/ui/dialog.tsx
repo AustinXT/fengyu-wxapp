@@ -111,8 +111,10 @@ function Dialog({
       aria-label={ariaLabel}
       aria-describedby={ariaDescribedBy}
       onClick={handleBackdropClick}
-      // ESC 触发的是 cancel。用 DOM 事件属性而不是 addEventListener + ref：
-      // ref 在 passive effect 里更新，点完「确认」立刻按 ESC 时监听可能还读着旧值。
+      // ESC 触发的是 cancel。用 React 的合成事件处理器而不是 addEventListener + ref：
+      // 处理器每次渲染都拿当前的 `dismissible`，而 ref 在 passive effect 里才更新 ——
+      // 点完「确认」立刻按 ESC 时那条路会读到旧值。
+      //（React 把 `cancel` 归在 nonDelegatedEvents 里，直接绑在元素上，不依赖冒泡。）
       onCancel={(e) => {
         if (!dismissible) e.preventDefault()
       }}

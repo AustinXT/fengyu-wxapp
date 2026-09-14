@@ -150,10 +150,12 @@ export default function InventoryDocsPage({
   // 提交在途时不接受任何行操作。真机上模态背景本就 inert 点不到，但 dialog.tsx 有降级到
   // .show() 的退路 —— 那条路下背景可点，A 的「处理中」界面会被 B 顶掉，用户以为 A 取消了。
   //
-  // 两个弹窗**各记各的在途态**：共用一个布尔的话，先结束的那个会把另一个仍在途的锁提前解开。
+  // 真正兜住的是后两项（任一弹窗开着就锁住开另一个的入口）—— 从状态上禁止两个弹窗并存，
+  // 提交在途自然也被包含在「弹窗开着」里。前两项是**第二道冗余闸**：两个弹窗各记各的
+  // 在途态，免得将来有人拆掉「不许并存」这条约束时，退回到「共用一个布尔、先结束的那个
+  // 把另一个仍在途的锁提前解开」。它们当前被后两项覆盖，删掉测试不会红 —— 这是有意保留。
   const [actionDialogBusy, setActionDialogBusy] = useState(false)
   const [createDialogBusy, setCreateDialogBusy] = useState(false)
-  // 降级路径下还要防「两个弹窗同时开着」：任一弹窗开着时就锁住开另一个的入口
   const actionBusy = actionDialogBusy || createDialogBusy || pendingAction !== null || open
 
   const columns: Column<InventoryDocRow>[] = [

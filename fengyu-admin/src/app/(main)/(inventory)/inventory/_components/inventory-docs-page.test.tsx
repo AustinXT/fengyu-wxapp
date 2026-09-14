@@ -656,7 +656,9 @@ describe('审批 / 驳回 / 收货的备注弹窗（#134）', () => {
     fireEvent.click(screen.getByRole('button', { name: '驳回' }))
     fireEvent.click(screen.getByRole('button', { name: '确认驳回' }))
 
-    // 行内红字故意不带 role="alert"：同文案的 toast 已经在 live region 里播报过一次
+    // 行内红字故意不带 role="alert"：同文案的 toast 已经在 live region 里播报过一次。
+    // 局限：sonner 在这里是 mock（没有真实 DOM），所以「toast 确实播报了」这个前提
+    // 单测验不到；这条断言只证明「行内红字没再挂一个 alert」。
     await waitFor(() =>
       expect(within(actionDialog()).getByText('请填写驳回原因')).toBeInTheDocument(),
     )
