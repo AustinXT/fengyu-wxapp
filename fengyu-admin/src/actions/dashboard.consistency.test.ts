@@ -219,13 +219,15 @@ describe('dashboard 组织层级现金流业绩一致性守护', () => {
       // 只禁 `FROM bounds` 不够（codex 评审）：`spe.performance_date = CURRENT_DATE`
       // 绕过该断言却同样把累计值日期化。这里把所有日期来源一并封死。
       expect(totalBlock![0], 'total_paid_amount 被加上了日期条件')
-        .not.toMatch(/FROM bounds|performance_date|paid_at|CURRENT_DATE|NOW\(\)|LOCALTIMESTAMP|\d{4}-\d{2}-\d{2}/)
+        .not.toMatch(/FROM bounds|performance_date|paid_at|CURRENT_DATE|CURRENT_TIMESTAMP|NOW\(\)|LOCALTIMESTAMP|\d{4}-\d{2}-\d{2}/)
       // boundary-critic P2：上面只看 CASE 块内部。若把日期条件加到 CTE 自己的 WHERE，
       // total_paid_amount 会被静默日期化而块内断言照过 —— 所以 WHERE 子句也要挡。
       const cteWhere = paymentMetrics.slice(paymentMetrics.indexOf('FROM sale_order_performance_events'))
       expect(cteWhere, '未能定位 payment_metrics 的 WHERE 子句').toContain('WHERE')
+      // 禁用清单与上面 totalBlock 那条保持一致（GLM 评审：此前缺 paid_at / 日期字面量 /
+      // CURRENT_TIMESTAMP，CTE WHERE 里写 `paid_at >= '2026-01-01'` 就能绕过）
       expect(cteWhere, 'payment_metrics 的 WHERE 被加上了日期条件，会波及 total_paid_amount')
-        .not.toMatch(/FROM bounds|performance_date|CURRENT_DATE|NOW\(\)/)
+        .not.toMatch(/FROM bounds|performance_date|paid_at|CURRENT_DATE|CURRENT_TIMESTAMP|NOW\(\)|LOCALTIMESTAMP|\d{4}-\d{2}-\d{2}/)
     })
 
     it('订单数量和待办仍在独立的 sale_orders CTE 中统计', () => {
