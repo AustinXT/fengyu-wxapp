@@ -1158,8 +1158,11 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
     let k = from
     while (k < to) {
       if (at(k) === '--') {
+        // 行尾有两种形态：模板串里是真换行 `\n`（1 字符），
+        // 宿主单引号串里 SQL 的换行只能写成转义序列 `\\n`（2 字符）——
+        // 只认真换行的话，宿主串里的 `--` 注释会一路遮到串尾，把后面的混用静默吃掉。
         let e = k
-        while (e < to && out[e] !== '\n') e += 1
+        while (e < to && out[e] !== '\n' && at(e) !== '\\n') e += 1
         blank(k, e); k = e; continue
       }
       if (at(k) === '/*') {
@@ -1492,9 +1495,17 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
     expect(violations(truncating), '数据里的右括号截断了 CTE 体，守护静默漏报').not.toEqual([])
     expect(unrecognizedWithHeads(truncating)).toBe(0)
 
-    // 注释里的限定符不算数 —— 算了就是对合法 SQL 假红
-    const commented = `pg.query('WITH RECURSIVE d(id, path) AS (SELECT 1, ARRAY[1] UNION ALL -- 别写 d.path\n SELECT alias.path FROM t JOIN d alias ON true)', [])`
+    // 注释里的限定符不算数 —— 算了就是对合法 SQL 假红。
+    // ⚠️ 换行必须写成宿主里的**转义序列**（单引号串里不可能有真换行），
+    //    用真换行的夹具跑的是另一条路径，覆盖不到真实源码形态。
+    const NL = String.fromCharCode(92) + 'n'
+    const commented = `pg.query('WITH RECURSIVE d(id, path) AS (SELECT 1, ARRAY[1] UNION ALL -- 别写 d.path${NL} SELECT alias.path FROM t JOIN d alias ON true)', [])`
     expect(violations(commented), '注释里的 d.path 被当成真引用，对合法 SQL 假红').toEqual([])
+
+    // 注释**之后**的混用必须照样查得出 —— 注释遮到串尾的话这条会静默漏报
+    const afterComment = `pg.query('WITH RECURSIVE d(id, path) AS (SELECT 1, ARRAY[1] UNION ALL -- 说明${NL} SELECT d.path FROM t JOIN d alias ON true)', [])`
+    expect(violations(afterComment), '行注释遮到了串尾，把后面的混用吃掉了').not.toEqual([])
+    expect(unrecognizedWithHeads(afterComment)).toBe(0)
   })
 
   // SQL 字符串字面量里的 `//` `--` `/*` 不能被当成注释起点，否则会把后面的真 SQL 吞掉
