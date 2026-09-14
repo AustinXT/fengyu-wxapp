@@ -1617,7 +1617,8 @@ describe('绩效页 · 评审 round-20 闭环（glm）', () => {
     await page.loadData(true)
 
     search(page, '8613')
-    // 候选只有 8613 本身（剥完只剩 2 位，不纳入），两条都不该命中
+    // 半截国际前缀：剥完只剩 `13`（噪声太大），只留 `8613` 又会造成
+    // 「存成 +86 的搜得到、存成国内格式的搜不到」—— 所以两边都不匹配
     expect(page.data.displayItems).toHaveLength(0)
 
     search(page, '+86 138') // 剥完剩 3 位，正常纳入
@@ -2109,5 +2110,33 @@ describe('绩效页 · 屏幕身份整体替换（评审 round-31 codex P2 的�
     aCb()
     expect(page._screen).toBeNull()      // 不复活
     expect(page._summaryCache).toBeNull()
+  })
+})
+
+describe('绩效页 · 半截国际前缀两种存法结果一致（评审 round-33 codex P2）', () => {
+  test.each([
+    ['存成国际格式', '+8613800138000'],
+    ['存成国内格式', '13800138000'],
+  ])('%s：输到 8613 时都不命中（等输全）', async (_label, phone) => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([makeItem('张三', phone, 1)], 1)
+    await page.loadData(true)
+
+    search(page, '8613')
+    expect(page.data.displayItems).toHaveLength(0)
+  })
+
+  test.each([
+    ['存成国际格式', '+8613800138000'],
+    ['存成国内格式', '13800138000'],
+  ])('%s：再输一位到 86138 时都命中', async (_label, phone) => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([makeItem('张三', phone, 1)], 1)
+    await page.loadData(true)
+
+    search(page, '86138')
+    expect(page.data.displayItems).toHaveLength(1)
   })
 })
