@@ -65,7 +65,29 @@ const DRIFT_SQL = `
           (sop.paid_at AT TIME ZONE 'Asia/Shanghai')::date,
           (sop.created_at AT TIME ZONE 'Asia/Shanghai')::date
         )
-      END AS legacy_value
+      END AS legacy_value,
+      -- 这一行会不会被迁移 0040 的 ① 回填顺手修掉？
+      --   · 首次支付行 —— ① 直接 UPDATE 它
+      --   · 同次已支付卡行 —— ① 更新首次支付行时，0039 的 BEFORE trigger 反向同步把它一起拉齐
+      -- 这两类回填后必然与旧 CASE 归零，不该算进"阻塞"。
+      -- （早先用 D1 减 D3 推导卡行漂移数，混合支付订单脱拍时 D1=2/D3=1 会误判成阻塞，
+      --   让运维中止一次本来会成功的迁移 —— 实测复现过。）
+      (
+        sop.change_type = '首次支付'
+        OR (
+          sop.change_type = '储值卡抵扣'
+          AND sop.status = '已支付'
+          AND EXISTS (
+            SELECT 1
+            FROM sale_order_payments first_payment
+            WHERE first_payment.sale_order_id = sop.sale_order_id
+              AND first_payment.change_type = '首次支付'
+              AND first_payment.status = sop.status
+              AND first_payment.paid_at IS NOT DISTINCT FROM sop.paid_at
+              AND first_payment.paid_at IS NOT NULL
+          )
+        )
+      ) AS resolved_by_backfill
     FROM sale_order_payments sop
     JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
     LEFT JOIN LATERAL (
@@ -93,7 +115,8 @@ const DRIFT_SQL = `
   )
   SELECT id, sale_order_id, change_type, status,
          column_value::text AS column_value,
-         legacy_value::text AS legacy_value
+         legacy_value::text AS legacy_value,
+         resolved_by_backfill
   FROM legacy
   WHERE column_value IS DISTINCT FROM legacy_value
   ORDER BY id
@@ -121,14 +144,14 @@ async function runCheck(db, label, sql) {
   const { rows } = await db.query(sql)
   if (rows.length === 0) {
     log(`✅ ${label}：0 行`)
-    return 0
+    return rows
   }
   log(`❌ ${label}：${rows.length} 行`)
   console.table(rows.slice(0, SAMPLE_LIMIT))
   if (rows.length > SAMPLE_LIMIT) {
     log(`   （只列出前 ${SAMPLE_LIMIT} 行）`)
   }
-  return rows.length
+  return rows
 }
 
 async function main() {
@@ -149,9 +172,10 @@ async function main() {
     const total = (await client.query('SELECT COUNT(*)::bigint AS n FROM sale_order_payments')).rows[0].n
     log(`sale_order_payments 共 ${total} 行（同一快照）`)
 
-    const d1 = await runCheck(client, 'D1 直读列 = 旧 CASE 表达式', DRIFT_SQL)
-    const d2 = await runCheck(client, 'D2 归属日期列无 NULL', NULL_SQL)
-    const d3 = await runCheck(client, 'D3 首次支付行 = 订单级归属日期（I6）', FIRST_PAYMENT_SQL)
+    const d1Rows = await runCheck(client, 'D1 直读列 = 旧 CASE 表达式', DRIFT_SQL)
+    const d2Rows = await runCheck(client, 'D2 归属日期列无 NULL', NULL_SQL)
+    const d3Rows = await runCheck(client, 'D3 首次支付行 = 订单级归属日期（I6）', FIRST_PAYMENT_SQL)
+    const [d1, d2, d3] = [d1Rows.length, d2Rows.length, d3Rows.length]
 
     log('')
     if (d1 === 0 && d2 === 0 && d3 === 0) {
@@ -159,26 +183,29 @@ async function main() {
       process.exitCode = 0
       return
     }
-    // 三项不是同一种严重程度，别一律当成阻塞：
-    if (d3 > 0) {
-      log(`D3 的 ${d3} 行会被迁移 0040 的 ① 回填自动拉齐 —— **预期内，不阻塞**。`)
-      log('  （D1 里由首次支付脱拍带来的那部分同理，回填之后 ② 自检看到的就是 0 行。）')
-    }
+
     if (d2 > 0) {
       log(`⛔ D2 的 ${d2} 行是真阻塞：0040 的 CHECK 约束会直接失败。`)
       log('  多半是这个库还没 apply 0039 —— 按 journal 顺序把 0039 补上即可（它的回填②会填掉这些 NULL）。')
-      log('  ⚠ 有 NULL 时 D1 的结论不可用：NULL 行同时命中 D1 与 D2，无法从 D1 分解出真正的卡行漂移。')
+      log('  ⚠ 有 NULL 时 D1 的结论不可用：NULL 行同时命中 D1 与 D2。')
       log('     先 apply 0039，再重跑本脚本，那时 D1 的读数才有意义。')
       process.exitCode = 1
       return
     }
-    // 只有在 D2=0（列已无 NULL）时，才能把 D1 拆成「首次支付脱拍」与「其余」两部分
-    const cardDrift = d1 - d3
-    if (cardDrift > 0) {
-      log(`⛔ D1 里有 ${cardDrift} 行不属于首次支付脱拍（多半是储值卡抵扣）：① 回填不覆盖这类，`)
-      log('  ② 自检会 RAISE 回滚整条迁移。必须人工判读上面的样例后再决定补回填还是改口径。')
+
+    // D1 按「会不会被 ① 回填顺手修掉」分成两堆。不能用 D1-D3 推导：
+    // 混合支付订单脱拍时首次支付与卡行各贡献一条 D1，而 D3 只数首次支付，相减会凭空多出一条"阻塞"。
+    const willBeFixed = d1Rows.filter((r) => r.resolved_by_backfill).length
+    const blocking = d1Rows.filter((r) => !r.resolved_by_backfill)
+    if (willBeFixed > 0) {
+      log(`D1 里有 ${willBeFixed} 行会被迁移 0040 的 ① 回填自动拉齐（首次支付行 + 同次已支付卡行）—— **预期内，不阻塞**。`)
     }
-    process.exitCode = cardDrift > 0 ? 1 : 0
+    if (blocking.length > 0) {
+      log(`⛔ D1 里有 ${blocking.length} 行回填覆盖不到（多半是配对回款的储值卡抵扣）：`)
+      log('  ② 自检会 RAISE 回滚整条迁移。必须人工判读后再决定补回填还是改口径。样例：')
+      console.table(blocking.slice(0, SAMPLE_LIMIT))
+    }
+    process.exitCode = blocking.length > 0 ? 1 : 0
   } finally {
     await client.query('ROLLBACK').catch(() => {})
     await client.end()
