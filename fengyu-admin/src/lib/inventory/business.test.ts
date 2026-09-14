@@ -1193,11 +1193,23 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
         const stop = end === -1 ? src.length : end + tag.length
         blank(i, stop); i = stop; continue
       }
-      // ⚠️ 只抹双引号，**不抹反引号、也不抹单引号**：
-      // - 反引号：.ts/.js 里 SQL 正写在模板字符串里，抹掉等于把要检查的 SQL 整段抹掉
-      // - 单引号：云函数有 `pg.query('WITH RECURSIVE …')` 这种写法，抹掉同样整段丢失
-      // 代价是 SQL 字符串字面量里若有不配对的括号（如 SELECT ')' ），会让 CTE 体提前收尾；
-      // 仓内无此写法，且真出现时会被下面的「WITH 头自一致性」断言逮到（识别不出块 → 红）。
+      // 单引号有两种截然相反的身份，只能按内容判：
+      // - `pg.query('WITH RECURSIVE …')` —— 引号里就是要检查的 SQL，抹掉等于整段丢失
+      // - `SELECT 'https://x'` / `'a--b'` —— 引号里是数据，不抹的话里面的
+      //   `//` `--` `/*` 会被当成注释起点，把后面的真 SQL 一路吞掉（假阴性）
+      // 判据：内容里有没有 CTE 头。有就当 SQL 留着，没有就当数据抹掉。
+      if (src[i] === "'") {
+        let j = i + 1
+        while (j < src.length && src[j] !== "'") j += (src[j] === '\\' ? 2 : 1)
+        const inner = src.slice(i + 1, j)
+        if (/\bWITH\s+(?:RECURSIVE\s+)?[A-Za-z_]\w*\s*(?:\([^()]*\))?\s+AS\s*\(/i.test(inner)) {
+          i += 1   // 是 SQL：跳过开引号，内容照常参与解析
+        } else {
+          blank(i, j + 1); i = j + 1
+        }
+        continue
+      }
+      // 反引号不抹：.ts/.js 里 SQL 正写在模板字符串里，抹掉等于把要检查的 SQL 整段抹掉
       if (src[i] === '"') {
         const quote = src[i]
         let j = i + 1
@@ -1392,6 +1404,18 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
     for (const src of sources) {
       expect(violations(src), `SQL 被抹没了，守护对这种源码形态是盲的：${src.slice(0, 50)}…`).not.toEqual([])
       expect(unrecognizedWithHeads(src), `WITH 头没被识别：${src.slice(0, 50)}…`).toBe(0)
+    }
+  })
+
+  // SQL 字符串字面量里的 `//` `--` `/*` 不能被当成注释起点，否则会把后面的真 SQL 吞掉
+  it('SQL 数据里的注释符不吞掉后续 SQL', () => {
+    const cases = [
+      "WITH RECURSIVE d(id, path) AS (SELECT 1, ARRAY[1] UNION ALL SELECT 'https://x', d.path FROM t JOIN d alias ON true)",
+      "WITH RECURSIVE d(id, path) AS (SELECT 1, ARRAY[1] UNION ALL SELECT 'a--b', d.path FROM t JOIN d alias ON true)",
+      "WITH RECURSIVE d(id, path) AS (SELECT 1, ARRAY[1] UNION ALL SELECT 'a/*b', d.path FROM t JOIN d alias ON true)",
+    ]
+    for (const sql of cases) {
+      expect(violations(sql), `被字面量里的注释符吞掉了：${sql.slice(0, 60)}…`).not.toEqual([])
     }
   })
 
