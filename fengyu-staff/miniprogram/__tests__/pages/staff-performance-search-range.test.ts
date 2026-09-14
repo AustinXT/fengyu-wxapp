@@ -972,3 +972,53 @@ describe('绩效页 · 过滤结果渲染上限（评审 round-8 codex P1）', (
     expect(page.data.searchHint).not.toContain('仅显示前')
   })
 })
+
+describe('绩效页 · 姓名空格归一与手动刷新入口（评审 round-9 glm P3）', () => {
+  test('「张 三」能搜到「张三」，反之亦然——看着一样却搜不到最伤信任', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([makeItem('张三', '13800000001', 1), makeItem('李 四', '13900000002', 2)], 2)
+    await page.loadData(true)
+
+    search(page, '张 三')
+    expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['张三'])
+
+    search(page, '李四')
+    expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['李 四'])
+  })
+
+  test('点已选中的「今日」仍然重拉（这是页面唯一的手动刷新入口）', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'today' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+
+    vi.mocked(callStaffApi).mockClear()
+    page.onRangeTap({ currentTarget: { dataset: { type: 'today' } } })
+
+    expect(callStaffApi).toHaveBeenCalledTimes(1)
+  })
+
+  test('点已选中的「自定义」仍然不重拉（后端是全区间扫描，白跑一趟纯浪费）', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'custom' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+
+    vi.mocked(callStaffApi).mockClear()
+    page.onRangeTap({ currentTarget: { dataset: { type: 'custom' } } })
+
+    expect(callStaffApi).not.toHaveBeenCalled()
+  })
+
+  test('命中过多被截断时同样标注顶部汇总口径（此时明细与汇总差距最大）', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage(Array.from({ length: 500 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i)), 500)
+    await page.loadData(true)
+
+    search(page, '顾客')
+    expect(page.data.searchHint).toContain('仅显示前 200 条')
+    expect(page.data.searchHint).toContain('顶部汇总为全量')
+  })
+})

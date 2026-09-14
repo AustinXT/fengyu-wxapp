@@ -322,7 +322,9 @@ Page({
     //
     // 用 `_lastKey`（上一次**成功**渲染的查询键）而不是 `items.length > 0` 判断屏幕上有没有
     // 同源数据：后者会把「本期成功查到 0 条」误判成「还没加载」，白白多跑一次全区间扫描。
-    if (fetch && start === this.data.startDate && end === this.data.endDate && this._lastKey) {
+    // 只对 custom 早退：点「今日」「本月」时区间同样没变，但那是用户在**手动刷新**，
+    // 一并吃掉会让页面失去唯一的主动重拉入口
+    if (fetch && type === 'custom' && start === this.data.startDate && end === this.data.endDate && this._lastKey) {
       this.setData({ rangeType: type, displayDate: display });
       return;
     }
@@ -692,8 +694,12 @@ Page({
     // 先全角转半角：中文输入法偶发全角数字（１３８），直接剥 \D 会把它们整个吃掉，
     // kwDigits 变空 → 手机号匹配被静默跳过，员工只看到「未找到」
     const kwDigits = kw.replace(/[\uFF10-\uFF19]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)).replace(/\D/g, '');
+    // 姓名两侧都剥空白：关键词写回时已 trim（避免「框里有内容、列表是全量」的哑态），
+    // 但词**中间**的空格留着 —— 顾客姓名里也可能有（「张 三」/ 全角空格），
+    // 两边都归一才不会出现「看着一模一样却搜不到」
+    const kwName = kw.replace(/\s+/g, '');
     const matched = items.filter((it) => {
-      if (String(it.customerName || '').toLowerCase().indexOf(kw) >= 0) return true;
+      if (kwName && String(it.customerName || '').replace(/\s+/g, '').toLowerCase().indexOf(kwName) >= 0) return true;
       if (!kwDigits) return false;
       return String(it.clientPhone || '').replace(/\D/g, '').indexOf(kwDigits) >= 0;
     });
@@ -712,7 +718,7 @@ Page({
       searchHint: total === 0
         ? `本时段暂无提成记录（${loaded}，搜索「${shown}」仍生效）`
         : capped
-          ? `${loaded}，匹配 ${matched.length} 条，仅显示前 ${MAX_DISPLAY_ITEMS} 条 —— 关键词再具体些`
+          ? `${loaded}，匹配 ${matched.length} 条，仅显示前 ${MAX_DISPLAY_ITEMS} 条（顶部汇总为全量，不随搜索变化）—— 关键词再具体些`
           : matched.length
             ? `${loaded}，匹配 ${matched.length} 条（顶部汇总为全量，不随搜索变化）`
             : `${loaded}中未找到「${shown}」`,
