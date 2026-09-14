@@ -253,17 +253,24 @@ describe('绩效页 · 时间范围「自定义」', () => {
     })
   })
 
-  test('开始日期晚于结束日期 → toast 拦截，不发请求且不写坏 data', () => {
+  test('开始日期晚于结束日期 → toast 拦截，不发请求且不写坏 data', async () => {
     const page = createPage()
     page.onLoad({ range: 'custom' })
+    mockPage([], 0)
+    // 先把结束日期挪到月初，再把开始日期挪到它之后（两端都在 picker 的绝对边界内，
+    // 否则会先被 clampDate 钳成合法区间，测不到这条分支）
+    page.onCustomEndChange({ detail: { value: '2026-09-05' } })
+    await vi.waitFor(() => expect(callStaffApi).toHaveBeenCalled())
+    vi.mocked(callStaffApi).mockClear()
 
-    page.onCustomStartChange({ detail: { value: '2026-09-20' } })
+    page.onCustomStartChange({ detail: { value: '2026-09-10' } })
 
     expect((globalThis as any).wx.showToast).toHaveBeenCalledWith(
       expect.objectContaining({ title: '开始日期不能晚于结束日期' })
     )
     expect(callStaffApi).not.toHaveBeenCalled()
     expect(page.data.startDate).toBe('2026-09-01') // picker 受控，显示回退原值
+    expect(page.data.endDate).toBe('2026-09-05')
   })
 
   test('结束日期早于开始日期 → 同样拦截', () => {
@@ -761,5 +768,75 @@ describe('绩效页 · 检索防抖（评审 round-5 glm P2）', () => {
 
     expect(spy).not.toHaveBeenCalled()
     spy.mockRestore()
+  })
+})
+
+describe('绩效页 · 关键词还在但新主体零记录（评审 round-6 codex P2）', () => {
+  test('切到没有记录的时段时空态仍给「已加载 N/共 M 条」，不退回无信息的「暂无提成记录」', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+    search(page, '张三')
+    expect(page.data.displayItems).toHaveLength(1)
+
+    // 切到一个一条都没有的时段：keyword 被 blankItems 刻意保留
+    mockPage([], 0)
+    page.setRange('today')
+    await vi.waitFor(() => expect(page.data.items).toHaveLength(0))
+
+    expect(page.data.keyword).toBe('张三')
+    expect(page.data.filterActive).toBe(true)
+    // wxml 的空态 description 走 `filterActive ? searchHint : '暂无提成记录'`
+    expect(page.data.searchHint).toContain('已加载 0/共 0 条')
+    expect(page.data.searchHint).toContain('张三')
+    expect(page.data.loadFailed).toBe(false)
+  })
+
+  test('加载失败优先级高于搜索提示——不能把失败说成「未找到某某」', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage([makeItem('张三', '13800000001', 1)], 1)
+    await page.loadData(true)
+    search(page, '张三')
+
+    vi.mocked(callStaffApi).mockRejectedValue(new Error('网络开小差'))
+    await page.loadData(true)
+
+    expect(page.data.loadFailed).toBe(true) // wxml 三元里 loadFailed 分支在最外层
+  })
+})
+
+describe('绩效页 · applyCustomRange 自己守边界（评审 round-6 codex P3）', () => {
+  test('非法日期直接拒绝——NaN 跨度会静默绕过上限校验', () => {
+    const page = createPage()
+    page.onLoad({ range: 'custom' })
+
+    page.applyCustomRange('不是日期', '2026-09-14', 'start')
+    page.applyCustomRange('2026-9-1', '2026-09-14', 'start')   // 非定宽
+    page.applyCustomRange('2026-02-31', '2026-09-14', 'start') // 格式合法但日期不存在
+
+    expect(callStaffApi).not.toHaveBeenCalled()
+    expect(page.data.startDate).toBe('2026-09-01')
+  })
+
+  test('越界日期被钳回绝对上下界，不原样发到后端', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'custom' })
+    mockPage([], 0)
+
+    page.applyCustomRange('1990-01-01', '2026-09-14', 'start')
+    await vi.waitFor(() => expect(callStaffApi).toHaveBeenCalled())
+
+    expect(page.data.startDate).toBe('2020-01-01')
+    expect(vi.mocked(callStaffApi).mock.calls[0][1]).toMatchObject({ startDate: '2020-01-01' })
+  })
+
+  test('isValidDate 认得闰日与月末', () => {
+    const page = createPage()
+    expect(page.isValidDate('2024-02-29')).toBe(true)  // 2024 闰年
+    expect(page.isValidDate('2025-02-29')).toBe(false) // 2025 平年
+    expect(page.isValidDate('2026-04-31')).toBe(false)
+    expect(page.isValidDate('2026-12-31')).toBe(true)
   })
 })

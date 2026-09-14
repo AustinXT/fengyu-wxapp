@@ -379,6 +379,12 @@ Page({
    */
   applyCustomRange(start: string, end: string, anchor: 'start' | 'end' = 'start') {
     if (!start || !end) return;
+    // 自己守住格式与绝对边界，不把安全性全押在 wxml 的 picker 属性上：
+    // 非法串会让 daysBetween 返回 NaN，而 `NaN > RANGE_MAX_DAYS` 是 false ——
+    // 跨度校验会被静默绕过，一个坏区间就这么发到后端去了
+    if (!this.isValidDate(start) || !this.isValidDate(end)) return;
+    start = this.clampDate(start);
+    end = this.clampDate(end);
     if (start > end) {
       wx.showToast({ title: '开始日期不能晚于结束日期', icon: 'none' });
       return;
@@ -666,6 +672,21 @@ Page({
     const [sy, sm, sd] = start.split('-').map(Number);
     const [ey, em, ed] = end.split('-').map(Number);
     return Math.round((Date.UTC(ey, em - 1, ed) - Date.UTC(sy, sm - 1, sd)) / 86400000);
+  },
+
+  /** 严格 `YYYY-MM-DD` 且是真实存在的日期（挡掉 `2026-02-31` 这种合法格式的假日期） */
+  isValidDate(v: string): boolean {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+    const [y, m, d] = v.split('-').map(Number);
+    const t = new Date(Date.UTC(y, m - 1, d));
+    return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d;
+  },
+
+  /** 钳到 picker 的绝对上下界内（wxml 属性只约束 UI，这里保证进到请求里的值也合规） */
+  clampDate(v: string): string {
+    if (v < this.data.customMinDate) return this.data.customMinDate;
+    if (v > this.data.customMaxDate) return this.data.customMaxDate;
+    return v;
   },
 
   /** `YYYY-MM-DD` 加/减天数，同样走 UTC（与 daysBetween 对称，避免夏令时差出一天） */
