@@ -549,6 +549,10 @@ export const getAvailablePickupItems = withPermission(
              LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
              GREATEST(0, COALESCE(pt.picked_quantity, 0))::int AS picked_quantity,
              CASE
+               -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
+               -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
+               -- 转换单/零总额单，且 total_amount 无 CHECK 约束，负值会静默放行。
+               WHEN o.sale_order_type = '寄存单' THEN si.quantity
                WHEN si.sale_amount <= 0 THEN si.quantity
                ELSE LEAST(
                  si.quantity,
@@ -736,6 +740,10 @@ async function createGroupedPickupRecord(
                 WHERE pr.sale_item_id = si.sale_item_id
              ), 0)::int AS picked_quantity,
              CASE
+               -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
+               -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
+               -- 转换单/零总额单，且 total_amount 无 CHECK 约束，负值会静默放行。
+               WHEN o.sale_order_type = '寄存单' THEN si.quantity
                WHEN si.sale_amount <= 0 THEN si.quantity
                ELSE LEAST(
                  si.quantity,
@@ -945,6 +953,10 @@ export const createPickupRecord = withPermission(
                   WHERE pr.sale_item_id = si.sale_item_id
                ), 0)::int AS picked_quantity,
                CASE
+                 -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
+                 -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
+                 -- 转换单/零总额单，且 total_amount 无 CHECK 约束，负值会静默放行。
+                 WHEN o.sale_order_type = '寄存单' THEN si.quantity
                  WHEN si.sale_amount <= 0 THEN si.quantity
                  ELSE LEAST(
                    si.quantity,

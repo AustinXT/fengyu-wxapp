@@ -403,11 +403,12 @@ test('0014 journal/snapshot 在合并迁移链中保持连续', () => {
 })
 
 test('0037 款项归属日以 paid_at 初始化，首次支付继续跟随订单', () => {
-  const schemaSql = read('schema/order.ts')
   const migrationSql = read('migrations/0037_abandoned_talisman.sql')
   const snapshot37 = JSON.parse(read('migrations/meta/0037_snapshot.json'))
+  // definitions 只含**当时**的 migration 与 snapshot，不含当前 schema/order.ts：
+  // 这条用例守护的是「0037 这条已发布的迁移不被改写」，不是「当前视图长什么样」。
+  // 迁移 0040 把视图收敛成直读列后，当前 schema 已不含这里断言的 CASE 分支（那正是它的目的）。
   const definitions = [
-    schemaSql,
     migrationSql,
     snapshot37.views['public.sale_order_performance_events'].definition,
     snapshot37.views['public.sale_item_performance_events'].definition,
@@ -446,11 +447,10 @@ test('0037 journal 与 snapshot 保持连续且只新增款项归属字段和索
 })
 
 test('0038 前向同步混合支付卡流水并让业绩视图跟随现付主流水', () => {
-  const schemaSql = read('schema/order.ts')
   const migrationSql = read('migrations/0038_sync_mixed_payment_attribution.sql')
   const snapshot38 = JSON.parse(read('migrations/meta/0038_snapshot.json'))
+  // 同 0037：不把当前 schema/order.ts 纳入断言，见上一条用例的说明。
   const definitions = [
-    schemaSql,
     migrationSql,
     snapshot38.views['public.sale_order_performance_events'].definition,
     snapshot38.views['public.sale_item_performance_events'].definition,
@@ -494,4 +494,146 @@ test('0038 journal 与 snapshot 连续且除两个业绩视图外无 schema 漂�
   delete snapshot38.id
   delete snapshot38.prevId
   assert.deepEqual(snapshot38, snapshot37, '0038 除两个业绩视图外不应夹带其他 schema 变化')
+})
+
+/** 抽出 `CREATE OR REPLACE FUNCTION initialize_...` 到配对 `$$;` 为止的整段。 */
+function extractFunctionBody(sql, from = 0) {
+  const start = sql.indexOf('CREATE OR REPLACE FUNCTION initialize_payment_performance_attribution_date', from)
+  assert.ok(start >= 0, '没找到 initialize_payment_performance_attribution_date 的定义')
+  const end = sql.indexOf('$$;', start)
+  assert.ok(end > start, '函数体没有收尾的 $$;')
+  return sql.slice(start, end + 3)
+}
+
+test('0040 业绩视图直读款项归属日期列，写入侧 trigger 与非空约束齐备', () => {
+  const schemaSql = read('schema/order.ts')
+  const migrationSql = read('migrations/0040_bizarre_wolfpack.sql')
+  const snapshot40 = JSON.parse(read('migrations/meta/0040_snapshot.json'))
+  const viewDefinitions = [
+    schemaSql,
+    snapshot40.views['public.sale_order_performance_events'].definition,
+    snapshot40.views['public.sale_item_performance_events'].definition,
+  ]
+
+  // 把 migration 里的两条 CREATE VIEW 各自切出来单独判 —— 整份 SQL 找一次"直读"是不够的：
+  // 只要有一个视图仍是直读，另一个被改回 CASE 也能让全文断言通过。
+  const viewStatements = ['sale_item_performance_events', 'sale_order_performance_events'].map((name) => {
+    const head = `CREATE VIEW "public"."${name}" AS (`
+    const from = migrationSql.indexOf(head)
+    assert.ok(from >= 0, `migration 里找不到 ${name} 的 CREATE VIEW`)
+    const to = migrationSql.indexOf(');--> statement-breakpoint', from)
+    assert.ok(to > from, `${name} 的 CREATE VIEW 没有收尾`)
+    return migrationSql.slice(from, to)
+  })
+
+  // 收敛的正面证据：直读列
+  for (const definition of [...viewDefinitions, ...viewStatements]) {
+    assert.match(definition, /sop\.performance_attribution_date AS performance_date/)
+  }
+  // 收敛的反面证据：0037/0038 那三段回退分支必须从**视图定义**里消失，否则等于口径没收敛。
+  // 反面断言不能套整份 migrationSql —— 它的自检块里**故意**保留了整套旧 CASE + LATERAL，
+  // 用来和直读列逐行对照，那是本次迁移的安全闸，不是残留；所以这里判的是切出来的两条语句。
+  for (const definition of [...viewDefinitions, ...viewStatements]) {
+    assert.doesNotMatch(definition, /WHEN change_type = '首次支付' THEN order_performance_attribution_date/)
+    assert.doesNotMatch(definition, /paired_payment_performance_date/)
+    assert.doesNotMatch(definition, /LEFT JOIN LATERAL/)
+  }
+
+  // ① 回填：首次支付行重新对齐订单级（0039 之后又攒下的脱拍行）
+  assert.match(migrationSql, /UPDATE sale_order_payments p[\s\S]*SET performance_attribution_date = so\.performance_attribution_date/)
+  assert.match(migrationSql, /p\.change_type = '首次支付'[\s\S]*IS DISTINCT FROM so\.performance_attribution_date/)
+
+  // ② fail-closed 自检：有偏差必须 RAISE 回滚，不能降级成告警
+  assert.match(migrationSql, /RAISE EXCEPTION[\s\S]*收敛自检失败/)
+
+  // ③ 订单级变更 → 款项行同步下沉为 trigger
+  assert.match(migrationSql, /CREATE OR REPLACE FUNCTION sync_order_performance_attribution_to_payments/)
+  assert.match(migrationSql, /CREATE OR REPLACE TRIGGER trg_sale_orders_sync_payment_attribution\s*\nAFTER UPDATE OF/)
+  // 不能是 DEFERRABLE：那会把同步推迟到 COMMIT，应用层紧接着的回读会读到旧值（静默出错数）。
+  // 按字符数开窗口不可靠（DEFERRABLE 的语法位在 EXECUTE FUNCTION 前，实测距 trigger 名 490+ 字符），
+  // 直接把整条 CREATE TRIGGER 语句切出来判。
+  const trgStart = migrationSql.indexOf('CREATE OR REPLACE TRIGGER trg_sale_orders_sync_payment_attribution')
+  assert.ok(trgStart >= 0)
+  const trgStmt = migrationSql.slice(trgStart, migrationSql.indexOf(';', trgStart) + 1)
+  assert.match(trgStmt, /EXECUTE FUNCTION sync_order_performance_attribution_to_payments\(\)/)
+  assert.doesNotMatch(trgStmt, /DEFERRABLE/)
+  // ④ 给 0039 的 BEFORE trigger 补行锁，堵住「改期未提交 + 首次支付入账」的脏读
+  assert.match(migrationSql, /CREATE OR REPLACE FUNCTION initialize_payment_performance_attribution_date/)
+  // 必须是 FOR SHARE：FOR KEY SHARE 与 FOR NO KEY UPDATE 不冲突，挡不住普通的 UPDATE sale_orders
+  assert.match(migrationSql, /WHERE so\.sale_order_id = NEW\.sale_order_id\s*\n\s*FOR SHARE;/)
+  assert.match(migrationSql, /FOR SHARE OF so;/)
+  // 注意只判**语句**，别判整文 —— 迁移注释里专门解释了"为什么不能用 FOR KEY SHARE"
+  assert.doesNotMatch(migrationSql, /FOR KEY SHARE\s*(;|OF)/)
+  // 迁移期间不许把业务表锁死
+  assert.match(migrationSql, /SET LOCAL lock_timeout/)
+
+  // 0040 重定义 0039 的 initialize_payment_performance_attribution_date()，只为给两处读
+  // sale_orders 的 SELECT 补 FOR SHARE（**不能是 FOR KEY SHARE**，理由见迁移 0040 的 ④ 段），
+  // 外加胜出者判定。函数体其余部分必须与 0039 **逐字相同** —— 否则就是在
+  // "顺手改了别的逻辑"，而 0039 的行为没有任何其他地方在守。
+  const fn0039 = extractFunctionBody(read('migrations/0039_payment_attribution_date_always_set.sql'))
+  const fn0040 = extractFunctionBody(migrationSql, migrationSql.lastIndexOf(
+    'CREATE OR REPLACE FUNCTION initialize_payment_performance_attribution_date',
+  ))
+  // 0040 相对 0039 只允许这三处改动，逐一剥掉后必须与 0039 逐字相同。
+  // 任何第四处差异都说明"顺手改了别的逻辑"，而 0039 的行为没有其他地方在守。
+  const normalized = fn0040
+    // ① 首次支付分支的加锁读
+    .replace(/\n\s*-- FOR SHARE：[^\n]*\n/, '\n')
+    .replace(/\n\s*FOR SHARE;/, ';')
+    // ② 储值卡配对分支的加锁读
+    .replace(/\n\s*-- 同上：这一支[\s\S]*?\n\s*FOR SHARE OF so;/, ';')
+    // ③ 反向同步块的「配对胜出者」判定（与自检②/I6b 的 ORDER BY 对齐）
+    .replace(/\n\s*--\n\s*-- NOT EXISTS 那一段是「胜出者」判定：[\s\S]*?三处口径必须一致。/, '')
+    .replace(/\n\s*AND NOT EXISTS \(\n\s*SELECT 1\n\s*FROM sale_order_payments better[\s\S]*?\n\s*\) THEN/, ' THEN')
+  assert.equal(
+    normalized,
+    fn0039,
+    '0040 里那份函数体除「两处加 FOR SHARE + 胜出者判定」外必须与 0039 逐字一致',
+  )
+  // 顺序是硬约束：卡行必须排在首次支付之前，否则 BEFORE trigger 的反向同步会撞
+  // 「tuple to be updated was already modified by an operation triggered by the current command」
+  const cardIdx = migrationSql.indexOf("UPDATE sale_order_payments card")
+  const firstIdx = migrationSql.indexOf("UPDATE sale_order_payments first_payment")
+  assert.ok(cardIdx > 0 && firstIdx > 0, 'trigger 函数体内两条 UPDATE 都要在')
+  assert.ok(cardIdx < firstIdx, '储值卡抵扣行必须先于首次支付行更新')
+
+  // 非空约束（用 CHECK 而非 SET NOT NULL：见 schema/order.ts 该约束处的说明）
+  assert.match(migrationSql, /ADD CONSTRAINT "chk_sop_attribution_date_present" CHECK/)
+  assert.match(schemaSql, /chk_sop_attribution_date_present/)
+  assert.ok(
+    snapshot40.tables['public.sale_order_payments'].checkConstraints?.chk_sop_attribution_date_present,
+    'snapshot 必须记录该 CHECK 约束',
+  )
+  // 该列保持 nullable：notNull 会让 drizzle 的 $inferInsert 变必填，三端 INSERT 都得自己算归属日期
+  assert.equal(
+    snapshot40.tables['public.sale_order_payments'].columns.performance_attribution_date.notNull,
+    false,
+  )
+})
+
+test('0040 journal 与 snapshot 连续且除两个业绩视图与该 CHECK 外无 schema 漂移', () => {
+  const journal = JSON.parse(read('migrations/meta/_journal.json'))
+  const snapshot39 = JSON.parse(read('migrations/meta/0039_snapshot.json'))
+  const snapshot40 = JSON.parse(read('migrations/meta/0040_snapshot.json'))
+  const entry40 = journal.entries.find((entry) => entry.idx === 40)
+
+  assert.equal(entry40?.tag, '0040_bizarre_wolfpack')
+  assert.equal(snapshot40.prevId, snapshot39.id)
+  journal.entries.forEach((entry, index) => {
+    assert.equal(entry.idx, index, 'journal 索引必须连续，不能重写已发布迁移')
+  })
+  for (const viewName of [
+    'public.sale_order_performance_events',
+    'public.sale_item_performance_events',
+  ]) {
+    snapshot40.views[viewName] = snapshot39.views[viewName]
+  }
+  delete snapshot40.tables['public.sale_order_payments'].checkConstraints
+    .chk_sop_attribution_date_present
+  delete snapshot39.id
+  delete snapshot39.prevId
+  delete snapshot40.id
+  delete snapshot40.prevId
+  assert.deepEqual(snapshot40, snapshot39, '0040 除两个业绩视图与该 CHECK 外不应夹带其他 schema 变化')
 })

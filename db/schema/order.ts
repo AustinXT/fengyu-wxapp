@@ -71,7 +71,10 @@ export const saleOrders = pgTable(
     storeName: varchar("store_name", { length: 100 }),
     saleOrderDatetime: timestamp("sale_order_datetime", { withTimezone: true }).notNull(),
     /**
-     * 业绩归属日期（上海自然日）。仅首次业绩事件按本字段归集；后续回款/退款仍按各自 paid_at。
+     * 业绩归属日期（上海自然日）。首次支付事件按本字段归集；后续回款/退款按各自款项行的
+     * `sale_order_payments.performance_attribution_date`（迁移 0040 起查询侧一律直读该列）。
+     * 本字段变更时由 `sync_order_performance_attribution_to_payments()` trigger 同步到
+     * 首次支付行与同次储值卡行。
      * 原始订单时间 sale_order_datetime 始终保留真实业务事实，不因经营周期调整而改写。
      */
     performanceAttributionDate: date("performance_attribution_date")
@@ -478,12 +481,17 @@ export const saleOrderPayments = pgTable(
     /** status 翻 '已支付' 的时间；线下/储值卡与 created_at 一致 */
     paidAt: timestamp("paid_at", { withTimezone: true }),
     /**
-     * 款项业绩归属日期（上海自然日）。**迁移 0039 起恒有值**，由
-     * `initialize_payment_performance_attribution_date()` trigger 保证：
-     * 首次支付镜像 sale_orders 的归属日期（不可单独修改，调整机会仍记在订单上）；
-     * 同次混合支付的储值卡抵扣跟随首次支付/回款主流水；其余款项入账时按 paid_at 初始化
-     * 并允许一次人工调整，未入账期间先按 created_at 占位、入账那一刻按 paid_at 重算。
-     * 暂未加 NOT NULL：三端云函数的 INSERT 都不带这一列，先由 trigger 收敛。
+     * 款项业绩归属日期（上海自然日）—— 查询侧的**唯一**口径：
+     * 各端直读本列，不再有任何 CASE/COALESCE 回退分支（迁移 0040）。
+     *
+     * 取值全部由写入侧两个 trigger 保证，迁移 0040 起由 `chk_sop_attribution_date_present`
+     * 约束兜底（等价 NOT NULL，见表末约束处的说明）：
+     * - `initialize_payment_performance_attribution_date()`（BEFORE INSERT/UPDATE，迁移 0039）：
+     *   首次支付镜像 sale_orders 的归属日期（不可单独修改，调整机会仍记在订单上）；
+     *   同次混合支付的储值卡抵扣跟随首次支付/回款主流水；其余款项入账时按 paid_at 初始化
+     *   并允许一次人工调整，未入账期间先按 created_at 占位、入账那一刻按 paid_at 重算。
+     * - `sync_order_performance_attribution_to_payments()`（sale_orders 的 AFTER UPDATE，迁移 0040）：
+     *   订单级归属日期被调整时同步首次支付行与同次卡行。
      */
     performanceAttributionDate: date("performance_attribution_date"),
     /** 首次人工调整时间；非 NULL 即表示该款项的一次修改机会已使用。 */
@@ -539,6 +547,21 @@ export const saleOrderPayments = pgTable(
     check(
       "chk_sop_method_txn",
       sql`${table.paymentMethod} NOT IN ('微信','支付宝') OR ${table.externalTxnId} IS NOT NULL`,
+    ),
+    /**
+     * 业绩归属日期必须有值（迁移 0040）。查询侧已改为直读该列，NULL 会让这笔款项的业绩事件
+     * 整行从报表里消失 —— 比报错更难发现，所以在库层面挡住。
+     *
+     * 用 CHECK 而不是 `.notNull()`：该列的值由 BEFORE INSERT trigger 填，应用层 INSERT 不带它。
+     * `.notNull()` 会让 drizzle 的 `$inferInsert` 把它变成必填，三端 7 处 INSERT 都得自己算一遍
+     * 归属日期 —— 正好与本次「口径收敛到单一来源」相反。
+     * 也不能改用 `.notNull().default(...)` 绕开：DEFAULT 在 BEFORE trigger 之前生效，
+     * trigger 里 `IF NEW.performance_attribution_date IS NULL` 就永不成立，
+     * 回款/退款会被静默落到 DEFAULT 那一天而不是 paid_at 当天。
+     */
+    check(
+      "chk_sop_attribution_date_present",
+      sql`${table.performanceAttributionDate} IS NOT NULL`,
     ),
   ],
 );
@@ -654,99 +677,55 @@ export const salePaymentItemAllocations = pgTable(
 );
 
 const saleOrderPerformanceEventsQuery = sql`
-  WITH classified AS (
-    SELECT
-      sop.id AS sale_payment_id,
-      sop.sale_order_id,
-      so.store_id,
-      so.sale_order_type,
-      so.legacy_source,
-      sop.change_type,
-      sop.payment_method,
-      sop.status,
-      sop.amount,
-      sop.paid_at,
-      sop.created_at,
-      sop.performance_attribution_date AS payment_performance_attribution_date,
-      so.performance_attribution_date AS order_performance_attribution_date,
-      paired_payment.performance_date AS paired_payment_performance_date,
-      (
-        sop.status = '已支付'
-        AND sop.amount::numeric > 0
-        AND sop.change_type IN ('首次支付', '回款', '储值卡抵扣')
-        AND NOT EXISTS (
-          SELECT 1
-          FROM sale_order_payments prior
-          WHERE prior.sale_order_id = sop.sale_order_id
-            AND prior.status = '已支付'
-            AND prior.amount::numeric > 0
-            AND prior.change_type IN ('首次支付', '回款', '储值卡抵扣')
-            AND (
-              COALESCE(prior.paid_at, prior.created_at),
-              prior.id
-            ) < (
-              COALESCE(sop.paid_at, sop.created_at),
-              sop.id
-            )
-        )
-      ) AS is_initial_event
-    FROM sale_order_payments sop
-    JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
-    LEFT JOIN LATERAL (
-      SELECT
-        CASE
-          WHEN primary_payment.change_type = '首次支付'
-            THEN so.performance_attribution_date
-          ELSE COALESCE(
-            primary_payment.performance_attribution_date,
-            (primary_payment.paid_at AT TIME ZONE 'Asia/Shanghai')::date,
-            (primary_payment.created_at AT TIME ZONE 'Asia/Shanghai')::date
-          )
-        END AS performance_date
-      FROM sale_order_payments primary_payment
-      WHERE sop.change_type = '储值卡抵扣'
-        AND primary_payment.sale_order_id = sop.sale_order_id
-        AND primary_payment.change_type IN ('首次支付', '回款')
-        AND primary_payment.status = sop.status
-        AND primary_payment.paid_at IS NOT DISTINCT FROM sop.paid_at
-      ORDER BY
-        CASE WHEN primary_payment.change_type = '首次支付' THEN 0 ELSE 1 END,
-        primary_payment.id
-      LIMIT 1
-    ) paired_payment ON true
-  )
   SELECT
-    sale_payment_id,
-    sale_order_id,
-    store_id,
-    sale_order_type,
-    legacy_source,
-    change_type,
-    payment_method,
-    status,
-    amount,
-    paid_at,
-    CASE
-      WHEN change_type = '首次支付' THEN order_performance_attribution_date
-      WHEN change_type = '储值卡抵扣' AND paired_payment_performance_date IS NOT NULL
-        THEN paired_payment_performance_date
-      ELSE COALESCE(
-        payment_performance_attribution_date,
-        (paid_at AT TIME ZONE 'Asia/Shanghai')::date,
-        (created_at AT TIME ZONE 'Asia/Shanghai')::date
+    sop.id AS sale_payment_id,
+    sop.sale_order_id,
+    so.store_id,
+    so.sale_order_type,
+    so.legacy_source,
+    sop.change_type,
+    sop.payment_method,
+    sop.status,
+    sop.amount,
+    sop.paid_at,
+    sop.performance_attribution_date AS performance_date,
+    (
+      sop.status = '已支付'
+      AND sop.amount::numeric > 0
+      AND sop.change_type IN ('首次支付', '回款', '储值卡抵扣')
+      AND NOT EXISTS (
+        SELECT 1
+        FROM sale_order_payments prior
+        WHERE prior.sale_order_id = sop.sale_order_id
+          AND prior.status = '已支付'
+          AND prior.amount::numeric > 0
+          AND prior.change_type IN ('首次支付', '回款', '储值卡抵扣')
+          AND (
+            COALESCE(prior.paid_at, prior.created_at),
+            prior.id
+          ) < (
+            COALESCE(sop.paid_at, sop.created_at),
+            sop.id
+          )
       )
-    END AS performance_date,
-    is_initial_event
-  FROM classified
+    ) AS is_initial_event
+  FROM sale_order_payments sop
+  JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
 `;
 
 /**
  * 订单款项业绩事件视图。
  *
- * - 首次支付使用订单业绩归属日期；
- * - 同次混合支付的储值卡抵扣跟随首次支付/回款主流水；纯储值卡支付使用自身归属日期；
- * - 回款和退款使用各自款项归属日期，未回填旧数据兼容回退 paid_at；
- * - 视图保留全部状态，报表必须继续限定 status='已支付'。
+ * `performance_date` **直读** `sale_order_payments.performance_attribution_date`，
+ * 视图侧不再有任何回退分支（迁移 0040，2026-09-14 需求：查询侧不存在回退）。
+ * 该列的取值规则全部下沉到写入侧的两个 trigger：
+ * - `initialize_payment_performance_attribution_date()`（BEFORE INSERT/UPDATE on sale_order_payments）
+ *   —— 首次支付镜像订单级、同次混合支付卡行跟随主流水、其余 paid_at → created_at 兜底；
+ * - `sync_order_performance_attribution_to_payments()`（AFTER UPDATE on sale_orders）
+ *   —— 订单级归属日期被调整时同步首次支付行与同次卡行。
+ * 迁移 0040 起该列为 NOT NULL，因此本视图的 performance_date 恒有值。
+ *
+ * 视图保留全部状态，报表必须继续限定 status='已支付'。
  */
 export const saleOrderPerformanceEvents = pgView(
   "sale_order_performance_events",

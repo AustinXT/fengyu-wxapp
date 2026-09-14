@@ -935,7 +935,7 @@ function buildOrderConditions(
     // （与 payment 口径同为 EXISTS 半连接：命中的是订单，导出金额仍是订单累计快照）。
     // ⚠ 下面的 status 条件是语义闸门，不是索引优化，删掉会改变结果集：
     // 迁移 0039 起未入账行的 performance_attribution_date 由 created_at 占位（不再是 NULL），
-    // 首次支付那一支又恒取订单级归属日期，两者都会让未入账款项把订单带进结果。
+    // 首次支付行的列值又是订单级的镜像（与本行是否入账无关），两者都会让未入账款项把订单带进结果。
     // 规范要求「按已入账的首次支付/回款/储值卡抵扣/退款判断订单是否入选」（admin.pr.spec.md §订单管理）。
     // 附带后果（非缺陷）：0 笔款项的 WorkFine 历史单在款项口径下不入选，要看它们须切「下单日期」。
     const [fromCond, toCond] = paymentAttributionRangeConditions(
@@ -1240,7 +1240,7 @@ export interface ExportPaymentRow {
   customerType: string | null
   openedByName: string | null
   saleOrderDatetime: string
-  /** 款项业绩归属日期：首次支付随订单，其余取款项级 ?? fmtDate(paid_at) */
+  /** 款项业绩归属日期：直读款项级列（迁移 0040 起由 trigger + CHECK 保证恒有值） */
   performanceAttributionDate: string | null
   /** 款项创建时间 */
   createdAt: string
@@ -1422,8 +1422,8 @@ export const exportOrderPayments = withPermission(
       ? [
           // 「无 paid_at 的未入账流水在这两种款项口径下都不命中」（admin.pr.spec.md §回款明细导出）。
           // payment 口径靠 paid_at 比较天然落选（NULL 比较恒为 NULL）；attribution 口径必须显式挡：
-          // 迁移 0039 起未入账行的 performance_attribution_date 由 created_at 占位，首次支付那一支
-          // 又恒取订单级归属日期（与本行是否入账无关），两者都会让未入账流水错误命中。
+          // 迁移 0039 起未入账行的 performance_attribution_date 由 created_at 占位，首次支付行的
+          // 列值又是订单级的镜像（与本行是否入账无关），两者都会让未入账流水错误命中。
           // 用 paid_at IS NOT NULL 而非 status='已支付'：前者才是规范的字面判据，且不会连带把
           // 「已作废但有 paid_at」的流水从 payment 口径里剔掉（那类流水应出现、金额留空，见 §金额留空规则）。
           sql`${saleOrderPayments.paidAt} IS NOT NULL`,
@@ -1631,12 +1631,10 @@ export const exportOrderPayments = withPermission(
         customerType: row.customerType ?? null,
         openedByName: row.openedByName ?? null,
         saleOrderDatetime: row.saleOrderDatetime.toISOString(),
-        performanceAttributionDate: resolvePaymentAttributionDate(
-          payment.changeType,
-          row.orderPerformanceAttributionDate,
-          payment.performanceAttributionDate,
-          payment.paidAt,
-        ),
+        // 款项粒度导出恒有款项行 → 直读款项级归属日期列（迁移 0040 起该列由 trigger 保证有值，
+        // 首次支付那一行本身就是订单级的镜像）。**不要**在这里补订单级兜底：
+        // 那会让极端情况下列为空的行（约束上线前的残留）伪装成"有归属日期"，掩盖数据问题。
+        performanceAttributionDate: payment.performanceAttributionDate ?? null,
         createdAt: payment.createdAt.toISOString(),
         remark: row.remark,
         paymentId: payment.id,
@@ -2365,7 +2363,7 @@ export interface ExportAllocationOrderRow {
   customerType: string | null
   openedByName: string | null
   paidAt: string | null
-  /** 回款归属日期：首次支付随订单，其余取款项级 ?? fmtDate(paid_at)（与回款明细导出同源） */
+  /** 回款归属日期：直读款项级列（迁移 0040 收敛，与回款明细导出同源） */
   performanceAttributionDate: string | null
   remark: string | null
   /** 以下字段仅供异步导出 worker 按完整回款聚合，不映射到 Excel 列。 */
@@ -2589,13 +2587,14 @@ export const exportAllocationOrders = withPermission(
             customerType: r.customerType,
             openedByName: r.openedByName,
             paidAt: r.payPaidAt?.toISOString() ?? r.orderPaidAt?.toISOString() ?? null,
-            // 旧的订单维度分配没有 sale_payment_id，paymentChangeType 为空 → 回退订单级归属日期
-            performanceAttributionDate: resolvePaymentAttributionDate(
-              r.paymentChangeType,
-              r.orderAttributionDate ?? null,
-              r.payAttributionDate,
-              r.payPaidAt,
-            ),
+            // 旧的订单维度分配没有 sale_payment_id（payAttributionDate 为空）→ 只能用订单级。
+            // 0040 之后 payment 为空**严格等价于**"没有款项实体"：该列由 trigger 赋值 +
+            // chk_sop_attribution_date_present 兜底，"有款项行但列为空"已不可达，
+            // 所以这里的订单级兜底不会掩盖数据异常（对照 exportOrderPayments 的留空策略）。
+            performanceAttributionDate: resolvePaymentAttributionDate({
+              payment: r.payAttributionDate,
+              order: r.orderAttributionDate ?? null,
+            }),
             remark: r.remark,
             __sourceId: String(r.sourceId),
             __salePaymentId: r.salePaymentId,
@@ -2746,13 +2745,14 @@ export const exportAllocationOrders = withPermission(
             customerType: r.customerType,
             openedByName: r.openedByName,
             paidAt: r.payPaidAt?.toISOString() ?? r.orderPaidAt?.toISOString() ?? null,
-            // 旧的订单维度分配没有 sale_payment_id，paymentChangeType 为空 → 回退订单级归属日期
-            performanceAttributionDate: resolvePaymentAttributionDate(
-              r.paymentChangeType,
-              r.orderAttributionDate ?? null,
-              r.payAttributionDate,
-              r.payPaidAt,
-            ),
+            // 旧的订单维度分配没有 sale_payment_id（payAttributionDate 为空）→ 只能用订单级。
+            // 0040 之后 payment 为空**严格等价于**"没有款项实体"：该列由 trigger 赋值 +
+            // chk_sop_attribution_date_present 兜底，"有款项行但列为空"已不可达，
+            // 所以这里的订单级兜底不会掩盖数据异常（对照 exportOrderPayments 的留空策略）。
+            performanceAttributionDate: resolvePaymentAttributionDate({
+              payment: r.payAttributionDate,
+              order: r.orderAttributionDate ?? null,
+            }),
             remark: r.remark,
             __sourceId: String(r.sourceId),
             __salePaymentId: r.salePaymentId,
@@ -3062,43 +3062,55 @@ export const updatePerformanceAttributionDate = withPermission(
         throw new ApiError('CONFLICT', '订单已被其他人修改，请刷新后重试')
       }
 
-      // 同次首次支付中被合并的储值卡流水与订单共用归属日期和一次调整机会。
-      const syncedCardRes = await tx.execute(sql`
-        UPDATE sale_order_payments card
-        SET performance_attribution_date = ${targetDate}::date,
-            performance_attribution_adjusted_at = ${updated.performance_attribution_adjusted_at}::timestamptz,
-            performance_attribution_adjusted_by = ${updated.performance_attribution_adjusted_by}
-        WHERE card.sale_order_id = ${saleOrderId}
-          AND card.change_type = '储值卡抵扣'
-          AND card.status = '已支付'
-          AND EXISTS (
-            SELECT 1
-            FROM sale_order_payments first_payment
-            WHERE first_payment.sale_order_id = card.sale_order_id
-              AND first_payment.change_type = '首次支付'
-              AND first_payment.status = card.status
-              AND first_payment.paid_at IS NOT DISTINCT FROM card.paid_at
+      // 款项行的同步由 DB trigger `sync_order_performance_attribution_to_payments()`
+      // （sale_orders 的 AFTER UPDATE，迁移 0040）完成，应用层不再各写一份 UPDATE：
+      // 查询侧已改为直读 sale_order_payments.performance_attribution_date，
+      // 任何漏同步的写入路径都会直接出错数，同步动作必须由 DB 保证而不是靠每个入口记得写。
+      // 这里只回读受影响的行用于审计日志（staffApi order.js 的同语义副本改法一致）。
+      // 回读条件与 trigger 的两条 UPDATE **同一个集合**（首次支付行 + 同次已支付卡行），
+      // 不是"日期等于目标值的行" —— 后者会把碰巧同日、但不归本次同步管的卡行也记进日志。
+      const syncedRes = await tx.execute(sql`
+        SELECT id
+        FROM sale_order_payments p
+        WHERE p.sale_order_id = ${saleOrderId}
+          AND (
+            p.change_type = '首次支付'
+            OR (
+              p.change_type = '储值卡抵扣'
+              AND p.status = '已支付'
+              AND EXISTS (
+                SELECT 1
+                FROM sale_order_payments first_payment
+                WHERE first_payment.sale_order_id = p.sale_order_id
+                  AND first_payment.change_type = '首次支付'
+                  AND first_payment.status = p.status
+                  AND first_payment.paid_at IS NOT DISTINCT FROM p.paid_at
+              )
+            )
           )
-        RETURNING card.id
-      `)
-      // 首次支付流水的归属日期恒等于订单级（迁移 0039 起该列不再留 NULL）。
-      // 必须排在卡流水同步**之后**：首次支付行的 BEFORE UPDATE trigger 会反向同步同次卡流水，
-      // 若与卡流水在同一条语句里更新，PG 会报「tuple already modified by an operation
-      // triggered by the current command」。
-      // 调整机会标记（adjusted_at/by）仍只记在 sale_orders 上：首次支付行不可被单独修改。
-      const syncedFirstRes = await tx.execute(sql`
-        UPDATE sale_order_payments first_payment
-        SET performance_attribution_date = ${targetDate}::date
-        WHERE first_payment.sale_order_id = ${saleOrderId}
-          AND first_payment.change_type = '首次支付'
-          AND first_payment.performance_attribution_date IS DISTINCT FROM ${targetDate}::date
-        RETURNING first_payment.id
+        ORDER BY p.id
       `)
       // tx.execute 走原生 SQL，不经 drizzle 列映射：bigint(int8) 由 postgres.js 原样返回 string，须显式 Number()
-      const syncedPaymentIds = [
-        ...(syncedCardRes as unknown as Array<{ id: number | string }>),
-        ...(syncedFirstRes as unknown as Array<{ id: number | string }>),
-      ].map((row) => Number(row.id))
+      const syncedPaymentIds = (syncedRes as unknown as Array<{ id: number | string }>)
+        .map((row) => Number(row.id))
+
+      // 部署顺序闸门：本函数依赖迁移 0040 的 trigger 完成同步。若代码先于迁移上线，
+      // 上面的 UPDATE 只改了 sale_orders、款项行纹丝不动，而查询侧已直读款项列
+      // —— 那是静默出错数。这里花一次廉价回读把它变成响亮失败并回滚整个事务。
+      const attributionCheck = await tx.execute(sql`
+        SELECT COUNT(*)::int AS stale
+        FROM sale_order_payments
+        WHERE sale_order_id = ${saleOrderId}
+          AND change_type = '首次支付'
+          AND performance_attribution_date IS DISTINCT FROM ${targetDate}::date
+      `)
+      const stale = Number((attributionCheck as unknown as Array<{ stale: number }>)[0]?.stale ?? 0)
+      if (stale > 0) {
+        throw new ApiError(
+          'INVALID_STATE',
+          '业绩归属日期未能同步到款项流水，请确认数据库迁移 0040 已执行后重试',
+        )
+      }
 
       await logUpdate(
         session,
@@ -3179,6 +3191,18 @@ export const updatePaymentPerformanceAttributionDate = withPermission(
     }
 
     const result = await db.transaction(async (tx) => {
+      // 先单独锁订单行，再锁款项行 —— 顺序必须是 sale_orders → sale_order_payments。
+      // 不能靠下面那条 JOIN 语句的 `FOR UPDATE OF sop, so` 代劳：它按 sop.id 主键扫描，
+      // 物理上是先锁 sop 再锁 so，正好把锁序倒过来，与订单级改期（先锁订单、
+      // AFTER trigger 再回写款项行）撞成 40P01。
+      await tx.execute(sql`
+        SELECT 1
+        FROM sale_orders
+        WHERE sale_order_id = (
+          SELECT sale_order_id FROM sale_order_payments WHERE id = ${paymentId}
+        )
+        FOR UPDATE
+      `)
       const lockedRes = await tx.execute(sql`
         SELECT
           sop.id,
@@ -3213,6 +3237,7 @@ export const updatePaymentPerformanceAttributionDate = withPermission(
         FROM sale_order_payments sop
         JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
         WHERE sop.id = ${paymentId}
+        -- 只锁 sop：订单行已由上面那条语句先锁住了。
         FOR UPDATE OF sop
       `)
       const locked = (lockedRes as unknown as Array<{
@@ -3247,7 +3272,10 @@ export const updatePaymentPerformanceAttributionDate = withPermission(
       if (locked.performance_attribution_adjusted_at) {
         throw new ApiError('CONFLICT', '该款项的业绩归属日期已经调整过，不能再次修改')
       }
-      const currentDate = locked.performance_attribution_date ?? locked.original_paid_date
+      // 迁移 0040 起该列由 trigger + chk_sop_attribution_date_present 保证恒有值，
+      // 这里直读。不再兜底 original_paid_date：兜底会把"列为空"这种数据异常
+      // 伪装成"当前归属日期 = 支付日"，让 CAS 误判成功。
+      const currentDate = locked.performance_attribution_date
       if (currentDate !== expectedAttributionDate) {
         throw new ApiError('CONFLICT', '款项归属日期已变化，请刷新后重试')
       }
@@ -3272,10 +3300,7 @@ export const updatePaymentPerformanceAttributionDate = withPermission(
             FROM sale_order_payments target
             WHERE target.id = ${paymentId}
               AND target.performance_attribution_adjusted_at IS NULL
-              AND COALESCE(
-                target.performance_attribution_date,
-                (target.paid_at AT TIME ZONE 'Asia/Shanghai')::date
-              ) = ${expectedAttributionDate}::date
+              AND target.performance_attribution_date = ${expectedAttributionDate}::date
           )
         RETURNING
           id,

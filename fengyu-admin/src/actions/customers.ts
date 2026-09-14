@@ -641,7 +641,8 @@ export const getCustomerHomeProducts = withPermission(
          GROUP BY sale_item_id
       ), conversion_totals AS (
         -- 2026-09-14 #125：家居转出数量并入 picked_up_quantity（"已结算"），这里单独聚合出来，
-        -- 避免把"已转换"算进"已退款"。只有「已关闭」完成过 rollback（数量已退回），故只排除它。
+        -- 避免把"已转换"算进"已退款"。只有「已关闭」完成过 rollback（数量已退回），故只排除它；
+        -- 其余状态（含"支付失败"）扣减仍然生效，必须计入已转换。删除订单的转出行已随主单消失。
         SELECT out_item.ref_sale_item_id AS sale_item_id,
                SUM(out_item.quantity)::int AS converted_quantity
           FROM sale_items out_item
@@ -649,13 +650,11 @@ export const getCustomerHomeProducts = withPermission(
          WHERE out_item.item_direction = '转出'
            AND out_item.product_type = '家居产品'
            AND out_item.ref_sale_item_id IS NOT NULL
-           -- 只排除 '已关闭'：那是 rollbackPendingConversionOnClose 的唯一触发状态（数量已退回）。
-           -- 其余状态（含 '支付失败'）扣减仍然生效，必须计入已转换，否则会被读成"已退款"。
-           -- 删除订单的转出行已随主单消失，天然不计入。
            AND conv_order.status <> '已关闭'
          GROUP BY out_item.ref_sale_item_id
-      ), home_products AS (
+      ), home_product_rows AS (
         SELECT
+          COALESCE(si.sale_item_group_id, si.sale_item_id) AS sale_item_group_id,
           si.sale_item_id,
           si.sale_order_id,
           COALESCE(si.product_name, '家居产品') AS product_name,
@@ -674,12 +673,19 @@ export const getCustomerHomeProducts = withPermission(
             GREATEST(0, COALESCE(ct.converted_quantity, 0))
           )::int AS converted_quantity,
           CASE
+            -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
+            -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
+            -- 转换单/零总额单，且 total_amount 无 CHECK 约束，负值会静默放行。
+            WHEN o.sale_order_type = '寄存单' THEN si.quantity
             WHEN si.sale_amount <= 0 THEN si.quantity
             ELSE LEAST(
               si.quantity,
               FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int
             )
           END AS paid_quantity,
+          si.sale_amount::numeric AS row_sale_amount,
+          GREATEST(0, si.received::numeric) AS row_received,
+          (o.sale_order_type = '寄存单') AS is_deposit,
           o.store_id,
           s.store_name,
           COALESCE(o.paid_at, o.sale_order_datetime, o.created_at) AS purchased_at,
@@ -699,6 +705,28 @@ export const getCustomerHomeProducts = withPermission(
           AND o.status IN ('已支付', '部分支付', '已完成')
           AND si.item_direction = '购买'
           AND si.product_type = '家居产品'
+      ), home_products AS (
+        -- 家居产品逐件落库（quantity 恒为 1），必须按 sale_item_group_id 合并，
+        -- 否则同一组合套餐在 admin 会摊成 N 行、金额也按行拆散，与三端口径分叉。
+        SELECT sale_item_group_id,
+               MIN(si.sale_item_id) AS sale_item_id,
+               MIN(si.sale_order_id) AS sale_order_id,
+               MIN(COALESCE(si.product_name, '家居产品')) AS product_name,
+               MIN(si.unit) AS unit,
+               SUM(si.purchased_quantity)::int AS purchased_quantity,
+               SUM(si.settled_quantity)::int AS settled_quantity,
+               SUM(si.picked_quantity)::int AS picked_quantity,
+               SUM(si.converted_quantity)::int AS converted_quantity,
+               SUM(si.paid_quantity)::int AS paid_quantity,
+               SUM(si.row_sale_amount) AS sale_amount_total,
+               SUM(si.row_received) AS received_total,
+               BOOL_OR(si.is_deposit) AS is_deposit,
+               MIN(si.store_id) AS store_id,
+               MIN(si.store_name) AS store_name,
+               MAX(si.purchased_at) AS purchased_at,
+               BOOL_OR(si.refund_pending) AS refund_pending
+          FROM home_product_rows si
+      GROUP BY sale_item_group_id
       ), home_product_balances AS (
         SELECT *,
                GREATEST(0, settled_quantity - picked_quantity - converted_quantity)::int AS refunded_quantity,
@@ -706,12 +734,17 @@ export const getCustomerHomeProducts = withPermission(
                LEAST(
                  purchased_quantity - settled_quantity,
                  GREATEST(paid_quantity - picked_quantity, 0)
-               )::int AS pending_pickup_quantity
+               )::int AS pending_pickup_quantity,
+               -- 寄存单的 sale_amount 只是原价快照、received 恒为历史值，两者相减不是欠款
+               -- （寄存的货本就属于顾客）。金额列一律留空，与导出口径一致。
+               CASE WHEN is_deposit THEN NULL
+                    ELSE GREATEST(0, sale_amount_total - received_total)::numeric(12, 2)
+               END AS unpaid_amount
           FROM home_products
       )
       SELECT *
         FROM home_product_balances
-       WHERE picked_quantity > 0 OR pending_pickup_quantity > 0 OR converted_quantity > 0
+       WHERE picked_quantity > 0 OR remaining_quantity > 0 OR converted_quantity > 0
     ORDER BY (pending_pickup_quantity > 0) DESC,
              purchased_at DESC,
              sale_item_id
@@ -720,12 +753,17 @@ export const getCustomerHomeProducts = withPermission(
     return (rows as unknown as Array<Record<string, unknown>>).map((row) => {
       const pickedQuantity = Number(row.picked_quantity ?? 0)
       const refundedQuantity = Number(row.refunded_quantity ?? 0)
-      const convertedQuantity = Number(row.converted_quantity ?? 0)
       const remainingQuantity = Number(row.remaining_quantity ?? 0)
       const paidQuantity = Number(row.paid_quantity ?? 0)
       const pendingPickupQuantity = Number(row.pending_pickup_quantity ?? 0)
+      const convertedQuantity = Number(row.converted_quantity ?? 0)
+      // 待付清行的欠款金额：received 是行级净实收（已扣该行退款），故对退过款的行
+      // sale_amount - received 会把"退掉的钱"误算成欠款；寄存单行 SQL 已置 NULL。
+      const unpaidAmount =
+        refundedQuantity > 0 || row.unpaid_amount == null ? null : Number(row.unpaid_amount)
       return {
         saleItemId: String(row.sale_item_id),
+        saleItemGroupId: row.sale_item_group_id == null ? null : String(row.sale_item_group_id),
         saleOrderId: String(row.sale_order_id),
         productName: String(row.product_name || '家居产品'),
         unit: String(row.unit || '盒'),
@@ -736,11 +774,14 @@ export const getCustomerHomeProducts = withPermission(
         convertedQuantity,
         remainingQuantity,
         pendingPickupQuantity,
+        unpaidAmount,
         status: deriveHomeProductStatus(
           Boolean(row.refund_pending),
           pickedQuantity,
           refundedQuantity,
           pendingPickupQuantity,
+          remainingQuantity,
+          unpaidAmount,
           convertedQuantity,
         ),
         storeId: String(row.store_id),

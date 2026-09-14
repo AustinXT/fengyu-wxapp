@@ -160,6 +160,7 @@ const routes = {
   'mgmtCustomer.serviceHistory': () => require('./routes/mgmt-customer').serviceHistory,
   'mgmtCustomer.giftHistory':   () => require('./routes/mgmt-customer').giftHistory,
   'mgmtCustomer.refundHistory': () => require('./routes/mgmt-customer').refundHistory,
+  'mgmtCustomer.homeProducts': () => require('./routes/mgmt-customer').homeProducts,
 }
 
 /**

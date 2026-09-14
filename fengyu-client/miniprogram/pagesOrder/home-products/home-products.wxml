@@ -31,6 +31,10 @@
             <text class="count-label">待提{{item.unit}}</text>
           </view>
           <view class="count-item">
+            <text class="count-value">{{item.pickedQuantity}}</text>
+            <text class="count-label">已提{{item.unit}}</text>
+          </view>
+          <view class="count-item">
             <text class="count-value">{{item.paidQuantity}}</text>
             <text class="count-label">已付{{item.unit}}</text>
           </view>
@@ -46,6 +50,10 @@
             <text class="count-value">{{item.refundedQuantity}}</text>
             <text class="count-label">已退款{{item.unit}}</text>
           </view>
+        </view>
+
+        <view wx:if="{{item.unpaidAmountFmt}}" class="unpaid-hint">
+          待付清 ¥{{item.unpaidAmountFmt}}
         </view>
 
         <view class="product-meta">

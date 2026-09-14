@@ -352,6 +352,24 @@
   color: var(--color-text-hint) !important;
 }
 
+/* 待付清金额（issue #122）：能显示它的卡必然 consumable=0 → 带 --disabled 的 45% 透明度，
+   而催款金额恰恰是最该被看见的信息，故在此把不透明度压回来。 */
+.tc-unpaid {
+  display: inline-block;
+  margin-top: 10rpx;
+  padding: 4rpx 12rpx;
+  border-radius: 8rpx;
+  background: #fff8e6;
+  color: #d4820a;
+  font-size: 24rpx;
+  font-weight: 600;
+}
+
+.treatment-card--disabled .tc-unpaid {
+  opacity: 1;
+  color: #d4820a !important;
+}
+
 .tc-row {
   display: flex;
   align-items: flex-start;
@@ -817,6 +835,13 @@
 
 .home-product-remaining {
   color: var(--color-primary);
+  font-weight: 600;
+}
+
+.home-product-unpaid {
+  margin-top: 10rpx;
+  color: #d4820a;
+  font-size: 24rpx;
   font-weight: 600;
 }
 

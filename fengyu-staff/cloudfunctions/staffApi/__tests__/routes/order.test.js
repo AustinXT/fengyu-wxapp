@@ -2749,8 +2749,11 @@ describe('order.updatePerformanceAttribution', () => {
       performance_attribution_adjusted_by: 'emp-001',
       updated_at: new Date('2026-08-26T06:00:00.000Z'),
     }],
-    syncedCardRows = [{ id: 43 }],
-    syncedFirstPaymentRows = [{ id: 41 }],
+    // node-pg 对 int8(OID 20) 不转换、原样返回 string —— mock 必须用字符串，
+    // 否则 order.js 里那句 Number(row.id) 的归一化完全没被覆盖（invariant：bigint id 是 string）。
+    // 顺序按真实 SQL 的 ORDER BY id 升序。
+    syncedRows = [{ id: '41' }, { id: '43' }],
+    staleRows = [{ stale: 0 }],
   } = {}) {
     const query = vi.fn()
       .mockResolvedValueOnce({
@@ -2766,8 +2769,9 @@ describe('order.updatePerformanceAttribution', () => {
         rowCount: 1,
       })
       .mockResolvedValueOnce({ rows: updatedRows, rowCount: updatedRows.length })
-      .mockResolvedValueOnce({ rows: syncedCardRows, rowCount: syncedCardRows.length })
-      .mockResolvedValueOnce({ rows: syncedFirstPaymentRows, rowCount: syncedFirstPaymentRows.length })
+      .mockResolvedValueOnce({ rows: syncedRows, rowCount: syncedRows.length })
+      // 部署顺序闸门的回读：stale=0 表示 trigger 已同步
+      .mockResolvedValueOnce({ rows: staleRows, rowCount: staleRows.length })
       .mockResolvedValue({ rows: [], rowCount: 1 })
     pg.transaction.mockImplementation(async (callback) => callback({ query }))
     return query
@@ -2784,22 +2788,28 @@ describe('order.updatePerformanceAttribution', () => {
     expect(query.mock.calls[0][0]).toMatch(/FOR UPDATE/)
     expect(query.mock.calls[1][0]).toMatch(/performance_attribution_adjusted_at IS NULL/)
     expect(query.mock.calls[1][0]).toMatch(/date_trunc\('milliseconds', updated_at\)/)
-    expect(query.mock.calls[2][0]).toMatch(/UPDATE sale_order_payments card/)
-    expect(query.mock.calls[2][0]).toMatch(/first_payment\.change_type = '首次支付'/)
-    expect(query.mock.calls[2][1]).toEqual([
-      '2026-09-02',
-      new Date('2026-08-26T06:00:00.000Z'),
-      'emp-001',
-      input.saleOrderId,
-    ])
-    // 首次支付行必须排在卡流水同步之后（trigger 会反向同步卡流水，同语句更新会撞 PG 报错），
-    // 且只改归属日期、不碰调整机会标记
-    expect(query.mock.calls[3][0]).toMatch(/UPDATE sale_order_payments first_payment/)
-    expect(query.mock.calls[3][0]).not.toMatch(/performance_attribution_adjusted_at =/)
-    expect(query.mock.calls[3][1]).toEqual(['2026-09-02', input.saleOrderId])
+    // 款项行同步已下沉为 sale_orders 的 AFTER UPDATE trigger（迁移 0040）：
+    // 查询侧改为直读款项级归属日期列后，漏同步会直接出错数，同步必须由 DB 保证。
+    // 应用层只回读受影响的行用于审计日志，不再自己发 UPDATE。
+    expect(query.mock.calls[2][0]).toMatch(/SELECT id/)
+    // 回读集合 = trigger 覆盖的行（首次支付 + 同次已支付卡行），不按日期比
+    expect(query.mock.calls[2][0]).toMatch(/p\.change_type = '首次支付'/)
+    expect(query.mock.calls[2][0]).toMatch(/p\.change_type = '储值卡抵扣'/)
+    expect(query.mock.calls[2][0]).toMatch(/first_payment\.paid_at IS NOT DISTINCT FROM p\.paid_at/)
+    expect(query.mock.calls[2][0]).not.toMatch(/performance_attribution_date = \$2/)
+    expect(query.mock.calls[2][1]).toEqual([input.saleOrderId])
+    expect(query.mock.calls.some(([s]) => /UPDATE sale_order_payments/.test(s))).toBe(false)
     expect(query.mock.calls.some(([sql]) => /INSERT INTO operation_logs/.test(sql))).toBe(true)
     const auditInsert = query.mock.calls.find(([sql]) => /INSERT INTO operation_logs/.test(sql))
-    expect(JSON.parse(auditInsert[1][8]).changes.syncedPaymentIds).toEqual({ from: [], to: [43, 41] })
+    expect(JSON.parse(auditInsert[1][8]).changes.syncedPaymentIds).toEqual({ from: [], to: [41, 43] })
+  })
+
+  test('迁移 0040 未落地（trigger 缺席）→ 响亮失败而不是静默出错数', async () => {
+    const ctx = createManagerCtx(input)
+    mockAttributionTransaction({ staleRows: [{ stale: 1 }] })
+
+    await expect(orderRoutes.updatePerformanceAttribution(ctx))
+      .rejects.toThrow(/INVALID_STATE.*迁移 0040/)
   })
 
   test('同日提交不消耗修改机会', async () => {
