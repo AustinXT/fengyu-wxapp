@@ -36,7 +36,7 @@ import { Pool } from 'pg'
 
 // 连接串必填：不提供默认值，避免忘传时连到已失效的旧地址（见 db/CLAUDE.md）
 const PG_CONNECTION_STRING =
-  process.env.PG_CONNECTION_STRING || process.env.DATABASE_URL
+  process.env.PG_CONNECTION_STRING?.trim() || process.env.DATABASE_URL?.trim()
 if (!PG_CONNECTION_STRING) {
   console.error('✗ 必须显式传 PG_CONNECTION_STRING 或 DATABASE_URL（dev=101.34.242.103:5433/fengyu_wxapp / prod=118.178.196.26:5433/fengyu_wxapp）')
   process.exit(1)

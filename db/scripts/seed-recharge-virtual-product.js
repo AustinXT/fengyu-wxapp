@@ -32,7 +32,7 @@ const PRODUCT_CATEGORY_ID = 'cat-cz-01'     // 储值卡 / product_kind=充值�
 
 async function main() {
   // DATABASE_URL 必填：不提供默认值，避免忘传时静默连到已弃用的旧 dev 库（见 db/CLAUDE.md）
-  const databaseUrl = process.env.DATABASE_URL
+  const databaseUrl = process.env.DATABASE_URL?.trim()
   if (!databaseUrl) {
     console.error('✗ 必须显式传 DATABASE_URL（dev=101.34.242.103:5433/fengyu_wxapp / prod=118.178.196.26:5433/fengyu_wxapp）')
     process.exit(1)

@@ -31,13 +31,13 @@ const MSSQL_CONFIG = {
 
 // DATABASE_URL 必填：不提供默认值，避免忘传时静默连到已弃用的旧 dev 库（见 db/CLAUDE.md）
 // 仅在直接执行时校验——本目录部分脚本的导出函数被 __tests__ require，顶层 exit 会打断测试进程。
-if (require.main === module && !process.env.DATABASE_URL) {
+if (require.main === module && !process.env.DATABASE_URL?.trim()) {
   console.error('✗ 必须显式传 DATABASE_URL（dev=101.34.242.103:5433/fengyu_wxapp / prod=118.178.196.26:5433/fengyu_wxapp）')
   process.exit(1)
 }
 
 const PG_CONFIG = {
-  connectionString: process.env.DATABASE_URL,
+  connectionString: process.env.DATABASE_URL?.trim(),
   max: 5,
 }
 
