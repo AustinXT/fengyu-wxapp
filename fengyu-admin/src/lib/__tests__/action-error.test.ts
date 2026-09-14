@@ -133,7 +133,7 @@ describe('actionErrorMessage', () => {
     it.each([
       ['SKU: FY-001 库存不足', 'SKU: FY-001 库存不足'],
       ['ID: 123 的订单不存在', 'ID: 123 的订单不存在'],
-      ['URL: https://example.com/a 打不开', 'URL: https://example.com/a 打不开'],
+      ['SN: A-100 已被占用', 'SN: A-100 已被占用'],
     ])('非白名单的业务语义标签不剥（%s）', (message, expected) => {
       // 一级前缀走 9 项白名单精确匹配，不做形状匹配 —— 否则 ID/URL/SKU 这类标签会被误吃
       expect(actionErrorMessage(new Error(message), FALLBACK)).toBe(expected)
@@ -146,10 +146,31 @@ describe('actionErrorMessage', () => {
       },
     )
 
+    // 「含中文」只是必要条件不是充分条件：包一层中文就放行，等于给技术细节开了后门。
+    it.each([
+      // lakala-onboarding.ts:470 → actions/lakala-onboarding.ts:1130 的真实拼装形态
+      'INVALID_STATE: 营业执照：Lakala https://test.example.cn/api/v3/file/upload failed with 500',
+      'INVALID_STATE: 备份失败：open EACCES /srv/backups/db.dump',
+      'INVALID_STATE: 数据库连接失败：10.0.0.5:5433 不可达',
+      // 全角括号不是「这是人话」的证据
+      'INVALID_STATE: PARSE_FAILED: Unexpected token <（position 0）',
+    ])('中文包着的技术痕迹照样挡住：%s', (digest) => {
+      expect(actionErrorMessage({ digest }, FALLBACK)).toBe(FALLBACK)
+    })
+
+    it('正常中文业务文案不受技术痕迹规则影响', () => {
+      expect(
+        actionErrorMessage({ digest: 'CONFLICT: 订单 FY-XSD-WX-2609140001 已被他人处理' }, FALLBACK),
+      ).toBe('订单 FY-XSD-WX-2609140001 已被他人处理')
+      expect(
+        actionErrorMessage({ digest: 'INVALID_PARAMS: 折扣需在 0.1~1.0 之间' }, FALLBACK),
+      ).toBe('折扣需在 0.1~1.0 之间')
+    })
+
     it.each([
       ['NOT_FOUND: SKU: S-001 不存在', 'SKU: S-001 不存在'],
       ['INVALID_PARAMS: ID: 123 不合法', 'ID: 123 不合法'],
-      ['NOT_FOUND: URL: https://example.com 打不开', 'URL: https://example.com 打不开'],
+      ['NOT_FOUND: SN: A-100 不存在', 'SN: A-100 不存在'],
     ])('短标签（≤3 字符）不当子标签剥：%s', (digest, expected) => {
       // 仓内真实子标签最短 7 字符（NO_CARD / OVERPAY），用长度把它们与 ID/SKU/URL 分开
       expect(actionErrorMessage({ digest }, FALLBACK)).toBe(expected)
@@ -350,7 +371,7 @@ describe('actionErrorMessage', () => {
     })
 
     it('片段表逐条都有真红检守着（改坏任一条都会有用例转红）', () => {
-      const src = readFileSync(resolve(process.cwd(), 'src/lib/action-error.ts'), 'utf8')
+      const src = readFileSync(resolve(import.meta.dirname, '../action-error.ts'), 'utf8')
       const block = src.match(/const UNREADABLE_FRAGMENTS = \[([\s\S]*?)\] as const/)?.[1]
       expect(block, '找不到 UNREADABLE_FRAGMENTS').toBeTruthy()
       const fragments = [...block!.matchAll(/'([^']+)'/g)].map((m) => m[1])
@@ -511,6 +532,8 @@ describe('actionErrorMessage', () => {
 describe('Next digest 形态漂移守护（#133）', () => {
   const require_ = createRequire(import.meta.url)
   const nextRoot = require_.resolve('next/package.json').replace(/package\.json$/, '')
+  // 统一相对本文件定位，不依赖运行目录（从 monorepo 根跑 vitest 时 process.cwd() 会指错）
+  const adminSrc = resolve(import.meta.dirname, '../..')
 
   it('create-error-handler 仍以 stringHash(...).toString() 生成 digest，且尊重已有 digest', () => {
     const src = readFileSync(`${nextRoot}dist/server/app-render/create-error-handler.js`, 'utf8')
@@ -538,33 +561,54 @@ describe('Next digest 形态漂移守护（#133）', () => {
     )
   })
 
-  it('全仓的裸 token digest 生产者都在中文说法表里（真扫描，不是列清单）', () => {
-    // 之前这条只是把 ERROR_PREFIXES 过滤后跟一个硬编码数组比 —— 新增一个
-    // `class PhoneRequiredError { readonly digest = 'PHONE_REQUIRED' }` 它照样全绿。
-    // 现在真去扫源码里的 digest 字面量。
-    const srcRoot = resolve(process.cwd(), 'src')
-    const files: string[] = []
+  /** 去掉行注释与块注释，免得把文档里的举例当成真实抛点。 */
+  const stripComments = (src: string) =>
+    src.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+
+  const listSourceFiles = (root: string): string[] => {
+    const out: string[] = []
     const walk = (dir: string) => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         const full = resolve(dir, entry.name)
         if (entry.isDirectory()) walk(full)
-        else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) files.push(full)
+        else if (/\.(?:ts|tsx|js|jsx)$/.test(entry.name) && !/\.test\.[jt]sx?$/.test(entry.name))
+          out.push(full)
       }
     }
-    walk(srcRoot)
+    walk(root)
+    return out
+  }
+
+  it('全仓写 digest 的生产者就是已知那几处（改动这张名单必须同步中文说法表）', () => {
+    // 早先这条只扫 `digest = '字面量'`，`const D = 'PHONE_REQUIRED'; readonly digest = D`
+    // 这种间接写法绕得过去。改为守「**哪些文件在写 digest**」这个更粗但绕不过的不变量：
+    // 任何新的 digest 生产者都会让文件集变化 → 红 → 逼着来这里决定要不要配中文说法。
+    const files = listSourceFiles(adminSrc)
     expect(files.length).toBeGreaterThan(100)
 
+    const producers = new Set<string>()
     const bareTokens = new Set<string>()
     for (const file of files) {
-      const text = readFileSync(file, 'utf8')
+      const text = stripComments(readFileSync(file, 'utf8'))
+      // 写入形态：`x.digest = …` / `readonly digest = …` / 对象字面量 `digest: …`
+      // 只认「写入 digest」：`x.digest = …` / `readonly digest = …` / 对象字面量里的 `digest:`
+      if (/\.digest\s*=(?!=)|readonly\s+digest\s*=|^\s*digest:\s*\S/m.test(text)) {
+        producers.add(file.slice(adminSrc.length + 1))
+      }
       for (const m of text.matchAll(/\bdigest\s*[=:]\s*['"`]([^'"`]+)['"`]/g)) {
         if (/^[A-Z][A-Z0-9_]*$/.test(m[1])) bareTokens.add(m[1])
       }
     }
-    // 今天只有 permissions.ts 的 PermissionError 这一个生产者
-    expect([...bareTokens].sort()).toEqual(['PERMISSION_DENIED'])
+    expect([...producers].sort(), 'digest 生产者变了').toEqual([
+      'actions/legacy-orders.ts',
+      'lib/permissions.ts',
+      'lib/with-permission.ts',
+      'lib/workfine-mssql.ts',
+    ])
 
-    const src = readFileSync(resolve(process.cwd(), 'src/lib/action-error.ts'), 'utf8')
+    // 其中写「裸 token」的只有 permissions.ts 的 PermissionError
+    expect([...bareTokens].sort()).toEqual(['PERMISSION_DENIED'])
+    const src = readFileSync(resolve(adminSrc, 'lib/action-error.ts'), 'utf8')
     const mapped = [
       ...(src.match(/const OPAQUE_TOKEN_MESSAGES[\s\S]*?\}\)/)?.[0] ?? '').matchAll(
         /^\s{2}([A-Z][A-Z0-9_]*):/gm,
@@ -581,26 +625,21 @@ describe('Next digest 形态漂移守护（#133）', () => {
     // LEVEL2_SUBTAG_RE 用「标签 ≥5 字符」把日志子标签与 ID:/SKU:/URL: 这类展示标签分开。
     // 这是启发式不是协议 —— 语法上二者没法区分。所以把前提本身钉住：一旦有人写出
     // `CONFLICT: LOCK: …` 这种短子标签，这条立刻红，逼着重新决定判定方式。
-    const actionsRoot = resolve(process.cwd(), 'src')
+    //
+    // 已知覆盖边界（诚实声明）：扫的是**源码里直接写出来的字面量**。把子标签先赋给常量
+    // 再拼（`const d = 'LOCK: …'; throw new ApiError('CONFLICT', d)`）绕得过去 ——
+    // 要闭合这个口子得上 AST/ESLint 规则，已登记为跟进项。
+    const escaped = (ERROR_PREFIXES as readonly string[]).map((p) =>
+      p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+    )
+    const re = new RegExp(`(?:${escaped.join('|')})['"\`]?\\s*[,:]\\s*['"\`]?\\s*([A-Z][A-Z0-9_]*):`, 'g')
     const found = new Map<string, string>()
-    const walk = (dir: string) => {
-      for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        const full = resolve(dir, entry.name)
-        if (entry.isDirectory()) walk(full)
-        // 跳过本模块自身：它的注释里举了 `NOT_FOUND: SKU: …` 这种反例，那是文档不是抛点
-        else if (
-          /\.tsx?$/.test(entry.name) &&
-          !/\.test\.tsx?$/.test(entry.name) &&
-          !full.endsWith('/lib/action-error.ts')
-        ) {
-          const text = readFileSync(full, 'utf8')
-          const prefixes = (ERROR_PREFIXES as readonly string[]).join('|')
-          const re = new RegExp(`(?:${prefixes})['"\`]?\\s*[,:]\\s*['"\`]?\\s*([A-Z][A-Z0-9_]*):`, 'g')
-          for (const m of text.matchAll(re)) found.set(m[1], full)
-        }
-      }
+    for (const file of listSourceFiles(adminSrc)) {
+      // 跳过本模块与 api-error.ts：它们的注释被剥掉后仍会留下举例用的字符串
+      if (/lib\/(?:action-error|api-error)\.ts$/.test(file)) continue
+      const text = stripComments(readFileSync(file, 'utf8'))
+      for (const m of text.matchAll(re)) found.set(m[1], file)
     }
-    walk(actionsRoot)
     expect(found.size).toBeGreaterThan(5)
     const tooShort = [...found].filter(([tag]) => tag.length < 5)
     expect(
@@ -610,24 +649,24 @@ describe('Next digest 形态漂移守护（#133）', () => {
   })
 
   it('Next 的内部错误码形态仍是 E+数字（@E 正则的前提）', () => {
-    const dist = `${nextRoot}dist`
-    const samples: string[] = []
-    const walk = (dir: string, depth: number) => {
-      if (depth > 3 || samples.length > 40) return
+    // 不截断样本数、不限目录深度：早先取到 41 个就停、只走三层，第 42 个之后变形态照样绿。
+    const samples = new Set<string>()
+    const walk = (dir: string) => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        if (samples.length > 40) return
         const full = resolve(dir, entry.name)
-        if (entry.isDirectory()) walk(full, depth + 1)
+        if (entry.isDirectory()) walk(full)
         else if (entry.name.endsWith('.js')) {
           const text = readFileSync(full, 'utf8')
-          for (const m of text.matchAll(/__NEXT_ERROR_CODE[\s\S]{0,80}?value:\s*"([^"]+)"/g)) {
-            samples.push(m[1])
+          if (!text.includes('__NEXT_ERROR_CODE')) continue
+          // 形态是 `Object.defineProperty(err, "__NEXT_ERROR_CODE", {\n  value: "E263", …})`
+          for (const m of text.matchAll(/__NEXT_ERROR_CODE[\s\S]{0,80}?value:\s*["']([^"']+)["']/g)) {
+            samples.add(m[1])
           }
         }
       }
     }
-    walk(`${dist}/server`, 0)
-    expect(samples.length, '没在 next/dist 里找到 __NEXT_ERROR_CODE 样本').toBeGreaterThan(0)
+    walk(`${nextRoot}dist/server`)
+    expect(samples.size, '没在 next/dist/server 里找到 __NEXT_ERROR_CODE 样本').toBeGreaterThan(100)
     for (const code of samples) {
       expect(code, `Next 错误码形态变了：${code}，NEXT_AUTO_DIGEST_RE 的 @E\\d+ 需要跟着改`).toMatch(
         /^E\d+$/,
@@ -636,7 +675,7 @@ describe('Next digest 形态漂移守护（#133）', () => {
   })
 
   it('9 项白名单里每个前缀，要么有裸 token 中文说法，要么确认不会以裸 token 出现', () => {
-    const src = readFileSync(resolve(process.cwd(), 'src/lib/action-error.ts'), 'utf8')
+    const src = readFileSync(resolve(adminSrc, 'lib/action-error.ts'), 'utf8')
     const mapped = [
       ...(src.match(/const OPAQUE_TOKEN_MESSAGES[\s\S]*?\}\)/)?.[0] ?? '').matchAll(
         /^\s{2}([A-Z][A-Z0-9_]*):/gm,
@@ -658,12 +697,12 @@ describe('Next digest 形态漂移守护（#133）', () => {
       'INVALID_STATE',
       'CLIENT_NOT_REGISTERED',
     ])
-    const permissionsSrc = readFileSync(resolve(process.cwd(), 'src/lib/permissions.ts'), 'utf8')
+    const permissionsSrc = readFileSync(resolve(adminSrc, 'lib/permissions.ts'), 'utf8')
     expect(permissionsSrc).toContain("readonly digest = 'PERMISSION_DENIED'")
   })
 
   it('error.tsx 判 401/403 用的裸 token 与本模块的说法表同源', () => {
-    const errorPageSrc = readFileSync(resolve(process.cwd(), 'src/app/(main)/error.tsx'), 'utf8')
+    const errorPageSrc = readFileSync(resolve(adminSrc, 'app/(main)/error.tsx'), 'utf8')
     // 它靠 `digest === "PERMISSION_DENIED"` / `=== "UNAUTHORIZED"` 渲染 403/401 页；
     // 本模块把同样这两个裸 token 翻成中文。两处漂移会让同一个 digest 在页面级与 toast 级判定不一致。
     expect(errorPageSrc).toContain('error.digest === "PERMISSION_DENIED"')

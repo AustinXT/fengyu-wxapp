@@ -72,3 +72,10 @@ jobs:
       - name: Run admin cross-end error-codes test
         working-directory: fengyu-admin
         run: npx vitest run src/lib/__tests__/error-codes-cross-end.test.ts
+
+      # action-error.test.ts 里有三条漂移守护（Next digest 形态 / 裸 token digest 生产者 /
+      # 二级子标签长度前提）。它们守的东西会随依赖升级和他人改代码而漂，不进 CI 就等于
+      # 只在本地手工跑时才生效，拦不住回归合入。
+      - name: Run admin action-error drift guards
+        working-directory: fengyu-admin
+        run: npx vitest run src/lib/__tests__/action-error.test.ts

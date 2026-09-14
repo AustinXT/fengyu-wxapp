@@ -141,9 +141,27 @@ const TAG_RUN_SOURCE = String.raw`(?:[A-Z][A-Z0-9_]{4,}|\d+(?:\.\d+)?)(?::[^\s:]
 const LEVEL2_SUBTAG_RE = new RegExp(`^${TAG_RUN_SOURCE}:(?:\\s+|$)`)
 
 /**
- * 中日韩字符。业务文案 100% 含中文，技术串 100% 不含 —— 这是本模块能做结构判定的地基。
+ * 中日韩**表意文字/假名**。业务文案必含，技术串必不含 —— 这是本模块做结构判定的地基。
+ *
+ * 刻意**不含**全角标点（U+3000-303F 的「：」「（」等、U+FF00-FFEF 的全角形式）：
+ * 那些只是标点，不构成「这是人话」的证据。否则
+ * `PARSE_FAILED: Unexpected token <（position 0）` 只因带一对全角括号就被放行。
  */
-const CJK_RE = /[\u3000-\u303F\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/
+const CJK_RE = /[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF66-\uFF9F]/
+
+/**
+ * 即便整句包着中文也必须挡掉的技术痕迹。
+ *
+ * 「含中文」只是「可能是人话」的**必要条件**，不是充分条件：拉卡拉进件失败会生成
+ * `INVALID_STATE: 营业执照：Lakala https://…/file/upload failed with 500`（lakala-onboarding.ts:470
+ * → actions/lakala-onboarding.ts:1130），中文包装 + 接口地址 + HTTP 状态一起端给用户；
+ * 备份失败的 `open EACCES /srv/backups/db.dump` 同理。
+ */
+const TECH_ARTIFACT_RES: readonly RegExp[] = [
+  /\bhttps?:\/\/\S/i, // 接口地址
+  /(?:^|[\s（(:：])\/(?:[A-Za-z0-9_.@-]+\/)+[A-Za-z0-9_.@-]+/, // 绝对文件路径
+  /\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{2,5})?\b/, // 内网 IP（可带端口）
+]
 
 /**
  * 「整串一个空白都没有、且不含中日韩」= 它不是人话，是标识符/编号/技术串。
@@ -164,7 +182,8 @@ function isProseless(value: string): boolean {
  * 这类有空格、逃得过 `isProseless`，而 errno 种类枚举不完（`lakala-client.ts:222` 会把
  * `err.message` 原文拼进白名单前缀），所以按结构认而不是按清单认。
  */
-const NODE_ERRNO_RE = /\b(?:connect|getaddrinfo|read|write|listen|bind|socket)\s+E[A-Z_]{2,}\b/
+const NODE_ERRNO_RE =
+  /\b(?:connect|getaddrinfo|read|write|listen|bind|socket|open|unlink|mkdir|rmdir|rename|stat|lstat|scandir|readdir|access|chmod|chown|copyfile|spawn|watch)\s+E[A-Z_]{2,}\b/
 
 /**
  * 原生异常被字符串化后的形态（`String(err)` / `new Error(String(e))`）。
@@ -179,7 +198,7 @@ const JS_ERROR_NAME_RE = /^(?:[A-Z][A-Za-z]*)?(?:Error|Exception):\s/
  * JS / Web 平台内建异常的 `name`。命中即说明这是**客户端自己的编程错误或平台错误**，
  * message 是给开发看控制台的（属性名、变量名、英文技术句），不能端给用户。
  *
- * 只列内建名：本项目自己的 `ApiError`（name 仍是 `Error`）、`PermissionError`、
+ * 只列内建名：本项目自己的 `ApiError`（name 是 `'ApiError'`）、`PermissionError`、
  * `LegacyOrderError` 等都不在其中，业务文案照常透出。
  */
 const NATIVE_ERROR_NAMES: ReadonlySet<string> = new Set([
@@ -208,6 +227,7 @@ function isOpaque(value: string): boolean {
   if (OPAQUE_TOKEN_RE.test(value)) return true
   if (isProseless(value)) return true
   if (NODE_ERRNO_RE.test(value)) return true
+  if (TECH_ARTIFACT_RES.some((re) => re.test(value))) return true
   if (JS_ERROR_NAME_RE.test(value)) return true
   const lower = value.toLowerCase()
   if (UNREADABLE_FRAGMENTS.some((f) => lower.includes(f))) return true
