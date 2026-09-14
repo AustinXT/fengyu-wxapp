@@ -204,6 +204,12 @@
       </view>
     </view>
 
+    <!-- 命中太多被窗口截断时，把窗口再推一屏：窗口钉死在前 200 条的话，
+         翻页新取回的命中项就永远露不出来 -->
+    <view wx:if="{{hasMoreMatches}}" class="perf-search-more">
+      <van-button size="small" plain bindtap="onShowMoreMatches">显示更多匹配</van-button>
+    </view>
+
     <!-- 搜索态常驻的翻页入口（不限命中 0 条）：过滤后往往只剩几行、够不到触底，
          onReachBottom 不会触发，没有这个按钮员工就没法确认「是不是还有没加载到的」 -->
     <view wx:if="{{filterActive && hasMore}}" class="perf-search-more">

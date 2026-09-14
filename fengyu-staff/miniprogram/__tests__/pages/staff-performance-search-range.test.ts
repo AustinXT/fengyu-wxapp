@@ -958,7 +958,8 @@ describe('绩效页 · 过滤结果渲染上限（评审 round-8 codex P1）', (
     search(page, '顾客') // 500 条全中
     expect(page.data.displayItems).toHaveLength(200)
     expect(page.data.searchHint).toContain('匹配 500 条')
-    expect(page.data.searchHint).toContain('仅显示前 200 条')
+    expect(page.data.searchHint).toContain('已显示前 200 条')
+    expect(page.data.hasMoreMatches).toBe(true)
   })
 
   test('正常检索（命中少量）不受上限影响，文案照旧带汇总口径说明', async () => {
@@ -1019,7 +1020,7 @@ describe('绩效页 · 姓名空格归一与手动刷新入口（评审 round-9 
     await page.loadData(true)
 
     search(page, '顾客')
-    expect(page.data.searchHint).toContain('仅显示前 200 条')
+    expect(page.data.searchHint).toContain('已显示前 200 条')
     expect(page.data.searchHint).toContain('顶部汇总为全量')
   })
 })
@@ -1076,5 +1077,105 @@ describe('绩效页 · 评审 round-11 闭环（glm）', () => {
     vi.advanceTimersByTime(250)
     expect(spy).not.toHaveBeenCalled()
     spy.mockRestore()
+  })
+})
+
+describe('绩效页 · 渲染窗口可推进（评审 round-12 codex P2）', () => {
+  function loadMany(page: Record<string, any>, n: number, total = n) {
+    mockPage(Array.from({ length: n }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i)), total)
+  }
+
+  test('窗口不能钉死在前 200 条——否则翻页新取回的命中永远露不出来', async () => {
+    const page = createPage()
+    page.onLoad({})
+    loadMany(page, 500)
+    await page.loadData(true)
+
+    search(page, '顾客')
+    expect(page.data.displayItems).toHaveLength(200)
+    expect(page.data.hasMoreMatches).toBe(true)
+
+    page.onShowMoreMatches()
+    expect(page.data.displayItems).toHaveLength(400)
+    expect(page.data.searchHint).toContain('已显示前 400 条')
+
+    page.onShowMoreMatches()
+    expect(page.data.displayItems).toHaveLength(500) // 命中只有 500，窗口 600 但取完即止
+    expect(page.data.hasMoreMatches).toBe(false)
+  })
+
+  test('推到硬顶就不再给按钮，改提示收窄关键词', async () => {
+    const page = createPage()
+    page.onLoad({})
+    loadMany(page, 1500)
+    await page.loadData(true)
+
+    search(page, '顾客')
+    for (let i = 0; i < 10; i++) page.onShowMoreMatches()
+
+    expect(page.data.displayItems).toHaveLength(1000) // HARD_DISPLAY_CAP
+    expect(page.data.hasMoreMatches).toBe(false)
+    expect(page.data.searchHint).toContain('关键词请再具体些')
+  })
+
+  test('换关键词把窗口收回第一屏', async () => {
+    const page = createPage()
+    page.onLoad({})
+    loadMany(page, 500)
+    await page.loadData(true)
+
+    search(page, '顾客')
+    page.onShowMoreMatches()
+    expect(page.data.displayLimit).toBe(400)
+
+    search(page, '顾客1')
+    expect(page.data.displayLimit).toBe(200)
+  })
+
+  test('翻页不会把已推开的窗口打回第一屏', async () => {
+    const page = createPage()
+    page.onLoad({})
+    loadMany(page, 500, 1000)
+    await page.loadData(true)
+    search(page, '顾客')
+    page.onShowMoreMatches()
+    expect(page.data.displayLimit).toBe(400)
+
+    mockPage([makeItem('顾客999', '13800009999', 999)], 1000)
+    await page.loadData(false)
+
+    expect(page.data.displayLimit).toBe(400)
+    expect(page.data.displayItems).toHaveLength(400)
+  })
+})
+
+describe('绩效页 · 跨零点自动刷新 picker 上界（评审 round-12 codex P3）', () => {
+  test('页面一直停在前台跨午夜也能把上界推到新的今天', () => {
+    const page = createPage()
+    page.onLoad({ range: 'custom' })
+    mockPage([], 0)
+    page.onShow()
+    expect(page.data.customMaxDate).toBe('2026-09-14')
+
+    // 不触发 onShow、不点任何按钮，纯粹让时钟走过零点
+    // （定时器定在次日 0:00:05，此刻是 10:00，差 14h05s —— fake timer 会一并推进 Date.now）
+    vi.advanceTimersByTime(14 * 3600 * 1000 + 10 * 1000)
+
+    expect(page.data.customMaxDate).toBe('2026-09-15')
+  })
+
+  test('onHide / onUnload 都要清掉跨零点定时器', () => {
+    const page = createPage()
+    page.onLoad({ range: 'custom' })
+    mockPage([], 0)
+    page.onShow()
+
+    page.onHide()
+    expect(page._midnightTimer).toBeNull()
+
+    page.onShow()
+    expect(page._midnightTimer).not.toBeNull()
+    page.onUnload()
+    expect(page._midnightTimer).toBeNull()
   })
 })

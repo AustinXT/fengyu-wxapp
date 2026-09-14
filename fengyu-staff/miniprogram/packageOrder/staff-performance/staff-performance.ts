@@ -120,9 +120,16 @@ const SEARCH_DEBOUNCE_MS = 200;
  * `items` 走路径式增量 setData 绕开了 1MB 上限，但 `displayItems` 是每次过滤整体重建的——
  * 宽泛关键词（比如只打一个「1」）能命中上千条，一次传过去照样超限，
  * 表现是「新页和过滤结果一起更新失败」，正好砸在「搜索激活时继续翻页」这条验收上。
- * 命中几百条本来也不是有效检索（这功能是用来找**某一个**顾客的），截断 + 提示更实用。
+ * 命中几百条本来也不是有效检索（这功能是用来找**某一个**顾客的），所以先渲染一批 + 给
+ * 「显示更多」把窗口推大，而不是一次全铺。
  */
-const MAX_DISPLAY_ITEMS = 200;
+const DISPLAY_PAGE_SIZE = 200;
+
+/**
+ * 渲染窗口的硬顶。到这儿就只能靠收窄关键词了——再往上单次 setData 会撞 1MB。
+ * （1000 × ~600B ≈ 600KB，留足余量给同一次 setData 里的汇总、分类格子等字段）
+ */
+const HARD_DISPLAY_CAP = 1000;
 
 /**
  * 访问被拒类错误 —— 一旦发生就不得继续展示屏幕上的既有数据（可能是他人薪酬）。
@@ -175,6 +182,10 @@ Page({
     // 顾客检索：**只过滤已加载的 items，不查服务器、不额外翻页**（2026-09-14 甲方拍板口径）
     keyword: '',
     displayItems: [] as PerformanceItem[],
+    /** 当前渲染窗口大小；关键词一变就复位（见 buildSearchView / onShowMoreMatches） */
+    displayLimit: DISPLAY_PAGE_SIZE,
+    /** 还有命中项没渲染出来 —— wxml 据此显示「显示更多匹配」 */
+    hasMoreMatches: false,
     // wxml 不支持方法调用，过滤结果与提示文案都必须在 ts 里算好
     filterActive: false,
     searchHint: '',
@@ -194,6 +205,8 @@ Page({
   _summaryCache: null as { summary: CategorySummary; categories: string[] } | null,
   /** 检索防抖定时器（onUnload 必须清，否则回调会打到已销毁的页面上） */
   _searchTimer: null as ReturnType<typeof setTimeout> | null,
+  /** 跨零点定时器：页面停在前台过午夜时把 picker 上界推到新的今天 */
+  _midnightTimer: null as ReturnType<typeof setTimeout> | null,
 
   onLoad(options: Record<string, string>) {
     const mgr = isManager();
@@ -216,6 +229,9 @@ Page({
     // 边界每次重算：页面留在页面栈里过夜后，onLoad 那次算出的上界还停在昨天，
     // 当天反而选不进去
     this.refreshDateBounds();
+    // onShow 只覆盖「切走再回来」；页面一直停在前台跨午夜时它不会触发，
+    // 而此时 picker 可能正展开着，用户直接点就是选不到今天。挂一个到零点的定时器补上
+    this.scheduleMidnightRefresh();
     if (!this._loaded || !this.data.startDate) return;
 
     // 预置档位的区间也必须跟着「今天」重算：页面在页面栈里过夜后，「今日」会一直查进页面
@@ -256,12 +272,33 @@ Page({
     }
   },
 
+  /** 到次日 0:00:05 把 picker 上界推一天，然后续下一天（不是轮询，一天只醒一次） */
+  scheduleMidnightRefresh() {
+    this.cancelMidnightRefresh();
+    const now = new Date();
+    const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
+    this._midnightTimer = setTimeout(() => {
+      this._midnightTimer = null;
+      if (this._disposed) return;
+      this.refreshDateBounds();
+      this.scheduleMidnightRefresh();
+    }, next.getTime() - now.getTime());
+  },
+
+  cancelMidnightRefresh() {
+    if (this._midnightTimer) {
+      clearTimeout(this._midnightTimer);
+      this._midnightTimer = null;
+    }
+  },
+
   // 跳下级页时把在途的防抖**跑完**再走，不能只 cancel：
   // 用户改完关键词 200ms 内就离开的话，回来时输入框显示新词、displayItems 还对应旧词，
   // 而 onShow 的被动刷新一旦失败会保留旧数据 —— 这个错配会一直挂着，
   // 直接让员工对「这个顾客是不是我的」得出错误结论
   onHide() {
     this.flushFilter();
+    this.cancelMidnightRefresh();
   },
 
   // 页面销毁后推进代次，丢弃晚到的响应，避免对已卸载页面 setData
@@ -269,6 +306,7 @@ Page({
     this._seq++;
     this._disposed = true;
     this.cancelFilter();
+    this.cancelMidnightRefresh();
   },
 
   async loadStaffList() {
@@ -495,6 +533,18 @@ Page({
   },
 
   /**
+   * 把渲染窗口再推一屏。
+   *
+   * 命中过多时只渲染前 N 条是为了绕开 setData 的 1MB 上限，但窗口**不能永远钉死在前 200 条**——
+   * 翻页新取回的命中项就永远露不出来了，和「搜索激活时新条目立即参与过滤」直接冲突。
+   */
+  onShowMoreMatches() {
+    const next = Math.min(this.data.displayLimit + DISPLAY_PAGE_SIZE, HARD_DISPLAY_CAP);
+    if (next === this.data.displayLimit) return;
+    this.setData(this.buildSearchView(this.data.items, this.data.keyword, this.data.total, next));
+  },
+
+  /**
    * 搜索态下的「继续加载下一页」。
    *
    * 不能只让用户下滑：过滤后列表往往只剩几行甚至 0 行，页面高度不足一屏，
@@ -623,7 +673,7 @@ Page({
         ...itemsPatch,
         // 关键词跨翻页存活：触底取回的新条目立刻参与过滤，不必重新输入一遍。
         // 未搜索时 displayItems 恒为空数组（wxml 直接渲染 items），不会再传一份全量
-        ...this.buildSearchView(newItems, this.data.keyword, total),
+        ...this.buildSearchView(newItems, this.data.keyword, total, this.data.displayLimit),
         total,
         page,
         // 用本次请求的 page 判断，不比累计长度 —— 长度一旦被过期响应污染，比较逻辑会崩
@@ -701,9 +751,19 @@ Page({
    * `filterActive` 为假时 `displayItems` 刻意留空，由 wxml 的 `filterActive ? displayItems : items`
    * 决定数据源 —— 否则未搜索时同一份明细会被 setData 序列化两遍，列表 payload 白白翻倍。
    */
-  buildSearchView(items: PerformanceItem[], keyword: string, total: number) {
+  buildSearchView(items: PerformanceItem[], keyword: string, total: number, limit?: number) {
+    // 关键词变了就把窗口收回第一屏；翻页/「显示更多」时由调用方显式传入当前窗口
+    const windowSize = limit ?? DISPLAY_PAGE_SIZE;
     const kw = (keyword || '').trim().toLowerCase();
-    if (!kw) return { displayItems: [] as PerformanceItem[], filterActive: false, searchHint: '' };
+    if (!kw) {
+      return {
+        displayItems: [] as PerformanceItem[],
+        filterActive: false,
+        searchHint: '',
+        displayLimit: DISPLAY_PAGE_SIZE,
+        hasMoreMatches: false,
+      };
+    }
 
     // 先全角转半角：中文输入法偶发全角数字（１３８），直接剥 \D 会把它们整个吃掉，
     // kwDigits 变空 → 手机号匹配被静默跳过，员工只看到「未找到」
@@ -720,10 +780,14 @@ Page({
     const loaded = `已加载 ${items.length}/共 ${total} 条`;
     // 关键词进文案前截断：整段粘贴进搜索框时，原样内插会把 van-empty 的 description 撑爆
     const shown = kw.length > 12 ? `${keyword.trim().slice(0, 12)}…` : keyword.trim();
-    const capped = matched.length > MAX_DISPLAY_ITEMS;
+    const capped = matched.length > windowSize;
+    const atHardCap = windowSize >= HARD_DISPLAY_CAP;
     return {
-      displayItems: capped ? matched.slice(0, MAX_DISPLAY_ITEMS) : matched,
+      displayItems: capped ? matched.slice(0, windowSize) : matched,
       filterActive: true,
+      displayLimit: windowSize,
+      // 还能再推窗口才给按钮；到硬顶就只能让用户收窄关键词
+      hasMoreMatches: capped && !atHardCap,
       // 三种文案各有各的必要性：
       // ① total===0：本期一条记录都没有，跟关键词无关。说「未找到张三」会让员工以为
       //    张三的单被分给了别人；但计数仍要带上，否则又退回无信息空态
@@ -732,7 +796,7 @@ Page({
       searchHint: total === 0
         ? `本时段暂无提成记录（${loaded}，搜索「${shown}」仍生效）`
         : capped
-          ? `${loaded}，匹配 ${matched.length} 条，仅显示前 ${MAX_DISPLAY_ITEMS} 条（顶部汇总为全量，不随搜索变化）—— 关键词再具体些`
+          ? `${loaded}，匹配 ${matched.length} 条，已显示前 ${windowSize} 条（顶部汇总为全量，不随搜索变化）${atHardCap ? ' —— 命中太多，关键词请再具体些' : ''}`
           : matched.length
             ? `${loaded}，匹配 ${matched.length} 条（顶部汇总为全量，不随搜索变化）`
             : `${loaded}中未找到「${shown}」`,
