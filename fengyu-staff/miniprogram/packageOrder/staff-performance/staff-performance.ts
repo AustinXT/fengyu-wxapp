@@ -337,19 +337,28 @@ Page({
   // 交叉约束会让「起晚于止」根本选不出来，下面的校验与其对应的验收项就永远不可达、不可测。
   // 但**绝对**上下界（customMinDate / customMaxDate）必须给，理由见 RANGE_MAX_DAYS。
   onCustomStartChange(e: WechatMiniprogram.PickerChange) {
-    this.applyCustomRange(String(e.detail.value), this.data.endDate);
+    this.applyCustomRange(String(e.detail.value), this.data.endDate, 'start');
   },
 
   onCustomEndChange(e: WechatMiniprogram.PickerChange) {
-    this.applyCustomRange(this.data.startDate, String(e.detail.value));
+    this.applyCustomRange(this.data.startDate, String(e.detail.value), 'end');
   },
 
   /**
-   * 落自定义区间。非法区间只 toast、**不写 data** —— picker 是受控组件，value 仍绑旧值，
-   * 显示会自动回退，用户不会停在一个看着已生效、实则没查的区间上。
+   * 落自定义区间。`anchor` 标明用户刚动的是哪一端——那一端是他的真实意图，必须原样保留。
+   *
+   * 「起晚于止」只 toast、**不写 data**：picker 是受控组件，value 仍绑旧值，显示会自动回退，
+   * 用户不会停在一个看着已生效、实则没查的区间上。
+   *
+   * 「跨度超限」则**不能**照样拒绝，否则两个 picker 各自即时提交会把用户锁死：
+   * 从 `2026-09-01 ~ 2026-09-14` 想去 `2020-01-01 ~ 2020-01-07`，
+   *   先挪开始 → 跨度 2448 天被拒；先挪结束 → 起晚于止被拒 —— 两个顺序都走不通，
+   * `HISTORY_MIN_DATE` 放开的那几年就成了摆设。所以这里保留用户刚动的那端、
+   * 把另一端收敛到上限内，用户接着调第二步即可到位。
+   *
    * 日期都是 `YYYY-MM-DD` 定宽格式，字典序即时间序，可直接比较。
    */
-  applyCustomRange(start: string, end: string) {
+  applyCustomRange(start: string, end: string, anchor: 'start' | 'end' = 'start') {
     if (!start || !end) return;
     if (start > end) {
       wx.showToast({ title: '开始日期不能晚于结束日期', icon: 'none' });
@@ -359,8 +368,14 @@ Page({
     // **每翻一页都重跑一次全区间扫描 + 全量排序**。改自定义区间前最大跨度只有「本月」(≤31 天)，
     // 这条路径够不着；放开后选个跨年区间就能把云函数拖垮，所以上限在前端就得卡死。
     if (this.daysBetween(start, end) > RANGE_MAX_DAYS) {
-      wx.showToast({ title: `查询区间最长 ${RANGE_MAX_DAYS} 天`, icon: 'none' });
-      return;
+      if (anchor === 'start') {
+        const capped = this.shiftDate(start, RANGE_MAX_DAYS);
+        end = capped < this.data.customMaxDate ? capped : this.data.customMaxDate;
+      } else {
+        const capped = this.shiftDate(end, -RANGE_MAX_DAYS);
+        start = capped > HISTORY_MIN_DATE ? capped : HISTORY_MIN_DATE;
+      }
+      wx.showToast({ title: `区间最长 ${RANGE_MAX_DAYS} 天，另一端已自动调整`, icon: 'none' });
     }
     if (start === this.data.startDate && end === this.data.endDate) return; // 选了同一天，无需重拉
 
@@ -606,6 +621,14 @@ Page({
     const [sy, sm, sd] = start.split('-').map(Number);
     const [ey, em, ed] = end.split('-').map(Number);
     return Math.round((Date.UTC(ey, em - 1, ed) - Date.UTC(sy, sm - 1, sd)) / 86400000);
+  },
+
+  /** `YYYY-MM-DD` 加/减天数，同样走 UTC（与 daysBetween 对称，避免夏令时差出一天） */
+  shiftDate(date: string, days: number): string {
+    const [y, m, d] = date.split('-').map(Number);
+    const t = new Date(Date.UTC(y, m - 1, d) + days * 86400000);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${t.getUTCFullYear()}-${pad(t.getUTCMonth() + 1)}-${pad(t.getUTCDate())}`;
   },
 
   blankSummary() {

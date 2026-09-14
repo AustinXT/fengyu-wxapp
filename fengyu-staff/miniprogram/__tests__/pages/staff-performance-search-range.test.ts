@@ -430,17 +430,86 @@ describe('绩效页 · 自定义区间跨度上限（评审补漏 P1）', () => 
     expect(page.data.customMaxDate).toBe('2026-09-15')
   })
 
-  test('超过上限的区间被拦截且不发请求——后端是全量取回+内存分页，跨年区间会拖垮云函数', () => {
+  test('超过上限时保留用户刚动的那端，另一端收敛到上限内并提示', async () => {
     const page = createPage()
     page.onLoad({ range: 'custom' })
+    mockPage([], 0)
 
     page.onCustomStartChange({ detail: { value: '2024-01-01' } })
+    await vi.waitFor(() => expect(callStaffApi).toHaveBeenCalled())
 
     expect((globalThis as any).wx.showToast).toHaveBeenCalledWith(
       expect.objectContaining({ title: expect.stringContaining('最长') })
     )
-    expect(callStaffApi).not.toHaveBeenCalled()
+    expect(page.data.startDate).toBe('2024-01-01')          // 用户的意图原样保留
+    expect(page.data.endDate).toBe('2025-01-06')            // 2024-01-01 + 371 天
+    expect(page.daysBetween(page.data.startDate, page.data.endDate)).toBe(371)
+  })
+
+  test('改结束日期超限时收敛的是开始日期（锚定用户动的那端）', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'custom' })
+    page.applyCustomRange('2020-01-01', '2020-01-07', 'end')
+    mockPage([], 0)
+    vi.mocked(callStaffApi).mockClear()
+
+    page.onCustomEndChange({ detail: { value: '2023-06-01' } })
+    await vi.waitFor(() => expect(callStaffApi).toHaveBeenCalled())
+
+    expect(page.data.endDate).toBe('2023-06-01')            // 用户的意图原样保留
+    expect(page.data.startDate).toBe('2022-05-26')          // 2023-06-01 - 371 天
+  })
+
+  test('两步可达任意历史短区间——单端即时提交不能把用户锁死（评审 round-3 codex P1）', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage([], 0)
+    page.onRangeTap({ currentTarget: { dataset: { type: 'custom' } } })
     expect(page.data.startDate).toBe('2026-09-01')
+    expect(page.data.endDate).toBe('2026-09-14')
+
+    // 第一步：挪开始日期到 2020 —— 旧实现在这里就被「跨度超限」拒了
+    page.onCustomStartChange({ detail: { value: '2020-01-01' } })
+    expect(page.data.startDate).toBe('2020-01-01')
+
+    // 第二步：挪结束日期到目标 —— 旧实现走另一个顺序会被「起晚于止」拒，两路皆死
+    page.onCustomEndChange({ detail: { value: '2020-01-07' } })
+    expect(page.data.startDate).toBe('2020-01-01')
+    expect(page.data.endDate).toBe('2020-01-07')
+    expect(page.data.displayDate).toBe('2020-01-01 ~ 2020-01-07')
+  })
+
+  // 这两条钳制在 picker 带绝对上下界时正常操作走不到（要触发就得先选出界外的日期），
+  // 属防御性分支——直接调 applyCustomRange 覆盖，别用 picker 事件构造不可能的输入
+  test('收敛后的结束日期不会跑到今天之后（防御分支）', () => {
+    const page = createPage()
+    page.onLoad({ range: 'custom' })
+    mockPage([], 0)
+
+    page.applyCustomRange('2026-09-01', '2028-01-01', 'start')
+
+    expect(page.data.startDate).toBe('2026-09-01')
+    expect(page.data.endDate).toBe('2026-09-14') // 钳到 customMaxDate，不是 2026-09-01+371
+  })
+
+  test('收敛后的开始日期不会早于业务数据起点（防御分支）', () => {
+    const page = createPage()
+    page.onLoad({ range: 'custom' })
+    mockPage([], 0)
+
+    page.applyCustomRange('2019-01-01', '2020-06-01', 'end')
+
+    expect(page.data.endDate).toBe('2020-06-01')
+    expect(page.data.startDate).toBe('2020-01-01') // 钳到 HISTORY_MIN_DATE，不是 2019-05-27
+  })
+
+  test('shiftDate 与 daysBetween 互为逆运算（跨年跨闰）', () => {
+    const page = createPage()
+    expect(page.shiftDate('2026-09-14', 1)).toBe('2026-09-15')
+    expect(page.shiftDate('2026-01-01', -1)).toBe('2025-12-31')
+    expect(page.shiftDate('2024-02-28', 2)).toBe('2024-03-01') // 闰年
+    expect(page.shiftDate('2020-01-01', 371)).toBe('2021-01-06')
+    expect(page.daysBetween('2020-01-01', page.shiftDate('2020-01-01', 371))).toBe(371)
   })
 
   test('上限之内的长区间正常放行', async () => {
