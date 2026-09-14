@@ -64,7 +64,31 @@ function between(src: string, start: string, end: string): string {
   return from === -1 ? '' : src.slice(from, to === -1 ? undefined : to)
 }
 
-/** 提取 `orderStats` 的整条 SQL 模板（到 CROSS JOIN 结束，即模板末尾） */
+/**
+ * 找模板字符串的真实闭合反引号：跳过被 `\` 转义的那些。
+ *
+ * 裸 `indexOf('`')` 区分不了闭合符与转义反引号。codex 评审给过构造：
+ * 在 `CROSS JOIN order_metrics` 后写一行 SQL 注释 `-- \``，
+ * 提取器会在那个转义反引号处提前收尾，`stripComments` 再把注释删掉，
+ * 结果恰好等于期望快照 —— 而其后的 `WHERE FALSE` 照样生效，整条查询返回零行。
+ */
+function findTemplateEnd(src: string, from: number): number {
+  for (let i = from; i < src.length; i += 1) {
+    if (src[i] === '\\') {
+      i += 1 // 跳过被转义的字符本身
+      continue
+    }
+    if (src[i] === '`') return i
+  }
+  return -1
+}
+
+/**
+ * 提取 `orderStats` 的整条 SQL 模板（到模板闭合反引号为止）。
+ *
+ * 任何一步定位失败都返回空串，由调用方的 `not.toBe('')` 明确报红——
+ * **不做 fallback 到文件尾**，那会把「提取器坏了」伪装成「SQL 变了」甚至假绿。
+ */
 function extractOrderStatsSql(src: string): string {
   const MARK = 'const orderStats = await db.execute(sql`'
   const from = src.indexOf(MARK)
@@ -72,8 +96,9 @@ function extractOrderStatsSql(src: string): string {
   const start = from + MARK.length
   const anchor = src.indexOf('CROSS JOIN order_metrics', start)
   if (anchor === -1) return ''
-  const end = src.indexOf('`', anchor)
-  return normalize(stripComments(src.slice(start, end === -1 ? undefined : end)))
+  const end = findTemplateEnd(src, anchor)
+  if (end === -1) return ''
+  return normalize(stripComments(src.slice(start, end)))
 }
 
 function expectCashflowRevenueSql(src: string) {
