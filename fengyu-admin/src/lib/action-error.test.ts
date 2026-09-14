@@ -205,6 +205,9 @@ describe('闸门二 · 内容：前缀合法 ≠ 正文能给人看', () => {
 
   it.each([
     ['PG relation 报错（中文包裹）', 'INVALID_STATE: 数据库错误：relation "client_profile_tmp" does not exist'],
+    // 只枚举 relation 会漏掉 column/type/function —— PG 全用 does not exist 收尾（评审 round 3）
+    ['PG column 报错（中文包裹）', 'INVALID_STATE: 数据库错误：column "customer_id" does not exist'],
+    ['PG 输入语法错误', 'INVALID_PARAMS: 参数有误：invalid input syntax for type integer'],
     ['约束冲突（中文包裹）', 'CONFLICT: 合并失败：duplicate key value violates unique constraint "uq_sku"'],
     ['SQL 片段（中文包裹）', 'NOT_FOUND: 查询失败：select * from sale_orders where id=$1'],
     ['文件路径（中文包裹）', 'INVALID_STATE: 读取失败：/app/node_modules/pg/lib/client.js'],
@@ -222,6 +225,9 @@ describe('闸门二 · 内容：前缀合法 ≠ 正文能给人看', () => {
     ['含 API 字样', 'PERMISSION_DENIED: 请联系管理员开通 API 权限', '请联系管理员开通 API 权限'],
     ['含权限动作名', 'PERMISSION_DENIED: 无权执行 employee:update', '无权执行 employee:update'],
     ['含日期时间', 'INVALID_STATE: 活动已于 2026-09-14 23:59:59 结束', '活动已于 2026-09-14 23:59:59 结束'],
+    // 斜杠分隔的业务选项不是路径（app/api/upload/route.ts 的真实文案，评审 round 3 反例）
+    ['斜杠分隔的格式列表', 'INVALID_PARAMS: 不支持的文件类型，仅支持 JPG/PNG/WebP/GIF', '不支持的文件类型，仅支持 JPG/PNG/WebP/GIF'],
+    ['含比例分数', 'INVALID_PARAMS: 折扣需在 1/10 到 9/10 之间', '折扣需在 1/10 到 9/10 之间'],
     // 刻意保留：这类「配置缺失」文案的读者就是要去改 env 的人，吞掉会让配置错误像随机故障。
     // 泄漏的只是变量名不是值；裸枚举/英文技术串仍被「必须含中文」那道闸门挡住。
     ['配置缺失（仓内真实文案）', 'INVALID_STATE: 密码加密未配置（缺少 RSA_PRIVATE_KEY）', '密码加密未配置（缺少 RSA_PRIVATE_KEY）'],

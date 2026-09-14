@@ -30,7 +30,15 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ADMIN_ROOT = path.resolve(HERE, '../../..')
 
 /** 用户可见的展示入口。 */
-const SINKS = ['toast.error', 'toast.success', 'toast.warning', 'alert', 'setError', 'setMessage']
+const SINKS = [
+  'toast.error',
+  'toast.success',
+  'toast.warning',
+  'toast.info',
+  'alert',
+  // setError / setErrorMsg / setQrError / setLoadError… 统一按「set*Error*/set*Msg*」匹配
+]
+const SINK_RE = /(?:toast\.(?:error|success|warning|info)|alert|set\w*(?:Error|Msg|Message)\w*)\s*\(/
 
 /**
  * catch 绑定名直接取 message：`err.message` / `e?.message` / `(err as Error).message`。
@@ -64,7 +72,7 @@ describe('issue #133 防回归：客户端不得直接展示 catch 到的 err.me
     for (const file of listClientFiles()) {
       const lines = readFileSync(path.join(ADMIN_ROOT, file), 'utf8').split('\n')
       lines.forEach((line, i) => {
-        if (!SINKS.some((sink) => line.includes(`${sink}(`))) return
+        if (!SINK_RE.test(line)) return
         if (line.includes('actionErrorMessage')) return
         if (!CATCH_MESSAGE_RE.test(line)) return
         const location = `${file}:${i + 1}`
@@ -84,6 +92,10 @@ describe('issue #133 防回归：客户端不得直接展示 catch 到的 err.me
   })
 
   it('判定口径自检：返回值形态不误报、catch 形态不漏报', () => {
+    // sink 名单也自检，避免「加了新 setter 却没进表」
+    expect(SINK_RE.test('toast.info(err.message)')).toBe(true)
+    expect(SINK_RE.test('setQrError(err.message)')).toBe(true)
+    expect(SINK_RE.test('setErrorMsg(err.message)')).toBe(true)
     // 安全形态（Server Action 返回值，Next 不脱敏）——必须不命中
     expect(CATCH_MESSAGE_RE.test('toast.error(res.error.message)')).toBe(false)
     expect(CATCH_MESSAGE_RE.test('toast.error(data.error.message)')).toBe(false)
@@ -103,12 +115,28 @@ describe('issue #133 防回归：客户端不得直接展示 catch 到的 err.me
  * （约束名 / SQL 片段）直送前端 toast —— 这是 digest 之外的第二条泄漏通道（issue #133 的
  * 双谱系评审发现，两个谱系独立指出）。本 PR 已把 11 处改走 `businessErrorMessage()`。
  *
- * ALLOWLIST 里剩下的是**刻意保留**的供应商错误透传：拉卡拉/微信返回的 errmsg 对运维定位
- * （如 40125 invalid appsecret）有实际价值，且会写进 `lastErrorMessage` 供排查。把它们一律
- * 换成中文兜底会丢掉运维信息，属产品决策而非 bug 修复，另开 issue 处理。
+ * ⚠️ 这是逐行正则的 best-effort tripwire，**不是证明**：换个不含 message/msg 的变量名、
+ * 或写成跨行表达式都躲得过（自检用例里显式断言了这些已知漏报形态）。命中即人工判断。
+ *
+ * ALLOWLIST 里剩下的是**刻意保留**的微信 errcode/errmsg 透传：它是对**供应商响应体**的定点
+ * 插值（不是 catch 任意异常），对运维定位有实际价值（如 40125 invalid appsecret）。
+ *
+ * ⚠️ 拉卡拉那两处曾被误列进来：它们的 catch 同时包住本地校验、加密、DB 写入和审计日志，
+ * 豁免整条赋值等于放行全部内部异常（评审 round 3 指出）。实际上供应商拒绝原因本身就是用
+ * 白名单前缀抛的（`INVALID_STATE: ${result.errorMessage}`），走 businessErrorMessage 既能
+ * 透传它、又能挡住 PG/TypeError —— 豁免根本不需要，已移除。
  */
-const SERVER_RETURN_RE =
-  /(?:message:\s*|(?:const|let)\s+\w*[mM]essage\w*\s*=\s*)(?:`[^`]*\$\{)?(?:(?<![.\w])(?:err|error|e|ex)(?:\s*instanceof\s+Error\s*\?\s*(?:err|error|e|ex))?(?:\s+as\s+Error\s*\)?)?\??\.message)|\$\{\w*[eE]rr(?:Data|or)?\??\.errmsg\}/
+/**
+ * 直接把异常 message 放进返回值：`message: err.message` / `` message: `失败：${err.message}` ``。
+ *
+ * **刻意只认「不经中间变量」的直接形态**，换取零误报。评审 round 3 建议过「按中间变量名放宽」，
+ * 实测会把 8 处**安全**的捕获-判前缀写法一起报出来（`const msg = err.message` 后只做
+ * `msg.startsWith('INVALID_PARAMS:')` 判断，从不原样回传），要么逼出一张 8 条的豁免表、
+ * 要么做函数级作用域分析 —— 逐行正则做不到后者，前者的维护噪声大过收益。
+ * 故选「高精度 + 显式声明漏报面」，漏报形态由下面的自检用例逐条断言钉住。
+ */
+const DIRECT_RETURN_RE =
+  /message:\s*(?:`[^`]*\$\{)?(?:(?<![.\w])(?:err|error|e|ex)(?:\s+instanceof\s+Error\s*\?\s*(?:err|error|e|ex))?(?:\s+as\s+Error\s*\)?)?\??\.message)|\$\{\w*[eE]rr(?:Data|or)?\??\.errmsg\}/
 
 /**
  * 已核定豁免。按**代码片段**而非行号定位 —— 行号会随无关改动漂移，误报比漏报更磨人。
@@ -135,16 +163,6 @@ const SERVER_ALLOWLIST: readonly { file: string; snippet: string; reason: string
     snippet: 'const message = err instanceof Error ? err.message : String(err)',
     reason: '已 fail-closed：紧接着 parseErrorPrefix，非白名单走「冻结在线回款金额失败」兜底',
   },
-  {
-    file: 'src/actions/lakala-onboarding.ts',
-    snippet: 'const message = error instanceof Error ? error.message : "电子合同申请失败"',
-    reason: '拉卡拉电子合同返回的拒绝原因，运维需要且会写入 lastErrorMessage',
-  },
-  {
-    file: 'src/actions/lakala-onboarding.ts',
-    snippet: 'const message = error instanceof Error ? error.message : "提交失败"',
-    reason: '拉卡拉进件返回的拒绝原因，同上',
-  },
 ]
 
 function allowed(file: string, line: string): boolean {
@@ -160,7 +178,7 @@ describe('issue #133 防回归：Server Action 返回值不得直接回传异常
       const lines = readFileSync(path.join(ADMIN_ROOT, file), 'utf8').split('\n')
       lines.forEach((line, i) => {
         if (line.includes('businessErrorMessage')) return
-        if (!SERVER_RETURN_RE.test(line)) return
+        if (!DIRECT_RETURN_RE.test(line)) return
         if (allowed(file, line)) return
         violations.push(`${file}:${i + 1}  ${line.trim()}`)
       })
@@ -175,6 +193,21 @@ describe('issue #133 防回归：Server Action 返回值不得直接回传异常
             violations.map((v) => `  - ${v}`).join('\n')
         : '',
     ).toEqual([])
+  })
+
+  it('判定口径自检：命中面与**已声明的漏报面**', () => {
+    // 必须命中
+    expect(DIRECT_RETURN_RE.test('return { success: false, message: err.message }')).toBe(true)
+    expect(DIRECT_RETURN_RE.test('message: `失败：${err.message}`')).toBe(true)
+    expect(DIRECT_RETURN_RE.test('message: err instanceof Error ? err.message : \'失败\'')).toBe(true)
+    expect(DIRECT_RETURN_RE.test('message: `生成失败: ${errData.errcode} ${errData.errmsg}`')).toBe(true)
+    // 安全形态不得误报（返回值对象的字段、固定文案）
+    expect(DIRECT_RETURN_RE.test('message: res.error.message')).toBe(false)
+    expect(DIRECT_RETURN_RE.test("message: '固定中文文案'")).toBe(false)
+    // ⚠️ 已声明的漏报面：经中间变量中转、跨行表达式、String(err) 都躲得过。
+    // 列出来是为了不制造「已钉死」的错觉 —— 本护栏是 tripwire 不是证明。
+    expect(DIRECT_RETURN_RE.test('const msg = err.message; return { message: msg }')).toBe(false)
+    expect(DIRECT_RETURN_RE.test('message: String(err)')).toBe(false)
   })
 
   it('豁免项仍然存在（防止 allowlist 变成过期的死条目）', () => {

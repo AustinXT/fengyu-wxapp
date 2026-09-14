@@ -34,8 +34,13 @@ export function getScopeTopLevel(session: AuthSession): 'all' | 'market' | 'stor
  * EfficiencyBoard/ProductBoard）的内联红字线上一律退化成「无权执行该操作」，用户分不清
  * 该找人授权还是该切 scope。
  *
- * 修法是让 `PermissionError.digest` 带上完整 message、`(main)/error.tsx` 改判前缀 —— 那会动到
- * 全局 401/403 渲染链路，风险面远超一个文案 bug，故另开 issue，不在 #133 内做。
+ * 修法是让 `PermissionError.digest` 带上完整 message。**技术改动面很小**：`error.tsx` 已改走
+ * `actionErrorType`，它经 `parseErrorPrefix` 对 `PERMISSION_DENIED: 理由` 照样判出 403，
+ * 无需再动渲染链路（issue #133 评审 round 3 纠正了这里原先「要动全局 401/403」的夸大表述）。
+ *
+ * 真正的工作量在**逐条审文案**：`requirePermission` 抛的是 `无权执行 ${action}`，直接透出等于把
+ * 内部动作 ID（`employee:update`）端给用户，比现在的「无权执行该操作」更差。所以要先给每个
+ * PermissionError 定一句面向用户的话，才能放开透传 —— 属文案决策，另开 issue。
  */
 export async function validateScope(session: AuthSession, scope: DataCenterScope): Promise<void> {
   if (isAdminScope(session)) return

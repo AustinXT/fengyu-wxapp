@@ -758,7 +758,9 @@ async function deductPrepaidCardAtCreation(
   }
   const currentBalance = Number(balRows[0].balance)
   if (currentBalance + 0.001 < amount) {
-    throw new Error(`INSUFFICIENT_BALANCE:${currentBalance}: 顾客储值卡余额不足，期望扣 ${amount}，实际 ${currentBalance}`)
+    // 余额不放子标签位：这里的数字无人解析（只有下方 recordPayment 的纯数字抛点被解析），
+    // 放在子标签位只会以「320.5: 」的形式漏进用户 toast（issue #133 评审 round 3）
+    throw new Error(`INSUFFICIENT_BALANCE: 顾客储值卡余额不足，期望扣 ${amount}，实际 ${currentBalance}`)
   }
   const cardId = balRows[0].card_id as string
   await tx.execute(sql`
@@ -3576,7 +3578,8 @@ export const confirmOfflinePayment = withPermission(
           }
           const currentBalance = Number(balRows[0].balance)
           if (currentBalance + 0.001 < orderPendingPrepaid) {
-            throw new Error(`INSUFFICIENT_BALANCE:${currentBalance}: 顾客储值卡余额不足，期望扣 ${orderPendingPrepaid}，实际 ${currentBalance}`)
+            // 同上：余额不放子标签位（issue #133 评审 round 3）
+            throw new Error(`INSUFFICIENT_BALANCE: 顾客储值卡余额不足，期望扣 ${orderPendingPrepaid}，实际 ${currentBalance}`)
           }
           const cardId = balRows[0].card_id as string
           await tx.execute(sql`
@@ -5212,8 +5215,9 @@ export const createOrder = withPermission(
     // 修复 f4248169 把这些 throw 迁移到 ApiError（带 "<PREFIX>: " 前缀）后，
     // 旧的 err.message === / startsWith('<中文>') 匹配器全部失配，被吞成通用「创建订单失败」的回归。
     if (err instanceof ApiError) {
-      const parsed = parseErrorPrefix(err.message)
-      return { success: false, message: parsed?.displayMessage ?? err.message }
+      // 走 businessErrorMessage 而非 parsed.displayMessage：后者只剥一级前缀，
+      // 会把 HOME_PRODUCT_NO_PENDING: 这类二级子标签送进 toast（issue #133 评审 round 3）
+      return { success: false, message: businessErrorMessage(err, '创建订单失败，请稍后重试') }
     }
     // 全额储值卡抵扣扣卡失败：deductPrepaidCardAtCreation 抛 plain Error（非 ApiError），
     // 消息形如 'INSUFFICIENT_BALANCE:NO_CARD: ...' / 'INSUFFICIENT_BALANCE:<余额>: ...'，
@@ -6145,8 +6149,9 @@ export const createConversionOrder = withPermission(
       return { success: false, message: stripped || '顾客储值卡余额不足' }
     }
     if (err instanceof ApiError) {
-      const parsed = parseErrorPrefix(err.message)
-      return { success: false, message: parsed?.displayMessage ?? err.message }
+      // 走 businessErrorMessage 而非 parsed.displayMessage：后者只剥一级前缀，
+      // 会把 HOME_PRODUCT_NO_PENDING: 这类二级子标签送进 toast（issue #133 评审 round 3）
+      return { success: false, message: businessErrorMessage(err, '创建订单失败，请稍后重试') }
     }
     if (m?.includes('SKU_NOT_FOUND:')) return { success: false, message: '转入商品不存在' }
     if (pgErrorCode(err) === '23503') {

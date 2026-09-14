@@ -81,7 +81,9 @@ const MAX_DISPLAY_LENGTH = 120
  * `lib/permissions.ts` 的 `PermissionError`（`digest = 'PERMISSION_DENIED'`，
  * 供 `(main)/error.tsx` 判 403 用）与其 401 对应物。
  *
- * ⚠️ 与 `(main)/error.tsx:24,27` 的同名字面量是**同一套约定的两份硬编码**，改一处必改另一处。
+ * ⚠️ `(main)/error.tsx` 判 401/403 现在经 `actionErrorType` **间接依赖本 Map**（本次已把那边的
+ * 字面量副本收掉）。因此从这里删掉任一 token 会连带杀死错误页的 403/401 分级，
+ * 由 `src/app/(main)/error.test.tsx` 守护。
  * 用 Map 而非对象字面量：对象查表会命中 `Object.prototype`，`digest='toString'` 会返回函数而非字符串。
  *
  * 业务侧抛的 `ApiError('PERMISSION_DENIED', '具体原因')` 走 `rethrowWithDigest`，
@@ -119,10 +121,13 @@ const MAX_SCANNABLE_LENGTH = 2000
  * `action-error.test.ts` 的正负例用例钉住（正例=真实业务文案不得被误吞）。
  */
 const TECHNICAL_DETAIL_PATTERNS: readonly RegExp[] = [
-  // SQL 与 PG 报错术语
-  /\b(?:select|insert into|update\s+\w+\s+set|delete from|relation|constraint|duplicate key|violates|syntax error at)\b/i,
-  // 文件路径（两段以上）与 URL
-  /(?:\/[\w.-]+){2,}/,
+  // SQL 与 PG 报错术语。`does not exist` 单列一条：PG 的 relation/column/type/function
+  // 全用这句收尾，只枚举 relation 会漏掉 `column "customer_id" does not exist`（评审 round 3）。
+  /\b(?:select|insert into|update\s+\w+\s+set|delete from|relation|constraint|duplicate key|violates|syntax error at|invalid input syntax|out of range)\b/i,
+  /\bdoes not exist\b/i,
+  // 文件路径（两段以上）。`(?<![\w])` 不可省：否则「仅支持 JPG/PNG/WebP/GIF」这类
+  // 斜杠分隔的业务选项会被当成路径吞掉（评审 round 3 的真实反例）。
+  /(?<![\w])(?:\/[\w.-]+){2,}/,
   /https?:\/\//i,
   // IPv4[:端口]
   /\b\d{1,3}(?:\.\d{1,3}){3}\b/,

@@ -3267,7 +3267,8 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     const result = await createConversionOrder(homeConvData)
 
     expect(result.success).toBe(false)
-    expect(JSON.stringify(result)).toContain('HOME_PRODUCT_NO_PENDING')
+    // 子标签 HOME_PRODUCT_NO_PENDING 只进日志，用户看到的是中文正文（issue #133）
+    expect(result.message).toBe('所选家居产品已无未提货数量，不可折抵')
   })
 
   it('#125 家居扣减 rowsAffected=0（并发被抢先）→ 冲突', async () => {
@@ -3280,7 +3281,8 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     const result = await createConversionOrder(homeConvData)
 
     expect(result.success).toBe(false)
-    expect(JSON.stringify(result)).toContain('HOME_PRODUCT_CONCURRENT_CHANGED')
+    // 子标签 HOME_PRODUCT_CONCURRENT_CHANGED 只进日志，用户看到的是中文正文（issue #133）
+    expect(result.message).toBe('家居产品可提数量变化，请重试')
   })
 
   it('受限普通转入 SKU 不匹配顾客绑定门店市场时拒绝提交', async () => {
