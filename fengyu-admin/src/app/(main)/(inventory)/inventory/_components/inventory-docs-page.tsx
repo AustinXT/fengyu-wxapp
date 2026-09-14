@@ -352,7 +352,7 @@ function CreateDocDialog({
    *
    * ⚠️ 用 ref 不用 state：它**绝不能进任何 useEffect 的依赖数组**（#129 的成因正是如此）。
    */
-  const lotCacheRef = useRef<Map<string, Promise<InventoryLotRow[]>>>(new Map())
+  const lotCacheRef = useRef<LotCache>(new Map())
   /**
    * 缓存代次。原生 <dialog> 关闭不卸载组件，`lotCacheRef` 与每行的 `loaded` 都会常驻 ——
    * 只 clear() 缓存是不够的：子组件的 `loaded.key` 没变，effect 根本不会重跑。
@@ -371,7 +371,12 @@ function CreateDocDialog({
 
   useEffect(() => {
     if (open) return
-    lotCacheRef.current.clear()
+    // 只丢弃**已完成**的结果：在途请求留着给下一代复用。
+    // Server Action 不可 abort，关闭时无条件 clear 等于把还在 FIFO 队列里排队的 N 个请求
+    // 白白作废；用户秒关秒开就会再发 N 个，新请求还排在旧请求后面，等待时间翻倍。
+    for (const [key, entry] of lotCacheRef.current) {
+      if (entry.settled) lotCacheRef.current.delete(key)
+    }
     setLotEpoch((n) => n + 1)
     // 代次一换，已选的 lotId 可能指向下一代里已经不存在的批次：受控 select 会显示空白，
     // state 却还留着旧值，直接提交就只能靠服务端 lockLotById 兜底报错。换主体/换 SKU
@@ -530,6 +535,14 @@ function CreateDocDialog({
  */
 type LotLoadState = { key: string; lots: InventoryLotRow[]; failed?: boolean }
 
+/**
+ * 弹窗级批次取数缓存：(库位, SKU) → 在途/已完成的 Promise。
+ *
+ * key **不含代次** —— 代次只管「结果算不算新鲜」（编在 DocLotSelect 的 cacheKey 里），
+ * 在途去重是另一回事。关闭弹窗时只清 `settled` 的条目，在途的留给下一代复用。
+ */
+type LotCache = Map<string, { promise: Promise<InventoryLotRow[]>; settled: boolean }>
+
 function DocLotSelect({
   locationId,
   skuId,
@@ -545,38 +558,46 @@ function DocLotSelect({
   value: string
   onChange: (lotId: string) => void
   /** 弹窗级 (库位,SKU) → Promise 缓存，见 CreateDocDialog 的 lotCacheRef */
-  cache: Map<string, Promise<InventoryLotRow[]>>
+  cache: LotCache
   /** 缓存代次，弹窗关闭时递增，用来强制下次打开重新取数 */
   epoch: number
   /** 弹窗是否打开。原生 <dialog> 关闭不卸载 children，关着时绝不能取数 */
   active: boolean
   label: string
 }) {
-  // 用 JSON 数组当 key，避免 ('a:b','c') 与 ('a','b:c') 这类分隔符歧义撞进同一个缓存槽
+  // 用 JSON 数组当 key，避免 ('a:b','c') 与 ('a','b:c') 这类分隔符歧义撞进同一个缓存槽。
+  // 组件自己的新鲜度 key 含代次（换代即判定过期）；查缓存用的 key 不含代次（在途请求跨代可复用）。
   const cacheKey = locationId && skuId ? JSON.stringify([epoch, locationId, skuId]) : ''
+  const requestKey = locationId && skuId ? JSON.stringify([locationId, skuId]) : ''
   const [retryToken, setRetryToken] = useState(0)
   const [loaded, setLoaded] = useState<LotLoadState | null>(null)
 
   useEffect(() => {
     if (!active || !cacheKey) return
     let cancelled = false
-    let pending = cache.get(cacheKey)
-    if (!pending) {
-      pending = listInventoryLotOptions(locationId, skuId).then((lots) => {
+    let entry = cache.get(requestKey)
+    if (!entry) {
+      const promise = listInventoryLotOptions(locationId, skuId).then((lots) => {
         // 契约异常（灰度不一致 / action 回归返回了非数组）必须走失败路径，
         // 不能吞成「正常的空列表」—— 那会和 #129 一样让用户误判为「没货」
         if (!Array.isArray(lots)) throw new Error('批次接口返回格式异常')
         return lots
       })
-      cache.set(cacheKey, pending)
+      entry = { promise, settled: false }
+      cache.set(requestKey, entry)
+      const created = entry
+      void promise.then(
+        () => { created.settled = true },
+        () => { created.settled = true },
+      )
     }
-    pending
+    entry.promise
       .then((lots) => {
         if (!cancelled) setLoaded({ key: cacheKey, lots })
       })
       .catch((error) => {
         // 失败的 Promise 不能留在缓存里，否则重试会拿到同一个已 reject 的 Promise
-        cache.delete(cacheKey)
+        cache.delete(requestKey)
         // 失败必须让用户看见：静默吞掉会和「该批次真的没货」长得一模一样。
         // 多行共用同一个 key 时会各自 catch，用 cacheKey 当 toast id 去重，避免弹 N 条一样的。
         if (!cancelled) {
@@ -587,7 +608,7 @@ function DocLotSelect({
     return () => {
       cancelled = true
     }
-  }, [active, cacheKey, locationId, skuId, cache, retryToken])
+  }, [active, cacheKey, requestKey, locationId, skuId, cache, retryToken])
 
   const isCurrent = loaded?.key === cacheKey
   const lots = isCurrent ? loaded.lots : []

@@ -372,6 +372,27 @@ describe('InventoryDocsPage 来源批次下拉（#129 回归）', () => {
     expect(listInventoryLotOptions).toHaveBeenCalledTimes(2)
   })
 
+  it('请求还在途时关掉再打开，复用同一个在途请求而不是重发', async () => {
+    // Server Action 不可 abort。关闭时无条件清缓存，等于把还在 FIFO 队列里排队的请求作废；
+    // 用户秒关秒开就会再发一遍，新请求还排在旧请求后面，等待时间翻倍 —— 又是 #129 的观感。
+    const first = deferred<InventoryLotRow[]>()
+    vi.mocked(listInventoryLotOptions).mockReturnValue(first.promise as never)
+
+    openDialogAndPickSource()
+    expect(listInventoryLotOptions).toHaveBeenCalledTimes(1)
+    expect(lotSelect()).toBeDisabled()
+
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '取消' }))
+    fireEvent.click(screen.getByRole('button', { name: '新建' }))
+    // 在途的那次没被作废，也没有第二次
+    expect(listInventoryLotOptions).toHaveBeenCalledTimes(1)
+
+    await act(async () => { first.resolve([lot(11, 'SKU-1', 'B-001', 30)]) })
+    await waitFor(() => expect(lotSelect()).not.toBeDisabled())
+    expect(listInventoryLotOptions).toHaveBeenCalledTimes(1)
+    expect(within(screen.getByRole('dialog')).getByRole('option', { name: /B-001/ })).toBeInTheDocument()
+  })
+
   it('同一 (主体, SKU) 被多行选中时只发一次请求（弹窗级 Promise 缓存）', async () => {
     vi.mocked(listInventoryLotOptions).mockResolvedValue([lot(11, 'SKU-1', 'B-001', 30)])
 
