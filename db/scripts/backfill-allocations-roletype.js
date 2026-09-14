@@ -13,11 +13,11 @@
  *
  * 用法：
  *   # 5434 / fengyu（测试库，admin 用）
- *   PG_CONNECTION_STRING="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
+ *   PG_CONNECTION_STRING="postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp" \
  *     node db/scripts/backfill-allocations-roletype.js
  *
  *   # 5433 / fengyu_wxapp（开发库，云函数用）
- *   PG_CONNECTION_STRING="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
+ *   PG_CONNECTION_STRING="postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp" \
  *     node db/scripts/backfill-allocations-roletype.js
  *
  *   # dry-run 模式（仅预览统计，不执行 UPDATE）
@@ -26,7 +26,7 @@
  *   # 实际写入（commit 模式）
  *   node db/scripts/backfill-allocations-roletype.js --commit
  *
- * 重要：生产业务库 118.178.196.26:5433/fengyu_wxapp（必跑）；开发/测试库 47.113.202.7:5433/fengyu_wxapp 先验证。两端均 5433/fengyu_wxapp，仅 IP 区分。
+ * 重要：生产业务库 118.178.196.26:5433/fengyu_wxapp（必跑）；开发/测试库 101.34.242.103:5433/fengyu_wxapp 先验证。两端均 5433/fengyu_wxapp，仅 IP 区分。
  *
  * 自检：执行后 `role_type IS NULL AND is_void = FALSE` 应等于 0。
  *
@@ -95,7 +95,7 @@ async function main() {
 
   log(`目标库: ${PG_CONFIG.connectionString.replace(/:[^:@]+@/, ':***@')}`)
   log(`模式: ${commit ? 'COMMIT（实际写入）' : 'DRY-RUN（仅预览，不写入；加 --commit 才执行 UPDATE）'}`)
-  log('提醒: 生产业务库 118.178.196.26:5433/fengyu_wxapp（必跑）；开发/测试库 47.113.202.7:5433/fengyu_wxapp 先验证（两端均 5433/fengyu_wxapp，仅 IP 区分）')
+  log('提醒: 生产业务库 118.178.196.26:5433/fengyu_wxapp（必跑）；开发/测试库 101.34.242.103:5433/fengyu_wxapp 先验证（两端均 5433/fengyu_wxapp，仅 IP 区分）')
 
   const pool = new Pool(PG_CONFIG)
   try {

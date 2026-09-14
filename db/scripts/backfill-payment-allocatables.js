@@ -21,7 +21,7 @@
  *   - 最后按 refreshOrderAllocationRollup 同义重算 sale_orders.allocation_status（任一回款待分配→订单待分配）。
  *
  * 用法（必须显式传库；先 5434 验证，再 5433 生产）：
- *   PG_CONNECTION_STRING="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
+ *   PG_CONNECTION_STRING="postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp" \
  *     node db/scripts/backfill-payment-allocatables.js              # dry-run（事务内跑完打印统计后 ROLLBACK）
  *   PG_CONNECTION_STRING="...5433/fengyu_wxapp" \
  *     node db/scripts/backfill-payment-allocatables.js --commit     # 实际写入（COMMIT）

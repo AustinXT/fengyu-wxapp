@@ -30,15 +30,15 @@
  *
  * 用法：
  *   # 默认 dry-run，仅打印将要执行的迁移统计
- *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
+ *   DATABASE_URL="postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp" \
  *     node db/scripts/recalc-all-customer-types.js
  *
  *   # 显式提交
- *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
+ *   DATABASE_URL="postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp" \
  *     node db/scripts/recalc-all-customer-types.js --apply
  *
  * 顺序：
- *   先在开发/测试库 47.113.202.7:5433/fengyu_wxapp 跑 --apply 验证；生产库 118.178.196.26:5433/fengyu_wxapp 再跑一次（必跑）。两端均 5433/fengyu_wxapp，仅 IP 区分。
+ *   先在开发/测试库 101.34.242.103:5433/fengyu_wxapp 跑 --apply 验证；生产库 118.178.196.26:5433/fengyu_wxapp 再跑一次（必跑）。两端均 5433/fengyu_wxapp，仅 IP 区分。
  *
  * 幂等：
  *   - customer_type 仅向上跃迁；二次运行时已是目标态的不再 UPDATE。

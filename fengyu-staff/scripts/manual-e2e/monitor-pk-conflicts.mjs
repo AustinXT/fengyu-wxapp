@@ -34,10 +34,13 @@
  */
 import { Pool } from 'pg'
 
+// 连接串必填：不提供默认值，避免忘传时连到已失效的旧地址（见 db/CLAUDE.md）
 const PG_CONNECTION_STRING =
-  process.env.PG_CONNECTION_STRING ||
-  process.env.DATABASE_URL ||
-  'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu'
+  process.env.PG_CONNECTION_STRING || process.env.DATABASE_URL
+if (!PG_CONNECTION_STRING) {
+  console.error('✗ 必须显式传 PG_CONNECTION_STRING 或 DATABASE_URL（dev=101.34.242.103:5433/fengyu_wxapp / prod=118.178.196.26:5433/fengyu_wxapp）')
+  process.exit(1)
+}
 
 const DAYS = Number(process.env.DAYS || 30)
 const ROLLBACK_WAIT = Number(process.env.ROLLBACK_WAIT || 0) // 0 = 不采样

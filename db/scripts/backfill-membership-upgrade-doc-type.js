@@ -27,11 +27,11 @@
  *
  * 用法：
  *   # dry-run（默认，仅打印统计）
- *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
+ *   DATABASE_URL="postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp" \
  *     node db/scripts/backfill-membership-upgrade-doc-type.js
  *
  *   # 实际提交
- *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
+ *   DATABASE_URL="postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp" \
  *     node db/scripts/backfill-membership-upgrade-doc-type.js --apply
  *
  * 顺序：先 5434/fengyu（dev）--apply 验证；再 5433/fengyu_wxapp（prod）--apply。

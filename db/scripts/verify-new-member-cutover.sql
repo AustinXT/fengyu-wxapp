@@ -11,8 +11,8 @@
 -- 依赖：backfill-became-member-at.js 已在两库执行完毕（自检 NULL = 0）。
 --
 -- 执行方式：
---   psql "postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu" -f db/scripts/verify-new-member-cutover.sql
---   psql "postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" -f db/scripts/verify-new-member-cutover.sql
+--   psql "postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp" -f db/scripts/verify-new-member-cutover.sql   # dev
+--   psql "postgresql://fengyu:fengyu123@118.178.196.26:5433/fengyu_wxapp" -f db/scripts/verify-new-member-cutover.sql   # prod
 
 \echo '========================================'
 \echo '1. 全局新会员数（本月）：旧 vs 新口径出数对比'
