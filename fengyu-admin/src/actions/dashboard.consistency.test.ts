@@ -120,6 +120,35 @@ describe('dashboard 组织层级现金流业绩一致性守护', () => {
       const paymentMetrics = normalize(stripComments(
         between(adminSrc, 'payment_metrics AS (', 'order_metrics AS ('),
       ))
+
+      /**
+       * `tz_today` / `bounds` 的定义也要锁（codex 评审）。
+       *
+       * 下面的 CASE 快照只锁「引用了 `(SELECT today FROM bounds)`」，
+       * 而 `bounds` 自己定义在 `payment_metrics` 之前、在截取范围之外。
+       * 把 `bounds.today` 改成 `today - 1`，所有 CASE 快照与 CTE 正向快照都不变、
+       * 守护全绿，但五个日期指标**整体错位一天**——这不是对抗构造，
+       * 是重构 `bounds` 时真实会犯的错。
+       */
+      const boundsDef = normalize(stripComments(
+        between(adminSrc, 'WITH tz_today AS (', 'payment_metrics AS ('),
+      ))
+      expect(boundsDef, '未能定位 tz_today / bounds 定义').not.toBe('')
+      expect(boundsDef, 'tz_today / bounds 的定义漂移，会让五个日期指标整体错位').toBe(
+        "WITH tz_today AS ( SELECT (NOW() AT TIME ZONE 'Asia/Shanghai')::date AS today ),"
+        + ' bounds AS ( SELECT today, today - 1 AS yesterday FROM tz_today ),',
+      )
+
+      /**
+       * 最终投影同样在截取范围之外：`payment_metrics.*` 一旦改成逐列点名，
+       * 就能在这里重算同名字段而绕过上面所有块内守护。
+       */
+      const projection = normalize(stripComments(adminSrc))
+        .match(/SELECT payment_metrics\.\*[\s\S]*?CROSS JOIN order_metrics/)
+      expect(projection, '未能定位最终投影').toBeTruthy()
+      expect(projection![0], '最终投影漂移：只允许 .* 透传两个 CTE，不得在此重算指标').toBe(
+        'SELECT payment_metrics.*, order_metrics.* FROM payment_metrics CROSS JOIN order_metrics',
+      )
       // between() 找不到起止标记时返回空串，会让下面所有负向断言恒真（假绿）
       expect(paymentMetrics, '未能截取 payment_metrics 片段，后续断言将失去意义').not.toBe('')
 
