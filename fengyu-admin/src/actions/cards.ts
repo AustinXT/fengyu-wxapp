@@ -746,7 +746,7 @@ export interface HeldCardCandidate {
   saleAmount: string
   received: string
   pendingReceived: string
-  /** 折抵金额 = unitRealPrice × remainingSessions */
+  /** 折抵金额：疗程卡 = unitRealPrice × remainingSessions；家居产品 = unitRealPrice × remainingQty（未提货数量，#125） */
   deductibleAmount: string
   expireDate: string | null
   remark: string | null

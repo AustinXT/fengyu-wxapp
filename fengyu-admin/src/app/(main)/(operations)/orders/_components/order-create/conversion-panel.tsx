@@ -25,7 +25,7 @@ import { getTreatmentCardBusinessIdentity, groupTreatmentCards, selectGroupSourc
 export interface ConversionPanelProps {
   /** 加载中（父组件正在调用 getCustomerHeldCards） */
   loading: boolean
-  /** 候选折抵卡 */
+  /** 候选折抵项（疗程卡 + 未提货家居） */
   heldCards: HeldCardCandidate[]
   /** 当前已勾选的 saleItemId 集合 */
   selectedIds: string[]
@@ -200,9 +200,9 @@ export function ConversionPanel({
         <h3 className="text-sm font-semibold">转换单结算</h3>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* 左列：折抵卡列表 */}
+          {/* 左列：折抵项列表（疗程卡 + 未提货家居） */}
           <div className="space-y-2">
-            <p className="text-xs text-[#666666]">勾选折抵卡</p>
+            <p className="text-xs text-[#666666]">勾选折抵项</p>
             {!loading && groupedHeldCards.length > 0 && (
               <div className="grid gap-2 sm:grid-cols-[1fr_1fr]">
                 <Select
@@ -241,11 +241,11 @@ export function ConversionPanel({
               <p className="text-xs text-[#999999] py-4 text-center">正在加载候选卡…</p>
             )}
             {!loading && groupedHeldCards.length === 0 && (
-              <p className="text-xs text-[#999999] py-4 text-center">该顾客在当前门店无可折抵卡</p>
+              <p className="text-xs text-[#999999] py-4 text-center">该顾客在当前门店无可折抵项</p>
             )}
             {!loading && groupedHeldCards.length > 0 && filteredHeldCards.length === 0 && (
               <p className="text-xs text-[#999999] py-4 text-center">
-                {hasCardFilters ? "未找到匹配的折抵项" : "该顾客在当前门店无可折抵卡"}
+                {hasCardFilters ? "未找到匹配的折抵项" : "该顾客在当前门店无可折抵项"}
               </p>
             )}
             <div className="space-y-1 max-h-72 overflow-y-auto">

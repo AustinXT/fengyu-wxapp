@@ -44,12 +44,12 @@
     </view>
   </view>
 
-  <text class="conv-title">折抵卡选择</text>
+  <text class="conv-title">折抵项选择</text>
 
   <!-- 加载中 -->
   <view wx:if="{{loading}}" class="conv-loading">
     <van-loading size="36rpx" />
-    <text class="conv-loading-text">加载顾客折抵卡</text>
+    <text class="conv-loading-text">加载顾客折抵项</text>
   </view>
 
   <!-- 错误 -->
@@ -59,7 +59,7 @@
 
   <!-- 空态 -->
   <view wx:elif="{{allCardCount === 0}}" class="conv-empty">
-    <van-empty description="该顾客暂无可折抵卡" />
+    <van-empty description="该顾客暂无可折抵项" />
   </view>
 
   <!-- 卡列表 -->
@@ -73,7 +73,7 @@
           <view class="conv-card-filter-picker">{{cardCategoryLabel}}</view>
         </picker>
       </view>
-      <van-search value="{{cardNameQuery}}" placeholder="搜索疗程卡名称" bind:change="onCardNameChange" />
+      <van-search value="{{cardNameQuery}}" placeholder="搜索折抵项名称" bind:change="onCardNameChange" />
     </view>
 
     <view wx:if="{{cards.length === 0}}" class="conv-empty">

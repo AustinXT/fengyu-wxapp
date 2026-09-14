@@ -2137,6 +2137,9 @@ describe('#125 家居转换折抵跨端守护', () => {
       expect(src).toContain("AND item_direction = '购买' ORDER BY sale_item_id FOR UPDATE")
       expect(src).not.toContain("AND product_type = '家居产品' ORDER BY sale_item_id FOR UPDATE")
       expect(src).toMatch(/homeRefundQty[\s\S]{0,2500}cascadeRefund/)
+      // 加锁必须无条件：老退款单（无 note.items 且 ref_sale_item_id 空）会让 homeRefundQty 为空，
+      // 用 `if (homeRefundQty.size > 0)` 包裹加锁就退回「不锁不校验」的旧缺口
+      expect(src).not.toContain('homeRefundQty.size > 0')
     })
   })
 

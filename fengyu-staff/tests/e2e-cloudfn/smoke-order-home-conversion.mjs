@@ -253,6 +253,8 @@ async function main() {
     _testOpenid: TEST_MANAGER_OPENID,
     clientUserId: TEST_CLIENT_USER_ID,
   })
+  check(held2.code === 0, `customerHeldCards(2) code=${held2.code} msg=${held2.message}`)
+  check(Array.isArray(held2.data?.cards), 'customerHeldCards(2) 未返回 cards 数组')
   const stillCandidate = (held2.data?.cards || []).some((c) => c.saleItemId === srcItemId)
   check(!stillCandidate, '已全部结算的家居行不应出现在折抵候选中')
 
