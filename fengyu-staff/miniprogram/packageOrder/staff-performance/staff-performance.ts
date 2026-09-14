@@ -254,14 +254,16 @@ Page({
 
     if (this.syncRangeToToday()) return; // 已经走了完整的重拉流程
 
-    // 已经翻过好几页时，被动刷新只刷汇总、**不重建明细**：`loadData(true, …)` 的 reset 语义
-    // 会把几百条塌回第一页 20 条，而「去微信里抄个手机号再切回来」恰恰是用检索功能时的
-    // 高频动作，几十次「继续加载下一页」的进度不该就这么没了（后端每页还都是全区间扫描）。
-    //
-    // ⚠️ 但**请求必须照发**：隐藏期间员工可能被撤权、被调店、手机号被 admin 置空，
-    // 跳过请求就等于跳过权限重验，屏幕上会继续挂着已经无权查看的薪酬数据。
-    // 失败路径（尤其 -403 清屏）与完整重拉共用同一套逻辑。
-    this.loadData(true, true, this.data.page > 1 && !!this._lastKey);
+    // 被动刷新是完整 reset：翻了几十页再切个后台回来，进度确实会塌回第一页，
+    // 体验上不舒服。但**不能**为了保住进度就复用旧的 offset 游标 ——
+    // 后端是 offset 分页且每次重新排序，期间只要有新单/退款作废，游标就指偏了：
+    // 下一页会把旧的最后一条重复出来、新记录永远翻不到，页面还会显示「已加载 N/共 N 条」
+    // 让员工以为查全了。前端拿不到数据版本号，无法可靠判断是否漂移
+    // （只比 total + 首条是启发式，中间插入恰好保持两者不变就会漏判）。
+    // 要既保进度又保正确，得等后端换成 keyset 游标分页 —— 已登记为 follow-up。
+    // 另外这次请求也承担权限重验：隐藏期间员工可能被撤权/调店/手机号被置空，
+    // 不发请求就等于把已无权查看的薪酬继续挂在屏幕上。
+    this.loadData(true, true);
   },
 
   /**
@@ -660,7 +662,7 @@ Page({
   // keepStaleOnError：同主体的被动刷新（onShow）失败时保留旧数据 —— 旧值是「正确主体的
   // 最后已知值」，抹成 ¥0.00 + 空列表属信息丢失，且页面没有重试入口。只有主体变更
   // （换员工/换时段）与筛选切换失败才需要清，否则新选中态会挂着旧条件的明细。
-  async loadData(reset: boolean, keepStaleOnError = false, preserveItems = false) {
+  async loadData(reset: boolean, keepStaleOnError = false) {
     const seq = ++this._seq;
     // page 作为局部量推导：失败时不会像「先 setData 自增」那样留下永久跳页
     const page = reset ? 1 : this.data.page + 1;
@@ -718,14 +720,7 @@ Page({
       // 优先用新字段 totalServiceCommission，回退到旧字段 totalServiceFee（向后兼容）
       const serviceCommission = res.totalServiceCommission ?? res.totalServiceFee ?? 0;
       const total = res.total || 0;
-      // preserveItems 只在「数据集一点没动」时才站得住：后端是 offset 分页且**每次都重新排序**，
-      // 一旦期间新增/作废了记录，旧游标就漂了 —— 下一次翻页会把旧的最后一条重复出来，
-      // 新记录则永久漏掉，最后页面显示「已加载 81/共 81 条」却怎么也搜不到那个顾客。
-      // 一发现漂移就退回完整刷新（本次请求拿的正是第 1 页，直接当 reset 用）。
-      const effectivePreserve = preserveItems && !this.pagingDrifted(formattedItems, total);
-      const newItems = reset && !effectivePreserve
-        ? formattedItems
-        : [...this.data.items, ...formattedItems];
+      const newItems = reset ? formattedItems : [...this.data.items, ...formattedItems];
       // 翻页只传**新增那一页**，不把已累积的几百上千条重新序列化一遍：
       // setData 单次有 1MB 上限，超了整次调用直接失败（表现是「继续加载」点了没反应，
       // 还会和「没加载够」的提示混在一起，员工根本分不清）。
@@ -734,9 +729,7 @@ Page({
       // 本次写回已经带了最新的 buildSearchView 结果，在途防抖再跑一遍纯属重复过桥
       this.cancelFilter();
       const itemsPatch: Record<string, unknown> = {};
-      if (effectivePreserve) {
-        // 明细不动，什么都不用拼
-      } else if (reset) {
+      if (reset) {
         itemsPatch.items = formattedItems;
       } else {
         const base = this.data.items.length;
@@ -750,39 +743,23 @@ Page({
         totalServiceCommission: money(serviceCommission),
         totalCommission: money(res.totalCommission),
         ...this.buildCategoryPanel(res.categorySummary, res.categories, activeMainTab, activeSubCategory),
+        ...itemsPatch,
+        // 关键词跨翻页存活：触底取回的新条目立刻参与过滤，不必重新输入一遍。
+        // 未搜索时 displayItems 恒为空数组（wxml 直接渲染 items），不会再传一份全量。
+        // 关键词变了就不带旧窗口（复位回第一屏）—— 改完词 200ms 内正好有响应回来时，
+        // 上面的 cancelFilter 会吞掉防抖，窗口复位就只剩这一条路；
+        // reset（换时段/换员工/被动刷新）时 items 整批换掉，旧窗口起点同样没意义了
+        ...this.buildSearchView(
+          newItems,
+          this.data.keyword,
+          total,
+          !reset && keywordAtBuild === this._filteredKeyword ? this.data.displayLimit : undefined,
+          !reset && keywordAtBuild === this._filteredKeyword ? this.data.displayOffset : undefined,
+        ),
         total,
-        // preserveItems：这次请求只为刷汇总 + 重验权限（onShow 深翻页场景），
-        // 明细与分页游标原样保留。hasMore 仍按**已加载页数**对新 total 重算：
-        // 隐藏期间可能新增了单，翻页还得能继续
-        ...(effectivePreserve
-          ? {
-              hasMore: this.data.page * PAGE_SIZE < total,
-              ...this.buildSearchView(
-                this.data.items,
-                this.data.keyword,
-                total,
-                keywordAtBuild === this._filteredKeyword ? this.data.displayLimit : undefined,
-                keywordAtBuild === this._filteredKeyword ? this.data.displayOffset : undefined,
-              ),
-            }
-          : {
-              ...itemsPatch,
-              // 关键词跨翻页存活：触底取回的新条目立刻参与过滤，不必重新输入一遍。
-              // 未搜索时 displayItems 恒为空数组（wxml 直接渲染 items），不会再传一份全量。
-              // 关键词变了就不带旧窗口（复位回第一屏）—— 改完词 200ms 内正好有响应回来时，
-              // 上面的 cancelFilter 会吞掉防抖，窗口复位就只剩这一条路；
-              // reset（换时段/换员工）时 items 整批换掉，旧窗口起点同样没意义了
-              ...this.buildSearchView(
-                newItems,
-                this.data.keyword,
-                total,
-                !reset && keywordAtBuild === this._filteredKeyword ? this.data.displayLimit : undefined,
-                !reset && keywordAtBuild === this._filteredKeyword ? this.data.displayOffset : undefined,
-              ),
-              page,
-              // 用本次请求的 page 判断，不比累计长度 —— 长度一旦被过期响应污染，比较逻辑会崩
-              hasMore: page * PAGE_SIZE < total,
-            }),
+        page,
+        // 用本次请求的 page 判断，不比累计长度 —— 长度一旦被过期响应污染，比较逻辑会崩
+        hasMore: page * PAGE_SIZE < total,
       }, () => {
         // 这三个是「屏幕上那批数据的身份证」，必须等数据真的过桥落到视图层才提交：
         // 提前写的话，setData 万一失败（比如撞 1MB 上限）它们就和实际渲染的内容对不上，
@@ -979,20 +956,6 @@ Page({
     // 剥 86 前要确认剩下的是合法国内手机号段（1[3-9] 开头的 11 位），
     // 否则 `8612345678901` 这种不明号码会被削成 `12345678901`，反而更难对上
     return /^861[3-9]\d{9}$/.test(digits) ? digits.slice(2) : digits;
-  },
-
-  /**
-   * 判断「保留旧明细」这件事还安不安全。
-   *
-   * total 变了 = 明确有增删；第一页首条换人了 = 排序位次动了。任一成立，
-   * 旧的 offset 游标就不再指向原来的位置，继续沿用会漏记录 + 重复记录。
-   * 明细行没有稳定主键（一单多行），用业务字段拼签名够用。
-   */
-  pagingDrifted(firstPage: PerformanceItem[], total: number): boolean {
-    if (total !== this.data.total) return true;
-    const sig = (it?: PerformanceItem) =>
-      it ? `${it.date}|${it.type}|${it.productName}|${it.amount}|${it.customerName}` : '';
-    return sig(firstPage[0]) !== sig(this.data.items[0]);
   },
 
   /** 两个 `YYYY-MM-DD` 之间的天数（含头不含尾）。用 UTC 构造避开夏令时/时区偏移 */

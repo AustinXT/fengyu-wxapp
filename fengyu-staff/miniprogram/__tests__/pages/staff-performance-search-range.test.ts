@@ -1608,37 +1608,7 @@ describe('绩效页 · 评审 round-20 闭环（glm）', () => {
     expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['张三'])
   })
 
-  test('深翻页后切后台再回来，不把几十次「继续加载」的进度塌掉', async () => {
-    const page = createPage()
-    page.onLoad({ range: 'month' })
-    mockPage(Array.from({ length: 20 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i)), 200)
-    await page.loadData(true)
-    for (let p = 0; p < 3; p++) {
-      mockPage(Array.from({ length: 20 }, (_, i) => makeItem(`顾客${i}`, `1390000${String(i).padStart(4, '0')}`, i)), 200)
-      await page.loadData(false)
-    }
-    expect(page.data.page).toBe(4)
-    expect(page.data.items).toHaveLength(80)
-
-    // onShow 在深翻页时改走「只刷汇总、保留明细」的模式（不用 vi.waitFor：
-    // 它在 fake timers 下会推进定时器，把跨零点回调提前引爆，测出来的不是真实时序）
-    const spy = vi.spyOn(page, 'loadData').mockResolvedValue(undefined as never)
-    page.onShow()
-    expect(spy).toHaveBeenCalledWith(true, true, true) // 第三参 = preserveItems
-    spy.mockRestore()
-
-    // 数据集没动（total 与第一页首条都一样）→ 保留明细与游标
-    vi.mocked(callStaffApi).mockClear()
-    mockPage(Array.from({ length: 20 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i)), 200)
-    await page.loadData(true, true, true)
-
-    expect(callStaffApi).toHaveBeenCalledTimes(1) // 请求照发 → 权限得到重验
-    expect(page.data.items).toHaveLength(80)      // 明细与分页游标原样保留
-    expect(page.data.page).toBe(4)
-    expect(page.data.items[0].customerName).toBe('顾客0')
-  })
-
-  test('隐藏期间数据集动过：不能沿用旧游标，退回完整刷新', async () => {
+  test('被动刷新是完整 reset：宁可丢翻页进度，也不能沿用会漂移的 offset 游标', async () => {
     const page = createPage()
     page.onLoad({ range: 'month' })
     mockPage(Array.from({ length: 20 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i)), 200)
@@ -1646,60 +1616,33 @@ describe('绩效页 · 评审 round-20 闭环（glm）', () => {
     await page.loadData(false)
     expect(page.data.items).toHaveLength(40)
 
-    // 新增了一条并排到最前：旧 offset 游标已经不指向原来的位置了。
-    // 沿用的话下一页会把旧的最后一条重复出来，新记录永远翻不到
-    mockPage([makeItem('新单', '13700000000', 999), ...Array.from({ length: 19 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i))], 201)
-    await page.loadData(true, true, true)
+    // 后端是 offset 分页 + 每次重排；期间有新单的话旧游标就指偏了，
+    // 继续沿用会重复旧行、漏掉新行，还会显示「已加载 N/共 N」让员工以为查全了
+    mockPage(Array.from({ length: 20 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i)), 201)
+    await page.loadData(true, true)
 
-    expect(page.data.items).toHaveLength(20)   // 退回第一页
+    expect(page.data.items).toHaveLength(20)
     expect(page.data.page).toBe(1)
-    expect(page.data.items[0].customerName).toBe('新单')
     expect(page.data.total).toBe(201)
   })
 
-  test('pagingDrifted：total 变或首条换人都算漂移', async () => {
-    const page = createPage()
-    page.onLoad({ range: 'month' })
-    const first20 = Array.from({ length: 20 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i))
-    mockPage(first20, 200)
-    await page.loadData(true)
-
-    const sameFirstPage = page.data.items.slice(0, 20)
-    expect(page.pagingDrifted(sameFirstPage, 200)).toBe(false)
-    expect(page.pagingDrifted(sameFirstPage, 201)).toBe(true)  // total 变了
-    expect(page.pagingDrifted([{ ...sameFirstPage[0], customerName: '别人' }, ...sameFirstPage.slice(1)], 200)).toBe(true)
-  })
-
-  test('只有第一页时 onShow 走完整刷新（preserveItems=false）', async () => {
-    const page = createPage()
-    page.onLoad({ range: 'month' })
-    mockPage([makeItem('张三', '13800000001', 1)], 1)
-    await page.loadData(true)
-
-    const spy = vi.spyOn(page, 'loadData').mockResolvedValue(undefined as never)
-    page.onShow()
-    expect(spy).toHaveBeenCalledWith(true, true, false)
-    spy.mockRestore()
-  })
-
-  test('保留明细的那次刷新如果撞上撤权，照样清屏', async () => {
+  test('被动刷新期间被撤权：必须清屏，不能继续挂着无权查看的薪酬', async () => {
     const page = createPage()
     page.onLoad({ range: 'month' })
     mockPage(Array.from({ length: 20 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i)), 200)
     await page.loadData(true)
     await page.loadData(false)
-    expect(page.data.items).toHaveLength(40)
 
     const denied = Object.assign(new Error('无权查看'), { errorType: 'PERMISSION_DENIED' })
     vi.mocked(callStaffApi).mockRejectedValue(denied)
-    await page.loadData(true, true, true)
+    await page.loadData(true, true)
 
-    // 访问被拒独立于 reset/preserve 模式清屏——否则撤权后他人薪酬会一直挂在屏幕上
     expect(page.data.items).toHaveLength(0)
     expect(page.data.displayItems).toHaveLength(0)
     expect(page.data.totalCommission).toBe('--')
     expect(page._lastKey).toBe('')
   })
+
 
   test('只有第一页时 onShow 仍照常被动刷新', async () => {
     const page = createPage()
