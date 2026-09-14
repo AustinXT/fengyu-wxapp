@@ -7,9 +7,18 @@
  *   - fengyu-admin/src/actions/dashboard.ts        (Drizzle / TS)
  *   - fengyu-staff/cloudfunctions/staffApi/routes/mgmt-dashboard.js (pg / JS)
  *
- * 因两端 ORM 不同（Drizzle vs 原生 pg）且 admin 用大 CTE，
- * staff 用按指标拆分的多查询，**完整 SQL snapshot 不可行**。
- * 守护策略改为"关键不变量字面量匹配"：
+ * 守护分两层：
+ *
+ * **① admin 单端：`orderStats` 整条 SQL 完整逐字快照**（2026-09-14 #140 起）。
+ * 原策略只做分段的「关键不变量字面量匹配」，但分段断言无论补多少条都有
+ * 「截取范围之外」的盲区——评审逐轮演示过：`bounds` 定义在 payment_metrics 之前、
+ * 最终投影在之后、`CROSS JOIN` 后还能追加 `WHERE FALSE` 让整条查询返回零行、
+ * `order_metrics` 里 `HAVING FALSE` 同理。每补一个分段就暴露下一个边界，
+ * 唯一收敛的办法是把整条 SQL 一次锁死。分段断言保留作为**失败定位辅助**。
+ *
+ * **② 跨端（admin ↔ staff）：仍用关键不变量字面量匹配**——
+ * 两端 ORM 不同（Drizzle vs 原生 pg）、admin 用大 CTE 而 staff 按指标拆分多查询，
+ * 跨端的完整 SQL snapshot 确实不可行。这层守护的四项不变量：
  *   1. 营业额公式 = SUM(sale_order_performance_events.amount)
  *   2. 付款类型 = 首次支付 / 回款 / 退款，排除储值卡抵扣
  *   3. 订单类型 = 销售单 / 转换单 / 充值单
@@ -55,6 +64,18 @@ function between(src: string, start: string, end: string): string {
   return from === -1 ? '' : src.slice(from, to === -1 ? undefined : to)
 }
 
+/** 提取 `orderStats` 的整条 SQL 模板（到 CROSS JOIN 结束，即模板末尾） */
+function extractOrderStatsSql(src: string): string {
+  const MARK = 'const orderStats = await db.execute(sql`'
+  const from = src.indexOf(MARK)
+  if (from === -1) return ''
+  const start = from + MARK.length
+  const anchor = src.indexOf('CROSS JOIN order_metrics', start)
+  if (anchor === -1) return ''
+  const end = src.indexOf('`', anchor)
+  return normalize(stripComments(src.slice(start, end === -1 ? undefined : end)))
+}
+
 function expectCashflowRevenueSql(src: string) {
   const normalized = normalize(stripComments(src))
   expect(normalized).toMatch(/FROM\s+sale_order_performance_events\s+spe/i)
@@ -68,6 +89,32 @@ function expectCashflowRevenueSql(src: string) {
   expect(normalized).not.toMatch(/payment_method/i)
 }
 
+/**
+ * `orderStats` 整条 SQL 的**完整逐字快照**（口径权威，任何改动必须显式更新本表）。
+ *
+ * 为什么最终要上完整快照：分段断言无论补多少条，总有「截取范围之外」的盲区。
+ * 评审逐轮演示过——bounds 定义在 payment_metrics 之前（改 `today - 1` 让五指标整体错位）、
+ * 最终投影在之后（逐列点名可重算同名字段）、`CROSS JOIN` 之后还能追加 `WHERE FALSE`
+ * 让整条查询返回零行把所有指标降为 0、`order_metrics` 里 `HAVING FALSE` 同理。
+ * 每补一个分段就暴露下一个边界，唯一收敛的办法是把整条 SQL 一次锁死。
+ *
+ * 下面那些分段断言（bounds / 六个 CASE / CTE 尾部 / 投影）**保留作为失败定位辅助**：
+ * 本条红了只说明「SQL 变了」，分段断言能指出变在哪一段。
+ */
+const EXPECTED_ORDER_STATS_SQL = [
+    "WITH tz_today AS ( SELECT (NOW() AT TIME ZONE 'Asia/Shanghai')::date AS today ),",
+    "bounds AS ( SELECT today, today - 1 AS yesterday FROM tz_today ),",
+    "payment_metrics AS ( SELECT COALESCE(SUM(CASE WHEN spe.performance_date = (SELECT today FROM bounds) AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.sale_order_type IN ('销售单', '转换单', '充值单') THEN spe.amount::numeric END), 0) AS today_revenue,",
+    "COALESCE(SUM(CASE WHEN spe.performance_date = (SELECT today FROM bounds) AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款') AND spe.amount::numeric > 0 AND spe.sale_order_type IN ('销售单', '转换单', '充值单') THEN spe.amount::numeric END), 0) AS today_paid_amount,",
+    "COALESCE(SUM(CASE WHEN spe.performance_date = (SELECT today FROM bounds) AND spe.status = '已支付' AND spe.change_type = '退款' AND spe.sale_order_type IN ('销售单', '转换单', '充值单') THEN ABS(spe.amount::numeric) END), 0) AS today_refunded_amount,",
+    "COALESCE(SUM(CASE WHEN spe.performance_date = (SELECT yesterday FROM bounds) AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.sale_order_type IN ('销售单', '转换单', '充值单') THEN spe.amount::numeric END), 0) AS yesterday_revenue,",
+    "COALESCE(SUM(CASE WHEN spe.performance_date = (SELECT yesterday FROM bounds) AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款') AND spe.amount::numeric > 0 AND spe.sale_order_type IN ('销售单', '转换单', '充值单') THEN spe.amount::numeric END), 0) AS yesterday_paid_amount,",
+    "COALESCE(SUM(CASE WHEN spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款') AND spe.amount::numeric > 0 AND spe.sale_order_type IN ('销售单', '转换单', '充值单') THEN spe.amount::numeric END), 0) AS total_paid_amount FROM sale_order_performance_events spe WHERE spe.store_id IN (${sql.join(scopeIds.map(id => sql`${id}`), sql`, `)}) AND spe.legacy_source IS DISTINCT FROM 'workfine' ),",
+    "order_metrics AS ( SELECT COUNT(DISTINCT CASE WHEN so.sale_order_datetime::date = (SELECT today FROM bounds) AND so.status NOT IN ('已关闭', '支付失败', '未审核', '已作废') AND so.sale_order_type IN ('销售单', '转换单') THEN so.client_user_id END) AS today_opened_customers,",
+    "COUNT(CASE WHEN so.status = '待支付' THEN 1 END) AS pending_orders,",
+    "COUNT(CASE WHEN so.status IN ('已支付') AND so.allocation_status = '待分配' AND so.sale_order_type IN ('销售单', '转换单') THEN 1 END) AS pending_allocations FROM sale_orders so WHERE so.store_id IN (${sql.join(scopeIds.map(id => sql`${id}`), sql`, `)}) AND so.legacy_source IS DISTINCT FROM 'workfine' ) SELECT payment_metrics.*, order_metrics.* FROM payment_metrics CROSS JOIN order_metrics",
+].join(' ')
+
 describe('dashboard 组织层级现金流业绩一致性守护', () => {
   let adminSrc: string
   let staffSrc: string
@@ -75,6 +122,13 @@ describe('dashboard 组织层级现金流业绩一致性守护', () => {
   beforeAll(() => {
     adminSrc = fs.readFileSync(ADMIN_DASHBOARD, 'utf-8')
     staffSrc = fs.readFileSync(STAFF_MGMT_DASHBOARD, 'utf-8')
+  })
+
+  it('orderStats 整条 SQL 逐字快照（关闭一切「截取范围之外」的盲区）', () => {
+    const actual = extractOrderStatsSql(adminSrc)
+    expect(actual, '未能提取 orderStats SQL 模板').not.toBe('')
+    expect(actual, 'orderStats SQL 漂移：改口径必须显式更新 EXPECTED_ORDER_STATS_SQL')
+      .toBe(EXPECTED_ORDER_STATS_SQL)
   })
 
   describe('业绩 = 已支付付款流水的有符号合计', () => {
