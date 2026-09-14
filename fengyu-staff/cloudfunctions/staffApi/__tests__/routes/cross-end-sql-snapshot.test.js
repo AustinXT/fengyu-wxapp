@@ -56,6 +56,7 @@ const FILES = {
   adminCustomersTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/customers.ts'),
   adminHomeProductTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/home-product.ts'),
   staffMgmtCustomerJs: path.resolve(__dirname, '../../routes/mgmt-customer.js'),
+  adminCardsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/cards.ts'),
   adminPickupRecordsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/pickup-records.ts'),
   staffPaymentAllocatableJs: path.resolve(__dirname, '../../utils/payment-allocatable.js'),
   clientPaymentAllocatableJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/payment-allocatable.js'),
@@ -2116,6 +2117,61 @@ describe('家居产品部分支付权益跨端守护', () => {
     expect(src).toContain('FOR UPDATE OF si')
     expect(src).toContain("['已支付', '部分支付', '已完成'].includes")
   })
+
+  // issue #128：家居 paid_quantity 原先只有行级 `sale_amount <= 0` 满付分支。寄存单
+  // sale_amount=原价快照>0 而 received=0 → FLOOR 恒 0 → 可提恒 0，顾客寄存的货提不出来。
+  //
+  // ⚠ 断言必须**逐个 CASE 块**校验，不能跑整份文件：staffApi/routes/order.js 有 4 处、
+  // admin/actions/pickup-records.ts 有 3 处 paid_quantity 站点，文件级 toContain 只要
+  // 命中任意一处就通过——删掉 createPickup 事务锁内那处最关键闸门也测不出来（变异实证）。
+  const PAID_QUANTITY_SITES = [
+    ['staff 顾客档案', FILES.staffCustomerJs, 1],
+    ['staff 管理层顾客档案', FILES.staffMgmtCustomerJs, 1],
+    ['client 我的家居产品', FILES.clientOrderJs, 1],
+    ['admin 顾客详情', FILES.adminCustomersTs, 1],
+    ['staff 提货', FILES.staffOrderJs, 4],
+    ['admin 提货', FILES.adminPickupRecordsTs, 3],
+  ]
+
+  /** 取出文件内每一个 `CASE ... END AS paid_quantity` 块（剥注释 + 压空白） */
+  function extractPaidQuantityCases(file) {
+    const src = readFile(file).replace(/--[^\n]*/g, '')
+    const blocks = []
+    let idx = 0
+    while (true) {
+      const endAt = src.indexOf('END AS paid_quantity', idx)
+      if (endAt === -1) break
+      const caseAt = src.lastIndexOf('CASE', endAt)
+      blocks.push(normalizeSql(src.slice(caseAt, endAt + 'END AS paid_quantity'.length)))
+      idx = endAt + 1
+    }
+    return blocks
+  }
+
+  test.each(PAID_QUANTITY_SITES)(
+    '%s 每一处家居已付整件数都含寄存单满付分支',
+    (_name, file, expectedSites) => {
+      const blocks = extractPaidQuantityCases(file)
+      expect(blocks.length, '站点数变化：新增/删除了 paid_quantity 查询，需同步本断言').toBe(
+        expectedSites,
+      )
+      blocks.forEach((block, i) => {
+        expect(block, `第 ${i + 1} 处 paid_quantity 缺寄存单满付分支`).toContain(
+          "WHEN o.sale_order_type = '寄存单' THEN si.quantity",
+        )
+        expect(block, `第 ${i + 1} 处 paid_quantity 缺行级赠品分支`).toContain(
+          'WHEN si.sale_amount <= 0 THEN si.quantity',
+        )
+      })
+    },
+  )
+
+  test('家居已付整件数 11 处站点跨端逐字同义', () => {
+    const all = PAID_QUANTITY_SITES.flatMap(([, file]) => extractPaidQuantityCases(file))
+    expect(all.length).toBe(11)
+    const unique = [...new Set(all)]
+    expect(unique, `11 处 CASE 块出现 ${unique.length} 种写法，跨端已漂移`).toHaveLength(1)
+  })
 })
 
 describe('转换单在线回款意图事务守护', () => {
@@ -2140,5 +2196,89 @@ describe('转换单在线回款意图事务守护', () => {
     expect(repaymentBody).toContain("String(locked.lakala_out_order_no || '').trim()")
     expect(repaymentBody).toContain('lakala_out_order_no IS NULL')
     expect(repaymentBody).not.toContain('lakala_out_order_no = CASE')
+  })
+})
+
+describe('疗程卡可用次数为 0 时仍展示的跨端守护（issue #122）', () => {
+  // 部分支付且实收不足一次单价 → paid_sessions=0，旧过滤把整张卡剔除，顾客档案查无此卡。
+  // 展示门槛改为物理剩余次数；核销限额仍走 paid_sessions，由 service 侧独立校验。
+  const CARD_LIST_FILES = [
+    ['staff 顾客档案 paidOrders', FILES.staffCustomerJs],
+    ['staff 管理层 paidOrders', FILES.staffMgmtCustomerJs],
+  ]
+
+  // 断言必须锁在 paidOrders 的那条 SQL 上：customer.js 是 2000+ 行、十几条查询的文件，
+  // 文件级 toContain 会被兄弟查询（甚至注释）兜底而静默失效（变异测试实证）。
+  // 必须先剥 `--` 注释再断言：normalizeSql 只压空白不去注释，
+  // 一句 `-- si.remaining_sessions > 0` 的注释就能骗过 toContain（变异测试实证）。
+  const stripSqlComments = (sql) => sql.replace(/--[^\n]*/g, '')
+  const cardListSql = (file) =>
+    normalizeSql(stripSqlComments(extractBacktickStringContaining(readFile(file), 'si.paid_sessions')))
+
+  test.each(CARD_LIST_FILES)('%s 按剩余次数放行，不再用已付未用整行过滤', (_name, file) => {
+    const src = cardListSql(file)
+    expect(src).toContain('si.remaining_sessions > 0')
+  })
+
+  // ⚠ 退款不减 remaining_sessions（Model X）：paid_sessions 是「已退卡从卡包消失」的唯一机制。
+  // 放宽展示门槛后必须保留这条守卫，否则已退款的卡会重新出现并被标成待付清（实测 87 行 / ¥118605）。
+  test.each(CARD_LIST_FILES)('%s 保留已审批退款守卫，已退卡不得因放宽展示而复现', (_name, file) => {
+    const src = cardListSql(file)
+    expect(src).toContain("AND sop.change_type = '退款' AND sop.status = '已支付'")
+    expect(src).toContain('OR si.paid_sessions > (si.session_count - si.remaining_sessions)')
+  })
+
+  // 欠款三重条件：订单确实未付清 + 该卡未买满次数 + 按行级净实收相减。
+  // 缺第一条会把「已付清但行级分摊缺口」（dev 实测 78 行）报成欠款；
+  // 缺第二条会把寄存单（sale_amount 只是原价快照）报成欠款。
+  // admin 不在此列：admin 的卡包列表/顾客详情卡包 Tab 是资产管理视图，只展示次数不展示欠款
+  // （欠款催收在 admin 侧走订单详情的「可回款」口径，见 actions/orders.ts）。
+  // 若将来 admin 要展示行级欠款，必须把它加进本列表，保持四端同源。
+  const DEBT_FILES = [
+    ['staff 顾客档案', FILES.staffCustomerJs],
+    ['staff 管理层', FILES.staffMgmtCustomerJs],
+    ['client 我的疗程卡', FILES.clientOrderJs],
+  ]
+
+  test.each(DEBT_FILES)('%s 行级欠款仅在订单未付清且卡未买满次数时计算', (_name, file) => {
+    // 整条 CASE 作为一个字面量断言：拆成多条 toContain 允许「某条 AND 被删、
+    // 同文件别处恰好有该字面量」的组合逃逸。
+    const src = normalizeSql(stripSqlComments(readFile(file)))
+    const caseExpr = src.match(/CASE\s+WHEN o\.status = '部分支付'[\s\S]*?END AS unpaid_amount/)?.[0]
+    expect(caseExpr, '未能定位 unpaid_amount 的 CASE 表达式').toBeTruthy()
+    expect(caseExpr).toContain('AND si.paid_sessions IS NOT NULL')
+    expect(caseExpr).toContain('AND si.paid_sessions < si.session_count')
+    // received 是行级净实收，退款会下调它 → 相减必然虚增欠款，故已退单一律不算
+    expect(caseExpr).toContain("AND sop.change_type = '退款' AND sop.status = '已支付'")
+    // 1 元阈值：瀑布分摊尾差会造出 ¥0.01 的假欠款
+    expect(caseExpr).toContain('AND (si.sale_amount::numeric - si.received::numeric) >= 1')
+    expect(caseExpr).toContain(
+      'THEN GREATEST(0, si.sale_amount::numeric - si.received::numeric)::numeric(12, 2)',
+    )
+  })
+
+  test('admin 卡包列表按剩余次数展示，不再按已付次数硬过滤', () => {
+    const src = readFile(FILES.adminCardsTs)
+    // 断言必须锁在 buildCardBaseConditions 函数体内：同文件别处也有
+    // `remainingSessions > 0`，文件级 toContain 会被兄弟代码兜底而测不出回退。
+    const body = src.match(
+      /function buildCardBaseConditions\b[\s\S]*?\n\}/,
+    )?.[0]
+    expect(body, '未能定位 buildCardBaseConditions 函数体').toBeTruthy()
+    expect(body, '不得回退到 paid_sessions > 0 硬过滤').not.toContain(
+      'sql`${saleItems.paidSessions} > 0`',
+    )
+    // 基础集也不能按 remaining 过滤：status='exhausted' 要的正是 remaining=0，
+    // base 先排掉它会让该筛选恒空、卡详情 404、导出漏行。
+    expect(body, '基础集不得按次数过滤').not.toContain(
+      'sql`${saleItems.remainingSessions} > 0`',
+    )
+  })
+
+  // 核销限额与展示解耦：service 侧三处校验必须原样保留，放宽展示不得放宽核销。
+  test('service 核销限额仍按 paid_sessions 校验，未被展示放宽波及', () => {
+    const src = readFile(FILES.staffServiceJs)
+    expect(src).toContain('INSUFFICIENT_BALANCE')
+    expect(src).toMatch(/COALESCE\(paid_sessions, session_count\)/)
   })
 })

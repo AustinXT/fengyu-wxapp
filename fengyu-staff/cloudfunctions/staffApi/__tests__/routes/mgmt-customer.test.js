@@ -988,7 +988,13 @@ describe('mgmtCustomer 细节 SQL：交易数据跟顾客走（不再按门店�
     expect(itemSql).toContain("si.item_direction = '转入'")
     expect(itemSql).not.toContain("si.item_direction = '转出'")
     expect(itemSql).toContain('si.paid_sessions IS NULL')
-    expect(itemSql).toContain('si.paid_sessions > (si.session_count - si.remaining_sessions)')
+    // issue #122：改按物理剩余次数下发，可用次数 0 的卡不再整行隐藏。
+    // 核销限额仍走 paid_sessions，但由 service.create/start/finalize 独立校验，不在此查询。
+    expect(itemSql).toContain('si.remaining_sessions > 0')
+    // ⚠ 退款不减 remaining_sessions：paid_sessions 是「已退卡从卡包消失」的唯一机制，
+    // 放宽展示后这条守卫必须保留（已审批退款时回退到已付未用口径）。
+    expect(itemSql).toContain("AND sop.change_type = '退款' AND sop.status = '已支付'")
+    expect(itemSql).toContain('OR si.paid_sessions > (si.session_count - si.remaining_sessions)')
   })
 
   test('giftHistory scope=market：赠品 SQL 不含 o.store_id 过滤', async () => {

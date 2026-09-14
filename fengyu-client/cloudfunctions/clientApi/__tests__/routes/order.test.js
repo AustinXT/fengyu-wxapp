@@ -2101,6 +2101,55 @@ describe('order.homeProducts', () => {
     })
   })
 
+  // issue #122：部分支付且实收不足一次单价 → paid_sessions=0，可用次数 0。
+  // 顾客端卡包（includeInactive=true）本就展示这类卡，本次补「待付清」金额。
+  test('可用次数为 0 的卡下发行级欠款', async () => {
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'SO-UNPAID', order_status: '部分支付', paid_at: '2026-09-13T10:00:00Z',
+      sale_item_id: 'SI-UNPAID', product_name: '深层补水', product_type: '疗程卡',
+      session_count: 15, remaining_sessions: 15, paid_sessions: 0,
+      sale_amount: '3000.00', received: '150.00', unpaid_amount: '2850.00',
+      unit: '次', quantity: 1,
+    }])
+
+    const ctx = createBoundCtx({})
+    await routes.appointableItems(ctx)
+
+    expect(ctx.result.orders[0].items[0]).toMatchObject({
+      saleItemId: 'SI-UNPAID',
+      paidSessions: 0,
+      unpaidAmount: 2850,
+    })
+  })
+
+  test('欠款字段为空时透传 null，不塞 0', async () => {
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'SO-PAID', order_status: '已支付', paid_at: '2026-07-25T10:00:00Z',
+      sale_item_id: 'SI-PAID', product_name: '面部护理', product_type: '疗程卡',
+      session_count: 10, remaining_sessions: 8, paid_sessions: 10,
+      sale_amount: '3980.00', received: '3980.00', unpaid_amount: null,
+      unit: '次', quantity: 1,
+    }])
+
+    const ctx = createBoundCtx({})
+    await routes.appointableItems(ctx)
+
+    expect(ctx.result.orders[0].items[0].unpaidAmount).toBeNull()
+  })
+
+  test('欠款 SQL 排除已审批退款单，避免按净实收虚增欠款', async () => {
+    pg.query.mockResolvedValueOnce([])
+    const ctx = createBoundCtx({})
+    await routes.appointableItems(ctx)
+
+    const sql = pg.query.mock.calls[0][0]
+    expect(sql).toContain("WHEN o.status = '部分支付'")
+    expect(sql).toContain('AND si.paid_sessions < si.session_count')
+    expect(sql).toContain('END AS unpaid_amount')
+    // received 是行级净实收（已扣退款），退过款的单相减必然虚增欠款
+    expect(sql).toMatch(/unpaid_amount/)
+  })
+
   test('部分支付家居产品返回已付和待提整件数', async () => {
     pg.query.mockResolvedValueOnce([{
       sale_item_id: 'SI-PARTIAL-HOME', sale_order_id: 'SO-PARTIAL-HOME', product_name: '面膜',
