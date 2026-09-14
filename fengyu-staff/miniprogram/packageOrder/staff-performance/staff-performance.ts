@@ -715,10 +715,17 @@ Page({
         // displayItems 作为子集也继承同一套键
         rowKey: `${reset ? 0 : this.data.items.length}-${i}`,
       }));
-      const newItems = reset ? formattedItems : [...this.data.items, ...formattedItems];
       // 优先用新字段 totalServiceCommission，回退到旧字段 totalServiceFee（向后兼容）
       const serviceCommission = res.totalServiceCommission ?? res.totalServiceFee ?? 0;
       const total = res.total || 0;
+      // preserveItems 只在「数据集一点没动」时才站得住：后端是 offset 分页且**每次都重新排序**，
+      // 一旦期间新增/作废了记录，旧游标就漂了 —— 下一次翻页会把旧的最后一条重复出来，
+      // 新记录则永久漏掉，最后页面显示「已加载 81/共 81 条」却怎么也搜不到那个顾客。
+      // 一发现漂移就退回完整刷新（本次请求拿的正是第 1 页，直接当 reset 用）。
+      const effectivePreserve = preserveItems && !this.pagingDrifted(formattedItems, total);
+      const newItems = reset && !effectivePreserve
+        ? formattedItems
+        : [...this.data.items, ...formattedItems];
       // 翻页只传**新增那一页**，不把已累积的几百上千条重新序列化一遍：
       // setData 单次有 1MB 上限，超了整次调用直接失败（表现是「继续加载」点了没反应，
       // 还会和「没加载够」的提示混在一起，员工根本分不清）。
@@ -727,7 +734,7 @@ Page({
       // 本次写回已经带了最新的 buildSearchView 结果，在途防抖再跑一遍纯属重复过桥
       this.cancelFilter();
       const itemsPatch: Record<string, unknown> = {};
-      if (preserveItems) {
+      if (effectivePreserve) {
         // 明细不动，什么都不用拼
       } else if (reset) {
         itemsPatch.items = formattedItems;
@@ -747,7 +754,7 @@ Page({
         // preserveItems：这次请求只为刷汇总 + 重验权限（onShow 深翻页场景），
         // 明细与分页游标原样保留。hasMore 仍按**已加载页数**对新 total 重算：
         // 隐藏期间可能新增了单，翻页还得能继续
-        ...(preserveItems
+        ...(effectivePreserve
           ? {
               hasMore: this.data.page * PAGE_SIZE < total,
               ...this.buildSearchView(
@@ -894,7 +901,9 @@ Page({
       /[\uFF10-\uFF19\uFF08\uFF09\uFF0B\uFF0D\uFF0E\u3000]/g,
       (c) => (c === '\u3000' ? ' ' : String.fromCharCode(c.charCodeAt(0) - 0xFEE0)),
     );
-    const looksLikePhone = /^[\d\s\-+()]+$/.test(kwHalfWidth);
+    // 白名单要含 `.` 与 `/`：上面刚把全角句点 `．` 转成了 ASCII `.`，白名单漏了它的话，
+    // `138.0013.8000` 这种写法会被判成非号码、退化去匹配姓名，必然「未找到」
+    const looksLikePhone = /^[\d\s\-+()./]+$/.test(kwHalfWidth);
     // 号码有「带 86」和「不带 86」两种写法，**关键词和明细各自都可能是任意一种**，
     // 所以两边都摊成候选串做交叉匹配，否则同一个号会因为存储格式不同而时灵时不灵：
     //   明细 +8613900139000 + 关键词 139001   → 要靠明细侧的国内串
@@ -970,6 +979,20 @@ Page({
     // 剥 86 前要确认剩下的是合法国内手机号段（1[3-9] 开头的 11 位），
     // 否则 `8612345678901` 这种不明号码会被削成 `12345678901`，反而更难对上
     return /^861[3-9]\d{9}$/.test(digits) ? digits.slice(2) : digits;
+  },
+
+  /**
+   * 判断「保留旧明细」这件事还安不安全。
+   *
+   * total 变了 = 明确有增删；第一页首条换人了 = 排序位次动了。任一成立，
+   * 旧的 offset 游标就不再指向原来的位置，继续沿用会漏记录 + 重复记录。
+   * 明细行没有稳定主键（一单多行），用业务字段拼签名够用。
+   */
+  pagingDrifted(firstPage: PerformanceItem[], total: number): boolean {
+    if (total !== this.data.total) return true;
+    const sig = (it?: PerformanceItem) =>
+      it ? `${it.date}|${it.type}|${it.productName}|${it.amount}|${it.customerName}` : '';
+    return sig(firstPage[0]) !== sig(this.data.items[0]);
   },
 
   /** 两个 `YYYY-MM-DD` 之间的天数（含头不含尾）。用 UTC 构造避开夏令时/时区偏移 */

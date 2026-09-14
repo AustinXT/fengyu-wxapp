@@ -1627,16 +1627,47 @@ describe('绩效页 · 评审 round-20 闭环（glm）', () => {
     expect(spy).toHaveBeenCalledWith(true, true, true) // 第三参 = preserveItems
     spy.mockRestore()
 
-    // 直接验 preserveItems 的语义
+    // 数据集没动（total 与第一页首条都一样）→ 保留明细与游标
     vi.mocked(callStaffApi).mockClear()
-    mockPage([makeItem('新单', '13700000000', 999)], 210)
+    mockPage(Array.from({ length: 20 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i)), 200)
     await page.loadData(true, true, true)
 
     expect(callStaffApi).toHaveBeenCalledTimes(1) // 请求照发 → 权限得到重验
     expect(page.data.items).toHaveLength(80)      // 明细与分页游标原样保留
     expect(page.data.page).toBe(4)
     expect(page.data.items[0].customerName).toBe('顾客0')
-    expect(page.data.total).toBe(210)             // 汇总口径仍然刷新
+  })
+
+  test('隐藏期间数据集动过：不能沿用旧游标，退回完整刷新', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    mockPage(Array.from({ length: 20 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i)), 200)
+    await page.loadData(true)
+    await page.loadData(false)
+    expect(page.data.items).toHaveLength(40)
+
+    // 新增了一条并排到最前：旧 offset 游标已经不指向原来的位置了。
+    // 沿用的话下一页会把旧的最后一条重复出来，新记录永远翻不到
+    mockPage([makeItem('新单', '13700000000', 999), ...Array.from({ length: 19 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i))], 201)
+    await page.loadData(true, true, true)
+
+    expect(page.data.items).toHaveLength(20)   // 退回第一页
+    expect(page.data.page).toBe(1)
+    expect(page.data.items[0].customerName).toBe('新单')
+    expect(page.data.total).toBe(201)
+  })
+
+  test('pagingDrifted：total 变或首条换人都算漂移', async () => {
+    const page = createPage()
+    page.onLoad({ range: 'month' })
+    const first20 = Array.from({ length: 20 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i))
+    mockPage(first20, 200)
+    await page.loadData(true)
+
+    const sameFirstPage = page.data.items.slice(0, 20)
+    expect(page.pagingDrifted(sameFirstPage, 200)).toBe(false)
+    expect(page.pagingDrifted(sameFirstPage, 201)).toBe(true)  // total 变了
+    expect(page.pagingDrifted([{ ...sameFirstPage[0], customerName: '别人' }, ...sameFirstPage.slice(1)], 200)).toBe(true)
   })
 
   test('只有第一页时 onShow 走完整刷新（preserveItems=false）', async () => {
@@ -1697,5 +1728,24 @@ describe('绩效页 · 评审 round-20 闭环（glm）', () => {
 
     expect(callStaffApi).toHaveBeenCalledTimes(1)
     expect(page.data.items).toHaveLength(0)
+  })
+})
+
+describe('绩效页 · 号码分隔符白名单（评审 round-22 codex P2）', () => {
+  test.each([
+    ['点分隔', '138.0013.8000'],
+    ['全角点分隔', '138．0013．8000'],
+    ['斜杠分隔', '138/0013/8000'],
+    ['空格分隔', '138 0013 8000'],
+    ['减号分隔', '138-0013-8000'],
+    ['括号', '(138)0013 8000'],
+  ])('%s 的写法都能搜到', async (_label, keyword) => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([makeItem('张三', '13800138000', 1), makeItem('李四', '13900139000', 2)], 2)
+    await page.loadData(true)
+
+    search(page, keyword)
+    expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['张三'])
   })
 })
