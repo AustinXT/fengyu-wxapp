@@ -639,6 +639,18 @@ export const getCustomerHomeProducts = withPermission(
         SELECT sale_item_id, SUM(pickup_quantity)::int AS picked_quantity
           FROM pickup_records
          GROUP BY sale_item_id
+      ), conversion_totals AS (
+        -- 2026-09-14 #125：家居转出数量并入 picked_up_quantity（"已结算"），这里单独聚合出来，
+        -- 避免把"已转换"算进"已退款"。已关闭/失败的转换单已被 rollback 退回数量，须排除。
+        SELECT out_item.ref_sale_item_id AS sale_item_id,
+               SUM(out_item.quantity)::int AS converted_quantity
+          FROM sale_items out_item
+          JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+         WHERE out_item.item_direction = '转出'
+           AND out_item.product_type = '家居产品'
+           AND out_item.ref_sale_item_id IS NOT NULL
+           AND conv_order.status NOT IN ('已关闭', '支付失败', '已作废')
+         GROUP BY out_item.ref_sale_item_id
       ), home_products AS (
         SELECT
           si.sale_item_id,
@@ -654,6 +666,10 @@ export const getCustomerHomeProducts = withPermission(
             LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0))),
             GREATEST(0, COALESCE(pt.picked_quantity, 0))
           )::int AS picked_quantity,
+          LEAST(
+            LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0))),
+            GREATEST(0, COALESCE(ct.converted_quantity, 0))
+          )::int AS converted_quantity,
           CASE
             WHEN si.sale_amount <= 0 THEN si.quantity
             ELSE LEAST(
@@ -675,13 +691,14 @@ export const getCustomerHomeProducts = withPermission(
         LEFT JOIN stores s ON s.store_id = o.store_id
         LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
         LEFT JOIN pickup_totals pt ON pt.sale_item_id = si.sale_item_id
+        LEFT JOIN conversion_totals ct ON ct.sale_item_id = si.sale_item_id
         WHERE o.client_user_id = ${userId}
           AND o.status IN ('已支付', '部分支付', '已完成')
           AND si.item_direction = '购买'
           AND si.product_type = '家居产品'
       ), home_product_balances AS (
         SELECT *,
-               (settled_quantity - picked_quantity)::int AS refunded_quantity,
+               GREATEST(0, settled_quantity - picked_quantity - converted_quantity)::int AS refunded_quantity,
                (purchased_quantity - settled_quantity)::int AS remaining_quantity,
                LEAST(
                  purchased_quantity - settled_quantity,
@@ -700,6 +717,7 @@ export const getCustomerHomeProducts = withPermission(
     return (rows as unknown as Array<Record<string, unknown>>).map((row) => {
       const pickedQuantity = Number(row.picked_quantity ?? 0)
       const refundedQuantity = Number(row.refunded_quantity ?? 0)
+      const convertedQuantity = Number(row.converted_quantity ?? 0)
       const remainingQuantity = Number(row.remaining_quantity ?? 0)
       const paidQuantity = Number(row.paid_quantity ?? 0)
       const pendingPickupQuantity = Number(row.pending_pickup_quantity ?? 0)
@@ -712,6 +730,7 @@ export const getCustomerHomeProducts = withPermission(
         paidQuantity,
         pickedQuantity,
         refundedQuantity,
+        convertedQuantity,
         remainingQuantity,
         pendingPickupQuantity,
         status: deriveHomeProductStatus(
@@ -719,6 +738,7 @@ export const getCustomerHomeProducts = withPermission(
           pickedQuantity,
           refundedQuantity,
           pendingPickupQuantity,
+          convertedQuantity,
         ),
         storeId: String(row.store_id),
         storeName: (row.store_name as string | null) ?? null,
