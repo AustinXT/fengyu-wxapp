@@ -217,7 +217,7 @@
         wx:if="{{hasMoreMatches}}"
         size="mini" plain
         bindtap="onShowMoreMatches"
-      >{{displayLimit < 500 ? '显示更多' : '下一批'}}</van-button>
+      >{{moreMatchesLabel}}</van-button>
     </view>
 
     <!-- 搜索态常驻的翻页入口（不限命中 0 条）：过滤后往往只剩几行、够不到触底，

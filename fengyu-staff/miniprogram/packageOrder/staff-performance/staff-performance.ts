@@ -196,6 +196,8 @@ Page({
     hasPrevMatches: false,
     /** 「第 A-B 条」的区间文案，wxml 不支持算式，在 ts 里拼好 */
     matchWindowLabel: '',
+    /** 「显示更多」还是「下一批」——取决于窗口是继续变大还是整段滑动 */
+    moreMatchesLabel: '显示更多',
     // wxml 不支持方法调用，过滤结果与提示文案都必须在 ts 里算好
     filterActive: false,
     searchHint: '',
@@ -755,10 +757,13 @@ Page({
         // 迟到的回调也要认代次：期间用户可能已经切走了
         if (seq !== this._seq) return;
         this._lastKey = queryKey;
-        this._filteredKeyword = keywordAtBuild;
         this._summaryCache = res.categorySummary && res.categories && res.categories.length
           ? { summary: res.categorySummary, categories: res.categories }
           : null;
+        // 关键词只在**还是当初那个词**时才回写：过桥期间用户可能已经改了词，
+        // 而新词的防抖过滤会先跑完；这时候把标记回滚成旧词，
+        // 下一次点「显示更多/上一批」就会误判成「过滤还没完成」，复位窗口并吞掉这次点击
+        if (this.data.keyword === keywordAtBuild) this._filteredKeyword = keywordAtBuild;
       });
     } catch (err: unknown) {
       if (seq !== this._seq) return;
@@ -846,6 +851,7 @@ Page({
         hasMoreMatches: false,
         hasPrevMatches: false,
         matchWindowLabel: '',
+        moreMatchesLabel: '显示更多',
       };
     }
 
@@ -896,6 +902,9 @@ Page({
       // 否则超过硬顶的命中项永远露不出来，跟「新条目立即参与过滤」直接冲突
       hasMoreMatches: end < matched.length,
       hasPrevMatches: start > 0,
+      // 文案在这里算：wxml 里写 `displayLimit < 500` 会和 HARD_DISPLAY_CAP 形成双源，
+      // 改了常量就对不上（本仓 memory 里「字段族跨文件漂移」踩过的同类坑）
+      moreMatchesLabel: windowSize < HARD_DISPLAY_CAP ? '显示更多' : '下一批',
       matchWindowLabel: capped ? `第 ${start + 1}-${end} 条 / 共 ${matched.length} 条命中` : '',
       // 三种文案各有各的必要性：
       // ① total===0：本期一条记录都没有，跟关键词无关。说「未找到张三」会让员工以为

@@ -1533,3 +1533,46 @@ describe('绩效页 · 号码格式交叉匹配（评审 round-18 codex P2）', 
     expect(page.data.displayItems.map((i: any) => i.customerName)).toEqual(['张三'])
   })
 })
+
+describe('绩效页 · 评审 round-19 闭环（codex）', () => {
+  test('过桥回调迟到时不把「新词已过滤」的标记回滚成旧词', async () => {
+    const page = createPage()
+    page.onLoad({})
+    mockPage([makeItem('张三', '13800000001', 1), makeItem('李四', '13900000002', 2)], 2)
+
+    // 手工模拟真机时序：setData 回调延后到「用户已改词 + 新词防抖已跑完」之后
+    const pending: Array<() => void> = []
+    const realSetData = page.setData.bind(page)
+    page.setData = (u: Record<string, unknown>, cb?: () => void) => {
+      realSetData(u)
+      if (cb) pending.push(cb)
+    }
+
+    await page.loadData(true)
+    search(page, '张三')
+    expect(page._filteredKeyword).toBe('张三')
+
+    pending.forEach((cb) => cb()) // 迟到的回调此刻才落地
+    expect(page._filteredKeyword).toBe('张三') // 不能被回滚成 ''
+
+    page.setData = realSetData
+    // 标记没被回滚，点窗口按钮就不会误判成「过滤未完成」而吞掉点击
+    expect(page.data.keyword).toBe(page._filteredKeyword)
+  })
+
+  test('按钮文案由 ts 预算，不在 wxml 里硬编码硬顶数字', async () => {
+    const page = createPage()
+    page.onLoad({})
+    const many = Array.from({ length: 1500 }, (_, i) => makeItem(`顾客${i}`, `1380000${String(i).padStart(4, '0')}`, i))
+    mockPage(many, 1500)
+    await page.loadData(true)
+
+    search(page, '顾客')
+    expect(page.data.moreMatchesLabel).toBe('显示更多') // 窗口还能变大
+
+    page.onShowMoreMatches()
+    page.onShowMoreMatches()
+    expect(page.data.displayLimit).toBe(500)
+    expect(page.data.moreMatchesLabel).toBe('下一批')   // 到硬顶，改为整段滑动
+  })
+})
