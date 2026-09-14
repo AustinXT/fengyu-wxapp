@@ -55,6 +55,10 @@ function stripComments(src: string): string {
     // SQL 行注释：被测文本是 TS 里的 SQL 模板串，`--` 注释此前会原样留在里面。
     // 若某条 CASE 内的 `--` 注释恰好写着 `(SELECT today FROM bounds)` 之类字样，
     // 就能骗过基于文本的断言（GLM 评审指出的对抗路径）。
+    //
+    // ⚠ 已知限制：本规则对被测文本一视同仁，若 JS/TS 代码里出现 `i--` 或 `a - -b`，
+    // 会连同其后整行一起被吞掉。当前两端被测段落都不含 `--`
+    // （由下面 `staff 被测段落不含 -- 序列` 那条测试守护），将来引入时会立刻报红。
     .replace(/--[^\n]*/g, ' ')
 }
 
@@ -98,6 +102,11 @@ function extractOrderStatsSql(src: string): string {
   if (anchor === -1) return ''
   const end = findTemplateEnd(src, anchor)
   if (end === -1) return ''
+  // 模板闭合后必须**紧跟 db.execute 的右括号**。
+  // Drizzle 的 `sql`...`.append(sql` WHERE FALSE`)` 是正常 builder API（不是恶意构造），
+  // 能在模板之外追加条件，而只看模板的快照完全无感——`WHERE FALSE` 会让查询返回零行、
+  // 所有指标默认成 0。这里要求 execute 的参数就是单个 tagged template，没有后续组合。
+  if (!/^\s*\)/.test(src.slice(end + 1))) return ''
   return normalize(stripComments(src.slice(start, end)))
 }
 
@@ -159,6 +168,14 @@ describe('dashboard 组织层级现金流业绩一致性守护', () => {
   describe('业绩 = 已支付付款流水的有符号合计', () => {
     it('admin dashboard payment_metrics 使用现金流口径', () => {
       expectCashflowRevenueSql(between(adminSrc, 'payment_metrics AS (', 'order_metrics AS ('))
+    })
+
+    it('staff 被测段落不含 -- 序列（否则 stripComments 会吞掉整行）', () => {
+      // stripComments 的 SQL 注释规则对 JS 源码同样生效：`i--` 会让其后整行消失，
+      // 静默改变被测文本。当前为 0 次；将来若在该段落引入递减运算符，这条会先红。
+      const seg = between(staffSrc, 'async function queryStoreRevenue', 'async function queryShengmeiRevenue')
+      expect(seg, '未能截取 staff queryStoreRevenue 段落').not.toBe('')
+      expect(seg.match(/--/g) ?? [], 'staff 被测段落出现 -- 序列，stripComments 会吞掉整行').toHaveLength(0)
     })
 
     it('staff summary queryStoreRevenue 使用同一现金流口径', () => {
