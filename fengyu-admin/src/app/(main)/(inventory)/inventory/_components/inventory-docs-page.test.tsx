@@ -1025,7 +1025,7 @@ describe('弹窗在异常与并发下的出路（#134 评审补）', () => {
 })
 
 describe('建单失败的提示（#134）', () => {
-  it('用 toast + actionErrorMessage，不再弹原生 alert，也不再吐脱敏英文', async () => {
+  it('可读的业务 digest：剥前缀后原样透出，且不再弹原生 alert', async () => {
     const { alert: alertSpy } = stubNativeDialogs()
     vi.mocked(createInventoryCoreDoc).mockRejectedValue(
       Object.assign(
@@ -1043,5 +1043,42 @@ describe('建单失败的提示（#134）', () => {
       expect(toast.error).toHaveBeenCalledWith('库存期初尚未导入并核验完成，暂不可办理库存业务'),
     )
     expect(alertSpy).not.toHaveBeenCalled()
+  })
+
+  // 上一条同时给了可读 digest 与脱敏 message，走的其实只是「digest 优先」那一支 ——
+  // 真正的兜底路径（Next 自动生成的数字编号 / 裸前缀）得单独造。
+  it.each([
+    ['1738462912', '创建单据失败', 'Next 自动生成的数字编号'],
+    ['1956068727@E263', '创建单据失败', '带错误码后缀的数字编号'],
+    ['PERMISSION_DENIED', '单据状态或权限已变化，已为你刷新列表', '权限被收回（裸前缀）'],
+  ])('不可读的信号（%s / %s）不能端给用户', async (digest, expected) => {
+    vi.mocked(createInventoryCoreDoc).mockRejectedValue(
+      Object.assign(
+        new Error(
+          'An error occurred in the Server Components render. The specific message is omitted in production builds.',
+        ),
+        { digest },
+      ),
+    )
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '新建' }))
+    fireEvent.click(screen.getByRole('button', { name: '提交' }))
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expected))
+    // 建单弹窗**不关**：表单里是用户敲进去的内容，关掉就全没了
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('状态/权限已变化时刷新列表（但不关建单弹窗）', async () => {
+    vi.mocked(createInventoryCoreDoc).mockRejectedValue(
+      Object.assign(new Error('sanitized'), { digest: 'CONFLICT: 单据号已被占用' }),
+    )
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '新建' }))
+    fireEvent.click(screen.getByRole('button', { name: '提交' }))
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('单据号已被占用'))
+    await waitFor(() => expect(mockRefresh).toHaveBeenCalled())
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 })

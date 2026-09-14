@@ -328,6 +328,7 @@ export default function InventoryDocsPage({
           locations={locations}
           skuOptions={skuOptions}
           onSuccess={() => startTransition(() => router.refresh())}
+          onStale={() => startTransition(() => router.refresh())}
           onBusyChange={setCreateDialogBusy}
           initialDocType={initialDocType}
           allowedDocTypes={allowedCreateDocTypes}
@@ -438,6 +439,14 @@ const INVISIBLE_FORMAT_RE = /\p{Cf}/gu
 /** 裸前缀错误的统一说法：它本来就没带可读文案，直接说清「发生了什么 + 已经替你做了什么」。 */
 const STALE_STATE_MESSAGE = '单据状态或权限已变化，已为你刷新列表'
 
+/** 取展示文案：信号本身不可读时给统一说法，否则走全站收口点。 */
+function docActionErrorMessage(err: unknown, fallback: string): string {
+  if (isUnreadableSignal(err)) {
+    return isStaleStateError(err) ? STALE_STATE_MESSAGE : fallback
+  }
+  return actionErrorMessage(err, fallback)
+}
+
 /** 状态型错误：说明单据已被别人改过，弹窗留着也没用，直接关掉 + 刷新列表给出路。 */
 const STALE_STATE_PREFIXES: readonly string[] = [
   'CONFLICT',
@@ -454,12 +463,18 @@ function rawErrorSignal(err: unknown): string {
 }
 
 /**
- * 整串恰好就是一个错误前缀、没有任何可读文案 —— `PermissionError` 的
- * `digest = 'PERMISSION_DENIED'` 就是这形态。这种串不能交给 `actionErrorMessage`
- * 直出（它剥前缀的正则要求冒号，剥不掉就原样返回，用户看到一串英文）。
+ * 这个 err 的「信号」本身就不是人话，交给 `actionErrorMessage` 会原样吐给用户：
+ *
+ * - 整串恰好是一个错误前缀、无可读文案 —— `PermissionError` 的 `digest = 'PERMISSION_DENIED'`
+ *   （剥前缀的正则要求冒号，剥不掉就原样返回）
+ * - 纯数字 —— Next 给没有自定义 digest 的异常自动生成的错误编号（未包装的 DB/驱动异常走这条）
+ *
+ * 注：issue #133 在 `actionErrorMessage` 里也修了同一类问题。这里仍然自己判一道，
+ * 是为了让本 PR **单独合入也正确**；#133 合入后这段就是无害的冗余。
  */
-function isBarePrefixError(err: unknown): boolean {
-  return STALE_STATE_PREFIXES.includes(rawErrorSignal(err))
+function isUnreadableSignal(err: unknown): boolean {
+  const raw = rawErrorSignal(err)
+  return STALE_STATE_PREFIXES.includes(raw) || /^\d{1,10}(?:@[A-Za-z][\w-]*)?$/.test(raw)
 }
 
 function isStaleStateError(err: unknown): boolean {
@@ -548,11 +563,7 @@ function DocActionDialog({
       toast.success(config.successMessage(result))
       onDone(pending)
     } catch (err) {
-      toast.error(
-        isBarePrefixError(err)
-          ? STALE_STATE_MESSAGE
-          : actionErrorMessage(err, config.errorFallback),
-      )
+      toast.error(docActionErrorMessage(err, config.errorFallback))
       // 单据已被别人改过时，留着弹窗只会让人反复点同一个必失败的按钮：
       // 列表也还是旧状态，按钮照样在。关掉 + 刷新，才是有出路的处理。
       if (isStaleStateError(err)) onDone(pending)
@@ -639,6 +650,7 @@ function CreateDocDialog({
   locations,
   skuOptions,
   onSuccess,
+  onStale,
   onBusyChange,
   initialDocType,
   allowedDocTypes,
@@ -648,6 +660,8 @@ function CreateDocDialog({
   locations: InventoryLocationRow[]
   skuOptions: InventorySkuRow[]
   onSuccess: () => void
+  /** 状态/权限已变化时刷新列表（不关弹窗） */
+  onStale: () => void
   /** 与 DocActionDialog 同样上报在途态，两个弹窗的闸门保持对称 */
   onBusyChange: (busy: boolean) => void
   initialDocType?: InventoryDocType
@@ -750,7 +764,10 @@ function CreateDocDialog({
       onOpenChange(false)
       onSuccess()
     } catch (err) {
-      toast.error(actionErrorMessage(err, '创建单据失败'))
+      toast.error(docActionErrorMessage(err, '创建单据失败'))
+      // 状态/权限已变化时刷新列表给出路，但**不关弹窗** —— 建单表单里是用户敲进去的内容，
+      // 关掉就全没了；动作弹窗只有一个备注框，关掉代价小，两者取舍不同。
+      if (isStaleStateError(err)) onStale()
     } finally {
       setSubmitting(false)
     }

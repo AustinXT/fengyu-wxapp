@@ -115,6 +115,8 @@ function Dialog({
       // 处理器每次渲染都拿当前的 `dismissible`，而 ref 在 passive effect 里才更新 ——
       // 点完「确认」立刻按 ESC 时那条路会读到旧值。
       //（React 把 `cancel` 归在 nonDelegatedEvents 里，直接绑在元素上，不依赖冒泡。）
+      // 注意这条只在 `showModal()` 的模态路径上生效 —— 降级到 `.show()` 时浏览器本就不对
+      // ESC 派发 `cancel`，那条路上「ESC 关不掉」靠的是非模态自身不响应 ESC。
       onCancel={(e) => {
         if (!dismissible) e.preventDefault()
       }}
