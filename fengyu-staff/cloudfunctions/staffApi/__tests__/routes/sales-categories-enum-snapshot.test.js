@@ -16,7 +16,8 @@
  *    端到端正确性仍需 L2/L3 与实效验证，别把这里的绿当成全链路保证。
  *
  * ── 覆盖边界（issue #136 收敛后的实际状态）──────────────────────────────────
- * issue #136 把**端内**副本收敛到了两个单源，生产源码中剩下的四元组只有 4 处，全部在下方守护：
+ * issue #136 把**端内**副本收敛到了两个单源。生产源码中的四元组现在是
+ * **1 个权威定义 + 4 个运行时副本**，全部在下方守护：
  *
  *   ① db/schema/enums.ts                              权威单源（本测试的比较基准）
  *   ② staffApi/utils/sales-categories.js              staffApi 端内单源
@@ -117,6 +118,73 @@ const COPIES = [
   },
 ]
 
+/**
+ * 生产源码里**允许**出现完整四元组的文件白名单 —— 下方负向扫描用例的对照基准。
+ * 新增条目前请先问：这份副本真的无法收敛吗（跨端？展示决策？），还是只是图省事。
+ */
+const ALLOWED_QUADRUPLE_FILES = [
+  'db/schema/enums.ts',
+  'fengyu-admin/src/actions/data-center/efficiency.ts',
+  'fengyu-admin/src/lib/sales-categories.ts',
+  'fengyu-client/cloudfunctions/payNotify/index.js',
+  'fengyu-staff/cloudfunctions/staffApi/utils/sales-categories.js',
+]
+
+/** 负向扫描的搜索根（生产源码；运维脚本 / 种子 / 迁移不在内） */
+const PRODUCTION_ROOTS = [
+  'db/schema',
+  'fengyu-admin/src',
+  'fengyu-client/cloudfunctions',
+  'fengyu-client/miniprogram',
+  'fengyu-staff/cloudfunctions',
+  'fengyu-staff/miniprogram',
+]
+
+/** 非生产代码：测试、依赖、构建产物、种子数据 */
+const NON_PRODUCTION = /(^|\/)(node_modules|__tests__|tests|dist|\.next|miniprogram_npm)(\/|$)|\.test\.[jt]sx?$|(^|\/)seed\.ts$/
+
+const collectSourceFiles = (dir, acc = []) => {
+  if (!fs.existsSync(dir)) return acc
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name)
+    if (NON_PRODUCTION.test(path.relative(REPO, full))) continue
+    if (entry.isDirectory()) collectSourceFiles(full, acc)
+    else if (/\.(js|mjs|ts|tsx)$/.test(entry.name)) acc.push(full)
+  }
+  return acc
+}
+
+describe('生产源码副本面封闭（负向扫描）', () => {
+  /**
+   * 上面的 COPIES 是**白名单**守护：只盯已知文件的已知形状。它挡不住两件事 ——
+   *   ① 新副本以**新形状**出现。例如某报表写全量
+   *      `sales_category IN ('自销自耗','他销自耗','他销他耗','生态合作')`，
+   *      与「有意子集」同形状，不受 `= '单值'` 锚定约束；加第 5 值时上面全绿，它静默漏算。
+   *   ② 已收敛的消费者**回退**为本地字面量（如页面重新定义 SALES_CATEGORY_OPTIONS 并改用它）
+   *      —— 旧 pattern 已随收敛删除，没有任何断言在盯着「它还接着单源」。
+   *
+   * 故补一条绊线：生产源码中「同文件出现全部四个分类名」的文件集合必须**恰好等于**白名单。
+   * 这是词法近似（不解析语法），但足以在 code review 之前就把新副本顶出来。
+   */
+  test('含完整四元组的生产文件集合 = 白名单（防新副本 / 防已收敛处回退）', () => {
+    const hits = PRODUCTION_ROOTS
+      .flatMap((root) => collectSourceFiles(path.join(REPO, root)))
+      .filter((file) => {
+        const source = fs.readFileSync(file, 'utf8')
+        return SALES_CATEGORIES.every((category) => source.includes(category))
+      })
+      .map((file) => path.relative(REPO, file))
+      .sort()
+
+    expect(
+      hits,
+      '生产源码出现了白名单之外的四分类副本（或白名单里的副本已消失）。\n' +
+        '新增副本前先确认能否收敛到端内单源；确属跨端/展示决策必须保留的，' +
+        '请加进 ALLOWED_QUADRUPLE_FILES 并在 COPIES 里补对应守护。'
+    ).toEqual([...ALLOWED_QUADRUPLE_FILES].sort())
+  })
+})
+
 describe('sales_category 跨端字面量一致性', () => {
   test('utils/sales-categories.js 与 db/schema/enums.ts::salesCategoryEnum 逐字一致', () => {
     const source = read(ENUMS_TS)
@@ -213,7 +281,9 @@ describe('efficiency.ts 员工人效四分类列链路完整性', () => {
    * 而真正根因是注释，错误信息指错方向。键的引号可有可无。
    */
   const columnKeysBlock = read(ADMIN_SINGLE_SOURCE_TS).match(
-    /SALES_CATEGORY_COLUMN_KEYS[^=]*=\s*(?:Object\.freeze\(\s*)?\{([^}]+)\}/
+    // 锚定 `export const` 前缀：否则 `[^=]*` 会跨行吞掉注释，若注释里先出现该标识符
+    // 且其后到真正声明之间没有 `=`，捕获块会错位（红，但方向误导）
+    /export const SALES_CATEGORY_COLUMN_KEYS[^=]*=\s*(?:Object\.freeze\(\s*)?\{([^}]+)\}/
   )
   const columnKeyByCategory = new Map(
     [...(columnKeysBlock?.[1] ?? '').matchAll(/['"]?([^\s'",:{}]+)['"]?\s*:\s*['"]([^'"]+)['"]/g)]

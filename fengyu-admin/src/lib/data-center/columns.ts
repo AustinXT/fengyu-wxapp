@@ -52,9 +52,11 @@ const staffTextColumns = [
  *    `actions/data-center/efficiency.ts` 的 `revenue_by_emp_cat` CTE；
  *    与 staff 绩效页同名 4 格的 `commission_amount`（提成）差一个费率量级，勿对齐。
  */
-const salesCategoryMetricColumns: readonly DataCenterMetricColumn[] = SALES_CATEGORIES.map(
-  (label) => ({ key: SALES_CATEGORY_COLUMN_KEYS[label], label, unit: 'amount' }),
-)
+const salesCategoryMetricColumns = SALES_CATEGORIES.map((label) => ({
+  key: SALES_CATEGORY_COLUMN_KEYS[label],
+  label,
+  unit: 'amount' as const,
+})) satisfies readonly DataCenterMetricColumn[]
 
 const customerRegistrationMetricColumns = [
   { key: 'registered', label: '会员注册', unit: 'count' },

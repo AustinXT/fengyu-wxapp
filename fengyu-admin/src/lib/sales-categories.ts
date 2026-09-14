@@ -33,6 +33,9 @@ export type SalesCategory = (typeof SALES_CATEGORIES)[number]
  * 用 `Record<SalesCategory, string>` 而非并行数组 —— 枚举加值时 **tsc 直接报缺键**，
  * 比 snapshot 测试更早失败。`lib/data-center/columns.ts` 的 4 个分类列由本表生成。
  *
+ * 用 `satisfies` 而非类型标注：两者都强制键完备，但 `satisfies` 额外保留**值的字面量类型**
+ * （`'saleZxzh'` 而非宽化成 `string`），使 `columns.ts` 生成的列 key 仍是精确联合而非 `string`。
+ *
  * ⚠️ 该表口径是 `spia.allocated_amount`（**营业额份额**），与 staff 绩效页同名 4 格的
  *    `commission_amount`（**提成**）差一个费率量级，两者不应相等，勿顺手统一。
  *
@@ -40,12 +43,12 @@ export type SalesCategory = (typeof SALES_CATEGORIES)[number]
  * `salesCategoryMetricColumns`，事后改本表**根本不生效** —— 「改了没反应」比直接报错更难查，
  * freeze 让这类误用在 strict mode 下当场抛错。同 `api-error.ts:45` 对 CODE_MAP 的处理。
  */
-export const SALES_CATEGORY_COLUMN_KEYS: Readonly<Record<SalesCategory, string>> = Object.freeze({
+export const SALES_CATEGORY_COLUMN_KEYS = Object.freeze({
   自销自耗: 'saleZxzh',
   他销自耗: 'saleTxzh',
   他销他耗: 'saleTxth',
   生态合作: 'saleEco',
-})
+}) satisfies Readonly<Record<SalesCategory, string>>
 
 /**
  * 生成以四分类为键、值全 0 的**可变**费率骨架。
