@@ -29,24 +29,19 @@ const NEXT_SANITIZED_MESSAGE =
 type ClientError = Error & { digest?: string }
 
 /**
- * 模拟 Next **生产构建**把服务端抛出的错误送到客户端后的形态：
- * message 换成脱敏话术，digest 原样转发；服务端没写 digest 的，由 Next 补自动编号。
- * issue #133 的两个复现场景都发生在这一形态下。
+ * 模拟 Next 把服务端抛出的错误送到客户端后的形态：digest 原样转发，服务端没写的由 Next 补自动编号；
+ * message 在**生产构建**下换成脱敏话术（默认），在**开发构建**下保留原文（传 `source.message`）。
+ * issue #133 的两个复现场景都发生在生产形态下。
  */
-function asProductionError(thrown: unknown): ClientError {
+function asClientError(thrown: unknown, message = NEXT_SANITIZED_MESSAGE): ClientError {
   const source = thrown as ClientError
-  const client = new Error(NEXT_SANITIZED_MESSAGE) as ClientError
+  const client = new Error(message) as ClientError
   client.digest = source.digest ?? stringHash(`${source.message}${source.stack ?? ''}`).toString()
   return client
 }
 
-/** 模拟**开发构建**：message 保留原文，digest 同样会被补上。 */
-function asDevError(thrown: unknown): ClientError {
-  const source = thrown as ClientError
-  const client = new Error(source.message) as ClientError
-  client.digest = source.digest ?? stringHash(`${source.message}${source.stack ?? ''}`).toString()
-  return client
-}
+const asProductionError = (thrown: unknown) => asClientError(thrown)
+const asDevError = (thrown: unknown) => asClientError(thrown, (thrown as ClientError).message)
 
 function makeSession(actions: string[]): AuthSession {
   return {
@@ -72,8 +67,8 @@ async function throwFromAction(thrown: unknown, action = 'inventory:create_doc')
   throw new Error('期望 action 抛错，但它正常返回了')
 }
 
-/** 造一个「生产形态 + 指定 digest」的客户端错误。 */
-function digestOf(digest: string): ClientError {
+/** 造一个「生产形态 + 指定 digest」的客户端错误。（与生产文件的 pick 无关，勿混） */
+function withDigest(digest: string): ClientError {
   const e = new Error(NEXT_SANITIZED_MESSAGE) as ClientError
   e.digest = digest
   return e
@@ -138,7 +133,7 @@ describe('闸门一 · 来源：digest 必须带白名单前缀（fail-closed）
     ['只有前缀没有正文', 'CONFLICT:'],
     ['空串', '   '],
   ])('%s → 回退兜底', (_label, digest) => {
-    expect(actionErrorMessage(digestOf(digest), '加载失败')).toBe('加载失败')
+    expect(actionErrorMessage(withDigest(digest), '加载失败')).toBe('加载失败')
   })
 
   it('digest 不是字符串（数字 / 带 toString 的对象）时按无 digest 处理', () => {
@@ -156,7 +151,7 @@ describe('闸门一 · 来源：digest 必须带白名单前缀（fail-closed）
   it.each(['toString', 'valueOf', 'constructor', 'hasOwnProperty', 'isPrototypeOf', '__proto__'])(
     '原型链键名 %s 不会被当成文案',
     (key) => {
-      const shown = actionErrorMessage(digestOf(key), '加载失败')
+      const shown = actionErrorMessage(withDigest(key), '加载失败')
       expect(typeof shown).toBe('string')
       expect(shown).toBe('加载失败')
     },
@@ -178,12 +173,12 @@ describe('闸门二 · 内容：前缀合法 ≠ 正文能给人看', () => {
     ['连接被拒', 'INVALID_STATE: 同步失败 ECONNREFUSED'],
     ['管道断开', 'INVALID_STATE: 写入失败 write EPIPE'],
   ])('%s → 回退兜底', (_label, digest) => {
-    expect(actionErrorMessage(digestOf(digest), '操作失败')).toBe('操作失败')
+    expect(actionErrorMessage(withDigest(digest), '操作失败')).toBe('操作失败')
   })
 
   it('多行错误只取首行，SQL / 堆栈不跟着出去', () => {
     const shown = actionErrorMessage(
-      digestOf(
+      withDigest(
         'NOT_FOUND: 订单不存在\nSQL: select * from sale_orders where id=$1\n  at query (/app/node_modules/pg/lib/client.js:526:17)',
       ),
       '兜底',
@@ -194,50 +189,50 @@ describe('闸门二 · 内容：前缀合法 ≠ 正文能给人看', () => {
   })
 
   it('超长文案截断，不把 toast / 内联红字撑爆', () => {
-    const shown = actionErrorMessage(digestOf(`CONFLICT: ${'这是一条很长的业务错误文案'.repeat(500)}`), '兜底')
+    const shown = actionErrorMessage(withDigest(`CONFLICT: ${'这是一条很长的业务错误文案'.repeat(500)}`), '兜底')
     expect(shown.length).toBeLessThanOrEqual(121)
     expect(shown.endsWith('…')).toBe(true)
   })
 
   it('正文是内部枚举时，类型判定不受影响（类型可知 ≠ 正文可读）', () => {
-    expect(actionErrorType(digestOf('INVALID_STATE: LAKALA_NOT_CONFIGURED'))).toBe('INVALID_STATE')
+    expect(actionErrorType(withDigest('INVALID_STATE: LAKALA_NOT_CONFIGURED'))).toBe('INVALID_STATE')
   })
 })
 
 describe('业务文案提取', () => {
   it('剥掉一级白名单前缀', () => {
-    expect(actionErrorMessage(digestOf('CONFLICT: 订单已被审核，请刷新后重试'), '兜底')).toBe(
+    expect(actionErrorMessage(withDigest('CONFLICT: 订单已被审核，请刷新后重试'), '兜底')).toBe(
       '订单已被审核，请刷新后重试',
     )
   })
 
   it('二级子标签只进日志，不展示给用户', () => {
     expect(
-      actionErrorMessage(digestOf('INVALID_STATE: CARD_EXHAUSTED: 储值卡剩余次数为 0'), '兜底'),
+      actionErrorMessage(withDigest('INVALID_STATE: CARD_EXHAUSTED: 储值卡剩余次数为 0'), '兜底'),
     ).toBe('储值卡剩余次数为 0')
     // 仓内真实形态：NO_CARD 子标签（actions/orders.ts:756）
     expect(
-      actionErrorMessage(digestOf('INSUFFICIENT_BALANCE: NO_CARD: 顾客无储值卡账户'), '兜底'),
+      actionErrorMessage(withDigest('INSUFFICIENT_BALANCE: NO_CARD: 顾客无储值卡账户'), '兜底'),
     ).toBe('顾客无储值卡账户')
   })
 
   it('「看着像子标签、其实是正文」的不剥（子标签必须含下划线）', () => {
-    expect(actionErrorMessage(digestOf('NOT_FOUND: ID: 123 的订单不存在'), '兜底')).toBe(
+    expect(actionErrorMessage(withDigest('NOT_FOUND: ID: 123 的订单不存在'), '兜底')).toBe(
       'ID: 123 的订单不存在',
     )
-    expect(actionErrorMessage(digestOf('INVALID_PARAMS: SKU: 缺货'), '兜底')).toBe('SKU: 缺货')
+    expect(actionErrorMessage(withDigest('INVALID_PARAMS: SKU: 缺货'), '兜底')).toBe('SKU: 缺货')
   })
 
   it('裸 token 换成中文说法，不把内部枚举端给用户', () => {
     // lib/permissions.ts 的 PermissionError：digest 是给 error.tsx 判 403 用的信号量
-    expect(actionErrorMessage(digestOf('PERMISSION_DENIED'), '兜底')).toBe('无权执行该操作')
-    expect(actionErrorMessage(digestOf('UNAUTHORIZED'), '兜底')).toBe('登录已过期，请重新登录')
+    expect(actionErrorMessage(withDigest('PERMISSION_DENIED'), '兜底')).toBe('无权执行该操作')
+    expect(actionErrorMessage(withDigest('UNAUTHORIZED'), '兜底')).toBe('登录已过期，请重新登录')
   })
 
   it.each([...ERROR_PREFIXES])('白名单前缀 %s 走得通（遍历而非写死，加第 10 项会报警）', (prefix) => {
-    const shown = actionErrorMessage(digestOf(`${prefix}: 这是一条业务提示`), '兜底')
+    const shown = actionErrorMessage(withDigest(`${prefix}: 这是一条业务提示`), '兜底')
     expect(shown).toBe('这是一条业务提示')
-    expect(actionErrorType(digestOf(`${prefix}: 这是一条业务提示`))).toBe(prefix)
+    expect(actionErrorType(withDigest(`${prefix}: 这是一条业务提示`))).toBe(prefix)
   })
 })
 
@@ -254,32 +249,21 @@ describe('message 通道 fail-open：本地 throw 的可读中文不被误伤', 
     )
   })
 
-  it('不含中文的一律判不可读（编号 / 英文技术串 / 堆栈）', () => {
-    const unreadable = [
-      '1956068727',
-      'Cannot read properties of undefined (reading \'map\')',
-      'column reference "employee_id" is ambiguous',
-      'TypeError: x is not a function\n    at Board (/app/.next/static/chunks/main.js:1:2)',
-      'LAKALA_TIMEOUT_8000ms',
-    ]
-    for (const message of unreadable) {
-      expect(actionErrorMessage(new Error(message), '加载失败')).toBe('加载失败')
-    }
-  })
-
-  it('脱敏话术 / 网络层错误回退兜底', () => {
-    const unreadable = [
-      NEXT_SANITIZED_MESSAGE,
-      'Failed to fetch',
-      'NetworkError when attempting to fetch resource.',
-      'An unexpected response was received from the server.',
-      'read ECONNRESET',
-      'Error: ESOCKET',
-      'connect ETIMEDOUT 10.0.0.1:1433',
-    ]
-    for (const message of unreadable) {
-      expect(actionErrorMessage(new Error(message), '加载失败')).toBe('加载失败')
-    }
+  it.each([
+    ['纯数字编号', '1956068727'],
+    ['JS 运行时错', "Cannot read properties of undefined (reading 'map')"],
+    ['SQL 报错', 'column reference "employee_id" is ambiguous'],
+    ['带堆栈', 'TypeError: x is not a function\n    at Board (/app/.next/static/chunks/main.js:1:2)'],
+    ['内部枚举', 'LAKALA_TIMEOUT_8000ms'],
+    ['脱敏话术', NEXT_SANITIZED_MESSAGE],
+    ['fetch 失败', 'Failed to fetch'],
+    ['NetworkError', 'NetworkError when attempting to fetch resource.'],
+    ['RSC 响应异常', 'An unexpected response was received from the server.'],
+    ['ECONNRESET', 'read ECONNRESET'],
+    ['ESOCKET', 'Error: ESOCKET'],
+    ['ETIMEDOUT + 内网地址', 'connect ETIMEDOUT 10.0.0.1:1433'],
+  ])('%s → 回退兜底', (_label, message) => {
+    expect(actionErrorMessage(new Error(message), '加载失败')).toBe('加载失败')
   })
 
   it('全角冒号写错时也不把前缀 token 漏给用户', () => {
@@ -345,17 +329,17 @@ describe('actionErrorType：按业务类型分支渲染', () => {
   })
 
   it('可达面与 actionErrorMessage 一致：只认实际会产出的那两个裸 token', () => {
-    expect(actionErrorType(digestOf('PERMISSION_DENIED'))).toBe('PERMISSION_DENIED')
-    expect(actionErrorType(digestOf('UNAUTHORIZED'))).toBe('UNAUTHORIZED')
+    expect(actionErrorType(withDigest('PERMISSION_DENIED'))).toBe('PERMISSION_DENIED')
+    expect(actionErrorType(withDigest('UNAUTHORIZED'))).toBe('UNAUTHORIZED')
     // 其余 7 项不会以裸形态产出；放行会造成「类型判得出、文案判不出」的不一致
-    expect(actionErrorType(digestOf('NOT_FOUND'))).toBeNull()
-    expect(actionErrorType(digestOf('CONFLICT'))).toBeNull()
+    expect(actionErrorType(withDigest('NOT_FOUND'))).toBeNull()
+    expect(actionErrorType(withDigest('CONFLICT'))).toBeNull()
   })
 
   it('digest 带前缀 / message 带前缀 / 都没有', () => {
-    expect(actionErrorType(digestOf('INVALID_STATE: CARD_EXHAUSTED: 卡已用完'))).toBe('INVALID_STATE')
+    expect(actionErrorType(withDigest('INVALID_STATE: CARD_EXHAUSTED: 卡已用完'))).toBe('INVALID_STATE')
     expect(actionErrorType(new Error('NOT_FOUND: 订单不存在'))).toBe('NOT_FOUND')
-    expect(actionErrorType(digestOf('1956068727'))).toBeNull()
+    expect(actionErrorType(withDigest('1956068727'))).toBeNull()
     expect(actionErrorType(new Error('普通崩溃'))).toBeNull()
     expect(actionErrorType(null)).toBeNull()
   })

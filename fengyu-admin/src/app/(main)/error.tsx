@@ -3,6 +3,7 @@
 import { useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import { actionErrorType } from "@/lib/action-error"
 
 export default function ErrorPage({
   error,
@@ -15,16 +16,15 @@ export default function ErrorPage({
     console.error("[ErrorBoundary]", error)
   }, [error])
 
-  // digest 优先、message 兜底：
-  // 生产构建会脱敏 Server Component 抛出的 error.message（只剩通用文案），
-  // 但保留开发者自设的 error.digest（见 lib/permissions.ts PermissionError）。
-  // 故 dev 走 message、prod 走 digest，两端都能正确区分 403/401。
+  // 判类型统一走 actionErrorType（digest 优先、message 兜底）：生产构建会脱敏
+  // Server Component 抛出的 error.message，但保留开发者自设的 error.digest
+  // （见 lib/permissions.ts 的 PermissionError）。此前这里是同一套约定的第二份硬编码，
+  // 与 lib/action-error.ts 的 OPAQUE_TOKEN_MESSAGES 各改各的会漂移（issue #133）。
+  const errorType = actionErrorType(error)
   // 权限不足 → 403
-  const isPermissionDenied =
-    error.digest === "PERMISSION_DENIED" || !!error.message?.includes("PERMISSION_DENIED")
+  const isPermissionDenied = errorType === "PERMISSION_DENIED"
   // 未登录 → 401（通常被 middleware 拦截，此处为兜底）
-  const isUnauthorized =
-    error.digest === "UNAUTHORIZED" || !!error.message?.includes("UNAUTHORIZED")
+  const isUnauthorized = errorType === "UNAUTHORIZED"
 
   if (isUnauthorized) {
     return (

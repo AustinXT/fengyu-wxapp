@@ -131,6 +131,8 @@ describe('normalizeWorkfineAmount', () => {
   })
 })
 
+// actionErrorMessage 本身的通用行为（脱敏话术 / 网络错 / digest 口径）归 src/lib/action-error.test.ts
+// 单一归属，本文件只保留 WorkFine 专属的那条链路（issue #133 去重）。
 describe('WorkfineUnavailableError（WorkFine 不可用提示在 prod 的透传守护）', () => {
   // 根因：普通 Error 在 Next.js 生产构建会被脱敏（message 只剩通用文案），前端拿不到
   // 友好提示。必须带自定义 digest，前端 actionErrorMessage 才能从 digest 取回可读文案。
@@ -152,41 +154,6 @@ describe('WorkfineUnavailableError（WorkFine 不可用提示在 prod 的透传�
     const err = new WorkfineUnavailableError()
     expect(err.message).toContain('WORKFINE_UNAVAILABLE')
     expect(err.name).toBe('WorkfineUnavailableError')
-  })
-})
-
-describe('actionErrorMessage（框架级异常脱敏扩展）', () => {
-  // 根因：WorkFine 远程 MSSQL 偶发慢/抖动 → Next.js Server Action 的 POST 响应不是
-  // 合法 RSC 响应 → 客户端自抛 "An unexpected response was received from the server."
-  // （无 digest）。旧 actionErrorMessage 只识别 "Server Components render"，漏掉这句
-  // 英文 → 原样回显给用户。扩展后命中即回退 fallback。
-  it('"An unexpected response was received from the server." → 回退 fallback（本次元凶）', () => {
-    expect(
-      actionErrorMessage(
-        new Error('An unexpected response was received from the server.'),
-        WORKFINE_CONNECT_ERROR_MSG,
-      ),
-    ).toBe(WORKFINE_CONNECT_ERROR_MSG)
-  })
-
-  it('"Failed to fetch" / "NetworkError..." → 回退 fallback', () => {
-    expect(actionErrorMessage(new Error('Failed to fetch'), 'fb')).toBe('fb')
-    expect(
-      actionErrorMessage(new Error('NetworkError when attempting to fetch resource'), 'fb'),
-    ).toBe('fb')
-  })
-
-  it('大小写不敏感（"UNEXPECTED RESPONSE" 也命中）', () => {
-    expect(actionErrorMessage(new Error('UNEXPECTED RESPONSE'), 'fb')).toBe('fb')
-  })
-
-  it('可读业务文案仍正常透传（不被误脱敏）', () => {
-    expect(actionErrorMessage({ digest: 'CONFLICT: 顾客姓名已存在' }, 'fb')).toBe('顾客姓名已存在')
-  })
-
-  it('空 message / null → fallback', () => {
-    expect(actionErrorMessage({}, 'fb')).toBe('fb')
-    expect(actionErrorMessage(null, 'fb')).toBe('fb')
   })
 })
 

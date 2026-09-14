@@ -88,62 +88,57 @@ const OPAQUE_TOKEN_MESSAGES: ReadonlyMap<string, string> = new Map([
   ['UNAUTHORIZED', '登录已过期，请重新登录'],
 ])
 
-function nonEmptyString(value: unknown): string | null {
+/** 从 unknown 错误上取一格字段；非字符串或空串一律当没有。 */
+function pick(err: unknown, key: 'digest' | 'message'): string | null {
+  const value = (err as Record<string, unknown> | null | undefined)?.[key]
   if (typeof value !== 'string') return null
-  const trimmed = value.trim()
-  return trimmed || null
+  return value.trim() || null
 }
 
 /**
  * 内容闸门：把一段候选正文收敛成「能端给用户的话」，收敛不出来返回 null。
  *
  * 顺序有讲究：先取首行（多行错误从第二行起通常是 SQL / 堆栈 / 文件路径）→ 剥日志子标签 →
- * 判中文 → 判技术噪声片段 → 截断。
+ * **先截断再判定**（message 通道长度无上界，不能对整串做 toLowerCase + 11 次子串扫描；
+ * 且中文只出现在 120 字之后时退化成兜底文案，方向更保守）→ 判中文 → 判技术噪声片段。
  */
 function presentable(raw: string): string | null {
-  const value = raw.split('\n')[0].replace(LOG_TAG_RE, '').trim()
+  const newline = raw.indexOf('\n')
+  let value = (newline === -1 ? raw : raw.slice(0, newline)).replace(LOG_TAG_RE, '').trim()
   if (!value) return null
+  const truncated = value.length > MAX_DISPLAY_LENGTH
+  if (truncated) value = value.slice(0, MAX_DISPLAY_LENGTH)
   // 不含中文 ⇒ 错误编号 / 内部枚举 / HTTP 码 / 英文技术串，一律不给看
   if (!CJK_RE.test(value)) return null
   const lower = value.toLowerCase()
   if (UNREADABLE_FRAGMENTS.some((f) => lower.includes(f))) return null
-  return value.length > MAX_DISPLAY_LENGTH ? `${value.slice(0, MAX_DISPLAY_LENGTH)}…` : value
+  return truncated ? `${value}…` : value
 }
 
-/** 命中 9 项白名单前缀 → 剥前缀后过内容闸门；没命中返回 null。 */
-function businessMessage(value: string): string | null {
+/**
+ * 取一格候选值里的用户文案，取不出返回 null。
+ *
+ * `failOpen` 就是上面说的两道来源口径：
+ * - `false`（digest 通道）：必须带白名单前缀，或整串是那两个裸 token 之一
+ * - `true`（message 通道）：不带前缀的可读中文也放行
+ *
+ * 两条通道都要过 `presentable` 内容闸门。
+ */
+function readable(value: string, failOpen: boolean): string | null {
   const parsed = parseErrorPrefix(value)
-  return parsed ? presentable(parsed.displayMessage) : null
-}
-
-/** digest 通道：来源 fail-closed（必须带白名单前缀或是那两个裸 token）。 */
-function readableFromDigest(digest: unknown): string | null {
-  const value = nonEmptyString(digest)
-  if (!value) return null
-  return businessMessage(value) ?? OPAQUE_TOKEN_MESSAGES.get(value) ?? null
-}
-
-/** message 通道：来源 fail-open（无前缀的可读中文照常展示），内容闸门一样要过。 */
-function readableFromMessage(message: unknown): string | null {
-  const value = nonEmptyString(message)
-  if (!value) return null
-  return businessMessage(value) ?? OPAQUE_TOKEN_MESSAGES.get(value) ?? presentable(value)
-}
-
-/** 从 unknown 里取 message，不要求 `instanceof Error`（跨 RSC 边界的错误可能只是普通对象）。 */
-function messageOf(err: unknown): unknown {
-  return (err as { message?: unknown } | null | undefined)?.message
-}
-
-function digestOf(err: unknown): unknown {
-  return (err as { digest?: unknown } | null | undefined)?.digest
+  if (parsed) return presentable(parsed.displayMessage)
+  return OPAQUE_TOKEN_MESSAGES.get(value) ?? (failOpen ? presentable(value) : null)
 }
 
 export function actionErrorMessage(err: unknown, fallback: string): string {
   // 本函数被 200+ 个 catch 块调用，自己绝不能抛：digest/message 可能是抛异常的 getter 或 Proxy，
   // 一次逃逸就是整页白屏。
   try {
-    return readableFromDigest(digestOf(err)) ?? readableFromMessage(messageOf(err)) ?? fallback
+    const digest = pick(err, 'digest')
+    const fromDigest = digest ? readable(digest, false) : null
+    if (fromDigest) return fromDigest
+    const message = pick(err, 'message')
+    return (message ? readable(message, true) : null) ?? fallback
   } catch {
     return fallback
   }
@@ -153,21 +148,22 @@ export function actionErrorMessage(err: unknown, fallback: string): string {
  * 取业务错误类型（9 项白名单前缀之一），供前端按类型分支渲染，取不到返回 null。
  *
  * 生产构建下 `err.message` 已被脱敏，`msg.startsWith('PERMISSION_DENIED:')` 这类判断线上
- * 恒不成立；本函数从 digest 侧取，dev / prod 行为一致。
+ * 恒不成立；本函数从 digest 侧取，dev / prod 行为一致。`(main)/error.tsx` 判 401/403、
+ * `employees/[id]` 与 `org` 的专属文案分支都走它。
  *
  * 注意与 `actionErrorMessage` 的可达面刻意保持一致：裸 token 只认
  * `OPAQUE_TOKEN_MESSAGES` 里那两个（= 实际会被产出的那两个），不放行其余 7 项前缀的裸形态。
  */
 export function actionErrorType(err: unknown): ErrorPrefix | null {
   try {
-    const digest = nonEmptyString(digestOf(err))
+    const digest = pick(err, 'digest')
     if (digest) {
       const parsed = parseErrorPrefix(digest)
       if (parsed) return parsed.prefix
       // `PermissionError` 的裸 token 形态：digest 整串就是类型本身
       if (OPAQUE_TOKEN_MESSAGES.has(digest)) return digest as ErrorPrefix
     }
-    const message = nonEmptyString(messageOf(err))
+    const message = pick(err, 'message')
     return message ? (parseErrorPrefix(message)?.prefix ?? null) : null
   } catch {
     return null
