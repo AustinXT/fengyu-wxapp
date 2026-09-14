@@ -1157,6 +1157,10 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
     const at = (k: number) => out.slice(k, k + 2).join('')
     let k = from
     while (k < to) {
+      // 宿主串里 SQL 的换行是 2 字符的转义序列 `\\n`，必须等长遮成空白：
+      // 留着的话那个 `n` 是单词字符，`SELECT -- 说明\\nd.path` 会变成 `nd.path`，
+      // 下游的 `\\bd\\.` 边界匹配不上 → 静默漏报。换行本来就是空白，遮掉语义也对。
+      if (at(k) === '\\n') { blank(k, k + 2); k += 2; continue }
       if (at(k) === '--') {
         // 行尾有两种形态：模板串里是真换行 `\n`（1 字符），
         // 宿主单引号串里 SQL 的换行只能写成转义序列 `\\n`（2 字符）——
@@ -1506,6 +1510,12 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
     const afterComment = `pg.query('WITH RECURSIVE d(id, path) AS (SELECT 1, ARRAY[1] UNION ALL -- 说明${NL} SELECT d.path FROM t JOIN d alias ON true)', [])`
     expect(violations(afterComment), '行注释遮到了串尾，把后面的混用吃掉了').not.toEqual([])
     expect(unrecognizedWithHeads(afterComment)).toBe(0)
+
+    // ⚠️ 换行后**紧跟**限定符、中间没有空格：`\n` 若原样留着，那个 `n` 是单词字符，
+    //    `nd.path` 会让下游的 `\bd\.` 边界匹配不上 —— 上面那条夹具多打了个空格，正好掩盖这条路径
+    const noIndent = `pg.query('WITH RECURSIVE d(id, path) AS (SELECT 1, ARRAY[1] UNION ALL -- 说明${NL}d.path FROM t JOIN d alias ON true)', [])`
+    expect(violations(noIndent), '转义换行没遮成空白，单词边界被 n 破坏，静默漏报').not.toEqual([])
+    expect(unrecognizedWithHeads(noIndent)).toBe(0)
   })
 
   // SQL 字符串字面量里的 `//` `--` `/*` 不能被当成注释起点，否则会把后面的真 SQL 吞掉
