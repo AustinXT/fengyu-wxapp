@@ -9,6 +9,7 @@ import test from 'node:test'
 import {
   TARGETS,
   ROOT,
+  KNOWN_DEV_HISTORICAL_MIGRATION_ROWS,
   KNOWN_PROD_HISTORICAL_MIGRATION_ROWS,
   analyzeMigrationState,
   buildServiceEnvs,
@@ -401,6 +402,16 @@ test('migration analysis follows latest created_at and hash instead of row count
   assert.equal(currentWithKnownProdHistorical.latestTag, '0002_c')
   assert.equal(currentWithKnownProdHistorical.historicalRowDelta, 0)
   assert.equal(currentWithKnownProdHistorical.ignoredHistoricalRowCount, 1)
+
+  const knownDevHistorical = KNOWN_DEV_HISTORICAL_MIGRATION_ROWS[0]
+  const currentWithKnownDevHistorical = analyzeMigrationState(entries, [
+    { hash: 'a', created_at: '100' },
+    knownDevHistorical,
+    { hash: 'b', created_at: '200' },
+    { hash: 'c', created_at: '300' },
+  ], hashes, { knownHistoricalRows: KNOWN_DEV_HISTORICAL_MIGRATION_ROWS })
+  assert.equal(currentWithKnownDevHistorical.ok, true)
+  assert.equal(currentWithKnownDevHistorical.ignoredHistoricalRowCount, 1)
 
   const currentWithHistoricalGap = analyzeMigrationState(entries, [
     { hash: 'c', created_at: '300' },
