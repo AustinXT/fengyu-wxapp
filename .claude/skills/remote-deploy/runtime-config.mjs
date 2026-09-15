@@ -269,9 +269,9 @@ function readOptionalEnv(file) {
 }
 
 /**
- * 将 v2.0 之前的三个真实 env 原地迁移到严格门禁要求：
+ * 将 v2.0 之前的两份真实 env 原地迁移到严格门禁要求：
  * - 保留各环境已有真值；
- * - staff 独立账号沿用旧 fengyu-staff/.env（test 优先沿用 prod）；
+ * - staff 独立账号沿用旧 fengyu-staff/.env；
  * - 仅补齐明确列出的非秘密模板默认值；
  * - 三份文件全部校验通过后再以 0600 写回。
  */
@@ -282,19 +282,18 @@ export function reconcileLegacyConfigFiles(options = {}) {
   const templateEnvDir = path.join(templateRoot, 'envs')
   const templates = {
     dev: fs.readFileSync(path.join(templateEnvDir, 'dev.env.example'), 'utf8'),
-    test: fs.readFileSync(path.join(templateEnvDir, 'prod.env.example'), 'utf8'),
     prod: fs.readFileSync(path.join(templateEnvDir, 'prod.env.example'), 'utf8'),
   }
   const templateValues = Object.fromEntries(
     Object.entries(templates).map(([env, text]) => [env, parseEnv(text)]),
   )
-  const current = Object.fromEntries(['dev', 'test', 'prod'].map((env) => [
+  const current = Object.fromEntries(['dev', 'prod'].map((env) => [
     env,
     readOptionalEnv(path.join(envDir, `${env}.env`)),
   ]))
   const legacyStaff = readOptionalEnv(path.join(root, 'fengyu-staff/.env'))
 
-  const configs = Object.fromEntries(['dev', 'test', 'prod'].map((env) => {
+  const configs = Object.fromEntries(['dev', 'prod'].map((env) => {
     const config = { ...current[env], ENV_PROFILE: env }
     for (const key of LEGACY_SAFE_DEFAULT_KEYS) {
       const templateDefault = key === 'COOKIE_DOMAIN' && env !== 'prod' ? '' : templateValues[env][key]
@@ -302,20 +301,15 @@ export function reconcileLegacyConfigFiles(options = {}) {
         config[key] = templateDefault
       }
     }
-    // dev/test 当前均以 IP 访问；注入生产父域会令浏览器拒收登录 Cookie。
+    // dev 当前以 IP 访问；注入生产父域会令浏览器拒收登录 Cookie。
     if (env !== 'prod') config.COOKIE_DOMAIN = ''
-    const staffFallback = env === 'test' ? current.prod : {}
-    config.STAFF_TENCENTCLOUD_SECRETID ||= (
-      staffFallback.STAFF_TENCENTCLOUD_SECRETID || legacyStaff.TENCENTCLOUD_SECRETID
-    )
-    config.STAFF_TENCENTCLOUD_SECRETKEY ||= (
-      staffFallback.STAFF_TENCENTCLOUD_SECRETKEY || legacyStaff.TENCENTCLOUD_SECRETKEY
-    )
+    config.STAFF_TENCENTCLOUD_SECRETID ||= legacyStaff.TENCENTCLOUD_SECRETID
+    config.STAFF_TENCENTCLOUD_SECRETKEY ||= legacyStaff.TENCENTCLOUD_SECRETKEY
     validateConfig(env, config)
     return [env, config]
   }))
 
-  for (const env of ['dev', 'test', 'prod']) {
+  for (const env of ['dev', 'prod']) {
     const file = path.join(envDir, `${env}.env`)
     const keys = templateKeys(templates[env])
     const missing = keys.filter((key) => configs[env][key] === undefined)
@@ -324,7 +318,7 @@ export function reconcileLegacyConfigFiles(options = {}) {
     fs.chmodSync(file, 0o600)
   }
 
-  return { environments: ['dev', 'test', 'prod'], keyCount: templateKeys(templates.prod).length }
+  return { environments: ['dev', 'prod'], keyCount: templateKeys(templates.prod).length }
 }
 
 function assertUrl(name, value) {
