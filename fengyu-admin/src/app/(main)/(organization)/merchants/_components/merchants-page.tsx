@@ -107,6 +107,11 @@ export default function MerchantsPage({
       cell: (row) => row.marketName ?? "—",
     },
     {
+      key: "storeNames",
+      header: "门店",
+      cell: (row) => row.storeNames ?? "—",
+    },
+    {
       key: "storeCount",
       header: "关联门店",
       cell: (row) => `${row.storeCount} 个`,
