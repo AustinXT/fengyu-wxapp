@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -10,8 +10,11 @@ import type {
   InventorySkuRow,
 } from '@/lib/inventory/types'
 
+// refresh 必须是共享引用：原先每次调用 useRouter 都新建一个 vi.fn()，测试拿不到它，
+// 于是「关弹窗 + **刷新列表**」这条修复只有前半截被守住（同目录 inventory-skus-page.test.tsx 已是此写法）。
+const { mockRefresh } = vi.hoisted(() => ({ mockRefresh: vi.fn() }))
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
+  useRouter: () => ({ push: vi.fn(), refresh: mockRefresh }),
   usePathname: () => '/inventory/docs',
   useSearchParams: () => new URLSearchParams('status=待审批&page=2'),
 }))
@@ -36,13 +39,23 @@ vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
 
 import { toast } from 'sonner'
 import { listInventoryLotOptions } from '@/actions/inventory/stocks'
-import { createInventoryCoreDoc } from '@/actions/inventory/docs'
+import {
+  approveInventoryCoreDoc,
+  confirmInventoryCoreReceive,
+  createInventoryCoreDoc,
+  rejectInventoryCoreDoc,
+} from '@/actions/inventory/docs'
 import InventoryDocsPage, { SOURCE_LOT_DOC_TYPES } from './inventory-docs-page'
 import { INVENTORY_GENERIC_DOC_TYPES } from '@/lib/inventory/types'
 
 // vitest.config.ts 没开 clearMocks/restoreMocks。这里必须用 resetAllMocks 而不是 clearAllMocks ——
 // 后者只清调用记录、不清 implementation，忘记设 mock 的新用例会静默继承上一条的 mockRejectedValue。
-beforeEach(() => vi.resetAllMocks())
+beforeEach(() => {
+  vi.resetAllMocks()
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+  mockRefresh.mockClear()
+})
 
 const row: InventoryDocRow = {
   id: 'MBS-260813-0001',
@@ -549,5 +562,566 @@ describe('通用建单入口里需要来源批次的单据类型', () => {
       generic.filter((t) => serverNeedsSourceLot.has(t)).sort(),
       '前端 SOURCE_LOT_DOC_TYPES 与服务端 shouldCaptureSourceLot 在通用建单类型上漂移了',
     ).toEqual(generic.filter((t) => SOURCE_LOT_DOC_TYPES.has(t as never)).sort())
+  })
+})
+
+// ── #134：原生 alert / prompt 换成页内组件 ────────────────────────────────
+// 原实现用 prompt('驳回原因') 收集备注：不可样式化、阻塞 JS、**且无法做必填校验**
+// （prompt 取消或留空都得到 ''，代码 `|| ''` 直接放过，空驳回原因就这么提交了）。
+
+const receivableRow: InventoryDocRow = { ...row, id: 'DTO-260813-0002', docType: '内部领用', status: '待收货' }
+
+function renderDocs(rows: InventoryDocRow[] = [row]) {
+  render(<InventoryDocsPage {...baseProps} rows={rows} allowedCreateDocTypes={['市场产品报损']} />)
+}
+
+/**
+ * happy-dom 不实现 window.alert / prompt / confirm（`vi.spyOn` 会报
+ * 「can only spy on a function」）—— 顺带说明原实现的 `alert(...)` / `prompt(...)`
+ * 在单测里根本跑不起来，这也是这几条路径此前零覆盖的原因之一。
+ * 这里显式塞进去，好让「不再被调用」这件事真的可断言。
+ */
+function stubNativeDialogs() {
+  const spies = { alert: vi.fn(), prompt: vi.fn(() => ''), confirm: vi.fn(() => true) }
+  for (const [name, fn] of Object.entries(spies)) vi.stubGlobal(name, fn)
+  return spies
+}
+
+const actionDialog = () => screen.getByRole('dialog')
+/**
+ * 走 `<label htmlFor>` ↔ `id` 的真实配对（组件上已去掉 aria-label —— 它优先级高于
+ * label，留着的话把 htmlFor 或 id 写错都测不出来）。必填项的可及名带着 `*`，故用正则。
+ */
+const remarkBox = (label: string) =>
+  screen.getByLabelText(new RegExp(`^${label}`)) as HTMLTextAreaElement
+
+describe('审批 / 驳回 / 收货的备注弹窗（#134）', () => {
+  // 守护正则必须连**带接收者**的写法一起认：仓内域外残留的 6 处用的全是
+  // `window.confirm(` / `window.prompt(` 这种形式，只认裸调用的守护恰好看不见
+  // 最可能长出来的那种回归。
+  const NATIVE_DIALOG_RE =
+    /(?:^|[^.\w$])(?:(?:window|globalThis|self|top|parent)\s*\??\s*\.\s*)?(?:alert|prompt|confirm)\s*\(|\[\s*['"](?:alert|prompt|confirm)['"]\s*\]\s*\(/
+
+  it('整个库存域组件目录都不再出现原生弹窗调用', () => {
+    // 只守单个文件的话，同目录的 inventory-operations-page.tsx / inventory-skus-page.tsx
+    // 新写一个 window.confirm 照样过 —— 而域外残留的 7 处恰好证明这种写法是会自然长出来的。
+    const dir = import.meta.dirname
+    const files = readdirSync(dir).filter(
+      (f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f),
+    )
+    expect(files.length).toBeGreaterThan(3)
+    for (const file of files) {
+      const src = readFileSync(resolve(dir, file), 'utf8')
+      expect(src, `${file} 里出现了原生弹窗调用`).not.toMatch(NATIVE_DIALOG_RE)
+    }
+  })
+
+  it('守护正则本身盖得住带接收者的写法（元测试）', () => {
+    const shouldCatch = [
+      "alert('x')",
+      "prompt('驳回原因')",
+      "window.alert('x')",
+      "window.prompt('驳回原因')",
+      "window.confirm('确定?')",
+      "globalThis.prompt('x')",
+      "self.alert('x')",
+      "window?.alert('x')",
+      "window['alert']('x')",
+      'alert\n(\'x\')',
+    ]
+    const shouldPass = [
+      'confirmInventoryCoreReceive(docId, remark)',
+      'onConfirm()',
+      'setAlert(true)',
+      'this.alert(',
+      'foo.confirm2(',
+    ]
+    for (const bad of shouldCatch) expect(bad, `应命中：${bad}`).toMatch(NATIVE_DIALOG_RE)
+    for (const ok of shouldPass) expect(ok, `不应命中：${ok}`).not.toMatch(NATIVE_DIALOG_RE)
+  })
+
+  it('点「驳回」开的是页内弹窗，不是原生 prompt', () => {
+    const { prompt: promptSpy } = stubNativeDialogs()
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+
+    expect(promptSpy).not.toHaveBeenCalled()
+    expect(within(actionDialog()).getByText('驳回单据')).toBeInTheDocument()
+    // 单据号要出现在弹窗里 —— 原生 prompt 只给一句「驳回原因」，操作员不知道在驳哪张单
+    expect(within(actionDialog()).getByText(`单据号 ${row.id}`)).toBeInTheDocument()
+  })
+
+  it('驳回原因为空时阻止提交，并给出可见校验提示', async () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认驳回' }))
+
+    // 行内红字故意不带 role="alert"：同文案的 toast 已经在 live region 里播报过一次。
+    // 局限：sonner 在这里是 mock（没有真实 DOM），所以「toast 确实播报了」这个前提
+    // 单测验不到；这条断言只证明「行内红字没再挂一个 alert」。
+    await waitFor(() =>
+      expect(within(actionDialog()).getByText('请填写驳回原因')).toBeInTheDocument(),
+    )
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(rejectInventoryCoreDoc).not.toHaveBeenCalled()
+    expect(toast.error).toHaveBeenCalledWith('请填写驳回原因')
+    expect(remarkBox('驳回原因')).toHaveAttribute('aria-invalid', 'true')
+  })
+
+  it('只填空白字符同样算空', async () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    fireEvent.change(remarkBox('驳回原因'), { target: { value: '   \n  ' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认驳回' }))
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('请填写驳回原因'))
+    expect(rejectInventoryCoreDoc).not.toHaveBeenCalled()
+  })
+
+  it('填了原因才提交，且传给 action 的是 trim 后的值', async () => {
+    vi.mocked(rejectInventoryCoreDoc).mockResolvedValue(undefined as never)
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    fireEvent.change(remarkBox('驳回原因'), { target: { value: '  数量与实物不符  ' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认驳回' }))
+
+    await waitFor(() =>
+      expect(rejectInventoryCoreDoc).toHaveBeenCalledWith(row.id, '数量与实物不符'),
+    )
+    expect(toast.success).toHaveBeenCalledWith('单据已驳回')
+    await waitFor(() => expect(mockRefresh).toHaveBeenCalled())
+  })
+
+  it('审批备注选填：留空也能提交', async () => {
+    vi.mocked(approveInventoryCoreDoc).mockResolvedValue(undefined as never)
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '通过' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认通过' }))
+
+    await waitFor(() => expect(approveInventoryCoreDoc).toHaveBeenCalledWith(row.id, ''))
+    expect(toast.success).toHaveBeenCalledWith('单据已通过，库存已扣减')
+  })
+
+  it('收货备注选填，且调的是收货 action', async () => {
+    vi.mocked(confirmInventoryCoreReceive).mockResolvedValue({
+      success: true,
+      inboundDocId: 'CGRK-260813-0007',
+    } as never)
+    renderDocs([receivableRow])
+    fireEvent.click(screen.getByRole('button', { name: '收货' }))
+    fireEvent.change(remarkBox('收货备注'), { target: { value: '少收 1 件' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认收货' }))
+
+    await waitFor(() =>
+      expect(confirmInventoryCoreReceive).toHaveBeenCalledWith(receivableRow.id, '少收 1 件'),
+    )
+    // 收货会生成入库单，单号要带进提示里 —— 那是用户下一步要找的东西
+    expect(toast.success).toHaveBeenCalledWith('收货已确认，已生成入库单 CGRK-260813-0007')
+  })
+
+  it('取消就是取消：不调用任何 action', () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    fireEvent.change(remarkBox('驳回原因'), { target: { value: '写了一半又反悔' } })
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+
+    expect(rejectInventoryCoreDoc).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('换一个动作重开，上一次输入不会串味', () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    fireEvent.change(remarkBox('驳回原因'), { target: { value: '写了一半又反悔' } })
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+
+    fireEvent.click(screen.getByRole('button', { name: '通过' }))
+    expect(remarkBox('审批备注')).toHaveValue('')
+  })
+
+  it('服务端报错走 toast + actionErrorMessage，不再是原生 alert', async () => {
+    const { alert: alertSpy } = stubNativeDialogs()
+    vi.mocked(approveInventoryCoreDoc).mockRejectedValue(
+      Object.assign(new Error('sanitized'), { digest: 'INVALID_STATE: 只有待审批单据可以审批' }),
+    )
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '通过' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认通过' }))
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('只有待审批单据可以审批'))
+    expect(alertSpy).not.toHaveBeenCalled()
+  })
+
+  it('提交期间按钮禁用，点第二下不会重复调 action', async () => {
+    const gate = deferred<void>()
+    vi.mocked(rejectInventoryCoreDoc).mockReturnValue(gate.promise as never)
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    fireEvent.change(remarkBox('驳回原因'), { target: { value: '数量不符' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认驳回' }))
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '处理中…' })).toBeDisabled())
+    fireEvent.click(screen.getByRole('button', { name: '处理中…' }))
+    await act(async () => { gate.resolve(); await gate.promise })
+    expect(rejectInventoryCoreDoc).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('弹窗在异常与并发下的出路（#134 评审补）', () => {
+  it('状态型错误（单据已被别人改过）→ 关弹窗 + 刷新列表，不把人困在必失败的按钮上', async () => {
+    vi.mocked(approveInventoryCoreDoc).mockRejectedValue(
+      Object.assign(new Error('sanitized'), { digest: 'INVALID_STATE: 只有待审批单据可以审批' }),
+    )
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '通过' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认通过' }))
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('只有待审批单据可以审批'))
+    // 留着弹窗只会让人反复点同一个必失败的按钮 —— 列表也还是旧状态，按钮照样在
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    // 「刷新」是这条修复的另一半：不刷的话回到列表看到的还是「待审批」
+    await waitFor(() => expect(mockRefresh).toHaveBeenCalled())
+  })
+
+  it('非状态型错误（网络抖动）→ 弹窗留着让人重试', async () => {
+    vi.mocked(approveInventoryCoreDoc).mockRejectedValue(new Error('Failed to fetch'))
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '通过' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认通过' }))
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('审批失败'))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(mockRefresh).not.toHaveBeenCalled()
+  })
+
+  /**
+   * happy-dom 的 `getBoundingClientRect()` 恒为全 0，而组件在判「点击落点是否在框外」之前
+   * 就会因 `rect.width === 0` 提前 return —— 不打桩的话，把 `if (!dismissible) return`
+   * 整行删掉测试照样绿。这里给它一个真实矩形，并从框外坐标点下去。
+   */
+  function clickBackdrop(dialog: HTMLElement) {
+    vi.spyOn(dialog, 'getBoundingClientRect').mockReturnValue({
+      x: 100, y: 100, width: 400, height: 300,
+      top: 100, left: 100, right: 500, bottom: 400,
+      toJSON: () => ({}),
+    } as DOMRect)
+    fireEvent.click(dialog, { clientX: 10, clientY: 10 })
+  }
+
+  it('空闲时点遮罩能关（对照组：证明上面那条确实走到了 dismissible 分支）', () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '通过' }))
+    clickBackdrop(screen.getByRole('dialog'))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('提交在途时遮罩与 ESC 都关不掉（「关掉了」≠「取消了」）', async () => {
+    const gate = deferred<void>()
+    vi.mocked(approveInventoryCoreDoc).mockReturnValue(gate.promise as never)
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '通过' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认通过' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '处理中…' })).toBeDisabled())
+
+    const dialog = screen.getByRole('dialog')
+    clickBackdrop(dialog)
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    // ESC 走 cancel；不可关闭时应被 preventDefault
+    const cancelEvent = new Event('cancel', { cancelable: true, bubbles: true })
+    fireEvent(dialog, cancelEvent)
+    expect(cancelEvent.defaultPrevented).toBe(true)
+    // 光断言 defaultPrevented 不够：万一将来有人既 preventDefault 又 onOpenChange(false)，
+    // 这条用例照样绿。把「弹窗仍在 + action 没被重复调」也钉住。
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(approveInventoryCoreDoc).toHaveBeenCalledTimes(1)
+
+    await act(async () => { gate.resolve(); await gate.promise })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  /**
+   * 真机上 `showModal()` 会让背景 inert，行按钮点不到；只有 dialog.tsx 降级到 `.show()`
+   * 那条退路才可达。让 `showModal` 抛错，把降级路径真正打开 —— 否则用例名声称的
+   * 「降级路径」其实只是 fireEvent 不遵守 inert 而已，删掉 fallback 分支照样绿。
+   */
+  function forceNonModalFallback() {
+    const showModal = vi
+      .spyOn(HTMLDialogElement.prototype, 'showModal')
+      .mockImplementation(function (this: HTMLDialogElement) {
+        throw new Error('showModal unsupported')
+      })
+    const show = vi.spyOn(HTMLDialogElement.prototype, 'show')
+    return { showModal, show }
+  }
+
+  it('降级路径确实走到了 .show()（前置条件自检）', () => {
+    const { show } = forceNonModalFallback()
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    expect(show).toHaveBeenCalled()
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  // ⚠️ 这条（以及下面两条）真正钉住的是 `anyDialogOpen`（`pendingAction !== null || open`），
+  // 不是 `submitting` 专属的 `actionDialogBusy` / `createDialogBusy` —— 把后两个整个删掉，
+  // 这些用例照样全绿（组件注释里也这么写了）。那两个是「拆掉不许并存约束」时的第二道闸，
+  // 有意保留、有意无独立断言。
+  it('降级路径下弹窗开着（含提交在途）时，背景的行操作按钮被锁住', async () => {
+    forceNonModalFallback()
+    const gate = deferred<void>()
+    vi.mocked(rejectInventoryCoreDoc).mockReturnValue(gate.promise as never)
+    const rowB: InventoryDocRow = { ...row, id: 'MBS-260813-0009' }
+    renderDocs([row, rowB])
+
+    fireEvent.click(screen.getAllByRole('button', { name: '驳回' })[0])
+    fireEvent.change(remarkBox('驳回原因'), { target: { value: '数量不符' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认驳回' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '处理中…' })).toBeDisabled())
+
+    // 背景里 B 单的「通过」点了必须没反应，否则 A 的「处理中」界面会被顶掉，用户以为 A 取消了。
+    // 断言的是**行为**不是 disabled 属性 —— 开窗入口刻意不用 disabled（见组件注释：
+    // 那样会让 showModal 记不到可聚焦的触发元素，关闭后焦点回不去）。
+    fireEvent.click(screen.getAllByRole('button', { name: '通过' })[1])
+    fireEvent.click(screen.getByRole('button', { name: '新建' }))
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+    expect(within(actionDialog()).getByText('驳回单据')).toBeInTheDocument()
+    // 「详情」是链接，光给按钮加 disabled 拦不住导航 —— 这时整个换成禁用按钮
+    for (const btn of screen.getAllByRole('button', { name: '详情' })) expect(btn).toBeDisabled()
+    expect(screen.queryByRole('link', { name: '详情' })).not.toBeInTheDocument()
+
+    await act(async () => { gate.resolve(); await gate.promise })
+    // 解锁那条腿也要钉住：在途结束后入口必须恢复，否则页面就永久锁死了
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: '新建' })).toBeEnabled()
+    for (const btn of screen.getAllByRole('button', { name: '通过' })) expect(btn).toBeEnabled()
+  })
+
+  it('提交的是用户原样输入，不因必填校验顺手改写正文', async () => {
+    vi.mocked(rejectInventoryCoreDoc).mockResolvedValue(undefined as never)
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    // ZWJ 组合 emoji：清 Cf 只能用于「看起来是不是空的」，不能拿去落库
+    fireEvent.change(remarkBox('驳回原因'), { target: { value: '  已联系 👩\u200D⚕️ 复核  ' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认驳回' }))
+
+    await waitFor(() =>
+      expect(rejectInventoryCoreDoc).toHaveBeenCalledWith(row.id, '已联系 👩\u200D⚕️ 复核'),
+    )
+  })
+
+  it('弹窗有可及名称，读屏不会只念一句「对话框」', () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    expect(screen.getByRole('dialog', { name: '驳回单据' })).toBeInTheDocument()
+  })
+
+  it('零宽字符不算数：只粘一个零宽空格照样判空', async () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    fireEvent.change(remarkBox('驳回原因'), { target: { value: '\u200B\uFEFF' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认驳回' }))
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('请填写驳回原因'))
+    expect(rejectInventoryCoreDoc).not.toHaveBeenCalled()
+  })
+
+  it('审批弹窗写明不可撤销的后果（它是三个动作里唯一实扣库存的）', () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '通过' }))
+    expect(within(actionDialog()).getByText(/实扣库存/)).toBeInTheDocument()
+    expect(within(actionDialog()).getByText(/不可撤销/)).toBeInTheDocument()
+  })
+
+  it('错误提示与输入框用 aria-describedby 关联（焦点在框里时读屏才念得到）', async () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认驳回' }))
+
+    const errorText = await waitFor(() => within(actionDialog()).getByText('请填写驳回原因'))
+    const box = remarkBox('驳回原因')
+    expect(errorText.id).toBeTruthy()
+    expect(box).toHaveAttribute('aria-describedby', errorText.id)
+  })
+
+  it('打开弹窗时焦点直接落在备注输入框，而不是右上角的关闭按钮', async () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    await waitFor(() => expect(remarkBox('驳回原因')).toHaveFocus())
+  })
+
+  it('关掉再打开（含换动作）焦点仍然落在输入框 —— 常驻挂载后这才是真正的风险点', async () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    await waitFor(() => expect(remarkBox('驳回原因')).toHaveFocus())
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    // 把焦点挪走，确保下面断言的是「重新聚焦」而不是「焦点恰好还在原处」
+    screen.getByRole('button', { name: '新建' }).focus()
+
+    fireEvent.click(screen.getByRole('button', { name: '通过' }))
+    await waitFor(() => expect(remarkBox('审批备注')).toHaveFocus())
+  })
+
+  it('弹窗把单据号与不可撤销后果作为可及描述播报出来', () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '通过' }))
+    expect(screen.getByRole('dialog', { name: '确认审批通过？' })).toHaveAccessibleDescription(
+      /实扣库存/,
+    )
+  })
+
+  it.each([
+    // 业务层抛的 ApiError：digest 是带冒号的完整 message，剥前缀后原样透出
+    ['PERMISSION_DENIED: 无权审批该单据', 'ApiError 形态', '无权审批该单据'],
+    // HOF 层 requireAnyPermission 抛的 PermissionError：digest 是**裸前缀**，无冒号无文案。
+    // 这才是「权限被收回」最直接的那条路径；交给 actionErrorMessage 会原样吐英文 token，
+    // 所以这里要给统一说法。
+    ['PERMISSION_DENIED', 'PermissionError 裸前缀形态', '单据状态或权限已变化，已为你刷新列表'],
+  ])('权限被收回也给出路：关窗 + 刷新（%s / %s）', async (digest, _label, expectedToast) => {
+    vi.mocked(approveInventoryCoreDoc).mockRejectedValue(
+      Object.assign(new Error('sanitized'), { digest }),
+    )
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '通过' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认通过' }))
+
+    // 文案必须断死：只断言「调过 toast」的话，裸前缀形态下显示什么完全放空 ——
+    // 而那正好是会把英文 PERMISSION_DENIED 甩给用户的那条路径
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expectedToast))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await waitFor(() => expect(mockRefresh).toHaveBeenCalled())
+  })
+
+  it('字数计数随输入更新', () => {
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    expect(within(actionDialog()).getByText('0/300')).toBeInTheDocument()
+    fireEvent.change(remarkBox('驳回原因'), { target: { value: '数量不符' } })
+    expect(within(actionDialog()).getByText('4/300')).toBeInTheDocument()
+  })
+
+  it('降级路径下同时只能开一个弹窗：弹窗开着时所有开窗入口都锁住', () => {
+    // 共用一个布尔 busy 的话，先结束的请求会把另一个仍在途的锁提前解开；
+    // 而两个非模态弹窗叠开又会让焦点与输入归属混乱。所以从状态上就禁止并存。
+    const { show } = forceNonModalFallback()
+    const rowB: InventoryDocRow = { ...row, id: 'MBS-260813-0009' }
+    renderDocs([row, rowB])
+
+    fireEvent.click(screen.getAllByRole('button', { name: '驳回' })[0])
+    expect(show).toHaveBeenCalled()
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+
+    // 点了没反应，而且始终只有一个 dialog
+    fireEvent.click(screen.getAllByRole('button', { name: '通过' })[1])
+    fireEvent.click(screen.getByRole('button', { name: '新建' }))
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+    expect(within(actionDialog()).getByText('驳回单据')).toBeInTheDocument()
+
+    // 关掉之后入口恢复
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    fireEvent.click(screen.getByRole('button', { name: '新建' }))
+    expect(within(actionDialog()).getByText('新建库存单据')).toBeInTheDocument()
+  })
+
+  it('建单弹窗开着时，行操作入口同样锁住', () => {
+    forceNonModalFallback()
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '新建' }))
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: '通过' }))
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+    expect(within(actionDialog()).getByText('新建库存单据')).toBeInTheDocument()
+    for (const btn of screen.getAllByRole('button', { name: '详情' })) expect(btn).toBeDisabled()
+  })
+
+  it('建单弹窗开着时权限被收回：弹窗不消失、输入还在、关掉后页面自行解锁', () => {
+    // `{canCreate && <CreateDocDialog/>}` 在 canCreate 翻 false 时会把正开着的弹窗整个卸载：
+    // 用户填的表单没了，而父组件的 `open` 仍是 true → 所有入口被点击闸锁死，只能整页重载。
+    const { rerender } = render(
+      <InventoryDocsPage {...baseProps} allowedCreateDocTypes={['市场产品报损']} />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '新建' }))
+    const remark = within(actionDialog()).getByPlaceholderText('备注')
+    fireEvent.change(remark, { target: { value: '填了一半' } })
+
+    rerender(
+      <InventoryDocsPage {...baseProps} canCreate={false} allowedCreateDocTypes={['市场产品报损']} />,
+    )
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(within(actionDialog()).getByPlaceholderText('备注')).toHaveValue('填了一半')
+
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    // 解锁：行操作入口恢复可用（点得开动作弹窗）
+    fireEvent.click(screen.getByRole('button', { name: '驳回' }))
+    expect(within(actionDialog()).getByText('驳回单据')).toBeInTheDocument()
+  })
+
+  it('开窗入口不能用 disabled —— 那会让原生 dialog 记不到可聚焦的触发元素', () => {
+    // codex 第 8 轮抓到的回归：点「驳回」那一刻按钮就变 disabled，而 showModal() 在随后的
+    // layout effect 里才记录「打开前的焦点」，记到的已经不是可聚焦元素，关闭后焦点回不去。
+    renderDocs()
+    const opener = screen.getByRole('button', { name: '驳回' })
+    fireEvent.click(opener)
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(opener).toBeEnabled()
+  })
+})
+
+describe('建单失败的提示（#134）', () => {
+  it('可读的业务 digest：剥前缀后原样透出，且不再弹原生 alert', async () => {
+    const { alert: alertSpy } = stubNativeDialogs()
+    vi.mocked(createInventoryCoreDoc).mockRejectedValue(
+      Object.assign(
+        new Error(
+          'An error occurred in the Server Components render. The specific message is omitted in production builds.',
+        ),
+        { digest: 'INVALID_STATE: 库存期初尚未导入并核验完成，暂不可办理库存业务' },
+      ),
+    )
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '新建' }))
+    fireEvent.click(screen.getByRole('button', { name: '提交' }))
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith('库存期初尚未导入并核验完成，暂不可办理库存业务'),
+    )
+    expect(alertSpy).not.toHaveBeenCalled()
+  })
+
+  // 上一条同时给了可读 digest 与脱敏 message，走的其实只是「digest 优先」那一支 ——
+  // 真正的兜底路径（Next 自动生成的数字编号 / 裸前缀）得单独造。
+  it.each([
+    ['1738462912', '创建单据失败', 'Next 自动生成的数字编号'],
+    ['1956068727@E263', '创建单据失败', '带错误码后缀的数字编号'],
+    ['PERMISSION_DENIED', '单据状态或权限已变化，已为你刷新列表', '权限被收回（裸前缀）'],
+  ])('不可读的信号（%s / %s）不能端给用户', async (digest, expected) => {
+    vi.mocked(createInventoryCoreDoc).mockRejectedValue(
+      Object.assign(
+        new Error(
+          'An error occurred in the Server Components render. The specific message is omitted in production builds.',
+        ),
+        { digest },
+      ),
+    )
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '新建' }))
+    fireEvent.click(screen.getByRole('button', { name: '提交' }))
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expected))
+    // 建单弹窗**不关**：表单里是用户敲进去的内容，关掉就全没了
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('状态/权限已变化时刷新列表（但不关建单弹窗）', async () => {
+    vi.mocked(createInventoryCoreDoc).mockRejectedValue(
+      Object.assign(new Error('sanitized'), { digest: 'CONFLICT: 单据号已被占用' }),
+    )
+    renderDocs()
+    fireEvent.click(screen.getByRole('button', { name: '新建' }))
+    fireEvent.click(screen.getByRole('button', { name: '提交' }))
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('单据号已被占用'))
+    await waitFor(() => expect(mockRefresh).toHaveBeenCalled())
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 })
