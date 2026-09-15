@@ -1,8 +1,9 @@
 'use client'
 
-import { useCallback, useEffect, useState, useTransition } from 'react'
+import { useCallback, useEffect, useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { ClipboardList, Plus } from 'lucide-react'
+import { toast } from 'sonner'
 import {
   approveInventoryCoreDoc,
   confirmInventoryCoreReceive,
@@ -32,13 +33,16 @@ import { Input } from '@/components/ui/input'
 import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { actionErrorMessage } from '@/lib/action-error'
 import { useUrlFilters } from '@/lib/hooks/use-url-filters'
 import { PreserveListContextLink } from '@/components/return-context'
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
 const GENERIC_DOC_TYPE_SET = new Set<InventoryDocType>(INVENTORY_GENERIC_DOC_TYPES)
 
-const SOURCE_LOT_DOC_TYPES = new Set<InventoryDocType>([
+// 导出供测试锁定：它与 INVENTORY_GENERIC_DOC_TYPES 的交集就是「通用建单入口里需要选来源批次」
+// 的全集，必须与服务端 engine.ts 的 shouldCaptureSourceLot 判定保持一致（见同目录测试的守护用例）。
+export const SOURCE_LOT_DOC_TYPES = new Set<InventoryDocType>([
   '品项公司发货',
   '分院配货',
   '分院调货出库',
@@ -338,41 +342,55 @@ function CreateDocDialog({
   })
   const [remark, setRemark] = useState('')
   const [items, setItems] = useState<DraftItem[]>([defaultItem()])
-  const [lotOptionsByKey, setLotOptionsByKey] = useState<Record<string, InventoryLotRow[]>>({})
-  const [loadingLotKeys, setLoadingLotKeys] = useState<Record<string, boolean>>({})
   const requiresSourceLot = SOURCE_LOT_DOC_TYPES.has(docType)
+  /**
+   * 批次取数的弹窗级缓存：按 (库位, SKU) 存**Promise**，既去重在途请求也复用已取结果。
+   * 没有它的话，N 条明细选同一个 SKU 就发 N 次；更隐蔽的是明细行用 index 当 React key，
+   * 删掉中间一行会让其后每一行的 (库位,SKU) 组合整体平移，触发一连串重复请求 ——
+   * 而 Server Action 走的是全局 FIFO 队列，这些请求串行排队，下拉会一起变灰，
+   * 观感和 #129 的卡死几乎一样。
+   *
+   * ⚠️ 用 ref 不用 state：它**绝不能进任何 useEffect 的依赖数组**（#129 的成因正是如此）。
+   */
+  const lotCacheRef = useRef<LotCache>(new Map())
+  /**
+   * 缓存代次。原生 <dialog> 关闭不卸载组件，`lotCacheRef` 与每行的 `loaded` 都会常驻 ——
+   * 只 clear() 缓存是不够的：子组件的 `loaded.key` 没变，effect 根本不会重跑。
+   * 把代次编进 key，重开弹窗时所有批次下拉就会重新取数，不会拿几分钟前的数量去建下一张单
+   * （提交必被服务端 FOR UPDATE + 可用量校验拒掉）。
+   *
+   * 代次在**关闭时**推进，不是打开时：
+   * - 打开时推进的话，open→true 的首帧 `loaded.key` 仍等于旧 cacheKey，会闪一下旧批次；
+   * - 关闭时推进，重开的第一帧渲染期就判定为过期 → 直接进加载态。
+   * 配合下面传给 DocLotSelect 的 `active={open}`（关闭态只 cleanup 不取数），
+   * 保证「关着不发请求、一次重开只产生一个新代次」—— 否则提交成功后弹窗已关，
+   * N 个不同 SKU 的明细行会各发一次无用请求，排在重开后的可见请求前面，
+   * 把批次框重新拖成长时间 disabled（正是 #129 的观感）。
+   */
+  const [lotEpoch, setLotEpoch] = useState(0)
+
+  useEffect(() => {
+    if (open) return
+    // 正确性由取数侧的 settled + epoch 判定负责（见 LotCache 注释）—— 在这里按
+    // 「关闭当刻是否 settled」一刀切会漏掉「关闭后、重开前才返回」的那批：它们关闭当刻还在途、
+    // 躲过清理，重开时又已完成，于是被当成新鲜结果复用。
+    // 这里只做内存清扫：当刻已完成的条目下次取数必被代次淘汰，留着也只是占内存
+    // （用户翻过很多 SKU 又一直不关页面时会累积）。在途的必须留着给下一代过继。
+    for (const [key, entry] of lotCacheRef.current) {
+      if (entry.settled) lotCacheRef.current.delete(key)
+    }
+    setLotEpoch((n) => n + 1)
+    // 代次一换，已选的 lotId 可能指向下一代里已经不存在的批次：受控 select 会显示空白，
+    // state 却还留着旧值，直接提交就只能靠服务端 lockLotById 兜底报错。换主体/换 SKU
+    // 都清了 lotId，这条路径也要清。
+    setItems((prev) => (prev.some((item) => item.lotId) ? prev.map((item) => ({ ...item, lotId: '' })) : prev))
+  }, [open])
   const isDocTypeLocked = Boolean(initialDocType && availableDocTypes.includes(initialDocType))
   const sourceLocationId = locations.find((location) => location.orgNodeId === sourceOrgNodeId)?.locationId ?? ''
 
   function updateItem(index: number, patch: Partial<DraftItem>) {
     setItems((prev) => prev.map((item, i) => (i === index ? { ...item, ...patch } : item)))
   }
-
-  useEffect(() => {
-    if (!requiresSourceLot || !sourceLocationId) return
-    const skuIds = Array.from(new Set(items.map((item) => item.skuId).filter(Boolean)))
-    let cancelled = false
-    for (const skuId of skuIds) {
-      const key = `${sourceLocationId}:${skuId}`
-      if (lotOptionsByKey[key] || loadingLotKeys[key]) continue
-      setLoadingLotKeys((prev) => ({ ...prev, [key]: true }))
-      void listInventoryLotOptions(sourceLocationId, skuId)
-        .then((lots) => {
-          if (!cancelled) setLotOptionsByKey((prev) => ({ ...prev, [key]: lots }))
-        })
-        .catch(() => {
-          if (!cancelled) setLotOptionsByKey((prev) => ({ ...prev, [key]: [] }))
-        })
-        .finally(() => {
-          if (!cancelled) {
-            setLoadingLotKeys((prev) => ({ ...prev, [key]: false }))
-          }
-        })
-    }
-    return () => {
-      cancelled = true
-    }
-  }, [items, loadingLotKeys, lotOptionsByKey, requiresSourceLot, sourceLocationId])
 
   async function submit() {
     if (submitting) return
@@ -396,6 +414,8 @@ function CreateDocDialog({
         })),
       }
       await createInventoryCoreDoc(payload)
+      // 不在这里手工失效缓存：onOpenChange(false) 会走上面那个「关闭即推进代次」的 effect，
+      // 下次打开自然重新取数。在这里再推一次只会在弹窗已关的状态下白发一轮请求。
       onOpenChange(false)
       onSuccess()
     } catch (err) {
@@ -449,33 +469,18 @@ function CreateDocDialog({
               key={index}
               className={`${requiresSourceLot ? 'grid-cols-7' : 'grid-cols-6'} grid gap-2 rounded-md border border-[var(--border)] p-2`}
             >
-              {requiresSourceLot && (() => {
-                const key = item.skuId ? `${sourceLocationId}:${item.skuId}` : ''
-                const lots = key ? lotOptionsByKey[key] || [] : []
-                const isLoadingLots = key ? loadingLotKeys[key] : false
-                return (
-                  <Select
-                    value={item.lotId}
-                    disabled={!sourceLocationId || !item.skuId || isLoadingLots}
-                    onChange={(e) => updateItem(index, { lotId: e.target.value })}
-                  >
-                    <option value="">
-                      {!sourceLocationId
-                        ? '先选择出库主体'
-                        : !item.skuId
-                          ? '先选择库存 SKU'
-                          : isLoadingLots
-                            ? '加载库存批次...'
-                            : '选择库存批次'}
-                    </option>
-                    {lots.map((lot) => (
-                      <option key={lot.id} value={String(lot.id)}>
-                        {`${lot.batchNo || '无批号'} · 可用 ${lot.quantityOnHand}${lot.expiryDate ? ` · ${formatDate(lot.expiryDate)}` : ''}`}
-                      </option>
-                    ))}
-                  </Select>
-                )
-              })()}
+              {requiresSourceLot && (
+                <DocLotSelect
+                  locationId={sourceLocationId}
+                  skuId={item.skuId}
+                  value={item.lotId}
+                  onChange={(lotId) => updateItem(index, { lotId })}
+                  cache={lotCacheRef.current}
+                  epoch={lotEpoch}
+                  active={open}
+                  label={`明细 ${index + 1} 来源批次`}
+                />
+              )}
               <Select
                 value={item.skuId}
                 onChange={(e) => updateItem(index, { skuId: e.target.value, lotId: '' })}
@@ -509,5 +514,159 @@ function CreateDocDialog({
         <Button onClick={submit} disabled={submitting}>提交</Button>
       </DialogFooter>
     </Dialog>
+  )
+}
+
+/**
+ * 来源批次下拉：每行一个实例、自带 state，按 (locationId, skuId) 拉取，取数走弹窗级 Promise 缓存。
+ *
+ * ⚠️ 依赖数组只能放**真实输入**（locationId / skuId / 显式的重试计数），
+ * 绝不能放这个 effect 自己 set 的 state。曾经的写法是父层共享 `lotOptionsByKey` /
+ * `loadingLotKeys` 两个 Record 再把它们塞进依赖数组：setState → re-render → 依赖变 →
+ * effect 重跑 → cleanup 把上一轮 `cancelled` 置 true → 首次请求的 then/catch/finally
+ * 全被跳过 → loading 永远停在 true → 下拉永久 disabled，6 种需选来源批次的单据
+ * 全部建不出来（#129）。
+ * （`retryToken` 虽然也是本组件的 state，但它只在 onFocus 里 set、不在 effect 体内 set，
+ *   不构成自触发环 —— 区别就在这里。）
+ *
+ * 办理台 `inventory-operations-page.tsx` 的 `LotPicker` **不存在**这个 bug（它的依赖数组
+ * 干净地只有 `[locationId, skuId]`），可作正例参照；但它在加载期间不清旧数据，
+ * 本组件用 `loaded.key === cacheKey` 顺带解决了 —— 入参一变，渲染期立刻判定为加载中，
+ * 不会闪出上一对入参的批次（删除明细行时尤其重要：明细用 index 当 React key，
+ * 删行会让实例拿到下一行的 props）。
+ */
+type LotLoadState = { key: string; lots: InventoryLotRow[]; failed?: boolean }
+
+/**
+ * 弹窗级批次取数缓存：(库位, SKU) → 在途/已完成的 Promise。
+ *
+ * key **不含代次** —— 代次只管「结果算不算新鲜」（编在 DocLotSelect 的 cacheKey 里），
+ * 在途去重是另一回事。
+ *
+ * 取数时按 `settled` + `epoch` 决定复用还是重取：
+ * - 还在途（`settled === false`）→ 无条件复用，并把它「过继」给当前代次
+ *   （Server Action 不可 abort，作废等于白等一轮）
+ * - 已完成且属于**旧代次** → 淘汰重取（可用量可能已经过期）
+ * - 已完成且属于当前代次 → 复用（同一弹窗内多行去重）
+ */
+type LotCache = Map<string, { promise: Promise<InventoryLotRow[]>; settled: boolean; epoch: number }>
+
+function DocLotSelect({
+  locationId,
+  skuId,
+  value,
+  onChange,
+  cache,
+  epoch,
+  active,
+  label,
+}: {
+  locationId: string
+  skuId: string
+  value: string
+  onChange: (lotId: string) => void
+  /** 弹窗级 (库位,SKU) → Promise 缓存，见 CreateDocDialog 的 lotCacheRef */
+  cache: LotCache
+  /** 缓存代次，弹窗关闭时递增，用来强制下次打开重新取数 */
+  epoch: number
+  /** 弹窗是否打开。原生 <dialog> 关闭不卸载 children，关着时绝不能取数 */
+  active: boolean
+  label: string
+}) {
+  // 用 JSON 数组当 key，避免 ('a:b','c') 与 ('a','b:c') 这类分隔符歧义撞进同一个缓存槽。
+  // 组件自己的新鲜度 key 含代次（换代即判定过期）；查缓存用的 key 不含代次（在途请求跨代可复用）。
+  const cacheKey = locationId && skuId ? JSON.stringify([epoch, locationId, skuId]) : ''
+  const requestKey = locationId && skuId ? JSON.stringify([locationId, skuId]) : ''
+  const [retryToken, setRetryToken] = useState(0)
+  const [loaded, setLoaded] = useState<LotLoadState | null>(null)
+
+  useEffect(() => {
+    if (!active || !cacheKey) return
+    let cancelled = false
+    let entry = cache.get(requestKey)
+    // 已完成且属于旧代次 → 结果可能过期，淘汰重取（在途的不动，见 LotCache 注释）
+    if (entry && entry.settled && entry.epoch !== epoch) {
+      cache.delete(requestKey)
+      entry = undefined
+    }
+    if (!entry) {
+      const promise = listInventoryLotOptions(locationId, skuId).then((lots) => {
+        // 契约异常（灰度不一致 / action 回归返回了非数组）必须走失败路径，
+        // 不能吞成「正常的空列表」—— 那会和 #129 一样让用户误判为「没货」
+        if (!Array.isArray(lots)) throw new Error('批次接口返回格式异常')
+        return lots
+      })
+      entry = { promise, settled: false, epoch }
+      cache.set(requestKey, entry)
+      const created = entry
+      void promise.then(
+        () => { created.settled = true },
+        () => { created.settled = true },
+      )
+    } else {
+      // 在途条目被新代次接手：它落地后，同代次的其它明细行直接复用，不再多发一次
+      entry.epoch = epoch
+    }
+    entry.promise
+      .then((lots) => {
+        if (!cancelled) setLoaded({ key: cacheKey, lots })
+      })
+      .catch((error) => {
+        // 失败的 Promise 不能留在缓存里，否则重试会拿到同一个已 reject 的 Promise
+        cache.delete(requestKey)
+        // 失败必须让用户看见：静默吞掉会和「该批次真的没货」长得一模一样。
+        // 多行共用同一个 key 时会各自 catch，用 cacheKey 当 toast id 去重，避免弹 N 条一样的。
+        if (!cancelled) {
+          setLoaded({ key: cacheKey, lots: [], failed: true })
+          toast.error(actionErrorMessage(error, '加载可用批次失败'), { id: cacheKey })
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [active, cacheKey, requestKey, epoch, locationId, skuId, cache, retryToken])
+
+  const isCurrent = loaded?.key === cacheKey
+  const lots = isCurrent ? loaded.lots : []
+  const failed = isCurrent && loaded.failed === true
+  const isLoadingLots = Boolean(cacheKey) && !isCurrent
+
+  return (
+    <Select
+      aria-label={label}
+      value={value}
+      disabled={!locationId || !skuId || isLoadingLots}
+      onChange={(e) => onChange(e.target.value)}
+      onFocus={() => {
+        // 失败态是唯一的重试入口：关掉弹窗再打开不会重挂载（原生 <dialog>），
+        // 不给入口的话用户只能靠「切到别的 SKU 再切回来」猜出来。
+        if (failed) {
+          setLoaded(null)
+          setRetryToken((n) => n + 1)
+        }
+      }}
+    >
+      <option value="">
+        {!locationId
+          ? '先选择出库主体'
+          : !skuId
+            ? '先选择库存 SKU'
+            : isLoadingLots
+              ? '加载库存批次...'
+              : failed
+                ? '批次加载失败，点此重试'
+                : '选择库存批次'}
+      </option>
+      {lots.map((lot) => (
+        <option key={lot.id} value={String(lot.id)}>
+          {/*
+            用 availableQuantity（在手 − 未完成预留）而不是 quantityOnHand：
+            服务端扣减时校验的就是可用量，显示在手量会出现「界面写着可用 30、提交却报库存不足」
+            的自相矛盾。接口本来就把这个字段算好返回了，之前只是没用上。
+          */}
+          {`${lot.batchNo || '无批号'} · 可用 ${lot.availableQuantity}${lot.expiryDate ? ` · ${formatDate(lot.expiryDate)}` : ''}`}
+        </option>
+      ))}
+    </Select>
   )
 }
