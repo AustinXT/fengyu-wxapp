@@ -714,6 +714,18 @@ describe('Next digest 形态漂移守护（#133）', () => {
     return out
   }
 
+  /**
+   * 「源码里写了一个 digest」的形态判据。要区分开的是**写**与**读/类型标注/三元**：
+   * - 字段声明那一支排除 `const/let/var digest = …`（`inventory-docs-page.tsx` 里就有
+   *   `const digest = (err as …)?.digest`，#134 合入后会让这条守护误报）
+   * - 对象字面量那一支要求「前面是 `{` 或 `,`」且「值是字符串字面量」，否则
+   *   `digest: string`（类型标注）与 `cond ? digest : ''`（三元）都会中招
+   * 下面有元测试拿正反例把这条判据本身钉住。
+   * 已知不覆盖：`{ digest }` 简写、`digest: SOME_CONST` 这类标识符值 —— 见 AST 跟进项。
+   */
+  const DIGEST_WRITE_RE =
+    /\.digest\s*=(?!=)|(?<!\b(?:const|let|var)\s+)(?:readonly\s+)?\bdigest\s*(?::\s*[\w<>[\]|\s]+)?=(?!=)|(?<=[{,]\s{0,40})\bdigest\s*:\s*['"`]|\[\s*['"`]digest['"`]\s*\]\s*=|defineProperty\s*\([^,]+,\s*['"`]digest['"`]/
+
   it('全仓写 digest 的生产者就是已知那几处（改动这张名单必须同步中文说法表）', () => {
     // 早先这条只扫 `digest = '字面量'`，`const D = 'PHONE_REQUIRED'; readonly digest = D`
     // 这种间接写法绕得过去。改为守「**哪些文件在写 digest**」这个更粗但绕不过的不变量：
@@ -727,11 +739,7 @@ describe('Next digest 形态漂移守护（#133）', () => {
       const text = stripComments(readFileSync(file, 'utf8'))
       // 写入形态：`x.digest = …` / `readonly digest = …` / `digest = …`（无 readonly 的字段）
       // / 对象字面量里任意位置的 `digest:` / `['digest'] =` / `defineProperty(…, 'digest', …)`
-      if (
-        /\.digest\s*=(?!=)|(?:readonly\s+)?\bdigest\s*(?::\s*[\w<>[\]|\s]+)?=(?!=)|\bdigest\s*:\s*\S|\[\s*['"`]digest['"`]\s*\]\s*=|defineProperty\s*\([^,]+,\s*['"`]digest['"`]/.test(
-          text,
-        )
-      ) {
+      if (DIGEST_WRITE_RE.test(text)) {
         producers.add(file.slice(adminSrc.length + 1))
       }
       // 同文件里的一层常量间接（`const D = 'PHONE_REQUIRED'; readonly digest = D`）——
@@ -768,6 +776,28 @@ describe('Next digest 形态漂移守护（#133）', () => {
 
     // 其中写「裸 token」的只有 permissions.ts 的 PermissionError
     expect([...bareTokens].sort()).toEqual(['PERMISSION_DENIED'])
+
+    // 元测试：确认「写 vs 读」的判据真的分得开 —— 这两组曾在 #134 合入时撞出误报
+    const producerRe = DIGEST_WRITE_RE
+    for (const write of [
+      "err.digest = err.message",
+      "readonly digest = 'PERMISSION_DENIED'",
+      "readonly digest: string = 'PHONE_REQUIRED'",
+      "digest = DIGEST_CONST",
+      "err['digest'] = 'X'",
+      "Object.defineProperty(err, 'digest', { value: 'X' })",
+      "const e = { name: 'x', digest: 'CONFLICT: y' }",
+    ]) {
+      expect(write, `应判为写入：${write}`).toMatch(producerRe)
+    }
+    for (const read of [
+      "const digest = (err as { digest?: unknown } | null | undefined)?.digest",
+      "let digest: string | undefined = readDigest(err)",
+      "interface E { digest: string }",
+      "const raw = typeof digest === 'string' ? digest : ''",
+    ]) {
+      expect(read, `应判为读取：${read}`).not.toMatch(producerRe)
+    }
     const src = readFileSync(resolve(adminSrc, 'lib/action-error.ts'), 'utf8')
     const mapped = [
       ...(src.match(/const OPAQUE_TOKEN_MESSAGES[\s\S]*?\}\)/)?.[0] ?? '').matchAll(
