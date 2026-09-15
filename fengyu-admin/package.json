@@ -26,7 +26,8 @@
     "test:e2e:inventory": "bun tests/e2e-actions/smoke-inventory-chain.mjs && bun tests/e2e-actions/smoke-inventory-returns.mjs && bun tests/e2e-actions/smoke-inventory-transfer.mjs",
     "test:visual": "playwright test tests/e2e-pages/visual",
     "test:visual:update": "playwright test tests/e2e-pages/visual --update-snapshots",
-    "test:all": "vitest run && playwright test"
+    "test:all": "vitest run && playwright test",
+    "test:e2e:inventory-ui": "ADMIN_BASE_URL=${ADMIN_BASE_URL:-http://101.34.242.103:3000} playwright test --config=tests/e2e-inventory-ui/playwright.inventory.config.ts"
   },
   "dependencies": {
     "@alicloud/ocr-api20210707": "^3.1.3",
