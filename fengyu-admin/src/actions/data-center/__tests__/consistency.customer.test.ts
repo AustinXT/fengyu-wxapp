@@ -37,6 +37,14 @@ function stripComments(src: string): string {
   return src
     .replace(/\/\*[\s\S]*?\*\//g, ' ')
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ')
+    // PostgreSQL 行注释：被测文本是 TS/JS 里的 SQL 模板串，`--` 注释此前原样保留。
+    // 维护中临时注释掉一行过滤（`-- AND spe.change_type IN (...)`），
+    // 逐块断言仍能匹配到注释里的字面量 → 假绿。codex 评审指出这条路。
+    //
+    // ⚠ 只剥「行首」或「空白后」的 `--`，不碰 `i--` 这类递减运算符
+    // （全局删 `--` 会误伤代码——GLM 在 #141 提过同一风险）。
+    .replace(/^[ \t]*--.*$/gm, '')
+    .replace(/(\s)--[ \t].*$/gm, '$1')
 }
 
 describe('客量板块两端口径一致性守护', () => {
@@ -196,6 +204,26 @@ describe('客量板块两端口径一致性守护', () => {
           }
         })
       }
+    })
+
+    /**
+     * stripComments 必须同时剥掉 **SQL 行注释**（codex 评审）。
+     * 否则「临时注释掉一行过滤」这种最常见的维护动作会让守护假绿 ——
+     * JS 注释路径在上一轮已封，SQL `--` 是同一个洞的另一半。
+     * ⚠ 只剥行首/空白后的 `--`，不碰 `i--` 这类递减运算符。
+     */
+    it('stripComments 剥掉 SQL 行注释，但不误伤递减运算符', () => {
+      const sql = [
+        "  AND spe.status = '已支付'",
+        "  -- AND spe.change_type IN ('首次支付', '回款', '退款')",
+        "  AND x = 1 -- AND spe.performance_date BETWEEN a AND b",
+      ].join('\n')
+      const out = stripComments(sql)
+      expect(out, '行首 SQL 注释未被剥').not.toMatch(/spe\.change_type/)
+      expect(out, '行内尾部 SQL 注释未被剥').not.toMatch(/spe\.performance_date/)
+      expect(out, '有效条件被误删').toMatch(/spe\.status\s*=\s*'已支付'/)
+      // 递减运算符不受影响
+      expect(stripComments('for (let i = n; i > 0; i--) {'), '误伤 i--').toContain('i--')
     })
 
     it('金额一律取款项流水（按出现次数锁死，防某处改回订单快照）', () => {
