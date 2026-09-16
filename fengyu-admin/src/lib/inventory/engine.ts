@@ -32,6 +32,9 @@ import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { AuthSession } from '@/lib/types'
 import { assertInventoryBusinessWritable } from './cutover'
+// 账面数按**主体 + SKU 汇总**记录 —— 口径由甲方 2026-09-16 拍板（issue #131 Q1）：
+// 现场就是按商品数总盘、不区分批次，按批次记会造成假精确。类型清单与详情页共用单源。
+import { STOCKTAKE_DOC_TYPES } from './stocktake'
 import {
   INVENTORY_DOC_TYPES,
   INVENTORY_GENERIC_DOC_TYPES,
@@ -1051,6 +1054,49 @@ async function ensureLotFromSku(
   `)
   const id = Number((rows as unknown as Array<{ id: number }>)[0].id)
   return lockLotById(tx, id, locationId)
+}
+
+/**
+ * 某主体下一批 SKU 各自的**在手量**（所有批次求和），返回 `skuId → 数量`。
+ *
+ * 盘点账面数刻意**不扣预留**（issue #131 的 Q0）：盘点比的是「账面 vs 货架上数出来的实物」，
+ * 预留是对外承诺、货还在架上；扣了预留会让所有有在途预留的 SKU 天然显示为盘亏。
+ * `stock_snapshot` 这一列在不同单据上有三种含义，别互相套用：
+ *   - 绝大多数单据：**单个批次**的在手量（`lot.quantityOnHand`）
+ *   - 盘点单（本函数）：**主体 + SKU 汇总**的在手量 —— 与上面同为「在手量」，只是**粒度**不同
+ *   - 市场报货汇总（`business.ts` 里另算另写）：在手 − 已预留 = **可承诺量** —— 这个才是**口径**不同
+ * 真正会算错账的是把最后那种与前两种混用。
+ *
+ * **一次 GROUP BY 取齐，不逐行查**：建单事务全程持有 `inventory_cutover_states` 的行锁
+ * （`assertInventoryBusinessWritable` 的 `SELECT ... FOR UPDATE`），那是整个库存域的串行点；
+ * 逐行往返会把别人的库存写入一起堵在这把锁后面，且连接池 max=5。
+ * 一次查询还顺带让同一张单所有行的账面数取自**同一个语句快照**（READ COMMITTED 下
+ * 逐条 SELECT 各取各的快照，会让一张「账面 vs 实盘」单失去单一时点语义）。
+ *
+ * GROUP BY 不出行 = 该 SKU 在该主体一个批次都没有 → 调用方落 0（不是 NULL）。
+ */
+async function skuOnHandByLocation(
+  tx: Tx,
+  locationId: string,
+  skuIds: readonly string[],
+): Promise<Map<string, number>> {
+  const result = new Map<string, number>()
+  if (skuIds.length === 0) return result
+  // ⚠️ 不能写 `= ANY(${skuIds}::text[])`：drizzle 的 sql 模板把 JS 数组当**单个**参数绑，
+  // PG 收到的是裸字符串 → `22P02 malformed array literal`（2026-09-16 实机复现）。
+  // 仓内既有写法是 sql.join 逐个参数化展开成 IN（见 actions/dashboard.ts:135），不拼接不注入。
+  const rows = await tx.execute(sql`
+    SELECT sku_id, COALESCE(SUM(quantity_on_hand), 0) AS quantity
+      FROM inventory_stock_lots
+     WHERE location_id = ${locationId}
+       AND sku_id IN (${sql.join(skuIds.map((skuId) => sql`${skuId}`), sql`, `)})
+     GROUP BY sku_id
+  `)
+  // 原生 SQL 的 numeric 聚合经 postgres.js 回来是 string，必须显式 Number()
+  for (const row of rows as unknown as Array<{ sku_id: string; quantity: string | number | null }>) {
+    result.set(row.sku_id, Number(row.quantity ?? 0))
+  }
+  return result
 }
 
 async function skuSnapshot(
@@ -2642,6 +2688,24 @@ export const createInventoryCoreDoc = withAnyPermission(
     if (!Array.isArray(input.items) || input.items.length === 0) {
       throw new ApiError('INVALID_PARAMS', '库存单据至少需要一条明细')
     }
+    /**
+     * 盘点单：一个 SKU 只能一行。账面数按「主体 + SKU 汇总」记（#131 Q1），同 SKU 两行会
+     * 各自拿到**同一个**完整账面数，差异列直接变成重复计算的废数。
+     * 放在开事务前拦——失败不占那把全局的 cutover 行锁。
+     * 只对盘点单生效；其余单据的重复行语义（同 SKU 不同批次）保持不变。
+     */
+    const stocktakeSkuIds: string[] = []
+    if (STOCKTAKE_DOC_TYPES.has(input.docType)) {
+      const seen = new Set<string>()
+      for (const item of input.items) {
+        const skuId = normalizeRequired(item.skuId, '库存 SKU')
+        if (seen.has(skuId)) {
+          throw new ApiError('INVALID_PARAMS', '同一 SKU 请合并为一条盘点明细')
+        }
+        seen.add(skuId)
+        stocktakeSkuIds.push(skuId)
+      }
+    }
     let sourceOrgNodeId = normalizeText(input.sourceOrgNodeId)
     let targetOrgNodeId = normalizeText(input.targetOrgNodeId)
     if (INTERNAL_SAME_NODE_DOC_TYPES.has(input.docType)) {
@@ -2706,11 +2770,15 @@ export const createInventoryCoreDoc = withAnyPermission(
 
       let calculatedTotalAmount = 0
       let hasCalculatedAmount = false
+      // 盘点账面数：一次取齐（见 skuOnHandByLocation 的注释：串行点 + 单一时点语义）
+      const bookQuantityBySkuId = await skuOnHandByLocation(tx, actingLocationId, stocktakeSkuIds)
       for (const item of input.items) {
         const quantity = assertPositiveQuantity(item.quantity)
         // 通用入口只接收库存事实；所有价格与金额从 SKU/锁定批次快照派生。
         const serverItem = stripPriceInput(item)
         let lot: LockedLot | null = null
+        /** 盘点单的账面数（主体 + SKU 在手量汇总）；非盘点单保持 null，行为与改前一致 */
+        let bookQuantity: number | null = null
         let snapshot: Pick<LockedLot, 'skuId' | 'skuName' | 'specName' | 'supplier' | 'productSeries'> & Partial<LockedLot>
         const shouldCaptureSourceLot =
           plan?.locationRole === 'source' ||
@@ -2738,6 +2806,12 @@ export const createInventoryCoreDoc = withAnyPermission(
           const skuId = normalizeRequired(serverItem.skuId, '库存 SKU')
           await assertSkuIdAvailableAtLocation(tx, skuId, actingLocationId)
           snapshot = await skuSnapshot(tx, skuId)
+          if (STOCKTAKE_DOC_TYPES.has(input.docType)) {
+            // 盘点单没有批次选择器，`lot` 恒为 null —— 账面数只能来自上面一次取齐的汇总。
+            // 不写的话 `stock_snapshot` 恒 NULL，盘点单就退化成一张只有「实盘数」的白条。
+            // 取不到 = 该 SKU 在该主体一个批次都没有 → 账上就是 0（不是「没记」）。
+            bookQuantity = bookQuantityBySkuId.get(skuId) ?? 0
+          }
         }
 
         const standardUnitPrice =
@@ -2774,7 +2848,7 @@ export const createInventoryCoreDoc = withAnyPermission(
             expiryDate: lot?.expiryDate ?? normalizeText(serverItem.expiryDate),
             isGift: lot?.isGift ?? Boolean(serverItem.isGift),
             quantity: String(quantity),
-            stockSnapshot: lot ? String(lot.quantityOnHand) : null,
+            stockSnapshot: lot ? String(lot.quantityOnHand) : numString(bookQuantity),
             requestQuantity: numString(serverItem.requestQuantity),
             fulfilledQuantity: numString(serverItem.fulfilledQuantity),
             standardUnitPrice: numString(standardUnitPrice),

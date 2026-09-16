@@ -8,6 +8,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { fmtDateTime } from '@/lib/datetime'
 import { getSession } from '@/lib/auth'
 import { requireAllUiPageCapabilities } from '@/lib/page-capability'
+import { isStocktakeDocType, stocktakeDiff, stocktakeSummary } from '@/lib/inventory/stocktake'
 
 export const dynamic = 'force-dynamic'
 
@@ -15,6 +16,17 @@ function fmt(v: string | number | boolean | null | undefined) {
   if (v === null || v === undefined || v === '') return '—'
   if (typeof v === 'boolean') return v ? '是' : '否'
   return String(v)
+}
+
+/** 盘盈绿 / 盘亏红 / 相符灰，取 admin 状态色（成功 / 错误 / 完结）。 */
+function StocktakeDiffCell({ diff }: { diff: number | null }) {
+  if (diff === null) return <td className="px-3 py-2 text-right text-[#999999]">—</td>
+  const tone = diff > 0 ? 'text-[#3D8A5A]' : diff < 0 ? 'text-[#D94040]' : 'text-[#888888]'
+  return (
+    <td className={`px-3 py-2 text-right font-medium ${tone}`}>
+      {diff > 0 ? `+${diff}` : String(diff)}
+    </td>
+  )
 }
 
 export default async function Page({
@@ -59,10 +71,15 @@ export default async function Page({
   const shipmentColumnCount = shipmentFulfillment ? 2 : 0
   const itemCompanyRequestColumnCount = itemCompanyRequestFulfillment ? 3 : 0
   const supplyChainPurchaseColumnCount = supplyChainPurchaseFulfillment ? 2 : 0
+  // 盘点单：把「数量」当实盘数，额外并排展示账面数与差异。
+  // 差异是纯派生值（实盘 − 账面），**前端算、不落库** —— 落库就多一个会漂的数（issue #131 Q2）。
+  const isStocktake = isStocktakeDocType(doc.docType)
+  const stocktakeColumnCount = isStocktake ? 2 : 0
   const priceColumnCount = showPrice ? (showStoreAllocationPrice ? 4 : 2) : 0
   const promotionColumnCount = doc.items.some((item) => item.promotionPlanId || item.promotionPlanNoSnapshot) ? 1 : 0
   const itemColumnCount = 9 + priceColumnCount + reportColumnCount + shipmentColumnCount +
-    itemCompanyRequestColumnCount + supplyChainPurchaseColumnCount + promotionColumnCount
+    itemCompanyRequestColumnCount + supplyChainPurchaseColumnCount + promotionColumnCount +
+    stocktakeColumnCount
   const fields = [
     ['单据号', doc.id],
     ['类型', doc.docType],
@@ -71,6 +88,7 @@ export default async function Page({
     ['入库/接收主体', doc.targetOrgNodeName ?? doc.targetOrgNodeId],
     ['单据日期', doc.docDate?.slice(0, 10)],
     ['总数量', doc.totalQuantity],
+    ...(isStocktake ? ([['盘点结论', stocktakeSummary(doc.items)]] as const) : []),
     ...(showPrice ? ([['金额', doc.totalAmount]] as const) : []),
     ['顾客', doc.customerName],
     ['员工', doc.employeeName],
@@ -171,7 +189,9 @@ export default async function Page({
       </Card>
 
       <div className="overflow-x-auto rounded-md border border-[var(--border)] bg-white">
-        <table className={`w-full ${showStoreAllocationPrice ? 'min-w-[1180px]' : 'min-w-[960px]'} text-sm`}>
+        <table className={`w-full ${
+          showStoreAllocationPrice ? 'min-w-[1180px]' : isStocktake ? 'min-w-[1080px]' : 'min-w-[960px]'
+        } text-sm`}>
           <thead className="bg-[#F8F8F8] text-xs text-[#666666]">
             <tr>
               <th className="px-3 py-2 text-left">批次ID</th>
@@ -180,7 +200,9 @@ export default async function Page({
               <th className="px-3 py-2 text-left">规格</th>
               <th className="px-3 py-2 text-left">批号</th>
               <th className="px-3 py-2 text-left">效期</th>
-              <th className="px-3 py-2 text-right">数量</th>
+              {isStocktake && <th className="px-3 py-2 text-right">账面数量</th>}
+              <th className="px-3 py-2 text-right">{isStocktake ? '实盘数量' : '数量'}</th>
+              {isStocktake && <th className="px-3 py-2 text-right">差异</th>}
               <th className="px-3 py-2 text-left">赠送</th>
               {showStoreAllocationPrice ? <>
                 <th className="px-3 py-2 text-right">门店标准单价</th>
@@ -230,7 +252,11 @@ export default async function Page({
                   <td className="px-3 py-2">{fmt(item.specName)}</td>
                   <td className="px-3 py-2">{fmt(item.batchNo)}</td>
                   <td className="px-3 py-2">{fmt(item.expiryDate?.slice(0, 10))}</td>
+                  {isStocktake && (
+                    <td className="px-3 py-2 text-right">{fmt(item.stockSnapshot)}</td>
+                  )}
                   <td className="px-3 py-2 text-right font-medium">{item.quantity}</td>
+                  {isStocktake && <StocktakeDiffCell diff={stocktakeDiff(item)} />}
                   <td className="px-3 py-2">
                     {item.isGift ? <Badge variant="outline" className="text-[10px]">赠送</Badge> : '—'}
                   </td>

@@ -28,6 +28,8 @@ const path = require('node:path')
 const FILES = {
   staffInventoryJs: path.resolve(__dirname, '../../routes/inventory.js'),
   adminEngineTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/inventory/engine.ts'),
+  // 盘点类型集合在 admin 侧住在独立模块（engine 与单据详情页共用单源），不在 engine.ts 里。
+  adminStocktakeTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/inventory/stocktake.ts'),
   dbSchemaInventoryTs: path.resolve(__dirname, '../../../../../db/schema/inventory.ts'),
 }
 
@@ -56,6 +58,31 @@ function extractQuotedPairs(block) {
   return [...block.matchAll(/'([^']+)'\s*:\s*'([^']+)'|([一-龥][一-龥A-Za-z0-9]*)\s*:\s*'([^']+)'/g)]
     .map((m) => `${m[1] ?? m[3]}=${m[2] ?? m[4]}`)
     .sort()
+}
+
+/**
+ * 取包含 `needle` 的**整条**模板字符串字面量（一对反引号之间）。
+ *
+ * 用于「这条 SQL 里不许出现 X」这类断言：只截关键字附近的固定窗口是不够的 ——
+ * 在关键字**前面**加一段 CTE（比如扣预留）就能滑出窗口，断言照样绿。
+ *
+ * ⚠️ **仅用于 staff 侧**：staff 的 SQL 是原生 pg 的纯 `$1/$2` 模板，没有 `${}` 插值，
+ * 也就没有嵌套模板的歧义，简单的「前后各找一个反引号」是可靠的。
+ * admin 侧是 drizzle 模板（`sql.join` 里就有嵌套反引号），源码正则天然不可靠 ——
+ * 那边改用 `engine.test.ts` 的 `PgDialect().sqlToQuery` 断编译产物，严格更强。
+ */
+function enclosingTemplateLiteral(src, needle) {
+  // ⚠️ 多命中要显式炸掉，不能静默取第一个：将来若在更早的行又写了一条同结构的
+  //    在手量聚合 SQL，`indexOf` 会截到那一条，后面的 `not.toMatch(/reserv/i)`
+  //    就守错了对象 —— 而且是静默守错。
+  const hits = src.split(needle).length - 1
+  if (hits > 1) throw new Error(`源码里有 ${hits} 处「${needle}」，本取法只认唯一一处，请改用更精确的锚点`)
+  const at = src.indexOf(needle)
+  if (at < 0) return null
+  const start = src.lastIndexOf('`', at)
+  const end = src.indexOf('`', at)
+  if (start < 0 || end < 0) return null
+  return src.slice(start + 1, end)
 }
 
 /** 提取所有 throw new Error 一级前缀（单引号与模板字符串两种形态；变量传入的跳过）。 */
@@ -123,14 +150,58 @@ describe('PR #113 进销存单据组织端点跨端守护（staff / admin / sche
       { name: 'NO_MOVEMENT_DOC_TYPES', size: 5 },
       { name: 'RECEIVE_REQUIRED_DOC_TYPES', size: 4 },
       { name: 'APPROVAL_DOC_TYPES', size: 4 },
+      // admin 侧住在 stocktake.ts 而非 engine.ts（engine 与单据详情页共用单源）
+      { name: 'STOCKTAKE_DOC_TYPES', size: 2, adminFile: 'adminStocktakeTs' },
     ]
 
-    test.each(CASES)('%s 两端逐项一致且共 %i 项', ({ name, size }) => {
+    test.each(CASES)('$name 两端逐项一致且共 $size 项', ({ name, size, adminFile }) => {
       const staffItems = extractSetItems(staffSrc, name)
-      const adminItems = extractSetItems(adminSrc, name)
+      const adminItems = extractSetItems(adminFile ? readFile(FILES[adminFile]) : adminSrc, name)
       expect(staffItems.length, `staff ${name} 项数漂移`).toBe(size)
       expect(adminItems.length, `admin ${name} 项数漂移`).toBe(size)
       expect(staffItems).toEqual(adminItems)
+    })
+
+    test('盘点账面数两端都写（staff 侧曾漏写导致 stock_snapshot 恒 NULL，#131）', () => {
+      // 只比集合不够：两端集合一致但只有一端真的往 stock_snapshot 写账面数，
+      // 同一种单据就会「admin 建的有账面数、staff 建的没有」。这里钉住写入形态本身。
+      expect(staffSrc, 'staff 缺少「主体 + SKU 汇总在手量」查询').toMatch(
+        /COALESCE\(SUM\(quantity_on_hand\), 0\)[\s\S]{0,200}?FROM inventory_stock_lots[\s\S]{0,200}?GROUP BY sku_id/,
+      )
+      expect(staffSrc, 'staff 的 stock_snapshot 参数仍写死 null').toMatch(
+        /lot \? lot\.quantityOnHand : bookQuantity/,
+      )
+      const adminEngine = readFile(FILES.adminEngineTs)
+      expect(adminEngine, 'admin 缺少「主体 + SKU 汇总在手量」查询').toMatch(
+        /COALESCE\(SUM\(quantity_on_hand\), 0\)[\s\S]{0,200}?FROM inventory_stock_lots[\s\S]{0,200}?GROUP BY sku_id/,
+      )
+      // staff 侧必须**不扣预留**（#131 Q0）：出现 reservation 扣减即口径漂移。
+      // ⚠️ 不能只截 `SUM(...)` → `GROUP BY` 那一段 —— 在它**前面**加一段扣预留的 CTE
+      //    就绕过去了。取整条 SQL 字面量；staff 是原生 pg 的纯 `$1/$2` 模板、无 `${}`，
+      //    没有嵌套模板的歧义，这个取法是可靠的。
+      //
+      // admin 侧在这里**只做存在性检查**（上面那条 toMatch，确认两端都有这条汇总查询，
+      // 这是"跨端两边都写了"的对账点）；**不做口径扫描**。
+      // admin 的口径由 `engine.test.ts` 用 drizzle 自己的编译器（`PgDialect().sqlToQuery`）
+      // 断真正发给 PG 的 SQL 与参数，对内联 CTE / 嵌套 sql / query-builder 子查询一律有效，
+      // 严格强于任何源码正则；在这儿再加一道弱的源码扫描反而误导。
+      const staffLiteral = enclosingTemplateLiteral(staffSrc, 'COALESCE(SUM(quantity_on_hand), 0)')
+      expect(staffLiteral, 'staff 取不到账面数查询所在的 SQL 字面量').toBeTruthy()
+      // 保险丝：取法只在「模板里没有 ${}」时可靠。一旦 staff 那条 SQL 引入插值，
+      // 截取跨度就可能错，而错了是**静默**的 —— 宁可在这里红一下提醒来人换取法。
+      expect(staffLiteral, 'staff 账面数 SQL 引入了 ${} 插值，此处的截取法不再可靠').not.toContain('${')
+      expect(staffLiteral, 'staff 的盘点账面数不该扣预留').not.toMatch(/reserv/i)
+      expect(staffLiteral, 'staff 账面数必须按 sku_id 聚合').toMatch(/GROUP BY sku_id/)
+      // admin 侧**不在这里加元断言**：grep「那行断言字符串还在不在」是假守护 ——
+      // 把它注释掉照样匹配（注释里字符串还在），等价重写又会误红。
+      // admin 的真守护是 engine.test.ts 里那条口径快照，且已接进 CI（lint.yml 的 admin job）。
+    })
+
+    test('两端都拦「同一 SKU 多行盘点」且话术一致', () => {
+      // 账面数按 SKU 汇总，同 SKU 两行会各自拿到同一个完整账面数 → 差异是重复计算的废数
+      const message = '同一 SKU 请合并为一条盘点明细'
+      expect(staffSrc).toContain(message)
+      expect(readFile(FILES.adminEngineTs)).toContain(message)
     })
 
     test('DOC_PREFIX 前缀映射两端逐对一致且共 33 对', () => {

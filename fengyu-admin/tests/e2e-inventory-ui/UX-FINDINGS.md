@@ -1,5 +1,9 @@
 # 库存管理 —— 交互合理性审计报告
 
+> ⚠️ 本文件是 2026-09-13 首轮扫描的产物，**不随代码状态自动更新**。已修条目以删除线 + issue 号标注；
+> 重新生成会覆盖这些手工标注，判读时请以各 issue 的实际状态为准。
+
+
 > 目标：http://101.34.242.103:3000（dev 环境 fengyu-admin）
 > 生成时间：2026/9/13 23:32:32
 > 生成方式：`bun run test:e2e:inventory-ui` 中的 `inv-10-ux-audit.spec.ts` 自动扫描 + 链路测试中的实测发现
@@ -22,7 +26,7 @@
 | P0 | 员工下拉恒为空（SQL 别名错误） | `/inventory/operations/{market,supply-chain} → 员工购` | business.ts 有 5 处递归 CTE 写错别名引用：CTE 在 JOIN 时起了别名（JOIN descendants parent / JOIN ancestors ancestor），SELECT/WHERE 却仍用原名（descendants.path / ancestors.path），PostgreSQL 直接报 invalid reference to FROM-clause entry。后果：市场员工购与供应链员工购的员工下拉恒为空，功能完全不可用；即使绕过下拉，提交时的 employeeForMarket / employeeForSupplyChain 校验同样会炸 | `business.ts:1234 / 1263 / 1273 / 1329 / 1371；dev 库按正确 SQL 能查出 85 / 115 个候选` |
 | P1 | 外键类字段应提供选择器 | `/inventory/skus → 新建库存商品` | 字段「供货商」引用的是已有档案（命中关键词「供货商」），却渲染为 <input> 自由输入 | `label="供货商" control=<input>` |
 | P1 | 使用原生 alert / prompt | `/inventory/docs` | 建单失败用 alert() 弹原生框（inventory-docs-page.tsx:402）；审批/驳回/收货的备注用 prompt() 收集（:135-151）。原生弹窗无法样式化、无法做必填校验（驳回原因是必填的）、移动端体验差，且会阻塞页面 | `本轮未触发，证据见 INV-02 / INV-05` |
-| P1 | 盘点单不记录账面数量 | `/inventory/docs → 市场库存盘点 / 分院库存盘点` | engine.ts:2777 的 stockSnapshot 只在选中批次时才写（lot ? ... : null），而盘点单不属于 SOURCE_LOT_DOC_TYPES、UI 不提供批次选择器，于是 stock_snapshot 恒为 NULL。盘点单既不动库存也不记账面数，退化成只有「数量」的白条，无法用于任何盈亏对账 | `INV-06 实测 stock_snapshot = NULL` |
+| ~~P1~~（#131 已修） | 盘点单不记录账面数量 | `/inventory/docs → 市场库存盘点 / 分院库存盘点` | engine.ts:2777 的 stockSnapshot 只在选中批次时才写（lot ? ... : null），而盘点单不属于 SOURCE_LOT_DOC_TYPES、UI 不提供批次选择器，于是 stock_snapshot 恒为 NULL。盘点单既不动库存也不记账面数，退化成只有「数量」的白条，无法用于任何盈亏对账 | `INV-06 实测 stock_snapshot = NULL` |
 | P1 | SKU 供货商与供应商档案无关联 | `/inventory/skus → 新建库存商品` | 「供货商」是裸 <input> 文本框，且 inventory_skus 表只有 supplier(text) 列、没有 supplier_id 外键 —— 与 inventory_suppliers 档案表（以及 /inventory/suppliers 整个页面）完全不关联。同一供应商会产生多种写法，供应商档案形同虚设，也无法按供应商统计采购 | `inventory-skus-page.tsx:388；information_schema 查无 supplier_id 列` |
 | P1 | 业务错误提示被生产构建脱敏 | `全局（Server Action 错误路径）` | Server Action 抛出的 ApiError 在生产构建下被 Next.js 统一脱敏，用户看到的是「An error occurred in the Server Components render...」或一串 error digest 数字（如 1956068727），业务文案（「库存期初尚未导入并核验完成」等）完全丢失，用户无从判断该做什么 | `INV-02 期初门禁拦截、INV-07 员工加载失败均复现` |
 | P2 | 列表缺少分页与总数 | `/inventory/suppliers` | 列表有 6 行数据，但页面没有总数或分页控件，用户不知道数据有没有被截断 | — |

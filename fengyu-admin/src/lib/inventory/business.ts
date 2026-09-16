@@ -2006,6 +2006,10 @@ export async function summarizeStoreReplenishmentRequests(
         `))
         const onHandQuantity = Number(onHand?.quantity ?? 0)
         const reservedQuantity = Number(reserved?.quantity ?? 0)
+        // ⚠️ 这里是**可承诺量**（在手 − 已预留），不是盘点的账面数。
+        // 盘点账面数刻意不扣预留（issue #131 Q0，见 engine.ts 的 skuOnHandByLocation）——
+        // 上面那条在手量 SQL 与盘点那条**同结构**（都是按主体 + SKU 求在手量，
+        // 只是这里查单个 SKU、盘点那条 GROUP BY 批量查），复用时别把这一行的扣减一起抄走。
         const availableQuantity = Math.max(0, fixed(onHandQuantity - reservedQuantity))
         const outstandingQuantity = Math.max(0, fixed(Number(row.outstanding_quantity)))
         items.push({
@@ -2110,6 +2114,10 @@ export async function createMarketReplenishment(
         sku,
         sourceItems,
         requestQuantity,
+        // ⚠️ 市场报货汇总的 stockSnapshot 是**可承诺量**（在手 − 已预留）。
+        // 同一列在盘点单上写的是**未扣预留的在手量**（issue #131 Q0）——
+        // 上面那条在手量 SQL 与盘点那条**同结构**（都是按主体 + SKU 求在手量），
+        // 复用时别把这里的扣减一起抄走。
         stockSnapshot: Math.max(0, fixed(Number(stock?.quantity ?? 0) - Number(reserved?.quantity ?? 0))),
         purchaseQuantity,
       })

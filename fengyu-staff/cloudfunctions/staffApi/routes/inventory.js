@@ -78,6 +78,12 @@ const STAFF_VISIBLE_DOC_TYPE_LIST = Array.from(STAFF_VISIBLE_DOC_TYPES)
 const NO_MOVEMENT_DOC_TYPES = new Set(['门店报货', '市场报货', '品项公司报货需求', '采购订单', '供应链采购订单'])
 const RECEIVE_REQUIRED_DOC_TYPES = new Set(['品项公司发货', '分院配货', '分院调货出库', '市场间调货出库'])
 const APPROVAL_DOC_TYPES = new Set(['市场退货', '院退货', '市场产品报损', '院产品报损'])
+// 盘点单：只记录「账面 vs 实盘」，不产生任何 inventory_movements、不改 quantity_on_hand。
+// 账面数按**主体 + SKU 汇总**记录（issue #131，甲方 2026-09-16 拍板 Q1：现场按商品数总盘、不分批次）。
+// ⚠️ 与 admin 的 fengyu-admin/src/lib/inventory/stocktake.ts 是**独立副本**（四端禁共享目录），
+// 由 __tests__/routes/cross-end-inventory-snapshot.test.js 的 §2 字面量 snapshot 守护。
+// staff 侧只开放了「分院库存盘点」（见 STAFF_CREATE_DOC_TYPES），但集合保持两端逐字一致。
+const STOCKTAKE_DOC_TYPES = new Set(['市场库存盘点', '分院库存盘点'])
 const INBOUND_DOC_TYPES = new Set([
   '供应链采购入库',
   '市场采购入库',
@@ -1388,7 +1394,21 @@ async function createDoc(ctx) {
     sourceLocationId,
     targetLocationId,
     marketId,
+    actingLocationId,
   } = await resolveStaffCreateLocations(ctx, payload)
+  // 盘点单：一个 SKU 只能一行。账面数按「主体 + SKU 汇总」记，同 SKU 两行会各自
+  // 拿到同一个完整账面数，差异直接变成重复计算的废数。放在开事务前拦，失败不占锁。
+  const stocktakeSkuIds = []
+  if (STOCKTAKE_DOC_TYPES.has(docType)) {
+    const seen = new Set()
+    for (const item of items) {
+      const skuId = String(item.skuId || '').trim()
+      if (!skuId) throw new Error('INVALID_PARAMS: 明细缺少库存 SKU')
+      if (seen.has(skuId)) throw new Error('INVALID_PARAMS: 同一 SKU 请合并为一条盘点明细')
+      seen.add(skuId)
+      stocktakeSkuIds.push(skuId)
+    }
+  }
   const status = defaultDocStatus(docType)
   // 同一批次的待审批退货需按稳定顺序锁库存，降低多明细并发提交的死锁概率。
   const orderedItems = docType === '院退货'
@@ -1439,6 +1459,27 @@ async function createDoc(ctx) {
         marketId,
       ],
     )
+    // 盘点单账面数：**一次 GROUP BY 取齐**，不逐行查。
+    // 两个理由：① 少 N 次事务内往返，事务持有时间短；② 同一张单所有行的账面数取自
+    // **同一个语句快照**（逐条 SELECT 在 READ COMMITTED 下各取各的快照，一张「账面 vs 实盘」
+    // 的单会失去单一时点语义）。
+    // ⚠️ 别照搬 admin 那边「持有全局串行锁」的说法：staff 的
+    // `assertWorkfineInventoryInitialized` 用的是 `FOR KEY SHARE`（共享锁，多个库存事务
+    // 可同时持有、也挡不住普通 `quantity_on_hand` 更新）；admin 的 `cutover.ts` 才是
+    // `FOR UPDATE`。两端锁强度不同，别互相套用结论。
+    const bookQuantityBySkuId = new Map()
+    if (stocktakeSkuIds.length > 0) {
+      const { rows: bookRows } = await client.query(
+        `SELECT sku_id, COALESCE(SUM(quantity_on_hand), 0) AS quantity
+           FROM inventory_stock_lots
+          WHERE location_id = $1 AND sku_id = ANY($2::text[])
+          GROUP BY sku_id`,
+        [actingLocationId, stocktakeSkuIds],
+      )
+      // 账面数刻意**不扣预留**（#131 Q0）：盘点比的是账面与货架上的实物，预留是承诺、货还在架上。
+      for (const row of bookRows) bookQuantityBySkuId.set(row.sku_id, Number(row.quantity))
+    }
+
     for (const item of orderedItems) {
       const qty = assertQty(item.quantity)
       let lot = null
@@ -1462,6 +1503,11 @@ async function createDoc(ctx) {
         if (!item.skuId) throw new Error('INVALID_PARAMS: 明细缺少库存 SKU')
         snapshot = await inventorySkuSnapshot(client, item.skuId)
       }
+      // 盘点单没有批次选择器，lot 恒为 null —— 账面数只能来自上面的汇总。
+      // 一个批次都没有时 GROUP BY 不出行，落 0（不是 NULL）：账上就是 0，实盘有货即盘盈。
+      const bookQuantity = STOCKTAKE_DOC_TYPES.has(docType)
+        ? bookQuantityBySkuId.get(String(item.skuId || '').trim()) ?? 0
+        : null
       const standardUnitPrice = lot?.storeStandardUnitPrice ?? null
       const unitDiscount = lot?.storeUnitDiscount ?? null
       const actualUnitPrice = lot?.storeActualUnitPrice ?? null
@@ -1490,7 +1536,7 @@ async function createDoc(ctx) {
           lot?.expiryDate || item.expiryDate || null,
           lot?.isGift ?? Boolean(item.isGift),
           qty,
-          lot ? lot.quantityOnHand : null,
+          lot ? lot.quantityOnHand : bookQuantity,
           item.requestQuantity || null,
           item.fulfilledQuantity || null,
           standardUnitPrice,
