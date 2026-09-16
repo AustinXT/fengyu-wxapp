@@ -681,9 +681,6 @@ async function getTopProduct(clientUserId) {
  * 单据口径：仅销售单、转换单计入消费；寄存单只是剩余服务权益初始化，不能重复计入。
  */
 async function getConsumptionStats(clientUserId) {
-  // 与 mgmt-customer.getConsumptionStatsScoped 同一口径副本，守卫同步（#141）：
-  // 未迁库时首次支付行 100% NULL，年度消费会静默变负数
-  await assertPaymentAttributionReady(pg)
   if (!clientUserId) {
     return {
       totalConsumption: 0,
@@ -692,6 +689,11 @@ async function getConsumptionStats(clientUserId) {
       yearActualConsumption: 0,
     };
   }
+
+  // 与 mgmt-customer.getConsumptionStatsScoped 同一口径副本，守卫同步（#141）：
+  // 未迁库时首次支付行 100% NULL，年度消费会静默变负数。
+  // ⚠ 放在空值短路之后：无 clientUserId 时本就零查询，不该为此打探针。
+  await assertPaymentAttributionReady(pg);
 
   const yearStart = `${shanghaiDateStr().slice(0, 4)}-01-01`;
   const rows = await pg.query(

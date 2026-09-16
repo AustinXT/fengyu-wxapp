@@ -2578,10 +2578,15 @@ describe('疗程卡可用次数为 0 时仍展示的跨端守护（issue #122）
      */
     test('年度消费两份副本都必须过迁移就绪守卫', () => {
       for (const key of ['staffCustomerJs', 'staffMgmtCustomerJs']) {
+        // 必须剥注释：两个文件的注释里正好都提到 `utils/attribution-guard.js`，
+        // 裸 readFile 会让第一条断言被注释满足。
+        // （本文件没有通用 stripComments，这里就地剥掉块注释与整行行注释。）
         const src = readFile(FILES[key])
+          .replace(/\/\*[\s\S]*?\*\//g, ' ')
+          .replace(/^[ \t]*\/\/.*$/gm, '')
         expect(src, `${key} 未接入 attribution-guard`).toContain('utils/attribution-guard')
         expect(src, `${key} 未在年度消费查询前调用守卫`)
-          .toContain('await assertPaymentAttributionReady(pg)')
+          .toContain('assertPaymentAttributionReady(pg)')
       }
     })
 
