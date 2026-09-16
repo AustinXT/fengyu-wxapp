@@ -157,36 +157,55 @@ describe('客量板块两端口径一致性守护', () => {
     })
 
     it.each(SPEND_INVARIANTS)('staff 侧：%s', (_label, re) => {
-      expect(normalize(staffSrc)).toMatch(re)
+      expect(normalize(stripComments(staffSrc))).toMatch(re)
     })
 
     /**
      * ⚠ 上面的 `toMatch` 只证明「文件里存在」，挡不住**单处漏改**：
      * admin 有 5 个会员消费查询（3 个 KPI + 2 个明细），staff 有 2 个。
      * 删掉其中一处的 `change_type` 过滤，其余几处仍满足正则 —— 实测确认过这条漏网。
-     * 所以把**每项过滤的出现次数**与查询数量锁死：数量变了必须显式更新本表。
+     *
+     * 这里按 `FROM sale_order_performance_events spe` 切块，**逐块**检查 WHERE 侧过滤：
+     * 断言数随查询数自适应（新增/合并查询不会产生一堆假红），
+     * 失败时能指出是第几个查询缺了哪一项。
+     * 块尾截到 `GROUP BY` / 下一个查询，避免借用后文字符串造成假绿。
      */
-    it('每个会员消费查询都带齐全部过滤（按出现次数锁死，防单处漏改）', () => {
+    it('每个会员消费查询块内的过滤都齐全（逐块自适应，防单处漏改）', () => {
+      const WHERE_INVARIANTS: Array<[string, RegExp]> = [
+        ['订单类型', /spe\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/],
+        ['款项状态已支付', /spe\.status\s*=\s*'已支付'/],
+        ['排除储值卡抵扣', /spe\.change_type\s+IN\s*\(\s*'首次支付'\s*,\s*'回款'\s*,\s*'退款'\s*\)/],
+        ['排除 workfine', /spe\.legacy_source\s+IS\s+DISTINCT\s+FROM\s+'workfine'/],
+        ['归属日期区间', /spe\.performance_date\s+BETWEEN/],
+      ]
       const SITES: Array<[string, string, number]> = [
         ['admin', adminCode, 5],
-        ['staff', normalize(staffSrc), 2],
+        ['staff', normalize(stripComments(staffSrc)), 2],
       ]
-      const PER_QUERY: Array<[string, RegExp]> = [
-        ['归属日期', /spe\.performance_date\s+BETWEEN/g],
-        ['款项状态', /spe\.status\s*=\s*'已支付'/g],
-        ['排除储值卡抵扣', /spe\.change_type\s+IN/g],
-        ['订单类型', /spe\.sale_order_type\s+IN/g],
-        ['排除 workfine', /spe\.legacy_source\s+IS\s+DISTINCT\s+FROM/g],
-        ['金额取款项流水', /SUM\(spe\.amount::numeric\)/g],
-      ]
-      for (const [side, code, expected] of SITES) {
-        for (const [label, re] of PER_QUERY) {
-          const hits = code.match(re) ?? []
-          expect(
-            hits.length,
-            `${side} 的「${label}」出现 ${hits.length} 次，期望 ${expected} 次（每个会员消费查询各一次）`,
-          ).toBe(expected)
-        }
+      for (const [side, code, minBlocks] of SITES) {
+        const blocks = code
+          .split(/FROM\s+sale_order_performance_events\s+spe/)
+          .slice(1)
+          // 块尾截到 GROUP BY 或下一个 SELECT，避免借用后文内容假绿
+          .map((b) => b.split(/GROUP BY|SELECT\s+COALESCE/)[0])
+        expect(blocks.length, `${side} 的会员消费查询数少于预期（整块被删？）`)
+          .toBeGreaterThanOrEqual(minBlocks)
+        blocks.forEach((block, i) => {
+          for (const [label, re] of WHERE_INVARIANTS) {
+            expect(block, `${side} 第 ${i + 1} 个会员消费查询缺「${label}」`).toMatch(re)
+          }
+        })
+      }
+    })
+
+    it('金额一律取款项流水（按出现次数锁死，防某处改回订单快照）', () => {
+      for (const [side, code, expected] of [
+        ['admin', adminCode, 5],
+        ['staff', normalize(stripComments(staffSrc)), 2],
+      ] as Array<[string, string, number]>) {
+        const hits = code.match(/SUM\(spe\.amount::numeric\)/g) ?? []
+        expect(hits.length, `${side} 的 SUM(spe.amount) 出现 ${hits.length} 次，期望 ${expected} 次`)
+          .toBe(expected)
       }
     })
 

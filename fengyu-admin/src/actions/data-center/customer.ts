@@ -16,7 +16,9 @@
  * 关键口径红线（与 mgmt-traffic.js 字面一致，consistency.customer.test.ts 守护）：
  *   - 新会员/会员数 = became_member_at（历史化）；保有会员 = 90 天到店窗口 + became_member_at 守卫
  *   - 消费分桶 = member_spend CTE 左闭右开 [1990,1w)/[1w,3w)/[3w,6w)/[6w,10w)/[10w,+∞)，
- *     不复用 spending_tier 列（lifetime 快照）；spend = received - refunded_amount（与 mgmt-traffic.js 一致）
+ *     不复用 spending_tier 列（lifetime 快照）；
+ *     spend = SUM(sale_order_performance_events.amount) @ performance_date（#138 起，与业绩 KPI 同源；
+ *     不按父订单 status 过滤、排除储值卡抵扣；与 mgmt-traffic.js 逐条一致，由 consistency.customer.test.ts 守护）
  *   - 成交率分母 = 区间内到店的「体验客 + 小美客」（D-conv-denom=B）
  *   - 项目数 = SUM(session_used) WHERE sales_category IN ('自销自耗','他销自耗')（D-5）
  *   - customer_status 枚举 '沉睡'/'冰冻'/'休眠'（非 '预警沉睡'）
@@ -284,7 +286,11 @@ async function queryReactivated(
   return num(first(rows).v)
 }
 
-/** 会员经营人数（区间内单笔订单消费 >= 1990 的会员客去重人数） */
+/**
+ * 会员经营人数（区间内**已入账款项净额合计** >= 1990 的会员客去重人数）。
+ * ⚠ 不是「单笔订单 >= 1990」——SQL 先 GROUP BY client_user_id 汇总区间内全部款项流水，
+ * 再按 1990 分档。#138 起金额口径为款项流水净额（含退款负数），日期按业绩归属日期。
+ */
 async function queryOperatedMembers(
   session: AuthSession,
   scope: DataCenterScope,
@@ -965,7 +971,7 @@ export const getCustomerBoard = withPermission(
       withComparison((r) => queryReactivated(session, scope, r, 'frozen'), comparison, 'count', false),
       withComparison(() => queryStatusCount(session, scope, '休眠'), comparison, 'count', false),
       withComparison((r) => queryReactivated(session, scope, r, 'deep'), comparison, 'count', false),
-      // 会员经营人数（单笔≥1990）
+      // 会员经营人数（区间内款项净额合计 ≥1990，非单笔）
       withComparison((r) => queryOperatedMembers(session, scope, r), comparison, 'count', enabled),
       // 会员新增
       withComparison((r) => queryNewMemberCount(session, scope, r), comparison, 'count', enabled),
