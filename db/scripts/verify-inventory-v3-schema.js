@@ -290,12 +290,14 @@ async function main() {
          COUNT(*) FILTER (
            WHERE supplier_id IS NULL AND btrim(COALESCE(supplier, '')) <> ''
          )::int AS unmatched,
-         -- 「有同名档案却没关联上」的两种成因必须分开，否则要么误报要么漏报：
-         --  (a) 档案是**后**建的（SKU 早就在，后来才有人建了同名档案）——
-         --      系统没有「建档后自动回溯关联」这条规则，属正常业务状态，只提示不失败。
-         --  (b) 建这条 SKU 时档案**已经存在**了 —— 那它本该被关联上（迁移回填或
-         --      WorkFine 导入的逐行 link 都应命中），没关联就是缺陷，逐行判失败。
-         -- 用 created_at 先后区分两者。
+         -- 「有同名档案却没关联上」有两种成因：档案后建（正常业务，系统没有「建档后自动
+         -- 回溯关联」这条规则）、建 SKU 时档案已在（本该关联上）。下面用 created_at 先后
+         -- 给出一个**启发式提示**帮人工判断。
+         -- ⚠️ 它不作为失败判据：created_at 表达不了因果顺序 ——
+         --    同一事务里插入的两行 now() 相等（PG 的 now() 是事务开始时间），
+         --    批量导入统一时间戳同样分不出先后，时钟回拨还会把先建的判成后建。
+         --    而且 migration 0042 建的档案 created_at 恒大于存量 SKU，
+         --    这个指标对「回填只连上了一部分」本来就恒为 0。两个谱系的评审都指出了这点。
          COUNT(*) FILTER (
            WHERE supplier_id IS NULL
              AND btrim(COALESCE(supplier, '')) <> ''
@@ -327,7 +329,7 @@ async function main() {
     console.log(
       `INFO inventory_skus supplier: total=${supplierAudit.total} linked=${supplierAudit.linked} `
       + `unmatched_text=${supplierAudit.unmatched} matchable_but_unlinked=${supplierAudit.matchable_but_unlinked} `
-      + `matchable_at_creation=${supplierAudit.matchable_at_creation} name_drift=${supplierAudit.name_drift}`,
+      + `matchable_at_creation(hint)=${supplierAudit.matchable_at_creation} name_drift=${supplierAudit.name_drift}`,
     )
     if (Number(supplierAudit.unmatched) > 0) {
       const unmatchedRows = await client.query(
@@ -358,12 +360,7 @@ async function main() {
         ...(Number(supplierAudit.name_drift) > 0
           ? [`supplier text differs from linked profile name on ${supplierAudit.name_drift} rows`]
           : []),
-        // 逐行判（与 name_drift 同口径）：建 SKU 时档案就在，却没关联上 = 回填/导入的
-        // link 步骤没生效。档案后建那种正常状态已经被 created_at 条件排除掉了。
-        ...(Number(supplierAudit.matchable_at_creation) > 0
-          ? [`${supplierAudit.matchable_at_creation} rows had a matching supplier profile at creation time but no supplier_id (backfill / import link step did not run?)`]
-          : []),
-        // 「一条都没关联上」是回填整段没跑的强信号，即便上面那条因 created_at 先后被放过
+        // 「一条都没关联上、却有精确同名档案」= 回填整段没跑。这是唯一足够硬的失败判据。
         ...(Number(supplierAudit.matchable_but_unlinked) > 0 && Number(supplierAudit.linked) === 0
           ? [`nothing is linked at all while ${supplierAudit.matchable_but_unlinked} rows have an exactly-matching profile (migration 0042 backfill did not run?)`]
           : []),

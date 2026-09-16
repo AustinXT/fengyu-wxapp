@@ -314,7 +314,13 @@ export default function InventorySuppliersPage({
             <div className="flex items-center gap-3">
               <Switch
                 checked={form.isActive}
-                onCheckedChange={(value) => setField('isActive', value)}
+                onCheckedChange={(value) => {
+                  setField('isActive', value)
+                  // 切到停用的**当下**重新核对，而不是只在打开弹窗时核对一次：
+                  // 用户可能打开弹窗改了半天电话，期间别人关联了 SKU，
+                  // 拿打开时的旧计数就又漏掉提示了（列表那条入口是点击当下才核对的）。
+                  if (!value && editing) refreshLinkedCount(editing)
+                }}
                 aria-label="供应商启用状态"
               />
               <span className="text-sm text-[#666666]">{form.isActive ? '启用' : '停用'}</span>

@@ -302,6 +302,27 @@ describe('InventorySkusPage', () => {
       expect(mockUpdateInventorySku.mock.calls[0][1].supplierId).toBeUndefined()
     })
 
+    it('选中的档案不在选项里时补占位，不让显示值与提交值分裂', async () => {
+      // 服务端重新下发选项会把本地缓存淘汰掉，而表单里还留着刚建的那个 id。
+      // 不补占位的话原生 <select> 找不到 option 会显示成「未指定」，
+      // 保存提交的却仍是那个 id —— 用户看到的和落库的不是一回事。
+      const linkedToUnknown: InventorySkuRow = {
+        ...row, supplier: null, supplierId: 'SUP-NOT-IN-OPTIONS', supplierName: null,
+      }
+      renderPage({ rows: [linkedToUnknown], supplierOptions: [] })
+      fireEvent.click(screen.getByTitle('编辑库存商品'))
+
+      const select = supplierSelect()
+      expect(select.value).toBe('SUP-NOT-IN-OPTIONS')
+      expect(Array.from(select.options).map((o) => o.value)).toContain('SUP-NOT-IN-OPTIONS')
+
+      fireEvent.click(screen.getByRole('button', { name: '保存' }))
+      await waitFor(() => expect(mockUpdateInventorySku).toHaveBeenCalledWith(
+        'SKU-1',
+        expect.objectContaining({ supplierId: 'SUP-NOT-IN-OPTIONS' }),
+      ))
+    })
+
     it('主动清空已有关联时提交 null', async () => {
       const linked: InventorySkuRow = {
         ...row,

@@ -387,8 +387,15 @@ function SkuFormDialog({
     if (row?.supplierId && !merged.has(row.supplierId)) {
       merged.set(row.supplierId, `${row.supplierName ?? row.supplier ?? row.supplierId}（已停用）`)
     }
+    // 兜底：表单当前选中的 id 不在选项里时补一条占位。
+    // 会发生在「服务端重新下发选项把本地缓存淘汰掉、而表单里还留着刚建的那个 id」——
+    // 不补的话原生 <select> 找不到 option 会显示成「未指定」，而保存提交的仍是那个 id，
+    // 界面显示值与提交值分裂。
+    if (form.supplierId && !merged.has(form.supplierId)) {
+      merged.set(form.supplierId, '已选供应商（刷新后可见）')
+    }
     return Array.from(merged, ([supplierId, name]) => ({ supplierId, name }))
-  }, [supplierOptions, createdSuppliers, row])
+  }, [supplierOptions, createdSuppliers, row, form.supplierId])
 
   const calculatedMarketPrice = useMemo(
     () => marketPriceFromAccounting(form.accountingPrice, form.marketPurchaseDiscount),

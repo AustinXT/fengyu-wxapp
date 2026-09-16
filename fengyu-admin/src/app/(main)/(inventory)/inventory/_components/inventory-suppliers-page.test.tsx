@@ -99,6 +99,20 @@ describe('InventorySuppliersPage（#132 关联 SKU 计数）', () => {
     expect(await screen.findByText(/仍有 3 个库存商品关联该供应商/)).toBeInTheDocument()
   })
 
+  it('编辑弹窗里切到停用的**当下**重新核对，不用打开弹窗时的旧值', async () => {
+    // 打开弹窗时是 0，改了半天电话期间别人关联了 3 个 —— 切停用时必须重新拉
+    mockCountSkus.mockResolvedValueOnce(0).mockResolvedValueOnce(3)
+    render(
+      <InventorySuppliersPage rows={[supplier({ linkedSkuCount: 0 })]} canCreate canUpdate />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /编辑/ }))
+    await waitFor(() => expect(mockCountSkus).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(screen.getByLabelText('供应商启用状态'))
+    await waitFor(() => expect(mockCountSkus).toHaveBeenCalledTimes(2))
+    expect(await screen.findByText(/仍有 3 个库存商品关联该供应商/)).toBeInTheDocument()
+  })
+
   it('核对未完成前不能确认停用', () => {
     mockCountSkus.mockReturnValue(new Promise(() => {}))
     render(
