@@ -5414,16 +5414,6 @@ export const createConversionOrder = withPermission(
           si.unit_real_price,
           si.sale_amount,
           si.received,
-          -- #145/#153 家居折抵额度：物理提货合计 + 已转走金额（与 staff LATERAL 同源）
-          COALESCE((SELECT SUM(pr.pickup_quantity) FROM pickup_records pr
-                     WHERE pr.sale_item_id = si.sale_item_id), 0) AS home_picked_quantity,
-          COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric))
-                      FROM sale_items out_item
-                      JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
-                     WHERE out_item.ref_sale_item_id = si.sale_item_id
-                       AND out_item.item_direction = '转出'
-                       AND out_item.product_type = '家居产品'
-                       AND conv_order.status <> '已关闭'), 0) AS home_converted_amount,
           si.sales_category,
           COALESCE(si.is_shengmei, psk.is_shengmei) AS is_shengmei,
           si.service_fee,
@@ -5445,6 +5435,36 @@ export const createConversionOrder = withPermission(
       `)
 
       const held = Array.from(heldRows as unknown as Iterable<Record<string, unknown>>)
+      // #145/#153：折抵额度必须在**锁取得之后**用另一条语句复算。
+      // `FOR UPDATE OF si` 只锁 sale_items：READ COMMITTED 下语句先取快照再等锁，
+      // 唤醒后 EvalPlanQual 只刷新 si 自身的行版本，pickup_records 与转出行聚合仍是旧快照
+      // → 两笔并发折抵会各自读到 converted_amount=0，把同一批已付价值折两遍。
+      const homeIds = held
+        .filter((row) => row.product_type === '家居产品')
+        .map((row) => row.sale_item_id as string)
+      if (homeIds.length > 0) {
+        const consumedRows = (await tx.execute(sql`
+          SELECT si.sale_item_id,
+                 COALESCE((SELECT SUM(pr.pickup_quantity) FROM pickup_records pr
+                            WHERE pr.sale_item_id = si.sale_item_id), 0) AS home_picked_quantity,
+                 COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric))
+                             FROM sale_items out_item
+                             JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+                            WHERE out_item.ref_sale_item_id = si.sale_item_id
+                              AND out_item.item_direction = '转出'
+                              AND out_item.product_type = '家居产品'
+                              AND conv_order.status <> '已关闭'), 0) AS home_converted_amount
+            FROM sale_items si
+           WHERE si.sale_item_id IN (${sql.join(homeIds.map((id) => sql`${id}`), sql`, `)})
+        `)) as unknown as Array<Record<string, unknown>>
+        const consumedById = new Map(consumedRows.map((r) => [r.sale_item_id as string, r]))
+        for (const row of held) {
+          if (row.product_type !== '家居产品') continue
+          const c = consumedById.get(row.sale_item_id as string)
+          row.home_picked_quantity = c?.home_picked_quantity ?? 0
+          row.home_converted_amount = c?.home_converted_amount ?? 0
+        }
+      }
       if (held.length !== data.convertOutSaleItemIds.length) {
         throw new ApiError('NOT_FOUND', 'CARD_NOT_FOUND: 部分卡不存在或已失效')
       }

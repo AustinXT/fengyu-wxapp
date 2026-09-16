@@ -1058,7 +1058,10 @@ async function homeProducts(ctx) {
        -- 避免把"已转换"算进"已退款"。只有「已关闭」完成过 rollback（数量已退回），故只排除它；
        -- 其余状态（含"支付失败"）扣减仍然生效，必须计入已转换。删除订单的转出行已随主单消失。
        SELECT out_item.ref_sale_item_id AS sale_item_id,
-              SUM(out_item.quantity)::int AS converted_quantity
+              SUM(out_item.quantity)::int AS converted_quantity,
+              -- #145/#153：折抵额度按金额结算，件数用于展示「已转换 N 件」，
+              -- 金额用于算「剩余已付」（折 4 件可能带走 ¥450 而非 ¥400，用件数推算会失真）。
+              SUM(GREATEST(0, -out_item.received::numeric)) AS converted_amount
          FROM sale_items out_item
          JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
         WHERE out_item.item_direction = '转出'
@@ -1082,6 +1085,20 @@ async function homeProducts(ctx) {
                 LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0))),
                 GREATEST(0, COALESCE(ct.converted_quantity, 0))
               )::int AS converted_quantity,
+              -- #145/#153：行级可提件数 = min(物理未结算, floor(剩余已付 / 单价))，与折抵额度同一口径。
+              -- 剩余已付 = 行实收 − 已提货金额 − 已转走金额；退款不在此处扣（received 已扣过）。
+              -- 必须按金额算而非「已付件数 − 已提 − 已折抵件数」：折抵金额含余数时两者不等，
+              -- 折 4 件带走 ¥450 后再回款 ¥50，按件数会多放出 1 件（累计兑现超实收）。
+              CASE
+                WHEN o.sale_order_type = '寄存单' OR si.sale_amount <= 0
+                  THEN GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0))))
+                ELSE LEAST(
+                  GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))),
+                  GREATEST(0, FLOOR((GREATEST(0, si.received::numeric)
+                    - GREATEST(0, COALESCE(pt.picked_quantity, 0)) * si.unit_real_price::numeric
+                    - COALESCE(ct.converted_amount, 0)) / NULLIF(si.unit_real_price::numeric, 0)))::int
+                )
+              END AS row_pending_pickup,
               CASE
                 -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
                 -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
@@ -1133,6 +1150,7 @@ async function homeProducts(ctx) {
               SUM(si.settled_quantity)::int AS settled_quantity,
               SUM(si.picked_quantity)::int AS picked_quantity,
               SUM(si.converted_quantity)::int AS converted_quantity,
+              SUM(si.row_pending_pickup)::int AS pending_pickup_quantity,
               SUM(si.paid_quantity)::int AS paid_quantity,
               SUM(si.row_sale_amount) AS sale_amount_total,
               SUM(si.row_received) AS received_total,
@@ -1147,13 +1165,6 @@ async function homeProducts(ctx) {
        SELECT *,
               GREATEST(0, settled_quantity - picked_quantity - converted_quantity)::int AS refunded_quantity,
               (purchased_quantity - settled_quantity)::int AS remaining_quantity,
-              LEAST(
-                purchased_quantity - settled_quantity,
-                -- #145/#153：已折抵转走的件数必须一并扣除。picked_up_quantity 混装了
-                -- 「已提货 + 已退款 + 已折抵」三义，而 received 已扣过退款（STEP 1.5），
-                -- 所以这里只能减「已提 + 已折抵」——退款靠 paid_quantity 反映，再减一次就是重复扣减。
-                GREATEST(paid_quantity - picked_quantity - converted_quantity, 0)
-              )::int AS pending_pickup_quantity,
               -- 寄存单的 sale_amount 只是原价快照、received 恒为历史值，两者相减不是欠款
               -- （寄存的货本就属于顾客）。金额列一律留空，与导出口径一致。
               CASE WHEN is_deposit THEN NULL

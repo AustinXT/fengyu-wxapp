@@ -2029,11 +2029,12 @@ describe('家居产品部分支付权益跨端守护', () => {
     expect(src).toContain(
       'FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int',
     )
-    // #145/#153：已折抵转走的件数一并扣除（退款不在此处再减一次——received 已扣过）
-    expect(src).toContain('GREATEST(paid_quantity - picked_quantity - converted_quantity, 0)')
-    expect(src, '可提额度漏扣已折抵件数 → 折抵后仍可提货（重复兑现）').not.toMatch(
-      /GREATEST\(paid_quantity - picked_quantity, 0\)/,
+    // #145/#153：可提件数改用「剩余已付」口径（见 ROW_PENDING_EXPR 断言）。
+    // 件数口径在折抵金额含余数时会多放出货，不得回退。
+    expect(src, '可提额度回退到件数口径').not.toMatch(
+      /GREATEST\(paid_quantity - picked_quantity(?: - converted_quantity)?, 0\)/,
     )
+    expect(src).toContain('SUM(si.row_pending_pickup)::int AS pending_pickup_quantity')
     expect(src).toContain('pending_pickup_quantity')
     expect(src).toContain("si.item_direction = '购买'")
     expect(src).toContain("si.product_type = '家居产品'")
@@ -2328,6 +2329,32 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
     }
   })
 
+  // 子表聚合（pickup_records / 转出行）**不得**与 `FOR UPDATE OF si` 同语句：
+  // READ COMMITTED 下语句先取快照再等锁，唤醒后 EvalPlanQual 只刷新 si 自身的行版本，
+  // 子表聚合仍是旧快照 → 两笔并发折抵各读到 converted_amount=0，把同一批已付价值折两遍
+  // （物理件数守卫拦不住）。必须锁取得后用**另一条语句**复算（对抗审查实证）。
+  test.each([
+    ['staff', FILES.staffOrderJs],
+    ['admin', FILES.adminPickupRecordsTs],
+    ['admin 转换', FILES.adminOrdersTs],
+  ])('%s 持锁查询不得内联子表聚合', (_name, file) => {
+    const src = stripComments(readFile(file))
+    let idx = 0
+    for (;;) {
+      const at = src.indexOf('FOR UPDATE OF si', idx)
+      if (at === -1) break
+      const start = src.lastIndexOf('SELECT si.sale_item_id', at)
+      const block = normalizeSql(src.slice(start === -1 ? src.lastIndexOf('SELECT', at) : start, at))
+      expect(block, '持锁查询内联了 pickup_records 聚合（锁等待后是旧快照）').not.toContain(
+        'FROM pickup_records pr',
+      )
+      expect(block, '持锁查询内联了转出行聚合（锁等待后是旧快照）').not.toContain(
+        "out_item.item_direction = '转出'",
+      )
+      idx = at + 1
+    }
+  })
+
   // helper 读 row.sale_order_type：锁行查询漏 select 这一列会让判据恒为 false，
   // 转入行在最关键的事务闸门处被静默拒绝，且报成「该商品类型不支持提货」难以排查。
   const LOCK_SITES = [
@@ -2378,22 +2405,40 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
     ['admin 提货', FILES.adminPickupRecordsTs],
   ]
 
-  test.each(PICKUP_QUERY_FILES)('%s 可提额度扣除已折抵件数', (_name, file) => {
+  // 可提件数与折抵额度必须共用「剩余已付 = 行实收 − 已提货金额 − 已转走金额」口径。
+  // 曾经折抵按金额扣、提货按件数扣，两者在折抵金额含余数时对不上：折 4 件带走 ¥450 后
+  // 再回款 ¥50，提货侧按件数会多放出 1 件，累计兑现 ¥550 > 累计实收 ¥500（对抗审查实证）。
+  const ROW_PENDING_EXPR = "CASE WHEN o.sale_order_type = '寄存单' OR si.sale_amount <= 0 THEN GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))) ELSE LEAST(GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))), GREATEST(0, FLOOR((GREATEST(0, si.received::numeric) - GREATEST(0, COALESCE(pt.picked_quantity, 0)) * si.unit_real_price::numeric - COALESCE(ct.converted_amount, 0)) / NULLIF(si.unit_real_price::numeric, 0)))::int) END AS row_pending_pickup"
+
+  const ROW_PENDING_SITES = [
+    ['staff 顾客档案', FILES.staffCustomerJs],
+    ['staff 管理层顾客档案', FILES.staffMgmtCustomerJs],
+    ['client 我的家居产品', FILES.clientOrderJs],
+    ['admin 顾客详情', FILES.adminCustomersTs],
+    ['staff 提货候选', FILES.staffOrderJs],
+    ['admin 提货候选', FILES.adminPickupRecordsTs],
+  ]
+
+  test.each(ROW_PENDING_SITES)('%s 可提件数用「剩余已付」口径', (_name, file) => {
     const src = normalizeSql(stripComments(readFile(file)))
-    expect(src, '提货候选漏扣已折抵件数 → 折抵后仍可提（重复兑现）').toContain(
-      'GREATEST(paid_quantity - picked_quantity - converted_quantity, 0)',
+    expect(src, '可提件数未用剩余已付口径（或表达式漂移）').toContain(ROW_PENDING_EXPR)
+    // 已转走额度必须聚合**金额**，不能只聚合件数
+    expect(src, 'conversion_totals 未聚合已转走金额').toContain(
+      'SUM(GREATEST(0, -out_item.received::numeric)) AS converted_amount',
     )
-    expect(src).not.toMatch(/GREATEST\(paid_quantity - picked_quantity, 0\)/)
   })
 
-  test('提货闸门 helper 双端都扣已折抵件数', () => {
+  test('提货闸门 helper 双端都用「剩余已付」口径', () => {
     for (const [end, file] of [['staff', FILES.staffOrderJs], ['admin', FILES.adminPickupRecordsTs]]) {
       const src = readFile(file).replace(/\s+/g, ' ')
-      expect(src, `${end} pendingHomeProductQuantity 漏扣已折抵件数`).toContain(
-        'const consumed = Number(row.picked_quantity || 0) + Number(row.converted_quantity || 0)',
+      expect(src, `${end} pendingHomeProductQuantity 未按分算剩余已付`).toContain(
+        'toCents(row.received) - Number(row.picked_quantity || 0) * unitCents - toCents(row.converted_amount),',
       )
-      expect(src, `${end} pendingHomeProductQuantity 回退成只扣已提货`).not.toContain(
-        'Number(row.paid_quantity || 0) - Number(row.picked_quantity || 0)',
+      expect(src, `${end} pendingHomeProductQuantity 未按剩余已付整除`).toContain(
+        'return Math.min(physicalRemaining, Math.floor(remainingCents / unitCents))',
+      )
+      expect(src, `${end} pendingHomeProductQuantity 回退成件数口径`).not.toContain(
+        'Number(row.paid_quantity || 0)',
       )
     }
   })

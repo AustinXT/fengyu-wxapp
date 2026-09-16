@@ -6964,7 +6964,10 @@ describe('order.createPickup', () => {
           return { rows: [{
             sale_item_id: 'item-partial', sale_order_id: 'FY-PARTIAL', store_id: 'store-001',
             product_type: '家居产品', item_direction: '购买', quantity: 10,
-            settled_quantity: 0, picked_quantity: 0, paid_quantity: 2, order_status: '部分支付',
+            settled_quantity: 0, picked_quantity: 0, order_status: '部分支付',
+            // #145/#153：可提件数按「剩余已付 / 单价」算 —— 10 件 ¥100，实收 ¥200 → 2 件
+            sale_order_type: '销售单', sale_amount: '1000', unit_real_price: '100',
+            received: '200', converted_amount: '0',
           }], rowCount: 1 }
         }
         return { rows: [], rowCount: 0 }
@@ -6999,7 +7002,7 @@ describe('提货查询门店范围', () => {
 
     expect(pg.query.mock.calls[0][0]).toMatch(/o\.store_id\s*=\s*\$2/)
     expect(pg.query.mock.calls[0][0]).toContain("o.status IN ('已支付', '部分支付', '已完成')")
-    expect(pg.query.mock.calls[0][0]).toContain('GREATEST(paid_quantity - picked_quantity - converted_quantity, 0)')
+    expect(pg.query.mock.calls[0][0]).toContain('row_pending_pickup AS pending_pickup_quantity')
     expect(pg.query.mock.calls[0][1]).toEqual(['customer-001', 'store-001'])
   })
 
@@ -7843,6 +7846,17 @@ describe('order.createConversion — 家居产品折抵（#125）', () => {
         if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
         if (sql.includes('FROM sale_items si') && sql.includes('FOR UPDATE OF si')) {
           return { rows: [row], rowCount: 1 }
+        }
+        // #145/#153：折抵额度在锁取得后用独立语句复算（新快照），仅家居行触发
+        if (sql.includes('home_deductible_quantity')) {
+          return {
+            rows: [{
+              sale_item_id: row.sale_item_id,
+              home_deductible_quantity: row.home_deductible_quantity,
+              home_deductible_amount: row.home_deductible_amount,
+            }],
+            rowCount: 1,
+          }
         }
         if (sql.includes('FROM service_items sit')) return { rows: [], rowCount: 0 }
         if (sql.includes('FROM product_skus')) {

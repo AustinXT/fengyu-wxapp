@@ -3106,6 +3106,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
    */
   function mockConvTx(opts: {
     heldRows: any[]
+    homeConsumedRows?: any[]
     skuRows: any[]
     reservedRows?: any[]
     orderId?: string
@@ -3119,8 +3120,17 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
       let execCall = 0
       const tx = {
         execute: vi.fn().mockImplementation(async (sqlArg: any) => {
+          const text = sqlArg?.__sqlText ?? ''
+          // #145/#153：家居折抵额度在锁取得后用独立语句复算（新快照），仅家居行触发。
+          // 按 SQL 特征识别而非序号，避免它挤掉后面按序号 mock 的返回值。
+          if (text.includes('home_picked_quantity')) {
+            executeSql.push(text)
+            return opts.homeConsumedRows ?? [{
+              sale_item_id: 'home-1', home_picked_quantity: 3, home_converted_amount: '0',
+            }]
+          }
           execCall++
-          executeSql.push(sqlArg?.__sqlText ?? '')
+          executeSql.push(text)
           if (execCall === 1) return opts.heldRows
           if (execCall === 2) return opts.reservedRows ?? []
           if (execCall === 3) return [{ id: opts.orderId || 'FY-XSD-WX-260416-0001' }]
@@ -3187,6 +3197,8 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     session_count: null, remaining_sessions: null,
     quantity: 10, picked_up_quantity: 3,
     unit_price: '120', unit_real_price: '100',
+    // #145/#153：折抵额度按「剩余已付 = 1000 − 3 件已提 × 100 − 0 已转走 = 700」→ 7 件
+    sale_amount: '1000', received: '1000', sale_order_type: '销售单',
     sales_category: '自销自耗', service_fee: '0', is_experience: false, is_shengmei: false,
     client_user_id: 'user-1', order_status: '已支付', product_kind: '家居',
     ...over,
