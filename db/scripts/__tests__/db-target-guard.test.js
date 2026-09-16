@@ -47,6 +47,15 @@ const CASES = [
   ['postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?%68ost=47.113.202.7', false, '编码键 %68ost'],
   ['postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?h%6Fst=47.113.202.7', false, '编码键 h%6Fst'],
   ['postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?%70ort=5434', false, '编码键 %70ort'],
+  ['postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?host=1.1.1.1&host=47.113.202.7', false, '重复 host 键（libpq 取末值）'],
+
+  // 以下形态经实测「解析器不会真的覆盖目标」，故放行是正确的；列在这里把「碰巧安全」
+  // 锁成「被验证的安全」——将来若 URL/解析器行为变化导致它们能覆盖目标，本测试会立刻红。
+  ['postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?HOST=47.113.202.7', true, '大写 HOST（libpq 键名大小写敏感，不生效）'],
+  ['postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?Dbname=other', true, '大写 Dbname（同上）'],
+  ['postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?%2568ost=47.113.202.7', true, '双重编码（单次解码得 %68ost，非 host）'],
+  ['postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?a=1;host=47.113.202.7', true, '分号夹带（& 才是分隔符，; 在值内）'],
+  ['postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?host%3D47.113.202.7', true, '编码等号（整段成为键名）'],
 ]
 
 test('权威实现的行为符合预期（含 query 覆盖与百分号编码绕过）', () => {
@@ -56,12 +65,8 @@ test('权威实现的行为符合预期（含 query 覆盖与百分号编码绕�
 })
 
 test('放行的串经真实解析器解析后确实落在白名单内（交叉验证）', () => {
-  let parse
-  try {
-    parse = require('pg-connection-string').parse
-  } catch {
-    return // 该依赖不在本目录时跳过；CI 的 admin/staff 侧另有覆盖
-  }
+  // 不静默跳过：db/ 必然有 pg 依赖，拿不到说明环境坏了，应当暴露而不是假绿
+  const parse = require('pg-connection-string').parse
   for (const [url, want] of CASES) {
     if (!want) continue
     const r = parse(url)
@@ -106,6 +111,19 @@ function extractInlineImpl(relPath) {
   )
 }
 
+test('跨子项目的内联副本结构完整（trim / URL / searchParams 缺一不可）', () => {
+  for (const rel of INLINE_COPIES) {
+    const abs = path.join(ROOT, rel)
+    assert.ok(fs.existsSync(abs), `${rel} 不存在`)
+    const body = fs.readFileSync(abs, 'utf8')
+    // extractInlineImpl 只取两个字面量、函数体由测试模板提供，检不出函数体被改坏；
+    // 这里对源码本身做结构断言补上这个缺口。
+    for (const token of ['isAllowedDbTarget', 'searchParams', '.trim()', 'new URL(']) {
+      assert.ok(body.includes(token), `${rel} 的内联实现缺少 ${token}`)
+    }
+  }
+})
+
 test('跨子项目的内联副本与权威实现行为完全一致', () => {
   for (const rel of INLINE_COPIES) {
     const impl = extractInlineImpl(rel)
@@ -114,6 +132,45 @@ test('跨子项目的内联副本与权威实现行为完全一致', () => {
       assert.equal(impl(url), want, `${rel} 在「${label}」上与权威实现不一致 — ${url}`)
     }
   }
+})
+
+// 使用权威实现的入口清单。反向的「禁止内联」扫描挡不住「守卫被整个删掉」——
+// 那种情况下既没有内联正则、也没有 require，反向扫描照样全绿。故这里再做一次正向断言。
+const EXPECTED_HELPER_USERS = [
+  'db/scripts/calc-monthly-activity.js',
+  'db/scripts/import-workfine-legacy.js',
+  'db/scripts/migrate-active-cards.js',
+  'db/scripts/migrate-allocations.js',
+  'db/scripts/migrate-history-orders.js',
+  'db/scripts/migrate-jclsh-items.js',
+  'db/scripts/migrate-missing-customers.js',
+  'db/scripts/migrate-phantom-items.js',
+  'db/scripts/migrate-prepaid-cards.js',
+  'db/scripts/migrate-presale-services.js',
+  'db/scripts/migrate-service-records.js',
+  'db/scripts/sync-workfine.js',
+  'db/scripts/seed-recharge-virtual-product.js',
+  'db/scripts/seed-first-admin.js',
+  'db/scripts/test-d4-trigger.mjs',
+  'db/scripts/migrate-lakala-test-data-to-prod.js',
+  'db/scripts/repair-deposit-refund-service-remarks-20260824.js',
+  'db/scripts/repair-cancel-conversion-order-2608130108.js',
+  'db/scripts/repair-bundle-conversion-2608160038.js',
+  'db/scripts/repair-unconfirm-conversion-2608050125.js',
+  'db/scripts/repair-deposit-refund-service-remarks-20260907.js',
+]
+
+test('每个预期入口都确实引用了权威实现（防守卫被整个删掉）', () => {
+  const missing = []
+  for (const rel of EXPECTED_HELPER_USERS) {
+    const abs = path.join(ROOT, rel)
+    if (!fs.existsSync(abs)) { missing.push(`${rel}（文件不存在）`); continue }
+    const text = fs.readFileSync(abs, 'utf8')
+    const usesHelper = /_lib\/assert-db-target/.test(text)
+    const callsGuard = /assertDbTargetOrExit|isAllowedDbTarget|DB_OVERRIDE_KEYS/.test(text)
+    if (!usesHelper || !callsGuard) missing.push(rel)
+  }
+  assert.deepEqual(missing, [], `以下入口未引用/未调用权威实现：\n  ${missing.join('\n  ')}`)
 })
 
 test('db/scripts 下的连库入口都改用了权威实现，未各自内联正则', () => {
