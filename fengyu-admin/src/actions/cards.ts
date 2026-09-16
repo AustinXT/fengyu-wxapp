@@ -66,7 +66,7 @@ export interface AdminCard {
   remainingSessions: number | null
   /** 已付次数（按付款比例 floor） */
   paidSessions: number | null
-  /** 可用次数（已付未用）；paid_sessions 为 NULL 时退回物理剩余，否则 max(paid − used, 0)；列表仅含 paid_sessions>0 的卡 */
+  /** 可用次数（已付未用）；paid_sessions 为 NULL 时退回物理剩余，否则 max(paid − used, 0)；可用 0 的欠款卡也在列表内（issue #122） */
   paidUnusedSessions: number | null
   /** 可退的行级多收余数金额。 */
   remainingRemainder: number
@@ -209,9 +209,11 @@ function buildCardBaseConditions(
     inArray(saleOrders.status, [...CARD_ENTITLEMENT_ORDER_STATUSES]),
     eq(saleItems.productType, '疗程卡'),
     isNotNull(saleItems.remainingSessions),
-    // #4：过滤完全未付款的欠款卡（paid_sessions=0/NULL）——可用卡列表只展示有已付次数的卡，
-    // 避免欠款卡误显「剩余 0 / 已用完」红色进度条（历史 NULL 行同样视作未付款排除）
-    sql`${saleItems.paidSessions} > 0`,
+    // issue #122：移除原本的 `paid_sessions > 0` —— 它会把部分支付的欠款卡整行隐藏，
+    // 顾客买了卡却在卡包里查无此卡。基础集不再按次数过滤（"是否已用完"交给 status 分支，
+    // exhausted 要的正是 remaining_sessions = 0，基础集若先排掉它会让该筛选恒空、卡详情 404）。
+    // 可用次数仍由 paidUnusedSessionsExpr 算出并展示为 0，核销限额走 service 侧独立校验。
+    // 已退款的卡由 paid_sessions 口径在 service 侧挡住，不在本列表口径内。
     // scope 过滤（admin 返回 undefined；非 admin 按 scopeStoreIds）
     scopeCondition(session, saleItems.storeId),
   ]
@@ -219,7 +221,7 @@ function buildCardBaseConditions(
 
 /**
  * 构建卡包 WHERE 条件（列表分页与导出共用，单一真源防漂移）。
- * 基础过滤：权益方向 + 有效订单状态 + 疗程卡 + 余次不为空 + 已付次数>0 + scope。
+ * 基础过滤：权益方向 + 有效订单状态 + 疗程卡 + 余次不为空 + scope（不按次数过滤，见 issue #122）。
  * market 分支用子查询（不预查节点类型），故为同步函数。
  */
 function buildCardConditions(
@@ -710,8 +712,10 @@ export const getCardTransactions = withPermission(
  * 折抵对象（2026-05-21 单品合并后放开）：
  *   疗程卡 (product_type='疗程卡') AND remaining_sessions > 0
  *   —— 原"体验卡单品"已并入疗程卡（session_count=1），不再要求 is_experience。
+ *   家居产品 (product_type='家居产品') AND quantity − picked_up_quantity > 0（2026-09-14 #125）
+ *   —— 未提货数量整行折抵，不看付款进度；已退数量已由 refund-cascade 并入 picked_up_quantity。
  *
- * 不包含：充值卡（走 prepaid_cards 账户，不在 sale_items 行）、家居产品（不在业务口径内）
+ * 不包含：充值卡（走 prepaid_cards 账户，不在 sale_items 行）
  */
 export interface HeldCardCandidate {
   saleItemId: string
@@ -744,7 +748,7 @@ export interface HeldCardCandidate {
   saleAmount: string
   received: string
   pendingReceived: string
-  /** 折抵金额 = unitRealPrice × remainingSessions */
+  /** 折抵金额：疗程卡 = unitRealPrice × remainingSessions；家居产品 = unitRealPrice × remainingQty（未提货数量，#125） */
   deductibleAmount: string
   expireDate: string | null
   remark: string | null
@@ -814,21 +818,36 @@ export const getCustomerHeldCards = withPermission(
         eq(saleItems.storeId, storeId),
         eq(saleOrders.clientUserId, clientUserId),
         cardEntitlementDirectionCondition(),
-        or(eq(saleOrders.status, '已支付'), eq(saleOrders.status, '已完成')),
+        // 2026-09-14 #125 甲方拍板：订单级「部分支付」也可折抵；与卡包列表共用同一组状态，
+        // 疗程卡与家居同时放开，欠款按方案 A 留原单
+        inArray(saleOrders.status, [...CARD_ENTITLEMENT_ORDER_STATUSES]),
         // 2026-05-21 单品合并：折抵对象统一为 疗程卡 + 剩余次数>0（含原"体验卡单品"=1 次卡）
-        eq(saleItems.productType, '疗程卡'),
-        sql`COALESCE(${saleItems.remainingSessions}, 0) > 0`,
+        // 2026-09-14 #125：家居产品未提货数量同样可作为折抵来源（整行折抵，不看付款进度）
+        or(
+          and(
+            eq(saleItems.productType, '疗程卡'),
+            sql`COALESCE(${saleItems.remainingSessions}, 0) > 0`,
+          ),
+          and(
+            eq(saleItems.productType, '家居产品'),
+            sql`(${saleItems.quantity} - COALESCE(${saleItems.pickedUpQuantity}, 0)) > 0`,
+          ),
+        ),
         // 在途退款冻结：原订单存在 '待审批' 退款时排除整单的卡（与 staff customerHeldCards 对齐）
         sql`NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '待审批')`,
         // 审批后隐藏已退完的卡：仅当订单存在已审批退款时按 paid_sessions 有效余量判定（不影响无退款的分期卡）
-        sql`(NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付') OR ${saleItems.paidSessions} IS NULL OR ${saleItems.paidSessions} > (${saleItems.sessionCount} - ${saleItems.remainingSessions}))`,
+        // 家居产品不适用：已退数量由 refund-cascade 并入 picked_up_quantity，未提货数量已天然扣除
+        sql`(${saleItems.productType} <> '疗程卡' OR NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付') OR ${saleItems.paidSessions} IS NULL OR ${saleItems.paidSessions} > (${saleItems.sessionCount} - ${saleItems.remainingSessions}))`,
       ),
     )
 
-  // 单品合并后 WHERE 仅返回疗程卡行，统一按 remaining_sessions 折抵
+  // 疗程卡按 remaining_sessions 折抵；家居产品按未提货数量 quantity − picked_up_quantity 折抵
   return rows.map((r) => {
     const unit = Number(r.unitRealPrice)
+    const isHomeProduct = r.productType === '家居产品'
     const remSess = r.remainingSessions ?? 0
+    const remainingQty = Math.max(0, (r.quantity ?? 0) - (r.pickedUpQuantity ?? 0))
+    const deductibleQty = isHomeProduct ? remainingQty : remSess
     return {
       saleItemId: r.saleItemId,
       saleItemGroupId: r.saleItemGroupId ?? null,
@@ -845,19 +864,19 @@ export const getCustomerHeldCards = withPermission(
       itemDirection: r.itemDirection,
       refSaleItemId: r.refSaleItemId ?? null,
       productName: r.productName,
-      productType: '疗程卡' as const,
-      unit: r.unit ?? '次',
+      productType: isHomeProduct ? ('家居产品' as const) : ('疗程卡' as const),
+      unit: r.unit ?? (isHomeProduct ? '盒' : '次'),
       quantity: r.quantity ?? 1,
       sessionCount: r.sessionCount ?? null,
-      remainingSessions: remSess,
+      remainingSessions: isHomeProduct ? null : remSess,
       paidSessions: r.paidSessions ?? null,
-      remainingQty: null,
+      remainingQty: isHomeProduct ? remainingQty : null,
       unitPrice: r.unitPrice,
       unitRealPrice: r.unitRealPrice,
       saleAmount: r.saleAmount,
       received: r.received,
       pendingReceived: r.pendingReceived,
-      deductibleAmount: (unit * remSess).toFixed(2),
+      deductibleAmount: (unit * deductibleQty).toFixed(2),
       expireDate: r.expireDate ?? null,
       remark: r.remark ?? null,
       salesCategory: r.salesCategory ?? null,
@@ -880,6 +899,7 @@ export const getCustomerHeldCards = withPermission(
 import { loadRechargeConfig, matchTier, type RechargeTier, type RechargeConfig } from '@/lib/recharge'
 import { logOperation } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
+import { businessErrorMessage } from '@/lib/action-error'
 import { revalidatePath } from 'next/cache'
 
 /**
@@ -1040,7 +1060,7 @@ export const createRechargeOrder = withPermission(
       const matched = matchTier(data.faceValue, cfg)
       payAmount = matched.payAmount
     } catch (err: any) {
-      return { success: false, message: (err?.message || '档位匹配失败').replace(/^[A-Z_]+:\s*/, '') }
+      return { success: false, message: businessErrorMessage(err, '档位匹配失败') }
     }
 
     // 顾客 + market_name 快照；documentType 在创建事务内按历史达标次数计算。
@@ -1132,8 +1152,8 @@ export const createRechargeOrder = withPermission(
         return id
       })
     } catch (err: any) {
-      const msg = err?.message || '充值订单创建失败'
-      return { success: false, message: msg.replace(/^[A-Z_]+:\s*/, '') }
+      // fail-closed：非白名单前缀的原始 PG 报错（SQL 片段 / 约束名）绝不回传给前端 toast（issue #133）
+      return { success: false, message: businessErrorMessage(err, '充值订单创建失败') }
     }
 
     await logOperation(session, 'sale_order.create_recharge', 'sale_order', saleOrderId, {

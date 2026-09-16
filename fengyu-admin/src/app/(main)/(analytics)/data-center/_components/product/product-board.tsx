@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import { Card } from "@/components/ui/card"
 import { Select, SelectOption } from "@/components/ui/select"
+import { actionErrorMessage } from "@/lib/action-error"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { parseBoardParams } from "@/lib/data-center/params"
 import { getProductBoard } from "@/actions/data-center/product"
@@ -54,7 +55,9 @@ export function ProductBoard() {
         if (!cancelled) setData(res)
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : "加载失败")
+        // 生产构建会脱敏 message，必须走 actionErrorMessage 取 digest（issue #133）；
+        // validateScope 的 4 条拒绝理由为何到不了这里，见 lib/data-center/context.ts 的说明。
+        if (!cancelled) setError(actionErrorMessage(e, "请稍后重试"))
       })
       .finally(() => {
         if (!cancelled) setLoading(false)

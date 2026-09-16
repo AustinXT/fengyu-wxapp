@@ -1,11 +1,11 @@
 /**
- * STEP 7 — auditPaymentInvariants（5 项资金不变量守护）
+ * STEP 7 — auditPaymentInvariants（6 项资金不变量守护）
  *
  * 关键场景：
  *   A 全部不变量通过 → violations=0，零 INSERT
  *   B 任一不变量违反 → 单条 INSERT operation_logs(action='cron.audit_invariants') + notifyOps
  *   C 永不修补（无 UPDATE 调用）
- *   D 5 项 SELECT 都按预期顺序执行（保证后续日志聚合一致）
+ *   D 8 条 SELECT（I1/I2/I2b/I3/I4/I5/I6/I6b）都按预期模板出现（保证后续日志聚合一致）
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
@@ -38,16 +38,17 @@ describe('cron-worker STEP 7 — auditPaymentInvariants', () => {
   })
 
   it('A. 全部不变量通过 → violations=0，零写入', async () => {
-    // 6 次 SELECT 均返回空（无违规）：I1 received / I2 refunded_amount / I2b refunded_le_received /
-    // I3 points_balance / I4 prepaid_balance / I5 payable_eq_total_minus_prepaid
-    for (let i = 0; i < 6; i++) mockExecute.mockResolvedValueOnce([])
+    // 8 次 SELECT 均返回空（无违规）：I1 received / I2 refunded_amount / I2b refunded_le_received /
+    // I3 points_balance / I4 prepaid_balance / I5 payable_eq_total_minus_prepaid /
+    // I6 first_payment_attribution_eq_order / I6b card_attribution_eq_paired_primary
+    for (let i = 0; i < 8; i++) mockExecute.mockResolvedValueOnce([])
 
     const result = await auditPaymentInvariants(mockDb as never)
 
     expect(result.violations).toBe(0)
     expect(result.details).toEqual([])
     // 无 INSERT 调用、无 webhook
-    expect(mockExecute).toHaveBeenCalledTimes(6)
+    expect(mockExecute).toHaveBeenCalledTimes(8)
     expect(notifyOpsMock).not.toHaveBeenCalled()
     expect(mockDb.transaction).not.toHaveBeenCalled()
   })
@@ -57,9 +58,12 @@ describe('cron-worker STEP 7 — auditPaymentInvariants', () => {
       { sale_order_id: 'o1', received: 100, computed: 80 },
     ]) // I1 violation
     mockExecute.mockResolvedValueOnce([]) // I2
+    mockExecute.mockResolvedValueOnce([]) // I2b
     mockExecute.mockResolvedValueOnce([]) // I3
     mockExecute.mockResolvedValueOnce([]) // I4
     mockExecute.mockResolvedValueOnce([]) // I5
+    mockExecute.mockResolvedValueOnce([]) // I6
+    mockExecute.mockResolvedValueOnce([]) // I6b
     mockExecute.mockResolvedValueOnce([]) // INSERT operation_logs
 
     const result = await auditPaymentInvariants(mockDb as never)
@@ -91,8 +95,8 @@ describe('cron-worker STEP 7 — auditPaymentInvariants', () => {
     mockExecute.mockResolvedValueOnce([
       { sale_order_id: 'o1', received: 100, computed: 0 },
     ])
-    for (let i = 0; i < 4; i++) mockExecute.mockResolvedValueOnce([])
-    mockExecute.mockResolvedValueOnce([])
+    for (let i = 0; i < 7; i++) mockExecute.mockResolvedValueOnce([])
+    mockExecute.mockResolvedValueOnce([]) // INSERT operation_logs
 
     await auditPaymentInvariants(mockDb as never)
 
@@ -104,7 +108,7 @@ describe('cron-worker STEP 7 — auditPaymentInvariants', () => {
   })
 
   it('D. 6 项不变量按预期 SQL 模板出现', async () => {
-    for (let i = 0; i < 6; i++) mockExecute.mockResolvedValueOnce([])
+    for (let i = 0; i < 8; i++) mockExecute.mockResolvedValueOnce([])
 
     await auditPaymentInvariants(mockDb as never)
 
@@ -114,6 +118,11 @@ describe('cron-worker STEP 7 — auditPaymentInvariants', () => {
     // I1 必须豁免历史单（legacy_source='workfine'）：历史单 received 为旧系统平移值、无支付流水
     const i1 = sqlTexts.find((s) => s.includes('so.received') && s.includes('change_type IN'))!
     expect(i1).toContain("legacy_source IS DISTINCT FROM 'workfine'")
+    // ⚠ 该 WHERE 必须排在 LEFT JOIN 之后 —— 2026-07-20 加豁免时插到了 JOIN 前面，
+    // 那是 PG 语法错误，r1 一抛整个 STEP 就退出，I1~I5 静默停摆近两个月（issue #137 修复）。
+    // 单测 mock 掉了 db.execute，只能靠这条结构断言守住；真实语法由 e2e-chains cron-08 把关。
+    expect(i1).toContain('LEFT JOIN')
+    expect(i1.indexOf('LEFT JOIN')).toBeLessThan(i1.indexOf('WHERE'))
     expect(sqlTexts.some((s) => s.includes('refunded_amount') && s.includes("change_type = '退款'"))).toBe(true)
     expect(sqlTexts.some((s) => s.includes('refunded_amount::numeric > so.received'))).toBe(true) // I2b refunded_le_received
     expect(sqlTexts.some((s) => s.includes('points_balance') && s.includes('point_batches'))).toBe(true)
@@ -124,6 +133,15 @@ describe('cron-worker STEP 7 — auditPaymentInvariants', () => {
     expect(i5).toContain('销售单')
     expect(i5).toContain('寄存单')
     expect(i5).not.toContain('充值单')
+    // I6 首次支付归属日期 = 订单级（issue #137：查询侧直读列后，镜像脱拍会让业绩落错日子）
+    const i6 = sqlTexts.find((s) => s.includes("p.change_type = '首次支付'"))!
+    expect(i6).toBeDefined()
+    expect(i6).toContain('IS DISTINCT FROM so.performance_attribution_date')
+    // I6b 同次卡行 = 配对主流水（谓词必须与 trigger / 迁移自检的配对条件一致）
+    const i6b = sqlTexts.find((s) => s.includes("card.change_type = '储值卡抵扣'"))!
+    expect(i6b).toBeDefined()
+    expect(i6b).toContain('p.paid_at IS NOT DISTINCT FROM card.paid_at')
+    expect(i6b).toContain("card.status = '已支付'")
   })
 
   it('E. 多个不变量同时违反 → details 累积，notifyOps 仅一次', async () => {
@@ -133,10 +151,8 @@ describe('cron-worker STEP 7 — auditPaymentInvariants', () => {
     mockExecute.mockResolvedValueOnce([
       { sale_order_id: 'o2', refunded_amount: 50, computed: 0 },
     ])
-    mockExecute.mockResolvedValueOnce([])
-    mockExecute.mockResolvedValueOnce([])
-    mockExecute.mockResolvedValueOnce([])
-    mockExecute.mockResolvedValueOnce([])
+    for (let i = 0; i < 6; i++) mockExecute.mockResolvedValueOnce([]) // I2b/I3/I4/I5/I6/I6b
+    mockExecute.mockResolvedValueOnce([]) // INSERT operation_logs
 
     const result = await auditPaymentInvariants(mockDb as never)
 

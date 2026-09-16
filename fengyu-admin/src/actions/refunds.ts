@@ -41,6 +41,7 @@ import { cascadeRefund, notifyRefundCreated, notifyRefundResult } from '@/lib/re
 import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { recalcPaidSessionsForOrder } from '@/lib/paid-sessions'
 import { reconcileAllocationStatusAfterRefund } from '@/lib/payment-allocatable'
+import { businessErrorMessage } from '@/lib/action-error'
 import type {
   OrderStatus,
   PaymentMethod,
@@ -794,7 +795,8 @@ export const createRefund = withPermission(
     if (msg.startsWith('INVALID_STATE:')) {
       return { success: false, error: { code: 'INVALID_STATE', message: msg.replace(/^INVALID_STATE:\s*/, '') } }
     }
-    return { success: false, error: { code: 'UNKNOWN', message: msg } }
+    // fail-closed：非白名单前缀的原始错误（PG 报错 / 堆栈）不回传给前端（issue #133）
+    return { success: false, error: { code: 'UNKNOWN', message: businessErrorMessage(err, '退款处理失败，请稍后重试') } }
   }
 
   const fee = Math.max(0, Number(input.handlingFee) || 0)
@@ -1154,6 +1156,42 @@ export const approveRefund = withPermission(
       if (cascadeItems.length === 0 && refSaleItemId) {
         cascadeItems = [{ saleItemId: refSaleItemId, sessionCount, refundAmount, isFullItemRefund: true }]
       }
+      // G2 复校（2026-09-14 #125）：家居行可退数量必须在锁内复算。
+      // createRefund 是事务外、无行锁读 picked_up_quantity 定额的；其间若有转换单把这批货折抵走
+      // （picked_up_quantity 被抬高），cascade 通道 5 的 LEAST(quantity, picked_up + qty) 会把冲突
+      // 静默封顶吞掉 —— 同一批货既进了转换单又退了现金，且家居账面 refunded_quantity 归 0 查无实据。
+      // 这里按 sale_item_id 定序锁行复核，不足即拒绝审批。staff routes/order.js 有同义副本。
+      const homeRefundQty = new Map<string, number>()
+      for (const it of cascadeItems) {
+        if (!it.saleItemId || (it as { isOverpay?: boolean }).isOverpay) continue
+        const qty = Number(it.sessionCount ?? 0)
+        if (qty > 0) homeRefundQty.set(it.saleItemId, (homeRefundQty.get(it.saleItemId) ?? 0) + qty)
+      }
+      {
+        // 无条件锁：老退款单（无 note.items 且 ref_sale_item_id 为空）会让 homeRefundQty 为空，
+        // 若因此跳过加锁就退回「createRefund 无锁定额 + cascade LEAST 静默封顶」的旧缺口。
+        // 锁集必须覆盖本单**全部购买行**而非只锁家居子集：后续 cascadeRefund /
+        // recalcPaidSessionsForOrder 会更新同单的疗程卡行，只锁家居会与「先锁疗程卡、再等家居」
+        // 的混选转换事务形成反向锁序而死锁。按 sale_item_id 升序，与 createConversionOrder 的锁序一致。
+        const lockedRows = await tx.execute(sql`
+          SELECT sale_item_id, product_type, quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity
+            FROM sale_items
+           WHERE sale_order_id = ${refSaleOrderId}
+             AND item_direction = '购买'
+           ORDER BY sale_item_id
+             FOR UPDATE
+        `)
+        for (const r of Array.from(lockedRows as unknown as Iterable<Record<string, unknown>>)) {
+          if (r.product_type !== '家居产品') continue
+          const requested = homeRefundQty.get(r.sale_item_id as string) ?? 0
+          if (requested <= 0) continue
+          const refundable = Number(r.quantity ?? 0) - Number(r.picked_up_quantity ?? 0)
+          if (requested > refundable) {
+            throw new ApiError('CONFLICT', 'HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
+          }
+        }
+      }
+
       const result = await cascadeRefund(tx, {
         saleOrderId: refSaleOrderId,
         refundPaymentId: idNum,
@@ -1202,6 +1240,11 @@ export const approveRefund = withPermission(
     }
     if (msg.includes('退款金额无法完整映射到商品行实收')) {
       return { success: false, error: { code: 'INVALID_STATE', message: '商品行实收数据异常，本次退款已回滚，请联系管理员处理' } }
+    }
+    // #125 G2：家居可退数量在审批前被转换折抵/提货吃掉。必须单独成分支——落到下面的
+    // UNKNOWN「请稍后重试」会误导审批员反复重试同一笔（picked_up 抬高是持久状态，重试必然再失败）。
+    if (msg.includes('HOME_PRODUCT_REFUNDABLE_CHANGED')) {
+      return { success: false, error: { code: 'CONFLICT', message: '家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款' } }
     }
     console.error('[approveRefund] unexpected error:', err)
     return { success: false, error: { code: 'UNKNOWN', message: '审批退款失败，请稍后重试' } }

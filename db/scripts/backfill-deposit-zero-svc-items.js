@@ -32,14 +32,14 @@
  *
  * 用法：
  *   # dry-run（默认，仅打印统计 + 样本，事务回滚）
- *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
+ *   DATABASE_URL="postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp" \
  *     node db/scripts/backfill-deposit-zero-svc-items.js
  *
  *   # 实际提交
- *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
+ *   DATABASE_URL="postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp" \
  *     node db/scripts/backfill-deposit-zero-svc-items.js --apply
  *
- * 顺序：先 dev(47.113.202.7:5433) --apply 验证脚本正确性；再 prod(118.178.196.26:5433) --apply。
+ * 顺序：先 dev(101.34.242.103:5433) --apply 验证脚本正确性；再 prod(118.178.196.26:5433) --apply。
  * 两库均 5433/fengyu_wxapp，仅 IP 区分。永远显式传 DATABASE_URL；e2e 绝不碰生产 IP 118.178.196.26。
  */
 

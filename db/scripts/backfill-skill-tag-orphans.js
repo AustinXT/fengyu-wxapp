@@ -25,12 +25,12 @@
  *
  * 用法：
  *   # dry-run（默认）
- *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
+ *   DATABASE_URL="postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp" \
  *     node db/scripts/backfill-skill-tag-orphans.js
  *   # 实际提交
  *   ... node db/scripts/backfill-skill-tag-orphans.js --apply
  *
- * 双库（dev 47.113.202.7 / prod 118.178.196.26）各跑；永远显式传 DATABASE_URL。
+ * 双库（dev 101.34.242.103 / prod 118.178.196.26）各跑；永远显式传 DATABASE_URL。
  */
 
 const { Pool } = require('pg')

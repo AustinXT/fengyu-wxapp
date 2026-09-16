@@ -800,8 +800,11 @@ describe('Next digest 形态漂移守护（#133）', () => {
     }
     const src = readFileSync(resolve(adminSrc, 'lib/action-error.ts'), 'utf8')
     const mapped = [
-      ...(src.match(/const OPAQUE_TOKEN_MESSAGES[\s\S]*?\}\)/)?.[0] ?? '').matchAll(
-        /^\s{2}([A-Z][A-Z0-9_]*):/gm,
+      // 2026-09-16 main→dev 合并后 OPAQUE_TOKEN_MESSAGES 改成了 `new Map([[k, v], …])`
+      // （对象字面量查表会命中 Object.prototype，`digest='toString'` 返回函数而非字符串）。
+      // 这里按 Map 形态抽键；块收尾是 `])` 而不是 `})`。
+      ...(src.match(/const OPAQUE_TOKEN_MESSAGES[\s\S]*?\]\)/)?.[0] ?? '').matchAll(
+        /\[\s*'([A-Z][A-Z0-9_]*)'/g,
       ),
     ].map((m) => m[1])
     for (const token of bareTokens) {
@@ -889,8 +892,11 @@ describe('Next digest 形态漂移守护（#133）', () => {
   it('9 项白名单里每个前缀，要么有裸 token 中文说法，要么确认不会以裸 token 出现', () => {
     const src = readFileSync(resolve(adminSrc, 'lib/action-error.ts'), 'utf8')
     const mapped = [
-      ...(src.match(/const OPAQUE_TOKEN_MESSAGES[\s\S]*?\}\)/)?.[0] ?? '').matchAll(
-        /^\s{2}([A-Z][A-Z0-9_]*):/gm,
+      // 2026-09-16 main→dev 合并后 OPAQUE_TOKEN_MESSAGES 改成了 `new Map([[k, v], …])`
+      // （对象字面量查表会命中 Object.prototype，`digest='toString'` 返回函数而非字符串）。
+      // 这里按 Map 形态抽键；块收尾是 `])` 而不是 `})`。
+      ...(src.match(/const OPAQUE_TOKEN_MESSAGES[\s\S]*?\]\)/)?.[0] ?? '').matchAll(
+        /\[\s*'([A-Z][A-Z0-9_]*)'/g,
       ),
     ].map((m) => m[1])
     expect(mapped).toEqual(['PERMISSION_DENIED', 'UNAUTHORIZED'])
@@ -913,12 +919,20 @@ describe('Next digest 形态漂移守护（#133）', () => {
     expect(permissionsSrc).toContain("readonly digest = 'PERMISSION_DENIED'")
   })
 
-  it('error.tsx 判 401/403 用的裸 token 与本模块的说法表同源', () => {
+  it('error.tsx 判 401/403 不再自己比对 digest 字面量，一律经 actionErrorType 与本模块同源', () => {
     const errorPageSrc = readFileSync(resolve(adminSrc, 'app/(main)/error.tsx'), 'utf8')
-    // 它靠 `digest === "PERMISSION_DENIED"` / `=== "UNAUTHORIZED"` 渲染 403/401 页；
-    // 本模块把同样这两个裸 token 翻成中文。两处漂移会让同一个 digest 在页面级与 toast 级判定不一致。
-    expect(errorPageSrc).toContain('error.digest === "PERMISSION_DENIED"')
-    expect(errorPageSrc).toContain('error.digest === "UNAUTHORIZED"')
+    // 2026-09-16 main→dev 合并：原先这里断言 error.tsx 里写着
+    // `error.digest === "PERMISSION_DENIED"` —— 那是「两处各写一份字面量、靠测试盯着别漂移」。
+    // test 线把那两份字面量收进了 `actionErrorType`，同源关系从「字面量相等」升级成
+    // 「单一实现」，于是这条断言要跟着改判据：**不允许再出现字面量比对**，且必须走 actionErrorType。
+    // 这比原来的断言更强 —— 原来只能发现漂移，现在连「又抄了一份」都不许。
+    expect(errorPageSrc).toContain('actionErrorType(error)')
+    expect(errorPageSrc).not.toMatch(/digest\s*===\s*["'][A-Z_]+["']/)
+    // 裸 token 的中文说法与类型判定同源于 OPAQUE_TOKEN_MESSAGES：从表里删掉任一 token
+    // 会连带杀死错误页的 403/401 分级，这一点由 `app/(main)/error.test.tsx` 实测守护。
+    expect(readFileSync(resolve(adminSrc, 'app/(main)/error.test.tsx'), 'utf8')).toMatch(
+      /PERMISSION_DENIED[\s\S]*UNAUTHORIZED/,
+    )
   })
 
   it('本地 stringHash 副本与 Next 编译内置实现逐样本一致', () => {

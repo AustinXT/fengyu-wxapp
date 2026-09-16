@@ -2035,7 +2035,127 @@ describe('order.homeProducts', () => {
     expect(sql).toContain("si.item_direction = '购买'")
     expect(sql).toContain("si.product_type = '家居产品'")
     expect(sql).toMatch(/FLOOR\(GREATEST\(0, si\.received::numeric\) \* si\.quantity \/ NULLIF\(si\.sale_amount::numeric, 0\)\)/)
-    expect(sql).toContain('pending_pickup_quantity > 0')
+    // issue #120：放行口径改为按物理剩余份额，旧的 pending 过滤会吞掉未付清的行。
+    // 注意不能只断言 'pending_pickup_quantity > 0'——那串在 ORDER BY 里也有，测不出过滤口径。
+    expect(sql).toContain('WHERE picked_quantity > 0 OR remaining_quantity > 0')
+    expect(sql).not.toContain('WHERE picked_quantity > 0 OR pending_pickup_quantity > 0')
+    expect(sql).toContain("(o.sale_order_type = '寄存单') AS is_deposit")
+    expect(sql).toContain('CASE WHEN is_deposit THEN NULL')
+  })
+
+  // issue #120：买 1 件未付清 → FLOOR=0 → pending=0，旧 WHERE 把整行剔除，
+  // 顾客在「我的家居产品」里完全看不到自己买过这件货。
+  test('未付清整件的行仍返回，状态为待付清并带欠款金额', async () => {
+    pg.query.mockResolvedValueOnce([{
+      sale_item_id: 'SI-UNPAID', sale_order_id: 'SO-UNPAID', product_name: '舒缓精华液',
+      unit: '盒', purchased_quantity: 1, paid_quantity: 0,
+      picked_quantity: 0, refunded_quantity: 0,
+      remaining_quantity: 1, pending_pickup_quantity: 0, unpaid_amount: '380.00',
+      store_id: 's1', store_name: '本店', purchased_at: '2026-09-13T10:00:00Z',
+      refund_pending: false,
+    }])
+
+    const ctx = createBoundCtx({})
+    await routes.homeProducts(ctx)
+
+    expect(ctx.result.items[0]).toMatchObject({
+      purchasedQuantity: 1,
+      paidQuantity: 0,
+      pendingPickupQuantity: 0,
+      unpaidAmount: 380,
+      status: '待付清',
+    })
+  })
+
+  // 寄存单 sale_amount 是原价快照、received 是历史值，相减不是欠款。
+  // 顾客端尤其不能显示这笔钱——那是向顾客伪造一笔不存在的债务。
+  test('寄存单行不下发欠款，状态为待提货', async () => {
+    pg.query.mockResolvedValueOnce([{
+      sale_item_id: 'SI-DEPOSIT', sale_order_id: 'SO-DEPOSIT', product_name: '生物胶原修复面膜',
+      unit: '盒', purchased_quantity: 27, paid_quantity: 0,
+      picked_quantity: 0, refunded_quantity: 0,
+      remaining_quantity: 27, pending_pickup_quantity: 0, unpaid_amount: null,
+      store_id: 's1', store_name: '本店', purchased_at: '2026-08-03T10:00:00Z',
+      refund_pending: false,
+    }])
+
+    const ctx = createBoundCtx({})
+    await routes.homeProducts(ctx)
+
+    expect(ctx.result.items[0]).toMatchObject({
+      unpaidAmount: null,
+      status: '待提货',
+      purchasedQuantity: 27,
+    })
+  })
+
+  test('退款过的行不下发欠款金额，且仍有剩余份额时不标已完成', async () => {
+    pg.query.mockResolvedValueOnce([{
+      sale_item_id: 'SI-REFUNDED', sale_order_id: 'SO-REFUNDED', product_name: '面膜',
+      unit: '盒', purchased_quantity: 3, paid_quantity: 0,
+      picked_quantity: 0, refunded_quantity: 1,
+      remaining_quantity: 2, pending_pickup_quantity: 0, unpaid_amount: '200.00',
+      store_id: 's1', store_name: '本店', purchased_at: '2026-08-20T10:00:00Z',
+      refund_pending: false,
+    }])
+
+    const ctx = createBoundCtx({})
+    await routes.homeProducts(ctx)
+
+    expect(ctx.result.items[0]).toMatchObject({
+      unpaidAmount: null,
+      status: '待提货',
+      remainingQuantity: 2,
+    })
+  })
+
+  // issue #122：部分支付且实收不足一次单价 → paid_sessions=0，可用次数 0。
+  // 顾客端卡包（includeInactive=true）本就展示这类卡，本次补「待付清」金额。
+  test('可用次数为 0 的卡下发行级欠款', async () => {
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'SO-UNPAID', order_status: '部分支付', paid_at: '2026-09-13T10:00:00Z',
+      sale_item_id: 'SI-UNPAID', product_name: '深层补水', product_type: '疗程卡',
+      session_count: 15, remaining_sessions: 15, paid_sessions: 0,
+      sale_amount: '3000.00', received: '150.00', unpaid_amount: '2850.00',
+      unit: '次', quantity: 1,
+    }])
+
+    const ctx = createBoundCtx({})
+    await routes.appointableItems(ctx)
+
+    expect(ctx.result.orders[0].items[0]).toMatchObject({
+      saleItemId: 'SI-UNPAID',
+      paidSessions: 0,
+      unpaidAmount: 2850,
+    })
+  })
+
+  test('欠款字段为空时透传 null，不塞 0', async () => {
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'SO-PAID', order_status: '已支付', paid_at: '2026-07-25T10:00:00Z',
+      sale_item_id: 'SI-PAID', product_name: '面部护理', product_type: '疗程卡',
+      session_count: 10, remaining_sessions: 8, paid_sessions: 10,
+      sale_amount: '3980.00', received: '3980.00', unpaid_amount: null,
+      unit: '次', quantity: 1,
+    }])
+
+    const ctx = createBoundCtx({})
+    await routes.appointableItems(ctx)
+
+    expect(ctx.result.orders[0].items[0].unpaidAmount).toBeNull()
+  })
+
+  test('欠款 SQL 排除已审批退款单，避免按净实收虚增欠款', async () => {
+    pg.query.mockResolvedValueOnce([])
+    const ctx = createBoundCtx({})
+    await routes.appointableItems(ctx)
+
+    const sql = pg.query.mock.calls[0][0]
+    expect(sql).toContain("WHEN o.status = '部分支付'")
+    expect(sql).toContain('AND si.paid_sessions < si.session_count')
+    expect(sql).toContain('END AS unpaid_amount')
+    // received 是行级净实收（已扣退款），退过款的单相减必然虚增欠款
+    expect(sql).toMatch(/unpaid_amount/)
   })
 
   test('部分支付家居产品返回已付和待提整件数', async () => {

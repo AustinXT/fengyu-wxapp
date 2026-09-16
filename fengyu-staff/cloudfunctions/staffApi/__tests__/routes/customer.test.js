@@ -9,10 +9,58 @@
 const pg = globalThis.__mocks__.pg
 const { createManagerCtx, createBeauticianCtx, createManagementCtx } = require('../helpers')
 const customerRoutes = require('../../routes/customer')
+const { assertPaymentAttributionReady, __resetAttributionGuardCache } = require('../../utils/attribution-guard')
+
+/**
+ * #141：年度消费直读款项归属日期，跑 SQL 前会过 attribution-guard 探针。
+ * guard **只缓存「已就绪」**，所以这里预热一次，之后整个文件的测试都不再发探针查询，
+ * 既有 mock 的调用序列/索引全部不受影响。
+ * （预热本身会占一次 pg.query，但它在 beforeAll 里、早于任何用例的 mock 设置。）
+ * guard 本身的行为（未就绪时拦截）另有专门用例覆盖。
+ */
+beforeAll(async () => {
+  pg.query.mockResolvedValueOnce([{ has_gap: false, trigger_ready: true }])
+  await assertPaymentAttributionReady(pg)
+})
+
 
 // ============================================================
 // customer.search
 // ============================================================
+/**
+ * #141：本文件用 beforeAll 预热 guard（使既有用例零改动），
+ * 但那样 guard 在全文件变成 no-op —— 把调用挪走也不会有用例变红。
+ * 这里补一条**行为**用例，显式重置缓存后验证 fail-closed。
+ */
+describe('customer.detail 年度消费的迁移就绪守卫（#141）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    __resetAttributionGuardCache()
+  })
+
+  afterAll(async () => {
+    // 复原就绪态，避免影响本文件其余用例
+    __resetAttributionGuardCache()
+    pg.query.mockResolvedValueOnce([{ has_gap: false, trigger_ready: true }])
+    await assertPaymentAttributionReady(pg)
+  })
+
+  test('未迁移库拒绝出数（不给运营看负数年度消费）', async () => {
+    // 按 SQL 内容分发，不依赖 detail 内部的查询顺序
+    pg.query.mockImplementation(async (sql) => {
+      if (/has_gap/.test(sql)) return [{ has_gap: true, trigger_ready: false }]
+      if (/FROM\s+client_wechat_users/.test(sql)) {
+        return [{ user_id: 'u1', customer_id: 'C001', name: '张三', phone: '13800001111' }]
+      }
+      return []
+    })
+    const ctx = createManagerCtx({ clientUserId: 'u1' })
+    await expect(customerRoutes.detail(ctx)).rejects.toThrow(/INVALID_STATE: MIGRATION_REQUIRED/)
+    // 确认探针确实发了（守卫真的被调用，不是别的原因抛错）
+    expect(pg.query.mock.calls.some(([sql]) => /has_gap/.test(sql)), '守卫未被调用').toBe(true)
+  })
+})
+
 describe('customer.search', () => {
   test('关键词搜索返回 PG 结果（含 store_name JOIN）', async () => {
     const ctx = createManagerCtx({ keyword: '张' })
@@ -602,8 +650,15 @@ describe('customer.detail', () => {
     expect(sql).toContain('SUM(\n         sop.amount::numeric')
     expect(sql).toContain("o.legacy_source IS DISTINCT FROM 'workfine'")
     expect(sql).toContain("o.legacy_source = 'workfine'")
-    expect(sql).toContain("sop.paid_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Shanghai')")
-    expect(sql).toContain("sop.paid_at < (($2::date + INTERVAL '1 year') AT TIME ZONE 'Asia/Shanghai')")
+    // #141 年度消费落年改按业绩归属日期：款项级走 sop、legacy(workfine) 走订单级 o。
+    // 归属日期是 date，年区间用半开 [start, start+1year)，不再套北京时区半开区间。
+    expect(sql).toContain('sop.performance_attribution_date >= $2::date')
+    expect(sql).toContain("sop.performance_attribution_date < ($2::date + INTERVAL '1 year')")
+    expect(sql).toContain('o.performance_attribution_date >= $2::date')
+    expect(sql).toContain("o.performance_attribution_date < ($2::date + INTERVAL '1 year')")
+    // 旧口径必须消失（含时区半开区间形态）
+    expect(sql).not.toContain('sop.paid_at >=')
+    expect(sql).not.toContain("AT TIME ZONE 'Asia/Shanghai')")
     expect(sql).not.toContain('WHEN o.paid_at >= $2')
     expect(sql).toContain('FROM service_orders so')
     expect(sql).toContain('JOIN service_items sit ON sit.service_order_id = so.service_order_id')
@@ -734,6 +789,82 @@ describe('customer.paidOrders', () => {
       categoryId: 'face-care',
       categoryName: '面部护理',
     })
+  })
+
+  // issue #122：部分支付且实收不足一次单价 → paid_sessions=0，旧过滤把整张卡剔除，
+  // 顾客买了卡却在档案里查无此卡。现在照常下发，可用次数由前端算作 0。
+  test('可用次数为 0 的卡仍下发，并带行级欠款', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-unpaid-card' })
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+    pg.query.mockResolvedValueOnce([
+      { sale_order_id: 'SO-UNPAID', status: '部分支付', paid_at: '2026-09-13T10:00:00Z' },
+    ])
+    pg.query.mockResolvedValueOnce([
+      {
+        sale_order_id: 'SO-UNPAID', sale_item_id: 'item-unpaid',
+        session_count: 15, remaining_sessions: 15, paid_sessions: 0,
+        sku_id: 'sku-1', product_type: '疗程卡', product_name: '深层补水',
+        sale_amount: '3000.00', received: '150.00', unpaid_amount: '2850.00',
+      },
+    ])
+
+    await customerRoutes.paidOrders(ctx)
+
+    expect(ctx.result[0].items[0]).toEqual(
+      expect.objectContaining({
+        saleItemId: 'item-unpaid',
+        paidSessions: 0,
+        remainingSessions: 15,
+        unpaidAmount: 2850,
+      }),
+    )
+  })
+
+  // 订单已付清但行 received 不足 → 行级分摊缺口（已知数据问题），不是顾客欠款。
+  // dev 实测 78 行属此类，若按金额差报欠款会伪造债务。
+  test('订单已付清的行不下发欠款（行级分摊缺口不算欠款）', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-settled-gap' })
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+    pg.query.mockResolvedValueOnce([
+      { sale_order_id: 'SO-PAID', status: '已支付', paid_at: '2026-07-25T10:00:00Z' },
+    ])
+    pg.query.mockResolvedValueOnce([
+      {
+        sale_order_id: 'SO-PAID', sale_item_id: 'item-gap',
+        session_count: 10, remaining_sessions: 8, paid_sessions: 2,
+        sku_id: 'sku-1', product_type: '疗程卡', product_name: '面部护理',
+        sale_amount: '3980.00', received: '796.00', unpaid_amount: null,
+      },
+    ])
+
+    await customerRoutes.paidOrders(ctx)
+
+    expect(ctx.result[0].items[0]).toEqual(
+      expect.objectContaining({ saleItemId: 'item-gap', unpaidAmount: null }),
+    )
+  })
+
+  // ⚠ 退款不减 remaining_sessions（Model X）：paid_sessions 是「已退卡从卡包消失」的唯一机制。
+  // 放宽展示门槛时若不保留这条守卫，已退款的卡会重新出现并被标成待付清（实测 87 行 / ¥118605）。
+  test('SQL 保留已审批退款守卫，已退卡不因放宽展示而复现', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1' })
+    pg.query.mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+    pg.query.mockResolvedValueOnce([
+      { sale_order_id: 'SO-1', status: '部分支付', paid_at: '2026-09-13T10:00:00Z' },
+    ])
+    pg.query.mockResolvedValueOnce([])
+
+    await customerRoutes.paidOrders(ctx)
+
+    const itemSql = pg.query.mock.calls[2][0]
+    expect(itemSql).toContain("AND sop.change_type = '退款' AND sop.status = '已支付'")
+    expect(itemSql).toContain('OR si.paid_sessions > (si.session_count - si.remaining_sessions)')
+    // 欠款也不得落在已退款的单上（received 是净实收，相减必然虚增）：
+    // 断言退款短路出现在 unpaid_amount 的 CASE 内部，而非文件别处
+    const caseExpr = itemSql.match(/CASE\s+WHEN o\.status = '部分支付'[\s\S]*?END AS unpaid_amount/)?.[0]
+    expect(caseExpr).toBeTruthy()
+    expect(caseExpr).toContain("AND sop.change_type = '退款' AND sop.status = '已支付'")
+    expect(caseExpr).toContain('AND (si.sale_amount::numeric - si.received::numeric) >= 1')
   })
 
   test('无已支付订单时返回空数组', async () => {
@@ -870,7 +1001,13 @@ describe('customer.paidOrders', () => {
     expect(itemSql).toContain("si.item_direction = '转入'")
     expect(itemSql).not.toContain("si.item_direction = '转出'")
     expect(itemSql).toContain('si.paid_sessions IS NULL')
-    expect(itemSql).toContain('si.paid_sessions > (si.session_count - si.remaining_sessions)')
+    // issue #122：改按物理剩余次数下发，可用次数 0 的卡不再整行隐藏。
+    // 核销限额仍走 paid_sessions，但由 service.create/start/finalize 独立校验，不在此查询。
+    expect(itemSql).toContain('si.remaining_sessions > 0')
+    // ⚠ 退款不减 remaining_sessions：paid_sessions 是「已退卡从卡包消失」的唯一机制，
+    // 放宽展示后这条守卫必须保留（已审批退款时回退到已付未用口径）。
+    expect(itemSql).toContain("AND sop.change_type = '退款' AND sop.status = '已支付'")
+    expect(itemSql).toContain('OR si.paid_sessions > (si.session_count - si.remaining_sessions)')
   })
 })
 
@@ -956,6 +1093,113 @@ describe('customer.homeProducts', () => {
         status: '待提货',
       }),
     ])
+  })
+
+  // issue #120：买 1 件未付清 → FLOOR(received*1/sale_amount)=0 → pending=0，
+  // 旧 WHERE 把整行剔除，顾客档案显示"暂无家居产品"。
+  test('未付清整件的行仍返回，状态为待付清并带欠款金额', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-unpaid-home' })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([{
+        sale_item_id: 'SI-UNPAID', sale_order_id: 'SO-UNPAID', product_name: '舒缓精华液',
+        unit: '盒', purchased_quantity: 1, paid_quantity: 0, picked_quantity: 0,
+        refunded_quantity: 0, remaining_quantity: 1, pending_pickup_quantity: 0,
+        unpaid_amount: '380.00',
+        store_id: 'store-001', store_name: '本店', purchased_at: '2026-09-13T10:00:00Z',
+        refund_pending: false,
+      }])
+
+    await customerRoutes.homeProducts(ctx)
+
+    expect(ctx.result).toEqual([
+      expect.objectContaining({
+        saleItemId: 'SI-UNPAID',
+        purchasedQuantity: 1,
+        paidQuantity: 0,
+        pendingPickupQuantity: 0,
+        unpaidAmount: 380,
+        status: '待付清',
+      }),
+    ])
+  })
+
+  test('退款过的行不下发欠款金额，避免净实收口径虚增', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-refunded-home' })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([{
+        sale_item_id: 'SI-REFUNDED', sale_order_id: 'SO-REFUNDED', product_name: '面膜',
+        unit: '盒', purchased_quantity: 2, paid_quantity: 2, picked_quantity: 1,
+        refunded_quantity: 1, remaining_quantity: 0, pending_pickup_quantity: 0,
+        unpaid_amount: '120.00',
+        store_id: 'store-001', purchased_at: '2026-08-20T10:00:00Z',
+        refund_pending: false,
+      }])
+
+    await customerRoutes.homeProducts(ctx)
+
+    expect(ctx.result[0]).toEqual(
+      expect.objectContaining({ unpaidAmount: null, status: '已完成' }),
+    )
+  })
+
+  // 寄存单的 sale_amount 只是原价快照、received 是历史值，相减不是欠款（SQL 置 NULL）。
+  // 放行后若按金额差报欠款，会向顾客伪造一笔不存在的债务（dev 实测 86 行 / ¥44834.30）。
+  test('寄存单行不报欠款，状态为待提货而非待付清', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-deposit-home' })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([{
+        sale_item_id: 'SI-DEPOSIT', sale_order_id: 'SO-DEPOSIT', product_name: '生物胶原修复面膜',
+        unit: '盒', purchased_quantity: 27, paid_quantity: 0, picked_quantity: 0,
+        refunded_quantity: 0, remaining_quantity: 27, pending_pickup_quantity: 0,
+        unpaid_amount: null,
+        store_id: 'store-001', purchased_at: '2026-08-03T10:00:00Z', refund_pending: false,
+      }])
+
+    await customerRoutes.homeProducts(ctx)
+
+    expect(ctx.result[0]).toEqual(
+      expect.objectContaining({ unpaidAmount: null, status: '待提货', purchasedQuantity: 27 }),
+    )
+  })
+
+  test('退款后仍有剩余份额的行标待提货，不标已完成', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-partial-refund-home' })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([{
+        sale_item_id: 'SI-PART-REFUND', sale_order_id: 'SO-PART-REFUND', product_name: '面膜',
+        unit: '盒', purchased_quantity: 3, paid_quantity: 0, picked_quantity: 0,
+        refunded_quantity: 1, remaining_quantity: 2, pending_pickup_quantity: 0,
+        unpaid_amount: '200.00',
+        store_id: 'store-001', purchased_at: '2026-08-20T10:00:00Z', refund_pending: false,
+      }])
+
+    await customerRoutes.homeProducts(ctx)
+
+    // refunded>0 → 欠款口径不可靠，金额留空；但 2 件未交付，不能叫「已完成」
+    expect(ctx.result[0]).toEqual(
+      expect.objectContaining({ unpaidAmount: null, status: '待提货', remainingQuantity: 2 }),
+    )
+  })
+
+  test('放行口径按剩余份额，不再用待提数量整行过滤', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-home' })
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([])
+
+    await customerRoutes.homeProducts(ctx)
+
+    const sql = pg.query.mock.calls[1][0]
+    expect(sql).toContain('WHERE picked_quantity > 0 OR remaining_quantity > 0')
+    expect(sql).not.toContain('WHERE picked_quantity > 0 OR pending_pickup_quantity > 0')
+    expect(sql).toContain('AS unpaid_amount')
+    // 寄存单必须在 SQL 层就把金额列置空，不能只靠前端不显示
+    expect(sql).toContain("(o.sale_order_type = '寄存单') AS is_deposit")
+    expect(sql).toContain('CASE WHEN is_deposit THEN NULL')
   })
 
   test('缺少顾客标识时拒绝', async () => {

@@ -23,8 +23,8 @@ const SOURCE_CONTAINER_PRIVATE_UPLOAD_ROOTS = [
   CONTAINER_PRIVATE_UPLOAD_ROOT,
   '/var/lib/fengyu-admin/private-uploads',
 ]
-const DEFAULT_TEST_SSH_HOST = 'sqlserver101'
-const DEFAULT_PROD_SSH_HOST = 'fengyu-prod'
+const DEFAULT_TEST_SSH_HOST = 'lx-test'   // ~/.ssh/config 别名（原 sqlserver101，2026-09-04 改名）
+const DEFAULT_PROD_SSH_HOST = 'lx-prod'   // ~/.ssh/config 别名（原 fengyu-prod，2026-09-04 改名）
 const DEFAULT_PRIVATE_UPLOAD_HOST_DIR = '/www/wwwroot/fengyu-admin/docker/data/private-uploads'
 const DEFAULT_LEGACY_TEST_PRIVATE_UPLOAD_HOST_DIR = '/www/wwwroot/fengyu-admin/docker/private-uploads'
 const MAX_SSH_BUFFER = 8 * 1024 * 1024
@@ -42,10 +42,16 @@ function envValue(file, key) {
   return line.slice(key.length + 1).trim().replace(/^"|"$/g, '')
 }
 
+// 复用权威实现：只比 authority 会被 `?host=` / `?%68ost=` 这类 query 覆盖绕过（见 _lib/assert-db-target.js）
+const { isAllowedDbTarget } = require('./_lib/assert-db-target')
+
 function assertTarget(url, host) {
+  if (!isAllowedDbTarget(url)) {
+    throw new Error(`数据库目标校验失败：连接串不在白名单内，或 query 试图覆盖连接目标`)
+  }
   const parsed = new URL(url)
-  if (parsed.hostname !== host || parsed.port !== '5433' || parsed.pathname !== '/fengyu_wxapp') {
-    throw new Error(`数据库目标校验失败：应为 ${host}:5433/fengyu_wxapp`)
+  if (parsed.hostname !== host) {
+    throw new Error(`数据库目标校验失败：应为 ${host}:5433/fengyu_wxapp，实际 ${parsed.hostname}`)
   }
 }
 
@@ -211,7 +217,8 @@ function cleanupCopiedAttachments(prodSshHost, copiedTargetPaths) {
 async function main() {
   const apply = process.argv.includes('--apply')
   const root = path.resolve(__dirname, '..', '..')
-  const testUrl = process.env.TEST_DATABASE_URL || envValue(path.join(root, 'envs/test.env'), 'PG_CONNECTION_STRING')
+  // 来源是 dev 环境的库（原 envs/test.env 随独立 test 环境于 2026-09-01 退役；两者本就同一个库）。
+  const testUrl = process.env.TEST_DATABASE_URL || envValue(path.join(root, 'envs/dev.env'), 'PG_CONNECTION_STRING')
   const prodUrl = process.env.PROD_DATABASE_URL || envValue(path.join(root, 'envs/prod.env'), 'ADMIN_DATABASE_URL')
   assertTarget(testUrl, '101.34.242.103')
   assertTarget(prodUrl, '118.178.196.26')

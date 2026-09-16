@@ -66,12 +66,15 @@
 连接数据库：
 
 ```bash
-# dev 环境
-psql "postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp"
+# dev 环境（lx-test）
+psql "postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp"
 
-# prod 环境
+# prod 环境（lx-prod）
 psql "postgresql://fengyu:fengyu123@118.178.196.26:5433/fengyu_wxapp"
 ```
+
+⚠ 旧的 `47.113.202.7` 已于 2026-09-01 全面弃用（见 issue #151）。它**仍可连通**但数据停在
+2026-08-24，连上不报错、只是安静地给旧数据——照抄旧地址会拿着陈旧数据下结论。
 
 查询示例：
 

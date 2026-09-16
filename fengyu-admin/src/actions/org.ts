@@ -2,6 +2,7 @@
 
 import { db } from '@/db'
 import { pgErrorCode } from '@/lib/pg-error'
+import { businessErrorMessage } from '@/lib/action-error'
 import { orgNodes, stores } from '@db/org'
 import { staffWechatUsers } from '@db/user'
 import { permissionRoles } from '@db/permission'
@@ -219,7 +220,8 @@ export const updateOrgNode = withPermission(
       : await db.update(orgNodes).set(data).where(whereConditions)
   } catch (err: any) {
     if (err instanceof Error && err.message.includes('不能将节点移动到自己的子节点下')) {
-      return { success: false, message: err.message }
+      // 原样回传会把 `INVALID_STATE: ` 前缀一起端给用户；走白名单闸门剥掉前缀（issue #133）。
+      return { success: false, message: businessErrorMessage(err, '不能将节点移动到自己的子节点下') }
     }
     throw err
   }

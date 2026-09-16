@@ -47,7 +47,9 @@ const lines = [
   '',
   '# === PG ===',
   `PG_CONNECTION_STRING=${clientFn.PG_CONNECTION_STRING}`,
-  `ADMIN_DATABASE_URL=${clientFn.PG_CONNECTION_STRING}`,
+  // dev 的 admin/analyst 跑在 lx-test 容器里，必须经 Docker 网桥回连宿主 PG；
+  // 直接沿用公网串会被 remote-deploy 的 containerDbHost 断言拒绝（见 db/CLAUDE.md）。
+  `ADMIN_DATABASE_URL=${clientFn.PG_CONNECTION_STRING.replace(/@[^:]+:/, '@172.18.0.1:')}`,
   '',
   '# === CloudBase envId ===',
   `CLIENT_ENV_ID=${client.envId}`,

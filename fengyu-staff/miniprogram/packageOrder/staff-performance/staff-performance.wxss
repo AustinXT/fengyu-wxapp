@@ -77,6 +77,85 @@
   font-weight: 600;
 }
 
+/* 自定义区间行（仅 rangeType === 'custom' 时渲染） */
+.perf-custom-range {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+  margin-top: 16rpx;
+  padding: 12rpx 16rpx;
+  border-radius: 12rpx;
+  background: #F5F5F5;
+}
+
+/* picker 是块级包裹，不给 flex:1 两边宽度会塌成内容宽 */
+.perf-date-picker {
+  flex: 1;
+}
+
+.perf-date-cell {
+  font-size: 24rpx;
+  color: var(--color-text-primary);
+  text-align: center;
+}
+
+.perf-date-sep {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  flex-shrink: 0;
+}
+
+/* 顾客检索 —— sticky 是 ui.spec §3「搜索框容器长列表滚动时持续可见」的硬要求：
+   这个搜索框的用途就是边翻明细边核对，滚下去就没了等于白做。
+   白底 + 细分割线 + 轻投影抄 business-list-filter，与订单管理观感一致 */
+.perf-search-bar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: #FFFFFF;
+  border-bottom: 1rpx solid var(--color-border);
+  box-shadow: 0 4rpx 12rpx rgba(45, 32, 23, 0.04);
+}
+
+/* 搜索命中提示：说明「已加载 N/共 M」与顶部汇总仍为全量 */
+.perf-search-hint {
+  font-size: 20rpx;
+  line-height: 1.5;
+  color: var(--color-text-hint);
+  padding: 0 8rpx 12rpx;
+}
+
+.perf-search-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-bottom: 24rpx;
+}
+
+/* 命中窗口导航（上一批 / 第 A-B 条 / 下一批）。
+   放在列表之前，翻批次滚回顶部后正好落在视野里 */
+.perf-match-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12rpx;
+  padding: 4rpx 8rpx 16rpx;
+}
+
+.perf-match-label {
+  flex: 1;
+  text-align: center;
+  font-size: 20rpx;
+  color: var(--color-text-hint);
+}
+
+/* 搜索态常驻的翻页入口 */
+.perf-search-more {
+  display: flex;
+  justify-content: center;
+  padding: 8rpx 0 16rpx;
+}
+
 /* 汇总卡片 */
 .perf-summary-card {
   margin: 24rpx 24rpx 0;
@@ -113,9 +192,87 @@
   background: var(--color-border);
 }
 
+/* 二级分类面板（chip 筛选 + 分类金额格子） */
+.perf-category-panel {
+  background: #FFFFFF;
+  padding: 16rpx 24rpx 20rpx;
+  border-bottom: 1rpx solid var(--color-border);
+}
+
+/* 固定 5 项（全部 + 4 分类）一行放得下；出现「未分类」等额外分类时自动换行 */
+.perf-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  margin-bottom: 4rpx;
+}
+
+.perf-chip {
+  font-size: 22rpx;
+  line-height: 1;
+  padding: 12rpx 20rpx;
+  margin: 0 12rpx 12rpx 0;
+  border-radius: 24rpx;
+  background: #F5F5F5;
+  color: var(--color-text-secondary);
+}
+
+.perf-chip--active {
+  background: var(--color-primary);
+  color: #FFFFFF;
+  font-weight: 600;
+}
+
+.perf-cells-caption {
+  display: block;
+  font-size: 20rpx;
+  color: var(--color-text-hint);
+  margin: 4rpx 0 8rpx;
+}
+
+.perf-cell-grid {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+/* 4 列等宽；出现「未分类」等额外分类时自动换行 */
+.perf-cell {
+  width: 25%;
+  box-sizing: border-box;
+  padding: 12rpx 4rpx;
+  text-align: center;
+  border-radius: 12rpx;
+}
+
+.perf-cell--active {
+  background: var(--color-primary-light);
+}
+
+.perf-cell-name {
+  display: block;
+  font-size: 20rpx;
+  color: var(--color-text-hint);
+  margin-bottom: 6rpx;
+}
+
+.perf-cell-amount {
+  display: block;
+  font-size: 26rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.perf-cell--active .perf-cell-amount {
+  color: var(--color-primary);
+}
+
 /* 明细列表 */
 .perf-list {
   padding: 16rpx 24rpx;
+}
+
+/* 筛选切换在途：淡化旧数据，避免与已更新的选中态看着像同一批 */
+.perf-list--switching {
+  opacity: 0.45;
 }
 
 .perf-item {
@@ -160,6 +317,12 @@
 .type-tag--service {
   background: #E3F0FF;
   color: #5E8BB3;
+}
+
+/* 退款冲销行（提成/业绩为负）——品牌红，与 ui.spec §4.19 退款色一致 */
+.type-tag--refund {
+  background: #FFF0EE;
+  color: var(--color-primary);
 }
 
 .perf-item-row {

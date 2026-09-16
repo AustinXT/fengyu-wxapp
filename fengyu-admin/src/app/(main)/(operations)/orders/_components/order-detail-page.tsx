@@ -688,7 +688,9 @@ export default function OrderDetailPageClient({
                           <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-[#999999]">
                             {item.salesCategory && <span>{item.salesCategory}</span>}
                             {item.expireDate && <span>有效期至 {formatDate(item.expireDate)}</span>}
-                            {(item.pickedUpQuantity ?? 0) > 0 && <span>已提 {item.pickedUpQuantity}</span>}
+                            {/* picked_up_quantity 是「已结算」= 已提货 + 已退款 + 已转换（#125），
+                                不等于物理提货量（权威来源是 pickup_records） */}
+                            {(item.pickedUpQuantity ?? 0) > 0 && <span>已结算 {item.pickedUpQuantity}</span>}
                           </div>
                         )}
                       </td>
@@ -765,9 +767,10 @@ export default function OrderDetailPageClient({
                   const amt = Number(p.amount);
                   const isRefund = p.changeType === "退款" || amt < 0;
                   const isFirstPayment = p.changeType === "首次支付";
-                  const attributionDate = isFirstPayment
-                    ? order.performanceAttributionDate
-                    : p.performanceAttributionDate || (p.paidAt ? formatDate(p.paidAt) : null);
+                  // 直读款项级列：迁移 0040 起它由 trigger 赋值 + CHECK 兜底恒有值，
+                  // 首次支付那一行本身就是订单级的镜像。不按 changeType 分支、也不回退 paid_at
+                  // —— 回退会把"列为空"这种数据异常伪装成有归属日期，与导出侧的留空策略相反。
+                  const attributionDate = p.performanceAttributionDate;
                   const canEditPaymentAttribution = canEditPaymentPerformanceAttribution(
                     canAdjustPerformanceAttribution,
                     p,

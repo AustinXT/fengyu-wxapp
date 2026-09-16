@@ -11,8 +11,8 @@ export const ROOT = path.resolve(HERE, '../../..')
 
 export const TARGETS = Object.freeze({
   dev: Object.freeze({
-    // 2026-09-10 对齐 origin/dev：dev 的 PG 迁入 lx-test（101.34.242.103），ali-demo(47.113.202.7) 弃用。
-    // ⚠ 与下方 test 同机同库同目录 —— 本分支两个 target 只是 CloudBase 环境不同（dev 用 cloud1-*）。
+    // dev 的 PG 于 2026-09-01 迁入 lx-test（101.34.242.103），ali-demo(47.113.202.7) 同日弃用；
+    // 本分支于 2026-09-10 对齐 origin/dev 的该项配置。
     sshHost: 'lx-test', // ~/.ssh/config 别名（原 sqlserver101，2026-09-04 改名）
     publicHost: '101.34.242.103',
     remoteDir: '/www/wwwroot/fengyu-admin/docker',
@@ -23,17 +23,6 @@ export const TARGETS = Object.freeze({
     cloudBaseEnvId: 'cloud1-3gpht4b01ff88838',
     staffEnvId: 'cloud1-9g3ydpg512eecc99',
     cdnBase: 'https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la',
-  }),
-  test: Object.freeze({
-    sshHost: 'lx-test', // ~/.ssh/config 别名（原 sqlserver101，2026-09-04 改名）
-    publicHost: '101.34.242.103',
-    remoteDir: '/www/wwwroot/fengyu-admin/docker',
-    migrationHost: '101.34.242.103',
-    containerDbHost: '172.18.0.1',
-    // test 与 prod 共用同一套 CloudBase 环境（test 仅 PG 落在独立机器）
-    cloudBaseEnvId: 'fengyu-client-prod-d1cga6909c0ba',
-    staffEnvId: 'fengyu-staff-prod-d4dtv6052992e9',
-    cdnBase: 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la',
   }),
   prod: Object.freeze({
     sshHost: 'lx-prod', // ~/.ssh/config 别名（原 fengyu-prod，2026-09-04 改名）
@@ -269,11 +258,11 @@ function readOptionalEnv(file) {
 }
 
 /**
- * 将 v2.0 之前的两份真实 env 原地迁移到严格门禁要求：
+ * 将 v2.0 之前的三个真实 env 原地迁移到严格门禁要求：
  * - 保留各环境已有真值；
- * - staff 独立账号沿用旧 fengyu-staff/.env；
+ * - staff 独立账号沿用旧 fengyu-staff/.env（test 优先沿用 prod）；
  * - 仅补齐明确列出的非秘密模板默认值；
- * - 三份文件全部校验通过后再以 0600 写回。
+ * - 两份文件全部校验通过后再以 0600 写回。
  */
 export function reconcileLegacyConfigFiles(options = {}) {
   const root = options.root || ROOT
@@ -303,8 +292,13 @@ export function reconcileLegacyConfigFiles(options = {}) {
     }
     // dev 当前以 IP 访问；注入生产父域会令浏览器拒收登录 Cookie。
     if (env !== 'prod') config.COOKIE_DOMAIN = ''
-    config.STAFF_TENCENTCLOUD_SECRETID ||= legacyStaff.TENCENTCLOUD_SECRETID
-    config.STAFF_TENCENTCLOUD_SECRETKEY ||= legacyStaff.TENCENTCLOUD_SECRETKEY
+    const staffFallback = {}
+    config.STAFF_TENCENTCLOUD_SECRETID ||= (
+      staffFallback.STAFF_TENCENTCLOUD_SECRETID || legacyStaff.TENCENTCLOUD_SECRETID
+    )
+    config.STAFF_TENCENTCLOUD_SECRETKEY ||= (
+      staffFallback.STAFF_TENCENTCLOUD_SECRETKEY || legacyStaff.TENCENTCLOUD_SECRETKEY
+    )
     validateConfig(env, config)
     return [env, config]
   }))
@@ -334,6 +328,9 @@ function assertUrl(name, value) {
   return url
 }
 
+// 可覆盖连接目标的 libpq 连接参数——出现在 query 里即视为试图绕过 host/port/dbname 断言。
+const OVERRIDING_CONN_PARAMS = ['host', 'hostaddr', 'port', 'dbname', 'database', 'options', 'service', 'passfile']
+
 function assertDatabaseUrl(name, value, expectedHost) {
   let url
   try {
@@ -344,6 +341,13 @@ function assertDatabaseUrl(name, value, expectedHost) {
   if (!['postgres:', 'postgresql:'].includes(url.protocol)) fail(`${name} must use PostgreSQL`)
   if (url.hostname !== expectedHost || url.port !== '5433' || url.pathname !== '/fengyu_wxapp') {
     fail(`${name} must target ${expectedHost}:5433/fengyu_wxapp`)
+  }
+  // libpq/pg 的 query 参数会覆盖 URL authority 里的 host/port/dbname
+  //（pg-connection-string：Only set the host if there is no equivalent query param），
+  // 只比 authority 会被 `?host=<旧库>` 整个绕过。
+  const overriding = OVERRIDING_CONN_PARAMS.filter((key) => url.searchParams.has(key))
+  if (overriding.length) {
+    fail(`${name} must not override connection target via query params: ${overriding.join(', ')}`)
   }
 }
 
@@ -398,15 +402,6 @@ export function validateConfig(env, config) {
   assertOptionalProvider(config, 'OPENAI')
 
   if (env === 'prod' && !config.COOKIE_DOMAIN) fail('prod COOKIE_DOMAIN must be explicit')
-  if (env === 'test') {
-    if (!['release', 'prod', 'production'].includes(config.LAKALA_ENV)) {
-      fail('test LAKALA_ENV must use the approved production onboarding channel')
-    }
-    if (config.LAKALA_ONBOARDING_API_BASE !== 'https://s2.lakala.com') {
-      fail('test LAKALA_ONBOARDING_API_BASE must be https://s2.lakala.com')
-    }
-    if (config.LAKALA_APPID === 'OP00000003') fail('test LAKALA_APPID must not use the SIT credential')
-  }
 
   return target
 }
@@ -625,8 +620,8 @@ async function main() {
     }
     return
   }
-  if (!['dev', 'test', 'prod'].includes(env)) {
-    console.error('Usage: runtime-config.mjs reconcile | <validate|render|migrations> <dev|test|prod> [output-dir]')
+  if (!['dev', 'prod'].includes(env)) {
+    console.error('Usage: runtime-config.mjs reconcile | <validate|render|migrations> <dev|prod> [output-dir]')
     process.exit(1)
   }
   try {

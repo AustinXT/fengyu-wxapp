@@ -47,7 +47,8 @@ const { INVENTORY_LINKAGE_ENABLED } = require('../utils/feature-flags')
 const { assertEmployeesAssignableToStore } = require('../utils/employee-assignment')
 const { classifySaleOrderDocumentType } = require('../utils/document-type')
 const { maskPhoneForAuth } = require('../utils/phone-visibility')
-const { isValidDate, normalizeListFilters, addTimestampDateRange } = require('../utils/list-filters')
+const { isValidDate, normalizeListFilters, addDateRange } = require('../utils/list-filters')
+const { assertPaymentAttributionReady } = require('../utils/attribution-guard')
 
 // 模块级缓存：saleOrderId → qrcodeUrl，避免轮询时重复生成
 const qrcodeCache = new Map()
@@ -2311,9 +2312,30 @@ async function confirmOffline(ctx) {
 /**
  * 待支付/支付失败转换单被关闭时，撤销创建时的即时资产变更：
  * - 恢复被转出的原卡 remaining_sessions；
+ * - 恢复被转出的家居产品 picked_up_quantity（2026-09-14 #125）；
  * - 作废本转换单的转入/转出权益计数，避免详情和后续查询继续表现为已转。
+ *
+ * admin actions/orders.ts 有同义 SQL 副本；修改时保持语义一致。
  */
 async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
+  // 0. 先用一条语句按全局 sale_item_id 顺序锁住本单引用的**全部**源行。
+  //    createConversion 折抵时是单语句 `ORDER BY si.sale_item_id ... FOR UPDATE OF si`（不分类型），
+  //    若这里分「疗程卡段→家居段」两次加锁，混选转换单在家居行 id < 疗程卡行 id 时会形成反向锁序而死锁。
+  await client.query(
+    `SELECT src.sale_item_id
+       FROM sale_items src
+       JOIN (
+         SELECT DISTINCT ref_sale_item_id
+           FROM sale_items
+          WHERE sale_order_id = $1
+            AND item_direction = '转出'
+            AND ref_sale_item_id IS NOT NULL
+       ) refs ON refs.ref_sale_item_id = src.sale_item_id
+      ORDER BY src.sale_item_id
+      FOR UPDATE OF src`,
+    [saleOrderId],
+  )
+
   await client.query(
     `WITH restore AS (
         SELECT ref_sale_item_id, SUM(quantity)::integer AS restore_sessions
@@ -2331,12 +2353,46 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
                restore.restore_sessions
           FROM sale_items src
           JOIN restore ON restore.ref_sale_item_id = src.sale_item_id
+         -- 按 sale_item_id 升序加锁，与 createConversion 折抵时的加锁顺序保持一致；
+         -- 两段回滚是独立语句，不定序会与开单事务反向加锁而死锁。
+         ORDER BY src.sale_item_id
          FOR UPDATE OF src
       )
       UPDATE sale_items src
          SET remaining_sessions = LEAST(
                COALESCE(src.session_count, src.remaining_sessions, 0),
                COALESCE(src.remaining_sessions, 0) + locked_source.restore_sessions
+             ),
+             updated_at = $2
+        FROM locked_source
+       WHERE src.sale_item_id = locked_source.sale_item_id`,
+    [saleOrderId, now],
+  )
+
+  // 家居产品转出把数量并进了 picked_up_quantity，撤销时必须等量退回；
+  // 否则订单一关这批货既提不出（pending 恒 0）也退不掉（refundable 恒 0）。
+  await client.query(
+    `WITH restore AS (
+        SELECT ref_sale_item_id, SUM(quantity)::integer AS restore_quantity
+          FROM sale_items
+         WHERE sale_order_id = $1
+           AND item_direction = '转出'
+           AND product_type = '家居产品'
+           AND ref_sale_item_id IS NOT NULL
+         GROUP BY ref_sale_item_id
+      ),
+      locked_source AS (
+        SELECT src.sale_item_id,
+               restore.restore_quantity
+          FROM sale_items src
+          JOIN restore ON restore.ref_sale_item_id = src.sale_item_id
+         ORDER BY src.sale_item_id
+         FOR UPDATE OF src
+      )
+      UPDATE sale_items src
+         SET picked_up_quantity = GREATEST(
+               0,
+               COALESCE(src.picked_up_quantity, 0) - locked_source.restore_quantity
              ),
              updated_at = $2
         FROM locked_source
@@ -2557,7 +2613,27 @@ async function list(ctx) {
     conditions.push(`(${searchParts.join(' OR ')})`)
   }
 
-  addTimestampDateRange(conditions, params, 'o.sale_order_datetime', startDate, endDate)
+  // 日期筛选口径固定为「款项业绩归属日期」（#139），与 admin 订单管理默认口径 attribution 同构，
+  // staff 侧不提供口径切换下拉（管理层视图口径单一）。
+  // 订单粒度：订单只要存在任一笔归属日期落在区间内的**已入账**款项即入选（EXISTS 半连接）。
+  // ⚠ 下面的 status='已支付' 是语义闸门，不是索引优化，删掉会改变结果集：
+  // 迁移 0039 起未入账行的 performance_attribution_date 由 created_at 占位（不再是 NULL），
+  // 首次支付行的列值又是订单级的镜像（与本行是否入账无关），两者都会让未入账款项把订单带进结果。
+  // 归属日期是 date 而非 timestamptz，走 addDateRange 的闭区间（与 allocation.js 共用同一实现）。
+  // 附带后果（与 admin 一致，非缺陷）：0 笔已入账款项的订单——WorkFine 历史单、纯待支付单、
+  // 未收款即关闭的单——在本口径下不入选。部分支付单有已支付的首次支付行，仍可入选。
+  if (startDate || endDate) {
+    await assertPaymentAttributionReady(pg)
+    const attributionParts = []
+    addDateRange(attributionParts, params, 'pf.performance_attribution_date', startDate, endDate)
+    conditions.push(`EXISTS (
+        SELECT 1
+          FROM sale_order_payments pf
+         WHERE pf.sale_order_id = o.sale_order_id
+           AND pf.status = '已支付'
+           AND ${attributionParts.join('\n           AND ')}
+      )`)
+  }
 
   // 美容师只能看到指定自己的订单
   if (!ctx.auth.roles.includes('manager')) {
@@ -2683,49 +2759,56 @@ async function updatePerformanceAttribution(ctx) {
       throw new Error('CONFLICT: 订单已被其他人修改，请刷新后重试')
     }
 
-    const syncedCardRes = await client.query(
-      `UPDATE sale_order_payments card
-       SET performance_attribution_date = $1::date,
-           performance_attribution_adjusted_at = $2::timestamptz,
-           performance_attribution_adjusted_by = $3
-       WHERE card.sale_order_id = $4
-         AND card.change_type = '储值卡抵扣'
-         AND card.status = '已支付'
-         AND EXISTS (
-           SELECT 1
-           FROM sale_order_payments first_payment
-           WHERE first_payment.sale_order_id = card.sale_order_id
-             AND first_payment.change_type = '首次支付'
-             AND first_payment.status = card.status
-             AND first_payment.paid_at IS NOT DISTINCT FROM card.paid_at
-         )
-       RETURNING card.id`,
-      [
-        updated.performance_attribution_date,
-        updated.performance_attribution_adjusted_at,
-        updated.performance_attribution_adjusted_by,
-        saleOrderId,
-      ],
-    )
-    // 首次支付流水的归属日期恒等于订单级（迁移 0039 起该列不再留 NULL）。
-    // 必须排在卡流水同步**之后**：首次支付行的 BEFORE UPDATE trigger 会反向同步同次卡流水，
-    // 若与卡流水在同一条语句里更新，PG 会报「tuple already modified by an operation
-    // triggered by the current command」。
-    // 调整机会标记（adjusted_at/by）仍只记在 sale_orders 上：首次支付行不可被单独修改。
+    // 款项行的同步由 DB trigger `sync_order_performance_attribution_to_payments()`
+    // （sale_orders 的 AFTER UPDATE，迁移 0040）完成，应用层不再各写一份 UPDATE：
+    // 查询侧已改为直读 sale_order_payments.performance_attribution_date，
+    // 任何漏同步的写入路径都会直接出错数，同步动作必须由 DB 保证而不是靠每个入口记得写。
+    // 这里只回读受影响的行用于审计日志。
     // 与 admin orders.ts updatePerformanceAttributionDate 同语义独立副本，改一端必同步另一端。
-    const syncedFirstRes = await client.query(
-      `UPDATE sale_order_payments first_payment
-       SET performance_attribution_date = $1::date
-       WHERE first_payment.sale_order_id = $2
-         AND first_payment.change_type = '首次支付'
-         AND first_payment.performance_attribution_date IS DISTINCT FROM $1::date
-       RETURNING first_payment.id`,
-      [updated.performance_attribution_date, saleOrderId],
+    // 回读条件与 trigger 的两条 UPDATE **同一个集合**（首次支付行 + 同次已支付卡行），
+    // 不是"日期等于目标值的行" —— 后者会把碰巧同日、但不归本次同步管的卡行也记进日志。
+    const syncedRes = await client.query(
+      `SELECT id
+         FROM sale_order_payments p
+        WHERE p.sale_order_id = $1
+          AND (
+            p.change_type = '首次支付'
+            OR (
+              p.change_type = '储值卡抵扣'
+              AND p.status = '已支付'
+              AND EXISTS (
+                SELECT 1
+                FROM sale_order_payments first_payment
+                WHERE first_payment.sale_order_id = p.sale_order_id
+                  AND first_payment.change_type = '首次支付'
+                  AND first_payment.status = p.status
+                  AND first_payment.paid_at IS NOT DISTINCT FROM p.paid_at
+              )
+            )
+          )
+        ORDER BY p.id`,
+      [saleOrderId],
     )
     // node-pg 对 int8(OID 20) 不做转换、原样返回 string。admin orders.ts 的同语义副本已显式
     // Number()，这里不归一会让 operation_logs 里 staff 写 ["12","34"]、admin 写 [12,34]，
     // 后续按 id 对账/去重的脚本两端行为不一致。
-    const syncedPaymentIds = [...syncedCardRes.rows, ...syncedFirstRes.rows].map((row) => Number(row.id))
+    const syncedPaymentIds = syncedRes.rows.map((row) => Number(row.id))
+
+    // 部署顺序闸门：本函数依赖迁移 0040 的 trigger 完成同步。若云函数先于迁移上线，
+    // 上面的 UPDATE 只改了 sale_orders、款项行纹丝不动，而查询侧已直读款项列
+    // —— 那是静默出错数。这里花一次廉价回读把它变成响亮失败并回滚整个事务。
+    // 与 admin orders.ts updatePerformanceAttributionDate 同语义独立副本。
+    const staleRes = await client.query(
+      `SELECT COUNT(*)::int AS stale
+         FROM sale_order_payments
+        WHERE sale_order_id = $1
+          AND change_type = '首次支付'
+          AND performance_attribution_date IS DISTINCT FROM $2::date`,
+      [saleOrderId, updated.performance_attribution_date],
+    )
+    if (Number(staleRes.rows[0]?.stale || 0) > 0) {
+      throw new Error('INVALID_STATE: 业绩归属日期未能同步到款项流水，请确认数据库迁移 0040 已执行后重试')
+    }
 
     await logUpdate(
       client,
@@ -3469,6 +3552,44 @@ async function approveRefund(ctx) {
     if (cascadeItems.length === 0 && sopRow.ref_sale_item_id) {
       cascadeItems = [{ saleItemId: sopRow.ref_sale_item_id, sessionCount: sopRow.session_count, refundAmount: refundAbs, isFullItemRefund: true }]
     }
+    // G2 复校（2026-09-14 #125）：家居行可退数量必须在锁内复算。
+    // createRefund 是事务外、无行锁读 picked_up_quantity 定额的；其间若有转换单把这批货折抵走
+    // （picked_up_quantity 被抬高），cascade 通道 5 的 LEAST(quantity, picked_up + qty) 会把冲突
+    // 静默封顶吞掉 —— 同一批货既进了转换单又退了现金，且家居账面 refunded_quantity 归 0 查无实据。
+    // 这里按 sale_item_id 定序锁行复核，不足即拒绝审批（店员刷新后重新发起即可）。
+    const homeRefundQty = new Map()
+    for (const it of cascadeItems) {
+      if (!it.saleItemId || it.isOverpay) continue
+      const qty = Number(it.sessionCount || 0)
+      if (qty > 0) homeRefundQty.set(it.saleItemId, (homeRefundQty.get(it.saleItemId) || 0) + qty)
+    }
+    {
+      // 无条件锁：老退款单（无 note.items 且 ref_sale_item_id 为空）会让 homeRefundQty 为空，
+      // 若因此跳过加锁就退回「createRefund 无锁定额 + cascade LEAST 静默封顶」的旧缺口。
+      // 行锁本身即可把并发折抵挡在审批之外，成本也只是一条即将被更新的行的锁。
+      // 锁集必须覆盖本单**全部购买行**而非只锁家居子集：后续 cascadeRefund /
+      // recalcPaidSessionsForOrder 会更新同单的疗程卡行，只锁家居会与「先锁疗程卡、再等家居」
+      // 的混选转换事务形成反向锁序而死锁。按 sale_item_id 升序，与 createConversion 的锁序一致。
+      const lockedRows = await client.query(
+        `SELECT sale_item_id, product_type, quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity
+           FROM sale_items
+          WHERE sale_order_id = $1
+            AND item_direction = '购买'
+          ORDER BY sale_item_id
+            FOR UPDATE`,
+        [refSaleOrderId],
+      )
+      for (const r of lockedRows.rows) {
+        if (r.product_type !== '家居产品') continue
+        const requested = homeRefundQty.get(r.sale_item_id) || 0
+        if (requested <= 0) continue
+        const refundable = Number(r.quantity || 0) - Number(r.picked_up_quantity || 0)
+        if (requested > refundable) {
+          throw new Error('CONFLICT: HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
+        }
+      }
+    }
+
     const cascadeResult = await cascadeRefund(client, {
       saleOrderId: refSaleOrderId,
       refundPaymentId: paymentId,
@@ -4178,16 +4299,18 @@ async function createConversion(ctx) {
     // 先完成与预扣无关的归属/状态校验，避免无效请求额外扫描 service_items。
     for (const row of held) {
       // 归属校验
+      // 家居产品行复用同一分支，文案用中性表述避免「卡」字样误导员工
       if (row.store_id !== storeId) {
-        throw new Error('INVALID_PARAMS: 部分卡不属于当前门店或已耗尽')
+        throw new Error('INVALID_PARAMS: 部分折抵项不属于当前门店或已耗尽')
       }
       if (row.client_user_id !== clientUserId) {
-        throw new Error('INVALID_PARAMS: 部分卡不属于该顾客')
+        throw new Error('INVALID_PARAMS: 部分折抵项不属于该顾客')
       }
       if (!isConvertibleEntitlementRow(row)) {
-        throw new Error('INVALID_PARAMS: 所选行不是有效疗程权益，不可折抵')
+        throw new Error('INVALID_PARAMS: 所选行不是有效权益，不可折抵')
       }
-      if (row.order_status !== '已支付' && row.order_status !== '已完成') {
+      // 订单级「部分支付」同样放行（#125 甲方拍板），与候选查询的 WHERE 保持一致
+      if (row.order_status !== '已支付' && row.order_status !== '部分支付' && row.order_status !== '已完成') {
         throw new Error('INVALID_PARAMS: 原订单状态不允许转换')
       }
       // 冻结闭环（Bug I）：源卡所属订单有待审批退款时禁止折抵转换（转换会置 remaining_sessions=0，与在途退款冲突）
@@ -4218,8 +4341,9 @@ async function createConversion(ctx) {
     for (const row of held) {
       const unit = Number(row.unit_real_price)
       const productType = row.product_type
-      // 2026-05-21 单品合并：折抵统一按 remaining_sessions（含原"体验卡单品"=1 次卡）；家居产品不可折抵
+      // 2026-05-21 单品合并：折抵统一按 remaining_sessions（含原"体验卡单品"=1 次卡）
       // 2026-08-06 预扣机制：可折抵数量 = remaining_sessions - 服务预扣（total_reserved）
+      // 2026-09-14 #125：家居产品按未提货数量整行折抵（quantity − picked_up_quantity，不看付款进度）
       let qty = 0
       if (productType === '疗程卡') {
         const rem = Number(row.remaining_sessions || 0)
@@ -4229,6 +4353,12 @@ async function createConversion(ctx) {
           throw new Error('INVALID_PARAMS: 部分卡可用次数不足（存在服务中预留）')
         }
         qty = available  // 折抵数量改为可用次数（扣除预扣）
+      } else if (productType === '家居产品') {
+        const pending = Number(row.quantity || 0) - Number(row.picked_up_quantity || 0)
+        if (pending <= 0) {
+          throw new Error('INVALID_PARAMS: 部分家居产品已无未提货数量，不可折抵')
+        }
+        qty = pending
       } else {
         throw new Error('INVALID_PARAMS: 所选行类型不支持折抵')
       }
@@ -4674,6 +4804,22 @@ async function createConversion(ctx) {
         if (upd.rowCount === 0) {
           throw new Error('INVALID_PARAMS: 卡状态变化，请重试')
         }
+      } else if (d.productType === '家居产品') {
+        // 2026-09-14 #125：家居转出数量并入 picked_up_quantity（该列语义已是"已结算"=已提货+已退款，
+        // 见 refund-cascade 通道 5），提货与退款两侧的可用量随之归零。守卫式加法与 createPickup 一致，
+        // 并发双开转换单时第二笔 rowCount=0 直接冲突，不会静默超转。
+        const upd = await tx.query(
+          `UPDATE sale_items
+             SET picked_up_quantity = COALESCE(picked_up_quantity, 0) + $4, updated_at = $1
+           WHERE sale_item_id = $2
+             AND store_id = $3
+             AND product_type = '家居产品'
+             AND (COALESCE(picked_up_quantity, 0) + $4) <= quantity`,
+          [now, d.refSaleItemId, storeId, d.quantity]
+        )
+        if (upd.rowCount === 0) {
+          throw new Error('INVALID_PARAMS: 家居产品可提数量变化，请重试')
+        }
       }
     }
 
@@ -4855,6 +5001,7 @@ async function createConversion(ctx) {
  *
  * 口径与 admin getCustomerHeldCards 保持一致（2026-05-21 单品合并后放开）：
  *   - 疗程卡（含原"体验卡单品"=1 次卡）：product_type='疗程卡' AND remaining_sessions > 0
+ *   - 家居产品（2026-09-14 #125）：未提货数量 quantity − picked_up_quantity > 0，不看付款进度
  */
 async function customerHeldCards(ctx) {
   await requireManager()(ctx, async () => {})
@@ -4885,7 +5032,7 @@ async function customerHeldCards(ctx) {
             si.remaining_sessions,
             si.paid_sessions,
             si.unit_price,
-            (si.quantity - COALESCE(si.picked_up_quantity, 0)) AS remaining_quantity,
+            GREATEST(0, si.quantity - COALESCE(si.picked_up_quantity, 0)) AS remaining_quantity,
             si.unit_real_price,
             si.sale_amount,
             si.received,
@@ -4901,6 +5048,8 @@ async function customerHeldCards(ctx) {
             CASE
               WHEN si.product_type = '疗程卡'
                 THEN si.unit_real_price * COALESCE(si.remaining_sessions, 0)
+              WHEN si.product_type = '家居产品'
+                THEN si.unit_real_price * GREATEST(0, si.quantity - COALESCE(si.picked_up_quantity, 0))
               ELSE 0
             END AS deductible_amount
      FROM sale_items si
@@ -4913,9 +5062,15 @@ async function customerHeldCards(ctx) {
          si.item_direction = '购买'
          OR (so.sale_order_type = '转换单' AND si.item_direction = '转入')
        )
-       AND so.status IN ('已支付', '已完成')
-       AND si.product_type = '疗程卡'
-       AND COALESCE(si.remaining_sessions, 0) > 0
+       -- 2026-09-14 #125 甲方拍板：订单级「部分支付」也可折抵。与卡包列表口径统一
+       -- （admin cards.ts 的 CARD_ENTITLEMENT_ORDER_STATUSES 本就含「部分支付」），
+       -- 疗程卡与家居同时放开；欠款按方案 A 留在原单继续催收，折抵不按实收比例折算。
+       AND so.status IN ('已支付', '部分支付', '已完成')
+       -- 2026-09-14 #125：家居产品未提货数量同样可作为折抵来源（整行折抵，不看付款进度）
+       AND (
+         (si.product_type = '疗程卡' AND COALESCE(si.remaining_sessions, 0) > 0)
+         OR (si.product_type = '家居产品' AND (si.quantity - COALESCE(si.picked_up_quantity, 0)) > 0)
+       )
        -- 在途退款冻结：原订单存在 '待审批' 退款时排除整单的卡
        AND NOT EXISTS (
          SELECT 1 FROM sale_order_payments sop
@@ -4923,8 +5078,10 @@ async function customerHeldCards(ctx) {
            AND sop.change_type = '退款' AND sop.status = '待审批'
        )
        -- 审批后隐藏已退完的卡：仅当订单存在已审批退款时按 paid_sessions 有效余量判定（不影响无退款的分期卡）
+       -- 家居产品不适用：已退数量由 refund-cascade 并入 picked_up_quantity，未提货数量已天然扣除
        AND (
-         NOT EXISTS (
+         si.product_type <> '疗程卡'
+         OR NOT EXISTS (
            SELECT 1 FROM sale_order_payments sop
            WHERE sop.sale_order_id = si.sale_order_id
              AND sop.change_type = '退款' AND sop.status = '已支付'
@@ -5269,6 +5426,10 @@ async function createGroupedPickup(ctx, saleItemIds, pickupQuantity, remark, ide
                  WHERE pr.sale_item_id = si.sale_item_id
               ), 0)::int AS picked_quantity,
               CASE
+                -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
+                -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
+                -- 转换单/零总额单，且 total_amount 无 CHECK 约束，负值会静默放行。
+                WHEN o.sale_order_type = '寄存单' THEN si.quantity
                 WHEN si.sale_amount <= 0 THEN si.quantity
                 ELSE LEAST(
                   si.quantity,
@@ -5394,10 +5555,15 @@ async function createPickup(ctx) {
                 LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
                 COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id), 0)::int AS picked_quantity,
                 CASE
+                  -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
+                  -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
+                  -- 转换单/零总额单，且 total_amount 无 CHECK 约束，负值会静默放行。
+                  WHEN o.sale_order_type = '寄存单' THEN si.quantity
                   WHEN si.sale_amount <= 0 THEN si.quantity
                   ELSE LEAST(si.quantity, FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int)
                 END AS paid_quantity
            FROM sale_items si
+           JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
           WHERE si.sale_item_id = $1
             AND si.store_id = $2`,
         [saleItemId, ctx.auth.effectiveStoreId]
@@ -5433,6 +5599,10 @@ async function createPickup(ctx) {
               LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
               COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id), 0)::int AS picked_quantity,
               CASE
+                -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
+                -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
+                -- 转换单/零总额单，且 total_amount 无 CHECK 约束，负值会静默放行。
+                WHEN o.sale_order_type = '寄存单' THEN si.quantity
                 WHEN si.sale_amount <= 0 THEN si.quantity
                 ELSE LEAST(si.quantity, FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int)
               END AS paid_quantity,
@@ -5561,6 +5731,10 @@ async function availablePickupItems(ctx) {
               LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
               GREATEST(0, COALESCE(pt.picked_quantity, 0))::int AS picked_quantity,
               CASE
+                -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
+                -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
+                -- 转换单/零总额单，且 total_amount 无 CHECK 约束，负值会静默放行。
+                WHEN o.sale_order_type = '寄存单' THEN si.quantity
                 WHEN si.sale_amount <= 0 THEN si.quantity
                 ELSE LEAST(
                   si.quantity,

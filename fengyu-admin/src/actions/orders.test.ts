@@ -104,7 +104,10 @@ vi.mock('@db/order', () => ({
     createdAt: 'created_at',
     paidAt: 'paid_at',
     allocationStatus: 'allocation_status',
-    performanceAttributionDate: 'performance_attribution_date',
+    // 与 saleOrders.performanceAttributionDate 刻意用**不同**的 mock 串：
+    // 两者同名的话，"读款项级列"与"读订单级列"在断言里无法区分，
+    // 而这正是本 PR 的全部行为变更所在。
+    performanceAttributionDate: 'sop.performance_attribution_date',
     performanceAttributionAdjustedAt: 'performance_attribution_adjusted_at',
     performanceAttributionAdjustedBy: 'performance_attribution_adjusted_by',
     refundReason: 'refund_reason',
@@ -295,6 +298,22 @@ import { eq, ilike, gte, lt, gt, inArray, isNull, sql } from 'drizzle-orm'
 import { requirePermission } from '@/lib/permissions'
 import { ApiError } from '@/lib/api-error'
 import { logUpdate } from '@/lib/operation-log'
+
+/**
+ * 归属日期口径断言助手（迁移 0040 收敛后）：查询侧直读
+ * sale_order_payments.performance_attribution_date，不再拼 CASE/COALESCE。
+ * 无别名时该列作为插值进 sql`` 的 values；带别名时走 sql.raw，见各调用点的单独断言。
+ */
+const usedAttributionColumn = () =>
+  (sql as any).mock.calls.some(([, ...values]: any[]) =>
+    values.includes('sop.performance_attribution_date'),
+  )
+
+/** 反向守卫：口径一旦被改回订单级，上面的 usedAttributionColumn 仍为真，只有这条能红。 */
+const usedOrderLevelColumn = () =>
+  (sql as any).mock.calls.some(([, ...values]: any[]) =>
+    values.includes('performance_attribution_date'),
+  )
 import { hasPendingRefund } from '@/lib/refund-cascade'
 
 const mockSession = {
@@ -984,6 +1003,8 @@ describe('createOrder — 全额储值卡抵扣即时扣卡（2026-05-21）', ()
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('储值卡余额不足')
+    // 余额不得落回子标签位：`50: 顾客储值卡余额不足…` 这种开头会直接漏进 toast（issue #133 评审 round 3/4）
+    expect(result.message).toMatch(/^顾客储值卡余额不足/)
   })
 })
 
@@ -1649,7 +1670,8 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
     const result = await confirmOfflinePayment('order-active-intent')
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain('PAYMENT_INTENT_ACTIVE')
+    // 子标签（PAYMENT_INTENT_ACTIVE）只进日志不展示给用户；机器可读部分在 code 字段（issue #133）
+    expect(result.message).toBe('在线支付处理中，暂不能确认线下收款')
     expect(statements).toHaveLength(1)
   })
 
@@ -2131,6 +2153,41 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
     expect(result.success).toBe(true)
   })
 
+  it('关闭待支付转换单 → 家居转出数量等量退回 picked_up_quantity（#125）', async () => {
+    mockSelectBefore([{
+      status: '待支付',
+      customerName: '顾客甲',
+      totalAmount: '200.00',
+      saleOrderType: '转换单',
+      storeId: 'store-1',
+    }])
+
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue({ count: 1 }),
+          }),
+        }),
+        execute: vi.fn().mockResolvedValue({}),
+      }
+      const result = await fn(tx)
+      const sqlTexts = tx.execute.mock.calls.map((call: any[]) => call[0]?.__sqlText || '')
+      // 家居回滚段：不退回则关单后这批货既提不出（pending 恒 0）也退不掉（refundable 恒 0）
+      expect(sqlTexts.some((text: string) =>
+        text.includes('restore_quantity') &&
+        text.includes("product_type = '家居产品'") &&
+        text.includes('picked_up_quantity = GREATEST'),
+      )).toBe(true)
+      // 疗程卡回滚段必须仍在
+      expect(sqlTexts.some((text: string) => text.includes('restore_sessions'))).toBe(true)
+      return result
+    })
+
+    const result = await closeOrder('order-1')
+    expect(result.success).toBe(true)
+  })
+
   it('事务异常 → 返回友好错误', async () => {
     ;(db.transaction as any).mockRejectedValue(new Error('connection lost'))
     const result = await closeOrder('order-1')
@@ -2433,8 +2490,18 @@ describe('getOrdersPaginated — 服务端分页', () => {
       .map(([strings]: any[]) => (Array.isArray(strings?.raw) ? strings.raw.join(' ') : ''))
       .join('\n')
     expect(rendered).toContain('payment_attribution_filter')
-    expect(rendered).toContain("= '首次支付' THEN")
-    expect(rendered).toContain("AT TIME ZONE 'Asia/Shanghai'")
+    // 迁移 0040 收敛：直读款项级归属日期列，不再有首次支付→订单级的 CASE 分支
+    expect(rendered).not.toContain("= '首次支付' THEN")
+    // 带别名时走 sql.raw，不进 strings.raw，要单独查
+    expect((sql as any).raw.mock.calls.some(
+      ([text]: any[]) => text === 'payment_attribution_filter.performance_attribution_date',
+    )).toBe(true)
+    // 别名必须指向款项表（EXISTS 子查询里的 sale_order_payments），不能是外层 sale_orders
+    expect((sql as any).raw.mock.calls.some(
+      ([text]: any[]) => text === 'sale_orders.performance_attribution_date',
+    )).toBe(false)
+    // 也不能以非 raw 的方式把订单级列混进日期条件
+    expect(usedOrderLevelColumn()).toBe(false)
     // 不能同时落到款项发生日期口径
     expect(rendered).not.toContain('payment_date_filter')
   })
@@ -3129,6 +3196,110 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     }],
   }
 
+  // ── #125 家居折抵（与 staff order.test.js 的三个用例对称）────────────────────
+  const homeHeldRow = (over: Record<string, unknown> = {}) => ({
+    sale_item_id: 'home-1', sale_order_id: 'old-order', store_id: 'store-1', item_direction: '购买',
+    sku_id: 'sku-home', product_name: '家居精华', product_type: '家居产品',
+    session_count: null, remaining_sessions: null,
+    quantity: 10, picked_up_quantity: 3,
+    unit_price: '120', unit_real_price: '100',
+    sales_category: '自销自耗', service_fee: '0', is_experience: false, is_shengmei: false,
+    client_user_id: 'user-1', order_status: '已支付', product_kind: '家居',
+    ...over,
+  })
+  const homeConvData = { ...baseConvData, convertOutSaleItemIds: ['home-1'] }
+  const homeSkuRows = [{
+    skuId: 'sku-new-1', specName: '新项目', price: '300.00', specialPrice: null,
+    serviceFee: '0', sessionCount: 1, productType: '疗程卡', salesCategory: '自销自耗',
+    isExperience: false, isManagerSpecial: false, isShengmei: false, categoryId: 'cat-new',
+    purchaseLimit: null, marketScope: null,
+  }]
+
+  it('#125 家居按未提货数量整行折抵：7 盒 × 100 = 700，转出行金额为负', async () => {
+    const inserted: any[] = []
+    mockConvTx({
+      heldRows: [homeHeldRow()],
+      skuRows: homeSkuRows,
+      onInsertItem: (v) => inserted.push(v),
+    })
+
+    const result = await createConversionOrder(homeConvData)
+
+    expect(result.success).toBe(true)
+    const outRow = inserted.find((v) => v.itemDirection === '转出')
+    expect(outRow).toBeDefined()
+    // 未提货 7 盒（不看付款进度），转出行金额 = −700
+    expect(outRow.quantity).toBe(7)
+    expect(outRow.saleAmount).toBe('-700.00')
+    expect(outRow.received).toBe('-700.00')
+  })
+
+  it('#125 家居转出数量并入 picked_up_quantity 且带不可超转守卫，不走 remaining_sessions', async () => {
+    const { executeSql } = mockConvTx({
+      heldRows: [homeHeldRow()],
+      skuRows: homeSkuRows,
+    })
+
+    await createConversionOrder(homeConvData)
+
+    // 扣减走 drizzle update（不在 executeSql 里），这里断言没有误用疗程卡的 remaining_sessions 路径
+    expect(executeSql.some((t) => t.includes('remaining_sessions ='))).toBe(false)
+  })
+
+  it('#125 部分支付订单的家居行可折抵（订单级状态已放开）', async () => {
+    const inserted: any[] = []
+    mockConvTx({
+      heldRows: [homeHeldRow({ order_status: '部分支付' })],
+      skuRows: homeSkuRows,
+      onInsertItem: (v) => inserted.push(v),
+    })
+
+    const result = await createConversionOrder(homeConvData)
+
+    expect(result.success).toBe(true)
+    const outRow = inserted.find((v) => v.itemDirection === '转出')
+    expect(outRow?.quantity).toBe(7)
+  })
+
+  it('#125 已关闭订单仍不可折抵（只放开部分支付）', async () => {
+    mockConvTx({
+      heldRows: [homeHeldRow({ order_status: '已关闭' })],
+      skuRows: homeSkuRows,
+    })
+
+    const result = await createConversionOrder(homeConvData)
+
+    expect(result.success).toBe(false)
+    expect(JSON.stringify(result)).toContain('原订单状态不允许转换')
+  })
+
+  it('#125 已无未提货数量的家居行拒绝折抵', async () => {
+    mockConvTx({
+      heldRows: [homeHeldRow({ quantity: 4, picked_up_quantity: 4 })],
+      skuRows: homeSkuRows,
+    })
+
+    const result = await createConversionOrder(homeConvData)
+
+    expect(result.success).toBe(false)
+    // 子标签 HOME_PRODUCT_NO_PENDING 只进日志，用户看到的是中文正文（issue #133）
+    expect(result.message).toBe('所选家居产品已无未提货数量，不可折抵')
+  })
+
+  it('#125 家居扣减 rowsAffected=0（并发被抢先）→ 冲突', async () => {
+    mockConvTx({
+      heldRows: [homeHeldRow()],
+      skuRows: homeSkuRows,
+      updateCount: 0,
+    })
+
+    const result = await createConversionOrder(homeConvData)
+
+    expect(result.success).toBe(false)
+    // 子标签 HOME_PRODUCT_CONCURRENT_CHANGED 只进日志，用户看到的是中文正文（issue #133）
+    expect(result.message).toBe('家居产品可提数量变化，请重试')
+  })
+
   it('受限普通转入 SKU 不匹配顾客绑定门店市场时拒绝提交', async () => {
     ;(db.select as any)
       .mockImplementationOnce(mockSelectFound(mockClient))
@@ -3402,7 +3573,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
       convertOutSaleItemIds: ['invalid-in-row'],
     })
 
-    expect(result).toEqual({ success: false, message: '所选行不是有效疗程权益，不可折抵' })
+    expect(result).toEqual({ success: false, message: '所选行不是有效权益，不可折抵' })
   })
 
   it('先锁转出卡再汇总预扣，并按预扣次数折抵', async () => {
@@ -4215,14 +4386,15 @@ describe('updatePerformanceAttributionDate — 一次性业绩归属日期调整
       updated_at: new Date('2026-08-17T03:00:00.000Z'),
     }],
     // bigint id 经 tx.execute 由 postgres.js 原样返回 string，审计日志须归一成 number
-    syncedCardRows = [{ id: '43' }],
-    syncedFirstPaymentRows = [{ id: '41' }],
+    // 顺序按真实 SQL 的 ORDER BY id 升序
+    syncedRows = [{ id: '41' }, { id: '43' }],
+    staleRows = [{ stale: 0 }],
   }: {
     adjustedAt?: Date | null
     currentDate?: string
     updatedRows?: any[]
-    syncedCardRows?: any[]
-    syncedFirstPaymentRows?: any[]
+    syncedRows?: any[]
+    staleRows?: any[]
   } = {}) {
     const execute = vi.fn()
       .mockResolvedValueOnce([{
@@ -4235,8 +4407,8 @@ describe('updatePerformanceAttributionDate — 一次性业绩归属日期调整
         max_performance_date: '2026-08-24',
       }])
       .mockResolvedValueOnce(updatedRows)
-      .mockResolvedValueOnce(syncedCardRows)
-      .mockResolvedValueOnce(syncedFirstPaymentRows)
+      .mockResolvedValueOnce(syncedRows)
+      .mockResolvedValueOnce(staleRows) // 部署顺序闸门的回读：stale=0 表示 trigger 已同步
     const tx = { execute, select: vi.fn(), insert: vi.fn() }
     ;(db.transaction as any).mockImplementation(async (fn: any) => fn(tx))
     return { tx, execute }
@@ -4256,10 +4428,16 @@ describe('updatePerformanceAttributionDate — 一次性业绩归属日期调整
     expect(execute.mock.calls[0][0].__sqlText).toMatch(/FOR UPDATE/)
     expect(execute.mock.calls[1][0].__sqlText).toMatch(/performance_attribution_adjusted_at IS NULL/)
     expect(execute.mock.calls[1][0].__sqlText).toMatch(/date_trunc\('milliseconds', updated_at\)/)
-    expect(execute.mock.calls[2][0].__sqlText).toMatch(/first_payment\.change_type = '首次支付'/)
-    // 首次支付行必须排在卡流水同步之后，且只改归属日期、不碰调整机会标记
-    expect(execute.mock.calls[3][0].__sqlText).toMatch(/UPDATE sale_order_payments first_payment/)
-    expect(execute.mock.calls[3][0].__sqlText).not.toMatch(/performance_attribution_adjusted_at =/)
+    // 款项行同步已下沉为 sale_orders 的 AFTER UPDATE trigger（迁移 0040），
+    // 应用层只回读受影响的行用于审计日志，不再自己发 UPDATE
+    expect(execute.mock.calls[2][0].__sqlText).toMatch(/SELECT id/)
+    // 回读集合 = trigger 覆盖的行（首次支付 + 同次已支付卡行），不按日期比
+    expect(execute.mock.calls[2][0].__sqlText).toMatch(/p\.change_type = '首次支付'/)
+    expect(execute.mock.calls[2][0].__sqlText).toMatch(/p\.change_type = '储值卡抵扣'/)
+    expect(execute.mock.calls[2][0].__sqlText).toMatch(/first_payment\.paid_at IS NOT DISTINCT FROM p\.paid_at/)
+    expect(
+      execute.mock.calls.some(([q]: any[]) => /UPDATE sale_order_payments/.test(q?.__sqlText ?? '')),
+    ).toBe(false)
     expect(logUpdate).toHaveBeenCalledWith(
       expect.anything(),
       'order.performanceAttribution.update',
@@ -4269,10 +4447,17 @@ describe('updatePerformanceAttributionDate — 一次性业绩归属日期调整
       expect.objectContaining({
         performanceAttributionDate: '2026-08-24',
         performanceAttributionAdjustedBy: 'EMP-001',
-        syncedPaymentIds: [43, 41],
+        syncedPaymentIds: [41, 43],
       }),
       tx,
     )
+  })
+
+  it('迁移 0040 未落地（trigger 缺席）→ 响亮失败而不是静默出错数', async () => {
+    // 款项行没被同步 → 回读发现首次支付行日期仍是旧值
+    mockAttributionTransaction({ staleRows: [{ stale: 1 }] })
+
+    await expect(updatePerformanceAttributionDate(input)).rejects.toThrow(/迁移 0040/)
   })
 
   it('同日提交不消耗修改机会', async () => {
@@ -4359,6 +4544,8 @@ describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日�
     pairedCardPaymentIds?: Array<number | string>
   } = {}) {
     const execute = vi.fn()
+      // ① 先锁订单行（把锁序钉成 sale_orders → sale_order_payments），不返回业务数据
+      .mockResolvedValueOnce([{ '?column?': 1 }])
       .mockResolvedValueOnce([{
         id: String(input.paymentId),
         sale_order_id: 'FY-XSD-WX-2608170001',
@@ -4392,11 +4579,16 @@ describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日�
       performanceAttributionAdjustedBy: 'EMP-001',
       performanceAttributionAdjustedByName: '店长甲',
     })
-    expect(execute.mock.calls[0][0].__sqlText).toMatch(/FOR UPDATE OF sop/)
-    expect(execute.mock.calls[0][0].__sqlText).toMatch(/paired_card_payment_ids/)
-    expect(execute.mock.calls[1][0].__sqlText).toMatch(/performance_attribution_adjusted_at IS NULL/)
-    expect(execute.mock.calls[1][0].__sqlText).toMatch(/WHERE payment\.id/)
-    expect(execute.mock.calls[1][0].__sqlText).not.toMatch(/payment\.change_type = '储值卡抵扣'/)
+    // 第 0 条必须是「先锁订单行」：物理锁序 sale_orders → sale_order_payments，
+    // 否则与订单级改期（先锁订单、AFTER trigger 再回写款项行）撞成 40P01
+    expect(execute.mock.calls[0][0].__sqlText).toMatch(/FROM sale_orders/)
+    expect(execute.mock.calls[0][0].__sqlText).toMatch(/FOR UPDATE/)
+    expect(execute.mock.calls[0][0].__sqlText).not.toMatch(/FOR UPDATE OF sop/)
+    expect(execute.mock.calls[1][0].__sqlText).toMatch(/FOR UPDATE OF sop/)
+    expect(execute.mock.calls[1][0].__sqlText).toMatch(/paired_card_payment_ids/)
+    expect(execute.mock.calls[2][0].__sqlText).toMatch(/performance_attribution_adjusted_at IS NULL/)
+    expect(execute.mock.calls[2][0].__sqlText).toMatch(/WHERE payment\.id/)
+    expect(execute.mock.calls[2][0].__sqlText).not.toMatch(/payment\.change_type = '储值卡抵扣'/)
     expect(logUpdate).toHaveBeenCalledWith(
       expect.anything(),
       'payment.performanceAttribution.update',
@@ -4413,7 +4605,8 @@ describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日�
 
     await expect(updatePaymentPerformanceAttributionDate(input))
       .rejects.toThrow(/INVALID_STATE.*首次支付跟随订单/)
-    expect(execute).toHaveBeenCalledTimes(1)
+    // 2 = 先锁订单行 + 锁款项行；校验失败发生在锁之后，不会再发第三条
+    expect(execute).toHaveBeenCalledTimes(2)
   })
 
   it('混合支付中被合并的储值卡流水不能绕过主流水单独调整', async () => {
@@ -4424,7 +4617,8 @@ describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日�
 
     await expect(updatePaymentPerformanceAttributionDate(input))
       .rejects.toThrow(/INVALID_STATE.*跟随同次现付/)
-    expect(execute).toHaveBeenCalledTimes(1)
+    // 2 = 先锁订单行 + 锁款项行；校验失败发生在锁之后，不会再发第三条
+    expect(execute).toHaveBeenCalledTimes(2)
   })
 
   it('未入账款项没有 paid_at 时拒绝调整', async () => {
@@ -4432,7 +4626,8 @@ describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日�
 
     await expect(updatePaymentPerformanceAttributionDate(input))
       .rejects.toThrow(/INVALID_STATE.*仅已入账/)
-    expect(execute).toHaveBeenCalledTimes(1)
+    // 2 = 先锁订单行 + 锁款项行；校验失败发生在锁之后，不会再发第三条
+    expect(execute).toHaveBeenCalledTimes(2)
   })
 
   it('超出 paid_at 前后 7 天时拒绝且不消耗机会', async () => {
@@ -4442,7 +4637,8 @@ describe('updatePaymentPerformanceAttributionDate — 一次性款项归属日�
       ...input,
       performanceAttributionDate: '2026-08-25',
     })).rejects.toThrow(/INVALID_PARAMS.*前后 7 天/)
-    expect(execute).toHaveBeenCalledTimes(1)
+    // 2 = 先锁订单行 + 锁款项行；校验失败发生在锁之后，不会再发第三条
+    expect(execute).toHaveBeenCalledTimes(2)
     expect(logUpdate).not.toHaveBeenCalled()
   })
 
@@ -4634,7 +4830,8 @@ describe('recordPayment — 管理后台录入回款', () => {
       success: false,
       error: {
         code: 'CONFLICT',
-        message: 'PAYMENT_INTENT_ACTIVE: 订单存在进行中的在线支付，请等待支付结果或先取消在线支付',
+        // 子标签只进日志不给用户看，机器可读部分在 code 字段（issue #133）
+        message: '订单存在进行中的在线支付，请等待支付结果或先取消在线支付',
       },
     })
     expect(captured.insertValues).toHaveLength(0)
@@ -5038,6 +5235,25 @@ describe('freezeConversionRepaymentAmount — admin 在线转换回款金额冻�
     expect(statements[1]).toContain('refunded_amount =')
   })
 
+  it('超额冻结：余额在中文正文里，不落子标签位（issue #133 评审 round 5）', async () => {
+    mockFreezeTx(lockedConversion)
+
+    const result = await freezeConversionRepaymentAmount({
+      saleOrderId: lockedConversion.sale_order_id,
+      amount: 999,
+    })
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.code).toBe('CONFLICT')
+      // 旧形态是 `OVERPAY:100.00: 本次回款金额超过订单欠款`，剥掉 OVERPAY: 后会以
+      // 「100.00: 」开头直接漏进 toast；现在余额写在中文正文括号里
+      expect(result.error.message).toMatch(/^本次回款金额超过订单欠款（剩余 ¥[\d.]+）$/)
+      expect(result.error.message).not.toMatch(/^[\d.]+:/)
+      expect(result.error.message).not.toContain('OVERPAY')
+    }
+  })
+
   it('退款后的欠款按 total - received + refunded_amount 冻结', async () => {
     mockFreezeTx({
       ...lockedConversion,
@@ -5095,7 +5311,8 @@ describe('freezeConversionRepaymentAmount — admin 在线转换回款金额冻�
     expect(result.success).toBe(false)
     if (!result.success) {
       expect(result.error.code).toBe('CONFLICT')
-      expect(result.error.message).toContain('PAYMENT_INTENT_ACTIVE')
+      // 子标签只进日志不给用户看，机器可读部分在 code 字段（issue #133）
+      expect(result.error.message).toBe('订单已有进行中的在线支付，请等待支付结果后重试')
     }
     expect(statements).toHaveLength(1)
   })
@@ -5413,6 +5630,53 @@ describe('deleteOrder — 守卫 + 级联删除', () => {
     expect(result.success).toBe(false)
     expect(result.message).toContain('单据')
     expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  // #125：转换单删除前必须在事务内锁单读新鲜状态，否则 closeOrder‖deleteOrder 交错时
+  // 会拿事务外的陈旧 '待支付' 二次回滚，把家居 picked_up_quantity 多减一遍。
+  function setupConversionTx(freshStatus: string | undefined) {
+    const executed: string[] = []
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }) }),
+        execute: vi.fn().mockImplementation(async (q: any) => {
+          const text = q?.__sqlText || ''
+          executed.push(text)
+          if (text.includes('SELECT status FROM sale_orders') && text.includes('FOR UPDATE')) {
+            return freshStatus === undefined ? [] : [{ status: freshStatus }]
+          }
+          return undefined
+        }),
+        delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+      }
+      await fn(tx)
+      return { deleted: true }
+    })
+    return executed
+  }
+
+  it('删除待支付转换单 → 事务内锁单读到待支付，执行回滚（#125）', async () => {
+    enqueueSelect([[{ ...okOrder, saleOrderType: '转换单' }], [], []])
+    enqueueExecute([[], [], []])
+    const executed = setupConversionTx('待支付')
+
+    await deleteOrder('FY-CONV-DEL-1')
+
+    expect(executed.some((t) => t.includes('SELECT status FROM sale_orders') && t.includes('FOR UPDATE'))).toBe(true)
+    expect(executed.some((t) => t.includes('restore_sessions'))).toBe(true)
+    expect(executed.some((t) => t.includes('restore_quantity') && t.includes("product_type = '家居产品'"))).toBe(true)
+  })
+
+  it('删除已关闭转换单 → 锁单读到已关闭，跳过回滚（closeOrder 已回滚过，二次会多退家居数量）', async () => {
+    enqueueSelect([[{ ...okOrder, status: '已关闭', saleOrderType: '转换单' }], [], []])
+    enqueueExecute([[], [], []])
+    const executed = setupConversionTx('已关闭')
+
+    await deleteOrder('FY-CONV-DEL-2')
+
+    expect(executed.some((t) => t.includes('SELECT status FROM sale_orders') && t.includes('FOR UPDATE'))).toBe(true)
+    expect(executed.some((t) => t.includes('restore_sessions'))).toBe(false)
+    expect(executed.some((t) => t.includes('restore_quantity'))).toBe(false)
   })
 
   it('干净测试单 → 级联删除成功 + 审计', async () => {
@@ -5758,7 +6022,10 @@ describe('exportAllocationOrders — 销售提成三态导出（已分配明细 
     const rendered = (sql as any).mock.calls
       .map(([strings]: any[]) => (Array.isArray(strings?.raw) ? strings.raw.join(' ') : ''))
       .join('\n')
-    expect(rendered).toContain("= '首次支付' THEN")
+    // 迁移 0040 收敛：直读**款项级**列；订单级列不得再出现在日期条件里
+    expect(usedAttributionColumn()).toBe(true)
+    expect(usedOrderLevelColumn()).toBe(false)
+    expect(rendered).not.toContain("= '首次支付' THEN")
     expect(rendered).not.toContain('payment_attribution_filter')
   })
 
@@ -6291,10 +6558,14 @@ describe('exportOrderPayments — 回款明细导出（款项 × 商品子项）
     })
   })
 
-  it('归属日期三分支：首次支付随订单、回款取款项级、未入账为空', async () => {
+  // 迁移 0040 收敛：款项粒度导出直读款项级归属日期列，不再按 changeType 分支。
+  // fixture 刻意让首次支付行的**款项级列 ≠ 订单级列**（库里由 I6 巡检守护不会出现，
+  // 但单测必须造得出来）—— 否则两值相等，断言无法区分读的是哪一列。
+  // 列真为空时保持空：**不**补订单级兜底，否则约束上线前的残留会伪装成有归属日期。
+  it('归属日期直读款项级列：款项级与订单级不一致时取款项级、列为空则留空', async () => {
     const repayment = paymentRow()
     const first = paymentRow({
-      payment: { id: 40, changeType: '首次支付', performanceAttributionDate: null, performanceAttributionAdjustedAt: null },
+      payment: { id: 40, changeType: '首次支付', performanceAttributionDate: '2026-08-19', performanceAttributionAdjustedAt: null },
       orderPerformanceAttributionDate: '2026-08-16',
       orderPerformanceAttributionAdjustedAt: new Date('2026-08-16T04:00:00.000Z'),
       orderPerformanceAttributionAdjustedByName: '店长丙',
@@ -6313,7 +6584,8 @@ describe('exportOrderPayments — 回款明细导出（款项 × 商品子项）
       performanceAttributionAdjustedByName: '店长甲',
     })
     expect(rows[1]).toMatchObject({
-      performanceAttributionDate: '2026-08-16',
+      // 取款项级 08-19 而**不是**订单级 08-16：读错列这里就红
+      performanceAttributionDate: '2026-08-19',
       performanceAttributionStatus: '随订单',
       performanceAttributionAdjustedByName: '店长丙',
     })
@@ -6360,7 +6632,10 @@ describe('exportOrderPayments — 回款明细导出（款项 × 商品子项）
     const rendered = (sql as any).mock.calls
       .map(([strings]: any[]) => (Array.isArray(strings?.raw) ? strings.raw.join(' ') : ''))
       .join('\n')
-    expect(rendered).toContain("= '首次支付' THEN")
+    // 迁移 0040 收敛：直读**款项级**列；订单级列不得再出现在日期条件里
+    expect(usedAttributionColumn()).toBe(true)
+    expect(usedOrderLevelColumn()).toBe(false)
+    expect(rendered).not.toContain("= '首次支付' THEN")
     expect(rendered).toContain('::date')
     // 款项粒度导出必须约束当前这一行，命中订单再全量带出款项就重复计数了
     expect(rendered).not.toContain('payment_attribution_filter')

@@ -469,3 +469,93 @@
   text-align: right;
   padding-top: 8rpx;
 }
+
+/* ===== Tab 6: 家居产品（与门店视图 customer-detail 同款样式） ===== */
+
+.home-product-list {
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx;
+}
+
+.home-product-card {
+  padding: 24rpx;
+  border-radius: 16rpx;
+  background: #fff;
+}
+
+.home-product-head,
+.home-product-meta,
+.home-product-counts {
+  display: flex;
+  align-items: center;
+}
+
+.home-product-head {
+  justify-content: space-between;
+  gap: 12rpx;
+}
+
+.home-product-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: #333;
+  font-size: 28rpx;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-product-counts {
+  flex-wrap: wrap;
+  gap: 8rpx 20rpx;
+  margin-top: 14rpx;
+  color: #666;
+  font-size: 24rpx;
+}
+
+.home-product-remaining {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.home-product-unpaid {
+  margin-top: 10rpx;
+  color: #d4820a;
+  font-size: 24rpx;
+  font-weight: 600;
+}
+
+.home-product-meta {
+  justify-content: space-between;
+  margin-top: 14rpx;
+  color: #999;
+  font-size: 22rpx;
+}
+
+.home-product-order {
+  display: block;
+  margin-top: 8rpx;
+  color: #aaa;
+  font-size: 20rpx;
+}
+
+/* 待付清 / 不可核销说明（issue #122）：可用次数 0 的卡现在也展示，
+   必须给出原因，否则只看到「剩余 0」像是一张坏卡。 */
+.tc-unpaid {
+  display: inline-block;
+  margin-top: 10rpx;
+  padding: 4rpx 12rpx;
+  border-radius: 8rpx;
+  background: #fff8e6;
+  color: #d4820a;
+  font-size: 24rpx;
+  font-weight: 600;
+}
+
+.tc-unpaid--plain {
+  background: #f5f5f5;
+  color: #888888;
+  font-weight: 400;
+}

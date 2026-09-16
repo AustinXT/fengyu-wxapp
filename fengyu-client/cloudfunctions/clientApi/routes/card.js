@@ -189,18 +189,32 @@ async function rechargeConfig(ctx) {
 
 /**
  * 关闭过期的待支付订单（10 分钟）以释放唯一约束 uq_sale_orders_client_pending
+ *
+ * ⚠ 只处理顾客自助下单（opened_by IS NULL）—— 与 uq_sale_orders_client_pending 这个
+ * partial index 的定义域一致，也与 order.closeExpiredOrder 的守卫一致。
+ * 员工开的待支付单（尤其是转换单）绝不能在这里被静默关闭：转换单建单时已即时扣减源卡资产
+ * （疗程卡 remaining_sessions / 家居 picked_up_quantity），而本函数不执行
+ * rollbackPendingConversionOnClose；一旦置为「已关闭」，staff close（只受理待支付/支付失败）
+ * 与 admin deleteOrder（事务内闸门读到「已关闭」即跳过回滚）都不会再补回，资产永久蒸发。
  */
 async function _closeExpiredPendingByUser(client, userId) {
   const expired = await client.query(
     `SELECT sale_order_id FROM sale_orders
      WHERE client_user_id = $1 AND status = '待支付'
+     AND opened_by IS NULL
+     AND sale_order_type <> '转换单'
+     AND lakala_out_order_no IS NULL
      AND sale_order_datetime < NOW() - INTERVAL '10 minutes'`,
     [userId]
   )
   for (const row of expired.rows) {
     await client.query(
       `UPDATE sale_orders SET status = '已关闭', updated_at = NOW()
-       WHERE sale_order_id = $1 AND status = '待支付'`,
+       WHERE sale_order_id = $1 AND status = '待支付' AND opened_by IS NULL
+         AND sale_order_type <> '转换单'
+         -- 与 order.closeExpiredOrder 对齐：有活跃在线支付意图的单不可强关，
+         -- 否则第 9 分钟发起支付、第 11 分钟进充值会把单关掉，payNotify 落到已关闭单
+         AND lakala_out_order_no IS NULL`,
       [row.sale_order_id]
     )
     await client.query(
@@ -272,9 +286,11 @@ async function recharge(ctx) {
   await pg.transaction(async (client) => {
     await _closeExpiredPendingByUser(client, userId)
 
+    // 与 _closeExpiredPendingByUser 同口径：唯一约束只覆盖自助单，员工开的待支付单
+    // （转换单等）不该阻断顾客充值——否则上面不再关闭员工单后，这里会把顾客永久挡住。
     const existing = await client.query(
       `SELECT sale_order_id FROM sale_orders
-       WHERE client_user_id = $1 AND status = '待支付'`,
+       WHERE client_user_id = $1 AND status = '待支付' AND opened_by IS NULL`,
       [userId]
     )
     if (existing.rows.length > 0) {

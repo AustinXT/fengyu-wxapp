@@ -16,7 +16,7 @@ metadata:
 
 # prod → dev 数据库同步
 
-⚠ **破坏性操作**：用生产库数据**覆盖**开发库（sqlserver101），dev 现有数据全部丢失、不可恢复。
+⚠ **破坏性操作**：用生产库数据**覆盖**开发/测试库，dev 现有数据全部丢失、不可恢复。
 
 运行同步脚本：
 
@@ -35,7 +35,7 @@ bash .claude/skills/sync-prod-to-dev/sync-prod-to-dev.sh
 
 ## 注意
 
-- 来源：生产库 `118.178.196.26:5433/fengyu_wxapp`；目标：开发库 `101.34.242.103:5433/fengyu_wxapp`（sqlserver101）
+- 来源：生产库 `118.178.196.26:5433/fengyu_wxapp`；目标：开发库 `101.34.242.103:5433/fengyu_wxapp`
 - restore 期间不要用 dev admin / dev 云函数（会冲突，脚本会先断开连接兜底）
 - dev 开发中手造的数据会丢失；未上线 migration 的库内痕迹会清掉，但 `db/migrations/` 代码层 `.sql` 不受影响（下次 `db:migrate` 会重 apply）
 - dump 产物含顾客手机号 / 身份证 / 支付等敏感数据，落项目外 `~/backups/fengyu/`，勿外发

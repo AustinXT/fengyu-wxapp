@@ -2749,8 +2749,11 @@ describe('order.updatePerformanceAttribution', () => {
       performance_attribution_adjusted_by: 'emp-001',
       updated_at: new Date('2026-08-26T06:00:00.000Z'),
     }],
-    syncedCardRows = [{ id: 43 }],
-    syncedFirstPaymentRows = [{ id: 41 }],
+    // node-pg 对 int8(OID 20) 不转换、原样返回 string —— mock 必须用字符串，
+    // 否则 order.js 里那句 Number(row.id) 的归一化完全没被覆盖（invariant：bigint id 是 string）。
+    // 顺序按真实 SQL 的 ORDER BY id 升序。
+    syncedRows = [{ id: '41' }, { id: '43' }],
+    staleRows = [{ stale: 0 }],
   } = {}) {
     const query = vi.fn()
       .mockResolvedValueOnce({
@@ -2766,8 +2769,9 @@ describe('order.updatePerformanceAttribution', () => {
         rowCount: 1,
       })
       .mockResolvedValueOnce({ rows: updatedRows, rowCount: updatedRows.length })
-      .mockResolvedValueOnce({ rows: syncedCardRows, rowCount: syncedCardRows.length })
-      .mockResolvedValueOnce({ rows: syncedFirstPaymentRows, rowCount: syncedFirstPaymentRows.length })
+      .mockResolvedValueOnce({ rows: syncedRows, rowCount: syncedRows.length })
+      // 部署顺序闸门的回读：stale=0 表示 trigger 已同步
+      .mockResolvedValueOnce({ rows: staleRows, rowCount: staleRows.length })
       .mockResolvedValue({ rows: [], rowCount: 1 })
     pg.transaction.mockImplementation(async (callback) => callback({ query }))
     return query
@@ -2784,22 +2788,28 @@ describe('order.updatePerformanceAttribution', () => {
     expect(query.mock.calls[0][0]).toMatch(/FOR UPDATE/)
     expect(query.mock.calls[1][0]).toMatch(/performance_attribution_adjusted_at IS NULL/)
     expect(query.mock.calls[1][0]).toMatch(/date_trunc\('milliseconds', updated_at\)/)
-    expect(query.mock.calls[2][0]).toMatch(/UPDATE sale_order_payments card/)
-    expect(query.mock.calls[2][0]).toMatch(/first_payment\.change_type = '首次支付'/)
-    expect(query.mock.calls[2][1]).toEqual([
-      '2026-09-02',
-      new Date('2026-08-26T06:00:00.000Z'),
-      'emp-001',
-      input.saleOrderId,
-    ])
-    // 首次支付行必须排在卡流水同步之后（trigger 会反向同步卡流水，同语句更新会撞 PG 报错），
-    // 且只改归属日期、不碰调整机会标记
-    expect(query.mock.calls[3][0]).toMatch(/UPDATE sale_order_payments first_payment/)
-    expect(query.mock.calls[3][0]).not.toMatch(/performance_attribution_adjusted_at =/)
-    expect(query.mock.calls[3][1]).toEqual(['2026-09-02', input.saleOrderId])
+    // 款项行同步已下沉为 sale_orders 的 AFTER UPDATE trigger（迁移 0040）：
+    // 查询侧改为直读款项级归属日期列后，漏同步会直接出错数，同步必须由 DB 保证。
+    // 应用层只回读受影响的行用于审计日志，不再自己发 UPDATE。
+    expect(query.mock.calls[2][0]).toMatch(/SELECT id/)
+    // 回读集合 = trigger 覆盖的行（首次支付 + 同次已支付卡行），不按日期比
+    expect(query.mock.calls[2][0]).toMatch(/p\.change_type = '首次支付'/)
+    expect(query.mock.calls[2][0]).toMatch(/p\.change_type = '储值卡抵扣'/)
+    expect(query.mock.calls[2][0]).toMatch(/first_payment\.paid_at IS NOT DISTINCT FROM p\.paid_at/)
+    expect(query.mock.calls[2][0]).not.toMatch(/performance_attribution_date = \$2/)
+    expect(query.mock.calls[2][1]).toEqual([input.saleOrderId])
+    expect(query.mock.calls.some(([s]) => /UPDATE sale_order_payments/.test(s))).toBe(false)
     expect(query.mock.calls.some(([sql]) => /INSERT INTO operation_logs/.test(sql))).toBe(true)
     const auditInsert = query.mock.calls.find(([sql]) => /INSERT INTO operation_logs/.test(sql))
-    expect(JSON.parse(auditInsert[1][8]).changes.syncedPaymentIds).toEqual({ from: [], to: [43, 41] })
+    expect(JSON.parse(auditInsert[1][8]).changes.syncedPaymentIds).toEqual({ from: [], to: [41, 43] })
+  })
+
+  test('迁移 0040 未落地（trigger 缺席）→ 响亮失败而不是静默出错数', async () => {
+    const ctx = createManagerCtx(input)
+    mockAttributionTransaction({ staleRows: [{ stale: 1 }] })
+
+    await expect(orderRoutes.updatePerformanceAttribution(ctx))
+      .rejects.toThrow(/INVALID_STATE.*迁移 0040/)
   })
 
   test('同日提交不消耗修改机会', async () => {
@@ -5284,7 +5294,7 @@ describe('order.createConversion', () => {
     mockPositiveDifferenceConversion(null, { itemDirection: '转入', saleOrderType: '销售单' })
 
     await expect(orderRoutes.createConversion(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*有效疗程权益/)
+      .rejects.toThrow(/INVALID_PARAMS.*不是有效权益/)
   })
 
   test('转换转入疗程卡 quantity=2 按两张独立权益落库并共享分组号', async () => {
@@ -6748,14 +6758,16 @@ describe('order.customerHeldCards', () => {
     expect(sql).toMatch(/si\.item_direction\s*=\s*'转入'/)
   })
 
-  test('SQL 守卫：status 必须 IN (已支付, 已完成)', async () => {
+  test('SQL 守卫：status 必须 IN (已支付, 部分支付, 已完成)（#125 放开订单级部分支付）', async () => {
     const ctx = createManagerCtx({ clientUserId: 'cu-001' })
     pg.query.mockResolvedValueOnce([])
 
     await orderRoutes.customerHeldCards(ctx)
 
     const sql = pg.query.mock.calls[0][0]
-    expect(sql).toMatch(/so\.status IN \('已支付', '已完成'\)/)
+    // 甲方 2026-09-14 拍板：订单级「部分支付」也可折抵（疗程卡与家居同时放开），
+    // 与 admin 卡包列表 CARD_ENTITLEMENT_ORDER_STATUSES 口径统一；欠款按方案 A 留原单
+    expect(sql).toMatch(/so\.status IN \('已支付', '部分支付', '已完成'\)/)
   })
 
   test('SQL 守卫：疗程卡 remaining_sessions=0 不出现（> 0 过滤）', async () => {
@@ -7780,5 +7792,172 @@ describe('order.createConversion — schema 变更：UPSERT 按 user_id、不含
     const hasDeduct = txCalls.some(c => c.sql.includes('INSERT INTO card_transactions'))
     expect(hasUpsert).toBe(false)
     expect(hasDeduct).toBe(false)
+  })
+})
+
+// ============================================================
+// #125 家居产品参与转换折抵
+// ============================================================
+describe('order.createConversion — 家居产品折抵（#125）', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  /**
+   * 源行：家居产品 10 盒、已结算（提货+退款）3 盒 → 未提货 7 盒，单价 100 → 折抵 700。
+   * 转入：sku-new 疗程卡 1 次 300 → 差额 -400（旧值高，走储值卡补差）。
+   */
+  function mockHomeProductConversion(overrides = {}) {
+    const calls = []
+    pg.transaction.mockImplementationOnce(async (cb) => cb({
+      query: vi.fn(async (sql, params) => {
+        calls.push({ sql, params })
+        if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
+        if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
+        if (sql.includes('FROM sale_items si') && sql.includes('FOR UPDATE OF si')) {
+          return {
+            rows: [{
+              sale_item_id: 'item-home-1', sale_order_id: 'order-old', store_id: 'store-001',
+              item_direction: '购买',
+              sku_id: 'sku-home', product_name: '家居精华', product_type: '家居产品',
+              session_count: null, remaining_sessions: null,
+              quantity: 10, picked_up_quantity: 3,
+              unit_price: '120', unit_real_price: '100', sales_category: '自销自耗', service_fee: '0',
+              client_user_id: 'cu-001', sale_order_type: '销售单',
+              order_status: '已支付', product_kind: '家居',
+              ...overrides,
+            }],
+            rowCount: 1,
+          }
+        }
+        if (sql.includes('FROM service_items sit')) return { rows: [], rowCount: 0 }
+        if (sql.includes('FROM product_skus')) {
+          return {
+            rows: [{
+              sku_id: 'sku-new', product_type: '疗程卡', spec_name: '新项目',
+              price: '300', special_price: null, session_count: 1, service_fee: '0',
+              sales_category: '自销自耗', is_manager_special: false,
+            }],
+            rowCount: 1,
+          }
+        }
+        if (sql.includes('SELECT balance FROM prepaid_cards')) return { rows: [], rowCount: 0 }
+        return defaultQueryResult(sql, params)
+      }),
+    }))
+    return calls
+  }
+
+  function homeConversionCtx() {
+    const ctx = createManagerCtx({
+      clientUserId: 'cu-001',
+      convertOutSaleItemIds: ['item-home-1'],
+      convertInItems: [{ skuId: 'sku-new', quantity: 1 }],
+      paymentMethod: '线下',
+    })
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'cu-001', phone: '138', name: '张三', customer_type: '会员客', bound_store_id: 'store-001',
+    }])
+    return ctx
+  }
+
+  test('按未提货数量整行折抵：7 盒 × 100 = 700，转出行金额为负', async () => {
+    const ctx = homeConversionCtx()
+    const calls = mockHomeProductConversion()
+
+    await orderRoutes.createConversion(ctx)
+
+    // 折抵 700 − 转入 300 = −400（旧值高于新值，差额入储值卡）
+    expect(ctx.result.priceDiff).toBe(-400)
+
+    const outInsert = calls.find(({ sql }) =>
+      sql.includes('INSERT INTO sale_items') && sql.includes("'转出'"))
+    expect(outInsert).toBeDefined()
+    // quantity 落未提货数量 7；sale_amount / received 均为 −700
+    expect(outInsert.params).toEqual(expect.arrayContaining([7, -700]))
+  })
+
+  test('转出数量并入 picked_up_quantity，带不可超转守卫', async () => {
+    const ctx = homeConversionCtx()
+    const calls = mockHomeProductConversion()
+
+    await orderRoutes.createConversion(ctx)
+
+    const deduct = calls.find(({ sql }) =>
+      sql.includes('UPDATE sale_items') && sql.includes('picked_up_quantity = COALESCE(picked_up_quantity, 0) +'))
+    expect(deduct).toBeDefined()
+    // 守卫：加完不得超过 quantity，并发第二笔 rowCount=0 → 抛冲突
+    expect(deduct.sql).toContain('(COALESCE(picked_up_quantity, 0) + $4) <= quantity')
+    expect(deduct.params).toEqual(expect.arrayContaining(['item-home-1', 'store-001', 7]))
+    // 家居不得走疗程卡的 remaining_sessions 扣减
+    const sessionDeduct = calls.find(({ sql }) =>
+      sql.includes('SET remaining_sessions = remaining_sessions -'))
+    expect(sessionDeduct).toBeUndefined()
+  })
+
+  test('#125 部分支付订单的家居行可折抵（订单级状态已放开）', async () => {
+    const ctx = homeConversionCtx()
+    const calls = mockHomeProductConversion({ order_status: '部分支付' })
+
+    await orderRoutes.createConversion(ctx)
+
+    // 未被 order_status 闸门拦下，正常产出转出行
+    const outInsert = calls.find(({ sql }) =>
+      sql.includes('INSERT INTO sale_items') && sql.includes("'转出'"))
+    expect(outInsert).toBeDefined()
+    expect(outInsert.params).toEqual(expect.arrayContaining([7, -700]))
+  })
+
+  test('#125 已关闭订单仍不可折抵（只放开部分支付，不是放开全部状态）', async () => {
+    const ctx = homeConversionCtx()
+    mockHomeProductConversion({ order_status: '已关闭' })
+
+    await expect(orderRoutes.createConversion(ctx))
+      .rejects.toThrow(/INVALID_PARAMS: 原订单状态不允许转换/)
+  })
+
+  test('已无未提货数量的家居行拒绝折抵', async () => {
+    const ctx = homeConversionCtx()
+    mockHomeProductConversion({ quantity: 4, picked_up_quantity: 4 })
+
+    await expect(orderRoutes.createConversion(ctx))
+      .rejects.toThrow(/INVALID_PARAMS: 部分家居产品已无未提货数量/)
+  })
+})
+
+describe('order.close — 家居转出回滚（#125）', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  // assertOrderInScope helper 先 SELECT store_id FROM sale_orders
+  const mockScopeOk = (storeId = 'store-001') =>
+    pg.query.mockResolvedValueOnce([{ store_id: storeId }])
+
+  test('关闭待支付转换单时把家居转出数量退回 picked_up_quantity', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-CONV-HOME-001' })
+
+    mockScopeOk()
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-CONV-HOME-001',
+      status: '待支付',
+      sale_order_type: '转换单',
+      store_id: 'store-001',
+      opened_by: 'emp-other',
+    }])
+
+    const closeEffectsQuery = vi.fn(async (sql) => defaultQueryResult(sql))
+    const clientQueryMock = makeCloseQuery(closeEffectsQuery)
+    pg.transaction.mockImplementation(async (cb) => cb({ query: clientQueryMock }))
+
+    await orderRoutes.close(ctx)
+
+    const homeRestore = clientQueryMock.mock.calls.find(([sql]) =>
+      String(sql).includes('restore_quantity') &&
+      String(sql).includes("product_type = '家居产品'"))
+    expect(homeRestore).toBeTruthy()
+    expect(String(homeRestore[0])).toContain('picked_up_quantity = GREATEST')
+    expect(homeRestore[1]).toEqual(expect.arrayContaining(['FY-CONV-HOME-001']))
+
+    // 疗程卡回滚段必须仍在（两类资产各回各的）
+    const sessionRestore = clientQueryMock.mock.calls.find(([sql]) =>
+      String(sql).includes('restore_sessions'))
+    expect(sessionRestore).toBeTruthy()
   })
 })

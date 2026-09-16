@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Dialog, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog"
 import { formatDateTime } from "@/lib/utils"
-import { actionErrorMessage } from "@/lib/action-error"
+import { actionErrorMessage, actionErrorType } from "@/lib/action-error"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { createOrgNode, updateOrgNode, deleteOrgNode } from "@/actions/org"
 
@@ -594,10 +594,12 @@ export default function OrgPage({
                 toast.error(res.message)
               }
             } catch (err: any) {
-              const msg = err?.message ?? ''
-              if (msg.includes('PERMISSION_DENIED')) {
+              // 判类型必须走 actionErrorType：生产构建下 err.message 已被脱敏，
+              // 判 message 前缀恒不成立，这两个专属文案线上永远不会出现（issue #133）。
+              const errorType = actionErrorType(err)
+              if (errorType === 'PERMISSION_DENIED') {
                 toast.error('无权执行删除操作')
-              } else if (msg.includes('UNAUTHORIZED')) {
+              } else if (errorType === 'UNAUTHORIZED') {
                 toast.error('登录已过期，请重新登录')
               } else {
                 toast.error(actionErrorMessage(err, '操作失败，请稍后重试'))
