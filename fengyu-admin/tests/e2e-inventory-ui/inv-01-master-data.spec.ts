@@ -97,9 +97,11 @@ test('INV-01：基础档案建档 + 六价体系 + 公式价校验', async ({ br
     const skuDialog = page.getByRole('dialog')
     await expect(skuDialog.getByText('新建库存商品')).toBeVisible({ timeout: 10_000 })
 
-    // ── UX-FIXED-01：供货商应为选择器，实测是裸文本输入 ──────────
+    // ── UX-FIXED-01：供货商必须是选择器（#132 已修，两条断言现在应当转绿）──────
     // 不预设 role：若写死 getByRole('textbox') 就等于假定了它是 input，
     // 「是不是选择器」这个检测本身会失去意义。改为按 label 包裹关系取其内部控件。
+    // 注意 #132 把「+ 新建供应商」按钮与提示文字放在了 label **外面**，
+    // 所以 /^供货商$/ 这个精确匹配依然成立，label 内也仍然只有一个控件。
     const supplierField = skuDialog
       .locator('label')
       .filter({ hasText: /^供货商$/ })
@@ -108,18 +110,18 @@ test('INV-01：基础档案建档 + 六价体系 + 公式价校验', async ({ br
     const supplierTag = await supplierField.evaluate((el) => el.tagName.toLowerCase()).catch(() => 'missing')
     recordVerdict(
       verdicts,
-      'UX-FIXED-01: SKU 的「供货商」应是选择器（期望 select，实测将失败）',
+      'UX-FIXED-01: SKU 的「供货商」是选择器而非自由文本（#132）',
       supplierTag === 'select',
       `tagName=${supplierTag}`,
     )
-    // 更深一层：数据模型上就没有外键，档案表与 SKU 零关联
+    // 更深一层：数据模型上要有真外键，否则「选择器」只是个摆设
     const hasSupplierFk = psql(
       `SELECT count(*) FROM information_schema.columns
         WHERE table_name = 'inventory_skus' AND column_name = 'supplier_id'`,
     )
     recordVerdict(
       verdicts,
-      'UX-FIXED-01b: inventory_skus 应有 supplier_id 外键（期望 1，实测将失败）',
+      'UX-FIXED-01b: inventory_skus 有 supplier_id 外键（#132）',
       hasSupplierFk === '1',
       `supplier_id 列数=${hasSupplierFk}`,
     )
@@ -130,7 +132,8 @@ test('INV-01：基础档案建档 + 六价体系 + 公式价校验', async ({ br
     const skuText = (name: string) => skuDialog.getByRole('textbox', { name, exact: true })
     await skuText('产品名称 *').fill(SKU_SUPPLY_NAME)
     await skuText('规格').fill('INVT-规格')
-    await supplierField.fill(SUPPLIER_NAME)   // 只能手打，无法从档案选
+    // Step 1 刚建的档案，这里直接从下拉选（#132 前只能手打）
+    await supplierField.selectOption({ label: SUPPLIER_NAME })
     await skuText('产品系列').fill('INVT-系列')
     await skuText('供应链采购价').fill('800')
     await skuText('门店进货价').fill('1200')
@@ -143,10 +146,11 @@ test('INV-01：基础档案建档 + 六价体系 + 公式价校验', async ({ br
 
     const supplySku = psql(
       `SELECT sku_id || '|' || source_type || '|' || COALESCE(market_purchase_price::text,'') || '|' ||
-              COALESCE(market_purchase_price_mode,'') || '|' || COALESCE(supplier,'')
+              COALESCE(market_purchase_price_mode,'') || '|' || COALESCE(supplier,'') || '|' ||
+              COALESCE(supplier_id,'')
          FROM inventory_skus WHERE product_name = ${sqlStr(SKU_SUPPLY_NAME)}`,
     )
-    const [supplySkuId, sourceType, marketPrice, priceMode, skuSupplier] = supplySku.split('|')
+    const [supplySkuId, sourceType, marketPrice, priceMode, skuSupplier, skuSupplierId] = supplySku.split('|')
     recordVerdict(verdicts, 'sku: 供应链 SKU 落库', Boolean(supplySkuId), supplySkuId)
     recordVerdict(verdicts, 'sku: source_type = 供应链', sourceType === '供应链', sourceType)
     recordVerdict(
@@ -158,7 +162,13 @@ test('INV-01：基础档案建档 + 六价体系 + 公式价校验', async ({ br
     recordVerdict(verdicts, 'sku: 价格模式 = 公式', priceMode === '公式', priceMode)
     recordVerdict(
       verdicts,
-      'sku: 供货商存成自由文本（与供应商档案无关联，佐证 UX-FIXED-01）',
+      'sku: 供货商关联到档案 supplier_id（#132）',
+      skuSupplierId === supplierId && supplierId.length > 0,
+      `supplier_id=${skuSupplierId} 期望=${supplierId}`,
+    )
+    recordVerdict(
+      verdicts,
+      'sku: supplier 名称快照由档案派生写入（批次快照 ensureLotFromSku 取这一列）',
       skuSupplier === SUPPLIER_NAME,
       skuSupplier,
     )
@@ -272,9 +282,14 @@ test('INV-01：基础档案建档 + 六价体系 + 公式价校验', async ({ br
     summarize(1, verdicts)
   }
 
-  // UX 固定断言是「已知缺陷」，单独列出不阻断链路建设
-  const uxFindings = verdicts.filter((v) => v.verdict === 'FAIL' && v.check.startsWith('UX-'))
-  const functional = verdicts.filter((v) => v.verdict === 'FAIL' && !v.check.startsWith('UX-'))
+  // 仍未修的 UX 固定断言单独列出、不阻断链路建设。
+  // ⚠️ 修好一条就要从这里挪走，否则它会从「待修清单」悄悄变成「退化了也不报」：
+  // UX-FIXED-01 / 01b 已由 #132 修复，现在是正式守护 —— 把供货商改回裸 Input
+  // 或删掉 supplier_id 外键，本 spec 会直接红。UX-A11Y-01 仍挂起（#135）。
+  const PENDING_UX_CHECKS = ['UX-A11Y-01']
+  const isPendingUx = (check: string) => PENDING_UX_CHECKS.some((prefix) => check.startsWith(prefix))
+  const uxFindings = verdicts.filter((v) => v.verdict === 'FAIL' && isPendingUx(v.check))
+  const functional = verdicts.filter((v) => v.verdict === 'FAIL' && !isPendingUx(v.check))
   if (uxFindings.length > 0) {
     console.log(`\n[INV-01] ⚠️ UX 发现 ${uxFindings.length} 条（已知缺陷，记入 UX-FINDINGS.md）:`)
     console.log(JSON.stringify(uxFindings, null, 2))
