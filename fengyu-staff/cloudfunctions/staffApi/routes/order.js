@@ -3583,6 +3583,9 @@ async function approveRefund(ctx) {
           refundAmount: it.refundAmount ?? null,
           isFullItemRefund: !!it.isFullItemRefund,
           isOverpay: it.isOverpay === true,
+          // #145/#153：新版明细把余数并在普通行上（quantity 可为 0、isOverpay=false），
+          // 丢掉这个字段会让 G2 复核拿到 0 而直接跳过（对抗审查实证）。
+          overpayAmount: Number(it.overpayAmount ?? 0) || 0,
         }))
         cascadeWholeOrder = !!noteObj.isWholeOrderRefund
       }
@@ -3602,11 +3605,15 @@ async function approveRefund(ctx) {
     const homeOverpayAmt = new Map()
     for (const it of cascadeItems) {
       if (!it.saleItemId) continue
-      if (it.isOverpay) {
-        const amt = Math.abs(Number(it.refundAmount || 0))
-        if (amt > 0) homeOverpayAmt.set(it.saleItemId, (homeOverpayAmt.get(it.saleItemId) || 0) + amt)
-        continue
+      // 历史哨兵行（isOverpay=true）整行就是余数，金额在 refundAmount 上；
+      // 新版明细把余数并在普通行的 overpayAmount 上，quantity 可以为 0。
+      const overpay = it.isOverpay
+        ? Math.abs(Number(it.refundAmount || 0))
+        : Math.max(0, Number(it.overpayAmount || 0))
+      if (overpay > 0) {
+        homeOverpayAmt.set(it.saleItemId, (homeOverpayAmt.get(it.saleItemId) || 0) + overpay)
       }
+      if (it.isOverpay) continue
       const qty = Number(it.sessionCount || 0)
       if (qty > 0) homeRefundQty.set(it.saleItemId, (homeRefundQty.get(it.saleItemId) || 0) + qty)
     }

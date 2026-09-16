@@ -1153,18 +1153,21 @@ export const approveRefund = withPermission(
       const sessionCount = pre.payment.sessionCount ?? null
 
       // 5) 级联回滚（Bug Q/M）：从 note.items 读本次退款明细，逐 item 级联，仅全退 item 作废分配/提成
-      let cascadeItems: Array<{ saleItemId: string; sessionCount: number | null; refundAmount: number | null; isFullItemRefund: boolean; isOverpay?: boolean }> = []
+      let cascadeItems: Array<{ saleItemId: string; sessionCount: number | null; refundAmount: number | null; isFullItemRefund: boolean; isOverpay?: boolean; overpayAmount?: number }> = []
       let cascadeWholeOrder = false
       try {
         const noteObj = pre.payment.note ? JSON.parse(pre.payment.note) : null
         if (noteObj && Array.isArray(noteObj.items)) {
           cascadeItems = noteObj.items.map(
-            (it: { refSaleItemId: string; quantity: number; refundAmount?: number; isFullItemRefund?: boolean; isOverpay?: boolean }) => ({
+            (it: { refSaleItemId: string; quantity: number; refundAmount?: number; isFullItemRefund?: boolean; isOverpay?: boolean; overpayAmount?: number }) => ({
               saleItemId: it.refSaleItemId,
               sessionCount: it.quantity,
               refundAmount: it.refundAmount ?? null,
               isFullItemRefund: !!it.isFullItemRefund,
               isOverpay: it.isOverpay === true,
+              // #145/#153：新版明细把余数并在普通行上（quantity 可为 0、isOverpay=false），
+              // 丢掉这个字段会让 G2 复核拿到 0 而直接跳过（对抗审查实证）。
+              overpayAmount: Number(it.overpayAmount ?? 0) || 0,
             }),
           )
           cascadeWholeOrder = !!noteObj.isWholeOrderRefund
@@ -1187,11 +1190,15 @@ export const approveRefund = withPermission(
       const homeOverpayAmt = new Map<string, number>()
       for (const it of cascadeItems) {
         if (!it.saleItemId) continue
-        if ((it as { isOverpay?: boolean }).isOverpay) {
-          const amt = Math.abs(Number((it as { refundAmount?: unknown }).refundAmount ?? 0))
-          if (amt > 0) homeOverpayAmt.set(it.saleItemId, (homeOverpayAmt.get(it.saleItemId) ?? 0) + amt)
-          continue
+        // 历史哨兵行（isOverpay=true）整行就是余数，金额在 refundAmount 上；
+        // 新版明细把余数并在普通行的 overpayAmount 上，quantity 可以为 0。
+        const overpay = it.isOverpay
+          ? Math.abs(Number(it.refundAmount ?? 0))
+          : Math.max(0, Number(it.overpayAmount ?? 0))
+        if (overpay > 0) {
+          homeOverpayAmt.set(it.saleItemId, (homeOverpayAmt.get(it.saleItemId) ?? 0) + overpay)
         }
+        if (it.isOverpay) continue
         const qty = Number(it.sessionCount ?? 0)
         if (qty > 0) homeRefundQty.set(it.saleItemId, (homeRefundQty.get(it.saleItemId) ?? 0) + qty)
       }

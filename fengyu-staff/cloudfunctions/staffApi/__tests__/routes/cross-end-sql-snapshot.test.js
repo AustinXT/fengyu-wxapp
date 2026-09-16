@@ -2404,6 +2404,16 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
       expect(src, `${end} G2 未复核余数上限`).toContain(
         'computeItemOverpayRemainders([lockedSrc]).get(',
       )
+      // ⚠ 光有复核代码不够：**note.items 的解析必须保留 overpayAmount**。
+      // 新版明细把余数并在普通行上（quantity 可为 0、isOverpay=false），解析时丢掉这个字段
+      // 会让 G2 拿到 0 而直接跳过——复核形同虚设（对抗审查实证，snapshot 原先只查变量存在）。
+      expect(src, `${end} note.items 解析丢弃了 overpayAmount`).toContain(
+        'overpayAmount: Number(it.overpayAmount ?? 0) || 0,',
+      )
+      // 收集时非哨兵行也必须取 overpayAmount，不能只认 isOverpay=true 的历史哨兵
+      expect(src, `${end} 仅从 isOverpay 哨兵行收集余数`).toMatch(
+        /const overpay = it\.isOverpay \? Math\.abs\(Number\(it\.refundAmount (?:\|\||\?\?) 0\)\) : Math\.max\(0, Number\(it\.overpayAmount (?:\|\||\?\?) 0\)\)/,
+      )
     }
   })
 
