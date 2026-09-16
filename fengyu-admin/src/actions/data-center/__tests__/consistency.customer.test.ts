@@ -228,7 +228,9 @@ function stripSqlComments(sql: string): string {
       // PG 的 dollar-quote tag 规则同未引标识符：可含数字、首位不可数字；`$$` 也合法。
       // `$1` / `$2` 参数占位不匹配（数字开头且无闭合 `$`）。
       // ⚠ 已知简化：未检查 tag 与前一个标识符的边界，`name$tag$` 会被误判为起始符（当前零命中）。
-      const m = /^\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$/.exec(sql.slice(i))
+      //   未闭合时抛错，所以最坏是误红，不会静默放行。
+      // 用 Unicode 属性转义：PG 的未引标识符允许非 ASCII 字母（`$标签$` 合法）
+      const m = /^\$(?:[\p{L}_][\p{L}\p{N}_]*)?\$/u.exec(sql.slice(i))
       if (m) {
         const tag = m[0]
         const close = sql.indexOf(tag, i + tag.length)
@@ -752,12 +754,15 @@ describe('客量板块两端口径一致性守护', () => {
         expect(() => stripSqlComments('a = ${unclosed')).toThrow(/未闭合/)
       })
 
-      it('dollar-quote tag 允许含数字（PG 规则同未引标识符）', () => {
+      it('dollar-quote tag 允许含数字 / 非 ASCII（PG 规则同未引标识符）', () => {
         expect(clean("a = $t1$ -- not a comment $t1$ AND c = 3")).toBe(
           "a = $t1$ -- not a comment $t1$ AND c = 3",
         )
         expect(clean("a = $$ -- not a comment $$ AND c = 3"), '匿名 $$ 也合法').toBe(
           "a = $$ -- not a comment $$ AND c = 3",
+        )
+        expect(clean("a = $标签$ -- not a comment $标签$ AND c = 3"), '非 ASCII tag').toBe(
+          "a = $标签$ -- not a comment $标签$ AND c = 3",
         )
       })
     })
