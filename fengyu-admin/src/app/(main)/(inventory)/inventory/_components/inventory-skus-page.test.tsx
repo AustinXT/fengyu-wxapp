@@ -228,6 +228,23 @@ describe('InventorySkusPage', () => {
       expect(mockUpdateInventorySku.mock.calls[0][1].supplierId).toBeUndefined()
     })
 
+    it('存量文本的 SKU：选了档案又改回「未指定」时提交 null（能把旧文本清掉）', async () => {
+      // 「没碰过」与「选了又改回未指定」的 form.supplierId 都是 ''，不靠 touched 标记区分的话，
+      // 后者也会走「两列都不动」—— 那段没匹配上的旧文本就永远删不掉了（改造前的自由输入框能删）
+      const legacyText: InventorySkuRow = {
+        ...row, supplier: '某个没建档的供应商', supplierId: null, supplierName: null,
+      }
+      renderPage({ rows: [legacyText] })
+      fireEvent.click(screen.getByTitle('编辑库存商品'))
+
+      fireEvent.change(supplierSelect(), { target: { value: 'SUP-1' } })
+      fireEvent.change(supplierSelect(), { target: { value: '' } })
+      fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+      await waitFor(() => expect(mockUpdateInventorySku).toHaveBeenCalled())
+      expect(mockUpdateInventorySku.mock.calls[0][1].supplierId).toBeNull()
+    })
+
     it('主动清空已有关联时提交 null', async () => {
       const linked: InventorySkuRow = {
         ...row,

@@ -270,13 +270,25 @@ export default function InventorySuppliersPage({
             <label className="text-sm font-medium">备注</label>
             <Textarea value={form.remark} onChange={(event) => setField('remark', event.target.value)} />
           </div>
-          <div className="flex items-center gap-3 sm:col-span-2">
-            <Switch
-              checked={form.isActive}
-              onCheckedChange={(value) => setField('isActive', value)}
-              aria-label="供应商启用状态"
-            />
-            <span className="text-sm text-[#666666]">{form.isActive ? '启用' : '停用'}</span>
+          <div className="flex flex-col gap-2 sm:col-span-2">
+            <div className="flex items-center gap-3">
+              <Switch
+                checked={form.isActive}
+                onCheckedChange={(value) => setField('isActive', value)}
+                aria-label="供应商启用状态"
+              />
+              <span className="text-sm text-[#666666]">{form.isActive ? '启用' : '停用'}</span>
+            </div>
+            {/*
+              列表里的「停用」按钮走 AlertDialog 会提示关联数，但从**编辑弹窗**把开关切到停用
+              是另一条入口，它直接 submit()、绕过那个对话框。只守一条入口等于没守。
+            */}
+            {!!editing && editing.isActive && !form.isActive && editing.linkedSkuCount > 0 && (
+              <p className="text-sm text-[var(--destructive)]">
+                仍有 {editing.linkedSkuCount} 个库存商品关联该供应商。
+                停用后这些商品的关联保持不变，但新建 / 改挂其它商品时将不能再选它。
+              </p>
+            )}
           </div>
         </div>
         <DialogFooter>

@@ -333,6 +333,10 @@ function SkuFormDialog({
 }) {
   const [form, setForm] = useState<SkuForm>(() => row ? formFromRow(row) : emptyForm())
   const [submitting, setSubmitting] = useState(false)
+  // 用户有没有动过供货商下拉。没有它就分不清「没碰」和「选了档案又改回未指定」——
+  // 两者的 form.supplierId 都是 ''，而前者要保住存量旧文本、后者是明确要清空。
+  // 不区分的话，未匹配上档案的那段旧文本用户**永远删不掉**（改造前的自由输入框能删）。
+  const [supplierTouched, setSupplierTouched] = useState(false)
   const [supplierFormOpen, setSupplierFormOpen] = useState(false)
   const [supplierDraft, setSupplierDraft] = useState({ name: '', contactName: '', phone: '' })
   const [savingSupplier, setSavingSupplier] = useState(false)
@@ -352,8 +356,12 @@ function SkuFormDialog({
 
   const supplierChoices = useMemo(() => {
     const merged = new Map<string, string>()
-    for (const option of supplierOptions) merged.set(option.supplierId, option.name)
+    // 顺序是刻意的：**本地新建的先放、服务器的后放**，让服务器值覆盖本地缓存。
+    // 反过来的话，在本页快捷建了档案、别处又把它改了名，`router.refresh()` 下发的新名
+    // 会被本地缓存的旧名盖掉 —— 列表（走 JOIN）显示新名、下拉显示旧名，而保存时后端
+    // 又按 id 派生出新名，界面与实际写入值对不上。
     for (const option of createdSuppliers) merged.set(option.supplierId, option.name)
+    for (const option of supplierOptions) merged.set(option.supplierId, option.name)
     // 已关联的档案后来被停用时，它不在「启用中」的选项里。不补进来的话下拉会显示空，
     // 用户一保存就把关联清掉了 —— 这是编辑旧 SKU 最容易丢数据的地方。
     if (row?.supplierId && !merged.has(row.supplierId)) {
@@ -388,6 +396,7 @@ function SkuFormDialog({
       // 只更新本地选项、不 router.refresh()：refresh 会让 server 重新下发 row，
       // SkuFormDialog 的 useEffect([open, row]) 随即把用户填到一半的表单重置掉。
       onSupplierCreated({ supplierId, name })
+      setSupplierTouched(true)
       setField('supplierId', supplierId)
       setSupplierDraft({ name: '', contactName: '', phone: '' })
       setSupplierFormOpen(false)
@@ -426,7 +435,7 @@ function SkuFormDialog({
         //   选了档案            → 传 id，后端顺带把档案名写进 supplier 快照
         //   没选，且原本就没关联、只有一段没匹配上的旧文本 → 不传，保住那段文本
         //   其余（含主动清空已有关联）→ null，两列一起清
-        supplierId: form.supplierId || (unlinkedLegacyText ? undefined : null),
+        supplierId: form.supplierId || (unlinkedLegacyText && !supplierTouched ? undefined : null),
         manufacturer: form.manufacturer,
         brand: form.brand,
         productSeries: form.productSeries,
@@ -500,7 +509,10 @@ function SkuFormDialog({
                 <span className="text-[#666666]">供货商</span>
                 <Select
                   value={form.supplierId}
-                  onChange={(event) => setField('supplierId', event.target.value)}
+                  onChange={(event) => {
+                    setSupplierTouched(true)
+                    setField('supplierId', event.target.value)
+                  }}
                 >
                   <option value="">未指定</option>
                   {supplierChoices.map((option) => (
@@ -529,7 +541,8 @@ function SkuFormDialog({
               )}
               {unlinkedLegacyText && !form.supplierId && (
                 <p className="text-xs text-[#D4820A]">
-                  原填写「{unlinkedLegacyText}」未匹配到供应商档案。选择档案即完成关联；不选则保留原文本。
+                  原填写「{unlinkedLegacyText}」未匹配到供应商档案。选择档案即完成关联；
+                  保持不动则保留原文本。要清空它：先切到别的选项再切回「未指定」。
                 </p>
               )}
               {supplierFormOpen && (

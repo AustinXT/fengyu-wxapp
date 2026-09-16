@@ -55,10 +55,16 @@ const SESSION = {
 } as never
 
 function selectWithLimit(rows: unknown[]) {
+  // `.limit(1)` 之后可能再接 `.for('share')`（resolveSkuSupplier 对供应商行加行锁），
+  // 所以这里返回一个既可 await、又带 `.for()` 的 thenable，两种写法都能跑。
+  const result = {
+    then: (resolve: (value: unknown[]) => unknown) => resolve(rows),
+    for: async () => rows,
+  }
   return {
     from: () => ({
       where: () => ({
-        limit: async () => rows,
+        limit: () => result,
       }),
     }),
   }
@@ -396,6 +402,10 @@ describe('库存 SKU 来源与价格保护', () => {
     vi.mocked(isAdminScope).mockReturnValue(true)
     mockGetSession.mockResolvedValue(SESSION)
     mockDb.select.mockReset()
+    // updateInventorySku 现在整段跑在事务里（resolveSkuSupplier 要在同一事务内对档案行
+    // 加 FOR SHARE）。默认把 mockDb 自身当 tx 传进去，tx.select / tx.update 就直接复用
+    // 各测试已有的 mock；需要 execute/insert 的建单类测试再用 mockImplementationOnce 覆盖。
+    mockDb.transaction.mockImplementation(async (callback: (tx: unknown) => unknown) => callback(mockDb))
   })
 
   it('库存商品编号按上海日期和当日序号由系统生成', async () => {
@@ -486,9 +496,10 @@ describe('库存 SKU 来源与价格保护', () => {
   // 派生断了批次快照就会变空。
 
   it('新建 SKU 选中档案时同时写入 supplier_id 与名称快照', async () => {
-    mockDb.select.mockReturnValueOnce(selectWithLimit([{ name: '广州美姿贺生物科技', isActive: true }]))
     const values = vi.fn().mockResolvedValue(undefined)
+    // 供应商解析已移进事务内（要对档案行加 FOR SHARE），所以 tx 也得提供 select
     mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
+      select: vi.fn(() => selectWithLimit([{ name: '广州美姿贺生物科技', isActive: true }])),
       execute: vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([{ value: 'INV-SKU-20260916-0001' }]),
       insert: vi.fn(() => ({ values })),
     }))
@@ -525,7 +536,11 @@ describe('库存 SKU 来源与价格保护', () => {
 
     await updateInventorySku('SKU-1', { productName: '改个名' })
 
-    // drizzle 对 undefined 的列不生成 SET 子句 —— 这正是「两列都别动」的实现方式
+    // drizzle 对 undefined 的列不生成 SET 子句 —— 这正是「两列都别动」的实现方式。
+    // ⚠️ 单看这两条断言，把生产代码里的字段映射整行删掉它们照样绿（都还是 undefined）。
+    // 所以补一条正向锚点证明 set 确实被正常调用过；而「传了 id 就写两列」由
+    // 「显式传 null / 选中档案」那两条测试守护，删掉映射会让它们红。
+    expect(set.mock.calls[0]?.[0]).toMatchObject({ productName: '改个名' })
     expect(set.mock.calls[0]?.[0]?.supplierId).toBeUndefined()
     expect(set.mock.calls[0]?.[0]?.supplier).toBeUndefined()
   })
@@ -571,7 +586,10 @@ describe('库存 SKU 来源与价格保护', () => {
 
   it('供应商改名同步回写关联 SKU 的名称快照', async () => {
     const supplierSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }))
-    const skuSet = vi.fn((_values: Record<string, unknown>) => ({ where: vi.fn().mockResolvedValue(undefined) }))
+    // 把 where 的实参记下来：漏掉 `.where(eq(supplierId, ...))` 的话，一次改名会把
+    // **全表** SKU 的 supplier 都改成这个名字 —— 只断言 set 的内容是拦不住这种数据损坏的
+    const skuWhere = vi.fn().mockResolvedValue(undefined)
+    const skuSet = vi.fn((_values: Record<string, unknown>) => ({ where: skuWhere }))
     let call = 0
     mockDb.select.mockReturnValueOnce(selectWithLimit([{ supplierId: 'SUP-1' }]))
     mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
@@ -583,6 +601,12 @@ describe('库存 SKU 来源与价格保护', () => {
     // 不回写的话：admin 列表读 JOIN 的实时名，而 staffApi 的 SKU 列表与新建批次读文本列，
     // 同一个供应商在两端显示成两个名字
     expect(skuSet).toHaveBeenCalledWith(expect.objectContaining({ supplier: '改名后的供应商' }))
+    // 必须带 WHERE，且限定的是 supplier_id 这一列。
+    // 列名要从 drizzle 的 SQL 片段里挖（renderSql 只渲染字面量片段，把 Column 对象渲成
+    // [object Object]）—— 依赖内部结构，但这是能区分「限定了哪一列」的最直接方式。
+    expect(skuWhere).toHaveBeenCalledTimes(1)
+    const whereArg = skuWhere.mock.calls[0]?.[0] as { queryChunks?: Array<{ name?: string }> }
+    expect(whereArg?.queryChunks?.some((chunk) => chunk?.name === 'supplier_id')).toBe(true)
   })
 
   it('只改联系方式时不回写 SKU 名称快照', async () => {

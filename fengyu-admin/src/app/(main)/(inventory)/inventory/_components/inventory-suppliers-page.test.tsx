@@ -77,6 +77,17 @@ describe('InventorySuppliersPage（#132 关联 SKU 计数）', () => {
     expect(mockToastSuccess).toHaveBeenCalledWith('供应商已停用')
   })
 
+  it('从编辑弹窗把开关切到停用时，同样提示关联数（那条入口绕过了 AlertDialog）', () => {
+    render(
+      <InventorySuppliersPage rows={[supplier({ linkedSkuCount: 7 })]} canCreate canUpdate />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /编辑/ }))
+    expect(screen.queryByText(/仍有 7 个库存商品关联该供应商/)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByLabelText('供应商启用状态'))
+    expect(screen.getByText(/仍有 7 个库存商品关联该供应商/)).toBeInTheDocument()
+  })
+
   it('无关联时不显示关联提示', () => {
     render(
       <InventorySuppliersPage rows={[supplier({ linkedSkuCount: 0 })]} canCreate canUpdate />,

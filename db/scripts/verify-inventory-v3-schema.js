@@ -37,6 +37,7 @@ const FORBIDDEN_TABLES = [
 const REQUIRED_COLUMNS = [
   ['inventory_locations', 'parent_location_id'],
   ['inventory_stock_lots', 'supplier_id'],
+  ['inventory_skus', 'supplier_id'],
   ['inventory_stock_lots', 'source_doc_id'],
   ['inventory_doc_links', 'from_item_id'],
   ['inventory_doc_links', 'to_item_id'],
@@ -57,6 +58,7 @@ const FORBIDDEN_COLUMNS = [
 const REQUIRED_CONSTRAINTS = [
   'inventory_locations_parent_location_id_inventory_locations_location_id_fk',
   'inventory_stock_lots_supplier_id_inventory_suppliers_supplier_id_fk',
+  'inventory_skus_supplier_id_inventory_suppliers_supplier_id_fk',
   'inventory_stock_lots_source_doc_id_inventory_docs_id_fk',
   'inventory_doc_items_promotion_plan_id_inventory_promotion_plans_id_fk',
   'inventory_doc_links_from_item_doc_fk',
@@ -97,6 +99,7 @@ const REQUIRED_MIGRATIONS = [
   '0010_mute_black_bolt',
   '0017_watery_slyde',
   '0018_complete_amazoness',
+  '0041_inventory_sku_supplier_fk',
 ]
 
 function postgresIdentifier(name) {
@@ -261,6 +264,52 @@ async function main() {
           ? [`malformed movement document pairs=${audit.malformed_movement_doc_pair_count}`]
           : []),
       ],
+    ) && ok
+
+    // ── SKU 供货商关联档案（#132）的回填核对 ──────────────────────────
+    // issue 验收标准要求「迁移结果可核对（迁移前后条数、未匹配清单）」。
+    // 这里是**只读**核对：未匹配不算失败 —— 按拍板口径 Q1，匹配不上的本来就该留 NULL、
+    // 不自动建档，需要人工在 admin 改挂。所以只打印清单，不置 exitCode。
+    const supplierRows = await client.query(
+      `SELECT
+         COUNT(*)::int AS total,
+         COUNT(supplier_id)::int AS linked,
+         COUNT(*) FILTER (
+           WHERE supplier_id IS NULL AND btrim(COALESCE(supplier, '')) <> ''
+         )::int AS unmatched,
+         COUNT(*) FILTER (
+           WHERE supplier_id IS NOT NULL
+             AND supplier IS DISTINCT FROM (
+               SELECT v.name FROM inventory_suppliers v WHERE v.supplier_id = inventory_skus.supplier_id
+             )
+         )::int AS name_drift
+         FROM inventory_skus`,
+    )
+    const supplierAudit = supplierRows.rows[0]
+    console.log(
+      `INFO inventory_skus supplier: total=${supplierAudit.total} linked=${supplierAudit.linked} `
+      + `unmatched_text=${supplierAudit.unmatched} name_drift=${supplierAudit.name_drift}`,
+    )
+    if (Number(supplierAudit.unmatched) > 0) {
+      const unmatchedRows = await client.query(
+        `SELECT sku_id, product_name, supplier
+           FROM inventory_skus
+          WHERE supplier_id IS NULL AND btrim(COALESCE(supplier, '')) <> ''
+          ORDER BY supplier, sku_id
+          LIMIT 50`,
+      )
+      console.log('INFO unmatched supplier text (need manual re-link, up to 50):')
+      for (const row of unmatchedRows.rows) {
+        console.log(`  - ${row.sku_id} ${row.product_name} => ${JSON.stringify(row.supplier)}`)
+      }
+    }
+    // 名称漂移**是**真问题：supplier 文本由 supplier_id 派生，两者对不上说明有写入路径
+    // 绕过了派生（例如 WorkFine 导入覆盖了已关联 SKU 的文本）。
+    ok = report(
+      'inventory_skus supplier snapshot',
+      Number(supplierAudit.name_drift) > 0
+        ? [`supplier text differs from linked profile name on ${supplierAudit.name_drift} rows`]
+        : [],
     ) && ok
 
     if (!ok) process.exitCode = 1

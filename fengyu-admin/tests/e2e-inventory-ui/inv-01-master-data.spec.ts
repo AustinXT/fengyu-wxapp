@@ -119,16 +119,23 @@ test('INV-01：基础档案建档 + 六价体系 + 公式价校验', async ({ br
       supplierTag === 'select',
       `tagName=${supplierTag}`,
     )
-    // 更深一层：数据模型上要有真外键，否则「选择器」只是个摆设
+    // 更深一层：数据模型上要有**真外键**，否则「选择器」只是个摆设。
+    // ⚠️ 不能只查 information_schema.columns 有没有这一列：把 migration 的 ADD CONSTRAINT
+    //    删掉、只留 `supplier_id text`，那种查法照样返回 1、断言照样绿，
+    //    而数据库已经允许写入一个根本不存在的供应商 id。必须查约束本身 + 它指向谁。
     const hasSupplierFk = psql(
-      `SELECT count(*) FROM information_schema.columns
-        WHERE table_name = 'inventory_skus' AND column_name = 'supplier_id'`,
+      `SELECT count(*) FROM pg_constraint c
+        WHERE c.conrelid = 'inventory_skus'::regclass
+          AND c.contype = 'f'
+          AND c.confrelid = 'inventory_suppliers'::regclass
+          AND (SELECT attname FROM pg_attribute
+                WHERE attrelid = c.conrelid AND attnum = c.conkey[1]) = 'supplier_id'`,
     )
     recordVerdict(
       verdicts,
-      'UX-FIXED-01b: inventory_skus 有 supplier_id 外键（#132）',
+      'UX-FIXED-01b: inventory_skus.supplier_id 有指向 inventory_suppliers 的外键（#132）',
       hasSupplierFk === '1',
-      `supplier_id 列数=${hasSupplierFk}`,
+      `外键数=${hasSupplierFk}`,
     )
 
     // 定位用 role + exact name：Field 的 <label> 包裹控件，但「市场进货价」那个
