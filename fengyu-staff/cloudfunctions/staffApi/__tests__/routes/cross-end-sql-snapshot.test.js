@@ -2581,9 +2581,11 @@ describe('疗程卡可用次数为 0 时仍展示的跨端守护（issue #122）
         // 必须剥注释：两个文件的注释里正好都提到 `utils/attribution-guard.js`，
         // 裸 readFile 会让第一条断言被注释满足。
         // （本文件没有通用 stripComments，这里就地剥掉块注释与整行行注释。）
+        // 块注释 + 行注释（含**行内尾注释**：`x(); // assertPaymentAttributionReady(pg)`
+        // 这种写法会让「删了调用但留着尾注释」骗过断言 —— GLM 评审指出）
         const src = readFile(FILES[key])
           .replace(/\/\*[\s\S]*?\*\//g, ' ')
-          .replace(/^[ \t]*\/\/.*$/gm, '')
+          .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ')
         expect(src, `${key} 未接入 attribution-guard`).toContain('utils/attribution-guard')
         expect(src, `${key} 未在年度消费查询前调用守卫`)
           .toContain('assertPaymentAttributionReady(pg)')
