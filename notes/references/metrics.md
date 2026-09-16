@@ -840,9 +840,12 @@ tiyan AS (                                    -- 体验：期内有购买但全�
 > 索引建议**只能建在底层表上**——`sale_item_performance_events` 是普通 `pgView`，不能直接建索引，
 > 且 `sale_item_performance_events.performance_date` 的**底表来源有两个分支**：
 > **receipt 分支**继承款项事件日期（→ `sale_order_payments.performance_attribution_date`）、
-> **legacy residual 分支**直读 `sale_orders.performance_attribution_date`；
-> `client_user_id` / `status` 又都在 `sale_orders`。
-> 跨多张表且分支不同，无法组成单个复合索引。
+> **legacy residual 分支**直读 `sale_orders.performance_attribution_date`。
+> 而 `client_user_id` / `status` **并不是该视图自身的列** —— 视图只输出
+> `event_key / receipt_id / sale_payment_id / sale_order_id / sale_item_id / store_id /
+> amount / sales_category / change_type / performance_date / is_initial_event / is_legacy_residual`；
+> 顾客与状态过滤是消费方再 JOIN `sale_orders` 得到的。
+> 跨多张表、分支日期来源又不同，无法组成单个复合索引。
 > 按实际 JOIN/过滤路径分别考虑：`sale_order_payments(performance_attribution_date)`、
 > `sale_orders(client_user_id, status)`、`sale_items(sale_order_id)`。800ms slow warn 阈值。
 > ⚠ **2026-09-14 订正**：原建议面向 `sale_order_datetime/paid_at` 的复合索引，
