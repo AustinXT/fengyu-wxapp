@@ -303,23 +303,45 @@ describe('InventorySkusPage', () => {
     })
 
     it('选中的档案不在选项里时补占位，不让显示值与提交值分裂', async () => {
-      // 服务端重新下发选项会把本地缓存淘汰掉，而表单里还留着刚建的那个 id。
-      // 不补占位的话原生 <select> 找不到 option 会显示成「未指定」，
-      // 保存提交的却仍是那个 id —— 用户看到的和落库的不是一回事。
-      const linkedToUnknown: InventorySkuRow = {
-        ...row, supplier: null, supplierId: 'SUP-NOT-IN-OPTIONS', supplierName: null,
+      // ⚠️ 夹具必须让 row.supplierId **为空**：若把待测 id 放在 row 上，
+      // `formFromRow` 会让 form.supplierId === row.supplierId，于是「（已停用）」补回分支
+      // 先把它塞进 options，占位分支的 `!merged.has(...)` 恒为 false —— 删掉占位实现
+      // 测试照样绿（两个谱系的评审都抓到了这一点）。
+      // 真正要覆盖的是：**用户选中的 id 异于 row**，随后服务端重新下发的选项里没有它。
+      const noSupplier: InventorySkuRow = {
+        ...row, supplier: null, supplierId: null, supplierName: null,
       }
-      renderPage({ rows: [linkedToUnknown], supplierOptions: [] })
+      const props = (options: InventorySupplierOption[]) => (
+        <InventorySkusPage
+          rows={[noSupplier]}
+          total={1}
+          markets={[]}
+          supplierOptions={options}
+          canCreate
+          canUpdate
+          canCreateSupplier
+          canViewPrice
+          canManageMarketSkus
+          canManageSupplySkus
+        />
+      )
+      const { rerender } = render(props(SUPPLIER_OPTIONS))
       fireEvent.click(screen.getByTitle('编辑库存商品'))
+      fireEvent.change(supplierSelect(), { target: { value: 'SUP-2' } })
+
+      // 服务端重新下发，SUP-2 已不在选项里（被停用 / 被过滤）。
+      // editing 不变 → 弹窗 key 不变 → 组件不重挂 → form.supplierId 仍是 SUP-2。
+      rerender(props([]))
 
       const select = supplierSelect()
-      expect(select.value).toBe('SUP-NOT-IN-OPTIONS')
-      expect(Array.from(select.options).map((o) => o.value)).toContain('SUP-NOT-IN-OPTIONS')
+      expect(select.value).toBe('SUP-2')
+      expect(Array.from(select.options).map((o) => o.textContent))
+        .toContain('已选供应商（刷新后可见）')
 
       fireEvent.click(screen.getByRole('button', { name: '保存' }))
       await waitFor(() => expect(mockUpdateInventorySku).toHaveBeenCalledWith(
         'SKU-1',
-        expect.objectContaining({ supplierId: 'SUP-NOT-IN-OPTIONS' }),
+        expect.objectContaining({ supplierId: 'SUP-2' }),
       ))
     })
 
