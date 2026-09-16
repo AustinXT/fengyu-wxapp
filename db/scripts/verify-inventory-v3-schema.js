@@ -268,8 +268,21 @@ async function main() {
 
     // ── SKU 供货商关联档案（#132）的回填核对 ──────────────────────────
     // issue 验收标准要求「迁移结果可核对（迁移前后条数、未匹配清单）」。
-    // 这里是**只读**核对：未匹配不算失败 —— 按拍板口径 Q1，匹配不上的本来就该留 NULL、
-    // 不自动建档，需要人工在 admin 改挂。所以只打印清单，不置 exitCode。
+    //
+    // ⚠️ 能核对什么、不能核对什么，说清楚：
+    //   能：迁移**后**的状态 —— 关联数、未匹配清单、名称漂移、「有同名档案却一条都没关联」。
+    //   不能：**迁移前后的条数对比**。本脚本是事后只读核验，拿不到迁移前的基线，
+    //         所以「迁移过程中丢了几行 SKU」「未匹配文本被误清空」这两类它抓不到
+    //         （当前 0042 的 SQL 不会造成这两种情况，但脚本无法**证明**没发生）。
+    //         要真正核对条数，必须在**迁移前**先跑一次基线采集：
+    //           SELECT count(*) AS total,
+    //                  count(*) FILTER (WHERE btrim(COALESCE(supplier,'')) <> '') AS with_text,
+    //                  count(supplier_id) AS linked
+    //             FROM inventory_skus;
+    //         迁移后把 total 与 with_text 对回来（两者都不应减少）。
+    //
+    // 未匹配本身不算失败 —— 按拍板口径 Q1，匹配不上的本来就该留 NULL、不自动建档，
+    // 需要人工在 admin 改挂。
     const supplierRows = await client.query(
       `SELECT
          COUNT(*)::int AS total,
@@ -277,8 +290,12 @@ async function main() {
          COUNT(*) FILTER (
            WHERE supplier_id IS NULL AND btrim(COALESCE(supplier, '')) <> ''
          )::int AS unmatched,
-         -- 「本来能精确匹配到档案、却没有回填」= 回填根本没跑（或被改坏了）。
-         -- 必须与「确实没有对应档案的遗留文本」区分开：前者是缺陷，后者是拍板口径 Q1。
+         -- 「有同名档案却没关联上」的两种成因必须分开，否则要么误报要么漏报：
+         --  (a) 档案是**后**建的（SKU 早就在，后来才有人建了同名档案）——
+         --      系统没有「建档后自动回溯关联」这条规则，属正常业务状态，只提示不失败。
+         --  (b) 建这条 SKU 时档案**已经存在**了 —— 那它本该被关联上（迁移回填或
+         --      WorkFine 导入的逐行 link 都应命中），没关联就是缺陷，逐行判失败。
+         -- 用 created_at 先后区分两者。
          COUNT(*) FILTER (
            WHERE supplier_id IS NULL
              AND btrim(COALESCE(supplier, '')) <> ''
@@ -286,6 +303,15 @@ async function main() {
                SELECT 1 FROM inventory_suppliers v WHERE v.name = btrim(inventory_skus.supplier)
              )
          )::int AS matchable_but_unlinked,
+         COUNT(*) FILTER (
+           WHERE supplier_id IS NULL
+             AND btrim(COALESCE(supplier, '')) <> ''
+             AND EXISTS (
+               SELECT 1 FROM inventory_suppliers v
+                WHERE v.name = btrim(inventory_skus.supplier)
+                  AND v.created_at <= inventory_skus.created_at
+             )
+         )::int AS matchable_at_creation,
          COUNT(*) FILTER (
            WHERE supplier_id IS NOT NULL
              AND supplier IS DISTINCT FROM (
@@ -296,9 +322,12 @@ async function main() {
     )
     const supplierAudit = supplierRows.rows[0]
     console.log(
+      'INFO inventory_skus supplier baseline note: 迁移前后条数对比需在迁移前另行采集基线，本脚本只核验迁移后状态',
+    )
+    console.log(
       `INFO inventory_skus supplier: total=${supplierAudit.total} linked=${supplierAudit.linked} `
       + `unmatched_text=${supplierAudit.unmatched} matchable_but_unlinked=${supplierAudit.matchable_but_unlinked} `
-      + `name_drift=${supplierAudit.name_drift}`,
+      + `matchable_at_creation=${supplierAudit.matchable_at_creation} name_drift=${supplierAudit.name_drift}`,
     )
     if (Number(supplierAudit.unmatched) > 0) {
       const unmatchedRows = await client.query(
@@ -329,11 +358,14 @@ async function main() {
         ...(Number(supplierAudit.name_drift) > 0
           ? [`supplier text differs from linked profile name on ${supplierAudit.name_drift} rows`]
           : []),
-        // 只在「一条都没关联上」时判失败。迁移之后新建/改名出一个同名档案是正常业务变化
-        // （系统没有「建档后自动回溯关联遗留 SKU」这条规则），拿它当迁移失败会误报；
-        // 而回填真没跑的话，当时能匹配的**一条都不会**被关联上 —— linked=0 才是那个信号。
+        // 逐行判（与 name_drift 同口径）：建 SKU 时档案就在，却没关联上 = 回填/导入的
+        // link 步骤没生效。档案后建那种正常状态已经被 created_at 条件排除掉了。
+        ...(Number(supplierAudit.matchable_at_creation) > 0
+          ? [`${supplierAudit.matchable_at_creation} rows had a matching supplier profile at creation time but no supplier_id (backfill / import link step did not run?)`]
+          : []),
+        // 「一条都没关联上」是回填整段没跑的强信号，即便上面那条因 created_at 先后被放过
         ...(Number(supplierAudit.matchable_but_unlinked) > 0 && Number(supplierAudit.linked) === 0
-          ? [`${supplierAudit.matchable_but_unlinked} rows have an exactly-matching supplier profile and nothing is linked at all (migration 0042 backfill did not run?)`]
+          ? [`nothing is linked at all while ${supplierAudit.matchable_but_unlinked} rows have an exactly-matching profile (migration 0042 backfill did not run?)`]
           : []),
       ],
     ) && ok

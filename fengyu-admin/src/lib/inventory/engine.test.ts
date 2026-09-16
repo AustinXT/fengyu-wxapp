@@ -650,7 +650,36 @@ describe('库存 SKU 来源与价格保护', () => {
     expect(update).toHaveBeenCalledTimes(1)
   })
 
-  it('表单全量提交同名时不回写；事务内发现名字已被他人改掉则照常回写', async () => {
+  it('表单全量提交、名字没变时不回写 SKU', async () => {
+    // 供应商页 submit() 是全量提交，每次编辑都带 name。丢掉「与 locked.name 的相等比较」
+    // 的话，只改电话 / 停用也会触发整批关联 SKU 的 supplier 与 updated_at 被无因重写。
+    // 这一侧此前没有任何断言覆盖 —— 改坏了 2800+ 条测试照样全绿。
+    const supplierSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }))
+    const update = vi.fn(() => ({ set: supplierSet }))
+    mockDb.select.mockReturnValueOnce(selectWithLimit([{ supplierId: 'SUP-1', name: '甲公司' }]))
+    mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
+      select: vi.fn(() => selectWithLock([{ name: '甲公司' }], {})),
+      update,
+    }))
+
+    await updateInventorySupplier('SUP-1', { name: '甲公司', phone: '13900000000' })
+
+    // 只更新了档案本身，没有第二次 update（SKU 回写）
+    expect(update).toHaveBeenCalledTimes(1)
+  })
+
+  it('改名撞唯一约束时抛可读的 CONFLICT（update 路径）', async () => {
+    const duplicate = Object.assign(new Error('Failed query'), {
+      cause: { code: '23505', constraint: 'uq_inventory_suppliers_name' },
+    })
+    mockDb.select.mockReturnValueOnce(selectWithLimit([{ supplierId: 'SUP-1', name: '甲公司' }]))
+    mockDb.transaction.mockImplementationOnce(async () => { throw duplicate })
+
+    await expect(updateInventorySupplier('SUP-1', { name: '乙公司' }))
+      .rejects.toThrow('供应商名称「乙公司」已存在')
+  })
+
+  it('事务内发现名字已被他人改掉时照常回写', async () => {
     // 供应商表单是全量提交，停用/改电话时 name 照样在 payload 里。
     // 判据必须是「事务内锁到的旧名 vs 新名」：
     //  - 锁到的还是同一个名字 → 真的没改名 → 不回写（否则无因刷整批 SKU 的 updated_at）

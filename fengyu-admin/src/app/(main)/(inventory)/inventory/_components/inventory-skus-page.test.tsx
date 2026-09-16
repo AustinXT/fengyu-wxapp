@@ -263,6 +263,45 @@ describe('InventorySkusPage', () => {
       expect(mockUpdateInventorySku.mock.calls[0][1].supplierId).toBeNull()
     })
 
+    it('取消新建弹窗后重开，快捷建档草稿不残留', () => {
+      // 走**新建**路径才真正依赖那几行重置：key 恒为 'create'，
+      // editing 从 null 变 undefined 不会让组件卸载，state 不会自然清空。
+      //（编辑路径的 key 会从 skuId 变 create 而重建，测不出重置代码有没有用。）
+      renderPage()
+
+      fireEvent.click(screen.getByRole('button', { name: /新建/ }))
+      fireEvent.click(screen.getByRole('button', { name: '+ 新建供应商' }))
+      fireEvent.change(screen.getByLabelText('新供应商名称 *'), { target: { value: '放弃的草稿' } })
+      // 此时有两个「取消」：快捷建档区块的、和弹窗底部的。要点的是**外层弹窗**那个
+      const cancels = screen.getAllByRole('button', { name: '取消' })
+      fireEvent.click(cancels[cancels.length - 1])
+
+      fireEvent.click(screen.getByRole('button', { name: /新建/ }))
+      // 快捷建档面板应已收起、草稿应已清空，否则用户会拿上次放弃的内容建出档案
+      expect(screen.queryByLabelText('新供应商名称 *')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '+ 新建供应商' })).toBeInTheDocument()
+    })
+
+    it('点了「清空原文本」后取消、再打开，不会残留清空意图', async () => {
+      // 这条守的是**行为**：当前由「关闭时 key 从 skuId 变 create、组件重建」保证
+      //（删掉重置代码本条仍绿 —— 真正依赖重置的是上面那条新建路径）。
+      const legacyText: InventorySkuRow = {
+        ...row, supplier: '某个没建档的供应商', supplierId: null, supplierName: null,
+      }
+      renderPage({ rows: [legacyText], supplierOptions: [], canCreateSupplier: false })
+
+      fireEvent.click(screen.getByTitle('编辑库存商品'))
+      fireEvent.click(screen.getByRole('button', { name: '清空原文本' }))
+      fireEvent.click(screen.getByRole('button', { name: '取消' }))
+
+      fireEvent.click(screen.getByTitle('编辑库存商品'))
+      expect(screen.getByRole('button', { name: '清空原文本' })).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+      await waitFor(() => expect(mockUpdateInventorySku).toHaveBeenCalled())
+      expect(mockUpdateInventorySku.mock.calls[0][1].supplierId).toBeUndefined()
+    })
+
     it('主动清空已有关联时提交 null', async () => {
       const linked: InventorySkuRow = {
         ...row,

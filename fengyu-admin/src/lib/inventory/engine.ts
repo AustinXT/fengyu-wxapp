@@ -3461,7 +3461,7 @@ export const updateInventorySupplier = withPermission(
         }
       })
     } catch (error) {
-      throw supplierNameConflict(error, nextName ?? '')
+      throw supplierNameConflict(error, nextName ?? current.name)
     }
     await logOperation(session, 'inventory.supplier.update', 'inventory_suppliers', supplierId, input)
     revalidatePath('/inventory/suppliers')

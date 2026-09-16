@@ -162,6 +162,16 @@ export default function InventorySkusPage({
   // 弹窗内快捷建的供应商。存在父组件而不是弹窗里，是因为弹窗按 key 重建（换一行编辑就丢），
   // 而刚建出来的档案在整页重新 SSR 之前不会出现在 supplierOptions 里。
   const [createdSuppliers, setCreatedSuppliers] = useState<InventorySupplierOption[]>([])
+  // 服务端重新下发选项（router.refresh 之后）就把本地缓存清掉，一切以服务端为准。
+  // 不清的话：本页快捷建了 SUP-X，别处把它改名并停用，refresh 后 supplierOptions 已排除它，
+  // 而本地缓存仍留着旧名 —— 下拉里会出现一个看似可用的旧名档案（选中保存才被后端拒），
+  // 且因为 Map 里已有这个 id，「当前行关联的停用档案」那条补回逻辑也不会执行，
+  // 于是列表显示新名、下拉显示旧名，正是这次要消灭的双名称。
+  // supplierOptions 是 server component 传下来的 prop，只有真的重新 SSR 才换引用，
+  // 普通重渲染不会触发。
+  useEffect(() => {
+    setCreatedSuppliers([])
+  }, [supplierOptions])
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
 
   const page = Math.max(1, Number(get('page', '1')) || 1)
@@ -342,7 +352,17 @@ function SkuFormDialog({
   const [savingSupplier, setSavingSupplier] = useState(false)
 
   useEffect(() => {
-    if (open) setForm(row ? formFromRow(row) : emptyForm())
+    if (!open) return
+    setForm(row ? formFromRow(row) : emptyForm())
+    // 把弹窗内的其余状态一并重置。
+    // ⚠️ 诚实标注：当前**不靠**这几行也能重置 —— 关闭时 editing 变 undefined，
+    // `key` 从 skuId 变成 'create'，React 会卸载旧实例、state 自然清空
+    //（已做变异测试确认：删掉这几行，「取消后重开不残留清空意图」那条仍绿）。
+    // 留着是显式防御：key 策略一旦改动（比如改成固定 key 以避免重挂），
+    // 「点了『清空原文本』→ 取消 → 重开 → 直接保存把文本清掉」就会立刻成真。
+    setSupplierTouched(false)
+    setSupplierFormOpen(false)
+    setSupplierDraft({ name: '', contactName: '', phone: '' })
   }, [open, row])
 
   /**
