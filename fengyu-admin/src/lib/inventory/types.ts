@@ -80,7 +80,16 @@ export type InventoryCoreDocStatus = (typeof INVENTORY_DOC_STATUSES)[number]
 export interface InventorySkuInput {
   productName: string
   specName?: string | null
-  supplier?: string | null
+  /**
+   * 供应商档案关联（#132）。**不接受自由文本** —— `inventory_skus.supplier` 名称快照
+   * 由本字段派生写入，避免同一供应商被打成多种写法。
+   *
+   * 三态语义（update 时）：
+   * - `undefined` → 关联与名称快照都不动（用于「旧数据文本没匹配上档案」时不误清空）
+   * - `null`      → 显式解除关联，两列一起清空
+   * - 具体 id     → 校验档案存在后写入，同时把档案名写进 `supplier` 快照
+   */
+  supplierId?: string | null
   manufacturer?: string | null
   brand?: string | null
   productSeries?: string | null
@@ -108,7 +117,11 @@ export interface InventorySkuRow extends Required<Pick<InventorySkuInput, 'produ
   skuId: string
   productCode: string
   specName: string | null
+  /** 供应商名称快照（关联时派生写入）。档案改名后不跟随，展示请优先用 `supplierName`。 */
   supplier: string | null
+  supplierId: string | null
+  /** 关联档案的实时名称；`supplierId` 为空（含存量未匹配文本）时为 null。 */
+  supplierName: string | null
   manufacturer: string | null
   brand: string | null
   productSeries: string | null
@@ -224,8 +237,16 @@ export interface InventorySupplierRow {
   address: string | null
   isActive: boolean
   remark: string | null
+  /** 关联到本供应商的库存 SKU 数（含已停用 SKU），停用前提示用（#132）。 */
+  linkedSkuCount: number
   createdAt: string
   updatedAt: string
+}
+
+/** SKU 表单的供应商下拉选项；只带 id + 名称，不把联系人/地址带到客户端。 */
+export interface InventorySupplierOption {
+  supplierId: string
+  name: string
 }
 
 export interface InventoryPromotionPlanItemInput {

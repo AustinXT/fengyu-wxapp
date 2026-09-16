@@ -6,12 +6,14 @@ import { useRouter } from 'next/navigation'
 import { Package, Pencil, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 import { createInventorySku, updateInventorySku } from '@/actions/inventory/skus'
+import { createInventorySupplier } from '@/actions/inventory/suppliers'
 import {
   INVENTORY_SKU_SOURCE_TYPES,
   type InventoryLocationRow,
   type InventorySkuInput,
   type InventorySkuRow,
   type InventorySkuSourceType,
+  type InventorySupplierOption,
 } from '@/lib/inventory/types'
 import { Button } from '@/components/ui/button'
 import { DataTable, type Column } from '@/components/ui/data-table'
@@ -29,7 +31,8 @@ const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
 type SkuForm = {
   productName: string
   specName: string
-  supplier: string
+  /** 供应商档案 id；空串表示未选（#132，不再收自由文本）。 */
+  supplierId: string
   manufacturer: string
   brand: string
   productSeries: string
@@ -69,7 +72,7 @@ function emptyForm(): SkuForm {
   return {
     productName: '',
     specName: '',
-    supplier: '',
+    supplierId: '',
     manufacturer: '',
     brand: '',
     productSeries: '',
@@ -96,7 +99,7 @@ function formFromRow(row: InventorySkuRow): SkuForm {
   return {
     productName: row.productName,
     specName: text(row.specName),
-    supplier: text(row.supplier),
+    supplierId: text(row.supplierId),
     manufacturer: text(row.manufacturer),
     brand: text(row.brand),
     productSeries: text(row.productSeries),
@@ -132,8 +135,10 @@ export default function InventorySkusPage({
   rows,
   total,
   markets,
+  supplierOptions,
   canCreate,
   canUpdate,
+  canCreateSupplier,
   canViewPrice,
   canManageMarketSkus,
   canManageSupplySkus,
@@ -141,8 +146,10 @@ export default function InventorySkusPage({
   rows: InventorySkuRow[]
   total: number
   markets: InventoryLocationRow[]
+  supplierOptions: InventorySupplierOption[]
   canCreate: boolean
   canUpdate: boolean
+  canCreateSupplier: boolean
   canViewPrice: boolean
   canManageMarketSkus: boolean
   canManageSupplySkus: boolean
@@ -152,6 +159,9 @@ export default function InventorySkusPage({
   const [, startTransition] = useTransition()
   const [searchInput, setSearchInput] = useState(get('q'))
   const [editing, setEditing] = useState<InventorySkuRow | null | undefined>(undefined)
+  // 弹窗内快捷建的供应商。存在父组件而不是弹窗里，是因为弹窗按 key 重建（换一行编辑就丢），
+  // 而刚建出来的档案在整页重新 SSR 之前不会出现在 supplierOptions 里。
+  const [createdSuppliers, setCreatedSuppliers] = useState<InventorySupplierOption[]>([])
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
 
   const page = Math.max(1, Number(get('page', '1')) || 1)
@@ -175,7 +185,22 @@ export default function InventorySkusPage({
       ),
     },
     { key: 'specName', header: '规格', cell: (row) => row.specName || '-' },
-    { key: 'supplier', header: '供货商', cell: (row) => row.supplier || '-' },
+    {
+      key: 'supplier',
+      header: '供货商',
+      // 关联上档案就显示档案名（改名后自动跟随）；没关联上的存量文本照常显示，
+      // 但标出来 —— 不标的话「关联了」和「只是打了段字」在列表里长得一模一样。
+      cell: (row) => row.supplierName
+        ? row.supplierName
+        : row.supplier
+          ? (
+            <span className="inline-flex items-center gap-1">
+              {row.supplier}
+              <span className="rounded bg-[#FDF3E3] px-1 text-xs text-[#D4820A]">未关联档案</span>
+            </span>
+          )
+          : '-',
+    },
     { key: 'productSeries', header: '系列', cell: (row) => row.productSeries || '-' },
     {
       key: 'sourceType',
@@ -265,10 +290,14 @@ export default function InventorySkusPage({
         open={dialogOpen}
         row={editing ?? null}
         markets={markets}
+        supplierOptions={supplierOptions}
+        createdSuppliers={createdSuppliers}
         canViewPrice={canViewPrice}
+        canCreateSupplier={canCreateSupplier}
         canManageMarketSkus={canManageMarketSkus}
         canManageSupplySkus={canManageSupplySkus}
         onOpenChange={(open) => { if (!open) setEditing(undefined) }}
+        onSupplierCreated={(option) => setCreatedSuppliers((previous) => [...previous, option])}
         onSuccess={() => startTransition(() => router.refresh())}
       />
     </div>
@@ -279,27 +308,53 @@ function SkuFormDialog({
   open,
   row,
   markets,
+  supplierOptions,
+  createdSuppliers,
   canViewPrice,
+  canCreateSupplier,
   canManageMarketSkus,
   canManageSupplySkus,
   onOpenChange,
+  onSupplierCreated,
   onSuccess,
 }: {
   open: boolean
   row: InventorySkuRow | null
   markets: InventoryLocationRow[]
+  supplierOptions: InventorySupplierOption[]
+  createdSuppliers: InventorySupplierOption[]
   canViewPrice: boolean
+  canCreateSupplier: boolean
   canManageMarketSkus: boolean
   canManageSupplySkus: boolean
   onOpenChange: (open: boolean) => void
+  onSupplierCreated: (option: InventorySupplierOption) => void
   onSuccess: () => void
 }) {
   const [form, setForm] = useState<SkuForm>(() => row ? formFromRow(row) : emptyForm())
   const [submitting, setSubmitting] = useState(false)
+  const [supplierFormOpen, setSupplierFormOpen] = useState(false)
+  const [supplierDraft, setSupplierDraft] = useState({ name: '', contactName: '', phone: '' })
+  const [savingSupplier, setSavingSupplier] = useState(false)
 
   useEffect(() => {
     if (open) setForm(row ? formFromRow(row) : emptyForm())
   }, [open, row])
+
+  /** 存量里 supplier 文本没匹配上档案的旧 SKU（migration 0041 匹配不上就留 NULL）。 */
+  const unlinkedLegacyText = row && row.supplierId === null ? row.supplier : null
+
+  const supplierChoices = useMemo(() => {
+    const merged = new Map<string, string>()
+    for (const option of supplierOptions) merged.set(option.supplierId, option.name)
+    for (const option of createdSuppliers) merged.set(option.supplierId, option.name)
+    // 已关联的档案后来被停用时，它不在「启用中」的选项里。不补进来的话下拉会显示空，
+    // 用户一保存就把关联清掉了 —— 这是编辑旧 SKU 最容易丢数据的地方。
+    if (row?.supplierId && !merged.has(row.supplierId)) {
+      merged.set(row.supplierId, `${row.supplierName ?? row.supplier ?? row.supplierId}（已停用）`)
+    }
+    return Array.from(merged, ([supplierId, name]) => ({ supplierId, name }))
+  }, [supplierOptions, createdSuppliers, row])
 
   const calculatedMarketPrice = useMemo(
     () => marketPriceFromAccounting(form.accountingPrice, form.marketPurchaseDiscount),
@@ -308,6 +363,34 @@ function SkuFormDialog({
 
   function setField<K extends keyof SkuForm>(key: K, value: SkuForm[K]) {
     setForm((previous) => ({ ...previous, [key]: value }))
+  }
+
+  async function submitSupplier() {
+    if (savingSupplier) return
+    const name = supplierDraft.name.trim()
+    if (!name) {
+      toast.error('请输入供应商名称')
+      return
+    }
+    setSavingSupplier(true)
+    try {
+      const { supplierId } = await createInventorySupplier({
+        name,
+        contactName: supplierDraft.contactName.trim() || null,
+        phone: supplierDraft.phone.trim() || null,
+      })
+      // 只更新本地选项、不 router.refresh()：refresh 会让 server 重新下发 row，
+      // SkuFormDialog 的 useEffect([open, row]) 随即把用户填到一半的表单重置掉。
+      onSupplierCreated({ supplierId, name })
+      setField('supplierId', supplierId)
+      setSupplierDraft({ name: '', contactName: '', phone: '' })
+      setSupplierFormOpen(false)
+      toast.success('供应商已创建并选中')
+    } catch (error) {
+      toast.error(actionErrorMessage(error, '创建供应商失败'))
+    } finally {
+      setSavingSupplier(false)
+    }
   }
 
   async function submit() {
@@ -330,7 +413,11 @@ function SkuFormDialog({
       const input: InventorySkuInput = {
         productName: form.productName,
         specName: form.specName,
-        supplier: form.supplier,
+        // 三态（engine 的 resolveSkuSupplier 按此区分）：
+        //   选了档案            → 传 id，后端顺带把档案名写进 supplier 快照
+        //   没选，且原本就没关联、只有一段没匹配上的旧文本 → 不传，保住那段文本
+        //   其余（含主动清空已有关联）→ null，两列一起清
+        supplierId: form.supplierId || (unlinkedLegacyText ? undefined : null),
         manufacturer: form.manufacturer,
         brand: form.brand,
         productSeries: form.productSeries,
@@ -385,7 +472,72 @@ function SkuFormDialog({
             </Field>
             <Field label="产品名称 *"><Input value={form.productName} onChange={(event) => setField('productName', event.target.value)} /></Field>
             <Field label="规格"><Input value={form.specName} onChange={(event) => setField('specName', event.target.value)} /></Field>
-            <Field label="供货商"><Input value={form.supplier} onChange={(event) => setField('supplier', event.target.value)} /></Field>
+            {/*
+              「+ 新建供应商」按钮与提示文字放在 <label> **外面**：Field 会把 children 全裹进
+              label，按钮进去既不利于读屏，也会让按 label 文本定位的测试（e2e 的
+              /^供货商$/）失配。这里只让 label 裹住 Select 本身。
+            */}
+            <div className="grid gap-1.5 text-sm">
+              <label className="grid gap-1.5 text-sm">
+                <span className="text-[#666666]">供货商</span>
+                <Select
+                  value={form.supplierId}
+                  onChange={(event) => setField('supplierId', event.target.value)}
+                >
+                  <option value="">未指定</option>
+                  {supplierChoices.map((option) => (
+                    <option key={option.supplierId} value={option.supplierId}>{option.name}</option>
+                  ))}
+                </Select>
+              </label>
+              {canCreateSupplier && !supplierFormOpen && (
+                <button
+                  type="button"
+                  className="justify-self-start text-xs text-[var(--primary)] hover:underline"
+                  onClick={() => setSupplierFormOpen(true)}
+                >
+                  + 新建供应商
+                </button>
+              )}
+              {unlinkedLegacyText && !form.supplierId && (
+                <p className="text-xs text-[#D4820A]">
+                  原填写「{unlinkedLegacyText}」未匹配到供应商档案。选择档案即完成关联；不选则保留原文本。
+                </p>
+              )}
+              {supplierFormOpen && (
+                <div className="space-y-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--muted)] p-2">
+                  <Input
+                    aria-label="新供应商名称"
+                    placeholder="供应商名称 *"
+                    value={supplierDraft.name}
+                    onChange={(event) => setSupplierDraft((previous) => ({ ...previous, name: event.target.value }))}
+                  />
+                  <Input
+                    aria-label="新供应商联系人"
+                    placeholder="联系人"
+                    value={supplierDraft.contactName}
+                    onChange={(event) => setSupplierDraft((previous) => ({ ...previous, contactName: event.target.value }))}
+                  />
+                  <Input
+                    aria-label="新供应商联系电话"
+                    placeholder="联系电话"
+                    value={supplierDraft.phone}
+                    onChange={(event) => setSupplierDraft((previous) => ({ ...previous, phone: event.target.value }))}
+                  />
+                  <div className="flex justify-end gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => { setSupplierFormOpen(false); setSupplierDraft({ name: '', contactName: '', phone: '' }) }}
+                      disabled={savingSupplier}
+                    >
+                      取消
+                    </Button>
+                    <Button size="sm" onClick={submitSupplier} loading={savingSupplier}>创建并选中</Button>
+                  </div>
+                </div>
+              )}
+            </div>
             <Field label="生产厂家"><Input value={form.manufacturer} onChange={(event) => setField('manufacturer', event.target.value)} /></Field>
             <Field label="品牌"><Input value={form.brand} onChange={(event) => setField('brand', event.target.value)} /></Field>
             <Field label="产品系列"><Input value={form.productSeries} onChange={(event) => setField('productSeries', event.target.value)} /></Field>

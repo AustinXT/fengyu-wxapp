@@ -479,6 +479,99 @@ describe('库存 SKU 来源与价格保护', () => {
     }))
   })
 
+  // ── #132：SKU 供货商关联供应商档案 ─────────────────────────────────
+  // supplier 文本列不再收自由文本，改由 supplier_id 派生 —— ensureLotFromSku 建批次时
+  // 取的正是这一列（engine.ts 的 `normalizeText(trace.supplier) ?? sku.supplier`），
+  // 派生断了批次快照就会变空。
+
+  function supplierLookup(rows: unknown[]) {
+    return selectWithLimit(rows)
+  }
+
+  it('新建 SKU 选中档案时同时写入 supplier_id 与名称快照', async () => {
+    mockDb.select.mockReturnValueOnce(supplierLookup([{ name: '广州美姿贺生物科技', isActive: true }]))
+    const values = vi.fn().mockResolvedValue(undefined)
+    mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
+      execute: vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([{ value: 'INV-SKU-20260916-0001' }]),
+      insert: vi.fn(() => ({ values })),
+    }))
+
+    await createInventorySku({ productName: '测试商品', supplierId: 'SUP-1' })
+
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      supplierId: 'SUP-1',
+      supplier: '广州美姿贺生物科技',
+    }))
+  })
+
+  it('新建 SKU 不能关联已停用的供应商', async () => {
+    mockDb.select.mockReturnValueOnce(supplierLookup([{ name: '停用档案', isActive: false }]))
+
+    await expect(createInventorySku({ productName: '测试商品', supplierId: 'SUP-OFF' }))
+      .rejects.toThrow('已停用，无法关联到库存商品')
+  })
+
+  it('关联不存在的供应商时报 NOT_FOUND', async () => {
+    mockDb.select.mockReturnValueOnce(supplierLookup([]))
+
+    await expect(createInventorySku({ productName: '测试商品', supplierId: 'SUP-404' }))
+      .rejects.toThrow('供应商不存在')
+  })
+
+  it('未提交 supplierId 时不动关联与名称快照（存量未匹配文本得以保留）', async () => {
+    const set = vi.fn((_values: Record<string, unknown>) => ({ where: vi.fn().mockResolvedValue(undefined) }))
+    mockDb.select.mockImplementation(() => selectWithLimit([{
+      accountingPrice: null, marketPurchaseDiscount: null,
+      sourceType: '供应链', ownerMarketId: null, supplierId: null,
+    }]))
+    mockDb.update.mockReturnValue({ set })
+
+    await updateInventorySku('SKU-1', { productName: '改个名' })
+
+    // drizzle 对 undefined 的列不生成 SET 子句 —— 这正是「两列都别动」的实现方式
+    expect(set.mock.calls[0]?.[0]?.supplierId).toBeUndefined()
+    expect(set.mock.calls[0]?.[0]?.supplier).toBeUndefined()
+  })
+
+  it('显式传 null 时关联与名称快照一起清空', async () => {
+    const set = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }))
+    mockDb.select.mockImplementation(() => selectWithLimit([{
+      accountingPrice: null, marketPurchaseDiscount: null,
+      sourceType: '供应链', ownerMarketId: null, supplierId: 'SUP-1',
+    }]))
+    mockDb.update.mockReturnValue({ set })
+
+    await updateInventorySku('SKU-1', { supplierId: null })
+
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ supplierId: null, supplier: null }))
+  })
+
+  it('保持已关联但已停用的档案不报错，换成另一个停用档案才拦', async () => {
+    const set = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }))
+    const current = {
+      accountingPrice: null, marketPurchaseDiscount: null,
+      sourceType: '供应链', ownerMarketId: null, supplierId: 'SUP-OFF',
+    }
+    mockDb.update.mockReturnValue({ set })
+
+    // 原样保存：档案虽已停用，但它就是当前关联值 —— 拦了就等于不让编辑这条 SKU
+    mockDb.select
+      .mockReturnValueOnce(selectWithLimit([current]))
+      .mockReturnValueOnce(supplierLookup([{ name: '停用档案', isActive: false }]))
+    await updateInventorySku('SKU-1', { supplierId: 'SUP-OFF' })
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({
+      supplierId: 'SUP-OFF',
+      supplier: '停用档案',
+    }))
+
+    // 换成另一个停用档案：停用语义是「不再采购」，这条要拦
+    mockDb.select
+      .mockReturnValueOnce(selectWithLimit([current]))
+      .mockReturnValueOnce(supplierLookup([{ name: '另一个停用档案', isActive: false }]))
+    await expect(updateInventorySku('SKU-1', { supplierId: 'SUP-OFF-2' }))
+      .rejects.toThrow('已停用，无法关联到库存商品')
+  })
+
   it('创建后不能跨市场或转换库存 SKU 来源', async () => {
     mockDb.select.mockImplementation(() => selectWithLimit([{
       accountingPrice: null,

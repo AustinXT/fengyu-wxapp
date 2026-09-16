@@ -2,6 +2,7 @@
 
 import {
   createInventorySupplier as createInventorySupplierImpl,
+  listInventorySupplierOptions as listInventorySupplierOptionsImpl,
   listInventorySuppliers as listInventorySuppliersImpl,
   updateInventorySupplier as updateInventorySupplierImpl,
 } from '@/lib/inventory/engine'
@@ -12,6 +13,11 @@ export const listInventorySuppliers = withPermission(
   'inventory:stock_list',
   async (_session, filters: { keyword?: string; onlyActive?: boolean } = {}) =>
     listInventorySuppliersImpl(filters),
+)
+
+export const listInventorySupplierOptions = withPermission(
+  'inventory:stock_list',
+  async () => listInventorySupplierOptionsImpl(),
 )
 
 export const createInventorySupplier = withPermission(

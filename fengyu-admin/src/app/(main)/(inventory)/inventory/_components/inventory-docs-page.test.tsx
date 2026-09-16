@@ -171,6 +171,8 @@ function sku(skuId: string, productCode: string, productName: string): Inventory
     productName,
     specName: null,
     supplier: null,
+    supplierId: null,
+    supplierName: null,
     manufacturer: null,
     brand: null,
     productSeries: null,

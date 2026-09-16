@@ -62,6 +62,7 @@ import {
   type InventorySkuRow,
   type InventorySkuSourceType,
   type InventorySupplierInput,
+  type InventorySupplierOption,
   type InventorySupplierRow,
 } from './types'
 import { buildInventoryLocationFilterOptions } from './location-filter'
@@ -1179,6 +1180,7 @@ async function applyMovement(
 function skuRow(row: {
   sku: typeof inventorySkus.$inferSelect
   ownerMarketName: string | null
+  supplierName: string | null
   priceVisibility: import('./types').InventoryPriceVisibility
 }): InventorySkuRow {
   const sku = row.sku
@@ -1191,6 +1193,8 @@ function skuRow(row: {
     productName: sku.productName,
     specName: sku.specName,
     supplier: sku.supplier,
+    supplierId: sku.supplierId,
+    supplierName: row.supplierName,
     manufacturer: sku.manufacturer,
     brand: sku.brand,
     productSeries: sku.productSeries,
@@ -1408,6 +1412,35 @@ export const listInventoryDocLocationFilterOptions = withPermission(
   inventoryDocLocationFilterOptions,
 )
 
+/**
+ * 把表单提交的 `supplierId` 解析成 `supplier_id` + `supplier`（名称快照）两列的写入值（#132）。
+ *
+ * 返回 `null` 表示**这两列都不要动** —— 对应 `input.supplierId === undefined`。
+ * 存量里有一批 `supplier` 文本没匹配上档案的旧 SKU（migration 0041 按名称精确匹配回填，
+ * 匹配不上的留 NULL），编辑这类 SKU 时前端不提交 `supplierId`，靠这条分支保住原文本。
+ *
+ * `currentSupplierId` 用来放行「已关联的档案后来被停用」：编辑这类 SKU 时下拉仍会带上它，
+ * 保存不应被拒；但**换成**另一个已停用的档案要拦（停用 = 不再采购）。
+ */
+async function resolveSkuSupplier(
+  supplierIdInput: string | null | undefined,
+  currentSupplierId: string | null,
+): Promise<{ supplierId: string | null; supplier: string | null } | null> {
+  if (supplierIdInput === undefined) return null
+  const id = normalizeText(supplierIdInput)
+  if (!id) return { supplierId: null, supplier: null }
+  const [supplier] = await db
+    .select({ name: inventorySuppliers.name, isActive: inventorySuppliers.isActive })
+    .from(inventorySuppliers)
+    .where(eq(inventorySuppliers.supplierId, id))
+    .limit(1)
+  if (!supplier) throw new ApiError('NOT_FOUND', '供应商不存在')
+  if (!supplier.isActive && id !== currentSupplierId) {
+    throw new ApiError('INVALID_STATE', `供应商「${supplier.name}」已停用，无法关联到库存商品`)
+  }
+  return { supplierId: id, supplier: supplier.name }
+}
+
 export const listInventorySkus = withPermission(
   'inventory:stock_list',
   async (
@@ -1457,9 +1490,12 @@ export const listInventorySkus = withPermission(
       .from(inventorySkus)
       .where(whereClause)
     const rows = await db
-      .select({ sku: inventorySkus, ownerMarketName: orgNodes.name })
+      .select({ sku: inventorySkus, ownerMarketName: orgNodes.name, supplierName: inventorySuppliers.name })
       .from(inventorySkus)
       .leftJoin(orgNodes, eq(inventorySkus.ownerMarketId, orgNodes.id))
+      // 关联档案名走实时 JOIN 而不是读 supplier 文本快照：供应商改名后列表立刻跟随，
+      // 而批次快照（inventory_stock_lots.supplier）保留下单时的旧名，两者语义不同。
+      .leftJoin(inventorySuppliers, eq(inventorySkus.supplierId, inventorySuppliers.supplierId))
       .where(whereClause)
       .orderBy(asc(inventorySkus.productCode))
       .limit(pageSize)
@@ -1480,6 +1516,7 @@ export const createInventorySku = withAnyPermission(
     assertSelfPurchasedSkuEditor(session, sourceType)
     const ownerMarketId = await normalizeSkuOwnerMarket(session, sourceType, input.ownerMarketId)
     const priceValues = skuPriceValues(input, inventoryPriceVisibility(session), sourceType)
+    const supplierValues = await resolveSkuSupplier(input.supplierId, null)
     const skuId = await db.transaction(async (tx) => {
       const generatedNo = await generateInventorySkuNo(tx)
       await tx.insert(inventorySkus).values({
@@ -1487,7 +1524,8 @@ export const createInventorySku = withAnyPermission(
         productCode: generatedNo,
         productName,
         specName: normalizeText(input.specName),
-        supplier: normalizeText(input.supplier),
+        supplier: supplierValues?.supplier ?? null,
+        supplierId: supplierValues?.supplierId ?? null,
         manufacturer: normalizeText(input.manufacturer),
         brand: normalizeText(input.brand),
         productSeries: normalizeText(input.productSeries),
@@ -1524,6 +1562,7 @@ export const updateInventorySku = withAnyPermission(
         marketPurchasePriceOverrideReason: inventorySkus.marketPurchasePriceOverrideReason,
         sourceType: inventorySkus.sourceType,
         ownerMarketId: inventorySkus.ownerMarketId,
+        supplierId: inventorySkus.supplierId,
       })
       .from(inventorySkus)
       .where(eq(inventorySkus.skuId, id))
@@ -1546,12 +1585,14 @@ export const updateInventorySku = withAnyPermission(
       requestedOwnerMarketId,
     )
     const priceValues = skuPriceValues(input, inventoryPriceVisibility(session), sourceType, current)
+    const supplierValues = await resolveSkuSupplier(input.supplierId, current.supplierId)
     await db
       .update(inventorySkus)
       .set({
         productName: normalizeText(input.productName) ?? undefined,
         specName: input.specName === undefined ? undefined : normalizeText(input.specName),
-        supplier: input.supplier === undefined ? undefined : normalizeText(input.supplier),
+        supplier: supplierValues === null ? undefined : supplierValues.supplier,
+        supplierId: supplierValues === null ? undefined : supplierValues.supplierId,
         manufacturer: input.manufacturer === undefined ? undefined : normalizeText(input.manufacturer),
         brand: input.brand === undefined ? undefined : normalizeText(input.brand),
         productSeries: input.productSeries === undefined ? undefined : normalizeText(input.productSeries),
@@ -3196,7 +3237,9 @@ export const confirmInventoryCoreReceive = withAnyPermission(
   },
 )
 
-function supplierRow(row: typeof inventorySuppliers.$inferSelect): InventorySupplierRow {
+function supplierRow(
+  row: typeof inventorySuppliers.$inferSelect & { linkedSkuCount: number },
+): InventorySupplierRow {
   return {
     supplierId: row.supplierId,
     name: row.name,
@@ -3205,6 +3248,7 @@ function supplierRow(row: typeof inventorySuppliers.$inferSelect): InventorySupp
     address: row.address,
     isActive: row.isActive,
     remark: row.remark,
+    linkedSkuCount: row.linkedSkuCount,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   }
@@ -3228,11 +3272,35 @@ export const listInventorySuppliers = withPermission(
     }
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined
     const rows = await db
-      .select()
+      .select({
+        supplier: inventorySuppliers,
+        // 停用前要提示「仍有 N 个 SKU 在用」（#132）。含已停用的 SKU：
+        // 停用供应商不该因为 SKU 也停了就把关联当不存在。
+        linkedSkuCount: sql<number>`cast(count(${inventorySkus.skuId}) as int)`,
+      })
       .from(inventorySuppliers)
+      .leftJoin(inventorySkus, eq(inventorySkus.supplierId, inventorySuppliers.supplierId))
       .where(whereClause)
+      .groupBy(inventorySuppliers.supplierId)
       .orderBy(asc(inventorySuppliers.name))
-    return rows.map(supplierRow)
+    return rows.map((row) => supplierRow({ ...row.supplier, linkedSkuCount: row.linkedSkuCount }))
+  },
+)
+
+/**
+ * SKU 表单的供应商下拉选项（#132）：只返回**启用中**的档案，且只带 id + 名称。
+ *
+ * 「当前 SKU 已关联但档案已停用」那一条不在这里补 —— 它由 `InventorySkuRow` 自带的
+ * `supplierId` / `supplierName` 在表单侧补进选项，这样与当前行绑定、不依赖列表分页。
+ */
+export const listInventorySupplierOptions = withPermission(
+  'inventory:stock_list',
+  async (): Promise<InventorySupplierOption[]> => {
+    return db
+      .select({ supplierId: inventorySuppliers.supplierId, name: inventorySuppliers.name })
+      .from(inventorySuppliers)
+      .where(eq(inventorySuppliers.isActive, true))
+      .orderBy(asc(inventorySuppliers.name))
   },
 )
 

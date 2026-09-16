@@ -164,6 +164,11 @@ export default function InventorySuppliersPage({
     { key: 'phone', header: '联系电话', cell: (row) => row.phone || '—' },
     { key: 'address', header: '地址', cell: (row) => row.address || '—' },
     {
+      key: 'linkedSkuCount',
+      header: '关联 SKU',
+      cell: (row) => row.linkedSkuCount > 0 ? `${row.linkedSkuCount} 个` : '—',
+    },
+    {
       key: 'isActive',
       header: '状态',
       cell: (row) => (
@@ -284,6 +289,17 @@ export default function InventorySuppliersPage({
         <AlertDialogTitle>停用供应商</AlertDialogTitle>
         <AlertDialogDescription>
           确定停用供应商「{disableTarget?.name}」吗？历史单据不会受影响，但后续业务不应再选择该供应商。
+          {/*
+            提示但不阻止（#132 拍板 Q5）：停用语义是「不再采购」而非「删除」，
+            阻止停用会逼运营先逐个改 SKU。已关联的 SKU 继续正常显示与编辑，
+            只是不会再出现在新 SKU 的下拉里。
+          */}
+          {!!disableTarget && disableTarget.linkedSkuCount > 0 && (
+            <span className="mt-2 block text-[var(--destructive)]">
+              仍有 {disableTarget.linkedSkuCount} 个库存商品关联该供应商。
+              停用后这些商品的关联保持不变，但新建 / 改挂其它商品时将不能再选它。
+            </span>
+          )}
         </AlertDialogDescription>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => setDisableTarget(null)} disabled={disabling}>取消</AlertDialogCancel>
