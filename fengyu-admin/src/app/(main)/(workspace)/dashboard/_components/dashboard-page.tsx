@@ -36,10 +36,14 @@ interface Props {
 /**
  * 业务角色看板：manager / finance
  *
- * 2026-04-26 sale-order-domain-refactor 关键展示口径：
+ * 关键展示口径（以 actions/dashboard.ts 的 SQL 为准，本段是摘要）：
  *   - "今日客流" = service_orders[已完成] DISTINCT client_user_id（与 metrics §"客流"对齐）
- *   - "今日业绩" = SUM(received - refunded_amount)，已扣退款（audit-17 P0-17-01/02 修复）
- *   - "今日已退款"独立展示（refunded_amount > 0 时才点亮，避免噪音）
+ *   - "今日业绩" = SUM(sale_order_performance_events.amount)，含首次支付/回款/退款
+ *     （退款为负、天然冲销）；**不再**是 SUM(received - refunded_amount)
+ *     ——2026-08 现金流口径修订起该描述即失效，2026-09-14 随 #140 一并订正
+ *   - "今日已退款"独立展示（> 0 时才点亮，避免噪音）
+ *   - ⚠ 日期口径统一为业绩归属日期 performance_date（#140），
+ *     业绩与实付/退款同口径；「今日实付」不再与银行流水逐日对齐
  */
 function BusinessDashboard({ stats, actions }: Props) {
   const canAccess = (action: string | readonly string[]) =>

@@ -10,7 +10,11 @@
  *   一次返回 4 张大卡（业绩/实耗，含月店均）+ 4 张小卡（客流/客量/新会员/项目数）
  *   口径定义：notes/references/metrics.md
  *   2026-08 业绩归属日期：组织层级业绩按 sale_order_performance_events 的
- *   performance_date 统计；首次收款跟随订单归属日期，后续回款/退款仍按真实发生日。
+ *   performance_date 统计。
+ *   ⚠ 2026-09-14 订正（#137 / #140）：原文「首次收款跟随订单归属日期，后续回款/退款仍按
+ *   真实发生日」**已失效**。迁移 0040 起视图的 performance_date 一律直读
+ *   `sale_order_payments.performance_attribution_date`，回款/退款同样按归属日期；
+ *   回退只发生在写入侧 trigger。admin 工作台的实付/退款也已统一到该口径（#140）。
  *
  * **公式 / sale_order_type / status 过滤变更必须同步
  * `fengyu-admin/src/actions/dashboard.ts`
@@ -1376,7 +1380,8 @@ async function salesData(ctx) {
   const t0 = Date.now()
   const [revRows, custRevRows, consRows, custConsRows, prodOutRows, catRows, kindRows, nameRows, skeletonRows] =
     await Promise.all([
-      // SQL 1: 总业绩（首次收款按订单归属日，后续回款/退款按真实发生日）
+      // SQL 1: 总业绩（一律按款项业绩归属日期 spe.performance_date；
+      //        原注释「后续回款/退款按真实发生日」自 #137 收敛后已失效，见文件头）
       pg.query(
         `SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
            FROM sale_order_performance_events spe

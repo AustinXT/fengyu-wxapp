@@ -76,8 +76,16 @@ export const getDashboardStats = withPermission('dashboard:view', async (session
     /**
      * 业绩 / 实付 / 已退款 / 待办。
      *
-     * 经营业绩按 performance_date；真实实付/退款仍按 paid_at，避免统计归属改写资金事实。
+     * **日期口径统一为业绩归属日期 `spe.performance_date`（#140，2026-09-14）**，
+     * 业绩与实付/退款不再分两套口径。此前实付/退款按 `paid_at`，理由是"避免统计归属改写资金事实"；
+     * 甲方在知悉该权衡后仍要求一并切归属日期（业绩相关统计一律基于归属日期），故改。
+     *
+     * ⚠ 因此「今日实付」**不再与银行/收款流水逐日对齐**——被人工调整过归属日期的款项
+     * 会落到别的自然日。若财务对账需要资金发生日口径，应另开报表入口，
+     * 不要把 `paid_at` 改回这里制造双口径。
+     *
      * 包含充值单，排除储值卡抵扣。订单数量和待办保持独立聚合。
+     * `total_paid_amount` 是不带日期条件的累计，不受本次口径变更影响。
      */
     const orderStats = await db.execute(sql`
       WITH tz_today AS (
@@ -96,7 +104,7 @@ export const getDashboardStats = withPermission('dashboard:view', async (session
             THEN spe.amount::numeric
           END), 0) AS today_revenue,
           COALESCE(SUM(CASE
-            WHEN (spe.paid_at AT TIME ZONE 'Asia/Shanghai')::date = (SELECT today FROM bounds)
+            WHEN spe.performance_date = (SELECT today FROM bounds)
               AND spe.status = '已支付'
               AND spe.change_type IN ('首次支付', '回款')
               AND spe.amount::numeric > 0
@@ -104,7 +112,7 @@ export const getDashboardStats = withPermission('dashboard:view', async (session
             THEN spe.amount::numeric
           END), 0) AS today_paid_amount,
           COALESCE(SUM(CASE
-            WHEN (spe.paid_at AT TIME ZONE 'Asia/Shanghai')::date = (SELECT today FROM bounds)
+            WHEN spe.performance_date = (SELECT today FROM bounds)
               AND spe.status = '已支付'
               AND spe.change_type = '退款'
               AND spe.sale_order_type IN ('销售单', '转换单', '充值单')
@@ -118,7 +126,7 @@ export const getDashboardStats = withPermission('dashboard:view', async (session
             THEN spe.amount::numeric
           END), 0) AS yesterday_revenue,
           COALESCE(SUM(CASE
-            WHEN (spe.paid_at AT TIME ZONE 'Asia/Shanghai')::date = (SELECT yesterday FROM bounds)
+            WHEN spe.performance_date = (SELECT yesterday FROM bounds)
               AND spe.status = '已支付'
               AND spe.change_type IN ('首次支付', '回款')
               AND spe.amount::numeric > 0
