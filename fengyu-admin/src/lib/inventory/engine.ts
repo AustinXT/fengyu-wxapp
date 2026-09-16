@@ -3415,6 +3415,19 @@ export const updateInventorySupplier = withPermission(
     const nextName = input.name === undefined ? undefined : normalizeRequired(input.name, '供应商名称')
     try {
       await db.transaction(async (tx) => {
+        // 在事务内**锁行重读**名字，不能拿上面那次事务外的 current.name 来判断改没改名。
+        // 时序：甲乙同时打开编辑页（都读到名字 A）→ 甲改名 B 并同步了所有关联 SKU →
+        // 乙只改电话，但表单是全量提交、name 仍是 A → 乙把档案名写回 A，
+        // 而 `A === current.name(A)` 用旧快照判成「没改名」→ 跳过 SKU 回写 →
+        // 档案叫 A、SKU 文本留在 B，持久分叉（admin 列表走 JOIN 显示 A，staff 读文本显示 B）。
+        // FOR UPDATE 让乙等甲提交后再读，于是读到 B、判定「名字变了」、正确回写成 A。
+        const [locked] = await tx
+          .select({ name: inventorySuppliers.name })
+          .from(inventorySuppliers)
+          .where(eq(inventorySuppliers.supplierId, supplierId))
+          .limit(1)
+          .for('update')
+        if (!locked) throw new ApiError('NOT_FOUND', '供应商不存在')
         await tx
           .update(inventorySuppliers)
           .set({
@@ -3435,8 +3448,8 @@ export const updateInventorySupplier = withPermission(
         // 读的都是这个文本列 —— 同一个供应商在两端会显示成两个名字。
         // 比的是**新旧名是否真的不同**，不是「有没有传 name」：供应商表单是全量提交，
         // 停用 / 只改联系方式时 name 照样在 payload 里，只判 undefined 等于每次都回写，
-        // 会无因刷掉整批关联 SKU 的 updated_at。
-        if (nextName !== undefined && nextName !== current.name) {
+        // 会无因刷掉整批关联 SKU 的 updated_at。旧名取事务内锁到的值（见上）。
+        if (nextName !== undefined && nextName !== locked.name) {
           // 这会把 N 条关联 SKU 的 updated_at 一起刷新。**是刻意的**：这些行的数据确实变了，
           // 不刷的话基于 updated_at 的增量同步/变更检测会漏掉这次改名。
           // 代价是若将来把 SKU 列表改成 admin 的默认惯例 `desc(updatedAt)`「编辑即浮顶」，

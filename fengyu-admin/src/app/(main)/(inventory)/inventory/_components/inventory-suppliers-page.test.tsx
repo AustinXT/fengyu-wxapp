@@ -110,15 +110,46 @@ describe('InventorySuppliersPage（#132 关联 SKU 计数）', () => {
     expect(screen.getByRole('button', { name: '确认停用' })).toBeDisabled()
   })
 
-  it('从编辑弹窗把开关切到停用时，同样提示关联数（那条入口绕过了 AlertDialog）', () => {
+  it('从编辑弹窗把开关切到停用时，同样提示关联数（那条入口绕过了 AlertDialog）', async () => {
+    // 且用的必须是**实时**值：列表行带的是 0（页面加载时的旧值），实时核对是 7
+    mockCountSkus.mockResolvedValue(7)
     render(
-      <InventorySuppliersPage rows={[supplier({ linkedSkuCount: 7 })]} canCreate canUpdate />,
+      <InventorySuppliersPage rows={[supplier({ linkedSkuCount: 0 })]} canCreate canUpdate />,
     )
     fireEvent.click(screen.getByRole('button', { name: /编辑/ }))
+    expect(mockCountSkus).toHaveBeenCalledWith('SUP-1')
     expect(screen.queryByText(/仍有 7 个库存商品关联该供应商/)).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByLabelText('供应商启用状态'))
-    expect(screen.getByText(/仍有 7 个库存商品关联该供应商/)).toBeInTheDocument()
+    expect(await screen.findByText(/仍有 7 个库存商品关联该供应商/)).toBeInTheDocument()
+  })
+
+  it('切换停用目标时，前一个供应商的慢响应不会覆盖当前目标的结果', async () => {
+    // A 的请求慢、B 的先回。没有请求序号的话，A 的 0 回来会把 B 的 5 覆盖掉 ——
+    // 警告消失、确认按钮还被放开。
+    let resolveA: ((n: number) => void) | undefined
+    mockCountSkus
+      .mockImplementationOnce(() => new Promise<number>((r) => { resolveA = r }))
+      .mockResolvedValueOnce(5)
+
+    render(
+      <InventorySuppliersPage
+        rows={[
+          supplier({ supplierId: 'SUP-A', name: '甲公司' }),
+          supplier({ supplierId: 'SUP-B', name: '乙公司' }),
+        ]}
+        canCreate
+        canUpdate
+      />,
+    )
+    const disableButtons = screen.getAllByRole('button', { name: /停用/ })
+    fireEvent.click(disableButtons[0])          // A：慢请求
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    fireEvent.click(disableButtons[1])          // B：快请求
+    expect(await screen.findByText(/仍有 5 个库存商品关联该供应商/)).toBeInTheDocument()
+
+    resolveA?.(0)                                // A 的旧响应姗姗来迟
+    await waitFor(() => expect(screen.getByText(/仍有 5 个库存商品关联该供应商/)).toBeInTheDocument())
   })
 
   it('无关联时不显示关联提示', async () => {

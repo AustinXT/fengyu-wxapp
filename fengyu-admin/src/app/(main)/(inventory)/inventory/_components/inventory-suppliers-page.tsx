@@ -78,6 +78,9 @@ export default function InventorySuppliersPage({
   // 别人在这期间关联了 SKU 的话，拿旧值会显示「0 个」而漏掉提示。
   // null = 还在核对；数字 = 核对结果（核对失败时退回列表行的旧值，至少不比原来差）。
   const [liveLinkedCount, setLiveLinkedCount] = useState<number | null>(null)
+  // 请求序号：取消 A 的弹窗又去停用 B 时，A 的慢响应回来会把 B 的结果覆盖掉
+  //（B 显示「仍有 5 个」→ 被 A 的 0 覆盖 → 警告消失还放开了确认）。
+  const countSeqRef = useRef(0)
 
   useEffect(() => () => {
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
@@ -104,18 +107,28 @@ export default function InventorySuppliersPage({
     setDialogOpen(true)
   }
 
-  function askDisable(row: InventorySupplierRow) {
-    setDisableTarget(row)
+  /** 实时核对关联 SKU 数；只有最后一次请求的结果会被采纳。 */
+  function refreshLinkedCount(row: InventorySupplierRow) {
+    const seq = ++countSeqRef.current
     setLiveLinkedCount(null)
     countInventorySkusBySupplier(row.supplierId)
-      .then((count) => setLiveLinkedCount(count))
-      .catch(() => setLiveLinkedCount(row.linkedSkuCount))
+      .then((count) => { if (countSeqRef.current === seq) setLiveLinkedCount(count) })
+      // 核对失败就退回列表行的旧值：至少不比改造前更差
+      .catch(() => { if (countSeqRef.current === seq) setLiveLinkedCount(row.linkedSkuCount) })
+  }
+
+  function askDisable(row: InventorySupplierRow) {
+    setDisableTarget(row)
+    refreshLinkedCount(row)
   }
 
   function openEdit(row: InventorySupplierRow) {
     setEditing(row)
     setForm(toForm(row))
     setDialogOpen(true)
+    // 编辑弹窗里把开关切到停用是**另一条**停用入口，同样要实时核对 ——
+    // 只守列表那条等于没守（列表的计数是页面加载时的旧值）。
+    refreshLinkedCount(row)
   }
 
   async function submit() {
@@ -296,9 +309,13 @@ export default function InventorySuppliersPage({
               列表里的「停用」按钮走 AlertDialog 会提示关联数，但从**编辑弹窗**把开关切到停用
               是另一条入口，它直接 submit()、绕过那个对话框。只守一条入口等于没守。
             */}
-            {!!editing && editing.isActive && !form.isActive && editing.linkedSkuCount > 0 && (
+            {!!editing && editing.isActive && !form.isActive && liveLinkedCount === null && (
+              <p className="text-sm text-[#888888]">正在核对关联的库存商品…</p>
+            )}
+            {!!editing && editing.isActive && !form.isActive
+              && liveLinkedCount !== null && liveLinkedCount > 0 && (
               <p className="text-sm text-[var(--destructive)]">
-                仍有 {editing.linkedSkuCount} 个库存商品关联该供应商。
+                仍有 {liveLinkedCount} 个库存商品关联该供应商。
                 停用后这些商品的关联保持不变，但新建 / 改挂其它商品时将不能再选它。
               </p>
             )}

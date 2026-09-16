@@ -302,7 +302,10 @@ async function main() {
     )
     if (Number(supplierAudit.unmatched) > 0) {
       const unmatchedRows = await client.query(
-        `SELECT sku_id, product_name, supplier
+        `SELECT sku_id, product_name, supplier,
+                EXISTS (
+                  SELECT 1 FROM inventory_suppliers v WHERE v.name = btrim(inventory_skus.supplier)
+                ) AS matchable
            FROM inventory_skus
           WHERE supplier_id IS NULL AND btrim(COALESCE(supplier, '')) <> ''
           ORDER BY supplier, sku_id
@@ -310,7 +313,9 @@ async function main() {
       )
       console.log('INFO unmatched supplier text (need manual re-link, up to 50):')
       for (const row of unmatchedRows.rows) {
-        console.log(`  - ${row.sku_id} ${row.product_name} => ${JSON.stringify(row.supplier)}`)
+        // 标出「现在已经有同名档案了」的行 —— 这些是人工改挂的首选目标
+        const hint = row.matchable ? ' [同名档案已存在，可改挂]' : ''
+        console.log(`  - ${row.sku_id} ${row.product_name} => ${JSON.stringify(row.supplier)}${hint}`)
       }
     }
     // 两类**是**真问题，必须让脚本失败：
@@ -324,8 +329,11 @@ async function main() {
         ...(Number(supplierAudit.name_drift) > 0
           ? [`supplier text differs from linked profile name on ${supplierAudit.name_drift} rows`]
           : []),
-        ...(Number(supplierAudit.matchable_but_unlinked) > 0
-          ? [`${supplierAudit.matchable_but_unlinked} rows have an exactly-matching supplier profile but no supplier_id (migration 0042 backfill did not run?)`]
+        // 只在「一条都没关联上」时判失败。迁移之后新建/改名出一个同名档案是正常业务变化
+        // （系统没有「建档后自动回溯关联遗留 SKU」这条规则），拿它当迁移失败会误报；
+        // 而回填真没跑的话，当时能匹配的**一条都不会**被关联上 —— linked=0 才是那个信号。
+        ...(Number(supplierAudit.matchable_but_unlinked) > 0 && Number(supplierAudit.linked) === 0
+          ? [`${supplierAudit.matchable_but_unlinked} rows have an exactly-matching supplier profile and nothing is linked at all (migration 0042 backfill did not run?)`]
           : []),
       ],
     ) && ok

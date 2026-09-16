@@ -81,13 +81,17 @@ export interface InventorySkuInput {
   productName: string
   specName?: string | null
   /**
-   * 供应商档案关联（#132）。**不接受自由文本** —— `inventory_skus.supplier` 名称快照
+   * 供应商档案关联（#132）。**不接受自由文本** —— `inventory_skus.supplier` 这个冗余名
    * 由本字段派生写入，避免同一供应商被打成多种写法。
    *
    * 三态语义（update 时）：
-   * - `undefined` → 关联与名称快照都不动（用于「旧数据文本没匹配上档案」时不误清空）
+   * - `undefined` → 关联与冗余名都不动（用于「旧数据文本没匹配上档案」时不误清空）
    * - `null`      → 显式解除关联，两列一起清空
-   * - 具体 id     → 校验档案存在后写入，同时把档案名写进 `supplier` 快照
+   * - 具体 id     → 校验档案存在后写入，同时把档案当前名写进 `supplier`
+   *
+   * ⚠️ `supplier` 是**同步维护的冗余名**，不是历史快照：档案改名时
+   * `updateInventorySupplier` 会把所有关联 SKU 的该列一起改过来。
+   * 真正的历史快照是 `inventory_doc_items.supplier` / `inventory_stock_lots.supplier`。
    */
   supplierId?: string | null
   manufacturer?: string | null

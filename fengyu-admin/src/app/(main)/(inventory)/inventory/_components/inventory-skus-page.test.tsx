@@ -245,6 +245,24 @@ describe('InventorySkusPage', () => {
       expect(mockUpdateInventorySku.mock.calls[0][1].supplierId).toBeNull()
     })
 
+    it('一个可选档案都没有时，仍能通过「清空原文本」按钮清掉存量文本', async () => {
+      // 下拉当前就停在「未指定」，再点一次不触发 change —— 没有其它选项时
+      // （市场角色 + 档案表为空）用户根本没法把 supplierTouched 置上，
+      // 那段旧文本就永远删不掉。必须有个显式入口。
+      const legacyText: InventorySkuRow = {
+        ...row, supplier: '某个没建档的供应商', supplierId: null, supplierName: null,
+      }
+      renderPage({ rows: [legacyText], supplierOptions: [], canCreateSupplier: false })
+      fireEvent.click(screen.getByTitle('编辑库存商品'))
+
+      expect(Array.from(supplierSelect().options)).toHaveLength(1)   // 只有「未指定」
+      fireEvent.click(screen.getByRole('button', { name: '清空原文本' }))
+      fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+      await waitFor(() => expect(mockUpdateInventorySku).toHaveBeenCalled())
+      expect(mockUpdateInventorySku.mock.calls[0][1].supplierId).toBeNull()
+    })
+
     it('主动清空已有关联时提交 null', async () => {
       const linked: InventorySkuRow = {
         ...row,

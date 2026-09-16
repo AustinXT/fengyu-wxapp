@@ -540,10 +540,27 @@ function SkuFormDialog({
                 </p>
               )}
               {unlinkedLegacyText && !form.supplierId && (
-                <p className="text-xs text-[#D4820A]">
-                  原填写「{unlinkedLegacyText}」未匹配到供应商档案。选择档案即完成关联；
-                  保持不动则保留原文本。要清空它：先切到别的选项再切回「未指定」。
-                </p>
+                <div className="grid gap-1 text-xs text-[#D4820A]">
+                  <p>
+                    原填写「{unlinkedLegacyText}」未匹配到供应商档案。选择档案即完成关联；
+                    保持不动则保留原文本。
+                  </p>
+                  {/*
+                    必须给一个**显式**的清空入口：下拉当前就停在「未指定」，再点一次它
+                    不会触发原生 change —— 没有其它可选档案时（比如市场角色、且档案表为空）
+                    用户根本没有办法把 supplierTouched 置上，那段旧文本就永远删不掉。
+                  */}
+                  {!supplierTouched && (
+                    <button
+                      type="button"
+                      className="justify-self-start underline"
+                      onClick={() => setSupplierTouched(true)}
+                    >
+                      清空原文本
+                    </button>
+                  )}
+                  {supplierTouched && <p>保存后将清空该文本。</p>}
+                </div>
               )}
               {supplierFormOpen && (
                 <div className="space-y-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--muted)] p-2">
