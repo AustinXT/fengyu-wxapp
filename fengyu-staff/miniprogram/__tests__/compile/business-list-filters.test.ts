@@ -21,6 +21,9 @@ describe('业务列表统一筛选与分页', () => {
     expect(wxml).toContain('placeholder="搜索顾客姓名或手机号"')
     expect(wxml).toContain('bind:status-change="onStatusChange"')
     expect(wxml).toContain('bind:clear-dates="clearDates"')
+    // 四个页面的日期筛选打在不同字段上（业绩归属日期 / 服务日期 / 预约时间），
+    // 组件不设默认文案——每个接入方必须自报口径，新页面接入时这条会直接红。
+    expect(wxml).toMatch(/date-hint="[^"]+"/)
     expect(ts).toContain('pageSize: 20')
     expect(ts).toMatch(/onReachBottom\(\)/)
     expect(json.usingComponents['business-list-filter']).toBe('/components/business-list-filter/business-list-filter')

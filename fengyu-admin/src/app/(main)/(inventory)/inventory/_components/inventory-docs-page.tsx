@@ -32,6 +32,7 @@ import { Input } from '@/components/ui/input'
 import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { actionErrorMessage } from '@/lib/action-error'
 import { useUrlFilters } from '@/lib/hooks/use-url-filters'
 import { PreserveListContextLink } from '@/components/return-context'
 
@@ -404,7 +405,9 @@ function CreateDocDialog({
       onOpenChange(false)
       onSuccess()
     } catch (err) {
-      alert((err as Error).message || '创建失败')
+      // 生产构建下 err.message 已被 Next 脱敏成英文占位，必须走 actionErrorMessage 取
+      // digest 里的业务文案（如库存期初门禁的拦截理由），否则用户只看到框架话术（issue #133）。
+      alert(actionErrorMessage(err, '创建失败'))
     } finally {
       setSubmitting(false)
     }

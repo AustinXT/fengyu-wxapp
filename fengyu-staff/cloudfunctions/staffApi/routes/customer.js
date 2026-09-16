@@ -24,6 +24,7 @@ const { maskPhoneForAuth } = require("../utils/phone-visibility");
 const { logOperation, logUpdate } = require("../utils/operation-log");
 const { shanghaiDateStr } = require("../utils/datetime");
 const { excludeDepositRefundSql } = require("../utils/consume-filter");
+const { assertPaymentAttributionReady } = require("../utils/attribution-guard");
 const { getPointsToYuanRate, getPointsDeductionMaxRate } = require("../utils/config");
 
 /**
@@ -689,6 +690,11 @@ async function getConsumptionStats(clientUserId) {
     };
   }
 
+  // 与 mgmt-customer.getConsumptionStatsScoped 同一口径副本，守卫同步（#141）：
+  // 未迁库时首次支付行 100% NULL，年度消费会静默变负数。
+  // ⚠ 放在空值短路之后：无 clientUserId 时本就零查询，不该为此打探针。
+  await assertPaymentAttributionReady(pg);
+
   const yearStart = `${shanghaiDateStr().slice(0, 4)}-01-01`;
   const rows = await pg.query(
     `WITH order_stats AS (
@@ -715,8 +721,8 @@ async function getConsumptionStats(clientUserId) {
          AND o.sale_order_type IN ('销售单', '转换单')
          AND o.client_user_id = $1
          AND o.legacy_source IS DISTINCT FROM 'workfine'
-         AND sop.paid_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Shanghai')
-         AND sop.paid_at < (($2::date + INTERVAL '1 year') AT TIME ZONE 'Asia/Shanghai')
+         AND sop.performance_attribution_date >= $2::date
+         AND sop.performance_attribution_date < ($2::date + INTERVAL '1 year')
      ), legacy_year_stats AS (
        SELECT
        COALESCE(SUM(
@@ -731,8 +737,8 @@ async function getConsumptionStats(clientUserId) {
          AND o.sale_order_type IN ('销售单', '转换单')
          AND o.client_user_id = $1
          AND o.legacy_source = 'workfine'
-         AND o.paid_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Shanghai')
-         AND o.paid_at < (($2::date + INTERVAL '1 year') AT TIME ZONE 'Asia/Shanghai')
+         AND o.performance_attribution_date >= $2::date
+         AND o.performance_attribution_date < ($2::date + INTERVAL '1 year')
      ), actual_stats AS (
        SELECT
          COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS total_actual_consumption,

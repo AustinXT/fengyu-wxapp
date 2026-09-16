@@ -28,6 +28,7 @@ const { validateManagementScope, buildManagementStoreScope } = require('../utils
 const { maskPhone } = require('../utils/pii')
 const { excludeDepositRefundSql } = require('../utils/consume-filter')
 const { shanghaiDateStr } = require('../utils/datetime')
+const { assertPaymentAttributionReady } = require('../utils/attribution-guard')
 
 // ====================================================================
 // 共享 helper（buildSaleScope/buildClientScope 为与 mgmt-product.js 一致的本地副本；
@@ -159,6 +160,10 @@ async function getConsumptionStatsScoped(clientUserId, scopeType, scopeId) {
       yearActualConsumption: 0,
     }
   }
+  // 年度消费直读款项归属日期：未迁库时首次支付行 100% 为 NULL，三值逻辑会把正数主体
+  // 全部吞掉、只剩退款负数（dev 实测年度消费变 −425801.66）。宁可报错也不给运营看负数。
+  // ⚠ 放在空值短路**之后**：无 clientUserId 时本就零查询直接返回 0，不该为此打探针。
+  await assertPaymentAttributionReady(pg)
   const yearStart = `${shanghaiDateStr().slice(0, 4)}-01-01`
   // $1=clientUserId, $2=yearStart。交易数据跟顾客走：消费统计不按门店过滤
   const rows = await pg.query(
@@ -185,8 +190,8 @@ async function getConsumptionStatsScoped(clientUserId, scopeType, scopeId) {
          AND o.sale_order_type IN ('销售单', '转换单')
          AND o.client_user_id = $1
          AND o.legacy_source IS DISTINCT FROM 'workfine'
-         AND sop.paid_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Shanghai')
-         AND sop.paid_at < (($2::date + INTERVAL '1 year') AT TIME ZONE 'Asia/Shanghai')
+         AND sop.performance_attribution_date >= $2::date
+         AND sop.performance_attribution_date < ($2::date + INTERVAL '1 year')
      ), legacy_year_stats AS (
        SELECT
        COALESCE(SUM(
@@ -201,8 +206,8 @@ async function getConsumptionStatsScoped(clientUserId, scopeType, scopeId) {
          AND o.sale_order_type IN ('销售单', '转换单')
          AND o.client_user_id = $1
          AND o.legacy_source = 'workfine'
-         AND o.paid_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Shanghai')
-         AND o.paid_at < (($2::date + INTERVAL '1 year') AT TIME ZONE 'Asia/Shanghai')
+         AND o.performance_attribution_date >= $2::date
+         AND o.performance_attribution_date < ($2::date + INTERVAL '1 year')
      ), actual_stats AS (
        SELECT
          COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS total_actual_consumption,
@@ -363,9 +368,22 @@ async function search(ctx) {
   const allClientUserIds = customers.map((c) => c.clientUserId).filter(Boolean)
 
   if (allClientUserIds.length > 0) {
-    const yearStart = `${new Date().getFullYear()}-01-01`
+    // ⚠ 与详情（getConsumptionStatsScoped）用同一算法取年份：
+    // `new Date().getFullYear()` 依赖进程时区，容器 TZ 丢失时上海 1/1 08:00 前会取到上一年，
+    // 与详情的 shanghaiDateStr() 分叉。
+    const yearStart = `${shanghaiDateStr().slice(0, 4)}-01-01`
 
-    // 年消费（scope 过滤）
+    // 年消费（scope 过滤）—— 只用于下面的 tier 徽章分档，列表不直接展示该金额
+    // 订单级归属日期由 0009 起全量回填、实测 NULL 率 0（legacy 16248 单亦然），
+    // 本不受未迁库影响；但与详情同页展示，口径未就绪时一起挡住更一致（#141）
+    await assertPaymentAttributionReady(pg)
+    // 日期口径：订单级业绩归属日期（#141），与详情的落年口径一致。
+    // ⚠ 必须是**半开区间** [yearStart, yearStart+1year)：
+    // 改前按 paid_at 时无上界是无害的（实付日不可能落到未来），但归属日期可被人工
+    // 调整到订单日 ±7 天（见 order.js 的 min/max_performance_date 校验），
+    // 跨年那 7 天的订单会被计进今年 —— 而详情用半开区间会把它排除，两处再次分叉。
+    // 金额公式与详情不同是**有意的**：详情 SUM(sop.amount) 是款项级实收，
+    // 这里 SUM(o.total_amount) 是订单级应付总额，只服务于徽章分档。
     const sc1 = buildSaleScope(scopeType, scopeId, 'o', 3)
     const spendRows = await pg.query(
       `SELECT o.client_user_id,
@@ -373,7 +391,8 @@ async function search(ctx) {
          FROM sale_orders o
         WHERE o.client_user_id = ANY($1)
           AND o.status = '已支付'
-          AND o.paid_at >= $2::date
+          AND o.performance_attribution_date >= $2::date
+          AND o.performance_attribution_date < ($2::date + INTERVAL '1 year')
           AND ${sc1.sql}
         GROUP BY o.client_user_id`,
       [allClientUserIds, yearStart, ...sc1.params],

@@ -38,6 +38,16 @@ const STATUS_OPTIONS = [
   { text: '已分配', value: '已分配' },
 ];
 
+/**
+ * 两个 Tab 的日期筛选打在不同字段上，同一个筛选器必须随 Tab 换文案：
+ * 销售提成走 `allocation.pendingPayments`（款项业绩归属日期，#139），
+ * 服务提成走 `serviceCommission.pendingList`（服务单 service_date）。
+ */
+const DATE_HINT: Record<Tab, string> = {
+  sale: '日期按业绩归属日期筛选',
+  service: '日期按服务日期筛选',
+};
+
 Page({
   data: {
     activeTab: 'sale' as Tab,
@@ -49,6 +59,7 @@ Page({
     keyword: '',
     startDate: '',
     endDate: '',
+    dateHint: DATE_HINT.sale,
     loading: false,
     orders: [] as Array<SalePayment | ServiceOrder>,
     page: 1,
@@ -95,6 +106,7 @@ Page({
     this.setData({
       activeTab: tab,
       status: tab === 'sale' ? this.data.saleStatus : this.data.serviceStatus,
+      dateHint: DATE_HINT[tab],
     });
     this.reload();
   },

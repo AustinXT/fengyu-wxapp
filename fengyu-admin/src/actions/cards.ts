@@ -929,6 +929,7 @@ export const getCustomerHeldCards = withPermission(
 import { loadRechargeConfig, matchTier, type RechargeTier, type RechargeConfig } from '@/lib/recharge'
 import { logOperation } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
+import { businessErrorMessage } from '@/lib/action-error'
 import { revalidatePath } from 'next/cache'
 
 /**
@@ -1089,7 +1090,7 @@ export const createRechargeOrder = withPermission(
       const matched = matchTier(data.faceValue, cfg)
       payAmount = matched.payAmount
     } catch (err: any) {
-      return { success: false, message: (err?.message || '档位匹配失败').replace(/^[A-Z_]+:\s*/, '') }
+      return { success: false, message: businessErrorMessage(err, '档位匹配失败') }
     }
 
     // 顾客 + market_name 快照；documentType 在创建事务内按历史达标次数计算。
@@ -1181,8 +1182,8 @@ export const createRechargeOrder = withPermission(
         return id
       })
     } catch (err: any) {
-      const msg = err?.message || '充值订单创建失败'
-      return { success: false, message: msg.replace(/^[A-Z_]+:\s*/, '') }
+      // fail-closed：非白名单前缀的原始 PG 报错（SQL 片段 / 约束名）绝不回传给前端 toast（issue #133）
+      return { success: false, message: businessErrorMessage(err, '充值订单创建失败') }
     }
 
     await logOperation(session, 'sale_order.create_recharge', 'sale_order', saleOrderId, {

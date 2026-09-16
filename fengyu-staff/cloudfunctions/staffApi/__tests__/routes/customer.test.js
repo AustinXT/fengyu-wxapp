@@ -9,10 +9,58 @@
 const pg = globalThis.__mocks__.pg
 const { createManagerCtx, createBeauticianCtx, createManagementCtx } = require('../helpers')
 const customerRoutes = require('../../routes/customer')
+const { assertPaymentAttributionReady, __resetAttributionGuardCache } = require('../../utils/attribution-guard')
+
+/**
+ * #141：年度消费直读款项归属日期，跑 SQL 前会过 attribution-guard 探针。
+ * guard **只缓存「已就绪」**，所以这里预热一次，之后整个文件的测试都不再发探针查询，
+ * 既有 mock 的调用序列/索引全部不受影响。
+ * （预热本身会占一次 pg.query，但它在 beforeAll 里、早于任何用例的 mock 设置。）
+ * guard 本身的行为（未就绪时拦截）另有专门用例覆盖。
+ */
+beforeAll(async () => {
+  pg.query.mockResolvedValueOnce([{ has_gap: false, trigger_ready: true }])
+  await assertPaymentAttributionReady(pg)
+})
+
 
 // ============================================================
 // customer.search
 // ============================================================
+/**
+ * #141：本文件用 beforeAll 预热 guard（使既有用例零改动），
+ * 但那样 guard 在全文件变成 no-op —— 把调用挪走也不会有用例变红。
+ * 这里补一条**行为**用例，显式重置缓存后验证 fail-closed。
+ */
+describe('customer.detail 年度消费的迁移就绪守卫（#141）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    __resetAttributionGuardCache()
+  })
+
+  afterAll(async () => {
+    // 复原就绪态，避免影响本文件其余用例
+    __resetAttributionGuardCache()
+    pg.query.mockResolvedValueOnce([{ has_gap: false, trigger_ready: true }])
+    await assertPaymentAttributionReady(pg)
+  })
+
+  test('未迁移库拒绝出数（不给运营看负数年度消费）', async () => {
+    // 按 SQL 内容分发，不依赖 detail 内部的查询顺序
+    pg.query.mockImplementation(async (sql) => {
+      if (/has_gap/.test(sql)) return [{ has_gap: true, trigger_ready: false }]
+      if (/FROM\s+client_wechat_users/.test(sql)) {
+        return [{ user_id: 'u1', customer_id: 'C001', name: '张三', phone: '13800001111' }]
+      }
+      return []
+    })
+    const ctx = createManagerCtx({ clientUserId: 'u1' })
+    await expect(customerRoutes.detail(ctx)).rejects.toThrow(/INVALID_STATE: MIGRATION_REQUIRED/)
+    // 确认探针确实发了（守卫真的被调用，不是别的原因抛错）
+    expect(pg.query.mock.calls.some(([sql]) => /has_gap/.test(sql)), '守卫未被调用').toBe(true)
+  })
+})
+
 describe('customer.search', () => {
   test('关键词搜索返回 PG 结果（含 store_name JOIN）', async () => {
     const ctx = createManagerCtx({ keyword: '张' })
@@ -601,8 +649,15 @@ describe('customer.detail', () => {
     expect(sql).toContain('SUM(\n         sop.amount::numeric')
     expect(sql).toContain("o.legacy_source IS DISTINCT FROM 'workfine'")
     expect(sql).toContain("o.legacy_source = 'workfine'")
-    expect(sql).toContain("sop.paid_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Shanghai')")
-    expect(sql).toContain("sop.paid_at < (($2::date + INTERVAL '1 year') AT TIME ZONE 'Asia/Shanghai')")
+    // #141 年度消费落年改按业绩归属日期：款项级走 sop、legacy(workfine) 走订单级 o。
+    // 归属日期是 date，年区间用半开 [start, start+1year)，不再套北京时区半开区间。
+    expect(sql).toContain('sop.performance_attribution_date >= $2::date')
+    expect(sql).toContain("sop.performance_attribution_date < ($2::date + INTERVAL '1 year')")
+    expect(sql).toContain('o.performance_attribution_date >= $2::date')
+    expect(sql).toContain("o.performance_attribution_date < ($2::date + INTERVAL '1 year')")
+    // 旧口径必须消失（含时区半开区间形态）
+    expect(sql).not.toContain('sop.paid_at >=')
+    expect(sql).not.toContain("AT TIME ZONE 'Asia/Shanghai')")
     expect(sql).not.toContain('WHEN o.paid_at >= $2')
     expect(sql).toContain('FROM service_orders so')
     expect(sql).toContain('JOIN service_items sit ON sit.service_order_id = so.service_order_id')

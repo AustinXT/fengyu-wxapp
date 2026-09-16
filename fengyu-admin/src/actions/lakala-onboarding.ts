@@ -16,6 +16,7 @@ import {
   lakalaOnboardingAttachments,
   lakalaOnboardingRequestLogs,
 } from "@db/lakala-onboarding";
+import { businessErrorMessage } from "@/lib/action-error";
 import {
   AGREEMENT_ATTACHMENT,
   ATTACHMENT_REQUIREMENTS,
@@ -1600,9 +1601,13 @@ export const initiateElectronicContract = withPermission(
       revalidatePath(`/merchants/onboarding-prototype/${applicationId}`);
       return { success: true, message: "电子合同已发起，请完成签约", resultUrl: result.resultUrl };
     } catch (error) {
-      const message = error instanceof Error ? error.message : "电子合同申请失败";
-      await db.update(lakalaOnboardingApplications).set({ lastErrorMessage: message }).where(eq(lakalaOnboardingApplications.id, applicationId));
-      return { success: false, message };
+      // diagnosticText 只落 DB 的 lastErrorMessage 供运维排查（刻意不叫 *message，
+      // 与 action-error-usage 护栏「进返回值的 message 必须 fail-closed」口径区分开）。
+      // 供应商拒绝原因本身就是用白名单前缀抛的（上面 `INVALID_STATE: ${result.errorMessage}`），
+      // 所以照常透传；被挡掉的只有 PG / TypeError 这类内部异常（issue #133 评审 round 3）。
+      const diagnosticText = error instanceof Error ? error.message : "电子合同申请失败";
+      await db.update(lakalaOnboardingApplications).set({ lastErrorMessage: diagnosticText }).where(eq(lakalaOnboardingApplications.id, applicationId));
+      return { success: false, message: businessErrorMessage(error, "电子合同申请失败") };
     }
   },
 );
@@ -1675,10 +1680,11 @@ export const submitOnboardingApplication = withPermission(
       revalidatePath(`/merchants/onboarding-prototype/${applicationId}`);
       return { success: true, message: "已提交拉卡拉，收款商户已生成并绑定门店" };
     } catch (error) {
-      const message = error instanceof Error ? error.message : "提交失败";
+      // 同上：DB 留原始文本供运维，前端只拿 fail-closed 后的文案
+      const diagnosticText = error instanceof Error ? error.message : "提交失败";
       const nextStatus = app.merInnerNo || app.merCupNo ? "FAILED" : "FILES_READY";
-      await db.update(lakalaOnboardingApplications).set({ status: nextStatus, lastErrorMessage: message }).where(eq(lakalaOnboardingApplications.id, applicationId));
-      return { success: false, message };
+      await db.update(lakalaOnboardingApplications).set({ status: nextStatus, lastErrorMessage: diagnosticText }).where(eq(lakalaOnboardingApplications.id, applicationId));
+      return { success: false, message: businessErrorMessage(error, "提交失败") };
     }
   },
 );

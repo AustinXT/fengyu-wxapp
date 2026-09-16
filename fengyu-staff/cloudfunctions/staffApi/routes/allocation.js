@@ -14,7 +14,8 @@
 const pg = require('../db/pg')
 const { requireManager } = require('../middleware/auth')
 const { logOperation } = require('../utils/operation-log')
-const { normalizeListFilters, addTimestampDateRange } = require('../utils/list-filters')
+const { normalizeListFilters, addDateRange } = require('../utils/list-filters')
+const { assertPaymentAttributionReady } = require('../utils/attribution-guard')
 const { assertNoPendingRefund, assertNoSettledRefundForPayment } = require('../utils/refund')
 const { resolveMarketNameByStore } = require('../utils/market')
 const { refreshOrderAllocationRollup } = require('../utils/payment-allocatable')
@@ -216,7 +217,17 @@ async function pendingPayments(ctx) {
     conditions.push(`(${searchParts.join(' OR ')})`)
   }
 
-  addTimestampDateRange(conditions, params, 'p.paid_at', startDate, endDate)
+  // 日期筛选口径固定为「款项业绩归属日期」（#139），与 admin 营业额分配默认口径 attribution 同构。
+  // 款项粒度：直接约束当前这一行款项的归属日期，**不得**退化成订单级 EXISTS 半连接
+  // （那样会把同订单里落在区间外的其他回款一并带出）。归属日期是 date，走 addDateRange 闭区间。
+  //
+  // 这里**不加** `status='已支付'` 闸门，与 admin allocations.ts 的 getPendingPayments 保持一致
+  // （加了反而制造副本漂移）。注意别把理由记成「allocation_status IS NOT NULL 只命中已支付行」——
+  // 那是错的：退款行会被 helpers/refund-cascade.js 置 '已分配'，全额储值卡抵扣行也会被
+  // utils/payment-allocatable.js 置 '待分配'，DB 层只有枚举没有 CHECK 兜底。
+  // 真正的依据是**写入侧时序**：这些写入点都发生在该行 status 已置 '已支付' 之后。
+  if (startDate || endDate) await assertPaymentAttributionReady(pg)
+  addDateRange(conditions, params, 'p.performance_attribution_date', startDate, endDate)
 
   params.push(pageSize)
   const limitParam = params.length

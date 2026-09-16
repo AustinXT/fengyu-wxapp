@@ -22,6 +22,7 @@ import {
   type ExportBatchResult,
 } from '@/lib/export-pagination'
 import { orderMarketScopeCondition, resolveCustomerOrderMarketScope } from '@/lib/order-market-scope'
+import { businessErrorMessage } from '@/lib/action-error'
 
 /**
  * 获取所有市场节点（type='市场'），用于商品可见范围选择。
@@ -1040,7 +1041,8 @@ export const addSkuToProduct = withPermission(
       if (pgErrorCode(err) === '23505') return { success: false, message: '该规格已关联到此商品' }
       if (pgErrorCode(err) === '23503') return { success: false, message: '商品或规格不存在' }
       console.error('[addSkuToProduct] insert failed:', err)
-      return { success: false, message: `添加失败: ${err?.message ?? '未知错误'}` }
+      // fail-closed：23505/23503 之外的 PG 码不再把原始报错回传给前端（issue #133）
+      return { success: false, message: businessErrorMessage(err, '添加失败，请稍后重试') }
     }
 
     await logOperation(session, 'mall_product_sku.create', 'mall_product_sku', productId, { skuId })

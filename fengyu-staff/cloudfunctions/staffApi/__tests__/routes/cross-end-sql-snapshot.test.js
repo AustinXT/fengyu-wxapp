@@ -69,6 +69,12 @@ const FILES = {
   payNotifyIndexJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/index.js'),
   adminOrdersTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/orders.ts'),
 
+  // issue #139 — 款项业绩归属日期筛选的两种粒度，staff / admin 各两处共四个站点
+  staffAllocationJs: path.resolve(__dirname, '../../routes/allocation.js'),
+  adminPerformanceAttributionTs: path.resolve(
+    __dirname, '../../../../../fengyu-admin/src/lib/performance-attribution.ts',
+  ),
+
   // ticket 2026-05-19-sale-items-paid-sessions — paid_sessions 重算 SQL 四端字节同义
   staffPaidSessionsJs: path.resolve(__dirname, '../../utils/paid-sessions.js'),
   clientPaidSessionsJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/utils/paid-sessions.js'),
@@ -115,6 +121,22 @@ const FILES = {
 
 function readFile(p) {
   return fs.readFileSync(p, 'utf8')
+}
+
+/**
+ * 剥掉 JS/TS 注释后再做「某行代码是否存在」的断言。
+ *
+ * 不剥的话，把目标行注释掉就能骗过断言而代码已失效——这是 snapshot 守护的经典漏网：
+ * `toContain` 吃行注释，行形锚点 `/^\s*x$/m` 吃块注释（整行包进 /* *\/ 后行首仍是空白+代码）。
+ * 块注释整体置空而非逐行删，是为了保持行结构不塌陷，行形锚点才不会误命中相邻行。
+ *
+ * 只用于这类存在性断言，不追求完备的词法分析（字符串字面量里的 `//` 会被误伤，
+ * 但那只会让断言更严格，方向是 fail-closed）。
+ */
+function stripJsComments(src) {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+    .replace(/(^|[^:])\/\/.*$/gm, '$1')
 }
 
 function normalizeSql(sql) {
@@ -2816,5 +2838,174 @@ describe('疗程卡可用次数为 0 时仍展示的跨端守护（issue #122）
     const src = readFile(FILES.staffServiceJs)
     expect(src).toContain('INSUFFICIENT_BALANCE')
     expect(src).toMatch(/COALESCE\(paid_sessions, session_count\)/)
+  })
+
+  /**
+   * issue #139 — 款项业绩归属日期筛选的跨端形态守护。
+   *
+   * 两端实现语言不同（staff 原生 SQL / admin Drizzle），不能做字面 snapshot 相等，
+   * 守护的是**三条口径不变量**在四个站点上同时成立：
+   *   ① 订单粒度用 EXISTS 半连接，且带 `status='已支付'` 语义闸门
+   *   ② 款项粒度直接约束当前行，**不得**套 EXISTS（否则带出同订单区间外的款项）
+   *   ③ 归属日期是 date，一律闭区间 `::date`，不得混入 timestamptz 半开区间
+   * 任一端单边漂移都会在这里断掉。
+   */
+  describe('款项业绩归属日期筛选（#139，四站点形态一致）', () => {
+    test('订单粒度两端都是 EXISTS 半连接 + 已入账闸门', () => {
+      const staffList = readFile(FILES.staffOrderJs).match(
+        /async function list\(ctx\)[\s\S]*?\n\}/,
+      )?.[0]
+      expect(staffList, '未能定位 staff order.list 函数体').toBeTruthy()
+      // normalizeSql 会清掉括号内侧空白，故断言串里 `EXISTS (SELECT` 之间无空格
+      const staffFlat = normalizeSql(staffList)
+      expect(staffFlat, 'staff 订单列表必须走 EXISTS 半连接').toContain(
+        "EXISTS (SELECT 1 FROM sale_order_payments pf WHERE pf.sale_order_id = o.sale_order_id AND pf.status = '已支付'",
+      )
+
+      const adminConds = readFile(FILES.adminOrdersTs).match(
+        /function buildOrderConditions\b[\s\S]*?\n\}/,
+      )?.[0]
+      expect(adminConds, '未能定位 admin buildOrderConditions 函数体').toBeTruthy()
+      expect(adminConds, 'admin 订单管理必须走 EXISTS 半连接').toContain(
+        'FROM ${saleOrderPayments} AS payment_attribution_filter',
+      )
+      expect(adminConds, 'admin 侧 status 语义闸门不得删').toContain(
+        "payment_attribution_filter.status = '已支付'",
+      )
+    })
+
+    test('款项粒度两端都约束当前行，不退化成 EXISTS', () => {
+      const staffPending = readFile(FILES.staffAllocationJs).match(
+        /async function pendingPayments\(ctx\)[\s\S]*?\n\}/,
+      )?.[0]
+      expect(staffPending, '未能定位 staff allocation.pendingPayments 函数体').toBeTruthy()
+      expect(staffPending, 'staff 分配列表必须行级约束归属日期').toContain(
+        "addDateRange(conditions, params, 'p.performance_attribution_date', startDate, endDate)",
+      )
+      // 归属日期在该函数体内只许出现这一次；套进任何 EXISTS 子查询都会引入第二次引用或换别名
+      expect(
+        staffPending.match(/performance_attribution_date/g),
+        'staff 分配列表的归属日期引用次数漂移（疑似退化成 EXISTS）',
+      ).toHaveLength(1)
+
+      const adminAllocationsSrc = readFile(FILES.adminAllocationsTs)
+      const adminPending = adminAllocationsSrc.match(
+        /const dateRangeConditions = \(\(\) => \{[\s\S]*?\}\)\(\)/,
+      )?.[0]
+      expect(adminPending, '未能定位 admin 分配列表日期条件块').toBeTruthy()
+      // 不传 paymentAlias == 引用 sale_order_payments 表本身 == 行级约束
+      expect(adminPending, 'admin 分配列表必须行级约束（不得传 alias 变成 EXISTS 形态）').toContain(
+        'paymentAttributionRangeConditions(params.dateFrom, params.dateTo)',
+      )
+      // codex 评审 P2：上面只证明"helper 被调用并赋给局部变量"，不证明它接进了最终 WHERE。
+      // 删掉展开处，条件就静默失效而断言仍绿——所以这里必须钉住展开位置。
+      //
+      // 这条断言被两轮评审各打穿一次，逐级加固到现在：
+      //   toContain          → 吃行注释 `// ...dateRangeConditions,`（GLM round-2 指出）
+      //   行形锚点 /^\s*\.\.\./m → 吃块注释（codex round-3 实际变异验证：把整行包进 /* */ 仍匹配）
+      //   现在：先剥注释再匹配，两种注释形态都失效
+      expect(
+        stripJsComments(adminAllocationsSrc),
+        'admin 分配列表的日期条件未接入最终查询（dateRangeConditions 未展开进 conds，或被注释掉）',
+      ).toMatch(/^\s*\.\.\.dateRangeConditions,$/m)
+    })
+
+    // GLM 评审 P2：上面四条只守护「attribution 分支的代码形态还在」，
+    // 不守护「默认就走这个分支」。把 admin 的 `?? 'attribution'` 改成 `?? 'payment'` 一个词，
+    // 默认口径即退回 paid_at 半开区间，而所有形态断言仍然全绿——
+    // 而「staff 与 admin 默认口径一致」正是 #139 的头号验收标准。
+    test('admin 两处默认口径锚点仍是 attribution（staff 无下拉，只能对齐默认值）', () => {
+      expect(
+        readFile(FILES.adminOrdersTs),
+        'admin 订单管理默认口径漂移，staff 侧无下拉可切，会与 staff 出数不一致',
+      ).toContain("filters.dateBasis ?? 'attribution'")
+      expect(
+        readFile(FILES.adminAllocationsTs),
+        'admin 营业额分配默认口径漂移，staff 侧无下拉可切，会与 staff 出数不一致',
+      ).toContain("params.dateBasis ?? 'attribution'")
+    })
+
+    test('两端归属日期一律 date 闭区间，无 timestamptz 半开区间', () => {
+      const staffOrder = readFile(FILES.staffOrderJs).match(
+        /async function list\(ctx\)[\s\S]*?\n\}/,
+      )?.[0]
+      // staff 两处都走 list-filters 的 addDateRange（`>= $n::date` / `<= $n::date`）
+      expect(staffOrder).toContain(
+        "addDateRange(attributionParts, params, 'pf.performance_attribution_date', startDate, endDate)",
+      )
+      const addDateRange = readFile(
+        path.resolve(__dirname, '../../utils/list-filters.js'),
+      ).match(/function addDateRange\([\s\S]*?\n\}/)?.[0]
+      expect(addDateRange, '未能定位 addDateRange').toBeTruthy()
+      expect(addDateRange, 'staff 侧闭区间形态漂移').toContain('>= $${params.length}::date')
+      expect(addDateRange, 'staff 侧闭区间形态漂移').toContain('<= $${params.length}::date')
+      expect(addDateRange, 'staff 侧不得混入半开区间').not.toContain('+ 1)')
+
+      const adminHelper = readFile(FILES.adminPerformanceAttributionTs)
+      const rangeFn = adminHelper.match(
+        /export function paymentAttributionRangeConditions[\s\S]*?\n\}/,
+      )?.[0]
+      expect(rangeFn, '未能定位 paymentAttributionRangeConditions').toBeTruthy()
+      expect(rangeFn, 'admin 侧闭区间形态漂移').toContain('>= ${dateFrom}::date')
+      expect(rangeFn, 'admin 侧闭区间形态漂移').toContain('<= ${dateTo}::date')
+      expect(rangeFn, 'admin 侧不得退回北京半开区间').not.toContain('beijingNextDayBoundaryTs')
+    })
+
+    /**
+     * 迁移就绪探针 SQL 的**精确快照**（codex round-4 P2）。
+     *
+     * 为什么不能只断言「关键片段存在」：那样可以一边保留原片段（塞进 SQL 块注释或一个
+     * 没被引用的 CTE）、一边用 `(1 = 0) AS has_gap, (1 = 1) AS trigger_ready` 供值，
+     * 所有正向片段断言仍命中、常量黑名单也拦不住，而空的 0038 库会被永久缓存成 ready。
+     * codex 实测演示过这条绕过路径。
+     *
+     * 逐字快照把「改探针」变成必须显式更新本断言的有意识动作。
+     * 改动本 SQL 时请同步确认：① 存量缺口谓词 ② 0039 正面分支比对串 ③ 两个字段真的由子查询供值。
+     */
+    test('迁移就绪探针 SQL 精确快照', () => {
+      const src = readFile(path.resolve(__dirname, '../../utils/attribution-guard.js'))
+      const probeSql = extractBacktickStringContaining(src, 'has_gap')
+      expect(normalizeSql(probeSql)).toBe(
+        "SELECT EXISTS (SELECT 1 FROM sale_order_payments WHERE change_type = '首次支付'"
+        + " AND status = '已支付' AND performance_attribution_date IS NULL) AS has_gap,"
+        + " COALESCE((SELECT pg_get_functiondef(p.oid) LIKE '%IF NEW.change_type = ''首次支付'' THEN%'"
+        + " FROM pg_proc p WHERE p.proname = 'initialize_payment_performance_attribution_date'"
+        + ' LIMIT 1), false) AS trigger_ready',
+      )
+    })
+
+    /**
+     * #141：年度消费（`customer.js` / `mgmt-customer.js` 两份**字节同义副本**）
+     * 直读款项归属日期，未迁库时首次支付行 100% NULL，
+     * 正数主体被三值逻辑吞掉、只剩退款负数（dev 实测 −425801.66）。
+     *
+     * 两边都必须过守卫——此前移除 `customer.js` 那侧的守卫**没有任何测试变红**
+     * （mgmt 侧有行为用例，customer 侧没有），故在此补字面量守护。
+     */
+    test('年度消费两份副本都必须过迁移就绪守卫', () => {
+      for (const key of ['staffCustomerJs', 'staffMgmtCustomerJs']) {
+        // 必须剥注释：两个文件的注释里正好都提到 `utils/attribution-guard.js`，
+        // 裸 readFile 会让第一条断言被注释满足。
+        // （本文件没有通用 stripComments，这里就地剥掉块注释与整行行注释。）
+        // 块注释 + 行注释（含**行内尾注释**：`x(); // assertPaymentAttributionReady(pg)`
+        // 这种写法会让「删了调用但留着尾注释」骗过断言 —— GLM 评审指出）
+        const src = readFile(FILES[key])
+          .replace(/\/\*[\s\S]*?\*\//g, ' ')
+          .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ')
+        expect(src, `${key} 未接入 attribution-guard`).toContain('utils/attribution-guard')
+        expect(src, `${key} 未在年度消费查询前调用守卫`)
+          .toContain('assertPaymentAttributionReady(pg)')
+      }
+    })
+
+    test('staff 带日期筛选前必须过迁移就绪守卫（未迁库时宁可报错也不出空数据）', () => {
+      for (const key of ['staffOrderJs', 'staffAllocationJs']) {
+        const src = readFile(FILES[key])
+        expect(src, `${key} 未接入 attribution-guard`).toContain(
+          "require('../utils/attribution-guard')",
+        )
+        expect(src, `${key} 未在日期分支调用守卫`).toContain('assertPaymentAttributionReady(pg)')
+      }
+    })
   })
 })

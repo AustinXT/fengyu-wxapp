@@ -25,6 +25,7 @@ import { scopeCondition, isInScope, requireAdmin, isDepositOrderApprover } from 
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
 import { logOperation, logTransition, logUpdate } from '@/lib/operation-log'
 import { ApiError, parseErrorPrefix } from '@/lib/api-error'
+import { businessErrorMessage } from '@/lib/action-error'
 import { hasPendingRefund } from '@/lib/refund-cascade'
 import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { calcCouponDiscount } from '@/lib/utils'
@@ -758,7 +759,9 @@ async function deductPrepaidCardAtCreation(
   }
   const currentBalance = Number(balRows[0].balance)
   if (currentBalance + 0.001 < amount) {
-    throw new Error(`INSUFFICIENT_BALANCE:${currentBalance}: 顾客储值卡余额不足，期望扣 ${amount}，实际 ${currentBalance}`)
+    // 余额不放子标签位：这里的数字无人解析（只有下方 recordPayment 的纯数字抛点被解析），
+    // 放在子标签位只会以「320.5: 」的形式漏进用户 toast（issue #133 评审 round 3）
+    throw new Error(`INSUFFICIENT_BALANCE: 顾客储值卡余额不足，期望扣 ${amount}，实际 ${currentBalance}`)
   }
   const cardId = balRows[0].card_id as string
   await tx.execute(sql`
@@ -3576,7 +3579,8 @@ export const confirmOfflinePayment = withPermission(
           }
           const currentBalance = Number(balRows[0].balance)
           if (currentBalance + 0.001 < orderPendingPrepaid) {
-            throw new Error(`INSUFFICIENT_BALANCE:${currentBalance}: 顾客储值卡余额不足，期望扣 ${orderPendingPrepaid}，实际 ${currentBalance}`)
+            // 同上：余额不放子标签位（issue #133 评审 round 3）
+            throw new Error(`INSUFFICIENT_BALANCE: 顾客储值卡余额不足，期望扣 ${orderPendingPrepaid}，实际 ${currentBalance}`)
           }
           const cardId = balRows[0].card_id as string
           await tx.execute(sql`
@@ -3691,11 +3695,8 @@ export const confirmOfflinePayment = withPermission(
       }
     })
   } catch (err: any) {
-    if (err instanceof ApiError && err.prefix === 'INVALID_PARAMS') {
-      return { success: false, message: err.message.replace(/^INVALID_PARAMS:\s*/, '') }
-    }
-    if (err instanceof ApiError && err.prefix === 'CONFLICT') {
-      return { success: false, message: err.message.replace(/^CONFLICT:\s*/, '') }
+    if (err instanceof ApiError && (err.prefix === 'INVALID_PARAMS' || err.prefix === 'CONFLICT')) {
+      return { success: false, message: businessErrorMessage(err, '确认收款失败，请稍后重试') }
     }
     // 透传 INSUFFICIENT_BALANCE（储值卡余额不足 / 无卡）
     const msg: string = err?.message || ''
@@ -4840,7 +4841,8 @@ export const createOrder = withPermission(
         applyOrderLevelDiscountToItems(data.items, pointsDiscount)
       }
     } catch (err) {
-      return { success: false, message: err instanceof Error ? err.message : '积分抵扣参数无效' }
+      // fail-closed：积分抵扣的业务拒绝带白名单前缀会照常透传，未知异常走兜底（issue #133）
+      return { success: false, message: businessErrorMessage(err, '积分抵扣参数无效') }
     }
   }
 
@@ -5214,12 +5216,15 @@ export const createOrder = withPermission(
     // 修复 f4248169 把这些 throw 迁移到 ApiError（带 "<PREFIX>: " 前缀）后，
     // 旧的 err.message === / startsWith('<中文>') 匹配器全部失配，被吞成通用「创建订单失败」的回归。
     if (err instanceof ApiError) {
-      const parsed = parseErrorPrefix(err.message)
-      return { success: false, message: parsed?.displayMessage ?? err.message }
+      // 走 businessErrorMessage 而非 parsed.displayMessage：后者只剥一级前缀，
+      // 会把 HOME_PRODUCT_NO_PENDING: 这类二级子标签送进 toast（issue #133 评审 round 3）
+      return { success: false, message: businessErrorMessage(err, '创建订单失败，请稍后重试') }
     }
     // 全额储值卡抵扣扣卡失败：deductPrepaidCardAtCreation 抛 plain Error（非 ApiError），
-    // 消息形如 'INSUFFICIENT_BALANCE:NO_CARD: ...' / 'INSUFFICIENT_BALANCE:<余额>: ...'，
-    // 需用专用正则连子标签一起剥掉（parseErrorPrefix 会残留 NO_CARD/数字子标签）。
+    // 消息形如 'INSUFFICIENT_BALANCE:NO_CARD: ...'，需用专用正则连子标签一起剥掉
+    // （parseErrorPrefix 会残留 NO_CARD 子标签）。
+    // 注：`INSUFFICIENT_BALANCE:<余额>:` 形态在本 catch 的可达面内已消灭（余额已移进中文正文，
+    // 见 issue #133 评审 round 3）；仅 recordPayment 自抛自解的那对还保留数字子标签。
     if (typeof err?.message === 'string' && err.message.startsWith('INSUFFICIENT_BALANCE')) {
       const stripped = err.message.replace(/^INSUFFICIENT_BALANCE:?(NO_CARD)?:?\s*/, '')
       return { success: false, message: stripped || '顾客储值卡余额不足' }
@@ -6195,8 +6200,9 @@ export const createConversionOrder = withPermission(
       return { success: false, message: stripped || '顾客储值卡余额不足' }
     }
     if (err instanceof ApiError) {
-      const parsed = parseErrorPrefix(err.message)
-      return { success: false, message: parsed?.displayMessage ?? err.message }
+      // 走 businessErrorMessage 而非 parsed.displayMessage：后者只剥一级前缀，
+      // 会把 HOME_PRODUCT_NO_PENDING: 这类二级子标签送进 toast（issue #133 评审 round 3）
+      return { success: false, message: businessErrorMessage(err, '创建订单失败，请稍后重试') }
     }
     if (m?.includes('SKU_NOT_FOUND:')) return { success: false, message: '转入商品不存在' }
     if (pgErrorCode(err) === '23503') {
@@ -6539,10 +6545,8 @@ export const createDepositOrder = withPermission(
         return id
       })
     } catch (err: any) {
-      if (err instanceof ApiError) {
-        return { success: false, message: err.message }
-      }
-      return { success: false, message: err?.message || '寄存单创建失败' }
+      // fail-closed：ApiError 剥前缀透出业务文案，非白名单错误（原始 PG 报错等）走兜底（issue #133）
+      return { success: false, message: businessErrorMessage(err, '寄存单创建失败') }
     }
 
     await logOperation(
@@ -6884,8 +6888,8 @@ export const createPrepaidInflow = withPermission(
         return id
       })
     } catch (err: any) {
-      const msg = err?.message || '转入失败'
-      return { success: false, message: msg.replace(/^[A-Z_]+:\s*/, '') }
+      // fail-closed：非白名单前缀的原始 PG 报错（SQL 片段 / 约束名）绝不回传给前端 toast（issue #133）
+      return { success: false, message: businessErrorMessage(err, '转入失败') }
     }
 
     await logOperation(session, 'sale_order.prepaid_inflow', 'sale_order', saleOrderId, {
@@ -7453,7 +7457,9 @@ export const recordPayment = withPermission(
         success: false,
         error: {
           code: 'CONFLICT',
-          message: 'PAYMENT_INTENT_ACTIVE: 订单存在进行中的在线支付，请等待支付结果或先取消在线支付',
+          // 子标签只进日志不给用户看（根 CLAUDE.md），机器可读部分已在 code 字段；
+          // 与上面 REF_ORDER_NOT_FOUND 分支的口径对齐（issue #133）
+          message: '订单存在进行中的在线支付，请等待支付结果或先取消在线支付',
         },
       }
     }
@@ -7523,13 +7529,14 @@ export const recordPayment = withPermission(
         },
       }
     }
-    console.error('[recordPayment] unexpected error:', err)
-    // 兜底收口：任意 DB 错误（23xxx 等）只给通用提示，不回显原始 SQL（避免 Failed query 泄露前端）；
-    // 非 DB 错误才保留 err.message 便于排查。
+    // 兜底收口：任意 DB 错误（23xxx 等）只给通用提示，不回显原始 SQL（避免 Failed query 泄露前端）。
+    // DB 错误这一支不经 businessErrorMessage，故自己记日志；非 DB 那一支由它统一记，避免双记。
     if (pgErrorCode(err)) {
+      console.error('[recordPayment] db error:', err)
       return { success: false, error: { code: 'UNKNOWN', message: '录入回款失败：数据冲突或约束校验未通过，请刷新后重试' } }
     }
-    return { success: false, error: { code: 'UNKNOWN', message: `录入回款失败：${err?.message || String(err)}` } }
+    // fail-closed：非白名单前缀的异常（含 TypeError 的内部信息）不回传给前端（issue #133）
+    return { success: false, error: { code: 'UNKNOWN', message: businessErrorMessage(err, '录入回款失败，请稍后重试') } }
   }
 
   // 幂等命中：首次回款已处理（余额已扣、操作日志已记），本次为重复提交 → 直接返回当前状态，
@@ -7624,7 +7631,13 @@ export const freezeConversionRepaymentAmount = withPermission(
           ) * 100,
         )
         if (amountCents > remainingCents) {
-          throw new ApiError('CONFLICT', `OVERPAY:${(remainingCents / 100).toFixed(2)}: 本次回款金额超过订单欠款`)
+          // 余额写进中文正文而非子标签位：本条的 catch 走 businessErrorMessage，
+          // 留在子标签位会显示成「100.00: 本次回款金额超过订单欠款」（评审 round 5）。
+          // recordPayment 的 OVERPAY 解析器（见下方 /OVERPAY:([\d.]+)/）读的是另一处抛点，不受影响。
+          throw new ApiError(
+            'CONFLICT',
+            `本次回款金额超过订单欠款（剩余 ¥${(remainingCents / 100).toFixed(2)}）`,
+          )
         }
 
         const activeAmount = locked.first_payment_amount == null
@@ -7669,7 +7682,12 @@ export const freezeConversionRepaymentAmount = withPermission(
       const message = err instanceof Error ? err.message : String(err)
       const parsed = parseErrorPrefix(message)
       if (parsed) {
-        return { success: false, error: { code: parsed.prefix, message: parsed.displayMessage } }
+        // code 承载机器可读部分；message 走 businessErrorMessage 顺带剥掉二级子标签，
+        // 与 recordPayment 的同类分支口径一致（issue #133）
+        return {
+          success: false,
+          error: { code: parsed.prefix, message: businessErrorMessage(err, '冻结在线回款金额失败，请刷新后重试') },
+        }
       }
       console.error('[freezeConversionRepaymentAmount] unexpected error:', err)
       return { success: false, error: { code: 'UNKNOWN', message: '冻结在线回款金额失败，请刷新后重试' } }
@@ -7737,7 +7755,8 @@ export const generateOrderWxacode = withPermission(
     const base64 = Buffer.from(buffer).toString('base64')
     return { success: true, dataUrl: `data:image/png;base64,${base64}` }
   } catch (err: any) {
-    return { success: false, message: err.message || '生成小程序码失败' }
+    // fail-closed：微信接口/网络层的英文错误不回传给前端（issue #133）
+    return { success: false, message: businessErrorMessage(err, '生成小程序码失败') }
   }
   },
 )

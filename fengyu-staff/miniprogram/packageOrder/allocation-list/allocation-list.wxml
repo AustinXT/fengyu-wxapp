@@ -13,6 +13,7 @@
     status-options="{{statusOptions}}"
     start-date="{{startDate}}"
     end-date="{{endDate}}"
+    date-hint="{{dateHint}}"
     bind:keyword-change="onSearchChange"
     bind:search="onSearch"
     bind:search-clear="onSearchClear"
@@ -26,7 +27,13 @@
     <van-loading type="spinner" color="#C0322A" />
   </view>
 
-  <van-empty wx:elif="{{!loading && orders.length === 0}}" description="暂无数据" />
+  <view wx:elif="{{!loading && orders.length === 0}}">
+    <van-empty description="暂无数据" />
+    <!-- 销售提成走款项归属日期：未入账的款项不会出现在任何日期区间里 -->
+    <view wx:if="{{activeTab === 'sale' && (startDate || endDate)}}" class="empty-hint">
+      当前按业绩归属日期筛选，未入账的款项不在结果内
+    </view>
+  </view>
 
   <block wx:else>
     <!-- 销售提成卡片（按回款逐笔分配：每张卡 = 一笔回款事件） -->
