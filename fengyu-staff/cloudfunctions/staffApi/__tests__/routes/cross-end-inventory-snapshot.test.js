@@ -30,6 +30,8 @@ const FILES = {
   adminEngineTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/inventory/engine.ts'),
   // 盘点类型集合在 admin 侧住在独立模块（engine 与单据详情页共用单源），不在 engine.ts 里。
   adminStocktakeTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/inventory/stocktake.ts'),
+  // 建批次的第三份副本：upsertLot 与 engine 的 ensureLotFromSku 同功能不同名。
+  adminBusinessTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/inventory/business.ts'),
   dbSchemaInventoryTs: path.resolve(__dirname, '../../../../../db/schema/inventory.ts'),
 }
 
@@ -298,6 +300,19 @@ describe('PR #113 进销存单据组织端点跨端守护（staff / admin / sche
       const selectPattern = /SELECT sku_id, product_name, spec_name, supplier, supplier_id, product_series/
       expect(staffSrc).toMatch(selectPattern)
       expect(adminSrc).toMatch(selectPattern)
+    })
+
+    test('admin 的第三份建批次副本（business.ts 的 skuSnapshot）也取 supplier_id', () => {
+      // 建批次的副本有**三**份而不是两份：admin engine 的 ensureLotFromSku、staffApi 的
+      // ensureInventoryLotFromSku，以及 admin business.ts 的 upsertLot（同功能、不同名 ——
+      // 按名字 grep 会漏掉它）。business.ts 里 skuSnapshot 原本硬写 `supplierId: null`，
+      // 类型上却是 string|null，采购入库单没填供应商时批次就只剩名称锚点。
+      const businessSrc = readFile(FILES.adminBusinessTs)
+      expect(businessSrc).toMatch(
+        /SELECT sku_id, product_code, product_name, spec_name, supplier, supplier_id, product_series/,
+      )
+      expect(businessSrc).toMatch(/supplierId: row\.supplier_id/)
+      expect(businessSrc).not.toMatch(/supplierId: null,/)
     })
 
     test('schema 里 inventory_skus.supplier_id 是指向 inventory_suppliers 的外键', () => {

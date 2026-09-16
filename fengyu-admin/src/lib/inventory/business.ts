@@ -752,6 +752,7 @@ async function loadSku(
     product_name: string
     spec_name: string | null
     supplier: string | null
+    supplier_id: string | null
     product_series: string | null
     source_type: '供应链' | '市场自采' | '转让店'
     owner_market_id: string | null
@@ -761,7 +762,7 @@ async function loadSku(
     market_staff_purchase_price: string | number | null
     item_company_purchase_price: string | number | null
   }>(await tx.execute(sql`
-    SELECT sku_id, product_code, product_name, spec_name, supplier, product_series,
+    SELECT sku_id, product_code, product_name, spec_name, supplier, supplier_id, product_series,
            source_type, owner_market_id, supply_chain_purchase_price, market_purchase_price,
            store_purchase_price, market_staff_purchase_price, item_company_purchase_price
      FROM inventory_skus
@@ -782,7 +783,7 @@ async function loadSku(
     productName: row.product_name,
     specName: row.spec_name,
     supplier: row.supplier,
-    supplierId: null,
+    supplierId: row.supplier_id,
     productSeries: row.product_series,
     sourceType: row.source_type,
     ownerMarketId: row.owner_market_id,
@@ -3010,7 +3011,9 @@ export async function receiveSupplyChainPurchaseOrder(
         skuName: line.sku.productName,
         specName: line.sku.specName,
         supplier: order.supplierName ?? line.sku.supplier,
-        supplierId: order.supplierId,
+        // 与上一行的回落对齐：只回落名称、不回落 id 的话，lot_key 的 supplier 段会退回
+        // 名称锚点，供应商一改名同一批实物就裂成两行（#132）
+        supplierId: order.supplierId ?? line.sku.supplierId,
         productSeries: line.sku.productSeries,
         batchNo: line.batchNo,
         expiryDate: line.expiryDate,
