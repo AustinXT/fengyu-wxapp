@@ -114,6 +114,16 @@ jobs:
         working-directory: fengyu-admin
         run: npx vitest run src/lib/__tests__/action-error.test.ts
 
+      # SKU 供货商关联档案（#132）：`supplierId` 三态（undefined=不动 / null=清空 / id=写两列）
+      # 与「供货商必须是 select 而不是自由文本」的守护。不进 CI 的话，把下拉改回 <Input>、
+      # 或让 engine 重新收自由文本，GitHub 检查照样全绿 —— 而 issue 的根因正是自由文本。
+      - name: Run inventory SKU supplier guards (#132)
+        working-directory: fengyu-admin
+        run: |
+          npx vitest run \
+            src/lib/inventory/engine.test.ts \
+            'src/app/(main)/(inventory)/inventory/_components/inventory-skus-page.test.tsx'
+
       # 盘点账面数（#131）：engine 的口径快照（编译后的 SQL 与参数）、纯计算单测、
       # 以及详情页三列的真实渲染测试。不进 CI 的话，把 stockSnapshot 改回 null
       # 或删掉详情页三列，GitHub 检查照样全绿 —— 守护等于只在本地手工跑时才存在。
