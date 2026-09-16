@@ -9,6 +9,19 @@
 const pg = globalThis.__mocks__.pg
 const { createManagerCtx, createBeauticianCtx, createManagementCtx } = require('../helpers')
 const customerRoutes = require('../../routes/customer')
+const { assertPaymentAttributionReady, __resetAttributionGuardCache } = require('../../utils/attribution-guard')
+
+/**
+ * #141：年度消费直读款项归属日期，跑 SQL 前会过 attribution-guard 探针。
+ * guard **只缓存「已就绪」**，所以这里预热一次，之后整个文件的测试都不再发探针查询，
+ * 既有 mock 的调用序列/索引全部不受影响。
+ * guard 本身的行为（未就绪时拦截）另有专门用例覆盖。
+ */
+beforeAll(async () => {
+  pg.query.mockResolvedValueOnce([{ has_gap: false, trigger_ready: true }])
+  await assertPaymentAttributionReady(pg)
+})
+
 
 // ============================================================
 // customer.search

@@ -2568,6 +2568,23 @@ describe('疗程卡可用次数为 0 时仍展示的跨端守护（issue #122）
       )
     })
 
+    /**
+     * #141：年度消费（`customer.js` / `mgmt-customer.js` 两份**字节同义副本**）
+     * 直读款项归属日期，未迁库时首次支付行 100% NULL，
+     * 正数主体被三值逻辑吞掉、只剩退款负数（dev 实测 −425801.66）。
+     *
+     * 两边都必须过守卫——此前移除 `customer.js` 那侧的守卫**没有任何测试变红**
+     * （mgmt 侧有行为用例，customer 侧没有），故在此补字面量守护。
+     */
+    test('年度消费两份副本都必须过迁移就绪守卫', () => {
+      for (const key of ['staffCustomerJs', 'staffMgmtCustomerJs']) {
+        const src = readFile(FILES[key])
+        expect(src, `${key} 未接入 attribution-guard`).toContain('utils/attribution-guard')
+        expect(src, `${key} 未在年度消费查询前调用守卫`)
+          .toContain('await assertPaymentAttributionReady(pg)')
+      }
+    })
+
     test('staff 带日期筛选前必须过迁移就绪守卫（未迁库时宁可报错也不出空数据）', () => {
       for (const key of ['staffOrderJs', 'staffAllocationJs']) {
         const src = readFile(FILES[key])

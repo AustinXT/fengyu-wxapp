@@ -28,6 +28,7 @@ const { validateManagementScope, buildManagementStoreScope } = require('../utils
 const { maskPhone } = require('../utils/pii')
 const { excludeDepositRefundSql } = require('../utils/consume-filter')
 const { shanghaiDateStr } = require('../utils/datetime')
+const { assertPaymentAttributionReady } = require('../utils/attribution-guard')
 
 // ====================================================================
 // 共享 helper（buildSaleScope/buildClientScope 为与 mgmt-product.js 一致的本地副本；
@@ -151,6 +152,10 @@ async function getTopProductScoped(clientUserId, scopeType, scopeId) {
  * 仅销售单、转换单计入消费；寄存单只是剩余服务权益初始化，不能重复计入。
  */
 async function getConsumptionStatsScoped(clientUserId, scopeType, scopeId) {
+  // 年度消费直读款项归属日期：未迁库时首次支付行 100% 为 NULL，
+  // 三值逻辑会把正数主体全部吞掉、只剩退款负数（dev 实测年度消费变 −425801.66）。
+  // 宁可报错也不给运营看负数。详见 utils/attribution-guard.js
+  await assertPaymentAttributionReady(pg)
   if (!clientUserId) {
     return {
       totalConsumption: 0,
@@ -366,6 +371,9 @@ async function search(ctx) {
     const yearStart = `${new Date().getFullYear()}-01-01`
 
     // 年消费（scope 过滤）
+    // 订单级归属日期由 0009 起全量回填、实测 NULL 率 0（legacy 16248 单亦然），
+    // 本不受未迁库影响；但与详情同页展示，口径未就绪时一起挡住更一致（#141）
+    await assertPaymentAttributionReady(pg)
     // 日期口径：订单级业绩归属日期（#141）。与顾客详情的「年度消费」同口径**落年**，
     // 但金额公式不同——详情走款项级 SUM(sop.amount)（实收），这里是订单级
     // SUM(o.total_amount)（应付总额）。两者数值本就不相等，#141 只统一了落年口径，

@@ -24,6 +24,7 @@ const { maskPhoneForAuth } = require("../utils/phone-visibility");
 const { logOperation, logUpdate } = require("../utils/operation-log");
 const { shanghaiDateStr } = require("../utils/datetime");
 const { excludeDepositRefundSql } = require("../utils/consume-filter");
+const { assertPaymentAttributionReady } = require("../utils/attribution-guard");
 const { getPointsToYuanRate, getPointsDeductionMaxRate } = require("../utils/config");
 
 /**
@@ -680,6 +681,9 @@ async function getTopProduct(clientUserId) {
  * 单据口径：仅销售单、转换单计入消费；寄存单只是剩余服务权益初始化，不能重复计入。
  */
 async function getConsumptionStats(clientUserId) {
+  // 与 mgmt-customer.getConsumptionStatsScoped 同一口径副本，守卫同步（#141）：
+  // 未迁库时首次支付行 100% NULL，年度消费会静默变负数
+  await assertPaymentAttributionReady(pg)
   if (!clientUserId) {
     return {
       totalConsumption: 0,

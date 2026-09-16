@@ -12,6 +12,19 @@
 
 const pg = globalThis.__mocks__.pg
 const { createCtx, createManagerCtx } = require('../helpers')
+const { assertPaymentAttributionReady, __resetAttributionGuardCache } = require('../../utils/attribution-guard')
+
+/**
+ * #141：年度消费直读款项归属日期，跑 SQL 前会过 attribution-guard 探针。
+ * guard **只缓存「已就绪」**，所以这里预热一次，之后整个文件的测试都不再发探针查询，
+ * 既有 mock 的调用序列/索引全部不受影响。
+ * guard 本身的行为（未就绪时拦截）另有专门用例覆盖。
+ */
+beforeAll(async () => {
+  pg.query.mockResolvedValueOnce([{ has_gap: false, trigger_ready: true }])
+  await assertPaymentAttributionReady(pg)
+})
+
 const {
   search,
   detail,
@@ -91,9 +104,14 @@ function setupCommonMocks(opts = {}) {
     homeProductRows = [],     // 2026-09-13 家居产品资产（mgmtCustomer.homeProducts）
     marketName = '华东市场',
     storeName = '凤御A店',
+    attributionReady = true,   // #141 迁移就绪探针（attribution-guard）
   } = opts
 
   pg.query.mockReset().mockImplementation(async (sql, params) => {
+    // #141 attribution-guard 探针：按 SQL 内容分发，不占用调用序号
+    if (/has_gap/.test(sql)) {
+      return [{ has_gap: !attributionReady, trigger_ready: attributionReady }]
+    }
     // resolveScopeName: org_nodes
     if (/FROM\s+org_nodes\s+WHERE\s+id\s*=\s*\$1/.test(sql) && /SELECT\s+name\b/.test(sql)) {
       return [{ name: marketName }]
@@ -301,6 +319,46 @@ describe('mgmtCustomer 参数与权限校验', () => {
    * `performance_attribution_date` / `paid_at` 之间来回换，整套 staffApi 测试照常全绿。
    * 现有那条只断言金额公式（`SUM(o.total_amount) AS annual_spend`），不看日期。
    */
+  /**
+   * #141 fail-closed：未迁库时首次支付行 100% 为 NULL（dev 实测 1523/1523），
+   * 三值逻辑把正数主体全部吞掉、只剩退款负数——年度消费会显示 −425801.66。
+   * 宁可报错也不给运营看负数。
+   *
+   * 注意别用 pg.query.mockReset()：那会清掉 setupCommonMocks 装的 mockImplementation，
+   * 波及后续用例。mockResolvedValueOnce 本就优先于 mockImplementation，够用。
+   */
+  /**
+   * #141 fail-closed：未迁库时首次支付行 100% 为 NULL（dev 实测 1523/1523），
+   * 三值逻辑把正数主体全部吞掉、只剩退款负数——年度消费会显示 −425801.66。
+   * 宁可报错也不给运营看负数。
+   */
+  const withUnreadyGuard = async (opts, run) => {
+    __resetAttributionGuardCache()
+    setupCommonMocks({ ...opts, attributionReady: false })
+    try {
+      await run()
+    } finally {
+      // 复原就绪态，后续用例继续零探针
+      __resetAttributionGuardCache()
+      pg.query.mockResolvedValueOnce([{ has_gap: false, trigger_ready: true }])
+      await assertPaymentAttributionReady(pg)
+    }
+  }
+
+  test('detail 年度消费在未迁移库上拒绝出数（不显示负数）', async () => {
+    await withUnreadyGuard({ detailRows: [{ user_id: 'u1', bound_store_id: 'store-001' }] }, async () => {
+      const ctx = makeHqCtx({ scopeType: 'all', clientUserId: 'u1', customerId: 'c1', clientPhone: '13800000000' })
+      await expect(detail(ctx)).rejects.toThrow(/INVALID_STATE: MIGRATION_REQUIRED/)
+    })
+  })
+
+  test('search 年消费同样过迁移守卫', async () => {
+    await withUnreadyGuard({ searchRows: [{ user_id: 'u1', name: '张三', bound_store_id: 'store-001' }] }, async () => {
+      const ctx = makeHqCtx({ scopeType: 'all', keyword: '张' })
+      await expect(search(ctx)).rejects.toThrow(/INVALID_STATE: MIGRATION_REQUIRED/)
+    })
+  })
+
   test('search 年消费按订单级业绩归属日期落年，不得回退 paid_at', async () => {
     // 必须给 searchRows，否则 allClientUserIds 为空、search 会跳过年消费查询
     setupCommonMocks({
