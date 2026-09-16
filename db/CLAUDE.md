@@ -40,7 +40,11 @@ npm run db:test       # node:test 套件（migration 字面量回归等，不连
 npm run db:check:attribution   # 款项归属日期迁移前体检（只读，须显式传 DATABASE_URL）
 ```
 
-⚠ `npm run db:test` **不在** admin / staffApi 的 vitest 基线里，"单测全绿"不覆盖它，发版前要单独跑。
+⚠ `npm run db:test` **不在** admin / staffApi 的 vitest 基线里，"单测全绿"不覆盖它。
+它由独立 workflow `.github/workflows/db-script-tests.yml` 在 CI 跑，但**该 workflow 带 `paths` 过滤**
+（`db/scripts/**`、`db/migrations/**`、两个跨子项目内联副本等）——改动落在过滤器之外时 CI 不触发，
+发版前仍要本地跑一次。新增本套件会读取的仓库文件时，记得同步补 workflow 的 `paths`；
+其中「跨子项目内联副本」那几条由 `db-target-guard.test.js` 反向断言，漏了会直接红。
 
 迁移前需设置环境变量 `DATABASE_URL`（或在 `.env` 中配置）。Drizzle 配置见 `drizzle.config.ts`，启用了 strict 模式（破坏性变更需确认）。
 
