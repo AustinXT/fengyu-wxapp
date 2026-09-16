@@ -3272,7 +3272,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     expect(JSON.stringify(result)).toContain('原订单状态不允许转换')
   })
 
-  it('#125 已无未提货数量的家居行拒绝折抵', async () => {
+  it('#125/#145 没有已付清整件的家居行拒绝折抵', async () => {
     mockConvTx({
       heldRows: [homeHeldRow({ quantity: 4, picked_up_quantity: 4 })],
       skuRows: homeSkuRows,
@@ -3282,7 +3282,8 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
 
     expect(result.success).toBe(false)
     // 子标签 HOME_PRODUCT_NO_PENDING 只进日志，用户看到的是中文正文（issue #133）
-    expect(result.message).toBe('所选家居产品已无未提货数量，不可折抵')
+    // #145/#153 收紧后文案随口径改为「没有已付清的整件可折抵」
+    expect(result.message).toBe('所选家居产品没有已付清的整件可折抵')
   })
 
   it('#125 家居扣减 rowsAffected=0（并发被抢先）→ 冲突', async () => {
