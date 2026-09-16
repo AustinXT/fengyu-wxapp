@@ -1421,7 +1421,7 @@ export const listInventoryDocLocationFilterOptions = withPermission(
  * 把表单提交的 `supplierId` 解析成 `supplier_id` + `supplier`（名称快照）两列的写入值（#132）。
  *
  * 返回 `null` 表示**这两列都不要动** —— 对应 `input.supplierId === undefined`。
- * 存量里有一批 `supplier` 文本没匹配上档案的旧 SKU（migration 0041 按名称精确匹配回填，
+ * 存量里有一批 `supplier` 文本没匹配上档案的旧 SKU（migration 0042 按名称精确匹配回填，
  * 匹配不上的留 NULL），编辑这类 SKU 时前端不提交 `supplierId`，靠这条分支保住原文本。
  *
  * `currentSupplierId` 用来放行「已关联的档案后来被停用」：编辑这类 SKU 时下拉仍会带上它，

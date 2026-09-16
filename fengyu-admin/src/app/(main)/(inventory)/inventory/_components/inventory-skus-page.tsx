@@ -346,7 +346,7 @@ function SkuFormDialog({
   }, [open, row])
 
   /**
-   * 存量里 supplier 文本没匹配上档案的旧 SKU（migration 0041 匹配不上就留 NULL）。
+   * 存量里 supplier 文本没匹配上档案的旧 SKU（migration 0042 匹配不上就留 NULL）。
    *
    * 必须 trim 后再判真值：`btrim` 只吃 ASCII 空格，全角空格 / NBSP 包裹的值会带着
    * `supplier_id IS NULL` 活下来。不 trim 的话它是 truthy → 提交 `undefined` →

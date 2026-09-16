@@ -99,7 +99,7 @@ const REQUIRED_MIGRATIONS = [
   '0010_mute_black_bolt',
   '0017_watery_slyde',
   '0018_complete_amazoness',
-  '0041_inventory_sku_supplier_fk',
+  '0042_inventory_sku_supplier_fk',
 ]
 
 function postgresIdentifier(name) {
