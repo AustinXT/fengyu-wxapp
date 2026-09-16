@@ -28,6 +28,15 @@ describe('拉卡拉入网：可操作的运维错误必须透传', () => {
     )
   })
 
+  it('入网配置缺失（requireEnv）', () => {
+    const thrown = new Error(
+      'INVALID_STATE: 缺少入网配置 LAKALA_PRIVATE_KEY_PEM（LAKALA_CLIENT_MODE=real 时必填）',
+    )
+    expect(shownToUser(thrown, '提交失败')).toBe(
+      '缺少入网配置 LAKALA_PRIVATE_KEY_PEM（LAKALA_CLIENT_MODE=real 时必填）',
+    )
+  })
+
   it('504 网关超时提示（不含 URL，用户拿到可操作建议）', () => {
     const thrown = new Error('INVALID_STATE: 拉卡拉网关超时，通常是附件过大，请压缩后重试')
     expect(shownToUser(thrown, '提交失败')).toBe('拉卡拉网关超时，通常是附件过大，请压缩后重试')

@@ -419,7 +419,9 @@ function requireEnv(...names: string[]) {
     const value = process.env[name];
     if (value) return value;
   }
-  throw new Error(`${names.join(" or ")} is required when LAKALA_CLIENT_MODE=real`);
+  // 与 decodeSm4Key 同类：给运维看的可操作配置错误，必须带白名单前缀 + 中文才能穿过
+  // businessErrorMessage 的两道闸门，否则线上只会显示「提交失败」（issue #133 评审 round 5 自查）
+  throw new Error(`INVALID_STATE: 缺少入网配置 ${names.join(" 或 ")}（LAKALA_CLIENT_MODE=real 时必填）`);
 }
 
 async function resolvePrivateKey() {
