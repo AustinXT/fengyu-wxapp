@@ -659,6 +659,72 @@ describe('客量板块两端口径一致性守护', () => {
     })
 
     /**
+     * `stripSqlComments()` 是整个守护的地基 —— 它错了，上面所有逐字快照一起失效。
+     * 所以它自己也要被测：这里逐条钉死词法边界。
+     */
+    describe('stripSqlComments 词法边界（守护的地基）', () => {
+      const clean = (s: string) => normalize(stripSqlComments(s))
+
+      it('剥掉行注释的各种贴法', () => {
+        expect(clean("a = 1\n-- AND b = 2\nAND c = 3")).toBe('a = 1 AND c = 3')
+        expect(clean("a = 1\n--AND b = 2\nAND c = 3"), '`--` 后不带空格').toBe('a = 1 AND c = 3')
+        expect(clean("a = 1--AND b = 2\nAND c = 3"), 'token 紧贴 `--`').toBe('a = 1 AND c = 3')
+      })
+
+      it('剥掉块注释，含 PG 的嵌套块注释', () => {
+        expect(clean('a = 1 /* AND b = 2 */ AND c = 3')).toBe('a = 1 AND c = 3')
+        expect(
+          clean('a = 1 /* outer /* inner */ AND b = 2 */ AND c = 3'),
+          'PG 支持嵌套；非贪婪正则会在内层 */ 停下，状态机不会',
+        ).toBe('a = 1 AND c = 3')
+      })
+
+      it('字符串字面量里的注释符**不能**被当成注释', () => {
+        expect(clean("note = '-- not a comment' AND c = 3")).toBe(
+          "note = '-- not a comment' AND c = 3",
+        )
+        expect(clean("note = '/* not a comment */' AND c = 3")).toBe(
+          "note = '/* not a comment */' AND c = 3",
+        )
+        expect(clean("note = 'it''s -- fine' AND c = 3"), "'' 转义").toBe(
+          "note = 'it''s -- fine' AND c = 3",
+        )
+      })
+
+      it('${} 插值整段跳过——里面的引号不得干扰 SQL 词法', () => {
+        // 若不先跳过 ${}，`'so'` 的开引号会吞掉后面的 `--`，导致注释漏剥
+        expect(clean("AND ${excludeDepositRefundSql('so')}\n-- AND b = 2\nAND c = 3")).toBe(
+          "AND ${excludeDepositRefundSql('so')} AND c = 3",
+        )
+        // 插值内的大括号要按配平跳过
+        expect(clean('AND ${f({ a: 1 })} AND c = 3')).toBe('AND ${f({ a: 1 })} AND c = 3')
+      })
+
+      it('PG 参数占位 $1/$2 不被误判为 dollar-quote', () => {
+        expect(clean('a = $1 AND b = $2\n-- AND c = 3\nAND d = $3')).toBe(
+          'a = $1 AND b = $2 AND d = $3',
+        )
+      })
+
+      it('dollar-quote 内容原样保留', () => {
+        expect(clean("a = $tag$ -- not a comment $tag$ AND c = 3")).toBe(
+          "a = $tag$ -- not a comment $tag$ AND c = 3",
+        )
+      })
+
+      it('注释替换成空格而非删除，不制造新 token', () => {
+        // 若删成空串，`1` 与 `AND` 会粘成 `1AND`
+        expect(clean('a = 1/* x */AND c = 3')).toBe('a = 1 AND c = 3')
+      })
+
+      it('未闭合的注释/引号不会抛异常（fail-loud 由上层快照负责）', () => {
+        expect(() => stripSqlComments('a = 1 /* unclosed')).not.toThrow()
+        expect(() => stripSqlComments("a = 'unclosed")).not.toThrow()
+        expect(() => stripSqlComments('a = ${unclosed')).not.toThrow()
+      })
+    })
+
+    /**
      * 反向变异同样要打一次 **staff** 源（GLM r5：此前只打 admin）。
      * staff 的插值形态与 admin 不同（`${sc.sql}` / `${startDateExpr(period)}`），
      * 且其中一块**没有 GROUP BY**（走「截到模板串结束」分支），值得单独验一次。
