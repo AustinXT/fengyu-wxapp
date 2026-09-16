@@ -27,10 +27,12 @@ async function main() {
   await createTestStaff()
   await createTestClient()
 
-  // 消费口径夹具：
-  // - WorkFine 历史销售单无支付流水，继续按订单快照计入；
-  // - 原生部分支付按本年实际到账流水计入；
-  // - 跨年结清订单只把本年回款计入年度消费；
+  // 消费口径夹具（#141 起按**业绩归属日期**落年，非 paid_at）：
+  // - WorkFine 历史销售单无支付流水，继续按订单快照计入（legacy 分支走订单级归属日）；
+  // - 原生部分支付按款项归属日计入本年；
+  // - 跨年结清订单：**首次支付按订单归属日落年**（0039 trigger 镜像，即使 paid_at 在去年
+  //   也计入今年），回款按款项自身归属日落年 —— 这条正是新旧口径的分水岭
+  //   （旧 paid_at 口径会排除那笔首次支付 → 1700，新口径计入 → 1900）；
   // - 寄存单只是剩余权益初始化，不重复计入。
   const legacySaleOrderId = `${NS}_CUSDET_SALE`
   const partialOrderId = `${NS}_CUSDET_PARTIAL`
