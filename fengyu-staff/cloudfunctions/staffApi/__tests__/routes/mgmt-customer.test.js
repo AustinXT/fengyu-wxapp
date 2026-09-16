@@ -317,22 +317,12 @@ function setupCommonMocks(opts = {}) {
 
 describe('mgmtCustomer 参数与权限校验', () => {
   /**
-   * #141：列表「年消费」的日期口径此前**零守护**——把它在
-   * `performance_attribution_date` / `paid_at` 之间来回换，整套 staffApi 测试照常全绿。
-   * 现有那条只断言金额公式（`SUM(o.total_amount) AS annual_spend`），不看日期。
-   */
-  /**
-   * #141 fail-closed：未迁库时首次支付行 100% 为 NULL（dev 实测 1523/1523），
+   * #141 fail-closed：未迁库时首次支付行 100% 为 NULL（dev 实测 1523/1523，¥4,872,147.25），
    * 三值逻辑把正数主体全部吞掉、只剩退款负数——年度消费会显示 −425801.66。
    * 宁可报错也不给运营看负数。
    *
-   * 注意别用 pg.query.mockReset()：那会清掉 setupCommonMocks 装的 mockImplementation，
+   * ⚠ 别用 pg.query.mockReset()：那会清掉 setupCommonMocks 装的 mockImplementation、
    * 波及后续用例。mockResolvedValueOnce 本就优先于 mockImplementation，够用。
-   */
-  /**
-   * #141 fail-closed：未迁库时首次支付行 100% 为 NULL（dev 实测 1523/1523），
-   * 三值逻辑把正数主体全部吞掉、只剩退款负数——年度消费会显示 −425801.66。
-   * 宁可报错也不给运营看负数。
    */
   const withUnreadyGuard = async (opts, run) => {
     __resetAttributionGuardCache()
