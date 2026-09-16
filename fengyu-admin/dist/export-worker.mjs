@@ -97083,9 +97083,9 @@ var require__stream_readable = __commonJS((exports, module) => {
     else
       src.once("end", endFn);
     dest.on("unpipe", onunpipe);
-    function onunpipe(readable, unpipeInfo) {
+    function onunpipe(readable2, unpipeInfo) {
       debug("onunpipe");
-      if (readable === src) {
+      if (readable2 === src) {
         if (unpipeInfo && unpipeInfo.hasUnpiped === false) {
           unpipeInfo.hasUnpiped = true;
           cleanup();
@@ -105924,7 +105924,7 @@ var require_end_of_stream = __commonJS((exports, module) => {
     if (!opts)
       opts = {};
     callback = once(callback || noop3);
-    var readable = opts.readable || opts.readable !== false && stream.readable;
+    var readable2 = opts.readable || opts.readable !== false && stream.readable;
     var writable = opts.writable || opts.writable !== false && stream.writable;
     var onlegacyfinish = function onlegacyfinish() {
       if (!stream.writable)
@@ -105934,12 +105934,12 @@ var require_end_of_stream = __commonJS((exports, module) => {
     var onfinish = function onfinish() {
       writable = false;
       writableEnded = true;
-      if (!readable)
+      if (!readable2)
         callback.call(stream);
     };
     var readableEnded = stream._readableState && stream._readableState.endEmitted;
     var onend = function onend() {
-      readable = false;
+      readable2 = false;
       readableEnded = true;
       if (!writable)
         callback.call(stream);
@@ -105949,7 +105949,7 @@ var require_end_of_stream = __commonJS((exports, module) => {
     };
     var onclose = function onclose() {
       var err;
-      if (readable && !readableEnded) {
+      if (readable2 && !readableEnded) {
         if (!stream._readableState || !stream._readableState.ended)
           err = new ERR_STREAM_PREMATURE_CLOSE;
         return callback.call(stream, err);
@@ -106265,11 +106265,11 @@ var require_from = __commonJS((exports, module) => {
       iterator = iterable[Symbol.iterator]();
     else
       throw new ERR_INVALID_ARG_TYPE("iterable", ["Iterable"], iterable);
-    var readable = new Readable(_objectSpread({
+    var readable2 = new Readable(_objectSpread({
       objectMode: true
     }, opts));
     var reading = false;
-    readable._read = function() {
+    readable2._read = function() {
       if (!reading) {
         reading = true;
         next();
@@ -106283,19 +106283,19 @@ var require_from = __commonJS((exports, module) => {
         try {
           var _yield$iterator$next = yield iterator.next(), value2 = _yield$iterator$next.value, done = _yield$iterator$next.done;
           if (done) {
-            readable.push(null);
-          } else if (readable.push(yield value2)) {
+            readable2.push(null);
+          } else if (readable2.push(yield value2)) {
             next();
           } else {
             reading = false;
           }
         } catch (err) {
-          readable.destroy(err);
+          readable2.destroy(err);
         }
       });
       return _next2.apply(this, arguments);
     }
-    return readable;
+    return readable2;
   }
   module.exports = from;
 });
@@ -106713,9 +106713,9 @@ var require__stream_readable2 = __commonJS((exports, module) => {
     else
       src.once("end", endFn);
     dest.on("unpipe", onunpipe);
-    function onunpipe(readable, unpipeInfo) {
+    function onunpipe(readable2, unpipeInfo) {
       debug("onunpipe");
-      if (readable === src) {
+      if (readable2 === src) {
         if (unpipeInfo && unpipeInfo.hasUnpiped === false) {
           unpipeInfo.hasUnpiped = true;
           cleanup();
@@ -129253,9 +129253,9 @@ var require__stream_readable3 = __commonJS((exports, module) => {
     else
       src.once("end", endFn);
     dest.on("unpipe", onunpipe);
-    function onunpipe(readable, unpipeInfo) {
+    function onunpipe(readable2, unpipeInfo) {
       debug("onunpipe");
-      if (readable === src) {
+      if (readable2 === src) {
         if (unpipeInfo && unpipeInfo.hasUnpiped === false) {
           unpipeInfo.hasUnpiped = true;
           cleanup();
@@ -131409,9 +131409,9 @@ var require__stream_readable4 = __commonJS((exports, module) => {
     else
       src.once("end", endFn);
     dest.on("unpipe", onunpipe);
-    function onunpipe(readable, unpipeInfo) {
+    function onunpipe(readable2, unpipeInfo) {
       debug("onunpipe");
-      if (readable === src) {
+      if (readable2 === src) {
         if (unpipeInfo && unpipeInfo.hasUnpiped === false) {
           unpipeInfo.hasUnpiped = true;
           cleanup();
@@ -138513,7 +138513,7 @@ var require_end_of_stream2 = __commonJS((exports, module) => {
     callback = once(callback || noop3);
     var ws = stream._writableState;
     var rs = stream._readableState;
-    var readable = opts.readable || opts.readable !== false && stream.readable;
+    var readable2 = opts.readable || opts.readable !== false && stream.readable;
     var writable = opts.writable || opts.writable !== false && stream.writable;
     var cancelled = false;
     var onlegacyfinish = function() {
@@ -138522,11 +138522,11 @@ var require_end_of_stream2 = __commonJS((exports, module) => {
     };
     var onfinish = function() {
       writable = false;
-      if (!readable)
+      if (!readable2)
         callback.call(stream);
     };
     var onend = function() {
-      readable = false;
+      readable2 = false;
       if (!writable)
         callback.call(stream);
     };
@@ -138542,7 +138542,7 @@ var require_end_of_stream2 = __commonJS((exports, module) => {
     var onclosenexttick = function() {
       if (cancelled)
         return;
-      if (readable && !(rs && (rs.ended && !rs.destroyed)))
+      if (readable2 && !(rs && (rs.ended && !rs.destroyed)))
         return callback.call(stream, new Error("premature close"));
       if (writable && !(ws && (ws.ended && !ws.destroyed)))
         return callback.call(stream, new Error("premature close"));
@@ -147369,9 +147369,9 @@ var require__stream_readable5 = __commonJS((exports, module) => {
     else
       src.once("end", endFn);
     dest.on("unpipe", onunpipe);
-    function onunpipe(readable, unpipeInfo) {
+    function onunpipe(readable2, unpipeInfo) {
       debug("onunpipe");
-      if (readable === src) {
+      if (readable2 === src) {
         if (unpipeInfo && unpipeInfo.hasUnpiped === false) {
           unpipeInfo.hasUnpiped = true;
           cleanup();
@@ -149662,9 +149662,9 @@ var require__stream_readable6 = __commonJS((exports, module) => {
     else
       src.once("end", endFn);
     dest.on("unpipe", onunpipe);
-    function onunpipe(readable, unpipeInfo) {
+    function onunpipe(readable2, unpipeInfo) {
       debug("onunpipe");
-      if (readable === src) {
+      if (readable2 === src) {
         if (unpipeInfo && unpipeInfo.hasUnpiped === false) {
           unpipeInfo.hasUnpiped = true;
           cleanup();
@@ -150170,18 +150170,18 @@ var require_readable6 = __commonJS((exports, module) => {
 // ../../../../fengyu-admin/node_modules/duplexer2/index.js
 var require_duplexer2 = __commonJS((exports, module) => {
   var stream = require_readable6();
-  function DuplexWrapper(options, writable, readable) {
-    if (typeof readable === "undefined") {
-      readable = writable;
+  function DuplexWrapper(options, writable, readable2) {
+    if (typeof readable2 === "undefined") {
+      readable2 = writable;
       writable = options;
       options = null;
     }
     stream.Duplex.call(this, options);
-    if (typeof readable.read !== "function") {
-      readable = new stream.Readable(options).wrap(readable);
+    if (typeof readable2.read !== "function") {
+      readable2 = new stream.Readable(options).wrap(readable2);
     }
     this._writable = writable;
-    this._readable = readable;
+    this._readable = readable2;
     this._waiting = false;
     var self2 = this;
     writable.once("finish", function() {
@@ -150190,20 +150190,20 @@ var require_duplexer2 = __commonJS((exports, module) => {
     this.once("finish", function() {
       writable.end();
     });
-    readable.on("readable", function() {
+    readable2.on("readable", function() {
       if (self2._waiting) {
         self2._waiting = false;
         self2._read();
       }
     });
-    readable.once("end", function() {
+    readable2.once("end", function() {
       self2.push(null);
     });
     if (!options || typeof options.bubbleErrors === "undefined" || options.bubbleErrors) {
       writable.on("error", function(err) {
         self2.emit("error", err);
       });
-      readable.on("error", function(err) {
+      readable2.on("error", function(err) {
         self2.emit("error", err);
       });
     }
@@ -150223,8 +150223,8 @@ var require_duplexer2 = __commonJS((exports, module) => {
       this._waiting = true;
     }
   };
-  module.exports = function duplex2(options, writable, readable) {
-    return new DuplexWrapper(options, writable, readable);
+  module.exports = function duplex2(options, writable, readable2) {
+    return new DuplexWrapper(options, writable, readable2);
   };
   module.exports.DuplexWrapper = DuplexWrapper;
 });
@@ -152386,20 +152386,20 @@ var require_extract2 = __commonJS((exports, module) => {
       const writer = opts.getWriter ? opts.getWriter({ path: extractPath }) : Writer({ path: extractPath });
       entry.pipe(writer).on("error", cb).on("close", cb);
     };
-    var extract = duplexer2(parser, outStream);
+    var extract2 = duplexer2(parser, outStream);
     parser.once("crx-header", function(crxHeader) {
-      extract.crxHeader = crxHeader;
+      extract2.crxHeader = crxHeader;
     });
     parser.pipe(outStream).on("finish", function() {
-      extract.emit("close");
+      extract2.emit("close");
     });
-    extract.promise = function() {
+    extract2.promise = function() {
       return new Promise2(function(resolve, reject) {
-        extract.on("close", resolve);
-        extract.on("error", reject);
+        extract2.on("close", resolve);
+        extract2.on("error", reject);
       });
     };
-    return extract;
+    return extract2;
   }
 });
 
@@ -159711,6 +159711,89 @@ function orderMarketScopeCondition(marketScopeColumn, scope) {
     )`);
 }
 
+// src/lib/action-error.ts
+init_api_error();
+var UNREADABLE_FRAGMENTS = [
+  "server components render",
+  "omitted in production",
+  "unexpected response",
+  "failed to fetch",
+  "network request failed",
+  "networkerror",
+  "econnreset",
+  "econnrefused",
+  "esocket",
+  "etimedout",
+  "epipe"
+];
+var LOG_TAG_RE = /^(?:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+|[A-Z][A-Z0-9]{5,})\s*[:：]\s*/;
+var CJK_RE = /[一-鿿]/;
+var MAX_DISPLAY_LENGTH = 120;
+var OPAQUE_TOKEN_MESSAGES = new Map([
+  ["PERMISSION_DENIED", "无权执行该操作"],
+  ["UNAUTHORIZED", "登录已过期，请重新登录"]
+]);
+function pick(err, key) {
+  const value = err?.[key];
+  if (typeof value !== "string")
+    return null;
+  return value.trim() || null;
+}
+var MAX_SCANNABLE_LENGTH = 2000;
+var TECHNICAL_DETAIL_PATTERNS = [
+  /\b(?:select|insert into|update\s+\w+\s+set|delete from|relation|constraint|duplicate key|violates|syntax error at|invalid input syntax|out of range)\b/i,
+  /\bdoes not exist\b/i,
+  /(?<![\w])(?:\/[\w.-]+){2,}/,
+  /https?:\/\//i,
+  /\b\d{1,3}(?:\.\d{1,3}){3}\b/,
+  /\bat\s+\w+\s*\(/
+];
+function presentable(raw) {
+  const newline = raw.indexOf(`
+`);
+  const line5 = (newline === -1 ? raw : raw.slice(0, newline)).replace(LOG_TAG_RE, "").trim();
+  if (!line5)
+    return null;
+  if (line5.length > MAX_SCANNABLE_LENGTH)
+    return null;
+  const lower = line5.toLowerCase();
+  if (UNREADABLE_FRAGMENTS.some((f) => lower.includes(f)))
+    return null;
+  if (TECHNICAL_DETAIL_PATTERNS.some((re) => re.test(line5)))
+    return null;
+  const chars = Array.from(line5);
+  const truncated = chars.length > MAX_DISPLAY_LENGTH;
+  const display = truncated ? chars.slice(0, MAX_DISPLAY_LENGTH).join("") : line5;
+  if (!CJK_RE.test(display))
+    return null;
+  return truncated ? `${display}…` : display;
+}
+function readable(value, failOpen) {
+  const parsed = parseErrorPrefix(value);
+  if (parsed)
+    return presentable(parsed.displayMessage);
+  return OPAQUE_TOKEN_MESSAGES.get(value) ?? (failOpen ? presentable(value) : null);
+}
+function extract(err, fallback, failOpenMessage) {
+  try {
+    const digest = pick(err, "digest");
+    const fromDigest = digest ? readable(digest, false) : null;
+    if (fromDigest)
+      return fromDigest;
+    const message2 = pick(err, "message");
+    return (message2 ? readable(message2, failOpenMessage) : null) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+function businessErrorMessage(err, fallback) {
+  const shown = extract(err, fallback, false);
+  if (shown === fallback) {
+    console.error("[businessErrorMessage] 非业务错误已对用户隐藏，原始错误：", err);
+  }
+  return shown;
+}
+
 // src/actions/products.ts
 "use server";
 var getMarkets = withPermission("product:list", async (session4) => {
@@ -160270,7 +160353,7 @@ var addSkuToProduct = withPermission("product:update", async (session4, productI
     if (pgErrorCode(err) === "23503")
       return { success: false, message: "商品或规格不存在" };
     console.error("[addSkuToProduct] insert failed:", err);
-    return { success: false, message: `添加失败: ${err?.message ?? "未知错误"}` };
+    return { success: false, message: businessErrorMessage(err, "添加失败，请稍后重试") };
   }
   await logOperation(session4, "mall_product_sku.create", "mall_product_sku", productId, { skuId });
   import_cache2.revalidatePath("/mall");
@@ -164024,7 +164107,7 @@ async function deductPrepaidCardAtCreation(tx, args) {
   }
   const currentBalance = Number(balRows[0].balance);
   if (currentBalance + 0.001 < amount) {
-    throw new Error(`INSUFFICIENT_BALANCE:${currentBalance}: 顾客储值卡余额不足，期望扣 ${amount}，实际 ${currentBalance}`);
+    throw new Error(`INSUFFICIENT_BALANCE: 顾客储值卡余额不足，期望扣 ${amount}，实际 ${currentBalance}`);
   }
   const cardId = balRows[0].card_id;
   await tx.execute(import_drizzle_orm32.sql`
@@ -165695,7 +165778,7 @@ var confirmOfflinePayment = withPermission("sale_order:update", async (session4,
           }
           const currentBalance = Number(balRows[0].balance);
           if (currentBalance + 0.001 < orderPendingPrepaid) {
-            throw new Error(`INSUFFICIENT_BALANCE:${currentBalance}: 顾客储值卡余额不足，期望扣 ${orderPendingPrepaid}，实际 ${currentBalance}`);
+            throw new Error(`INSUFFICIENT_BALANCE: 顾客储值卡余额不足，期望扣 ${orderPendingPrepaid}，实际 ${currentBalance}`);
           }
           const cardId = balRows[0].card_id;
           await tx.execute(import_drizzle_orm32.sql`
@@ -165792,11 +165875,8 @@ var confirmOfflinePayment = withPermission("sale_order:update", async (session4,
       };
     });
   } catch (err) {
-    if (err instanceof ApiError && err.prefix === "INVALID_PARAMS") {
-      return { success: false, message: err.message.replace(/^INVALID_PARAMS:\s*/, "") };
-    }
-    if (err instanceof ApiError && err.prefix === "CONFLICT") {
-      return { success: false, message: err.message.replace(/^CONFLICT:\s*/, "") };
+    if (err instanceof ApiError && (err.prefix === "INVALID_PARAMS" || err.prefix === "CONFLICT")) {
+      return { success: false, message: businessErrorMessage(err, "确认收款失败，请稍后重试") };
     }
     const msg = err?.message || "";
     if (msg.startsWith("INSUFFICIENT_BALANCE")) {
@@ -166460,7 +166540,7 @@ var createOrder = withPermission("sale_order:create", async (session4, data) => 
         applyOrderLevelDiscountToItems(data.items, pointsDiscount);
       }
     } catch (err) {
-      return { success: false, message: err instanceof Error ? err.message : "积分抵扣参数无效" };
+      return { success: false, message: businessErrorMessage(err, "积分抵扣参数无效") };
     }
   }
   const totalAmount = roundMoney2(data.items.reduce((sum, item) => {
@@ -166694,8 +166774,7 @@ var createOrder = withPermission("sale_order:create", async (session4, data) => 
     });
   } catch (err) {
     if (err instanceof ApiError) {
-      const parsed = parseErrorPrefix(err.message);
-      return { success: false, message: parsed?.displayMessage ?? err.message };
+      return { success: false, message: businessErrorMessage(err, "创建订单失败，请稍后重试") };
     }
     if (typeof err?.message === "string" && err.message.startsWith("INSUFFICIENT_BALANCE")) {
       const stripped = err.message.replace(/^INSUFFICIENT_BALANCE:?(NO_CARD)?:?\s*/, "");
@@ -167320,8 +167399,7 @@ var createConversionOrder = withPermission("sale_order:create", async (session4,
       return { success: false, message: stripped || "顾客储值卡余额不足" };
     }
     if (err instanceof ApiError) {
-      const parsed = parseErrorPrefix(err.message);
-      return { success: false, message: parsed?.displayMessage ?? err.message };
+      return { success: false, message: businessErrorMessage(err, "创建订单失败，请稍后重试") };
     }
     if (m?.includes("SKU_NOT_FOUND:"))
       return { success: false, message: "转入商品不存在" };
@@ -167582,10 +167660,7 @@ var createDepositOrder = withPermission("sale_order:create", async (session4, da
       return id;
     });
   } catch (err) {
-    if (err instanceof ApiError) {
-      return { success: false, message: err.message };
-    }
-    return { success: false, message: err?.message || "寄存单创建失败" };
+    return { success: false, message: businessErrorMessage(err, "寄存单创建失败") };
   }
   await logOperation(session4, "order.createDeposit", "sale_order", saleOrderId, {
     _v: 1,
@@ -167847,8 +167922,7 @@ var createPrepaidInflow = withPermission("sale_order:create", async (session4, d
       return id;
     });
   } catch (err) {
-    const msg = err?.message || "转入失败";
-    return { success: false, message: msg.replace(/^[A-Z_]+:\s*/, "") };
+    return { success: false, message: businessErrorMessage(err, "转入失败") };
   }
   await logOperation(session4, "sale_order.prepaid_inflow", "sale_order", saleOrderId, {
     clientUserId: data.clientUserId,
@@ -168215,7 +168289,7 @@ var recordPayment = withPermission("sale_order:record_payment", async (session4,
         success: false,
         error: {
           code: "CONFLICT",
-          message: "PAYMENT_INTENT_ACTIVE: 订单存在进行中的在线支付，请等待支付结果或先取消在线支付"
+          message: "订单存在进行中的在线支付，请等待支付结果或先取消在线支付"
         }
       };
     }
@@ -168277,11 +168351,11 @@ var recordPayment = withPermission("sale_order:record_payment", async (session4,
         }
       };
     }
-    console.error("[recordPayment] unexpected error:", err);
     if (pgErrorCode(err)) {
+      console.error("[recordPayment] db error:", err);
       return { success: false, error: { code: "UNKNOWN", message: "录入回款失败：数据冲突或约束校验未通过，请刷新后重试" } };
     }
-    return { success: false, error: { code: "UNKNOWN", message: `录入回款失败：${err?.message || String(err)}` } };
+    return { success: false, error: { code: "UNKNOWN", message: businessErrorMessage(err, "录入回款失败，请稍后重试") } };
   }
   if (result.idempotent) {
     return { success: true, data: result };
@@ -168345,7 +168419,7 @@ var freezeConversionRepaymentAmount = withPermission("sale_order:record_payment"
       }
       const remainingCents = Math.round((Number(locked.total_amount || 0) - Number(locked.received || 0) + Number(locked.refunded_amount || 0)) * 100);
       if (amountCents > remainingCents) {
-        throw new ApiError("CONFLICT", `OVERPAY:${(remainingCents / 100).toFixed(2)}: 本次回款金额超过订单欠款`);
+        throw new ApiError("CONFLICT", `本次回款金额超过订单欠款（剩余 ¥${(remainingCents / 100).toFixed(2)}）`);
       }
       const activeAmount = locked.first_payment_amount == null ? null : Math.round(Number(locked.first_payment_amount) * 100);
       if (activeAmount != null) {
@@ -168382,7 +168456,10 @@ var freezeConversionRepaymentAmount = withPermission("sale_order:record_payment"
     const message2 = err instanceof Error ? err.message : String(err);
     const parsed = parseErrorPrefix(message2);
     if (parsed) {
-      return { success: false, error: { code: parsed.prefix, message: parsed.displayMessage } };
+      return {
+        success: false,
+        error: { code: parsed.prefix, message: businessErrorMessage(err, "冻结在线回款金额失败，请刷新后重试") }
+      };
     }
     console.error("[freezeConversionRepaymentAmount] unexpected error:", err);
     return { success: false, error: { code: "UNKNOWN", message: "冻结在线回款金额失败，请刷新后重试" } };
@@ -168436,7 +168513,7 @@ var generateOrderWxacode = withPermission("sale_order:list", async (_session, sa
     const base64 = Buffer.from(buffer2).toString("base64");
     return { success: true, dataUrl: `data:image/png;base64,${base64}` };
   } catch (err) {
-    return { success: false, message: err.message || "生成小程序码失败" };
+    return { success: false, message: businessErrorMessage(err, "生成小程序码失败") };
   }
 });
 async function requestWxacode(token, scene, page) {
@@ -169120,7 +169197,7 @@ var createRefund = withPermission("sale_order:refund_create", async (session4, i
     if (msg.startsWith("INVALID_STATE:")) {
       return { success: false, error: { code: "INVALID_STATE", message: msg.replace(/^INVALID_STATE:\s*/, "") } };
     }
-    return { success: false, error: { code: "UNKNOWN", message: msg } };
+    return { success: false, error: { code: "UNKNOWN", message: businessErrorMessage(err, "退款处理失败，请稍后重试") } };
   }
   const fee = Math.max(0, Number(input.handlingFee) || 0);
   if (isHandlingFeeInvalidForRefund(refundDetails, fee)) {
@@ -169902,8 +169979,8 @@ function normalizeServiceDate(value) {
       month: "2-digit",
       day: "2-digit"
     }).formatToParts(value);
-    const pick = (type) => parts.find((part) => part.type === type)?.value ?? "";
-    return `${pick("year")}-${pick("month")}-${pick("day")}`;
+    const pick2 = (type) => parts.find((part) => part.type === type)?.value ?? "";
+    return `${pick2("year")}-${pick2("month")}-${pick2("day")}`;
   }
   const normalized = String(value || "").slice(0, 10);
   return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : "";
@@ -172098,7 +172175,7 @@ var mergeClientProfile = withPermission("customer:update", async (session4, sour
       await tx.delete(clientWechatUsers).where(import_drizzle_orm44.eq(clientWechatUsers.userId, orphanUserId));
     });
   } catch (err) {
-    return { success: false, message: `合并失败：${err?.message ?? "unknown"}` };
+    return { success: false, message: businessErrorMessage(err, "合并失败，请稍后重试") };
   }
   await logOperation(session4, "admin.mergeClientProfile", "client_user", sourceUserId, {
     sourceUserId,
@@ -173433,7 +173510,7 @@ var createRechargeOrder = withPermission("sale_order:create", async (session4, d
     const matched = matchTier(data.faceValue, cfg);
     payAmount = matched.payAmount;
   } catch (err) {
-    return { success: false, message: (err?.message || "档位匹配失败").replace(/^[A-Z_]+:\s*/, "") };
+    return { success: false, message: businessErrorMessage(err, "档位匹配失败") };
   }
   const [client2] = await db2.select({
     userId: clientWechatUsers.userId,
@@ -173511,8 +173588,7 @@ var createRechargeOrder = withPermission("sale_order:create", async (session4, d
       return id;
     });
   } catch (err) {
-    const msg = err?.message || "充值订单创建失败";
-    return { success: false, message: msg.replace(/^[A-Z_]+:\s*/, "") };
+    return { success: false, message: businessErrorMessage(err, "充值订单创建失败") };
   }
   await logOperation(session4, "sale_order.create_recharge", "sale_order", saleOrderId, {
     clientUserId: data.clientUserId,
@@ -176790,14 +176866,16 @@ async function queryOperatedMembers(session4, scope, range) {
   const rows = await db2.execute(import_drizzle_orm57.sql`
     WITH member_spend AS (
       SELECT o.client_user_id,
-             SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric) AS spend
-      FROM sale_orders o
+             SUM(spe.amount::numeric) AS spend
+      FROM sale_order_performance_events spe
+      JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
       WHERE ${sc}
-        AND o.sale_order_type IN ('销售单', '转换单')
-        AND o.status = '已支付'
-        AND o.legacy_source IS DISTINCT FROM 'workfine'
-        AND o.paid_at::date BETWEEN ${range.start} AND ${range.end}
+        AND spe.sale_order_type IN ('销售单', '转换单')
+        AND spe.status = '已支付'
+        AND spe.change_type IN ('首次支付', '回款', '退款')
+        AND spe.legacy_source IS DISTINCT FROM 'workfine'
+        AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
         AND c.customer_type = '会员客'
       GROUP BY o.client_user_id
     )
@@ -176811,14 +176889,16 @@ async function queryMemberAvgTicket(session4, scope, range) {
   const rows = await db2.execute(import_drizzle_orm57.sql`
     WITH member_spend AS (
       SELECT o.client_user_id,
-             SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric) AS spend
-      FROM sale_orders o
+             SUM(spe.amount::numeric) AS spend
+      FROM sale_order_performance_events spe
+      JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
       WHERE ${sc}
-        AND o.sale_order_type IN ('销售单', '转换单')
-        AND o.status = '已支付'
-        AND o.legacy_source IS DISTINCT FROM 'workfine'
-        AND o.paid_at::date BETWEEN ${range.start} AND ${range.end}
+        AND spe.sale_order_type IN ('销售单', '转换单')
+        AND spe.status = '已支付'
+        AND spe.change_type IN ('首次支付', '回款', '退款')
+        AND spe.legacy_source IS DISTINCT FROM 'workfine'
+        AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
         AND c.customer_type = '会员客'
       GROUP BY o.client_user_id
     )
@@ -176843,16 +176923,18 @@ async function queryNewMemberCount(session4, scope, range) {
 async function queryNewMemberSpend(session4, scope, range) {
   const sc = scopeFilterSql(session4, scope, "o.store_id");
   const rows = await db2.execute(import_drizzle_orm57.sql`
-    SELECT COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric), 0) AS v
-    FROM sale_orders o
+    SELECT COALESCE(SUM(spe.amount::numeric), 0) AS v
+    FROM sale_order_performance_events spe
+    JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
     JOIN client_wechat_users c ON c.user_id = o.client_user_id
     WHERE ${sc}
       AND c.became_member_at IS NOT NULL
       AND c.became_member_at::date BETWEEN ${range.start} AND ${range.end}
-      AND o.sale_order_type IN ('销售单', '转换单')
-      AND o.status = '已支付'
-      AND o.legacy_source IS DISTINCT FROM 'workfine'
-      AND o.paid_at::date BETWEEN ${range.start} AND ${range.end}
+      AND spe.sale_order_type IN ('销售单', '转换单')
+      AND spe.status = '已支付'
+      AND spe.change_type IN ('首次支付', '回款', '退款')
+      AND spe.legacy_source IS DISTINCT FROM 'workfine'
+      AND spe.performance_date BETWEEN ${range.start} AND ${range.end}
   `);
   return num(first(rows).v);
 }
@@ -177057,17 +177139,19 @@ async function queryOpsBreakdown(session4, scope, range, group) {
       FROM skel sk
       GROUP BY ${groupId}
     ),
-    -- 会员消费先按当前市场/门店 + 顾客合并：spend = received - refunded_amount
+    -- 会员消费先按当前市场/门店 + 顾客合并：spend = SUM(已入账款项流水) @ 业绩归属日期（#138）
     member_spend AS (
       SELECT ${groupId} AS group_id, o.client_user_id,
-             SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric) AS spend
-      FROM sale_orders o
+             SUM(spe.amount::numeric) AS spend
+      FROM sale_order_performance_events spe
+      JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
       JOIN skel sk ON sk.store_id = o.store_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
-      WHERE o.sale_order_type IN ('销售单', '转换单')
-        AND o.status = '已支付'
-        AND o.legacy_source IS DISTINCT FROM 'workfine'
-        AND o.paid_at::date BETWEEN ${start} AND ${end}
+      WHERE spe.sale_order_type IN ('销售单', '转换单')
+        AND spe.status = '已支付'
+        AND spe.change_type IN ('首次支付', '回款', '退款')
+        AND spe.legacy_source IS DISTINCT FROM 'workfine'
+        AND spe.performance_date BETWEEN ${start} AND ${end}
         AND c.customer_type = '会员客'
       GROUP BY ${groupId}, o.client_user_id
     ),
@@ -177098,16 +177182,18 @@ async function queryOpsBreakdown(session4, scope, range, group) {
     -- 新增会员对应消费按实际订单发生门店汇总
     newmem_spend AS (
       SELECT ${groupId} AS group_id,
-             COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric), 0) AS new_spend
-      FROM sale_orders o
+             COALESCE(SUM(spe.amount::numeric), 0) AS new_spend
+      FROM sale_order_performance_events spe
+      JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id
       JOIN skel sk ON sk.store_id = o.store_id
       JOIN client_wechat_users c ON c.user_id = o.client_user_id
       WHERE c.became_member_at IS NOT NULL
         AND c.became_member_at::date BETWEEN ${start} AND ${end}
-        AND o.sale_order_type IN ('销售单', '转换单')
-        AND o.status = '已支付'
-        AND o.legacy_source IS DISTINCT FROM 'workfine'
-        AND o.paid_at::date BETWEEN ${start} AND ${end}
+        AND spe.sale_order_type IN ('销售单', '转换单')
+        AND spe.status = '已支付'
+        AND spe.change_type IN ('首次支付', '回款', '退款')
+        AND spe.legacy_source IS DISTINCT FROM 'workfine'
+        AND spe.performance_date BETWEEN ${start} AND ${end}
       GROUP BY ${groupId}
     ),
     -- 流量客人数（成交率分母，体验客+小美客，市场内 DISTINCT 客户）
@@ -178621,6 +178707,15 @@ var getEfficiencyBoard = withPermission("data_center:dashboard", async (session4
   };
 });
 
+// src/lib/sales-categories.ts
+var SALES_CATEGORIES = Object.freeze(["自销自耗", "他销自耗", "他销他耗", "生态合作"]);
+var SALES_CATEGORY_COLUMN_KEYS = Object.freeze({
+  自销自耗: "saleZxzh",
+  他销自耗: "saleTxzh",
+  他销他耗: "saleTxth",
+  生态合作: "saleEco"
+});
+
 // src/lib/data-center/columns.ts
 var marketTextColumns = [];
 var storeTextColumns = [
@@ -178630,6 +178725,11 @@ var staffTextColumns = [
   { key: "store", label: "门店", source: "labels" },
   { key: "position", label: "职级", source: "labels" }
 ];
+var salesCategoryMetricColumns = SALES_CATEGORIES.map((label) => ({
+  key: SALES_CATEGORY_COLUMN_KEYS[label],
+  label,
+  unit: "amount"
+}));
 var customerRegistrationMetricColumns = [
   { key: "registered", label: "会员注册", unit: "count" },
   { key: "retained", label: "保有会员", unit: "count" },
@@ -178765,10 +178865,7 @@ var DATA_CENTER_VIEW_CONFIG = {
     textColumns: staffTextColumns,
     metricColumns: [
       { key: "revenue", label: "当月业绩", unit: "amount" },
-      { key: "saleZxzh", label: "自销自耗", unit: "amount" },
-      { key: "saleTxzh", label: "他销自耗", unit: "amount" },
-      { key: "saleTxth", label: "他销他耗", unit: "amount" },
-      { key: "saleEco", label: "生态合作", unit: "amount" },
+      ...salesCategoryMetricColumns,
       { key: "consumeTotal", label: "实耗合计", unit: "amount" },
       { key: "newMember", label: "纳客数", unit: "count" },
       { key: "projectCount", label: "项目数", unit: "count" },
