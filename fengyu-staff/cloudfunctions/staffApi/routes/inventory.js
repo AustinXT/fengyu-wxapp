@@ -692,7 +692,7 @@ async function ensureInventoryLotFromSku(client, locationId, item, trace, priceS
   const skuId = String(item.skuId || '').trim()
   if (!skuId) throw new Error('INVALID_PARAMS: 缺少库存 SKU')
   const skuRes = await client.query(
-    `SELECT sku_id, product_name, spec_name, supplier, product_series,
+    `SELECT sku_id, product_name, spec_name, supplier, supplier_id, product_series,
             source_type, owner_market_id, supply_chain_purchase_price,
             market_purchase_price, store_purchase_price
        FROM inventory_skus
@@ -718,7 +718,10 @@ async function ensureInventoryLotFromSku(client, locationId, item, trace, priceS
   )
   const sourceDocId = String(trace?.sourceDocId || '').trim()
   if (!sourceDocId) throw new Error('INVALID_PARAMS: 缺少批次来源单据')
-  const supplierId = String(trace?.supplierId || '').trim() || null
+  // 批次键锚在 supplier_id 而不是名称（#132）：lotKey 的 supplier 段取 supplierId ?? supplier，
+  // 单据头不带供应商的入库（内部领用 / 调货 / 报损…）若只落到文本，供应商一改名，
+  // 同批号同效期同价的下一次入库就会算出新的 lot_key，把同一批实物拆成两行库存。
+  const supplierId = String(trace?.supplierId || '').trim() || sku.supplier_id || null
   const supplier = String(trace?.supplier || '').trim() || sku.supplier || null
   const key = lotKey(skuId, {
     ...item,

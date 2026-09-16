@@ -100,11 +100,16 @@ test('INV-01：基础档案建档 + 六价体系 + 公式价校验', async ({ br
     // ── UX-FIXED-01：供货商必须是选择器（#132 已修，两条断言现在应当转绿）──────
     // 不预设 role：若写死 getByRole('textbox') 就等于假定了它是 input，
     // 「是不是选择器」这个检测本身会失去意义。改为按 label 包裹关系取其内部控件。
-    // 注意 #132 把「+ 新建供应商」按钮与提示文字放在了 label **外面**，
-    // 所以 /^供货商$/ 这个精确匹配依然成立，label 内也仍然只有一个控件。
+    // ⚠️ 这里**不能**再用 /^供货商$/：hasText 比的是元素的可见文本，而 Playwright 的
+    //    shouldSkipForTextMatching 只跳过 SCRIPT/NOSCRIPT/STYLE/head —— <option> 的文本
+    //    照样计入。#132 把控件换成 <select> 之后，这个 label 的文本是
+    //    「供货商未指定广州美姿贺生物科技…」，带 $ 的精确匹配必然落空（命中 0 个元素）。
+    //    用前缀匹配，与同文件「市场进货价」那处的既有写法一致。
+    //    （单测里 getByLabelText('供货商') 能过是因为 testing-library 把 select 的内容
+    //      当空串处理，两个框架口径不同 —— 单测绿推不出 e2e 绿。）
     const supplierField = skuDialog
       .locator('label')
-      .filter({ hasText: /^供货商$/ })
+      .filter({ hasText: /^供货商/ })
       .locator('input, select, textarea')
       .first()
     const supplierTag = await supplierField.evaluate((el) => el.tagName.toLowerCase()).catch(() => 'missing')
@@ -269,6 +274,12 @@ test('INV-01：基础档案建档 + 六价体系 + 公式价校验', async ({ br
     writeCtx('inv01', {
       supplierId,
       supplierName: SUPPLIER_NAME,
+      // 供 INV-10 转述（#132）：让 UX 报告转述这里的**实测**判定，
+      // 而不是在 inv-10 里硬编码一条「供货商无关联」的字面量 finding。
+      at: new Date().toISOString(),
+      supplierControlTag: supplierTag,
+      supplierFkPresent: hasSupplierFk === '1',
+      skuSupplierLinked: skuSupplierId === supplierId && supplierId.length > 0,
       supplySkuId,
       supplySkuName: SKU_SUPPLY_NAME,
       selfSkuId,

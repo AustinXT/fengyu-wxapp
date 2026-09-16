@@ -249,7 +249,11 @@ describe('InventorySkusPage', () => {
       fireEvent.click(screen.getByTitle('编辑库存商品'))
       fireEvent.click(screen.getByRole('button', { name: '+ 新建供应商' }))
 
-      fireEvent.change(screen.getByLabelText('新供应商名称'), { target: { value: '新建的供应商' } })
+      // label 带 * 且有 required：快捷建档的 3 个输入用 aria-label（不是 <Field> 包裹的
+      // <label>），必填标记只能落在可及名称上，否则读屏用户无从得知名称是必填的
+      const nameInput = screen.getByLabelText('新供应商名称 *')
+      expect(nameInput).toBeRequired()
+      fireEvent.change(nameInput, { target: { value: '新建的供应商' } })
       fireEvent.change(screen.getByLabelText('新供应商联系电话'), { target: { value: '13800000000' } })
       fireEvent.click(screen.getByRole('button', { name: '创建并选中' }))
 

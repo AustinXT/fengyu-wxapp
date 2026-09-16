@@ -41,6 +41,7 @@ import {
   rejectInventoryCoreDoc,
   syncInventoryLocations,
   updateInventorySku,
+  updateInventorySupplier,
   updateInventoryPromotionPlan,
 } from './engine'
 import { hasPermission, isAdminScope } from '@/lib/permissions'
@@ -570,6 +571,46 @@ describe('库存 SKU 来源与价格保护', () => {
       .mockReturnValueOnce(supplierLookup([{ name: '另一个停用档案', isActive: false }]))
     await expect(updateInventorySku('SKU-1', { supplierId: 'SUP-OFF-2' }))
       .rejects.toThrow('已停用，无法关联到库存商品')
+  })
+
+  it('供应商改名同步回写关联 SKU 的名称快照', async () => {
+    const supplierSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }))
+    const skuSet = vi.fn((_values: Record<string, unknown>) => ({ where: vi.fn().mockResolvedValue(undefined) }))
+    let call = 0
+    mockDb.select.mockReturnValueOnce(selectWithLimit([{ supplierId: 'SUP-1' }]))
+    mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
+      update: vi.fn(() => (call++ === 0 ? { set: supplierSet } : { set: skuSet })),
+    }))
+
+    await updateInventorySupplier('SUP-1', { name: '改名后的供应商' })
+
+    // 不回写的话：admin 列表读 JOIN 的实时名，而 staffApi 的 SKU 列表与新建批次读文本列，
+    // 同一个供应商在两端显示成两个名字
+    expect(skuSet).toHaveBeenCalledWith(expect.objectContaining({ supplier: '改名后的供应商' }))
+  })
+
+  it('只改联系方式时不回写 SKU 名称快照', async () => {
+    const supplierSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }))
+    const update = vi.fn(() => ({ set: supplierSet }))
+    mockDb.select.mockReturnValueOnce(selectWithLimit([{ supplierId: 'SUP-1' }]))
+    mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({ update }))
+
+    await updateInventorySupplier('SUP-1', { phone: '13900000000' })
+
+    expect(update).toHaveBeenCalledTimes(1)
+  })
+
+  it('供应商重名抛可读的 CONFLICT，而不是把 PG 英文原文丢给用户', async () => {
+    // action-error 既把 'violates unique constraint' 列进不可读片段，又有「没有中日韩字符
+    // 就判不可读」的兜底 —— 不翻译的话用户只会看到 fallback「创建供应商失败」，
+    // 而重名的那条若已停用，列表和下拉里都看不到，用户没有任何自诊断入口
+    const duplicate = Object.assign(new Error('Failed query'), {
+      cause: { code: '23505', constraint: 'uq_inventory_suppliers_name' },
+    })
+    mockDb.insert.mockReturnValueOnce({ values: vi.fn().mockRejectedValue(duplicate) })
+
+    await expect(createInventorySupplier({ name: '广州美姿贺生物科技' }))
+      .rejects.toThrow('供应商名称「广州美姿贺生物科技」已存在（可能是已停用的档案）')
   })
 
   it('创建后不能跨市场或转换库存 SKU 来源', async () => {

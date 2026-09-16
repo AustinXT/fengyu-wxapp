@@ -1,6 +1,7 @@
 import { db } from '@/db'
 import 'server-only'
 import { ApiError } from '@/lib/api-error'
+import { pgErrorCode } from '@/lib/pg-error'
 import { fmtDate, shanghaiToday, shanghaiYmd } from '@/lib/datetime'
 import { logOperation } from '@/lib/operation-log'
 import { hasPermission, isAdminScope } from '@/lib/permissions'
@@ -964,7 +965,7 @@ async function ensureLotFromSku(
 ): Promise<LockedLot> {
   const skuId = normalizeRequired(item.skuId, '库存 SKU')
   const skuRows = await tx.execute(sql`
-    SELECT sku_id, product_name, spec_name, supplier, product_series,
+    SELECT sku_id, product_name, spec_name, supplier, supplier_id, product_series,
            source_type, owner_market_id, supply_chain_purchase_price,
            market_purchase_price, store_purchase_price
       FROM inventory_skus
@@ -977,6 +978,7 @@ async function ensureLotFromSku(
     product_name: string
     spec_name: string | null
     supplier: string | null
+    supplier_id: string | null
     product_series: string | null
     source_type: InventorySkuSourceType
     owner_market_id: string | null
@@ -1012,7 +1014,10 @@ async function ensureLotFromSku(
     (storeStandardUnitPrice == null
       ? null
       : storeStandardUnitPrice - Number(storeUnitDiscount ?? 0))
-  const supplierId = normalizeText(trace.supplierId)
+  // 批次键锚在 supplier_id 而不是名称（#132）：makeLotKey 的 supplier 段取 supplierId ?? supplier，
+  // 单据头不带供应商的入库（内部领用 / 调货 / 报损…）若只落到文本，供应商一改名，
+  // 同批号同效期同价的下一次入库就会算出新的 lot_key，把同一批实物拆成两行库存。
+  const supplierId = normalizeText(trace.supplierId) ?? sku.supplier_id
   const supplier = normalizeText(trace.supplier) ?? sku.supplier
   const sourceDocId = normalizeRequired(trace.sourceDocId, '批次来源单据')
   const lotKey = makeLotKey(skuId, {
@@ -3237,6 +3242,24 @@ export const confirmInventoryCoreReceive = withAnyPermission(
   },
 )
 
+/**
+ * 把 `uq_inventory_suppliers_name` 的唯一约束冲突翻成可读业务错误（#132）。
+ *
+ * 不翻的话用户看到的是 fallback「创建供应商失败」：PG 原文是英文，而
+ * `action-error.ts` 既把 `violates unique constraint` 列进 UNREADABLE_FRAGMENTS，
+ * 又有「一整串没有中日韩字符就判为不可读」的兜底 —— 两道都拦。
+ *
+ * 文案必须点出「可能已被停用」：停用的档案既不在 SKU 表单的下拉里
+ * （`listInventorySupplierOptions` 只查启用中的），默认也不在供应商列表里，
+ * 用户撞上它时**没有任何入口能自己查明原因**，只会反复重试同一个名字。
+ */
+function supplierNameConflict(error: unknown, name: string): unknown {
+  if (pgErrorCode(error) === '23505') {
+    return new ApiError('CONFLICT', `供应商名称「${name}」已存在（可能是已停用的档案），请到供应商档案页查找`)
+  }
+  return error
+}
+
 function supplierRow(
   row: typeof inventorySuppliers.$inferSelect & { linkedSkuCount: number },
 ): InventorySupplierRow {
@@ -3309,15 +3332,19 @@ export const createInventorySupplier = withPermission(
   async (session, input: InventorySupplierInput): Promise<{ supplierId: string }> => {
     const supplierId = `INV-SUP-${crypto.randomUUID()}`
     const name = normalizeRequired(input.name, '供应商名称')
-    await db.insert(inventorySuppliers).values({
-      supplierId,
-      name,
-      contactName: normalizeText(input.contactName),
-      phone: normalizeText(input.phone),
-      address: normalizeText(input.address),
-      isActive: input.isActive ?? true,
-      remark: normalizeText(input.remark),
-    })
+    try {
+      await db.insert(inventorySuppliers).values({
+        supplierId,
+        name,
+        contactName: normalizeText(input.contactName),
+        phone: normalizeText(input.phone),
+        address: normalizeText(input.address),
+        isActive: input.isActive ?? true,
+        remark: normalizeText(input.remark),
+      })
+    } catch (error) {
+      throw supplierNameConflict(error, name)
+    }
     await logOperation(session, 'inventory.supplier.create', 'inventory_suppliers', supplierId, { name })
     revalidatePath('/inventory/suppliers')
     return { supplierId }
@@ -3338,19 +3365,37 @@ export const updateInventorySupplier = withPermission(
       .where(eq(inventorySuppliers.supplierId, supplierId))
       .limit(1)
     if (!current) throw new ApiError('NOT_FOUND', '供应商不存在')
-    if (input.name !== undefined) normalizeRequired(input.name, '供应商名称')
-    await db
-      .update(inventorySuppliers)
-      .set({
-        name: input.name === undefined ? undefined : normalizeRequired(input.name, '供应商名称'),
-        contactName: input.contactName === undefined ? undefined : normalizeText(input.contactName),
-        phone: input.phone === undefined ? undefined : normalizeText(input.phone),
-        address: input.address === undefined ? undefined : normalizeText(input.address),
-        isActive: input.isActive,
-        remark: input.remark === undefined ? undefined : normalizeText(input.remark),
-        updatedAt: new Date(),
+    const nextName = input.name === undefined ? undefined : normalizeRequired(input.name, '供应商名称')
+    try {
+      await db.transaction(async (tx) => {
+        await tx
+          .update(inventorySuppliers)
+          .set({
+            name: nextName,
+            contactName: input.contactName === undefined ? undefined : normalizeText(input.contactName),
+            phone: input.phone === undefined ? undefined : normalizeText(input.phone),
+            address: input.address === undefined ? undefined : normalizeText(input.address),
+            isActive: input.isActive,
+            remark: input.remark === undefined ? undefined : normalizeText(input.remark),
+            updatedAt: new Date(),
+          })
+          .where(eq(inventorySuppliers.supplierId, supplierId))
+        // 改名要同步 SKU 上的名称快照（#132）。`inventory_skus.supplier` 是**主数据字段**，
+        // 不是历史快照 —— 真正的历史快照是 inventory_doc_items / inventory_stock_lots 上那两列，
+        // 它们在建单 / 建批次时冻结，本处不动。
+        // 不同步的话：admin 列表读 JOIN 出来的实时名，而 staffApi 的 SKU 列表
+        //（routes/inventory.js 的 `SELECT sku.supplier`）与 ensureLotFromSku 之后建的新批次
+        // 读的都是这个文本列 —— 同一个供应商在两端会显示成两个名字。
+        if (nextName !== undefined) {
+          await tx
+            .update(inventorySkus)
+            .set({ supplier: nextName, updatedAt: new Date() })
+            .where(eq(inventorySkus.supplierId, supplierId))
+        }
       })
-      .where(eq(inventorySuppliers.supplierId, supplierId))
+    } catch (error) {
+      throw supplierNameConflict(error, nextName ?? '')
+    }
     await logOperation(session, 'inventory.supplier.update', 'inventory_suppliers', supplierId, input)
     revalidatePath('/inventory/suppliers')
     return { success: true }

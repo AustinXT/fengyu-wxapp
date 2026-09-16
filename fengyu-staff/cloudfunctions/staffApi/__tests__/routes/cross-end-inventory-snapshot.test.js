@@ -283,6 +283,30 @@ describe('PR #113 进销存单据组织端点跨端守护（staff / admin / sche
     })
   })
 
+  // #132：批次供应商锚点。ensureLotFromSku / ensureInventoryLotFromSku 是两份独立副本，
+  // 而 lot_key 的 supplier 段取 `supplierId ?? supplier` —— 一端锚 id、另一端锚名称的话，
+  // 同一批实物会在两条写入路径下算出不同的 lot_key，拆成两行库存。
+  describe('§5 批次供应商锚点两端一致（#132）', () => {
+    test('两端都把 SKU 的 supplier_id 作为 trace.supplierId 的回落', () => {
+      expect(staffSrc).toMatch(/trace\?\.supplierId[^\n]*\|\|\s*sku\.supplier_id/)
+      expect(adminSrc).toMatch(/normalizeText\(trace\.supplierId\)\s*\?\?\s*sku\.supplier_id/)
+    })
+
+    test('两端的 SKU 查询都取了 supplier_id 列', () => {
+      // 光断言上面的回落表达式不够：SELECT 里漏掉这一列时 `sku.supplier_id` 恒 undefined，
+      // 表达式还在、行为却悄悄退回名称锚点，那条测试照样绿。
+      const selectPattern = /SELECT sku_id, product_name, spec_name, supplier, supplier_id, product_series/
+      expect(staffSrc).toMatch(selectPattern)
+      expect(adminSrc).toMatch(selectPattern)
+    })
+
+    test('schema 里 inventory_skus.supplier_id 是指向 inventory_suppliers 的外键', () => {
+      expect(schemaSrc).toMatch(
+        /supplierId: text\('supplier_id'\)\.references\(\(\) => inventorySuppliers\.supplierId\)/,
+      )
+    })
+  })
+
   describe('Snapshot 守护（提交后任一项漂移立即可见）', () => {
     test('单据类型集合与端点口径文本快照', () => {
       expect({

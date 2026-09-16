@@ -341,8 +341,14 @@ function SkuFormDialog({
     if (open) setForm(row ? formFromRow(row) : emptyForm())
   }, [open, row])
 
-  /** 存量里 supplier 文本没匹配上档案的旧 SKU（migration 0041 匹配不上就留 NULL）。 */
-  const unlinkedLegacyText = row && row.supplierId === null ? row.supplier : null
+  /**
+   * 存量里 supplier 文本没匹配上档案的旧 SKU（migration 0041 匹配不上就留 NULL）。
+   *
+   * 必须 trim 后再判真值：`btrim` 只吃 ASCII 空格，全角空格 / NBSP 包裹的值会带着
+   * `supplier_id IS NULL` 活下来。不 trim 的话它是 truthy → 提交 `undefined` →
+   * 两列都不动 → 这段空白**永远删不掉**，而且列表上会渲染成「空名字 + 未关联档案角标」。
+   */
+  const unlinkedLegacyText = row && row.supplierId === null ? (row.supplier?.trim() || null) : null
 
   const supplierChoices = useMemo(() => {
     const merged = new Map<string, string>()
@@ -394,7 +400,10 @@ function SkuFormDialog({
   }
 
   async function submit() {
-    if (submitting) return
+    // 也要挡 savingSupplier：快捷建档在途时点「保存」，读到的 form.supplierId 还是旧值
+    //（setField 在 await 之后才执行），SKU 会以旧供货商落库并关窗，
+    // 随后建档成功 —— 留下一条谁都没关联、当次列表也刷不出来的孤儿档案。
+    if (submitting || savingSupplier) return
     const hasManualMarketPrice = form.marketPurchasePrice.trim().length > 0
     const manualMarketPrice = num(form.marketPurchasePrice)
     if (hasManualMarketPrice && (manualMarketPrice == null || manualMarketPrice < 0)) {
@@ -457,7 +466,16 @@ function SkuFormDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange} className="max-w-4xl">
+    // dismissible=false 覆盖「提交在途」：光给按钮加 disabled 拦不住 ESC 与点遮罩
+    //（dialog.tsx 的组件注释里写明了这一点）。快捷建档在途时被 ESC 关掉的话，
+    // 弹窗按 key 整体卸载，setField('supplierId', ...) 打在已卸载实例上 ——
+    // 档案已经落库，用户却只看到「已创建并选中」而找不到选中在哪。
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+      className="max-w-4xl"
+      dismissible={!submitting && !savingSupplier}
+    >
       <DialogHeader>
         <DialogTitle>{row ? '编辑库存商品' : '新建库存商品'}</DialogTitle>
       </DialogHeader>
@@ -499,6 +517,16 @@ function SkuFormDialog({
                   + 新建供应商
                 </button>
               )}
+              {/*
+                建供应商档案要 supply_chain_master_data_manage，而建 SKU 只要 market_sku_manage
+                也行 —— 市场角色能建自采 SKU 却建不了档案。改造前他们至少能手打一个名字，
+                现在下拉里没有就真的没有了；不给出路的话这是一次能力回退。
+              */}
+              {!canCreateSupplier && supplierChoices.length === 0 && (
+                <p className="text-xs text-[#888888]">
+                  暂无可选供应商。供应商档案由供应链管理员在「资料配置 → 供应商」维护，请联系其先建档。
+                </p>
+              )}
               {unlinkedLegacyText && !form.supplierId && (
                 <p className="text-xs text-[#D4820A]">
                   原填写「{unlinkedLegacyText}」未匹配到供应商档案。选择档案即完成关联；不选则保留原文本。
@@ -507,7 +535,8 @@ function SkuFormDialog({
               {supplierFormOpen && (
                 <div className="space-y-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--muted)] p-2">
                   <Input
-                    aria-label="新供应商名称"
+                    aria-label="新供应商名称 *"
+                    required
                     placeholder="供应商名称 *"
                     value={supplierDraft.name}
                     onChange={(event) => setSupplierDraft((previous) => ({ ...previous, name: event.target.value }))}
@@ -605,8 +634,8 @@ function SkuFormDialog({
         </section>
       </div>
       <DialogFooter>
-        <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>取消</Button>
-        <Button onClick={submit} disabled={submitting}>{submitting ? '保存中...' : '保存'}</Button>
+        <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting || savingSupplier}>取消</Button>
+        <Button onClick={submit} disabled={submitting || savingSupplier}>{submitting ? '保存中...' : '保存'}</Button>
       </DialogFooter>
     </Dialog>
   )
