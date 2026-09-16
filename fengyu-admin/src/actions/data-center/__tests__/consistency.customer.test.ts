@@ -164,6 +164,11 @@ function sqlTemplatesFromSource(src: string, fileName: string): string[] {
  * 于是在某个受保护 `SELECT` 前插入未闭合的 `$tag$`，块起点仍从内部 `SELECT` 算，
  * 提取结果与快照逐字相同 —— 运行时 SQL 已语法错误，守护却全绿（fail-open）。
  * 现在改为抛错，由 vitest 直接报红。
+ *
+ * ⚠ 已知未覆盖的 PG 词法形态（**当前两文件零命中**，引入时最坏是误红）：
+ *   - `E'...'` 的反斜杠转义、`U&'...'` unicode 字符串（GLM r7 B1）
+ *   - `name$tag$` 这种 tag 与前一标识符的边界
+ *   - `${...}` 配平不识别 span 内 JS 字符串里的裸 `{` / `}`（如 `${f('}')}`）
  */
 function stripSqlComments(sql: string): string {
   let out = ''
@@ -284,10 +289,15 @@ function stripSqlComments(sql: string): string {
  *
  * 注释已在上一步剥净，故起点不再会被注释里的 `SELECT` 劫持。
  *
- * ⚠ 已知边界（GLM r5 P3-1，当前 7 块均无此形态）：若将来写成
- * `GROUP BY COALESCE(a,b)` 或 `HAVING SUM(x) > 0`，终点会落在该 `)` 上。
- * **首次引入时会误红**（块文本变），但维护者刷新快照后，该 `)` 之后的内容将不再受保护。
- * 届时应把终点改为从 CTE 的 `AS (` 起做括号配平。
+ * ⚠ 已知边界（当前 7 块均无这些形态）：
+ *   - `GROUP BY COALESCE(a,b)` / `HAVING SUM(x) > 0` 会让终点落在该 `)` 上（GLM r5）。
+ *     **首次引入时会误红**（块文本变），但维护者刷新快照后该 `)` 之后的内容不再受保护；
+ *     届时应把终点改为从 CTE 的 `AS (` 起做括号配平。
+ *   - 锚点与表名计数都**大小写敏感**，`FROM SALE_ORDER_PERFORMANCE_EVENTS spe` 可同时绕过两者
+ *     （GLM r7 B2）。PG 标识符大小写不敏感，但全仓一律小写，这需要刻意规避才会发生。
+ *   - inline 嵌套里**不含表名**的诱饵（`${flag ? sql\`-- x\` : sql\`date_trunc(…)\`}`）
+ *     不改变块数/表名计数（GLM r7 B3）—— 属已接受的「插值生产者」边界的 inline 变体，
+ *     与 `startDateExpr` 同族，靠出数对比兜底。
  */
 function speBlocksFromSource(src: string, fileName: string): string[] {
   const out: string[] = []
