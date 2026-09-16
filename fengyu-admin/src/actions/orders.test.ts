@@ -3211,7 +3211,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     purchaseLimit: null, marketScope: null,
   }]
 
-  it('#125 家居按未提货数量整行折抵：7 盒 × 100 = 700，转出行金额为负', async () => {
+  it('家居按「剩余已付」折抵：1000 − 已提 3 × 100 = 700 → 7 盒 / ¥700', async () => {
     const inserted: any[] = []
     mockConvTx({
       heldRows: [homeHeldRow()],
@@ -3224,7 +3224,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     expect(result.success).toBe(true)
     const outRow = inserted.find((v) => v.itemDirection === '转出')
     expect(outRow).toBeDefined()
-    // 未提货 7 盒（不看付款进度），转出行金额 = −700
+    // 剩余已付 700 / 单价 100 = 7 盒；转出行金额 = −700
     expect(outRow.quantity).toBe(7)
     expect(outRow.saleAmount).toBe('-700.00')
     expect(outRow.received).toBe('-700.00')

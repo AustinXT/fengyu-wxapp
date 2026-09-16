@@ -2329,6 +2329,19 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
     }
   })
 
+  // pendingHomeProductQuantity 靠 sale_order_type 判「寄存单走物理未结算分支」。
+  // 幂等重放走的是另一条查询（不持锁、不在事务内），漏取这列会让寄存单重放时
+  // 误走普通实收公式：首次返回 remaining=2，重放返回 0（对抗审查实证）。
+  test('staff 提货幂等重放查询取到 sale_order_type', () => {
+    const src = stripComments(readFile(FILES.staffOrderJs))
+    const replayStart = src.indexOf('SELECT si.quantity,')
+    expect(replayStart, '未找到幂等重放查询（锚点 `SELECT si.quantity,` 变了）').toBeGreaterThan(-1)
+    const block = normalizeSql(src.slice(replayStart, src.indexOf('END AS paid_quantity', replayStart)))
+    expect(block, '幂等重放漏取 sale_order_type，寄存单会误走普通实收公式').toMatch(
+      /\w+\.sale_order_type\s*,/,
+    )
+  })
+
   // 子表聚合（pickup_records / 转出行）**不得**与 `FOR UPDATE OF si` 同语句：
   // READ COMMITTED 下语句先取快照再等锁，唤醒后 EvalPlanQual 只刷新 si 自身的行版本，
   // 子表聚合仍是旧快照 → 两笔并发折抵各读到 converted_amount=0，把同一批已付价值折两遍

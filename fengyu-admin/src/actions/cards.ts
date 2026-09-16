@@ -828,7 +828,7 @@ export const getCustomerHeldCards = withPermission(
         // 疗程卡与家居同时放开，欠款按方案 A 留原单
         inArray(saleOrders.status, [...CARD_ENTITLEMENT_ORDER_STATUSES]),
         // 2026-05-21 单品合并：折抵对象统一为 疗程卡 + 剩余次数>0（含原"体验卡单品"=1 次卡）
-        // 2026-09-14 #125：家居产品未提货数量同样可作为折抵来源（整行折抵，不看付款进度）
+        // #125 引入家居折抵；#145/#153 收紧为「剩余已付」口径（见下方 sql 片段与 homeDeductible）
         or(
           and(
             eq(saleItems.productType, '疗程卡'),

@@ -5054,7 +5054,10 @@ async function createConversion(ctx) {
  *
  * 口径与 admin getCustomerHeldCards 保持一致（2026-05-21 单品合并后放开）：
  *   - 疗程卡（含原"体验卡单品"=1 次卡）：product_type='疗程卡' AND remaining_sessions > 0
- *   - 家居产品（2026-09-14 #125）：未提货数量 quantity − picked_up_quantity > 0，不看付款进度
+ *   - 家居产品（#125 引入，#145/#153 收紧）：可折抵件数 > 0，按「剩余已付」口径算
+ *     （剩余已付 = 行实收 − 已提货金额 − 已转走金额；件数 = floor(剩余已付 / 单价)，
+ *      受物理未结算封顶；金额 = 剩余已付，含不足一整件的余数）。
+ *     寄存单与 0 元赠品行无「实收」可言，只受物理未结算封顶。详见 backend.pr.spec §2.9。
  */
 async function customerHeldCards(ctx) {
   await requireManager()(ctx, async () => {})
@@ -5088,7 +5091,9 @@ async function customerHeldCards(ctx) {
             -- #145/#153 收紧：家居折抵以「剩余已付金额」为基准（见下方 home_paid LATERAL）。
             -- 旧口径（未提数量全额折抵、不看付款进度）可把未兑现价值洗成全额可提：
             -- 10 件 ¥1000 只付 ¥400 → 折 ¥1000 换等额家居 → 新行 10 件全可提，欠款仍留原单（dev 实证）。
-            hp.deductible_quantity AS remaining_quantity,
+            CASE WHEN si.product_type = '家居产品' THEN hp.deductible_quantity
+                 ELSE GREATEST(0, si.quantity - COALESCE(si.picked_up_quantity, 0))
+            END AS remaining_quantity,
             si.unit_real_price,
             si.sale_amount,
             si.received,
@@ -5117,16 +5122,20 @@ async function customerHeldCards(ctx) {
      -- 剩余已付 = 行实收 − 已提货金额 − **已转走金额**（从转出行 received 聚合，不是
      -- 件数 × 单价——折抵金额含余数时两者不等，用件数推算会让多次折抵累计超过实收）。
      -- 退款不在此处扣：received 已由 paid-sessions STEP 1.5 扣过，再减一次就是重复扣减。
+     -- 只对家居行求值：疗程卡走 remaining_sessions 口径，拿到家居式折抵件数没有意义
+     -- （admin 对疗程卡的 remainingQty 返回 null，两端语义须一致）。
      LEFT JOIN LATERAL (
        SELECT
-         CASE WHEN so.sale_order_type = '寄存单' OR si.sale_amount <= 0
+         CASE WHEN si.product_type <> '家居产品' THEN NULL
+              WHEN so.sale_order_type = '寄存单' OR si.sale_amount <= 0
               THEN GREATEST(0, si.quantity - COALESCE(si.picked_up_quantity, 0))
               ELSE LEAST(
                 GREATEST(0, si.quantity - COALESCE(si.picked_up_quantity, 0)),
                 GREATEST(0, FLOOR(hpa.remaining_paid / NULLIF(si.unit_real_price::numeric, 0)))::int
               )
          END AS deductible_quantity,
-         CASE WHEN so.sale_order_type = '寄存单' OR si.sale_amount <= 0
+         CASE WHEN si.product_type <> '家居产品' THEN NULL
+              WHEN so.sale_order_type = '寄存单' OR si.sale_amount <= 0
               THEN si.unit_real_price::numeric * GREATEST(0, si.quantity - COALESCE(si.picked_up_quantity, 0))
               ELSE hpa.remaining_paid
          END AS deductible_amount
@@ -5691,7 +5700,11 @@ async function createPickup(ctx) {
                 LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
                 COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id), 0)::int AS picked_quantity,
                 COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0) AS converted_amount,
-              si.sale_amount, si.unit_real_price, si.received,
+                si.sale_amount, si.unit_real_price, si.received,
+                -- pendingHomeProductQuantity 靠 sale_order_type 判「寄存单走物理未结算分支」，
+                -- 漏取这列会让寄存单重放时误走普通实收公式（寄存单 received 不代表权益），
+                -- 首次事务返回 remaining=2 而重放返回 0（对抗审查实证）。
+                o.sale_order_type,
                 CASE
                   -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
                   -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
