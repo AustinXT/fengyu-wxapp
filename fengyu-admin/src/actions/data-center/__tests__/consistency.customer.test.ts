@@ -135,7 +135,12 @@ function sqlTemplatesFromSource(src: string, fileName: string): string[] {
       // 去掉包裹的反引号，保留 `${...}` 占位原文
       const text = src.slice(n.getStart(sf) + 1, n.getEnd() - 1)
       if (text.includes('sale_order_performance_events')) out.push(text)
-      return // 不下钻，避免嵌套模板被重复计入
+      // ⚠ 必须继续下钻（GLM r6）：`stripSqlComments` 把 `${...}` span 整段原样保留，
+      // 所以 **inline 嵌套**的模板（`sql\`${flag ? sql\`…\` : sql\`…\`}\``）里的 SQL 注释不会被剥。
+      // 早先命中后 `return` 不下钻，于是「内层放一个带 `-- SELECT …` 诱饵的分支、
+      // 真查询改用别的别名」可以让块文本与快照逐字相同 → 全绿而运行时出数已漂移。
+      // 下钻后内层模板被独立收集（各自剥注释、各自跑锚点），诱饵会被外层与内层**各计一次**
+      // → 块数超出预期 → 红。正常（无 inline 嵌套）情况下不会重复，块数不变。
     }
     ts.forEachChild(n, visit)
   }
@@ -153,7 +158,12 @@ function sqlTemplatesFromSource(src: string, fileName: string): string[] {
  *     否则 `${excludeDepositRefundSql('so')}` 里的 `'so'` 会被当成 SQL 字符串起点
  *   - `--` 到行尾、`/* … *\/`（**支持 PG 的嵌套**）→ 替换为一个空格（不是删除，避免 token 粘连）
  *
- * ⚠ `$1` / `$2` 这类 PG 参数占位不会被误判为 dollar-quote（tag 必须是 `$[A-Za-z_]*$`）。
+ * ⚠ `$1` / `$2` 这类 PG 参数占位不会被误判为 dollar-quote。
+ *
+ * ⚠ **未闭合的字面量/注释直接抛错**（codex r6）：此前只是「原样复制剩余文本」，
+ * 于是在某个受保护 `SELECT` 前插入未闭合的 `$tag$`，块起点仍从内部 `SELECT` 算，
+ * 提取结果与快照逐字相同 —— 运行时 SQL 已语法错误，守护却全绿（fail-open）。
+ * 现在改为抛错，由 vitest 直接报红。
  */
 function stripSqlComments(sql: string): string {
   let out = ''
@@ -166,17 +176,20 @@ function stripSqlComments(sql: string): string {
     if (c2 === '${') {
       let depth = 0
       let j = i
+      let closed = false
       while (j < n) {
         if (sql[j] === '{') depth++
         else if (sql[j] === '}') {
           depth--
           if (depth === 0) {
             j++
+            closed = true
             break
           }
         }
         j++
       }
+      if (!closed) throw new Error(`模板插值 \${...} 未闭合（偏移 ${i}）`)
       out += sql.slice(i, j)
       i = j
       continue
@@ -184,15 +197,18 @@ function stripSqlComments(sql: string): string {
 
     if (c === "'") {
       let j = i + 1
+      let closed = false
       while (j < n) {
         if (sql[j] === "'") {
           if (sql[j + 1] === "'") j += 2
           else {
             j++
+            closed = true
             break
           }
         } else j++
       }
+      if (!closed) throw new Error(`SQL 里有未闭合的单引号字符串（偏移 ${i}）`)
       out += sql.slice(i, j)
       i = j
       continue
@@ -201,18 +217,23 @@ function stripSqlComments(sql: string): string {
     if (c === '"') {
       let j = i + 1
       while (j < n && sql[j] !== '"') j++
+      if (j >= n) throw new Error(`SQL 里有未闭合的双引号标识符（偏移 ${i}）`)
       j++
-      out += sql.slice(i, Math.min(j, n))
-      i = Math.min(j, n)
+      out += sql.slice(i, j)
+      i = j
       continue
     }
 
     if (c === '$') {
-      const m = /^\$[A-Za-z_]*\$/.exec(sql.slice(i))
+      // PG 的 dollar-quote tag 规则同未引标识符：可含数字、首位不可数字；`$$` 也合法。
+      // `$1` / `$2` 参数占位不匹配（数字开头且无闭合 `$`）。
+      // ⚠ 已知简化：未检查 tag 与前一个标识符的边界，`name$tag$` 会被误判为起始符（当前零命中）。
+      const m = /^\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$/.exec(sql.slice(i))
       if (m) {
         const tag = m[0]
         const close = sql.indexOf(tag, i + tag.length)
-        const j = close < 0 ? n : close + tag.length
+        if (close < 0) throw new Error(`SQL 里有未闭合的 dollar-quote ${tag}（偏移 ${i}）`)
+        const j = close + tag.length
         out += sql.slice(i, j)
         i = j
         continue
@@ -240,6 +261,7 @@ function stripSqlComments(sql: string): string {
           if (depth === 0) break
         } else j++
       }
+      if (depth !== 0) throw new Error(`SQL 里有未闭合的块注释（偏移 ${i}）`)
       out += ' '
       i = j
       continue
@@ -717,10 +739,26 @@ describe('客量板块两端口径一致性守护', () => {
         expect(clean('a = 1/* x */AND c = 3')).toBe('a = 1 AND c = 3')
       })
 
-      it('未闭合的注释/引号不会抛异常（fail-loud 由上层快照负责）', () => {
-        expect(() => stripSqlComments('a = 1 /* unclosed')).not.toThrow()
-        expect(() => stripSqlComments("a = 'unclosed")).not.toThrow()
-        expect(() => stripSqlComments('a = ${unclosed')).not.toThrow()
+      /**
+       * 未闭合字面量必须 **fail-loud**（codex r6 P2-2）。
+       * 早先只是「原样复制剩余文本」——于是在某个受保护 `SELECT` 前插入未闭合的 `$tag$`，
+       * 块起点仍从内部 `SELECT` 算，提取结果与快照逐字相同：运行时 SQL 已语法错误，守护却全绿。
+       */
+      it('未闭合的注释/引号/插值直接抛错（fail-loud）', () => {
+        expect(() => stripSqlComments('a = 1 /* unclosed')).toThrow(/未闭合的块注释/)
+        expect(() => stripSqlComments("a = 'unclosed")).toThrow(/未闭合的单引号/)
+        expect(() => stripSqlComments('a = "unclosed')).toThrow(/未闭合的双引号/)
+        expect(() => stripSqlComments('a = $tag$ unclosed')).toThrow(/未闭合的 dollar-quote/)
+        expect(() => stripSqlComments('a = ${unclosed')).toThrow(/未闭合/)
+      })
+
+      it('dollar-quote tag 允许含数字（PG 规则同未引标识符）', () => {
+        expect(clean("a = $t1$ -- not a comment $t1$ AND c = 3")).toBe(
+          "a = $t1$ -- not a comment $t1$ AND c = 3",
+        )
+        expect(clean("a = $$ -- not a comment $$ AND c = 3"), '匿名 $$ 也合法').toBe(
+          "a = $$ -- not a comment $$ AND c = 3",
+        )
       })
     })
 
@@ -739,9 +777,13 @@ describe('客量板块两端口径一致性守护', () => {
           'SUM(spe.amount::numeric) AS spend',
           'GREATEST(SUM(spe.amount::numeric), 0) AS spend',
         )],
+        // ⚠ 锚点必须唯一命中 queryNewMemberSpend（GLM r6 P3-1）：
+        // 裸的 `AND spe.performance_date BETWEEN ...` 首次出现在 queryMemberOps（**有** GROUP BY），
+        // `replace` 只换第一处 → 「无 GROUP BY」那条分支其实从未被反向变异打过，
+        // 标签名不副实。这里用该块独有的收尾形态（模板串末尾紧跟反引号）定位。
         ['无 GROUP BY 那块改区间实参', staffSrc.replace(
-          'AND spe.performance_date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}',
-          'AND spe.performance_date BETWEEN ${startDateExpr(period)} AND ${startDateExpr(period)}',
+          'AND spe.performance_date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}`',
+          'AND spe.performance_date BETWEEN ${startDateExpr(period)} AND ${startDateExpr(period)}`',
         )],
       ]
 
@@ -753,6 +795,55 @@ describe('客量板块两端口径一致性守护', () => {
           blocks.length === expected.length && blocks.every((b, i) => b === expected[i])
         expect(allMatch, `staff 侧「${label}」未被主守护拦下`).toBe(false)
       }
+    })
+
+    /**
+     * 直接验证 AST 提取会**下钻 inline 嵌套模板**（GLM r6 P2-1 的关键修复点）。
+     *
+     * 绕过链：`stripSqlComments` 把 `${...}` span 整段原样保留（含里面的 SQL 注释），
+     * 若命中外层模板后就 `return` 不下钻，则内层分支里的 `-- SELECT …` 诱饵永远不会被剥，
+     * `lastIndexOf('SELECT')` 落到诱饵上 → 块文本与快照逐字相同，而真查询（改了别名/聚合）
+     * 已经漂移。下钻后内层模板被独立收集，诱饵会被外层与内层**各计一次** → 块数超标 → 红。
+     */
+    it('AST 提取会下钻 inline 嵌套模板（诱饵无法藏在 ${} span 里）', () => {
+      const fake = [
+        'const q = sql`',
+        '  WITH m AS (${flag',
+        '    ? sql`SELECT AVG(spe.amount::numeric) AS spend',
+        '        FROM sale_order_performance_events spe GROUP BY o.client_user_id)`',
+        '    : sql`-- SELECT o.client_user_id, SUM(spe.amount::numeric) AS spend',
+        '        SELECT 1 FROM sale_order_performance_events spe GROUP BY o.client_user_id)`}',
+        '`',
+      ].join('\n')
+
+      const templates = sqlTemplatesFromSource(fake, 'fake.ts')
+      expect(
+        templates.length,
+        '内层模板没有被独立收集 —— `visit` 命中后又不下钻了？诱饵通道会复活',
+      ).toBeGreaterThan(1)
+
+      // 外层 + 两个内层都含表名，块会被重复计入 → 真实文件里这会让块数超标而报红
+      const blocks = speBlocksFromSource(fake, 'fake.ts')
+      expect(blocks.length, 'inline 嵌套应产生重复计数（正是报红的来源）').toBeGreaterThan(2)
+    })
+
+    /**
+     * 锁死两端 spe 表名的出现次数（GLM r6 P3-2）。
+     *
+     * 守护的可见性 = 「模板文本含字面表名」∧「锚点要求别名恰为 `spe`」。
+     * **新增**一个 `FROM sale_order_performance_events s`（别名不是 `spe`）的查询时，
+     * 锚点不匹配 → 块数不变 → 静默全绿，而该端出数已经变了。
+     * 就地改别名会被块快照拦下，所以这纯属「新增查询」通道 —— 这条把它也关掉。
+     */
+    it('两端 spe 表名出现次数锁死（防新增别名不同的查询绕过锚点）', () => {
+      const countTable = (sql: string) =>
+        (sql.match(/sale_order_performance_events/g) ?? []).length
+      expect(
+        countTable(adminSql),
+        'admin 的 spe 表引用次数变了：新增/删除了会员消费查询？' +
+          '若是有意变更，需同步 EXPECTED_SPE_BLOCKS + 两端出数对比。',
+      ).toBe(5)
+      expect(countTable(staffSql), 'staff 的 spe 表引用次数变了，同上').toBe(2)
     })
 
     /**
@@ -780,8 +871,13 @@ describe('客量板块两端口径一致性守护', () => {
       }
 
       // admin 明细（索引 3/4）是 admin 独有的 byMarket/byStore，staff 无对应实现
+      // ⚠ admin[1]（queryMemberAvgTicket）必须单列一行（codex r6）：
+      // 早先只比 [0,0] 和 [2,1]，注释却写着「经营人数/客单价」——
+      // 于是「只改客单价 CTE 的 WHERE + 同步刷新 admin[1] 快照」可以两端全绿，
+      // 而那正是 r5 已确认的 `NOT (...)` 语义反转路径。
       const MIRRORED: Array<[number, number, string]> = [
-        [0, 0, '会员经营人数/客单价 ↔ queryMemberOps'],
+        [0, 0, '会员经营人数 ↔ queryMemberOps'],
+        [1, 0, '会员客单价 ↔ queryMemberOps'],
         [2, 1, '新会员消费 ↔ queryNewMemberSpend'],
       ]
       for (const [ai, si, label] of MIRRORED) {
