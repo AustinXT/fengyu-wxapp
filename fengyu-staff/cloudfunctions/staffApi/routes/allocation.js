@@ -18,6 +18,7 @@ const { normalizeListFilters, addDateRange } = require('../utils/list-filters')
 const { assertPaymentAttributionReady } = require('../utils/attribution-guard')
 const { assertNoPendingRefund, assertNoSettledRefundForPayment } = require('../utils/refund')
 const { resolveMarketNameByStore } = require('../utils/market')
+const { createSalesCategoryRates } = require('../utils/sales-categories')
 const { refreshOrderAllocationRollup } = require('../utils/payment-allocatable')
 const {
   isEmployeeAssignableToStore,
@@ -75,7 +76,7 @@ async function buildSalesRateLookup(marketName) {
         department: dept,
         amountMin: r.amount_tier_min != null ? Number(r.amount_tier_min) : -9999.9,
         amountMax: r.amount_tier_max != null ? Number(r.amount_tier_max) : 10000000,
-        orderRates: { '自销自耗': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 },
+        orderRates: createSalesCategoryRates(),
       }
       byKey.set(key, entry)
       grouped.push(entry)
@@ -131,8 +132,8 @@ async function getCommissionRates(ctx) {
         department: dept,
         amountMin: r.amount_tier_min != null ? Number(r.amount_tier_min) : -9999.9,
         amountMax: r.amount_tier_max != null ? Number(r.amount_tier_max) : 10000000,
-        orderRates: { '自销自耗': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 },
-        serviceRates: { '自销自耗': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 },
+        orderRates: createSalesCategoryRates(),
+        serviceRates: createSalesCategoryRates(),
       })
     }
     const entry = grouped.get(key)
@@ -354,7 +355,7 @@ async function suggestPayment(ctx) {
           department: dept,
           amountMin: r.amount_tier_min != null ? Number(r.amount_tier_min) : -9999.9,
           amountMax: r.amount_tier_max != null ? Number(r.amount_tier_max) : 10000000,
-          orderRates: { '自销自耗': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 },
+          orderRates: createSalesCategoryRates(),
         })
       }
       grouped.get(key).orderRates[r.sales_category] = Number(r.commission_rate) || 0

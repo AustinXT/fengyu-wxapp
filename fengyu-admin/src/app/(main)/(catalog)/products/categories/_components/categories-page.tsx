@@ -4,6 +4,7 @@ import { useState, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import type { ProductCategory } from "@/lib/types"
+import { SALES_CATEGORIES, type SalesCategory } from "@/lib/sales-categories"
 import { actionErrorMessage } from "@/lib/action-error"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -23,10 +24,6 @@ import {
 } from "@/components/ui/alert-dialog"
 import { createCategory, updateCategory, deleteCategory } from "@/actions/products"
 import ProductKindManagementDialog from "./product-kind-management-dialog"
-
-type SalesCategory = '自销自耗' | '他销自耗' | '他销他耗' | '生态合作'
-
-const SALES_CATEGORY_OPTIONS: SalesCategory[] = ['自销自耗', '他销自耗', '他销他耗', '生态合作']
 
 interface CategoryFormData {
   categoryName: string
@@ -361,7 +358,7 @@ export default function CategoriesPageClient({
               }
             >
               <option value="">未设置</option>
-              {SALES_CATEGORY_OPTIONS.map((sc) => (
+              {SALES_CATEGORIES.map((sc) => (
                 <option key={sc} value={sc}>{sc}</option>
               ))}
             </Select>

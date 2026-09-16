@@ -18,6 +18,7 @@ const { requireManager } = require('../middleware/auth')
 const { logOperation } = require('../utils/operation-log')
 const { assertNoPendingRefundByServiceOrder } = require('../utils/refund')
 const { resolveMarketNameByStore } = require('../utils/market')
+const { createSalesCategoryRates } = require('../utils/sales-categories')
 const { DEPOSIT_REFUND_REMARK } = require('../utils/consume-filter')
 const { assertEmployeesAssignableToStore } = require('../utils/employee-assignment')
 const { normalizeListFilters, addDateRange } = require('../utils/list-filters')
@@ -180,7 +181,7 @@ async function detail(ctx) {
           department: role,
           amountMin: r.amount_tier_min != null ? Number(r.amount_tier_min) : -9999.9,
           amountMax: r.amount_tier_max != null ? Number(r.amount_tier_max) : 10000000,
-          serviceRates: { '自销自耗': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 },
+          serviceRates: createSalesCategoryRates(),
         })
       }
       grouped.get(key).serviceRates[r.sales_category] = Number(r.commission_rate) || 0
