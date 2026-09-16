@@ -61,7 +61,10 @@ function stripComments(src: string): string {
  *   - 注释掉其中一行 → 注释起始符插进串中间 → 不匹配 → 红。**不依赖识别注释**，
  *     `-- AND` / `--AND` / `TRUE--AND` / 块注释包裹 / 嵌套块注释一视同仁全部拦下
  *   - 中间插入额外条件、调换顺序、改写任一 token → 同样破坏连续性
- *   - 配合精确计数（admin 5 / staff 2），单处漏改会让计数掉到 4 或 1 → 红
+ *
+ * 断言形态是「**按查询块**切开后，每块恰好含 1 次；块数恰好 admin 5 / staff 2」，
+ * 而不是在整份文件里数总次数 —— 后者可被「删一处 + 在注释里补一份凑数」绕过
+ * （自查实测成立，见 `splitSpeQueryBlocks`）。
  *
  * ⚠ 不含前导 `AND`：KPI 查询由 `${sc}` 起头故写 `AND spe.sale_order_type ...`，
  * 而门店/市场明细查询无 scope 条件、直接 `WHERE spe.sale_order_type ...`。
@@ -88,6 +91,24 @@ function countOccurrences(haystack: string, needle: string): number {
     i += needle.length
   }
   return n
+}
+
+/**
+ * 在**原文**（只归一化空白，不剥任何注释）上切出每个 spe 查询块。
+ *
+ * ⚠ 为什么必须切块而不是在整份文件里数出现次数：
+ * 「删掉一处过滤 + 在别处注释里补一份完整五件套」会让全文件计数**保持不变** →
+ * 主守护假绿（我自查时实测确认这条成立）。切块后凑数串不落在任何查询块内，
+ * 而若凑数串连 `FROM sale_order_performance_events spe` 一起伪造，块数就会超出预期 → 红。
+ *
+ * 块尾截到 `GROUP BY` 或反引号（两端的 SQL 都写在模板串里，反引号即模板结束），
+ * 避免末块一路借用到 EOF 把远处的文本算进来。
+ */
+function splitSpeQueryBlocks(src: string): string[] {
+  return normalize(src)
+    .split(/FROM\s+sale_order_performance_events\s+spe/)
+    .slice(1)
+    .map((b) => b.split(/GROUP BY|`/)[0])
 }
 
 describe('客量板块两端口径一致性守护', () => {
@@ -273,13 +294,21 @@ describe('客量板块两端口径一致性守护', () => {
         ['admin', adminSrc, 5],
         ['staff', staffSrc, 2],
       ] as Array<[string, string, number]>) {
-        const got = countOccurrences(normalize(src), EXPECTED_SPE_WHERE)
+        const blocks = splitSpeQueryBlocks(src)
         expect(
-          got,
-          `${side} 的 WHERE 五件套连续串出现 ${got} 次，期望 ${expected} 次。\n` +
-            '可能原因：某处过滤被删/被注释掉、顺序被调换、中间插了别的条件，' +
-            '或新增/删除了会员消费查询（后者需同步更新期望值 + 出数对比）。',
+          blocks.length,
+          `${side} 的 spe 查询块数为 ${blocks.length}，期望 ${expected}。` +
+            '整块被删、或新增了会员消费查询（后者需同步更新期望值 + 出数对比）。',
         ).toBe(expected)
+
+        blocks.forEach((block, i) => {
+          expect(
+            countOccurrences(block, EXPECTED_SPE_WHERE),
+            `${side} 第 ${i + 1} 个 spe 查询块的 WHERE 五件套不是预期的连续文本。\n` +
+              '可能原因：某处过滤被删/被注释掉、顺序被调换、中间插了别的条件。\n' +
+              '（具体缺哪一项，看下方逐块定位辅助那条断言的报错。）',
+          ).toBe(1)
+        })
       }
     })
 
