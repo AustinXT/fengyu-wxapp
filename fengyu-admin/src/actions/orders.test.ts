@@ -5222,6 +5222,25 @@ describe('freezeConversionRepaymentAmount — admin 在线转换回款金额冻�
     expect(statements[1]).toContain('refunded_amount =')
   })
 
+  it('超额冻结：余额在中文正文里，不落子标签位（issue #133 评审 round 5）', async () => {
+    mockFreezeTx(lockedConversion)
+
+    const result = await freezeConversionRepaymentAmount({
+      saleOrderId: lockedConversion.sale_order_id,
+      amount: 999,
+    })
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.code).toBe('CONFLICT')
+      // 旧形态是 `OVERPAY:100.00: 本次回款金额超过订单欠款`，剥掉 OVERPAY: 后会以
+      // 「100.00: 」开头直接漏进 toast；现在余额写在中文正文括号里
+      expect(result.error.message).toMatch(/^本次回款金额超过订单欠款（剩余 ¥[\d.]+）$/)
+      expect(result.error.message).not.toMatch(/^[\d.]+:/)
+      expect(result.error.message).not.toContain('OVERPAY')
+    }
+  })
+
   it('退款后的欠款按 total - received + refunded_amount 冻结', async () => {
     mockFreezeTx({
       ...lockedConversion,

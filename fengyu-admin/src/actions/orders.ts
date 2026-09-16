@@ -5220,8 +5220,10 @@ export const createOrder = withPermission(
       return { success: false, message: businessErrorMessage(err, '创建订单失败，请稍后重试') }
     }
     // 全额储值卡抵扣扣卡失败：deductPrepaidCardAtCreation 抛 plain Error（非 ApiError），
-    // 消息形如 'INSUFFICIENT_BALANCE:NO_CARD: ...' / 'INSUFFICIENT_BALANCE:<余额>: ...'，
-    // 需用专用正则连子标签一起剥掉（parseErrorPrefix 会残留 NO_CARD/数字子标签）。
+    // 消息形如 'INSUFFICIENT_BALANCE:NO_CARD: ...'，需用专用正则连子标签一起剥掉
+    // （parseErrorPrefix 会残留 NO_CARD 子标签）。
+    // 注：`INSUFFICIENT_BALANCE:<余额>:` 形态在本 catch 的可达面内已消灭（余额已移进中文正文，
+    // 见 issue #133 评审 round 3）；仅 recordPayment 自抛自解的那对还保留数字子标签。
     if (typeof err?.message === 'string' && err.message.startsWith('INSUFFICIENT_BALANCE')) {
       const stripped = err.message.replace(/^INSUFFICIENT_BALANCE:?(NO_CARD)?:?\s*/, '')
       return { success: false, message: stripped || '顾客储值卡余额不足' }
@@ -7478,10 +7480,10 @@ export const recordPayment = withPermission(
         },
       }
     }
-    console.error('[recordPayment] unexpected error:', err)
-    // 兜底收口：任意 DB 错误（23xxx 等）只给通用提示，不回显原始 SQL（避免 Failed query 泄露前端）；
-    // 非 DB 错误才保留 err.message 便于排查。
+    // 兜底收口：任意 DB 错误（23xxx 等）只给通用提示，不回显原始 SQL（避免 Failed query 泄露前端）。
+    // DB 错误这一支不经 businessErrorMessage，故自己记日志；非 DB 那一支由它统一记，避免双记。
     if (pgErrorCode(err)) {
+      console.error('[recordPayment] db error:', err)
       return { success: false, error: { code: 'UNKNOWN', message: '录入回款失败：数据冲突或约束校验未通过，请刷新后重试' } }
     }
     // fail-closed：非白名单前缀的异常（含 TypeError 的内部信息）不回传给前端（issue #133）
