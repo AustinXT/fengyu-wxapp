@@ -601,8 +601,15 @@ describe('customer.detail', () => {
     expect(sql).toContain('SUM(\n         sop.amount::numeric')
     expect(sql).toContain("o.legacy_source IS DISTINCT FROM 'workfine'")
     expect(sql).toContain("o.legacy_source = 'workfine'")
-    expect(sql).toContain("sop.paid_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Shanghai')")
-    expect(sql).toContain("sop.paid_at < (($2::date + INTERVAL '1 year') AT TIME ZONE 'Asia/Shanghai')")
+    // #141 年度消费落年改按业绩归属日期：款项级走 sop、legacy(workfine) 走订单级 o。
+    // 归属日期是 date，年区间用半开 [start, start+1year)，不再套北京时区半开区间。
+    expect(sql).toContain('sop.performance_attribution_date >= $2::date')
+    expect(sql).toContain("sop.performance_attribution_date < ($2::date + INTERVAL '1 year')")
+    expect(sql).toContain('o.performance_attribution_date >= $2::date')
+    expect(sql).toContain("o.performance_attribution_date < ($2::date + INTERVAL '1 year')")
+    // 旧口径必须消失（含时区半开区间形态）
+    expect(sql).not.toContain('sop.paid_at >=')
+    expect(sql).not.toContain("AT TIME ZONE 'Asia/Shanghai')")
     expect(sql).not.toContain('WHEN o.paid_at >= $2')
     expect(sql).toContain('FROM service_orders so')
     expect(sql).toContain('JOIN service_items sit ON sit.service_order_id = so.service_order_id')

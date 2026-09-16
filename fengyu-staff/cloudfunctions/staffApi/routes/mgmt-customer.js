@@ -185,8 +185,8 @@ async function getConsumptionStatsScoped(clientUserId, scopeType, scopeId) {
          AND o.sale_order_type IN ('销售单', '转换单')
          AND o.client_user_id = $1
          AND o.legacy_source IS DISTINCT FROM 'workfine'
-         AND sop.paid_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Shanghai')
-         AND sop.paid_at < (($2::date + INTERVAL '1 year') AT TIME ZONE 'Asia/Shanghai')
+         AND sop.performance_attribution_date >= $2::date
+         AND sop.performance_attribution_date < ($2::date + INTERVAL '1 year')
      ), legacy_year_stats AS (
        SELECT
        COALESCE(SUM(
@@ -201,8 +201,8 @@ async function getConsumptionStatsScoped(clientUserId, scopeType, scopeId) {
          AND o.sale_order_type IN ('销售单', '转换单')
          AND o.client_user_id = $1
          AND o.legacy_source = 'workfine'
-         AND o.paid_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Shanghai')
-         AND o.paid_at < (($2::date + INTERVAL '1 year') AT TIME ZONE 'Asia/Shanghai')
+         AND o.performance_attribution_date >= $2::date
+         AND o.performance_attribution_date < ($2::date + INTERVAL '1 year')
      ), actual_stats AS (
        SELECT
          COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS total_actual_consumption,
@@ -366,6 +366,10 @@ async function search(ctx) {
     const yearStart = `${new Date().getFullYear()}-01-01`
 
     // 年消费（scope 过滤）
+    // 日期口径：订单级业绩归属日期（#141）。与顾客详情的「年度消费」同口径**落年**，
+    // 但金额公式不同——详情走款项级 SUM(sop.amount)（实收），这里是订单级
+    // SUM(o.total_amount)（应付总额）。两者数值本就不相等，#141 只统一了落年口径，
+    // 未动金额公式（见 PR 说明）。
     const sc1 = buildSaleScope(scopeType, scopeId, 'o', 3)
     const spendRows = await pg.query(
       `SELECT o.client_user_id,
@@ -373,7 +377,7 @@ async function search(ctx) {
          FROM sale_orders o
         WHERE o.client_user_id = ANY($1)
           AND o.status = '已支付'
-          AND o.paid_at >= $2::date
+          AND o.performance_attribution_date >= $2::date
           AND ${sc1.sql}
         GROUP BY o.client_user_id`,
       [allClientUserIds, yearStart, ...sc1.params],
