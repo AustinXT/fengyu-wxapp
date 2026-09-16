@@ -3586,7 +3586,10 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     const reservedIndex = captured.executeSql.findIndex((text) => /FROM\s+service_items\s+sit/i.test(text))
     expect(lockIndex).toBeGreaterThanOrEqual(0)
     expect(reservedIndex).toBe(lockIndex + 1)
-    expect(captured.executeSql[lockIndex]).not.toMatch(/service_items|SUM\s*\(/i)
+    // 锁行查询不得混入服务预扣（那必须是独立的下一条查询），也不得在**顶层**聚合。
+    // #145/#153 的家居折抵额度是标量子查询里的 SUM——每行一个值，不改变返回行数与锁定范围。
+    expect(captured.executeSql[lockIndex]).not.toMatch(/service_items/i)
+    expect(captured.executeSql[lockIndex]).not.toMatch(/\n\s*GROUP BY/i)
     expect(captured.executeSql[lockIndex]).toMatch(/ORDER\s+BY\s+si\.sale_item_id\s+FOR\s+UPDATE/i)
     expect(captured.executeSql[reservedIndex]).toMatch(/reserved_at\s+IS\s+NOT\s+NULL/i)
     expect(captured.executeSql[reservedIndex]).toMatch(/INNER\s+JOIN\s+service_orders\s+reserved_order/i)

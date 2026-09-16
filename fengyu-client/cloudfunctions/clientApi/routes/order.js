@@ -2724,7 +2724,10 @@ async function homeProducts(ctx) {
               (purchased_quantity - settled_quantity)::int AS remaining_quantity,
               LEAST(
                 purchased_quantity - settled_quantity,
-                GREATEST(paid_quantity - picked_quantity, 0)
+                -- #145/#153：已折抵转走的件数必须一并扣除。picked_up_quantity 混装了
+                -- 「已提货 + 已退款 + 已折抵」三义，而 received 已扣过退款（STEP 1.5），
+                -- 所以这里只能减「已提 + 已折抵」——退款靠 paid_quantity 反映，再减一次就是重复扣减。
+                GREATEST(paid_quantity - picked_quantity - converted_quantity, 0)
               )::int AS pending_pickup_quantity,
               -- 寄存单的 sale_amount 只是原价快照、received 恒为历史值，两者相减不是欠款
               -- （寄存的货本就属于顾客）。金额列一律留空，与导出口径一致。

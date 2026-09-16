@@ -2029,7 +2029,11 @@ describe('家居产品部分支付权益跨端守护', () => {
     expect(src).toContain(
       'FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int',
     )
-    expect(src).toContain('GREATEST(paid_quantity - picked_quantity, 0)')
+    // #145/#153：已折抵转走的件数一并扣除（退款不在此处再减一次——received 已扣过）
+    expect(src).toContain('GREATEST(paid_quantity - picked_quantity - converted_quantity, 0)')
+    expect(src, '可提额度漏扣已折抵件数 → 折抵后仍可提货（重复兑现）').not.toMatch(
+      /GREATEST\(paid_quantity - picked_quantity, 0\)/,
+    )
     expect(src).toContain('pending_pickup_quantity')
     expect(src).toContain("si.item_direction = '购买'")
     expect(src).toContain("si.product_type = '家居产品'")
@@ -2240,7 +2244,10 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
     const re = /(?:\w+\.)?item_direction = '购买'[\s\S]{0,160}?(?:\w+\.)?item_direction = '转入'/g
     for (const m of src.matchAll(re)) {
       const near = src.slice(Math.max(0, m.index - 400), m.index + m[0].length + 400)
-      const kinds = [...near.matchAll(/AND (?:\w+\.)?product_type = '(家居产品|疗程卡)'/g)].map((x) => x[1])
+      // 判据限定在被查询的明细别名上（si / sale_item / 无别名）。折抵额度的 LATERAL 里有
+      // `AND out_item.product_type = '家居产品'`（转出行聚合），不能拿它当归属证据。
+      const kinds = [...near.matchAll(/AND (?:(si|sale_item)\.)?product_type = '(家居产品|疗程卡)'/g)]
+        .map((x) => x[2])
       if (!kinds.includes('家居产品')) continue
       blocks.push(
         normalizeSql(m[0])
@@ -2319,12 +2326,17 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
     '%s 每个 FOR UPDATE OF si 锁行查询都取到 sale_order_type',
     (_name, file, expectedSites) => {
       const src = stripComments(readFile(file))
+      // 取「最外层 SELECT 起点 → FOR UPDATE OF si」整段。不能用 lastIndexOf('SELECT')：
+      // 折抵额度的 hp LATERAL 内部也有 SELECT，回溯会落进子查询，把外层的
+      // sale_order_type 列切掉（改动后首轮即误报）。改为回溯到查询开头的 `SELECT si.`。
       const blocks = []
       let idx = 0
       for (;;) {
         const at = src.indexOf('FOR UPDATE OF si', idx)
         if (at === -1) break
-        blocks.push(normalizeSql(src.slice(src.lastIndexOf('SELECT', at), at)))
+        // 五处锁行查询都以 `SELECT si.sale_item_id` 开头，用它锚定最外层
+        const start = src.lastIndexOf('SELECT si.sale_item_id', at)
+        blocks.push(normalizeSql(src.slice(start === -1 ? src.lastIndexOf('SELECT', at) : start, at)))
         idx = at + 1
       }
       expect(blocks.length, '锁行查询数量变化，需同步本断言').toBe(expectedSites)
@@ -2344,6 +2356,34 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
       })
     },
   )
+
+  // 折抵把数量并进 picked_up_quantity，但提货额度是从 paid_quantity 减「已提货」算的，
+  // 不减「已折抵」就会让同一批已付件既折走又提走（对抗审查两个谱系独立命中）。
+  // 展示侧四端由「家居产品部分支付权益跨端守护」那条断言覆盖，这里补提货候选与事务闸门。
+  const PICKUP_QUERY_FILES = [
+    ['staff 提货', FILES.staffOrderJs],
+    ['admin 提货', FILES.adminPickupRecordsTs],
+  ]
+
+  test.each(PICKUP_QUERY_FILES)('%s 可提额度扣除已折抵件数', (_name, file) => {
+    const src = normalizeSql(stripComments(readFile(file)))
+    expect(src, '提货候选漏扣已折抵件数 → 折抵后仍可提（重复兑现）').toContain(
+      'GREATEST(paid_quantity - picked_quantity - converted_quantity, 0)',
+    )
+    expect(src).not.toMatch(/GREATEST\(paid_quantity - picked_quantity, 0\)/)
+  })
+
+  test('提货闸门 helper 双端都扣已折抵件数', () => {
+    for (const [end, file] of [['staff', FILES.staffOrderJs], ['admin', FILES.adminPickupRecordsTs]]) {
+      const src = readFile(file).replace(/\s+/g, ' ')
+      expect(src, `${end} pendingHomeProductQuantity 漏扣已折抵件数`).toContain(
+        'const consumed = Number(row.picked_quantity || 0) + Number(row.converted_quantity || 0)',
+      )
+      expect(src, `${end} pendingHomeProductQuantity 回退成只扣已提货`).not.toContain(
+        'Number(row.paid_quantity || 0) - Number(row.picked_quantity || 0)',
+      )
+    }
+  })
 
   // 提货链路的三处订单状态白名单必须一致：可提列表放行 `部分支付` 却让出库清单预览卡在
   // `已支付`，会造成「列表看得见、点提货报 NOT_FOUND」——差额未结清的转换单首当其冲，
@@ -2367,39 +2407,42 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
   // 洗成全额可提（dev 真库实证：10 件 ¥1000 只付 ¥400 → 折 ¥1000 换等额家居 → 新行 10 件全可提，
   // 欠款仍留原单）。改为「已付整件数 − 已结算件数」件 + 「行实收 − 已结算件数 × 单价」金额。
   // 三处站点（staff 候选 / staff 锁内复算 / admin）必须同源，否则候选与闸门分叉。
-  test('家居折抵件数三处站点同源（已付整件数 − 已结算件数）', () => {
+  // 折抵额度基准：剩余已付 = 行实收 − 已提货金额 − **已转走金额**（从转出行 received 聚合）。
+  // 用「已转走件数 × 单价」推算会让多次折抵累计超过实收（折抵金额含余数时两者不等）；
+  // 用 picked_up_quantity 当已消耗件数则会把退款件扣两次（received 已由 STEP 1.5 扣过）。
+  const REMAINING_PAID_EXPR = "GREATEST(0, si.received::numeric - COALESCE((SELECT SUM(pr.pickup_quantity) FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id), 0) * si.unit_real_price::numeric - COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)) AS remaining_paid"
+
+  test('家居折抵额度以「剩余已付金额」为基准，两处 staff 站点同源', () => {
     const staff = normalizeSql(stripComments(readFile(FILES.staffOrderJs)))
-    const staffSites = staff.split(
-      "GREATEST(0, CASE WHEN so.sale_order_type = '寄存单' THEN si.quantity WHEN si.sale_amount <= 0 THEN si.quantity ELSE LEAST(si.quantity, FLOOR(GREATEST(0, si.received::numeric) * si.quantity / NULLIF(si.sale_amount::numeric, 0))::int) END - COALESCE(si.picked_up_quantity, 0))",
-    ).length - 1
-    // customerHeldCards 的 SELECT 列 + 同查询 WHERE + createConversion 锁内复算
-    expect(staffSites, 'staff 家居可折抵件数表达式站点数漂移').toBe(3)
-    expect(staff, '折抵不得回退到「未提货件数」口径').not.toContain(
+    // customerHeldCards 候选 + createConversion 锁内复算
+    expect(staff.split(REMAINING_PAID_EXPR).length - 1, 'staff 剩余已付表达式站点数漂移').toBe(2)
+    expect(
+      staff.split("GREATEST(0, FLOOR(hpa.remaining_paid / NULLIF(si.unit_real_price::numeric, 0)))::int").length - 1,
+      'staff 折抵件数（剩余已付 / 单价，向下取整）站点数漂移',
+    ).toBe(2)
+    // 不得回退到「未提货件数」或「件数 × 单价」口径
+    expect(staff, '折抵不得回退到未提货件数口径').not.toContain(
       "OR (si.product_type = '家居产品' AND (si.quantity - COALESCE(si.picked_up_quantity, 0)) > 0)",
     )
-
-    // admin 用 JS helper（Drizzle 侧无法复用 SQL 字面量），判据须与 staff 同义
-    const adminHelper = readFile(FILES.adminHomeProductTs).replace(/\s+/g, ' ')
-    expect(adminHelper).toContain(
-      'const paidQuantity = isDepositOrGift ? qty : Math.min(qty, Math.floor((Math.max(0, received) * qty) / saleAmount))',
+    expect(staff, '已转走金额不得用件数 × 单价推算').not.toContain(
+      'COALESCE(si.picked_up_quantity, 0) * si.unit_real_price::numeric)',
     )
-    expect(adminHelper).toContain('quantity: Math.max(0, paidQuantity - settled)')
   })
 
-  test('家居折抵金额含不足一整件的已付余数，寄存单/0 元行维持单价口径', () => {
-    const staff = normalizeSql(stripComments(readFile(FILES.staffOrderJs)))
-    const AMOUNT_EXPR = "CASE WHEN so.sale_order_type = '寄存单' OR si.sale_amount <= 0 THEN si.unit_real_price * GREATEST(0, si.quantity - COALESCE(si.picked_up_quantity, 0)) ELSE GREATEST(0, si.received::numeric - COALESCE(si.picked_up_quantity, 0) * si.unit_real_price::numeric) END"
-    expect(staff.split(AMOUNT_EXPR).length - 1, 'staff 家居折抵金额表达式站点数漂移').toBe(2)
-    // 不得退回「单价 × 未提件数」——那会把没付清的货按全价折走
-    expect(staff, '折抵金额不得回退到单价 × 未提件数').not.toContain(
-      "WHEN si.product_type = '家居产品' THEN si.unit_real_price * GREATEST(0, si.quantity - COALESCE(si.picked_up_quantity, 0)) ELSE 0 END AS deductible_amount",
-    )
-
+  test('admin 折抵 helper 与 staff 同义，且两处闸门都走 helper', () => {
     const adminHelper = readFile(FILES.adminHomeProductTs).replace(/\s+/g, ' ')
-    expect(adminHelper).toContain(
-      'amount: isDepositOrGift ? unit * Math.max(0, qty - settled) : Math.max(0, received - settled * unit)',
+    expect(adminHelper, 'admin 剩余已付口径漂移').toContain(
+      'const remainingPaid = Math.max(0, received - picked * unit - convertedAmount)',
     )
-    // 两端的折抵闸门都必须走同一 helper / 同一表达式，不得各自内联
+    expect(adminHelper, 'admin 折抵件数口径漂移').toContain(
+      'quantity: unit > 0 ? Math.min(physicalRemaining, Math.floor(remainingPaid / unit)) : 0',
+    )
+    expect(adminHelper, 'admin 折抵金额应为剩余已付（含余数）').toContain('amount: remainingPaid')
+    // 寄存单 / 0 元行维持单价 × 未结算件数
+    expect(adminHelper).toContain(
+      "if (row.saleOrderType === '寄存单' || saleAmount <= 0) { return { quantity: physicalRemaining, amount: unit * physicalRemaining } }",
+    )
+    // 两处闸门都必须走同一 helper，不得各自内联
     expect(readFile(FILES.adminCardsTs), 'admin 折抵候选未走 homeDeductible').toContain('homeDeductible(')
     expect(readFile(FILES.adminOrdersTs), 'admin 折抵锁内复算未走 homeDeductible').toContain('homeDeductible(')
   })

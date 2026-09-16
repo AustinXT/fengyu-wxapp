@@ -5414,6 +5414,16 @@ export const createConversionOrder = withPermission(
           si.unit_real_price,
           si.sale_amount,
           si.received,
+          -- #145/#153 家居折抵额度：物理提货合计 + 已转走金额（与 staff LATERAL 同源）
+          COALESCE((SELECT SUM(pr.pickup_quantity) FROM pickup_records pr
+                     WHERE pr.sale_item_id = si.sale_item_id), 0) AS home_picked_quantity,
+          COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric))
+                      FROM sale_items out_item
+                      JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+                     WHERE out_item.ref_sale_item_id = si.sale_item_id
+                       AND out_item.item_direction = '转出'
+                       AND out_item.product_type = '家居产品'
+                       AND conv_order.status <> '已关闭'), 0) AS home_converted_amount,
           si.sales_category,
           COALESCE(si.is_shengmei, psk.is_shengmei) AS is_shengmei,
           si.service_fee,
@@ -5522,6 +5532,8 @@ export const createConversionOrder = withPermission(
             saleOrderType: row.sale_order_type as string,
             quantity: Number(row.quantity ?? 0),
             pickedUpQuantity: Number(row.picked_up_quantity ?? 0),
+            pickedQuantity: Number(row.home_picked_quantity ?? 0),
+            convertedAmount: row.home_converted_amount as string,
             saleAmount: row.sale_amount as string,
             received: row.received as string,
             unitRealPrice: row.unit_real_price as string,

@@ -798,6 +798,9 @@ export const getCustomerHeldCards = withPermission(
       paidSessions: saleItems.paidSessions,
       quantity: saleItems.quantity,
       pickedUpQuantity: saleItems.pickedUpQuantity,
+      // #145/#153 家居折抵额度：物理提货合计与已转走金额（与 staff LATERAL 同源）
+      homePickedQuantity: sql`COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = ${saleItems.saleItemId}), 0)`,
+      homeConvertedAmount: sql`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)`,
       unitPrice: saleItems.unitPrice,
       unitRealPrice: saleItems.unitRealPrice,
       saleAmount: saleItems.saleAmount,
@@ -831,16 +834,21 @@ export const getCustomerHeldCards = withPermission(
           ),
           and(
             eq(saleItems.productType, '家居产品'),
-            // #145/#153 收紧：家居可折抵件数 = 已付整件数 − 已结算件数，不再是「未提货件数」。
-            // 与 staff customerHeldCards 的 remaining_quantity 表达式字面同源。
-            sql`GREATEST(0, CASE
-              WHEN ${saleOrders.saleOrderType} = '寄存单' THEN ${saleItems.quantity}
-              WHEN ${saleItems.saleAmount} <= 0 THEN ${saleItems.quantity}
-              ELSE LEAST(
-                ${saleItems.quantity},
-                FLOOR(GREATEST(0, ${saleItems.received}::numeric) * ${saleItems.quantity} / NULLIF(${saleItems.saleAmount}::numeric, 0))::int
-              )
-            END - COALESCE(${saleItems.pickedUpQuantity}, 0)) > 0`,
+            // #145/#153 收紧：家居折抵以「剩余已付金额」为基准（= 行实收 − 已提货金额 − 已转走金额），
+            // 与 staff customerHeldCards 的 hp LATERAL 字面同源。旧口径按未提货件数全额折抵，
+            // 会把未兑现价值洗成全额可提。
+            sql`(
+              CASE WHEN ${saleOrders.saleOrderType} = '寄存单' OR ${saleItems.saleAmount} <= 0
+                   THEN GREATEST(0, ${saleItems.quantity} - COALESCE(${saleItems.pickedUpQuantity}, 0))
+                   ELSE LEAST(
+                     GREATEST(0, ${saleItems.quantity} - COALESCE(${saleItems.pickedUpQuantity}, 0)),
+                     GREATEST(0, FLOOR(GREATEST(0, ${saleItems.received}::numeric
+                       - COALESCE((SELECT SUM(pr.pickup_quantity) FROM pickup_records pr WHERE pr.sale_item_id = ${saleItems.saleItemId}), 0) * ${saleItems.unitRealPrice}::numeric
+                       - COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)
+                     ) / NULLIF(${saleItems.unitRealPrice}::numeric, 0)))::int
+                   )
+              END
+            ) > 0`,
           ),
         ),
         // 在途退款冻结：原订单存在 '待审批' 退款时排除整单的卡（与 staff customerHeldCards 对齐）
@@ -860,6 +868,8 @@ export const getCustomerHeldCards = withPermission(
       saleOrderType: r.saleOrderType,
       quantity: r.quantity ?? 0,
       pickedUpQuantity: r.pickedUpQuantity ?? 0,
+      pickedQuantity: Number(r.homePickedQuantity ?? 0),
+      convertedAmount: r.homeConvertedAmount as string | number | null,
       saleAmount: r.saleAmount,
       received: r.received,
       unitRealPrice: r.unitRealPrice,

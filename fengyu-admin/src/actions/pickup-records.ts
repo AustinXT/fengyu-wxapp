@@ -530,14 +530,25 @@ function isConvertibleEntitlementRow(row: {
     || (row.sale_order_type === '转换单' && row.item_direction === '转入')
 }
 
+/**
+ * 家居可提件数 = min(物理未结算, 已付未消耗)
+ *
+ * #145/#153：`picked_up_quantity`（= settled_quantity）混装了「已提货 + 已退款 + 已折抵转走」
+ * 三义，而 `received` 已由 paid-sessions STEP 1.5 扣过逐项退款。因此「已付未消耗」只能减
+ * 「已提货 + 已折抵」——退款靠 paid_quantity 反映，再减一次就是重复扣减（顾客少提）。
+ * 物理上限那一项仍用 settled_quantity（三者都占用物理件）。
+ * 与 staffApi routes/order.js 同名函数跨端同义。
+ */
 function pendingHomeProductQuantity(row: {
   quantity: number
   settled_quantity: number
   picked_quantity: number
+  converted_quantity?: number
   paid_quantity: number
 }): number {
   const physicalRemaining = Math.max(0, Number(row.quantity) - Number(row.settled_quantity || 0))
-  const paidRemaining = Math.max(0, Number(row.paid_quantity || 0) - Number(row.picked_quantity || 0))
+  const consumed = Number(row.picked_quantity || 0) + Number(row.converted_quantity || 0)
+  const paidRemaining = Math.max(0, Number(row.paid_quantity || 0) - consumed)
   return Math.min(physicalRemaining, paidRemaining)
 }
 
@@ -552,6 +563,18 @@ export const getAvailablePickupItems = withPermission(
       SELECT sale_item_id, SUM(pickup_quantity)::int AS picked_quantity
         FROM pickup_records
        GROUP BY sale_item_id
+    ), conversion_totals AS (
+      -- #145/#153：已折抵转走的件数必须从可提数量里扣除。写法与四端展示侧的
+      -- conversion_totals 字面同源（只排除「已关闭」——它完成过 rollback，数量已退回）。
+      SELECT out_item.ref_sale_item_id AS sale_item_id,
+             SUM(out_item.quantity)::int AS converted_quantity
+        FROM sale_items out_item
+        JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+       WHERE out_item.item_direction = '转出'
+         AND out_item.product_type = '家居产品'
+         AND out_item.ref_sale_item_id IS NOT NULL
+         AND conv_order.status <> '已关闭'
+       GROUP BY out_item.ref_sale_item_id
     ), home_product_rows AS (
       SELECT COALESCE(si.sale_item_group_id, si.sale_item_id) AS sale_item_group_id,
              si.sale_item_id,
@@ -561,6 +584,7 @@ export const getAvailablePickupItems = withPermission(
              si.quantity::int AS quantity,
              LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
              GREATEST(0, COALESCE(pt.picked_quantity, 0))::int AS picked_quantity,
+             GREATEST(0, COALESCE(ct.converted_quantity, 0))::int AS converted_quantity,
              CASE
                -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
                -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
@@ -580,6 +604,7 @@ export const getAvailablePickupItems = withPermission(
         JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
         LEFT JOIN stores s ON s.store_id = o.store_id
         LEFT JOIN pickup_totals pt ON pt.sale_item_id = si.sale_item_id
+        LEFT JOIN conversion_totals ct ON ct.sale_item_id = si.sale_item_id
        WHERE o.client_user_id = ${clientUserId}
          AND o.status IN ('已支付', '部分支付', '已完成')
          -- #145/#153：转换单换入的家居与购买行同权（与疗程卡侧放行写法同源）。
@@ -596,7 +621,9 @@ export const getAvailablePickupItems = withPermission(
       SELECT *,
              LEAST(
                quantity - settled_quantity,
-               GREATEST(paid_quantity - picked_quantity, 0)
+               -- #145/#153：已折抵转走的件数一并扣除（picked_up_quantity 三义混装，
+               -- 退款已由 received → paid_quantity 反映，这里只减「已提 + 已折抵」）
+               GREATEST(paid_quantity - picked_quantity - converted_quantity, 0)
              )::int AS pending_pickup_quantity
         FROM home_product_rows
     )
@@ -767,6 +794,7 @@ async function createGroupedPickupRecord(
                SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
                 WHERE pr.sale_item_id = si.sale_item_id
              ), 0)::int AS picked_quantity,
+             COALESCE((SELECT SUM(out_item.quantity)::int FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)::int AS converted_quantity,
              CASE
                -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
                -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
@@ -809,6 +837,7 @@ async function createGroupedPickupRecord(
       inventory_composition_snapshot: unknown
       settled_quantity: number
       picked_quantity: number
+      converted_quantity: number
       paid_quantity: number
       product_type: string
       item_direction: string
@@ -993,6 +1022,7 @@ export const createPickupRecord = withPermission(
                  SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
                   WHERE pr.sale_item_id = si.sale_item_id
                ), 0)::int AS picked_quantity,
+               COALESCE((SELECT SUM(out_item.quantity)::int FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)::int AS converted_quantity,
                CASE
                  -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
                  -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
