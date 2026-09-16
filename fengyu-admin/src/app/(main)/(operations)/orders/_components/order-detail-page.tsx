@@ -767,7 +767,7 @@ export default function OrderDetailPageClient({
                   const amt = Number(p.amount);
                   const isRefund = p.changeType === "退款" || amt < 0;
                   const isFirstPayment = p.changeType === "首次支付";
-                  // 直读款项级列：迁移 0040 起它由 trigger 赋值 + CHECK 兜底恒有值，
+                  // 直读款项级列：迁移 0041 起它由 trigger 赋值 + CHECK 兜底恒有值，
                   // 首次支付那一行本身就是订单级的镜像。不按 changeType 分支、也不回退 paid_at
                   // —— 回退会把"列为空"这种数据异常伪装成有归属日期，与导出侧的留空策略相反。
                   const attributionDate = p.performanceAttributionDate;

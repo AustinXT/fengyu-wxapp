@@ -3,14 +3,14 @@
 /**
  * check-attribution-drift.js — 款项业绩归属日期收敛前的迁移前体检（read-only）
  *
- * 背景：issue #137。迁移 0040 把两个业绩视图的 `performance_date` 从
+ * 背景：issue #137。迁移 0041 把两个业绩视图的 `performance_date` 从
  *   「CASE 三分支 + LATERAL 配对」改成直读 `sale_order_payments.performance_attribution_date`，
  *   并给该列加上 `chk_sop_attribution_date_present`（等价 NOT NULL）。
  *
  *   直读能不能替换 CASE，取决于两件事在目标库上是否成立：
  *     D1 该列与旧 CASE 表达式逐行相等（唯一可能漂移的是储值卡抵扣：
  *        旧视图对卡行**优先取配对主流水**的归属日，优先级高于自身列值）
- *     D2 该列没有 NULL（否则 CHECK 约束会让 0040 直接失败）
+ *     D2 该列没有 NULL（否则 CHECK 约束会让 0041 直接失败）
  *   顺带检查 0040 新增的巡检项 I6：
  *     D3 首次支付行的归属日期 = 所属订单的归属日期
  *
@@ -23,10 +23,10 @@
  *   DATABASE_URL="postgresql://fengyu:***@118.178.196.26:5433/fengyu_wxapp" \
  *     node db/scripts/check-attribution-drift.js          # prod
  *
- * 退出码：0 = 可以迁（含"只有 D3 脱拍、会被 0040 的 ① 回填自动拉齐"这种情况）；
+ * 退出码：0 = 可以迁（含"只有 D3 脱拍、会被 0041 的 ① 回填自动拉齐"这种情况）；
  *         1 = 真阻塞（D2 有 NULL，或 D1 里有非首次支付的漂移）；2 = 脚本自身出错。
  *
- * ⚠ 本脚本的 D1 与迁移 0040 的 ② 自检是**同一条 SQL 的两份副本**，改一处必须同步另一处。
+ * ⚠ 本脚本的 D1 与迁移 0041 的 ② 自检是**同一条 SQL 的两份副本**，改一处必须同步另一处。
  */
 
 const { Client } = require('pg')
@@ -46,7 +46,7 @@ function log(msg) {
   console.log(`[ATTR-DRIFT] ${msg}`)
 }
 
-/** D1：直读列 vs 旧 CASE 表达式（与 0040 迁移内自检同一条 SQL）。 */
+/** D1：直读列 vs 旧 CASE 表达式（与 0041 迁移内自检同一条 SQL）。 */
 const DRIFT_SQL = `
   WITH legacy AS (
     SELECT
@@ -66,9 +66,9 @@ const DRIFT_SQL = `
           (sop.created_at AT TIME ZONE 'Asia/Shanghai')::date
         )
       END AS legacy_value,
-      -- 这一行会不会被迁移 0040 的 ① 回填顺手修掉？
+      -- 这一行会不会被迁移 0041 的 ① 回填顺手修掉？
       --   · 首次支付行 —— ① 直接 UPDATE 它
-      --   · 同次已支付卡行 —— ① 更新首次支付行时，0039 的 BEFORE trigger 反向同步把它一起拉齐
+      --   · 同次已支付卡行 —— ① 更新首次支付行时，0040 的 BEFORE trigger 反向同步把它一起拉齐
       -- 这两类回填后必然与旧 CASE 归零，不该算进"阻塞"。
       -- （早先用 D1 减 D3 推导卡行漂移数，混合支付订单脱拍时 D1=2/D3=1 会误判成阻塞，
       --   让运维中止一次本来会成功的迁移 —— 实测复现过。）
@@ -179,16 +179,16 @@ async function main() {
 
     log('')
     if (d1 === 0 && d2 === 0 && d3 === 0) {
-      log('三项全清，可以执行迁移 0040。')
+      log('三项全清，可以执行迁移 0041。')
       process.exitCode = 0
       return
     }
 
     if (d2 > 0) {
-      log(`⛔ D2 的 ${d2} 行是真阻塞：0040 的 CHECK 约束会直接失败。`)
-      log('  多半是这个库还没 apply 0039 —— 按 journal 顺序把 0039 补上即可（它的回填②会填掉这些 NULL）。')
+      log(`⛔ D2 的 ${d2} 行是真阻塞：0041 的 CHECK 约束会直接失败。`)
+      log('  多半是这个库还没 apply 0040 —— 按 journal 顺序把 0040 补上即可（它的回填②会填掉这些 NULL）。')
       log('  ⚠ 有 NULL 时 D1 的结论不可用：NULL 行同时命中 D1 与 D2。')
-      log('     先 apply 0039，再重跑本脚本，那时 D1 的读数才有意义。')
+      log('     先 apply 0040，再重跑本脚本，那时 D1 的读数才有意义。')
       process.exitCode = 1
       return
     }
@@ -198,7 +198,7 @@ async function main() {
     const willBeFixed = d1Rows.filter((r) => r.resolved_by_backfill).length
     const blocking = d1Rows.filter((r) => !r.resolved_by_backfill)
     if (willBeFixed > 0) {
-      log(`D1 里有 ${willBeFixed} 行会被迁移 0040 的 ① 回填自动拉齐（首次支付行 + 同次已支付卡行）—— **预期内，不阻塞**。`)
+      log(`D1 里有 ${willBeFixed} 行会被迁移 0041 的 ① 回填自动拉齐（首次支付行 + 同次已支付卡行）—— **预期内，不阻塞**。`)
     }
     if (blocking.length > 0) {
       log(`⛔ D1 里有 ${blocking.length} 行回填覆盖不到（多半是配对回款的储值卡抵扣）：`)

@@ -12,7 +12,7 @@
  *   2026-08 业绩归属日期：组织层级业绩按 sale_order_performance_events 的
  *   performance_date 统计。
  *   ⚠ 2026-09-14 订正（#137 / #140）：原文「首次收款跟随订单归属日期，后续回款/退款仍按
- *   真实发生日」**已失效**。迁移 0040 起视图的 performance_date 一律直读
+ *   真实发生日」**已失效**。迁移 0041 起视图的 performance_date 一律直读
  *   `sale_order_payments.performance_attribution_date`，回款/退款同样按归属日期；
  *   回退只发生在写入侧 trigger。admin 工作台的实付/退款也已统一到该口径（#140）。
  *

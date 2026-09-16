@@ -2788,7 +2788,7 @@ describe('order.updatePerformanceAttribution', () => {
     expect(query.mock.calls[0][0]).toMatch(/FOR UPDATE/)
     expect(query.mock.calls[1][0]).toMatch(/performance_attribution_adjusted_at IS NULL/)
     expect(query.mock.calls[1][0]).toMatch(/date_trunc\('milliseconds', updated_at\)/)
-    // 款项行同步已下沉为 sale_orders 的 AFTER UPDATE trigger（迁移 0040）：
+    // 款项行同步已下沉为 sale_orders 的 AFTER UPDATE trigger（迁移 0041）：
     // 查询侧改为直读款项级归属日期列后，漏同步会直接出错数，同步必须由 DB 保证。
     // 应用层只回读受影响的行用于审计日志，不再自己发 UPDATE。
     expect(query.mock.calls[2][0]).toMatch(/SELECT id/)
@@ -2804,12 +2804,12 @@ describe('order.updatePerformanceAttribution', () => {
     expect(JSON.parse(auditInsert[1][8]).changes.syncedPaymentIds).toEqual({ from: [], to: [41, 43] })
   })
 
-  test('迁移 0040 未落地（trigger 缺席）→ 响亮失败而不是静默出错数', async () => {
+  test('迁移 0041 未落地（trigger 缺席）→ 响亮失败而不是静默出错数', async () => {
     const ctx = createManagerCtx(input)
     mockAttributionTransaction({ staleRows: [{ stale: 1 }] })
 
     await expect(orderRoutes.updatePerformanceAttribution(ctx))
-      .rejects.toThrow(/INVALID_STATE.*迁移 0040/)
+      .rejects.toThrow(/INVALID_STATE.*迁移 0041/)
   })
 
   test('同日提交不消耗修改机会', async () => {

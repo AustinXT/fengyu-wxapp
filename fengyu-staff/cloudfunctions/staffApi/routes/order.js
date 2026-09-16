@@ -2617,7 +2617,7 @@ async function list(ctx) {
   // staff 侧不提供口径切换下拉（管理层视图口径单一）。
   // 订单粒度：订单只要存在任一笔归属日期落在区间内的**已入账**款项即入选（EXISTS 半连接）。
   // ⚠ 下面的 status='已支付' 是语义闸门，不是索引优化，删掉会改变结果集：
-  // 迁移 0039 起未入账行的 performance_attribution_date 由 created_at 占位（不再是 NULL），
+  // 迁移 0040 起未入账行的 performance_attribution_date 由 created_at 占位（不再是 NULL），
   // 首次支付行的列值又是订单级的镜像（与本行是否入账无关），两者都会让未入账款项把订单带进结果。
   // 归属日期是 date 而非 timestamptz，走 addDateRange 的闭区间（与 allocation.js 共用同一实现）。
   // 附带后果（与 admin 一致，非缺陷）：0 笔已入账款项的订单——WorkFine 历史单、纯待支付单、
@@ -2760,7 +2760,7 @@ async function updatePerformanceAttribution(ctx) {
     }
 
     // 款项行的同步由 DB trigger `sync_order_performance_attribution_to_payments()`
-    // （sale_orders 的 AFTER UPDATE，迁移 0040）完成，应用层不再各写一份 UPDATE：
+    // （sale_orders 的 AFTER UPDATE，迁移 0041）完成，应用层不再各写一份 UPDATE：
     // 查询侧已改为直读 sale_order_payments.performance_attribution_date，
     // 任何漏同步的写入路径都会直接出错数，同步动作必须由 DB 保证而不是靠每个入口记得写。
     // 这里只回读受影响的行用于审计日志。
@@ -2794,7 +2794,7 @@ async function updatePerformanceAttribution(ctx) {
     // 后续按 id 对账/去重的脚本两端行为不一致。
     const syncedPaymentIds = syncedRes.rows.map((row) => Number(row.id))
 
-    // 部署顺序闸门：本函数依赖迁移 0040 的 trigger 完成同步。若云函数先于迁移上线，
+    // 部署顺序闸门：本函数依赖迁移 0041 的 trigger 完成同步。若云函数先于迁移上线，
     // 上面的 UPDATE 只改了 sale_orders、款项行纹丝不动，而查询侧已直读款项列
     // —— 那是静默出错数。这里花一次廉价回读把它变成响亮失败并回滚整个事务。
     // 与 admin orders.ts updatePerformanceAttributionDate 同语义独立副本。
@@ -2807,7 +2807,7 @@ async function updatePerformanceAttribution(ctx) {
       [saleOrderId, updated.performance_attribution_date],
     )
     if (Number(staleRes.rows[0]?.stale || 0) > 0) {
-      throw new Error('INVALID_STATE: 业绩归属日期未能同步到款项流水，请确认数据库迁移 0040 已执行后重试')
+      throw new Error('INVALID_STATE: 业绩归属日期未能同步到款项流水，请确认数据库迁移 0041 已执行后重试')
     }
 
     await logUpdate(

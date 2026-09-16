@@ -938,7 +938,7 @@ function buildOrderConditions(
     // 默认口径：订单只要存在任一笔「业绩归属日期」落在区间内的**已入账**款项就入选
     // （与 payment 口径同为 EXISTS 半连接：命中的是订单，导出金额仍是订单累计快照）。
     // ⚠ 下面的 status 条件是语义闸门，不是索引优化，删掉会改变结果集：
-    // 迁移 0039 起未入账行的 performance_attribution_date 由 created_at 占位（不再是 NULL），
+    // 迁移 0040 起未入账行的 performance_attribution_date 由 created_at 占位（不再是 NULL），
     // 首次支付行的列值又是订单级的镜像（与本行是否入账无关），两者都会让未入账款项把订单带进结果。
     // 规范要求「按已入账的首次支付/回款/储值卡抵扣/退款判断订单是否入选」（admin.pr.spec.md §订单管理）。
     // 附带后果（非缺陷）：0 笔款项的 WorkFine 历史单在款项口径下不入选，要看它们须切「下单日期」。
@@ -1245,7 +1245,7 @@ export interface ExportPaymentRow {
   customerType: string | null
   openedByName: string | null
   saleOrderDatetime: string
-  /** 款项业绩归属日期：直读款项级列（迁移 0040 起由 trigger + CHECK 保证恒有值） */
+  /** 款项业绩归属日期：直读款项级列（迁移 0041 起由 trigger + CHECK 保证恒有值） */
   performanceAttributionDate: string | null
   /** 款项创建时间 */
   createdAt: string
@@ -1427,7 +1427,7 @@ export const exportOrderPayments = withPermission(
       ? [
           // 「无 paid_at 的未入账流水在这两种款项口径下都不命中」（admin.pr.spec.md §回款明细导出）。
           // payment 口径靠 paid_at 比较天然落选（NULL 比较恒为 NULL）；attribution 口径必须显式挡：
-          // 迁移 0039 起未入账行的 performance_attribution_date 由 created_at 占位，首次支付行的
+          // 迁移 0040 起未入账行的 performance_attribution_date 由 created_at 占位，首次支付行的
           // 列值又是订单级的镜像（与本行是否入账无关），两者都会让未入账流水错误命中。
           // 用 paid_at IS NOT NULL 而非 status='已支付'：前者才是规范的字面判据，且不会连带把
           // 「已作废但有 paid_at」的流水从 payment 口径里剔掉（那类流水应出现、金额留空，见 §金额留空规则）。
@@ -1636,7 +1636,7 @@ export const exportOrderPayments = withPermission(
         customerType: row.customerType ?? null,
         openedByName: row.openedByName ?? null,
         saleOrderDatetime: row.saleOrderDatetime.toISOString(),
-        // 款项粒度导出恒有款项行 → 直读款项级归属日期列（迁移 0040 起该列由 trigger 保证有值，
+        // 款项粒度导出恒有款项行 → 直读款项级归属日期列（迁移 0041 起该列由 trigger 保证有值，
         // 首次支付那一行本身就是订单级的镜像）。**不要**在这里补订单级兜底：
         // 那会让极端情况下列为空的行（约束上线前的残留）伪装成"有归属日期"，掩盖数据问题。
         performanceAttributionDate: payment.performanceAttributionDate ?? null,
@@ -2366,7 +2366,7 @@ export interface ExportAllocationOrderRow {
   customerType: string | null
   openedByName: string | null
   paidAt: string | null
-  /** 回款归属日期：直读款项级列（迁移 0040 收敛，与回款明细导出同源） */
+  /** 回款归属日期：直读款项级列（迁移 0041 收敛，与回款明细导出同源） */
   performanceAttributionDate: string | null
   remark: string | null
   /** 以下字段仅供异步导出 worker 按完整回款聚合，不映射到 Excel 列。 */
@@ -2591,7 +2591,7 @@ export const exportAllocationOrders = withPermission(
             openedByName: r.openedByName,
             paidAt: r.payPaidAt?.toISOString() ?? r.orderPaidAt?.toISOString() ?? null,
             // 旧的订单维度分配没有 sale_payment_id（payAttributionDate 为空）→ 只能用订单级。
-            // 0040 之后 payment 为空**严格等价于**"没有款项实体"：该列由 trigger 赋值 +
+            // 0041 之后 payment 为空**严格等价于**"没有款项实体"：该列由 trigger 赋值 +
             // chk_sop_attribution_date_present 兜底，"有款项行但列为空"已不可达，
             // 所以这里的订单级兜底不会掩盖数据异常（对照 exportOrderPayments 的留空策略）。
             performanceAttributionDate: resolvePaymentAttributionDate({
@@ -2749,7 +2749,7 @@ export const exportAllocationOrders = withPermission(
             openedByName: r.openedByName,
             paidAt: r.payPaidAt?.toISOString() ?? r.orderPaidAt?.toISOString() ?? null,
             // 旧的订单维度分配没有 sale_payment_id（payAttributionDate 为空）→ 只能用订单级。
-            // 0040 之后 payment 为空**严格等价于**"没有款项实体"：该列由 trigger 赋值 +
+            // 0041 之后 payment 为空**严格等价于**"没有款项实体"：该列由 trigger 赋值 +
             // chk_sop_attribution_date_present 兜底，"有款项行但列为空"已不可达，
             // 所以这里的订单级兜底不会掩盖数据异常（对照 exportOrderPayments 的留空策略）。
             performanceAttributionDate: resolvePaymentAttributionDate({
@@ -3066,7 +3066,7 @@ export const updatePerformanceAttributionDate = withPermission(
       }
 
       // 款项行的同步由 DB trigger `sync_order_performance_attribution_to_payments()`
-      // （sale_orders 的 AFTER UPDATE，迁移 0040）完成，应用层不再各写一份 UPDATE：
+      // （sale_orders 的 AFTER UPDATE，迁移 0041）完成，应用层不再各写一份 UPDATE：
       // 查询侧已改为直读 sale_order_payments.performance_attribution_date，
       // 任何漏同步的写入路径都会直接出错数，同步动作必须由 DB 保证而不是靠每个入口记得写。
       // 这里只回读受影响的行用于审计日志（staffApi order.js 的同语义副本改法一致）。
@@ -3097,7 +3097,7 @@ export const updatePerformanceAttributionDate = withPermission(
       const syncedPaymentIds = (syncedRes as unknown as Array<{ id: number | string }>)
         .map((row) => Number(row.id))
 
-      // 部署顺序闸门：本函数依赖迁移 0040 的 trigger 完成同步。若代码先于迁移上线，
+      // 部署顺序闸门：本函数依赖迁移 0041 的 trigger 完成同步。若代码先于迁移上线，
       // 上面的 UPDATE 只改了 sale_orders、款项行纹丝不动，而查询侧已直读款项列
       // —— 那是静默出错数。这里花一次廉价回读把它变成响亮失败并回滚整个事务。
       const attributionCheck = await tx.execute(sql`
@@ -3111,7 +3111,7 @@ export const updatePerformanceAttributionDate = withPermission(
       if (stale > 0) {
         throw new ApiError(
           'INVALID_STATE',
-          '业绩归属日期未能同步到款项流水，请确认数据库迁移 0040 已执行后重试',
+          '业绩归属日期未能同步到款项流水，请确认数据库迁移 0041 已执行后重试',
         )
       }
 
@@ -3275,7 +3275,7 @@ export const updatePaymentPerformanceAttributionDate = withPermission(
       if (locked.performance_attribution_adjusted_at) {
         throw new ApiError('CONFLICT', '该款项的业绩归属日期已经调整过，不能再次修改')
       }
-      // 迁移 0040 起该列由 trigger + chk_sop_attribution_date_present 保证恒有值，
+      // 迁移 0041 起该列由 trigger + chk_sop_attribution_date_present 保证恒有值，
       // 这里直读。不再兜底 original_paid_date：兜底会把"列为空"这种数据异常
       // 伪装成"当前归属日期 = 支付日"，让 CAS 误判成功。
       const currentDate = locked.performance_attribution_date

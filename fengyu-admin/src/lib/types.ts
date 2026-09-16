@@ -846,7 +846,7 @@ export interface SaleOrderPayment {
   createdAt: string
   paidAt: string | null
   /**
-   * 款项业绩归属日期 —— 全部款项都有值（迁移 0040 起查询侧直读该列，无回退分支）。
+   * 款项业绩归属日期 —— 全部款项都有值（迁移 0041 起查询侧直读该列，无回退分支）。
    * 首次支付行由 trigger 写成订单级的镜像；混合支付卡流水跟随同次主流水；其余按各自 paid_at。
    */
   performanceAttributionDate: string | null

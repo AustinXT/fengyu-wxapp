@@ -15,7 +15,7 @@
  * ★ 口径红线（consistency.sales.test.ts 字面量守护，禁止偏离）：
  *   - 组织层级业绩 = SUM(sale_order_performance_events.amount) ∩ status='已支付'
  *     ∩ change_type IN ('首次支付','回款','退款') ∩ sale_order_type IN ('销售单','转换单','充值单')
- *     ∩ performance_date（**一律直读款项归属日期，无回退分支**；#137 收敛 / 迁移 0040。
+ *     ∩ performance_date（**一律直读款项归属日期，无回退分支**；#137 收敛 / 迁移 0041。
  *     原「首次按订单归属日、后续流水按真实发生日」表述已失效）
  *   - 生美 = sale_item_performance_events 行级 SUM(amount) WHERE is_shengmei=TRUE
  *   - 实耗 = SUM(unit_real_price * session_used) ∩ service_orders.status='已完成' ∩ service_date；
@@ -64,7 +64,7 @@ export const getSalesBoard = withPermission(
 
     // ── 区间标量 runner（KPI 用，按区间复算以支持同比/环比）────────────────
 
-    /** 业绩：付款流水净现金流，一律按款项业绩归属日期（#137 收敛 / 迁移 0040）。 */
+    /** 业绩：付款流水净现金流，一律按款项业绩归属日期（#137 收敛 / 迁移 0041）。 */
     const runStoreRevenue = async (range: ResolvedRange) =>
       scalar(
         await db.execute(sql`
