@@ -31,7 +31,7 @@
  *   - 不读 cronTask/index.js（顶部 cloud.init() 不可 require），而是把其中的核心 SQL
  *     逐条复制到本脚本 `CRON_SQL` 常量中，并在每个场景调用。如果 cronTask SQL 变更，
  *     需要同步更新本脚本对应常量。
- *   - 不触碰 5434/5433 真实库；仅操作 DATABASE_URL 指定的临时库。
+ *   - 不触碰 dev/prod 真实业务库；仅操作 DATABASE_URL 指定的临时库。
  */
 
 'use strict'

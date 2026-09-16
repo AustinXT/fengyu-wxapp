@@ -8,8 +8,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/deploy-common.sh"
 
 usage() {
-  echo "Usage: $0 <dev|test|prod> [--check]" >&2
-  echo "       $0 --rollback <dev|test|prod>" >&2
+  echo "Usage: $0 <dev|prod> [--check]" >&2
+  echo "       $0 --rollback <dev|prod>" >&2
 }
 
 if [[ "${1:-}" == "--rollback" ]]; then

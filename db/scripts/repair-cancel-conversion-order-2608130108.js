@@ -16,6 +16,7 @@
  */
 
 const { Client } = require('pg')
+const { OVERRIDE_KEYS: DB_OVERRIDE_KEYS } = require('./_lib/assert-db-target')
 
 const BATCH_ID = 'repair-cancel-conversion-order-2608130108'
 const CONFIRM_TOKEN = `--confirm-prod=${BATCH_ID}`
@@ -191,6 +192,16 @@ async function loadState(client, lock = false) {
 
 async function assertProductionTarget(client, databaseUrl) {
   const url = new URL(databaseUrl)
+  // query 参数（含百分号编码形式）优先级高于 URL authority，只比 hostname/port/pathname
+  // 会被 `?host=<旧库>` 整个绕过 —— 而本脚本 --apply 直接写生产数据。
+  {
+    const overriding = DB_OVERRIDE_KEYS.filter((k) => url.searchParams.has(k))
+    if (overriding.length) {
+      console.error(`FATAL: 连接串 query 试图覆盖连接目标（${overriding.join(', ')}），拒绝执行`)
+      process.exit(1)
+    }
+  }
+
   assert(url.hostname === '118.178.196.26', `仅允许生产 host 118.178.196.26，实际 ${url.hostname}`)
   assert(url.port === '5433', `仅允许生产端口 5433，实际 ${url.port || '(默认)'}`)
   assert(url.pathname === '/fengyu_wxapp', `仅允许数据库 fengyu_wxapp，实际 ${url.pathname}`)

@@ -1,7 +1,7 @@
 {
   "_meta": {
     "purpose": "admin Chrome E2E 测试固定夹具，对应 fengyu-admin/tests/e2e-chains/README.md §0.5",
-    "db": "47.113.202.7:5433/fengyu_wxapp",
+    "db": "101.34.242.103:5433/fengyu_wxapp",
     "created_at": "2026-04-26",
     "last_extended_at": "2026-05-18 (link-25~31)",
     "FY_FIX_prefix": "所有 fixture 资源的 ID 前缀，便于 grep 清理",

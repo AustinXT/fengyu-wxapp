@@ -13,10 +13,10 @@
 --      —— 否则今晚 03:00 cronTask 重跑后还会把脏数据再写回来。
 --   2. db/scripts/update-customer-status.js 已同步更新（保持手工跑入口一致）。
 --
--- 执行方式（5433 + 5434 两个库各跑一次）：
---   psql 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp' \
+-- 执行方式（dev + prod 两个库各跑一次；两库均 5433/fengyu_wxapp，仅 IP 区分）：
+--   psql 'postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp' \
 --        -f db/scripts/fix-customer-status-non-member.sql
---   psql 'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu' \
+--   psql 'postgresql://fengyu:fengyu123@118.178.196.26:5433/fengyu_wxapp' \
 --        -f db/scripts/fix-customer-status-non-member.sql
 --
 -- 特性：
