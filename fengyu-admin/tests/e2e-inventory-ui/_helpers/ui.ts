@@ -266,6 +266,14 @@ export function lotQty(orgNodeId: string, skuId: string, batchNo: string): numbe
 }
 
 /** 指定主体 + SKU 的全部批次在手合计 */
+/**
+ * 指定 org 节点 + SKU 的全部批次在手数量之和。
+ *
+ * ⚠️ 这里按 `org_node_id` JOIN 求和，而引擎按 `location_id` 直查。两者相等的前提是
+ * **一个 org 节点恰好对应一个 `inventory_locations` 行** —— 由 `uq_inventory_locations_org`
+ * 唯一索引保证（db/schema/inventory.ts）。将来若出现一 org 多 location 的拓扑，
+ * 这里会静默变成口径漂移，届时要改成按 location 聚合。
+ */
 export function lotQtyAll(orgNodeId: string, skuId: string): number {
   return Number(psql(
     `SELECT COALESCE(SUM(l.quantity_on_hand),0)::text FROM inventory_stock_lots l

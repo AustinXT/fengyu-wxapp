@@ -171,6 +171,10 @@ test('INV-10：交互合理性扫描 → UX-FINDINGS.md', async ({ browser }) =>
     })
 
     // ══ F. 已在链路测试中确认的缺陷，一并汇入报告 ═══════════════════
+    // ⚠️ 下面这几条是 2026-09-13 首轮实测的**硬编码**结论，不随代码状态自动失效。
+    //    #129 / #130 / #134 的修复已合入 dev（但未必已部署到被扫描的实例），
+    //    它们的条目仍会照旧输出 —— 判读时以对应 issue 的状态为准，别当成新发现。
+    //    盘点账面数那条已改为转述 INV-06 的实测判定（见下），其余几条的同类改造留给各自的跟进。
     findings.push({
       rule: '批次下拉永久卡在加载中',
       severity: 'P0',
@@ -185,13 +189,79 @@ test('INV-10：交互合理性扫描 → UX-FINDINGS.md', async ({ browser }) =>
       detail: 'business.ts 有 5 处递归 CTE 写错别名引用：CTE 在 JOIN 时起了别名（JOIN descendants parent / JOIN ancestors ancestor），SELECT/WHERE 却仍用原名（descendants.path / ancestors.path），PostgreSQL 直接报 invalid reference to FROM-clause entry。后果：市场员工购与供应链员工购的员工下拉恒为空，功能完全不可用；即使绕过下拉，提交时的 employeeForMarket / employeeForSupplyChain 校验同样会炸',
       evidence: 'business.ts:1234 / 1263 / 1273 / 1329 / 1371；dev 库按正确 SQL 能查出 85 / 115 个候选',
     })
-    findings.push({
-      rule: '盘点单不记录账面数量',
-      severity: 'P1',
-      page: '/inventory/docs → 市场库存盘点 / 分院库存盘点',
-      detail: 'engine.ts:2777 的 stockSnapshot 只在选中批次时才写（lot ? ... : null），而盘点单不属于 SOURCE_LOT_DOC_TYPES、UI 不提供批次选择器，于是 stock_snapshot 恒为 NULL。盘点单既不动库存也不记账面数，退化成只有「数量」的白条，无法用于任何盈亏对账',
-      evidence: 'INV-06 实测 stock_snapshot = NULL',
-    })
+    // 盘点账面数（issue #131）：只看 **INV-06 本轮受控创建**的盘点单（单号经 ctx 传来）。
+    //   - 无条件登记   → 修好之后报告仍输出旧结论，本身就是假情报
+    //   - 扫全库历史   → dev 上有 8 张 #131 修复前建的单，stock_snapshot 本来就是 NULL；
+    //                    不论报 P1 还是 P2，都是把「甲方已接受的历史数据」当缺陷
+    //   - 只看最近一张 → 修复已部署但还没人建新单时误报；只看第一行还会漏掉第二行的回归
+    // 受控单据是唯一能证明「当前实现是否把账面数写进去」的样本。
+    // 盘点账面数（issue #131）：**转述 INV-06 自己的判定**，不在这里重新查库反推。
+    //
+    // 为什么不自己查：ctx 文件跨运行保留，回退后单跑 INV-10 会读到回退前建的非空单据
+    // 而漏报；扫全库历史又会把 dev 上 8 张修复前的 NULL 单当成缺陷。两条路都通不了 ——
+    // 「当前部署有没有生效」只有**跑过建单的那支 spec** 才知道。
+    // 时间戳只用来标明证据时效，不当「同一轮」的证明（这一点本报告不假装能证明）。
+    const inv06 = readCtx<{
+      snapshotPresent?: boolean | null
+      snapshotMatchesBook?: boolean | null
+      mpdId?: string
+      at?: string
+    }>('inv06')
+    // ⚠️ **两个方向都要判时效**，ctx 文件跨运行保留：
+    //    - 上一轮的「合格」+ 之后回退 → 单跑 INV-10 会零输出，回归漏报；
+    //    - 上一轮的「不合格」+ 之后修好 → 单跑 INV-10 会继续断言「当前未生效」，误报。
+    //    本报告**不假装能证明部署状态**（那需要同轮 run-id 或部署指纹），
+    //    只把「证据太旧、没复核过」如实摆出来。
+    const evidenceAge = inv06?.at ? Date.now() - Date.parse(inv06.at) : NaN
+    const evidenceStale = !Number.isFinite(evidenceAge) || evidenceAge < 0 || evidenceAge > 6 * 3600_000
+    const evidenceAt = inv06?.at ? `（证据来自 INV-06 ${inv06.at} 的运行）` : ''
+    const present = inv06?.snapshotPresent ?? null
+    const matches = inv06?.snapshotMatchesBook ?? null
+
+    if (present === false && !evidenceStale) {
+      // 真·没写：退化成白条。**优先于其它分支** —— 这条与并发无关，
+      // 即便口径判定因并发被降级成 null，也不该把已确认的「没写」说成「不知道」。
+      findings.push({
+        rule: '盘点单不记录账面数量',
+        severity: 'P1',
+        page: '/inventory/docs → 市场库存盘点 / 分院库存盘点',
+        detail: `INV-06 实测新建的盘点单没有写 stock_snapshot —— 盘点单既不动库存也不记账面数，退化成只有「数量」的白条，无法用于任何盈亏对账。issue #131 的修复是「无批次时按主体 + SKU 汇总在手量写入」，这条出现说明该实例上修复未生效${evidenceAt}`,
+        evidence: `INV-06 判定 snapshotPresent=false，受控单据 ${inv06?.mpdId ?? '(无单号)'}`,
+      })
+    } else if (present === null) {
+      findings.push({
+        rule: '盘点账面数量未覆盖（本轮未跑 INV-06 或判定未执行）',
+        severity: 'P2',
+        page: '/inventory/docs → 市场库存盘点 / 分院库存盘点',
+        detail: '没有 INV-06 的判定可转述（它没跑、或建单失败导致判定压根没执行），无法判定 stock_snapshot 是否落库。单跑 INV-10 时属正常 —— 注意这**不等于** #131 回归，别当成缺陷',
+        evidence: inv06?.at ? `ctx inv06 写于 ${inv06.at}，snapshotPresent=null` : 'ctx 无 inv06',
+      })
+    } else if (evidenceStale) {
+      findings.push({
+        rule: '盘点账面数量证据过期未复核',
+        severity: 'P2',
+        page: '/inventory/docs → 市场库存盘点 / 分院库存盘点',
+        detail: `上下文里有 INV-06 的判定（写入=${String(present)} / 口径=${String(matches)}），但那次运行距今已超过 6 小时（或时间戳异常）。这期间本实例可能已重新部署，该判定既不能证明当前实现正确、也不能证明它有问题 —— 请跑一遍 INV-06 再看`,
+        evidence: `ctx inv06 写于 ${inv06?.at ?? '(缺失)'}`,
+      })
+    } else if (matches === false) {
+      // 写了、但值不对 —— 与「没写」是两回事，报告不能说成「退化成白条」
+      findings.push({
+        rule: '盘点账面数量口径不符',
+        severity: 'P1',
+        page: '/inventory/docs → 市场库存盘点 / 分院库存盘点',
+        detail: `盘点单**写了** stock_snapshot，但数值不等于「该主体下该 SKU 全部批次在手量之和」（#131 Q0 在手量不扣预留 / Q1 按 SKU 汇总）。差异列会据此算出错误的盘盈盘亏${evidenceAt}`,
+        evidence: `INV-06 判定 snapshotPresent=true 但 snapshotMatchesBook=false，受控单据 ${inv06?.mpdId ?? '(无单号)'}`,
+      })
+    } else if (matches === null) {
+      findings.push({
+        rule: '盘点账面数量口径未复核（撞上并发）',
+        severity: 'P2',
+        page: '/inventory/docs → 市场库存盘点 / 分院库存盘点',
+        detail: '账面数已写入，但核对期间该 SKU 在手量被他人改动，INV-06 把口径判定降级了 —— 本轮无法判断数值是否正确。重跑 INV-06 即可',
+        evidence: `INV-06 判定 snapshotPresent=true，snapshotMatchesBook=null（并发降级）`,
+      })
+    }
     findings.push({
       rule: 'SKU 供货商与供应商档案无关联',
       severity: 'P1',
@@ -240,13 +310,16 @@ test('INV-10：交互合理性扫描 → UX-FINDINGS.md', async ({ browser }) =>
       '本报告由启发式规则自动生成，**每条都需人工复核定性**为「真问题 / 设计如此 / 误报」。',
       '规则只负责摆出可核对的事实（字段名、控件类型、页面路径、源码位置），不替人下结论。',
       '',
-      '其中 P0 两条与 P1 三条已在链路测试中实测复现，不是静态推测：',
+      '下列条目**若出现在上表中**，其证据来自链路测试实测复现，不是静态推测：',
       '',
       '- 批次下拉卡死 → `inv-05-transfers.spec.ts` / `inv-90-probe-lot-loading.spec.ts`',
       '- 员工下拉恒空 → `inv-07-staff-purchase-and-self-purchase.spec.ts`（并已在 dev 库直接执行原 SQL 复现报错）',
       '- 盘点不记账面数 → `inv-06-stocktake-and-loss.spec.ts`',
       '- 供货商无外键 → `inv-01-master-data.spec.ts`',
       '- 错误提示脱敏 → `inv-02-supply-chain-stock.spec.ts`',
+      '',
+      '（「盘点不记账面数」已改为实测再报：本轮没检出就不会出现在上表里，',
+      '这一行只说明**万一出现**时证据来自哪支 spec，不代表它已复现。）',
       '',
     ].join('\n')
     fs.writeFileSync(outPath, md)

@@ -80,20 +80,37 @@ test('INV-06：盘点不动库存 / 盘溢入库 / 报损受阻记录', async ({
         `${marketBefore} → ${marketAfter}`,
       )
       // 盘点的业务价值 = 记录「账面数量 vs 实盘数量」的差异。
-      // 但 engine.ts:2777 的 stockSnapshot 只在**选中批次**时才写入
-      // （`lot ? String(lot.quantityOnHand) : null`），而盘点单不属于
-      // SOURCE_LOT_DOC_TYPES、UI 压根不提供批次选择器 —— 于是 stock_snapshot 恒为 NULL。
-      // 结果：盘点单既不动库存、也不记账面数，退化成一张只有「数量」的白条，
-      // 无法用于任何对账。记为缺陷而非功能失败。
+      // 原实现的 stockSnapshot 只在**选中批次**时才写（`lot ? String(lot.quantityOnHand) : null`），
+      // 而盘点单不属于 SOURCE_LOT_DOC_TYPES、UI 不提供批次选择器 —— stock_snapshot 恒为 NULL，
+      // 盘点单退化成一张只有「数量」的白条。issue #131 已修：无批次时按「主体 + SKU」汇总在手量写入。
+      // 账面口径是**在手量、不扣预留**（#131 Q0）；按 SKU 汇总而非按批次（#131 Q1）。
       const snapshot = psql(
         `SELECT COALESCE(stock_snapshot::text,'NULL') FROM inventory_doc_items
-          WHERE doc_id = ${sqlStr(mpdId)} LIMIT 1`,
+          WHERE doc_id = ${sqlStr(mpdId)} ORDER BY id LIMIT 1`,
       )
       recordVerdict(
         verdicts,
-        'BUG-STOCKTAKE-SNAPSHOT: 盘点明细应记录账面数量 stock_snapshot（当前恒为 NULL）',
+        '盘点明细记录账面数量 stock_snapshot（#131）',
         snapshot !== 'NULL' && snapshot !== '',
         snapshot,
+      )
+      // 账面数必须等于该主体该 SKU 的全部批次在手量之和（按 SKU 汇总、不扣预留）。
+      //
+      // ⚠️ 时序：`marketBefore` 在建单**前**读（t0），引擎的账面 SUM 发生在建单事务内（t2），
+      //    中间隔着整个表单填写与提交。本套件跑在**共享 dev 实例**上，这几秒里若有人
+      //    对同一主体同一 SKU 入库一笔，两个值就会不等 —— 那是并发，不是回归。
+      //    所以对不上时先复读一次当前值：若当前值也变了，判定为「疑似并发」（带 UX- 前缀
+      //    走已知项、不让整支 spec 硬失败，也不把假 P1 经 ctx 传给 INV-10）。
+      const bookNow = lotQtyAll(TOPO.MARKET, inv01.supplySkuId)
+      const bookMatched = Number(snapshot) === marketBefore
+      const concurrentWrite = !bookMatched && bookNow !== marketBefore
+      recordVerdict(
+        verdicts,
+        concurrentWrite
+          ? 'UX-并发：账面数核对期间该 SKU 在手量被他人改动，本轮不判定'
+          : '账面数量 = 该主体下该 SKU 全部批次在手量之和（按 SKU 汇总，不扣预留）',
+        concurrentWrite ? false : bookMatched,
+        `stock_snapshot=${snapshot} vs 建单前 SUM=${marketBefore} / 当前 SUM=${bookNow}`,
       )
       recordVerdict(verdicts, 'doc: 盘点单建单即完成', docStatus(mpdId) === '已完成', docStatus(mpdId))
     }
@@ -126,6 +143,27 @@ test('INV-06：盘点不动库存 / 盘溢入库 / 报损受阻记录', async ({
         '★ 分院盘点后门店在手数量分毫未变',
         storeAfter === storeBefore,
         `${storeBefore} → ${storeAfter}`,
+      )
+      // 分院侧同样校验账面数 —— 否则「分院盘点写账面数」在真库上是空白
+      //（单测覆盖了，但 E2E 这一层只验了市场段）。并发处理同市场段。
+      const ypdSnapshot = psql(
+        `SELECT COALESCE(stock_snapshot::text,'NULL') FROM inventory_doc_items
+          WHERE doc_id = ${sqlStr(ypdId)} ORDER BY id LIMIT 1`,
+      )
+      recordVerdict(
+        verdicts,
+        '分院盘点明细记录账面数量 stock_snapshot（#131）',
+        ypdSnapshot !== 'NULL' && ypdSnapshot !== '',
+        ypdSnapshot,
+      )
+      const storeConcurrent = Number(ypdSnapshot) !== storeBefore && storeAfter !== storeBefore
+      recordVerdict(
+        verdicts,
+        storeConcurrent
+          ? 'UX-并发：分院账面数核对期间该 SKU 在手量被他人改动，本轮不判定'
+          : '分院账面数量 = 该门店下该 SKU 全部批次在手量之和',
+        storeConcurrent ? false : Number(ypdSnapshot) === storeBefore,
+        `stock_snapshot=${ypdSnapshot} vs 建单前 SUM=${storeBefore} / 当前 SUM=${storeAfter}`,
       )
     }
 
@@ -176,7 +214,42 @@ test('INV-06：盘点不动库存 / 盘溢入库 / 报损受阻记录', async ({
       )
     }
 
-    writeCtx('inv06', { mpdId, ypdId, mpyId })
+    // 把**本 spec 自己的判定**交给 INV-10 转述，而不是让 INV-10 再查一遍库去
+    // 反推「当前部署有没有生效」——它反推不了：ctx 文件跨运行保留，回退后单跑 INV-10
+    // 会读到回退前建的非空单据，从而漏报（反向假绿）。
+    // `at` 只用于让报告标明证据的时效，不当作「同一轮」的证明。
+    // ⚠️ 必须**两条都 PASS**：只看「非 NULL」的话，把 stock_snapshot 写死成 1 也算通过，
+    //    INV-10 就会漏报（INV-06 自己会红，但生成的 UX-FINDINGS.md 是错的）。
+    //    第二条「账面数量 = 该主体该 SKU 全部批次在手量之和」才是口径守护。
+    // 交给 INV-10 转述的两个事实，**各自独立**（`null` = 该判定没执行过）：
+    //   - snapshotPresent     账面数非 NULL —— 与并发**无关**
+    //   - snapshotMatchesBook 账面数等于该主体该 SKU 的在手量之和 —— 撞上并发会被降级成 null
+    // ⚠️ 别把两者揉成一个「都执行了吗」的布尔：回退修复（写 NULL）又恰好撞上并发时，
+    //    matches 变 null 会把**已经确认的「没写」**一起降级成「不知道」，报告就误导人了。
+    // ⚠️ 也别揉成一个「合格吗」的布尔：写了但值不对（比如写死成 1）时，
+    //    INV-10 会说成「没有写、退化成白条」—— 事实错误。
+    // ⚠️ 市场段与分院段**都要算进去**：只汇总市场段的话，「市场盘点写对了、
+    //    分院盘点仍写 NULL」这种回归会让 ctx 全是 true，INV-10 一条 finding 都不出。
+    const verdictOf = (...prefixes: string[]): boolean | null => {
+      const hits = prefixes.map((prefix) => verdicts.find((v) => v.check.startsWith(prefix)))
+      if (hits.every((h) => h === undefined)) return null       // 都没执行 → 不知道
+      if (hits.some((h) => h && h.verdict === 'FAIL')) return false  // 任一失败 → 失败
+      return hits.some((h) => h === undefined) ? null : true    // 有的没执行 → 不知道
+    }
+    writeCtx('inv06', {
+      mpdId,
+      ypdId,
+      mpyId,
+      snapshotPresent: verdictOf(
+        '盘点明细记录账面数量 stock_snapshot',
+        '分院盘点明细记录账面数量 stock_snapshot',
+      ),
+      snapshotMatchesBook: verdictOf(
+        '账面数量 = 该主体下该 SKU 全部批次在手量之和',
+        '分院账面数量 = 该门店下该 SKU 全部批次在手量之和',
+      ),
+      at: new Date().toISOString(),
+    })
   } finally {
     await ctx.close()
     summarize(6, verdicts)

@@ -584,6 +584,195 @@ describe('inventory.createDoc 权限与状态', () => {
     )
     expect(pg.transaction).not.toHaveBeenCalled()
   })
+
+  // ── 盘点账面数量（issue #131）──────────────────────────────────────────
+  // staff 端的 STAFF_CREATE_DOC_TYPES 含「分院库存盘点」，原实现的 stock_snapshot 参数
+  // 写死 `lot ? lot.quantityOnHand : null` —— 盘点无批次选择器 ⇒ 恒 NULL，
+  // 与 admin 端分叉（同一种单据，admin 建的有账面数、staff 建的没有）。
+
+  /** 建一张 staff 侧分院盘点单，返回事务 client 以便断言发出的 SQL。 */
+  function mockStoreStocktake({ bookRows, items }) {
+    const ctx = createCtx({
+      payload: {
+        docType: '分院库存盘点',
+        sourceOrgNodeId: 'store-A',
+        items,
+      },
+      auth: {
+        storeId: 'store-A',
+        effectiveStoreId: 'store-A',
+        scopeStoreIds: ['store-A'],
+        roleBindings: [{ role: 'manager', scopeId: 'node-store-A', scopeType: '门店' }],
+      },
+    })
+    pg.query.mockImplementation(async (query, params) => {
+      const sql = String(query)
+      if (sql.includes('WITH RECURSIVE descendants')) return [{ store_id: 'store-A' }]
+      if (sql.includes('FROM inventory_locations') && sql.includes('WHERE location_id = $1')) {
+        return [{
+          location_id: params[0], location_type: '门店', parent_location_id: 'market-A', is_active: true,
+        }]
+      }
+      return []
+    })
+    let client
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      client = {
+        query: vi.fn(async (sql, params = []) => {
+          const text = String(sql)
+          const cutover = cutoverQueryResult(text)
+          if (cutover) return cutover
+          if (text.includes('COALESCE(SUM(quantity_on_hand), 0)')) {
+            return { rows: bookRows, rowCount: bookRows.length, _params: params }
+          }
+          if (text.includes('FROM inventory_skus')) {
+            return {
+              rows: [{
+                sku_id: params[0], product_name: '测试商品',
+                spec_name: null, supplier: null, product_series: null,
+              }],
+              rowCount: 1,
+            }
+          }
+          if (text.includes('INSERT INTO inventory_doc_items')) {
+            return { rows: [{ id: 101 }], rowCount: 1 }
+          }
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      return cb(client)
+    })
+    return { ctx, getClient: () => client }
+  }
+
+  test('分院库存盘点把主体 + SKU 的在手量写进 stock_snapshot（与 admin 同口径）', async () => {
+    const { ctx, getClient } = mockStoreStocktake({
+      bookRows: [{ sku_id: 'sku-1', quantity: '12' }],
+      items: [{ skuId: 'sku-1', quantity: 9 }],
+    })
+
+    await inventoryRoutes.createDoc(ctx)
+
+    const client = getClient()
+    const bookCall = client.query.mock.calls.find(([sql]) => (
+      String(sql).includes('COALESCE(SUM(quantity_on_hand), 0)')
+    ))
+    expect(bookCall, '没有发出账面数查询').toBeTruthy()
+    // ── 账面数查询的**口径快照**（与 admin 侧 engine.test.ts 同款）───────────────
+    // 只断片段（含 GROUP BY / 不含 reserv）挡不住「多加一个过滤条件」：
+    // 比如补一句 `AND (expiry_date IS NULL OR expiry_date >= CURRENT_DATE)`，
+    // 账面数就会漏掉已过期但仍在手的批次、比实际偏小，而那些片段断言全都照样绿。
+    // 口径是甲方拍板的（#131 Q0 在手量不扣预留 / Q1 按主体 + SKU 汇总**全部批次**），
+    // 改这条 SQL 就该是有意的 —— 改了来更新快照，顺便重新想一遍口径。
+    expect(String(bookCall[0]).replace(/\s+/g, ' ').trim()).toBe(
+      'SELECT sku_id, COALESCE(SUM(quantity_on_hand), 0) AS quantity'
+      + ' FROM inventory_stock_lots'
+      + ' WHERE location_id = $1 AND sku_id = ANY($2::text[])'
+      + ' GROUP BY sku_id',
+    )
+    expect(bookCall[1]).toEqual(['store-A', ['sku-1']])
+
+    const itemCall = client.query.mock.calls.find(([sql]) => (
+      String(sql).includes('INSERT INTO inventory_doc_items')
+    ))
+    // 位置下标对应 INSERT 列表：doc_id(0) lot_id(1) sku_id(2) sale_item_id(3) sku_name(4)
+    // spec_name(5) supplier(6) product_series(7) batch_no(8) expiry_date(9) is_gift(10)
+    // **quantity(11) stock_snapshot(12)** …（加删列会让这里误红，不会假绿）
+    expect(itemCall[1][1]).toBeNull()       // lot_id：盘点无批次
+    expect(itemCall[1][11]).toBe(9)         // quantity：实盘
+    expect(itemCall[1][12]).toBe(12)        // stock_snapshot：账面
+  })
+
+  test('该 SKU 一个批次都没有时账面数落 0，不是 NULL', async () => {
+    // GROUP BY 查不到就不出行。落 NULL 的话前端会显示「—」（当成历史单没记账面），
+    // 而不是「账上 0、实盘 5 = 盘盈 5」。
+    const { ctx, getClient } = mockStoreStocktake({
+      bookRows: [],
+      items: [{ skuId: 'sku-1', quantity: 5 }],
+    })
+
+    await inventoryRoutes.createDoc(ctx)
+
+    const itemCall = getClient().query.mock.calls.find(([sql]) => (
+      String(sql).includes('INSERT INTO inventory_doc_items')
+    ))
+    expect(itemCall[1][12]).toBe(0)
+  })
+
+  test('盘点单不产生库存流水，也不直接改在手量', async () => {
+    const { ctx, getClient } = mockStoreStocktake({
+      bookRows: [{ sku_id: 'sku-1', quantity: '12' }],
+      items: [{ skuId: 'sku-1', quantity: 9 }],
+    })
+
+    await inventoryRoutes.createDoc(ctx)
+
+    // 验收标准是「不产生任何 inventory_movements **且**不改变 quantity_on_hand」，
+    // 改在手量有两条路：写流水让触发器联动、或直接 UPDATE 批次表。后者当前代码里没有，
+    // 但「盘点自动校准」这类需求最可能就从那里来，且它不写流水 —— 只断第一条看不见。
+    //
+    // ⚠️ 按表名 + 归一大小写/引号来判，别退回 `includes('INSERT INTO inventory_movements')`：
+    //    `insert into …`（小写）、`INSERT INTO "inventory_movements"`（带引号）都匹配不上。
+    // ⚠️ 事务连接与**全局** pg.query 都要扫：绕过事务直接 `pg.query(UPDATE ...)`
+    //    照样真改库存，只看 client.query 完全看不见。
+    const sqls = [
+      ...getClient().query.mock.calls.map(([sql]) => String(sql)),
+      ...pg.query.mock.calls.map(([sql]) => String(sql)),
+    ]
+    // `\\w+\\.` 放行 schema 限定名（`INSERT INTO public.inventory_movements`），
+    // 不放行的话这一整类写法静默漏检。
+    const writesTable = (text, table) => new RegExp(
+      `(insert\\s+into|update(\\s+only)?|delete\\s+from|merge\\s+into)\\s+(\\w+\\.)?${table}\\b`,
+    ).test(
+      text.toLowerCase()
+        .replace(/\/\*[\s\S]*?\*\//g, ' ')   // 块注释：`UPDATE /* x */ tbl` 是合法 SQL
+        .replace(/--[^\n]*/g, ' ')
+        .replace(/["`]/g, ''),
+    )
+    for (const table of ['inventory_movements', 'inventory_stock_lots']) {
+      expect(sqls.some((s) => writesTable(s, table)), `盘点写了 ${table}`).toBe(false)
+    }
+    // 账面数**不扣预留**（#131 Q0）：整个建单过程连预留表都不该碰。
+    // 只断主查询里没有 reserv 不够 —— 另发一条查预留的 SELECT 再在 JS 里减掉，主查询一字不变。
+    expect(
+      sqls.some((s) => /inventory_stock_reservations/i.test(s)),
+      '盘点期间查了预留表 —— 账面数不该扣预留',
+    ).toBe(false)
+  })
+
+  test('多行盘点只发一次账面数查询（不逐行查）', async () => {
+    // 逐行往返会拉长事务持有时间，且各行账面数取自不同语句快照。
+    //（注意 staff 的 cutover 锁是 FOR KEY SHARE、不串行；admin 那边才是 FOR UPDATE。）
+    const { ctx, getClient } = mockStoreStocktake({
+      bookRows: [{ sku_id: 'sku-1', quantity: '12' }, { sku_id: 'sku-2', quantity: '4' }],
+      items: [{ skuId: 'sku-1', quantity: 9 }, { skuId: 'sku-2', quantity: 4 }],
+    })
+
+    await inventoryRoutes.createDoc(ctx)
+
+    const client = getClient()
+    const bookCalls = client.query.mock.calls.filter(([sql]) => (
+      String(sql).includes('COALESCE(SUM(quantity_on_hand), 0)')
+    ))
+    expect(bookCalls).toHaveLength(1)
+    expect(bookCalls[0][1][1]).toEqual(['sku-1', 'sku-2'])
+    const itemCalls = client.query.mock.calls.filter(([sql]) => (
+      String(sql).includes('INSERT INTO inventory_doc_items')
+    ))
+    expect(itemCalls.map(([, params]) => params[12])).toEqual([12, 4])
+  })
+
+  test('同一 SKU 在一张盘点单里只能出现一次，且拦在开事务前', async () => {
+    const { ctx } = mockStoreStocktake({
+      bookRows: [{ sku_id: 'sku-1', quantity: '12' }],
+      items: [{ skuId: 'sku-1', quantity: 9 }, { skuId: 'sku-1', quantity: 3 }],
+    })
+
+    await expect(inventoryRoutes.createDoc(ctx)).rejects.toThrow(
+      'INVALID_PARAMS: 同一 SKU 请合并为一条盘点明细',
+    )
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
 })
 
 describe('inventory WorkFine 切流门禁', () => {

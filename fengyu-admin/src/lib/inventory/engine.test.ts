@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { PgDialect } from 'drizzle-orm/pg-core'
 
 const { mockDb, mockGetSession } = vi.hoisted(() => ({
   mockDb: {
@@ -8,6 +9,7 @@ const { mockDb, mockGetSession } = vi.hoisted(() => ({
     insert: vi.fn(),
     select: vi.fn(),
     update: vi.fn(),
+    delete: vi.fn(),
     transaction: vi.fn(),
   },
   mockGetSession: vi.fn(),
@@ -2205,5 +2207,467 @@ describe('§9.3 混合绑定行级价格档位（跨绑定借权回归）', () =
     expect(reservedSql).toContain('inventory_stock_reservations')
     expect(reservedSql).toContain("reservation.status = '已预留'")
     expect(reservedSql).toContain('reservation.quantity - reservation.fulfilled_quantity - reservation.released_quantity')
+  })
+})
+
+// ── 盘点单账面数量（#131）────────────────────────────────────────────────
+// 盘点单没有批次选择器，`lot` 恒为 null，原实现 `stockSnapshot: lot ? … : null` 让
+// `stock_snapshot` 恒 NULL —— 盘点单退化成一张只有「实盘数」的白条，无法用于任何盈亏对账。
+// 口径（甲方 2026-09-16 拍板）：账面数按**主体 + SKU 汇总**、取**在手量不扣预留**。
+
+/**
+ * 按 SQL 文本路由的 tx.execute —— 比「按调用顺序排 mockResolvedValueOnce」抗漂移：
+ * 中间多一条无关查询不会让整串错位。返回值之外还把渲染后的 SQL 收集起来供断言。
+ */
+function routingTxExecute(routes: Array<[string, unknown]>) {
+  const calls: string[] = []
+  const fn = vi.fn(async (query: unknown) => {
+    const rendered = renderSql(query)
+    calls.push(rendered)
+    for (const [fragment, rows] of routes) {
+      if (rendered.includes(fragment)) return rows
+    }
+    return []
+  })
+  return { fn, calls }
+}
+
+describe('盘点单账面数量（#131）', () => {
+  /**
+   * `db.select().from(表)` 也是一条读通道 —— 在事务回调里读 `inventory_stock_reservations`
+   * 再在 JS 里扣掉预留，主查询 SQL 一字不变、`executedSql` 也看不见（它不走 execute）。
+   * 这里把 `.from()` 的表参数记下来，并入下面的「不该碰预留表」断言。
+   */
+  const selectedTables: unknown[] = []
+  const recordingSelect = (rows: unknown[]) => ({
+    from: (table: unknown) => {
+      selectedTables.push(tableName(table))
+      return { where: () => ({ limit: async () => rows }) }
+    },
+  })
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(isAdminScope).mockReturnValue(true)
+    mockGetSession.mockResolvedValue(SESSION)
+    mockDb.execute.mockResolvedValue([])
+    mockDb.select.mockReset()
+    // locationId 刻意与 orgNodeId 取不同的值：账面数查询必须按**库存主体**过滤，
+    // 传成 orgNodeId 的话断言要能看出来（ensureOrgNodeLocation 有 `locationId ?? orgNodeId` 兜底）
+    selectedTables.length = 0
+    mockDb.select.mockImplementation(() =>
+      recordingSelect([{ locationId: 'LOC-MARKET-1', locationType: '市场' }]))
+    mockDb.transaction.mockReset()
+    // 非事务 query builder 也配好返回链：否则「误用 db.update(...) 改库存」那类回归
+    // 会因 `undefined.set` 抛 TypeError 而变红 —— 那是**偶发红**，不是设计的守护。
+    // 配好之后，红的必须是 writtenTables 那条断言本身。
+    mockDb.insert.mockReturnValue({ values: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 1 }]) })) })
+    mockDb.update.mockReturnValue({ set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })) })
+    mockDb.delete.mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+  })
+
+  const SKU_SNAPSHOT_ROW = {
+    sku_id: 'SKU-1',
+    product_name: '测试 SKU',
+    spec_name: null,
+    supplier: null,
+    product_series: null,
+    source_type: '供应链',
+    owner_market_id: null,
+  }
+
+  /**
+   * 盘点建单场景。`bookBySku` 是「账面数查询要返回哪些行」——注意查询是一次
+   * `GROUP BY sku_id`，所以返回的是**行数组**，没查到的 SKU 天然不在结果里。
+   */
+  function setupStocktake(bookBySku: Record<string, string>) {
+    const { fn: txExecute, calls } = routingTxExecute([
+      [
+        'SUM(quantity_on_hand)',
+        Object.entries(bookBySku).map(([sku_id, quantity]) => ({ sku_id, quantity })),
+      ],
+      ['FROM inventory_skus', [SKU_SNAPSHOT_ROW]],
+    ])
+    const headerValues = vi.fn().mockResolvedValue(undefined)
+    const itemValues = vi.fn((_values: Record<string, unknown>) => ({
+      returning: vi.fn().mockResolvedValue([{ id: 1 }]),
+    }))
+    // 记录 table 入参：用表名断言比按 SQL 字面量匹配抗漂移（带引号/大小写/表对象插值都能认）
+    let insertCall = 0
+    const txInsert = vi.fn((_table: unknown) => (
+      insertCall++ === 0 ? { values: headerValues } : { values: itemValues }
+    ))
+    const txUpdate = vi.fn((_table: unknown) => ({ set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })) }))
+    // ⚠️ delete / select 也要**配好返回链**并记账：不配的话这两条通道的回归是靠
+    //    `undefined.where` 抛 TypeError 变红的「偶发红」，谁顺手照 update 的样子把 mock
+    //    补上（本仓 `engine.ts` 里 `.delete()` 是真实写入形态），回归立刻静默漏检。
+    const txDelete = vi.fn((_table: unknown) => ({ where: vi.fn().mockResolvedValue(undefined) }))
+    const txSelect = vi.fn(() => recordingSelect([]))
+    mockDb.transaction.mockImplementation(async (callback: (tx: unknown) => unknown) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+      insert: txInsert,
+      update: txUpdate,
+      delete: txDelete,
+      select: txSelect,
+    }))
+    return { calls, headerValues, itemValues, txExecute, txUpdate, txInsert, txDelete }
+  }
+
+  /** 取账面数查询的原始 query 对象（要看绑定参数只能深走对象图，见下方注释）。 */
+  function bookQuery(txExecute: { mock: { calls: unknown[][] } }): unknown {
+    return txExecute.mock.calls
+      .map((args) => args[0])
+      .find((query) => renderSql(query).includes('SUM(quantity_on_hand)'))
+  }
+
+  /**
+   * 用 drizzle **自己的编译器**把 query 编成真正发给 PG 的 `{ sql, params }`。
+   *
+   * 为什么不手写遍历 `queryChunks`：试过三版，每版都被评审找出漏洞 ——
+   * 裸数组 chunk / `sql.param(arr)` 的数组型 Param / `db.select().as()` 子查询里
+   * 藏在 `getSQL()` 的 SQL，载体各不相同；而「什么都遍历」那版又会在读
+   * query-builder 代理的任意属性时抛错，把**正确实现判红**。
+   * 编译器是唯一权威：它输出什么，PG 就收到什么，所有形态自然都覆盖到。
+   *
+   * 本次要守的两件事，编译后都是一眼可判的：
+   *   - SKU 列表必须逐个参数化成 `IN ($1, $2)`。
+   *     `IN (${arr})` → `IN (($1, $2))`（PG 当 record 解析，报错）；
+   *     `ANY(${arr}::text[])` → `ANY(($1, $2)::text[])`（同样报错）；
+   *     `ANY(${sql.param(arr)}::text[])` → `ANY($1::text[])` 且 **params 里是数组**
+   *     → postgres.js 串成 `SKU-1,SKU-2` → `22P02 malformed array literal`。
+   *     三种本 issue 都实机踩过或实测复现过。
+   *   - 账面数**不扣预留**（#131 Q0）：编译后的 SQL 文本里不该出现 reservation，
+   *     无论它是内联 CTE、嵌套 `sql` 对象还是子查询。
+   */
+  function compileSql(query: unknown): { text: string; params: unknown[] } {
+    const compiled = new PgDialect().sqlToQuery(query as Parameters<PgDialect['sqlToQuery']>[0])
+    return { text: compiled.sql, params: compiled.params }
+  }
+
+  /**
+   * 这条 SQL 是否**写**了某张表（INSERT / UPDATE / DELETE）。
+   *
+   * ⚠️ 别退回 `calls.some(c => c.includes('INSERT INTO inventory_movements'))` 那种字面匹配：
+   *   - `INSERT INTO "inventory_movements"`（带引号）、`insert into …`（小写）都匹配不上；
+   *   - `sql\`UPDATE ${inventoryStockLots} …\`` 经顶层 renderSql 会渲成 `UPDATE [object Object]`。
+   * 这里统一走**编译产物**（表对象会被解析成真实表名）+ 归一大小写与引号。
+   */
+  function writesTable(sqlText: string, table: string): boolean {
+    const normalized = sqlText
+      .toLowerCase()
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')   // 块注释：`UPDATE /* 盘点自动校准 */ tbl` 是合法 SQL
+      .replace(/--[^\n]*/g, ' ')            // 行注释
+      .replace(/["`]/g, '')
+    // `\\w+\\.` 是 schema 限定名：`INSERT INTO public.inventory_movements` /
+    // drizzle 编译出的 `"public"."inventory_movements"` 去引号后都是这个形态，
+    // 不放行的话这一整类写法静默漏检。
+    return new RegExp(`(insert\\s+into|update(\\s+only)?|delete\\s+from|merge\\s+into|truncate(\\s+table)?)\\s+(\\w+\\.)?${table}\\b`).test(normalized)
+  }
+
+  /** 事务里所有 tx.execute 的**编译后**文本 */
+  function executedSql(txExecute: { mock: { calls: unknown[][] } }): string[] {
+    return txExecute.mock.calls.map((args) => {
+      try { return compileSql(args[0]).text } catch { return String(args[0]) }
+    })
+  }
+
+  /**
+   * drizzle 表对象 → 真实表名。
+   *
+   * ⚠️ `alias(tbl, 'x')` 之后 `drizzle:Name` 变成别名 `x`，原表名只在 `drizzle:OriginalName`。
+   * 只读前者的话，`db.select().from(alias(inventoryStockReservations,'r'))` 就记不到真实表名。
+   */
+  function tableName(table: unknown): unknown {
+    const t = table as Record<symbol, unknown> | null | undefined
+    return t?.[Symbol.for('drizzle:OriginalName')] ?? t?.[Symbol.for('drizzle:Name')]
+  }
+
+  it('市场库存盘点把主体 + SKU 的在手量写进 stock_snapshot', async () => {
+    const { itemValues, txExecute } = setupStocktake({ 'SKU-1': '12' })
+
+    await createInventoryCoreDoc({
+      docType: '市场库存盘点',
+      sourceOrgNodeId: 'MARKET-1',
+      items: [{ skuId: 'SKU-1', quantity: 9 }],
+    } as never)
+
+    expect(itemValues).toHaveBeenCalledWith(expect.objectContaining({
+      // 账面 12、实盘 9 —— 差异由前端算，不落库
+      stockSnapshot: '12',
+      quantity: '9',
+      lotId: null,
+    }))
+    // 账面数必须按「这个主体 + 这些 SKU」聚合。
+    // ⚠️ 不能只断模板文本含 'location_id' / 'sku_id'：绑定参数不在模板文本里，
+    //    把 actingLocationId 误传成别的主体、或传成上一行的 skuId，那种断言照样绿。
+    //    这里直接断**编译后真正发给 PG 的参数**。
+    const { text, params } = compileSql(bookQuery(txExecute))
+    expect(text).toContain('GROUP BY sku_id')
+    expect(params, '账面数查询的主体或 SKU 传错了').toEqual(['LOC-MARKET-1', 'SKU-1'])
+  })
+
+  it('分院库存盘点同样写账面数', async () => {
+    mockDb.select.mockImplementation(() =>
+      recordingSelect([{ locationId: 'LOC-STORE-1', locationType: '门店' }]))
+    const { itemValues } = setupStocktake({ 'SKU-1': '3' })
+
+    await createInventoryCoreDoc({
+      docType: '分院库存盘点',
+      sourceOrgNodeId: 'STORE-1',
+      items: [{ skuId: 'SKU-1', quantity: 3 }],
+    } as never)
+
+    expect(itemValues).toHaveBeenCalledWith(expect.objectContaining({ stockSnapshot: '3' }))
+  })
+
+  it('该 SKU 在该主体一个批次都没有时账面数是 0，不是 NULL', async () => {
+    // GROUP BY 查不到该 SKU 就不出行。落 0 表示「账上就是 0」；若退化成 NULL，
+    // 前端差异列会显示「—」（当成历史单没记账面），而不是「账上 0、实盘 5 = 盘盈 5」。
+    const { itemValues } = setupStocktake({})
+
+    await createInventoryCoreDoc({
+      docType: '市场库存盘点',
+      sourceOrgNodeId: 'MARKET-1',
+      items: [{ skuId: 'SKU-1', quantity: 5 }],
+    } as never)
+
+    expect(itemValues).toHaveBeenCalledWith(expect.objectContaining({ stockSnapshot: '0' }))
+  })
+
+  it('numeric 的小数与末尾零归一后落库', async () => {
+    // pg 的 numeric 经 postgres.js 回来是 string（'7.50'）。经 Number → numString
+    // 归一成 '7.5' 再落 numeric(12,2)。这条钉的是**小数不被截断、末尾零被归一**，
+    // 不宣称守护类型转换本身 —— numString 自己就是 String(Number(v))，
+    // 把上游的 Number() 删掉这条照样绿，不该假装它守得住。
+    const { itemValues } = setupStocktake({ 'SKU-1': '7.50' })
+
+    await createInventoryCoreDoc({
+      docType: '市场库存盘点',
+      sourceOrgNodeId: 'MARKET-1',
+      items: [{ skuId: 'SKU-1', quantity: 7 }],
+    } as never)
+
+    expect(itemValues).toHaveBeenCalledWith(expect.objectContaining({ stockSnapshot: '7.5' }))
+  })
+
+  it('非盘点单不受影响：入库类仍写批次在手量，且不跑账面数聚合', async () => {
+    // ⚠️ 经核实，通用建单的 10 种类型里**只有两种盘点单会走「无批次」分支**，
+    //    所以「非盘点单 + 无批次 → stock_snapshot 为 null」这个场景根本不可达。
+    //    真正该守的是：入库类走 ensureLotFromSku，快照取**批次**在手量，且不跑盘点聚合。
+    const { fn: txExecute, calls } = routingTxExecute([
+      ['INSERT INTO inventory_stock_lots', [{ id: 7 }]],
+      ['FOR UPDATE', [{ ...lotRow('99'), id: 7 }]],
+      ['FROM inventory_skus', [SKU_SNAPSHOT_ROW]],
+    ])
+    const itemValues = vi.fn((_values: Record<string, unknown>) => ({
+      returning: vi.fn().mockResolvedValue([{ id: 1 }]),
+    }))
+    const txInsert = vi.fn()
+      .mockReturnValueOnce({ values: vi.fn().mockResolvedValue(undefined) })
+      .mockReturnValue({ values: itemValues })
+    mockDb.transaction.mockImplementation(async (callback: (tx: unknown) => unknown) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+      insert: txInsert,
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })) })),
+    }))
+
+    await createInventoryCoreDoc({
+      docType: '市场产品盘溢',
+      targetOrgNodeId: 'MARKET-1',
+      items: [{ skuId: 'SKU-1', quantity: 1 }],
+    } as never)
+
+    // 无条件断言（原版用 .catch 吞异常 + if 包住断言，标题主张一个字都没断到）
+    expect(itemValues).toHaveBeenCalledWith(expect.objectContaining({
+      stockSnapshot: '99',
+      lotId: 7,
+    }))
+    expect(calls.some((c) => c.includes('SUM(quantity_on_hand)'))).toBe(false)
+  })
+
+  // ⚠️ 两种盘点类型都要跑：只测市场的话，「只在分院分支里新增 INSERT INTO inventory_movements」
+  //    这种回归在 admin 侧完全没有守卫（分院用例只断了 stockSnapshot 的值）。
+  it.each([
+    ['市场库存盘点', 'MARKET-1', 'LOC-MARKET-1', '市场'],
+    ['分院库存盘点', 'STORE-1', 'LOC-STORE-1', '门店'],
+  ])('%s 不产生库存流水，也不直接改在手量', async (docType, orgNodeId, locationId, locationType) => {
+    mockDb.select.mockImplementation(() => recordingSelect([{ locationId, locationType }]))
+    const { txExecute, txUpdate, txInsert, txDelete } = setupStocktake({ 'SKU-1': '12' })
+
+    await createInventoryCoreDoc({
+      docType,
+      sourceOrgNodeId: orgNodeId,
+      items: [{ skuId: 'SKU-1', quantity: 9 }],
+    } as never)
+
+    // 验收标准原文是「不产生任何 inventory_movements **且**不改变 quantity_on_hand」。
+    // 两条都要守，因为改在手量有**两条**路径：
+    //   1. 写流水 → migration 0009 的触发器联动更新 quantity_on_hand（当前唯一路径）
+    //   2. 直接写 inventory_stock_lots（当前代码里没有，但「盘点自动校准」这类需求
+    //      最可能就从这里来，且它不写流水 —— 只断第 1 条会完全看不见）
+    // 所有写入通道合并成**一个表集合**再判。
+    // ⚠️ 别按通道分别断「tx.insert 的调用序列等于 [...]」——那绑的是 ORM 调用形态，
+    //    把单头 INSERT 等价改写成原生 SQL 就会误红，而落库结果完全没变。
+    //    这里只关心「写了哪些表」这个语义事实。
+    // ⚠️ **非事务**通道也要扫：在事务回调里误写 `db.execute(...)` / `db.update(...)` 之类，
+    //    既真改库存（事务外执行、不随回滚撤销）、又违反「单事务体内不得非-tx await」，
+    //    只扫 tx.* 完全看不见。
+    const ALL_TABLES = [
+      'inventory_docs', 'inventory_doc_items', 'inventory_movements',
+      'inventory_stock_lots', 'inventory_stock_reservations', 'inventory_doc_links',
+    ]
+    const allSql = [...executedSql(txExecute), ...executedSql(mockDb.execute)]
+    const writtenTables = new Set<unknown>([
+      ...txInsert.mock.calls.map(([t]) => tableName(t)),
+      ...txUpdate.mock.calls.map(([t]) => tableName(t)),
+      // 非事务 query builder（本仓真实存在的写入形态，本文件多处既有用例就在配它的返回链）
+      ...txDelete.mock.calls.map(([t]) => tableName(t)),
+      ...mockDb.insert.mock.calls.map(([t]: unknown[]) => tableName(t)),
+      ...mockDb.update.mock.calls.map(([t]: unknown[]) => tableName(t)),
+      ...mockDb.delete.mock.calls.map(([t]: unknown[]) => tableName(t)),
+      ...ALL_TABLES.filter((t) => allSql.some((text) => writesTable(text, t))),
+    ])
+    // 反向：绝不能碰流水与批次表（改在手量的两条路都在这里）
+    expect([...writtenTables], '盘点写了库存流水').not.toContain('inventory_movements')
+    expect([...writtenTables], '盘点直接改了批次表').not.toContain('inventory_stock_lots')
+    // 正向：建单只该写单头与明细
+    expect([...writtenTables].sort()).toEqual(['inventory_doc_items', 'inventory_docs'])
+    // 账面数**不扣预留**（#131 Q0）：整个建单过程连预留表都不该碰。
+    // ⚠️ 只断主查询 SQL 里没有 reserv 是不够的 —— 保留主查询、**另发一条**查预留的
+    //    SELECT 再在 JS 里减掉，主查询快照一字不变，那条断言照样绿。
+    // 读通道也一并判：原生 SQL 与 `db.select().from(预留表)` 两条路都不该出现
+    expect(allSql.some((text) => /inventory_stock_reservations/i.test(text)), '盘点期间用 SQL 查了预留表 —— 账面数不该扣预留').toBe(false)
+    expect(selectedTables, '盘点期间用 db.select 读了预留表 —— 账面数不该扣预留')
+      .not.toContain('inventory_stock_reservations')
+  })
+
+  it('同一 SKU 在一张盘点单里只能出现一次，且在开事务前就拦住', async () => {
+    // 账面数按「主体 + SKU 汇总」记，两行同 SKU 会各自拿到**同一个**完整账面数，
+    // 差异列直接变成重复计算的废数 —— 必须在建单时就拦住。
+    const { itemValues, headerValues } = setupStocktake({ 'SKU-1': '12' })
+
+    await expect(createInventoryCoreDoc({
+      docType: '市场库存盘点',
+      sourceOrgNodeId: 'MARKET-1',
+      items: [
+        { skuId: 'SKU-1', quantity: 9 },
+        { skuId: 'SKU-1', quantity: 3 },
+      ],
+    } as never)).rejects.toThrow('同一 SKU 请合并为一条盘点明细')
+
+    // 拦在**开事务之前**：直接断 db.transaction 一次都没调用。
+    // ⚠️ 只断「没插单头/明细」不够 —— 把校验挪到事务内、cutover 加锁之后、插单头之前，
+    //    这两条仍然 not.toHaveBeenCalled，而重复请求已经拿到了全库存域的 FOR UPDATE 锁。
+    expect(mockDb.transaction, '重复行校验没有拦在开事务之前').not.toHaveBeenCalled()
+    expect(headerValues).not.toHaveBeenCalled()
+    expect(itemValues).not.toHaveBeenCalled()
+  })
+
+  it('不同 SKU 的多行盘点：一次查询取齐，各行带各自的账面数', async () => {
+    const { itemValues, txExecute, calls } = setupStocktake({ 'SKU-1': '12', 'SKU-2': '4' })
+
+    await createInventoryCoreDoc({
+      docType: '市场库存盘点',
+      sourceOrgNodeId: 'MARKET-1',
+      items: [
+        { skuId: 'SKU-1', quantity: 9 },
+        { skuId: 'SKU-2', quantity: 4 },
+      ],
+    } as never)
+
+    expect(itemValues).toHaveBeenCalledTimes(2)
+    expect(itemValues.mock.calls[0][0]).toMatchObject({ stockSnapshot: '12', quantity: '9' })
+    expect(itemValues.mock.calls[1][0]).toMatchObject({ stockSnapshot: '4', quantity: '4' })
+
+    // **N+1 回归守护**：建单事务全程持有 inventory_cutover_states 的行锁（全库存域串行点），
+    // 逐行查会把别人的库存写入一起堵住。两行明细也只能发一次账面数查询。
+    expect(calls.filter((c) => c.includes('SUM(quantity_on_hand)'))).toHaveLength(1)
+
+    // ── 账面数查询的**口径快照** ─────────────────────────────────────
+    // 断的是 drizzle 编译后真正发给 PG 的 `{sql, params}`（见 compileSql 的注释）。
+    //
+    // 为什么整条快照、而不是挑几个片段断：挑片段挡不住「多加一个过滤条件」。
+    // 比如补一句 `AND (expiry_date IS NULL OR expiry_date >= CURRENT_DATE)`，
+    // 账面数就会漏掉已过期但仍在手的批次、比实际偏小 —— 而「含 IN ($2,$3)」
+    // 「参数是这三个」「不含 reserv」三条断言全都照样绿。
+    //
+    // 口径是甲方拍板的（#131 Q0 在手量不扣预留 / Q1 按主体 + SKU 汇总**全部批次**），
+    // 所以这条查询任何改动都应该是**有意**的：改了就来更新这份快照，顺便重新想一遍口径。
+    // ⚠️ 代价是它对**书写形式**也敏感：调换 WHERE 顺序、或在 SKU 列表前插入新的绑定参数
+    //    （占位符会从 $2/$3 顺延），都会让这条红 —— 那是刻意的，不是缺陷，照着新编译结果更新即可。
+    const compiled = compileSql(bookQuery(txExecute))
+    expect(compiled.text.replace(/\s+/g, ' ').trim()).toBe(
+      'SELECT sku_id, COALESCE(SUM(quantity_on_hand), 0) AS quantity'
+      + ' FROM inventory_stock_lots'
+      + ' WHERE location_id = $1 AND sku_id IN ($2, $3)'
+      + ' GROUP BY sku_id',
+    )
+    expect(compiled.params).toEqual(['LOC-MARKET-1', 'SKU-1', 'SKU-2'])
+  })
+
+  it('非盘点单不跑重复行守护：同 SKU 多批次仍可多行', async () => {
+    // 守「别把盘点的约束误伤到全部单据」——出入库单同 SKU 不同批次天然要多行。
+    // 用行为断言，不读源码字面量（原版整条只 grep 源码，标题主张没有任何行为覆盖）。
+    const { fn: txExecute } = routingTxExecute([
+      ['INSERT INTO inventory_stock_lots', [{ id: 7 }]],
+      ['FOR UPDATE', [{ ...lotRow('99'), id: 7 }]],
+      ['FROM inventory_skus', [SKU_SNAPSHOT_ROW]],
+    ])
+    const itemValues = vi.fn((_values: Record<string, unknown>) => ({
+      returning: vi.fn().mockResolvedValue([{ id: 1 }]),
+    }))
+    const txInsert = vi.fn()
+      .mockReturnValueOnce({ values: vi.fn().mockResolvedValue(undefined) })
+      .mockReturnValue({ values: itemValues })
+    mockDb.transaction.mockImplementation(async (callback: (tx: unknown) => unknown) => callback({
+      execute: initializedCutoverExecutor(txExecute),
+      insert: txInsert,
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })) })),
+    }))
+
+    await createInventoryCoreDoc({
+      docType: '市场产品盘溢',
+      targetOrgNodeId: 'MARKET-1',
+      items: [
+        { skuId: 'SKU-1', quantity: 1, batchNo: 'B1' },
+        { skuId: 'SKU-1', quantity: 2, batchNo: 'B2' },
+      ],
+    } as never)
+
+    expect(itemValues).toHaveBeenCalledTimes(2)
+  })
+
+  it('盘点单类型集合与 movementPlan 的「不产流水」判定一致', () => {
+    // 源码字面量守护：把盘点类型加进 INBOUND / OUTBOUND / RECEIVE_REQUIRED 会让它开始产流水，
+    // 而本文件上面那条不变量用例只覆盖了当前这两种类型。
+    // ⚠️ 刻意**不**断 NO_MOVEMENT_DOC_TYPES：movementPlan 对那个集合是 `return null`，
+    //    放进去反而是更明确的「不产流水」，断它 not.toContain 是过严的假护栏。
+    const engineSrc = readFileSync(resolve(process.cwd(), 'src/lib/inventory/engine.ts'), 'utf8')
+    const stocktakeSrc = readFileSync(resolve(process.cwd(), 'src/lib/inventory/stocktake.ts'), 'utf8')
+    const readSet = (src: string, file: string, name: string): string[] => {
+      const block = src.match(
+        new RegExp(`${name} = new Set<InventoryDocType>\\(\\[([\\s\\S]*?)\\]\\)`),
+      )?.[1]
+      expect(block, `${file} 里找不到 ${name}`).toBeTruthy()
+      return [...block!.matchAll(/'([^']+)'/g)].map((m) => m[1])
+    }
+    const stocktake = readSet(stocktakeSrc, 'stocktake.ts', 'STOCKTAKE_DOC_TYPES')
+    expect(stocktake).toEqual(['市场库存盘点', '分院库存盘点'])
+    // 清单必须是 engine 与详情页共用的那一份，不能各写各的
+    expect(engineSrc).toMatch(/import \{ STOCKTAKE_DOC_TYPES \} from '\.\/stocktake'/)
+    expect(engineSrc).not.toMatch(/const STOCKTAKE_DOC_TYPES\s*=/)
+    for (const name of ['RECEIVE_REQUIRED_DOC_TYPES', 'INBOUND_DOC_TYPES', 'OUTBOUND_DOC_TYPES']) {
+      for (const t of stocktake) {
+        expect(
+          readSet(engineSrc, 'engine.ts', `const ${name}`),
+          `${t} 不该出现在 ${name} 里，否则盘点会开始产库存流水`,
+        ).not.toContain(t)
+      }
+    }
+    // 每种盘点类型都必须在 assertLocationType 的 switch 里有对应分支，
+    // 否则新增第三种盘点单会静默跳过主体类型校验
+    for (const t of stocktake) {
+      expect(engineSrc, `assertLocationType 缺少 ${t} 的分支`).toContain(`case '${t}':`)
+    }
   })
 })
