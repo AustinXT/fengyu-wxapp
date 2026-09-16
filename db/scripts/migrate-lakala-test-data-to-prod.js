@@ -42,10 +42,16 @@ function envValue(file, key) {
   return line.slice(key.length + 1).trim().replace(/^"|"$/g, '')
 }
 
+// 复用权威实现：只比 authority 会被 `?host=` / `?%68ost=` 这类 query 覆盖绕过（见 _lib/assert-db-target.js）
+const { isAllowedDbTarget } = require('./_lib/assert-db-target')
+
 function assertTarget(url, host) {
+  if (!isAllowedDbTarget(url)) {
+    throw new Error(`数据库目标校验失败：连接串不在白名单内，或 query 试图覆盖连接目标`)
+  }
   const parsed = new URL(url)
-  if (parsed.hostname !== host || parsed.port !== '5433' || parsed.pathname !== '/fengyu_wxapp') {
-    throw new Error(`数据库目标校验失败：应为 ${host}:5433/fengyu_wxapp`)
+  if (parsed.hostname !== host) {
+    throw new Error(`数据库目标校验失败：应为 ${host}:5433/fengyu_wxapp，实际 ${parsed.hostname}`)
   }
 }
 

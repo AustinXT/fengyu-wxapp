@@ -11,7 +11,8 @@ export const ROOT = path.resolve(HERE, '../../..')
 
 export const TARGETS = Object.freeze({
   dev: Object.freeze({
-    // 2026-09-10 对齐 origin/dev：dev 的 PG 迁入 lx-test（101.34.242.103），ali-demo(47.113.202.7) 弃用。
+    // dev 的 PG 于 2026-09-01 迁入 lx-test（101.34.242.103），ali-demo(47.113.202.7) 同日弃用；
+    // 本分支于 2026-09-10 对齐 origin/dev 的该项配置。
     sshHost: 'lx-test', // ~/.ssh/config 别名（原 sqlserver101，2026-09-04 改名）
     publicHost: '101.34.242.103',
     remoteDir: '/www/wwwroot/fengyu-admin/docker',

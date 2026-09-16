@@ -123,7 +123,7 @@ metadata:
    MIGRATE_KEY=$([[ "$ENV" == dev ]] && echo PG_CONNECTION_STRING || echo ADMIN_DATABASE_URL)  # dev 的 ADMIN_DATABASE_URL 是容器网桥，本地迁移连不上
    MIGRATE_DATABASE_URL="$(grep -m1 "^${MIGRATE_KEY}=" "envs/$ENV.env" | cut -d= -f2- | tr -d '\r\"')"
    test -n "$MIGRATE_DATABASE_URL" || { echo "$MIGRATE_KEY 缺失 ✗ 停"; exit 1; }
-   node -e 'const u=new URL(process.argv[1]), h=process.argv[2]; if (u.hostname!==h || u.port!=="5433" || u.pathname!=="/fengyu_wxapp") process.exit(1); console.log(`migration DB→${u.hostname}:${u.port}${u.pathname} ✓`)' "$MIGRATE_DATABASE_URL" "$EXPECT_IP" || { echo 'migration DB 目标错误 ✗ 停' >&2; exit 1; }
+   node -e 'const u=new URL(process.argv[1]), h=process.argv[2]; const BAD=["host","hostaddr","port","dbname","database","options","service","passfile"].filter(k=>u.searchParams.has(k)); if(BAD.length){console.error("拒绝：query 参数 "+BAD.join(",")+" 会覆盖连接目标");process.exit(1)} if (u.hostname!==h || u.port!=="5433" || u.pathname!=="/fengyu_wxapp") process.exit(1); console.log(`migration DB→${u.hostname}:${u.port}${u.pathname} ✓`)' "$MIGRATE_DATABASE_URL" "$EXPECT_IP" || { echo 'migration DB 目标错误 ✗ 停' >&2; exit 1; }
    unset MIGRATE_DATABASE_URL
    grep -n 'PLACEHOLDER' envs/$ENV.env || echo 'no placeholder ✓'
    ```
@@ -159,7 +159,7 @@ git --no-pager diff fengyu-client/miniprogram/utils/version.ts fengyu-staff/mini
 MIGRATE_KEY=$([[ "$ENV" == dev ]] && echo PG_CONNECTION_STRING || echo ADMIN_DATABASE_URL)  # dev 的 ADMIN_DATABASE_URL 是容器网桥，本地迁移连不上
 MIGRATE_DATABASE_URL="$(grep -m1 "^${MIGRATE_KEY}=" "envs/$ENV.env" | cut -d= -f2- | tr -d '\r\"')"
 test -n "$MIGRATE_DATABASE_URL" || { echo "$MIGRATE_KEY 缺失"; exit 1; }
-node -e 'const u=new URL(process.argv[1]), h=process.argv[2]; if (u.hostname!==h || u.port!=="5433" || u.pathname!=="/fengyu_wxapp") { console.error("migration DB target mismatch"); process.exit(1); } console.log(`migration DB→${u.hostname}:${u.port}${u.pathname} ✓`)' "$MIGRATE_DATABASE_URL" "$EXPECT_IP" || { echo 'migration DB 目标错误，停止发版。' >&2; exit 1; }
+node -e 'const u=new URL(process.argv[1]), h=process.argv[2]; const BAD=["host","hostaddr","port","dbname","database","options","service","passfile"].filter(k=>u.searchParams.has(k)); if(BAD.length){console.error("拒绝：query 参数 "+BAD.join(",")+" 会覆盖连接目标");process.exit(1)} if (u.hostname!==h || u.port!=="5433" || u.pathname!=="/fengyu_wxapp") { console.error("migration DB target mismatch"); process.exit(1); } console.log(`migration DB→${u.hostname}:${u.port}${u.pathname} ✓`)' "$MIGRATE_DATABASE_URL" "$EXPECT_IP" || { echo 'migration DB 目标错误，停止发版。' >&2; exit 1; }
 if ! DATABASE_URL="$MIGRATE_DATABASE_URL" npm --prefix db run db:migrate; then
   unset MIGRATE_DATABASE_URL
   echo 'db:migrate 失败，停止发版。' >&2

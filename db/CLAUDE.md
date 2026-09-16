@@ -180,14 +180,16 @@ dev=`101.34.242.103`、prod=`118.178.196.26`。`172.18.0.1` 只允许 lx-test �
 
 ```bash
 TARGET_DATABASE_URL="$(grep -m1 '^PG_CONNECTION_STRING=' ../envs/dev.env | cut -d= -f2- | tr -d '\r\"')"
-node -e 'const u=new URL(process.argv[1]); if(u.hostname!=="101.34.242.103"||u.port!=="5433"||u.pathname!=="/fengyu_wxapp") process.exit(1)' "$TARGET_DATABASE_URL"
+node -e 'const u=new URL(process.argv[1]); const BAD=["host","hostaddr","port","dbname","database","options","service","passfile"].filter(k=>u.searchParams.has(k)); if(BAD.length){console.error("拒绝：query 参数 "+BAD.join(",")+" 会覆盖连接目标");process.exit(1)}; if(u.hostname!=="101.34.242.103"||u.port!=="5433"||u.pathname!=="/fengyu_wxapp") process.exit(1)' "$TARGET_DATABASE_URL"
 DATABASE_URL="$TARGET_DATABASE_URL" npm run db:migrate
 
 TARGET_DATABASE_URL="$(grep -m1 '^ADMIN_DATABASE_URL=' ../envs/prod.env | cut -d= -f2- | tr -d '\r\"')"
-node -e 'const u=new URL(process.argv[1]); if(u.hostname!=="118.178.196.26"||u.port!=="5433"||u.pathname!=="/fengyu_wxapp") process.exit(1)' "$TARGET_DATABASE_URL"
+node -e 'const u=new URL(process.argv[1]); const BAD=["host","hostaddr","port","dbname","database","options","service","passfile"].filter(k=>u.searchParams.has(k)); if(BAD.length){console.error("拒绝：query 参数 "+BAD.join(",")+" 会覆盖连接目标");process.exit(1)}; if(u.hostname!=="118.178.196.26"||u.port!=="5433"||u.pathname!=="/fengyu_wxapp") process.exit(1)' "$TARGET_DATABASE_URL"
 DATABASE_URL="$TARGET_DATABASE_URL" npm run db:migrate
 unset TARGET_DATABASE_URL
 ```
+
+⚠ 上面断言里的 `BAD` 检查不能省：PG 连接串的 query 参数（`?host=` 乃至编码形式 `?%68ost=`）优先级高于 URL authority，只比 `hostname/port/pathname` 会被整个绕过——而 `db:migrate` 打错库无法回滚。
 
 **数据修复 / backfill**：先分清目标环境——dev=`101.34.242.103:5433`、prod=`118.178.196.26:5433`，
 **永远显式传 `DATABASE_URL` 并断言 host/port/dbname**。仅修某环境的数据时只跑
