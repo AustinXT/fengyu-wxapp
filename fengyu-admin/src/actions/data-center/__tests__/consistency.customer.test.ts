@@ -12,7 +12,8 @@
  *   3. 消费分桶阈值 1990 / 10000 / 30000 / 60000 / 100000（左闭右开）
  *   4. sales_category IN ('自销自耗','他销自耗')（项目数口径）
  *   5. 成交率分母 = 体验客 + 小美客
- *   6. spend = received - refunded_amount（与 mgmt-traffic.js 实际实现一致，非 metrics.md 的 paid_amount）
+ *   6. spend = SUM(sale_order_performance_events.amount) @ performance_date（#138 起，与业绩 KPI 同源；
+ *      不再按父订单 status 过滤、排除储值卡抵扣；非 metrics.md 的 paid_amount）
  *   7. anchor 反推关键字面量（visits_90d_prev / 6 months / 12 months / 90 days）
  *
  * 任一端口径变更必须双端同步，否则数据中心客量板块与员工端 mgmtTraffic 数字对不上。
@@ -129,17 +130,75 @@ describe('客量板块两端口径一致性守护', () => {
     })
   })
 
-  describe('会员消费 spend = received - refunded_amount（与 staff 实际实现一致）', () => {
-    it('admin member_spend 用 received - refunded_amount', () => {
-      expect(adminCode).toMatch(
-        /received::numeric\s*-\s*COALESCE\(\s*o\.refunded_amount,\s*0\s*\)::numeric/i,
-      )
+  /**
+   * #138（2026-09-16）：spend 从「订单快照 `received - refunded_amount` @ `paid_at`」
+   * 改为「已入账款项流水 `SUM(spe.amount)` @ `performance_date`」，与业绩 KPI 同源。
+   *
+   * 连带两个语义变化（都是有意的）：
+   *   - **不再按父订单 status 过滤** —— 款项流水自带 status，部分支付订单的已到账款也计入
+   *   - **排除储值卡抵扣** —— `change_type IN ('首次支付','回款','退款')`，与组织层级业绩一致
+   *
+   * 分桶阈值（1990 / 1w / 3w / 6w / 10w）不变。
+   */
+  describe('会员消费 spend = 已入账款项流水 @ 业绩归属日期（#138，两端同源）', () => {
+    const SPEND_INVARIANTS: Array<[string, RegExp]> = [
+      ['金额取款项流水', /SUM\(spe\.amount::numeric\)/],
+      ['数据源是业绩事件视图', /FROM\s+sale_order_performance_events\s+spe/],
+      ['JOIN 回订单表取 client_user_id', /JOIN\s+sale_orders\s+o\s+ON\s+o\.sale_order_id\s*=\s*spe\.sale_order_id/],
+      ['订单类型限定', /spe\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/],
+      ['款项状态已支付', /spe\.status\s*=\s*'已支付'/],
+      ['排除储值卡抵扣', /spe\.change_type\s+IN\s*\(\s*'首次支付'\s*,\s*'回款'\s*,\s*'退款'\s*\)/],
+      ['排除 workfine 历史单', /spe\.legacy_source\s+IS\s+DISTINCT\s+FROM\s+'workfine'/],
+      ['日期走业绩归属日期', /spe\.performance_date\s+BETWEEN/],
+    ]
+
+    it.each(SPEND_INVARIANTS)('admin 侧：%s', (_label, re) => {
+      expect(adminCode).toMatch(re)
     })
-    it('staff member_spend 用 received - refunded_amount', () => {
-      expect(normalize(staffSrc)).toMatch(
-        /received::numeric\s*-\s*COALESCE\(\s*o\.refunded_amount,\s*0\s*\)::numeric/i,
-      )
+
+    it.each(SPEND_INVARIANTS)('staff 侧：%s', (_label, re) => {
+      expect(normalize(staffSrc)).toMatch(re)
     })
+
+    /**
+     * ⚠ 上面的 `toMatch` 只证明「文件里存在」，挡不住**单处漏改**：
+     * admin 有 5 个会员消费查询（3 个 KPI + 2 个明细），staff 有 2 个。
+     * 删掉其中一处的 `change_type` 过滤，其余几处仍满足正则 —— 实测确认过这条漏网。
+     * 所以把**每项过滤的出现次数**与查询数量锁死：数量变了必须显式更新本表。
+     */
+    it('每个会员消费查询都带齐全部过滤（按出现次数锁死，防单处漏改）', () => {
+      const SITES: Array<[string, string, number]> = [
+        ['admin', adminCode, 5],
+        ['staff', normalize(staffSrc), 2],
+      ]
+      const PER_QUERY: Array<[string, RegExp]> = [
+        ['归属日期', /spe\.performance_date\s+BETWEEN/g],
+        ['款项状态', /spe\.status\s*=\s*'已支付'/g],
+        ['排除储值卡抵扣', /spe\.change_type\s+IN/g],
+        ['订单类型', /spe\.sale_order_type\s+IN/g],
+        ['排除 workfine', /spe\.legacy_source\s+IS\s+DISTINCT\s+FROM/g],
+        ['金额取款项流水', /SUM\(spe\.amount::numeric\)/g],
+      ]
+      for (const [side, code, expected] of SITES) {
+        for (const [label, re] of PER_QUERY) {
+          const hits = code.match(re) ?? []
+          expect(
+            hits.length,
+            `${side} 的「${label}」出现 ${hits.length} 次，期望 ${expected} 次（每个会员消费查询各一次）`,
+          ).toBe(expected)
+        }
+      }
+    })
+
+    it('两端都不得回退到订单快照口径', () => {
+      for (const code of [adminCode, normalize(stripComments(staffSrc))]) {
+        expect(code, 'spend 回退到 received - refunded_amount').not.toMatch(
+          /received::numeric\s*-\s*COALESCE\(\s*o\.refunded_amount,\s*0\s*\)::numeric/i,
+        )
+        expect(code, '日期回退到 paid_at').not.toMatch(/o\.paid_at::date\s+BETWEEN/)
+      }
+    })
+
     it('两端禁用 paid_amount（已 DROP，防回归）', () => {
       expect(adminCode).not.toMatch(/paid_amount/)
       expect(normalize(stripComments(staffSrc))).not.toMatch(/paid_amount/)
