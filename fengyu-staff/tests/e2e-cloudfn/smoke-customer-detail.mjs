@@ -27,10 +27,12 @@ async function main() {
   await createTestStaff()
   await createTestClient()
 
-  // 消费口径夹具：
-  // - WorkFine 历史销售单无支付流水，继续按订单快照计入；
-  // - 原生部分支付按本年实际到账流水计入；
-  // - 跨年结清订单只把本年回款计入年度消费；
+  // 消费口径夹具（#141 起按**业绩归属日期**落年，非 paid_at）：
+  // - WorkFine 历史销售单无支付流水，继续按订单快照计入（legacy 分支走订单级归属日）；
+  // - 原生部分支付按款项归属日计入本年；
+  // - 跨年结清订单：**首次支付按订单归属日落年**（0039 trigger 镜像，即使 paid_at 在去年
+  //   也计入今年），回款按款项自身归属日落年 —— 这条正是新旧口径的分水岭
+  //   （旧 paid_at 口径会排除那笔首次支付 → 1700，新口径计入 → 1900）；
   // - 寄存单只是剩余权益初始化，不重复计入。
   const legacySaleOrderId = `${NS}_CUSDET_SALE`
   const partialOrderId = `${NS}_CUSDET_PARTIAL`
@@ -128,11 +130,15 @@ async function main() {
     if (Number(r.data.totalConsumption) !== 1900) {
       errors.push(`detail.totalConsumption 应为历史 1200 + 部分支付 200 + 跨年单 500 = 1900，实际=${r.data.totalConsumption}`)
     }
-    if (Number(r.data.yearConsumption) !== 1700) {
-      errors.push(`detail.yearConsumption 应为历史 1200 + 本年部分支付 200 + 本年回款 300 = 1700，实际=${r.data.yearConsumption}`)
+    // #141：年度消费改按**业绩归属日期**落年。跨年单的首次支付 paid_at 虽在去年，
+    // 但 0039 的 BEFORE trigger 把首次支付行的归属日镜像为**订单归属日**（今年），
+    // 所以它计入今年 —— 这正是新旧口径的分水岭：旧口径按 paid_at 会排除它（1700），
+    // 新口径按归属日会计入（1900）。本断言即新口径已生效的正面证明。
+    if (Number(r.data.yearConsumption) !== 1900) {
+      errors.push(`detail.yearConsumption 应为历史 1200 + 本年部分支付 200 + 跨年单首次支付 200（归属日镜像订单=今年）+ 本年回款 300 = 1900，实际=${r.data.yearConsumption}`)
     }
     rec(`  ✓ detail 返回字段: gender=${r.data.gender} store=${r.data.storeName} member=${r.data.memberLevel}`)
-    rec(`  ✓ 消费口径: 历史快照保留，部分支付立即入年，跨年仅计本年回款，寄存未重复计入`)
+    rec(`  ✓ 消费口径(#141 归属日): 首次支付按订单归属日计入今年（即使 paid_at 在去年），寄存未重复计入`)
   }
 
   // 管理层详情必须与门店详情同口径，同时保留无 sale_items 的 WorkFine 历史单回退。
@@ -149,8 +155,8 @@ async function main() {
     if (Number(mgmtR.data.totalConsumption) !== 1900) {
       errors.push(`mgmtCustomer.detail.totalConsumption 应为 1900，实际=${mgmtR.data.totalConsumption}`)
     }
-    if (Number(mgmtR.data.yearConsumption) !== 1700) {
-      errors.push(`mgmtCustomer.detail.yearConsumption 应为 1700，实际=${mgmtR.data.yearConsumption}`)
+    if (Number(mgmtR.data.yearConsumption) !== 1900) {
+      errors.push(`mgmtCustomer.detail.yearConsumption 应为 1900（同门店详情，#141 归属日口径），实际=${mgmtR.data.yearConsumption}`)
     }
     rec(`  ✓ 管理层详情消费口径与门店详情一致`)
   }

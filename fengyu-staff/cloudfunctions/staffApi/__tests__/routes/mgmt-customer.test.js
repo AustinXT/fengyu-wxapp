@@ -12,6 +12,20 @@
 
 const pg = globalThis.__mocks__.pg
 const { createCtx, createManagerCtx } = require('../helpers')
+const { assertPaymentAttributionReady, __resetAttributionGuardCache } = require('../../utils/attribution-guard')
+
+/**
+ * #141：年度消费直读款项归属日期，跑 SQL 前会过 attribution-guard 探针。
+ * guard **只缓存「已就绪」**，所以这里预热一次，之后整个文件的测试都不再发探针查询，
+ * 既有 mock 的调用序列/索引全部不受影响。
+ * （预热本身会占一次 pg.query，但它在 beforeAll 里、早于任何用例的 mock 设置。）
+ * guard 本身的行为（未就绪时拦截）另有专门用例覆盖。
+ */
+beforeAll(async () => {
+  pg.query.mockResolvedValueOnce([{ has_gap: false, trigger_ready: true }])
+  await assertPaymentAttributionReady(pg)
+})
+
 const {
   search,
   detail,
@@ -91,9 +105,15 @@ function setupCommonMocks(opts = {}) {
     homeProductRows = [],     // 2026-09-13 家居产品资产（mgmtCustomer.homeProducts）
     marketName = '华东市场',
     storeName = '凤御A店',
+    attributionReady = true,   // #141 迁移就绪探针（attribution-guard）
   } = opts
 
   pg.query.mockReset().mockImplementation(async (sql, params) => {
+    // #141 attribution-guard 探针：按 SQL 内容分发（仍会进 mock.calls，
+    // 但 beforeAll 预热后正常用例根本不触发它）
+    if (/has_gap/.test(sql)) {
+      return [{ has_gap: !attributionReady, trigger_ready: attributionReady }]
+    }
     // resolveScopeName: org_nodes
     if (/FROM\s+org_nodes\s+WHERE\s+id\s*=\s*\$1/.test(sql) && /SELECT\s+name\b/.test(sql)) {
       return [{ name: marketName }]
@@ -296,6 +316,85 @@ function setupCommonMocks(opts = {}) {
 // ===================================================================
 
 describe('mgmtCustomer 参数与权限校验', () => {
+  /**
+   * #141 fail-closed：未迁库时首次支付行 100% 为 NULL（dev 实测 1523/1523，¥4,872,147.25），
+   * 三值逻辑把正数主体全部吞掉、只剩退款负数——年度消费会显示 −425801.66。
+   * 宁可报错也不给运营看负数。
+   *
+   * ⚠ 别用 pg.query.mockReset()：那会清掉 setupCommonMocks 装的 mockImplementation、
+   * 波及后续用例。mockResolvedValueOnce 本就优先于 mockImplementation，够用。
+   */
+  const withUnreadyGuard = async (opts, run) => {
+    __resetAttributionGuardCache()
+    setupCommonMocks({ ...opts, attributionReady: false })
+    try {
+      await run()
+    } finally {
+      // 复原就绪态，后续用例继续零探针。
+      // 包 try/catch：这里再抛会**替换掉**原始断言失败信息，让排查指向错误方向。
+      try {
+        __resetAttributionGuardCache()
+        pg.query.mockResolvedValueOnce([{ has_gap: false, trigger_ready: true }])
+        await assertPaymentAttributionReady(pg)
+      } catch {
+        /* 复原失败不掩盖原始失败；下个用例的 setupCommonMocks 会重建 mock */
+      }
+    }
+  }
+
+  test('detail 年度消费在未迁移库上拒绝出数（不显示负数）', async () => {
+    await withUnreadyGuard({ detailRows: [{ user_id: 'u1', bound_store_id: 'store-001' }] }, async () => {
+      const ctx = makeHqCtx({ scopeType: 'all', clientUserId: 'u1', customerId: 'c1', clientPhone: '13800000000' })
+      await expect(detail(ctx)).rejects.toThrow(/INVALID_STATE: MIGRATION_REQUIRED/)
+    })
+  })
+
+  test('search 年消费同样过迁移守卫', async () => {
+    await withUnreadyGuard({ searchRows: [{ user_id: 'u1', name: '张三', bound_store_id: 'store-001' }] }, async () => {
+      const ctx = makeHqCtx({ scopeType: 'all', keyword: '张' })
+      await expect(search(ctx)).rejects.toThrow(/INVALID_STATE: MIGRATION_REQUIRED/)
+    })
+  })
+
+  test('search 年消费按订单级业绩归属日期落年，不得回退 paid_at', async () => {
+    // 必须给 searchRows，否则 allClientUserIds 为空、search 会跳过年消费查询
+    setupCommonMocks({
+      searchRows: [{ user_id: 'u1', name: '张三', bound_store_id: 'store-001' }],
+      spendRows: [{ client_user_id: 'u1', annual_spend: '100.00' }],
+    })
+    const ctx = makeHqCtx({ scopeType: 'all', keyword: '张' })
+    await search(ctx)
+    const spendSql = pg.query.mock.calls
+      .map((c) => c[0])
+      .find((sql) => /COALESCE\(SUM\(o\.total_amount::numeric\),\s*0\)\s+AS\s+annual_spend/.test(sql))
+    expect(spendSql, '未找到年消费 SQL').toBeTruthy()
+    expect(spendSql, '年消费落年口径漂移').toContain('o.performance_attribution_date >= $2::date')
+    expect(spendSql, '年消费不得回退到 paid_at').not.toContain('o.paid_at')
+    // ⚠ 必须是半开区间：归属日期可被人工调到订单日 ±7 天，跨年那 7 天的订单
+    // 没有上界就会被计进今年，而详情用半开区间会排除它 —— 两处落年再次分叉。
+    // （改前按 paid_at 时无上界是无害的，实付日不可能落到未来。）
+    expect(spendSql, '年消费缺上界，跨年改期的订单会多算')
+      .toContain("o.performance_attribution_date < ($2::date + INTERVAL '1 year')")
+  })
+
+  /**
+   * 列表与详情必须用**同一个**年份算法。`new Date().getFullYear()` 依赖进程时区，
+   * 容器 TZ 丢失时上海 1/1 08:00 前会取到上一年，与详情的 shanghaiDateStr() 分叉；
+   * 叠加上一条的上界问题，列表会把两年消费累加、徽章分档全错。
+   */
+  test('列表与详情的年份算法一致（都走 shanghaiDateStr，不依赖进程时区）', () => {
+    const src = require('node:fs').readFileSync(
+      require('node:path').resolve(__dirname, '../../routes/mgmt-customer.js'),
+      'utf8',
+    )
+    const yearStarts = src.match(/const yearStart = `\$\{[^}]+\}-01-01`/g) ?? []
+    expect(yearStarts.length, '年份计算点数量变了，请同步本断言').toBe(2)
+    for (const expr of yearStarts) {
+      expect(expr, '年份计算不得依赖进程时区（用 shanghaiDateStr）')
+        .toContain('shanghaiDateStr().slice(0, 4)')
+    }
+  })
+
   test('search 缺 scopeType 抛 INVALID_PARAMS', async () => {
     setupCommonMocks()
     const ctx = makeHqCtx({})
@@ -727,8 +826,15 @@ describe('mgmtCustomer.detail 出数', () => {
     expect(consumptionSql).toContain('SUM(\n         sop.amount::numeric')
     expect(consumptionSql).toContain("o.legacy_source IS DISTINCT FROM 'workfine'")
     expect(consumptionSql).toContain("o.legacy_source = 'workfine'")
-    expect(consumptionSql).toContain("sop.paid_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Shanghai')")
-    expect(consumptionSql).toContain("sop.paid_at < (($2::date + INTERVAL '1 year') AT TIME ZONE 'Asia/Shanghai')")
+    // #141 年度消费落年改按业绩归属日期：款项级走 sop、legacy(workfine) 走订单级 o。
+    // 归属日期是 date，年区间用半开 [start, start+1year)，不再套北京时区半开区间。
+    expect(consumptionSql).toContain('sop.performance_attribution_date >= $2::date')
+    expect(consumptionSql).toContain("sop.performance_attribution_date < ($2::date + INTERVAL '1 year')")
+    expect(consumptionSql).toContain('o.performance_attribution_date >= $2::date')
+    expect(consumptionSql).toContain("o.performance_attribution_date < ($2::date + INTERVAL '1 year')")
+    // 旧口径必须消失（含时区半开区间形态）
+    expect(consumptionSql).not.toContain('sop.paid_at >=')
+    expect(consumptionSql).not.toContain("AT TIME ZONE 'Asia/Shanghai')")
     expect(consumptionSql).not.toContain('WHEN o.paid_at >= $2')
     expect(consumptionSql).toContain('FROM service_orders so')
     expect(consumptionSql).toContain('JOIN service_items sit ON sit.service_order_id = so.service_order_id')
