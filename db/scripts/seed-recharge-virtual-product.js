@@ -24,8 +24,8 @@
  */
 
 const { Client } = require('pg')
+const { assertDbTargetOrExit } = require('./_lib/assert-db-target')
 
-const DB_TARGET_RE = /^postgres(?:ql)?:\/\/[^@/]*@(101\.34\.242\.103|118\.178\.196\.26):5433\/fengyu_wxapp(?:\?(?![^#]*\b(?:host|hostaddr|port|dbname|database|options|service|passfile)=)[^#]*)?$/
 
 const PRODUCT_ID = 'prod-recharge-virtual'
 const SKU_ID = 'sku-recharge-virtual'
@@ -33,12 +33,8 @@ const MALL_CATEGORY_ID = 'mall-cat-cz-01'   // 储值卡
 const PRODUCT_CATEGORY_ID = 'cat-cz-01'     // 储值卡 / product_kind=充值卡
 
 async function main() {
-  // DATABASE_URL 必填且必须精确指向业务库（db/CLAUDE.md 硬规则）。
-  const databaseUrl = process.env.DATABASE_URL?.trim()
-  if (!DB_TARGET_RE.test(databaseUrl || '')) {
-    console.error('✗ DATABASE_URL 必须显式指向 dev=101.34.242.103:5433/fengyu_wxapp 或 prod=118.178.196.26:5433/fengyu_wxapp')
-    process.exit(1)
-  }
+  // DATABASE_URL 必填且必须精确指向业务库（db/CLAUDE.md 硬规则），实现见 _lib/assert-db-target.js
+  const databaseUrl = assertDbTargetOrExit(process.env.DATABASE_URL)
   const client = new Client({ connectionString: databaseUrl })
   await client.connect()
 

@@ -23,6 +23,8 @@
 const path = require('node:path')
 const fs = require('node:fs')
 const { Client } = require('pg')
+// 目标断言：本脚本会回落读取本机 db/.env，那份文件很容易残留已弃用的旧地址
+const { isAllowedDbTarget } = require('./_lib/assert-db-target')
 const { hash } = require('bcryptjs')
 
 // --- CLI 参数 ---
@@ -66,10 +68,6 @@ function validatePhone(phone) {
   }
 }
 
-// 目标断言：本脚本会回落读取本机 db/.env，那份文件很容易残留已弃用的旧地址
-// （ali-demo 47.113.202.7 仍可连通、数据陈旧），不断言就会静默 seed 到错库。
-const DB_TARGET_RE = /^postgres(?:ql)?:\/\/[^@/]*@(101\.34\.242\.103|118\.178\.196\.26):5433\/fengyu_wxapp(?:\?(?![^#]*\b(?:host|hostaddr|port|dbname|database|options|service|passfile)=)[^#]*)?$/
-
 function loadDbUrl() {
   let url = process.env.DATABASE_URL?.trim()
   if (!url) {
@@ -83,7 +81,7 @@ function loadDbUrl() {
     console.error('ERROR: DATABASE_URL not set and db/.env not found.')
     process.exit(1)
   }
-  if (!DB_TARGET_RE.test(url)) {
+  if (!isAllowedDbTarget(url)) {
     console.error('ERROR: DATABASE_URL 必须显式指向 dev=101.34.242.103:5433/fengyu_wxapp 或 prod=118.178.196.26:5433/fengyu_wxapp')
     console.error('       （若来源是 db/.env，请先更新那份文件——旧的 47.113.202.7 已于 2026-09-01 弃用）')
     process.exit(1)

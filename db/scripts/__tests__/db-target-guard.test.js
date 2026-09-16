@@ -1,16 +1,13 @@
 'use strict'
 
 /**
- * db-target-guard.test.js — 守护「连接串目标断言」在各端副本间不漂移。
+ * db-target-guard.test.js — 守护「连接串目标断言」的正确性与跨副本一致性（issue #151）。
  *
- * 背景（issue #151）：已弃用的旧库 47.113.202.7 至今仍可连通、数据陈旧，误连不报错。
- * 因此 db/CLAUDE.md 规定运维脚本必须「显式传 DATABASE_URL 并断言 host/port/dbname」。
- * 该断言以正则字面量的形式内联在十几个脚本里——刻意不抽公共 helper：这些是独立的一次性
- * 运维工具，救火时可能被单独拷出来跑，多一个跨文件依赖就多一个失效点；且它们横跨
- * CJS / ESM / TS 三种模块系统，helper 本身也得维护三份。
- *
- * 代价是字面量重复，所以用本测试兜底：任何一处改了正则或白名单 IP，这里立刻失败。
- * （与本仓 cross-end-*-snapshot 守护四端副本是同一套思路。）
+ * 权威实现：db/scripts/_lib/assert-db-target.js。
+ * db/scripts 下的脚本直接 require 它；两个跨子项目的入口
+ * （fengyu-staff 的 monitor 脚本、fengyu-admin 的 seed.ts）无法 require，内联了同义逻辑，
+ * 本测试用**同一组正负例**验证它们行为一致——比比对字面量更本质（字面量可以写法不同而行为相同，
+ * 也可以看着一样却因上下文差异而行为不同）。
  */
 
 const test = require('node:test')
@@ -19,91 +16,119 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const ROOT = path.resolve(__dirname, '../../..')
+const { isAllowedDbTarget, OVERRIDE_KEYS } = require('../_lib/assert-db-target')
 
-// 权威字面量：改这里必须同时改所有副本，否则本测试失败。
-const CANONICAL =
-  "/^postgres(?:ql)?:\\/\\/[^@/]*@(101\\.34\\.242\\.103|118\\.178\\.196\\.26):5433\\/fengyu_wxapp(?:\\?(?![^#]*\\b(?:host|hostaddr|port|dbname|database|options|service|passfile)=)[^#]*)?$/"
+// [连接串, 是否应放行, 说明]
+const CASES = [
+  ['postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp', true, 'dev 基本串'],
+  ['postgres://fengyu:pw@101.34.242.103:5433/fengyu_wxapp', true, 'postgres:// 也是合法 scheme'],
+  ['postgresql://fengyu:pw@118.178.196.26:5433/fengyu_wxapp', true, 'prod 基本串'],
+  ['postgresql://fengyu:p%40ss@118.178.196.26:5433/fengyu_wxapp?sslmode=require', true, '密码编码 + 无害 query'],
+  ['postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?connect_timeout=8&application_name=x', true, '多个无害 query'],
 
-// 预期持有守卫的入口清单（显式列举，不用「数量 ≥ N」——那样漏改一个也不会失败）。
-// 新增连库入口时请一并加进来；删除入口时同步删除。
-const EXPECTED_HOLDERS = [
-  'db/scripts/calc-monthly-activity.js',
-  'db/scripts/import-workfine-legacy.js',
-  'db/scripts/migrate-active-cards.js',
-  'db/scripts/migrate-allocations.js',
-  'db/scripts/migrate-history-orders.js',
-  'db/scripts/migrate-jclsh-items.js',
-  'db/scripts/migrate-missing-customers.js',
-  'db/scripts/migrate-phantom-items.js',
-  'db/scripts/migrate-prepaid-cards.js',
-  'db/scripts/migrate-presale-services.js',
-  'db/scripts/migrate-service-records.js',
-  'db/scripts/seed-first-admin.js',
-  'db/scripts/seed-recharge-virtual-product.js',
-  'db/scripts/sync-workfine.js',
-  'db/scripts/test-d4-trigger.mjs',
-  'fengyu-admin/src/db/seed.ts',
-  'fengyu-staff/scripts/manual-e2e/monitor-pk-conflicts.mjs',
+  ['', false, '空串'],
+  ['   ', false, '纯空白'],
+  ['not-a-url', false, '非 URL'],
+  ['postgresql://fengyu:pw@47.113.202.7:5433/fengyu_wxapp', false, '已弃用的旧库（仍可连通，最危险）'],
+  ['postgresql://fengyu:pw@101.34.242.103:5434/fengyu', false, '旧端口 + 旧库名'],
+  ['postgresql://fengyu:pw@101.34.242.103:5433/fengyu_e2e', false, 'e2e 独立库不是业务库'],
+  ['postgresql://fengyu:pw@101.34.242.103:5432/fengyu_wxapp', false, '错端口'],
+  ['postgresql://fengyu:pw@localhost:5433/fengyu_wxapp', false, '本地库'],
+
+  // libpq 的 query 参数优先级高于 authority（pg-connection-string：
+  // "Only set the host if there is no equivalent query param"），两层绕过都必须挡住：
+  ['postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?host=47.113.202.7', false, 'query 覆盖 host'],
+  ['postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?sslmode=require&host=47.113.202.7', false, 'host 藏在第二个参数'],
+  ['postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?hostaddr=1.2.3.4', false, 'hostaddr 覆盖'],
+  ['postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?port=5434', false, 'port 覆盖'],
+  ['postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?dbname=other', false, 'dbname 覆盖'],
+  ['postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?options=-csearch_path%3Dx', false, 'options 覆盖'],
+  // ⚠ 百分号编码：正则匹配字面 `host=` 挡不住，必须靠 searchParams 解码后判断
+  ['postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?%68ost=47.113.202.7', false, '编码键 %68ost'],
+  ['postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?h%6Fst=47.113.202.7', false, '编码键 h%6Fst'],
+  ['postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?%70ort=5434', false, '编码键 %70ort'],
 ]
 
-function literalIn(relPath) {
+test('权威实现的行为符合预期（含 query 覆盖与百分号编码绕过）', () => {
+  for (const [url, want, label] of CASES) {
+    assert.equal(isAllowedDbTarget(url), want, `${label}：期望${want ? '放行' : '拒绝'} — ${url}`)
+  }
+})
+
+test('放行的串经真实解析器解析后确实落在白名单内（交叉验证）', () => {
+  let parse
+  try {
+    parse = require('pg-connection-string').parse
+  } catch {
+    return // 该依赖不在本目录时跳过；CI 的 admin/staff 侧另有覆盖
+  }
+  for (const [url, want] of CASES) {
+    if (!want) continue
+    const r = parse(url)
+    assert.ok(
+      ['101.34.242.103', '118.178.196.26'].includes(r.host) &&
+        String(r.port) === '5433' &&
+        r.database === 'fengyu_wxapp',
+      `放行却解析到白名单外：${url} → ${r.host}:${r.port}/${r.database}`,
+    )
+  }
+})
+
+test('OVERRIDE_KEYS 覆盖 libpq 所有可改写连接目标的参数', () => {
+  for (const key of ['host', 'hostaddr', 'port', 'dbname', 'database', 'options', 'service', 'passfile']) {
+    assert.ok(OVERRIDE_KEYS.includes(key), `缺少覆盖键：${key}`)
+  }
+})
+
+// ── 跨副本一致性 ────────────────────────────────────────────────────────────
+// 无法 require 的两个入口内联了同义逻辑，这里把它们的实现抽出来跑同一组用例。
+
+const INLINE_COPIES = [
+  'fengyu-staff/scripts/manual-e2e/monitor-pk-conflicts.mjs',
+  'fengyu-admin/src/db/seed.ts',
+]
+
+function extractInlineImpl(relPath) {
   const abs = path.join(ROOT, relPath)
   if (!fs.existsSync(abs)) return null
-  // 行尾可能带分号（ESM/TS 文件风格不同），一并容忍
-  const m = fs.readFileSync(abs, 'utf8').match(/const DB_TARGET_RE = (\/.*\/);?\s*$/m)
-  return m ? m[1] : null
+  const text = fs.readFileSync(abs, 'utf8')
+  const re = text.match(/^const DB_TARGET_RE = (\/.*\/)\s*$/m)
+  const keys = text.match(/^const DB_OVERRIDE_KEYS(?::\s*string\[\])? = (\[[^\]]*\])/m)
+  if (!re || !keys) return null
+  // eslint-disable-next-line no-new-func
+  return new Function(
+    'raw',
+    `const DB_TARGET_RE = ${re[1]}
+     const DB_OVERRIDE_KEYS = ${keys[1]}
+     const s = String(raw ?? '').trim()
+     if (!DB_TARGET_RE.test(s)) return false
+     try { const u = new URL(s); return !DB_OVERRIDE_KEYS.some((k) => u.searchParams.has(k)) } catch { return false }`,
+  )
 }
 
-test('每个预期入口都持有守卫，且字面量逐字节一致（防漏改 / 防漂移）', () => {
-  const missing = []
-  const drifted = []
-  for (const rel of EXPECTED_HOLDERS) {
-    const literal = literalIn(rel)
-    if (literal === null) missing.push(rel)
-    else if (literal !== CANONICAL) drifted.push(rel)
-  }
-  assert.deepEqual(missing, [], `以下入口缺少 DB_TARGET_RE 守卫（或文件被删/改名）：\n  ${missing.join('\n  ')}`)
-  assert.deepEqual(drifted, [], `以下入口的 DB_TARGET_RE 与权威字面量不一致：\n  ${drifted.join('\n  ')}`)
-})
-
-test('DB_TARGET_RE 的行为符合预期（正负例）', () => {
-  const re = new RegExp(CANONICAL.slice(1, -1))
-
-  for (const ok of [
-    'postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp',
-    'postgres://fengyu:pw@101.34.242.103:5433/fengyu_wxapp',
-    'postgresql://fengyu:pw@118.178.196.26:5433/fengyu_wxapp',
-    'postgresql://fengyu:p%40ss@118.178.196.26:5433/fengyu_wxapp?sslmode=require',
-    'postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?connect_timeout=8&application_name=x',
-  ]) {
-    assert.ok(re.test(ok), `应放行但被拒：${ok}`)
-  }
-
-  for (const bad of [
-    '',
-    '   ',
-    'postgresql://fengyu:pw@47.113.202.7:5433/fengyu_wxapp', // 已弃用的旧库
-    'postgresql://fengyu:pw@101.34.242.103:5434/fengyu', // 旧端口 + 旧库名
-    'postgresql://fengyu:pw@101.34.242.103:5433/fengyu_e2e', // e2e 独立库，不是业务库
-    // ⚠ libpq/pg 的 query 参数会**覆盖** URL authority 里的 host/port/dbname
-    //（pg-connection-string 源码：Only set the host if there is no equivalent query param）。
-    // 只比 authority 会被这类串整个绕过——实测 ?host= 后真实连的是 47.113.202.7。
-    'postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?host=47.113.202.7',
-    'postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?sslmode=require&host=47.113.202.7',
-    'postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?hostaddr=1.2.3.4',
-    'postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?port=5434',
-    'postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?dbname=other',
-    'postgresql://fengyu:pw@101.34.242.103:5433/fengyu_wxapp?options=-csearch_path%3Dx',
-    'postgresql://fengyu:pw@101.34.242.103:5432/fengyu_wxapp', // 错端口
-    'postgresql://fengyu:pw@localhost:5433/fengyu_wxapp',
-    'not-a-url',
-  ]) {
-    assert.ok(!re.test(bad), `应拒绝但被放行：${bad}`)
+test('跨子项目的内联副本与权威实现行为完全一致', () => {
+  for (const rel of INLINE_COPIES) {
+    const impl = extractInlineImpl(rel)
+    assert.ok(impl, `${rel}：未能提取到内联实现（DB_TARGET_RE / DB_OVERRIDE_KEYS 缺失或格式变了）`)
+    for (const [url, want, label] of CASES) {
+      assert.equal(impl(url), want, `${rel} 在「${label}」上与权威实现不一致 — ${url}`)
+    }
   }
 })
 
-test('白名单只含当前两套业务库，且不含已弃用地址', () => {
-  assert.ok(CANONICAL.includes('101\\.34\\.242\\.103'), 'dev 库地址缺失')
-  assert.ok(CANONICAL.includes('118\\.178\\.196\\.26'), 'prod 库地址缺失')
-  assert.ok(!CANONICAL.includes('47.113.202.7'), '不得把已弃用的 ali-demo 地址放进白名单')
+test('db/scripts 下的连库入口都改用了权威实现，未各自内联正则', () => {
+  const dir = path.join(ROOT, 'db/scripts')
+  const offenders = []
+  for (const name of fs.readdirSync(dir)) {
+    if (!/\.(js|mjs)$/.test(name)) continue
+    const abs = path.join(dir, name)
+    if (!fs.statSync(abs).isFile()) continue
+    const text = fs.readFileSync(abs, 'utf8')
+    if (/const DB_TARGET_RE = \//.test(text)) offenders.push(`db/scripts/${name}`)
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `以下脚本又自己内联了正则，应改为 require('./_lib/assert-db-target')：\n  ${offenders.join('\n  ')}`,
+  )
 })

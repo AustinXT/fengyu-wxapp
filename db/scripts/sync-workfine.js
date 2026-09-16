@@ -34,14 +34,11 @@ const MSSQL_CONFIG = {
   options: { encrypt: false, trustServerCertificate: true, enableArithAbort: true },
 }
 
-// DATABASE_URL 必填且必须精确指向两个业务库之一（db/CLAUDE.md 硬规则：显式传值 + 断言 host/port/dbname）。
-// 只查"非空"不够：已弃用的旧库 47.113.202.7 至今仍可连通，手滑传进来会静默写错库。
+// DATABASE_URL 必填且必须精确指向业务库（db/CLAUDE.md 硬规则：显式传值 + 断言 host/port/dbname）。
+// 实现见 _lib/assert-db-target.js —— 它同时挡住 `?host=` 与 `?%68ost=`（百分号编码）两层 query 覆盖绕过。
 // 仅在直接执行时校验——本目录部分脚本的导出函数被 __tests__ require，顶层 exit 会打断测试进程。
-const DB_TARGET_RE = /^postgres(?:ql)?:\/\/[^@/]*@(101\.34\.242\.103|118\.178\.196\.26):5433\/fengyu_wxapp(?:\?(?![^#]*\b(?:host|hostaddr|port|dbname|database|options|service|passfile)=)[^#]*)?$/
-if (require.main === module && !DB_TARGET_RE.test(process.env.DATABASE_URL?.trim() || '')) {
-  console.error('✗ DATABASE_URL 必须显式指向 dev=101.34.242.103:5433/fengyu_wxapp 或 prod=118.178.196.26:5433/fengyu_wxapp')
-  process.exit(1)
-}
+const { assertDbTargetOrExit } = require('./_lib/assert-db-target')
+if (require.main === module) assertDbTargetOrExit(process.env.DATABASE_URL)
 
 const PG_CONFIG = {
   connectionString: process.env.DATABASE_URL?.trim(),
