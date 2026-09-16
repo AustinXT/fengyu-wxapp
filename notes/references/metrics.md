@@ -61,8 +61,12 @@
 | 项目数 | `SUM(session_used)` | `service_items.session_used` | JOIN service_orders；`status='已完成'` ∩ `service_items.sales_category IN ('自销自耗','他销自耗')` ∩ `[service_date]` |
 
 > **寄存单退款服务单的统一剔除**：实耗 / 项目数 / 客流 / 生美实耗等 `service_orders` 类指标，
-> 两端实现都额外套了 `excludeDepositRefundSql()`（`utils/consume-filter.js`，两端共 10 处调用），
-> 用于剔除「寄存单退款」专用服务单。此前本文档从未登记该过滤，公式照抄会多算。
+> 两端实现都额外套了 `excludeDepositRefundSql(alias)`，展开为
+> `<alias>.remark IS DISTINCT FROM '<寄存单退款备注>'` —— 剔除「寄存单退款」打标的专用服务单。
+> 单源：admin `src/lib/data-center/consume-filter.ts` / staff `utils/consume-filter.js`；
+> 调用遍布 admin `data-center/{customer,efficiency,sales}.ts` 与 staff
+> `routes/{mgmt-dashboard,mgmt-traffic,mgmt-customer,customer}.js`（实测 admin 22 处 / staff 16 处）。
+> 此前本文档从未登记该过滤，照公式抄会多算。
 > （2026-09-14 补登记；非本批引入，属历史遗漏。）
 >
 > **项目数为何只算「自销自耗 / 他销自耗」**：项目数衡量的是"本店实际承接的服务次数"。`他销他耗` / `生态合作` 属于跨店或合作机构消耗，不计入本店项目数；与提成口径一致。
