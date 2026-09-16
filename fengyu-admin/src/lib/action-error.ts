@@ -1,13 +1,35 @@
 /**
  * 从 Server Action 抛出的错误中取可读文案（客户端组件用）。
  *
- * Next.js 生产构建会把 Server Action 抛出的 `error.message` 脱敏成通用的
+ * Next.js 生产构建会把 Server Action / RSC 抛出的 `error.message` 脱敏成通用的
  * 「An error occurred in the Server Components render…」文案，但**原样转发自定义
- * `digest`**。因此业务 action 把可读 message 同时写入 digest（见
- * legacy-orders.ts 的 LegacyOrderError），前端优先读 digest、剥业务前缀
- * （`CONFLICT:` / `INVALID_PARAMS:` 等）后展示；若取到的仍是脱敏文案或为空，
- * 则退回调用方给的业务兜底文案。
+ * `digest`**。因此业务侧把可读 message 同时写入 digest（`with-permission.ts` 的
+ * `rethrowWithDigest`、`legacy-orders.ts` 的 `LegacyOrderError`、`workfine-mssql.ts`），
+ * 前端优先读 digest。
+ *
+ * 但 digest 这一格是**两用**的：业务侧往里写可读文案，Next 自己也往里写错误编号与
+ * 内部信号。所以取值必须逐级判定「这一格到底是文案还是编号」，判不出来就往下一格走，
+ * 全都判不出来才回退调用方给的业务兜底文案 —— 绝不把编号 / 内部枚举 / 英文技术串
+ * 端给用户（issue #133）。
+ *
+ * 取值顺序：`err.digest` → `err.message` → `fallback`。
+ *
+ * ## 两道闸门
+ *
+ * **闸门一 · 来源**：digest 只认带 9 项白名单前缀的串，外加 `PERMISSION_DENIED` /
+ * `UNAUTHORIZED` 两个裸 token（`PermissionError` 专用）。这是 fail-closed —— 我们自己写的
+ * digest 一定带前缀，所以「不带前缀 = 不是我们写的 = 不给看」零损失，且对 Next 未来新增的
+ * digest 形态天然免疫（15.5 已出 `<数字>@E<码>` 变体，黑名单枚举不全）。
+ * message 则是 fail-open：它是 dev 构建与前端本地 throw（如 `lib/recharge-tier.ts` 的
+ * `matchTier`）的通道，要求带前缀会把可读中文误降级成兜底文案。
+ *
+ * **闸门二 · 内容**（`presentable`）：**前缀合法 ≠ 正文能给人看**。剥完前缀后还要过
+ * 内容闸门——这是本模块最关键的一条，`INVALID_STATE: ANALYST_UNAUTHORIZED: 401`、
+ * `INVALID_STATE: LAKALA_NOT_CONFIGURED`、`INVALID_STATE: 同步失败 connect ETIMEDOUT 10.0.0.1:1433`
+ * 三者前缀都合法，正文却分别是 HTTP 码 / 内部枚举 / 内网地址。
  */
+import { parseErrorPrefix, type ErrorPrefix } from '@/lib/api-error'
+
 /**
  * Next.js / 网络层"不可读"文案片段（大小写不敏感匹配）。
  * 命中任一即视为脱敏/框架级异常，前端回退到调用方业务 fallback，
@@ -24,19 +46,223 @@ const UNREADABLE_FRAGMENTS = [
   'failed to fetch',
   'network request failed',
   'networkerror',
-  // 底层网络错（通常在服务端日志，偶现于脱敏 message 时兜底）
+  // 底层网络错（与 lib/workfine-mssql.ts 的瞬态码表保持同一套）
   'econnreset',
+  'econnrefused',
   'esocket',
   'etimedout',
+  'epipe',
 ] as const
 
+/**
+ * 日志子标签：**含下划线**的全大写 token + 冒号，如
+ * `INVALID_STATE: CARD_EXHAUSTED: 储值卡剩余次数为 0` 里的 `CARD_EXHAUSTED:`。
+ * 按根 CLAUDE.md「子标签仅供日志归类，不计入白名单」，展示侧剥掉不给用户看。
+ *
+ * **形状要求「含下划线 或 长度 ≥6」**，而不是宽泛的 `[A-Z_]+:`：否则
+ * `NOT_FOUND: ID: 123 的订单不存在`、`INVALID_PARAMS: SKU: 缺货`、`HTTP: 500` 这类
+ * 「看着像标签、其实是正文」的串会被吃掉半句。仓内真实子标签要么含下划线
+ * （`CARD_EXHAUSTED` / `OUT_OF_SCOPE` / `STATE_TRANSITION_BLOCKED` / `NO_CARD`…），
+ * 要么是长描述性单词（`OVERPAY`，见 actions/orders.ts:7153）；正文里的缩写前缀则都很短。
+ * 这是**外观启发式**不是契约，判错的代价上限是多显示/少显示一个标签，不构成泄漏
+ * （安全性由下面的中文闸门与噪声表保证）。
+ * 全角冒号一并认，防中文输入法写错一个冒号就把 token 漏给用户。
+ *
+ * **只剥一层**：根 CLAUDE.md 的二级前缀语法也只允许一级子标签，仓内已 grep 确认无双层形态抛点。
+ * 真出现 `A_SUB: B_SUB: 正文` 时第二个标签会漏进展示（已知限制，评审 round 6 记录）。
+ */
+const LOG_TAG_RE = /^(?:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+|[A-Z][A-Z0-9]{5,})\s*[:：]\s*/
+
+/** 中日韩统一表意文字。本产品所有面向用户的文案都是中文，这是最稳的「给人看的」判据。 */
+const CJK_RE = /[一-鿿]/
+
+/** 展示长度上限：toast / alert / 内联红字都撑不住长文本，超出截断。 */
+const MAX_DISPLAY_LENGTH = 120
+
+/**
+ * 裸 token → 中文说法。只收录**确实会以裸 token 形态出现在 digest 里**的两个：
+ * `lib/permissions.ts` 的 `PermissionError`（`digest = 'PERMISSION_DENIED'`，
+ * 供 `(main)/error.tsx` 判 403 用）与其 401 对应物。
+ *
+ * ⚠️ `(main)/error.tsx` 判 401/403 现在经 `actionErrorType` **间接依赖本 Map**（本次已把那边的
+ * 字面量副本收掉）。因此从这里删掉任一 token 会连带杀死错误页的 403/401 分级，
+ * 由 `src/app/(main)/error.test.tsx` 守护。
+ * 用 Map 而非对象字面量：对象查表会命中 `Object.prototype`，`digest='toString'` 会返回函数而非字符串。
+ *
+ * 业务侧抛的 `ApiError('PERMISSION_DENIED', '具体原因')` 走 `rethrowWithDigest`，
+ * digest 是**带前缀的完整 message**，不会落到这里。
+ */
+const OPAQUE_TOKEN_MESSAGES: ReadonlyMap<string, string> = new Map([
+  ['PERMISSION_DENIED', '无权执行该操作'],
+  ['UNAUTHORIZED', '登录已过期，请重新登录'],
+])
+
+/** 从 unknown 错误上取一格字段；非字符串或空串一律当没有。 */
+function pick(err: unknown, key: 'digest' | 'message'): string | null {
+  const value = (err as Record<string, unknown> | null | undefined)?.[key]
+  if (typeof value !== 'string') return null
+  return value.trim() || null
+}
+
+/**
+ * 首行长度硬上限：超过即 fail-closed。
+ *
+ * 一行 2000 字以上的「错误信息」不可能是给人看的业务提示，只会是 SQL / 堆栈 / dump。
+ * 直接判死而不是「扫前 2000 字」——后者会被「噪声词放在 2000 字之后」绕过（评审 round 2）。
+ * 同时它也给下面的码点迭代兜住了上界。
+ */
+const MAX_SCANNABLE_LENGTH = 2000
+
+/**
+ * 技术细节特征：命中即判不可读。
+ *
+ * 补这一组是因为「含中文」这道判据挡不住**中文包裹的技术细节**——
+ * `INVALID_STATE: 数据库错误：relation "x" does not exist` 前缀合法、含中文、不命中噪声词表，
+ * 旧版会完整放行（评审 round 2 指出）。
+ *
+ * 每条都按「只在技术语境出现、不会出现在中文业务文案里」挑选，并由
+ * `action-error.test.ts` 的正负例用例钉住（正例=真实业务文案不得被误吞）。
+ */
+const TECHNICAL_DETAIL_PATTERNS: readonly RegExp[] = [
+  // SQL 与 PG 报错术语。`does not exist` 单列一条：PG 的 relation/column/type/function
+  // 全用这句收尾，只枚举 relation 会漏掉 `column "customer_id" does not exist`（评审 round 3）。
+  /\b(?:select|insert into|update\s+\w+\s+set|delete from|relation|constraint|duplicate key|violates|syntax error at|invalid input syntax|out of range)\b/i,
+  /\bdoes not exist\b/i,
+  // 文件路径（两段以上）。`(?<![\w])` 不可省：否则「仅支持 JPG/PNG/WebP/GIF」这类
+  // 斜杠分隔的业务选项会被当成路径吞掉（评审 round 3 的真实反例）。
+  /(?<![\w])(?:\/[\w.-]+){2,}/,
+  /https?:\/\//i,
+  // IPv4[:端口]
+  /\b\d{1,3}(?:\.\d{1,3}){3}\b/,
+  // ⚠️ 刻意**不**收「长大写 token」这条。全仓扫过：它在真实代码里唯一的效果是吞掉 4 条
+  // **故意提示配置缺失**的运维文案（`密码加密未配置（缺少 RSA_PRIVATE_KEY）`、
+  // `未配置 WX_CLIENT_SECRET 环境变量` 等）。这类错误发生在部署期、读者就是要去改 env 的人，
+  // 换成中文兜底会让配置错误看起来像随机故障。而它想挡的泄漏形态（裸枚举、英文技术串）
+  // 已由「必须含中文」那道闸门兜住，配置键泄漏的也只是**变量名**不是值。
+  // 堆栈帧
+  /\bat\s+\w+\s*\(/,
+]
+
+/**
+ * 内容闸门：把一段候选正文收敛成「能端给用户的话」，收敛不出来返回 null。
+ *
+ * 顺序有讲究：
+ * 1. 取首行 —— 多行错误从第二行起通常是 SQL / 堆栈 / 文件路径
+ * 2. 剥日志子标签
+ * 3. **噪声与技术特征判定在截断之前**做 —— 若先截断，「内网地址在第 50 字、ETIMEDOUT 在第 150 字」
+ *    这种串会把地址露出去而噪声词检测不到（评审 round 1）；超长首行直接判死而不是
+ *    「只扫前 N 字」，否则噪声词挪到 N 之后照样绕过（评审 round 2）
+ * 4. 码点安全截断 —— `slice` 会切断 emoji 代理对
+ * 5. **中文判定在「展示文本」上**做 —— 中文若只出现在截断点之后，露出去的仍是英文技术串
+ */
+function presentable(raw: string): string | null {
+  const newline = raw.indexOf('\n')
+  const line = (newline === -1 ? raw : raw.slice(0, newline)).replace(LOG_TAG_RE, '').trim()
+  if (!line) return null
+  // 超长首行直接判死（见 MAX_SCANNABLE_LENGTH），顺带给下面的码点迭代兜住上界
+  if (line.length > MAX_SCANNABLE_LENGTH) return null
+
+  const lower = line.toLowerCase()
+  if (UNREADABLE_FRAGMENTS.some((f) => lower.includes(f))) return null
+  if (TECHNICAL_DETAIL_PATTERNS.some((re) => re.test(line))) return null
+
+  const chars = Array.from(line)
+  const truncated = chars.length > MAX_DISPLAY_LENGTH
+  const display = truncated ? chars.slice(0, MAX_DISPLAY_LENGTH).join('') : line
+  // 不含中文 ⇒ 错误编号 / 内部枚举 / HTTP 码 / 英文技术串，一律不给看
+  if (!CJK_RE.test(display)) return null
+  return truncated ? `${display}…` : display
+}
+
+/**
+ * 取一格候选值里的用户文案，取不出返回 null。
+ *
+ * `failOpen` 就是上面说的两道来源口径：
+ * - `false`（digest 通道）：必须带白名单前缀，或整串是那两个裸 token 之一
+ * - `true`（message 通道）：不带前缀的可读中文也放行
+ *
+ * 两条通道都要过 `presentable` 内容闸门。
+ */
+function readable(value: string, failOpen: boolean): string | null {
+  const parsed = parseErrorPrefix(value)
+  if (parsed) return presentable(parsed.displayMessage)
+  return OPAQUE_TOKEN_MESSAGES.get(value) ?? (failOpen ? presentable(value) : null)
+}
+
+/**
+ * digest → message → fallback 三级取值。
+ *
+ * 本函数绝不能抛：它被 200+ 个 catch 块调用，digest/message 可能是抛异常的 getter 或 Proxy，
+ * 一次逃逸就是整页白屏。
+ */
+function extract(err: unknown, fallback: string, failOpenMessage: boolean): string {
+  try {
+    const digest = pick(err, 'digest')
+    const fromDigest = digest ? readable(digest, false) : null
+    if (fromDigest) return fromDigest
+    const message = pick(err, 'message')
+    return (message ? readable(message, failOpenMessage) : null) ?? fallback
+  } catch {
+    return fallback
+  }
+}
+
+/**
+ * 【客户端展示用】从 Server Action 抛出的错误里取用户文案。
+ *
+ * message 通道 fail-open：客户端 catch 里也会接到前端本地 throw（如 `lib/recharge-tier.ts`
+ * 的 `matchTier`），那些 message 没有前缀但完全可读。
+ */
 export function actionErrorMessage(err: unknown, fallback: string): string {
-  const digest = (err as { digest?: unknown } | null)?.digest
-  const raw =
-    (typeof digest === "string" && digest) ||
-    (err instanceof Error ? err.message : "")
-  if (!raw) return fallback
-  const lower = raw.toLowerCase()
-  if (UNREADABLE_FRAGMENTS.some((f) => lower.includes(f))) return fallback
-  return raw.replace(/^[A-Z_]+:\s*/, "")
+  return extract(err, fallback, true)
+}
+
+/**
+ * 【服务端返回值用】同上，但 message 通道也 fail-closed。
+ *
+ * Server Action 的**返回值**不经 Next 脱敏，`catch { return { message: err.message } }` 会把
+ * 原始 PG 报错（约束名 / SQL 片段）原样送到前端 toast —— 这是 digest 之外的**第二条泄漏通道**，
+ * 双谱系评审 round 1 两个谱系都指了出来。服务端 catch 到的错误没有「本地可读 throw」这一类，
+ * 因此这里要求必须带 9 项白名单前缀，不带就一律用调用方的中文兜底文案。
+ */
+export function businessErrorMessage(err: unknown, fallback: string): string {
+  const shown = extract(err, fallback, false)
+  // 「被吞掉的必须落日志」：改造前原始报错至少随 toast 充当穷人日志，现在用户侧只剩兜底文案，
+  // 服务端若也没落点，线上排查就彻底断线（评审 round 6）。只在真的退回兜底时记，
+  // 正常业务拒绝（有可读文案）不产生噪声。
+  if (shown === fallback) {
+    console.error('[businessErrorMessage] 非业务错误已对用户隐藏，原始错误：', err)
+  }
+  return shown
+}
+
+/**
+ * 取业务错误类型（9 项白名单前缀之一），供前端按类型分支渲染，取不到返回 null。
+ *
+ * 生产构建下 `err.message` 已被脱敏，`msg.startsWith('PERMISSION_DENIED:')` 这类判断线上
+ * 恒不成立；本函数从 digest 侧取，dev / prod 行为一致。`(main)/error.tsx` 判 401/403、
+ * `employees/[id]` 与 `org` 的专属文案分支都走它。
+ *
+ * 注意与 `actionErrorMessage` 的可达面刻意保持一致：裸 token 只认
+ * `OPAQUE_TOKEN_MESSAGES` 里那两个（= 实际会被产出的那两个），不放行其余 7 项前缀的裸形态。
+ */
+export function actionErrorType(err: unknown): ErrorPrefix | null {
+  try {
+    const digest = pick(err, 'digest')
+    if (digest) {
+      const parsed = parseErrorPrefix(digest)
+      if (parsed) return parsed.prefix
+      // `PermissionError` 的裸 token 形态：digest 整串就是类型本身
+      if (OPAQUE_TOKEN_MESSAGES.has(digest)) return digest as ErrorPrefix
+    }
+    const message = pick(err, 'message')
+    if (!message) return null
+    const parsed = parseErrorPrefix(message)
+    if (parsed) return parsed.prefix
+    // 与 actionErrorMessage 的可达面对齐：message 整串是裸 token 时它会给出中文说法，
+    // 这里也必须判得出类型，否则 error.tsx 会把该判 403 的渲染成 500（评审 round 1）
+    return OPAQUE_TOKEN_MESSAGES.has(message) ? (message as ErrorPrefix) : null
+  } catch {
+    return null
+  }
 }

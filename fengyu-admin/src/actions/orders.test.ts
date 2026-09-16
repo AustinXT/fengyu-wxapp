@@ -1003,6 +1003,8 @@ describe('createOrder — 全额储值卡抵扣即时扣卡（2026-05-21）', ()
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('储值卡余额不足')
+    // 余额不得落回子标签位：`50: 顾客储值卡余额不足…` 这种开头会直接漏进 toast（issue #133 评审 round 3/4）
+    expect(result.message).toMatch(/^顾客储值卡余额不足/)
   })
 })
 
@@ -1655,7 +1657,8 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
     const result = await confirmOfflinePayment('order-active-intent')
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain('PAYMENT_INTENT_ACTIVE')
+    // 子标签（PAYMENT_INTENT_ACTIVE）只进日志不展示给用户；机器可读部分在 code 字段（issue #133）
+    expect(result.message).toBe('在线支付处理中，暂不能确认线下收款')
     expect(statements).toHaveLength(1)
   })
 
@@ -3266,7 +3269,8 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     const result = await createConversionOrder(homeConvData)
 
     expect(result.success).toBe(false)
-    expect(JSON.stringify(result)).toContain('HOME_PRODUCT_NO_PENDING')
+    // 子标签 HOME_PRODUCT_NO_PENDING 只进日志，用户看到的是中文正文（issue #133）
+    expect(result.message).toBe('所选家居产品已无未提货数量，不可折抵')
   })
 
   it('#125 家居扣减 rowsAffected=0（并发被抢先）→ 冲突', async () => {
@@ -3279,7 +3283,8 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     const result = await createConversionOrder(homeConvData)
 
     expect(result.success).toBe(false)
-    expect(JSON.stringify(result)).toContain('HOME_PRODUCT_CONCURRENT_CHANGED')
+    // 子标签 HOME_PRODUCT_CONCURRENT_CHANGED 只进日志，用户看到的是中文正文（issue #133）
+    expect(result.message).toBe('家居产品可提数量变化，请重试')
   })
 
   it('受限普通转入 SKU 不匹配顾客绑定门店市场时拒绝提交', async () => {
@@ -4812,7 +4817,8 @@ describe('recordPayment — 管理后台录入回款', () => {
       success: false,
       error: {
         code: 'CONFLICT',
-        message: 'PAYMENT_INTENT_ACTIVE: 订单存在进行中的在线支付，请等待支付结果或先取消在线支付',
+        // 子标签只进日志不给用户看，机器可读部分在 code 字段（issue #133）
+        message: '订单存在进行中的在线支付，请等待支付结果或先取消在线支付',
       },
     })
     expect(captured.insertValues).toHaveLength(0)
@@ -5216,6 +5222,25 @@ describe('freezeConversionRepaymentAmount — admin 在线转换回款金额冻�
     expect(statements[1]).toContain('refunded_amount =')
   })
 
+  it('超额冻结：余额在中文正文里，不落子标签位（issue #133 评审 round 5）', async () => {
+    mockFreezeTx(lockedConversion)
+
+    const result = await freezeConversionRepaymentAmount({
+      saleOrderId: lockedConversion.sale_order_id,
+      amount: 999,
+    })
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.code).toBe('CONFLICT')
+      // 旧形态是 `OVERPAY:100.00: 本次回款金额超过订单欠款`，剥掉 OVERPAY: 后会以
+      // 「100.00: 」开头直接漏进 toast；现在余额写在中文正文括号里
+      expect(result.error.message).toMatch(/^本次回款金额超过订单欠款（剩余 ¥[\d.]+）$/)
+      expect(result.error.message).not.toMatch(/^[\d.]+:/)
+      expect(result.error.message).not.toContain('OVERPAY')
+    }
+  })
+
   it('退款后的欠款按 total - received + refunded_amount 冻结', async () => {
     mockFreezeTx({
       ...lockedConversion,
@@ -5273,7 +5298,8 @@ describe('freezeConversionRepaymentAmount — admin 在线转换回款金额冻�
     expect(result.success).toBe(false)
     if (!result.success) {
       expect(result.error.code).toBe('CONFLICT')
-      expect(result.error.message).toContain('PAYMENT_INTENT_ACTIVE')
+      // 子标签只进日志不给用户看，机器可读部分在 code 字段（issue #133）
+      expect(result.error.message).toBe('订单已有进行中的在线支付，请等待支付结果后重试')
     }
     expect(statements).toHaveLength(1)
   })

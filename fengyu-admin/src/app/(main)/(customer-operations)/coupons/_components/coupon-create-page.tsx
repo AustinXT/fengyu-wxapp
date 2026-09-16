@@ -12,6 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { Tooltip } from "@/components/ui/tooltip"
 import { createTemplate } from "@/actions/coupons"
+import { actionErrorMessage } from "@/lib/action-error"
 import type { CouponType } from "@/lib/types"
 import { validateCouponValidityFields } from "./coupon-validity-helper"
 
@@ -115,7 +116,7 @@ export default function CouponCreatePage({ markets, categories }: Props) {
       router.push("/coupons")
       router.refresh()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "创建失败，请重试")
+      toast.error(actionErrorMessage(err, "创建失败，请重试"))
     } finally {
       setSaving(false)
     }
