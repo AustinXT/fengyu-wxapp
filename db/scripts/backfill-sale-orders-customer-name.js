@@ -18,12 +18,12 @@
  * client_wechat_users 的 sale_orders.customer_name 覆写为权威 name。
  *
  * 用法：
- *   # 5434 / fengyu（开发库）
- *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
+ *   # dev
+ *   DATABASE_URL="postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp" \
  *     node db/scripts/backfill-sale-orders-customer-name.js
  *
- *   # 5433 / fengyu_wxapp（生产业务库）
- *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
+ *   # prod
+ *   DATABASE_URL="postgresql://fengyu:fengyu123@118.178.196.26:5433/fengyu_wxapp" \
  *     node db/scripts/backfill-sale-orders-customer-name.js
  *
  *   # 预览（不写入）

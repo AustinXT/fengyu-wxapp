@@ -24,7 +24,7 @@ process.env.ALLOW_TEST_OPENID = 'true'
 process.env.POINTS_ACCRUAL_ENABLED = process.env.POINTS_ACCRUAL_ENABLED || 'true'
 process.env.PG_CONNECTION_STRING =
   process.env.PG_CONNECTION_STRING ||
-  'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
+  'postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp'
 process.env.DATABASE_URL = process.env.PG_CONNECTION_STRING
 
 // 用绝对路径 import setup / fixtures（cwd=admin/，相对路径不可靠）

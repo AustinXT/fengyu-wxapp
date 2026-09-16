@@ -1,4 +1,4 @@
-import { safeParseDate, formatDate, formatDateTime, formatDateTimeShort, formatTime, getElapsedTime, STATUS_CLASS, ORDER_TYPE_LABEL, formatDiscount, buildCouponDisplay } from '../../utils/formatters'
+import { safeParseDate, formatDate, formatDateTime, formatDateTimeShort, formatTime, getElapsedTime, maskPhone, STATUS_CLASS, ORDER_TYPE_LABEL, formatDiscount, buildCouponDisplay } from '../../utils/formatters'
 
 describe('优惠券展示格式化', () => {
   test('折扣券 0.85 显示 8.5 折', () => {
@@ -158,6 +158,30 @@ describe('formatTime', () => {
 
   test('短字符串返回原值', () => {
     expect(formatTime('10:30')).toBe('10:30')
+  })
+})
+
+describe('maskPhone', () => {
+  test('11 位手机号遮中间 4 位', () => {
+    expect(maskPhone('13812345678')).toBe('138****5678')
+  })
+
+  test('前 3 位与后 4 位保留原样（据此核对是不是同一个人）', () => {
+    expect(maskPhone('18600000001')).toBe('186****0001')
+  })
+
+  test('短号按长度分档脱敏，不留原文（对齐 staffApi/utils/pii.js）', () => {
+    expect(maskPhone('1234')).toBe('****')       // <=4 全遮
+    expect(maskPhone('12345')).toBe('1***5')     // <=7 首尾各留一位
+    expect(maskPhone('123456')).toBe('1****6')
+    expect(maskPhone('8812345')).toBe('8*****5') // 7 位座机不再变成 881****2345
+  })
+
+  test('空值归一为空串，不把 undefined 吐回去渲染到页面上', () => {
+    expect(maskPhone('')).toBe('')
+    expect(maskPhone('   ')).toBe('')
+    expect(maskPhone(undefined as unknown as string)).toBe('')
+    expect(maskPhone(null as unknown as string)).toBe('')
   })
 })
 

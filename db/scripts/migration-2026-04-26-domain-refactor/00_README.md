@@ -1,5 +1,8 @@
 # Migration 2026-04-26 — Sale Order Domain Refactor
 
+> ⚠ 历史记录（2026-04-26 一次性迁移，已执行完毕）：下文的 `47.113.202.7` / 5434 是当时的拓扑，
+> 保留原文以还原语境。该机已于 2026-09-01 全面弃用，**不要照抄其中的连接串**（见 issue #151）。
+
 > 来源 ticket：[notes/tickets/2026-04-26-sale-order-domain-refactor.md](../../../notes/tickets/2026-04-26-sale-order-domain-refactor.md)
 > 主迁移 SQL：[`db/migrations/0018_black_madrox.sql`](../../migrations/0018_black_madrox.sql)（drizzle 自动生成）
 > 数据迁移脚本：本目录 01–05

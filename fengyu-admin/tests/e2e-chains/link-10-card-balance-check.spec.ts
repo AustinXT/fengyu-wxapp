@@ -49,7 +49,7 @@ const RECHARGE_PAY_AMOUNT = 495 // 500 * 0.99
 function psql(sql: string): string {
   try {
     return execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp -t -c "${sql.replace(/"/g, '\\"')}"`,
+      `PGPASSWORD=fengyu123 psql -h 101.34.242.103 -p 5433 -U fengyu -d fengyu_wxapp -t -c "${sql.replace(/"/g, '\\"')}"`,
       { encoding: 'utf8', timeout: 15000 },
     ).trim()
   } catch (e: any) {

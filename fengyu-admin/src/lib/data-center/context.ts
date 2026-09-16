@@ -25,7 +25,23 @@ export function getScopeTopLevel(session: AuthSession): 'all' | 'market' | 'stor
   return 'store'
 }
 
-/** UI 选中的 scope 是否在账号权限内；越权抛 PermissionError（仿 staff validateScope） */
+/**
+ * UI 选中的 scope 是否在账号权限内；越权抛 PermissionError（仿 staff validateScope）。
+ *
+ * ⚠️ 已知限制（issue #133 的 pr-ready 审查记录）：`PermissionError` 的 `digest` 是裸 token
+ * `'PERMISSION_DENIED'`（类字段，先于 `rethrowWithDigest` 存在故不被覆盖），下面 4 条具体理由
+ * 只活在 `message` 里，而生产构建会把 message 脱敏。于是 4 个看板（SalesBoard/CustomerBoard/
+ * EfficiencyBoard/ProductBoard）的内联红字线上一律退化成「无权执行该操作」，用户分不清
+ * 该找人授权还是该切 scope。
+ *
+ * 修法是让 `PermissionError.digest` 带上完整 message。**技术改动面很小**：`error.tsx` 已改走
+ * `actionErrorType`，它经 `parseErrorPrefix` 对 `PERMISSION_DENIED: 理由` 照样判出 403，
+ * 无需再动渲染链路（issue #133 评审 round 3 纠正了这里原先「要动全局 401/403」的夸大表述）。
+ *
+ * 真正的工作量在**逐条审文案**：`requirePermission` 抛的是 `无权执行 ${action}`，直接透出等于把
+ * 内部动作 ID（`employee:update`）端给用户，比现在的「无权执行该操作」更差。所以要先给每个
+ * PermissionError 定一句面向用户的话，才能放开透传 —— 属文案决策，另开 issue。
+ */
 export async function validateScope(session: AuthSession, scope: DataCenterScope): Promise<void> {
   if (isAdminScope(session)) return
   if (session.roles.some((r) => r.scopeType === '总部')) return

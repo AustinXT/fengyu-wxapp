@@ -8,8 +8,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ENV_NAME="${1:-}"
 OUTPUT="${2:-}"
 
-if [[ ! "$ENV_NAME" =~ ^(dev|test|prod)$ ]] || [[ -z "$OUTPUT" ]]; then
-  echo "Usage: $0 <dev|test|prod> <output-file>" >&2
+if [[ ! "$ENV_NAME" =~ ^(dev|prod)$ ]] || [[ -z "$OUTPUT" ]]; then
+  echo "Usage: $0 <dev|prod> <output-file>" >&2
   exit 1
 fi
 

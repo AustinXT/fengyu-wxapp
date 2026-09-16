@@ -22,6 +22,7 @@
  */
 
 const { Client } = require('pg')
+const { OVERRIDE_KEYS: DB_OVERRIDE_KEYS } = require('./_lib/assert-db-target')
 
 const TARGET_ORDER_ID = 'FY-XSD-WX-2608160038'
 const CLOSED_SCREENSHOT_ORDER_ID = 'FY-XSD-WX-2608160040'
@@ -345,6 +346,16 @@ async function main() {
   }
 
   const parsed = new URL(databaseUrl)
+  // query 参数（含百分号编码形式）优先级高于 URL authority，只比 hostname/port/pathname
+  // 会被 `?host=<旧库>` 整个绕过 —— 而本脚本 --apply 直接写生产数据。
+  {
+    const overriding = DB_OVERRIDE_KEYS.filter((k) => parsed.searchParams.has(k))
+    if (overriding.length) {
+      console.error(`FATAL: 连接串 query 试图覆盖连接目标（${overriding.join(', ')}），拒绝执行`)
+      process.exit(1)
+    }
+  }
+
   if (APPLY) {
     if (CONFIRMED_ORDER !== TARGET_ORDER_ID) {
       console.error(`FATAL: APPLY 必须追加 --confirm-order=${TARGET_ORDER_ID}`)

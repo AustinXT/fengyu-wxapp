@@ -16,12 +16,15 @@
 //   node db/scripts/seed-first-admin.js --phone 13800000001 --name 张三 --password 'TempPass#2026'
 //   node db/scripts/seed-first-admin.js --phone 13800000001 --name 张三 --password 'TempPass#2026' --dry-run
 //
-//   DATABASE_URL 默认读 db/.env（5434/fengyu），prod 请显式传：
-//   DATABASE_URL=postgresql://...:5433/fengyu_wxapp node db/scripts/seed-first-admin.js ...
+//   DATABASE_URL 默认读 db/.env；务必显式传目标库，避免连到非预期环境：
+//   dev : DATABASE_URL=postgresql://...@101.34.242.103:5433/fengyu_wxapp node db/scripts/seed-first-admin.js ...
+//   prod: DATABASE_URL=postgresql://...@118.178.196.26:5433/fengyu_wxapp node db/scripts/seed-first-admin.js ...
 
 const path = require('node:path')
 const fs = require('node:fs')
 const { Client } = require('pg')
+// 目标断言：本脚本会回落读取本机 db/.env，那份文件很容易残留已弃用的旧地址
+const { isAllowedDbTarget } = require('./_lib/assert-db-target')
 const { hash } = require('bcryptjs')
 
 // --- CLI 参数 ---
@@ -66,14 +69,24 @@ function validatePhone(phone) {
 }
 
 function loadDbUrl() {
-  if (process.env.DATABASE_URL) return process.env.DATABASE_URL
-  const envPath = path.join(__dirname, '..', '.env')
-  if (fs.existsSync(envPath)) {
-    const m = fs.readFileSync(envPath, 'utf8').match(/^DATABASE_URL=(.+)$/m)
-    if (m) return m[1].trim()
+  let url = process.env.DATABASE_URL?.trim()
+  if (!url) {
+    const envPath = path.join(__dirname, '..', '.env')
+    if (fs.existsSync(envPath)) {
+      const m = fs.readFileSync(envPath, 'utf8').match(/^DATABASE_URL=(.+)$/m)
+      if (m) url = m[1].trim()
+    }
   }
-  console.error('ERROR: DATABASE_URL not set and db/.env not found.')
-  process.exit(1)
+  if (!url) {
+    console.error('ERROR: DATABASE_URL not set and db/.env not found.')
+    process.exit(1)
+  }
+  if (!isAllowedDbTarget(url)) {
+    console.error('ERROR: DATABASE_URL 必须显式指向 dev=101.34.242.103:5433/fengyu_wxapp 或 prod=118.178.196.26:5433/fengyu_wxapp')
+    console.error('       （若来源是 db/.env，请先更新那份文件——旧的 47.113.202.7 已于 2026-09-01 弃用）')
+    process.exit(1)
+  }
+  return url
 }
 
 async function main() {

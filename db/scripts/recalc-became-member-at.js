@@ -33,14 +33,14 @@
  *
  * 用法：
  *   # dry-run（默认，仅打印统计 + 抽样）
- *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
+ *   DATABASE_URL="postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp" \
  *     node db/scripts/recalc-became-member-at.js
  *
  *   # 实际提交
- *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
+ *   DATABASE_URL="postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp" \
  *     node db/scripts/recalc-became-member-at.js --apply
  *
- * 顺序：先 dev（47.113.202.7:5433/fengyu_wxapp）--apply 验证；再 prod
+ * 顺序：先 dev（101.34.242.103:5433/fengyu_wxapp）--apply 验证；再 prod
  *   （118.178.196.26:5433/fengyu_wxapp）--apply。两库均 5433/fengyu_wxapp，仅 IP 区分。
  *   prod --apply 前先 `bash db/scripts/dump-prod.sh -t client_wechat_users` 备份（覆写不可逆）。
  *   e2e 绝不碰生产 IP 118.178.196.26。

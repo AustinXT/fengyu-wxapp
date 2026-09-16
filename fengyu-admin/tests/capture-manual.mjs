@@ -11,7 +11,7 @@
 //   bun run build && bun run start            # 或 bun run dev（dev 有 React 调试浮层，建议 build+start）
 //   ADMIN_PHONE=13900139000 ADMIN_PASS=<密码> bun tests/capture-manual.mjs
 //
-// 前提：.env.local 的 DATABASE_URL 指向 5433（postgresql://fengyu:***@47.113.202.7:5433/fengyu_wxapp）。
+// 前提：.env.local 的 DATABASE_URL 指向 5433（postgresql://fengyu:***@101.34.242.103:5433/fengyu_wxapp）。
 
 import { chromium } from '@playwright/test'
 import { mkdirSync } from 'node:fs'

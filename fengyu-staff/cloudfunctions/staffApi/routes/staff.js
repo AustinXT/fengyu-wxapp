@@ -347,7 +347,8 @@ async function todayCommission(ctx) {
     lastMonthServiceCount: Number(lastMonthSvcRows[0].service_count),
   }
 
-  // 店长：门店今日总业绩（首次收款按订单归属日，后续回款/退款按真实发生日）
+  // 店长：门店今日总业绩（一律按款项业绩归属日期 spe.performance_date；#137 收敛后
+  // 首次支付/回款/退款同口径，原「后续按真实发生日」表述已失效）
   // 门店过滤用 effectiveStoreId（当前选中门店），多店店长切店后才正确
   const eff = ctx.auth.effectiveStoreId
   if (isManager && eff) {
@@ -372,7 +373,8 @@ async function todayCommission(ctx) {
  * 月度业绩日历（整店口径）
  *
  * 口径约定（勿误改）：日历每日格子 + 头部合计 = 整店汇总业绩
- *   = SUM(sale_order_performance_events.amount)，首次收款按订单归属日，后续流水按真实发生日，
+ *   = SUM(sale_order_performance_events.amount)，**一律按款项业绩归属日期**
+ *   （#137 收敛 / 迁移 0040，首次支付/回款/退款同口径），
  *   按 effectiveStoreId（当前选中门店）过滤，与首卡「门店今日营收」/ mgmt-dashboard.queryStoreRevenue 同口径。
  *   ⚠️ 这是【整店营业额】维度，不是登录员工的个人分成份额（个人本月累计走 todayCommission.thisMonth*）。
  */

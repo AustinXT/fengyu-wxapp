@@ -41,6 +41,7 @@ import { cascadeRefund, notifyRefundCreated, notifyRefundResult } from '@/lib/re
 import { pgErrorCode, pgErrorConstraint } from '@/lib/pg-error'
 import { recalcPaidSessionsForOrder } from '@/lib/paid-sessions'
 import { reconcileAllocationStatusAfterRefund } from '@/lib/payment-allocatable'
+import { businessErrorMessage } from '@/lib/action-error'
 import type {
   OrderStatus,
   PaymentMethod,
@@ -794,7 +795,8 @@ export const createRefund = withPermission(
     if (msg.startsWith('INVALID_STATE:')) {
       return { success: false, error: { code: 'INVALID_STATE', message: msg.replace(/^INVALID_STATE:\s*/, '') } }
     }
-    return { success: false, error: { code: 'UNKNOWN', message: msg } }
+    // fail-closed：非白名单前缀的原始错误（PG 报错 / 堆栈）不回传给前端（issue #133）
+    return { success: false, error: { code: 'UNKNOWN', message: businessErrorMessage(err, '退款处理失败，请稍后重试') } }
   }
 
   const fee = Math.max(0, Number(input.handlingFee) || 0)
