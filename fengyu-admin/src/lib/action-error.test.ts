@@ -464,6 +464,22 @@ describe('Next 行为漂移守护', () => {
 })
 
 describe('businessErrorMessage：服务端返回值通道（message 也 fail-closed）', () => {
+  it('被吞掉时落服务端日志，正常业务拒绝不产生噪声', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      // 正常业务拒绝 → 不记
+      businessErrorMessage(new Error('INVALID_PARAMS: 最低充值金额 ¥100'), '兜底')
+      expect(spy).not.toHaveBeenCalled()
+      // 被吞 → 必须记，且带上原始错误供排查
+      const swallowed = new Error('duplicate key value violates unique constraint "uq_sku"')
+      businessErrorMessage(swallowed, '兜底')
+      expect(spy).toHaveBeenCalledTimes(1)
+      expect(spy.mock.calls[0][1]).toBe(swallowed)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
   it('带白名单前缀的业务错误照常透出', () => {
     expect(businessErrorMessage(new Error('INVALID_PARAMS: 最低充值金额 ¥100'), '兜底')).toBe(
       '最低充值金额 ¥100',

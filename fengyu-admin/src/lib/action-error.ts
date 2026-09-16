@@ -67,6 +67,9 @@ const UNREADABLE_FRAGMENTS = [
  * 这是**外观启发式**不是契约，判错的代价上限是多显示/少显示一个标签，不构成泄漏
  * （安全性由下面的中文闸门与噪声表保证）。
  * 全角冒号一并认，防中文输入法写错一个冒号就把 token 漏给用户。
+ *
+ * **只剥一层**：根 CLAUDE.md 的二级前缀语法也只允许一级子标签，仓内已 grep 确认无双层形态抛点。
+ * 真出现 `A_SUB: B_SUB: 正文` 时第二个标签会漏进展示（已知限制，评审 round 6 记录）。
  */
 const LOG_TAG_RE = /^(?:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+|[A-Z][A-Z0-9]{5,})\s*[:：]\s*/
 
@@ -223,7 +226,14 @@ export function actionErrorMessage(err: unknown, fallback: string): string {
  * 因此这里要求必须带 9 项白名单前缀，不带就一律用调用方的中文兜底文案。
  */
 export function businessErrorMessage(err: unknown, fallback: string): string {
-  return extract(err, fallback, false)
+  const shown = extract(err, fallback, false)
+  // 「被吞掉的必须落日志」：改造前原始报错至少随 toast 充当穷人日志，现在用户侧只剩兜底文案，
+  // 服务端若也没落点，线上排查就彻底断线（评审 round 6）。只在真的退回兜底时记，
+  // 正常业务拒绝（有可读文案）不产生噪声。
+  if (shown === fallback) {
+    console.error('[businessErrorMessage] 非业务错误已对用户隐藏，原始错误：', err)
+  }
+  return shown
 }
 
 /**

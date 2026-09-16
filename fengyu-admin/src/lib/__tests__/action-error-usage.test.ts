@@ -24,6 +24,9 @@ import path from 'node:path'
  *
  * 这是 best-effort tripwire 不是证明：新写法（如先赋给中间变量再展示）躲得过。
  * 命中即人工判断——要么改走 `actionErrorMessage()`，要么在 ALLOWLIST 里写明豁免理由。
+ *
+ * ⚠️ 扫描面是 `git ls-files`，**未提交的新文件看不到** —— 新增页面请先 `git add` 再跑本用例，
+ * 否则它在提交前是盲区（评审 round 6）。
  */
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
