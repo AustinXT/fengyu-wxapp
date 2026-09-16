@@ -21,6 +21,7 @@ import { revalidatePath } from 'next/cache'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { INVENTORY_LINKAGE_ENABLED } from '@/lib/inventory-feature-flags'
 import { computeAvailableByLot } from '@/lib/inventory/lot-availability'
+import { isConvertibleEntitlementRow } from '@/lib/home-product'
 
 export interface AdminPickupRecord {
   id: number
@@ -515,19 +516,6 @@ export interface AvailablePickupItem {
   unitRealPrice: string
   storeId: string
   storeName: string | null
-}
-
-/**
- * 可提货方向判据（#145/#153）：购买行，或转换单换入行。
- * 与 staffApi routes/order.js `isConvertibleEntitlementRow` 跨端同义，
- * 亦与疗程卡侧 `item_direction='购买' OR (sale_order_type='转换单' AND item_direction='转入')` 同源。
- */
-function isConvertibleEntitlementRow(row: {
-  item_direction: string
-  sale_order_type: string
-}): boolean {
-  return row.item_direction === '购买'
-    || (row.sale_order_type === '转换单' && row.item_direction === '转入')
 }
 
 /**

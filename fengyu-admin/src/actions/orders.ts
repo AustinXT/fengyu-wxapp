@@ -35,7 +35,7 @@ import { calculateTreatmentTierLineAmounts } from '@/lib/treatment-tier-pricing'
 import { settlePointsSafe } from '@/lib/points-settle'
 import { grantPointBatch, consumePointBatches } from '@/lib/points-batches'
 import { recalcPaidSessionsForOrder, paidUnusedSessionsExpr } from '@/lib/paid-sessions'
-import { homeDeductible } from '@/lib/home-product'
+import { homeDeductible, isConvertibleEntitlementRow } from '@/lib/home-product'
 import { capturePaymentAllocatables, refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
 import { getPerItemRefundedMap } from '@/lib/per-item-refund'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
@@ -5493,8 +5493,10 @@ export const createConversionOrder = withPermission(
         // 归属校验：store_id / client_user_id / direction / 状态
         if (row.store_id !== data.storeId) throw new ApiError('INVALID_STATE', 'CARD_STORE_MISMATCH: 所选卡不属于当前门店')
         if (row.client_user_id !== data.clientUserId) throw new ApiError('INVALID_STATE', 'CARD_OWNER_MISMATCH: 所选卡不属于该顾客')
-        const isEntitlement = row.item_direction === '购买'
-          || (row.sale_order_type === '转换单' && row.item_direction === '转入')
+        const isEntitlement = isConvertibleEntitlementRow({
+          item_direction: row.item_direction as string,
+          sale_order_type: row.sale_order_type as string,
+        })
         if (!isEntitlement) throw new ApiError('INVALID_STATE', 'CARD_DIRECTION_INVALID: 所选行不是有效权益，不可折抵')
         // 订单级「部分支付」同样放行（#125 甲方拍板），与 getCustomerHeldCards 的 WHERE 保持一致
         if (row.order_status !== '已支付' && row.order_status !== '部分支付' && row.order_status !== '已完成') {

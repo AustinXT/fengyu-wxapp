@@ -713,8 +713,10 @@ export const getCardTransactions = withPermission(
  * 折抵对象（2026-05-21 单品合并后放开）：
  *   疗程卡 (product_type='疗程卡') AND remaining_sessions > 0
  *   —— 原"体验卡单品"已并入疗程卡（session_count=1），不再要求 is_experience。
- *   家居产品 (product_type='家居产品') AND quantity − picked_up_quantity > 0（2026-09-14 #125）
- *   —— 未提货数量整行折抵，不看付款进度；已退数量已由 refund-cascade 并入 picked_up_quantity。
+ *   家居产品 (product_type='家居产品')：可折抵件数 > 0（#145/#153 收紧）
+ *   —— 以「剩余已付金额 = 行实收 − 已提货金额 − 已转走金额」为基准，件数 = floor(剩余已付 / 单价)、
+ *      受物理未结算件数封顶；金额 = 剩余已付（含不足一整件的余数）。
+ *      寄存单与 0 元赠品行无「实收」可言，维持 单价 × 未结算件数。口径见 lib/home-product.ts::homeDeductible。
  *
  * 不包含：充值卡（走 prepaid_cards 账户，不在 sale_items 行）
  */

@@ -2290,12 +2290,25 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
   })
 
   // 事务闸门里的方向判据走 JS helper，两端必须同义。
-  const HELPER_RETURN = "return row.item_direction === '购买' || (row.sale_order_type === '转换单' && row.item_direction === '转入')"
+  const HELPER_EXPR = "row.item_direction === '购买' || (row.sale_order_type === '转换单' && row.item_direction === '转入')"
+  const HELPER_RETURN = `return ${HELPER_EXPR}`
 
-  test('方向判据 helper 双端同义', () => {
-    for (const file of [FILES.staffOrderJs, FILES.adminPickupRecordsTs]) {
+  test('方向判据 helper 双端同义，admin 侧单源且三处站点都走它', () => {
+    // staff 内联在 routes/order.js；admin 抽在 lib/home-product.ts（单源）
+    for (const file of [FILES.staffOrderJs, FILES.adminHomeProductTs]) {
       const src = readFile(file).replace(/\s+/g, ' ')
       expect(src, `${file} 的 isConvertibleEntitlementRow 判据漂移`).toContain(HELPER_RETURN)
+    }
+    // admin 的两个 action 必须 import 单源，不得各自内联——内联是脱缰的漂移向量，
+    // 改一端漏改另一端测不出来（对抗审查实证：orders.ts 曾内联同义判据逃过守护）。
+    for (const file of [FILES.adminPickupRecordsTs, FILES.adminOrdersTs]) {
+      const src = readFile(file).replace(/\s+/g, ' ')
+      expect(src, `${file} 未从 lib/home-product 引入方向判据`).toMatch(
+        /import \{[^}]*isConvertibleEntitlementRow[^}]*\} from '@\/lib\/home-product'/,
+      )
+      // 按**表达式本体**查，不能只查带 `return` 的完整 helper——内联时写成
+      // `const isEntitlement = <表达式>` 就绕过去了（变异 M21 实证）。
+      expect(src, `${file} 又内联了一份方向判据`).not.toContain(HELPER_EXPR)
     }
   })
 
@@ -2431,18 +2444,22 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
 
   test('admin 折抵 helper 与 staff 同义，且两处闸门都走 helper', () => {
     const adminHelper = readFile(FILES.adminHomeProductTs).replace(/\s+/g, ' ')
-    expect(adminHelper, 'admin 剩余已付口径漂移').toContain(
-      'const remainingPaid = Math.max(0, received - picked * unit - convertedAmount)',
-    )
     // 必须按「分」整除：staff 侧是 PG numeric 精确除法，JS 浮点直除会分叉
     // （300.27 / 100.09 浮点得 2.9999999999999996 → floor 2，PG 得 3）。
-    expect(adminHelper, 'admin 折抵件数未按分整除，与 PG numeric 会分叉').toContain(
-      'quantity: unitCents > 0 ? Math.min(physicalRemaining, Math.floor(toCents(remainingPaid) / unitCents)) : 0,',
+    // 全程按「分」算：这些列是 numeric(10,2)，staff 走 PG exact decimal，
+    // admin 一旦用 double 做减法/除法就分叉（unit=16.67 × 3 件、received=50.01：
+    // 浮点 floor 得 2，PG 得 3 → admin 落 quantity=2/received=-50.01 的转出行，
+    // 源行只 +2 件，第 3 件仍可提 → 超发）。
+    expect(adminHelper, 'admin 折抵额度未全程按分计算，与 PG numeric 会分叉').toContain(
+      'const remainingCents = Math.max( 0, toCents(received) - picked * unitCents - toCents(convertedAmount), )',
     )
-    expect(adminHelper, 'admin 折抵件数回退成浮点直除').not.toContain(
-      'Math.floor(remainingPaid / unit)',
+    expect(adminHelper, 'admin 折抵件数未按分整除').toContain(
+      'quantity: unitCents > 0 ? Math.min(physicalRemaining, Math.floor(remainingCents / unitCents)) : 0,',
     )
-    expect(adminHelper, 'admin 折抵金额应为剩余已付（含余数）').toContain('amount: remainingPaid')
+    expect(adminHelper, 'admin 折抵额度回退成浮点运算').not.toMatch(
+      /Math\.floor\(remainingPaid \/ unit\)|received - picked \* unit - convertedAmount/,
+    )
+    expect(adminHelper, 'admin 折抵金额应为剩余已付（含余数）').toContain('amount: remainingCents / 100')
     // 寄存单 / 0 元行维持单价 × 未结算件数
     expect(adminHelper).toContain(
       "if (row.saleOrderType === '寄存单' || saleAmount <= 0) { return { quantity: physicalRemaining, amount: unit * physicalRemaining } }",

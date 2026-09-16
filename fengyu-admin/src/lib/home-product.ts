@@ -90,16 +90,35 @@ export function homeDeductible(row: {
     return { quantity: physicalRemaining, amount: unit * physicalRemaining }
   }
 
-  const remainingPaid = Math.max(0, received - picked * unit - convertedAmount)
-  // ⚠ 必须按「分」做整除：staff 侧是 PG numeric 精确除法，JS 浮点直除会分叉——
-  // 例如 remainingPaid=300.27 / unit=100.09，浮点得 2.9999999999999996 → floor 2，
-  // 而 PG 得 3。候选（SQL）放行 3 件、锁内复算（JS）只折 2 件，双端与候选/闸门全都对不上。
+  // ⚠ 全程按「分」算：这些列都是 numeric(10,2)，staff 侧走 PG exact decimal，
+  // admin 侧一旦用 IEEE-754 double 做减法/除法就会与它分叉。实测 unit=16.67 × 3 件、
+  // received=50.01 时，浮点 floor 得 2 而 PG 得 3——admin 会落一条
+  // `quantity=2 / received=-50.01` 的转出行（违反 sale_amount = unit × quantity），
+  // 源行只 +2 件，展示侧按 SUM(quantity)=2 算，第 3 件仍可提 → 超发一件。
   const toCents = (v: number) => Math.round(v * 100)
   const unitCents = toCents(unit)
+  const remainingCents = Math.max(
+    0,
+    toCents(received) - picked * unitCents - toCents(convertedAmount),
+  )
   return {
-    quantity: unitCents > 0
-      ? Math.min(physicalRemaining, Math.floor(toCents(remainingPaid) / unitCents))
-      : 0,
-    amount: remainingPaid,
+    quantity: unitCents > 0 ? Math.min(physicalRemaining, Math.floor(remainingCents / unitCents)) : 0,
+    amount: remainingCents / 100,
   }
+}
+
+/**
+ * 可提货 / 可折抵的方向判据（#145 / #153）：购买行，或转换单换入行。
+ *
+ * admin 三处站点共用（提货候选与闸门 `actions/pickup-records.ts`、
+ * 转换折抵锁内复算 `actions/orders.ts`），与 staffApi routes/order.js
+ * 的 `isConvertibleEntitlementRow` 跨端同义，由 cross-end snapshot 守护。
+ * 内联复制会成为脱缰的漂移向量——改一端漏改另一端测不出来。
+ */
+export function isConvertibleEntitlementRow(row: {
+  item_direction: string
+  sale_order_type: string
+}): boolean {
+  return row.item_direction === '购买'
+    || (row.sale_order_type === '转换单' && row.item_direction === '转入')
 }
