@@ -2434,8 +2434,13 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
     expect(adminHelper, 'admin 剩余已付口径漂移').toContain(
       'const remainingPaid = Math.max(0, received - picked * unit - convertedAmount)',
     )
-    expect(adminHelper, 'admin 折抵件数口径漂移').toContain(
-      'quantity: unit > 0 ? Math.min(physicalRemaining, Math.floor(remainingPaid / unit)) : 0',
+    // 必须按「分」整除：staff 侧是 PG numeric 精确除法，JS 浮点直除会分叉
+    // （300.27 / 100.09 浮点得 2.9999999999999996 → floor 2，PG 得 3）。
+    expect(adminHelper, 'admin 折抵件数未按分整除，与 PG numeric 会分叉').toContain(
+      'quantity: unitCents > 0 ? Math.min(physicalRemaining, Math.floor(toCents(remainingPaid) / unitCents)) : 0,',
+    )
+    expect(adminHelper, 'admin 折抵件数回退成浮点直除').not.toContain(
+      'Math.floor(remainingPaid / unit)',
     )
     expect(adminHelper, 'admin 折抵金额应为剩余已付（含余数）').toContain('amount: remainingPaid')
     // 寄存单 / 0 元行维持单价 × 未结算件数

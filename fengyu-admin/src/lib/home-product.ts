@@ -91,8 +91,15 @@ export function homeDeductible(row: {
   }
 
   const remainingPaid = Math.max(0, received - picked * unit - convertedAmount)
+  // ⚠ 必须按「分」做整除：staff 侧是 PG numeric 精确除法，JS 浮点直除会分叉——
+  // 例如 remainingPaid=300.27 / unit=100.09，浮点得 2.9999999999999996 → floor 2，
+  // 而 PG 得 3。候选（SQL）放行 3 件、锁内复算（JS）只折 2 件，双端与候选/闸门全都对不上。
+  const toCents = (v: number) => Math.round(v * 100)
+  const unitCents = toCents(unit)
   return {
-    quantity: unit > 0 ? Math.min(physicalRemaining, Math.floor(remainingPaid / unit)) : 0,
+    quantity: unitCents > 0
+      ? Math.min(physicalRemaining, Math.floor(toCents(remainingPaid) / unitCents))
+      : 0,
     amount: remainingPaid,
   }
 }
