@@ -7580,7 +7580,13 @@ export const freezeConversionRepaymentAmount = withPermission(
           ) * 100,
         )
         if (amountCents > remainingCents) {
-          throw new ApiError('CONFLICT', `OVERPAY:${(remainingCents / 100).toFixed(2)}: 本次回款金额超过订单欠款`)
+          // 余额写进中文正文而非子标签位：本条的 catch 走 businessErrorMessage，
+          // 留在子标签位会显示成「100.00: 本次回款金额超过订单欠款」（评审 round 5）。
+          // recordPayment 的 OVERPAY 解析器（见下方 /OVERPAY:([\d.]+)/）读的是另一处抛点，不受影响。
+          throw new ApiError(
+            'CONFLICT',
+            `本次回款金额超过订单欠款（剩余 ¥${(remainingCents / 100).toFixed(2)}）`,
+          )
         }
 
         const activeAmount = locked.first_payment_amount == null

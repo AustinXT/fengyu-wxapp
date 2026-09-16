@@ -490,16 +490,22 @@ function isSuccess(raw: Record<string, unknown>) {
   return raw.code === "000000" || raw.code === "0000" || raw.retCode === "000000" || raw.retCode === "0000" || raw.respCode === "0000";
 }
 
-function errorMessage(raw: Record<string, unknown>) {
-  const message = typeof raw.message === "string"
-    ? raw.message
-    : typeof raw.msg === "string"
-      ? raw.msg
-      : typeof raw.retMsg === "string"
-        ? raw.retMsg
-        : typeof raw.httpError === "string"
-          ? raw.httpError
-          : undefined;
+/**
+ * 从拉卡拉响应里挑一条最有用的错误文案。
+ *
+ * 顺序刻意不是「响应体优先」：504 时响应体常是 `{"message":"Gateway Timeout"}`，
+ * 英文候选会顶掉我方的 `httpError`（「拉卡拉网关超时，通常是附件过大，请压缩后重试」），
+ * 而前者过不了 `businessErrorMessage` 的中文闸门 → 用户只剩「提交失败」，
+ * 可操作建议丢失（issue #133 评审 round 5）。故按「含中文的候选 → httpError → 任意候选」取。
+ *
+ * 导出仅供单测覆盖 `fetch → postBody → errorMessage` 这一段。
+ */
+export function errorMessage(raw: Record<string, unknown>) {
+  const candidates = [raw.message, raw.msg, raw.retMsg].filter(
+    (v): v is string => typeof v === "string" && v.trim() !== "",
+  );
+  const httpError = typeof raw.httpError === "string" && raw.httpError.trim() !== "" ? raw.httpError : undefined;
+  const message = candidates.find((v) => /[一-鿿]/.test(v)) ?? httpError ?? candidates[0];
   if (message) return message;
   const code = raw.code || raw.retCode || raw.respCode || raw.httpStatus;
   return code ? `拉卡拉返回错误码：${String(code)}` : undefined;
@@ -579,6 +585,11 @@ async function postTkbsEncrypted(pathname: string, payload: Record<string, unkno
   const raw = await postBody(pathname, encryptedBody);
   const parsed: Record<string, unknown> = parseEncryptedResponse(raw);
   return {
+    // 传输层元数据（httpStatus / httpError / httpDiagnostic）挂在 raw 上，解密后必须带上，
+    // 否则 504 的可操作提示与诊断信息在这条链路上会整个丢掉（评审 round 5）
+    httpStatus: raw.httpStatus,
+    httpError: raw.httpError,
+    httpDiagnostic: raw.httpDiagnostic,
     ...parsed,
     request_req_id: envelope.req_id,
   };
