@@ -18,6 +18,7 @@ const { assertPaymentAttributionReady, __resetAttributionGuardCache } = require(
  * #141：年度消费直读款项归属日期，跑 SQL 前会过 attribution-guard 探针。
  * guard **只缓存「已就绪」**，所以这里预热一次，之后整个文件的测试都不再发探针查询，
  * 既有 mock 的调用序列/索引全部不受影响。
+ * （预热本身会占一次 pg.query，但它在 beforeAll 里、早于任何用例的 mock 设置。）
  * guard 本身的行为（未就绪时拦截）另有专门用例覆盖。
  */
 beforeAll(async () => {
@@ -108,7 +109,8 @@ function setupCommonMocks(opts = {}) {
   } = opts
 
   pg.query.mockReset().mockImplementation(async (sql, params) => {
-    // #141 attribution-guard 探针：按 SQL 内容分发，不占用调用序号
+    // #141 attribution-guard 探针：按 SQL 内容分发（仍会进 mock.calls，
+    // 但 beforeAll 预热后正常用例根本不触发它）
     if (/has_gap/.test(sql)) {
       return [{ has_gap: !attributionReady, trigger_ready: attributionReady }]
     }
@@ -338,10 +340,15 @@ describe('mgmtCustomer 参数与权限校验', () => {
     try {
       await run()
     } finally {
-      // 复原就绪态，后续用例继续零探针
-      __resetAttributionGuardCache()
-      pg.query.mockResolvedValueOnce([{ has_gap: false, trigger_ready: true }])
-      await assertPaymentAttributionReady(pg)
+      // 复原就绪态，后续用例继续零探针。
+      // 包 try/catch：这里再抛会**替换掉**原始断言失败信息，让排查指向错误方向。
+      try {
+        __resetAttributionGuardCache()
+        pg.query.mockResolvedValueOnce([{ has_gap: false, trigger_ready: true }])
+        await assertPaymentAttributionReady(pg)
+      } catch {
+        /* 复原失败不掩盖原始失败；下个用例的 setupCommonMocks 会重建 mock */
+      }
     }
   }
 
@@ -373,6 +380,29 @@ describe('mgmtCustomer 参数与权限校验', () => {
     expect(spendSql, '未找到年消费 SQL').toBeTruthy()
     expect(spendSql, '年消费落年口径漂移').toContain('o.performance_attribution_date >= $2::date')
     expect(spendSql, '年消费不得回退到 paid_at').not.toContain('o.paid_at')
+    // ⚠ 必须是半开区间：归属日期可被人工调到订单日 ±7 天，跨年那 7 天的订单
+    // 没有上界就会被计进今年，而详情用半开区间会排除它 —— 两处落年再次分叉。
+    // （改前按 paid_at 时无上界是无害的，实付日不可能落到未来。）
+    expect(spendSql, '年消费缺上界，跨年改期的订单会多算')
+      .toContain("o.performance_attribution_date < ($2::date + INTERVAL '1 year')")
+  })
+
+  /**
+   * 列表与详情必须用**同一个**年份算法。`new Date().getFullYear()` 依赖进程时区，
+   * 容器 TZ 丢失时上海 1/1 08:00 前会取到上一年，与详情的 shanghaiDateStr() 分叉；
+   * 叠加上一条的上界问题，列表会把两年消费累加、徽章分档全错。
+   */
+  test('列表与详情的年份算法一致（都走 shanghaiDateStr，不依赖进程时区）', () => {
+    const src = require('node:fs').readFileSync(
+      require('node:path').resolve(__dirname, '../../routes/mgmt-customer.js'),
+      'utf8',
+    )
+    const yearStarts = src.match(/const yearStart = `\$\{[^}]+\}-01-01`/g) ?? []
+    expect(yearStarts.length, '年份计算点数量变了，请同步本断言').toBe(2)
+    for (const expr of yearStarts) {
+      expect(expr, '年份计算不得依赖进程时区（用 shanghaiDateStr）')
+        .toContain('shanghaiDateStr().slice(0, 4)')
+    }
   })
 
   test('search 缺 scopeType 抛 INVALID_PARAMS', async () => {

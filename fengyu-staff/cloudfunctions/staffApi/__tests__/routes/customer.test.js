@@ -15,6 +15,7 @@ const { assertPaymentAttributionReady, __resetAttributionGuardCache } = require(
  * #141：年度消费直读款项归属日期，跑 SQL 前会过 attribution-guard 探针。
  * guard **只缓存「已就绪」**，所以这里预热一次，之后整个文件的测试都不再发探针查询，
  * 既有 mock 的调用序列/索引全部不受影响。
+ * （预热本身会占一次 pg.query，但它在 beforeAll 里、早于任何用例的 mock 设置。）
  * guard 本身的行为（未就绪时拦截）另有专门用例覆盖。
  */
 beforeAll(async () => {
@@ -26,6 +27,40 @@ beforeAll(async () => {
 // ============================================================
 // customer.search
 // ============================================================
+/**
+ * #141：本文件用 beforeAll 预热 guard（使既有用例零改动），
+ * 但那样 guard 在全文件变成 no-op —— 把调用挪走也不会有用例变红。
+ * 这里补一条**行为**用例，显式重置缓存后验证 fail-closed。
+ */
+describe('customer.detail 年度消费的迁移就绪守卫（#141）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    __resetAttributionGuardCache()
+  })
+
+  afterAll(async () => {
+    // 复原就绪态，避免影响本文件其余用例
+    __resetAttributionGuardCache()
+    pg.query.mockResolvedValueOnce([{ has_gap: false, trigger_ready: true }])
+    await assertPaymentAttributionReady(pg)
+  })
+
+  test('未迁移库拒绝出数（不给运营看负数年度消费）', async () => {
+    // 按 SQL 内容分发，不依赖 detail 内部的查询顺序
+    pg.query.mockImplementation(async (sql) => {
+      if (/has_gap/.test(sql)) return [{ has_gap: true, trigger_ready: false }]
+      if (/FROM\s+client_wechat_users/.test(sql)) {
+        return [{ user_id: 'u1', customer_id: 'C001', name: '张三', phone: '13800001111' }]
+      }
+      return []
+    })
+    const ctx = createManagerCtx({ clientUserId: 'u1' })
+    await expect(customerRoutes.detail(ctx)).rejects.toThrow(/INVALID_STATE: MIGRATION_REQUIRED/)
+    // 确认探针确实发了（守卫真的被调用，不是别的原因抛错）
+    expect(pg.query.mock.calls.some(([sql]) => /has_gap/.test(sql)), '守卫未被调用').toBe(true)
+  })
+})
+
 describe('customer.search', () => {
   test('关键词搜索返回 PG 结果（含 store_name JOIN）', async () => {
     const ctx = createManagerCtx({ keyword: '张' })
