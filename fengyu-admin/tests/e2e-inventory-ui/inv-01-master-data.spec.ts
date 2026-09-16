@@ -137,6 +137,18 @@ test('INV-01：基础档案建档 + 六价体系 + 公式价校验', async ({ br
       hasSupplierFk === '1',
       `外键数=${hasSupplierFk}`,
     )
+    // ⚠️ 判定一出来就立刻写盘，**不要**攒到 spec 末尾那次 writeCtx。
+    // 攒着的话：控件被回退成 <input> → 下面的 selectOption 抛错 → spec 在写 ctx 之前就挂了
+    // → ctx 里留着上一轮的「通过」，INV-10 在 6 小时窗口内会把它当成本轮结论，
+    // 生成一份声称「本轮实测通过」的假报告。
+    writeCtx('inv01', {
+      at: new Date().toISOString(),
+      supplierControlTag: supplierTag,
+      supplierFkPresent: hasSupplierFk === '1',
+      // 这一步还没建 SKU，关联与否留待末尾补写；先按「未通过」落盘，
+      // 中途挂掉时 INV-10 宁可报 P1 也不要漏报。
+      skuSupplierLinked: false,
+    })
 
     // 定位用 role + exact name：Field 的 <label> 包裹控件，但「市场进货价」那个
     // label 里还塞了整段说明文字（"公式价 = 核算价 × 市场折扣；手工覆盖必须留痕原因"），

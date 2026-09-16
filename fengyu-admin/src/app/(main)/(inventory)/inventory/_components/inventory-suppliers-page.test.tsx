@@ -2,9 +2,16 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { InventorySupplierRow } from '@/lib/inventory/types'
 
-const { mockRefresh, mockUpdateInventorySupplier, mockToastError, mockToastSuccess } = vi.hoisted(() => ({
+const {
+  mockRefresh,
+  mockUpdateInventorySupplier,
+  mockCountSkus,
+  mockToastError,
+  mockToastSuccess,
+} = vi.hoisted(() => ({
   mockRefresh: vi.fn(),
   mockUpdateInventorySupplier: vi.fn(),
+  mockCountSkus: vi.fn(),
   mockToastError: vi.fn(),
   mockToastSuccess: vi.fn(),
 }))
@@ -18,6 +25,7 @@ vi.mock('@/lib/hooks/use-url-filters', () => ({
 vi.mock('@/actions/inventory/suppliers', () => ({
   createInventorySupplier: vi.fn(),
   updateInventorySupplier: mockUpdateInventorySupplier,
+  countInventorySkusBySupplier: mockCountSkus,
 }))
 
 vi.mock('sonner', () => ({ toast: { error: mockToastError, success: mockToastSuccess } }))
@@ -44,6 +52,7 @@ describe('InventorySuppliersPage（#132 关联 SKU 计数）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockUpdateInventorySupplier.mockResolvedValue({ success: true })
+    mockCountSkus.mockResolvedValue(0)
   })
 
   it('列表展示关联 SKU 数，无关联时显示占位', () => {
@@ -63,6 +72,7 @@ describe('InventorySuppliersPage（#132 关联 SKU 计数）', () => {
   })
 
   it('停用仍被引用的供应商时提示关联数，但不阻止停用', async () => {
+    mockCountSkus.mockResolvedValue(5)
     render(
       <InventorySuppliersPage rows={[supplier({ linkedSkuCount: 5 })]} canCreate canUpdate />,
     )
@@ -70,11 +80,34 @@ describe('InventorySuppliersPage（#132 关联 SKU 计数）', () => {
 
     // 甲方口径 Q5：提示但不阻止 —— 停用语义是「不再采购」而非「删除」，
     // 阻止停用会逼运营先逐个改 SKU
-    expect(screen.getByText(/仍有 5 个库存商品关联该供应商/)).toBeInTheDocument()
+    expect(await screen.findByText(/仍有 5 个库存商品关联该供应商/)).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '确认停用' }))
     await waitFor(() => expect(mockUpdateInventorySupplier).toHaveBeenCalledWith('SUP-1', { isActive: false }))
     expect(mockToastSuccess).toHaveBeenCalledWith('供应商已停用')
+  })
+
+  it('停用提示用的是**实时**核对结果，不是页面加载时的旧计数', async () => {
+    // 页面加载时是 0，但别人刚关联了 3 个 —— 拿旧值会显示不出提示
+    mockCountSkus.mockResolvedValue(3)
+    render(
+      <InventorySuppliersPage rows={[supplier({ linkedSkuCount: 0 })]} canCreate canUpdate />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /停用/ }))
+
+    expect(mockCountSkus).toHaveBeenCalledWith('SUP-1')
+    expect(await screen.findByText(/仍有 3 个库存商品关联该供应商/)).toBeInTheDocument()
+  })
+
+  it('核对未完成前不能确认停用', () => {
+    mockCountSkus.mockReturnValue(new Promise(() => {}))
+    render(
+      <InventorySuppliersPage rows={[supplier({ linkedSkuCount: 0 })]} canCreate canUpdate />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /停用/ }))
+
+    expect(screen.getByText(/正在核对关联的库存商品/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '确认停用' })).toBeDisabled()
   })
 
   it('从编辑弹窗把开关切到停用时，同样提示关联数（那条入口绕过了 AlertDialog）', () => {
@@ -88,11 +121,12 @@ describe('InventorySuppliersPage（#132 关联 SKU 计数）', () => {
     expect(screen.getByText(/仍有 7 个库存商品关联该供应商/)).toBeInTheDocument()
   })
 
-  it('无关联时不显示关联提示', () => {
+  it('无关联时不显示关联提示', async () => {
     render(
       <InventorySuppliersPage rows={[supplier({ linkedSkuCount: 0 })]} canCreate canUpdate />,
     )
     fireEvent.click(screen.getByRole('button', { name: /停用/ }))
+    await waitFor(() => expect(mockCountSkus).toHaveBeenCalled())
 
     expect(screen.queryByText(/仍有 .* 个库存商品关联该供应商/)).not.toBeInTheDocument()
     // 通用文案仍在

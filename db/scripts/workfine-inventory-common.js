@@ -1237,8 +1237,13 @@ async function upsertSku(client, row) {
        -- 已关联档案的 SKU，supplier 文本由 supplier_id 派生（#132），WorkFine 不得覆盖：
        -- 覆盖了就会得到「supplier_id 指向 A、文本却是 B」的分叉 —— admin 列表走 JOIN 显示 A，
        -- staffApi 的 SKU 列表与新建批次读文本列显示 B，且「按供应商统计」算到错的供应商头上。
-       -- ⚠️ 代价：WorkFine 侧换了供应商时这里不会自动改挂，需人工在 admin 改挂。
+       -- ⚠️ 代价一：WorkFine 侧换了供应商时这里不会自动改挂，需人工在 admin 改挂。
        --    这是刻意的 —— PG 是库存数据的唯一真理源，WorkFine 只是种源（同步已停用）。
+       -- ⚠️ 代价二：用户在 admin 把供货商清成「未指定」（两列都 NULL）之后，再重跑本导入，
+       --    这一行会把 WorkFine 的历史供应商名写回来、末尾的回填再把它关联上 ——
+       --    等于静默撤销了用户的清空。之所以接受：本脚本是**一次性历史迁移 / 初始导入**
+       --    工具，不在运营期运行（WorkFine 同步正式上线后已停用），而它的语义本就是
+       --    「以 WorkFine 为准补齐」。真要在运营期重跑，须先确认没有手工清空过的 SKU。
        supplier = CASE
          WHEN inventory_skus.supplier_id IS NULL
            THEN COALESCE(EXCLUDED.supplier, inventory_skus.supplier)

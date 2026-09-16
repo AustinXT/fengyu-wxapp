@@ -38,9 +38,15 @@ export const inventorySkus = pgTable(
     productName: text('product_name').notNull(),
     specName: text('spec_name'),
     /**
-     * 供应商名称快照。由 `supplier_id` 关联档案时派生写入，供批次快照
-     * （`ensureLotFromSku` 建批次时取本列）与历史数据回溯使用。
-     * 关联档案改名后本列不自动跟随——展示一律走 `supplier_id` 的实时关联名。
+     * 供应商名称，由 `supplier_id` 关联的档案派生写入。
+     *
+     * **是同步维护的冗余名，不是历史快照**：档案改名时 `updateInventorySupplier`
+     * 会把所有关联 SKU 的本列一起改过来。真正的历史快照是
+     * `inventory_doc_items.supplier` 与 `inventory_stock_lots.supplier`，它们在
+     * 建单 / 建批次那一刻冻结、之后不再变。
+     *
+     * 保留本列的理由：`ensureLotFromSku` 建批次时取的就是它；存量里匹配不上档案的
+     * 旧文本也靠它留存（`supplier_id` 为 NULL 时）。
      */
     supplier: text('supplier'),
     /** 供应商档案关联。存量文本按名称精确匹配回填，匹配不上的保留文本、本列为 NULL。 */

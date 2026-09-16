@@ -1,6 +1,7 @@
 'use server'
 
 import {
+  countInventorySkusBySupplier as countInventorySkusBySupplierImpl,
   createInventorySupplier as createInventorySupplierImpl,
   listInventorySupplierOptions as listInventorySupplierOptionsImpl,
   listInventorySuppliers as listInventorySuppliersImpl,
@@ -13,6 +14,11 @@ export const listInventorySuppliers = withPermission(
   'inventory:stock_list',
   async (_session, filters: { keyword?: string; onlyActive?: boolean } = {}) =>
     listInventorySuppliersImpl(filters),
+)
+
+export const countInventorySkusBySupplier = withPermission(
+  'inventory:stock_list',
+  async (_session, supplierId: string) => countInventorySkusBySupplierImpl(supplierId),
 )
 
 export const listInventorySupplierOptions = withPermission(

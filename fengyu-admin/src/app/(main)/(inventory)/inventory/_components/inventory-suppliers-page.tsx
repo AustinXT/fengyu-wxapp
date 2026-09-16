@@ -5,6 +5,7 @@ import { Ban, Pencil, Plus, Truck } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import {
+  countInventorySkusBySupplier,
   createInventorySupplier,
   updateInventorySupplier,
 } from '@/actions/inventory/suppliers'
@@ -73,6 +74,10 @@ export default function InventorySuppliersPage({
   const [saving, setSaving] = useState(false)
   const [disableTarget, setDisableTarget] = useState<InventorySupplierRow | null>(null)
   const [disabling, setDisabling] = useState(false)
+  // 停用前实时核对的关联数。列表行自带的 linkedSkuCount 是页面加载那一刻的值，
+  // 别人在这期间关联了 SKU 的话，拿旧值会显示「0 个」而漏掉提示。
+  // null = 还在核对；数字 = 核对结果（核对失败时退回列表行的旧值，至少不比原来差）。
+  const [liveLinkedCount, setLiveLinkedCount] = useState<number | null>(null)
 
   useEffect(() => () => {
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
@@ -97,6 +102,14 @@ export default function InventorySuppliersPage({
     setEditing(null)
     setForm(emptyForm)
     setDialogOpen(true)
+  }
+
+  function askDisable(row: InventorySupplierRow) {
+    setDisableTarget(row)
+    setLiveLinkedCount(null)
+    countInventorySkusBySupplier(row.supplierId)
+      .then((count) => setLiveLinkedCount(count))
+      .catch(() => setLiveLinkedCount(row.linkedSkuCount))
   }
 
   function openEdit(row: InventorySupplierRow) {
@@ -195,7 +208,7 @@ export default function InventorySuppliersPage({
               variant="link"
               size="sm"
               className="h-auto px-1 text-[var(--destructive)]"
-              onClick={() => setDisableTarget(row)}
+              onClick={() => askDisable(row)}
             >
               <Ban /> 停用
             </Button>
@@ -306,16 +319,21 @@ export default function InventorySuppliersPage({
             阻止停用会逼运营先逐个改 SKU。已关联的 SKU 继续正常显示与编辑，
             只是不会再出现在新 SKU 的下拉里。
           */}
-          {!!disableTarget && disableTarget.linkedSkuCount > 0 && (
+          {!!disableTarget && liveLinkedCount === null && (
+            <span className="mt-2 block text-[#888888]">正在核对关联的库存商品…</span>
+          )}
+          {!!disableTarget && liveLinkedCount !== null && liveLinkedCount > 0 && (
             <span className="mt-2 block text-[var(--destructive)]">
-              仍有 {disableTarget.linkedSkuCount} 个库存商品关联该供应商。
+              仍有 {liveLinkedCount} 个库存商品关联该供应商。
               停用后这些商品的关联保持不变，但新建 / 改挂其它商品时将不能再选它。
             </span>
           )}
         </AlertDialogDescription>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => setDisableTarget(null)} disabled={disabling}>取消</AlertDialogCancel>
-          <AlertDialogAction onClick={disable} disabled={disabling}>确认停用</AlertDialogAction>
+          <AlertDialogAction onClick={disable} disabled={disabling || liveLinkedCount === null}>
+            确认停用
+          </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialog>
     </div>

@@ -2,6 +2,7 @@ import { db } from '@/db'
 import 'server-only'
 import { ApiError } from '@/lib/api-error'
 import { pgErrorCode } from '@/lib/pg-error'
+import { rowsAffected } from '@/lib/pg-rows'
 import { fmtDate, shanghaiToday, shanghaiYmd } from '@/lib/datetime'
 import { logOperation } from '@/lib/operation-log'
 import { hasPermission, isAdminScope } from '@/lib/permissions'
@@ -1418,7 +1419,7 @@ export const listInventoryDocLocationFilterOptions = withPermission(
 )
 
 /**
- * 把表单提交的 `supplierId` 解析成 `supplier_id` + `supplier`（名称快照）两列的写入值（#132）。
+ * 把表单提交的 `supplierId` 解析成 `supplier_id` + `supplier`（冗余名称）两列的写入值（#132）。
  *
  * 返回 `null` 表示**这两列都不要动** —— 对应 `input.supplierId === undefined`。
  * 存量里有一批 `supplier` 文本没匹配上档案的旧 SKU（migration 0042 按名称精确匹配回填，
@@ -1431,10 +1432,10 @@ async function resolveSkuSupplier(
   tx: Tx,
   supplierIdInput: string | null | undefined,
   currentSupplierId: string | null,
-): Promise<{ supplierId: string | null; supplier: string | null } | null> {
+): Promise<{ supplierId: string | null; supplier: string | null; onlyIfCurrent: boolean } | null> {
   if (supplierIdInput === undefined) return null
   const id = normalizeText(supplierIdInput)
-  if (!id) return { supplierId: null, supplier: null }
+  if (!id) return { supplierId: null, supplier: null, onlyIfCurrent: false }
   // `FOR SHARE` 而不是默认快照读，也不是 `FOR KEY SHARE`：
   // 改名改的是 name 这个**非键列**，走 FOR NO KEY UPDATE —— FOR KEY SHARE 挡不住它。
   // 挡不住的话这条时序会留下永久不一致：
@@ -1453,7 +1454,11 @@ async function resolveSkuSupplier(
   if (!supplier.isActive && id !== currentSupplierId) {
     throw new ApiError('INVALID_STATE', `供应商「${supplier.name}」已停用，无法关联到库存商品`)
   }
-  return { supplierId: id, supplier: supplier.name }
+  // 放行了一个**已停用**的档案，靠的是「它就是当前关联值」。但 currentSupplierId 是
+  // 事务外读到的快照：别人可能已经把这条 SKU 改挂到别的档案上，那样这次写入实际是
+  // 「换成另一个停用档案」—— 恰恰是上面那条要拦的。所以把这个前提下推到 UPDATE 的
+  // WHERE 里，用行的**当前值**再判一次（见 updateInventorySku 的 supplierGuard）。
+  return { supplierId: id, supplier: supplier.name, onlyIfCurrent: !supplier.isActive }
 }
 
 export const listInventorySkus = withPermission(
@@ -1605,7 +1610,12 @@ export const updateInventorySku = withAnyPermission(
     // 挡住「读到旧名 → 别人改名并同步 → 我写回旧名」的时序（见 resolveSkuSupplier）
     await db.transaction(async (tx) => {
       const supplierValues = await resolveSkuSupplier(tx, input.supplierId, current.supplierId)
-      await tx
+      // 只有「保持一个已停用的档案」这一种情况需要 CAS：行的 supplier_id 必须仍是它，
+      // 否则说明中途被改挂了，这次写入就成了「换到停用档案」。
+      const supplierGuard = supplierValues?.onlyIfCurrent && supplierValues.supplierId
+        ? eq(inventorySkus.supplierId, supplierValues.supplierId)
+        : undefined
+      const updateResult = await tx
         .update(inventorySkus)
         .set({
           productName: normalizeText(input.productName) ?? undefined,
@@ -1624,7 +1634,11 @@ export const updateInventorySku = withAnyPermission(
           remark: input.remark === undefined ? undefined : normalizeText(input.remark),
           updatedAt: new Date(),
         })
-        .where(eq(inventorySkus.skuId, id))
+        .where(supplierGuard ? and(eq(inventorySkus.skuId, id), supplierGuard) : eq(inventorySkus.skuId, id))
+      // postgres.js 下受影响行数是 `.count`（没有 rowCount），统一走 rowsAffected
+      if (supplierGuard && rowsAffected(updateResult) === 0) {
+        throw new ApiError('CONFLICT', '该库存商品的供货商已被他人修改，请刷新后重试')
+      }
     })
     await logOperation(session, 'update', 'inventory_skus', id, input)
     revalidatePath('/inventory/skus')
@@ -3342,6 +3356,24 @@ export const listInventorySupplierOptions = withPermission(
   },
 )
 
+/**
+ * 停用前实时核对关联 SKU 数（#132）。
+ *
+ * 列表行自带的 `linkedSkuCount` 是**页面加载那一刻**的值：别人在这期间把某个 SKU 关联过来，
+ * 用旧计数就会显示「0 个」而不给提示，验收标准要的「明确提示」就落空了。
+ */
+export const countInventorySkusBySupplier = withPermission(
+  'inventory:stock_list',
+  async (_session, supplierIdInput: string): Promise<number> => {
+    const supplierId = normalizeRequired(supplierIdInput, '供应商')
+    const [row] = await db
+      .select({ count: sql<number>`cast(count(*) as int)` })
+      .from(inventorySkus)
+      .where(eq(inventorySkus.supplierId, supplierId))
+    return row?.count ?? 0
+  },
+)
+
 export const createInventorySupplier = withPermission(
   'inventory:supply_chain_master_data_manage',
   async (session, input: InventorySupplierInput): Promise<{ supplierId: string }> => {
@@ -3375,7 +3407,7 @@ export const updateInventorySupplier = withPermission(
   ): Promise<{ success: true }> => {
     const supplierId = normalizeRequired(supplierIdInput, '供应商')
     const [current] = await db
-      .select({ supplierId: inventorySuppliers.supplierId })
+      .select({ supplierId: inventorySuppliers.supplierId, name: inventorySuppliers.name })
       .from(inventorySuppliers)
       .where(eq(inventorySuppliers.supplierId, supplierId))
       .limit(1)
@@ -3401,7 +3433,10 @@ export const updateInventorySupplier = withPermission(
         // 不同步的话：admin 列表读 JOIN 出来的实时名，而 staffApi 的 SKU 列表
         //（routes/inventory.js 的 `SELECT sku.supplier`）与 ensureLotFromSku 之后建的新批次
         // 读的都是这个文本列 —— 同一个供应商在两端会显示成两个名字。
-        if (nextName !== undefined) {
+        // 比的是**新旧名是否真的不同**，不是「有没有传 name」：供应商表单是全量提交，
+        // 停用 / 只改联系方式时 name 照样在 payload 里，只判 undefined 等于每次都回写，
+        // 会无因刷掉整批关联 SKU 的 updated_at。
+        if (nextName !== undefined && nextName !== current.name) {
           // 这会把 N 条关联 SKU 的 updated_at 一起刷新。**是刻意的**：这些行的数据确实变了，
           // 不刷的话基于 updated_at 的增量同步/变更检测会漏掉这次改名。
           // 代价是若将来把 SKU 列表改成 admin 的默认惯例 `desc(updatedAt)`「编辑即浮顶」，

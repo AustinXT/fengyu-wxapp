@@ -117,7 +117,11 @@ export interface InventorySkuRow extends Required<Pick<InventorySkuInput, 'produ
   skuId: string
   productCode: string
   specName: string | null
-  /** 供应商名称快照（关联时派生写入）。档案改名后不跟随，展示请优先用 `supplierName`。 */
+  /**
+   * 供应商名称，由关联档案派生的**冗余列**（档案改名时会被一起改）。
+   * 展示优先用 `supplierName`（JOIN 出来的实时名）；本列的用途是批次快照的取值来源，
+   * 以及存量里匹配不上档案的旧文本（此时 `supplierId` 为 null）。
+   */
   supplier: string | null
   supplierId: string | null
   /** 关联档案的实时名称；`supplierId` 为空（含存量未匹配文本）时为 null。 */

@@ -277,6 +277,15 @@ async function main() {
          COUNT(*) FILTER (
            WHERE supplier_id IS NULL AND btrim(COALESCE(supplier, '')) <> ''
          )::int AS unmatched,
+         -- 「本来能精确匹配到档案、却没有回填」= 回填根本没跑（或被改坏了）。
+         -- 必须与「确实没有对应档案的遗留文本」区分开：前者是缺陷，后者是拍板口径 Q1。
+         COUNT(*) FILTER (
+           WHERE supplier_id IS NULL
+             AND btrim(COALESCE(supplier, '')) <> ''
+             AND EXISTS (
+               SELECT 1 FROM inventory_suppliers v WHERE v.name = btrim(inventory_skus.supplier)
+             )
+         )::int AS matchable_but_unlinked,
          COUNT(*) FILTER (
            WHERE supplier_id IS NOT NULL
              AND supplier IS DISTINCT FROM (
@@ -288,7 +297,8 @@ async function main() {
     const supplierAudit = supplierRows.rows[0]
     console.log(
       `INFO inventory_skus supplier: total=${supplierAudit.total} linked=${supplierAudit.linked} `
-      + `unmatched_text=${supplierAudit.unmatched} name_drift=${supplierAudit.name_drift}`,
+      + `unmatched_text=${supplierAudit.unmatched} matchable_but_unlinked=${supplierAudit.matchable_but_unlinked} `
+      + `name_drift=${supplierAudit.name_drift}`,
     )
     if (Number(supplierAudit.unmatched) > 0) {
       const unmatchedRows = await client.query(
@@ -303,13 +313,21 @@ async function main() {
         console.log(`  - ${row.sku_id} ${row.product_name} => ${JSON.stringify(row.supplier)}`)
       }
     }
-    // 名称漂移**是**真问题：supplier 文本由 supplier_id 派生，两者对不上说明有写入路径
-    // 绕过了派生（例如 WorkFine 导入覆盖了已关联 SKU 的文本）。
+    // 两类**是**真问题，必须让脚本失败：
+    //  - name_drift：supplier 文本由 supplier_id 派生，对不上说明有写入路径绕过了派生
+    //    （例如 WorkFine 导入覆盖了已关联 SKU 的文本）
+    //  - matchable_but_unlinked：明明有同名档案却没关联上 = 迁移 0042 的回填没跑或被改坏
+    //    （只打印 unmatched 而不失败的话，把整段回填 UPDATE 删掉本脚本照样 exit 0）
     ok = report(
       'inventory_skus supplier snapshot',
-      Number(supplierAudit.name_drift) > 0
-        ? [`supplier text differs from linked profile name on ${supplierAudit.name_drift} rows`]
-        : [],
+      [
+        ...(Number(supplierAudit.name_drift) > 0
+          ? [`supplier text differs from linked profile name on ${supplierAudit.name_drift} rows`]
+          : []),
+        ...(Number(supplierAudit.matchable_but_unlinked) > 0
+          ? [`${supplierAudit.matchable_but_unlinked} rows have an exactly-matching supplier profile but no supplier_id (migration 0042 backfill did not run?)`]
+          : []),
+      ],
     ) && ok
 
     if (!ok) process.exitCode = 1
