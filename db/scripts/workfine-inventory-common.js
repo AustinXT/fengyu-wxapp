@@ -1293,7 +1293,22 @@ async function upsertSku(client, row) {
       row.remark,
     ],
   )
-  return result.rows[0].sku_id
+  const insertedSkuId = result.rows[0].sku_id
+  // WorkFine 只给供应商名称文本，没有档案 id。SKU 建档侧（admin）自 #132 起强制选档案，
+  // 这里不补的话，每跑一次导入都会产生一批「有文本、没关联」的 SKU，档案关联被慢慢侵蚀。
+  // 口径与 migration 0041 的存量回填完全一致：按名称精确匹配，匹配不上就留 NULL
+  // （不自动建档 —— 凭空建出的档案联系人/地址全空）。幂等，重复导入不会改已有关联。
+  await client.query(
+    `UPDATE inventory_skus AS s
+        SET supplier_id = v.supplier_id
+       FROM inventory_suppliers AS v
+      WHERE s.sku_id = $1
+        AND s.supplier_id IS NULL
+        AND btrim(COALESCE(s.supplier, '')) <> ''
+        AND btrim(s.supplier) = v.name`,
+    [insertedSkuId],
+  )
+  return insertedSkuId
 }
 
 async function upsertInitialDocument(client, group, createdBy) {
