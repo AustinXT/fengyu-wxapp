@@ -41,10 +41,15 @@ function stripComments(src: string): string {
     // 维护中临时注释掉一行过滤（`-- AND spe.change_type IN (...)`），
     // 逐块断言仍能匹配到注释里的字面量 → 假绿。codex 评审指出这条路。
     //
-    // ⚠ 只剥「行首」或「空白后」的 `--`，不碰 `i--` 这类递减运算符
+    // ⚠ 只剥「行首」或「空白后」的 `--`，不碰 `i--` 这类**后缀**递减运算符
     // （全局删 `--` 会误伤代码——GLM 在 #141 提过同一风险）。
+    //
+    // 尾注释不要求 `--` 后跟空白：PG 里 `--AND spe.change_type IN (...)` 同样是
+    // 合法注释，若限定 `--[ \t]` 则「不加空格」即可绕过剥离、假绿复活。
+    // 代价是前缀递减（`x = --i`）会被误剥，但那只会让断言**误红**（fail-loud），
+    // 不会放过被注释掉的过滤；被测两文件也不含前缀递减。
     .replace(/^[ \t]*--.*$/gm, '')
-    .replace(/(\s)--[ \t].*$/gm, '$1')
+    .replace(/(\s)--.*$/gm, '$1')
 }
 
 describe('客量板块两端口径一致性守护', () => {
@@ -210,7 +215,10 @@ describe('客量板块两端口径一致性守护', () => {
      * stripComments 必须同时剥掉 **SQL 行注释**（codex 评审）。
      * 否则「临时注释掉一行过滤」这种最常见的维护动作会让守护假绿 ——
      * JS 注释路径在上一轮已封，SQL `--` 是同一个洞的另一半。
-     * ⚠ 只剥行首/空白后的 `--`，不碰 `i--` 这类递减运算符。
+     * ⚠ 只剥行首/空白后的 `--`，不碰 `i--` 这类后缀递减运算符。
+     *
+     * `--` 后**不要求**空白：PG 里 `--AND ...` 也是注释，限定 `--[ \t]` 等于
+     * 留了个「不加空格就能绕过」的后门。这条是自查补的，两个 reviewer 都没提。
      */
     it('stripComments 剥掉 SQL 行注释，但不误伤递减运算符', () => {
       const sql = [
@@ -224,6 +232,18 @@ describe('客量板块两端口径一致性守护', () => {
       expect(out, '有效条件被误删').toMatch(/spe\.status\s*=\s*'已支付'/)
       // 递减运算符不受影响
       expect(stripComments('for (let i = n; i > 0; i--) {'), '误伤 i--').toContain('i--')
+    })
+
+    it('stripComments 剥掉「--」后不带空格的 SQL 注释（绕过后门）', () => {
+      const sql = [
+        "  AND spe.status = '已支付'",
+        "  --AND spe.change_type IN ('首次支付', '回款', '退款')",
+        "  AND x = 1 --AND spe.legacy_source IS DISTINCT FROM 'workfine'",
+      ].join('\n')
+      const out = stripComments(sql)
+      expect(out, '行首「--」无空格未被剥').not.toMatch(/spe\.change_type/)
+      expect(out, '尾部「--」无空格未被剥').not.toMatch(/spe\.legacy_source/)
+      expect(out, '有效条件被误删').toMatch(/spe\.status\s*=\s*'已支付'/)
     })
 
     it('金额一律取款项流水（按出现次数锁死，防某处改回订单快照）', () => {
