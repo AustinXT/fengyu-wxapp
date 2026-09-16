@@ -37,7 +37,14 @@ export const inventorySkus = pgTable(
     productCode: text('product_code').notNull(),
     productName: text('product_name').notNull(),
     specName: text('spec_name'),
+    /**
+     * 供应商名称快照。由 `supplier_id` 关联档案时派生写入，供批次快照
+     * （`ensureLotFromSku` 建批次时取本列）与历史数据回溯使用。
+     * 关联档案改名后本列不自动跟随——展示一律走 `supplier_id` 的实时关联名。
+     */
     supplier: text('supplier'),
+    /** 供应商档案关联。存量文本按名称精确匹配回填，匹配不上的保留文本、本列为 NULL。 */
+    supplierId: text('supplier_id').references(() => inventorySuppliers.supplierId),
     manufacturer: text('manufacturer'),
     brand: text('brand'),
     productSeries: text('product_series'),
@@ -97,6 +104,7 @@ export const inventorySkus = pgTable(
     index('idx_inventory_skus_series').on(table.productSeries),
     index('idx_inventory_skus_source').on(table.sourceType),
     index('idx_inventory_skus_owner_market').on(table.ownerMarketId),
+    index('idx_inventory_skus_supplier').on(table.supplierId),
     check(
       'chk_inventory_skus_source_type',
       sql`${table.sourceType} IN ('供应链','市场自采','转让店')`,
