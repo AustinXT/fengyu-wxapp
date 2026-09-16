@@ -32,24 +32,62 @@ function normalize(src: string): string {
   return src.replace(/\s+/g, ' ').trim()
 }
 
-/** 剥离 JS/TS 注释（避免 docstring 里的反例引用干扰反向守护） */
+/**
+ * 剥离 **JS/TS** 注释（避免 docstring 里的反例引用干扰反向守护）。
+ *
+ * ⚠ 刻意**不剥 SQL `--` 行注释**。两轮评审把「用正则剥 SQL 注释」这条路彻底打穿：
+ *   - 只剥 `-- ` → `--AND ...`（不加空格）绕过
+ *   - 放宽到 `(\s)--` → `WHERE TRUE--AND ...`（token 紧贴）仍绕过（codex + GLM 独立复现）
+ *   - PG 支持**嵌套**块注释，非贪婪的块注释正则也能被绕
+ *   - `--` 出现在 SQL 字符串字面量里（`note = ' --marker' AND paid_amount > 0`）会**误删**
+ *     后续有效条件 → 反向断言 `not.toMatch` 反而通过 → 假绿（codex 给出反例，
+ *     推翻了我此前「误剥只会误红」的论断）
+ *
+ * 结论：正则做不了 SQL 词法分析，补一次就冒出下一种等价写法 —— 与 #140 得到的
+ * 「黑名单证明不了『没有任何日期条件』」是同一个教训。
+ * 因此口径守护的**主力**改为下方 `EXPECTED_SPE_WHERE` 连续子串快照：
+ * 任何注释字符插进五件套中间都会破坏连续性，无需先识别它是不是注释。
+ */
 function stripComments(src: string): string {
   return src
     .replace(/\/\*[\s\S]*?\*\//g, ' ')
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ')
-    // PostgreSQL 行注释：被测文本是 TS/JS 里的 SQL 模板串，`--` 注释此前原样保留。
-    // 维护中临时注释掉一行过滤（`-- AND spe.change_type IN (...)`），
-    // 逐块断言仍能匹配到注释里的字面量 → 假绿。codex 评审指出这条路。
-    //
-    // ⚠ 只剥「行首」或「空白后」的 `--`，不碰 `i--` 这类**后缀**递减运算符
-    // （全局删 `--` 会误伤代码——GLM 在 #141 提过同一风险）。
-    //
-    // 尾注释不要求 `--` 后跟空白：PG 里 `--AND spe.change_type IN (...)` 同样是
-    // 合法注释，若限定 `--[ \t]` 则「不加空格」即可绕过剥离、假绿复活。
-    // 代价是前缀递减（`x = --i`）会被误剥，但那只会让断言**误红**（fail-loud），
-    // 不会放过被注释掉的过滤；被测两文件也不含前缀递减。
-    .replace(/^[ \t]*--.*$/gm, '')
-    .replace(/(\s)--.*$/gm, '$1')
+}
+
+/**
+ * **口径守护主力**：会员消费查询的 WHERE 五件套，归一化后必须是这段**连续**文本。
+ *
+ * 为什么连续子串比「5 条独立正则 + 剥注释」强：
+ *   - 注释掉其中一行 → 注释起始符插进串中间 → 不匹配 → 红。**不依赖识别注释**，
+ *     `-- AND` / `--AND` / `TRUE--AND` / 块注释包裹 / 嵌套块注释一视同仁全部拦下
+ *   - 中间插入额外条件、调换顺序、改写任一 token → 同样破坏连续性
+ *   - 配合精确计数（admin 5 / staff 2），单处漏改会让计数掉到 4 或 1 → 红
+ *
+ * ⚠ 不含前导 `AND`：KPI 查询由 `${sc}` 起头故写 `AND spe.sale_order_type ...`，
+ * 而门店/市场明细查询无 scope 条件、直接 `WHERE spe.sale_order_type ...`。
+ * 两种引导词都包含这段串，五件套之间的 4 个 `AND` 连接仍被逐字锁死。
+ *
+ * ⚠ 截到 `BETWEEN` 为止：其后的区间插值两端不同（admin `${range.start}` /
+ * staff `${startDateExpr(period)}`），且明细查询用 `${start}`。
+ *
+ * 改这段常量 = 改口径，必须同步两端 + 更新出数对比。
+ */
+const EXPECTED_SPE_WHERE =
+  "spe.sale_order_type IN ('销售单', '转换单') " +
+  "AND spe.status = '已支付' " +
+  "AND spe.change_type IN ('首次支付', '回款', '退款') " +
+  "AND spe.legacy_source IS DISTINCT FROM 'workfine' " +
+  'AND spe.performance_date BETWEEN'
+
+/** 数 needle 在 haystack 中的不重叠出现次数 */
+function countOccurrences(haystack: string, needle: string): number {
+  let n = 0
+  let i = 0
+  while ((i = haystack.indexOf(needle, i)) >= 0) {
+    n++
+    i += needle.length
+  }
+  return n
 }
 
 describe('客量板块两端口径一致性守护', () => {
@@ -179,11 +217,23 @@ describe('客量板块两端口径一致性守护', () => {
      * 删掉其中一处的 `change_type` 过滤，其余几处仍满足正则 —— 实测确认过这条漏网。
      *
      * 这里按 `FROM sale_order_performance_events spe` 切块，**逐块**检查 WHERE 侧过滤：
-     * 断言数随查询数自适应（新增/合并查询不会产生一堆假红），
+     * 断言数随查询数自适应（用 `>=`，新增/合并查询不会在**本条**产生一堆假红），
      * 失败时能指出是第几个查询缺了哪一项。
      * 块尾截到 `GROUP BY` / 下一个查询，避免借用后文字符串造成假绿。
+     *
+     * ⚠ **本条是失败定位辅助，不是主守护**。它用剥过 JS 注释的文本 + 5 条独立正则，
+     * 因此「把某行过滤注释掉」这类改动它**拦不住**（SQL 注释刻意不剥，原因见
+     * `stripComments`）。真正拦下的是下方 `EXPECTED_SPE_WHERE` 连续串 + 精确计数；
+     * 本条的价值是在那条红掉之后，直接指出「第几个查询缺了哪一项」。
+     *
+     * 另两点澄清（GLM 评审 P3-3）：
+     * 1. 「自适应」只限本条。「金额按出现次数锁死」与主守护都是精确 `toBe(5/2)`，
+     *    新增 spe 查询仍会红在那里——那是有意的（防某处改回订单快照），需连同更新期望值。
+     * 2. 截断标记 `SELECT\s+COALESCE` 对当前 5+2 块**从未实际命中**（全截在 GROUP BY 或 EOF），
+     *    末块因此会借用后文文本。GLM 实测确认借用段不含任何 `spe.*` 引用
+     *    （别名必须先有 FROM 才成立），**无假绿路径**，只是失败信息定位偏长。
      */
-    it('每个会员消费查询块内的过滤都齐全（逐块自适应，防单处漏改）', () => {
+    it('每个会员消费查询块内的过滤都齐全（逐块定位辅助，防单处漏改）', () => {
       const WHERE_INVARIANTS: Array<[string, RegExp]> = [
         ['订单类型', /spe\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/],
         ['款项状态已支付', /spe\.status\s*=\s*'已支付'/],
@@ -212,38 +262,60 @@ describe('客量板块两端口径一致性守护', () => {
     })
 
     /**
-     * stripComments 必须同时剥掉 **SQL 行注释**（codex 评审）。
-     * 否则「临时注释掉一行过滤」这种最常见的维护动作会让守护假绿 ——
-     * JS 注释路径在上一轮已封，SQL `--` 是同一个洞的另一半。
-     * ⚠ 只剥行首/空白后的 `--`，不碰 `i--` 这类后缀递减运算符。
+     * **口径守护主力**（见 `EXPECTED_SPE_WHERE` 的说明）。
      *
-     * `--` 后**不要求**空白：PG 里 `--AND ...` 也是注释，限定 `--[ \t]` 等于
-     * 留了个「不加空格就能绕过」的后门。这条是自查补的，两个 reviewer 都没提。
+     * 断言 WHERE 五件套在**原文**（只归一化空白，不剥任何注释）里恰好出现
+     * admin 5 次 / staff 2 次。这条一旦红，说明有人动了过滤条件本身 ——
+     * 上方的逐块断言只是用来告诉你「是第几个查询缺了哪一项」。
      */
-    it('stripComments 剥掉 SQL 行注释，但不误伤递减运算符', () => {
-      const sql = [
-        "  AND spe.status = '已支付'",
-        "  -- AND spe.change_type IN ('首次支付', '回款', '退款')",
-        "  AND x = 1 -- AND spe.performance_date BETWEEN a AND b",
-      ].join('\n')
-      const out = stripComments(sql)
-      expect(out, '行首 SQL 注释未被剥').not.toMatch(/spe\.change_type/)
-      expect(out, '行内尾部 SQL 注释未被剥').not.toMatch(/spe\.performance_date/)
-      expect(out, '有效条件被误删').toMatch(/spe\.status\s*=\s*'已支付'/)
-      // 递减运算符不受影响
-      expect(stripComments('for (let i = n; i > 0; i--) {'), '误伤 i--').toContain('i--')
+    it('WHERE 五件套逐字连续 + 精确计数（主守护，不依赖注释剥离）', () => {
+      for (const [side, src, expected] of [
+        ['admin', adminSrc, 5],
+        ['staff', staffSrc, 2],
+      ] as Array<[string, string, number]>) {
+        const got = countOccurrences(normalize(src), EXPECTED_SPE_WHERE)
+        expect(
+          got,
+          `${side} 的 WHERE 五件套连续串出现 ${got} 次，期望 ${expected} 次。\n` +
+            '可能原因：某处过滤被删/被注释掉、顺序被调换、中间插了别的条件，' +
+            '或新增/删除了会员消费查询（后者需同步更新期望值 + 出数对比）。',
+        ).toBe(expected)
+      }
     })
 
-    it('stripComments 剥掉「--」后不带空格的 SQL 注释（绕过后门）', () => {
-      const sql = [
-        "  AND spe.status = '已支付'",
-        "  --AND spe.change_type IN ('首次支付', '回款', '退款')",
-        "  AND x = 1 --AND spe.legacy_source IS DISTINCT FROM 'workfine'",
-      ].join('\n')
-      const out = stripComments(sql)
-      expect(out, '行首「--」无空格未被剥').not.toMatch(/spe\.change_type/)
-      expect(out, '尾部「--」无空格未被剥').not.toMatch(/spe\.legacy_source/)
-      expect(out, '有效条件被误删').toMatch(/spe\.status\s*=\s*'已支付'/)
+    /**
+     * 上一条的**反向验证**：确认它真能拦下各种「注释掉一行过滤」的写法。
+     *
+     * 两轮评审逐个打穿了「用正则剥 SQL 注释」的每种补法（见 `stripComments` 的说明），
+     * 这里固化其中每一种绕过形态 —— 连续子串对它们一视同仁，因为**不需要**先判断
+     * 那是不是注释，只要有字符插进五件套中间就破坏连续性。
+     */
+    it('各种 SQL 注释形态都会破坏五件套连续性（反向验证主守护）', () => {
+      const intact = EXPECTED_SPE_WHERE
+      expect(countOccurrences(normalize(intact), EXPECTED_SPE_WHERE), '基线自身应匹配').toBe(1)
+
+      const BYPASS_ATTEMPTS: Array<[string, string]> = [
+        // codex round-1 指出的原始路径
+        ['行首 `-- ` 带空格', "spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付'\n-- AND spe.change_type IN ('首次支付', '回款', '退款')\nAND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN"],
+        // 我自查发现的后门
+        ['行首 `--` 无空格', "spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付'\n--AND spe.change_type IN ('首次支付', '回款', '退款')\nAND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN"],
+        // codex round-2 指出的：token 紧贴 `--`，两版正则都拦不住
+        ['token 紧贴 `--`', "spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付'--AND spe.change_type IN ('首次支付', '回款', '退款')\nAND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN"],
+        // PG 块注释
+        ['块注释包裹', "spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' /* AND spe.change_type IN ('首次支付', '回款', '退款') */ AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN"],
+        // PG 特性：嵌套块注释，非贪婪正则会在内层 */ 停下
+        ['嵌套块注释', "spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' /* outer /* nested */ AND spe.change_type IN ('首次支付', '回款', '退款') */ AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN"],
+        // 不是注释，但同样是口径漂移
+        ['中间插入额外条件', "spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND 1 = 1 AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN"],
+        ['调换顺序', "spe.sale_order_type IN ('销售单', '转换单') AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.status = '已支付' AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN"],
+      ]
+
+      for (const [label, mutated] of BYPASS_ATTEMPTS) {
+        expect(
+          countOccurrences(normalize(mutated), EXPECTED_SPE_WHERE),
+          `「${label}」未被主守护拦下 —— 连续子串仍匹配，假绿路径复活`,
+        ).toBe(0)
+      }
     })
 
     it('金额一律取款项流水（按出现次数锁死，防某处改回订单快照）', () => {
