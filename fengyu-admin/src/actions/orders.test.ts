@@ -1003,6 +1003,8 @@ describe('createOrder — 全额储值卡抵扣即时扣卡（2026-05-21）', ()
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('储值卡余额不足')
+    // 余额不得落回子标签位：`50: 顾客储值卡余额不足…` 这种开头会直接漏进 toast（issue #133 评审 round 3/4）
+    expect(result.message).toMatch(/^顾客储值卡余额不足/)
   })
 })
 

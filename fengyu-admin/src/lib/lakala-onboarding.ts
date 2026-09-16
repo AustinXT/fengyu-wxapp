@@ -471,7 +471,14 @@ async function postBody(pathname: string, body: string) {
     return {
       ...json,
       httpStatus: response.status,
-      httpError: `Lakala ${getLakalaBaseUrl()}${pathname} failed with ${response.status}${response.status === 504 ? "，通常是附件过大或拉卡拉网关超时，请压缩后重试" : ""}`,
+      // 诊断信息（含网关 URL）只进日志/DB；面向用户的那句必须单独给，否则整串因含 https://
+      // 被内容闸门判死，连「附件过大…请压缩后重试」这种可操作提示都透不出去（评审 round 4）
+      httpDiagnostic: `Lakala ${getLakalaBaseUrl()}${pathname} failed with ${response.status}`,
+      // 不带前缀：调用方抛出时会补 `INVALID_STATE: `（见 initiateElectronicContract）
+      httpError:
+        response.status === 504
+          ? "拉卡拉网关超时，通常是附件过大，请压缩后重试"
+          : `拉卡拉接口返回 ${response.status}，请稍后重试或联系运维`,
     };
   }
   return json;
@@ -523,7 +530,9 @@ function decodeSm4Key(value: string) {
   if (hex.length === 16) return hex;
   const utf8 = Buffer.from(trimmed, "utf8");
   if (utf8.length === 16) return utf8;
-  throw new Error("LAKALA_SM4_KEY 必须是 16 字节，或对应的 base64/hex 编码");
+  // 带白名单前缀才能穿过 businessErrorMessage 的来源闸门：这是**给运维看的可操作配置错误**，
+  // 与「密码加密未配置（缺少 RSA_PRIVATE_KEY）」同类，不该被兜底文案吞掉（issue #133 评审 round 4）
+  throw new Error("INVALID_STATE: LAKALA_SM4_KEY 必须是 16 字节，或对应的 base64/hex 编码");
 }
 
 function resolveSm4KeyBuffer() {

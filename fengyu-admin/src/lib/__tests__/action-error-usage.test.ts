@@ -29,15 +29,7 @@ import path from 'node:path'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ADMIN_ROOT = path.resolve(HERE, '../../..')
 
-/** 用户可见的展示入口。 */
-const SINKS = [
-  'toast.error',
-  'toast.success',
-  'toast.warning',
-  'toast.info',
-  'alert',
-  // setError / setErrorMsg / setQrError / setLoadError… 统一按「set*Error*/set*Msg*」匹配
-]
+/** 用户可见的展示入口：toast.* / alert / set*Error*|Msg*|Message* setter。 */
 const SINK_RE = /(?:toast\.(?:error|success|warning|info)|alert|set\w*(?:Error|Msg|Message)\w*)\s*\(/
 
 /**
@@ -136,7 +128,7 @@ describe('issue #133 防回归：客户端不得直接展示 catch 到的 err.me
  * 故选「高精度 + 显式声明漏报面」，漏报形态由下面的自检用例逐条断言钉住。
  */
 const DIRECT_RETURN_RE =
-  /message:\s*(?:`[^`]*\$\{)?(?:(?<![.\w])(?:err|error|e|ex)(?:\s+instanceof\s+Error\s*\?\s*(?:err|error|e|ex))?(?:\s+as\s+Error\s*\)?)?\??\.message)|\$\{\w*[eE]rr(?:Data|or)?\??\.errmsg\}/
+  /message:\s*\(?(?:`[^`]*\$\{)?\(?(?<![.\w])(?:err|error|e|ex)(?:\s+instanceof\s+Error\s*\?\s*\(?(?:err|error|e|ex))?(?:\s+as\s+\w+\s*\))?\??\.message|\$\{\w*[eE]rr(?:Data|or)?\??\.errmsg\}/
 
 /**
  * 已核定豁免。按**代码片段**而非行号定位 —— 行号会随无关改动漂移，误报比漏报更磨人。
@@ -157,11 +149,6 @@ const SERVER_ALLOWLIST: readonly { file: string; snippet: string; reason: string
     file: 'src/actions/orders.ts',
     snippet: '`生成失败: ${errData.errcode} ${errData.errmsg}`',
     reason: '同上',
-  },
-  {
-    file: 'src/actions/orders.ts',
-    snippet: 'const message = err instanceof Error ? err.message : String(err)',
-    reason: '已 fail-closed：紧接着 parseErrorPrefix，非白名单走「冻结在线回款金额失败」兜底',
   },
 ]
 
@@ -201,6 +188,8 @@ describe('issue #133 防回归：Server Action 返回值不得直接回传异常
     expect(DIRECT_RETURN_RE.test('message: `失败：${err.message}`')).toBe(true)
     expect(DIRECT_RETURN_RE.test('message: err instanceof Error ? err.message : \'失败\'')).toBe(true)
     expect(DIRECT_RETURN_RE.test('message: `生成失败: ${errData.errcode} ${errData.errmsg}`')).toBe(true)
+    // 括号形态：与客户端 CATCH_MESSAGE_RE 口径对齐（评审 round 4 指出两端不对称）
+    expect(DIRECT_RETURN_RE.test('message: (err as Error).message')).toBe(true)
     // 安全形态不得误报（返回值对象的字段、固定文案）
     expect(DIRECT_RETURN_RE.test('message: res.error.message')).toBe(false)
     expect(DIRECT_RETURN_RE.test("message: '固定中文文案'")).toBe(false)
@@ -210,12 +199,16 @@ describe('issue #133 防回归：Server Action 返回值不得直接回传异常
     expect(DIRECT_RETURN_RE.test('message: String(err)')).toBe(false)
   })
 
-  it('豁免项仍然存在（防止 allowlist 变成过期的死条目）', () => {
+  it('豁免项仍然存在**且确实会被规则命中**（防止死条目）', () => {
     for (const entry of SERVER_ALLOWLIST) {
-      const source = readFileSync(path.join(ADMIN_ROOT, entry.file), 'utf8')
+      const lines = readFileSync(path.join(ADMIN_ROOT, entry.file), 'utf8').split('\n')
+      const line = lines.find((l) => l.includes(entry.snippet))
+      expect(line, `${entry.file} 已不含该片段，应从 SERVER_ALLOWLIST 移除：${entry.snippet}`).toBeTruthy()
+      // 只验「源码还含这个片段」不够 —— 规则收窄后豁免会变成从不生效的死条目，
+      // 却依然给人「已登记」的错觉（评审 round 4 两个谱系都指了出来）
       expect(
-        source.includes(entry.snippet),
-        `${entry.file} 已不含该片段，应从 SERVER_ALLOWLIST 移除：${entry.snippet}`,
+        DIRECT_RETURN_RE.test(line as string),
+        `${entry.file} 的该行已不会被扫描规则命中，豁免是死条目：${entry.snippet}`,
       ).toBe(true)
     }
   })
