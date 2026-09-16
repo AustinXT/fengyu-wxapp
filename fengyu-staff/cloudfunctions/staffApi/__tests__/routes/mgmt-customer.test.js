@@ -296,6 +296,27 @@ function setupCommonMocks(opts = {}) {
 // ===================================================================
 
 describe('mgmtCustomer 参数与权限校验', () => {
+  /**
+   * #141：列表「年消费」的日期口径此前**零守护**——把它在
+   * `performance_attribution_date` / `paid_at` 之间来回换，整套 staffApi 测试照常全绿。
+   * 现有那条只断言金额公式（`SUM(o.total_amount) AS annual_spend`），不看日期。
+   */
+  test('search 年消费按订单级业绩归属日期落年，不得回退 paid_at', async () => {
+    // 必须给 searchRows，否则 allClientUserIds 为空、search 会跳过年消费查询
+    setupCommonMocks({
+      searchRows: [{ user_id: 'u1', name: '张三', bound_store_id: 'store-001' }],
+      spendRows: [{ client_user_id: 'u1', annual_spend: '100.00' }],
+    })
+    const ctx = makeHqCtx({ scopeType: 'all', keyword: '张' })
+    await search(ctx)
+    const spendSql = pg.query.mock.calls
+      .map((c) => c[0])
+      .find((sql) => /COALESCE\(SUM\(o\.total_amount::numeric\),\s*0\)\s+AS\s+annual_spend/.test(sql))
+    expect(spendSql, '未找到年消费 SQL').toBeTruthy()
+    expect(spendSql, '年消费落年口径漂移').toContain('o.performance_attribution_date >= $2::date')
+    expect(spendSql, '年消费不得回退到 paid_at').not.toContain('o.paid_at')
+  })
+
   test('search 缺 scopeType 抛 INVALID_PARAMS', async () => {
     setupCommonMocks()
     const ctx = makeHqCtx({})
@@ -727,8 +748,15 @@ describe('mgmtCustomer.detail 出数', () => {
     expect(consumptionSql).toContain('SUM(\n         sop.amount::numeric')
     expect(consumptionSql).toContain("o.legacy_source IS DISTINCT FROM 'workfine'")
     expect(consumptionSql).toContain("o.legacy_source = 'workfine'")
-    expect(consumptionSql).toContain("sop.paid_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Shanghai')")
-    expect(consumptionSql).toContain("sop.paid_at < (($2::date + INTERVAL '1 year') AT TIME ZONE 'Asia/Shanghai')")
+    // #141 年度消费落年改按业绩归属日期：款项级走 sop、legacy(workfine) 走订单级 o。
+    // 归属日期是 date，年区间用半开 [start, start+1year)，不再套北京时区半开区间。
+    expect(consumptionSql).toContain('sop.performance_attribution_date >= $2::date')
+    expect(consumptionSql).toContain("sop.performance_attribution_date < ($2::date + INTERVAL '1 year')")
+    expect(consumptionSql).toContain('o.performance_attribution_date >= $2::date')
+    expect(consumptionSql).toContain("o.performance_attribution_date < ($2::date + INTERVAL '1 year')")
+    // 旧口径必须消失（含时区半开区间形态）
+    expect(consumptionSql).not.toContain('sop.paid_at >=')
+    expect(consumptionSql).not.toContain("AT TIME ZONE 'Asia/Shanghai')")
     expect(consumptionSql).not.toContain('WHEN o.paid_at >= $2')
     expect(consumptionSql).toContain('FROM service_orders so')
     expect(consumptionSql).toContain('JOIN service_items sit ON sit.service_order_id = so.service_order_id')
