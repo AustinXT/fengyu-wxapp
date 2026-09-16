@@ -485,12 +485,8 @@ describe('库存 SKU 来源与价格保护', () => {
   // 取的正是这一列（engine.ts 的 `normalizeText(trace.supplier) ?? sku.supplier`），
   // 派生断了批次快照就会变空。
 
-  function supplierLookup(rows: unknown[]) {
-    return selectWithLimit(rows)
-  }
-
   it('新建 SKU 选中档案时同时写入 supplier_id 与名称快照', async () => {
-    mockDb.select.mockReturnValueOnce(supplierLookup([{ name: '广州美姿贺生物科技', isActive: true }]))
+    mockDb.select.mockReturnValueOnce(selectWithLimit([{ name: '广州美姿贺生物科技', isActive: true }]))
     const values = vi.fn().mockResolvedValue(undefined)
     mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
       execute: vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([{ value: 'INV-SKU-20260916-0001' }]),
@@ -506,14 +502,14 @@ describe('库存 SKU 来源与价格保护', () => {
   })
 
   it('新建 SKU 不能关联已停用的供应商', async () => {
-    mockDb.select.mockReturnValueOnce(supplierLookup([{ name: '停用档案', isActive: false }]))
+    mockDb.select.mockReturnValueOnce(selectWithLimit([{ name: '停用档案', isActive: false }]))
 
     await expect(createInventorySku({ productName: '测试商品', supplierId: 'SUP-OFF' }))
       .rejects.toThrow('已停用，无法关联到库存商品')
   })
 
   it('关联不存在的供应商时报 NOT_FOUND', async () => {
-    mockDb.select.mockReturnValueOnce(supplierLookup([]))
+    mockDb.select.mockReturnValueOnce(selectWithLimit([]))
 
     await expect(createInventorySku({ productName: '测试商品', supplierId: 'SUP-404' }))
       .rejects.toThrow('供应商不存在')
@@ -558,7 +554,7 @@ describe('库存 SKU 来源与价格保护', () => {
     // 原样保存：档案虽已停用，但它就是当前关联值 —— 拦了就等于不让编辑这条 SKU
     mockDb.select
       .mockReturnValueOnce(selectWithLimit([current]))
-      .mockReturnValueOnce(supplierLookup([{ name: '停用档案', isActive: false }]))
+      .mockReturnValueOnce(selectWithLimit([{ name: '停用档案', isActive: false }]))
     await updateInventorySku('SKU-1', { supplierId: 'SUP-OFF' })
     expect(set).toHaveBeenCalledWith(expect.objectContaining({
       supplierId: 'SUP-OFF',
@@ -568,7 +564,7 @@ describe('库存 SKU 来源与价格保护', () => {
     // 换成另一个停用档案：停用语义是「不再采购」，这条要拦
     mockDb.select
       .mockReturnValueOnce(selectWithLimit([current]))
-      .mockReturnValueOnce(supplierLookup([{ name: '另一个停用档案', isActive: false }]))
+      .mockReturnValueOnce(selectWithLimit([{ name: '另一个停用档案', isActive: false }]))
     await expect(updateInventorySku('SKU-1', { supplierId: 'SUP-OFF-2' }))
       .rejects.toThrow('已停用，无法关联到库存商品')
   })
