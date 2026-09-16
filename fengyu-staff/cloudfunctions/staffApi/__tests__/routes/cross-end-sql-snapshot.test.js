@@ -66,6 +66,7 @@ const FILES = {
   staffOrderJs: path.resolve(__dirname, '../../routes/order.js'),
   staffRefundJs: path.resolve(__dirname, '../../utils/refund.js'),
   adminRefundTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/refund.ts'),
+  adminRefundsTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/refunds.ts'),
   payNotifyIndexJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/index.js'),
   adminOrdersTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/orders.ts'),
 
@@ -2381,6 +2382,27 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
       // 历史调用方未传聚合时回退物理剩余（零回归），但不得整体退回旧口径
       expect(src, `${end} 缺少未传聚合时的回退分支`).toContain(
         'if (item.picked_quantity == null && item.converted_amount == null) return physicalRemaining',
+      )
+      // 余数（overpay）同样要按**实际已转走金额**算：折抵带走的是剩余已付的实际金额
+      // （付 ¥450 折 4 件带走 ¥450，而 4 × 100 = 400），用件数 × 单价会把差额 ¥50
+      // 误判成多收余数再退一次（对抗审查实证）。
+      expect(src, `${end} overpay 未按实际已转走金额算`).toContain(
+        'Number(it.picked_quantity || 0) * unitRealPrice + (Number(it.converted_amount ?? 0) || 0)',
+      )
+    }
+  })
+
+  // 只退余数的明细（quantity=0、overpayAmount>0）也必须在审批锁内复核：
+  // 申请时合法的 ¥50 余数可能在审批前被折抵带走，只校验件数会直接 continue 放行。
+  test('两端审批 G2 复核覆盖「仅退余数」明细', () => {
+    for (const [end, file] of [['staff', FILES.staffOrderJs], ['admin', FILES.adminRefundsTs]]) {
+      const src = readFile(file).replace(/\s+/g, ' ')
+      expect(src, `${end} G2 未收集 overpay 金额`).toMatch(/homeOverpayAmt/)
+      expect(src, `${end} G2 对仅退余数的明细直接跳过`).toMatch(
+        /if \(requested <= 0 && requestedOverpay <= 0\) continue/,
+      )
+      expect(src, `${end} G2 未复核余数上限`).toContain(
+        'computeItemOverpayRemainders([lockedSrc]).get(',
       )
     }
   })

@@ -129,11 +129,16 @@ export function computeItemOverpayRemainders(origItems: RefundSourceItem[]): Map
       continue
     }
     const unitRealPrice = Number(it.unit_real_price) || 0
-    const consumedQty =
-      it.product_type === '疗程卡'
-        ? Math.max(0, Number(it.session_count || 0) - Number(it.remaining_sessions || 0))
-        : Math.max(0, Number(it.picked_up_quantity || 0))
-    const consumedValue = consumedQty * unitRealPrice
+    // #145/#153：家居的「已消耗价值」不能再用 picked_up_quantity × 单价——折抵带走的是
+    // 「剩余已付」的实际金额（付 ¥450 折 4 件带走 ¥450，而 4 × 100 = 400），差额 ¥50 会被
+    // 误判成多收余数再退一次。有聚合字段时按实际已提货金额 + 实际已转走金额算。
+    const hasConsumedDetail = it.product_type !== '疗程卡'
+      && (it.picked_quantity != null || it.converted_amount != null)
+    const consumedValue = hasConsumedDetail
+      ? Number(it.picked_quantity || 0) * unitRealPrice + (Number(it.converted_amount ?? 0) || 0)
+      : (it.product_type === '疗程卡'
+          ? Math.max(0, Number(it.session_count || 0) - Number(it.remaining_sessions || 0))
+          : Math.max(0, Number(it.picked_up_quantity || 0))) * unitRealPrice
     const maxRefundableValue = calculateUnusedQuantity(it) * unitRealPrice
     result.set(it.sale_item_id, Math.max(0, roundMoney(received - consumedValue - maxRefundableValue)))
   }

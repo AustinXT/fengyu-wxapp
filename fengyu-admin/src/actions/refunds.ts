@@ -730,12 +730,26 @@ export const createRefund = withPermission(
     return { success: false, error: { code: 'INVALID_STATE', message: '该订单有未完成的服务单，请先完成或取消后再退款' } }
   }
 
-  const origRows = await db
-    .select()
+  // #145/#153：可退数量与 overpay 都要按「剩余已付」算，必须带上 pickup_records 与
+  // 转出行聚合——缺这两列会落进 calculateUnusedQuantity 的「回退物理剩余」分支，
+  // 与候选（getRefundable）口径分叉：候选显示可退 0，提交却按旧口径放行。
+  const origRows = (await db
+    .select({
+      item: saleItems,
+      pickedQuantity: sql<number>`COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = ${saleItems.saleItemId}), 0)`,
+      convertedAmount: sql<string>`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)`,
+    })
     .from(saleItems)
-    .where(and(eq(saleItems.saleOrderId, refSaleOrderId), eq(saleItems.itemDirection, '购买')))
+    .where(and(eq(saleItems.saleOrderId, refSaleOrderId), eq(saleItems.itemDirection, '购买'))))
+    .map(({ item, pickedQuantity, convertedAmount }) => ({
+      ...item,
+      pickedQuantity: Number(pickedQuantity ?? 0),
+      convertedAmount,
+    }))
 
   const sourceItems: RefundSourceItem[] = origRows.map((r) => ({
+    picked_quantity: r.pickedQuantity,
+    converted_amount: r.convertedAmount,
     sale_item_id: r.saleItemId,
     sku_id: r.skuId,
     product_name: r.productName,
@@ -1168,8 +1182,16 @@ export const approveRefund = withPermission(
       // 静默封顶吞掉 —— 同一批货既进了转换单又退了现金，且家居账面 refunded_quantity 归 0 查无实据。
       // 这里按 sale_item_id 定序锁行复核，不足即拒绝审批。staff routes/order.js 有同义副本。
       const homeRefundQty = new Map<string, number>()
+      // #145/#153：只退余数的明细（quantity=0、overpayAmount>0）也必须复核——折抵会带走
+      // 「剩余已付」的全部金额，申请时合法的 ¥50 余数可能在审批前已被折走。只校验件数会漏掉它。
+      const homeOverpayAmt = new Map<string, number>()
       for (const it of cascadeItems) {
-        if (!it.saleItemId || (it as { isOverpay?: boolean }).isOverpay) continue
+        if (!it.saleItemId) continue
+        if ((it as { isOverpay?: boolean }).isOverpay) {
+          const amt = Math.abs(Number((it as { refundAmount?: unknown }).refundAmount ?? 0))
+          if (amt > 0) homeOverpayAmt.set(it.saleItemId, (homeOverpayAmt.get(it.saleItemId) ?? 0) + amt)
+          continue
+        }
         const qty = Number(it.sessionCount ?? 0)
         if (qty > 0) homeRefundQty.set(it.saleItemId, (homeRefundQty.get(it.saleItemId) ?? 0) + qty)
       }
@@ -1208,11 +1230,12 @@ export const approveRefund = withPermission(
         for (const r of Array.from(lockedRows as unknown as Iterable<Record<string, unknown>>)) {
           if (r.product_type !== '家居产品') continue
           const requested = homeRefundQty.get(r.sale_item_id as string) ?? 0
-          if (requested <= 0) continue
+          const requestedOverpay = homeOverpayAmt.get(r.sale_item_id as string) ?? 0
+          if (requested <= 0 && requestedOverpay <= 0) continue
           // 与 calculateUnusedQuantity 同口径：折抵可能带走剩余已付的全部金额却只占用
           // 向下取整的件数，剩下的物理件已无对应已付金额，不能再退。
           const c = consumedById.get(r.sale_item_id as string)
-          const refundable = calculateUnusedQuantity({
+          const lockedSrc: RefundSourceItem = {
             sale_item_id: r.sale_item_id as string,
             sku_id: null,
             product_name: null,
@@ -1229,9 +1252,19 @@ export const approveRefund = withPermission(
             converted_amount: c ? (c.converted_amount as string) : null,
             sales_category: null,
             service_fee: null,
-          })
+          }
+          const refundable = calculateUnusedQuantity(lockedSrc)
           if (requested > refundable) {
             throw new ApiError('CONFLICT', 'HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
+          }
+          // 余数同样按锁内新快照复核：申请时的 ¥50 余数可能已被折抵带走
+          if (requestedOverpay > 0) {
+            const currentOverpay = Number(
+              computeItemOverpayRemainders([lockedSrc]).get(r.sale_item_id as string) ?? 0,
+            )
+            if (requestedOverpay > currentOverpay + 0.001) {
+              throw new ApiError('CONFLICT', 'HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退余数已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
+            }
           }
         }
       }

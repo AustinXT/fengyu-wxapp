@@ -327,3 +327,50 @@ describe('calculateUnusedQuantity — 家居受「剩余已付」封顶（#145/#
     expect(calculateUnusedQuantity(home({ unit_real_price: '0', received: '0' }))).toBe(10)
   })
 })
+
+describe('computeItemOverpayRemainders — 家居余数按实际已转走金额算（#145/#153）', () => {
+  const home = (over = {}) => ({
+    sale_item_id: 'si-1',
+    product_type: '家居产品',
+    quantity: 10,
+    picked_up_quantity: 0,
+    unit_real_price: '100',
+    received: '1000',
+    picked_quantity: 0,
+    converted_amount: '0',
+    ...over,
+  })
+  const overpayOf = (row) => computeItemOverpayRemainders([row]).get(row.sale_item_id)
+
+  // 折抵带走的是「剩余已付」的实际金额（付 ¥450 折 4 件带走 ¥450），
+  // 用 picked_up_quantity × 单价（= 400）算已消耗，差额 ¥50 会被误判成多收余数再退一次。
+  test('折走全部已付后余数为 0（付 450 折 4 件带走 450）', () => {
+    expect(overpayOf(home({
+      picked_up_quantity: 4, received: '450', converted_amount: '450',
+    }))).toBe(0)
+  })
+
+  test('未折抵的部分支付保留真实余数（付 450 → 可退 4 件 + ¥50 余数）', () => {
+    expect(overpayOf(home({ received: '450' }))).toBe(50)
+  })
+
+  test('已提货件按实际提货金额扣（付清已提 3 → 无余数）', () => {
+    expect(overpayOf(home({ picked_up_quantity: 3, picked_quantity: 3 }))).toBe(0)
+  })
+
+  // 历史调用方未传聚合时回退旧口径（picked_up_quantity × 单价），零回归
+  test('未传聚合字段时回退旧口径', () => {
+    expect(overpayOf({
+      sale_item_id: 'si-2', product_type: '家居产品', quantity: 10,
+      picked_up_quantity: 3, unit_real_price: '100', received: '1000',
+    })).toBe(0)
+  })
+
+  test('疗程卡不受影响，仍按已消费次数算', () => {
+    expect(overpayOf({
+      sale_item_id: 'si-3', product_type: '疗程卡', quantity: 1,
+      session_count: 10, remaining_sessions: 7, paid_sessions: 10,
+      unit_real_price: '100', received: '1050', picked_up_quantity: 0,
+    })).toBe(50)
+  })
+})

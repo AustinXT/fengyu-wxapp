@@ -2964,7 +2964,21 @@ async function detail(ctx) {
       si.expire_date, si.remark, si.sales_category, si.ref_sale_item_id,
       si.product_name, si.product_type, si.picked_up_quantity,
       COALESCE(ps.unit, CASE WHEN si.product_type = '家居产品' THEN '盒' ELSE '次' END) AS unit,
-      si.item_direction
+      si.item_direction,
+      -- #145/#153：overpay 要按「剩余已付」算（折抵带走的是实际金额而非件数 × 单价），
+      -- 缺这两列会让展示侧与退款候选/提交口径分叉。
+      COALESCE((
+        SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
+         WHERE pr.sale_item_id = si.sale_item_id
+      ), 0)::int AS picked_quantity,
+      COALESCE((
+        SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item
+          JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+         WHERE out_item.ref_sale_item_id = si.sale_item_id
+           AND out_item.item_direction = '转出'
+           AND out_item.product_type = '家居产品'
+           AND conv_order.status <> '已关闭'
+      ), 0) AS converted_amount
     FROM sale_items si
     LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
     WHERE si.sale_order_id = $1
@@ -3583,8 +3597,16 @@ async function approveRefund(ctx) {
     // 静默封顶吞掉 —— 同一批货既进了转换单又退了现金，且家居账面 refunded_quantity 归 0 查无实据。
     // 这里按 sale_item_id 定序锁行复核，不足即拒绝审批（店员刷新后重新发起即可）。
     const homeRefundQty = new Map()
+    // #145/#153：只退余数的明细（quantity=0、overpayAmount>0）也必须复核——折抵会带走
+    // 「剩余已付」的全部金额，申请时合法的 ¥50 余数可能在审批前已被折走。只校验件数会漏掉它。
+    const homeOverpayAmt = new Map()
     for (const it of cascadeItems) {
-      if (!it.saleItemId || it.isOverpay) continue
+      if (!it.saleItemId) continue
+      if (it.isOverpay) {
+        const amt = Math.abs(Number(it.refundAmount || 0))
+        if (amt > 0) homeOverpayAmt.set(it.saleItemId, (homeOverpayAmt.get(it.saleItemId) || 0) + amt)
+        continue
+      }
       const qty = Number(it.sessionCount || 0)
       if (qty > 0) homeRefundQty.set(it.saleItemId, (homeRefundQty.get(it.saleItemId) || 0) + qty)
     }
@@ -3630,11 +3652,13 @@ async function approveRefund(ctx) {
       for (const r of lockedRows.rows) {
         if (r.product_type !== '家居产品') continue
         const requested = homeRefundQty.get(r.sale_item_id) || 0
-        if (requested <= 0) continue
+        const requestedOverpay = homeOverpayAmt.get(r.sale_item_id) || 0
+        if (requested <= 0 && requestedOverpay <= 0) continue
         // 与 calculateUnusedQuantity 同口径：折抵可能带走了剩余已付的全部金额却只占用
         // 向下取整的件数，剩下的物理件已无对应已付金额，不能再退（否则折走 ¥450 又退 ¥450）。
         const c = consumedById.get(r.sale_item_id)
-        const refundable = calculateUnusedQuantity({
+        const lockedSrc = {
+          sale_item_id: r.sale_item_id,
           product_type: r.product_type,
           quantity: r.quantity,
           picked_up_quantity: r.picked_up_quantity,
@@ -3642,9 +3666,17 @@ async function approveRefund(ctx) {
           received: r.received,
           picked_quantity: c ? c.picked_quantity : null,
           converted_amount: c ? c.converted_amount : null,
-        })
+        }
+        const refundable = calculateUnusedQuantity(lockedSrc)
         if (requested > refundable) {
           throw new Error('CONFLICT: HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
+        }
+        // 余数同样按锁内新快照复核：申请时的 ¥50 余数可能已被折抵带走
+        if (requestedOverpay > 0) {
+          const currentOverpay = Number(computeItemOverpayRemainders([lockedSrc]).get(r.sale_item_id) || 0)
+          if (requestedOverpay > currentOverpay + 0.001) {
+            throw new Error('CONFLICT: HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退余数已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
+          }
         }
       }
     }
