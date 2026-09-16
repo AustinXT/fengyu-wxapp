@@ -64,8 +64,18 @@ test('权威实现的行为符合预期（含 query 覆盖与百分号编码绕�
   }
 })
 
-test('放行的串经真实解析器解析后确实落在白名单内（交叉验证）', () => {
-  // 不静默跳过：db/ 必然有 pg 依赖，拿不到说明环境坏了，应当暴露而不是假绿
+test('放行的串经真实解析器解析后确实落在白名单内（交叉验证）', (t) => {
+  // 「依赖没装」与「行为不符」必须分开处理，否则两边都失真：
+  //   - 解析不到模块 = 环境没装依赖（裸 checkout、或把 HEAD 导出到临时目录做提交态验证），
+  //     此时报红是假红，显式 skip 并说明怎么拿回这层覆盖；
+  //   - 解析得到之后的任何失败（加载报错 / 断言不符）都是真问题，照常抛，绝不吞。
+  try {
+    require.resolve('pg-connection-string')
+  } catch (err) {
+    if (err.code !== 'MODULE_NOT_FOUND') throw err
+    t.skip('未安装 pg-connection-string（pg 的传递依赖）；在 db/ 跑 npm ci 后可获得这层交叉验证')
+    return
+  }
   const parse = require('pg-connection-string').parse
   for (const [url, want] of CASES) {
     if (!want) continue
