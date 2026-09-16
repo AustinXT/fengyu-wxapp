@@ -47,7 +47,8 @@ const { INVENTORY_LINKAGE_ENABLED } = require('../utils/feature-flags')
 const { assertEmployeesAssignableToStore } = require('../utils/employee-assignment')
 const { classifySaleOrderDocumentType } = require('../utils/document-type')
 const { maskPhoneForAuth } = require('../utils/phone-visibility')
-const { normalizeListFilters, addTimestampDateRange } = require('../utils/list-filters')
+const { normalizeListFilters, addDateRange } = require('../utils/list-filters')
+const { assertPaymentAttributionReady } = require('../utils/attribution-guard')
 
 // 模块级缓存：saleOrderId → qrcodeUrl，避免轮询时重复生成
 const qrcodeCache = new Map()
@@ -2612,7 +2613,27 @@ async function list(ctx) {
     conditions.push(`(${searchParts.join(' OR ')})`)
   }
 
-  addTimestampDateRange(conditions, params, 'o.sale_order_datetime', startDate, endDate)
+  // 日期筛选口径固定为「款项业绩归属日期」（#139），与 admin 订单管理默认口径 attribution 同构，
+  // staff 侧不提供口径切换下拉（管理层视图口径单一）。
+  // 订单粒度：订单只要存在任一笔归属日期落在区间内的**已入账**款项即入选（EXISTS 半连接）。
+  // ⚠ 下面的 status='已支付' 是语义闸门，不是索引优化，删掉会改变结果集：
+  // 迁移 0039 起未入账行的 performance_attribution_date 由 created_at 占位（不再是 NULL），
+  // 首次支付行的列值又是订单级的镜像（与本行是否入账无关），两者都会让未入账款项把订单带进结果。
+  // 归属日期是 date 而非 timestamptz，走 addDateRange 的闭区间（与 allocation.js 共用同一实现）。
+  // 附带后果（与 admin 一致，非缺陷）：0 笔已入账款项的订单——WorkFine 历史单、纯待支付单、
+  // 未收款即关闭的单——在本口径下不入选。部分支付单有已支付的首次支付行，仍可入选。
+  if (startDate || endDate) {
+    await assertPaymentAttributionReady(pg)
+    const attributionParts = []
+    addDateRange(attributionParts, params, 'pf.performance_attribution_date', startDate, endDate)
+    conditions.push(`EXISTS (
+        SELECT 1
+          FROM sale_order_payments pf
+         WHERE pf.sale_order_id = o.sale_order_id
+           AND pf.status = '已支付'
+           AND ${attributionParts.join('\n           AND ')}
+      )`)
+  }
 
   // 美容师只能看到指定自己的订单
   if (!ctx.auth.roles.includes('manager')) {

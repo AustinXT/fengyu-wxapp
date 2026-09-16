@@ -73,3 +73,12 @@
 .no-more-text {
   font-size: 24rpx; color: #999;
 }
+
+/* 归属日期口径下的空态补充说明（仅在有日期筛选时出现） */
+.empty-hint {
+  padding: 0 64rpx 24rpx;
+  color: #999999;
+  font-size: 24rpx;
+  line-height: 34rpx;
+  text-align: center;
+}

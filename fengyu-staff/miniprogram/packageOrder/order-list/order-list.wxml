@@ -7,6 +7,7 @@
     status-options="{{statusOptions}}"
     start-date="{{startDate}}"
     end-date="{{endDate}}"
+    date-hint="日期按业绩归属日期筛选"
     bind:keyword-change="onSearchChange"
     bind:search="onSearch"
     bind:search-clear="onSearchClear"
@@ -22,6 +23,11 @@
 
   <view wx:elif="{{!loading && list.length === 0}}" class="empty-wrap">
     <van-empty description="暂无订单" />
+    <!-- 归属日期口径下「0 笔已入账款项」的订单查不出来（历史单/未收款单/未收款即关闭的单），
+         空态不解释的话会被当成业务事实 -->
+    <view wx:if="{{startDate || endDate}}" class="empty-hint">
+      当前按业绩归属日期筛选，未产生收款的订单不在结果内
+    </view>
   </view>
 
   <view wx:else class="list-wrap">
