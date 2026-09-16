@@ -45,8 +45,15 @@ function normalize(src: string): string {
  *
  * 结论：正则做不了 SQL 词法分析，补一次就冒出下一种等价写法 —— 与 #140 得到的
  * 「黑名单证明不了『没有任何日期条件』」是同一个教训。
- * 因此口径守护的**主力**改为下方 `EXPECTED_SPE_WHERE` 连续子串快照：
- * 任何注释字符插进五件套中间都会破坏连续性，无需先识别它是不是注释。
+ * 因此口径守护的**主力**改为下方 `EXPECTED_SPE_BLOCKS` 块级逐字快照，
+ * 它**完全不经过本函数**：块文本与快照差一个字符就红，无需先识别注释。
+ *
+ * ⚠ 本函数**仅**服务于两类次要断言：逐块定位辅助、以及 `not.toMatch` 反向守卫。
+ * 它用正则处理完整源码，codex 指出仍有理论误剥路径（`const marker = '//'; const paid_amount = x`
+ * —— `//` 规则从字符串内部删到行尾，反向断言随之假绿；块注释同理）。
+ * 当前两个被测文件**不含**触发该误剥的字符串，且这类回退真发生时会改动 FROM 子句 /
+ * 块文本，被主守护直接拦下。若日后要彻底闭环，应改用 Babel parser 的真实 comment range
+ * （项目已有先例：`.claude/skills/pack-delivery/scripts/strip-comments.mjs`）。
  */
 function stripComments(src: string): string {
   return src
@@ -55,42 +62,45 @@ function stripComments(src: string): string {
 }
 
 /**
- * **口径守护主力**：会员消费查询的 WHERE 五件套，归一化后必须是这段**连续**文本。
+ * **口径守护主力**：7 个 spe 查询块（admin 5 / staff 2）的 JOIN + WHERE 全文逐字快照。
  *
- * 为什么连续子串比「5 条独立正则 + 剥注释」强：
- *   - 注释掉其中一行 → 注释起始符插进串中间 → 不匹配 → 红。**不依赖识别注释**，
- *     `-- AND` / `--AND` / `TRUE--AND` / 块注释包裹 / 嵌套块注释一视同仁全部拦下
- *   - 中间插入额外条件、调换顺序、改写任一 token → 同样破坏连续性
+ * 为什么是逐字快照，而不是「找关键字面量」的各种变体 —— 三轮评审把后者逐级打穿：
+ *   - r1：只剥 JS 注释 → SQL `-- AND ...` 注释掉过滤，正则仍匹配到注释里的字面量
+ *   - r2：补剥 SQL `--` → `--AND`（无空格）绕过；再放宽 → `TRUE--AND`（token 紧贴）绕过；
+ *         PG 还支持嵌套块注释；且误剥会让 `not.toMatch` 反向断言**假绿**
+ *   - r3：改连续子串 → 因为串不含前导 `AND`，把**第一项**整行注释掉时串仍完整命中；
+ *         `BETWEEN` 之后的实参完全没锁，`BETWEEN ${start} AND ${start}`、
+ *         `WHERE TRUE OR (...)` 都能让过滤失效而文本不变
  *
- * 断言形态是「**按查询块**切开后，每块恰好含 1 次；块数恰好 admin 5 / staff 2」，
- * 而不是在整份文件里数总次数 —— 后者可被「删一处 + 在注释里补一份凑数」绕过
- * （自查实测成立，见 `splitSpeQueryBlocks`）。
+ * 每补一次就冒出下一种等价写法 —— 与 #140 得到的「黑名单证明不了『没有任何日期条件』」
+ * 是同一个教训，最终也收敛到同一个形态：**整段逐字快照**。
+ * 任何字符级改动（注释、改实参、加 `OR TRUE`、调换顺序、插条件）都必须显式更新这里的常量，
+ * 因此**不需要**先判断某段文本是不是注释。
  *
- * ⚠ 不含前导 `AND`：KPI 查询由 `${sc}` 起头故写 `AND spe.sale_order_type ...`，
- * 而门店/市场明细查询无 scope 条件、直接 `WHERE spe.sale_order_type ...`。
- * 两种引导词都包含这段串，五件套之间的 4 个 `AND` 连接仍被逐字锁死。
+ * 块的范围：`FROM sale_order_performance_events spe` 之后到 `GROUP BY` / 模板串结束之前，
+ * 即完整的 JOIN 链 + WHERE 全部条件（含 `BETWEEN` 两端的插值表达式）。
  *
- * ⚠ 截到 `BETWEEN` 为止：其后的区间插值两端不同（admin `${range.start}` /
- * staff `${startDateExpr(period)}`），且明细查询用 `${start}`。
- *
- * 改这段常量 = 改口径，必须同步两端 + 更新出数对比。
+ * ⚠ 改这些常量 = 改口径：必须同步另一端 + 重跑出数对比 + 在 PR 里说明差异。
  */
-const EXPECTED_SPE_WHERE =
-  "spe.sale_order_type IN ('销售单', '转换单') " +
-  "AND spe.status = '已支付' " +
-  "AND spe.change_type IN ('首次支付', '回款', '退款') " +
-  "AND spe.legacy_source IS DISTINCT FROM 'workfine' " +
-  'AND spe.performance_date BETWEEN'
-
-/** 数 needle 在 haystack 中的不重叠出现次数 */
-function countOccurrences(haystack: string, needle: string): number {
-  let n = 0
-  let i = 0
-  while ((i = haystack.indexOf(needle, i)) >= 0) {
-    n++
-    i += needle.length
-  }
-  return n
+const EXPECTED_SPE_BLOCKS: Record<'admin' | 'staff', string[]> = {
+  admin: [
+    // queryOperatedMembers（会员经营人数）
+    "JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN client_wechat_users c ON c.user_id = o.client_user_id WHERE ${sc} AND spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${range.start} AND ${range.end} AND c.customer_type = '会员客'",
+    // queryMemberAvgTicket（会员客单价）—— 与上一条同 SQL
+    "JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN client_wechat_users c ON c.user_id = o.client_user_id WHERE ${sc} AND spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${range.start} AND ${range.end} AND c.customer_type = '会员客'",
+    // queryNewMemberSpend（新会员消费）—— 多 became_member_at 谓词，无 customer_type
+    "JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN client_wechat_users c ON c.user_id = o.client_user_id WHERE ${sc} AND c.became_member_at IS NOT NULL AND c.became_member_at::date BETWEEN ${range.start} AND ${range.end} AND spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${range.start} AND ${range.end}",
+    // 门店/市场明细·会员消费分桶 —— 用 skel JOIN 代替 ${sc}
+    "JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN skel sk ON sk.store_id = o.store_id JOIN client_wechat_users c ON c.user_id = o.client_user_id WHERE spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${start} AND ${end} AND c.customer_type = '会员客'",
+    // 门店/市场明细·新会员消费
+    "JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN skel sk ON sk.store_id = o.store_id JOIN client_wechat_users c ON c.user_id = o.client_user_id WHERE c.became_member_at IS NOT NULL AND c.became_member_at::date BETWEEN ${start} AND ${end} AND spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${start} AND ${end}",
+  ],
+  staff: [
+    // queryMemberOps（会员经营 + 分桶）
+    "JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN client_wechat_users c ON c.user_id = o.client_user_id WHERE ${sc.sql} AND spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)} AND c.customer_type = '会员客'",
+    // queryNewMemberSpend
+    "JOIN sale_orders o ON o.sale_order_id = spe.sale_order_id JOIN client_wechat_users c ON c.user_id = o.client_user_id WHERE ${sc.sql} AND c.became_member_at IS NOT NULL AND c.became_member_at::date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)} AND spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN ${startDateExpr(period)} AND ${endDateExpr(period)}",
+  ],
 }
 
 /**
@@ -108,7 +118,7 @@ function splitSpeQueryBlocks(src: string): string[] {
   return normalize(src)
     .split(/FROM\s+sale_order_performance_events\s+spe/)
     .slice(1)
-    .map((b) => b.split(/GROUP BY|`/)[0])
+    .map((b) => b.split(/GROUP BY|`/)[0].trim())
 }
 
 describe('客量板块两端口径一致性守护', () => {
@@ -244,8 +254,9 @@ describe('客量板块两端口径一致性守护', () => {
      *
      * ⚠ **本条是失败定位辅助，不是主守护**。它用剥过 JS 注释的文本 + 5 条独立正则，
      * 因此「把某行过滤注释掉」这类改动它**拦不住**（SQL 注释刻意不剥，原因见
-     * `stripComments`）。真正拦下的是下方 `EXPECTED_SPE_WHERE` 连续串 + 精确计数；
-     * 本条的价值是在那条红掉之后，直接指出「第几个查询缺了哪一项」。
+     * `stripComments`）。真正拦下的是下方 `EXPECTED_SPE_BLOCKS` 块级逐字快照；
+     * 本条的价值是在那条红掉之后，直接指出「第几个查询缺了哪一项」——
+     * 快照断言只能告诉你「这一块不一样」，定位到具体哪一项要靠这里。
      *
      * 另两点澄清（GLM 评审 P3-3）：
      * 1. 「自适应」只限本条。「金额按出现次数锁死」与主守护都是精确 `toBe(5/2)`，
@@ -283,67 +294,82 @@ describe('客量板块两端口径一致性守护', () => {
     })
 
     /**
-     * **口径守护主力**（见 `EXPECTED_SPE_WHERE` 的说明）。
+     * **口径守护主力**（设计理由见 `EXPECTED_SPE_BLOCKS` 的说明）。
      *
-     * 断言 WHERE 五件套在**原文**（只归一化空白，不剥任何注释）里恰好出现
-     * admin 5 次 / staff 2 次。这条一旦红，说明有人动了过滤条件本身 ——
-     * 上方的逐块断言只是用来告诉你「是第几个查询缺了哪一项」。
+     * 在**原文**（只归一化空白，不剥任何注释）上切出 7 个 spe 查询块，
+     * 逐块与快照全等比较。这条一旦红，说明 JOIN 链或 WHERE 里有任何字符被动过 ——
+     * 上方的逐块断言用来进一步告诉你「是第几个查询缺了哪一项」。
      */
-    it('WHERE 五件套逐字连续 + 精确计数（主守护，不依赖注释剥离）', () => {
-      for (const [side, src, expected] of [
-        ['admin', adminSrc, 5],
-        ['staff', staffSrc, 2],
-      ] as Array<[string, string, number]>) {
+    it('7 个 spe 查询块逐字快照（主守护，不依赖注释剥离）', () => {
+      for (const [side, src] of [
+        ['admin', adminSrc],
+        ['staff', staffSrc],
+      ] as Array<['admin' | 'staff', string]>) {
+        const expectedBlocks = EXPECTED_SPE_BLOCKS[side]
         const blocks = splitSpeQueryBlocks(src)
+
         expect(
           blocks.length,
-          `${side} 的 spe 查询块数为 ${blocks.length}，期望 ${expected}。` +
-            '整块被删、或新增了会员消费查询（后者需同步更新期望值 + 出数对比）。',
-        ).toBe(expected)
+          `${side} 的 spe 查询块数为 ${blocks.length}，期望 ${expectedBlocks.length}。` +
+            '整块被删、或新增了会员消费查询（后者需同步更新 EXPECTED_SPE_BLOCKS + 出数对比）。',
+        ).toBe(expectedBlocks.length)
 
         blocks.forEach((block, i) => {
           expect(
-            countOccurrences(block, EXPECTED_SPE_WHERE),
-            `${side} 第 ${i + 1} 个 spe 查询块的 WHERE 五件套不是预期的连续文本。\n` +
-              '可能原因：某处过滤被删/被注释掉、顺序被调换、中间插了别的条件。\n' +
-              '（具体缺哪一项，看下方逐块定位辅助那条断言的报错。）',
-          ).toBe(1)
+            block,
+            `${side} 第 ${i + 1} 个 spe 查询块与快照不符。\n` +
+              '任何字符级改动都会命中这条：过滤被删/被注释、BETWEEN 实参被换、' +
+              '加了 OR TRUE、顺序调换、插了别的条件。\n' +
+              '确认是有意的口径变更后，同步更新 EXPECTED_SPE_BLOCKS、另一端副本，并重跑出数对比。',
+          ).toBe(expectedBlocks[i])
         })
       }
     })
 
     /**
-     * 上一条的**反向验证**：确认它真能拦下各种「注释掉一行过滤」的写法。
+     * 上一条的**反向验证**：把三轮评审逐级打穿的每种绕过形态固化下来，
+     * 确认逐字快照对它们一视同仁。
      *
-     * 两轮评审逐个打穿了「用正则剥 SQL 注释」的每种补法（见 `stripComments` 的说明），
-     * 这里固化其中每一种绕过形态 —— 连续子串对它们一视同仁，因为**不需要**先判断
-     * 那是不是注释，只要有字符插进五件套中间就破坏连续性。
+     * 前几版守护（剥 SQL 注释 + 找关键字面量 / 连续子串）对这些形态**各有漏网**，
+     * 详见 `EXPECTED_SPE_BLOCKS` 的说明。逐字快照不需要判断某段文本是不是注释，
+     * 只要块文本与快照有一个字符不同就红。
      */
-    it('各种 SQL 注释形态都会破坏五件套连续性（反向验证主守护）', () => {
-      const intact = EXPECTED_SPE_WHERE
-      expect(countOccurrences(normalize(intact), EXPECTED_SPE_WHERE), '基线自身应匹配').toBe(1)
+    it('各种绕过形态都会破坏块级逐字快照（反向验证主守护）', () => {
+      const base = EXPECTED_SPE_BLOCKS.admin[0]
+      expect(base, '基线自身应相等').toBe(EXPECTED_SPE_BLOCKS.admin[0])
+
+      const seq = "AND spe.change_type IN ('首次支付', '回款', '退款') "
+      expect(base.includes(seq), '基线应含 change_type 过滤（用例前提）').toBe(true)
+      const firstFilter = "AND spe.sale_order_type IN ('销售单', '转换单') "
+      expect(base.includes(firstFilter), '基线应含订单类型过滤（用例前提）').toBe(true)
 
       const BYPASS_ATTEMPTS: Array<[string, string]> = [
-        // codex round-1 指出的原始路径
-        ['行首 `-- ` 带空格', "spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付'\n-- AND spe.change_type IN ('首次支付', '回款', '退款')\nAND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN"],
-        // 我自查发现的后门
-        ['行首 `--` 无空格', "spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付'\n--AND spe.change_type IN ('首次支付', '回款', '退款')\nAND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN"],
-        // codex round-2 指出的：token 紧贴 `--`，两版正则都拦不住
-        ['token 紧贴 `--`', "spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付'--AND spe.change_type IN ('首次支付', '回款', '退款')\nAND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN"],
-        // PG 块注释
-        ['块注释包裹', "spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' /* AND spe.change_type IN ('首次支付', '回款', '退款') */ AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN"],
-        // PG 特性：嵌套块注释，非贪婪正则会在内层 */ 停下
-        ['嵌套块注释', "spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' /* outer /* nested */ AND spe.change_type IN ('首次支付', '回款', '退款') */ AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN"],
+        // r1：最常见的维护动作，只剥 JS 注释时漏网
+        ['行首 `-- ` 带空格', base.replace(seq, `-- ${seq}`)],
+        // r2：我自查发现的后门（`--` 后不带空格）
+        ['行首 `--` 无空格', base.replace(seq, `--${seq}`)],
+        // r2 codex：token 紧贴 `--`，两版正则都拦不住
+        ['token 紧贴 `--`', base.replace(` ${seq}`, `--${seq}`)],
+        // PG 块注释 / 嵌套块注释（非贪婪正则会在内层 */ 停下）
+        ['块注释包裹', base.replace(seq, `/* ${seq} */ `)],
+        ['嵌套块注释', base.replace(seq, `/* outer /* nested */ ${seq} */ `)],
+        // r3 codex：**第一项**被注释 —— 连续子串版因串不含前导 AND 而完全漏网
+        ['注释掉第一项过滤', base.replace(firstFilter, `-- ${firstFilter}`)],
+        // r3 codex：BETWEEN 实参被改 / 整体被 OR 短路 —— 连续子串版止于 BETWEEN，同样漏网
+        ['BETWEEN 起止同值', base.replace('${range.start} AND ${range.end}', '${range.start} AND ${range.start}')],
+        ['BETWEEN 起止颠倒', base.replace('${range.start} AND ${range.end}', '${range.end} AND ${range.start}')],
+        ['OR TRUE 短路整段 WHERE', base.replace('WHERE ${sc}', 'WHERE TRUE OR ${sc}')],
         // 不是注释，但同样是口径漂移
-        ['中间插入额外条件', "spe.sale_order_type IN ('销售单', '转换单') AND spe.status = '已支付' AND spe.change_type IN ('首次支付', '回款', '退款') AND 1 = 1 AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN"],
-        ['调换顺序', "spe.sale_order_type IN ('销售单', '转换单') AND spe.change_type IN ('首次支付', '回款', '退款') AND spe.status = '已支付' AND spe.legacy_source IS DISTINCT FROM 'workfine' AND spe.performance_date BETWEEN"],
+        ['中间插入额外条件', base.replace(seq, `${seq}AND 1 = 1 `)],
+        ['调换顺序', base.replace(seq, '').replace(firstFilter, `${firstFilter}${seq}`)],
       ]
 
       for (const [label, mutated] of BYPASS_ATTEMPTS) {
+        expect(mutated, `「${label}」构造无效：变异后与基线相同，用例本身失效`).not.toBe(base)
         expect(
-          countOccurrences(normalize(mutated), EXPECTED_SPE_WHERE),
-          `「${label}」未被主守护拦下 —— 连续子串仍匹配，假绿路径复活`,
-        ).toBe(0)
+          EXPECTED_SPE_BLOCKS.admin.includes(mutated),
+          `「${label}」未被主守护拦下 —— 变异块仍命中某条快照，假绿路径复活`,
+        ).toBe(false)
       }
     })
 
