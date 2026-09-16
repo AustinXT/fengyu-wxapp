@@ -41,9 +41,25 @@ function calculateUnusedQuantity(item) {
     const consumed = Number(item.session_count || 0) - remaining
     return Math.max(0, Math.min(remaining, Number(item.paid_sessions) - consumed))
   }
+  // #145/#153：家居可退件数还要受「剩余已付」封顶。
+  // 折抵可以带走剩余已付的**全部金额**却只占用向下取整的件数（付 ¥450 折 4 件带走 ¥450），
+  // 剩下的物理件已经没有对应的已付金额了——只按 quantity − picked_up_quantity 判可退，
+  // 顾客能折走 ¥450 之后再退 ¥450，实付仅 ¥450（对抗审查实证的资损）。
+  // 口径与提货/折抵一致：剩余已付 = 行实收 − 已提货金额 − 已转走金额，全程按分整除。
+  // picked_quantity / converted_amount 由调用方从 pickup_records 与转出行聚合传入；
+  // 缺失时退回物理剩余（历史调用方零回归，金额门仍兜底）。
   const quantity = Number(item.quantity || 0)
   const pickedUp = Number(item.picked_up_quantity || 0)
-  return Math.max(0, quantity - pickedUp)
+  const physicalRemaining = Math.max(0, quantity - pickedUp)
+  if (item.picked_quantity == null && item.converted_amount == null) return physicalRemaining
+  const toCents = (v) => Math.round(Number(v || 0) * 100)
+  const unitCents = toCents(item.unit_real_price)
+  if (unitCents <= 0) return physicalRemaining
+  const remainingCents = Math.max(
+    0,
+    toCents(item.received) - Number(item.picked_quantity || 0) * unitCents - toCents(item.converted_amount),
+  )
+  return Math.min(physicalRemaining, Math.floor(remainingCents / unitCents))
 }
 
 /**

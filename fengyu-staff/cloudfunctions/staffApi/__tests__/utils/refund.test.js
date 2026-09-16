@@ -267,3 +267,63 @@ describe('isHandlingFeeInvalidForRefund', () => {
     ], 1)).toBe(false)
   })
 })
+
+describe('calculateUnusedQuantity — 家居受「剩余已付」封顶（#145/#153）', () => {
+  const home = (over = {}) => ({
+    product_type: '家居产品',
+    quantity: 10,
+    picked_up_quantity: 0,
+    unit_real_price: '100',
+    received: '1000',
+    picked_quantity: 0,
+    converted_amount: '0',
+    ...over,
+  })
+
+  // 折抵能带走「剩余已付」的**全部金额**却只占用向下取整的件数（付 ¥450 折 4 件带走 ¥450），
+  // 剩下的物理件已经没有对应的已付金额了。只按 quantity − picked_up_quantity 判可退，
+  // 顾客能折走 ¥450 之后再退 ¥450，而他只付了 ¥450。
+  test('折走全部已付后不可再退（付 450 → 折 4 件带走 450 → 可退 0）', () => {
+    expect(calculateUnusedQuantity(home({
+      picked_up_quantity: 4, received: '450', converted_amount: '450',
+    }))).toBe(0)
+  })
+
+  test('未折抵的部分支付按已付整件数封顶（付 450 → 可退 4 件）', () => {
+    expect(calculateUnusedQuantity(home({ received: '450' }))).toBe(4)
+  })
+
+  test('付清未提可退全部', () => {
+    expect(calculateUnusedQuantity(home())).toBe(10)
+  })
+
+  test('已提货件从剩余已付里扣（付清已提 3 → 可退 7）', () => {
+    expect(calculateUnusedQuantity(home({ picked_up_quantity: 3, picked_quantity: 3 }))).toBe(7)
+  })
+
+  // received 已由 paid-sessions STEP 1.5 扣过退款，picked_up_quantity 又含退款结算数，
+  // 两边都减就是重复扣减（顾客少退）。
+  test('退款件不重复扣减（付清 10 件退 2 件 → 仍可退 8）', () => {
+    expect(calculateUnusedQuantity(home({
+      picked_up_quantity: 2, received: '800', picked_quantity: 0,
+    }))).toBe(8)
+  })
+
+  test('分币单价按分整除，与 PG numeric 一致（16.67 × 3 = 50.01 → 3 件）', () => {
+    expect(calculateUnusedQuantity(home({
+      quantity: 3, unit_real_price: '16.67', received: '50.01',
+    }))).toBe(3)
+  })
+
+  // 历史调用方（未传聚合）零回归：回退到物理剩余，金额门仍兜底
+  test('未传 picked_quantity / converted_amount 时回退物理剩余', () => {
+    expect(calculateUnusedQuantity({
+      product_type: '家居产品', quantity: 10, picked_up_quantity: 3,
+      unit_real_price: '100', received: '1000',
+    })).toBe(7)
+  })
+
+  test('单价为 0（赠品行）回退物理剩余，不被零除', () => {
+    expect(calculateUnusedQuantity(home({ unit_real_price: '0', received: '0' }))).toBe(10)
+  })
+})

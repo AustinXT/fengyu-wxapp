@@ -40,6 +40,7 @@ const {
   assertNoPendingRefund,
   notifyRefundCreated,
   notifyRefundResult,
+  calculateUnusedQuantity,
 } = require('../utils/refund')
 const { logOperation, logUpdate, logTransition } = require('../utils/operation-log')
 const { shanghaiDateStr, shanghaiYMD, shanghaiYYMMDD } = require('../utils/datetime')
@@ -3222,7 +3223,19 @@ async function createRefund(ctx) {
 
   // 查原单明细（构建 + 校验未使用数量）
   const origItems = await pg.query(
-    "SELECT * FROM sale_items WHERE sale_order_id = $1 AND item_direction = '购买'",
+    // #145/#153：可退数量受「剩余已付」封顶，需要 pickup_records 与转出行聚合（见 utils/refund.js）
+    `SELECT si.*,
+            COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
+                       WHERE pr.sale_item_id = si.sale_item_id), 0)::int AS picked_quantity,
+            COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric))
+                        FROM sale_items out_item
+                        JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+                       WHERE out_item.ref_sale_item_id = si.sale_item_id
+                         AND out_item.item_direction = '转出'
+                         AND out_item.product_type = '家居产品'
+                         AND conv_order.status <> '已关闭'), 0) AS converted_amount
+       FROM sale_items si
+      WHERE si.sale_order_id = $1 AND si.item_direction = '购买'`,
     [refSaleOrderId]
   )
 
@@ -3562,7 +3575,8 @@ async function approveRefund(ctx) {
       // recalcPaidSessionsForOrder 会更新同单的疗程卡行，只锁家居会与「先锁疗程卡、再等家居」
       // 的混选转换事务形成反向锁序而死锁。按 sale_item_id 升序，与 createConversion 的锁序一致。
       const lockedRows = await client.query(
-        `SELECT sale_item_id, product_type, quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity
+        `SELECT sale_item_id, product_type, quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity,
+                unit_real_price, received
            FROM sale_items
           WHERE sale_order_id = $1
             AND item_direction = '购买'
@@ -3570,11 +3584,44 @@ async function approveRefund(ctx) {
             FOR UPDATE`,
         [refSaleOrderId],
       )
+      // #145/#153：锁取得后另起一条语句聚合 pickup_records 与转出行——与持锁查询同语句会拿到
+      // 旧快照（EvalPlanQual 只刷新 sale_items 自身的行版本）。
+      const consumedRes = await client.query(
+        `SELECT si.sale_item_id,
+                COALESCE((
+                  SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
+                   WHERE pr.sale_item_id = si.sale_item_id
+                ), 0)::int AS picked_quantity,
+                COALESCE((
+                  SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item
+                    JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+                   WHERE out_item.ref_sale_item_id = si.sale_item_id
+                     AND out_item.item_direction = '转出'
+                     AND out_item.product_type = '家居产品'
+                     AND conv_order.status <> '已关闭'
+                ), 0) AS converted_amount
+           FROM sale_items si
+          WHERE si.sale_order_id = $1
+            AND si.item_direction = '购买'`,
+        [refSaleOrderId],
+      )
+      const consumedById = new Map(consumedRes.rows.map((c) => [c.sale_item_id, c]))
       for (const r of lockedRows.rows) {
         if (r.product_type !== '家居产品') continue
         const requested = homeRefundQty.get(r.sale_item_id) || 0
         if (requested <= 0) continue
-        const refundable = Number(r.quantity || 0) - Number(r.picked_up_quantity || 0)
+        // 与 calculateUnusedQuantity 同口径：折抵可能带走了剩余已付的全部金额却只占用
+        // 向下取整的件数，剩下的物理件已无对应已付金额，不能再退（否则折走 ¥450 又退 ¥450）。
+        const c = consumedById.get(r.sale_item_id)
+        const refundable = calculateUnusedQuantity({
+          product_type: r.product_type,
+          quantity: r.quantity,
+          picked_up_quantity: r.picked_up_quantity,
+          unit_real_price: r.unit_real_price,
+          received: r.received,
+          picked_quantity: c ? c.picked_quantity : null,
+          converted_amount: c ? c.converted_amount : null,
+        })
         if (requested > refundable) {
           throw new Error('CONFLICT: HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
         }

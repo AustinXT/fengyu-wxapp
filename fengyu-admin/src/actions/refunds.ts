@@ -333,13 +333,17 @@ export const getRefundable = withAnyPermission(
     .select({
       item: saleItems,
       skuUnit: productSkus.unit,
+      // #145/#153：家居可退数量受「剩余已付」封顶，需要 pickup_records 与转出行聚合
+      // （折抵会带走剩余已付的全部金额却只占用向下取整的件数）。
+      pickedQuantity: sql<number>`COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = ${saleItems.saleItemId}), 0)`,
+      convertedAmount: sql<string>`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)`,
     })
     .from(saleItems)
     .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
     .where(and(eq(saleItems.saleOrderId, saleOrderId), eq(saleItems.itemDirection, '购买')))
 
   // 先建 RefundSourceItem[]（computeOverpayRemainder 入参），再派生展示用 RefundableItem[]
-  const srcItems: RefundSourceItem[] = rows.map(({ item }) => ({
+  const srcItems: RefundSourceItem[] = rows.map(({ item, pickedQuantity, convertedAmount }) => ({
     sale_item_id: item.saleItemId,
     sku_id: item.skuId,
     product_name: item.productName,
@@ -353,6 +357,8 @@ export const getRefundable = withAnyPermission(
     sale_amount: item.saleAmount,
     received: item.received,
     picked_up_quantity: item.pickedUpQuantity,
+    picked_quantity: Number(pickedQuantity ?? 0),
+    converted_amount: convertedAmount,
     sales_category: item.salesCategory as SalesCategory | null,
     service_fee: item.serviceFee,
   }))
@@ -1172,18 +1178,56 @@ export const approveRefund = withPermission(
         // recalcPaidSessionsForOrder 会更新同单的疗程卡行，只锁家居会与「先锁疗程卡、再等家居」
         // 的混选转换事务形成反向锁序而死锁。按 sale_item_id 升序，与 createConversionOrder 的锁序一致。
         const lockedRows = await tx.execute(sql`
-          SELECT sale_item_id, product_type, quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity
+          SELECT sale_item_id, product_type, quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity,
+                 unit_real_price, received
             FROM sale_items
            WHERE sale_order_id = ${refSaleOrderId}
              AND item_direction = '购买'
            ORDER BY sale_item_id
              FOR UPDATE
         `)
+        // #145/#153：锁取得后另起一条语句聚合（与持锁查询同语句会拿到旧快照）
+        const consumedRows = (await tx.execute(sql`
+          SELECT si.sale_item_id,
+                 COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
+                            WHERE pr.sale_item_id = si.sale_item_id), 0)::int AS picked_quantity,
+                 COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric))
+                             FROM sale_items out_item
+                             JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+                            WHERE out_item.ref_sale_item_id = si.sale_item_id
+                              AND out_item.item_direction = '转出'
+                              AND out_item.product_type = '家居产品'
+                              AND conv_order.status <> '已关闭'), 0) AS converted_amount
+            FROM sale_items si
+           WHERE si.sale_order_id = ${refSaleOrderId}
+             AND si.item_direction = '购买'
+        `)) as unknown as Array<Record<string, unknown>>
+        const consumedById = new Map(consumedRows.map((c) => [c.sale_item_id as string, c]))
         for (const r of Array.from(lockedRows as unknown as Iterable<Record<string, unknown>>)) {
           if (r.product_type !== '家居产品') continue
           const requested = homeRefundQty.get(r.sale_item_id as string) ?? 0
           if (requested <= 0) continue
-          const refundable = Number(r.quantity ?? 0) - Number(r.picked_up_quantity ?? 0)
+          // 与 calculateUnusedQuantity 同口径：折抵可能带走剩余已付的全部金额却只占用
+          // 向下取整的件数，剩下的物理件已无对应已付金额，不能再退。
+          const c = consumedById.get(r.sale_item_id as string)
+          const refundable = calculateUnusedQuantity({
+            sale_item_id: r.sale_item_id as string,
+            sku_id: null,
+            product_name: null,
+            product_type: r.product_type as ProductType,
+            session_count: null,
+            remaining_sessions: null,
+            paid_sessions: null,
+            unit_price: 0,
+            quantity: Number(r.quantity ?? 0),
+            unit_real_price: r.unit_real_price as string,
+            received: r.received as string,
+            picked_up_quantity: Number(r.picked_up_quantity ?? 0),
+            picked_quantity: c ? Number(c.picked_quantity ?? 0) : null,
+            converted_amount: c ? (c.converted_amount as string) : null,
+            sales_category: null,
+            service_fee: null,
+          })
           if (requested > refundable) {
             throw new ApiError('CONFLICT', 'HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
           }

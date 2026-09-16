@@ -64,6 +64,8 @@ const FILES = {
   adminPaymentAllocatableTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/payment-allocatable.ts'),
 
   staffOrderJs: path.resolve(__dirname, '../../routes/order.js'),
+  staffRefundJs: path.resolve(__dirname, '../../utils/refund.js'),
+  adminRefundTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/lib/refund.ts'),
   payNotifyIndexJs: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/index.js'),
   adminOrdersTs: path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/orders.ts'),
 
@@ -2340,6 +2342,25 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
     expect(block, '幂等重放漏取 sale_order_type，寄存单会误走普通实收公式').toMatch(
       /\w+\.sale_order_type\s*,/,
     )
+  })
+
+  // 退款可退数量必须与提货/折抵共用「剩余已付」封顶：折抵能带走剩余已付的全部金额却只
+  // 占用向下取整的件数，剩下的物理件已无对应已付金额。只按 quantity − picked_up_quantity
+  // 判可退，顾客能折走 ¥450 后再退 ¥450（实付仅 ¥450）——对抗审查实证的资损。
+  test('退款可退数量双端受「剩余已付」封顶', () => {
+    for (const [end, file] of [['staff', FILES.staffRefundJs], ['admin', FILES.adminRefundTs]]) {
+      const src = readFile(file).replace(/\s+/g, ' ')
+      expect(src, `${end} calculateUnusedQuantity 未按剩余已付封顶`).toContain(
+        'toCents(item.received) - Number(item.picked_quantity || 0) * unitCents - toCents(item.converted_amount),',
+      )
+      expect(src, `${end} calculateUnusedQuantity 未受物理剩余与整件金额双重封顶`).toContain(
+        'return Math.min(physicalRemaining, Math.floor(remainingCents / unitCents))',
+      )
+      // 历史调用方未传聚合时回退物理剩余（零回归），但不得整体退回旧口径
+      expect(src, `${end} 缺少未传聚合时的回退分支`).toContain(
+        'if (item.picked_quantity == null && item.converted_amount == null) return physicalRemaining',
+      )
+    }
   })
 
   // 子表聚合（pickup_records / 转出行）**不得**与 `FOR UPDATE OF si` 同语句：
