@@ -36,7 +36,7 @@ PostgreSQL 数据库层，使用 Drizzle ORM 管理 schema 定义与迁移。
 npm run db:generate   # 生成迁移文件（schema 变更后）
 npm run db:migrate    # 执行迁移
 npm run db:studio     # Drizzle Studio 可视化管理
-npm run db:test       # node:test 套件（migration 字面量回归等，不连库）
+npm run db:test       # node:test 套件（migration 字面量回归等，不连库）；用 shell glob，勿改回目录参数
 npm run db:check:attribution   # 款项归属日期迁移前体检（只读，须显式传 DATABASE_URL）
 ```
 

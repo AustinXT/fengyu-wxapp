@@ -172,6 +172,28 @@ test('CI workflow 确实跑本套件，且 paths 覆盖所有跨子项目内联�
   }
 })
 
+test('db:test 的 glob 能覆盖 __tests__ 下的每个测试文件', () => {
+  // Node 22 的 `node --test <目录>` **不展开目录**，会把目录名当模块 require 然后整体失败；
+  // 本地 Node 26 会展开，于是这个坑在接入 CI 之前一直被掩盖（实测 node:22.23.2 容器复现）。
+  // 故 db:test 改用 shell glob：跨 Node 版本行为一致，且零匹配时 sh 会把字面量交给 node、
+  // node 找不到文件直接报错 —— fail-closed，不会静默跑 0 个用例后绿灯。
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'db/package.json'), 'utf8'))
+  assert.match(
+    pkg.scripts['db:test'],
+    /node --test scripts\/__tests__\/\*\.test\.js/,
+    'db:test 必须用 shell glob，不能退回目录参数（Node 22 下会直接挂）',
+  )
+
+  // glob 只认 *.test.js：__tests__ 下任何别的 .js/.mjs 都会被静默漏掉
+  const dir = path.join(ROOT, 'db/scripts/__tests__')
+  const missed = fs.readdirSync(dir).filter((f) => /\.(js|mjs)$/.test(f) && !f.endsWith('.test.js'))
+  assert.deepEqual(
+    missed,
+    [],
+    `以下文件不匹配 db:test 的 glob、会被静默跳过（改名为 *.test.js 或移出本目录）：\n  ${missed.join('\n  ')}`,
+  )
+})
+
 // 使用权威实现的入口清单。反向的「禁止内联」扫描挡不住「守卫被整个删掉」——
 // 那种情况下既没有内联正则、也没有 require，反向扫描照样全绿。故这里再做一次正向断言。
 const EXPECTED_HELPER_USERS = [
