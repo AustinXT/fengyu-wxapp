@@ -72,10 +72,8 @@ const prodTemplateValues = parseEnv(prodTemplate)
 const devTemplateValues = parseEnv(devTemplate)
 
 const prodPath = path.join(root, 'envs/prod.env')
-const testPath = path.join(root, 'envs/test.env')
 const devPath = path.join(root, 'envs/dev.env')
 const currentProd = readEnv(prodPath)
-const currentTest = readEnv(testPath)
 const currentDev = readEnv(devPath)
 const staffAccount = readEnv(path.join(root, 'fengyu-staff/.env'))
 const admin = readEnv(path.join(auditDir, 'admin.env'))
@@ -113,18 +111,34 @@ Object.assign(prod, {
 // PG_CONNECTION_STRING 以三个线上云函数共同使用的 PG 为准，远程 admin 的同名遗留值不参与。
 prod.PG_CONNECTION_STRING = clientApi.PG_CONNECTION_STRING
 
-const test = { ...prodTemplateValues, ...currentTest, ENV_PROFILE: 'test' }
-const dev = { ...devTemplateValues, ...currentTest, ...currentDev, ENV_PROFILE: 'dev' }
+const dev = { ...devTemplateValues, ...currentDev, ENV_PROFILE: 'dev' }
+
+// 值是否仍是 example 模板里的占位符（而非真实值）。
+// 背景：独立 test 环境退役后 dev 不再从 test.env 继承值，只剩「本地 dev.env → example 模板」两级。
+// 而模板含全部键，所以 `undefined` 检查永远发现不了「真实值丢了、回落成占位符」——必须单独查。
+const isPlaceholder = (value, templateDefault) => {
+  const v = String(value ?? '')
+  if (!v) return false // 空值由各自的部署门禁判定，不在这里误报
+  return /^<.*>$/.test(v) || /PLACEHOLDER/.test(v) || (templateDefault !== undefined && v === String(templateDefault) && /^<.*>$/.test(String(templateDefault)))
+}
 
 for (const [file, template, values] of [
   [prodPath, prodTemplate, prod],
-  [testPath, prodTemplate, test],
   [devPath, devTemplate, dev],
 ]) {
   const keys = templateKeys(template)
   const missing = keys.filter((key) => values[key] === undefined)
   if (missing.length) throw new Error(`${path.basename(file)} missing keys: ${missing.join(', ')}`)
+
+  const templateValues = parseEnv(template)
+  const placeholders = keys.filter((key) => isPlaceholder(values[key], templateValues[key]))
+  if (placeholders.length) {
+    console.warn(
+      `WARN ${path.basename(file)}: 以下键仍是模板占位符，写回后部署会拿到假值，请补真实值后重跑：\n  ${placeholders.join(', ')}`,
+    )
+  }
+
   fs.writeFileSync(file, render(template, values), { mode: 0o600 })
 }
 
-console.log(`Reconciled ${templateKeys(prodTemplate).length} keys across prod/test/dev without printing values.`)
+console.log(`Reconciled ${templateKeys(prodTemplate).length} keys across prod/dev without printing values.`)

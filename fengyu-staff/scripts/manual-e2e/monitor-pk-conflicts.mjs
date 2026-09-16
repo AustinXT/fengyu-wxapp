@@ -34,10 +34,27 @@
  */
 import { Pool } from 'pg'
 
+// 跨子项目无法 require db/scripts 的实现，故此处内联同义逻辑（权威实现见
+// db/scripts/_lib/assert-db-target.js，一致性由 db/scripts/__tests__/db-target-guard.test.js 守护）。
+// 正则只负责 authority；query 交给 searchParams —— 它会把 %68ost 这类编码键还原成 host，正则挡不住。
+const DB_TARGET_RE = /^postgres(?:ql)?:\/\/[^@/]*@(101\.34\.242\.103|118\.178\.196\.26):5433\/fengyu_wxapp(?:\?[^#]*)?$/
+const DB_OVERRIDE_KEYS = ['host', 'hostaddr', 'port', 'dbname', 'database', 'options', 'service', 'passfile']
+function isAllowedDbTarget(raw) {
+  const s = String(raw ?? '').trim()
+  if (!DB_TARGET_RE.test(s)) return false
+  try {
+    const url = new URL(s)
+    return !DB_OVERRIDE_KEYS.some((key) => url.searchParams.has(key))
+  } catch {
+    return false
+  }
+}
 const PG_CONNECTION_STRING =
-  process.env.PG_CONNECTION_STRING ||
-  process.env.DATABASE_URL ||
-  'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu'
+  process.env.PG_CONNECTION_STRING?.trim() || process.env.DATABASE_URL?.trim()
+if (!isAllowedDbTarget(PG_CONNECTION_STRING)) {
+  console.error('✗ PG_CONNECTION_STRING / DATABASE_URL 必须显式指向 dev=101.34.242.103:5433/fengyu_wxapp 或 prod=118.178.196.26:5433/fengyu_wxapp')
+  process.exit(1)
+}
 
 const DAYS = Number(process.env.DAYS || 30)
 const ROLLBACK_WAIT = Number(process.env.ROLLBACK_WAIT || 0) // 0 = 不采样

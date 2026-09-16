@@ -50,12 +50,29 @@ PROD_CS="$(read_cs "$PROD_ENV")"
 DEV_CS="$(read_cs "$DEV_ENV")"
 
 # --- 双向防误连校验（防反向把 dev 灌进 prod / 防连错库） ---
-case "$PROD_CS" in *"118.178.196.26"*) : ;; *)
-  echo "${RED}✗ prod 连接串未指向生产库 118.178.196.26，拒绝执行${RST}" >&2
-  echo "  目标：$(mask "$PROD_CS")" >&2; exit 1 ;; esac
-case "$DEV_CS" in *"101.34.242.103"*) : ;; *)
-  echo "${RED}✗ dev 连接串未指向开发库 101.34.242.103，拒绝执行（防反向覆盖）${RST}" >&2
-  echo "  目标：$(mask "$DEV_CS")" >&2; exit 1 ;; esac
+# 本脚本是破坏性的（prod 数据覆盖 dev），断言必须精确：
+#   - 不能只用「字符串包含 IP」——IP 可能出现在密码或 query 里，形成假通过；
+#   - 必须同时校验 host/port/dbname，并拒绝 libpq 的目标覆盖参数
+#     （`?host=` 等会覆盖 authority，实测能让所有表面校验全绿却连到另一台机）。
+assert_pg_target() {  # $1=连接串  $2=期望 host  $3=角色描述
+  node -e '
+    const [s, expectHost, role] = process.argv.slice(1)
+    let u
+    try { u = new URL(s) } catch { console.error(`✗ ${role} 连接串无法解析为 URL`); process.exit(1) }
+    const errs = []
+    if (!["postgres:", "postgresql:"].includes(u.protocol)) errs.push(`protocol=${u.protocol}`)
+    if (u.hostname !== expectHost) errs.push(`host=${u.hostname} ≠ ${expectHost}`)
+    if (u.port !== "5433") errs.push(`port=${u.port || "(空)"} ≠ 5433`)
+    if (u.pathname !== "/fengyu_wxapp") errs.push(`dbname=${u.pathname || "(空)"} ≠ /fengyu_wxapp`)
+    const ov = ["host","hostaddr","port","dbname","database","options","service","passfile"].filter((k) => u.searchParams.has(k))
+    if (ov.length) errs.push(`query 试图覆盖连接目标：${ov.join(",")}`)
+    if (errs.length) { console.error(`✗ ${role} 目标校验失败：${errs.join("；")}`); process.exit(1) }
+  ' "$1" "$2" "$3"
+}
+assert_pg_target "$PROD_CS" "118.178.196.26" "prod（来源）" || {
+  echo "  目标：$(mask "$PROD_CS")" >&2; exit 1; }
+assert_pg_target "$DEV_CS" "101.34.242.103" "dev（覆盖目标）" || {
+  echo "${RED}  拒绝执行，防反向覆盖${RST}" >&2; echo "  目标：$(mask "$DEV_CS")" >&2; exit 1; }
 [ "$PROD_CS" != "$DEV_CS" ] || { echo "${RED}✗ prod 与 dev 连接串相同，拒绝执行${RST}" >&2; exit 1; }
 
 echo "${GRN}• 来源 prod : $(mask "$PROD_CS")${RST}"

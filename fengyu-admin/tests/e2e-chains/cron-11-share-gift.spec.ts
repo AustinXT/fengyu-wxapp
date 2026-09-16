@@ -53,7 +53,7 @@ const refundCascade: {
   ) => Promise<{ revokedShareGiftCoupons?: number }>
 } = require('../../../fengyu-staff/cloudfunctions/staffApi/helpers/refund-cascade.js')
 
-const PG_URL = 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
+const PG_URL = 'postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp'
 
 function ensureTestStore(): string {
   const storeId = psql(`SELECT store_id FROM stores LIMIT 1`)

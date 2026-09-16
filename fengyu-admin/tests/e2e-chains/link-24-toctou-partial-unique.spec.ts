@@ -32,7 +32,7 @@
 import { test, expect } from '@playwright/test'
 import { execSync } from 'child_process'
 
-const PG_HOST = '47.113.202.7'
+const PG_HOST = '101.34.242.103'
 const PG_PORT = '5433'
 const PG_DB = 'fengyu_wxapp'
 const PG_USER = 'fengyu'

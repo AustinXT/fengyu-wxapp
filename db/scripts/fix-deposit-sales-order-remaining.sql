@@ -10,9 +10,11 @@
 --       session_count IS NULL 守卫已不满足（SKU 已 session_count=1），重跑无效（NO-OP），
 --       故需本独立修正（以 remaining_sessions=0 为幂等守卫）。
 --
--- 范围：仅生产 5433（5434 开发库无此 SKU）；幂等（remaining_sessions=0 守卫）。
+-- 范围：仅生产库；幂等（remaining_sessions=0 守卫）。
+--       ⚠ 上文「生产 5433 / 5434 开发库」是 2026-07 旧拓扑（ali-demo 47.113.202.7）的说法，
+--         保留以还原当时语境；当前拓扑见 db/CLAUDE.md，重跑请对准下方 prod 地址。
 -- 预期：2 行受影响（FY-XSD-WX-2607120094 的两个疗程卡 SKU 行）。
--- 用法：psql "postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" -f db/scripts/fix-deposit-sales-order-remaining.sql
+-- 用法：psql "postgresql://fengyu:fengyu123@118.178.196.26:5433/fengyu_wxapp" -f db/scripts/fix-deposit-sales-order-remaining.sql
 
 BEGIN;
 

@@ -46,6 +46,15 @@ if [[ ! -f "$ROOT/envs/.active" ]]; then
 fi
 ACTIVE=$(cat "$ROOT/envs/.active")
 
+# ── .active 白名单：只允许 dev / prod ──
+# 独立 test 环境已于 2026-09-01 退役。若 .active 残留 'test' 且本地仍有 envs/test.env，
+# 由于 test.env 的 PG host 与 dev 同为 101，PG 校验会误判通过，而它的 envId 复用 prod ——
+# 结果是把 dev 的 PG 变量推进 prod CloudBase（2026-05-26 跨环境污染事故的同族路径）。
+if [[ ! "$ACTIVE" =~ ^(dev|prod)$ ]]; then
+  echo "ERROR: envs/.active='$ACTIVE' 不在白名单（只允许 dev / prod）。请先执行 scripts/use-env.sh <dev|prod>。" >&2
+  exit 1
+fi
+
 if [[ ! -f "$ROOT/envs/$ACTIVE.env" ]]; then
   echo "ERROR: envs/$ACTIVE.env not found." >&2
   exit 1
@@ -123,9 +132,10 @@ echo "==> Re-rendering cloudbaserc from .active=$ACTIVE （保证 envId 指向�
 node "$ROOT/scripts/render-cloudbaserc.mjs" "$ACTIVE"
 
 # ── 一致性校验：envId 必须匹配 .active 的 env-id；PG host(IP) 必须匹配环境
-#    （2026-07-17 起 dev/测试与 prod 均用 5433 端口，环境改靠 IP 区分：
-#     prod=118.178.196.26 / dev=47.113.202.7）──
-EXPECT_PG_HOST=$([[ "$ACTIVE" == "prod" ]] && echo "118.178.196.26" || echo "47.113.202.7")
+#    （所有环境均用 5433 端口 + fengyu_wxapp 库名，只能靠 IP 区分。
+#     2026-09-01 起 dev 迁入 lx-test（原 sqlserver101）：dev=101.34.242.103；
+#     prod=118.178.196.26。旧的 ali-demo 47.113.202.7 已弃用，不再是任何环境的目标。）──
+EXPECT_PG_HOST=$([[ "$ACTIVE" == "prod" ]] && echo "118.178.196.26" || echo "101.34.242.103")
 assert_rc() {  # $1=side 目录  $2=期望 envId
   local f="$ROOT/$1/cloudbaserc.json"
   [[ -f "$f" ]] || { echo "ERROR: $f 缺失（渲染失败）。中止。" >&2; exit 1; }
@@ -134,10 +144,44 @@ assert_rc() {  # $1=side 目录  $2=期望 envId
   if [[ "$got_env" != "$2" ]]; then
     echo "ERROR: $1/cloudbaserc.json envId=$got_env ≠ 期望 $2（.active=$ACTIVE 渲染异常）。中止。" >&2; exit 1
   fi
-  got_host=$(node -e "const c=require('$f');const fn=(c.functions||[]).find(x=>(x.envVariables||{}).PG_CONNECTION_STRING);const s=fn&&fn.envVariables.PG_CONNECTION_STRING;const m=s&&s.match(/@([^:]+):\d+\//);console.log(m?m[1]:'')")
-  if [[ -n "$got_host" && "$got_host" != "$EXPECT_PG_HOST" ]]; then
-    echo "ERROR: $1 的 PG host=$got_host ≠ ${ACTIVE} 期望 ${EXPECT_PG_HOST}（env 值与环境不符，疑似跨环境污染）。中止。" >&2; exit 1
-  fi
+  # PG 连接串完整断言：host / port / dbname 三者全中才放行。
+  # 只比 host 是不够的——同一台 101 上还有 :5433/fengyu_e2e（e2e 独立库）与历史的 :5434，
+  # 只要 host 对就放行会把 e2e 库或错端口的串推进云函数。解析失败/缺值一律拒绝（fail-closed）。
+  node -e '
+    const f = process.argv[1], expectHost = process.argv[2]
+    const c = require(f)
+    // 逐个函数校验——不能只看第一个：client 侧有 clientApi + payNotify 两个函数，
+    // 任一条串指错库都会被 `fn code update` 一并推上去。
+    const fns = (c.functions || []).filter((x) => x.envVariables && "PG_CONNECTION_STRING" in x.envVariables)
+    if (fns.length === 0) {
+      console.error("  未找到任何带 PG_CONNECTION_STRING 的函数——渲染异常，fail-closed 中止"); process.exit(1)
+    }
+    const mask = (v) => String(v).replace(/:\/\/[^@]*@/, "://***@")
+    const allErrs = []
+    for (const fn of fns) {
+      const name = fn.name || "(未命名函数)"
+      const s = fn.envVariables.PG_CONNECTION_STRING
+      if (!s || /PLACEHOLDER|待用户提供/.test(s)) {
+        allErrs.push(`${name}: PG_CONNECTION_STRING 缺失或仍是占位符`); continue
+      }
+      let u
+      try { u = new URL(s) } catch {
+        allErrs.push(`${name}: 无法解析 ${mask(s)}`); continue
+      }
+      const errs = []
+      if (u.hostname !== expectHost) errs.push(`host=${u.hostname} ≠ ${expectHost}`)
+      if (u.port !== "5433") errs.push(`port=${u.port || "(空)"} ≠ 5433`)
+      if (u.pathname !== "/fengyu_wxapp") errs.push(`dbname=${u.pathname || "(空)"} ≠ /fengyu_wxapp`)
+      // query 可覆盖 authority 的 host/port/dbname（libpq 语义），只比 authority 会被 ?host=<旧库> 绕过
+      const overriding = ["host","hostaddr","port","dbname","database","options","service","passfile"].filter((k) => u.searchParams.has(k))
+      if (overriding.length) errs.push(`query 试图覆盖连接目标：${overriding.join(",")}`)
+      if (errs.length) allErrs.push(`${name}: ${errs.join("；")}`)
+    }
+    if (allErrs.length) { console.error("  " + allErrs.join("\n  ")); process.exit(1) }
+  ' "$f" "$EXPECT_PG_HOST" || {
+    echo "ERROR: $1 的 PG_CONNECTION_STRING 与 ${ACTIVE} 环境不符（详见上行），疑似跨环境污染。中止。" >&2
+    exit 1
+  }
 }
 [[ "$DO_STAFF"  == "1" ]] && assert_rc fengyu-staff  "$STAFF_ENV_ID"
 [[ "$DO_CLIENT" == "1" ]] && assert_rc fengyu-client "$CLIENT_ENV_ID"

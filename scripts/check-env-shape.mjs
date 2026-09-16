@@ -18,7 +18,6 @@ const canonical = keys(canonicalPath)
 const candidates = [
   'envs/dev.env.example',
   'envs/prod.env',
-  'envs/test.env',
   'envs/dev.env',
 ]
 

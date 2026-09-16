@@ -27,15 +27,15 @@
  *
  * 用法：
  *   # dry-run（默认，仅打印统计 + 样本）
- *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
+ *   DATABASE_URL="postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp" \
  *     node db/scripts/backfill-deposit-zero-real-price.js
  *
  *   # 实际提交
- *   DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
+ *   DATABASE_URL="postgresql://fengyu:fengyu123@101.34.242.103:5433/fengyu_wxapp" \
  *     node db/scripts/backfill-deposit-zero-real-price.js --apply
  *
- * 顺序：先 5434/fengyu（dev）--apply 验证；再 5433/fengyu_wxapp（prod）--apply。
- * 永远显式传 DATABASE_URL；e2e 全部打 5434，绝不碰 5433 生产库。
+ * 顺序：先 dev(101.34.242.103:5433) --apply 验证；再 prod(118.178.196.26:5433) --apply。
+ * 两库均 5433/fengyu_wxapp，仅 IP 区分。永远显式传 DATABASE_URL；e2e 绝不碰 prod。
  */
 
 const { Pool } = require('pg')

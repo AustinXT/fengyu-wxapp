@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 const fs = require('fs')
+const { OVERRIDE_KEYS: DB_OVERRIDE_KEYS } = require('./_lib/assert-db-target')
 const { Client } = require('pg')
 
 const BATCH = 'repair-deposit-refund-service-remarks-20260907'
@@ -26,6 +27,16 @@ async function main() {
   assert(line, 'envs/prod.env 缺少 ADMIN_DATABASE_URL')
   const url = line.slice('ADMIN_DATABASE_URL='.length).replace(/^['"]|['"]$/g, '')
   const parsed = new URL(url)
+  // query 参数（含百分号编码形式）优先级高于 URL authority，只比 hostname/port/pathname
+  // 会被 `?host=<旧库>` 整个绕过 —— 而本脚本 --apply 直接写生产数据。
+  {
+    const overriding = DB_OVERRIDE_KEYS.filter((k) => parsed.searchParams.has(k))
+    if (overriding.length) {
+      console.error(`FATAL: 连接串 query 试图覆盖连接目标（${overriding.join(', ')}），拒绝执行`)
+      process.exit(1)
+    }
+  }
+
   assert(parsed.hostname === '118.178.196.26' && parsed.port === '5433' && parsed.pathname === '/fengyu_wxapp', '连接目标不是 prod 118.178.196.26:5433/fengyu_wxapp')
   if (APPLY) assert(CONFIRM, `提交必须追加 --confirm-prod=${BATCH}`)
 
