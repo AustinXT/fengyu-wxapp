@@ -87,6 +87,22 @@ jobs:
       - name: Install admin deps
         working-directory: fengyu-admin
         run: npm ci || npm install
+
+      # admin 的 `@db/*`（tsconfig paths → `../db/schema/*`）里的文件自己 import
+      # `drizzle-orm/pg-core`。裸包名按 node 规则从 **importer 目录**（= `db/`）向上找
+      # node_modules，`fengyu-admin/node_modules` 不在这条链上。本地一直是绿的，靠的是
+      # `db/` 有自己的 node_modules（它是独立的 Drizzle 工程）；CI 只装 admin 的话，
+      # 任何 import 到 `@db/*` 的测试会整文件加载失败（Failed to resolve import）。
+      # ⚠️ 别改成 resolve.dedupe 或把 db/node_modules/drizzle-orm 软链到 admin 那份 ——
+      #    vite 默认 realpath 软链，两条路径会塌成同一个 module id。而 src/actions 下
+      #    6 个测试（stores / orders / refunds / employees{,.delete} /
+      #    products-getProductsByKind）用 `vi.mock('drizzle-orm/pg-core')` 只导出 alias，
+      #    一旦合成一份，真实 schema（如 db/schema/lookup.ts）就会拿到残缺 mock，
+      #    报 `pgTable is not a function`。实测：dedupe 会让这 6 个文件 360 条转红。
+      - name: Install db schema deps
+        working-directory: db
+        run: npm ci --omit=dev || npm install --omit=dev
+
       - name: Run admin cross-end error-codes test
         working-directory: fengyu-admin
         run: npx vitest run src/lib/__tests__/error-codes-cross-end.test.ts
