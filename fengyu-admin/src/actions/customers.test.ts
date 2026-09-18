@@ -1375,7 +1375,14 @@ describe('exportCustomers — 顾客导出（14 列 + spending_tier 口径累计
     expect(result.hasMore).toBe(true)
     // 游标取本页最后一行（u2），不是被切掉的探测行（u3）
     expect(result.nextCursor).toBe('u2')
+    // 不能只断言 gt 被调用过：算了条件却忘了拼进 whereClause 时，固定返回数据的 mock 照样会绿
     expect(gt).toHaveBeenCalledWith(clientWechatUsers.userId, 'u0')
+    expect(mainChain.where).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'and',
+        args: expect.arrayContaining([{ type: 'gt', col: 'user_id', val: 'u0' }]),
+      }),
+    )
     // 排序键只能是 user_id：name 可被 updateCustomer 改写，拿它当游标首键会让
     // 改名后的顾客移到游标之前、永久漏掉
     expect(mainChain.orderBy).toHaveBeenCalledWith({ type: 'asc', col: 'user_id' })

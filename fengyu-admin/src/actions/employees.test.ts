@@ -1201,10 +1201,18 @@ describe('exportEmployees — 导出 + 技能标签服务端兜底（对称列�
     expect(result.hasMore).toBe(true)
     // 游标是本页最后一行的员工编号，不是被切掉的探测行
     expect(result.nextCursor).toBe('FY-00002')
+    // 不能只断言 gt 被调用过：算了条件却忘了拼进 whereClause 时，固定返回数据的 mock 照样会绿
     expect(gt).toHaveBeenCalledWith('employee_id', 'FY-00000')
+    expect(chain.where).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'and',
+        args: expect.arrayContaining([{ type: 'gt', col: 'employee_id', val: 'FY-00000' }]),
+      }),
+    )
     // 排序键只能是 employee_id：updated_at 会被员工每次小程序登录写新值，
     // 行在页间移位就会造成一行重复 + 一行永久漏掉
     expect(chain.orderBy).toHaveBeenCalledWith({ type: 'asc', col: 'employee_id' })
+    expect(chain.orderBy).toHaveBeenCalledTimes(1)
   })
 
   it('keyset 游标是空串/非字符串 → 抛 INVALID_STATE，且在打库之前就拦住', async () => {

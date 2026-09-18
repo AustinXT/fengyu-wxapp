@@ -47,17 +47,21 @@ describe('resolveExportKeysetPage', () => {
     expect(() => resolveExportKeysetPage([{ id: 'a' }], 0, toCursor)).toThrow('导出分页 limit 必须 ≥ 1')
   })
 
-  it('游标可以是复合键对象（顾客导出的 name+userId 形态）', () => {
-    const rows = [
-      { name: '陈一', userId: 'u1' },
-      { name: null, userId: 'u2' },
-      { name: null, userId: 'u3' },
-    ]
-    const page = resolveExportKeysetPage(rows, 2, (r) => ({ name: r.name, userId: r.userId }))
+  // 现有两个调用方（顾客 user_id / 员工 employee_id）都用单字符串游标；
+  // 这条只保证 helper 的泛型能力，将来若有导出需要复合排序键可直接用。
+  it('游标也可以是对象（helper 对复合键泛型开放）', () => {
+    const rows = [{ k1: 'a', k2: 1 }, { k1: 'b', k2: 2 }, { k1: 'c', k2: 3 }]
+    const page = resolveExportKeysetPage(rows, 2, (r) => ({ k1: r.k1, k2: r.k2 }))
 
     expect(page.hasMore).toBe(true)
-    // name 为 null 也必须能当游标（NULLS LAST 区间的行），不能被当成「无游标」
-    expect(page.nextCursor).toEqual({ name: null, userId: 'u2' })
+    expect(page.nextCursor).toEqual({ k1: 'b', k2: 2 })
+  })
+
+  it('游标字段值为 null 也算有效游标，不被当成「无游标」', () => {
+    const rows = [{ id: 'a', tag: null }, { id: 'b', tag: null }]
+    const page = resolveExportKeysetPage(rows, 1, (r) => ({ id: r.id, tag: r.tag }))
+
+    expect(page.nextCursor).toEqual({ id: 'a', tag: null })
   })
 
   it('hasMore 时游标必定存在，能接上 iterateExportPages 的守卫', async () => {
