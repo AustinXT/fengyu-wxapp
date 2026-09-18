@@ -1252,7 +1252,7 @@ describe('mergeClientProfile — 积分批次余额重算', () => {
   })
 })
 
-describe('exportCustomers — 顾客导出（12 列 + spending_tier 口径累计消费）', () => {
+describe('exportCustomers — 顾客导出（14 列 + spending_tier 口径累计消费）', () => {
   /**
    * mock 两次 db.select：
    *   1) 主查询 .from().where().orderBy() → customerRows
@@ -1288,11 +1288,17 @@ describe('exportCustomers — 顾客导出（12 列 + spending_tier 口径累计
         customerType: '会员客', memberLevel: '金钻', spendingTier: '3-6W', customerStatus: '保有会员-稳定',
         boundEmployeeName: '李美容', promoterName: '王推荐', customerSource: '老带新',
         birthday: new Date('1990-05-20T00:00:00.000Z'),
+        // 北京时间 2026-01-15 01:30 / 2026-03-02 07:00：两者 UTC 日期都比北京日期早一天，
+        // 裸 slice(0,10) 会各偏一天，只有走 fmtDate（Asia/Shanghai 还原）才对。
+        createdAt: new Date('2026-01-14T17:30:00.000Z'),
+        becameMemberAt: new Date('2026-03-01T23:00:00.000Z'),
       },
       {
         userId: 'u2', name: null, phone: null, storeName: null,
         customerType: '流量客', memberLevel: null, spendingTier: '<1990', customerStatus: null,
         boundEmployeeName: null, promoterName: null, customerSource: null, birthday: null,
+        createdAt: new Date('2026-02-10T03:00:00.000Z'),
+        becameMemberAt: null, // 流量客从未成为会员
       },
     ]
     mockExportChains(customerRows, [{ clientUserId: 'u1', total: '35000.00' }])
@@ -1308,10 +1314,15 @@ describe('exportCustomers — 顾客导出（12 列 + spending_tier 口径累计
       totalSpend: '35000.00', // 与 spendingTier '3-6W' 自洽
     })
     expect(rows[0].birthday).toBe('1990-05-20') // fmtDate（Asia/Shanghai）
+    // #183 新增两列：timestamptz 按北京日期落地，不是 UTC 日期
+    expect(rows[0].createdAt).toBe('2026-01-15')
+    expect(rows[0].becameMemberAt).toBe('2026-03-02')
     // u2 无消费记录 → totalSpend 回退 '0'；null 字段透传
     expect(rows[1].totalSpend).toBe('0')
     expect(rows[1].name).toBeNull()
     expect(rows[1].birthday).toBeNull()
+    expect(rows[1].createdAt).toBe('2026-02-10')
+    expect(rows[1].becameMemberAt).toBeNull() // 非会员客留空，不回退成建档日
   })
 
   it('超过旧上限也返回全量且不标记截断', async () => {

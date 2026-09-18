@@ -15,6 +15,10 @@ vi.mock('@/actions/data-center/efficiency', () => ({
 vi.mock('@/actions/refunds', () => ({
   exportRefunds: vi.fn(),
 }))
+// 员工导出分支会立即查 org_nodes 建路径映射（其余分支的 rows 都是惰性的，不碰 db）
+vi.mock('@/db', () => ({
+  db: { select: vi.fn(() => ({ from: vi.fn().mockResolvedValue([]) })) },
+}))
 
 import { getSalesBoard } from '@/actions/data-center/sales'
 import { getCustomerBoard } from '@/actions/data-center/customer'
@@ -92,6 +96,35 @@ describe('服务单导出列', () => {
     expect(column?.value({ sessionUsed: 2, unit: '次' })).toBe(2)
     expect(column?.value({ sessionUsed: '3.5', unit: '疗程' })).toBe(3.5)
     expect(column?.value({ sessionUsed: null, unit: '次' })).toBe('')
+  })
+})
+
+describe('顾客/员工导出日期列', () => {
+  it('顾客新增两列追加在「生日」之后，值由 action 侧格式化后透传，空值输出空串', async () => {
+    const content = await createExportContent('customers', {})
+    const headers = content.columns.map((column) => column.header)
+
+    expect(headers.slice(-3)).toEqual(['生日', '注册日期', '成为会员日期'])
+
+    const registeredAt = content.columns.find((column) => column.header === '注册日期')
+    const becameMemberAt = content.columns.find((column) => column.header === '成为会员日期')
+    // action 已 fmtDate，列侧只做 null→'' 的兜底，不再二次格式化
+    expect(registeredAt?.value({ createdAt: '2026-01-15' })).toBe('2026-01-15')
+    expect(becameMemberAt?.value({ becameMemberAt: '2026-03-02' })).toBe('2026-03-02')
+    expect(registeredAt?.value({ createdAt: null })).toBe('')
+    expect(becameMemberAt?.value({ becameMemberAt: null })).toBe('')
+  })
+
+  it('员工「入职日期」插在「职位」之后，走列侧 fmtDate，空值输出空串', async () => {
+    const content = await createExportContent('employees', {})
+    const headers = content.columns.map((column) => column.header)
+
+    expect(headers.slice(headers.indexOf('职位'), headers.indexOf('职位') + 3)).toEqual(['职位', '入职日期', '生日'])
+
+    const hiredAt = content.columns.find((column) => column.header === '入职日期')
+    // date 列原样传入（无 T），fmtDate 直接截断不做时区换算
+    expect(hiredAt?.value({ hiredAt: '2024-03-01' })).toBe('2024-03-01')
+    expect(hiredAt?.value({ hiredAt: null })).toBe('')
   })
 })
 

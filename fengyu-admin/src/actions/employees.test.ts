@@ -1142,6 +1142,38 @@ describe('exportEmployees — 导出 + 技能标签服务端兜底（对称列�
     expect((sql as any).join).not.toHaveBeenCalled()
   })
 
+  it('字段映射：hiredAt 原样透传（date 列，格式化在 registry 列 map），未填入职日期为 null', async () => {
+    mockExportChain([
+      {
+        staff_wechat_users: {
+          employeeId: 'FY-00001', name: '张美容', gender: '女', phone: '13800000001',
+          idCard: '360102199001011234', orgNodeId: 'node-1', positionName: '美容师',
+          hiredAt: '2024-03-01', birthday: '1990-01-01', skills: ['护理'],
+          socialInsurance: true, isResigned: false, resignationReason: null,
+        },
+        stores: { storeName: '南昌店' },
+      },
+      {
+        staff_wechat_users: {
+          employeeId: 'FY-00002', name: '李未填', gender: null, phone: null,
+          idCard: null, orgNodeId: null, positionName: null,
+          hiredAt: null, birthday: null, skills: null,
+          socialInsurance: false, isResigned: false, resignationReason: null,
+        },
+        stores: null,
+      },
+    ])
+
+    const { rows } = await exportEmployees({})
+
+    expect(rows[0]).toMatchObject({
+      employeeId: 'FY-00001', name: '张美容', storeName: '南昌店',
+      positionName: '美容师', hiredAt: '2024-03-01', birthday: '1990-01-01',
+    })
+    // 历史员工普遍未回填 hired_at，必须留空而不是补今天/建档日
+    expect(rows[1].hiredAt).toBeNull()
+  })
+
   it('超过旧上限也返回全量且不标记截断', async () => {
     const overflow = Array.from({ length: 10001 }, (_, i) => ({
       staff_wechat_users: {
