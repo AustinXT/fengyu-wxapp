@@ -806,20 +806,51 @@ describe('库存 SKU 来源与价格保护', () => {
       source.indexOf('function skuRow(row: {'),
       source.indexOf('function docRow(row: {'),
     )
-    expect(skuBlock).toMatch(/supplyChainPurchasePrice: supplyVisible \?/)
-    expect(skuBlock).toMatch(/marketPurchasePrice: anyPriceVisible \?/)
-    expect(skuBlock).toMatch(/storePurchasePrice: marketVisible \?/)
-    expect(skuBlock).toMatch(/marketStaffPurchasePrice: marketVisible \?/)
-    expect(skuBlock).toMatch(/retailPrice: row\.priceVisibility === 'all' \?/)
+
+    // ① 先钉住三个可见性变量的**定义**。只断言字段用了哪个变量是不够的 ——
+    //    把 `marketVisible` 的定义放宽成 `!== 'none'`，所有字段断言照样绿，
+    //    而供应链角色已经能看到门店价格了。
+    expect(skuBlock).toContain("const supplyVisible = row.priceVisibility === 'all' || row.priceVisibility === 'supply_chain'")
+    expect(skuBlock).toContain("const marketVisible = row.priceVisibility === 'all' || row.priceVisibility === 'market'")
+    expect(skuBlock).toContain('const anyPriceVisible = supplyVisible || marketVisible')
+
+    // ② 再逐字段钉住。**12 个价格相关字段一个都不能漏** ——
+    //    只守 5 个的话，把 accountingPrice 从 supplyVisible 放宽成 anyPriceVisible
+    //    （市场角色会拿到供应链核算价）不会被任何断言拦住。
+    const SKU_PRICE_GUARDS: Array<[string, string]> = [
+      ['retailPrice', "row.priceVisibility === 'all'"],
+      ['accountingPrice', 'supplyVisible'],
+      ['supplyChainPurchasePrice', 'supplyVisible'],
+      ['marketPurchasePrice', 'anyPriceVisible'],
+      ['marketPurchasePriceMode', 'supplyVisible'],
+      ['marketPurchasePriceOverrideReason', 'supplyVisible'],
+      ['storePurchasePrice', 'marketVisible'],
+      ['marketStaffPurchasePrice', 'marketVisible'],
+      ['marketPurchaseDiscount', 'anyPriceVisible'],
+      ['storePurchaseDiscount', 'marketVisible'],
+      ['staffPurchaseDiscount', 'marketVisible'],
+      ['itemCompanyPurchasePrice', 'supplyVisible'],
+    ]
+    for (const [field, cond] of SKU_PRICE_GUARDS) {
+      expect(skuBlock).toContain(`${field}: ${cond} ?`)
+    }
 
     const lotBlock = source.slice(
       source.indexOf('function lotRow('),
       source.indexOf('function inventoryDocScopeSql('),
     )
-    expect(lotBlock).toMatch(/marketActualUnitPrice: supplyVisible \|\| marketVisible \?/)
-    expect(lotBlock).toMatch(/storeActualUnitPrice: marketVisible \?/)
-    // 反向：门店实际价**不能**放宽成 supplyVisible（那样供应链角色会看到一整列 null）
-    expect(lotBlock).not.toMatch(/storeActualUnitPrice: supplyVisible/)
+    expect(lotBlock).toContain("const supplyVisible = priceVisibility === 'all' || priceVisibility === 'supply_chain'")
+    expect(lotBlock).toContain("const marketVisible = priceVisibility === 'all' || priceVisibility === 'market'")
+    const LOT_PRICE_GUARDS: Array<[string, string]> = [
+      ['supplyChainUnitCost', 'supplyVisible'],
+      ['marketActualUnitPrice', 'supplyVisible || marketVisible'],
+      ['storeActualUnitPrice', 'marketVisible'],
+    ]
+    for (const [field, cond] of LOT_PRICE_GUARDS) {
+      expect(lotBlock).toContain(`${field}: ${cond} ?`)
+    }
+    // 反向：门店实际价**不能**放宽成 supplyVisible（那样供应链角色会看到门店价）
+    expect(lotBlock).not.toMatch(/storeActualUnitPrice: supplyVisible \?/)
   })
 
   it('页码归一化兜住小数、Infinity 与巨大有限值', () => {
