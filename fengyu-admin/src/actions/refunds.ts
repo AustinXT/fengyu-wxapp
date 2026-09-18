@@ -243,6 +243,22 @@ async function reconcileOrderStatusAfterRefund(tx: RefundTx, saleOrderId: string
          AND elem ->> 'refSaleItemId' <> 'OVERPAY'
        GROUP BY elem ->> 'refSaleItemId'
     ),
+    -- #182：已被转换单折走的数量不是「交付给顾客的服务/货」，必须从 consumed_value 里排除。
+    -- 折抵 = 整行退出会把 remaining_sessions 扣光 / picked_up_quantity 抬满，若不排除，
+    -- consumed_value 会膨胀成整行标价价值，retained_value 随之大于行实收 →
+    -- 同单其它行退款触发本函数时，已结清的折抵行会被误判回「部分支付」。
+    converted_qty AS (
+      SELECT out_item.ref_sale_item_id AS sale_item_id,
+             SUM(out_item.quantity) AS qty
+        FROM sale_items out_item
+        JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+       WHERE out_item.item_direction = '转出'
+         AND conv_order.status <> '已关闭'
+         AND out_item.ref_sale_item_id IN (
+           SELECT sale_item_id FROM sale_items WHERE sale_order_id = ${saleOrderId}
+         )
+       GROUP BY out_item.ref_sale_item_id
+    ),
     item_states AS (
       SELECT si.sale_item_id,
              si.received::numeric AS received,
@@ -250,12 +266,13 @@ async function reconcileOrderStatusAfterRefund(tx: RefundTx, saleOrderId: string
              COALESCE(rr.refunded, 0) AS refunded,
              COALESCE(fr.full_refund, false) AS full_refund,
              CASE WHEN si.product_type = '疗程卡'
-               THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0)) * COALESCE(si.unit_real_price::numeric, 0)
-               ELSE GREATEST(0, COALESCE(si.picked_up_quantity, 0)) * COALESCE(si.unit_real_price::numeric, 0)
+               THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0) - COALESCE(cq.qty, 0)) * COALESCE(si.unit_real_price::numeric, 0)
+               ELSE GREATEST(0, COALESCE(si.picked_up_quantity, 0) - COALESCE(cq.qty, 0)) * COALESCE(si.unit_real_price::numeric, 0)
              END AS consumed_value
         FROM sale_items si
         LEFT JOIN receipt_refunds rr ON rr.sale_item_id = si.sale_item_id
         LEFT JOIN full_refunds fr ON fr.sale_item_id = si.sale_item_id
+        LEFT JOIN converted_qty cq ON cq.sale_item_id = si.sale_item_id
        WHERE si.sale_order_id = ${saleOrderId}
          AND si.item_direction = '购买'
     ),
@@ -337,7 +354,7 @@ export const getRefundable = withAnyPermission(
       // #145/#153：家居可退数量受「剩余已付」封顶，需要 pickup_records 与转出行聚合
       // （折抵会带走剩余已付的全部金额却只占用向下取整的件数）。
       pickedQuantity: sql<number>`COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = ${saleItems.saleItemId}), 0)`,
-      convertedAmount: sql<string>`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)`,
+      convertedAmount: sql<string>`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)`,
     })
     .from(saleItems)
     .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
@@ -737,7 +754,7 @@ export const createRefund = withPermission(
     .select({
       item: saleItems,
       pickedQuantity: sql<number>`COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = ${saleItems.saleItemId}), 0)`,
-      convertedAmount: sql<string>`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)`,
+      convertedAmount: sql<string>`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)`,
     })
     .from(saleItems)
     .where(and(eq(saleItems.saleOrderId, refSaleOrderId), eq(saleItems.itemDirection, '购买'))))
@@ -1227,7 +1244,8 @@ export const approveRefund = withPermission(
                              JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
                             WHERE out_item.ref_sale_item_id = si.sale_item_id
                               AND out_item.item_direction = '转出'
-                              AND out_item.product_type = '家居产品'
+                              -- #182 不限 product_type：疗程卡的已转走金额同样要从 overpay 里扣掉，
+                              -- 否则折走的余数能再退一次；纯余数转出行(quantity=0)也必须计入。
                               AND conv_order.status <> '已关闭'), 0) AS converted_amount
             FROM sale_items si
            WHERE si.sale_order_id = ${refSaleOrderId}

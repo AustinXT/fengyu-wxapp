@@ -463,7 +463,8 @@ describe('getCustomerHeldCards — 数据映射', () => {
     const [row] = await getCustomerHeldCards('user-1', 'store-1')
     expect(row.productType).toBe('疗程卡')
     expect(row.remainingSessions).toBe(5)
-    expect(row.remainingQty).toBeNull()
+    // #182：疗程卡也给出「可折抵数量」= 注销的次数，与 staff remaining_quantity 对齐
+    expect(row.remainingQty).toBe(5)
     expect(row.deductibleAmount).toBe('1000.00')
   })
 
@@ -482,7 +483,7 @@ describe('getCustomerHeldCards — 数据映射', () => {
     const [row] = await getCustomerHeldCards('user-1', 'store-1')
     expect(row.productType).toBe('疗程卡')
     expect(row.remainingSessions).toBe(2)
-    expect(row.remainingQty).toBeNull()
+    expect(row.remainingQty).toBe(2)
     expect(row.deductibleAmount).toBe('198.00')
   })
 
@@ -561,11 +562,11 @@ describe('getCustomerHeldCards — 数据映射', () => {
     expect(row.unit).toBe('盒')
   })
 
-  it('家居产品未付清：实收 450 → 折 4 盒，金额含不足一件的 ¥50 余数', async () => {
+  it('#182 家居未付清：整行退出带走全部未结算件，金额只折剩余已付（10 盒 / ¥450）', async () => {
     mockSelectRows([homeRow({ pickedUpQuantity: 0, homePickedQuantity: 0, received: '450.00' })])
     const [row] = await getCustomerHeldCards('user-1', 'store-1')
-    // 件数向下取整（转出行受 chk_item_quantity > 0 约束），金额是剩余已付本身
-    expect(row.remainingQty).toBe(4)
+    // 件数不再向下取整（#182 放宽 chk_item_quantity 后整行退出）；金额仍是剩余已付本身
+    expect(row.remainingQty).toBe(10)
     expect(row.deductibleAmount).toBe('450.00')
   })
 
@@ -575,7 +576,8 @@ describe('getCustomerHeldCards — 数据映射', () => {
       pickedUpQuantity: 4, homePickedQuantity: 0, homeConvertedAmount: '450', received: '500.00',
     })])
     const [row] = await getCustomerHeldCards('user-1', 'store-1')
-    expect(row.remainingQty).toBe(0)
+    // #182：剩余已付 ¥50 不足一件，但仍可连同剩余 6 件一起整行折走
+    expect(row.remainingQty).toBe(6)
     expect(row.deductibleAmount).toBe('50.00')
   })
 
@@ -631,7 +633,7 @@ describe('getCustomerHeldCards — 数据映射', () => {
     }])
     const [row] = await getCustomerHeldCards('user-1', 'store-1')
     expect(row.remainingSessions).toBe(0)
-    expect(row.remainingQty).toBeNull()
+    expect(row.remainingQty).toBe(0)
     expect(row.deductibleAmount).toBe('0.00')
   })
 })

@@ -802,7 +802,8 @@ export const getCustomerHeldCards = withPermission(
       pickedUpQuantity: saleItems.pickedUpQuantity,
       // #145/#153 家居折抵额度：物理提货合计与已转走金额（与 staff LATERAL 同源）
       homePickedQuantity: sql`COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = ${saleItems.saleItemId}), 0)`,
-      homeConvertedAmount: sql`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)`,
+      // #182 不限 out_item.product_type：疗程卡的已转走金额同样要扣，纯余数转出行(quantity=0)也必须计入
+      homeConvertedAmount: sql`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)`,
       unitPrice: saleItems.unitPrice,
       unitRealPrice: saleItems.unitRealPrice,
       saleAmount: saleItems.saleAmount,
@@ -827,32 +828,28 @@ export const getCustomerHeldCards = withPermission(
         // 2026-09-14 #125 甲方拍板：订单级「部分支付」也可折抵；与卡包列表共用同一组状态，
         // 疗程卡与家居同时放开，欠款按方案 A 留原单
         inArray(saleOrders.status, [...CARD_ENTITLEMENT_ORDER_STATUSES]),
-        // 2026-05-21 单品合并：折抵对象统一为 疗程卡 + 剩余次数>0（含原"体验卡单品"=1 次卡）
-        // #125 引入家居折抵；#145/#153 收紧为「剩余已付」口径（见下方 sql 片段与 homeDeductible）
-        or(
-          and(
-            eq(saleItems.productType, '疗程卡'),
-            sql`COALESCE(${saleItems.remainingSessions}, 0) > 0`,
-          ),
-          and(
-            eq(saleItems.productType, '家居产品'),
-            // #145/#153 收紧：家居折抵以「剩余已付金额」为基准（= 行实收 − 已提货金额 − 已转走金额），
-            // 与 staff customerHeldCards 的 hp LATERAL 字面同源。旧口径按未提货件数全额折抵，
-            // 会把未兑现价值洗成全额可提。
-            sql`(
-              CASE WHEN ${saleOrders.saleOrderType} = '寄存单' OR ${saleItems.saleAmount} <= 0
-                   THEN GREATEST(0, ${saleItems.quantity} - COALESCE(${saleItems.pickedUpQuantity}, 0))
-                   ELSE LEAST(
-                     GREATEST(0, ${saleItems.quantity} - COALESCE(${saleItems.pickedUpQuantity}, 0)),
-                     GREATEST(0, FLOOR(GREATEST(0, ${saleItems.received}::numeric
-                       - COALESCE((SELECT SUM(pr.pickup_quantity) FROM pickup_records pr WHERE pr.sale_item_id = ${saleItems.saleItemId}), 0) * ${saleItems.unitRealPrice}::numeric
-                       - COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)
-                     ) / NULLIF(${saleItems.unitRealPrice}::numeric, 0)))::int
-                   )
-              END
-            ) > 0`,
-          ),
-        ),
+        // 2026-05-21 单品合并：折抵对象统一为疗程卡（含原"体验卡单品"=1 次卡）；#125 引入家居折抵。
+        // #182 改**金额口径**：疗程卡与家居统一按「剩余已付」放行，只要还有已付的钱就能折，
+        // 不再要求凑满一整次/一整件——件数门槛曾把「1 件 ¥680 只付 ¥594」整行剔除
+        // （prod 3 行 ¥814），顾客的钱既折不掉也提不出。与 staff customerHeldCards 的 hp LATERAL 同源。
+        inArray(saleItems.productType, ['疗程卡', '家居产品']),
+        sql`(
+          CASE WHEN ${saleOrders.saleOrderType} = '寄存单' OR ${saleItems.saleAmount} <= 0
+               THEN ${saleItems.unitRealPrice}::numeric * (
+                 CASE WHEN ${saleItems.productType} = '疗程卡'
+                      THEN COALESCE(${saleItems.remainingSessions}, 0)
+                      ELSE GREATEST(0, ${saleItems.quantity} - COALESCE(${saleItems.pickedUpQuantity}, 0))
+                 END
+               )
+               ELSE GREATEST(0, ${saleItems.received}::numeric
+                 - CASE WHEN ${saleItems.productType} = '疗程卡'
+                        THEN (COALESCE(${saleItems.sessionCount}, 0) - COALESCE(${saleItems.remainingSessions}, 0))::numeric * ${saleItems.unitRealPrice}::numeric
+                        ELSE COALESCE((SELECT SUM(pr.pickup_quantity) FROM pickup_records pr WHERE pr.sale_item_id = ${saleItems.saleItemId}), 0) * ${saleItems.unitRealPrice}::numeric
+                   END
+                 - COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)
+               )
+          END
+        ) > 0`,
         // 在途退款冻结：原订单存在 '待审批' 退款时排除整单的卡（与 staff customerHeldCards 对齐）
         sql`NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '待审批')`,
         // 审批后隐藏已退完的卡：仅当订单存在已审批退款时按 paid_sessions 有效余量判定（不影响无退款的分期卡）
@@ -861,7 +858,10 @@ export const getCustomerHeldCards = withPermission(
       ),
     )
 
-  // 疗程卡按 remaining_sessions 折抵；家居按「已付未结算」折抵（#145/#153 收紧，见 homeDeductible）
+  // #182：折抵 = 整行退出。数量带走该行全部剩余权益（疗程卡剩余次数 / 家居未结算件数），
+  // 金额只折「剩余已付」。注意**件数与提货口径就此分家**：提货仍要按 floor(剩余已付/单价)
+  // 一件件付满才放行，而折抵把物理件与已付金额一并清空，守恒仍成立
+  // （折后可提 = min(0, …) = 0）。homeDeductible 的 quantity 是提货口径，这里只取它的 amount。
   return rows.map((r) => {
     const unit = Number(r.unitRealPrice)
     const isHomeProduct = r.productType === '家居产品'
@@ -876,8 +876,20 @@ export const getCustomerHeldCards = withPermission(
       received: r.received,
       unitRealPrice: r.unitRealPrice,
     })
-    const remainingQty = home.quantity
-    const deductibleQty = isHomeProduct ? remainingQty : remSess
+    // 全程按「分」整除，与 staff 侧 numeric 运算对齐（浮点直除会与 PG 分叉）
+    const toCents = (v: unknown) => Math.round((Number(v ?? 0) || 0) * 100)
+    const isDepositOrGift = r.saleOrderType === '寄存单' || Number(r.saleAmount ?? 0) <= 0
+    const cardDeliveredCents = Math.max(0, (r.sessionCount ?? 0) - remSess) * toCents(r.unitRealPrice)
+    const cardRemainingPaidCents = Math.max(
+      0,
+      toCents(r.received) - cardDeliveredCents - toCents(r.homeConvertedAmount),
+    )
+    const cardAmount = isDepositOrGift
+      ? (toCents(r.unitRealPrice) * remSess) / 100
+      : cardRemainingPaidCents / 100
+    const remainingQty = isHomeProduct
+      ? Math.max(0, (r.quantity ?? 0) - (r.pickedUpQuantity ?? 0))
+      : remSess
     return {
       saleItemId: r.saleItemId,
       saleItemGroupId: r.saleItemGroupId ?? null,
@@ -900,13 +912,14 @@ export const getCustomerHeldCards = withPermission(
       sessionCount: r.sessionCount ?? null,
       remainingSessions: isHomeProduct ? null : remSess,
       paidSessions: r.paidSessions ?? null,
-      remainingQty: isHomeProduct ? remainingQty : null,
+      // #182：疗程卡也给出「可折抵数量」（= 注销的次数），与 staff remaining_quantity 对齐
+      remainingQty,
       unitPrice: r.unitPrice,
       unitRealPrice: r.unitRealPrice,
       saleAmount: r.saleAmount,
       received: r.received,
       pendingReceived: r.pendingReceived,
-      deductibleAmount: isHomeProduct ? home.amount.toFixed(2) : (unit * deductibleQty).toFixed(2),
+      deductibleAmount: (isHomeProduct ? home.amount : cardAmount).toFixed(2),
       expireDate: r.expireDate ?? null,
       remark: r.remark ?? null,
       salesCategory: r.salesCategory ?? null,
