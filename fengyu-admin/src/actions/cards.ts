@@ -800,8 +800,10 @@ export const getCustomerHeldCards = withPermission(
       paidSessions: saleItems.paidSessions,
       quantity: saleItems.quantity,
       pickedUpQuantity: saleItems.pickedUpQuantity,
-      // #145/#153 家居折抵额度：物理提货合计与已转走金额（与 staff LATERAL 同源）
-      homePickedQuantity: sql`COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = ${saleItems.saleItemId}), 0)`,
+      refundedQuantity: saleItems.refundedQuantity,
+      convertedQuantity: saleItems.convertedQuantity,
+      // #145/#153 家居折抵额度的**金额**项（件数自 #154 起直读上面三列，不再聚合 pickup_records）。
+      // 金额仍须从转出行 received 聚合：折 4 件可能带走 ¥450 而非 ¥400（与 staff LATERAL 同源）。
       homeConvertedAmount: sql`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)`,
       unitPrice: saleItems.unitPrice,
       unitRealPrice: saleItems.unitRealPrice,
@@ -870,7 +872,8 @@ export const getCustomerHeldCards = withPermission(
       saleOrderType: r.saleOrderType,
       quantity: r.quantity ?? 0,
       pickedUpQuantity: r.pickedUpQuantity ?? 0,
-      pickedQuantity: Number(r.homePickedQuantity ?? 0),
+      refundedQuantity: r.refundedQuantity ?? 0,
+      convertedQuantity: r.convertedQuantity ?? 0,
       convertedAmount: r.homeConvertedAmount as string | number | null,
       saleAmount: r.saleAmount,
       received: r.received,

@@ -558,16 +558,12 @@ export const getAvailablePickupItems = withPermission(
     clientUserId: string,
   ): Promise<AvailablePickupItem[]> => {
   const rows = await db.execute(sql`
-    WITH pickup_totals AS (
-      SELECT sale_item_id, SUM(pickup_quantity)::int AS picked_quantity
-        FROM pickup_records
-       GROUP BY sale_item_id
-    ), conversion_totals AS (
-      -- #145/#153：已折抵转走的件数必须从可提数量里扣除。写法与四端展示侧的
-      -- conversion_totals 字面同源（只排除「已关闭」——它完成过 rollback，数量已退回）。
+    WITH conversion_totals AS (
+      -- #154 拆列后件数直读 sale_items.converted_quantity，这里只剩**金额**：
+      -- 折抵额度按金额结算，折 4 件可能带走 ¥450 而非 ¥400，用件数推算会失真。
+      -- 写法与四端展示侧的 conversion_totals 字面同源
+      -- （只排除「已关闭」——它完成过 rollback，数量已退回）。
       SELECT out_item.ref_sale_item_id AS sale_item_id,
-             SUM(out_item.quantity)::int AS converted_quantity,
-             -- 折抵额度按金额结算：折 4 件可能带走 ¥450 而非 ¥400，用件数推算会失真
              SUM(GREATEST(0, -out_item.received::numeric)) AS converted_amount
         FROM sale_items out_item
         JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
@@ -583,19 +579,20 @@ export const getAvailablePickupItems = withPermission(
              si.sku_id,
              si.product_name,
              si.quantity::int AS quantity,
-             LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
-             GREATEST(0, COALESCE(pt.picked_quantity, 0))::int AS picked_quantity,
-             GREATEST(0, COALESCE(ct.converted_quantity, 0))::int AS converted_quantity,
+             LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))::int AS settled_quantity,
+             GREATEST(0, COALESCE(si.picked_up_quantity, 0))::int AS picked_quantity,
+             GREATEST(0, COALESCE(si.refunded_quantity, 0))::int AS refunded_quantity,
+             GREATEST(0, COALESCE(si.converted_quantity, 0))::int AS converted_quantity,
              -- #145/#153：可提件数 = min(物理未结算, floor(剩余已付 / 单价))，与折抵额度同一口径。
              -- 按金额算而非「已付件数 − 已提 − 已折抵件数」：折抵金额含余数时两者不等，
              -- 折 4 件带走 ¥450 后再回款 ¥50，按件数会多放出 1 件（累计兑现超实收）。
              CASE
                WHEN o.sale_order_type = '寄存单' OR si.sale_amount <= 0
-                 THEN GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0))))
+                 THEN GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0))))
                ELSE LEAST(
-                 GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))),
+                 GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))),
                  GREATEST(0, FLOOR((GREATEST(0, si.received::numeric)
-                   - GREATEST(0, COALESCE(pt.picked_quantity, 0)) * si.unit_real_price::numeric
+                   - GREATEST(0, COALESCE(si.picked_up_quantity, 0)) * si.unit_real_price::numeric
                    - COALESCE(ct.converted_amount, 0)) / NULLIF(si.unit_real_price::numeric, 0)))::int
                )
              END AS row_pending_pickup,
@@ -617,7 +614,6 @@ export const getAvailablePickupItems = withPermission(
         FROM sale_items si
         JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
         LEFT JOIN stores s ON s.store_id = o.store_id
-        LEFT JOIN pickup_totals pt ON pt.sale_item_id = si.sale_item_id
         LEFT JOIN conversion_totals ct ON ct.sale_item_id = si.sale_item_id
        WHERE o.client_user_id = ${clientUserId}
          AND o.status IN ('已支付', '部分支付', '已完成')
@@ -711,7 +707,10 @@ export const getPickupInventorySkuOptions = withPermission(
            OR (sale_order.sale_order_type = '转换单' AND sale_item.item_direction = '转入')
          )
          AND sale_item.product_type = '家居产品'
-         AND sale_item.quantity > COALESCE(sale_item.picked_up_quantity, 0)
+         -- #154：可提判据看「已结算」三列之和；只看 picked_up 会把已退款/已折抵占用的额度当成可提
+         AND sale_item.quantity > (COALESCE(sale_item.picked_up_quantity, 0)
+                                   + COALESCE(sale_item.refunded_quantity, 0)
+                                   + COALESCE(sale_item.converted_quantity, 0))
        LIMIT 1
     `)) as unknown as Array<{ sku_id: string | null; inventory_composition_snapshot: unknown }>
     const item = itemRows[0]
@@ -798,7 +797,7 @@ async function createGroupedPickupRecord(
       SELECT si.sale_item_id, si.sale_item_group_id, si.sale_order_id, si.sku_id,
              si.product_name, si.quantity, COALESCE(si.picked_up_quantity, 0) AS picked_up_quantity,
              si.inventory_composition_snapshot,
-             LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
+             LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))::int AS settled_quantity,
                si.sale_amount, si.unit_real_price, si.received,
              CASE
                -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
@@ -929,7 +928,9 @@ async function createGroupedPickupRecord(
         UPDATE sale_items
            SET picked_up_quantity = 1, updated_at = NOW()
          WHERE sale_item_id = ${item.sale_item_id}
-           AND COALESCE(picked_up_quantity, 0) = 0
+           -- #154：守卫看「已结算」三列之和而非单列——只看 picked_up 会把已退款/已折抵的行当成可提
+           AND (COALESCE(picked_up_quantity, 0) + COALESCE(refunded_quantity, 0)
+                + COALESCE(converted_quantity, 0)) = 0
         RETURNING sale_item_id
       `)) as unknown as Array<{ sale_item_id: string }>
       if (updated.length !== 1) throw new ApiError('CONFLICT', '家居产品状态已更新，请刷新后重试')
@@ -1052,7 +1053,7 @@ export const createPickupRecord = withPermission(
       const locked = (await tx.execute(sql`
         SELECT si.sale_item_id, si.sale_order_id, si.sku_id, si.product_name,
                si.product_type, si.item_direction, si.quantity,
-               LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
+               LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))::int AS settled_quantity,
                si.sale_amount, si.unit_real_price, si.received,
                CASE
                  -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
@@ -1148,7 +1149,9 @@ export const createPickupRecord = withPermission(
                   AND o.sale_order_type = '转换单'
              ))
            )
-           AND (COALESCE(picked_up_quantity, 0) + ${data.pickupQuantity}) <= quantity
+           -- #154：守卫看「已结算」三列之和而非单列——只看 picked_up 会把已退款/已折抵占用的额度重新放出来提货
+           AND (COALESCE(picked_up_quantity, 0) + COALESCE(refunded_quantity, 0)
+                + COALESCE(converted_quantity, 0) + ${data.pickupQuantity}) <= quantity
         RETURNING sale_item_id, sale_order_id, sku_id, product_name, quantity, picked_up_quantity,
                   inventory_composition_snapshot
       `)
@@ -1245,6 +1248,12 @@ export const createPickupRecord = withPermission(
  * 关键：提货记录创建时原子累加了 sale_items.picked_up_quantity，
  * 删除必须在同事务内回退该计数（GREATEST 防越界为负），否则"可提数量"虚低。
  * pickup_records 无任何 inbound FK，无级联。
+ *
+ * #154：拆列前 picked_up_quantity 同时承载「已提货 / 已退款 / 已转换」，而这里的减法只对应
+ * 其中一种来源却作用在合计值上——删一条 3 盒的提货记录会把已被退款或折抵占用的 3 盒额度
+ * 重新放出来（quantity=10、提 3、折抵 7 → picked_up=10；删掉那条提货记录 → picked_up=7 →
+ * 顾客可以再提 3 盒，而这 3 盒的价值已折进另一张转换单）。拆列后本列只记物理提货，
+ * 等量回退即天然正确，无需任何额外条件。
  */
 export const deletePickupRecord = withPermission(
   'pickup_record:delete',

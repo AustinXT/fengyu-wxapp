@@ -521,9 +521,9 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
        FOR UPDATE OF src
     )
     UPDATE sale_items src
-       SET picked_up_quantity = GREATEST(
+       SET converted_quantity = GREATEST(
              0,
-             COALESCE(src.picked_up_quantity, 0) - locked_source.restore_quantity
+             COALESCE(src.converted_quantity, 0) - locked_source.restore_quantity
            ),
            updated_at = NOW()
       FROM locked_source
@@ -5415,6 +5415,8 @@ export const createConversionOrder = withPermission(
           si.remaining_sessions,
           si.quantity,
           si.picked_up_quantity,
+          si.refunded_quantity,
+          si.converted_quantity,
           si.unit_price,
           si.unit_real_price,
           si.sale_amount,
@@ -5440,18 +5442,19 @@ export const createConversionOrder = withPermission(
       `)
 
       const held = Array.from(heldRows as unknown as Iterable<Record<string, unknown>>)
-      // #145/#153：折抵额度必须在**锁取得之后**用另一条语句复算。
+      // #145/#153：折抵**金额**必须在**锁取得之后**用另一条语句复算。
       // `FOR UPDATE OF si` 只锁 sale_items：READ COMMITTED 下语句先取快照再等锁，
-      // 唤醒后 EvalPlanQual 只刷新 si 自身的行版本，pickup_records 与转出行聚合仍是旧快照
+      // 唤醒后 EvalPlanQual 只刷新 si 自身的行版本，转出行聚合仍是旧快照
       // → 两笔并发折抵会各自读到 converted_amount=0，把同一批已付价值折两遍。
+      //
+      // #154：件数三列（picked_up / refunded / converted）都在 si 自己身上，EvalPlanQual 会刷新，
+      // 已随持锁查询一并取到，不再需要事后聚合 pickup_records —— 这条语句现在只为金额而存在。
       const homeIds = held
         .filter((row) => row.product_type === '家居产品')
         .map((row) => row.sale_item_id as string)
       if (homeIds.length > 0) {
         const consumedRows = (await tx.execute(sql`
           SELECT si.sale_item_id,
-                 COALESCE((SELECT SUM(pr.pickup_quantity) FROM pickup_records pr
-                            WHERE pr.sale_item_id = si.sale_item_id), 0) AS home_picked_quantity,
                  COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric))
                              FROM sale_items out_item
                              JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
@@ -5466,7 +5469,6 @@ export const createConversionOrder = withPermission(
         for (const row of held) {
           if (row.product_type !== '家居产品') continue
           const c = consumedById.get(row.sale_item_id as string)
-          row.home_picked_quantity = c?.home_picked_quantity ?? 0
           row.home_converted_amount = c?.home_converted_amount ?? 0
         }
       }
@@ -5559,7 +5561,8 @@ export const createConversionOrder = withPermission(
             saleOrderType: row.sale_order_type as string,
             quantity: Number(row.quantity ?? 0),
             pickedUpQuantity: Number(row.picked_up_quantity ?? 0),
-            pickedQuantity: Number(row.home_picked_quantity ?? 0),
+            refundedQuantity: Number(row.refunded_quantity ?? 0),
+            convertedQuantity: Number(row.converted_quantity ?? 0),
             convertedAmount: row.home_converted_amount as string,
             saleAmount: row.sale_amount as string,
             received: row.received as string,
@@ -6020,18 +6023,19 @@ export const createConversionOrder = withPermission(
             )
           if (rowsAffected(upd) === 0) throw new ApiError('CONFLICT', 'CARD_CONCURRENT_CHANGED: 卡状态变化，请重试')
         } else if (out.productType === '家居产品') {
-          // 2026-09-14 #125：家居转出数量并入 picked_up_quantity（该列语义已是"已结算"=已提货+已退款，
-          // 见 refund-cascade 通道 5），提货与退款两侧的可用量随之归零。守卫式加法与 createPickup 一致，
-          // 并发双开转换单时第二笔 count=0 直接冲突，不会静默超转。
+          // 2026-09-14 #125：家居转出数量占用源行额度；#154 起写入独立的 converted_quantity
+          // （拆列前与已提货/已退款共用 picked_up_quantity）。提货与退款两侧的可用量都从
+          // 「已结算 = 已提货 + 已退款 + 已转换」扣，故守卫必须算三者之和而不只是本列。
+          // 守卫式加法与 createPickup 一致，并发双开转换单时第二笔 count=0 直接冲突，不会静默超转。
           const upd = await tx
             .update(saleItems)
-            .set({ pickedUpQuantity: sql`COALESCE(${saleItems.pickedUpQuantity}, 0) + ${out.quantity}`, updatedAt: sql`NOW()` })
+            .set({ convertedQuantity: sql`COALESCE(${saleItems.convertedQuantity}, 0) + ${out.quantity}`, updatedAt: sql`NOW()` })
             .where(
               and(
                 eq(saleItems.saleItemId, out.refSaleItemId),
                 eq(saleItems.storeId, data.storeId),
                 eq(saleItems.productType, '家居产品'),
-                sql`(COALESCE(${saleItems.pickedUpQuantity}, 0) + ${out.quantity}) <= ${saleItems.quantity}`,
+                sql`(COALESCE(${saleItems.pickedUpQuantity}, 0) + COALESCE(${saleItems.refundedQuantity}, 0) + COALESCE(${saleItems.convertedQuantity}, 0) + ${out.quantity}) <= ${saleItems.quantity}`,
               ),
             )
           // 影响行数必须走 rowsAffected：postgres.js 的 RowList 只有 .count，

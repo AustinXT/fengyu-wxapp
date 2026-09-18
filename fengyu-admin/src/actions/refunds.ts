@@ -77,7 +77,12 @@ export interface RefundableItem {
   quantity: number
   sessionCount: number | null
   remainingSessions: number | null
+  /** 已物理提货件数（#154 拆列后 picked_up_quantity 只记提货） */
   pickedUpQuantity: number | null
+  /** 已退款结算件数（#154 新列） */
+  refundedQuantity: number | null
+  /** 已转换折抵件数（#154 新列） */
+  convertedQuantity: number | null
 }
 
 export interface GetRefundableResult {
@@ -251,7 +256,10 @@ async function reconcileOrderStatusAfterRefund(tx: RefundTx, saleOrderId: string
              COALESCE(fr.full_refund, false) AS full_refund,
              CASE WHEN si.product_type = '疗程卡'
                THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0)) * COALESCE(si.unit_real_price::numeric, 0)
-               ELSE GREATEST(0, COALESCE(si.picked_up_quantity, 0)) * COALESCE(si.unit_real_price::numeric, 0)
+               -- #154：「已消耗」= 已提货 + 已转换，**不含已退款**。拆列前 picked_up_quantity
+               -- 把退款件数也算成已消耗，会抬高 retained_value 并压住「整行已退」的判定。
+               ELSE GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.converted_quantity, 0))
+                    * COALESCE(si.unit_real_price::numeric, 0)
              END AS consumed_value
         FROM sale_items si
         LEFT JOIN receipt_refunds rr ON rr.sale_item_id = si.sale_item_id
@@ -358,6 +366,8 @@ export const getRefundable = withAnyPermission(
     sale_amount: item.saleAmount,
     received: item.received,
     picked_up_quantity: item.pickedUpQuantity,
+    refunded_quantity: item.refundedQuantity,
+    converted_quantity: item.convertedQuantity,
     picked_quantity: Number(pickedQuantity ?? 0),
     converted_amount: convertedAmount,
     sales_category: item.salesCategory as SalesCategory | null,
@@ -385,6 +395,8 @@ export const getRefundable = withAnyPermission(
       sessionCount: src.session_count,
       remainingSessions: src.remaining_sessions,
       pickedUpQuantity: src.picked_up_quantity,
+      refundedQuantity: src.refunded_quantity ?? 0,
+      convertedQuantity: src.converted_quantity ?? 0,
     }
   })
 
@@ -763,6 +775,8 @@ export const createRefund = withPermission(
     sale_amount: r.saleAmount,
     received: r.received,
     picked_up_quantity: r.pickedUpQuantity,
+    refunded_quantity: r.refundedQuantity,
+    converted_quantity: r.convertedQuantity,
     sales_category: r.salesCategory as SalesCategory | null,
     service_fee: r.serviceFee,
   }))
@@ -1210,6 +1224,8 @@ export const approveRefund = withPermission(
         // 的混选转换事务形成反向锁序而死锁。按 sale_item_id 升序，与 createConversionOrder 的锁序一致。
         const lockedRows = await tx.execute(sql`
           SELECT sale_item_id, product_type, quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity,
+                 COALESCE(refunded_quantity, 0) AS refunded_quantity,
+                 COALESCE(converted_quantity, 0) AS converted_quantity,
                  unit_real_price, received
             FROM sale_items
            WHERE sale_order_id = ${refSaleOrderId}
@@ -1255,6 +1271,8 @@ export const approveRefund = withPermission(
             unit_real_price: r.unit_real_price as string,
             received: r.received as string,
             picked_up_quantity: Number(r.picked_up_quantity ?? 0),
+            refunded_quantity: Number(r.refunded_quantity ?? 0),
+            converted_quantity: Number(r.converted_quantity ?? 0),
             picked_quantity: c ? Number(c.picked_quantity ?? 0) : null,
             converted_amount: c ? (c.converted_amount as string) : null,
             sales_category: null,

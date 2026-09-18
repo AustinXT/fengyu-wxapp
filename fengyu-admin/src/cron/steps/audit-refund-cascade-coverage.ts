@@ -17,7 +17,8 @@
  *   C3 coupon_not_returned    — user_coupons 退款生效时仍未过期的 → 应已恢复 '未使用'
  *                                 （用 sop.paid_at 对齐 cascade 的 NOW() 快照）
  *   C4 point_not_reversed     — point_transactions 正向赠送/获取 → 应存在 -amount 的 '消费冲销'
- *   C5 pickup_not_rolled_back — 原单已经提过货 → sale_items.picked_up_quantity 应 < SUM(pickup_records.pickup_quantity)
+ *   C5 pickup_quantity_mismatch  — sale_items.picked_up_quantity 必须等于 SUM(pickup_records.pickup_quantity)
+ *   C5b settled_quantity_overflow— picked_up + refunded + converted 不得超过 quantity
  *
  * 决议：与 STEP 5/6/7/8 一致，**只告警不修复**。
  *   - 自动 cascade 修复会掩盖上游退款逻辑 bug
@@ -42,7 +43,8 @@ type CascadeChannel =
   | 'sc_not_voided'
   | 'coupon_not_returned'
   | 'point_not_reversed'
-  | 'pickup_not_rolled_back'
+  | 'pickup_quantity_mismatch'
+  | 'settled_quantity_overflow'
 
 interface CascadeViolation {
   channel: CascadeChannel
@@ -284,37 +286,51 @@ export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeC
     details.push({ channel: 'point_not_reversed', count: c4.length, samples: c4 })
   }
 
-  // ── C5: sale_items.picked_up_quantity 回滚 ──
-  // 仅检"原单已经提过货"的 sale_item（pickup_records 至少 1 行）。
-  // 若 picked_up_quantity = SUM(pickup_records.pickup_quantity) → 完全没回滚 → mismatch
-  // （> 不可能：cascade 用 GREATEST(0, ...) 兜底）。
+  // ── C5: picked_up_quantity 与 pickup_records 守恒（#154）──
+  //
+  // 旧判据是「原单提过货且 picked_up_quantity >= SUM(pickup_records)」即告警，写于 2026-06-08
+  // 止血**之前**——那时 cascade 用减法回滚，picked_up < SUM(pickup_records) 才是正常态。
+  // 止血改成把退款数**加进** picked_up 之后，该式对「既提过货又退过款」的行恒成立，
+  // 即必然误报；#125 的转换折抵又加了一类。两库 pickup_records 至今为空，所以雷还没炸。
+  //
+  // #154 拆列后本列回归物理提货量本义，判据也随之回到列本义、与退款彻底解耦：
+  // 不再 JOIN 退款流水，直接校验全量家居行的 picked_up_quantity == SUM(pickup_records)。
   const c5 = (await db.execute(sql`
-    WITH refunds AS (
-      SELECT sop.id AS sop_id, sop.sale_order_id, sop.ref_sale_item_id
-      FROM sale_order_payments sop
-      WHERE sop.change_type = '退款' AND sop.status = '已支付'
-    )
-    SELECT r.sop_id, s.sale_item_id,
+    SELECT s.sale_item_id,
            COALESCE(s.picked_up_quantity, 0) AS current_picked,
-           (SELECT COALESCE(SUM(pr.pickup_quantity), 0)
-            FROM pickup_records pr
-            WHERE pr.sale_item_id = s.sale_item_id) AS total_picked
-    FROM refunds r
-    JOIN sale_items s
-      ON (r.ref_sale_item_id IS NOT NULL AND s.sale_item_id = r.ref_sale_item_id)
-      OR (r.ref_sale_item_id IS NULL     AND s.sale_order_id = r.sale_order_id)
-    WHERE EXISTS (
-      SELECT 1 FROM pickup_records pr WHERE pr.sale_item_id = s.sale_item_id
-    )
-      AND COALESCE(s.picked_up_quantity, 0) >= (
-        SELECT COALESCE(SUM(pr.pickup_quantity), 0)
-        FROM pickup_records pr
-        WHERE pr.sale_item_id = s.sale_item_id
-      )
+           COALESCE((SELECT SUM(pr.pickup_quantity)
+                       FROM pickup_records pr
+                      WHERE pr.sale_item_id = s.sale_item_id), 0) AS total_picked
+    FROM sale_items s
+    WHERE s.product_type = '家居产品'
+      AND COALESCE(s.picked_up_quantity, 0) <> COALESCE((
+            SELECT SUM(pr.pickup_quantity)
+              FROM pickup_records pr
+             WHERE pr.sale_item_id = s.sale_item_id
+          ), 0)
     LIMIT ${SAMPLE_LIMIT}
   `)) as Array<Record<string, unknown>>
   if (c5.length > 0) {
-    details.push({ channel: 'pickup_not_rolled_back', count: c5.length, samples: c5 })
+    details.push({ channel: 'pickup_quantity_mismatch', count: c5.length, samples: c5 })
+  }
+
+  // ── C5b: 「已结算」不得超过购买件数（#154）──
+  // 各写入点的 UPDATE 都带了 `picked_up + refunded + converted + 本次 <= quantity` 守卫，
+  // 本项是它们的运行时镜像：迁移 0043 刻意没加 CHECK 约束（ADD CONSTRAINT 会对 12.6 万行取
+  // ACCESS EXCLUSIVE），这条巡检就是那个约束的替身。
+  const c5b = (await db.execute(sql`
+    SELECT s.sale_item_id, s.quantity,
+           COALESCE(s.picked_up_quantity, 0) AS picked_up_quantity,
+           COALESCE(s.refunded_quantity, 0) AS refunded_quantity,
+           COALESCE(s.converted_quantity, 0) AS converted_quantity
+    FROM sale_items s
+    WHERE COALESCE(s.picked_up_quantity, 0)
+        + COALESCE(s.refunded_quantity, 0)
+        + COALESCE(s.converted_quantity, 0) > s.quantity
+    LIMIT ${SAMPLE_LIMIT}
+  `)) as Array<Record<string, unknown>>
+  if (c5b.length > 0) {
+    details.push({ channel: 'settled_quantity_overflow', count: c5b.length, samples: c5b })
   }
 
   if (details.length > 0) {
