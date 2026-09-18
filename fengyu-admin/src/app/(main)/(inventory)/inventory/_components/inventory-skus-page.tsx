@@ -10,6 +10,7 @@ import { createInventorySupplier } from '@/actions/inventory/suppliers'
 import {
   INVENTORY_SKU_SOURCE_TYPES,
   type InventoryLocationRow,
+  type InventoryPriceVisibility,
   type InventorySkuInput,
   type InventorySkuRow,
   type InventorySkuSourceType,
@@ -140,6 +141,7 @@ export default function InventorySkusPage({
   canUpdate,
   canCreateSupplier,
   canViewPrice,
+  priceVisibility,
   canManageMarketSkus,
   canManageSupplySkus,
 }: {
@@ -151,6 +153,7 @@ export default function InventorySkusPage({
   canUpdate: boolean
   canCreateSupplier: boolean
   canViewPrice: boolean
+  priceVisibility: InventoryPriceVisibility
   canManageMarketSkus: boolean
   canManageSupplySkus: boolean
 }) {
@@ -182,6 +185,11 @@ export default function InventorySkusPage({
     if (debounceRef[0]) clearTimeout(debounceRef[0])
     debounceRef[0] = setTimeout(() => setMany({ q: value, page: '' }), 300)
   }, [debounceRef, setMany])
+
+  // 与 engine.ts skuRow() 的三个判定同名同义，便于两侧对照
+  const supplyPriceVisible = priceVisibility === 'all' || priceVisibility === 'supply_chain'
+  const marketPriceVisible = priceVisibility === 'all' || priceVisibility === 'market'
+  const anyPriceVisible = priceVisibility !== 'none'
 
   const columns: Column<InventorySkuRow>[] = [
     {
@@ -224,14 +232,30 @@ export default function InventorySkusPage({
         </div>
       ),
     },
-    ...(canViewPrice
+    // 逐列按价格档位裁剪，**与 engine.ts 的 skuRow() 遮蔽口径一一对应**：
+    //   supplyChainPurchasePrice → supplyVisible
+    //   marketPurchasePrice      → anyPriceVisible
+    //   storePurchasePrice       → marketVisible
+    //   marketStaffPurchasePrice → marketVisible
+    //   retailPrice              → 仅 'all'
+    // 之前是一个粗粒度的 canViewPrice 控全部 5 列，于是只有 market_price_view 的
+    // 市场财务角色会看到「供应链采购价」列头、底下整列都是「—」（#135 组 5）。
+    // 数值遮蔽本来就是对的，这里修的是"渲染了一列永远没有值的空列"。
+    // 改任一侧都要同步另一侧，engine.test.ts 有守护。
+    ...(supplyPriceVisible
+      ? [{ key: 'supplyChainPurchasePrice', header: '供应链采购价', cell: (row: InventorySkuRow) => price(row.supplyChainPurchasePrice) } as Column<InventorySkuRow>]
+      : []),
+    ...(anyPriceVisible
+      ? [{ key: 'marketPurchasePrice', header: '市场进货价', cell: (row: InventorySkuRow) => price(row.marketPurchasePrice) } as Column<InventorySkuRow>]
+      : []),
+    ...(marketPriceVisible
       ? [
-          { key: 'supplyChainPurchasePrice', header: '供应链采购价', cell: (row: InventorySkuRow) => price(row.supplyChainPurchasePrice) } as Column<InventorySkuRow>,
-          { key: 'marketPurchasePrice', header: '市场进货价', cell: (row: InventorySkuRow) => price(row.marketPurchasePrice) } as Column<InventorySkuRow>,
           { key: 'storePurchasePrice', header: '门店进货价', cell: (row: InventorySkuRow) => price(row.storePurchasePrice) } as Column<InventorySkuRow>,
           { key: 'marketStaffPurchasePrice', header: '市场员工购价', cell: (row: InventorySkuRow) => price(row.marketStaffPurchasePrice) } as Column<InventorySkuRow>,
-          { key: 'retailPrice', header: '零售价', cell: (row: InventorySkuRow) => price(row.retailPrice) } as Column<InventorySkuRow>,
         ]
+      : []),
+    ...(priceVisibility === 'all'
+      ? [{ key: 'retailPrice', header: '零售价', cell: (row: InventorySkuRow) => price(row.retailPrice) } as Column<InventorySkuRow>]
       : []),
     { key: 'isReportable', header: '可报货', cell: (row) => (row.isReportable ? '是' : '否') },
     { key: 'isActive', header: '启用', cell: (row) => (row.isActive ? '是' : '否') },
@@ -519,11 +543,18 @@ function SkuFormDialog({
         <section className="space-y-3">
           <h3 className="text-sm font-medium">基础资料</h3>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field label="产品编号">
+            {/*
+              产品编号是只读展示（保存后由系统生成），**没有可聚焦控件可关联** ——
+              用 Field 就成了一个包着 <div> 的游离 <label>，读屏念不出对应关系，
+              UX 扫描也因此把它记成「label 未与控件关联」。这里的正解不是补 htmlFor
+              （没有控件可指），而是让它根本不是 label。视觉沿用 Field 的排版。
+            */}
+            <div className="grid gap-1.5 text-sm">
+              <span className="text-[#666666]">产品编号</span>
               <div className="flex min-h-9 items-center rounded-[var(--radius)] border border-[var(--border)] bg-[var(--muted)] px-3 text-sm text-[#666666]">
                 {row?.productCode ?? '保存后由系统自动生成'}
               </div>
-            </Field>
+            </div>
             <Field label="产品名称 *"><Input value={form.productName} onChange={(event) => setField('productName', event.target.value)} /></Field>
             <Field label="规格"><Input value={form.specName} onChange={(event) => setField('specName', event.target.value)} /></Field>
             {/*
@@ -650,12 +681,19 @@ function SkuFormDialog({
           <section className="space-y-3 border-t border-[var(--border)] pt-4">
             <h3 className="text-sm font-medium">价格资料</h3>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field label="供应链采购价"><Input inputMode="decimal" value={form.supplyChainPurchasePrice} onChange={(event) => setField('supplyChainPurchasePrice', event.target.value)} /></Field>
-              <Field label="门店进货价"><Input inputMode="decimal" value={form.storePurchasePrice} onChange={(event) => setField('storePurchasePrice', event.target.value)} /></Field>
-              <Field label="市场员工购价"><Input inputMode="decimal" value={form.marketStaffPurchasePrice} onChange={(event) => setField('marketStaffPurchasePrice', event.target.value)} /></Field>
-              <Field label="顾客零售价"><Input inputMode="decimal" value={form.retailPrice} onChange={(event) => setField('retailPrice', event.target.value)} /></Field>
-              <Field label="核算价"><Input inputMode="decimal" value={form.accountingPrice} onChange={(event) => setField('accountingPrice', event.target.value)} /></Field>
-              <Field label="市场折扣（25 表示 25%）"><Input inputMode="decimal" value={form.marketPurchaseDiscount} onChange={(event) => setField('marketPurchaseDiscount', event.target.value)} /></Field>
+              <Field label="供应链采购价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.supplyChainPurchasePrice} onChange={(event) => setField('supplyChainPurchasePrice', event.target.value)} /></Field>
+              <Field label="门店进货价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.storePurchasePrice} onChange={(event) => setField('storePurchasePrice', event.target.value)} /></Field>
+              <Field label="市场员工购价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.marketStaffPurchasePrice} onChange={(event) => setField('marketStaffPurchasePrice', event.target.value)} /></Field>
+              <Field label="顾客零售价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.retailPrice} onChange={(event) => setField('retailPrice', event.target.value)} /></Field>
+              <Field label="核算价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.accountingPrice} onChange={(event) => setField('accountingPrice', event.target.value)} /></Field>
+              {/*
+                市场折扣的边界与其它金额字段**不同**，不能套用 numeric(12,2) 那组：
+                列是 `numeric(8,4)`（db/schema/inventory.ts:82），业务侧
+                `engine.ts` 把 >1 的值按百分数解释再校验 `ratio ∈ [0,1]`，
+                所以合法区间是 0–100，不是 0–9999999999.99。
+                step 取 0.0001 以匹配列的 4 位小数（用小数写比率时 0.8125 也要能填）。
+              */}
+              <Field label="市场折扣（25 表示 25%）"><Input type="number" min="0" step="0.0001" max="100" value={form.marketPurchaseDiscount} onChange={(event) => setField('marketPurchaseDiscount', event.target.value)} /></Field>
               <Field label="市场进货价">
                 <div className="space-y-1">
                   {form.sourceType === '供应链' && (
@@ -665,7 +703,7 @@ function SkuFormDialog({
                     </Select>
                   )}
                   <Input
-                    inputMode="decimal"
+                    type="number" min="0" step="0.01" max="9999999999.99"
                     value={form.marketPurchasePrice}
                     placeholder={calculatedMarketPrice == null ? undefined : String(calculatedMarketPrice)}
                     disabled={form.sourceType === '供应链' && form.marketPurchasePriceMode === '公式'}
@@ -677,7 +715,7 @@ function SkuFormDialog({
               {form.sourceType === '供应链' && form.marketPurchasePriceMode === '手工覆盖' && (
                 <Field label="手工覆盖原因 *"><Textarea value={form.marketPurchasePriceOverrideReason} onChange={(event) => setField('marketPurchasePriceOverrideReason', event.target.value)} /></Field>
               )}
-              <Field label="自采实际进货价"><Input inputMode="decimal" value={form.itemCompanyPurchasePrice} onChange={(event) => setField('itemCompanyPurchasePrice', event.target.value)} /></Field>
+              <Field label="自采实际进货价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.itemCompanyPurchasePrice} onChange={(event) => setField('itemCompanyPurchasePrice', event.target.value)} /></Field>
             </div>
           </section>
         )}

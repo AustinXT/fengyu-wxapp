@@ -20,10 +20,12 @@ export default async function Page({
   const status = ['configured', 'unconfigured', 'invalid'].includes(params.status ?? '')
     ? params.status as 'configured' | 'unconfigured' | 'invalid'
     : undefined
+  const page = params.page ? Number(params.page) : 1
+  const pageSize = params.size ? Number(params.size) : 20
   const session = await getSession()
   requireAllUiPageCapabilities(session, ['inventory:stock_list'])
-  const [rows, options] = await Promise.all([
-    listInventorySkuCompositions({ keyword: params.q, status }),
+  const [compositions, options] = await Promise.all([
+    listInventorySkuCompositions({ keyword: params.q, status, page, pageSize }),
     listInventorySkuCompositionOptions(),
   ])
   const canCreate = hasUiCapability(session.permissions.actions, 'inventory:supply_chain_master_data_manage')
@@ -34,7 +36,8 @@ export default async function Page({
       <InventoryMasterDataTabs />
       <Suspense>
         <InventorySkuMappingsPage
-          rows={rows}
+          rows={compositions.data}
+          total={compositions.total}
           options={options}
           canCreate={canCreate}
           canUpdate={canUpdate}

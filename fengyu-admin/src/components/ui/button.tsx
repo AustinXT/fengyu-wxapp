@@ -72,6 +72,9 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
         className={cn(buttonVariants({ variant, size, className }))}
         ref={ref}
         disabled={disabled || loading}
+        // 提交期间对辅助技术也要可感知（#135）。`|| undefined` 让非 loading 时
+        // 根本不渲染该属性，避免给全站每个按钮平白加上 aria-busy="false"。
+        aria-busy={loading || undefined}
         {...props}
       >
         {loading && <Spinner />}

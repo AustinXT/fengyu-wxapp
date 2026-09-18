@@ -2,6 +2,7 @@ import { Suspense } from 'react'
 import { listInventoryLocationFilterOptions } from '@/actions/inventory/locations'
 import { listInventoryLots } from '@/actions/inventory/stocks'
 import { getSession } from '@/lib/auth'
+import { canViewInventoryAmount, inventoryPriceVisibility } from '@/lib/inventory/access'
 import { resolveInventoryFilterLocationId } from '@/lib/inventory/location-filter'
 import { hasUiCapability } from '@/lib/permission-contract'
 import { requireAllUiPageCapabilities } from '@/lib/page-capability'
@@ -21,7 +22,7 @@ export default async function Page({
   requireAllUiPageCapabilities(session, ['inventory:stock_list'])
   const filterOptions = await listInventoryLocationFilterOptions()
   const selectedLocationId = resolveInventoryFilterLocationId(filterOptions, params.location)
-  const { data, total, canViewPrice } = selectedLocationId
+  const { data, total, canViewPrice, priceVisibility } = selectedLocationId
     ? await listInventoryLots({
       keyword: params.q,
       locationId: selectedLocationId,
@@ -32,7 +33,11 @@ export default async function Page({
     : {
         data: [],
         total: 0,
-        canViewPrice: hasUiCapability(session.permissions.actions, 'inventory:supply_chain_price_view') || hasUiCapability(session.permissions.actions, 'inventory:market_price_view'),
+        // 未选主体的空态分支：用 access.ts 里的同一对 helper，别再手写
+        // `hasUiCapability(supply) || hasUiCapability(market)` —— 那与
+        // inventoryPriceVisibility 有口径差（后者对 isAdminScope 直接返回 'all'，不看 actions）。
+        canViewPrice: canViewInventoryAmount(session),
+        priceVisibility: inventoryPriceVisibility(session),
       }
   const canExport = hasUiCapability(session.permissions.actions, 'inventory:export')
 
@@ -43,6 +48,7 @@ export default async function Page({
           rows={data}
           total={total}
           canViewPrice={canViewPrice}
+          priceVisibility={priceVisibility}
           canExport={canExport}
           locationFilterOptions={filterOptions}
           selectedLocationId={selectedLocationId}

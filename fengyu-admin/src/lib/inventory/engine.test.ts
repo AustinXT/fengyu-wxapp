@@ -753,10 +753,191 @@ describe('库存 SKU 来源与价格保护', () => {
       source.indexOf('export const listInventorySuppliers'),
       source.indexOf('export const listInventorySupplierOptions'),
     )
-    expect(listBlock).toMatch(/count\(\$\{inventorySkus\.skuId\}\)/)
-    expect(listBlock).not.toMatch(/count\(\*\)/)
+    expect(listBlock).toMatch(/linkedSkuCount: sql<number>`cast\(count\(\$\{inventorySkus\.skuId\}\) as int\)`/)
+    // 守的是 linkedSkuCount 这一处，不是整个函数块：#135 加的「共 N 条」总数查询
+    // 也用 count(*)，但它对主表单独 count（见下一条），是正确用法。
+    expect(listBlock).not.toMatch(/linkedSkuCount: sql<number>`cast\(count\(\*\)/)
     // 同时确认是 leftJoin（inner join 会让无关联的供应商整行消失）
     expect(listBlock).toMatch(/leftJoin\(inventorySkus/)
+  })
+
+  it('供应商状态筛选是三态：undefined=全部 / true=仅启用 / false=仅停用', () => {
+    // 行为测试是 mock 的，SQL 条件怎么拼都不会红，只能靠源码断言。
+    // 原写法 `filters.onlyActive ?? true` 把三态压成二值：「全部状态」变成只返回启用、
+    // 「停用」变成返回全部 —— 页面三个选项里两个与标签不符。
+    const source = readFileSync(resolve(__dirname, 'engine.ts'), 'utf8')
+    const block = source.slice(
+      source.indexOf('export const listInventorySuppliers'),
+      source.indexOf('export const listInventorySupplierOptions'),
+    )
+    expect(block).toMatch(
+      /filters\.onlyActive === true\) conditions\.push\(eq\(inventorySuppliers\.isActive, true\)\)/,
+    )
+    expect(block).toMatch(
+      /filters\.onlyActive === false\) conditions\.push\(eq\(inventorySuppliers\.isActive, false\)\)/,
+    )
+    expect(block).not.toMatch(/filters\.onlyActive \?\? true/)
+  })
+
+  it('分页页长走白名单，page 用 || 兜 NaN', () => {
+    // `?size=7` 会让服务端每页 7 条而 UI 按 20 条算页数，尾部数据翻到哪页都够不到；
+    // `?size=-5&page=2` 更糟：drizzle 丢弃负 limit 却照发负 offset → PG 报错 → 500。
+    // `?page=abc` 的 NaN 是 falsy，必须用 `|| 1` 而不是 `?? 1`。
+    const source = readFileSync(resolve(__dirname, 'engine.ts'), 'utf8')
+    for (const [from, to] of [
+      ['export const listInventorySuppliers', 'export const listInventorySupplierOptions'],
+      ['export const listInventorySkuCompositions', 'export const listInventorySkuCompositionOptions'],
+    ] as const) {
+      const block = source.slice(source.indexOf(from), source.indexOf(to))
+      expect(block).toMatch(/PAGE_SIZE_WHITELIST\.includes\(filters\.pageSize\)/)
+      expect(block).toMatch(/normalizePage\(filters\.page\)/)
+      expect(block).not.toMatch(/filters\.page \?\? 1/)
+    }
+  })
+
+  /**
+   * 生成「字段: 条件 ?」的匹配式，**容忍任意空白与换行**。
+   * 不能用 `toContain('字段: 条件 ?')` 字面量 —— 那等于把「三元必须写成单行」
+   * 也钉进了守护：日后 prettier 换行（或接入 printWidth）会让断言误报红，
+   * 而语义零变化。
+   */
+  function loosen(expr: string): string {
+    return expr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/ /g, '\\s+')
+  }
+
+  function guardPattern(field: string, cond: string): RegExp {
+    return new RegExp(`${field}:\\s*${loosen(cond)}\\s*\\?`)
+  }
+
+  /** 同理，变量定义也不能用整行 `toContain` —— 赋值符后换行是无害格式化，不该让测试红 */
+  function defPattern(name: string, expr: string): RegExp {
+    return new RegExp(`const\\s+${name}\\s*=\\s*${loosen(expr)}`)
+  }
+
+  it('skuRow / lotRow 的价格遮蔽口径与组件的列裁剪逐列对应', () => {
+    // skus-page / stocks-page 的列渲染测试是 **prop 注入**的，只能证明「给了这个档就这样渲染」，
+    // 拦不住 engine 反向漂移（比如把 storeActualUnitPrice 改成 supplyVisible）——
+    // 那会让列显示出来却整列是 null，正是 #135 组 5 要治的病反向复发。
+    // 两个组件的注释里都写了「engine.test.ts 有守护」，这就是那个守护。
+    const source = readFileSync(resolve(__dirname, 'engine.ts'), 'utf8')
+
+    const skuBlock = source.slice(
+      source.indexOf('function skuRow(row: {'),
+      source.indexOf('function docRow(row: {'),
+    )
+
+    // ① 先钉住三个可见性变量的**定义**。只断言字段用了哪个变量是不够的 ——
+    //    把 `marketVisible` 的定义放宽成 `!== 'none'`，所有字段断言照样绿，
+    //    而供应链角色已经能看到门店价格了。
+    expect(skuBlock).toMatch(defPattern('supplyVisible', "row.priceVisibility === 'all' || row.priceVisibility === 'supply_chain'"))
+    expect(skuBlock).toMatch(defPattern('marketVisible', "row.priceVisibility === 'all' || row.priceVisibility === 'market'"))
+    expect(skuBlock).toMatch(defPattern('anyPriceVisible', 'supplyVisible || marketVisible'))
+
+    // ② 再逐字段钉住。**12 个价格相关字段一个都不能漏** ——
+    //    只守 5 个的话，把 accountingPrice 从 supplyVisible 放宽成 anyPriceVisible
+    //    （市场角色会拿到供应链核算价）不会被任何断言拦住。
+    const SKU_PRICE_GUARDS: Array<[string, string]> = [
+      ['retailPrice', "row.priceVisibility === 'all'"],
+      ['accountingPrice', 'supplyVisible'],
+      ['supplyChainPurchasePrice', 'supplyVisible'],
+      ['marketPurchasePrice', 'anyPriceVisible'],
+      ['marketPurchasePriceMode', 'supplyVisible'],
+      ['marketPurchasePriceOverrideReason', 'supplyVisible'],
+      ['storePurchasePrice', 'marketVisible'],
+      ['marketStaffPurchasePrice', 'marketVisible'],
+      ['marketPurchaseDiscount', 'anyPriceVisible'],
+      ['storePurchaseDiscount', 'marketVisible'],
+      ['staffPurchaseDiscount', 'marketVisible'],
+      ['itemCompanyPurchasePrice', 'supplyVisible'],
+    ]
+    for (const [field, cond] of SKU_PRICE_GUARDS) {
+      expect(skuBlock).toMatch(guardPattern(field, cond))
+    }
+
+    const lotBlock = source.slice(
+      source.indexOf('function lotRow('),
+      source.indexOf('function inventoryDocScopeSql('),
+    )
+    expect(lotBlock).toMatch(defPattern('supplyVisible', "priceVisibility === 'all' || priceVisibility === 'supply_chain'"))
+    expect(lotBlock).toMatch(defPattern('marketVisible', "priceVisibility === 'all' || priceVisibility === 'market'"))
+    const LOT_PRICE_GUARDS: Array<[string, string]> = [
+      ['supplyChainUnitCost', 'supplyVisible'],
+      ['marketActualUnitPrice', 'supplyVisible || marketVisible'],
+      ['storeActualUnitPrice', 'marketVisible'],
+    ]
+    for (const [field, cond] of LOT_PRICE_GUARDS) {
+      expect(lotBlock).toMatch(guardPattern(field, cond))
+    }
+    // 反向：门店实际价**不能**放宽成 supplyVisible（那样供应链角色会看到门店价）
+    expect(lotBlock).not.toMatch(/storeActualUnitPrice: supplyVisible \?/)
+  })
+
+  it('页码归一化兜住小数、Infinity 与巨大有限值', () => {
+    // `Math.max(1, page || 1)` 只兜得住 NaN/0。`?page=1.5` 会让 offset 变成
+    // (1.5-1)*20 = 10 → 返回第 11–30 条，而客户端 Pagination 内部 floor 后高亮第 1 页，
+    // 用户看到的既不是第 1 页也不是第 2 页；`?page=Infinity` 直接把 SQL 打挂。
+    const source = readFileSync(resolve(__dirname, 'engine.ts'), 'utf8')
+    // 右锚用「函数体自身的收尾 `\n}`」，不要用后面某个无关常量名 ——
+    // 拿 `const NO_MOVEMENT_DOC_TYPES` 当锚的话，日后有人在两者之间插入任何声明，
+    // slice 会把那段也吃进来，断言照绿，守护就悄悄失效了。
+    const fnStart = source.indexOf('function normalizePage')
+    expect(fnStart).toBeGreaterThan(-1)
+    const fn = source.slice(fnStart, source.indexOf('\n}', fnStart) + 2)
+    expect(fn).toMatch(/Number\.isFinite\(value\)/)
+    expect(fn).toMatch(/Math\.trunc/)
+    // `Number.isFinite` 放行 1e308 这种有限但巨大的值，乘页长后 offset 溢出成 Infinity
+    // → PG 拒绝 → 列表页 500。必须再夹一道上界。
+    expect(fn).toMatch(/Math\.min\(/)
+    expect(source).toMatch(/const MAX_PAGE = /)
+    // 五支列表查询必须全部走它，不能有漏网的内联写法
+    expect(source.match(/normalizePage\(filters\.page\)/g)).toHaveLength(5)
+    expect(source).not.toMatch(/Math\.max\(1, filters\.page/)
+  })
+
+  it('SKU 映射的 total 取过滤后的长度，不是全量长度', () => {
+    // 这一支的 status / keyword 过滤都在内存里做（configurationStatus 是按
+    // components 算出来的派生字段，没法下推成 WHERE）。total 若取 productRows.length，
+    // 筛完之后「共 N 条」还是全量数字，页数也跟着错。
+    const source = readFileSync(resolve(__dirname, 'engine.ts'), 'utf8')
+    const block = source.slice(
+      source.indexOf('export const listInventorySkuCompositions'),
+      source.indexOf('export const listInventorySkuCompositionOptions'),
+    )
+    expect(block).toMatch(/total: filtered\.length/)
+    expect(block).not.toMatch(/total: productRows\.length/)
+    // 切片同样必须基于 filtered
+    expect(block).toMatch(/filtered\.slice\(offset, offset \+ pageSize\)/)
+  })
+
+  it('供应商总数查询绕开 leftJoin（否则「共 N 条」会被关联 SKU 放大）', () => {
+    // 这条拦的是「顺手把 total 塞进主查询」：leftJoin 之后 count(*) 数的是 join 后的行数，
+    // 一个有 3 个关联 SKU 的供应商会被算成 3 条，分页总数与页数全错。
+    const source = readFileSync(resolve(__dirname, 'engine.ts'), 'utf8')
+    const listBlock = source.slice(
+      source.indexOf('export const listInventorySuppliers'),
+      source.indexOf('export const listInventorySupplierOptions'),
+    )
+    const totalBlock = listBlock.slice(
+      listBlock.indexOf('const [totalRow]'),
+      listBlock.indexOf('const query ='),
+    )
+    expect(totalBlock).toMatch(/count\(\*\)/)
+    expect(totalBlock).not.toMatch(/leftJoin/)
+  })
+
+  it('pageSize 缺省时不加 limit（办理台下拉要整份名单）', () => {
+    // 办理台的供应商下拉与列表页共用 listInventorySuppliers。给它兜一个默认页长，
+    // 「自采产品入库」里排在 20 名之后的供应商就会静默消失、且没有任何报错。
+    const source = readFileSync(resolve(__dirname, 'engine.ts'), 'utf8')
+    const listBlock = source.slice(
+      source.indexOf('export const listInventorySuppliers'),
+      source.indexOf('export const listInventorySupplierOptions'),
+    )
+    expect(listBlock).toMatch(/const pageSize = filters\.pageSize\b/)
+    expect(listBlock).toMatch(/pageSize\s*\n?\s*\?\s*await query\.limit\(pageSize\)/)
+    expect(listBlock).toMatch(/:\s*await query\b/)
+    // 不得出现 `filters.pageSize ?? 20` 这类默认值
+    expect(listBlock).not.toMatch(/filters\.pageSize\s*\?\?/)
   })
 
   it('SKU 列表的 supplierName 来自档案表 JOIN，不是 SKU 自己的冗余列', () => {
@@ -783,32 +964,59 @@ describe('库存 SKU 来源与价格保护', () => {
     expect(block).toMatch(/\.where\(eq\(inventorySkus\.supplierId, supplierId\)\)/)
   })
 
-  it('供应商列表把 linkedSkuCount 映射进返回行', async () => {
-    mockDb.select.mockReturnValueOnce({
-      from: () => ({
-        leftJoin: () => ({
-          where: () => ({
-            groupBy: () => ({
-              orderBy: async () => [
-                {
-                  supplier: {
-                    supplierId: 'SUP-1', name: '甲公司', contactName: null, phone: null,
-                    address: null, isActive: true, remark: null,
-                    createdAt: new Date('2026-08-01T00:00:00Z'),
-                    updatedAt: new Date('2026-08-01T00:00:00Z'),
+  it('供应商列表把 linkedSkuCount 映射进返回行，并附带总数', async () => {
+    // 两次 db.select：先总数（from→where，无 join），再列表（from→leftJoin→…）。
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({ where: async () => [{ total: 7 }] }),
+      } as never)
+      .mockReturnValueOnce({
+        from: () => ({
+          leftJoin: () => ({
+            where: () => ({
+              groupBy: () => ({
+                orderBy: async () => [
+                  {
+                    supplier: {
+                      supplierId: 'SUP-1', name: '甲公司', contactName: null, phone: null,
+                      address: null, isActive: true, remark: null,
+                      createdAt: new Date('2026-08-01T00:00:00Z'),
+                      updatedAt: new Date('2026-08-01T00:00:00Z'),
+                    },
+                    linkedSkuCount: 3,
                   },
-                  linkedSkuCount: 3,
-                },
-              ],
+                ],
+              }),
             }),
           }),
         }),
-      }),
-    } as never)
+      } as never)
 
-    await expect(listInventorySuppliers({})).resolves.toEqual([
-      expect.objectContaining({ supplierId: 'SUP-1', linkedSkuCount: 3 }),
-    ])
+    await expect(listInventorySuppliers({})).resolves.toEqual({
+      data: [expect.objectContaining({ supplierId: 'SUP-1', linkedSkuCount: 3 })],
+      total: 7,
+    })
+  })
+
+  it('不传 pageSize 时不调用 limit', async () => {
+    // 变异守护：给 listInventorySuppliers 兜一个默认页长的话，这里的 limit 会被调用。
+    const limit = vi.fn()
+    mockDb.select
+      .mockReturnValueOnce({ from: () => ({ where: async () => [{ total: 0 }] }) } as never)
+      .mockReturnValueOnce({
+        from: () => ({
+          leftJoin: () => ({
+            where: () => ({
+              groupBy: () => ({
+                orderBy: () => Object.assign(Promise.resolve([]), { limit }),
+              }),
+            }),
+          }),
+        }),
+      } as never)
+
+    await listInventorySuppliers({})
+    expect(limit).not.toHaveBeenCalled()
   })
 
   it('创建后不能跨市场或转换库存 SKU 来源', async () => {

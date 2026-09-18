@@ -5,7 +5,11 @@ import { useSearchParams } from 'next/navigation'
 import { Boxes } from 'lucide-react'
 import { toast } from 'sonner'
 import { exportInventoryLots } from '@/actions/inventory/stocks'
-import type { InventoryLocationFilterOptions, InventoryLotRow } from '@/lib/inventory/types'
+import type {
+  InventoryLocationFilterOptions,
+  InventoryLotRow,
+  InventoryPriceVisibility,
+} from '@/lib/inventory/types'
 import { Button } from '@/components/ui/button'
 import { DataTable, type Column } from '@/components/ui/data-table'
 import { ExportButton } from '@/components/ui/export-button'
@@ -25,6 +29,7 @@ export default function InventoryStocksPage({
   rows,
   total,
   canViewPrice,
+  priceVisibility,
   canExport,
   locationFilterOptions,
   selectedLocationId,
@@ -32,6 +37,7 @@ export default function InventoryStocksPage({
   rows: InventoryLotRow[]
   total: number
   canViewPrice: boolean
+  priceVisibility: InventoryPriceVisibility
   canExport: boolean
   locationFilterOptions: InventoryLocationFilterOptions
   selectedLocationId: string | null
@@ -140,19 +146,26 @@ export default function InventoryStocksPage({
         </span>
       ),
     },
-    ...(canViewPrice
-      ? [
-          {
-            key: 'marketActualUnitPrice',
-            header: '市场实际价',
-            cell: (r: InventoryLotRow) => r.marketActualUnitPrice ?? '—',
-          } as Column<InventoryLotRow>,
-          {
-            key: 'storeActualUnitPrice',
-            header: '门店实际价',
-            cell: (r: InventoryLotRow) => r.storeActualUnitPrice ?? '—',
-          } as Column<InventoryLotRow>,
-        ]
+    // 逐列按价格档位裁剪，与 engine.ts `lotRow()` 的遮蔽口径一一对应（#135）：
+    //   marketActualUnitPrice → supplyVisible || marketVisible（即 !== 'none'）
+    //   storeActualUnitPrice  → **仅** marketVisible
+    // 原先用一个粗粒度 canViewPrice 同时控两列，于是只有 supply_chain_price_view 的
+    // 角色会看到「门店实际价」列头、整列恒为「—」。
+    // ⚠️ `lotRow()` 是**行级**档位（按该行 location 所属 org 判定），这里只能按
+    // 会话档位做**上界**裁剪：列显示出来不代表每一行都有值，但列不显示就一定全是空。
+    ...(priceVisibility !== 'none'
+      ? [{
+        key: 'marketActualUnitPrice',
+        header: '市场实际价',
+        cell: (r: InventoryLotRow) => r.marketActualUnitPrice ?? '—',
+      } as Column<InventoryLotRow>]
+      : []),
+    ...(priceVisibility === 'all' || priceVisibility === 'market'
+      ? [{
+        key: 'storeActualUnitPrice',
+        header: '门店实际价',
+        cell: (r: InventoryLotRow) => r.storeActualUnitPrice ?? '—',
+      } as Column<InventoryLotRow>]
       : []),
     { key: 'updatedAt', header: '更新时间', cell: (r) => formatDate(r.updatedAt) },
   ]
