@@ -1859,6 +1859,81 @@ describe('营业额分配：回款级 allocation_status 置「已分配」守护
   })
 })
 
+/**
+ * 营业额分配：事务锁序守护（issue #148）
+ *
+ * 项目硬约束（db/CLAUDE.md「写 sale_order_payments 的硬约束」）：
+ *   锁序 `sale_orders` → `sale_order_payments`，新代码不得反向。
+ *
+ * 分配链路天然是「先改款项行、再刷订单汇总」，与「订单级改期」（先 FOR UPDATE 锁订单、
+ * 再由迁移 0040 的 AFTER trigger 回写款项行）方向相反 —— 两个入口并发同一订单必 40P01，
+ * 已在临时 PG 实测复现。修法是让分配事务一进来就先取订单行锁。
+ *
+ * 词法守护挡不住"锁还在文件里、但被挪到事务末尾"这种失效方式，所以这里除了断言锁语句存在，
+ * 还断言它**出现在第一条写语句之前**（位置比较）。真实并发回归在
+ * db/scripts/__tests__/allocation-lock-order.pg.test.js。
+ */
+describe('营业额分配：事务锁序守护 sale_orders → sale_order_payments（#148）', () => {
+  const STAFF_LOCK_SQL = "SELECT 1 FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE"
+  const STAFF_LOCK_CALL = 'lockSaleOrderForAllocation(client, pay.sale_order_id)'
+  const FIRST_WRITE = 'UPDATE sale_payment_item_allocations'
+
+  // 一律剥注释后再断言：两个文件的注释里都**有意**写着反例 `FOR UPDATE OF sop, so`，
+  // 不剥的话负向断言会被自己的文档命中；正向断言剥注释后也更严格（把锁注释掉即红）。
+  let staffAllocationSrc
+  let adminAllocationsSrc
+  beforeAll(() => {
+    staffAllocationSrc = stripJsComments(readFile(FILES.staffAllocationJs))
+    adminAllocationsSrc = stripJsComments(readFile(FILES.adminAllocationsTs))
+  })
+
+  test('staff allocation.js：锁定 helper 用独立一条 sale_orders 语句取 FOR UPDATE', () => {
+    expect(staffAllocationSrc).toContain(STAFF_LOCK_SQL)
+  })
+
+  test('staff allocation.js：三个写事务（空分配 / 保存 / 删除）都调用锁定 helper', () => {
+    const txCount = (staffAllocationSrc.match(/await pg\.transaction\(async \(client\) => \{/g) || []).length
+    const lockCount = (staffAllocationSrc.match(/lockSaleOrderForAllocation\(client, pay\.sale_order_id\)/g) || []).length
+    expect(txCount).toBe(3)
+    expect(lockCount).toBe(txCount)
+  })
+
+  test('staff allocation.js：每个事务里锁订单都排在第一条写语句之前', () => {
+    // 按事务起点切段，逐段比较「锁」与「第一条写」的先后，挡住"锁被挪到事务末尾"。
+    const segments = staffAllocationSrc.split(/await pg\.transaction\(async \(client\) => \{/).slice(1)
+    expect(segments).toHaveLength(3)
+    for (const seg of segments) {
+      const lockAt = seg.indexOf(STAFF_LOCK_CALL)
+      const writeAt = seg.indexOf(FIRST_WRITE)
+      expect(lockAt).toBeGreaterThanOrEqual(0)
+      expect(writeAt).toBeGreaterThanOrEqual(0)
+      expect(lockAt).toBeLessThan(writeAt)
+    }
+  })
+
+  test('admin allocations.ts：事务内先取订单行锁，再写分配', () => {
+    expect(adminAllocationsSrc).toMatch(/SELECT 1 FROM sale_orders WHERE sale_order_id = \$\{pay\.sale_order_id\} FOR UPDATE/)
+    const lockAt = adminAllocationsSrc.indexOf('FROM sale_orders WHERE sale_order_id = ${pay.sale_order_id} FOR UPDATE')
+    const writeAt = adminAllocationsSrc.indexOf(FIRST_WRITE)
+    expect(lockAt).toBeGreaterThanOrEqual(0)
+    expect(writeAt).toBeGreaterThanOrEqual(0)
+    expect(lockAt).toBeLessThan(writeAt)
+  })
+
+  test('两端都不得用 JOIN 的 FOR UPDATE OF 取锁（按 sop 主键扫描会把锁序倒过来）', () => {
+    // #137 评审实测踩过：`FROM sop JOIN so ... WHERE sop.id=$1 FOR UPDATE OF sop, so`
+    // 物理上先锁款项行，正好与约定相反。锁必须来自独立的 sale_orders 单表语句。
+    expect(staffAllocationSrc).not.toMatch(/FOR UPDATE OF/i)
+    expect(adminAllocationsSrc).not.toMatch(/FOR UPDATE OF/i)
+  })
+
+  test('两端都把 40P01 死锁翻成可重试提示，不落通用内部错误', () => {
+    expect(staffAllocationSrc).toContain("err.code === '40P01'")
+    expect(staffAllocationSrc).toMatch(/CONFLICT: DEADLOCK_DETECTED:/)
+    expect(adminAllocationsSrc).toContain("pgErrorCode(err) === '40P01'")
+  })
+})
+
 // ============================================================================
 // ticket 2026-06-29 paidUnusedSessions 派生口径守护
 //

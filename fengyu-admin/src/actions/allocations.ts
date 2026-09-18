@@ -669,6 +669,19 @@ export const savePaymentAllocations = withPermission(
 
     try {
       await db.transaction(async (tx) => {
+        // 锁序 `sale_orders` → `sale_order_payments`（硬约束见 db/CLAUDE.md），必须是事务第一条语句。
+        // 分配链路天然「先改款项行、再刷订单汇总」，与「订单级改期」（先 FOR UPDATE 锁订单、再由
+        // 迁移 0040 的 AFTER trigger 回写款项行）方向相反，并发同一订单必 40P01（issue #148，已实测复现）。
+        //
+        // ⚠ 必须是**独立一条**只查 sale_orders 的语句：写成 `FROM sop JOIN so ... FOR UPDATE OF sop, so`
+        // 会按 sop 主键扫描而物理上先锁款项行，恰好把锁序倒回来（该坑在 #137 评审中实测踩过）。
+        //
+        // 锁强度 FOR UPDATE，与 orders.ts 既有的 confirmOfflinePayment / recordPayment 等同族写事务一致。
+        // 订单行在事务外已查得存在；若恰被并发删除则返回 0 行，由下面 allocation_status 的 CAS 守卫
+        // 以 rowCount=0 抛冲突兜底。staffApi routes/allocation.js 的 lockSaleOrderForAllocation 是同语义副本。
+        await tx.execute(sql`
+          SELECT 1 FROM sale_orders WHERE sale_order_id = ${pay.sale_order_id} FOR UPDATE
+        `)
         await tx.execute(sql`
           UPDATE sale_payment_item_allocations
              SET is_void = true, voided_at = NOW(), updated_at = NOW()
@@ -708,6 +721,11 @@ export const savePaymentAllocations = withPermission(
       }
       if (pgErrorCode(err) === '23503') {
         return { success: false, message: '员工信息不存在，请检查后重试' }
+      }
+      // 40P01 = deadlock_detected。上面的订单行锁已消掉「分配 × 改期」这个环，这里是兜底：
+      // 仍可能有未覆盖的交错路径，届时应提示可重试，而不是掉进通用 500（生产还会被脱敏成 digest）。
+      if (pgErrorCode(err) === '40P01') {
+        return { success: false, message: '该订单正被其他操作修改，请稍后重试' }
       }
       throw err
     }
