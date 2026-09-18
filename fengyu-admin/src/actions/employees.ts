@@ -449,7 +449,9 @@ export const exportEmployees = withPermission(
       rows,
       truncated: false,
       hasMore,
-      ...(nextCursor ? { nextCursor } : {}),
+      // 用 !== undefined 而不是真值判断：游标契约里空串是「畸形」，真值判断会在
+      // hasMore 为真时悄悄不带游标，让 worker 抛 INVALID_STATE（fail-safe 但契约不对称）
+      ...(nextCursor !== undefined ? { nextCursor } : {}),
     }
   },
   { scopeActions: ['employee:create'] },

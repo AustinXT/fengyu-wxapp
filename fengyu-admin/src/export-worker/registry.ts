@@ -392,7 +392,7 @@ const customerColumns = mapColumns([
   { header: '累计消费', width: 14, key: 'totalSpend' },
   { header: '推荐人', width: 14, key: 'promoterName' },
   { header: '顾客来源', width: 14, key: 'customerSource' },
-  { header: '生日', width: 14, key: 'birthday' },
+  { header: '生日', width: 14, key: 'birthday', map: (row) => fmtDate(value(row, 'birthday') as string | Date | null) },
   // 「建档日期」而非「注册日期」：created_at 是本系统建档时刻，data-center 的「注册」指的是
   // became_member_at（会员注册），两个「注册」不是一件事，同名会让甲方拿两张表对不上数。
   // 老顾客普遍 2026 年才录入本系统，所以「建档日期」晚于「成为会员日期」是正常的（非倒挂 bug）。

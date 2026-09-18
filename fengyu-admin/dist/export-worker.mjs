@@ -171532,7 +171532,7 @@ var exportCustomers = withPermission("customer:list", async (session4, params, o
     rows,
     truncated: false,
     hasMore,
-    ...nextCursor ? { nextCursor } : {}
+    ...nextCursor !== undefined ? { nextCursor } : {}
   };
 });
 var getCustomerById = withPermission("customer:list", async (session4, userId) => {
@@ -172761,7 +172761,7 @@ var exportEmployees = withPermission("employee:list", async (session4, params, o
     rows,
     truncated: false,
     hasMore,
-    ...nextCursor ? { nextCursor } : {}
+    ...nextCursor !== undefined ? { nextCursor } : {}
   };
 }, { scopeActions: ["employee:create"] });
 var getEmployeeById = withPermission("employee:list", async (session4, employeeId) => {
@@ -179454,7 +179454,7 @@ var customerColumns2 = mapColumns([
   { header: "累计消费", width: 14, key: "totalSpend" },
   { header: "推荐人", width: 14, key: "promoterName" },
   { header: "顾客来源", width: 14, key: "customerSource" },
-  { header: "生日", width: 14, key: "birthday" },
+  { header: "生日", width: 14, key: "birthday", map: (row) => fmtDate(value(row, "birthday")) },
   { header: "建档日期", width: 14, key: "createdAt", map: (row) => fmtDate(value(row, "createdAt")) },
   { header: "成为会员日期", width: 16, key: "becameMemberAt", map: (row) => fmtDate(value(row, "becameMemberAt")) }
 ]);

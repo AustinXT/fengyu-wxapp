@@ -91,7 +91,9 @@ export function resolveExportKeysetPage<Row, Cursor>(
 ): ExportKeysetPage<Row, Cursor> {
   if (limit == null) return { pageRows: fetchedRows, hasMore: false }
   // 自守卫而不是信任 resolveExportBatchLimit 的下界：limit<1 时下面取末行会拿到
-  // undefined，toCursor 里读属性就是一句语义不明的 TypeError，比这里抛难排查得多
+  // undefined，toCursor 里读属性就是一句语义不明的 TypeError，比这里抛难排查得多。
+  // 这里刻意抛裸 Error 而不是 ApiError：本文件是 worker/action 共用的纯工具层，
+  // 不往上依赖 @/lib/api-error；worker 对两者一样按 job 失败处理。
   if (limit < 1) throw new Error('INVALID_STATE: 导出分页 limit 必须 ≥ 1')
 
   const hasMore = fetchedRows.length > limit
