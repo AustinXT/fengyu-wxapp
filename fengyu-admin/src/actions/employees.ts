@@ -384,6 +384,14 @@ export const exportEmployees = withPermission(
     params: Record<string, string | undefined>,
     options?: ExportBatchOptions<string>,
   ): Promise<ExportBatchResult<ExportEmployeeRow, string>> => {
+    // 游标校验放在任何查询之前：畸形游标不该先白打一次 getSkillTags 的库
+    const limit = resolveExportBatchLimit(options?.limit)
+    const cursor = options?.cursor
+    // 只有 undefined 代表「首批」；空串 / 非字符串一律视为畸形，不能静默从头重扫
+    if (cursor !== undefined && (typeof cursor !== 'string' || !cursor)) {
+      throw new ApiError('INVALID_STATE', '导出分页游标无效')
+    }
+
     const parsed = parseEmployeeFilters(params)
     // 服务端兜底：剔除 URL ?skill= 中字典外（已删除）的标签名，防幽灵筛选。
     // 与列表路径 page.tsx 同源；前端 handleExport 已清洗，此处为防御层（即使漏清洗，
@@ -393,11 +401,6 @@ export const exportEmployees = withPermission(
     const filters = {
       ...parsed,
       skills: filterValidSkillValues(parsed.skills, validSkillNames),
-    }
-    const limit = resolveExportBatchLimit(options?.limit)
-    const cursor = options?.cursor
-    if (cursor !== undefined && (typeof cursor !== 'string' || !cursor)) {
-      throw new ApiError('INVALID_STATE', '导出分页游标无效')
     }
     const whereClause = and(
       ...(await buildEmployeeConditions(session, filters)),

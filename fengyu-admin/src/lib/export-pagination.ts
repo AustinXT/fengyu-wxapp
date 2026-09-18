@@ -85,6 +85,9 @@ export function resolveExportKeysetPage<Row, Cursor>(
   toCursor: (lastRow: Row) => Cursor,
 ): ExportKeysetPage<Row, Cursor> {
   if (limit == null) return { pageRows: fetchedRows, hasMore: false }
+  // 自守卫而不是信任 resolveExportBatchLimit 的下界：limit<1 时下面取末行会拿到
+  // undefined，toCursor 里读属性就是一句语义不明的 TypeError，比这里抛难排查得多
+  if (limit < 1) throw new Error('INVALID_STATE: 导出分页 limit 必须 ≥ 1')
 
   const hasMore = fetchedRows.length > limit
   const pageRows = hasMore ? fetchedRows.slice(0, limit) : fetchedRows

@@ -1207,11 +1207,14 @@ describe('exportEmployees — 导出 + 技能标签服务端兜底（对称列�
     expect(chain.orderBy).toHaveBeenCalledWith({ type: 'asc', col: 'employee_id' })
   })
 
-  it('keyset 游标是空串/非字符串 → 抛 INVALID_STATE，不静默从头重扫', async () => {
+  it('keyset 游标是空串/非字符串 → 抛 INVALID_STATE，且在打库之前就拦住', async () => {
     mockExportChain([])
 
     await expect(exportEmployees({}, { limit: 2, cursor: '' as any })).rejects.toThrow('导出分页游标无效')
     await expect(exportEmployees({}, { limit: 2, cursor: 123 as any })).rejects.toThrow('导出分页游标无效')
+    // 畸形游标不该先白打一次 getSkillTags 的库
+    expect(getSkillTags).not.toHaveBeenCalled()
+    expect(db.select).not.toHaveBeenCalled()
   })
 
   it('超过旧上限也返回全量且不标记截断', async () => {

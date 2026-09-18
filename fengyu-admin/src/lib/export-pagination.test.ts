@@ -43,6 +43,10 @@ describe('resolveExportKeysetPage', () => {
     expect(resolveExportKeysetPage([], 2, toCursor)).toEqual({ pageRows: [], hasMore: false })
   })
 
+  it('limit < 1 → 抛 INVALID_STATE，而不是在 toCursor 里抛语义不明的 TypeError', () => {
+    expect(() => resolveExportKeysetPage([{ id: 'a' }], 0, toCursor)).toThrow('导出分页 limit 必须 ≥ 1')
+  })
+
   it('游标可以是复合键对象（顾客导出的 name+userId 形态）', () => {
     const rows = [
       { name: '陈一', userId: 'u1' },
