@@ -1194,8 +1194,8 @@ export const approveRefund = withPermission(
         cascadeItems = [{ saleItemId: refSaleItemId, sessionCount, refundAmount, isFullItemRefund: true }]
       }
       // G2 复校（2026-09-14 #125）：家居行可退数量必须在锁内复算。
-      // createRefund 是事务外、无行锁读 picked_up_quantity 定额的；其间若有转换单把这批货折抵走
-      // （picked_up_quantity 被抬高），cascade 通道 5 的 LEAST(quantity, picked_up + qty) 会把冲突
+      // createRefund 是事务外、无行锁读已结算数量定额的；其间若有转换单把这批货折抵走
+      // （converted_quantity 被抬高），拆列前 cascade 通道 5 的 LEAST(quantity, picked_up + qty) 会把冲突
       // 静默封顶吞掉 —— 同一批货既进了转换单又退了现金，且家居账面 refunded_quantity 归 0 查无实据。
       // 这里按 sale_item_id 定序锁行复核，不足即拒绝审批。staff routes/order.js 有同义副本。
       const homeRefundQty = new Map<string, number>()

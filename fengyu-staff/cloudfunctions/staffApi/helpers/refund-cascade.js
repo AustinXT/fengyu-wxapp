@@ -515,26 +515,53 @@ async function cascadeRefund(client, params) {
     pointsBalanceUpdated = true
   }
 
-  // ========== 通道 5: 家居退款计入已结算（逐被退家居 item，按退款数量）==========
-  // 修复（家居提货账 schema-free 止血 2026-06-08）：退家居退的是「未提货」数量，
-  // 原 `GREATEST(0, picked_up - qty)` 错把退款数从已提货里减 → 损坏提货账 + refundable
-  // (=quantity-picked_up) 回升致可重复退（资损）。改为把已退数计入 picked_up（语义升级为
-  // 「已结算」= 已提货 + 已退 + 已转换（2026-09-14 #125），LEAST(quantity) 封顶，使 refundable 正确归零、不可超退。
-  // 代价：picked_up 不再纯指已物理提货（pickup_records 仍是真实提货源）；彻底分离待 refunded_quantity 列。
-  // 字段名 rolledBackPickups 保留（跨端 snapshot 守护），语义现为「计入已结算的家居退款行数」。
+  // ========== 通道 5: 家居退款计入 refunded_quantity（逐被退家居 item，按退款数量）==========
+  // 沿革：2026-06-08 止血把已退数并进 picked_up_quantity（原 `GREATEST(0, picked_up - qty)`
+  // 错把退款数从已提货里减 → 损坏提货账 + refundable 回升致可重复退，资损）；2026-09-14 #125
+  // 又把转换折抵也并进同一列。三语义共用一列的代价已在 #154 兑现，现拆为独立列：
+  //   picked_up_quantity  = 物理提货（与 pickup_records 守恒）
+  //   refunded_quantity   = 本通道写入
+  //   converted_quantity  = 转换折抵写入
+  // 派生「已结算」= 三者之和，`refundable = quantity − 已结算` 仍正确归零、不可超退。
+  //
+  // 同时把 `LEAST(quantity, ...)` 静默封顶换成守卫式加法：封顶会把「可退量已被提货/折抵吃掉」
+  // 这一冲突吞掉（影响行数原本只用于计数、不用于校验）。现改为 WHERE 带守卫，rowCount=0 抛 CONFLICT，
+  // 与 #125 折抵侧口径一致。
+  //
+  // ⚠ effItems 不带 product_type，通道过滤靠 SQL 里的 `product_type = '家居产品'`。疗程卡的
+  // sessionCount 同样 > 0，若直接拿 rowCount=0 判冲突会把每一笔疗程卡退款都误判成冲突 ——
+  // 所以先按 product_type 预筛出家居行，循环内的 rowCount=0 才唯一地意味着「守卫没过」。
+  //
+  // 字段名 rolledBackPickups 保留（跨端 snapshot 守护），语义现为「计入已退款的家居行数」。
   let rolledBackPickups = 0
+  const homeItemIds = new Set()
+  if (effItems.length > 0) {
+    const homeRes = await client.query(
+      `SELECT sale_item_id FROM sale_items
+        WHERE sale_item_id = ANY($1)
+          AND product_type = '家居产品'`,
+      [effItems.map((it) => it.saleItemId)],
+    )
+    for (const r of homeRes.rows) homeItemIds.add(r.sale_item_id)
+  }
   for (const it of effItems) {
+    if (!homeItemIds.has(it.saleItemId)) continue
     const qty = it.sessionCount && Number(it.sessionCount) > 0 ? Number(it.sessionCount) : null
     if (!qty) continue
     const pickupRes = await client.query(
       `UPDATE sale_items
-          SET picked_up_quantity = LEAST(quantity, COALESCE(picked_up_quantity, 0) + $1),
+          SET refunded_quantity = COALESCE(refunded_quantity, 0) + $1,
               updated_at = $2
         WHERE sale_item_id = $3
-          AND product_type = '家居产品'`,
+          AND product_type = '家居产品'
+          AND (COALESCE(picked_up_quantity, 0) + COALESCE(refunded_quantity, 0)
+               + COALESCE(converted_quantity, 0) + $1) <= quantity`,
       [qty, now, it.saleItemId],
     )
-    rolledBackPickups += pickupRes.rowCount || 0
+    if (pickupRes.rowCount === 0) {
+      throw new Error('CONFLICT: HOME_REFUND_SETTLED_EXCEEDED: 家居可退数量已被提货或转换占用，请刷新后重新发起退款')
+    }
+    rolledBackPickups += pickupRes.rowCount
   }
 
   return {

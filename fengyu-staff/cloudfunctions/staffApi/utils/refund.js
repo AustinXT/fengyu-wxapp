@@ -8,7 +8,7 @@
  *
  * 未使用数量按 sale_items.product_type 区分（2026-05-21 单品合并后）：
  *   疗程卡（含原单品=1 次卡）：remaining_sessions
- *   家居产品：quantity − picked_up_quantity
+ *   家居产品：quantity − 已结算（已提货 + 已退款 + 已转换，#154 拆列后三列各自独立）
  *
  * 多收余数（overpay，2026-07-18 ticket FY-XSD-WX-2607150028）：
  *   余数归属具体 sale_item：overpayRefundable(item) =
@@ -48,9 +48,14 @@ function calculateUnusedQuantity(item) {
   // 口径与提货/折抵一致：剩余已付 = 行实收 − 已提货金额 − 已转走金额，全程按分整除。
   // picked_quantity / converted_amount 由调用方从 pickup_records 与转出行聚合传入；
   // 缺失时退回物理剩余（历史调用方零回归，金额门仍兜底）。
+  // #154：物理剩余必须减「已结算」= 已提货 + 已退款 + 已转换。拆列前三者共用 picked_up_quantity，
+  // 减单列即可；拆列后只减 picked_up 会让已退款件数重新变成可退 —— 正是 2026-06-08 止血
+  // 要堵的那条可重复退路径（资损）。
   const quantity = Number(item.quantity || 0)
-  const pickedUp = Number(item.picked_up_quantity || 0)
-  const physicalRemaining = Math.max(0, quantity - pickedUp)
+  const settled = Number(item.picked_up_quantity || 0)
+    + Number(item.refunded_quantity || 0)
+    + Number(item.converted_quantity || 0)
+  const physicalRemaining = Math.max(0, quantity - settled)
   if (item.picked_quantity == null && item.converted_amount == null) return physicalRemaining
   const toCents = (v) => Math.round(Number(v || 0) * 100)
   const unitCents = toCents(item.unit_real_price)
@@ -89,7 +94,9 @@ function computeItemOverpayRemainders(origItems) {
       ? Number(it.picked_quantity || 0) * unitRealPrice + (Number(it.converted_amount ?? 0) || 0)
       : (it.product_type === '疗程卡'
           ? Math.max(0, Number(it.session_count || 0) - Number(it.remaining_sessions || 0))
-          : Math.max(0, Number(it.picked_up_quantity || 0))) * unitRealPrice
+          // #154：「已消耗」= 已提货 + 已转换，**不含已退款**（received 已由 paid-sessions
+          // STEP 1.5 扣过逐项退款，再算一次就是重复扣减，顾客会少退）。
+          : Math.max(0, Number(it.picked_up_quantity || 0) + Number(it.converted_quantity || 0))) * unitRealPrice
     const maxRefundableValue = calculateUnusedQuantity(it) * unitRealPrice
     result.set(it.sale_item_id, Math.max(0, roundMoney(received - consumedValue - maxRefundableValue)))
   }
@@ -120,7 +127,9 @@ function computeOverpayRemainder(order, origItems) {
       const rem = Number(it.remaining_sessions) || 0
       consumedValue += Math.max(0, sc - rem) * urp
     } else {
+      // #154：「已消耗」= 已提货 + 已转换，不含已退款（received 已扣过逐项退款）
       consumedValue += (Number(it.picked_up_quantity) || 0) * urp
+        + (Number(it.converted_quantity) || 0) * urp
     }
     maxSessionRefundable += calculateUnusedQuantity(it) * urp
   }
@@ -184,9 +193,14 @@ function buildRefundDetails(origItems, requestItems) {
     // 修复（Bug M 强化 2026-06-08）：仅「退光全部可退 **且** 该明细零已消费/零已提货」才算全退该明细。
     // 退款只退未使用数量，未使用部分本无 service_commission；收紧后通道2 对被退 item 天然零作废，
     // 保护「已完成服务的提成」与「已实现营收的分配」不被退剩余次数误删（两端镜像 admin lib/refund.ts）。
+    // #154：这里要的是「已结算」（已提货 + 已退款 + 已转换）而非「已消耗」——保持拆列前的行为。
+    // isFullItemRefund 只在该明细零结算时才放行 cascade 作废分配/提成；把已退款件数排除出去
+    // 会让「二次部分退款」被判成全退并触发作废，那是本次拆列范围外的行为变更。
     const consumedQty = orig.product_type === '疗程卡'
       ? Number(orig.session_count || 0) - Number(orig.remaining_sessions || 0)
       : Number(orig.picked_up_quantity || 0)
+        + Number(orig.refunded_quantity || 0)
+        + Number(orig.converted_quantity || 0)
 
     refundDetails.push({
       refSaleItemId: req.saleItemId,
