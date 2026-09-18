@@ -2386,8 +2386,16 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
       // 余数（overpay）同样要按**实际已转走金额**算：折抵带走的是剩余已付的实际金额
       // （付 ¥450 折 4 件带走 ¥450，而 4 × 100 = 400），用件数 × 单价会把差额 ¥50
       // 误判成多收余数再退一次（对抗审查实证）。
-      expect(src, `${end} overpay 未按实际已转走金额算`).toContain(
-        'Number(it.picked_quantity || 0) * unitRealPrice + (Number(it.converted_amount ?? 0) || 0)',
+      expect(src, `${end} overpay 家居分支未按实际已转走金额算`).toContain(
+        'Number(it.picked_quantity || 0) * unitRealPrice + convertedAmount',
+      )
+      // #182：疗程卡分支也必须扣掉已转走金额。overpay 场景（received > sale_amount）折走的是
+      // 余数这笔真实金额且不动 remaining_sessions，不扣它就能「折一次再退一次」。
+      expect(src, `${end} overpay 疗程卡分支未扣已转走金额`).toContain(
+        'Math.max(0, Number(it.session_count || 0) - Number(it.remaining_sessions || 0)) * unitRealPrice + convertedAmount',
+      )
+      expect(src, `${end} overpay 不得把疗程卡排除在已转走金额口径外`).not.toContain(
+        "const hasConsumedDetail = it.product_type !== '疗程卡'",
       )
     }
   })
@@ -2556,19 +2564,29 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
   // 折抵额度基准：剩余已付 = 行实收 − 已提货金额 − **已转走金额**（从转出行 received 聚合）。
   // 用「已转走件数 × 单价」推算会让多次折抵累计超过实收（折抵金额含余数时两者不等）；
   // 用 picked_up_quantity 当已消耗件数则会把退款件扣两次（received 已由 STEP 1.5 扣过）。
-  const REMAINING_PAID_EXPR = "GREATEST(0, si.received::numeric - COALESCE((SELECT SUM(pr.pickup_quantity) FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id), 0) * si.unit_real_price::numeric - COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)) AS remaining_paid"
+  // ⚠ 写 SQL 时不要把续行以 `*` 开头：stripComments 的 /^[ \t]*\*.*$/gm（本意剥 JSDoc 续行）
+  //   会把整行删掉，归一化文本会凭空少一个乘法项，断言便对不上实现。
+  const REMAINING_PAID_EXPR = "SELECT GREATEST(0, si.received::numeric - CASE WHEN si.product_type = '疗程卡' THEN (COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))::numeric * si.unit_real_price::numeric ELSE COALESCE((SELECT SUM(pr.pickup_quantity) FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id), 0) * si.unit_real_price::numeric END - COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)) AS remaining_paid"
 
   test('家居折抵额度以「剩余已付金额」为基准，两处 staff 站点同源', () => {
     const staff = normalizeSql(stripComments(readFile(FILES.staffOrderJs)))
-    // customerHeldCards 候选 + createConversion 锁内复算
+    // customerHeldCards 候选 + createConversion 锁内复算。#182 起疗程卡与家居共用同一
+    // 表达式：已交付价值按 product_type 分支（疗程卡=已消费次数×单价 / 家居=物理提货×单价）。
     expect(staff.split(REMAINING_PAID_EXPR).length - 1, 'staff 剩余已付表达式站点数漂移').toBe(2)
+    // 折抵**数量**不得再用「剩余已付 / 单价 向下取整」：#182 改为整行退出（带走全部剩余权益），
+    // 向下取整那条口径曾把「1 件 ¥680 只付 ¥594」整行剔除（prod 3 行 ¥814）。
+    expect(staff, '折抵件数不得回退到「剩余已付 / 单价」向下取整').not.toContain(
+      'GREATEST(0, FLOOR(hpa.remaining_paid / NULLIF(si.unit_real_price::numeric, 0)))::int',
+    )
+    // 折抵数量表达式（疗程卡剩余次数 / 家居物理未结算）两处同源
     expect(
-      staff.split("GREATEST(0, FLOOR(hpa.remaining_paid / NULLIF(si.unit_real_price::numeric, 0)))::int").length - 1,
-      'staff 折抵件数（剩余已付 / 单价，向下取整）站点数漂移',
-    ).toBe(2)
-    // 不得回退到「未提货件数」或「件数 × 单价」口径
-    expect(staff, '折抵不得回退到未提货件数口径').not.toContain(
-      "OR (si.product_type = '家居产品' AND (si.quantity - COALESCE(si.picked_up_quantity, 0)) > 0)",
+      staff.split("CASE WHEN si.product_type = '疗程卡' THEN COALESCE(si.remaining_sessions, 0) ELSE GREATEST(0, si.quantity - COALESCE(si.picked_up_quantity, 0)) END").length - 1,
+      'staff 折抵数量表达式站点数漂移',
+    ).toBe(4)   // 候选 deductible_quantity + 候选寄存单分支 + 锁内 deductible_quantity + 锁内寄存单分支
+    // 已转走金额的聚合**不得**再限 product_type：疗程卡与纯余数转出行(quantity=0)都要计入，
+    // 否则同一笔已付能被反复折走 / 折走后还能再退一次。
+    expect(staff, '折抵侧已转走金额聚合不得限 product_type').not.toContain(
+      "AND out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)) AS remaining_paid",
     )
     expect(staff, '已转走金额不得用件数 × 单价推算').not.toContain(
       'COALESCE(si.picked_up_quantity, 0) * si.unit_real_price::numeric)',

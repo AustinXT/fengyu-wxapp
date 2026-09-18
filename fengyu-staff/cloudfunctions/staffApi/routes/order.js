@@ -4549,8 +4549,7 @@ async function createConversion(ctx) {
          CROSS JOIN LATERAL (
            SELECT GREATEST(0, si.received::numeric
              - CASE WHEN si.product_type = '疗程卡'
-                    THEN (COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))::numeric
-                         * si.unit_real_price::numeric
+                    THEN (COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))::numeric * si.unit_real_price::numeric
                     ELSE COALESCE((
                            SELECT SUM(pr.pickup_quantity) FROM pickup_records pr
                             WHERE pr.sale_item_id = si.sale_item_id
@@ -5504,8 +5503,7 @@ async function customerHeldCards(ctx) {
        FROM (
          SELECT GREATEST(0, si.received::numeric
            - CASE WHEN si.product_type = '疗程卡'
-                  THEN (COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))::numeric
-                       * si.unit_real_price::numeric
+                  THEN (COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))::numeric * si.unit_real_price::numeric
                   ELSE COALESCE((
                          SELECT SUM(pr.pickup_quantity) FROM pickup_records pr
                           WHERE pr.sale_item_id = si.sale_item_id
