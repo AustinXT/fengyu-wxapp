@@ -10,6 +10,7 @@ import { createInventorySupplier } from '@/actions/inventory/suppliers'
 import {
   INVENTORY_SKU_SOURCE_TYPES,
   type InventoryLocationRow,
+  type InventoryPriceVisibility,
   type InventorySkuInput,
   type InventorySkuRow,
   type InventorySkuSourceType,
@@ -140,6 +141,7 @@ export default function InventorySkusPage({
   canUpdate,
   canCreateSupplier,
   canViewPrice,
+  priceVisibility,
   canManageMarketSkus,
   canManageSupplySkus,
 }: {
@@ -151,6 +153,7 @@ export default function InventorySkusPage({
   canUpdate: boolean
   canCreateSupplier: boolean
   canViewPrice: boolean
+  priceVisibility: InventoryPriceVisibility
   canManageMarketSkus: boolean
   canManageSupplySkus: boolean
 }) {
@@ -182,6 +185,11 @@ export default function InventorySkusPage({
     if (debounceRef[0]) clearTimeout(debounceRef[0])
     debounceRef[0] = setTimeout(() => setMany({ q: value, page: '' }), 300)
   }, [debounceRef, setMany])
+
+  // 与 engine.ts skuRow() 的三个判定同名同义，便于两侧对照
+  const supplyPriceVisible = priceVisibility === 'all' || priceVisibility === 'supply_chain'
+  const marketPriceVisible = priceVisibility === 'all' || priceVisibility === 'market'
+  const anyPriceVisible = priceVisibility !== 'none'
 
   const columns: Column<InventorySkuRow>[] = [
     {
@@ -224,14 +232,30 @@ export default function InventorySkusPage({
         </div>
       ),
     },
-    ...(canViewPrice
+    // 逐列按价格档位裁剪，**与 engine.ts 的 skuRow() 遮蔽口径一一对应**：
+    //   supplyChainPurchasePrice → supplyVisible
+    //   marketPurchasePrice      → anyPriceVisible
+    //   storePurchasePrice       → marketVisible
+    //   marketStaffPurchasePrice → marketVisible
+    //   retailPrice              → 仅 'all'
+    // 之前是一个粗粒度的 canViewPrice 控全部 5 列，于是只有 market_price_view 的
+    // 市场财务角色会看到「供应链采购价」列头、底下整列都是「—」（#135 组 5）。
+    // 数值遮蔽本来就是对的，这里修的是"渲染了一列永远没有值的空列"。
+    // 改任一侧都要同步另一侧，engine.test.ts 有守护。
+    ...(supplyPriceVisible
+      ? [{ key: 'supplyChainPurchasePrice', header: '供应链采购价', cell: (row: InventorySkuRow) => price(row.supplyChainPurchasePrice) } as Column<InventorySkuRow>]
+      : []),
+    ...(anyPriceVisible
+      ? [{ key: 'marketPurchasePrice', header: '市场进货价', cell: (row: InventorySkuRow) => price(row.marketPurchasePrice) } as Column<InventorySkuRow>]
+      : []),
+    ...(marketPriceVisible
       ? [
-          { key: 'supplyChainPurchasePrice', header: '供应链采购价', cell: (row: InventorySkuRow) => price(row.supplyChainPurchasePrice) } as Column<InventorySkuRow>,
-          { key: 'marketPurchasePrice', header: '市场进货价', cell: (row: InventorySkuRow) => price(row.marketPurchasePrice) } as Column<InventorySkuRow>,
           { key: 'storePurchasePrice', header: '门店进货价', cell: (row: InventorySkuRow) => price(row.storePurchasePrice) } as Column<InventorySkuRow>,
           { key: 'marketStaffPurchasePrice', header: '市场员工购价', cell: (row: InventorySkuRow) => price(row.marketStaffPurchasePrice) } as Column<InventorySkuRow>,
-          { key: 'retailPrice', header: '零售价', cell: (row: InventorySkuRow) => price(row.retailPrice) } as Column<InventorySkuRow>,
         ]
+      : []),
+    ...(priceVisibility === 'all'
+      ? [{ key: 'retailPrice', header: '零售价', cell: (row: InventorySkuRow) => price(row.retailPrice) } as Column<InventorySkuRow>]
       : []),
     { key: 'isReportable', header: '可报货', cell: (row) => (row.isReportable ? '是' : '否') },
     { key: 'isActive', header: '启用', cell: (row) => (row.isActive ? '是' : '否') },

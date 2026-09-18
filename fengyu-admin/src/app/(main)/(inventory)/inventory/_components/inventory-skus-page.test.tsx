@@ -1,6 +1,10 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { InventorySkuRow, InventorySupplierOption } from '@/lib/inventory/types'
+import type {
+  InventoryPriceVisibility,
+  InventorySkuRow,
+  InventorySupplierOption,
+} from '@/lib/inventory/types'
 
 const {
   mockRefresh,
@@ -90,7 +94,9 @@ function renderPage(overrides: {
   rows?: InventorySkuRow[]
   supplierOptions?: InventorySupplierOption[]
   canCreateSupplier?: boolean
+  priceVisibility?: InventoryPriceVisibility
 } = {}) {
+  const priceVisibility = overrides.priceVisibility ?? 'all'
   return render(
     <InventorySkusPage
       rows={overrides.rows ?? [row]}
@@ -100,7 +106,8 @@ function renderPage(overrides: {
       canCreate
       canUpdate
       canCreateSupplier={overrides.canCreateSupplier ?? true}
-      canViewPrice
+      canViewPrice={priceVisibility !== 'none'}
+      priceVisibility={priceVisibility}
       canManageMarketSkus
       canManageSupplySkus
     />,
@@ -321,6 +328,7 @@ describe('InventorySkusPage', () => {
           canUpdate
           canCreateSupplier
           canViewPrice
+          priceVisibility="all"
           canManageMarketSkus
           canManageSupplySkus
         />
@@ -411,6 +419,52 @@ describe('InventorySkusPage', () => {
       const legacyRow = screen.getByText('仅文本').closest('tr')!
       expect(within(legacyRow).getByText('某个没建档的供应商')).toBeInTheDocument()
       expect(within(legacyRow).getByText('未关联档案')).toBeInTheDocument()
+    })
+  })
+
+  describe('价格列按档位裁剪（#135）', () => {
+    // 判据是 engine.ts skuRow() 的遮蔽口径，两侧必须一致：
+    //   supplyChainPurchasePrice → supplyVisible（all / supply_chain）
+    //   marketPurchasePrice      → anyPriceVisible（≠ none）
+    //   storePurchasePrice       → marketVisible（all / market）
+    //   marketStaffPurchasePrice → marketVisible
+    //   retailPrice              → 仅 all
+    // 渲染了服务端必然遮蔽成 null 的列，用户看到的就是一整列「—」。
+    const header = (name: string) => screen.queryByRole('columnheader', { name })
+
+    it('market 档不渲染供应链采购价列（原症状：列头在、整列都是「—」）', () => {
+      renderPage({ priceVisibility: 'market' })
+      expect(header('供应链采购价')).not.toBeInTheDocument()
+      expect(header('门店进货价')).toBeInTheDocument()
+      expect(header('市场员工购价')).toBeInTheDocument()
+      expect(header('市场进货价')).toBeInTheDocument()
+      // 零售价只有 all 档看得到
+      expect(header('零售价')).not.toBeInTheDocument()
+    })
+
+    it('supply_chain 档不渲染门店/员工购价与零售价', () => {
+      renderPage({ priceVisibility: 'supply_chain' })
+      expect(header('供应链采购价')).toBeInTheDocument()
+      expect(header('市场进货价')).toBeInTheDocument()
+      expect(header('门店进货价')).not.toBeInTheDocument()
+      expect(header('市场员工购价')).not.toBeInTheDocument()
+      expect(header('零售价')).not.toBeInTheDocument()
+    })
+
+    it('all 档五列齐全', () => {
+      renderPage({ priceVisibility: 'all' })
+      for (const name of ['供应链采购价', '市场进货价', '门店进货价', '市场员工购价', '零售价']) {
+        expect(header(name)).toBeInTheDocument()
+      }
+    })
+
+    it('none 档一个价格列都不渲染', () => {
+      renderPage({ priceVisibility: 'none' })
+      for (const name of ['供应链采购价', '市场进货价', '门店进货价', '市场员工购价', '零售价']) {
+        expect(header(name)).not.toBeInTheDocument()
+      }
+      // 非价格列不受影响
+      expect(header('来源')).toBeInTheDocument()
     })
   })
 })
