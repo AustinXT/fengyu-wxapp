@@ -2683,6 +2683,24 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
   })
 
   // ④ admin 折抵候选闸门：与 staff 的 hp LATERAL 同口径（pr-ready 命中过一次两端分叉）
+  // ⑥ 「可退件数」的入参守护双端等价：admin 让 tsc 兜（RefundSourceItem 两列必填），
+  //    staff 是纯 JS，只能在 calculateUnusedQuantity 里显式拦。少了它，调用方漏取两列时
+  //    `Number(undefined || 0)` 会安静得 0 → 已结算低估 → 可退量虚高（可重复退）。
+  test('可退件数的缺列守护：admin 靠必填类型，staff 靠运行时断言', () => {
+    const adminSrc = readFile(FILES.adminRefundTs).replace(/\s+/g, ' ')
+    expect(adminSrc, 'admin RefundSourceItem 的两列退回可选，tsc 就兜不住漏传了').toContain(
+      'refunded_quantity: number | null',
+    )
+    expect(adminSrc).toContain('converted_quantity: number | null')
+    expect(adminSrc, '两列不得是可选').not.toContain('refunded_quantity?: number | null')
+
+    const staffSrc = readFile(FILES.staffRefundJs).replace(/\s+/g, ' ')
+    expect(staffSrc, 'staff 缺少缺列断言').toContain('REFUND_SOURCE_MISSING_QUANTITY_COLUMNS')
+    expect(staffSrc).toMatch(
+      /item\.refunded_quantity === undefined \|\| item\.converted_quantity === undefined/,
+    )
+  })
+
   // ⑤ 持锁路径的「已提货件数」必须直读 si.picked_up_quantity，不得再聚合 pickup_records。
   //    该列就在被 FOR UPDATE 锁住的行上，EvalPlanQual 会刷新；聚合子查询读的是旧快照。
   //    更要紧的是两个来源并存——一旦 C5 不变量破裂，提货闸门与退款/折抵闸门会给出不同答案且不报错。

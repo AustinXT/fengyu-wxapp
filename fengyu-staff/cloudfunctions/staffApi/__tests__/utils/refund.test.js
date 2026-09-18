@@ -95,6 +95,7 @@ describe('computeOverpayRemainder 多收余数（overpay）', () => {
     const order = { received: 500, refunded_amount: 0 }
     const items = [{
       product_type: '家居产品', quantity: 2, picked_up_quantity: 1,
+      refunded_quantity: 0, converted_quantity: 0,
       unit_real_price: 200, session_count: null,
     }]
     // 家居 unused = quantity-picked = 1；consumedValue = picked(1)×200 = 200
@@ -271,6 +272,7 @@ describe('isHandlingFeeInvalidForRefund', () => {
 describe('calculateUnusedQuantity — 家居受「剩余已付」封顶（#145/#153）', () => {
   const home = (over = {}) => ({
     product_type: '家居产品',
+    refunded_quantity: 0, converted_quantity: 0,
     quantity: 10,
     picked_up_quantity: 0,
     unit_real_price: '100',
@@ -319,6 +321,7 @@ describe('calculateUnusedQuantity — 家居受「剩余已付」封顶（#145/#
   test('未传 picked_quantity / converted_amount 时回退物理剩余', () => {
     expect(calculateUnusedQuantity({
       product_type: '家居产品', quantity: 10, picked_up_quantity: 3,
+      refunded_quantity: 0, converted_quantity: 0,
       unit_real_price: '100', received: '1000',
     })).toBe(7)
   })
@@ -332,6 +335,7 @@ describe('computeItemOverpayRemainders — 家居余数按实际已转走金额�
   const home = (over = {}) => ({
     sale_item_id: 'si-1',
     product_type: '家居产品',
+    refunded_quantity: 0, converted_quantity: 0,
     quantity: 10,
     picked_up_quantity: 0,
     unit_real_price: '100',
@@ -362,6 +366,7 @@ describe('computeItemOverpayRemainders — 家居余数按实际已转走金额�
   test('未传聚合字段时回退旧口径', () => {
     expect(overpayOf({
       sale_item_id: 'si-2', product_type: '家居产品', quantity: 10,
+      refunded_quantity: 0, converted_quantity: 0,
       picked_up_quantity: 3, unit_real_price: '100', received: '1000',
     })).toBe(0)
   })

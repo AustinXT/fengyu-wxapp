@@ -39,10 +39,14 @@ export interface RefundSourceItem {
   received?: string | number | null
   /** 已物理提货件数（#154 拆列后本列只记提货；拆列前是「已结算」合计） */
   picked_up_quantity: number | null
-  /** 已退款结算件数（#154 新列） */
-  refunded_quantity?: number | null
-  /** 已转换折抵件数（#154 新列） */
-  converted_quantity?: number | null
+  /**
+   * 已退款结算件数（#154 新列）。
+   * **刻意设成必填**：可选的话调用方漏传时 tsc 不报错，calculateUnusedQuantity 会静默退回
+   * 「只减 picked_up」——已退款件数重新变成可退（资损），而这条路径没有任何运行时守护。
+   */
+  refunded_quantity: number | null
+  /** 已转换折抵件数（#154 新列）；必填理由同上 */
+  converted_quantity: number | null
   /** 该行 pickup_records 物理提货合计（不含退款、不含折抵）；#145/#153 剩余已付口径用 */
   picked_quantity?: number | null
   /** 该行已被折抵转走的金额合计（转出行 received 取正，排除已关闭转换单） */

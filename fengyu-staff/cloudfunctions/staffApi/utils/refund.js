@@ -51,6 +51,17 @@ function calculateUnusedQuantity(item) {
   // #154：物理剩余必须减「已结算」= 已提货 + 已退款 + 已转换。拆列前三者共用 picked_up_quantity，
   // 减单列即可；拆列后只减 picked_up 会让已退款件数重新变成可退 —— 正是 2026-06-08 止血
   // 要堵的那条可重复退路径（资损）。
+  //
+  // 调用方漏取这两列时 `Number(undefined || 0)` 会安静地得 0，已结算被低估、可退量虚高。
+  // admin 侧由 RefundSourceItem 的必填字段让 tsc 兜住；staff 是纯 JS，只能在这里显式拦。
+  // 全部调用点都在退款链路上，抛错即拒绝退款，是 fail-closed 的正确方向。
+  // 只对家居行校验：疗程卡在上面的分支已经 return，根本不读这两列。
+  if (item.refunded_quantity === undefined || item.converted_quantity === undefined) {
+    throw new Error(
+      'INVALID_STATE: REFUND_SOURCE_MISSING_QUANTITY_COLUMNS: '
+      + '家居可退件数缺少 refunded_quantity / converted_quantity，取数处需补齐这两列',
+    )
+  }
   const quantity = Number(item.quantity || 0)
   const settled = Number(item.picked_up_quantity || 0)
     + Number(item.refunded_quantity || 0)

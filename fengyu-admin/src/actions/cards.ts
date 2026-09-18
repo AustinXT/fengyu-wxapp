@@ -106,6 +106,9 @@ function computeCardRemainingRemainder(item: {
     sku_id: null,
     product_name: null,
     product_type: '疗程卡',
+    // 疗程卡不走家居数量链路，两列恒 0（#154 起 RefundSourceItem 要求显式给出）
+    refunded_quantity: 0,
+    converted_quantity: 0,
     session_count: item.sessionCount,
     remaining_sessions: item.remainingSessions,
     paid_sessions: item.paidSessions,
