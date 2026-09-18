@@ -451,6 +451,26 @@ function assertCanApproveDepositOrder(session: AuthSession): void {
  * staffApi/routes/order.js 有同义 SQL 副本；修改时保持语义一致。
  */
 async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string): Promise<void> {
+  // 0a. 先锁**原单**（#182，与 createConversionOrder 同一锁序）：本函数末尾要 UPDATE 原单的
+  // total_amount/status 还原欠款，若留到那时才锁，足迹就是 sale_items → sale_orders，
+  // 与入账路径（先锁 sale_orders）反向成环。按 sale_order_id 升序一次锁完。
+  await tx.execute(sql`
+    SELECT sale_order_id FROM sale_orders
+     WHERE sale_order_id IN (
+       SELECT DISTINCT src.sale_order_id
+         FROM sale_items src
+         JOIN (
+           SELECT DISTINCT ref_sale_item_id
+             FROM sale_items
+            WHERE sale_order_id = ${saleOrderId}
+              AND item_direction = '转出'
+              AND ref_sale_item_id IS NOT NULL
+         ) refs ON refs.ref_sale_item_id = src.sale_item_id
+     )
+     ORDER BY sale_order_id
+     FOR UPDATE
+  `)
+
   // 0. 先用一条语句按全局 sale_item_id 顺序锁住本单引用的**全部**源行。
   //    createConversionOrder 折抵时是单语句 ORDER BY si.sale_item_id ... FOR UPDATE OF si（不分类型），
   //    若这里分「疗程卡段→家居段」两次加锁，混选转换单在家居行 id < 疗程卡行 id 时会形成反向锁序而死锁。
@@ -553,10 +573,13 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
     restored AS (
       UPDATE sale_items src
          SET sale_amount = (src.sale_amount::numeric + locked_source.waived)::numeric(10, 2),
-             waived_amount = GREATEST(0, src.waived_amount::numeric - locked_source.waived)::numeric(10, 2),
+             waived_amount = (src.waived_amount::numeric - locked_source.waived)::numeric(10, 2),
              updated_at = NOW()
         FROM locked_source
        WHERE src.sale_item_id = locked_source.sale_item_id
+         -- 自校验：原行累计豁免额必须够扣。只夹下界（GREATEST）会把「重复还原」静默吃掉
+         -- （sale_amount 被 +Δ 两次、waived 只减到 0），破坏「原始应付 = sale_amount + waived_amount」。
+         AND src.waived_amount::numeric >= locked_source.waived
       RETURNING locked_source.sale_order_id, locked_source.waived
     )
     SELECT sale_order_id, SUM(waived)::numeric(10, 2) AS waived
@@ -592,7 +615,7 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
     const targetStatus = o.status === '已支付' && orderReceived + 0.001 < newTotal
       ? '部分支付'
       : (o.status as string)
-    await tx.execute(sql`
+    const updRestored = await tx.execute(sql`
       UPDATE sale_orders
          SET total_amount = ${newTotal.toFixed(2)},
              payable_amount = ${newPayable === null ? sql`payable_amount` : sql`${newPayable.toFixed(2)}`},
@@ -600,6 +623,11 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
              updated_at = NOW()
        WHERE sale_order_id = ${refOrderId}
     `)
+    // 行已在上一句 FOR UPDATE 持锁，正常必为 1；为 0 说明原单在持锁期间消失（孤儿数据），
+    // 此时源行 sale_amount 已还原而订单 total 未还原，必须显式抛出而不是静默放过。
+    if (rowsAffected(updRestored) === 0) {
+      throw new ApiError('CONFLICT', 'ORDER_GONE: 原订单已不存在，无法还原折抵豁免的欠款')
+    }
     // 应付恢复 → paid_sessions 退回未满付（公式与 PAID_SESSIONS_RECALC_SQL 同源）
     await tx.execute(sql`
       UPDATE sale_items
@@ -617,6 +645,10 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
           WHERE out_item.sale_order_id = ${saleOrderId}
             AND out_item.item_direction = '转出'
             AND out_item.ref_sale_item_id IS NOT NULL
+            -- 必须与正向作用域一致（只含真正被豁免过的行）。少了这条会把同单其它被折抵行
+            -- 一起重算——已全退、被 STEP 2.5 压成 paid_sessions=0 的 0 元赠品卡会命中
+            -- sale_amount <= 0 兜底重回满次数，而 paid_sessions 是「已退款卡消失」的唯一机制。
+            AND out_item.waived_amount::numeric > 0
        )
          AND sale_items.sale_order_id = ${refOrderId}
     `)
@@ -5493,7 +5525,30 @@ export const createConversionOrder = withPermission(
 
   try {
     result = await db.transaction(async (tx) => {
-      // 1. 先锁住转出候选行；service.start 使用同一把 sale_items 行锁写预扣。
+      // 0b. 先锁**原单**（#182）。项目锁序约定 sale_orders → sale_order_payments，既有入账路径
+      // （confirmOffline / recordPayment / payNotify）一律先锁 sale_orders、再由
+      // recalcPaidSessionsForOrder 更新 sale_items。欠款归零那段要锁原单，若等到那时才锁，
+      // 本事务足迹就是 sale_items → sale_orders，与入账路径互为反向，中间还隔着十余条语句，
+      // 持锁窗口长、40P01 命中率高。故先按 sale_order_id 升序锁住涉及的原单，
+      // 把锁序统一回 sale_orders → sale_items；后面那次 FOR UPDATE 变成同事务重入。
+      const refOrderRows = (await tx.execute(sql`
+        SELECT DISTINCT sale_order_id FROM sale_items
+         WHERE sale_item_id IN (${sql.join(data.convertOutSaleItemIds.map((id) => sql`${id}`), sql`, `)})
+         ORDER BY sale_order_id
+      `)) as unknown as Array<Record<string, unknown>>
+      const refOrderIds = Array.isArray(refOrderRows)
+        ? refOrderRows.map((r) => r.sale_order_id as string)
+        : []
+      if (refOrderIds.length > 0) {
+        await tx.execute(sql`
+          SELECT sale_order_id FROM sale_orders
+           WHERE sale_order_id IN (${sql.join(refOrderIds.map((id) => sql`${id}`), sql`, `)})
+           ORDER BY sale_order_id
+           FOR UPDATE
+        `)
+      }
+
+      // 1. 再锁住转出候选行；service.start 使用同一把 sale_items 行锁写预扣。
       const heldRows = await tx.execute(sql`
         SELECT
           si.sale_item_id,
@@ -5678,7 +5733,14 @@ export const createConversionOrder = withPermission(
 
         // 纯余数行（疗程卡次数已用完 / 家居物理件已结算完）Q=0 但 A>0 仍放行——
         // 让顾客把这笔不足一整次(件)的已付款换走，DB 侧已放宽 chk_item_quantity。
-        if (qty <= 0 && lineAmount <= 0) {
+        //
+        // ⚠ 本闸门必须与 getCustomerHeldCards 的候选 WHERE **同口径**，宽一点都不行：
+        // 若写成 `qty <= 0 && lineAmount <= 0`，则「Q>0 且 A=0」会被放行——候选加载后一次
+        // 服务核销（delivered 涨满、预扣随服务完成释放）就能构造出来。后果是落一条 0 元转出行、
+        // 把剩余权益凭空注销（顾客一分钱没换走），又因 Δ=0 不走欠款归零，于是
+        // (session_count − remaining_sessions) > paid_sessions 永久违反 D3，该原单此后任何
+        // recalc（回款/退款/支付回调）都抛 PAID_SESSIONS_UNDERFLOW 而彻底锁死。
+        if (isDepositOrGift ? qty <= 0 : lineAmount <= 0) {
           throw new ApiError('INVALID_STATE', 'DEDUCTIBLE_EMPTY: 所选折抵项没有可折抵的已付金额')
         }
 
@@ -5695,11 +5757,15 @@ export const createConversionOrder = withPermission(
 
         const amount = lineAmount
         totalOut += amount
-        // 按折抵数量比例扣减 service_fee（负值）；纯余数行 qty=0 → 不扣手工费
+        // 按折抵数量比例扣减 service_fee（负值）；纯余数行 qty=0 → 不扣手工费。
+        // ⚠ 分母必须与 qty 同量纲：service_fee 快照口径是 sku.service_fee × quantity(**张数**)，
+        // 而疗程卡的 qty 是**次数**。用张数作分母会把手工费放大 session_count 倍。
         const origServiceFee = Number(row.service_fee ?? 0)
-        const origQty = Number(row.quantity) || 1
+        const feeBase = productType === '疗程卡'
+          ? (Number(row.session_count) || 1)
+          : (Number(row.quantity) || 1)
         const outServiceFee = qty > 0
-          ? -Math.round((origServiceFee * qty / origQty) * 100) / 100
+          ? -Math.round((origServiceFee * qty / feeBase) * 100) / 100
           : 0
 
         outItems.push({
@@ -6182,6 +6248,11 @@ export const createConversionOrder = withPermission(
           .set({
             saleAmount: sql`${saleItems.saleAmount} - ${waive}`,
             waivedAmount: sql`${saleItems.waivedAmount} + ${waive}`,
+            // 同步把「逐行实付草稿」压到实收：该行已结清，pending 即 received。这是 D3 的
+            // 最后一道保险——STEP 1 Branch B 第一段瀑布按 pending_received 铺满后，该行
+            // received 不会再被后续整单 recalc 稀释；仅靠 sale_cap（已改用原始应付）在
+            // 「无定向 receipt 且 pending=0」的历史行上不能保证精确。
+            pendingReceived: sql`${saleItems.received}`,
             updatedAt: sql`NOW()`,
           })
           .where(and(
@@ -6216,8 +6287,11 @@ export const createConversionOrder = withPermission(
               - Number(o.prepaid_card_amount ?? 0)
               - Number(o.pending_prepaid_card_amount ?? 0)) * 100) / 100)
           : null
-        // 结清判定基准 = total_amount（与 recordPayment 同锚）。只从'部分支付'向前推进；
-        // paid_at 只在原本为空时补：豁免不是收款，不能改写既有业绩日期。
+        // 结清判定基准 = total_amount（与 recordPayment 同锚）。只从'部分支付'向前推进。
+        // ⚠ 刻意**不写 paid_at**：豁免不是收款。既有 reconcileOrderStatusAfterRefund 推进状态时
+        // 会 COALESCE(paid_at, NOW())，但那条路径没有回滚；这里若照做，关单回滚无法区分
+        // 「本次补的」与「首付时原有的」paid_at，清空会误删真实收款时间、不清则部分支付单
+        // 带着豁免那天的日期。不写即天然对称。业绩归属读 performance_attribution_date，不受影响。
         const targetStatus = o.status === '部分支付' && orderReceived + 0.001 >= newTotal
           ? '已支付'
           : (o.status as string)
@@ -6226,7 +6300,6 @@ export const createConversionOrder = withPermission(
              SET total_amount = ${newTotal.toFixed(2)},
                  payable_amount = ${newPayable === null ? sql`payable_amount` : sql`${newPayable.toFixed(2)}`},
                  status = ${targetStatus}::order_status,
-                 paid_at = COALESCE(paid_at, ${targetStatus === '已支付' ? sql`NOW()` : sql`NULL`}),
                  updated_at = NOW()
            WHERE sale_order_id = ${refOrderId}
              AND status = ${o.status as string}::order_status

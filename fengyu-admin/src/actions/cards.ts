@@ -100,6 +100,12 @@ function computeCardRemainingRemainder(item: {
   paidSessions: number | null
   unitRealPrice: string | number | null
   received: string | number | null
+  /**
+   * #182：已被转换单折走的金额。折抵会带走 overpay 余数且不动 remaining_sessions，
+   * 不传这一项，卡包/顾客持卡/导出的「剩余零头」列会继续展示已经被折走的钱。
+   * 调用方未提供时按 0（旧行为），但列表类查询都应带上转出行聚合。
+   */
+  convertedAmount?: string | number | null
 }): number {
   const source: RefundSourceItem = {
     sale_item_id: item.saleItemId,
@@ -114,6 +120,8 @@ function computeCardRemainingRemainder(item: {
     unit_real_price: item.unitRealPrice ?? 0,
     received: item.received,
     picked_up_quantity: 0,
+    picked_quantity: null,
+    converted_amount: item.convertedAmount ?? null,
     sales_category: null,
     service_fee: null,
   }
@@ -326,6 +334,8 @@ export const getCardsPaginated = withPermission(
       paidUnusedSessions: paidUnusedSessionsExpr,
       unitRealPrice: saleItems.unitRealPrice,
       received: saleItems.received,
+      // #182：折抵会带走 overpay 余数，「剩余零头」列必须扣掉已转走金额，否则展示的是已被折走的钱
+      convertedAmount: sql<string>`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)`,
       quantity: saleItems.quantity,
       expireDate: saleItems.expireDate,
       paidAt: saleOrders.paidAt,
@@ -469,6 +479,8 @@ export const exportCards = withPermission(
         unitRealPrice: saleItems.unitRealPrice,
         saleAmount: saleItems.saleAmount,
         received: saleItems.received,
+        // #182：折抵会带走 overpay 余数，「剩余零头」列必须扣掉已转走金额，否则展示的是已被折走的钱
+        convertedAmount: sql<string>`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)`,
         productKind: productCategories.productKind,
         categoryName: productCategories.categoryName,
         storeName: stores.storeName,
@@ -833,9 +845,12 @@ export const getCustomerHeldCards = withPermission(
         // 不再要求凑满一整次/一整件——件数门槛曾把「1 件 ¥680 只付 ¥594」整行剔除
         // （prod 3 行 ¥814），顾客的钱既折不掉也提不出。与 staff customerHeldCards 的 hp LATERAL 同源。
         inArray(saleItems.productType, ['疗程卡', '家居产品']),
+        // 寄存单 / 0 元赠品行没有「实收」：它们的折抵额 = 单价 × 权益，而赠品单价为 0 → 恒 0，
+        // 用金额门会把整行**静默剔除**（旧闸门 remaining_sessions > 0 是放行的）。故这两类按
+        // **权益**放行、其余按**金额**放行；createConversionOrder 的锁内闸门必须逐字同口径。
         sql`(
           CASE WHEN ${saleOrders.saleOrderType} = '寄存单' OR ${saleItems.saleAmount} <= 0
-               THEN ${saleItems.unitRealPrice}::numeric * (
+               THEN (
                  CASE WHEN ${saleItems.productType} = '疗程卡'
                       THEN COALESCE(${saleItems.remainingSessions}, 0)
                       ELSE GREATEST(0, ${saleItems.quantity} - COALESCE(${saleItems.pickedUpQuantity}, 0))
@@ -843,7 +858,7 @@ export const getCustomerHeldCards = withPermission(
                )
                ELSE GREATEST(0, ${saleItems.received}::numeric
                  - CASE WHEN ${saleItems.productType} = '疗程卡'
-                        THEN (COALESCE(${saleItems.sessionCount}, 0) - COALESCE(${saleItems.remainingSessions}, 0))::numeric * ${saleItems.unitRealPrice}::numeric
+                        THEN GREATEST(0, COALESCE(${saleItems.sessionCount}, 0) - COALESCE(${saleItems.remainingSessions}, 0))::numeric * ${saleItems.unitRealPrice}::numeric
                         ELSE COALESCE((SELECT SUM(pr.pickup_quantity) FROM pickup_records pr WHERE pr.sale_item_id = ${saleItems.saleItemId}), 0) * ${saleItems.unitRealPrice}::numeric
                    END
                  - COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)
@@ -863,7 +878,6 @@ export const getCustomerHeldCards = withPermission(
   // 一件件付满才放行，而折抵把物理件与已付金额一并清空，守恒仍成立
   // （折后可提 = min(0, …) = 0）。homeDeductible 的 quantity 是提货口径，这里只取它的 amount。
   return rows.map((r) => {
-    const unit = Number(r.unitRealPrice)
     const isHomeProduct = r.productType === '家居产品'
     const remSess = r.remainingSessions ?? 0
     const home = homeDeductible({

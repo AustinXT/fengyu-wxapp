@@ -5576,6 +5576,10 @@ describe('order.createConversion', () => {
           .mockResolvedValueOnce({ rows: [], rowCount: 1 })
           // generateOrderNo: SELECT sale_order_id FROM sale_orders WHERE LIKE → seq=1
           .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+          // #182 锁序：先按 sale_order_id 升序锁原单（sale_orders），再锁源行（sale_items）。
+          // 返回空集 → 实现跳过第二条 FOR UPDATE，只消耗本条；锁序本身由
+          // 「折抵先锁原单、再锁源行」用例断言。
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 })
           // SELECT held items（FOR UPDATE）— 余 1 次（整张卡折抵 → totalOut=1000）
           .mockResolvedValueOnce({
             rows: [{
@@ -5687,6 +5691,10 @@ describe('order.createConversion', () => {
           return defaultQueryResult(sql)
         }))
           .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+          // #182 锁序：先按 sale_order_id 升序锁原单（sale_orders），再锁源行（sale_items）。
+          // 返回空集 → 实现跳过第二条 FOR UPDATE，只消耗本条；锁序本身由
+          // 「折抵先锁原单、再锁源行」用例断言。
           .mockResolvedValueOnce({ rows: [], rowCount: 0 })
           .mockResolvedValueOnce({
             rows: [{
@@ -6067,6 +6075,10 @@ describe('order.createConversion', () => {
     const txQuery = vi.fn(async (sql) => defaultQueryResult(sql))
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // generateOrderNo: advisory_xact_lock
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // generateOrderNo: SELECT sale_order_id LIKE
+      // #182 锁序：先按 sale_order_id 升序锁原单（sale_orders），再锁源行（sale_items）。
+      // 返回空集 → 实现跳过第二条 FOR UPDATE，只消耗本条；锁序本身由
+      // 「折抵先锁原单、再锁源行」用例断言。
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
       .mockResolvedValueOnce({
         rows: [{
           sale_item_id: 'item-eq-001', store_id: 'store-001', item_direction: '购买',
@@ -6124,6 +6136,10 @@ describe('order.createConversion', () => {
     const txQuery = vi.fn(async (sql) => defaultQueryResult(sql))
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // generateOrderNo: advisory_xact_lock
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // generateOrderNo: SELECT sale_order_id LIKE
+      // #182 锁序：先按 sale_order_id 升序锁原单（sale_orders），再锁源行（sale_items）。
+      // 返回空集 → 实现跳过第二条 FOR UPDATE，只消耗本条；锁序本身由
+      // 「折抵先锁原单、再锁源行」用例断言。
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
       .mockResolvedValueOnce({
         rows: [{
           sale_item_id: 'item-neg-001', store_id: 'store-001', item_direction: '购买',
@@ -6269,6 +6285,10 @@ describe('order.createConversion', () => {
     const txQuery = vi.fn(async (sql) => defaultQueryResult(sql))
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // generateOrderNo: advisory_xact_lock
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // generateOrderNo: SELECT sale_order_id LIKE
+      // #182 锁序：先按 sale_order_id 升序锁原单（sale_orders），再锁源行（sale_items）。
+      // 返回空集 → 实现跳过第二条 FOR UPDATE，只消耗本条；锁序本身由
+      // 「折抵先锁原单、再锁源行」用例断言。
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
       .mockResolvedValueOnce({
         rows: [{
           sale_item_id: 'item-race', store_id: 'store-001', item_direction: '购买',
@@ -6322,6 +6342,10 @@ describe('order.createConversion', () => {
     const txQuery = vi.fn(async (sql) => defaultQueryResult(sql))
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // generateOrderNo: advisory_xact_lock
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // generateOrderNo: SELECT sale_order_id LIKE
+      // #182 锁序：先按 sale_order_id 升序锁原单（sale_orders），再锁源行（sale_items）。
+      // 返回空集 → 实现跳过第二条 FOR UPDATE，只消耗本条；锁序本身由
+      // 「折抵先锁原单、再锁源行」用例断言。
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
       .mockResolvedValueOnce({
         rows: [{
           sale_item_id: 'item-exp-001', store_id: 'store-001', item_direction: '购买',
@@ -7892,6 +7916,14 @@ describe('order.createConversion — 家居产品折抵（#125）', () => {
         calls.push({ sql, params })
         if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
         if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
+        // #182 锁序第一步：查涉及的原单（不加锁）
+        if (sql.includes('SELECT DISTINCT sale_order_id FROM sale_items')) {
+          return { rows: [{ sale_order_id: row.sale_order_id }], rowCount: 1 }
+        }
+        // #182 锁序第二步：按 sale_order_id 升序锁原单
+        if (sql.includes('FROM sale_orders') && sql.includes('ORDER BY sale_order_id') && sql.includes('FOR UPDATE')) {
+          return { rows: [{ sale_order_id: row.sale_order_id }], rowCount: 1 }
+        }
         if (sql.includes('FROM sale_items si') && sql.includes('FOR UPDATE OF si')) {
           return { rows: [row], rowCount: 1 }
         }
@@ -8121,6 +8153,28 @@ describe('order.createConversion — 家居产品折抵（#125）', () => {
       sql.includes('UPDATE sale_orders') && sql.includes('total_amount = $2'))
     expect(orderUpd).toBeDefined()
     expect(orderUpd.params[1]).toBe(594)
+  })
+
+  // #182 F1：锁序必须与入账路径同向（sale_orders → sale_items）。折抵事务要在末尾锁原单
+  // 改 total_amount，若留到那时才锁，本事务足迹就是 sale_items → sale_orders，与
+  // confirmOffline / createRepayment / payNotify（先锁 sale_orders）互为反向 → 40P01 死锁，
+  // 且中间隔着十余条语句、持锁窗口很长。
+  test('#182 锁序：先锁原单（sale_orders）再锁源行（sale_items）', async () => {
+    const ctx = homeConversionCtx()
+    const calls = mockHomeProductConversion()
+
+    await orderRoutes.createConversion(ctx)
+
+    const refLookup = calls.findIndex(({ sql }) =>
+      sql.includes('SELECT DISTINCT sale_order_id FROM sale_items'))
+    const orderLock = calls.findIndex(({ sql }) =>
+      sql.includes('FROM sale_orders') && sql.includes('ORDER BY sale_order_id') && sql.includes('FOR UPDATE'))
+    const itemLock = calls.findIndex(({ sql }) => sql.includes('FOR UPDATE OF si'))
+    expect(refLookup).toBeGreaterThanOrEqual(0)
+    expect(orderLock).toBeGreaterThan(refLookup)
+    expect(itemLock).toBeGreaterThan(orderLock)
+    // 多单必须定序加锁，否则两笔并发折抵跨相同两张原单时会反向互等
+    expect(calls[orderLock].sql).toMatch(/ORDER BY sale_order_id\s+FOR UPDATE/)
   })
 })
 

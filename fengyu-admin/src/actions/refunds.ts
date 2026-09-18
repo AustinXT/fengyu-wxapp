@@ -1227,6 +1227,7 @@ export const approveRefund = withPermission(
         // 的混选转换事务形成反向锁序而死锁。按 sale_item_id 升序，与 createConversionOrder 的锁序一致。
         const lockedRows = await tx.execute(sql`
           SELECT sale_item_id, product_type, quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity,
+                 session_count, remaining_sessions, paid_sessions,
                  unit_real_price, received
             FROM sale_items
            WHERE sale_order_id = ${refSaleOrderId}
@@ -1253,8 +1254,14 @@ export const approveRefund = withPermission(
         `)) as unknown as Array<Record<string, unknown>>
         const consumedById = new Map(consumedRows.map((c) => [c.sale_item_id as string, c]))
         for (const r of Array.from(lockedRows as unknown as Iterable<Record<string, unknown>>)) {
-          if (r.product_type !== '家居产品') continue
-          const requested = homeRefundQty.get(r.sale_item_id as string) ?? 0
+          // #182：疗程卡也要进来做**余数**复核（与 staff order.js 的 approveRefund 逐行对齐）。
+          // 疗程卡可退次数由 cascadeRefund + recalcPaidSessionsForOrder 的 D3 守护把关，
+          // 但 overpay 余数（received > sale_amount 的多收零头）现在可以被转换单折走，
+          // 申请时合法的余数可能在审批前已经没了——漏这一段就能「折一次再退一次」。
+          const isHome = r.product_type === '家居产品'
+          const isCard = r.product_type === '疗程卡'
+          if (!isHome && !isCard) continue
+          const requested = isHome ? (homeRefundQty.get(r.sale_item_id as string) ?? 0) : 0
           const requestedOverpay = homeOverpayAmt.get(r.sale_item_id as string) ?? 0
           if (requested <= 0 && requestedOverpay <= 0) continue
           // 与 calculateUnusedQuantity 同口径：折抵可能带走剩余已付的全部金额却只占用
@@ -1265,9 +1272,9 @@ export const approveRefund = withPermission(
             sku_id: null,
             product_name: null,
             product_type: r.product_type as ProductType,
-            session_count: null,
-            remaining_sessions: null,
-            paid_sessions: null,
+            session_count: r.session_count == null ? null : Number(r.session_count),
+            remaining_sessions: r.remaining_sessions == null ? null : Number(r.remaining_sessions),
+            paid_sessions: r.paid_sessions == null ? null : Number(r.paid_sessions),
             unit_price: 0,
             quantity: Number(r.quantity ?? 0),
             unit_real_price: r.unit_real_price as string,
@@ -1278,9 +1285,11 @@ export const approveRefund = withPermission(
             sales_category: null,
             service_fee: null,
           }
-          const refundable = calculateUnusedQuantity(lockedSrc)
-          if (requested > refundable) {
-            throw new ApiError('CONFLICT', 'HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
+          if (isHome) {
+            const refundable = calculateUnusedQuantity(lockedSrc)
+            if (requested > refundable) {
+              throw new ApiError('CONFLICT', 'HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
+            }
           }
           // 余数同样按锁内新快照复核：申请时的 ¥50 余数可能已被折抵带走
           if (requestedOverpay > 0) {
@@ -1288,7 +1297,9 @@ export const approveRefund = withPermission(
               computeItemOverpayRemainders([lockedSrc]).get(r.sale_item_id as string) ?? 0,
             )
             if (requestedOverpay > currentOverpay + 0.001) {
-              throw new ApiError('CONFLICT', 'HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退余数已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
+              throw new ApiError('CONFLICT', isHome
+                ? 'HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退余数已变化（可能已被转换折抵或提货），请刷新后重新发起退款'
+                : 'OVERPAY_REFUNDABLE_CHANGED: 可退余数已变化（可能已被转换折抵），请刷新后重新发起退款')
             }
           }
         }
@@ -1345,6 +1356,10 @@ export const approveRefund = withPermission(
     }
     // #125 G2：家居可退数量在审批前被转换折抵/提货吃掉。必须单独成分支——落到下面的
     // UNKNOWN「请稍后重试」会误导审批员反复重试同一笔（picked_up 抬高是持久状态，重试必然再失败）。
+    // #182 同理：疗程卡的 overpay 余数也会被转换折抵吃掉，同样不能落到「请稍后重试」
+    if (msg.includes('OVERPAY_REFUNDABLE_CHANGED')) {
+      return { success: false, error: { code: 'CONFLICT', message: '可退余数已变化（可能已被转换折抵），请刷新后重新发起退款' } }
+    }
     if (msg.includes('HOME_PRODUCT_REFUNDABLE_CHANGED')) {
       return { success: false, error: { code: 'CONFLICT', message: '家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款' } }
     }

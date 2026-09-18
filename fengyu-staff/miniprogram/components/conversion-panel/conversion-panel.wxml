@@ -102,7 +102,7 @@
                  remainingQuantity 为 0 的纯余数行（次数已用完 / 件已全提，只剩不足一整次(件)
                  的已付余额）单独提示，否则店员会以为这行是空的、不敢选。 -->
             <text wx:if="{{item.remainingQuantity > 0}}" class="conv-card-remain">注销 {{item.remainingQuantity}} {{item.unit || (item.productType === '疗程卡' ? '次' : '盒')}}</text>
-            <text wx:else class="conv-card-remain">仅余额（无剩余{{item.unit || (item.productType === '疗程卡' ? '次数' : '件数')}}）</text>
+            <text wx:else class="conv-card-remain">仅余额（无剩余{{item.productType === '疗程卡' ? '次数' : '件数'}}）</text>
             <text wx:if="{{item.productType === '疗程卡'}}" class="conv-card-remain">· 共 {{item.cardCount || 1}} 张</text>
             <text wx:elif="{{item.sourceItems.length > 1}}" class="conv-card-remain">· 可拆 {{item.sourceItems.length}} 行</text>
             <text class="conv-card-unit">· 单{{item.unit || '次'}}价 ¥{{item.unitRealPrice}}</text>

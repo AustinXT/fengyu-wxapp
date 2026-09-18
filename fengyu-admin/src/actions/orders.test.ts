@@ -3134,6 +3134,16 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
               sale_item_id: 'home-1', home_picked_quantity: 3, home_converted_amount: '0',
             }]
           }
+          // #182 锁序：先查涉及原单（不加锁）→ 再按 sale_order_id 升序锁原单。
+          // 同样按特征识别，不占按序号的返回值。
+          if (text.includes('SELECT DISTINCT sale_order_id FROM sale_items')) {
+            executeSql.push(text)
+            return [{ sale_order_id: 'old-order' }]
+          }
+          if (text.includes('FROM sale_orders') && text.includes('ORDER BY sale_order_id') && text.includes('FOR UPDATE')) {
+            executeSql.push(text)
+            return [{ sale_order_id: 'old-order' }]
+          }
           // #182 欠款归零的三条语句同样按特征识别，不占按序号的返回值。
           // ⚠ UPDATE 必须返回带 count 的对象：rowsAffected 读 postgres.js RowList 的 .count，
           // 返回裸数组会让实现里的 rowsAffected(...) === 0 守卫误报冲突。
@@ -3643,6 +3653,37 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     expect(captured.executeSql[reservedIndex]).toMatch(/reserved_order\.status\s+IN\s*\('服务中',\s*'待客户确认'\)/i)
   })
 
+  // #182 F1：锁序必须与入账路径同向（sale_orders → sale_items）。欠款归零要在末尾锁原单，
+  // 若留到那时才锁，本事务足迹就是 sale_items → sale_orders，与 confirmOffline /
+  // recordPayment / payNotify（先锁 sale_orders）互为反向 → 40P01。
+  it('#182 锁序：先锁原单（sale_orders）再锁源行（sale_items）', async () => {
+    const captured = mockConvTx({
+      heldRows: [{
+        sale_item_id: 'card-1', sale_order_id: 'old-order', store_id: 'store-1', item_direction: '购买',
+        sku_id: 'sku-old-1', product_name: '老疗程',
+        product_type: '疗程卡', session_count: 1, remaining_sessions: 1,
+        quantity: 1, picked_up_quantity: 0, unit_price: '100.00',
+        unit_real_price: '100.00', sales_category: '自销自耗', service_fee: '0',
+        client_user_id: 'user-1', order_status: '已支付', product_kind: '护理项目',
+      }],
+      skuRows: [{
+        skuId: 'sku-new-1', price: '100.00', serviceFee: '0', sessionCount: 10,
+        productType: '疗程卡', salesCategory: '自销自耗',
+      }],
+    })
+
+    await createConversionOrder(baseConvData)
+
+    const refLookup = captured.executeSql.findIndex((t) => t.includes('SELECT DISTINCT sale_order_id FROM sale_items'))
+    const orderLock = captured.executeSql.findIndex((t) =>
+      t.includes('FROM sale_orders') && t.includes('ORDER BY sale_order_id') && t.includes('FOR UPDATE'))
+    const itemLock = captured.executeSql.findIndex((t) => /FOR\s+UPDATE\s+OF\s+si/i.test(t))
+    expect(refLookup).toBeGreaterThanOrEqual(0)
+    expect(orderLock).toBeGreaterThan(refLookup)
+    expect(itemLock).toBeGreaterThan(orderLock)
+    expect(captured.executeSql[orderLock]).toMatch(/ORDER BY sale_order_id\s+FOR UPDATE/)
+  })
+
   it('全部次数被服务预留 → CARD_RESERVED 透出中文业务提示', async () => {
     mockConvTx({
       heldRows: [{
@@ -4128,15 +4169,18 @@ describe('createConversionOrder — 异常路径', () => {
       const tx = {
         execute: vi.fn().mockImplementation(async () => {
           execCall++
-          if (execCall === 1) return [{
-            sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
+          // #182 锁序：1=查涉及原单（不加锁）、2=按 sale_order_id 升序锁原单
+          if (execCall === 1 || execCall === 2) return [{ sale_order_id: 'old-order' }]
+          if (execCall === 3) return [{
+            sale_item_id: 'card-1', sale_order_id: 'old-order', store_id: 'store-1', item_direction: '购买',
             product_type: '疗程卡', remaining_sessions: 5, unit_real_price: '100',
             client_user_id: 'user-1', order_status: '已支付', quantity: 1,
             picked_up_quantity: 0, unit_price: '100', service_fee: '0',
             session_count: 5, product_kind: '护理项目', sku_id: 'sku-old',
             product_name: 'xx', sales_category: '自销自耗',
           }]
-          if (execCall === 2) return []
+          // 4=折抵额度复算、5=预扣汇总
+          if (execCall === 4 || execCall === 5) return []
           return [{ id: 'FY-XSD-WX-260416-0001' }]
         }),
         select: vi.fn().mockReturnValue({

@@ -237,7 +237,13 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
         SELECT si.sale_item_id,
                COALESCE(tg.targeted, 0)::numeric AS targeted,
                GREATEST(0, si.pending_received::numeric - COALESCE(tg.targeted, 0)::numeric) AS pend_cap,
-               GREATEST(0, si.sale_amount::numeric - GREATEST(si.pending_received::numeric, COALESCE(tg.targeted, 0)::numeric)) AS sale_cap
+               -- #182：上限用**原始应付** = sale_amount + waived_amount。转换单折抵会把已结清行的
+             -- sale_amount 永久下调到实收（欠款归零），若直接拿下调后的值作 cap，本行在下一次
+             -- 整单 recalc 里会被按更小的比例重新摊到更少的 received —— 而它的 remaining_sessions
+             -- 已被注销为 0，于是 (session_count − 0) > paid_sessions 触发 D3 PAID_SESSIONS_UNDERFLOW，
+             -- 该订单此后回款/退款/支付回调全部失败（故障点还被推迟到「折抵后的下一次回款」，极难归因）。
+             -- 未被豁免的行 waived_amount 恒为 0，公式与改前逐字等价，零回归。
+             GREATEST(0, (si.sale_amount::numeric + si.waived_amount::numeric) - GREATEST(si.pending_received::numeric, COALESCE(tg.targeted, 0)::numeric)) AS sale_cap
         FROM sale_items si
         LEFT JOIN tg ON tg.ref_sale_item_id = si.sale_item_id
         WHERE si.sale_order_id = ${saleOrderId} AND si.item_direction = '购买'

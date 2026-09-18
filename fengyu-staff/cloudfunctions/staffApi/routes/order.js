@@ -2319,7 +2319,28 @@ async function confirmOffline(ctx) {
  * admin actions/orders.ts 有同义 SQL 副本；修改时保持语义一致。
  */
 async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
-  // 0. 先用一条语句按全局 sale_item_id 顺序锁住本单引用的**全部**源行。
+  // 0a. 先锁**原单**（#182，与 createConversion 同一锁序）：本函数末尾要 UPDATE 原单的
+  // total_amount/status 还原欠款，若留到那时才锁，足迹就是 sale_items → sale_orders，
+  // 与入账路径（先锁 sale_orders）反向成环。按 sale_order_id 升序一次锁完。
+  await client.query(
+    `SELECT sale_order_id FROM sale_orders
+      WHERE sale_order_id IN (
+        SELECT DISTINCT src.sale_order_id
+          FROM sale_items src
+          JOIN (
+            SELECT DISTINCT ref_sale_item_id
+              FROM sale_items
+             WHERE sale_order_id = $1
+               AND item_direction = '转出'
+               AND ref_sale_item_id IS NOT NULL
+          ) refs ON refs.ref_sale_item_id = src.sale_item_id
+      )
+      ORDER BY sale_order_id
+      FOR UPDATE`,
+    [saleOrderId],
+  )
+
+  // 0. 再用一条语句按全局 sale_item_id 顺序锁住本单引用的**全部**源行。
   //    createConversion 折抵时是单语句 `ORDER BY si.sale_item_id ... FOR UPDATE OF si`（不分类型），
   //    若这里分「疗程卡段→家居段」两次加锁，混选转换单在家居行 id < 疗程卡行 id 时会形成反向锁序而死锁。
   await client.query(
@@ -2425,10 +2446,14 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
       restored AS (
         UPDATE sale_items src
            SET sale_amount = (src.sale_amount::numeric + locked_source.waived)::numeric(10, 2),
-               waived_amount = GREATEST(0, src.waived_amount::numeric - locked_source.waived)::numeric(10, 2),
+               waived_amount = (src.waived_amount::numeric - locked_source.waived)::numeric(10, 2),
                updated_at = $2
           FROM locked_source
          WHERE src.sale_item_id = locked_source.sale_item_id
+           -- 自校验：原行累计豁免额必须够扣。不加这条就只能靠 GREATEST(0,…) 夹下界，
+           -- 而那会把「重复还原」静默吃掉（sale_amount 被 +Δ 两次、waived 只减到 0），
+           -- 破坏「原始应付 = sale_amount + waived_amount」恒等式且查无实据。
+           AND src.waived_amount::numeric >= locked_source.waived
         RETURNING locked_source.sale_order_id, locked_source.waived
       )
       SELECT sale_order_id, SUM(waived)::numeric(10, 2) AS waived
@@ -2462,7 +2487,7 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
     const targetStatus = o.status === '已支付' && orderReceived + 0.001 < newTotal
       ? '部分支付'
       : o.status
-    await client.query(
+    const updRestored = await client.query(
       `UPDATE sale_orders
           SET total_amount = $2,
               payable_amount = COALESCE($3, payable_amount),
@@ -2471,6 +2496,11 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
         WHERE sale_order_id = $1`,
       [refOrderId, newTotal, newPayable, targetStatus, now],
     )
+    // 行已在上一句 FOR UPDATE 持锁，正常必为 1；为 0 说明原单在持锁期间消失（孤儿数据），
+    // 此时源行 sale_amount 已还原而订单 total 未还原，必须显式抛出而不是静默放过。
+    if (updRestored.rowCount === 0) {
+      throw new Error('CONFLICT: 原订单已不存在，无法还原折抵豁免的欠款')
+    }
     // 应付恢复 → paid_sessions 退回未满付。公式与 PAID_SESSIONS_RECALC_SQL 字面同源，
     // 作用域收到本次还原的行（同单其它行未被改过）。
     await client.query(
@@ -2489,6 +2519,10 @@ WHERE sale_items.sale_item_id IN (
    WHERE out_item.sale_order_id = $1
      AND out_item.item_direction = '转出'
      AND out_item.ref_sale_item_id IS NOT NULL
+     -- 必须与正向 6b 的作用域一致（只含真正被豁免过的行）。少了这条会把同单其它被折抵行
+     -- 一起重算——例如已全退、被 STEP 2.5 压成 paid_sessions=0 的 0 元赠品卡会命中
+     -- sale_amount <= 0 兜底重回满次数，而 paid_sessions 是「已退款卡从卡包消失」的唯一机制。
+     AND out_item.waived_amount::numeric > 0
 )
   AND sale_items.sale_order_id = $2`,
       [saleOrderId, refOrderId],
@@ -4481,6 +4515,29 @@ async function createConversion(ctx) {
     // 生成 convOrderId（内部独占 advisory_xact_lock(hashtext('sale_order_id_gen'))）
     convOrderId = await generateOrderNo('FY-XSD-WX-', tx)
 
+    // 0b. 先锁**原单**（#182）。项目锁序约定 sale_orders → sale_order_payments，而既有入账路径
+    // （confirmOffline / createRepayment / payNotify）一律先锁 sale_orders、再由
+    // recalcPaidSessionsForOrder 更新 sale_items。6b 的欠款归零要锁原单，若等到那一步才锁，
+    // 本事务的足迹就是 sale_items → sale_orders，与入账路径互为反向，且中间隔着十余条语句
+    // （SKU/套餐/优惠券校验 + INSERT 订单 + 转出行 + 扣减），持锁窗口长、40P01 命中率高。
+    // 故在锁 sale_items **之前**按 sale_order_id 升序把涉及的原单一次性锁住，
+    // 把锁序统一回 sale_orders → sale_items；6b 里那次 FOR UPDATE 变成同事务重入，无额外代价。
+    const refOrderRes = await tx.query(
+      `SELECT DISTINCT sale_order_id FROM sale_items
+        WHERE sale_item_id = ANY($1)
+        ORDER BY sale_order_id`,
+      [convertOutSaleItemIds],
+    )
+    if (refOrderRes.rows.length > 0) {
+      await tx.query(
+        `SELECT sale_order_id FROM sale_orders
+          WHERE sale_order_id = ANY($1)
+          ORDER BY sale_order_id
+          FOR UPDATE`,
+        [refOrderRes.rows.map((r) => r.sale_order_id)],
+      )
+    }
+
     // 1. 锁候选卡。预扣汇总必须在独立查询中执行：PostgreSQL 不允许同层
     // GROUP BY/聚合查询使用 FOR UPDATE，也必须先取得此行锁才能与 service.start 串行。
     const heldResult = await tx.query(
@@ -4549,7 +4606,7 @@ async function createConversion(ctx) {
          CROSS JOIN LATERAL (
            SELECT GREATEST(0, si.received::numeric
              - CASE WHEN si.product_type = '疗程卡'
-                    THEN (COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))::numeric * si.unit_real_price::numeric
+                    THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))::numeric * si.unit_real_price::numeric
                     ELSE COALESCE((
                            SELECT SUM(pr.pickup_quantity) FROM pickup_records pr
                             WHERE pr.sale_item_id = si.sale_item_id
@@ -4656,7 +4713,17 @@ async function createConversion(ctx) {
 
       // 纯余数行（疗程卡次数已用完 / 家居物理件已结算完）Q=0 但 A>0，仍要放行——
       // 让顾客把这笔不足一整次(件)的已付款换走，DB 侧已放宽 chk_item_quantity。
-      if (qty <= 0 && lineAmount <= 0) {
+      //
+      // ⚠ 本闸门必须与候选查询 WHERE **同口径**，宽一点都不行：
+      // 若写成 `qty <= 0 && lineAmount <= 0`，则「Q>0 且 A=0」会被放行——候选加载后顾客做了
+      // 一次服务核销（delivered 涨满、预扣随服务完成释放）就能构造出这个状态。后果是落一条
+      // sale_amount=received=0 的转出行、把剩余权益凭空注销（顾客一分钱没换走），又因 Δ=0
+      // 不走欠款归零，于是 (session_count − remaining_sessions) > paid_sessions 永久违反 D3，
+      // 该原单此后任何 recalc（回款/退款/支付回调）都抛 PAID_SESSIONS_UNDERFLOW 而彻底锁死。
+      // 寄存单与 0 元赠品行没有「实收」，它们的 A = 单价 × 权益（赠品单价为 0 → A 恒 0），
+      // 只能按**权益**放行，否则整行会被金额门静默剔除。
+      const isDepositOrGift = row.sale_order_type === '寄存单' || Number(row.sale_amount ?? 0) <= 0
+      if (isDepositOrGift ? qty <= 0 : lineAmount <= 0) {
         throw new Error('INVALID_PARAMS: 部分折抵项没有可折抵的已付金额')
       }
 
@@ -4676,11 +4743,17 @@ async function createConversion(ctx) {
         ? rawWaive
         : 0
 
-      // 按折抵数量占原单比例扣减 service_fee（转出行为负数）；纯余数行 qty=0 → 不扣手工费
+      // 按折抵数量占原行比例扣减 service_fee（转出行为负数）；纯余数行 qty=0 → 不扣手工费。
+      // ⚠ 分母必须与 qty 同量纲：service_fee 快照口径是 sku.service_fee × quantity(**张数**)，
+      // 而疗程卡的 qty 是**次数**。用张数作分母会把手工费放大 session_count 倍
+      // （1 张 10 次卡、fee=100、整行退出 qty=10 → -1000，服务提成基数被抹成负值）。
+      // 整行退出时 qty = session_count → 正好全额冲销该行手工费。
       const origServiceFee = Number(row.service_fee || 0)
-      const origQty = Number(row.quantity) || 1
+      const feeBase = productType === '疗程卡'
+        ? (Number(row.session_count) || 1)
+        : (Number(row.quantity) || 1)
       const outServiceFee = qty > 0
-        ? -Math.round((origServiceFee * qty / origQty) * 100) / 100
+        ? -Math.round((origServiceFee * qty / feeBase) * 100) / 100
         : 0
 
       outItems.push({
@@ -5159,6 +5232,14 @@ async function createConversion(ctx) {
         `UPDATE sale_items
             SET sale_amount = sale_amount - $3,
                 waived_amount = waived_amount + $3,
+                -- 同步把「逐行实付草稿」压到实收：该行已结清，pending 即 received。
+                -- 这是 D3 的最后一道保险——STEP 1 Branch B 的第一段瀑布按 pending_received
+                -- 铺满，铺满后该行 received 不会再被后续整单 recalc 稀释。仅靠 sale_cap
+                -- （已改用原始应付）在「无定向 receipt 且 pending=0」的历史行上只能让比例
+                -- 更接近、不能保证精确；而一旦 received 被摊少，本行 remaining_sessions 已
+                -- 注销为 0 → (session_count − 0) > paid_sessions → D3 PAID_SESSIONS_UNDERFLOW，
+                -- 该订单此后回款/退款/支付回调全部失败。
+                pending_received = received,
                 updated_at = $2
           WHERE sale_item_id = $1
             AND sale_amount = $4`,
@@ -5202,18 +5283,22 @@ async function createConversion(ctx) {
         ? '已支付'
         : o.status
 
+      // ⚠ 刻意**不写 paid_at**：豁免不是收款。既有 reconcileOrderStatusAfterRefund 在推进
+      // 状态时会 `COALESCE(paid_at, NOW())`，但那条路径没有回滚；这里若照做，关单回滚时
+      // 无法区分「本次补的 paid_at」与「首付时原有的 paid_at」，清空会误删真实收款时间、
+      // 不清则部分支付单带着豁免那天的日期污染按 paid_at 归集的口径。不写即天然对称。
+      // 业绩归属读的是 performance_attribution_date（独立列，由首次支付流水 trigger 派生），
+      // 不受影响。
       const updOrder = await tx.query(
         `UPDATE sale_orders
             SET total_amount = $2,
                 payable_amount = COALESCE($3, payable_amount),
                 status = $4,
-                paid_at = COALESCE(paid_at, $5),
-                updated_at = $6
+                updated_at = $5
           WHERE sale_order_id = $1
-            AND status = $7
+            AND status = $6
             AND lakala_out_order_no IS NULL`,
-        [refOrderId, newTotal, newPayable, targetStatus,
-          targetStatus === '已支付' ? now : null, now, o.status],
+        [refOrderId, newTotal, newPayable, targetStatus, now, o.status],
       )
       if (updOrder.rowCount === 0) {
         throw new Error('CONFLICT: 原订单状态已变更或有在途支付，请刷新后重试')
@@ -5503,7 +5588,7 @@ async function customerHeldCards(ctx) {
        FROM (
          SELECT GREATEST(0, si.received::numeric
            - CASE WHEN si.product_type = '疗程卡'
-                  THEN (COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))::numeric * si.unit_real_price::numeric
+                  THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))::numeric * si.unit_real_price::numeric
                   ELSE COALESCE((
                          SELECT SUM(pr.pickup_quantity) FROM pickup_records pr
                           WHERE pr.sale_item_id = si.sale_item_id
@@ -5532,7 +5617,16 @@ async function customerHeldCards(ctx) {
        -- #182 改**金额口径**：只要该行还有「剩余已付」就能折，不再要求凑满一整次/一整件。
        -- 这才是甲方要的「没有剩余次数但有余数的项目也能选到」；件数门槛曾把
        -- 「1 件 ¥680 只付 ¥594」整行剔除（prod 3 行 ¥814），顾客的钱既折不掉也提不出。
-       AND COALESCE(hp.deductible_amount, 0) > 0
+       -- 寄存单 / 0 元赠品行没有「实收」可言：它们的 A = 单价 × 权益，而赠品单价为 0 → A 恒 0，
+       -- 用金额门会把整行**静默剔除**（旧闸门 remaining_sessions > 0 是放行的）。故这两类按
+       -- **权益**放行，其余按**金额**放行。锁内闸门必须与此逐字同口径，否则宽的那一侧会放行
+       -- 「有权益但无钱」的行，凭空注销权益且不下调应付 → 永久违反 D3、订单锁死。
+       AND (
+         CASE WHEN so.sale_order_type = '寄存单' OR si.sale_amount <= 0
+              THEN COALESCE(hp.deductible_quantity, 0) > 0
+              ELSE COALESCE(hp.deductible_amount, 0) > 0
+         END
+       )
        AND si.product_type IN ('疗程卡', '家居产品')
        -- 在途退款冻结：原订单存在 '待审批' 退款时排除整单的卡
        AND NOT EXISTS (

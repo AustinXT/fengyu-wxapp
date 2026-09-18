@@ -1446,8 +1446,12 @@ describe("STEP 1 received 分摊 SQL 四端字节同义守护", () => {
       expect(allocSqls.payNotify).toMatch(pattern)
       expect(allocSqls.adminTs).toMatch(pattern)
     })
-    test("四端第二段产能 sale_cap = GREATEST(0, sale_amount - max(pending_received, targeted))（实付→应付余量，防冻结）", () => {
-      const pattern = /GREATEST\(0,\s*si\.sale_amount::numeric\s*-\s*GREATEST\(si\.pending_received::numeric,\s*COALESCE\(tg\.targeted,\s*0\)::numeric\)\)/i
+    // #182：上限改用**原始应付** = sale_amount + waived_amount。折抵的「欠款归零」会把已结清行的
+    // sale_amount 永久下调到实收，直接拿下调后的值作 cap 会让该行在下一次整单 recalc 被摊到更少的
+    // received，而它的 remaining_sessions 已注销为 0 → 触发 D3 PAID_SESSIONS_UNDERFLOW，订单锁死。
+    // 未豁免行 waived_amount 恒 0，与改前逐字等价。
+    test("四端第二段产能 sale_cap = GREATEST(0, (sale_amount + waived_amount) - max(pending_received, targeted))（实付→应付余量，防冻结）", () => {
+      const pattern = /GREATEST\(0,\s*\(si\.sale_amount::numeric\s*\+\s*si\.waived_amount::numeric\)\s*-\s*GREATEST\(si\.pending_received::numeric,\s*COALESCE\(tg\.targeted,\s*0\)::numeric\)\)/i
       expect(allocSqls.staff).toMatch(pattern)
       expect(allocSqls.client).toMatch(pattern)
       expect(allocSqls.payNotify).toMatch(pattern)
@@ -2566,7 +2570,7 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
   // 用 picked_up_quantity 当已消耗件数则会把退款件扣两次（received 已由 STEP 1.5 扣过）。
   // ⚠ 写 SQL 时不要把续行以 `*` 开头：stripComments 的 /^[ \t]*\*.*$/gm（本意剥 JSDoc 续行）
   //   会把整行删掉，归一化文本会凭空少一个乘法项，断言便对不上实现。
-  const REMAINING_PAID_EXPR = "SELECT GREATEST(0, si.received::numeric - CASE WHEN si.product_type = '疗程卡' THEN (COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))::numeric * si.unit_real_price::numeric ELSE COALESCE((SELECT SUM(pr.pickup_quantity) FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id), 0) * si.unit_real_price::numeric END - COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)) AS remaining_paid"
+  const REMAINING_PAID_EXPR = "SELECT GREATEST(0, si.received::numeric - CASE WHEN si.product_type = '疗程卡' THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0))::numeric * si.unit_real_price::numeric ELSE COALESCE((SELECT SUM(pr.pickup_quantity) FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id), 0) * si.unit_real_price::numeric END - COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)) AS remaining_paid"
 
   test('家居折抵额度以「剩余已付金额」为基准，两处 staff 站点同源', () => {
     const staff = normalizeSql(stripComments(readFile(FILES.staffOrderJs)))
