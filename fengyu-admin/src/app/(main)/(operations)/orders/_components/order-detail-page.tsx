@@ -167,6 +167,8 @@ function getDisplaySaleItems(order: SaleOrder, items: NonNullable<SaleOrder["ite
       received: sumGroupValue(group, (item) => item.received).toFixed(2),
       pendingReceived: sumGroupValue(group, (item) => item.pendingReceived).toFixed(2),
       pickedUpQuantity: sumGroupValue(group, (item) => item.pickedUpQuantity),
+      refundedQuantity: sumGroupValue(group, (item) => item.refundedQuantity),
+      convertedQuantity: sumGroupValue(group, (item) => item.convertedQuantity),
       cardCount: group.cardCount,
     };
     if (primary.sessionCount === null) return aggregate;
@@ -680,13 +682,16 @@ export default function OrderDetailPageClient({
                             <span className="text-xs text-[#999999]">共 {item.cardCount} 张</span>
                           )}
                         </div>
-                        {(item.salesCategory || item.expireDate || (item.pickedUpQuantity ?? 0) > 0) && (
+                        {(item.salesCategory || item.expireDate || (item.pickedUpQuantity ?? 0) > 0
+                          || (item.refundedQuantity ?? 0) > 0 || (item.convertedQuantity ?? 0) > 0) && (
                           <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-[#999999]">
                             {item.salesCategory && <span>{item.salesCategory}</span>}
                             {item.expireDate && <span>有效期至 {formatDate(item.expireDate)}</span>}
-                            {/* picked_up_quantity 是「已结算」= 已提货 + 已退款 + 已转换（#125），
-                                不等于物理提货量（权威来源是 pickup_records） */}
-                            {(item.pickedUpQuantity ?? 0) > 0 && <span>已结算 {item.pickedUpQuantity}</span>}
+                            {/* #154 拆列后三类数量各有独立列：picked_up_quantity 就是物理提货量
+                                （与 pickup_records 守恒），已退款与已转换单独展示 */}
+                            {(item.pickedUpQuantity ?? 0) > 0 && <span>已提货 {item.pickedUpQuantity}</span>}
+                            {(item.refundedQuantity ?? 0) > 0 && <span>已退款 {item.refundedQuantity}</span>}
+                            {(item.convertedQuantity ?? 0) > 0 && <span>已转换 {item.convertedQuantity}</span>}
                           </div>
                         )}
                       </td>

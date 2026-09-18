@@ -2886,6 +2886,8 @@ export const getOrderById = withAnyPermission(
     pendingReceived: ir.item.pendingReceived,
     expireDate: ir.item.expireDate,
     pickedUpQuantity: ir.item.pickedUpQuantity,
+    refundedQuantity: ir.item.refundedQuantity,
+    convertedQuantity: ir.item.convertedQuantity,
     remark: ir.item.remark,
     salesCategory: ir.item.salesCategory as SaleItem['salesCategory'],
     createdAt: ir.item.createdAt.toISOString(),
