@@ -358,6 +358,8 @@ export interface ExportEmployeeRow {
   orgNodeId: string | null
   storeName: string | null
   positionName: string | null
+  /** 「入职日期」列：hired_at（date 列，原样透传，格式化在 registry 的列 map 里做，与 birthday 同源） */
+  hiredAt: string | null
   birthday: string | null
   skills: string | null
   socialInsurance: boolean
@@ -409,6 +411,7 @@ export const exportEmployees = withPermission(
         orgNodeId: e.orgNodeId,
         storeName: row.stores?.storeName ?? null,
         positionName: e.positionName,
+        hiredAt: e.hiredAt,
         birthday: e.birthday,
         skills: e.skills?.filter((s) => validSkillNames.has(s)).join('、') ?? null,
         socialInsurance: e.socialInsurance,

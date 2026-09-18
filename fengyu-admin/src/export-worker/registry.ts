@@ -385,6 +385,9 @@ const customerColumns = mapColumns([
   { header: '推荐人', width: 14, key: 'promoterName' },
   { header: '顾客来源', width: 14, key: 'customerSource' },
   { header: '生日', width: 14, key: 'birthday' },
+  // 顾客侧日期一律在 exportCustomers 里 fmtDate 完再传（与上面 birthday 同源），此处不再挂 map
+  { header: '注册日期', width: 14, key: 'createdAt' },
+  { header: '成为会员日期', width: 16, key: 'becameMemberAt' },
 ])
 
 const employeeColumns = mapColumns([
@@ -396,6 +399,7 @@ const employeeColumns = mapColumns([
   { header: '所属组织', width: 18, key: 'orgPath' },
   { header: '所属门店', width: 18, key: 'storeName' },
   { header: '职位', key: 'positionName' },
+  { header: '入职日期', width: 14, key: 'hiredAt', map: (row) => fmtDate(value(row, 'hiredAt') as string | Date | null) },
   { header: '生日', width: 14, key: 'birthday', map: (row) => fmtDate(value(row, 'birthday') as string | Date | null) },
   { header: '技能', width: 24, key: 'skills' },
   { header: '社保', width: 8, key: 'socialInsurance', map: (row) => boolLabel(row, 'socialInsurance') },

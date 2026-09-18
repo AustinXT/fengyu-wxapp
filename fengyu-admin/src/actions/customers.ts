@@ -124,7 +124,7 @@ function serializeCustomer(row: CustomerRow): Customer {
 /** 推荐员工当前姓名优先，关联失效或旧 client 仅写快照时回退历史姓名。 */
 const promoterName = sql<string | null>`COALESCE(${promoterCurrentNameSql}, ${clientWechatUsers.promoterEmployeeName})`
 
-/** 顾客导出取数列（12 表头所需字段 + storeName + promoterName） */
+/** 顾客导出取数列（14 表头所需字段 + storeName + promoterName） */
 const exportCustomerColumns = {
   userId: clientWechatUsers.userId,
   name: clientWechatUsers.name,
@@ -136,6 +136,8 @@ const exportCustomerColumns = {
   customerSource: clientWechatUsers.customerSource,
   birthday: clientWechatUsers.birthday,
   boundEmployeeName: clientWechatUsers.boundEmployeeName,
+  createdAt: clientWechatUsers.createdAt,
+  becameMemberAt: clientWechatUsers.becameMemberAt,
   storeName,
   promoterName,
 }
@@ -316,7 +318,7 @@ export const getCustomersPaginated = withPermission(
   },
 )
 
-/** 顾客导出行（对应 12 列表头） */
+/** 顾客导出行（对应 14 列表头） */
 export interface ExportCustomerRow {
   name: string | null
   phone: string | null
@@ -331,6 +333,13 @@ export interface ExportCustomerRow {
   promoterName: string | null
   customerSource: string | null
   birthday: string | null
+  /**
+   * 「注册日期」列：client_wechat_users.created_at 的日期部分。
+   * 语义是建档时间（首次 bindStore 落库；auth.login 不建行），WorkFine 迁移顾客则是迁移日。
+   */
+  createdAt: string | null
+  /** 「成为会员日期」列：became_member_at 的日期部分，非会员客为 null */
+  becameMemberAt: string | null
 }
 
 /**
@@ -394,6 +403,9 @@ export const exportCustomers = withPermission(
       promoterName: r.promoterName,
       customerSource: r.customerSource,
       birthday: r.birthday ? fmtDate(r.birthday) : null,
+      // timestamptz 必须走 fmtDate（Asia/Shanghai 还原），裸截 UTC 会在 00:00~08:00 建档的行上偏一天
+      createdAt: r.createdAt ? fmtDate(r.createdAt) : null,
+      becameMemberAt: r.becameMemberAt ? fmtDate(r.becameMemberAt) : null,
     }))
 
     return offsetPageResult(rows, page)
