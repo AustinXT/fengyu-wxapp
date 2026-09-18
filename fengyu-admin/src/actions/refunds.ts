@@ -1232,11 +1232,11 @@ export const approveRefund = withPermission(
            ORDER BY sale_item_id
              FOR UPDATE
         `)
-        // #145/#153：锁取得后另起一条语句聚合（与持锁查询同语句会拿到旧快照）
+        // #145/#153：锁取得后另起一条语句聚合转出行（与持锁查询同语句会拿到旧快照）。
+        // #154：已提货件数直读持锁行的 picked_up_quantity（EvalPlanQual 会刷新它），
+        // 本查询只剩**金额**——折抵金额含余数，不能由件数 × 单价推算。
         const consumedRows = (await tx.execute(sql`
           SELECT si.sale_item_id,
-                 COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
-                            WHERE pr.sale_item_id = si.sale_item_id), 0)::int AS picked_quantity,
                  COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric))
                              FROM sale_items out_item
                              JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
@@ -1272,7 +1272,7 @@ export const approveRefund = withPermission(
             picked_up_quantity: Number(r.picked_up_quantity ?? 0),
             refunded_quantity: Number(r.refunded_quantity ?? 0),
             converted_quantity: Number(r.converted_quantity ?? 0),
-            picked_quantity: c ? Number(c.picked_quantity ?? 0) : null,
+            picked_quantity: c ? Number(r.picked_up_quantity ?? 0) : null,
             converted_amount: c ? (c.converted_amount as string) : null,
             sales_category: null,
             service_fee: null,

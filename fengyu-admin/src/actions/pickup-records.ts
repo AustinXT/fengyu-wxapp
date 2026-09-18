@@ -856,14 +856,13 @@ async function createGroupedPickupRecord(
     if (locked.length !== sourceIds.length) {
       throw new ApiError('CONFLICT', '部分家居产品已更新，请刷新后重试')
     }
-    // #145/#153：已提货 / 已转走额度必须在**锁取得之后**用另一条语句查。
+    // #145/#153：已转走**金额**必须在**锁取得之后**用另一条语句查。
     // `FOR UPDATE OF si` 只锁 sale_items：READ COMMITTED 下语句先取快照再等锁，唤醒后
-    // EvalPlanQual 只刷新 si 自身的行版本，pickup_records 与转出行聚合仍是旧快照。
-    // 物理上限挡不住「已付额度」被重复使用（并发提货各读到 picked_quantity=0）。
+    // EvalPlanQual 只刷新 si 自身的行版本，转出行聚合仍是旧快照。
+    // #154：已提货件数不再在这里聚合——它就在被锁的 si 行上（picked_up_quantity），
+    // EvalPlanQual 会刷新；两个来源并存会在不变量破裂时让两道闸门无声分歧。
     const consumedRows = (await tx.execute(sql`
       SELECT si.sale_item_id,
-             COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
-                        WHERE pr.sale_item_id = si.sale_item_id), 0)::int AS picked_quantity,
              COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric))
                          FROM sale_items out_item
                          JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
@@ -873,11 +872,11 @@ async function createGroupedPickupRecord(
                           AND conv_order.status <> '已关闭'), 0) AS converted_amount
         FROM sale_items si
        WHERE si.sale_item_id IN (${sourceIdList})
-    `)) as unknown as Array<{ sale_item_id: string; picked_quantity: number; converted_amount: string }>
+    `)) as unknown as Array<{ sale_item_id: string; converted_amount: string }>
     const consumedById = new Map(consumedRows.map((r) => [r.sale_item_id, r]))
     for (const row of locked) {
       const c = consumedById.get(row.sale_item_id)
-      row.picked_quantity = c ? Number(c.picked_quantity ?? 0) : 0
+      row.picked_quantity = Number(row.picked_up_quantity ?? 0)
       row.converted_amount = c ? c.converted_amount : '0'
     }
 
@@ -1053,6 +1052,7 @@ export const createPickupRecord = withPermission(
       const locked = (await tx.execute(sql`
         SELECT si.sale_item_id, si.sale_order_id, si.sku_id, si.product_name,
                si.product_type, si.item_direction, si.quantity,
+               COALESCE(si.picked_up_quantity, 0)::int AS picked_up_quantity,
                LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))::int AS settled_quantity,
                si.sale_amount, si.unit_real_price, si.received,
                CASE
@@ -1082,6 +1082,7 @@ export const createPickupRecord = withPermission(
         sale_order_type: string
         converted_amount: string
         quantity: number
+        picked_up_quantity: number
         settled_quantity: number
         picked_quantity: number
         paid_quantity: number
@@ -1091,14 +1092,13 @@ export const createPickupRecord = withPermission(
       }>
       const lockedItem = locked[0]
       if (!lockedItem) throw new ApiError('NOT_FOUND', '销售明细不存在')
-      // #145/#153：已提货 / 已转走额度必须在**锁取得之后**用另一条语句查。
+      // #145/#153：已转走**金额**必须在**锁取得之后**用另一条语句查。
       // `FOR UPDATE OF si` 只锁 sale_items：READ COMMITTED 下语句先取快照再等锁，唤醒后
-      // EvalPlanQual 只刷新 si 自身的行版本，pickup_records 与转出行聚合仍是旧快照。
-      // 物理上限挡不住「已付额度」被重复使用（并发提货各读到 picked_quantity=0）。
+      // EvalPlanQual 只刷新 si 自身的行版本，转出行聚合仍是旧快照。
+      // #154：已提货件数不再在这里聚合——它就在被锁的 si 行上（picked_up_quantity），
+      // EvalPlanQual 会刷新；两个来源并存会在不变量破裂时让两道闸门无声分歧。
       const consumedRows = (await tx.execute(sql`
         SELECT si.sale_item_id,
-                   COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
-                                    WHERE pr.sale_item_id = si.sale_item_id), 0)::int AS picked_quantity,
                    COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric))
                                      FROM sale_items out_item
                                      JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
@@ -1108,10 +1108,10 @@ export const createPickupRecord = withPermission(
                                       AND conv_order.status <> '已关闭'), 0) AS converted_amount
             FROM sale_items si
          WHERE si.sale_item_id IN (${data.saleItemId})
-      `)) as unknown as Array<{ sale_item_id: string; picked_quantity: number; converted_amount: string }>
+      `)) as unknown as Array<{ sale_item_id: string; converted_amount: string }>
       const consumedById = new Map(consumedRows.map((r) => [r.sale_item_id, r]))
       const consumed = consumedById.get(data.saleItemId)
-      lockedItem.picked_quantity = consumed ? Number(consumed.picked_quantity ?? 0) : 0
+      lockedItem.picked_quantity = Number(lockedItem.picked_up_quantity ?? 0)
       lockedItem.converted_amount = consumed ? consumed.converted_amount : '0'
 
       // #145/#153：转换单换入的家居可提（与 staff createPickup 同一判据）

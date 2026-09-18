@@ -2683,6 +2683,27 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
   })
 
   // ④ admin 折抵候选闸门：与 staff 的 hp LATERAL 同口径（pr-ready 命中过一次两端分叉）
+  // ⑤ 持锁路径的「已提货件数」必须直读 si.picked_up_quantity，不得再聚合 pickup_records。
+  //    该列就在被 FOR UPDATE 锁住的行上，EvalPlanQual 会刷新；聚合子查询读的是旧快照。
+  //    更要紧的是两个来源并存——一旦 C5 不变量破裂，提货闸门与退款/折抵闸门会给出不同答案且不报错。
+  const LOCK_PATH_FILES = [
+    ['staff order.js（createRefund 复校 + 两处提货）', FILES.staffOrderJs],
+    ['admin refunds.ts（approveRefund 复校）', FILES.adminRefundsTs],
+    ['admin pickup-records.ts（两处提货）', FILES.adminPickupRecordsTs],
+  ]
+  // 只针对「锁取得之后另起的那条复算语句」（统一命名为 consumedRes / consumedRows）。
+  // 展示侧与 createRefund 锁前定额仍可聚合 pickup_records —— 那些不依赖锁内新鲜度。
+  test.each(LOCK_PATH_FILES)('%s 的锁后复算语句不得再聚合已提货件数', (_name, file) => {
+    const src = normalizeSql(stripComments(readFile(file)))
+    expect(src, '锁后复算语句回退到聚合 pickup_records 求件数').not.toMatch(
+      /const consumed(?:Res|Rows)\s*=[\s\S]{0,900}?AS picked_quantity/,
+    )
+    // 且这条语句必须仍在（折抵金额含余数，只能从转出行 received 聚合）
+    expect(src, '锁后复算语句被整个删掉了，折抵金额会读到旧快照').toMatch(
+      /const consumed(?:Res|Rows)\s*=[\s\S]{0,900}?AS converted_amount/,
+    )
+  })
+
   test('admin 折抵候选闸门按三列之和判未结算，且已提货金额直读列', () => {
     // 这里刻意不用 normalizeSql：它会把 ${saleItems.xxx} 统一成 ?，断言就退化成一堆占位符。
     const src = stripComments(readFile(FILES.adminCardsTs)).replace(/\s+/g, ' ')

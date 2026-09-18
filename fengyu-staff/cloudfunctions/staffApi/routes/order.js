@@ -3639,14 +3639,13 @@ async function approveRefund(ctx) {
             FOR UPDATE`,
         [refSaleOrderId],
       )
-      // #145/#153：锁取得后另起一条语句聚合 pickup_records 与转出行——与持锁查询同语句会拿到
-      // 旧快照（EvalPlanQual 只刷新 sale_items 自身的行版本）。
+      // #145/#153：锁取得后另起一条语句聚合转出行——与持锁查询同语句会拿到旧快照
+      // （EvalPlanQual 只刷新 sale_items 自身的行版本）。
+      // #154：已提货件数不再在这里聚合，直读持锁行的 si.picked_up_quantity（它就在被锁的行上，
+      // EvalPlanQual 会刷新）。两个来源并存会在不变量破裂时让提货闸门与折抵闸门无声分歧。
+      // 本查询现在只为**金额**而存在：折抵金额含余数，不能由件数 × 单价推算。
       const consumedRes = await client.query(
         `SELECT si.sale_item_id,
-                COALESCE((
-                  SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
-                   WHERE pr.sale_item_id = si.sale_item_id
-                ), 0)::int AS picked_quantity,
                 COALESCE((
                   SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item
                     JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
@@ -3678,7 +3677,7 @@ async function approveRefund(ctx) {
           converted_quantity: r.converted_quantity,
           unit_real_price: r.unit_real_price,
           received: r.received,
-          picked_quantity: c ? c.picked_quantity : null,
+          picked_quantity: c ? Number(r.picked_up_quantity || 0) : null,
           converted_amount: c ? c.converted_amount : null,
         }
         const refundable = calculateUnusedQuantity(lockedSrc)
@@ -5687,10 +5686,6 @@ async function createGroupedPickup(ctx, saleItemIds, pickupQuantity, remark, ide
     const consumedRes = await client.query(
       `SELECT si.sale_item_id,
               COALESCE((
-                SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
-                 WHERE pr.sale_item_id = si.sale_item_id
-              ), 0)::int AS picked_quantity,
-              COALESCE((
                 SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item
                   JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
                  WHERE out_item.ref_sale_item_id = si.sale_item_id
@@ -5705,7 +5700,7 @@ async function createGroupedPickup(ctx, saleItemIds, pickupQuantity, remark, ide
     const consumedById = new Map(consumedRes.rows.map((r) => [r.sale_item_id, r]))
     for (const row of locked.rows) {
       const c = consumedById.get(row.sale_item_id)
-      row.picked_quantity = c ? Number(c.picked_quantity || 0) : 0
+      row.picked_quantity = Number(row.picked_up_quantity || 0)
       row.converted_amount = c ? Number(c.converted_amount || 0) : 0
     }
 
@@ -5893,10 +5888,6 @@ async function createPickup(ctx) {
     const consumedRes = await client.query(
       `SELECT si.sale_item_id,
               COALESCE((
-                SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
-                 WHERE pr.sale_item_id = si.sale_item_id
-              ), 0)::int AS picked_quantity,
-              COALESCE((
                 SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item
                   JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
                  WHERE out_item.ref_sale_item_id = si.sale_item_id
@@ -5910,7 +5901,7 @@ async function createPickup(ctx) {
     )
     const consumedById = new Map(consumedRes.rows.map((r) => [r.sale_item_id, r]))
     const consumed = consumedById.get(saleItemId)
-    row.picked_quantity = consumed ? Number(consumed.picked_quantity || 0) : 0
+    row.picked_quantity = Number(row.picked_up_quantity || 0)
     row.converted_amount = consumed ? Number(consumed.converted_amount || 0) : 0
 
     if (row.store_id !== ctx.auth.effectiveStoreId) {
