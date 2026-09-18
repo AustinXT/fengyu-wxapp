@@ -1989,7 +1989,11 @@ describe('营业额分配：事务锁序守护 sale_orders → sale_order_paymen
     const refundQueryAt = src.indexOf("change_type = '退款'", txAt)
     // 删除既可能是裸 SQL 也可能是 drizzle builder（`tx.delete(...)`）——只防前者的话，
     // 把 builder 形式的删除挪到复检之前就绕过去了。
-    const firstDeleteAt = src.slice(txAt).search(/DELETE\s+FROM|tx\.delete\(/i)
+    // 搜索范围收窄到**本事务段内**（到下一个 db.transaction 为止）：否则本段的 DELETE 被整体移除时，
+    // 文件后方其它 action 的删除仍能满足「存在删除」，守护语义被悄悄放宽。
+    const nextTxAt = src.indexOf('await db.transaction(async (tx) => {', txAt + 1)
+    const txSeg = nextTxAt > 0 ? src.slice(txAt, nextTxAt) : src.slice(txAt)
+    const firstDeleteAt = txSeg.search(/DELETE\s+FROM|tx\.delete\(/i)
 
     expect(lockAt).toBeGreaterThanOrEqual(0)
     expect(refundQueryAt).toBeGreaterThanOrEqual(0)
