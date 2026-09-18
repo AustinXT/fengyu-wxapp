@@ -147,6 +147,18 @@ const DOC_PREFIX: Record<InventoryDocType, string> = {
  */
 const PAGE_SIZE_WHITELIST = [10, 20, 50, 100]
 
+/**
+ * 页码归一化。`Math.max(1, page || 1)` 只兜得住 NaN 和 0，兜不住小数与 Infinity：
+ * - `?page=1.5` → offset 变成 `(1.5-1)*20 = 10`，返回第 11–30 条，
+ *   而客户端 `Pagination` 内部 `Math.floor` 后高亮的是第 1 页 ——
+ *   用户看到的既不是第 1 页也不是第 2 页，且翻页时会重复/跳过行
+ * - `?page=Infinity` → offset 为 Infinity，直接把 SQL 打挂
+ * 客户端已经 floor + clamp（pagination.tsx:23），服务端这里做同样的兜底。
+ */
+function normalizePage(value: number | undefined): number {
+  return Number.isFinite(value) ? Math.max(1, Math.trunc(value as number)) : 1
+}
+
 const NO_MOVEMENT_DOC_TYPES = new Set<InventoryDocType>([
   '门店报货',
   '市场报货',
@@ -1475,7 +1487,7 @@ export const listInventorySkus = withPermission(
     filters: { keyword?: string; sourceType?: InventorySkuSourceType; onlyActive?: boolean; page?: number; pageSize?: number } = {},
   ): Promise<{ data: InventorySkuRow[]; total: number }> => {
     await syncInventoryLocations()
-    const page = Math.max(1, filters.page || 1)
+    const page = normalizePage(filters.page)
     const pageSize = PAGE_SIZE_WHITELIST.includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
     const offset = (page - 1) * pageSize
     const conditions: (SQL | undefined)[] = []
@@ -1748,7 +1760,7 @@ export const listInventorySkuCompositions = withPermission(
     const pageSize = filters.pageSize === undefined
       ? undefined
       : (PAGE_SIZE_WHITELIST.includes(filters.pageSize) ? filters.pageSize : 20)
-    const offset = (Math.max(1, filters.page || 1) - 1) * (pageSize ?? 0)
+    const offset = (normalizePage(filters.page) - 1) * (pageSize ?? 0)
     return {
       data: pageSize ? filtered.slice(offset, offset + pageSize) : filtered,
       total: filtered.length,
@@ -1911,7 +1923,7 @@ export const listInventoryLots = withPermission(
   ): Promise<{ data: InventoryLotRow[]; total: number; canViewPrice: boolean; priceVisibility: import('./types').InventoryPriceVisibility }> => {
     await syncInventoryLocations()
     const scoped = await scopedLocationIds(session)
-    const page = Math.max(1, filters.page || 1)
+    const page = normalizePage(filters.page)
     const pageSize = PAGE_SIZE_WHITELIST.includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
     const offset = (page - 1) * pageSize
     const conditions: (SQL | undefined)[] = []
@@ -2086,7 +2098,7 @@ export const listInventoryCoreDocs = withPermission(
   ): Promise<{ data: InventoryDocRow[]; total: number; canViewPrice: boolean; priceVisibility: import('./types').InventoryPriceVisibility }> => {
     await syncInventoryLocations()
     const scoped = inventoryScopedOrgNodeIds(session)
-    const page = Math.max(1, filters.page || 1)
+    const page = normalizePage(filters.page)
     const pageSize = PAGE_SIZE_WHITELIST.includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
     const offset = (page - 1) * pageSize
     const conditions: (SQL | undefined)[] = []
@@ -3398,7 +3410,7 @@ export const listInventorySuppliers = withPermission(
       ? undefined
       : (PAGE_SIZE_WHITELIST.includes(filters.pageSize) ? filters.pageSize : 20)
     const rows = pageSize
-      ? await query.limit(pageSize).offset((Math.max(1, filters.page || 1) - 1) * pageSize)
+      ? await query.limit(pageSize).offset((normalizePage(filters.page) - 1) * pageSize)
       : await query
     return {
       data: rows.map((row) => supplierRow({ ...row.supplier, linkedSkuCount: row.linkedSkuCount })),

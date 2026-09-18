@@ -790,9 +790,25 @@ describe('库存 SKU 来源与价格保护', () => {
     ] as const) {
       const block = source.slice(source.indexOf(from), source.indexOf(to))
       expect(block).toMatch(/PAGE_SIZE_WHITELIST\.includes\(filters\.pageSize\)/)
-      expect(block).toMatch(/Math\.max\(1, filters\.page \|\| 1\)/)
+      expect(block).toMatch(/normalizePage\(filters\.page\)/)
       expect(block).not.toMatch(/filters\.page \?\? 1/)
     }
+  })
+
+  it('页码归一化兜住小数与 Infinity，不只是 NaN', () => {
+    // `Math.max(1, page || 1)` 只兜得住 NaN/0。`?page=1.5` 会让 offset 变成
+    // (1.5-1)*20 = 10 → 返回第 11–30 条，而客户端 Pagination 内部 floor 后高亮第 1 页，
+    // 用户看到的既不是第 1 页也不是第 2 页；`?page=Infinity` 直接把 SQL 打挂。
+    const source = readFileSync(resolve(__dirname, 'engine.ts'), 'utf8')
+    const fn = source.slice(
+      source.indexOf('function normalizePage'),
+      source.indexOf('const NO_MOVEMENT_DOC_TYPES'),
+    )
+    expect(fn).toMatch(/Number\.isFinite\(value\)/)
+    expect(fn).toMatch(/Math\.trunc/)
+    // 五支列表查询必须全部走它，不能有漏网的内联写法
+    expect(source.match(/normalizePage\(filters\.page\)/g)).toHaveLength(5)
+    expect(source).not.toMatch(/Math\.max\(1, filters\.page/)
   })
 
   it('SKU 映射的 total 取过滤后的长度，不是全量长度', () => {
