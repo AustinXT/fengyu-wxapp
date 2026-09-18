@@ -2164,7 +2164,7 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
       expect(sqlTexts.some((text: string) =>
         text.includes('restore_quantity') &&
         text.includes("product_type = '家居产品'") &&
-        text.includes('picked_up_quantity = GREATEST'),
+        text.includes('converted_quantity = GREATEST'),
       )).toBe(true)
       // 疗程卡回滚段必须仍在
       expect(sqlTexts.some((text: string) => text.includes('restore_sessions'))).toBe(true)
@@ -3124,12 +3124,14 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
       const tx = {
         execute: vi.fn().mockImplementation(async (sqlArg: any) => {
           const text = sqlArg?.__sqlText ?? ''
-          // #145/#153：家居折抵额度在锁取得后用独立语句复算（新快照），仅家居行触发。
+          // #145/#153：家居折抵**金额**在锁取得后用独立语句复算（新快照），仅家居行触发。
           // 按 SQL 特征识别而非序号，避免它挤掉后面按序号 mock 的返回值。
-          if (text.includes('home_picked_quantity')) {
+          // #154：件数三列已随持锁查询直读（EvalPlanQual 会刷新），这条语句只剩金额，
+          // 识别键相应从 home_picked_quantity 换成 home_converted_amount。
+          if (text.includes('home_converted_amount')) {
             executeSql.push(text)
             return opts.homeConsumedRows ?? [{
-              sale_item_id: 'home-1', home_picked_quantity: 3, home_converted_amount: '0',
+              sale_item_id: 'home-1', home_converted_amount: '0',
             }]
           }
           execCall++
@@ -3198,7 +3200,8 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     sale_item_id: 'home-1', sale_order_id: 'old-order', store_id: 'store-1', item_direction: '购买',
     sku_id: 'sku-home', product_name: '家居精华', product_type: '家居产品',
     session_count: null, remaining_sessions: null,
-    quantity: 10, picked_up_quantity: 3,
+    // #154：三列各记各的语义（已提 3 / 未退 / 未折抵）
+    quantity: 10, picked_up_quantity: 3, refunded_quantity: 0, converted_quantity: 0,
     unit_price: '120', unit_real_price: '100',
     // #145/#153：折抵额度按「剩余已付 = 1000 − 3 件已提 × 100 − 0 已转走 = 700」→ 7 件
     sale_amount: '1000', received: '1000', sale_order_type: '销售单',
@@ -3233,7 +3236,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     expect(outRow.received).toBe('-700.00')
   })
 
-  it('#125 家居转出数量并入 picked_up_quantity 且带不可超转守卫，不走 remaining_sessions', async () => {
+  it('#125/#154 家居转出数量落 converted_quantity 且带不可超转守卫，不走 remaining_sessions', async () => {
     const { executeSql } = mockConvTx({
       heldRows: [homeHeldRow()],
       skuRows: homeSkuRows,

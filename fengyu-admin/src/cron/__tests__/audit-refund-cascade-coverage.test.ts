@@ -2,11 +2,14 @@
  * STEP 9 — auditRefundCascadeCoverage（退款 5 通道级联巡检）
  *
  * 关键场景：
- *   A 全部 5 通道一致 → violations=0，零写入
+ *   A 全部通道一致 → violations=0，零写入
  *   B 任一通道 mismatch → 单条聚合 INSERT operation_logs(action='cron.audit_refund_cascade') + notifyOps
  *   C 永不修补：无 UPDATE / DELETE
- *   D 5 通道 SQL 模板按预期出现（含 paid_at / pickup_quantity 这两个易错列名）
+ *   D 通道 SQL 模板按预期出现（含 paid_at / pickup_quantity 这两个易错列名）
  *   E 多通道同时违反 → details 累积，notifyOps 仅一次
+ *
+ * #154：C5 从「退款是否回滚 picked_up」改为「picked_up == SUM(pickup_records)」守恒，
+ * 并新增 C5b「已结算三列之和不得超过 quantity」——故查询数由 5 条变成 6 条。
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
@@ -38,14 +41,14 @@ describe('cron-worker STEP 9 — auditRefundCascadeCoverage', () => {
     notifyOpsMock.mockClear()
   })
 
-  it('A. 全部 5 通道一致 → violations=0，零写入', async () => {
-    for (let i = 0; i < 5; i++) mockExecute.mockResolvedValueOnce([])
+  it('A. 全部通道一致 → violations=0，零写入', async () => {
+    for (let i = 0; i < 6; i++) mockExecute.mockResolvedValueOnce([])
 
     const result = await auditRefundCascadeCoverage(mockDb as never)
 
     expect(result.violations).toBe(0)
     expect(result.details).toEqual([])
-    expect(mockExecute).toHaveBeenCalledTimes(5)
+    expect(mockExecute).toHaveBeenCalledTimes(6)
     expect(notifyOpsMock).not.toHaveBeenCalled()
     expect(mockDb.transaction).not.toHaveBeenCalled()
   })
@@ -58,6 +61,7 @@ describe('cron-worker STEP 9 — auditRefundCascadeCoverage', () => {
     mockExecute.mockResolvedValueOnce([]) // C3
     mockExecute.mockResolvedValueOnce([]) // C4
     mockExecute.mockResolvedValueOnce([]) // C5
+    mockExecute.mockResolvedValueOnce([]) // C5b
     mockExecute.mockResolvedValueOnce([]) // INSERT operation_logs
 
     const result = await auditRefundCascadeCoverage(mockDb as never)
@@ -99,8 +103,8 @@ describe('cron-worker STEP 9 — auditRefundCascadeCoverage', () => {
     expect(writeCalls.length).toBe(0)
   })
 
-  it('D. 5 通道 SQL 模板按预期出现（含 paid_at / pickup_quantity 易错列名）', async () => {
-    for (let i = 0; i < 5; i++) mockExecute.mockResolvedValueOnce([])
+  it('D. 通道 SQL 模板按预期出现（含 paid_at / pickup_quantity 易错列名）', async () => {
+    for (let i = 0; i < 6; i++) mockExecute.mockResolvedValueOnce([])
 
     await auditRefundCascadeCoverage(mockDb as never)
 
@@ -130,6 +134,19 @@ describe('cron-worker STEP 9 — auditRefundCascadeCoverage', () => {
     expect(sqlTexts.some((s) => s.includes('point_transactions') && s.includes('消费冲销'))).toBe(true)
     // C5 pickup_records.pickup_quantity（关键易错列名 — 不是 quantity 或 picked_quantity）
     expect(sqlTexts.some((s) => s.includes('pickup_records') && s.includes('pickup_quantity'))).toBe(true)
+    // #154：C5 判据必须与退款解耦——继续 JOIN 退款流水就会把「既提过货又退过款」的行恒判为
+    // mismatch（2026-06-08 止血把退款数加进 picked_up 之后，旧判据 picked_up >= SUM 恒成立）。
+    const c5 = sqlTexts.find((s) => s.includes('pickup_records') && s.includes('<>'))
+    expect(c5, 'C5 未改成守恒判据').toBeDefined()
+    expect(c5).not.toContain("change_type = '退款'")
+    expect(c5).toContain("s.product_type = '家居产品'")
+    // C5b 已结算三列之和不得超过 quantity（迁移 0043 未加 CHECK，这条巡检是它的替身）
+    expect(sqlTexts.some((s) =>
+      s.includes('COALESCE(s.picked_up_quantity, 0)') &&
+      s.includes('COALESCE(s.refunded_quantity, 0)') &&
+      s.includes('COALESCE(s.converted_quantity, 0)') &&
+      s.includes('> s.quantity'),
+    ), 'C5b settled_quantity_overflow 缺失').toBe(true)
   })
 
   it('E. C2 + C5 同时违反 → details 累积，notifyOps 仅一次', async () => {
@@ -141,8 +158,9 @@ describe('cron-worker STEP 9 — auditRefundCascadeCoverage', () => {
     mockExecute.mockResolvedValueOnce([]) // C3 ok
     mockExecute.mockResolvedValueOnce([]) // C4 ok
     mockExecute.mockResolvedValueOnce([
-      { sop_id: 13, sale_item_id: 'si-C', current_picked: 5, total_picked: 5 },
+      { sale_item_id: 'si-C', current_picked: 5, total_picked: 3 },
     ]) // C5 violation x1
+    mockExecute.mockResolvedValueOnce([]) // C5b ok
     mockExecute.mockResolvedValueOnce([]) // INSERT operation_logs
 
     const result = await auditRefundCascadeCoverage(mockDb as never)
@@ -150,13 +168,13 @@ describe('cron-worker STEP 9 — auditRefundCascadeCoverage', () => {
     expect(result.violations).toBe(2)
     expect(result.details.map((d) => d.channel)).toEqual([
       'sc_not_voided',
-      'pickup_not_rolled_back',
+      'pickup_quantity_mismatch',
     ])
     expect(result.details[0].count).toBe(2)
     expect(result.details[1].count).toBe(1)
     expect(notifyOpsMock).toHaveBeenCalledTimes(1)
     const msg = notifyOpsMock.mock.calls[0][0] as string
     expect(msg).toContain('sc_not_voided: 2 条 mismatch')
-    expect(msg).toContain('pickup_not_rolled_back: 1 条 mismatch')
+    expect(msg).toContain('pickup_quantity_mismatch: 1 条 mismatch')
   })
 })

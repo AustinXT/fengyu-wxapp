@@ -1061,7 +1061,9 @@ describe('customer.homeProducts', () => {
     await customerRoutes.homeProducts(ctx)
 
     const sql = pg.query.mock.calls[1][0]
-    expect(sql).toContain('FROM pickup_records')
+    // #154：已提货件数直读 sale_items.picked_up_quantity，不再聚合 pickup_records
+    expect(sql).toContain('COALESCE(si.picked_up_quantity, 0)')
+    expect(sql).not.toContain('FROM pickup_records')
     expect(sql).toContain("o.status IN ('已支付', '部分支付', '已完成')")
     expect(sql).toContain("si.item_direction = '购买'")
     expect(sql).toContain("si.product_type = '家居产品'")

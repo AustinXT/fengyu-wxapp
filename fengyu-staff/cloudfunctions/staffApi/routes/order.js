@@ -6015,16 +6015,12 @@ async function availablePickupItems(ctx) {
   if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
 
   const rows = await pg.query(
-    `WITH pickup_totals AS (
-       SELECT sale_item_id, SUM(pickup_quantity)::int AS picked_quantity
-         FROM pickup_records
-        GROUP BY sale_item_id
-     ), conversion_totals AS (
-       -- #145/#153：已折抵转走的件数必须从可提数量里扣除。写法与四端展示侧的
-       -- conversion_totals 字面同源（只排除「已关闭」——它完成过 rollback，数量已退回）。
+    `WITH conversion_totals AS (
+       -- #154 拆列后件数直读 sale_items.converted_quantity，这里只剩**金额**：
+       -- 折抵额度按金额结算，折 4 件可能带走 ¥450 而非 ¥400，用件数推算会失真。
+       -- 写法与四端展示侧的 conversion_totals 字面同源
+       -- （只排除「已关闭」——它完成过 rollback，数量已退回）。
        SELECT out_item.ref_sale_item_id AS sale_item_id,
-              SUM(out_item.quantity)::int AS converted_quantity,
-              -- 折抵额度按金额结算：折 4 件可能带走 ¥450 而非 ¥400，用件数推算会失真
               SUM(GREATEST(0, -out_item.received::numeric)) AS converted_amount
          FROM sale_items out_item
          JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
@@ -6041,8 +6037,9 @@ async function availablePickupItems(ctx) {
               si.product_name,
               si.quantity::int AS quantity,
               LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))::int AS settled_quantity,
-              GREATEST(0, COALESCE(pt.picked_quantity, 0))::int AS picked_quantity,
-              GREATEST(0, COALESCE(ct.converted_quantity, 0))::int AS converted_quantity,
+              GREATEST(0, COALESCE(si.picked_up_quantity, 0))::int AS picked_quantity,
+              GREATEST(0, COALESCE(si.refunded_quantity, 0))::int AS refunded_quantity,
+              GREATEST(0, COALESCE(si.converted_quantity, 0))::int AS converted_quantity,
               -- #145/#153：可提件数 = min(物理未结算, floor(剩余已付 / 单价))，与折抵额度同一口径。
               -- 按金额算而非「已付件数 − 已提 − 已折抵件数」：折抵金额含余数时两者不等，
               -- 折 4 件带走 ¥450 后再回款 ¥50，按件数会多放出 1 件（累计兑现超实收）。
@@ -6052,7 +6049,7 @@ async function availablePickupItems(ctx) {
                 ELSE LEAST(
                   GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))),
                   GREATEST(0, FLOOR((GREATEST(0, si.received::numeric)
-                    - GREATEST(0, COALESCE(pt.picked_quantity, 0)) * si.unit_real_price::numeric
+                    - GREATEST(0, COALESCE(si.picked_up_quantity, 0)) * si.unit_real_price::numeric
                     - COALESCE(ct.converted_amount, 0)) / NULLIF(si.unit_real_price::numeric, 0)))::int
                 )
               END AS row_pending_pickup,
@@ -6074,7 +6071,6 @@ async function availablePickupItems(ctx) {
          FROM sale_items si
          JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
          LEFT JOIN stores s ON s.store_id = o.store_id
-         LEFT JOIN pickup_totals pt ON pt.sale_item_id = si.sale_item_id
          LEFT JOIN conversion_totals ct ON ct.sale_item_id = si.sale_item_id
         WHERE o.client_user_id = $1
           AND o.store_id = $2
