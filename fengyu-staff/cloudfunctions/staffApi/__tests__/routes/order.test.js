@@ -38,6 +38,56 @@ function mockScopeAllow(storeId = 'store-001') {
  * 默认 client.query 返回结果（识别 RETURNING / bool_and 等需要 rows[0] 的 SQL）。
  * 内联 vi.fn 中 fallthrough 也应使用此函数，否则 .rows[0].id 会 undefined。
  */
+/**
+ * #182 折抵额度复算的 mock 支撑。
+ *
+ * 实现侧在取得 `FOR UPDATE OF si` 行锁**之后**另起一条语句复算折抵额度（并发正确性要求，
+ * 与锁行同语句会拿到子表的旧快照）。这里用一个透明包装器统一响应那条语句：
+ * 记住锁行返回的行，按同一口径算出 deductible_quantity / deductible_amount。
+ *
+ * 兜底约定：mock 行未显式声明 `received` 时视为**已付清**（received = sale_amount 或
+ * 单价 × 次数/件数）。这样只关心折抵数量的老用例不必逐个补金额字段，而显式声明了
+ * received 的用例（部分支付、余数、二次折抵）走真实口径。
+ */
+function deductibleRowsFor(rows) {
+  return (rows || []).map((r) => {
+    const unit = Number(r.unit_real_price || 0)
+    const isCard = r.product_type === '疗程卡'
+    const qty = isCard
+      ? Number(r.remaining_sessions || 0)
+      : Math.max(0, Number(r.quantity || 0) - Number(r.picked_up_quantity || 0))
+    const delivered = isCard
+      ? (Number(r.session_count || 0) - Number(r.remaining_sessions || 0)) * unit
+      : Number(r.picked_quantity ?? r.home_picked_quantity ?? 0) * unit
+    const fullPrice = unit * Number(isCard ? (r.session_count || 0) : (r.quantity || 0))
+    const saleAmount = r.sale_amount != null ? Number(r.sale_amount) : fullPrice
+    const received = r.received != null ? Number(r.received) : saleAmount
+    const depositOrGift = r.sale_order_type === '寄存单' || saleAmount <= 0
+    const remainingPaid = Math.max(0, received - delivered
+      - Number(r.converted_amount ?? r.home_converted_amount ?? 0))
+    return {
+      sale_item_id: r.sale_item_id,
+      deductible_quantity: qty,
+      deductible_amount: String(depositOrGift ? unit * qty : remainingPaid),
+    }
+  })
+}
+
+function withDeductible(inner) {
+  let held = []
+  return async (sql, params) => {
+    if (sql.includes('deductible_quantity') && !sql.includes('FOR UPDATE')) {
+      const rows = deductibleRowsFor(held)
+      return { rows, rowCount: rows.length }
+    }
+    const res = await inner(sql, params)
+    if (sql.includes('FROM sale_items si') && sql.includes('FOR UPDATE OF si')) {
+      held = (res && res.rows) || []
+    }
+    return res
+  }
+}
+
 function defaultQueryResult(sql, params) {
   if (typeof sql === 'string' && /RETURNING\s+id/i.test(sql)) {
     return { rows: [{ id: 1 }], rowCount: 1 }
@@ -298,12 +348,12 @@ describe('order.create', () => {
     // mock 事务内 client.query 的守卫查询返回「已有待支付订单」
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql) => {
+        query: vi.fn(withDeductible(async (sql) => {
           if (typeof sql === 'string' && /sale_orders/.test(sql) && /'待支付'/.test(sql)) {
             return { rows: [{ sale_order_id: 'FY-exist' }], rowCount: 1 }
           }
           return { rows: [], rowCount: 0 }
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -347,12 +397,12 @@ describe('order.create', () => {
     // mock 事务内 client.query 的守卫查询返回「同店已有待支付订单」
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql) => {
+        query: vi.fn(withDeductible(async (sql) => {
           if (typeof sql === 'string' && /sale_orders/.test(sql) && /'待支付'/.test(sql)) {
             return { rows: [{ sale_order_id: 'FY-exist' }], rowCount: 1 }
           }
           return { rows: [], rowCount: 0 }
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -1282,11 +1332,11 @@ describe('order.create', () => {
     let orderInsertParams = null
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           if (sql.includes('INSERT INTO sale_orders')) orderInsertParams = params
           if (sql.includes('INSERT INTO sale_order_payments')) paymentInserts.push({ sql, params })
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -1309,10 +1359,10 @@ describe('order.create', () => {
     const paymentInserts = []
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           if (sql.includes('INSERT INTO sale_order_payments')) paymentInserts.push({ sql, params })
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -1334,10 +1384,10 @@ describe('order.create', () => {
     const paymentInserts = []
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           if (sql.includes('INSERT INTO sale_order_payments')) paymentInserts.push({ sql, params })
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -1369,7 +1419,7 @@ describe('order.create', () => {
     const cardTxnInserts = []
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           if (sql.includes('INSERT INTO sale_order_payments')) {
             paymentInserts.push({ sql, params })
           }
@@ -1377,7 +1427,7 @@ describe('order.create', () => {
             cardTxnInserts.push({ sql, params })
           }
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -1457,7 +1507,7 @@ describe('order.create', () => {
     const cardTxnInserts = []
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           if (sql.includes('INSERT INTO sale_order_payments')) {
             let changeType = null
             if (sql.includes("'储值卡抵扣'")) changeType = '储值卡抵扣'
@@ -1468,7 +1518,7 @@ describe('order.create', () => {
             cardTxnInserts.push({ sql, params })
           }
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -3204,7 +3254,7 @@ describe('order.qrcode', () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-QR-CONV-REPAY', paymentAmount: 500 })
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         txCalls.push({ sql, params })
         if (sql.includes('FOR UPDATE')) {
           return {
@@ -3220,7 +3270,7 @@ describe('order.qrcode', () => {
           return { rows: [], rowCount: 1 }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
     pg.query
       .mockResolvedValueOnce([{
@@ -3247,7 +3297,7 @@ describe('order.qrcode', () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-QR-CONV-IDEMP', paymentAmount: 500 })
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         txCalls.push({ sql, params })
         if (sql.includes('FOR UPDATE')) {
           return {
@@ -3261,7 +3311,7 @@ describe('order.qrcode', () => {
           }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
     await expect(orderRoutes.qrcode(ctx)).rejects.toThrow(/CONFLICT.*已有进行中的在线回款/)
 
@@ -3273,7 +3323,7 @@ describe('order.qrcode', () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-QR-CONV-OLD-O1', paymentAmount: 300 })
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         txCalls.push({ sql, params })
         if (sql.includes('FOR UPDATE')) {
           return {
@@ -3287,7 +3337,7 @@ describe('order.qrcode', () => {
           }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
     await expect(orderRoutes.qrcode(ctx)).rejects.toThrow(/CONFLICT.*已有进行中的在线回款/)
@@ -3301,7 +3351,7 @@ describe('order.qrcode', () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-QR-CONV-CONFLICT', paymentAmount: 300 })
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         txCalls.push({ sql, params })
         if (sql.includes('FOR UPDATE')) {
           return {
@@ -3315,7 +3365,7 @@ describe('order.qrcode', () => {
           }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
     await expect(orderRoutes.qrcode(ctx)).rejects.toThrow(/CONFLICT.*已有进行中的在线回款/)
@@ -3326,7 +3376,7 @@ describe('order.qrcode', () => {
   test('冻结的转换单在线回款金额不得超过订单欠款', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-QR-CONV-OVER', paymentAmount: 1500 })
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql) => {
+      query: vi.fn(withDeductible(async (sql) => {
         if (sql.includes('FOR UPDATE')) {
           return {
             rows: [{
@@ -3338,7 +3388,7 @@ describe('order.qrcode', () => {
           }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
     await expect(orderRoutes.qrcode(ctx)).rejects.toThrow(/INVALID_PARAMS.*不能超过订单欠款/)
@@ -3348,7 +3398,7 @@ describe('order.qrcode', () => {
   test('非转换单不能借 qrcode 写入在线回款上限', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-QR-NORMAL-CAP', paymentAmount: 100 })
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql) => {
+      query: vi.fn(withDeductible(async (sql) => {
         if (sql.includes('FOR UPDATE')) {
           return {
             rows: [{
@@ -3360,7 +3410,7 @@ describe('order.qrcode', () => {
           }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
     await expect(orderRoutes.qrcode(ctx)).rejects.toThrow(/INVALID_STATE.*仅普通转换单/)
@@ -3370,7 +3420,7 @@ describe('order.qrcode', () => {
   test('跨店订单不能写入在线回款上限', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-QR-OTHER-STORE', paymentAmount: 100 })
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql) => {
+      query: vi.fn(withDeductible(async (sql) => {
         if (sql.includes('FOR UPDATE')) {
           return {
             rows: [{
@@ -3382,7 +3432,7 @@ describe('order.qrcode', () => {
           }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
     await expect(orderRoutes.qrcode(ctx)).rejects.toThrow(/PERMISSION_DENIED.*不属于当前门店/)
@@ -4581,7 +4631,7 @@ describe.skip('order.createRepayment', () => {
     }
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           txCalls.push({ sql, params })
           // generateOrderNo 子事务（advisory_xact_lock 后 SELECT sale_order_id LIKE）
           if (sql.includes('pg_advisory_xact_lock')) {
@@ -4609,7 +4659,7 @@ describe.skip('order.createRepayment', () => {
             return { rows: [{ customer_type: '会员客' }], rowCount: 1 }
           }
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -4881,7 +4931,7 @@ describe('order.createRepayment — 活动渠道意图互斥', () => {
 
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         txCalls.push({ sql, params })
         if (sql.includes('FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE')) {
           return {
@@ -4898,7 +4948,7 @@ describe('order.createRepayment — 活动渠道意图互斥', () => {
           }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
     await expect(orderRoutes.createRepayment(ctx))
@@ -4921,7 +4971,7 @@ describe('order.createConversion', () => {
   function mockPositiveDifferenceConversion(cardBalance, source = {}) {
     const calls = []
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         calls.push({ sql, params })
         if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
         if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
@@ -4954,7 +5004,7 @@ describe('order.createConversion', () => {
           return { rows: cardBalance == null ? [] : [{ balance: cardBalance }], rowCount: cardBalance == null ? 0 : 1 }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
     return calls
   }
@@ -5028,7 +5078,7 @@ describe('order.createConversion', () => {
 
     const calls = []
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         calls.push({ sql, params })
         if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
         if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
@@ -5078,7 +5128,7 @@ describe('order.createConversion', () => {
           }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
     await orderRoutes.createConversion(ctx)
@@ -5112,7 +5162,7 @@ describe('order.createConversion', () => {
       user_id: 'cu-001', phone: '138', name: '王莉', customer_type: '会员客', bound_store_id: 'store-001',
     }])
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql) => {
+      query: vi.fn(withDeductible(async (sql) => {
         if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
         if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
         if (sql.includes('FROM sale_items si') && sql.includes('FOR UPDATE OF si')) {
@@ -5143,7 +5193,7 @@ describe('order.createConversion', () => {
           }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
     await expect(orderRoutes.createConversion(ctx)).rejects.toThrow(/BUNDLE_SKU_NOT_BELONG/)
@@ -5162,7 +5212,7 @@ describe('order.createConversion', () => {
     }])
     const calls = []
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         calls.push({ sql, params })
         if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
         if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
@@ -5197,7 +5247,7 @@ describe('order.createConversion', () => {
           return { rows: [], rowCount: 0 }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
     await expect(orderRoutes.createConversion(ctx)).rejects.toThrow(/商品 sku-disabled 不存在/)
@@ -5333,7 +5383,7 @@ describe('order.createConversion', () => {
 
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         txCalls.push({ sql, params })
         if (sql.includes('pg_advisory_xact_lock') || sql.includes('sale_order_id LIKE')) {
           return { rows: [], rowCount: 0 }
@@ -5364,7 +5414,7 @@ describe('order.createConversion', () => {
         }
         if (sql.includes('WHERE s.sku_id = ANY($1)')) return { rows: [], rowCount: 0 }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
     await expect(orderRoutes.createConversion(ctx))
@@ -5388,7 +5438,7 @@ describe('order.createConversion', () => {
     const calls = []
     pg.transaction.mockImplementationOnce(async (cb) => {
       const tx = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           calls.push({ sql, params })
           if (sql.includes('pg_advisory_xact_lock')) return { rows: [], rowCount: 1 }
           if (sql.includes('SELECT sale_order_id FROM sale_orders')) return { rows: [], rowCount: 0 }
@@ -5433,7 +5483,7 @@ describe('order.createConversion', () => {
             return { rows: [{ receipt_positive_total: '0', order_received: '0' }], rowCount: 1 }
           }
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return cb(tx)
     })
@@ -5467,7 +5517,7 @@ describe('order.createConversion', () => {
 
     const calls = []
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         calls.push({ sql, params })
         if (sql.includes('pg_advisory_xact_lock')) return { rows: [], rowCount: 1 }
         if (sql.includes('SELECT sale_order_id FROM sale_orders')) return { rows: [], rowCount: 0 }
@@ -5496,7 +5546,7 @@ describe('order.createConversion', () => {
         }
         if (sql.includes('WHERE s.category_id = ANY')) return { rows: [], rowCount: 0 }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
     await expect(orderRoutes.createConversion(ctx))
@@ -5538,6 +5588,8 @@ describe('order.createConversion', () => {
               client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
             }], rowCount: 1,
           })
+          // #182 折抵额度复算（锁取得后另起语句，与锁行同语句会拿到子表旧快照）
+          .mockResolvedValueOnce({ rows: [{ sale_item_id: 'item-001', deductible_quantity: 1, deductible_amount: '1000' }], rowCount: 1 })
           .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 预扣汇总
           // 转入 SKU 查询（quantity=10 → totalIn=15000）
           .mockResolvedValueOnce({
@@ -5630,10 +5682,10 @@ describe('order.createConversion', () => {
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => {
       const tx = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           txCalls.push({ sql, params })
           return defaultQueryResult(sql)
-        })
+        }))
           .mockResolvedValueOnce({ rows: [], rowCount: 1 })
           .mockResolvedValueOnce({ rows: [], rowCount: 0 })
           .mockResolvedValueOnce({
@@ -5657,6 +5709,8 @@ describe('order.createConversion', () => {
               product_kind: '护理项目',
             }], rowCount: 1,
           })
+          // #182 折抵额度复算（锁取得后另起语句，与锁行同语句会拿到子表旧快照）
+          .mockResolvedValueOnce({ rows: [{ sale_item_id: 'item-special-old', deductible_quantity: 1, deductible_amount: '100' }], rowCount: 1 })
           .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 预扣汇总
           .mockResolvedValueOnce({
             rows: [{
@@ -5711,7 +5765,7 @@ describe('order.createConversion', () => {
 
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         txCalls.push({ sql, params })
         if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
         if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
@@ -5837,7 +5891,7 @@ describe('order.createConversion', () => {
           }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
     await orderRoutes.createConversion(ctx)
@@ -5887,7 +5941,7 @@ describe('order.createConversion', () => {
 
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         txCalls.push({ sql, params })
         if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
         if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
@@ -5908,23 +5962,25 @@ describe('order.createConversion', () => {
           return { rows: [{ sku_id: 'sku-new', product_type: '疗程卡', spec_name: '新项目', price: '500', session_count: 1, service_fee: '0', sales_category: '自销自耗' }], rowCount: 1 }
         }
         return defaultQueryResult(sql)
-      }),
+      })),
     }))
 
-    await orderRoutes.createConversion(ctx)
+    // #182：折抵改为「整行退出」后与在途服务预扣互斥——钱已全额折走却留下 2 次给服务，
+    // 那 2 次就是白送；而把预扣一起注销会让 service.confirm 的扣次守卫失败、
+    // 服务单永久卡在「待客户确认」且预扣不释放。故整行拒绝，要求先处理服务单。
+    await expect(orderRoutes.createConversion(ctx))
+      .rejects.toThrow(/INVALID_PARAMS: 部分项目有服务进行中/)
 
-    expect(ctx.result.totalOut).toBe(300)
     const heldLock = txCalls.find((call) => call.sql.includes('FOR UPDATE OF si'))
     // held 锁行查询不得在**顶层**聚合（会改变返回行数与锁定范围）。
-    // #145/#153 的 hp LATERAL 内有标量 SUM——每行一个值，不影响行数，属允许范围。
     expect(heldLock.sql).not.toMatch(/\n\s*GROUP BY/)
     expect(heldLock.sql).toMatch(/ORDER BY si\.sale_item_id\s+FOR UPDATE OF si/)
     const reservedQuery = txCalls.find((call) => call.sql.includes('GROUP BY sit.sale_item_id'))
     expect(reservedQuery.sql).not.toMatch(/FOR UPDATE/)
     expect(reservedQuery.sql).toMatch(/JOIN service_orders reserved_order/)
     expect(reservedQuery.sql).toMatch(/reserved_order\.status IN \('服务中', '待客户确认'\)/)
-    const sourceUpdate = txCalls.find((call) => call.sql.includes('SET remaining_sessions = remaining_sessions - $4'))
-    expect(sourceUpdate.params[3]).toBe(3)
+    // 拒绝发生在扣减之前：源卡的 remaining_sessions 一次都没被动过
+    expect(txCalls.some((call) => call.sql.includes('SET remaining_sessions = remaining_sessions - $4'))).toBe(false)
   })
 
   test('缺少 clientUserId 拒绝', async () => {
@@ -6022,6 +6078,8 @@ describe('order.createConversion', () => {
           client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
         }], rowCount: 1,
       })
+      // #182 折抵额度复算（锁取得后另起语句，与锁行同语句会拿到子表旧快照）
+      .mockResolvedValueOnce({ rows: [{ sale_item_id: 'item-eq-001', deductible_quantity: 2, deductible_amount: '1000' }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 预扣汇总
       .mockResolvedValueOnce({
         rows: [{
@@ -6077,6 +6135,8 @@ describe('order.createConversion', () => {
           client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
         }], rowCount: 1,
       })
+      // #182 折抵额度复算（锁取得后另起语句，与锁行同语句会拿到子表旧快照）
+      .mockResolvedValueOnce({ rows: [{ sale_item_id: 'item-neg-001', deductible_quantity: 2, deductible_amount: '2000' }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 预扣汇总
       .mockResolvedValueOnce({
         rows: [{
@@ -6220,6 +6280,8 @@ describe('order.createConversion', () => {
           client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
         }], rowCount: 1,
       })
+      // #182 折抵额度复算（锁取得后另起语句，与锁行同语句会拿到子表旧快照）
+      .mockResolvedValueOnce({ rows: [{ sale_item_id: 'item-race', deductible_quantity: 3, deductible_amount: '300' }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 预扣汇总
       .mockResolvedValueOnce({
         rows: [{
@@ -6273,6 +6335,8 @@ describe('order.createConversion', () => {
           is_recharge_card: false, is_experience: true,
         }], rowCount: 1,
       })
+      // #182 折抵额度复算（锁取得后另起语句，与锁行同语句会拿到子表旧快照）
+      .mockResolvedValueOnce({ rows: [{ sale_item_id: 'item-exp-001', deductible_quantity: 3, deductible_amount: '600' }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 预扣汇总
       .mockResolvedValueOnce({
         rows: [{
@@ -6325,7 +6389,7 @@ describe('order.createConversion', () => {
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => {
       const tx = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           txCalls.push({ sql, params })
           if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
           // generateOrderNo: SELECT sale_order_id LIKE → empty → seq=1
@@ -6352,7 +6416,7 @@ describe('order.createConversion', () => {
             }
           }
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(tx)
     })
@@ -6381,7 +6445,7 @@ describe('order.createConversion', () => {
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => {
       const tx = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           txCalls.push({ sql, params })
           if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
           if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
@@ -6407,7 +6471,7 @@ describe('order.createConversion', () => {
             }
           }
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(tx)
     })
@@ -6456,10 +6520,10 @@ describe('order.createDeposit', () => {
     const txCalls = []
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           txCalls.push({ sql, params })
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -6550,10 +6614,10 @@ describe('order.createDeposit', () => {
     const txCalls = []
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           txCalls.push({ sql, params })
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -6606,10 +6670,10 @@ describe('order.createDeposit', () => {
     const txCalls = []
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           txCalls.push({ sql, params })
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -6670,10 +6734,10 @@ describe('order.createDeposit', () => {
     const txCalls = []
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           txCalls.push({ sql, params })
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -6854,7 +6918,7 @@ describe('order.createPickup', () => {
     // createPickup 主体在 pg.transaction(cb) 内，调用 client.query；用 mockImplementation 替换 transaction
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           if (/FROM inventory_cutover_states/.test(sql)) {
             return { rows: [{ status: '已初始化' }], rowCount: 1 }
           }
@@ -6901,7 +6965,7 @@ describe('order.createPickup', () => {
             return { rows: [{ id: 10 }], rowCount: 1 }
           }
           return { rows: [], rowCount: 1 }
-        }),
+        })),
       }
       transactionClient = client
       return await cb(client)
@@ -6956,7 +7020,7 @@ describe('order.createPickup', () => {
   test('部分支付仅允许提已付整件数', async () => {
     const ctx = createManagerCtx({ saleItemId: 'item-partial', pickupQuantity: 3 })
     pg.transaction.mockImplementation(async (cb) => cb({
-      query: vi.fn(async (sql) => {
+      query: vi.fn(withDeductible(async (sql) => {
         if (/FROM inventory_cutover_states/.test(sql)) {
           return { rows: [{ status: '已初始化' }], rowCount: 1 }
         }
@@ -6971,7 +7035,7 @@ describe('order.createPickup', () => {
           }], rowCount: 1 }
         }
         return { rows: [], rowCount: 0 }
-      }),
+      })),
     }))
 
     await expect(orderRoutes.createPickup(ctx)).rejects.toThrow(/INVALID_STATE.*当前可提 2/)
@@ -7065,7 +7129,7 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
     let txCalls = []
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           txCalls.push({ sql, params })
           // 扣卡块：SELECT card_id, balance FROM prepaid_cards ... FOR UPDATE → 返回足额账户
           if (typeof sql === 'string' && /SELECT card_id, balance FROM prepaid_cards/i.test(sql)) {
@@ -7080,7 +7144,7 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
             return { rows: [{ customer_type: '流量客' }], rowCount: 1 }
           }
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(client)
     })
@@ -7685,7 +7749,7 @@ describe('order.createConversion — schema 变更：UPSERT 按 user_id、不含
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => {
       const tx = {
-        query: vi.fn(async (sql, params) => {
+        query: vi.fn(withDeductible(async (sql, params) => {
           txCalls.push({ sql, params })
           if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
           // generateOrderNo: SELECT sale_order_id LIKE → empty → seq=1
@@ -7715,7 +7779,7 @@ describe('order.createConversion — schema 变更：UPSERT 按 user_id、不含
             return { rows: [{ card_id: 'card-credit-neg' }], rowCount: 1 }
           }
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(tx)
     })
@@ -7747,7 +7811,7 @@ describe('order.createConversion — schema 变更：UPSERT 按 user_id、不含
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => {
       const tx = {
-        query: vi.fn(async (sql) => {
+        query: vi.fn(withDeductible(async (sql) => {
           txCalls.push({ sql })
           if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
           // generateOrderNo: SELECT sale_order_id LIKE → empty → seq=1
@@ -7774,7 +7838,7 @@ describe('order.createConversion — schema 变更：UPSERT 按 user_id、不含
             }
           }
           return defaultQueryResult(sql)
-        }),
+        })),
       }
       return await cb(tx)
     })
@@ -7823,42 +7887,27 @@ describe('order.createConversion — 家居产品折抵（#125）', () => {
       order_status: '已支付', product_kind: '家居',
       ...overrides,
     }
-    const qty = Number(row.quantity)
-    const settled = Number(row.picked_up_quantity || 0)
-    const picked = Number(row.home_picked_quantity || 0)
-    const convertedAmount = Number(row.home_converted_amount || 0)
-    const unit = Number(row.unit_real_price)
-    const amt = Number(row.sale_amount)
-    const recv = Number(row.received)
-    const depositOrGift = row.sale_order_type === '寄存单' || amt <= 0
-    const physicalRemaining = Math.max(0, qty - settled)
-    // 剩余已付 = 行实收 − 已提货金额 − 已转走金额（退款不在此处扣，received 已扣过）
-    const remainingPaid = Math.max(0, recv - picked * unit - convertedAmount)
-    row.home_deductible_quantity = depositOrGift
-      ? physicalRemaining
-      : (unit > 0 ? Math.min(physicalRemaining, Math.floor(remainingPaid / unit)) : 0)
-    row.home_deductible_amount = String(depositOrGift ? unit * physicalRemaining : remainingPaid)
-
     pg.transaction.mockImplementationOnce(async (cb) => cb({
-      query: vi.fn(async (sql, params) => {
+      query: vi.fn(withDeductible(async (sql, params) => {
         calls.push({ sql, params })
         if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
         if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
         if (sql.includes('FROM sale_items si') && sql.includes('FOR UPDATE OF si')) {
           return { rows: [row], rowCount: 1 }
         }
-        // #145/#153：折抵额度在锁取得后用独立语句复算（新快照），仅家居行触发
-        if (sql.includes('home_deductible_quantity')) {
+        // 折抵额度复算由 withDeductible 统一响应（#182 起疗程卡与家居同一条语句）
+        if (sql.includes('FROM service_items sit')) return { rows: [], rowCount: 0 }
+        // #182 欠款归零：锁原单读金额快照
+        if (sql.includes('FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE')) {
           return {
             rows: [{
-              sale_item_id: row.sale_item_id,
-              home_deductible_quantity: row.home_deductible_quantity,
-              home_deductible_amount: row.home_deductible_amount,
+              total_amount: row.sale_amount, received: row.received,
+              prepaid_card_amount: '0', pending_prepaid_card_amount: '0',
+              status: row.order_status, paid_at: null, sale_order_type: row.sale_order_type,
             }],
             rowCount: 1,
           }
         }
-        if (sql.includes('FROM service_items sit')) return { rows: [], rowCount: 0 }
         if (sql.includes('FROM product_skus')) {
           return {
             rows: [{
@@ -7871,7 +7920,7 @@ describe('order.createConversion — 家居产品折抵（#125）', () => {
         }
         if (sql.includes('SELECT balance FROM prepaid_cards')) return { rows: [], rowCount: 0 }
         return defaultQueryResult(sql, params)
-      }),
+      })),
     }))
     return calls
   }
@@ -7938,9 +7987,11 @@ describe('order.createConversion — 家居产品折抵（#125）', () => {
 
   // #145/#153 收紧：折抵以「已付未结算」为准。旧口径按未提货数量全额折抵，会把
   // 未兑现价值洗成全额可提（10 件 ¥1000 只付 ¥400 → 折 ¥1000 换等额家居 → 新行全可提）。
-  test('#145 未付清：折抵件数按已付整件数收敛（10 件付 600 已结算 3 → 折 3 件）', async () => {
+  // #182 改口径：折抵 = 整行退出。件数带走**全部**未结算件，金额只折「剩余已付」。
+  // #145 的「件数按已付整件数收敛」已被取代——那会把未付部分的货留在原单继续挂欠款，
+  // 而新口径把欠款一并归零，货与钱同时结清。
+  test('#182 未付清：件数整行退出、金额只折剩余已付（10 件付 600 已结算 3 → 7 件 / ¥300）', async () => {
     const ctx = homeConversionCtx()
-    // received 600 / sale_amount 1000 → 已付整件数 6；已结算 3 → 可折 3 件
     const calls = mockHomeProductConversion({ order_status: '部分支付', received: '600' })
 
     await orderRoutes.createConversion(ctx)
@@ -7948,16 +7999,20 @@ describe('order.createConversion — 家居产品折抵（#125）', () => {
     const outInsert = calls.find(({ sql }) =>
       sql.includes('INSERT INTO sale_items') && sql.includes("'转出'"))
     expect(outInsert).toBeDefined()
-    // 金额 = 已付 600 − 已结算 3 × 100 = 300（不是旧口径的 7 × 100 = 700）
-    expect(outInsert.params).toEqual(expect.arrayContaining([3, -300]))
+    // 件数 = 10 − 3 = 7（整行退出）；金额 = 已付 600 − 已提 3 × 100 = 300
+    expect(outInsert.params).toEqual(expect.arrayContaining([7, -300]))
     // 折抵 300 − 转入 300 = 0
     expect(ctx.result.priceDiff).toBe(0)
+    // 欠款归零：原行应付下调 400（1000 − 600），差额记在转出行 waived_amount 上
+    expect(outInsert.params).toEqual(expect.arrayContaining([400]))
+    const waiveUpd = calls.find(({ sql }) => sql.includes('waived_amount = waived_amount +'))
+    expect(waiveUpd).toBeDefined()
   })
 
-  // 用户 2026-09-14 拍板：件数向下取整，金额含不足一整件的已付余数，顾客付的钱一分不丢。
-  test('#145 折抵金额含不足一整件的已付余数（付 450 → 折 4 件 / ¥450）', async () => {
+  // 金额含不足一整件的已付余数（2026-09-14 拍板，顾客付的钱一分不丢）；
+  // #182 起件数不再向下取整，整行退出带走全部未结算件。
+  test('#182 折抵金额含不足一整件的已付余数（付 450 → 10 件 / ¥450）', async () => {
     const ctx = homeConversionCtx()
-    // received 450 / sale_amount 1000 → 已付整件数 4（450 → 4.5 件向下取整）；已结算 0
     const calls = mockHomeProductConversion({
       order_status: '部分支付', received: '450', picked_up_quantity: 0, home_picked_quantity: 0,
     })
@@ -7967,8 +8022,8 @@ describe('order.createConversion — 家居产品折抵（#125）', () => {
     const outInsert = calls.find(({ sql }) =>
       sql.includes('INSERT INTO sale_items') && sql.includes("'转出'"))
     expect(outInsert).toBeDefined()
-    // 件数 4（向下取整），金额 450（含不足一件的 ¥50 余数，而非 4 × 100 = 400）
-    expect(outInsert.params).toEqual(expect.arrayContaining([4, -450]))
+    // 件数 10（全部未结算件），金额 450（含不足一件的 ¥50 余数，而非 4 × 100 = 400）
+    expect(outInsert.params).toEqual(expect.arrayContaining([10, -450]))
   })
 
   // 寄存单与 0 元赠品行没有"实收"可言，维持原口径（单价 × 未结算件数），否则折抵额恒为 0
@@ -8000,7 +8055,7 @@ describe('order.createConversion — 家居产品折抵（#125）', () => {
     })
 
     await expect(orderRoutes.createConversion(ctx))
-      .rejects.toThrow(/INVALID_PARAMS: 部分家居产品没有已付清的整件可折抵/)
+      .rejects.toThrow(/INVALID_PARAMS: 部分折抵项没有可折抵的已付金额/)
   })
 
   // #145/#153：`received` 已由 STEP 1.5 扣过退款，`picked_up_quantity` 又含退款结算数，
@@ -8022,31 +8077,50 @@ describe('order.createConversion — 家居产品折抵（#125）', () => {
 
   // 已转走金额取自转出行 received，不是「已转走件数 × 单价」——折抵金额含余数时两者不等，
   // 用件数推算会让多次折抵累计超过累计实收。
-  test('#145 二次折抵按实际已转走金额扣减（付 450 折 450 后回款 50 → 不足一件，拒绝）', async () => {
+  test('#182 二次折抵按实际已转走金额扣减：只剩 ¥50 余数仍可折走', async () => {
     const ctx = homeConversionCtx()
-    mockHomeProductConversion({
+    const calls = mockHomeProductConversion({
       order_status: '部分支付', quantity: 10, picked_up_quantity: 4,
       home_picked_quantity: 0, home_converted_amount: '450',
       sale_amount: '1000', received: '500', unit_real_price: '100',
     })
 
-    // 剩余已付 = 500 − 0 − 450 = 50 < 单价 100 → 无整件可折
-    await expect(orderRoutes.createConversion(ctx))
-      .rejects.toThrow(/INVALID_PARAMS: 部分家居产品没有已付清的整件可折抵/)
+    await orderRoutes.createConversion(ctx)
+
+    const outInsert = calls.find(({ sql }) =>
+      sql.includes('INSERT INTO sale_items') && sql.includes("'转出'"))
+    expect(outInsert).toBeDefined()
+    // 剩余已付 = 500 − 0 − 450 = 50。#145 时因「不足一整件没有载体」整行拒绝，
+    // #182 放宽 chk_item_quantity 后带全部未结算件（10 − 4 = 6）+ ¥50 一起走。
+    expect(outInsert.params).toEqual(expect.arrayContaining([6, -50]))
   })
 
-  // 转出行受 chk_item_quantity > 0 约束：不足一整件时没有载体可折，整行拒绝
-  // （顾客已付的钱留在原单，付清后即可折抵；不能凭空换走没买到手的货）。
-  test('#145 已付不足一整件：整行拒绝折抵（转出行件数不能为 0）', async () => {
+  // 本单核心场景，对应 prod FY-XSD-WX-2608170136（净肤清颜啫喱 1 件 ¥680 已付 ¥594）。
+  // 旧口径 FLOOR(594/680)=0 → 整行被剔除，顾客的 ¥594 既折不掉也提不出。
+  test('#182 已付不足一整件：按余数折走并把原单欠款归零', async () => {
     const ctx = homeConversionCtx()
-    // 1 件 ¥680 只付 ¥594 → 已付整件数 0 → 无可折件数
-    mockHomeProductConversion({
+    const calls = mockHomeProductConversion({
       order_status: '部分支付', quantity: 1, picked_up_quantity: 0, home_picked_quantity: 0,
       sale_amount: '680', received: '594', unit_real_price: '680',
     })
 
-    await expect(orderRoutes.createConversion(ctx))
-      .rejects.toThrow(/INVALID_PARAMS: 部分家居产品没有已付清的整件可折抵/)
+    await orderRoutes.createConversion(ctx)
+
+    const outInsert = calls.find(({ sql }) =>
+      sql.includes('INSERT INTO sale_items') && sql.includes("'转出'"))
+    expect(outInsert).toBeDefined()
+    // 件数 1（整行退出）、金额 594（剩余已付）、豁免 86（680 − 594）
+    expect(outInsert.params).toEqual(expect.arrayContaining([1, -594, 86]))
+    // 原行应付下调 + 留底
+    const waiveUpd = calls.find(({ sql }) =>
+      sql.includes('sale_amount = sale_amount -') && sql.includes('waived_amount = waived_amount +'))
+    expect(waiveUpd).toBeDefined()
+    expect(waiveUpd.params).toEqual(expect.arrayContaining([86, 680]))
+    // 原单 total_amount 同步下调到 594，欠款归零
+    const orderUpd = calls.find(({ sql }) =>
+      sql.includes('UPDATE sale_orders') && sql.includes('total_amount = $2'))
+    expect(orderUpd).toBeDefined()
+    expect(orderUpd.params[1]).toBe(594)
   })
 })
 
