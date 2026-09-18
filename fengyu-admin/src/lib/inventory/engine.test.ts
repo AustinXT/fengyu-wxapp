@@ -761,6 +761,21 @@ describe('库存 SKU 来源与价格保护', () => {
     expect(listBlock).toMatch(/leftJoin\(inventorySkus/)
   })
 
+  it('SKU 映射的 total 取过滤后的长度，不是全量长度', () => {
+    // 这一支的 status / keyword 过滤都在内存里做（configurationStatus 是按
+    // components 算出来的派生字段，没法下推成 WHERE）。total 若取 productRows.length，
+    // 筛完之后「共 N 条」还是全量数字，页数也跟着错。
+    const source = readFileSync(resolve(__dirname, 'engine.ts'), 'utf8')
+    const block = source.slice(
+      source.indexOf('export const listInventorySkuCompositions'),
+      source.indexOf('export const listInventorySkuCompositionOptions'),
+    )
+    expect(block).toMatch(/total: filtered\.length/)
+    expect(block).not.toMatch(/total: productRows\.length/)
+    // 切片同样必须基于 filtered
+    expect(block).toMatch(/filtered\.slice\(offset, offset \+ pageSize\)/)
+  })
+
   it('供应商总数查询绕开 leftJoin（否则「共 N 条」会被关联 SKU 放大）', () => {
     // 这条拦的是「顺手把 total 塞进主查询」：leftJoin 之后 count(*) 数的是 join 后的行数，
     // 一个有 3 个关联 SKU 的供应商会被算成 3 条，分页总数与页数全错。
