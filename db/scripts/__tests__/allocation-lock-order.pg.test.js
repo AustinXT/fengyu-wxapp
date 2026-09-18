@@ -79,6 +79,21 @@ function runSuite() {
   /** 库名校验通过才允许跑夹具；before 失败时 node:test 仍会执行 after，用它挡住清理语句。 */
   let dbVerified = false
 
+  /**
+   * 两个真库套件（本文件 + `attribution-trigger.pg.test.js`）共用同一个库时**必须串行**。
+   *
+   * 光按 pid / application_name 过滤等锁观察是不够的 —— 那只解决「看错了谁在等」，
+   * 不隔离**真实的锁图**：本套件的对照组持着 `sale_order_payments` 的 ROW EXCLUSIVE，
+   * 而兄弟套件会 `ALTER TABLE sale_order_payments DISABLE TRIGGER`（要 ACCESS EXCLUSIVE），
+   * 三者可以绕成一个跨套件的环 —— 那时本用例拿到的 40P01 **不是目标锁环产生的**，
+   * 断言照样绿，结论却是假的；也可能反过来把兄弟套件判死。
+   *
+   * 用会话级 advisory lock 让两个套件互斥（必须用**专用连接**，池连接会轮换导致锁跟着丢）。
+   * 只串行这两个真库套件，`db:test` 里其余纯逻辑套件仍然并行。
+   */
+  const SUITE_LOCK_KEY = 148137
+  let suiteLockClient = null
+
   /** 按前缀清掉本套件的全部夹具行（可重入用：before 与 after 共用）。 */
   async function purgeFixtures() {
     await q(`DELETE FROM sale_payment_item_receipts WHERE sale_order_id LIKE $1`, [LIKE_P])
@@ -95,6 +110,10 @@ function runSuite() {
   test.before(async () => {
     await assertNotBusinessDatabase(pool)
     dbVerified = true
+    // 与兄弟套件互斥（见 SUITE_LOCK_KEY 说明）。取不到就一直等——两个套件都只跑几百毫秒。
+    suiteLockClient = new Client({ connectionString: URL })
+    await suiteLockClient.connect()
+    await suiteLockClient.query('SELECT pg_advisory_lock($1)', [SUITE_LOCK_KEY])
     // 可重入：上一次跑若被 Ctrl-C / 进程崩溃打断，after 不会执行，残留夹具会让 seed 撞唯一键，
     // 报出与锁序毫不相关的 23505。开场先清一次。
     await purgeFixtures()
@@ -109,12 +128,17 @@ function runSuite() {
   })
 
   test.after(async () => {
-    // try/finally：任一 DELETE 抛错（新外键、被兄弟套件的表级锁挡住）都不能跳过 pool.end()，
+    // try/finally：任一 DELETE 抛错（新外键、并发清理）都不能跳过连接释放，
     // 否则连接池吊住 event loop → 整个套件挂起，而不是红一条。
     try {
       if (dbVerified) await purgeFixtures()
     } finally {
-      await pool.end()
+      await pool.end().catch(() => {})
+      // 断开即释放 advisory lock；显式 unlock 只是让意图明确
+      if (suiteLockClient) {
+        await suiteLockClient.query('SELECT pg_advisory_unlock($1)', [SUITE_LOCK_KEY]).catch(() => {})
+        await suiteLockClient.end().catch(() => {})
+      }
     }
   })
 
@@ -193,16 +217,23 @@ function runSuite() {
       await a.connect()
       await b.connect()
       const pids = [await backendPid(a), await backendPid(b)]
+      // ⚠ 必须在 BEGIN **之前**、且用会话级 SET（不是 SET LOCAL）：
+      // `deadlock_timeout` 是 superuser-only 参数，普通账号跑会报 42501。放在事务里失败的话，
+      // 整个事务会进入 aborted 状态、后续语句全报 25P02 —— 一个纯提速的调参不该有能力搞挂套件。
+      // 放事务外则失败无害，只是退回默认 1s（套件慢 ~0.85s）。连接断开即失效。
+      await a.query("SET deadlock_timeout = '150ms'").catch(() => {})
+      await b.query("SET deadlock_timeout = '150ms'").catch(() => {})
       await a.query('BEGIN')
       await b.query('BEGIN')
-      await a.query("SET LOCAL deadlock_timeout = '150ms'")
-      await b.query("SET LOCAL deadlock_timeout = '150ms'")
       return await run({ a, b, pids, track })
     } finally {
-      // 必须无条件断开：留着未提交事务会让后续用例全卡死，表现为整个套件挂起而不是一条红
-      await Promise.allSettled(tracked)
+      // ⚠ 顺序不能反：**先断开，再 settle**。
+      // 反过来写的话，`tracked` 里若有 query 正卡在对方尚未释放的行锁上，
+      // `allSettled` 会永久等待、连 `end()` 都执行不到 → 整个 db:test 挂起（而不是红一条）。
+      // `end()` 会让在途 query 立刻以 "Connection terminated" reject，allSettled 随即返回。
       await a.end().catch(() => {})
       await b.end().catch(() => {})
+      await Promise.allSettled(tracked)
     }
   }
 

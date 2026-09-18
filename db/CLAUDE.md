@@ -96,6 +96,18 @@ staffApi `routes/allocation.js` 的保存/空分配/删除）原本是「先改�
 同一轮还给 admin `deleteOrder` 补了**无条件**的订单行锁（此前只有「转换单」分支取锁，
 非转换单路径是「先删子表、最后删主单」，在分配改成先锁订单后会与之成环）。
 
+⚠ **`deleteOrder` 的订单锁本身又与「退款审批」形成一对反向**（退款审批是「先拿退款行 → 再
+`UPDATE sale_orders`」，删除是「先锁订单 → 再删全单款项行」）。它不成环，靠的是两者**不可能并存**，
+而这需要两个条件同时成立：
+
+1. `deleteOrder` 的锁是 `FOR UPDATE`（**不能降成 `FOR NO KEY UPDATE`**）—— 它与外键 INSERT 取的
+   `FOR KEY SHARE` 冲突，持锁期间没人能给这张单新建退款流水；
+2. 事务内、锁之后有一条**退款流水复检**（`change_type='退款'` 命中即拒绝删除），把已存在的挡在 DELETE 之前。
+
+**删掉复检、把它移到锁之前、或把锁降级，任何一条都会让它变成真实的死锁对。**
+守护：`cross-end-sql-snapshot.test.js` 钉「锁 → 复检 → 删除」的顺序，
+`orders.test.ts` 有一条行为用例（复检命中时一条 DELETE 都不发）。
+
 **锁强度用 `FOR NO KEY UPDATE`，不是 `FOR UPDATE`。** 实测对照（PG 16，2026-09-18）：
 
 | 事务持有 | FK 子表 INSERT（取父行 FOR KEY SHARE） | 改期的 `FOR UPDATE` | 0040 trigger 的 `FOR SHARE` |

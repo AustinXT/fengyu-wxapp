@@ -68,10 +68,26 @@ async function assertNotBusinessDatabase(db) {
 function runSuite() {
   const APP_NAME = 'T137PG'
   const pool = new Pool({ connectionString: URL, max: 4, application_name: APP_NAME })
+
+  /**
+   * 与 `allocation-lock-order.pg.test.js`（issue #148）互斥。
+   *
+   * `db:test` 并行跑多文件，两个真库套件会连同一个库。光按 application_name 过滤等锁观察不够 ——
+   * 那只解决「看错了谁在等」，不隔离**真实锁图**：本套件会 `ALTER TABLE sale_order_payments
+   * DISABLE TRIGGER`（ACCESS EXCLUSIVE），与对方持有的行锁能绕成跨套件的环，让任一方拿到
+   * 「不是自己那个环产生的」40P01。用会话级 advisory lock 把两个套件串起来（需专用连接，
+   * 池连接轮换会让锁跟着丢）。两个套件各自只跑几百毫秒，串行代价可以忽略。
+   */
+  const SUITE_LOCK_KEY = 148137
+  let suiteLockClient = null
   const q = (sql, params) => pool.query(sql, params)
 
   test.before(async () => {
     await assertNotBusinessDatabase(pool)
+    // 与 allocation-lock-order.pg.test.js 互斥（见 SUITE_LOCK_KEY 说明）
+    suiteLockClient = new Client({ connectionString: URL, application_name: APP_NAME })
+    await suiteLockClient.connect()
+    await suiteLockClient.query('SELECT pg_advisory_lock($1)', [SUITE_LOCK_KEY])
     await q(`INSERT INTO org_nodes (id, name, type) VALUES ($1,'测试总部','总部') ON CONFLICT (id) DO NOTHING`, [`${P}HQ`])
     await q(`INSERT INTO org_nodes (id, name, type, parent_id) VALUES ($1,'测试市场','市场',$2) ON CONFLICT (id) DO NOTHING`, [`${P}MK`, `${P}HQ`])
     await q(`INSERT INTO org_nodes (id, name, type, parent_id) VALUES ($1,'测试门店','门店',$2) ON CONFLICT (id) DO NOTHING`, [`${P}ST`, `${P}MK`])
@@ -79,17 +95,26 @@ function runSuite() {
   })
 
   test.after(async () => {
-    await q(`DELETE FROM sale_payment_item_receipts WHERE sale_order_id LIKE $1`, [`${P}%`])
-    await q(`DELETE FROM sale_items WHERE sale_order_id LIKE $1`, [`${P}%`])
-    await q(`DELETE FROM sale_order_payments WHERE sale_order_id LIKE $1`, [`${P}%`])
-    await q(`DELETE FROM sale_orders WHERE sale_order_id LIKE $1`, [`${P}%`])
-    // org_nodes / stores 上有 inventory_sync_location_from_org_node trigger 自动建
-    // inventory_locations 行，不先删它就会撞外键
-    await q(`DELETE FROM inventory_locations WHERE location_id LIKE $1 OR store_id LIKE $1`, [`${P}%`])
-    await q(`DELETE FROM stores WHERE store_id LIKE $1`, [`${P}%`])
-    await q(`DELETE FROM staff_wechat_users WHERE employee_id LIKE $1`, [`${P}%`])
-    await q(`DELETE FROM org_nodes WHERE id LIKE $1`, [`${P}%`])
-    await pool.end()
+    // try/finally：任一 DELETE 抛错都不能跳过连接释放，否则连接池吊住 event loop
+    // → 整个套件挂起而不是红一条。
+    try {
+      await q(`DELETE FROM sale_payment_item_receipts WHERE sale_order_id LIKE $1`, [`${P}%`])
+      await q(`DELETE FROM sale_items WHERE sale_order_id LIKE $1`, [`${P}%`])
+      await q(`DELETE FROM sale_order_payments WHERE sale_order_id LIKE $1`, [`${P}%`])
+      await q(`DELETE FROM sale_orders WHERE sale_order_id LIKE $1`, [`${P}%`])
+      // org_nodes / stores 上有 inventory_sync_location_from_org_node trigger 自动建
+      // inventory_locations 行，不先删它就会撞外键
+      await q(`DELETE FROM inventory_locations WHERE location_id LIKE $1 OR store_id LIKE $1`, [`${P}%`])
+      await q(`DELETE FROM stores WHERE store_id LIKE $1`, [`${P}%`])
+      await q(`DELETE FROM staff_wechat_users WHERE employee_id LIKE $1`, [`${P}%`])
+      await q(`DELETE FROM org_nodes WHERE id LIKE $1`, [`${P}%`])
+    } finally {
+      await pool.end().catch(() => {})
+      if (suiteLockClient) {
+        await suiteLockClient.query('SELECT pg_advisory_unlock($1)', [SUITE_LOCK_KEY]).catch(() => {})
+        await suiteLockClient.end().catch(() => {})
+      }
+    }
   })
 
   /** 建一张订单 + 可选的首次支付/储值卡/回款流水，全部不显式带归属日期列（由 trigger 赋值）。 */

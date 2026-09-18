@@ -3991,6 +3991,27 @@ export const deleteOrder = withPermission(
         `) as unknown as Array<{ status?: string }> | undefined
         const freshStatus = freshRows?.[0]?.status
 
+        // 锁内复检：本单不得存在任何退款流水（含「待审批」）。
+        //
+        // 业务上：有退款在走的订单本就不该物理删除；上面那批守卫是在**事务外**读的（TOCTOU），
+        // 且只挡 `status='已支付'` 的款项流水，待审批退款行漏网。
+        //
+        // 并发上：这条复检是新加的订单锁能成立的前提。退款审批（staff order.js / admin refunds.ts /
+        // staff card.js）是「先拿退款行锁 → 再 UPDATE sale_orders」，与本事务「先锁订单 → 再删全单款项行」
+        // 恰好反向。之所以不成环，靠的是两者**不可能并存**：
+        //   1. 本事务持 `FOR UPDATE`，它与外键 INSERT 取的 `FOR KEY SHARE` 冲突 ——
+        //      持锁期间没人能给这张单新建退款流水；
+        //   2. 已存在的退款流水被这条复检挡下，直接退出、根本不进入 DELETE。
+        // ⚠ 因此**不要把这条复检删掉或移到锁之前**，那会让 deleteOrder × 退款审批变成真实的死锁对。
+        const refundRows = await tx.execute(sql`
+          SELECT 1 FROM sale_order_payments
+          WHERE sale_order_id = ${saleOrderId} AND change_type = '退款'
+          LIMIT 1
+        `) as unknown as unknown[]
+        if (refundRows.length > 0) {
+          throw new Error('ORDER_HAS_REFUND_FLOW')
+        }
+
         // 待支付/支付失败转换单：撤销创建时对源疗程卡 remaining_sessions / 家居 picked_up_quantity 的即时扣减。
         if (order.saleOrderType === '转换单') {
           if (freshStatus === '待支付' || freshStatus === '支付失败') {
@@ -4046,6 +4067,9 @@ export const deleteOrder = withPermission(
     } catch (e) {
       if (e instanceof Error && e.message === 'ORDER_STATE_CHANGED') {
         return { success: false, message: '订单状态已变更，请刷新重试' }
+      }
+      if (e instanceof Error && e.message === 'ORDER_HAS_REFUND_FLOW') {
+        return { success: false, message: '订单存在退款流水，不可删除' }
       }
       if (pgErrorCode(e) === '23503') {
         return { success: false, message: '订单存在关联业务数据，无法删除' }

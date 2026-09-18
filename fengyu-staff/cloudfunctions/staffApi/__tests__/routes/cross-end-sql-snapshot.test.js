@@ -1888,16 +1888,19 @@ describe('营业额分配：事务锁序守护 sale_orders → sale_order_paymen
    *
    * 早期只盯 `UPDATE sale_payment_item_allocations` —— 那样在锁之前插一条
    * `UPDATE sale_order_payments` 仍然全绿，而那恰恰是本 issue 要防的那类写。
-   * 这里取所有会拿写锁的语句里最早的一条。
+   *
+   * 现在按 **DML 语法**匹配而不是枚举字面量：枚举漏掉任何一种（`DELETE`、drizzle builder、
+   * 另一张表）守护就会放过它。`FOR NO KEY UPDATE` 里的 UPDATE 后面不跟表名，不会误命中锁语句本身。
    */
+  const WRITE_STMT_RE = new RegExp(
+    '(?:INSERT\\s+INTO|UPDATE|DELETE\\s+FROM)\\s+' +
+      '(?:sale_payment_item_allocations|sale_payment_item_receipts|sale_order_payments|sale_orders)\\b' +
+      '|tx\\.(?:insert|update|delete)\\(',
+    'i',
+  )
   const firstWriteAt = (seg) => {
-    const positions = [
-      seg.indexOf('UPDATE sale_payment_item_allocations'),
-      seg.indexOf('UPDATE sale_order_payments'),
-      seg.indexOf('INSERT INTO sale_payment_item_allocations'),
-      seg.indexOf('tx.insert(salePaymentItemAllocations)'),
-    ].filter((i) => i >= 0)
-    return positions.length > 0 ? Math.min(...positions) : -1
+    const m = seg.match(WRITE_STMT_RE)
+    return m ? m.index : -1
   }
 
   // 一律剥注释后再断言：两个文件的注释里都**有意**写着反例 `FOR UPDATE OF sop, so`，
@@ -1964,6 +1967,27 @@ describe('营业额分配：事务锁序守护 sale_orders → sale_order_paymen
     const joinLock = /FROM\s+sale_order_payments[\s\S]{0,400}?JOIN\s+sale_orders[\s\S]{0,400}?FOR\s+(?:NO\s+KEY\s+)?UPDATE/i
     expect(staffAllocationSrc).not.toMatch(joinLock)
     expect(adminAllocationsSrc).not.toMatch(joinLock)
+  })
+
+  test('admin deleteOrder：无条件先锁订单，且在删任何子表之前复检退款流水', () => {
+    // deleteOrder 是「先删子表、最后删主单」，不先锁订单就与「先锁订单再写款项」的事务（分配/收款）反向成环。
+    // 补锁之后它又与**退款审批**（先拿退款行 → 再 UPDATE sale_orders）构成另一对反向，
+    // 靠两条一起排除并存：① 持 FOR UPDATE 挡住 FK 新建退款行；② 锁内复检已存在的退款流水直接退出。
+    // 缺任何一条都会变成真实死锁对，所以这里把「锁 → 复检 → 删除」的顺序钉死。
+    const src = stripJsComments(readFile(FILES.adminOrdersTs))
+    const refundCheckAt = src.indexOf("throw new Error('ORDER_HAS_REFUND_FLOW')")
+    expect(refundCheckAt).toBeGreaterThan(0)
+
+    // 定位复检所属事务的起点，只在该段内断言，避免被 orders.ts 其它事务的字面量干扰
+    const txAt = src.lastIndexOf('await db.transaction(async (tx) => {', refundCheckAt)
+    expect(txAt).toBeGreaterThan(0)
+    const beforeCheck = src.slice(txAt, refundCheckAt)
+
+    // 事务开头到复检之间：必须已取订单行锁，且不得出现任何删除
+    expect(beforeCheck).toMatch(/SELECT status FROM sale_orders WHERE sale_order_id = \$\{saleOrderId\} FOR UPDATE/)
+    expect(beforeCheck).not.toMatch(/DELETE\s+FROM/i)
+    // 复检之后才允许删子表
+    expect(src.slice(refundCheckAt)).toMatch(/DELETE FROM sale_payment_item_allocations/)
   })
 
   test('40P01 翻成可重试提示：staff 在全局漏斗、admin 在 action 内', () => {
