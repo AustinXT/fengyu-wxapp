@@ -15,7 +15,7 @@ import {
   exportAllocationServiceOrders,
   type ExportAllocationServiceCursor,
 } from '@/actions/services'
-import { exportCustomers, type ExportCustomersCursor } from '@/actions/customers'
+import { exportCustomers } from '@/actions/customers'
 import { exportEmployees } from '@/actions/employees'
 import { exportPointTransactions } from '@/actions/points'
 import { exportCards } from '@/actions/cards'
@@ -686,7 +686,7 @@ export async function createExportContent(
       return {
         sheetName: '顾客',
         columns: customerColumns,
-        rows: pagedRows((options: ExportBatchOptions<ExportCustomersCursor>) => exportCustomers(params, options)),
+        rows: pagedRows((options: ExportBatchOptions<string>) => exportCustomers(params, options)),
       }
     case 'employees': {
       const nodes = await db.select().from(orgNodes)

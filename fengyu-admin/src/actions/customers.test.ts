@@ -163,7 +163,7 @@ import { hasRole } from '@/lib/auth'
 import { logUpdate } from '@/lib/operation-log'
 import { clientWechatUsers } from '@db/user'
 import { pointBatches } from '@db/points'
-import { eq, ilike, isNotNull, sql, gt, isNull } from 'drizzle-orm'
+import { eq, ilike, isNotNull, sql, gt } from 'drizzle-orm'
 
 const mockSession = {
   employeeId: 'MGR-001',
@@ -1347,18 +1347,20 @@ describe('exportCustomers — 顾客导出（14 列 + spending_tier 口径累计
     expect(rows[10000].createdAt).toBe('2026-02-10')
   })
 
-  it('keyset 分页：切掉探测行、给出 (name,userId) 游标，游标转成 name>x OR 同名 userId>y OR name IS NULL', async () => {
+  it('keyset 分页：按不可变 user_id 排序 + 游标 gt，切掉探测行，游标取本页末行', async () => {
+    const mkRow = (id: string) => ({
+      userId: id, name: `顾客${id}`, phone: null, storeName: null, customerType: '流量客',
+      memberLevel: null, spendingTier: '<1990', customerStatus: null, boundEmployeeName: null,
+      promoterName: null, customerSource: null, birthday: null,
+      createdAt: new Date('2026-02-10T03:00:00.000Z'), becameMemberAt: null,
+    })
     // 请求 2 条 → 查询取 3 条（探测行），末行应被切掉且不参与游标
-    const customerRows = [
-      { userId: 'u1', name: '陈一', phone: null, storeName: null, customerType: '流量客', memberLevel: null, spendingTier: '<1990', customerStatus: null, boundEmployeeName: null, promoterName: null, customerSource: null, birthday: null, createdAt: new Date('2026-02-10T03:00:00.000Z'), becameMemberAt: null },
-      { userId: 'u2', name: '李二', phone: null, storeName: null, customerType: '流量客', memberLevel: null, spendingTier: '<1990', customerStatus: null, boundEmployeeName: null, promoterName: null, customerSource: null, birthday: null, createdAt: new Date('2026-02-11T03:00:00.000Z'), becameMemberAt: null },
-      { userId: 'u3', name: '王三', phone: null, storeName: null, customerType: '流量客', memberLevel: null, spendingTier: '<1990', customerStatus: null, boundEmployeeName: null, promoterName: null, customerSource: null, birthday: null, createdAt: new Date('2026-02-12T03:00:00.000Z'), becameMemberAt: null },
-    ]
-    const mainChain: any = Object.assign(Promise.resolve(customerRows), {})
+    const fetched = [mkRow('u1'), mkRow('u2'), mkRow('u3')]
+    const mainChain: any = Object.assign(Promise.resolve(fetched), {})
     mainChain.from = vi.fn().mockReturnValue(mainChain)
     mainChain.where = vi.fn().mockReturnValue(mainChain)
     mainChain.orderBy = vi.fn().mockReturnValue(mainChain)
-    mainChain.limit = vi.fn().mockResolvedValue(customerRows)
+    mainChain.limit = vi.fn().mockResolvedValue(fetched)
     ;(db.select as any).mockReturnValueOnce(mainChain)
     const spendChain: any = {}
     spendChain.from = vi.fn().mockReturnValue(spendChain)
@@ -1366,38 +1368,29 @@ describe('exportCustomers — 顾客导出（14 列 + spending_tier 口径累计
     spendChain.groupBy = vi.fn().mockResolvedValue([])
     ;(db.select as any).mockReturnValueOnce(spendChain)
 
-    const result = await exportCustomers({}, { limit: 2, cursor: { name: '陈一', userId: 'u1' } })
+    const result = await exportCustomers({}, { limit: 2, cursor: 'u0' })
 
     expect(mainChain.limit).toHaveBeenCalledWith(3) // limit + 1 探测行
     expect(result.rows).toHaveLength(2)
     expect(result.hasMore).toBe(true)
     // 游标取本页最后一行（u2），不是被切掉的探测行（u3）
-    expect(result.nextCursor).toEqual({ name: '李二', userId: 'u2' })
-    // NULLS LAST 三分支齐全：漏掉 isNull 那支会把所有无名顾客整批丢掉
-    expect(gt).toHaveBeenCalledWith(clientWechatUsers.name, '陈一')
-    expect(gt).toHaveBeenCalledWith(clientWechatUsers.userId, 'u1')
-    expect(isNull).toHaveBeenCalledWith(clientWechatUsers.name)
+    expect(result.nextCursor).toBe('u2')
+    expect(gt).toHaveBeenCalledWith(clientWechatUsers.userId, 'u0')
+    // 排序键只能是 user_id：name 可被 updateCustomer 改写，拿它当游标首键会让
+    // 改名后的顾客移到游标之前、永久漏掉
+    expect(mainChain.orderBy).toHaveBeenCalledWith({ type: 'asc', col: 'user_id' })
+    expect(mainChain.orderBy).toHaveBeenCalledTimes(1)
+    expect(gt).not.toHaveBeenCalledWith(clientWechatUsers.name, expect.any(String))
     // 补查累计消费只针对本页两人，不含探测行
     expect(spendChain.where).toHaveBeenCalledWith({ type: 'inArray', col: 'client_user_id', vals: ['u1', 'u2'] })
   })
 
-  it('keyset 游标进入 NULL 区（name=null）→ 只取同为 NULL 且 userId 更大的，不回头捞有名顾客', async () => {
+  it('keyset 游标是空串/非字符串 → 抛 INVALID_STATE，不静默从头重扫', async () => {
     mockExportChains([], null)
 
-    await exportCustomers({}, { limit: 2, cursor: { name: null, userId: 'u9' } })
-
-    expect(isNull).toHaveBeenCalledWith(clientWechatUsers.name)
-    expect(gt).toHaveBeenCalledWith(clientWechatUsers.userId, 'u9')
-    // 不得再出现 name > null 这种比较（会把已扫过的有名顾客重新捞回来）
-    expect(gt).not.toHaveBeenCalledWith(clientWechatUsers.name, expect.anything())
-  })
-
-  it('keyset 游标缺 userId → 抛 INVALID_STATE，不静默全表重扫', async () => {
-    mockExportChains([], null)
-
-    await expect(
-      exportCustomers({}, { limit: 2, cursor: { name: '陈一' } as any }),
-    ).rejects.toThrow('导出分页游标无效')
+    await expect(exportCustomers({}, { limit: 2, cursor: '' as any })).rejects.toThrow('导出分页游标无效')
+    await expect(exportCustomers({}, { limit: 2, cursor: 0 as any })).rejects.toThrow('导出分页游标无效')
+    await expect(exportCustomers({}, { limit: 2, cursor: { userId: 'u9' } as any })).rejects.toThrow('导出分页游标无效')
     expect(db.select).not.toHaveBeenCalled()
   })
 

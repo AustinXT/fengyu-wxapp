@@ -4,7 +4,7 @@ import { db } from '@/db'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { saleOrders } from '@db/order'
 import { stores, orgNodes } from '@db/org'
-import { eq, and, or, gt, desc, asc, inArray, sql, ilike, isNull, isNotNull, getTableColumns } from 'drizzle-orm'
+import { eq, and, or, gt, desc, asc, inArray, sql, ilike, isNotNull, getTableColumns } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import type { Customer, SaleOrder, SaleItem, Appointment, AuthSession, CustomerCoupon, CouponType, CouponStatus } from '@/lib/types'
 import { scopeCondition, isAdminScope, isInScope, requireAdmin } from '@/lib/permissions'
@@ -319,47 +319,6 @@ export const getCustomersPaginated = withPermission(
   },
 )
 
-/**
- * 顾客导出的 keyset 游标 = 排序键 (name, userId)。
- * name 可空且可被 updateCustomer 改写，靠不可变主键 userId 唯一化。
- */
-export interface ExportCustomersCursor {
-  name: string | null
-  userId: string
-}
-
-function normalizeExportCustomersCursor(
-  cursor: ExportCustomersCursor | undefined,
-): ExportCustomersCursor | null {
-  if (!cursor) return null
-  // 只校验唯一化末位键；name 为 null 是合法游标（NULLS LAST 区间的行）
-  if (typeof cursor.userId !== 'string' || !cursor.userId) {
-    throw new ApiError('INVALID_STATE', '导出分页游标无效')
-  }
-  return { name: cursor.name ?? null, userId: cursor.userId }
-}
-
-/**
- * ORDER BY name ASC, user_id ASC 的 seek 条件（PG 默认 ASC NULLS LAST）。
- * 分两种情形，漏掉任一种都会静默丢行：
- *   游标 name 非空 → 取 name 更大的、同名但 userId 更大的、以及**全部 name IS NULL**（它们排在最后）
- *   游标 name 为空 → 已在 NULL 区，只取同为 NULL 且 userId 更大的
- */
-function exportCustomerSeekCondition(cursor: ExportCustomersCursor): SQL {
-  const sameNameTail = and(
-    eq(clientWechatUsers.name, cursor.name as string),
-    gt(clientWechatUsers.userId, cursor.userId),
-  )
-  if (cursor.name === null) {
-    return and(isNull(clientWechatUsers.name), gt(clientWechatUsers.userId, cursor.userId)) as SQL
-  }
-  return or(
-    gt(clientWechatUsers.name, cursor.name),
-    sameNameTail,
-    isNull(clientWechatUsers.name),
-  ) as SQL
-}
-
 /** 顾客导出行（对应 14 列表头） */
 export interface ExportCustomerRow {
   name: string | null
@@ -403,37 +362,45 @@ export interface ExportCustomerRow {
  * 含 WorkFine 历史单、不限支付状态，故数值与「消费档位」列严格对应。
  * 推荐人 = 关联员工当前姓名；关联失效或旧 client 仅写姓名时回退快照。
  *
- * 分页是 keyset（#183 从 offset 改过来）：排序键 name 可被改写、新顾客随时建档，
- * offset 翻页会让边界行重复输出。keyset 下只有「导出途中恰好被改名」的那一行可能重复或漏掉。
+ * 分页是 keyset（#183 从 offset 改过来），排序键是**不可变主键 user_id**：
+ * offset 翻页下新顾客建档就会顶掉边界行；而若沿用列表页的 `asc(name)` 做游标首键，
+ * 一个尚未导出的顾客被改名后会移到游标之前、**永久漏掉且无痕迹**（name 可被
+ * updateCustomer 改写，userId 只能唯一化同名行，救不了整行的排序位置）。
+ * 代价是导出不再按姓名字母序 —— 拿到 xlsx 后按「姓名」列排一下即可，
+ * 而漏掉的行是找不回来的，故取正确性。
  */
 export const exportCustomers = withPermission(
   'customer:list',
   async (
     session,
     params: Record<string, string | undefined>,
-    options?: ExportBatchOptions<ExportCustomersCursor>,
-  ): Promise<ExportBatchResult<ExportCustomerRow, ExportCustomersCursor>> => {
+    options?: ExportBatchOptions<string>,
+  ): Promise<ExportBatchResult<ExportCustomerRow, string>> => {
     const filters = parseCustomerFilters(params)
     const limit = resolveExportBatchLimit(options?.limit)
-    const cursor = normalizeExportCustomersCursor(options?.cursor)
+    const cursor = options?.cursor
+    // 只有 undefined 代表「首批」；空串 / 非字符串一律视为畸形游标，不能静默从头重扫
+    if (cursor !== undefined && (typeof cursor !== 'string' || !cursor)) {
+      throw new ApiError('INVALID_STATE', '导出分页游标无效')
+    }
     const whereClause = and(
       ...buildCustomerConditions(session, filters),
-      ...(cursor ? [exportCustomerSeekCondition(cursor)] : []),
+      ...(cursor ? [gt(clientWechatUsers.userId, cursor)] : []),
     )
 
     const query = db
       .select(exportCustomerColumns)
       .from(clientWechatUsers)
       .where(whereClause)
-      // 例外：picker 字母序（与列表一致）；userId 是 keyset 游标的唯一化末位键。
-      .orderBy(asc(clientWechatUsers.name), asc(clientWechatUsers.userId))
+      // 例外：导出走 keyset 分页，排序键必须不可变（见上方注释），故不用列表页的姓名字母序。
+      .orderBy(asc(clientWechatUsers.userId))
     const fetchedRows = limit == null
       ? await query
       : await query.limit(limit + 1)
     const { pageRows, hasMore, nextCursor } = resolveExportKeysetPage(
       fetchedRows,
       limit,
-      (lastRow) => ({ name: lastRow.name, userId: lastRow.userId }),
+      (lastRow) => lastRow.userId,
     )
 
     // 补查只针对本页（探测行已切掉），避免多算一个顾客的累计消费
