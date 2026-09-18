@@ -341,8 +341,18 @@ describe('mgmtTraffic.summary 会员被经营 6 桶 SQL 形态', () => {
     )
     expect(opsSql).toBeDefined()
     expect(opsSql).toMatch(/c\.customer_type\s*=\s*'会员客'/)
-    expect(opsSql).toMatch(/o\.sale_order_type IN \('销售单',\s*'转换单'\)/)
-    expect(opsSql).toMatch(/o\.status\s*=\s*'已支付'/)
+    // #138：spend 从「订单快照 received - refunded_amount @ paid_at」
+    // 改为「已入账款项流水 SUM(spe.amount) @ performance_date」，与业绩 KPI 同源
+    expect(opsSql).toMatch(/SUM\(spe\.amount::numeric\)\s+AS\s+spend/)
+    expect(opsSql).toMatch(/FROM sale_order_performance_events spe/)
+    expect(opsSql).toMatch(/spe\.sale_order_type IN \('销售单',\s*'转换单'\)/)
+    expect(opsSql).toMatch(/spe\.status\s*=\s*'已支付'/)
+    expect(opsSql).toMatch(/spe\.change_type IN \('首次支付',\s*'回款',\s*'退款'\)/)
+    expect(opsSql).toMatch(/spe\.performance_date\s+BETWEEN/)
+    // 旧口径必须消失（订单快照 + paid_at + 父订单状态过滤）
+    expect(opsSql).not.toMatch(/received::numeric\s*-\s*COALESCE/)
+    expect(opsSql).not.toMatch(/o\.paid_at::date\s+BETWEEN/)
+    expect(opsSql).not.toMatch(/o\.status\s*=\s*'已支付'/)
     expect(opsSql).toMatch(/FILTER \(WHERE spend\s*<\s*1990\)/)
     expect(opsSql).toMatch(/FILTER \(WHERE spend\s*>=\s*1990\s+AND\s+spend\s*<\s*10000\)/)
     expect(opsSql).toMatch(/FILTER \(WHERE spend\s*>=\s*10000\s+AND\s+spend\s*<\s*30000\)/)
@@ -410,7 +420,7 @@ describe('mgmtTraffic.summary 新会员经营 + trialFootfall', () => {
     expect(newMemSql).toBeDefined()
   })
 
-  test('newMemberSpend SQL 含 sale_orders + JOIN client + became_member_at + paid_at BETWEEN', async () => {
+  test('newMemberSpend SQL 走款项流水视图 + became_member_at + performance_date BETWEEN', async () => {
     setupDefaultMocks()
     const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
     await summary(ctx)
@@ -418,14 +428,19 @@ describe('mgmtTraffic.summary 新会员经营 + trialFootfall', () => {
     const sqlList = pg.query.mock.calls.map((c) => c[0])
     const spendSql = sqlList.find(
       (s) =>
-        /FROM sale_orders o/.test(s) &&
+        /FROM sale_order_performance_events spe/.test(s) &&
         /JOIN client_wechat_users c/.test(s) &&
         /c\.became_member_at::date\s+BETWEEN/.test(s) &&
-        /o\.paid_at::date\s+BETWEEN/.test(s),
+        /spe\.performance_date\s+BETWEEN/.test(s),
     )
     expect(spendSql).toBeDefined()
-    expect(spendSql).toMatch(/o\.sale_order_type IN \('销售单',\s*'转换单'\)/)
-    expect(spendSql).toMatch(/o\.status\s*=\s*'已支付'/)
+    // #138 同 memberOps：款项流水 @ 归属日期
+    expect(spendSql).toMatch(/SUM\(spe\.amount::numeric\)/)
+    expect(spendSql).toMatch(/spe\.sale_order_type IN \('销售单',\s*'转换单'\)/)
+    expect(spendSql).toMatch(/spe\.status\s*=\s*'已支付'/)
+    expect(spendSql).toMatch(/spe\.change_type IN \('首次支付',\s*'回款',\s*'退款'\)/)
+    expect(spendSql).not.toMatch(/received::numeric\s*-\s*COALESCE/)
+    expect(spendSql).not.toMatch(/o\.paid_at::date\s+BETWEEN/)
   })
 
   test('trialFootfall SQL 含 customer_type IN (体验客, 小美客)', async () => {

@@ -3109,6 +3109,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
    */
   function mockConvTx(opts: {
     heldRows: any[]
+    homeConsumedRows?: any[]
     skuRows: any[]
     reservedRows?: any[]
     orderId?: string
@@ -3122,8 +3123,17 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
       let execCall = 0
       const tx = {
         execute: vi.fn().mockImplementation(async (sqlArg: any) => {
+          const text = sqlArg?.__sqlText ?? ''
+          // #145/#153：家居折抵额度在锁取得后用独立语句复算（新快照），仅家居行触发。
+          // 按 SQL 特征识别而非序号，避免它挤掉后面按序号 mock 的返回值。
+          if (text.includes('home_picked_quantity')) {
+            executeSql.push(text)
+            return opts.homeConsumedRows ?? [{
+              sale_item_id: 'home-1', home_picked_quantity: 3, home_converted_amount: '0',
+            }]
+          }
           execCall++
-          executeSql.push(sqlArg?.__sqlText ?? '')
+          executeSql.push(text)
           if (execCall === 1) return opts.heldRows
           if (execCall === 2) return opts.reservedRows ?? []
           if (execCall === 3) return [{ id: opts.orderId || 'FY-XSD-WX-260416-0001' }]
@@ -3190,6 +3200,8 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     session_count: null, remaining_sessions: null,
     quantity: 10, picked_up_quantity: 3,
     unit_price: '120', unit_real_price: '100',
+    // #145/#153：折抵额度按「剩余已付 = 1000 − 3 件已提 × 100 − 0 已转走 = 700」→ 7 件
+    sale_amount: '1000', received: '1000', sale_order_type: '销售单',
     sales_category: '自销自耗', service_fee: '0', is_experience: false, is_shengmei: false,
     client_user_id: 'user-1', order_status: '已支付', product_kind: '家居',
     ...over,
@@ -3202,7 +3214,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     purchaseLimit: null, marketScope: null,
   }]
 
-  it('#125 家居按未提货数量整行折抵：7 盒 × 100 = 700，转出行金额为负', async () => {
+  it('家居按「剩余已付」折抵：1000 − 已提 3 × 100 = 700 → 7 盒 / ¥700', async () => {
     const inserted: any[] = []
     mockConvTx({
       heldRows: [homeHeldRow()],
@@ -3215,7 +3227,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     expect(result.success).toBe(true)
     const outRow = inserted.find((v) => v.itemDirection === '转出')
     expect(outRow).toBeDefined()
-    // 未提货 7 盒（不看付款进度），转出行金额 = −700
+    // 剩余已付 700 / 单价 100 = 7 盒；转出行金额 = −700
     expect(outRow.quantity).toBe(7)
     expect(outRow.saleAmount).toBe('-700.00')
     expect(outRow.received).toBe('-700.00')
@@ -3260,7 +3272,7 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     expect(JSON.stringify(result)).toContain('原订单状态不允许转换')
   })
 
-  it('#125 已无未提货数量的家居行拒绝折抵', async () => {
+  it('#125/#145 没有已付清整件的家居行拒绝折抵', async () => {
     mockConvTx({
       heldRows: [homeHeldRow({ quantity: 4, picked_up_quantity: 4 })],
       skuRows: homeSkuRows,
@@ -3270,7 +3282,8 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
 
     expect(result.success).toBe(false)
     // 子标签 HOME_PRODUCT_NO_PENDING 只进日志，用户看到的是中文正文（issue #133）
-    expect(result.message).toBe('所选家居产品已无未提货数量，不可折抵')
+    // #145/#153 收紧后文案随口径改为「没有已付清的整件可折抵」
+    expect(result.message).toBe('所选家居产品没有已付清的整件可折抵')
   })
 
   it('#125 家居扣减 rowsAffected=0（并发被抢先）→ 冲突', async () => {
@@ -3591,7 +3604,10 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
     const reservedIndex = captured.executeSql.findIndex((text) => /FROM\s+service_items\s+sit/i.test(text))
     expect(lockIndex).toBeGreaterThanOrEqual(0)
     expect(reservedIndex).toBe(lockIndex + 1)
-    expect(captured.executeSql[lockIndex]).not.toMatch(/service_items|SUM\s*\(/i)
+    // 锁行查询不得混入服务预扣（那必须是独立的下一条查询），也不得在**顶层**聚合。
+    // #145/#153 的家居折抵额度是标量子查询里的 SUM——每行一个值，不改变返回行数与锁定范围。
+    expect(captured.executeSql[lockIndex]).not.toMatch(/service_items/i)
+    expect(captured.executeSql[lockIndex]).not.toMatch(/\n\s*GROUP BY/i)
     expect(captured.executeSql[lockIndex]).toMatch(/ORDER\s+BY\s+si\.sale_item_id\s+FOR\s+UPDATE/i)
     expect(captured.executeSql[reservedIndex]).toMatch(/reserved_at\s+IS\s+NOT\s+NULL/i)
     expect(captured.executeSql[reservedIndex]).toMatch(/INNER\s+JOIN\s+service_orders\s+reserved_order/i)

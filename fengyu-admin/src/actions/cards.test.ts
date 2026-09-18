@@ -530,24 +530,81 @@ describe('getCustomerHeldCards — 数据映射', () => {
     expect(eq).toHaveBeenCalledWith('item_direction', '转入')
   })
 
-  it('家居产品（#125）：按未提货数量折抵，remainingSessions=null、单位回退盒', async () => {
-    mockSelectRows([{
-      saleItemId: 'si-home-1',
-      productName: '家居精华',
-      productType: '家居产品',
-      remainingSessions: null,
-      quantity: 10,
-      pickedUpQuantity: 3,
-      unitRealPrice: '100.00',
-      productKind: '家居',
-    }])
+  // #145/#153：折抵按「剩余已付 = 行实收 − 已提货金额 − 已转走金额」算。
+  // ⚠ fixture 必须给全 saleOrderType / saleAmount / received / homePickedQuantity /
+  //   homeConvertedAmount——缺任一项都会让 homeDeductible 走 `saleAmount <= 0` 的赠品分支，
+  //   测试「碰巧」通过却完全没验证普通销售行的公式（对抗审查实证）。
+  const homeRow = (over: Record<string, unknown> = {}) => ({
+    saleItemId: 'si-home-1',
+    productName: '家居精华',
+    productType: '家居产品',
+    saleOrderType: '销售单',
+    remainingSessions: null,
+    quantity: 10,
+    pickedUpQuantity: 3,
+    homePickedQuantity: 3,
+    homeConvertedAmount: '0',
+    saleAmount: '1000.00',
+    received: '1000.00',
+    unitRealPrice: '100.00',
+    productKind: '家居',
+    ...over,
+  })
+
+  it('家居产品付清：剩余已付 1000 − 已提 3 × 100 = 700 → 7 盒 / ¥700', async () => {
+    mockSelectRows([homeRow()])
     const [row] = await getCustomerHeldCards('user-1', 'store-1')
     expect(row.productType).toBe('家居产品')
-    // 未提货 7 盒 × 100 = 700；不看付款进度
     expect(row.remainingQty).toBe(7)
     expect(row.remainingSessions).toBeNull()
     expect(row.deductibleAmount).toBe('700.00')
     expect(row.unit).toBe('盒')
+  })
+
+  it('家居产品未付清：实收 450 → 折 4 盒，金额含不足一件的 ¥50 余数', async () => {
+    mockSelectRows([homeRow({ pickedUpQuantity: 0, homePickedQuantity: 0, received: '450.00' })])
+    const [row] = await getCustomerHeldCards('user-1', 'store-1')
+    // 件数向下取整（转出行受 chk_item_quantity > 0 约束），金额是剩余已付本身
+    expect(row.remainingQty).toBe(4)
+    expect(row.deductibleAmount).toBe('450.00')
+  })
+
+  it('家居产品已折抵过：已转走金额按实际值扣，不用「件数 × 单价」推算', async () => {
+    // 付 450 折走 4 件带走 ¥450，再回款 ¥50 → 剩余已付 50 < 单价 100 → 无整件可折
+    mockSelectRows([homeRow({
+      pickedUpQuantity: 4, homePickedQuantity: 0, homeConvertedAmount: '450', received: '500.00',
+    })])
+    const [row] = await getCustomerHeldCards('user-1', 'store-1')
+    expect(row.remainingQty).toBe(0)
+    expect(row.deductibleAmount).toBe('50.00')
+  })
+
+  it('家居产品退款不重复扣减：付清 10 件退 2 件 → 仍可折 8 盒 / ¥800', async () => {
+    // received 已由 STEP 1.5 扣过退款（800），picked_up_quantity 又含退款结算数（2）——
+    // 只能用它算物理未结算，不能再从金额里减一次
+    mockSelectRows([homeRow({ pickedUpQuantity: 2, homePickedQuantity: 0, received: '800.00' })])
+    const [row] = await getCustomerHeldCards('user-1', 'store-1')
+    expect(row.remainingQty).toBe(8)
+    expect(row.deductibleAmount).toBe('800.00')
+  })
+
+  it('家居产品分币单价按分整除，与 PG numeric 一致（16.67 × 3 = 50.01 → 3 件）', async () => {
+    mockSelectRows([homeRow({
+      quantity: 3, pickedUpQuantity: 0, homePickedQuantity: 0,
+      unitRealPrice: '16.67', saleAmount: '50.01', received: '50.01',
+    })])
+    const [row] = await getCustomerHeldCards('user-1', 'store-1')
+    // JS 浮点直除得 2.9999999999999996 → floor 2，PG numeric 得 3；必须按分整除
+    expect(row.remainingQty).toBe(3)
+  })
+
+  it('寄存单家居维持原口径：只受物理未结算封顶（实收不代表权益）', async () => {
+    mockSelectRows([homeRow({
+      saleOrderType: '寄存单', pickedUpQuantity: 1, homePickedQuantity: 1, received: '0.00',
+    })])
+    const [row] = await getCustomerHeldCards('user-1', 'store-1')
+    expect(row.remainingQty).toBe(9)
+    expect(row.deductibleAmount).toBe('900.00')
   })
 
   it('家居产品全部结算（提货+退款）时 remainingQty 归零不为负', async () => {

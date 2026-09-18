@@ -19,7 +19,7 @@ import { prepaidCards, cardTransactions } from '@db/prepaid-card'
 import { eq, desc, asc, and, or, sql, ilike, gte, lt, gt, inArray, isNull } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
-import type { AuthSession, SaleOrder, SaleItem, DateBasis, OrderStatus, SaleOrderType } from '@/lib/types'
+import type { AuthSession, SaleOrder, SaleItem, DateBasis, OrderStatus, SaleOrderType, SalesCategory } from '@/lib/types'
 import { revalidatePath } from 'next/cache'
 import { scopeCondition, isInScope, requireAdmin, isDepositOrderApprover } from '@/lib/permissions'
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
@@ -36,6 +36,7 @@ import { calculateTreatmentTierLineAmounts } from '@/lib/treatment-tier-pricing'
 import { settlePointsSafe } from '@/lib/points-settle'
 import { grantPointBatch, consumePointBatches } from '@/lib/points-batches'
 import { recalcPaidSessionsForOrder, paidUnusedSessionsExpr } from '@/lib/paid-sessions'
+import { homeDeductible, isConvertibleEntitlementRow } from '@/lib/home-product'
 import { capturePaymentAllocatables, refreshOrderAllocationRollup } from '@/lib/payment-allocatable'
 import { getPerItemRefundedMap } from '@/lib/per-item-refund'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
@@ -4286,7 +4287,7 @@ export const createOrder = withPermission(
     saleAmount?: string
     /** 手动实付金额（可选，覆盖 saleAmount） */
     received?: string
-    salesCategory?: '自销自耗' | '他销自耗' | '他销他耗' | '生态合作' | null
+    salesCategory?: SalesCategory | null
     /**
      * 套餐子项标记（前端 BundlePicker 加购时置 true）：套餐价是独立机制，
      * 后端「会员价分流权威定价」对其豁免（维持现状，沿用前端套餐价）。
@@ -5303,7 +5304,7 @@ export const createConversionOrder = withPermission(
     /** 店长特价行手填应付金额（转换单同销售单，后端按 DB is_manager_special 采纳） */
     saleAmount?: string
     quantity: number
-    salesCategory?: '自销自耗' | '他销自耗' | '他销他耗' | '生态合作' | null
+    salesCategory?: SalesCategory | null
   }>
   /** 充值卡抵扣金额（仅正补差额 priceDiff > 0 时有效） */
   prepaidCardAmount?: number
@@ -5416,6 +5417,8 @@ export const createConversionOrder = withPermission(
           si.picked_up_quantity,
           si.unit_price,
           si.unit_real_price,
+          si.sale_amount,
+          si.received,
           si.sales_category,
           COALESCE(si.is_shengmei, psk.is_shengmei) AS is_shengmei,
           si.service_fee,
@@ -5437,6 +5440,36 @@ export const createConversionOrder = withPermission(
       `)
 
       const held = Array.from(heldRows as unknown as Iterable<Record<string, unknown>>)
+      // #145/#153：折抵额度必须在**锁取得之后**用另一条语句复算。
+      // `FOR UPDATE OF si` 只锁 sale_items：READ COMMITTED 下语句先取快照再等锁，
+      // 唤醒后 EvalPlanQual 只刷新 si 自身的行版本，pickup_records 与转出行聚合仍是旧快照
+      // → 两笔并发折抵会各自读到 converted_amount=0，把同一批已付价值折两遍。
+      const homeIds = held
+        .filter((row) => row.product_type === '家居产品')
+        .map((row) => row.sale_item_id as string)
+      if (homeIds.length > 0) {
+        const consumedRows = (await tx.execute(sql`
+          SELECT si.sale_item_id,
+                 COALESCE((SELECT SUM(pr.pickup_quantity) FROM pickup_records pr
+                            WHERE pr.sale_item_id = si.sale_item_id), 0) AS home_picked_quantity,
+                 COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric))
+                             FROM sale_items out_item
+                             JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+                            WHERE out_item.ref_sale_item_id = si.sale_item_id
+                              AND out_item.item_direction = '转出'
+                              AND out_item.product_type = '家居产品'
+                              AND conv_order.status <> '已关闭'), 0) AS home_converted_amount
+            FROM sale_items si
+           WHERE si.sale_item_id IN (${sql.join(homeIds.map((id) => sql`${id}`), sql`, `)})
+        `)) as unknown as Array<Record<string, unknown>>
+        const consumedById = new Map(consumedRows.map((r) => [r.sale_item_id as string, r]))
+        for (const row of held) {
+          if (row.product_type !== '家居产品') continue
+          const c = consumedById.get(row.sale_item_id as string)
+          row.home_picked_quantity = c?.home_picked_quantity ?? 0
+          row.home_converted_amount = c?.home_converted_amount ?? 0
+        }
+      }
       if (held.length !== data.convertOutSaleItemIds.length) {
         throw new ApiError('NOT_FOUND', 'CARD_NOT_FOUND: 部分卡不存在或已失效')
       }
@@ -5485,8 +5518,10 @@ export const createConversionOrder = withPermission(
         // 归属校验：store_id / client_user_id / direction / 状态
         if (row.store_id !== data.storeId) throw new ApiError('INVALID_STATE', 'CARD_STORE_MISMATCH: 所选卡不属于当前门店')
         if (row.client_user_id !== data.clientUserId) throw new ApiError('INVALID_STATE', 'CARD_OWNER_MISMATCH: 所选卡不属于该顾客')
-        const isEntitlement = row.item_direction === '购买'
-          || (row.sale_order_type === '转换单' && row.item_direction === '转入')
+        const isEntitlement = isConvertibleEntitlementRow({
+          item_direction: row.item_direction as string,
+          sale_order_type: row.sale_order_type as string,
+        })
         if (!isEntitlement) throw new ApiError('INVALID_STATE', 'CARD_DIRECTION_INVALID: 所选行不是有效权益，不可折抵')
         // 订单级「部分支付」同样放行（#125 甲方拍板），与 getCustomerHeldCards 的 WHERE 保持一致
         if (row.order_status !== '已支付' && row.order_status !== '部分支付' && row.order_status !== '已完成') {
@@ -5502,8 +5537,11 @@ export const createConversionOrder = withPermission(
 
         // 2026-05-21 单品合并：折抵统一按 remaining_sessions（含原"体验卡单品"=1 次卡）
         // 2026-08-06 预扣机制：可折抵数量 = remaining_sessions - 服务预扣（total_reserved）
-        // 2026-09-14 #125：家居产品按未提货数量整行折抵（quantity − picked_up_quantity，不看付款进度）
+        // 2026-09-14 #125：家居产品可作为折抵来源
+        // ⚠ #145/#153 收紧：家居改按「已付未结算」折抵（件数向下取整、金额含余数，见 homeDeductible）。
+        //   旧的「未提货数量全额折抵」会把未兑现价值洗成全额可提（dev 真库实证）。疗程卡口径不变。
         let qty = 0
+        let lineAmount: number | null = null   // 非空时覆盖 unit × qty（家居金额含不足一件的已付余数）
         if (productType === '疗程卡') {
           const rem = Number(row.remaining_sessions ?? 0)
           const reserved = reservedBySaleItemId.get(row.sale_item_id as string) ?? 0
@@ -5516,16 +5554,27 @@ export const createConversionOrder = withPermission(
           }
           qty = available  // 折抵数量改为可用次数（扣除预扣）
         } else if (productType === '家居产品') {
-          const pending = Number(row.quantity ?? 0) - Number(row.picked_up_quantity ?? 0)
-          if (pending <= 0) {
-            throw new ApiError('INVALID_STATE', 'HOME_PRODUCT_NO_PENDING: 所选家居产品已无未提货数量，不可折抵')
+          // 锁内复算（候选列表可能已过期），与 staff createConversion 同源
+          const home = homeDeductible({
+            saleOrderType: row.sale_order_type as string,
+            quantity: Number(row.quantity ?? 0),
+            pickedUpQuantity: Number(row.picked_up_quantity ?? 0),
+            pickedQuantity: Number(row.home_picked_quantity ?? 0),
+            convertedAmount: row.home_converted_amount as string,
+            saleAmount: row.sale_amount as string,
+            received: row.received as string,
+            unitRealPrice: row.unit_real_price as string,
+          })
+          if (home.quantity <= 0) {
+            throw new ApiError('INVALID_STATE', 'HOME_PRODUCT_NO_PENDING: 所选家居产品没有已付清的整件可折抵')
           }
-          qty = pending
+          qty = home.quantity
+          lineAmount = Math.round(home.amount * 100) / 100
         } else {
           throw new ApiError('INVALID_PARAMS', 'CARD_TYPE_INVALID: 所选行类型不支持折抵')
         }
 
-        const amount = Math.round(unit * qty * 100) / 100
+        const amount = lineAmount != null ? lineAmount : Math.round(unit * qty * 100) / 100
         totalOut += amount
         // 按折抵数量比例扣减 service_fee（负值）
         const origServiceFee = Number(row.service_fee ?? 0)

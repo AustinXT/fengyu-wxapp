@@ -20,4 +20,16 @@ const SALES_CATEGORIES = Object.freeze(['自销自耗', '他销自耗', '他销�
 /** sales_category 为 NULL 时的归类名 —— 前后端必须字面量一致，勿改 */
 const UNCATEGORIZED = '未分类'
 
-module.exports = { SALES_CATEGORIES, UNCATEGORIZED }
+/**
+ * 生成以四分类为键、值全 0 的**可变**费率骨架（提成矩阵 pivot 用）。
+ *
+ * 必须每次新建：调用方会原地写入 `skeleton[r.sales_category] = rate`，
+ * 因此不能复用上面那个 freeze 过的共享常量。
+ */
+function createSalesCategoryRates() {
+  const rates = {}
+  for (const category of SALES_CATEGORIES) rates[category] = 0
+  return rates
+}
+
+module.exports = { SALES_CATEGORIES, UNCATEGORIZED, createSalesCategoryRates }

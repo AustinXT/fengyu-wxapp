@@ -25,7 +25,7 @@ import { getTreatmentCardBusinessIdentity, groupTreatmentCards, selectGroupSourc
 export interface ConversionPanelProps {
   /** 加载中（父组件正在调用 getCustomerHeldCards） */
   loading: boolean
-  /** 候选折抵项（疗程卡 + 未提货家居） */
+  /** 候选折抵项（疗程卡 + 家居；家居按「已付未结算」计，见 homeDeductible） */
   heldCards: HeldCardCandidate[]
   /** 当前已勾选的 saleItemId 集合 */
   selectedIds: string[]
@@ -200,7 +200,7 @@ export function ConversionPanel({
         <h3 className="text-sm font-semibold">转换单结算</h3>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* 左列：折抵项列表（疗程卡 + 未提货家居） */}
+          {/* 左列：折抵项列表（疗程卡 + 家居「已付未结算」） */}
           <div className="space-y-2">
             <p className="text-xs text-[#666666]">勾选折抵项</p>
             {!loading && groupedHeldCards.length > 0 && (
@@ -255,7 +255,7 @@ export function ConversionPanel({
                 const remainLabel =
                   c.productType === '疗程卡'
                     ? `剩 ${c.remainingSessions ?? 0} ${c.unit}`
-                    : `未提货 ${c.remainingQty ?? 0} ${c.unit}`
+                    : `可折抵 ${c.remainingQty ?? 0} ${c.unit}`
                 return (
                   <label
                     key={c.groupKey}
