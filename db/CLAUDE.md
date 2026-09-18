@@ -88,16 +88,32 @@ npm run db:check:attribution   # 款项归属日期迁移前体检（只读，�
 回款与退款走 ELSE 分支，不读 `sale_orders`；`allocation_status` 之类的 UPDATE 不在
 `UPDATE OF status, paid_at, performance_attribution_date` 列表里，根本不触发 trigger。
 
-⚠ **已知的反向锁序（既有，非 0040 引入）**：手工营业额分配
-（`fengyu-admin/src/actions/allocations.ts` 的 `refreshOrderAllocationRollup` 链路、
-staffApi `routes/allocation.js` 的保存/删除）是「先改款项行、再刷新订单汇总」。
-它与「订单级改期」（先锁订单、再回写款项行）并发时会 40P01 —— 已在临时 PG 实测复现，
-且**把 0040 的 AFTER trigger 禁用、改用改造前的应用层 UPDATE 同样复现**，
-说明这个环在 0040 之前就存在，只是同步动作下沉后不再能从应用代码里一眼看出锁足迹。修它属于 allocation 模块的独立课题。
+✅ **曾经的反向锁序已修复（issue #148，2026-09-18）**：手工营业额分配
+（`fengyu-admin/src/actions/allocations.ts` 的 `savePaymentAllocations`、
+staffApi `routes/allocation.js` 的保存/空分配/删除）原本是「先改款项行、再刷新订单汇总」，
+与「订单级改期」（先锁订单、再回写款项行）并发时会 40P01（临时 PG 实测复现过，
+且把 0040 的 AFTER trigger 禁用、改用改造前的应用层 UPDATE 同样复现 —— 环在 0040 之前就存在）。
 
-另有两条路径（clientApi `routes/order.js` 的 repay 纯卡/混合分支、admin `orders.ts` 的
-`deductPrepaidCardAtCreation`）不先锁订单，但它们写的是配对不上主流水的卡行，压根不触发上面的共享锁，
-且被 `prepaid_cards` 行锁串行化 —— **无环是因为不触发，不是因为顺序对**。改动这两处时要重新评估。
+现在四个写事务都以 `SELECT 1 FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE` 开头。守护分两层：
+- 词法：`staffApi/__tests__/routes/cross-end-sql-snapshot.test.js` 的「事务锁序守护」块，
+  既断言锁存在、也断言它**排在第一条写语句之前**（挡「锁被挪到事务末尾」）；
+- 真库：`db/scripts/__tests__/allocation-lock-order.pg.test.js`，同时跑「修复前序列必死锁」与
+  「修复后序列不死锁」两条 —— 前者在，后者才不是假绿。
+
+⚠ **形式上反向、但目前无环的路径（改动前必须重新评估）**：
+
+1. **退款审批**（admin `refunds.ts` 的 `approveRefund`、staffApi `order.js` 同语义副本）
+   事务第一条就是 `UPDATE sale_order_payments`（CAS 翻退款行 status/paid_at），之后才
+   `UPDATE sale_orders` 重算 `refunded_amount` —— 顺序是反的。它**不**与改期成环，原因是**行不相交**：
+   改期 trigger 只回写 `change_type='首次支付'` 与同次 `'储值卡抵扣'` 两类行，而退款审批链路
+   （含 `refund-cascade` 的 `allocation_status` 回写）全部限定 `WHERE id = <退款流水>`。
+   2026-09-18 用两个真实会话交错验证过，不产生 40P01。
+   **一旦退款链路开始写首次支付行（例如改它的 status/paid_at），这个环立刻成立。**
+2. **clientApi `routes/order.js` 的 repay 纯卡/混合分支、admin `orders.ts` 的
+   `deductPrepaidCardAtCreation`** 不先锁订单，但写的是配对不上主流水的卡行，压根不触发上面的共享锁，
+   且被 `prepaid_cards` 行锁串行化。
+
+两类都是**无环因为不相交/不触发，不是因为顺序对**。
 
 跑 0040 之前先执行 `npm run db:check:attribution` 确认没有真阻塞项：该迁移的
 `ADD CONSTRAINT` 取 ACCESS EXCLUSIVE 并持有到事务提交，回填与自检的全表扫描都落在这个窗口里，
