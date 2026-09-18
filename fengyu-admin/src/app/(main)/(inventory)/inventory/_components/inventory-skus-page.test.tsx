@@ -132,7 +132,9 @@ describe('InventorySkusPage', () => {
     fireEvent.click(screen.getByTitle('编辑库存商品'))
 
     const input = screen.getAllByLabelText(/^市场进货价/).find((element) => element.tagName === 'INPUT')!
-    expect(input).toHaveValue('78')
+    // #135 把价格输入改成 type="number" 后，jest-dom 的 toHaveValue 返回的是
+    // **number**（对 text input 才是 string）。这里断言 78 而不是 '78' 是预期的。
+    expect(input).toHaveValue(78)
     expect(input).not.toHaveAttribute('readonly')
 
     fireEvent.change(input, { target: { value: '79.5' } })

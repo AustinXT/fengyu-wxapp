@@ -681,12 +681,12 @@ function SkuFormDialog({
           <section className="space-y-3 border-t border-[var(--border)] pt-4">
             <h3 className="text-sm font-medium">价格资料</h3>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field label="供应链采购价"><Input inputMode="decimal" value={form.supplyChainPurchasePrice} onChange={(event) => setField('supplyChainPurchasePrice', event.target.value)} /></Field>
-              <Field label="门店进货价"><Input inputMode="decimal" value={form.storePurchasePrice} onChange={(event) => setField('storePurchasePrice', event.target.value)} /></Field>
-              <Field label="市场员工购价"><Input inputMode="decimal" value={form.marketStaffPurchasePrice} onChange={(event) => setField('marketStaffPurchasePrice', event.target.value)} /></Field>
-              <Field label="顾客零售价"><Input inputMode="decimal" value={form.retailPrice} onChange={(event) => setField('retailPrice', event.target.value)} /></Field>
-              <Field label="核算价"><Input inputMode="decimal" value={form.accountingPrice} onChange={(event) => setField('accountingPrice', event.target.value)} /></Field>
-              <Field label="市场折扣（25 表示 25%）"><Input inputMode="decimal" value={form.marketPurchaseDiscount} onChange={(event) => setField('marketPurchaseDiscount', event.target.value)} /></Field>
+              <Field label="供应链采购价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.supplyChainPurchasePrice} onChange={(event) => setField('supplyChainPurchasePrice', event.target.value)} /></Field>
+              <Field label="门店进货价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.storePurchasePrice} onChange={(event) => setField('storePurchasePrice', event.target.value)} /></Field>
+              <Field label="市场员工购价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.marketStaffPurchasePrice} onChange={(event) => setField('marketStaffPurchasePrice', event.target.value)} /></Field>
+              <Field label="顾客零售价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.retailPrice} onChange={(event) => setField('retailPrice', event.target.value)} /></Field>
+              <Field label="核算价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.accountingPrice} onChange={(event) => setField('accountingPrice', event.target.value)} /></Field>
+              <Field label="市场折扣（25 表示 25%）"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.marketPurchaseDiscount} onChange={(event) => setField('marketPurchaseDiscount', event.target.value)} /></Field>
               <Field label="市场进货价">
                 <div className="space-y-1">
                   {form.sourceType === '供应链' && (
@@ -696,7 +696,7 @@ function SkuFormDialog({
                     </Select>
                   )}
                   <Input
-                    inputMode="decimal"
+                    type="number" min="0" step="0.01" max="9999999999.99"
                     value={form.marketPurchasePrice}
                     placeholder={calculatedMarketPrice == null ? undefined : String(calculatedMarketPrice)}
                     disabled={form.sourceType === '供应链' && form.marketPurchasePriceMode === '公式'}
@@ -708,7 +708,7 @@ function SkuFormDialog({
               {form.sourceType === '供应链' && form.marketPurchasePriceMode === '手工覆盖' && (
                 <Field label="手工覆盖原因 *"><Textarea value={form.marketPurchasePriceOverrideReason} onChange={(event) => setField('marketPurchasePriceOverrideReason', event.target.value)} /></Field>
               )}
-              <Field label="自采实际进货价"><Input inputMode="decimal" value={form.itemCompanyPurchasePrice} onChange={(event) => setField('itemCompanyPurchasePrice', event.target.value)} /></Field>
+              <Field label="自采实际进货价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.itemCompanyPurchasePrice} onChange={(event) => setField('itemCompanyPurchasePrice', event.target.value)} /></Field>
             </div>
           </section>
         )}

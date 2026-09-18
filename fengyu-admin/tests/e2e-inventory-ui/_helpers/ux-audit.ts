@@ -61,7 +61,18 @@ export async function extractFormControls(scope: Locator): Promise<FormControl[]
   return await scope.locator('label').evaluateAll((labels) =>
     labels.map((label) => {
       const control = label.querySelector('input, select, textarea')
-      const labelText = (label.querySelector('span')?.textContent ?? label.textContent ?? '').trim()
+      // sr-only 是只给读屏的补充说明（#135 给必填字段加了「（必填）」），
+      // **不能**算进字段名：否则 bare 会以「（必填）」结尾，
+      // 规则 1 里靠 `bare.endsWith(ex)` 的白名单豁免会整批失效，凭空冒出一串 P1 误报。
+      const holder = label.querySelector('span')
+      let labelText: string
+      if (holder) {
+        const clone = holder.cloneNode(true) as HTMLElement
+        clone.querySelectorAll('.sr-only').forEach((el) => el.remove())
+        labelText = (clone.textContent ?? '').trim()
+      } else {
+        labelText = (label.textContent ?? '').trim()
+      }
       return {
         label: labelText.split('\n')[0].trim(),
         tag: control ? control.tagName.toLowerCase() : 'none',
@@ -186,7 +197,12 @@ export async function checkListAffordances(
 /** 规则 6：数量/金额输入缺少边界约束 */
 export async function checkNumericGuards(scope: Locator, pageName: string): Promise<Finding[]> {
   const findings: Finding[] = []
-  const numeric = scope.locator('input[inputmode="decimal"], input[placeholder="数量"]')
+  // ⚠️ 必须同时收 type=number：#135 把办理台的数值输入从 inputmode="decimal" 改成了
+  // type="number"，只按 inputmode 选的话这条规则会一个元素都匹配不到、
+  // 然后「0 个未受保护」静默通过 —— 不是修好了，是检测器瞎了。
+  const numeric = scope.locator(
+    'input[type="number"], input[inputmode="decimal"], input[placeholder="数量"]',
+  )
   const count = await numeric.count()
   let unguarded = 0
   const samples: string[] = []
@@ -197,8 +213,11 @@ export async function checkNumericGuards(scope: Locator, pageName: string): Prom
       el.getAttribute('type'),
       el.getAttribute('placeholder'),
     ])
-    // type=number + min 才是浏览器级约束；纯 text + inputmode 只影响软键盘
-    if (type !== 'number' && min === null) {
+    // 必须 type=number **且** 有 min，缺一不可（#135 收紧）。
+    // 原判据是 `type !== 'number' && min === null`，即两者有其一就算过 ——
+    // 但 min/max 对 type=text **完全无效**（HTML 规范里只作用于 number/range/date 系），
+    // 「给 text 加个 min」能骗过这条规则却零实际效果，正是 issue 字面建议会掉进的假修复。
+    if (type !== 'number' || min === null) {
       unguarded += 1
       if (samples.length < 4) samples.push(ph || `第${i + 1}个数值框`)
     }
@@ -208,7 +227,7 @@ export async function checkNumericGuards(scope: Locator, pageName: string): Prom
       rule: '数值输入无浏览器级边界约束',
       severity: 'P2',
       page: pageName,
-      detail: `${unguarded}/${count} 个数值输入既不是 type=number 也没有 min 属性，负数与超大值只能等服务端拒绝`,
+      detail: `${unguarded}/${count} 个数值输入不是 type=number 或缺少 min 属性（min 对 type=text 无效），负数与超大值只能等服务端拒绝`,
       evidence: samples.join(' / '),
     })
   }
