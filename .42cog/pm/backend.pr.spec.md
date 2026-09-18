@@ -253,13 +253,26 @@
 
 **家居产品「转入行」的可见性与可提性（#145 / #153）**：转换单换入的家居行（`item_direction='转入'`）与购买行**同权**——四端顾客档案可见、可提货、可被再次折抵转出，放行判据与疗程卡侧同源：`item_direction = '购买' OR (sale_order_type = '转换单' AND item_direction = '转入')`。可提数量沿用 `FLOOR(received × quantity / sale_amount)`：`sale_amount > 0` 的转入行 `received` 由 paid-sessions STEP 1.6 重建为「转出旧卡价值 + 本单净到账，封顶转入总价」，因而差额未结清时按比例逐件释放、结清后恢复满额；`sale_amount <= 0` 的转入行走赠品分支全额可提（STEP 1.6 带 `sale_amount > 0` 过滤，刻意不碰 0 元行），与购买侧 0 元赠品行同口径。**不得为转入行另加满付分支**——那会让差额未结清的货被提前解锁。
 
-**家居产品的「剩余已付」额度口径（#145 / #153 收紧 #125）**：提货与折抵**共用同一额度**，
+**折抵与提货的「剩余已付」额度口径（#145 / #153 立，#182 统一到疗程卡）**：
 
 ```
-剩余已付 = 行实收 − 已提货金额 − 已转走金额
-可提件数 = 可折抵件数 = min(物理未结算件数, floor(剩余已付 / 单价))
-可折抵金额 = 剩余已付（含不足一整件的余数）
+剩余已付 = 行实收 − 已交付价值 − 已转走金额
+  疗程卡：已交付价值 = 已消费次数 × 单价 =（session_count − remaining_sessions）× 单价
+  家居：  已交付价值 = pickup_records 物理提货件数 × 单价
+
+可折抵金额 = 剩余已付（含不足一整次/一整件的余数）        ← 疗程卡与家居同口径
+可折抵数量 = 该行**全部**剩余权益                          ← #182「折抵 = 整行退出」
+  疗程卡：remaining_sessions − 在途服务预扣
+  家居：  物理未结算件数 = quantity − picked_up_quantity
+可提件数   = min(物理未结算件数, floor(剩余已付 / 单价))    ← 提货口径**不变**
 ```
+
+> ⚠️ **金额共用、件数分家**（#182 起）。提货仍要一件件付满才放行（`floor`），而折抵是「这个项目不要了」——
+> 把该行剩余权益一次性注销、剩余已付一次性折走。守恒仍成立：折抵把物理件与已付金额**同时**清空，
+> 折后 `可提件数 = min(0, …) = 0`。**不要**再把这两个数量当成同一个值（#145 时它们确实相等）。
+
+> ⚠️ **不得回退到「可折抵件数 = floor(剩余已付 / 单价)」**：该口径会把「1 件 ¥680 只付 ¥594」
+> 整行剔除（`floor(594/680) = 0`），顾客已付的钱既折不掉也提不出（prod 实测 3 行 / ¥814，issue #182）。
 
 - **已提货金额**按 `pickup_records` 的物理提货合计 × 单价算；**已转走金额**取自**转出行的 `received` 聚合**（排除已关闭的转换单）。
 - **已转走金额不得用「已转走件数 × 单价」推算**：折抵金额含余数时两者不等（折 4 件可能带走 ¥450 而非 ¥400），用件数推算会让多次折抵累计超过累计实收。
@@ -267,7 +280,10 @@
 - **全程按「分」整除**，与 `numeric(10,2)` 对齐；admin 侧用 JS 浮点直除会与 PG 分叉（`16.67 × 3 = 50.01` 时浮点得 2、PG 得 3）。
 - 寄存单与 0 元赠品行没有「实收」可言，只受物理未结算件数封顶。
 
-> 件数向下取整而金额含余数，是因为转出行受 `chk_item_quantity > 0` 约束：**不足一整件时没有载体可折，整行不可折抵**，已付款留在原单，付清后即可折抵或提货。
+> **转出行可以只有金额、没有数量**（#182）：`chk_item_quantity` 已放宽为
+> 「`quantity > 0` 或（`item_direction = '转出'` 且 `quantity = 0`）」。疗程卡次数已用完 /
+> 家居件已全提、只剩不足一整次(件)的已付余额时，仍要让顾客把这笔钱换走——此时转出行
+> `quantity = 0`、`sale_amount = received = −余数`。购买 / 转入行仍必须 > 0。
 >
 > ⚠️ **不得回退到 #125 的「未提货件数 × 单价、不看付款进度」**：那会把未兑现价值洗成全额可提——dev 真库实证，10 件 ¥1000 只付 ¥400（欠 ¥600）时，旧口径可折 ¥1000 换入等额家居，新行 10 件全部可提，而欠款仍留原单，资金缺口 ¥600。收紧后同一场景折 4 件 / ¥400，新单差额 ¥600 待支付，实付 ¥400 + 两单欠款 ¥1200 = 货值 ¥1600，完全守恒。
 >
@@ -275,7 +291,53 @@
 >
 > ⚠️ **子表聚合不得与 `FOR UPDATE OF si` 同语句**：READ COMMITTED 下语句先取快照再等锁，唤醒后 EvalPlanQual 只刷新 `sale_items` 自身的行版本，`pickup_records` 与转出行聚合仍是旧快照——两笔并发折抵会各自读到已转走金额为 0，把同一批已付价值折两遍，物理件数守卫拦不住。必须**锁取得后用另一条语句**复算。
 >
-> 疗程卡侧维持 #125 的 `remaining_sessions` 口径不变（权益是服务次数而非实物，甲方 2026-09-14 方案 A）。
+> **疗程卡已于 #182（甲方 2026-09-18 拍板）并入同一口径**，#125 的「按物理 `remaining_sessions` 全额折抵、
+> 不看付款进度」作废：1 次 ¥19800 只付 ¥14000 时旧口径可折 ¥19800，把未付的 ¥5800 洗成资产，
+> 配上「欠款归零」即每笔净亏 ¥5800。现在折抵额 = 剩余已付（¥14000）。存量影响 prod 575 行 / 实收 ¥14.8 万。
+
+**折抵后原单该行「欠款归零」（#182）**：折抵 = 整行退出，原单不该再为已经不存在的权益挂欠款。
+
+```
+仅当 sale_order_type <> '寄存单' AND sale_amount > 0 AND received > 0 AND received < sale_amount：
+  Δ = sale_amount − received
+  原行：sale_amount -= Δ；waived_amount += Δ（留底，供关单回滚）
+  原单：total_amount -= Δ；payable_amount 按 total − 已结算储值卡 − 待结算储值卡 重算
+  该行 paid_sessions 行级重算；订单 status 仅从'部分支付'向前推进，paid_at 只在原本为空时补
+```
+
+三个守卫条件缺一不可：
+- **排除寄存单** —— `received` 恒 0，`sale_amount` 是原价快照不是欠款，下调会把快照抹成 0
+- **`received > 0`** —— 否则新 `sale_amount` 落到 0，踩 `WHEN sale_amount <= 0 THEN quantity` 的赠品全放分支，未付的货凭空解锁
+- **`received < sale_amount`** —— overpay 行 `received > sale_amount`，不能反向**上调**应付
+
+> ⚠️ **「欠款归零」不是可选的善后，而是注销权益的前置条件**。不变量 D3
+> `(session_count − remaining_sessions) <= paid_sessions` 由 `recalcPaidSessionsForOrder` 末尾
+> **按整单**执法。只扣 `remaining_sessions` 而不下调应付，部分支付行立刻违反 D3 →
+> 源订单**从此无法回款、无法退款、payNotify 回调直接抛 `CONFLICT`**。应付下调到实收后
+> `paid_sessions = LEAST(sc, FLOOR(received × sc / sale_amount))` 恒为满付，D3 自动成立。
+
+> ⚠️ **折抵路径刻意不跑整单 `recalcPaidSessionsForOrder`**，改为行级重算 `paid_sessions`
+> + 手工同步 `payable_amount`。两个原因：① prod 实测 338 行 / 28 单**本就**违反 D3，整单守护会让
+> 这些单的折抵直接失败；② 整单重算的 Branch B 会按新 `sale_cap` 重分行级 `received`，触发
+> `0040` 视图的 residual 凭空产出营业额事件。绕开 STEP 0 就必须自己写 `payable_amount`，
+> 否则撞 cron 的 I5 资金不变量告警。
+
+> ⚠️ **关单/删单回滚必须还原金额**：`sale_amount += waived_amount`、`waived_amount` 清零、
+> `total_amount` 加回、状态退回'部分支付'。Δ 记在**转出行**的 `waived_amount` 上（原行那份是累计值，
+> 归因不到具体转换单）。不补这一步，「开转换单 → 关闭」= 永久抹掉原单欠款。
+
+> ⚠️ **折抵与在途服务预扣互斥**：存在「服务中 / 待客户确认」的预扣时整行拒绝折抵。钱已全额折走却
+> 留下几次给服务就是白送；而把预扣一起注销会让 `service.confirm` 的扣次守卫 `remaining_sessions >= $1`
+> 失败 → finalize 事务回滚、服务单永久卡在「待客户确认」且预扣不释放。
+
+> ⚠️ **已转走金额的聚合不得限 `out_item.product_type`**：`ref_sale_item_id` 已唯一定位原行，
+> 限定类型会漏掉疗程卡与纯余数转出行（`quantity = 0`），后果是同一笔已付被反复折走、
+> 或折走的 overpay 余数还能再退一次。同理 `computeItemOverpayRemainders` 的疗程卡分支
+> 必须把已转走金额计入「已消耗价值」。
+
+> ⚠️ **`reconcileOrderStatusAfterRefund` 的 `consumed_value` 必须排除已转走数量**：折抵会把
+> `remaining_sessions` 扣光 / `picked_up_quantity` 抬满，不排除则该值膨胀成整行标价价值，
+> 同单其它行退款时会把已结清的折抵行误判回「部分支付」。
 
 > ⚠️ **转入行「可提不可退」是既定语义**：转换单整单禁止退款（仅销售单支持），退款候选与 `refund-cascade` 的 effItems 取数均只取 `item_direction='购买'` 行。换入的货只能沿源头销售单退，而源头此时 `refundable = quantity − picked_up_quantity` 已因折抵归零。**若将来放开转换单退款，必须同步让 `refund-cascade` 的 effItems 覆盖转入行**，否则转入家居行的 `picked_up_quantity` 不会被抬、`refundable` 不归零，即成可重复退的资损。
 > - `购买`（默认）：正常购买行
