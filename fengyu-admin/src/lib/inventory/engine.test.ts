@@ -795,6 +795,25 @@ describe('库存 SKU 来源与价格保护', () => {
     }
   })
 
+  /**
+   * 生成「字段: 条件 ?」的匹配式，**容忍任意空白与换行**。
+   * 不能用 `toContain('字段: 条件 ?')` 字面量 —— 那等于把「三元必须写成单行」
+   * 也钉进了守护：日后 prettier 换行（或接入 printWidth）会让断言误报红，
+   * 而语义零变化。
+   */
+  function loosen(expr: string): string {
+    return expr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/ /g, '\\s+')
+  }
+
+  function guardPattern(field: string, cond: string): RegExp {
+    return new RegExp(`${field}:\\s*${loosen(cond)}\\s*\\?`)
+  }
+
+  /** 同理，变量定义也不能用整行 `toContain` —— 赋值符后换行是无害格式化，不该让测试红 */
+  function defPattern(name: string, expr: string): RegExp {
+    return new RegExp(`const\\s+${name}\\s*=\\s*${loosen(expr)}`)
+  }
+
   it('skuRow / lotRow 的价格遮蔽口径与组件的列裁剪逐列对应', () => {
     // skus-page / stocks-page 的列渲染测试是 **prop 注入**的，只能证明「给了这个档就这样渲染」，
     // 拦不住 engine 反向漂移（比如把 storeActualUnitPrice 改成 supplyVisible）——
@@ -810,9 +829,9 @@ describe('库存 SKU 来源与价格保护', () => {
     // ① 先钉住三个可见性变量的**定义**。只断言字段用了哪个变量是不够的 ——
     //    把 `marketVisible` 的定义放宽成 `!== 'none'`，所有字段断言照样绿，
     //    而供应链角色已经能看到门店价格了。
-    expect(skuBlock).toContain("const supplyVisible = row.priceVisibility === 'all' || row.priceVisibility === 'supply_chain'")
-    expect(skuBlock).toContain("const marketVisible = row.priceVisibility === 'all' || row.priceVisibility === 'market'")
-    expect(skuBlock).toContain('const anyPriceVisible = supplyVisible || marketVisible')
+    expect(skuBlock).toMatch(defPattern('supplyVisible', "row.priceVisibility === 'all' || row.priceVisibility === 'supply_chain'"))
+    expect(skuBlock).toMatch(defPattern('marketVisible', "row.priceVisibility === 'all' || row.priceVisibility === 'market'"))
+    expect(skuBlock).toMatch(defPattern('anyPriceVisible', 'supplyVisible || marketVisible'))
 
     // ② 再逐字段钉住。**12 个价格相关字段一个都不能漏** ——
     //    只守 5 个的话，把 accountingPrice 从 supplyVisible 放宽成 anyPriceVisible
@@ -832,22 +851,22 @@ describe('库存 SKU 来源与价格保护', () => {
       ['itemCompanyPurchasePrice', 'supplyVisible'],
     ]
     for (const [field, cond] of SKU_PRICE_GUARDS) {
-      expect(skuBlock).toContain(`${field}: ${cond} ?`)
+      expect(skuBlock).toMatch(guardPattern(field, cond))
     }
 
     const lotBlock = source.slice(
       source.indexOf('function lotRow('),
       source.indexOf('function inventoryDocScopeSql('),
     )
-    expect(lotBlock).toContain("const supplyVisible = priceVisibility === 'all' || priceVisibility === 'supply_chain'")
-    expect(lotBlock).toContain("const marketVisible = priceVisibility === 'all' || priceVisibility === 'market'")
+    expect(lotBlock).toMatch(defPattern('supplyVisible', "priceVisibility === 'all' || priceVisibility === 'supply_chain'"))
+    expect(lotBlock).toMatch(defPattern('marketVisible', "priceVisibility === 'all' || priceVisibility === 'market'"))
     const LOT_PRICE_GUARDS: Array<[string, string]> = [
       ['supplyChainUnitCost', 'supplyVisible'],
       ['marketActualUnitPrice', 'supplyVisible || marketVisible'],
       ['storeActualUnitPrice', 'marketVisible'],
     ]
     for (const [field, cond] of LOT_PRICE_GUARDS) {
-      expect(lotBlock).toContain(`${field}: ${cond} ?`)
+      expect(lotBlock).toMatch(guardPattern(field, cond))
     }
     // 反向：门店实际价**不能**放宽成 supplyVisible（那样供应链角色会看到门店价）
     expect(lotBlock).not.toMatch(/storeActualUnitPrice: supplyVisible \?/)
