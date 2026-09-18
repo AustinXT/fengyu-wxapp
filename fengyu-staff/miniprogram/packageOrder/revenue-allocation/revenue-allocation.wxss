@@ -158,7 +158,7 @@
 .picker-scroll {
   height: 720rpx;
   padding: 0 32rpx;
-  /* scroll-view 默认 content-box，不加此行左右 padding 会把行内容整体挤出屏幕右侧 */
+  /* scroll-view 默认 content-box，不加 box-sizing 左右 padding 会把行内容整体挤出屏幕右侧 */
   box-sizing: border-box;
 }
 .picker-group {
@@ -183,9 +183,13 @@
 .picker-member:active {
   background: #F5F5F5;
 }
+/* text 默认 inline，显式块化才保证 ellipsis 生效（与全仓其它截断场景写法一致） */
 .picker-member-name {
-  flex: 0 1 auto;
-  min-width: 0;
+  display: block;
+  /* 不收缩：姓名必须完整，长门店名不得挤压它 */
+  flex: 0 0 auto;
+  /* 极端长姓名的兜底，避免反过来把门店名挤没 */
+  max-width: 60%;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -193,7 +197,9 @@
   color: #2D2017;
 }
 .picker-member-store {
-  flex: 1 1 auto;
+  display: block;
+  /* basis 0 + grow：吃满姓名以外的剩余宽度，ellipsis 的可用宽度才确定 */
+  flex: 1 1 0;
   min-width: 0;
   margin-left: 16rpx;
   overflow: hidden;
