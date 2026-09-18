@@ -1975,19 +1975,29 @@ describe('营业额分配：事务锁序守护 sale_orders → sale_order_paymen
     // 靠两条一起排除并存：① 持 FOR UPDATE 挡住 FK 新建退款行；② 锁内复检已存在的退款流水直接退出。
     // 缺任何一条都会变成真实死锁对，所以这里把「锁 → 复检 → 删除」的顺序钉死。
     const src = stripJsComments(readFile(FILES.adminOrdersTs))
-    const refundCheckAt = src.indexOf("throw new Error('ORDER_HAS_REFUND_FLOW')")
-    expect(refundCheckAt).toBeGreaterThan(0)
+    const throwAt = src.indexOf("throw new Error('ORDER_HAS_REFUND_FLOW')")
+    expect(throwAt).toBeGreaterThan(0)
 
     // 定位复检所属事务的起点，只在该段内断言，避免被 orders.ts 其它事务的字面量干扰
-    const txAt = src.lastIndexOf('await db.transaction(async (tx) => {', refundCheckAt)
+    const txAt = src.lastIndexOf('await db.transaction(async (tx) => {', throwAt)
     expect(txAt).toBeGreaterThan(0)
-    const beforeCheck = src.slice(txAt, refundCheckAt)
 
-    // 事务开头到复检之间：必须已取订单行锁，且不得出现任何删除
-    expect(beforeCheck).toMatch(/SELECT status FROM sale_orders WHERE sale_order_id = \$\{saleOrderId\} FOR UPDATE/)
-    expect(beforeCheck).not.toMatch(/DELETE\s+FROM/i)
-    // 复检之后才允许删子表
-    expect(src.slice(refundCheckAt)).toMatch(/DELETE FROM sale_payment_item_allocations/)
+    // ⚠ 锚点必须是**退款查询本身**，不能用那句 throw：
+    // 只盯 throw 的话，把 SELECT 挪到锁之前、throw 仍留在锁之后，断言照样全绿 ——
+    // 而那正好破坏「持锁期间才判定」这个前提（评审实测指出的假阴性）。
+    const lockAt = src.indexOf('SELECT status FROM sale_orders WHERE sale_order_id = ${saleOrderId} FOR UPDATE', txAt)
+    const refundQueryAt = src.indexOf("change_type = '退款'", txAt)
+    // 删除既可能是裸 SQL 也可能是 drizzle builder（`tx.delete(...)`）——只防前者的话，
+    // 把 builder 形式的删除挪到复检之前就绕过去了。
+    const firstDeleteAt = src.slice(txAt).search(/DELETE\s+FROM|tx\.delete\(/i)
+
+    expect(lockAt).toBeGreaterThanOrEqual(0)
+    expect(refundQueryAt).toBeGreaterThanOrEqual(0)
+    expect(firstDeleteAt).toBeGreaterThanOrEqual(0)
+    // 三者顺序：取订单锁 → 查退款流水 → 才允许删
+    expect(refundQueryAt).toBeGreaterThan(lockAt)
+    expect(throwAt).toBeGreaterThan(refundQueryAt)
+    expect(txAt + firstDeleteAt).toBeGreaterThan(throwAt)
   })
 
   test('40P01 翻成可重试提示：staff 在全局漏斗、admin 在 action 内', () => {

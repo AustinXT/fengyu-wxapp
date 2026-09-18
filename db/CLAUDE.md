@@ -104,8 +104,19 @@ staffApi `routes/allocation.js` 的保存/空分配/删除）原本是「先改�
    `FOR KEY SHARE` 冲突，持锁期间没人能给这张单新建退款流水；
 2. 事务内、锁之后有一条**退款流水复检**（`change_type='退款'` 命中即拒绝删除），把已存在的挡在 DELETE 之前。
 
-**删掉复检、把它移到锁之前、或把锁降级，任何一条都会让它变成真实的死锁对。**
-守护：`cross-end-sql-snapshot.test.js` 钉「锁 → 复检 → 删除」的顺序，
+**删掉复检、把它移到锁之前、或把锁降级，任何一条都会让「删除 × 退款审批」变成稳定的死锁对。**
+
+⚠ 该论证隐含假设：**退款流水只由 INSERT 产生**。若将来出现「UPDATE 既有款项行、把 `change_type`
+改写成 `'退款'`」的路径，它不取父行的 `FOR KEY SHARE`，条件 1 就挡不住它（2026-09-18 已 grep 确认无此路径）。
+
+⚠ 并且这**不等于该路径零死锁**：退款**申请**侧仍有一个可检测的暂态环 —— `createRefund` 先插入
+payments tuple（持新行锁）、其 FK 检查卡在删除事务的 `FOR UPDATE` 上，而删除事务随后的
+`DELETE FROM sale_order_payments WHERE sale_order_id=...` 会撞上那条未提交 tuple 转而等它。
+窗口是毫秒级，两侧都有 40P01 → 可重试提示，且删除是低频运维操作，因此按**可接受**处理而非缺陷。
+彻底解法是让退款申请也先显式锁订单（与「退款审批」一并整改时再做）。
+
+守护：`cross-end-sql-snapshot.test.js` 钉「取订单锁 → 查退款流水 → 才允许删」的顺序
+（锚点是**退款查询本身**，不是那句 throw —— 只盯 throw 的话，把查询挪到锁前仍会全绿），
 `orders.test.ts` 有一条行为用例（复检命中时一条 DELETE 都不发）。
 
 **锁强度用 `FOR NO KEY UPDATE`，不是 `FOR UPDATE`。** 实测对照（PG 16，2026-09-18）：

@@ -4003,6 +4003,14 @@ export const deleteOrder = withPermission(
         //      持锁期间没人能给这张单新建退款流水；
         //   2. 已存在的退款流水被这条复检挡下，直接退出、根本不进入 DELETE。
         // ⚠ 因此**不要把这条复检删掉或移到锁之前**，那会让 deleteOrder × 退款审批变成真实的死锁对。
+        //
+        // ⚠ 上面第 1 条隐含一个假设：**退款流水只由 INSERT 产生**。若将来出现「UPDATE 既有款项行、
+        // 把 change_type 改写成 '退款'」的路径，它不取父行的 FOR KEY SHARE，这条锁就挡不住它，
+        // 论证随之失效。（2026-09-18 已 grep 全仓确认无此路径；两个评审谱系独立指出该假设应写明。）
+        //
+        // 另需知道：申请侧仍有一个**可检测**的暂态环 —— createRefund 先插入 tuple、其 FK 检查卡在本锁上，
+        // 而本事务随后的 DELETE 会撞上那条未提交 tuple。它是毫秒级窗口、双方都有 40P01→可重试翻译、
+        // 且删除是低频运维操作，故按可接受处理（详见 db/CLAUDE.md）。
         const refundRows = await tx.execute(sql`
           SELECT 1 FROM sale_order_payments
           WHERE sale_order_id = ${saleOrderId} AND change_type = '退款'

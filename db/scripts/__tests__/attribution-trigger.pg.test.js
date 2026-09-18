@@ -43,6 +43,11 @@ const FORBIDDEN_DB_NAMES = [BUSINESS_DB_NAME, 'fengyu_e2e']
 
 /** 夹具前缀，清理时按它删；与 e2e 的 TE2L2_ 命名空间区隔开。 */
 const P = 'T137PG_'
+/**
+ * LIKE 模式：前缀里的 `_` 是 LIKE 通配符，不转义的话 `T137PG_%` 会连 `T137PGx...` 一起删掉 ——
+ * 清理范围宽于约定前缀。
+ */
+const LIKE_P = `${P.replace(/_/g, '\\_')}%`
 
 if (!URL) {
   test('attribution trigger 真实 PG 回归（未设 ATTRIBUTION_PG_TEST_URL，跳过）', { skip: true }, () => {})
@@ -79,13 +84,21 @@ function runSuite() {
    * 池连接轮换会让锁跟着丢）。两个套件各自只跑几百毫秒，串行代价可以忽略。
    */
   const SUITE_LOCK_KEY = 148137
+  /**
+   * 锁连接**不能**共用 APP_NAME：它在等 advisory lock 时 `wait_event_type` 也是 'Lock'，
+   * 会被本套件自己的 `waitUntilBlocked()` 当成「被测事务已阻塞」而提前放行（多进程跑时）。
+   */
+  const LOCK_APP_NAME = 'T137PG-suitelock'
   let suiteLockClient = null
+  /** 库名校验通过才允许跑清理；before 失败时 node:test 仍会执行 after，用它挡住 DELETE。 */
+  let dbVerified = false
   const q = (sql, params) => pool.query(sql, params)
 
   test.before(async () => {
     await assertNotBusinessDatabase(pool)
+    dbVerified = true
     // 与 allocation-lock-order.pg.test.js 互斥（见 SUITE_LOCK_KEY 说明）
-    suiteLockClient = new Client({ connectionString: URL, application_name: APP_NAME })
+    suiteLockClient = new Client({ connectionString: URL, application_name: LOCK_APP_NAME })
     await suiteLockClient.connect()
     await suiteLockClient.query('SELECT pg_advisory_lock($1)', [SUITE_LOCK_KEY])
     await q(`INSERT INTO org_nodes (id, name, type) VALUES ($1,'测试总部','总部') ON CONFLICT (id) DO NOTHING`, [`${P}HQ`])
@@ -98,16 +111,20 @@ function runSuite() {
     // try/finally：任一 DELETE 抛错都不能跳过连接释放，否则连接池吊住 event loop
     // → 整个套件挂起而不是红一条。
     try {
-      await q(`DELETE FROM sale_payment_item_receipts WHERE sale_order_id LIKE $1`, [`${P}%`])
-      await q(`DELETE FROM sale_items WHERE sale_order_id LIKE $1`, [`${P}%`])
-      await q(`DELETE FROM sale_order_payments WHERE sale_order_id LIKE $1`, [`${P}%`])
-      await q(`DELETE FROM sale_orders WHERE sale_order_id LIKE $1`, [`${P}%`])
-      // org_nodes / stores 上有 inventory_sync_location_from_org_node trigger 自动建
-      // inventory_locations 行，不先删它就会撞外键
-      await q(`DELETE FROM inventory_locations WHERE location_id LIKE $1 OR store_id LIKE $1`, [`${P}%`])
-      await q(`DELETE FROM stores WHERE store_id LIKE $1`, [`${P}%`])
-      await q(`DELETE FROM staff_wechat_users WHERE employee_id LIKE $1`, [`${P}%`])
-      await q(`DELETE FROM org_nodes WHERE id LIKE $1`, [`${P}%`])
+      // 只有确认过不是业务库才允许发 DELETE：before 抛错时 node:test 仍会执行 after，
+      // 没有这道守卫就会对一个刚被拒绝的库照发整串清理语句。
+      if (dbVerified) {
+        await q(`DELETE FROM sale_payment_item_receipts WHERE sale_order_id LIKE $1`, [LIKE_P])
+        await q(`DELETE FROM sale_items WHERE sale_order_id LIKE $1`, [LIKE_P])
+        await q(`DELETE FROM sale_order_payments WHERE sale_order_id LIKE $1`, [LIKE_P])
+        await q(`DELETE FROM sale_orders WHERE sale_order_id LIKE $1`, [LIKE_P])
+        // org_nodes / stores 上有 inventory_sync_location_from_org_node trigger 自动建
+        // inventory_locations 行，不先删它就会撞外键
+        await q(`DELETE FROM inventory_locations WHERE location_id LIKE $1 OR store_id LIKE $1`, [LIKE_P])
+        await q(`DELETE FROM stores WHERE store_id LIKE $1`, [LIKE_P])
+        await q(`DELETE FROM staff_wechat_users WHERE employee_id LIKE $1`, [LIKE_P])
+        await q(`DELETE FROM org_nodes WHERE id LIKE $1`, [LIKE_P])
+      }
     } finally {
       await pool.end().catch(() => {})
       if (suiteLockClient) {
