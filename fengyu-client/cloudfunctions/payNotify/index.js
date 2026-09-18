@@ -23,6 +23,47 @@ const { getPerItemRefundedMap, computeRefundAwareDirectedItems } = require('./pe
 const { classifySaleOrderDocumentType } = require('./document-type')
 
 /**
+ * 顾客分类跃迁的订单级金额 CTE（#187，2026-09-18）。$1 = client_user_id。
+ * 产出每张已结清销售单的 non_trial / trial = 非体验 / 体验行的**毛实收**合计
+ * （sale_items.received 净额 + 该行逐项退款额 → 还原"曾经收到的钱"，退款不扣减）。
+ * refund_by_item 的 note→jsonb 三重防线逐字对齐 paid-sessions.js
+ * RECEIVED_REFUNDED_DEDUCT_SQL，根除 22P02。七处副本逐字一致，由 staffApi
+ * __tests__/routes/recalc-customer-type-sql.test.js 守护。
+ */
+const RECALC_CUSTOMER_TYPE_CTE = `WITH refund_by_item AS (
+       SELECT elem ->> 'refSaleItemId' AS sale_item_id,
+              SUM(COALESCE((elem ->> 'refundAmount')::numeric, 0)) AS refunded
+       FROM sale_order_payments sop
+       JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
+       CROSS JOIN LATERAL jsonb_array_elements(
+         CASE WHEN sop.note LIKE '{%'
+              THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
+                        THEN (sop.note)::jsonb -> 'items'
+                        ELSE '[]'::jsonb END
+              ELSE '[]'::jsonb END
+       ) AS elem
+       WHERE ro.client_user_id = $1
+         AND sop.change_type = '退款'
+         AND sop.status = '已支付'
+       GROUP BY 1
+     ),
+     order_amounts AS (
+       SELECT o.sale_order_id,
+              COALESCE(SUM(si.received::numeric + COALESCE(rbi.refunded, 0))
+                       FILTER (WHERE si.is_experience = false), 0) AS non_trial,
+              COALESCE(SUM(si.received::numeric + COALESCE(rbi.refunded, 0))
+                       FILTER (WHERE si.is_experience = true), 0) AS trial
+       FROM sale_orders o
+       JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+       LEFT JOIN refund_by_item rbi ON rbi.sale_item_id = si.sale_item_id
+       WHERE o.client_user_id = $1
+         AND o.status IN ('已支付', '已完成')
+         AND o.sale_order_type = '销售单'
+         AND si.item_direction = '购买'
+       GROUP BY o.sale_order_id
+     )`
+
+/**
  * 线上支付自动逐笔分配：把本次回款（perItem 逐项可分配额）100% 记到开单指定销售员名下，
  * 提成率按【本次回款额 eventAmount】查档（按回款逐笔分配口径，非订单累计）。
  * 无 preferred / 无 perItem 直接跳过（留待分配走手动）。
@@ -1253,36 +1294,17 @@ exports.main = async (event) => {
         if (curType.rows[0]?.customer_type !== '会员客') {
           const threshold = await getMemberThreshold()
 
-          // 三端 SQL 独立副本（admin actions/orders.ts + staffApi routes/order.js + payNotify index.js）
-          // 修改时必须同步另外两端；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js
-          // 守护。
+          // 七处 SQL 独立副本（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
+          // + admin actions/orders.ts + admin lib/recompute-customer-tags.ts
+          // + db/scripts/recalc-all-customer-types.js + db/scripts/recalc-became-member-at.js）。
+          // 修改时必须同步其余六处；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js 守护。
+          // #187（2026-09-18）：按单笔订单的非体验部分毛实收判定，落地 Q5.2 决策。
           const typeResult = await client.query(
-            `SELECT CASE
-               WHEN EXISTS (
-                 SELECT 1 FROM sale_orders o
-                 WHERE o.client_user_id = $1
-                   AND o.status IN ('已支付', '已完成')
-                   AND o.sale_order_type = '销售单'
-                   AND o.total_amount >= $2
-               ) THEN '会员客'
-               WHEN EXISTS (
-                 SELECT 1
-                 FROM sale_orders o
-                 JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-                 WHERE o.client_user_id = $1
-                   AND o.status IN ('已支付', '已完成')
-                   AND o.sale_order_type = '销售单'
-                   AND si.is_experience = false
-               ) THEN '小美客'
-               WHEN EXISTS (
-                 SELECT 1
-                 FROM sale_orders o
-                 JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-                 WHERE o.client_user_id = $1
-                   AND o.status IN ('已支付', '已完成')
-                   AND o.sale_order_type = '销售单'
-                   AND si.is_experience = true
-               ) THEN '体验客'
+            `${RECALC_CUSTOMER_TYPE_CTE}
+             SELECT CASE
+               WHEN EXISTS (SELECT 1 FROM order_amounts WHERE non_trial >= $2) THEN '会员客'
+               WHEN EXISTS (SELECT 1 FROM order_amounts WHERE non_trial > 0)   THEN '小美客'
+               WHEN EXISTS (SELECT 1 FROM order_amounts WHERE trial > 0)       THEN '体验客'
                ELSE '流量客'
              END AS computed_type`,
             [targetOrder.client_user_id, threshold]
@@ -1311,11 +1333,10 @@ exports.main = async (event) => {
             // 选单子查询与本端下方 is_membership_upgrade 归因同源、选同一单。
             await client.query(
               `UPDATE client_wechat_users SET became_member_at = (
+                 ${RECALC_CUSTOMER_TYPE_CTE}
                  SELECT COALESCE(o.paid_at, o.created_at) FROM sale_orders o
-                 WHERE o.client_user_id = $1
-                   AND o.status IN ('已支付', '已完成')
-                   AND o.sale_order_type = '销售单'
-                   AND o.total_amount >= $2
+                 JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
+                 WHERE oa.non_trial >= $2
                  ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
                  LIMIT 1
                ) WHERE user_id = $1`,
@@ -1326,11 +1347,10 @@ exports.main = async (event) => {
             await client.query(
               `UPDATE sale_orders SET is_membership_upgrade = true
                WHERE sale_order_id = (
+                 ${RECALC_CUSTOMER_TYPE_CTE}
                  SELECT o.sale_order_id FROM sale_orders o
-                 WHERE o.client_user_id = $1
-                   AND o.status IN ('已支付', '已完成')
-                   AND o.sale_order_type = '销售单'
-                   AND o.total_amount >= $2
+                 JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
+                 WHERE oa.non_trial >= $2
                  ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
                  LIMIT 1
                )`,

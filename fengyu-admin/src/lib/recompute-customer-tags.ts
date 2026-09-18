@@ -82,6 +82,45 @@ async function recomputeCustomerStatusForUser(tx: Tx, clientUserId: string): Pro
  * + 本 helper）。SQL 字面必须与其它三端一致；守护测试：
  * fengyu-staff/cloudfunctions/staffApi/__tests__/routes/recalc-customer-type-sql.test.js
  */
+/**
+ * 顾客分类跃迁的订单级金额 CTE（#187）。产出每张已结清销售单的
+ * non_trial / trial = 非体验 / 体验行的毛实收合计（received 净额 + 该行逐项退款额）。
+ * refund_by_item 的 note→jsonb 三重防线逐字对齐 staffApi utils/paid-sessions.js
+ * RECEIVED_REFUNDED_DEDUCT_SQL，根除 22P02。七处副本逐字一致，由 recalc-customer-type-sql.test.js 守护。
+ */
+const recalcCustomerTypeCte = (clientUserId: string) => sql`WITH refund_by_item AS (
+       SELECT elem ->> 'refSaleItemId' AS sale_item_id,
+              SUM(COALESCE((elem ->> 'refundAmount')::numeric, 0)) AS refunded
+       FROM sale_order_payments sop
+       JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
+       CROSS JOIN LATERAL jsonb_array_elements(
+         CASE WHEN sop.note LIKE '{%'
+              THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
+                        THEN (sop.note)::jsonb -> 'items'
+                        ELSE '[]'::jsonb END
+              ELSE '[]'::jsonb END
+       ) AS elem
+       WHERE ro.client_user_id = ${clientUserId}
+         AND sop.change_type = '退款'
+         AND sop.status = '已支付'
+       GROUP BY 1
+     ),
+     order_amounts AS (
+       SELECT o.sale_order_id,
+              COALESCE(SUM(si.received::numeric + COALESCE(rbi.refunded, 0))
+                       FILTER (WHERE si.is_experience = false), 0) AS non_trial,
+              COALESCE(SUM(si.received::numeric + COALESCE(rbi.refunded, 0))
+                       FILTER (WHERE si.is_experience = true), 0) AS trial
+       FROM sale_orders o
+       JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+       LEFT JOIN refund_by_item rbi ON rbi.sale_item_id = si.sale_item_id
+       WHERE o.client_user_id = ${clientUserId}
+         AND o.status IN ('已支付', '已完成')
+         AND o.sale_order_type = '销售单'
+         AND si.item_direction = '购买'
+       GROUP BY o.sale_order_id
+     )`
+
 async function recomputeCustomerTypeForUser(
   tx: Tx,
   clientUserId: string,
@@ -95,35 +134,16 @@ async function recomputeCustomerTypeForUser(
 
   const threshold = await getMemberThreshold(db)
 
-  // 四端 SQL 镜像副本，修改时必须同步另外三端（admin orders.ts + staffApi order.js + payNotify index.js）；
+  // 七处 SQL 镜像副本，修改时必须同步其余六处（staffApi order.js + clientApi order.js + payNotify index.js
+  // + admin orders.ts + 本文件 + db/scripts/recalc-all-customer-types.js + db/scripts/recalc-became-member-at.js）；
   // 一致性由 recalc-customer-type-sql.test.js 守护。
+  // #187（2026-09-18）：按单笔订单的非体验部分毛实收判定（received 净额 + 逐项退款额），落地 Q5.2 决策。
   const typeRes = await tx.execute(sql`
+    ${recalcCustomerTypeCte(clientUserId)}
     SELECT CASE
-       WHEN EXISTS (
-         SELECT 1 FROM sale_orders o
-         WHERE o.client_user_id = ${clientUserId}
-           AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '销售单'
-           AND o.total_amount >= ${threshold}
-       ) THEN '会员客'
-       WHEN EXISTS (
-         SELECT 1
-         FROM sale_orders o
-         JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-         WHERE o.client_user_id = ${clientUserId}
-           AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '销售单'
-           AND si.is_experience = false
-       ) THEN '小美客'
-       WHEN EXISTS (
-         SELECT 1
-         FROM sale_orders o
-         JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-         WHERE o.client_user_id = ${clientUserId}
-           AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '销售单'
-           AND si.is_experience = true
-       ) THEN '体验客'
+       WHEN EXISTS (SELECT 1 FROM order_amounts WHERE non_trial >= ${threshold}) THEN '会员客'
+       WHEN EXISTS (SELECT 1 FROM order_amounts WHERE non_trial > 0)   THEN '小美客'
+       WHEN EXISTS (SELECT 1 FROM order_amounts WHERE trial > 0)       THEN '体验客'
        ELSE '流量客'
      END AS computed_type
   `)
@@ -154,28 +174,24 @@ async function recomputeCustomerTypeForUser(
     // 选单子查询与下方 is_membership_upgrade 归因同源、选同一单。
     await tx.execute(sql`
       UPDATE client_wechat_users SET became_member_at = (
+        ${recalcCustomerTypeCte(clientUserId)}
         SELECT COALESCE(o.paid_at, o.created_at) FROM sale_orders o
-        WHERE o.client_user_id = ${clientUserId}
-          AND o.status IN ('已支付', '已完成')
-          AND o.sale_order_type = '销售单'
-          AND o.total_amount >= ${threshold}
+        JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
+        WHERE oa.non_trial >= ${threshold}
         ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
         LIMIT 1
       ) WHERE user_id = ${clientUserId}
     `)
-    // 给触发本次首次跃迁的达标销售单打会员升级标记（WHERE 与会员客判定 CASE 同源；四端镜像）。
-    // ⚠️ 与 payNotify 归因段的合法差异：admin 端只看 `o.total_amount >= ${threshold}`（单笔达标），
-    // payNotify 端额外含「回款单累计」分支（单笔+回款 ≥ 阈值），因 payNotify 的会员客判定 CASE 同源含累计。
-    // 后果：total<阈值但 total+回款累计达阈值时，payNotify 路径打标、admin 路径不打标。
-    // 守护：`recalc-customer-type-sql.test.js` 中 payNotify/admin 段 normalize 后差异已断言。
+    // 给触发本次首次跃迁的达标销售单打会员升级标记（WHERE 与会员客判定 CASE 同源；七处镜像逐字一致）。
+    // 2026-09-18 (#187) 订正：旧注释称「payNotify 端额外含回款单累计分支」已不成立——
+    // sale-order-domain-refactor 后该分支即被删除，七处归因段一直是同一口径，现统一为 oa.non_trial >= 阈值。
     await tx.execute(sql`
       UPDATE sale_orders SET is_membership_upgrade = true
       WHERE sale_order_id = (
+        ${recalcCustomerTypeCte(clientUserId)}
         SELECT o.sale_order_id FROM sale_orders o
-        WHERE o.client_user_id = ${clientUserId}
-          AND o.status IN ('已支付', '已完成')
-          AND o.sale_order_type = '销售单'
-          AND o.total_amount >= ${threshold}
+        JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
+        WHERE oa.non_trial >= ${threshold}
         ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
         LIMIT 1
       )
