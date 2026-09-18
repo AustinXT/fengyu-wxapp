@@ -69,6 +69,7 @@ const FILES = {
 
   // issue #139 — 款项业绩归属日期筛选的两种粒度，staff / admin 各两处共四个站点
   staffAllocationJs: path.resolve(__dirname, '../../routes/allocation.js'),
+  staffIndexJs: path.resolve(__dirname, '../../index.js'),
   adminPerformanceAttributionTs: path.resolve(
     __dirname, '../../../../../fengyu-admin/src/lib/performance-attribution.ts',
   ),
@@ -1874,9 +1875,13 @@ describe('营业额分配：回款级 allocation_status 置「已分配」守护
  * db/scripts/__tests__/allocation-lock-order.pg.test.js。
  */
 describe('营业额分配：事务锁序守护 sale_orders → sale_order_payments（#148）', () => {
-  const STAFF_LOCK_SQL = "SELECT 1 FROM sale_orders WHERE sale_order_id = $1 FOR NO KEY UPDATE"
+  /** 两端同语义的订单锁语句（归一后比对：`$1` 与 `${pay.sale_order_id}` 都被 normalizeSql 压成 `?`）。 */
+  const CANONICAL_LOCK_SQL = 'SELECT 1 FROM sale_orders WHERE sale_order_id = ? FOR NO KEY UPDATE'
+  const extractLockSql = (src) => {
+    const m = src.match(/SELECT 1 FROM sale_orders WHERE sale_order_id = \S+ FOR NO KEY UPDATE/)
+    return m ? normalizeSql(m[0]) : null
+  }
   const STAFF_LOCK_CALL = 'lockSaleOrderForAllocation(client, pay.sale_order_id)'
-  const DEADLOCK_MESSAGE = '该订单正被其他操作修改，请稍后重试'
 
   /**
    * 段内「第一条写语句」的位置。
@@ -1899,40 +1904,35 @@ describe('营业额分配：事务锁序守护 sale_orders → sale_order_paymen
   // 不剥的话负向断言会被自己的文档命中；正向断言剥注释后也更严格（把锁注释掉即红）。
   let staffAllocationSrc
   let adminAllocationsSrc
+  let staffIndexSrc
   beforeAll(() => {
     staffAllocationSrc = stripJsComments(readFile(FILES.staffAllocationJs))
     adminAllocationsSrc = stripJsComments(readFile(FILES.adminAllocationsTs))
+    staffIndexSrc = stripJsComments(readFile(FILES.staffIndexJs))
   })
 
-  test('staff allocation.js：锁定 helper 用独立一条 sale_orders 语句取 FOR NO KEY UPDATE', () => {
-    expect(staffAllocationSrc).toContain(STAFF_LOCK_SQL)
-  })
-
-  test('两端锁强度都是 FOR NO KEY UPDATE —— 升成 FOR UPDATE 会挡住该订单的 FK 子表 INSERT', () => {
+  test('两端订单锁语句归一后完全一致，且强度是 FOR NO KEY UPDATE', () => {
     // 实测（PG 16）：FOR UPDATE 与 FK 取的 FOR KEY SHARE 冲突，整事务期间该订单的
     // INSERT sale_order_payments / sale_items / receipts 全被挡；FOR NO KEY UPDATE 放行，
     // 且同样挡得住改期的 FOR UPDATE 与 0040 trigger 的 FOR SHARE —— 消环不需要更强的锁。
-    expect(staffAllocationSrc).toMatch(/FROM sale_orders WHERE sale_order_id = \$1 FOR NO KEY UPDATE/)
-    expect(adminAllocationsSrc).toMatch(/FROM sale_orders WHERE sale_order_id = \$\{pay\.sale_order_id\} FOR NO KEY UPDATE/)
-    // 负向：两端都不得对 sale_orders 取 FOR UPDATE（不带 NO KEY）
-    expect(staffAllocationSrc).not.toMatch(/FROM sale_orders[\s\S]{0,120}?FOR UPDATE(?! OF)(?!\s*\n?\s*OF)/i)
+    // 完整对照表在 db/CLAUDE.md「写 sale_order_payments 的硬约束」。
+    expect(extractLockSql(staffAllocationSrc)).toBe(CANONICAL_LOCK_SQL)
+    expect(extractLockSql(adminAllocationsSrc)).toBe(CANONICAL_LOCK_SQL)
+    // 负向：两端都不得把它升成 FOR UPDATE（不带 NO KEY）
+    expect(staffAllocationSrc).not.toMatch(/FROM sale_orders WHERE sale_order_id = \S+ FOR UPDATE\b/)
+    expect(adminAllocationsSrc).not.toMatch(/FROM sale_orders WHERE sale_order_id = \S+ FOR UPDATE\b/)
   })
 
-  test('staff allocation.js：三个写事务（空分配 / 保存 / 删除）都调用锁定 helper', () => {
-    const txCount = (staffAllocationSrc.match(/await pg\.transaction\(async \(client\) => \{/g) || []).length
-    const lockCount = (staffAllocationSrc.match(/lockSaleOrderForAllocation\(client, pay\.sale_order_id\)/g) || []).length
-    // 事务总数用不依赖箭头函数写法的方式再数一次：两者不等说明有事务改了写法而没被上面数到，
-    // 那时 txCount 会失真、闸门形同虚设（报错信息也才指得准）。
-    const rawTxCount = (staffAllocationSrc.match(/pg\.transaction\(/g) || []).length
-    expect(rawTxCount).toBe(txCount)
-    expect(txCount).toBe(3)
-    expect(lockCount).toBe(txCount)
-  })
-
-  test('staff allocation.js：每个事务里锁订单都排在第一条写语句之前', () => {
-    // 按事务起点切段，逐段比较「锁」与「第一条写」的先后，挡住"锁被挪到事务末尾"。
-    const segments = staffAllocationSrc.split(/await pg\.transaction\(async \(client\) => \{/).slice(1)
-    expect(segments).toHaveLength(3)
+  test('staff allocation.js：每个写事务都先取订单行锁，再写', () => {
+    // 按事务起点切段，逐段比较「锁」与「第一条写」的先后：
+    // 既挡住"新增事务漏加锁"（段内 lockAt < 0），也挡住"锁被挪到事务末尾"。
+    // 不再额外硬编码事务条数——段数本身就是计数，多一条硬编码只会在无害重构时误红。
+    const arrowTx = /await pg\.transaction\(async \(client\) => \{/g
+    const segments = staffAllocationSrc.split(arrowTx).slice(1)
+    // 防写法漂移：裸 `pg.transaction(` 的出现次数必须与按箭头写法切出的段数一致，
+    // 否则说明有事务换了写法而没被切出来，上面的逐段检查会静默漏掉它。
+    expect((staffAllocationSrc.match(/pg\.transaction\(/g) || []).length).toBe(segments.length)
+    expect(segments.length).toBeGreaterThan(0)
     for (const seg of segments) {
       const lockAt = seg.indexOf(STAFF_LOCK_CALL)
       const writeAt = firstWriteAt(seg)
@@ -1942,11 +1942,11 @@ describe('营业额分配：事务锁序守护 sale_orders → sale_order_paymen
     }
   })
 
-  test('admin allocations.ts：按事务切段，每个事务都先取订单行锁再写', () => {
-    // 与 staff 对称：admin 侧原先用全文件 indexOf 比较位置，一旦 671 行之前出现同样字面量
-    // 就会拿错参照点（误红/误绿）。改成按 db.transaction 切段。
-    const segments = adminAllocationsSrc.split(/await db\.transaction\(async \(tx\) => \{/).slice(1)
-    expect(segments.length).toBeGreaterThanOrEqual(1)
+  test('admin allocations.ts：每个写事务都先取订单行锁，再写（与 staff 对称）', () => {
+    const arrowTx = /await db\.transaction\(async \(tx\) => \{/g
+    const segments = adminAllocationsSrc.split(arrowTx).slice(1)
+    expect((adminAllocationsSrc.match(/db\.transaction\(/g) || []).length).toBe(segments.length)
+    expect(segments.length).toBeGreaterThan(0)
     for (const seg of segments) {
       const lockAt = seg.indexOf('FROM sale_orders WHERE sale_order_id = ${pay.sale_order_id} FOR NO KEY UPDATE')
       const writeAt = firstWriteAt(seg)
@@ -1956,36 +1956,25 @@ describe('营业额分配：事务锁序守护 sale_orders → sale_order_paymen
     }
   })
 
-  test('admin allocations.ts：事务计数闸门 —— 新增写事务不加锁必红（与 staff 对称）', () => {
-    const txCount = (adminAllocationsSrc.match(/db\.transaction\(/g) || []).length
-    const lockCount = (adminAllocationsSrc.match(/FOR NO KEY UPDATE/g) || []).length
-    expect(txCount).toBe(1)
-    expect(lockCount).toBe(txCount)
-  })
-
   test('两端都不得用 JOIN 取订单锁（按 sop 主键扫描会把锁序倒过来）', () => {
     // #137 评审实测踩过：`FROM sop JOIN so ... WHERE sop.id=$1 FOR UPDATE OF sop, so`
     // 物理上先锁款项行，正好与约定相反。
-    // 注意不能只禁 `FOR UPDATE OF`：不写 OF 的 `FROM sop JOIN so ... FOR UPDATE` 会锁 FROM 里
+    // 不能只禁 `FOR UPDATE OF`：不写 OF 的 `FROM sop JOIN so ... FOR UPDATE` 会锁 FROM 里
     // 所有表、同样按 sop 主键驱动，是等价的反模式。所以按「涉及 sale_order_payments 的 JOIN + 取锁」锚定。
     const joinLock = /FROM\s+sale_order_payments[\s\S]{0,400}?JOIN\s+sale_orders[\s\S]{0,400}?FOR\s+(?:NO\s+KEY\s+)?UPDATE/i
     expect(staffAllocationSrc).not.toMatch(joinLock)
     expect(adminAllocationsSrc).not.toMatch(joinLock)
   })
 
-  test('两端都把 40P01 死锁翻成可重试提示，且用户文案一致', () => {
-    expect(staffAllocationSrc).toContain("err.code === '40P01'")
-    expect(staffAllocationSrc).toMatch(/CONFLICT: DEADLOCK_DETECTED:/)
+  test('40P01 翻成可重试提示：staff 在全局漏斗、admin 在 action 内', () => {
+    // staff 放 index.js 的全局 catch 而非各 route 自己兜：死锁是两个事务共同造成的，
+    // PG 选谁当 victim 是任意的 —— 只翻译「分配」一侧，被选中的若是改期/收款/退款那侧照样落 -1。
+    expect(staffIndexSrc).toContain("cur.code === '40P01'")
+    expect(staffIndexSrc).toMatch(/CONFLICT: DEADLOCK_DETECTED:/)
+    // 沿 cause 链取码（当前错误是扁平的，但引入包装层后只看 error.code 会静默失效）
+    expect(staffIndexSrc).toContain('cur.cause')
+    // admin 侧该 action 返回 {success:false} 而非 throw，下沉会改错误形状，故保持局部
     expect(adminAllocationsSrc).toContain("pgErrorCode(err) === '40P01'")
-    // 文案跨端一致：两端各写一份字面量，漂移了这里会红
-    expect(staffAllocationSrc).toContain(DEADLOCK_MESSAGE)
-    expect(adminAllocationsSrc).toContain(DEADLOCK_MESSAGE)
-  })
-
-  test('staff 三个写事务都挂了死锁翻译（新增事务漏挂必红）', () => {
-    const txCount = (staffAllocationSrc.match(/await pg\.transaction\(async \(client\) => \{/g) || []).length
-    const catchCount = (staffAllocationSrc.match(/\.catch\(rethrowAsConflictIfDeadlock\)/g) || []).length
-    expect(catchCount).toBe(txCount)
   })
 })
 

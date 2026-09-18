@@ -35,6 +35,11 @@ const URL = process.env.ATTRIBUTION_PG_TEST_URL
  * 本套件会建数据、在事务里禁用核心 trigger、跑并发事务，误连一次就是生产事故。
  */
 const BUSINESS_DB_NAME = 'fengyu_wxapp'
+/**
+ * 一并拒绝 admin 的 e2e 库：它与 dev 业务库同机、只靠库名隔离（见 db/CLAUDE.md「e2e 独立库」），
+ * 同样不该被拿来禁用 trigger 和跑并发事务。
+ */
+const FORBIDDEN_DB_NAMES = [BUSINESS_DB_NAME, 'fengyu_e2e']
 
 /** 夹具前缀，清理时按它删；与 e2e 的 TE2L2_ 命名空间区隔开。 */
 const P = 'T137PG_'
@@ -52,7 +57,7 @@ async function assertNotBusinessDatabase(db) {
             COALESCE(host(inet_server_addr()), 'local') AS addr`,
   )
   const { db: dbName, addr } = rows[0]
-  if (dbName === BUSINESS_DB_NAME) {
+  if (FORBIDDEN_DB_NAMES.includes(dbName)) {
     throw new Error(
       `拒绝在业务库上运行本套件：current_database()=${dbName} @ ${addr}。`
       + '本套件会建数据、禁用 trigger、跑并发事务。',
@@ -61,7 +66,8 @@ async function assertNotBusinessDatabase(db) {
 }
 
 function runSuite() {
-  const pool = new Pool({ connectionString: URL, max: 4 })
+  const APP_NAME = 'T137PG'
+  const pool = new Pool({ connectionString: URL, max: 4, application_name: APP_NAME })
   const q = (sql, params) => pool.query(sql, params)
 
   test.before(async () => {
@@ -104,9 +110,17 @@ function runSuite() {
     return res.rows[0]
   }
   /**
-   * 等到「有会话正卡在锁上」为止。
+   * 等到「**本套件的**某个会话正卡在锁上」为止。
+   *
    * 原先固定 sleep 500ms：慢机器上被测事务可能在 T1 提交之后才真正执行，
    * 那样即使把 FOR SHARE 删掉测试也会假绿 —— 这类并发用例必须确认对方真的在等。
+   *
+   * ⚠ 必须按 `application_name` 过滤，只数自己人：`db:test` 是
+   * `node --test scripts/__tests__/`，Node 默认并行跑多文件，而
+   * `allocation-lock-order.pg.test.js`（issue #148）复用同一个 `ATTRIBUTION_PG_TEST_URL`
+   * 也在刻意制造等锁会话。只数「全库有没有人在等锁」会被它误触发 → 这里提前返回 →
+   * T1 在 T2 真正排上队之前就 COMMIT，并发时序没建立起来，用例退化成假绿。
+   * （T2 走连接池、pid 不固定，所以用 application_name 而不是 pid 白名单。）
    */
   async function waitUntilBlocked(timeoutMs = 5000) {
     const deadline = Date.now() + timeoutMs
@@ -115,12 +129,14 @@ function runSuite() {
         `SELECT COUNT(*)::int AS n FROM pg_stat_activity
          WHERE datname = current_database()
            AND wait_event_type = 'Lock'
+           AND application_name = $1
            AND pid <> pg_backend_pid()`,
+        [APP_NAME],
       )
       if (rows[0].n > 0) return
       await new Promise((r) => setTimeout(r, 50))
     }
-    throw new Error('等待超时：没有观察到任何会话在等锁，这个并发用例没有真正跑起来')
+    throw new Error('等待超时：没有观察到本套件的会话在等锁，这个并发用例没有真正跑起来')
   }
 
   const dateOf = async (id, changeType) =>
@@ -241,7 +257,7 @@ function runSuite() {
   test('绕过 trigger 写 NULL 会被 chk_sop_attribution_date_present 拦下', async () => {
     const id = `${P}D`
     await seedOrder(id, { orderDate: '2026-09-05', orderDatetime: '2026-09-05 10:00:00+08' })
-    const c = new Client({ connectionString: URL })
+    const c = new Client({ connectionString: URL, application_name: APP_NAME })
     await c.connect()
     try {
       await c.query('BEGIN')
@@ -267,7 +283,7 @@ function runSuite() {
    * 行锁上，整个套件表现为**挂起**而不是一条红 —— 排查成本差很多（本套件踩过）。
    */
   async function runBlockedConcurrency({ holdLock, write }) {
-    const t1 = new Client({ connectionString: URL })
+    const t1 = new Client({ connectionString: URL, application_name: APP_NAME })
     await t1.connect()
     let pending
     try {

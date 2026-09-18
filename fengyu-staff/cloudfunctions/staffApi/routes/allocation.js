@@ -516,18 +516,6 @@ async function lockSaleOrderForAllocation(client, saleOrderId) {
 }
 
 /**
- * 把 PG 死锁（40P01）翻成可重试的 CONFLICT，而不是掉进全局兜底的「-1 服务器内部错误」。
- * 锁序修正后分配 × 改期这一个环已消除，这里是**兜底**：仍可能有未覆盖的交错路径，
- * 届时用户看到的应该是「请重试」而不是一个无从判断的内部错误。
- */
-function rethrowAsConflictIfDeadlock(err) {
-  if (err && err.code === '40P01') {
-    throw new Error('CONFLICT: DEADLOCK_DETECTED: 该订单正被其他操作修改，请稍后重试')
-  }
-  throw err
-}
-
-/**
  * 保存某笔回款的营业额分配（店长专用）
  * totalAmount 服务端重算 = 可分配额 × ratio；提成率按本次回款额查档。
  */
@@ -607,7 +595,7 @@ async function savePayment(ctx) {
       await logOperation(client, ctx, 'allocation.savePayment', 'sale_payment', String(salePaymentId), {
         _v: 1, allocationCount: 0, note: '标记为无需分配',
       })
-    }).catch(rethrowAsConflictIfDeadlock)
+    })
     ctx.result = { salePaymentId, message: '已标记为无需分配', allocationCount: 0 }
     return
   }
@@ -700,7 +688,7 @@ async function savePayment(ctx) {
       allocationCount: enriched.length,
       totalAmount: Math.round(enriched.reduce((s, a) => s + a.totalAmount, 0) * 100) / 100,
     })
-  }).catch(rethrowAsConflictIfDeadlock)
+  })
 
   ctx.result = { salePaymentId, message: '提成分配已保存', allocationCount: enriched.length }
 }
@@ -749,7 +737,7 @@ async function deletePaymentAllocation(ctx) {
     if (resetUpd.rowCount === 0) throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED: sale_order_payments:${salePaymentId}:allocation_status`)
     await refreshOrderAllocationRollup(client, pay.sale_order_id)
     await logOperation(client, ctx, 'allocation.deletePaymentAllocation', 'sale_payment', String(salePaymentId), { _v: 1 })
-  }).catch(rethrowAsConflictIfDeadlock)
+  })
 
   ctx.result = { salePaymentId, message: '营业额分配已清除' }
 }

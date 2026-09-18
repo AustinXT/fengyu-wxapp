@@ -168,26 +168,54 @@ function runSuite() {
     Number((await client.query('SELECT pg_backend_pid() AS pid')).rows[0].pid)
 
   /**
+   * 起两个独立连接、各自 BEGIN，跑一段并发编排，收尾无条件断开。
+   *
+   * 把「连接 / 取 pid / 调 deadlock_timeout / 断开」这套样板收到一处，
+   * 两个场景函数就只剩真正有差异的时序。**编排本身刻意不抽象**：三条用例的价值
+   * 正在于各自不同的交错顺序，套进统一模板反而看不出差别。
+   *
+   * `track(p)` 登记"可能还悬着"的 promise：就地吞掉 rejection，并在 finally 里 settle。
+   * 不这么做的话，中途抛错跳到 finally 断连时它会以 "Connection terminated" 变成
+   * unhandled rejection —— Node 默认 `--unhandled-rejections=throw`，**整个 db:test 进程会崩**，
+   * 而不是红一条。（兄弟套件 attribution-trigger.pg.test.js 踩过同一个坑。）
+   *
+   * PG 默认 `deadlock_timeout=1s`：检测器要等满这段时间才去查环，「修复前必死锁」那条
+   * 因此恒定耗时 ~1s，占整个套件一半以上。调到 150ms 只影响**多久开始检测**，
+   * 不影响是否成环，对结论没有任何削弱。`SET LOCAL` 随事务结束自动失效。
+   */
+  async function withTwoSessions(run) {
+    const a = new Client({ connectionString: URL })
+    const b = new Client({ connectionString: URL })
+    const tracked = []
+    const track = (p) => { p.catch(() => {}); tracked.push(p); return p }
+    try {
+      // connect 也放进 try：在 try 之外时，b 连接失败会让 a 的 socket 永不释放
+      await a.connect()
+      await b.connect()
+      const pids = [await backendPid(a), await backendPid(b)]
+      await a.query('BEGIN')
+      await b.query('BEGIN')
+      await a.query("SET LOCAL deadlock_timeout = '150ms'")
+      await b.query("SET LOCAL deadlock_timeout = '150ms'")
+      return await run({ a, b, pids, track })
+    } finally {
+      // 必须无条件断开：留着未提交事务会让后续用例全卡死，表现为整个套件挂起而不是一条红
+      await Promise.allSettled(tracked)
+      await a.end().catch(() => {})
+      await b.end().catch(() => {})
+    }
+  }
+
+  /**
    * 交错跑「改期」(T1) 与「分配」(T2) 两个事务，返回各自的结局。
    *
    * @param {boolean} lockOrderFirst 分配事务是否先取订单行锁（true = 修复后，false = 修复前）
    * @returns {Promise<{t1: Error|null, t2: Error|null}>}
    */
   async function raceAttributionVsAllocation(orderId, paymentId, lockOrderFirst) {
-    const t1 = new Client({ connectionString: URL })   // 改期
-    const t2 = new Client({ connectionString: URL })   // 分配
-
-    let t1Err = null
-    let t2Err = null
-    // 在 try 之外 connect 会让「t2 连接失败时 t1 的 socket 永不释放」，故连接也放进 try/finally
-    let t2Step1 = null
-    try {
-      await t1.connect()
-      await t2.connect()
-      const pids = [await backendPid(t1), await backendPid(t2)]
-
-      await t1.query('BEGIN')
-      await t2.query('BEGIN')
+    return withTwoSessions(async ({ a: t1, b: t2, pids, track }) => {
+      let t1Err = null
+      let t2Err = null
 
       // T1 第 1 步：锁订单（与两端 updatePerformanceAttribution 一致）
       await t1.query('SELECT 1 FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE', [orderId])
@@ -196,17 +224,12 @@ function runSuite() {
       // 修复前则直接去改款项行，拿住 payments 锁。
       // 锁强度与实现保持一致：分配侧用 FOR NO KEY UPDATE（放行 FK 子表 INSERT，
       // 同时仍与改期的 FOR UPDATE 冲突，足以消环）。
-      t2Step1 = lockOrderFirst
+      const t2Step1 = track(lockOrderFirst
         ? t2.query('SELECT 1 FROM sale_orders WHERE sale_order_id = $1 FOR NO KEY UPDATE', [orderId])
             .then(() => t2.query(
               `UPDATE sale_order_payments SET allocation_status = '已分配' WHERE id = $1`, [paymentId]))
         : t2.query(
-            `UPDATE sale_order_payments SET allocation_status = '已分配' WHERE id = $1`, [paymentId])
-      // 就地吞掉 rejection：真正的错误仍由下面的 await/.catch 记进 t2Err。
-      // 不挂这个的话，一旦中途抛错跳到 finally 断连，t2Step1 会以 "Connection terminated" 变成
-      // unhandled rejection —— Node 默认 --unhandled-rejections=throw，整个 db:test 进程会崩，
-      // 而不是红一条。（兄弟套件 attribution-trigger.pg.test.js 也踩过同一个坑。）
-      t2Step1.catch(() => {})
+            `UPDATE sale_order_payments SET allocation_status = '已分配' WHERE id = $1`, [paymentId]))
 
       if (lockOrderFirst) {
         // T2 卡在订单行锁上，等它真的排上队再推进 T1
@@ -252,13 +275,8 @@ function runSuite() {
         await t1.query(t1Err ? 'ROLLBACK' : 'COMMIT').catch(() => {})
         await t2.query(t2Err ? 'ROLLBACK' : 'COMMIT').catch(() => {})
       }
-    } finally {
-      // 必须无条件断开：留着未提交事务会让后续用例全卡死，表现为整个套件挂起而不是一条红
-      if (t2Step1) await Promise.allSettled([t2Step1])
-      await t1.end().catch(() => {})
-      await t2.end().catch(() => {})
-    }
-    return { t1: t1Err, t2: t2Err }
+      return { t1: t1Err, t2: t2Err }
+    })
   }
 
   /**
@@ -270,26 +288,18 @@ function runSuite() {
    * 又混进「先写 payments 再取 so 锁」的语句，这条会抓到。
    */
   async function raceAllocationFirst(orderId, paymentId) {
-    const tAlloc = new Client({ connectionString: URL })
-    const tAttr = new Client({ connectionString: URL })
-    let allocErr = null
-    let attrErr = null
-    let attrStep = null
-    try {
-      await tAlloc.connect()
-      await tAttr.connect()
-      const pids = [await backendPid(tAlloc), await backendPid(tAttr)]
-
-      await tAlloc.query('BEGIN')
-      await tAttr.query('BEGIN')
+    return withTwoSessions(async ({ a: tAlloc, b: tAttr, pids, track }) => {
+      let allocErr = null
+      let attrErr = null
 
       // 分配先到：取订单锁（修复后的第一条语句），再写款项行
       await tAlloc.query('SELECT 1 FROM sale_orders WHERE sale_order_id = $1 FOR NO KEY UPDATE', [orderId])
       await tAlloc.query(`UPDATE sale_order_payments SET allocation_status = '已分配' WHERE id = $1`, [paymentId])
 
       // 改期随后到达，应在订单锁上排队（而不是与分配互等）
-      attrStep = tAttr.query('SELECT 1 FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE', [orderId])
-      attrStep.catch(() => {})
+      const attrStep = track(
+        tAttr.query('SELECT 1 FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE', [orderId]),
+      )
       await waitUntilBlocked(pids)
 
       // 分配继续刷订单汇总并提交 —— 若锁序有问题，这里会与 tAttr 互等
@@ -308,12 +318,8 @@ function runSuite() {
         [orderId],
       ).catch((e) => { attrErr = attrErr || e })
       await tAttr.query(attrErr ? 'ROLLBACK' : 'COMMIT').catch(() => {})
-    } finally {
-      if (attrStep) await Promise.allSettled([attrStep])
-      await tAlloc.end().catch(() => {})
-      await tAttr.end().catch(() => {})
-    }
-    return { alloc: allocErr, attr: attrErr }
+      return { alloc: allocErr, attr: attrErr }
+    })
   }
 
   const isDeadlock = (e) => Boolean(e) && e.code === '40P01'
