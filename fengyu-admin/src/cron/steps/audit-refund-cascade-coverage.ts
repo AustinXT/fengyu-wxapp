@@ -303,6 +303,11 @@ export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeC
                       WHERE pr.sale_item_id = s.sale_item_id), 0) AS total_picked
     FROM sale_items s
     WHERE s.product_type = '家居产品'
+      -- 只校验**有提货记录**的行：迁移 0043 对「有 picked_up 但完全没有 pickup_records、
+      -- 且订单无已支付退款」的历史行刻意保留原值（视为提货未留记录），它的事后断言 2 用的
+      -- 也是这条 EXISTS 豁免。此处不豁免的话，那类行会每天恒告警 —— 而 0043 放弃 CHECK 之后
+      -- C5/C5b 是唯一的运行时守护，恒红等于守护失效。
+      AND EXISTS (SELECT 1 FROM pickup_records pr WHERE pr.sale_item_id = s.sale_item_id)
       AND COALESCE(s.picked_up_quantity, 0) <> COALESCE((
             SELECT SUM(pr.pickup_quantity)
               FROM pickup_records pr

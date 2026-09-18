@@ -663,9 +663,16 @@ export async function cascadeRefund(
   // 这一冲突吞掉（影响行数原本只用于计数、不用于校验）。现改为 WHERE 带守卫，rowCount=0 抛 CONFLICT，
   // 与 #125 折抵侧口径一致。
   //
-  // ⚠ effItems 不带 product_type，通道过滤靠 SQL 里的 product_type = '家居产品'。疗程卡的
-  // sessionCount 同样 > 0，若直接拿 rowCount=0 判冲突会把每一笔疗程卡退款都误判成冲突 ——
-  // 所以先按 product_type 预筛出家居行，循环内的 rowCount=0 才唯一地意味着「守卫没过」。
+  // ⚠ 预筛只用来判定「0 行意味着什么」，**不用来决定是否执行 UPDATE**：
+  // effItems 不带 product_type，疗程卡的 sessionCount 同样 > 0，若直接拿 rowCount=0 判冲突，
+  // 每一笔疗程卡退款都会被误判。但反过来用预筛决定「跳过」是 fail-open 的 ——
+  // 预筛结果一旦为空（driver 形状变化、mock 漂移），整条通道会静默 no-op，
+  // refunded_quantity 永不累加且不报错 → 可重复退（正是 2026-06-08 止血要堵的资损路径）。
+  // 现在 UPDATE 始终执行、由 SQL 里的 product_type 谓词做真正的过滤；预筛失灵最多退化成
+  // 「该抛的 CONFLICT 没抛」，即拆列前的旧行为，不会丢账。
+  //
+  // 两条 SQL 都带 sale_order_id：effItems 源自 note.items 的 refSaleItemId，历史脏数据可能
+  // 指向别单的家居行，而 approveRefund 的行锁只覆盖本单购买行 —— 不限定就会写坏别单的账。
   //
   // 字段名 rolledBackPickups 保留（跨端 snapshot 守护），语义现为「计入已退款的家居行数」。
   let rolledBackPickups = 0
@@ -677,6 +684,7 @@ export async function cascadeRefund(
     const homeRes = await tx.execute(sql`
       SELECT sale_item_id FROM sale_items
        WHERE sale_item_id IN (${idList})
+         AND sale_order_id = ${saleOrderId}
          AND product_type = '家居产品'
     `)
     for (const r of homeRes as unknown as Array<{ sale_item_id: string }>) {
@@ -684,7 +692,6 @@ export async function cascadeRefund(
     }
   }
   for (const it of effItems) {
-    if (!homeItemIds.has(it.saleItemId)) continue
     const qty = it.sessionCount && Number(it.sessionCount) > 0 ? Number(it.sessionCount) : null
     if (!qty) continue
     const res = await tx.execute(sql`
@@ -692,14 +699,20 @@ export async function cascadeRefund(
          SET refunded_quantity = COALESCE(refunded_quantity, 0) + ${qty},
              updated_at = NOW()
        WHERE sale_item_id = ${it.saleItemId}
+         AND sale_order_id = ${saleOrderId}
          AND product_type = '家居产品'
          AND (COALESCE(picked_up_quantity, 0) + COALESCE(refunded_quantity, 0)
               + COALESCE(converted_quantity, 0) + ${qty}) <= quantity
     `)
-    if (rowsAffected(res) === 0) {
-      throw new Error('CONFLICT: HOME_REFUND_SETTLED_EXCEEDED: 家居可退数量已被提货或转换占用，请刷新后重新发起退款')
+    const affected = rowsAffected(res)
+    if (affected === 0) {
+      // 只有「确属本单家居行」才是守卫没过；非家居行本就该 0 行，正常跳过
+      if (homeItemIds.has(it.saleItemId)) {
+        throw new Error('CONFLICT: HOME_REFUND_SETTLED_EXCEEDED: 家居可退数量已被提货或转换占用，请刷新后重新发起退款')
+      }
+      continue
     }
-    rolledBackPickups += rowsAffected(res)
+    rolledBackPickups += affected
   }
 
   return {

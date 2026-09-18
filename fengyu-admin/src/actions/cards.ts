@@ -841,13 +841,17 @@ export const getCustomerHeldCards = withPermission(
             // #145/#153 收紧：家居折抵以「剩余已付金额」为基准（= 行实收 − 已提货金额 − 已转走金额），
             // 与 staff customerHeldCards 的 hp LATERAL 字面同源。旧口径按未提货件数全额折抵，
             // 会把未兑现价值洗成全额可提。
+            // #154：未结算件数必须减「已结算」三列之和。只减 picked_up 会让整行退款/整行折抵的
+            // 寄存单与 0 元赠品家居行重新通过本闸门（那两类走上面的分支，没有金额兜底），
+            // 在转换候选列表里复活——staff 同名守卫 routes/order.js 的 hp LATERAL 已改三列，
+            // 漏改这一处就是两端分叉。「已提货金额」的件数因子同理直读 picked_up_quantity 列。
             sql`(
               CASE WHEN ${saleOrders.saleOrderType} = '寄存单' OR ${saleItems.saleAmount} <= 0
-                   THEN GREATEST(0, ${saleItems.quantity} - COALESCE(${saleItems.pickedUpQuantity}, 0))
+                   THEN GREATEST(0, ${saleItems.quantity} - (COALESCE(${saleItems.pickedUpQuantity}, 0) + COALESCE(${saleItems.refundedQuantity}, 0) + COALESCE(${saleItems.convertedQuantity}, 0)))
                    ELSE LEAST(
-                     GREATEST(0, ${saleItems.quantity} - COALESCE(${saleItems.pickedUpQuantity}, 0)),
+                     GREATEST(0, ${saleItems.quantity} - (COALESCE(${saleItems.pickedUpQuantity}, 0) + COALESCE(${saleItems.refundedQuantity}, 0) + COALESCE(${saleItems.convertedQuantity}, 0))),
                      GREATEST(0, FLOOR(GREATEST(0, ${saleItems.received}::numeric
-                       - COALESCE((SELECT SUM(pr.pickup_quantity) FROM pickup_records pr WHERE pr.sale_item_id = ${saleItems.saleItemId}), 0) * ${saleItems.unitRealPrice}::numeric
+                       - COALESCE(${saleItems.pickedUpQuantity}, 0) * ${saleItems.unitRealPrice}::numeric
                        - COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)
                      ) / NULLIF(${saleItems.unitRealPrice}::numeric, 0)))::int
                    )

@@ -94,10 +94,24 @@ async function dryRun(client) {
              COALESCE(si.picked_up_quantity, 0) AS old_settled,
              ${PICKED_PHYS} AS picked_phys,
              ${CONVERTED} AS conv,
-             ${HAS_PAID_REFUND} AS has_paid_refund
+             ${HAS_PAID_REFUND} AS has_paid_refund,
+             EXISTS (
+               SELECT 1 FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id
+             ) AS has_pickup_records
         FROM sale_items si
+       -- ⚠ 这三个分支必须与迁移 0043 的 WHERE **字面同口径**：少一个分支，dry-run 会对
+       -- 「picked_up=0 但有未关闭转出行」这类历史行报「全部通过」，而迁移实际会 RAISE 回滚。
        WHERE COALESCE(si.picked_up_quantity, 0) <> 0
           OR EXISTS (SELECT 1 FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id)
+          OR EXISTS (
+               SELECT 1
+                 FROM sale_items out_item
+                 JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+                WHERE out_item.ref_sale_item_id = si.sale_item_id
+                  AND out_item.item_direction = '转出'
+                  AND out_item.product_type = '家居产品'
+                  AND conv_order.status <> '已关闭'
+             )
     )
     SELECT *, old_settled - picked_phys - conv AS residual
       FROM src
@@ -108,7 +122,8 @@ async function dryRun(client) {
     sale_item_id: r.sale_item_id,
     quantity: r.quantity,
     旧_已结算: r.old_settled,
-    新_已提货: r.picked_phys + (r.residual > 0 && !r.has_paid_refund ? r.residual : 0),
+    新_已提货: r.picked_phys
+      + (r.residual > 0 && !r.has_paid_refund && !r.has_pickup_records ? r.residual : 0),
     新_已退款: r.residual > 0 && r.has_paid_refund ? r.residual : 0,
     新_已转换: r.conv,
   })
@@ -133,11 +148,22 @@ async function dryRun(client) {
     report('residual < 0 明细', negative.map(toRow))
   }
 
-  const legacyPicked = plan.filter((r) => r.residual > 0 && !r.has_paid_refund)
+  // 有提货记录却仍有无退款实据的残差：并回 picked_up 会破坏「picked_up == SUM(pickup_records)」，
+  // 并回 refunded 又查无实据 —— 迁移 0043 的前置断言会 RAISE 把整条迁移打回。
+  const unexplained = plan.filter((r) => r.residual > 0 && !r.has_paid_refund && r.has_pickup_records)
+  if (unexplained.length > 0) {
+    problems += unexplained.length
+    console.log('\n✗ 有提货记录、却存在无退款实据的残差 → 迁移 0043 会 RAISE EXCEPTION 中止。')
+    console.log('  典型来源：已删除转换单的转出行（conv 聚合归 0 而 picked_up 仍被抬高）。必须先查清。')
+    report('无从解释的残差明细', unexplained.map(toRow))
+  }
+
+  const legacyPicked = plan.filter((r) => r.residual > 0 && !r.has_paid_refund && !r.has_pickup_records)
   if (legacyPicked.length > 0) {
-    console.log('\n⚠ 有残差但订单无已支付退款 → 按口径视为「无 pickup_records 的历史提货」，')
+    console.log('\n⚠ 有残差、订单无已支付退款、且完全没有 pickup_records → 按口径视为「历史提货未留记录」，')
     console.log('  会留在 picked_up_quantity。不阻断迁移，但请人工确认这批数据的来历。')
-    report('无退款残差明细', legacyPicked.map(toRow))
+    console.log('  注意：cron STEP 12 的 C5 对这类行同样豁免（判据带 EXISTS(pickup_records)）。')
+    report('历史提货残差明细', legacyPicked.map(toRow))
   }
 
   // 部署窗口暴露面：迁移已跑、新代码未部署时，旧代码会把哪些份额重新放出来。

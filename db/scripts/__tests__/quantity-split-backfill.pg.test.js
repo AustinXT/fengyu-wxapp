@@ -266,6 +266,28 @@ function runSuite() {
     assert.deepEqual(await readSplit(item), { picked: 1, refunded: 0, converted: 0 })
   })
 
+  // 回归锁（pr-ready 对抗评审命中）：回填的「无退款残差留在 picked_up」分支若不排除
+  // 「有 pickup_records」的行，就会与事后断言 2（有记录的行必须 picked_up == SUM(pickup_records)）
+  // 直接互斥 —— 迁移当场 RAISE 被整条打回。两者必须收敛到同一口径。
+  test('有提货记录却存在无退款实据的残差 → 前置断言拦下，而不是并回 picked_up 后被断言 2 打回', async () => {
+    await cleanupFixtures()
+    const order = `${P}U1`
+    const item = `${P}U1-01`
+    await seedOrder(order)
+    // 提货记录 2 件，旧已结算 5 → residual=3；订单无任何已支付退款流水
+    await seedHomeItem(item, order, { quantity: 8, pickedUp: 5 })
+    await seedPickupRecord(item, 2)
+
+    await assert.rejects(
+      runBackfill(),
+      (e) => /#154 回填前守恒破坏/.test(e.message) && e.message.includes(item),
+      '该类行必须被前置断言拦住并带上样例 sale_item_id',
+    )
+
+    // 事务已回滚
+    assert.deepEqual(await readSplit(item), { picked: 5, refunded: 0, converted: 0 })
+  })
+
   test('事后断言 2：有提货记录的行，picked_up_quantity 必须等于 pickup_records 合计', async () => {
     await cleanupFixtures()
     const order = `${P}A1`

@@ -2,6 +2,18 @@ ALTER TABLE "sale_items" ADD COLUMN "refunded_quantity" integer DEFAULT 0;--> st
 ALTER TABLE "sale_items" ADD COLUMN "converted_quantity" integer DEFAULT 0;--> statement-breakpoint
 -- ↑ 以上为 drizzle-kit 生成；以下为手写回填（db/CLAUDE.md 允许的「末尾追加数据回填」例外）。
 --
+-- ⚠ 执行方式：**必须** `npm --prefix db run db:migrate`（drizzle migrator 把整个文件包进单事务，
+--   RAISE EXCEPTION 才能真正回滚已执行的 UPDATE，并发写入也被 ALTER 的 ACCESS EXCLUSIVE 天然排除）。
+--   **禁止**用 `db/scripts/apply-pending-migrations.js` 跑本条：它按 statement-breakpoint 标记逐条
+--   autocommit，会丢掉原子性，并在回填与并发写之间开出 lost update 窗口（旧代码把退款/折抵写进
+--   picked_up，回填按旧快照覆盖 → 份额丢失 → 可重复退）。
+--   （注意本行刻意不写出那个标记的完整字面量——drizzle 就是按它切分语句，写全会把注释从中间切开。）
+--
+-- ⚠ 部署顺序：本迁移**不向前也不向后兼容**，详见 docs/changes/ 对应变更文档。
+--   正向：先迁 → 立即部署 staffApi / clientApi / admin 三端 → 跑 verify-quantity-split.js。
+--   反向：**禁止代码回滚**（新列写过之后回滚代码，旧代码会把已退款/已折抵份额读回可提可退 → 资损），
+--   只能 forward-fix。
+--
 -- #154：picked_up_quantity 三语义拆列的历史数据回填。
 --
 -- 编号说明：本条刻意跳号到 0043。test 与 dev 两线的 migration 编号自 0039 起已分叉
@@ -14,9 +26,15 @@ ALTER TABLE "sale_items" ADD COLUMN "converted_quantity" integer DEFAULT 0;--> s
 --   picked_phys := SUM(pickup_records.pickup_quantity)                    — 物理提货，独立源
 --   conv        := SUM(转出行 quantity WHERE 转换单 status <> '已关闭')     — 已转换，独立源
 --   residual    := 旧 picked_up_quantity − picked_phys − conv
---     residual < 0                        → 守恒破坏，RAISE EXCEPTION 回滚整个迁移（不静默 clamp）
---     residual > 0 且该行订单有已支付退款  → 计入 refunded_quantity
---     residual > 0 且无已支付退款          → 视为「无 pickup_records 的历史提货」，留在 picked_up_quantity
+--     residual < 0                                  → 守恒破坏，RAISE EXCEPTION 回滚整个迁移（不静默 clamp）
+--     residual > 0 且该行订单有已支付退款            → 计入 refunded_quantity
+--     residual > 0、无退款、且该行**没有** pickup_records → 视为「历史提货未留记录」，留在 picked_up_quantity
+--     residual > 0、无退款、但该行**有** pickup_records   → 无从解释的结算量，RAISE EXCEPTION
+--
+--   最后一类必须拦而不能并回 picked_up_quantity：并回去会让该行 picked_up > SUM(pickup_records)，
+--   与本迁移事后断言 2 以及 cron STEP 12 的 C5 守恒判据直接冲突（断言当场 RAISE 把整条迁移打回，
+--   或迁移侥幸通过后 C5 每日恒告警）。典型来源是「已删除转换单的转出行」——conv 聚合归 0 而
+--   picked_up 仍被抬高。部署前跑 verify-quantity-split.js 可提前发现这类行。
 --
 -- 2026-09-18 实测：dev 14 行 / 17 件、prod 18 行 / 24 件，全部 picked_phys=0、conv=0 且订单均有已支付退款
 -- （pickup_records 两库皆空、家居转出行尚无数据），即全量归入 refunded_quantity，0 行守恒破坏。
@@ -50,11 +68,24 @@ BEGIN
                 AND out_item.item_direction = '转出'
                 AND out_item.product_type = '家居产品'
                 AND conv_order.status <> '已关闭'
-           ), 0) AS conv
+           ), 0) AS conv,
+           EXISTS (
+             SELECT 1 FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id
+           ) AS has_pickup_records,
+           EXISTS (
+             SELECT 1 FROM sale_order_payments sop
+              WHERE sop.sale_order_id = si.sale_order_id
+                AND sop.change_type = '退款'
+                AND sop.status = '已支付'
+           ) AS has_paid_refund
       FROM sale_items si
   )
   , broken AS (
-    SELECT sale_item_id FROM src WHERE old_settled - picked_phys - conv < 0
+    SELECT sale_item_id FROM src
+     WHERE old_settled - picked_phys - conv < 0
+        -- 有提货记录却仍有无法解释的结算量：并回 picked_up 会破坏「picked_up == SUM(pickup_records)」，
+        -- 并回 refunded 又查无退款实据。两条路都不能走，只能拦下来让人查。
+        OR (old_settled - picked_phys - conv > 0 AND NOT has_paid_refund AND has_pickup_records)
   )
   SELECT (SELECT COUNT(*) FROM broken),
          COALESCE((
@@ -64,7 +95,7 @@ BEGIN
     INTO bad, sample;
 
   IF bad > 0 THEN
-    RAISE EXCEPTION '#154 回填前守恒破坏：% 行满足 picked_up < 物理提货 + 已转换，样例 [%]', bad, sample;
+    RAISE EXCEPTION '#154 回填前守恒破坏：% 行的已结算量无法按口径拆分（picked_up < 物理提货+已转换，或有提货记录却存在无退款实据的残差），样例 [%]', bad, sample;
   END IF;
 END $$;--> statement-breakpoint
 WITH src AS (
@@ -84,6 +115,9 @@ WITH src AS (
               AND out_item.product_type = '家居产品'
               AND conv_order.status <> '已关闭'
          ), 0) AS conv,
+         EXISTS (
+           SELECT 1 FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id
+         ) AS has_pickup_records,
          EXISTS (
            SELECT 1
              FROM sale_order_payments sop
@@ -107,13 +141,16 @@ WITH src AS (
            AND conv_order.status <> '已关闭'
       )
 ), split AS (
-  SELECT sale_item_id, picked_phys, conv, has_paid_refund,
+  SELECT sale_item_id, picked_phys, conv, has_paid_refund, has_pickup_records,
          old_settled - picked_phys - conv AS residual
     FROM src
 )
 UPDATE sale_items si
+   -- 「历史提货未留记录」的残差只在该行完全没有 pickup_records 时才并回本列；
+   -- 有记录的行并回去就会破坏事后断言 2，那一类已在前置断言里被拦掉。
    SET picked_up_quantity = s.picked_phys
-                            + CASE WHEN s.residual > 0 AND NOT s.has_paid_refund THEN s.residual ELSE 0 END,
+                            + CASE WHEN s.residual > 0 AND NOT s.has_paid_refund AND NOT s.has_pickup_records
+                                   THEN s.residual ELSE 0 END,
        refunded_quantity  = CASE WHEN s.residual > 0 AND s.has_paid_refund THEN s.residual ELSE 0 END,
        converted_quantity = s.conv
   FROM split s

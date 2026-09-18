@@ -769,9 +769,29 @@ describe('SUMMARY v3 §2 #14：refund-cascade 双端 5 通道覆盖守护', () =
       })
       // effItems 不带 product_type，疗程卡的 sessionCount 同样 > 0；不先按 product_type 预筛，
       // rowCount=0 会把每一笔疗程卡退款都误判成冲突。
-      test(`${end} 通道 5 必须先按 product_type 预筛家居行再判冲突`, () => {
+      //
+      // 但预筛只能用来判定「0 行意味着什么」，**不能用来决定是否执行 UPDATE**：
+      // 用它决定跳过是 fail-open 的 —— 预筛结果一旦为空（driver 形状变化、mock 漂移），
+      // 整条通道静默 no-op、refunded_quantity 永不累加且不报错 → 可重复退（资损）。
+      // 所以这里正向锁「throw 被 homeItemIds 门控」，反向锁「不得用它 continue 跳过」。
+      test(`${end} 通道 5 预筛只门控 CONFLICT，不得用来跳过 UPDATE`, () => {
         expect(getSrc()).toMatch(/homeItemIds/)
-        expect(getSrc()).toMatch(/if\s*\(!homeItemIds\.has\(it\.saleItemId\)\)\s*continue/)
+        expect(
+          getSrc(),
+          '预筛被用来跳过 UPDATE —— 预筛失灵会让整条通道静默 no-op',
+        ).not.toMatch(/if\s*\(!homeItemIds\.has\(it\.saleItemId\)\)\s*continue/)
+        // CONFLICT 必须落在「影响行数为 0」且「确属家居行」的分支里
+        expect(getSrc()).toMatch(
+          /===\s*0[\s\S]{0,400}?if\s*\(homeItemIds\.has\(it\.saleItemId\)\)[\s\S]{0,200}?HOME_REFUND_SETTLED_EXCEEDED/,
+        )
+      })
+      // effItems 源自 note.items 的 refSaleItemId，脏数据可指向别单的家居行，
+      // 而 approveRefund 的行锁只覆盖本单购买行——两条 SQL 都必须限定 sale_order_id。
+      test(`${end} 通道 5 的预筛与 UPDATE 都必须限定 sale_order_id`, () => {
+        const src = getSrc()
+        const seg = src.slice(src.indexOf('homeItemIds'))
+        expect(seg.match(/sale_order_id\s*=\s*(\$\d+|\$\{saleOrderId\})/g)?.length ?? 0)
+          .toBeGreaterThanOrEqual(2)
       })
     }
   })
