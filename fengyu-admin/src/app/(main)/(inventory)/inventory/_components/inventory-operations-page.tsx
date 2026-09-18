@@ -223,18 +223,38 @@ function SmallIconButton({
   )
 }
 
+/**
+ * `required` 只加视觉标记，**不往控件上加 HTML `required` 属性** —— 各表单的必填校验
+ * 已由 submit() 里的 toast 分支承担，再叠一层原生 constraint validation 会把提交拦在
+ * submit 事件之前，既改变了既有报错文案，也会让按 toast 文案断言的 e2e 失配。
+ *
+ * 标注判据取自各表单 submit() 的校验分支，不是凭字段名猜的：
+ * `positiveNumber()` 对空串返回 null（`Number('') === 0`，不满足 `> 0`）→ 真必填；
+ * `nonnegativeNumber()` 对空串返回 0 → 清空等价于填 0，**不是**必填；
+ * `optionalText()` → 可选。
+ */
 function FormField({
   label,
   children,
   className = '',
+  required = false,
 }: {
   label: string
   children: ReactNode
   className?: string
+  required?: boolean
 }) {
   return (
     <label className={`space-y-1.5 ${className}`}>
-      <span className="block text-sm font-medium">{label}</span>
+      <span className="block text-sm font-medium">
+        {label}
+        {required && (
+          <>
+            <span className="ml-0.5 text-[var(--primary)]" aria-hidden="true">*</span>
+            <span className="sr-only">（必填）</span>
+          </>
+        )}
+      </span>
       {children}
     </label>
   )
@@ -270,15 +290,17 @@ function DocPicker({
   value,
   onChange,
   disabled = false,
+  required = false,
 }: {
   label: string
   docs: InventoryDocRow[]
   value: string
   onChange: (value: string) => void
   disabled?: boolean
+  required?: boolean
 }) {
   return (
-    <FormField label={label}>
+    <FormField label={label} required={required}>
       <Select value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled}>
         <option value="">请选择</option>
         {docs.map((doc) => (
@@ -690,13 +712,13 @@ function StoreRequestForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <FormField label="报货门店">
+        <FormField label="报货门店" required>
           <Select value={storeId} onChange={(event) => selectStore(event.target.value)}>
             <option value="">请选择门店</option>
             {stores.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
           </Select>
         </FormField>
-        <FormField label="所属市场">
+        <FormField label="所属市场" required>
           <Select value={marketId} onChange={(event) => setMarketId(event.target.value)}>
             <option value="">请选择市场</option>
             {markets.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
@@ -716,11 +738,11 @@ function StoreRequestForm({
         </div>
         {lines.map((line, index) => (
           <div key={index} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 md:grid-cols-[minmax(0,1fr)_10rem_minmax(0,1fr)_2.5rem]">
-            <FormField label="商品">
+            <FormField label="商品" required>
               <SkuPicker value={line.skuId} onChange={(skuId) => updateLine(index, { skuId })} skus={skuOptions} />
             </FormField>
-            <FormField label="数量">
-              <Input inputMode="decimal" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} />
+            <FormField label="数量" required>
+              <Input type="number" min="0" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} />
             </FormField>
             <FormField label="明细备注">
               <Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} />
@@ -796,7 +818,7 @@ function ItemCompanyReplenishmentForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <FormField label="供应链库存主体">
+        <FormField label="供应链库存主体" required>
           <Select value={supplyChainLocationId} onChange={(event) => setSupplyChainLocationId(event.target.value)}>
             <option value="">请选择总部</option>
             {headquarters.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
@@ -811,8 +833,8 @@ function ItemCompanyReplenishmentForm({
         </div>
         {lines.map((line, index) => (
           <div key={index} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 md:grid-cols-[minmax(0,1fr)_10rem_minmax(0,1fr)_2.5rem]">
-            <FormField label="供应链商品"><SkuPicker value={line.skuId} onChange={(skuId) => updateLine(index, { skuId })} skus={supplyChainSkus} /></FormField>
-            <FormField label="数量"><Input inputMode="decimal" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
+            <FormField label="供应链商品" required><SkuPicker value={line.skuId} onChange={(skuId) => updateLine(index, { skuId })} skus={supplyChainSkus} /></FormField>
+            <FormField label="数量" required><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
             <FormField label="明细备注"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></FormField>
             <div className="flex items-end justify-end"><SmallIconButton label="删除明细" onClick={() => setLines((previous) => previous.length > 1 ? previous.filter((_, lineIndex) => lineIndex !== index) : previous)} disabled={lines.length === 1} /></div>
           </div>
@@ -1030,13 +1052,13 @@ function MarketReportForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3 xl:grid-cols-5">
-        <FormField label="市场">
+        <FormField label="市场" required>
           <Select value={marketId} onChange={(event) => { setMarketId(event.target.value); setLines([]); setQuoteResult(null) }}>
             <option value="">请选择市场</option>
             {markets.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
           </Select>
         </FormField>
-        <FormField label="供应链库存主体">
+        <FormField label="供应链库存主体" required>
           <Select value={supplyChainLocationId} onChange={(event) => setSupplyChainLocationId(event.target.value)}>
             <option value="">请选择总部</option>
             {headquarters.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
@@ -1082,7 +1104,7 @@ function MarketReportForm({
                       <td className="px-3 py-2">{line.requestQuantity}</td>
                       <td className="px-3 py-2">{line.availableQuantity}</td>
                       <td className="px-3 py-2">{line.suggestedPurchaseQuantity}</td>
-                      <td className="px-3 py-2"><Input className="w-24" inputMode="decimal" value={line.purchaseQuantity} onChange={(event) => updateLine(index, { purchaseQuantity: event.target.value })} disabled={!line.selected} /></td>
+                      <td className="px-3 py-2"><Input className="w-24" type="number" min="0" step="0.01" max="9999999999.99" value={line.purchaseQuantity} onChange={(event) => updateLine(index, { purchaseQuantity: event.target.value })} disabled={!line.selected} /></td>
                       {canViewPrice && (
                         <td className="px-3 py-2">
                           {!line.selected ? (
@@ -1233,14 +1255,14 @@ function PurchaseOrderForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <DocPicker label="市场报货单" docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
-        <FormField label="供应商">
+        <DocPicker label="市场报货单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
+        <FormField label="供应商" required>
           <Select value={supplierId} onChange={(event) => setSupplierId(event.target.value)}>
             <option value="">请选择供应商</option>
             {suppliers.map((supplier) => <option key={supplier.supplierId} value={supplier.supplierId}>{supplier.name}</option>)}
           </Select>
         </FormField>
-        <FormField label="供应链库存主体">
+        <FormField label="供应链库存主体" required>
           <Select value={supplyChainLocationId} onChange={(event) => setSupplyChainLocationId(event.target.value)}>
             <option value="">请选择总部</option>
             {headquarters.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
@@ -1260,7 +1282,7 @@ function PurchaseOrderForm({
             {lines.map((line, index) => (
               <div key={line.sourceItemId} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 md:grid-cols-[minmax(0,1fr)_10rem]">
                 <div><div className="font-medium text-sm">{line.skuName}</div><div className="text-xs text-[#888888]">{line.specName || `明细 #${line.sourceItemId}`}</div></div>
-                <FormField label="采购数量"><Input inputMode="decimal" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
+                <FormField label="采购数量"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
               </div>
             ))}
           </div>
@@ -1350,14 +1372,14 @@ function SupplyChainPurchaseOrderForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <DocPicker label="品项公司报货需求" docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
-        <FormField label="供应商">
+        <DocPicker label="品项公司报货需求" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
+        <FormField label="供应商" required>
           <Select value={supplierId} onChange={(event) => setSupplierId(event.target.value)}>
             <option value="">请选择供应商</option>
             {suppliers.map((supplier) => <option key={supplier.supplierId} value={supplier.supplierId}>{supplier.name}</option>)}
           </Select>
         </FormField>
-        <FormField label="供应链库存主体">
+        <FormField label="供应链库存主体" required>
           <Select value={supplyChainLocationId} onChange={(event) => setSupplyChainLocationId(event.target.value)}>
             <option value="">请选择总部</option>
             {headquarters.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
@@ -1374,7 +1396,7 @@ function SupplyChainPurchaseOrderForm({
             {lines.map((line, index) => (
               <div key={line.sourceItemId} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 md:grid-cols-[minmax(0,1fr)_10rem]">
                 <div><div className="font-medium text-sm">{line.skuName}</div><div className="text-xs text-[#888888]">{line.specName || `明细 #${line.sourceItemId}`}</div></div>
-                <FormField label="采购数量"><Input inputMode="decimal" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
+                <FormField label="采购数量"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
               </div>
             ))}
           </div>
@@ -1484,8 +1506,8 @@ function CompanyShipmentForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <DocPicker label="采购订单" docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
-        <FormField label="发货总部">
+        <DocPicker label="采购订单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
+        <FormField label="发货总部" required>
           <Select value={sourceOrgNodeId} onChange={(event) => setSourceOrgNodeId(event.target.value)}>
             <option value="">请选择总部</option>
             {headquarters.filter((location) => location.orgNodeId).map((location) => <option key={location.orgNodeId!} value={location.orgNodeId!}>{location.name}</option>)}
@@ -1507,9 +1529,9 @@ function CompanyShipmentForm({
                 <div className="text-xs text-[#888888]">{line.specName || line.skuId}</div>
                 {line.remainingQuantity <= 0.000001 && <div className="mt-1 text-xs text-[#888888]">正常已履约，仍可单独填写赠送数量</div>}
               </div>
-              <FormField label="发货批次"><LotPicker locationId={headquarters.find((location) => location.orgNodeId === sourceOrgNodeId)?.locationId ?? ''} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateLine(index, { lotId })} /></FormField>
-              <FormField label="正常发货"><Input inputMode="decimal" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
-              <FormField label="赠送数量"><Input inputMode="decimal" value={line.giftQuantity} onChange={(event) => updateLine(index, { giftQuantity: event.target.value })} /></FormField>
+              <FormField label="发货批次" required><LotPicker locationId={headquarters.find((location) => location.orgNodeId === sourceOrgNodeId)?.locationId ?? ''} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateLine(index, { lotId })} /></FormField>
+              <FormField label="正常发货"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
+              <FormField label="赠送数量"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.giftQuantity} onChange={(event) => updateLine(index, { giftQuantity: event.target.value })} /></FormField>
               <FormField label="明细备注"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></FormField>
             </div>
           ))}
@@ -1624,7 +1646,7 @@ function ShipmentReceiptForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <DocPicker label={kind === 'market' ? '品项公司发货单' : '分院配货单'} docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
+        <DocPicker label={kind === 'market' ? '品项公司发货单' : '分院配货单'} docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} required />
         <FormField label="收货日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
       </div>
       {(loading || loadingProgress) && <div className="text-sm text-[#666666]">正在加载待收货明细</div>}
@@ -1632,7 +1654,7 @@ function ShipmentReceiptForm({
         <div className="overflow-x-auto rounded-[var(--radius)] border border-[var(--border)]">
           <table className="w-full min-w-[720px] text-sm">
             <thead className="bg-[var(--muted)] text-left text-xs text-[var(--muted-foreground)]"><tr><th className="px-3 py-2 font-medium">商品</th><th className="px-3 py-2 font-medium">发货</th><th className="px-3 py-2 font-medium">已收</th><th className="px-3 py-2 font-medium">待收</th><th className="px-3 py-2 font-medium">本次实收</th><th className="px-3 py-2 font-medium">明细备注</th></tr></thead>
-            <tbody>{lines.map((line, index) => <tr key={line.shipmentItemId} className="border-t border-[var(--border)]"><td className="px-3 py-2"><div className="font-medium">{line.skuName}</div>{line.isGift && <Badge variant="outline" className="mt-1 text-[10px]">赠送</Badge>}</td><td className="px-3 py-2">{line.shippedQuantity}</td><td className="px-3 py-2">{line.receivedQuantity}</td><td className="px-3 py-2">{line.outstandingQuantity}</td><td className="px-3 py-2"><Input className="w-24" inputMode="decimal" value={line.receivedInput} onChange={(event) => updateLine(index, { receivedInput: event.target.value })} /></td><td className="px-3 py-2"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></td></tr>)}</tbody>
+            <tbody>{lines.map((line, index) => <tr key={line.shipmentItemId} className="border-t border-[var(--border)]"><td className="px-3 py-2"><div className="font-medium">{line.skuName}</div>{line.isGift && <Badge variant="outline" className="mt-1 text-[10px]">赠送</Badge>}</td><td className="px-3 py-2">{line.shippedQuantity}</td><td className="px-3 py-2">{line.receivedQuantity}</td><td className="px-3 py-2">{line.outstandingQuantity}</td><td className="px-3 py-2"><Input className="w-24" type="number" min="0" step="0.01" max="9999999999.99" value={line.receivedInput} onChange={(event) => updateLine(index, { receivedInput: event.target.value })} /></td><td className="px-3 py-2"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></td></tr>)}</tbody>
           </table>
         </div>
       )}
@@ -1731,8 +1753,8 @@ function SupplyChainPurchaseReceiptForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <DocPicker label="供应链采购订单" docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
-        <FormField label="供应链库存主体">
+        <DocPicker label="供应链采购订单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
+        <FormField label="供应链库存主体" required>
           <Select value={supplyChainLocationId} onChange={(event) => setSupplyChainLocationId(event.target.value)} disabled={Boolean(doc)}>
             <option value="">请选择总部</option>
             {headquarters.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
@@ -1748,7 +1770,7 @@ function SupplyChainPurchaseReceiptForm({
           {lines.map((line, index) => (
             <div key={line.purchaseOrderItemId} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 md:grid-cols-5">
               <div><div className="font-medium text-sm">{line.skuName}</div><div className="text-xs text-[#888888]">{line.specName || `明细 #${line.purchaseOrderItemId}`}</div></div>
-              <FormField label="实收数量"><Input inputMode="decimal" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
+              <FormField label="实收数量"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
               <FormField label="批号"><Input value={line.batchNo} onChange={(event) => updateLine(index, { batchNo: event.target.value })} /></FormField>
               <FormField label="效期"><DatePicker value={line.expiryDate} onValueChange={(value) => updateLine(index, { expiryDate: value })} /></FormField>
               <FormField label="明细备注"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></FormField>
@@ -1797,11 +1819,11 @@ function SupplyChainPurchaseCancelForm({
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        <DocPicker label="待收货供应链采购订单" docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
+        <DocPicker label="待收货供应链采购订单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
       </div>
       {loading && <div className="text-sm text-[#666666]">正在加载采购订单明细</div>}
       <SourceDocumentItems doc={doc} canViewPrice={false} />
-      <FormField label="关闭原因"><Textarea value={reason} onChange={(event) => setReason(event.target.value)} /></FormField>
+      <FormField label="关闭原因" required><Textarea value={reason} onChange={(event) => setReason(event.target.value)} /></FormField>
       <div className="flex justify-end">
         <Button type="button" variant="destructive" loading={saving} onClick={() => void submit()} disabled={!doc}>关闭供应链采购订单</Button>
       </div>
@@ -1937,8 +1959,8 @@ function StoreAllocationForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <DocPicker label="门店报货单" docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
-        <FormField label="配货市场">
+        <DocPicker label="门店报货单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
+        <FormField label="配货市场" required>
           <Select value={sourceMarketId} onChange={(event) => setSourceMarketId(event.target.value)}>
             <option value="">请选择市场</option>
             {markets.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}
@@ -1961,10 +1983,10 @@ function StoreAllocationForm({
                     <div className="text-xs text-[#888888]">{line.specName || line.skuId}</div>
                     {line.remainingQuantity <= 0.000001 && <div className="mt-1 text-xs text-[#888888]">正常已履约，仍可单独填写赠送数量</div>}
                   </div>
-                  <FormField label="市场批次"><LotPicker locationId={sourceMarketId} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateLine(index, { lotId })} /></FormField>
-                  <FormField label="正常配货"><Input inputMode="decimal" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
-                  <FormField label="赠送数量"><Input inputMode="decimal" value={line.giftQuantity} onChange={(event) => updateLine(index, { giftQuantity: event.target.value })} /></FormField>
-                  {canViewPrice && <FormField label="门店单价优惠"><Input inputMode="decimal" value={line.storeUnitDiscount} onChange={(event) => updateLine(index, { storeUnitDiscount: event.target.value })} /></FormField>}
+                  <FormField label="市场批次" required><LotPicker locationId={sourceMarketId} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateLine(index, { lotId })} /></FormField>
+                  <FormField label="正常配货"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
+                  <FormField label="赠送数量"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.giftQuantity} onChange={(event) => updateLine(index, { giftQuantity: event.target.value })} /></FormField>
+                  {canViewPrice && <FormField label="门店单价优惠"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.storeUnitDiscount} onChange={(event) => updateLine(index, { storeUnitDiscount: event.target.value })} /></FormField>}
                   <FormField label="明细备注"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></FormField>
                 </div>
                 {canViewPrice && (
@@ -2067,13 +2089,13 @@ function ReturnForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <FormField label="退货主体">
+        <FormField label="退货主体" required>
           <Select value={sourceOrgNodeId} onChange={(event) => selectSource(event.target.value)}>
             <option value="">请选择{sourceType}</option>
             {sourceLocations.filter((location) => location.orgNodeId).map((location) => <option key={location.orgNodeId!} value={location.orgNodeId!}>{location.locationType} · {location.name}</option>)}
           </Select>
         </FormField>
-        <FormField label="回库主体">
+        <FormField label="回库主体" required>
           <Select value={targetOrgNodeId} onChange={(event) => setTargetOrgNodeId(event.target.value)}>
             <option value="">请选择回库主体</option>
             {targets.filter((location) => location.orgNodeId).map((location) => <option key={location.orgNodeId!} value={location.orgNodeId!}>{location.name}</option>)}
@@ -2085,9 +2107,9 @@ function ReturnForm({
         <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-medium">退货批次</h3><Button type="button" variant="outline" size="sm" onClick={() => setLines((previous) => [...previous, { skuId: '', lotId: '', quantity: '1', reason: '', remark: '' }])}>添加明细</Button></div>
         {lines.map((line, index) => (
           <div key={index} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_8rem_minmax(0,1fr)_minmax(0,1fr)_2.5rem]">
-            <FormField label="商品"><SkuPicker value={line.skuId} skus={skuOptions} onChange={(skuId) => updateLine(index, { skuId, lotId: '' })} /></FormField>
-            <FormField label="来源批次"><LotPicker locationId={source?.locationId ?? ''} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateLine(index, { lotId })} /></FormField>
-            <FormField label="数量"><Input inputMode="decimal" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
+            <FormField label="商品" required><SkuPicker value={line.skuId} skus={skuOptions} onChange={(skuId) => updateLine(index, { skuId, lotId: '' })} /></FormField>
+            <FormField label="来源批次" required><LotPicker locationId={source?.locationId ?? ''} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateLine(index, { lotId })} /></FormField>
+            <FormField label="数量" required><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField>
             <FormField label="退货原因"><Input value={line.reason} onChange={(event) => updateLine(index, { reason: event.target.value })} /></FormField>
             <FormField label="明细备注"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></FormField>
             <div className="flex items-end justify-end"><SmallIconButton label="删除明细" onClick={() => setLines((previous) => previous.length > 1 ? previous.filter((_, lineIndex) => lineIndex !== index) : previous)} disabled={lines.length === 1} /></div>
@@ -2150,7 +2172,7 @@ function ReturnApprovalForm({
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2"><DocPicker label="待审批退货单" docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} /></div>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2"><DocPicker label="待审批退货单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} /></div>
       {loading && <div className="text-sm text-[#666666]">正在加载退货明细</div>}
       <SourceDocumentItems doc={doc} canViewPrice={false} />
       <RemarkField value={auditRemark} onChange={setAuditRemark} />
@@ -2190,10 +2212,10 @@ function ShipmentCancellationRequestForm({
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2"><DocPicker label="待收货品项公司发货单" docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} /></div>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2"><DocPicker label="待收货品项公司发货单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} /></div>
       {loading && <div className="text-sm text-[#666666]">正在加载发货明细</div>}
       <SourceDocumentItems doc={doc} canViewPrice={false} />
-      <FormField label="撤回原因"><Textarea value={reason} onChange={(event) => setReason(event.target.value)} /></FormField>
+      <FormField label="撤回原因" required><Textarea value={reason} onChange={(event) => setReason(event.target.value)} /></FormField>
       <div className="flex justify-end"><Button type="button" variant="destructive" loading={saving} onClick={() => void submit()} disabled={!doc}>提交撤回申请</Button></div>
     </div>
   )
@@ -2250,7 +2272,7 @@ function ShipmentCancellationApprovalForm({
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        <DocPicker label="待审批品项公司发货单" docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
+        <DocPicker label="待审批品项公司发货单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
       </div>
       {loading && <div className="text-sm text-[#666666]">正在加载撤回申请明细</div>}
       <SourceDocumentItems doc={doc} canViewPrice={false} />
@@ -2349,8 +2371,8 @@ function SupplyChainStaffPurchaseForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <FormField label="供应链总部"><Select value={locationId} onChange={(event) => void selectLocation(event.target.value)}><option value="">请选择供应链总部</option>{headquarters.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}</Select></FormField>
-        <FormField label="购买员工">
+        <FormField label="供应链总部" required><Select value={locationId} onChange={(event) => void selectLocation(event.target.value)}><option value="">请选择供应链总部</option>{headquarters.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}</Select></FormField>
+        <FormField label="购买员工" required>
           <Select value={employeeId} disabled={!locationId || loadingEmployees} onChange={(event) => setEmployeeId(event.target.value)}>
             <option value="">{loadingEmployees ? '正在加载员工' : locationId ? '请选择员工' : '请先选择供应链总部'}</option>
             {employeeOptions.map((employee) => <option key={employee.employeeId} value={employee.employeeId}>{employee.name}</option>)}
@@ -2360,7 +2382,7 @@ function SupplyChainStaffPurchaseForm({
       </div>
       <div className="space-y-3">
         <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-medium">员工购批次</h3><Button type="button" variant="outline" size="sm" onClick={() => setLines((previous) => [...previous, { skuId: '', lotId: '', quantity: '1', reason: '', remark: '' }])}>添加明细</Button></div>
-        {lines.map((line, index) => <div key={index} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_8rem_minmax(0,1fr)_2.5rem]"><FormField label="商品"><SkuPicker value={line.skuId} skus={skuOptions} onChange={(skuId) => updateLine(index, { skuId, lotId: '' })} /></FormField><FormField label="供应链批次"><LotPicker locationId={locationId} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateLine(index, { lotId })} /></FormField><FormField label="数量"><Input inputMode="decimal" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField><FormField label="明细备注"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></FormField><div className="flex items-end justify-end"><SmallIconButton label="删除明细" onClick={() => setLines((previous) => previous.length > 1 ? previous.filter((_, lineIndex) => lineIndex !== index) : previous)} disabled={lines.length === 1} /></div></div>)}
+        {lines.map((line, index) => <div key={index} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_8rem_minmax(0,1fr)_2.5rem]"><FormField label="商品" required><SkuPicker value={line.skuId} skus={skuOptions} onChange={(skuId) => updateLine(index, { skuId, lotId: '' })} /></FormField><FormField label="供应链批次" required><LotPicker locationId={locationId} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateLine(index, { lotId })} /></FormField><FormField label="数量" required><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField><FormField label="明细备注"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></FormField><div className="flex items-end justify-end"><SmallIconButton label="删除明细" onClick={() => setLines((previous) => previous.length > 1 ? previous.filter((_, lineIndex) => lineIndex !== index) : previous)} disabled={lines.length === 1} /></div></div>)}
       </div>
       <RemarkField value={remark} onChange={setRemark} />
       <div className="flex justify-end"><Button type="submit" loading={saving}>创建供应链员工购出库单</Button></div>
@@ -2448,8 +2470,8 @@ function MarketStaffPurchaseForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <FormField label="市场"><Select value={marketId} onChange={(event) => void selectMarket(event.target.value)}><option value="">请选择市场</option>{markets.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}</Select></FormField>
-        <FormField label="购买员工">
+        <FormField label="市场" required><Select value={marketId} onChange={(event) => void selectMarket(event.target.value)}><option value="">请选择市场</option>{markets.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}</Select></FormField>
+        <FormField label="购买员工" required>
           <Select value={employeeId} disabled={!marketId || loadingEmployees} onChange={(event) => setEmployeeId(event.target.value)}>
             <option value="">{loadingEmployees ? '正在加载员工' : marketId ? '请选择员工' : '请先选择市场'}</option>
             {employeeOptions.map((employee) => <option key={employee.employeeId} value={employee.employeeId}>{employee.name}</option>)}
@@ -2459,7 +2481,7 @@ function MarketStaffPurchaseForm({
       </div>
       <div className="space-y-3">
         <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-medium">员工购批次</h3><Button type="button" variant="outline" size="sm" onClick={() => setLines((previous) => [...previous, { skuId: '', lotId: '', quantity: '1', reason: '', remark: '' }])}>添加明细</Button></div>
-        {lines.map((line, index) => <div key={index} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_8rem_minmax(0,1fr)_2.5rem]"><FormField label="商品"><SkuPicker value={line.skuId} skus={skuOptions} onChange={(skuId) => updateLine(index, { skuId, lotId: '' })} /></FormField><FormField label="市场批次"><LotPicker locationId={marketId} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateLine(index, { lotId })} /></FormField><FormField label="数量"><Input inputMode="decimal" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField><FormField label="明细备注"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></FormField><div className="flex items-end justify-end"><SmallIconButton label="删除明细" onClick={() => setLines((previous) => previous.length > 1 ? previous.filter((_, lineIndex) => lineIndex !== index) : previous)} disabled={lines.length === 1} /></div></div>)}
+        {lines.map((line, index) => <div key={index} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_8rem_minmax(0,1fr)_2.5rem]"><FormField label="商品" required><SkuPicker value={line.skuId} skus={skuOptions} onChange={(skuId) => updateLine(index, { skuId, lotId: '' })} /></FormField><FormField label="市场批次" required><LotPicker locationId={marketId} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateLine(index, { lotId })} /></FormField><FormField label="数量" required><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField><FormField label="明细备注"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></FormField><div className="flex items-end justify-end"><SmallIconButton label="删除明细" onClick={() => setLines((previous) => previous.length > 1 ? previous.filter((_, lineIndex) => lineIndex !== index) : previous)} disabled={lines.length === 1} /></div></div>)}
       </div>
       <RemarkField value={remark} onChange={setRemark} />
       <div className="flex justify-end"><Button type="submit" loading={saving}>创建员工购出库单</Button></div>
@@ -2559,14 +2581,14 @@ function SelfPurchaseForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3 xl:grid-cols-4">
-        <FormField label="入库市场"><Select value={marketId} onChange={(event) => { setMarketId(event.target.value); setLines((previous) => previous.map((line) => ({ ...line, skuId: '' }))) }}><option value="">请选择市场</option>{markets.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}</Select></FormField>
-        <FormField label="供应商"><Select value={supplierId} onChange={(event) => setSupplierId(event.target.value)}><option value="">请选择供应商</option>{suppliers.map((supplier) => <option key={supplier.supplierId} value={supplier.supplierId}>{supplier.name}</option>)}</Select></FormField>
+        <FormField label="入库市场" required><Select value={marketId} onChange={(event) => { setMarketId(event.target.value); setLines((previous) => previous.map((line) => ({ ...line, skuId: '' }))) }}><option value="">请选择市场</option>{markets.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}</Select></FormField>
+        <FormField label="供应商" required><Select value={supplierId} onChange={(event) => setSupplierId(event.target.value)}><option value="">请选择供应商</option>{suppliers.map((supplier) => <option key={supplier.supplierId} value={supplier.supplierId}>{supplier.name}</option>)}</Select></FormField>
         <FormField label="入库日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
         <FormField label="收据附件地址" className="md:col-span-2"><Input value={receiptAttachmentUrl} onChange={(event) => setReceiptAttachmentUrl(event.target.value)} placeholder="填写附件地址" /></FormField>
       </div>
       <div className="space-y-3">
         <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-medium">自采入库明细</h3><Button type="button" variant="outline" size="sm" onClick={() => setLines((previous) => [...previous, { skuId: '', quantity: '1', batchNo: '', expiryDate: '', isGift: false, marketActualUnitPrice: '', storeUnitDiscount: '0', remark: '' }])}>添加明细</Button></div>
-        {lines.map((line, index) => <div key={index} className={`grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 ${canViewPrice ? 'xl:grid-cols-8' : 'xl:grid-cols-6'}`}><FormField label="自采商品"><SkuPicker value={line.skuId} skus={eligibleSkus} onChange={(skuId) => updateLine(index, { skuId })} /></FormField><FormField label="数量"><Input inputMode="decimal" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField><FormField label="批号"><Input value={line.batchNo} onChange={(event) => updateLine(index, { batchNo: event.target.value })} /></FormField><FormField label="效期"><DatePicker value={line.expiryDate} onValueChange={(value) => updateLine(index, { expiryDate: value })} /></FormField><label className="flex items-end gap-2 pb-2 text-sm"><input type="checkbox" checked={line.isGift} onChange={(event) => updateLine(index, { isGift: event.target.checked })} />赠送</label>{canViewPrice && <><FormField label="实际采购单价"><Input inputMode="decimal" value={line.marketActualUnitPrice} onChange={(event) => updateLine(index, { marketActualUnitPrice: event.target.value })} placeholder="资料价或本次价格" /></FormField><FormField label="门店单价优惠"><Input inputMode="decimal" value={line.storeUnitDiscount} onChange={(event) => updateLine(index, { storeUnitDiscount: event.target.value })} /></FormField></>}<FormField label="明细备注"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></FormField><div className="flex items-end justify-end"><SmallIconButton label="删除明细" onClick={() => setLines((previous) => previous.length > 1 ? previous.filter((_, lineIndex) => lineIndex !== index) : previous)} disabled={lines.length === 1} /></div></div>)}
+        {lines.map((line, index) => <div key={index} className={`grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 ${canViewPrice ? 'xl:grid-cols-8' : 'xl:grid-cols-6'}`}><FormField label="自采商品" required><SkuPicker value={line.skuId} skus={eligibleSkus} onChange={(skuId) => updateLine(index, { skuId })} /></FormField><FormField label="数量" required><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField><FormField label="批号"><Input value={line.batchNo} onChange={(event) => updateLine(index, { batchNo: event.target.value })} /></FormField><FormField label="效期"><DatePicker value={line.expiryDate} onValueChange={(value) => updateLine(index, { expiryDate: value })} /></FormField><label className="flex items-end gap-2 pb-2 text-sm"><input type="checkbox" checked={line.isGift} onChange={(event) => updateLine(index, { isGift: event.target.checked })} />赠送</label>{canViewPrice && <><FormField label="实际采购单价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.marketActualUnitPrice} onChange={(event) => updateLine(index, { marketActualUnitPrice: event.target.value })} placeholder="资料价或本次价格" /></FormField><FormField label="门店单价优惠"><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.storeUnitDiscount} onChange={(event) => updateLine(index, { storeUnitDiscount: event.target.value })} /></FormField></>}<FormField label="明细备注"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></FormField><div className="flex items-end justify-end"><SmallIconButton label="删除明细" onClick={() => setLines((previous) => previous.length > 1 ? previous.filter((_, lineIndex) => lineIndex !== index) : previous)} disabled={lines.length === 1} /></div></div>)}
       </div>
       <RemarkField value={remark} onChange={setRemark} />
       <div className="flex justify-end"><Button type="submit" loading={saving}>创建自采产品入库单</Button></div>
@@ -2626,8 +2648,8 @@ function ExternalOutboundForm({
 
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-3"><FormField label="供应链库存主体"><Select value={locationId} onChange={(event) => { setLocationId(event.target.value); setLines((previous) => previous.map((line) => ({ ...line, lotId: '' }))) }}><option value="">请选择供应链库存主体</option>{headquarters.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}</Select></FormField><FormField label="外部对象"><Input value={externalPartyName} onChange={(event) => setExternalPartyName(event.target.value)} /></FormField><FormField label="出库日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField></div>
-      <div className="space-y-3"><div className="flex items-center justify-between gap-3"><h3 className="text-sm font-medium">出库批次</h3><Button type="button" variant="outline" size="sm" onClick={() => setLines((previous) => [...previous, { skuId: '', lotId: '', quantity: '1', reason: '', remark: '' }])}>添加明细</Button></div>{lines.map((line, index) => <div key={index} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_8rem_minmax(0,1fr)_2.5rem]"><FormField label="商品"><SkuPicker value={line.skuId} skus={skuOptions} onChange={(skuId) => updateLine(index, { skuId, lotId: '' })} /></FormField><FormField label="供应链批次"><LotPicker locationId={locationId} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateLine(index, { lotId })} /></FormField><FormField label="数量"><Input inputMode="decimal" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField><FormField label="明细备注"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></FormField><div className="flex items-end justify-end"><SmallIconButton label="删除明细" onClick={() => setLines((previous) => previous.length > 1 ? previous.filter((_, lineIndex) => lineIndex !== index) : previous)} disabled={lines.length === 1} /></div></div>)}</div>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-3"><FormField label="供应链库存主体" required><Select value={locationId} onChange={(event) => { setLocationId(event.target.value); setLines((previous) => previous.map((line) => ({ ...line, lotId: '' }))) }}><option value="">请选择供应链库存主体</option>{headquarters.map((location) => <option key={location.locationId} value={location.locationId}>{location.name}</option>)}</Select></FormField><FormField label="外部对象" required><Input value={externalPartyName} onChange={(event) => setExternalPartyName(event.target.value)} /></FormField><FormField label="出库日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField></div>
+      <div className="space-y-3"><div className="flex items-center justify-between gap-3"><h3 className="text-sm font-medium">出库批次</h3><Button type="button" variant="outline" size="sm" onClick={() => setLines((previous) => [...previous, { skuId: '', lotId: '', quantity: '1', reason: '', remark: '' }])}>添加明细</Button></div>{lines.map((line, index) => <div key={index} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_8rem_minmax(0,1fr)_2.5rem]"><FormField label="商品" required><SkuPicker value={line.skuId} skus={skuOptions} onChange={(skuId) => updateLine(index, { skuId, lotId: '' })} /></FormField><FormField label="供应链批次" required><LotPicker locationId={locationId} skuId={line.skuId} value={line.lotId} onChange={(lotId) => updateLine(index, { lotId })} /></FormField><FormField label="数量" required><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></FormField><FormField label="明细备注"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></FormField><div className="flex items-end justify-end"><SmallIconButton label="删除明细" onClick={() => setLines((previous) => previous.length > 1 ? previous.filter((_, lineIndex) => lineIndex !== index) : previous)} disabled={lines.length === 1} /></div></div>)}</div>
       <RemarkField value={remark} onChange={setRemark} />
       <div className="flex justify-end"><Button type="submit" loading={saving}>创建非凤御市场出库单</Button></div>
     </form>
@@ -2706,12 +2728,12 @@ function ConversionForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <FormField label="转换库存主体"><Select value={locationId} onChange={(event) => { setLocationId(event.target.value); setLines((previous) => previous.map((line) => ({ ...line, sourceLotId: '' }))) }}><option value="">请选择{locationType}</option>{availableLocations.map((location) => <option key={location.locationId} value={location.locationId}>{location.locationType} · {location.name}</option>)}</Select></FormField>
+        <FormField label="转换库存主体" required><Select value={locationId} onChange={(event) => { setLocationId(event.target.value); setLines((previous) => previous.map((line) => ({ ...line, sourceLotId: '' }))) }}><option value="">请选择{locationType}</option>{availableLocations.map((location) => <option key={location.locationId} value={location.locationId}>{location.locationType} · {location.name}</option>)}</Select></FormField>
         <FormField label="转换日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
       </div>
       <div className="space-y-3">
         <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-medium">转换明细</h3><Button type="button" variant="outline" size="sm" onClick={() => setLines((previous) => [...previous, { sourceSkuId: '', sourceLotId: '', sourceQuantity: '1', targetSkuId: '', targetQuantity: '1', targetBatchNo: '', targetExpiryDate: '', remark: '' }])}>添加明细</Button></div>
-        {lines.map((line, index) => <div key={index} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 xl:grid-cols-8"><FormField label="来源商品"><SkuPicker value={line.sourceSkuId} skus={skuOptions} onChange={(sourceSkuId) => updateLine(index, { sourceSkuId, sourceLotId: '' })} /></FormField><FormField label="来源批次"><LotPicker locationId={locationId} skuId={line.sourceSkuId} value={line.sourceLotId} onChange={(sourceLotId) => updateLine(index, { sourceLotId })} /></FormField><FormField label="出库数量"><Input inputMode="decimal" value={line.sourceQuantity} onChange={(event) => updateLine(index, { sourceQuantity: event.target.value })} /></FormField><FormField label="目标商品"><SkuPicker value={line.targetSkuId} skus={skuOptions} onChange={(targetSkuId) => updateLine(index, { targetSkuId })} /></FormField><FormField label="入库数量"><Input inputMode="decimal" value={line.targetQuantity} onChange={(event) => updateLine(index, { targetQuantity: event.target.value })} /></FormField><FormField label="目标批号"><Input value={line.targetBatchNo} onChange={(event) => updateLine(index, { targetBatchNo: event.target.value })} /></FormField><FormField label="目标效期"><DatePicker value={line.targetExpiryDate} onValueChange={(value) => updateLine(index, { targetExpiryDate: value })} /></FormField><div className="flex items-end justify-end"><SmallIconButton label="删除明细" onClick={() => setLines((previous) => previous.length > 1 ? previous.filter((_, lineIndex) => lineIndex !== index) : previous)} disabled={lines.length === 1} /></div><FormField label="明细备注" className="xl:col-span-7"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></FormField></div>)}
+        {lines.map((line, index) => <div key={index} className="grid grid-cols-1 gap-2 rounded-[var(--radius)] border border-[var(--border)] p-3 xl:grid-cols-8"><FormField label="来源商品" required><SkuPicker value={line.sourceSkuId} skus={skuOptions} onChange={(sourceSkuId) => updateLine(index, { sourceSkuId, sourceLotId: '' })} /></FormField><FormField label="来源批次" required><LotPicker locationId={locationId} skuId={line.sourceSkuId} value={line.sourceLotId} onChange={(sourceLotId) => updateLine(index, { sourceLotId })} /></FormField><FormField label="出库数量" required><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.sourceQuantity} onChange={(event) => updateLine(index, { sourceQuantity: event.target.value })} /></FormField><FormField label="目标商品" required><SkuPicker value={line.targetSkuId} skus={skuOptions} onChange={(targetSkuId) => updateLine(index, { targetSkuId })} /></FormField><FormField label="入库数量" required><Input type="number" min="0" step="0.01" max="9999999999.99" value={line.targetQuantity} onChange={(event) => updateLine(index, { targetQuantity: event.target.value })} /></FormField><FormField label="目标批号"><Input value={line.targetBatchNo} onChange={(event) => updateLine(index, { targetBatchNo: event.target.value })} /></FormField><FormField label="目标效期"><DatePicker value={line.targetExpiryDate} onValueChange={(value) => updateLine(index, { targetExpiryDate: value })} /></FormField><div className="flex items-end justify-end"><SmallIconButton label="删除明细" onClick={() => setLines((previous) => previous.length > 1 ? previous.filter((_, lineIndex) => lineIndex !== index) : previous)} disabled={lines.length === 1} /></div><FormField label="明细备注" className="xl:col-span-7"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></FormField></div>)}
       </div>
       <RemarkField value={remark} onChange={setRemark} />
       <div className="flex justify-end"><Button type="submit" loading={saving}>创建库存转换单</Button></div>
