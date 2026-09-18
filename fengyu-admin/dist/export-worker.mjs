@@ -95652,10 +95652,10 @@ var require_util4 = __commonJS((exports) => {
     return typeof arg === "boolean";
   }
   exports.isBoolean = isBoolean;
-  function isNull10(arg) {
+  function isNull9(arg) {
     return arg === null;
   }
-  exports.isNull = isNull10;
+  exports.isNull = isNull9;
   function isNullOrUndefined(arg) {
     return arg == null;
   }
@@ -159636,6 +159636,8 @@ function offsetPageResult(rows, page) {
 function resolveExportKeysetPage(fetchedRows, limit, toCursor) {
   if (limit == null)
     return { pageRows: fetchedRows, hasMore: false };
+  if (limit < 1)
+    throw new Error("INVALID_STATE: 导出分页 limit 必须 ≥ 1");
   const hasMore = fetchedRows.length > limit;
   const pageRows = hasMore ? fetchedRows.slice(0, limit) : fetchedRows;
   return {
@@ -171487,29 +171489,17 @@ var getCustomersPaginated = withPermission("customer:list", async (session4, fil
     total: countRow?.count ?? 0
   };
 });
-function normalizeExportCustomersCursor(cursor) {
-  if (!cursor)
-    return null;
-  if (typeof cursor.userId !== "string" || !cursor.userId) {
-    throw new ApiError("INVALID_STATE", "导出分页游标无效");
-  }
-  return { name: cursor.name ?? null, userId: cursor.userId };
-}
-function exportCustomerSeekCondition(cursor) {
-  const sameNameTail = import_drizzle_orm44.and(import_drizzle_orm44.eq(clientWechatUsers.name, cursor.name), import_drizzle_orm44.gt(clientWechatUsers.userId, cursor.userId));
-  if (cursor.name === null) {
-    return import_drizzle_orm44.and(import_drizzle_orm44.isNull(clientWechatUsers.name), import_drizzle_orm44.gt(clientWechatUsers.userId, cursor.userId));
-  }
-  return import_drizzle_orm44.or(import_drizzle_orm44.gt(clientWechatUsers.name, cursor.name), sameNameTail, import_drizzle_orm44.isNull(clientWechatUsers.name));
-}
 var exportCustomers = withPermission("customer:list", async (session4, params, options) => {
   const filters = parseCustomerFilters(params);
   const limit = resolveExportBatchLimit(options?.limit);
-  const cursor = normalizeExportCustomersCursor(options?.cursor);
-  const whereClause = import_drizzle_orm44.and(...buildCustomerConditions(session4, filters), ...cursor ? [exportCustomerSeekCondition(cursor)] : []);
-  const query = db2.select(exportCustomerColumns).from(clientWechatUsers).where(whereClause).orderBy(import_drizzle_orm44.asc(clientWechatUsers.name), import_drizzle_orm44.asc(clientWechatUsers.userId));
+  const cursor = options?.cursor;
+  if (cursor !== undefined && (typeof cursor !== "string" || !cursor)) {
+    throw new ApiError("INVALID_STATE", "导出分页游标无效");
+  }
+  const whereClause = import_drizzle_orm44.and(...buildCustomerConditions(session4, filters), ...cursor ? [import_drizzle_orm44.gt(clientWechatUsers.userId, cursor)] : []);
+  const query = db2.select(exportCustomerColumns).from(clientWechatUsers).where(whereClause).orderBy(import_drizzle_orm44.asc(clientWechatUsers.userId));
   const fetchedRows = limit == null ? await query : await query.limit(limit + 1);
-  const { pageRows, hasMore, nextCursor } = resolveExportKeysetPage(fetchedRows, limit, (lastRow) => ({ name: lastRow.name, userId: lastRow.userId }));
+  const { pageRows, hasMore, nextCursor } = resolveExportKeysetPage(fetchedRows, limit, (lastRow) => lastRow.userId);
   const userIds = pageRows.map((r) => r.userId);
   const spendMap = new Map;
   if (userIds.length > 0) {
@@ -172732,6 +172722,11 @@ var getEmployeesPaginated = withPermission("employee:list", async (session4, fil
   };
 }, { scopeActions: ["employee:create"] });
 var exportEmployees = withPermission("employee:list", async (session4, params, options) => {
+  const limit = resolveExportBatchLimit(options?.limit);
+  const cursor = options?.cursor;
+  if (cursor !== undefined && (typeof cursor !== "string" || !cursor)) {
+    throw new ApiError("INVALID_STATE", "导出分页游标无效");
+  }
   const parsed = parseEmployeeFilters(params);
   const skillTags2 = await getSkillTags();
   const validSkillNames = new Set(skillTags2.map((t) => t.name));
@@ -172739,11 +172734,6 @@ var exportEmployees = withPermission("employee:list", async (session4, params, o
     ...parsed,
     skills: filterValidSkillValues(parsed.skills, validSkillNames)
   };
-  const limit = resolveExportBatchLimit(options?.limit);
-  const cursor = options?.cursor;
-  if (cursor !== undefined && (typeof cursor !== "string" || !cursor)) {
-    throw new ApiError("INVALID_STATE", "导出分页游标无效");
-  }
   const whereClause = import_drizzle_orm47.and(...await buildEmployeeConditions(session4, filters), ...cursor ? [import_drizzle_orm47.gt(staffWechatUsers.employeeId, cursor)] : []);
   const query = db2.select().from(staffWechatUsers).leftJoin(stores, import_drizzle_orm47.eq(staffWechatUsers.storeId, stores.storeId)).where(whereClause).orderBy(import_drizzle_orm47.asc(staffWechatUsers.employeeId));
   const fetchedRows = limit == null ? await query : await query.limit(limit + 1);
