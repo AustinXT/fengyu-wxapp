@@ -519,11 +519,18 @@ function SkuFormDialog({
         <section className="space-y-3">
           <h3 className="text-sm font-medium">基础资料</h3>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field label="产品编号">
+            {/*
+              产品编号是只读展示（保存后由系统生成），**没有可聚焦控件可关联** ——
+              用 Field 就成了一个包着 <div> 的游离 <label>，读屏念不出对应关系，
+              UX 扫描也因此把它记成「label 未与控件关联」。这里的正解不是补 htmlFor
+              （没有控件可指），而是让它根本不是 label。视觉沿用 Field 的排版。
+            */}
+            <div className="grid gap-1.5 text-sm">
+              <span className="text-[#666666]">产品编号</span>
               <div className="flex min-h-9 items-center rounded-[var(--radius)] border border-[var(--border)] bg-[var(--muted)] px-3 text-sm text-[#666666]">
                 {row?.productCode ?? '保存后由系统自动生成'}
               </div>
-            </Field>
+            </div>
             <Field label="产品名称 *"><Input value={form.productName} onChange={(event) => setField('productName', event.target.value)} /></Field>
             <Field label="规格"><Input value={form.specName} onChange={(event) => setField('specName', event.target.value)} /></Field>
             {/*

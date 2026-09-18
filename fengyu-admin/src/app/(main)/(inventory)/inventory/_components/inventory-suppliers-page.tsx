@@ -290,26 +290,33 @@ export default function InventorySuppliersPage({
           <DialogTitle>{editing ? '编辑供应商' : '新建供应商'}</DialogTitle>
         </DialogHeader>
         <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div className="space-y-2 sm:col-span-2">
-            <label className="text-sm font-medium">供应商名称 *</label>
+          {/*
+            这些字段原本是 <div><label>名称</label><Input/></div> —— label 既没包裹控件也没有
+            htmlFor，读屏念不出字段名，e2e 也只能退回按 DOM 顺序 nth() 定位（见 inv-01 的
+            UX-A11Y-01）。改为 <label> 包裹控件的隐式关联，与 FormField / Field 同一写法。
+            `*` 保留写在文本里：e2e 有 getByLabel('供应商名称 *')，改成独立的红色 span 会让
+            accessible name 变成「供应商名称 （必填）」而匹配不上。
+          */}
+          <label className="block space-y-2 sm:col-span-2">
+            <span className="block text-sm font-medium">供应商名称 *</span>
             <Input value={form.name} onChange={(event) => setField('name', event.target.value)} />
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium">联系人</label>
+          </label>
+          <label className="block space-y-2">
+            <span className="block text-sm font-medium">联系人</span>
             <Input value={form.contactName} onChange={(event) => setField('contactName', event.target.value)} />
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium">联系电话</label>
+          </label>
+          <label className="block space-y-2">
+            <span className="block text-sm font-medium">联系电话</span>
             <Input value={form.phone} onChange={(event) => setField('phone', event.target.value)} />
-          </div>
-          <div className="space-y-2 sm:col-span-2">
-            <label className="text-sm font-medium">地址</label>
+          </label>
+          <label className="block space-y-2 sm:col-span-2">
+            <span className="block text-sm font-medium">地址</span>
             <Input value={form.address} onChange={(event) => setField('address', event.target.value)} />
-          </div>
-          <div className="space-y-2 sm:col-span-2">
-            <label className="text-sm font-medium">备注</label>
+          </label>
+          <label className="block space-y-2 sm:col-span-2">
+            <span className="block text-sm font-medium">备注</span>
             <Textarea value={form.remark} onChange={(event) => setField('remark', event.target.value)} />
-          </div>
+          </label>
           <div className="flex flex-col gap-2 sm:col-span-2">
             <div className="flex items-center gap-3">
               <Switch

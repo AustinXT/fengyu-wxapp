@@ -471,24 +471,24 @@ export default function InventoryPromotionsPage({
         <div className="mt-4 max-h-[68vh] space-y-5 overflow-y-auto pr-1">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <div className="space-y-2">
-              <label className="text-sm font-medium">方案编号</label>
+              <span className="block text-sm font-medium text-[#666666]">方案编号</span>
               <div className="flex min-h-9 items-center rounded-[var(--radius)] border border-[var(--border)] bg-[var(--muted)] px-3 text-sm text-[#666666]">
                 {selectedPlan?.planNo ?? '保存后由系统自动生成'}
               </div>
             </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">方案名称 *</label>
+            <label className="block space-y-2">
+              <span className="block text-sm font-medium">方案名称 *</span>
               <Input value={form.name} readOnly={readOnly} disabled={saving} onChange={(event) => setField('name', event.target.value)} />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">规则类型</label>
+            </label>
+            <label className="block space-y-2">
+              <span className="block text-sm font-medium">规则类型</span>
               <Select value={form.ruleType} disabled={readOnly || saving} onChange={(event) => setField('ruleType', event.target.value as PromotionForm['ruleType'])}>
                 <option value="单品阶梯">单品阶梯</option>
                 <option value="组合">组合</option>
               </Select>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">适用市场</label>
+            </label>
+            <label className="block space-y-2">
+              <span className="block text-sm font-medium">适用市场</span>
               <Select
                 value={form.scopeMarketId}
                 disabled={readOnly || saving}
@@ -499,26 +499,26 @@ export default function InventoryPromotionsPage({
                   <option key={market.locationId} value={market.locationId}>{market.name}</option>
                 ))}
               </Select>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">开始日期 *</label>
+            </label>
+            <label className="block space-y-2">
+              <span className="block text-sm font-medium">开始日期 *</span>
               <DatePicker value={form.startsAt} disabled={readOnly || saving} onValueChange={(value) => setField('startsAt', value)} aria-label="开始日期" />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">结束日期 *</label>
+            </label>
+            <label className="block space-y-2">
+              <span className="block text-sm font-medium">结束日期 *</span>
               <DatePicker value={form.endsAt} disabled={readOnly || saving} onValueChange={(value) => setField('endsAt', value)} aria-label="结束日期" />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">状态</label>
+            </label>
+            <label className="block space-y-2">
+              <span className="block text-sm font-medium">状态</span>
               <Select value={form.status} disabled={readOnly || saving} onChange={(event) => setField('status', event.target.value as '启用' | '停用')}>
                 <option value="启用">启用</option>
                 <option value="停用">停用</option>
               </Select>
-            </div>
-            <div className="space-y-2 sm:col-span-2 lg:col-span-3">
-              <label className="text-sm font-medium">备注</label>
+            </label>
+            <label className="block space-y-2 sm:col-span-2 lg:col-span-3">
+              <span className="block text-sm font-medium">备注</span>
               <Textarea value={form.remark} readOnly={readOnly} disabled={saving} onChange={(event) => setField('remark', event.target.value)} />
-            </div>
+            </label>
           </div>
 
           <div className="space-y-3 border-t border-[var(--border)] pt-4">
@@ -546,8 +546,8 @@ export default function InventoryPromotionsPage({
                     )}
                   </div>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                    <div className="space-y-2 sm:col-span-2">
-                      <label className="text-sm font-medium">库存商品 *</label>
+                    <label className="block space-y-2 sm:col-span-2">
+                      <span className="block text-sm font-medium">库存商品 *</span>
                       <Select value={item.skuId} disabled={readOnly || saving} onChange={(event) => updateItem(index, { skuId: event.target.value })}>
                         <option value="">请选择库存商品</option>
                         {skuOptions.map((sku) => (
@@ -556,27 +556,27 @@ export default function InventoryPromotionsPage({
                           </option>
                         ))}
                       </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium">{form.ruleType === '组合' ? '组合数量下限 *' : '数量下限'}</label>
+                    </label>
+                    <label className="block space-y-2">
+                      <span className="block text-sm font-medium">{form.ruleType === '组合' ? '组合数量下限 *' : '数量下限'}</span>
                       <Input type="number" min="0" step="1" placeholder={form.ruleType === '组合' ? '必填' : '留空不限'} value={item.reportMinQuantity} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { reportMinQuantity: event.target.value })} />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium">数量上限</label>
+                    </label>
+                    <label className="block space-y-2">
+                      <span className="block text-sm font-medium">数量上限</span>
                       <Input type="number" min="0" step="1" placeholder="留空不限" value={item.reportMaxQuantity} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { reportMaxQuantity: event.target.value })} />
-                    </div>
+                    </label>
                     {canViewPrice && (
                       <>
-                        <div className="space-y-2">
-                          <label className="text-sm font-medium">单价优惠 *</label>
+                        <label className="block space-y-2">
+                          <span className="block text-sm font-medium">单价优惠 *</span>
                           <Input type="number" min="0" step="0.01" value={item.marketUnitDiscount} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { marketUnitDiscount: event.target.value })} />
-                        </div>
+                        </label>
                       </>
                     )}
-                    <div className="space-y-2 sm:col-span-2 lg:col-span-4">
-                      <label className="text-sm font-medium">明细备注</label>
+                    <label className="block space-y-2 sm:col-span-2 lg:col-span-4">
+                      <span className="block text-sm font-medium">明细备注</span>
                       <Textarea value={item.remark} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { remark: event.target.value })} />
-                    </div>
+                    </label>
                   </div>
                   {readOnly && (
                     <p className="text-xs text-[#666666]">适用数量：{formatQuantityRange(numberOrNull(item.reportMinQuantity), numberOrNull(item.reportMaxQuantity))}</p>
