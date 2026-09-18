@@ -100,18 +100,27 @@ describe('服务单导出列', () => {
 })
 
 describe('顾客/员工导出日期列', () => {
-  it('顾客新增两列追加在「生日」之后，值由 action 侧格式化后透传，空值输出空串', async () => {
+  it('顾客新增两列追加在「生日」之后，表头是「建档日期」而非「注册日期」', async () => {
     const content = await createExportContent('customers', {})
     const headers = content.columns.map((column) => column.header)
 
-    expect(headers.slice(-3)).toEqual(['生日', '注册日期', '成为会员日期'])
+    expect(headers.slice(-3)).toEqual(['生日', '建档日期', '成为会员日期'])
+    // 「注册」在 data-center 专指 became_member_at（会员注册），顾客导出不得再占用这个词
+    expect(headers).not.toContain('注册日期')
+  })
 
-    const registeredAt = content.columns.find((column) => column.header === '注册日期')
+  it('顾客两列对 action 侧已格式化的串幂等，对 Date 也能兜住，空值输出空串', async () => {
+    const content = await createExportContent('customers', {})
+    const createdAt = content.columns.find((column) => column.header === '建档日期')
     const becameMemberAt = content.columns.find((column) => column.header === '成为会员日期')
-    // action 已 fmtDate，列侧只做 null→'' 的兜底，不再二次格式化
-    expect(registeredAt?.value({ createdAt: '2026-01-15' })).toBe('2026-01-15')
+
+    // action 已 fmtDate → 列侧 fmtDate 幂等（无 T 直接 slice），不会二次偏移
+    expect(createdAt?.value({ createdAt: '2026-01-15' })).toBe('2026-01-15')
     expect(becameMemberAt?.value({ becameMemberAt: '2026-03-02' })).toBe('2026-03-02')
-    expect(registeredAt?.value({ createdAt: null })).toBe('')
+    // 双保险：万一上游改成透传 Date（或 schema 改 mode:'string'），列侧仍还原北京日期，
+    // 而不是把 "Wed Jan 14 2026 ... GMT+0000" 整串写进单元格
+    expect(createdAt?.value({ createdAt: new Date('2026-01-14T17:30:00.000Z') })).toBe('2026-01-15')
+    expect(createdAt?.value({ createdAt: null })).toBe('')
     expect(becameMemberAt?.value({ becameMemberAt: null })).toBe('')
   })
 
@@ -119,10 +128,12 @@ describe('顾客/员工导出日期列', () => {
     const content = await createExportContent('employees', {})
     const headers = content.columns.map((column) => column.header)
 
+    // 先钉住锚点列存在，否则 indexOf 返回 -1 时 slice 会给出 [] 这种看不出真因的失败信息
+    expect(headers).toContain('职位')
     expect(headers.slice(headers.indexOf('职位'), headers.indexOf('职位') + 3)).toEqual(['职位', '入职日期', '生日'])
 
     const hiredAt = content.columns.find((column) => column.header === '入职日期')
-    // date 列原样传入（无 T），fmtDate 直接截断不做时区换算
+    // hired_at 是 drizzle date() 列 → string 模式，fmtDate 走 slice 分支不做时区换算
     expect(hiredAt?.value({ hiredAt: '2024-03-01' })).toBe('2024-03-01')
     expect(hiredAt?.value({ hiredAt: null })).toBe('')
   })
