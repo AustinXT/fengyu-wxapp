@@ -89,6 +89,7 @@ WITH refund_by_item AS (
     ) AS elem
    WHERE sop.change_type = '退款'
      AND sop.status = '已支付'
+     AND elem ->> 'refSaleItemId' <> 'OVERPAY'
    GROUP BY 1
 ),
 order_amounts AS (

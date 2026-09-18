@@ -45,6 +45,7 @@ const RECALC_CUSTOMER_TYPE_CTE = `WITH refund_by_item AS (
        WHERE ro.client_user_id = $1
          AND sop.change_type = '退款'
          AND sop.status = '已支付'
+         AND elem ->> 'refSaleItemId' <> 'OVERPAY'
        GROUP BY 1
      ),
      order_amounts AS (

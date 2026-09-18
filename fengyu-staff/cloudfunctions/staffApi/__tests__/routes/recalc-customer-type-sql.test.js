@@ -184,6 +184,12 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
           expect(cte).toContain("AND sop.status = '已支付'")
         })
 
+        test("排除 OVERPAY 哨兵行（与 per-item-refund helper 口径对齐）", () => {
+          // 历史 note 里 refSaleItemId='OVERPAY' 是订单级多收余数的分摊哨兵，不对应任何 sale_item。
+          // 当前靠 LEFT JOIN 不匹配也能自然过滤，显式排除是为了让意图可读 + 防将来改 JOIN 方式踩坑。
+          expect(cte).toContain("AND elem ->> 'refSaleItemId' <> 'OVERPAY'")
+        })
+
         test("note→jsonb 三重防线（LIKE '{%' 守门 + 嵌套 CASE 延迟 cast + jsonb_typeof 兜非数组），根除 22P02", () => {
           expect(cte).toContain("sop.note LIKE '{%'")
           expect(cte).toContain("jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'")
@@ -463,9 +469,10 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
           expect(src).toContain("jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'")
         })
 
-        test('退款聚合只认已支付的退款流水', () => {
+        test('退款聚合只认已支付的退款流水 + 排除 OVERPAY 哨兵行', () => {
           expect(src).toContain("WHERE sop.change_type = '退款'")
           expect(src).toContain("AND sop.status = '已支付'")
+          expect(src).toContain("AND elem ->> 'refSaleItemId' <> 'OVERPAY'")
         })
 
         test('达标判定改用 non_trial >= 阈值，不再比 o.total_amount（#187 回归守护）', () => {

@@ -103,6 +103,7 @@ const recalcCustomerTypeCte = (clientUserId: string) => sql`WITH refund_by_item 
        WHERE ro.client_user_id = ${clientUserId}
          AND sop.change_type = '退款'
          AND sop.status = '已支付'
+         AND elem ->> 'refSaleItemId' <> 'OVERPAY'
        GROUP BY 1
      ),
      order_amounts AS (
