@@ -155,8 +155,14 @@ const PAGE_SIZE_WHITELIST = [10, 20, 50, 100]
  * - `?page=Infinity` → offset 为 Infinity，直接把 SQL 打挂
  * 客户端已经 floor + clamp（pagination.tsx:23），服务端这里做同样的兜底。
  */
+const MAX_PAGE = 1_000_000
+
 function normalizePage(value: number | undefined): number {
-  return Number.isFinite(value) ? Math.max(1, Math.trunc(value as number)) : 1
+  if (!Number.isFinite(value)) return 1
+  // 还要夹上界：`Number.isFinite` 放行 1e308 这种**有限但巨大**的值，
+  // 乘以页长之后 offset 会溢出成 Infinity，PG 直接拒绝 → 列表页 500。
+  // 100 万页 × 100 条/页 = 1 亿行，远超任何业务规模，夹到这里不会误伤真实翻页。
+  return Math.min(Math.max(1, Math.trunc(value as number)), MAX_PAGE)
 }
 
 const NO_MOVEMENT_DOC_TYPES = new Set<InventoryDocType>([

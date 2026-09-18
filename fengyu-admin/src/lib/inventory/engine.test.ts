@@ -795,7 +795,34 @@ describe('库存 SKU 来源与价格保护', () => {
     }
   })
 
-  it('页码归一化兜住小数与 Infinity，不只是 NaN', () => {
+  it('skuRow / lotRow 的价格遮蔽口径与组件的列裁剪逐列对应', () => {
+    // skus-page / stocks-page 的列渲染测试是 **prop 注入**的，只能证明「给了这个档就这样渲染」，
+    // 拦不住 engine 反向漂移（比如把 storeActualUnitPrice 改成 supplyVisible）——
+    // 那会让列显示出来却整列是 null，正是 #135 组 5 要治的病反向复发。
+    // 两个组件的注释里都写了「engine.test.ts 有守护」，这就是那个守护。
+    const source = readFileSync(resolve(__dirname, 'engine.ts'), 'utf8')
+
+    const skuBlock = source.slice(
+      source.indexOf('function skuRow(row: {'),
+      source.indexOf('function docRow(row: {'),
+    )
+    expect(skuBlock).toMatch(/supplyChainPurchasePrice: supplyVisible \?/)
+    expect(skuBlock).toMatch(/marketPurchasePrice: anyPriceVisible \?/)
+    expect(skuBlock).toMatch(/storePurchasePrice: marketVisible \?/)
+    expect(skuBlock).toMatch(/marketStaffPurchasePrice: marketVisible \?/)
+    expect(skuBlock).toMatch(/retailPrice: row\.priceVisibility === 'all' \?/)
+
+    const lotBlock = source.slice(
+      source.indexOf('function lotRow('),
+      source.indexOf('function inventoryDocScopeSql('),
+    )
+    expect(lotBlock).toMatch(/marketActualUnitPrice: supplyVisible \|\| marketVisible \?/)
+    expect(lotBlock).toMatch(/storeActualUnitPrice: marketVisible \?/)
+    // 反向：门店实际价**不能**放宽成 supplyVisible（那样供应链角色会看到一整列 null）
+    expect(lotBlock).not.toMatch(/storeActualUnitPrice: supplyVisible/)
+  })
+
+  it('页码归一化兜住小数、Infinity 与巨大有限值', () => {
     // `Math.max(1, page || 1)` 只兜得住 NaN/0。`?page=1.5` 会让 offset 变成
     // (1.5-1)*20 = 10 → 返回第 11–30 条，而客户端 Pagination 内部 floor 后高亮第 1 页，
     // 用户看到的既不是第 1 页也不是第 2 页；`?page=Infinity` 直接把 SQL 打挂。
@@ -806,6 +833,10 @@ describe('库存 SKU 来源与价格保护', () => {
     )
     expect(fn).toMatch(/Number\.isFinite\(value\)/)
     expect(fn).toMatch(/Math\.trunc/)
+    // `Number.isFinite` 放行 1e308 这种有限但巨大的值，乘页长后 offset 溢出成 Infinity
+    // → PG 拒绝 → 列表页 500。必须再夹一道上界。
+    expect(fn).toMatch(/Math\.min\(/)
+    expect(source).toMatch(/const MAX_PAGE = /)
     // 五支列表查询必须全部走它，不能有漏网的内联写法
     expect(source.match(/normalizePage\(filters\.page\)/g)).toHaveLength(5)
     expect(source).not.toMatch(/Math\.max\(1, filters\.page/)
