@@ -745,13 +745,19 @@ login 返回中包含 `permissions` 字段：
 22. **回款/转换/退款仅员工端操作**
 23. **capability 列 SSoT**（2026-04-26 ticket 落地）：体验卡 / 充值卡 等"特殊 SKU 行为"判定一律读 `product_skus.is_experience` / `is_recharge_card`，**禁止**写 `WHERE product_kind = '体验卡'` / `'充值卡'` 字面量。两列互斥（`chk_sku_not_both_capabilities` CHECK 保护）。`product_kind` 仅作组织/分类标签。开单时 `sale_items` 自动快照同名列，行级不可变（admin 后续修改 SKU capability 不影响历史订单）。
 24. **D4 充值卡严格独立**：同一订单 `sale_items.is_recharge_card` 必须全 true 或全 false；混合下单抛 `INVALID_PARAMS: MIXED_RECHARGE_NOT_ALLOWED`。三端应用层（admin / staff / client）已加显式守卫，DB trigger `trg_check_no_mixed_recharge` 在 COMMIT 兜底。
-25. **customer_type 跃迁（event-driven）**：在三处收款触发点同步重算 — `payNotify`（线上支付回调）/ `staffApi.order.confirmOffline`（线下确认）/ `admin.recordPayment`（后台补录）。跃迁 SQL **三端独立副本**（admin `actions/orders.ts` + staffApi `routes/order.js` + payNotify `index.js`），由 `staffApi/__tests__/routes/recalc-customer-type-sql.test.js` 字节守卫一致性。判定逻辑：
-    - `EXISTS(销售单 total_amount ≥ threshold)` → `会员客`
-    - `EXISTS(销售单 sale_items.is_experience = false)` → `小美客`（充值卡的 `is_experience = false`，自动计入此通道，D1=A 决策）
-    - `EXISTS(销售单 sale_items.is_experience = true)` → `体验客`
+25. **customer_type 跃迁（event-driven）**：在收款触发点同步重算 — `payNotify`（线上支付回调）/ `clientApi` 支付完成 / `staffApi.order.confirmOffline` + `order.createRepayment` + 全额储值卡抵扣开单 / `admin.confirmOfflinePayment` + `recordPayment` + 零应付开单 + 全额抵扣转换。跃迁 SQL **七处独立副本**：五处运行时（staffApi `routes/order.js`、clientApi `routes/order.js`、payNotify `index.js`、admin `actions/orders.ts`、admin `lib/recompute-customer-tags.ts`）逐字一致 + 两个全库批量脚本（`db/scripts/recalc-all-customer-types.js`、`db/scripts/recalc-became-member-at.js`）结构对齐，由 `staffApi/__tests__/routes/recalc-customer-type-sql.test.js` 守卫一致性。
+
+    判定逻辑（#187，2026-09-18 落地 2026-04-26 Q5.2 决策）——先按**单笔订单**聚合金额，再走三档 CASE：
+    - `non_trial` / `trial` = 该订单非体验 / 体验明细行的**毛实收**合计；毛实收 = `sale_items.received`（净额）+ 该行逐项退款额，即"曾经收到的钱"（退款不扣减）
+    - 聚合范围：`status IN ('已支付','已完成')` 的销售单、`item_direction='购买'` 行；部分支付订单不参与判定
+    - `EXISTS(某单 non_trial ≥ threshold)` → `会员客`
+    - `EXISTS(某单 non_trial > 0)` → `小美客`（充值卡的 `is_experience = false`，自动计入此通道，D1=A 决策）
+    - `EXISTS(某单 trial > 0)` → `体验客`
     - 否则 `流量客`
+    - **混合订单按非体验部分判**：体验卡 500 + 普通商品 1600（阈值 1980）→ 小美客，不因合计 2100 达标而判会员客
     - 客户分类**只升不降**（取 max(current, computed)）
     - `customer_type='会员客'` 早退出，无需重算
+    - `became_member_at` 与 `is_membership_upgrade` 归因同源同序（`non_trial ≥ threshold` 的单里按 `paid_at ASC NULLS LAST, created_at ASC` 取首笔）
 
 ---
 
