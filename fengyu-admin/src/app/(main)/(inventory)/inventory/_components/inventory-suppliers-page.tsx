@@ -5,6 +5,7 @@ import { Ban, Pencil, Plus, Truck } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import {
+  countInventorySkusBySupplier,
   createInventorySupplier,
   updateInventorySupplier,
 } from '@/actions/inventory/suppliers'
@@ -73,6 +74,15 @@ export default function InventorySuppliersPage({
   const [saving, setSaving] = useState(false)
   const [disableTarget, setDisableTarget] = useState<InventorySupplierRow | null>(null)
   const [disabling, setDisabling] = useState(false)
+  // 停用前实时核对的关联数。列表行自带的 linkedSkuCount 是页面加载那一刻的值，
+  // 别人在这期间关联了 SKU 的话，拿旧值会显示「0 个」而漏掉提示。
+  // null = 核对中；数字 = 核对结果；'failed' = 核对失败。
+  // ⚠️ 失败**不能**退回旧值：那等于把「不知道」伪装成「已核对且为 0」，
+  //    而本改动恰恰是宣称停用前会实时核对。失败时禁止停用，让用户刷新重试。
+  const [liveLinkedCount, setLiveLinkedCount] = useState<number | 'failed' | null>(null)
+  // 请求序号：取消 A 的弹窗又去停用 B 时，A 的慢响应回来会把 B 的结果覆盖掉
+  //（B 显示「仍有 5 个」→ 被 A 的 0 覆盖 → 警告消失还放开了确认）。
+  const countSeqRef = useRef(0)
 
   useEffect(() => () => {
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
@@ -83,6 +93,12 @@ export default function InventorySuppliersPage({
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
     searchTimerRef.current = setTimeout(() => setMany({ q: value }), 300)
   }, [setMany])
+
+  // 编辑弹窗里「把启用开关切到停用」是另一条停用入口，必须和列表那条受同样的门禁：
+  // 核对未完成 / 核对失败时不许保存 —— 否则用户在看到「仍有 N 个」之前就点完了，
+  // 提示形同虚设。
+  const switchingToDisabled = !!editing && editing.isActive && !form.isActive
+  const blockedByLinkedCheck = switchingToDisabled && typeof liveLinkedCount !== 'number'
 
   function setField<K extends keyof SupplierForm>(key: K, value: SupplierForm[K]) {
     setForm((prev) => ({ ...prev, [key]: value }))
@@ -99,16 +115,40 @@ export default function InventorySuppliersPage({
     setDialogOpen(true)
   }
 
+  /** 实时核对关联 SKU 数；只有最后一次请求的结果会被采纳。 */
+  function refreshLinkedCount(row: InventorySupplierRow) {
+    const seq = ++countSeqRef.current
+    setLiveLinkedCount(null)
+    countInventorySkusBySupplier(row.supplierId)
+      .then((count) => { if (countSeqRef.current === seq) setLiveLinkedCount(count) })
+      .catch(() => { if (countSeqRef.current === seq) setLiveLinkedCount('failed') })
+  }
+
+  function askDisable(row: InventorySupplierRow) {
+    setDisableTarget(row)
+    refreshLinkedCount(row)
+  }
+
   function openEdit(row: InventorySupplierRow) {
     setEditing(row)
     setForm(toForm(row))
     setDialogOpen(true)
+    // 编辑弹窗里把开关切到停用是**另一条**停用入口，同样要实时核对 ——
+    // 只守列表那条等于没守（列表的计数是页面加载时的旧值）。
+    refreshLinkedCount(row)
   }
 
   async function submit() {
     const name = form.name.trim()
     if (!name) {
       toast.error('请输入供应商名称')
+      return
+    }
+    // 按钮已 disabled，这里再挡一次：键盘回车 / 程序化触发绕得过按钮
+    if (blockedByLinkedCheck) {
+      toast.error(liveLinkedCount === 'failed'
+        ? '关联的库存商品数核对失败，请刷新后重试'
+        : '正在核对关联的库存商品，请稍候')
       return
     }
 
@@ -164,6 +204,11 @@ export default function InventorySuppliersPage({
     { key: 'phone', header: '联系电话', cell: (row) => row.phone || '—' },
     { key: 'address', header: '地址', cell: (row) => row.address || '—' },
     {
+      key: 'linkedSkuCount',
+      header: '关联 SKU',
+      cell: (row) => row.linkedSkuCount > 0 ? `${row.linkedSkuCount} 个` : '—',
+    },
+    {
       key: 'isActive',
       header: '状态',
       cell: (row) => (
@@ -190,7 +235,7 @@ export default function InventorySuppliersPage({
               variant="link"
               size="sm"
               className="h-auto px-1 text-[var(--destructive)]"
-              onClick={() => setDisableTarget(row)}
+              onClick={() => askDisable(row)}
             >
               <Ban /> 停用
             </Button>
@@ -265,18 +310,46 @@ export default function InventorySuppliersPage({
             <label className="text-sm font-medium">备注</label>
             <Textarea value={form.remark} onChange={(event) => setField('remark', event.target.value)} />
           </div>
-          <div className="flex items-center gap-3 sm:col-span-2">
-            <Switch
-              checked={form.isActive}
-              onCheckedChange={(value) => setField('isActive', value)}
-              aria-label="供应商启用状态"
-            />
-            <span className="text-sm text-[#666666]">{form.isActive ? '启用' : '停用'}</span>
+          <div className="flex flex-col gap-2 sm:col-span-2">
+            <div className="flex items-center gap-3">
+              <Switch
+                checked={form.isActive}
+                onCheckedChange={(value) => {
+                  setField('isActive', value)
+                  // 切到停用的**当下**重新核对，而不是只在打开弹窗时核对一次：
+                  // 用户可能打开弹窗改了半天电话，期间别人关联了 SKU，
+                  // 拿打开时的旧计数就又漏掉提示了（列表那条入口是点击当下才核对的）。
+                  if (!value && editing) refreshLinkedCount(editing)
+                }}
+                aria-label="供应商启用状态"
+              />
+              <span className="text-sm text-[#666666]">{form.isActive ? '启用' : '停用'}</span>
+            </div>
+            {/*
+              列表里的「停用」按钮走 AlertDialog 会提示关联数，但从**编辑弹窗**把开关切到停用
+              是另一条入口，它直接 submit()、绕过那个对话框。只守一条入口等于没守。
+            */}
+            {switchingToDisabled && liveLinkedCount === null && (
+              <p className="text-sm text-[#888888]">正在核对关联的库存商品…</p>
+            )}
+            {switchingToDisabled && liveLinkedCount === 'failed' && (
+              <p className="text-sm text-[var(--destructive)]">
+                关联的库存商品数核对失败，无法判断是否仍有商品在用。请刷新后重试。
+              </p>
+            )}
+            {switchingToDisabled && typeof liveLinkedCount === 'number' && liveLinkedCount > 0 && (
+              <p className="text-sm text-[var(--destructive)]">
+                仍有 {liveLinkedCount} 个库存商品关联该供应商。
+                停用后这些商品的关联保持不变，但新建 / 改挂其它商品时将不能再选它。
+              </p>
+            )}
           </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => closeDialog(false)} disabled={saving}>取消</Button>
-          <Button onClick={submit} loading={saving}>{editing ? '保存修改' : '创建供应商'}</Button>
+          <Button onClick={submit} loading={saving} disabled={blockedByLinkedCheck}>
+            {editing ? '保存修改' : '创建供应商'}
+          </Button>
         </DialogFooter>
       </Dialog>
 
@@ -284,10 +357,34 @@ export default function InventorySuppliersPage({
         <AlertDialogTitle>停用供应商</AlertDialogTitle>
         <AlertDialogDescription>
           确定停用供应商「{disableTarget?.name}」吗？历史单据不会受影响，但后续业务不应再选择该供应商。
+          {/*
+            提示但不阻止（#132 拍板 Q5）：停用语义是「不再采购」而非「删除」，
+            阻止停用会逼运营先逐个改 SKU。已关联的 SKU 继续正常显示与编辑，
+            只是不会再出现在新 SKU 的下拉里。
+          */}
+          {!!disableTarget && liveLinkedCount === null && (
+            <span className="mt-2 block text-[#888888]">正在核对关联的库存商品…</span>
+          )}
+          {!!disableTarget && liveLinkedCount === 'failed' && (
+            <span className="mt-2 block text-[var(--destructive)]">
+              关联的库存商品数核对失败，无法判断是否仍有商品在用。请刷新后重试。
+            </span>
+          )}
+          {!!disableTarget && typeof liveLinkedCount === 'number' && liveLinkedCount > 0 && (
+            <span className="mt-2 block text-[var(--destructive)]">
+              仍有 {liveLinkedCount} 个库存商品关联该供应商。
+              停用后这些商品的关联保持不变，但新建 / 改挂其它商品时将不能再选它。
+            </span>
+          )}
         </AlertDialogDescription>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => setDisableTarget(null)} disabled={disabling}>取消</AlertDialogCancel>
-          <AlertDialogAction onClick={disable} disabled={disabling}>确认停用</AlertDialogAction>
+          <AlertDialogAction
+            onClick={disable}
+            disabled={disabling || typeof liveLinkedCount !== 'number'}
+          >
+            确认停用
+          </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialog>
     </div>

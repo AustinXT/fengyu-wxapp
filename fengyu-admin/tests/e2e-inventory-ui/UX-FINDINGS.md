@@ -24,10 +24,10 @@
 |---|---|---|---|---|
 | P0 | 批次下拉永久卡在加载中 | `/inventory/docs → 新建库存单据` | 选定主体与 SKU 后，来源批次下拉永远停留在「加载库存批次...」且始终 disabled（实测 60s+）。根因是 inventory-docs-page.tsx:351-375 的 useEffect 自循环：依赖数组含它自己 set 的 loadingLotKeys/lotOptionsByKey，effect 重跑触发 cleanup 把 cancelled 置 true，首次请求的 then/catch/finally 全被跳过。后果：单据中心里所有需要选来源批次的单据类型（分院调货出库、市场间调货出库、内部领用、院顾客产品出库、市场产品报损、院产品报损）全部无法创建 | `接口已返回 200，是前端把结果丢了；详见 INV-05 / inv-90-probe-lot-loading` |
 | P0 | 员工下拉恒为空（SQL 别名错误） | `/inventory/operations/{market,supply-chain} → 员工购` | business.ts 有 5 处递归 CTE 写错别名引用：CTE 在 JOIN 时起了别名（JOIN descendants parent / JOIN ancestors ancestor），SELECT/WHERE 却仍用原名（descendants.path / ancestors.path），PostgreSQL 直接报 invalid reference to FROM-clause entry。后果：市场员工购与供应链员工购的员工下拉恒为空，功能完全不可用；即使绕过下拉，提交时的 employeeForMarket / employeeForSupplyChain 校验同样会炸 | `business.ts:1234 / 1263 / 1273 / 1329 / 1371；dev 库按正确 SQL 能查出 85 / 115 个候选` |
-| P1 | 外键类字段应提供选择器 | `/inventory/skus → 新建库存商品` | 字段「供货商」引用的是已有档案（命中关键词「供货商」），却渲染为 <input> 自由输入 | `label="供货商" control=<input>` |
+| ~~P1~~（#132 已修） | 外键类字段应提供选择器 | `/inventory/skus → 新建库存商品` | 字段「供货商」引用的是已有档案（命中关键词「供货商」），却渲染为 <input> 自由输入 | `label="供货商" control=<input>` → 已改为 `<select>`，选项来自启用中的供应商档案 |
 | P1 | 使用原生 alert / prompt | `/inventory/docs` | 建单失败用 alert() 弹原生框（inventory-docs-page.tsx:402）；审批/驳回/收货的备注用 prompt() 收集（:135-151）。原生弹窗无法样式化、无法做必填校验（驳回原因是必填的）、移动端体验差，且会阻塞页面 | `本轮未触发，证据见 INV-02 / INV-05` |
 | ~~P1~~（#131 已修） | 盘点单不记录账面数量 | `/inventory/docs → 市场库存盘点 / 分院库存盘点` | engine.ts:2777 的 stockSnapshot 只在选中批次时才写（lot ? ... : null），而盘点单不属于 SOURCE_LOT_DOC_TYPES、UI 不提供批次选择器，于是 stock_snapshot 恒为 NULL。盘点单既不动库存也不记账面数，退化成只有「数量」的白条，无法用于任何盈亏对账 | `INV-06 实测 stock_snapshot = NULL` |
-| P1 | SKU 供货商与供应商档案无关联 | `/inventory/skus → 新建库存商品` | 「供货商」是裸 <input> 文本框，且 inventory_skus 表只有 supplier(text) 列、没有 supplier_id 外键 —— 与 inventory_suppliers 档案表（以及 /inventory/suppliers 整个页面）完全不关联。同一供应商会产生多种写法，供应商档案形同虚设，也无法按供应商统计采购 | `inventory-skus-page.tsx:388；information_schema 查无 supplier_id 列` |
+| ~~P1~~（#132 已修） | SKU 供货商与供应商档案无关联 | `/inventory/skus → 新建库存商品` | 「供货商」是裸 <input> 文本框，且 inventory_skus 表只有 supplier(text) 列、没有 supplier_id 外键 —— 与 inventory_suppliers 档案表（以及 /inventory/suppliers 整个页面）完全不关联。同一供应商会产生多种写法，供应商档案形同虚设，也无法按供应商统计采购 | migration 0042 加 `supplier_id` 外键 + 按名称回填；supplier 文本列保留为名称快照（批次快照取这一列）|
 | P1 | 业务错误提示被生产构建脱敏 | `全局（Server Action 错误路径）` | Server Action 抛出的 ApiError 在生产构建下被 Next.js 统一脱敏，用户看到的是「An error occurred in the Server Components render...」或一串 error digest 数字（如 1956068727），业务文案（「库存期初尚未导入并核验完成」等）完全丢失，用户无从判断该做什么 | `INV-02 期初门禁拦截、INV-07 员工加载失败均复现` |
 | P2 | 列表缺少分页与总数 | `/inventory/suppliers` | 列表有 6 行数据，但页面没有总数或分页控件，用户不知道数据有没有被截断 | — |
 | P2 | 列表缺少分页与总数 | `/inventory/sku-mappings` | 列表有 101 行数据，但页面没有总数或分页控件，用户不知道数据有没有被截断 | — |
@@ -58,5 +58,5 @@
 - 批次下拉卡死 → `inv-05-transfers.spec.ts` / `inv-90-probe-lot-loading.spec.ts`
 - 员工下拉恒空 → `inv-07-staff-purchase-and-self-purchase.spec.ts`（并已在 dev 库直接执行原 SQL 复现报错）
 - 盘点不记账面数 → `inv-06-stocktake-and-loss.spec.ts`
-- 供货商无外键 → `inv-01-master-data.spec.ts`
+- 供货商无外键 → `inv-01-master-data.spec.ts`（#132 已修；该 spec 的 UX-FIXED-01 / 01b 已从「已知缺陷豁免」转为正式守护，退化会让 spec 直接红）
 - 错误提示脱敏 → `inv-02-supply-chain-stock.spec.ts`

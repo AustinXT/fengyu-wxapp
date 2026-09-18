@@ -38,9 +38,11 @@ import {
   listInventoryCoreDocs,
   listInventoryLocationFilterOptions,
   listInventoryLots,
+  listInventorySuppliers,
   rejectInventoryCoreDoc,
   syncInventoryLocations,
   updateInventorySku,
+  updateInventorySupplier,
   updateInventoryPromotionPlan,
 } from './engine'
 import { hasPermission, isAdminScope } from '@/lib/permissions'
@@ -52,6 +54,27 @@ const SESSION = {
   roles: [{ role: 'admin', scopeId: 'HQ', scopeType: '总部' }],
   permissions: { actions: ['inventory:create_doc', 'inventory:approve'], scopeStoreIds: [] },
 } as never
+
+/**
+ * `.limit(1)` 之后**必须**再接 `.for('share')` 的查询（resolveSkuSupplier 对供应商行加行锁）
+ * 用这个。它记录锁强度，让测试能断言到底加没加锁、加的是哪一种 ——
+ * 只做成「既可 await 又有个忽略参数的 .for()」的话，把生产代码里的 `.for('share')` 删掉、
+ * 或降级成 `.for('key share')`，测试照样全绿（FOR KEY SHARE 挡不住改名这种非键列 UPDATE）。
+ */
+function selectWithLock(rows: unknown[], lock: { strength?: string }) {
+  return {
+    from: () => ({
+      where: () => ({
+        limit: () => ({
+          for: async (strength: string) => {
+            lock.strength = strength
+            return rows
+          },
+        }),
+      }),
+    }),
+  }
+}
 
 function selectWithLimit(rows: unknown[]) {
   return {
@@ -395,6 +418,10 @@ describe('库存 SKU 来源与价格保护', () => {
     vi.mocked(isAdminScope).mockReturnValue(true)
     mockGetSession.mockResolvedValue(SESSION)
     mockDb.select.mockReset()
+    // updateInventorySku 现在整段跑在事务里（resolveSkuSupplier 要在同一事务内对档案行
+    // 加 FOR SHARE）。默认把 mockDb 自身当 tx 传进去，tx.select / tx.update 就直接复用
+    // 各测试已有的 mock；需要 execute/insert 的建单类测试再用 mockImplementationOnce 覆盖。
+    mockDb.transaction.mockImplementation(async (callback: (tx: unknown) => unknown) => callback(mockDb))
   })
 
   it('库存商品编号按上海日期和当日序号由系统生成', async () => {
@@ -477,6 +504,311 @@ describe('库存 SKU 来源与价格保护', () => {
       supplierId: result.supplierId,
       name: '测试供应商',
     }))
+  })
+
+  // ── #132：SKU 供货商关联供应商档案 ─────────────────────────────────
+  // supplier 文本列不再收自由文本，改由 supplier_id 派生 —— ensureLotFromSku 建批次时
+  // 取的正是这一列（engine.ts 的 `normalizeText(trace.supplier) ?? sku.supplier`），
+  // 派生断了批次快照就会变空。
+
+  it('新建 SKU 选中档案时同时写入 supplier_id 与冗余名，且加的是 FOR SHARE', async () => {
+    const lock: { strength?: string } = {}
+    const values = vi.fn().mockResolvedValue(undefined)
+    // 供应商解析已移进事务内（要对档案行加 FOR SHARE），所以 tx 也得提供 select
+    mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
+      select: vi.fn(() => selectWithLock([{ name: '广州美姿贺生物科技', isActive: true }], lock)),
+      execute: vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([{ value: 'INV-SKU-20260916-0001' }]),
+      insert: vi.fn(() => ({ values })),
+    }))
+
+    await createInventorySku({ productName: '测试商品', supplierId: 'SUP-1' })
+
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      supplierId: 'SUP-1',
+      supplier: '广州美姿贺生物科技',
+    }))
+    // 必须是 share：改名改的是 name 这个非键列，走 FOR NO KEY UPDATE，
+    // FOR KEY SHARE 拦不住它 —— 降级成 'key share' 这条断言就会红
+    expect(lock.strength).toBe('share')
+  })
+
+  it('新建 SKU 不能关联已停用的供应商', async () => {
+    mockDb.select.mockReturnValueOnce(selectWithLock([{ name: '停用档案', isActive: false }], {}))
+
+    await expect(createInventorySku({ productName: '测试商品', supplierId: 'SUP-OFF' }))
+      .rejects.toThrow('已停用，无法关联到库存商品')
+  })
+
+  it('关联不存在的供应商时报 NOT_FOUND', async () => {
+    mockDb.select.mockReturnValueOnce(selectWithLock([], {}))
+
+    await expect(createInventorySku({ productName: '测试商品', supplierId: 'SUP-404' }))
+      .rejects.toThrow('供应商不存在')
+  })
+
+  it('未提交 supplierId 时不动关联与名称快照（存量未匹配文本得以保留）', async () => {
+    const set = vi.fn((_values: Record<string, unknown>) => ({ where: vi.fn().mockResolvedValue(undefined) }))
+    mockDb.select.mockImplementation(() => selectWithLimit([{
+      accountingPrice: null, marketPurchaseDiscount: null,
+      sourceType: '供应链', ownerMarketId: null, supplierId: null,
+    }]))
+    mockDb.update.mockReturnValue({ set })
+
+    await updateInventorySku('SKU-1', { productName: '改个名' })
+
+    // drizzle 对 undefined 的列不生成 SET 子句 —— 这正是「两列都别动」的实现方式。
+    // ⚠️ 单看这两条断言，把生产代码里的字段映射整行删掉它们照样绿（都还是 undefined）。
+    // 所以补一条正向锚点证明 set 确实被正常调用过；而「传了 id 就写两列」由
+    // 「显式传 null / 选中档案」那两条测试守护，删掉映射会让它们红。
+    expect(set.mock.calls[0]?.[0]).toMatchObject({ productName: '改个名' })
+    expect(set.mock.calls[0]?.[0]?.supplierId).toBeUndefined()
+    expect(set.mock.calls[0]?.[0]?.supplier).toBeUndefined()
+  })
+
+  it('显式传 null 时关联与名称快照一起清空', async () => {
+    const set = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }))
+    mockDb.select.mockImplementation(() => selectWithLimit([{
+      accountingPrice: null, marketPurchaseDiscount: null,
+      sourceType: '供应链', ownerMarketId: null, supplierId: 'SUP-1',
+    }]))
+    mockDb.update.mockReturnValue({ set })
+
+    await updateInventorySku('SKU-1', { supplierId: null })
+
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ supplierId: null, supplier: null }))
+  })
+
+  it('保持已关联但已停用的档案不报错，换成另一个停用档案才拦', async () => {
+    // where 要返回 postgres.js 形状的受影响行数：保持停用档案会走 CAS 守卫，
+    // 命中 0 行就抛 CONFLICT（见下一条测试）
+    const set = vi.fn(() => ({ where: vi.fn().mockResolvedValue({ count: 1 }) }))
+    const current = {
+      accountingPrice: null, marketPurchaseDiscount: null,
+      sourceType: '供应链', ownerMarketId: null, supplierId: 'SUP-OFF',
+    }
+    mockDb.update.mockReturnValue({ set })
+
+    // 原样保存：档案虽已停用，但它就是当前关联值 —— 拦了就等于不让编辑这条 SKU
+    mockDb.select
+      .mockReturnValueOnce(selectWithLimit([current]))
+      .mockReturnValueOnce(selectWithLock([{ name: '停用档案', isActive: false }], {}))
+    await updateInventorySku('SKU-1', { supplierId: 'SUP-OFF' })
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({
+      supplierId: 'SUP-OFF',
+      supplier: '停用档案',
+    }))
+
+    // 换成另一个停用档案：停用语义是「不再采购」，这条要拦
+    mockDb.select
+      .mockReturnValueOnce(selectWithLimit([current]))
+      .mockReturnValueOnce(selectWithLock([{ name: '另一个停用档案', isActive: false }], {}))
+    await expect(updateInventorySku('SKU-1', { supplierId: 'SUP-OFF-2' }))
+      .rejects.toThrow('已停用，无法关联到库存商品')
+  })
+
+  it('供应商改名同步回写关联 SKU 的冗余名，且对档案行加 FOR UPDATE', async () => {
+    const supplierSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }))
+    // 把 where 的实参记下来：漏掉 `.where(eq(supplierId, ...))` 的话，一次改名会把
+    // **全表** SKU 的 supplier 都改成这个名字 —— 只断言 set 的内容是拦不住这种数据损坏的
+    const skuWhere = vi.fn().mockResolvedValue(undefined)
+    const skuSet = vi.fn((_values: Record<string, unknown>) => ({ where: skuWhere }))
+    const lock: { strength?: string } = {}
+    let call = 0
+    mockDb.select.mockReturnValueOnce(selectWithLimit([{ supplierId: 'SUP-1', name: '原来的供应商' }]))
+    mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
+      select: vi.fn(() => selectWithLock([{ name: '原来的供应商' }], lock)),
+      update: vi.fn(() => (call++ === 0 ? { set: supplierSet } : { set: skuSet })),
+    }))
+
+    await updateInventorySupplier('SUP-1', { name: '改名后的供应商' })
+    // 旧名必须取自事务内锁到的行：用事务外快照的话，「甲改名 B 后乙把名字写回 A」
+    // 会被判成「没改名」而跳过 SKU 回写，留下档案叫 A、SKU 文本是 B 的持久分叉
+    expect(lock.strength).toBe('update')
+
+    // 不回写的话：admin 列表读 JOIN 的实时名，而 staffApi 的 SKU 列表与新建批次读文本列，
+    // 同一个供应商在两端显示成两个名字
+    expect(skuSet).toHaveBeenCalledWith(expect.objectContaining({ supplier: '改名后的供应商' }))
+    // 必须带 WHERE，且限定的是 supplier_id 这一列。
+    // 列名要从 drizzle 的 SQL 片段里挖（renderSql 只渲染字面量片段，把 Column 对象渲成
+    // [object Object]）—— 依赖内部结构，但这是能区分「限定了哪一列」的最直接方式。
+    expect(skuWhere).toHaveBeenCalledTimes(1)
+    const whereArg = skuWhere.mock.calls[0]?.[0] as { queryChunks?: Array<{ name?: string }> }
+    expect(whereArg?.queryChunks?.some((chunk) => chunk?.name === 'supplier_id')).toBe(true)
+  })
+
+  it('只改联系方式时不回写 SKU 冗余名', async () => {
+    const supplierSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }))
+    const update = vi.fn(() => ({ set: supplierSet }))
+    mockDb.select.mockReturnValueOnce(selectWithLimit([{ supplierId: 'SUP-1', name: '原来的供应商' }]))
+    mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
+      select: vi.fn(() => selectWithLock([{ name: '原来的供应商' }], {})),
+      update,
+    }))
+
+    await updateInventorySupplier('SUP-1', { phone: '13900000000' })
+
+    expect(update).toHaveBeenCalledTimes(1)
+  })
+
+  it('表单全量提交、名字没变时不回写 SKU', async () => {
+    // 供应商页 submit() 是全量提交，每次编辑都带 name。丢掉「与 locked.name 的相等比较」
+    // 的话，只改电话 / 停用也会触发整批关联 SKU 的 supplier 与 updated_at 被无因重写。
+    // 这一侧此前没有任何断言覆盖 —— 改坏了 2800+ 条测试照样全绿。
+    const supplierSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }))
+    const update = vi.fn(() => ({ set: supplierSet }))
+    mockDb.select.mockReturnValueOnce(selectWithLimit([{ supplierId: 'SUP-1', name: '甲公司' }]))
+    mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
+      select: vi.fn(() => selectWithLock([{ name: '甲公司' }], {})),
+      update,
+    }))
+
+    await updateInventorySupplier('SUP-1', { name: '甲公司', phone: '13900000000' })
+
+    // 只更新了档案本身，没有第二次 update（SKU 回写）
+    expect(update).toHaveBeenCalledTimes(1)
+  })
+
+  it('改名撞唯一约束时抛可读的 CONFLICT（update 路径）', async () => {
+    const duplicate = Object.assign(new Error('Failed query'), {
+      cause: { code: '23505', constraint: 'uq_inventory_suppliers_name' },
+    })
+    mockDb.select.mockReturnValueOnce(selectWithLimit([{ supplierId: 'SUP-1', name: '甲公司' }]))
+    mockDb.transaction.mockImplementationOnce(async () => { throw duplicate })
+
+    await expect(updateInventorySupplier('SUP-1', { name: '乙公司' }))
+      .rejects.toThrow('供应商名称「乙公司」已存在')
+  })
+
+  it('事务内发现名字已被他人改掉时照常回写', async () => {
+    // 供应商表单是全量提交，停用/改电话时 name 照样在 payload 里。
+    // 判据必须是「事务内锁到的旧名 vs 新名」：
+    //  - 锁到的还是同一个名字 → 真的没改名 → 不回写（否则无因刷整批 SKU 的 updated_at）
+    //  - 锁到的已经变成别人改的新名 → 这次提交实际是在改回去 → 必须回写
+    const supplierSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }))
+    const skuSet = vi.fn((_values: Record<string, unknown>) => ({ where: vi.fn().mockResolvedValue(undefined) }))
+    let call = 0
+    mockDb.select.mockReturnValueOnce(selectWithLimit([{ supplierId: 'SUP-1', name: '甲公司' }]))
+    mockDb.transaction.mockImplementationOnce(async (callback: (tx: unknown) => unknown) => callback({
+      // 事务外读到「甲公司」，但等锁期间别人已经把它改成了「乙公司」
+      select: vi.fn(() => selectWithLock([{ name: '乙公司' }], {})),
+      update: vi.fn(() => (call++ === 0 ? { set: supplierSet } : { set: skuSet })),
+    }))
+
+    await updateInventorySupplier('SUP-1', { name: '甲公司', phone: '13900000000' })
+
+    expect(skuSet).toHaveBeenCalledWith(expect.objectContaining({ supplier: '甲公司' }))
+  })
+
+  it('供应商重名抛可读的 CONFLICT，而不是把 PG 英文原文丢给用户', async () => {
+    // action-error 既把 'violates unique constraint' 列进不可读片段，又有「没有中日韩字符
+    // 就判不可读」的兜底 —— 不翻译的话用户只会看到 fallback「创建供应商失败」，
+    // 而重名的那条若已停用，列表和下拉里都看不到，用户没有任何自诊断入口
+    const duplicate = Object.assign(new Error('Failed query'), {
+      cause: { code: '23505', constraint: 'uq_inventory_suppliers_name' },
+    })
+    mockDb.insert.mockReturnValueOnce({ values: vi.fn().mockRejectedValue(duplicate) })
+
+    await expect(createInventorySupplier({ name: '广州美姿贺生物科技' }))
+      .rejects.toThrow('供应商名称「广州美姿贺生物科技」已存在（可能是已停用的档案）')
+  })
+
+  it('保持停用档案时若该 SKU 已被他人改挂，CAS 命中 0 行并抛 CONFLICT', async () => {
+    // currentSupplierId 是事务外读到的快照。别人在这中间把 SKU 改挂到别的档案，
+    // 「保持当前停用档案」就变成了「换到一个停用档案」—— 正是上一条要拦的。
+    // 所以放行前提被下推进 UPDATE 的 WHERE，用行的当前值再判一次。
+    const set = vi.fn(() => ({ where: vi.fn().mockResolvedValue({ count: 0 }) }))
+    mockDb.update.mockReturnValue({ set })
+    mockDb.select
+      .mockReturnValueOnce(selectWithLimit([{
+        accountingPrice: null, marketPurchaseDiscount: null,
+        sourceType: '供应链', ownerMarketId: null, supplierId: 'SUP-OFF',
+      }]))
+      .mockReturnValueOnce(selectWithLock([{ name: '停用档案', isActive: false }], {}))
+
+    await expect(updateInventorySku('SKU-1', { supplierId: 'SUP-OFF' }))
+      .rejects.toThrow('该库存商品的供货商已被他人修改')
+  })
+
+  it('正常保存（未涉及停用档案）不加 CAS 守卫，不会因受影响行数误判', async () => {
+    // 只有「保持停用档案」这一种情况才加守卫；否则 where 只有主键条件，
+    // 返回什么 count 都不该抛 —— 不然普通编辑会被误判成并发冲突
+    const set = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }))
+    mockDb.update.mockReturnValue({ set })
+    mockDb.select
+      .mockReturnValueOnce(selectWithLimit([{
+        accountingPrice: null, marketPurchaseDiscount: null,
+        sourceType: '供应链', ownerMarketId: null, supplierId: 'SUP-1',
+      }]))
+      .mockReturnValueOnce(selectWithLock([{ name: '启用档案', isActive: true }], {}))
+
+    await expect(updateInventorySku('SKU-1', { supplierId: 'SUP-1' })).resolves.toEqual({ success: true })
+  })
+
+  it('关联 SKU 数用 count(列) 而不是 count(*)', () => {
+    // 组件测试是直接注入 linkedSkuCount 的，拦不住这个：leftJoin 之后 count(*) 会把
+    // 「没有任何关联 SKU」的供应商数成 1（那一行的 SKU 侧全是 NULL，但行本身存在），
+    // 页面就会显示「1 个」并在停用时弹出不存在的关联警告。count(列) 忽略 NULL 才对。
+    const source = readFileSync(resolve(__dirname, 'engine.ts'), 'utf8')
+    const listBlock = source.slice(
+      source.indexOf('export const listInventorySuppliers'),
+      source.indexOf('export const listInventorySupplierOptions'),
+    )
+    expect(listBlock).toMatch(/count\(\$\{inventorySkus\.skuId\}\)/)
+    expect(listBlock).not.toMatch(/count\(\*\)/)
+    // 同时确认是 leftJoin（inner join 会让无关联的供应商整行消失）
+    expect(listBlock).toMatch(/leftJoin\(inventorySkus/)
+  })
+
+  it('SKU 列表的 supplierName 来自档案表 JOIN，不是 SKU 自己的冗余列', () => {
+    // 组件测试是直接注入 supplierName 的，只能证明「组件优先显示它」。
+    // 把生产查询改成 `supplierName: inventorySkus.supplier` 组件测试照样绿 ——
+    // 那样档案改名后列表就不再实时跟随了（退回冗余列的值）。
+    const source = readFileSync(resolve(__dirname, 'engine.ts'), 'utf8')
+    const listBlock = source.slice(
+      source.indexOf('export const listInventorySkus'),
+      source.indexOf('export const createInventorySku'),
+    )
+    expect(listBlock).toMatch(/supplierName: inventorySuppliers\.name/)
+    expect(listBlock).toMatch(/leftJoin\(inventorySuppliers, eq\(inventorySkus\.supplierId, inventorySuppliers\.supplierId\)\)/)
+  })
+
+  it('实时关联数查询按 supplier_id 过滤', () => {
+    // 组件测试全都 mock 掉了这个 action。误删 where 的话，页面会把全库 SKU 总数
+    // 当成当前供应商的关联数（停用任何供应商都会弹出巨大的关联警告）。
+    const source = readFileSync(resolve(__dirname, 'engine.ts'), 'utf8')
+    const block = source.slice(
+      source.indexOf('export const countInventorySkusBySupplier'),
+      source.indexOf('export const createInventorySupplier'),
+    )
+    expect(block).toMatch(/\.where\(eq\(inventorySkus\.supplierId, supplierId\)\)/)
+  })
+
+  it('供应商列表把 linkedSkuCount 映射进返回行', async () => {
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        leftJoin: () => ({
+          where: () => ({
+            groupBy: () => ({
+              orderBy: async () => [
+                {
+                  supplier: {
+                    supplierId: 'SUP-1', name: '甲公司', contactName: null, phone: null,
+                    address: null, isActive: true, remark: null,
+                    createdAt: new Date('2026-08-01T00:00:00Z'),
+                    updatedAt: new Date('2026-08-01T00:00:00Z'),
+                  },
+                  linkedSkuCount: 3,
+                },
+              ],
+            }),
+          }),
+        }),
+      }),
+    } as never)
+
+    await expect(listInventorySuppliers({})).resolves.toEqual([
+      expect.objectContaining({ supplierId: 'SUP-1', linkedSkuCount: 3 }),
+    ])
   })
 
   it('创建后不能跨市场或转换库存 SKU 来源', async () => {

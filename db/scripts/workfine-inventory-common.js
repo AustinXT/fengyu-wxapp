@@ -1234,7 +1234,21 @@ async function upsertSku(client, row) {
      ON CONFLICT (product_code) DO UPDATE SET
        product_name = EXCLUDED.product_name,
        spec_name = COALESCE(EXCLUDED.spec_name, inventory_skus.spec_name),
-       supplier = COALESCE(EXCLUDED.supplier, inventory_skus.supplier),
+       -- 已关联档案的 SKU，supplier 文本由 supplier_id 派生（#132），WorkFine 不得覆盖：
+       -- 覆盖了就会得到「supplier_id 指向 A、文本却是 B」的分叉 —— admin 列表走 JOIN 显示 A，
+       -- staffApi 的 SKU 列表与新建批次读文本列显示 B，且「按供应商统计」算到错的供应商头上。
+       -- ⚠️ 代价一：WorkFine 侧换了供应商时这里不会自动改挂，需人工在 admin 改挂。
+       --    这是刻意的 —— PG 是库存数据的唯一真理源，WorkFine 只是种源（同步已停用）。
+       -- ⚠️ 代价二：用户在 admin 把供货商清成「未指定」（两列都 NULL）之后，再重跑本导入，
+       --    这一行会把 WorkFine 的历史供应商名写回来、末尾的回填再把它关联上 ——
+       --    等于静默撤销了用户的清空。之所以接受：本脚本是**一次性历史迁移 / 初始导入**
+       --    工具，不在运营期运行（WorkFine 同步正式上线后已停用），而它的语义本就是
+       --    「以 WorkFine 为准补齐」。真要在运营期重跑，须先确认没有手工清空过的 SKU。
+       supplier = CASE
+         WHEN inventory_skus.supplier_id IS NULL
+           THEN COALESCE(EXCLUDED.supplier, inventory_skus.supplier)
+         ELSE inventory_skus.supplier
+       END,
        manufacturer = COALESCE(EXCLUDED.manufacturer, inventory_skus.manufacturer),
        brand = COALESCE(EXCLUDED.brand, inventory_skus.brand),
        product_series = COALESCE(EXCLUDED.product_series, inventory_skus.product_series),
@@ -1293,7 +1307,25 @@ async function upsertSku(client, row) {
       row.remark,
     ],
   )
-  return result.rows[0].sku_id
+  const insertedSkuId = result.rows[0].sku_id
+  // WorkFine 只给供应商名称文本，没有档案 id。SKU 建档侧（admin）自 #132 起强制选档案，
+  // 这里不补的话，每跑一次导入都会产生一批「有文本、没关联」的 SKU，档案关联被慢慢侵蚀。
+  // 口径与 migration 0042 的存量回填完全一致：按名称精确匹配、匹配上就一并把文本归一成
+  // 档案名（' 恒美 ' 拿到 id 却仍带空格的话，列表显示「恒美」、批次快照写「 恒美 」），
+  // 匹配不上就留 NULL、不自动建档（凭空建出的档案联系人/地址全空）。
+  // 幂等：只补 supplier_id IS NULL 的行，重复导入不会改已有关联。
+  await client.query(
+    `UPDATE inventory_skus AS s
+        SET supplier_id = v.supplier_id,
+            supplier = v.name
+       FROM inventory_suppliers AS v
+      WHERE s.sku_id = $1
+        AND s.supplier_id IS NULL
+        AND btrim(COALESCE(s.supplier, '')) <> ''
+        AND btrim(s.supplier) = v.name`,
+    [insertedSkuId],
+  )
+  return insertedSkuId
 }
 
 async function upsertInitialDocument(client, group, createdBy) {

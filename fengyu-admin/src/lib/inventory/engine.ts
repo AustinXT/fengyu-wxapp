@@ -1,6 +1,8 @@
 import { db } from '@/db'
 import 'server-only'
 import { ApiError } from '@/lib/api-error'
+import { pgErrorCode } from '@/lib/pg-error'
+import { rowsAffected } from '@/lib/pg-rows'
 import { fmtDate, shanghaiToday, shanghaiYmd } from '@/lib/datetime'
 import { logOperation } from '@/lib/operation-log'
 import { hasPermission, isAdminScope } from '@/lib/permissions'
@@ -62,6 +64,7 @@ import {
   type InventorySkuRow,
   type InventorySkuSourceType,
   type InventorySupplierInput,
+  type InventorySupplierOption,
   type InventorySupplierRow,
 } from './types'
 import { buildInventoryLocationFilterOptions } from './location-filter'
@@ -963,7 +966,7 @@ async function ensureLotFromSku(
 ): Promise<LockedLot> {
   const skuId = normalizeRequired(item.skuId, '库存 SKU')
   const skuRows = await tx.execute(sql`
-    SELECT sku_id, product_name, spec_name, supplier, product_series,
+    SELECT sku_id, product_name, spec_name, supplier, supplier_id, product_series,
            source_type, owner_market_id, supply_chain_purchase_price,
            market_purchase_price, store_purchase_price
       FROM inventory_skus
@@ -976,6 +979,7 @@ async function ensureLotFromSku(
     product_name: string
     spec_name: string | null
     supplier: string | null
+    supplier_id: string | null
     product_series: string | null
     source_type: InventorySkuSourceType
     owner_market_id: string | null
@@ -1011,7 +1015,10 @@ async function ensureLotFromSku(
     (storeStandardUnitPrice == null
       ? null
       : storeStandardUnitPrice - Number(storeUnitDiscount ?? 0))
-  const supplierId = normalizeText(trace.supplierId)
+  // 批次键锚在 supplier_id 而不是名称（#132）：makeLotKey 的 supplier 段取 supplierId ?? supplier，
+  // 单据头不带供应商的入库（内部领用 / 调货 / 报损…）若只落到文本，供应商一改名，
+  // 同批号同效期同价的下一次入库就会算出新的 lot_key，把同一批实物拆成两行库存。
+  const supplierId = normalizeText(trace.supplierId) ?? sku.supplier_id
   const supplier = normalizeText(trace.supplier) ?? sku.supplier
   const sourceDocId = normalizeRequired(trace.sourceDocId, '批次来源单据')
   const lotKey = makeLotKey(skuId, {
@@ -1179,6 +1186,7 @@ async function applyMovement(
 function skuRow(row: {
   sku: typeof inventorySkus.$inferSelect
   ownerMarketName: string | null
+  supplierName: string | null
   priceVisibility: import('./types').InventoryPriceVisibility
 }): InventorySkuRow {
   const sku = row.sku
@@ -1191,6 +1199,8 @@ function skuRow(row: {
     productName: sku.productName,
     specName: sku.specName,
     supplier: sku.supplier,
+    supplierId: sku.supplierId,
+    supplierName: row.supplierName,
     manufacturer: sku.manufacturer,
     brand: sku.brand,
     productSeries: sku.productSeries,
@@ -1408,6 +1418,49 @@ export const listInventoryDocLocationFilterOptions = withPermission(
   inventoryDocLocationFilterOptions,
 )
 
+/**
+ * 把表单提交的 `supplierId` 解析成 `supplier_id` + `supplier`（冗余名称）两列的写入值（#132）。
+ *
+ * 返回 `null` 表示**这两列都不要动** —— 对应 `input.supplierId === undefined`。
+ * 存量里有一批 `supplier` 文本没匹配上档案的旧 SKU（migration 0042 按名称精确匹配回填，
+ * 匹配不上的留 NULL），编辑这类 SKU 时前端不提交 `supplierId`，靠这条分支保住原文本。
+ *
+ * `currentSupplierId` 用来放行「已关联的档案后来被停用」：编辑这类 SKU 时下拉仍会带上它，
+ * 保存不应被拒；但**换成**另一个已停用的档案要拦（停用 = 不再采购）。
+ */
+async function resolveSkuSupplier(
+  tx: Tx,
+  supplierIdInput: string | null | undefined,
+  currentSupplierId: string | null,
+): Promise<{ supplierId: string | null; supplier: string | null; onlyIfCurrent: boolean } | null> {
+  if (supplierIdInput === undefined) return null
+  const id = normalizeText(supplierIdInput)
+  if (!id) return { supplierId: null, supplier: null, onlyIfCurrent: false }
+  // `FOR SHARE` 而不是默认快照读，也不是 `FOR KEY SHARE`：
+  // 改名改的是 name 这个**非键列**，走 FOR NO KEY UPDATE —— FOR KEY SHARE 挡不住它。
+  // 挡不住的话这条时序会留下永久不一致：
+  //   ① 本事务读到「旧名」→ ② updateInventorySupplier 改名并把所有关联 SKU 同步成新名并提交
+  //   → ③ 本事务用缓存的旧名写回 → supplier_id 指向的档案叫新名，而 SKU 快照是旧名，
+  //      之后建的批次 / 单据把旧名永久冻结进去。
+  // 锁序统一为 inventory_suppliers → inventory_skus（改名事务也是先改档案再同步 SKU），
+  // 两条路径在供应商行上互斥，进不到同时操作 SKU 的阶段，不构成死锁。
+  const [supplier] = await tx
+    .select({ name: inventorySuppliers.name, isActive: inventorySuppliers.isActive })
+    .from(inventorySuppliers)
+    .where(eq(inventorySuppliers.supplierId, id))
+    .limit(1)
+    .for('share')
+  if (!supplier) throw new ApiError('NOT_FOUND', '供应商不存在')
+  if (!supplier.isActive && id !== currentSupplierId) {
+    throw new ApiError('INVALID_STATE', `供应商「${supplier.name}」已停用，无法关联到库存商品`)
+  }
+  // 放行了一个**已停用**的档案，靠的是「它就是当前关联值」。但 currentSupplierId 是
+  // 事务外读到的快照：别人可能已经把这条 SKU 改挂到别的档案上，那样这次写入实际是
+  // 「换成另一个停用档案」—— 恰恰是上面那条要拦的。所以把这个前提下推到 UPDATE 的
+  // WHERE 里，用行的**当前值**再判一次（见 updateInventorySku 的 supplierGuard）。
+  return { supplierId: id, supplier: supplier.name, onlyIfCurrent: !supplier.isActive }
+}
+
 export const listInventorySkus = withPermission(
   'inventory:stock_list',
   async (
@@ -1457,9 +1510,12 @@ export const listInventorySkus = withPermission(
       .from(inventorySkus)
       .where(whereClause)
     const rows = await db
-      .select({ sku: inventorySkus, ownerMarketName: orgNodes.name })
+      .select({ sku: inventorySkus, ownerMarketName: orgNodes.name, supplierName: inventorySuppliers.name })
       .from(inventorySkus)
       .leftJoin(orgNodes, eq(inventorySkus.ownerMarketId, orgNodes.id))
+      // 关联档案名走实时 JOIN 而不是读 supplier 文本快照：供应商改名后列表立刻跟随，
+      // 而批次快照（inventory_stock_lots.supplier）保留下单时的旧名，两者语义不同。
+      .leftJoin(inventorySuppliers, eq(inventorySkus.supplierId, inventorySuppliers.supplierId))
       .where(whereClause)
       .orderBy(asc(inventorySkus.productCode))
       .limit(pageSize)
@@ -1481,13 +1537,16 @@ export const createInventorySku = withAnyPermission(
     const ownerMarketId = await normalizeSkuOwnerMarket(session, sourceType, input.ownerMarketId)
     const priceValues = skuPriceValues(input, inventoryPriceVisibility(session), sourceType)
     const skuId = await db.transaction(async (tx) => {
+      // 在事务内、且对档案行加 FOR SHARE —— 见 resolveSkuSupplier 的注释
+      const supplierValues = await resolveSkuSupplier(tx, input.supplierId, null)
       const generatedNo = await generateInventorySkuNo(tx)
       await tx.insert(inventorySkus).values({
         skuId: generatedNo,
         productCode: generatedNo,
         productName,
         specName: normalizeText(input.specName),
-        supplier: normalizeText(input.supplier),
+        supplier: supplierValues?.supplier ?? null,
+        supplierId: supplierValues?.supplierId ?? null,
         manufacturer: normalizeText(input.manufacturer),
         brand: normalizeText(input.brand),
         productSeries: normalizeText(input.productSeries),
@@ -1524,6 +1583,7 @@ export const updateInventorySku = withAnyPermission(
         marketPurchasePriceOverrideReason: inventorySkus.marketPurchasePriceOverrideReason,
         sourceType: inventorySkus.sourceType,
         ownerMarketId: inventorySkus.ownerMarketId,
+        supplierId: inventorySkus.supplierId,
       })
       .from(inventorySkus)
       .where(eq(inventorySkus.skuId, id))
@@ -1546,25 +1606,40 @@ export const updateInventorySku = withAnyPermission(
       requestedOwnerMarketId,
     )
     const priceValues = skuPriceValues(input, inventoryPriceVisibility(session), sourceType, current)
-    await db
-      .update(inventorySkus)
-      .set({
-        productName: normalizeText(input.productName) ?? undefined,
-        specName: input.specName === undefined ? undefined : normalizeText(input.specName),
-        supplier: input.supplier === undefined ? undefined : normalizeText(input.supplier),
-        manufacturer: input.manufacturer === undefined ? undefined : normalizeText(input.manufacturer),
-        brand: input.brand === undefined ? undefined : normalizeText(input.brand),
-        productSeries: input.productSeries === undefined ? undefined : normalizeText(input.productSeries),
-        purchaseCategory: input.purchaseCategory === undefined ? undefined : normalizeText(input.purchaseCategory),
-        sourceType,
-        ownerMarketId,
-        ...priceValues,
-        isReportable: input.isReportable,
-        isActive: input.isActive,
-        remark: input.remark === undefined ? undefined : normalizeText(input.remark),
-        updatedAt: new Date(),
-      })
-      .where(eq(inventorySkus.skuId, id))
+    // 供应商解析与 SKU 写入必须在同一事务：解析时对档案行加 FOR SHARE，
+    // 挡住「读到旧名 → 别人改名并同步 → 我写回旧名」的时序（见 resolveSkuSupplier）
+    await db.transaction(async (tx) => {
+      const supplierValues = await resolveSkuSupplier(tx, input.supplierId, current.supplierId)
+      // 只有「保持一个已停用的档案」这一种情况需要 CAS：行的 supplier_id 必须仍是它，
+      // 否则说明中途被改挂了，这次写入就成了「换到停用档案」。
+      const supplierGuard = supplierValues?.onlyIfCurrent && supplierValues.supplierId
+        ? eq(inventorySkus.supplierId, supplierValues.supplierId)
+        : undefined
+      const updateResult = await tx
+        .update(inventorySkus)
+        .set({
+          productName: normalizeText(input.productName) ?? undefined,
+          specName: input.specName === undefined ? undefined : normalizeText(input.specName),
+          supplier: supplierValues === null ? undefined : supplierValues.supplier,
+          supplierId: supplierValues === null ? undefined : supplierValues.supplierId,
+          manufacturer: input.manufacturer === undefined ? undefined : normalizeText(input.manufacturer),
+          brand: input.brand === undefined ? undefined : normalizeText(input.brand),
+          productSeries: input.productSeries === undefined ? undefined : normalizeText(input.productSeries),
+          purchaseCategory: input.purchaseCategory === undefined ? undefined : normalizeText(input.purchaseCategory),
+          sourceType,
+          ownerMarketId,
+          ...priceValues,
+          isReportable: input.isReportable,
+          isActive: input.isActive,
+          remark: input.remark === undefined ? undefined : normalizeText(input.remark),
+          updatedAt: new Date(),
+        })
+        .where(supplierGuard ? and(eq(inventorySkus.skuId, id), supplierGuard) : eq(inventorySkus.skuId, id))
+      // postgres.js 下受影响行数是 `.count`（没有 rowCount），统一走 rowsAffected
+      if (supplierGuard && rowsAffected(updateResult) === 0) {
+        throw new ApiError('CONFLICT', '该库存商品的供货商已被他人修改，请刷新后重试')
+      }
+    })
     await logOperation(session, 'update', 'inventory_skus', id, input)
     revalidatePath('/inventory/skus')
     return { success: true }
@@ -3196,7 +3271,27 @@ export const confirmInventoryCoreReceive = withAnyPermission(
   },
 )
 
-function supplierRow(row: typeof inventorySuppliers.$inferSelect): InventorySupplierRow {
+/**
+ * 把 `uq_inventory_suppliers_name` 的唯一约束冲突翻成可读业务错误（#132）。
+ *
+ * 不翻的话用户看到的是 fallback「创建供应商失败」：PG 原文是英文，而
+ * `action-error.ts` 既把 `violates unique constraint` 列进 UNREADABLE_FRAGMENTS，
+ * 又有「一整串没有中日韩字符就判为不可读」的兜底 —— 两道都拦。
+ *
+ * 文案必须点出「可能已被停用」：停用的档案既不在 SKU 表单的下拉里
+ * （`listInventorySupplierOptions` 只查启用中的），默认也不在供应商列表里，
+ * 用户撞上它时**没有任何入口能自己查明原因**，只会反复重试同一个名字。
+ */
+function supplierNameConflict(error: unknown, name: string): unknown {
+  if (pgErrorCode(error) === '23505') {
+    return new ApiError('CONFLICT', `供应商名称「${name}」已存在（可能是已停用的档案），请到供应商档案页查找`)
+  }
+  return error
+}
+
+function supplierRow(
+  row: typeof inventorySuppliers.$inferSelect & { linkedSkuCount: number },
+): InventorySupplierRow {
   return {
     supplierId: row.supplierId,
     name: row.name,
@@ -3205,6 +3300,7 @@ function supplierRow(row: typeof inventorySuppliers.$inferSelect): InventorySupp
     address: row.address,
     isActive: row.isActive,
     remark: row.remark,
+    linkedSkuCount: row.linkedSkuCount,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   }
@@ -3228,11 +3324,53 @@ export const listInventorySuppliers = withPermission(
     }
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined
     const rows = await db
-      .select()
+      .select({
+        supplier: inventorySuppliers,
+        // 停用前要提示「仍有 N 个 SKU 在用」（#132）。含已停用的 SKU：
+        // 停用供应商不该因为 SKU 也停了就把关联当不存在。
+        linkedSkuCount: sql<number>`cast(count(${inventorySkus.skuId}) as int)`,
+      })
       .from(inventorySuppliers)
+      .leftJoin(inventorySkus, eq(inventorySkus.supplierId, inventorySuppliers.supplierId))
       .where(whereClause)
+      .groupBy(inventorySuppliers.supplierId)
       .orderBy(asc(inventorySuppliers.name))
-    return rows.map(supplierRow)
+    return rows.map((row) => supplierRow({ ...row.supplier, linkedSkuCount: row.linkedSkuCount }))
+  },
+)
+
+/**
+ * SKU 表单的供应商下拉选项（#132）：只返回**启用中**的档案，且只带 id + 名称。
+ *
+ * 「当前 SKU 已关联但档案已停用」那一条不在这里补 —— 它由 `InventorySkuRow` 自带的
+ * `supplierId` / `supplierName` 在表单侧补进选项，这样与当前行绑定、不依赖列表分页。
+ */
+export const listInventorySupplierOptions = withPermission(
+  'inventory:stock_list',
+  async (): Promise<InventorySupplierOption[]> => {
+    return db
+      .select({ supplierId: inventorySuppliers.supplierId, name: inventorySuppliers.name })
+      .from(inventorySuppliers)
+      .where(eq(inventorySuppliers.isActive, true))
+      .orderBy(asc(inventorySuppliers.name))
+  },
+)
+
+/**
+ * 停用前实时核对关联 SKU 数（#132）。
+ *
+ * 列表行自带的 `linkedSkuCount` 是**页面加载那一刻**的值：别人在这期间把某个 SKU 关联过来，
+ * 用旧计数就会显示「0 个」而不给提示，验收标准要的「明确提示」就落空了。
+ */
+export const countInventorySkusBySupplier = withPermission(
+  'inventory:stock_list',
+  async (_session, supplierIdInput: string): Promise<number> => {
+    const supplierId = normalizeRequired(supplierIdInput, '供应商')
+    const [row] = await db
+      .select({ count: sql<number>`cast(count(*) as int)` })
+      .from(inventorySkus)
+      .where(eq(inventorySkus.supplierId, supplierId))
+    return row?.count ?? 0
   },
 )
 
@@ -3241,15 +3379,19 @@ export const createInventorySupplier = withPermission(
   async (session, input: InventorySupplierInput): Promise<{ supplierId: string }> => {
     const supplierId = `INV-SUP-${crypto.randomUUID()}`
     const name = normalizeRequired(input.name, '供应商名称')
-    await db.insert(inventorySuppliers).values({
-      supplierId,
-      name,
-      contactName: normalizeText(input.contactName),
-      phone: normalizeText(input.phone),
-      address: normalizeText(input.address),
-      isActive: input.isActive ?? true,
-      remark: normalizeText(input.remark),
-    })
+    try {
+      await db.insert(inventorySuppliers).values({
+        supplierId,
+        name,
+        contactName: normalizeText(input.contactName),
+        phone: normalizeText(input.phone),
+        address: normalizeText(input.address),
+        isActive: input.isActive ?? true,
+        remark: normalizeText(input.remark),
+      })
+    } catch (error) {
+      throw supplierNameConflict(error, name)
+    }
     await logOperation(session, 'inventory.supplier.create', 'inventory_suppliers', supplierId, { name })
     revalidatePath('/inventory/suppliers')
     return { supplierId }
@@ -3265,24 +3407,62 @@ export const updateInventorySupplier = withPermission(
   ): Promise<{ success: true }> => {
     const supplierId = normalizeRequired(supplierIdInput, '供应商')
     const [current] = await db
-      .select({ supplierId: inventorySuppliers.supplierId })
+      .select({ supplierId: inventorySuppliers.supplierId, name: inventorySuppliers.name })
       .from(inventorySuppliers)
       .where(eq(inventorySuppliers.supplierId, supplierId))
       .limit(1)
     if (!current) throw new ApiError('NOT_FOUND', '供应商不存在')
-    if (input.name !== undefined) normalizeRequired(input.name, '供应商名称')
-    await db
-      .update(inventorySuppliers)
-      .set({
-        name: input.name === undefined ? undefined : normalizeRequired(input.name, '供应商名称'),
-        contactName: input.contactName === undefined ? undefined : normalizeText(input.contactName),
-        phone: input.phone === undefined ? undefined : normalizeText(input.phone),
-        address: input.address === undefined ? undefined : normalizeText(input.address),
-        isActive: input.isActive,
-        remark: input.remark === undefined ? undefined : normalizeText(input.remark),
-        updatedAt: new Date(),
+    const nextName = input.name === undefined ? undefined : normalizeRequired(input.name, '供应商名称')
+    try {
+      await db.transaction(async (tx) => {
+        // 在事务内**锁行重读**名字，不能拿上面那次事务外的 current.name 来判断改没改名。
+        // 时序：甲乙同时打开编辑页（都读到名字 A）→ 甲改名 B 并同步了所有关联 SKU →
+        // 乙只改电话，但表单是全量提交、name 仍是 A → 乙把档案名写回 A，
+        // 而 `A === current.name(A)` 用旧快照判成「没改名」→ 跳过 SKU 回写 →
+        // 档案叫 A、SKU 文本留在 B，持久分叉（admin 列表走 JOIN 显示 A，staff 读文本显示 B）。
+        // FOR UPDATE 让乙等甲提交后再读，于是读到 B、判定「名字变了」、正确回写成 A。
+        const [locked] = await tx
+          .select({ name: inventorySuppliers.name })
+          .from(inventorySuppliers)
+          .where(eq(inventorySuppliers.supplierId, supplierId))
+          .limit(1)
+          .for('update')
+        if (!locked) throw new ApiError('NOT_FOUND', '供应商不存在')
+        await tx
+          .update(inventorySuppliers)
+          .set({
+            name: nextName,
+            contactName: input.contactName === undefined ? undefined : normalizeText(input.contactName),
+            phone: input.phone === undefined ? undefined : normalizeText(input.phone),
+            address: input.address === undefined ? undefined : normalizeText(input.address),
+            isActive: input.isActive,
+            remark: input.remark === undefined ? undefined : normalizeText(input.remark),
+            updatedAt: new Date(),
+          })
+          .where(eq(inventorySuppliers.supplierId, supplierId))
+        // 改名要同步 SKU 上的名称快照（#132）。`inventory_skus.supplier` 是**主数据字段**，
+        // 不是历史快照 —— 真正的历史快照是 inventory_doc_items / inventory_stock_lots 上那两列，
+        // 它们在建单 / 建批次时冻结，本处不动。
+        // 不同步的话：admin 列表读 JOIN 出来的实时名，而 staffApi 的 SKU 列表
+        //（routes/inventory.js 的 `SELECT sku.supplier`）与 ensureLotFromSku 之后建的新批次
+        // 读的都是这个文本列 —— 同一个供应商在两端会显示成两个名字。
+        // 比的是**新旧名是否真的不同**，不是「有没有传 name」：供应商表单是全量提交，
+        // 停用 / 只改联系方式时 name 照样在 payload 里，只判 undefined 等于每次都回写，
+        // 会无因刷掉整批关联 SKU 的 updated_at。旧名取事务内锁到的值（见上）。
+        if (nextName !== undefined && nextName !== locked.name) {
+          // 这会把 N 条关联 SKU 的 updated_at 一起刷新。**是刻意的**：这些行的数据确实变了，
+          // 不刷的话基于 updated_at 的增量同步/变更检测会漏掉这次改名。
+          // 代价是若将来把 SKU 列表改成 admin 的默认惯例 `desc(updatedAt)`「编辑即浮顶」，
+          // 一次改名会让整批 SKU 无因浮顶 —— 当前列表按 product_code 排序，不受影响。
+          await tx
+            .update(inventorySkus)
+            .set({ supplier: nextName, updatedAt: new Date() })
+            .where(eq(inventorySkus.supplierId, supplierId))
+        }
       })
-      .where(eq(inventorySuppliers.supplierId, supplierId))
+    } catch (error) {
+      throw supplierNameConflict(error, nextName ?? current.name)
+    }
     await logOperation(session, 'inventory.supplier.update', 'inventory_suppliers', supplierId, input)
     revalidatePath('/inventory/suppliers')
     return { success: true }

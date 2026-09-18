@@ -262,13 +262,52 @@ test('INV-10：交互合理性扫描 → UX-FINDINGS.md', async ({ browser }) =>
         evidence: `INV-06 判定 snapshotPresent=true，snapshotMatchesBook=null（并发降级）`,
       })
     }
-    findings.push({
-      rule: 'SKU 供货商与供应商档案无关联',
-      severity: 'P1',
-      page: '/inventory/skus → 新建库存商品',
-      detail: '「供货商」是裸 <input> 文本框，且 inventory_skus 表只有 supplier(text) 列、没有 supplier_id 外键 —— 与 inventory_suppliers 档案表（以及 /inventory/suppliers 整个页面）完全不关联。同一供应商会产生多种写法，供应商档案形同虚设，也无法按供应商统计采购',
-      evidence: 'inventory-skus-page.tsx:388；information_schema 查无 supplier_id 列',
-    })
+    // SKU 供货商关联档案（issue #132）：**转述 INV-01 自己的判定**，不在这里硬编码字面量。
+    // 硬编码的那条即便修好也会原样复活 —— 本 spec 是**整文件覆写** UX-FINDINGS.md，
+    // 手工加的「已修」标注下一次跑就没了，P1 计数永远虚高。
+    // 时效判定与 #131 的盘点那条同口径：ctx 跨运行保留，两个方向都要防。
+    const inv01 = readCtx<{
+      supplierControlTag?: string
+      supplierFkPresent?: boolean
+      skuSupplierLinked?: boolean
+      at?: string
+    }>('inv01')
+    const supplierEvidenceAge = inv01?.at ? Date.now() - Date.parse(inv01.at) : NaN
+    const supplierEvidenceStale = !Number.isFinite(supplierEvidenceAge)
+      || supplierEvidenceAge < 0
+      || supplierEvidenceAge > 6 * 3600_000
+    const supplierJudged = inv01?.supplierControlTag !== undefined
+    const supplierBroken = supplierJudged && (
+      inv01!.supplierControlTag !== 'select'
+      || inv01!.supplierFkPresent !== true
+      || inv01!.skuSupplierLinked !== true
+    )
+
+    if (supplierBroken && !supplierEvidenceStale) {
+      findings.push({
+        rule: 'SKU 供货商与供应商档案无关联',
+        severity: 'P1',
+        page: '/inventory/skus → 新建库存商品',
+        detail: `INV-01 实测：供货商控件=${inv01!.supplierControlTag}、inventory_skus.supplier_id 外键存在=${String(inv01!.supplierFkPresent)}、新建 SKU 落库后 supplier_id 指向所选档案=${String(inv01!.skuSupplierLinked)}。三项有一项不成立，就说明该实例上 issue #132 的修复未生效 —— 供货商回到自由文本会让同一供应商产生多种写法，档案形同虚设，也无法按供应商统计采购（证据来自 INV-01 ${inv01!.at} 的运行）`,
+        evidence: `INV-01 判定 控件=${inv01!.supplierControlTag} / 外键=${String(inv01!.supplierFkPresent)} / 关联=${String(inv01!.skuSupplierLinked)}`,
+      })
+    } else if (!supplierJudged) {
+      findings.push({
+        rule: 'SKU 供货商关联未覆盖（本轮未跑 INV-01 或判定未执行）',
+        severity: 'P2',
+        page: '/inventory/skus → 新建库存商品',
+        detail: '没有 INV-01 的判定可转述（它没跑、或建档失败导致判定压根没执行）。单跑 INV-10 时属正常 —— 这**不等于** #132 回归，别当成缺陷',
+        evidence: inv01?.at ? `ctx inv01 写于 ${inv01.at}，无 supplierControlTag` : 'ctx 无 inv01',
+      })
+    } else if (supplierEvidenceStale) {
+      findings.push({
+        rule: 'SKU 供货商关联证据过期未复核',
+        severity: 'P2',
+        page: '/inventory/skus → 新建库存商品',
+        detail: `上下文里有 INV-01 的判定（控件=${inv01!.supplierControlTag} / 外键=${String(inv01!.supplierFkPresent)}），但那次运行距今已超过 6 小时（或时间戳异常）。这期间本实例可能已重新部署，该判定既不能证明当前实现正确、也不能证明它有问题 —— 请跑一遍 INV-01 再看`,
+        evidence: `ctx inv01 写于 ${inv01?.at ?? '(缺失)'}`,
+      })
+    }
     findings.push({
       rule: '业务错误提示被生产构建脱敏',
       severity: 'P1',
@@ -315,7 +354,8 @@ test('INV-10：交互合理性扫描 → UX-FINDINGS.md', async ({ browser }) =>
       '- 批次下拉卡死 → `inv-05-transfers.spec.ts` / `inv-90-probe-lot-loading.spec.ts`',
       '- 员工下拉恒空 → `inv-07-staff-purchase-and-self-purchase.spec.ts`（并已在 dev 库直接执行原 SQL 复现报错）',
       '- 盘点不记账面数 → `inv-06-stocktake-and-loss.spec.ts`',
-      '- 供货商无外键 → `inv-01-master-data.spec.ts`',
+      '- 供货商无外键 → `inv-01-master-data.spec.ts`（#132 已修；同样改为实测再报，',
+      '  本轮没检出就不会出现在上表里）',
       '- 错误提示脱敏 → `inv-02-supply-chain-stock.spec.ts`',
       '',
       '（「盘点不记账面数」已改为实测再报：本轮没检出就不会出现在上表里，',
