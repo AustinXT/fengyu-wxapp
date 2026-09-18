@@ -8,16 +8,23 @@
  * Round 2 修复（audit-15 P0-15-02 预备）：
  * 小美客 / 体验客两分支从 product_categories JOIN 链 + is_card_kind 迁移到
  * sale_items.is_experience capability 列，去掉对 product_categories 的依赖。
- * staffApi order.js recalcCustomerType 与 payNotify/index.js CASE 段保持字符级一致。
- * 2026-04-26 sale-order-domain-refactor 后，回款下沉到 sale_order_payments.change_type='回款'，
- * sale_order_type 枚举已不含“回款单”，运行时 SQL 禁止再引用该枚举字面量。
+ *
+ * #187（2026-09-18）Round 3 —— 落地 2026-04-26 Q5.2 决策：
+ * 判定金额从订单应付额 `o.total_amount` 换成**单笔订单的非体验部分毛实收**
+ * （`sale_items.received` 净额 + 该行逐项退款额 → "曾经收到的钱"，退款不扣减）。
+ * 判定逻辑下沉到 RECALC_CUSTOMER_TYPE_CTE（refund_by_item + order_amounts），
+ * CASE 只剩三个 `EXISTS(SELECT 1 FROM order_amounts WHERE …)` 分支。
+ *
+ * 守护范围（**七处副本**）：
+ *   逐字镜像（五端运行时）：staffApi / clientApi / payNotify / admin orders.ts / admin recompute-customer-tags
+ *   结构性守护（两个全库批量脚本）：db/scripts/recalc-all-customer-types.js / recalc-became-member-at.js
+ *   —— 脚本版无 client_user_id 参数过滤、多带输出列，无法逐字比对，故只断言关键片段。
  *
  * 本测试做**源文件文本结构守卫**：
- *   1. is_experience 守卫——两处 CASE SQL 必须同时存在 `si.is_experience = false`
- *      （小美客）和 `si.is_experience = true`（体验客），任一缺失即视为回退
- *   2. 无旧 JOIN 链——不再出现 product_skus / product_categories JOIN
- *   3. 小美客/体验客分支镜像——两文件的 ② ③ 分支规范化后逐字一致
- *   4. ELSE 兜底必须是 '流量客'
+ *   1. CTE 守卫——毛实收表达式、is_experience FILTER 拆分、item_direction='购买'、note→jsonb 三重防线
+ *   2. CASE 守卫——三分支阈值/大于零判定 + ELSE 兜底 '流量客'
+ *   3. 无旧 JOIN 链——不再出现 product_skus / product_categories JOIN
+ *   4. 归因段（became_member_at / is_membership_upgrade）五端逐字一致且已脱离 total_amount
  */
 
 const fs = require('node:fs')
@@ -43,6 +50,28 @@ const CLIENT_API_ORDER_JS = path.resolve(
   __dirname,
   '../../../../../fengyu-client/cloudfunctions/clientApi/routes/order.js'
 )
+/**
+ * 第 6/7 处副本：db/scripts 的全库批量脚本。与五端运行时副本**不逐字一致**
+ * （无 client_user_id 参数过滤、多带输出列），故只做结构性守护（关键片段断言），
+ * 不进逐字镜像比对。口径漂移时靠这些断言报红。
+ */
+const SCRIPT_RECALC_ALL_TYPES = path.resolve(
+  __dirname,
+  '../../../../../db/scripts/recalc-all-customer-types.js'
+)
+const SCRIPT_RECALC_BECAME_MEMBER = path.resolve(
+  __dirname,
+  '../../../../../db/scripts/recalc-became-member-at.js'
+)
+
+/** 五端运行时副本（逐字镜像比对范围） */
+const RUNTIME_FILES = [
+  ['staffApi', STAFF_ORDER_JS],
+  ['clientApi', CLIENT_API_ORDER_JS],
+  ['payNotify', PAYNOTIFY_JS],
+  ['admin orders.ts', ADMIN_ORDERS_TS],
+  ['admin recompute-customer-tags.ts', ADMIN_RECOMPUTE_TS],
+]
 
 /**
  * 从源文件提取 `SELECT CASE ... END AS computed_type` 段
@@ -59,8 +88,27 @@ function extractCaseSql(filePath) {
 }
 
 /**
+ * 提取顾客分类跃迁的金额 CTE（#187 起判定逻辑的真正所在）。
+ * 锚定 `WITH refund_by_item AS (` 起、`GROUP BY o.sale_order_id` + 闭合括号止。
+ * 旧口径（判定写在 CASE 里、无 CTE）→ 抛错，强制五端全部迁移完毕才通过。
+ * @param {string} filePath
+ * @returns {string}
+ */
+function extractCte(filePath) {
+  const src = fs.readFileSync(filePath, 'utf8')
+  const match = src.match(/WITH refund_by_item AS \([\s\S]*?GROUP BY o\.sale_order_id\s*\)/m)
+  if (!match) {
+    throw new Error(
+      `未在 ${filePath} 找到 RECALC_CUSTOMER_TYPE_CTE（WITH refund_by_item … GROUP BY o.sale_order_id）；` +
+      '可能仍为旧的 total_amount 口径'
+    )
+  }
+  return match[0]
+}
+
+/**
  * 规范化 SQL 文本：折叠连续空白为单空格 + 占位符归一化（$1/$2 与 ${var} 都→?）
- * 占位符归一化使三端镜像比对时 native pg ($1) 与 Drizzle sql template (${var}) 等价。
+ * 占位符归一化使跨端镜像比对时 native pg ($1) 与 Drizzle sql template (${var}) 等价。
  */
 function normalizeSql(sql) {
   return sql
@@ -70,16 +118,6 @@ function normalizeSql(sql) {
     .replace(/\( /g, '(')
     .replace(/ \)/g, ')')
     .trim()
-}
-
-/**
- * 提取小美客和体验客两个 WHEN EXISTS 分支（不含会员客分支）
- * 用于跨文件镜像对比。
- */
-function extractNonMemberBranches(sql) {
-  // 从 THEN '会员客' 之后开始，匹配小美客和体验客两个分支到 ELSE 之前
-  const match = sql.match(/THEN '会员客'\s*(WHEN EXISTS[\s\S]*?THEN '小美客'\s*WHEN EXISTS[\s\S]*?THEN '体验客')/)
-  return match ? match[1] : sql
 }
 
 /**
@@ -101,7 +139,6 @@ function extractMembershipUpgradeAttribution(filePath) {
  * 提取 became_member_at UPDATE 段（首笔达标单时间口径）。
  * 正则锚定 UPDATE client_wechat_users SET became_member_at，终止于其选单子查询的 LIMIT 1)。
  * 旧口径 `SET became_member_at = NOW()` 无 LIMIT 1) → 抛错，强制 5 端全部迁移完毕才通过。
- * 非贪婪匹配从 became_member_at 起找到最近的 LIMIT 1)（即其自身子查询闭合），不会越过到 is_membership_upgrade 段。
  * @param {string} filePath
  * @returns {string}
  */
@@ -115,163 +152,130 @@ function extractBecameMemberAtUpdate(filePath) {
 }
 
 describe('recalcCustomerType SQL 源文件守卫', () => {
-  let staffSql
-  let paynotifySql
-  let adminSql
-  let adminSrc
-  let adminRecomputeSql
-  let clientApiSql
+  describe('金额 CTE（#187 判定逻辑所在）', () => {
+    for (const [label, file] of RUNTIME_FILES) {
+      describe(label, () => {
+        let cte
 
-  beforeAll(() => {
-    staffSql = extractCaseSql(STAFF_ORDER_JS)
-    paynotifySql = extractCaseSql(PAYNOTIFY_JS)
-    adminSql = extractCaseSql(ADMIN_ORDERS_TS)
-    adminSrc = fs.readFileSync(ADMIN_ORDERS_TS, 'utf8')
-    adminRecomputeSql = extractCaseSql(ADMIN_RECOMPUTE_TS)
-    clientApiSql = extractCaseSql(CLIENT_API_ORDER_JS)
+        beforeAll(() => {
+          cte = extractCte(file)
+        })
+
+        test('毛实收表达式 = received 净额 + 该行逐项退款额（退款不扣减）', () => {
+          expect(cte).toContain('si.received::numeric + COALESCE(rbi.refunded, 0)')
+        })
+
+        test('按 is_experience 拆分为 non_trial / trial 两个 FILTER 聚合', () => {
+          expect(cte).toContain("FILTER (WHERE si.is_experience = false), 0) AS non_trial")
+          expect(cte).toContain("FILTER (WHERE si.is_experience = true), 0) AS trial")
+        })
+
+        test('FILTER 聚合结果 COALESCE 归零（防 NULL > 0 使分支静默不命中）', () => {
+          expect(cte).toMatch(/COALESCE\(SUM\([\s\S]*?FILTER \(WHERE si\.is_experience = false\), 0\)/)
+          expect(cte).toMatch(/COALESCE\(SUM\([\s\S]*?FILTER \(WHERE si\.is_experience = true\), 0\)/)
+        })
+
+        test("只聚合 item_direction='购买' 行（与 STEP 1.5 退款扣减作用域一致，排除转出/转入负数行)", () => {
+          expect(cte).toContain("AND si.item_direction = '购买'")
+        })
+
+        test('退款聚合只认已支付的退款流水', () => {
+          expect(cte).toContain("AND sop.change_type = '退款'")
+          expect(cte).toContain("AND sop.status = '已支付'")
+        })
+
+        test("note→jsonb 三重防线（LIKE '{%' 守门 + 嵌套 CASE 延迟 cast + jsonb_typeof 兜非数组），根除 22P02", () => {
+          expect(cte).toContain("sop.note LIKE '{%'")
+          expect(cte).toContain("jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'")
+          expect(cte).toContain("ELSE '[]'::jsonb END")
+        })
+
+        test('订单范围仍限已支付/已完成的销售单', () => {
+          expect(cte).toContain("AND o.status IN ('已支付', '已完成')")
+          expect(cte).toContain("AND o.sale_order_type = '销售单'")
+        })
+
+        test('按订单分组（单笔口径，不跨订单累计）', () => {
+          expect(cte).toContain('GROUP BY o.sale_order_id')
+        })
+
+        test('不再依赖 product_categories JOIN 链（已迁移到 is_experience）', () => {
+          expect(cte).not.toContain('JOIN product_skus')
+          expect(cte).not.toContain('JOIN product_categories')
+          expect(cte).not.toContain('is_card_kind')
+        })
+
+        test('不含已删除的回款单枚举字面量', () => {
+          expect(cte).not.toContain('ref_sale_order_id')
+          expect(cte).not.toContain("'回款单'")
+        })
+      })
+    }
+
+    test('五端 CTE 规范化后逐字相同（占位符归一化后 $1 与 ${clientUserId} 等价）', () => {
+      const staffN = normalizeSql(extractCte(STAFF_ORDER_JS))
+      for (const [label, file] of RUNTIME_FILES.slice(1)) {
+        expect(normalizeSql(extractCte(file)), `${label} CTE 与 staffApi 漂移`).toBe(staffN)
+      }
+    })
   })
 
-  describe('staffApi routes/order.js', () => {
-    test('小美客分支必须使用 si.is_experience = false', () => {
-      expect(staffSql).toContain('si.is_experience = false')
-    })
+  describe('CASE 分支（三档判定）', () => {
+    for (const [label, file] of RUNTIME_FILES) {
+      describe(label, () => {
+        let caseSql
 
-    test('体验客分支必须使用 si.is_experience = true', () => {
-      expect(staffSql).toContain('si.is_experience = true')
-    })
+        beforeAll(() => {
+          caseSql = extractCaseSql(file)
+        })
 
-    test('ELSE 兜底必须是流量客', () => {
-      expect(staffSql).toMatch(/ELSE '流量客'/)
-    })
+        test('会员客：存在一张单其 non_trial 达阈值', () => {
+          expect(normalizeSql(caseSql)).toContain(
+            "WHEN EXISTS (SELECT 1 FROM order_amounts WHERE non_trial >= ?) THEN '会员客'"
+          )
+        })
 
-    test('不再依赖 product_categories JOIN 链（已迁移到 is_experience）', () => {
-      expect(staffSql).not.toContain('JOIN product_skus')
-      expect(staffSql).not.toContain('JOIN product_categories')
-      expect(staffSql).not.toContain('is_card_kind')
-    })
+        test('小美客：存在一张单其 non_trial > 0', () => {
+          expect(normalizeSql(caseSql)).toContain(
+            "WHEN EXISTS (SELECT 1 FROM order_amounts WHERE non_trial > 0) THEN '小美客'"
+          )
+        })
 
-    test('JOIN sale_items 直接挂 is_experience 条件', () => {
-      expect(staffSql).toContain('JOIN sale_items si ON si.sale_order_id = o.sale_order_id')
-    })
-  })
+        test('体验客：存在一张单其 trial > 0', () => {
+          expect(normalizeSql(caseSql)).toContain(
+            "WHEN EXISTS (SELECT 1 FROM order_amounts WHERE trial > 0) THEN '体验客'"
+          )
+        })
 
-  describe('fengyu-client payNotify/index.js', () => {
-    test('小美客分支必须使用 si.is_experience = false', () => {
-      expect(paynotifySql).toContain('si.is_experience = false')
-    })
+        test('ELSE 兜底必须是流量客', () => {
+          expect(caseSql).toMatch(/ELSE '流量客'/)
+        })
 
-    test('体验客分支必须使用 si.is_experience = true', () => {
-      expect(paynotifySql).toContain('si.is_experience = true')
-    })
+        test('判定不再直接比 o.total_amount（#187 旧口径回归守护）', () => {
+          expect(caseSql).not.toContain('o.total_amount')
+        })
 
-    test('会员客分支不含已删除的回款单枚举字面量', () => {
-      expect(paynotifySql).not.toContain('ref_sale_order_id')
-      expect(paynotifySql).not.toContain("'回款单'")
-    })
+        test('不再出现 ② ③ 分支字节级相同的死分支模式', () => {
+          const olderDeadPattern = /WHEN EXISTS \(\s*SELECT 1 FROM sale_orders\s*WHERE[^)]*sale_order_type = '销售单'\s*\)\s*THEN '小美客'/
+          expect(caseSql).not.toMatch(olderDeadPattern)
+        })
+      })
+    }
 
-    test('ELSE 兜底必须是流量客', () => {
-      expect(paynotifySql).toMatch(/ELSE '流量客'/)
-    })
-
-    test('不再依赖 product_categories JOIN 链（已迁移到 is_experience）', () => {
-      expect(paynotifySql).not.toContain('JOIN product_skus')
-      expect(paynotifySql).not.toContain('JOIN product_categories')
-      expect(paynotifySql).not.toContain('is_card_kind')
-    })
-  })
-
-  describe('fengyu-client clientApi/routes/order.js', () => {
-    test('小美客分支必须使用 si.is_experience = false', () => {
-      expect(clientApiSql).toContain('si.is_experience = false')
-    })
-
-    test('体验客分支必须使用 si.is_experience = true', () => {
-      expect(clientApiSql).toContain('si.is_experience = true')
-    })
-
-    test('ELSE 兜底必须是流量客', () => {
-      expect(clientApiSql).toMatch(/ELSE '流量客'/)
-    })
-
-    test('不含回款单累计死代码分支（clientApi 用单笔口径，与 staff/admin 同）', () => {
-      expect(clientApiSql).not.toContain('ref_sale_order_id')
-      expect(clientApiSql).not.toContain("'回款单'")
-    })
-
-    test('不再依赖 product_categories JOIN 链（已迁移到 is_experience）', () => {
-      expect(clientApiSql).not.toContain('JOIN product_skus')
-      expect(clientApiSql).not.toContain('JOIN product_categories')
-      expect(clientApiSql).not.toContain('is_card_kind')
-    })
-
-    test('JOIN sale_items 直接挂 is_experience 条件', () => {
-      expect(clientApiSql).toContain('JOIN sale_items si ON si.sale_order_id = o.sale_order_id')
+    test('五端 CASE 规范化后逐字相同', () => {
+      const staffN = normalizeSql(extractCaseSql(STAFF_ORDER_JS))
+      for (const [label, file] of RUNTIME_FILES.slice(1)) {
+        expect(normalizeSql(extractCaseSql(file)), `${label} CASE 与 staffApi 漂移`).toBe(staffN)
+      }
     })
   })
 
   describe('fengyu-admin actions/orders.ts (recordPayment 触发点)', () => {
-    test('小美客分支必须使用 si.is_experience = false', () => {
-      expect(adminSql).toContain('si.is_experience = false')
-    })
-
-    test('体验客分支必须使用 si.is_experience = true', () => {
-      expect(adminSql).toContain('si.is_experience = true')
-    })
-
-    test('ELSE 兜底必须是流量客', () => {
-      expect(adminSql).toMatch(/ELSE '流量客'/)
-    })
-
-    test('不再依赖 product_categories JOIN 链（已迁移到 is_experience）', () => {
-      expect(adminSql).not.toContain('JOIN product_skus')
-      expect(adminSql).not.toContain('JOIN product_categories')
-      expect(adminSql).not.toContain('is_card_kind')
-    })
-
-    test('JOIN sale_items 直接挂 is_experience 条件', () => {
-      expect(adminSql).toContain('JOIN sale_items si ON si.sale_order_id = o.sale_order_id')
-    })
-
     test('recordPayment 事务结清时必须调用 recalcCustomerType（防 audit-15 P0-15-01 admin 触发点跃迁缺失复发）', () => {
+      const adminSrc = fs.readFileSync(ADMIN_ORDERS_TS, 'utf8')
       // 守卫文本特征：targetStatus === '已支付' 分支内出现 recalcCustomerType(tx, ...)
       const pattern = /targetStatus\s*===\s*'已支付'[\s\S]{0,200}recalcCustomerType\s*\(\s*tx\s*,/
       expect(adminSrc).toMatch(pattern)
-    })
-  })
-
-  describe('三端小美客/体验客分支镜像一致性', () => {
-    test('staff vs payNotify 规范化后逐字相同', () => {
-      const staffBranches = normalizeSql(extractNonMemberBranches(staffSql))
-      const paynotifyBranches = normalizeSql(extractNonMemberBranches(paynotifySql))
-      expect(paynotifyBranches).toBe(staffBranches)
-    })
-
-    test('staff vs admin 规范化后逐字相同（占位符归一化后 $1 与 ${clientUserId} 等价）', () => {
-      const staffBranches = normalizeSql(extractNonMemberBranches(staffSql))
-      const adminBranches = normalizeSql(extractNonMemberBranches(adminSql))
-      expect(adminBranches).toBe(staffBranches)
-    })
-
-    test('admin recompute-customer-tags.ts vs staff（legacy 订单审核通过触发的第 4 端副本）', () => {
-      const staffBranches = normalizeSql(extractNonMemberBranches(staffSql))
-      const recomputeBranches = normalizeSql(extractNonMemberBranches(adminRecomputeSql))
-      expect(recomputeBranches).toBe(staffBranches)
-    })
-
-    test('clientApi vs staff 规范化后逐字相同（clientApi 支付完成链路第 5 端副本，单笔口径）', () => {
-      const staffBranches = normalizeSql(extractNonMemberBranches(staffSql))
-      const clientApiBranches = normalizeSql(extractNonMemberBranches(clientApiSql))
-      expect(clientApiBranches).toBe(staffBranches)
-    })
-
-    test('不再出现 ② ③ 分支字节级相同的死分支模式', () => {
-      // 旧 bug 模式：两个相邻 WHEN EXISTS 块完全一样，只查 sale_orders 不 JOIN
-      const olderDeadPattern = /WHEN EXISTS \(\s*SELECT 1 FROM sale_orders\s*WHERE[^)]*sale_order_type = '销售单'\s*\)\s*THEN '小美客'/
-      expect(staffSql).not.toMatch(olderDeadPattern)
-      expect(paynotifySql).not.toMatch(olderDeadPattern)
-      expect(adminSql).not.toMatch(olderDeadPattern)
-      expect(adminRecomputeSql).not.toMatch(olderDeadPattern)
-      expect(clientApiSql).not.toMatch(olderDeadPattern)
     })
   })
 
@@ -307,11 +311,24 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       expect(normalizeSql(clientApiAttr)).toBe(staffN)
     })
 
-    test('payNotify 归因条件仍含有效的单笔 total_amount >= 阈值分支', () => {
-      expect(normalizeSql(paynotifyAttr)).toContain('o.total_amount >= ?')
+    test('五端归因选单条件已改为 oa.non_trial >= 阈值（#187，不再比 o.total_amount）', () => {
+      for (const s of [staffAttr, paynotifyAttr, adminAttr, adminRecomputeAttr, clientApiAttr]) {
+        expect(normalizeSql(s)).toContain('WHERE oa.non_trial >= ?')
+        expect(s).not.toContain('o.total_amount')
+      }
     })
 
-    test('五端无回款单累计分支（仅看单笔 total）', () => {
+    test('五端归因段 JOIN 金额 CTE 取数（与会员客判定 CASE 同源）', () => {
+      // 源文本里 CTE 以插值形式出现：云函数 ${RECALC_CUSTOMER_TYPE_CTE}、admin ${recalcCustomerTypeCte(clientUserId)}。
+      // 两者归一化后都是 ?，故此处断言原始插值引用 + JOIN 子句，确保归因段确实走 CTE 而非自带一份判定。
+      const cteRef = /\$\{(RECALC_CUSTOMER_TYPE_CTE|recalcCustomerTypeCte\([^)]*\))\}/
+      for (const s of [staffAttr, paynotifyAttr, adminAttr, adminRecomputeAttr, clientApiAttr]) {
+        expect(s).toMatch(cteRef)
+        expect(s).toContain('JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id')
+      }
+    })
+
+    test('五端无回款单累计分支（单笔订单口径）', () => {
       // 2026-04-26 sale-order-domain-refactor 后，回款记录下沉到
       // sale_order_payments.change_type='回款'，sale_orders 不再产生旧“回款单”类型行。
       for (const s of [staffAttr, paynotifyAttr, adminAttr, adminRecomputeAttr, clientApiAttr]) {
@@ -345,13 +362,16 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       clientApiBma = extractBecameMemberAtUpdate(CLIENT_API_ORDER_JS)
     })
 
-    test('五端目标列一致：UPDATE client_wechat_users SET became_member_at = (SELECT COALESCE(o.paid_at, o.created_at) …', () => {
-      const re = /^UPDATE client_wechat_users SET became_member_at = \(\s*SELECT COALESCE\(o\.paid_at, o\.created_at\)/
+    test('五端目标列一致：UPDATE client_wechat_users SET became_member_at = (…SELECT COALESCE(o.paid_at, o.created_at)…', () => {
+      const re = /^UPDATE client_wechat_users SET became_member_at = \(/
       expect(staffBma).toMatch(re)
       expect(paynotifyBma).toMatch(re)
       expect(adminBma).toMatch(re)
       expect(adminRecomputeBma).toMatch(re)
       expect(clientApiBma).toMatch(re)
+      for (const s of [staffBma, paynotifyBma, adminBma, adminRecomputeBma, clientApiBma]) {
+        expect(s).toContain('SELECT COALESCE(o.paid_at, o.created_at)')
+      }
     })
 
     test('五端规范化后逐字相同（占位符归一化后 $1 与 ${clientUserId} 等价）', () => {
@@ -370,15 +390,18 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       expect(clientApiBma).not.toMatch(/NOW\(\)/)
     })
 
-    test('五端无回款单累计分支（单笔 total 口径，与五端 is_membership_upgrade 归因段同源）', () => {
+    test('五端选单条件已改为 oa.non_trial >= 阈值（#187，与 is_membership_upgrade 归因同源 ⇒ 选同一单）', () => {
+      for (const s of [staffBma, paynotifyBma, adminBma, adminRecomputeBma, clientApiBma]) {
+        expect(normalizeSql(s)).toContain('WHERE oa.non_trial >= ?')
+        expect(s).not.toContain('o.total_amount')
+      }
+    })
+
+    test('五端无回款单累计分支（单笔订单口径，与五端 is_membership_upgrade 归因段同源）', () => {
       for (const s of [staffBma, paynotifyBma, adminBma, adminRecomputeBma, clientApiBma]) {
         expect(s).not.toContain('ref_sale_order_id')
         expect(s).not.toContain("'回款单'")
       }
-    })
-
-    test('payNotify became_member_at 段使用单笔 total_amount 达标口径', () => {
-      expect(normalizeSql(paynotifyBma)).toContain('o.total_amount >= ?')
     })
 
     test('五端都按 paid_at ASC NULLS LAST, created_at ASC 取首笔达标单（与各端 is_membership_upgrade 同序 ⇒ 选同一单）', () => {
@@ -392,11 +415,79 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
 
     test('回归守护：五端源码不再出现旧的 SET became_member_at = NOW() 形态', () => {
       const re = /SET became_member_at\s*=\s*NOW\(\)/
-      expect(fs.readFileSync(STAFF_ORDER_JS, 'utf8')).not.toMatch(re)
-      expect(fs.readFileSync(PAYNOTIFY_JS, 'utf8')).not.toMatch(re)
-      expect(fs.readFileSync(ADMIN_ORDERS_TS, 'utf8')).not.toMatch(re)
-      expect(fs.readFileSync(ADMIN_RECOMPUTE_TS, 'utf8')).not.toMatch(re)
-      expect(fs.readFileSync(CLIENT_API_ORDER_JS, 'utf8')).not.toMatch(re)
+      for (const [, file] of RUNTIME_FILES) {
+        expect(fs.readFileSync(file, 'utf8')).not.toMatch(re)
+      }
+    })
+  })
+
+  /**
+   * 第 6/7 处副本：db/scripts 的全库批量脚本。
+   * 这两个脚本会把全库 customer_type / became_member_at 按自身 SQL 重算覆写——
+   * 口径与运行时漂移时，跑一次脚本就会把线上数据改回旧口径，因此必须纳入守护。
+   * 无法逐字比对（全库版无 $clientUserId 过滤、多带输出列），故断言关键片段。
+   */
+  describe('db/scripts 全库批量脚本口径对齐（第 6/7 处副本）', () => {
+    const SCRIPTS = [
+      ['recalc-all-customer-types.js', SCRIPT_RECALC_ALL_TYPES],
+      ['recalc-became-member-at.js', SCRIPT_RECALC_BECAME_MEMBER],
+    ]
+
+    for (const [label, file] of SCRIPTS) {
+      describe(label, () => {
+        let src
+
+        beforeAll(() => {
+          src = fs.readFileSync(file, 'utf8')
+        })
+
+        test('含金额 CTE（refund_by_item + order_amounts）', () => {
+          expect(src).toContain('refund_by_item AS (')
+          expect(src).toContain('order_amounts AS (')
+        })
+
+        test('毛实收表达式与运行时一致（received 净额 + 逐项退款额）', () => {
+          expect(src).toContain('si.received::numeric + COALESCE(rbi.refunded, 0)')
+        })
+
+        test('non_trial 按 is_experience = false 聚合且 COALESCE 归零', () => {
+          expect(src).toContain('FILTER (WHERE si.is_experience = false), 0) AS non_trial')
+        })
+
+        test("只聚合 item_direction='购买' 行", () => {
+          expect(src).toContain("AND si.item_direction = '购买'")
+        })
+
+        test("note→jsonb 三重防线（与运行时逐字同源）", () => {
+          expect(src).toContain("sop.note LIKE '{%'")
+          expect(src).toContain("jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'")
+        })
+
+        test('退款聚合只认已支付的退款流水', () => {
+          expect(src).toContain("WHERE sop.change_type = '退款'")
+          expect(src).toContain("AND sop.status = '已支付'")
+        })
+
+        test('达标判定改用 non_trial >= 阈值，不再比 o.total_amount（#187 回归守护）', () => {
+          expect(src).toMatch(/non_trial >= /)
+          expect(src).not.toMatch(/o\.total_amount >= /)
+        })
+
+        test('按订单分组（单笔口径）', () => {
+          expect(src).toContain('GROUP BY o.sale_order_id, o.client_user_id, o.paid_at, o.created_at')
+        })
+      })
+    }
+
+    test('recalc-all-customer-types.js 的小美客/体验客改按金额判（non_trial / trial > 0）', () => {
+      const src = fs.readFileSync(SCRIPT_RECALC_ALL_TYPES, 'utf8')
+      expect(src).toMatch(/xiaomei_users AS \([\s\S]*?WHERE non_trial > 0/)
+      expect(src).toMatch(/tiyan_users AS \([\s\S]*?WHERE trial > 0/)
+    })
+
+    test('recalc-became-member-at.js 选单序与运行时一致（paid_at ASC NULLS LAST, created_at ASC）', () => {
+      const src = fs.readFileSync(SCRIPT_RECALC_BECAME_MEMBER, 'utf8')
+      expect(src).toContain('ORDER BY oa.client_user_id, oa.paid_at ASC NULLS LAST, oa.created_at ASC')
     })
   })
 })
