@@ -2478,7 +2478,11 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
          FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE`,
       [refOrderId],
     )
-    if (lockedOrder.rows.length === 0) continue
+    // 前面的 CTE 已还原源行 sale_amount / waived_amount / pending_received，此时订单不存在
+    // 会留下「行已还原、单未还原」的永久不一致；必须让整笔关单事务回滚。
+    if (lockedOrder.rows.length === 0) {
+      throw new Error('CONFLICT: 原订单已不存在，无法还原折抵豁免的欠款')
+    }
     const o = lockedOrder.rows[0]
     const newTotal = Math.round((Number(o.total_amount || 0) + waived) * 100) / 100
     const orderReceived = Math.round(Number(o.received || 0) * 100) / 100
@@ -4716,6 +4720,18 @@ async function createConversion(ctx) {
       reservedResult.rows.map((row) => [row.sale_item_id, Number(row.total_reserved || 0)])
     )
 
+    // #182：Δ（欠款豁免额）必须扣掉**行级已退款额**。`received` 是行级**净**实收
+    // （paid-sessions STEP 1.5 已按逐项退款扣过），直接用 sale_amount − received 会把
+    // 「已经退给顾客的钱」也当成欠款豁免掉：原价 ¥100、已付 ¥100、已退 ¥40 →
+    // received=60 → 错误 Δ=40（真实欠款为 0）；订单 total 再减 40 后，按
+    // total − refunded_amount 统计的净额会从正确的 60 掉到 20，并污染报表 / 会员阈值 / 状态判定。
+    // 毛已付 = received + 行级已退款额，真实欠款 = sale_amount − 毛已付。
+    const refundedByItem = new Map()
+    for (const orderId of [...new Set(held.map((r) => r.sale_order_id))].sort()) {
+      const m = await getPerItemRefundedMap(tx, orderId)
+      for (const [k, v] of m) refundedByItem.set(k, v)
+    }
+
     let totalOut = 0
     const outItems = []
     for (const row of held) {
@@ -4774,7 +4790,9 @@ async function createConversion(ctx) {
       //  - Δ > 0：overpay 行 received > sale_amount，不能反向上调应付
       const refSaleAmount = Math.round(Number(row.sale_amount || 0) * 100) / 100
       const refReceived = Math.round(Number(row.received || 0) * 100) / 100
-      const rawWaive = Math.round((refSaleAmount - refReceived) * 100) / 100
+      // 毛已付 = 净实收 + 行级已退款额；真实欠款 = 应付 − 毛已付
+      const refRefunded = Math.round((Number(refundedByItem.get(row.sale_item_id) || 0)) * 100) / 100
+      const rawWaive = Math.round((refSaleAmount - refReceived - refRefunded) * 100) / 100
       const waiveAmount = (row.sale_order_type !== '寄存单'
         && refSaleAmount > 0 && refReceived > 0 && rawWaive > 0)
         ? rawWaive

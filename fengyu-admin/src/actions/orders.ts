@@ -607,7 +607,9 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
         FROM sale_orders WHERE sale_order_id = ${refOrderId} FOR UPDATE
     `)) as unknown as Array<Record<string, unknown>>
     const o = lockedRows[0]
-    if (!o) continue
+    // 前面的 CTE 已经还原了源行 sale_amount / waived_amount / pending_received，
+    // 此时订单不存在就会留下「行已还原、单未还原」的永久不一致；必须让整笔关单事务回滚。
+    if (!o) throw new ApiError('CONFLICT', 'ORDER_GONE: 原订单已不存在，无法还原折抵豁免的欠款')
     const newTotal = Math.round((Number(o.total_amount ?? 0) + waived) * 100) / 100
     const orderReceived = Math.round(Number(o.received ?? 0) * 100) / 100
     const keepsPayable = ['销售单', '内部单', '转换单'].includes(o.sale_order_type as string)
@@ -5647,6 +5649,42 @@ export const createConversionOrder = withPermission(
       }
 
       let totalOut = 0
+      // #182：Δ（欠款豁免额）必须扣掉**行级已退款额**。`received` 是行级**净**实收
+      // （paid-sessions STEP 1.5 已按逐项退款扣过），直接用 sale_amount − received 会把
+      // 「已经退给顾客的钱」也当成欠款豁免掉：原价 ¥100 已付 ¥100 已退 ¥40 → received=60 →
+      // 错误 Δ=40（真实欠款为 0）；订单 total 再减 40 后 total − refunded_amount 的净额
+      // 从 60 掉到 20，污染报表 / 会员阈值 / 状态判定。SQL 与 lib/per-item-refund.ts 同源，
+      // 此处必须走 tx（事务体内不得有非-tx await）。
+      const refundedRows = (await tx.execute(sql`
+        WITH refund_items AS (
+          SELECT elem ->> 'refSaleItemId' AS sale_item_id,
+                 COALESCE((elem ->> 'refundAmount')::numeric, 0) AS refund_amount
+          FROM sale_order_payments sop
+          CROSS JOIN LATERAL jsonb_array_elements(
+            CASE WHEN sop.note LIKE '{%'
+                 THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
+                           THEN (sop.note)::jsonb -> 'items'
+                           ELSE '[]'::jsonb END
+                 ELSE '[]'::jsonb END
+          ) AS elem
+          WHERE sop.sale_order_id IN (
+                  SELECT DISTINCT sale_order_id FROM sale_items
+                   WHERE sale_item_id IN (${sql.join(data.convertOutSaleItemIds.map((id) => sql`${id}`), sql`, `)})
+                )
+            AND sop.change_type = '退款'
+            AND sop.status = '已支付'
+            AND elem ->> 'refSaleItemId' IS NOT NULL
+            AND elem ->> 'refSaleItemId' <> 'OVERPAY'
+        )
+        SELECT sale_item_id, SUM(refund_amount) AS refunded
+          FROM refund_items GROUP BY sale_item_id
+      `)) as unknown as Array<Record<string, unknown>>
+      const refundedByItem = new Map<string, number>(
+        (Array.isArray(refundedRows) ? refundedRows : []).map(
+          (r) => [r.sale_item_id as string, Number(r.refunded ?? 0)],
+        ),
+      )
+
       type OutItem = {
         refSaleItemId: string
         skuId: string | null
@@ -5756,7 +5794,11 @@ export const createConversionOrder = withPermission(
         // 全放分支）、Δ > 0（overpay 行 received > sale_amount，不能反向上调应付）。
         const refSaleAmount = Math.round(Number(row.sale_amount ?? 0) * 100) / 100
         const refReceived = Math.round(Number(row.received ?? 0) * 100) / 100
-        const rawWaive = Math.round((refSaleAmount - refReceived) * 100) / 100
+        // 毛已付 = 净实收 + 行级已退款额；真实欠款 = 应付 − 毛已付
+        const refRefunded = Math.round(
+          Number(refundedByItem.get(row.sale_item_id as string) ?? 0) * 100,
+        ) / 100
+        const rawWaive = Math.round((refSaleAmount - refReceived - refRefunded) * 100) / 100
         const waiveAmount = (row.sale_order_type !== '寄存单'
           && refSaleAmount > 0 && refReceived > 0 && rawWaive > 0)
           ? rawWaive

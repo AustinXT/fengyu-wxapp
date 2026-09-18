@@ -5594,6 +5594,8 @@ describe('order.createConversion', () => {
           })
           // #182 折抵额度复算（锁取得后另起语句，与锁行同语句会拿到子表旧快照）
           .mockResolvedValueOnce({ rows: [{ sale_item_id: 'item-001', deductible_quantity: 1, deductible_amount: '1000' }], rowCount: 1 })
+          // #182 行级已退款额（Δ 必须扣掉它，received 是净额）——空集即无退款
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 })
           .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 预扣汇总
           // 转入 SKU 查询（quantity=10 → totalIn=15000）
           .mockResolvedValueOnce({
@@ -5719,6 +5721,8 @@ describe('order.createConversion', () => {
           })
           // #182 折抵额度复算（锁取得后另起语句，与锁行同语句会拿到子表旧快照）
           .mockResolvedValueOnce({ rows: [{ sale_item_id: 'item-special-old', deductible_quantity: 1, deductible_amount: '100' }], rowCount: 1 })
+          // #182 行级已退款额（Δ 必须扣掉它，received 是净额）——空集即无退款
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 })
           .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 预扣汇总
           .mockResolvedValueOnce({
             rows: [{
@@ -6092,6 +6096,8 @@ describe('order.createConversion', () => {
       })
       // #182 折抵额度复算（锁取得后另起语句，与锁行同语句会拿到子表旧快照）
       .mockResolvedValueOnce({ rows: [{ sale_item_id: 'item-eq-001', deductible_quantity: 2, deductible_amount: '1000' }], rowCount: 1 })
+      // #182 行级已退款额（Δ 必须扣掉它，received 是净额）——空集即无退款
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 预扣汇总
       .mockResolvedValueOnce({
         rows: [{
@@ -6153,6 +6159,8 @@ describe('order.createConversion', () => {
       })
       // #182 折抵额度复算（锁取得后另起语句，与锁行同语句会拿到子表旧快照）
       .mockResolvedValueOnce({ rows: [{ sale_item_id: 'item-neg-001', deductible_quantity: 2, deductible_amount: '2000' }], rowCount: 1 })
+      // #182 行级已退款额（Δ 必须扣掉它，received 是净额）——空集即无退款
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 预扣汇总
       .mockResolvedValueOnce({
         rows: [{
@@ -6302,6 +6310,8 @@ describe('order.createConversion', () => {
       })
       // #182 折抵额度复算（锁取得后另起语句，与锁行同语句会拿到子表旧快照）
       .mockResolvedValueOnce({ rows: [{ sale_item_id: 'item-race', deductible_quantity: 3, deductible_amount: '300' }], rowCount: 1 })
+      // #182 行级已退款额（Δ 必须扣掉它，received 是净额）——空集即无退款
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 预扣汇总
       .mockResolvedValueOnce({
         rows: [{
@@ -6361,6 +6371,8 @@ describe('order.createConversion', () => {
       })
       // #182 折抵额度复算（锁取得后另起语句，与锁行同语句会拿到子表旧快照）
       .mockResolvedValueOnce({ rows: [{ sale_item_id: 'item-exp-001', deductible_quantity: 3, deductible_amount: '600' }], rowCount: 1 })
+      // #182 行级已退款额（Δ 必须扣掉它，received 是净额）——空集即无退款
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 预扣汇总
       .mockResolvedValueOnce({
         rows: [{

@@ -35,7 +35,10 @@ export function deriveHomeProductStatus(
   if (pendingPickupQuantity > 0) return pickedQuantity > 0 ? '部分提货' : '待提货'
   // 「待付清」必须与欠款金额绑定：只有真的算得出欠款才这么标。
   // 否则寄存单（金额列留空）和退款后仍有剩余的行会被误标成待付清/已完成。
-  // 注：#125 整行折抵后原单 received 不变（方案 A），欠款仍挂原单继续催收，故此处照常标「待付清」。
+  // 注：#182 起折抵会把原单该行欠款归零（下调 sale_amount / total_amount，下调量记在
+  // sale_items.waived_amount，仅关闭/删除该转换单时还原），因此被折抵过的行算出来的
+  // unpaidAmount 通常已是 0，不会再落进「待付清」。这条分支现在只服务**未被折抵**的欠款行。
+  // （#125 的方案 A「received 不变、欠款仍挂原单继续催收」已作废。）
   if (unpaidAmount != null && unpaidAmount > 0) return '待付清'
   // 还有未交付份额但算不出欠款（寄存单、退款后剩余）——是待提，不是已完成。
   // 整行折抵后 remainingQuantity = purchased − settled = 0，不会落进这条分支。
