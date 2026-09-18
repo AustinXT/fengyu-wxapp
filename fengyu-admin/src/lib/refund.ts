@@ -42,6 +42,12 @@ export interface RefundSourceItem {
   picked_quantity?: number | null
   /** 该行已被折抵转走的金额合计（转出行 received 取正，排除已关闭转换单） */
   converted_amount?: string | number | null
+  /**
+   * 该行已被折抵转走的**数量**合计（转出行 quantity，排除已关闭转换单）。
+   * #182：疗程卡算已消耗价值时必须先按次数扣掉被折走的部分，再加实际已转走金额，
+   * 否则 (session_count − remaining_sessions) 与 converted_amount 双计，overpay 被钳成 0。
+   */
+  converted_quantity?: number | null
   sales_category: SalesCategory | null
   service_fee: string | number | null
   item_direction?: string
@@ -138,9 +144,18 @@ export function computeItemOverpayRemainders(origItems: RefundSourceItem[]): Map
     // 真实金额、且不动 remaining_sessions（Q=0 的纯余数行），不扣它就能折一次再退一次。
     // converted_amount 缺省（历史调用方不传）时为 0，退回旧口径，零回归。
     const convertedAmount = Number(it.converted_amount ?? 0) || 0
+    const convertedQuantity = Math.max(0, Number(it.converted_quantity ?? 0) || 0)
     const hasConsumedDetail = it.picked_quantity != null || it.converted_amount != null
+    // 疗程卡：已消耗 =（已消费次数 − **已转走次数**）× 单价 + 实际已转走金额。
+    // 必须先按次数扣掉被折走的部分，否则会双计：折抵会把 remaining_sessions 扣掉 Q，
+    // 于是 (session_count − remaining) 已经含了这 Q 次，再整额加 converted_amount 就重复了。
+    // 对 #182 之前的历史转出行（received = −单价 × Q，恰好等于 Q 次的标价）双计尤其明显：
+    // 10 次 × ¥100 实收 ¥1200（多收 ¥200）、旧口径折走 10 次 ¥1000 →
+    // 双计得 1200 − 1000 − 1000 < 0 → overpay 被钳成 0，顾客那 ¥200 既退不出也折不到。
+    // 与 reconcileOrderStatusAfterRefund 的 consumed_value 用 converted_qty 的做法一致。
+    // converted_quantity 缺省（历史调用方不传）时为 0，退回旧口径，零回归。
     const consumedValue = it.product_type === '疗程卡'
-      ? Math.max(0, Number(it.session_count || 0) - Number(it.remaining_sessions || 0)) * unitRealPrice
+      ? Math.max(0, Number(it.session_count || 0) - Number(it.remaining_sessions || 0) - convertedQuantity) * unitRealPrice
         + convertedAmount
       : hasConsumedDetail
         ? Number(it.picked_quantity || 0) * unitRealPrice + convertedAmount

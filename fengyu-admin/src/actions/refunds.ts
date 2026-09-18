@@ -355,13 +355,16 @@ export const getRefundable = withAnyPermission(
       // （折抵会带走剩余已付的全部金额却只占用向下取整的件数）。
       pickedQuantity: sql<number>`COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = ${saleItems.saleItemId}), 0)`,
       convertedAmount: sql<string>`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)`,
+      // #182：疗程卡已消耗价值要先按已转走**次数**扣减，再加已转走金额，否则与
+      // (session_count − remaining_sessions) 双计 → overpay 被钳成 0
+      convertedQuantity: sql<number>`COALESCE((SELECT SUM(out_item.quantity) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)::int`,
     })
     .from(saleItems)
     .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
     .where(and(eq(saleItems.saleOrderId, saleOrderId), eq(saleItems.itemDirection, '购买')))
 
   // 先建 RefundSourceItem[]（computeOverpayRemainder 入参），再派生展示用 RefundableItem[]
-  const srcItems: RefundSourceItem[] = rows.map(({ item, pickedQuantity, convertedAmount }) => ({
+  const srcItems: RefundSourceItem[] = rows.map(({ item, pickedQuantity, convertedAmount, convertedQuantity }) => ({
     sale_item_id: item.saleItemId,
     sku_id: item.skuId,
     product_name: item.productName,
@@ -377,6 +380,7 @@ export const getRefundable = withAnyPermission(
     picked_up_quantity: item.pickedUpQuantity,
     picked_quantity: Number(pickedQuantity ?? 0),
     converted_amount: convertedAmount,
+    converted_quantity: Number(convertedQuantity ?? 0),
     sales_category: item.salesCategory as SalesCategory | null,
     service_fee: item.serviceFee,
   }))
@@ -755,18 +759,23 @@ export const createRefund = withPermission(
       item: saleItems,
       pickedQuantity: sql<number>`COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = ${saleItems.saleItemId}), 0)`,
       convertedAmount: sql<string>`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)`,
+      // #182：疗程卡已消耗价值要先按已转走**次数**扣减，再加已转走金额，否则与
+      // (session_count − remaining_sessions) 双计 → overpay 被钳成 0
+      convertedQuantity: sql<number>`COALESCE((SELECT SUM(out_item.quantity) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)::int`,
     })
     .from(saleItems)
     .where(and(eq(saleItems.saleOrderId, refSaleOrderId), eq(saleItems.itemDirection, '购买'))))
-    .map(({ item, pickedQuantity, convertedAmount }) => ({
+    .map(({ item, pickedQuantity, convertedAmount, convertedQuantity }) => ({
       ...item,
       pickedQuantity: Number(pickedQuantity ?? 0),
       convertedAmount,
+      convertedQuantity: Number(convertedQuantity ?? 0),
     }))
 
   const sourceItems: RefundSourceItem[] = origRows.map((r) => ({
     picked_quantity: r.pickedQuantity,
     converted_amount: r.convertedAmount,
+    converted_quantity: Number(r.convertedQuantity ?? 0),
     sale_item_id: r.saleItemId,
     sku_id: r.skuId,
     product_name: r.productName,
@@ -1220,6 +1229,11 @@ export const approveRefund = withPermission(
         if (qty > 0) homeRefundQty.set(it.saleItemId, (homeRefundQty.get(it.saleItemId) ?? 0) + qty)
       }
       {
+        // #182 锁序：先锁本单（sale_orders），再锁源行（sale_items）——与入账路径、
+        // createConversionOrder、关单回滚统一为 sale_orders → sale_items，避免 40P01。
+        await tx.execute(sql`
+          SELECT sale_order_id FROM sale_orders WHERE sale_order_id = ${refSaleOrderId} FOR UPDATE
+        `)
         // 无条件锁：老退款单（无 note.items 且 ref_sale_item_id 为空）会让 homeRefundQty 为空，
         // 若因此跳过加锁就退回「createRefund 无锁定额 + cascade LEAST 静默封顶」的旧缺口。
         // 锁集必须覆盖本单**全部购买行**而非只锁家居子集：后续 cascadeRefund /
@@ -1247,7 +1261,13 @@ export const approveRefund = withPermission(
                               AND out_item.item_direction = '转出'
                               -- #182 不限 product_type：疗程卡的已转走金额同样要从 overpay 里扣掉，
                               -- 否则折走的余数能再退一次；纯余数转出行(quantity=0)也必须计入。
-                              AND conv_order.status <> '已关闭'), 0) AS converted_amount
+                              AND conv_order.status <> '已关闭'), 0) AS converted_amount,
+                 COALESCE((SELECT SUM(out_item.quantity)
+                             FROM sale_items out_item
+                             JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+                            WHERE out_item.ref_sale_item_id = si.sale_item_id
+                              AND out_item.item_direction = '转出'
+                              AND conv_order.status <> '已关闭'), 0)::int AS converted_quantity
             FROM sale_items si
            WHERE si.sale_order_id = ${refSaleOrderId}
              AND si.item_direction = '购买'
@@ -1282,6 +1302,7 @@ export const approveRefund = withPermission(
             picked_up_quantity: Number(r.picked_up_quantity ?? 0),
             picked_quantity: c ? Number(c.picked_quantity ?? 0) : null,
             converted_amount: c ? (c.converted_amount as string) : null,
+            converted_quantity: c ? Number(c.converted_quantity ?? 0) : null,
             sales_category: null,
             service_fee: null,
           }

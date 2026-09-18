@@ -555,7 +555,10 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
   // 「开转换单 → 关闭」= 永久抹掉原单欠款。与 staff rollbackPendingConversionOnClose 同源。
   const restoredWaiveRaw = await tx.execute(sql`
     WITH waived AS (
-      SELECT ref_sale_item_id, SUM(waived_amount::numeric) AS waived
+      SELECT ref_sale_item_id,
+             SUM(waived_amount::numeric) AS waived,
+             -- 原行 pending_received 快照（新口径下同一行只折一次，MAX 即该次快照）
+             MAX(pending_received::numeric) AS orig_pending
         FROM sale_items
        WHERE sale_order_id = ${saleOrderId}
          AND item_direction = '转出'
@@ -564,7 +567,7 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
       HAVING SUM(waived_amount::numeric) > 0
     ),
     locked_source AS (
-      SELECT src.sale_item_id, src.sale_order_id, waived.waived
+      SELECT src.sale_item_id, src.sale_order_id, waived.waived, waived.orig_pending
         FROM sale_items src
         JOIN waived ON waived.ref_sale_item_id = src.sale_item_id
        ORDER BY src.sale_item_id
@@ -574,6 +577,8 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
       UPDATE sale_items src
          SET sale_amount = (src.sale_amount::numeric + locked_source.waived)::numeric(10, 2),
              waived_amount = (src.waived_amount::numeric - locked_source.waived)::numeric(10, 2),
+             -- 还原折抵时被钉住的 pending_received，避免永久改写 Branch B 的分摊权重
+             pending_received = locked_source.orig_pending::numeric(10, 2),
              updated_at = NOW()
         FROM locked_source
        WHERE src.sale_item_id = locked_source.sale_item_id
@@ -5566,6 +5571,7 @@ export const createConversionOrder = withPermission(
           si.unit_real_price,
           si.sale_amount,
           si.received,
+          si.pending_received,
           si.sales_category,
           COALESCE(si.is_shengmei, psk.is_shengmei) AS is_shengmei,
           si.service_fee,
@@ -5655,10 +5661,11 @@ export const createConversionOrder = withPermission(
         serviceFee: number
         isExperience: boolean
         isShengmei: boolean | null
-        /** #182 欠款归零：原单 id / 原行应付快照（CAS 期望值）/ 本次豁免额 Δ */
+        /** #182 欠款归零：原单 id / 原行应付快照（CAS 期望值）/ 本次豁免额 Δ / 原 pending 快照 */
         refSaleOrderId: string
         refSaleAmount: number
         waiveAmount: number
+        refPendingReceived: number
       }
       const outItems: OutItem[] = []
 
@@ -5786,6 +5793,9 @@ export const createConversionOrder = withPermission(
           refSaleOrderId: row.sale_order_id as string,
           refSaleAmount,
           waiveAmount,
+          // 原行 pending_received 快照：欠款归零会把它钉到 received（保住 Branch B 第一段铺满），
+          // 关单回滚必须还原，否则历史行（原本 pending=0）的分摊权重被永久改写。
+          refPendingReceived: Math.round(Number(row.pending_received ?? 0) * 100) / 100,
         })
       }
 
@@ -6197,6 +6207,9 @@ export const createConversionOrder = withPermission(
           isShengmei: out.isShengmei,
           // #182：本次为该行豁免掉的原单欠款，关单回滚靠它归因到本张转换单
           waivedAmount: out.waiveAmount.toFixed(2),
+          // #182：原行 pending_received 快照。转出行自身不参与 STEP 1 的 caps（只取「购买」行），
+          // 故借这一列存快照不影响既有计算。
+          pendingReceived: out.refPendingReceived.toFixed(2),
         })
 
         // 原子扣减本次实际折抵的次数；服务中预扣仍留在源卡，供后续确认核销。

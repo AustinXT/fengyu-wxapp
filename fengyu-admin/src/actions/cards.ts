@@ -106,6 +106,8 @@ function computeCardRemainingRemainder(item: {
    * 调用方未提供时按 0（旧行为），但列表类查询都应带上转出行聚合。
    */
   convertedAmount?: string | number | null
+  /** #182：已折走的**次数**。必须先按次数扣减再加金额，否则与 (sc − rem) 双计。 */
+  convertedQuantity?: number | null
 }): number {
   const source: RefundSourceItem = {
     sale_item_id: item.saleItemId,
@@ -122,6 +124,7 @@ function computeCardRemainingRemainder(item: {
     picked_up_quantity: 0,
     picked_quantity: null,
     converted_amount: item.convertedAmount ?? null,
+    converted_quantity: item.convertedQuantity ?? null,
     sales_category: null,
     service_fee: null,
   }
@@ -334,7 +337,9 @@ export const getCardsPaginated = withPermission(
       paidUnusedSessions: paidUnusedSessionsExpr,
       unitRealPrice: saleItems.unitRealPrice,
       received: saleItems.received,
-      // #182：折抵会带走 overpay 余数，「剩余零头」列必须扣掉已转走金额，否则展示的是已被折走的钱
+      // #182：折抵会带走 overpay 余数，「剩余零头」列必须扣掉已转走金额与次数，
+      // 否则展示的是已被折走的钱（次数不先扣会与 (sc − rem) 双计）
+      convertedQuantity: sql<number>`COALESCE((SELECT SUM(out_item.quantity) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)::int`,
       convertedAmount: sql<string>`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)`,
       quantity: saleItems.quantity,
       expireDate: saleItems.expireDate,
@@ -370,7 +375,7 @@ export const getCardsPaginated = withPermission(
       remainingSessions: r.remainingSessions ?? null,
       paidSessions: r.paidSessions ?? null,
       paidUnusedSessions: r.paidUnusedSessions ?? null,
-      remainingRemainder: computeCardRemainingRemainder(r),
+      remainingRemainder: computeCardRemainingRemainder({ ...r, convertedQuantity: Number(r.convertedQuantity ?? 0) }),
       quantity: r.quantity ?? 1,
       expireDate: r.expireDate ?? null,
       paidAt: r.paidAt?.toISOString() ?? null,
@@ -480,6 +485,8 @@ export const exportCards = withPermission(
         saleAmount: saleItems.saleAmount,
         received: saleItems.received,
         // #182：折抵会带走 overpay 余数，「剩余零头」列必须扣掉已转走金额，否则展示的是已被折走的钱
+        // #182：次数也要，先按次数扣减再加金额，否则与 (sc − rem) 双计
+        convertedQuantity: sql<number>`COALESCE((SELECT SUM(out_item.quantity) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)::int`,
         convertedAmount: sql<string>`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND conv_order.status <> '已关闭'), 0)`,
         productKind: productCategories.productKind,
         categoryName: productCategories.categoryName,
@@ -521,7 +528,7 @@ export const exportCards = withPermission(
         remaining: r.paidUnusedSessions ?? 0,
         paidSessions: r.paidSessions ?? 0,
         totalSessions: sessionCount,
-        remainingRemainder: computeCardRemainingRemainder(r),
+        remainingRemainder: computeCardRemainingRemainder({ ...r, convertedQuantity: Number(r.convertedQuantity ?? 0) }),
         unitPrice: numOrNull(r.unitPrice),
         unitRealPrice: numOrNull(r.unitRealPrice),
         saleAmount: numOrNull(r.saleAmount),

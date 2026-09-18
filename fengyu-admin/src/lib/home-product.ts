@@ -57,13 +57,21 @@ export function deriveHomeProductStatus(
  * - **退款不在此处扣**：`received` 已由 paid-sessions STEP 1.5 扣过逐项退款，
  *   而 `picked_up_quantity` 又包含退款结算数，两边都减就是重复扣减（顾客少折）。
  * - **件数**向下取整：`floor(剩余已付 / 单价)`，再受物理未结算件数封顶。
- *   转出行受 `chk_item_quantity > 0` 约束，不足一整件时没有载体可折，整行不可折抵
- *   （已付款留原单，付清后即可折抵或提货）。
+ *
+ * ⚠️ **#182 起本函数的 `quantity` 只是「提货 / 退款」口径，不再是折抵数量。**
+ *   折抵改为「整行退出」：一次带走该行**全部**物理未结算件（见 cards.ts / orders.ts 的
+ *   `remainingQty`），`chk_item_quantity` 也已放宽到允许转出行 quantity = 0（纯余数行）。
+ *   折抵只复用本函数的 `amount`（剩余已付，含不足一整件的余数）。
+ *   **不要**再把 `homeDeductible().quantity` 当折抵件数用——那会把「1 件 ¥680 只付 ¥594」
+ *   这类行重新算成 0 件而整行剔除，正是 #182 要修的缺陷。
  * - **金额**即剩余已付，含不足一整件的余数（用户 2026-09-14 拍板，顾客付的钱一分不丢）。
  * - 寄存单与 0 元赠品行没有「实收」可言，维持原口径 `单价 × 未结算件数`。
  *
- * 疗程卡不走本函数（维持 #125 的 remaining_sessions 口径）。
- * 与 staffApi routes/order.js 的 `hp.deductible_quantity` / `hp.deductible_amount` LATERAL 跨端同义。
+ * 疗程卡不走本函数：#182 起它与家居共用「剩余已付」金额口径，但已交付价值按
+ * （session_count − remaining_sessions）× 单价 算，与家居的 pickup_records 口径不同，
+ * 故在 cards.ts / orders.ts 内按分单独计算，没有抽成公共函数。
+ * 本函数的 `amount` 仍与 staffApi routes/order.js 的 `hp.deductible_amount` 家居分支同义；
+ * `quantity` 则只对应提货侧的 `pendingHomeProductQuantity`，**不**对应折抵数量。
  */
 export function homeDeductible(row: {
   saleOrderType: string | null

@@ -299,6 +299,9 @@ export const saleItems = pgTable(
      *
      * ⚠️ 另有一条运行时写入路径会**下调购买行的 sale_amount**：转换单折抵的「欠款归零」
      * （#182，见 waived_amount 列）。下调量记在 waived_amount，原值 = sale_amount + waived_amount。
+     * 该路径**只改 sale_amount**，`unit_real_price` / `quantity` / `session_count` 保持原值，
+     * 因此这类行上「sale_amount = unit_real_price × 次数/件数」同样不再成立——按 unit × qty
+     * 反推行金额的对账或导出脚本必须改用 sale_amount + waived_amount，或按 waived_amount > 0 排除。
      */
     saleAmount: numeric("sale_amount", { precision: 10, scale: 2 }).notNull(),
     /**

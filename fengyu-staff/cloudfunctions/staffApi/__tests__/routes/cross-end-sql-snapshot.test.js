@@ -1262,7 +1262,11 @@ describe('转换单转入 received 重算 SQL 四端一致性守护', () => {
     expect(sqls.staff).toContain("conversion_order.sale_order_type = '转换单'")
     expect(sqls.staff).toContain("out_item.item_direction = '转出'")
     expect(sqls.staff).toContain("si.item_direction = '转入'")
-    expect(sqls.staff).toMatch(/LEAST\(conversion_order\.in_total, conversion_order\.converted_value \+ conversion_order\.net_received\)/)
+    // #182：target 要先扣掉「已退出转入行已占的实收」（waived_in_received），
+    // 否则被再次折抵的转入行会与其余行一起重分摊，received 被改小而 remaining 已注销 → 踩 D3。
+    expect(sqls.staff).toMatch(/LEAST\(conversion_order\.in_total, GREATEST\(0, conversion_order\.converted_value \+ conversion_order\.net_received - conversion_order\.waived_in_received\)\)/)
+    expect(sqls.staff).toContain("AND in_item.waived_amount::numeric = 0")
+    expect(sqls.staff).toContain("AND si.waived_amount::numeric = 0")
     expect(sqls.staff).toMatch(/ROW_NUMBER\(\) OVER\s*\(ORDER BY si\.sale_item_id\)\s+AS rn/)
     expect(sqls.staff).toContain('WHEN rn = item_count THEN target_received -')
   })
@@ -1446,12 +1450,12 @@ describe("STEP 1 received 分摊 SQL 四端字节同义守护", () => {
       expect(allocSqls.payNotify).toMatch(pattern)
       expect(allocSqls.adminTs).toMatch(pattern)
     })
-    // #182：上限改用**原始应付** = sale_amount + waived_amount。折抵的「欠款归零」会把已结清行的
-    // sale_amount 永久下调到实收，直接拿下调后的值作 cap 会让该行在下一次整单 recalc 被摊到更少的
-    // received，而它的 remaining_sessions 已注销为 0 → 触发 D3 PAID_SESSIONS_UNDERFLOW，订单锁死。
-    // 未豁免行 waived_amount 恒 0，与改前逐字等价。
-    test("四端第二段产能 sale_cap = GREATEST(0, (sale_amount + waived_amount) - max(pending_received, targeted))（实付→应付余量，防冻结）", () => {
-      const pattern = /GREATEST\(0,\s*\(si\.sale_amount::numeric\s*\+\s*si\.waived_amount::numeric\)\s*-\s*GREATEST\(si\.pending_received::numeric,\s*COALESCE\(tg\.targeted,\s*0\)::numeric\)\)/i
+    // ⚠ 不得改成 (sale_amount + waived_amount)：#182 折抵会把已结清行的 sale_amount 下调到实收、
+    // 并把 pending_received 钉到同值，本式对该行自然得 cap = 0（已结清、不再参与第二段分配）。
+    // 放大上限会让退出行吸走本该给同单欠款行的回款（两行各 ¥100 各付 ¥50，A 折抵后再回款 ¥50：
+    // 放大后分成 A=75/B=75，正确应为 A=50/B=100），还可能让 B 少解锁权益甚至踩 D3。
+    test("四端第二段产能 sale_cap = GREATEST(0, sale_amount - max(pending_received, targeted))（实付→应付余量，防冻结）", () => {
+      const pattern = /GREATEST\(0,\s*si\.sale_amount::numeric\s*-\s*GREATEST\(si\.pending_received::numeric,\s*COALESCE\(tg\.targeted,\s*0\)::numeric\)\)/i
       expect(allocSqls.staff).toMatch(pattern)
       expect(allocSqls.client).toMatch(pattern)
       expect(allocSqls.payNotify).toMatch(pattern)
@@ -2395,8 +2399,14 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
       )
       // #182：疗程卡分支也必须扣掉已转走金额。overpay 场景（received > sale_amount）折走的是
       // 余数这笔真实金额且不动 remaining_sessions，不扣它就能「折一次再退一次」。
-      expect(src, `${end} overpay 疗程卡分支未扣已转走金额`).toContain(
-        'Math.max(0, Number(it.session_count || 0) - Number(it.remaining_sessions || 0)) * unitRealPrice + convertedAmount',
+      // #182：疗程卡必须**先按已转走次数扣减**再加已转走金额。只加金额会与
+      // (session_count − remaining_sessions) 双计——历史转出行（received = −单价 × Q）上
+      // 双计会把 overpay 钳成 0，顾客的多收零头既退不出也折不到。
+      expect(src, `${end} overpay 疗程卡分支未按已转走次数先扣再加金额`).toContain(
+        'Math.max(0, Number(it.session_count || 0) - Number(it.remaining_sessions || 0) - convertedQuantity) * unitRealPrice + convertedAmount',
+      )
+      expect(src, `${end} overpay 未取已转走次数`).toContain(
+        'const convertedQuantity = Math.max(0, Number(it.converted_quantity ?? 0) || 0)',
       )
       expect(src, `${end} overpay 不得把疗程卡排除在已转走金额口径外`).not.toContain(
         "const hasConsumedDetail = it.product_type !== '疗程卡'",

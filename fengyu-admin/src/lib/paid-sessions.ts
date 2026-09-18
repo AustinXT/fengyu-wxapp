@@ -104,12 +104,23 @@ export const CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL = `WITH conversion_order AS
                FROM sale_items out_item
                WHERE out_item.sale_order_id = $1 AND out_item.item_direction = '转出'
              ), 0)::numeric AS converted_value,
+             -- #182：被再次折抵（waived_amount > 0）的转入行已结清、其 received 已被钉住，
+             -- 不能参与重分摊。它的 sale_amount 已下调，若还算进 in_total 并按新权重重摊，
+             -- 该行 received 会被改小，而其 remaining_sessions 已注销为 0 → 立刻踩 D3。
              COALESCE((
                SELECT SUM(in_item.sale_amount::numeric)
                FROM sale_items in_item
                WHERE in_item.sale_order_id = $1 AND in_item.item_direction = '转入'
                  AND in_item.sale_amount::numeric > 0
-             ), 0)::numeric AS in_total
+                 AND in_item.waived_amount::numeric = 0
+             ), 0)::numeric AS in_total,
+             -- 已退出转入行占掉的实收，要从本轮可分配的 target 里扣除
+             COALESCE((
+               SELECT SUM(in_item.received::numeric)
+               FROM sale_items in_item
+               WHERE in_item.sale_order_id = $1 AND in_item.item_direction = '转入'
+                 AND in_item.waived_amount::numeric > 0
+             ), 0)::numeric AS waived_in_received
       FROM sale_orders so
       WHERE so.sale_order_id = $1
     ),
@@ -118,7 +129,8 @@ export const CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL = `WITH conversion_order AS
              si.sale_amount::numeric AS item_sale_amount,
              conversion_order.in_total,
              LEAST(conversion_order.in_total,
-                   conversion_order.converted_value + conversion_order.net_received) AS target_received,
+                   GREATEST(0, conversion_order.converted_value + conversion_order.net_received
+                               - conversion_order.waived_in_received)) AS target_received,
              ROW_NUMBER() OVER (ORDER BY si.sale_item_id) AS rn,
              COUNT(*) OVER () AS item_count
       FROM sale_items si
@@ -127,6 +139,7 @@ export const CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL = `WITH conversion_order AS
         AND si.sale_order_id = $1
         AND si.item_direction = '转入'
         AND si.sale_amount::numeric > 0
+        AND si.waived_amount::numeric = 0
     ),
     provisional AS (
       SELECT ranked.*,
@@ -237,13 +250,13 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
         SELECT si.sale_item_id,
                COALESCE(tg.targeted, 0)::numeric AS targeted,
                GREATEST(0, si.pending_received::numeric - COALESCE(tg.targeted, 0)::numeric) AS pend_cap,
-               -- #182：上限用**原始应付** = sale_amount + waived_amount。转换单折抵会把已结清行的
-             -- sale_amount 永久下调到实收（欠款归零），若直接拿下调后的值作 cap，本行在下一次
-             -- 整单 recalc 里会被按更小的比例重新摊到更少的 received —— 而它的 remaining_sessions
-             -- 已被注销为 0，于是 (session_count − 0) > paid_sessions 触发 D3 PAID_SESSIONS_UNDERFLOW，
-             -- 该订单此后回款/退款/支付回调全部失败（故障点还被推迟到「折抵后的下一次回款」，极难归因）。
-             -- 未被豁免的行 waived_amount 恒为 0，公式与改前逐字等价，零回归。
-             GREATEST(0, (si.sale_amount::numeric + si.waived_amount::numeric) - GREATEST(si.pending_received::numeric, COALESCE(tg.targeted, 0)::numeric)) AS sale_cap
+               -- ⚠ #182 折抵的「欠款归零」会把已结清行的 sale_amount 下调到实收，并同步把
+             -- pending_received 钉到同一个值，于是本式对该行自然得 cap = 0——它已结清，
+             -- **不应**再参与第二段 untargeted 分配（否则会吸走本该给同单欠款行的回款：
+             -- 两行各原价 ¥100 各实收 ¥50，A 折抵后再回款 ¥50，若 A 仍有产能会分成
+             -- A=¥75/B=¥75，而正确结果是 A=¥50/B=¥100，还可能让 B 少解锁权益甚至踩 D3）。
+             -- 保住该行 received 靠的是第一段按 pending_received 铺满，不是放大本式的上限。
+             GREATEST(0, si.sale_amount::numeric - GREATEST(si.pending_received::numeric, COALESCE(tg.targeted, 0)::numeric)) AS sale_cap
         FROM sale_items si
         LEFT JOIN tg ON tg.ref_sale_item_id = si.sale_item_id
         WHERE si.sale_order_id = ${saleOrderId} AND si.item_direction = '购买'
@@ -311,12 +324,23 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
                FROM sale_items out_item
                WHERE out_item.sale_order_id = ${saleOrderId} AND out_item.item_direction = '转出'
              ), 0)::numeric AS converted_value,
+             -- #182：被再次折抵（waived_amount > 0）的转入行已结清、其 received 已被钉住，
+             -- 不能参与重分摊。它的 sale_amount 已下调，若还算进 in_total 并按新权重重摊，
+             -- 该行 received 会被改小，而其 remaining_sessions 已注销为 0 → 立刻踩 D3。
              COALESCE((
                SELECT SUM(in_item.sale_amount::numeric)
                FROM sale_items in_item
                WHERE in_item.sale_order_id = ${saleOrderId} AND in_item.item_direction = '转入'
                  AND in_item.sale_amount::numeric > 0
-             ), 0)::numeric AS in_total
+                 AND in_item.waived_amount::numeric = 0
+             ), 0)::numeric AS in_total,
+             -- 已退出转入行占掉的实收，要从本轮可分配的 target 里扣除
+             COALESCE((
+               SELECT SUM(in_item.received::numeric)
+               FROM sale_items in_item
+               WHERE in_item.sale_order_id = ${saleOrderId} AND in_item.item_direction = '转入'
+                 AND in_item.waived_amount::numeric > 0
+             ), 0)::numeric AS waived_in_received
       FROM sale_orders so
       WHERE so.sale_order_id = ${saleOrderId}
     ),
@@ -325,7 +349,8 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
              si.sale_amount::numeric AS item_sale_amount,
              conversion_order.in_total,
              LEAST(conversion_order.in_total,
-                   conversion_order.converted_value + conversion_order.net_received) AS target_received,
+                   GREATEST(0, conversion_order.converted_value + conversion_order.net_received
+                               - conversion_order.waived_in_received)) AS target_received,
              ROW_NUMBER() OVER (ORDER BY si.sale_item_id) AS rn,
              COUNT(*) OVER () AS item_count
       FROM sale_items si
@@ -334,6 +359,7 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
         AND si.sale_order_id = ${saleOrderId}
         AND si.item_direction = '转入'
         AND si.sale_amount::numeric > 0
+        AND si.waived_amount::numeric = 0
     ),
     provisional AS (
       SELECT ranked.*,

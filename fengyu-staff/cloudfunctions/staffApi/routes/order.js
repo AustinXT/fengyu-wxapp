@@ -2427,7 +2427,10 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
   // 「开转换单 → 关闭」= 永久抹掉原单欠款。
   const restoredWaive = await client.query(
     `WITH waived AS (
-        SELECT ref_sale_item_id, SUM(waived_amount::numeric) AS waived
+        SELECT ref_sale_item_id,
+               SUM(waived_amount::numeric) AS waived,
+               -- 原行 pending_received 快照（新口径下同一行只折一次，MAX 即该次快照）
+               MAX(pending_received::numeric) AS orig_pending
           FROM sale_items
          WHERE sale_order_id = $1
            AND item_direction = '转出'
@@ -2436,7 +2439,7 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
         HAVING SUM(waived_amount::numeric) > 0
       ),
       locked_source AS (
-        SELECT src.sale_item_id, src.sale_order_id, waived.waived
+        SELECT src.sale_item_id, src.sale_order_id, waived.waived, waived.orig_pending
           FROM sale_items src
           JOIN waived ON waived.ref_sale_item_id = src.sale_item_id
          -- 与上面两段回滚、以及 createConversion 折抵同一把升序锁序
@@ -2447,6 +2450,8 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
         UPDATE sale_items src
            SET sale_amount = (src.sale_amount::numeric + locked_source.waived)::numeric(10, 2),
                waived_amount = (src.waived_amount::numeric - locked_source.waived)::numeric(10, 2),
+               -- 还原折抵时被钉住的 pending_received，避免永久改写 Branch B 的分摊权重
+               pending_received = locked_source.orig_pending::numeric(10, 2),
                updated_at = $2
           FROM locked_source
          WHERE src.sale_item_id = locked_source.sale_item_id
@@ -3107,7 +3112,14 @@ async function detail(ctx) {
            -- #182 刻意不限 out_item.product_type：疗程卡的已转走金额同样要从
            -- overpay 里扣掉，否则折走的余数能再退一次；纯余数转出行(quantity=0)也必须计入。
            AND conv_order.status <> '已关闭'
-      ), 0) AS converted_amount
+      ), 0) AS converted_amount,
+      COALESCE((
+        SELECT SUM(out_item.quantity) FROM sale_items out_item
+          JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+         WHERE out_item.ref_sale_item_id = si.sale_item_id
+           AND out_item.item_direction = '转出'
+           AND conv_order.status <> '已关闭'
+      ), 0)::int AS converted_quantity
     FROM sale_items si
     LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
     WHERE si.sale_order_id = $1
@@ -3415,7 +3427,15 @@ async function createRefund(ctx) {
                          AND out_item.item_direction = '转出'
                          -- #182 刻意不限 out_item.product_type：疗程卡的已转走金额同样要从
                          -- overpay 里扣掉，否则折走的余数能再退一次；纯余数转出行(quantity=0)也必须计入。
-                         AND conv_order.status <> '已关闭'), 0) AS converted_amount
+                         AND conv_order.status <> '已关闭'), 0) AS converted_amount,
+            -- #182：疗程卡的已消耗价值要先按**已转走次数**扣减，再加已转走金额，
+            -- 否则 (session_count − remaining_sessions) 与 converted_amount 双计 → overpay 被钳成 0
+            COALESCE((SELECT SUM(out_item.quantity)
+                        FROM sale_items out_item
+                        JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+                       WHERE out_item.ref_sale_item_id = si.sale_item_id
+                         AND out_item.item_direction = '转出'
+                         AND conv_order.status <> '已关闭'), 0)::int AS converted_quantity
        FROM sale_items si
       WHERE si.sale_order_id = $1 AND si.item_direction = '购买'`,
     [refSaleOrderId]
@@ -3765,6 +3785,14 @@ async function approveRefund(ctx) {
       if (qty > 0) homeRefundQty.set(it.saleItemId, (homeRefundQty.get(it.saleItemId) || 0) + qty)
     }
     {
+      // #182 锁序：先锁本单（sale_orders），再锁源行（sale_items）。项目约定
+      // sale_orders → sale_order_payments，入账路径与 createConversion / 关单回滚都已统一为
+      // 先锁 sale_orders；approveRefund 原本是 sale_items → sale_orders（后续 cascade /
+      // recalcPaidSessionsForOrder 才更新订单行），与它们互为反向 → 40P01。
+      await client.query(
+        `SELECT sale_order_id FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE`,
+        [refSaleOrderId],
+      )
       // 无条件锁：老退款单（无 note.items 且 ref_sale_item_id 为空）会让 homeRefundQty 为空，
       // 若因此跳过加锁就退回「createRefund 无锁定额 + cascade LEAST 静默封顶」的旧缺口。
       // 行锁本身即可把并发折抵挡在审批之外，成本也只是一条即将被更新的行的锁。
@@ -3798,7 +3826,14 @@ async function approveRefund(ctx) {
                      -- #182 刻意不限 out_item.product_type：疗程卡的已转走金额同样要从
                      -- overpay 里扣掉，否则折走的余数能再退一次；纯余数转出行(quantity=0)也必须计入。
                      AND conv_order.status <> '已关闭'
-                ), 0) AS converted_amount
+                ), 0) AS converted_amount,
+                COALESCE((
+                  SELECT SUM(out_item.quantity) FROM sale_items out_item
+                    JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+                   WHERE out_item.ref_sale_item_id = si.sale_item_id
+                     AND out_item.item_direction = '转出'
+                     AND conv_order.status <> '已关闭'
+                ), 0)::int AS converted_quantity
            FROM sale_items si
           WHERE si.sale_order_id = $1
             AND si.item_direction = '购买'`,
@@ -3830,6 +3865,7 @@ async function approveRefund(ctx) {
           received: r.received,
           picked_quantity: c ? c.picked_quantity : null,
           converted_amount: c ? c.converted_amount : null,
+          converted_quantity: c ? c.converted_quantity : null,
         }
         if (isHome) {
           const refundable = calculateUnusedQuantity(lockedSrc)
@@ -4556,6 +4592,7 @@ async function createConversion(ctx) {
               si.unit_real_price,
               si.sale_amount,
               si.received,
+              si.pending_received,
               si.sales_category,
               si.service_fee,
               si.is_shengmei,
@@ -4776,6 +4813,10 @@ async function createConversion(ctx) {
         // Δ 同时写在**转出行**的 waived_amount 上：原行那份是累计值，无法归因到具体转换单，
         // 关闭待支付转换单时要靠转出行这份才能只还原本单豁免掉的欠款。
         waiveAmount,
+        // 原行 pending_received 快照：欠款归零会把它钉到 received（保住 Branch B 第一段铺满），
+        // 关单回滚必须还原，否则历史行（原本 pending=0）的分摊权重被永久改写，
+        // 行级实收与 0040 视图 residual 随之漂移。同样只能记在转出行上才归因得到本单。
+        refPendingReceived: Math.round(Number(row.pending_received ?? 0) * 100) / 100,
       })
     }
 
@@ -5167,8 +5208,8 @@ async function createConversion(ctx) {
           sale_item_id, sale_order_id, store_id, item_direction, ref_sale_item_id,
           sku_id, product_name, product_type,
           session_count, unit_price, quantity, unit_real_price, sale_amount, received,
-          sales_category, service_fee, is_shengmei, is_experience, waived_amount
-        ) VALUES ($1, $2, $3, '转出', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+          sales_category, service_fee, is_shengmei, is_experience, waived_amount, pending_received
+        ) VALUES ($1, $2, $3, '转出', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
         [
           saleItemId, convOrderId, storeId, d.refSaleItemId,
           d.skuId, d.productName, d.productType,
@@ -5181,6 +5222,9 @@ async function createConversion(ctx) {
           d.isExperience === true,
           // #182：本次为该行豁免掉的原单欠款，关单回滚靠它归因到本张转换单
           d.waiveAmount,
+          // #182：原行 pending_received 快照。转出行自身不参与 STEP 1 的 caps（那里只取
+          // item_direction='购买' 的行），故借这一列存快照不影响任何既有计算。
+          d.refPendingReceived,
         ]
       )
       // 原子扣减原卡余量（幂等守卫：余量不足则 rowCount=0）。这里不能置 0：
