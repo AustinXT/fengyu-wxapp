@@ -827,10 +827,12 @@ describe('库存 SKU 来源与价格保护', () => {
     // (1.5-1)*20 = 10 → 返回第 11–30 条，而客户端 Pagination 内部 floor 后高亮第 1 页，
     // 用户看到的既不是第 1 页也不是第 2 页；`?page=Infinity` 直接把 SQL 打挂。
     const source = readFileSync(resolve(__dirname, 'engine.ts'), 'utf8')
-    const fn = source.slice(
-      source.indexOf('function normalizePage'),
-      source.indexOf('const NO_MOVEMENT_DOC_TYPES'),
-    )
+    // 右锚用「函数体自身的收尾 `\n}`」，不要用后面某个无关常量名 ——
+    // 拿 `const NO_MOVEMENT_DOC_TYPES` 当锚的话，日后有人在两者之间插入任何声明，
+    // slice 会把那段也吃进来，断言照绿，守护就悄悄失效了。
+    const fnStart = source.indexOf('function normalizePage')
+    expect(fnStart).toBeGreaterThan(-1)
+    const fn = source.slice(fnStart, source.indexOf('\n}', fnStart) + 2)
     expect(fn).toMatch(/Number\.isFinite\(value\)/)
     expect(fn).toMatch(/Math\.trunc/)
     // `Number.isFinite` 放行 1e308 这种有限但巨大的值，乘页长后 offset 溢出成 Infinity
