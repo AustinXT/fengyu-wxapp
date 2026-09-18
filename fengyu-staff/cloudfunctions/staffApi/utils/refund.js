@@ -83,13 +83,19 @@ function computeItemOverpayRemainders(origItems) {
     // #145/#153：家居的「已消耗价值」不能再用 picked_up_quantity × 单价——折抵带走的是
     // 「剩余已付」的实际金额（付 ¥450 折 4 件带走 ¥450，而 4 × 100 = 400），差额 ¥50 会被
     // 误判成多收余数再退一次。有聚合字段时按实际已提货金额 + 实际已转走金额算。
-    const hasConsumedDetail = it.product_type !== '疗程卡'
-      && (it.picked_quantity != null || it.converted_amount != null)
-    const consumedValue = hasConsumedDetail
-      ? Number(it.picked_quantity || 0) * unitRealPrice + (Number(it.converted_amount ?? 0) || 0)
-      : (it.product_type === '疗程卡'
-          ? Math.max(0, Number(it.session_count || 0) - Number(it.remaining_sessions || 0))
-          : Math.max(0, Number(it.picked_up_quantity || 0))) * unitRealPrice
+    // #182：**疗程卡的已转走金额也要计入已消耗价值**。折抵 = 整行退出后 remaining_sessions
+    // 归零，(session_count − remaining) 覆盖了被折走的次数，但它算的是**标价**价值；
+    // overpay 场景（received > sale_amount，如 7 次 × ¥398 实收 ¥3000）折走的是 ¥214 这笔
+    // 真实金额、且不动 remaining_sessions（Q=0 的纯余数行），不扣它就能折一次再退一次。
+    // converted_amount 缺省（历史调用方不传）时为 0，退回旧口径，零回归。
+    const convertedAmount = Number(it.converted_amount ?? 0) || 0
+    const hasConsumedDetail = it.picked_quantity != null || it.converted_amount != null
+    const consumedValue = it.product_type === '疗程卡'
+      ? Math.max(0, Number(it.session_count || 0) - Number(it.remaining_sessions || 0)) * unitRealPrice
+        + convertedAmount
+      : hasConsumedDetail
+        ? Number(it.picked_quantity || 0) * unitRealPrice + convertedAmount
+        : Math.max(0, Number(it.picked_up_quantity || 0)) * unitRealPrice
     const maxRefundableValue = calculateUnusedQuantity(it) * unitRealPrice
     result.set(it.sale_item_id, Math.max(0, roundMoney(received - consumedValue - maxRefundableValue)))
   }
