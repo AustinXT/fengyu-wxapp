@@ -60,6 +60,43 @@ export function offsetPageResult<Row>(
   }
 }
 
+export interface ExportKeysetPage<Row, Cursor> {
+  /** 切掉探测行后的本页数据 */
+  pageRows: Row[]
+  hasMore: boolean
+  nextCursor?: Cursor
+}
+
+/**
+ * Keyset（seek）分页切片。与 resolveExportOffsetPage + offsetPageResult 的区别：
+ * 游标是「上一页最后一行的排序键」而不是行序号，因此导出期间其它会话 INSERT / UPDATE
+ * 不会让已扫过的行重复输出或被整行跳过。
+ *
+ * 档案型导出必须用这个而不是 offset —— 它们的排序键是 updated_at / name 这类**可变列**，
+ * offset 翻页下任何一次改动都会让行在页间移位（详见 exportEmployees 上方的注释）。
+ *
+ * 用法：查询多取一行（`limit + 1`）作探测行，把原始行喂进来，游标从**源行**取，
+ * 这样导出行类型不必为了翻页而多带主键字段。
+ * 调用方负责保证排序键唯一（末位加主键即可），否则同键行会在页边界被吞掉。
+ */
+export function resolveExportKeysetPage<Row, Cursor>(
+  fetchedRows: Row[],
+  limit: number | null,
+  toCursor: (lastRow: Row) => Cursor,
+): ExportKeysetPage<Row, Cursor> {
+  if (limit == null) return { pageRows: fetchedRows, hasMore: false }
+
+  const hasMore = fetchedRows.length > limit
+  const pageRows = hasMore ? fetchedRows.slice(0, limit) : fetchedRows
+  // limit >= 1（resolveExportBatchLimit 保证）且 hasMore ⇒ pageRows 非空，游标必定给得出来。
+  // iterateExportPages 在 hasMore 而 nextCursor 缺失时会抛 INVALID_STATE，不会静默截断。
+  return {
+    pageRows,
+    hasMore,
+    ...(hasMore ? { nextCursor: toCursor(pageRows[pageRows.length - 1]) } : {}),
+  }
+}
+
 /**
  * Repeatedly fetches a bounded export page. A malformed page is treated as a
  * job failure instead of allowing the worker to loop forever.

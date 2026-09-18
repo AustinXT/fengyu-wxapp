@@ -4,7 +4,7 @@ import { db } from '@/db'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { saleOrders } from '@db/order'
 import { stores, orgNodes } from '@db/org'
-import { eq, and, or, desc, asc, inArray, sql, ilike, isNotNull, getTableColumns } from 'drizzle-orm'
+import { eq, and, or, gt, desc, asc, inArray, sql, ilike, isNull, isNotNull, getTableColumns } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import type { Customer, SaleOrder, SaleItem, Appointment, AuthSession, CustomerCoupon, CouponType, CouponStatus } from '@/lib/types'
 import { scopeCondition, isAdminScope, isInScope, requireAdmin } from '@/lib/permissions'
@@ -14,11 +14,12 @@ import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
 import { fmtDate } from '@/lib/datetime'
 import {
-  offsetPageResult,
-  resolveExportOffsetPage,
+  resolveExportBatchLimit,
+  resolveExportKeysetPage,
   type ExportBatchOptions,
   type ExportBatchResult,
 } from '@/lib/export-pagination'
+import { ApiError } from '@/lib/api-error'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { deriveHomeProductStatus, type CustomerHomeProduct } from '@/lib/home-product'
 import { businessErrorMessage } from '@/lib/action-error'
@@ -318,6 +319,47 @@ export const getCustomersPaginated = withPermission(
   },
 )
 
+/**
+ * 顾客导出的 keyset 游标 = 排序键 (name, userId)。
+ * name 可空且可被 updateCustomer 改写，靠不可变主键 userId 唯一化。
+ */
+export interface ExportCustomersCursor {
+  name: string | null
+  userId: string
+}
+
+function normalizeExportCustomersCursor(
+  cursor: ExportCustomersCursor | undefined,
+): ExportCustomersCursor | null {
+  if (!cursor) return null
+  // 只校验唯一化末位键；name 为 null 是合法游标（NULLS LAST 区间的行）
+  if (typeof cursor.userId !== 'string' || !cursor.userId) {
+    throw new ApiError('INVALID_STATE', '导出分页游标无效')
+  }
+  return { name: cursor.name ?? null, userId: cursor.userId }
+}
+
+/**
+ * ORDER BY name ASC, user_id ASC 的 seek 条件（PG 默认 ASC NULLS LAST）。
+ * 分两种情形，漏掉任一种都会静默丢行：
+ *   游标 name 非空 → 取 name 更大的、同名但 userId 更大的、以及**全部 name IS NULL**（它们排在最后）
+ *   游标 name 为空 → 已在 NULL 区，只取同为 NULL 且 userId 更大的
+ */
+function exportCustomerSeekCondition(cursor: ExportCustomersCursor): SQL {
+  const sameNameTail = and(
+    eq(clientWechatUsers.name, cursor.name as string),
+    gt(clientWechatUsers.userId, cursor.userId),
+  )
+  if (cursor.name === null) {
+    return and(isNull(clientWechatUsers.name), gt(clientWechatUsers.userId, cursor.userId)) as SQL
+  }
+  return or(
+    gt(clientWechatUsers.name, cursor.name),
+    sameNameTail,
+    isNull(clientWechatUsers.name),
+  ) as SQL
+}
+
 /** 顾客导出行（对应 14 列表头） */
 export interface ExportCustomerRow {
   name: string | null
@@ -334,11 +376,22 @@ export interface ExportCustomerRow {
   customerSource: string | null
   birthday: string | null
   /**
-   * 「注册日期」列：client_wechat_users.created_at 的日期部分。
-   * 语义是建档时间（首次 bindStore 落库；auth.login 不建行），WorkFine 迁移顾客则是迁移日。
+   * 「建档日期」列：client_wechat_users.created_at 的日期部分。
+   *
+   * 语义是本系统建档时刻——建行发生在 clientApi 的 `auth.bindPhone`（`auth.js` 绑手机号时
+   * INSERT），不是 `auth.login`（不落库行），也不是 `bindStore`（它要求行已存在且有 phone）。
+   * WorkFine 存量顾客则是首次同步日。刻意不叫「注册日期」：data-center 的「注册」指
+   * became_member_at（会员注册），两处同名会让甲方拿两张表对不上数。
    */
   createdAt: string | null
-  /** 「成为会员日期」列：became_member_at 的日期部分，非会员客为 null */
+  /**
+   * 「成为会员日期」列：became_member_at 的日期部分，非会员客为 null。
+   *
+   * ⚠️ 口径是「确立会员资格的首笔达标单」`COALESCE(paid_at, created_at)`，而历史订单的
+   * paid_at 写的是历史销售日 → 老顾客这一列会**早于**「建档日期」（prod 实测 1845 个会员客里
+   * 1476 个如此，最极端早 1457 天）。这是数据本来的样子，不是倒挂 bug：顾客 2022 年就在
+   * 线下成为会员，2026 年才被录入本系统。
+   */
   becameMemberAt: string | null
 }
 
@@ -349,29 +402,42 @@ export interface ExportCustomerRow {
  *   SUM(GREATEST(received - refunded_amount, 0)) FILTER (WHERE sale_order_type IN ('销售单','转换单'))
  * 含 WorkFine 历史单、不限支付状态，故数值与「消费档位」列严格对应。
  * 推荐人 = 关联员工当前姓名；关联失效或旧 client 仅写姓名时回退快照。
+ *
+ * 分页是 keyset（#183 从 offset 改过来）：排序键 name 可被改写、新顾客随时建档，
+ * offset 翻页会让边界行重复输出。keyset 下只有「导出途中恰好被改名」的那一行可能重复或漏掉。
  */
 export const exportCustomers = withPermission(
   'customer:list',
   async (
     session,
     params: Record<string, string | undefined>,
-    options?: ExportBatchOptions,
-  ): Promise<ExportBatchResult<ExportCustomerRow>> => {
+    options?: ExportBatchOptions<ExportCustomersCursor>,
+  ): Promise<ExportBatchResult<ExportCustomerRow, ExportCustomersCursor>> => {
     const filters = parseCustomerFilters(params)
-    const whereClause = and(...buildCustomerConditions(session, filters))
-    const page = resolveExportOffsetPage(options)
+    const limit = resolveExportBatchLimit(options?.limit)
+    const cursor = normalizeExportCustomersCursor(options?.cursor)
+    const whereClause = and(
+      ...buildCustomerConditions(session, filters),
+      ...(cursor ? [exportCustomerSeekCondition(cursor)] : []),
+    )
 
     const query = db
       .select(exportCustomerColumns)
       .from(clientWechatUsers)
       .where(whereClause)
-      // 例外：picker 字母序（与列表一致）；userId 让 worker 分页在同名顾客下保持稳定。
+      // 例外：picker 字母序（与列表一致）；userId 是 keyset 游标的唯一化末位键。
       .orderBy(asc(clientWechatUsers.name), asc(clientWechatUsers.userId))
-    const dataRows = page
-      ? await query.limit(page.limit + 1).offset(page.offset)
-      : await query
+    const fetchedRows = limit == null
+      ? await query
+      : await query.limit(limit + 1)
+    const { pageRows, hasMore, nextCursor } = resolveExportKeysetPage(
+      fetchedRows,
+      limit,
+      (lastRow) => ({ name: lastRow.name, userId: lastRow.userId }),
+    )
 
-    const userIds = dataRows.map((r) => r.userId)
+    // 补查只针对本页（探测行已切掉），避免多算一个顾客的累计消费
+    const userIds = pageRows.map((r) => r.userId)
 
     // 批量补查累计消费（spending_tier 口径，1 次聚合避免 N+1）
     const spendMap = new Map<string, string>()
@@ -390,7 +456,7 @@ export const exportCustomers = withPermission(
       }
     }
 
-    const rows: ExportCustomerRow[] = dataRows.map((r) => ({
+    const rows: ExportCustomerRow[] = pageRows.map((r) => ({
       name: r.name,
       phone: r.phone,
       storeName: r.storeName,
@@ -408,7 +474,12 @@ export const exportCustomers = withPermission(
       becameMemberAt: r.becameMemberAt ? fmtDate(r.becameMemberAt) : null,
     }))
 
-    return offsetPageResult(rows, page)
+    return {
+      rows,
+      truncated: false,
+      hasMore,
+      ...(nextCursor ? { nextCursor } : {}),
+    }
   },
 )
 
