@@ -2153,8 +2153,6 @@ async function detail(ctx) {
       si.remark,
       si.sales_category,
       si.picked_up_quantity,
-      si.refunded_quantity,
-      si.converted_quantity,
       (SELECT p.cover_image FROM mall_product_skus mps
        JOIN products p ON mps.product_id = p.product_id
        WHERE mps.sku_id = si.sku_id LIMIT 1) AS cover_image
@@ -2466,8 +2464,6 @@ async function appointableItems(ctx) {
       si.remark,
       si.sales_category,
       si.picked_up_quantity,
-      si.refunded_quantity,
-      si.converted_quantity,
       -- 行级欠款：仅「订单确实未付清」且「该卡未买满次数」时才算。
       -- 订单已付清但行 received 不足的是行级分摊缺口（已知数据问题），不是顾客欠款；
       -- 寄存单 total_amount<=0 → paid_sessions=session_count，天然不进此分支（其 sale_amount 只是原价快照）。
@@ -2568,8 +2564,6 @@ async function appointableItems(ctx) {
       remark: item.remark,
       salesCategory: item.sales_category,
       pickedUpQuantity: item.picked_up_quantity,
-      refundedQuantity: item.refunded_quantity,
-      convertedQuantity: item.converted_quantity,
       productKind: item.product_kind,
       categoryId: item.category_id,
       categoryName: item.category_name,

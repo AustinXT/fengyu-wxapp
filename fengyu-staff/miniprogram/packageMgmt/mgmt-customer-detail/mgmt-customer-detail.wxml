@@ -303,6 +303,8 @@
                   <text>已提 {{item.pickedQuantity}}{{item.unit}}</text>
                   <text>已付 {{item.paidQuantity}}{{item.unit}}</text>
                   <text>购买 {{item.purchasedQuantity}}{{item.unit}}</text>
+                  <text wx:if="{{item.convertedQuantity > 0}}">已转换 {{item.convertedQuantity}}{{item.unit}}</text>
+                  <text wx:if="{{item.refundedQuantity > 0}}">已退款 {{item.refundedQuantity}}{{item.unit}}</text>
                 </view>
                 <view wx:if="{{item.unpaidAmountFmt}}" class="home-product-unpaid">待付清 ¥{{item.unpaidAmountFmt}}</view>
                 <view class="home-product-meta">

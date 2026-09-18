@@ -32,8 +32,6 @@ interface OrderDetailItem {
   remark?: string | null;
   sales_category?: string | null;
   picked_up_quantity?: number | null;
-  refunded_quantity?: number | null;
-  converted_quantity?: number | null;
   // 视图字段（前端计算注入）
   used_sessions?: number;
   used_pct?: number;
@@ -246,8 +244,6 @@ Page({
           pending_received: sumGroupValue(group, (item) => item.pending_received),
           refunded_amount: sumGroupValue(group, (item) => item.refunded_amount),
           picked_up_quantity: sumGroupValue(group, (item) => item.picked_up_quantity),
-          refunded_quantity: sumGroupValue(group, (item) => item.refunded_quantity),
-          converted_quantity: sumGroupValue(group, (item) => item.converted_quantity),
           card_count: group.cardCount,
         };
         if (primary.product_type !== '疗程卡') return aggregate;

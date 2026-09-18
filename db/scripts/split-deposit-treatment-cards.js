@@ -326,6 +326,14 @@ async function inspect(client, saleItemId) {
     return { skip: '家居产品存在疗程次数字段' }
   }
 
+  // #154：本脚本只搬运 picked_up_quantity，拆出的子行两个新列会落默认 0。
+  // 家居行的 refunded_quantity / converted_quantity 一旦非零被拆走，那部分已结算额度就凭空消失
+  // → 整行重新变成可提可退（资损）。下方 unsafe 守卫只挡 pickup_records，挡不住这两类。
+  // 与其在这里补一套没法充分验证的分摊算法，不如照本脚本既有的 fail-closed 风格直接拒绝拆分。
+  if (Number(source.refunded_quantity ?? 0) !== 0 || Number(source.converted_quantity ?? 0) !== 0) {
+    return { skip: '存在已退款/已转换数量，拆分会丢失已结算额度' }
+  }
+
   const { rows: refCounts } = await client.query(
     `SELECT
        (SELECT count(*)::int FROM pickup_records WHERE sale_item_id = $1) AS pickups,

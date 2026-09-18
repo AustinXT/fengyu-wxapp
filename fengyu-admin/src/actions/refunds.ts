@@ -258,8 +258,7 @@ async function reconcileOrderStatusAfterRefund(tx: RefundTx, saleOrderId: string
                THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0)) * COALESCE(si.unit_real_price::numeric, 0)
                -- #154：「已消耗」= 已提货 + 已转换，**不含已退款**。拆列前 picked_up_quantity
                -- 把退款件数也算成已消耗，会抬高 retained_value 并压住「整行已退」的判定。
-               ELSE GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.converted_quantity, 0))
-                    * COALESCE(si.unit_real_price::numeric, 0)
+               ELSE GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.converted_quantity, 0)) * COALESCE(si.unit_real_price::numeric, 0)
              END AS consumed_value
         FROM sale_items si
         LEFT JOIN receipt_refunds rr ON rr.sale_item_id = si.sale_item_id

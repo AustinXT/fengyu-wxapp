@@ -3139,8 +3139,7 @@ async function reconcileOrderStatusAfterRefund(client, saleOrderId) {
                 THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0)) * COALESCE(si.unit_real_price::numeric, 0)
                 -- #154：「已消耗」= 已提货 + 已转换，**不含已退款**。拆列前 picked_up_quantity
                 -- 把退款件数也算成已消耗，会抬高 retained_value 并压住「整行已退」的判定。
-                ELSE GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.converted_quantity, 0))
-                     * COALESCE(si.unit_real_price::numeric, 0)
+                ELSE GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.converted_quantity, 0)) * COALESCE(si.unit_real_price::numeric, 0)
               END AS consumed_value
          FROM sale_items si
          LEFT JOIN receipt_refunds rr ON rr.sale_item_id = si.sale_item_id
@@ -4375,6 +4374,10 @@ async function createConversion(ctx) {
               si.session_count,
               si.remaining_sessions,
               si.quantity,
+              -- ⚠ 这里刻意不取 refunded_quantity / converted_quantity：staff 的折抵额度由下方
+              -- deductibleResult 的 SQL 整体算出（hp LATERAL 已按三列判未结算），JS 侧不参与计算。
+              -- admin 的同名查询要取这两列，是因为它在 JS 里调 homeDeductible()。
+              -- **本行的 picked_up_quantity 自 #154 起只是物理提货量，不要拿它当「已结算」用。**
               si.picked_up_quantity,
               si.unit_price,
               si.unit_real_price,
@@ -6038,7 +6041,6 @@ async function availablePickupItems(ctx) {
               si.quantity::int AS quantity,
               LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))::int AS settled_quantity,
               GREATEST(0, COALESCE(si.picked_up_quantity, 0))::int AS picked_quantity,
-              GREATEST(0, COALESCE(si.refunded_quantity, 0))::int AS refunded_quantity,
               GREATEST(0, COALESCE(si.converted_quantity, 0))::int AS converted_quantity,
               -- #145/#153：可提件数 = min(物理未结算, floor(剩余已付 / 单价))，与折抵额度同一口径。
               -- 按金额算而非「已付件数 − 已提 − 已折抵件数」：折抵金额含余数时两者不等，

@@ -17,6 +17,7 @@ import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
 import { hasPendingRefund } from '@/lib/refund-cascade'
+import { rowsAffected } from '@/lib/pg-rows'
 import { revalidatePath } from 'next/cache'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { INVENTORY_LINKAGE_ENABLED } from '@/lib/inventory-feature-flags'
@@ -501,7 +502,7 @@ export const getPickupRecordById = withPermission(
  * - 订单已支付
  * - item_direction = '购买'，或转换单的 item_direction = '转入'（#145/#153）
  * - product_type = '家居产品'
- * - 可提数量 = quantity - COALESCE(picked_up_quantity, 0) > 0
+ * - 可提数量 = quantity − 已结算（picked_up + refunded + converted）> 0
  */
 export interface AvailablePickupItem {
   saleItemId: string
@@ -581,7 +582,6 @@ export const getAvailablePickupItems = withPermission(
              si.quantity::int AS quantity,
              LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))::int AS settled_quantity,
              GREATEST(0, COALESCE(si.picked_up_quantity, 0))::int AS picked_quantity,
-             GREATEST(0, COALESCE(si.refunded_quantity, 0))::int AS refunded_quantity,
              GREATEST(0, COALESCE(si.converted_quantity, 0))::int AS converted_quantity,
              -- #145/#153：可提件数 = min(物理未结算, floor(剩余已付 / 单价))，与折抵额度同一口径。
              -- 按金额算而非「已付件数 − 已提 − 已折抵件数」：折抵金额含余数时两者不等，
@@ -1280,7 +1280,11 @@ export const deletePickupRecord = withPermission(
         const result = await tx
           .delete(pickupRecords)
           .where(and(eq(pickupRecords.id, id), scopeCondition(session, pickupRecords.storeId)))
-        if ((result as any).count === 0) {
+        // 必须走 rowsAffected：postgres.js 的 RowList 只有 .count，裸 `.count === 0` 在
+        // driver 变更/mock 漂移时会 `undefined === 0` → 静默放行守卫，而下一句照样把
+        // picked_up_quantity 减掉 → 记录没删却减了计数，直接破坏 #154 立的
+        // 「picked_up_quantity == SUM(pickup_records)」不变量并放出可提额度。
+        if (rowsAffected(result) === 0) {
           throw new Error('PICKUP_ROW_GONE')
         }
         // 回退已提数量（不低于 0）

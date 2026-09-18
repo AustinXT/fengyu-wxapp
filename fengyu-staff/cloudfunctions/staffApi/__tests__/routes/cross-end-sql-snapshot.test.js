@@ -2624,6 +2624,77 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
     )
   })
 
+  // ── #154 拆列后的三类守护 ──────────────────────────────────────────────
+  // 三者都是「漏改也全绿」的盲区：pr-ready 对抗评审各命中一次，故补成显式清单。
+
+  // ① 「已结算」表达式：11 个站点。该式是可提/可退/折抵三条闸门的共同分母，
+  //    漏掉任何一处都会让已退款或已折抵的额度重新放出来。
+  const SETTLED_EXPR =
+    'LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)'
+    + ' + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))'
+  const SETTLED_SITES = [
+    ['staff 顾客档案', FILES.staffCustomerJs, 3],
+    ['staff 管理层顾客档案', FILES.staffMgmtCustomerJs, 3],
+    ['client 我的家居产品', FILES.clientOrderJs, 3],
+    ['admin 顾客详情', FILES.adminCustomersTs, 3],
+    ['staff order.js（提货候选 + 三处持锁查询）', FILES.staffOrderJs, 6],
+    ['admin 提货候选与闸门', FILES.adminPickupRecordsTs, 5],
+  ]
+  test.each(SETTLED_SITES)('%s 的「已结算」表达式站点数不漂移', (_name, file, expected) => {
+    const src = normalizeSql(stripComments(readFile(file)))
+    expect(src.split(SETTLED_EXPR).length - 1, '「已结算」站点数变了').toBe(expected)
+  })
+
+  // ② 提货写侧守卫：三处 UPDATE 都必须按三列之和判不可超提。
+  //    只判 picked_up 会把已退款/已折抵占用的额度重新放出来提货。
+  test('提货写侧守卫按三列之和判不可超提（staff 2 处 + admin 2 处）', () => {
+    const staff = normalizeSql(stripComments(readFile(FILES.staffOrderJs)))
+    const admin = normalizeSql(stripComments(readFile(FILES.adminPickupRecordsTs)))
+    // normalizeSql 已把 $1 / ${data.pickupQuantity} 统一成 ?
+    const ADD_GUARD = 'AND (COALESCE(picked_up_quantity, 0) + COALESCE(refunded_quantity, 0)'
+      + ' + COALESCE(converted_quantity, 0) + ?) <= quantity'
+    const ZERO_GUARD = 'AND (COALESCE(picked_up_quantity, 0) + COALESCE(refunded_quantity, 0)'
+      + ' + COALESCE(converted_quantity, 0)) = 0'
+    // staff 两处累加式（createPickup 与折抵扣减），admin 一处（createPickupRecord）
+    expect(staff.split(ADD_GUARD).length - 1, 'staff 累加式守卫站点数漂移').toBe(2)
+    expect(admin.split(ADD_GUARD).length - 1, 'admin 累加式守卫站点数漂移').toBe(1)
+    for (const [end, src] of [['staff', staff], ['admin', admin]]) {
+      expect(src, `${end} 单件提货守卫未算三列之和`).toContain(ZERO_GUARD)
+    }
+    // 不得回退到只看单列的旧写法
+    expect(staff).not.toContain('AND (COALESCE(picked_up_quantity, 0) + ?) <= quantity')
+    expect(admin).not.toContain('AND COALESCE(picked_up_quantity, 0) = 0')
+  })
+
+  // ③ 「已消耗价值」：两端 SQL 必须是「已提货 + 已转换」，**不含已退款**
+  //    （received 已由 paid-sessions STEP 1.5 扣过逐项退款，再算一次就是重复扣减，顾客少退）。
+  test('consumed_value 双端同源且不含已退款', () => {
+    const EXPR = 'ELSE GREATEST(0, COALESCE(si.picked_up_quantity, 0)'
+      + ' + COALESCE(si.converted_quantity, 0)) * COALESCE(si.unit_real_price::numeric, 0)'
+      + ' END AS consumed_value'
+    for (const [end, file] of [['staff', FILES.staffOrderJs], ['admin', FILES.adminRefundsTs]]) {
+      const src = normalizeSql(stripComments(readFile(file)))
+      expect(src, `${end} consumed_value 未按「已提货 + 已转换」算`).toContain(EXPR)
+      // 把已退款也算成已消耗 = 重复扣减（received 已由 paid-sessions STEP 1.5 扣过逐项退款）
+      expect(src, `${end} consumed_value 把已退款也算进去了`).not.toContain(
+        'COALESCE(si.refunded_quantity, 0)) * COALESCE(si.unit_real_price::numeric, 0) END AS consumed_value',
+      )
+    }
+  })
+
+  // ④ admin 折抵候选闸门：与 staff 的 hp LATERAL 同口径（pr-ready 命中过一次两端分叉）
+  test('admin 折抵候选闸门按三列之和判未结算，且已提货金额直读列', () => {
+    // 这里刻意不用 normalizeSql：它会把 ${saleItems.xxx} 统一成 ?，断言就退化成一堆占位符。
+    const src = stripComments(readFile(FILES.adminCardsTs)).replace(/\s+/g, ' ')
+    expect(src, 'admin 折抵闸门未按三列之和判未结算').toContain(
+      '${saleItems.quantity} - (COALESCE(${saleItems.pickedUpQuantity}, 0)'
+      + ' + COALESCE(${saleItems.refundedQuantity}, 0) + COALESCE(${saleItems.convertedQuantity}, 0))',
+    )
+    expect(src, 'admin 折抵闸门的已提货金额仍在聚合 pickup_records').not.toContain(
+      'SELECT SUM(pr.pickup_quantity) FROM pickup_records pr',
+    )
+  })
+
   test('admin 折抵 helper 与 staff 同义，且两处闸门都走 helper', () => {
     const adminHelper = readFile(FILES.adminHomeProductTs).replace(/\s+/g, ' ')
     // 必须按「分」整除：staff 侧是 PG numeric 精确除法，JS 浮点直除会分叉
