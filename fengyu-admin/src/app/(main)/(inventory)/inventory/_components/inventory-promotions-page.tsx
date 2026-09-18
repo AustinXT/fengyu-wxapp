@@ -23,8 +23,11 @@ import { DataTable, type Column } from '@/components/ui/data-table'
 import { Dialog, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Input } from '@/components/ui/input'
+import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
 
 type EditorMode = 'create' | 'edit' | 'view' | null
 
@@ -165,7 +168,7 @@ export default function InventoryPromotionsPage({
   const handleSearchChange = useCallback((value: string) => {
     setSearchInput(value)
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
-    searchTimerRef.current = setTimeout(() => setMany({ q: value }), 300)
+    searchTimerRef.current = setTimeout(() => setMany({ q: value, page: '' }), 300)
   }, [setMany])
 
   const filteredRows = useMemo(() => {
@@ -181,6 +184,16 @@ export default function InventoryPromotionsPage({
         .some((value) => value!.toLowerCase().includes(keyword))
     })
   }, [get, rows, searchInput])
+
+  // 分页在**筛选之后**做：本页三个筛选都在上面的 useMemo 里，
+  // 若先切页再筛，用户只会筛到当前页那一屏的匹配项。
+  const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get('size'))) ? Number(get('size')) : 20
+  const rawPage = Math.max(1, Number(get('page', '1')) || 1)
+  // searchInput 是本地 state，打字时 filteredRows 立刻变短，而重置 page 的 setMany
+  // 要等 300ms debounce —— 这中间 page 会越界，不夹一下会闪一屏空列表。
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize))
+  const page = Math.min(rawPage, totalPages)
+  const pagedRows = filteredRows.slice((page - 1) * pageSize, page * pageSize)
 
   const canCreatePlan = canCreate && (canManageGlobal || marketOptions.length > 0)
   const readOnly = mode === 'view'
@@ -423,7 +436,7 @@ export default function InventoryPromotionsPage({
         <div className="flex flex-wrap items-center gap-2">
           <Select
             value={get('market')}
-            onChange={(event) => setMany({ market: event.target.value })}
+            onChange={(event) => setMany({ market: event.target.value, page: '' })}
             className="w-36"
             aria-label="适用市场筛选"
           >
@@ -434,7 +447,7 @@ export default function InventoryPromotionsPage({
           </Select>
           <Select
             value={get('status')}
-            onChange={(event) => setMany({ status: event.target.value })}
+            onChange={(event) => setMany({ status: event.target.value, page: '' })}
             className="w-28"
             aria-label="福利方案状态筛选"
           >
@@ -450,7 +463,7 @@ export default function InventoryPromotionsPage({
           />
           <Button variant="outline" onClick={() => {
             setSearchInput('')
-            setMany({ q: '', market: '', status: '' })
+            setMany({ q: '', market: '', status: '', page: '' })
           }}>
             重置
           </Button>
@@ -462,7 +475,15 @@ export default function InventoryPromotionsPage({
         </div>
       </div>
 
-      <DataTable columns={columns} data={filteredRows} emptyText="暂无市场报货福利方案" />
+      <DataTable columns={columns} data={pagedRows} emptyText="暂无市场报货福利方案" />
+      <Pagination
+        total={filteredRows.length}
+        page={page}
+        pageSize={pageSize}
+        pageSizeOptions={PAGE_SIZE_OPTIONS}
+        onPageChange={(next) => setMany({ page: String(next) })}
+        onPageSizeChange={(size) => setMany({ size: String(size), page: '' })}
+      />
 
       <Dialog open={mode !== null} onOpenChange={closeEditor} className="max-w-5xl">
         <DialogHeader>

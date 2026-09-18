@@ -1650,8 +1650,13 @@ export const listInventorySkuCompositions = withPermission(
   'inventory:stock_list',
   async (
     _session,
-    filters: { keyword?: string; status?: 'configured' | 'unconfigured' | 'invalid' } = {},
-  ): Promise<InventoryCompositionRow[]> => {
+    filters: {
+      keyword?: string
+      status?: 'configured' | 'unconfigured' | 'invalid'
+      page?: number
+      pageSize?: number
+    } = {},
+  ): Promise<{ data: InventoryCompositionRow[]; total: number }> => {
     const [productRows, componentRows] = await Promise.all([
       db
         .select({
@@ -1696,7 +1701,7 @@ export const listInventorySkuCompositions = withPermission(
     }
 
     const keyword = filters.keyword?.trim().toLocaleLowerCase() ?? ''
-    return productRows
+    const filtered = productRows
       .map((product): InventoryCompositionRow => {
         const components = componentsByProduct.get(product.productSkuId) ?? []
         const configurationStatus = components.length === 0
@@ -1722,6 +1727,19 @@ export const listInventorySkuCompositions = withPermission(
           component.inventorySkuSpecName ?? '',
         ]),
       ].some((value) => value.toLocaleLowerCase().includes(keyword)))
+
+    // ⚠️ 这里是**内存切片**，不是 SQL 分页 —— 上面两个 filter 依赖的
+    // `configurationStatus` 是按 components 算出来的派生字段，keyword 还要搜到
+    // components 内部，都没法下推成 WHERE。所以 total 必须取过滤**之后**的长度，
+    // 而不是 productRows.length。
+    // 家居 SKU 是低基数主数据（dev 现有 101 行），全量取回可接受；
+    // 若将来量级上来，得先把 configurationStatus 物化到列上才谈得上真正的 SQL 分页。
+    const pageSize = filters.pageSize
+    const offset = (Math.max(1, filters.page ?? 1) - 1) * (pageSize ?? 0)
+    return {
+      data: pageSize ? filtered.slice(offset, offset + pageSize) : filtered,
+      total: filtered.length,
+    }
   },
 )
 
@@ -3306,12 +3324,19 @@ function supplierRow(
   }
 }
 
+/**
+ * 供应商列表（#135 起返回 `{ data, total }`）。
+ *
+ * **`pageSize` 不给就不分页**，整份返回 —— 办理台的供应商下拉走的是同一个函数
+ * （operations/[level]/page.tsx），默认塞一个页长进去会把下拉静默截断，
+ * 用户在「自采产品入库」里就选不到排在后面的供应商了。
+ */
 export const listInventorySuppliers = withPermission(
   'inventory:stock_list',
   async (
     _session,
-    filters: { keyword?: string; onlyActive?: boolean } = {},
-  ): Promise<InventorySupplierRow[]> => {
+    filters: { keyword?: string; onlyActive?: boolean; page?: number; pageSize?: number } = {},
+  ): Promise<{ data: InventorySupplierRow[]; total: number }> => {
     const conditions: (SQL | undefined)[] = []
     if (filters.onlyActive ?? true) conditions.push(eq(inventorySuppliers.isActive, true))
     if (filters.keyword) {
@@ -3323,7 +3348,16 @@ export const listInventorySuppliers = withPermission(
       ))
     }
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined
-    const rows = await db
+
+    // 总数**不能**在 leftJoin 之后 count：join 会把一个供应商放大成 N 行（N = 关联 SKU 数），
+    // 「共 N 条」会比实际行数大一截。筛选条件只涉及 inventory_suppliers 自身的列，
+    // 所以直接对主表单独 count 既准确又比 count(distinct) 便宜。
+    const [totalRow] = await db
+      .select({ total: sql<number>`cast(count(*) as int)` })
+      .from(inventorySuppliers)
+      .where(whereClause)
+
+    const query = db
       .select({
         supplier: inventorySuppliers,
         // 停用前要提示「仍有 N 个 SKU 在用」（#132）。含已停用的 SKU：
@@ -3335,7 +3369,15 @@ export const listInventorySuppliers = withPermission(
       .where(whereClause)
       .groupBy(inventorySuppliers.supplierId)
       .orderBy(asc(inventorySuppliers.name))
-    return rows.map((row) => supplierRow({ ...row.supplier, linkedSkuCount: row.linkedSkuCount }))
+
+    const pageSize = filters.pageSize
+    const rows = pageSize
+      ? await query.limit(pageSize).offset((Math.max(1, filters.page ?? 1) - 1) * pageSize)
+      : await query
+    return {
+      data: rows.map((row) => supplierRow({ ...row.supplier, linkedSkuCount: row.linkedSkuCount })),
+      total: totalRow?.total ?? 0,
+    }
   },
 )
 
@@ -3719,6 +3761,14 @@ async function promotionPlanRows(
   }))
 }
 
+/**
+ * 福利方案列表 —— **刻意保持全量返回**，分页在组件侧做（#135）。
+ *
+ * 这一页的关键词 / 市场 / 状态三个筛选都在客户端 useMemo 里算
+ * （inventory-promotions-page.tsx 的 filteredRows）。要是在这里先按页切 20 条、
+ * 再让客户端去筛，用户筛到的就只是当前页那 20 条里的匹配项，翻页还会看到不同结果 ——
+ * 分页必须发生在筛选**之后**。方案是低基数配置数据，全量返回代价可忽略。
+ */
 export const listInventoryPromotionPlans = withPermission(
   'inventory:stock_list',
   async (session): Promise<InventoryPromotionPlanRow[]> => promotionPlanRows(session),

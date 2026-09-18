@@ -18,6 +18,7 @@ import { Button } from '@/components/ui/button'
 import { DataTable, type Column } from '@/components/ui/data-table'
 import { Dialog, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { Pagination } from '@/components/ui/pagination'
 import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
@@ -30,6 +31,8 @@ interface SupplierForm {
   isActive: boolean
   remark: string
 }
+
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
 
 const emptyForm: SupplierForm = {
   name: '',
@@ -57,15 +60,21 @@ function optionalText(value: string): string | null {
 
 export default function InventorySuppliersPage({
   rows,
+  total,
   canCreate,
   canUpdate,
 }: {
   rows: InventorySupplierRow[]
+  total: number
   canCreate: boolean
   canUpdate: boolean
 }) {
   const router = useRouter()
   const { get, setMany } = useUrlFilters()
+  const page = Math.max(1, Number(get('page', '1')) || 1)
+  const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get('size')))
+    ? Number(get('size'))
+    : 20
   const [searchInput, setSearchInput] = useState(get('q'))
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -91,7 +100,8 @@ export default function InventorySuppliersPage({
   const handleSearchChange = useCallback((value: string) => {
     setSearchInput(value)
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
-    searchTimerRef.current = setTimeout(() => setMany({ q: value }), 300)
+    // 换了搜索词就回第一页：否则停在第 3 页而新结果只有 1 页时，列表会显示为空
+    searchTimerRef.current = setTimeout(() => setMany({ q: value, page: '' }), 300)
   }, [setMany])
 
   // 编辑弹窗里「把启用开关切到停用」是另一条停用入口，必须和列表那条受同样的门禁：
@@ -255,7 +265,7 @@ export default function InventorySuppliersPage({
         <div className="flex flex-wrap items-center gap-2">
           <Select
             value={get('status')}
-            onChange={(event) => setMany({ status: event.target.value })}
+            onChange={(event) => setMany({ status: event.target.value, page: '' })}
             className="w-28"
             aria-label="供应商状态筛选"
           >
@@ -271,7 +281,7 @@ export default function InventorySuppliersPage({
           />
           <Button variant="outline" onClick={() => {
             setSearchInput('')
-            setMany({ q: '', status: '' })
+            setMany({ q: '', status: '', page: '' })
           }}>
             重置
           </Button>
@@ -284,6 +294,14 @@ export default function InventorySuppliersPage({
       </div>
 
       <DataTable columns={columns} data={rows} emptyText="暂无供应商" />
+      <Pagination
+        total={total}
+        page={page}
+        pageSize={pageSize}
+        pageSizeOptions={PAGE_SIZE_OPTIONS}
+        onPageChange={(next) => setMany({ page: String(next) })}
+        onPageSizeChange={(size) => setMany({ size: String(size), page: '' })}
+      />
 
       <Dialog open={dialogOpen} onOpenChange={closeDialog} className="max-w-2xl">
         <DialogHeader>

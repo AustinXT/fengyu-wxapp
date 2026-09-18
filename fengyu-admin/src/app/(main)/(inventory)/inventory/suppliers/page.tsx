@@ -19,10 +19,12 @@ export default async function Page({
     : params.status === 'inactive'
       ? false
       : undefined
+  const page = params.page ? Number(params.page) : 1
+  const pageSize = params.size ? Number(params.size) : 20
   const session = await getSession()
   requireAllUiPageCapabilities(session, ['inventory:stock_list'])
-  const [rows] = await Promise.all([
-    listInventorySuppliers({ keyword: params.q, onlyActive }),
+  const [suppliers] = await Promise.all([
+    listInventorySuppliers({ keyword: params.q, onlyActive, page, pageSize }),
   ])
   const canCreate = hasUiCapability(session.permissions.actions, 'inventory:supply_chain_master_data_manage')
   const canUpdate = canCreate
@@ -31,7 +33,12 @@ export default async function Page({
     <div className="p-6">
       <InventoryMasterDataTabs />
       <Suspense>
-        <InventorySuppliersPage rows={rows} canCreate={canCreate} canUpdate={canUpdate} />
+        <InventorySuppliersPage
+          rows={suppliers.data}
+          total={suppliers.total}
+          canCreate={canCreate}
+          canUpdate={canUpdate}
+        />
       </Suspense>
     </div>
   )

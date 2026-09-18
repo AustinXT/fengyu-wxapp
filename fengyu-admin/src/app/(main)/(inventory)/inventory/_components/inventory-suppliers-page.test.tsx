@@ -62,6 +62,7 @@ describe('InventorySuppliersPage（#132 关联 SKU 计数）', () => {
           supplier({ supplierId: 'SUP-1', name: '有关联的', linkedSkuCount: 3 }),
           supplier({ supplierId: 'SUP-2', name: '没关联的', linkedSkuCount: 0 }),
         ]}
+        total={2}
         canCreate
         canUpdate
       />,
@@ -74,7 +75,7 @@ describe('InventorySuppliersPage（#132 关联 SKU 计数）', () => {
   it('停用仍被引用的供应商时提示关联数，但不阻止停用', async () => {
     mockCountSkus.mockResolvedValue(5)
     render(
-      <InventorySuppliersPage rows={[supplier({ linkedSkuCount: 5 })]} canCreate canUpdate />,
+      <InventorySuppliersPage rows={[supplier({ linkedSkuCount: 5 })]} total={1} canCreate canUpdate />,
     )
     fireEvent.click(screen.getByRole('button', { name: /停用/ }))
 
@@ -91,7 +92,7 @@ describe('InventorySuppliersPage（#132 关联 SKU 计数）', () => {
     // 页面加载时是 0，但别人刚关联了 3 个 —— 拿旧值会显示不出提示
     mockCountSkus.mockResolvedValue(3)
     render(
-      <InventorySuppliersPage rows={[supplier({ linkedSkuCount: 0 })]} canCreate canUpdate />,
+      <InventorySuppliersPage rows={[supplier({ linkedSkuCount: 0 })]} total={1} canCreate canUpdate />,
     )
     fireEvent.click(screen.getByRole('button', { name: /停用/ }))
 
@@ -103,7 +104,7 @@ describe('InventorySuppliersPage（#132 关联 SKU 计数）', () => {
     // 打开弹窗时是 0，改了半天电话期间别人关联了 3 个 —— 切停用时必须重新拉
     mockCountSkus.mockResolvedValueOnce(0).mockResolvedValueOnce(3)
     render(
-      <InventorySuppliersPage rows={[supplier({ linkedSkuCount: 0 })]} canCreate canUpdate />,
+      <InventorySuppliersPage rows={[supplier({ linkedSkuCount: 0 })]} total={1} canCreate canUpdate />,
     )
     fireEvent.click(screen.getByRole('button', { name: /编辑/ }))
     await waitFor(() => expect(mockCountSkus).toHaveBeenCalledTimes(1))
@@ -116,7 +117,7 @@ describe('InventorySuppliersPage（#132 关联 SKU 计数）', () => {
   it('核对未完成前不能确认停用', () => {
     mockCountSkus.mockReturnValue(new Promise(() => {}))
     render(
-      <InventorySuppliersPage rows={[supplier({ linkedSkuCount: 0 })]} canCreate canUpdate />,
+      <InventorySuppliersPage rows={[supplier({ linkedSkuCount: 0 })]} total={1} canCreate canUpdate />,
     )
     fireEvent.click(screen.getByRole('button', { name: /停用/ }))
 
@@ -128,7 +129,7 @@ describe('InventorySuppliersPage（#132 关联 SKU 计数）', () => {
     // 且用的必须是**实时**值：列表行带的是 0（页面加载时的旧值），实时核对是 7
     mockCountSkus.mockResolvedValue(7)
     render(
-      <InventorySuppliersPage rows={[supplier({ linkedSkuCount: 0 })]} canCreate canUpdate />,
+      <InventorySuppliersPage rows={[supplier({ linkedSkuCount: 0 })]} total={1} canCreate canUpdate />,
     )
     fireEvent.click(screen.getByRole('button', { name: /编辑/ }))
     expect(mockCountSkus).toHaveBeenCalledWith('SUP-1')
@@ -152,6 +153,7 @@ describe('InventorySuppliersPage（#132 关联 SKU 计数）', () => {
           supplier({ supplierId: 'SUP-A', name: '甲公司' }),
           supplier({ supplierId: 'SUP-B', name: '乙公司' }),
         ]}
+        total={1}
         canCreate
         canUpdate
       />,
@@ -168,7 +170,7 @@ describe('InventorySuppliersPage（#132 关联 SKU 计数）', () => {
 
   it('无关联时不显示关联提示', async () => {
     render(
-      <InventorySuppliersPage rows={[supplier({ linkedSkuCount: 0 })]} canCreate canUpdate />,
+      <InventorySuppliersPage rows={[supplier({ linkedSkuCount: 0 })]} total={1} canCreate canUpdate />,
     )
     fireEvent.click(screen.getByRole('button', { name: /停用/ }))
     await waitFor(() => expect(mockCountSkus).toHaveBeenCalled())

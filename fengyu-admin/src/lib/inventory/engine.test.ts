@@ -753,10 +753,43 @@ describe('库存 SKU 来源与价格保护', () => {
       source.indexOf('export const listInventorySuppliers'),
       source.indexOf('export const listInventorySupplierOptions'),
     )
-    expect(listBlock).toMatch(/count\(\$\{inventorySkus\.skuId\}\)/)
-    expect(listBlock).not.toMatch(/count\(\*\)/)
+    expect(listBlock).toMatch(/linkedSkuCount: sql<number>`cast\(count\(\$\{inventorySkus\.skuId\}\) as int\)`/)
+    // 守的是 linkedSkuCount 这一处，不是整个函数块：#135 加的「共 N 条」总数查询
+    // 也用 count(*)，但它对主表单独 count（见下一条），是正确用法。
+    expect(listBlock).not.toMatch(/linkedSkuCount: sql<number>`cast\(count\(\*\)/)
     // 同时确认是 leftJoin（inner join 会让无关联的供应商整行消失）
     expect(listBlock).toMatch(/leftJoin\(inventorySkus/)
+  })
+
+  it('供应商总数查询绕开 leftJoin（否则「共 N 条」会被关联 SKU 放大）', () => {
+    // 这条拦的是「顺手把 total 塞进主查询」：leftJoin 之后 count(*) 数的是 join 后的行数，
+    // 一个有 3 个关联 SKU 的供应商会被算成 3 条，分页总数与页数全错。
+    const source = readFileSync(resolve(__dirname, 'engine.ts'), 'utf8')
+    const listBlock = source.slice(
+      source.indexOf('export const listInventorySuppliers'),
+      source.indexOf('export const listInventorySupplierOptions'),
+    )
+    const totalBlock = listBlock.slice(
+      listBlock.indexOf('const [totalRow]'),
+      listBlock.indexOf('const query ='),
+    )
+    expect(totalBlock).toMatch(/count\(\*\)/)
+    expect(totalBlock).not.toMatch(/leftJoin/)
+  })
+
+  it('pageSize 缺省时不加 limit（办理台下拉要整份名单）', () => {
+    // 办理台的供应商下拉与列表页共用 listInventorySuppliers。给它兜一个默认页长，
+    // 「自采产品入库」里排在 20 名之后的供应商就会静默消失、且没有任何报错。
+    const source = readFileSync(resolve(__dirname, 'engine.ts'), 'utf8')
+    const listBlock = source.slice(
+      source.indexOf('export const listInventorySuppliers'),
+      source.indexOf('export const listInventorySupplierOptions'),
+    )
+    expect(listBlock).toMatch(/const pageSize = filters\.pageSize\b/)
+    expect(listBlock).toMatch(/pageSize\s*\n?\s*\?\s*await query\.limit\(pageSize\)/)
+    expect(listBlock).toMatch(/:\s*await query\b/)
+    // 不得出现 `filters.pageSize ?? 20` 这类默认值
+    expect(listBlock).not.toMatch(/filters\.pageSize\s*\?\?/)
   })
 
   it('SKU 列表的 supplierName 来自档案表 JOIN，不是 SKU 自己的冗余列', () => {
@@ -783,32 +816,59 @@ describe('库存 SKU 来源与价格保护', () => {
     expect(block).toMatch(/\.where\(eq\(inventorySkus\.supplierId, supplierId\)\)/)
   })
 
-  it('供应商列表把 linkedSkuCount 映射进返回行', async () => {
-    mockDb.select.mockReturnValueOnce({
-      from: () => ({
-        leftJoin: () => ({
-          where: () => ({
-            groupBy: () => ({
-              orderBy: async () => [
-                {
-                  supplier: {
-                    supplierId: 'SUP-1', name: '甲公司', contactName: null, phone: null,
-                    address: null, isActive: true, remark: null,
-                    createdAt: new Date('2026-08-01T00:00:00Z'),
-                    updatedAt: new Date('2026-08-01T00:00:00Z'),
+  it('供应商列表把 linkedSkuCount 映射进返回行，并附带总数', async () => {
+    // 两次 db.select：先总数（from→where，无 join），再列表（from→leftJoin→…）。
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({ where: async () => [{ total: 7 }] }),
+      } as never)
+      .mockReturnValueOnce({
+        from: () => ({
+          leftJoin: () => ({
+            where: () => ({
+              groupBy: () => ({
+                orderBy: async () => [
+                  {
+                    supplier: {
+                      supplierId: 'SUP-1', name: '甲公司', contactName: null, phone: null,
+                      address: null, isActive: true, remark: null,
+                      createdAt: new Date('2026-08-01T00:00:00Z'),
+                      updatedAt: new Date('2026-08-01T00:00:00Z'),
+                    },
+                    linkedSkuCount: 3,
                   },
-                  linkedSkuCount: 3,
-                },
-              ],
+                ],
+              }),
             }),
           }),
         }),
-      }),
-    } as never)
+      } as never)
 
-    await expect(listInventorySuppliers({})).resolves.toEqual([
-      expect.objectContaining({ supplierId: 'SUP-1', linkedSkuCount: 3 }),
-    ])
+    await expect(listInventorySuppliers({})).resolves.toEqual({
+      data: [expect.objectContaining({ supplierId: 'SUP-1', linkedSkuCount: 3 })],
+      total: 7,
+    })
+  })
+
+  it('不传 pageSize 时不调用 limit', async () => {
+    // 变异守护：给 listInventorySuppliers 兜一个默认页长的话，这里的 limit 会被调用。
+    const limit = vi.fn()
+    mockDb.select
+      .mockReturnValueOnce({ from: () => ({ where: async () => [{ total: 0 }] }) } as never)
+      .mockReturnValueOnce({
+        from: () => ({
+          leftJoin: () => ({
+            where: () => ({
+              groupBy: () => ({
+                orderBy: () => Object.assign(Promise.resolve([]), { limit }),
+              }),
+            }),
+          }),
+        }),
+      } as never)
+
+    await listInventorySuppliers({})
+    expect(limit).not.toHaveBeenCalled()
   })
 
   it('创建后不能跨市场或转换库存 SKU 来源', async () => {
