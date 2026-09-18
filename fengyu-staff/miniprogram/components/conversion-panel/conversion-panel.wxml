@@ -99,7 +99,7 @@
           <text class="conv-card-name">{{item.productName}}</text>
           <view class="conv-card-meta">
             <text wx:if="{{item.productType === '疗程卡'}}" class="conv-card-remain">剩余 {{item.remainingSessions}} {{item.unit || '次'}}</text>
-            <text wx:else class="conv-card-remain">未提货 {{item.remainingQuantity}} {{item.unit || '盒'}}</text>
+            <text wx:else class="conv-card-remain">可折抵 {{item.remainingQuantity}} {{item.unit || '盒'}}</text>
             <text wx:if="{{item.productType === '疗程卡'}}" class="conv-card-remain">· 共 {{item.cardCount || 1}} 张</text>
             <text wx:elif="{{item.sourceItems.length > 1}}" class="conv-card-remain">· 可拆 {{item.sourceItems.length}} 行</text>
             <text class="conv-card-unit">· 单{{item.unit || '次'}}价 ¥{{item.unitRealPrice}}</text>

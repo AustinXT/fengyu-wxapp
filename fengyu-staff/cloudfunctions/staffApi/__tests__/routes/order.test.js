@@ -5915,7 +5915,9 @@ describe('order.createConversion', () => {
 
     expect(ctx.result.totalOut).toBe(300)
     const heldLock = txCalls.find((call) => call.sql.includes('FOR UPDATE OF si'))
-    expect(heldLock.sql).not.toMatch(/GROUP BY|SUM\s*\(/)
+    // held 锁行查询不得在**顶层**聚合（会改变返回行数与锁定范围）。
+    // #145/#153 的 hp LATERAL 内有标量 SUM——每行一个值，不影响行数，属允许范围。
+    expect(heldLock.sql).not.toMatch(/\n\s*GROUP BY/)
     expect(heldLock.sql).toMatch(/ORDER BY si\.sale_item_id\s+FOR UPDATE OF si/)
     const reservedQuery = txCalls.find((call) => call.sql.includes('GROUP BY sit.sale_item_id'))
     expect(reservedQuery.sql).not.toMatch(/FOR UPDATE/)
@@ -6962,7 +6964,10 @@ describe('order.createPickup', () => {
           return { rows: [{
             sale_item_id: 'item-partial', sale_order_id: 'FY-PARTIAL', store_id: 'store-001',
             product_type: '家居产品', item_direction: '购买', quantity: 10,
-            settled_quantity: 0, picked_quantity: 0, paid_quantity: 2, order_status: '部分支付',
+            settled_quantity: 0, picked_quantity: 0, order_status: '部分支付',
+            // #145/#153：可提件数按「剩余已付 / 单价」算 —— 10 件 ¥100，实收 ¥200 → 2 件
+            sale_order_type: '销售单', sale_amount: '1000', unit_real_price: '100',
+            received: '200', converted_amount: '0',
           }], rowCount: 1 }
         }
         return { rows: [], rowCount: 0 }
@@ -6997,7 +7002,7 @@ describe('提货查询门店范围', () => {
 
     expect(pg.query.mock.calls[0][0]).toMatch(/o\.store_id\s*=\s*\$2/)
     expect(pg.query.mock.calls[0][0]).toContain("o.status IN ('已支付', '部分支付', '已完成')")
-    expect(pg.query.mock.calls[0][0]).toContain('GREATEST(paid_quantity - picked_quantity, 0)')
+    expect(pg.query.mock.calls[0][0]).toContain('row_pending_pickup AS pending_pickup_quantity')
     expect(pg.query.mock.calls[0][1]).toEqual(['customer-001', 'store-001'])
   })
 
@@ -7794,28 +7799,61 @@ describe('order.createConversion — 家居产品折抵（#125）', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
   /**
-   * 源行：家居产品 10 盒、已结算（提货+退款）3 盒 → 未提货 7 盒，单价 100 → 折抵 700。
+   * 源行：家居产品 10 盒、已结算（提货+退款+已折抵）3 盒，单价 100，行应付 1000。
+   * 默认已付清（received=1000）→ 可折抵 10−3 = 7 盒、金额 1000−3×100 = 700。
    * 转入：sku-new 疗程卡 1 次 300 → 差额 -400（旧值高，走储值卡补差）。
+   *
+   * ⚠ `home_deductible_quantity` / `home_deductible_amount` 是锁行 SQL 里算好的列
+   * （#145/#153 收紧口径）。这里按同一公式在 JS 侧复算，改 overrides 时自动跟随；
+   * SQL 表达式本身由 cross-end snapshot + L2 smoke 守护。
    */
   function mockHomeProductConversion(overrides = {}) {
     const calls = []
+    const row = {
+      sale_item_id: 'item-home-1', sale_order_id: 'order-old', store_id: 'store-001',
+      item_direction: '购买',
+      sku_id: 'sku-home', product_name: '家居精华', product_type: '家居产品',
+      session_count: null, remaining_sessions: null,
+      quantity: 10, picked_up_quantity: 3,
+      unit_price: '120', unit_real_price: '100', sale_amount: '1000', received: '1000',
+      // 默认 3 件已结算且全部来自物理提货；退款/折抵场景由各用例显式覆盖
+      home_picked_quantity: 3, home_converted_amount: '0',
+      sales_category: '自销自耗', service_fee: '0',
+      client_user_id: 'cu-001', sale_order_type: '销售单',
+      order_status: '已支付', product_kind: '家居',
+      ...overrides,
+    }
+    const qty = Number(row.quantity)
+    const settled = Number(row.picked_up_quantity || 0)
+    const picked = Number(row.home_picked_quantity || 0)
+    const convertedAmount = Number(row.home_converted_amount || 0)
+    const unit = Number(row.unit_real_price)
+    const amt = Number(row.sale_amount)
+    const recv = Number(row.received)
+    const depositOrGift = row.sale_order_type === '寄存单' || amt <= 0
+    const physicalRemaining = Math.max(0, qty - settled)
+    // 剩余已付 = 行实收 − 已提货金额 − 已转走金额（退款不在此处扣，received 已扣过）
+    const remainingPaid = Math.max(0, recv - picked * unit - convertedAmount)
+    row.home_deductible_quantity = depositOrGift
+      ? physicalRemaining
+      : (unit > 0 ? Math.min(physicalRemaining, Math.floor(remainingPaid / unit)) : 0)
+    row.home_deductible_amount = String(depositOrGift ? unit * physicalRemaining : remainingPaid)
+
     pg.transaction.mockImplementationOnce(async (cb) => cb({
       query: vi.fn(async (sql, params) => {
         calls.push({ sql, params })
         if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
         if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
         if (sql.includes('FROM sale_items si') && sql.includes('FOR UPDATE OF si')) {
+          return { rows: [row], rowCount: 1 }
+        }
+        // #145/#153：折抵额度在锁取得后用独立语句复算（新快照），仅家居行触发
+        if (sql.includes('home_deductible_quantity')) {
           return {
             rows: [{
-              sale_item_id: 'item-home-1', sale_order_id: 'order-old', store_id: 'store-001',
-              item_direction: '购买',
-              sku_id: 'sku-home', product_name: '家居精华', product_type: '家居产品',
-              session_count: null, remaining_sessions: null,
-              quantity: 10, picked_up_quantity: 3,
-              unit_price: '120', unit_real_price: '100', sales_category: '自销自耗', service_fee: '0',
-              client_user_id: 'cu-001', sale_order_type: '销售单',
-              order_status: '已支付', product_kind: '家居',
-              ...overrides,
+              sale_item_id: row.sale_item_id,
+              home_deductible_quantity: row.home_deductible_quantity,
+              home_deductible_amount: row.home_deductible_amount,
             }],
             rowCount: 1,
           }
@@ -7851,7 +7889,7 @@ describe('order.createConversion — 家居产品折抵（#125）', () => {
     return ctx
   }
 
-  test('按未提货数量整行折抵：7 盒 × 100 = 700，转出行金额为负', async () => {
+  test('付清的家居行按未结算件数折抵：7 盒 × 100 = 700，转出行金额为负', async () => {
     const ctx = homeConversionCtx()
     const calls = mockHomeProductConversion()
 
@@ -7898,6 +7936,54 @@ describe('order.createConversion — 家居产品折抵（#125）', () => {
     expect(outInsert.params).toEqual(expect.arrayContaining([7, -700]))
   })
 
+  // #145/#153 收紧：折抵以「已付未结算」为准。旧口径按未提货数量全额折抵，会把
+  // 未兑现价值洗成全额可提（10 件 ¥1000 只付 ¥400 → 折 ¥1000 换等额家居 → 新行全可提）。
+  test('#145 未付清：折抵件数按已付整件数收敛（10 件付 600 已结算 3 → 折 3 件）', async () => {
+    const ctx = homeConversionCtx()
+    // received 600 / sale_amount 1000 → 已付整件数 6；已结算 3 → 可折 3 件
+    const calls = mockHomeProductConversion({ order_status: '部分支付', received: '600' })
+
+    await orderRoutes.createConversion(ctx)
+
+    const outInsert = calls.find(({ sql }) =>
+      sql.includes('INSERT INTO sale_items') && sql.includes("'转出'"))
+    expect(outInsert).toBeDefined()
+    // 金额 = 已付 600 − 已结算 3 × 100 = 300（不是旧口径的 7 × 100 = 700）
+    expect(outInsert.params).toEqual(expect.arrayContaining([3, -300]))
+    // 折抵 300 − 转入 300 = 0
+    expect(ctx.result.priceDiff).toBe(0)
+  })
+
+  // 用户 2026-09-14 拍板：件数向下取整，金额含不足一整件的已付余数，顾客付的钱一分不丢。
+  test('#145 折抵金额含不足一整件的已付余数（付 450 → 折 4 件 / ¥450）', async () => {
+    const ctx = homeConversionCtx()
+    // received 450 / sale_amount 1000 → 已付整件数 4（450 → 4.5 件向下取整）；已结算 0
+    const calls = mockHomeProductConversion({
+      order_status: '部分支付', received: '450', picked_up_quantity: 0, home_picked_quantity: 0,
+    })
+
+    await orderRoutes.createConversion(ctx)
+
+    const outInsert = calls.find(({ sql }) =>
+      sql.includes('INSERT INTO sale_items') && sql.includes("'转出'"))
+    expect(outInsert).toBeDefined()
+    // 件数 4（向下取整），金额 450（含不足一件的 ¥50 余数，而非 4 × 100 = 400）
+    expect(outInsert.params).toEqual(expect.arrayContaining([4, -450]))
+  })
+
+  // 寄存单与 0 元赠品行没有"实收"可言，维持原口径（单价 × 未结算件数），否则折抵额恒为 0
+  test('#145 寄存单维持原口径：按单价 × 未结算件数折抵', async () => {
+    const ctx = homeConversionCtx()
+    const calls = mockHomeProductConversion({ sale_order_type: '寄存单', received: '0' })
+
+    await orderRoutes.createConversion(ctx)
+
+    const outInsert = calls.find(({ sql }) =>
+      sql.includes('INSERT INTO sale_items') && sql.includes("'转出'"))
+    expect(outInsert).toBeDefined()
+    expect(outInsert.params).toEqual(expect.arrayContaining([7, -700]))
+  })
+
   test('#125 已关闭订单仍不可折抵（只放开部分支付，不是放开全部状态）', async () => {
     const ctx = homeConversionCtx()
     mockHomeProductConversion({ order_status: '已关闭' })
@@ -7906,12 +7992,61 @@ describe('order.createConversion — 家居产品折抵（#125）', () => {
       .rejects.toThrow(/INVALID_PARAMS: 原订单状态不允许转换/)
   })
 
-  test('已无未提货数量的家居行拒绝折抵', async () => {
+  test('已全部结算的家居行拒绝折抵', async () => {
     const ctx = homeConversionCtx()
-    mockHomeProductConversion({ quantity: 4, picked_up_quantity: 4 })
+    mockHomeProductConversion({
+      quantity: 4, picked_up_quantity: 4, home_picked_quantity: 4,
+      sale_amount: '400', received: '400',
+    })
 
     await expect(orderRoutes.createConversion(ctx))
-      .rejects.toThrow(/INVALID_PARAMS: 部分家居产品已无未提货数量/)
+      .rejects.toThrow(/INVALID_PARAMS: 部分家居产品没有已付清的整件可折抵/)
+  })
+
+  // #145/#153：`received` 已由 STEP 1.5 扣过退款，`picked_up_quantity` 又含退款结算数，
+  // 两边都减就是重复扣减（顾客少折）。退款件只能通过 received 反映一次。
+  test('#145 退款件不重复扣减（付清 10 件退 2 件 → 仍可折 8 件 / ¥800）', async () => {
+    const ctx = homeConversionCtx()
+    const calls = mockHomeProductConversion({
+      quantity: 10, picked_up_quantity: 2, home_picked_quantity: 0,
+      sale_amount: '1000', received: '800', unit_real_price: '100',
+    })
+
+    await orderRoutes.createConversion(ctx)
+
+    const outInsert = calls.find(({ sql }) =>
+      sql.includes('INSERT INTO sale_items') && sql.includes("'转出'"))
+    expect(outInsert).toBeDefined()
+    expect(outInsert.params).toEqual(expect.arrayContaining([8, -800]))
+  })
+
+  // 已转走金额取自转出行 received，不是「已转走件数 × 单价」——折抵金额含余数时两者不等，
+  // 用件数推算会让多次折抵累计超过累计实收。
+  test('#145 二次折抵按实际已转走金额扣减（付 450 折 450 后回款 50 → 不足一件，拒绝）', async () => {
+    const ctx = homeConversionCtx()
+    mockHomeProductConversion({
+      order_status: '部分支付', quantity: 10, picked_up_quantity: 4,
+      home_picked_quantity: 0, home_converted_amount: '450',
+      sale_amount: '1000', received: '500', unit_real_price: '100',
+    })
+
+    // 剩余已付 = 500 − 0 − 450 = 50 < 单价 100 → 无整件可折
+    await expect(orderRoutes.createConversion(ctx))
+      .rejects.toThrow(/INVALID_PARAMS: 部分家居产品没有已付清的整件可折抵/)
+  })
+
+  // 转出行受 chk_item_quantity > 0 约束：不足一整件时没有载体可折，整行拒绝
+  // （顾客已付的钱留在原单，付清后即可折抵；不能凭空换走没买到手的货）。
+  test('#145 已付不足一整件：整行拒绝折抵（转出行件数不能为 0）', async () => {
+    const ctx = homeConversionCtx()
+    // 1 件 ¥680 只付 ¥594 → 已付整件数 0 → 无可折件数
+    mockHomeProductConversion({
+      order_status: '部分支付', quantity: 1, picked_up_quantity: 0, home_picked_quantity: 0,
+      sale_amount: '680', received: '594', unit_real_price: '680',
+    })
+
+    await expect(orderRoutes.createConversion(ctx))
+      .rejects.toThrow(/INVALID_PARAMS: 部分家居产品没有已付清的整件可折抵/)
   })
 })
 

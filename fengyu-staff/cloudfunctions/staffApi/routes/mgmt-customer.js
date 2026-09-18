@@ -1285,7 +1285,10 @@ async function homeProducts(ctx) {
        -- 避免把"已转换"算进"已退款"。只有「已关闭」完成过 rollback（数量已退回），故只排除它；
        -- 其余状态（含"支付失败"）扣减仍然生效，必须计入已转换。删除订单的转出行已随主单消失。
        SELECT out_item.ref_sale_item_id AS sale_item_id,
-              SUM(out_item.quantity)::int AS converted_quantity
+              SUM(out_item.quantity)::int AS converted_quantity,
+              -- #145/#153：折抵额度按金额结算，件数用于展示「已转换 N 件」，
+              -- 金额用于算「剩余已付」（折 4 件可能带走 ¥450 而非 ¥400，用件数推算会失真）。
+              SUM(GREATEST(0, -out_item.received::numeric)) AS converted_amount
          FROM sale_items out_item
          JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
         WHERE out_item.item_direction = '转出'
@@ -1309,6 +1312,20 @@ async function homeProducts(ctx) {
                 LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0))),
                 GREATEST(0, COALESCE(ct.converted_quantity, 0))
               )::int AS converted_quantity,
+              -- #145/#153：行级可提件数 = min(物理未结算, floor(剩余已付 / 单价))，与折抵额度同一口径。
+              -- 剩余已付 = 行实收 − 已提货金额 − 已转走金额；退款不在此处扣（received 已扣过）。
+              -- 必须按金额算而非「已付件数 − 已提 − 已折抵件数」：折抵金额含余数时两者不等，
+              -- 折 4 件带走 ¥450 后再回款 ¥50，按件数会多放出 1 件（累计兑现超实收）。
+              CASE
+                WHEN o.sale_order_type = '寄存单' OR si.sale_amount <= 0
+                  THEN GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0))))
+                ELSE LEAST(
+                  GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))),
+                  GREATEST(0, FLOOR((GREATEST(0, si.received::numeric)
+                    - GREATEST(0, COALESCE(pt.picked_quantity, 0)) * si.unit_real_price::numeric
+                    - COALESCE(ct.converted_amount, 0)) / NULLIF(si.unit_real_price::numeric, 0)))::int
+                )
+              END AS row_pending_pickup,
               CASE
                 -- 寄存单：货本就属于顾客，全额可提（sale_amount 只是原价快照，received 不代表欠款）。
                 -- 判据与 #120 展示侧 is_deposit 同源；刻意不用疗程卡那条 total_amount<=0——后者会连带覆盖
@@ -1340,7 +1357,15 @@ async function homeProducts(ctx) {
          LEFT JOIN conversion_totals ct ON ct.sale_item_id = si.sale_item_id
         WHERE o.client_user_id = $1
           AND o.status IN ('已支付', '部分支付', '已完成')
-          AND si.item_direction = '购买'
+          -- #145/#153：转换单换入的家居与购买行同权（与疗程卡侧放行写法同源）。
+          -- sale_amount>0 的转入行，received 已由 paid-sessions STEP 1.6 重建为「转出旧卡
+          -- 价值 + 本单净到账」，FLOOR(received × qty / sale_amount) 天然成立；sale_amount<=0
+          -- 的转入行走上方赠品分支全额可提（STEP 1.6 带 sale_amount>0 过滤，刻意不碰 0 元行，
+          -- 与购买侧 0 元赠品行同口径）。两类都不需要为「转入」另加满付分支。
+          AND (
+            si.item_direction = '购买'
+            OR (o.sale_order_type = '转换单' AND si.item_direction = '转入')
+          )
           AND si.product_type = '家居产品'
      ), home_products AS (
        SELECT sale_item_group_id,
@@ -1352,6 +1377,7 @@ async function homeProducts(ctx) {
               SUM(si.settled_quantity)::int AS settled_quantity,
               SUM(si.picked_quantity)::int AS picked_quantity,
               SUM(si.converted_quantity)::int AS converted_quantity,
+              SUM(si.row_pending_pickup)::int AS pending_pickup_quantity,
               SUM(si.paid_quantity)::int AS paid_quantity,
               SUM(si.row_sale_amount) AS sale_amount_total,
               SUM(si.row_received) AS received_total,
@@ -1366,10 +1392,6 @@ async function homeProducts(ctx) {
        SELECT *,
               GREATEST(0, settled_quantity - picked_quantity - converted_quantity)::int AS refunded_quantity,
               (purchased_quantity - settled_quantity)::int AS remaining_quantity,
-              LEAST(
-                purchased_quantity - settled_quantity,
-                GREATEST(paid_quantity - picked_quantity, 0)
-              )::int AS pending_pickup_quantity,
               -- 寄存单的 sale_amount 只是原价快照、received 恒为历史值，两者相减不是欠款
               -- （寄存的货本就属于顾客）。金额列一律留空，与导出口径一致。
               CASE WHEN is_deposit THEN NULL

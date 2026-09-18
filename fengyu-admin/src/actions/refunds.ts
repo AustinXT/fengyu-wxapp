@@ -334,13 +334,17 @@ export const getRefundable = withAnyPermission(
     .select({
       item: saleItems,
       skuUnit: productSkus.unit,
+      // #145/#153：家居可退数量受「剩余已付」封顶，需要 pickup_records 与转出行聚合
+      // （折抵会带走剩余已付的全部金额却只占用向下取整的件数）。
+      pickedQuantity: sql<number>`COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = ${saleItems.saleItemId}), 0)`,
+      convertedAmount: sql<string>`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)`,
     })
     .from(saleItems)
     .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
     .where(and(eq(saleItems.saleOrderId, saleOrderId), eq(saleItems.itemDirection, '购买')))
 
   // 先建 RefundSourceItem[]（computeOverpayRemainder 入参），再派生展示用 RefundableItem[]
-  const srcItems: RefundSourceItem[] = rows.map(({ item }) => ({
+  const srcItems: RefundSourceItem[] = rows.map(({ item, pickedQuantity, convertedAmount }) => ({
     sale_item_id: item.saleItemId,
     sku_id: item.skuId,
     product_name: item.productName,
@@ -354,6 +358,8 @@ export const getRefundable = withAnyPermission(
     sale_amount: item.saleAmount,
     received: item.received,
     picked_up_quantity: item.pickedUpQuantity,
+    picked_quantity: Number(pickedQuantity ?? 0),
+    converted_amount: convertedAmount,
     sales_category: item.salesCategory as SalesCategory | null,
     service_fee: item.serviceFee,
   }))
@@ -724,12 +730,26 @@ export const createRefund = withPermission(
     return { success: false, error: { code: 'INVALID_STATE', message: '该订单有未完成的服务单，请先完成或取消后再退款' } }
   }
 
-  const origRows = await db
-    .select()
+  // #145/#153：可退数量与 overpay 都要按「剩余已付」算，必须带上 pickup_records 与
+  // 转出行聚合——缺这两列会落进 calculateUnusedQuantity 的「回退物理剩余」分支，
+  // 与候选（getRefundable）口径分叉：候选显示可退 0，提交却按旧口径放行。
+  const origRows = (await db
+    .select({
+      item: saleItems,
+      pickedQuantity: sql<number>`COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = ${saleItems.saleItemId}), 0)`,
+      convertedAmount: sql<string>`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)`,
+    })
     .from(saleItems)
-    .where(and(eq(saleItems.saleOrderId, refSaleOrderId), eq(saleItems.itemDirection, '购买')))
+    .where(and(eq(saleItems.saleOrderId, refSaleOrderId), eq(saleItems.itemDirection, '购买'))))
+    .map(({ item, pickedQuantity, convertedAmount }) => ({
+      ...item,
+      pickedQuantity: Number(pickedQuantity ?? 0),
+      convertedAmount,
+    }))
 
   const sourceItems: RefundSourceItem[] = origRows.map((r) => ({
+    picked_quantity: r.pickedQuantity,
+    converted_amount: r.convertedAmount,
     sale_item_id: r.saleItemId,
     sku_id: r.skuId,
     product_name: r.productName,
@@ -1133,18 +1153,21 @@ export const approveRefund = withPermission(
       const sessionCount = pre.payment.sessionCount ?? null
 
       // 5) 级联回滚（Bug Q/M）：从 note.items 读本次退款明细，逐 item 级联，仅全退 item 作废分配/提成
-      let cascadeItems: Array<{ saleItemId: string; sessionCount: number | null; refundAmount: number | null; isFullItemRefund: boolean; isOverpay?: boolean }> = []
+      let cascadeItems: Array<{ saleItemId: string; sessionCount: number | null; refundAmount: number | null; isFullItemRefund: boolean; isOverpay?: boolean; overpayAmount?: number }> = []
       let cascadeWholeOrder = false
       try {
         const noteObj = pre.payment.note ? JSON.parse(pre.payment.note) : null
         if (noteObj && Array.isArray(noteObj.items)) {
           cascadeItems = noteObj.items.map(
-            (it: { refSaleItemId: string; quantity: number; refundAmount?: number; isFullItemRefund?: boolean; isOverpay?: boolean }) => ({
+            (it: { refSaleItemId: string; quantity: number; refundAmount?: number; isFullItemRefund?: boolean; isOverpay?: boolean; overpayAmount?: number }) => ({
               saleItemId: it.refSaleItemId,
               sessionCount: it.quantity,
               refundAmount: it.refundAmount ?? null,
               isFullItemRefund: !!it.isFullItemRefund,
               isOverpay: it.isOverpay === true,
+              // #145/#153：新版明细把余数并在普通行上（quantity 可为 0、isOverpay=false），
+              // 丢掉这个字段会让 G2 复核拿到 0 而直接跳过（对抗审查实证）。
+              overpayAmount: Number(it.overpayAmount ?? 0) || 0,
             }),
           )
           cascadeWholeOrder = !!noteObj.isWholeOrderRefund
@@ -1162,8 +1185,20 @@ export const approveRefund = withPermission(
       // 静默封顶吞掉 —— 同一批货既进了转换单又退了现金，且家居账面 refunded_quantity 归 0 查无实据。
       // 这里按 sale_item_id 定序锁行复核，不足即拒绝审批。staff routes/order.js 有同义副本。
       const homeRefundQty = new Map<string, number>()
+      // #145/#153：只退余数的明细（quantity=0、overpayAmount>0）也必须复核——折抵会带走
+      // 「剩余已付」的全部金额，申请时合法的 ¥50 余数可能在审批前已被折走。只校验件数会漏掉它。
+      const homeOverpayAmt = new Map<string, number>()
       for (const it of cascadeItems) {
-        if (!it.saleItemId || (it as { isOverpay?: boolean }).isOverpay) continue
+        if (!it.saleItemId) continue
+        // 历史哨兵行（isOverpay=true）整行就是余数，金额在 refundAmount 上；
+        // 新版明细把余数并在普通行的 overpayAmount 上，quantity 可以为 0。
+        const overpay = it.isOverpay
+          ? Math.abs(Number(it.refundAmount ?? 0))
+          : Math.max(0, Number(it.overpayAmount ?? 0))
+        if (overpay > 0) {
+          homeOverpayAmt.set(it.saleItemId, (homeOverpayAmt.get(it.saleItemId) ?? 0) + overpay)
+        }
+        if (it.isOverpay) continue
         const qty = Number(it.sessionCount ?? 0)
         if (qty > 0) homeRefundQty.set(it.saleItemId, (homeRefundQty.get(it.saleItemId) ?? 0) + qty)
       }
@@ -1174,20 +1209,69 @@ export const approveRefund = withPermission(
         // recalcPaidSessionsForOrder 会更新同单的疗程卡行，只锁家居会与「先锁疗程卡、再等家居」
         // 的混选转换事务形成反向锁序而死锁。按 sale_item_id 升序，与 createConversionOrder 的锁序一致。
         const lockedRows = await tx.execute(sql`
-          SELECT sale_item_id, product_type, quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity
+          SELECT sale_item_id, product_type, quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity,
+                 unit_real_price, received
             FROM sale_items
            WHERE sale_order_id = ${refSaleOrderId}
              AND item_direction = '购买'
            ORDER BY sale_item_id
              FOR UPDATE
         `)
+        // #145/#153：锁取得后另起一条语句聚合（与持锁查询同语句会拿到旧快照）
+        const consumedRows = (await tx.execute(sql`
+          SELECT si.sale_item_id,
+                 COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr
+                            WHERE pr.sale_item_id = si.sale_item_id), 0)::int AS picked_quantity,
+                 COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric))
+                             FROM sale_items out_item
+                             JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+                            WHERE out_item.ref_sale_item_id = si.sale_item_id
+                              AND out_item.item_direction = '转出'
+                              AND out_item.product_type = '家居产品'
+                              AND conv_order.status <> '已关闭'), 0) AS converted_amount
+            FROM sale_items si
+           WHERE si.sale_order_id = ${refSaleOrderId}
+             AND si.item_direction = '购买'
+        `)) as unknown as Array<Record<string, unknown>>
+        const consumedById = new Map(consumedRows.map((c) => [c.sale_item_id as string, c]))
         for (const r of Array.from(lockedRows as unknown as Iterable<Record<string, unknown>>)) {
           if (r.product_type !== '家居产品') continue
           const requested = homeRefundQty.get(r.sale_item_id as string) ?? 0
-          if (requested <= 0) continue
-          const refundable = Number(r.quantity ?? 0) - Number(r.picked_up_quantity ?? 0)
+          const requestedOverpay = homeOverpayAmt.get(r.sale_item_id as string) ?? 0
+          if (requested <= 0 && requestedOverpay <= 0) continue
+          // 与 calculateUnusedQuantity 同口径：折抵可能带走剩余已付的全部金额却只占用
+          // 向下取整的件数，剩下的物理件已无对应已付金额，不能再退。
+          const c = consumedById.get(r.sale_item_id as string)
+          const lockedSrc: RefundSourceItem = {
+            sale_item_id: r.sale_item_id as string,
+            sku_id: null,
+            product_name: null,
+            product_type: r.product_type as ProductType,
+            session_count: null,
+            remaining_sessions: null,
+            paid_sessions: null,
+            unit_price: 0,
+            quantity: Number(r.quantity ?? 0),
+            unit_real_price: r.unit_real_price as string,
+            received: r.received as string,
+            picked_up_quantity: Number(r.picked_up_quantity ?? 0),
+            picked_quantity: c ? Number(c.picked_quantity ?? 0) : null,
+            converted_amount: c ? (c.converted_amount as string) : null,
+            sales_category: null,
+            service_fee: null,
+          }
+          const refundable = calculateUnusedQuantity(lockedSrc)
           if (requested > refundable) {
             throw new ApiError('CONFLICT', 'HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退数量已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
+          }
+          // 余数同样按锁内新快照复核：申请时的 ¥50 余数可能已被折抵带走
+          if (requestedOverpay > 0) {
+            const currentOverpay = Number(
+              computeItemOverpayRemainders([lockedSrc]).get(r.sale_item_id as string) ?? 0,
+            )
+            if (requestedOverpay > currentOverpay + 0.001) {
+              throw new ApiError('CONFLICT', 'HOME_PRODUCT_REFUNDABLE_CHANGED: 家居产品可退余数已变化（可能已被转换折抵或提货），请刷新后重新发起退款')
+            }
           }
         }
       }
