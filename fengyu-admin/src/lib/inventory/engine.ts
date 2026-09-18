@@ -140,6 +140,13 @@ const DOC_PREFIX: Record<InventoryDocType, string> = {
   期初库存: 'QC',
 }
 
+/**
+ * 分页页长白名单。必须与各列表组件的 `PAGE_SIZE_OPTIONS` 一致 ——
+ * 两侧不同源时，`?size=7` 会让服务端每页 7 条而 UI 按 20 条算页数，
+ * 尾部数据翻到哪一页都够不到，且不会有任何报错。
+ */
+const PAGE_SIZE_WHITELIST = [10, 20, 50, 100]
+
 const NO_MOVEMENT_DOC_TYPES = new Set<InventoryDocType>([
   '门店报货',
   '市场报货',
@@ -1469,7 +1476,7 @@ export const listInventorySkus = withPermission(
   ): Promise<{ data: InventorySkuRow[]; total: number }> => {
     await syncInventoryLocations()
     const page = Math.max(1, filters.page || 1)
-    const pageSize = [10, 20, 50, 100].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
+    const pageSize = PAGE_SIZE_WHITELIST.includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
     const offset = (page - 1) * pageSize
     const conditions: (SQL | undefined)[] = []
     const scoped = await scopedLocationIds(session)
@@ -1734,8 +1741,14 @@ export const listInventorySkuCompositions = withPermission(
     // 而不是 productRows.length。
     // 家居 SKU 是低基数主数据（dev 现有 101 行），全量取回可接受；
     // 若将来量级上来，得先把 configurationStatus 物化到列上才谈得上真正的 SQL 分页。
-    const pageSize = filters.pageSize
-    const offset = (Math.max(1, filters.page ?? 1) - 1) * (pageSize ?? 0)
+    // 同 listInventorySuppliers：给了 pageSize 就必须过白名单，page 用 `|| 1` 兜 NaN。
+    // 这一支尤其不能漏 —— `filtered.slice(NaN, NaN)` 返回**空数组**（ToInteger(NaN)=0），
+    // 而客户端 `Number(get('page','1')) || 1` 会认为自己在第 1 页、不触发越界自纠，
+    // 于是 `?page=abc` 会永久停在「空表 + 共 101 条」，用户只能手改 URL 才能出来。
+    const pageSize = filters.pageSize === undefined
+      ? undefined
+      : (PAGE_SIZE_WHITELIST.includes(filters.pageSize) ? filters.pageSize : 20)
+    const offset = (Math.max(1, filters.page || 1) - 1) * (pageSize ?? 0)
     return {
       data: pageSize ? filtered.slice(offset, offset + pageSize) : filtered,
       total: filtered.length,
@@ -1899,7 +1912,7 @@ export const listInventoryLots = withPermission(
     await syncInventoryLocations()
     const scoped = await scopedLocationIds(session)
     const page = Math.max(1, filters.page || 1)
-    const pageSize = [10, 20, 50, 100].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
+    const pageSize = PAGE_SIZE_WHITELIST.includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
     const offset = (page - 1) * pageSize
     const conditions: (SQL | undefined)[] = []
     if (scoped !== null) {
@@ -2074,7 +2087,7 @@ export const listInventoryCoreDocs = withPermission(
     await syncInventoryLocations()
     const scoped = inventoryScopedOrgNodeIds(session)
     const page = Math.max(1, filters.page || 1)
-    const pageSize = [10, 20, 50, 100].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
+    const pageSize = PAGE_SIZE_WHITELIST.includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
     const offset = (page - 1) * pageSize
     const conditions: (SQL | undefined)[] = []
     if (scoped !== null) {
@@ -3338,7 +3351,13 @@ export const listInventorySuppliers = withPermission(
     filters: { keyword?: string; onlyActive?: boolean; page?: number; pageSize?: number } = {},
   ): Promise<{ data: InventorySupplierRow[]; total: number }> => {
     const conditions: (SQL | undefined)[] = []
-    if (filters.onlyActive ?? true) conditions.push(eq(inventorySuppliers.isActive, true))
+    // 三态：undefined = 全部 / true = 仅启用 / false = 仅停用。
+    // 原写法用 `?? true` 兜底，把三态压成了二值 ——
+    // 「全部状态」(undefined) 变成只返回启用、「停用」(false) 变成返回全部，
+    // 页面上三个选项里有两个行为与标签不符，「停用」那档永远筛不出停用的供应商。
+    // 这是存量缺陷，但本次新增的「共 N 条」会把这个错误结果的数量白纸黑字印出来，顺手修。
+    if (filters.onlyActive === true) conditions.push(eq(inventorySuppliers.isActive, true))
+    else if (filters.onlyActive === false) conditions.push(eq(inventorySuppliers.isActive, false))
     if (filters.keyword) {
       const pattern = `%${filters.keyword.replace(/[%_]/g, '\\$&')}%`
       conditions.push(or(
@@ -3370,9 +3389,16 @@ export const listInventorySuppliers = withPermission(
       .groupBy(inventorySuppliers.supplierId)
       .orderBy(asc(inventorySuppliers.name))
 
-    const pageSize = filters.pageSize
+    // pageSize 缺省仍是「不分页」（办理台下拉共用本函数），但**一旦给了值就必须过白名单**：
+    // `?size=7` 会让服务端每页 7 条而 UI 按 20 条算页数，尾部数据永远够不到；
+    // `?size=-5` 更糟 —— drizzle 会静默丢弃负 limit 却照发负 offset，PG 直接
+    // `OFFSET must not be negative`，生产脱敏后只剩一个通用 500 页。
+    // `page` 用 `|| 1` 而不是 `?? 1`：`?page=abc` 的 NaN 是 falsy，`??` 兜不住。
+    const pageSize = filters.pageSize === undefined
+      ? undefined
+      : (PAGE_SIZE_WHITELIST.includes(filters.pageSize) ? filters.pageSize : 20)
     const rows = pageSize
-      ? await query.limit(pageSize).offset((Math.max(1, filters.page ?? 1) - 1) * pageSize)
+      ? await query.limit(pageSize).offset((Math.max(1, filters.page || 1) - 1) * pageSize)
       : await query
     return {
       data: rows.map((row) => supplierRow({ ...row.supplier, linkedSkuCount: row.linkedSkuCount })),

@@ -195,6 +195,15 @@ export default function InventoryPromotionsPage({
   const page = Math.min(rawPage, totalPages)
   const pagedRows = filteredRows.slice((page - 1) * pageSize, page * pageSize)
 
+  // 夹取只解决了「渲染出空列表」，URL 里的越界页码还在：Pagination 收到的是夹取**后**的
+  // page，它自己的越界自纠 effect 就永远不触发。残留的 `?page=99` 会在用户清掉筛选、
+  // 结果变多时把人莫名带到第 99 页。这里主动清掉。
+  // 条件守卫保证只在越界时执行一次：setMany 之后 rawPage 变回 1，条件不再成立，不会自循环
+  // （本仓库在 inventory-docs-page 有过 useEffect 自循环把下拉卡死的 P0，这里刻意写严）。
+  useEffect(() => {
+    if (rawPage > totalPages) setMany({ page: '' })
+  }, [rawPage, totalPages, setMany])
+
   const canCreatePlan = canCreate && (canManageGlobal || marketOptions.length > 0)
   const readOnly = mode === 'view'
 
@@ -580,17 +589,17 @@ export default function InventoryPromotionsPage({
                     </label>
                     <label className="block space-y-2">
                       <span className="block text-sm font-medium">{form.ruleType === '组合' ? '组合数量下限 *' : '数量下限'}</span>
-                      <Input type="number" min="0" step="1" placeholder={form.ruleType === '组合' ? '必填' : '留空不限'} value={item.reportMinQuantity} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { reportMinQuantity: event.target.value })} />
+                      <Input type="number" min="0" step="1" max="9999999999.99" placeholder={form.ruleType === '组合' ? '必填' : '留空不限'} value={item.reportMinQuantity} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { reportMinQuantity: event.target.value })} />
                     </label>
                     <label className="block space-y-2">
                       <span className="block text-sm font-medium">数量上限</span>
-                      <Input type="number" min="0" step="1" placeholder="留空不限" value={item.reportMaxQuantity} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { reportMaxQuantity: event.target.value })} />
+                      <Input type="number" min="0" step="1" max="9999999999.99" placeholder="留空不限" value={item.reportMaxQuantity} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { reportMaxQuantity: event.target.value })} />
                     </label>
                     {canViewPrice && (
                       <>
                         <label className="block space-y-2">
                           <span className="block text-sm font-medium">单价优惠 *</span>
-                          <Input type="number" min="0" step="0.01" value={item.marketUnitDiscount} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { marketUnitDiscount: event.target.value })} />
+                          <Input type="number" min="0" step="0.01" max="9999999999.99" value={item.marketUnitDiscount} readOnly={readOnly} disabled={saving} onChange={(event) => updateItem(index, { marketUnitDiscount: event.target.value })} />
                         </label>
                       </>
                     )}

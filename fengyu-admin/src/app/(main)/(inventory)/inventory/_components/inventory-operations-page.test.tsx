@@ -36,8 +36,10 @@ describe('办理台表单一致性（#135）', () => {
   })
 
   it('FormField 不往控件上加 HTML required 属性', () => {
-    // 加了的话浏览器会在 submit 事件**之前**拦截，既绕过各表单 submit() 里的
-    // toast 文案，也会让按 toast 断言的 e2e（submitForm/readToast）失配。
+    // 职责分工：值域（min/max/step）交给浏览器，必填与组合逻辑交给 submit()。
+    // `required` 拦的是「空值」，而本页大量字段是条件必填（二选一 / filter-then-validate /
+    // 驳回才必填），加上去会把合法的留空一律拦下，且弹的是浏览器通用文案而非业务文案。
+    // 注意这跟保留 min/max 不矛盾 —— 后者拦的是「填了但越界」，submit() 的 JS 校验管不到。
     const formField = block('function FormField(', 'function RemarkField(')
     expect(formField).not.toMatch(/\brequired=\{required\}\s*\/?>/)
     expect(formField).not.toMatch(/aria-required/)
@@ -59,11 +61,29 @@ describe('办理台表单一致性（#135）', () => {
     // 21 个数值输入分布在 18 行（有的一行多个）
     expect(numberInputs.length).toBe(21)
     for (const attrs of numberInputs) {
-      expect(attrs).toMatch(/min="0"/)
+      expect(attrs).toMatch(/min="0(\.01)?"/)
       expect(attrs).toMatch(/step="0\.01"/)
       // numeric(12,2) 的上界：再大 PG 会抛 22003 numeric field overflow
       expect(attrs).toMatch(/max="9999999999\.99"/)
     }
+  })
+
+  it('min 按 positiveNumber / nonnegativeNumber 分档，不是一刀切 0', () => {
+    // 走 positiveNumber 的字段填 0 会被 JS 拒绝，但 toast 说的是「请完整填写…」——
+    // 字段明明填了却被告知没填完，用户会去找哪个框空着。给 min="0.01" 让浏览器
+    // 直接说「值必须大于或等于 0.01」。
+    // 「至少填一条」语义的（采购数量 / 实收数量）保持 min="0"：那里填 0 会被
+    // .filter(x !== null) 剔除，等于「这行不选」，是合法操作，不能拦。
+    const strict = source.match(/min="0\.01"/g) ?? []
+    const loose = source.match(/min="0"/g) ?? []
+    expect(strict.length).toBe(9)
+    expect(loose.length).toBe(12)
+
+    // 抽样两个方向，防止整体计数对了但分配错了
+    const store = block('function StoreRequestForm(', 'function ItemCompanyReplenishmentForm(')
+    expect(store).toMatch(/min="0\.01"/)          // 数量走 positiveNumber
+    const purchase = block('function PurchaseOrderForm(', 'function SupplyChainPurchaseOrderForm(')
+    expect(purchase).toMatch(/<FormField label="采购数量"><Input type="number" min="0"/)
   })
 
   it('「请完整填写」语义的字段标必填', () => {
@@ -100,14 +120,34 @@ describe('办理台表单一致性（#135）', () => {
     expect(shipment).not.toMatch(/<FormField label="正常发货" required/)
     expect(shipment).toMatch(/<FormField label="赠送数量">/)
     expect(shipment).not.toMatch(/<FormField label="赠送数量" required/)
-    // 但批次是必填的（「请为每条发货明细选择批次并填写数量」）
-    expect(shipment).toMatch(/<FormField label="发货批次" required/)
+  })
+
+  it('filter-then-validate 的批次字段不标必填（条件必填）', () => {
+    // 品项公司发货 / 分院配货的 submit() 都是**先 filter 再校验**：
+    //   .filter((line) => (line.quantity ?? 0) + (line.giftQuantity ?? 0) > 0)
+    //   .some((line) => !Number.isInteger(line.lotId) || ...)
+    // 数量为 0 的行根本不检查 lotId —— 部分发货时"这次不发"的行留空批次完全合法。
+    // 标上 * 会逼用户去给不发货的行挑批次，而该 SKU 在该库位可能压根没有批次可挑。
+    // 这与「采购数量不该逐行标」是同一类判据，只是发生在批次上。
+    for (const [from, to, label] of [
+      ['function CompanyShipmentForm(', 'interface ReceiptProgressLine', '发货批次'],
+      ['function StoreAllocationForm(', 'function ReturnForm(', '市场批次'],
+    ] as const) {
+      const form = block(from, to)
+      expect(form).toMatch(new RegExp(`<FormField label="${label}">`))
+      expect(form).not.toMatch(new RegExp(`<FormField label="${label}" required`))
+    }
+
+    // 反向：市场员工购的「市场批次」**没有** filter（`items.some(...)` 直接校验每一行），
+    // 是无条件必填，必须仍标着 —— 否则这条测试就退化成"把所有批次都去掉标记"也能过。
+    const staffPurchase = block('function MarketStaffPurchaseForm(', 'function SelfPurchaseForm(')
+    expect(staffPurchase).toMatch(/<FormField label="市场批次" required/)
   })
 
   it('必填标记覆盖到全部 19 个表单，不只是 UX 扫描点到的那 5 个', () => {
     // 只改被扫描到的 5 个表单，会让同一个 FormField 组件在页面内自相矛盾：
     // 用户看到有些字段带 *、有些不带，会以为不带的都是可选。
     const marked = source.match(/<(?:FormField|DocPicker) label=(?:"[^"]*"|\{[^}]*\}) required/g) ?? []
-    expect(marked.length).toBe(60)
+    expect(marked.length).toBe(58)
   })
 })

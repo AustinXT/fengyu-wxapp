@@ -269,6 +269,9 @@ export default function InventorySkuMappingsPage({
                         type="number"
                         min={1}
                         step={1}
+                        // quantity_per_sale_unit 是 integer 列，上界即 int4 上限；
+                        // 超出会让 PG 抛 22003，生产脱敏后只剩一个通用 500 页
+                        max={2147483647}
                         value={component.quantityPerSaleUnit}
                         onChange={(event) => updateComponent(index, {
                           quantityPerSaleUnit: Number(event.target.value),

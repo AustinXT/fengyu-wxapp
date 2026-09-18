@@ -686,7 +686,14 @@ function SkuFormDialog({
               <Field label="市场员工购价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.marketStaffPurchasePrice} onChange={(event) => setField('marketStaffPurchasePrice', event.target.value)} /></Field>
               <Field label="顾客零售价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.retailPrice} onChange={(event) => setField('retailPrice', event.target.value)} /></Field>
               <Field label="核算价"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.accountingPrice} onChange={(event) => setField('accountingPrice', event.target.value)} /></Field>
-              <Field label="市场折扣（25 表示 25%）"><Input type="number" min="0" step="0.01" max="9999999999.99" value={form.marketPurchaseDiscount} onChange={(event) => setField('marketPurchaseDiscount', event.target.value)} /></Field>
+              {/*
+                市场折扣的边界与其它金额字段**不同**，不能套用 numeric(12,2) 那组：
+                列是 `numeric(8,4)`（db/schema/inventory.ts:82），业务侧
+                `engine.ts` 把 >1 的值按百分数解释再校验 `ratio ∈ [0,1]`，
+                所以合法区间是 0–100，不是 0–9999999999.99。
+                step 取 0.0001 以匹配列的 4 位小数（用小数写比率时 0.8125 也要能填）。
+              */}
+              <Field label="市场折扣（25 表示 25%）"><Input type="number" min="0" step="0.0001" max="100" value={form.marketPurchaseDiscount} onChange={(event) => setField('marketPurchaseDiscount', event.target.value)} /></Field>
               <Field label="市场进货价">
                 <div className="space-y-1">
                   {form.sourceType === '供应链' && (

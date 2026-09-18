@@ -761,6 +761,40 @@ describe('库存 SKU 来源与价格保护', () => {
     expect(listBlock).toMatch(/leftJoin\(inventorySkus/)
   })
 
+  it('供应商状态筛选是三态：undefined=全部 / true=仅启用 / false=仅停用', () => {
+    // 行为测试是 mock 的，SQL 条件怎么拼都不会红，只能靠源码断言。
+    // 原写法 `filters.onlyActive ?? true` 把三态压成二值：「全部状态」变成只返回启用、
+    // 「停用」变成返回全部 —— 页面三个选项里两个与标签不符。
+    const source = readFileSync(resolve(__dirname, 'engine.ts'), 'utf8')
+    const block = source.slice(
+      source.indexOf('export const listInventorySuppliers'),
+      source.indexOf('export const listInventorySupplierOptions'),
+    )
+    expect(block).toMatch(
+      /filters\.onlyActive === true\) conditions\.push\(eq\(inventorySuppliers\.isActive, true\)\)/,
+    )
+    expect(block).toMatch(
+      /filters\.onlyActive === false\) conditions\.push\(eq\(inventorySuppliers\.isActive, false\)\)/,
+    )
+    expect(block).not.toMatch(/filters\.onlyActive \?\? true/)
+  })
+
+  it('分页页长走白名单，page 用 || 兜 NaN', () => {
+    // `?size=7` 会让服务端每页 7 条而 UI 按 20 条算页数，尾部数据翻到哪页都够不到；
+    // `?size=-5&page=2` 更糟：drizzle 丢弃负 limit 却照发负 offset → PG 报错 → 500。
+    // `?page=abc` 的 NaN 是 falsy，必须用 `|| 1` 而不是 `?? 1`。
+    const source = readFileSync(resolve(__dirname, 'engine.ts'), 'utf8')
+    for (const [from, to] of [
+      ['export const listInventorySuppliers', 'export const listInventorySupplierOptions'],
+      ['export const listInventorySkuCompositions', 'export const listInventorySkuCompositionOptions'],
+    ] as const) {
+      const block = source.slice(source.indexOf(from), source.indexOf(to))
+      expect(block).toMatch(/PAGE_SIZE_WHITELIST\.includes\(filters\.pageSize\)/)
+      expect(block).toMatch(/Math\.max\(1, filters\.page \|\| 1\)/)
+      expect(block).not.toMatch(/filters\.page \?\? 1/)
+    }
+  })
+
   it('SKU 映射的 total 取过滤后的长度，不是全量长度', () => {
     // 这一支的 status / keyword 过滤都在内存里做（configurationStatus 是按
     // components 算出来的派生字段，没法下推成 WHERE）。total 若取 productRows.length，
