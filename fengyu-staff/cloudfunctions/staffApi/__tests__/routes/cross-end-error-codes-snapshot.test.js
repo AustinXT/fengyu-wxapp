@@ -170,6 +170,7 @@ describe('audit-CC5 P0：admin actions/ 范围 0 处非白名单裸 throw（除�
       'EMPLOYEE_ROW_GONE', // employees.ts: 行已被删 → NOT_FOUND
       'PICKUP_ROW_GONE', // pickup-records.ts: 行已被删 → NOT_FOUND
       'PAYMENT_NOT_FOUND', // allocations.ts: savePayment 回款状态被并发改 → 外层 catch 转 {success:false}（f2002074 按回款逐笔分配引入）
+      'ORDER_ROW_GONE', // allocations.ts: 取订单行锁时 0 行（订单已不存在）→ 外层 catch 转 {success:false}「该订单已不存在，请刷新后重试」（#148 锁序修复引入）
       'SKILL_TAG_DUP_NAME', // skill-tags.ts: 改名撞唯一约束 23505 → 外层 catch 转 {success:false}「该标签名称已存在」
       'SKILL_TAG_OPTIMISTIC_MISS', // skill-tags.ts: 改名字典行乐观锁 rowCount=0 → 外层 catch 转 {success:false}「数据已被其他人修改，请刷新后重试」
       'SKILL_TAG_GONE', // skill-tags.ts: 删除时行已被并发删 → 外层 catch 转 {success:false}「标签不存在」

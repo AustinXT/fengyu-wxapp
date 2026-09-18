@@ -480,7 +480,7 @@ async function suggestPayment(ctx) {
  * 取订单行锁，把本模块的写事务钉在项目约定的锁序上：`sale_orders` → `sale_order_payments`
  * （硬约束见 db/CLAUDE.md「写 sale_order_payments 的硬约束」）。
  *
- * 分配链路天然是「先改款项行、再刷订单汇总」，与「订单级改期」（先 FOR UPDATE 锁订单、
+ * 分配链路天然是「先改款项行、再刷订单汇总」，与「订单级改期」（先锁订单、
  * 再由迁移 0040 的 AFTER trigger 回写款项行）方向相反，并发同一订单必 40P01（issue #148，
  * 已在临时 PG 实测复现）。事务一进来就先取订单行锁即可消环。
  *
@@ -488,12 +488,31 @@ async function suggestPayment(ctx) {
  * `SELECT ... FROM sop JOIN so ... WHERE sop.id = $1 FOR UPDATE OF sop, so` 会按 sop 主键扫描，
  * 物理上先锁款项行，恰好把锁序倒回来（该坑已在 #137 评审中实测踩过）。
  *
- * 锁强度取 `FOR UPDATE`，与 order.js 既有的 confirmOffline / createRepayment 等
- * 同族写事务保持一致；订单行在事务外已查得存在，此处若恰好被并发删除则返回 0 行，
- * 随后的 allocation_status CAS 守卫会以 rowCount=0 抛冲突兜底。
+ * ⚠ 锁强度是 `FOR NO KEY UPDATE`，**不要"顺手"改成 `FOR UPDATE`**。三者实测对照
+ * （PG 16，2026-09-18，issue #148 评审）：
+ *
+ * | 本事务持有 | FK 子表 INSERT（取父行 FOR KEY SHARE） | 改期的 FOR UPDATE | 0040 trigger 的 FOR SHARE |
+ * |---|---|---|---|
+ * | `FOR UPDATE`        | **被挡** | 被挡 | 被挡 |
+ * | `FOR NO KEY UPDATE` | 放行     | 被挡 | 被挡 |
+ *
+ * 消环只需要挡住后两者，`FOR NO KEY UPDATE` 已经够。而 `FOR UPDATE` 会在整个分配事务期间
+ * 把该订单的所有子表 INSERT 一并挡住 —— `order.js` 的 createRefund 事务第一条就是
+ * `INSERT INTO sale_order_payments`，本来是毫秒级，会被拖到分配事务提交。
+ * 它也正是 rollup 的 `UPDATE sale_orders` 最终要取的锁级别，顺带省掉一次锁升级。
+ *
+ * 订单行在事务外已查得存在；`sale_order_payments.sale_order_id` 是 NOT NULL + ON DELETE RESTRICT，
+ * 有款项行时订单删不掉，所以这里恒锁到 1 行。返回 0 行只可能是传了空 saleOrderId 之类的编程错误，
+ * 那意味着**本次调用完全没拿到订单锁、锁序修复对它失效**，必须响亮失败而不是静默退化。
  */
 async function lockSaleOrderForAllocation(client, saleOrderId) {
-  await client.query('SELECT 1 FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE', [saleOrderId])
+  const res = await client.query(
+    'SELECT 1 FROM sale_orders WHERE sale_order_id = $1 FOR NO KEY UPDATE',
+    [saleOrderId],
+  )
+  if (res.rowCount !== 1) {
+    throw new Error(`CONFLICT: ORDER_GONE: 订单不存在或已被删除（${saleOrderId}）`)
+  }
 }
 
 /**

@@ -3974,17 +3974,25 @@ export const deleteOrder = withPermission(
     // 2. 事务级联删除（仅安全从属表 + 释放券；再删主单并复核可删条件）
     try {
       const txResult = await db.transaction(async (tx) => {
-        // 待支付/支付失败转换单：撤销创建时对源疗程卡 remaining_sessions / 家居 picked_up_quantity 的即时扣减。
+        // 锁序 `sale_orders` → `sale_order_payments`（硬约束见 db/CLAUDE.md），**无条件**取，必须是第一条。
+        // 本事务是「先删子表（spia → receipts → payments → items）、最后删主单」，天然反向；
+        // 而营业额分配 / 改期 / 收款等事务都是先锁订单行再写款项与分配。两者交错即 40P01：
+        //   T_分配: 锁 sale_orders ✓ → 等 sale_payment_item_allocations
+        //   T_删除: 删 sale_payment_item_allocations ✓ → 等 sale_orders
+        // 此前这条锁只在「转换单」分支里取，非转换单路径整条链不持订单锁（issue #148 评审发现）。
         //
-        // 状态闸门不可省，且**必须在事务内锁单后读新鲜状态**：外层 `order.status` 是事务外读的，
-        // closeOrder‖deleteOrder 交错时（close 先提交并已回滚）这里会拿陈旧的 '待支付' 再回滚一次，
-        // 把家居 picked_up_quantity 多减一遍 → 已提货/已退款的数量凭空复活成可提可退。
-        // DELETE 复检允许 '已关闭'，所以那笔 delete 仍会提交，错误不会被任何守卫拦下。
+        // 它同时供下面的转换单状态闸门读新鲜状态——该闸门不可省，且**必须在锁内读**：
+        // 外层 `order.status` 是事务外读的，closeOrder‖deleteOrder 交错时（close 先提交并已回滚）
+        // 会拿陈旧的 '待支付' 再回滚一次，把家居 picked_up_quantity 多减一遍 →
+        // 已提货/已退款的数量凭空复活成可提可退。DELETE 复检允许 '已关闭'，那笔 delete 仍会提交，
+        // 错误不会被任何守卫拦下。
+        const freshRows = await tx.execute(sql`
+          SELECT status FROM sale_orders WHERE sale_order_id = ${saleOrderId} FOR UPDATE
+        `) as unknown as Array<{ status?: string }> | undefined
+        const freshStatus = freshRows?.[0]?.status
+
+        // 待支付/支付失败转换单：撤销创建时对源疗程卡 remaining_sessions / 家居 picked_up_quantity 的即时扣减。
         if (order.saleOrderType === '转换单') {
-          const freshRows = await tx.execute(sql`
-            SELECT status FROM sale_orders WHERE sale_order_id = ${saleOrderId} FOR UPDATE
-          `) as unknown as Array<{ status?: string }> | undefined
-          const freshStatus = freshRows?.[0]?.status
           if (freshStatus === '待支付' || freshStatus === '支付失败') {
             await rollbackPendingConversionOnClose(tx, saleOrderId)
           }

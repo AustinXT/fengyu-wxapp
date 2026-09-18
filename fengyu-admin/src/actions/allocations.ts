@@ -670,18 +670,29 @@ export const savePaymentAllocations = withPermission(
     try {
       await db.transaction(async (tx) => {
         // 锁序 `sale_orders` → `sale_order_payments`（硬约束见 db/CLAUDE.md），必须是事务第一条语句。
-        // 分配链路天然「先改款项行、再刷订单汇总」，与「订单级改期」（先 FOR UPDATE 锁订单、再由
+        // 分配链路天然「先改款项行、再刷订单汇总」，与「订单级改期」（先锁订单、再由
         // 迁移 0040 的 AFTER trigger 回写款项行）方向相反，并发同一订单必 40P01（issue #148，已实测复现）。
         //
         // ⚠ 必须是**独立一条**只查 sale_orders 的语句：写成 `FROM sop JOIN so ... FOR UPDATE OF sop, so`
         // 会按 sop 主键扫描而物理上先锁款项行，恰好把锁序倒回来（该坑在 #137 评审中实测踩过）。
         //
-        // 锁强度 FOR UPDATE，与 orders.ts 既有的 confirmOfflinePayment / recordPayment 等同族写事务一致。
-        // 订单行在事务外已查得存在；若恰被并发删除则返回 0 行，由下面 allocation_status 的 CAS 守卫
-        // 以 rowCount=0 抛冲突兜底。staffApi routes/allocation.js 的 lockSaleOrderForAllocation 是同语义副本。
-        await tx.execute(sql`
-          SELECT 1 FROM sale_orders WHERE sale_order_id = ${pay.sale_order_id} FOR UPDATE
-        `)
+        // ⚠ 锁强度是 `FOR NO KEY UPDATE`，**不要"顺手"改成 `FOR UPDATE`**。实测对照（PG 16，2026-09-18）：
+        //   FOR UPDATE        → 挡住 FK 子表 INSERT / 挡住改期 / 挡住 trigger 的 FOR SHARE
+        //   FOR NO KEY UPDATE → **放行** FK 子表 INSERT / 挡住改期 / 挡住 trigger 的 FOR SHARE
+        // 消环只需后两者；FOR UPDATE 会在整个事务期间把该订单所有子表 INSERT 一并挡住
+        // （refunds.ts 的退款创建首条就是 INSERT sale_order_payments），是白付的并发度代价。
+        //
+        // 订单行在事务外已查得存在；`sale_order_payments.sale_order_id` 是 NOT NULL + ON DELETE RESTRICT，
+        // 有款项行时订单删不掉，故恒锁到 1 行。0 行意味着本次调用没拿到订单锁、锁序修复对它失效，必须响亮失败。
+        // staffApi routes/allocation.js 的 lockSaleOrderForAllocation 是同语义副本。
+        // 用 RowList 的 .length 而不是 rowsAffected()：这是读不是写，postgres.js 的
+        // db.execute() 返回的是数组（RowList），行数取 .length 语义最直接。
+        const lockRows = (await tx.execute(sql`
+          SELECT 1 FROM sale_orders WHERE sale_order_id = ${pay.sale_order_id} FOR NO KEY UPDATE
+        `)) as unknown as unknown[]
+        if (lockRows.length !== 1) {
+          throw new Error('ORDER_ROW_GONE')
+        }
         await tx.execute(sql`
           UPDATE sale_payment_item_allocations
              SET is_void = true, voided_at = NOW(), updated_at = NOW()
@@ -718,6 +729,10 @@ export const savePaymentAllocations = withPermission(
     } catch (err: any) {
       if (err?.message === 'PAYMENT_NOT_FOUND') {
         return { success: false, message: '回款状态已变更，请刷新后重试' }
+      }
+      // 锁订单时 0 行：订单已不存在（正常情况下被 FK RESTRICT 挡住，能走到这里说明状态已变）
+      if (err?.message === 'ORDER_ROW_GONE') {
+        return { success: false, message: '该订单已不存在，请刷新后重试' }
       }
       if (pgErrorCode(err) === '23503') {
         return { success: false, message: '员工信息不存在，请检查后重试' }

@@ -93,27 +93,58 @@ npm run db:check:attribution   # 款项归属日期迁移前体检（只读，�
 staffApi `routes/allocation.js` 的保存/空分配/删除）原本是「先改款项行、再刷新订单汇总」，
 与「订单级改期」（先锁订单、再回写款项行）并发时会 40P01（临时 PG 实测复现过，
 且把 0040 的 AFTER trigger 禁用、改用改造前的应用层 UPDATE 同样复现 —— 环在 0040 之前就存在）。
+同一轮还给 admin `deleteOrder` 补了**无条件**的订单行锁（此前只有「转换单」分支取锁，
+非转换单路径是「先删子表、最后删主单」，在分配改成先锁订单后会与之成环）。
 
-现在四个写事务都以 `SELECT 1 FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE` 开头。守护分两层：
-- 词法：`staffApi/__tests__/routes/cross-end-sql-snapshot.test.js` 的「事务锁序守护」块，
-  既断言锁存在、也断言它**排在第一条写语句之前**（挡「锁被挪到事务末尾」）；
-- 真库：`db/scripts/__tests__/allocation-lock-order.pg.test.js`，同时跑「修复前序列必死锁」与
-  「修复后序列不死锁」两条 —— 前者在，后者才不是假绿。
+**锁强度用 `FOR NO KEY UPDATE`，不是 `FOR UPDATE`。** 实测对照（PG 16，2026-09-18）：
+
+| 事务持有 | FK 子表 INSERT（取父行 FOR KEY SHARE） | 改期的 `FOR UPDATE` | 0040 trigger 的 `FOR SHARE` |
+|---|---|---|---|
+| `FOR UPDATE` | **被挡** | 被挡 | 被挡 |
+| `FOR NO KEY UPDATE` | 放行 | 被挡 | 被挡 |
+
+消环只需挡住后两者。用 `FOR UPDATE` 会在整个事务期间把该订单的所有子表 INSERT 一并挡住
+（`createRefund` 事务第一条就是 `INSERT INTO sale_order_payments`，本是毫秒级），是白付的并发度代价。
+删除链路（`deleteOrder`）例外，它要删主键行，仍用 `FOR UPDATE`。
+
+守护分两层：
+- 词法：`staffApi/__tests__/routes/cross-end-sql-snapshot.test.js` 的「事务锁序守护」块 —— 断言锁存在、
+  **排在第一条写语句之前**（写语句集合含 `UPDATE sale_order_payments`，不是只看分配表）、
+  两端事务计数闸门、禁 JOIN 取锁（含不带 `OF` 的等价写法）；
+- 真库：`db/scripts/__tests__/allocation-lock-order.pg.test.js` —— 「修复前序列必死锁」+
+  「改期先到」+「分配先到」+ 落库结果四条。**对照组不能删**：没有「修复前必死锁」，
+  「修复后不死锁」可能只是没构造出环的假绿。
 
 ⚠ **形式上反向、但目前无环的路径（改动前必须重新评估）**：
 
 1. **退款审批**（admin `refunds.ts` 的 `approveRefund`、staffApi `order.js` 同语义副本）
    事务第一条就是 `UPDATE sale_order_payments`（CAS 翻退款行 status/paid_at），之后才
-   `UPDATE sale_orders` 重算 `refunded_amount` —— 顺序是反的。它**不**与改期成环，原因是**行不相交**：
-   改期 trigger 只回写 `change_type='首次支付'` 与同次 `'储值卡抵扣'` 两类行，而退款审批链路
-   （含 `refund-cascade` 的 `allocation_status` 回写）全部限定 `WHERE id = <退款流水>`。
-   2026-09-18 用两个真实会话交错验证过，不产生 40P01。
-   **一旦退款链路开始写首次支付行（例如改它的 status/paid_at），这个环立刻成立。**
-2. **clientApi `routes/order.js` 的 repay 纯卡/混合分支、admin `orders.ts` 的
-   `deductPrepaidCardAtCreation`** 不先锁订单，但写的是配对不上主流水的卡行，压根不触发上面的共享锁，
-   且被 `prepaid_cards` 行锁串行化。
+   `UPDATE sale_orders` 重算 `refunded_amount` —— 顺序是反的。
 
-两类都是**无环因为不相交/不触发，不是因为顺序对**。
+   **无环靠的是语句顺序，不是行不相交**：该链路末尾的
+   `reconcileAllocationStatusAfterRefund`（`payment-allocatable` 四副本）写的是
+   `WHERE p.sale_order_id = $1` —— **全单款项行，含首次支付行，与 trigger 目标行确实相交**。
+   它之所以不成环，是因为 `UPDATE sale_orders SET refunded_amount`（staff `order.js` / admin `refunds.ts`）
+   **排在它之前**：退款事务在等 `sale_orders` 锁的那段窗口里，手上只有 `change_type='退款'` 那一行，
+   而 trigger 从不碰退款行。
+
+   → **把 `reconcile` / `cascade` 这类宽写挪到 `UPDATE sale_orders SET refunded_amount` 之前，
+   环立刻成立。** 这是个看起来很无害的语句重排，改退款链路顺序前务必回到这一条。
+
+2. **admin `orders.ts` 的 `deductPrepaidCardAtCreation`** 不先锁订单，但写的是配对不上主流水的卡行，
+   压根不触发上面的共享锁，且被 `prepaid_cards` 行锁串行化 —— 无环是因为**不触发**，不是因为顺序对。
+
+3. **staffApi `routes/card.js` 的充值卡退款审批**用
+   `FROM sale_order_payments sop JOIN sale_orders so ... WHERE sop.id=$1 FOR UPDATE OF sop` 取锁
+   （按 sop 主键扫描 → 物理上先锁款项行），之后才 `UPDATE sale_orders`。当前只碰退款行故无环，
+   但它同时踩了「JOIN 取锁」和「反向顺序」两条，是下一个该整改的点（#148 评审记录，未在该 PR 内改）。
+
+4. **`db/scripts/` 的批处理**（`backfill-payment-allocatables.js`、`backfill-conversion-allocation-status.js`、
+   若干 `repair-*.js`）会先改款项行再写 `sale_orders`，与改期并发就是 #148 的原型。
+   一律在业务低峰单跑，或在每单事务首条补 `SELECT 1 FROM sale_orders ... FOR NO KEY UPDATE`。
+
+（历史记录：`clientApi routes/order.js` 的 repay 曾被列为「不先锁订单」的豁免项，2026-09-18 复核
+已不成立 —— 它的事务第一条就是 `SELECT * FROM sale_orders ... FOR UPDATE`，纯卡与混合两个分支都在锁内。）
 
 跑 0040 之前先执行 `npm run db:check:attribution` 确认没有真阻塞项：该迁移的
 `ADD CONSTRAINT` 取 ACCESS EXCLUSIVE 并持有到事务提交，回填与自检的全表扫描都落在这个窗口里，
