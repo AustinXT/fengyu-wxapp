@@ -123,7 +123,8 @@
   border-bottom: 1rpx solid #F0F0F0;
 }
 .picker-title { font-size: 32rpx; font-weight: 600; color: #2D2017; }
-.picker-scroll { height: 720rpx; padding: 0 32rpx; }
+/* box-sizing 不可省：scroll-view 默认 content-box，左右 padding 会把行内容整体挤出屏幕右侧 */
+.picker-scroll { height: 720rpx; padding: 0 32rpx; box-sizing: border-box; }
 .picker-member {
   display: flex;
   align-items: center;
@@ -132,8 +133,26 @@
   border-bottom: 1rpx solid #F5F5F5;
 }
 .picker-member:active { background: #F5F5F5; }
-.picker-member-name { font-size: 28rpx; color: #2D2017; }
-.picker-member-store { font-size: 22rpx; color: #999; }
+.picker-member-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 28rpx;
+  color: #2D2017;
+}
+.picker-member-store {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: 16rpx;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: right;
+  font-size: 22rpx;
+  color: #999;
+}
 .picker-empty { text-align: center; font-size: 26rpx; color: #999; padding: 80rpx 0; }
 
 /* 汇总 */

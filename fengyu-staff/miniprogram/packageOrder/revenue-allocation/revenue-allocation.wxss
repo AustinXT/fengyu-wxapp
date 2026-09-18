@@ -158,6 +158,8 @@
 .picker-scroll {
   height: 720rpx;
   padding: 0 32rpx;
+  /* scroll-view 默认 content-box，不加此行左右 padding 会把行内容整体挤出屏幕右侧 */
+  box-sizing: border-box;
 }
 .picker-group {
   margin-bottom: 16rpx;
@@ -182,10 +184,22 @@
   background: #F5F5F5;
 }
 .picker-member-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   font-size: 28rpx;
   color: #2D2017;
 }
 .picker-member-store {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: 16rpx;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: right;
   font-size: 22rpx;
   color: #999;
 }
