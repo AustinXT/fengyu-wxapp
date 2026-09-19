@@ -11,7 +11,7 @@
  *   已是会员客的顾客，把其 paid_at 最早的达标销售单改 document_type='售前一次' 并补打
  *   is_membership_upgrade。
  *
- *   is_membership_upgrade 打标代码（recalcCustomerType，四端镜像）已写好但尚未部署，
+ *   is_membership_upgrade 打标代码（recalcCustomerType，八处副本）已写好但尚未部署，
  *   存量单该标记全为 false；本脚本一并补打。
  *
  * 选单口径（与 staffApi/admin recalcCustomerType 打标 SQL 同源；#187 起按非体验部分毛实收达标）：

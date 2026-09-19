@@ -329,11 +329,69 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
   })
 
   describe('fengyu-admin actions/orders.ts (recordPayment 触发点)', () => {
+    /**
+     * 截取 recordPayment 的函数体。
+     * ⚠️ 原断言在**整个 orders.ts** 上搜宽泛模式，先命中的是更早的 confirmOfflinePayment，
+     * 于是删掉 recordPayment 里的调用、甚至把它移回 recalcPaidSessionsForOrder 之前，测试照样通过
+     * ——守护是误通过（闸门 2 codex 抓出）。必须先切出函数体再断言。
+     */
+    function recordPaymentBody() {
+      const src = fs.readFileSync(ADMIN_ORDERS_TS, 'utf8')
+      const start = src.indexOf('export const recordPayment = withPermission(')
+      expect(start, 'orders.ts 里找不到 export const recordPayment').toBeGreaterThan(-1)
+      const next = src.indexOf('\nexport const ', start + 1)
+      return src.slice(start, next === -1 ? undefined : next)
+    }
+
     test('recordPayment 事务结清时必须调用 recalcCustomerType（防 audit-15 P0-15-01 admin 触发点跃迁缺失复发）', () => {
-      const adminSrc = fs.readFileSync(ADMIN_ORDERS_TS, 'utf8')
-      // 守卫文本特征：targetStatus === '已支付' 分支内出现 recalcCustomerType(tx, ...)
-      const pattern = /targetStatus\s*===\s*'已支付'[\s\S]{0,200}recalcCustomerType\s*\(\s*tx\s*,/
-      expect(adminSrc).toMatch(pattern)
+      const body = recordPaymentBody()
+      expect(body).toMatch(/targetStatus\s*===\s*'已支付'[\s\S]{0,300}recalcCustomerType\s*\(\s*tx\s*,/)
+    })
+
+    test('recordPayment 里 recalcCustomerType 必须排在 recalcPaidSessionsForOrder 之后（#187）', () => {
+      // 跃迁判定已改读 sale_items.received，而它由 recalcPaidSessionsForOrder 的 STEP1 写出；
+      // 排在前面会读到本次回款之前的旧值，少算本笔回款额。
+      const body = recordPaymentBody()
+      const paidSessionsAt = body.indexOf('recalcPaidSessionsForOrder(tx,')
+      const recalcTypeAt = body.indexOf('recalcCustomerType(tx,')
+      expect(paidSessionsAt, 'recordPayment 内未找到 recalcPaidSessionsForOrder').toBeGreaterThan(-1)
+      expect(recalcTypeAt, 'recordPayment 内未找到 recalcCustomerType').toBeGreaterThan(-1)
+      expect(recalcTypeAt).toBeGreaterThan(paidSessionsAt)
+    })
+  })
+
+  describe('参数绑定身份与 CTE 引用（防 normalizeSql 把身份抹平后的误通过）', () => {
+    // normalizeSql 把 $1/$2/${…} 一律换成 ?，绑定反了也能"逐字一致"。
+    // 这里在**归一化之前**断言各参数的身份（闸门 2 codex 抓出）。
+    test('三个云函数端：CTE 只用 $1（顾客），阈值 $2 只出现在判定/归因条件里', () => {
+      for (const [label, file] of RUNTIME_FILES.filter(([l]) => !l.startsWith('admin'))) {
+        const cte = extractCte(file)
+        expect(cte, `${label} CTE 不应出现阈值参数 $2`).not.toMatch(/\$2/)
+        expect(cte, `${label} CTE 应按 $1 过滤顾客`).toContain('ro.client_user_id = $1')
+        expect(cte, `${label} CTE 应按 $1 过滤顾客`).toContain('o.client_user_id = $1')
+        const caseSql = extractCaseSql(file)
+        expect(caseSql, `${label} CASE 不应出现顾客参数 $1`).not.toMatch(/\$1/)
+        expect(caseSql, `${label} CASE 应按 $2 比阈值`).toContain('non_trial >= $2')
+      }
+    })
+
+    test('admin 两端：CTE 只插 clientUserId，阈值 threshold 只出现在判定/归因条件里', () => {
+      for (const [label, file] of RUNTIME_FILES.filter(([l]) => l.startsWith('admin'))) {
+        const cte = extractCte(file)
+        expect(cte, `${label} CTE 不应插入 threshold`).not.toContain('${threshold}')
+        expect(cte, `${label} CTE 应插入 clientUserId`).toContain('ro.client_user_id = ${clientUserId}')
+        const caseSql = extractCaseSql(file)
+        expect(caseSql, `${label} CASE 不应插入 clientUserId`).not.toContain('${clientUserId}')
+        expect(caseSql, `${label} CASE 应按 threshold 比阈值`).toContain('non_trial >= ${threshold}')
+      }
+    })
+
+    test('CASE 查询必须真的引用金额 CTE（删掉引用不得静默通过）', () => {
+      // extractCaseSql 只截 SELECT CASE 段，删掉它前面的 ${CTE} 引用不会让别的断言失败。
+      const cteRef = /\$\{(RECALC_CUSTOMER_TYPE_CTE|recalcCustomerTypeCte\([^)]*\))\}\s*\n\s*SELECT CASE/
+      for (const [label, file] of RUNTIME_FILES) {
+        expect(fs.readFileSync(file, 'utf8'), `${label} 的 SELECT CASE 前缺 CTE 引用`).toMatch(cteRef)
+      }
     })
   })
 
