@@ -571,6 +571,11 @@ async function cascadeRefund(client, params) {
       if (homeItemIds.has(it.saleItemId)) {
         throw new Error('CONFLICT: HOME_REFUND_SETTLED_EXCEEDED: 家居可退数量已被提货或转换占用，请刷新后重新发起退款')
       }
+      // 0 行且不在本单家居集合里：要么不是家居行（正常），要么 note.items 的 refSaleItemId
+      // 指向了别单（脏数据）。后者款照退、账未记且此前无任何痕迹，留一条日志供排查。
+      console.warn('[cascadeRefund] 通道5 跳过：未命中本单家居行', {
+        saleOrderId, saleItemId: it.saleItemId, qty,
+      })
       continue
     }
     rolledBackPickups += pickupRes.rowCount

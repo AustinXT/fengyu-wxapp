@@ -112,6 +112,16 @@ export function calculateUnusedQuantity(item: RefundSourceItem | null | undefine
   // #154：物理剩余必须减「已结算」= 已提货 + 已退款 + 已转换。拆列前三者共用 picked_up_quantity，
   // 减单列即可；拆列后只减 picked_up 会让已退款件数重新变成可退 —— 正是 2026-06-08 止血
   // 要堵的那条可重复退路径（资损）。
+  //
+  // 必填字段只挡得住「构造对象时漏写」；**挡不住原生 SQL 漏 SELECT 这两列**——
+  // `tx.execute()` 的行类型是手写断言，少一列 tsc 照样绿，运行时 `undefined ?? 0` 静默归零 →
+  // 已结算低估 → 可退虚高（资损方向）。与 staff 纯 JS 侧同款运行时拦截。
+  if (item.refunded_quantity === undefined || item.converted_quantity === undefined) {
+    throw new Error(
+      'INVALID_STATE: REFUND_SOURCE_MISSING_QUANTITY_COLUMNS: '
+      + '家居可退件数缺少 refunded_quantity / converted_quantity，取数处需补齐这两列',
+    )
+  }
   const quantity = Number(item.quantity || 0)
   const settled = Number(item.picked_up_quantity || 0)
     + Number(item.refunded_quantity || 0)

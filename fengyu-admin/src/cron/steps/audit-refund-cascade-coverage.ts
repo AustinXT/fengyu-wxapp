@@ -18,7 +18,8 @@
  *                                 （用 sop.paid_at 对齐 cascade 的 NOW() 快照）
  *   C4 point_not_reversed     — point_transactions 正向赠送/获取 → 应存在 -amount 的 '消费冲销'
  *   C5 pickup_quantity_mismatch  — sale_items.picked_up_quantity 必须等于 SUM(pickup_records.pickup_quantity)
- *   C5b settled_quantity_overflow— picked_up + refunded + converted 不得超过 quantity
+ *   C5b settled_quantity_overflow— picked_up + refunded + converted 不得超过 quantity（CHECK 约束的二道保险）
+ *   C5c converted_quantity_mismatch — converted_quantity 必须等于未关闭转出行的 quantity 聚合
  *
  * 决议：与 STEP 5/6/7/8 一致，**只告警不修复**。
  *   - 自动 cascade 修复会掩盖上游退款逻辑 bug
@@ -45,6 +46,7 @@ type CascadeChannel =
   | 'point_not_reversed'
   | 'pickup_quantity_mismatch'
   | 'settled_quantity_overflow'
+  | 'converted_quantity_mismatch'
 
 interface CascadeViolation {
   channel: CascadeChannel
@@ -293,27 +295,28 @@ export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeC
   // 止血改成把退款数**加进** picked_up 之后，该式对「既提过货又退过款」的行恒成立，
   // 即必然误报；#125 的转换折抵又加了一类。两库 pickup_records 至今为空，所以雷还没炸。
   //
-  // #154 拆列后本列回归物理提货量本义，判据也随之回到列本义、与退款彻底解耦：
-  // 不再 JOIN 退款流水，直接校验全量家居行的 picked_up_quantity == SUM(pickup_records)。
-  // 由 pickup_records 聚合驱动而非 sale_items 全表扫：
-  //   · 「只校验有提货记录的行」由 JOIN 天然表达 —— 迁移 0043 对「有 picked_up 但完全没有
-  //     pickup_records、且订单无已支付退款」的历史行刻意保留原值（视为提货未留记录），
-  //     它的事后断言 2 用的也是这条豁免。不豁免的话那类行每天恒告警，而 0043 放弃 CHECK 之后
-  //     C5/C5b 是唯一的运行时守护，恒红等于守护失效。
-  //   · 写成 EXISTS + 相关 SUM 子查询时 PG 不会合并这两个子计划，会对每个候选行各探一遍
-  //     pickup_records；聚合驱动只扫一次。
+  // #154 拆列后本列回归物理提货量本义，判据随之回到列本义、与退款彻底解耦，
+  // 且迁移不留任何豁免行 —— 所以这是一条**全量**不变量：任何 sale_item 的
+  // picked_up_quantity 都必须等于它的 pickup_records 合计（没有记录就必须是 0）。
+  //
+  // 初版曾为迁移保留的「历史提货未留记录」行开 EXISTS 豁免，双谱系评审指出那等于
+  // 给巡检开了个正对着「删提货记录」逻辑的永久盲区（而该逻辑正是 C5 存在的理由）：
+  // 一旦某行的 pickup_records 被删光而 picked_up 没归零，它就永远出圈了。
+  // 现在迁移把那类行一律拦下，判据随之收紧为 FULL JOIN 的全量比对。
+  //
+  // 写成 EXISTS + 相关 SUM 子查询时 PG 不会合并这两个子计划，会对每个候选行各探一遍
+  // pickup_records；聚合驱动只扫一次。
   const c5 = (await db.execute(sql`
-    SELECT s.sale_item_id,
+    SELECT COALESCE(s.sale_item_id, p.sale_item_id) AS sale_item_id,
            COALESCE(s.picked_up_quantity, 0) AS current_picked,
-           p.total_picked
-    FROM (
-           SELECT sale_item_id, SUM(pickup_quantity) AS total_picked
+           COALESCE(p.total_picked, 0) AS total_picked
+    FROM sale_items s
+    FULL JOIN (
+           SELECT sale_item_id, SUM(pickup_quantity)::int AS total_picked
              FROM pickup_records
             GROUP BY sale_item_id
-         ) p
-    JOIN sale_items s ON s.sale_item_id = p.sale_item_id
-    WHERE s.product_type = '家居产品'
-      AND COALESCE(s.picked_up_quantity, 0) <> p.total_picked
+         ) p ON p.sale_item_id = s.sale_item_id
+    WHERE COALESCE(s.picked_up_quantity, 0) <> COALESCE(p.total_picked, 0)
     LIMIT ${SAMPLE_LIMIT}
   `)) as Array<Record<string, unknown>>
   if (c5.length > 0) {
@@ -338,6 +341,32 @@ export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeC
   `)) as Array<Record<string, unknown>>
   if (c5b.length > 0) {
     details.push({ channel: 'settled_quantity_overflow', count: c5b.length, samples: c5b })
+  }
+
+  // ── C5c: converted_quantity 与转出行聚合守恒（#154）──
+  // 三列里它是唯一「有独立交叉源」的：转出行本身就是折抵的凭证。
+  // picked_up 有 C5、settled 有 CHECK 约束，converted 此前无人看 ——
+  // 折抵关闭回退漏跑或写错列只能靠 C5b 的上限检查间接发现，而「少减」根本发现不了。
+  const c5c = (await db.execute(sql`
+    SELECT COALESCE(s.sale_item_id, o.ref_sale_item_id) AS sale_item_id,
+           COALESCE(s.converted_quantity, 0) AS current_converted,
+           COALESCE(o.total_converted, 0) AS total_converted
+    FROM sale_items s
+    FULL JOIN (
+           SELECT out_item.ref_sale_item_id, SUM(out_item.quantity)::int AS total_converted
+             FROM sale_items out_item
+             JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+            WHERE out_item.item_direction = '转出'
+              AND out_item.product_type = '家居产品'
+              AND out_item.ref_sale_item_id IS NOT NULL
+              AND conv_order.status <> '已关闭'
+            GROUP BY out_item.ref_sale_item_id
+         ) o ON o.ref_sale_item_id = s.sale_item_id
+    WHERE COALESCE(s.converted_quantity, 0) <> COALESCE(o.total_converted, 0)
+    LIMIT ${SAMPLE_LIMIT}
+  `)) as Array<Record<string, unknown>>
+  if (c5c.length > 0) {
+    details.push({ channel: 'converted_quantity_mismatch', count: c5c.length, samples: c5c })
   }
 
   if (details.length > 0) {

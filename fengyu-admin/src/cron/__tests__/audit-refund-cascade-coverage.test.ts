@@ -8,8 +8,9 @@
  *   D 通道 SQL 模板按预期出现（含 paid_at / pickup_quantity 这两个易错列名）
  *   E 多通道同时违反 → details 累积，notifyOps 仅一次
  *
- * #154：C5 从「退款是否回滚 picked_up」改为「picked_up == SUM(pickup_records)」守恒，
- * 并新增 C5b「已结算三列之和不得超过 quantity」——故查询数由 5 条变成 6 条。
+ * #154：C5 从「退款是否回滚 picked_up」改为「picked_up == SUM(pickup_records)」全量守恒，
+ * 并新增 C5b「已结算三列之和不得超过 quantity」与 C5c「converted 与转出行聚合守恒」
+ * ——故查询数由 5 条变成 7 条。
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
@@ -42,13 +43,13 @@ describe('cron-worker STEP 9 — auditRefundCascadeCoverage', () => {
   })
 
   it('A. 全部通道一致 → violations=0，零写入', async () => {
-    for (let i = 0; i < 6; i++) mockExecute.mockResolvedValueOnce([])
+    for (let i = 0; i < 7; i++) mockExecute.mockResolvedValueOnce([])
 
     const result = await auditRefundCascadeCoverage(mockDb as never)
 
     expect(result.violations).toBe(0)
     expect(result.details).toEqual([])
-    expect(mockExecute).toHaveBeenCalledTimes(6)
+    expect(mockExecute).toHaveBeenCalledTimes(7)
     expect(notifyOpsMock).not.toHaveBeenCalled()
     expect(mockDb.transaction).not.toHaveBeenCalled()
   })
@@ -62,6 +63,7 @@ describe('cron-worker STEP 9 — auditRefundCascadeCoverage', () => {
     mockExecute.mockResolvedValueOnce([]) // C4
     mockExecute.mockResolvedValueOnce([]) // C5
     mockExecute.mockResolvedValueOnce([]) // C5b
+    mockExecute.mockResolvedValueOnce([]) // C5c
     mockExecute.mockResolvedValueOnce([]) // INSERT operation_logs
 
     const result = await auditRefundCascadeCoverage(mockDb as never)
@@ -91,7 +93,8 @@ describe('cron-worker STEP 9 — auditRefundCascadeCoverage', () => {
     mockExecute.mockResolvedValueOnce([
       { sop_id: 1, sale_order_id: 'o1', ref_sale_item_id: null },
     ])
-    for (let i = 0; i < 4; i++) mockExecute.mockResolvedValueOnce([])
+    // C2 / C3 / C4 / C5 / C5b / C5c 六条 + 一条 INSERT operation_logs
+    for (let i = 0; i < 6; i++) mockExecute.mockResolvedValueOnce([])
     mockExecute.mockResolvedValueOnce([])
 
     await auditRefundCascadeCoverage(mockDb as never)
@@ -104,7 +107,7 @@ describe('cron-worker STEP 9 — auditRefundCascadeCoverage', () => {
   })
 
   it('D. 通道 SQL 模板按预期出现（含 paid_at / pickup_quantity 易错列名）', async () => {
-    for (let i = 0; i < 6; i++) mockExecute.mockResolvedValueOnce([])
+    for (let i = 0; i < 7; i++) mockExecute.mockResolvedValueOnce([])
 
     await auditRefundCascadeCoverage(mockDb as never)
 
@@ -136,10 +139,12 @@ describe('cron-worker STEP 9 — auditRefundCascadeCoverage', () => {
     expect(sqlTexts.some((s) => s.includes('pickup_records') && s.includes('pickup_quantity'))).toBe(true)
     // #154：C5 判据必须与退款解耦——继续 JOIN 退款流水就会把「既提过货又退过款」的行恒判为
     // mismatch（2026-06-08 止血把退款数加进 picked_up 之后，旧判据 picked_up >= SUM 恒成立）。
-    const c5 = sqlTexts.find((s) => s.includes('pickup_records') && s.includes('<>'))
+    const c5 = sqlTexts.find((s) => s.includes('pickup_records') && s.includes('FULL JOIN'))
     expect(c5, 'C5 未改成守恒判据').toBeDefined()
     expect(c5).not.toContain("change_type = '退款'")
-    expect(c5).toContain("s.product_type = '家居产品'")
+    // #154：AC4 是**全量**不变量，不得再为任何行开豁免 —— 豁免会在「删提货记录」这条
+    // 正对着 C5 存在理由的路径上留永久盲区（双谱系评审命中）
+    expect(c5, 'C5 回退到了带豁免的 INNER JOIN').not.toMatch(/EXISTS \(SELECT 1 FROM pickup_records/)
     // C5b 已结算三列之和不得超过 quantity（迁移 0043 未加 CHECK，这条巡检是它的替身）
     expect(sqlTexts.some((s) =>
       s.includes('COALESCE(s.picked_up_quantity, 0)') &&
@@ -147,6 +152,12 @@ describe('cron-worker STEP 9 — auditRefundCascadeCoverage', () => {
       s.includes('COALESCE(s.converted_quantity, 0)') &&
       s.includes('> s.quantity'),
     ), 'C5b settled_quantity_overflow 缺失').toBe(true)
+    // C5c：converted 是三列里唯一有独立交叉源的，必须也有守恒巡检
+    expect(sqlTexts.some((s) =>
+      s.includes('total_converted') &&
+      s.includes("out_item.item_direction = '转出'") &&
+      s.includes("conv_order.status <> '已关闭'"),
+    ), 'C5c converted_quantity_mismatch 缺失').toBe(true)
   })
 
   it('E. C2 + C5 同时违反 → details 累积，notifyOps 仅一次', async () => {
@@ -161,6 +172,7 @@ describe('cron-worker STEP 9 — auditRefundCascadeCoverage', () => {
       { sale_item_id: 'si-C', current_picked: 5, total_picked: 3 },
     ]) // C5 violation x1
     mockExecute.mockResolvedValueOnce([]) // C5b ok
+    mockExecute.mockResolvedValueOnce([]) // C5c ok
     mockExecute.mockResolvedValueOnce([]) // INSERT operation_logs
 
     const result = await auditRefundCascadeCoverage(mockDb as never)

@@ -2686,7 +2686,7 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
   // ⑥ 「可退件数」的入参守护双端等价：admin 让 tsc 兜（RefundSourceItem 两列必填），
   //    staff 是纯 JS，只能在 calculateUnusedQuantity 里显式拦。少了它，调用方漏取两列时
   //    `Number(undefined || 0)` 会安静得 0 → 已结算低估 → 可退量虚高（可重复退）。
-  test('可退件数的缺列守护：admin 靠必填类型，staff 靠运行时断言', () => {
+  test('可退件数的缺列守护：两端都要类型 + 运行时双保险', () => {
     const adminSrc = readFile(FILES.adminRefundTs).replace(/\s+/g, ' ')
     expect(adminSrc, 'admin RefundSourceItem 的两列退回可选，tsc 就兜不住漏传了').toContain(
       'refunded_quantity: number | null',
@@ -2694,11 +2694,16 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
     expect(adminSrc).toContain('converted_quantity: number | null')
     expect(adminSrc, '两列不得是可选').not.toContain('refunded_quantity?: number | null')
 
-    const staffSrc = readFile(FILES.staffRefundJs).replace(/\s+/g, ' ')
-    expect(staffSrc, 'staff 缺少缺列断言').toContain('REFUND_SOURCE_MISSING_QUANTITY_COLUMNS')
-    expect(staffSrc).toMatch(
-      /item\.refunded_quantity === undefined \|\| item\.converted_quantity === undefined/,
-    )
+    // 必填类型只挡得住「构造对象时漏写」，**挡不住原生 SQL 漏 SELECT**：
+    // tx.execute() 的行类型是手写断言，少一列 tsc 照样绿，运行时静默归零 → 可退虚高（资损）。
+    // 故两端都要运行时拦截（双谱系评审命中 admin 侧缺失）。
+    for (const [end, file] of [['staff', FILES.staffRefundJs], ['admin', FILES.adminRefundTs]]) {
+      const src = readFile(file).replace(/\s+/g, ' ')
+      expect(src, `${end} 缺少缺列运行时断言`).toContain('REFUND_SOURCE_MISSING_QUANTITY_COLUMNS')
+      expect(src).toMatch(
+        /item\.refunded_quantity === undefined \|\| item\.converted_quantity === undefined/,
+      )
+    }
   })
 
   // ⑤ 持锁路径的「已提货件数」必须直读 si.picked_up_quantity，不得再聚合 pickup_records。

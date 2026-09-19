@@ -58,11 +58,35 @@ const CONVERTED = `COALESCE((
      AND conv_order.status <> '已关闭'
 ), 0)`
 
-const HAS_PAID_REFUND = `EXISTS (
-  SELECT 1 FROM sale_order_payments sop
-   WHERE sop.sale_order_id = si.sale_order_id
-     AND sop.change_type = '退款'
-     AND sop.status = '已支付'
+/**
+ * 「本行退款实据」—— 与迁移 0043 的前置断言字面同口径。
+ * 只看「订单上有没有退款」会把同单**他行**的退款错安到本行头上（双谱系评审命中）：
+ * 「已消耗」口径刻意不含 refunded，错记会让 overpay 余数虚高 → 多退。
+ */
+const HAS_ITEM_REFUND_EVIDENCE = `(
+  o.status = '已退款'
+  OR EXISTS (
+    SELECT 1 FROM sale_order_payments sop
+     WHERE sop.sale_order_id = si.sale_order_id
+       AND sop.change_type = '退款'
+       AND sop.status = '已支付'
+       AND sop.ref_sale_item_id = si.sale_item_id
+  )
+  OR EXISTS (
+    SELECT 1
+      FROM sale_order_payments sop
+      CROSS JOIN LATERAL jsonb_array_elements(
+        CASE WHEN sop.note LIKE '{%'
+             THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
+                       THEN (sop.note)::jsonb -> 'items'
+                       ELSE '[]'::jsonb END
+             ELSE '[]'::jsonb END
+      ) AS elem
+     WHERE sop.sale_order_id = si.sale_order_id
+       AND sop.change_type = '退款'
+       AND sop.status = '已支付'
+       AND elem ->> 'refSaleItemId' = si.sale_item_id
+  )
 )`
 
 async function columnsExist(client) {
@@ -98,11 +122,9 @@ async function dryRun(client) {
              COALESCE(si.picked_up_quantity, 0) AS old_settled,
              ${PICKED_PHYS} AS picked_phys,
              ${CONVERTED} AS conv,
-             ${HAS_PAID_REFUND} AS has_paid_refund,
-             EXISTS (
-               SELECT 1 FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id
-             ) AS has_pickup_records
+             ${HAS_ITEM_REFUND_EVIDENCE} AS has_item_refund_evidence
         FROM sale_items si
+        JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
        -- ⚠ 这三个分支必须与迁移 0043 的 WHERE **字面同口径**：少一个分支，dry-run 会对
        -- 「picked_up=0 但有未关闭转出行」这类历史行报「全部通过」，而迁移实际会 RAISE 回滚。
        WHERE COALESCE(si.picked_up_quantity, 0) <> 0
@@ -126,9 +148,8 @@ async function dryRun(client) {
     sale_item_id: r.sale_item_id,
     quantity: r.quantity,
     旧_已结算: r.old_settled,
-    新_已提货: r.picked_phys
-      + (r.residual > 0 && !r.has_paid_refund && !r.has_pickup_records ? r.residual : 0),
-    新_已退款: r.residual > 0 && r.has_paid_refund ? r.residual : 0,
+    新_已提货: r.picked_phys,
+    新_已退款: Math.max(0, r.residual),
     新_已转换: r.conv,
   })
 
@@ -142,22 +163,16 @@ async function dryRun(client) {
     report('residual < 0 明细', negative.map(toRow))
   }
 
-  // 有提货记录却仍有无退款实据的残差：并回 picked_up 会破坏「picked_up == SUM(pickup_records)」，
-  // 并回 refunded 又查无实据 —— 迁移 0043 的前置断言会 RAISE 把整条迁移打回。
-  const unexplained = plan.filter((r) => r.residual > 0 && !r.has_paid_refund && r.has_pickup_records)
+  // 与迁移 0043 的前置断言同口径：残差必须能落到**本行**的退款实据上，否则拦下。
+  // 初版留过一条「无退款残差视为历史提货未留记录」的口子，它让 AC4 不再是全量不变量、
+  // 并迫使 cron C5 为这类行开永久盲区（双谱系评审命中）。现在一律阻断。
+  const unexplained = plan.filter((r) => r.residual > 0 && !r.has_item_refund_evidence)
   if (unexplained.length > 0) {
     problems += unexplained.length
-    console.log('\n✗ 有提货记录、却存在无退款实据的残差 → 迁移 0043 会 RAISE EXCEPTION 中止。')
-    console.log('  典型来源：已删除转换单的转出行（conv 聚合归 0 而 picked_up 仍被抬高）。必须先查清。')
+    console.log('\n✗ 残差查无本行退款实据 → 迁移 0043 会 RAISE EXCEPTION 中止。')
+    console.log('  实据三选一：整单已退款 / 退款流水 ref_sale_item_id 指向本行 / 退款 note.items 含本行。')
+    console.log('  典型来源：同单他行退款、已删除转换单的转出行。必须先查清。')
     report('无从解释的残差明细', unexplained.map(toRow))
-  }
-
-  const legacyPicked = plan.filter((r) => r.residual > 0 && !r.has_paid_refund && !r.has_pickup_records)
-  if (legacyPicked.length > 0) {
-    console.log('\n⚠ 有残差、订单无已支付退款、且完全没有 pickup_records → 按口径视为「历史提货未留记录」，')
-    console.log('  会留在 picked_up_quantity。不阻断迁移，但请人工确认这批数据的来历。')
-    console.log('  注意：cron STEP 12 的 C5 对这类行同样豁免（判据带 EXISTS(pickup_records)）。')
-    report('历史提货残差明细', legacyPicked.map(toRow))
   }
 
   // 部署窗口暴露面：迁移已跑、新代码未部署时，旧代码会把哪些份额重新放出来。
@@ -193,20 +208,21 @@ async function verifyAfter(client) {
   console.log('模式：**迁移后守恒校验**（sale_items 已有 refunded_quantity / converted_quantity）\n')
   let problems = 0
 
-  // 与迁移事后断言 2、cron C5 同构：由 pickup_records 聚合驱动，
-  // 「无提货记录的行豁免」由 JOIN 天然表达，也避免同一相关子查询被求值两遍。
+  // 与迁移事后断言、cron C5 同构，且是**全量**比对：
+  // 用 INNER JOIN 会把「有 picked_up 但零 pickup_records」的损坏行整片漏掉 ——
+  // 而那正是「删提货记录」出错后的形态。
   const { rows: mismatch } = await client.query(`
-    SELECT si.sale_item_id,
+    SELECT COALESCE(si.sale_item_id, p.sale_item_id) AS sale_item_id,
            COALESCE(si.picked_up_quantity, 0) AS picked_up_quantity,
-           p.pickup_records_total
-      FROM (
+           COALESCE(p.pickup_records_total, 0) AS pickup_records_total
+      FROM sale_items si
+      FULL JOIN (
              SELECT sale_item_id, SUM(pickup_quantity)::int AS pickup_records_total
                FROM pickup_records
               GROUP BY sale_item_id
-           ) p
-      JOIN sale_items si ON si.sale_item_id = p.sale_item_id
-     WHERE COALESCE(si.picked_up_quantity, 0) <> p.pickup_records_total
-     ORDER BY si.sale_item_id
+           ) p ON p.sale_item_id = si.sale_item_id
+     WHERE COALESCE(si.picked_up_quantity, 0) <> COALESCE(p.pickup_records_total, 0)
+     ORDER BY 1
   `)
   if (mismatch.length > 0) {
     problems += mismatch.length

@@ -401,13 +401,24 @@ export const saleItems = pgTable(
      * #154：「已结算」不得超过购买件数。三列各自的写入点都带了同判据的 WHERE 守卫，
      * 但那是 8 份手抄；约束是同一条不变量的**唯一权威表达**，且不可能被绕过。
      *
+     * ⚠ 必须用 COALESCE 而不是 `picked_up_quantity IS NULL OR (...)`：后者对 NULL 行直接放行，
+     * 「不可能被绕过」就不成立（双谱系评审命中）。
+     *
      * 曾以「ADD CONSTRAINT 取 ACCESS EXCLUSIVE 太贵」为由不加——该理由不成立：
      * 这把锁在同一迁移的 ADD COLUMN 就已取到，drizzle 又把整批迁移包进单事务持有到提交，
      * 追加约束的边际锁成本是 0；全表扫描的代价也已被迁移的事后断言付过一遍。
      */
     check(
       "chk_sale_item_settled_le_quantity",
-      sql`${table.pickedUpQuantity} IS NULL OR (${table.pickedUpQuantity} + ${table.refundedQuantity} + ${table.convertedQuantity}) <= ${table.quantity}`,
+      sql`(COALESCE(${table.pickedUpQuantity}, 0) + ${table.refundedQuantity} + ${table.convertedQuantity}) <= ${table.quantity}`,
+    ),
+    /**
+     * 三列非负。展示侧那些 `GREATEST(0, ...)` 本来就是在防负值；有了约束，负值成为不可能，
+     * 而不是「出现了再夹回去」。picked_up_quantity 历史可空，故走 COALESCE。
+     */
+    check(
+      "chk_sale_item_quantities_non_negative",
+      sql`COALESCE(${table.pickedUpQuantity}, 0) >= 0 AND ${table.refundedQuantity} >= 0 AND ${table.convertedQuantity} >= 0`,
     ),
     check("chk_item_service_fee", sql`${table.serviceFee} >= 0`),
   ],

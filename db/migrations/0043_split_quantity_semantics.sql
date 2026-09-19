@@ -1,55 +1,43 @@
 ALTER TABLE "sale_items" ADD COLUMN "refunded_quantity" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
 ALTER TABLE "sale_items" ADD COLUMN "converted_quantity" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
-ALTER TABLE "sale_items" ADD CONSTRAINT "chk_sale_item_settled_le_quantity" CHECK ("sale_items"."picked_up_quantity" IS NULL OR ("sale_items"."picked_up_quantity" + "sale_items"."refunded_quantity" + "sale_items"."converted_quantity") <= "sale_items"."quantity");--> statement-breakpoint
+ALTER TABLE "sale_items" ADD CONSTRAINT "chk_sale_item_settled_le_quantity" CHECK ((COALESCE("sale_items"."picked_up_quantity", 0) + "sale_items"."refunded_quantity" + "sale_items"."converted_quantity") <= "sale_items"."quantity");--> statement-breakpoint
+ALTER TABLE "sale_items" ADD CONSTRAINT "chk_sale_item_quantities_non_negative" CHECK (COALESCE("sale_items"."picked_up_quantity", 0) >= 0 AND "sale_items"."refunded_quantity" >= 0 AND "sale_items"."converted_quantity" >= 0);--> statement-breakpoint
 -- ↑ 以上为 drizzle-kit 生成；以下为手写回填（db/CLAUDE.md 允许的「末尾追加数据回填」例外）。
 --
 -- ⚠ 执行方式：**必须** `npm --prefix db run db:migrate`（drizzle migrator 把整个文件包进单事务，
---   RAISE EXCEPTION 才能真正回滚已执行的 UPDATE，并发写入也被 ALTER 的 ACCESS EXCLUSIVE 天然排除）。
+--   RAISE EXCEPTION 才能真正回滚已执行的 UPDATE；ALTER 取的 ACCESS EXCLUSIVE 也让回填期间
+--   不可能有并发写入 sale_items）。
 --   **禁止**用 `db/scripts/apply-pending-migrations.js` 跑本条：它按 statement-breakpoint 标记逐条
---   autocommit，会丢掉原子性，并在回填与并发写之间开出 lost update 窗口（旧代码把退款/折抵写进
---   picked_up，回填按旧快照覆盖 → 份额丢失 → 可重复退）。
+--   autocommit，会丢掉原子性，并在回填与并发写之间开出 lost update 窗口。
 --   （注意本行刻意不写出那个标记的完整字面量——drizzle 就是按它切分语句，写全会把注释从中间切开。）
 --
--- ⚠ 部署顺序：本迁移**不向前也不向后兼容**，详见 docs/changes/ 对应变更文档。
---   正向：先迁 → 立即部署 staffApi / clientApi / admin 三端 → 跑 verify-quantity-split.js。
---   反向：**禁止代码回滚**（新列写过之后回滚代码，旧代码会把已退款/已折抵份额读回可提可退 → 资损），
---   只能 forward-fix。
+-- ⚠ 部署顺序：本迁移**不向前也不向后兼容**，runbook 见 docs/changes/arch/011。
 --
--- #154：picked_up_quantity 三语义拆列的历史数据回填。
---
--- 编号说明：本条刻意跳号到 0043。test 与 dev 两线的 migration 编号自 0039 起已分叉
--- （两线的 0039/0040 同名不同内容，dev 另有 0041_bizarre_wolfpack / 0042_inventory_sku_supplier_fk），
--- 在 test 线取自然号 0041 会与 dev 的 0041 撞名。0043 是两线均未占用的号，
--- 将来双线合并时 dev 的 0041/0042 可干净插入。drizzle 的下一个号取「上一条 idx + 1」，
--- 跳号不会在后续产生空洞或二次冲突。
+-- #154：picked_up_quantity 三语义拆列的历史数据回填。编号跳号到 0043 的理由见 011。
 --
 -- 回填口径：
 --   picked_phys := SUM(pickup_records.pickup_quantity)                    — 物理提货，独立源
 --   conv        := SUM(转出行 quantity WHERE 转换单 status <> '已关闭')     — 已转换，独立源
 --   residual    := 旧 picked_up_quantity − picked_phys − conv
---     residual < 0                                  → 守恒破坏，RAISE EXCEPTION 回滚整个迁移（不静默 clamp）
---     residual > 0 且该行订单有已支付退款            → 计入 refunded_quantity
---     residual > 0、无退款、且该行**没有** pickup_records → 视为「历史提货未留记录」，留在 picked_up_quantity
---     residual > 0、无退款、但该行**有** pickup_records   → 无从解释的结算量，RAISE EXCEPTION
 --
---   最后一类必须拦而不能并回 picked_up_quantity：并回去会让该行 picked_up > SUM(pickup_records)，
---   与本迁移事后断言 2 以及 cron STEP 12 的 C5 守恒判据直接冲突（断言当场 RAISE 把整条迁移打回，
---   或迁移侥幸通过后 C5 每日恒告警）。典型来源是「已删除转换单的转出行」——conv 聚合归 0 而
---   picked_up 仍被抬高。部署前跑 verify-quantity-split.js 可提前发现这类行。
+--   residual < 0                → RAISE（物理提货 + 已转换 超过旧的已结算合计）
+--   residual > 0 且**有退款实据** → refunded_quantity
+--   residual > 0 且无退款实据    → RAISE（无从解释的结算量）
 --
--- 2026-09-18 实测：dev 14 行 / 17 件、prod 18 行 / 24 件，全部 picked_phys=0、conv=0 且订单均有已支付退款
--- （pickup_records 两库皆空、家居转出行尚无数据），即全量归入 refunded_quantity，0 行守恒破坏。
--- 规则仍按通用式写，以覆盖 PR 合入到实际部署之间可能新增的数据。
+-- 「退款实据」必须能落到**本行**，不能只看订单上有没有退款（双谱系评审命中）：
+--   ① sale_order_payments.ref_sale_item_id 直接指向本行的已支付退款；或
+--   ② 该退款的 note.items 里出现本行；或
+--   ③ 整单已退款（status='已退款'）—— 整单退时每个购买行都被退，归因必然正确。
+-- 只用订单级 EXISTS 会把「同单**他行**退款 + 本行是无记录的历史提货」错记成退款：
+-- 「已消耗」口径刻意不含 refunded，错记会让 overpay 余数虚高 → 多退。
 --
--- 「已结算 <= 购买件数」由上方 drizzle 生成段的 chk_sale_item_settled_le_quantity 约束兜底。
--- 曾以「ADD CONSTRAINT 取 ACCESS EXCLUSIVE 太贵」为由不加，那个理由不成立：这把锁在本文件
--- 第一条 ADD COLUMN 就已取到，drizzle 又把整批迁移包进单事务持有到提交，追加约束的边际锁成本是 0。
--- 约束在**回填之前**生效，此时 refunded/converted 恒为 0、picked_up <= quantity（2026-09-18 实测
--- 两库 0 行越界），故必然通过；回填是等量搬运、三列之和不变，回填后同样成立。
--- 写入侧的 WHERE 守卫与 cron STEP 12 的 C5b 是它的二道保险（约束被 DROP 时仍能发现）。
+-- 回填后 picked_up_quantity 恒等于 SUM(pickup_records)，**没有任何豁免行** ——
+-- 初版留过一条「无退款残差视为历史提货未留记录、留在 picked_up」的口子，它会让 AC4 不成立、
+-- 并迫使 cron C5 永久豁免这类行（评审指出那等于给巡检开了个正对着删提货记录逻辑的盲区）。
+-- 2026-09-18 实测：按本规则 dev / prod 被阻断行数均为 0。
 --
--- 前置守恒断言：residual < 0 说明「物理提货 + 已转换」已超过旧的已结算合计，属于回填口径无法
--- 安全消化的数据异常。必须在 UPDATE 之前拦截——放到事后查会被 CASE 的 ELSE 0 分支吞掉。
+-- 2026-09-18 实测：dev 14 行 / 17 件、prod 18 行 / 24 件，全部 picked_phys=0、conv=0
+-- 且订单 status 均为「已退款」，即全量归入 refunded_quantity，0 行守恒破坏。
 DO $$
 DECLARE
   bad integer;
@@ -72,19 +60,33 @@ BEGIN
                 AND out_item.product_type = '家居产品'
                 AND conv_order.status <> '已关闭'
            ), 0) AS conv,
-           EXISTS (
-             SELECT 1 FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id
-           ) AS has_pickup_records,
-           EXISTS (
-             SELECT 1 FROM sale_order_payments sop
-              WHERE sop.sale_order_id = si.sale_order_id
-                AND sop.change_type = '退款'
-                AND sop.status = '已支付'
-           ) AS has_paid_refund
+           (
+             o.status = '已退款'
+             OR EXISTS (
+               SELECT 1 FROM sale_order_payments sop
+                WHERE sop.sale_order_id = si.sale_order_id
+                  AND sop.change_type = '退款'
+                  AND sop.status = '已支付'
+                  AND sop.ref_sale_item_id = si.sale_item_id
+             )
+             OR EXISTS (
+               SELECT 1
+                 FROM sale_order_payments sop
+                 CROSS JOIN LATERAL jsonb_array_elements(
+                   CASE WHEN sop.note LIKE '{%'
+                        THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
+                                  THEN (sop.note)::jsonb -> 'items'
+                                  ELSE '[]'::jsonb END
+                        ELSE '[]'::jsonb END
+                 ) AS elem
+                WHERE sop.sale_order_id = si.sale_order_id
+                  AND sop.change_type = '退款'
+                  AND sop.status = '已支付'
+                  AND elem ->> 'refSaleItemId' = si.sale_item_id
+             )
+           ) AS has_item_refund_evidence
       FROM sale_items si
-     -- 与下方回填的 WHERE 字面同口径：被它排除的行必然 picked_up=0、无提货记录、无未关闭转出行，
-     -- 于是 residual 恒为 0，不可能命中 broken。不带这个 WHERE 就要对全表 12.6 万行各跑 4 个
-     -- 相关子计划，而整段都在 ALTER 的 ACCESS EXCLUSIVE 窗口内。
+      JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
      WHERE COALESCE(si.picked_up_quantity, 0) <> 0
         OR EXISTS (SELECT 1 FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id)
         OR EXISTS (
@@ -96,13 +98,10 @@ BEGIN
                 AND out_item.product_type = '家居产品'
                 AND conv_order.status <> '已关闭'
            )
-  )
-  , broken AS (
+  ), broken AS (
     SELECT sale_item_id FROM src
      WHERE old_settled - picked_phys - conv < 0
-        -- 有提货记录却仍有无法解释的结算量：并回 picked_up 会破坏「picked_up == SUM(pickup_records)」，
-        -- 并回 refunded 又查无退款实据。两条路都不能走，只能拦下来让人查。
-        OR (old_settled - picked_phys - conv > 0 AND NOT has_paid_refund AND has_pickup_records)
+        OR (old_settled - picked_phys - conv > 0 AND NOT has_item_refund_evidence)
   )
   SELECT (SELECT COUNT(*) FROM broken),
          COALESCE((
@@ -112,7 +111,7 @@ BEGIN
     INTO bad, sample;
 
   IF bad > 0 THEN
-    RAISE EXCEPTION '#154 回填前守恒破坏：% 行的已结算量无法按口径拆分（picked_up < 物理提货+已转换，或有提货记录却存在无退款实据的残差），样例 [%]', bad, sample;
+    RAISE EXCEPTION '#154 回填口径无法拆分 % 行的已结算量（picked_up < 物理提货+已转换，或残差查无本行退款实据），样例 [%]', bad, sample;
   END IF;
 END $$;--> statement-breakpoint
 WITH src AS (
@@ -131,93 +130,43 @@ WITH src AS (
               AND out_item.item_direction = '转出'
               AND out_item.product_type = '家居产品'
               AND conv_order.status <> '已关闭'
-         ), 0) AS conv,
-         EXISTS (
-           SELECT 1 FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id
-         ) AS has_pickup_records,
-         EXISTS (
-           SELECT 1
-             FROM sale_order_payments sop
-            WHERE sop.sale_order_id = si.sale_order_id
-              AND sop.change_type = '退款'
-              AND sop.status = '已支付'
-         ) AS has_paid_refund
+         ), 0) AS conv
     FROM sale_items si
+   -- 与上方前置断言的取行范围字面同口径
    WHERE COALESCE(si.picked_up_quantity, 0) <> 0
-      -- 兜住「picked_up 为 0 但另两类已有数据」的异常行：不纳入的话它们会带着默认 0 溜过回填。
+      OR EXISTS (SELECT 1 FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id)
       OR EXISTS (
-        SELECT 1 FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id
-      )
-      OR EXISTS (
-        SELECT 1
-          FROM sale_items out_item
-          JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
-         WHERE out_item.ref_sale_item_id = si.sale_item_id
-           AND out_item.item_direction = '转出'
-           AND out_item.product_type = '家居产品'
-           AND conv_order.status <> '已关闭'
-      )
-), split AS (
-  SELECT sale_item_id, picked_phys, conv, has_paid_refund, has_pickup_records,
-         old_settled - picked_phys - conv AS residual
-    FROM src
+           SELECT 1
+             FROM sale_items out_item
+             JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+            WHERE out_item.ref_sale_item_id = si.sale_item_id
+              AND out_item.item_direction = '转出'
+              AND out_item.product_type = '家居产品'
+              AND conv_order.status <> '已关闭'
+         )
 )
 UPDATE sale_items si
-   -- 「历史提货未留记录」的残差只在该行完全没有 pickup_records 时才并回本列；
-   -- 有记录的行并回去就会破坏事后断言 2，那一类已在前置断言里被拦掉。
-   SET picked_up_quantity = s.picked_phys
-                            + CASE WHEN s.residual > 0 AND NOT s.has_paid_refund AND NOT s.has_pickup_records
-                                   THEN s.residual ELSE 0 END,
-       refunded_quantity  = CASE WHEN s.residual > 0 AND s.has_paid_refund THEN s.residual ELSE 0 END,
+   -- 前置断言已保证：残差要么为 0，要么有本行退款实据。故这里无条件归入 refunded_quantity，
+   -- picked_up_quantity 无条件回归物理提货量 —— 没有任何豁免分支。
+   SET picked_up_quantity = s.picked_phys,
+       refunded_quantity  = GREATEST(0, s.old_settled - s.picked_phys - s.conv),
        converted_quantity = s.conv
-  FROM split s
+  FROM src s
  WHERE si.sale_item_id = s.sale_item_id;--> statement-breakpoint
--- 事后断言 1：三列均非负，且合计不超过购买件数。
-DO $$
-DECLARE
-  bad_negative integer;
-  bad_overflow integer;
-BEGIN
-  -- 两个判据合成一趟扫：谓词都用不上索引，分成两条就是两次 12.6 万行 seq scan，
-  -- 且同样落在 ALTER 的锁窗口内。
-  SELECT COUNT(*) FILTER (
-           WHERE COALESCE(picked_up_quantity, 0) < 0
-              OR COALESCE(refunded_quantity, 0) < 0
-              OR COALESCE(converted_quantity, 0) < 0
-         ),
-         COUNT(*) FILTER (
-           WHERE COALESCE(picked_up_quantity, 0)
-               + COALESCE(refunded_quantity, 0)
-               + COALESCE(converted_quantity, 0) > quantity
-         )
-    INTO bad_negative, bad_overflow
-    FROM sale_items;
-
-  IF bad_negative > 0 THEN
-    RAISE EXCEPTION '#154 回填后守恒破坏：% 行数量列为负', bad_negative;
-  END IF;
-
-  IF bad_overflow > 0 THEN
-    RAISE EXCEPTION '#154 回填后守恒破坏：% 行 picked_up + refunded + converted > quantity', bad_overflow;
-  END IF;
-END $$;--> statement-breakpoint
--- 事后断言 2（AC4 不变量）：有提货记录的行，picked_up_quantity 必须等于 pickup_records 合计。
--- 「无 pickup_records 的历史提货」行按口径留在 picked_up_quantity，不参与本断言。
+-- 事后断言（AC4，**全量无豁免**）：picked_up_quantity 必须等于 pickup_records 合计。
+-- 三列非负与「已结算 <= quantity」已由上方两条 CHECK 约束保证，不再重复断言。
 DO $$
 DECLARE
   mismatch integer;
 BEGIN
-  -- 由 pickup_records 聚合驱动：需要校验的行数就是它的 distinct sale_item_id 个数，
-  -- 远小于 sale_items 全表；「无 pickup_records 的行豁免」也由 JOIN 天然表达，
-  -- 不再需要 EXISTS + SUM 两个相关子查询（PG 不会把它们合并，会各跑一遍）。
   SELECT COUNT(*) INTO mismatch
-    FROM (
+    FROM sale_items si
+    LEFT JOIN (
            SELECT sale_item_id, SUM(pickup_quantity)::int AS total_picked
              FROM pickup_records
             GROUP BY sale_item_id
-         ) p
-    JOIN sale_items si ON si.sale_item_id = p.sale_item_id
-   WHERE COALESCE(si.picked_up_quantity, 0) <> p.total_picked;
+         ) p ON p.sale_item_id = si.sale_item_id
+   WHERE COALESCE(si.picked_up_quantity, 0) <> COALESCE(p.total_picked, 0);
 
   IF mismatch > 0 THEN
     RAISE EXCEPTION '#154 回填后 picked_up_quantity 与 pickup_records 不一致：% 行', mismatch;

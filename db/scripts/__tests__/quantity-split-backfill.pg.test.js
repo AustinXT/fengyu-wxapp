@@ -7,7 +7,7 @@
  *
  * 本套件**直接读取 `db/migrations/0043_split_quantity_semantics.sql` 的正文**执行，
  * 不复制一份 SQL 到测试里：复制副本会随迁移改动漂移，而漂移了测试照样绿。
- * drizzle-kit 生成段（两条 ADD COLUMN + 一条 ADD CONSTRAINT）由 `db:migrate` 建库时已执行，
+ * drizzle-kit 生成段（两条 ADD COLUMN + 两条 ADD CONSTRAINT）由 `db:migrate` 建库时已执行，
  * 重放时跳过。
  *
  * 运行（需要一个已 apply 全部 migration 的库；绝不要指向业务库）：
@@ -57,10 +57,10 @@ function backfillStatements() {
   const kept = parts.filter((s) => !/^ALTER TABLE "sale_items"/i.test(s))
   assert.equal(
     parts.length - kept.length,
-    3,
-    'drizzle 生成段的语句条数变了（预期 2 条 ADD COLUMN + 1 条 ADD CONSTRAINT），本测试的切分假设需同步更新',
+    4,
+    'drizzle 生成段的语句条数变了（预期 2 条 ADD COLUMN + 2 条 ADD CONSTRAINT），本测试的切分假设需同步更新',
   )
-  assert.ok(kept.length >= 4, '回填段应含：前置断言 + UPDATE + 两个事后断言')
+  assert.ok(kept.length >= 3, '回填段应含：前置断言 + UPDATE + 事后断言')
   return kept
 }
 
@@ -101,9 +101,10 @@ function runSuite() {
 
   async function cleanupFixtures() {
     await q(`DELETE FROM pickup_records WHERE sale_item_id LIKE $1`, [`${P}%`])
+    // sale_order_payments.ref_sale_item_id 指向 sale_items，必须先删款项行
+    await q(`DELETE FROM sale_order_payments WHERE sale_order_id LIKE $1`, [`${P}%`])
     await q(`UPDATE sale_items SET ref_sale_item_id = NULL WHERE sale_order_id LIKE $1`, [`${P}%`])
     await q(`DELETE FROM sale_items WHERE sale_order_id LIKE $1`, [`${P}%`])
-    await q(`DELETE FROM sale_order_payments WHERE sale_order_id LIKE $1`, [`${P}%`])
     await q(`DELETE FROM sale_orders WHERE sale_order_id LIKE $1`, [`${P}%`])
   }
 
@@ -136,12 +137,13 @@ function runSuite() {
     )
   }
 
-  async function seedPaidRefund(orderId) {
+  /** 已支付退款流水；传 itemId 即构成「退款实据①」（ref_sale_item_id 指向本行）。 */
+  async function seedPaidRefund(orderId, itemId = null) {
     await q(
       `INSERT INTO sale_order_payments (sale_order_id, change_type, amount, payment_method,
-                                        status, source_end, paid_at)
-       VALUES ($1,'退款',-100,'线下','已支付','staff','2026-09-10 10:00:00+08')`,
-      [orderId],
+                                        status, source_end, paid_at, ref_sale_item_id)
+       VALUES ($1,'退款',-100,'线下','已支付','staff','2026-09-10 10:00:00+08',$2)`,
+      [orderId, itemId],
     )
   }
 
@@ -172,7 +174,8 @@ function runSuite() {
     await cleanupFixtures()
     const order = `${P}R1`
     const item = `${P}R1-01`
-    await seedOrder(order)
+    // 实据③：整单已退款 —— prod 那 18 行的真实形态（整单退时每个购买行都被退）
+    await seedOrder(order, { status: '已退款' })
     await seedHomeItem(item, order, { quantity: 3, pickedUp: 3 })
     await seedPaidRefund(order)
 
@@ -201,7 +204,7 @@ function runSuite() {
     await seedOrder(order)
     await seedHomeItem(item, order, { quantity: 5, pickedUp: 5 })
     await seedPickupRecord(item, 2)
-    await seedPaidRefund(order)
+    await seedPaidRefund(order, item)
 
     await runBackfill()
 
@@ -240,7 +243,9 @@ function runSuite() {
     assert.deepEqual(await readSplit(item), { picked: 1, refunded: 0, converted: 0 })
   })
 
-  test('无退款的残差留在 picked_up_quantity（无 pickup_records 的历史提货），不误记成退款', async () => {
+  // 初版把这类行「视为历史提货未留记录、留在 picked_up」，代价是 AC4 不再是全量不变量、
+  // 且 cron C5 要为它永久开一个正对着删提货记录逻辑的豁免（双谱系评审命中）。现一律拦下。
+  test('有残差却查无本行退款实据 → 前置断言拦下，不再有「历史提货」豁免分支', async () => {
     await cleanupFixtures()
     const order = `${P}L1`
     const item = `${P}L1-01`
@@ -248,9 +253,54 @@ function runSuite() {
     await seedHomeItem(item, order, { quantity: 2, pickedUp: 2 })
     // 刻意不建 pickup_records、不建退款流水
 
+    await assert.rejects(
+      runBackfill(),
+      (e) => /#154 回填口径无法拆分/.test(e.message) && e.message.includes(item),
+      '无实据的残差必须被拦下并带上样例 sale_item_id',
+    )
+    assert.deepEqual(await readSplit(item), { picked: 2, refunded: 0, converted: 0 })
+  })
+
+  // 三条退款实据任一成立即可归因；只看「订单上有退款」会把同单他行的退款错安到本行头上。
+  test('退款实据①：ref_sale_item_id 直接指向本行', async () => {
+    await cleanupFixtures()
+    const order = `${P}E1`
+    const item = `${P}E1-01`
+    await seedOrder(order, { status: '部分支付' })
+    await seedHomeItem(item, order, { quantity: 4, pickedUp: 3 })
+    await q(
+      `INSERT INTO sale_order_payments (sale_order_id, change_type, amount, payment_method,
+                                        status, source_end, paid_at, ref_sale_item_id)
+       VALUES ($1,'退款',-100,'线下','已支付','staff','2026-09-10 10:00:00+08',$2)`,
+      [order, item],
+    )
+
     await runBackfill()
 
-    assert.deepEqual(await readSplit(item), { picked: 2, refunded: 0, converted: 0 })
+    assert.deepEqual(await readSplit(item), { picked: 0, refunded: 3, converted: 0 })
+  })
+
+  test('同单**他行**退款不构成本行实据 → 拦下（订单级 EXISTS 会误判成退款）', async () => {
+    await cleanupFixtures()
+    const order = `${P}E2`
+    const mine = `${P}E2-01`
+    const other = `${P}E2-02`
+    await seedOrder(order, { status: '部分支付' })
+    await seedHomeItem(mine, order, { quantity: 4, pickedUp: 3 })
+    await seedHomeItem(other, order, { quantity: 1, pickedUp: 0 })
+    // 退款明确指向**另一行**
+    await q(
+      `INSERT INTO sale_order_payments (sale_order_id, change_type, amount, payment_method,
+                                        status, source_end, paid_at, ref_sale_item_id)
+       VALUES ($1,'退款',-100,'线下','已支付','staff','2026-09-10 10:00:00+08',$2)`,
+      [order, other],
+    )
+
+    await assert.rejects(
+      runBackfill(),
+      (e) => /#154 回填口径无法拆分/.test(e.message) && e.message.includes(mine),
+      '本行没有退款实据，不能靠同单他行的退款蒙混过关',
+    )
   })
 
   test('residual < 0 必须 RAISE 而不是被 ELSE 0 静默吞掉', async () => {
@@ -264,7 +314,7 @@ function runSuite() {
 
     await assert.rejects(
       runBackfill(),
-      (e) => /#154 回填前守恒破坏/.test(e.message) && e.message.includes(item),
+      (e) => /#154 回填口径无法拆分/.test(e.message) && e.message.includes(item),
       '守恒破坏必须带上样例 sale_item_id 抛出',
     )
 
@@ -286,7 +336,7 @@ function runSuite() {
 
     await assert.rejects(
       runBackfill(),
-      (e) => /#154 回填前守恒破坏/.test(e.message) && e.message.includes(item),
+      (e) => /#154 回填口径无法拆分/.test(e.message) && e.message.includes(item),
       '该类行必须被前置断言拦住并带上样例 sale_item_id',
     )
 
@@ -314,14 +364,14 @@ function runSuite() {
     assert.deepEqual(await readSplit(item), { picked: 2, refunded: 1, converted: 0 })
   })
 
-  test('事后断言 2：有提货记录的行，picked_up_quantity 必须等于 pickup_records 合计', async () => {
+  test('事后断言（AC4 全量无豁免）：picked_up_quantity 必须等于 pickup_records 合计', async () => {
     await cleanupFixtures()
     const order = `${P}A1`
     const item = `${P}A1-01`
     await seedOrder(order)
     await seedHomeItem(item, order, { quantity: 6, pickedUp: 6 })
     await seedPickupRecord(item, 4)
-    await seedPaidRefund(order)
+    await seedPaidRefund(order, item)
 
     await runBackfill()
 

@@ -67,52 +67,54 @@ test('两边的三语义拆分口径同源（物理提货 / 已转换 / 已支�
   }
 })
 
-test('回填的四个分支判据两边一致（含「有提货记录的无退款残差」必须拦下）', () => {
+test('回填的归因判据两边一致：必须落到本行的退款实据，且无任何豁免分支', () => {
   const migration = flat(read(MIGRATION))
   const verify = flat(read(VERIFY))
 
-  // 迁移侧：前置断言拦「residual > 0 且无退款 且有提货记录」
-  assert.ok(
-    migration.includes(
-      'old_settled - picked_phys - conv > 0 AND NOT has_paid_refund AND has_pickup_records',
-    ),
-    '迁移的前置断言没有拦「有提货记录的无退款残差」—— 该类行并回 picked_up 会与事后断言 2 互斥',
-  )
-  // 迁移侧：只有「没有提货记录」时残差才留在 picked_up
-  assert.ok(
-    migration.includes(
-      's.residual > 0 AND NOT s.has_paid_refund AND NOT s.has_pickup_records',
-    ),
-    '迁移的回填分支没有排除「有提货记录」的行',
-  )
+  // 只看「订单上有没有退款」会把同单**他行**的退款错安到本行头上（双谱系评审命中）。
+  // 三条实据任一成立即可：整单已退款 / ref_sale_item_id 指向本行 / note.items 含本行。
+  for (const [name, src] of [['迁移', migration], ['verify 脚本', verify]]) {
+    assert.ok(src.includes("o.status = '已退款'") || src.includes("order_status = '已退款'"),
+      `${name} 缺少「整单已退款」实据`)
+    assert.ok(src.includes('sop.ref_sale_item_id = si.sale_item_id'),
+      `${name} 缺少「ref_sale_item_id 指向本行」实据`)
+    assert.ok(src.includes("elem ->> 'refSaleItemId' = si.sale_item_id"),
+      `${name} 缺少「note.items 含本行」实据`)
+  }
 
-  // 脚本侧：同两个判据，用 JS 表达
+  // 初版留过一条「无退款残差 → 留在 picked_up」的口子，它让 AC4 不再是全量不变量、
+  // 并迫使 cron C5 为这类行开永久豁免。现在一律拦下，任何回潮都要在这里红。
   assert.ok(
-    verify.includes('r.residual > 0 && !r.has_paid_refund && r.has_pickup_records'),
-    'verify 脚本没有把「有提货记录的无退款残差」报成阻断项',
+    !/NOT has_paid_refund AND NOT has_pickup_records/.test(migration),
+    '迁移回潮到了「历史提货未留记录」豁免分支 —— 它会让 AC4 不成立',
   )
   assert.ok(
-    verify.includes('r.residual > 0 && !r.has_paid_refund && !r.has_pickup_records'),
-    'verify 脚本的「历史提货未留记录」分支判据与迁移不一致',
+    migration.includes('NOT has_item_refund_evidence'),
+    '迁移的前置断言没有按「本行退款实据」拦截无从解释的残差',
   )
 })
 
-test('迁移后校验与 cron C5 是同一条不变量（都由 pickup_records 聚合驱动）', () => {
+test('迁移后校验与 cron C5 是同一条**全量**不变量（都由 pickup_records 聚合驱动、无豁免）', () => {
   const verify = flat(read(VERIFY))
   const cron = flat(read(path.join(
     ROOT, 'fengyu-admin/src/cron/steps/audit-refund-cascade-coverage.ts',
   )))
+  const migration = flat(read(MIGRATION))
 
-  // 两边都必须是「聚合驱动 JOIN」而不是「全表扫 + EXISTS + 相关子查询」：
-  // 前者让「无提货记录的行豁免」由 JOIN 天然表达，两处口径不会各自漂移。
-  for (const [name, src] of [['verify 脚本', verify], ['cron C5', cron]]) {
+  for (const [name, src] of [['verify 脚本', verify], ['cron C5', cron], ['迁移事后断言', migration]]) {
     assert.ok(
       /SELECT sale_item_id, SUM\(pickup_quantity\)(?:::int)? AS \w+ FROM pickup_records GROUP BY sale_item_id/.test(src),
       `${name} 的 picked_up 守恒校验不是聚合驱动`,
     )
+    // 用 INNER JOIN 会把「有 picked_up 但零 pickup_records」的损坏行整片漏掉 ——
+    // 而那正是「删提货记录」出错后的形态，也正是 C5 存在的理由。
+    assert.ok(
+      /(FULL|LEFT) JOIN/.test(src),
+      `${name} 用了 INNER JOIN，会漏掉「有 picked_up 但零提货记录」的损坏行`,
+    )
     assert.ok(
       !/EXISTS \(SELECT 1 FROM pickup_records pr WHERE pr\.sale_item_id = s(?:i)?\.sale_item_id\)\s*AND COALESCE/.test(src),
-      `${name} 回退到了 EXISTS + 相关子查询的写法`,
+      `${name} 回退到了 EXISTS 豁免写法`,
     )
   }
 })
