@@ -107,13 +107,13 @@ order_amounts AS (
   -- 把「不可逆误升会员客」压成「最多漏升」（漏升可由后续订单或再跑一次本脚本自愈）。
   -- 无明细行订单（WorkFine 历史单只建 sale_orders）回退订单级 received，全额计入 non_trial。
   SELECT o.sale_order_id, o.client_user_id, o.paid_at, o.created_at,
-         CASE WHEN COUNT(si.sale_item_id) = 0
+         CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
               THEN GREATEST(o.received::numeric, 0)
               ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
                                       si.sale_amount::numeric))
                             FILTER (WHERE si.is_experience = false), 0)
          END AS non_trial,
-         CASE WHEN COUNT(si.sale_item_id) = 0
+         CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
               THEN 0
               ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
                                       si.sale_amount::numeric))
@@ -147,7 +147,7 @@ member_first AS (
          client_user_id AS user_id,
          COALESCE(paid_at, created_at) AS first_qualified_at
     FROM qualified_orders
-   ORDER BY client_user_id, paid_at ASC NULLS LAST, created_at ASC
+   ORDER BY client_user_id, paid_at ASC NULLS LAST, created_at ASC, sale_order_id ASC
 ),
 -- 2026-04-26 sku-capability 切换：xiaomei/tiyan 直接用 sale_items.is_experience 判定
 -- 充值卡 SKU 的 is_experience=false → 充值卡购买视同"小美客"消费（D1=A）

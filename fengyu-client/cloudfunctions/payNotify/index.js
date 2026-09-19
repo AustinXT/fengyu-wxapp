@@ -52,13 +52,13 @@ const RECALC_CUSTOMER_TYPE_CTE = `WITH refund_by_item AS (
      ),
      order_amounts AS (
        SELECT o.sale_order_id,
-              CASE WHEN COUNT(si.sale_item_id) = 0
+              CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
                    THEN GREATEST(o.received::numeric, 0)
                    ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
                                            si.sale_amount::numeric))
                                  FILTER (WHERE si.is_experience = false), 0)
               END AS non_trial,
-              CASE WHEN COUNT(si.sale_item_id) = 0
+              CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
                    THEN 0
                    ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
                                            si.sale_amount::numeric))
@@ -1343,14 +1343,14 @@ exports.main = async (event) => {
             // became_member_at 记为确立会员资格的首笔达标单时间（COALESCE(paid_at, created_at)）；
             // 选单子查询与本端下方 is_membership_upgrade 归因同源、选同一单。
             await client.query(
-              `UPDATE client_wechat_users SET became_member_at = (
+              `UPDATE client_wechat_users SET became_member_at = COALESCE((
                  ${RECALC_CUSTOMER_TYPE_CTE}
                  SELECT COALESCE(o.paid_at, o.created_at) FROM sale_orders o
                  JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
                  WHERE oa.non_trial >= $2
-                 ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+                 ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC
                  LIMIT 1
-               ) WHERE user_id = $1`,
+               ), became_member_at) WHERE user_id = $1`,
               [targetOrder.client_user_id, threshold]
             )
             // 给触发本次首次跃迁的达标销售单打会员升级标记。WHERE 与本端会员客判定 CASE 同源
@@ -1362,7 +1362,7 @@ exports.main = async (event) => {
                  SELECT o.sale_order_id FROM sale_orders o
                  JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
                  WHERE oa.non_trial >= $2
-                 ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+                 ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC
                  LIMIT 1
                )`,
               [targetOrder.client_user_id, threshold]

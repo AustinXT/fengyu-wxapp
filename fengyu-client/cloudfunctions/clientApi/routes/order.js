@@ -309,13 +309,13 @@ const RECALC_CUSTOMER_TYPE_CTE = `WITH refund_by_item AS (
      ),
      order_amounts AS (
        SELECT o.sale_order_id,
-              CASE WHEN COUNT(si.sale_item_id) = 0
+              CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
                    THEN GREATEST(o.received::numeric, 0)
                    ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
                                            si.sale_amount::numeric))
                                  FILTER (WHERE si.is_experience = false), 0)
               END AS non_trial,
-              CASE WHEN COUNT(si.sale_item_id) = 0
+              CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
                    THEN 0
                    ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
                                            si.sale_amount::numeric))
@@ -390,14 +390,14 @@ async function recalcCustomerType(client, clientUserId) {
   // 函数开头“已是会员客即 return”保证只在首次跃迁时执行一次。
   if (updateResult.rowCount > 0 && updateResult.rows[0].customer_type === '会员客') {
     await client.query(
-      `UPDATE client_wechat_users SET became_member_at = (
+      `UPDATE client_wechat_users SET became_member_at = COALESCE((
          ${RECALC_CUSTOMER_TYPE_CTE}
          SELECT COALESCE(o.paid_at, o.created_at) FROM sale_orders o
          JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
          WHERE oa.non_trial >= $2
-         ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+         ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC
          LIMIT 1
-       ) WHERE user_id = $1`,
+       ), became_member_at) WHERE user_id = $1`,
       [clientUserId, threshold]
     )
     await client.query(
@@ -407,7 +407,7 @@ async function recalcCustomerType(client, clientUserId) {
          SELECT o.sale_order_id FROM sale_orders o
          JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
          WHERE oa.non_trial >= $2
-         ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+         ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC
          LIMIT 1
        )`,
       [clientUserId, threshold]

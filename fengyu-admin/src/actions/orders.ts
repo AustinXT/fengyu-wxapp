@@ -656,13 +656,13 @@ const recalcCustomerTypeCte = (clientUserId: string) => sql`WITH refund_by_item 
      ),
      order_amounts AS (
        SELECT o.sale_order_id,
-              CASE WHEN COUNT(si.sale_item_id) = 0
+              CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
                    THEN GREATEST(o.received::numeric, 0)
                    ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
                                            si.sale_amount::numeric))
                                  FILTER (WHERE si.is_experience = false), 0)
               END AS non_trial,
-              CASE WHEN COUNT(si.sale_item_id) = 0
+              CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
                    THEN 0
                    ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
                                            si.sale_amount::numeric))
@@ -724,14 +724,14 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<vo
     // became_member_at 记为确立会员资格的首笔达标单时间（COALESCE(paid_at, created_at)）；
     // 选单子查询与下方 is_membership_upgrade 归因同源、选同一单。
     await tx.execute(sql`
-      UPDATE client_wechat_users SET became_member_at = (
+      UPDATE client_wechat_users SET became_member_at = COALESCE((
         ${recalcCustomerTypeCte(clientUserId)}
         SELECT COALESCE(o.paid_at, o.created_at) FROM sale_orders o
         JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
         WHERE oa.non_trial >= ${threshold}
-        ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+        ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC
         LIMIT 1
-      ) WHERE user_id = ${clientUserId}
+      ), became_member_at) WHERE user_id = ${clientUserId}
     `)
     // 给触发本次首次跃迁的达标销售单打会员升级标记（WHERE 与会员客判定 CASE 同源；七处镜像）。
     // 函数开头“已是会员客即 return”保证只在首次跃迁时执行一次；paid_at 最早 = 确立会员资格的首笔达标单。
@@ -742,7 +742,7 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<vo
         SELECT o.sale_order_id FROM sale_orders o
         JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
         WHERE oa.non_trial >= ${threshold}
-        ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+        ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC
         LIMIT 1
       )
     `)

@@ -510,6 +510,17 @@ async function refreshSpendingTier(client, clientUserId) {
  * 的 22P02 爆炸半径收回到本就要读的订单集合内（原 RECEIVED_REFUNDED_DEDUCT_SQL 按单聚合，
  * 本 CTE 按顾客聚合，不限定范围会把半径放大到该顾客全部历史流水）。
  *
+ * ⚠️ **残留风险（#187 闸门 2 codex 指出，未根除）**：`LIKE '{"%'` 只是把误判概率压到极低，
+ * 并不能证明 JSON 合法——截断值如 `{"items":` 仍会进 ::jsonb 抛 22P02；
+ * 同理 `(elem ->> 'refundAmount')::numeric` 遇非数字文本也会抛。
+ * 根治要 PG16 的 `pg_input_is_valid(sop.note, 'jsonb')`（本仓 docker-compose 用 postgres:16，
+ * 但**自托管生产库版本未经确认**，贸然使用会因函数不存在而让整条跃迁链路失败，比 22P02 更糟）。
+ * 上线前请用只读体检确认线上无此类脏数据：
+ *   SELECT id, sale_order_id, left(note, 40) FROM sale_order_payments
+ *    WHERE change_type = '退款' AND status = '已支付'
+ *      AND note LIKE '{"%' AND NOT (note ~ '^\\{"items"\\s*:\\s*\\[.*\\]\\s*\\}$');
+ * 确认 PG ≥ 16 后应改用 pg_input_is_valid 并同步八处副本。
+ *
  * **LEAST(… , si.sale_amount) 封顶**：received 的扣减有两条路径——主路径按
  * sale_payment_item_receipts 负额净算、回退路径才用 note.items[].refundAmount + GREATEST(0) clamp。
  * 加回 note 原始额并非扣减的严格逆运算，`refunded > 实际扣减额` 时会高估 non_trial。
@@ -550,13 +561,13 @@ const RECALC_CUSTOMER_TYPE_CTE = `WITH refund_by_item AS (
      ),
      order_amounts AS (
        SELECT o.sale_order_id,
-              CASE WHEN COUNT(si.sale_item_id) = 0
+              CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
                    THEN GREATEST(o.received::numeric, 0)
                    ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
                                            si.sale_amount::numeric))
                                  FILTER (WHERE si.is_experience = false), 0)
               END AS non_trial,
-              CASE WHEN COUNT(si.sale_item_id) = 0
+              CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
                    THEN 0
                    ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
                                            si.sale_amount::numeric))
@@ -637,14 +648,14 @@ async function recalcCustomerType(client, clientUserId) {
   // （COALESCE(paid_at, created_at)；选单子查询与下方 is_membership_upgrade 归因同源、选同一单）。
   if (updateResult.rowCount > 0 && updateResult.rows[0].customer_type === '会员客') {
     await client.query(
-      `UPDATE client_wechat_users SET became_member_at = (
+      `UPDATE client_wechat_users SET became_member_at = COALESCE((
          ${RECALC_CUSTOMER_TYPE_CTE}
          SELECT COALESCE(o.paid_at, o.created_at) FROM sale_orders o
          JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
          WHERE oa.non_trial >= $2
-         ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+         ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC
          LIMIT 1
-       ) WHERE user_id = $1`,
+       ), became_member_at) WHERE user_id = $1`,
       [clientUserId, threshold]
     )
     // 给触发本次首次跃迁的达标销售单打会员升级标记（WHERE 与会员客判定 CASE 同源）。
@@ -656,7 +667,7 @@ async function recalcCustomerType(client, clientUserId) {
          SELECT o.sale_order_id FROM sale_orders o
          JOIN order_amounts oa ON oa.sale_order_id = o.sale_order_id
          WHERE oa.non_trial >= $2
-         ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC
+         ORDER BY o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC
          LIMIT 1
        )`,
       [clientUserId, threshold]

@@ -94,7 +94,7 @@ order_amounts AS (
   -- LEAST(…, sale_amount) 封顶 + 无明细行（WorkFine 历史单）回退订单级 received，
   -- 与运行时 RECALC_CUSTOMER_TYPE_CTE 同语义。
   SELECT o.sale_order_id, o.client_user_id, o.paid_at, o.created_at,
-         CASE WHEN COUNT(si.sale_item_id) = 0
+         CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)
               THEN GREATEST(o.received::numeric, 0)
               ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
                                       si.sale_amount::numeric))
@@ -118,7 +118,7 @@ SELECT DISTINCT ON (o.client_user_id)
  WHERE u.customer_type = '会员客'
    AND oa.non_trial >= $1::numeric
    AND (u.became_member_at IS NULL OR COALESCE(o.paid_at, o.created_at) <= u.became_member_at)
- ORDER BY o.client_user_id, o.paid_at ASC NULLS LAST, o.created_at ASC
+ ORDER BY o.client_user_id, o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC
 `
 
 const PREVIEW_SQL = `

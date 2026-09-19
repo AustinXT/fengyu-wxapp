@@ -152,9 +152,16 @@ function extractMembershipUpgradeAttribution(filePath) {
  */
 function extractBecameMemberAtUpdate(filePath) {
   const src = fs.readFileSync(filePath, 'utf8')
-  const match = src.match(/UPDATE client_wechat_users SET became_member_at[\s\S]*?LIMIT 1\s*\)/)
+  // ⚠️ 必须一路匹配到 WHERE user_id：正则若止于 `LIMIT 1)`，删掉 WHERE 子句（=全表覆写
+  // 所有顾客的 became_member_at，不可逆）守护测试仍会通过——闸门 2 GLM 的摘录误报暴露了这个盲区。
+  const match = src.match(
+    /UPDATE client_wechat_users SET became_member_at[\s\S]*?LIMIT 1\s*\)[\s\S]{0,40}?WHERE user_id = (?:\$\d+|\$\{[^}]+\})/
+  )
   if (!match) {
-    throw new Error(`未在 ${filePath} 找到 became_member_at UPDATE（含 LIMIT 1 子查询）；可能仍为旧 NOW() 口径`)
+    throw new Error(
+      `未在 ${filePath} 找到完整的 became_member_at UPDATE（含 LIMIT 1 子查询 + WHERE user_id）；` +
+      '可能仍为旧 NOW() 口径，或 WHERE 子句被删（会全表覆写）'
+    )
   }
   return match[0]
 }
@@ -182,7 +189,13 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
         })
 
         test('无明细行订单回退订单级 received（WorkFine 历史单只建 sale_orders）', () => {
-          expect(cte).toContain('CASE WHEN COUNT(si.sale_item_id) = 0')
+          // ⚠️ 必须是 NOT EXISTS(整张单无任何 sale_items) 而非 COUNT(购买行)=0：
+          // LEFT JOIN 的 ON 带了 item_direction='购买'，COUNT=0 只说明「无购买行」。
+          // 若某销售单只含退出方向行，COUNT=0 会误走回退分支、用订单级 received 且
+          // **绕过 LEAST 封顶** → 可能不可逆误升为会员客（闸门 2 GLM P1）。
+          expect(cte).toContain(
+            'CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)'
+          )
           expect(cte).toContain('THEN GREATEST(o.received::numeric, 0)')
           // 必须是 LEFT JOIN，INNER 会让无明细行的历史单整个消失（相对旧口径是回归）
           expect(cte).toContain('LEFT JOIN sale_items si ON si.sale_order_id = o.sale_order_id')
@@ -382,8 +395,11 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       }
     })
 
-    test('五端归因段都按 paid_at ASC NULLS LAST 取首笔达标单', () => {
-      const re = /ORDER BY o\.paid_at ASC NULLS LAST/
+    test('五端归因段都按 paid_at ASC NULLS LAST, created_at ASC, sale_order_id ASC 取首笔达标单', () => {
+      // sale_order_id 是确定性兜底：两张达标单的 paid_at 与 created_at 完全相同时，
+      // 没有唯一键 PG 不保证两次独立查询选同一单，会让 became_member_at 与
+      // is_membership_upgrade 落到不同订单上（codex 闸门 2 抓出）。
+      const re = /ORDER BY o\.paid_at ASC NULLS LAST, o\.created_at ASC, o\.sale_order_id ASC/
       expect(staffAttr).toMatch(re)
       expect(paynotifyAttr).toMatch(re)
       expect(adminAttr).toMatch(re)
@@ -407,8 +423,8 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       clientApiBma = extractBecameMemberAtUpdate(CLIENT_API_ORDER_JS)
     })
 
-    test('五端目标列一致：UPDATE client_wechat_users SET became_member_at = (…SELECT COALESCE(o.paid_at, o.created_at)…', () => {
-      const re = /^UPDATE client_wechat_users SET became_member_at = \(/
+    test('五端目标列一致：UPDATE client_wechat_users SET became_member_at = COALESCE((…SELECT COALESCE(o.paid_at, o.created_at)…', () => {
+      const re = /^UPDATE client_wechat_users SET became_member_at = COALESCE\(\(/
       expect(staffBma).toMatch(re)
       expect(paynotifyBma).toMatch(re)
       expect(adminBma).toMatch(re)
@@ -425,6 +441,21 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       expect(normalizeSql(adminBma)).toBe(staffN)
       expect(normalizeSql(adminRecomputeBma)).toBe(staffN)
       expect(normalizeSql(clientApiBma)).toBe(staffN)
+    })
+
+    test('五端 became_member_at 段必须带 WHERE user_id（防全表覆写）', () => {
+      for (const s2 of [staffBma, paynotifyBma, adminBma, adminRecomputeBma, clientApiBma]) {
+        expect(normalizeSql(s2)).toMatch(/WHERE user_id = \?/)
+      }
+    })
+
+    test('五端 became_member_at 用 COALESCE 兜底，空集不得把已有值抹成 NULL', () => {
+      // 标量子查询无行返回 NULL，裸 SET 会直接抹掉已有 became_member_at。
+      // 外层「只在首次跃迁时执行」是隐含契约，COALESCE 把它变成显式保护（闸门 2 GLM P2）。
+      for (const s2 of [staffBma, paynotifyBma, adminBma, adminRecomputeBma, clientApiBma]) {
+        expect(s2).toContain('SET became_member_at = COALESCE((')
+        expect(normalizeSql(s2)).toContain('), became_member_at) WHERE user_id = ?')
+      }
     })
 
     test('五端 became_member_at 段不含 NOW()（旧跃迁时刻口径已下线）', () => {
@@ -449,8 +480,8 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       }
     })
 
-    test('五端都按 paid_at ASC NULLS LAST, created_at ASC 取首笔达标单（与各端 is_membership_upgrade 同序 ⇒ 选同一单）', () => {
-      const re = /ORDER BY o\.paid_at ASC NULLS LAST, o\.created_at ASC/
+    test('五端都按 paid_at ASC NULLS LAST, created_at ASC, sale_order_id ASC 取首笔达标单（与各端 is_membership_upgrade 同序 ⇒ 选同一单）', () => {
+      const re = /ORDER BY o\.paid_at ASC NULLS LAST, o\.created_at ASC, o\.sale_order_id ASC/
       expect(staffBma).toMatch(re)
       expect(paynotifyBma).toMatch(re)
       expect(adminBma).toMatch(re)
@@ -476,6 +507,9 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
     const SCRIPTS = [
       ['recalc-all-customer-types.js', SCRIPT_RECALC_ALL_TYPES],
       ['recalc-became-member-at.js', SCRIPT_RECALC_BECAME_MEMBER],
+      // ⚠️ 第 8 处曾只声明常量、未进本数组 —— 守护形同虚设（codex 闸门 2 抓出）。
+      // 它写 is_membership_upgrade + document_type，幂等可重跑，漏守护就会把线上打标改回旧口径。
+      ['backfill-membership-upgrade-doc-type.js', SCRIPT_BACKFILL_UPGRADE_DOC_TYPE],
     ]
 
     for (const [label, file] of SCRIPTS) {
@@ -497,7 +531,9 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
         })
 
         test('无明细行订单回退订单级 received（与运行时同语义）', () => {
-          expect(src).toContain('CASE WHEN COUNT(si.sale_item_id) = 0')
+          expect(src).toContain(
+            'CASE WHEN NOT EXISTS (SELECT 1 FROM sale_items si2 WHERE si2.sale_order_id = o.sale_order_id)'
+          )
           expect(src).toContain('THEN GREATEST(o.received::numeric, 0)')
           expect(src).toContain('LEFT JOIN sale_items si ON si.sale_order_id = o.sale_order_id')
         })
@@ -542,9 +578,20 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       expect(src).toMatch(/tiyan_users AS \([\s\S]*?WHERE trial > 0/)
     })
 
-    test('recalc-became-member-at.js 选单序与运行时一致（paid_at ASC NULLS LAST, created_at ASC）', () => {
+    test('recalc-became-member-at.js 选单序与运行时一致（末位 sale_order_id 兜底确定性）', () => {
       const src = fs.readFileSync(SCRIPT_RECALC_BECAME_MEMBER, 'utf8')
-      expect(src).toContain('ORDER BY oa.client_user_id, oa.paid_at ASC NULLS LAST, oa.created_at ASC')
+      expect(src).toContain(
+        'ORDER BY oa.client_user_id, oa.paid_at ASC NULLS LAST, oa.created_at ASC, oa.sale_order_id ASC'
+      )
+    })
+
+    test('三个脚本的 DISTINCT ON 选单都带 sale_order_id 确定性兜底', () => {
+      expect(fs.readFileSync(SCRIPT_RECALC_ALL_TYPES, 'utf8')).toContain(
+        'ORDER BY client_user_id, paid_at ASC NULLS LAST, created_at ASC, sale_order_id ASC'
+      )
+      expect(fs.readFileSync(SCRIPT_BACKFILL_UPGRADE_DOC_TYPE, 'utf8')).toContain(
+        'ORDER BY o.client_user_id, o.paid_at ASC NULLS LAST, o.created_at ASC, o.sale_order_id ASC'
+      )
     })
   })
 })
