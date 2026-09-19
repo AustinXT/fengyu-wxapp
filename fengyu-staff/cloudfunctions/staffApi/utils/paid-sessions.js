@@ -131,13 +131,11 @@ const SALE_ITEMS_RECEIVED_ALLOC_SQL = `WITH tg AS (
  */
 const RECEIVED_REFUNDED_DEDUCT_SQL = `WITH refund_items AS (
       SELECT elem ->> 'refSaleItemId' AS sale_item_id,
-             COALESCE((elem ->> 'refundAmount')::numeric, 0) AS refund_amount
+             COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0) AS refund_amount
       FROM sale_order_payments sop
       CROSS JOIN LATERAL jsonb_array_elements(
-        CASE WHEN sop.note LIKE '{%'
-             THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
-                       THEN (sop.note)::jsonb -> 'items'
-                       ELSE '[]'::jsonb END
+        CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+             THEN public.try_jsonb(sop.note) -> 'items'
              ELSE '[]'::jsonb END
       ) AS elem
       WHERE sop.sale_order_id = $1 AND sop.change_type = '退款' AND sop.status = '已支付'
@@ -298,10 +296,8 @@ const FULL_REFUND_ZERO_AMOUNT_PAID_SESSIONS_SQL = `WITH full_refund_zero_items A
       SELECT elem ->> 'refSaleItemId' AS sale_item_id
       FROM sale_order_payments sop
       CROSS JOIN LATERAL jsonb_array_elements(
-        CASE WHEN sop.note LIKE '{%'
-             THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
-                       THEN (sop.note)::jsonb -> 'items'
-                       ELSE '[]'::jsonb END
+        CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+             THEN public.try_jsonb(sop.note) -> 'items'
              ELSE '[]'::jsonb END
       ) AS elem
       WHERE sop.sale_order_id = $1 AND sop.change_type = '退款' AND sop.status = '已支付'

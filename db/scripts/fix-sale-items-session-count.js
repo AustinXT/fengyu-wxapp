@@ -163,10 +163,8 @@ WHERE sale_items.sale_order_id = $1`
       SELECT elem ->> 'refSaleItemId' AS sale_item_id
       FROM sale_order_payments sop
       CROSS JOIN LATERAL jsonb_array_elements(
-        CASE WHEN sop.note LIKE '{%'
-             THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
-                       THEN (sop.note)::jsonb -> 'items'
-                       ELSE '[]'::jsonb END
+        CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+             THEN public.try_jsonb(sop.note) -> 'items'
              ELSE '[]'::jsonb END
       ) AS elem
       WHERE sop.sale_order_id = $1 AND sop.change_type = '退款' AND sop.status = '已支付'

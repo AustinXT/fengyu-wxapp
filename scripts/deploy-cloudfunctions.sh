@@ -187,6 +187,41 @@ assert_rc() {  # $1=side 目录  $2=期望 envId
 [[ "$DO_CLIENT" == "1" ]] && assert_rc fengyu-client "$CLIENT_ENV_ID"
 echo "  ✓ envId + PG host 校验通过（${ACTIVE}）"
 
+# ── DB 前置依赖闸：云函数 SQL 依赖的 DB 对象必须已迁到目标库（#187）──
+# 背景：云函数与 admin 的退款 JSON 解析统一走 migration 0043 的 public.try_jsonb /
+# public.try_numeric。若目标库漏迁就部署，所有解析退款 note 的收款路径都会报
+# `function public.try_jsonb(text) does not exist` —— 报错点在收款主链上，是生产事故。
+# 这里用目标环境自己的连接串做**只读**探测；缺 psql 或连不上时告警放行（不阻塞无 psql 的机器），
+# 但只要连得上且函数缺失就 fail-closed。
+assert_db_prereqs() {
+  local pg_conn
+  pg_conn=$(node -e '
+    const fs = require("fs")
+    const c = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
+    const fn = (c.functions || []).find((x) => x.envVariables && x.envVariables.PG_CONNECTION_STRING)
+    process.stdout.write(fn ? fn.envVariables.PG_CONNECTION_STRING : "")
+  ' "$1" 2>/dev/null || true)
+  [[ -z "$pg_conn" ]] && { echo "  ⚠️  未取到 PG 连接串，跳过 DB 前置依赖检查"; return 0; }
+  command -v psql >/dev/null 2>&1 || { echo "  ⚠️  本机无 psql，跳过 DB 前置依赖检查（部署前请自行确认已迁 0043）"; return 0; }
+
+  local missing
+  missing=$(psql "$pg_conn" -tAc "
+    SELECT string_agg(f, ', ')
+      FROM (VALUES ('public.try_jsonb(text)'), ('public.try_numeric(text)')) AS t(f)
+     WHERE to_regprocedure(f) IS NULL
+  " 2>/dev/null) || { echo "  ⚠️  DB 探测失败（网络/权限），跳过 DB 前置依赖检查"; return 0; }
+
+  if [[ -n "${missing//[[:space:]]/}" ]]; then
+    echo "ERROR: 目标库缺少云函数依赖的 DB 对象：${missing}" >&2
+    echo "       请先对 ${ACTIVE} 库执行 db:migrate（migration 0043_try_cast_helpers），再部署。" >&2
+    echo "       参见 db/CLAUDE.md「schema 变更两个库都要迁」的目标断言流程。" >&2
+    exit 1
+  fi
+  echo "  ✓ DB 前置依赖就绪（public.try_jsonb / public.try_numeric）"
+}
+[[ "$DO_STAFF"  == "1" ]] && assert_db_prereqs "$ROOT/fengyu-staff/cloudbaserc.json"
+[[ "$DO_CLIENT" == "1" ]] && assert_db_prereqs "$ROOT/fengyu-client/cloudbaserc.json"
+
 # ── 占位符扫描：渲染后仍含占位符的 env 给出告警（不中止，部分占位是预期的，如 prod 未填的 SM4）──
 SCAN_FILES=()
 [[ "$DO_STAFF"  == "1" ]] && SCAN_FILES+=("$ROOT/fengyu-staff/cloudbaserc.json")
