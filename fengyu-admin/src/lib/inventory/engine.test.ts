@@ -47,6 +47,19 @@ import {
 } from './engine'
 import { hasPermission, isAdminScope } from '@/lib/permissions'
 
+/*
+ * 每个用例从干净的默认权限开始。
+ *
+ * `vi.clearAllMocks()` 只清调用记录、**不恢复实现** —— 有几个用例用
+ * `vi.mocked(hasPermission).mockReturnValue(false)` 测拒绝路径，那份实现会一路泄漏到
+ * 后面所有 describe。以前没炸是因为建单路径根本不调 hasPermission；#191 给通用建单
+ * 补了层级 action 校验之后，泄漏立刻变成「后续建单用例全部 PERMISSION_DENIED」。
+ * 各 describe 自己的 beforeEach 仍可覆盖（内层后跑）。
+ */
+beforeEach(() => {
+  vi.mocked(hasPermission).mockReturnValue(true)
+})
+
 const SESSION = {
   employeeId: 'E001',
   name: '测试用户',
@@ -3358,5 +3371,77 @@ describe('#190 单据列表的多类型 / 多状态 / 撤回标记过滤', () =>
     expect(compiled.sql).toContain('"source_org_node_id" in')
     expect(compiled.sql).toContain('"target_org_node_id" in')
     expect(compiled.sql).toMatch(/source_org_node_id" in[^)]*\)\s+or\s+"[^"]*"\."target_org_node_id" in/)
+  })
+})
+
+/**
+ * 通用建单的层级 action 校验（#191）。
+ *
+ * 入口的 `withAnyPermission` 是「三个 operate 任一」，只靠它，一个仅有
+ * `inventory:market_operate` 的账号也能建「院产品报损」这类门店单 —— 而行级 scope
+ * 拦不住（市场 scope 本就包含下属门店）。办理台把卡片按层级分页摆出来之后，
+ * 服务端不跟上就成了「页面上没这张卡、接口却建得出来」。
+ */
+describe('#191 通用建单按 docType 校验层级 operate 权限', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockDb.select.mockReset()
+    mockDb.execute.mockReset()
+    mockGetSession.mockResolvedValue(SESSION)
+    vi.mocked(isAdminScope).mockReturnValue(false)
+    mockDb.execute.mockResolvedValue([{ drifted: false }] as never)
+  })
+
+  function sessionWith(actions: string[]) {
+    vi.mocked(hasPermission).mockImplementation((_session, action) => actions.includes(action))
+  }
+
+  const CASES: Array<[string, string, string]> = [
+    ['院产品报损', 'inventory:store_operate', '门店'],
+    ['分院库存盘点', 'inventory:store_operate', '门店'],
+    ['院顾客产品出库', 'inventory:store_operate', '门店'],
+    ['市场产品报损', 'inventory:market_operate', '市场'],
+    ['市场库存盘点', 'inventory:market_operate', '市场'],
+    ['内部领用', 'inventory:supply_chain_operate', '供应链'],
+  ]
+
+  it.each(CASES)('%s 需要 %s', async (docType, requiredAction) => {
+    // 持有另外两个 operate 也不行：层级各管各的
+    const others = [
+      'inventory:supply_chain_operate',
+      'inventory:market_operate',
+      'inventory:store_operate',
+    ].filter((action) => action !== requiredAction)
+    sessionWith(others)
+    await expect(
+      createInventoryCoreDoc({
+        docType: docType as never,
+        sourceOrgNodeId: 'NODE-A1',
+        targetOrgNodeId: null,
+        docDate: '2026-09-19',
+        remark: '',
+        items: [{ skuId: 'SKU-1', quantity: 1 } as never],
+      }),
+    ).rejects.toThrow('PERMISSION_DENIED')
+  })
+
+  it('持有对应层级权限时不会被这道闸拦下', async () => {
+    // 只断言「没被权限闸拦住」：后面的主体/批次校验不在本用例范围，
+    // 所以接受任何非 PERMISSION_DENIED 的失败。
+    sessionWith(['inventory:store_operate'])
+    let error: unknown
+    try {
+      await createInventoryCoreDoc({
+        docType: '院产品报损' as never,
+        sourceOrgNodeId: 'NODE-A1',
+        targetOrgNodeId: null,
+        docDate: '2026-09-19',
+        remark: '',
+        items: [{ skuId: 'SKU-1', quantity: 1 } as never],
+      })
+    } catch (err) {
+      error = err
+    }
+    expect(String((error as Error)?.message ?? '')).not.toContain('库存操作权限')
   })
 })

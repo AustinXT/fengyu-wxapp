@@ -320,23 +320,43 @@ describe('办理台内嵌建单的闸门（#191）', () => {
     expect(submitBody).toMatch(/onSuccess\(result\.id\)/)
   })
 
-  it('onStale 只刷新，不能接成 onSuccess', () => {
+  it('onStale 只刷新，不碰任何成功通道', () => {
     // 接成 onSuccess 的话，提交失败时会在红色错误 toast 旁边再弹一条绿色「成功」。
+    // ⚠️ 不能只防 `onStale={() => onSuccess(...)}` 这一种字面写法 ——
+    // 包成 `onStale={() => { router.refresh(); onSuccess('x') }}` 就绕过去了。
+    // 改成：把 onStale 的整个表达式切出来，断言里面除了 router.refresh() 什么都没有。
     const workspace = source.slice(source.indexOf('function OperationWorkspace('))
-    expect(workspace).toMatch(/onStale=\{\(\) => router\.refresh\(\)\}/)
-    expect(workspace).not.toMatch(/onStale=\{\(\) => onSuccess/)
+    const onStaleStart = workspace.indexOf('onStale={')
+    expect(onStaleStart).toBeGreaterThan(-1)
+    const onStaleExpr = workspace.slice(onStaleStart, workspace.indexOf('\n', onStaleStart))
+    expect(onStaleExpr).toMatch(/onStale=\{\(\) => router\.refresh\(\)\}/)
+    expect(onStaleExpr).not.toMatch(/onSuccess|toast/)
   })
 
   it('提交在途时卡片与关闭按钮一起上锁', () => {
     // 这时候切走会把表单连同在途请求一起卸载：单已经建出去了，用户却只看到面板消失。
-    expect(source).toMatch(/&& !workspaceBusy/)
+    // ⚠️ 锚定到 enabled 的计算式里，不要全文找 `!workspaceBusy` —— 那样任何无关位置
+    // 出现这个子串都算过，「锁卡片」这条被单独拆掉时反而抓不住。
+    const enabledExpr = source.slice(
+      source.indexOf('const enabled = (operation.approvalOnly'),
+      source.indexOf('const content = ('),
+    )
+    expect(enabledExpr).toMatch(/&& !workspaceBusy/)
     expect(source).toMatch(/closeDisabled=\{busy\}/)
     expect(source).toMatch(/onBusyChange=\{setWorkspaceBusy\}/)
   })
 
-  it('深链消费后把 ?create= 从地址栏抹掉', () => {
-    // 留着的话，用户关掉工作区一刷新又自动弹开；这个 URL 被收藏/分享也会带着副作用。
-    expect(source).toMatch(/router\.replace\(`\/inventory\/operations\/\$\{level\}`/)
+  it('深链先打开工作区再抹掉 ?create=，顺序不能反', () => {
+    // 只抹参数不打开的话，客户端软导航（Link / router.push 带 ?create=）会静默失效：
+    // useState 只吃首次挂载的初值，服务端 prop 变了组件却不重挂。
+    const effect = source.slice(
+      source.indexOf('if (!initialOperationId) return'),
+      source.indexOf('}, [initialOperationId, level, router])'),
+    )
+    const setIndex = effect.indexOf('setActiveOperation(initialOperationId)')
+    const replaceIndex = effect.indexOf('router.replace(')
+    expect(setIndex).toBeGreaterThan(-1)
+    expect(replaceIndex).toBeGreaterThan(setIndex)
   })
 
   it('通用卡的 docType 有编译期覆盖性检查，不只靠测试扫源码', () => {

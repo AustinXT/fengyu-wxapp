@@ -34,6 +34,7 @@ import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { AuthSession } from '@/lib/types'
 import { assertInventoryBusinessWritable } from './cutover'
+import { genericDocBusinessLevel } from './business-level'
 // 账面数按**主体 + SKU 汇总**记录 —— 口径由甲方 2026-09-16 拍板（issue #131 Q1）：
 // 现场就是按商品数总盘、不区分批次，按批次记会造成假精确。类型清单与详情页共用单源。
 import { STOCKTAKE_DOC_TYPES } from './stocktake'
@@ -1259,6 +1260,13 @@ function skuRow(row: {
  * DB 保留该快照供审计追溯，响应层对此单据类型统一遮蔽。
  */
 const AMOUNTLESS_DOC_TYPES = new Set<InventoryDocType>(['品项公司发货'])
+
+/** 通用建单的层级 → 所需 operate 权限（#191，与 business-level.ts 的层级表同源）。 */
+const GENERIC_DOC_LEVEL_ACTION = {
+  'supply-chain': 'inventory:supply_chain_operate',
+  market: 'inventory:market_operate',
+  store: 'inventory:store_operate',
+} as const
 
 function docRow(row: {
   doc: typeof inventoryDocs.$inferSelect
@@ -2846,6 +2854,21 @@ export const createInventoryCoreDoc = withAnyPermission(
     }
     if (!(INVENTORY_GENERIC_DOC_TYPES as readonly string[]).includes(input.docType)) {
       throw new ApiError('INVALID_STATE', '该库存单据不支持通用建单')
+    }
+    /*
+     * 层级 action 校验（#191）：入口的 withAnyPermission 是「三个 operate 任一」，
+     * 光靠它，只有 `inventory:market_operate` 的账号也能建「院产品报损」这类门店单 ——
+     * 而行级 scope 拦不住（市场 scope 本就包含下属门店），于是校验全部落空。
+     * 权限矩阵把三个层级拆成三个独立 action，就是要求各管各的。
+     *
+     * ⚠️ 这是**收紧**：之前能用市场权限建门店单，现在不能。办理台的卡片一直按层级
+     * 分页展示，服务端不跟上的话，「页面上没这张卡、接口却建得出来」自相矛盾。
+     */
+    const docLevel = genericDocBusinessLevel(input.docType)
+    if (!docLevel) throw new ApiError('INVALID_STATE', '该库存单据没有归属业务层级')
+    const requiredAction = GENERIC_DOC_LEVEL_ACTION[docLevel]
+    if (!hasPermission(session, requiredAction)) {
+      throw new ApiError('PERMISSION_DENIED', `缺少${docLevel === 'store' ? '门店' : docLevel === 'market' ? '市场' : '供应链'}库存操作权限`)
     }
     const status = defaultStatusForDoc(input.docType)
     if (!Array.isArray(input.items) || input.items.length === 0) {

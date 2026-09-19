@@ -449,6 +449,13 @@ function CreateDocDialog({
   allowedDocTypes?: readonly InventoryDocType[]
 }) {
   const [submitting, setSubmitting] = useState(false)
+  // useCallback：内联箭头每次重渲都换 identity，会让共享表单里两个 `[onBusyChange]`
+  // 的 effect 反复 cleanup+setup，等价于「每次重渲闪断一次 busy」。
+  // 当前两个调用方都只是 setState，批处理后净效果为零，但契约上不该这么写。
+  const handleBusyChange = useCallback((busy: boolean) => {
+    setSubmitting(busy)
+    onBusyChange(busy)
+  }, [onBusyChange])
 
   return (
     <Dialog
@@ -476,10 +483,7 @@ function CreateDocDialog({
             onSuccess()
           }}
           onStale={onStale}
-          onBusyChange={(busy) => {
-            setSubmitting(busy)
-            onBusyChange(busy)
-          }}
+          onBusyChange={handleBusyChange}
           renderActions={({ submit, submitting: busy }) => (
             <DialogFooter>
               <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>取消</Button>

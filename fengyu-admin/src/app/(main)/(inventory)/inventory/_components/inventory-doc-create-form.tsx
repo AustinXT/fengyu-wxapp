@@ -50,6 +50,15 @@ function formatDate(v: string | null | undefined) {
   return v ? v.slice(0, 10) : '—'
 }
 
+function shanghaiToday(): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date())
+}
+
 function num(v: string): number | null {
   if (!v.trim()) return null
   const n = Number(v)
@@ -143,14 +152,7 @@ export function InventoryDocCreateForm({
   )
   const [sourceOrgNodeId, setSourceOrgNodeId] = useState('')
   const [targetOrgNodeId, setTargetOrgNodeId] = useState('')
-  const [docDate, setDocDate] = useState(() => {
-    return new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Asia/Shanghai',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).format(new Date())
-  })
+  const [docDate, setDocDate] = useState(shanghaiToday)
   const [remark, setRemark] = useState('')
   const [items, setItems] = useState<DraftItem[]>([defaultItem()])
   const requiresSourceLot = SOURCE_LOT_DOC_TYPES.has(docType)
@@ -235,10 +237,18 @@ export function InventoryDocCreateForm({
        * （内部领用 / 顾客产品出库 / 顾客退货 / 盘溢 / 两种调货出库），重复提交 = 重复扣减或重复入库，
        * 事后只能红冲。同页的内置表单成功后都会 `setLines([初始行])`，这里对齐它们。
        *
-       * 主体与单据类型刻意保留：连续建几张同主体的单是常态，与内置表单的做法一致。
+       * **主体与日期也要清**，别为了「连续建单少选一次」把它们留着：
+       * 盘点 / 报损 / 盘溢这些同主体类型在服务端走 `source ?? target`
+       * （engine.ts 的 INTERNAL_SAME_NODE_DOC_TYPES），残留的 source 会**静默吃掉**
+       * 用户这次选的 target —— 界面照常返回成功单号，货却记在上一张单的主体上。
+       * 明细已经清空、表单看着像新的，这个陷阱反而更难被发现。
+       * 日期同理：不重置的话下一张单会沿用上次补录的历史日期。
        */
       setItems([defaultItem()])
       setRemark('')
+      setSourceOrgNodeId('')
+      setTargetOrgNodeId('')
+      setDocDate(shanghaiToday())
       /*
        * 批次可用量刚被自己这一单改掉，缓存里的数字立刻就是旧的。
        * 推代次 + 清掉已完成条目，下一张单的批次下拉会重新取数 ——
@@ -252,6 +262,16 @@ export function InventoryDocCreateForm({
       onSuccess(result.id)
     } catch (err) {
       toast.error(docActionErrorMessage(err, '创建单据失败'))
+      /*
+       * 失败也要推代次。最常见的失败就是「别人并发扣了库存」，服务端回的是
+       * 「可用 5」，而批次下拉里还写着「可用 30」—— 用户对着自相矛盾的数字反复盲试。
+       * 办理台的 visible 恒 true，不在这里刷新的话它**没有任何**重取入口
+       * （单据中心至少还能关弹窗再开）。
+       */
+      for (const [key, entry] of lotCacheRef.current) {
+        if (entry.settled) lotCacheRef.current.delete(key)
+      }
+      setLotEpoch((n) => n + 1)
       // 状态/权限已变化时刷新列表给出路，但**不关闭表单** —— 里面是用户敲进去的内容，
       // 关掉就全没了；动作弹窗只有一个备注框，关掉代价小，两者取舍不同。
       if (isStaleStateError(err)) onStale()

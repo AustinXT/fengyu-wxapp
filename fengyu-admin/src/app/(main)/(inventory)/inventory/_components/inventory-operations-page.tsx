@@ -557,8 +557,15 @@ export default function InventoryOperationsPage({
 
   useEffect(() => {
     if (!initialOperationId) return
-    // 深链已经消费掉了：把 ?create= 从地址栏抹掉，否则用户关掉工作区后一刷新又自动弹开，
-    // 而且这个 URL 被收藏 / 分享出去也会带着一个「自动打开某张卡」的副作用。
+    /*
+     * 先打开再抹参数。`useState(initialOperationId ?? null)` 只吃**首次挂载**的初值，
+     * 客户端软导航（Link / router.push 到同一路由带 ?create=）时服务端 prop 变了、
+     * 组件却不重挂，光抹参数的话就成了「整页加载生效、软导航静默失效」的半生效 ——
+     * 而验收标准明确要求二选一。
+     */
+    setActiveOperation(initialOperationId)
+    // 抹掉 ?create=：留着的话用户关掉工作区一刷新又自动弹开，这个 URL 被收藏 / 分享
+    // 出去也会带着「自动打开某张卡」的副作用。
     router.replace(`/inventory/operations/${level}`, { scroll: false })
   }, [initialOperationId, level, router])
 
