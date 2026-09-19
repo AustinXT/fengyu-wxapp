@@ -2077,9 +2077,7 @@ export async function summarizeStoreReplenishmentRequests(
     for (const row of result) {
         const requestedQuantity = Number(row.requested_quantity)
         const fulfilledQuantity = Number(row.fulfilled_quantity)
-        const ids = Array.isArray(row.request_item_ids)
-          ? row.request_item_ids.map(Number)
-          : String(row.request_item_ids ?? '').replace(/[{}]/g, '').split(',').filter(Boolean).map(Number)
+        const ids = parseIdArray(row.request_item_ids)
         const [onHand] = rows<{ quantity: string | number | null }>(await tx.execute(sql`
           SELECT COALESCE(SUM(quantity_on_hand), 0) AS quantity
             FROM inventory_stock_lots
