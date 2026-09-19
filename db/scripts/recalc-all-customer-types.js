@@ -86,12 +86,12 @@ refund_by_item AS (
   -- note→jsonb 三重防线逐字对齐 staffApi utils/paid-sessions.js RECEIVED_REFUNDED_DEDUCT_SQL：
   -- ① 仅退款+已支付流水；② note LIKE '{%' 纯文本守门；③ 嵌套 CASE 令 ::jsonb cast 只在守门通过时求值。
   SELECT elem ->> 'refSaleItemId' AS sale_item_id,
-         SUM(COALESCE(try_numeric(elem ->> 'refundAmount'), 0)) AS refunded
+         SUM(COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0)) AS refunded
     FROM sale_order_payments sop
     JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
     CROSS JOIN LATERAL jsonb_array_elements(
-      CASE WHEN jsonb_typeof(try_jsonb(sop.note) -> 'items') = 'array'
-           THEN try_jsonb(sop.note) -> 'items'
+      CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+           THEN public.try_jsonb(sop.note) -> 'items'
            ELSE '[]'::jsonb END
     ) AS elem
    WHERE ro.status IN ('已支付', '已完成')

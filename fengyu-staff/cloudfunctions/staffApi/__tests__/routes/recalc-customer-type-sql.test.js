@@ -15,7 +15,7 @@
  * 判定逻辑下沉到 RECALC_CUSTOMER_TYPE_CTE（refund_by_item + order_amounts），
  * CASE 只剩三个 `EXISTS(SELECT 1 FROM order_amounts WHERE …)` 分支。
  *
- * 守护范围（**七处副本**）：
+ * 守护范围（**八处副本**）：
  *   逐字镜像（五端运行时）：staffApi / clientApi / payNotify / admin orders.ts / admin recompute-customer-tags
  *   结构性守护（两个全库批量脚本）：db/scripts/recalc-all-customer-types.js / recalc-became-member-at.js
  *   —— 脚本版无 client_user_id 参数过滤、多带输出列，无法逐字比对，故只断言关键片段。
@@ -242,9 +242,10 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
         test('用 try_jsonb / try_numeric 安全转换，禁止裸 ::jsonb / ::numeric（根除 22P02）', () => {
           // LIKE 守门无法证明 JSON 合法：`{手工备注}`、`{"items":`（截断）都能通过却在 cast 处炸。
           // migration 0043 的 PL/pgSQL helper 把失败降级成 NULL（版本无关，不依赖 PG16 pg_input_is_valid）。
-          expect(cte).toContain("jsonb_typeof(try_jsonb(sop.note) -> 'items') = 'array'")
-          expect(cte).toContain("try_jsonb(sop.note) -> 'items'")
-          expect(cte).toContain("COALESCE(try_numeric(elem ->> 'refundAmount'), 0)")
+          // schema 限定：迁移账号与运行时账号 search_path 可能不同，public. 前缀消除解析歧义
+          expect(cte).toContain("jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'")
+          expect(cte).toContain("public.try_jsonb(sop.note) -> 'items'")
+          expect(cte).toContain("COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0)")
           expect(cte).toContain("ELSE '[]'::jsonb END")
           // 回归守护：不得回退到裸 cast 或 LIKE 守门
           expect(cte).not.toContain('(sop.note)::jsonb')
@@ -610,8 +611,8 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
         })
 
         test('用 try_jsonb / try_numeric 安全转换（与运行时同源）', () => {
-          expect(src).toContain("jsonb_typeof(try_jsonb(sop.note) -> 'items') = 'array'")
-          expect(src).toContain("COALESCE(try_numeric(elem ->> 'refundAmount'), 0)")
+          expect(src).toContain("jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'")
+          expect(src).toContain("COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0)")
           expect(src).not.toContain('(sop.note)::jsonb')
           expect(src).not.toContain('sop.note LIKE')
         })

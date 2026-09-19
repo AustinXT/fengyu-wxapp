@@ -27,17 +27,17 @@ const { classifySaleOrderDocumentType } = require('./document-type')
  * 产出每张已结清销售单的 non_trial / trial = 非体验 / 体验行的**毛实收**合计
  * （sale_items.received 净额 + 该行逐项退款额 → 还原"曾经收到的钱"，退款不扣减）。
  * refund_by_item 的 note→jsonb 三重防线逐字对齐 paid-sessions.js
- * RECEIVED_REFUNDED_DEDUCT_SQL，根除 22P02。七处副本逐字一致，由 staffApi
+ * RECEIVED_REFUNDED_DEDUCT_SQL，根除 22P02。八处副本逐字一致，由 staffApi
  * __tests__/routes/recalc-customer-type-sql.test.js 守护。
  */
 const RECALC_CUSTOMER_TYPE_CTE = `WITH refund_by_item AS (
        SELECT elem ->> 'refSaleItemId' AS sale_item_id,
-              SUM(COALESCE(try_numeric(elem ->> 'refundAmount'), 0)) AS refunded
+              SUM(COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0)) AS refunded
        FROM sale_order_payments sop
        JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
        CROSS JOIN LATERAL jsonb_array_elements(
-         CASE WHEN jsonb_typeof(try_jsonb(sop.note) -> 'items') = 'array'
-              THEN try_jsonb(sop.note) -> 'items'
+         CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+              THEN public.try_jsonb(sop.note) -> 'items'
               ELSE '[]'::jsonb END
        ) AS elem
        WHERE ro.client_user_id = $1
@@ -1303,10 +1303,10 @@ exports.main = async (event) => {
         if (curType.rows[0]?.customer_type !== '会员客') {
           const threshold = await getMemberThreshold()
 
-          // 七处 SQL 独立副本（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
+          // 八处 SQL 独立副本（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
           // + admin actions/orders.ts + admin lib/recompute-customer-tags.ts
           // + db/scripts/recalc-all-customer-types.js + db/scripts/recalc-became-member-at.js）。
-          // 修改时必须同步其余六处；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js 守护。
+          // 修改时必须同步其余七处；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js 守护。
           // #187（2026-09-18）：按单笔订单的非体验部分毛实收判定，落地 Q5.2 决策。
           const typeResult = await client.query(
             `${RECALC_CUSTOMER_TYPE_CTE}

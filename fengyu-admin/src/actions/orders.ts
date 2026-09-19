@@ -609,7 +609,7 @@ async function applyRechargeOnOrderPaid(
 /**
  * customer_type 跃迁（admin recordPayment 触发点）。
  *
- * 七处跃迁 SQL 副本之一（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
+ * 八处跃迁 SQL 副本之一（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
  * + admin actions/orders.ts + admin lib/recompute-customer-tags.ts
  * + db/scripts/recalc-all-customer-types.js + db/scripts/recalc-became-member-at.js）。
  *
@@ -623,7 +623,7 @@ async function applyRechargeOnOrderPaid(
  *
  * 只升不降；跃迁为"会员客"时同步写入 became_member_at = COALESCE(首笔达标单 paid_at, created_at)（非检测时刻 NOW()）。
  *
- * SQL 必须与其余六处字面一致 —— 守卫测试 recalc-customer-type-sql.test.js 跨七个文件比对。
+ * SQL 必须与其余七处字面一致 —— 守卫测试 recalc-customer-type-sql.test.js 跨八个文件比对。
  */
 type AdminTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
 
@@ -636,12 +636,12 @@ type AdminTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
  */
 const recalcCustomerTypeCte = (clientUserId: string) => sql`WITH refund_by_item AS (
        SELECT elem ->> 'refSaleItemId' AS sale_item_id,
-              SUM(COALESCE(try_numeric(elem ->> 'refundAmount'), 0)) AS refunded
+              SUM(COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0)) AS refunded
        FROM sale_order_payments sop
        JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
        CROSS JOIN LATERAL jsonb_array_elements(
-         CASE WHEN jsonb_typeof(try_jsonb(sop.note) -> 'items') = 'array'
-              THEN try_jsonb(sop.note) -> 'items'
+         CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+              THEN public.try_jsonb(sop.note) -> 'items'
               ELSE '[]'::jsonb END
        ) AS elem
        WHERE ro.client_user_id = ${clientUserId}
@@ -687,7 +687,7 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<vo
 
   const threshold = await getMemberThreshold()
 
-  // 七处 SQL 独立副本，修改时必须同步其余六处；一致性由 staffApi
+  // 八处 SQL 独立副本，修改时必须同步其余七处；一致性由 staffApi
   // __tests__/routes/recalc-customer-type-sql.test.js 与 cross-end-sql-snapshot.test.js 守护。
   const typeRes = await tx.execute(sql`
     ${recalcCustomerTypeCte(clientUserId)}
@@ -731,7 +731,7 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<vo
         LIMIT 1
       ), became_member_at) WHERE user_id = ${clientUserId}
     `)
-    // 给触发本次首次跃迁的达标销售单打会员升级标记（WHERE 与会员客判定 CASE 同源；七处镜像）。
+    // 给触发本次首次跃迁的达标销售单打会员升级标记（WHERE 与会员客判定 CASE 同源；八处镜像）。
     // 函数开头“已是会员客即 return”保证只在首次跃迁时执行一次；paid_at 最早 = 确立会员资格的首笔达标单。
     await tx.execute(sql`
       UPDATE sale_orders SET is_membership_upgrade = true

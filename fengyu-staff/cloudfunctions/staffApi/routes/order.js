@@ -532,17 +532,17 @@ async function refreshSpendingTier(client, clientUserId) {
  * （当前 '转出'/'转入' 只出现在转换单、已被 sale_order_type 过滤，此条为防御性对齐）。
  * FILTER 聚合对全体验/全非体验订单会产生 NULL，COALESCE 归零以免 `NULL > 0` 使分支静默不命中。
  *
- * 七处副本逐字一致（详见 recalcCustomerType 内注释），由
+ * 八处副本逐字一致（详见 recalcCustomerType 内注释），由
  * __tests__/routes/recalc-customer-type-sql.test.js 守护。
  */
 const RECALC_CUSTOMER_TYPE_CTE = `WITH refund_by_item AS (
        SELECT elem ->> 'refSaleItemId' AS sale_item_id,
-              SUM(COALESCE(try_numeric(elem ->> 'refundAmount'), 0)) AS refunded
+              SUM(COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0)) AS refunded
        FROM sale_order_payments sop
        JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
        CROSS JOIN LATERAL jsonb_array_elements(
-         CASE WHEN jsonb_typeof(try_jsonb(sop.note) -> 'items') = 'array'
-              THEN try_jsonb(sop.note) -> 'items'
+         CASE WHEN jsonb_typeof(public.try_jsonb(sop.note) -> 'items') = 'array'
+              THEN public.try_jsonb(sop.note) -> 'items'
               ELSE '[]'::jsonb END
        ) AS elem
        WHERE ro.client_user_id = $1
@@ -597,9 +597,9 @@ async function recalcCustomerType(client, clientUserId) {
 
   const threshold = await getMemberThreshold()
 
-  // 七处 SQL 独立副本（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
+  // 八处 SQL 独立副本（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
   // + admin actions/orders.ts + admin lib/recompute-customer-tags.ts + db/scripts/recalc-all-customer-types.js
-  // + db/scripts/recalc-became-member-at.js）。修改时必须同步其余六处；一致性由 staffApi
+  // + db/scripts/recalc-became-member-at.js）。修改时必须同步其余七处；一致性由 staffApi
   // __tests__/routes/recalc-customer-type-sql.test.js 守护，任一处漂移立即触发测试失败。
   //
   // 2026-09-18 (#187) 口径：按**单笔订单的非体验部分毛实收**判定，落地 2026-04-26 Q5.2 决策
