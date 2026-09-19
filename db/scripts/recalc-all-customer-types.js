@@ -86,34 +86,49 @@ refund_by_item AS (
   SELECT elem ->> 'refSaleItemId' AS sale_item_id,
          SUM(COALESCE((elem ->> 'refundAmount')::numeric, 0)) AS refunded
     FROM sale_order_payments sop
+    JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
     CROSS JOIN LATERAL jsonb_array_elements(
-      CASE WHEN sop.note LIKE '{%'
+      CASE WHEN sop.note LIKE '{"%'
            THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
                      THEN (sop.note)::jsonb -> 'items'
                      ELSE '[]'::jsonb END
            ELSE '[]'::jsonb END
     ) AS elem
-   WHERE sop.change_type = '退款'
+   WHERE ro.status IN ('已支付', '已完成')
+     AND ro.sale_order_type = '销售单'
+     AND sop.change_type = '退款'
      AND sop.status = '已支付'
      AND elem ->> 'refSaleItemId' <> 'OVERPAY'
    GROUP BY 1
 ),
 order_amounts AS (
+  -- LEAST(…, sale_amount) 封顶：加回 note 原始退款额并非扣减的严格逆运算，
+  -- refunded > 实际扣减额时会高估；已结清订单的行级毛额上限就是 sale_amount，故以此封顶，
+  -- 把「不可逆误升会员客」压成「最多漏升」（漏升可由后续订单或再跑一次本脚本自愈）。
+  -- 无明细行订单（WorkFine 历史单只建 sale_orders）回退订单级 received，全额计入 non_trial。
   SELECT o.sale_order_id, o.client_user_id, o.paid_at, o.created_at,
-         COALESCE(SUM(si.received::numeric + COALESCE(rbi.refunded, 0))
-                  FILTER (WHERE si.is_experience = false), 0) AS non_trial,
-         COALESCE(SUM(si.received::numeric + COALESCE(rbi.refunded, 0))
-                  FILTER (WHERE si.is_experience = true), 0) AS trial
+         CASE WHEN COUNT(si.sale_item_id) = 0
+              THEN GREATEST(o.received::numeric, 0)
+              ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
+                                      si.sale_amount::numeric))
+                            FILTER (WHERE si.is_experience = false), 0)
+         END AS non_trial,
+         CASE WHEN COUNT(si.sale_item_id) = 0
+              THEN 0
+              ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
+                                      si.sale_amount::numeric))
+                            FILTER (WHERE si.is_experience = true), 0)
+         END AS trial
     FROM sale_orders o
-    JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+    LEFT JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+                           AND si.item_direction = '购买'
     LEFT JOIN refund_by_item rbi ON rbi.sale_item_id = si.sale_item_id
     -- 2026-04-26 sale-order-domain-refactor 后，回款下沉到
     -- sale_order_payments.change_type='回款'，sale_order_type 枚举已不含“回款单”。
    WHERE o.status IN ('已支付', '已完成')
      AND o.sale_order_type = '销售单'
      AND o.client_user_id IS NOT NULL
-     AND si.item_direction = '购买'
-   GROUP BY o.sale_order_id, o.client_user_id, o.paid_at, o.created_at
+   GROUP BY o.sale_order_id, o.client_user_id, o.paid_at, o.created_at, o.received
 ),
 qualified_orders AS (
   -- 非体验部分毛实收达阈值的订单。保留 paid_at / created_at 原始列供 member_first

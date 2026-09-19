@@ -640,13 +640,15 @@ const recalcCustomerTypeCte = (clientUserId: string) => sql`WITH refund_by_item 
        FROM sale_order_payments sop
        JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
        CROSS JOIN LATERAL jsonb_array_elements(
-         CASE WHEN sop.note LIKE '{%'
+         CASE WHEN sop.note LIKE '{"%'
               THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
                         THEN (sop.note)::jsonb -> 'items'
                         ELSE '[]'::jsonb END
               ELSE '[]'::jsonb END
        ) AS elem
        WHERE ro.client_user_id = ${clientUserId}
+         AND ro.status IN ('已支付', '已完成')
+         AND ro.sale_order_type = '销售单'
          AND sop.change_type = '退款'
          AND sop.status = '已支付'
          AND elem ->> 'refSaleItemId' <> 'OVERPAY'
@@ -654,18 +656,26 @@ const recalcCustomerTypeCte = (clientUserId: string) => sql`WITH refund_by_item 
      ),
      order_amounts AS (
        SELECT o.sale_order_id,
-              COALESCE(SUM(si.received::numeric + COALESCE(rbi.refunded, 0))
-                       FILTER (WHERE si.is_experience = false), 0) AS non_trial,
-              COALESCE(SUM(si.received::numeric + COALESCE(rbi.refunded, 0))
-                       FILTER (WHERE si.is_experience = true), 0) AS trial
+              CASE WHEN COUNT(si.sale_item_id) = 0
+                   THEN GREATEST(o.received::numeric, 0)
+                   ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
+                                           si.sale_amount::numeric))
+                                 FILTER (WHERE si.is_experience = false), 0)
+              END AS non_trial,
+              CASE WHEN COUNT(si.sale_item_id) = 0
+                   THEN 0
+                   ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
+                                           si.sale_amount::numeric))
+                                 FILTER (WHERE si.is_experience = true), 0)
+              END AS trial
        FROM sale_orders o
-       JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+       LEFT JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+                              AND si.item_direction = '购买'
        LEFT JOIN refund_by_item rbi ON rbi.sale_item_id = si.sale_item_id
        WHERE o.client_user_id = ${clientUserId}
          AND o.status IN ('已支付', '已完成')
          AND o.sale_order_type = '销售单'
-         AND si.item_direction = '购买'
-       GROUP BY o.sale_order_id
+       GROUP BY o.sale_order_id, o.received
      )`
 
 async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<void> {
@@ -7376,13 +7386,6 @@ export const recordPayment = withPermission(
         throw new ApiError('CONFLICT', 'CONCURRENT_CHANGED: 订单状态已变更，请刷新后重试')
       }
 
-      // 9) customer_type 跃迁（仅在本次回款使订单结清，即翻为'已支付'时触发）
-      // 与 staff confirmOffline / payNotify 三端对齐，保证 admin 财务补录回款
-      // 也能驱动客户分类升级（修复 audit-15 P0-15-01 admin 三资金触发点跃迁缺失）。
-      if (targetStatus === '已支付' && locked.client_user_id) {
-        await recalcCustomerType(tx, locked.client_user_id)
-      }
-
       // 10) 积分发放（修复 audit-15 P0-15-01：admin recordPayment 触发点缺失）
       //     无论本次是否结清都尝试 settle：链净额差值法天然幂等，
       //     可正确处理"分次回款只发增量积分"的场景
@@ -7408,6 +7411,16 @@ export const recordPayment = withPermission(
       // 11) paid_sessions 重算（ticket 2026-05-19）：received 增长 → paid_sessions 单调上升
       //     必须在 capture 之后：新 STEP1 从 receipt 聚合 received
       await recalcPaidSessionsForOrder(tx, saleOrderId)
+
+      // 12) customer_type 跃迁（仅在本次回款使订单结清，即翻为'已支付'时触发）
+      //     与 staff confirmOffline / payNotify 对齐，保证 admin 财务补录回款
+      //     也能驱动客户分类升级（修复 audit-15 P0-15-01 admin 三资金触发点跃迁缺失）。
+      //     ⚠️ #187 起必须排在 recalcPaidSessionsForOrder **之后**：跃迁判定已改读
+      //     sale_items.received（由上面 STEP1 从 receipt 聚合写出），排在前面会读到本次回款
+      //     之前的旧值、少算本笔回款额。旧口径读 o.total_amount（建单即定）不受顺序影响。
+      if (targetStatus === '已支付' && locked.client_user_id) {
+        await recalcCustomerType(tx, locked.client_user_id)
+      }
 
       return {
         repaymentOrderId,

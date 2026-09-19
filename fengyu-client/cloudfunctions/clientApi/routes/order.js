@@ -293,13 +293,15 @@ const RECALC_CUSTOMER_TYPE_CTE = `WITH refund_by_item AS (
        FROM sale_order_payments sop
        JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
        CROSS JOIN LATERAL jsonb_array_elements(
-         CASE WHEN sop.note LIKE '{%'
+         CASE WHEN sop.note LIKE '{"%'
               THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
                         THEN (sop.note)::jsonb -> 'items'
                         ELSE '[]'::jsonb END
               ELSE '[]'::jsonb END
        ) AS elem
        WHERE ro.client_user_id = $1
+         AND ro.status IN ('已支付', '已完成')
+         AND ro.sale_order_type = '销售单'
          AND sop.change_type = '退款'
          AND sop.status = '已支付'
          AND elem ->> 'refSaleItemId' <> 'OVERPAY'
@@ -307,18 +309,26 @@ const RECALC_CUSTOMER_TYPE_CTE = `WITH refund_by_item AS (
      ),
      order_amounts AS (
        SELECT o.sale_order_id,
-              COALESCE(SUM(si.received::numeric + COALESCE(rbi.refunded, 0))
-                       FILTER (WHERE si.is_experience = false), 0) AS non_trial,
-              COALESCE(SUM(si.received::numeric + COALESCE(rbi.refunded, 0))
-                       FILTER (WHERE si.is_experience = true), 0) AS trial
+              CASE WHEN COUNT(si.sale_item_id) = 0
+                   THEN GREATEST(o.received::numeric, 0)
+                   ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
+                                           si.sale_amount::numeric))
+                                 FILTER (WHERE si.is_experience = false), 0)
+              END AS non_trial,
+              CASE WHEN COUNT(si.sale_item_id) = 0
+                   THEN 0
+                   ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
+                                           si.sale_amount::numeric))
+                                 FILTER (WHERE si.is_experience = true), 0)
+              END AS trial
        FROM sale_orders o
-       JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+       LEFT JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+                              AND si.item_direction = '购买'
        LEFT JOIN refund_by_item rbi ON rbi.sale_item_id = si.sale_item_id
        WHERE o.client_user_id = $1
          AND o.status IN ('已支付', '已完成')
          AND o.sale_order_type = '销售单'
-         AND si.item_direction = '购买'
-       GROUP BY o.sale_order_id
+       GROUP BY o.sale_order_id, o.received
      )`
 
 /**

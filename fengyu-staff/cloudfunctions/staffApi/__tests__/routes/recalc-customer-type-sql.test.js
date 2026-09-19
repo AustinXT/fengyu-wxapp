@@ -51,9 +51,13 @@ const CLIENT_API_ORDER_JS = path.resolve(
   '../../../../../fengyu-client/cloudfunctions/clientApi/routes/order.js'
 )
 /**
- * 第 6/7 处副本：db/scripts 的全库批量脚本。与五端运行时副本**不逐字一致**
+ * 第 6/7/8 处副本：db/scripts 的全库批量脚本。与五端运行时副本**不逐字一致**
  * （无 client_user_id 参数过滤、多带输出列），故只做结构性守护（关键片段断言），
  * 不进逐字镜像比对。口径漂移时靠这些断言报红。
+ *
+ * 这三个脚本都会按自身 SQL **覆写线上数据**（customer_type / became_member_at /
+ * is_membership_upgrade + document_type），且都幂等可重跑——口径与运行时漂移时，
+ * 跑一次就把线上改回旧口径，因此必须纳入守护。
  */
 const SCRIPT_RECALC_ALL_TYPES = path.resolve(
   __dirname,
@@ -62,6 +66,10 @@ const SCRIPT_RECALC_ALL_TYPES = path.resolve(
 const SCRIPT_RECALC_BECAME_MEMBER = path.resolve(
   __dirname,
   '../../../../../db/scripts/recalc-became-member-at.js'
+)
+const SCRIPT_BACKFILL_UPGRADE_DOC_TYPE = path.resolve(
+  __dirname,
+  '../../../../../db/scripts/backfill-membership-upgrade-doc-type.js'
 )
 
 /** 五端运行时副本（逐字镜像比对范围） */
@@ -96,10 +104,10 @@ function extractCaseSql(filePath) {
  */
 function extractCte(filePath) {
   const src = fs.readFileSync(filePath, 'utf8')
-  const match = src.match(/WITH refund_by_item AS \([\s\S]*?GROUP BY o\.sale_order_id\s*\)/m)
+  const match = src.match(/WITH refund_by_item AS \([\s\S]*?GROUP BY o\.sale_order_id, o\.received\s*\)/m)
   if (!match) {
     throw new Error(
-      `未在 ${filePath} 找到 RECALC_CUSTOMER_TYPE_CTE（WITH refund_by_item … GROUP BY o.sale_order_id）；` +
+      `未在 ${filePath} 找到 RECALC_CUSTOMER_TYPE_CTE（WITH refund_by_item … GROUP BY o.sale_order_id, o.received）；` +
       '可能仍为旧的 total_amount 口径'
     )
   }
@@ -165,9 +173,26 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
           expect(cte).toContain('si.received::numeric + COALESCE(rbi.refunded, 0)')
         })
 
+        test('毛实收按 sale_amount 封顶（LEAST），防加回非逆运算导致的不可逆误升', () => {
+          // 加回的是 note.items[].refundAmount 原始额，而 received 的扣减主路径按
+          // sale_payment_item_receipts 负额净算（还带 GREATEST(0) clamp）——两者不是严格互逆。
+          // 已结清订单的行级毛额上限就是 sale_amount，以此封顶把「误升会员客」压成「最多漏升」。
+          expect(cte).toContain('LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),')
+          expect(cte).toContain('si.sale_amount::numeric)')
+        })
+
+        test('无明细行订单回退订单级 received（WorkFine 历史单只建 sale_orders）', () => {
+          expect(cte).toContain('CASE WHEN COUNT(si.sale_item_id) = 0')
+          expect(cte).toContain('THEN GREATEST(o.received::numeric, 0)')
+          // 必须是 LEFT JOIN，INNER 会让无明细行的历史单整个消失（相对旧口径是回归）
+          expect(cte).toContain('LEFT JOIN sale_items si ON si.sale_order_id = o.sale_order_id')
+        })
+
         test('按 is_experience 拆分为 non_trial / trial 两个 FILTER 聚合', () => {
-          expect(cte).toContain("FILTER (WHERE si.is_experience = false), 0) AS non_trial")
-          expect(cte).toContain("FILTER (WHERE si.is_experience = true), 0) AS trial")
+          expect(cte).toContain('FILTER (WHERE si.is_experience = false), 0)')
+          expect(cte).toContain('END AS non_trial')
+          expect(cte).toContain('FILTER (WHERE si.is_experience = true), 0)')
+          expect(cte).toContain('END AS trial')
         })
 
         test('FILTER 聚合结果 COALESCE 归零（防 NULL > 0 使分支静默不命中）', () => {
@@ -176,12 +201,23 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
         })
 
         test("只聚合 item_direction='购买' 行（与 STEP 1.5 退款扣减作用域一致，排除转出/转入负数行)", () => {
-          expect(cte).toContain("AND si.item_direction = '购买'")
+          // 挂在 LEFT JOIN 的 ON 条件上——放进 WHERE 会把 LEFT JOIN 退化成 INNER，
+          // 无明细行的历史单又会消失。
+          expect(cte).toMatch(
+            /LEFT JOIN sale_items si ON si\.sale_order_id = o\.sale_order_id\s*AND si\.item_direction = '购买'/
+          )
         })
 
         test('退款聚合只认已支付的退款流水', () => {
           expect(cte).toContain("AND sop.change_type = '退款'")
           expect(cte).toContain("AND sop.status = '已支付'")
+        })
+
+        test('退款展开范围限定在参与判定的已结清销售单（收窄 22P02 爆炸半径）', () => {
+          // 本 CTE 按顾客聚合（原 RECEIVED_REFUNDED_DEDUCT_SQL 按单聚合）。不加这两条限定，
+          // 该顾客任一充值单/寄存单上的脏 note 都会被展开，把故障半径放大到其全部收款事务。
+          expect(cte).toContain("AND ro.status IN ('已支付', '已完成')")
+          expect(cte).toContain("AND ro.sale_order_type = '销售单'")
         })
 
         test("排除 OVERPAY 哨兵行（与 per-item-refund helper 口径对齐）", () => {
@@ -190,8 +226,11 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
           expect(cte).toContain("AND elem ->> 'refSaleItemId' <> 'OVERPAY'")
         })
 
-        test("note→jsonb 三重防线（LIKE '{%' 守门 + 嵌套 CASE 延迟 cast + jsonb_typeof 兜非数组），根除 22P02", () => {
-          expect(cte).toContain("sop.note LIKE '{%'")
+        test("note→jsonb 三重防线（LIKE '{\"%' 守门 + 嵌套 CASE 延迟 cast + jsonb_typeof 兜非数组），根除 22P02", () => {
+          // 守门比 RECEIVED_REFUNDED_DEDUCT_SQL 的 LIKE '{%' **有意加严**：
+          // `{手工备注}` 这类以 { 开头但非合法 JSON 的值能通过 '{%'，到 ::jsonb 才抛 22P02（已实测复现）。
+          // 合法的含 items 的 note 必然以 {" 开头，故加严不会漏掉任何真数据。
+          expect(cte).toContain('sop.note LIKE \'{"%\'')
           expect(cte).toContain("jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'")
           expect(cte).toContain("ELSE '[]'::jsonb END")
         })
@@ -202,7 +241,7 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
         })
 
         test('按订单分组（单笔口径，不跨订单累计）', () => {
-          expect(cte).toContain('GROUP BY o.sale_order_id')
+          expect(cte).toContain('GROUP BY o.sale_order_id, o.received')
         })
 
         test('不再依赖 product_categories JOIN 链（已迁移到 is_experience）', () => {
@@ -452,27 +491,38 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
           expect(src).toContain('order_amounts AS (')
         })
 
-        test('毛实收表达式与运行时一致（received 净额 + 逐项退款额）', () => {
-          expect(src).toContain('si.received::numeric + COALESCE(rbi.refunded, 0)')
+        test('毛实收表达式与运行时一致（received 净额 + 逐项退款额，LEAST 封顶）', () => {
+          expect(src).toContain('LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),')
+          expect(src).toContain('si.sale_amount::numeric)')
+        })
+
+        test('无明细行订单回退订单级 received（与运行时同语义）', () => {
+          expect(src).toContain('CASE WHEN COUNT(si.sale_item_id) = 0')
+          expect(src).toContain('THEN GREATEST(o.received::numeric, 0)')
+          expect(src).toContain('LEFT JOIN sale_items si ON si.sale_order_id = o.sale_order_id')
         })
 
         test('non_trial 按 is_experience = false 聚合且 COALESCE 归零', () => {
-          expect(src).toContain('FILTER (WHERE si.is_experience = false), 0) AS non_trial')
+          expect(src).toContain('FILTER (WHERE si.is_experience = false), 0)')
+          expect(src).toContain('END AS non_trial')
         })
 
         test("只聚合 item_direction='购买' 行", () => {
           expect(src).toContain("AND si.item_direction = '购买'")
         })
 
-        test("note→jsonb 三重防线（与运行时逐字同源）", () => {
-          expect(src).toContain("sop.note LIKE '{%'")
+        test("note→jsonb 三重防线（与运行时逐字同源，守门加严为 LIKE '{\"%'）", () => {
+          expect(src).toContain('sop.note LIKE \'{"%\'')
           expect(src).toContain("jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'")
         })
 
-        test('退款聚合只认已支付的退款流水 + 排除 OVERPAY 哨兵行', () => {
-          expect(src).toContain("WHERE sop.change_type = '退款'")
+        test('退款聚合只认已支付的退款流水 + 排除 OVERPAY + 限定已结清销售单', () => {
+          expect(src).toContain("AND sop.change_type = '退款'")
           expect(src).toContain("AND sop.status = '已支付'")
           expect(src).toContain("AND elem ->> 'refSaleItemId' <> 'OVERPAY'")
+          // 本 CTE 按全库聚合，不限定订单范围会把脏 note 的 22P02 半径放到最大
+          expect(src).toContain("WHERE ro.status IN ('已支付', '已完成')")
+          expect(src).toContain("AND ro.sale_order_type = '销售单'")
         })
 
         test('达标判定改用 non_trial >= 阈值，不再比 o.total_amount（#187 回归守护）', () => {
@@ -481,7 +531,7 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
         })
 
         test('按订单分组（单笔口径）', () => {
-          expect(src).toContain('GROUP BY o.sale_order_id, o.client_user_id, o.paid_at, o.created_at')
+          expect(src).toContain('GROUP BY o.sale_order_id, o.client_user_id, o.paid_at, o.created_at, o.received')
         })
       })
     }

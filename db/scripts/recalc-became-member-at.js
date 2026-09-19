@@ -80,30 +80,39 @@ WITH refund_by_item AS (
   SELECT elem ->> 'refSaleItemId' AS sale_item_id,
          SUM(COALESCE((elem ->> 'refundAmount')::numeric, 0)) AS refunded
     FROM sale_order_payments sop
+    JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
     CROSS JOIN LATERAL jsonb_array_elements(
-      CASE WHEN sop.note LIKE '{%'
+      CASE WHEN sop.note LIKE '{"%'
            THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
                      THEN (sop.note)::jsonb -> 'items'
                      ELSE '[]'::jsonb END
            ELSE '[]'::jsonb END
     ) AS elem
-   WHERE sop.change_type = '退款'
+   WHERE ro.status IN ('已支付', '已完成')
+     AND ro.sale_order_type = '销售单'
+     AND sop.change_type = '退款'
      AND sop.status = '已支付'
      AND elem ->> 'refSaleItemId' <> 'OVERPAY'
    GROUP BY 1
 ),
 order_amounts AS (
+  -- LEAST(…, sale_amount) 封顶 + 无明细行（WorkFine 历史单）回退订单级 received，
+  -- 与运行时 RECALC_CUSTOMER_TYPE_CTE 同语义。
   SELECT o.sale_order_id, o.client_user_id, o.paid_at, o.created_at,
-         COALESCE(SUM(si.received::numeric + COALESCE(rbi.refunded, 0))
-                  FILTER (WHERE si.is_experience = false), 0) AS non_trial
+         CASE WHEN COUNT(si.sale_item_id) = 0
+              THEN GREATEST(o.received::numeric, 0)
+              ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
+                                      si.sale_amount::numeric))
+                            FILTER (WHERE si.is_experience = false), 0)
+         END AS non_trial
     FROM sale_orders o
-    JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+    LEFT JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+                           AND si.item_direction = '购买'
     LEFT JOIN refund_by_item rbi ON rbi.sale_item_id = si.sale_item_id
    WHERE o.status IN ('已支付', '已完成')
      AND o.sale_order_type = '销售单'
      AND o.client_user_id IS NOT NULL
-     AND si.item_direction = '购买'
-   GROUP BY o.sale_order_id, o.client_user_id, o.paid_at, o.created_at
+   GROUP BY o.sale_order_id, o.client_user_id, o.paid_at, o.created_at, o.received
 )
 SELECT DISTINCT ON (oa.client_user_id)
        oa.client_user_id AS user_id,

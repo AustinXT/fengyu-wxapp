@@ -505,7 +505,21 @@ async function refreshSpendingTier(client, clientUserId) {
  * refund_by_item 的 note→jsonb 三重防线逐字对齐 utils/paid-sessions.js:132
  * RECEIVED_REFUNDED_DEDUCT_SQL（① 仅退款+已支付流水；② note LIKE '{%' 纯文本守门；
  * ③ 嵌套 CASE 令 ::jsonb cast 只在守门通过时求值，jsonb_typeof 兜 items 非数组），根除 22P02。
- * 退款按顾客维度一次聚合，供其全部订单复用。
+ * ⚠️ 展开范围额外限定在**参与判定的已结清销售单**（ro.status / ro.sale_order_type）：
+ * 既避免白展开充值单/寄存单/转换单的退款 JSON，也把「以 { 开头但非合法 JSON」这类脏 note
+ * 的 22P02 爆炸半径收回到本就要读的订单集合内（原 RECEIVED_REFUNDED_DEDUCT_SQL 按单聚合，
+ * 本 CTE 按顾客聚合，不限定范围会把半径放大到该顾客全部历史流水）。
+ *
+ * **LEAST(… , si.sale_amount) 封顶**：received 的扣减有两条路径——主路径按
+ * sale_payment_item_receipts 负额净算、回退路径才用 note.items[].refundAmount + GREATEST(0) clamp。
+ * 加回 note 原始额并非扣减的严格逆运算，`refunded > 实际扣减额` 时会高估 non_trial。
+ * 已结清订单的行级毛额上限就是 sale_amount（两段式瀑布按 sale_amount 余量铺开），故以此封顶：
+ * 把「不可逆误升为会员客」压成「最多漏升」——漏升可由后续订单或全库重算脚本自愈，误升不可逆。
+ *
+ * **无明细行订单兜底**：WorkFine 历史单（db/scripts/import-workfine-legacy.js）只建 sale_orders、
+ * 不建 sale_items，审核通过时 UPDATE received = total_amount。若用 INNER JOIN，这些单会整个从
+ * order_amounts 消失、历史大额单不再触发跃迁（相对旧口径是回归）。故改 LEFT JOIN + 无明细行时
+ * 回退到订单级 o.received，并全额计入 non_trial（历史单无体验卡语义）。
  *
  * item_direction='购买' 与 STEP 1.5 扣减作用域一致：转出/转入负数行不进 SUM
  * （当前 '转出'/'转入' 只出现在转换单、已被 sale_order_type 过滤，此条为防御性对齐）。
@@ -520,13 +534,15 @@ const RECALC_CUSTOMER_TYPE_CTE = `WITH refund_by_item AS (
        FROM sale_order_payments sop
        JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
        CROSS JOIN LATERAL jsonb_array_elements(
-         CASE WHEN sop.note LIKE '{%'
+         CASE WHEN sop.note LIKE '{"%'
               THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
                         THEN (sop.note)::jsonb -> 'items'
                         ELSE '[]'::jsonb END
               ELSE '[]'::jsonb END
        ) AS elem
        WHERE ro.client_user_id = $1
+         AND ro.status IN ('已支付', '已完成')
+         AND ro.sale_order_type = '销售单'
          AND sop.change_type = '退款'
          AND sop.status = '已支付'
          AND elem ->> 'refSaleItemId' <> 'OVERPAY'
@@ -534,18 +550,26 @@ const RECALC_CUSTOMER_TYPE_CTE = `WITH refund_by_item AS (
      ),
      order_amounts AS (
        SELECT o.sale_order_id,
-              COALESCE(SUM(si.received::numeric + COALESCE(rbi.refunded, 0))
-                       FILTER (WHERE si.is_experience = false), 0) AS non_trial,
-              COALESCE(SUM(si.received::numeric + COALESCE(rbi.refunded, 0))
-                       FILTER (WHERE si.is_experience = true), 0) AS trial
+              CASE WHEN COUNT(si.sale_item_id) = 0
+                   THEN GREATEST(o.received::numeric, 0)
+                   ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
+                                           si.sale_amount::numeric))
+                                 FILTER (WHERE si.is_experience = false), 0)
+              END AS non_trial,
+              CASE WHEN COUNT(si.sale_item_id) = 0
+                   THEN 0
+                   ELSE COALESCE(SUM(LEAST(si.received::numeric + COALESCE(rbi.refunded, 0),
+                                           si.sale_amount::numeric))
+                                 FILTER (WHERE si.is_experience = true), 0)
+              END AS trial
        FROM sale_orders o
-       JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+       LEFT JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+                              AND si.item_direction = '购买'
        LEFT JOIN refund_by_item rbi ON rbi.sale_item_id = si.sale_item_id
        WHERE o.client_user_id = $1
          AND o.status IN ('已支付', '已完成')
          AND o.sale_order_type = '销售单'
-         AND si.item_direction = '购买'
-       GROUP BY o.sale_order_id
+       GROUP BY o.sale_order_id, o.received
      )`
 
 /**
@@ -3121,7 +3145,7 @@ async function reconcileOrderStatusAfterRefund(client, saleOrderId) {
               BOOL_OR(LOWER(COALESCE(elem ->> 'isFullItemRefund', 'false')) = 'true') AS full_refund
          FROM sale_order_payments sop
          CROSS JOIN LATERAL jsonb_array_elements(
-           CASE WHEN sop.note LIKE '{%'
+           CASE WHEN sop.note LIKE '{"%'
                 THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
                           THEN (sop.note)::jsonb -> 'items'
                           ELSE '[]'::jsonb END
