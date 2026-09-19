@@ -292,3 +292,56 @@ describe('通用建单业务卡片（#191）', () => {
     expect(cardsBlock).not.toMatch(/<Link/)
   })
 })
+
+/**
+ * 共享建单表单接进办理台时的闸门（#191 pr-ready 三方审计的 P1/P2）。
+ *
+ * 这几条防的都是「页面看起来完全正常，但用户多建了一张实扣库存的单」。
+ */
+describe('办理台内嵌建单的闸门（#191）', () => {
+  const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
+  const formSource = readFileSync(resolve(__dirname, 'inventory-doc-create-form.tsx'), 'utf8')
+
+  it('建单成功后表单就地清场，不能靠调用方去关弹窗', () => {
+    /*
+     * 办理台提交完工作区还开着（只 toast + router.refresh()，后者不重挂客户端组件）。
+     * 不清场的话用户再点一次就是第二张一模一样的单，而 10 种通用类型里有 6 种
+     * 建单当刻就落库存流水 —— 重复提交＝重复扣减，只能事后红冲。
+     */
+    const submitBody = formSource.slice(
+      formSource.indexOf('const result = await createInventoryCoreDoc(payload)'),
+      formSource.indexOf('} catch (err) {', formSource.indexOf('const result = await createInventoryCoreDoc')),
+    )
+    expect(submitBody).toMatch(/setItems\(\[defaultItem\(\)\]\)/)
+    expect(submitBody).toMatch(/setRemark\(''\)/)
+    // 批次可用量刚被自己这单改掉，必须推代次让下一张单重新取数
+    expect(submitBody).toMatch(/setLotEpoch\(\(n\) => n \+ 1\)/)
+    // 单号要交回给调用方做可核对的反馈
+    expect(submitBody).toMatch(/onSuccess\(result\.id\)/)
+  })
+
+  it('onStale 只刷新，不能接成 onSuccess', () => {
+    // 接成 onSuccess 的话，提交失败时会在红色错误 toast 旁边再弹一条绿色「成功」。
+    const workspace = source.slice(source.indexOf('function OperationWorkspace('))
+    expect(workspace).toMatch(/onStale=\{\(\) => router\.refresh\(\)\}/)
+    expect(workspace).not.toMatch(/onStale=\{\(\) => onSuccess/)
+  })
+
+  it('提交在途时卡片与关闭按钮一起上锁', () => {
+    // 这时候切走会把表单连同在途请求一起卸载：单已经建出去了，用户却只看到面板消失。
+    expect(source).toMatch(/&& !workspaceBusy/)
+    expect(source).toMatch(/closeDisabled=\{busy\}/)
+    expect(source).toMatch(/onBusyChange=\{setWorkspaceBusy\}/)
+  })
+
+  it('深链消费后把 ?create= 从地址栏抹掉', () => {
+    // 留着的话，用户关掉工作区一刷新又自动弹开；这个 URL 被收藏/分享也会带着副作用。
+    expect(source).toMatch(/router\.replace\(`\/inventory\/operations\/\$\{level\}`/)
+  })
+
+  it('通用卡的 docType 有编译期覆盖性检查，不只靠测试扫源码', () => {
+    // 漏配一张卡时 tsc 直接报错并点名缺哪种类型（已做变异验证）。
+    expect(source).toMatch(/as const satisfies Record<InventoryBusinessLevel, readonly GenericOperationDefinition\[\]>/)
+    expect(source).toMatch(/Exclude<InventoryGenericDocType, DeclaredGenericDocTypes>/)
+  })
+})

@@ -150,6 +150,9 @@ export const INVENTORY_OPERATION_DOC_QUERY: Record<InventoryOperationId, Invento
  */
 export const GENERIC_OPERATION_PREFIX = 'generic:'
 
+/** 通用建单类型（`INVENTORY_GENERIC_DOC_TYPES` 的成员），供卡片定义做编译期约束。 */
+export type InventoryGenericDocType = (typeof INVENTORY_GENERIC_DOC_TYPES)[number]
+
 export type InventoryGenericOperationId = `${typeof GENERIC_OPERATION_PREFIX}${string}`
 
 export function genericOperationId(docType: InventoryDocType): InventoryGenericOperationId {

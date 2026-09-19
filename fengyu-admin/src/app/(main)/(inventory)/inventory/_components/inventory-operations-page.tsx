@@ -68,6 +68,7 @@ import type { InventoryBusinessLevel } from '@/lib/inventory/business-level'
 import {
   genericOperationId,
   type InventoryAnyOperationId,
+  type InventoryGenericDocType,
   type InventoryGenericOperationId,
   type InventoryOperationId,
 } from '@/lib/inventory/operation-doc-types'
@@ -107,9 +108,15 @@ interface OperationDefinition extends OperationCardBase {
   id: OperationId
 }
 
-/** 通用建单业务：没有专属函数，直接建一张该类型的单，用共享建单表单。 */
+/**
+ * 通用建单业务：没有专属函数，直接建一张该类型的单，用共享建单表单。
+ *
+ * `docType` 收窄到 `InventoryGenericDocType`（而不是宽泛的 `InventoryDocType`）——
+ * 写一个业务单类型（如「品项公司发货」）进来会**编译失败**，而不是等运行时被
+ * 白名单拒掉、或更糟：在某个没走白名单的路径上溜进去。
+ */
 interface GenericOperationDefinition extends OperationCardBase {
-  docType: InventoryDocType
+  docType: InventoryGenericDocType
 }
 
 /**
@@ -156,7 +163,7 @@ const OPERATIONS: OperationDefinition[] = [
  * 一旦哪张卡被改成内嵌表单，它的单据 Tab 会列出库存转换单（页面完全正常、数据完全不对）。
  * 现在每张卡用 `generic:<docType>` 作为自己的 id，单据映射由 docType 天然派生。
  */
-const GENERIC_OPERATIONS: Record<InventoryBusinessLevel, GenericOperationDefinition[]> = {
+const GENERIC_OPERATIONS = {
   'supply-chain': [
     { docType: '内部领用', level: 'supply-chain', title: '内部领用', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]' },
   ],
@@ -173,7 +180,18 @@ const GENERIC_OPERATIONS: Record<InventoryBusinessLevel, GenericOperationDefinit
     { docType: '院产品报损', level: 'store', title: '门店产品报损', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]' },
     { docType: '分院库存盘点', level: 'store', title: '门店库存盘点', group: '市场特殊业务', icon: ClipboardCheck, tone: 'text-[#7B5E2B] bg-[#FFF8E6]' },
   ],
-}
+} as const satisfies Record<InventoryBusinessLevel, readonly GenericOperationDefinition[]>
+
+/*
+ * 编译期覆盖性检查：10 张卡的 docType 并集必须**恰好**等于全部通用建单类型。
+ * 漏一种（比如新增了通用类型却忘了配卡片），下面这行的类型立刻变成 never 而报错 ——
+ * 不必等测试跑起来，更不必等用户发现某个业务在办理台里根本没有入口。
+ */
+type DeclaredGenericDocTypes = (typeof GENERIC_OPERATIONS)[InventoryBusinessLevel][number]['docType']
+const _genericCardsCoverAllTypes: Exclude<InventoryGenericDocType, DeclaredGenericDocTypes> extends never
+  ? true
+  : ['缺少通用业务卡片', Exclude<InventoryGenericDocType, DeclaredGenericDocTypes>] = true
+void _genericCardsCoverAllTypes
 
 /** 通用卡 → 统一成与内置卡同形的条目（id 由 docType 派生）。 */
 function genericAsOperation(definition: GenericOperationDefinition): ResolvedOperation {
@@ -296,7 +314,15 @@ function RemarkField({ value, onChange }: { value: string; onChange: (value: str
   )
 }
 
-function OperationHeader({ title, onClose }: { title: string; onClose: () => void }) {
+function OperationHeader({
+  title,
+  onClose,
+  closeDisabled = false,
+}: {
+  title: string
+  onClose: () => void
+  closeDisabled?: boolean
+}) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] pb-4">
       <div className="flex items-center gap-3">
@@ -305,7 +331,7 @@ function OperationHeader({ title, onClose }: { title: string; onClose: () => voi
         </div>
         <h2 className="text-lg font-semibold">{title}</h2>
       </div>
-      <Button type="button" variant="outline" onClick={onClose}>
+      <Button type="button" variant="outline" onClick={onClose} disabled={closeDisabled}>
         关闭
       </Button>
     </div>
@@ -507,6 +533,11 @@ export default function InventoryOperationsPage({
 }) {
   const router = useRouter()
   const [activeOperation, setActiveOperation] = useState<InventoryAnyOperationId | null>(initialOperationId ?? null)
+  /*
+   * 工作区里有提交在途时，锁住所有卡片与关闭按钮：这时候切走会把表单连同
+   * 在途请求一起卸载 —— 单其实已经建出去了，用户只看到面板消失，没有任何结果反馈。
+   */
+  const [workspaceBusy, setWorkspaceBusy] = useState(false)
   const levelOperations = useMemo<ResolvedOperation[]>(
     () => [
       ...OPERATIONS.filter((operation) => operation.level === level).map(
@@ -523,6 +554,13 @@ export default function InventoryOperationsPage({
     market: { title: '市场库存业务', description: '处理市场采购、门店配货、退货审批及市场特殊库存业务。' },
     store: { title: '门店库存业务', description: '处理门店报货、收货、退货、调拨和日常库存业务。' },
   }[level]
+
+  useEffect(() => {
+    if (!initialOperationId) return
+    // 深链已经消费掉了：把 ?create= 从地址栏抹掉，否则用户关掉工作区后一刷新又自动弹开，
+    // 而且这个 URL 被收藏 / 分享出去也会带着一个「自动打开某张卡」的副作用。
+    router.replace(`/inventory/operations/${level}`, { scroll: false })
+  }, [initialOperationId, level, router])
 
   const afterSuccess = useCallback((message: string) => {
     toast.success(message)
@@ -563,6 +601,7 @@ export default function InventoryOperationsPage({
                 const enabled = (operation.approvalOnly ? canApprove : canCreate)
                   && hasShipmentCancellationAccess
                   && hasSelfPurchaseAccess
+                  && !workspaceBusy
                 const content = (
                   <>
                     <span className={`flex size-10 shrink-0 items-center justify-center rounded-[var(--radius)] ${operation.tone}`}>
@@ -599,6 +638,8 @@ export default function InventoryOperationsPage({
           <CardContent className="p-5">
             <OperationWorkspace
               operation={active}
+              busy={workspaceBusy}
+              onBusyChange={setWorkspaceBusy}
               locations={locations}
               skuOptions={skuOptions}
               suppliers={suppliers}
@@ -616,6 +657,8 @@ export default function InventoryOperationsPage({
 
 function OperationWorkspace({
   operation: card,
+  busy,
+  onBusyChange,
   locations,
   skuOptions,
   suppliers,
@@ -625,6 +668,8 @@ function OperationWorkspace({
   onSuccess,
 }: {
   operation: ResolvedOperation
+  busy: boolean
+  onBusyChange: (busy: boolean) => void
   locations: InventoryLocationRow[]
   skuOptions: InventorySkuRow[]
   suppliers: InventorySupplierRow[]
@@ -633,10 +678,11 @@ function OperationWorkspace({
   onClose: () => void
   onSuccess: (message: string) => void
 }) {
+  const router = useRouter()
   const operation = card.id
   return (
     <div className="space-y-5">
-      <OperationHeader title={card.title} onClose={onClose} />
+      <OperationHeader title={card.title} onClose={onClose} closeDisabled={busy} />
       {/*
         * key：`activeOperation` A→B 时父层元素类型与位置不变，React 原地更新、不重挂，
         * Tabs 的 uncontrolled state 会把「单据」选中态带到下一个业务 ——
@@ -666,9 +712,13 @@ function OperationWorkspace({
               skuOptions={skuOptions}
               initialDocType={card.docType}
               allowedDocTypes={[card.docType]}
-              onSuccess={() => onSuccess(`${card.title}单据已创建`)}
-              onStale={() => onSuccess('单据状态或权限已变化，已为你刷新')}
-              onBusyChange={() => {}}
+              onSuccess={(docId) => onSuccess(`${card.title}单据已创建：${docId}`)}
+              /*
+               * 只刷新，**不能**接 onSuccess —— 那会在提交失败时弹一条绿色「成功」，
+               * 跟共享组件自己弹的红色错误 toast 同屏打架。
+               */
+              onStale={() => router.refresh()}
+              onBusyChange={onBusyChange}
               renderActions={({ submit, submitting }) => (
                 <div className="flex justify-end">
                   <Button type="button" onClick={submit} loading={submitting}>创建{card.title}单据</Button>

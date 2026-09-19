@@ -121,8 +121,9 @@ export function InventoryDocCreateForm({
   skuOptions: InventorySkuRow[]
   initialDocType?: InventoryDocType
   allowedDocTypes?: readonly InventoryDocType[]
-  onSuccess: () => void
-  /** 状态/权限已变化时刷新列表（不关闭表单） */
+  /** 建单成功。`docId` 是刚建出来的单号，调用方拿去做可核对的反馈。 */
+  onSuccess: (docId: string) => void
+  /** 状态/权限已变化时刷新列表（不关闭表单）。⚠️ 别接成"成功"回调，失败时会弹绿色成功提示 */
   onStale: () => void
   /** 上报提交在途态，调用方据此锁自己的入口 */
   onBusyChange: (busy: boolean) => void
@@ -224,8 +225,31 @@ export function InventoryDocCreateForm({
           remark: item.remark || null,
         })),
       }
-      await createInventoryCoreDoc(payload)
-      onSuccess()
+      const result = await createInventoryCoreDoc(payload)
+      /*
+       * 提交成功必须就地清场，**不能**指望调用方去关弹窗 / 收起面板：
+       *
+       * 办理台的工作区提交完还开着（只 toast + router.refresh()，后者不重挂客户端组件），
+       * 表单原样留在屏幕上、按钮解禁 —— 用户没看见 toast 再点一次，就建出第二张一模一样的单。
+       * 而 `createInventoryCoreDoc` 没有幂等键，10 种通用类型里有 6 种**建单当刻就落库存流水**
+       * （内部领用 / 顾客产品出库 / 顾客退货 / 盘溢 / 两种调货出库），重复提交 = 重复扣减或重复入库，
+       * 事后只能红冲。同页的内置表单成功后都会 `setLines([初始行])`，这里对齐它们。
+       *
+       * 主体与单据类型刻意保留：连续建几张同主体的单是常态，与内置表单的做法一致。
+       */
+      setItems([defaultItem()])
+      setRemark('')
+      /*
+       * 批次可用量刚被自己这一单改掉，缓存里的数字立刻就是旧的。
+       * 推代次 + 清掉已完成条目，下一张单的批次下拉会重新取数 ——
+       * 否则第二行选同一个 SKU 时显示的还是扣减前的可用量，提交必被服务端拒掉，
+       * 而用户看到的是「界面写着有货、提交说没货」。
+       */
+      for (const [key, entry] of lotCacheRef.current) {
+        if (entry.settled) lotCacheRef.current.delete(key)
+      }
+      setLotEpoch((n) => n + 1)
+      onSuccess(result.id)
     } catch (err) {
       toast.error(docActionErrorMessage(err, '创建单据失败'))
       // 状态/权限已变化时刷新列表给出路，但**不关闭表单** —— 里面是用户敲进去的内容，
