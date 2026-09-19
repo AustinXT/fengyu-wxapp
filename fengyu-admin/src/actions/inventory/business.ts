@@ -12,8 +12,7 @@ import {
   createMarketReportSummary as createMarketReportSummaryImpl,
   createMarketStaffPurchase as createMarketStaffPurchaseImpl,
   createSupplyChainStaffPurchase as createSupplyChainStaffPurchaseImpl,
-  createPurchaseOrderFromItemCompanyReplenishment as createPurchaseOrderFromItemCompanyReplenishmentImpl,
-  createPurchaseOrderFromMarketReplenishment as createPurchaseOrderFromMarketReplenishmentImpl,
+  createPurchaseOrder as createPurchaseOrderImpl,
   createReturnForRestock as createReturnForRestockImpl,
   createSelfPurchasedReceipt as createSelfPurchasedReceiptImpl,
   createStoreAllocation as createStoreAllocationImpl,
@@ -34,7 +33,6 @@ import {
   type CreateItemCompanyShipmentInput,
   type CreateMarketReportSummaryInput,
   type CreateItemCompanyReplenishmentInput,
-  type CreateCompanyPurchaseOrderInput,
   type CancelSupplyChainPurchaseOrderInput,
   type CreateExternalMarketOutboundInput,
   type CreateInventoryConversionInput,
@@ -42,7 +40,7 @@ import {
   type MarketPromotionSelectionInput,
   type CreateMarketStaffPurchaseInput,
   type CreateSupplyChainStaffPurchaseInput,
-  type CreatePurchaseOrderInput,
+  type CreateMergedPurchaseOrderInput,
   type CreateReturnForRestockInput,
   type CreateSelfPurchasedReceiptInput,
   type CreateStoreAllocationInput,
@@ -116,16 +114,10 @@ export const createMarketReportSummary = withPermission(
     createMarketReportSummaryImpl(session, input),
 )
 
-export const createPurchaseOrderFromMarketReplenishment = withPermission(
+export const createPurchaseOrder = withPermission(
   'inventory:supply_chain_operate',
-  async (session, input: CreatePurchaseOrderInput) =>
-    createPurchaseOrderFromMarketReplenishmentImpl(session, input),
-)
-
-export const createPurchaseOrderFromItemCompanyReplenishment = withPermission(
-  'inventory:supply_chain_operate',
-  async (session, input: CreateCompanyPurchaseOrderInput) =>
-    createPurchaseOrderFromItemCompanyReplenishmentImpl(session, input),
+  async (session, input: CreateMergedPurchaseOrderInput) =>
+    createPurchaseOrderImpl(session, input),
 )
 
 export const createItemCompanyShipment = withPermission(

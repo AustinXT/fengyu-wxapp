@@ -2773,6 +2773,8 @@ export const getInventoryCoreDocById = withPermission(
         skuName: item.skuName,
         specName: item.specName,
         supplier: item.supplier,
+        supplierId: item.supplierId,
+        marketId: item.marketId,
         productSeries: item.productSeries,
         batchNo: item.batchNo,
         expiryDate: item.expiryDate,

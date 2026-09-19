@@ -444,6 +444,10 @@ export interface InventoryDocItemRow {
   skuName: string
   specName: string | null
   supplier: string | null
+  /** 行级供应商档案关联（#194）。 */
+  supplierId: string | null
+  /** 行级市场归属（#194）。NULL = 品项公司自用行，走供应链采购入库。 */
+  marketId: string | null
   productSeries: string | null
   batchNo: string
   expiryDate: string | null
