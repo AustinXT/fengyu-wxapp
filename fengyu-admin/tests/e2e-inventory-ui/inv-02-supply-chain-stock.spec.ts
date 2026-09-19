@@ -5,7 +5,7 @@
  *   A. 门禁关闭态下走通用建单，断言写入被 fail-closed 拒绝
  *      （cutover.ts:49-51 抛 INVALID_STATE: 库存期初尚未导入并核验完成）
  *   B. 开闸（置「已初始化」，用户已确认开后不恢复），重建同一张单应成功
- *   C. 供应链备货：品项公司报货需求 → 供应链采购订单 → 供应链采购入库
+ *   C. 供应链备货：品项公司报货需求 → 采购订单（供应链行）→ 供应链采购入库
  *      —— 总部批次由此产生，是 INV-03 三级主链的前提
  *
  * ⚠️ 建单失败时 inventory-docs-page.tsx:402 走的是原生 alert()，不是 toast。
@@ -155,28 +155,44 @@ test('INV-02：门禁 fail-closed → 开闸 → 供应链备货', async ({ brow
     const reqMoves = psql(`SELECT count(*) FROM inventory_movements WHERE doc_id = ${sqlStr(reqId)}`)
     recordVerdict(verdicts, 'doc: 报货需求不产生库存流水（§报货不增减库存）', reqMoves === '0', reqMoves)
 
-    console.log('[INV-02] C-2: 供应链采购订单')
+    // #194：两张采购卡片合并为「采购订单」，来源改多选 checkbox，供应商按商品带出不再手选
+    console.log('[INV-02] C-2: 采购订单（供应链行）')
     await page.getByRole('button', { name: '关闭' }).click().catch(() => null)
-    await page.getByRole('button', { name: '供应链采购订单' }).click()
-    await expect(page.getByRole('heading', { name: '供应链采购订单' })).toBeVisible({ timeout: 15_000 })
+    await page.getByRole('button', { name: '采购订单' }).click()
+    await expect(page.getByRole('heading', { name: '采购订单' })).toBeVisible({ timeout: 15_000 })
 
     const PO_REMARK = `${NS}-供应链采购-${STAMP}`
-    await selectByLabel(page, '品项公司报货需求', { contains: reqId })
-    await page.waitForTimeout(1500)   // 选单后要拉明细
-    await selectByLabel(page, '供应商', { contains: inv01.supplierName })
+    const sourceRow = page.locator('label').filter({ hasText: reqId }).first()
+    await sourceRow.waitFor({ state: 'visible', timeout: 20_000 })
+    await sourceRow.locator('input[type="checkbox"]').check()
+    await page.waitForTimeout(1500)   // 勾选后要拉明细
     await selectByLabel(page, '供应链库存主体', { label: '品牌总部' })
     await fillByLabel(page, '采购数量', '100')
     await fillByLabel(page, '备注', PO_REMARK)
-    await page.getByRole('button', { name: '创建供应链采购订单' }).click()
-    await expect(page.getByText(/供应链采购订单已创建/)).toBeVisible({ timeout: 20_000 })
+    await page.locator('form').getByRole('button', { name: '创建采购订单', exact: true }).click()
+    await expect(page.getByText(/采购订单已创建/)).toBeVisible({ timeout: 20_000 })
 
     const poDoc = psql(
       `SELECT id || '|' || status || '|' || total_quantity::text
-         FROM inventory_docs WHERE doc_type = '供应链采购订单' AND remark = ${sqlStr(PO_REMARK)}`,
+         FROM inventory_docs WHERE doc_type = '采购订单' AND remark = ${sqlStr(PO_REMARK)}`,
     )
     const [poId, poStatus, poQty] = poDoc.split('|')
-    recordVerdict(verdicts, 'doc: 供应链采购订单落库', Boolean(poId), poId)
+    recordVerdict(verdicts, 'doc: 采购订单落库', Boolean(poId), poId)
     recordVerdict(verdicts, 'doc: 采购订单状态 = 待收货', poStatus === '待收货', poStatus)
+    // #194：供应商下沉到明细行，单头不再挂
+    recordVerdict(
+      verdicts,
+      'doc: 采购单头不挂供应商，明细行按商品带出',
+      psql(`SELECT COALESCE(supplier_id,'') FROM inventory_docs WHERE id = ${sqlStr(poId)}`) === ''
+        && psql(`SELECT count(*) FROM inventory_doc_items WHERE doc_id = ${sqlStr(poId)} AND supplier_id IS NOT NULL`) !== '0',
+      '单头空 / 行级有值',
+    )
+    recordVerdict(
+      verdicts,
+      'doc: 供应链行的 market_id 为空（据此走供应链入库而非发货）',
+      psql(`SELECT count(*) FROM inventory_doc_items WHERE doc_id = ${sqlStr(poId)} AND market_id IS NOT NULL`) === '0',
+      'market_id 全为空',
+    )
     recordVerdict(verdicts, 'doc: 采购数量 = 100', Number(poQty) === 100, poQty)
     const poLink = psql(
       `SELECT relation_type FROM inventory_doc_links
@@ -191,7 +207,7 @@ test('INV-02：门禁 fail-closed → 开闸 → 供应链备货', async ({ brow
 
     const GRK_REMARK = `${NS}-供应链入库-${STAMP}`
     const BATCH_NO = `${NS}-B${STAMP}`
-    await selectByLabel(page, '供应链采购订单', { contains: poId })
+    await selectByLabel(page, '采购订单', { contains: poId })
     await page.waitForTimeout(1500)
     // 「供应链库存主体」在选定采购订单后 disabled={Boolean(doc)} —— 主体随单锁定，
     // 不需要也不能再设置。这是个合理的交互设计，顺手记一条正向断言。

@@ -1990,7 +1990,7 @@ function SupplyChainPurchaseReceiptForm({
   async function submit() {
     if (saving) return
     if (!doc || !supplyChainLocationId) {
-      toast.error('请选择待收货的供应链采购订单')
+      toast.error('请选择待收货的采购订单')
       return
     }
     const items = lines.map((line) => ({
@@ -2026,7 +2026,7 @@ function SupplyChainPurchaseReceiptForm({
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <DocPicker label="供应链采购订单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
+        <DocPicker label="采购订单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
         <FormField label="供应链库存主体" required>
           <Select value={supplyChainLocationId} onChange={(event) => setSupplyChainLocationId(event.target.value)} disabled={Boolean(doc)}>
             <option value="">请选择总部</option>
@@ -2035,7 +2035,7 @@ function SupplyChainPurchaseReceiptForm({
         </FormField>
         <FormField label="入库日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
       </div>
-      {loading && <div className="text-sm text-[#666666]">正在加载供应链采购订单明细</div>}
+      {loading && <div className="text-sm text-[#666666]">正在加载采购订单明细</div>}
       <SourceDocumentItems doc={doc} canViewPrice={canViewPrice} />
       {lines.length > 0 && (
         <div className="space-y-3">
@@ -2072,7 +2072,7 @@ function SupplyChainPurchaseCancelForm({
   async function submit() {
     if (saving) return
     if (!doc || !reason.trim()) {
-      toast.error('请选择待收货的供应链采购订单并填写关闭原因')
+      toast.error('请选择待收货的采购订单并填写关闭原因')
       return
     }
     setSaving(true)
@@ -2081,9 +2081,9 @@ function SupplyChainPurchaseCancelForm({
         purchaseOrderId: doc.id,
         cancellationReason: reason.trim(),
       })
-      onSuccess('供应链采购订单已关闭，未收数量已释放')
+      onSuccess('采购订单已关闭，未收数量已释放')
     } catch (error) {
-      toast.error(actionErrorMessage(error, '关闭供应链采购订单失败'))
+      toast.error(actionErrorMessage(error, '关闭采购订单失败'))
     } finally {
       setSaving(false)
     }
@@ -2092,13 +2092,13 @@ function SupplyChainPurchaseCancelForm({
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        <DocPicker label="待收货供应链采购订单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
+        <DocPicker label="待收货采购订单" required docs={candidates} value={docId} onChange={(id) => void selectDocument(id)} />
       </div>
       {loading && <div className="text-sm text-[#666666]">正在加载采购订单明细</div>}
       <SourceDocumentItems doc={doc} canViewPrice={false} />
       <FormField label="关闭原因" required><Textarea value={reason} onChange={(event) => setReason(event.target.value)} /></FormField>
       <div className="flex justify-end">
-        <Button type="button" variant="destructive" loading={saving} onClick={() => void submit()} disabled={!doc}>关闭供应链采购订单</Button>
+        <Button type="button" variant="destructive" loading={saving} onClick={() => void submit()} disabled={!doc}>关闭采购订单</Button>
       </div>
     </div>
   )
