@@ -75,9 +75,12 @@ export default async function Page({
   // 差异是纯派生值（实盘 − 账面），**前端算、不落库** —— 落库就多一个会漂的数（issue #131 Q2）。
   const isStocktake = isStocktakeDocType(doc.docType)
   const stocktakeColumnCount = isStocktake ? 2 : 0
+  // 采购订单与市场报货汇总把供应商/市场挂在明细行上（#193 #194），单头没有这两个字段。
+  // 按「行上是否真有归属」判断而不是按 docType，这样 0043 回填过的存量单据也能显示。
+  const lineOwnershipColumnCount = doc.items.some((item) => item.supplierId || item.marketId) ? 2 : 0
   const priceColumnCount = showPrice ? (showStoreAllocationPrice ? 4 : 2) : 0
   const promotionColumnCount = doc.items.some((item) => item.promotionPlanId || item.promotionPlanNoSnapshot) ? 1 : 0
-  const itemColumnCount = 9 + priceColumnCount + reportColumnCount + shipmentColumnCount +
+  const itemColumnCount = 9 + lineOwnershipColumnCount + priceColumnCount + reportColumnCount + shipmentColumnCount +
     itemCompanyRequestColumnCount + supplyChainPurchaseColumnCount + promotionColumnCount +
     stocktakeColumnCount
   const fields = [
@@ -204,6 +207,10 @@ export default async function Page({
               <th className="px-3 py-2 text-right">{isStocktake ? '实盘数量' : '数量'}</th>
               {isStocktake && <th className="px-3 py-2 text-right">差异</th>}
               <th className="px-3 py-2 text-left">赠送</th>
+              {lineOwnershipColumnCount > 0 && <>
+                <th className="px-3 py-2 text-left">供应商</th>
+                <th className="px-3 py-2 text-left">市场</th>
+              </>}
               {showStoreAllocationPrice ? <>
                 <th className="px-3 py-2 text-right">门店标准单价</th>
                 <th className="px-3 py-2 text-right">单价优惠</th>
@@ -260,6 +267,10 @@ export default async function Page({
                   <td className="px-3 py-2">
                     {item.isGift ? <Badge variant="outline" className="text-[10px]">赠送</Badge> : '—'}
                   </td>
+                  {lineOwnershipColumnCount > 0 && <>
+                    <td className="px-3 py-2">{fmt(item.supplier)}</td>
+                    <td className="px-3 py-2">{item.marketId ? fmt(item.marketName) : '品项公司自用'}</td>
+                  </>}
                   {showStoreAllocationPrice ? <>
                     <td className="px-3 py-2 text-right">{fmt(item.standardUnitPrice)}</td>
                     <td className="px-3 py-2 text-right">{fmt(item.unitDiscount)}</td>

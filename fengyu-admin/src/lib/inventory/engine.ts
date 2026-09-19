@@ -2762,6 +2762,18 @@ export const getInventoryCoreDocById = withPermission(
       loadInventoryDocLineage(id, scoped),
       loadInventoryDocFulfillmentProgress(head.docType, id, scoped),
     ])
+    // 采购订单与市场报货汇总把市场归属挂在明细行上（#193/#194），单头没有这个字段，
+    // 详情页要显示市场名就得按行解析一次。只在真有行级市场时才查。
+    const itemMarketIds = [...new Set(items.map((item) => item.marketId).filter((id): id is string => Boolean(id)))]
+    const itemMarketNameByOrgNodeId = new Map(
+      itemMarketIds.length > 0
+        ? (await db
+          .select({ orgNodeId: inventoryLocations.orgNodeId, name: inventoryLocations.name })
+          .from(inventoryLocations)
+          .where(inArray(inventoryLocations.orgNodeId, itemMarketIds))
+        ).map((row) => [row.orgNodeId, row.name])
+        : [],
+    )
     return {
       ...head,
       items: items.map((item) => ({
@@ -2775,6 +2787,9 @@ export const getInventoryCoreDocById = withPermission(
         supplier: item.supplier,
         supplierId: item.supplierId,
         marketId: item.marketId,
+        marketName: item.marketId
+          ? (itemMarketNameByOrgNodeId.get(item.marketId) ?? item.marketId)
+          : null,
         productSeries: item.productSeries,
         batchNo: item.batchNo,
         expiryDate: item.expiryDate,

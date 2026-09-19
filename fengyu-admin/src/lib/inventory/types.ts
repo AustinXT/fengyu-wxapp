@@ -448,6 +448,8 @@ export interface InventoryDocItemRow {
   supplierId: string | null
   /** 行级市场归属（#194）。NULL = 品项公司自用行，走供应链采购入库。 */
   marketId: string | null
+  /** 行级市场名称，由 `marketId` 解析；解析不到时回落为 id 本身。 */
+  marketName: string | null
   productSeries: string | null
   batchNo: string
   expiryDate: string | null
