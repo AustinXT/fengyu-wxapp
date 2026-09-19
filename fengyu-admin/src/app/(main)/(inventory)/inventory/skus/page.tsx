@@ -53,7 +53,7 @@ export default async function Page({
         <InventorySkusPage
           rows={data}
           total={total}
-          markets={locations.filter((location) => location.locationType === '市场')}
+          markets={locations.filter((location) => location.locationType === '市场' && location.isActive)}
           supplierOptions={supplierOptions}
           canCreate={canCreate}
           canUpdate={canUpdate}
