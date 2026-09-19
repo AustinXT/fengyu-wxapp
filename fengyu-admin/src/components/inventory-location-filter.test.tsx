@@ -107,10 +107,17 @@ describe('InventoryLocationFilter', () => {
       defaultLocationId: 'M1',
     }
 
-    render(<InventoryLocationFilter options={soleMarket} value={null} onChange={vi.fn()} />)
+    const onChange = vi.fn()
+    render(<InventoryLocationFilter options={soleMarket} value={null} onChange={onChange} />)
 
-    expect(screen.getByRole('combobox', { name: '库存市场层级' })).toBeInTheDocument()
+    const select = screen.getByRole('combobox', { name: '库存市场层级' })
+    expect(select).toBeInTheDocument()
     expect(screen.queryByText('南昌市场')).not.toHaveAttribute('data-fixed-subject')
+    // 必须有与空值对应的占位项：否则原生 select 会显示第一项、让用户以为已选中它，
+    // 再点一次也不触发 change —— 唯一候选就彻底选不进去。
+    expect(select).toHaveDisplayValue('请选择库存主体')
+    fireEvent.change(select, { target: { value: 'M1' } })
+    expect(onChange).toHaveBeenLastCalledWith('M1')
   })
 
   it('完全没有可用主体时给出空态而不是空下拉', () => {

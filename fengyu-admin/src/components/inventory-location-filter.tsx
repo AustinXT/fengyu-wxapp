@@ -113,6 +113,14 @@ export default function InventoryLocationFilter({
           aria-label="库存市场层级"
         >
           {primaryOptions.length === 0 && <option value="">暂无可用库存主体</option>}
+          {/*
+            值为空时必须给一个与之对应的占位项：原生 select 在找不到匹配 option 时会
+            视觉上显示第一项，用户以为已经选中它，再点一次也不会触发 change —— 唯一
+            候选的场景下就彻底选不进去了。
+          */}
+          {primaryOptions.length > 0 && primaryValue === '' && (
+            <option value="" disabled>请选择库存主体</option>
+          )}
           {primaryOptions.map((option) => (
             <option key={option.locationId} value={option.locationId}>{option.name}</option>
           ))}
