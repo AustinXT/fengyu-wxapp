@@ -2714,6 +2714,50 @@ async function allocateSummaryToMarketReportItems(
   return allocations
 }
 
+/**
+ * 把"已收数量"按各来源血缘的占比分配下去，返回每个来源应**保留**多少、应**退还**多少。
+ *
+ * 必须在**两位小数**（`numeric(12,2)` 的持久化精度）上分配，不能先按浮点算完再落库：
+ * 三个来源各 1 件、合并行实收 1 件时，按比例是 0.3333 / 0.3333 / 0.3334，
+ * 逐行落库各自舍成 0.33，合计只有 0.99 —— 凭空多出 0.01 的可下单额度。
+ *
+ * 做法是换算成"分"取整，先按比例向下取整，余数再用最大余数法补给小数部分最大的行，
+ * 且补的时候受各自血缘量封顶。由此保证：
+ *   ① 每行 `0 ≤ retained ≤ link.quantity`
+ *   ② `Σ retained === receivedQuantity`（在两位小数上严格相等）
+ */
+function allocateRetainedQuantity(
+  links: Array<{ from_item_id: number | string; quantity: string | number | null }>,
+  receivedQuantity: number,
+): Array<{ requestItemId: number; retained: number; releasable: number }> {
+  const toCents = (value: number) => Math.round(value * 100)
+  const linkCents = links.map((link) => toCents(Number(link.quantity ?? 0)))
+  const totalCents = linkCents.reduce((sum, cents) => sum + cents, 0)
+  const receivedCents = Math.min(toCents(receivedQuantity), totalCents)
+  const exact = linkCents.map((cents) => (
+    totalCents > 0 ? (cents * receivedCents) / totalCents : 0
+  ))
+  const retainedCents = exact.map((value, index) => Math.min(linkCents[index], Math.floor(value)))
+  let remainder = receivedCents - retainedCents.reduce((sum, cents) => sum + cents, 0)
+  // 余数按小数部分从大到小补，受各自血缘量封顶（末行硬补会顶破它自己的额度）
+  const byFraction = exact
+    .map((value, index) => ({ index, fraction: value - Math.floor(value) }))
+    .sort((left, right) => right.fraction - left.fraction)
+  for (const { index } of byFraction) {
+    if (remainder <= 0) break
+    const room = linkCents[index] - retainedCents[index]
+    if (room <= 0) continue
+    const added = Math.min(room, remainder)
+    retainedCents[index] += added
+    remainder -= added
+  }
+  return links.map((link, index) => ({
+    requestItemId: Number(link.from_item_id),
+    retained: retainedCents[index] / 100,
+    releasable: (linkCents[index] - retainedCents[index]) / 100,
+  }))
+}
+
 interface PreparedPurchaseSource {
   /** `市场` = 走品项公司发货的行；`供应链` = 走供应链采购入库的行。 */
   kind: '市场' | '供应链'
@@ -3800,24 +3844,13 @@ export async function cancelSupplyChainPurchaseOrder(
       // 顺序法把未收的 2 件全记在排序靠前的 A 上（A 留 3、B 留 5），
       // 而进度按占比算的是 A、B 各留 4。随后 A 还能再下单 2 件，
       // 最终 A 的累计入库归属会涨到 6，超过它自己 5 件的需求量。
-      //
-      // 末行补差：保证各来源保留量之和**严格等于** receivedQuantity，不因两位小数留尾巴。
-      const retainRatio = orderItem.quantity > EPSILON ? receivedQuantity / orderItem.quantity : 0
-      let retainedSoFar = 0
-      itemSourceLinks.forEach((link, index) => {
-        const linkQuantity = Number(link.quantity ?? 0)
-        const retained = index === itemSourceLinks.length - 1
-          ? fixed(Math.max(0, receivedQuantity - retainedSoFar))
-          : fixed(linkQuantity * retainRatio)
-        retainedSoFar = fixed(retainedSoFar + retained)
-        const releasable = fixed(Math.max(0, linkQuantity - retained))
-        if (releasable <= EPSILON) return
-        const requestItemId = Number(link.from_item_id)
+      for (const allocation of allocateRetainedQuantity(itemSourceLinks, receivedQuantity)) {
+        if (allocation.releasable <= EPSILON) continue
         remainingByRequestItem.set(
-          requestItemId,
-          fixed((remainingByRequestItem.get(requestItemId) ?? 0) + releasable),
+          allocation.requestItemId,
+          fixed((remainingByRequestItem.get(allocation.requestItemId) ?? 0) + allocation.releasable),
         )
-      })
+      }
     }
     // 按 id 升序回退，取锁顺序确定（与建单侧一致，避免 ABBA）。
     // 这里同时覆盖两类来源行：品项公司报货需求行、市场报货汇总行 —— 两者的占用都记在

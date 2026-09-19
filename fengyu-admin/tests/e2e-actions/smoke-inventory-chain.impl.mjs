@@ -603,6 +603,33 @@ try {
     Math.abs(dupReceivedTotal - 6) < 0.01,
     `A=${dupProgressA?.receivedQuantity} B=${dupProgressB?.receivedQuantity} 合计=${dupReceivedTotal}`)
 
+  // 多来源 + 部分收货 + 关闭：落库精度守恒与"已下单量"口径
+  await biz.cancelSupplyChainPurchaseOrder({
+    purchaseOrderId: dupPoId, cancellationReason: '供应商短供',
+  })
+  const dupAfterA = (await docItems(dupReqAId))[0]
+  const dupAfterB = (await docItems(dupReqBId))[0]
+  check('部分收货关闭后，两来源保留量之和严格等于实收 6（两位小数守恒）',
+    Math.abs(num(dupAfterA?.fulfilled_quantity) + num(dupAfterB?.fulfilled_quantity) - 6) < 0.001,
+    `A=${dupAfterA?.fulfilled_quantity} B=${dupAfterB?.fulfilled_quantity}`)
+  check('保留量按占比而非顺序分配（各 3，不是 5/1）',
+    num(dupAfterA?.fulfilled_quantity) === 3 && num(dupAfterB?.fulfilled_quantity) === 3,
+    `A=${dupAfterA?.fulfilled_quantity} B=${dupAfterB?.fulfilled_quantity}`)
+  const dupOrderedA = (await docs.getInventoryCoreDocById(dupReqAId))?.fulfillmentProgress?.items?.[0]
+  check('已取消采购单的「已下单量」也按占比算（3 而不是 5）',
+    Math.abs((dupOrderedA?.orderedQuantity ?? 0) - 3) < 0.01,
+    `ordered=${dupOrderedA?.orderedQuantity}`)
+  check('关闭后来源 A 可再下单 2 件（5 − 保留 3）',
+    (await biz.createPurchaseOrder({
+      supplyChainLocationId: HQ_ORG,
+      items: [{ sourceItemId: dupItemA.id, quantity: 2 }],
+    })).id.length > 0, '')
+  await expectThrow('再多下 1 件即超出未下单数量(CONFLICT)', /CONFLICT/, () =>
+    biz.createPurchaseOrder({
+      supplyChainLocationId: HQ_ORG,
+      items: [{ sourceItemId: dupItemA.id, quantity: 1 }],
+    }))
+
   check('回退后该汇总行可以重新下单',
     (await biz.createPurchaseOrder({
       supplyChainLocationId: HQ_ORG,

@@ -2556,24 +2556,18 @@ async function loadItemCompanyRequestFulfillmentProgress(
          AND doc_link.relation_type = '品项公司报货采购订单'
          AND purchase_doc.status IN ('待收货', '已完成', '已取消')
     ),
-    purchase_totals AS (
-      SELECT
-        request_item_id,
-        SUM(CASE
-          WHEN purchase_status = '已取消' THEN LEAST(quantity, received_quantity)
-          ELSE quantity
-        END) AS ordered_quantity
-        FROM purchase_links
-       GROUP BY request_item_id
-    ),
     -- 与市场报货那套同理：一条采购明细可由多张需求单的多行合并而来（#194），
-    -- 入库量要按各来源在该采购行里的占比分摊，否则每个来源都会记到全量。
-    -- 分母同样要取该采购行的**全部**来源血缘 —— purchase_links 已被 from_doc_id
+    -- 下游的入库量、以及已取消采购单残留的已下单量，都要按各来源在该采购行里的
+    -- 占比分摊，否则每个来源都会记到全量。
+    -- 分母要取该采购行的**全部**来源血缘 —— purchase_links 已被 from_doc_id
     -- 限成当前这张需求单，窗口函数看不到别的来源单。
     purchase_share AS (
       SELECT
         purchase_link.request_item_id,
         purchase_link.purchase_item_id,
+        purchase_link.quantity,
+        purchase_link.purchase_status,
+        purchase_link.received_quantity,
         purchase_link.quantity / NULLIF(source_total.total_quantity, 0) AS share
         FROM purchase_links purchase_link
         JOIN LATERAL (
@@ -2582,6 +2576,19 @@ async function loadItemCompanyRequestFulfillmentProgress(
            WHERE all_link.to_item_id = purchase_link.purchase_item_id
              AND all_link.relation_type = '品项公司报货采购订单'
         ) source_total ON true
+    ),
+    purchase_totals AS (
+      SELECT
+        request_item_id,
+        SUM(CASE
+          -- 已取消的采购单只剩"实收那部分"仍占着需求额度，而这部分同样要按占比分给各来源：
+          -- A、B 各 5 件合成采购行 10 件、实收 6 件后关闭时，关闭逻辑给两边各留 3，
+          -- 这里若按 LEAST(5, 6) 逐条算就会各显示 5，与真实占用对不上。
+          WHEN purchase_status = '已取消' THEN LEAST(quantity, received_quantity * COALESCE(share, 0))
+          ELSE quantity
+        END) AS ordered_quantity
+        FROM purchase_share
+       GROUP BY request_item_id
     ),
     receipt_totals AS (
       SELECT
