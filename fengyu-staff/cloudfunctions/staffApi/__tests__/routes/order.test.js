@@ -8234,7 +8234,9 @@ describe('order.close — 欠款归零的回滚（#182）', () => {
 
   // 构造「关闭待支付转换单」场景，并让豁免还原 CTE 返回一行。
   // rowWaived = 行级豁免额，rowRefunded = 该行已退款额 → 订单级还原量 = max(0, 差)。
-  const runClose = async ({ rowWaived, rowRefunded, restoredOk = true, orderTotal = '1000.00' }) => {
+  const runClose = async ({
+    rowWaived, rowRefunded, restoredOk = true, sourceFound = true, orderTotal = '1000.00',
+  }) => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-CONV-WAIVE-001' })
     pg.query.mockResolvedValueOnce([{ store_id: 'store-001' }])
     pg.query.mockResolvedValueOnce([{
@@ -8254,6 +8256,7 @@ describe('order.close — 欠款归零的回滚（#182）', () => {
             sale_order_id: 'FY-SRC-001',
             sale_item_id: 'ITEM-SRC-001',
             waived: rowWaived,
+            source_found: sourceFound,
             restored_ok: restoredOk,
           }],
           rowCount: 1,
@@ -8342,6 +8345,7 @@ describe('order.close — 欠款归零的回滚（#182）', () => {
             sale_order_id: 'FY-SRC-001',
             sale_item_id: 'ITEM-SRC-001',
             waived: '400.00',
+            source_found: true,
             restored_ok: false,
           }],
           rowCount: 1,
@@ -8352,5 +8356,54 @@ describe('order.close — 欠款归零的回滚（#182）', () => {
     pg.transaction.mockImplementation(async (cb) => cb({ query: clientQueryMock }))
 
     await expect(orderRoutes.close(ctx)).rejects.toThrow(/CONFLICT: 原订单的折抵豁免额已被改动/)
+  })
+
+  // codex 第 5 轮 P1-3：自校验若从 locked_source（内连接）出发，源行已被删时这条归因会
+  // **整条消失**，restored_ok 根本看不见它 —— 权益已被前两段无条件加回、欠款却没还原。
+  // 改为从 waived 左连出发并显式带出 source_found。
+  test('源行已不存在（source_found=false）必须抛 CONFLICT', async () => {
+    await expect(runClose({ rowWaived: '400.00', rowRefunded: 0, sourceFound: false }))
+      .rejects.toThrow(/CONFLICT: 折抵的原订单明细已不存在/)
+  })
+
+  // codex 第 5 轮 P1-3（另一半）：paid_sessions 重算的 op 子查询取不到原单时只会影响 0 行，
+  // 之前没有断言 → 源行金额已还原、paid_sessions 没还原，而收尾还会把归因凭据清零。
+  test('paid_sessions 重算影响 0 行（原单孤儿）必须抛 CONFLICT', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-CONV-WAIVE-001' })
+    pg.query.mockResolvedValueOnce([{ store_id: 'store-001' }])
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-CONV-WAIVE-001',
+      status: '待支付',
+      sale_order_type: '转换单',
+      store_id: 'store-001',
+      opened_by: 'emp-other',
+    }])
+    const clientQueryMock = makeCloseQuery(async (sql, params) => {
+      const text = String(sql)
+      if (text.includes('orig_pending')) {
+        return {
+          rows: [{
+            sale_order_id: 'FY-SRC-001',
+            sale_item_id: 'ITEM-SRC-001',
+            waived: '400.00',
+            source_found: true,
+            restored_ok: true,
+          }],
+          rowCount: 1,
+        }
+      }
+      // 行级已退款额 400 → 订单级还原量 0 → 不走订单 UPDATE，只走 paid_sessions 重算
+      if (text.includes('refund_items') && text.includes('GROUP BY sale_item_id')) {
+        return { rows: [{ sale_item_id: 'ITEM-SRC-001', refunded: '400' }], rowCount: 1 }
+      }
+      if (text.includes('SET paid_sessions = CASE') && text.includes('out_item.waived_amount')) {
+        return { rows: [], rowCount: 0 }
+      }
+      return defaultQueryResult(sql, params)
+    })
+    pg.transaction.mockImplementation(async (cb) => cb({ query: clientQueryMock }))
+
+    await expect(orderRoutes.close(ctx))
+      .rejects.toThrow(/CONFLICT: 原订单已不存在，无法还原折抵行的已支付次数/)
   })
 })

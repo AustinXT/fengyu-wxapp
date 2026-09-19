@@ -2203,12 +2203,17 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
               sale_order_id: 'src-1',
               sale_item_id: 'item-1',
               waived: '400.00',
+              source_found: true,
               restored_ok: true,
             }]
           }
           // 行级已退款额：400 全部已退 → 订单级还原量 = 0
           if (text.includes('refund_items') && text.includes('GROUP BY sale_item_id')) {
             return [{ sale_item_id: 'item-1', refunded: '400' }]
+          }
+          // paid_sessions 重算现在断言影响行数 >= 1（为 0 ⟺ 原单孤儿）
+          if (text.includes('SET paid_sessions = CASE') && text.includes('out_item.waived_amount')) {
+            return { count: 1 }
           }
           return {}
         }),
@@ -2254,6 +2259,47 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
               sale_order_id: 'src-1',
               sale_item_id: 'item-1',
               waived: '400.00',
+              source_found: true,
+              restored_ok: false,
+            }]
+          }
+          return {}
+        }),
+      }
+      return fn(tx)
+    })
+
+    const result = await closeOrder('order-1')
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('关闭订单失败，请稍后重试')
+  })
+
+  // #182 第 5 轮 P1-3：自校验若从 locked_source（内连接）出发，源行已被删时这条归因会
+  // **整条消失**，restored_ok 根本看不见它 —— 权益已被前两段无条件加回、欠款却没还原。
+  it('欠款归零回滚：源行已不存在（source_found=false）必须整笔失败（#182）', async () => {
+    mockSelectBefore([{
+      status: '待支付',
+      customerName: '顾客甲',
+      totalAmount: '200.00',
+      saleOrderType: '转换单',
+      storeId: 'store-1',
+    }])
+
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue({ count: 1 }),
+          }),
+        }),
+        execute: vi.fn().mockImplementation(async (q: any) => {
+          const text: string = q?.__sqlText ?? ''
+          if (text.includes('orig_pending')) {
+            return [{
+              sale_order_id: null,
+              sale_item_id: 'item-1',
+              waived: '400.00',
+              source_found: false,
               restored_ok: false,
             }]
           }

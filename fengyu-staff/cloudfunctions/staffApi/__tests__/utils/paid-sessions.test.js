@@ -179,7 +179,14 @@ describe('PAID_SESSIONS_RECALC_SQL 模板字面量守护', () => {
     expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain("in_item.item_direction = '转入'")
     expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain('conversion_order.converted_value + conversion_order.net_received')
     expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toContain('LEAST(conversion_order.in_total,')
-    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toMatch(/WHEN rn = item_count\s+THEN target_received -/)
+    // #182：分摊改用「累计比例的相邻边界差」（与 STEP 1.75 同手法），不再逐行 ROUND + 尾行吸差。
+    // 旧写法的尾差可为负（target=0.02、四行等权 → -0.01）→ FLOOR(负) = -1 → 误抛 D3；
+    // 只钳尾行又会让 Σ 超过 target。边界差保证每行非负且 Σ 精确等于 target。
+    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).toMatch(
+      /ROUND\(target_received \* cumulative_sale_amount \/ in_total, 2\)\s*-\s*ROUND\(target_received \* \(cumulative_sale_amount - item_sale_amount\) \/ in_total, 2\)/,
+    )
+    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).not.toContain('rn = item_count')
+    expect(CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL).not.toContain('provisional_received')
   })
 
   test('行级公式必须为 received × session_count / sale_amount（session_count 参与，先乘后除保整数精度）', () => {

@@ -2463,16 +2463,24 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
       )
       -- 按**行**返回：订单级还原量要逐行扣掉该行已退款额（与正向 orderWaiveAmount 同公式），
       -- 直接把行级总额加回 total_amount 会把「已退给顾客的钱」变成假欠款。
-      -- 同时带出「该行是否真的被还原」：上面那道自校验 CAS 失败时 restored 只会**静默少行**，
-      -- 而前两段回滚已经把权益（remaining_sessions / picked_up_quantity）无条件加回去了 ——
-      -- 不检查就继续关单，结果是「货已还给顾客、欠款却仍被豁免」的资损，且事后查无实据。
-      SELECT ls.sale_order_id, ls.sale_item_id, ls.waived,
+      -- ⚠ 必须从 waived（转出行归因凭据）**左连**出发，不能从 locked_source 出发：
+      -- locked_source 是内连接，源行若已不存在，这条归因会**整条消失**，下面的
+      -- restored_ok 检查也就看不见它 —— 权益已被前两段无条件加回、欠款却没还原。
+      -- restored_ok 单独一列：上面那道自校验 CAS 失败时 restored 只会**静默少行**。
+      SELECT w.ref_sale_item_id AS sale_item_id,
+             ls.sale_order_id,
+             w.waived,
+             (ls.sale_item_id IS NOT NULL) AS source_found,
              (r.sale_item_id IS NOT NULL) AS restored_ok
-        FROM locked_source ls
-        LEFT JOIN restored r ON r.sale_item_id = ls.sale_item_id
-       ORDER BY ls.sale_order_id, ls.sale_item_id`,
+        FROM waived w
+        LEFT JOIN locked_source ls ON ls.sale_item_id = w.ref_sale_item_id
+        LEFT JOIN restored r ON r.sale_item_id = w.ref_sale_item_id
+       ORDER BY ls.sale_order_id, w.ref_sale_item_id`,
     [saleOrderId, now],
   )
+  if (restoredWaive.rows.some((r) => r.source_found !== true)) {
+    throw new Error('CONFLICT: 折抵的原订单明细已不存在，无法还原欠款')
+  }
   if (restoredWaive.rows.some((r) => r.restored_ok !== true)) {
     throw new Error('CONFLICT: 原订单的折抵豁免额已被改动，无法还原欠款，请刷新后重试')
   }
@@ -2541,7 +2549,7 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
   // CTE **无条件**还原 —— 不重算就会留下偏高的 paid_sessions（付清后退款 40% 的 10 次卡会
   // 停在 10，正确值 6），把已退款的权益重新放出来。
   for (const refOrderId of [...new Set(restoredWaive.rows.map((r) => r.sale_order_id))].sort()) {
-    await client.query(
+    const recalcRes = await client.query(
       `UPDATE sale_items
 SET paid_sessions = CASE
   WHEN sale_items.session_count IS NULL THEN NULL
@@ -2565,6 +2573,13 @@ WHERE sale_items.sale_item_id IN (
   AND sale_items.sale_order_id = $2`,
       [saleOrderId, refOrderId],
     )
+    // 影响行数必为 >= 1：作用域来自「本单 waived_amount > 0 的转出行」，其源行刚被上面的 CTE
+    // 还原过、source_found / restored_ok 都已校验。为 0 只可能是 op 子查询取不到原单
+    // （孤儿数据）—— 此时源行金额已还原、paid_sessions 没还原，而下面还会把归因凭据清零，
+    // 必须显式抛出。订单级还原量为 0 的那条路径也走这里，不会被上面的 continue 绕过。
+    if (recalcRes.rowCount === 0) {
+      throw new Error('CONFLICT: 原订单已不存在，无法还原折抵行的已支付次数')
+    }
   }
 
   await client.query(

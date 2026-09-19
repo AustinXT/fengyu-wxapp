@@ -1258,7 +1258,8 @@ describe('转换单转入 received 重算 SQL 四端一致性守护', () => {
     expect(sqls.adminTs).toBe(sqls.staff)
   })
 
-  test('目标值必须为 min(转入总价, 转出旧卡价值 + 订单净到账)，并按稳定顺序吸收尾差', () => {
+  // 尾差处理已从「稳定顺序吸收」改为累计边界差，见下一条用例。
+  test('目标值必须为 min(转入总价, 转出旧卡价值 + 订单净到账)', () => {
     expect(sqls.staff).toContain("conversion_order.sale_order_type = '转换单'")
     expect(sqls.staff).toContain("out_item.item_direction = '转出'")
     expect(sqls.staff).toContain("si.item_direction = '转入'")
@@ -1273,16 +1274,20 @@ describe('转换单转入 received 重算 SQL 四端一致性守护', () => {
     expect(sqls.staff).not.toContain("AND in_item.waived_amount::numeric = 0")
   })
 
-  // #182：尾差吸收行钳位。target 很小且转入行 >= 4 时差额可为 -0.01，received 变负
-  // → FLOOR(负 × sc / sa) = -1 → 已消费 0 也满足 0 > -1 → 误抛 D3 CONFLICT。
-  test("四端尾差吸收行钳到 >= 0", () => {
-    const pattern = /GREATEST\(0,\s*CASE WHEN rn = item_count/i
-    expect(sqls.staff).toMatch(pattern)
-    expect(sqls.client).toMatch(pattern)
-    expect(sqls.payNotify).toMatch(pattern)
-    expect(sqls.adminTs).toMatch(pattern)
-    expect(sqls.staff).toMatch(/ROW_NUMBER\(\) OVER\s*\(ORDER BY si\.sale_item_id\)\s+AS rn/)
-    expect(sqls.staff).toContain('WHEN rn = item_count THEN target_received -')
+  // #182：分摊必须用**累计比例的相邻边界差**（与 STEP 1.75 同手法），不得回到
+  // 「逐行 ROUND + 最后一行吸收尾差」：① 尾差可为负（target=0.02、四行等权，每行
+  // ROUND(0.005,2)=0.01，前三行已占 0.03）→ received 变负 → FLOOR(负) = -1 → 误抛 D3；
+  // ② 只把尾行钳到 0 又会让 Σ 超过 target（0.03 > 0.02），凭空膨胀转入行价值。
+  // 边界差同时保证「每行非负」与「Σ 精确等于 target」。
+  test("四端按累计比例的相邻边界差分摊（不得回到尾行吸差）", () => {
+    const boundary = /ROUND\(target_received \* cumulative_sale_amount \/ in_total, 2\)\s*-\s*ROUND\(target_received \* \(cumulative_sale_amount - item_sale_amount\) \/ in_total, 2\)/i
+    const cumulative = /SUM\(si\.sale_amount::numeric\) OVER \(\s*ORDER BY si\.sale_item_id\s*ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\s*\) AS cumulative_sale_amount/i
+    for (const sql of [sqls.staff, sqls.client, sqls.payNotify, sqls.adminTs]) {
+      expect(sql).toMatch(boundary)
+      expect(sql).toMatch(cumulative)
+      expect(sql).not.toMatch(/rn = item_count/i)
+      expect(sql).not.toMatch(/provisional_received/i)
+    }
   })
 
   test('转换单转入 received SQL 文本快照', () => {

@@ -219,4 +219,42 @@ describe('#182 折抵行 received 重建（real PG 5433, BEGIN...ROLLBACK）', (
     // 守恒：行级净额 = 订单级实收 − 已退款
     expect(num(items[ITEM_C].received)).toBe(100 - 40)
   })
+
+  // STEP 1.6 的分币性质（第 5 轮 codex P1-2）。四个等权转入行、target 只有 ¥0.02：
+  //   旧「逐行 ROUND + 尾行吸差」→ 前三行各 0.01 已占 0.03，尾行 = 0.02 − 0.03 = **−0.01**
+  //     → received 变负 → FLOOR(负 × sc / sa) = −1 → 已消费 0 也满足 0 > −1 → 误抛 D3；
+  //   只把尾行钳到 0 → Σ = 0.03 > target 0.02，凭空膨胀转入行价值、提前解锁次数。
+  //   累计边界差 → 每行非负且 Σ 精确等于 0.02。
+  it('用例3：转换单 4 个等权转入行、可兑现价值仅 ¥0.02 → 每行非负且合计精确 0.02', async () => {
+    const convOrder = `IT182-C-${RUN}`
+    await client.query(
+      `INSERT INTO sale_orders
+         (sale_order_id, status, sale_order_type, market_name, store_id, store_name,
+          sale_order_datetime, total_amount, payment_method, received, refunded_amount)
+       VALUES ($1, '部分支付', '转换单', '集成测试市场', $2, '集成测试门店',
+               NOW(), 400, '线下', 0.02, 0)`,
+      [convOrder, storeId],
+    )
+    const inIds = [1, 2, 3, 4].map((i) => `IT182-CI${i}-${RUN}`)
+    for (const id of inIds) {
+      await client.query(
+        `INSERT INTO sale_items
+           (sale_item_id, sale_order_id, store_id, item_direction, product_type,
+            unit_price, unit_real_price, sale_amount, received, pending_received,
+            quantity, session_count, remaining_sessions, sales_category)
+         VALUES ($1, $2, $3, '转入', '疗程卡', 100, 10, 100, 100, 0, 1, 10, 10, '自销自耗')`,
+        [id, convOrder, storeId],
+      )
+    }
+
+    // 旧写法在这里就会抛 CONFLICT: PAID_SESSIONS_UNDERFLOW（尾行 received = -0.01）
+    await recalcPaidSessionsForOrder(client, convOrder)
+
+    const items = await readItems(convOrder)
+    const values = inIds.map((id) => num(items[id].received))
+    for (const v of values) expect(v).toBeGreaterThanOrEqual(0)
+    expect(num(values.reduce((a, b) => a + b, 0))).toBe(0.02)
+    // 0.02 换不到任何一次，四行 paid_sessions 全为 0，已消费 0 → D3 成立
+    for (const id of inIds) expect(items[id].paid_sessions).toBe(0)
+  })
 })
