@@ -17,7 +17,8 @@
  *
  * 守护范围（**八处副本**）：
  *   逐字镜像（五端运行时）：staffApi / clientApi / payNotify / admin orders.ts / admin recompute-customer-tags
- *   结构性守护（两个全库批量脚本）：db/scripts/recalc-all-customer-types.js / recalc-became-member-at.js
+ *   结构性守护（三个全库批量脚本）：db/scripts/recalc-all-customer-types.js / recalc-became-member-at.js
+ *                                  / backfill-membership-upgrade-doc-type.js
  *   —— 脚本版无 client_user_id 参数过滤、多带输出列，无法逐字比对，故只断言关键片段。
  *
  * 本测试做**源文件文本结构守卫**：
@@ -573,12 +574,12 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
   })
 
   /**
-   * 第 6/7 处副本：db/scripts 的全库批量脚本。
+   * 第 6/7/8 处副本：db/scripts 的全库批量脚本。
    * 这两个脚本会把全库 customer_type / became_member_at 按自身 SQL 重算覆写——
    * 口径与运行时漂移时，跑一次脚本就会把线上数据改回旧口径，因此必须纳入守护。
    * 无法逐字比对（全库版无 $clientUserId 过滤、多带输出列），故断言关键片段。
    */
-  describe('db/scripts 全库批量脚本口径对齐（第 6/7 处副本）', () => {
+  describe('db/scripts 全库批量脚本口径对齐（第 6/7/8 处副本）', () => {
     const SCRIPTS = [
       ['recalc-all-customer-types.js', SCRIPT_RECALC_ALL_TYPES],
       ['recalc-became-member-at.js', SCRIPT_RECALC_BECAME_MEMBER],

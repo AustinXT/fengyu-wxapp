@@ -611,7 +611,8 @@ async function applyRechargeOnOrderPaid(
  *
  * 八处跃迁 SQL 副本之一（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
  * + admin actions/orders.ts + admin lib/recompute-customer-tags.ts
- * + db/scripts/recalc-all-customer-types.js + db/scripts/recalc-became-member-at.js）。
+ * + db/scripts/recalc-all-customer-types.js + db/scripts/recalc-became-member-at.js
+ * + db/scripts/backfill-membership-upgrade-doc-type.js）。
  *
  * 业务口径（#187，2026-09-18 落地 2026-04-26 Q5.2 决策）——按**单笔订单的非体验部分毛实收**判定：
  *   - 会员客：存在一张销售单，其 non_trial >= memberThreshold

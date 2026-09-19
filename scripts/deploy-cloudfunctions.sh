@@ -198,6 +198,8 @@ assert_db_prereqs() {
   pg_conn=$(node -e '
     const fs = require("fs")
     const c = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
+    // 取第一个带连接串的函数：本项目单库架构下同 env 各函数连接串一致，取哪个等价。
+    // 若日后某函数指向异库（只读副本等），这里要改成按函数名过滤，否则探测目标会静默漂移。
     const fn = (c.functions || []).find((x) => x.envVariables && x.envVariables.PG_CONNECTION_STRING)
     process.stdout.write(fn ? fn.envVariables.PG_CONNECTION_STRING : "")
   ' "$1" 2>/dev/null || true)
@@ -223,8 +225,17 @@ assert_db_prereqs() {
   local probe
   if probe=$(cd "$ROOT/db" && node -e '
     const { Client } = require("pg")
-    const c = new Client({ connectionString: process.argv[1], connectionTimeoutMillis: 8000 })
+    // connectionTimeoutMillis 只覆盖建连；statement_timeout 防「连上了但查询 hang 住」把发版卡死
+    const c = new Client({
+      connectionString: process.argv[1],
+      connectionTimeoutMillis: 8000,
+      statement_timeout: 8000,
+      query_timeout: 8000,
+    })
     c.connect()
+      // WARNING: 下面这段 SQL 内禁止出现双引号标识符。外层是 bash 单引号写不了裸单引号，
+      // 故 SQL 里用双引号占位、再由末尾的 .replace 统一翻成单引号；
+      // 若写了带双引号的标识符（如 schema.table 的引号形式），会被静默变形导致 SQL 报错。
       .then(() => c.query(`
         SELECT COALESCE(string_agg(f, ", "), "") AS missing
           FROM (VALUES (\x27public.try_jsonb(text)\x27), (\x27public.try_numeric(text)\x27)) AS t(f)
@@ -232,7 +243,7 @@ assert_db_prereqs() {
       `.replace(/"/g, "\x27")))
       .then((r) => { process.stdout.write(r.rows[0].missing || ""); return c.end() })
       .catch((e) => { console.error(e.message); process.exit(2) })
-  ' "$pg_conn" 2>/dev/null); then
+  ' "$pg_conn"); then
     : # 探测成功，结果在 $probe 里（空串=全部就绪）
   else
     _db_probe_unavailable "DB 探测失败（网络/权限/依赖）"

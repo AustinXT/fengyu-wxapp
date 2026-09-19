@@ -86,7 +86,7 @@ INSERT INTO sale_items (sale_item_id, sale_order_id, item_direction, sale_amount
 
 INSERT INTO sale_order_payments (sale_order_id, change_type, status, amount, note) VALUES
   ('O_refund','退款','已支付',-1500,'{"items":[{"refSaleItemId":"I_refund","refundAmount":1500}]}'),
-  -- 脏数据守护：note 非 JSON → LIKE '{%' 挡掉
+  -- 脏数据守护：note 非 JSON → try_jsonb 返回 NULL
   ('O_pure',  '退款','已支付',   -1,'手工备注不是 JSON'),
   -- 已作废退款流水 → WHERE status 挡掉（若漏挡 U_pure 会变成 2999）
   ('O_pure',  '退款','已作废', -999,'{"items":[{"refSaleItemId":"I_pure","refundAmount":999}]}'),
@@ -94,7 +94,7 @@ INSERT INTO sale_order_payments (sale_order_id, change_type, status, amount, not
   ('O_mix',   '退款','已支付',   -1,'{"items":"不是数组"}'),
   -- 超额 refundAmount → LEAST 封顶
   ('O_over',  '退款','已支付', -500,'{"items":[{"refSaleItemId":"I_over","refundAmount":9999}]}'),
-  -- 以 { 开头但非合法 JSON → ::jsonb 会抛 22P02，靠 LIKE 守门 + 范围限定兜住
+  -- 以 { 开头但非合法 JSON → 旧写法的 ::jsonb 会抛 22P02，靠 try_jsonb 降级兜住
   ('O_bad',   '退款','已支付',   -1,'{手工备注不是合法JSON}');
 
 -- ===== 闸门 2 追加：GLM P1 场景 =====
