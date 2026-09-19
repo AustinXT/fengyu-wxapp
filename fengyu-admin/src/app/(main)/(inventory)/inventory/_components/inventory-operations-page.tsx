@@ -627,7 +627,7 @@ function OperationWorkspace({
       {operation === 'store-request' && <StoreRequestForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
       {operation === 'market-report' && <MarketReportForm locations={locations} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
       {operation === 'item-company-request' && <ItemCompanyReplenishmentForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
-      {operation === 'purchase-order' && <PurchaseOrderForm locations={locations} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
+      {operation === 'purchase-order' && <PurchaseOrderForm locations={locations} skuOptions={skuOptions} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
       {operation === 'market-report-summary' && <MarketReportSummaryForm locations={locations} onSuccess={onSuccess} />}
       {operation === 'company-shipment' && <CompanyShipmentForm locations={locations} workflowDocs={workflowDocs} onSuccess={onSuccess} />}
       {operation === 'market-receipt' && <ShipmentReceiptForm workflowDocs={workflowDocs} kind="market" onSuccess={onSuccess} />}
@@ -1405,8 +1405,12 @@ interface PurchaseSourceLine {
   skuName: string
   specName: string | null
   marketId: string | null
+  /** 来源明细行上的供应商快照；仅采购订单与市场报货汇总会写，展示用。 */
   supplier: string | null
   supplierId: string | null
+  /** 商品档案上的供应商 —— fail-closed 判断以它为准，与服务端同源。 */
+  skuSupplierId: string | null
+  skuSupplierName: string | null
   actualUnitPrice: number | null
   availableQuantity: number
   quantity: string
@@ -1421,11 +1425,13 @@ interface PurchaseSourceLine {
  */
 function PurchaseOrderForm({
   locations,
+  skuOptions,
   workflowDocs,
   canViewPrice,
   onSuccess,
 }: {
   locations: InventoryLocationRow[]
+  skuOptions: InventorySkuRow[]
   workflowDocs: InventoryDocRow[]
   canViewPrice: boolean
   onSuccess: (message: string) => void
@@ -1442,6 +1448,15 @@ function PurchaseOrderForm({
   const marketNameByOrgNodeId = useMemo(
     () => new Map(locations.filter((location) => location.orgNodeId).map((location) => [location.orgNodeId as string, location.name])),
     [locations],
+  )
+
+  // 供应商的真相源是**商品档案**，与服务端 `loadSku().supplierId` 同一口径。
+  // 早先这里读的是来源明细行的 `supplier_id`，但只有采购订单与市场报货汇总会写那一列 ——
+  // 品项公司报货需求的明细从不写，于是供应链采购每一行都被判成「未绑定」，
+  // 红条常亮把提交按钮永久禁用（服务端其实放行）。
+  const skuById = useMemo(
+    () => new Map(skuOptions.map((sku) => [sku.skuId, sku])),
+    [skuOptions],
   )
 
   const candidates = useMemo(
@@ -1480,6 +1495,10 @@ function PurchaseOrderForm({
               marketId: item.marketId,
               supplier: item.supplier,
               supplierId: item.supplierId,
+              skuSupplierId: skuById.get(item.skuId)?.supplierId ?? null,
+              skuSupplierName: skuById.get(item.skuId)?.supplierName
+                ?? skuById.get(item.skuId)?.supplier
+                ?? null,
               actualUnitPrice: item.actualUnitPrice ?? null,
               availableQuantity: available,
               quantity: String(available),
@@ -1516,8 +1535,8 @@ function PurchaseOrderForm({
         skuName: line.skuName,
         specName: line.specName,
         marketId: line.marketId,
-        supplier: line.supplier,
-        missingSupplier: !line.supplierId,
+        supplier: line.skuSupplierName ?? line.supplier,
+        missingSupplier: !line.skuSupplierId,
         lines: [],
       }
       group.lines.push(line)
@@ -1527,7 +1546,7 @@ function PurchaseOrderForm({
   }, [lines])
 
   const missingSupplierNames = useMemo(
-    () => Array.from(new Set(lines.filter((line) => !line.supplierId).map((line) => line.skuName))),
+    () => Array.from(new Set(lines.filter((line) => !line.skuSupplierId).map((line) => line.skuName))),
     [lines],
   )
 

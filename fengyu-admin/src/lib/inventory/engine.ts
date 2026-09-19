@@ -2342,6 +2342,12 @@ async function loadMarketReportFulfillmentProgress(
        WHERE item.doc_id = ${docId}
     ),
     purchase_links AS (
+      -- ⚠️ 这里**刻意不按 visible_docs 过滤采购单**（#194）。
+      -- 收敛后采购单可以汇总多个市场的行，单头因此没有 source/market 归属，
+      -- 市场 scope 看不见它；若在这里过滤，市场打开自己的报货单会看到「已采购 0」——
+      -- 收敛前采购单 source=该市场、天然可见，是本次改动引入的可见性回归。
+      -- 本 CTE 只把数量聚合回**已经过可见性校验的** root_items，不外泄采购单本身的任何内容
+      -- （单号、其它市场的明细都不出现在返回值里），所以放开这层过滤是安全的。
       SELECT
         doc_link.from_item_id AS root_item_id,
         doc_link.to_item_id AS purchase_item_id,
@@ -2349,10 +2355,9 @@ async function loadMarketReportFulfillmentProgress(
         FROM inventory_doc_links doc_link
         JOIN root_items root_item ON root_item.item_id = doc_link.from_item_id
         JOIN inventory_docs purchase_doc ON purchase_doc.id = doc_link.to_doc_id
-        JOIN visible_docs visible_purchase ON visible_purchase.id = purchase_doc.id
        WHERE doc_link.from_doc_id = ${docId}
          AND doc_link.relation_type = '市场报货采购订单'
-         AND purchase_doc.status = '已完成'
+         AND purchase_doc.status IN ('已完成', '待收货')
     ),
     purchase_totals AS (
       SELECT root_item_id, SUM(quantity) AS ordered_quantity

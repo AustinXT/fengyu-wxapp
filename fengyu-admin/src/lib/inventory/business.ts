@@ -568,12 +568,19 @@ interface PromotionCandidate {
 
 const EPSILON = 0.000001
 
+/**
+ * ⚠️ 这是 `DOC_PREFIX` 的**第三份**副本（另两份在 `engine.ts` 与 staffApi 的
+ * `routes/inventory.js`）。它声明成 `Record<string, string>` 而不是
+ * `Record<InventoryDocType, string>`，所以**增删 doc_type 时 tsc 不会报它** ——
+ * #193 加 `市场报货汇总` 时就漏过一次，`generateDocId` 直接抛「不支持的业务单据类型」。
+ * 动 doc_type 清单务必三份一起改。
+ */
 const DOC_PREFIX: Record<string, string> = {
   门店报货: 'DBH',
   市场报货: 'MBH',
+  市场报货汇总: 'MHZ',
   品项公司报货需求: 'ZBH',
   采购订单: 'CGD',
-  供应链采购订单: 'PCG',
   供应链采购入库: 'GRK',
   品项公司发货: 'GFH',
   市场采购入库: 'MRK',
@@ -761,6 +768,20 @@ async function syncLocations(): Promise<void> {
 }
 
 async function locationForUpdate(tx: Tx, endpointId: string): Promise<Location> {
+  return loadLocation(tx, endpointId, true)
+}
+
+/**
+ * 只读路径专用：不取 `FOR UPDATE`。
+ *
+ * 纯查询若对库存主体行加写锁，会和所有业务写入在同一行上互相阻塞；
+ * 它还是唯一一条「先拿主体锁、却不先拿 cutover 全局锁」的路径，等于在死锁豁免上开口子。
+ */
+async function locationForRead(tx: Tx, endpointId: string): Promise<Location> {
+  return loadLocation(tx, endpointId, false)
+}
+
+async function loadLocation(tx: Tx, endpointId: string, forUpdate: boolean): Promise<Location> {
   const [row] = rows<{
     location_id: string
     org_node_id: string
@@ -772,7 +793,7 @@ async function locationForUpdate(tx: Tx, endpointId: string): Promise<Location> 
       FROM inventory_locations
      WHERE (location_id = ${endpointId} OR org_node_id = ${endpointId})
        AND is_active = true
-     FOR UPDATE
+     ${forUpdate ? sql`FOR UPDATE` : sql``}
   `))
   if (!row) throw new ApiError('NOT_FOUND', '库存主体不存在或已停用')
   return {
@@ -2324,7 +2345,7 @@ export async function summarizeMarketReplenishmentRequests(
   const supplyChainLocationId = required(input.supplyChainLocationId, '供应链库存主体')
   await syncLocations()
   return db.transaction(async (tx) => {
-    const supplyChain = await locationForUpdate(tx, supplyChainLocationId)
+    const supplyChain = await locationForRead(tx, supplyChainLocationId)
     assertType(supplyChain, '总部', '供应链库存主体')
     assertLocationWritable(session, supplyChain)
     const startDate = input.startDate ? dateOrToday(input.startDate) : null
@@ -2460,7 +2481,10 @@ export async function createMarketReportSummary(
       const market = await locationForUpdate(tx, marketId)
       assertType(market, '市场', '报货市场')
       const sourceItems: DocItemSnapshot[] = []
-      for (const rawItemId of line.sourceReportItemIds) {
+      // 按 id 升序取行锁：两个请求若以相反顺序锁同一批来源行会 ABBA 死锁（40P01），
+      // 而 40P01 没有被包装成 CONFLICT，用户看到的是 500。排序成本近零。
+      const orderedReportItemIds = [...line.sourceReportItemIds].map(Number).sort((a, b) => a - b)
+      for (const rawItemId of orderedReportItemIds) {
         const sourceItemId = Number(rawItemId)
         if (!Number.isInteger(sourceItemId) || sourceItemId <= 0 || seenSourceItems.has(sourceItemId)) {
           throw new ApiError('INVALID_PARAMS', '市场报货明细不能重复引用')
@@ -2679,7 +2703,11 @@ export async function createPurchaseOrder(
     const seen = new Set<number>()
     const prepared: PreparedPurchaseSource[] = []
     const missingSupplier = new Map<string, string>()
-    for (const line of input.items) {
+    // 同样按来源明细 id 升序取锁，避免不同请求以相反顺序锁同一批行造成 ABBA 死锁。
+    const orderedItems = [...input.items].sort(
+      (left, right) => Number(left.sourceItemId) - Number(right.sourceItemId),
+    )
+    for (const line of orderedItems) {
       const sourceItemId = Number(line.sourceItemId)
       if (!Number.isInteger(sourceItemId) || sourceItemId <= 0 || seen.has(sourceItemId)) {
         throw new ApiError('INVALID_PARAMS', '来源明细不能重复引用')
@@ -2869,9 +2897,17 @@ export async function createPurchaseOrder(
             quantity: item.quantity,
           })
           await bumpFulfilledQuantity(tx, item.source.id, item.quantity)
-          // 再跨过汇总单，直连到原始市场报货明细。这样 engine 里按
-          // `市场报货采购订单` 统计「已采购」的 SQL 与 fulfilled_quantity 的回写口径
-          // 都不必穿透两跳血缘，收敛前后保持一致。
+          // 再跨过汇总单，直连到原始市场报货明细，让 engine 里按 `市场报货采购订单`
+          // 统计「已采购」的 SQL（engine.ts:2354）不必穿透两跳血缘。
+          //
+          // ⚠️ 这里**只写血缘、不回写原始行的 `fulfilled_quantity`**。
+          // 汇总占用与采购占用是同一批量的前后两阶段：汇总时已经记进
+          // `市场报货汇总` 血缘，采购再回写一次 fulfilled，就会让
+          // `quantity − 已汇总 − fulfilled` 把同一批量减两次，剩余需求静默蒸发
+          // （报货 10 → 汇总 4 → 采购这 4 → 剩余显示 2，实际应为 6）。
+          //
+          // 对比：门店报货那层的同名公式是对的 —— 「汇总到市场报货」与「配货给门店」
+          // 是两条彼此独立的占用路径，相减才准。本层不是。
           for (const allocation of await allocateSummaryToMarketReportItems(
             tx,
             item.source.id,
@@ -2885,7 +2921,6 @@ export async function createPurchaseOrder(
               toItemId: itemId,
               quantity: allocation.quantity,
             })
-            await bumpFulfilledQuantity(tx, allocation.reportItemId, allocation.quantity)
           }
         } else {
           await insertDocLink(tx, {
@@ -3134,6 +3169,9 @@ export async function createItemCompanyShipment(
         })
       }
     }
+    // 市场行发完也可能是整单的最后一步（混合单里供应链行已先收完货），
+    // 所以这里同样要收口。纯市场单建单即「已完成」，此时是 no-op。
+    await completePurchaseOrderIfFullyFulfilled(tx, purchaseOrderId)
     return docId
   })
   await logOperation(session, 'inventory.item_company_shipment.create', 'inventory_docs', id, { purchaseOrderId })
@@ -3353,7 +3391,15 @@ export async function receiveItemCompanyShipment(
   return receivePhysicalShipment(session, input, '品项公司发货', '市场采购入库')
 }
 
-async function completeSupplyChainPurchaseOrderIfFullyReceived(tx: Tx, purchaseOrderId: string): Promise<void> {
+/**
+ * 采购订单的完结判定：**全部**明细行都履约满了才转「已完成」。
+ *
+ * 收敛后一张单可以同时含市场行与供应链行，两类行的履约来自不同动作 ——
+ * 市场行由品项公司发货回写、供应链行由供应链采购入库回写 —— 所以**两个动作末尾都要调它**，
+ * 谁最后完成谁负责收口。早先只有收货路径调用，导致「先收完供应链货、再发完市场货」的
+ * 顺序下单据永久卡在待收货，而关闭流程又拒绝含市场行的单，操作员没有任何补救手段。
+ */
+async function completePurchaseOrderIfFullyFulfilled(tx: Tx, purchaseOrderId: string): Promise<void> {
   const [row] = rows<{ completed: boolean }>(await tx.execute(sql`
     SELECT COALESCE(BOOL_AND(COALESCE(fulfilled_quantity, 0) >= quantity), false) AS completed
       FROM inventory_doc_items
@@ -3536,7 +3582,7 @@ export async function receiveSupplyChainPurchaseOrder(
          WHERE id = ${line.orderItem.id}
       `)
     }
-    await completeSupplyChainPurchaseOrderIfFullyReceived(tx, purchaseOrderId)
+    await completePurchaseOrderIfFullyFulfilled(tx, purchaseOrderId)
     return docId
   })
   await logOperation(session, 'inventory.supply_chain_purchase.receive', 'inventory_docs', inboundId, {
@@ -3590,6 +3636,7 @@ export async function cancelSupplyChainPurchaseOrder(
         FROM inventory_doc_links
        WHERE to_doc_id = ${purchaseOrderId}
          AND relation_type = '品项公司报货采购订单'
+       ORDER BY from_item_id
        FOR UPDATE
     `))
     // 合并后一条采购明细可以汇总自**多张**品项公司报货需求的多行，因此这里按采购行分组
