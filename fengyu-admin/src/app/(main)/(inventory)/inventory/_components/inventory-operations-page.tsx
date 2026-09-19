@@ -730,11 +730,13 @@ function StoreRequestForm({
           />
         </FormField>
         <FormField label="所属市场" required>
+          {/* 值由「报货门店」联动派生（selectStore 写 parentLocationId），不能自己补 */}
           <InventorySubjectSelect
             options={markets.map((location) => ({ value: location.locationId, label: location.name }))}
             value={marketId}
             onChange={setMarketId}
             placeholder="请选择市场"
+            autoSelect={false}
           />
         </FormField>
         <FormField label="报货日期">
@@ -2113,6 +2115,9 @@ function ReturnForm({
     }
   }
 
+  // 注意跨 id 空间比较：parentLocationId 存的是 inventory_locations 的父级 location_id，
+  // 这里拿它比 org_node_id —— 只因为父级必然是市场 / 总部（两者 location_id = org_nodes.id）
+  // 才成立。门店的 location_id 是 store_id，永远不会出现在 targets 里。
   const targets = source?.locationType === '门店'
     ? locations.filter((location) => location.orgNodeId === source.parentLocationId)
     : headquarters
@@ -2128,11 +2133,17 @@ function ReturnForm({
           />
         </FormField>
         <FormField label="回库主体" required>
+          {/*
+            值由「退货主体」联动派生（门店→父市场、市场→总部），不能自己补：未选来源时
+            targets 退化成 headquarters，自动选中会把唯一总部固定成只读——而门店退货
+            只能退回父市场，那就是个撒谎的只读值，还会盖掉 selectSource 刚写进去的市场。
+          */}
           <InventorySubjectSelect
             options={targets.filter((location) => location.orgNodeId).map((location) => ({ value: location.orgNodeId!, label: location.name }))}
             value={targetOrgNodeId}
             onChange={setTargetOrgNodeId}
             placeholder="请选择回库主体"
+            autoSelect={false}
           />
         </FormField>
         <FormField label="退货日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
@@ -2345,6 +2356,10 @@ function SupplyChainStaffPurchaseForm({
   const [lines, setLines] = useState<LotDraftLine[]>([{ skuId: '', lotId: '', quantity: '1', reason: '', remark: '' }])
   const [saving, setSaving] = useState(false)
 
+  // 卸载哨兵：主体候选唯一时员工列表会在挂载那一刻就开始拉（#189），此前只有用户手选
+  // 才会发起。请求序号挡得住结果错配，但挡不住「打开就切走」时给已卸载表单弹错误 toast。
+  useEffect(() => () => { employeeRequestRef.current = -1 }, [])
+
   function updateLine(index: number, patch: Partial<LotDraftLine>) {
     setLines((previous) => previous.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line))
   }
@@ -2450,6 +2465,10 @@ function MarketStaffPurchaseForm({
   const [remark, setRemark] = useState('')
   const [lines, setLines] = useState<LotDraftLine[]>([{ skuId: '', lotId: '', quantity: '1', reason: '', remark: '' }])
   const [saving, setSaving] = useState(false)
+
+  // 卸载哨兵：主体候选唯一时员工列表会在挂载那一刻就开始拉（#189），此前只有用户手选
+  // 才会发起。请求序号挡得住结果错配，但挡不住「打开就切走」时给已卸载表单弹错误 toast。
+  useEffect(() => () => { employeeRequestRef.current = -1 }, [])
 
   function updateLine(index: number, patch: Partial<LotDraftLine>) {
     setLines((previous) => previous.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line))

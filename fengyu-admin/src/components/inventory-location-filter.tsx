@@ -4,22 +4,41 @@ import { useMemo } from 'react'
 import type { InventoryLocationFilterOptions } from '@/lib/inventory/types'
 import { Select } from '@/components/ui/select'
 
+interface FilterLevelOption {
+  locationId: string
+  name: string
+}
+
 /**
- * 候选唯一时不渲染下拉，只展示当前主体（#189）。
+ * 候选唯一的层级不渲染下拉，只展示当前主体（#189）。
  *
  * 供应链角色只看得到总部一个主体，门店角色只看得到自家店 —— 给一个永远只有一项
  * 的下拉，用户点开只会看到自己已经选中的那一项。这里按**候选数**判定而不是按
  * 层级判定：`org_nodes` 没有「总部唯一」的约束，写死层级会在建第二个总部那天选错。
  *
- * 与办理台的 `SubjectSelect` 不同，这里不需要补 onChange：库存查询页的
+ * 与办理台的 `InventorySubjectSelect` 不同，这里不需要补 onChange：库存查询页的
  * `selectedLocationId` 由服务端 `resolveInventoryFilterLocationId()` 解析后下发，
- * 唯一候选时它本来就已经是那个值。
+ * 唯一候选时它本来就已经是那个值。属性名沿用 `data-fixed-subject`，让 E2E 的
+ * `selectByLabel` 与 UX 扫描一套选择器通吃两处。
  */
-function FixedLocation({ label, locationId }: { label: string; locationId: string }) {
+function FixedLevel({
+  option,
+  ariaLabel,
+  className,
+}: {
+  option: FilterLevelOption
+  ariaLabel: string
+  className: string
+}) {
   return (
-    <div className="flex h-10 items-center text-sm" data-fixed-location={locationId}>
-      {label}
-    </div>
+    <output
+      className={`block h-10 truncate px-3 text-sm leading-10 ${className}`}
+      aria-label={ariaLabel}
+      data-fixed-subject={option.locationId}
+      title={option.name}
+    >
+      {option.name}
+    </output>
   )
 }
 
@@ -41,14 +60,14 @@ export default function InventoryLocationFilter({
     market.locationId === value || market.stores.some((store) => store.locationId === value)
   )), [options.markets, value])
   const primaryValue = selectedHeadquarters?.locationId ?? selectedMarket?.locationId ?? ''
-  const hasOptions = options.headquarters.length > 0 || options.markets.length > 0
-  const solePrimary = options.headquarters.length + options.markets.length === 1
-    ? (options.headquarters[0]
-      ? { locationId: options.headquarters[0].locationId, name: '总部（供应链）' }
-      : { locationId: options.markets[0].locationId, name: options.markets[0].name })
-    : null
-  // 二级候选：总部只有「供应链库存」自己；市场下是（可选的市场本级）+ 门店。
-  const secondaryOptions = selectedHeadquarters
+
+  // 一级：总部（统一显示为「总部（供应链）」）+ 各市场。
+  const primaryOptions: FilterLevelOption[] = [
+    ...options.headquarters.map((location) => ({ locationId: location.locationId, name: '总部（供应链）' })),
+    ...options.markets.map((market) => ({ locationId: market.locationId, name: market.name })),
+  ]
+  // 二级：总部层级只有「供应链库存」自己；市场层级是（可选的）市场本级 + 其门店。
+  const secondaryOptions: FilterLevelOption[] = selectedHeadquarters
     ? [{ locationId: selectedHeadquarters.locationId, name: '供应链库存' }]
     : selectedMarket
       ? [
@@ -58,6 +77,8 @@ export default function InventoryLocationFilter({
         ...selectedMarket.stores,
       ]
       : []
+
+  const solePrimary = primaryOptions.length === 1 ? primaryOptions[0] : null
   const soleSecondary = secondaryOptions.length === 1 ? secondaryOptions[0] : null
 
   function selectPrimary(locationId: string) {
@@ -76,27 +97,24 @@ export default function InventoryLocationFilter({
   return (
     <>
       {solePrimary && primaryValue === solePrimary.locationId ? (
-        <FixedLocation label={solePrimary.name} locationId={solePrimary.locationId} />
+        <FixedLevel option={solePrimary} ariaLabel="库存市场层级" className={headquartersClassName} />
       ) : (
         <Select
           value={primaryValue}
           onChange={(event) => selectPrimary(event.target.value)}
           className={headquartersClassName}
-          disabled={!hasOptions}
+          disabled={primaryOptions.length === 0}
           aria-label="库存市场层级"
         >
-          {!hasOptions && <option value="">暂无可用库存主体</option>}
-          {options.headquarters.map((location) => (
-            <option key={location.locationId} value={location.locationId}>总部（供应链）</option>
-          ))}
-          {options.markets.map((market) => (
-            <option key={market.locationId} value={market.locationId}>{market.name}</option>
+          {primaryOptions.length === 0 && <option value="">暂无可用库存主体</option>}
+          {primaryOptions.map((option) => (
+            <option key={option.locationId} value={option.locationId}>{option.name}</option>
           ))}
         </Select>
       )}
 
       {soleSecondary && (value ?? '') === soleSecondary.locationId ? (
-        <FixedLocation label={soleSecondary.name} locationId={soleSecondary.locationId} />
+        <FixedLevel option={soleSecondary} ariaLabel="库存门店层级" className={storeClassName} />
       ) : (
         <Select
           value={selectedHeadquarters ? selectedHeadquarters.locationId : (value ?? '')}
@@ -106,8 +124,8 @@ export default function InventoryLocationFilter({
           aria-label="库存门店层级"
         >
           {secondaryOptions.length > 0 ? (
-            secondaryOptions.map((location) => (
-              <option key={location.locationId} value={location.locationId}>{location.name}</option>
+            secondaryOptions.map((option) => (
+              <option key={option.locationId} value={option.locationId}>{option.name}</option>
             ))
           ) : (
             <option value="">请先选择市场</option>
