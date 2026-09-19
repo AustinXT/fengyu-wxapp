@@ -47,16 +47,18 @@ const pick = (re, what) => {
 const cte = pick(/WITH refund_by_item AS \([\s\S]*?GROUP BY o\.sale_order_id, o\.received\s*\)/m, '金额 CTE')
 const caseSql = pick(/SELECT CASE[\s\S]*?END AS computed_type/m, '三档 CASE')
 const CTE_REF = '${RECALC_CUSTOMER_TYPE_CTE}'
-const upd = pick(/UPDATE sale_orders SET is_membership_upgrade[\s\S]*?LIMIT 1\s*\)/, 'is_membership_upgrade 归因').replace(CTE_REF, cte)
-const bma = pick(/UPDATE client_wechat_users SET became_member_at[\s\S]*?LIMIT 1\s*\)[\s\S]{0,40}?WHERE user_id = \$\d+/, 'became_member_at 归因').replace(CTE_REF, cte)
+const upd = pick(/UPDATE sale_orders SET is_membership_upgrade[\s\S]*?LIMIT 1\s*\)/, 'is_membership_upgrade 归因').replace(CTE_REF, () => cte)
+const bma = pick(/UPDATE client_wechat_users SET became_member_at[\s\S]*?LIMIT 1\s*\)[\s\S]{0,40}?WHERE user_id = \$\d+/, 'became_member_at 归因').replace(CTE_REF, () => cte)
 
-const sub = (s, u) => {
-  const out = s.replaceAll('$1', `'${u}'`).replaceAll('$2', String(THRESHOLD))
-  // 兜住参数布局漂移：源码若把 user_id 挪到 $3，上面只会替掉 $1/$2，剩下的 $N 必须报出来，
-  // 否则会静默把值塞进错误参数位、验证结果不可信。
-  if (/\$\d/.test(out)) throw new Error('替换后仍有未处理的参数占位符，源码参数布局变了？')
-  return out
-}
+// 按**完整占位符**一次性替换：不能用 replaceAll('$1', …)，那样 `$10` 会被当成 `$1`+`0`
+// 替出 `'U_pure'0`，`$20` 更会静默替成 `19800`（合法但错误的 SQL）——codex 闸门 2 指出的盲区。
+const PARAMS = { 1: (u) => `'${u}'`, 2: () => String(THRESHOLD) }
+const sub = (s, u) =>
+  s.replace(/\$(\d+)/g, (m, n) => {
+    const f = PARAMS[n]
+    if (!f) throw new Error(`SQL 里出现未知参数 ${m}（源码参数布局变了？）——本脚本只认 $1=顾客 / $2=阈值`)
+    return f(u)
+  })
 const psql = (file) => {
   execFileSync('docker', ['cp', file, `${CONTAINER}:/tmp/run.sql`])
   return execFileSync(
@@ -67,6 +69,12 @@ const psql = (file) => {
 }
 
 const work = mkdtempSync(join(tmpdir(), 'fy187-'))
+// 异常路径（sub/docker cp/psql 抛错）也要报出现场路径，否则 README 承诺的「失败保留并打印」不成立
+process.on('uncaughtException', (e) => {
+  console.error(`\n❌ ${e.message}`)
+  console.error(`   生成的 SQL 保留在 ${work}`)
+  process.exit(2)
+})
 
 // ── 1. 三档判定 ──
 const typeSql = USERS.map(([u]) => `SELECT '${u}', (${sub(`${cte}\n${caseSql}`, u)});`).join('\n\n')
@@ -123,7 +131,37 @@ for (const [label, actual, want] of [
   console.log(`${ok ? '✓' : '✗'} ${label.padEnd(26)} 期望 ${want} / 实际 ${actual}`)
 }
 
-console.log(`\n${failed === 0 ? '✅ 全部通过' : `❌ ${failed} 项不符`}（${USERS.length} 组判定 + 2 项归因）`)
+// ── 3. 三个全库批量脚本的 SQL 可执行性 ──
+// 本脚本原先只提取 staffApi 的运行时 SQL，批量脚本一行没跑过——于是
+// `recalc-all-customer-types.js` 引用已 DROP 的 paid_amount 列（跑一次必炸）一直没被发现，
+// 直到闸门 2 codex 静态审出来。这里把三个脚本的建表 SQL 也在临时库上真跑一遍（事务内回滚）。
+console.log('\n=== 全库批量脚本 SQL 可执行性 ===')
+const SCRIPTS = [
+  ['recalc-all-customer-types.js', /const BUILD_TARGET_TABLE_SQL = `([\s\S]*?)`/],
+  ['recalc-became-member-at.js', /const BUILD_TARGET_SQL = `([\s\S]*?)`/],
+  ['backfill-membership-upgrade-doc-type.js', /const BUILD_TARGET_SQL = `([\s\S]*?)`/],
+]
+for (const [name, re] of SCRIPTS) {
+  const body = readFileSync(`db/scripts/${name}`, 'utf8').match(re)?.[1]
+  if (!body) {
+    console.log(`✗ ${name.padEnd(40)} 提取建表 SQL 失败（结构变了？）`)
+    failed++
+    continue
+  }
+  const f = join(work, `${name}.sql`)
+  // $1 = 阈值；事务内跑完即回滚，不留痕
+  writeFileSync(f, `BEGIN;\n${body.replaceAll('$1', String(THRESHOLD))};\nROLLBACK;\n`)
+  try {
+    psql(f)
+    console.log(`✓ ${name.padEnd(40)} SQL 可执行`)
+  } catch (e) {
+    const msg = String(e.stderr || e.message).split('\n').filter(Boolean).slice(-2).join(' / ')
+    console.log(`✗ ${name.padEnd(40)} ${msg}`)
+    failed++
+  }
+}
+
+console.log(`\n${failed === 0 ? '✅ 全部通过' : `❌ ${failed} 项不符`}（${USERS.length} 组判定 + 2 项归因 + ${SCRIPTS.length} 个批量脚本）`)
 if (failed === 0) {
   rmSync(work, { recursive: true, force: true })
 } else {

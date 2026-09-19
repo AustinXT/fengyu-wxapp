@@ -22,7 +22,7 @@
  *   仅"向上跃迁"（rank: 流量客<体验客<小美客<会员客），保护已被手工或 payNotify 升级过的行。
  *
  * 同事务额外维护：
- *   - 会员客升级行：member_level 仅在原值为 NULL 时按滚动 12 个月销售额 (paid_amount) 写入
+ *   - 会员客升级行：member_level 仅在原值为 NULL 时按滚动 12 个月净消费写入
  *     初始等级（黑/金/粉/星/初钻），与 cron-worker determineMemberLevel 同源。
  *   - became_member_at 仅在原值为 NULL 时写入 first_qualified_at（首笔达标单
  *     COALESCE(paid_at, created_at)；选单口径 DISTINCT ON + ORDER BY paid_at
@@ -155,7 +155,7 @@ member_first AS (
 -- 2026-04-26 sku-capability 切换：xiaomei/tiyan 直接用 sale_items.is_experience 判定
 -- 充值卡 SKU 的 is_experience=false → 充值卡购买视同"小美客"消费（D1=A）
 -- #187 起改判金额：存在一张单其 non_trial > 0（小美客）/ trial > 0（体验客），
--- 与七处运行时副本的 non_trial > 0 / trial > 0 分支同口径。
+-- 与其余七处副本的 non_trial > 0 / trial > 0 分支同口径。
 xiaomei_users AS (
   SELECT DISTINCT client_user_id AS user_id
     FROM order_amounts
@@ -167,11 +167,16 @@ tiyan_users AS (
    WHERE trial > 0
 ),
 spend_12m AS (
+  -- 2026-09-19 修既有 bug（#187 闸门 2 codex 发现）：本段原查 paid_amount 列，
+  -- 而该列在 2026-04-26 sale-order-domain-refactor 里已 DROP（与 received 重复，见
+  -- db/schema/order.ts 的 received 注释）。结果是整个脚本一跑就报
+  -- column paid_amount does not exist，全库回算根本执行不了。
+  -- 口径对齐 cron steps/refresh-member-levels.ts：净消费 = GREATEST(received - refunded_amount, 0)，
+  -- 单据范围含 '销售单' 与 '转换单'（原脚本只算销售单，与 cron 不一致，一并对齐）。
   SELECT client_user_id AS user_id,
-         COALESCE(SUM(paid_amount::numeric), 0) AS spend
+         COALESCE(SUM(GREATEST(received::numeric - refunded_amount::numeric, 0)), 0) AS spend
     FROM sale_orders
-   WHERE sale_order_type = '销售单'
-     AND paid_amount > 0
+   WHERE sale_order_type IN ('销售单', '转换单')
      AND paid_at >= (NOW() - INTERVAL '12 months')
      AND client_user_id IS NOT NULL
    GROUP BY client_user_id

@@ -39,7 +39,12 @@ docker stop pg-187-verify
 ✓ became_member_at           期望 2026-01-11 / 实际 2026-01-11
 ✓ is_membership_upgrade 打标单  期望 O_pure / 实际 O_pure
 
-✅ 全部通过（15 组判定 + 2 项归因）
+=== 全库批量脚本 SQL 可执行性 ===
+✓ recalc-all-customer-types.js             SQL 可执行
+✓ recalc-became-member-at.js               SQL 可执行
+✓ backfill-membership-upgrade-doc-type.js  SQL 可执行
+
+✅ 全部通过（15 组判定 + 2 项归因 + 3 个批量脚本）
 ```
 
 自检过它确实会失败：去掉源码里的 `LEAST(..., si.sale_amount)` 封顶后跑，
@@ -66,6 +71,15 @@ docker stop pg-187-verify
 | `U_exitonly` | 整单只含「退出」方向明细 | 流量客（`COUNT(购买行)=0` 会误走回退分支、绕过封顶） |
 
 另外 fixtures 里还埋了三类不该被计入的脏流水：非 JSON 备注、`items` 非数组、`status='已作废'` 的退款。
+
+### 第三段：三个全库批量脚本的 SQL 可执行性
+
+把 `db/scripts/` 三个批量脚本的建表 SQL 也提出来在临时库上真跑一遍（事务内 ROLLBACK，不留痕）。
+
+**为什么需要这一段**：`recalc-all-customer-types.js` 引用了 2026-04-26 就已 DROP 的
+`sale_orders.paid_amount` 列——跑一次必报 `column paid_amount does not exist`、
+全库回算根本执行不了，但因为没人真跑过它的 SQL，这个问题潜伏到 #187 才被静态审出来。
+加这一段后，任何「引用不存在的列」都会当场报出来（已用变异测试确认）。
 
 ### 维护提示
 

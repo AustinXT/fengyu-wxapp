@@ -1,9 +1,12 @@
 -- #187 判据层验证：最小 schema + 正负例数据
 CREATE TYPE customer_type AS ENUM ('流量客', '体验客', '小美客', '会员客');
+CREATE TYPE member_level AS ENUM ('初钻', '星钻', '粉钻', '金钻', '黑钻');
+CREATE TYPE document_type AS ENUM ('售前一次', '售前二次', '售后');
 
 CREATE TABLE client_wechat_users (
   user_id text PRIMARY KEY,
   customer_type customer_type NOT NULL DEFAULT '流量客',
+  member_level member_level,
   became_member_at timestamptz,
   updated_at timestamptz DEFAULT now()
 );
@@ -18,12 +21,14 @@ CREATE TABLE sale_orders (
   received numeric(10,2) NOT NULL DEFAULT 0,
   refunded_amount numeric(10,2) NOT NULL DEFAULT 0,
   is_membership_upgrade boolean NOT NULL DEFAULT false,
+  document_type document_type,
   paid_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE sale_items (
   sale_item_id text PRIMARY KEY,
+  updated_at timestamptz DEFAULT now(),
   sale_order_id text NOT NULL REFERENCES sale_orders(sale_order_id),
   item_direction text NOT NULL DEFAULT '购买',
   sale_amount numeric(10,2) NOT NULL DEFAULT 0,
