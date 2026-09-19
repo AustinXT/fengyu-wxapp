@@ -483,8 +483,18 @@ async function selectContaining(sel: Locator, text: string) {
   await sel.selectOption(value)
 }
 
+/**
+ * 候选唯一的主体字段会自动选中并降级成只读 `<output data-fixed-subject>`（#189），
+ * 那里没有 select 可选 —— 改为核对展示值，语义与"选中它"等价。
+ */
 async function selectByLabel(page: Page, labelText: string, option: { label: string } | { contains: string }) {
-  const sel = labelled(page, labelText).locator('select').first()
+  const field = labelled(page, labelText)
+  const fixed = field.locator('[data-fixed-subject]')
+  if (await fixed.count() > 0) {
+    await expect(fixed.first()).toContainText('contains' in option ? option.contains : option.label)
+    return
+  }
+  const sel = field.locator('select').first()
   if ('contains' in option) await selectContaining(sel, option.contains)
   else await sel.selectOption({ label: option.label })
 }

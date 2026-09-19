@@ -22,8 +22,10 @@ describe('InventoryLocationFilter', () => {
     )
 
     expect(screen.getByLabelText('库存市场层级')).toHaveDisplayValue('总部（供应链）')
-    expect(screen.getByLabelText('库存门店层级')).toHaveDisplayValue('供应链库存')
-    expect(screen.getByLabelText('库存门店层级')).toBeDisabled()
+    // 总部层级下二级候选只有「供应链库存」自己 —— 一个永远只有一项的下拉没有意义，
+    // 降级为只读文本（#189）。
+    expect(screen.queryByLabelText('库存门店层级')).not.toBeInTheDocument()
+    expect(screen.getByText('供应链库存')).toHaveAttribute('data-fixed-location', 'HQ')
 
     fireEvent.change(screen.getByLabelText('库存市场层级'), { target: { value: 'M1' } })
     expect(onChange).toHaveBeenLastCalledWith('M1')
@@ -49,6 +51,46 @@ describe('InventoryLocationFilter', () => {
     render(<InventoryLocationFilter options={storeOnly} value="S1" onChange={vi.fn()} />)
 
     expect(screen.queryByRole('option', { name: '该市场库存' })).not.toBeInTheDocument()
-    expect(screen.getByLabelText('库存门店层级')).toHaveDisplayValue('红谷滩店')
+    // 市场、门店两级候选都只剩一个，两个下拉一起降级为只读文本。
+    expect(screen.queryByLabelText('库存市场层级')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('库存门店层级')).not.toBeInTheDocument()
+    expect(screen.getByText('南昌市场')).toHaveAttribute('data-fixed-location', 'M1')
+    expect(screen.getByText('红谷滩店')).toHaveAttribute('data-fixed-location', 'S1')
+  })
+
+  it('候选多于一个时仍是可选下拉（只读降级不能退化成"全都不给选"）', () => {
+    const onChange = vi.fn()
+    const twoStores: InventoryLocationFilterOptions = {
+      headquarters: [],
+      markets: [{
+        locationId: 'M1',
+        name: '南昌市场',
+        canSelectInventory: false,
+        stores: [{ locationId: 'S1', name: '红谷滩店' }, { locationId: 'S2', name: '世纪店' }],
+      }],
+      defaultLocationId: 'S1',
+    }
+
+    render(<InventoryLocationFilter options={twoStores} value="S1" onChange={onChange} />)
+
+    // 市场只有一个 → 只读；门店有两家 → 仍要能切换。
+    expect(screen.queryByLabelText('库存市场层级')).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('库存门店层级'), { target: { value: 'S2' } })
+    expect(onChange).toHaveBeenLastCalledWith('S2')
+  })
+
+  it('市场本级可选 + 无门店时，二级只剩「该市场库存」也降级为只读', () => {
+    const marketOnly: InventoryLocationFilterOptions = {
+      headquarters: [{ locationId: 'HQ', name: '总部' }],
+      markets: [{ locationId: 'M1', name: '南昌市场', canSelectInventory: true, stores: [] }],
+      defaultLocationId: 'M1',
+    }
+
+    render(<InventoryLocationFilter options={marketOnly} value="M1" onChange={vi.fn()} />)
+
+    // 一级有总部 + 市场两项，仍是下拉；二级只剩市场本级一项。
+    expect(screen.getByLabelText('库存市场层级')).toHaveDisplayValue('南昌市场')
+    expect(screen.queryByLabelText('库存门店层级')).not.toBeInTheDocument()
+    expect(screen.getByText('该市场库存')).toHaveAttribute('data-fixed-location', 'M1')
   })
 })

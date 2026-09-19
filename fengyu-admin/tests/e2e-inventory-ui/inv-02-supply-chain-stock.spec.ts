@@ -193,14 +193,19 @@ test('INV-02：门禁 fail-closed → 开闸 → 供应链备货', async ({ brow
     const BATCH_NO = `${NS}-B${STAMP}`
     await selectByLabel(page, '供应链采购订单', { contains: poId })
     await page.waitForTimeout(1500)
-    // 「供应链库存主体」在选定采购订单后 disabled={Boolean(doc)} —— 主体随单锁定，
-    // 不需要也不能再设置。这是个合理的交互设计，顺手记一条正向断言。
-    const lockedLocation = selectOf(page, '供应链库存主体')
+    // 「供应链库存主体」不可由操作人自由改：候选唯一时直接是只读展示（#189），
+    // 候选多个时也会在选定采购订单后 disabled={Boolean(doc)} 随单锁定。
+    // 两种形态都满足「主体不会与单据不一致」这条不变量，顺手记一条正向断言。
+    const fixedLocation = fixedOf(page, '供应链库存主体')
+    const isFixed = await fixedLocation.count() > 0
+    const lockedEvidence = isFixed
+      ? `fixed=${await fixedLocation.first().innerText()}`
+      : `disabled=${await selectOf(page, '供应链库存主体').isDisabled()}`
     recordVerdict(
       verdicts,
-      'UX-GOOD: 选定采购订单后库存主体自动锁定（防止主体与单据不一致）',
-      await lockedLocation.isDisabled(),
-      `disabled=${await lockedLocation.isDisabled()}`,
+      'UX-GOOD: 库存主体不可与单据不一致（唯一候选只读固定 / 多候选选单后锁定）',
+      isFixed || await selectOf(page, '供应链库存主体').isDisabled(),
+      lockedEvidence,
     )
     await fillByLabel(page, '实收数量', '100')
     await fillByLabel(page, '批号', BATCH_NO)
@@ -267,12 +272,17 @@ async function fillByLabel(page: import('@playwright/test').Page, labelText: str
 }
 
 /** 按 label 定位 <select> */
+function fieldOf(page: import('@playwright/test').Page, labelText: string) {
+  return page.locator('label').filter({ hasText: new RegExp(`^${escapeRe(labelText)}`) })
+}
+
 function selectOf(page: import('@playwright/test').Page, labelText: string) {
-  return page
-    .locator('label')
-    .filter({ hasText: new RegExp(`^${escapeRe(labelText)}`) })
-    .locator('select')
-    .first()
+  return fieldOf(page, labelText).locator('select').first()
+}
+
+/** 候选唯一时字段会降级成只读 `<output data-fixed-subject>`（#189） */
+function fixedOf(page: import('@playwright/test').Page, labelText: string) {
+  return fieldOf(page, labelText).locator('[data-fixed-subject]')
 }
 
 /**
@@ -296,6 +306,12 @@ async function selectByLabel(
   labelText: string,
   option: { label: string } | { contains: string },
 ) {
+  // 候选唯一的主体字段没有 select 可选，改为核对只读展示值（#189）。
+  const fixed = fixedOf(page, labelText)
+  if (await fixed.count() > 0) {
+    await expect(fixed.first()).toContainText('contains' in option ? option.contains : option.label)
+    return
+  }
   const sel = selectOf(page, labelText)
   if ('contains' in option) await selectContaining(sel, option.contains)
   else await sel.selectOption({ label: option.label })
