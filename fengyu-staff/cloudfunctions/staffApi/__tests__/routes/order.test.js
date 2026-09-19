@@ -5981,7 +5981,7 @@ describe('order.createConversion', () => {
     // 那 2 次就是白送；而把预扣一起注销会让 service.confirm 的扣次守卫失败、
     // 服务单永久卡在「待客户确认」且预扣不释放。故整行拒绝，要求先处理服务单。
     await expect(orderRoutes.createConversion(ctx))
-      .rejects.toThrow(/INVALID_PARAMS: 部分项目有服务进行中/)
+      .rejects.toThrow(/INVALID_STATE: CARD_RESERVED: 部分项目有服务进行中/)
 
     const heldLock = txCalls.find((call) => call.sql.includes('FOR UPDATE OF si'))
     // held 锁行查询不得在**顶层**聚合（会改变返回行数与锁定范围）。
@@ -8099,7 +8099,7 @@ describe('order.createConversion — 家居产品折抵（#125）', () => {
     })
 
     await expect(orderRoutes.createConversion(ctx))
-      .rejects.toThrow(/INVALID_PARAMS: 部分折抵项没有可折抵的已付金额/)
+      .rejects.toThrow(/INVALID_STATE: DEDUCTIBLE_EMPTY: 部分折抵项没有可折抵的已付金额/)
   })
 
   // #145/#153：`received` 已由 STEP 1.5 扣过退款，`picked_up_quantity` 又含退款结算数，

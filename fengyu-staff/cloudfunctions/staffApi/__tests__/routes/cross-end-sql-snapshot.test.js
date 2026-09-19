@@ -2096,6 +2096,24 @@ describe('cross-end-sql-snapshot 反模式守护（防镜像 bug 字面锁定失
         .toMatch(/items\.find\(\(i\) => !\(Number\(i\.waived_amount\) > 0\)\) \|\| items\[0\]/)
     }
   })
+
+  // #182：折抵两道闸门的错误**分类**必须两端一致。都映射成 -400 不代表等价——
+  // 前端按 `errorType` 分支、日志按前缀归类，一端 INVALID_PARAMS / 一端 INVALID_STATE
+  // 就不是严格镜像。语义上两者都是「该行当前状态不允许折抵」，统一用 INVALID_STATE +
+  // 二级子标签（CARD_RESERVED / DEDUCTIBLE_EMPTY）。
+  test('折抵两道闸门的错误分类两端一致（INVALID_STATE + 同名子标签）', () => {
+    const staffText = readFile(FILES.staffOrderJs)
+    const adminText = readFile(FILES.adminOrdersTs)
+    for (const tag of ['CARD_RESERVED', 'DEDUCTIBLE_EMPTY']) {
+      expect(staffText, `staff 的 ${tag} 未用 INVALID_STATE + 子标签`)
+        .toContain(`INVALID_STATE: ${tag}:`)
+      expect(adminText, `admin 的 ${tag} 未用 INVALID_STATE`)
+        .toMatch(new RegExp(`ApiError\\('INVALID_STATE',\\s*'${tag}:`))
+      // 反向：不得再退回 INVALID_PARAMS
+      expect(staffText, `staff 的 ${tag} 仍存在 INVALID_PARAMS 分类`)
+        .not.toMatch(new RegExp(`INVALID_PARAMS: ${tag}`))
+    }
+  })
 })
 
 describe('家居产品部分支付权益跨端守护', () => {

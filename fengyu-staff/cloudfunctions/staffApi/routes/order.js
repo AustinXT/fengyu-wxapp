@@ -4816,7 +4816,7 @@ async function createConversion(ctx) {
         // 而把预扣一起注销又会让 service.confirm 的扣次守卫失败、服务单永久卡在
         // 「待客户确认」且预扣不释放。故存在在途预扣时整行拒绝，请先完成/取消服务单。
         if (reserved > 0) {
-          throw new Error('INVALID_PARAMS: 部分项目有服务进行中，请先完成或取消服务单后再折抵')
+          throw new Error('INVALID_STATE: CARD_RESERVED: 部分项目有服务进行中，请先完成或取消服务单后再折抵')
         }
       }
 
@@ -4833,7 +4833,7 @@ async function createConversion(ctx) {
       // 只能按**权益**放行，否则整行会被金额门静默剔除。
       const isDepositOrGift = row.sale_order_type === '寄存单' || Number(row.sale_amount ?? 0) <= 0
       if (isDepositOrGift ? qty <= 0 : lineAmount <= 0) {
-        throw new Error('INVALID_PARAMS: 部分折抵项没有可折抵的已付金额')
+        throw new Error('INVALID_STATE: DEDUCTIBLE_EMPTY: 部分折抵项没有可折抵的已付金额')
       }
 
       const amount = lineAmount
