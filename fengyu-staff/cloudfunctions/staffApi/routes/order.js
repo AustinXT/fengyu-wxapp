@@ -2459,18 +2459,32 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
            -- 而那会把「重复还原」静默吃掉（sale_amount 被 +Δ 两次、waived 只减到 0），
            -- 破坏「原始应付 = sale_amount + waived_amount」恒等式且查无实据。
            AND src.waived_amount::numeric >= locked_source.waived
-        RETURNING locked_source.sale_order_id, locked_source.waived
+        RETURNING locked_source.sale_order_id, locked_source.sale_item_id, locked_source.waived
       )
-      SELECT sale_order_id, SUM(waived)::numeric(10, 2) AS waived
+      -- 按**行**返回：订单级还原量要逐行扣掉该行已退款额（与正向 orderWaiveAmount 同公式），
+      -- 直接把行级总额加回 total_amount 会把「已退给顾客的钱」变成假欠款。
+      SELECT sale_order_id, sale_item_id, waived
         FROM restored
-       GROUP BY sale_order_id
-       ORDER BY sale_order_id`,
+       ORDER BY sale_order_id, sale_item_id`,
     [saleOrderId, now],
   )
 
-  for (const r of restoredWaive.rows) {
-    const refOrderId = r.sale_order_id
-    const waived = Math.round(Number(r.waived || 0) * 100) / 100
+  // 逐行换算成订单级还原量：Σ max(0, 行级 waived − 该行已退款额)
+  const orderRestoreMap = new Map()
+  for (const orderId of [...new Set(restoredWaive.rows.map((r) => r.sale_order_id))].sort()) {
+    const refundedMap = await getPerItemRefundedMap(client, orderId)
+    let total = 0
+    for (const r of restoredWaive.rows) {
+      if (r.sale_order_id !== orderId) continue
+      const rowWaived = Math.round(Number(r.waived || 0) * 100) / 100
+      const refunded = Math.round(Number(refundedMap.get(r.sale_item_id) || 0) * 100) / 100
+      total += Math.max(0, Math.round((rowWaived - refunded) * 100) / 100)
+    }
+    orderRestoreMap.set(orderId, Math.round(total * 100) / 100)
+  }
+
+  for (const refOrderId of [...orderRestoreMap.keys()].sort()) {
+    const waived = orderRestoreMap.get(refOrderId)
     if (!(waived > 0)) continue
     const lockedOrder = await client.query(
       `SELECT total_amount, received, prepaid_card_amount, pending_prepaid_card_amount,
@@ -4790,13 +4804,21 @@ async function createConversion(ctx) {
       //  - Δ > 0：overpay 行 received > sale_amount，不能反向上调应付
       const refSaleAmount = Math.round(Number(row.sale_amount || 0) * 100) / 100
       const refReceived = Math.round(Number(row.received || 0) * 100) / 100
-      // 毛已付 = 净实收 + 行级已退款额；真实欠款 = 应付 − 毛已付
       const refRefunded = Math.round((Number(refundedByItem.get(row.sale_item_id) || 0)) * 100) / 100
-      const rawWaive = Math.round((refSaleAmount - refReceived - refRefunded) * 100) / 100
-      const waiveAmount = (row.sale_order_type !== '寄存单'
-        && refSaleAmount > 0 && refReceived > 0 && rawWaive > 0)
-        ? rawWaive
-        : 0
+      // ⚠ 行级与订单级的下调额**不是同一个数**，必须分开：
+      //  · 行级 = sale_amount − 净实收。它的作用是让 paid_sessions 重算到满付，从而在
+      //    remaining_sessions 被注销为 0 后仍满足 D3。少扣这一截就会提交坏状态：
+      //    10 次卡 ¥1000 付清后退 4 次 → received=600 / paid_sessions=6，折抵后 remaining=0，
+      //    (10 − 0) > 6 立刻违反 D3，此后该单任何整单 recalc 都抛 PAID_SESSIONS_UNDERFLOW。
+      //  · 订单级 = 行级 − 行级已退款额，即**真实欠款**（毛已付 = 净实收 + 已退款）。
+      //    多扣这一截就是把已经退给顾客的钱又当欠款豁免一次，
+      //    按 total_amount − refunded_amount 统计的净额会被重复扣减。
+      const rowWaiveRaw = Math.round((refSaleAmount - refReceived) * 100) / 100
+      const orderWaiveRaw = Math.round((rowWaiveRaw - refRefunded) * 100) / 100
+      const waiveEligible = row.sale_order_type !== '寄存单'
+        && refSaleAmount > 0 && refReceived > 0
+      const waiveAmount = waiveEligible && rowWaiveRaw > 0 ? rowWaiveRaw : 0
+      const orderWaiveAmount = waiveEligible && orderWaiveRaw > 0 ? orderWaiveRaw : 0
 
       // 按折抵数量占原行比例扣减 service_fee（转出行为负数）；纯余数行 qty=0 → 不扣手工费。
       // ⚠ 分母必须与 qty 同量纲：service_fee 快照口径是 sku.service_fee × quantity(**张数**)，
@@ -4828,9 +4850,12 @@ async function createConversion(ctx) {
         // #182 欠款归零用：原行/原单快照（行已持 FOR UPDATE，CAS 时作为期望值）+ 本次豁免额
         refSaleOrderId: row.sale_order_id,
         refSaleAmount,
-        // Δ 同时写在**转出行**的 waived_amount 上：原行那份是累计值，无法归因到具体转换单，
-        // 关闭待支付转换单时要靠转出行这份才能只还原本单豁免掉的欠款。
+        // 行级下调额写在**转出行**的 waived_amount 上：原行那份是累计值，无法归因到具体转换单，
+        // 关闭待支付转换单时要靠转出行这份才能只还原本单的调整。
+        // 订单级下调额不单独存：它 = waived_amount − 该行已退款额，而折抵后该行 remaining=0、
+        // overpay 也已被折走 → 可退恒 0，已退款额自此冻结，回滚时按同一公式重算即可。
         waiveAmount,
+        orderWaiveAmount,
         // 原行 pending_received 快照：欠款归零会把它钉到 received（保住 Branch B 第一段铺满），
         // 关单回滚必须还原，否则历史行（原本 pending=0）的分摊权重被永久改写，
         // 行级实收与 0040 视图 residual 随之漂移。同样只能记在转出行上才归因得到本单。
@@ -5286,7 +5311,8 @@ async function createConversion(ctx) {
     // 应付下调到实收后 paid_sessions 重算恒为满付，D3 自动成立。
     const waiveByOrder = new Map()
     for (const d of outItems) {
-      // Δ 与三个守卫在转出行构建时已算好（见 waiveAmount），此处只负责落库
+      // 两个下调额与守卫在转出行构建时已算好（见 waiveAmount / orderWaiveAmount）：
+      // waive = 行级（压到净实收，保 paid_sessions 满付 → D3）；订单级见下方 waiveByOrder。
       const waive = d.waiveAmount
       if (!(waive > 0)) continue
 
@@ -5310,16 +5336,20 @@ async function createConversion(ctx) {
       if (updItem.rowCount === 0) {
         throw new Error('CONFLICT: 原订单金额已变更，请刷新后重试')
       }
+      // 订单级只累加**真实欠款**部分（行级那一截含已退款额，不能进 total_amount）
       waiveByOrder.set(
         d.refSaleOrderId,
-        Math.round(((waiveByOrder.get(d.refSaleOrderId) || 0) + waive) * 100) / 100,
+        Math.round(((waiveByOrder.get(d.refSaleOrderId) || 0) + d.orderWaiveAmount) * 100) / 100,
       )
       // 标记本行已豁免，供下方 paid_sessions 行级重算筛选
     }
 
-    // 原单按 sale_order_id 排序处理，保持稳定锁序（多张卡可能分属不同原单）
+    // 原单按 sale_order_id 排序处理，保持稳定锁序（多张卡可能分属不同原单）。
+    // 订单级下调额为 0（该行的差额全部来自已退款、并无真实欠款）时跳过——行级 sale_amount
+    // 与 paid_sessions 仍已在上面处理，D3 已成立，订单 total 本就不该动。
     for (const refOrderId of [...waiveByOrder.keys()].sort()) {
       const waiveTotal = waiveByOrder.get(refOrderId)
+      if (!(waiveTotal > 0)) continue
       const lockedOrder = await tx.query(
         `SELECT total_amount, received, prepaid_card_amount, pending_prepaid_card_amount,
                 status, paid_at, sale_order_type
@@ -5366,15 +5396,24 @@ async function createConversion(ctx) {
         throw new Error('CONFLICT: 原订单状态已变更或有在途支付，请刷新后重试')
       }
 
-      // 行级重算被折抵行的 paid_sessions。**刻意不跑整单 recalcPaidSessionsForOrder**：
-      // ① prod 实测 338 行 / 28 单本就违反 D3，整单 UNDERFLOW 守护会让这些单的折抵直接失败；
-      // ② 整单重算的 Branch B 会按新 sale_cap 重分行级 received，触发 0040 视图的 residual
-      //    凭空产出营业额事件。公式与 paid-sessions.js 的 PAID_SESSIONS_RECALC_SQL 字面同源，
-      //    仅把作用域从 sale_order_id 收到 sale_item_id（total 下调后仍 >= received > 0，
-      //    不会新触发 `total_amount <= 0` 的满付兜底，同单其它行的 paid_sessions 不受影响）。
-      const waivedItemIds = outItems
-        .filter((d) => d.refSaleOrderId === refOrderId && d.waiveAmount > 0)
-        .map((d) => d.refSaleItemId)
+    }
+
+    // 行级重算被折抵行的 paid_sessions。**必须独立于「订单级是否有真实欠款可扣」**：
+    // 付清后部分退款的行 orderWaive 为 0（差额全来自退款、并无欠款），但行级 sale_amount
+    // 仍被压到净实收，paid_sessions 必须跟着重算到满付，否则 remaining_sessions 已注销为 0
+    // 而 (session_count − 0) > paid_sessions → 提交坏状态，此后整单 recalc 必抛
+    // PAID_SESSIONS_UNDERFLOW。**刻意不跑整单 recalcPaidSessionsForOrder**：
+    // ① prod 实测 338 行 / 28 单本就违反 D3，整单守护会让这些单的折抵直接失败；
+    // ② 整单重算的 Branch B 会按新 sale_cap 重分行级 received，触发 0040 视图的 residual
+    //    凭空产出营业额事件。公式与 paid-sessions.js 的 PAID_SESSIONS_RECALC_SQL 字面同源，
+    //    仅把作用域从 sale_order_id 收到 sale_item_id。
+    const recalcTargets = new Map()
+    for (const d of outItems) {
+      if (!(d.waiveAmount > 0)) continue
+      if (!recalcTargets.has(d.refSaleOrderId)) recalcTargets.set(d.refSaleOrderId, [])
+      recalcTargets.get(d.refSaleOrderId).push(d.refSaleItemId)
+    }
+    for (const refOrderId of [...recalcTargets.keys()].sort()) {
       await tx.query(
         `UPDATE sale_items
 SET paid_sessions = CASE
@@ -5386,7 +5425,7 @@ END,
 updated_at = NOW()
 FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = $2) op
 WHERE sale_items.sale_item_id = ANY($1)`,
-        [waivedItemIds, refOrderId],
+        [recalcTargets.get(refOrderId), refOrderId],
       )
     }
 

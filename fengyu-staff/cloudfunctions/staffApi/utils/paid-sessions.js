@@ -123,6 +123,34 @@ const SALE_ITEMS_RECEIVED_ALLOC_SQL = `WITH tg AS (
         updated_at = NOW()
     FROM caps, agg
     WHERE si.sale_item_id = caps.sale_item_id`
+// ⚠ #182 折抵「欠款归零」过的行（waived_amount > 0）由 SALE_ITEMS_RECEIVED_FLOOR_SQL 补一道
+//   下限，见其注释：本式第一段是按 pend_cap **比例**分配，untargeted < Σpend_cap 时
+//   （legacy / receipt 不完整才走 Branch B，正是本式的定义域）该行只能拿到比例份额、
+//   低于折抵当时钉住的值，而它的 remaining_sessions 已注销为 0 → 立刻踩 D3。
+
+/**
+ * STEP 1.4（#182）：给「折抵欠款归零」过的行补 received 下限。
+ *
+ * 折抵时把该行 sale_amount 压到净实收、并把 pending_received 钉到同一个值，其
+ * remaining_sessions 已被注销为 0 —— 此后只要 received 低于钉住值，
+ * (session_count − 0) > paid_sessions 就成立，D3 立刻被破，该订单之后任何整单 recalc
+ * 都会抛 PAID_SESSIONS_UNDERFLOW。
+ *
+ * Branch A（receipt 完整）按 receipt 覆盖，不会低于钉住值；Branch B 的第一段却是按
+ * pend_cap **比例**分 LEAST(untargeted, Σpend_cap)，当 untargeted < Σpend_cap（legacy /
+ * 数据异常单，正是 Branch B 的定义域）时该行会被摊薄。故在 STEP 1 之后、STEP 1.5 之前
+ * 统一抬回下限。只作用于 waived_amount > 0 的购买行，其余行零影响。
+ *
+ * 必须在 RECEIVED_REFUNDED_DEDUCT_SQL（STEP 1.5）**之前**执行：1.5 是从毛额扣退款，
+ * 下限要作用在毛额语义上。
+ */
+const WAIVED_ROWS_RECEIVED_FLOOR_SQL = `UPDATE sale_items si
+    SET received = GREATEST(si.received::numeric, si.pending_received::numeric),
+        updated_at = NOW()
+    WHERE si.sale_order_id = $1
+      AND si.item_direction = '购买'
+      AND si.waived_amount::numeric > 0
+      AND si.received::numeric < si.pending_received::numeric`
 
 /**
  * STEP 1.5 逐项退款净额 SQL（2026-06-08 退款侧 $1 = saleOrderId）：从毛额 received 扣减
@@ -173,7 +201,11 @@ const CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL = `WITH conversion_order AS (
                FROM sale_items out_item
                WHERE out_item.sale_order_id = $1 AND out_item.item_direction = '转出'
              ), 0)::numeric AS converted_value,
-             -- #182：被再次折抵（waived_amount > 0）的转入行已结清、其 received 已被钉住，
+             -- #182：**已被折走**的转入行（存在未关闭的转出行引用它）不参与重分摊。
+             -- 判据刻意不用 waived_amount > 0：全额结清的转入行再被折抵时 Δ = 0、不写
+             -- waived_amount，却同样已被注销权益（剩余次数归零），而本 SQL 是
+             -- **整额覆盖式**重分摊（SET received = allocated），一旦 target 收缩就会把它的
+             -- received 改小 → 立刻踩 D3。转出行引用才是「已被折走」的充分判据。
              -- 不能参与重分摊。它的 sale_amount 已下调，若还算进 in_total 并按新权重重摊，
              -- 该行 received 会被改小，而其 remaining_sessions 已注销为 0 → 立刻踩 D3。
              COALESCE((
@@ -181,14 +213,14 @@ const CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL = `WITH conversion_order AS (
                FROM sale_items in_item
                WHERE in_item.sale_order_id = $1 AND in_item.item_direction = '转入'
                  AND in_item.sale_amount::numeric > 0
-                 AND in_item.waived_amount::numeric = 0
+                 AND NOT EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = in_item.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭')
              ), 0)::numeric AS in_total,
              -- 已退出转入行占掉的实收，要从本轮可分配的 target 里扣除
              COALESCE((
                SELECT SUM(in_item.received::numeric)
                FROM sale_items in_item
                WHERE in_item.sale_order_id = $1 AND in_item.item_direction = '转入'
-                 AND in_item.waived_amount::numeric > 0
+                 AND EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = in_item.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭')
              ), 0)::numeric AS waived_in_received
       FROM sale_orders so
       WHERE so.sale_order_id = $1
@@ -208,7 +240,7 @@ const CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL = `WITH conversion_order AS (
         AND si.sale_order_id = $1
         AND si.item_direction = '转入'
         AND si.sale_amount::numeric > 0
-        AND si.waived_amount::numeric = 0
+        AND NOT EXISTS (SELECT 1 FROM sale_items conv_out JOIN sale_orders conv_out_order ON conv_out_order.sale_order_id = conv_out.sale_order_id WHERE conv_out.ref_sale_item_id = si.sale_item_id AND conv_out.item_direction = '转出' AND conv_out_order.status <> '已关闭')
     ),
     provisional AS (
       SELECT ranked.*,
@@ -371,6 +403,10 @@ async function recalcPaidSessionsForOrder(client, saleOrderId) {
     await client.query(SALE_ITEMS_RECEIVED_FROM_RECEIPTS_SQL, [saleOrderId])
   } else {
     await client.query(SALE_ITEMS_RECEIVED_ALLOC_SQL, [saleOrderId])
+    // STEP 1.4（#182）：Branch B 的第一段是按 pend_cap **比例**分配，untargeted < Σpend_cap 时
+    // 会把「折抵欠款归零」过的行摊薄到钉住值以下，而其 remaining_sessions 已注销为 0 → 踩 D3。
+    // 抬回下限；只作用于 waived_amount > 0 的行。必须在 STEP 1.5 扣退款之前（下限是毛额语义）。
+    await client.query(WAIVED_ROWS_RECEIVED_FLOOR_SQL, [saleOrderId])
     // STEP 1.5：回退分支没有完整正向 receipt 覆盖，须按 note.items[].refundAmount 扣减。
     // 分支 A 已由负数 receipt 得到净额，故不在 A 中执行本扣减。
     await client.query(RECEIVED_REFUNDED_DEDUCT_SQL, [saleOrderId])
@@ -406,6 +442,7 @@ module.exports = {
   computePaidSessionsForItem,
   SALE_ITEMS_RECEIVED_ALLOC_SQL,
   SALE_ITEMS_RECEIVED_FROM_RECEIPTS_SQL,
+  WAIVED_ROWS_RECEIVED_FLOOR_SQL,
   RECEIVED_REFUNDED_DEDUCT_SQL,
   CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL,
   ORDER_PREPAID_CARD_RECALC_SQL,

@@ -1265,8 +1265,12 @@ describe('转换单转入 received 重算 SQL 四端一致性守护', () => {
     // #182：target 要先扣掉「已退出转入行已占的实收」（waived_in_received），
     // 否则被再次折抵的转入行会与其余行一起重分摊，received 被改小而 remaining 已注销 → 踩 D3。
     expect(sqls.staff).toMatch(/LEAST\(conversion_order\.in_total, GREATEST\(0, conversion_order\.converted_value \+ conversion_order\.net_received - conversion_order\.waived_in_received\)\)/)
-    expect(sqls.staff).toContain("AND in_item.waived_amount::numeric = 0")
-    expect(sqls.staff).toContain("AND si.waived_amount::numeric = 0")
+    // #182：排除判据是「存在未关闭的转出行引用本行」，**不是** waived_amount > 0——
+    // 全额结清的转入行再被折抵时 Δ=0、不写 waived_amount，却同样已注销权益，
+    // 而本 SQL 是整额覆盖式重分摊，漏排除就会在 target 收缩时把它的 received 改小 → 踩 D3。
+    expect(sqls.staff).toContain("AND NOT EXISTS (SELECT 1 FROM sale_items conv_out")
+    expect(sqls.staff).toContain("conv_out.ref_sale_item_id = si.sale_item_id")
+    expect(sqls.staff).not.toContain("AND in_item.waived_amount::numeric = 0")
     expect(sqls.staff).toMatch(/ROW_NUMBER\(\) OVER\s*\(ORDER BY si\.sale_item_id\)\s+AS rn/)
     expect(sqls.staff).toContain('WHEN rn = item_count THEN target_received -')
   })

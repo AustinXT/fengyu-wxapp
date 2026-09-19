@@ -585,21 +585,61 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
          -- 自校验：原行累计豁免额必须够扣。只夹下界（GREATEST）会把「重复还原」静默吃掉
          -- （sale_amount 被 +Δ 两次、waived 只减到 0），破坏「原始应付 = sale_amount + waived_amount」。
          AND src.waived_amount::numeric >= locked_source.waived
-      RETURNING locked_source.sale_order_id, locked_source.waived
+      RETURNING locked_source.sale_order_id, locked_source.sale_item_id, locked_source.waived
     )
-    SELECT sale_order_id, SUM(waived)::numeric(10, 2) AS waived
+    -- 按**行**返回：订单级还原量要逐行扣掉该行已退款额（与正向 orderWaiveAmount 同公式），
+    -- 直接把行级总额加回 total_amount 会把「已退给顾客的钱」变成假欠款。
+    SELECT sale_order_id, sale_item_id, waived
       FROM restored
-     GROUP BY sale_order_id
-     ORDER BY sale_order_id
+     ORDER BY sale_order_id, sale_item_id
   `)
   // 没有任何行被豁免过时这条语句返回空集；非数组一律按「无可还原」处理
   const restoredWaive: Array<Record<string, unknown>> = Array.isArray(restoredWaiveRaw)
     ? (restoredWaiveRaw as unknown as Array<Record<string, unknown>>)
     : []
 
-  for (const r of restoredWaive) {
-    const refOrderId = r.sale_order_id as string
-    const waived = Math.round(Number(r.waived ?? 0) * 100) / 100
+  // 逐行换算成订单级还原量：Σ max(0, 行级 waived − 该行已退款额)。
+  // SQL 与 lib/per-item-refund.ts 同源；事务体内必须走 tx。
+  const orderRestoreMap = new Map<string, number>()
+  for (const orderId of [...new Set(restoredWaive.map((r) => r.sale_order_id as string))].sort()) {
+    const refundedRows = (await tx.execute(sql`
+      WITH refund_items AS (
+        SELECT elem ->> 'refSaleItemId' AS sale_item_id,
+               COALESCE((elem ->> 'refundAmount')::numeric, 0) AS refund_amount
+        FROM sale_order_payments sop
+        CROSS JOIN LATERAL jsonb_array_elements(
+          CASE WHEN sop.note LIKE '{%'
+               THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
+                         THEN (sop.note)::jsonb -> 'items'
+                         ELSE '[]'::jsonb END
+               ELSE '[]'::jsonb END
+        ) AS elem
+        WHERE sop.sale_order_id = ${orderId}
+          AND sop.change_type = '退款'
+          AND sop.status = '已支付'
+          AND elem ->> 'refSaleItemId' IS NOT NULL
+          AND elem ->> 'refSaleItemId' <> 'OVERPAY'
+      )
+      SELECT sale_item_id, SUM(refund_amount) AS refunded
+        FROM refund_items GROUP BY sale_item_id
+    `)) as unknown as Array<Record<string, unknown>>
+    const refundedMap = new Map<string, number>(
+      (Array.isArray(refundedRows) ? refundedRows : []).map(
+        (r) => [r.sale_item_id as string, Number(r.refunded ?? 0)],
+      ),
+    )
+    let total = 0
+    for (const r of restoredWaive) {
+      if ((r.sale_order_id as string) !== orderId) continue
+      const rowWaived = Math.round(Number(r.waived ?? 0) * 100) / 100
+      const refunded = Math.round(Number(refundedMap.get(r.sale_item_id as string) ?? 0) * 100) / 100
+      total += Math.max(0, Math.round((rowWaived - refunded) * 100) / 100)
+    }
+    orderRestoreMap.set(orderId, Math.round(total * 100) / 100)
+  }
+
+  for (const refOrderId of [...orderRestoreMap.keys()].sort()) {
+    const waived = orderRestoreMap.get(refOrderId) as number
     if (!(waived > 0)) continue
     const lockedRows = (await tx.execute(sql`
       SELECT total_amount, received, prepaid_card_amount, pending_prepaid_card_amount,
@@ -5703,6 +5743,8 @@ export const createConversionOrder = withPermission(
         refSaleOrderId: string
         refSaleAmount: number
         waiveAmount: number
+        /** 订单级真实欠款豁免额（= 行级 − 行级已退款额），只有它能进 total_amount */
+        orderWaiveAmount: number
         refPendingReceived: number
       }
       const outItems: OutItem[] = []
@@ -5794,15 +5836,21 @@ export const createConversionOrder = withPermission(
         // 全放分支）、Δ > 0（overpay 行 received > sale_amount，不能反向上调应付）。
         const refSaleAmount = Math.round(Number(row.sale_amount ?? 0) * 100) / 100
         const refReceived = Math.round(Number(row.received ?? 0) * 100) / 100
-        // 毛已付 = 净实收 + 行级已退款额；真实欠款 = 应付 − 毛已付
         const refRefunded = Math.round(
           Number(refundedByItem.get(row.sale_item_id as string) ?? 0) * 100,
         ) / 100
-        const rawWaive = Math.round((refSaleAmount - refReceived - refRefunded) * 100) / 100
-        const waiveAmount = (row.sale_order_type !== '寄存单'
-          && refSaleAmount > 0 && refReceived > 0 && rawWaive > 0)
-          ? rawWaive
-          : 0
+        // ⚠ 行级与订单级的下调额**不是同一个数**：
+        //  · 行级 = sale_amount − 净实收，作用是让 paid_sessions 重算到满付，从而在
+        //    remaining_sessions 注销为 0 后仍满足 D3（10 次卡付清后退 4 次 → received=600 /
+        //    paid_sessions=6，折抵后 (10 − 0) > 6 会立刻违反 D3 并提交坏状态）。
+        //  · 订单级 = 行级 − 行级已退款额，即真实欠款；多扣就是把已退给顾客的钱
+        //    又当欠款豁免一次，total_amount − refunded_amount 的净额被重复扣减。
+        const rowWaiveRaw = Math.round((refSaleAmount - refReceived) * 100) / 100
+        const orderWaiveRaw = Math.round((rowWaiveRaw - refRefunded) * 100) / 100
+        const waiveEligible = row.sale_order_type !== '寄存单'
+          && refSaleAmount > 0 && refReceived > 0
+        const waiveAmount = waiveEligible && rowWaiveRaw > 0 ? rowWaiveRaw : 0
+        const orderWaiveAmount = waiveEligible && orderWaiveRaw > 0 ? orderWaiveRaw : 0
 
         const amount = lineAmount
         totalOut += amount
@@ -5835,6 +5883,7 @@ export const createConversionOrder = withPermission(
           refSaleOrderId: row.sale_order_id as string,
           refSaleAmount,
           waiveAmount,
+          orderWaiveAmount,
           // 原行 pending_received 快照：欠款归零会把它钉到 received（保住 Branch B 第一段铺满），
           // 关单回滚必须还原，否则历史行（原本 pending=0）的分摊权重被永久改写。
           refPendingReceived: Math.round(Number(row.pending_received ?? 0) * 100) / 100,
@@ -6317,15 +6366,19 @@ export const createConversionOrder = withPermission(
         if (rowsAffected(updItem) === 0) {
           throw new ApiError('CONFLICT', 'ORDER_AMOUNT_CHANGED: 原订单金额已变更，请刷新后重试')
         }
+        // 订单级只累加**真实欠款**部分（行级那一截含已退款额，不能进 total_amount）
         waiveByOrder.set(
           out.refSaleOrderId,
-          Math.round(((waiveByOrder.get(out.refSaleOrderId) ?? 0) + waive) * 100) / 100,
+          Math.round(((waiveByOrder.get(out.refSaleOrderId) ?? 0) + out.orderWaiveAmount) * 100) / 100,
         )
       }
 
       // 原单按 sale_order_id 排序处理，保持稳定锁序（多张卡可能分属不同原单）
+      // 订单级下调额为 0（差额全部来自已退款、并无真实欠款）时跳过——行级 sale_amount 与
+      // paid_sessions 仍已处理、D3 已成立，订单 total 本就不该动。
       for (const refOrderId of [...waiveByOrder.keys()].sort()) {
         const waiveTotal = waiveByOrder.get(refOrderId) as number
+        if (!(waiveTotal > 0)) continue
         const lockedOrderRows = (await tx.execute(sql`
           SELECT total_amount, received, prepaid_card_amount, pending_prepaid_card_amount,
                  status, sale_order_type
@@ -6364,14 +6417,24 @@ export const createConversionOrder = withPermission(
           throw new ApiError('CONFLICT', 'ORDER_STATUS_CHANGED: 原订单状态已变更或有在途支付，请刷新后重试')
         }
 
-        // 行级重算被折抵行的 paid_sessions。**刻意不跑整单 recalcPaidSessionsForOrder**：
-        // ① prod 实测 338 行 / 28 单本就违反 D3，整单 UNDERFLOW 守护会让这些单的折抵直接失败；
-        // ② 整单重算的 Branch B 会按新 sale_cap 重分行级 received，触发 0040 视图的 residual
-        //    凭空产出营业额事件。公式与 paid-sessions 的 PAID_SESSIONS_RECALC_SQL 同源，
-        //    仅把作用域收到 sale_item_id。
-        const waivedItemIds = outItems
-          .filter((out) => out.refSaleOrderId === refOrderId && out.waiveAmount > 0)
-          .map((out) => out.refSaleItemId)
+      }
+
+      // 行级重算被折抵行的 paid_sessions。**必须独立于「订单级是否有真实欠款可扣」**：
+      // 付清后部分退款的行 orderWaive 为 0，但行级 sale_amount 仍被压到净实收，
+      // paid_sessions 必须跟着重算到满付，否则 remaining_sessions 已注销为 0 而
+      // (session_count − 0) > paid_sessions → 提交坏状态，此后整单 recalc 必抛
+      // PAID_SESSIONS_UNDERFLOW。**刻意不跑整单 recalcPaidSessionsForOrder**：
+      // ① prod 实测 338 行 / 28 单本就违反 D3，整单守护会让这些单的折抵直接失败；
+      // ② 整单重算的 Branch B 会按新 sale_cap 重分行级 received，触发 0040 视图 residual。
+      // 公式与 lib/paid-sessions.ts 的 PAID_SESSIONS_RECALC_SQL 同源，作用域收到 sale_item_id。
+      const recalcTargets = new Map<string, string[]>()
+      for (const out of outItems) {
+        if (!(out.waiveAmount > 0)) continue
+        if (!recalcTargets.has(out.refSaleOrderId)) recalcTargets.set(out.refSaleOrderId, [])
+        recalcTargets.get(out.refSaleOrderId)!.push(out.refSaleItemId)
+      }
+      for (const refOrderId of [...recalcTargets.keys()].sort()) {
+        const itemIds = recalcTargets.get(refOrderId) as string[]
         await tx.execute(sql`
           UPDATE sale_items
              SET paid_sessions = CASE
@@ -6382,7 +6445,7 @@ export const createConversionOrder = withPermission(
                  END,
                  updated_at = NOW()
             FROM (SELECT total_amount FROM sale_orders WHERE sale_order_id = ${refOrderId}) op
-           WHERE sale_items.sale_item_id IN (${sql.join(waivedItemIds.map((id) => sql`${id}`), sql`, `)})
+           WHERE sale_items.sale_item_id IN (${sql.join(itemIds.map((id) => sql`${id}`), sql`, `)})
         `)
       }
 
