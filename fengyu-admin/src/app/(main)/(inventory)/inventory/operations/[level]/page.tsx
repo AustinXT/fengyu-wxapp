@@ -8,6 +8,7 @@ import { getSession } from '@/lib/auth'
 import {
   INVENTORY_BUSINESS_LEVELS,
   genericDocBusinessLevel,
+  inventoryLevelOperateAction,
   requireInventoryBusinessLevel,
   type InventoryBusinessLevel,
 } from '@/lib/inventory/business-level'
@@ -53,11 +54,7 @@ export default async function Page({
     listInventoryCoreDocs({ page: 1, pageSize: 100 }),
   ])
   const actions = session.permissions.actions
-  const operateAction = level === 'supply-chain'
-    ? 'inventory:supply_chain_operate'
-    : level === 'market'
-      ? 'inventory:market_operate'
-      : 'inventory:store_operate'
+  const operateAction = inventoryLevelOperateAction(level)
   const approveAction = level === 'supply-chain'
     ? 'inventory:supply_chain_approve'
     : level === 'market'

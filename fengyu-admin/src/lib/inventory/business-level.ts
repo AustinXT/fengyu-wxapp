@@ -23,6 +23,23 @@ export function requireInventoryBusinessLevel(
   if (!session || !canAccessInventoryBusinessLevel(session, level)) notFound()
 }
 
+const LEVEL_OPERATE_ACTION: Record<InventoryBusinessLevel, string> = {
+  'supply-chain': 'inventory:supply_chain_operate',
+  market: 'inventory:market_operate',
+  store: 'inventory:store_operate',
+}
+
+/**
+ * 层级 → 该层级的库存操作权限。
+ *
+ * 这份对应关系原先散在四处（engine 的建单校验、办理台页面的 operateAction 三元、
+ * 办理台组件、以及本文件的 LEVEL_ACTION_ACCESS），新增层级或改 action 名要改四处，
+ * 漂移了也没有任何测试会红。收敛到这里当单源。
+ */
+export function inventoryLevelOperateAction(level: InventoryBusinessLevel): string {
+  return LEVEL_OPERATE_ACTION[level]
+}
+
 export function inventoryBusinessPath(level: InventoryBusinessLevel): string {
   return `/inventory/operations/${level}`
 }

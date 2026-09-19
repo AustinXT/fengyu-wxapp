@@ -3528,3 +3528,74 @@ describe('#191 层级权限必须与 scope 落在同一条角色绑定上', () =
     expect(String((error as Error)?.message ?? '')).not.toMatch(/PERMISSION_DENIED|无权|库存操作权限/)
   })
 })
+
+/**
+ * admin 不能被层级权限收紧误伤（#191 round-3，两个谱系都点名缺这条）。
+ *
+ * `scopeSessionToActions` 按 action 过滤角色，万一哪天 admin 角色的 actions 不再是
+ * 字面量枚举（比如改成通配或延迟解析），过滤会把 admin 角色整个滤掉 →
+ * `isAdminScope` 转假 → 全局范围塌成空集 → admin 反而建不了单。
+ * 这条用**带完整角色级元数据的真实形态 admin 会话**把它钉住。
+ */
+describe('#191 层级权限收紧不误伤 admin', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockDb.select.mockReset()
+    mockDb.execute.mockReset()
+    vi.mocked(hasPermission).mockImplementation(
+      (session, action) => (session.permissions.actions ?? []).includes(action),
+    )
+    mockDb.execute.mockResolvedValue([{ drifted: false }] as never)
+  })
+
+  it('admin 建任意层级的通用单都不被权限或可见性闸拦下', async () => {
+    // admin 的 scope 是「全局不受限」，靠 isAdminScope 判定；这里连同角色级元数据
+    // 一起给全，走的是真实的收窄路径而不是无元数据的兼容 no-op。
+    vi.mocked(isAdminScope).mockReturnValue(true)
+    mockGetSession.mockResolvedValue({
+      employeeId: 'E-ADMIN',
+      name: '超管',
+      phone: '13800000000',
+      roles: [{
+        role: 'admin', scopeId: 'HQ', scopeType: '总部',
+        actions: [
+          'inventory:list',
+          'inventory:supply_chain_operate',
+          'inventory:market_operate',
+          'inventory:store_operate',
+        ],
+        scopeStoreIds: [],
+        scopeOrgNodeIds: ['HQ'],
+      }],
+      permissions: {
+        actions: [
+          'inventory:list',
+          'inventory:supply_chain_operate',
+          'inventory:market_operate',
+          'inventory:store_operate',
+        ],
+        scopeStoreIds: [],
+        scopeOrgNodeIds: ['HQ'],
+      },
+    } as never)
+
+    for (const docType of ['院产品报损', '市场产品报损', '内部领用']) {
+      let error: unknown
+      try {
+        await createInventoryCoreDoc({
+          docType: docType as never,
+          sourceOrgNodeId: 'NODE-ANY',
+          targetOrgNodeId: null,
+          docDate: '2026-09-19',
+          remark: '',
+          items: [{ skuId: 'SKU-1', quantity: 1 } as never],
+        })
+      } catch (err) {
+        error = err
+      }
+      expect(String((error as Error)?.message ?? ''), docType).not.toMatch(
+        /PERMISSION_DENIED|无权|库存操作权限/,
+      )
+    }
+  })
+})
