@@ -3677,7 +3677,7 @@ async function approveRefund(ctx) {
           converted_quantity: r.converted_quantity,
           unit_real_price: r.unit_real_price,
           received: r.received,
-          picked_quantity: c ? Number(r.picked_up_quantity || 0) : null,
+          picked_quantity: Number(r.picked_up_quantity || 0),
           converted_amount: c ? c.converted_amount : null,
         }
         const refundable = calculateUnusedQuantity(lockedSrc)
@@ -5678,11 +5678,11 @@ async function createGroupedPickup(ctx, saleItemIds, pickupQuantity, remark, ide
     )
     if (locked.rows.length !== ids.length) throw new Error('CONFLICT: 部分家居产品已更新，请刷新后重试')
 
-    // #145/#153：已提货 / 已转走额度必须在**锁取得之后**用另一条语句查。
+    // #145/#153：已转走**金额**必须在**锁取得之后**用另一条语句查。
     // `FOR UPDATE OF si` 只锁 sale_items：READ COMMITTED 下语句先取快照再等锁，唤醒后
-    // EvalPlanQual 只刷新 si 自身的行版本，pickup_records 与转出行聚合仍是旧快照。
-    // 物理上限（quantity − picked_up_quantity）挡不住「已付额度」被重复使用：
-    // 10 件已付 4 件时，三笔并发提货各读到 picked_quantity=0，能提出 6 件。
+    // EvalPlanQual 只刷新 si 自身的行版本，转出行聚合仍是旧快照。
+    // #154：已提货件数不再在这里聚合——它就在被锁的 si 行上（picked_up_quantity），
+    // EvalPlanQual 会刷新；两个来源并存会在不变量破裂时让两道闸门无声分歧。
     const consumedRes = await client.query(
       `SELECT si.sale_item_id,
               COALESCE((
@@ -5880,11 +5880,11 @@ async function createPickup(ctx) {
     const row = locked.rows[0]
     if (!row) throw new Error('INVALID_PARAMS: 商品不存在')
 
-    // #145/#153：已提货 / 已转走额度必须在**锁取得之后**用另一条语句查。
+    // #145/#153：已转走**金额**必须在**锁取得之后**用另一条语句查。
     // `FOR UPDATE OF si` 只锁 sale_items：READ COMMITTED 下语句先取快照再等锁，唤醒后
-    // EvalPlanQual 只刷新 si 自身的行版本，pickup_records 与转出行聚合仍是旧快照。
-    // 物理上限（quantity − picked_up_quantity）挡不住「已付额度」被重复使用：
-    // 10 件已付 4 件时，三笔并发提货各读到 picked_quantity=0，能提出 6 件。
+    // EvalPlanQual 只刷新 si 自身的行版本，转出行聚合仍是旧快照。
+    // #154：已提货件数不再在这里聚合——它就在被锁的 si 行上（picked_up_quantity），
+    // EvalPlanQual 会刷新；两个来源并存会在不变量破裂时让两道闸门无声分歧。
     const consumedRes = await client.query(
       `SELECT si.sale_item_id,
               COALESCE((
