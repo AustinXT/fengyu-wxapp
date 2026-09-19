@@ -73,7 +73,13 @@ BEGIN
                SELECT 1
                  FROM sale_order_payments sop
                  CROSS JOIN LATERAL jsonb_array_elements(
-                   CASE WHEN btrim(sop.note) LIKE '{%'
+                   -- ⚠ 刻意与全仓 note→jsonb 守门写法字面一致（四端 14 处同款，由
+                   -- cross-end-sql-snapshot.test.js 的「四端 note→jsonb 守门」一项守护）：
+                   -- 外层 LIKE '{%' 纯文本守门 + 嵌套 CASE 让 ::jsonb cast 只在守门通过时求值。
+                   -- 评审建议过改 btrim(note) 以兜住前导空格，**不采纳**：那会让这两处单独偏离
+                   -- 四端约定（本仓最高频的 P1 源就是副本漂移），而实测 prod 235 条退款 note
+                   -- 全部合法且 0 条带前导空格。要改就四端一起改，属独立课题。
+                   CASE WHEN sop.note LIKE '{%'
                         THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
                                   THEN (sop.note)::jsonb -> 'items'
                                   ELSE '[]'::jsonb END

@@ -76,7 +76,10 @@ const HAS_ITEM_REFUND_EVIDENCE = `(
     SELECT 1
       FROM sale_order_payments sop
       CROSS JOIN LATERAL jsonb_array_elements(
-        CASE WHEN btrim(sop.note) LIKE '{%'
+        -- ⚠ 与全仓 note→jsonb 守门写法字面一致（四端 14 处同款，由 cross-end-sql-snapshot
+        -- 的「四端 note→jsonb 守门」一项守护）。评审建议过改 btrim 兜住前导空格，不采纳：
+        -- 那会让这里单独偏离四端约定，而实测 prod 235 条退款 note 全合法、0 条带前导空格。
+        CASE WHEN sop.note LIKE '{%'
              THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
                        THEN (sop.note)::jsonb -> 'items'
                        ELSE '[]'::jsonb END

@@ -163,3 +163,21 @@ test('两个新列是 NOT NULL（全新列无历史 NULL，可空只会让每个
     )
   }
 })
+
+test('note→jsonb 守门写法与全仓四端约定一致（不得单独加 btrim）', () => {
+  // `note LIKE '{%'` 是四端 14 处的既定写法，由 cross-end-sql-snapshot 的
+  // 「四端 note→jsonb 守门」一项守护。第 4 轮评审建议把这两处改 btrim 兜住前导空格 ——
+  // 不采纳：单独改会让这两处偏离四端约定，而副本漂移是本仓最高频的 P1 源；
+  // 实测 prod 235 条退款 note 全合法、0 条带前导空格。要改就四端一起改。
+  for (const [name, file] of [['迁移 0043', MIGRATION], ['verify 脚本', VERIFY]]) {
+    const src = read(file)
+    assert.ok(
+      src.includes("CASE WHEN sop.note LIKE '{%'"),
+      `${name} 的 note 守门写法偏离了四端约定`,
+    )
+    assert.ok(
+      !src.includes('btrim(sop.note)'),
+      `${name} 单独加了 btrim —— 要改请四端一起改，否则就是副本漂移`,
+    )
+  }
+})
