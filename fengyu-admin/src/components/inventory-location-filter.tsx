@@ -97,12 +97,12 @@ export default function InventoryLocationFilter({
   return (
     <>
       {/*
-        兜底带上 `!value`：`primaryValue` 是从选中的总部/市场反查出来的，调用方若传
-        value=null（生产路径上 `resolveInventoryFilterLocationId()` 会保证非空，但这里
-        不赖它），它会退回 ''，唯一候选就又变回「1 个选项还要你点」。而值为空时实际
-        查询走的就是服务端解析出的那个唯一候选，只读展示它不会说谎。
+        只在「当前值就是那个唯一候选」时才降级为只读。不要拿 `!value` 兜底：组件无从
+        知道调用方是否真的用这个唯一候选去查询，值为空却展示一个主体名就是在替调用方
+        撒谎。两个生产页面（stocks / docs）都先经 `resolveInventoryFilterLocationId()`
+        解析再下发，value 恒非空；真出现空值时宁可退回下拉。
       */}
-      {solePrimary && (primaryValue === solePrimary.locationId || !value) ? (
+      {solePrimary && primaryValue === solePrimary.locationId ? (
         <FixedLevel option={solePrimary} ariaLabel="库存市场层级" className={headquartersClassName} />
       ) : (
         <Select

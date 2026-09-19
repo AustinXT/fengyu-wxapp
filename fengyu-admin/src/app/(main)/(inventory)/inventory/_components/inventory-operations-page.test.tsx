@@ -180,6 +180,23 @@ describe('办理台表单一致性（#135）', () => {
     expect(returnSourceField).not.toMatch(/autoSelect=\{false\}/)
   })
 
+  it('随单回填的主体在选定单据后不自动补值（#189）', () => {
+    // 5 个表单会在选定来源单据后把主体回填成单据自己的主体。单据没带主体时（
+    // `target_org_node_id` 可空）值会被写成空串 —— 此时组件若自作主张补一个唯一候选，
+    // 界面显示"已固定"，服务端却仍按来源单据一致性拒绝，用户看不出问题出在哪。
+    expect(source.match(/autoSelect=\{!doc\}/g) ?? []).toHaveLength(5)
+
+    for (const [from, to] of [
+      ['function PurchaseOrderForm(', 'function SupplyChainPurchaseOrderForm('],
+      ['function SupplyChainPurchaseOrderForm(', 'interface ShipmentDraftLine'],
+      ['function CompanyShipmentForm(', 'interface ReceiptProgressLine'],
+      ['function SupplyChainPurchaseReceiptForm(', 'function SupplyChainPurchaseCancelForm('],
+      ['function StoreAllocationForm(', 'function ReturnForm('],
+    ] as const) {
+      expect(block(from, to)).toMatch(/autoSelect=\{!doc\}/)
+    }
+  })
+
   it('必填标记覆盖到全部 19 个表单，不只是 UX 扫描点到的那 5 个', () => {
     // 只改被扫描到的 5 个表单，会让同一个 FormField 组件在页面内自相矛盾：
     // 用户看到有些字段带 *、有些不带，会以为不带的都是可选。

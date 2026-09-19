@@ -168,6 +168,24 @@ describe('InventorySubjectSelect（#189 候选唯一即自动选中）', () => {
       expect(screen.queryByText('品牌总部')).not.toHaveAttribute('data-fixed-subject')
     })
 
+    it('值被上游清空（单据没带主体）时不写回，渲染空下拉而不是假只读', () => {
+      // 随单回填的 5 个表单传的是 autoSelect={!doc}：选定单据后主体完全由单据决定。
+      // 单据的 target_org_node_id 可空，此时值被写成空串 —— 组件若补一个唯一候选，
+      // 界面显示"已固定"，服务端却仍按来源单据一致性拒绝。
+      const onChange = vi.fn()
+      const { rerender } = render(
+        <InventorySubjectSelect options={HQ} value="ORG-HQ" onChange={onChange} placeholder="请选择总部" autoSelect={false} />,
+      )
+      expect(screen.getByText('品牌总部')).toHaveAttribute('data-fixed-subject', 'ORG-HQ')
+
+      rerender(
+        <InventorySubjectSelect options={HQ} value="" onChange={onChange} placeholder="请选择总部" autoSelect={false} />,
+      )
+      expect(onChange).not.toHaveBeenCalled()
+      expect(screen.getByRole('combobox')).toHaveValue('')
+      expect(screen.queryByText('品牌总部')).not.toHaveAttribute('data-fixed-subject')
+    })
+
     it('上游联动填好值后，候选唯一仍降级为只读', () => {
       render(
         <InventorySubjectSelect

@@ -1289,6 +1289,7 @@ function PurchaseOrderForm({
             value={supplyChainLocationId}
             onChange={setSupplyChainLocationId}
             placeholder="请选择总部"
+            autoSelect={!doc}
           />
         </FormField>
         <FormField label="订单日期">
@@ -1408,6 +1409,7 @@ function SupplyChainPurchaseOrderForm({
             value={supplyChainLocationId}
             onChange={setSupplyChainLocationId}
             placeholder="请选择总部"
+            autoSelect={!doc}
           />
         </FormField>
         <FormField label="订单日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
@@ -1538,6 +1540,7 @@ function CompanyShipmentForm({
             value={sourceOrgNodeId}
             onChange={setSourceOrgNodeId}
             placeholder="请选择总部"
+            autoSelect={!doc}
           />
         </FormField>
         <FormField label="发货日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
@@ -1787,6 +1790,7 @@ function SupplyChainPurchaseReceiptForm({
             value={supplyChainLocationId}
             onChange={setSupplyChainLocationId}
             placeholder="请选择总部"
+            autoSelect={!doc}
             disabled={Boolean(doc)}
           />
         </FormField>
@@ -1996,6 +2000,7 @@ function StoreAllocationForm({
             value={sourceMarketId}
             onChange={setSourceMarketId}
             placeholder="请选择市场"
+            autoSelect={!doc}
           />
         </FormField>
         <FormField label="配货日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>

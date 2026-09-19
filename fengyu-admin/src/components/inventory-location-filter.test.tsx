@@ -98,9 +98,9 @@ describe('InventoryLocationFilter', () => {
     expectFixedLevel('库存门店层级', '该市场库存', 'M1')
   })
 
-  it('调用方传 value=null 时，唯一候选仍是只读而不是「一个选项的下拉」', () => {
-    // primaryValue 是从选中的总部/市场反查出来的，value 为空时它会退回 ''，
-    // 不额外兜一层就会退化成本 issue 要消灭的那种冗余选择。
+  it('调用方传 value=null 时退回下拉，不假装已经选中唯一候选', () => {
+    // 组件无从知道调用方到底在用哪个值查询，值为空却展示一个主体名就是替它撒谎。
+    // 生产路径上 value 由 resolveInventoryFilterLocationId() 解析后下发，恒非空。
     const soleMarket: InventoryLocationFilterOptions = {
       headquarters: [],
       markets: [{ locationId: 'M1', name: '南昌市场', canSelectInventory: true, stores: [] }],
@@ -109,7 +109,8 @@ describe('InventoryLocationFilter', () => {
 
     render(<InventoryLocationFilter options={soleMarket} value={null} onChange={vi.fn()} />)
 
-    expect(screen.queryByRole('combobox', { name: '库存市场层级' })).not.toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: '库存市场层级' })).toBeInTheDocument()
+    expect(screen.queryByText('南昌市场')).not.toHaveAttribute('data-fixed-subject')
   })
 
   it('完全没有可用主体时给出空态而不是空下拉', () => {
