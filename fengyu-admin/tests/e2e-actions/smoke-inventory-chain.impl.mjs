@@ -8,7 +8,7 @@
 import path from 'node:path'
 import { closePool, pgQuery } from './setup.mjs'
 import {
-  HQ_ORG, MKA_ORG, STA1_ID, STA1_ORG,
+  HQ_ORG, MKA_ORG, MKB_ORG, STA1_ID, STA1_ORG,
   SKU_SUPPLY, SUPPLIER_ID, PROMO_ID,
   cleanupInventoryFixture, ensureInventoryFixture,
   docHeader, docItems, locationLots,
@@ -162,6 +162,22 @@ try {
   // ════ 阶段 4：市场报货汇总 → 采购订单 ════
   // #193 起采购不再直接引用市场报货单，中间多一层跨市场汇总。
   setSession(supplyChainSession())
+  // marketIds 过滤单独验一次：它走 sql.join 展开数组，写成 `= ANY($1::text[])` 会
+  // 被 drizzle 绑成单个参数直接 Failed query，而默认不传该参数的路径测不出来。
+  const filteredSummary = await biz.summarizeMarketReplenishmentRequests({
+    supplyChainLocationId: HQ_ORG,
+    marketIds: [MKA_ORG],
+  })
+  check('汇总支持按市场筛选（数组参数）',
+    filteredSummary.items.length > 0 && filteredSummary.items.every((i) => i.marketId === MKA_ORG),
+    `items=${filteredSummary.items.length}`)
+  const emptyMarketSummary = await biz.summarizeMarketReplenishmentRequests({
+    supplyChainLocationId: HQ_ORG,
+    marketIds: [MKB_ORG],
+  })
+  check('按无需求的市场筛选得到空集', emptyMarketSummary.items.length === 0,
+    `items=${emptyMarketSummary.items.length}`)
+
   const { id: mhzId } = await biz.createMarketReportSummary({
     supplyChainLocationId: HQ_ORG,
     items: [{ skuId: SKU_SUPPLY, marketId: MKA_ORG, quantity: 6, sourceReportItemIds: [mbhItem.id] }],

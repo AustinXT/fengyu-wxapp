@@ -2353,6 +2353,10 @@ export async function summarizeMarketReplenishmentRequests(
     const marketIds = Array.isArray(input.marketIds) && input.marketIds.length > 0
       ? input.marketIds
       : null
+    // 同上：数组参数走 sql.join 展开，不用 `= ANY(${数组}::text[])`。
+    const marketFilter = marketIds
+      ? sql`AND d.market_id IN (${sql.join(marketIds.map((id) => sql`${id}`), sql`, `)})`
+      : sql``
     const result = rows<{
       sku_id: string
       market_id: string
@@ -2387,12 +2391,12 @@ export async function summarizeMarketReplenishmentRequests(
                AND summary_doc.status <> '已取消'
           ) summarized ON true
          WHERE d.doc_type = '市场报货'
-           AND d.status <> '已取消'
+           AND d.status = '已完成'
            AND d.market_id IS NOT NULL
            AND d.target_org_node_id = ${supplyChain.orgNodeId}
            AND (${startDate}::date IS NULL OR d.doc_date >= ${startDate}::date)
            AND (${endDate}::date IS NULL OR d.doc_date <= ${endDate}::date)
-           AND (${marketIds}::text[] IS NULL OR d.market_id = ANY(${marketIds}::text[]))
+           ${marketFilter}
       )
       SELECT p.sku_id,
              p.market_id,
@@ -2462,6 +2466,8 @@ export async function createMarketReportSummary(
       marketId: string
       quantity: number
       sourceItems: DocItemSnapshot[]
+      /** 本次汇总量在各来源行之间的实际分摊；单价与血缘共用这一份，不得各算各的。 */
+      allocations: Array<{ sourceItemId: number; quantity: number }>
       requestQuantity: number
       standardUnitPrice: number | null
       actualUnitPrice: number | null
@@ -2494,7 +2500,9 @@ export async function createMarketReportSummary(
         const header = await docForUpdate(tx, item.docId)
         if (
           header.docType !== '市场报货' ||
-          header.status === '已取消' ||
+          // 只认已完成的市场报货：草稿 / 待审批的异常单（存量、人工修复、导入产生）
+          // 不该被汇总进采购链路。
+          header.status !== '已完成' ||
           header.marketId !== market.orgNodeId ||
           header.targetOrgNodeId !== supplyChain.orgNodeId ||
           item.skuId !== skuId
@@ -2515,14 +2523,25 @@ export async function createMarketReportSummary(
       }
       const sku = await loadSku(tx, skuId, false, false)
       assertSkuAvailableToMarket(sku, market.orgNodeId)
+      // 先定分摊、再按**实际分摊量**加权算价。
+      // 早先拿全部候选来源的未汇总量加权，而血缘只按 id 顺序截取前几条 —— 部分汇总时
+      // 两者对应的来源集合不同：来源 A 1 件×10 元、B 9 件×20 元，只汇总 1 件时
+      // 血缘落在 A（10 元），单价却被算成 19 元。
+      const allocations = allocateMarketReportSourceLinks(sourceItems, quantity)
+      const allocatedItems = allocations.map((allocation) => {
+        const sourceItem = sourceItems.find((item) => item.id === allocation.sourceItemId)
+        if (!sourceItem) throw new ApiError('CONFLICT', '市场报货明细关联丢失，请重试')
+        return { ...sourceItem, quantity: allocation.quantity }
+      })
       prepared.push({
         sku,
         marketId: market.orgNodeId,
         quantity,
         sourceItems,
+        allocations,
         requestQuantity: availableQuantity,
-        standardUnitPrice: weightedUnitPrice(sourceItems, 'marketStandardUnitPrice'),
-        actualUnitPrice: weightedUnitPrice(sourceItems, 'marketActualUnitPrice'),
+        standardUnitPrice: weightedUnitPrice(allocatedItems, 'marketStandardUnitPrice'),
+        actualUnitPrice: weightedUnitPrice(allocatedItems, 'marketActualUnitPrice'),
       })
     }
     const docId = await generateDocId(tx, '市场报货汇总')
@@ -2575,7 +2594,8 @@ export async function createMarketReportSummary(
         storeUnitDiscount: 0,
         storeActualUnitPrice: line.sku.storePurchasePrice,
       })
-      for (const sourceLink of allocateMarketReportSourceLinks(line.sourceItems, line.quantity)) {
+      // 复用 prepared 阶段那份 allocation —— 与上面算单价用的是同一份，不重算。
+      for (const sourceLink of line.allocations) {
         const sourceItem = line.sourceItems.find((item) => item.id === sourceLink.sourceItemId)
         if (!sourceItem) throw new ApiError('CONFLICT', '市场报货明细关联丢失，请重试')
         await insertDocLink(tx, {
@@ -2780,11 +2800,34 @@ export async function createPurchaseOrder(
         throw new ApiError('INVALID_STATE', '采购订单只能引用市场报货汇总或品项公司报货需求')
       }
     }
+    // 供应商还必须是**启用中**的档案 —— 收敛前这道校验由 ensureSupplier 承担
+    // （它带 `is_active = true`），合并后单头不再选供应商，这道校验一并下沉到行级。
+    // 停用的与未绑定的合到同一份清单里一次性报，免得操作人补一个、报一个。
+    const boundSupplierIds = Array.from(new Set(
+      prepared.map((line) => line.sku.supplierId).filter((id): id is string => Boolean(id)),
+    ))
+    if (boundSupplierIds.length > 0) {
+      // ⚠️ 不能写 `= ANY(${数组}::text[])`：drizzle 会把 JS 数组绑成**单个**参数，
+      // PG 拿到的不是数组，直接 Failed query。项目既有写法是 sql.join 展开成 IN 列表
+      // （见 actions/dashboard.ts），每个元素仍是参数化占位，没有注入面。
+      const activeSuppliers = rows<{ supplier_id: string }>(await tx.execute(sql`
+        SELECT supplier_id
+          FROM inventory_suppliers
+         WHERE supplier_id IN (${sql.join(boundSupplierIds.map((id) => sql`${id}`), sql`, `)})
+           AND is_active = true
+      `))
+      const activeSupplierIds = new Set(activeSuppliers.map((row) => row.supplier_id))
+      for (const line of prepared) {
+        if (line.sku.supplierId && !activeSupplierIds.has(line.sku.supplierId)) {
+          missingSupplier.set(line.sku.skuId, `${line.sku.productName}（供应商已停用）`)
+        }
+      }
+    }
     if (missingSupplier.size > 0) {
       const names = Array.from(missingSupplier.values()).join('、')
       throw new ApiError(
         'INVALID_STATE',
-        `以下商品未绑定供应商档案，请先在商品资料补全后再下单：${names}`,
+        `以下商品的供应商档案缺失或已停用，请先在商品资料处理后再下单：${names}`,
       )
     }
     if (prepared.length === 0) {
@@ -2971,6 +3014,9 @@ async function insertOutboundShipmentItem(
     skuName: input.sourceLot.skuName,
     specName: input.sourceLot.specName,
     supplier: input.sourceLot.supplier,
+    // 单头不再挂供应商（#194），批次自带的关联要带到行上，
+    // 否则多供应商的发货单在详情页看不出每行货来自谁。
+    supplierId: input.sourceLot.supplierId,
     productSeries: input.sourceLot.productSeries,
     batchNo: input.sourceLot.batchNo,
     expiryDate: input.sourceLot.expiryDate,
@@ -3335,6 +3381,7 @@ async function receivePhysicalShipment(
         skuName: targetLot.skuName,
         specName: targetLot.specName,
         supplier: targetLot.supplier,
+        supplierId: targetLot.supplierId,
         productSeries: targetLot.productSeries,
         batchNo: targetLot.batchNo,
         expiryDate: targetLot.expiryDate,
@@ -3423,7 +3470,7 @@ export async function receiveSupplyChainPurchaseOrder(
   session: AuthSession,
   input: ReceiveSupplyChainPurchaseOrderInput,
 ): Promise<{ id: string; purchaseOrderId: string }> {
-  const purchaseOrderId = required(input.purchaseOrderId, '供应链采购订单')
+  const purchaseOrderId = required(input.purchaseOrderId, '采购订单')
   const supplyChainLocationId = required(input.supplyChainLocationId, '供应链库存主体')
   if (!Array.isArray(input.items) || input.items.length === 0) {
     throw new ApiError('INVALID_PARAMS', '供应链采购入库至少需要一条明细')
@@ -3458,7 +3505,7 @@ export async function receiveSupplyChainPurchaseOrder(
     for (const line of input.items) {
       const itemId = Number(line.purchaseOrderItemId)
       if (!Number.isInteger(itemId) || itemId <= 0 || seen.has(itemId)) {
-        throw new ApiError('INVALID_PARAMS', '供应链采购订单明细不能重复收货')
+        throw new ApiError('INVALID_PARAMS', '采购订单明细不能重复收货')
       }
       seen.add(itemId)
       const orderItem = await docItemForUpdate(tx, itemId, purchaseOrderId)
@@ -3600,7 +3647,7 @@ export async function cancelSupplyChainPurchaseOrder(
   session: AuthSession,
   input: CancelSupplyChainPurchaseOrderInput,
 ): Promise<{ success: true }> {
-  const purchaseOrderId = required(input.purchaseOrderId, '供应链采购订单')
+  const purchaseOrderId = required(input.purchaseOrderId, '采购订单')
   const cancellationReason = required(input.cancellationReason, '关闭原因')
   await syncLocations()
   await db.transaction(async (tx) => {
@@ -3618,14 +3665,25 @@ export async function cancelSupplyChainPurchaseOrder(
     if (orderItems.length === 0) {
       throw new ApiError('INVALID_STATE', '采购订单没有可关闭的明细')
     }
-    // 本流程只释放「供应链侧未收货」的额度。市场归属的行走的是品项公司发货，
-    // 撤回要经市场财务申请 + 供应链审批（`requestItemCompanyShipmentCancellation`），
-    // 不能在这里顺手取消掉，否则绕过了那道审批。
-    if (orderItems.some((item) => item.marketId)) {
-      throw new ApiError(
-        'INVALID_STATE',
-        '该采购订单含有市场归属明细，市场部分请走品项公司发货撤回流程',
+    // 市场行只要发过货就不能在这里关单：已发出的货要经市场财务申请 + 供应链审批
+    // （`requestItemCompanyShipmentCancellation`）才能撤回，在这儿顺手取消等于绕过那道审批。
+    //
+    // 反之，**未发货的市场行不构成关单障碍**：市场侧的需求占用是按血缘算的
+    // （`linkedQuantity` 会排除已取消单），整单转「已取消」后占用自动释放，无需回写。
+    // 早先这里对「含市场行」一刀切拒绝，结果混合单一旦供应链侧短供就既关不掉、
+    // 又释放不了来源占用，操作员只能改库。
+    for (const item of orderItems) {
+      if (!item.marketId) continue
+      const shipped = fixed(
+        await linkedQuantity(tx, item.id, '采购订单发货')
+        + await linkedQuantity(tx, item.id, '采购订单赠送发货'),
       )
+      if (shipped > EPSILON) {
+        throw new ApiError(
+          'INVALID_STATE',
+          '该采购订单的市场明细已发货，请先走品项公司发货撤回流程，再关闭采购订单',
+        )
+      }
     }
     const sourceLinks = rows<{
       from_item_id: number | string

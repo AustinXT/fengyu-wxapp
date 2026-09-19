@@ -17,6 +17,9 @@ const WORKFINE_INVENTORY_INITIALIZED_STATUS = '已初始化'
 const DOC_PREFIX = {
   '门店报货': 'DBH',
   '市场报货': 'MBH',
+  // 供应链跨市场汇总单（#193）。**刻意不进 STAFF_VISIBLE / STAFF_CREATE_DOC_TYPES**：
+  // 它是供应链办理台发起的跨市场单据，分院侧既不该建也不该看见。
+  // 那两个集合不在 cross-end snapshot 的守护范围内，漏加不会红测试，所以把决策写在这儿。
   '市场报货汇总': 'MHZ',
   '品项公司报货需求': 'ZBH',
   // `供应链采购订单`（旧前缀 PCG）已并入 `采购订单`（#194，migration 0043/0044）；

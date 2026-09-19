@@ -233,6 +233,11 @@ $$;--> statement-breakpoint
 --    ⚠️ 必须临时摘掉上面那个守卫：它里面有「库存单据创建后禁止修改单据类型」一条，
 --    而这次收敛干的正是改类型。空库上这条 UPDATE 影响 0 行、根本不触发 trigger，
 --    真实库（dev 有 7 张待收货的供应链采购订单）则会被直接 RAISE 拦下。
+--
+--    安全前提是 `drizzle-kit migrate` 把整个文件包进**一个事务**：DISABLE 取的表级锁
+--    持有到提交，其它连接在这期间根本进不来。若有人 `psql -f` 逐句执行，
+--    DISABLE 与 ENABLE 之间就留出了一个能绕过守卫的窗口 —— 那样必须自己包
+--    `BEGIN; ... COMMIT;`。下面第 6 段的断言是这条纪律的兜底。
 ALTER TABLE inventory_docs DISABLE TRIGGER trg_inventory_docs_validate_lifecycle;--> statement-breakpoint
 UPDATE inventory_docs
    SET doc_type = '采购订单'

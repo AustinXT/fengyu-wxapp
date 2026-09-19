@@ -1729,7 +1729,27 @@ function CompanyShipmentForm({
   const [trackingNo, setTrackingNo] = useState('')
   const [remark, setRemark] = useState('')
   const [lines, setLines] = useState<ShipmentDraftLine[]>([])
+  const [shipMarketId, setShipMarketId] = useState('')
   const [saving, setSaving] = useState(false)
+
+  // 合并后一张采购单可含多个市场的行，外加无市场归属的品项公司自用行（#194）。
+  // 发货单单头只能有一个市场，自用行更是压根不走发货 —— 装载全部明细会让用户一提交
+  // 就撞上服务端的「只能发往同一个市场」/「该明细没有市场归属」。这里先按市场收窄。
+  const shipMarkets = useMemo(() => {
+    if (!doc) return [] as Array<{ id: string; name: string }>
+    const seen = new Map<string, string>()
+    for (const item of doc.items) {
+      if (!item.marketId || seen.has(item.marketId)) continue
+      seen.set(item.marketId, item.marketName ?? item.marketId)
+    }
+    return Array.from(seen, ([id, name]) => ({ id, name }))
+  }, [doc])
+
+  useEffect(() => {
+    setShipMarketId((current) => (
+      shipMarkets.some((market) => market.id === current) ? current : (shipMarkets[0]?.id ?? '')
+    ))
+  }, [shipMarkets])
 
   useEffect(() => {
     if (!doc) {
@@ -1737,7 +1757,7 @@ function CompanyShipmentForm({
       return
     }
     setSourceOrgNodeId(doc.targetOrgNodeId ?? '')
-    setLines(doc.items.map((item) => {
+    setLines(doc.items.filter((item) => item.marketId && item.marketId === shipMarketId).map((item) => {
       const remaining = remainingQuantity(item)
       return {
         purchaseOrderItemId: item.id,
@@ -1751,7 +1771,7 @@ function CompanyShipmentForm({
         remark: '',
       }
     }))
-  }, [doc])
+  }, [doc, shipMarketId])
 
   function updateLine(index: number, patch: Partial<ShipmentDraftLine>) {
     setLines((previous) => previous.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line))
@@ -1805,12 +1825,24 @@ function CompanyShipmentForm({
             {headquarters.filter((location) => location.orgNodeId).map((location) => <option key={location.orgNodeId!} value={location.orgNodeId!}>{location.name}</option>)}
           </Select>
         </FormField>
+        {shipMarkets.length > 1 && (
+          <FormField label="发往市场" required>
+            <Select value={shipMarketId} onChange={(event) => setShipMarketId(event.target.value)}>
+              {shipMarkets.map((market) => <option key={market.id} value={market.id}>{market.name}</option>)}
+            </Select>
+          </FormField>
+        )}
         <FormField label="发货日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
         <FormField label="物流公司"><Input value={logisticsCompany} onChange={(event) => setLogisticsCompany(event.target.value)} /></FormField>
         <FormField label="物流单号"><Input value={trackingNo} onChange={(event) => setTrackingNo(event.target.value)} /></FormField>
       </div>
 
       {loading && <div className="text-sm text-[#666666]">正在加载采购订单明细</div>}
+      {shipMarkets.length > 1 && (
+        <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--muted)] p-3 text-xs text-[#666666]">
+          本单含 {shipMarkets.length} 个市场的明细，发货单一次只能发往一个市场，请分次发货。
+        </div>
+      )}
       {lines.length > 0 && (
         <div className="space-y-3">
           <h3 className="text-sm font-medium">发货批次与数量</h3>
@@ -1991,7 +2023,9 @@ function SupplyChainPurchaseReceiptForm({
       return
     }
     setSupplyChainLocationId(doc.targetOrgNodeId ?? '')
-    setLines(doc.items.filter(hasAvailableQuantity).map((item) => ({
+    // 只有无市场归属的行才走供应链入库（#194）；市场行归品项公司发货，
+    // 一起装载会让提交必然撞上服务端的「该明细有市场归属」。
+    setLines(doc.items.filter((item) => !item.marketId).filter(hasAvailableQuantity).map((item) => ({
       purchaseOrderItemId: item.id,
       skuName: item.skuName,
       specName: item.specName,

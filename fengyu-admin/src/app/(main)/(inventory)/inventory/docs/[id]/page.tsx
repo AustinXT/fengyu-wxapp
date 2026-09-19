@@ -75,9 +75,13 @@ export default async function Page({
   // 差异是纯派生值（实盘 − 账面），**前端算、不落库** —— 落库就多一个会漂的数（issue #131 Q2）。
   const isStocktake = isStocktakeDocType(doc.docType)
   const stocktakeColumnCount = isStocktake ? 2 : 0
-  // 采购订单与市场报货汇总把供应商/市场挂在明细行上（#193 #194），单头没有这两个字段。
-  // 按「行上是否真有归属」判断而不是按 docType，这样 0043 回填过的存量单据也能显示。
-  const lineOwnershipColumnCount = doc.items.some((item) => item.supplierId || item.marketId) ? 2 : 0
+  // 采购订单与市场报货汇总把供应商/市场挂在明细行上（#193 #194），单头没有这两个字段；
+  // 它们的下游（品项公司发货、供应链采购入库）单头同样为空，行上带的是批次供应商。
+  // 按「行上是否真有归属」判断而不是按 docType，这样 0043 回填过的存量单据也能显示；
+  // 末一项兜住只有名称快照、没有档案关联的存量行 —— 但单头已经显示了供应商时就不重复列。
+  const lineOwnershipColumnCount = doc.items.some(
+    (item) => item.supplierId || item.marketId || (item.supplier && !doc.supplierName),
+  ) ? 2 : 0
   const priceColumnCount = showPrice ? (showStoreAllocationPrice ? 4 : 2) : 0
   const promotionColumnCount = doc.items.some((item) => item.promotionPlanId || item.promotionPlanNoSnapshot) ? 1 : 0
   const itemColumnCount = 9 + lineOwnershipColumnCount + priceColumnCount + reportColumnCount + shipmentColumnCount +
