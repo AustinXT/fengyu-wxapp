@@ -96,6 +96,35 @@ describe('共享建单表单的清场行为（#191）', () => {
     expect((selects[2] as HTMLSelectElement).value).toBe('')
   })
 
+  it('提交成功后日期回到当天，不沿用建上一张单时的日期', async () => {
+    /*
+     * DatePicker 的值载体是 hidden input（改值要走日历面板），fireEvent 驱动不了它，
+     * 所以用假时钟造一个「表单开着跨了天」的场景：挂载时是 1 月 5 日，提交时已是 9 月 19 日。
+     * 不重置的话下一张单会静默沿用 1 月 5 日 —— 跨天挂着的工作区、或补录历史单之后
+     * 接着建当天单，都会踩到。
+     */
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(new Date('2026-01-05T02:00:00Z'))
+      renderForm()
+      const dateInput = () => document.querySelector('[data-date-picker-value="date"]') as HTMLInputElement
+      expect(dateInput().value).toBe('2026-01-05')
+
+      vi.setSystemTime(new Date('2026-09-19T02:00:00Z'))
+      fillOneLine()
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: '提交' }))
+      })
+      await waitFor(() => expect(mockCreateDoc).toHaveBeenCalled())
+      // 这一张提交的仍是当时的 1 月 5 日
+      expect(mockCreateDoc.mock.calls[0][0].docDate).toBe('2026-01-05')
+      // 清场后回到「今天」
+      await waitFor(() => expect(dateInput().value).toBe('2026-09-19'))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('提交成功只调一次 action —— 清场后再点一次不会用旧内容重复建单', async () => {
     renderForm()
     fillOneLine()
@@ -153,5 +182,61 @@ describe('共享建单表单的清场行为（#191）', () => {
     const docTypeSelect = screen.getAllByRole('combobox')[0] as HTMLSelectElement
     expect(docTypeSelect.disabled).toBe(true)
     expect(docTypeSelect.value).toBe('市场产品盘溢')
+  })
+})
+
+/**
+ * 失败后批次自愈（#191 round-2 codex 点名：原先那条失败用例用的是不需要批次的
+ * 「市场产品盘溢」，删掉 catch 里的缓存清理与推代次照样全绿）。
+ *
+ * 最常见的失败就是「别人并发扣了库存」：服务端回「可用 5」，而批次下拉还写着「可用 30」。
+ * 办理台的 visible 恒真，不在失败路径刷新的话它**没有任何**重取入口，
+ * 用户只能对着自相矛盾的数字反复盲试。
+ */
+describe('提交失败后批次重新取数（#191）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('失败后无需关闭工作区，批次下拉会重新取数并显示新的可用量', async () => {
+    // 「市场产品报损」属于 SOURCE_LOT_DOC_TYPES，明细行带批次下拉
+    mockListLots
+      .mockResolvedValueOnce([{ id: 1, batchNo: 'B001', availableQuantity: 30, expiryDate: null }])
+      .mockResolvedValue([{ id: 1, batchNo: 'B001', availableQuantity: 5, expiryDate: null }])
+    mockCreateDoc.mockRejectedValue(new Error('INVALID_STATE: 库存不足：B001 可用 5'))
+
+    render(
+      <InventoryDocCreateForm
+        visible
+        locations={LOCATIONS}
+        skuOptions={SKUS}
+        initialDocType={'市场产品报损' as never}
+        allowedDocTypes={['市场产品报损'] as never}
+        onSuccess={vi.fn()}
+        onStale={vi.fn()}
+        onBusyChange={() => {}}
+        renderActions={({ submit }) => (
+          <button type="button" onClick={submit}>提交</button>
+        )}
+      />,
+    )
+
+    // 选主体 + SKU，触发第一次批次取数
+    fireEvent.change(screen.getAllByRole('combobox')[1], { target: { value: 'NODE-M1' } })
+    await act(async () => {
+      // 报损有批次列，SKU 下拉在 index 4（[3] 是批次）
+      fireEvent.change(screen.getAllByRole('combobox')[4], { target: { value: 'SKU-1' } })
+    })
+    await waitFor(() => expect(screen.getByText(/可用 30/)).toBeTruthy())
+    fireEvent.change(screen.getByPlaceholderText('数量'), { target: { value: '10' } })
+
+    const callsBefore = mockListLots.mock.calls.length
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '提交' }))
+    })
+
+    // 失败后代次推进 → 同一个 (库位,SKU) 重新取数 → 下拉显示新的可用量
+    await waitFor(() => expect(mockListLots.mock.calls.length).toBeGreaterThan(callsBefore))
+    await waitFor(() => expect(screen.getByText(/可用 5/)).toBeTruthy())
   })
 })

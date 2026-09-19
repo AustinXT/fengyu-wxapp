@@ -35,6 +35,7 @@ import { revalidatePath } from 'next/cache'
 import type { AuthSession } from '@/lib/types'
 import { assertInventoryBusinessWritable } from './cutover'
 import { genericDocBusinessLevel } from './business-level'
+import { scopeSessionToActions } from '@/lib/action-scope'
 // 账面数按**主体 + SKU 汇总**记录 —— 口径由甲方 2026-09-16 拍板（issue #131 Q1）：
 // 现场就是按商品数总盘、不区分批次，按批次记会造成假精确。类型清单与详情页共用单源。
 import { STOCKTAKE_DOC_TYPES } from './stocktake'
@@ -2870,6 +2871,17 @@ export const createInventoryCoreDoc = withAnyPermission(
     if (!hasPermission(session, requiredAction)) {
       throw new ApiError('PERMISSION_DENIED', `缺少${docLevel === 'store' ? '门店' : docLevel === 'market' ? '市场' : '供应链'}库存操作权限`)
     }
+    /*
+     * ⚠️ 光校验 action 不够，**scope 必须跟着同一条角色绑定收窄**。
+     *
+     * 入口的 withAnyPermission 收的是「持有三个 operate 任一」的角色并集，于是多绑定账号
+     * （市场 A 绑 market_operate + 门店 B 绑 store_operate）会出现：store_operate 由门店 B 提供、
+     * 而门店 A 的可见性由市场 A 提供，两者一拼接，就能给**门店 A** 建门店单 —— 它对门店 A
+     * 根本没有 store_operate 授权。action 并集配 scope 并集就是这么漏的。
+     *
+     * 往下所有可见性判定一律用这个收窄后的会话，不要再碰外层 session。
+     */
+    const actingSession = scopeSessionToActions(session, [requiredAction])
     const status = defaultStatusForDoc(input.docType)
     if (!Array.isArray(input.items) || input.items.length === 0) {
       throw new ApiError('INVALID_PARAMS', '库存单据至少需要一条明细')
@@ -2904,13 +2916,19 @@ export const createInventoryCoreDoc = withAnyPermission(
     }
     const actingOrgNodeId = sourceOrgNodeId ?? targetOrgNodeId
     if (!actingOrgNodeId) throw new ApiError('INVALID_PARAMS', '缺少当前操作组织节点')
+    /*
+     * 可见性判定放在**建库位之前**：它是纯内存比对，没有理由先为一个越权请求
+     * 去建/查库存主体行。顺带也不再先抛 NOT_FOUND —— 那等于告诉调用方
+     * 「这个节点存不存在」，而他本来就无权知道。
+     * 用按 requiredAction 收窄后的会话，别用外层的 action 并集会话（见上）。
+     */
+    await assertOrgNodeVisible(actingSession, actingOrgNodeId)
     const sourceLocationRow = sourceOrgNodeId ? await ensureOrgNodeLocation(sourceOrgNodeId) : null
     const targetLocationRow = targetOrgNodeId ? await ensureOrgNodeLocation(targetOrgNodeId) : null
     const actingLocationId = sourceOrgNodeId === actingOrgNodeId
       ? sourceLocationRow?.locationId
       : targetLocationRow?.locationId
     if (!actingLocationId) throw new ApiError('NOT_FOUND', '组织节点没有对应库存主体')
-    await assertOrgNodeVisible(session, actingOrgNodeId)
 
     const plan = movementPlan(input.docType, status)
     if (plan?.locationRole === 'source' && !sourceOrgNodeId) {
