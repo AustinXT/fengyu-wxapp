@@ -44,12 +44,26 @@ export async function selectContaining(sel: Locator, text: string): Promise<void
   await sel.selectOption(value)
 }
 
+/**
+ * 选中某个 label 下的下拉项；字段已被固定成只读时改为核对展示值。
+ *
+ * 候选唯一的库存主体（总部只有一个根节点、市场/门店角色只管一个主体）会自动选中
+ * 并降级成只读 `<output data-fixed-subject>`（#189）—— 那里根本没有 select 可选，
+ * 硬等 `toBeEnabled` 只会超时。此时断言展示的就是期望的主体，语义与"选中它"等价。
+ */
 export async function selectByLabel(
   page: Page,
   labelText: string,
   option: { label: string } | { contains: string },
 ): Promise<void> {
-  const sel = labelled(page, labelText).locator('select').first()
+  const field = labelled(page, labelText)
+  await expect(field.locator('select, [data-fixed-subject]').first()).toBeVisible({ timeout: 20_000 })
+  const fixed = field.locator('[data-fixed-subject]')
+  if (await fixed.count() > 0) {
+    await expect(fixed.first()).toContainText('contains' in option ? option.contains : option.label)
+    return
+  }
+  const sel = field.locator('select').first()
   await expect(sel).toBeEnabled({ timeout: 20_000 })
   if ('contains' in option) await selectContaining(sel, option.contains)
   else await sel.selectOption({ label: option.label })

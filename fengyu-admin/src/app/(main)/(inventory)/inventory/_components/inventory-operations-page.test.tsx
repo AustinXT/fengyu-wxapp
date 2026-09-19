@@ -150,6 +150,63 @@ describe('办理台表单一致性（#135）', () => {
     expect(staffPurchase).toMatch(/<FormField label="市场批次" required/)
   })
 
+  it('主体字段一律走 InventorySubjectSelect，不退回裸 Select（#189）', () => {
+    // 组件单测只测组件自身、INV-11 默认 skip —— 把这 17 处换回 `<Select>` 不会让
+    // 任何测试变红，而回退的后果（唯一候选还要手点一次 / 联动被吞）在总部、市场
+    // 都只有一个的环境里肉眼难辨。这里钉住接线本身。
+    expect(source.match(/<InventorySubjectSelect/g) ?? []).toHaveLength(17)
+
+    // 反向：主体类 state 不得再出现在裸 `<Select value={...}>` 上。
+    const subjectStates = [
+      'supplyChainLocationId', 'marketId', 'storeId', 'sourceMarketId',
+      'sourceOrgNodeId', 'targetOrgNodeId', 'locationId',
+    ]
+    for (const state of subjectStates) {
+      expect(source).not.toMatch(new RegExp(`<Select value=\\{${state}\\}`))
+    }
+  })
+
+  it('值由上游字段派生的主体不参与自动选中（#189）', () => {
+    // 「所属市场」由报货门店带出、「回库主体」由退货主体带出。这两处若自己补值：
+    //   ① 上游还没选时，只读文本展示的「唯一候选」不是最终会用的主体（门店退货
+    //      永远不可能回总部）；
+    //   ② 兄弟组件的 effect 在同一次 flush 里读的是本轮渲染前的快照，补出来的值
+    //      会反过来盖掉联动刚写进去的那个（后写胜出）。
+    const storeRequest = block('function StoreRequestForm(', 'function ItemCompanyReplenishmentForm(')
+    expect(storeRequest).toMatch(/label="所属市场"[\s\S]*?autoSelect=\{false\}/)
+
+    const returnForm = block('function ReturnForm(', 'function ReturnApprovalForm(')
+    expect(returnForm).toMatch(/label="回库主体"[\s\S]*?autoSelect=\{false\}/)
+    // 反向：退货主体本身是上游，必须保持自动选中。按字段区间截取再断言，
+    // 避免「区间外某处出现 autoSelect={false}」把这条测试骗过去。
+    const returnSourceField = returnForm.slice(
+      returnForm.indexOf('label="退货主体"'),
+      returnForm.indexOf('label="回库主体"'),
+    )
+    expect(returnSourceField).not.toMatch(/autoSelect=\{false\}/)
+  })
+
+  it('随单回填的主体在选定单据后不自动补值（#189）', () => {
+    // 5 个表单会在选定来源单据后把主体回填成单据自己的主体。单据没带主体时（
+    // `target_org_node_id` 可空）值会被写成空串 —— 此时组件若自作主张补一个唯一候选，
+    // 界面显示"已固定"，服务端却仍按来源单据一致性拒绝，用户看不出问题出在哪。
+    // #194 把两张采购表单合并成一张：`SupplyChainPurchaseOrderForm` 已不存在，
+    // 清单从 5 条减到 4 条。合并后的 `PurchaseOrderForm` 没有单选的来源单，
+    // 同一语义写成 `autoSelect={selectedDocIds.length === 0}`（勾了来源就交还单据决定），
+    // 所以它不计入 `!doc` 那一组，单独断言。
+    expect(source.match(/autoSelect=\{!doc\}/g) ?? []).toHaveLength(3)
+
+    for (const [from, to] of [
+      ['function CompanyShipmentForm(', 'interface ReceiptProgressLine'],
+      ['function SupplyChainPurchaseReceiptForm(', 'function SupplyChainPurchaseCancelForm('],
+      ['function StoreAllocationForm(', 'function ReturnForm('],
+    ] as const) {
+      expect(block(from, to)).toMatch(/autoSelect=\{!doc\}/)
+    }
+    expect(block('function PurchaseOrderForm(', 'interface ShipmentDraftLine {'))
+      .toMatch(/autoSelect=\{selectedDocIds\.length === 0\}/)
+  })
+
   it('必填标记覆盖到全部表单，不只是 UX 扫描点到的那 5 个', () => {
     // 只改被扫描到的 5 个表单，会让同一个 FormField 组件在页面内自相矛盾：
     // 用户看到有些字段带 *、有些不带，会以为不带的都是可选。
