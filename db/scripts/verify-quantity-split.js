@@ -76,7 +76,7 @@ const HAS_ITEM_REFUND_EVIDENCE = `(
     SELECT 1
       FROM sale_order_payments sop
       CROSS JOIN LATERAL jsonb_array_elements(
-        CASE WHEN sop.note LIKE '{%'
+        CASE WHEN btrim(sop.note) LIKE '{%'
              THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
                        THEN (sop.note)::jsonb -> 'items'
                        ELSE '[]'::jsonb END

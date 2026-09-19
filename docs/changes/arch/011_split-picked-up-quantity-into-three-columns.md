@@ -154,7 +154,18 @@ converted 守恒校验 —— 第 4 步不是可选项。
   `actions/{pickup-records,orders,customers,cards,refunds}`、cron STEP 12、订单详情与提货记录 UI
 - 小程序：staff 订单详情 / 提货列表 / 管理层顾客详情（文案回归「已提货」+ 新增已退款、已转换）
 
-payNotify 不涉及家居数量（已验证：11 个 .js 中 `quantity` 出现 0 次）。
+payNotify 不涉及家居数量（已验证：11 个 .js 中 `quantity` 出现 0 次）；
+clientApi 也没有 `consumed_value` / overpay 口径副本（已验证）。
+
+## 两个隐含前提（迁移与巡检都按全量口径写，不带 product_type 过滤）
+
+1. **非家居行的 `picked_up_quantity` 恒为 0** —— 2026-09-18 实测 dev / prod 均 0 行违例
+   （`picked_up_quantity > 0 AND product_type <> '家居产品'`）。若将来有非家居写入点，
+   回填与 cron C5 都会把它们纳入，需重新评估。
+2. **家居转出行的 `received` 恒 ≤ 0** —— 折抵按 `-d.amount` 写入，
+   `SUM(GREATEST(0, -received))` 据此还原为正数金额。prod 目前 0 行转出数据（#125 尚未产生）。
+   若出现正值行，该聚合会把它夹成 0 → 已消耗低估 → 多退方向。这是 #145/#153 既有口径，
+   非本次引入，但值得在启用折抵后复核一次。
 
 ## cron STEP 12 的 C5 判据同步重写
 

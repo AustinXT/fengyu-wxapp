@@ -2695,6 +2695,41 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
   // ⑥ 「可退件数」的入参守护双端等价：admin 让 tsc 兜（RefundSourceItem 两列必填），
   //    staff 是纯 JS，只能在 calculateUnusedQuantity 里显式拦。少了它，调用方漏取两列时
   //    `Number(undefined || 0)` 会安静得 0 → 已结算低估 → 可退量虚高（可重复退）。
+  // 「已转走金额」优先用实际聚合、缺了才退回件数 × 单价 —— 这个 fallback 是给历史调用方的，
+  // 一旦哪个生产取数点忘了注入 converted_amount，就会静默走件数推算：折抵含余数时低估
+  // consumed → overpay 余数虚高 → 多退。代码里看不出来，只能把「必须注入」锁成断言。
+  test('所有退款取数点都注入 converted_amount（转出行 received 聚合）', () => {
+    const staff = normalizeSql(stripComments(readFile(FILES.staffOrderJs)))
+    const adminRefunds = normalizeSql(stripComments(readFile(FILES.adminRefundsTs)))
+
+    // staff：createRefund 的 origItems（SELECT si.* + 两个聚合别名）
+    expect(
+      staff,
+      'staff createRefund 的 origItems 没带 converted_amount 聚合',
+    ).toMatch(/SELECT si\.\*,[\s\S]{0,600}?AS converted_amount/)
+    // staff：approveRefund 锁内复算（consumedRes）
+    expect(staff, 'staff 锁内复算没带 converted_amount').toMatch(
+      /const consumedRes[\s\S]{0,900}?AS converted_amount/,
+    )
+    // admin：getRefundable 与 createRefund 两处 drizzle select 别名
+    expect(
+      adminRefunds.split('convertedAmount: sql<string>').length - 1,
+      'admin 退款取数的 convertedAmount 别名站点数漂移',
+    ).toBe(2)
+    // admin：approveRefund 锁内复算
+    expect(adminRefunds, 'admin 锁内复算没带 converted_amount').toMatch(
+      /const consumedRows[\s\S]{0,900}?AS converted_amount/,
+    )
+
+    // JS 侧必须优先用实额，不能只留件数推算
+    for (const [end, file] of [['staff', FILES.staffRefundJs], ['admin', FILES.adminRefundTs]]) {
+      const src = readFile(file).replace(/\s+/g, ' ')
+      expect(src, `${end} computeOverpayRemainder 未优先使用 converted_amount`).toContain(
+        'it.converted_amount != null',
+      )
+    }
+  })
+
   test('可退件数的缺列守护：两端都要类型 + 运行时双保险', () => {
     const adminSrc = readFile(FILES.adminRefundTs).replace(/\s+/g, ' ')
     expect(adminSrc, 'admin RefundSourceItem 的两列退回可选，tsc 就兜不住漏传了').toContain(
