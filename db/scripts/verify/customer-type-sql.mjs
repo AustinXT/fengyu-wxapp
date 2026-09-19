@@ -7,7 +7,7 @@
  *
  * 跑法见同目录 README.md。只操作固定名字的 docker 容器，不读 DATABASE_URL，不碰任何业务库。
  */
-import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -50,7 +50,13 @@ const CTE_REF = '${RECALC_CUSTOMER_TYPE_CTE}'
 const upd = pick(/UPDATE sale_orders SET is_membership_upgrade[\s\S]*?LIMIT 1\s*\)/, 'is_membership_upgrade 归因').replace(CTE_REF, cte)
 const bma = pick(/UPDATE client_wechat_users SET became_member_at[\s\S]*?LIMIT 1\s*\)[\s\S]{0,40}?WHERE user_id = \$\d+/, 'became_member_at 归因').replace(CTE_REF, cte)
 
-const sub = (s, u) => s.replaceAll('$1', `'${u}'`).replaceAll('$2', String(THRESHOLD))
+const sub = (s, u) => {
+  const out = s.replaceAll('$1', `'${u}'`).replaceAll('$2', String(THRESHOLD))
+  // 兜住参数布局漂移：源码若把 user_id 挪到 $3，上面只会替掉 $1/$2，剩下的 $N 必须报出来，
+  // 否则会静默把值塞进错误参数位、验证结果不可信。
+  if (/\$\d/.test(out)) throw new Error('替换后仍有未处理的参数占位符，源码参数布局变了？')
+  return out
+}
 const psql = (file) => {
   execFileSync('docker', ['cp', file, `${CONTAINER}:/tmp/run.sql`])
   return execFileSync(
@@ -88,13 +94,26 @@ const attrFile = join(work, 'attr.sql')
 writeFileSync(
   attrFile,
   [
+    // ⚠️ 先重置：两段归因是 UPDATE，写入后会留在库里。不重置的话第二次跑读到的是上次的结果，
+    // 即使本次 UPDATE 一行没命中也照样"通过"——断言会退化成只在首次跑有效。
+    `UPDATE client_wechat_users SET became_member_at = NULL WHERE user_id = '${ATTRIBUTION.user}';`,
+    `UPDATE sale_orders SET is_membership_upgrade = false WHERE is_membership_upgrade;`,
     `${sub(bma, ATTRIBUTION.user)};`,
     `${sub(upd, ATTRIBUTION.user)};`,
-    `SELECT to_char(became_member_at, 'YYYY-MM-DD') FROM client_wechat_users WHERE user_id = '${ATTRIBUTION.user}';`,
-    `SELECT string_agg(sale_order_id, ',' ORDER BY sale_order_id) FROM sale_orders WHERE is_membership_upgrade;`,
+    // 带标签列 + COALESCE：两个 SELECT 都可能返回 NULL（UPDATE 没命中时），
+    // -t -A 下 NULL 是空行，裸解析会被 trim 吞掉导致行错位、把「日期」显示成订单号。
+    `SELECT 'date', COALESCE(to_char(became_member_at, 'YYYY-MM-DD'), '<NULL>') FROM client_wechat_users WHERE user_id = '${ATTRIBUTION.user}';`,
+    `SELECT 'orders', COALESCE(string_agg(sale_order_id, ',' ORDER BY sale_order_id), '<无打标单>') FROM sale_orders WHERE is_membership_upgrade;`,
   ].join('\n\n'),
 )
-const [gotDate, gotOrders] = psql(attrFile).trim().split('\n').map((s) => s.trim())
+const attrRows = new Map(
+  psql(attrFile).split('\n').filter(Boolean).map((l) => {
+    const i = l.indexOf('|')
+    return [l.slice(0, i).trim(), l.slice(i + 1).trim()]
+  }),
+)
+const gotDate = attrRows.get('date')
+const gotOrders = attrRows.get('orders')
 for (const [label, actual, want] of [
   ['became_member_at', gotDate, ATTRIBUTION.becameDate],
   ['is_membership_upgrade 打标单', gotOrders, ATTRIBUTION.upgradeOrder],
@@ -105,4 +124,10 @@ for (const [label, actual, want] of [
 }
 
 console.log(`\n${failed === 0 ? '✅ 全部通过' : `❌ ${failed} 项不符`}（${USERS.length} 组判定 + 2 项归因）`)
-process.exit(failed === 0 ? 0 : 1)
+if (failed === 0) {
+  rmSync(work, { recursive: true, force: true })
+} else {
+  // 失败时保留现场：生成的 SQL 就在这里，可直接贴进 psql 复现
+  console.log(`   生成的 SQL 保留在 ${work}`)
+}
+process.exitCode = failed === 0 ? 0 : 1
