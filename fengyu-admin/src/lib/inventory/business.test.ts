@@ -21,6 +21,7 @@ import {
   createItemCompanyReplenishment,
   createMarketStaffPurchase,
   createMarketReplenishment,
+  allocateRetainedQuantity,
   createPurchaseOrder,
   createReturnForRestock,
   createSelfPurchasedReceipt,
@@ -1564,5 +1565,64 @@ describe('CTE 的别名与原名不得混用（#130）', () => {
     ].join('\n')
     expect(violations(src), '函数体被当字面量抹掉了，热路径 SQL 从未被检查').not.toEqual([])
     expect(unrecognizedWithHeads(src)).toBe(0)
+  })
+})
+
+/**
+ * 关闭采购单时把「已收数量」按来源血缘占比分配的算法（#194）。
+ *
+ * 这些场景 e2e smoke 覆盖不到 —— 真跑一遍需要造出几百条来源血缘，
+ * 而分配错误的表现又只是「来源间多退/少退一分」，不会让链路报错。
+ * 两条不变量必须恒成立：
+ *   ① 每行 `0 ≤ retained ≤ link.quantity`
+ *   ② `Σ retained` 在**两位小数**上严格等于实收量（落库是 numeric(12,2)）
+ */
+describe('allocateRetainedQuantity 按占比分配已收数量', () => {
+  const cents = (value: number) => Math.round(value * 100)
+  function run(quantities: number[], receivedQuantity: number) {
+    const links = quantities.map((quantity, index) => ({
+      from_item_id: index + 1,
+      quantity,
+    }))
+    const result = allocateRetainedQuantity(links, receivedQuantity)
+    return {
+      retained: result.map((row) => row.retained),
+      retainedCents: result.reduce((sum, row) => sum + cents(row.retained), 0),
+      withinCap: result.every((row, index) => (
+        cents(row.retained) >= 0 && cents(row.retained) <= cents(quantities[index])
+      )),
+      conserved: result.every((row, index) => (
+        cents(row.retained) + cents(row.releasable) === cents(quantities[index])
+      )),
+    }
+  }
+
+  it.each([
+    { name: '三来源各 1 件、实收 1 件（循环小数）', quantities: [1, 1, 1], received: 1 },
+    { name: '三来源各 1 件、实收 2 件（余数 2 分）', quantities: [1, 1, 1], received: 2 },
+    { name: '两来源 5+5、实收 6', quantities: [5, 5], received: 6 },
+    { name: '300 个 0.01、实收 1.00', quantities: Array(300).fill(0.01), received: 1 },
+    { name: '300 个 0.01、实收 2.00', quantities: Array(300).fill(0.01), received: 2 },
+    { name: '实收 0', quantities: [3, 7], received: 0 },
+    { name: '实收等于全额', quantities: [3, 7], received: 10 },
+    { name: '不等量来源 + 循环小数', quantities: [1, 2, 4], received: 3 },
+  ])('$name：合计守恒且每行不超自身血缘', ({ quantities, received }) => {
+    const result = run(quantities, received)
+    expect(result.retainedCents).toBe(Math.round(received * 100))
+    expect(result.withinCap).toBe(true)
+    expect(result.conserved).toBe(true)
+  })
+
+  it('余数按最大余数法逐行补 1 分，不会一次全塞给同一行', () => {
+    // 三来源各 1 件、实收 2 件：基础分配 0.66 × 3，余 2 分。
+    // 每行最多补 1 分 → 0.67 / 0.67 / 0.66；一次全给首行会得到 0.68 / 0.66 / 0.66。
+    expect(run([1, 1, 1], 2).retained).toEqual([0.67, 0.67, 0.66])
+  })
+
+  it('实收超过来源血缘合计时抛 CONFLICT，而不是静默截断', () => {
+    expect(() => allocateRetainedQuantity(
+      [{ from_item_id: 1, quantity: 5 }],
+      6,
+    )).toThrow('已收数量超过来源血缘合计')
   })
 })

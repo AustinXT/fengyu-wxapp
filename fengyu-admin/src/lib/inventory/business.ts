@@ -2726,30 +2726,52 @@ async function allocateSummaryToMarketReportItems(
  *   ① 每行 `0 ≤ retained ≤ link.quantity`
  *   ② `Σ retained === receivedQuantity`（在两位小数上严格相等）
  */
-function allocateRetainedQuantity(
+export function allocateRetainedQuantity(
   links: Array<{ from_item_id: number | string; quantity: string | number | null }>,
   receivedQuantity: number,
 ): Array<{ requestItemId: number; retained: number; releasable: number }> {
   const toCents = (value: number) => Math.round(value * 100)
   const linkCents = links.map((link) => toCents(Number(link.quantity ?? 0)))
   const totalCents = linkCents.reduce((sum, cents) => sum + cents, 0)
-  const receivedCents = Math.min(toCents(receivedQuantity), totalCents)
+  // 前置条件写成断言而不是靠注释：当前唯一调用点已经校验过血缘非空、来源合计等于采购量、
+  // 实收不超采购量，DB 也保证血缘数量 > 0；但这函数一旦被复用，静默截断会很难查。
+  if (linkCents.some((cents) => cents < 0) || !Number.isSafeInteger(totalCents)) {
+    throw new ApiError('INVALID_STATE', '来源血缘数量异常，无法分配已收数量')
+  }
+  if (toCents(receivedQuantity) > totalCents) {
+    throw new ApiError('CONFLICT', '已收数量超过来源血缘合计，不能关闭采购订单')
+  }
+  const receivedCents = Math.max(0, toCents(receivedQuantity))
   const exact = linkCents.map((cents) => (
     totalCents > 0 ? (cents * receivedCents) / totalCents : 0
   ))
   const retainedCents = exact.map((value, index) => Math.min(linkCents[index], Math.floor(value)))
   let remainder = receivedCents - retainedCents.reduce((sum, cents) => sum + cents, 0)
-  // 余数按小数部分从大到小补，受各自血缘量封顶（末行硬补会顶破它自己的额度）
+  // 最大余数法：按小数部分降序，**每行最多补 1 分**。
+  // 早先写成 `Math.min(room, remainder)`，会把好几分余数一次性塞给同一行 ——
+  // 三来源各 1 件、实收 2 件时得到 0.68/0.66/0.66，而正确结果是 0.67/0.67/0.66，
+  // 来源越多，排在前面的越容易把余数全吸走。
+  // 同小数部分时按 from_item_id 升序，保证分配结果可复现。
   const byFraction = exact
-    .map((value, index) => ({ index, fraction: value - Math.floor(value) }))
-    .sort((left, right) => right.fraction - left.fraction)
-  for (const { index } of byFraction) {
-    if (remainder <= 0) break
-    const room = linkCents[index] - retainedCents[index]
-    if (room <= 0) continue
-    const added = Math.min(room, remainder)
-    retainedCents[index] += added
-    remainder -= added
+    .map((value, index) => ({
+      index,
+      fraction: value - Math.floor(value),
+      sourceItemId: Number(links[index]?.from_item_id ?? 0),
+    }))
+    .sort((left, right) => (
+      right.fraction - left.fraction || left.sourceItemId - right.sourceItemId
+    ))
+  while (remainder > 0) {
+    let progressed = false
+    for (const { index } of byFraction) {
+      if (remainder <= 0) break
+      if (linkCents[index] - retainedCents[index] <= 0) continue
+      retainedCents[index] += 1
+      remainder -= 1
+      progressed = true
+    }
+    // 所有来源都已封顶却还有余数：只可能是入参违反了前置条件，别转成死循环
+    if (!progressed) break
   }
   return links.map((link, index) => ({
     requestItemId: Number(link.from_item_id),
