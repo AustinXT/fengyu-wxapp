@@ -312,7 +312,14 @@ describe('PR #113 进销存单据组织端点跨端守护（staff / admin / sche
         /SELECT sku_id, product_code, product_name, spec_name, supplier, supplier_id, product_series/,
       )
       expect(businessSrc).toMatch(/supplierId: row\.supplier_id/)
-      expect(businessSrc).not.toMatch(/supplierId: null,/)
+      // 反向断言只钉 loadSku 的返回对象这一段：它是批次供应商的锚点来源。
+      // 全文匹配 `supplierId: null` 会误伤**单据头**的同名字段 —— #194 之后采购/发货/入库
+      // 单头一律不挂供应商（一张单可含多个供应商），那是另一回事，与批次锚点无关。
+      const skuSnapshotReturn = businessSrc.slice(
+        businessSrc.indexOf('SELECT sku_id, product_code, product_name, spec_name, supplier, supplier_id'),
+        businessSrc.indexOf('itemCompanyPurchasePrice: numberOrNull(row.item_company_purchase_price)'),
+      )
+      expect(skuSnapshotReturn).not.toMatch(/supplierId: null/)
     })
 
     test('schema 里 inventory_skus.supplier_id 是指向 inventory_suppliers 的外键', () => {

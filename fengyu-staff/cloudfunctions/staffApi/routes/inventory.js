@@ -17,9 +17,11 @@ const WORKFINE_INVENTORY_INITIALIZED_STATUS = '已初始化'
 const DOC_PREFIX = {
   '门店报货': 'DBH',
   '市场报货': 'MBH',
+  '市场报货汇总': 'MHZ',
   '品项公司报货需求': 'ZBH',
+  // `供应链采购订单`（旧前缀 PCG）已并入 `采购订单`（#194，migration 0043/0044）；
+  // 存量单号保留 PCG-*，新单一律 CGD-*。
   '采购订单': 'CGD',
-  '供应链采购订单': 'PCG',
   '供应链采购入库': 'GRK',
   '品项公司发货': 'GFH',
   '市场采购入库': 'MRK',
@@ -75,7 +77,7 @@ const STAFF_CREATE_DOC_TYPES = new Set([
 const STAFF_RECEIVE_DOC_TYPES = new Set(['分院配货', '分院调货出库'])
 const STAFF_VISIBLE_DOC_TYPE_LIST = Array.from(STAFF_VISIBLE_DOC_TYPES)
 
-const NO_MOVEMENT_DOC_TYPES = new Set(['门店报货', '市场报货', '品项公司报货需求', '采购订单', '供应链采购订单'])
+const NO_MOVEMENT_DOC_TYPES = new Set(['门店报货', '市场报货', '市场报货汇总', '品项公司报货需求', '采购订单'])
 const RECEIVE_REQUIRED_DOC_TYPES = new Set(['品项公司发货', '分院配货', '分院调货出库', '市场间调货出库'])
 const APPROVAL_DOC_TYPES = new Set(['市场退货', '院退货', '市场产品报损', '院产品报损'])
 // 盘点单：只记录「账面 vs 实盘」，不产生任何 inventory_movements、不改 quantity_on_hand。
