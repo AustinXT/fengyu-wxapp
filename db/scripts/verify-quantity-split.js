@@ -232,6 +232,34 @@ async function verifyAfter(client) {
     console.log('✓ AC4 不变量成立：有提货记录的行 picked_up_quantity == SUM(pickup_records)')
   }
 
+  // 与 cron C5c 同构：converted_quantity 是三列里唯一有独立交叉源的（转出行即折抵凭证）。
+  // 不在部署后当场校验，就只能等日频 cron 才发现旧实例误写或回退漏跑。
+  const { rows: convMismatch } = await client.query(`
+    SELECT COALESCE(si.sale_item_id, o.ref_sale_item_id) AS sale_item_id,
+           COALESCE(si.converted_quantity, 0) AS converted_quantity,
+           COALESCE(o.total_converted, 0) AS out_rows_total
+      FROM sale_items si
+      FULL JOIN (
+             SELECT out_item.ref_sale_item_id, SUM(out_item.quantity)::int AS total_converted
+               FROM sale_items out_item
+               JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+              WHERE out_item.item_direction = '转出'
+                AND out_item.product_type = '家居产品'
+                AND out_item.ref_sale_item_id IS NOT NULL
+                AND conv_order.status <> '已关闭'
+              GROUP BY out_item.ref_sale_item_id
+           ) o ON o.ref_sale_item_id = si.sale_item_id
+     WHERE COALESCE(si.converted_quantity, 0) <> COALESCE(o.total_converted, 0)
+     ORDER BY 1
+  `)
+  if (convMismatch.length > 0) {
+    problems += convMismatch.length
+    console.log('\n✗ converted_quantity 与未关闭转出行聚合不一致')
+    report('不一致明细', convMismatch)
+  } else {
+    console.log('✓ converted_quantity 与未关闭转出行聚合守恒')
+  }
+
   const { rows: bad } = await client.query(`
     SELECT sale_item_id, quantity,
            COALESCE(picked_up_quantity, 0) AS picked_up_quantity,

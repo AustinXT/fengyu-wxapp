@@ -2668,16 +2668,25 @@ describe('转换单换入家居产品可见可提跨端守护', () => {
 
   // ③ 「已消耗价值」：两端 SQL 必须是「已提货 + 已转换」，**不含已退款**
   //    （received 已由 paid-sessions STEP 1.5 扣过逐项退款，再算一次就是重复扣减，顾客少退）。
-  test('consumed_value 双端同源且不含已退款', () => {
-    const EXPR = 'ELSE GREATEST(0, COALESCE(si.picked_up_quantity, 0)'
-      + ' + COALESCE(si.converted_quantity, 0)) * COALESCE(si.unit_real_price::numeric, 0)'
+  test('consumed_value 双端同源：已提货按件数×单价，已转走按转出行 received 聚合', () => {
+    const EXPR = 'ELSE GREATEST(0, COALESCE(si.picked_up_quantity, 0))'
+      + ' * COALESCE(si.unit_real_price::numeric, 0)'
+      + " + COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item"
+      + ' JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id'
+      + " WHERE out_item.ref_sale_item_id = si.sale_item_id AND out_item.item_direction = '转出'"
+      + " AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)"
       + ' END AS consumed_value'
     for (const [end, file] of [['staff', FILES.staffOrderJs], ['admin', FILES.adminRefundsTs]]) {
       const src = normalizeSql(stripComments(readFile(file)))
-      expect(src, `${end} consumed_value 未按「已提货 + 已转换」算`).toContain(EXPR)
+      expect(src, `${end} consumed_value 口径漂移`).toContain(EXPR)
       // 把已退款也算成已消耗 = 重复扣减（received 已由 paid-sessions STEP 1.5 扣过逐项退款）
       expect(src, `${end} consumed_value 把已退款也算进去了`).not.toContain(
         'COALESCE(si.refunded_quantity, 0)) * COALESCE(si.unit_real_price::numeric, 0) END AS consumed_value',
+      )
+      // 已转走金额不得由「件数 × 单价」推算：折抵含余数时两者不等（折 4 件可能带走 ¥450 而非 ¥400），
+      // 低估 consumed 会让 overpay 余数虚高 → 多退（#145/#153 口径，双谱系评审两轮命中）
+      expect(src, `${end} 已转走金额退回到了件数 × 单价推算`).not.toContain(
+        'COALESCE(si.picked_up_quantity, 0) + COALESCE(si.converted_quantity, 0)) * COALESCE(si.unit_real_price::numeric, 0)',
       )
     }
   })

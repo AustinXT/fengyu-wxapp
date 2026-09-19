@@ -256,9 +256,21 @@ async function reconcileOrderStatusAfterRefund(tx: RefundTx, saleOrderId: string
              COALESCE(fr.full_refund, false) AS full_refund,
              CASE WHEN si.product_type = '疗程卡'
                THEN GREATEST(0, COALESCE(si.session_count, 0) - COALESCE(si.remaining_sessions, 0)) * COALESCE(si.unit_real_price::numeric, 0)
-               -- #154：「已消耗」= 已提货 + 已转换，**不含已退款**。拆列前 picked_up_quantity
-               -- 把退款件数也算成已消耗，会抬高 retained_value 并压住「整行已退」的判定。
-               ELSE GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.converted_quantity, 0)) * COALESCE(si.unit_real_price::numeric, 0)
+               -- #154：「已消耗」= 已提货金额 + **已转走金额**，不含已退款
+               -- （received 已扣过逐项退款，再扣一次就是重复扣减）。
+               -- ⚠ 已转走部分必须取转出行 received 的聚合，**不能用「已转换件数 × 单价」推算**：
+               -- 折抵金额含余数时两者不等（折 4 件可能带走 ¥450 而非 ¥400），用件数推算会低估
+               -- retained_value → overpay 余数虚高 → 多退（#145/#153 定下的口径，双谱系评审两轮命中）。
+               ELSE GREATEST(0, COALESCE(si.picked_up_quantity, 0)) * COALESCE(si.unit_real_price::numeric, 0)
+                    + COALESCE((
+                      SELECT SUM(GREATEST(0, -out_item.received::numeric))
+                        FROM sale_items out_item
+                        JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+                       WHERE out_item.ref_sale_item_id = si.sale_item_id
+                         AND out_item.item_direction = '转出'
+                         AND out_item.product_type = '家居产品'
+                         AND conv_order.status <> '已关闭'
+                    ), 0)
              END AS consumed_value
         FROM sale_items si
         LEFT JOIN receipt_refunds rr ON rr.sale_item_id = si.sale_item_id

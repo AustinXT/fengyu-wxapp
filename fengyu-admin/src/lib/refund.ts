@@ -164,6 +164,7 @@ export function computeItemOverpayRemainders(origItems: RefundSourceItem[]): Map
           ? Math.max(0, Number(it.session_count || 0) - Number(it.remaining_sessions || 0))
           // #154：「已消耗」= 已提货 + 已转换，**不含已退款**（received 已由 paid-sessions
           // STEP 1.5 扣过逐项退款，再算一次就是重复扣减，顾客会少退）。
+          // 走到这个分支说明调用方连 picked_quantity / converted_amount 都没给，只能按件数推算。
           : Math.max(0, Number(it.picked_up_quantity || 0) + Number(it.converted_quantity || 0))) * unitRealPrice
     const maxRefundableValue = calculateUnusedQuantity(it) * unitRealPrice
     result.set(it.sale_item_id, Math.max(0, roundMoney(received - consumedValue - maxRefundableValue)))
@@ -197,9 +198,14 @@ export function computeOverpayRemainder(
       const rem = Number(it.remaining_sessions) || 0
       consumedValue += Math.max(0, sc - rem) * urp
     } else {
-      // #154：「已消耗」= 已提货 + 已转换，不含已退款（received 已扣过逐项退款）
+      // #154：「已消耗」= 已提货金额 + 已转走金额，不含已退款（received 已扣过逐项退款）。
+      // 已转走优先取实际金额 converted_amount —— 折抵金额含余数时「件数 × 单价」会低估
+      // （折 4 件可能带走 ¥450 而非 ¥400），低估 consumed 会让 overpay 余数虚高 → 多退。
+      // 仅在调用方完全没提供该聚合时才退回件数推算（历史调用方零回归）。
       consumedValue += (Number(it.picked_up_quantity) || 0) * urp
-        + (Number(it.converted_quantity) || 0) * urp
+        + (it.converted_amount != null
+            ? Number(it.converted_amount) || 0
+            : (Number(it.converted_quantity) || 0) * urp)
     }
     maxSessionRefundable += calculateUnusedQuantity(it) * urp
   }

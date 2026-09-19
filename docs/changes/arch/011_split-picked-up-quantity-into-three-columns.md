@@ -86,17 +86,27 @@ picked_phys := SUM(pickup_records.pickup_quantity)
 conv        := SUM(转出行 quantity WHERE 转换单 status <> '已关闭')
 residual    := 旧 picked_up_quantity − picked_phys − conv
 
-residual < 0                                      → RAISE（守恒破坏）
-residual > 0 且订单有已支付退款                    → refunded_quantity
-residual > 0、无退款、且该行没有 pickup_records     → 留在 picked_up_quantity（历史提货未留记录）
-residual > 0、无退款、但该行有 pickup_records       → RAISE（无从解释的结算量）
+residual < 0                  → RAISE（物理提货 + 已转换 超过旧的已结算合计）
+residual > 0 且有**本行**退款实据 → refunded_quantity
+residual > 0 且无本行退款实据    → RAISE（无从解释的结算量）
+
+picked_up_quantity := picked_phys   （无条件，没有任何豁免分支）
 ```
 
-最后一类必须拦：并回 `picked_up_quantity` 会让该行 `picked_up > SUM(pickup_records)`，
-与事后断言 2 及 cron C5 的守恒判据直接冲突。
+**「本行退款实据」三选一**：整单已退款（`sale_orders.status='已退款'`，整单退时每个购买行都被退）
+/ 退款流水 `ref_sale_item_id` 指向本行 / 退款 `note.items` 含本行。
+
+只看「订单上有没有退款」不够（双谱系评审命中）：同单**他行**退款会把本行的历史提货误记成退款，
+而「已消耗」口径刻意不含 `refunded` → overpay 余数虚高 → 多退。
+
+初版留过一条「无退款残差视为历史提货未留记录、留在 picked_up」的豁免，已取消 ——
+它让 AC4 不再是全量不变量，并迫使 cron C5 为这类行开永久盲区，而那个盲区正对着
+「删提货记录」这条 C5 存在理由的路径。现在 AC4 **全量无豁免**，C5 用 FULL JOIN 全量比对。
 
 **2026-09-18 只读实测**：存量 `picked_up_quantity > 0` 的行 dev 14 行 / prod 18 行，
 **100% 是退款语义**（两库 `pickup_records` 全表为空、家居转出行零数据），残差为负 0 行。
+其中 prod 仅 4/18 行有 `ref_sale_item_id` 实据，但 18 行订单状态**全是「已退款」**，
+故按上述三条实据判定，两库均 **0 行被阻断**。
 
 ## 部署顺序（硬约束）
 
@@ -114,10 +124,24 @@ scripts/deploy-cloudfunctions.sh          # staffApi / clientApi
 DATABASE_URL="<目标库>" node db/scripts/verify-quantity-split.js
 ```
 
-- **正向窗口**（迁移已跑、新代码未部署）：旧代码把 `picked_up_quantity` 读成「已结算」，
-  被拆走的份额短暂回到可提/可退。整单退款的订单被派生查询的状态白名单
-  （`o.status IN ('已支付','部分支付','已完成')`）挡住；**部分退款**订单不受保护。
-  2026-09-18 实测两库暴露面均为 0，部署前必须复跑脚本确认仍为 0。
+### ⚠ 正向窗口必须用维护模式隔离，不能只靠「压缩时间」
+
+迁移持有的 ACCESS EXCLUSIVE **只会让旧请求阻塞、不会让它们消失**：迁移一提交，
+排队在锁后面的旧版退款/折抵 SQL 会立刻执行，把旧语义写回已经恢复为物理语义的
+`picked_up_quantity` —— 破坏 `picked_up == SUM(pickup_records)`；而新代码关闭转换单时
+只回退 `converted_quantity`，那部分占用会**永久冻结**顾客额度（双谱系评审两轮命中）。
+
+因此迁移前必须：
+
+1. 开启全端写入维护模式（或至少冻结家居**退款审批**与**转换折抵**两个入口）
+2. **等待在途请求与事务排空**——云函数旧实例要确认已排空，不能只触发发布
+3. 迁移 + 三端部署完成后再恢复写入
+
+`verify-quantity-split.js` 的「暴露面」统计只是提示（它是任何有存量数据的库的正常状态，
+压缩窗口不会让这个行数变 0），**不覆盖在途请求，也不阻断退出码**。
+真正能抓到窗口污染的是部署后那次 AC4 校验（`picked_up ≠ SUM(pickup_records)`）与
+converted 守恒校验 —— 第 4 步不是可选项。
+
 - **反向禁止回滚**：新列写过之后回滚代码，旧代码会把已退款/已折抵份额读回可提可退（资损）。
   只能 forward-fix。
 
@@ -138,9 +162,10 @@ payNotify 不涉及家居数量（已验证：11 个 .js 中 `quantity` 出现 0
 （那时 cascade 用减法回滚）。止血改成加法之后，该式对「既提过货又退过款」的行恒成立 = 必然误报；
 #125 的折抵又加了一类。两库 `pickup_records` 至今为空，所以雷还没炸。
 
-新判据回到列本义并与退款彻底解耦：`picked_up_quantity == SUM(pickup_records)`
-（豁免「无 pickup_records 的历史提货」行，与迁移口径一致），并新增
-`C5b settled_quantity_overflow` 作为 CHECK 约束被误 DROP 时的二道保险。
+新判据回到列本义、与退款彻底解耦，且是 **FULL JOIN 全量比对无豁免**：
+`picked_up_quantity == SUM(pickup_records)`。另新增两项：
+`C5b settled_quantity_overflow`（CHECK 约束被误 DROP 时的二道保险）与
+`C5c converted_quantity_mismatch`（converted 是三列里唯一有独立交叉源却曾无人看的列）。
 
 ## 后续项（本 PR 未做）
 
