@@ -73,10 +73,16 @@ export default function InventorySubjectSelect({
       reportedRef.current = null
       return
     }
-    // 只在「还没选」时补一次。选定来源单据后，表单的 useEffect 会把主体回填成单据
-    // 自己的主体（采购订单 / 发货 / 入库 / 配货共 5 处），那是更权威的值；若这里
-    // 无条件维持唯一候选，就会把随单锁定的主体悄悄改掉。
-    if (value) return
+    // 值已落定就重新布防：下次值被清空（切到一张 target_org_node_id 为 null 的单据、
+    // 或表单实例被复用）时还得再补一次。否则去重标记会一直挡着，而渲染仍走只读分支 ——
+    // 用户看到一个写着主体名的只读字段，表单 state 其实是空的，一提交就说没选。
+    if (value) {
+      reportedRef.current = null
+      return
+    }
+    // 只在「还没选」时补。选定来源单据后，表单的 useEffect 会把主体回填成单据自己的
+    // 主体（采购订单 / 发货 / 入库 / 配货共 5 处），那是更权威的值；若这里无条件维持
+    // 唯一候选，就会把随单锁定的主体悄悄改掉。
     if (reportedRef.current === soleValue) return
     reportedRef.current = soleValue
     onChangeRef.current(soleValue)
@@ -117,7 +123,9 @@ export default function InventorySubjectSelect({
       disabled={disabled || options.length === 0}
     >
       <option value="">{options.length === 0 ? '暂无可用主体' : placeholder}</option>
-      {outOfRangeValue && <option value={outOfRangeValue}>当前主体（不在可选范围）</option>}
+      {outOfRangeValue && (
+        <option value={outOfRangeValue} title={outOfRangeValue}>当前主体（不在可选范围）</option>
+      )}
       {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
     </Select>
   )

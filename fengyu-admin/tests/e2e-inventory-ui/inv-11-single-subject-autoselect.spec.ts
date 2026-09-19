@@ -21,18 +21,19 @@
 
 import { test, expect, type Page } from '@playwright/test'
 import { BASE, INVT_ACCOUNTS, INVT_PASS, login } from './_helpers/env'
-import { labelled, openOperation } from './_helpers/ui'
+import { escapeRe, labelled, openOperation } from './_helpers/ui'
 
 test.skip(process.env.INVT_189 !== '1', '待目标实例部署 #189 后启用（设 INVT_189=1）')
 
 test.setTimeout(180_000)
 
 /**
- * ⚠️ `labelled()` 是 `^label` 前缀匹配，`'市场'` 会同时命中明细行的「市场批次」——
- * 一律取第一个 label（表单头部那个主体字段），否则 `toHaveCount(0)` 会被批次下拉带红。
+ * ⚠️ `labelled()` 是 `^label` 前缀匹配，`'市场'` 会同时命中明细行的「市场批次」。
+ * 这里要求字段名后**紧跟必填星号**（主体字段无一例外都是必填），把「市场批次」
+ * 这类同前缀字段排除掉 —— 只靠 `.first()` 的话，将来行内控件挪到表单顶部就会被截胡。
  */
 function subjectField(page: Page, labelText: string) {
-  return labelled(page, labelText).first()
+  return page.locator('label').filter({ hasText: new RegExp(`^${escapeRe(labelText)}\\*`) }).first()
 }
 
 /** 核心不变量：字段要么已固定（唯一候选），要么给出真正需要做的选择（≥2 个候选）。 */
@@ -49,7 +50,9 @@ async function expectNoRedundantChoice(page: Page, labelText: string): Promise<'
     expect(value?.length ?? 0).toBeGreaterThan(0)            // 值确实落到了表单
     return 'fixed'
   }
-  // option 数 = 1 个占位 + N 个候选；N=1 就是本 issue 要消灭的那种冗余选择。
+  // 「≥3」= 1 个占位 + ≥2 个真候选。只剩 1 个真候选却还给下拉，正是本 issue 要消灭的
+  // 冗余选择，那时这条断言应当转红（而不是被当成"可选态"放过）。
+  await expect(select.first()).toBeEnabled()
   expect(await select.first().locator('option').count()).toBeGreaterThanOrEqual(3)
   return 'selectable'
 }
@@ -137,6 +140,9 @@ test.describe('INV-11 候选唯一即自动选中', () => {
     const employees = labelled(page, '购买员工').locator('select').first()
     await expect(employees).toBeEnabled({ timeout: 30_000 })
     await expect(employees.locator('option').first()).not.toHaveText('请先选择供应链总部')
+    // 光看 enabled 不够：请求被删掉、或直接把 loading 关掉也能变 enabled。
+    // 真正的证据是按主体拉回来的员工确实进了下拉（占位项之外还有人）。
+    expect(await employees.locator('option').count()).toBeGreaterThanOrEqual(2)
   })
 
   test('MK（库存 scope 只含一个市场）：市场字段只读固定', async ({ page }) => {
@@ -148,7 +154,9 @@ test.describe('INV-11 候选唯一即自动选中', () => {
     await openOperation(page, 'market', '市场员工购')
     await expectFixedTo(page, '市场', INVT_ACCOUNTS.MK.scopeId)
     // 市场员工购的 onChange 同样是异步拉员工，验证联动没被吞。
-    await expect(labelled(page, '购买员工').locator('select').first()).toBeEnabled({ timeout: 30_000 })
+    const mkEmployees = labelled(page, '购买员工').locator('select').first()
+    await expect(mkEmployees).toBeEnabled({ timeout: 30_000 })
+    expect(await mkEmployees.locator('option').count()).toBeGreaterThanOrEqual(2)
 
     await openOperation(page, 'market', '市场库存转换')
     await expectFixedTo(page, '转换库存主体', INVT_ACCOUNTS.MK.scopeId)

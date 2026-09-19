@@ -98,6 +98,20 @@ describe('InventoryLocationFilter', () => {
     expectFixedLevel('库存门店层级', '该市场库存', 'M1')
   })
 
+  it('调用方传 value=null 时，唯一候选仍是只读而不是「一个选项的下拉」', () => {
+    // primaryValue 是从选中的总部/市场反查出来的，value 为空时它会退回 ''，
+    // 不额外兜一层就会退化成本 issue 要消灭的那种冗余选择。
+    const soleMarket: InventoryLocationFilterOptions = {
+      headquarters: [],
+      markets: [{ locationId: 'M1', name: '南昌市场', canSelectInventory: true, stores: [] }],
+      defaultLocationId: 'M1',
+    }
+
+    render(<InventoryLocationFilter options={soleMarket} value={null} onChange={vi.fn()} />)
+
+    expect(screen.queryByRole('combobox', { name: '库存市场层级' })).not.toBeInTheDocument()
+  })
+
   it('完全没有可用主体时给出空态而不是空下拉', () => {
     const empty: InventoryLocationFilterOptions = {
       headquarters: [],

@@ -96,7 +96,13 @@ export default function InventoryLocationFilter({
 
   return (
     <>
-      {solePrimary && primaryValue === solePrimary.locationId ? (
+      {/*
+        兜底带上 `!value`：`primaryValue` 是从选中的总部/市场反查出来的，调用方若传
+        value=null（生产路径上 `resolveInventoryFilterLocationId()` 会保证非空，但这里
+        不赖它），它会退回 ''，唯一候选就又变回「1 个选项还要你点」。而值为空时实际
+        查询走的就是服务端解析出的那个唯一候选，只读展示它不会说谎。
+      */}
+      {solePrimary && (primaryValue === solePrimary.locationId || !value) ? (
         <FixedLevel option={solePrimary} ariaLabel="库存市场层级" className={headquartersClassName} />
       ) : (
         <Select

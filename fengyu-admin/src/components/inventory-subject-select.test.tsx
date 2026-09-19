@@ -26,6 +26,30 @@ describe('InventorySubjectSelect（#189 候选唯一即自动选中）', () => {
     expect(screen.getByText('品牌总部')).toHaveAttribute('data-fixed-subject', 'ORG-HQ')
   })
 
+  it('值落定后被清空（切到没带主体的单据）时会重新补上，不留「假只读」', () => {
+    // 去重标记若不在值落定后复位，这条路径会卡成：渲染仍是只读文本（因为候选唯一且
+    // 值为空），但表单 state 是空的 —— 用户看到字段已填，一提交却说没选。
+    const onChange = vi.fn()
+    const { rerender } = render(
+      <StrictMode>
+        <InventorySubjectSelect options={HQ} value="" onChange={onChange} placeholder="请选择总部" />
+      </StrictMode>,
+    )
+    expect(onChange).toHaveBeenCalledTimes(1)
+
+    const view = (value: string) => (
+      <StrictMode>
+        <InventorySubjectSelect options={HQ} value={value} onChange={onChange} placeholder="请选择总部" />
+      </StrictMode>
+    )
+    rerender(view('ORG-HQ'))
+    expect(screen.getByText('品牌总部')).toHaveAttribute('data-fixed-subject', 'ORG-HQ')
+
+    rerender(view(''))
+    expect(onChange).toHaveBeenCalledTimes(2)
+    expect(onChange).toHaveBeenLastCalledWith('ORG-HQ')
+  })
+
   it('StrictMode 重放 effect 时也只上报一次', () => {
     // Next 15 默认开启 StrictMode，dev 下每个 effect 会被重放一遍，两次都闭包捕获
     // 同一个 value=""。光靠 `!value` 守卫拦不住第二次 —— 员工购那类带异步副作用的
