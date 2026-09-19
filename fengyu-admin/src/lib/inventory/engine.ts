@@ -2368,20 +2368,34 @@ async function loadMarketReportFulfillmentProgress(
     -- 按各来源在该采购行里的占比分摊，不能每个来源都记全量 ——
     -- 来源 A 5 件、B 5 件合成采购行 10 件、实发 6 件时，不分摊会让 A 与 B 各显示 6，
     -- 合计 12 件，凭空多出一倍。
+    --
+    -- ⚠️ 分母必须取该采购行的**全部**来源血缘，不能用 PARTITION BY 的窗口和：
+    -- purchase_links 已经被 from_doc_id 限定成「当前这张单」的血缘，
+    -- 窗口函数看不到同一采购行来自**其它来源单**的那部分，share 又会退回 1，
+    -- 跨单合并的场景照样重复计数。
     purchase_share AS (
       SELECT
-        root_item_id,
-        purchase_item_id,
-        quantity,
-        quantity / NULLIF(SUM(quantity) OVER (PARTITION BY purchase_item_id), 0) AS share
-        FROM purchase_links
+        purchase_link.root_item_id,
+        purchase_link.purchase_item_id,
+        purchase_link.quantity,
+        purchase_link.quantity / NULLIF(source_total.total_quantity, 0) AS share
+        FROM purchase_links purchase_link
+        JOIN LATERAL (
+          SELECT COALESCE(SUM(COALESCE(all_link.quantity, 0)), 0) AS total_quantity
+            FROM inventory_doc_links all_link
+           WHERE all_link.to_item_id = purchase_link.purchase_item_id
+             AND all_link.relation_type = '市场报货采购订单'
+        ) source_total ON true
     ),
     shipment_links AS (
       SELECT
         purchase_link.root_item_id,
         doc_link.to_item_id AS shipment_item_id,
         doc_link.relation_type,
-        COALESCE(doc_link.quantity, 0) * COALESCE(purchase_link.share, 0) AS quantity
+        COALESCE(doc_link.quantity, 0) * COALESCE(purchase_link.share, 0) AS quantity,
+        -- 发货明细由采购行一对一产生，所以收货沿用采购层的占比即可。
+        -- 早先在这里按当前单据子集再归一化一次，等于把 share 重新拉回 1，白分摊了。
+        COALESCE(purchase_link.share, 0) AS share
         FROM purchase_share purchase_link
         JOIN inventory_doc_links doc_link
           ON doc_link.from_item_id = purchase_link.purchase_item_id
@@ -2398,22 +2412,12 @@ async function loadMarketReportFulfillmentProgress(
         FROM shipment_links
        GROUP BY root_item_id
     ),
-    -- 同一张发货明细也可能被多个来源分摊到，收货量按发货行内部的占比再分一次。
-    shipment_share AS (
-      SELECT
-        root_item_id,
-        shipment_item_id,
-        relation_type,
-        quantity,
-        quantity / NULLIF(SUM(quantity) OVER (PARTITION BY shipment_item_id), 0) AS share
-        FROM shipment_links
-    ),
     receipt_links AS (
       SELECT
         shipment_link.root_item_id,
         shipment_link.relation_type AS shipment_relation_type,
         COALESCE(doc_link.quantity, 0) * COALESCE(shipment_link.share, 0) AS quantity
-        FROM shipment_share shipment_link
+        FROM shipment_links shipment_link
         JOIN inventory_doc_links doc_link
           ON doc_link.from_item_id = shipment_link.shipment_item_id
         JOIN inventory_docs receipt_doc ON receipt_doc.id = doc_link.to_doc_id
@@ -2564,12 +2568,20 @@ async function loadItemCompanyRequestFulfillmentProgress(
     ),
     -- 与市场报货那套同理：一条采购明细可由多张需求单的多行合并而来（#194），
     -- 入库量要按各来源在该采购行里的占比分摊，否则每个来源都会记到全量。
+    -- 分母同样要取该采购行的**全部**来源血缘 —— purchase_links 已被 from_doc_id
+    -- 限成当前这张需求单，窗口函数看不到别的来源单。
     purchase_share AS (
       SELECT
-        request_item_id,
-        purchase_item_id,
-        quantity / NULLIF(SUM(quantity) OVER (PARTITION BY purchase_item_id), 0) AS share
-        FROM purchase_links
+        purchase_link.request_item_id,
+        purchase_link.purchase_item_id,
+        purchase_link.quantity / NULLIF(source_total.total_quantity, 0) AS share
+        FROM purchase_links purchase_link
+        JOIN LATERAL (
+          SELECT COALESCE(SUM(COALESCE(all_link.quantity, 0)), 0) AS total_quantity
+            FROM inventory_doc_links all_link
+           WHERE all_link.to_item_id = purchase_link.purchase_item_id
+             AND all_link.relation_type = '品项公司报货采购订单'
+        ) source_total ON true
     ),
     receipt_totals AS (
       SELECT

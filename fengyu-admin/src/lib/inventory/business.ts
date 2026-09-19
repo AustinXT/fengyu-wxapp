@@ -2738,8 +2738,11 @@ interface PreparedPurchaseSource {
  *    一次性收集后阻断提交，不允许带着空供应商下单；
  * 3. **单头不再写 market_id / supplier_id**，归属下沉到明细行，下游按行分流。
  *
- * 「已下单量」统一按血缘算（原先品项公司链路读的是 `fulfilled_quantity`）：血缘会排除已取消的
- * 采购单，而 `fulfilled_quantity` 不随取消回退，两者在有取消发生时会分叉。
+ * 「已下单量」以来源行的 `fulfilled_quantity` 为准，**不是**血缘累计。
+ * 血缘会把已取消采购单整张排除，而关闭采购时只退还「未收货」的部分
+ * （需求 10 → 下单 10 → 入库 8 → 关闭剩余 2，来源行 fulfilled 停在 8）——
+ * 用血缘算会把那 8 件也当成未下单，允许重复下单。
+ * 关闭流程（`cancelSupplyChainPurchaseOrder`）负责按占比退还未收货部分。
  */
 export async function createPurchaseOrder(
   session: AuthSession,
@@ -3791,19 +3794,30 @@ export async function cancelSupplyChainPurchaseOrder(
            SET fulfilled_quantity = ${numeric(receivedQuantity)}
          WHERE id = ${orderItem.id}
       `)
-      // 未收货的额度按血缘顺序退还给各来源需求行，退满为止。
-      let unreleasedQuantity = remainingQuantity
-      for (const link of itemSourceLinks) {
-        if (unreleasedQuantity <= EPSILON) break
-        const releasable = fixed(Math.min(Number(link.quantity ?? 0), unreleasedQuantity))
-        if (releasable <= EPSILON) continue
+      // 未收货的额度**按各来源的血缘占比**退还，而不是按顺序退满为止。
+      //
+      // 顺序退还会与履约进度的分摊口径打架：A、B 各 5 件合并采购 10 件、实收 8 件时，
+      // 顺序法把未收的 2 件全记在排序靠前的 A 上（A 留 3、B 留 5），
+      // 而进度按占比算的是 A、B 各留 4。随后 A 还能再下单 2 件，
+      // 最终 A 的累计入库归属会涨到 6，超过它自己 5 件的需求量。
+      //
+      // 末行补差：保证各来源保留量之和**严格等于** receivedQuantity，不因两位小数留尾巴。
+      const retainRatio = orderItem.quantity > EPSILON ? receivedQuantity / orderItem.quantity : 0
+      let retainedSoFar = 0
+      itemSourceLinks.forEach((link, index) => {
+        const linkQuantity = Number(link.quantity ?? 0)
+        const retained = index === itemSourceLinks.length - 1
+          ? fixed(Math.max(0, receivedQuantity - retainedSoFar))
+          : fixed(linkQuantity * retainRatio)
+        retainedSoFar = fixed(retainedSoFar + retained)
+        const releasable = fixed(Math.max(0, linkQuantity - retained))
+        if (releasable <= EPSILON) return
         const requestItemId = Number(link.from_item_id)
         remainingByRequestItem.set(
           requestItemId,
           fixed((remainingByRequestItem.get(requestItemId) ?? 0) + releasable),
         )
-        unreleasedQuantity = fixed(unreleasedQuantity - releasable)
-      }
+      })
     }
     // 按 id 升序回退，取锁顺序确定（与建单侧一致，避免 ABBA）。
     // 这里同时覆盖两类来源行：品项公司报货需求行、市场报货汇总行 —— 两者的占用都记在

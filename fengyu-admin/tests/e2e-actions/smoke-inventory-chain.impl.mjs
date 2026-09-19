@@ -565,6 +565,44 @@ try {
     num((await docItems(mixReqId))[0]?.fulfilled_quantity) === 0
       && num((await docItems(mixMhzId))[0]?.fulfilled_quantity) === 0,
     `req=${(await docItems(mixReqId))[0]?.fulfilled_quantity} mhz=${(await docItems(mixMhzId))[0]?.fulfilled_quantity}`)
+  // ════ 阶段 10：跨来源单合并到同一采购行，履约进度不得重复计数 ════
+  // 两张品项公司报货需求的同一 SKU 会被合并成**一条**采购明细。
+  // 下游入库量必须按各来源的血缘占比分摊回去；若按采购行全量归属，
+  // 两张需求单会各自显示全量，合计凭空翻倍。
+  const { id: dupReqAId } = await biz.createItemCompanyReplenishment({
+    supplyChainLocationId: HQ_ORG,
+    items: [{ skuId: SKU_SUPPLY, quantity: 5 }],
+  })
+  const { id: dupReqBId } = await biz.createItemCompanyReplenishment({
+    supplyChainLocationId: HQ_ORG,
+    items: [{ skuId: SKU_SUPPLY, quantity: 5 }],
+  })
+  const [dupItemA] = await docItems(dupReqAId)
+  const [dupItemB] = await docItems(dupReqBId)
+  const { id: dupPoId } = await biz.createPurchaseOrder({
+    supplyChainLocationId: HQ_ORG,
+    items: [
+      { sourceItemId: dupItemA.id, quantity: 5 },
+      { sourceItemId: dupItemB.id, quantity: 5 },
+    ],
+  })
+  const dupPoItems = await docItems(dupPoId)
+  check('两张需求单的同一 SKU 合并成一条采购明细',
+    dupPoItems.length === 1 && num(dupPoItems[0]?.quantity) === 10,
+    `rows=${dupPoItems.length} qty=${dupPoItems[0]?.quantity}`)
+
+  await biz.receiveSupplyChainPurchaseOrder({
+    purchaseOrderId: dupPoId,
+    supplyChainLocationId: HQ_ORG,
+    items: [{ purchaseOrderItemId: dupPoItems[0].id, quantity: 6, batchNo: 'BDUP', expiryDate: '2027-12-31' }],
+  })
+  const dupProgressA = (await docs.getInventoryCoreDocById(dupReqAId))?.fulfillmentProgress?.items?.[0]
+  const dupProgressB = (await docs.getInventoryCoreDocById(dupReqBId))?.fulfillmentProgress?.items?.[0]
+  const dupReceivedTotal = (dupProgressA?.receivedQuantity ?? 0) + (dupProgressB?.receivedQuantity ?? 0)
+  check('跨来源单合并后入库进度按占比分摊，两单合计等于实收 6（不是 12）',
+    Math.abs(dupReceivedTotal - 6) < 0.01,
+    `A=${dupProgressA?.receivedQuantity} B=${dupProgressB?.receivedQuantity} 合计=${dupReceivedTotal}`)
+
   check('回退后该汇总行可以重新下单',
     (await biz.createPurchaseOrder({
       supplyChainLocationId: HQ_ORG,
