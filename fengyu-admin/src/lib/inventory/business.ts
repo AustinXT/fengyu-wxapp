@@ -2723,7 +2723,15 @@ export async function createPurchaseOrder(
         })
       } else if (header.docType === '品项公司报货需求') {
         if (header.status !== '已完成') {
-          throw new ApiError('INVALID_STATE', '品项公司报货需求尚未完成，不能下单')
+          throw new ApiError('INVALID_STATE', '采购订单必须引用有效的品项公司报货需求单')
+        }
+        // source 兼容 null（历史形态）与总部主体（insertDocHeader 的同节点归一化形态）。
+        // 这道守卫拦的是 source 指向市场、或带了市场归属的异常需求单 —— 它们不该走供应链链路。
+        if (
+          (header.sourceOrgNodeId !== null && header.sourceOrgNodeId !== supplyChain.orgNodeId)
+          || header.marketId !== null
+        ) {
+          throw new ApiError('INVALID_STATE', '品项公司报货需求的供应链主体不一致')
         }
         const ordered = await linkedQuantity(tx, source.id, '品项公司报货采购订单')
         if (nearlyGreater(quantity, source.quantity - ordered)) {

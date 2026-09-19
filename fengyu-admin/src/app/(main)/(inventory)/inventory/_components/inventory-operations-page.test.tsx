@@ -82,8 +82,14 @@ describe('办理台表单一致性（#135）', () => {
     // 抽样两个方向，防止整体计数对了但分配错了
     const store = block('function StoreRequestForm(', 'function ItemCompanyReplenishmentForm(')
     expect(store).toMatch(/min="0\.01"/)          // 数量走 positiveNumber
-    const purchase = block('function PurchaseOrderForm(', 'function SupplyChainPurchaseOrderForm(')
-    expect(purchase).toMatch(/<FormField label="采购数量"><Input type="number" min="0"/)
+    // #194 把「供应链采购订单」并入「采购订单」，原右锚 SupplyChainPurchaseOrderForm 已不存在，
+    // 改用紧随其后的 interface 作右锚。
+    const purchase = block('function PurchaseOrderForm(', 'interface ShipmentDraftLine {')
+    expect(purchase).toMatch(/<FormField label="采购数量">/)
+    expect(purchase).toMatch(/min="0"/)
+    // 市场报货汇总（#193）同属「至少填一条」语义，也走 min="0"
+    const summary = block('function MarketReportSummaryForm(', 'interface PurchaseSourceLine {')
+    expect(summary).toMatch(/min="0"/)
   })
 
   it('「请完整填写」语义的字段标必填', () => {
@@ -102,7 +108,7 @@ describe('办理台表单一致性（#135）', () => {
   it('「请填写至少一条」语义的字段**不**标必填', () => {
     // 采购订单的「采购数量」：submit() 先 .filter(quantity !== null) 再判
     // 「请填写至少一条采购数量」—— 逐行标 * 是误导（单行留空是允许的）。
-    const purchase = block('function PurchaseOrderForm(', 'function SupplyChainPurchaseOrderForm(')
+    const purchase = block('function PurchaseOrderForm(', 'interface ShipmentDraftLine {')
     expect(purchase).toMatch(/<FormField label="采购数量">/)
     expect(purchase).not.toMatch(/<FormField label="采购数量" required/)
 
@@ -144,10 +150,15 @@ describe('办理台表单一致性（#135）', () => {
     expect(staffPurchase).toMatch(/<FormField label="市场批次" required/)
   })
 
-  it('必填标记覆盖到全部 19 个表单，不只是 UX 扫描点到的那 5 个', () => {
+  it('必填标记覆盖到全部表单，不只是 UX 扫描点到的那 5 个', () => {
     // 只改被扫描到的 5 个表单，会让同一个 FormField 组件在页面内自相矛盾：
     // 用户看到有些字段带 *、有些不带，会以为不带的都是可选。
+    //
+    // 58 → 54：#194 把两张采购表单合成一张。原先两张各带 3 个必填（来源单 / 供应商 /
+    // 供应链主体 = 6 个），合并后供应商不再手选（按商品带出）、来源单改成多选清单
+    // （标题上自带 *，不是 FormField），只剩「供应链库存主体」1 个；
+    // #193 新增的市场报货汇总表单同样只有 1 个。6 → 2，净减 4。
     const marked = source.match(/<(?:FormField|DocPicker) label=(?:"[^"]*"|\{[^}]*\}) required/g) ?? []
-    expect(marked.length).toBe(58)
+    expect(marked.length).toBe(54)
   })
 })

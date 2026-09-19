@@ -1707,13 +1707,13 @@ describe('库存单据详情履约进度', () => {
     expect(fulfillmentSql).toContain("receipt_doc.status = '已完成'")
   })
 
-  it('供应链采购订单按关联入库单聚合已收与待收数量', async () => {
+  it('采购订单的供应链行按关联入库单聚合已收与待收数量', async () => {
     const now = new Date('2026-08-10T09:00:00.000Z')
     mockDb.select
       .mockReturnValueOnce(detailHeadSelect([{
         doc: {
           id: 'PCG-260810-0001',
-          docType: '供应链采购订单',
+          docType: '采购订单',
           status: '待收货',
           sourceOrgNodeId: null,
           targetOrgNodeId: 'HQ',
