@@ -60,7 +60,7 @@ function backfillStatements() {
     4,
     'drizzle 生成段的语句条数变了（预期 2 条 ADD COLUMN + 2 条 ADD CONSTRAINT），本测试的切分假设需同步更新',
   )
-  assert.ok(kept.length >= 3, '回填段应含：前置断言 + UPDATE + 事后断言')
+  assert.ok(kept.length >= 4, '回填段应含：前导空格审计 + 前置断言 + UPDATE + 事后断言')
   return kept
 }
 

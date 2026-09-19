@@ -38,6 +38,24 @@ ALTER TABLE "sale_items" ADD CONSTRAINT "chk_sale_item_quantities_non_negative" 
 --
 -- 2026-09-18 实测：dev 14 行 / 17 件、prod 18 行 / 24 件，全部 picked_phys=0、conv=0
 -- 且订单 status 均为「已退款」，即全量归入 refunded_quantity，0 行守恒破坏。
+-- 前置审计：note 守门用的是四端约定的 `LIKE '{%'`（不带 btrim，理由见下方注释）。
+-- 带前导空格的 JSON note 会被守门漏判 → 该笔退款不计入实据 → 残差无处安放。
+-- 实测 prod 235 条退款 note 0 条带前导空格，但「实测」与「迁移执行」之间仍可能写入新数据。
+-- 这里不改守门写法（那会造成副本漂移），只把「静默漏判」变成显式失败。
+DO $$
+DECLARE
+  leading_space integer;
+BEGIN
+  SELECT COUNT(*) INTO leading_space
+    FROM sale_order_payments
+   WHERE change_type = '退款'
+     AND status = '已支付'
+     AND note ~ '^\s+\{';
+
+  IF leading_space > 0 THEN
+    RAISE EXCEPTION '#154 有 % 条已支付退款的 note 是带前导空格的 JSON —— 四端守门写法（note LIKE ''{%%''）认不出它们，退款实据会漏判。请先清理这些 note 的前导空格再迁移', leading_space;
+  END IF;
+END $$;--> statement-breakpoint
 DO $$
 DECLARE
   bad integer;
