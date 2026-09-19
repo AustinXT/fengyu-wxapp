@@ -1509,7 +1509,7 @@ describe("STEP 1 received 分摊 SQL 四端字节同义守护", () => {
 // Block 7c: STEP 1.5 逐项退款净额 SQL 四端字节同义（2026-06-08 退款侧）
 //   recalcPaidSessionsForOrder 在 STEP1（毛额分摊）之后、STEP2 之前，从已支付退款流水
 //   note.items[].refundAmount 按 refSaleItemId 聚合扣减 sale_items.received → 净额（被退项单独减少）。
-//   note→jsonb 三重防线：① WHERE 仅 退款+已支付；② note LIKE '{%' 纯文本守门；③ 嵌套 CASE 保 ::jsonb cast。
+//   note→jsonb 安全解析：① WHERE 仅 退款+已支付；② public.try_jsonb（0043）失败降级 NULL；③ jsonb_typeof 兜非数组。
 //   admin（Drizzle ${id}）+ staff/client/payNotify（pg $1）四端归一化后字节同义。
 // ─────────────────────────────────────────────────────────────────────────────
 describe("STEP 1.5 逐项退款净额 SQL 四端字节同义守护", () => {

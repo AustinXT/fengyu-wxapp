@@ -18,7 +18,15 @@
 --   **绝不可改成 `WHEN OTHERS`** —— 那会连查询取消(57014)、OOM(53200)、锁超时(55P03) 一起吞掉。
 --
 -- 转换失败一律返回 NULL，由调用方 COALESCE 兜底——**静默降级而非报错**是有意为之：
--- 一条历史脏备注不应该让顾客的收款事务失败。降级方向单调偏保守（少算退款 → 更难升级）。
+-- 一条历史脏备注不应该让顾客的收款事务失败。
+--
+-- ⚠️ **降级方向不是"保守"，要分语境看**（#187 闸门 2 GLM 指出原注释把方向写反了）：
+--   · STEP 1.5（paid-sessions）：refundAmount 解析失败 → 归 0 → **少扣**退款
+--     → `sale_items.received` 偏高 → `paid_sessions` 偏高 → 偏**多给顾客**（误升方向）。
+--   · 跃迁 CTE（recalcCustomerType）：加回的退款额偏小 → `non_trial` 偏小 → 偏**难升级**（保守方向）。
+-- 即同一个 helper 在两条链路上的偏向相反。这是「以精确性换收款事务可用性」的有意权衡：
+-- 暴露面只剩历史脏数据（写入侧 JSON.stringify(number) 恒合法），而抛 22P02 会让整笔收款失败。
+-- **后续若沿用本模式处理其它字段、或调整 COALESCE 的兜底值，必须重新推演该字段所在链路的偏向。**
 --
 -- ⚠️ 若日后基于这两个函数建表达式索引（IMMUTABLE 允许），CREATE OR REPLACE 改定义前必须先 DROP 索引。
 
@@ -64,7 +72,10 @@ $$;
 --> statement-breakpoint
 
 COMMENT ON FUNCTION public.try_jsonb(text) IS
-  '安全 jsonb 转换：非法 JSON 返回 NULL 而非抛 22P02。用于解析 sale_order_payments.note (#187)。改定义前先 DROP 依赖的表达式索引。';
+  '安全 jsonb 转换：非法 JSON 返回 NULL 而非抛 22P02。用于解析 sale_order_payments.note (#187)。'
+  '改定义前先 DROP 依赖的表达式索引。带 EXCEPTION 块的 PL/pgSQL 每次调用建子事务，'
+  '现有调用点在 CASE 条件与 THEN 各求值一次（每行 2 次）；联机路径无感、批量脚本秒级可接受，'
+  '若日后用于逐行解析的高频热路径，改成 CROSS JOIN LATERAL (SELECT public.try_jsonb(note) AS j) 单次求值。';
 --> statement-breakpoint
 
 COMMENT ON FUNCTION public.try_numeric(text) IS

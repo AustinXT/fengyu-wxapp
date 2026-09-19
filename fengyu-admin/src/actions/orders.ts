@@ -635,7 +635,8 @@ type AdminTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
  * item_direction='购买' 与 STEP 1.5 扣减作用域一致；FILTER 聚合的 NULL 由 COALESCE 归零。
  */
 const recalcCustomerTypeCte = (clientUserId: string) => sql`WITH refund_by_item AS (
-       SELECT elem ->> 'refSaleItemId' AS sale_item_id,
+       SELECT sop.sale_order_id,
+              elem ->> 'refSaleItemId' AS sale_item_id,
               SUM(COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0)) AS refunded
        FROM sale_order_payments sop
        JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
@@ -650,7 +651,7 @@ const recalcCustomerTypeCte = (clientUserId: string) => sql`WITH refund_by_item 
          AND sop.change_type = '退款'
          AND sop.status = '已支付'
          AND elem ->> 'refSaleItemId' <> 'OVERPAY'
-       GROUP BY 1
+       GROUP BY 1, 2
      ),
      order_amounts AS (
        SELECT o.sale_order_id,
@@ -669,7 +670,8 @@ const recalcCustomerTypeCte = (clientUserId: string) => sql`WITH refund_by_item 
        FROM sale_orders o
        LEFT JOIN sale_items si ON si.sale_order_id = o.sale_order_id
                               AND si.item_direction = '购买'
-       LEFT JOIN refund_by_item rbi ON rbi.sale_item_id = si.sale_item_id
+       LEFT JOIN refund_by_item rbi ON rbi.sale_order_id = o.sale_order_id
+                                   AND rbi.sale_item_id = si.sale_item_id
        WHERE o.client_user_id = ${clientUserId}
          AND o.status IN ('已支付', '已完成')
          AND o.sale_order_type = '销售单'

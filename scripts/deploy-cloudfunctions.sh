@@ -201,18 +201,41 @@ assert_db_prereqs() {
     const fn = (c.functions || []).find((x) => x.envVariables && x.envVariables.PG_CONNECTION_STRING)
     process.stdout.write(fn ? fn.envVariables.PG_CONNECTION_STRING : "")
   ' "$1" 2>/dev/null || true)
-  [[ -z "$pg_conn" ]] && { echo "  ⚠️  未取到 PG 连接串，跳过 DB 前置依赖检查"; return 0; }
-  command -v psql >/dev/null 2>&1 || { echo "  ⚠️  本机无 psql，跳过 DB 前置依赖检查（部署前请自行确认已迁 0043）"; return 0; }
+  # 探测不通时的处置：dev 告警放行，**prod 一律 fail-closed**——
+  # 生产恰恰是最不能"无法确认迁移状态还继续上传"的环境。
+  local soft_fail  # 0=可放行（dev）  1=必须中止（prod）
+  [[ "$ACTIVE" == "prod" ]] && soft_fail=1 || soft_fail=0
+  _db_probe_unavailable() {  # $1=原因
+    if [[ "$soft_fail" == "1" ]]; then
+      echo "ERROR: prod 部署无法确认 DB 迁移状态（$1），拒绝继续。" >&2
+      echo "       请先确认 ${ACTIVE} 库已执行 db:migrate（0043_try_cast_helpers）。" >&2
+      exit 1
+    fi
+    echo "  ⚠️  $1，跳过 DB 前置依赖检查（${ACTIVE} 环境放行；部署前请自行确认已迁 0043）"
+    return 0
+  }
 
-  local missing
-  missing=$(psql "$pg_conn" -tAc "
-    SELECT string_agg(f, ', ')
-      FROM (VALUES ('public.try_jsonb(text)'), ('public.try_numeric(text)')) AS t(f)
-     WHERE to_regprocedure(f) IS NULL
-  " 2>/dev/null) || { echo "  ⚠️  DB 探测失败（网络/权限），跳过 DB 前置依赖检查"; return 0; }
+  [[ -z "$pg_conn" ]] && { _db_probe_unavailable "未取到 PG 连接串"; return 0; }
 
-  if [[ -n "${missing//[[:space:]]/}" ]]; then
-    echo "ERROR: 目标库缺少云函数依赖的 DB 对象：${missing}" >&2
+  # 用项目已有的 Node pg 探测，不依赖本机 psql（CI / 同事机器上未必装）
+  local probe rc
+  probe=$(cd "$ROOT/db" && node -e '
+    const { Client } = require("pg")
+    const c = new Client({ connectionString: process.argv[1], connectionTimeoutMillis: 8000 })
+    c.connect()
+      .then(() => c.query(`
+        SELECT COALESCE(string_agg(f, ", "), "") AS missing
+          FROM (VALUES (\x27public.try_jsonb(text)\x27), (\x27public.try_numeric(text)\x27)) AS t(f)
+         WHERE to_regprocedure(f) IS NULL
+      `.replace(/"/g, "\x27")))
+      .then((r) => { process.stdout.write(r.rows[0].missing || ""); return c.end() })
+      .catch((e) => { console.error(e.message); process.exit(2) })
+  ' "$pg_conn" 2>/dev/null)
+  rc=$?
+  [[ $rc -ne 0 ]] && { _db_probe_unavailable "DB 探测失败（网络/权限/依赖）"; return 0; }
+
+  if [[ -n "${probe//[[:space:]]/}" ]]; then
+    echo "ERROR: 目标库缺少云函数依赖的 DB 对象：${probe}" >&2
     echo "       请先对 ${ACTIVE} 库执行 db:migrate（migration 0043_try_cast_helpers），再部署。" >&2
     echo "       参见 db/CLAUDE.md「schema 变更两个库都要迁」的目标断言流程。" >&2
     exit 1

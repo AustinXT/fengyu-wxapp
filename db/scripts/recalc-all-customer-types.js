@@ -84,8 +84,9 @@ WITH threshold AS (
 -- 其余判定语义与 staffApi routes/order.js RECALC_CUSTOMER_TYPE_CTE 逐项对齐。
 refund_by_item AS (
   -- note→jsonb 三重防线逐字对齐 staffApi utils/paid-sessions.js RECEIVED_REFUNDED_DEDUCT_SQL：
-  -- ① 仅退款+已支付流水；② note LIKE '{%' 纯文本守门；③ 嵌套 CASE 令 ::jsonb cast 只在守门通过时求值。
-  SELECT elem ->> 'refSaleItemId' AS sale_item_id,
+  -- ① 仅退款+已支付流水；② public.try_jsonb 安全转换（非法 JSON 降级 NULL）；③ jsonb_typeof 兜 items 非数组。
+  SELECT sop.sale_order_id,
+         elem ->> 'refSaleItemId' AS sale_item_id,
          SUM(COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0)) AS refunded
     FROM sale_order_payments sop
     JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
@@ -99,7 +100,7 @@ refund_by_item AS (
      AND sop.change_type = '退款'
      AND sop.status = '已支付'
      AND elem ->> 'refSaleItemId' <> 'OVERPAY'
-   GROUP BY 1
+   GROUP BY 1, 2
 ),
 order_amounts AS (
   -- LEAST(…, sale_amount) 封顶：加回 note 原始退款额并非扣减的严格逆运算，
@@ -122,7 +123,8 @@ order_amounts AS (
     FROM sale_orders o
     LEFT JOIN sale_items si ON si.sale_order_id = o.sale_order_id
                            AND si.item_direction = '购买'
-    LEFT JOIN refund_by_item rbi ON rbi.sale_item_id = si.sale_item_id
+    LEFT JOIN refund_by_item rbi ON rbi.sale_order_id = o.sale_order_id
+                                AND rbi.sale_item_id = si.sale_item_id
     -- 2026-04-26 sale-order-domain-refactor 后，回款下沉到
     -- sale_order_payments.change_type='回款'，sale_order_type 枚举已不含“回款单”。
    WHERE o.status IN ('已支付', '已完成')
