@@ -2364,13 +2364,25 @@ async function loadMarketReportFulfillmentProgress(
         FROM purchase_links
        GROUP BY root_item_id
     ),
+    -- 一条采购明细可以由**多个**来源行合并而来（#194），所以下游的发货/收货量必须
+    -- 按各来源在该采购行里的占比分摊，不能每个来源都记全量 ——
+    -- 来源 A 5 件、B 5 件合成采购行 10 件、实发 6 件时，不分摊会让 A 与 B 各显示 6，
+    -- 合计 12 件，凭空多出一倍。
+    purchase_share AS (
+      SELECT
+        root_item_id,
+        purchase_item_id,
+        quantity,
+        quantity / NULLIF(SUM(quantity) OVER (PARTITION BY purchase_item_id), 0) AS share
+        FROM purchase_links
+    ),
     shipment_links AS (
       SELECT
         purchase_link.root_item_id,
         doc_link.to_item_id AS shipment_item_id,
         doc_link.relation_type,
-        COALESCE(doc_link.quantity, 0) AS quantity
-        FROM purchase_links purchase_link
+        COALESCE(doc_link.quantity, 0) * COALESCE(purchase_link.share, 0) AS quantity
+        FROM purchase_share purchase_link
         JOIN inventory_doc_links doc_link
           ON doc_link.from_item_id = purchase_link.purchase_item_id
         JOIN inventory_docs shipment_doc ON shipment_doc.id = doc_link.to_doc_id
@@ -2386,12 +2398,22 @@ async function loadMarketReportFulfillmentProgress(
         FROM shipment_links
        GROUP BY root_item_id
     ),
+    -- 同一张发货明细也可能被多个来源分摊到，收货量按发货行内部的占比再分一次。
+    shipment_share AS (
+      SELECT
+        root_item_id,
+        shipment_item_id,
+        relation_type,
+        quantity,
+        quantity / NULLIF(SUM(quantity) OVER (PARTITION BY shipment_item_id), 0) AS share
+        FROM shipment_links
+    ),
     receipt_links AS (
       SELECT
         shipment_link.root_item_id,
         shipment_link.relation_type AS shipment_relation_type,
-        COALESCE(doc_link.quantity, 0) AS quantity
-        FROM shipment_links shipment_link
+        COALESCE(doc_link.quantity, 0) * COALESCE(shipment_link.share, 0) AS quantity
+        FROM shipment_share shipment_link
         JOIN inventory_doc_links doc_link
           ON doc_link.from_item_id = shipment_link.shipment_item_id
         JOIN inventory_docs receipt_doc ON receipt_doc.id = doc_link.to_doc_id
@@ -2540,11 +2562,20 @@ async function loadItemCompanyRequestFulfillmentProgress(
         FROM purchase_links
        GROUP BY request_item_id
     ),
+    -- 与市场报货那套同理：一条采购明细可由多张需求单的多行合并而来（#194），
+    -- 入库量要按各来源在该采购行里的占比分摊，否则每个来源都会记到全量。
+    purchase_share AS (
+      SELECT
+        request_item_id,
+        purchase_item_id,
+        quantity / NULLIF(SUM(quantity) OVER (PARTITION BY purchase_item_id), 0) AS share
+        FROM purchase_links
+    ),
     receipt_totals AS (
       SELECT
         purchase_link.request_item_id,
-        SUM(COALESCE(doc_link.quantity, 0)) AS received_quantity
-        FROM purchase_links purchase_link
+        SUM(COALESCE(doc_link.quantity, 0) * COALESCE(purchase_link.share, 0)) AS received_quantity
+        FROM purchase_share purchase_link
         JOIN inventory_doc_links doc_link
           ON doc_link.from_item_id = purchase_link.purchase_item_id
         JOIN inventory_docs receipt_doc ON receipt_doc.id = doc_link.to_doc_id
