@@ -636,14 +636,12 @@ type AdminTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
  */
 const recalcCustomerTypeCte = (clientUserId: string) => sql`WITH refund_by_item AS (
        SELECT elem ->> 'refSaleItemId' AS sale_item_id,
-              SUM(COALESCE((elem ->> 'refundAmount')::numeric, 0)) AS refunded
+              SUM(COALESCE(try_numeric(elem ->> 'refundAmount'), 0)) AS refunded
        FROM sale_order_payments sop
        JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
        CROSS JOIN LATERAL jsonb_array_elements(
-         CASE WHEN sop.note LIKE '{"%'
-              THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
-                        THEN (sop.note)::jsonb -> 'items'
-                        ELSE '[]'::jsonb END
+         CASE WHEN jsonb_typeof(try_jsonb(sop.note) -> 'items') = 'array'
+              THEN try_jsonb(sop.note) -> 'items'
               ELSE '[]'::jsonb END
        ) AS elem
        WHERE ro.client_user_id = ${clientUserId}

@@ -239,13 +239,17 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
           expect(cte).toContain("AND elem ->> 'refSaleItemId' <> 'OVERPAY'")
         })
 
-        test("note→jsonb 三重防线（LIKE '{\"%' 守门 + 嵌套 CASE 延迟 cast + jsonb_typeof 兜非数组），根除 22P02", () => {
-          // 守门比 RECEIVED_REFUNDED_DEDUCT_SQL 的 LIKE '{%' **有意加严**：
-          // `{手工备注}` 这类以 { 开头但非合法 JSON 的值能通过 '{%'，到 ::jsonb 才抛 22P02（已实测复现）。
-          // 合法的含 items 的 note 必然以 {" 开头，故加严不会漏掉任何真数据。
-          expect(cte).toContain('sop.note LIKE \'{"%\'')
-          expect(cte).toContain("jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'")
+        test('用 try_jsonb / try_numeric 安全转换，禁止裸 ::jsonb / ::numeric（根除 22P02）', () => {
+          // LIKE 守门无法证明 JSON 合法：`{手工备注}`、`{"items":`（截断）都能通过却在 cast 处炸。
+          // migration 0043 的 PL/pgSQL helper 把失败降级成 NULL（版本无关，不依赖 PG16 pg_input_is_valid）。
+          expect(cte).toContain("jsonb_typeof(try_jsonb(sop.note) -> 'items') = 'array'")
+          expect(cte).toContain("try_jsonb(sop.note) -> 'items'")
+          expect(cte).toContain("COALESCE(try_numeric(elem ->> 'refundAmount'), 0)")
           expect(cte).toContain("ELSE '[]'::jsonb END")
+          // 回归守护：不得回退到裸 cast 或 LIKE 守门
+          expect(cte).not.toContain('(sop.note)::jsonb')
+          expect(cte).not.toContain("(elem ->> 'refundAmount')::numeric")
+          expect(cte).not.toContain('sop.note LIKE')
         })
 
         test('订单范围仍限已支付/已完成的销售单', () => {
@@ -605,9 +609,11 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
           expect(src).toContain("AND si.item_direction = '购买'")
         })
 
-        test("note→jsonb 三重防线（与运行时逐字同源，守门加严为 LIKE '{\"%'）", () => {
-          expect(src).toContain('sop.note LIKE \'{"%\'')
-          expect(src).toContain("jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'")
+        test('用 try_jsonb / try_numeric 安全转换（与运行时同源）', () => {
+          expect(src).toContain("jsonb_typeof(try_jsonb(sop.note) -> 'items') = 'array'")
+          expect(src).toContain("COALESCE(try_numeric(elem ->> 'refundAmount'), 0)")
+          expect(src).not.toContain('(sop.note)::jsonb')
+          expect(src).not.toContain('sop.note LIKE')
         })
 
         test('退款聚合只认已支付的退款流水 + 排除 OVERPAY + 限定已结清销售单', () => {

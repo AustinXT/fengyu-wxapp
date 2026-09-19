@@ -73,14 +73,12 @@ CREATE TEMP TABLE _mem_upgrade_target ON COMMIT DROP AS
 WITH refund_by_item AS (
   -- note→jsonb 三重防线逐字对齐 staffApi utils/paid-sessions.js RECEIVED_REFUNDED_DEDUCT_SQL，根除 22P02。
   SELECT elem ->> 'refSaleItemId' AS sale_item_id,
-         SUM(COALESCE((elem ->> 'refundAmount')::numeric, 0)) AS refunded
+         SUM(COALESCE(try_numeric(elem ->> 'refundAmount'), 0)) AS refunded
     FROM sale_order_payments sop
     JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
     CROSS JOIN LATERAL jsonb_array_elements(
-      CASE WHEN sop.note LIKE '{"%'
-           THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
-                     THEN (sop.note)::jsonb -> 'items'
-                     ELSE '[]'::jsonb END
+      CASE WHEN jsonb_typeof(try_jsonb(sop.note) -> 'items') = 'array'
+           THEN try_jsonb(sop.note) -> 'items'
            ELSE '[]'::jsonb END
     ) AS elem
    WHERE ro.status IN ('已支付', '已完成')

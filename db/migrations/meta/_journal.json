@@ -302,6 +302,13 @@
       "when": 1789549103374,
       "tag": "0042_inventory_sku_supplier_fk",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1789785884611,
+      "tag": "0043_try_cast_helpers",
+      "breakpoints": true
     }
   ]
 }

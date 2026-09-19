@@ -502,24 +502,20 @@ async function refreshSpendingTier(client, clientUserId) {
  *   non_trial = Σ(非体验行毛实收)   trial = Σ(体验行毛实收)
  * 毛实收 = sale_items.received（STEP 1.5 扣退款后的净额）+ 该行逐项退款额 → 还原"曾经收到的钱"。
  *
- * refund_by_item 的 note→jsonb 三重防线逐字对齐 utils/paid-sessions.js:132
- * RECEIVED_REFUNDED_DEDUCT_SQL（① 仅退款+已支付流水；② note LIKE '{%' 纯文本守门；
- * ③ 嵌套 CASE 令 ::jsonb cast 只在守门通过时求值，jsonb_typeof 兜 items 非数组），根除 22P02。
- * ⚠️ 展开范围额外限定在**参与判定的已结清销售单**（ro.status / ro.sale_order_type）：
- * 既避免白展开充值单/寄存单/转换单的退款 JSON，也把「以 { 开头但非合法 JSON」这类脏 note
- * 的 22P02 爆炸半径收回到本就要读的订单集合内（原 RECEIVED_REFUNDED_DEDUCT_SQL 按单聚合，
- * 本 CTE 按顾客聚合，不限定范围会把半径放大到该顾客全部历史流水）。
+ * refund_by_item 用 `try_jsonb` / `try_numeric`（migration 0043 新增的 PL/pgSQL helper）
+ * 做**版本无关的安全转换**：非法 JSON / 非数字文本一律降级为 NULL，由 COALESCE 兜底，
+ * 而不是抛 22P02 回滚整个收款事务。
+ * 这取代了原先 `note LIKE '{%'` 的纯文本守门——LIKE 无法证明 JSON 合法，
+ * `{手工备注}`、`{"items":`（截断）都能通过守门却在 cast 处炸掉（#187 闸门 2 codex 两轮指出）。
+ * PG16 的 `pg_input_is_valid()` 能做同样的事，但自托管生产库版本未统一，故走 helper 路线。
+ * ⚠️ **部署顺序：必须先迁 0043 再部署本代码**，否则函数不存在会直接报错。
  *
- * ⚠️ **残留风险（#187 闸门 2 codex 指出，未根除）**：`LIKE '{"%'` 只是把误判概率压到极低，
- * 并不能证明 JSON 合法——截断值如 `{"items":` 仍会进 ::jsonb 抛 22P02；
- * 同理 `(elem ->> 'refundAmount')::numeric` 遇非数字文本也会抛。
- * 根治要 PG16 的 `pg_input_is_valid(sop.note, 'jsonb')`（本仓 docker-compose 用 postgres:16，
- * 但**自托管生产库版本未经确认**，贸然使用会因函数不存在而让整条跃迁链路失败，比 22P02 更糟）。
- * 上线前请用只读体检确认线上无此类脏数据：
- *   SELECT id, sale_order_id, left(note, 40) FROM sale_order_payments
- *    WHERE change_type = '退款' AND status = '已支付'
- *      AND note LIKE '{"%' AND NOT (note ~ '^\\{"items"\\s*:\\s*\\[.*\\]\\s*\\}$');
- * 确认 PG ≥ 16 后应改用 pg_input_is_valid 并同步八处副本。
+ * ⚠️ 展开范围额外限定在**参与判定的已结清销售单**（ro.status / ro.sale_order_type）：
+ * 既避免白展开充值单/寄存单/转换单的退款 JSON，也把解析量收回到本就要读的订单集合内
+ * （原 RECEIVED_REFUNDED_DEDUCT_SQL 按单聚合，本 CTE 按顾客聚合）。
+ *
+ * ⚠️ **全额退款单不在判定范围内**：退完全部明细后原单状态变 `'已退款'`，被 o.status 过滤排除。
+ * 即「退款不扣减」只对**部分退款**成立（业务方 2026-09-18 确认保持此口径）。
  *
  * **LEAST(… , si.sale_amount) 封顶**：received 的扣减有两条路径——主路径按
  * sale_payment_item_receipts 负额净算、回退路径才用 note.items[].refundAmount + GREATEST(0) clamp。
@@ -541,14 +537,12 @@ async function refreshSpendingTier(client, clientUserId) {
  */
 const RECALC_CUSTOMER_TYPE_CTE = `WITH refund_by_item AS (
        SELECT elem ->> 'refSaleItemId' AS sale_item_id,
-              SUM(COALESCE((elem ->> 'refundAmount')::numeric, 0)) AS refunded
+              SUM(COALESCE(try_numeric(elem ->> 'refundAmount'), 0)) AS refunded
        FROM sale_order_payments sop
        JOIN sale_orders ro ON ro.sale_order_id = sop.sale_order_id
        CROSS JOIN LATERAL jsonb_array_elements(
-         CASE WHEN sop.note LIKE '{"%'
-              THEN CASE WHEN jsonb_typeof((sop.note)::jsonb -> 'items') = 'array'
-                        THEN (sop.note)::jsonb -> 'items'
-                        ELSE '[]'::jsonb END
+         CASE WHEN jsonb_typeof(try_jsonb(sop.note) -> 'items') = 'array'
+              THEN try_jsonb(sop.note) -> 'items'
               ELSE '[]'::jsonb END
        ) AS elem
        WHERE ro.client_user_id = $1
