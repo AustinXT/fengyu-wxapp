@@ -88,17 +88,28 @@ function TabsTrigger({ value, className, children, ...props }: TabsTriggerProps)
 
 export interface TabsContentProps extends React.HTMLAttributes<HTMLDivElement> {
   value: string
+  /**
+   * 非激活时保留 DOM（隐藏而非卸载），默认 false 维持原行为。
+   *
+   * 给「面板里装着填了一半的表单」的场景用（#190 办理台）：默认的卸载语义会把
+   * 受控表单的 useState 一起清掉，切去看单据再切回来输入就没了。
+   * 隐藏用 `hidden` 属性 + `hidden` class 双保险：前者把子树移出可访问性树与 Tab 键序，
+   * 后者保证调用方传了 `flex` 之类的 display 工具类时也压得住。
+   */
+  keepMounted?: boolean
 }
 
-function TabsContent({ value, className, children, ...props }: TabsContentProps) {
+function TabsContent({ value, keepMounted = false, className, children, ...props }: TabsContentProps) {
   const { value: activeValue } = useTabsContext()
+  const isActive = activeValue === value
 
-  if (activeValue !== value) return null
+  if (!isActive && !keepMounted) return null
 
   return (
     <div
       role="tabpanel"
-      className={cn("mt-4 focus-visible:outline-none", className)}
+      hidden={!isActive}
+      className={cn("mt-4 focus-visible:outline-none", !isActive && "hidden", className)}
       {...props}
     >
       {children}

@@ -28,7 +28,7 @@ import {
 } from '@db/inventory'
 import { orgNodes, stores } from '@db/org'
 import { productSkus } from '@db/product'
-import { and, asc, desc, eq, gte, ilike, inArray, isNull, lte, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
@@ -2094,7 +2094,16 @@ export const listInventoryCoreDocs = withPermission(
       orgNodeId?: string
       locationType?: InventoryLocationType
       docType?: InventoryDocType
+      /**
+       * 多类型过滤（#190）。与单值 `docType` 是 AND 关系（两个都传时各自收窄），
+       * 办理台单据 Tab 只传本字段 —— 一个业务可能一次产出出库 + 入库两张单。
+       * 传了空数组表示「没有任何可展示的类型」，fail-closed 返回空，不退化成不过滤。
+       */
+      docTypes?: readonly InventoryDocType[]
       status?: InventoryCoreDocStatus
+      statuses?: readonly InventoryCoreDocStatus[]
+      /** 只保留发起过撤回申请的单据（`cancellation_request_reason` 非空）。 */
+      cancellationRequested?: boolean
       startDate?: string
       endDate?: string
       keyword?: string
@@ -2150,7 +2159,20 @@ export const listInventoryCoreDocs = withPermission(
         : sql`FALSE`)
     }
     if (filters.docType) conditions.push(eq(inventoryDocs.docType, filters.docType))
+    if (filters.docTypes) {
+      conditions.push(filters.docTypes.length > 0
+        ? inArray(inventoryDocs.docType, [...filters.docTypes])
+        : sql`FALSE`)
+    }
     if (filters.status) conditions.push(eq(inventoryDocs.status, filters.status))
+    if (filters.statuses) {
+      conditions.push(filters.statuses.length > 0
+        ? inArray(inventoryDocs.status, [...filters.statuses])
+        : sql`FALSE`)
+    }
+    if (filters.cancellationRequested) {
+      conditions.push(isNotNull(inventoryDocs.cancellationRequestReason))
+    }
     if (filters.startDate) conditions.push(gte(inventoryDocs.docDate, filters.startDate))
     if (filters.endDate) conditions.push(lte(inventoryDocs.docDate, filters.endDate))
     if (filters.keyword) {
