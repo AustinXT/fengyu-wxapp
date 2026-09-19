@@ -107,6 +107,25 @@ describe('listInventoryOperationDocs 入参闸门', () => {
     },
   )
 
+  it('通用业务 id 解析为「查这一种单据」', async () => {
+    await listInventoryOperationDocs({ operationId: 'generic:市场产品报损', page: 1 })
+    expect(mockEngine.listInventoryCoreDocs).toHaveBeenLastCalledWith({
+      docTypes: ['市场产品报损'], statuses: undefined, locationType: undefined,
+      cancellationRequested: undefined, page: 1, pageSize: undefined,
+    })
+  })
+
+  it('拼业务单类型的通用 id 被拒，不能从通用入口绕过专用服务', async () => {
+    // '品项公司发货' 是真实 docType，但必须走 createItemCompanyShipment 那套
+    // 数量/价格/批次校验；能从这里查出来就说明白名单破了。
+    for (const docType of ['品项公司发货', '采购订单', '库存转换出库']) {
+      await expect(
+        listInventoryOperationDocs({ operationId: `generic:${docType}` }),
+      ).rejects.toThrow('INVALID_PARAMS')
+    }
+    expect(mockEngine.listInventoryCoreDocs).not.toHaveBeenCalled()
+  })
+
   it('未知业务 id 被拒', async () => {
     await expect(listInventoryOperationDocs({ operationId: 'not-a-business' })).rejects.toThrow('INVALID_PARAMS')
     expect(mockEngine.listInventoryCoreDocs).not.toHaveBeenCalled()
