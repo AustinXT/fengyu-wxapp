@@ -3300,11 +3300,18 @@ describe('#190 单据列表的多类型 / 多状态 / 撤回标记过滤', () =>
     expect(text).toContain('"cancellation_request_reason" is not null')
   })
 
-  it('cancellationRequested 为 false / 不传时不加该条件', async () => {
+  it('不传 cancellationRequested 时不加该条件', async () => {
     // 撤回业务之外的发货单查询不能被这个条件误伤：漏加会少看单，多加会把
     // 普通发货单全筛掉（它们的 reason 恒为空），两个方向都是静默错。
     const notPassed = await whereOf({ docTypes: ['品项公司发货'] })
     expect(notPassed.text).not.toContain('cancellation_request_reason')
+  })
+
+  it('cancellationRequested 的类型已收窄为 true —— 传 false 会放宽结果集，只能从类型上堵', async () => {
+    // 运行时仍是 falsy 分支（退化成不过滤），这正是它危险的地方：写 `false` 的人
+    // 想要的是「只看没申请过撤回的」，拿到的却是**全部**。所以类型写死 true，
+    // 这里用 @ts-expect-error 越过类型检查，把「越过之后会发生什么」钉成文档。
+    // @ts-expect-error 刻意传入类型禁止的 false，验证运行时的 fail-open 行为
     const explicitFalse = await whereOf({ docTypes: ['品项公司发货'], cancellationRequested: false })
     expect(explicitFalse.text).not.toContain('cancellation_request_reason')
   })

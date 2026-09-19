@@ -52,8 +52,11 @@ export interface InventoryOperationDocQuery {
   /**
    * 仅保留发起过撤回申请的单据（`cancellation_request_reason` 非空）。
    * 撤回类业务不产出新单，靠这个标记把「被本业务经手过的发货单」跟普通发货单区分开。
+   *
+   * 类型是 `true` 而非 `boolean`：这个条件只有收窄一个方向，写 `false` 在 engine 里
+   * 会退化成不过滤（放宽），与字面意思相反 —— 从类型上堵掉这个三态陷阱。
    */
-  cancellationRequested?: boolean
+  cancellationRequested?: true
 }
 
 /**
@@ -73,10 +76,17 @@ export const INVENTORY_OPERATION_DOC_QUERY: Record<InventoryOperationId, Invento
   'supply-chain-purchase-cancel': { docTypes: ['供应链采购订单'], statuses: ['已取消'] },
   // 审批市场退货 → 货回供应链库，产出供应链退货入库单（business.ts: approveReturnForRestock）。
   'market-return-approval': { docTypes: ['供应链退货入库'] },
-  // 审批撤回通过后发货单变已取消；叠 cancellationRequested 排除其它途径取消的发货单。
+  /*
+   * 撤回审批的两个产出：通过 → 发货单变「已取消」；驳回 → status 改回「待收货」
+   * （`business.ts` rejectItemCompanyShipmentCancellation，不清 reason）。
+   * 两个都要显示，审批人得能复核自己刚驳回的单 —— 只留「已取消」的话，
+   * 驳回动作做完单子立刻从视野里消失，而它在申请人那边还看得见，同一条链两端口径相反。
+   * 「待审批」不在列：那是**待办**不是产出，按口径不进本 Tab。
+   * 叠 cancellationRequested 是为了排除其它途径取消的发货单。
+   */
   'shipment-cancel-approval': {
     docTypes: ['品项公司发货'],
-    statuses: ['已取消'],
+    statuses: ['已取消', '待收货'],
     cancellationRequested: true,
   },
   'supply-chain-conversion': {

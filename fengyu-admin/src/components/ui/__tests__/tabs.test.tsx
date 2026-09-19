@@ -69,12 +69,38 @@ describe('Tabs keepMounted', () => {
 
     const panels = container.querySelectorAll('[role="tabpanel"]')
     expect(panels.length).toBe(2)
-    const hiddenPanel = container.querySelector('[role="tabpanel"][hidden]')
+    const hiddenPanel = container.querySelector<HTMLElement>('[role="tabpanel"][hidden]')
     expect(hiddenPanel).not.toBeNull()
     expect(hiddenPanel!.textContent).toContain('计数')
-    // class 里也要有 hidden：调用方传 flex 之类的 display 工具类时，光靠 [hidden] 压不住。
-    expect(hiddenPanel!.className).toContain('hidden')
     // 可见的那个不能被误标
     expect(screen.getByText('单据列表').closest('[role="tabpanel"]')!.hasAttribute('hidden')).toBe(false)
+  })
+
+  it('隐藏靠内联 display:none —— 调用方传 flex 也压得住', () => {
+    // ⚠️ 这里不能用 `hidden` 工具类：cn() 走 twMerge，`hidden` 与 `flex`/`grid`/`block`
+    // 是同一个 display 冲突组，调用方的类会把它**合并掉**，而 `[hidden]` 的 UA 样式
+    // 特异性低于任何作者类也压不住 —— 结果是两个面板同时显示，且很难联想到 twMerge。
+    const { container } = render(
+      <Tabs defaultValue="form">
+        <TabsList>
+          <TabsTrigger value="form">填报表单</TabsTrigger>
+          <TabsTrigger value="docs">单据</TabsTrigger>
+        </TabsList>
+        <TabsContent value="form" keepMounted className="flex gap-2">
+          <span>表单内容</span>
+        </TabsContent>
+        <TabsContent value="docs">单据列表</TabsContent>
+      </Tabs>,
+    )
+    fireEvent.click(screen.getByRole('tab', { name: '单据' }))
+
+    const hiddenPanel = container.querySelector<HTMLElement>('[role="tabpanel"][hidden]')
+    expect(hiddenPanel).not.toBeNull()
+    expect(hiddenPanel!.style.display).toBe('none')
+    // 激活时不留下 display:none 残留
+    fireEvent.click(screen.getByRole('tab', { name: '填报表单' }))
+    const activePanel = screen.getByText('表单内容').closest('[role="tabpanel"]') as HTMLElement
+    expect(activePanel.style.display).toBe('')
+    expect(activePanel.hasAttribute('hidden')).toBe(false)
   })
 })

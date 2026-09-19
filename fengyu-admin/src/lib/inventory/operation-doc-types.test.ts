@@ -74,17 +74,55 @@ describe('业务 → 产出单据类型映射（#190）', () => {
       docTypes: ['供应链采购订单'],
       statuses: ['已取消'],
     })
+    // 审批侧含「待收货」：驳回时 business.ts 把 status 改回待收货且不清 reason，
+    // 那也是本业务的产出结果，审批人得能复核自己刚驳回的单。
+    // 「待审批」不在列 —— 那是待办不是产出。
     expect(INVENTORY_OPERATION_DOC_QUERY['shipment-cancel-approval']).toEqual({
       docTypes: ['品项公司发货'],
-      statuses: ['已取消'],
+      statuses: ['已取消', '待收货'],
       cancellationRequested: true,
     })
+    expect(businessSource).toContain(`SET status = '待收货', rejected_by = `)
     // 申请方刻意不限状态：驳回只把 status 改回「待收货」而不清 reason，
     // 申请人该看到自己申请的全部结果（待审批 / 已取消 / 被驳回）。
     expect(INVENTORY_OPERATION_DOC_QUERY['shipment-cancel']).toEqual({
       docTypes: ['品项公司发货'],
       cancellationRequested: true,
     })
+  })
+
+  /** 截取 business.ts 里某个导出函数的函数体（到下一个顶层 export 为止）。 */
+  function exportedFnBody(name: string): string {
+    const start = businessSource.indexOf(`export async function ${name}(`)
+    expect(start, `business.ts 里找不到 ${name}`).toBeGreaterThan(-1)
+    const next = businessSource.indexOf('\nexport ', start + 1)
+    return businessSource.slice(start, next === -1 ? undefined : next)
+  }
+
+  it('四组易混业务钉「函数 → docType」，互换映射必须转红', () => {
+    // 存在性断言挡不住互换：把 purchase-order 与 supply-chain-purchase-order 的
+    // docType 对调，两个字面量都还在 business.ts 里，测试照样全绿，而用户在 Tab 里
+    // 看到的是另一个业务的单。这几组名字只差「供应链」三个字，最容易抄反。
+    const pairs: Array<[InventoryOperationId, string, string]> = [
+      ['purchase-order', 'createPurchaseOrderFromMarketReplenishment', '采购订单'],
+      ['supply-chain-purchase-order', 'createPurchaseOrderFromItemCompanyReplenishment', '供应链采购订单'],
+      ['staff-purchase', 'createMarketStaffPurchase', '员工购出库'],
+      ['supply-chain-staff-purchase', 'createSupplyChainStaffPurchase', '供应链员工购出库'],
+    ]
+    for (const [operation, fnName, docType] of pairs) {
+      expect(INVENTORY_OPERATION_DOC_QUERY[operation].docTypes, operation).toEqual([docType])
+      expect(exportedFnBody(fnName), `${fnName} 应写入 ${docType}`).toContain(`docType: '${docType}'`)
+    }
+  })
+
+  it('两个退货业务按发起方分叉，门店发起 → 院退货、市场发起 → 市场退货', () => {
+    // 这两条共用 createReturnForRestock，靠 source.locationType 分叉，
+    // 分叉写反了两个业务的 Tab 会互相串。
+    const body = exportedFnBody('createReturnForRestock')
+    expect(body).toMatch(/source\.locationType === '门店'[\s\S]*?docType = '院退货'/)
+    expect(body).toMatch(/source\.locationType === '市场'[\s\S]*?docType = '市场退货'/)
+    expect(INVENTORY_OPERATION_DOC_QUERY['store-return'].docTypes).toEqual(['院退货'])
+    expect(INVENTORY_OPERATION_DOC_QUERY['market-return'].docTypes).toEqual(['市场退货'])
   })
 
   it('收货类业务映射到入库单，与 business.ts 的 receivePhysicalShipment 实参一致', () => {

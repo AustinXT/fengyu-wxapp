@@ -11,7 +11,9 @@ import {
 import type { CreateInventoryDocInput, InventoryCoreDocStatus, InventoryDocType, InventoryLocationType } from '@/lib/inventory/types'
 import {
   INVENTORY_OPERATION_DOC_QUERY,
+  INVENTORY_OPERATION_IDS,
   type InventoryOperationDocQuery,
+  type InventoryOperationId,
 } from '@/lib/inventory/operation-doc-types'
 import { ApiError } from '@/lib/api-error'
 import { withAnyPermission, withPermission } from '@/lib/with-permission'
@@ -44,10 +46,18 @@ export const listInventoryCoreDocs = withPermission(
 export const listInventoryOperationDocs = withPermission(
   'inventory:list',
   async (_session, input: { operationId: string; page?: number; pageSize?: number }) => {
-    const query = (INVENTORY_OPERATION_DOC_QUERY as Record<string, InventoryOperationDocQuery | undefined>)[
-      input.operationId
-    ]
-    if (!query) throw new ApiError('INVALID_PARAMS', '未知的库存业务')
+    /*
+     * 先过白名单再查表，**不能**直接 `MAP[input.operationId]` ——
+     * 映射表是普通对象字面量，`constructor` / `toString` / `__proto__` 这些原型链上的键
+     * 取出来都是 truthy，`if (!query) throw` 拦不住；而它们的 docTypes/statuses 全是
+     * undefined，engine 里那几个 `if (filters.xxx)` 分支一个都不进，
+     * 结果就是**返回 scope 内全部库存单据**，本函数注释自述的收窄承诺整个失效。
+     * 同型修复在本仓已有先例（`lib/action-error.ts` 改用 Map）。
+     */
+    if (!(INVENTORY_OPERATION_IDS as readonly string[]).includes(input.operationId)) {
+      throw new ApiError('INVALID_PARAMS', '未知的库存业务')
+    }
+    const query: InventoryOperationDocQuery = INVENTORY_OPERATION_DOC_QUERY[input.operationId as InventoryOperationId]
     return listInventoryCoreDocsImpl({
       docTypes: query.docTypes,
       statuses: query.statuses,

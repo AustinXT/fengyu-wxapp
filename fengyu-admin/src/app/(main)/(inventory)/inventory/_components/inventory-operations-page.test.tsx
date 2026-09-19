@@ -161,9 +161,12 @@ describe('办理台表单一致性（#135）', () => {
 describe('业务工作区双 Tab（#190）', () => {
   const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
 
-  it('工作区默认停在填报表单，不是单据', () => {
+  it('工作区默认停在填报表单，且换业务时 key 强制重建（光有 defaultValue 钉不住）', () => {
     // 办理台的主用途是办业务。默认落到单据 Tab 会让每个人每次都多点一下。
-    expect(source).toMatch(/<Tabs defaultValue="form">/)
+    // ⚠️ Tabs 是 uncontrolled：父层在 activeOperation A→B 时原地更新不重挂，
+    // 选中态会跟着跑到下一个业务 —— 点开 B 直接落在 B 的单据页。key 是唯一的拦法，
+    // 只断言 defaultValue 的话，这个回归照样全绿。
+    expect(source).toMatch(/<Tabs key=\{operation\} defaultValue="form">/)
     expect(source).toMatch(/<TabsTrigger value="form">填报表单<\/TabsTrigger>/)
     expect(source).toMatch(/<TabsTrigger value="docs">单据<\/TabsTrigger>/)
   })
@@ -174,19 +177,40 @@ describe('业务工作区双 Tab（#190）', () => {
     expect(source).toMatch(/<TabsContent value="form" keepMounted/)
   })
 
-  it('单据面板按 operation 加 key，换业务时重置分页与已加载数据', () => {
-    // 不加 key 的话，OperationDocsTab 在切换业务时不重建：page 还停在上一个业务的第 N 页，
-    // 新业务的单据只有 1 页 → 打开就是空白，且 Pagination 会自纠回第 1 页再请求一次。
-    expect(source).toMatch(/<OperationDocsTab key=\{operation\}/)
-  })
-
-  it('金额列头跟随本次查询返回的 canViewPrice，不吃父层的全局档位', () => {
-    // 父层传进来的 canViewPrice 是办理台首屏那次查询的结果（全局档位）。
-    // 金额的**行级**遮蔽在服务端按单据端点判定，列头要跟着本次查询的返回值走，
-    // 否则会出现「列头在、整列都是 —」的空列（#135 组 5 踩过同型问题）。
+  it('金额列头同时要求「有价格权限」与「这批单据真有金额」', () => {
+    // 只看权限不够：24 个业务里有 12 个产出的单据本身 totalAmount 恒为 null
+    // （退货 / 转换 / 发货 / 报货……business.ts 直接写 null），而 canViewPrice 是
+    // 会话级常量，跟 docType 无关 —— 只按它出列头，这 12 个业务永远多一列全是「—」，
+    // 正是本页在 #135 组 5 修过的症状。
     const tab = source.slice(source.indexOf('function OperationDocsTab('))
     expect(tab).toMatch(/setPriceVisible\(result\.canViewPrice\)/)
-    expect(tab).toMatch(/\.\.\.\(priceVisible/)
+    expect(tab).toMatch(/const hasAnyAmount = rows\.some\(/)
+    expect(tab).toMatch(/\.\.\.\(priceVisible && hasAnyAmount/)
+  })
+
+  it('分页器用服务端返回的 pageSize，不用前端常量', () => {
+    // engine 会把非白名单页长静默夹成 20。前端按自己那份算总页数的话，
+    // 页码条少算页数，最后几页永远翻不到且没有任何提示。
+    const tab = source.slice(source.indexOf('function OperationDocsTab('))
+    expect(tab).toMatch(/setPageSize\(result\.pageSize\)/)
+    expect(tab).toMatch(/<Pagination total=\{total\} page=\{page\} pageSize=\{pageSize\}/)
+  })
+
+  it('请求失败不清零 total，否则用户被静默弹回第 1 页并触发第二次请求', () => {
+    // Pagination 的越界自纠：total=0 → totalPages=1 → 第 3 页越界 → onPageChange(1)
+    // → effect 依赖变 → 再发一次请求。一次瞬时失败被放大成跳页 + 重复请求。
+    const catchBlock = source.slice(source.indexOf('.catch((error) => {', source.indexOf('function OperationDocsTab(')))
+    expect(catchBlock.slice(0, 400)).toMatch(/setRows\(\[\]\)/)
+    expect(catchBlock.slice(0, 400)).not.toMatch(/setTotal\(0\)/)
+  })
+
+  it('单据号用新标签打开详情，不做整行 router.push', () => {
+    // keepMounted 的全部意义是「去单据 Tab 看一眼回来表单还在」。行内 router.push
+    // 会把整个办理台连同填了一半的明细卸载掉，而 returnTo 只恢复 URL、恢复不了 React state。
+    const tab = source.slice(source.indexOf('function OperationDocsTab('))
+    expect(tab).toMatch(/target="_blank"/)
+    expect(tab).toMatch(/rel="noopener noreferrer"/)
+    expect(tab).not.toMatch(/onRowClick/)
   })
 
   it('单据 Tab 只能走 listInventoryOperationDocs，不自己拼单据类型', () => {
@@ -195,5 +219,36 @@ describe('业务工作区双 Tab（#190）', () => {
     expect(source).toContain('listInventoryOperationDocs')
     expect(source).not.toMatch(/listInventoryCoreDocs/)
     expect(source).not.toMatch(/docTypes:\s*\[/)
+  })
+})
+
+/**
+ * 通用业务卡片与单据 Tab 的边界（#190 / #191）。
+ *
+ * 10 张通用卡（内部领用 / 报损 / 盘点 / 调货 / 顾客产品出库…）目前借用了三个真实
+ * 转换业务的 id 当 React key，靠 `href` 分支走 <Link> 跳单据中心，永远不会
+ * setActiveOperation，所以不会打开单据 Tab。这层保护是**隐式**的 ——
+ * 一旦 #191 把某张卡改成内嵌表单而忘了给它自己的 id，
+ * 「市场产品报损」的单据 Tab 会直接列出库存转换单：页面完全正常，数据完全不对。
+ */
+describe('通用业务卡片不参与单据 Tab（#190 / #191 交界）', () => {
+  const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
+
+  it('GENERIC_OPERATIONS 每一条都带 href（否则会落进按 id 查映射表的单据 Tab）', () => {
+    const generic = source.slice(
+      source.indexOf('const GENERIC_OPERATIONS'),
+      source.indexOf('function today()'),
+    )
+    const entries = generic.match(/\{ id: '[^']+',[^}]*\}/g) ?? []
+    expect(entries.length).toBeGreaterThanOrEqual(10)
+    for (const entry of entries) {
+      expect(entry, `通用卡缺 href：${entry.slice(0, 60)}`).toContain("href: '/inventory/docs?create=")
+    }
+  })
+
+  it('工作区只接受 OPERATIONS 里的卡片，通用卡走 Link 分支', () => {
+    // active 的来源必须限定在 OPERATIONS（内置表单卡），不能把 GENERIC_OPERATIONS 也算进去。
+    expect(source).toMatch(/const active = OPERATIONS\.find\(/)
+    expect(source).toMatch(/if \(operation\.href\) \{/)
   })
 })

@@ -607,7 +607,12 @@ function OperationWorkspace({
   return (
     <div className="space-y-5">
       <OperationHeader title={title} onClose={onClose} />
-      <Tabs defaultValue="form">
+      {/*
+        * key：`activeOperation` A→B 时父层元素类型与位置不变，React 原地更新、不重挂，
+        * Tabs 的 uncontrolled state 会把「单据」选中态带到下一个业务 ——
+        * 点开 B 直接落在 B 的单据页、填报表单被藏起来。加 key 强制重建。
+        */}
+      <Tabs key={operation} defaultValue="form">
         <TabsList>
           <TabsTrigger value="form">填报表单</TabsTrigger>
           <TabsTrigger value="docs">单据</TabsTrigger>
@@ -643,8 +648,7 @@ function OperationWorkspace({
           {operation === 'store-conversion' && <ConversionForm locations={locations} skuOptions={skuOptions} locationType="门店" onSuccess={onSuccess} />}
         </TabsContent>
         <TabsContent value="docs">
-          {/* key：换业务时把分页与已加载数据一起重置，否则切过去还停在上一个业务的第 N 页。 */}
-          <OperationDocsTab key={operation} operation={operation} canViewPrice={canViewPrice} />
+          <OperationDocsTab operation={operation} canViewPrice={canViewPrice} />
         </TabsContent>
       </Tabs>
     </div>
@@ -666,10 +670,10 @@ function OperationDocsTab({
   operation: OperationId
   canViewPrice: boolean
 }) {
-  const router = useRouter()
   const [rows, setRows] = useState<InventoryDocRow[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(OPERATION_DOCS_PAGE_SIZE)
   const [loading, setLoading] = useState(true)
   const [priceVisible, setPriceVisible] = useState(canViewPrice)
 
@@ -681,12 +685,17 @@ function OperationDocsTab({
         if (cancelled) return
         setRows(result.data)
         setTotal(result.total)
+        // 服务端会把非白名单页长夹成 20，按它返回的实际值渲染分页器，
+        // 否则前端按自己那份 pageSize 算总页数，最后几页会翻不到。
+        setPageSize(result.pageSize)
         setPriceVisible(result.canViewPrice)
       })
       .catch((error) => {
         if (cancelled) return
+        // 刻意**不清零 total**：清了会让 Pagination 算出 totalPages=1，
+        // 越界自纠 effect 把用户从第 3 页静默弹回第 1 页并再发一次请求 ——
+        // 一次瞬时失败被放大成「跳页 + 重复请求 + 第二条 toast」。
         setRows([])
-        setTotal(0)
         toast.error(actionErrorMessage(error, '加载单据失败'))
       })
       .finally(() => {
@@ -695,8 +704,34 @@ function OperationDocsTab({
     return () => { cancelled = true }
   }, [operation, page])
 
+  /*
+   * 金额列不能只看会话权限：`canViewPrice` 是会话级常量，而 24 个业务里有 12 个
+   * 产出的单据本身就不带金额（退货、转换、发货、报货…… business.ts 写死 totalAmount: null），
+   * 只按权限出列头会得到「列头在、整列都是 —」的空列（#135 组 5 同型症状）。
+   * 金额有无由单据类型决定、同一业务内稳定，不会出现翻页时列时有时无。
+   */
+  const hasAnyAmount = rows.some((row) => row.totalAmount !== null && row.totalAmount !== undefined)
+
   const columns: Column<InventoryDocRow>[] = [
-    { key: 'id', header: '单据号', cell: (row) => <span className="font-mono text-xs">{row.id}</span> },
+    {
+      key: 'id',
+      header: '单据号',
+      /*
+       * 新标签打开，且**不做整行点击**：keepMounted 的全部意义就是「去单据 Tab 看一眼
+       * 回来表单还在」，行内 router.push 会把整个办理台连同填了一半的明细一起卸载，
+       * 而 returnTo 那套只能恢复 URL、恢复不了 React state。
+       */
+      cell: (row) => (
+        <a
+          href={`/inventory/docs/${row.id}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="font-mono text-xs text-[var(--primary)] underline-offset-2 hover:underline"
+        >
+          {row.id}
+        </a>
+      ),
+    },
     {
       key: 'docType',
       header: '类型',
@@ -709,8 +744,8 @@ function OperationDocsTab({
     { key: 'docDate', header: '日期', cell: (row) => row.docDate.slice(0, 10) },
     { key: 'totalQuantity', header: '数量', cell: (row) => <span className="font-medium">{row.totalQuantity}</span> },
     // 行级遮蔽已在服务端完成（engine 按价格档位决定是否带出 totalAmount），
-    // 这里只负责「整个档位都没权限就不出列头」，没权限的行落到 '—'。
-    ...(priceVisible
+    // 这里只负责「整档没权限、或这类单据压根没有金额」时不出列头。
+    ...(priceVisible && hasAnyAmount
       ? [{ key: 'totalAmount', header: '金额', cell: (row: InventoryDocRow) => row.totalAmount ?? '—' } as Column<InventoryDocRow>]
       : []),
     {
@@ -726,14 +761,8 @@ function OperationDocsTab({
 
   return (
     <div className="space-y-3">
-      <DataTable
-        columns={columns}
-        data={rows}
-        loading={loading}
-        emptyText="暂无单据"
-        onRowClick={(row) => router.push(`/inventory/docs/${row.id}`)}
-      />
-      <Pagination total={total} page={page} pageSize={OPERATION_DOCS_PAGE_SIZE} onPageChange={setPage} />
+      <DataTable columns={columns} data={rows} loading={loading} emptyText="暂无单据" />
+      <Pagination total={total} page={page} pageSize={pageSize} onPageChange={setPage} />
     </div>
   )
 }
