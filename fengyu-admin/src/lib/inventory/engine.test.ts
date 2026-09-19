@@ -3338,12 +3338,17 @@ describe('#190 单据列表的多类型 / 多状态 / 撤回标记过滤', () =>
     mockDb.select.mockReturnValueOnce({
       from: () => ({ where: async () => [{ orgNodeId: 'MKT-A' }] }),
     } as never)
-    const sink: { where?: unknown } = {}
+    // 与 whereOf 同样用双 sink：共用一个的话，只有 COUNT 漏掉层级条件
+    // （总数把别层级的转换单也算进去、翻出一堆空页）这种漂移测不出来。
+    const countSink: { where?: unknown } = {}
+    const listSink: { where?: unknown } = {}
     mockDb.select
-      .mockReturnValueOnce(capturingCountSelect([{ count: 0 }], sink) as never)
-      .mockReturnValueOnce(capturingDocsListSelect([], sink) as never)
+      .mockReturnValueOnce(capturingCountSelect([{ count: 0 }], countSink) as never)
+      .mockReturnValueOnce(capturingDocsListSelect([], listSink) as never)
     await listInventoryCoreDocs({ docTypes: ['库存转换出库', '库存转换入库'], locationType: '市场' })
-    const compiled = new PgDialect().sqlToQuery(sink.where as Parameters<PgDialect['sqlToQuery']>[0])
+    const compiled = new PgDialect().sqlToQuery(listSink.where as Parameters<PgDialect['sqlToQuery']>[0])
+    const countCompiled = new PgDialect().sqlToQuery(countSink.where as Parameters<PgDialect['sqlToQuery']>[0])
+    expect(countCompiled.sql, 'COUNT 与 LIST 的层级条件必须一致').toBe(compiled.sql)
     const params = compiled.params.map((param) => String(param))
     // 两种 docType 都要在：只剩出库的话，转换入库单会被静默漏掉，而 Tab 看起来完全正常。
     expect(params).toContain('库存转换出库')

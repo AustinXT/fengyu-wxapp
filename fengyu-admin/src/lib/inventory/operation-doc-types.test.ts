@@ -95,19 +95,35 @@ describe('业务 → 产出单据类型映射（#190）', () => {
      * 全靠 `IS NOT NULL` 认单，哪天有人在某条 UPDATE 里顺手把它清了（看起来像是
      * "清理过期字段"的无害改动），两个 Tab 会**静默变空**，没有任何报错。
      */
+    // 原生 SQL 写法（business.ts 全是这种）
     expect(businessSource).not.toMatch(/cancellation_request_reason\s*=\s*NULL/i)
     expect(businessSource).not.toMatch(/cancellation_request_reason\s*=\s*\$?\{?\s*null/i)
-    // 审批通过写的是另一列（cancellation_reason），别把两列搞混后误删 marker 列。
-    expect(businessSource).toMatch(/cancellation_reason\s*=/)
-    // 申请方刻意不限状态：驳回只把 status 改回「待收货」而不清 reason，
-    // 申请人该看到自己申请的全部结果（待审批 / 已取消 / 被驳回）。
+    // Drizzle 写法（`.set({ cancellationRequestReason: null })`）—— 换成驼峰就绕过上面两条，
+    // 所以整个 inventory lib 都扫一遍，不只 business.ts。
+    for (const file of ['business.ts', 'engine.ts']) {
+      const source = readFileSync(resolve(__dirname, file), 'utf8')
+      expect(source, `${file} 不得把撤回 marker 置空`).not.toMatch(/cancellationRequestReason:\s*null/i)
+    }
+    // 审批通过写的是**另一列** cancellation_reason —— 两列名字只差一个词，
+    // 断言限定在审批函数体内，否则关闭采购那条 UPDATE 会替它蒙混过关。
+    expect(exportedFnBody('approveItemCompanyShipmentCancellation')).toMatch(/cancellation_reason\s*=/)
+    // 申请方刻意不限状态：marker 打上后无人清，四种下场（待审批 / 已取消 /
+    // 待收货=被驳回 / 已完成=驳回后照常收货）都算申请足迹，都该看得到。
+    // ⚠️ 是**当前 scope 内团队**的全部撤回申请，没有按 cancellation_requested_by
+    // 收窄到"只看自己提的" —— 是否收窄已回填 issue 等甲方拍板。
     expect(INVENTORY_OPERATION_DOC_QUERY['shipment-cancel']).toEqual({
       docTypes: ['品项公司发货'],
       cancellationRequested: true,
     })
   })
 
-  /** 截取 business.ts 里某个导出函数的函数体（到下一个顶层 export 为止）。 */
+  /**
+   * 截取 business.ts 里某个导出函数的函数体（到下一个顶层 `export` 为止）。
+   *
+   * 前提：business.ts 的顶层函数之间没有夹非 export 的 helper。真夹了的话
+   * 那个 helper 会被并进上一个函数体，里面的 docType 字面量会被错误归属。
+   * 当前文件结构满足这个前提；哪天不满足了，这里要换成真解析。
+   */
   function exportedFnBody(name: string): string {
     const start = businessSource.indexOf(`export async function ${name}(`)
     expect(start, `business.ts 里找不到 ${name}`).toBeGreaterThan(-1)

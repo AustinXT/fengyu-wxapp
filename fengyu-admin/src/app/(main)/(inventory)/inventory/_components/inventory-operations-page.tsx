@@ -744,8 +744,10 @@ function OperationDocsTab({
      * 列头只看会话级价格权限，**不从当前页数据反推**：行级遮蔽后 totalAmount 会变成
      * undefined，按"本页有没有金额"决定列头的话，混合绑定账号翻到全遮蔽的一页时整列消失、
      * 翻回有权限的页又出现，表头随页抖动，且无权限的行也不再按验收要求显示「—」。
-     * 代价是有 12 个业务（退货 / 转换 / 发货 / 报货）产出的单据本就不带金额，会多一列全是「—」；
-     * 那要靠「docType → 有无金额语义」的单源来治（engine 侧同样缺，见 PR 的 follow-up）。
+     * 代价是有一批**业务卡片**（按卡片计 12 个：品项公司发货与两个撤回 Tab 共用的发货单、
+     * 两张退货申请、两张退货回库、非凤御出库、三个层级的转换、门店报货）产出的单据
+     * 本就不带金额，会多一列全是「—」。那要靠「docType → 有无金额语义」的单源来治
+     * （engine 侧的 AMOUNTLESS_DOC_TYPES 只覆盖一种，是遮蔽语义不是无金额全集，见 PR follow-up）。
      */
     ...(priceVisible
       ? [{ key: 'totalAmount', header: '金额', cell: (row: InventoryDocRow) => row.totalAmount ?? '—' } as Column<InventoryDocRow>]
