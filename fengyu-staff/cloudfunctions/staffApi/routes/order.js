@@ -2526,19 +2526,25 @@ async function rollbackPendingConversionOnClose(client, saleOrderId, now) {
     const targetStatus = o.status === '已支付' && orderReceived + 0.001 < newTotal
       ? '部分支付'
       : o.status
+    // CAS 与正向 6b 逐字对称（`AND status = $6 AND lakala_out_order_no IS NULL`）：本语句写
+    // status，缺 CAS 就是无守卫的状态机 UPDATE。行虽已在上一句 FOR UPDATE 持锁、并发写必须排队，
+    // 但在途在线支付（lakala_out_order_no 非空）意味着回调随时会按当前 total 结算，
+    // 此时改写 total/status 会与回调竞争 —— 宁可整笔关单失败让店员重试。
     const updRestored = await client.query(
       `UPDATE sale_orders
           SET total_amount = $2,
               payable_amount = COALESCE($3, payable_amount),
               status = $4,
               updated_at = $5
-        WHERE sale_order_id = $1`,
-      [refOrderId, newTotal, newPayable, targetStatus, now],
+        WHERE sale_order_id = $1
+          AND status = $6
+          AND lakala_out_order_no IS NULL`,
+      [refOrderId, newTotal, newPayable, targetStatus, now, o.status],
     )
-    // 行已在上一句 FOR UPDATE 持锁，正常必为 1；为 0 说明原单在持锁期间消失（孤儿数据），
-    // 此时源行 sale_amount 已还原而订单 total 未还原，必须显式抛出而不是静默放过。
+    // 行已在上一句 FOR UPDATE 持锁，正常必为 1；为 0 = 原单在持锁期间消失（孤儿数据）或
+    // 有在途在线支付。此时源行 sale_amount 已还原而订单 total 未还原，必须显式抛出。
     if (updRestored.rowCount === 0) {
-      throw new Error('CONFLICT: 原订单已不存在，无法还原折抵豁免的欠款')
+      throw new Error('CONFLICT: 原订单状态已变更或有在途支付，无法还原折抵豁免的欠款')
     }
   }
 

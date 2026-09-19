@@ -8300,6 +8300,11 @@ describe('order.close — 欠款归零的回滚（#182）', () => {
     expect(orderRestore).toBeTruthy()
     // 1000 + 400（行级豁免额无已退款可扣，订单级 = 行级）
     expect(orderRestore[1][1]).toBe(1400)
+    // 本语句写 status，CAS 必须与正向 6b 对称（lint-cas-guards 也守这条）。
+    // 缺 CAS 时它就是一条无守卫的状态机 UPDATE：并发/在途在线支付下会与支付回调竞争改写 total。
+    expect(String(orderRestore[0])).toContain('AND status = $6')
+    expect(String(orderRestore[0])).toContain('AND lakala_out_order_no IS NULL')
+    expect(orderRestore[1][5]).toBe('已支付') // CAS 期望值 = 锁内读到的旧状态
 
     const recalc = q.mock.calls.find(([sql]) =>
       String(sql).includes('SET paid_sessions = CASE')
@@ -8324,6 +8329,59 @@ describe('order.close — 欠款归零的回滚（#182）', () => {
       && String(sql).includes("out_item.waived_amount::numeric > 0"))
     expect(recalc).toBeTruthy()
     expect(recalc[1]).toEqual(['FY-CONV-WAIVE-001', 'FY-SRC-001'])
+  })
+
+  // CI 的 lint-cas-guards 抓到过这条：回滚的订单 UPDATE 写 status 却没带 CAS。
+  // rowCount=0 既可能是原单孤儿、也可能是有在途在线支付，两者都必须整笔失败。
+  test('订单还原 CAS 不命中（在途支付/状态已变）必须抛 CONFLICT', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-CONV-WAIVE-001' })
+    pg.query.mockResolvedValueOnce([{ store_id: 'store-001' }])
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-CONV-WAIVE-001',
+      status: '待支付',
+      sale_order_type: '转换单',
+      store_id: 'store-001',
+      opened_by: 'emp-other',
+    }])
+    const clientQueryMock = makeCloseQuery(async (sql, params) => {
+      const text = String(sql)
+      if (text.includes('orig_pending')) {
+        return {
+          rows: [{
+            sale_order_id: 'FY-SRC-001',
+            sale_item_id: 'ITEM-SRC-001',
+            waived: '400.00',
+            source_found: true,
+            restored_ok: true,
+          }],
+          rowCount: 1,
+        }
+      }
+      if (text.includes('SELECT total_amount, received, prepaid_card_amount') && text.includes('FOR UPDATE')) {
+        return {
+          rows: [{
+            total_amount: '1000.00',
+            received: '600.00',
+            prepaid_card_amount: '0.00',
+            pending_prepaid_card_amount: '0.00',
+            status: '已支付',
+            sale_order_type: '销售单',
+          }],
+          rowCount: 1,
+        }
+      }
+      // 只让**还原**那条 UPDATE 的 CAS 不命中（close 自己那条关单 UPDATE 也带
+      // lakala_out_order_no IS NULL，匹配太宽会先撞它的守卫）
+      if (text.includes('UPDATE sale_orders') && text.includes('total_amount = $2')
+          && text.includes('AND status = $6')) {
+        return { rows: [], rowCount: 0 }
+      }
+      return defaultQueryResult(sql, params)
+    })
+    pg.transaction.mockImplementation(async (cb) => cb({ query: clientQueryMock }))
+
+    await expect(orderRoutes.close(ctx))
+      .rejects.toThrow(/CONFLICT: 原订单状态已变更或有在途支付，无法还原折抵豁免的欠款/)
   })
 
   // codex 第 4 轮 P2：自校验 CAS 失败时 restored 只会静默少行，而权益已被前两段无条件加回 →
