@@ -5569,7 +5569,9 @@ describe('deleteOrder — 守卫 + 级联删除', () => {
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       const tx = {
         update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }) }),
-        execute: vi.fn().mockResolvedValue(undefined),
+        // 返回 [] 而不是 undefined：postgres.js 的 execute() 恒返回 RowList（数组），
+        // mock 成 undefined 会让「读了行再看 .length」的代码在单测里炸、在生产里正常 —— 是反向的漂移。
+        execute: vi.fn().mockResolvedValue([]),
         delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: deleteCount }) }),
       }
       return fn(tx)
@@ -5648,7 +5650,9 @@ describe('deleteOrder — 守卫 + 级联删除', () => {
           if (text.includes('SELECT status FROM sale_orders') && text.includes('FOR UPDATE')) {
             return freshStatus === undefined ? [] : [{ status: freshStatus }]
           }
-          return undefined
+          // 其余读（如 #148 的退款流水复检）返回空结果集：postgres.js 的 execute() 恒返回数组，
+          // 返回 undefined 会让读完看 .length 的代码在单测里炸、生产里正常——反向的 mock 漂移。
+          return []
         }),
         delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
       }
@@ -5680,6 +5684,46 @@ describe('deleteOrder — 守卫 + 级联删除', () => {
     expect(executed.some((t) => t.includes('SELECT status FROM sale_orders') && t.includes('FOR UPDATE'))).toBe(true)
     expect(executed.some((t) => t.includes('restore_sessions'))).toBe(false)
     expect(executed.some((t) => t.includes('restore_quantity'))).toBe(false)
+  })
+
+  // #148：事务内锁到订单后必须复检退款流水。这既是修 TOCTOU（上面那批守卫都在事务外读、
+  // 且只挡 status='已支付' 的款项行，待审批退款漏网），也是新增订单锁**不与退款审批成环**的前提——
+  // 退款审批是「先拿退款行 → 再 UPDATE sale_orders」，与本事务「先锁订单 → 再删全单款项行」反向。
+  // 把这条复检删掉或移到锁之前，两者就变成真实的死锁对。
+  it('事务内复检到退款流水（含待审批）→ 拒绝删除，不执行任何 DELETE', async () => {
+    enqueueSelect([[okOrder], [], []]) // 事务外三道守卫都放行：order / paidPayment（无已支付流水）/ childOrder
+    enqueueExecute([[], [], []])
+    const executed: string[] = []
+    const txDelete = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) })
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }) }),
+        execute: vi.fn().mockImplementation(async (q: any) => {
+          const text = q?.__sqlText || ''
+          executed.push(text)
+          if (text.includes('SELECT status FROM sale_orders') && text.includes('FOR UPDATE')) {
+            return [{ status: '待支付' }]
+          }
+          // 退款流水复检命中一行 —— 该单有一笔待审批退款
+          if (text.includes("change_type = '退款'")) return [{ '?column?': 1 }]
+          return []
+        }),
+        delete: txDelete,
+      }
+      return fn(tx)
+    })
+
+    const result = await deleteOrder('FY-REFUND')
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('退款流水')
+    // 顺序不变量：锁 → 复检，且复检不通过时一条 DELETE 都不该发出
+    const lockAt = executed.findIndex((t) => t.includes('SELECT status FROM sale_orders') && t.includes('FOR UPDATE'))
+    const checkAt = executed.findIndex((t) => t.includes("change_type = '退款'"))
+    expect(lockAt).toBeGreaterThanOrEqual(0)
+    expect(checkAt).toBeGreaterThan(lockAt)
+    expect(executed.some((t) => /DELETE\s+FROM/i.test(t))).toBe(false)
+    expect(txDelete).not.toHaveBeenCalled()
   })
 
   it('干净测试单 → 级联删除成功 + 审计', async () => {
