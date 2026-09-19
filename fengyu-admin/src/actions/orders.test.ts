@@ -2175,6 +2175,99 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
     expect(result.success).toBe(true)
   })
 
+  // #182 第 4 轮 P1-3：paid_sessions 重算曾被写在「订单级还原量 > 0」的循环内。
+  // 「付清后部分退款」的行订单级还原量为 0（那笔钱已退给顾客、不是欠款），但源行
+  // sale_amount 已被 CTE **无条件**还原 —— 不重算 paid_sessions 就会停在满付，
+  // 把已退款的权益重新放出来。与 staff 端同一条对称纪律。
+  it('欠款归零回滚：订单级还原量 = 0 时仍必须重算 paid_sessions（#182）', async () => {
+    mockSelectBefore([{
+      status: '待支付',
+      customerName: '顾客甲',
+      totalAmount: '200.00',
+      saleOrderType: '转换单',
+      storeId: 'store-1',
+    }])
+
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue({ count: 1 }),
+          }),
+        }),
+        execute: vi.fn().mockImplementation(async (q: any) => {
+          const text: string = q?.__sqlText ?? ''
+          // 豁免还原 CTE（唯一带 orig_pending 的语句）
+          if (text.includes('orig_pending')) {
+            return [{
+              sale_order_id: 'src-1',
+              sale_item_id: 'item-1',
+              waived: '400.00',
+              restored_ok: true,
+            }]
+          }
+          // 行级已退款额：400 全部已退 → 订单级还原量 = 0
+          if (text.includes('refund_items') && text.includes('GROUP BY sale_item_id')) {
+            return [{ sale_item_id: 'item-1', refunded: '400' }]
+          }
+          return {}
+        }),
+      }
+      const result = await fn(tx)
+      const sqlTexts = tx.execute.mock.calls.map((call: any[]) => call[0]?.__sqlText || '')
+      // 订单 total 不该动
+      expect(sqlTexts.some((t: string) =>
+        t.includes('UPDATE sale_orders') && t.includes('total_amount ='))).toBe(false)
+      // 但行级 paid_sessions 必须重算
+      expect(sqlTexts.some((t: string) =>
+        t.includes('SET paid_sessions = CASE')
+        && t.includes('out_item.waived_amount::numeric > 0'))).toBe(true)
+      return result
+    })
+
+    const result = await closeOrder('order-1')
+    expect(result.success).toBe(true)
+  })
+
+  // #182 第 4 轮 P2：自校验 CAS 失败时 restored 只会静默少行，而权益已被前两段无条件加回 →
+  // 「货已还给顾客、欠款仍被豁免」，必须整笔关单事务回滚。
+  it('欠款归零回滚：还原 CAS 失败（restored_ok=false）必须整笔失败（#182）', async () => {
+    mockSelectBefore([{
+      status: '待支付',
+      customerName: '顾客甲',
+      totalAmount: '200.00',
+      saleOrderType: '转换单',
+      storeId: 'store-1',
+    }])
+
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue({ count: 1 }),
+          }),
+        }),
+        execute: vi.fn().mockImplementation(async (q: any) => {
+          const text: string = q?.__sqlText ?? ''
+          if (text.includes('orig_pending')) {
+            return [{
+              sale_order_id: 'src-1',
+              sale_item_id: 'item-1',
+              waived: '400.00',
+              restored_ok: false,
+            }]
+          }
+          return {}
+        }),
+      }
+      return fn(tx)
+    })
+
+    const result = await closeOrder('order-1')
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('关闭订单失败，请稍后重试')
+  })
+
   it('事务异常 → 返回友好错误', async () => {
     ;(db.transaction as any).mockRejectedValue(new Error('connection lost'))
     const result = await closeOrder('order-1')

@@ -589,14 +589,22 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
     )
     -- 按**行**返回：订单级还原量要逐行扣掉该行已退款额（与正向 orderWaiveAmount 同公式），
     -- 直接把行级总额加回 total_amount 会把「已退给顾客的钱」变成假欠款。
-    SELECT sale_order_id, sale_item_id, waived
-      FROM restored
-     ORDER BY sale_order_id, sale_item_id
+    -- 同时带出「该行是否真的被还原」：上面那道自校验 CAS 失败时 restored 只会**静默少行**，
+    -- 而前两段回滚已经把权益（remaining_sessions / picked_up_quantity）无条件加回去了 ——
+    -- 不检查就继续关单，结果是「货已还给顾客、欠款却仍被豁免」的资损，且事后查无实据。
+    SELECT ls.sale_order_id, ls.sale_item_id, ls.waived,
+           (r.sale_item_id IS NOT NULL) AS restored_ok
+      FROM locked_source ls
+      LEFT JOIN restored r ON r.sale_item_id = ls.sale_item_id
+     ORDER BY ls.sale_order_id, ls.sale_item_id
   `)
   // 没有任何行被豁免过时这条语句返回空集；非数组一律按「无可还原」处理
   const restoredWaive: Array<Record<string, unknown>> = Array.isArray(restoredWaiveRaw)
     ? (restoredWaiveRaw as unknown as Array<Record<string, unknown>>)
     : []
+  if (restoredWaive.some((r) => r.restored_ok !== true)) {
+    throw new ApiError('CONFLICT', 'WAIVE_CHANGED: 原订单的折抵豁免额已被改动，无法还原欠款，请刷新后重试')
+  }
 
   // 逐行换算成订单级还原量：Σ max(0, 行级 waived − 该行已退款额)。
   // SQL 与 lib/per-item-refund.ts 同源；事务体内必须走 tx。
@@ -675,7 +683,14 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
     if (rowsAffected(updRestored) === 0) {
       throw new ApiError('CONFLICT', 'ORDER_GONE: 原订单已不存在，无法还原折抵豁免的欠款')
     }
-    // 应付恢复 → paid_sessions 退回未满付（公式与 PAID_SESSIONS_RECALC_SQL 同源）
+  }
+
+  // 应付恢复 → paid_sessions 退回未满付（公式与 PAID_SESSIONS_RECALC_SQL 同源）。
+  // ⚠ 必须**独立于订单级还原量**循环，与正向 6b 同一条对称纪律：订单级还原量为 0
+  // （行级豁免额全部来自已退款、本无真实欠款）时上面会 continue，但源行 sale_amount 已被
+  // CTE **无条件**还原 —— 不重算就会留下偏高的 paid_sessions（付清后退款 40% 的 10 次卡会
+  // 停在 10，正确值 6），把已退款的权益重新放出来。
+  for (const refOrderId of [...new Set(restoredWaive.map((r) => r.sale_order_id as string))].sort()) {
     await tx.execute(sql`
       UPDATE sale_items
          SET paid_sessions = CASE
@@ -712,6 +727,9 @@ async function rollbackPendingConversionOnClose(tx: OrderTx, saleOrderId: string
              WHEN session_count IS NULL THEN NULL
              ELSE 0
            END,
+           -- #182：归因额清零，让本函数对同一张转换单幂等。上面那道「CAS 失败即抛 CONFLICT」
+           -- 的自校验没有它就会把「已还原过」误判成「豁免额被外部改动」而报错。
+           waived_amount = 0,
            updated_at = NOW()
      WHERE sale_order_id = ${saleOrderId}
        AND item_direction IN ('转出', '转入')
@@ -5745,6 +5763,8 @@ export const createConversionOrder = withPermission(
         waiveAmount: number
         /** 订单级真实欠款豁免额（= 行级 − 行级已退款额），只有它能进 total_amount */
         orderWaiveAmount: number
+        /** 折抵后钉给 pending_received 的**毛已付**（净实收 + 该行已退款额） */
+        pinnedPendingReceived: number
         refPendingReceived: number
       }
       const outItems: OutItem[] = []
@@ -5884,8 +5904,13 @@ export const createConversionOrder = withPermission(
           refSaleAmount,
           waiveAmount,
           orderWaiveAmount,
-          // 原行 pending_received 快照：欠款归零会把它钉到 received（保住 Branch B 第一段铺满），
-          // 关单回滚必须还原，否则历史行（原本 pending=0）的分摊权重被永久改写。
+          // 欠款归零会把 pending_received 钉到该行**毛已付** = 净实收 + 该行已退款额。
+          // 必须是毛额：STEP 1 重建的是毛额语义，钉住值随后要经 STEP 1.5 扣一次退款才成净额。
+          // 钉成净实收会被 STEP 1.5 再扣一次（付清后退过款的行终值 = 净额 − 退款额 < 新应付）
+          // → paid_sessions 不满付，而 remaining_sessions 已注销为 0 → 永久违反 D3。
+          pinnedPendingReceived: Math.round((refReceived + refRefunded) * 100) / 100,
+          // 原行 pending_received 快照：关单回滚必须还原，否则历史行（原本 pending=0）的
+          // 分摊权重被永久改写。
           refPendingReceived: Math.round(Number(row.pending_received ?? 0) * 100) / 100,
         })
       }
@@ -6352,11 +6377,13 @@ export const createConversionOrder = withPermission(
           .set({
             saleAmount: sql`${saleItems.saleAmount} - ${waive}`,
             waivedAmount: sql`${saleItems.waivedAmount} + ${waive}`,
-            // 同步把「逐行实付草稿」压到实收：该行已结清，pending 即 received。这是 D3 的
-            // 最后一道保险——STEP 1 Branch B 第一段瀑布按 pending_received 铺满后，该行
-            // received 不会再被后续整单 recalc 稀释；仅靠 sale_cap（已改用原始应付）在
-            // 「无定向 receipt 且 pending=0」的历史行上不能保证精确。
-            pendingReceived: sql`${saleItems.received}`,
+            // 把「逐行实付草稿」钉到该行**毛已付**（净实收 + 该行已退款额）。这是 D3 的承重墙：
+            // STEP 1 Branch B 见 waived_amount > 0 就按本列**固定预留**该行的 received（不再丢进
+            // 比例池），预留额同时从 untargeted 扣除 → 该行 received 恒等于毛已付、同单其它行
+            // 分到的钱不变；再由 STEP 1.5 扣掉该行退款额得到净额，恰好等于下调后的 sale_amount。
+            // ⚠ 不能钉成净实收：STEP 1.5 会再扣一次退款，付清后退过款的行终值会低于新应付，
+            // 而本行 remaining_sessions 已注销为 0 → 永久违反 D3。
+            pendingReceived: out.pinnedPendingReceived.toFixed(2),
             updatedAt: sql`NOW()`,
           })
           .where(and(
@@ -7756,7 +7783,16 @@ export const recordPayment = withPermission(
         await tx.execute(sql`
           WITH repay (sale_item_id, delta) AS (VALUES ${repayValues})
           UPDATE sale_items si
-          SET pending_received = COALESCE(rp.delta, 0),
+          SET pending_received = CASE
+             -- #182：折抵退出的行 pending_received 已被钉成「毛已付」，是 paid-sessions
+                -- STEP 1 Branch B 固定预留该行 received 的唯一依据。本语句是**覆盖式**的
+                -- （未选中的行会被写 0），一旦把折抵行也覆盖掉，预留归零 → 该行 received 掉到
+                -- targeted（通常 0），而它的 remaining_sessions 已注销为 0 →
+                -- (session_count − 0) > paid_sessions 永久违反 D3，原单从此回款/退款/回调全失败。
+                -- 触发条件很普通：同一原单里另一行发起定向回款即可。
+                WHEN si.waived_amount::numeric > 0 THEN si.pending_received
+                ELSE COALESCE(rp.delta, 0)
+              END,
               updated_at = NOW()
           FROM (SELECT sale_item_id FROM sale_items WHERE sale_order_id = ${saleOrderId} AND item_direction = '购买') ai
           LEFT JOIN repay rp ON rp.sale_item_id = ai.sale_item_id

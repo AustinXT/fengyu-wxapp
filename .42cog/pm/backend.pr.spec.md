@@ -298,12 +298,25 @@
 **折抵后原单该行「欠款归零」（#182）**：折抵 = 整行退出，原单不该再为已经不存在的权益挂欠款。
 
 ```
-仅当 sale_order_type <> '寄存单' AND sale_amount > 0 AND received > 0 AND received < sale_amount：
-  Δ = sale_amount − received
-  原行：sale_amount -= Δ；waived_amount += Δ（留底，供关单回滚）
-  原单：total_amount -= Δ；payable_amount 按 total − 已结算储值卡 − 待结算储值卡 重算
-  该行 paid_sessions 行级重算；订单 status 仅从'部分支付'向前推进，paid_at 只在原本为空时补
+仅当 sale_order_type <> '寄存单' AND sale_amount > 0 AND received > 0 AND Δ_row > 0：
+  行级 Δ_row   = sale_amount − received（received 是行级**净**实收；Δ_row > 0 即 received < sale_amount）
+  订单级 Δ_ord = Δ_row − 该行已退款额 = 真实欠款
+  原行：sale_amount -= Δ_row；waived_amount += Δ_row（留底，供关单回滚）；
+        pending_received = received + 该行已退款额（= **毛已付**，见下方 ⚠）
+        该行 paid_sessions 行级重算 —— **与 Δ_ord 是否 > 0 无关**
+  原单（仅 Δ_ord > 0 时）：total_amount -= Δ_ord；payable_amount 按
+        total − 已结算储值卡 − 待结算储值卡 重算；status 仅从'部分支付'向前推进；
+        **不写 paid_at**（豁免不是收款；回滚也不清它，保持对称）
 ```
+
+**两个下调额不是同一个数，必须分开**：
+- 行级压到**净实收**才能让 `paid_sessions` 重算到满付，从而在 `remaining_sessions` 注销为 0 后
+  仍满足 D3。少扣这一截 → 付清后部分退款的行（¥1000 付清后退 4 次 → `received=600`、
+  `paid_sessions=6`）折抵后 `(10 − 0) > 6` 立刻违反 D3。
+- 订单级是**真实欠款**，多扣这一截就是把已经退给顾客的钱又当欠款豁免一次，按
+  `total_amount − refunded_amount` 统计的净额会被重复扣减。
+- **`Δ_ord = 0` 时仍必须做行级那一半**（含 `paid_sessions` 重算）。正向与关单回滚两侧都要遵守
+  这条对称纪律；把行级重算写在「订单级是否有欠款可扣」的循环里是同一个缺陷的两种形态。
 
 三个守卫条件缺一不可：
 - **排除寄存单** —— `received` 恒 0，`sale_amount` 是原价快照不是欠款，下调会把快照抹成 0
@@ -322,9 +335,29 @@
 > `0040` 视图的 residual 凭空产出营业额事件。绕开 STEP 0 就必须自己写 `payable_amount`，
 > 否则撞 cron 的 I5 资金不变量告警。
 
+> ⚠️ **已折抵退出的行在 STEP 1 Branch B 里走「固定预留」，不参与比例瀑布**。折抵时把
+> `pending_received` 钉到该行**毛已付**（净实收 + 该行已退款额）；Branch B 见 `waived_amount > 0`
+> 就按这一列固定预留该行的 `received`（`pend_cap = sale_cap = 0`），预留额**同时从 `untargeted`
+> 扣除**，之后由 STEP 1.5 扣该行退款额得到净额 = 下调后的 `sale_amount` → `paid_sessions` 满付。
+> 三种错误写法都踩过：
+> - 钉成**净**实收 → STEP 1.5 再扣一次退款，付清后退过款的行终值低于新应付 → 永久违反 D3；
+> - 仍丢回比例池 → `untargeted < Σpend_cap` 时被摊薄到钉住值以下 → 同样违反 D3；
+> - 事后单行抬 `received` 下限 → `Σ行级 received` 超过订单级实收（凭空多出行级实收、污染
+>   `0040` residual），且同单其它行被少分。
+> 另：不得把 `sale_cap` 放大成 `sale_amount + waived_amount`——已退出行会吸走本该给同单欠款行的回款
+> （两行各 ¥100 各付 ¥50，A 折抵后回款 ¥50：放大后 A=75/B=75，正确应 A=50/B=100）。
+>
+> ⚠️ **残留已知风险（非本单引入）**：若折抵后该订单从 Branch B 切到 Branch A（正向 receipt 变完整）
+> 而历史付款没有对应 receipt，折抵行会只拿到新 receipt 的份额、低于新应付 → 违反 D3。
+> 订单级覆盖判据（`Σ正向 receipt >= order.received`）挡住了常见路径；彻底根治要行级 receipt 保真。
+
 > ⚠️ **关单/删单回滚必须还原金额**：`sale_amount += waived_amount`、`waived_amount` 清零、
-> `total_amount` 加回、状态退回'部分支付'。Δ 记在**转出行**的 `waived_amount` 上（原行那份是累计值，
+> `pending_received` 还原成折抵前快照（存在**转出行**的 `pending_received` 上）、`total_amount`
+> 加回、状态退回'部分支付'。Δ 记在**转出行**的 `waived_amount` 上（原行那份是累计值，
 > 归因不到具体转换单）。不补这一步，「开转换单 → 关闭」= 永久抹掉原单欠款。
+> 还原的 CAS（`原行 waived_amount >= 本次归因额`）**失败必须抛 `CONFLICT`**：此时权益
+> （`remaining_sessions` / `picked_up_quantity`）已被前两段无条件加回，静默放过 = 货已还给顾客、
+> 欠款仍被豁免。幂等靠收尾把转出/转入行的 `waived_amount` 清零来保证，不是靠吞掉 CAS 失败。
 
 > ⚠️ **折抵与在途服务预扣互斥**：存在「服务中 / 待客户确认」的预扣时整行拒绝折抵。钱已全额折走却
 > 留下几次给服务就是白送；而把预扣一起注销会让 `service.confirm` 的扣次守卫 `remaining_sessions >= $1`

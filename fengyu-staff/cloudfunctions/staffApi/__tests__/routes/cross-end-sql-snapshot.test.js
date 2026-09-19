@@ -1271,6 +1271,16 @@ describe('转换单转入 received 重算 SQL 四端一致性守护', () => {
     expect(sqls.staff).toContain("AND NOT EXISTS (SELECT 1 FROM sale_items conv_out")
     expect(sqls.staff).toContain("conv_out.ref_sale_item_id = si.sale_item_id")
     expect(sqls.staff).not.toContain("AND in_item.waived_amount::numeric = 0")
+  })
+
+  // #182：尾差吸收行钳位。target 很小且转入行 >= 4 时差额可为 -0.01，received 变负
+  // → FLOOR(负 × sc / sa) = -1 → 已消费 0 也满足 0 > -1 → 误抛 D3 CONFLICT。
+  test("四端尾差吸收行钳到 >= 0", () => {
+    const pattern = /GREATEST\(0,\s*CASE WHEN rn = item_count/i
+    expect(sqls.staff).toMatch(pattern)
+    expect(sqls.client).toMatch(pattern)
+    expect(sqls.payNotify).toMatch(pattern)
+    expect(sqls.adminTs).toMatch(pattern)
     expect(sqls.staff).toMatch(/ROW_NUMBER\(\) OVER\s*\(ORDER BY si\.sale_item_id\)\s+AS rn/)
     expect(sqls.staff).toContain('WHEN rn = item_count THEN target_received -')
   })
@@ -1454,10 +1464,27 @@ describe("STEP 1 received 分摊 SQL 四端字节同义守护", () => {
       expect(allocSqls.payNotify).toMatch(pattern)
       expect(allocSqls.adminTs).toMatch(pattern)
     })
-    // ⚠ 不得改成 (sale_amount + waived_amount)：#182 折抵会把已结清行的 sale_amount 下调到实收、
-    // 并把 pending_received 钉到同值，本式对该行自然得 cap = 0（已结清、不再参与第二段分配）。
-    // 放大上限会让退出行吸走本该给同单欠款行的回款（两行各 ¥100 各付 ¥50，A 折抵后再回款 ¥50：
-    // 放大后分成 A=75/B=75，正确应为 A=50/B=100），还可能让 B 少解锁权益甚至踩 D3。
+    // #182：折抵退出的行（waived_amount > 0）必须走**固定预留**——按 pending_received（毛已付）
+    // 预留、同时从 untargeted 扣除，且 pend_cap / sale_cap 归 0 不参与比例瀑布。
+    // 三种错误写法都踩过（详见 backend.pr.spec.md）：钉净实收 → STEP 1.5 二次扣退款；
+    // 丢回比例池 → untargeted < Σpend_cap 时被摊薄；事后单行抬下限 → Σ行级 > 订单级实收。
+    test("四端折抵退出行按 pending_received 固定预留（reserved）", () => {
+      const reserved = /CASE WHEN si\.waived_amount::numeric > 0\s*THEN GREATEST\(0,\s*si\.pending_received::numeric\s*-\s*COALESCE\(tg\.targeted,\s*0\)::numeric\)\s*ELSE 0 END AS reserved/i
+      for (const sql of [allocSqls.staff, allocSqls.client, allocSqls.payNotify, allocSqls.adminTs]) {
+        expect(sql).toMatch(reserved)
+        // 预留额从 untargeted 扣除（否则同单其它行会被多分、Σ行级 > 订单级实收）
+        expect(sql).toMatch(/- COALESCE\(SUM\(reserved\),\s*0\)::numeric\) AS untargeted/i)
+        // 预留额计入终值两条分支
+        expect(sql).toMatch(/THEN caps\.targeted \+ caps\.reserved/i)
+        expect(sql).toMatch(/ELSE caps\.targeted \+ caps\.reserved END/i)
+        // 折抵行不得参与比例瀑布
+        expect(sql).toMatch(/CASE WHEN si\.waived_amount::numeric > 0 THEN 0\s*ELSE GREATEST\(0,\s*si\.pending_received[\s\S]*?END AS pend_cap/i)
+        expect(sql).toMatch(/CASE WHEN si\.waived_amount::numeric > 0 THEN 0\s*ELSE GREATEST\(0,\s*si\.sale_amount[\s\S]*?END AS sale_cap/i)
+      }
+    })
+    // ⚠ 不得改成 (sale_amount + waived_amount)：放大上限会让退出行吸走本该给同单欠款行的回款
+    // （两行各 ¥100 各付 ¥50，A 折抵后再回款 ¥50：放大后分成 A=75/B=75，正确应为 A=50/B=100），
+    // 还可能让 B 少解锁权益甚至踩 D3。折抵行的 received 靠上面那条 reserved 预留保住。
     test("四端第二段产能 sale_cap = GREATEST(0, sale_amount - max(pending_received, targeted))（实付→应付余量，防冻结）", () => {
       const pattern = /GREATEST\(0,\s*si\.sale_amount::numeric\s*-\s*GREATEST\(si\.pending_received::numeric,\s*COALESCE\(tg\.targeted,\s*0\)::numeric\)\)/i
       expect(allocSqls.staff).toMatch(pattern)
@@ -2038,6 +2065,30 @@ describe('cross-end-sql-snapshot 反模式守护（防镜像 bug 字面锁定失
       expect(sql, `${end} rollup 不得保留已失效的父订单 allocation_status`).not.toMatch(
         /ELSE\s+allocation_status\s+END/,
       )
+    }
+  })
+
+  // #182：折抵退出的行（waived_amount > 0）债务已归零、权益已注销，不得再吸收新款项。
+  // 它的 pending_received 被钉成「毛已付」作为 paid-sessions STEP 1 的预留依据，
+  // 若照常算 pendCap = pending − prior，无历史 receipt 的老单（prior = 0）会凭空得到
+  // 一整笔产能，把本该落在真正欠款行的回款分给已结清行。四端 JS/TS 派生逻辑同步守护
+  // （本段不是 SQL 字面量，只能按特征文本比对）。
+  test('四端款项分摊必须把折抵退出行的产能归零（且取数带 waived_amount）', () => {
+    const ENDS = [
+      ['staff', FILES.staffPaymentAllocatableJs],
+      ['client', FILES.clientPaymentAllocatableJs],
+      ['payNotify', FILES.payNotifyPaymentAllocatableJs],
+      ['admin', FILES.adminPaymentAllocatableTs],
+    ]
+    for (const [end, file] of ENDS) {
+      const text = readFile(file)
+      expect(text, `${end} 购买行取数缺 waived_amount，无法判断是否已折抵`)
+        .toContain('waived_amount::numeric AS waived_amount')
+      expect(text, `${end} 缺「折抵行产能归零」分支`)
+        .toMatch(/if \(Number\(i\.waived_amount\) > 0\) \{[\s\S]{0,120}pendCap: 0, saleCap: 0/)
+      // 两段产能均为 0 的兜底不得把钱落到折抵行上
+      expect(text, `${end} 兜底仍写死 items[0]，可能落到折抵行`)
+        .toMatch(/items\.find\(\(i\) => !\(Number\(i\.waived_amount\) > 0\)\) \|\| items\[0\]/)
     }
   })
 })

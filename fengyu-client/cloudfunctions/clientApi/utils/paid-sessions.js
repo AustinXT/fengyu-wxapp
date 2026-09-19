@@ -89,20 +89,33 @@ const SALE_ITEMS_RECEIVED_ALLOC_SQL = `WITH tg AS (
     caps AS (
       SELECT si.sale_item_id,
              COALESCE(tg.targeted, 0)::numeric AS targeted,
-             GREATEST(0, si.pending_received::numeric - COALESCE(tg.targeted, 0)::numeric) AS pend_cap,
-             -- ⚠ #182 折抵的「欠款归零」会把已结清行的 sale_amount 下调到实收，并同步把
-             -- pending_received 钉到同一个值，于是本式对该行自然得 cap = 0——它已结清，
-             -- **不应**再参与第二段 untargeted 分配（否则会吸走本该给同单欠款行的回款：
-             -- 两行各原价 ¥100 各实收 ¥50，A 折抵后再回款 ¥50，若 A 仍有产能会分成
-             -- A=¥75/B=¥75，而正确结果是 A=¥50/B=¥100，还可能让 B 少解锁权益甚至踩 D3）。
-             -- 保住该行 received 靠的是第一段按 pending_received 铺满，不是放大本式的上限。
-             GREATEST(0, si.sale_amount::numeric - GREATEST(si.pending_received::numeric, COALESCE(tg.targeted, 0)::numeric)) AS sale_cap
+             -- #182 折抵退出的行（waived_amount > 0）：它的**毛已付**已经钉在 pending_received
+             -- 上（折抵时写入 = 净实收 + 该行已退款额），改为**固定预留**、等同于一笔定向支付，
+             -- 不再参与按比例的两段瀑布，预留额同时从 untargeted 扣除（见 agg）。
+             -- 两个都不能省：① 仍丢回比例池 → untargeted < Σpend_cap 时该行只拿到比例份额、
+             --   低于钉住值，而其 remaining_sessions 已注销为 0 → (session_count − 0) >
+             --   paid_sessions 立刻踩 D3，该单此后任何整单 recalc 全抛 UNDERFLOW；
+             -- ② 事后再单行抬回下限 → Σ行级 received 会超过订单级实收（凭空多出行级实收，
+             --   污染 0040 视图 residual），且同单其它行被少分。预留是唯一同时守住两者的写法。
+             CASE WHEN si.waived_amount::numeric > 0
+                  THEN GREATEST(0, si.pending_received::numeric - COALESCE(tg.targeted, 0)::numeric)
+                  ELSE 0 END AS reserved,
+             CASE WHEN si.waived_amount::numeric > 0 THEN 0
+                  ELSE GREATEST(0, si.pending_received::numeric - COALESCE(tg.targeted, 0)::numeric)
+             END AS pend_cap,
+             -- ⚠ 第二段产能不得改成 (sale_amount + waived_amount)：折抵行已结清，**不应**再参与
+             -- 第二段 untargeted 分配（否则会吸走本该给同单欠款行的回款：两行各原价 ¥100 各实收
+             -- ¥50，A 折抵后再回款 ¥50，若 A 仍有产能会分成 A=¥75/B=¥75，而正确结果是
+             -- A=¥50/B=¥100，还可能让 B 少解锁权益甚至踩 D3）。折抵行这里直接取 0。
+             CASE WHEN si.waived_amount::numeric > 0 THEN 0
+                  ELSE GREATEST(0, si.sale_amount::numeric - GREATEST(si.pending_received::numeric, COALESCE(tg.targeted, 0)::numeric))
+             END AS sale_cap
       FROM sale_items si
       LEFT JOIN tg ON tg.ref_sale_item_id = si.sale_item_id
       WHERE si.sale_order_id = $1 AND si.item_direction = '购买'
     ),
     agg AS (
-      SELECT GREATEST(0, (SELECT received FROM sale_orders WHERE sale_order_id = $1)::numeric - COALESCE((SELECT SUM(targeted) FROM tg), 0)::numeric) AS untargeted,
+      SELECT GREATEST(0, (SELECT received FROM sale_orders WHERE sale_order_id = $1)::numeric - COALESCE((SELECT SUM(targeted) FROM tg), 0)::numeric - COALESCE(SUM(reserved), 0)::numeric) AS untargeted,
              COALESCE(SUM(pend_cap), 0)::numeric AS pend_cap_total,
              COALESCE(SUM(sale_cap), 0)::numeric AS sale_cap_total
       FROM caps
@@ -110,7 +123,7 @@ const SALE_ITEMS_RECEIVED_ALLOC_SQL = `WITH tg AS (
     UPDATE sale_items si
     SET received = CASE
           WHEN agg.pend_cap_total > 0 OR agg.sale_cap_total > 0
-            THEN caps.targeted
+            THEN caps.targeted + caps.reserved
               + ROUND(
                   (CASE WHEN agg.pend_cap_total > 0
                         THEN LEAST(agg.untargeted, agg.pend_cap_total) * caps.pend_cap / agg.pend_cap_total
@@ -118,39 +131,15 @@ const SALE_ITEMS_RECEIVED_ALLOC_SQL = `WITH tg AS (
                 + (CASE WHEN agg.sale_cap_total > 0 AND agg.untargeted > agg.pend_cap_total
                         THEN (agg.untargeted - agg.pend_cap_total) * caps.sale_cap / agg.sale_cap_total
                         ELSE 0 END), 2)
-          ELSE caps.targeted
+          ELSE caps.targeted + caps.reserved
         END,
         updated_at = NOW()
     FROM caps, agg
     WHERE si.sale_item_id = caps.sale_item_id`
-// ⚠ #182 折抵「欠款归零」过的行（waived_amount > 0）由 SALE_ITEMS_RECEIVED_FLOOR_SQL 补一道
-//   下限，见其注释：本式第一段是按 pend_cap **比例**分配，untargeted < Σpend_cap 时
-//   （legacy / receipt 不完整才走 Branch B，正是本式的定义域）该行只能拿到比例份额、
-//   低于折抵当时钉住的值，而它的 remaining_sessions 已注销为 0 → 立刻踩 D3。
-
-/**
- * STEP 1.4（#182）：给「折抵欠款归零」过的行补 received 下限。
- *
- * 折抵时把该行 sale_amount 压到净实收、并把 pending_received 钉到同一个值，其
- * remaining_sessions 已被注销为 0 —— 此后只要 received 低于钉住值，
- * (session_count − 0) > paid_sessions 就成立，D3 立刻被破，该订单之后任何整单 recalc
- * 都会抛 PAID_SESSIONS_UNDERFLOW。
- *
- * Branch A（receipt 完整）按 receipt 覆盖，不会低于钉住值；Branch B 的第一段却是按
- * pend_cap **比例**分 LEAST(untargeted, Σpend_cap)，当 untargeted < Σpend_cap（legacy /
- * 数据异常单，正是 Branch B 的定义域）时该行会被摊薄。故在 STEP 1 之后、STEP 1.5 之前
- * 统一抬回下限。只作用于 waived_amount > 0 的购买行，其余行零影响。
- *
- * 必须在 RECEIVED_REFUNDED_DEDUCT_SQL（STEP 1.5）**之前**执行：1.5 是从毛额扣退款，
- * 下限要作用在毛额语义上。
- */
-const WAIVED_ROWS_RECEIVED_FLOOR_SQL = `UPDATE sale_items si
-    SET received = GREATEST(si.received::numeric, si.pending_received::numeric),
-        updated_at = NOW()
-    WHERE si.sale_order_id = $1
-      AND si.item_direction = '购买'
-      AND si.waived_amount::numeric > 0
-      AND si.received::numeric < si.pending_received::numeric`
+// #182 折抵行走上面的 reserved 分支：received = GREATEST(pending_received, targeted)（毛额），
+//   随后 STEP 1.5 扣掉该行已退款额得到净额 = 折抵时的净实收 = 下调后的 sale_amount
+//   → paid_sessions 恒满付，D3 成立。**不要**改成「事后单行抬 received 下限」：
+//   钉住值是毛额、STEP 1.5 会再扣一次退款，且单行抬升会破坏 Σ行级 = 订单级实收。
 
 /**
  * STEP 1.5 逐项退款净额 SQL（2026-06-08 退款侧 $1 = saleOrderId）：从毛额 received 扣减
@@ -206,8 +195,8 @@ const CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL = `WITH conversion_order AS (
              -- waived_amount，却同样已被注销权益（剩余次数归零），而本 SQL 是
              -- **整额覆盖式**重分摊（SET received = allocated），一旦 target 收缩就会把它的
              -- received 改小 → 立刻踩 D3。转出行引用才是「已被折走」的充分判据。
-             -- 不能参与重分摊。它的 sale_amount 已下调，若还算进 in_total 并按新权重重摊，
-             -- 该行 received 会被改小，而其 remaining_sessions 已注销为 0 → 立刻踩 D3。
+             -- 关单回滚会还原（转出行随转换单置 '已关闭'）、删单会物理删掉转出行，两条路径下
+             -- 本判据都自动回归，无需额外清理。
              COALESCE((
                SELECT SUM(in_item.sale_amount::numeric)
                FROM sale_items in_item
@@ -250,10 +239,13 @@ const CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL = `WITH conversion_order AS (
     ),
     allocated AS (
       SELECT sale_item_id,
-             CASE WHEN rn = item_count
+             -- 尾差吸收行必须钳到 >= 0：target 很小且转入行 >= 4 时（如 target=0.02、四行等权，
+             -- 每行 ROUND(0.005,2)=0.01，前三行已占 0.03）差额可为 -0.01，
+             -- received 变负 → FLOOR(负 × sc / sa) = -1 → 已消费 0 也满足 0 > -1 → 误抛 D3。
+             GREATEST(0, CASE WHEN rn = item_count
                     THEN target_received - COALESCE(SUM(provisional_received) FILTER (WHERE rn < item_count) OVER (), 0)
                   ELSE provisional_received
-             END::numeric(10, 2) AS item_received
+             END)::numeric(10, 2) AS item_received
       FROM provisional
     )
     UPDATE sale_items si
@@ -403,10 +395,6 @@ async function recalcPaidSessionsForOrder(client, saleOrderId) {
     await client.query(SALE_ITEMS_RECEIVED_FROM_RECEIPTS_SQL, [saleOrderId])
   } else {
     await client.query(SALE_ITEMS_RECEIVED_ALLOC_SQL, [saleOrderId])
-    // STEP 1.4（#182）：Branch B 的第一段是按 pend_cap **比例**分配，untargeted < Σpend_cap 时
-    // 会把「折抵欠款归零」过的行摊薄到钉住值以下，而其 remaining_sessions 已注销为 0 → 踩 D3。
-    // 抬回下限；只作用于 waived_amount > 0 的行。必须在 STEP 1.5 扣退款之前（下限是毛额语义）。
-    await client.query(WAIVED_ROWS_RECEIVED_FLOOR_SQL, [saleOrderId])
     // STEP 1.5：回退分支没有完整正向 receipt 覆盖，须按 note.items[].refundAmount 扣减。
     // 分支 A 已由负数 receipt 得到净额，故不在 A 中执行本扣减。
     await client.query(RECEIVED_REFUNDED_DEDUCT_SQL, [saleOrderId])
@@ -442,7 +430,6 @@ module.exports = {
   computePaidSessionsForItem,
   SALE_ITEMS_RECEIVED_ALLOC_SQL,
   SALE_ITEMS_RECEIVED_FROM_RECEIPTS_SQL,
-  WAIVED_ROWS_RECEIVED_FLOOR_SQL,
   RECEIVED_REFUNDED_DEDUCT_SQL,
   CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL,
   ORDER_PREPAID_CARD_RECALC_SQL,
