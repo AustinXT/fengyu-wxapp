@@ -27,9 +27,17 @@ test.skip(process.env.INVT_189 !== '1', '待目标实例部署 #189 后启用（
 
 test.setTimeout(180_000)
 
+/**
+ * ⚠️ `labelled()` 是 `^label` 前缀匹配，`'市场'` 会同时命中明细行的「市场批次」——
+ * 一律取第一个 label（表单头部那个主体字段），否则 `toHaveCount(0)` 会被批次下拉带红。
+ */
+function subjectField(page: Page, labelText: string) {
+  return labelled(page, labelText).first()
+}
+
 /** 核心不变量：字段要么已固定（唯一候选），要么给出真正需要做的选择（≥2 个候选）。 */
 async function expectNoRedundantChoice(page: Page, labelText: string): Promise<'fixed' | 'selectable'> {
-  const field = labelled(page, labelText)
+  const field = subjectField(page, labelText)
   const fixed = field.locator('[data-fixed-subject]')
   const select = field.locator('select')
   await expect(fixed.or(select).first()).toBeVisible({ timeout: 20_000 })
@@ -47,9 +55,16 @@ async function expectNoRedundantChoice(page: Page, labelText: string): Promise<'
 }
 
 async function expectFixedTo(page: Page, labelText: string, value: string) {
-  const fixed = labelled(page, labelText).locator('[data-fixed-subject]').first()
+  const fixed = subjectField(page, labelText).locator('[data-fixed-subject]').first()
   await expect(fixed).toBeVisible({ timeout: 20_000 })
   await expect(fixed).toHaveAttribute('data-fixed-subject', value)
+}
+
+/** 值由上游字段派生的主体：上游没选时不许自作主张固定一个（#189 评审 B-1）。 */
+async function expectAwaitsUpstream(page: Page, labelText: string) {
+  const field = subjectField(page, labelText)
+  await expect(field.locator('select')).toHaveCount(1)
+  await expect(field.locator('[data-fixed-subject]')).toHaveCount(0)
 }
 
 test.describe('INV-11 候选唯一即自动选中', () => {
@@ -68,12 +83,12 @@ test.describe('INV-11 候选唯一即自动选中', () => {
       ['supply-chain', '供应链库存转换', ['转换库存主体']],
       ['market', '市场汇总报货', ['市场', '供应链库存主体']],
       ['market', '分院配货', ['配货市场']],
-      ['market', '市场退货申请', ['退货主体', '回库主体']],
+      ['market', '市场退货申请', ['退货主体']],
       ['market', '市场员工购', ['市场']],
       ['market', '自采产品入库', ['入库市场']],
       ['market', '市场库存转换', ['转换库存主体']],
-      ['store', '门店报货', ['报货门店', '所属市场']],
-      ['store', '门店退货申请', ['退货主体', '回库主体']],
+      ['store', '门店报货', ['报货门店']],
+      ['store', '门店退货申请', ['退货主体']],
       ['store', '门店库存转换', ['转换库存主体']],
     ]
 
@@ -83,6 +98,22 @@ test.describe('INV-11 候选唯一即自动选中', () => {
         await expectNoRedundantChoice(page, label)
       }
     }
+  })
+
+  test('派生字段在上游未选时不被自作主张固定（门店退货不会预填总部）', async ({ page }) => {
+    await login(page, INVT_ACCOUNTS.ADM.phone, INVT_PASS)
+
+    // 「回库主体」的候选在未选退货主体时退化成 headquarters；若它自动选中唯一总部，
+    // 用户会看到一个不可改的「品牌总部」—— 而门店退货只能退回父市场。
+    await openOperation(page, 'store', '门店退货申请')
+    await expectAwaitsUpstream(page, '回库主体')
+
+    await openOperation(page, 'market', '市场退货申请')
+    await expectAwaitsUpstream(page, '回库主体')
+
+    // 「所属市场」同理：它的值由报货门店带出。
+    await openOperation(page, 'store', '门店报货')
+    await expectAwaitsUpstream(page, '所属市场')
   })
 
   test('SC（库存 scope 只含总部）：总部字段只读固定，异步联动照常触发', async ({ page }) => {
@@ -123,23 +154,24 @@ test.describe('INV-11 候选唯一即自动选中', () => {
     await expectFixedTo(page, '转换库存主体', INVT_ACCOUNTS.MK.scopeId)
   })
 
-  test('库存查询：候选唯一的层级不渲染下拉', async ({ page }) => {
+  test('库存查询：候选唯一的层级不渲染下拉，但保住无障碍名', async ({ page }) => {
     await login(page, INVT_ACCOUNTS.SC.phone, INVT_PASS)
     await page.goto(`${BASE}/inventory/stocks`)
     await page.waitForLoadState('networkidle')
-    // 供应链 scope 只有总部本级：市场层级、门店层级两个下拉都没有选择余地。
-    await expect(page.getByLabel('库存市场层级')).toHaveCount(0)
-    await expect(page.getByLabel('库存门店层级')).toHaveCount(0)
-    await expect(page.locator('[data-fixed-location]').first()).toBeVisible()
+    // 供应链 scope 只有总部本级：两级都没有选择余地，但字段名仍要念得出来。
+    await expect(page.locator('select[aria-label="库存市场层级"]')).toHaveCount(0)
+    await expect(page.locator('select[aria-label="库存门店层级"]')).toHaveCount(0)
+    await expect(page.getByLabel('库存市场层级')).toHaveAttribute('data-fixed-subject', /.+/)
+    await expect(page.getByLabel('库存门店层级')).toHaveAttribute('data-fixed-subject', /.+/)
   })
 
   test('库存查询：ADM 的一级仍可切换，总部视角二级降级只读', async ({ page }) => {
     await login(page, INVT_ACCOUNTS.ADM.phone, INVT_PASS)
     await page.goto(`${BASE}/inventory/stocks`)
     await page.waitForLoadState('networkidle')
-    await expect(page.getByLabel('库存市场层级')).toBeVisible({ timeout: 20_000 })
+    await expect(page.locator('select[aria-label="库存市场层级"]')).toHaveCount(1)
     // 选中总部时二级只剩「供应链库存」一项。
-    await expect(page.getByLabel('库存门店层级')).toHaveCount(0)
-    await expect(page.locator('[data-fixed-location]')).toContainText('供应链库存')
+    await expect(page.locator('select[aria-label="库存门店层级"]')).toHaveCount(0)
+    await expect(page.getByLabel('库存门店层级')).toHaveText('供应链库存')
   })
 })

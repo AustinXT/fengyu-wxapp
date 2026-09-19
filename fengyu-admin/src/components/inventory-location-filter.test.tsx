@@ -14,6 +14,14 @@ const options: InventoryLocationFilterOptions = {
   defaultLocationId: 'HQ',
 }
 
+/** 降级成只读后仍要保住无障碍名：断言「不是下拉」而不是「找不到这个字段」。 */
+function expectFixedLevel(ariaLabel: string, text: string, locationId: string) {
+  expect(screen.queryByRole('combobox', { name: ariaLabel })).not.toBeInTheDocument()
+  const fixed = screen.getByLabelText(ariaLabel)
+  expect(fixed).toHaveTextContent(text)
+  expect(fixed).toHaveAttribute('data-fixed-subject', locationId)
+}
+
 describe('InventoryLocationFilter', () => {
   it('总部、市场、门店都提交单个精确库存主体', () => {
     const onChange = vi.fn()
@@ -23,9 +31,8 @@ describe('InventoryLocationFilter', () => {
 
     expect(screen.getByLabelText('库存市场层级')).toHaveDisplayValue('总部（供应链）')
     // 总部层级下二级候选只有「供应链库存」自己 —— 一个永远只有一项的下拉没有意义，
-    // 降级为只读文本（#189）。
-    expect(screen.queryByLabelText('库存门店层级')).not.toBeInTheDocument()
-    expect(screen.getByText('供应链库存')).toHaveAttribute('data-fixed-location', 'HQ')
+    // 降级为只读（#189）。
+    expectFixedLevel('库存门店层级', '供应链库存', 'HQ')
 
     fireEvent.change(screen.getByLabelText('库存市场层级'), { target: { value: 'M1' } })
     expect(onChange).toHaveBeenLastCalledWith('M1')
@@ -51,11 +58,9 @@ describe('InventoryLocationFilter', () => {
     render(<InventoryLocationFilter options={storeOnly} value="S1" onChange={vi.fn()} />)
 
     expect(screen.queryByRole('option', { name: '该市场库存' })).not.toBeInTheDocument()
-    // 市场、门店两级候选都只剩一个，两个下拉一起降级为只读文本。
-    expect(screen.queryByLabelText('库存市场层级')).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('库存门店层级')).not.toBeInTheDocument()
-    expect(screen.getByText('南昌市场')).toHaveAttribute('data-fixed-location', 'M1')
-    expect(screen.getByText('红谷滩店')).toHaveAttribute('data-fixed-location', 'S1')
+    // 市场、门店两级候选都只剩一个，两个下拉一起降级为只读。
+    expectFixedLevel('库存市场层级', '南昌市场', 'M1')
+    expectFixedLevel('库存门店层级', '红谷滩店', 'S1')
   })
 
   it('候选多于一个时仍是可选下拉（只读降级不能退化成"全都不给选"）', () => {
@@ -74,7 +79,7 @@ describe('InventoryLocationFilter', () => {
     render(<InventoryLocationFilter options={twoStores} value="S1" onChange={onChange} />)
 
     // 市场只有一个 → 只读；门店有两家 → 仍要能切换。
-    expect(screen.queryByLabelText('库存市场层级')).not.toBeInTheDocument()
+    expectFixedLevel('库存市场层级', '南昌市场', 'M1')
     fireEvent.change(screen.getByLabelText('库存门店层级'), { target: { value: 'S2' } })
     expect(onChange).toHaveBeenLastCalledWith('S2')
   })
@@ -90,7 +95,19 @@ describe('InventoryLocationFilter', () => {
 
     // 一级有总部 + 市场两项，仍是下拉；二级只剩市场本级一项。
     expect(screen.getByLabelText('库存市场层级')).toHaveDisplayValue('南昌市场')
-    expect(screen.queryByLabelText('库存门店层级')).not.toBeInTheDocument()
-    expect(screen.getByText('该市场库存')).toHaveAttribute('data-fixed-location', 'M1')
+    expectFixedLevel('库存门店层级', '该市场库存', 'M1')
+  })
+
+  it('完全没有可用主体时给出空态而不是空下拉', () => {
+    const empty: InventoryLocationFilterOptions = {
+      headquarters: [],
+      markets: [],
+      defaultLocationId: null,
+    }
+
+    render(<InventoryLocationFilter options={empty} value={null} onChange={vi.fn()} />)
+
+    expect(screen.getByLabelText('库存市场层级')).toBeDisabled()
+    expect(screen.getByRole('option', { name: '暂无可用库存主体' })).toBeInTheDocument()
   })
 })

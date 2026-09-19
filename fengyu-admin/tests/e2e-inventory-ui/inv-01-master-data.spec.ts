@@ -263,7 +263,13 @@ test('INV-01：基础档案建档 + 六价体系 + 公式价校验', async ({ br
       selfDialog.locator('label').filter({ hasText: labelRe }).first()
     await selfField(/^产品名称/).locator('input').fill(SKU_SELF_NAME)
     await selfField(/^来源/).locator('select').selectOption('市场自采')
-    await selfField(/^归属市场/).locator('select').selectOption({ label: TOPO.MARKET_NAME })
+    // 归属市场候选唯一时会自动选中并降级成只读（#189），那时没有 select 可选 —— 改为核对展示值。
+    const ownerMarketField = selfField(/^归属市场/)
+    if (await ownerMarketField.locator('[data-fixed-subject]').count() > 0) {
+      await expect(ownerMarketField.locator('[data-fixed-subject]')).toContainText(TOPO.MARKET_NAME)
+    } else {
+      await ownerMarketField.locator('select').selectOption({ label: TOPO.MARKET_NAME })
+    }
     await selfField(/^门店进货价/).locator('input').fill('300')
     await selfField(/^顾客零售价/).locator('input').fill('880')
     await selfDialog.getByRole('button', { name: /^保存|创建|确定$/ }).last().click()

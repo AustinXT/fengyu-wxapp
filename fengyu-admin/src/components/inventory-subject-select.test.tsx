@@ -36,9 +36,11 @@ describe('InventorySubjectSelect（#189 候选唯一即自动选中）', () => {
     expect(sideEffect).toHaveBeenCalledWith('联动:ORG-HQ')
   })
 
-  it('值已回填后不再重复上报，即使父组件换了新的 onChange 引用', () => {
+  it('onChange 换引用不会重复上报（值仍为空，只有依赖数组能决定是否重跑）', () => {
     // 调用方传的都是内联箭头函数，每次渲染都是新引用；若把它放进 effect 依赖，
     // 父组件每重渲染一次就会重报一次，配合带副作用的 onChange（异步拉员工）会刷请求。
+    // ⚠️ rerender 必须保持 value=""，否则 `!value` 守卫会替依赖数组挡住重复上报，
+    // 这条测试就退化成「什么都没钉住」。
     const onChange = vi.fn()
     const { rerender } = render(
       <InventorySubjectSelect options={HQ} value="" onChange={() => onChange('first')} placeholder="请选择总部" />,
@@ -46,10 +48,10 @@ describe('InventorySubjectSelect（#189 候选唯一即自动选中）', () => {
     expect(onChange).toHaveBeenCalledTimes(1)
 
     rerender(
-      <InventorySubjectSelect options={HQ} value="ORG-HQ" onChange={() => onChange('second')} placeholder="请选择总部" />,
+      <InventorySubjectSelect options={HQ} value="" onChange={() => onChange('second')} placeholder="请选择总部" />,
     )
     rerender(
-      <InventorySubjectSelect options={HQ} value="ORG-HQ" onChange={() => onChange('third')} placeholder="请选择总部" />,
+      <InventorySubjectSelect options={HQ} value="" onChange={() => onChange('third')} placeholder="请选择总部" />,
     )
 
     expect(onChange).toHaveBeenCalledTimes(1)
@@ -67,10 +69,11 @@ describe('InventorySubjectSelect（#189 候选唯一即自动选中）', () => {
     expect(onChange).toHaveBeenLastCalledWith('M2')
   })
 
-  it('候选唯一但值是候选之外的（随单回填了看不到的主体）时不覆盖、不撒谎', () => {
+  it('候选唯一但值是候选之外的（随单回填了看不到的主体）时不覆盖，且给出可见占位', () => {
     // 采购订单 / 发货 / 入库 / 配货共 5 处会在选定来源单据后把主体回填成单据自己的
-    // 主体。若那个主体不在当前用户的候选里，只读文本显示唯一候选就是撒谎，
-    // 自动改值更是把随单锁定的主体悄悄换掉。
+    // 主体。若那个主体不在当前用户的候选里，只读文本显示唯一候选就是撒谎，自动改值
+    // 更是把随单锁定的主体悄悄换掉；而不给 option 的话 select 会 selectedIndex=-1
+    // 渲染成空白框，操作人根本看不出发生了什么。
     const onChange = vi.fn()
     render(
       <InventorySubjectSelect
@@ -83,31 +86,88 @@ describe('InventorySubjectSelect（#189 候选唯一即自动选中）', () => {
 
     expect(onChange).not.toHaveBeenCalled()
     expect(screen.queryByText('品牌总部')).not.toHaveAttribute('data-fixed-subject')
-    expect(screen.getByRole('combobox')).toBeInTheDocument()
+    expect(screen.getByRole('combobox')).toHaveValue('ORG-OTHER-HQ')
+    expect(screen.getByRole('option', { name: '当前主体（不在可选范围）' })).toBeInTheDocument()
   })
 
-  it('无候选时渲染空下拉，不上报任何值', () => {
+  it('无候选时是禁用的空态下拉，不上报任何值', () => {
+    // 市场角色开「市场退货申请」时 headquarters 为空：给一个能点开却没有任何选项的
+    // 必填下拉，用户分不清是没权限还是没加载出来。
     const onChange = vi.fn()
     render(
       <InventorySubjectSelect options={[]} value="" onChange={onChange} placeholder="请选择总部" />,
     )
 
     expect(onChange).not.toHaveBeenCalled()
-    expect(screen.getByRole('combobox')).toBeInTheDocument()
-    expect(screen.getAllByRole('option')).toHaveLength(1)
+    expect(screen.getByRole('combobox')).toBeDisabled()
+    expect(screen.getByRole('option', { name: '暂无可用主体' })).toBeInTheDocument()
   })
 
-  it('disabled 只作用于可选下拉，只读态不受影响', () => {
-    // 供应链采购入库的主体在选定单据后 disabled={Boolean(doc)}：随单锁定。
-    const { rerender } = render(
-      <InventorySubjectSelect options={MARKETS} value="M1" onChange={vi.fn()} placeholder="请选择市场" disabled />,
-    )
-    expect(screen.getByRole('combobox')).toBeDisabled()
+  describe('autoSelect=false（值由同表单上游字段联动派生）', () => {
+    it('上游未选时不自动补值，也不显示只读文本', () => {
+      // 「回库主体」的候选在未选退货主体前退化成 headquarters —— 自动选中会把唯一总部
+      // 固定成只读，而门店退货只能退回父市场，那就是个撒谎的值；它还会盖掉
+      // selectSource 在同一次 effect flush 里刚写进去的父市场（后写胜出）。
+      const onChange = vi.fn()
+      render(
+        <InventorySubjectSelect
+          options={HQ}
+          value=""
+          onChange={onChange}
+          placeholder="请选择回库主体"
+          autoSelect={false}
+        />,
+      )
 
-    rerender(
-      <InventorySubjectSelect options={HQ} value="ORG-HQ" onChange={vi.fn()} placeholder="请选择总部" disabled />,
-    )
-    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
-    expect(screen.getByText('品牌总部')).toHaveAttribute('data-fixed-subject', 'ORG-HQ')
+      expect(onChange).not.toHaveBeenCalled()
+      expect(screen.getByRole('combobox')).toBeInTheDocument()
+      expect(screen.queryByText('品牌总部')).not.toHaveAttribute('data-fixed-subject')
+    })
+
+    it('上游联动填好值后，候选唯一仍降级为只读', () => {
+      render(
+        <InventorySubjectSelect
+          options={HQ}
+          value="ORG-HQ"
+          onChange={vi.fn()}
+          placeholder="请选择回库主体"
+          autoSelect={false}
+        />,
+      )
+
+      expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+      expect(screen.getByText('品牌总部')).toHaveAttribute('data-fixed-subject', 'ORG-HQ')
+    })
+  })
+
+  describe('disabled（主体随单锁定）', () => {
+    it('禁用时不自动补值，也不把空值伪装成已确定的只读值', () => {
+      // 供应链采购入库选中一张 target_org_node_id 为 null 的单据时，表单会把主体清成
+      // 空串（schema 里该列可空）。此时字段已 disabled 表示「随单锁定」，组件若还自动
+      // 填一个唯一候选并渲染成只读，用户看到的是个「不可改的确定值」，而它并非来自单据。
+      const onChange = vi.fn()
+      render(
+        <InventorySubjectSelect options={HQ} value="" onChange={onChange} placeholder="请选择总部" disabled />,
+      )
+
+      expect(onChange).not.toHaveBeenCalled()
+      expect(screen.getByRole('combobox')).toBeDisabled()
+    })
+
+    it('随单回填的值与唯一候选一致时仍只读展示', () => {
+      render(
+        <InventorySubjectSelect options={HQ} value="ORG-HQ" onChange={vi.fn()} placeholder="请选择总部" disabled />,
+      )
+
+      expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+      expect(screen.getByText('品牌总部')).toHaveAttribute('data-fixed-subject', 'ORG-HQ')
+    })
+
+    it('候选多个时 disabled 照常作用于下拉', () => {
+      render(
+        <InventorySubjectSelect options={MARKETS} value="M1" onChange={vi.fn()} placeholder="请选择市场" disabled />,
+      )
+      expect(screen.getByRole('combobox')).toBeDisabled()
+    })
   })
 })
