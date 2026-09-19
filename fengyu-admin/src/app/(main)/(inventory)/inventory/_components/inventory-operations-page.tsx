@@ -1876,6 +1876,13 @@ function CompanyShipmentForm({
           本单含 {shipMarkets.length} 个市场的明细，发货单一次只能发往一个市场，请分次发货。
         </div>
       )}
+      {/* 候选按 doc_type 筛，纯供应链行的采购单也会列进来；选中后表单会是空的，
+          不给提示的话用户只会看到一个没有明细、点了也提交不了的表单。 */}
+      {doc && !loading && shipMarkets.length === 0 && (
+        <div className="rounded-[var(--radius)] border border-[#D4820A] bg-[#FFF8E6] p-3 text-sm text-[#7B5E2B]">
+          该采购订单没有市场归属的明细（全部是品项公司自用行），请改走「供应链采购入库」。
+        </div>
+      )}
       {lines.length > 0 && (
         <div className="space-y-3">
           <h3 className="text-sm font-medium">发货批次与数量</h3>
