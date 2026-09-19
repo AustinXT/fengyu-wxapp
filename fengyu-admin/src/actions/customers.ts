@@ -4,7 +4,7 @@ import { db } from '@/db'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { saleOrders } from '@db/order'
 import { stores, orgNodes } from '@db/org'
-import { eq, and, or, desc, asc, inArray, sql, ilike, isNotNull, getTableColumns } from 'drizzle-orm'
+import { eq, and, or, gt, desc, asc, inArray, sql, ilike, isNotNull, getTableColumns } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import type { Customer, SaleOrder, SaleItem, Appointment, AuthSession, CustomerCoupon, CouponType, CouponStatus } from '@/lib/types'
 import { scopeCondition, isAdminScope, isInScope, requireAdmin } from '@/lib/permissions'
@@ -14,11 +14,12 @@ import { logOperation, logUpdate } from '@/lib/operation-log'
 import { pgErrorCode } from '@/lib/pg-error'
 import { fmtDate } from '@/lib/datetime'
 import {
-  offsetPageResult,
-  resolveExportOffsetPage,
+  resolveExportBatchLimit,
+  resolveExportKeysetPage,
   type ExportBatchOptions,
   type ExportBatchResult,
 } from '@/lib/export-pagination'
+import { ApiError } from '@/lib/api-error'
 import { storeInMarketCondition } from '@/lib/market-store-sql'
 import { deriveHomeProductStatus, type CustomerHomeProduct } from '@/lib/home-product'
 import { businessErrorMessage } from '@/lib/action-error'
@@ -124,7 +125,7 @@ function serializeCustomer(row: CustomerRow): Customer {
 /** 推荐员工当前姓名优先，关联失效或旧 client 仅写快照时回退历史姓名。 */
 const promoterName = sql<string | null>`COALESCE(${promoterCurrentNameSql}, ${clientWechatUsers.promoterEmployeeName})`
 
-/** 顾客导出取数列（12 表头所需字段 + storeName + promoterName） */
+/** 顾客导出取数列（14 表头所需字段 + storeName + promoterName） */
 const exportCustomerColumns = {
   userId: clientWechatUsers.userId,
   name: clientWechatUsers.name,
@@ -136,6 +137,8 @@ const exportCustomerColumns = {
   customerSource: clientWechatUsers.customerSource,
   birthday: clientWechatUsers.birthday,
   boundEmployeeName: clientWechatUsers.boundEmployeeName,
+  createdAt: clientWechatUsers.createdAt,
+  becameMemberAt: clientWechatUsers.becameMemberAt,
   storeName,
   promoterName,
 }
@@ -316,7 +319,7 @@ export const getCustomersPaginated = withPermission(
   },
 )
 
-/** 顾客导出行（对应 12 列表头） */
+/** 顾客导出行（对应 14 列表头） */
 export interface ExportCustomerRow {
   name: string | null
   phone: string | null
@@ -331,6 +334,24 @@ export interface ExportCustomerRow {
   promoterName: string | null
   customerSource: string | null
   birthday: string | null
+  /**
+   * 「建档日期」列：client_wechat_users.created_at 的日期部分。
+   *
+   * 语义是本系统建档时刻——建行发生在 clientApi 的 `auth.bindPhone`（`auth.js` 绑手机号时
+   * INSERT），不是 `auth.login`（不落库行），也不是 `bindStore`（它要求行已存在且有 phone）。
+   * WorkFine 存量顾客则是首次同步日。刻意不叫「注册日期」：data-center 的「注册」指
+   * became_member_at（会员注册），两处同名会让甲方拿两张表对不上数。
+   */
+  createdAt: string | null
+  /**
+   * 「成为会员日期」列：became_member_at 的日期部分，非会员客为 null。
+   *
+   * ⚠️ 口径是「确立会员资格的首笔达标单」`COALESCE(paid_at, created_at)`，而历史订单的
+   * paid_at 写的是历史销售日 → 老顾客这一列会**早于**「建档日期」（prod 实测 1845 个会员客里
+   * 1476 个如此，最极端早 1457 天）。这是数据本来的样子，不是倒挂 bug：顾客 2022 年就在
+   * 线下成为会员，2026 年才被录入本系统。
+   */
+  becameMemberAt: string | null
 }
 
 /**
@@ -340,29 +361,50 @@ export interface ExportCustomerRow {
  *   SUM(GREATEST(received - refunded_amount, 0)) FILTER (WHERE sale_order_type IN ('销售单','转换单'))
  * 含 WorkFine 历史单、不限支付状态，故数值与「消费档位」列严格对应。
  * 推荐人 = 关联员工当前姓名；关联失效或旧 client 仅写姓名时回退快照。
+ *
+ * 分页是 keyset（#183 从 offset 改过来），排序键是**不可变主键 user_id**：
+ * offset 翻页下新顾客建档就会顶掉边界行；而若沿用列表页的 `asc(name)` 做游标首键，
+ * 一个尚未导出的顾客被改名后会移到游标之前、**永久漏掉且无痕迹**（name 可被
+ * updateCustomer 改写，userId 只能唯一化同名行，救不了整行的排序位置）。
+ * 代价是导出不再按姓名字母序 —— 拿到 xlsx 后按「姓名」列排一下即可，
+ * 而漏掉的行是找不回来的，故取正确性。
  */
 export const exportCustomers = withPermission(
   'customer:list',
   async (
     session,
     params: Record<string, string | undefined>,
-    options?: ExportBatchOptions,
-  ): Promise<ExportBatchResult<ExportCustomerRow>> => {
+    options?: ExportBatchOptions<string>,
+  ): Promise<ExportBatchResult<ExportCustomerRow, string>> => {
     const filters = parseCustomerFilters(params)
-    const whereClause = and(...buildCustomerConditions(session, filters))
-    const page = resolveExportOffsetPage(options)
+    const limit = resolveExportBatchLimit(options?.limit)
+    const cursor = options?.cursor
+    // 只有 undefined 代表「首批」；空串 / 非字符串一律视为畸形游标，不能静默从头重扫
+    if (cursor !== undefined && (typeof cursor !== 'string' || !cursor)) {
+      throw new ApiError('INVALID_STATE', '导出分页游标无效')
+    }
+    const whereClause = and(
+      ...buildCustomerConditions(session, filters),
+      ...(cursor ? [gt(clientWechatUsers.userId, cursor)] : []),
+    )
 
     const query = db
       .select(exportCustomerColumns)
       .from(clientWechatUsers)
       .where(whereClause)
-      // 例外：picker 字母序（与列表一致）；userId 让 worker 分页在同名顾客下保持稳定。
-      .orderBy(asc(clientWechatUsers.name), asc(clientWechatUsers.userId))
-    const dataRows = page
-      ? await query.limit(page.limit + 1).offset(page.offset)
-      : await query
+      // 例外：导出走 keyset 分页，排序键必须不可变（见上方注释），故不用列表页的姓名字母序。
+      .orderBy(asc(clientWechatUsers.userId))
+    const fetchedRows = limit == null
+      ? await query
+      : await query.limit(limit + 1)
+    const { pageRows, hasMore, nextCursor } = resolveExportKeysetPage(
+      fetchedRows,
+      limit,
+      (lastRow) => lastRow.userId,
+    )
 
-    const userIds = dataRows.map((r) => r.userId)
+    // 补查只针对本页（探测行已切掉），避免多算一个顾客的累计消费
+    const userIds = pageRows.map((r) => r.userId)
 
     // 批量补查累计消费（spending_tier 口径，1 次聚合避免 N+1）
     const spendMap = new Map<string, string>()
@@ -381,7 +423,7 @@ export const exportCustomers = withPermission(
       }
     }
 
-    const rows: ExportCustomerRow[] = dataRows.map((r) => ({
+    const rows: ExportCustomerRow[] = pageRows.map((r) => ({
       name: r.name,
       phone: r.phone,
       storeName: r.storeName,
@@ -394,9 +436,19 @@ export const exportCustomers = withPermission(
       promoterName: r.promoterName,
       customerSource: r.customerSource,
       birthday: r.birthday ? fmtDate(r.birthday) : null,
+      // timestamptz 必须走 fmtDate（Asia/Shanghai 还原），裸截 UTC 会在 00:00~08:00 建档的行上偏一天
+      createdAt: r.createdAt ? fmtDate(r.createdAt) : null,
+      becameMemberAt: r.becameMemberAt ? fmtDate(r.becameMemberAt) : null,
     }))
 
-    return offsetPageResult(rows, page)
+    return {
+      rows,
+      truncated: false,
+      hasMore,
+      // 用 !== undefined 而不是真值判断：游标契约里空串是「畸形」，真值判断会在
+      // hasMore 为真时悄悄不带游标，让 worker 抛 INVALID_STATE（fail-safe 但契约不对称）
+      ...(nextCursor !== undefined ? { nextCursor } : {}),
+    }
   },
 )
 

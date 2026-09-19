@@ -3,6 +3,7 @@ import {
   EXPORT_WORKER_BATCH_SIZE,
   iterateExportPages,
   offsetPageResult,
+  resolveExportKeysetPage,
 } from './export-pagination'
 
 async function collect<T>(rows: AsyncIterable<T>): Promise<T[]> {
@@ -10,6 +11,73 @@ async function collect<T>(rows: AsyncIterable<T>): Promise<T[]> {
   for await (const row of rows) result.push(row)
   return result
 }
+
+describe('resolveExportKeysetPage', () => {
+  const toCursor = (row: { id: string }) => row.id
+
+  it('切掉探测行，游标取本页最后一行（不是探测行）', () => {
+    expect(
+      resolveExportKeysetPage([{ id: 'a' }, { id: 'b' }, { id: 'c' }], 2, toCursor),
+    ).toEqual({
+      pageRows: [{ id: 'a' }, { id: 'b' }],
+      hasMore: true,
+      nextCursor: 'b',
+    })
+  })
+
+  it('刚好取满不含探测行 → hasMore=false 且不给游标（否则 worker 会多跑一页空查询）', () => {
+    expect(resolveExportKeysetPage([{ id: 'a' }, { id: 'b' }], 2, toCursor)).toEqual({
+      pageRows: [{ id: 'a' }, { id: 'b' }],
+      hasMore: false,
+    })
+  })
+
+  it('limit=null（legacy 全量调用）→ 原样返回全部行，不分页', () => {
+    expect(resolveExportKeysetPage([{ id: 'a' }, { id: 'b' }], null, toCursor)).toEqual({
+      pageRows: [{ id: 'a' }, { id: 'b' }],
+      hasMore: false,
+    })
+  })
+
+  it('空结果 → 不给游标', () => {
+    expect(resolveExportKeysetPage([], 2, toCursor)).toEqual({ pageRows: [], hasMore: false })
+  })
+
+  it('limit < 1 → 抛 INVALID_STATE，而不是在 toCursor 里抛语义不明的 TypeError', () => {
+    expect(() => resolveExportKeysetPage([{ id: 'a' }], 0, toCursor)).toThrow('导出分页 limit 必须 ≥ 1')
+  })
+
+  // 现有两个调用方（顾客 user_id / 员工 employee_id）都用单字符串游标；
+  // 这条只保证 helper 的泛型能力，将来若有导出需要复合排序键可直接用。
+  it('游标也可以是对象（helper 对复合键泛型开放）', () => {
+    const rows = [{ k1: 'a', k2: 1 }, { k1: 'b', k2: 2 }, { k1: 'c', k2: 3 }]
+    const page = resolveExportKeysetPage(rows, 2, (r) => ({ k1: r.k1, k2: r.k2 }))
+
+    expect(page.hasMore).toBe(true)
+    expect(page.nextCursor).toEqual({ k1: 'b', k2: 2 })
+  })
+
+  it('游标字段值为 null 也算有效游标，不被当成「无游标」', () => {
+    const rows = [{ id: 'a', tag: null }, { id: 'b', tag: null }]
+    const page = resolveExportKeysetPage(rows, 1, (r) => ({ id: r.id, tag: r.tag }))
+
+    expect(page.nextCursor).toEqual({ id: 'a', tag: null })
+  })
+
+  it('hasMore 时游标必定存在，能接上 iterateExportPages 的守卫', async () => {
+    const pages = [
+      resolveExportKeysetPage([{ id: 'a' }, { id: 'b' }], 1, toCursor),
+      resolveExportKeysetPage([{ id: 'b' }], 1, toCursor),
+    ]
+    let call = 0
+    const fetch = vi.fn().mockImplementation(async () => {
+      const page = pages[call++]
+      return { rows: page.pageRows, truncated: false, hasMore: page.hasMore, ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}) }
+    })
+
+    await expect(collect(iterateExportPages(fetch))).resolves.toEqual([{ id: 'a' }, { id: 'b' }])
+  })
+})
 
 describe('export pagination', () => {
   it('offset page only exposes the configured page and advances its cursor', () => {

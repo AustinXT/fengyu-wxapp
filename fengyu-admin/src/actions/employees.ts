@@ -5,7 +5,7 @@ import { staffWechatUsers } from '@db/user'
 import { stores, orgNodes } from '@db/org'
 import { permissionRoles } from '@db/permission'
 import { adminPasswords } from '@db/admin-auth'
-import { eq, and, or, sql, ilike, desc, asc } from 'drizzle-orm'
+import { eq, and, or, gt, sql, ilike, desc, asc } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
@@ -18,8 +18,8 @@ import { pgErrorCode, pgErrorConstraint, pgErrorDetail } from '@/lib/pg-error'
 import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
 import { shanghaiToday } from '@/lib/datetime'
 import {
-  offsetPageResult,
-  resolveExportOffsetPage,
+  resolveExportBatchLimit,
+  resolveExportKeysetPage,
   type ExportBatchOptions,
   type ExportBatchResult,
 } from '@/lib/export-pagination'
@@ -358,6 +358,8 @@ export interface ExportEmployeeRow {
   orgNodeId: string | null
   storeName: string | null
   positionName: string | null
+  /** 「入职日期」列：hired_at（date 列，原样透传，格式化在 registry 的列 map 里做，与 birthday 同源） */
+  hiredAt: string | null
   birthday: string | null
   skills: string | null
   socialInsurance: boolean
@@ -365,14 +367,31 @@ export interface ExportEmployeeRow {
   resignationReason: string | null
 }
 
-/** 导出员工（全部筛选命中）。身份证脱敏由前端 maskIdCard 处理。 */
+/**
+ * 导出员工（全部筛选命中）。身份证脱敏在导出列 maskIdCard 处做。
+ *
+ * **分页用 keyset 且排序键换成 employee_id，不能沿用列表页的 desc(updated_at)**（#183）：
+ * updated_at 是可变列，而员工每次登录 staff 小程序都会被 `staffApi/routes/auth.js` 写一次
+ * （还有 drizzle 的 $onUpdate、删技能标签的级联更新），导出期间行会不断被顶到最前。
+ * 配 offset 翻页时，任何一行从「未导出区」被顶进「已导出区」都必然造成**一行重复 + 一行永久漏掉**，
+ * 且漏掉的那行毫无痕迹。employee_id 是不可变主键，keyset 下天然免疫。
+ * 代价是导出不再按「编辑即浮顶」排序，改为按员工编号升序——对逐行核对的导出场景反而更合用。
+ */
 export const exportEmployees = withPermission(
   'employee:list',
   async (
     session,
     params: Record<string, string | undefined>,
-    options?: ExportBatchOptions,
-  ): Promise<ExportBatchResult<ExportEmployeeRow>> => {
+    options?: ExportBatchOptions<string>,
+  ): Promise<ExportBatchResult<ExportEmployeeRow, string>> => {
+    // 游标校验放在任何查询之前：畸形游标不该先白打一次 getSkillTags 的库
+    const limit = resolveExportBatchLimit(options?.limit)
+    const cursor = options?.cursor
+    // 只有 undefined 代表「首批」；空串 / 非字符串一律视为畸形，不能静默从头重扫
+    if (cursor !== undefined && (typeof cursor !== 'string' || !cursor)) {
+      throw new ApiError('INVALID_STATE', '导出分页游标无效')
+    }
+
     const parsed = parseEmployeeFilters(params)
     // 服务端兜底：剔除 URL ?skill= 中字典外（已删除）的标签名，防幽灵筛选。
     // 与列表路径 page.tsx 同源；前端 handleExport 已清洗，此处为防御层（即使漏清洗，
@@ -383,8 +402,10 @@ export const exportEmployees = withPermission(
       ...parsed,
       skills: filterValidSkillValues(parsed.skills, validSkillNames),
     }
-    const whereClause = and(...(await buildEmployeeConditions(session, filters)))
-    const page = resolveExportOffsetPage(options)
+    const whereClause = and(
+      ...(await buildEmployeeConditions(session, filters)),
+      ...(cursor ? [gt(staffWechatUsers.employeeId, cursor)] : []),
+    )
 
     const query = db
       .select()
@@ -393,12 +414,18 @@ export const exportEmployees = withPermission(
       // 无门店员工（养生部/财智部/总部职能岗）storeId 为 null，旧的门店→父市场链取不到组织值。
       .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
       .where(whereClause)
-      .orderBy(desc(staffWechatUsers.updatedAt), desc(staffWechatUsers.createdAt), asc(staffWechatUsers.employeeId))
-    const dataRows = page
-      ? await query.limit(page.limit + 1).offset(page.offset)
-      : await query
+      // 例外：导出走 keyset 分页，排序键必须是不可变唯一键（见上方注释），故不用列表页的 updated_at 浮顶序。
+      .orderBy(asc(staffWechatUsers.employeeId))
+    const fetchedRows = limit == null
+      ? await query
+      : await query.limit(limit + 1)
+    const { pageRows, hasMore, nextCursor } = resolveExportKeysetPage(
+      fetchedRows,
+      limit,
+      (lastRow) => lastRow.staff_wechat_users.employeeId,
+    )
 
-    const rows: ExportEmployeeRow[] = dataRows.map((row) => {
+    const rows: ExportEmployeeRow[] = pageRows.map((row) => {
       const e = row.staff_wechat_users
       return {
         employeeId: e.employeeId,
@@ -409,6 +436,7 @@ export const exportEmployees = withPermission(
         orgNodeId: e.orgNodeId,
         storeName: row.stores?.storeName ?? null,
         positionName: e.positionName,
+        hiredAt: e.hiredAt,
         birthday: e.birthday,
         skills: e.skills?.filter((s) => validSkillNames.has(s)).join('、') ?? null,
         socialInsurance: e.socialInsurance,
@@ -417,7 +445,14 @@ export const exportEmployees = withPermission(
       }
     })
 
-    return offsetPageResult(rows, page)
+    return {
+      rows,
+      truncated: false,
+      hasMore,
+      // 用 !== undefined 而不是真值判断：游标契约里空串是「畸形」，真值判断会在
+      // hasMore 为真时悄悄不带游标，让 worker 抛 INVALID_STATE（fail-safe 但契约不对称）
+      ...(nextCursor !== undefined ? { nextCursor } : {}),
+    }
   },
   { scopeActions: ['employee:create'] },
 )

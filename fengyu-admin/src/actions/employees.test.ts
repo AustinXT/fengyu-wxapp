@@ -77,6 +77,7 @@ vi.mock('drizzle-orm', () => ({
   ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
   inArray: vi.fn((a, b) => ({ type: 'inArray', a, b })),
   isNull: vi.fn((a) => ({ type: 'isNull', a })),
+  gt: vi.fn((col, val) => ({ type: 'gt', col, val })),
   desc: vi.fn((col) => ({ type: 'desc', col })),
   asc: vi.fn((col) => ({ type: 'asc', col })),
   sql: Object.assign(
@@ -104,7 +105,7 @@ import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
-import { eq, ilike, inArray, isNull, sql } from 'drizzle-orm'
+import { eq, ilike, inArray, isNull, sql, gt } from 'drizzle-orm'
 import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
 import { getSkillTags } from '@/actions/skill-tags'
 
@@ -1140,6 +1141,88 @@ describe('exportEmployees — 导出 + 技能标签服务端兜底（对称列�
 
     // 全字典外 → filterValidSkillValues 返回 undefined → buildEmployeeConditions 跳过 skills 条件
     expect((sql as any).join).not.toHaveBeenCalled()
+  })
+
+  it('字段映射：hiredAt 原样透传（date 列，格式化在 registry 列 map），未填入职日期为 null', async () => {
+    // prod 实测 338 名员工里 248 个不同入职日、仅 3 个为空、28 个等于建档日兜底值 —— 即
+    // hired_at 是真实维护过的数据。空值是少数情形但必须留空，不能补今天或建档日充数。
+    mockExportChain([
+      {
+        staff_wechat_users: {
+          employeeId: 'FY-00001', name: '张美容', gender: '女', phone: '13800000001',
+          idCard: '360102199001011234', orgNodeId: 'node-1', positionName: '美容师',
+          hiredAt: '2024-03-01', birthday: '1990-01-01', skills: ['护理'],
+          socialInsurance: true, isResigned: false, resignationReason: null,
+        },
+        stores: { storeName: '南昌店' },
+      },
+      {
+        staff_wechat_users: {
+          employeeId: 'FY-00002', name: '李未填', gender: null, phone: null,
+          idCard: null, orgNodeId: null, positionName: null,
+          hiredAt: null, birthday: null, skills: null,
+          socialInsurance: false, isResigned: false, resignationReason: null,
+        },
+        stores: null,
+      },
+    ])
+
+    const { rows } = await exportEmployees({})
+
+    expect(rows[0]).toMatchObject({
+      employeeId: 'FY-00001', name: '张美容', storeName: '南昌店',
+      positionName: '美容师', hiredAt: '2024-03-01', birthday: '1990-01-01',
+    })
+    expect(rows[1].hiredAt).toBeNull()
+  })
+
+  it('keyset 分页：按 employee_id 升序 + 游标 gt，不再用可变的 updated_at 排序（否则漏行/重行）', async () => {
+    const mkRow = (id: string) => ({
+      staff_wechat_users: {
+        employeeId: id, name: `员工${id}`, gender: null, phone: null, idCard: null,
+        orgNodeId: null, positionName: null, hiredAt: null, birthday: null, skills: null,
+        socialInsurance: false, isResigned: false, resignationReason: null,
+      },
+      stores: null,
+    })
+    const fetched = [mkRow('FY-00001'), mkRow('FY-00002'), mkRow('FY-00003')]
+    const chain: any = Object.assign(Promise.resolve(fetched), {})
+    chain.from = vi.fn().mockReturnValue(chain)
+    chain.leftJoin = vi.fn().mockReturnValue(chain)
+    chain.where = vi.fn().mockReturnValue(chain)
+    chain.orderBy = vi.fn().mockReturnValue(chain)
+    chain.limit = vi.fn().mockResolvedValue(fetched)
+    ;(db.select as any).mockReturnValue(chain)
+
+    const result = await exportEmployees({}, { limit: 2, cursor: 'FY-00000' })
+
+    expect(chain.limit).toHaveBeenCalledWith(3) // limit + 1 探测行
+    expect(result.rows).toHaveLength(2)
+    expect(result.hasMore).toBe(true)
+    // 游标是本页最后一行的员工编号，不是被切掉的探测行
+    expect(result.nextCursor).toBe('FY-00002')
+    // 不能只断言 gt 被调用过：算了条件却忘了拼进 whereClause 时，固定返回数据的 mock 照样会绿
+    expect(gt).toHaveBeenCalledWith('employee_id', 'FY-00000')
+    expect(chain.where).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'and',
+        args: expect.arrayContaining([{ type: 'gt', col: 'employee_id', val: 'FY-00000' }]),
+      }),
+    )
+    // 排序键只能是 employee_id：updated_at 会被员工每次小程序登录写新值，
+    // 行在页间移位就会造成一行重复 + 一行永久漏掉
+    expect(chain.orderBy).toHaveBeenCalledWith({ type: 'asc', col: 'employee_id' })
+    expect(chain.orderBy).toHaveBeenCalledTimes(1)
+  })
+
+  it('keyset 游标是空串/非字符串 → 抛 INVALID_STATE，且在打库之前就拦住', async () => {
+    mockExportChain([])
+
+    await expect(exportEmployees({}, { limit: 2, cursor: '' as any })).rejects.toThrow('导出分页游标无效')
+    await expect(exportEmployees({}, { limit: 2, cursor: 123 as any })).rejects.toThrow('导出分页游标无效')
+    // 畸形游标不该先白打一次 getSkillTags 的库
+    expect(getSkillTags).not.toHaveBeenCalled()
+    expect(db.select).not.toHaveBeenCalled()
   })
 
   it('超过旧上限也返回全量且不标记截断', async () => {
