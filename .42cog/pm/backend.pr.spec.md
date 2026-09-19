@@ -347,16 +347,23 @@
 > 另：不得把 `sale_cap` 放大成 `sale_amount + waived_amount`——已退出行会吸走本该给同单欠款行的回款
 > （两行各 ¥100 各付 ¥50，A 折抵后回款 ¥50：放大后 A=75/B=75，正确应 A=50/B=100）。
 >
-> ⚠️ **残留已知风险（两条，均非本单引入）**：
-> 1. 若折抵后该订单从 Branch B 切到 Branch A（正向 receipt 变完整）而历史付款没有对应 receipt，
->    折抵行会只拿到新 receipt 的份额、低于新应付 → 违反 D3。订单级覆盖判据
->    （`Σ正向 receipt >= order.received`）挡住了常见路径；彻底根治要行级 receipt 保真。
+> ⚠️ **残留已知风险（三条，均非本单引入）**：
+> 1. 「固定预留」只存在于 Branch B。若折抵后该订单从 Branch B 切到 Branch A（正向 receipt 变完整）
+>    而历史付款没有对应 receipt，折抵行会只拿到新 receipt 的份额、低于新应付 → 违反 D3，
+>    该单此后任何 recalc 都抛 CONFLICT（单子永久不可操作，不是数据损坏）。订单级覆盖判据
+>    （`Σ正向 receipt >= order.received`）挡住了常见路径。**运维禁令：不得为含折抵行
+>    （`waived_amount > 0`）的订单补写/回填 `sale_payment_item_receipts`**——那会把它推过覆盖阈值。
+>    彻底根治要行级 receipt 保真。
 > 2. Branch B 两段瀑布对非预留行是**逐行 `ROUND(…, 2)`**、没有尾差吸收，`Σ行级 received`
 >    可能比订单级实收多几分钱（订单实收 ¥0.02、四行等权 → 每行 ¥0.01、Σ=¥0.04）。
 >    这个分币漂移自 2026-06-08 两段瀑布落地起就在，本单未改它、也不放大它（折抵只把该行当时的
 >    `received` 原样钉住）。**不要用「折抵前断言 Σ钉住值 <= 订单毛实收，否则抛 CONFLICT」来堵**：
 >    历史单若已有这种漂移，合法折抵会被直接拒绝。要修就整体改成累计边界差（STEP 1.6 / STEP 1.75
 >    已是这种写法），那会影响全部订单，属独立重构、需独立基线对跑。
+> 3. Branch B 的 `pend_cap_total = 0 AND sale_cap_total = 0` 兜底分支会把 `untargeted`
+>    在**行级静默丢弃**（订单级 `received` 仍计），`Σ行级 < 订单级` → `0040` 视图出现无归属差额。
+>    这是 overpay（多收）在行级的既有落点（由 `computeItemOverpayRemainders` 单独处理），
+>    折抵把折抵行的两段产能强制为 0 只是扩大了该状态的可达面，未改变行为。
 
 > ⚠️ **关单/删单回滚必须还原金额**：`sale_amount += waived_amount`、`waived_amount` 清零、
 > `pending_received` 还原成折抵前快照（存在**转出行**的 `pending_received` 上）、`total_amount`

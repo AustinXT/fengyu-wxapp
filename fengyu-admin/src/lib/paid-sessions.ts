@@ -154,7 +154,9 @@ export const CONVERSION_IN_ITEMS_RECEIVED_RECALC_SQL = `WITH conversion_order AS
       -- → FLOOR(负 × sc / sa) = -1 → 已消费 0 也满足 0 > -1 → 误抛 D3；② 只把尾行钳到 0
       -- 又会让 Σ 超过 target（0.03 > 0.02），凭空膨胀转入行价值、提前解锁次数并污染营业额分配。
       -- 边界差同时保证「每行非负」与「Σ 精确等于 target」：ROUND 对非负 target 单调不减，
-      -- 相邻差必 >= 0；首尾相消后合计 = ROUND(target, 2) - ROUND(0, 2) = target。
+      -- 相邻差必 >= 0；首尾相消后合计 = ROUND(target, 2) - ROUND(0, 2)。
+      -- 「= target」的前提是 target 本身两位小数 —— 它的三个输入（so.received / refunded_amount /
+      -- sale_items.received、sale_amount）都是 numeric(10,2)，加减后仍是两位，故成立。
       SELECT sale_item_id,
              (
                ROUND(target_received * cumulative_sale_amount / in_total, 2)
@@ -395,7 +397,9 @@ export async function recalcPaidSessionsForOrder(tx: AdminTx, saleOrderId: strin
       -- → FLOOR(负 × sc / sa) = -1 → 已消费 0 也满足 0 > -1 → 误抛 D3；② 只把尾行钳到 0
       -- 又会让 Σ 超过 target（0.03 > 0.02），凭空膨胀转入行价值、提前解锁次数并污染营业额分配。
       -- 边界差同时保证「每行非负」与「Σ 精确等于 target」：ROUND 对非负 target 单调不减，
-      -- 相邻差必 >= 0；首尾相消后合计 = ROUND(target, 2) - ROUND(0, 2) = target。
+      -- 相邻差必 >= 0；首尾相消后合计 = ROUND(target, 2) - ROUND(0, 2)。
+      -- 「= target」的前提是 target 本身两位小数 —— 它的三个输入（so.received / refunded_amount /
+      -- sale_items.received、sale_amount）都是 numeric(10,2)，加减后仍是两位，故成立。
       SELECT sale_item_id,
              (
                ROUND(target_received * cumulative_sale_amount / in_total, 2)
