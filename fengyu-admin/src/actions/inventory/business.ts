@@ -9,6 +9,7 @@ import {
   createItemCompanyReplenishment as createItemCompanyReplenishmentImpl,
   createInventoryConversion as createInventoryConversionImpl,
   createMarketReplenishment as createMarketReplenishmentImpl,
+  createMarketReportSummary as createMarketReportSummaryImpl,
   createMarketStaffPurchase as createMarketStaffPurchaseImpl,
   createSupplyChainStaffPurchase as createSupplyChainStaffPurchaseImpl,
   createPurchaseOrderFromItemCompanyReplenishment as createPurchaseOrderFromItemCompanyReplenishmentImpl,
@@ -28,8 +29,10 @@ import {
   rejectItemCompanyShipmentCancellation as rejectItemCompanyShipmentCancellationImpl,
   rejectReturnForRestock as rejectReturnForRestockImpl,
   requestItemCompanyShipmentCancellation as requestItemCompanyShipmentCancellationImpl,
+  summarizeMarketReplenishmentRequests as summarizeMarketReplenishmentRequestsImpl,
   summarizeStoreReplenishmentRequests as summarizeStoreReplenishmentRequestsImpl,
   type CreateItemCompanyShipmentInput,
+  type CreateMarketReportSummaryInput,
   type CreateItemCompanyReplenishmentInput,
   type CreateCompanyPurchaseOrderInput,
   type CancelSupplyChainPurchaseOrderInput,
@@ -95,6 +98,22 @@ export const createItemCompanyReplenishment = withPermission(
   'inventory:supply_chain_operate',
   async (session, input: CreateItemCompanyReplenishmentInput) =>
     createItemCompanyReplenishmentImpl(session, input),
+)
+
+export const summarizeMarketReplenishmentRequests = withPermission(
+  'inventory:supply_chain_operate',
+  async (session, input: {
+    supplyChainLocationId: string
+    startDate?: string | null
+    endDate?: string | null
+    marketIds?: string[] | null
+  }) => summarizeMarketReplenishmentRequestsImpl(session, input),
+)
+
+export const createMarketReportSummary = withPermission(
+  'inventory:supply_chain_operate',
+  async (session, input: CreateMarketReportSummaryInput) =>
+    createMarketReportSummaryImpl(session, input),
 )
 
 export const createPurchaseOrderFromMarketReplenishment = withPermission(

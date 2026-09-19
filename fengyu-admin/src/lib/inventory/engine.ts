@@ -107,9 +107,10 @@ interface LockedLot {
 const DOC_PREFIX: Record<InventoryDocType, string> = {
   门店报货: 'DBH',
   市场报货: 'MBH',
+  市场报货汇总: 'MHZ',
   品项公司报货需求: 'ZBH',
+  // `供应链采购订单`（旧前缀 PCG）已并入 `采购订单`；存量单号保留 PCG-*，新单一律 CGD-*。
   采购订单: 'CGD',
-  供应链采购订单: 'PCG',
   供应链采购入库: 'GRK',
   品项公司发货: 'GFH',
   市场采购入库: 'MRK',
@@ -168,9 +169,9 @@ function normalizePage(value: number | undefined): number {
 const NO_MOVEMENT_DOC_TYPES = new Set<InventoryDocType>([
   '门店报货',
   '市场报货',
+  '市场报货汇总',
   '品项公司报货需求',
   '采购订单',
-  '供应链采购订单',
 ])
 const RECEIVE_REQUIRED_DOC_TYPES = new Set<InventoryDocType>([
   '品项公司发货',
@@ -225,9 +226,9 @@ const RECEIVE_INBOUND_TYPE: Partial<Record<InventoryDocType, InventoryDocType>> 
 const SPECIALIZED_DOC_TYPES = new Set<InventoryDocType>([
   '门店报货',
   '市场报货',
+  '市场报货汇总',
   '品项公司报货需求',
   '采购订单',
-  '供应链采购订单',
   '供应链采购入库',
   '品项公司发货',
   '市场采购入库',
@@ -2576,7 +2577,7 @@ async function loadItemCompanyRequestFulfillmentProgress(
 async function loadSupplyChainPurchaseReceiptProgress(
   docId: string,
   scoped: string[] | null,
-): Promise<InventoryDocFulfillmentProgress> {
+): Promise<InventoryDocFulfillmentProgress | null> {
   const rows = await db.execute(sql`
     WITH visible_docs AS (${visibleInventoryDocsSql(scoped)}),
     purchase_items AS (
@@ -2585,6 +2586,7 @@ async function loadSupplyChainPurchaseReceiptProgress(
         JOIN inventory_docs purchase_doc ON purchase_doc.id = item.doc_id
         JOIN visible_docs visible_purchase ON visible_purchase.id = purchase_doc.id
        WHERE item.doc_id = ${docId}
+         AND item.market_id IS NULL
     ),
     receipt_totals AS (
       SELECT
@@ -2608,6 +2610,9 @@ async function loadSupplyChainPurchaseReceiptProgress(
       LEFT JOIN receipt_totals receipt_total ON receipt_total.purchase_item_id = purchase_item.item_id
      ORDER BY purchase_item.item_id
   `)
+  // 纯市场行的采购单在上面被 `market_id IS NULL` 过滤成空集，这里返回 null 而不是空进度，
+  // 避免详情页渲染出一张「已收货 0」的空表把市场行误导成待收货。
+  if (rows.length === 0) return null
   return {
     kind: '供应链采购收货',
     items: (rows as unknown as Array<{
@@ -2699,7 +2704,10 @@ async function loadInventoryDocFulfillmentProgress(
   if (docType === '品项公司报货需求') {
     return loadItemCompanyRequestFulfillmentProgress(docId, scoped)
   }
-  if (docType === '供应链采购订单') {
+  // 收敛后只剩 `采购订单` 一种类型，但收货进度只对**供应链行**（market_id IS NULL）有意义：
+  // 市场行走的是品项公司发货，不经供应链采购入库。纯市场单在下面的函数里会得到空 items 并返回 null，
+  // 与收敛前「市场链路采购单无履约进度」的行为一致。
+  if (docType === '采购订单') {
     return loadSupplyChainPurchaseReceiptProgress(docId, scoped)
   }
   if (docType === '品项公司发货' || docType === '分院配货') {

@@ -87,6 +87,10 @@ interface DocItemSnapshot {
   skuName: string
   specName: string | null
   supplier: string | null
+  /** 行级供应商档案关联（#194）；`supplier` 是同一刻冻结的名称快照。 */
+  supplierId: string | null
+  /** 行级市场归属（#194）。NULL = 品项公司自用行，非 NULL = 市场行。 */
+  marketId: string | null
   productSeries: string | null
   batchNo: string
   expiryDate: string | null
@@ -150,6 +154,10 @@ interface InsertDocItemInput extends PriceSnapshot {
   skuName: string
   specName?: string | null
   supplier?: string | null
+  /** 行级供应商档案关联（#194）；不传则留空，`supplier` 名称快照仍单独写入。 */
+  supplierId?: string | null
+  /** 行级市场归属（#194）；采购订单与市场报货汇总按行写入，其它单据留空。 */
+  marketId?: string | null
   productSeries?: string | null
   batchNo?: string | null
   expiryDate?: string | null
@@ -222,6 +230,50 @@ export interface CreateMarketReplenishmentInput {
 export interface MarketPromotionSelectionInput {
   skuId: string
   promotionPlanId: string
+}
+
+/**
+ * 供应链跨市场汇总各市场报货需求的一行（#193）。
+ *
+ * **按 SKU × 市场 成行，不跨市场并成一行**：下游采购订单要按行承载市场归属才能发货，
+ * 也才能把履约回写到正确的市场报货明细。UI 可按 SKU 分组展示合计。
+ */
+export interface MarketReportSummaryLine {
+  skuId: string
+  skuName: string
+  specName: string | null
+  marketId: string
+  marketName: string
+  /** 该 SKU × 市场 的报货总量（含已汇总、已采购的部分）。 */
+  requestedQuantity: number
+  /** 尚未被汇总单占用、也未被采购订单占用的量。 */
+  outstandingQuantity: number
+  /** 来源市场报货明细行 id。 */
+  requestItemIds: number[]
+  /** 商品档案上的供应商，供 UI 提前提示缺绑定；建单时服务端会再校验一次。 */
+  supplierId: string | null
+  supplierName: string | null
+  /** 按来源行数量加权的市场实际单价，用于汇总单与采购订单的金额快照。 */
+  marketActualUnitPrice: number | null
+}
+
+export interface MarketReportSummary {
+  supplyChainLocationId: string
+  items: MarketReportSummaryLine[]
+}
+
+export interface MarketReportSummaryLineInput {
+  skuId: string
+  marketId: string
+  quantity: number
+  sourceReportItemIds: number[]
+}
+
+export interface CreateMarketReportSummaryInput {
+  supplyChainLocationId: string
+  docDate?: string | null
+  remark?: string | null
+  items: MarketReportSummaryLineInput[]
 }
 
 /** 品项公司直接向供应链提出的采购需求，不经过市场报货或门店需求汇总。 */
@@ -986,7 +1038,8 @@ async function insertDocHeader(tx: Tx, input: InsertDocHeaderInput): Promise<voi
 async function insertDocItem(tx: Tx, input: InsertDocItemInput): Promise<number> {
   const [created] = rows<{ id: number }>(await tx.execute(sql`
     INSERT INTO inventory_doc_items (
-      doc_id, lot_id, sku_id, sku_name, spec_name, supplier, product_series,
+      doc_id, lot_id, sku_id, sku_name, spec_name, supplier, supplier_id, market_id,
+      product_series,
       batch_no, expiry_date, is_gift, quantity, stock_snapshot, request_quantity,
       fulfilled_quantity, standard_unit_price, unit_discount, actual_unit_price, amount,
       supply_chain_unit_cost, market_standard_unit_price, market_unit_discount,
@@ -996,7 +1049,8 @@ async function insertDocItem(tx: Tx, input: InsertDocItemInput): Promise<number>
       reason, remark
     ) VALUES (
       ${input.docId}, ${input.lotId ?? null}, ${input.skuId}, ${input.skuName},
-      ${text(input.specName)}, ${text(input.supplier)}, ${text(input.productSeries)},
+      ${text(input.specName)}, ${text(input.supplier)}, ${text(input.supplierId)},
+      ${text(input.marketId)}, ${text(input.productSeries)},
       ${text(input.batchNo) ?? ''}, ${text(input.expiryDate)}, ${Boolean(input.isGift)},
       ${numeric(input.quantity)}, ${numeric(input.stockSnapshot ?? null)},
       ${numeric(input.requestQuantity ?? null)}, ${numeric(input.fulfilledQuantity ?? null)},
@@ -1072,6 +1126,8 @@ function asDocItem(row: Record<string, unknown>): DocItemSnapshot {
     skuName: String(row.sku_name),
     specName: text(row.spec_name as string | null | undefined),
     supplier: text(row.supplier as string | null | undefined),
+    supplierId: text(row.supplier_id as string | null | undefined),
+    marketId: text(row.market_id as string | null | undefined),
     productSeries: text(row.product_series as string | null | undefined),
     batchNo: String(row.batch_no ?? ''),
     expiryDate: text(row.expiry_date as string | null | undefined),
@@ -1135,7 +1191,8 @@ async function docForUpdate(tx: Tx, id: string): Promise<DocHeader> {
 
 async function docItemForUpdate(tx: Tx, id: number, docId?: string): Promise<DocItemSnapshot> {
   const [row] = rows<Record<string, unknown>>(await tx.execute(sql`
-    SELECT id, doc_id, lot_id, sku_id, sku_name, spec_name, supplier, product_series,
+    SELECT id, doc_id, lot_id, sku_id, sku_name, spec_name, supplier, supplier_id, market_id,
+           product_series,
            batch_no, expiry_date, is_gift, quantity, stock_snapshot, request_quantity,
            fulfilled_quantity, standard_unit_price, unit_discount, actual_unit_price, amount,
            supply_chain_unit_cost, market_standard_unit_price, market_unit_discount,
@@ -1770,6 +1827,44 @@ export function allocateMarketReportSourceLinks(
   return links
 }
 
+/**
+ * `ARRAY_AGG(id)` 聚合出来的 bigint[] 在 postgres.js 下没有 parser，可能是 string[] 也可能是
+ * `{1,2,3}` 形态的裸字符串（见 admin CLAUDE.md「原生 SQL 的 bigint 返回 string」）。两种都要认。
+ */
+function parseIdArray(value: number[] | string | null | undefined): number[] {
+  if (Array.isArray(value)) return value.map(Number)
+  return String(value ?? '')
+    .replace(/[{}]/g, '')
+    .split(',')
+    .filter(Boolean)
+    .map(Number)
+}
+
+/**
+ * 多张市场报货汇成一行时的单价口径：按各来源行的未汇总数量加权平均。
+ *
+ * 来源行可能命中不同的报货福利方案因而单价不同，取加权均价能让汇总行的金额
+ * 与各来源行金额之和守恒；全部来源都没有价格快照时返回 null 而不是 0，
+ * 避免把「未知价」写成「免费」。
+ */
+function weightedUnitPrice(
+  sourceItems: DocItemSnapshot[],
+  field: 'marketStandardUnitPrice' | 'marketActualUnitPrice',
+): number | null {
+  let quantity = 0
+  let amount = 0
+  let priced = false
+  for (const item of sourceItems) {
+    const price = item[field]
+    if (price === null) continue
+    priced = true
+    quantity += item.quantity
+    amount += item.quantity * price
+  }
+  if (!priced || quantity <= EPSILON) return null
+  return fixed(amount / quantity)
+}
+
 function refreshInventoryPaths(): void {
   revalidatePath('/inventory')
   revalidatePath('/inventory/docs')
@@ -2215,6 +2310,276 @@ export async function createMarketReplenishment(
   })
   refreshInventoryPaths()
   return { id: result.id }
+}
+
+/**
+ * 汇总各市场尚未被汇总单占用、也未被采购订单占用的市场报货需求（#193）。
+ *
+ * 与市场层的 `summarizeStoreReplenishmentRequests` 同构，两点差别：
+ * 1. 跨市场，因此 **GROUP BY sku_id, market_id** —— 行上必须留住市场，否则下游采购订单
+ *    既无法按市场发货，也无法把履约回写到正确的市场报货明细；
+ * 2. 不计算可承诺量。报多少是市场层结合自身库存做出的决定（已经体现在市场报货单的数量里），
+ *    供应链层只负责把各市场已提出的需求汇总起来向供应商下单。
+ */
+export async function summarizeMarketReplenishmentRequests(
+  session: AuthSession,
+  input: {
+    supplyChainLocationId: string
+    startDate?: string | null
+    endDate?: string | null
+    marketIds?: string[] | null
+  },
+): Promise<MarketReportSummary> {
+  const supplyChainLocationId = required(input.supplyChainLocationId, '供应链库存主体')
+  await syncLocations()
+  return db.transaction(async (tx) => {
+    const supplyChain = await locationForUpdate(tx, supplyChainLocationId)
+    assertType(supplyChain, '总部', '供应链库存主体')
+    assertLocationWritable(session, supplyChain)
+    const startDate = input.startDate ? dateOrToday(input.startDate) : null
+    const endDate = input.endDate ? dateOrToday(input.endDate) : null
+    const marketIds = Array.isArray(input.marketIds) && input.marketIds.length > 0
+      ? input.marketIds
+      : null
+    const result = rows<{
+      sku_id: string
+      market_id: string
+      market_name: string | null
+      sku_name: string
+      spec_name: string | null
+      supplier_id: string | null
+      supplier_name: string | null
+      requested_quantity: string | number
+      outstanding_quantity: string | number
+      market_actual_unit_price: string | number | null
+      request_item_ids: number[] | string
+    }>(await tx.execute(sql`
+      WITH pending AS (
+        SELECT i.id,
+               i.sku_id,
+               d.market_id,
+               i.sku_name,
+               i.spec_name,
+               i.quantity,
+               i.market_actual_unit_price,
+               GREATEST(i.quantity - summarized.quantity - COALESCE(i.fulfilled_quantity, 0), 0)
+                 AS outstanding_quantity
+          FROM inventory_docs d
+          JOIN inventory_doc_items i ON i.doc_id = d.id
+          JOIN LATERAL (
+            SELECT COALESCE(SUM(l.quantity), 0) AS quantity
+              FROM inventory_doc_links l
+              JOIN inventory_docs summary_doc ON summary_doc.id = l.to_doc_id
+             WHERE l.from_item_id = i.id
+               AND l.relation_type = '市场报货汇总'
+               AND summary_doc.status <> '已取消'
+          ) summarized ON true
+         WHERE d.doc_type = '市场报货'
+           AND d.status <> '已取消'
+           AND d.market_id IS NOT NULL
+           AND d.target_org_node_id = ${supplyChain.orgNodeId}
+           AND (${startDate}::date IS NULL OR d.doc_date >= ${startDate}::date)
+           AND (${endDate}::date IS NULL OR d.doc_date <= ${endDate}::date)
+           AND (${marketIds}::text[] IS NULL OR d.market_id = ANY(${marketIds}::text[]))
+      )
+      SELECT p.sku_id,
+             p.market_id,
+             MAX(market.name) AS market_name,
+             MAX(p.sku_name) AS sku_name,
+             MAX(p.spec_name) AS spec_name,
+             MAX(sku.supplier_id) AS supplier_id,
+             MAX(supplier.name) AS supplier_name,
+             SUM(p.quantity) AS requested_quantity,
+             SUM(p.outstanding_quantity) AS outstanding_quantity,
+             SUM(p.outstanding_quantity * COALESCE(p.market_actual_unit_price, 0))
+               / NULLIF(SUM(p.outstanding_quantity), 0) AS market_actual_unit_price,
+             ARRAY_AGG(p.id ORDER BY p.id) AS request_item_ids
+        FROM pending p
+        LEFT JOIN inventory_locations market ON market.org_node_id = p.market_id
+        JOIN inventory_skus sku ON sku.sku_id = p.sku_id
+        LEFT JOIN inventory_suppliers supplier ON supplier.supplier_id = sku.supplier_id
+       WHERE p.outstanding_quantity > 0
+       GROUP BY p.sku_id, p.market_id
+       ORDER BY MAX(p.sku_name), p.sku_id, MAX(market.name)
+    `))
+    return {
+      supplyChainLocationId,
+      items: result.map((row) => ({
+        skuId: row.sku_id,
+        skuName: row.sku_name,
+        specName: text(row.spec_name),
+        marketId: row.market_id,
+        marketName: row.market_name ?? row.market_id,
+        requestedQuantity: Number(row.requested_quantity),
+        outstandingQuantity: Math.max(0, fixed(Number(row.outstanding_quantity))),
+        requestItemIds: parseIdArray(row.request_item_ids),
+        supplierId: text(row.supplier_id),
+        supplierName: text(row.supplier_name),
+        marketActualUnitPrice: numberOrNull(row.market_actual_unit_price),
+      })),
+    }
+  })
+}
+
+/**
+ * 把选中的市场报货明细汇总成一张供应链侧的「市场报货汇总」单（#193）。
+ *
+ * **不回写来源行的 `fulfilled_quantity`**：数量占用仍由采购订单负责（`engine.ts` 里
+ * 市场报货的「已采购」列也是按采购订单血缘算的），两处都回写会让同一批需求被扣两次。
+ * 防止重复汇总靠 `市场报货汇总` 血缘上的已占用量，与门店报货→市场报货那层的做法一致。
+ */
+export async function createMarketReportSummary(
+  session: AuthSession,
+  input: CreateMarketReportSummaryInput,
+): Promise<{ id: string }> {
+  const supplyChainLocationId = required(input.supplyChainLocationId, '供应链库存主体')
+  if (!Array.isArray(input.items) || input.items.length === 0) {
+    throw new ApiError('INVALID_PARAMS', '市场报货汇总至少需要一条明细')
+  }
+  await syncLocations()
+  const id = await db.transaction(async (tx) => {
+    await assertInventoryBusinessWritable(tx)
+    const supplyChain = await locationForUpdate(tx, supplyChainLocationId)
+    assertType(supplyChain, '总部', '供应链库存主体')
+    assertLocationWritable(session, supplyChain)
+    const docDate = dateOrToday(input.docDate)
+    const seenSourceItems = new Set<number>()
+    const seenLines = new Set<string>()
+    const prepared: Array<{
+      sku: SkuSnapshot
+      marketId: string
+      quantity: number
+      sourceItems: DocItemSnapshot[]
+      requestQuantity: number
+      standardUnitPrice: number | null
+      actualUnitPrice: number | null
+    }> = []
+    for (const line of input.items) {
+      const skuId = required(line.skuId, '库存 SKU')
+      const marketId = required(line.marketId, '报货市场')
+      const lineKey = `${skuId}@${marketId}`
+      if (seenLines.has(lineKey)) {
+        throw new ApiError('INVALID_PARAMS', '同一商品在同一市场只能汇总成一行')
+      }
+      seenLines.add(lineKey)
+      const quantity = positive(line.quantity, '汇总数量')
+      if (!Array.isArray(line.sourceReportItemIds) || line.sourceReportItemIds.length === 0) {
+        throw new ApiError('INVALID_PARAMS', '市场报货汇总必须选择来源明细')
+      }
+      const market = await locationForUpdate(tx, marketId)
+      assertType(market, '市场', '报货市场')
+      const sourceItems: DocItemSnapshot[] = []
+      for (const rawItemId of line.sourceReportItemIds) {
+        const sourceItemId = Number(rawItemId)
+        if (!Number.isInteger(sourceItemId) || sourceItemId <= 0 || seenSourceItems.has(sourceItemId)) {
+          throw new ApiError('INVALID_PARAMS', '市场报货明细不能重复引用')
+        }
+        seenSourceItems.add(sourceItemId)
+        const item = await docItemForUpdate(tx, sourceItemId)
+        const header = await docForUpdate(tx, item.docId)
+        if (
+          header.docType !== '市场报货' ||
+          header.status === '已取消' ||
+          header.marketId !== market.orgNodeId ||
+          header.targetOrgNodeId !== supplyChain.orgNodeId ||
+          item.skuId !== skuId
+        ) {
+          throw new ApiError('INVALID_STATE', '所选明细不是该市场可汇总的市场报货')
+        }
+        const alreadySummarized = await linkedQuantity(tx, item.id, '市场报货汇总')
+        const alreadyFulfilled = item.fulfilledQuantity ?? 0
+        const outstandingQuantity = fixed(item.quantity - alreadySummarized - alreadyFulfilled)
+        if (!nearlyGreater(outstandingQuantity, 0)) {
+          throw new ApiError('CONFLICT', '市场报货明细已全部汇总或已采购')
+        }
+        sourceItems.push({ ...item, quantity: outstandingQuantity })
+      }
+      const availableQuantity = fixed(sourceItems.reduce((sum, item) => sum + item.quantity, 0))
+      if (nearlyGreater(quantity, availableQuantity)) {
+        throw new ApiError('CONFLICT', '汇总数量不能超过所选市场报货的未汇总数量')
+      }
+      const sku = await loadSku(tx, skuId, false, false)
+      assertSkuAvailableToMarket(sku, market.orgNodeId)
+      prepared.push({
+        sku,
+        marketId: market.orgNodeId,
+        quantity,
+        sourceItems,
+        requestQuantity: availableQuantity,
+        standardUnitPrice: weightedUnitPrice(sourceItems, 'marketStandardUnitPrice'),
+        actualUnitPrice: weightedUnitPrice(sourceItems, 'marketActualUnitPrice'),
+      })
+    }
+    const docId = await generateDocId(tx, '市场报货汇总')
+    const totalQuantity = fixed(prepared.reduce((sum, line) => sum + line.quantity, 0))
+    const totalAmount = fixed(prepared.reduce(
+      (sum, line) => sum + line.quantity * (line.actualUnitPrice ?? 0),
+      0,
+    ))
+    await insertDocHeader(tx, {
+      id: docId,
+      docType: '市场报货汇总',
+      status: '已完成',
+      // 跨市场汇总没有单一来源市场：source 与 market 都留空，端点只有供应链一侧
+      // （`chk_inventory_docs_org_endpoint` 只要求两个端点至少有一个非空）。
+      sourceOrgNodeId: null,
+      targetOrgNodeId: supplyChainLocationId,
+      marketId: null,
+      docDate,
+      totalQuantity,
+      totalAmount,
+      remark: input.remark,
+      createdBy: session.employeeId,
+      confirmed: true,
+    })
+    for (const line of prepared) {
+      const unitDiscount = line.standardUnitPrice !== null && line.actualUnitPrice !== null
+        ? fixed(line.standardUnitPrice - line.actualUnitPrice)
+        : null
+      const itemId = await insertDocItem(tx, {
+        docId,
+        skuId: line.sku.skuId,
+        skuName: line.sku.productName,
+        specName: line.sku.specName,
+        supplier: line.sku.supplier,
+        supplierId: line.sku.supplierId,
+        marketId: line.marketId,
+        productSeries: line.sku.productSeries,
+        quantity: line.quantity,
+        requestQuantity: line.requestQuantity,
+        fulfilledQuantity: 0,
+        standardUnitPrice: line.standardUnitPrice,
+        unitDiscount,
+        actualUnitPrice: line.actualUnitPrice,
+        amount: fixed(line.quantity * (line.actualUnitPrice ?? 0)),
+        supplyChainUnitCost: line.sku.supplyChainPurchasePrice,
+        marketStandardUnitPrice: line.standardUnitPrice,
+        marketUnitDiscount: unitDiscount,
+        marketActualUnitPrice: line.actualUnitPrice,
+        storeStandardUnitPrice: line.sku.storePurchasePrice,
+        storeUnitDiscount: 0,
+        storeActualUnitPrice: line.sku.storePurchasePrice,
+      })
+      for (const sourceLink of allocateMarketReportSourceLinks(line.sourceItems, line.quantity)) {
+        const sourceItem = line.sourceItems.find((item) => item.id === sourceLink.sourceItemId)
+        if (!sourceItem) throw new ApiError('CONFLICT', '市场报货明细关联丢失，请重试')
+        await insertDocLink(tx, {
+          fromDocId: sourceItem.docId,
+          toDocId: docId,
+          relationType: '市场报货汇总',
+          fromItemId: sourceItem.id,
+          toItemId: itemId,
+          quantity: sourceLink.quantity,
+        })
+      }
+    }
+    return docId
+  })
+  await logOperation(session, 'inventory.market_report_summary.create', 'inventory_docs', id, {
+    supplyChainLocationId,
+  })
+  refreshInventoryPaths()
+  return { id }
 }
 
 /** 采购订单只能从已完成的市场报货提取，不允许以自由 SKU/价格绕过需求和福利快照。 */
@@ -3546,7 +3911,8 @@ export async function createReturnForRestock(
 
 async function allDocItemsForUpdate(tx: Tx, docId: string): Promise<DocItemSnapshot[]> {
   const raw = rows<Record<string, unknown>>(await tx.execute(sql`
-    SELECT id, doc_id, lot_id, sku_id, sku_name, spec_name, supplier, product_series,
+    SELECT id, doc_id, lot_id, sku_id, sku_name, spec_name, supplier, supplier_id, market_id,
+           product_series,
            batch_no, expiry_date, is_gift, quantity, stock_snapshot, request_quantity,
            fulfilled_quantity, standard_unit_price, unit_discount, actual_unit_price, amount,
            supply_chain_unit_cost, market_standard_unit_price, market_unit_discount,

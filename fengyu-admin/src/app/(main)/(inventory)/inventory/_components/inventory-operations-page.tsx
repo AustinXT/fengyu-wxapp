@@ -1757,7 +1757,7 @@ function SupplyChainPurchaseReceiptForm({
     }
   }
 
-  const candidates = docCandidates(workflowDocs, '供应链采购订单', '待收货')
+  const candidates = docCandidates(workflowDocs, '采购订单', '待收货')
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
@@ -1802,7 +1802,7 @@ function SupplyChainPurchaseCancelForm({
   const { docId, doc, loading, selectDocument } = useLoadedDocument()
   const [reason, setReason] = useState('')
   const [saving, setSaving] = useState(false)
-  const candidates = docCandidates(workflowDocs, '供应链采购订单', '待收货')
+  const candidates = docCandidates(workflowDocs, '采购订单', '待收货')
 
   async function submit() {
     if (saving) return
