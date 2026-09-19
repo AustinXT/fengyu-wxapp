@@ -3251,14 +3251,26 @@ describe('#190 单据列表的多类型 / 多状态 / 撤回标记过滤', () =>
    * drizzle 的条件对象里挂着整张表的元数据，`sqlContains(where, '某列名')` 对
    * 任何条件都恒为真（列名来自表定义而非条件本身），假阳性会让「没加条件」的用例照样绿。
    */
-  async function whereOf(filters: Parameters<typeof listInventoryCoreDocs>[0]) {
-    const sink: { where?: unknown } = {}
-    mockDb.select
-      .mockReturnValueOnce(capturingCountSelect([{ count: 0 }], sink) as never)
-      .mockReturnValueOnce(capturingDocsListSelect([], sink) as never)
-    await listInventoryCoreDocs(filters)
-    const compiled = new PgDialect().sqlToQuery(sink.where as Parameters<PgDialect['sqlToQuery']>[0])
+  function compile(where: unknown) {
+    const compiled = new PgDialect().sqlToQuery(where as Parameters<PgDialect['sqlToQuery']>[0])
     return { text: compiled.sql, params: compiled.params.map((param) => String(param)) }
+  }
+
+  async function whereOf(filters: Parameters<typeof listInventoryCoreDocs>[0]) {
+    // COUNT 与 LIST 用**各自的 sink**：共用一个的话后写的会覆盖前一个，
+    // COUNT 漏掉过滤条件（total 把别的业务的单也算进去、分页器长出一堆空页）
+    // 这类漂移就永远测不出来。拿到后逐条断言两份条件必须一致。
+    const countSink: { where?: unknown } = {}
+    const listSink: { where?: unknown } = {}
+    mockDb.select
+      .mockReturnValueOnce(capturingCountSelect([{ count: 0 }], countSink) as never)
+      .mockReturnValueOnce(capturingDocsListSelect([], listSink) as never)
+    await listInventoryCoreDocs(filters)
+    const list = compile(listSink.where)
+    const count = compile(countSink.where)
+    expect(count.text, 'COUNT 与 LIST 的过滤条件必须一致').toBe(list.text)
+    expect(count.params, 'COUNT 与 LIST 的绑定参数必须一致').toEqual(list.params)
+    return list
   }
 
   beforeEach(() => {
@@ -3285,7 +3297,10 @@ describe('#190 单据列表的多类型 / 多状态 / 撤回标记过滤', () =>
   })
 
   it('statuses 收窄：关闭采购只看已取消的采购订单', async () => {
-    const { params } = await whereOf({ docTypes: ['供应链采购订单'], statuses: ['已取消'] })
+    const { text, params } = await whereOf({ docTypes: ['供应链采购订单'], statuses: ['已取消'] })
+    // 断言列名而不只是参数值：'已取消' 误绑到别的文本列（remark、audit_remark…）
+    // 时参数断言照样绿，而过滤完全没生效。
+    expect(text).toContain('"status" in')
     expect(params).toContain('供应链采购订单')
     expect(params).toContain('已取消')
   })

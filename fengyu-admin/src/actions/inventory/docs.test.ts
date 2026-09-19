@@ -20,6 +20,10 @@ vi.mock('@/lib/permissions', () => ({
 }))
 
 import { getSession } from '@/lib/auth'
+import {
+  INVENTORY_OPERATION_DOC_QUERY,
+  INVENTORY_OPERATION_IDS,
+} from '@/lib/inventory/operation-doc-types'
 import { listInventoryOperationDocs } from './docs'
 
 const SESSION = {
@@ -46,11 +50,50 @@ describe('listInventoryOperationDocs 入参闸门', () => {
     })
   })
 
-  it('合法业务 id 按映射表解析出收窄条件', async () => {
+  /*
+   * 全部 24 个业务逐条验证「映射表 → 传给 engine 的实参」这段**接线**。
+   *
+   * 映射表本身有 operation-doc-types.test.ts 守着、engine 的过滤有 engine.test.ts 守着，
+   * 但两端各自正确不代表中间接对了：漏转发 locationType，转换业务就会串到别层级的转换单；
+   * 漏转发 cancellationRequested，撤回业务就会列出全部发货单。两者都不会报错。
+   * 所以这里用**精确对象比较**（不是 objectContaining），多传少传都会红。
+   */
+  it.each(INVENTORY_OPERATION_IDS.map((id) => [id] as const))(
+    '%s 的映射被完整转发给 engine',
+    async (operationId) => {
+      const query = INVENTORY_OPERATION_DOC_QUERY[operationId]
+      await listInventoryOperationDocs({ operationId, page: 3, pageSize: 20 })
+      expect(mockEngine.listInventoryCoreDocs).toHaveBeenCalledWith({
+        docTypes: query.docTypes,
+        statuses: query.statuses,
+        locationType: query.locationType,
+        cancellationRequested: query.cancellationRequested,
+        page: 3,
+        pageSize: 20,
+      })
+    },
+  )
+
+  it('三个带可选条件的业务实参逐字段钉死', async () => {
+    // 上面那条是表驱动的自反比较（映射改了实参跟着改），这里把三组**具体值**写死，
+    // 防止映射与断言一起被改错还全绿。
     await listInventoryOperationDocs({ operationId: 'supply-chain-purchase-cancel', page: 1 })
-    expect(mockEngine.listInventoryCoreDocs).toHaveBeenCalledWith(
-      expect.objectContaining({ docTypes: ['供应链采购订单'], statuses: ['已取消'] }),
-    )
+    expect(mockEngine.listInventoryCoreDocs).toHaveBeenLastCalledWith({
+      docTypes: ['供应链采购订单'], statuses: ['已取消'], locationType: undefined,
+      cancellationRequested: undefined, page: 1, pageSize: undefined,
+    })
+
+    await listInventoryOperationDocs({ operationId: 'market-conversion', page: 1 })
+    expect(mockEngine.listInventoryCoreDocs).toHaveBeenLastCalledWith({
+      docTypes: ['库存转换出库', '库存转换入库'], statuses: undefined, locationType: '市场',
+      cancellationRequested: undefined, page: 1, pageSize: undefined,
+    })
+
+    await listInventoryOperationDocs({ operationId: 'shipment-cancel-approval', page: 1 })
+    expect(mockEngine.listInventoryCoreDocs).toHaveBeenLastCalledWith({
+      docTypes: ['品项公司发货'], statuses: ['已取消'], locationType: undefined,
+      cancellationRequested: true, page: 1, pageSize: undefined,
+    })
   })
 
   it.each(['constructor', '__proto__', 'toString', 'valueOf', 'hasOwnProperty'])(

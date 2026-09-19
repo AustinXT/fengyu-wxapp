@@ -107,11 +107,16 @@ export const INVENTORY_OPERATION_DOC_QUERY: Record<InventoryOperationId, Invento
   'market-return': { docTypes: ['市场退货'] },
   /*
    * 申请撤回不产出新单，只把发货单打上撤回申请标记（status → 待审批）。
-   * 这里**刻意不限状态**，申请人看到的是自己申请过撤回的全部单据，共四种下场：
+   * 这里**刻意不限状态**，列出的是本 scope 内申请过撤回的全部单据，共四种下场：
    * 待审批（还没批）、已取消（批了）、待收货（驳回了）、**已完成（驳回后照常收了货）**。
-   * 最后一种也留着是有意的 —— marker 一旦打上就不会被清（驳回 `business.ts:3875`、
-   * 收货 `:2891` 都不清 reason），申请人查"我申请过哪些撤回"时它就该在。
+   * 最后一种也留着是有意的 —— marker 只在 `requestItemCompanyShipmentCancellation`
+   * 写入，`rejectItemCompanyShipmentCancellation` 与后续 `receivePhysicalShipment`
+   * 都不会清它，查"这边申请过哪些撤回"时它就该在。
    * 这与审批侧只认「已取消」不矛盾：那边表达的是审批产出，这边表达的是申请足迹。
+   *
+   * ⚠️ 是**团队视角**不是个人视角：没有按 `cancellation_requested_by` 过滤，
+   * 同市场其他操作员提的撤回申请也会出现（都在 scope 内，不是越权）。
+   * 要不要收窄到"只看自己提的"已回填 issue 等甲方拍板。
    */
   'shipment-cancel': { docTypes: ['品项公司发货'], cancellationRequested: true },
   'staff-purchase': { docTypes: ['员工购出库'] },

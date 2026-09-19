@@ -84,8 +84,21 @@ describe('业务 → 产出单据类型映射（#190）', () => {
       statuses: ['已取消'],
       cancellationRequested: true,
     })
-    // 钉住上面那句「驳回态会继续演进」的前提：驳回写回待收货、且不清 marker。
+    // 钉住上面那句「驳回态会继续演进」的前提：驳回写回待收货。
     expect(businessSource).toContain(`SET status = '待收货', rejected_by = `)
+  })
+
+  it('撤回 marker 永不被清 —— 两个撤回 Tab 的存在性全靠它', () => {
+    /*
+     * `cancellation_request_reason` 只在申请时写入，此后无论审批通过、驳回、还是
+     * 驳回后照常收货，都不会被清空。这不是可有可无的细节：两个撤回类业务的 Tab
+     * 全靠 `IS NOT NULL` 认单，哪天有人在某条 UPDATE 里顺手把它清了（看起来像是
+     * "清理过期字段"的无害改动），两个 Tab 会**静默变空**，没有任何报错。
+     */
+    expect(businessSource).not.toMatch(/cancellation_request_reason\s*=\s*NULL/i)
+    expect(businessSource).not.toMatch(/cancellation_request_reason\s*=\s*\$?\{?\s*null/i)
+    // 审批通过写的是另一列（cancellation_reason），别把两列搞混后误删 marker 列。
+    expect(businessSource).toMatch(/cancellation_reason\s*=/)
     // 申请方刻意不限状态：驳回只把 status 改回「待收货」而不清 reason，
     // 申请人该看到自己申请的全部结果（待审批 / 已取消 / 被驳回）。
     expect(INVENTORY_OPERATION_DOC_QUERY['shipment-cancel']).toEqual({
@@ -146,14 +159,14 @@ describe('业务 → 产出单据类型映射（#190）', () => {
     expect(INVENTORY_OPERATION_DOC_QUERY['market-return-approval'].docTypes).toEqual(['供应链退货入库'])
   })
 
-  it('14 个自建单业务逐条钉「哪个函数写哪个 docType」，互换任意两条都会转红', () => {
+  it('12 个自建单业务 + 3 个转换业务逐条钉「哪个函数写哪个 docType」，互换任意两条都会转红', () => {
     /*
-     * 存在性断言（下一条用例）挡不住互换：把两个业务的 docType 对调，两个字面量
+     * 存在性断言（下面那条用例）挡不住互换：把两个业务的 docType 对调，两个字面量
      * 都还在 business.ts 里，测试照样全绿，而用户在 Tab 里看到的是另一个业务的单。
-     * 这里对**每个自己调 insertDocHeader 的业务**钉死「函数 → 类型」。
-     * 不在本表的 10 条各有专门断言：收货 ×2（receivePhysicalShipment 实参）、
-     * 退货 ×2（按 source.locationType 分叉）、退货审批 ×2（三元）、
-     * 撤回/关闭 ×3（不建单）、market-report（见下）。
+     * 这里对**每个自己调 insertDocHeader 的业务**钉死「函数 → 类型」：
+     * 12 条各有专属函数 + 3 个转换业务共用 createInventoryConversion（一次写两张单）。
+     * 剩下 9 条各有专门断言：收货 ×2（receivePhysicalShipment 实参）、
+     * 退货 ×2（按 source.locationType 分叉）、退货审批 ×2（三元）、撤回/关闭 ×3（不建单）。
      */
     const owned: Array<[InventoryOperationId, string, string]> = [
       ['store-request', 'createStoreReplenishmentRequest', '门店报货'],
