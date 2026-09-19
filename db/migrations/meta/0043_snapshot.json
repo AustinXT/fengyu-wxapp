@@ -1,5 +1,5 @@
 {
-  "id": "44e92689-04e5-4677-a137-1b86f37c9d13",
+  "id": "d6432803-ab4f-4ab2-81ca-86d956c7758c",
   "prevId": "ce07c1b8-05a7-4d78-a18e-4567d1fe7958",
   "version": "7",
   "dialect": "postgresql",
@@ -2143,14 +2143,14 @@
           "name": "refunded_quantity",
           "type": "integer",
           "primaryKey": false,
-          "notNull": false,
+          "notNull": true,
           "default": 0
         },
         "converted_quantity": {
           "name": "converted_quantity",
           "type": "integer",
           "primaryKey": false,
-          "notNull": false,
+          "notNull": true,
           "default": 0
         },
         "remark": {
@@ -2368,6 +2368,10 @@
         "chk_item_quantity": {
           "name": "chk_item_quantity",
           "value": "\"sale_items\".\"quantity\" > 0"
+        },
+        "chk_sale_item_settled_le_quantity": {
+          "name": "chk_sale_item_settled_le_quantity",
+          "value": "\"sale_items\".\"picked_up_quantity\" IS NULL OR (\"sale_items\".\"picked_up_quantity\" + \"sale_items\".\"refunded_quantity\" + \"sale_items\".\"converted_quantity\") <= \"sale_items\".\"quantity\""
         },
         "chk_item_service_fee": {
           "name": "chk_item_service_fee",

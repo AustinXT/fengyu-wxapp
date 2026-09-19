@@ -8,9 +8,11 @@
  * 按 sale_items 上是否已存在 refunded_quantity / converted_quantity 自动切换模式。
  *
  * ── 迁移前（列尚不存在）────────────────────────────────────────────────
- *   预演 0043 的回填口径，逐行给出 before/after，并报出两类需要人看的行：
- *     · residual < 0        —— 守恒破坏，迁移会 RAISE EXCEPTION 回滚，必须先查清
- *     · residual > 0 且无退款 —— 「无 pickup_records 的历史提货」，会留在 picked_up_quantity
+ *   预演 0043 的回填口径，逐行给出 before/after。**阻断项**（退出码 1）只有两类，
+ *   都是迁移会 RAISE EXCEPTION 的情形：
+ *     · residual < 0                       —— 物理提货 + 已转换 超过旧的已结算合计
+ *     · residual > 0、无退款、但有提货记录  —— 无从解释的结算量
+ *   另有两类只做提示不阻断：「历史提货未留记录」的残差、部署窗口暴露面。
  *   另外算出**部署窗口暴露面**：0043 不向前兼容，迁移已跑而新代码未部署的那段时间里，
  *   旧代码把 picked_up_quantity 读成「已结算」，被拆走的退款/折抵份额会短暂回到可提。
  *   整单退款的订单被派生查询的状态白名单挡住（o.status IN ('已支付','部分支付','已完成')），
@@ -18,7 +20,8 @@
  *
  * ── 迁移后（列已存在）──────────────────────────────────────────────────
  *     · AC4 不变量：有提货记录的行，picked_up_quantity == SUM(pickup_records.pickup_quantity)
- *     · 三列非负，且合计不超过 quantity（迁移刻意未加 CHECK，见 0043 注释）
+ *     · 三列非负，且合计不超过 quantity —— 后者已由 0043 的 CHECK 约束
+ *       chk_sale_item_settled_le_quantity 保证，这里是约束被误 DROP 时的二道保险
  *
  * 任一异常 → 退出码 1，可直接挂在部署脚本前后。
  *
@@ -72,7 +75,8 @@ async function columnsExist(client) {
   return rows[0].n === 2
 }
 
-function report(title, rows, { sample = SAMPLE } = {}) {
+function report(title, rows) {
+  const sample = SAMPLE
   console.log(`\n## ${title}：${rows.length} 行`)
   if (rows.length === 0) return
   console.table(VERBOSE ? rows : rows.slice(0, sample))
@@ -130,16 +134,6 @@ async function dryRun(client) {
 
   report('待回填行（预演 before/after）', plan.map(toRow))
 
-  // 守恒自检：新三列之和必须等于旧 picked_up_quantity
-  const broken = plan.filter((r) => {
-    const n = toRow(r)
-    return n.新_已提货 + n.新_已退款 + n.新_已转换 !== r.old_settled
-  })
-  if (broken.length > 0) {
-    problems += broken.length
-    report('✗ 守恒破坏：新三列之和 ≠ 旧 picked_up_quantity', broken.map(toRow))
-  }
-
   const negative = plan.filter((r) => r.residual < 0)
   if (negative.length > 0) {
     problems += negative.length
@@ -180,10 +174,12 @@ async function dryRun(client) {
      ORDER BY si.sale_item_id
   `)
   if (exposure.length > 0) {
-    problems += exposure.length
-    console.log('\n✗ 部署窗口暴露面不为 0：以下行的订单仍在展示状态白名单内，')
-    console.log('  迁移后若新代码未同批部署，被拆走的份额会短暂回到可提/可退。')
-    console.log('  处理：把迁移与三端部署压到同一个窗口，或先处理完这些行再迁。')
+    // 刻意**不**计入 problems：这不是异常，而是任何有存量提货/退款数据的库的正常状态，
+    // 且处置办法是「压缩部署窗口」——它缩短的是暴露**时间**，不会让这个行数变 0。
+    // 计入 problems 会让 dry-run 在正常库上恒退出 1，挂在部署脚本前直接把部署卡死。
+    console.log('\n⚠ 部署窗口暴露面不为 0：以下行的订单仍在展示状态白名单内，')
+    console.log('  迁移后到三端部署完成之间，被拆走的份额会短暂回到可提/可退。')
+    console.log('  确认迁移与三端部署在同一个窗口内完成即可继续。')
     report('暴露行明细', exposure)
   } else {
     console.log('\n✓ 部署窗口暴露面为 0（picked_up_quantity > 0 的家居行都不在展示状态白名单内）')
@@ -197,13 +193,19 @@ async function verifyAfter(client) {
   console.log('模式：**迁移后守恒校验**（sale_items 已有 refunded_quantity / converted_quantity）\n')
   let problems = 0
 
+  // 与迁移事后断言 2、cron C5 同构：由 pickup_records 聚合驱动，
+  // 「无提货记录的行豁免」由 JOIN 天然表达，也避免同一相关子查询被求值两遍。
   const { rows: mismatch } = await client.query(`
     SELECT si.sale_item_id,
            COALESCE(si.picked_up_quantity, 0) AS picked_up_quantity,
-           ${PICKED_PHYS} AS pickup_records_total
-      FROM sale_items si
-     WHERE EXISTS (SELECT 1 FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id)
-       AND COALESCE(si.picked_up_quantity, 0) <> ${PICKED_PHYS}
+           p.pickup_records_total
+      FROM (
+             SELECT sale_item_id, SUM(pickup_quantity)::int AS pickup_records_total
+               FROM pickup_records
+              GROUP BY sale_item_id
+           ) p
+      JOIN sale_items si ON si.sale_item_id = p.sale_item_id
+     WHERE COALESCE(si.picked_up_quantity, 0) <> p.pickup_records_total
      ORDER BY si.sale_item_id
   `)
   if (mismatch.length > 0) {
@@ -230,7 +232,8 @@ async function verifyAfter(client) {
   if (bad.length > 0) {
     problems += bad.length
     console.log('\n✗ 三列非法：出现负值，或「已结算」合计超过购买件数')
-    console.log('  （迁移 0043 未加 CHECK 约束，这里与 cron STEP 12 的 C5b 同判据）')
+    console.log('  后者本应被 0043 的 CHECK 约束 chk_sale_item_settled_le_quantity 挡住 —— ')
+    console.log('  真的报出来说明约束被 DROP 了，先查约束是否还在。')
     report('非法明细', bad)
   } else {
     console.log('✓ 三列均非负，且合计不超过 quantity')
@@ -268,4 +271,3 @@ if (require.main === module) {
   })
 }
 
-module.exports = { columnsExist, dryRun, verifyAfter }

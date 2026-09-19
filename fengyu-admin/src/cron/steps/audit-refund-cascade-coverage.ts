@@ -295,24 +295,25 @@ export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeC
   //
   // #154 拆列后本列回归物理提货量本义，判据也随之回到列本义、与退款彻底解耦：
   // 不再 JOIN 退款流水，直接校验全量家居行的 picked_up_quantity == SUM(pickup_records)。
+  // 由 pickup_records 聚合驱动而非 sale_items 全表扫：
+  //   · 「只校验有提货记录的行」由 JOIN 天然表达 —— 迁移 0043 对「有 picked_up 但完全没有
+  //     pickup_records、且订单无已支付退款」的历史行刻意保留原值（视为提货未留记录），
+  //     它的事后断言 2 用的也是这条豁免。不豁免的话那类行每天恒告警，而 0043 放弃 CHECK 之后
+  //     C5/C5b 是唯一的运行时守护，恒红等于守护失效。
+  //   · 写成 EXISTS + 相关 SUM 子查询时 PG 不会合并这两个子计划，会对每个候选行各探一遍
+  //     pickup_records；聚合驱动只扫一次。
   const c5 = (await db.execute(sql`
     SELECT s.sale_item_id,
            COALESCE(s.picked_up_quantity, 0) AS current_picked,
-           COALESCE((SELECT SUM(pr.pickup_quantity)
-                       FROM pickup_records pr
-                      WHERE pr.sale_item_id = s.sale_item_id), 0) AS total_picked
-    FROM sale_items s
+           p.total_picked
+    FROM (
+           SELECT sale_item_id, SUM(pickup_quantity) AS total_picked
+             FROM pickup_records
+            GROUP BY sale_item_id
+         ) p
+    JOIN sale_items s ON s.sale_item_id = p.sale_item_id
     WHERE s.product_type = '家居产品'
-      -- 只校验**有提货记录**的行：迁移 0043 对「有 picked_up 但完全没有 pickup_records、
-      -- 且订单无已支付退款」的历史行刻意保留原值（视为提货未留记录），它的事后断言 2 用的
-      -- 也是这条 EXISTS 豁免。此处不豁免的话，那类行会每天恒告警 —— 而 0043 放弃 CHECK 之后
-      -- C5/C5b 是唯一的运行时守护，恒红等于守护失效。
-      AND EXISTS (SELECT 1 FROM pickup_records pr WHERE pr.sale_item_id = s.sale_item_id)
-      AND COALESCE(s.picked_up_quantity, 0) <> COALESCE((
-            SELECT SUM(pr.pickup_quantity)
-              FROM pickup_records pr
-             WHERE pr.sale_item_id = s.sale_item_id
-          ), 0)
+      AND COALESCE(s.picked_up_quantity, 0) <> p.total_picked
     LIMIT ${SAMPLE_LIMIT}
   `)) as Array<Record<string, unknown>>
   if (c5.length > 0) {
@@ -320,9 +321,10 @@ export async function auditRefundCascadeCoverage(db: Db): Promise<RefundCascadeC
   }
 
   // ── C5b: 「已结算」不得超过购买件数（#154）──
-  // 各写入点的 UPDATE 都带了 `picked_up + refunded + converted + 本次 <= quantity` 守卫，
-  // 本项是它们的运行时镜像：迁移 0043 刻意没加 CHECK 约束（ADD CONSTRAINT 会对 12.6 万行取
-  // ACCESS EXCLUSIVE），这条巡检就是那个约束的替身。
+  // 这条不变量的**权威表达**是迁移 0043 的 CHECK 约束 chk_sale_item_settled_le_quantity，
+  // 它不可能被绕过；各写入点 UPDATE 的 WHERE 守卫负责把冲突转成友好的 CONFLICT 而不是 23514。
+  // 本项是二道保险：约束若被误 DROP（运维手滑、pg_restore 漏建），这里仍能次日发现。
+  // ⚠ 谓词是表达式、用不上索引，本项**设计为全表扫**（日频、百毫秒级，可接受）。
   const c5b = (await db.execute(sql`
     SELECT s.sale_item_id, s.quantity,
            COALESCE(s.picked_up_quantity, 0) AS picked_up_quantity,

@@ -1272,7 +1272,7 @@ export const approveRefund = withPermission(
             picked_up_quantity: Number(r.picked_up_quantity ?? 0),
             refunded_quantity: Number(r.refunded_quantity ?? 0),
             converted_quantity: Number(r.converted_quantity ?? 0),
-            picked_quantity: c ? Number(r.picked_up_quantity ?? 0) : null,
+            picked_quantity: Number(r.picked_up_quantity ?? 0),
             converted_amount: c ? (c.converted_amount as string) : null,
             sales_category: null,
             service_fee: null,

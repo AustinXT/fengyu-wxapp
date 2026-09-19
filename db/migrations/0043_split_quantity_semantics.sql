@@ -1,5 +1,6 @@
-ALTER TABLE "sale_items" ADD COLUMN "refunded_quantity" integer DEFAULT 0;--> statement-breakpoint
-ALTER TABLE "sale_items" ADD COLUMN "converted_quantity" integer DEFAULT 0;--> statement-breakpoint
+ALTER TABLE "sale_items" ADD COLUMN "refunded_quantity" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "sale_items" ADD COLUMN "converted_quantity" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "sale_items" ADD CONSTRAINT "chk_sale_item_settled_le_quantity" CHECK ("sale_items"."picked_up_quantity" IS NULL OR ("sale_items"."picked_up_quantity" + "sale_items"."refunded_quantity" + "sale_items"."converted_quantity") <= "sale_items"."quantity");--> statement-breakpoint
 -- ↑ 以上为 drizzle-kit 生成；以下为手写回填（db/CLAUDE.md 允许的「末尾追加数据回填」例外）。
 --
 -- ⚠ 执行方式：**必须** `npm --prefix db run db:migrate`（drizzle migrator 把整个文件包进单事务，
@@ -40,10 +41,12 @@ ALTER TABLE "sale_items" ADD COLUMN "converted_quantity" integer DEFAULT 0;--> s
 -- （pickup_records 两库皆空、家居转出行尚无数据），即全量归入 refunded_quantity，0 行守恒破坏。
 -- 规则仍按通用式写，以覆盖 PR 合入到实际部署之间可能新增的数据。
 --
--- 未加 CHECK (picked_up + refunded + converted <= quantity)：ADD CONSTRAINT 会对 sale_items
--- （prod 12.6 万行）取 ACCESS EXCLUSIVE 并持有到事务提交，而本文件不允许在 drizzle 生成段之前
--- 插入 SET LOCAL lock_timeout。该不变量改由两道机制守护：各写入点 UPDATE 的 WHERE 守卫
--- （不满足则 rowCount=0 抛 CONFLICT），以及 cron STEP 12 的 C5b settled_quantity_overflow 巡检。
+-- 「已结算 <= 购买件数」由上方 drizzle 生成段的 chk_sale_item_settled_le_quantity 约束兜底。
+-- 曾以「ADD CONSTRAINT 取 ACCESS EXCLUSIVE 太贵」为由不加，那个理由不成立：这把锁在本文件
+-- 第一条 ADD COLUMN 就已取到，drizzle 又把整批迁移包进单事务持有到提交，追加约束的边际锁成本是 0。
+-- 约束在**回填之前**生效，此时 refunded/converted 恒为 0、picked_up <= quantity（2026-09-18 实测
+-- 两库 0 行越界），故必然通过；回填是等量搬运、三列之和不变，回填后同样成立。
+-- 写入侧的 WHERE 守卫与 cron STEP 12 的 C5b 是它的二道保险（约束被 DROP 时仍能发现）。
 --
 -- 前置守恒断言：residual < 0 说明「物理提货 + 已转换」已超过旧的已结算合计，属于回填口径无法
 -- 安全消化的数据异常。必须在 UPDATE 之前拦截——放到事后查会被 CASE 的 ELSE 0 分支吞掉。
@@ -79,6 +82,20 @@ BEGIN
                 AND sop.status = '已支付'
            ) AS has_paid_refund
       FROM sale_items si
+     -- 与下方回填的 WHERE 字面同口径：被它排除的行必然 picked_up=0、无提货记录、无未关闭转出行，
+     -- 于是 residual 恒为 0，不可能命中 broken。不带这个 WHERE 就要对全表 12.6 万行各跑 4 个
+     -- 相关子计划，而整段都在 ALTER 的 ACCESS EXCLUSIVE 窗口内。
+     WHERE COALESCE(si.picked_up_quantity, 0) <> 0
+        OR EXISTS (SELECT 1 FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id)
+        OR EXISTS (
+             SELECT 1
+               FROM sale_items out_item
+               JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
+              WHERE out_item.ref_sale_item_id = si.sale_item_id
+                AND out_item.item_direction = '转出'
+                AND out_item.product_type = '家居产品'
+                AND conv_order.status <> '已关闭'
+           )
   )
   , broken AS (
     SELECT sale_item_id FROM src
@@ -161,17 +178,20 @@ DECLARE
   bad_negative integer;
   bad_overflow integer;
 BEGIN
-  SELECT COUNT(*) INTO bad_negative
-    FROM sale_items
-   WHERE COALESCE(picked_up_quantity, 0) < 0
-      OR COALESCE(refunded_quantity, 0) < 0
-      OR COALESCE(converted_quantity, 0) < 0;
-
-  SELECT COUNT(*) INTO bad_overflow
-    FROM sale_items
-   WHERE COALESCE(picked_up_quantity, 0)
-       + COALESCE(refunded_quantity, 0)
-       + COALESCE(converted_quantity, 0) > quantity;
+  -- 两个判据合成一趟扫：谓词都用不上索引，分成两条就是两次 12.6 万行 seq scan，
+  -- 且同样落在 ALTER 的锁窗口内。
+  SELECT COUNT(*) FILTER (
+           WHERE COALESCE(picked_up_quantity, 0) < 0
+              OR COALESCE(refunded_quantity, 0) < 0
+              OR COALESCE(converted_quantity, 0) < 0
+         ),
+         COUNT(*) FILTER (
+           WHERE COALESCE(picked_up_quantity, 0)
+               + COALESCE(refunded_quantity, 0)
+               + COALESCE(converted_quantity, 0) > quantity
+         )
+    INTO bad_negative, bad_overflow
+    FROM sale_items;
 
   IF bad_negative > 0 THEN
     RAISE EXCEPTION '#154 回填后守恒破坏：% 行数量列为负', bad_negative;
@@ -187,14 +207,17 @@ DO $$
 DECLARE
   mismatch integer;
 BEGIN
+  -- 由 pickup_records 聚合驱动：需要校验的行数就是它的 distinct sale_item_id 个数，
+  -- 远小于 sale_items 全表；「无 pickup_records 的行豁免」也由 JOIN 天然表达，
+  -- 不再需要 EXISTS + SUM 两个相关子查询（PG 不会把它们合并，会各跑一遍）。
   SELECT COUNT(*) INTO mismatch
-    FROM sale_items si
-   WHERE EXISTS (SELECT 1 FROM pickup_records pr WHERE pr.sale_item_id = si.sale_item_id)
-     AND COALESCE(si.picked_up_quantity, 0) <> COALESCE((
-           SELECT SUM(pr.pickup_quantity)::int
-             FROM pickup_records pr
-            WHERE pr.sale_item_id = si.sale_item_id
-         ), 0);
+    FROM (
+           SELECT sale_item_id, SUM(pickup_quantity)::int AS total_picked
+             FROM pickup_records
+            GROUP BY sale_item_id
+         ) p
+    JOIN sale_items si ON si.sale_item_id = p.sale_item_id
+   WHERE COALESCE(si.picked_up_quantity, 0) <> p.total_picked;
 
   IF mismatch > 0 THEN
     RAISE EXCEPTION '#154 回填后 picked_up_quantity 与 pickup_records 不一致：% 行', mismatch;

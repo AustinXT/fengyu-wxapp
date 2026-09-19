@@ -7,6 +7,8 @@
  *
  * 本套件**直接读取 `db/migrations/0043_split_quantity_semantics.sql` 的正文**执行，
  * 不复制一份 SQL 到测试里：复制副本会随迁移改动漂移，而漂移了测试照样绿。
+ * drizzle-kit 生成段（两条 ADD COLUMN + 一条 ADD CONSTRAINT）由 `db:migrate` 建库时已执行，
+ * 重放时跳过。
  *
  * 运行（需要一个已 apply 全部 migration 的库；绝不要指向业务库）：
  *
@@ -46,14 +48,18 @@ if (!URL) {
 }
 
 /**
- * 取迁移正文里的回填段：跳过 drizzle-kit 生成的两条 ALTER TABLE（库里已经有列了），
+ * 取迁移正文里的回填段：跳过 drizzle-kit 生成段（建库时已执行，重放会撞 42P07/42701），
  * 其余按 `--> statement-breakpoint` 切开逐条执行。
  */
 function backfillStatements() {
   const raw = fs.readFileSync(MIGRATION, 'utf8')
   const parts = raw.split('--> statement-breakpoint').map((s) => s.trim()).filter(Boolean)
-  const kept = parts.filter((s) => !/^ALTER TABLE "sale_items" ADD COLUMN/i.test(s))
-  assert.equal(parts.length - kept.length, 2, '迁移里的 ADD COLUMN 条数变了，本测试的切分假设需同步更新')
+  const kept = parts.filter((s) => !/^ALTER TABLE "sale_items"/i.test(s))
+  assert.equal(
+    parts.length - kept.length,
+    3,
+    'drizzle 生成段的语句条数变了（预期 2 条 ADD COLUMN + 1 条 ADD CONSTRAINT），本测试的切分假设需同步更新',
+  )
   assert.ok(kept.length >= 4, '回填段应含：前置断言 + UPDATE + 两个事后断言')
   return kept
 }
@@ -286,6 +292,26 @@ function runSuite() {
 
     // 事务已回滚
     assert.deepEqual(await readSplit(item), { picked: 5, refunded: 0, converted: 0 })
+  })
+
+  // 约束不是只在迁移时校验一次，而是对**后续每一次写入**生效 —— 这正是它比
+  // 「8 份手抄的 WHERE 守卫 + 日频巡检」更强的地方：守卫可能漏写一处，约束不可能被绕过。
+  test('chk_sale_item_settled_le_quantity 拦住任何让三列之和超过 quantity 的写入', async () => {
+    await cleanupFixtures()
+    const order = `${P}K1`
+    const item = `${P}K1-01`
+    await seedOrder(order)
+    await seedHomeItem(item, order, { quantity: 3, pickedUp: 2 })
+
+    // 2 + 2 = 4 > 3
+    await assert.rejects(
+      q(`UPDATE sale_items SET refunded_quantity = 2 WHERE sale_item_id = $1`, [item]),
+      (e) => e.code === '23514' && /chk_sale_item_settled_le_quantity/.test(e.message),
+      '越界写入必须被 CHECK 约束拒绝（23514）',
+    )
+    // 边界：正好等于 quantity 应当放行
+    await q(`UPDATE sale_items SET refunded_quantity = 1 WHERE sale_item_id = $1`, [item])
+    assert.deepEqual(await readSplit(item), { picked: 2, refunded: 1, converted: 0 })
   })
 
   test('事后断言 2：有提货记录的行，picked_up_quantity 必须等于 pickup_records 合计', async () => {

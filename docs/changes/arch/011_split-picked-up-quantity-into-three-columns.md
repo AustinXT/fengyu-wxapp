@@ -39,15 +39,24 @@
 → 顾客可以再提 3 盒，而这 3 盒的价值已折进另一张转换单。
 **没有 `refunded_quantity` 就无法在不新增列的前提下精确修**——「已退款量」没有列可查。
 
-### 刻意不加 CHECK 约束
+### 三列 NOT NULL + CHECK 约束
 
-未加 `CHECK (picked_up + refunded + converted <= quantity)`：`ADD CONSTRAINT` 会对
-`sale_items`（prod 12.6 万行）取 ACCESS EXCLUSIVE 并持有到事务提交，而 migration 文件
-不允许在 drizzle 生成段之前插 `SET LOCAL lock_timeout`（`db/CLAUDE.md` 只允许**末尾追加**）。
-该不变量改由两道机制守护：
+两个新列声明为 `integer NOT NULL DEFAULT 0`：它们是全新列、无历史 NULL，没有理由跟着
+`picked_up_quantity`（历史 nullable）一起可空——可空会让每个读取点都背一个 `COALESCE`。
+PG 11+ 起 `ADD COLUMN NOT NULL DEFAULT <常量>` 是纯 catalog 操作，不重写表、不延长锁窗口。
 
-1. 各写入点 UPDATE 的 WHERE 守卫 —— 不满足则 `rowCount = 0` 抛 `CONFLICT`（写时即拦）
-2. cron STEP 12 的 `C5b settled_quantity_overflow` 巡检（次日兜底）
+`CHECK (picked_up + refunded + converted <= quantity)` 作为该不变量的**唯一权威表达**：
+写入点的 WHERE 守卫有 8 份手抄，漏一处就是资损；约束不可能被绕过。
+
+> 本轮 pr-ready 对抗评审推翻了初版「不加约束」的理由。原理由是「`ADD CONSTRAINT` 会取
+> ACCESS EXCLUSIVE」——但那把锁在本迁移第一条 `ADD COLUMN` 就已取到，且 drizzle 把整批迁移
+> 包进单事务持有到提交，**追加约束的边际锁成本是 0**；全表扫描的代价也已被事后断言付过一遍。
+
+约束在**回填之前**生效：此时 `refunded/converted` 恒为 0、`picked_up <= quantity`
+（2026-09-18 实测两库 0 行越界），必然通过；回填是等量搬运、三列之和不变，回填后同样成立。
+
+写入点的 WHERE 守卫仍保留——它负责把冲突转成友好的 `CONFLICT` 而不是裸 23514；
+cron STEP 12 的 `C5b` 降级为二道保险（约束被误 DROP 时仍能次日发现）。
 
 ## migration 编号：刻意跳号到 0043
 
@@ -131,4 +140,20 @@ payNotify 不涉及家居数量（已验证：11 个 .js 中 `quantity` 出现 0
 
 新判据回到列本义并与退款彻底解耦：`picked_up_quantity == SUM(pickup_records)`
 （豁免「无 pickup_records 的历史提货」行，与迁移口径一致），并新增
-`C5b settled_quantity_overflow` 作为未加 CHECK 约束的替身。
+`C5b settled_quantity_overflow` 作为 CHECK 约束被误 DROP 时的二道保险。
+
+## 后续项（本 PR 未做）
+
+pr-ready 的 altitude 评审指出：拆列把「已结算」变成了一个**在四端字面重复约 49 次**的派生式，
+漏抄一项就是资损——而这正是 #154 要修的那类 bug 的成因。彻底的解法是加一个生成列：
+
+```sql
+settled_quantity int GENERATED ALWAYS AS (picked_up_quantity + refunded_quantity + converted_quantity) STORED
+```
+
+四端一律直读 `si.settled_quantity`，守卫变成 `settled_quantity + N <= quantity`；定义落在 DB 而非任何一端，
+不违反「禁止跨端共享代码目录」。本表已有先例（`cash_received` 就是生成列）。
+
+**本 PR 没做**，理由是：`STORED` 生成列要重写 12.6 万行，改变了本次迁移的风险剖面；
+且要重排四端约 49 处 + 全部 snapshot 字面量守护，这个规模的返工放在双谱系评审之前不划算。
+CHECK 约束已经把「漏抄一项」从资损降级为写入被拒，风险面大幅收窄。建议另开 issue 跟进。
