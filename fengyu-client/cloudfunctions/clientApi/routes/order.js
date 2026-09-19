@@ -2624,18 +2624,12 @@ function mapHomeProductRow(row) {
 async function homeProducts(ctx) {
   const { userId } = ctx.auth
   const rows = await pg.query(
-    `WITH pickup_totals AS (
-       SELECT sale_item_id, SUM(pickup_quantity)::int AS picked_quantity
-         FROM pickup_records
-        GROUP BY sale_item_id
-     ), conversion_totals AS (
-       -- 2026-09-14 #125：家居转出数量并入 picked_up_quantity（"已结算"），这里单独聚合出来，
-       -- 避免把"已转换"算进"已退款"。只有「已关闭」完成过 rollback（数量已退回），故只排除它；
+    `WITH conversion_totals AS (
+       -- #154 拆列后件数直读 sale_items.converted_quantity，这里只剩**金额**：折抵额度按金额结算，
+       -- 不能由「已转换件数 × 单价」推算（折 4 件可能带走 ¥450 而非 ¥400）。
+       -- 只有「已关闭」完成过 rollback（数量已退回），故只排除它；
        -- 其余状态（含"支付失败"）扣减仍然生效，必须计入已转换。删除订单的转出行已随主单消失。
        SELECT out_item.ref_sale_item_id AS sale_item_id,
-              SUM(out_item.quantity)::int AS converted_quantity,
-              -- #145/#153：折抵额度按金额结算，件数用于展示「已转换 N 件」，
-              -- 金额用于算「剩余已付」（折 4 件可能带走 ¥450 而非 ¥400，用件数推算会失真）。
               SUM(GREATEST(0, -out_item.received::numeric)) AS converted_amount
          FROM sale_items out_item
          JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id
@@ -2651,26 +2645,22 @@ async function homeProducts(ctx) {
               COALESCE(si.product_name, '家居产品') AS product_name,
               COALESCE(ps.unit, '盒') AS unit,
               si.quantity::int AS purchased_quantity,
-              LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS settled_quantity,
-              LEAST(
-                LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0))),
-                GREATEST(0, COALESCE(pt.picked_quantity, 0))
-              )::int AS picked_quantity,
-              LEAST(
-                LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0))),
-                GREATEST(0, COALESCE(ct.converted_quantity, 0))
-              )::int AS converted_quantity,
+              -- #154：三语义各有独立列，「已结算」回归派生量 = 已提货 + 已退款 + 已转换。
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))::int AS settled_quantity,
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))::int AS picked_quantity,
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.refunded_quantity, 0)))::int AS refunded_quantity,
+              LEAST(si.quantity, GREATEST(0, COALESCE(si.converted_quantity, 0)))::int AS converted_quantity,
               -- #145/#153：行级可提件数 = min(物理未结算, floor(剩余已付 / 单价))，与折抵额度同一口径。
               -- 剩余已付 = 行实收 − 已提货金额 − 已转走金额；退款不在此处扣（received 已扣过）。
               -- 必须按金额算而非「已付件数 − 已提 − 已折抵件数」：折抵金额含余数时两者不等，
               -- 折 4 件带走 ¥450 后再回款 ¥50，按件数会多放出 1 件（累计兑现超实收）。
               CASE
                 WHEN o.sale_order_type = '寄存单' OR si.sale_amount <= 0
-                  THEN GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0))))
+                  THEN GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0))))
                 ELSE LEAST(
-                  GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0)))),
+                  GREATEST(0, si.quantity - LEAST(si.quantity, GREATEST(0, COALESCE(si.picked_up_quantity, 0) + COALESCE(si.refunded_quantity, 0) + COALESCE(si.converted_quantity, 0)))),
                   GREATEST(0, FLOOR((GREATEST(0, si.received::numeric)
-                    - GREATEST(0, COALESCE(pt.picked_quantity, 0)) * si.unit_real_price::numeric
+                    - GREATEST(0, COALESCE(si.picked_up_quantity, 0)) * si.unit_real_price::numeric
                     - COALESCE(ct.converted_amount, 0)) / NULLIF(si.unit_real_price::numeric, 0)))::int
                 )
               END AS row_pending_pickup,
@@ -2701,7 +2691,6 @@ async function homeProducts(ctx) {
          JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
          LEFT JOIN stores s ON s.store_id = o.store_id
          LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
-         LEFT JOIN pickup_totals pt ON pt.sale_item_id = si.sale_item_id
          LEFT JOIN conversion_totals ct ON ct.sale_item_id = si.sale_item_id
         WHERE o.client_user_id = $1
           AND o.status IN ('已支付', '部分支付', '已完成')
@@ -2724,6 +2713,7 @@ async function homeProducts(ctx) {
               SUM(si.purchased_quantity)::int AS purchased_quantity,
               SUM(si.settled_quantity)::int AS settled_quantity,
               SUM(si.picked_quantity)::int AS picked_quantity,
+              SUM(si.refunded_quantity)::int AS refunded_quantity,
               SUM(si.converted_quantity)::int AS converted_quantity,
               SUM(si.row_pending_pickup)::int AS pending_pickup_quantity,
               SUM(si.paid_quantity)::int AS paid_quantity,
@@ -2738,7 +2728,7 @@ async function homeProducts(ctx) {
       GROUP BY sale_item_group_id
      ), home_product_balances AS (
        SELECT *,
-              GREATEST(0, settled_quantity - picked_quantity - converted_quantity)::int AS refunded_quantity,
+              -- #154 前「已退款」只能由 settled − 已提货 − 已转换 倒推；拆列后直读独立列。
               (purchased_quantity - settled_quantity)::int AS remaining_quantity,
               -- 寄存单的 sale_amount 只是原价快照、received 恒为历史值，两者相减不是欠款
               -- （寄存的货本就属于顾客）。金额列一律留空，与导出口径一致。

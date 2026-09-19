@@ -106,6 +106,9 @@ function computeCardRemainingRemainder(item: {
     sku_id: null,
     product_name: null,
     product_type: '疗程卡',
+    // 疗程卡不走家居数量链路，两列恒 0（#154 起 RefundSourceItem 要求显式给出）
+    refunded_quantity: 0,
+    converted_quantity: 0,
     session_count: item.sessionCount,
     remaining_sessions: item.remainingSessions,
     paid_sessions: item.paidSessions,
@@ -800,8 +803,10 @@ export const getCustomerHeldCards = withPermission(
       paidSessions: saleItems.paidSessions,
       quantity: saleItems.quantity,
       pickedUpQuantity: saleItems.pickedUpQuantity,
-      // #145/#153 家居折抵额度：物理提货合计与已转走金额（与 staff LATERAL 同源）
-      homePickedQuantity: sql`COALESCE((SELECT SUM(pr.pickup_quantity)::int FROM pickup_records pr WHERE pr.sale_item_id = ${saleItems.saleItemId}), 0)`,
+      refundedQuantity: saleItems.refundedQuantity,
+      convertedQuantity: saleItems.convertedQuantity,
+      // #145/#153 家居折抵额度的**金额**项（件数自 #154 起直读上面三列，不再聚合 pickup_records）。
+      // 金额仍须从转出行 received 聚合：折 4 件可能带走 ¥450 而非 ¥400（与 staff LATERAL 同源）。
       homeConvertedAmount: sql`COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)`,
       unitPrice: saleItems.unitPrice,
       unitRealPrice: saleItems.unitRealPrice,
@@ -839,13 +844,17 @@ export const getCustomerHeldCards = withPermission(
             // #145/#153 收紧：家居折抵以「剩余已付金额」为基准（= 行实收 − 已提货金额 − 已转走金额），
             // 与 staff customerHeldCards 的 hp LATERAL 字面同源。旧口径按未提货件数全额折抵，
             // 会把未兑现价值洗成全额可提。
+            // #154：未结算件数必须减「已结算」三列之和。只减 picked_up 会让整行退款/整行折抵的
+            // 寄存单与 0 元赠品家居行重新通过本闸门（那两类走上面的分支，没有金额兜底），
+            // 在转换候选列表里复活——staff 同名守卫 routes/order.js 的 hp LATERAL 已改三列，
+            // 漏改这一处就是两端分叉。「已提货金额」的件数因子同理直读 picked_up_quantity 列。
             sql`(
               CASE WHEN ${saleOrders.saleOrderType} = '寄存单' OR ${saleItems.saleAmount} <= 0
-                   THEN GREATEST(0, ${saleItems.quantity} - COALESCE(${saleItems.pickedUpQuantity}, 0))
+                   THEN GREATEST(0, ${saleItems.quantity} - (COALESCE(${saleItems.pickedUpQuantity}, 0) + COALESCE(${saleItems.refundedQuantity}, 0) + COALESCE(${saleItems.convertedQuantity}, 0)))
                    ELSE LEAST(
-                     GREATEST(0, ${saleItems.quantity} - COALESCE(${saleItems.pickedUpQuantity}, 0)),
+                     GREATEST(0, ${saleItems.quantity} - (COALESCE(${saleItems.pickedUpQuantity}, 0) + COALESCE(${saleItems.refundedQuantity}, 0) + COALESCE(${saleItems.convertedQuantity}, 0))),
                      GREATEST(0, FLOOR(GREATEST(0, ${saleItems.received}::numeric
-                       - COALESCE((SELECT SUM(pr.pickup_quantity) FROM pickup_records pr WHERE pr.sale_item_id = ${saleItems.saleItemId}), 0) * ${saleItems.unitRealPrice}::numeric
+                       - COALESCE(${saleItems.pickedUpQuantity}, 0) * ${saleItems.unitRealPrice}::numeric
                        - COALESCE((SELECT SUM(GREATEST(0, -out_item.received::numeric)) FROM sale_items out_item JOIN sale_orders conv_order ON conv_order.sale_order_id = out_item.sale_order_id WHERE out_item.ref_sale_item_id = ${saleItems.saleItemId} AND out_item.item_direction = '转出' AND out_item.product_type = '家居产品' AND conv_order.status <> '已关闭'), 0)
                      ) / NULLIF(${saleItems.unitRealPrice}::numeric, 0)))::int
                    )
@@ -856,7 +865,8 @@ export const getCustomerHeldCards = withPermission(
         // 在途退款冻结：原订单存在 '待审批' 退款时排除整单的卡（与 staff customerHeldCards 对齐）
         sql`NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '待审批')`,
         // 审批后隐藏已退完的卡：仅当订单存在已审批退款时按 paid_sessions 有效余量判定（不影响无退款的分期卡）
-        // 家居产品不适用：已退数量由 refund-cascade 并入 picked_up_quantity，未提货数量已天然扣除
+        // 家居产品不适用：已退数量落 refunded_quantity（#154 拆列前并入 picked_up_quantity），
+        // 而未结算件数 = quantity − 已提货 − 已退款 − 已转换，天然已扣除
         sql`(${saleItems.productType} <> '疗程卡' OR NOT EXISTS (SELECT 1 FROM sale_order_payments sop WHERE sop.sale_order_id = ${saleItems.saleOrderId} AND sop.change_type = '退款' AND sop.status = '已支付') OR ${saleItems.paidSessions} IS NULL OR ${saleItems.paidSessions} > (${saleItems.sessionCount} - ${saleItems.remainingSessions}))`,
       ),
     )
@@ -870,7 +880,8 @@ export const getCustomerHeldCards = withPermission(
       saleOrderType: r.saleOrderType,
       quantity: r.quantity ?? 0,
       pickedUpQuantity: r.pickedUpQuantity ?? 0,
-      pickedQuantity: Number(r.homePickedQuantity ?? 0),
+      refundedQuantity: r.refundedQuantity ?? 0,
+      convertedQuantity: r.convertedQuantity ?? 0,
       convertedAmount: r.homeConvertedAmount as string | number | null,
       saleAmount: r.saleAmount,
       received: r.received,

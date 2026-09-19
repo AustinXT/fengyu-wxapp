@@ -10,7 +10,7 @@ export interface CustomerHomeProduct {
   paidQuantity: number
   pickedQuantity: number
   refundedQuantity: number
-  /** 已通过转换单折抵转走的数量（2026-09-14 #125，与已退款分列，二者同源于 picked_up_quantity） */
+  /** 已通过转换单折抵转走的数量（2026-09-14 #125；#154 起直读 sale_items.converted_quantity 独立列） */
   convertedQuantity: number
   remainingQuantity: number
   pendingPickupQuantity: number
@@ -68,9 +68,12 @@ export function deriveHomeProductStatus(
 export function homeDeductible(row: {
   saleOrderType: string | null
   quantity: number
+  /** 已**物理提货**件数（#154 拆列后的 picked_up_quantity；拆列前本参数是「已结算」合计） */
   pickedUpQuantity: number | null
-  /** 该行 pickup_records 的物理提货合计（不含退款、不含折抵） */
-  pickedQuantity: number | null
+  /** 已退款结算件数（#154 新列） */
+  refundedQuantity: number | null
+  /** 已转换折抵件数（#154 新列） */
+  convertedQuantity: number | null
   /** 该行已被折抵转走的金额合计（转出行 received 取正，排除已关闭的转换单） */
   convertedAmount: string | number | null
   saleAmount: string | number | null
@@ -78,8 +81,12 @@ export function homeDeductible(row: {
   unitRealPrice: string | number | null
 }): { quantity: number; amount: number } {
   const qty = Number(row.quantity ?? 0)
-  const settled = Math.max(0, Number(row.pickedUpQuantity ?? 0))
-  const picked = Math.max(0, Number(row.pickedQuantity ?? 0))
+  // #154：拆列前「已结算」与「已提货」共用一列，需要调用方额外从 pickup_records 聚合出
+  // pickedQuantity 才能把两者分开；拆列后两者各有独立列，聚合参数随之取消。
+  const picked = Math.max(0, Number(row.pickedUpQuantity ?? 0))
+  const settled = picked
+    + Math.max(0, Number(row.refundedQuantity ?? 0))
+    + Math.max(0, Number(row.convertedQuantity ?? 0))
   const convertedAmount = Math.max(0, Number(row.convertedAmount ?? 0))
   const saleAmount = Number(row.saleAmount ?? 0)
   const received = Number(row.received ?? 0)

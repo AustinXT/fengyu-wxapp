@@ -218,6 +218,7 @@ const EXPECTED_HELPER_USERS = [
   'db/scripts/repair-bundle-conversion-2608160038.js',
   'db/scripts/repair-unconfirm-conversion-2608050125.js',
   'db/scripts/repair-deposit-refund-service-remarks-20260907.js',
+  'db/scripts/verify-quantity-split.js',
 ]
 
 test('每个预期入口都确实引用了权威实现（防守卫被整个删掉）', () => {

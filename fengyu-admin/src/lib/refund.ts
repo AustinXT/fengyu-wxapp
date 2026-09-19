@@ -37,7 +37,16 @@ export interface RefundSourceItem {
   unit_real_price: string | number
   sale_amount?: string | number | null
   received?: string | number | null
+  /** 已物理提货件数（#154 拆列后本列只记提货；拆列前是「已结算」合计） */
   picked_up_quantity: number | null
+  /**
+   * 已退款结算件数（#154 新列）。
+   * **刻意设成必填**：可选的话调用方漏传时 tsc 不报错，calculateUnusedQuantity 会静默退回
+   * 「只减 picked_up」——已退款件数重新变成可退（资损），而这条路径没有任何运行时守护。
+   */
+  refunded_quantity: number | null
+  /** 已转换折抵件数（#154 新列）；必填理由同上 */
+  converted_quantity: number | null
   /** 该行 pickup_records 物理提货合计（不含退款、不含折抵）；#145/#153 剩余已付口径用 */
   picked_quantity?: number | null
   /** 该行已被折抵转走的金额合计（转出行 received 取正，排除已关闭转换单） */
@@ -100,9 +109,24 @@ export function calculateUnusedQuantity(item: RefundSourceItem | null | undefine
   // 口径与提货/折抵一致：剩余已付 = 行实收 − 已提货金额 − 已转走金额，全程按分整除。
   // picked_quantity / converted_amount 由调用方从 pickup_records 与转出行聚合传入；
   // 缺失时退回物理剩余（历史调用方零回归，金额门仍兜底）。
+  // #154：物理剩余必须减「已结算」= 已提货 + 已退款 + 已转换。拆列前三者共用 picked_up_quantity，
+  // 减单列即可；拆列后只减 picked_up 会让已退款件数重新变成可退 —— 正是 2026-06-08 止血
+  // 要堵的那条可重复退路径（资损）。
+  //
+  // 必填字段只挡得住「构造对象时漏写」；**挡不住原生 SQL 漏 SELECT 这两列**——
+  // `tx.execute()` 的行类型是手写断言，少一列 tsc 照样绿，运行时 `undefined ?? 0` 静默归零 →
+  // 已结算低估 → 可退虚高（资损方向）。与 staff 纯 JS 侧同款运行时拦截。
+  if (item.refunded_quantity === undefined || item.converted_quantity === undefined) {
+    throw new Error(
+      'INVALID_STATE: REFUND_SOURCE_MISSING_QUANTITY_COLUMNS: '
+      + '家居可退件数缺少 refunded_quantity / converted_quantity，取数处需补齐这两列',
+    )
+  }
   const quantity = Number(item.quantity || 0)
-  const pickedUp = Number(item.picked_up_quantity || 0)
-  const physicalRemaining = Math.max(0, quantity - pickedUp)
+  const settled = Number(item.picked_up_quantity || 0)
+    + Number(item.refunded_quantity || 0)
+    + Number(item.converted_quantity || 0)
+  const physicalRemaining = Math.max(0, quantity - settled)
   if (item.picked_quantity == null && item.converted_amount == null) return physicalRemaining
   const toCents = (v: unknown) => Math.round(Number(v ?? 0) * 100)
   const unitCents = toCents(item.unit_real_price)
@@ -138,7 +162,10 @@ export function computeItemOverpayRemainders(origItems: RefundSourceItem[]): Map
       ? Number(it.picked_quantity || 0) * unitRealPrice + (Number(it.converted_amount ?? 0) || 0)
       : (it.product_type === '疗程卡'
           ? Math.max(0, Number(it.session_count || 0) - Number(it.remaining_sessions || 0))
-          : Math.max(0, Number(it.picked_up_quantity || 0))) * unitRealPrice
+          // #154：「已消耗」= 已提货 + 已转换，**不含已退款**（received 已由 paid-sessions
+          // STEP 1.5 扣过逐项退款，再算一次就是重复扣减，顾客会少退）。
+          // 走到这个分支说明调用方连 picked_quantity / converted_amount 都没给，只能按件数推算。
+          : Math.max(0, Number(it.picked_up_quantity || 0) + Number(it.converted_quantity || 0))) * unitRealPrice
     const maxRefundableValue = calculateUnusedQuantity(it) * unitRealPrice
     result.set(it.sale_item_id, Math.max(0, roundMoney(received - consumedValue - maxRefundableValue)))
   }
@@ -171,7 +198,14 @@ export function computeOverpayRemainder(
       const rem = Number(it.remaining_sessions) || 0
       consumedValue += Math.max(0, sc - rem) * urp
     } else {
+      // #154：「已消耗」= 已提货金额 + 已转走金额，不含已退款（received 已扣过逐项退款）。
+      // 已转走优先取实际金额 converted_amount —— 折抵金额含余数时「件数 × 单价」会低估
+      // （折 4 件可能带走 ¥450 而非 ¥400），低估 consumed 会让 overpay 余数虚高 → 多退。
+      // 仅在调用方完全没提供该聚合时才退回件数推算（历史调用方零回归）。
       consumedValue += (Number(it.picked_up_quantity) || 0) * urp
+        + (it.converted_amount != null
+            ? Number(it.converted_amount) || 0
+            : (Number(it.converted_quantity) || 0) * urp)
     }
     maxSessionRefundable += calculateUnusedQuantity(it) * urp
   }
@@ -233,10 +267,15 @@ export function buildRefundDetails(
     // 修复（Bug M 强化 2026-06-08）：仅「退光全部可退 **且** 该明细零已消费/零已提货」才算全退该明细。
     // 退款只退未使用数量，未使用部分本无 service_commission；收紧后通道2 对被退 item 天然零作废，
     // 保护「已完成服务的提成」与「已实现营收的分配」不被退剩余次数误删（两端镜像 staff utils/refund.js）。
+    // #154：这里要的是「已结算」（已提货 + 已退款 + 已转换）而非「已消耗」——保持拆列前的行为。
+    // isFullItemRefund 只在该明细零结算时才放行 cascade 作废分配/提成；把已退款件数排除出去
+    // 会让「二次部分退款」被判成全退并触发作废，那是本次拆列范围外的行为变更。
     const consumedQty =
       orig.product_type === '疗程卡'
         ? Number(orig.session_count || 0) - Number(orig.remaining_sessions || 0)
         : Number(orig.picked_up_quantity || 0)
+          + Number(orig.refunded_quantity || 0)
+          + Number(orig.converted_quantity || 0)
 
     refundDetails.push({
       refSaleItemId: req.saleItemId,

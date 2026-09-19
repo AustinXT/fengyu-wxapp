@@ -325,11 +325,39 @@ export const saleItems = pgTable(
     pendingReceived: numeric("pending_received", { precision: 10, scale: 2 }).notNull().default("0"),
     expireDate: date("expire_date"),
     /**
-     * 已**结算**数量（家居产品用，原子累加）= 已提货 + 已退款(2026-06-08) + 已转换折抵(2026-09-14 #125)。
-     * 可提 = quantity - picked_up_quantity；**物理提货量的权威来源是 pickup_records**，
-     * 不要把本列当作「已提货」解读。
+     * 已**物理提货**数量（家居产品用，原子累加）。2026-09-18 #154 拆列后回归本义。
+     *
+     * 不变量：`picked_up_quantity == SUM(pickup_records.pickup_quantity)`，由 cron STEP 12 的
+     * C5 `pickup_quantity_mismatch` 守恒。删除提货记录时直接等量回退本列即正确——拆列前本列
+     * 同时承载已退款/已转换，减法会释放掉那两类占用的额度（#154 缺陷 1）。
+     *
+     * 「已结算」是派生量，不再有对应列：
+     *   settled   = picked_up_quantity + refunded_quantity + converted_quantity（LEAST(quantity) 封顶）
+     *   可提/可退 = quantity − settled
      */
     pickedUpQuantity: integer("picked_up_quantity").default(0),
+    /**
+     * 已**退款**结算数量（家居产品用，原子累加；2026-09-18 #154 从 picked_up_quantity 拆出）。
+     * NOT NULL：这是全新列、无历史 NULL，没有理由跟着 picked_up_quantity（历史 nullable）一起可空——
+     * 可空会让读取侧每处都得背一个 COALESCE。PG 11+ 起 `ADD COLUMN NOT NULL DEFAULT <常量>`
+     * 是纯 catalog 操作，不重写表、不延长锁窗口。
+     *
+     * 三个数量语义里**只有它没有独立数据源**——已提货可由 pickup_records 反推、已转换可由转出行
+     * 反推，唯独已退款不能，这正是必须拆列的根本理由。
+     * 由 refund-cascade 通道 5 守卫式累加：`picked_up + refunded + converted + 本次 <= quantity`
+     * 不成立时 rowCount=0 → 抛 CONFLICT，不再用 LEAST 静默封顶（#154 缺陷 3）。
+     */
+    refundedQuantity: integer("refunded_quantity").notNull().default(0),
+    /**
+     * 已**转换折抵**数量（家居产品用，原子累加；2026-09-18 #154 从 picked_up_quantity 拆出，
+     * 折抵能力本身见 2026-09-14 #125）。
+     *
+     * 交叉源：`SUM(转出行 quantity WHERE item_direction='转出' AND 转换单 status <> '已关闭')`。
+     * 转换单关闭时由 rollbackPendingConversionOnClose 等量退回本列。
+     * 注意折抵**金额**仍须从转出行 received 聚合，不能由件数 × 单价推算（#145/#153：
+     * 折 4 件可能带走 ¥450 而非 ¥400）。
+     */
+    convertedQuantity: integer("converted_quantity").notNull().default(0),
     remark: text("remark"),
     salesCategory: salesCategoryEnum("sales_category"),
     /** 固定手工费快照（开单时从 product_skus.service_fee × quantity 持久化，用于服务完成时计算固定手工费部分的服务提成） */
@@ -369,6 +397,29 @@ export const saleItems = pgTable(
       sql`${table.paidSessions} IS NULL OR (${table.paidSessions} >= 0 AND ${table.paidSessions} <= ${table.sessionCount})`,
     ),
     check("chk_item_quantity", sql`${table.quantity} > 0`),
+    /**
+     * #154：「已结算」不得超过购买件数。三列各自的写入点都带了同判据的 WHERE 守卫，
+     * 但那是 8 份手抄；约束是同一条不变量的**唯一权威表达**，且不可能被绕过。
+     *
+     * ⚠ 必须用 COALESCE 而不是 `picked_up_quantity IS NULL OR (...)`：后者对 NULL 行直接放行，
+     * 「不可能被绕过」就不成立（双谱系评审命中）。
+     *
+     * 曾以「ADD CONSTRAINT 取 ACCESS EXCLUSIVE 太贵」为由不加——该理由不成立：
+     * 这把锁在同一迁移的 ADD COLUMN 就已取到，drizzle 又把整批迁移包进单事务持有到提交，
+     * 追加约束的边际锁成本是 0；全表扫描的代价也已被迁移的事后断言付过一遍。
+     */
+    check(
+      "chk_sale_item_settled_le_quantity",
+      sql`(COALESCE(${table.pickedUpQuantity}, 0) + ${table.refundedQuantity} + ${table.convertedQuantity}) <= ${table.quantity}`,
+    ),
+    /**
+     * 三列非负。展示侧那些 `GREATEST(0, ...)` 本来就是在防负值；有了约束，负值成为不可能，
+     * 而不是「出现了再夹回去」。picked_up_quantity 历史可空，故走 COALESCE。
+     */
+    check(
+      "chk_sale_item_quantities_non_negative",
+      sql`COALESCE(${table.pickedUpQuantity}, 0) >= 0 AND ${table.refundedQuantity} >= 0 AND ${table.convertedQuantity} >= 0`,
+    ),
     check("chk_item_service_fee", sql`${table.serviceFee} >= 0`),
   ],
 );

@@ -23,6 +23,8 @@
 | [007](arch/007_store-unbind-to-transfer-flow.md) | 2026-05-23 | 门店解绑流程改为「转店」（前置选新门店）+ 修复审批缓存陈旧 bug |
 | [008](arch/008_lakala-preorder-migration.md) | 2026-05-29 | 拉卡拉支付从收银台模式整体迁移到聚合主扫模式（+ 支付宝吱口令） |
 | [009](arch/009_lakala-merchant-onboarding.md) | 2026-05-29 | 拉卡拉商户入网模块（admin 14 步 OpenAPI 流程 + N:1 商户绑定 + 费率全 admin 不可见） |
+| [010](arch/010_fengyu-analyst-independent-site.md) | 2026-07-21 | fengyu-analyst 独立分析站点（复用 admin 登录态/权限 + 共用 PG 业务主库） |
+| [011](arch/011_split-picked-up-quantity-into-three-columns.md) | 2026-09-18 | sale_items.picked_up_quantity 三语义拆列（新增 refunded_quantity / converted_quantity） |
 
 ## ops — 生产操作
 
