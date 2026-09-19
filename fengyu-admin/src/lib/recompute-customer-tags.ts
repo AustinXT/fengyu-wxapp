@@ -105,6 +105,7 @@ const recalcCustomerTypeCte = (clientUserId: string) => sql`WITH refund_by_item 
          AND sop.change_type = '退款'
          AND sop.status = '已支付'
          AND elem ->> 'refSaleItemId' <> 'OVERPAY'
+       -- 序号绑定 SELECT 的前 2 列（sale_order_id, refSaleItemId）；重排 SELECT 列须同步改这里
        GROUP BY 1, 2
      ),
      order_amounts AS (

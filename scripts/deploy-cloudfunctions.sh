@@ -191,8 +191,8 @@ echo "  ✓ envId + PG host 校验通过（${ACTIVE}）"
 # 背景：云函数与 admin 的退款 JSON 解析统一走 migration 0043 的 public.try_jsonb /
 # public.try_numeric。若目标库漏迁就部署，所有解析退款 note 的收款路径都会报
 # `function public.try_jsonb(text) does not exist` —— 报错点在收款主链上，是生产事故。
-# 这里用目标环境自己的连接串做**只读**探测；缺 psql 或连不上时告警放行（不阻塞无 psql 的机器），
-# 但只要连得上且函数缺失就 fail-closed。
+# 这里用目标环境自己的连接串做**只读**探测（Node pg，不依赖本机 psql）。
+# 处置分环境：dev 探测不通告警放行；**prod 一律 fail-closed**（无法确认迁移状态就拒绝部署）。
 assert_db_prereqs() {
   local pg_conn
   pg_conn=$(node -e '
@@ -217,9 +217,11 @@ assert_db_prereqs() {
 
   [[ -z "$pg_conn" ]] && { _db_probe_unavailable "未取到 PG 连接串"; return 0; }
 
-  # 用项目已有的 Node pg 探测，不依赖本机 psql（CI / 同事机器上未必装）
-  local probe rc
-  probe=$(cd "$ROOT/db" && node -e '
+  # 用项目已有的 Node pg 探测，不依赖本机 psql（CI / 同事机器上未必装）。
+  # ⚠️ 必须写成 `if probe=$(...); then`：本脚本开头 set -e，裸写 `probe=$(...)` 后再读 $? 时，
+  # 命令替换非零会让脚本**直接退出**，下面的分环境处理根本不可达（闸门 2 codex 实测指出）。
+  local probe
+  if probe=$(cd "$ROOT/db" && node -e '
     const { Client } = require("pg")
     const c = new Client({ connectionString: process.argv[1], connectionTimeoutMillis: 8000 })
     c.connect()
@@ -230,9 +232,12 @@ assert_db_prereqs() {
       `.replace(/"/g, "\x27")))
       .then((r) => { process.stdout.write(r.rows[0].missing || ""); return c.end() })
       .catch((e) => { console.error(e.message); process.exit(2) })
-  ' "$pg_conn" 2>/dev/null)
-  rc=$?
-  [[ $rc -ne 0 ]] && { _db_probe_unavailable "DB 探测失败（网络/权限/依赖）"; return 0; }
+  ' "$pg_conn" 2>/dev/null); then
+    : # 探测成功，结果在 $probe 里（空串=全部就绪）
+  else
+    _db_probe_unavailable "DB 探测失败（网络/权限/依赖）"
+    return 0
+  fi
 
   if [[ -n "${probe//[[:space:]]/}" ]]; then
     echo "ERROR: 目标库缺少云函数依赖的 DB 对象：${probe}" >&2

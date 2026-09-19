@@ -226,6 +226,18 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
           expect(cte).toContain("AND sop.status = '已支付'")
         })
 
+        test('退款按 (订单, 明细) 复合键聚合与连接，防跨单错配', () => {
+          // CTE 按**顾客**聚合退款（原 RECEIVED_REFUNDED_DEDUCT_SQL 按单聚合，天然无此问题）。
+          // 若只按 sale_item_id 分组+JOIN，订单 A 的 note 错写订单 B 的 item id 时，
+          // 这笔退款会被加到 B 的毛实收、把 B 推到 sale_amount 满额 → 不可逆误升（闸门 2 codex 抓出）。
+          expect(cte).toContain('SELECT sop.sale_order_id,')
+          expect(cte).toContain("elem ->> 'refSaleItemId' AS sale_item_id")
+          expect(cte).toContain('GROUP BY 1, 2')
+          expect(cte).toMatch(
+            /LEFT JOIN refund_by_item rbi ON rbi\.sale_order_id = o\.sale_order_id\s*AND rbi\.sale_item_id = si\.sale_item_id/
+          )
+        })
+
         test('退款展开范围限定在参与判定的已结清销售单（收窄 22P02 爆炸半径）', () => {
           // 本 CTE 按顾客聚合（原 RECEIVED_REFUNDED_DEDUCT_SQL 按单聚合）。不加这两条限定，
           // 该顾客任一充值单/寄存单上的脏 note 都会被展开，把故障半径放大到其全部收款事务。
@@ -615,6 +627,14 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
           expect(src).toContain("COALESCE(public.try_numeric(elem ->> 'refundAmount'), 0)")
           expect(src).not.toContain('(sop.note)::jsonb')
           expect(src).not.toContain('sop.note LIKE')
+        })
+
+        test('退款按 (订单, 明细) 复合键聚合与连接（与运行时同语义）', () => {
+          expect(src).toContain('SELECT sop.sale_order_id,')
+          expect(src).toContain('GROUP BY 1, 2')
+          expect(src).toMatch(
+            /LEFT JOIN refund_by_item rbi ON rbi\.sale_order_id = o\.sale_order_id\s*AND rbi\.sale_item_id = si\.sale_item_id/
+          )
         })
 
         test('退款聚合只认已支付的退款流水 + 排除 OVERPAY + 限定已结清销售单', () => {

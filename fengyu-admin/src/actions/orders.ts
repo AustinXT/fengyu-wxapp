@@ -630,8 +630,8 @@ type AdminTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
 /**
  * 顾客分类跃迁的订单级金额 CTE（#187）。产出每张已结清销售单的
  * non_trial / trial = 非体验 / 体验行的毛实收合计。
- * refund_by_item 的 note→jsonb 三重防线逐字对齐 staffApi utils/paid-sessions.js
- * RECEIVED_REFUNDED_DEDUCT_SQL（LIKE '{%' 守门 + 嵌套 CASE 延迟 cast + jsonb_typeof 兜非数组），根除 22P02。
+ * refund_by_item 用 public.try_jsonb / public.try_numeric（migration 0043）做安全转换：
+ * 非法 JSON / 非数字文本降级为 NULL 而非抛 22P02。全仓退款 note 解析已统一此写法，LIKE 假守门已废除。
  * item_direction='购买' 与 STEP 1.5 扣减作用域一致；FILTER 聚合的 NULL 由 COALESCE 归零。
  */
 const recalcCustomerTypeCte = (clientUserId: string) => sql`WITH refund_by_item AS (
@@ -651,6 +651,7 @@ const recalcCustomerTypeCte = (clientUserId: string) => sql`WITH refund_by_item 
          AND sop.change_type = '退款'
          AND sop.status = '已支付'
          AND elem ->> 'refSaleItemId' <> 'OVERPAY'
+       -- 序号绑定 SELECT 的前 2 列（sale_order_id, refSaleItemId）；重排 SELECT 列须同步改这里
        GROUP BY 1, 2
      ),
      order_amounts AS (
