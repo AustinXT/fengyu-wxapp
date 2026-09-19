@@ -1220,6 +1220,7 @@ function MarketReportSummaryForm({
   )
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
+  const [selectedMarketIds, setSelectedMarketIds] = useState<string[]>([])
   const [docDate, setDocDate] = useState(today)
   const [remark, setRemark] = useState('')
   const [lines, setLines] = useState<MarketReportSummaryDraftLine[]>([])
@@ -1230,6 +1231,10 @@ function MarketReportSummaryForm({
   function lineKey(line: { skuId: string; marketId: string }) {
     return `${line.skuId}@${line.marketId}`
   }
+
+  const marketOptions = locations.filter(
+    (location) => location.locationType === '市场' && location.isActive && location.orgNodeId,
+  )
 
   async function loadSummary() {
     if (!supplyChainLocationId) {
@@ -1242,6 +1247,8 @@ function MarketReportSummaryForm({
         supplyChainLocationId,
         startDate: optionalText(startDate),
         endDate: optionalText(endDate),
+        // 不勾 = 全部市场（服务端把空数组与 null 同等对待）
+        marketIds: selectedMarketIds.length > 0 ? selectedMarketIds : null,
       })
       const nextSourceIds = new Map<string, number[]>()
       setLines(summary.items.map((item) => {
@@ -1329,6 +1336,29 @@ function MarketReportSummaryForm({
         <FormField label="报货截止日期"><DatePicker value={endDate} onValueChange={setEndDate} /></FormField>
         <FormField label="汇总单日期"><DatePicker value={docDate} onValueChange={setDocDate} /></FormField>
       </div>
+
+      {marketOptions.length > 0 && (
+        <div className="space-y-2">
+          <h3 className="text-sm font-medium">市场范围</h3>
+          <p className="text-xs text-[#666666]">不勾选则汇总全部市场。</p>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 rounded-[var(--radius)] border border-[var(--border)] p-3">
+            {marketOptions.map((market) => (
+              <label key={market.orgNodeId!} className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={selectedMarketIds.includes(market.orgNodeId!)}
+                  onChange={(event) => setSelectedMarketIds((previous) => (
+                    event.target.checked
+                      ? [...previous, market.orgNodeId!]
+                      : previous.filter((id) => id !== market.orgNodeId)
+                  ))}
+                />
+                {market.name}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="flex justify-start">
         <Button type="button" variant="secondary" loading={loadingSummary} onClick={() => void loadSummary()}>
