@@ -4,9 +4,12 @@ import { describe, expect, it } from 'vitest'
 import {
   INVENTORY_OPERATION_DOC_QUERY,
   INVENTORY_OPERATION_IDS,
+  genericOperationId,
+  parseGenericOperationId,
+  resolveOperationDocQuery,
   type InventoryOperationId,
 } from './operation-doc-types'
-import { INVENTORY_DOC_STATUSES, INVENTORY_DOC_TYPES } from './types'
+import { INVENTORY_DOC_STATUSES, INVENTORY_DOC_TYPES, INVENTORY_GENERIC_DOC_TYPES } from './types'
 
 /**
  * 办理台「单据」Tab 的业务 → 产出单据类型映射（#190）。
@@ -221,5 +224,50 @@ describe('业务 → 产出单据类型映射（#190）', () => {
         expect(businessSource, `${operation} → ${docType}`).toContain(`'${docType}'`)
       }
     }
+  })
+})
+
+/**
+ * 通用建单业务的 id 与查询解析（#191）。
+ *
+ * 通用业务的「映射」是从 docType 派生的，没有手抄的表可抄错 —— 风险转移到了
+ * **白名单**上：`generic:` 前缀后面跟什么都能拼出来，拼一个业务单类型进去
+ * 就等于从通用入口绕过专用服务的数量/价格/批次校验。
+ */
+describe('通用建单业务 id（#191）', () => {
+  it('10 种通用类型都能往返解析', () => {
+    for (const docType of INVENTORY_GENERIC_DOC_TYPES) {
+      expect(parseGenericOperationId(genericOperationId(docType))).toBe(docType)
+    }
+  })
+
+  it('非通用类型拼出来的 id 一律拒绝', () => {
+    // 这些都是真实存在的 docType，但必须走各自的专用业务服务建单。
+    for (const docType of ['品项公司发货', '市场报货', '采购订单', '院入库', '库存转换出库'] as const) {
+      expect(parseGenericOperationId(`generic:${docType}`), docType).toBeNull()
+      expect(resolveOperationDocQuery(`generic:${docType}`), docType).toBeNull()
+    }
+  })
+
+  it('乱拼的 id 与原型链键都解析不出查询条件', () => {
+    for (const bad of ['generic:', 'generic:不存在的单据', 'generic', '', 'constructor', '__proto__', 'generic:constructor']) {
+      expect(resolveOperationDocQuery(bad), bad).toBeNull()
+    }
+  })
+
+  it('通用业务的查询条件就是「查这一种单据」，不带任何收窄', () => {
+    // 带上 statuses/locationType 反而会漏单：通用单据没有层级共用问题，
+    // 也没有「只看某个状态」的业务含义。
+    expect(resolveOperationDocQuery(genericOperationId('市场产品报损'))).toEqual({ docTypes: ['市场产品报损'] })
+    expect(resolveOperationDocQuery(genericOperationId('内部领用'))).toEqual({ docTypes: ['内部领用'] })
+  })
+
+  it('内置业务仍走映射表，与通用分支互不串台', () => {
+    expect(resolveOperationDocQuery('market-conversion')).toEqual({
+      docTypes: ['库存转换出库', '库存转换入库'],
+      locationType: '市场',
+    })
+    // 内置 id 加上 generic: 前缀不应该被当成通用业务
+    expect(resolveOperationDocQuery('generic:market-conversion')).toBeNull()
   })
 })

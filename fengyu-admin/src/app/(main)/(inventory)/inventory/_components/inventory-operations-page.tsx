@@ -58,13 +58,20 @@ import { actionErrorMessage } from '@/lib/action-error'
 import type {
   InventoryDocDetail,
   InventoryDocRow,
+  InventoryDocType,
   InventoryLocationRow,
   InventoryLotRow,
   InventorySkuRow,
   InventorySupplierRow,
 } from '@/lib/inventory/types'
 import type { InventoryBusinessLevel } from '@/lib/inventory/business-level'
-import type { InventoryOperationId } from '@/lib/inventory/operation-doc-types'
+import {
+  genericOperationId,
+  type InventoryAnyOperationId,
+  type InventoryGenericOperationId,
+  type InventoryOperationId,
+} from '@/lib/inventory/operation-doc-types'
+import { InventoryDocCreateForm } from './inventory-doc-create-form'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -84,8 +91,7 @@ import { Tooltip } from '@/components/ui/tooltip'
  */
 type OperationId = InventoryOperationId
 
-interface OperationDefinition {
-  id: OperationId
+interface OperationCardBase {
   title: string
   group: '需求与采购' | '发货、收货与退货' | '市场特殊业务'
   icon: typeof Boxes
@@ -94,8 +100,25 @@ interface OperationDefinition {
   shipmentCancellationAccess?: '申请' | '审批'
   selfPurchaseOnly?: boolean
   level: InventoryBusinessLevel
-  href?: string
 }
+
+/** 内置表单业务：有专属业务函数与专属表单组件。 */
+interface OperationDefinition extends OperationCardBase {
+  id: OperationId
+}
+
+/** 通用建单业务：没有专属函数，直接建一张该类型的单，用共享建单表单。 */
+interface GenericOperationDefinition extends OperationCardBase {
+  docType: InventoryDocType
+}
+
+/**
+ * 工作区打开的业务，两类合一。`kind` 决定「填报表单」Tab 里渲染哪种表单，
+ * 而单据 Tab 两类走同一个 action（服务端按 id 解析查询条件）。
+ */
+type ResolvedOperation =
+  | (OperationDefinition & { kind: 'builtin' })
+  | (GenericOperationDefinition & { id: InventoryGenericOperationId; kind: 'generic' })
 
 const OPERATIONS: OperationDefinition[] = [
   { id: 'item-company-request', level: 'supply-chain', title: '品项公司报货需求', group: '需求与采购', icon: PackagePlus, tone: 'text-[#7B5E2B] bg-[#FFF8E6]' },
@@ -126,23 +149,35 @@ const OPERATIONS: OperationDefinition[] = [
   { id: 'store-conversion', level: 'store', title: '门店库存转换', group: '市场特殊业务', icon: ArrowLeftRight, tone: 'text-[#5E8BB3] bg-[#F0F5FA]' },
 ]
 
-const GENERIC_OPERATIONS: Record<InventoryBusinessLevel, Array<Omit<OperationDefinition, 'id'> & { id: OperationId }>> = {
+/**
+ * 通用建单业务（#191）：没有专属业务函数，就是直接建一张某类型的单。
+ *
+ * 改动前这 10 张卡带 `href` 直接跳单据中心，且**借用**三个转换业务的 id 当 React key ——
+ * 一旦哪张卡被改成内嵌表单，它的单据 Tab 会列出库存转换单（页面完全正常、数据完全不对）。
+ * 现在每张卡用 `generic:<docType>` 作为自己的 id，单据映射由 docType 天然派生。
+ */
+const GENERIC_OPERATIONS: Record<InventoryBusinessLevel, GenericOperationDefinition[]> = {
   'supply-chain': [
-    { id: 'supply-chain-conversion', level: 'supply-chain', title: '内部领用', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/docs?create=内部领用' },
+    { docType: '内部领用', level: 'supply-chain', title: '内部领用', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]' },
   ],
   market: [
-    { id: 'market-conversion', level: 'market', title: '市场间调货', group: '市场特殊业务', icon: ArrowLeftRight, tone: 'text-[#5E8BB3] bg-[#F0F5FA]', href: '/inventory/docs?create=市场间调货出库' },
-    { id: 'market-conversion', level: 'market', title: '市场产品报损', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/docs?create=市场产品报损' },
-    { id: 'market-conversion', level: 'market', title: '市场库存盘点', group: '市场特殊业务', icon: ClipboardCheck, tone: 'text-[#7B5E2B] bg-[#FFF8E6]', href: '/inventory/docs?create=市场库存盘点' },
-    { id: 'market-conversion', level: 'market', title: '市场产品盘溢', group: '市场特殊业务', icon: PackagePlus, tone: 'text-[#3D8A5A] bg-[#F0F9F2]', href: '/inventory/docs?create=市场产品盘溢' },
+    { docType: '市场间调货出库', level: 'market', title: '市场间调货', group: '市场特殊业务', icon: ArrowLeftRight, tone: 'text-[#5E8BB3] bg-[#F0F5FA]' },
+    { docType: '市场产品报损', level: 'market', title: '市场产品报损', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]' },
+    { docType: '市场库存盘点', level: 'market', title: '市场库存盘点', group: '市场特殊业务', icon: ClipboardCheck, tone: 'text-[#7B5E2B] bg-[#FFF8E6]' },
+    { docType: '市场产品盘溢', level: 'market', title: '市场产品盘溢', group: '市场特殊业务', icon: PackagePlus, tone: 'text-[#3D8A5A] bg-[#F0F9F2]' },
   ],
   store: [
-    { id: 'store-conversion', level: 'store', title: '门店调拨', group: '发货、收货与退货', icon: ArrowLeftRight, tone: 'text-[#5E8BB3] bg-[#F0F5FA]', href: '/inventory/docs?create=分院调货出库' },
-    { id: 'store-conversion', level: 'store', title: '顾客产品出库', group: '发货、收货与退货', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/docs?create=院顾客产品出库' },
-    { id: 'store-conversion', level: 'store', title: '顾客产品退货', group: '发货、收货与退货', icon: RotateCcw, tone: 'text-[#3D8A5A] bg-[#F0F9F2]', href: '/inventory/docs?create=院顾客退货' },
-    { id: 'store-conversion', level: 'store', title: '门店产品报损', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]', href: '/inventory/docs?create=院产品报损' },
-    { id: 'store-conversion', level: 'store', title: '门店库存盘点', group: '市场特殊业务', icon: ClipboardCheck, tone: 'text-[#7B5E2B] bg-[#FFF8E6]', href: '/inventory/docs?create=分院库存盘点' },
+    { docType: '分院调货出库', level: 'store', title: '门店调拨', group: '发货、收货与退货', icon: ArrowLeftRight, tone: 'text-[#5E8BB3] bg-[#F0F5FA]' },
+    { docType: '院顾客产品出库', level: 'store', title: '顾客产品出库', group: '发货、收货与退货', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]' },
+    { docType: '院顾客退货', level: 'store', title: '顾客产品退货', group: '发货、收货与退货', icon: RotateCcw, tone: 'text-[#3D8A5A] bg-[#F0F9F2]' },
+    { docType: '院产品报损', level: 'store', title: '门店产品报损', group: '市场特殊业务', icon: PackageX, tone: 'text-[#D94040] bg-[#FFF0F0]' },
+    { docType: '分院库存盘点', level: 'store', title: '门店库存盘点', group: '市场特殊业务', icon: ClipboardCheck, tone: 'text-[#7B5E2B] bg-[#FFF8E6]' },
   ],
+}
+
+/** 通用卡 → 统一成与内置卡同形的条目（id 由 docType 派生）。 */
+function genericAsOperation(definition: GenericOperationDefinition): ResolvedOperation {
+  return { ...definition, id: genericOperationId(definition.docType), kind: 'generic' }
 }
 
 function today() {
@@ -454,6 +489,7 @@ export default function InventoryOperationsPage({
   canRequestShipmentCancellation,
   canApproveShipmentCancellation,
   canViewPrice,
+  initialOperationId,
 }: {
   level: InventoryBusinessLevel
   locations: InventoryLocationRow[]
@@ -466,14 +502,21 @@ export default function InventoryOperationsPage({
   canRequestShipmentCancellation: boolean
   canApproveShipmentCancellation: boolean
   canViewPrice: boolean
+  /** 深链 `?create=<docType>` 解析出的初始业务（#191），服务端已校验权限与白名单。 */
+  initialOperationId?: InventoryAnyOperationId
 }) {
   const router = useRouter()
-  const [activeOperation, setActiveOperation] = useState<OperationId | null>(null)
-  const levelOperations = useMemo(
-    () => [...OPERATIONS.filter((operation) => operation.level === level), ...GENERIC_OPERATIONS[level]],
+  const [activeOperation, setActiveOperation] = useState<InventoryAnyOperationId | null>(initialOperationId ?? null)
+  const levelOperations = useMemo<ResolvedOperation[]>(
+    () => [
+      ...OPERATIONS.filter((operation) => operation.level === level).map(
+        (operation) => ({ ...operation, kind: 'builtin' }) as ResolvedOperation,
+      ),
+      ...GENERIC_OPERATIONS[level].map(genericAsOperation),
+    ],
     [level],
   )
-  const active = OPERATIONS.find((operation) => operation.level === level && operation.id === activeOperation) ?? null
+  const active = levelOperations.find((operation) => operation.id === activeOperation) ?? null
   const groups = useMemo(() => Array.from(new Set(levelOperations.map((operation) => operation.group))), [levelOperations])
   const levelMeta = {
     'supply-chain': { title: '供应链库存业务', description: '处理品项公司需求、采购、发货、退货审批和总部库存。' },
@@ -534,17 +577,6 @@ export default function InventoryOperationsPage({
                     </span>
                   </>
                 )
-                if (operation.href) {
-                  return (
-                    <Link
-                      key={operation.href}
-                      href={operation.href}
-                      className="flex min-h-24 items-center gap-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--card)] p-4 text-left shadow-sm transition-colors hover:border-[var(--primary)] hover:bg-[#FFFDFC]"
-                    >
-                      {content}
-                    </Link>
-                  )
-                }
                 return (
                   <button
                     key={operation.id}
@@ -566,8 +598,7 @@ export default function InventoryOperationsPage({
         <Card>
           <CardContent className="p-5">
             <OperationWorkspace
-              operation={active.id}
-              title={active.title}
+              operation={active}
               locations={locations}
               skuOptions={skuOptions}
               suppliers={suppliers}
@@ -584,8 +615,7 @@ export default function InventoryOperationsPage({
 }
 
 function OperationWorkspace({
-  operation,
-  title,
+  operation: card,
   locations,
   skuOptions,
   suppliers,
@@ -594,8 +624,7 @@ function OperationWorkspace({
   onClose,
   onSuccess,
 }: {
-  operation: OperationId
-  title: string
+  operation: ResolvedOperation
   locations: InventoryLocationRow[]
   skuOptions: InventorySkuRow[]
   suppliers: InventorySupplierRow[]
@@ -604,9 +633,10 @@ function OperationWorkspace({
   onClose: () => void
   onSuccess: (message: string) => void
 }) {
+  const operation = card.id
   return (
     <div className="space-y-5">
-      <OperationHeader title={title} onClose={onClose} />
+      <OperationHeader title={card.title} onClose={onClose} />
       {/*
         * key：`activeOperation` A→B 时父层元素类型与位置不变，React 原地更新、不重挂，
         * Tabs 的 uncontrolled state 会把「单据」选中态带到下一个业务 ——
@@ -622,6 +652,30 @@ function OperationWorkspace({
           * 明细行、选好的批次连同 useState 一起丢掉，用户去「单据」看一眼回来就得重填。
           */}
         <TabsContent value="form" keepMounted className="space-y-5">
+          {/*
+            * 通用业务没有专属表单，走与单据中心**同一份**共享建单表单（#191）。
+            * visible 接 `true` 而不是「表单 Tab 是否在前台」：面板是 keepMounted 的，
+            * 跟着 Tab 切换走会在用户去看一眼单据时清掉已选批次（#190 承诺切 Tab 不丢表单）。
+            * 代价是久置后批次数据可能陈旧 —— 由服务端 FOR UPDATE + 可用量校验兜底，
+            * 与「弹窗开着不动很久再提交」是同一条兜底路径。
+            */}
+          {card.kind === 'generic' && (
+            <InventoryDocCreateForm
+              visible
+              locations={locations}
+              skuOptions={skuOptions}
+              initialDocType={card.docType}
+              allowedDocTypes={[card.docType]}
+              onSuccess={() => onSuccess(`${card.title}单据已创建`)}
+              onStale={() => onSuccess('单据状态或权限已变化，已为你刷新')}
+              onBusyChange={() => {}}
+              renderActions={({ submit, submitting }) => (
+                <div className="flex justify-end">
+                  <Button type="button" onClick={submit} loading={submitting}>创建{card.title}单据</Button>
+                </div>
+              )}
+            />
+          )}
           {operation === 'store-request' && <StoreRequestForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
           {operation === 'market-report' && <MarketReportForm locations={locations} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
           {operation === 'item-company-request' && <ItemCompanyReplenishmentForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
@@ -667,7 +721,8 @@ function OperationDocsTab({
   operation,
   canViewPrice,
 }: {
-  operation: OperationId
+  /** 内置业务 id 或 `generic:<docType>`；查询条件由服务端按 id 解析（#190/#191）。 */
+  operation: InventoryAnyOperationId
   canViewPrice: boolean
 }) {
   const [rows, setRows] = useState<InventoryDocRow[]>([])
