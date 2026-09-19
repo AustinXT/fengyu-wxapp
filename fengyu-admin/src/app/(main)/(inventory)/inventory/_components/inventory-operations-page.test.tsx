@@ -180,6 +180,15 @@ describe('业务工作区双 Tab（#190）', () => {
     expect(source).toMatch(/<OperationDocsTab key=\{operation\}/)
   })
 
+  it('金额列头跟随本次查询返回的 canViewPrice，不吃父层的全局档位', () => {
+    // 父层传进来的 canViewPrice 是办理台首屏那次查询的结果（全局档位）。
+    // 金额的**行级**遮蔽在服务端按单据端点判定，列头要跟着本次查询的返回值走，
+    // 否则会出现「列头在、整列都是 —」的空列（#135 组 5 踩过同型问题）。
+    const tab = source.slice(source.indexOf('function OperationDocsTab('))
+    expect(tab).toMatch(/setPriceVisible\(result\.canViewPrice\)/)
+    expect(tab).toMatch(/\.\.\.\(priceVisible/)
+  })
+
   it('单据 Tab 只能走 listInventoryOperationDocs，不自己拼单据类型', () => {
     // 单据类型 / 状态 / 层级的收窄规则在服务端按 operationId 查映射表解析。
     // 客户端一旦自己拼 docType，映射表就有了第二份真相，改一处忘一处。
