@@ -307,7 +307,10 @@ async function selectByLabel(
   option: { label: string } | { contains: string },
 ) {
   // 候选唯一的主体字段没有 select 可选，改为核对只读展示值（#189）。
+  // 先等两种形态任一渲染出来：hydration 未完成时两边都还不在，count() 会读到 0
+  // 而误判成「可选」，接着在一个永远不会出现的 select 上空等到超时。
   const fixed = fixedOf(page, labelText)
+  await expect(fixed.or(selectOf(page, labelText)).first()).toBeVisible({ timeout: 20_000 })
   if (await fixed.count() > 0) {
     await expect(fixed.first()).toContainText('contains' in option ? option.contains : option.label)
     return

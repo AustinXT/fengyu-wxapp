@@ -2119,7 +2119,8 @@ function ReturnForm({
   // 这里拿它比 org_node_id —— 只因为父级必然是市场 / 总部（两者 location_id = org_nodes.id）
   // 才成立。门店的 location_id 是 store_id，永远不会出现在 targets 里。
   const targets = source?.locationType === '门店'
-    ? locations.filter((location) => location.orgNodeId === source.parentLocationId)
+    // isActive 与其它 16 处候选口径对齐：停用主体不该进候选，否则「候选唯一」会被它污染。
+    ? locations.filter((location) => location.orgNodeId === source.parentLocationId && location.isActive)
     : headquarters
   return (
     <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit() }}>
@@ -2356,9 +2357,15 @@ function SupplyChainStaffPurchaseForm({
   const [lines, setLines] = useState<LotDraftLine[]>([{ skuId: '', lotId: '', quantity: '1', reason: '', remark: '' }])
   const [saving, setSaving] = useState(false)
 
-  // 卸载哨兵：主体候选唯一时员工列表会在挂载那一刻就开始拉（#189），此前只有用户手选
+  // 卸载标志：主体候选唯一时员工列表会在挂载那一刻就开始拉（#189），此前只有用户手选
   // 才会发起。请求序号挡得住结果错配，但挡不住「打开就切走」时给已卸载表单弹错误 toast。
-  useEffect(() => () => { employeeRequestRef.current = -1 }, [])
+  // ⚠️ 必须是独立的 ref，不能拿请求序号当卸载标志：StrictMode（dev 默认开）会 mount →
+  // cleanup → 再 mount，污染序号会让首发请求的结果被永久丢弃，loading 再也不复位。
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
 
   function updateLine(index: number, patch: Partial<LotDraftLine>) {
     setLines((previous) => previous.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line))
@@ -2379,7 +2386,7 @@ function SupplyChainStaffPurchaseForm({
       const options = await listSupplyChainEmployeeOptions(nextLocationId)
       if (employeeRequestRef.current === requestId) setEmployeeOptions(options)
     } catch (error) {
-      if (employeeRequestRef.current === requestId) {
+      if (mountedRef.current && employeeRequestRef.current === requestId) {
         toast.error(actionErrorMessage(error, '加载供应链员工失败'))
       }
     } finally {
@@ -2466,9 +2473,15 @@ function MarketStaffPurchaseForm({
   const [lines, setLines] = useState<LotDraftLine[]>([{ skuId: '', lotId: '', quantity: '1', reason: '', remark: '' }])
   const [saving, setSaving] = useState(false)
 
-  // 卸载哨兵：主体候选唯一时员工列表会在挂载那一刻就开始拉（#189），此前只有用户手选
+  // 卸载标志：主体候选唯一时员工列表会在挂载那一刻就开始拉（#189），此前只有用户手选
   // 才会发起。请求序号挡得住结果错配，但挡不住「打开就切走」时给已卸载表单弹错误 toast。
-  useEffect(() => () => { employeeRequestRef.current = -1 }, [])
+  // ⚠️ 必须是独立的 ref，不能拿请求序号当卸载标志：StrictMode（dev 默认开）会 mount →
+  // cleanup → 再 mount，污染序号会让首发请求的结果被永久丢弃，loading 再也不复位。
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
 
   function updateLine(index: number, patch: Partial<LotDraftLine>) {
     setLines((previous) => previous.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line))
@@ -2489,7 +2502,7 @@ function MarketStaffPurchaseForm({
       const options = await listMarketEmployeeOptions(nextMarketId)
       if (employeeRequestRef.current === requestId) setEmployeeOptions(options)
     } catch (error) {
-      if (employeeRequestRef.current === requestId) {
+      if (mountedRef.current && employeeRequestRef.current === requestId) {
         toast.error(actionErrorMessage(error, '加载市场员工失败'))
       }
     } finally {

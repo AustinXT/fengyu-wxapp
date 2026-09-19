@@ -171,8 +171,13 @@ describe('办理台表单一致性（#135）', () => {
 
     const returnForm = block('function ReturnForm(', 'function ReturnApprovalForm(')
     expect(returnForm).toMatch(/label="回库主体"[\s\S]*?autoSelect=\{false\}/)
-    // 反向：退货主体本身是上游，必须保持自动选中
-    expect(returnForm).not.toMatch(/label="退货主体"[\s\S]*?autoSelect=\{false\}[\s\S]*?label="回库主体"/)
+    // 反向：退货主体本身是上游，必须保持自动选中。按字段区间截取再断言，
+    // 避免「区间外某处出现 autoSelect={false}」把这条测试骗过去。
+    const returnSourceField = returnForm.slice(
+      returnForm.indexOf('label="退货主体"'),
+      returnForm.indexOf('label="回库主体"'),
+    )
+    expect(returnSourceField).not.toMatch(/autoSelect=\{false\}/)
   })
 
   it('必填标记覆盖到全部 19 个表单，不只是 UX 扫描点到的那 5 个', () => {

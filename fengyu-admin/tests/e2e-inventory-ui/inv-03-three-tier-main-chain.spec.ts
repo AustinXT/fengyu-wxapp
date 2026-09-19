@@ -490,6 +490,8 @@ async function selectContaining(sel: Locator, text: string) {
 async function selectByLabel(page: Page, labelText: string, option: { label: string } | { contains: string }) {
   const field = labelled(page, labelText)
   const fixed = field.locator('[data-fixed-subject]')
+  // 先等两种形态任一渲染出来，否则 hydration 未完成时 count() 读到 0 会误判成「可选」。
+  await expect(field.locator('select, [data-fixed-subject]').first()).toBeVisible({ timeout: 20_000 })
   if (await fixed.count() > 0) {
     await expect(fixed.first()).toContainText('contains' in option ? option.contains : option.label)
     return

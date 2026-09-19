@@ -1,3 +1,4 @@
+import { StrictMode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import InventorySubjectSelect from './inventory-subject-select'
@@ -11,13 +12,32 @@ const MARKETS = [
 describe('InventorySubjectSelect（#189 候选唯一即自动选中）', () => {
   it('候选唯一时自动上报该值，并渲染成只读文本而非下拉', () => {
     const onChange = vi.fn()
-    render(
+    const { rerender } = render(
       <InventorySubjectSelect options={HQ} value="" onChange={onChange} placeholder="请选择总部" />,
     )
 
     expect(onChange).toHaveBeenCalledExactlyOnceWith('ORG-HQ')
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+    // 上报落定前不挂 data-fixed-subject：它是「值已进表单 state」的证据，早挂会让
+    // 依赖它的 E2E 在上报逻辑被删掉时照样全绿。
+    expect(screen.getByText('品牌总部')).not.toHaveAttribute('data-fixed-subject')
+
+    rerender(<InventorySubjectSelect options={HQ} value="ORG-HQ" onChange={onChange} placeholder="请选择总部" />)
     expect(screen.getByText('品牌总部')).toHaveAttribute('data-fixed-subject', 'ORG-HQ')
+  })
+
+  it('StrictMode 重放 effect 时也只上报一次', () => {
+    // Next 15 默认开启 StrictMode，dev 下每个 effect 会被重放一遍，两次都闭包捕获
+    // 同一个 value=""。光靠 `!value` 守卫拦不住第二次 —— 员工购那类带异步副作用的
+    // onChange 会因此多打一发请求。
+    const onChange = vi.fn()
+    render(
+      <StrictMode>
+        <InventorySubjectSelect options={HQ} value="" onChange={onChange} placeholder="请选择总部" />
+      </StrictMode>,
+    )
+
+    expect(onChange).toHaveBeenCalledExactlyOnceWith('ORG-HQ')
   })
 
   it('自动选中经调用方的 onChange 走，不绕过表单联动', () => {
