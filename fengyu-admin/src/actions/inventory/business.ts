@@ -10,6 +10,7 @@ import {
   createInventoryConversion as createInventoryConversionImpl,
   createMarketReplenishment as createMarketReplenishmentImpl,
   createMarketReportSummary as createMarketReportSummaryImpl,
+  resolveInventorySkuSupplierStatus as resolveInventorySkuSupplierStatusImpl,
   createMarketStaffPurchase as createMarketStaffPurchaseImpl,
   createSupplyChainStaffPurchase as createSupplyChainStaffPurchaseImpl,
   createPurchaseOrder as createPurchaseOrderImpl,
@@ -112,6 +113,11 @@ export const createMarketReportSummary = withPermission(
   'inventory:supply_chain_operate',
   async (session, input: CreateMarketReportSummaryInput) =>
     createMarketReportSummaryImpl(session, input),
+)
+
+export const resolveInventorySkuSupplierStatus = withPermission(
+  'inventory:supply_chain_operate',
+  async (session, skuIds: string[]) => resolveInventorySkuSupplierStatusImpl(session, skuIds),
 )
 
 export const createPurchaseOrder = withPermission(

@@ -2438,6 +2438,41 @@ export async function summarizeMarketReplenishmentRequests(
 }
 
 /**
+ * 按 SKU 批量解析「当前供应商档案状态」，供采购表单做 fail-closed 预判（#194）。
+ *
+ * 表单不能拿办理台那份 `skuOptions` 当真相源 —— 它只是列表页第一页（最多 100 条），
+ * 排在后面的合法 SKU 会被误判成「未绑定供应商」，提交按钮就此永久禁用，
+ * 而服务端其实放行。这里按选中的 SKU 精确查，和建单时的校验同一口径
+ * （既看 `supplier_id` 是否为空，也看档案是否仍启用）。
+ */
+export async function resolveInventorySkuSupplierStatus(
+  _session: AuthSession,
+  skuIds: string[],
+): Promise<Array<{ skuId: string; supplierId: string | null; supplierName: string | null }>> {
+  const uniqueIds = Array.from(new Set((skuIds ?? []).filter((id) => Boolean(id))))
+  if (uniqueIds.length === 0) return []
+  const result = rows<{
+    sku_id: string
+    supplier_id: string | null
+    supplier_name: string | null
+  }>(await db.execute(sql`
+    SELECT sku.sku_id,
+           supplier.supplier_id AS supplier_id,
+           supplier.name AS supplier_name
+      FROM inventory_skus sku
+      LEFT JOIN inventory_suppliers supplier
+        ON supplier.supplier_id = sku.supplier_id
+       AND supplier.is_active = true
+     WHERE sku.sku_id IN (${sql.join(uniqueIds.map((id) => sql`${id}`), sql`, `)})
+  `))
+  return result.map((row) => ({
+    skuId: row.sku_id,
+    supplierId: row.supplier_id,
+    supplierName: row.supplier_name,
+  }))
+}
+
+/**
  * 把选中的市场报货明细汇总成一张供应链侧的「市场报货汇总」单（#193）。
  *
  * **不回写来源行的 `fulfilled_quantity`**：数量占用仍由采购订单负责（`engine.ts` 里
@@ -2750,7 +2785,12 @@ export async function createPurchaseOrder(
         continue
       }
       if (header.docType === '市场报货汇总') {
-        const ordered = await linkedQuantity(tx, source.id, '报货汇总采购订单')
+        // 已下单量以来源行的 `fulfilled_quantity` 为准，**不能**改用血缘累计：
+        // 血缘会排除已取消的采购单，而取消时只退还「未收货」的部分
+        // （需求 10 → 下单 10 → 入库 8 → 关闭剩余 2，来源行 fulfilled 落在 8）。
+        // 用血缘算会把那 8 件也当成未下单，允许重复下单 10 件。
+        // 取消路径已同时维护两类来源行的 fulfilled_quantity，口径统一。
+        const ordered = source.fulfilledQuantity ?? 0
         if (nearlyGreater(quantity, source.quantity - ordered)) {
           throw new ApiError('CONFLICT', '采购数量不能超过市场报货汇总中的未下单数量')
         }
@@ -2779,7 +2819,8 @@ export async function createPurchaseOrder(
         ) {
           throw new ApiError('INVALID_STATE', '品项公司报货需求的供应链主体不一致')
         }
-        const ordered = await linkedQuantity(tx, source.id, '品项公司报货采购订单')
+        // 同上：以 fulfilled_quantity 为准，取消逻辑会把未收货部分退回来。
+        const ordered = source.fulfilledQuantity ?? 0
         if (nearlyGreater(quantity, source.quantity - ordered)) {
           throw new ApiError('CONFLICT', '采购数量不能超过品项公司报货中的未下单数量')
         }
@@ -2843,7 +2884,8 @@ export async function createPurchaseOrder(
       amount: number
       standardAmount: number
       pricedQuantity: number
-      supplyChainUnitCost: number | null
+      supplyChainCostAmount: number
+      supplyChainCostQuantity: number
       sources: PreparedPurchaseSource[]
     }>()
     for (const line of prepared) {
@@ -2856,7 +2898,8 @@ export async function createPurchaseOrder(
         amount: 0,
         standardAmount: 0,
         pricedQuantity: 0,
-        supplyChainUnitCost: line.supplyChainUnitCost,
+        supplyChainCostAmount: 0,
+        supplyChainCostQuantity: 0,
         sources: [],
       }
       group.quantity = fixed(group.quantity + line.quantity)
@@ -2866,6 +2909,15 @@ export async function createPurchaseOrder(
           group.standardAmount + line.quantity * (line.standardUnitPrice ?? line.actualUnitPrice),
         )
         group.pricedQuantity = fixed(group.pricedQuantity + line.quantity)
+      }
+      // 供应链成本同样要按量加权。早先固定取分组里第一条来源的成本，
+      // 而收货建批次用的就是这一列：同 SKU 两张需求 1×80 与 9×100 合并后
+      // 采购金额 980、均价 98，批次成本却按 80 入账，采购与入库口径当场分叉。
+      if (line.supplyChainUnitCost !== null) {
+        group.supplyChainCostAmount = fixed(
+          group.supplyChainCostAmount + line.quantity * line.supplyChainUnitCost,
+        )
+        group.supplyChainCostQuantity = fixed(group.supplyChainCostQuantity + line.quantity)
       }
       group.sources.push(line)
       groups.set(key, group)
@@ -2920,7 +2972,9 @@ export async function createPurchaseOrder(
         unitDiscount,
         actualUnitPrice,
         amount: line.amount,
-        supplyChainUnitCost: line.supplyChainUnitCost,
+        supplyChainUnitCost: line.supplyChainCostQuantity > EPSILON
+          ? fixed(line.supplyChainCostAmount / line.supplyChainCostQuantity)
+          : null,
         marketStandardUnitPrice: isMarketLine ? standardUnitPrice : null,
         marketUnitDiscount: isMarketLine ? unitDiscount : null,
         marketActualUnitPrice: isMarketLine ? actualUnitPrice : null,
@@ -3685,19 +3739,23 @@ export async function cancelSupplyChainPurchaseOrder(
         )
       }
     }
+    // 两类来源血缘一起取：供应链行来自品项公司报货需求，市场行来自市场报货汇总单。
+    // 早先只查前者，放开「含市场行可关闭」之后，市场行会因为查不到血缘而被误判成
+    // 「缺少品项公司报货血缘」—— 混合单照样关不掉，只是换了个错法。
     const sourceLinks = rows<{
+      relation_type: string
       from_item_id: number | string
       to_item_id: number | string
       quantity: string | number | null
     }>(await tx.execute(sql`
-      SELECT from_item_id, to_item_id, quantity
+      SELECT relation_type, from_item_id, to_item_id, quantity
         FROM inventory_doc_links
        WHERE to_doc_id = ${purchaseOrderId}
-         AND relation_type = '品项公司报货采购订单'
+         AND relation_type IN ('品项公司报货采购订单', '报货汇总采购订单')
        ORDER BY from_item_id
        FOR UPDATE
     `))
-    // 合并后一条采购明细可以汇总自**多张**品项公司报货需求的多行，因此这里按采购行分组
+    // 合并后一条采购明细可以汇总自**多张**来源单的多行，因此这里按采购行分组
     // 收集全部血缘（早先按 to_item_id 建一对一 Map，多来源时只会留下最后一条，
     // 数量断言随即误判、释放额度也会漏给其它来源行）。
     const sourceLinksByOrderItem = new Map<number, typeof sourceLinks>()
@@ -3711,7 +3769,7 @@ export async function cancelSupplyChainPurchaseOrder(
     for (const orderItem of orderItems) {
       const itemSourceLinks = sourceLinksByOrderItem.get(orderItem.id) ?? []
       if (itemSourceLinks.length === 0 || itemSourceLinks.some((link) => Number(link.from_item_id) <= 0)) {
-        throw new ApiError('INVALID_STATE', '采购订单明细缺少品项公司报货血缘')
+        throw new ApiError('INVALID_STATE', '采购订单明细缺少来源报货血缘')
       }
       const sourceLinkedQuantity = fixed(itemSourceLinks.reduce(
         (sum, link) => sum + Number(link.quantity ?? 0),
@@ -3720,11 +3778,10 @@ export async function cancelSupplyChainPurchaseOrder(
       if (Math.abs(sourceLinkedQuantity - orderItem.quantity) > EPSILON) {
         throw new ApiError('INVALID_STATE', '采购订单明细与品项公司报货数量不一致')
       }
-      const receivedQuantity = await linkedQuantity(
-        tx,
-        orderItem.id,
-        '采购订单供应链采购入库',
-      )
+      // 市场行不经供应链入库，没有"已收"概念，整单取消即全额作废。
+      const receivedQuantity = orderItem.marketId
+        ? 0
+        : await linkedQuantity(tx, orderItem.id, '采购订单供应链采购入库')
       if (nearlyGreater(receivedQuantity, orderItem.quantity)) {
         throw new ApiError('CONFLICT', '采购订单实收数量异常，不能关闭')
       }
@@ -3748,12 +3805,16 @@ export async function cancelSupplyChainPurchaseOrder(
         unreleasedQuantity = fixed(unreleasedQuantity - releasable)
       }
     }
-    for (const [requestItemId, remainingQuantity] of remainingByRequestItem) {
-      // 来源可能分布在多张需求单上，这里不再限定单一 companyRequestId。
+    // 按 id 升序回退，取锁顺序确定（与建单侧一致，避免 ABBA）。
+    // 这里同时覆盖两类来源行：品项公司报货需求行、市场报货汇总行 —— 两者的占用都记在
+    // 各自的 fulfilled_quantity 上，不回退的话来源行会永远显示"已全部下单"，再也用不了。
+    // （原始市场报货行不在此列：它的占用只记血缘，单据转已取消后 linkedQuantity 自动排除。）
+    for (const requestItemId of [...remainingByRequestItem.keys()].sort((a, b) => a - b)) {
+      const remainingQuantity = remainingByRequestItem.get(requestItemId)!
       const requestItem = await docItemForUpdate(tx, requestItemId)
       const currentFulfilledQuantity = requestItem.fulfilledQuantity ?? 0
       if (nearlyGreater(remainingQuantity, currentFulfilledQuantity)) {
-        throw new ApiError('CONFLICT', '品项公司报货履约数量异常，不能关闭采购订单')
+        throw new ApiError('CONFLICT', '来源报货履约数量异常，不能关闭采购订单')
       }
       await tx.execute(sql`
         UPDATE inventory_doc_items

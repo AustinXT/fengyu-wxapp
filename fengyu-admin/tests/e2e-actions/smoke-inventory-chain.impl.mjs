@@ -506,6 +506,70 @@ try {
       shipmentId: gfh2Id,
       items: [{ shipmentItemId: gfh2FirstItem.id, receivedQuantity: 3 }],
     }))
+
+  // ════ 阶段 9：混合采购单（市场行 + 供应链自用行）关闭 ════
+  // #194 的新能力，也是评审两轮里各被打回一次的路径：
+  // 早先「含市场行」一刀切拒绝关单 → 混合单供应链短供时既关不掉也释放不了占用；
+  // 改成「市场行已发货才拒绝」后，释放循环又只认品项公司血缘，市场行照样报错。
+  setSession(supplyChainSession())
+  const { id: mixReqId } = await biz.createItemCompanyReplenishment({
+    supplyChainLocationId: HQ_ORG,
+    items: [{ skuId: SKU_SUPPLY, quantity: 4 }],
+  })
+  const [mixReqItem] = await docItems(mixReqId)
+  setSession(storeA1Session())
+  const { id: mixStoreReqId } = await biz.createStoreReplenishmentRequest({
+    storeId: STA1_ID, marketId: MKA_ORG,
+    items: [{ skuId: SKU_SUPPLY, quantity: 2 }],
+  })
+  const [mixStoreItem] = await docItems(mixStoreReqId)
+  setSession(marketASession())
+  const { id: mixMbhId } = await biz.createMarketReplenishment({
+    marketId: MKA_ORG, supplyChainLocationId: HQ_ORG,
+    items: [{ skuId: SKU_SUPPLY, sourceRequestItemIds: [mixStoreItem.id], purchaseQuantity: 2 }],
+  })
+  const [mixMbhItem] = await docItems(mixMbhId)
+  setSession(supplyChainSession())
+  const { id: mixMhzId } = await biz.createMarketReportSummary({
+    supplyChainLocationId: HQ_ORG,
+    items: [{ skuId: SKU_SUPPLY, marketId: MKA_ORG, quantity: 2, sourceReportItemIds: [mixMbhItem.id] }],
+  })
+  const [mixMhzItem] = await docItems(mixMhzId)
+
+  const { id: mixPoId } = await biz.createPurchaseOrder({
+    supplyChainLocationId: HQ_ORG,
+    items: [
+      { sourceItemId: mixReqItem.id, quantity: 4 },
+      { sourceItemId: mixMhzItem.id, quantity: 2 },
+    ],
+  })
+  const mixPoItems = await docItems(mixPoId)
+  check('混合采购单：一张单同时含市场行与供应链自用行',
+    mixPoItems.length === 2
+      && mixPoItems.some((i) => i.market_id === MKA_ORG)
+      && mixPoItems.some((i) => !i.market_id),
+    JSON.stringify(mixPoItems.map((i) => ({ m: i.market_id, q: i.quantity }))))
+  check('含供应链行的混合单状态为待收货',
+    (await docHeader(mixPoId))?.status === '待收货', '')
+  check('两类来源行的 fulfilled 都已占用',
+    num((await docItems(mixReqId))[0]?.fulfilled_quantity) === 4
+      && num((await docItems(mixMhzId))[0]?.fulfilled_quantity) === 2,
+    `req=${(await docItems(mixReqId))[0]?.fulfilled_quantity} mhz=${(await docItems(mixMhzId))[0]?.fulfilled_quantity}`)
+
+  await biz.cancelSupplyChainPurchaseOrder({
+    purchaseOrderId: mixPoId, cancellationReason: '供应商短供',
+  })
+  check('混合单（市场行未发货）可关闭',
+    (await docHeader(mixPoId))?.status === '已取消', '')
+  check('关闭后两类来源行的 fulfilled 都回退',
+    num((await docItems(mixReqId))[0]?.fulfilled_quantity) === 0
+      && num((await docItems(mixMhzId))[0]?.fulfilled_quantity) === 0,
+    `req=${(await docItems(mixReqId))[0]?.fulfilled_quantity} mhz=${(await docItems(mixMhzId))[0]?.fulfilled_quantity}`)
+  check('回退后该汇总行可以重新下单',
+    (await biz.createPurchaseOrder({
+      supplyChainLocationId: HQ_ORG,
+      items: [{ sourceItemId: mixMhzItem.id, quantity: 2 }],
+    })).id.length > 0, '')
 } catch (e) {
   check('冒烟整体', false, '致命错误：' + (e?.stack || e?.message || String(e)))
 } finally {

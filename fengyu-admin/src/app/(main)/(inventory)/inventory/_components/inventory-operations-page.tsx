@@ -35,6 +35,7 @@ import {
   createSupplyChainStaffPurchase,
   createPurchaseOrder,
   createMarketReportSummary,
+  resolveInventorySkuSupplierStatus,
   summarizeMarketReplenishmentRequests,
   createReturnForRestock,
   createSelfPurchasedReceipt,
@@ -627,7 +628,7 @@ function OperationWorkspace({
       {operation === 'store-request' && <StoreRequestForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
       {operation === 'market-report' && <MarketReportForm locations={locations} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
       {operation === 'item-company-request' && <ItemCompanyReplenishmentForm locations={locations} skuOptions={skuOptions} onSuccess={onSuccess} />}
-      {operation === 'purchase-order' && <PurchaseOrderForm locations={locations} skuOptions={skuOptions} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
+      {operation === 'purchase-order' && <PurchaseOrderForm locations={locations} workflowDocs={workflowDocs} canViewPrice={canViewPrice} onSuccess={onSuccess} />}
       {operation === 'market-report-summary' && <MarketReportSummaryForm locations={locations} onSuccess={onSuccess} />}
       {operation === 'company-shipment' && <CompanyShipmentForm locations={locations} workflowDocs={workflowDocs} onSuccess={onSuccess} />}
       {operation === 'market-receipt' && <ShipmentReceiptForm workflowDocs={workflowDocs} kind="market" onSuccess={onSuccess} />}
@@ -1438,9 +1439,6 @@ interface PurchaseSourceLine {
   /** 来源明细行上的供应商快照；仅采购订单与市场报货汇总会写，展示用。 */
   supplier: string | null
   supplierId: string | null
-  /** 商品档案上的供应商 —— fail-closed 判断以它为准，与服务端同源。 */
-  skuSupplierId: string | null
-  skuSupplierName: string | null
   actualUnitPrice: number | null
   availableQuantity: number
   quantity: string
@@ -1455,13 +1453,11 @@ interface PurchaseSourceLine {
  */
 function PurchaseOrderForm({
   locations,
-  skuOptions,
   workflowDocs,
   canViewPrice,
   onSuccess,
 }: {
   locations: InventoryLocationRow[]
-  skuOptions: InventorySkuRow[]
   workflowDocs: InventoryDocRow[]
   canViewPrice: boolean
   onSuccess: (message: string) => void
@@ -1481,13 +1477,15 @@ function PurchaseOrderForm({
   )
 
   // 供应商的真相源是**商品档案**，与服务端 `loadSku().supplierId` 同一口径。
-  // 早先这里读的是来源明细行的 `supplier_id`，但只有采购订单与市场报货汇总会写那一列 ——
-  // 品项公司报货需求的明细从不写，于是供应链采购每一行都被判成「未绑定」，
-  // 红条常亮把提交按钮永久禁用（服务端其实放行）。
-  const skuById = useMemo(
-    () => new Map(skuOptions.map((sku) => [sku.skuId, sku])),
-    [skuOptions],
-  )
+  // 两次踩坑记在这里：
+  //   ① 早先读来源明细行的 `supplier_id`，但只有采购订单与市场报货汇总会写那一列，
+  //      品项公司报货需求的明细从不写 → 供应链采购每行都判「未绑定」，提交被永久禁用；
+  //   ② 接着改用办理台的 `skuOptions`，可它只是列表页第一页（最多 100 条），
+  //      排在后面的合法 SKU 同样被误判。
+  // 所以按**选中的 SKU 精确批量查**，并且和建单时一样连「档案是否仍启用」一起看。
+  const [skuSupplierStatus, setSkuSupplierStatus] = useState<
+    Map<string, { supplierId: string | null; supplierName: string | null }>
+  >(new Map())
 
   const candidates = useMemo(
     () => [
@@ -1525,16 +1523,18 @@ function PurchaseOrderForm({
               marketId: item.marketId,
               supplier: item.supplier,
               supplierId: item.supplierId,
-              skuSupplierId: skuById.get(item.skuId)?.supplierId ?? null,
-              skuSupplierName: skuById.get(item.skuId)?.supplierName
-                ?? skuById.get(item.skuId)?.supplier
-                ?? null,
               actualUnitPrice: item.actualUnitPrice ?? null,
               availableQuantity: available,
               quantity: String(available),
             })
           }
         }
+        // 按本批明细涉及的 SKU 精确查供应商档案状态（不用分页列表）
+        const status = await resolveInventorySkuSupplierStatus(
+          Array.from(new Set(next.map((line) => line.skuId))),
+        )
+        if (cancelled) return
+        setSkuSupplierStatus(new Map(status.map((row) => [row.skuId, row])))
         setLines(next)
         // 来源单的 target 就是供应链主体，默认带出来省一次选择（候选唯一时尤其明显）。
         setSupplyChainLocationId((current) => current
@@ -1560,24 +1560,27 @@ function PurchaseOrderForm({
     }>()
     for (const line of lines) {
       const key = `${line.skuId}@${line.marketId ?? ''}`
+      const status = skuSupplierStatus.get(line.skuId)
       const group = map.get(key) ?? {
         key,
         skuName: line.skuName,
         specName: line.specName,
         marketId: line.marketId,
-        supplier: line.skuSupplierName ?? line.supplier,
-        missingSupplier: !line.skuSupplierId,
+        supplier: status?.supplierName ?? line.supplier,
+        missingSupplier: !status?.supplierId,
         lines: [],
       }
       group.lines.push(line)
       map.set(key, group)
     }
     return Array.from(map.values())
-  }, [lines])
+  }, [lines, skuSupplierStatus])
 
   const missingSupplierNames = useMemo(
-    () => Array.from(new Set(lines.filter((line) => !line.skuSupplierId).map((line) => line.skuName))),
-    [lines],
+    () => Array.from(new Set(
+      lines.filter((line) => !skuSupplierStatus.get(line.skuId)?.supplierId).map((line) => line.skuName),
+    )),
+    [lines, skuSupplierStatus],
   )
 
   function updateLine(sourceItemId: number, quantity: string) {

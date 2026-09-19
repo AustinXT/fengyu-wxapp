@@ -75,13 +75,19 @@ export default async function Page({
   // 差异是纯派生值（实盘 − 账面），**前端算、不落库** —— 落库就多一个会漂的数（issue #131 Q2）。
   const isStocktake = isStocktakeDocType(doc.docType)
   const stocktakeColumnCount = isStocktake ? 2 : 0
-  // 采购订单与市场报货汇总把供应商/市场挂在明细行上（#193 #194），单头没有这两个字段；
-  // 它们的下游（品项公司发货、供应链采购入库）单头同样为空，行上带的是批次供应商。
-  // 按「行上是否真有归属」判断而不是按 docType，这样 0043 回填过的存量单据也能显示；
-  // 末一项兜住只有名称快照、没有档案关联的存量行 —— 但单头已经显示了供应商时就不重复列。
-  const lineOwnershipColumnCount = doc.items.some(
-    (item) => item.supplierId || item.marketId || (item.supplier && !doc.supplierName),
-  ) ? 2 : 0
+  // 供应商与市场两列的成立条件并不相同，分开判：
+  //
+  // 供应商：采购订单/汇总单把它挂在行上（#194 单头不再挂），其下游的发货、入库单
+  // 行上带的是批次供应商。按「行上是否真有」判断而不是按 docType，这样 0043 回填过的
+  // 存量单据也能显示；末一项兜住只有名称快照、没有档案关联的存量行 ——
+  // 但单头已经显示了供应商时就不重复列。
+  const lineSupplierColumnCount = doc.items.some(
+    (item) => item.supplierId || (item.supplier && !doc.supplierName),
+  ) ? 1 : 0
+  // 市场：**只有采购订单与市场报货汇总的行级归属是权威的**。下游发货/入库单的市场记在
+  // 单头、明细行为空，若一并按行渲染会把它们统统误标成「品项公司自用」。
+  const lineMarketColumnCount = (doc.docType === '采购订单' || doc.docType === '市场报货汇总') ? 1 : 0
+  const lineOwnershipColumnCount = lineSupplierColumnCount + lineMarketColumnCount
   const priceColumnCount = showPrice ? (showStoreAllocationPrice ? 4 : 2) : 0
   const promotionColumnCount = doc.items.some((item) => item.promotionPlanId || item.promotionPlanNoSnapshot) ? 1 : 0
   const itemColumnCount = 9 + lineOwnershipColumnCount + priceColumnCount + reportColumnCount + shipmentColumnCount +
@@ -211,10 +217,8 @@ export default async function Page({
               <th className="px-3 py-2 text-right">{isStocktake ? '实盘数量' : '数量'}</th>
               {isStocktake && <th className="px-3 py-2 text-right">差异</th>}
               <th className="px-3 py-2 text-left">赠送</th>
-              {lineOwnershipColumnCount > 0 && <>
-                <th className="px-3 py-2 text-left">供应商</th>
-                <th className="px-3 py-2 text-left">市场</th>
-              </>}
+              {lineSupplierColumnCount > 0 && <th className="px-3 py-2 text-left">供应商</th>}
+              {lineMarketColumnCount > 0 && <th className="px-3 py-2 text-left">市场</th>}
               {showStoreAllocationPrice ? <>
                 <th className="px-3 py-2 text-right">门店标准单价</th>
                 <th className="px-3 py-2 text-right">单价优惠</th>
@@ -271,10 +275,10 @@ export default async function Page({
                   <td className="px-3 py-2">
                     {item.isGift ? <Badge variant="outline" className="text-[10px]">赠送</Badge> : '—'}
                   </td>
-                  {lineOwnershipColumnCount > 0 && <>
-                    <td className="px-3 py-2">{fmt(item.supplier)}</td>
+                  {lineSupplierColumnCount > 0 && <td className="px-3 py-2">{fmt(item.supplier)}</td>}
+                  {lineMarketColumnCount > 0 && (
                     <td className="px-3 py-2">{item.marketId ? fmt(item.marketName) : '品项公司自用'}</td>
-                  </>}
+                  )}
                   {showStoreAllocationPrice ? <>
                     <td className="px-3 py-2 text-right">{fmt(item.standardUnitPrice)}</td>
                     <td className="px-3 py-2 text-right">{fmt(item.unitDiscount)}</td>

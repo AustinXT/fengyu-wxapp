@@ -733,17 +733,18 @@ describe('inventory business action input guards', () => {
   it('品项公司报货需求同节点归一化形态（source=target=总部）可通过供应链主体校验', async () => {
     // insertDocHeader 对同节点单据类型做 source=target 归一化，落库 source 不是 null。
     // 哨兵挪到了数量校验：能走到「未下单数量」说明已越过 source 守卫。
+    // 来源行 fulfilled_quantity 给满（5/5），本次再要 1 件即超出 ——
+    // 「已下单量」读的是行上的 fulfilled_quantity（它才是被取消逻辑维护的那一个），
+    // 不再额外查血缘，所以这里没有对应的 linkedQuantity mock。
     const txExecute = vi.fn()
       .mockResolvedValueOnce([{ location_id: 'HQ', org_node_id: 'HQ', location_type: '总部', name: '供应链', parent_location_id: null }])
-      .mockResolvedValueOnce([{ ...storeRequestItemRow(), doc_id: 'ZBH-1' }])
+      .mockResolvedValueOnce([{ ...storeRequestItemRow('5'), doc_id: 'ZBH-1' }])
       .mockResolvedValueOnce([{
         id: 'ZBH-1', doc_type: '品项公司报货需求', status: '已完成',
         source_org_node_id: 'HQ', target_org_node_id: 'HQ', market_id: null,
         supplier_id: null, supplier_name: null,
       }])
       .mockResolvedValueOnce([supplierBoundSkuRow()])
-      // linkedQuantity：已全部下单，于是本次 1 件超出未下单数量
-      .mockResolvedValueOnce([{ quantity: '5' }])
     vi.mocked(db.execute).mockResolvedValue([] as never)
     vi.mocked(db.transaction).mockImplementationOnce(async (callback) => callback({
       execute: initializedCutoverExecutor(txExecute),
