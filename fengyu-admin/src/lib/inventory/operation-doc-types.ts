@@ -77,16 +77,18 @@ export const INVENTORY_OPERATION_DOC_QUERY: Record<InventoryOperationId, Invento
   // 审批市场退货 → 货回供应链库，产出供应链退货入库单（business.ts: approveReturnForRestock）。
   'market-return-approval': { docTypes: ['供应链退货入库'] },
   /*
-   * 撤回审批的两个产出：通过 → 发货单变「已取消」；驳回 → status 改回「待收货」
-   * （`business.ts` rejectItemCompanyShipmentCancellation，不清 reason）。
-   * 两个都要显示，审批人得能复核自己刚驳回的单 —— 只留「已取消」的话，
-   * 驳回动作做完单子立刻从视野里消失，而它在申请人那边还看得见，同一条链两端口径相反。
-   * 「待审批」不在列：那是**待办**不是产出，按口径不进本 Tab。
-   * 叠 cancellationRequested 是为了排除其它途径取消的发货单。
+   * 审批通过 → 发货单变「已取消」，这是本业务唯一稳定的产出（甲方 2026-09-19 拍板表
+   * 也只写了「仅已取消」）。叠 cancellationRequested 排除其它途径取消的发货单。
+   *
+   * ⚠️ 驳回**刻意不在此列**，别再"顺手补上"：驳回只是把 status 改回「待收货」
+   * （`rejectItemCompanyShipmentCancellation`，不清 reason），而「待收货」会继续演进 ——
+   * 市场照常收货后变「已完成」，那张被驳回过的单又会从 Tab 里消失。
+   * 用会变的当前状态表达"审批处理过"这件既成事实，口径必然不自洽。
+   * 审批人要复核驳回记录，目前去操作日志查；是否要单独做一个稳定入口已回填 issue 等甲方拍板。
    */
   'shipment-cancel-approval': {
     docTypes: ['品项公司发货'],
-    statuses: ['已取消', '待收货'],
+    statuses: ['已取消'],
     cancellationRequested: true,
   },
   'supply-chain-conversion': {
@@ -105,9 +107,11 @@ export const INVENTORY_OPERATION_DOC_QUERY: Record<InventoryOperationId, Invento
   'market-return': { docTypes: ['市场退货'] },
   /*
    * 申请撤回不产出新单，只把发货单打上撤回申请标记（status → 待审批）。
-   * 这里**刻意不限状态**：驳回时 `business.ts` 只把 status 改回「待收货」，
-   * 不清 `cancellation_request_reason`，所以申请过的单（待审批 / 已取消 / 被驳回）
-   * 都还认得出来，申请人本来就该看到自己申请的全部结果。
+   * 这里**刻意不限状态**，申请人看到的是自己申请过撤回的全部单据，共四种下场：
+   * 待审批（还没批）、已取消（批了）、待收货（驳回了）、**已完成（驳回后照常收了货）**。
+   * 最后一种也留着是有意的 —— marker 一旦打上就不会被清（驳回 `business.ts:3875`、
+   * 收货 `:2891` 都不清 reason），申请人查"我申请过哪些撤回"时它就该在。
+   * 这与审批侧只认「已取消」不矛盾：那边表达的是审批产出，这边表达的是申请足迹。
    */
   'shipment-cancel': { docTypes: ['品项公司发货'], cancellationRequested: true },
   'staff-purchase': { docTypes: ['员工购出库'] },

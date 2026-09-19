@@ -74,14 +74,17 @@ describe('业务 → 产出单据类型映射（#190）', () => {
       docTypes: ['供应链采购订单'],
       statuses: ['已取消'],
     })
-    // 审批侧含「待收货」：驳回时 business.ts 把 status 改回待收货且不清 reason，
-    // 那也是本业务的产出结果，审批人得能复核自己刚驳回的单。
-    // 「待审批」不在列 —— 那是待办不是产出。
+    /*
+     * 审批侧只认「已取消」= 甲方拍板表原文。别顺手把驳回态补进来：
+     * 驳回只是把 status 改回「待收货」，而它会继续演进到「已完成」，
+     * 用会变的当前状态表达"审批处理过"必然不自洽（同一张单过阵子自己就消失了）。
+     */
     expect(INVENTORY_OPERATION_DOC_QUERY['shipment-cancel-approval']).toEqual({
       docTypes: ['品项公司发货'],
-      statuses: ['已取消', '待收货'],
+      statuses: ['已取消'],
       cancellationRequested: true,
     })
+    // 钉住上面那句「驳回态会继续演进」的前提：驳回写回待收货、且不清 marker。
     expect(businessSource).toContain(`SET status = '待收货', rejected_by = `)
     // 申请方刻意不限状态：驳回只把 status 改回「待收货」而不清 reason，
     // 申请人该看到自己申请的全部结果（待审批 / 已取消 / 被驳回）。
@@ -126,9 +129,12 @@ describe('业务 → 产出单据类型映射（#190）', () => {
   })
 
   it('收货类业务映射到入库单，与 business.ts 的 receivePhysicalShipment 实参一致', () => {
-    // 对账点：`receiveStoreAllocation` / `receiveItemCompanyShipment` 的第二个实参
-    // 就是产出的入库单类型，改了那边这里必须跟着改。
+    // 对账点：`receiveStoreAllocation` / `receiveItemCompanyShipment` 传给
+    // receivePhysicalShipment 的**第 4 个实参**就是产出的入库单类型。
+    // ⚠️ 两个调用点都要钉：只钉一个的话，另一个改成别的入库类型时，
+    // 那个字面量仍散落在 business.ts 别处（前缀表、注释），存在性对账照样绿。
     expect(businessSource).toContain(`receivePhysicalShipment(session, input, '分院配货', '院入库')`)
+    expect(businessSource).toContain(`receivePhysicalShipment(session, input, '品项公司发货', '市场采购入库')`)
     expect(INVENTORY_OPERATION_DOC_QUERY['store-receipt'].docTypes).toEqual(['院入库'])
     expect(INVENTORY_OPERATION_DOC_QUERY['market-receipt'].docTypes).toEqual(['市场采购入库'])
   })
@@ -138,6 +144,40 @@ describe('业务 → 产出单据类型映射（#190）', () => {
     expect(businessSource).toContain(`returnDoc.docType === '院退货' ? '市场退货入库' : '供应链退货入库'`)
     expect(INVENTORY_OPERATION_DOC_QUERY['store-return-approval'].docTypes).toEqual(['市场退货入库'])
     expect(INVENTORY_OPERATION_DOC_QUERY['market-return-approval'].docTypes).toEqual(['供应链退货入库'])
+  })
+
+  it('14 个自建单业务逐条钉「哪个函数写哪个 docType」，互换任意两条都会转红', () => {
+    /*
+     * 存在性断言（下一条用例）挡不住互换：把两个业务的 docType 对调，两个字面量
+     * 都还在 business.ts 里，测试照样全绿，而用户在 Tab 里看到的是另一个业务的单。
+     * 这里对**每个自己调 insertDocHeader 的业务**钉死「函数 → 类型」。
+     * 不在本表的 10 条各有专门断言：收货 ×2（receivePhysicalShipment 实参）、
+     * 退货 ×2（按 source.locationType 分叉）、退货审批 ×2（三元）、
+     * 撤回/关闭 ×3（不建单）、market-report（见下）。
+     */
+    const owned: Array<[InventoryOperationId, string, string]> = [
+      ['store-request', 'createStoreReplenishmentRequest', '门店报货'],
+      ['item-company-request', 'createItemCompanyReplenishment', '品项公司报货需求'],
+      ['market-report', 'createMarketReplenishment', '市场报货'],
+      ['purchase-order', 'createPurchaseOrderFromMarketReplenishment', '采购订单'],
+      ['supply-chain-purchase-order', 'createPurchaseOrderFromItemCompanyReplenishment', '供应链采购订单'],
+      ['company-shipment', 'createItemCompanyShipment', '品项公司发货'],
+      ['supply-chain-receipt', 'receiveSupplyChainPurchaseOrder', '供应链采购入库'],
+      ['store-allocation', 'createStoreAllocation', '分院配货'],
+      ['staff-purchase', 'createMarketStaffPurchase', '员工购出库'],
+      ['supply-chain-staff-purchase', 'createSupplyChainStaffPurchase', '供应链员工购出库'],
+      ['self-purchase', 'createSelfPurchasedReceipt', '自采产品入库'],
+      ['external-outbound', 'createExternalMarketOutbound', '非凤御市场出库'],
+    ]
+    for (const [operation, fnName, docType] of owned) {
+      expect(INVENTORY_OPERATION_DOC_QUERY[operation].docTypes, operation).toEqual([docType])
+      expect(exportedFnBody(fnName), `${fnName} 应写入 ${docType}`).toContain(`docType: '${docType}'`)
+    }
+
+    // 三个转换业务共用同一个函数，一次产出出库 + 入库两张。
+    const conversion = exportedFnBody('createInventoryConversion')
+    expect(conversion).toContain(`docType: '库存转换出库'`)
+    expect(conversion).toContain(`docType: '库存转换入库'`)
   })
 
   it('每个非撤回类业务的产出单据类型都在 business.ts 里真实存在', () => {

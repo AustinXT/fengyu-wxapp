@@ -3330,7 +3330,13 @@ describe('#190 单据列表的多类型 / 多状态 / 撤回标记过滤', () =>
     await listInventoryCoreDocs({ docTypes: ['库存转换出库', '库存转换入库'], locationType: '市场' })
     const compiled = new PgDialect().sqlToQuery(sink.where as Parameters<PgDialect['sqlToQuery']>[0])
     const params = compiled.params.map((param) => String(param))
+    // 两种 docType 都要在：只剩出库的话，转换入库单会被静默漏掉，而 Tab 看起来完全正常。
     expect(params).toContain('库存转换出库')
+    expect(params).toContain('库存转换入库')
     expect(params).toContain('MKT-A')
+    // 层级过滤必须覆盖 source 与 target 两个端点（OR），只挡一端就挡不住跨层级的单。
+    expect(compiled.sql).toContain('"source_org_node_id" in')
+    expect(compiled.sql).toContain('"target_org_node_id" in')
+    expect(compiled.sql).toMatch(/source_org_node_id" in[^)]*\)\s+or\s+"[^"]*"\."target_org_node_id" in/)
   })
 })

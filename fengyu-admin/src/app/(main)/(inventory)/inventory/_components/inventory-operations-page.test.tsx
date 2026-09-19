@@ -177,15 +177,21 @@ describe('业务工作区双 Tab（#190）', () => {
     expect(source).toMatch(/<TabsContent value="form" keepMounted/)
   })
 
-  it('金额列头同时要求「有价格权限」与「这批单据真有金额」', () => {
-    // 只看权限不够：24 个业务里有 12 个产出的单据本身 totalAmount 恒为 null
-    // （退货 / 转换 / 发货 / 报货……business.ts 直接写 null），而 canViewPrice 是
-    // 会话级常量，跟 docType 无关 —— 只按它出列头，这 12 个业务永远多一列全是「—」，
-    // 正是本页在 #135 组 5 修过的症状。
+  it('金额列头只看会话级价格权限，不从当前页数据反推', () => {
+    // 反推（`rows.some(r => r.totalAmount != null)`）看着能少一列空「—」，实则更糟：
+    // 行级遮蔽后 totalAmount 就是 undefined，混合绑定账号翻到整页都被遮蔽的那一页时
+    // 金额列会整列消失、翻回去又出现，表头随页抖动；无权限的行也不再显示「—」。
     const tab = source.slice(source.indexOf('function OperationDocsTab('))
     expect(tab).toMatch(/setPriceVisible\(result\.canViewPrice\)/)
-    expect(tab).toMatch(/const hasAnyAmount = rows\.some\(/)
-    expect(tab).toMatch(/\.\.\.\(priceVisible && hasAnyAmount/)
+    expect(tab).toMatch(/\.\.\.\(priceVisible\s*\n?\s*\?/)
+    expect(tab).not.toMatch(/rows\.some\([^)]*totalAmount/)
+  })
+
+  it('请求失败的空表与真的没单据，文案必须不同', () => {
+    // 两者都渲染「暂无单据」的话，用户会以为这个业务真的一张单都没有。
+    const tab = source.slice(source.indexOf('function OperationDocsTab('))
+    expect(tab).toMatch(/setFailed\(true\)/)
+    expect(tab).toMatch(/emptyText=\{failed \? '单据加载失败/)
   })
 
   it('分页器用服务端返回的 pageSize，不用前端常量', () => {
@@ -240,6 +246,13 @@ describe('通用业务卡片不参与单据 Tab（#190 / #191 交界）', () => 
       source.indexOf('function today()'),
     )
     const entries = generic.match(/\{ id: '[^']+',[^}]*\}/g) ?? []
+    /*
+     * ⚠️ 上面的正则要求 `id` 是字面量的第一个键且条目里没有嵌套对象。
+     * 键序一变条目就不进 entries —— 没 href 也不会红，正好漏掉这条测试要防的事故。
+     * 所以先用「`id:` 的出现次数 == 抓到的条目数」把漏检本身钉住。
+     */
+    const idCount = (generic.match(/\bid: '/g) ?? []).length
+    expect(entries.length, '有通用卡没被守护正则抓到（键序变了？含嵌套对象？）').toBe(idCount)
     expect(entries.length).toBeGreaterThanOrEqual(10)
     for (const entry of entries) {
       expect(entry, `通用卡缺 href：${entry.slice(0, 60)}`).toContain("href: '/inventory/docs?create=")

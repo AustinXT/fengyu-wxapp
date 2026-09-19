@@ -675,11 +675,13 @@ function OperationDocsTab({
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(OPERATION_DOCS_PAGE_SIZE)
   const [loading, setLoading] = useState(true)
+  const [failed, setFailed] = useState(false)
   const [priceVisible, setPriceVisible] = useState(canViewPrice)
 
   useEffect(() => {
     let cancelled = false
     setLoading(true)
+    setFailed(false)
     listInventoryOperationDocs({ operationId: operation, page, pageSize: OPERATION_DOCS_PAGE_SIZE })
       .then((result) => {
         if (cancelled) return
@@ -696,6 +698,9 @@ function OperationDocsTab({
         // 越界自纠 effect 把用户从第 3 页静默弹回第 1 页并再发一次请求 ——
         // 一次瞬时失败被放大成「跳页 + 重复请求 + 第二条 toast」。
         setRows([])
+        // 失败态与空态必须分开：都渲染成「暂无单据」会让人以为这个业务真的没单，
+        // 而实际上是这次没取到。
+        setFailed(true)
         toast.error(actionErrorMessage(error, '加载单据失败'))
       })
       .finally(() => {
@@ -703,14 +708,6 @@ function OperationDocsTab({
       })
     return () => { cancelled = true }
   }, [operation, page])
-
-  /*
-   * 金额列不能只看会话权限：`canViewPrice` 是会话级常量，而 24 个业务里有 12 个
-   * 产出的单据本身就不带金额（退货、转换、发货、报货…… business.ts 写死 totalAmount: null），
-   * 只按权限出列头会得到「列头在、整列都是 —」的空列（#135 组 5 同型症状）。
-   * 金额有无由单据类型决定、同一业务内稳定，不会出现翻页时列时有时无。
-   */
-  const hasAnyAmount = rows.some((row) => row.totalAmount !== null && row.totalAmount !== undefined)
 
   const columns: Column<InventoryDocRow>[] = [
     {
@@ -743,9 +740,14 @@ function OperationDocsTab({
     { key: 'targetOrgNodeName', header: '入库/接收', cell: (row) => row.targetOrgNodeName ?? '—' },
     { key: 'docDate', header: '日期', cell: (row) => row.docDate.slice(0, 10) },
     { key: 'totalQuantity', header: '数量', cell: (row) => <span className="font-medium">{row.totalQuantity}</span> },
-    // 行级遮蔽已在服务端完成（engine 按价格档位决定是否带出 totalAmount），
-    // 这里只负责「整档没权限、或这类单据压根没有金额」时不出列头。
-    ...(priceVisible && hasAnyAmount
+    /*
+     * 列头只看会话级价格权限，**不从当前页数据反推**：行级遮蔽后 totalAmount 会变成
+     * undefined，按"本页有没有金额"决定列头的话，混合绑定账号翻到全遮蔽的一页时整列消失、
+     * 翻回有权限的页又出现，表头随页抖动，且无权限的行也不再按验收要求显示「—」。
+     * 代价是有 12 个业务（退货 / 转换 / 发货 / 报货）产出的单据本就不带金额，会多一列全是「—」；
+     * 那要靠「docType → 有无金额语义」的单源来治（engine 侧同样缺，见 PR 的 follow-up）。
+     */
+    ...(priceVisible
       ? [{ key: 'totalAmount', header: '金额', cell: (row: InventoryDocRow) => row.totalAmount ?? '—' } as Column<InventoryDocRow>]
       : []),
     {
@@ -761,7 +763,12 @@ function OperationDocsTab({
 
   return (
     <div className="space-y-3">
-      <DataTable columns={columns} data={rows} loading={loading} emptyText="暂无单据" />
+      <DataTable
+        columns={columns}
+        data={rows}
+        loading={loading}
+        emptyText={failed ? '单据加载失败，请切换 Tab 或稍后重试' : '暂无单据'}
+      />
       <Pagination total={total} page={page} pageSize={pageSize} onPageChange={setPage} />
     </div>
   )
