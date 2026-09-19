@@ -78,8 +78,10 @@ async function recomputeCustomerStatusForUser(tx: Tx, clientUserId: string): Pro
 /**
  * 段 2：customer_type 跃迁（只升不降）。
  *
- * 四端 SQL 镜像副本（admin orders.ts + admin refunds 链路 + staffApi order.js + payNotify index.js
- * + 本 helper）。SQL 字面必须与其它三端一致；守护测试：
+ * 八处 SQL 镜像副本：五处运行时（staffApi order.js + clientApi order.js + payNotify index.js
+ * + admin orders.ts + 本 helper）逐字一致，三个 db/scripts 批量脚本（recalc-all-customer-types.js
+ * + recalc-became-member-at.js + backfill-membership-upgrade-doc-type.js）结构对齐。
+ * SQL 字面必须与其余七处一致；守护测试：
  * fengyu-staff/cloudfunctions/staffApi/__tests__/routes/recalc-customer-type-sql.test.js
  */
 /**

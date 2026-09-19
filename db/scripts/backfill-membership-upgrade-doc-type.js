@@ -21,7 +21,7 @@
  *   2026-04-26 sale-order-domain-refactor 后，回款单已从 sale_order_type 下沉到
  *   sale_order_payments.change_type='回款'，sale_orders 不再产生 sale_order_type='回款单' 行；
  *   payNotify 原回款累计分支已退化为恒为空的死代码，故不存在「超集单」需在线打标的场景。
- *   本脚本只需覆盖单笔 total_amount >= threshold 的销售单。
+ *   本脚本只需覆盖单笔 non_trial >= threshold 的销售单（#187 起按非体验部分毛实收，见上方选单口径）。
  *
  * 幂等：UPDATE WHERE 跳过 (is_membership_upgrade=true AND document_type='售前一次') 的行，
  *   二次运行无副作用。

@@ -1308,7 +1308,8 @@ exports.main = async (event) => {
 
           // 八处 SQL 独立副本（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
           // + admin actions/orders.ts + admin lib/recompute-customer-tags.ts
-          // + db/scripts/recalc-all-customer-types.js + db/scripts/recalc-became-member-at.js）。
+          // + db/scripts/recalc-all-customer-types.js + recalc-became-member-at.js
+          // + backfill-membership-upgrade-doc-type.js）。
           // 修改时必须同步其余七处；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js 守护。
           // #187（2026-09-18）：按单笔订单的非体验部分毛实收判定，落地 Q5.2 决策。
           const typeResult = await client.query(

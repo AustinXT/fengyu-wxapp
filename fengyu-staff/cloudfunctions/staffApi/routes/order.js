@@ -602,7 +602,8 @@ async function recalcCustomerType(client, clientUserId) {
 
   // 八处 SQL 独立副本（staffApi routes/order.js + clientApi routes/order.js + payNotify index.js
   // + admin actions/orders.ts + admin lib/recompute-customer-tags.ts + db/scripts/recalc-all-customer-types.js
-  // + db/scripts/recalc-became-member-at.js）。修改时必须同步其余七处；一致性由 staffApi
+  // + db/scripts/recalc-became-member-at.js + db/scripts/backfill-membership-upgrade-doc-type.js）。
+  // 修改时必须同步其余七处；一致性由 staffApi
   // __tests__/routes/recalc-customer-type-sql.test.js 守护，任一处漂移立即触发测试失败。
   //
   // 2026-09-18 (#187) 口径：按**单笔订单的非体验部分毛实收**判定，落地 2026-04-26 Q5.2 决策

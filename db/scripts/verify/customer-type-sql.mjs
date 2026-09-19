@@ -150,7 +150,13 @@ for (const [name, re] of SCRIPTS) {
   }
   const f = join(work, `${name}.sql`)
   // $1 = 阈值；事务内跑完即回滚，不留痕
-  writeFileSync(f, `BEGIN;\n${body.replaceAll('$1', String(THRESHOLD))};\nROLLBACK;\n`)
+  // 同样按完整占位符替换（不能 replaceAll('$1', …)，`$10` 会被静默替成 19800）。
+  // 批量脚本只应有 $1=阈值这一个参数；出现别的一律报错，防口径漂移后静默跑出错误结果。
+  const bodySql = body.replace(/\$(\d+)/g, (m, n) => {
+    if (n !== '1') throw new Error(`${name} 出现未知参数 ${m}（批量脚本只应有 $1=阈值）`)
+    return String(THRESHOLD)
+  })
+  writeFileSync(f, `BEGIN;\n${bodySql};\nROLLBACK;\n`)
   try {
     psql(f)
     console.log(`✓ ${name.padEnd(40)} SQL 可执行`)

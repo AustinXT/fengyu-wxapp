@@ -338,7 +338,7 @@ const RECALC_CUSTOMER_TYPE_CTE = `WITH refund_by_item AS (
  * 并给 paid_at 最早的达标销售单打 is_membership_upgrade=true（会员升级单归因）。
  *
  * 八处 SQL 独立副本（staffApi + clientApi + payNotify + admin orders.ts / recompute-customer-tags.ts
- * + db/scripts/recalc-all-customer-types.js + db/scripts/recalc-became-member-at.js），
+ * + db/scripts/recalc-all-customer-types.js + recalc-became-member-at.js + backfill-membership-upgrade-doc-type.js），
  * 修改必须同步其余七处；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js 守护。
  * 单笔订单口径（#187 后判定金额换成该单非体验部分毛实收，仍不跨订单累计）。
  * @param {object} client - pg 事务客户端
