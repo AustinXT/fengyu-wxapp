@@ -151,3 +151,40 @@ describe('办理台表单一致性（#135）', () => {
     expect(marked.length).toBe(58)
   })
 })
+
+/**
+ * 业务工作区双 Tab 的结构守护（#190）。
+ *
+ * 同样走源码守护（理由见文件顶部：2800 行组件 + 20 个表单，渲染 mock 成本远高于收益）。
+ * 这里钉的四条都是「改错了页面照常渲染、但行为静默跑偏」的点。
+ */
+describe('业务工作区双 Tab（#190）', () => {
+  const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
+
+  it('工作区默认停在填报表单，不是单据', () => {
+    // 办理台的主用途是办业务。默认落到单据 Tab 会让每个人每次都多点一下。
+    expect(source).toMatch(/<Tabs defaultValue="form">/)
+    expect(source).toMatch(/<TabsTrigger value="form">填报表单<\/TabsTrigger>/)
+    expect(source).toMatch(/<TabsTrigger value="docs">单据<\/TabsTrigger>/)
+  })
+
+  it('表单面板带 keepMounted，切去看单据不会清空填了一半的表单', () => {
+    // 去掉 keepMounted 后页面完全正常，只是每次切 Tab 回来数据没了 ——
+    // 这种回归没人会在 code review 里看出来。
+    expect(source).toMatch(/<TabsContent value="form" keepMounted/)
+  })
+
+  it('单据面板按 operation 加 key，换业务时重置分页与已加载数据', () => {
+    // 不加 key 的话，OperationDocsTab 在切换业务时不重建：page 还停在上一个业务的第 N 页，
+    // 新业务的单据只有 1 页 → 打开就是空白，且 Pagination 会自纠回第 1 页再请求一次。
+    expect(source).toMatch(/<OperationDocsTab key=\{operation\}/)
+  })
+
+  it('单据 Tab 只能走 listInventoryOperationDocs，不自己拼单据类型', () => {
+    // 单据类型 / 状态 / 层级的收窄规则在服务端按 operationId 查映射表解析。
+    // 客户端一旦自己拼 docType，映射表就有了第二份真相，改一处忘一处。
+    expect(source).toContain('listInventoryOperationDocs')
+    expect(source).not.toMatch(/listInventoryCoreDocs/)
+    expect(source).not.toMatch(/docTypes:\s*\[/)
+  })
+})

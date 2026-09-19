@@ -3211,3 +3211,119 @@ describe('盘点单账面数量（#131）', () => {
     }
   })
 })
+
+/**
+ * 办理台「单据」Tab 的过滤条件（#190）。
+ *
+ * Tab 里显示什么单完全由这几个 filter 决定：一个业务可能产出两种单（转换出库 + 入库），
+ * 不产出新单的业务靠状态 / 撤回标记收窄。任一条件没落到 WHERE 上，
+ * 用户看到的就是「别的业务的单」，而页面不会有任何异常表现。
+ */
+describe('#190 单据列表的多类型 / 多状态 / 撤回标记过滤', () => {
+  function capturingCountSelect(rows: unknown[], sink: { where?: unknown }) {
+    return {
+      from: () => ({
+        where: async (cond: unknown) => {
+          sink.where = cond
+          return rows
+        },
+      }),
+    }
+  }
+
+  function capturingDocsListSelect(rows: unknown[], sink: { where?: unknown }) {
+    return {
+      from: () => ({
+        leftJoin: () => ({
+          leftJoin: () => ({
+            where: (cond: unknown) => {
+              sink.where = cond
+              return { orderBy: () => ({ limit: () => ({ offset: async () => rows }) }) }
+            },
+          }),
+        }),
+      }),
+    }
+  }
+
+  /**
+   * 断言一律落在**编译后的 SQL 文本 + 参数**上，不用遍历对象找字符串的那种匹配：
+   * drizzle 的条件对象里挂着整张表的元数据，`sqlContains(where, '某列名')` 对
+   * 任何条件都恒为真（列名来自表定义而非条件本身），假阳性会让「没加条件」的用例照样绿。
+   */
+  async function whereOf(filters: Parameters<typeof listInventoryCoreDocs>[0]) {
+    const sink: { where?: unknown } = {}
+    mockDb.select
+      .mockReturnValueOnce(capturingCountSelect([{ count: 0 }], sink) as never)
+      .mockReturnValueOnce(capturingDocsListSelect([], sink) as never)
+    await listInventoryCoreDocs(filters)
+    const compiled = new PgDialect().sqlToQuery(sink.where as Parameters<PgDialect['sqlToQuery']>[0])
+    return { text: compiled.sql, params: compiled.params.map((param) => String(param)) }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockDb.select.mockReset()
+    mockDb.execute.mockReset()
+    // admin 会话：聚焦类型/状态条件本身，不掺 scope 节点（scope 另有 §9.4 专项）。
+    vi.mocked(isAdminScope).mockReturnValue(true)
+    mockGetSession.mockResolvedValue(SESSION)
+    mockDb.execute.mockResolvedValue([{ drifted: false }] as never)
+  })
+
+  it('docTypes 多值同时进条件：转换业务的出库单与入库单都在', async () => {
+    const { text, params } = await whereOf({ docTypes: ['库存转换出库', '库存转换入库'] })
+    expect(text).toContain('"doc_type" in')
+    expect(params).toContain('库存转换出库')
+    expect(params).toContain('库存转换入库')
+  })
+
+  it('docTypes 传空数组 fail-closed，不退化成「不过滤」', async () => {
+    // 退化成不过滤的话，某个业务的 Tab 会把**全部单据**倒出来 —— 比少几行危险得多。
+    const { text } = await whereOf({ docTypes: [] })
+    expect(text).toContain('FALSE')
+  })
+
+  it('statuses 收窄：关闭采购只看已取消的采购订单', async () => {
+    const { params } = await whereOf({ docTypes: ['供应链采购订单'], statuses: ['已取消'] })
+    expect(params).toContain('供应链采购订单')
+    expect(params).toContain('已取消')
+  })
+
+  it('statuses 传空数组同样 fail-closed', async () => {
+    const { text } = await whereOf({ statuses: [] })
+    expect(text).toContain('FALSE')
+  })
+
+  it('cancellationRequested 落到 cancellation_request_reason 非空', async () => {
+    const { text } = await whereOf({ docTypes: ['品项公司发货'], cancellationRequested: true })
+    expect(text).toContain('"cancellation_request_reason" is not null')
+  })
+
+  it('cancellationRequested 为 false / 不传时不加该条件', async () => {
+    // 撤回业务之外的发货单查询不能被这个条件误伤：漏加会少看单，多加会把
+    // 普通发货单全筛掉（它们的 reason 恒为空），两个方向都是静默错。
+    const notPassed = await whereOf({ docTypes: ['品项公司发货'] })
+    expect(notPassed.text).not.toContain('cancellation_request_reason')
+    const explicitFalse = await whereOf({ docTypes: ['品项公司发货'], cancellationRequested: false })
+    expect(explicitFalse.text).not.toContain('cancellation_request_reason')
+  })
+
+  it('locationType 与 docTypes 叠加：转换单按层级隔离', async () => {
+    // 市场办理台传 locationType=市场，条件里必须同时出现类型与层级两把锁。
+    mockDb.select.mockReset()
+    // locationType 分支会先查一次 inventory_locations 拿该类型的 org 节点。
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({ where: async () => [{ orgNodeId: 'MKT-A' }] }),
+    } as never)
+    const sink: { where?: unknown } = {}
+    mockDb.select
+      .mockReturnValueOnce(capturingCountSelect([{ count: 0 }], sink) as never)
+      .mockReturnValueOnce(capturingDocsListSelect([], sink) as never)
+    await listInventoryCoreDocs({ docTypes: ['库存转换出库', '库存转换入库'], locationType: '市场' })
+    const compiled = new PgDialect().sqlToQuery(sink.where as Parameters<PgDialect['sqlToQuery']>[0])
+    const params = compiled.params.map((param) => String(param))
+    expect(params).toContain('库存转换出库')
+    expect(params).toContain('MKT-A')
+  })
+})
