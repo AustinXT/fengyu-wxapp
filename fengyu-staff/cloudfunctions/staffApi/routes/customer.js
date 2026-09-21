@@ -193,11 +193,23 @@ function renderProfileFilters(filters, startIdx) {
 /**
  * 搜索顾客（PG 单源）
  * 数据来源 = PG client_wechat_users（含 WorkFine 同步数据）
+ *
+ * 分页（#181）：口径对齐 mgmt-customer.js 的 D-search-pagination —— keyword / 默认分支
+ * 按 `c.user_id ASC` 稳定排序后 LIMIT/OFFSET，hasMore 由 `rows.length === pageSize` 推断；
+ * phone 分支最多命中 0~1 条，不分页。排序键取 user_id 而非「最近到店」：后者不在主查询里
+ * （分页后按 id 批量补），按它排序要把 service_orders 聚合 JOIN 进主查询，代价与 scope 语义
+ * 都会变；分页只需一个稳定唯一键，不需要业务序。
+ *
+ * ⚠️ 返回形态是多态的，勿改成统一返回对象：
+ *   - payload 带 `page` → `{ customers, page, pageSize, hasMore }`（顾客档案 Tab 下滑加载用）
+ *   - 不带 `page`   → 裸数组（开单 / 充值卡 / 充值金转入 / 服务单 / 提货 五处选顾客沿用，
+ *                     改形态会同时打挂这 5 条业务流程）
+ * 两种形态均由 __tests__/routes/customer.test.js 锁定。
  */
 async function search(ctx) {
   await requireStaffBound()(ctx, async () => {});
 
-  const { keyword, phone, crossStore, profileScope } = ctx.event.payload || {};
+  const { keyword, phone, crossStore, profileScope, page, pageSize } = ctx.event.payload || {};
 
   // 拓展筛选：customer_type / spending_tier / monthly_activity / customer_status 等值过滤
   const filters = buildProfileFilters(ctx.event.payload);
@@ -206,7 +218,25 @@ async function search(ctx) {
   // 业务流程选顾客（开单/充值卡/服务单/提货）不传 profileScope，不受此限制。
   const restrictEmp = profileScope && restrictToBoundEmployee(ctx.auth);
 
-  const limit = 20;
+  // 不传 page 时 safePage=1 / safePageSize=20 / offset=0，等价于改造前的 `LIMIT 20`。
+  // `page: null` 视同未传（走裸数组分支）。
+  const wantsPaged = page !== undefined && page !== null;
+  /**
+   * 两道防线都不可省：
+   * ① Math.trunc —— Math.max/min 不取整，`pageSize=2.5` 会原样进 LIMIT，
+   *    PG 按 int8 解析参数直接抛 `invalid input syntax for type bigint: "2.5"`（500 级，非降级）。
+   * ② Number.isSafeInteger —— `page='Infinity'` 经 trunc 仍是 Infinity，
+   *    `Math.max(1, Infinity)` 还是 Infinity，OFFSET 会变成 Infinity 同样打到 PG 报错。
+   *    非安全整数一律回落默认值。
+   */
+  const pageNum = Math.trunc(Number(page));
+  const safePage = Number.isSafeInteger(pageNum) && pageNum >= 1 ? pageNum : 1;
+  const pageSizeNum = Math.trunc(Number(pageSize));
+  // 非法值（0 / 负数 / NaN / Infinity）一律回落默认 20，语义与 mgmt-customer 的 `|| 50` 一致
+  const safePageSize = Number.isSafeInteger(pageSizeNum) && pageSizeNum >= 1
+    ? Math.min(100, pageSizeNum)
+    : 20;
+  const offset = (safePage - 1) * safePageSize;
   let rows = [];
 
   if (phone) {
@@ -237,8 +267,9 @@ async function search(ctx) {
          FROM client_wechat_users c
          LEFT JOIN stores s ON s.store_id = c.bound_store_id
          WHERE (c.phone LIKE $1 OR c.name LIKE $1)${fSql}
-         LIMIT $${limitIdx}`,
-        [kw, ...filters.values, limit],
+         ORDER BY c.user_id ASC
+         LIMIT $${limitIdx} OFFSET $${limitIdx + 1}`,
+        [kw, ...filters.values, safePageSize, offset],
       );
     } else {
       // 门店内模糊检索：顾客 Tab / 服务单选顾客用
@@ -261,8 +292,9 @@ async function search(ctx) {
          FROM client_wechat_users c
          LEFT JOIN stores s ON s.store_id = c.bound_store_id
          WHERE (c.phone LIKE $1 OR c.name LIKE $1) AND ${scope.sql}${empClause}${fSql}
-         LIMIT $${limitIdx}`,
-        [...params, ...filters.values, limit],
+         ORDER BY c.user_id ASC
+         LIMIT $${limitIdx} OFFSET $${limitIdx + 1}`,
+        [...params, ...filters.values, safePageSize, offset],
       );
     }
   } else {
@@ -285,8 +317,9 @@ async function search(ctx) {
        FROM client_wechat_users c
        LEFT JOIN stores s ON s.store_id = c.bound_store_id
        WHERE ${scope.sql}${empClause}${fSql}
-       LIMIT $${limitIdx}`,
-      [...params, ...filters.values, limit],
+       ORDER BY c.user_id ASC
+       LIMIT $${limitIdx} OFFSET $${limitIdx + 1}`,
+      [...params, ...filters.values, safePageSize, offset],
     );
   }
 
@@ -349,7 +382,18 @@ async function search(ctx) {
     }
   }
 
-  ctx.result = results;
+  // 形态多态见函数头注释：带 page 才返回分页信封，否则保持裸数组（5 处业务流程依赖）。
+  // hasMore 由「本页取满」推断（与 mgmt-customer 同口径）：恰好取满而实际已到底时，
+  // 前端会多发一次拉到空页的请求，随后 hasMore 转 false —— 不会漏数据。
+  // phone 分支未分页（最多命中 0~1 条），恒为 false。
+  ctx.result = wantsPaged
+    ? {
+        customers: results,
+        page: safePage,
+        pageSize: safePageSize,
+        hasMore: phone ? false : results.length === safePageSize,
+      }
+    : results;
 }
 
 /**
@@ -1507,6 +1551,10 @@ async function listByTag(ctx) {
     WHERE ${cWhere}
     GROUP BY c.user_id, c.name, c.phone, c.birthday, c.member_level,
              c.customer_type, c.customer_status
+    -- #181：下方 filtered.slice() 是内存分页，依赖本查询的行序稳定。
+    -- PG 不保证 GROUP BY 的输出顺序，缺排序键时翻页会重复/漏行。
+    -- 排序键与 search() 一致（user_id ASC），两条列表路径翻页口径同源。
+    ORDER BY c.user_id ASC
   `, [...cParams, ...soScope.params])
 
   // 按 tag 过滤

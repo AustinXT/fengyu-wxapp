@@ -90,9 +90,53 @@ interface CustomerTagResponse {
   total: number;
 }
 
+// customer.search 带 page 时的分页信封（不带 page 仍返回裸数组，业务流程选顾客沿用）
+interface CustomerSearchPage {
+  customers: CustomerListItem[];
+  page: number;
+  pageSize: number;
+  hasMore: boolean;
+}
+
+// 与 customer.listByTag 及管理层顾客列表保持同一页大小
+const PAGE_SIZE = 20;
+
+/**
+ * 把 customer.search 的返回归一化成分页信封（#181）。
+ *
+ * ⚠️ 这不是防御性编程的洁癖，是**真实的发版窗口**：云函数部署与小程序审核发布是两条
+ * 独立时间线。本页改造后恒传 `page`，若线上 staffApi 还是旧版本（不认 page，直接返回裸
+ * 数组），`data.customers` 取到 undefined → 列表恒空，而 `hasMore` 为 undefined 会让
+ * 「没有更多了」照常显示 —— 呈现出一个逼真的「本店没有顾客」假象，不报错、不进 catch。
+ * 归一化后退化为「单页、无更多」，至少第一页数据是对的。
+ */
+function normalizeSearchPage(
+  raw: CustomerSearchPage | CustomerListItem[],
+  requestedPage: number,
+): CustomerSearchPage {
+  if (Array.isArray(raw)) {
+    return { customers: raw, page: requestedPage, pageSize: PAGE_SIZE, hasMore: false };
+  }
+  return {
+    customers: raw?.customers || [],
+    page: typeof raw?.page === 'number' ? raw.page : requestedPage,
+    pageSize: raw?.pageSize || PAGE_SIZE,
+    hasMore: !!raw?.hasMore,
+  };
+}
+
 Page({
   data: {
+    // 搜索框里的实时输入（输入即写入，未必已提交）
     searchKeyword: '',
+    /**
+     * 当前列表**实际生效**的关键词（#181）。
+     * 翻页必须沿用它，不能读 `searchKeyword` 实时值：用户搜「张」拿到第 1 页后，
+     * 在输入框改成「李」但没点搜索，此时触底会用「李」拉第 2 页拼到「张」的结果后面
+     * —— 既漏了「张」的第 2 页，又把两个关键词的数据混在一屏。
+     * `reqGen` 防的是「旧响应后到」，防不了这种「请求发出时参数已漂移」。
+     */
+    committedKeyword: '',
     results: [] as CustomerListItem[],
     loading: false,
     searched: false,
@@ -124,8 +168,23 @@ Page({
     hasAdvancedFilter: false,
     // 当前选中的标签（空 = 不筛选）
     activeTag: '' as '' | TagType,
-    tagPage: 1,
-    tagHasMore: false,
+    // 分页状态（#181）：标签分支与搜索/筛选分支共用，onReachBottom 单一判据
+    page: 1,
+    hasMore: false,
+    /**
+     * 请求世代（#181）：每次发起列表请求自增，响应回来先比对。
+     * 翻页请求在途时切筛选/搜索会并发发起 reset 请求，若旧的那次**后**返回，
+     * 它的 reset=false 分支会把旧条件的数据追加到新列表尾部（跨筛选脏合并）。
+     * `loading` 闸门挡不住这个 —— 各筛选入口本来就允许在 loading 期间点击。
+     */
+    reqGen: 0,
+    /**
+     * 首屏/重置请求失败（#181）。必须有这个独立状态，不能靠「列表为空」推断：
+     * 切换查询条件的请求失败时若保留旧条件的数据，屏幕上就是一份**属于旧条件**的列表，
+     * 却顶着新的筛选高亮、底部还写着「没有更多了」—— 比空列表更误导。
+     * 置错误态后清空列表并给出重试入口，语义才是诚实的。
+     */
+    listError: false,
     // 客户分配
     isManager: false,
     showAssignSheet: false,
@@ -140,18 +199,32 @@ Page({
     }
     this.setData({ isManager: isManager() });
     this.loadStats();
-    if (!this.data.activeTag && !this.data.searched) {
-      this.loadFilteredList();
+    /**
+     * #181：补 `results.length === 0` 守卫（对齐 mgmt-customer-list 的既有范式）。
+     * 改造前这条分支不支持翻页，每次 onShow 重拉第一页无损失；加上下滑加载后，
+     * 从顾客详情页返回会把已加载的第 2、3… 页整体丢掉、列表跳回顶部 ——
+     * 恰好打在本需求最常用的默认浏览态上。
+     * 代价：详情页里改了姓名/备注后返回，列表不自动刷新，需下拉刷新（与管理层视图一致）。
+     */
+    if (!this.data.activeTag && !this.data.searched && this.data.results.length === 0
+        && !this.data.listError && !this.data.loading) {
+      this.loadList(1, true);
     }
   },
 
+  /**
+   * 下拉刷新与错误态重试都走 `reset=true`，因此会采纳输入框里的**当前值**
+   * （哪怕用户输入后没点搜索）。这是有意取舍：此刻屏幕上输入框显示的就是那个词，
+   * 刷新出对应结果所见即所得；反过来把输入框回退成已提交词会抹掉用户正在打的字。
+   * 「未提交不生效」这条只约束**翻页**（见 committedKeyword 注释），不约束整体刷新。
+   */
   onPullDownRefresh() {
     const done = () => wx.stopPullDownRefresh();
     this.loadStats();
     if (this.data.activeTag) {
       this.loadByTag(this.data.activeTag as TagType, 1, true).finally(done);
     } else {
-      this.loadFilteredList().finally(done);
+      this.loadList(1, true).finally(done);
     }
   },
 
@@ -168,50 +241,95 @@ Page({
     return customerType !== 'all' || !!spendingTier || !!monthlyActivity || !!customerStatus;
   },
 
-  // 按当前筛选条件加载列表（无筛选时即默认全店列表）
-  async loadFilteredList(): Promise<void> {
-    this.setData({ loading: true, hasAdvancedFilter: this.computeHasAdvancedFilter() });
+  // 按当前筛选条件 + 关键词加载列表（无筛选无关键词时即默认全店列表）
+  // #181：原 loadFilteredList / onSearch 两个无分页函数合并于此，分页逻辑只写一遍。
+  // 关键词与拓展筛选**同时**下发 —— 改造前 onSearch 只传 keyword，筛选条在 UI 上仍高亮
+  // 却不作用于结果，属于 UI 与请求不一致；合并后以 UI 所见为准。
+  async loadList(page: number, reset: boolean): Promise<void> {
+    const gen = this.data.reqGen + 1;
+    // 开请求即清错误态：否则错误分支优先渲染，重试期间页面毫无变化，按钮还能连点
+    this.setData({ reqGen: gen, loading: true, listError: false, hasAdvancedFilter: this.computeHasAdvancedFilter() });
     try {
       const { customerType, spendingTier, monthlyActivity, customerStatus } = this.data;
+      // reset 才采纳输入框的当前值；翻页沿用已生效的关键词（见 committedKeyword 注释）
+      const keyword = reset ? this.data.searchKeyword.trim() : this.data.committedKeyword;
       // profileScope: 顾客档案浏览，普通员工仅见绑定本人的顾客（业务流程选顾客不传此标记）
-      const params: Record<string, string | boolean> = { profileScope: true };
+      const params: Record<string, string | number | boolean> = {
+        profileScope: true,
+        page,
+        pageSize: PAGE_SIZE,
+      };
+      if (keyword) params.keyword = keyword;
       if (customerType !== 'all') params.customerType = customerType;
       if (spendingTier) params.spendingTier = spendingTier;
       if (monthlyActivity) params.monthlyActivity = monthlyActivity;
       if (customerStatus) params.customerStatus = customerStatus;
-      const data = await callStaffApi<CustomerListItem[]>('customer.search', params);
-      this.setData({ results: withMemberLevelBadgeClasses(fmtCustomerDates(data || [])), searched: false });
-    } catch (_) {
-      this.setData({ results: [] });
+      // 带 page 时云函数返回分页信封（不带则是裸数组，供业务流程选顾客沿用）
+      const raw = await callStaffApi<CustomerSearchPage | CustomerListItem[]>('customer.search', params);
+      if (gen !== this.data.reqGen) return; // 期间已有更新的请求发出，本次结果作废
+      const data = normalizeSearchPage(raw, page);
+      const customers = withMemberLevelBadgeClasses(fmtCustomerDates(data.customers));
+      const newResults = reset ? customers : [...this.data.results, ...customers];
+      this.setData({
+        results: newResults,
+        page: data.page,
+        hasMore: data.hasMore,
+        searched: !!keyword,
+        committedKeyword: keyword,
+        listError: false,
+      });
+    } catch (err: unknown) {
+      if (gen !== this.data.reqGen) return;
+      this.handleListError(err, reset);
     } finally {
-      this.setData({ loading: false });
+      if (gen === this.data.reqGen) this.setData({ loading: false });
+    }
+  },
+
+  /**
+   * 列表请求失败的统一处理（#181）。
+   *
+   * 始终 toast（合并前 onSearch 失败是有提示的，不能因为合并丢掉反馈）。此外分两种：
+   *
+   * - **reset 请求失败**：调用方在发起前**已经**把查询条件切成新的（activeTag /
+   *   searchKeyword / 筛选项）。此时若保留旧条件的数据，屏幕上就是一份属于旧条件的列表，
+   *   却顶着新的筛选高亮、底部还写着「没有更多了」，`onShow` 也因列表非空不再重试 ——
+   *   一个会一直留在屏幕上的错误归属。而且旧的 `page`/`hasMore` 会让下一次触底拿**新条件**
+   *   请求 `page+1`，既跳过新条件第 1 页又混合两类数据。所以：清空 + 错误态 + 重试入口。
+   * - **翻页请求失败**：查询条件没变，屏幕上的数据是对的，保留即可；`page` 不推进，
+   *   下次触底自然重试同一页。
+   */
+  handleListError(err: unknown, reset: boolean) {
+    const msg = err instanceof Error ? err.message : '加载失败';
+    wx.showToast({ title: msg, icon: 'none' });
+    if (reset) {
+      this.setData({ results: [], page: 1, hasMore: false, listError: true });
+    }
+  },
+
+  // 错误态的重试入口：按当前处于哪条分支重新拉第一页
+  onListRetry() {
+    if (this.data.activeTag) {
+      this.loadByTag(this.data.activeTag as TagType, 1, true);
+    } else {
+      this.loadList(1, true);
     }
   },
 
   onSearchChange(e: WechatMiniprogram.CustomEvent) {
-    this.setData({ searchKeyword: e.detail as unknown as string });
-    if (!e.detail.trim()) {
+    // van-search 的边缘事件形态下 detail 可能是 undefined/null，直接 .trim() 会抛
+    const value = (e.detail as unknown as string) || '';
+    this.setData({ searchKeyword: value });
+    if (!value.trim()) {
       this.setData({ activeTag: '' });
-      this.loadFilteredList();
+      this.loadList(1, true);
     }
   },
 
   async onSearch() {
-    const keyword = this.data.searchKeyword.trim();
-    if (!keyword) {
-      this.loadFilteredList();
-      return;
-    }
-    this.setData({ loading: true, searched: true, activeTag: '' });
-    try {
-      const data = await callStaffApi<CustomerListItem[]>('customer.search', { keyword, profileScope: true });
-      this.setData({ results: withMemberLevelBadgeClasses(fmtCustomerDates(data || [])) });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '搜索失败';
-      wx.showToast({ title: msg, icon: 'none' });
-    } finally {
-      this.setData({ loading: false });
-    }
+    // 搜索与筛选互斥于标签筛选：清标签后统一交给 loadList（关键词为空即退回默认列表）
+    this.setData({ activeTag: '' });
+    await this.loadList(1, true);
   },
 
   // 展开/收起拓展筛选面板
@@ -225,7 +343,7 @@ Page({
     if ((this.data as Record<string, unknown>)[dim] === value) return;
     // 选拓展筛选清除统计卡片选中态（互斥）
     this.setData({ [dim]: value, activeTag: '', searchKeyword: '', searched: false });
-    this.loadFilteredList();
+    this.loadList(1, true);
   },
 
   // 重置全部拓展筛选（含顾客类型）
@@ -239,7 +357,7 @@ Page({
       searchKeyword: '',
       searched: false,
     });
-    this.loadFilteredList();
+    this.loadList(1, true);
   },
 
   // 点击统计卡片筛选
@@ -248,7 +366,7 @@ Page({
     if (tag === this.data.activeTag) {
       // 取消筛选
       this.setData({ activeTag: '', searchKeyword: '' });
-      this.loadFilteredList();
+      this.loadList(1, true);
       return;
     }
     // 选卡片清除全部拓展筛选（互斥）
@@ -261,33 +379,42 @@ Page({
       hasAdvancedFilter: false,
       searchKeyword: '',
       searched: false,
-      tagPage: 1,
+      page: 1,
     });
     this.loadByTag(tag, 1, true);
   },
 
   async loadByTag(tag: TagType, page: number, reset: boolean) {
-    this.setData({ loading: true });
+    const gen = this.data.reqGen + 1;
+    // 同 loadList：开请求即清错误态，让重试有可见反馈
+    this.setData({ reqGen: gen, loading: true, listError: false });
     try {
-      const data = await callStaffApi<CustomerTagResponse>('customer.listByTag', { tag, page, pageSize: 20 });
+      const data = await callStaffApi<CustomerTagResponse>('customer.listByTag', { tag, page, pageSize: PAGE_SIZE });
+      if (gen !== this.data.reqGen) return; // 同 loadList：期间已有更新的请求
       const customers = withMemberLevelBadgeClasses(fmtCustomerDates(data.customers || []));
       const newResults = reset ? customers : [...this.data.results, ...customers];
       this.setData({
         results: newResults,
-        tagPage: page,
-        tagHasMore: newResults.length < data.total,
+        page,
+        hasMore: newResults.length < data.total,
+        listError: false,
       });
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '加载失败';
-      wx.showToast({ title: msg, icon: 'none' });
+      if (gen !== this.data.reqGen) return;
+      this.handleListError(err, reset);
     } finally {
-      this.setData({ loading: false });
+      if (gen === this.data.reqGen) this.setData({ loading: false });
     }
   },
 
+  // #181：标签分支与搜索/筛选分支共用 page / hasMore，触底判据只剩一条
   onReachBottom() {
-    if (this.data.activeTag && this.data.tagHasMore && !this.data.loading) {
-      this.loadByTag(this.data.activeTag as TagType, this.data.tagPage + 1, false);
+    if (this.data.loading || !this.data.hasMore) return;
+    const nextPage = this.data.page + 1;
+    if (this.data.activeTag) {
+      this.loadByTag(this.data.activeTag as TagType, nextPage, false);
+    } else {
+      this.loadList(nextPage, false);
     }
   },
 
