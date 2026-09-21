@@ -37,6 +37,35 @@ describe('store.list', () => {
     expect(pg.query.mock.calls[0][0]).toContain('s.district LIKE')
     expect(pg.query.mock.calls[0][1]).toEqual(['%华东%'])
   })
+
+  // issue #213：列表一次渲染几十张卡片，原图（生产实测 12576×12575）解码会撑爆小程序进程
+  test('封面图返回缩略图 URL，不下发原图', async () => {
+    const original =
+      'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la/store-covers/a.png'
+    pg.query.mockResolvedValueOnce([
+      { store_id: 's1', store_name: '凤御A店', cover_image: original },
+    ])
+
+    const ctx = createCtx({ payload: {} })
+    await routes.list(ctx)
+
+    expect(ctx.result.stores[0].cover_image).toBe(
+      `${original}?imageMogr2/thumbnail/300x`
+    )
+  })
+
+  test('封面图为空时不产生无效 URL', async () => {
+    pg.query.mockResolvedValueOnce([
+      { store_id: 's1', store_name: '凤御A店', cover_image: null },
+      { store_id: 's2', store_name: '凤御B店', cover_image: '' },
+    ])
+
+    const ctx = createCtx({ payload: {} })
+    await routes.list(ctx)
+
+    expect(ctx.result.stores[0].cover_image).toBeNull()
+    expect(ctx.result.stores[1].cover_image).toBe('')
+  })
 })
 
 describe('store.detail', () => {
@@ -55,6 +84,44 @@ describe('store.detail', () => {
     expect(ctx.result.store.store_name).toBe('凤御A店')
     expect(ctx.result.store.staff_count).toBe(5)
     expect(ctx.result.store.customer_count).toBe(100)
+  })
+
+  // issue #213：详情头图接近满屏，用更大的缩略宽度；相册逐张处理
+  test('封面与相册均返回缩略图 URL', async () => {
+    const host =
+      'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la'
+    pg.query
+      .mockResolvedValueOnce([{
+        store_id: 's1',
+        store_name: '凤御A店',
+        cover_image: `${host}/store-covers/a.png`,
+        images: [`${host}/store-images/b.png`, `${host}/store-images/c.png`],
+      }])
+      .mockResolvedValueOnce([{ staff_count: 5 }])
+      .mockResolvedValueOnce([{ customer_count: 100 }])
+
+    const ctx = createCtx({ payload: { storeId: 's1' } })
+    await routes.detail(ctx)
+
+    expect(ctx.result.store.cover_image).toBe(
+      `${host}/store-covers/a.png?imageMogr2/thumbnail/750x`
+    )
+    expect(ctx.result.store.images).toEqual([
+      `${host}/store-images/b.png?imageMogr2/thumbnail/750x`,
+      `${host}/store-images/c.png?imageMogr2/thumbnail/750x`,
+    ])
+  })
+
+  test('相册字段非数组时降级为空数组', async () => {
+    pg.query
+      .mockResolvedValueOnce([{ store_id: 's1', store_name: '凤御A店', images: null }])
+      .mockResolvedValueOnce([{ staff_count: 0 }])
+      .mockResolvedValueOnce([{ customer_count: 0 }])
+
+    const ctx = createCtx({ payload: { storeId: 's1' } })
+    await routes.detail(ctx)
+
+    expect(ctx.result.store.images).toEqual([])
   })
 
   test('缺少 storeId 和 storeName → INVALID_PARAMS', async () => {
