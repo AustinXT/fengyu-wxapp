@@ -1231,6 +1231,41 @@ describe('inventory.approveDoc / rejectDoc 审批一致性', () => {
  * 新代码显式抛 INVALID_STATE。下面两条用例刻意把 target 设成审批人**有权**的主体，
  * 使旧代码必然放行 —— 回退修复后它们必红。
  */
+/** 读 routes/inventory.js 源码（缓存） */
+let __invSrc = null
+function readInventorySource() {
+  if (__invSrc === null) {
+    __invSrc = require('node:fs').readFileSync(
+      require('node:path').resolve(__dirname, '../../routes/inventory.js'), 'utf8',
+    )
+  }
+  return __invSrc
+}
+
+/**
+ * 取某个顶层函数的源码，**注释已剥离**。
+ *
+ * 剥注释是必须的：本文件的 #235 注释里原样引用了旧的代表值写法用于说明，
+ * 不剥的话守护会把注释当活代码而恒红（写完第一版就被自己抓到过）。
+ * 按函数切片而不是全文件匹配：inventory.js 两千多行，全文件搜到的命中可能落在别的函数里。
+ */
+function functionSource(fnName) {
+  const src = readInventorySource()
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:'"\\])\/\/[^\n]*/g, '$1')
+  const start = src.search(new RegExp(`(async )?function ${fnName}\\(`))
+  if (start < 0) return null
+  // 从函数起点做花括号配平，取到函数体结束
+  let depth = 0
+  let i = src.indexOf('{', start)
+  const from = i
+  for (; i < src.length; i++) {
+    if (src[i] === '{') depth++
+    else if (src[i] === '}') { depth--; if (depth === 0) return src.slice(from, i + 1) }
+  }
+  return null
+}
+
 describe('inventory.approveDoc / rejectDoc 鉴权主体（#235）', () => {
   /** 审批人对 market-A 有权；单据 source 为空、target 指向他有权的 store-A */
   function approverCtx(id) {
@@ -1304,36 +1339,122 @@ describe('inventory.approveDoc / rejectDoc 鉴权主体（#235）', () => {
   })
 
   /**
-   * 字面量守护：防复发。
+   * reviewer 构造的越权 mutant：鉴权打 target、扣库存仍打 source。
+   * 它能通过「source 为空」那两条用例（在鉴权前就抛），所以必须单独钉住
+   * 「鉴权用的就是被扣库存的那一侧」。
    *
-   * 上面两条只能锁住「source 为空」这一条可区分路径；`source || target` 这个写法本身
-   * 若以别的形式回潮（例如换个变量名、或在别处新增同款代表值取法），行为测试抓不到。
-   * 这条直接钉死源码里不许再出现该反模式。
+   * 构造：source = 审批人**无权**的 store-B，target = 他**有权**的 store-A，两端都非空。
+   * 正确实现按 source 鉴权 → PERMISSION_DENIED；mutant 按 target 鉴权 → 放行。
    */
-  test('源码中不存在 source_org_node_id || target_org_node_id 的代表值取法', () => {
-    const src = require('node:fs').readFileSync(
-      require('node:path').resolve(__dirname, '../../routes/inventory.js'),
-      'utf8',
+  test('approveDoc：两端非空且 source 无权 → 必须按 source 拒绝（不得改用 target 鉴权）', async () => {
+    const ctx = createCtx({
+      payload: { id: 'DOC-BOTH-ENDS', auditRemark: '越权探测' },
+      auth: {
+        roles: ['finance'],
+        roleBindings: [{ role: 'finance', scopeId: 'market-A', scopeType: '市场' }],
+        scopeStoreIds: ['store-A'],
+        effectiveStoreId: null,
+      },
+    })
+    pg.query.mockImplementation(async (query, params) => {
+      const sql = String(query)
+      // 审批人的 scope 只覆盖 store-A
+      if (sql.includes('WITH RECURSIVE descendants')) return [{ store_id: 'store-A' }]
+      if (sql.includes('SELECT location_id, location_type, parent_location_id')) {
+        return [{
+          location_id: params[0], org_node_id: params[0], location_type: '门店',
+          parent_location_id: 'market-A', is_active: true,
+        }]
+      }
+      return []
+    })
+    const client = mockTransactionClient([
+      {
+        rows: [{
+          id: 'DOC-BOTH-ENDS',
+          doc_type: '院退货',
+          status: '待审批',
+          source_org_node_id: 'store-B',
+          target_org_node_id: 'store-A',
+        }],
+      },
+      { rows: [{ store_id: 'store-A' }] },
+    ])
+
+    await expect(inventoryRoutes.approveDoc(ctx)).rejects.toThrow(
+      'PERMISSION_DENIED: 无权审批该门店库存单据',
     )
-    // 必须先剥离注释：本文件的 #235 注释里原样引用了旧写法用于说明，否则这条恒红
-    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
-    expect(code).not.toMatch(/source_org_node_id\s*\|\|\s*\w*\.?target_org_node_id/)
+    expect(client.query.mock.calls.some(([sql]) => /FROM inventory_doc_items/.test(sql))).toBe(false)
+    expect(client.query.mock.calls.some(([sql]) => /UPDATE inventory_docs/.test(sql))).toBe(false)
   })
 
   /**
-   * 方向守卫：刻意不写「入库 → 取 target」的分支（那会是不可达代码，正是 #237 清理的东西），
-   * 改为将来放开入库方向审批时直接 fail-closed。这条钉住守卫存在且是 fail-closed 形态。
+   * **语义**不变量（不是文本形状）：可审批的类型必须全部是出库方向。
+   *
+   * 第一版守卫写成 `APPROVAL_DOC_TYPES.has(t) ? '出库' : null` 再断言「不是出库就抛」——
+   * 那是恒真守卫（方向由被守卫的集合自己算出来），往 APPROVAL 加一个入库类型时会静默放行，
+   * 正是它声称要挡的场景。改用 OUTBOUND 这个独立分类器后，这条断言才有意义：
+   * 往 APPROVAL_DOC_TYPES 加入库类型 → 立刻红，提醒改的人回来补主体推导。
    */
-  test('审批方向守卫存在且为 fail-closed（非静默放行）', () => {
-    const src = require('node:fs').readFileSync(
-      require('node:path').resolve(__dirname, '../../routes/inventory.js'),
-      'utf8',
-    )
-    const fn = src.match(/function assertApprovalOutboundDirection\(docType\) \{[\s\S]*?\n\}/)?.[0]
+  test('APPROVAL_DOC_TYPES ⊆ OUTBOUND_DOC_TYPES（审批恒为出库方向）', () => {
+    const src = readInventorySource()
+    const setItems = (name) => {
+      const block = src.match(new RegExp(`const ${name} = new Set\\(\\[([\\s\\S]*?)\\]\\)`))
+      expect(block, `未找到 ${name}`).toBeTruthy()
+      return [...block[1].matchAll(/'([^']+)'/g)].map((m) => m[1])
+    }
+    const approval = setItems('APPROVAL_DOC_TYPES')
+    const outbound = new Set(setItems('OUTBOUND_DOC_TYPES'))
+    expect(approval.length).toBeGreaterThan(0)
+    expect(approval.filter((t) => !outbound.has(t))).toEqual([])
+  })
+
+  /**
+   * 守卫必须用**独立分类器**判方向。钉住它引用 OUTBOUND_DOC_TYPES ——
+   * 只要有人把它改回「从 APPROVAL_DOC_TYPES 自身派生方向」，这条就红。
+   */
+  test('方向守卫用独立分类器（OUTBOUND）而非从 APPROVAL 自身派生', () => {
+    const fn = functionSource('assertApprovalOutboundDirection')
     expect(fn, '缺少 assertApprovalOutboundDirection 守卫').toBeTruthy()
-    expect(fn).toMatch(/if \(direction !== '出库'\) throw/)
-    // approveDoc / rejectDoc 都必须经过它
-    expect((src.match(/assertApprovalOutboundDirection\(/g) || []).length).toBe(3)
+    expect(fn, '守卫必须用 OUTBOUND_DOC_TYPES 判方向').toMatch(/OUTBOUND_DOC_TYPES\.has\(/)
+    expect(fn, '守卫必须是 throw 而非静默返回').toMatch(/throw new Error\('INVALID_STATE/)
+    // 不得出现「用 APPROVAL 集合算出方向再拿方向去比」的恒真写法
+    expect(fn, '方向不得从 APPROVAL_DOC_TYPES 自身派生（恒真守卫）')
+      .not.toMatch(/APPROVAL_DOC_TYPES\.has\([^)]*\)\s*\?/)
+  })
+
+  /**
+   * 代表值取法的字面量守护（防复发）。
+   *
+   * 覆盖两种命名（snake_case 的 DB 列名 / camelCase 的 location 变量）、两个方向
+   * （source||target 与 target||source）、`||` 与 `??`。
+   * ⚠️ 中间变量（`const s = head.source_…; s || head.target_…`）抓不到 ——
+   * 这是词法守护的固有上限，真要防对抗只能上 AST；此处威胁模型是「后来者无意中复制」。
+   */
+  test('三处鉴权主体推导都不含「两主体二选一」的代表值取法', () => {
+    const PAIR_RE = /\b(?:source|target)(?:_org_node_id|OrgNodeId|Location)[^\n]{0,60}(?:\|\||\?\?)[^\n]{0,60}\b(?:target|source)(?:_org_node_id|OrgNodeId|Location)/
+
+    // approveDoc / rejectDoc 全函数体内都不该出现
+    for (const fn of ['approveDoc', 'rejectDoc']) {
+      const body = functionSource(fn)
+      expect(body, `未找到函数 ${fn}`).toBeTruthy()
+      expect(body, `${fn} 里出现了「第一个非空主体」式的代表值取法`).not.toMatch(PAIR_RE)
+    }
+
+    /**
+     * `resolveStaffCreateLocations` 只查**鉴权主体推导那一段**（acting 计算 → scope 校验）。
+     * 它末尾另有一处 `const orgNodeId = sourceOrgNodeId || targetOrgNodeId` —— 那是
+     * 同主体单据（院产品报损 / 分院库存盘点）把两端**归一**，与 admin 侧 insertDocHeader
+     * 里 #236 处理的是同一件事，不做任何安全决策，不能一并禁掉。
+     */
+    const createBody = functionSource('resolveStaffCreateLocations')
+    expect(createBody, '未找到 resolveStaffCreateLocations').toBeTruthy()
+    const actingAt = createBody.indexOf('const actingLocationId')
+    const scopeAt = createBody.indexOf('assertInventoryWriteStoreScope(')
+    expect(actingAt, '未找到 actingLocationId 推导').toBeGreaterThan(-1)
+    expect(scopeAt, '未找到建单 scope 校验').toBeGreaterThan(actingAt)
+    const authSegment = createBody.slice(actingAt, scopeAt + 80)
+    expect(authSegment, '建单鉴权主体仍是「第一个非空主体」式的代表值取法').not.toMatch(PAIR_RE)
   })
 })
 
