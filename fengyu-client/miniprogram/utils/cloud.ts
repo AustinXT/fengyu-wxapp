@@ -1,5 +1,6 @@
 // utils/cloud.ts — clientApi 调用封装
 import { APP_VERSION } from './version'
+import { getApiFnName } from './cloud-env'
 
 const LOGGED_OUT_KEY = 'clientLoggedOut'
 
@@ -78,7 +79,7 @@ export async function callClientApi<T = any>(
   let res: any
   try {
     res = await wx.cloud.callFunction({
-      name: 'clientApi',
+      name: getApiFnName(),
       data: { action, payload: withClientContext(payload) }
     })
   } catch (sdkErr: any) {
@@ -128,7 +129,7 @@ async function doBindPhoneWithCloudID(
   wx.showLoading({ title: '绑定中...', mask: true })
   try {
     const res = await wx.cloud.callFunction({
-      name: 'clientApi',
+      name: getApiFnName(),
       data: {
         action: 'auth.bindPhone',
         payload: withClientContext(payload),
