@@ -1131,6 +1131,31 @@ describe('syncLocations 漂移探测与 engine.ts 字面一致（副本守护）
  * 该断言是防未来新增专用服务复现此坑的前置守卫，其运行时行为规格由 engine.ts 侧的用例承载。
  */
 /**
+ * ## 这套副本守护的威胁模型（先读这段再改下面任何断言）
+ *
+ * 它防的是 **无意改坏** 与 **副本不对称漂移**：有人改了 engine 那份忘了 business 那份、
+ * 把 guard 挪位置、给集合加删成员、重构时顺手把归一化提前。这类失误在真实 PR 里高频出现，
+ * 而两份副本的分歧不会有任何运行时报错（`insertDocHeader` 那侧的行为是「静默吃掉 target」）。
+ *
+ * 它**不**防对抗性绕过。双谱系评审在六轮里一共给出 13 种绕过，每一种都需要刻意构造
+ * （不可达诱饵、块作用域影子声明、对象方法伪造调用、初始化阶段折叠、`Set.delete()` 后置突变、
+ * 条件 remark 跳过……）。已知仍可绕过的两条，都属于「必须故意」这一类：
+ *
+ *   - `INTERNAL_SAME_NODE_DOC_TYPES.delete('期初库存')` —— 初始化字面量不变、快照全绿，
+ *     但运行时集合已漂移。`Set` 本身可变，这条只能靠「代码里出现 `.delete(` 会非常显眼」兜住。
+ *   - 期望快照与源码集合**同时**修改 —— 任何仓内 golden snapshot 的固有属性。
+ *
+ * 想要真正抵抗对抗性绕过只有一条路：**行为测试**。而它在这里不可得 ——
+ * `insertDocHeader` 未导出，17 个调用点对同主体类型全是单边传参，没有任何公开 API
+ * 能构造出「两端都给且不一致」。运行时规格由 engine 侧的既有用例承载
+ * （`engine.test.ts` 的「分院库存盘点 + ORG-S1/ORG-S2 → 出库主体与入库主体必须是同一个」）。
+ *
+ * 结论：在这个威胁模型下继续加固正则/AST 的边际收益已经很低，**不要**为了再堵一种刻意构造
+ * 而把断言写得更复杂 —— 那会增加误红、降低可读性，却挡不住真想绕的人。
+ * 真要提高保障等级，正确的动作是让 `insertDocHeader` 可测（导出或抽纯函数），而不是加断言。
+ *
+ * ---
+ *
  * 副本守护改用 **AST 语义分析**，不再做文本/正则匹配。
  *
  * 前两版都是正则：剥注释 → 切函数体 → 匹配字面量。两个谱系在两轮里一共给出 10 种绕过，
@@ -1165,18 +1190,26 @@ function functionBodyNode(sf: ts.SourceFile, fnName: string): ts.Block {
    * 按 `parameters.length` 降序在同参数数时退化为源码顺序，前面放个同参诱饵就能骗过（codex）。
    * 只看**顶层实参**、不递归进子表达式，诱饵就没有落脚点。
    */
+  const KNOWN_WRAPPERS = new Set(['withPermission', 'withAnyPermission', 'withAllPermissions'])
   const pickImplementation = (node: ts.Node): ts.Block | undefined => {
     if (!ts.isCallExpression(node)) {
       // 直接 `const f = async (…) => {…}` 的形态
       return (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) && node.body
         && ts.isBlock(node.body) ? node.body : undefined
     }
-    const fnArgs = node.arguments.filter(
-      (a): a is ts.ArrowFunction | ts.FunctionExpression =>
-        ts.isArrowFunction(a) || ts.isFunctionExpression(a),
-    )
-    const impl = fnArgs[fnArgs.length - 1]
-    return impl?.body && ts.isBlock(impl.body) ? impl.body : undefined
+    /**
+     * 只认白名单 wrapper，且实现必须是**最后一个实参**（不限类型）。
+     *
+     * 「最后一个**函数**实参」会被**平级尾随**诱饵重定向（GLM 第 2 轮）：
+     *     withPermission(action, realImpl, () => { …完整 guard 文本… })   // 伪装成 telemetry 回调
+     * 三个检查全在诱饵体上通过，真实 impl 摘掉 guard 后照样全绿。
+     * 现在「最后一个实参之后不得再有函数实参」这条天然成立（它就是最后一个），
+     * 超出白名单的 wrapper 直接返回 undefined → 测试报「未找到函数」（红方向安全）。
+     */
+    if (!KNOWN_WRAPPERS.has(node.expression.getText())) return undefined
+    const last = node.arguments[node.arguments.length - 1]
+    if (!last || !(ts.isArrowFunction(last) || ts.isFunctionExpression(last))) return undefined
+    return last.body && ts.isBlock(last.body) ? last.body : undefined
   }
 
   /**
@@ -1278,14 +1311,19 @@ function ownershipAssignmentsBefore(body: ts.Block, beforePos: number): string[]
   const hits: string[] = []
 
   const namesInTarget = (target: ts.Node): string[] => {
-    const out: string[] = []
+    const out = new Set<string>()
     const dig = (n: ts.Node) => {
-      if (ts.isIdentifier(n) && NAMES.has(n.text)) out.push(n.text)
-      else if (ts.isPropertyAccessExpression(n) && NAMES.has(n.name.text)) out.push(n.name.text)
+      // PropertyAccess 先记一次再下降到 name Identifier 会重复记（只影响报错噪声），用 Set 去重
+      if (ts.isPropertyAccessExpression(n)) {
+        if (NAMES.has(n.name.text)) out.add(n.name.text)
+        ts.forEachChild(n.expression, dig)
+        return
+      }
+      if (ts.isIdentifier(n) && NAMES.has(n.text)) out.add(n.text)
       ts.forEachChild(n, dig)
     }
     dig(target)
-    return out
+    return [...out]
   }
 
   const visit = (n: ts.Node) => {
@@ -1293,7 +1331,11 @@ function ownershipAssignmentsBefore(body: ts.Block, beforePos: number): string[]
     // 不进入嵌套函数体：未被调用的回调里的赋值不该算（codex P3 的误红）。
     // 用 `isFunctionLike` 覆盖全部函数边界（含 MethodDeclaration、访问器）——
     // 只列三种节点会漏掉对象方法（codex 第 5 轮）。
-    // 已知上限：guard 之前的 IIFE 或前置调用里的赋值会漏 —— 那种写法本身就该在评审里被拦。
+    //
+    // ⚠️ 已知上限是「**绑定来源**」而非只有「赋值」（GLM 第 2 轮纠正了措辞）：
+    // `const { sourceOrgNodeId, targetOrgNodeId } = normalize(input)`（归一化发生在 helper 体内）、
+    // 解构默认值、参数默认值取值，这些都不产生赋值表达式因而一律不可见。
+    // 另有 guard 之前的 IIFE / 前置调用里的赋值也会漏。这类写法都该在人工评审里被拦。
     if (ts.isFunctionLike(n)) return
     // `for (targetOrgNodeId of [...])` —— 循环变量就是赋值目标，不是 BinaryExpression（codex 第 4 轮）
     if ((ts.isForOfStatement(n) || ts.isForInStatement(n)) && !ts.isVariableDeclarationList(n.initializer)) {
@@ -1401,10 +1443,77 @@ describe('insertDocHeader 同主体两端一致断言与 engine.ts 字面一致�
   })
 
   /**
+   * 归一化也可以**不用赋值**就完成 —— 直接写进初始化表达式（codex 第 6 轮）：
+   *
+   *     let targetOrgNodeId = INTERNAL_SAME_NODE_DOC_TYPES.has(input.docType) && sourceOrgNodeId
+   *       ? sourceOrgNodeId : (target?.orgNodeId ?? null)
+   *
+   * 没有任何赋值表达式，`ownershipAssignmentsBefore` 返回空、guard 与集合都没变，
+   * 而同主体类型传两个不同主体时 target 已被折叠成 source，冲突 guard 永不触发。
+   * 对策：两个变量的初始化表达式里不得互相引用。
+   */
+  it('两个归属变量的初始化表达式不得互相引用（防在初始化阶段就折叠）', () => {
+    for (const [file, fn] of SAME_NODE_HOSTS) {
+      const body = functionBodyNode(parseFile(file), fn)
+      const inits = new Map<string, ts.Expression>()
+      for (const st of topLevelStatements(body)) {
+        if (!ts.isVariableStatement(st)) continue
+        for (const decl of st.declarationList.declarations) {
+          if (ts.isIdentifier(decl.name) && decl.initializer
+              && (decl.name.text === 'sourceOrgNodeId' || decl.name.text === 'targetOrgNodeId')) {
+            inits.set(decl.name.text, decl.initializer)
+          }
+        }
+      }
+      expect(inits.size, `${file}#${fn} 未找到两个归属变量的初始化`).toBe(2)
+
+      for (const [name, init] of inits) {
+        const other = name === 'sourceOrgNodeId' ? 'targetOrgNodeId' : 'sourceOrgNodeId'
+        let refersOther = false
+        const scan = (n: ts.Node) => {
+          if (ts.isIdentifier(n) && n.text === other) refersOther = true
+          ts.forEachChild(n, scan)
+        }
+        scan(init)
+        expect(refersOther, `${file}#${fn} 的 ${name} 初始化里引用了 ${other}，可能在初始化阶段就折叠了两端`)
+          .toBe(false)
+      }
+    }
+  })
+
+  /**
    * 守了断言，还得守它**依赖的集合**。两份 `INTERNAL_SAME_NODE_DOC_TYPES` 是独立副本
    * （项目禁止抽取跨端共享目录）。给 engine 那份加类型却漏了 business 那份 →
    * business 对该类型退回「静默吃掉 target」的老行为，而上面两条守护照样全绿。
    */
+  /**
+   * 字面量快照只看 `new Set([...])` 的**初始**成员，对声明后的 mutation 全盲（GLM 第 2 轮 P1）。
+   *
+   * 这条与其它「必须刻意构造」的绕过不同 —— 它有**自然的非对抗性触发路径**：
+   * 「改成可配置 / 动态追加」式重构就是一行 `INTERNAL_SAME_NODE_DOC_TYPES.add(config.xxx)`，
+   * 不产生任何赋值表达式、不改字面量，三个 describe 全绿而运行时集合已与 12 项 oracle 脱钩。
+   * 所以它落在本守护的威胁模型**之内**，必须堵。
+   */
+  it('两个文件都没有对受守护集合做声明后 mutation（add / delete / clear）', () => {
+    const GUARDED = ['INTERNAL_SAME_NODE_DOC_TYPES', 'SPECIALIZED_DOC_TYPES']
+    const MUTATORS = new Set(['add', 'delete', 'clear'])
+    for (const file of [BUSINESS_TS, ENGINE_TS]) {
+      const sf = parseFile(file)
+      const found: string[] = []
+      const visit = (n: ts.Node) => {
+        if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)
+            && ts.isIdentifier(n.expression.expression)
+            && GUARDED.includes(n.expression.expression.text)
+            && MUTATORS.has(n.expression.name.text)) {
+          found.push(`${n.expression.expression.text}.${n.expression.name.text}()`)
+        }
+        ts.forEachChild(n, visit)
+      }
+      visit(sf)
+      expect(found, `${file} 对受守护集合做了声明后 mutation —— 字面量快照对它全盲`).toEqual([])
+    }
+  })
+
   it('两份 INTERNAL_SAME_NODE_DOC_TYPES 都等于期望成员快照', () => {
     const expected = [...EXPECTED_INTERNAL_SAME_NODE].sort()
     expect(setMembers(parseFile(BUSINESS_TS), 'INTERNAL_SAME_NODE_DOC_TYPES')).toEqual(expected)
@@ -1474,21 +1583,29 @@ describe('assertGenericDocLocationRules 的 case 与通用类型白名单一一�
      * 会让 callPos 仍是有限值且排在拒绝之后，而运行时**从未调用**规则函数（codex 第 4 轮）。
      * 跨函数边界的调用不算。
      */
+    /**
+     * 调用必须是函数体的**顶层 ExpressionStatement**，且只解包 `await` 与括号 ——
+     * 不钻进 `if`、逻辑表达式等控制结构。
+     *
+     * 「顶层语句内任意非函数子节点」还不够（codex 第 6 轮，这条有真实安全含义）：
+     *     if (input.remark !== '__skip_location_rules__') {
+     *       await assertGenericDocLocationRules(…)
+     *     }
+     * callPos 仍有限且排在拒绝之后、结构测试全绿，但调用方传那个 remark 就能跳过
+     * 「必须为总部」之类的位置规则 —— 等于给生产代码留了后门。
+     */
+    const unwrap = (e: ts.Expression): ts.Expression => {
+      let cur = e
+      while (ts.isAwaitExpression(cur) || ts.isParenthesizedExpression(cur)) cur = cur.expression
+      return cur
+    }
     const callPos = topLevelStatements(body).reduce((min, st) => {
-      let found = Infinity
-      const scan = (n: ts.Node) => {
-        // 顶层语句内部可以有 await/括号等包裹，但不跨**任何**函数边界。
-        // 只排除箭头/函数表达式/函数声明会漏掉对象方法（codex 第 5 轮实测）：
-        //     const deferred = { validate() { return assertGenericDocLocationRules(…) } }
-        // 这个方法从未被调用，却能让 callPos 有限且排在拒绝之后。
-        if (ts.isFunctionLike(n)) return
-        if (ts.isCallExpression(n) && n.expression.getText() === 'assertGenericDocLocationRules') {
-          found = Math.min(found, n.getStart())
-        }
-        ts.forEachChild(n, scan)
+      if (!ts.isExpressionStatement(st)) return min
+      const expr = unwrap(st.expression)
+      if (ts.isCallExpression(expr) && expr.expression.getText() === 'assertGenericDocLocationRules') {
+        return Math.min(min, expr.getStart())
       }
-      scan(st)
-      return Math.min(min, found)
+      return min
     }, Infinity)
 
     expect(rejectIf, 'createInventoryCoreDoc 顶层不再无条件拒绝 SPECIALIZED 类型').toBeTruthy()
