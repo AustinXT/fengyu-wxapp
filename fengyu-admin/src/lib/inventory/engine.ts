@@ -28,7 +28,7 @@ import {
 } from '@db/inventory'
 import { orgNodes, stores } from '@db/org'
 import { productSkus } from '@db/product'
-import { and, asc, desc, eq, gte, ilike, inArray, isNull, lte, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
@@ -2095,14 +2095,30 @@ export const listInventoryCoreDocs = withPermission(
       orgNodeId?: string
       locationType?: InventoryLocationType
       docType?: InventoryDocType
+      /**
+       * 多类型过滤（#190）。与单值 `docType` 是 AND 关系（两个都传时各自收窄），
+       * 办理台单据 Tab 只传本字段 —— 一个业务可能一次产出出库 + 入库两张单。
+       * 传了空数组表示「没有任何可展示的类型」，fail-closed 返回空，不退化成不过滤。
+       */
+      docTypes?: readonly InventoryDocType[]
       status?: InventoryCoreDocStatus
+      statuses?: readonly InventoryCoreDocStatus[]
+      /**
+       * 只保留发起过撤回申请的单据（`cancellation_request_reason` 非空）。
+       *
+       * 类型刻意写死 `true` 而不是 `boolean`：本条件只有「收窄」一个方向，
+       * 传 `false` 会走 falsy 分支退化成不过滤 —— 那是**放宽**结果集，
+       * 与调用方写 `false` 时期待的「只看没申请过撤回的」正好相反。
+       * 真需要反向过滤时应显式加一个 `cancellationNotRequested` 条件。
+       */
+      cancellationRequested?: true
       startDate?: string
       endDate?: string
       keyword?: string
       page?: number
       pageSize?: number
     } = {},
-  ): Promise<{ data: InventoryDocRow[]; total: number; canViewPrice: boolean; priceVisibility: import('./types').InventoryPriceVisibility }> => {
+  ): Promise<{ data: InventoryDocRow[]; total: number; pageSize: number; canViewPrice: boolean; priceVisibility: import('./types').InventoryPriceVisibility }> => {
     await syncInventoryLocations()
     const scoped = inventoryScopedOrgNodeIds(session)
     const page = normalizePage(filters.page)
@@ -2151,7 +2167,20 @@ export const listInventoryCoreDocs = withPermission(
         : sql`FALSE`)
     }
     if (filters.docType) conditions.push(eq(inventoryDocs.docType, filters.docType))
+    if (filters.docTypes) {
+      conditions.push(filters.docTypes.length > 0
+        ? inArray(inventoryDocs.docType, [...filters.docTypes])
+        : sql`FALSE`)
+    }
     if (filters.status) conditions.push(eq(inventoryDocs.status, filters.status))
+    if (filters.statuses) {
+      conditions.push(filters.statuses.length > 0
+        ? inArray(inventoryDocs.status, [...filters.statuses])
+        : sql`FALSE`)
+    }
+    if (filters.cancellationRequested) {
+      conditions.push(isNotNull(inventoryDocs.cancellationRequestReason))
+    }
     if (filters.startDate) conditions.push(gte(inventoryDocs.docDate, filters.startDate))
     if (filters.endDate) conditions.push(lte(inventoryDocs.docDate, filters.endDate))
     if (filters.keyword) {
@@ -2182,7 +2211,14 @@ export const listInventoryCoreDocs = withPermission(
       .leftJoin(sourceLocation, eq(sourceLocation.orgNodeId, inventoryDocs.sourceOrgNodeId))
       .leftJoin(targetLocation, eq(targetLocation.orgNodeId, inventoryDocs.targetOrgNodeId))
       .where(whereClause)
-      .orderBy(desc(inventoryDocs.docDate), desc(inventoryDocs.createdAt))
+      /*
+       * 末位 `id` 是**分页正确性**所必需，不是锦上添花的排序偏好：
+       * `created_at` 取 `NOW()`（事务开始时刻），而 `createInventoryConversion` 在同一个
+       * 事务里写「库存转换出库 + 库存转换入库」两张单 —— 两行的 doc_date 与 created_at
+       * 逐微秒相同。排序键完全并列时，两次独立的 LIMIT/OFFSET 查询之间顺序不保证稳定，
+       * 骑在页边界上的那一对会出现「一张重复、另一张永远不出现」。id 唯一且不可变。
+       */
+      .orderBy(desc(inventoryDocs.docDate), desc(inventoryDocs.createdAt), desc(inventoryDocs.id))
       .limit(pageSize)
       .offset(offset)
     const priceVisibility = inventoryPriceVisibility(session)
@@ -2198,6 +2234,9 @@ export const listInventoryCoreDocs = withPermission(
         ) !== 'none',
       })),
       total: countRow?.count ?? 0,
+      // 回传**夹过白名单后**的实际页长：调用方若传了非白名单值（如 30），这里按 20 取数，
+      // 前端却会按 30 算总页数，页码条少算页数、最后几页永远翻不到。
+      pageSize,
       canViewPrice: priceVisibility !== 'none',
       priceVisibility,
     }
