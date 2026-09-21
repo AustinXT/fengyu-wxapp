@@ -13,7 +13,7 @@
  *      形态断言（1~5）只验 SQL 长什么样，验不出"漏没漏行"—— #254 就是这么溜过去的。
  */
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // `@db/*` → `../db/schema/*`（tsconfig paths），所以是 @db/user 不是 @db/schema/user
 import { clientWechatUsers } from '@db/user'
 import { customerStatusEnum, customerTypeEnum } from '@db/enums'
@@ -21,6 +21,7 @@ import {
   RESET_NON_MEMBER_STATUS_SQL,
   UPDATE_CUSTOMER_STATUS_SQL,
   RESET_NO_VISITS_SQL,
+  refreshCustomerStatus,
 } from '../steps/refresh-customer-status'
 
 describe('cron-worker STEP customerStatus — customer_status 三段式 SQL', () => {
@@ -395,6 +396,84 @@ describe('cron-worker STEP customerStatus — customer_status 三段式 SQL', ()
     it('段 2/段 3 不能写 != 会员客（防误反向）', () => {
       expect(UPDATE_CUSTOMER_STATUS_SQL).not.toMatch(/customer_type\s*!=\s*'会员客'/)
       expect(RESET_NO_VISITS_SQL).not.toMatch(/customer_type\s*!=\s*'会员客'/)
+    })
+  })
+
+  /**
+   * 函数体（而非 SQL 常量）的测试：`suspiciousBulkReset` 判据是本 PR 新增的**有逻辑的代码**，
+   * 上面所有断言都打在 SQL 字符串与 JS 模型上，一条都没碰它 —— 把 `&&` 写成 `||`
+   * 或把 `>` 写反，`vitest run src/cron` 照样全绿。
+   *
+   * 下面的场景全部取自双谱系评审举出的真实反例，每个都曾是某一版判据的漏报点。
+   *
+   * ⚠️ mock 必须用 postgres.js 的 `{ count: n }` 形状 —— 写成 node-postgres 的
+   * `{ rowCount: n }` 会让 mock 漂移掩盖真实缺陷（本仓踩过，见 lib/pg-rows.ts 注释）。
+   * 这里反过来利用这一点：生产代码若改读 `.rowCount`，下面的计数断言会立刻转红。
+   */
+  describe('refreshCustomerStatus 函数体 —— suspiciousBulkReset 判据', () => {
+    /** 依次喂给 段1 / 段2 / 段3 / stats 四次 tx.execute */
+    function fakeDb(counts: { cleared: number; updated: number; reset: number }) {
+      const execute = vi
+        .fn()
+        .mockResolvedValueOnce({ count: counts.cleared })
+        .mockResolvedValueOnce({ count: counts.updated })
+        .mockResolvedValueOnce({ count: counts.reset })
+        .mockResolvedValueOnce([])
+      return {
+        transaction: (fn: (tx: { execute: typeof execute }) => unknown) => fn({ execute }),
+      } as unknown as Parameters<typeof refreshCustomerStatus>[0]
+    }
+
+    let warnSpy: ReturnType<typeof vi.spyOn>
+    beforeEach(() => {
+      warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    })
+    afterEach(() => {
+      warnSpy.mockRestore()
+    })
+
+    it('稳态（段 2 大头、段 3 个位数）不告警', async () => {
+      const r = await refreshCustomerStatus(fakeDb({ cleared: 0, updated: 1818, reset: 2 }))
+      expect(r.suspiciousBulkReset).toBe(false)
+      expect(warnSpy).not.toHaveBeenCalled()
+      // 顺带钉死计数读的是 postgres.js 的 .count
+      expect(r.updatedMember).toBe(1818)
+      expect(r.resetNoVisit).toBe(2)
+    })
+
+    it('service_orders 全塌陷（段 2 命中 0、段 3 刷光会员客）→ 告警', async () => {
+      const r = await refreshCustomerStatus(fakeDb({ cleared: 0, updated: 0, reset: 1889 }))
+      expect(r.suspiciousBulkReset).toBe(true)
+      expect(warnSpy).toHaveBeenCalledOnce()
+    })
+
+    it('中等塌陷 729 : 1091（旧判据「段 3 反超段 2」会漏报）→ 告警', async () => {
+      const r = await refreshCustomerStatus(fakeDb({ cleared: 0, updated: 1091, reset: 729 }))
+      expect(r.suspiciousBulkReset).toBe(true)
+    })
+
+    it('存量休眠稀释场景 800 : 0（旧判据「占会员客总数比例」会漏报）→ 告警', async () => {
+      // 1 万会员里 9200 本就休眠（段 3 不碰），剩 800 个有单会员的服务单全丢
+      const r = await refreshCustomerStatus(fakeDb({ cleared: 0, updated: 0, reset: 800 }))
+      expect(r.suspiciousBulkReset).toBe(true)
+    })
+
+    it('段 3 命中未达绝对下限 100 → 不告警（小库 / 新环境不刷屏）', async () => {
+      const r = await refreshCustomerStatus(fakeDb({ cleared: 0, updated: 0, reset: 99 }))
+      expect(r.suspiciousBulkReset).toBe(false)
+      expect(warnSpy).not.toHaveBeenCalled()
+    })
+
+    it('恰好等于 10% 不告警（判据是 `>` 不是 `>=`）', async () => {
+      // reset=100, touched=1000 → 100 > 100 为 false
+      const r = await refreshCustomerStatus(fakeDb({ cleared: 0, updated: 900, reset: 100 }))
+      expect(r.suspiciousBulkReset).toBe(false)
+    })
+
+    it('刚过 10% 且达下限 → 告警', async () => {
+      // reset=101, touched=1000 → 101 > 100
+      const r = await refreshCustomerStatus(fakeDb({ cleared: 0, updated: 899, reset: 101 }))
+      expect(r.suspiciousBulkReset).toBe(true)
     })
   })
 })
