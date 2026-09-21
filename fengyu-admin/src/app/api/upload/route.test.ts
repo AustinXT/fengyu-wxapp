@@ -139,20 +139,49 @@ describe('POST /api/upload 分辨率闸门', () => {
       expect(mocks.uploadFile).not.toHaveBeenCalled()
     })
 
-    it('超出独立阈值的仍被拒，不是无上界通道', async () => {
-      const res = await post(makePng(70000, 70000), {
+    // 下面两条刻意各自只触发一个守卫：若用同时超两个阈值的尺寸，
+    // 删掉任一守卫测试都仍会通过，等于证明不了什么。
+    it('超出独立阈值的像素积仍被拒（单边未超）', async () => {
+      const res = await post(makePng(30000, 5000), {
         exactKey: FENGYUGUAN_KEY,
+      })
+      expect(res.status).toBe(400)
+      await expect(res.json()).resolves.toMatchObject({
+        error: expect.stringContaining('分辨率过大'),
+      })
+      expect(mocks.uploadFile).not.toHaveBeenCalled()
+    })
+
+    it('超出独立阈值的单边仍被拒（像素积未超）', async () => {
+      const res = await post(makePng(46000, 1000), {
+        exactKey: FENGYUGUAN_KEY,
+      })
+      expect(res.status).toBe(400)
+      await expect(res.json()).resolves.toMatchObject({
+        error: expect.stringContaining('单边尺寸过大'),
+      })
+      expect(mocks.uploadFile).not.toHaveBeenCalled()
+    })
+
+    /**
+     * 用 64MP：超通用 40MP 但低于凤御馆 90MP，单边 8000 也低于通用上限 12000。
+     * 于是只有「其它 exactKey 错误地继承了凤御馆阈值」时才会放行——
+     * 若改用 158MP 那种两边都超的尺寸，把实现改坏成 isFengyuguan = !!exactKey 测试照样通过。
+     */
+    it('其它 exactKey 不继承豁免，适用通用阈值', async () => {
+      const res = await post(makePng(8000, 8000), {
+        exactKey: 'images/other-fixed.jpg',
       })
       expect(res.status).toBe(400)
       expect(mocks.uploadFile).not.toHaveBeenCalled()
     })
 
-    it('其它 exactKey 不继承豁免，适用通用阈值', async () => {
-      const res = await post(makePng(12576, 12575), {
-        exactKey: 'images/other-fixed.jpg',
+    it('同一 64MP 图走凤御馆 key 则放行（证明两套阈值确实不同）', async () => {
+      const res = await post(makePng(8000, 8000), {
+        exactKey: FENGYUGUAN_KEY,
       })
-      expect(res.status).toBe(400)
-      expect(mocks.uploadFile).not.toHaveBeenCalled()
+      expect(res.status).toBe(200)
+      expect(mocks.uploadFile).toHaveBeenCalledOnce()
     })
   })
 

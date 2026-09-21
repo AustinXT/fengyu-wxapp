@@ -232,6 +232,66 @@ describe("getImageDimensions", () => {
       ).toMatchObject({ width: 800, height: 600, animated: false })
     })
 
+    /**
+     * codex 第二轮构造：合法的两帧 GIF，但在帧之前塞 2.1MiB 的 Comment Extension。
+     * 任何「只扫前 N 字节」的实现都会漏判（ImageMagick 识别为 2 帧）。
+     * 按块遍历不受文件大小影响，必须命中。
+     */
+    it("帧前有 2.1MiB Comment Extension 的两帧 GIF 仍被识别", () => {
+      const lsd = Buffer.alloc(13)
+      lsd.write("GIF89a", 0, "ascii")
+      lsd.writeUInt16LE(1, 6)
+      lsd.writeUInt16LE(1, 8)
+
+      // Comment Extension：0x21 0xFE + 若干 255 字节 sub-block + 0x00
+      const subBlocks: Buffer[] = [Buffer.from([0x21, 0xfe])]
+      const chunk = Buffer.alloc(255, 0x41)
+      for (let i = 0; i < 8400; i++) {
+        subBlocks.push(Buffer.from([255]), chunk)
+      }
+      subBlocks.push(Buffer.from([0x00]))
+      const comment = Buffer.concat(subBlocks)
+
+      const frame = Buffer.concat([
+        Buffer.from([0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0]),
+        Buffer.from([0x08, 0x01, 0x00, 0x00]),
+      ])
+
+      const gif = Buffer.concat([
+        lsd,
+        comment,
+        frame,
+        frame,
+        Buffer.from([0x3b]),
+      ])
+
+      expect(gif.length).toBeGreaterThan(2 * 1024 * 1024)
+      expect(getImageDimensions(gif)).toMatchObject({ animated: true })
+    })
+
+    /**
+     * 反向：单帧 GIF 的 Comment Extension 里含两个 ASCII 逗号（0x2C）。
+     * 裸扫字节的实现会误判成动图，按块遍历则不会。
+     */
+    it("Comment Extension 内含 0x2C 的单帧 GIF 不被误判", () => {
+      const lsd = Buffer.alloc(13)
+      lsd.write("GIF89a", 0, "ascii")
+      lsd.writeUInt16LE(640, 6)
+      lsd.writeUInt16LE(480, 8)
+
+      const comment = Buffer.from([0x21, 0xfe, 0x02, 0x2c, 0x2c, 0x00])
+      const frame = Buffer.concat([
+        Buffer.from([0x2c, 0, 0, 0, 0, 0x80, 0x02, 0xe0, 0x01, 0x00]),
+        Buffer.from([0x08, 0x01, 0x00, 0x00]),
+      ])
+
+      expect(
+        getImageDimensions(
+          Buffer.concat([lsd, comment, frame, Buffer.from([0x3b])])
+        )
+      ).toMatchObject({ width: 640, height: 480, animated: false })
+    })
+
     it("APNG 被识别为动图（acTL chunk）", () => {
       expect(getImageDimensions(makeApng(4000, 4000))).toMatchObject({
         width: 4000,
