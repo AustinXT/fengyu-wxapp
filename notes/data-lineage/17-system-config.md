@@ -47,7 +47,7 @@
 
 | key | value 长度 | updated_at | 写入来源 | 业务用途 |
 |-----|-----------|-----------|----------|----------|
-| `banner_count` | 1（`'7'`） | 2026-03-31 | `saveSettings`（admin） | client 端 banner config.json 版本号辅助；无运行时读取，**仅 saveSettings 自读** |
+| `banner_count` | 1（`'7'`） | 2026-03-31 | `saveSettings`（admin） | ⚠️ **issue #231 起是运行时 load-bearing 键**：`clientApi/routes/config.js` 的 `banners` 用它决定下发几条 banner URL，并用它的 `updated_at` 当缓存版本号 `v`。（此前的「无运行时读取，仅 saveSettings 自读」已失效） |
 | `banner_images` | 771 字节 JSON 数组 | 2026-03-31 | `saveSettings`（admin） | clientApi `config.banners` 返回首页轮播图 |
 | `birthday_benefits` | 381 字节 JSON | 2026-04-24 | `saveMemberBenefits`（admin） | cron STEP 3 生日权益（消息/积分/优惠券） |
 | `fengyuguan_image` | 83 字节 URL | 2026-03-31 | `saveSettings`（admin） | clientApi `config.fengyuguan` 返回凤御馆宣传图 |
@@ -194,7 +194,7 @@ R2 直接挖文档外的边缘问题。R1 已识别 5 个治理 gap（order_pref
 | 3 | enum 漂移 | N/A | text 自由值 |
 | 4 | unique 约束 | ✅ 干净 | `GROUP BY key HAVING COUNT>1` 0 行，PK 真守住 |
 | 5 | 跨模块一致性 | ⚠️ HIGH | **R2-E1**（升级版 P0）：admin saveSettings 主动广播只有 `clientApi.config.invalidateConfig`，但 staffApi / payNotify 也已**实现** `invalidateCache()` 函数，却**没暴露 action 路由**——admin 永远调不到，等价于死代码（详见下文 EDGE-1） |
-| 6 | 死代码 / 永不命中 | ⚠️ HIGH | **R2-E2**（升级版 R1）：① `order_prefix='FY-XSD-WX-'` 残留；② `order_timeout='10'` 仅 admin 自读自写；③ `banner_count='7'` 仅 saveSettings 自身读取一次决定要删多少张老图；④ `share_gift_config` 行不存在导致分享礼三副本 100% 沉默；⑤ staffApi/payNotify 的 `invalidateCache` 函数（详见 E1）|
+| 6 | 死代码 / 永不命中 | ⚠️ HIGH | **R2-E2**（升级版 R1）：① `order_prefix='FY-XSD-WX-'` 残留；② `order_timeout='10'` 仅 admin 自读自写；③ ~~`banner_count='7'` 仅 saveSettings 自身读取一次决定要删多少张老图~~ → **issue #231 后已成为 `config.banners` 的运行时输入，不再是死键**；④ `share_gift_config` 行不存在导致分享礼三副本 100% 沉默；⑤ staffApi/payNotify 的 `invalidateCache` 函数（详见 E1）|
 | 7 | dump-restore drift | ⚠️ MED | **R2-E3** 三个 admin 写入入口（saveSettings/saveMemberBenefits/saveShareGiftConfig）各自内联 `CREATE TABLE IF NOT EXISTS system_configs`——baseline reset 之后已是冗余 fallback，存在"幻影建表"风险（若 DDL guard 永远跑则每次 saveSettings 触发 DDL 锁） |
 | 8 | 运行时安全 | ⚠️ HIGH | **R2-E4 / E5**：① saveSettings 4 次 UPSERT + saveMemberBenefits 3 次 UPSERT 均**未在事务里**（for 循环每次单独 db.execute）→ 中途失败留下半套配置；② new_member_threshold 改完最多 30 秒不一致窗口（R1 已识别），但叠加 E1 → staffApi/payNotify/cron-worker 是**完全无法主动失效**（不是"30 秒被动核对"，而是"永远只有被动 30 秒"），admin 的"主动广播"在工程上是**单独立不全的"半个广播"**；③ banner CDN 强一致性破缺：banner_images（DB） + config.json（CDN） + banner1.jpg..N.jpg（CDN）分三处异步写入，任一中断造成 client 端读 stale CDN 但 admin 显示新值 |
 

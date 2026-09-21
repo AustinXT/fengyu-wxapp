@@ -1,6 +1,6 @@
 /**
  * 系统配置模块路由（客户端）
- * config.banners — 获取首页轮播图数量 + 版本号（无需认证）
+ * config.banners — 获取首页轮播图（已缩略的完整 URL 列表 + 版本号，无需认证）
  * config.fengyuguan — 获取凤御馆宣传图（无需认证）
  * config.shareGift — 获取分享礼展示规则（脱敏，无需认证）
  * config.serviceHotline — 获取客服热线电话号（无需认证）
@@ -9,7 +9,7 @@
 
 const pg = require('../db/pg')
 const { invalidateCache } = require('../utils/config')
-const { safeBannerThumbUrl, BANNER_THUMB_BOX } = require('../utils/image')
+const { safeBannerThumbUrl, COS_BASE, BANNER_THUMB_BOX } = require('../utils/image')
 
 /**
  * 获取首页轮播图。
@@ -27,11 +27,12 @@ const { safeBannerThumbUrl, BANNER_THUMB_BOX } = require('../utils/image')
  *    两段白名单，所以走 `safeBannerThumbUrl`（专属白名单，比默认更严）
  * 2. **必须带 `?v=`**：banner 是覆盖式上传（admin `reuploadToFixedPath` 到固定文件名），
  *    换图后 URL 不变，丢了版本号客户端会长期拿到旧图
- * 3. **host 取自 `banner_images`**（admin 写入时用的是它自己的 `CDN_BASE`），
- *    而不是云函数另配一份 —— 少一处需要跟环境同步的配置。
- *    host 仍过 COS 白名单校验，不在白名单就返回 null（fail-closed）
+ * 3. **host 用写死的 `COS_BASE`，不从 `banner_images` 取**（见该常量注释）——
+ *    那个值是 admin 上传**当时**所在桶，而图实际重传到 admin **当前**桶，
+ *    两者可能不一致且同后缀、host 白名单拦不住
  *
- * `count`/`v` 保留：前端据此判断是否有 banner，且 v 仍是缓存版本的单一来源。
+ * `count`/`v` 仍返回：`v` 是缓存版本的单一来源；`count` 供排查时对照
+ * （前端已改为只看 `images.length`，两者不一致即说明有 URL 被 fail-closed 掉了）。
  * 无需认证，公开接口。
  */
 async function banners(ctx) {
@@ -52,41 +53,51 @@ async function banners(ctx) {
     v = Math.floor(Number(imgRow.v)) || 0
   }
 
-  ctx.result = { count, v, images: buildBannerUrls(imgRow && imgRow.value, count, v) }
+  ctx.result = { count, v, images: buildBannerUrls(count, v) }
 }
 
 /**
- * 由 `banner_images` 的第一条取出 origin，拼出固定路径的 banner URL 列表并施加缩略规则。
+ * banner 张数上限。
  *
- * `banner_images` 存的是 admin **上传原件**的随机名 URL
- * （`fengyu-client/banner/<ts>-<rand>.jpg`），而客户端要的是
- * `reuploadToFixedPath` 之后的固定名 `banner{N}.jpg` —— 两者同图不同键，
- * 所以这里只借它的 origin，路径按 count 重新生成。
+ * `count` 驱动下面的循环，而它来自 `system_configs.banner_count`（裸 text，
+ * admin 侧 `saveSettings` 无长度校验、UI 的 `max={0}` 也不限张数）。
+ * 不 clamp 的话 `banner_count='999999'` 会让这个**公开未认证接口**
+ * 生成 99 万条 URL —— 实测响应体 150MB，云函数直接 OOM，首页轮播接口全站不可用。
  *
- * 任何一条拼不出合法 URL（host 不在白名单、版本号非法……）就整体返回 `[]`：
- * banner 是展示位，宁可不显示也不下发未经缩略的原图。
+ * 改动前 `count` 只是原样回显（代价 O(1)），是本 PR 让它变成了循环上界。
+ * 与 `PRODUCT_DETAIL_IMAGE_MAX_COUNT` 同一思路：**下发侧必须自己截断，不能信上游**。
+ * 20 远超运营实际用量（生产现为 1）。
  */
-function buildBannerUrls(rawImages, count, v) {
-  if (!count || !rawImages) return []
+const MAX_BANNER_COUNT = 20
 
-  let origin
-  try {
-    const list = JSON.parse(rawImages)
-    if (!Array.isArray(list) || list.length === 0) return []
-    origin = new URL(list[0]).origin
-  } catch {
-    return []
-  }
+/**
+ * 拼出固定路径的 banner URL 列表并施加缩略规则。
+ *
+ * 路径按 `count` 生成 `banner{N}.jpg`（`reuploadToFixedPath` 写入的固定名），
+ * **不用** `banner_images` 里的随机名 —— 那是 admin 上传原件的键，同图不同键。
+ * host 用写死的 `COS_BASE`，理由见该常量注释。
+ *
+ * 任何一条拼不出合法 URL（版本号非法、档位越界……）就整体返回 `[]`：
+ * banner 是首屏展示位，宁可不显示也不下发未经缩略的原图。
+ */
+function buildBannerUrls(count, v) {
+  if (!count || count <= 0) return []
 
+  const effective = Math.min(count, MAX_BANNER_COUNT)
   const urls = []
-  for (let i = 1; i <= count; i += 1) {
+  for (let i = 1; i <= effective; i += 1) {
     const url = safeBannerThumbUrl(
-      `${origin}/fengyu-client/banner/banner${i}.jpg`,
+      `${COS_BASE}/fengyu-client/banner/banner${i}.jpg`,
       BANNER_THUMB_BOX,
       v
     )
     // 有一条不合规就整体放弃，避免前端拿到"缺了中间几张"的残缺轮播
-    if (!url) return []
+    if (!url) {
+      // fail-closed 的影响面是**整个首屏轮播模块**消失（不像商品封面只是一张占位），
+      // 而前端对空数组不会进 catch —— 没有这行日志，服务端和前端都不会留下任何痕迹。
+      console.warn('[config.banners] fail-closed: 无法生成合法 banner URL', { count, v, i })
+      return []
+    }
     urls.push(url)
   }
   return urls

@@ -50,10 +50,13 @@
 - 业务影响：每次 saveSettings/saveMemberBenefits/saveShareGiftConfig 都触发短暂 DDL lock；可阻塞同时跑的 SELECT；fengyu-admin 写入频率低问题不显但属代码气味
 - 修复：删除三处内联 DDL（baseline 已建表）
 
-**P2：`order_prefix` / `order_timeout` / `banner_count` 三死键 + `share_gift_config` 行不存在 — 文档 R1 已识别**
+**P2：~~`order_prefix` / `order_timeout` / `banner_count` 三死键~~ → 现为两死键 + `share_gift_config` 行不存在 — 文档 R1 已识别**
+
+> ⚠️ **`banner_count` 已不是死键**（issue #231）：`clientApi/routes/config.js` 的 `banners`
+> 用它决定下发几条 banner URL。下面那条「改为内部计算变量不持久化」的建议**会直接打空首页轮播**，勿采纳。
 
 - 位置：详见 17-system-config.md L56/L57/L62-63/L134-138（R1 治理 gap）
-- 现状：order_prefix='FY-XSD-WX-' 全仓 0 处读写；order_timeout='10' 仅 admin UI 读写无 cron 消费方；banner_count='7' 仅 saveSettings 自读决定要删多少张老图（无业务消费）；share_gift_config key 不存在导致分享礼三副本永远走 fallback
+- 现状：order_prefix='FY-XSD-WX-' 全仓 0 处读写；order_timeout='10' 仅 admin UI 读写无 cron 消费方；banner_count='7' **issue #231 起被 `config.banners` 运行时读取**（不再无业务消费）；share_gift_config key 不存在导致分享礼三副本永远走 fallback
 - 修复：（运营/产品决策类）A 撤掉 admin order_timeout 输入框；B clean order_prefix 行；C 业务方在 admin /share-gift 页启用一次配置；D banner_count 改为内部计算变量不持久化
 
 **P2：`verify-member-level-cron.js` 测试夹具 UPSERT new_member_threshold='1990' 可污染生产库**

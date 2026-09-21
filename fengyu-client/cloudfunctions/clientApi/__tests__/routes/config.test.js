@@ -221,42 +221,59 @@ describe('config.banners（issue #231）', () => {
     expect(ctx.result.images.join()).not.toContain('1788156883695-gz1cdm')
   })
 
-  describe('fail-closed：拼不出合法 URL 就整体返回空数组', () => {
-    test('host 不在 COS 白名单', async () => {
+  /**
+   * host 用写死的 COS_BASE，**不从 banner_images 取**（评审指出的 P1）。
+   * banner_images 是 admin 可写且无校验的字段；拿它当 host 来源等于让持 system:config
+   * 的账号把全量顾客的首页图源指到任意同后缀的桶，而 host 白名单只做后缀匹配、拦不住。
+   * 下面几条正面证明这条攻击面已经不存在。
+   */
+  describe('banner_images 不参与 URL 构造（host 来源已钉死）', () => {
+    const unaffected = [
+      ['指向另一个桶', 'https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la/x/y.jpg'],
+      ['指向站外域名', 'https://evil.example.com/fengyu-client/banner/x.jpg'],
+    ]
+    test.each(unaffected)('banner_images %s → 下发仍走 COS_BASE', async (_label, url) => {
       const ctx = createCtx()
-      pg.query.mockResolvedValueOnce([countRow(1), imagesRow('https://evil.example.com')])
+      pg.query.mockResolvedValueOnce([countRow(1), { key: 'banner_images', value: JSON.stringify([url]), v: V }])
+
       await routes.banners(ctx)
-      // count/v 照常返回（前端据此知道"配置了但取不到图"），images 为空
-      expect(ctx.result.count).toBe(1)
-      expect(ctx.result.images).toEqual([])
+
+      expect(ctx.result.images).toEqual([
+        `${HOST}/fengyu-client/banner/banner1.jpg?imageMogr2/thumbnail/1080x1080&v=${V}`,
+      ])
     })
 
-    test('banner_images 是坏 JSON', async () => {
+    test.each([
+      ['坏 JSON', '{oops'],
+      ['空数组', '[]'],
+    ])('banner_images 是%s → 有 banner_count 时不影响下发', async (_label, value) => {
       const ctx = createCtx()
-      pg.query.mockResolvedValueOnce([countRow(1), { key: 'banner_images', value: '{oops', v: V }])
+      pg.query.mockResolvedValueOnce([countRow(1), { key: 'banner_images', value, v: V }])
       await routes.banners(ctx)
-      expect(ctx.result.images).toEqual([])
+      expect(ctx.result.images).toHaveLength(1)
     })
 
-    test('banner_images 是空数组', async () => {
-      const ctx = createCtx()
-      pg.query.mockResolvedValueOnce([countRow(1), { key: 'banner_images', value: '[]', v: V }])
-      await routes.banners(ctx)
-      expect(ctx.result.images).toEqual([])
-    })
-
-    test('完全没有 banner_images 行', async () => {
+    test('完全没有 banner_images 行 → 不影响下发', async () => {
       const ctx = createCtx()
       pg.query.mockResolvedValueOnce([countRow(1)])
       await routes.banners(ctx)
-      expect(ctx.result.images).toEqual([])
+      expect(ctx.result.images).toHaveLength(1)
     })
+  })
 
-    test('count=0', async () => {
+  describe('fail-closed / 边界', () => {
+    test('count=0 → 空数组', async () => {
       const ctx = createCtx()
       pg.query.mockResolvedValueOnce([countRow(0), imagesRow()])
       await routes.banners(ctx)
       expect(ctx.result.count).toBe(0)
+      expect(ctx.result.images).toEqual([])
+    })
+
+    test('count 为负 → 空数组（不进循环）', async () => {
+      const ctx = createCtx()
+      pg.query.mockResolvedValueOnce([countRow(-5), imagesRow()])
+      await routes.banners(ctx)
       expect(ctx.result.images).toEqual([])
     })
 
@@ -265,6 +282,34 @@ describe('config.banners（issue #231）', () => {
       pg.query.mockResolvedValueOnce([])
       await routes.banners(ctx)
       expect(ctx.result).toEqual({ count: 0, v: 0, images: [] })
+    })
+
+    /**
+     * `banner_count` 是裸 text、admin 侧无长度校验，而它现在是循环上界。
+     * 不 clamp 的话 `999999` 会让这个**公开未认证接口**生成 99 万条 URL
+     * （评审实测响应体 150MB / 云函数 OOM）。
+     */
+    test('count 失控（999999）被 clamp 到上限，不生成巨响应', async () => {
+      const ctx = createCtx()
+      pg.query.mockResolvedValueOnce([countRow(999999), imagesRow()])
+
+      await routes.banners(ctx)
+
+      expect(ctx.result.images).toHaveLength(20)
+      // count 原样回显（供排查对照），但不驱动出 99 万条 URL
+      expect(ctx.result.count).toBe(999999)
+      expect(JSON.stringify(ctx.result).length).toBeLessThan(10 * 1024)
+    })
+
+    /**
+     * v 来自 `EXTRACT(EPOCH FROM updated_at)*1000`，理论上不会是负数，
+     * 但真出现时必须整体放弃：没有 `?v=` 的 banner URL 会被 CDN 长期缓存，换图不生效。
+     */
+    test('版本号非法 → 整体空数组（不降级成无 v 的 URL）', async () => {
+      const ctx = createCtx()
+      pg.query.mockResolvedValueOnce([{ key: 'banner_count', value: '2', v: -100 }])
+      await routes.banners(ctx)
+      expect(ctx.result.images).toEqual([])
     })
   })
 
