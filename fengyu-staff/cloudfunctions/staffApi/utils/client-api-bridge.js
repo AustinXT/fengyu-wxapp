@@ -22,13 +22,19 @@ const https = require('https')
 const crypto = require('crypto')
 const { URL } = require('url')
 
-// 每次读 process.env 而不是模块加载时快照：云函数实例复用期间 env 不变，读取开销可忽略，
-// 但这让「未配置时退回原行为」这条分支在单测里可被真实触发（模块常量无法在测试中改写）。
-// 90s：`order.voidPaymentIntent` 在 clientApi 侧最多要串行走三次拉卡拉往返
-// （queryTrade → closeTrade → 复核 queryTrade），而 lakala-client 单次超时就是 30s。
-// 给 20s 会让正常关单也经常超时，且超时后 clientApi 可能已经释放成功 —— 店员却收到
-// 失败提示，重试又撞上「意图已变」的误导性错误。
-const DEFAULT_TIMEOUT_MS = 90000
+// 注：env 一律每次读 process.env 而不是在模块加载时快照。云函数实例复用期间 env 不变，
+// 读取开销可忽略，但这让「未配置时退回原行为」那条分支在单测里可被真实触发
+// （模块级常量无法在测试中改写）。
+//
+// 50s：`order.voidPaymentIntent` 在 clientApi 侧最多串行走三次拉卡拉往返
+// （queryTrade → closeTrade → 复核 queryTrade）。
+//
+// 这个值要同时夹在两个平台超时之间，改任一个都要回来核对（双谱系评审 round-1 踩到）：
+//   - 必须 **小于 staffApi 自己的函数超时**（cloudbaserc `timeout`，本次已 30→60），
+//     否则 staffApi 先被平台干掉，店员看到超时而 clientApi 可能已经释放成功；
+//   - clientApi 侧的函数超时是 60s，其 void 路径给每次渠道调用设了 12s 预算
+//     （见 routes/order.js 的 LAKALA_VOID_CALL_TIMEOUT_MS），三次合计约 36s，留有余量。
+const DEFAULT_TIMEOUT_MS = 50000
 
 function postJson(urlStr, body, headers, timeoutMs) {
   return new Promise((resolve, reject) => {

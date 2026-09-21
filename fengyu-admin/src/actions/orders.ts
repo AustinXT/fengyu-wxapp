@@ -3976,6 +3976,11 @@ export const confirmOfflinePayment = withPermission(
 /** C4: 关闭订单 — 仅待支付/支付失败可关闭，同时作废关联的分配记录 */
 /** 拉卡拉 trade_state 三分类（官方 10 个取值），与 clientApi routes/order.js 同源。 */
 const LAKALA_RELEASABLE_TRADE_STATES = ['FAIL', 'CLOSE', 'REVOKED']
+
+/** 与 payNotify 解析回调时的 toUpperCase 对齐，避免两端对同一笔单判定不一致。 */
+function normalizeTradeState(state: string | null | undefined): string {
+  return String(state ?? '').trim().toUpperCase()
+}
 const LAKALA_PAID_TRADE_STATES = ['SUCCESS', 'PART_REFUND', 'REFUND']
 
 /**
@@ -4020,6 +4025,7 @@ async function resolveLakalaMerchantForStore(
  * 两份实现的终态集合与放行条件必须保持一致。
  */
 async function voidActiveOnlinePaymentIntent(
+  session: AuthSession,
   saleOrderId: string,
   outTradeNo: string,
   storeId: string | null,
@@ -4041,9 +4047,20 @@ async function voidActiveOnlinePaymentIntent(
       termNo: merchant.termNo,
       outTradeNo,
     })
-    tradeState = trade.tradeState
+    // 只有查单成功返回的 trade_state 才权威：request() 对非成功码不抛错，只置 ok=false，
+    // 而错误响应里可能仍带一个非权威的 trade_state。按它释放意图会形成「本地已关、渠道可付」。
+    // 大小写归一与 payNotify 的 toUpperCase 对齐。
+    if (!trade.ok) {
+      console.error('voidActiveOnlinePaymentIntent queryTrade not ok:', saleOrderId, trade.code, trade.msg)
+      return { success: false, message: '暂时无法确认支付结果，请稍后重试' }
+    }
+    tradeState = normalizeTradeState(trade.tradeState)
   } catch (e) {
     console.error('voidActiveOnlinePaymentIntent queryTrade failed:', saleOrderId, e)
+    return { success: false, message: '暂时无法确认支付结果，请稍后重试' }
+  }
+  if (!tradeState) {
+    console.error('voidActiveOnlinePaymentIntent empty trade_state:', saleOrderId)
     return { success: false, message: '暂时无法确认支付结果，请稍后重试' }
   }
 
@@ -4067,7 +4084,11 @@ async function voidActiveOnlinePaymentIntent(
         termNo: merchant.termNo,
         outTradeNo,
       })
-      tradeState = recheck.tradeState
+      if (!recheck.ok) {
+        console.error('voidActiveOnlinePaymentIntent recheck not ok:', saleOrderId, recheck.code, recheck.msg)
+        return { success: false, message: '暂时无法确认支付结果，请稍后重试' }
+      }
+      tradeState = normalizeTradeState(recheck.tradeState)
     } catch (e) {
       console.error('voidActiveOnlinePaymentIntent recheck failed:', saleOrderId, e)
       return { success: false, message: '暂时无法确认支付结果，请稍后重试' }
@@ -4093,10 +4114,23 @@ async function voidActiveOnlinePaymentIntent(
      WHERE sale_order_id = ${saleOrderId}
        AND status IN ('待支付', '支付失败')
        AND lakala_out_order_no = ${outTradeNo}
+       AND ${scopeCondition(session, saleOrders.storeId) ?? sql`TRUE`}
      RETURNING sale_order_id
   `)
   if (released.length === 0) {
-    return { success: false, message: '支付状态已变化，请刷新后重试' }
+    // CAS 0 行有三种语义，不能一律当失败（双谱系评审 round-1，与 clientApi 的
+    // confirmIntentReleased 同源）：
+    //   a) 顾客侧 cancel / 前端轮询已经把同一笔意图释放了 → 目标已达成，放行
+    //   b) 意图被换成了新单号 → 必须拦
+    //   c) 状态已变 → 必须拦
+    // 把 (a) 误报成失败，会让管理员在与顾客并发时看到「支付状态已变化」，要点第二次才成功。
+    const recheckRows = await db.execute(sql`
+      SELECT lakala_out_order_no FROM sale_orders WHERE sale_order_id = ${saleOrderId}
+    `)
+    const current = recheckRows[0] as { lakala_out_order_no?: string | null } | undefined
+    if (!current || String(current.lakala_out_order_no ?? '').trim()) {
+      return { success: false, message: '支付状态已变化，请刷新后重试' }
+    }
   }
   return { success: true }
 }
@@ -4117,7 +4151,10 @@ export const closeOrder = withPermission(
       lakalaOutOrderNo: saleOrders.lakalaOutOrderNo,
     })
     .from(saleOrders)
-    .where(eq(saleOrders.saleOrderId, saleOrderId))
+    // scope 必须参与这次查询（双谱系评审 round-1）：下面会据此向渠道关单，
+    // 若只在事务的 CAS 里带 scope，越域账号提交一个可枚举的订单号就能把别的门店
+    // 正在进行的支付打断——事务最终会拒绝，但渠道单已经被关掉了。
+    .where(and(eq(saleOrders.saleOrderId, saleOrderId), scopeCondition(session, saleOrders.storeId)))
     .limit(1)
 
   // issue #214：顾客唤起支付后没付款，渠道单仍在有效期内，旧实现只能拒绝关闭
@@ -4135,6 +4172,7 @@ export const closeOrder = withPermission(
       && lakalaIsReady()
       && (CLOSEABLE_ORDER_STATUSES as readonly string[]).includes(orderCtx.status ?? '')) {
     const voidResult = await voidActiveOnlinePaymentIntent(
+      session,
       saleOrderId,
       orderCtx.lakalaOutOrderNo,
       orderCtx.storeId,

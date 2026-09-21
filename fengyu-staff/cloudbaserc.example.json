@@ -6,7 +6,7 @@
   "functions": [
     {
       "name": "staffApi",
-      "timeout": 30,
+      "timeout": 60,
       "path": "/cloudfunctions/staffApi",
       "envVariables": {
         "PG_CONNECTION_STRING": "${PG_CONNECTION_STRING}",
@@ -29,7 +29,7 @@
       "_comment": "影子函数：与 staffApi 同一份代码（dir 指向它），但连 dev 库。仅开发者工具开发版(develop)调这个；体验版与正式版都调 staffApi 连生产库——dev/prod 共用同一套拉卡拉生产商户凭据，体验版下单扣的是真钱，账必须记在 prod 库。",
       "name": "staffApiDev",
       "dir": "cloudfunctions/staffApi",
-      "timeout": 30,
+      "timeout": 60,
       "path": "/cloudfunctions/staffApiDev",
       "envVariables": {
         "PG_CONNECTION_STRING": "${DEV_PG_CONNECTION_STRING}",

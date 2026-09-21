@@ -340,7 +340,7 @@ async function requestAlipayShareCode({
  *   raw: object
  * }>}
  */
-async function queryTrade({ merchantNo, termNo, outTradeNo, tradeNo }) {
+async function queryTrade({ merchantNo, termNo, outTradeNo, tradeNo, timeoutMs }) {
   if (!merchantNo) throw new Error('INVALID_PARAMS: LAKALA_QUERY_MERCHANT_NO_REQUIRED')
   if (!termNo) throw new Error('INVALID_PARAMS: LAKALA_QUERY_TERM_NO_REQUIRED')
   if (!outTradeNo && !tradeNo) throw new Error('INVALID_PARAMS: LAKALA_QUERY_OUT_TRADE_NO_OR_TRADE_NO_REQUIRED')
@@ -349,7 +349,7 @@ async function queryTrade({ merchantNo, termNo, outTradeNo, tradeNo }) {
   if (tradeNo) reqData.trade_no = tradeNo
   else reqData.out_trade_no = outTradeNo
 
-  const resp = await request({ path: '/v3/labs/query/tradequery', reqData })
+  const resp = await request({ path: '/v3/labs/query/tradequery', reqData, timeoutMs })
   const data = resp.resp_data || {}
   const accResp = data.acc_resp_fields || {}
   return {
@@ -380,7 +380,7 @@ async function queryTrade({ merchantNo, termNo, outTradeNo, tradeNo }) {
  * 字段按 relation 类接口的「原交易标识三选一」规则（与 /v3/labs/relation/refund 同族）：
  * origin_trade_no > origin_out_trade_no，传其一即可。
  */
-async function closeTrade({ merchantNo, termNo, outTradeNo, tradeNo }) {
+async function closeTrade({ merchantNo, termNo, outTradeNo, tradeNo, timeoutMs }) {
   if (!merchantNo) throw new Error('INVALID_PARAMS: LAKALA_CLOSE_MERCHANT_NO_REQUIRED')
   if (!termNo) throw new Error('INVALID_PARAMS: LAKALA_CLOSE_TERM_NO_REQUIRED')
   if (!outTradeNo && !tradeNo) throw new Error('INVALID_PARAMS: LAKALA_CLOSE_OUT_TRADE_NO_OR_TRADE_NO_REQUIRED')
@@ -389,7 +389,7 @@ async function closeTrade({ merchantNo, termNo, outTradeNo, tradeNo }) {
   if (tradeNo) reqData.origin_trade_no = tradeNo
   else reqData.origin_out_trade_no = outTradeNo
 
-  const resp = await request({ path: '/v3/labs/relation/close', reqData })
+  const resp = await request({ path: '/v3/labs/relation/close', reqData, timeoutMs })
   const data = resp.resp_data || {}
   return {
     ok: resp.ok,

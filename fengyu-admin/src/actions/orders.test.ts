@@ -10,7 +10,7 @@ vi.mock('@/lib/document-type', () => ({
 // 需要覆盖真实关单分支的用例自行把它改成 true。
 vi.mock('@/lib/lakala-client', () => ({
   isReady: vi.fn(() => false),
-  queryTrade: vi.fn(async () => ({ tradeState: 'CREATE' })),
+  queryTrade: vi.fn(async () => ({ ok: true, tradeState: 'CREATE' })),
   closeTrade: vi.fn(async () => ({ ok: true, tradeState: 'CLOSE' })),
 }))
 vi.mock('@/lib/refund-cascade', () => ({
@@ -2114,8 +2114,8 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
         storeId: 'store-001', lakalaOutOrderNo: 'order-1_123',
       }])
       ;(queryTrade as any)
-        .mockResolvedValueOnce({ tradeState: 'CREATE' })   // 首查：未付款
-        .mockResolvedValueOnce({ tradeState: 'CLOSE' })    // 关单后复核
+        .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })   // 首查：未付款
+        .mockResolvedValueOnce({ ok: true, tradeState: 'CLOSE' })    // 关单后复核
       ;(db.execute as any)
         .mockResolvedValueOnce([{ merchant_no: 'M1', term_no: 'T1', enabled: true }])  // 商户
         .mockResolvedValueOnce([{ sale_order_id: 'order-1' }])                          // 释放意图
@@ -2134,7 +2134,7 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
         status: '待支付', customerName: '顾客甲', totalAmount: '200.00',
         storeId: 'store-001', lakalaOutOrderNo: 'order-1_123',
       }])
-      ;(queryTrade as any).mockResolvedValueOnce({ tradeState: 'SUCCESS' })
+      ;(queryTrade as any).mockResolvedValueOnce({ ok: true, tradeState: 'SUCCESS' })
       ;(db.execute as any).mockResolvedValueOnce([{ merchant_no: 'M1', term_no: 'T1', enabled: true }])
 
       const result = await closeOrder('order-1')
@@ -2153,8 +2153,8 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
         storeId: 'store-001', lakalaOutOrderNo: 'order-1_123',
       }])
       ;(queryTrade as any)
-        .mockResolvedValueOnce({ tradeState: 'CREATE' })
-        .mockResolvedValueOnce({ tradeState: 'CREATE' })
+        .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
+        .mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
       ;(db.execute as any).mockResolvedValueOnce([{ merchant_no: 'M1', term_no: 'T1', enabled: true }])
 
       const result = await closeOrder('order-1')
@@ -2168,7 +2168,7 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
         status: '待支付', customerName: '顾客甲', totalAmount: '200.00',
         storeId: 'store-001', lakalaOutOrderNo: 'order-1_123',
       }])
-      ;(queryTrade as any).mockResolvedValueOnce({ tradeState: 'REVOKED' })
+      ;(queryTrade as any).mockResolvedValueOnce({ ok: true, tradeState: 'REVOKED' })
       ;(db.execute as any)
         .mockResolvedValueOnce([{ merchant_no: 'M1', term_no: 'T1', enabled: true }])
         .mockResolvedValueOnce([{ sale_order_id: 'order-1' }])
@@ -2188,7 +2188,7 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
         status: '支付失败', customerName: '顾客甲', totalAmount: '200.00',
         storeId: 'store-001', lakalaOutOrderNo: 'order-1_123',
       }])
-      ;(queryTrade as any).mockResolvedValueOnce({ tradeState: 'CLOSE' })
+      ;(queryTrade as any).mockResolvedValueOnce({ ok: true, tradeState: 'CLOSE' })
       ;(db.execute as any)
         .mockResolvedValueOnce([{ merchant_no: 'M1', term_no: 'T1', enabled: true }])
         .mockResolvedValueOnce([{ sale_order_id: 'order-1' }])

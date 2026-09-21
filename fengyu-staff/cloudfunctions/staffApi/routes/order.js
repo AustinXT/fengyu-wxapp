@@ -2706,21 +2706,35 @@ const CLOSEABLE_ORDER_STATUSES = ['待支付', '支付失败']
  * 通道未配置时静默跳过：退回改动前的行为（下面的守卫照样拦住），不因为桥没配好
  * 就让关单功能整个不可用。
  */
-async function releaseOnlinePaymentIntentBeforeClose(saleOrderId) {
+async function releaseOnlinePaymentIntentBeforeClose(ctx, saleOrderId) {
   // 通道未配置 → 什么都不做（连预读都省掉），行为与改动前逐字一致：
   // 下面事务里的 `lakala_out_order_no` 守卫照样拦住有活动意图的订单。
   if (!clientApiBridge.isConfigured()) return
 
   const rows = await pg.query(
-    'SELECT status, lakala_out_order_no FROM sale_orders WHERE sale_order_id = $1',
+    'SELECT status, opened_by, lakala_out_order_no FROM sale_orders WHERE sale_order_id = $1',
     [saleOrderId],
   )
   if (rows.length === 0) return
-  if (!String(rows[0].lakala_out_order_no || '').trim()) return
+  const order = rows[0]
+  if (!String(order.lakala_out_order_no || '').trim()) return
 
-  // 状态闸门排在关单之前：对一张已支付/已完成的单点关闭，本该由下面事务里的状态校验
-  // 直接拒绝，不该先跑一轮跨 env 查单甚至向渠道发关单请求。
-  if (!CLOSEABLE_ORDER_STATUSES.includes(rows[0].status)) return
+  // 鉴权与状态闸门都必须排在关单之前（双谱系评审 round-1）：
+  // 关渠道单是**对外副作用**，一旦发出就打断了顾客正在进行的支付。若只靠事务内的校验，
+  // 同门店的普通员工（非本单开单人）调一次 close 就能中断别人的支付——事务最终会抛
+  // PERMISSION_DENIED，但钱那头的场次已经没了。
+  //
+  // 这里的判定必须与事务内（isManagerRole / isCreator 两分支）逐字同口径；
+  // 事务内仍保留二次校验，这里只是把副作用挡在前面。
+  const isManagerRole = isCurrentStoreManager(ctx.auth)
+  const isCreator = order.opened_by && order.opened_by === ctx.auth.staffWfId
+  if (isManagerRole) {
+    if (!CLOSEABLE_ORDER_STATUSES.includes(order.status)) return
+  } else if (isCreator) {
+    if (order.status !== '待支付') return
+  } else {
+    return  // 无权操作：不碰渠道，让事务内抛 PERMISSION_DENIED
+  }
 
   await clientApiBridge.callClientApi('order.voidPaymentIntent', { saleOrderId })
 }
@@ -2746,7 +2760,7 @@ async function close(ctx) {
   //
   // 必须在事务之外：这是一次跨 env HTTPS 往返，放进事务会把订单行锁持有到网络返回。
   // 作废与下面的守卫之间若有顾客重新发起支付，事务内的守卫会重新拦住（fail-closed）。
-  await releaseOnlinePaymentIntentBeforeClose(saleOrderId)
+  await releaseOnlinePaymentIntentBeforeClose(ctx, saleOrderId)
 
   const now = new Date()
 

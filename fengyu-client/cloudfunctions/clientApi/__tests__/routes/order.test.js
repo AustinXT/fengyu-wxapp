@@ -1313,12 +1313,37 @@ describe('order.pay', () => {
 
   test('命中有效场次快照 → 复用原 paymentParams，不再向渠道下单 (#214)', async () => {
     mockPayQueries({ order: reusableOrder() })
+    // 复用前会查一次渠道确认这笔场次还没被支付
+    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({ ok: true, tradeState: 'CREATE' })
 
     const ctx = createBoundCtx({ orderNo: 'FY-REUSE-001' })
     await routes.pay(ctx)
 
     expect(ctx.result.paymentParams.package).toBe('prepay_id=wx_reuse_001')
     expect(__mocks__.lakalaClient.requestPreorder).not.toHaveBeenCalled()
+  })
+
+  // 顾客已付款但回调还没入账时立刻重新扫码：不查渠道就回发旧参数，前端会去唤起一笔
+  // 已成功的场次，顾客只能得到误导性失败或无尽等待。
+  test('复用前发现渠道已支付 → 拒绝复用并提示刷新 (#214)', async () => {
+    mockPayQueries({ order: reusableOrder() })
+    __mocks__.lakalaClient.queryTrade.mockResolvedValueOnce({ ok: true, tradeState: 'SUCCESS' })
+
+    const ctx = createBoundCtx({ orderNo: 'FY-REUSE-001' })
+    await expect(routes.pay(ctx)).rejects.toThrow(/PAYMENT_ALREADY_SUCCEEDED/)
+    expect(__mocks__.lakalaClient.requestPreorder).not.toHaveBeenCalled()
+  })
+
+  // 查单失败时放行复用：复用的是同一笔渠道单，渠道对已支付场次本身会拒绝二次付款，
+  // 不存在重复扣款；拒绝反而会让顾客重新卡在「发不了新支付」上。
+  test('复用前查单失败 → 降级放行，仍回发原参数 (#214)', async () => {
+    mockPayQueries({ order: reusableOrder() })
+    __mocks__.lakalaClient.queryTrade.mockRejectedValueOnce(new Error('INVALID_STATE: LAKALA_TIMEOUT_30000ms'))
+
+    const ctx = createBoundCtx({ orderNo: 'FY-REUSE-001' })
+    await routes.pay(ctx)
+
+    expect(ctx.result.paymentParams.package).toBe('prepay_id=wx_reuse_001')
   })
 
   test('快照已过期 → 不复用，回到 PAYMENT_INTENT_ACTIVE (#214)', async () => {
@@ -1736,9 +1761,9 @@ describe('order.cancel', () => {
     await routes.cancel(ctx)
 
     expect(ctx.result.status).toBe('已关闭')
-    expect(__mocks__.lakalaClient.queryTrade).toHaveBeenCalledWith({
+    expect(__mocks__.lakalaClient.queryTrade).toHaveBeenCalledWith(expect.objectContaining({
       merchantNo: 'M1', termNo: 'T1', outTradeNo: 'FY-001_1700000000',
-    })
+    }))
     expect(pg.transaction).toHaveBeenCalledTimes(1)
   })
 
@@ -1765,9 +1790,9 @@ describe('order.cancel', () => {
     await routes.cancel(ctx)
 
     expect(ctx.result.status).toBe('已关闭')
-    expect(__mocks__.lakalaClient.closeTrade).toHaveBeenCalledWith({
+    expect(__mocks__.lakalaClient.closeTrade).toHaveBeenCalledWith(expect.objectContaining({
       merchantNo: 'M1', termNo: 'T1', outTradeNo: 'FY-001_1700000000',
-    })
+    }))
     expect(__mocks__.lakalaClient.queryTrade).toHaveBeenCalledTimes(2)  // 关单前后各一次
   })
 
