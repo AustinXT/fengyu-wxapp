@@ -6,6 +6,11 @@
 const https = require('https')
 const pg = globalThis.__mocks__.pg
 const { createCtx, createBoundCtx } = require('../helpers')
+// 引用常量而非硬编码宽度，避免两处数字各改各的（pr-ready 指出的字段族漂移）
+const {
+  STORE_LIST_THUMB_WIDTH,
+  STORE_DETAIL_THUMB_WIDTH,
+} = require('../../utils/image')
 
 let routes
 beforeEach(() => {
@@ -50,7 +55,7 @@ describe('store.list', () => {
     await routes.list(ctx)
 
     expect(ctx.result.stores[0].cover_image).toBe(
-      `${original}?imageMogr2/thumbnail/300x`
+      `${original}?imageMogr2/thumbnail/${STORE_LIST_THUMB_WIDTH}x`
     )
   })
 
@@ -104,11 +109,11 @@ describe('store.detail', () => {
     await routes.detail(ctx)
 
     expect(ctx.result.store.cover_image).toBe(
-      `${host}/store-covers/a.png?imageMogr2/thumbnail/750x`
+      `${host}/store-covers/a.png?imageMogr2/thumbnail/${STORE_DETAIL_THUMB_WIDTH}x`
     )
     expect(ctx.result.store.images).toEqual([
-      `${host}/store-images/b.png?imageMogr2/thumbnail/750x`,
-      `${host}/store-images/c.png?imageMogr2/thumbnail/750x`,
+      `${host}/store-images/b.png?imageMogr2/thumbnail/${STORE_DETAIL_THUMB_WIDTH}x`,
+      `${host}/store-images/c.png?imageMogr2/thumbnail/${STORE_DETAIL_THUMB_WIDTH}x`,
     ])
   })
 

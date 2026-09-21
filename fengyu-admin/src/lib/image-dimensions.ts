@@ -70,6 +70,10 @@ function parseJpeg(buf: Buffer): ImageDimensions | null {
 
     const segmentLength = buf.readUInt16BE(offset + 2)
     if (segmentLength < 2) return null
+    // 段长越界（截断上传、或第三方工具写坏 APPn 长度）时直接判定失败。
+    // 不能继续扫描：跳进垃圾字节后可能恰好撞上 0xFFCn 字节序列，读出一个「合法」的错误小尺寸，
+    // 那会让真正的超大图通过校验——比返回 null 更危险。
+    if (offset + 2 + segmentLength > buf.length) return null
     offset += 2 + segmentLength
   }
   return null

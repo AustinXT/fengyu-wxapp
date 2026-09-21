@@ -38,14 +38,20 @@ function thumbUrl(url, width) {
     return url
   }
 
+  // 用 hostname 判断而不是对整串做正则：否则 https://a.tcb.qcloud.la@evil.com/
+  // 这类把可信域名塞进 userinfo 的 URL 会被误判为可信
   if (!COS_HOST_PATTERN.test(parsed.hostname)) return url
 
-  // 幂等：已经带过 imageMogr2 的不再叠加（叠加会让后一个参数失效或报错）
-  if (/imageMogr2/i.test(parsed.search)) return url
+  // 幂等：已经带过 imageMogr2 的不再叠加（叠加会让后一个参数失效）。
+  // 按「参数边界」判断而非子串匹配，否则 ?ref=imageMogr2Test 会被误判成已处理而放行原图
+  const existingParams = parsed.search.replace(/^\?/, '').split('&')
+  if (existingParams.some(p => p.startsWith('imageMogr2'))) return url
 
-  // 已有 query（如 admin exactKey 上传追加的 ?t=时间戳）时用 & 续接
-  const separator = parsed.search ? '&' : '?'
-  return `${url}${separator}imageMogr2/thumbnail/${width}x`
+  // 经 URL 对象重建而非裸字符串拼接：字符串拼接遇到 #fragment 会把参数拼进 fragment 里
+  // （对 COS 不生效），遇到末尾裸 ? 会拼出 ??
+  const param = `imageMogr2/thumbnail/${width}x`
+  parsed.search = parsed.search ? `${parsed.search}&${param}` : `?${param}`
+  return parsed.toString()
 }
 
 /**
@@ -54,9 +60,11 @@ function thumbUrl(url, width) {
 const STORE_LIST_THUMB_WIDTH = 300
 
 /**
- * 门店详情头图 / 相册：接近满屏宽（750rpx），取 750（解码约 750×750×4 ≈ 2.25MB，可接受）
+ * 门店详情头图 / 相册：头图宽度是满屏 750rpx，3x 屏（iPhone Pro 等）物理宽约 1170~1290px，
+ * 用 750 会被放大约 1.7 倍发虚，故取 1080。
+ * 解码约 1080×1080×4 ≈ 4.5MB/张，详情页图片数量有限（相册 admin 侧限制 9 张），可接受。
  */
-const STORE_DETAIL_THUMB_WIDTH = 750
+const STORE_DETAIL_THUMB_WIDTH = 1080
 
 module.exports = {
   thumbUrl,

@@ -80,16 +80,32 @@ export async function POST(req: NextRequest) {
 
     const buffer = Buffer.from(await file.arrayBuffer())
 
-    // 分辨率校验：仅对 path 模式（门店/商品封面等）生效。
-    // exactKey 模式是 banner 与凤御馆超长宣传图，形态特殊且有独立体积上限，不在此设限。
-    if (!exactKey) {
+    // 分辨率校验。只豁免凤御馆那一张超长宣传图：它形态特殊（极端长条），
+    // 且顾客端 pages/cart 会用 wx.getImageInfo 拿真实宽高后按 imageMogr2 动态切条显示，
+    // 自带等效防护。banner 走的是 path 模式，同样受本校验保护。
+    if (exactKey !== FENGYUGUAN_KEY) {
       const dimensions = getImageDimensions(buffer)
-      if (dimensions && dimensions.width * dimensions.height > MAX_PIXELS) {
+
+      // fail-closed：解析不出尺寸一律拒绝，不能放行。
+      // file.type 由客户端提供、可伪造，截断或畸形 header（例如 APPn 段声明长度越界、
+      // 导致 SOF 被跳过）都会让解析返回 null；而微信解码器对畸形 header 的容忍度远高于
+      // 这个最小解析器，放行等于给「本次要堵的那类图」留了后门。
+      if (!dimensions) {
+        return NextResponse.json(
+          {
+            error:
+              "无法识别图片尺寸，可能文件已损坏或格式不受支持，请换一张图片或重新导出后上传。",
+          },
+          { status: 400 }
+        )
+      }
+
+      if (dimensions.width * dimensions.height > MAX_PIXELS) {
         return NextResponse.json(
           {
             error:
               `图片分辨率过大（${dimensions.width}×${dimensions.height}），` +
-              `请压缩到 ${MAX_PIXELS / 1_000_000}MP 以内再上传。` +
+              `请压缩到 ${Math.round(MAX_PIXELS / 1_000_000)}MP 以内再上传。` +
               `分辨率过大的图片会导致小程序端加载时闪退。`,
           },
           { status: 400 }

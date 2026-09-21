@@ -120,4 +120,44 @@ describe("getImageDimensions", () => {
     buf.writeUInt16BE(0, 4) // 非法段长
     expect(getImageDimensions(buf)).toBeNull()
   })
+
+  /**
+   * pr-ready P1：APPn 段声明的长度越界时，若继续扫描可能在垃圾字节里撞上假的 0xFFCn，
+   * 读出一个「合法」的错误小尺寸，让真正的超大图通过 40MP 校验。
+   * 必须判定失败（返回 null），再由调用侧 fail-closed 拒绝。
+   */
+  it("JPEG 段长越界时判定失败，不得误读出尺寸", () => {
+    const sof = Buffer.alloc(11)
+    sof.writeUInt16BE(0xffc0, 0)
+    sof.writeUInt16BE(11, 2)
+    sof.writeUInt8(8, 4)
+    sof.writeUInt16BE(12575, 5)
+    sof.writeUInt16BE(12576, 7)
+
+    const app0 = Buffer.alloc(4)
+    app0.writeUInt16BE(0xffe0, 0)
+    app0.writeUInt16BE(60000, 2) // 声明 60000 字节，实际远不够
+
+    const malformed = Buffer.concat([Buffer.from([0xff, 0xd8]), app0, sof])
+
+    // 真实尺寸是超限的 12576×12575，但 header 畸形 → 必须返回 null 而不是某个小尺寸
+    const dim = getImageDimensions(malformed)
+    expect(dim).toBeNull()
+  })
+
+  it("JPEG 段长恰好贴到 buffer 末尾仍可正常解析", () => {
+    const sof = Buffer.alloc(11)
+    sof.writeUInt16BE(0xffc0, 0)
+    sof.writeUInt16BE(11, 2)
+    sof.writeUInt8(8, 4)
+    sof.writeUInt16BE(600, 5)
+    sof.writeUInt16BE(800, 7)
+
+    const app0 = Buffer.alloc(6)
+    app0.writeUInt16BE(0xffe0, 0)
+    app0.writeUInt16BE(4, 2) // 段长 4 = 2 字节长度字段 + 2 字节载荷，恰好不越界
+
+    const buf = Buffer.concat([Buffer.from([0xff, 0xd8]), app0, sof])
+    expect(getImageDimensions(buf)).toEqual({ width: 800, height: 600 })
+  })
 })
