@@ -781,16 +781,28 @@ describe('staff.performanceDetail', () => {
 
     // ⚠️ 断言 SQL 字面量而非切片结果：mock 数据天然有序，
     // 只断言 items 顺序的话把 ORDER BY 整条删掉测试照样绿（#181 踩过）。
+    // 取**整条 ORDER BY 子句**（到语句末尾）而非子串存在性 —— 后者可以被
+    // 「注释掉真 ORDER BY 再补一行同文本」骗过。
+    const orderByClause = (sql) => {
+      const m = sql.match(/ORDER BY([\s\S]*?)(?=\n\s*(?:LIMIT|OFFSET)\b|\s*$)/)
+      return m ? m[1].replace(/\s+/g, ' ').trim() : null
+    }
+
     const svcSql = pg.query.mock.calls[1][0]
-    expect(svcSql).toMatch(/ORDER BY\s+so\.service_date DESC,\s*sc\.id DESC/)
+    expect(orderByClause(svcSql)).toBe('so.service_date DESC, sc.id DESC')
 
     // 对照组：销售侧本来就有 tie-break，一并钉住，防止有人"统一风格"把它删掉
     const allocSql = pg.query.mock.calls[0][0]
-    expect(allocSql).toMatch(/ORDER BY\s+spe\.performance_date DESC,\s*spia\.id DESC/)
+    expect(orderByClause(allocSql)).toBe('spe.performance_date DESC, spia.id DESC')
   })
 
-  test('#239 同一天多条服务提成连续翻两页：两页无重复、并集等于总数', async () => {
-    // 触发条件是「同一天有多条服务提成」—— 对活跃门店的美容师是常态
+  // ⚠️ 这条**不锁 #239 的 tie-break**（删掉 `sc.id DESC` 它照样绿）——
+  // mock 不执行 SQL，6 行 date 全等时顺序完全由 mock 数组决定。
+  // 它锁的是另一件独立的事：**JS 内存分页的切片本身无重无漏**，
+  // 且 `total` 恒为过滤后全量（`safePage`/`safePageSize` 的负索引与字符串拼接加固靠它）。
+  // #239 的真正护栏是上面那条 ORDER BY 字面量断言。
+  test('内存分页切片无重无漏：连续翻两页并集等于 total', async () => {
+    // 场景取「同一天多条服务提成」—— 对活跃门店的美容师是常态，也是 #239 的触发条件
     const sameDayRows = Array.from({ length: 6 }, (_, i) => ({
       ...mkSvc('自销自耗', String(10 + i)),
       service_order_id: `SVC-${i}`,
