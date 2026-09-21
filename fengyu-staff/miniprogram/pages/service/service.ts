@@ -15,7 +15,12 @@ interface ServiceItem {
   serviceTime: string;
   startTime: string | null;
   completedTime: string | null;
+  // #224 跨店支援单。inCurrentStore 由云函数下发，与 cancel/confirm 的门店门同源——
+  // 前端据它决定是否渲染「取消 / 代客户确认」，自行推导会与后端判据错位造出点了必报错的按钮。
+  storeName: string;
+  inCurrentStore: boolean;
   items: Array<{
+    serviceItemId: string;   // wxml 的 wx:key，后端 list 下发
     itemName: string;
     spec: string;
     remainingSessions: number;
@@ -184,6 +189,7 @@ Page({
       await callStaffApi('service.start', { serviceOrderId: id });
       wx.showToast({ title: '服务已开始', icon: 'success' });
       this.resetAndLoad();
+      this.loadTabCounts(); // 待服务 → 服务中，两枚角标都要跟着动（与 onCompleteService 一致）
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '操作失败';
       wx.showToast({ title: msg, icon: 'none' });

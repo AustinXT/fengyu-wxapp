@@ -32,6 +32,7 @@ describe('service.list 手机号脱敏', () => {
         started_at: null,
         completed_at: null,
         created_at: '2026-05-22T00:00:00Z',
+        store_id: 'store-001', // #224：主查询新增 so.store_id，店长特权按「单的门店」判
         client_phone: FULL_PHONE,
       }])
       .mockResolvedValue([]) // itemsSummary 及任何兜底查询
@@ -49,6 +50,29 @@ describe('service.list 手机号脱敏', () => {
     mockListOrder()
     await serviceRoutes.list(ctx)
     expect(ctx.result[0].customerPhone).toBe(FULL_PHONE)
+  })
+
+  // #224：店长身份不再自动等于"对这张单有店长特权"
+  test('店长以外援身份拿到他店单 → 仍脱敏（跨组织域 PII 不外泄）', async () => {
+    const ctx = createManagerCtx({})
+    pg.query
+      .mockResolvedValueOnce([{
+        service_order_id: 'HLD-WX-2605220002',
+        status: '待服务',
+        service_date: '2026-05-22',
+        assigned_employee_id: ctx.auth.staffWfId, // 指派给本人 → 能看见
+        client_user_id: null,
+        appointment_id: null,
+        remark: '',
+        started_at: null,
+        completed_at: null,
+        created_at: '2026-05-22T00:00:00Z',
+        store_id: 'store-OTHER', // 但单不属本店 → 无店长特权
+        client_phone: FULL_PHONE,
+      }])
+      .mockResolvedValue([])
+    await serviceRoutes.list(ctx)
+    expect(ctx.result[0].customerPhone).toBe(MASKED_PHONE)
   })
 })
 
