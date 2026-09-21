@@ -339,18 +339,19 @@ Page({
         v: number;
         images?: string[];
       }>("config.banners", {});
-      if (Array.isArray(images) && images.length > 0) {
-        this.setData({
-          banners: images.map((image, i) => ({
-            id: String(i + 1),
-            title: "",
-            desc: "",
-            bgColor: "",
-            image,
-            link: "",
-          })),
-        });
-      }
+      // 显式覆盖而非「有值才写」：本函数目前只在 onLoad 调一次，但若将来挪进
+      // onShow / 下拉刷新，fail-closed 的空数组必须能清掉上一轮的 banners，
+      // 否则「宁可不显示轮播」就没落地。
+      this.setData({
+        banners: (Array.isArray(images) ? images : []).map((image, i) => ({
+          id: String(i + 1),
+          title: "",
+          desc: "",
+          bgColor: "",
+          image,
+          link: "",
+        })),
+      });
     } catch (err) {
       // 轮播图非关键路径，静默失败即可
       console.warn("[home] loadBanners failed", err);

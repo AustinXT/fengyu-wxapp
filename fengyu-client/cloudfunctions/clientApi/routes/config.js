@@ -45,8 +45,13 @@ async function banners(ctx) {
     count = parseInt(cntRow.value, 10) || 0
     v = Math.floor(Number(cntRow.v)) || 0
   } else if (imgRow) {
-    // 兜底：无 banner_count 时按 banner_images 数组长度
-    try { count = JSON.parse(imgRow.value).length } catch { /* empty */ }
+    // 兜底：无 banner_count 时按 banner_images 数组长度。
+    // ⚠️ 必须判 isArray：value 是 admin 可写且无校验的，合法 JSON 但非数组时
+    // `.length` 得 undefined → 后面 Math.max 出 NaN → 下发 `count: null`
+    try {
+      const arr = JSON.parse(imgRow.value)
+      count = Array.isArray(arr) ? arr.length : 0
+    } catch { /* empty */ }
     v = Math.floor(Number(imgRow.v)) || 0
   }
 

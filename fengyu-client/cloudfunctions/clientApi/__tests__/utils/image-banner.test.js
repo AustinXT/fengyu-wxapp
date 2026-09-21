@@ -16,12 +16,16 @@ const {
 } = require('../../utils/image')
 const {
   safeBannerThumbUrl,
-  bannerSourceUrl,
   COS_BASE,
+  BANNER_KEY_DIR,
   BANNER_THUMB_BOX,
 } = require('../../utils/image-banner')
 
+/** 源 URL 构造器刻意不导出（它返回原图地址），测试按同一规则自行拼 */
+const sourceUrl = (n) => `${COS_BASE}${BANNER_KEY_DIR}/banner${n}.jpg`
+
 const { parseProcessableUrl } = require('../../utils/image')
+const { BANNER_OBJECT_KEY_PATTERN } = require('../../utils/image-banner')
 
 const HOST = 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la'
 const BANNER = `${HOST}/fengyu-client/banner/banner1.jpg`
@@ -29,7 +33,7 @@ const V = 1756620894760
 
 /** 白名单是纵深防御（入参已收窄成序号），单独对它做形态测试 */
 const passesBannerKey = (url) =>
-  parseProcessableUrl(url, require('../../utils/image-banner').BANNER_OBJECT_KEY_PATTERN) !== null
+  parseProcessableUrl(url, BANNER_OBJECT_KEY_PATTERN) !== null
 
 describe('safeBannerThumbUrl', () => {
   test('拼出 box 规则 + 版本号', () => {
@@ -61,9 +65,12 @@ describe('safeBannerThumbUrl', () => {
   })
 
   test('源 URL 不带任何 query —— 规则完全由服务端决定', () => {
-    // 入参收窄成序号后，外部已无法把 query 带进来；这条钉住服务端自己也不会带
-    expect(bannerSourceUrl(1)).not.toContain('?')
     expect(safeBannerThumbUrl(1, V).split('?')).toHaveLength(2)
+  })
+
+  test('bannerSourceUrl 不对外导出（它返回的是原图地址）', () => {
+    // 导出它等于给调用方留一条绕开本模块防护的捷径 —— #213 那类事故正是这么来的
+    expect(require('../../utils/image-banner').bannerSourceUrl).toBeUndefined()
   })
 
   /**
@@ -120,6 +127,7 @@ describe('safeBannerThumbUrl', () => {
 
 describe('parseProcessableUrl 的 objectKeyPattern 参数', () => {
   const { parseProcessableUrl } = require('../../utils/image')
+const { BANNER_OBJECT_KEY_PATTERN } = require('../../utils/image-banner')
 
   /**
    * ⚠️ `g` 与 `y` 都会让 `.test()` 使用并更新 `lastIndex` —— 同一个输入**隔次返回 false**。
@@ -157,13 +165,26 @@ describe('bannerSourceUrl 与白名单同源', () => {
    */
   test('自己生成的源 URL 必定过自己的白名单', () => {
     for (const n of [1, 2, 20]) {
-      expect(passesBannerKey(bannerSourceUrl(n))).toBe(true)
+      expect(passesBannerKey(sourceUrl(n))).toBe(true)
       expect(safeBannerThumbUrl(n, V)).not.toBeNull()
     }
   })
 
+  /**
+   * 白名单由 BANNER_KEY_DIR 派生（不是两份独立字面量）——
+   * 评审指出上一版的注释宣称「单源」而实现是两份，改目录会让 pattern 立即失配、
+   * 首页轮播整块消失，而注释正是误导源。
+   */
+  test('白名单确实由 BANNER_KEY_DIR 派生', () => {
+    expect(BANNER_OBJECT_KEY_PATTERN.source).toContain(
+      BANNER_KEY_DIR.replace(/\//g, '\\/')
+    )
+    // 改目录后旧目录必须立刻失配
+    expect(passesBannerKey(`${COS_BASE}/other-dir/banner1.jpg`)).toBe(false)
+  })
+
   test('源 URL 用写死的 COS_BASE', () => {
-    expect(bannerSourceUrl(1)).toBe(`${COS_BASE}/fengyu-client/banner/banner1.jpg`)
+    expect(sourceUrl(1)).toBe(`${COS_BASE}/fengyu-client/banner/banner1.jpg`)
   })
 })
 

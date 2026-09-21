@@ -30,8 +30,19 @@ const { parseProcessableUrl, isProcessableHost } = require('./image')
  */
 const COS_BASE = 'https://6665-fengyu-client-prod-d1cga6909c0ba-1406056527.tcb.qcloud.la'
 
-/** banner 在桶里的目录。与下面的白名单单源，改目录只改这一处 */
+/** banner 在桶里的目录。白名单与源 URL 都由它派生，改目录只改这一处 */
 const BANNER_KEY_DIR = '/fengyu-client/banner'
+
+/**
+ * banner 的文件扩展名。admin 重传时目标路径写的是**字面量** `.jpg`
+ * （`settings.ts` 的模板串，与源文件 MIME 无关），所以这里也只认 `.jpg` ——
+ * 放行 png/webp 是死分支，而更窄的白名单意味着 admin 那边一旦改了模板，
+ * 这边会 fail-closed 报出来，而不是静默接受一个不存在的键。
+ *
+ * ⚠️ 这**不构成动图防护**：GIF 字节同样会被重传成 `banner1.jpg`。
+ * 要挡动图得在 admin 上传侧按 path 分流拒掉 `image/gif`。
+ */
+const BANNER_KEY_EXT = 'jpg'
 
 /**
  * banner 的对象键白名单 —— **比 `image.js` 的默认两段键更严格**：
@@ -41,17 +52,15 @@ const BANNER_KEY_DIR = '/fengyu-client/banner'
  * #232 两轮评审钉死的、且有多份副本，放宽会扩大
  * 「样式分隔符配成 `/` 时与正常键不可区分」这个已知限制的暴露面。
  *
- * ⚠️ 排除 `gif` 对 banner 是**无效防护**：admin 重传时目标路径的扩展名是字面量 `.jpg`
- * （`settings.ts` 的模板串，与源文件 MIME 无关），GIF 字节会存进 `banner1.jpg` 并被放行。
- * 真要挡动图得在 admin 上传侧按 path 分流拒掉 `image/gif`。
- *
  * ⚠️ 下一条要接的三段键链路是**头像**（issue #233）。在决定照抄这个模式之前先看一眼
  * 根因：三段键唯一的来源是 admin `settings.ts` 的一个字面量，而同文件里凤御馆用的是
  * **两段键**（`images/fengyuguan.jpg`）——即 banner 是项目里唯一的三段键。
  * 头像是新链路、无存量迁移负担，**从一开始就用两段键**比再加一条白名单更根本。
  */
-const BANNER_OBJECT_KEY_PATTERN =
-  /^\/fengyu-client\/banner\/banner\d+\.(png|jpe?g|webp)$/i
+const BANNER_OBJECT_KEY_PATTERN = new RegExp(
+  `^${BANNER_KEY_DIR.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/banner\\d+\\.${BANNER_KEY_EXT}$`,
+  'i',
+)
 
 /**
  * banner 档位：满屏轮播，`.banner-swiper { height: 260rpx }` + aspectFill。
@@ -100,15 +109,19 @@ function safeBannerThumbUrl(index, version) {
   return parsed.toString()
 }
 
-/** 第 N 张 banner 的完整源 URL（未施加缩略规则） */
+/**
+ * 第 N 张 banner 的完整源 URL（**未施加缩略规则**）。
+ *
+ * ⚠️ 刻意**不导出**：它返回的是原图地址，导出等于给调用方留一条绕开本模块防护的捷径
+ * ——#213 那类「原图直发」事故正是这么来的。只在 `safeBannerThumbUrl` 内部使用。
+ */
 function bannerSourceUrl(index) {
-  return `${COS_BASE}${BANNER_KEY_DIR}/banner${index}.jpg`
+  return `${COS_BASE}${BANNER_KEY_DIR}/banner${index}.${BANNER_KEY_EXT}`
 }
 
 module.exports = {
   safeBannerThumbUrl,
-  bannerSourceUrl,
-  isProcessableHost,
+  // 下面几个供测试断言用；`bannerSourceUrl` 刻意不在其中（见其注释）
   COS_BASE,
   BANNER_KEY_DIR,
   BANNER_THUMB_BOX,

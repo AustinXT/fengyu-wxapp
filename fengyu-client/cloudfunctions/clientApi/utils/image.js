@@ -137,7 +137,7 @@ function parseProcessableUrl(url, objectKeyPattern = OBJECT_KEY_PATTERN) {
   // 且不得配置含缩放规则的样式。
   //
   // 默认是上面那条两段键规则；端专属链路可传更窄的（见 image-banner.js）。
-  // ⚠️ 拒绝带 `g` 的正则：`.test()` 对它有状态（lastIndex），会隔次返回 false。
+  // 正则的无状态性已在函数头校验（拒绝 g / y）。
   if (!objectKeyPattern.test(parsed.pathname)) {
     return null
   }
