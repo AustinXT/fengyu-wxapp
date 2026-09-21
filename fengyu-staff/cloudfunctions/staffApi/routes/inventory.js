@@ -498,9 +498,10 @@ function queryRows(client, sql, params) {
  *   1. **`throw` 是唯一的正确性保障**：命中两行即 `CONFLICT`，不猜。
  *      ⚠️ 别把它改软成「告警 + 取第一行」—— 撞值时**根本不存在语义正确的那一行**：
  *      一半调用点传的是 org_node_id（`head.source_org_node_id` 等），另一半传的是 store_id
- *      （`resolveStaffCreateLocations` 的 fallback 链：`payload.storeId`、`effectiveStoreId`、
- *      `auth.inventoryStoreIds`，四项全是 store_id）。固定任何一侧优先，都会对另一半调用点
- *      **确定性地**返回另一家门店 —— 稳定，但稳定地错，而且从此不再报错。
+ *      （`resolveStaffCreateLocations` 的 `fallbackStoreId` 链共四项：`payload.storeId`、
+ *      `payload.locationId`、`ctx.auth.effectiveStoreId`、单元素时的 `scopedStoreIds[0]`，
+ *      全是 store_id）。固定任何一侧优先，都会对另一半调用点**确定性地**返回另一家门店
+ *      —— 稳定，但稳定地错，而且从此不再报错。
  *   2. `ORDER BY location_id` 按主键定序（非空、全序），**不暗示任何 id 空间的优先级** ——
  *      撞值时不存在语义正确的那一行，所以它只承诺「确定」，不承诺「对」。
  *      ⚠️ 别因为「2 行必抛、0/1 行与顺序无关」就删掉它：admin 侧的同签名副本带 `FOR UPDATE`，
@@ -548,8 +549,12 @@ async function ensureInventoryLocation(locationId, requiredType = null, client =
    * 同样可空）。这类行只能靠 `location_id = $1` 入选，而下面的 `|| locationId` 会把
    * **入参的 store_id 当组织节点 id 返回**；返回值被 `resolveStaffCreateLocations`
    * 取作 `sourceOrgNodeId` / `targetOrgNodeId` 写进 `inventory_docs` —— 那两列对
-   * `inventory_locations.org_node_id` 有 FK（`0039` 迁移），所以落库要么被 FK 挡下
-   * 报难懂的约束错，要么在撞值已存在时把错误主体钉进单据。正解是 fail-loud。
+   * `inventory_locations.org_node_id` 有 FK（`0039` 迁移），落库会被 FK 挡下、
+   * 报一条指不到真正病根的约束错。正解是 fail-loud。
+   *
+   *（补了撞值守卫之后，「把错误主体钉进单据」那一支已**不可达**：FK 要放行就得存在另一行
+   * `org_node_id = $1`，而那恰好就是 `rows.length === 2` → CONFLICT 的条件。
+   * 所以本函数现在只会走出「FK 挡下」这一支。）
    *
    * 不在本 PR 改的原因：现网 dev/prod 实测 `org_node_id` 为空的主体行均为 **0**，
    * 属理论缺陷；而改成抛错会打红 13 个既有用例（它们的 mock 行压根不带 `org_node_id`，

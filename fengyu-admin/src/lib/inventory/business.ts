@@ -825,8 +825,10 @@ async function locationForRead(tx: Tx, endpointId: string): Promise<Location> {
  *
  * 原先既无 `ORDER BY` 也无 `LIMIT`、直接取 `[row]`，取哪行不保证稳定；结果又直接喂
  * `assertLocationWritable` → `assertInventoryLocationInScope` ——「按 A 鉴权、扣 B 的批次」。
- * 更重的是 `forUpdate` 分支会**把两行都锁上**，与只锁单行的
- * `engine.ts` `orgNodeLocationIdForUpdate` 构成锁序分叉。
+ * 更重的是 `forUpdate` 分支会**把两行都锁上**，且旧版无 ORDER BY，加锁顺序不定 ——
+ * 与只锁单行的 `engine.ts` `orgNodeLocationIdForUpdate` 属于锁序卫生问题。
+ *（严格说单锁事务自身闭不出死锁环，要成环还得调用方先持有其它锁；但无序多行加锁
+ * 本就是该避免的形态，`ORDER BY location_id` 让并发的本语句之间有了一致的加锁顺序。）
  *
  * 故与 staff 端同款两道闸：
  *   1. **`throw` 是唯一正确性保障** —— 撞值时不存在语义正确的那一行（一半调用点传
