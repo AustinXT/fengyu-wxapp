@@ -231,11 +231,13 @@ Page({
       // #214：有可续付场次时，金额/方式/待扣卡额一律以**后端下发的快照口径**为准。
       // 前端自己推算会和快照对不上（round-8/9 连着两轮栽在这里）：本地 remaining 是
       // 退款感知的行级口径，而快照存的是预下单当时定死的线上金额。
-      const resumablePay = hasResumableIntent && Number.isFinite(Number(orderData.resumablePayAmount))
-        ? Number(orderData.resumablePayAmount)
+      // 用 typeof 而不是 Number.isFinite(Number(x))：后者对 null 会得到 0 并判为有效，
+      // 当前靠 hasResumableIntent 门控不可达，但那是隐式耦合（双谱系评审 round-10）
+      const resumablePay = hasResumableIntent && typeof orderData.resumablePayAmount === 'number'
+        ? orderData.resumablePayAmount
         : null;
-      const resumableCard = hasResumableIntent && Number.isFinite(Number(orderData.resumablePrepaidCardAmount))
-        ? Number(orderData.resumablePrepaidCardAmount)
+      const resumableCard = hasResumableIntent && typeof orderData.resumablePrepaidCardAmount === 'number'
+        ? orderData.resumablePrepaidCardAmount
         : null;
       const paid = resumablePay != null
         ? resumablePay

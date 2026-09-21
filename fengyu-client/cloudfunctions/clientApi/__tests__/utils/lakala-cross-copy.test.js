@@ -109,6 +109,19 @@ describe('lakala 跨副本一致性守护', () => {
       expect(read(ADMIN_ORDERS)).toContain('CLOSEABLE_ORDER_STATUSES')
     })
 
+    // scanDetail 下发的 resumablePrepaidCardAmount 取自订单行当前的 pending 卡额，
+    // 它等于「该渠道单的卡额」这一点，依赖**意图活跃期没有任何路径能改待扣卡额**。
+    // 这个跨端不变量一旦被旁路，页面展示的抵扣就会和渠道单实际金额分叉
+    // （双谱系评审 round-10）。这里把三端的守卫钉成字面量。
+    test('意图活跃期改待扣卡额的路径三端都有 PAYMENT_INTENT_ACTIVE 守卫', () => {
+      const client = read(CLIENT_ORDER)
+      // 顾客端：调整抵扣方案 / 改用储值卡支付
+      expect(client).toContain('暂不能调整抵扣方案')
+      expect(client).toContain('暂不能改用储值卡支付')
+      // admin：待结算储值卡支付意图
+      expect(read(ADMIN_ORDERS)).toContain('订单已有待结算储值卡支付意图')
+    })
+
     // fail-closed 是整个关单流程的承重结构：关单返回成功 ≠ 渠道已终态，
     // 必须复核；复核不过一律不释放本地意图。两份 helper 都不许绕过。
     test('clientApi 与 admin 的作废 helper 都保留「关单后复核」结构', () => {
