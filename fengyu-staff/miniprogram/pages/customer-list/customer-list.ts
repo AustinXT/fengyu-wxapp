@@ -127,7 +127,16 @@ function normalizeSearchPage(
 
 Page({
   data: {
+    // 搜索框里的实时输入（输入即写入，未必已提交）
     searchKeyword: '',
+    /**
+     * 当前列表**实际生效**的关键词（#181）。
+     * 翻页必须沿用它，不能读 `searchKeyword` 实时值：用户搜「张」拿到第 1 页后，
+     * 在输入框改成「李」但没点搜索，此时触底会用「李」拉第 2 页拼到「张」的结果后面
+     * —— 既漏了「张」的第 2 页，又把两个关键词的数据混在一屏。
+     * `reqGen` 防的是「旧响应后到」，防不了这种「请求发出时参数已漂移」。
+     */
+    committedKeyword: '',
     results: [] as CustomerListItem[],
     loading: false,
     searched: false,
@@ -197,7 +206,8 @@ Page({
      * 恰好打在本需求最常用的默认浏览态上。
      * 代价：详情页里改了姓名/备注后返回，列表不自动刷新，需下拉刷新（与管理层视图一致）。
      */
-    if (!this.data.activeTag && !this.data.searched && this.data.results.length === 0 && !this.data.listError) {
+    if (!this.data.activeTag && !this.data.searched && this.data.results.length === 0
+        && !this.data.listError && !this.data.loading) {
       this.loadList(1, true);
     }
   },
@@ -231,10 +241,12 @@ Page({
   // 却不作用于结果，属于 UI 与请求不一致；合并后以 UI 所见为准。
   async loadList(page: number, reset: boolean): Promise<void> {
     const gen = this.data.reqGen + 1;
-    this.setData({ reqGen: gen, loading: true, hasAdvancedFilter: this.computeHasAdvancedFilter() });
+    // 开请求即清错误态：否则错误分支优先渲染，重试期间页面毫无变化，按钮还能连点
+    this.setData({ reqGen: gen, loading: true, listError: false, hasAdvancedFilter: this.computeHasAdvancedFilter() });
     try {
       const { customerType, spendingTier, monthlyActivity, customerStatus } = this.data;
-      const keyword = this.data.searchKeyword.trim();
+      // reset 才采纳输入框的当前值；翻页沿用已生效的关键词（见 committedKeyword 注释）
+      const keyword = reset ? this.data.searchKeyword.trim() : this.data.committedKeyword;
       // profileScope: 顾客档案浏览，普通员工仅见绑定本人的顾客（业务流程选顾客不传此标记）
       const params: Record<string, string | number | boolean> = {
         profileScope: true,
@@ -257,6 +269,7 @@ Page({
         page: data.page,
         hasMore: data.hasMore,
         searched: !!keyword,
+        committedKeyword: keyword,
         listError: false,
       });
     } catch (err: unknown) {
@@ -298,8 +311,10 @@ Page({
   },
 
   onSearchChange(e: WechatMiniprogram.CustomEvent) {
-    this.setData({ searchKeyword: e.detail as unknown as string });
-    if (!e.detail.trim()) {
+    // van-search 的边缘事件形态下 detail 可能是 undefined/null，直接 .trim() 会抛
+    const value = (e.detail as unknown as string) || '';
+    this.setData({ searchKeyword: value });
+    if (!value.trim()) {
       this.setData({ activeTag: '' });
       this.loadList(1, true);
     }
@@ -365,7 +380,8 @@ Page({
 
   async loadByTag(tag: TagType, page: number, reset: boolean) {
     const gen = this.data.reqGen + 1;
-    this.setData({ reqGen: gen, loading: true });
+    // 同 loadList：开请求即清错误态，让重试有可见反馈
+    this.setData({ reqGen: gen, loading: true, listError: false });
     try {
       const data = await callStaffApi<CustomerTagResponse>('customer.listByTag', { tag, page, pageSize: PAGE_SIZE });
       if (gen !== this.data.reqGen) return; // 同 loadList：期间已有更新的请求

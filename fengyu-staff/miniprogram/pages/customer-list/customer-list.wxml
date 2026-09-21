@@ -126,8 +126,11 @@
     <van-loading type="spinner" color="#C0322A" />
   </view>
 
-  <view wx:elif="{{(searched || activeTag || hasAdvancedFilter) && results.length === 0}}" class="empty-wrap">
-    <van-empty description="{{activeTag ? '该分类暂无顾客' : (hasAdvancedFilter && !searched ? '该筛选条件下暂无顾客' : '未找到该顾客')}}" />
+  <!-- 空态覆盖全部「加载完成但没有数据」的情形：原先只在有搜索/标签/筛选时才显示，
+       默认列表真的没有顾客（新门店、清空关键词后为空、重试成功但为空）会落到最后的
+       空 view，整页白屏无任何说明 -->
+  <view wx:elif="{{results.length === 0}}" class="empty-wrap">
+    <van-empty description="{{activeTag ? '该分类暂无顾客' : (searched ? '未找到该顾客' : (hasAdvancedFilter ? '该筛选条件下暂无顾客' : '暂无顾客'))}}" />
   </view>
 
   <view wx:elif="{{results.length > 0}}" class="customer-list">

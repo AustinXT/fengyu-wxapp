@@ -120,6 +120,48 @@ describe('#181 分页信封与裸数组兼容', () => {
   })
 })
 
+describe('#181 关键词提交态', () => {
+  /**
+   * `reqGen` 防的是「旧响应后到」，防不了「请求发出时参数已漂移」：
+   * 搜「张」拿到第 1 页 → 在输入框改成「李」但没点搜索 → 触底 →
+   * 若读实时值就会用「李」拉第 2 页拼到「张」的结果后面，既漏「张」的第 2 页又混两批数据。
+   */
+  test('翻页沿用已提交的关键词，输入框里的未提交改动不生效', async () => {
+    const page = createPage('customerList')
+    vi.mocked(callStaffApi).mockResolvedValueOnce(pageEnvelope(['z1'], 1, true) as never)
+    page.data.searchKeyword = '张'
+    await page.onSearch()
+    expect(page.data.committedKeyword).toBe('张')
+
+    page.onSearchChange({ detail: '李' })   // 改了输入框但没提交
+    expect(page.data.searchKeyword).toBe('李')
+
+    vi.mocked(callStaffApi).mockResolvedValueOnce(pageEnvelope(['z2'], 2, false) as never)
+    await page.loadList(2, false)
+
+    expect(vi.mocked(callStaffApi).mock.calls.at(-1)![1]).toMatchObject({ keyword: '张', page: 2 })
+    expect(page.data.results.map((r: any) => r.clientUserId)).toEqual(['z1', 'z2'])
+  })
+
+  test('提交新关键词后 committedKeyword 才更新', async () => {
+    const page = createPage('customerList')
+    vi.mocked(callStaffApi).mockResolvedValue(pageEnvelope(['n1'], 1, false) as never)
+    page.data.searchKeyword = '张'
+    await page.onSearch()
+    page.data.searchKeyword = '李'
+    await page.onSearch()
+    expect(page.data.committedKeyword).toBe('李')
+    expect(vi.mocked(callStaffApi).mock.calls.at(-1)![1]).toMatchObject({ keyword: '李', page: 1 })
+  })
+
+  test('onSearchChange 的 detail 为空值时不抛异常', async () => {
+    const page = createPage('customerList')
+    vi.mocked(callStaffApi).mockResolvedValue(pageEnvelope([], 1, false) as never)
+    expect(() => page.onSearchChange({ detail: undefined })).not.toThrow()
+    expect(page.data.searchKeyword).toBe('')
+  })
+})
+
 describe('#181 请求世代：并发响应错序', () => {
   /**
    * P1：翻页请求在途时切筛选会并发发起 reset 请求。若旧的那次后返回，
