@@ -390,22 +390,46 @@ describe('safeThumbUrlByArea', () => {
  *
  * 这是 staffApi 当前**唯一**的外部图片下发点（`routes/product.js` 的 bundleGroups）。
  * 渲染侧 `components/bundle-picker/bundle-picker.wxml:28`，
- * 展示位 `.bundle-cover { width: 200rpx }` + `mode="aspectFill"`。
+ * 展示位 `.bundle-cover { width: 200rpx }`（**只设了宽**）+ `mode="aspectFill"`。
  */
 describe('staff 开单页套餐封面（issue #232）', () => {
   const { PRODUCT_THUMB_BOX_SMALL } = require('../../utils/image')
 
   test('复用 client 的小缩略档位 400，不另立档位', () => {
-    // 200rpx 展示位在 3x 屏约 314~344 物理像素，400 留余量。
     // 与 client 体验卡列表卡片（同为 200rpx）的档位一致——同一档展示位不该有两个数。
+    //
+    // ⚠️ 别照着"200rpx 宽 → 3x 屏 344 物理像素 → 400 够用"来理解这个数：
+    // 约束展示位的是**高**不是宽。`.bundle-cover` 没设 height，被 flex stretch
+    // 拉满卡片高（名称 2 行 + 描述 + 页脚 ≈ 211rpx）；1.56 横图 contain 到 400 box
+    // 后高度只剩 256，aspectFill 因此放大约 1.4 倍。这是**已接受的取舍**，
+    // 理由见 utils/image.js 里 PRODUCT_THUMB_BOX_SMALL 的注释（抬档会同时推高
+    // 另外 4 个一屏十几张的调用点）。
     expect(PRODUCT_THUMB_BOX_SMALL).toBe(400)
   })
 
-  test('单张封面解码内存压到 1MB 以内（开单页一屏十几张套餐卡）', () => {
+  test('单张封面解码内存压到 1MB 以内', () => {
     const bytes = PRODUCT_THUMB_BOX_SMALL * PRODUCT_THUMB_BOX_SMALL * 4
     expect(bytes).toBeLessThan(1024 * 1024)
-    // 32 个套餐（prod 实际数量）全部展开也只有 20MB 级
-    expect(bytes * 32).toBeLessThan(21 * 1024 * 1024)
+  })
+
+  test('⚠️ 页面级总量无上界——本档位只保证单张，不保证一页', () => {
+    // 这条不是在断言安全，是在**把已知缺口钉成文档**。
+    //
+    // `_queryMallBundleGroups` 的 SQL 没有 LIMIT，`bundle-picker` 全量 wx:for 渲染，
+    // 所以页面级解码量 = 套餐数 × 0.64MB，线性无界。
+    // 曾经这里写的是 `expect(bytes * 32).toBeLessThan(21MB)`——把"生产现在有 32 个套餐"
+    // 这个**数据快照**当成了不变量：admin 多建套餐，断言照样绿，
+    // 而它声称保证的页面级上界早已不成立。那种断言比没有更糟。
+    //
+    // 真正的上界要靠 SQL LIMIT / 前端分页（client 侧同类缺口见 issue #248）。
+    // 当前缓解只有 `bundle-picker.wxml:28` 的 lazy-load（只解码可见项）——
+    // 删掉那个 attribute 就穿，所以下面顺带钉住它。
+    const wxml = require('node:fs').readFileSync(
+      require('node:path').resolve(
+        __dirname, '../../../../miniprogram/components/bundle-picker/bundle-picker.wxml'
+      ), 'utf8'
+    )
+    expect(wxml).toContain('lazy-load')
   })
 
   test('套餐封面用 box 模式而非面积模式', () => {

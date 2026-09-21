@@ -6,7 +6,7 @@
 
 
 const pg = globalThis.__mocks__.pg
-const { createCtx } = require('../helpers')
+const { createCtx, resetPgMock } = require('../helpers')
 const productRoutes = require('../../routes/product')
 const { _queryCategoryRows, buildNormalSkuMarketScopeFilter } = productRoutes.__testables__
 
@@ -251,6 +251,14 @@ describe('product.skuDetail', () => {
 // product.shopInit
 // ============================================================
 describe('product.shopInit', () => {
+  // shopInit 的用例全部靠 `mockResolvedValueOnce` 的**位置**钉住查询序列，
+  // 而 `vi.clearAllMocks` 清不掉 Once 队列（helpers.js:149 有说明），
+  // `vitest.config.js` 也没开 clearMocks/mockReset。
+  // 不重置的话：本文件任一上游用例多排一个 Once 而没消费，残留就会顺延给下一个用例，
+  // 整条序列错位——而 setup.js 的默认实现是 `async () => []`，
+  // **少给一次 mock 不报错**，只会静默拿到空集，报错信息完全不指向真因。
+  beforeEach(() => resetPgMock(pg))
+
   test('普通 SKU 空分类判断同样按当前工作台门店范围过滤', async () => {
     const ctx = createCtx({
       auth: { effectiveStoreId: 'store-current', scopeStoreIds: ['store-other'] },
@@ -559,7 +567,9 @@ describe('product.shopInit', () => {
     expect(byId['prod-dirty']).toBe(`${COS_URL}?imageMogr2/thumbnail/400x400`)
     expect(byId['prod-evil']).toBeNull()
 
-    // 任何一条下发值都不得是未处理的原图 URL
+    // 任何一条下发值都不得是未处理的原图 URL。
+    // 先钉住条数——否则 byId 为空时这个循环 0 次断言、静默变绿。
+    expect(Object.keys(byId)).toHaveLength(3)
     for (const url of Object.values(byId)) {
       if (url !== null) expect(url).toContain('imageMogr2/thumbnail/')
     }
