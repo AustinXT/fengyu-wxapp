@@ -20,6 +20,7 @@ interface ServiceItem {
   storeName: string;
   inCurrentStore: boolean;
   items: Array<{
+    serviceItemId: string;   // wxml 的 wx:key，后端 list 下发
     itemName: string;
     spec: string;
     remainingSessions: number;

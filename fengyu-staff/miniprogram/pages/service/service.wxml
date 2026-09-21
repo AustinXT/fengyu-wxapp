@@ -42,7 +42,7 @@
         <text class="service-no">{{item.serviceOrderId}}</text>
         <view class="header-tags">
           <!-- 非本店单（#224）：标出开单门店，避免与本店单混淆 -->
-          <view wx:if="{{!item.inCurrentStore && item.storeName}}" class="support-tag">{{item.storeName}}</view>
+          <view wx:if="{{!item.inCurrentStore}}" class="support-tag">{{item.storeName || '其他门店'}}</view>
           <view class="status-tag status-tag--{{item.status === '待服务' ? 'pending' : item.status === '服务中' ? 'progress' : item.status === '待客户确认' ? 'awaiting' : 'done'}}">
             {{item.status}}
           </view>

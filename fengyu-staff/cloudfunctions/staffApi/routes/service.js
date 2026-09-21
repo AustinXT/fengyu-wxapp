@@ -922,7 +922,14 @@ async function list(ctx) {
     ]
     if (phoneKeyword) {
       params.push(`%${phoneKeyword}%`)
-      searchParts.push(`regexp_replace(COALESCE(wu.phone, ''), '[^0-9]', '', 'g') LIKE $${params.length}`)
+      const phoneParam = params.length
+      // 手机号匹配只对本店单开放（#224）：响应里跨店支援单的手机号是脱敏的，
+      // 若仍允许拿原始全号去匹配，外援可逐位枚举 keyword 观察目标单是否出现在结果中，
+      // 约 40 次请求就能还原被 **** 掩盖的 4 位，等于绕过脱敏。按姓名搜索不受影响。
+      params.push(ctx.auth.effectiveStoreId)
+      searchParts.push(
+        `(regexp_replace(COALESCE(wu.phone, ''), '[^0-9]', '', 'g') LIKE $${phoneParam} AND so.store_id = $${params.length})`
+      )
     }
     conditions.push(`(${searchParts.join(' OR ')})`)
   }
@@ -1116,24 +1123,40 @@ async function detail(ctx) {
   if (!visible && isMgmt && inStoreScope) {
     visible = true // 管理层监管本 scope 内服务单（只读）
   }
-  if (!visible && so.client_user_id) {
-    // 顾客在本 scope 内 → 可只读查看其任意服务单（含跨门店）：顾客档案服务记录场景。
-    // 普通员工(store_staff)额外要求该顾客分配给本人（与 assertCustomerProfileVisible 同口径），
-    // 否则可凭可枚举的 service_order_id 越权查看本店他人负责顾客的服务单详情。
+  // 顾客归属：可见性分支 3 与「店长特权」（全号手机 / 顾客评价）都要用，按需查一次后复用。
+  // 不无条件预查——本店店长看本店单是最高频路径，那里两个用途都不需要它。
+  let customer = null
+  let customerLoaded = false
+  const loadCustomer = async () => {
+    if (customerLoaded || !so.client_user_id) return customer
+    customerLoaded = true
     const custRows = await pg.query(
       'SELECT bound_store_id, bound_employee_id FROM client_wechat_users WHERE user_id = $1',
       [so.client_user_id]
     )
+    customer = custRows[0] || null
+    return customer
+  }
+
+  if (!visible && so.client_user_id && await loadCustomer()) {
+    // 顾客在本 scope 内 → 可只读查看其任意服务单（含跨门店）：顾客档案服务记录场景。
+    // 普通员工(store_staff)额外要求该顾客分配给本人（与 assertCustomerProfileVisible 同口径），
+    // 否则可凭可枚举的 service_order_id 越权查看本店他人负责顾客的服务单详情。
     if (
-      custRows.length > 0 &&
-      isStoreInScope(ctx.auth, custRows[0].bound_store_id) &&
-      (!restrictToBoundEmployee(ctx.auth) || custRows[0].bound_employee_id === ctx.auth.staffWfId)
+      isStoreInScope(ctx.auth, customer.bound_store_id) &&
+      (!restrictToBoundEmployee(ctx.auth) || customer.bound_employee_id === ctx.auth.staffWfId)
     ) {
       visible = true
     }
   }
   if (!visible) {
     throw new Error('PERMISSION_DENIED: 无权查看该服务单')
+  }
+
+  // 店长看非本店单时，特权可能来自「顾客是我的客户」这条来源，需要顾客归属才能判（#224）。
+  // 本店单与非店长都不必走这一步，上面的高频路径因此不会多一次查询。
+  if (isCurrentStoreManager(ctx.auth) && !isInCurrentStore(ctx.auth, so)) {
+    await loadCustomer()
   }
 
   // 查询服务明细
@@ -1185,10 +1208,11 @@ async function detail(ctx) {
     }
   }
 
-  // 顾客评价：仅**该单所属门店**的店长可见（防普通员工抓包）；评价仅存在于已完成单。
-  // 同 maskPhoneForOrder：跨店放行后不能再用「请求人当前门店店长」当判据（#224）。
+  // 顾客评价：与全号手机同判据（店长对这张单有特权：我店的单 ∨ 我店的客户）；仅已完成单有评价。
+  // 前端靠下发的 canViewReview 决定是否渲染评价区块——它自己无从知道顾客归属。
+  const canViewReview = canReadFullPhone(ctx.auth, so, customer)
   let review
-  if (isOrderStoreManager(ctx.auth, so) && so.status === '已完成') {
+  if (canViewReview && so.status === '已完成') {
     const reviewRows = await pg.query(
       `SELECT rating, comment, created_at FROM service_reviews WHERE service_order_id = $1`,
       [id]
@@ -1202,7 +1226,7 @@ async function detail(ctx) {
     id: so.service_order_id,
     serviceOrderId: so.service_order_id,
     customerName,
-    customerPhone: maskPhoneForOrder(ctx.auth, so),
+    customerPhone: maskPhoneForOrder(ctx.auth, so, customer),
     staffName,
     status: so.status,
     serviceTime: so.service_date,
@@ -1213,6 +1237,7 @@ async function detail(ctx) {
     storeName: (so.store_name || '').trim(),
     inCurrentStore: isInCurrentStore(ctx.auth, so),
     canOperate: canOperateOrder(ctx.auth, so),
+    canViewReview,
     review,
     items: items.map(i => ({
       saleItemId: i.sale_item_id,
@@ -1343,11 +1368,37 @@ function isOrderStoreManager(auth, so) {
  * 沿用旧判据就会把 B 店顾客的完整手机号交出去，构成跨组织域 PII 泄露。
  * 店长特权一律与**这张单的门店**挂钩；仅因「指派给我」放行的跨店支援单按普通员工脱敏。
  */
-function maskPhoneForOrder(auth, so) {
-  const canReadFull = auth?.loginLevel === 'management'
-    ? (hasValidManagerRole(auth) && isStoreInScope(auth, so.store_id))
-    : isOrderStoreManager(auth, so)
-  return canReadFull ? (so.client_phone || '') : maskPhone(so.client_phone)
+function maskPhoneForOrder(auth, so, customer) {
+  return canReadFullPhone(auth, so, customer) ? (so.client_phone || '') : maskPhone(so.client_phone)
+}
+
+/**
+ * 是否有权读到这张单顾客的完整手机号（评价可见性同判据）。
+ *
+ * 店长特权有**两条独立来源**，缺一条就会误伤存量场景：
+ *   ① 这是我店的单 —— 护理 Tab / 操作场景
+ *   ② 这是我店的客户 —— 顾客档案里看他在别店做的服务单。顾客档案页本身就显示全号，
+ *      只按单的门店判会让同一个号码在两个页面一个全号一个脱敏，且相对改动前是能力收缩
+ * 外援场景两条都不满足（顾客与单都在别店），因此仍按普通员工脱敏——这正是要堵的泄露面。
+ *
+ * 管理层分支**必须按 `managerStoreIds` 判，不能用 `scopeStoreIds`**：后者是全角色并集，
+ * 「manager@A 店 + finance@B 店」的账号在 B 店会同时满足 `hasValidManagerRole`（因 A 的绑定）
+ * 与 `isStoreInScope`（因 B 的财务绑定），拼接出一个 B 店并不存在的店长特权。
+ * 这正是 `requireManager()` 在 2026-05-21 堵掉的越权模式，PII 读取路径同样不能重蹈。
+ *
+ * @param customer 可选，`client_wechat_users` 行。list 不查顾客归属，传 undefined 即只按 ① 判——
+ *                 其可见集是「本店单 ∪ 指派给本人」，不含「顾客在本店但单在别店」那类单。
+ */
+function canReadFullPhone(auth, so, customer) {
+  if (!auth) return false
+  if (auth.loginLevel === 'management') {
+    if (!hasValidManagerRole(auth) || !Array.isArray(auth.managerStoreIds)) return false
+    return auth.managerStoreIds.includes(so.store_id)
+      || (!!customer && auth.managerStoreIds.includes(customer.bound_store_id))
+  }
+  if (!isCurrentStoreManager(auth)) return false
+  return isInCurrentStore(auth, so)
+    || (!!customer && !!customer.bound_store_id && customer.bound_store_id === auth.effectiveStoreId)
 }
 
 /**
@@ -1358,6 +1409,9 @@ function maskPhoneForOrder(auth, so) {
  * 列表页无需此字段：list 的可见集恒为「本店单（店长）∪ 指派给本人」，两者都必然可操作。
  */
 function canOperateOrder(auth, so) {
+  // 管理层是只读视角，start/complete 会先于两道门直接拒绝——不带上这一条，
+  // 字段契约就与接口实际行为不符（当前 WXML 另有 isReadOnly 兜底，但消费者不该依赖那个巧合）
+  if (auth?.loginLevel === 'management') return false
   return isOrderStoreManager(auth, so) || isAssignedToSelf(auth, so)
 }
 

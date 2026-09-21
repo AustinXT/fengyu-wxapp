@@ -22,6 +22,7 @@ interface ServiceDetail {
   storeName: string;
   inCurrentStore: boolean;
   canOperate: boolean;
+  canViewReview: boolean;   // 店长对这张单是否有评价/全号特权，由后端判（前端不知道顾客归属）
   items: Array<{
     saleItemId: string;
     itemName: string;

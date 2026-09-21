@@ -17,7 +17,7 @@
 
     <van-cell-group title="基本信息" class="section-group">
       <!-- 非本店单（#224）：显式标出开单门店，否则界面上看不出这单不归本店 -->
-      <van-cell wx:if="{{!detail.inCurrentStore && detail.storeName}}" title="服务门店" value="{{detail.storeName}}" />
+      <van-cell wx:if="{{!detail.inCurrentStore}}" title="服务门店" value="{{detail.storeName || '其他门店'}}" />
       <van-cell title="顾客" value="{{detail.customerName}}" />
       <van-cell title="手机号" value="{{detail.customerPhone}}" />
       <van-cell title="服务人员" value="{{detail.staffName}}" />
@@ -54,10 +54,9 @@
       <van-cell wx:if="{{detail.remark}}" title="备注" value="{{detail.remark}}" />
     </van-cell-group>
 
-    <!-- 顾客评价：仅**本单门店**的店长可见，且仅已完成单。
-         后端已改为按单的门店判（#224），这里不同步的话，店长外援会看到一个恒显示
-         「顾客暂未评价」的空区块——实际是无权查看，不是没评价 -->
-    <van-cell-group title="顾客评价" class="section-group" wx:if="{{isManager && detail.inCurrentStore && detail.status === '已完成'}}">
+    <!-- 顾客评价：可见性由后端下发（店长对这张单有特权 = 我店的单 ∨ 我店的客户）。
+         前端不自行推导——它不知道顾客归属，按 inCurrentStore 判会误伤「顾客档案里看别店单」场景 -->
+    <van-cell-group title="顾客评价" class="section-group" wx:if="{{detail.canViewReview && detail.status === '已完成'}}">
       <view wx:if="{{detail.review}}" class="review-box">
         <view class="review-rate-row">
           <van-rate value="{{detail.review.rating}}" readonly size="28rpx" color="#C0322A" void-color="#E8E8E8" />
@@ -107,9 +106,11 @@
         custom-style="border-radius: 48rpx; margin-top: 20rpx;"
         bind:click="onCancelService"
       >取消服务单</van-button>
-      <!-- 终态：返回工作台 -->
+      <!-- 无任何可用操作时给返回入口：外援标记完成后单转「待客户确认」，
+           开始/完成（状态不符）、代确认（非本店店长）、取消（非本店）全不满足，
+           不兜底的话底部一片空白、只能手势返回 -->
       <van-button
-        wx:if="{{detail.status === '已完成' || detail.status === '已取消'}}"
+        wx:if="{{!(detail.canOperate && (detail.status === '待服务' || detail.status === '服务中')) && !(isManager && detail.inCurrentStore && detail.status === '待客户确认')}}"
         type="primary" block plain
         custom-class="btn-outline-brand"
         custom-style="border-radius:48rpx;margin-top:20rpx;"
