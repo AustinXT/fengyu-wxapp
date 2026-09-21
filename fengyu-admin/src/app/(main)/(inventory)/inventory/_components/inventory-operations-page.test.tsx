@@ -237,7 +237,13 @@ describe('业务工作区双 Tab（#190）', () => {
     // ⚠️ Tabs 是 uncontrolled：父层在 activeOperation A→B 时原地更新不重挂，
     // 选中态会跟着跑到下一个业务 —— 点开 B 直接落在 B 的单据页。key 是唯一的拦法，
     // 只断言 defaultValue 的话，这个回归照样全绿。
-    expect(source).toMatch(/<Tabs key=\{operation\} defaultValue="form">/)
+    //
+    // #190 返回入口起 defaultValue 改吃 defaultTab，但它只能来自**一次性券**：
+    // key 在 A→B→A 时重建 Tabs，直接读 URL 上的 tab 会让用户之后每次打开那张卡
+    // 都被弹到单据 Tab，且没有任何报错 —— 本次改动最隐蔽的一个回归面。
+    expect(source).toMatch(/<Tabs key=\{operation\} defaultValue=\{defaultTab\}>/)
+    expect(source).toMatch(/defaultTab=\{pendingDocsTabFor === active\.id \? 'docs' : 'form'\}/)
+    expect(source).not.toMatch(/defaultValue=\{initialTab\}/)
     expect(source).toMatch(/<TabsTrigger value="form">填报表单<\/TabsTrigger>/)
     expect(source).toMatch(/<TabsTrigger value="docs">单据<\/TabsTrigger>/)
   })
@@ -286,8 +292,20 @@ describe('业务工作区双 Tab（#190）', () => {
     // 会把整个办理台连同填了一半的明细卸载掉，而 returnTo 只恢复 URL、恢复不了 React state。
     const tab = source.slice(source.indexOf('function OperationDocsTab('))
     expect(tab).toMatch(/target="_blank"/)
-    expect(tab).toMatch(/rel="noopener noreferrer"/)
     expect(tab).not.toMatch(/onRowClick/)
+    // #190：rel 必须留着 opener，详情页的「返回XX办理台」靠 window.opener 判断
+    // 本标签是不是办理台开出来的 —— 能判才敢 window.close() 真正回到原标签。
+    // 换回 noopener 的话返回会静默退化成「在新标签里再开一个空办理台」。
+    expect(tab).toMatch(/rel="opener"/)
+    expect(tab).not.toMatch(/rel="noopener/)
+  })
+
+  it('单据号 href 必须带来源参数，漏了详情页的返回入口会静默退化', () => {
+    // 漏传 from/level/op 的后果：详情页 resolveInventoryDocReturn 返回 null，
+    // 返回入口退化成「返回」→ 单据中心。两个页面各自看都完全正常，没人看得出来。
+    const tab = source.slice(source.indexOf('function OperationDocsTab('))
+    expect(tab).toMatch(/href=\{inventoryOperationDocHref\(row\.id, level, operation\)\}/)
+    expect(tab).not.toMatch(/href=\{`\/inventory\/docs\/\$\{row\.id\}`\}/)
   })
 
   it('单据 Tab 只能走 listInventoryOperationDocs，不自己拼单据类型', () => {
@@ -406,10 +424,11 @@ describe('办理台内嵌建单的闸门（#191）', () => {
     // 这时候切走会把表单连同在途请求一起卸载：单已经建出去了，用户却只看到面板消失。
     // ⚠️ 锚定到 enabled 的计算式里，不要全文找 `!workspaceBusy` —— 那样任何无关位置
     // 出现这个子串都算过，「锁卡片」这条被单独拆掉时反而抓不住。
-    const enabledExpr = source.slice(
-      source.indexOf('const enabled = (operation.approvalOnly'),
-      source.indexOf('const content = ('),
-    )
+    // #190 把权限判据抽成 operationEnabled 后，锚点从内联的三元表达式换成这一行；
+    // `!workspaceBusy` 刻意留在卡片侧（它是临时态、不是权限），别塞进 operationEnabled。
+    const enabledStart = source.indexOf('const enabled = operationEnabled(operation)')
+    expect(enabledStart).toBeGreaterThan(-1)
+    const enabledExpr = source.slice(enabledStart, source.indexOf('const content = ('))
     expect(enabledExpr).toMatch(/&& !workspaceBusy/)
     expect(source).toMatch(/closeDisabled=\{busy\}/)
     expect(source).toMatch(/onBusyChange=\{setWorkspaceBusy\}/)
@@ -432,5 +451,123 @@ describe('办理台内嵌建单的闸门（#191）', () => {
     // 漏配一张卡时 tsc 直接报错并点名缺哪种类型（已做变异验证）。
     expect(source).toMatch(/as const satisfies Record<InventoryBusinessLevel, readonly GenericOperationDefinition\[\]>/)
     expect(source).toMatch(/Exclude<InventoryGenericDocType, DeclaredGenericDocTypes>/)
+  })
+})
+
+/**
+ * 办理台 URL 恢复（#190「返回要求仍然可以返回到原来的页面」的降级路径）。
+ *
+ * 首选路径是详情页 window.close() 回到原标签（表单一个字不丢）；关不掉时才导航到
+ * `/inventory/operations/<level>?op=…&tab=docs`。下面钉的都是「页面照常渲染、
+ * 恢复却静默跑偏」的点。
+ */
+describe('办理台 URL 恢复（#190 返回）', () => {
+  const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
+
+  it('恢复参数用 op/tab，不能撞上会被整体重定向的 create/view', () => {
+    // 办理台的服务端入口对 `?view=docs` 做整体 redirect 到单据中心。
+    // 恢复参数一旦叫 view/create，用户点返回会被静默弹到单据中心，永远回不到办理台 ——
+    // 两个文件各自看都对，联调才炸。
+    const levelPage = readFileSync(
+      resolve(__dirname, '..', 'operations', '[level]', 'page.tsx'),
+      'utf8',
+    )
+    expect(levelPage).toMatch(/if \(query\.view === 'docs'\)/)
+    expect(source).toMatch(/searchParams\.get\('op'\)/)
+    expect(source).toMatch(/searchParams\.get\('tab'\)/)
+    expect(source).not.toMatch(/searchParams\.get\('create'\)/)
+    expect(source).not.toMatch(/searchParams\.get\('view'\)/)
+  })
+
+  it('URL 恢复出来的业务必须过和卡片同一道权限判据', () => {
+    // 不加的话，手改 URL `?op=purchase-order` 能打开一张按钮本来 disabled 的卡片。
+    // 只是 UI 越权（server action 侧 withPermission 仍会拦），但不该让表单渲染出来。
+    expect(source).toMatch(/const active = levelOperations\.find\(\s*\n?\s*\(operation\) => operation\.id === activeOperation && operationEnabled\(operation\),/)
+    // 反向：判据不得再有第二份内联展开，否则卡片与恢复两处会各走各的。
+    expect(source.match(/const hasShipmentCancellationAccess = operation\./g) ?? []).toHaveLength(1)
+  })
+
+  it('op 的白名单解析走共享纯函数，不在组件里手搓', () => {
+    // 手搓的话「generic:<docType>」这一支很容易漏掉（通用卡的 id 不在
+    // INVENTORY_OPERATION_IDS 里），表现为通用业务永远恢复不出来。
+    expect(source).toMatch(/parseInventoryOperationId\(searchParams\.get\('op'\)\)/)
+    expect(source).toMatch(/parseInventoryOperationsTab\(searchParams\.get\('tab'\)\)/)
+  })
+
+  it('手点卡片会清掉单据 Tab 的一次性券', () => {
+    // 漏改这处的后果：带 tab=docs 返回后再点别的卡片，那张卡也被弹到单据 Tab。
+    expect(source).toMatch(/onClick=\{\(\) => selectOperation\(operation\.id\)\}/)
+    expect(source).not.toMatch(/onClick=\{\(\) => setActiveOperation\(operation\.id\)\}/)
+    const selectOperationBody = source.slice(
+      source.indexOf('const selectOperation = useCallback('),
+      source.indexOf('const groups = useMemo('),
+    )
+    expect(selectOperationBody).toMatch(/setPendingDocsTabFor\(null\)/)
+  })
+
+  it('恢复后滚到已展开的工作区，且只滚一次', () => {
+    // 工作区渲染在卡片网格下方，不滚的话用户落在页面顶部看不到恢复出来的卡，
+    // 会以为返回没生效。但只能在恢复路径生效 —— 手点卡片被页面拽走是另一种烦人。
+    expect(source).toMatch(/<Card ref=\{workspaceRef\}>/)
+    const effect = source.slice(
+      source.indexOf('if (restoreScrolled.current) return'),
+      source.indexOf('}, [restoredOperation])'),
+    )
+    expect(effect).toMatch(/if \(!restoredOperation\) return/)
+    expect(effect).toMatch(/restoreScrolled\.current = true/)
+    expect(effect).toMatch(/scrollIntoView\(/)
+  })
+})
+
+/**
+ * 表格行内控件的可访问名（#194）。
+ *
+ * 这些控件在 `<td>` 里，没有 `<label>` 可包裹（字段名只在 `<th>` 上），读屏只会念
+ * 「编辑框」「复选框」，E2E 也只能按行结构猜位置 —— inv-03 卡在「本次汇总」就是这么来的。
+ *
+ * 口径：`<字段名> <行标识>`，行标识统一由各表自己的 `rowName` 给出，**必须行内唯一**。
+ * 只带商品名是不够的：`skuName` 落库时取的是 `sku.productName`（纯商品名，不含规格），
+ * 而这几张表都把规格当独立副标题渲染 —— 同一商品的两个规格同时成行时，
+ * 可访问名会完全重复：读屏分不清，Playwright 要么 strict mode violation、要么静默填错行。
+ */
+describe('行内控件的可访问名（#194）', () => {
+  const source = readFileSync(resolve(__dirname, 'inventory-operations-page.tsx'), 'utf8')
+
+  it('三张表格的行内控件都带 aria-label，文案口径是「<字段名> <行标识>」', () => {
+    for (const label of [
+      '选择 ${rowName}',      // 市场报货（市场汇总报货）：勾选
+      '实际采购 ${rowName}',   // 市场报货：数量
+      '福利方案 ${rowName}',   // 市场报货：福利方案下拉（原来是「${line.skuName}福利方案」，同样会重名）
+      '汇总 ${rowName}',      // 市场报货汇总：勾选
+      '本次汇总 ${rowName}',   // 市场报货汇总：数量
+      '本次实收 ${rowName}',   // 收货进度：数量
+      '明细备注 ${rowName}',   // 收货进度：备注
+    ]) {
+      expect(source, `缺 aria-label：${label}`).toContain(`aria-label={\`${label}\`}`)
+    }
+    // 反向：行内 aria-label 不得再直接插 `${line.skuName}` —— 那正是 #194 的重名缺陷本身。
+    // 只断言正向的话，任何一处偷偷退回「只带商品名」都照样全绿。
+    expect(source).not.toMatch(/aria-label=\{`[^`]*\$\{line\.skuName\}/)
+  })
+
+  it('每张表的 rowName 按自己的行唯一键拼，不是三份抄来抄去的商品名', () => {
+    // 行唯一键必须读渲染/聚合口径定，不能猜 —— 猜错的表现就是「页面看着好好的，
+    // 多规格一上就两行重名」，静态看不出来。
+    // 市场报货：明细按 sku 聚合，一行 = 一个 skuId；规格缺省时退回天然唯一的 skuId
+    //（和「商品」列副标题 `{line.specName || line.skuId}` 同一个表达式，屏幕内容与可访问名一致）。
+    expect(source).toContain('const rowName = `${line.skuName} ${line.specName || line.skuId}`')
+    // 市场报货汇总：行唯一键 = skuId + marketId（lineKey 就是 `${skuId}@${marketId}`），
+    // 所以商品维度之外还得带市场名。
+    expect(source).toContain('const rowName = `${line.skuName} ${line.specName || line.skuId} ${line.marketName}`')
+    // 收货进度：一行 = 发货单的一条明细，**不按 sku 聚合**，同一 sku 的赠品行与正常行
+    // 连 skuId 都相同；payload（ReceiptProgressLine）里又没有 specName。
+    // 故这张表用行序号兜底 —— lines 装载后不排序不增删，updateLine 也按 index 打补丁。
+    expect(source).toContain('const rowName = `${line.skuName} 第${index + 1}行`')
+  })
+
+  it('aria-label 一律写在 type="number" 之前', () => {
+    // 写在之后的话，模板串里的 `>` 会截断本文件「数值输入带 min/step/max」那条守护
+    // 抓属性串的正则（/type="number"[^/>]*/），三条断言会一起红 —— 排查成本远高于收益。
+    expect(source).not.toMatch(/type="number"[^/>]*aria-label/)
   })
 })

@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import {
   ArrowLeftRight,
@@ -74,6 +74,15 @@ import {
   type InventoryGenericOperationId,
   type InventoryOperationId,
 } from '@/lib/inventory/operation-doc-types'
+/*
+ * 值导入。`operation-return` 运行时是纯的（对 business-level 只 `import type`），
+ * 否则会把 @/lib/permissions → @/db 拖进客户端 bundle，见该文件头部注释。
+ */
+import {
+  inventoryOperationDocHref,
+  parseInventoryOperationId,
+  parseInventoryOperationsTab,
+} from '@/lib/inventory/operation-return'
 import { InventoryDocCreateForm } from './inventory-doc-create-form'
 import InventorySubjectSelect from '@/components/inventory-subject-select'
 import { Badge } from '@/components/ui/badge'
@@ -536,7 +545,32 @@ export default function InventoryOperationsPage({
   initialOperationId?: InventoryAnyOperationId
 }) {
   const router = useRouter()
-  const [activeOperation, setActiveOperation] = useState<InventoryAnyOperationId | null>(initialOperationId ?? null)
+  const searchParams = useSearchParams()
+  /*
+   * #190 返回入口的 URL 恢复：详情页「返回XX办理台」在 window.close() 关不掉时会降级导航到
+   * `/inventory/operations/<level>?op=<业务>&tab=docs`。这里只在**首次挂载**读一次 ——
+   * 恢复的也只有 URL 层（level 由路由段带、选中的业务卡片、单据 Tab），
+   * 填了一半的 React 表单 state 恢复不了，那正是详情页要优先走 window.close() 的理由。
+   *
+   * 参数名 `op`/`tab` 刻意避开 `create`/`view`：本页的服务端入口会把带 `view=docs` 的请求
+   * 整体重定向到单据中心，撞上就永远回不到办理台。
+   */
+  const restoredOperation = useMemo(
+    () => parseInventoryOperationId(searchParams.get('op')),
+    [searchParams],
+  )
+  const [activeOperation, setActiveOperation] = useState<InventoryAnyOperationId | null>(
+    () => initialOperationId ?? restoredOperation ?? null,
+  )
+  /*
+   * 单据 Tab 的「一次性券」：只对**从详情页返回时 URL 里带的那个业务**生效。
+   * 必须是一次性的 —— 下面 `<Tabs key={operation}>` 在 A→B→A 时会重建，
+   * 若直接读 URL 上的 tab，第二次打开 A 又会被弹回单据 Tab，用户永远回不到填报表单，
+   * 而且没有任何报错。
+   */
+  const [pendingDocsTabFor, setPendingDocsTabFor] = useState<InventoryAnyOperationId | null>(
+    () => (parseInventoryOperationsTab(searchParams.get('tab')) === 'docs' ? restoredOperation : null),
+  )
   /*
    * 工作区里有提交在途时，锁住所有卡片与关闭按钮：这时候切走会把表单连同
    * 在途请求一起卸载 —— 单其实已经建出去了，用户只看到面板消失，没有任何结果反馈。
@@ -551,7 +585,32 @@ export default function InventoryOperationsPage({
     ],
     [level],
   )
-  const active = levelOperations.find((operation) => operation.id === activeOperation) ?? null
+  /*
+   * 权限判据的唯一收口点：卡片的 disabled 态与「URL 恢复出来的业务能不能打开」必须同一份。
+   * 不收口的话，手改 URL `?op=purchase-order` 能打开一张按钮本来是 disabled 的卡片 ——
+   * 只是 UI 越权（server action 侧 withPermission 仍会拦），但不该让表单渲染出来。
+   * 刻意**不含** `!workspaceBusy`：那是「提交在途时锁卡片」的临时态，不是权限。
+   */
+  const operationEnabled = useCallback((operation: OperationCardBase) => {
+    const hasShipmentCancellationAccess = operation.shipmentCancellationAccess === '申请'
+      ? canRequestShipmentCancellation
+      : operation.shipmentCancellationAccess === '审批'
+        ? canApproveShipmentCancellation
+        : true
+    const hasSelfPurchaseAccess = !operation.selfPurchaseOnly || canSelfPurchase
+    return (operation.approvalOnly ? canApprove : canCreate)
+      && hasShipmentCancellationAccess
+      && hasSelfPurchaseAccess
+  }, [canApprove, canApproveShipmentCancellation, canCreate, canRequestShipmentCancellation, canSelfPurchase])
+  // `levelOperations` 只含本层级的卡，跨层级的 `?op=` 天然解析不出来（市场台带门店业务 → null）。
+  const active = levelOperations.find(
+    (operation) => operation.id === activeOperation && operationEnabled(operation),
+  ) ?? null
+  const selectOperation = useCallback((id: InventoryAnyOperationId) => {
+    // 手点卡片一律落回「填报表单」：一次性券只服务于返回路径。
+    setPendingDocsTabFor(null)
+    setActiveOperation(id)
+  }, [])
   const groups = useMemo(() => Array.from(new Set(levelOperations.map((operation) => operation.group))), [levelOperations])
   const levelMeta = {
     'supply-chain': { title: '供应链库存业务', description: '处理品项公司需求、采购、发货、退货审批和总部库存。' },
@@ -572,6 +631,22 @@ export default function InventoryOperationsPage({
     // 出去也会带着「自动打开某张卡」的副作用。
     router.replace(`/inventory/operations/${level}`, { scroll: false })
   }, [initialOperationId, level, router])
+
+  /*
+   * 从详情页返回时滚到已展开的工作区（#190）。工作区渲染在卡片网格**下方**，
+   * 不滚的话用户落在页面顶部，看不到自己刚被恢复出来的那张卡，会以为返回没生效。
+   * 只在恢复路径生效、且只做一次（ref 守卫）——手点卡片不该被页面自己拽走。
+   */
+  const workspaceRef = useRef<HTMLDivElement>(null)
+  const restoreScrolled = useRef(false)
+  useEffect(() => {
+    if (restoreScrolled.current) return
+    if (!restoredOperation) return
+    const node = workspaceRef.current
+    if (!node || typeof node.scrollIntoView !== 'function') return
+    restoreScrolled.current = true
+    node.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [restoredOperation])
 
   const afterSuccess = useCallback((message: string) => {
     toast.success(message)
@@ -603,16 +678,9 @@ export default function InventoryOperationsPage({
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
               {levelOperations.filter((operation) => operation.group === group).map((operation) => {
                 const Icon = operation.icon
-                const hasShipmentCancellationAccess = operation.shipmentCancellationAccess === '申请'
-                  ? canRequestShipmentCancellation
-                  : operation.shipmentCancellationAccess === '审批'
-                    ? canApproveShipmentCancellation
-                    : true
-                const hasSelfPurchaseAccess = !operation.selfPurchaseOnly || canSelfPurchase
-                const enabled = (operation.approvalOnly ? canApprove : canCreate)
-                  && hasShipmentCancellationAccess
-                  && hasSelfPurchaseAccess
-                  && !workspaceBusy
+                // 权限判据走 operationEnabled（与 URL 恢复共用同一份，见上方定义）；
+                // !workspaceBusy 是「提交在途时锁卡片」，只在这里叠加。
+                const enabled = operationEnabled(operation) && !workspaceBusy
                 const content = (
                   <>
                     <span className={`flex size-10 shrink-0 items-center justify-center rounded-[var(--radius)] ${operation.tone}`}>
@@ -632,7 +700,7 @@ export default function InventoryOperationsPage({
                     key={operation.id}
                     type="button"
                     disabled={!enabled}
-                    onClick={() => setActiveOperation(operation.id)}
+                    onClick={() => selectOperation(operation.id)}
                     className="flex min-h-24 items-center gap-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--card)] p-4 text-left shadow-sm transition-colors hover:border-[var(--primary)] hover:bg-[#FFFDFC] disabled:cursor-not-allowed disabled:opacity-45"
                   >
                     {content}
@@ -645,10 +713,12 @@ export default function InventoryOperationsPage({
       </div>
 
       {active && (
-        <Card>
+        <Card ref={workspaceRef}>
           <CardContent className="p-5">
             <OperationWorkspace
               operation={active}
+              level={level}
+              defaultTab={pendingDocsTabFor === active.id ? 'docs' : 'form'}
               busy={workspaceBusy}
               onBusyChange={setWorkspaceBusy}
               locations={locations}
@@ -656,7 +726,7 @@ export default function InventoryOperationsPage({
               suppliers={suppliers}
               workflowDocs={workflowDocs}
               canViewPrice={canViewPrice}
-              onClose={() => setActiveOperation(null)}
+              onClose={() => { setPendingDocsTabFor(null); setActiveOperation(null) }}
               onSuccess={afterSuccess}
             />
           </CardContent>
@@ -668,6 +738,8 @@ export default function InventoryOperationsPage({
 
 function OperationWorkspace({
   operation: card,
+  level,
+  defaultTab,
   busy,
   onBusyChange,
   locations,
@@ -679,6 +751,10 @@ function OperationWorkspace({
   onSuccess,
 }: {
   operation: ResolvedOperation
+  /** 单据 Tab 的单据号链接要带来源参数（#190 返回入口），所以层级得一路传到下游。 */
+  level: InventoryBusinessLevel
+  /** 只在「从详情页返回」那一次是 'docs'，由父层的一次性券决定。 */
+  defaultTab: 'form' | 'docs'
   busy: boolean
   onBusyChange: (busy: boolean) => void
   locations: InventoryLocationRow[]
@@ -698,8 +774,12 @@ function OperationWorkspace({
         * key：`activeOperation` A→B 时父层元素类型与位置不变，React 原地更新、不重挂，
         * Tabs 的 uncontrolled state 会把「单据」选中态带到下一个业务 ——
         * 点开 B 直接落在 B 的单据页、填报表单被藏起来。加 key 强制重建。
+        *
+        * defaultTab 必须是父层的**一次性券**（pendingDocsTabFor === active.id），不能直接读 URL：
+        * key 在 A→B→A 时重建 Tabs，直接读 URL 的话第二次打开 A 又被弹回单据 Tab，
+        * 用户永远回不到填报表单，且没有任何报错。
         */}
-      <Tabs key={operation} defaultValue="form">
+      <Tabs key={operation} defaultValue={defaultTab}>
         <TabsList>
           <TabsTrigger value="form">填报表单</TabsTrigger>
           <TabsTrigger value="docs">单据</TabsTrigger>
@@ -763,7 +843,7 @@ function OperationWorkspace({
           {operation === 'store-conversion' && <ConversionForm locations={locations} skuOptions={skuOptions} locationType="门店" onSuccess={onSuccess} />}
         </TabsContent>
         <TabsContent value="docs">
-          <OperationDocsTab operation={operation} canViewPrice={canViewPrice} />
+          <OperationDocsTab operation={operation} level={level} canViewPrice={canViewPrice} />
         </TabsContent>
       </Tabs>
     </div>
@@ -780,10 +860,13 @@ const OPERATION_DOCS_PAGE_SIZE = 20
  */
 function OperationDocsTab({
   operation,
+  level,
   canViewPrice,
 }: {
   /** 内置业务 id 或 `generic:<docType>`；查询条件由服务端按 id 解析（#190/#191）。 */
   operation: InventoryAnyOperationId
+  /** 拼「返回XX办理台」来源参数用（#190）。 */
+  level: InventoryBusinessLevel
   canViewPrice: boolean
 }) {
   const [rows, setRows] = useState<InventoryDocRow[]>([])
@@ -833,12 +916,21 @@ function OperationDocsTab({
        * 新标签打开，且**不做整行点击**：keepMounted 的全部意义就是「去单据 Tab 看一眼
        * 回来表单还在」，行内 router.push 会把整个办理台连同填了一半的明细一起卸载，
        * 而 returnTo 那套只能恢复 URL、恢复不了 React state。
+       *
+       * href 带来源参数（`from/level/op`，两个闭集枚举，详见 operation-return.ts）：
+       * 详情页据此渲染「返回XX办理台」。漏传的话详情页的返回入口会静默退化成
+       * 「返回单据中心」—— 两个页面各自看都完全正常，没人看得出来。
+       *
+       * `rel="opener"`（而不是默认的 noopener）：详情页的返回按钮要靠 `window.opener`
+       * 判断「本标签是办理台开出来的」，能判就直接 window.close() 回到原标签，
+       * 办理台填了一半的表单一个字不丢。这是甲方「返回到原来的页面」的字面要求。
+       * 同源页面，没有 noopener 要防的跨源风险。
        */
       cell: (row) => (
         <a
-          href={`/inventory/docs/${row.id}`}
+          href={inventoryOperationDocHref(row.id, level, operation)}
           target="_blank"
-          rel="noopener noreferrer"
+          rel="opener"
           className="font-mono text-xs text-[var(--primary)] underline-offset-2 hover:underline"
         >
           {row.id}
@@ -1359,14 +1451,28 @@ function MarketReportForm({
               <tbody>
                 {lines.map((line, index) => {
                   const currentQuote = quoteResult?.items.find((item) => item.skuId === line.skuId)
+                  /*
+                   * 行内控件的可访问名（#194）。行内控件没有 <label> 可包裹（字段名只在 <th> 上），
+                   * 读屏只会念「复选框」/「编辑框」，Playwright 也只能按行结构猜位置。
+                   *
+                   * ⚠️ 只带 skuName **不够**：skuName 落库时取的是 `sku.productName`（纯商品名，不含规格），
+                   * 本表又把规格当独立副标题渲染 —— 同一商品的两个规格同时成行时，可访问名会完全重复，
+                   * 读屏分不清，Playwright 报 strict mode violation 或静默填错行。
+                   * `specName || skuId` 与下面「商品」列副标题是同一个表达式：既和屏幕上看到的一致，
+                   * 规格缺省时又退回天然唯一的 skuId（本表按 sku 聚合，一行 = 一个 skuId）。
+                   *
+                   * aria-label 必须写在数值输入的 type 属性**之前**，
+                   * 否则源码守护测试抓属性串时会被模板串里的 `>` 截断（见本组件的单测）。
+                   */
+                  const rowName = `${line.skuName} ${line.specName || line.skuId}`
                   return (
                     <tr key={line.skuId} className="border-t border-[var(--border)]">
-                      <td className="px-3 py-2"><input type="checkbox" checked={line.selected} onChange={(event) => updateLine(index, { selected: event.target.checked })} /></td>
+                      <td className="px-3 py-2"><input aria-label={`选择 ${rowName}`} type="checkbox" checked={line.selected} onChange={(event) => updateLine(index, { selected: event.target.checked })} /></td>
                       <td className="px-3 py-2"><div className="font-medium">{line.skuName}</div><div className="text-xs text-[#888888]">{line.specName || line.skuId}</div></td>
                       <td className="px-3 py-2">{line.requestQuantity}</td>
                       <td className="px-3 py-2">{line.availableQuantity}</td>
                       <td className="px-3 py-2">{line.suggestedPurchaseQuantity}</td>
-                      <td className="px-3 py-2"><Input className="w-24" type="number" min="0" step="0.01" max="9999999999.99" value={line.purchaseQuantity} onChange={(event) => updateLine(index, { purchaseQuantity: event.target.value })} disabled={!line.selected} /></td>
+                      <td className="px-3 py-2"><Input className="w-24" aria-label={`实际采购 ${rowName}`} type="number" min="0" step="0.01" max="9999999999.99" value={line.purchaseQuantity} onChange={(event) => updateLine(index, { purchaseQuantity: event.target.value })} disabled={!line.selected} /></td>
                       {canViewPrice && (
                         <td className="px-3 py-2">
                           {!line.selected ? (
@@ -1377,11 +1483,13 @@ function MarketReportForm({
                             <div className="min-w-64 space-y-1.5">
                               {currentQuote.eligibleOptions.length > 1
                                 || (!currentQuote.promotionPlanId && currentQuote.eligibleOptions.length > 0) ? (
+                                // 同一行的第三个控件，可访问名口径与上面两个对齐：`<字段名> <行标识>`。
+                                // 原先只带商品名（「<商品名>福利方案」），同商品多规格成行时照样重名。
                                 <Select
                                   value={currentQuote.promotionPlanId ?? ''}
                                   onChange={(event) => void selectPromotion(line.skuId, event.target.value)}
                                   disabled={quoting}
-                                  aria-label={`${line.skuName}福利方案`}
+                                  aria-label={`福利方案 ${rowName}`}
                                 >
                                   {!currentQuote.promotionPlanId && (
                                     <option value="" disabled>请选择福利方案</option>
@@ -1633,10 +1741,22 @@ function MarketReportSummaryForm({
             <tbody>
               {lines.map((line) => {
                 const key = lineKey(line)
+                /*
+                 * 行内控件的可访问名（#194）。行内控件没有 <label> 可包裹（字段名只在 <th> 上）。
+                 * 本表按「商品 × 市场」成行（行唯一键 = skuId + marketId），所以两个维度都得带。
+                 *
+                 * ⚠️ 规格也得带：skuName 是纯商品名（落库取 `sku.productName`），本表又把规格
+                 * 当独立副标题渲染 —— 同一商品的两个规格同时报给同一个市场时，
+                 * 只有「商品名 + 市场名」的可访问名完全重复，读屏分不清，
+                 * Playwright 要么 strict mode violation 要么静默填错行。
+                 * 规格缺省时退回 skuId（本表行唯一键含 skuId，天然唯一）。
+                 */
+                const rowName = `${line.skuName} ${line.specName || line.skuId} ${line.marketName}`
                 return (
                   <tr key={key} className="border-t border-[var(--border)]">
                     <td className="px-3 py-2">
                       <input
+                        aria-label={`汇总 ${rowName}`}
                         type="checkbox"
                         checked={line.selected}
                         onChange={(event) => updateLine(key, { selected: event.target.checked })}
@@ -1653,6 +1773,7 @@ function MarketReportSummaryForm({
                     <td className="px-3 py-2 text-right">{line.outstandingQuantity}</td>
                     <td className="px-3 py-2 text-right">
                       <Input
+                        aria-label={`本次汇总 ${rowName}`}
                         type="number"
                         min="0"
                         step="0.01"
@@ -2274,7 +2395,21 @@ function ShipmentReceiptForm({
         <div className="overflow-x-auto rounded-[var(--radius)] border border-[var(--border)]">
           <table className="w-full min-w-[720px] text-sm">
             <thead className="bg-[var(--muted)] text-left text-xs text-[var(--muted-foreground)]"><tr><th className="px-3 py-2 font-medium">商品</th><th className="px-3 py-2 font-medium">发货</th><th className="px-3 py-2 font-medium">已收</th><th className="px-3 py-2 font-medium">待收</th><th className="px-3 py-2 font-medium">本次实收</th><th className="px-3 py-2 font-medium">明细备注</th></tr></thead>
-            <tbody>{lines.map((line, index) => <tr key={line.shipmentItemId} className="border-t border-[var(--border)]"><td className="px-3 py-2"><div className="font-medium">{line.skuName}</div>{line.isGift && <Badge variant="outline" className="mt-1 text-[10px]">赠送</Badge>}</td><td className="px-3 py-2">{line.shippedQuantity}</td><td className="px-3 py-2">{line.receivedQuantity}</td><td className="px-3 py-2">{line.outstandingQuantity}</td><td className="px-3 py-2"><Input className="w-24" type="number" min="0" step="0.01" max="9999999999.99" value={line.receivedInput} onChange={(event) => updateLine(index, { receivedInput: event.target.value })} /></td><td className="px-3 py-2"><Input value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></td></tr>)}</tbody>
+            <tbody>{lines.map((line, index) => {
+              /*
+               * 行内控件的可访问名（#194）。⚠️ 本表只用商品名是**不够**的，而且这里连规格都拼不上：
+               *   · 一行 = 发货单的一条明细（getShipmentReceiptProgress 走 allDocItemsForUpdate 原样返回，
+               *     不按 sku 聚合），skuName 落库时取的是 `sku.productName`（纯商品名，不含规格）；
+               *   · 同一商品的两个规格 → 两行，skuName 完全相同；
+               *   · 同一个 sku 的赠品行与正常行 → 两行，连 skuId 都相同（只差「赠送」角标）。
+               * 返回 payload（ReceiptProgressLine）里没有 specName，表格也只显示商品名 + 角标，
+               * 要补规格得改 src/lib/inventory/business.ts 的 getShipmentReceiptProgress，超出本次范围。
+               * 所以这张表按规则用**行序号**兜底：lines 装载后不排序、不增删，updateLine 也按 index
+               * 打补丁，序号在这张单据的加载期内是稳定的。
+               */
+              const rowName = `${line.skuName} 第${index + 1}行`
+              return <tr key={line.shipmentItemId} className="border-t border-[var(--border)]"><td className="px-3 py-2"><div className="font-medium">{line.skuName}</div>{line.isGift && <Badge variant="outline" className="mt-1 text-[10px]">赠送</Badge>}</td><td className="px-3 py-2">{line.shippedQuantity}</td><td className="px-3 py-2">{line.receivedQuantity}</td><td className="px-3 py-2">{line.outstandingQuantity}</td><td className="px-3 py-2"><Input className="w-24" aria-label={`本次实收 ${rowName}`} type="number" min="0" step="0.01" max="9999999999.99" value={line.receivedInput} onChange={(event) => updateLine(index, { receivedInput: event.target.value })} /></td><td className="px-3 py-2"><Input aria-label={`明细备注 ${rowName}`} value={line.remark} onChange={(event) => updateLine(index, { remark: event.target.value })} /></td></tr>
+            })}</tbody>
           </table>
         </div>
       )}
