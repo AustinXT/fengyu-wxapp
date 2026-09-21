@@ -31,7 +31,10 @@ vi.mock('@db/permission', () => ({
 }))
 
 vi.mock('@db/user', () => ({
-  staffWechatUsers: { name: 'name', employeeId: 'employee_id' },
+  staffWechatUsers: {
+    name: 'name', employeeId: 'employee_id',
+    storeId: 'store_id', orgNodeId: 'org_node_id', isResigned: 'is_resigned',
+  },
 }))
 
 vi.mock('@db/org', () => ({
@@ -43,15 +46,24 @@ vi.mock('@/lib/auth', () => ({
   hasRole: vi.fn(),
 }))
 
-vi.mock('@/lib/permissions', () => ({
-  requirePermission: vi.fn(),
-  requireAdmin: vi.fn(),
-  requireAnyPermission: vi.fn(),
-  hasPermission: vi.fn(() => true),
-  isAdminScope: vi.fn((session: any) => session.roles.some((role: any) => (
-    role.isSuperAdmin ?? role.role === 'admin'
-  ))),
-}))
+// ⚠️ isEmployeeRowVisible 取**真实实现**（importActual），不 mock 成固定值。
+// 它是 employeeScopeCondition 的内存版（#228 commit 6fa5b8dd 专门抽出做同源保障），
+// 把它替换成假实现，assignRole 的可见性用例就变成在测 mock 而不是测 scope 口径。
+// 它是纯函数（只读 session + 两个入参），唯一的外部依赖 isAdminScope 在其内部直接调用，
+// 因此这里连同 isAdminScope 一起用真实实现，语义与生产一致。
+vi.mock('@/lib/permissions', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/permissions')>('@/lib/permissions')
+  return {
+    requirePermission: vi.fn(),
+    requireAdmin: vi.fn(),
+    requireAnyPermission: vi.fn(),
+    hasPermission: vi.fn(() => true),
+    isAdminScope: vi.fn((session: any) => session.roles.some((role: any) => (
+      role.isSuperAdmin ?? role.role === 'admin'
+    ))),
+    isEmployeeRowVisible: actual.isEmployeeRowVisible,
+  }
+})
 
 vi.mock('@/lib/operation-log', () => ({
   logOperation: vi.fn(),
@@ -214,6 +226,34 @@ function mockSelectOnce(returnValue: any) {
   return mockSelectLimit(returnValue === null ? [] : [returnValue])
 }
 
+/**
+ * 对 adminSession 与 hrSession 都可见、且在职的被授权人。
+ *
+ * 刻意用 `storeId: null` + `orgNodeId` 命中 —— 这正是 `assignRole` 必须用
+ * `isEmployeeRowVisible`（store ∪ orgNode）而不是 `isInScope`（仅 store）的原因：
+ * 职能部门员工 `store_id IS NULL`，只按门店判会把他们整体挡在授权之外。
+ * hrSession 也没有 `scopeStoreIds`，换成带 storeId 的员工会走进 `isInScope` 读到 undefined。
+ */
+const VISIBLE_EMPLOYEE = { storeId: null, orgNodeId: 'market-1', isResigned: false }
+
+/**
+ * `assignRole` 的 `db.select` 调用序列 —— #250 之后固定为三段：
+ *   ① orgNodes 节点类型校验 → ② staff_wechat_users 被授权人校验 → ③ permission_roles 重复检查
+ *
+ * 既有用例原先写死「第 1 次是节点、其余都是重复检查」，插入第 ② 段后全部错位
+ * （12 条一起变红）。统一收到这个 helper 里，下次再插入查询只改一处。
+ */
+function mockAssignRoleSelects(opts: { node?: any; employee?: any; existing?: any } = {}) {
+  const { node = { type: '市场' }, employee = VISIBLE_EMPLOYEE, existing = null } = opts
+  let call = 0
+  ;(db.select as any).mockImplementation(() => {
+    call++
+    if (call === 1) return mockSelectOnce(node)()
+    if (call === 2) return mockSelectOnce(employee)()
+    return mockSelectOnce(existing)()
+  })
+}
+
 describe('assignRole — AC-09 & scope constraint', () => {
   const adminSession = {
     employeeId: 'ADMIN-001',
@@ -237,12 +277,7 @@ describe('assignRole — AC-09 & scope constraint', () => {
     ;(getSession as any).mockResolvedValue(adminSession)
     ;(hasRole as any).mockReturnValue(true)
 
-    let callCount = 0
-    ;(db.select as any).mockImplementation(() => {
-      callCount++
-      if (callCount === 1) return mockSelectOnce({ type: '总部' })() // HQ check
-      return mockSelectOnce(null)() // no existing role
-    })
+    mockAssignRoleSelects({ node: { type: '总部' }, existing: null })
     const values = vi.fn().mockResolvedValue({})
     ;(db.insert as any).mockReturnValue({ values })
 
@@ -282,14 +317,7 @@ describe('assignRole — AC-09 & scope constraint', () => {
     ;(getSession as any).mockResolvedValue(hrSession)
     ;(hasRole as any).mockReturnValue(false) // not admin
 
-    let callCount = 0
-    ;(db.select as any).mockImplementation(() => {
-      callCount++
-      // 第1次：node.type 校验（manager 允许市场）
-      if (callCount === 1) return mockSelectOnce({ type: '市场' })()
-      // 第2次：duplicate check
-      return mockSelectOnce(null)()
-    })
+    mockAssignRoleSelects({ node: { type: '市场' }, existing: null })
     const values = vi.fn().mockResolvedValue({})
     ;(db.insert as any).mockReturnValue({ values })
 
@@ -302,12 +330,7 @@ describe('assignRole — AC-09 & scope constraint', () => {
     ;(getSession as any).mockResolvedValue(hrSession)
     ;(hasRole as any).mockReturnValue(false)
 
-    let callCount = 0
-    ;(db.select as any).mockImplementation(() => {
-      callCount++
-      if (callCount === 1) return mockSelectOnce({ type: '门店' })()
-      return mockSelectOnce(null)()
-    })
+    mockAssignRoleSelects({ node: { type: '门店' }, existing: null })
     const values = vi.fn().mockResolvedValue({})
     ;(db.insert as any).mockReturnValue({ values })
 
@@ -337,12 +360,7 @@ describe('assignRole — AC-09 & scope constraint', () => {
     ;(getSession as any).mockResolvedValue(hrSession)
     ;(hasRole as any).mockReturnValue(false)
 
-    let callCount = 0
-    ;(db.select as any).mockImplementation(() => {
-      callCount++
-      if (callCount === 1) return mockSelectOnce({ type: '市场' })() // node.type 校验通过
-      return mockSelectOnce({ id: 99 })() // 重复
-    })
+    mockAssignRoleSelects({ node: { type: '市场' }, existing: { id: 99 } })
 
     const result = await assignRole({ employeeId: 'EMP-Y', role: 'manager', scopeId: 'market-1' })
 
@@ -354,12 +372,7 @@ describe('assignRole — AC-09 & scope constraint', () => {
   it('并发唯一冲突（23505）→ 友好消息而非 500', async () => {
     ;(getSession as any).mockResolvedValue(hrSession)
     ;(hasRole as any).mockReturnValue(false)
-    let callCount = 0
-    ;(db.select as any).mockImplementation(() => {
-      callCount++
-      if (callCount === 1) return mockSelectOnce({ type: '市场' })()
-      return mockSelectOnce(null)()
-    })
+    mockAssignRoleSelects({ node: { type: '市场' }, existing: null })
 
     const pgError = Object.assign(new Error('duplicate key'), { code: '23505' })
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(pgError) })
@@ -373,12 +386,7 @@ describe('assignRole — AC-09 & scope constraint', () => {
   it('其他 DB 异常 → 重新抛出', async () => {
     ;(getSession as any).mockResolvedValue(hrSession)
     ;(hasRole as any).mockReturnValue(false)
-    let callCount = 0
-    ;(db.select as any).mockImplementation(() => {
-      callCount++
-      if (callCount === 1) return mockSelectOnce({ type: '市场' })()
-      return mockSelectOnce(null)()
-    })
+    mockAssignRoleSelects({ node: { type: '市场' }, existing: null })
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(new Error('connection lost')) })
 
     await expect(
@@ -404,12 +412,7 @@ describe('assignRole — AC-09 & scope constraint', () => {
       ;(getSession as any).mockResolvedValue(adminSession)
       ;(hasRole as any).mockReturnValue(true)
 
-      let callCount = 0
-      ;(db.select as any).mockImplementation(() => {
-        callCount++
-        if (callCount === 1) return mockSelectOnce({ type: '门店' })()
-        return mockSelectOnce(null)()
-      })
+      mockAssignRoleSelects({ node: { type: '门店' }, existing: null })
       const values = vi.fn().mockResolvedValue({})
       ;(db.insert as any).mockReturnValue({ values })
 
@@ -423,12 +426,7 @@ describe('assignRole — AC-09 & scope constraint', () => {
   it('普通动态角色可分配到市场 scope', async () => {
     ;(getSession as any).mockResolvedValue(adminSession)
     ;(hasRole as any).mockReturnValue(true)
-    let callCount = 0
-    ;(db.select as any).mockImplementation(() => {
-      callCount++
-      if (callCount === 1) return mockSelectOnce({ type: '市场' })()
-      return mockSelectOnce(null)()
-    })
+    mockAssignRoleSelects({ node: { type: '市场' }, existing: null })
     const values = vi.fn().mockResolvedValue({})
     ;(db.insert as any).mockReturnValue({ values })
 
@@ -440,12 +438,7 @@ describe('assignRole — AC-09 & scope constraint', () => {
   it('manager 分配到 总部 型 scope → 成功 (manager 三 type 全允许)', async () => {
     ;(getSession as any).mockResolvedValue(adminSession)
     ;(hasRole as any).mockReturnValue(true)
-    let callCount = 0
-    ;(db.select as any).mockImplementation(() => {
-      callCount++
-      if (callCount === 1) return mockSelectOnce({ type: '总部' })()
-      return mockSelectOnce(null)()
-    })
+    mockAssignRoleSelects({ node: { type: '总部' }, existing: null })
     const values = vi.fn().mockResolvedValue({})
     ;(db.insert as any).mockReturnValue({ values })
 
@@ -463,6 +456,174 @@ describe('assignRole — AC-09 & scope constraint', () => {
       assignRole({ employeeId: 'EMP-Z', role: 'manager', scopeId: 'ghost-node' })
     ).rejects.toThrow(/INVALID_PARAMS: 组织节点不存在/)
     expect(db.insert).not.toHaveBeenCalled()
+  })
+
+  // ── 被授权人（第二主体）校验（#250）──────────────────────────────────────
+  // 此前只校验 data.scopeId，data.employeeId 完全不过闸。
+
+  /** 绑单门店的 manager：用来走通 isEmployeeRowVisible 的 store 维度（hrSession 无 scopeStoreIds） */
+  const storeManagerSession = {
+    employeeId: 'MGR-001',
+    roles: [{ role: 'manager', scopeId: 'store-fengyu' }],
+    permissions: {
+      actions: ['permission:assign'],
+      scopeStoreIds: ['store-fengyu'],
+      scopeOrgNodeIds: ['store-fengyu'],
+    },
+  }
+
+  it('hr 分配给 scope 外的真实员工 → 拒绝，零写入', async () => {
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(false)
+    mockAssignRoleSelects({
+      employee: { storeId: null, orgNodeId: 'other-market', isResigned: false },
+    })
+    ;(db.insert as any).mockReturnValue({ values: vi.fn() })
+
+    const result = await assignRole({ employeeId: 'EMP-N', role: 'manager', scopeId: 'market-1' })
+
+    expect(result).toEqual({ success: false, message: '员工不存在或不在您的权限范围内' })
+    expect(db.insert).not.toHaveBeenCalled()
+  })
+
+  it('分配给不存在的 employeeId → 友好文案，不落到 FK 23503 裸抛 500', async () => {
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(false)
+    mockAssignRoleSelects({ employee: null })
+    ;(db.insert as any).mockReturnValue({ values: vi.fn() })
+
+    const result = await assignRole({ employeeId: 'EMP-GHOST', role: 'manager', scopeId: 'market-1' })
+
+    expect(result).toEqual({ success: false, message: '员工不存在或不在您的权限范围内' })
+    expect(db.insert).not.toHaveBeenCalled()
+  })
+
+  it('信息 oracle：不存在 / 存在但 scope 外 → 响应逐字相同、写入与查询次数都相同', async () => {
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(false)
+    ;(db.insert as any).mockReturnValue({ values: vi.fn() })
+
+    mockAssignRoleSelects({ employee: null })
+    const notFound = await assignRole({ employeeId: 'EMP-GHOST', role: 'manager', scopeId: 'market-1' })
+    const selectsForNotFound = (db.select as any).mock.calls.length
+
+    ;(db.select as any).mockClear()
+    mockAssignRoleSelects({ employee: { storeId: null, orgNodeId: 'other-market', isResigned: false } })
+    const outOfScope = await assignRole({ employeeId: 'EMP-REAL-N', role: 'manager', scopeId: 'market-1' })
+    const selectsForOutOfScope = (db.select as any).mock.calls.length
+
+    expect(notFound).toEqual(outOfScope)
+    // 两条都必须停在第 ② 段：不能有一条多跑一次 existing 查询（调用次数本身是信道）
+    expect(selectsForNotFound).toBe(2)
+    expect(selectsForOutOfScope).toBe(2)
+    expect(db.insert).not.toHaveBeenCalled()
+  })
+
+  it('校验前置于重复检查：scope 外员工 + 已有同角色 → 报「不在权限范围」而非「已拥有相同角色」', async () => {
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(false)
+    mockAssignRoleSelects({
+      employee: { storeId: null, orgNodeId: 'other-market', isResigned: false },
+      existing: { id: 99 },
+    })
+    ;(db.insert as any).mockReturnValue({ values: vi.fn() })
+
+    const result = await assignRole({ employeeId: 'EMP-N', role: 'manager', scopeId: 'market-1' })
+
+    // 「该员工已拥有相同的角色和权限范围」对 scope 外员工同样是可探测的信道
+    expect(result).toEqual({ success: false, message: '员工不存在或不在您的权限范围内' })
+  })
+
+  it('已离职员工 → 拒绝（判定排在可见性之后，专属文案）', async () => {
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(false)
+    mockAssignRoleSelects({
+      employee: { storeId: null, orgNodeId: 'market-1', isResigned: true },
+    })
+    ;(db.insert as any).mockReturnValue({ values: vi.fn() })
+
+    const result = await assignRole({ employeeId: 'EMP-LEFT', role: 'manager', scopeId: 'market-1' })
+
+    expect(result).toEqual({ success: false, message: '该员工已离职，无法分配角色' })
+    expect(db.insert).not.toHaveBeenCalled()
+  })
+
+  it('不可见 + 已离职 → 只报「不在权限范围」，不泄露其在职状态', async () => {
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(false)
+    mockAssignRoleSelects({
+      employee: { storeId: null, orgNodeId: 'other-market', isResigned: true },
+    })
+    ;(db.insert as any).mockReturnValue({ values: vi.fn() })
+
+    const result = await assignRole({ employeeId: 'EMP-N-LEFT', role: 'manager', scopeId: 'market-1' })
+
+    expect(result).toEqual({ success: false, message: '员工不存在或不在您的权限范围内' })
+  })
+
+  it('职能部门员工（store_id IS NULL，靠 org_node_id 命中）→ 放行', async () => {
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(false)
+    mockAssignRoleSelects({
+      employee: { storeId: null, orgNodeId: 'store-jincheng', isResigned: false },
+    })
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+
+    const result = await assignRole({ employeeId: 'EMP-DEPT', role: 'manager', scopeId: 'market-1' })
+
+    expect(result.success).toBe(true)
+    expect(values).toHaveBeenCalledOnce()
+  })
+
+  it('store 维度：本店员工放行 / 他店员工拒绝', async () => {
+    ;(getSession as any).mockResolvedValue(storeManagerSession)
+    ;(hasRole as any).mockReturnValue(false)
+
+    mockAssignRoleSelects({
+      node: { type: '门店' },
+      employee: { storeId: 'store-fengyu', orgNodeId: null, isResigned: false },
+    })
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+    const own = await assignRole({ employeeId: 'EMP-OWN', role: 'manager', scopeId: 'store-fengyu' })
+    expect(own.success).toBe(true)
+
+    mockAssignRoleSelects({
+      node: { type: '门店' },
+      employee: { storeId: 'store-other', orgNodeId: null, isResigned: false },
+    })
+    const other = await assignRole({ employeeId: 'EMP-OTHER', role: 'manager', scopeId: 'store-fengyu' })
+    expect(other).toEqual({ success: false, message: '员工不存在或不在您的权限范围内' })
+    expect(values).toHaveBeenCalledOnce() // 只有放行那次写了
+  })
+
+  it('admin → 任意员工放行（isEmployeeRowVisible 对 admin 短路）', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    mockAssignRoleSelects({
+      node: { type: '总部' },
+      employee: { storeId: 'store-anywhere', orgNodeId: 'any-node', isResigned: false },
+    })
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+
+    const result = await assignRole({ employeeId: 'EMP-ANY', role: 'manager', scopeId: 'hq-1' })
+
+    expect(result.success).toBe(true)
+    expect(values).toHaveBeenCalledOnce()
+  })
+
+  it('并发删员工导致 FK 23503 → 友好文案，与前置校验逐字相同', async () => {
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(hasRole as any).mockReturnValue(false)
+    mockAssignRoleSelects()
+    const fkError = Object.assign(new Error('violates foreign key constraint'), { code: '23503' })
+    ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(fkError) })
+
+    const result = await assignRole({ employeeId: 'EMP-RACE', role: 'manager', scopeId: 'market-1' })
+
+    expect(result).toEqual({ success: false, message: '员工不存在或不在您的权限范围内' })
   })
 })
 
