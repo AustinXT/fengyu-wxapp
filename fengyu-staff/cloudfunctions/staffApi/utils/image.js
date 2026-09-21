@@ -55,17 +55,22 @@ const COS_ALLOWED_HOSTS = [
 const MAX_SOURCE_URL_LENGTH = 2048
 
 /**
- * 档位参数的上界，两种模式同一口径：**单张解码不超过 2048×2048×4 ≈ 16.8MB**。
+ * 档位参数的上界，两种模式同一口径：**单张解码不超过 2000×2000×4 = 16MB**。
  *
  * 不是为了当前调用点（它们传的都是本模块导出的常量），而是为了让
  * 「档位值本身失控」不至于等于没有保护 —— 这正是 issue #230 在
  * `thumbnail/!<Area>@` 上踩过的同一类坑：规则看着在，实际不生效。
  *
- * 2048 也远超现实需要：最大的展示位是满屏 750rpx（折叠屏展开约 2000 物理像素），
+ * ⚠️ 必须与前端净化器 `miniprogram/utils/cart.ts` 的
+ * `SANITIZE_MAX_EDGE` / `SANITIZE_MAX_AREA` **取同一个数**（#232 评审指出）。
+ * 曾经这里是 2048 而前端是 2000：任何落在 (2000, 2048] 区间的档位会被
+ * 云函数正常下发、却被购物车净化器静默置成占位图 —— 又一个"漂移后果是静默的"缝隙。
+ *
+ * 2000 也远超现实需要：最大的展示位是满屏 750rpx（折叠屏展开约 2000 物理像素），
  * 本模块最大的档位常量是 1080。
  */
-const MAX_THUMB_BOX = 2048
-const MAX_THUMB_PIXELS = MAX_THUMB_BOX * MAX_THUMB_BOX
+const MAX_THUMB_BOX = 2000
+const MAX_THUMB_PIXELS = 4000000
 
 /**
  * 判断 hostname 是否属于可做数据万象处理的 bucket。

@@ -30,7 +30,7 @@
           src="{{item.coverImage}}"
           mode="aspectFill"
           lazy-load
-          data-index="{{index}}"
+          data-product-id="{{item.productId}}"
           binderror="onCoverError"
         />
       </view>

@@ -45,6 +45,12 @@ const [HOST] = require(STAFF_IMAGE).COS_ALLOWED_HOSTS
 describe('image 工具跨副本一致性守护', () => {
   test.each(Object.keys(COPIES))('%s：staffApi 与 clientApi 字节一致', (key) => {
     const [staffPath, clientPath] = COPIES[key]
+    // `readFileSync` 透明跟随 symlink —— 有人用软链"保持两端同步"的话字节断言恒绿，
+    // 而软链恰恰是根 CLAUDE.md 明令禁止的跨端共享手段（用户已 veto）。
+    // 这条让「用软链绕过副本约定」直接暴露（GLM 评审指出）。
+    for (const p of [staffPath, clientPath]) {
+      expect(fs.lstatSync(p).isSymbolicLink()).toBe(false)
+    }
     expect(read(staffPath)).toBe(read(clientPath))
   })
 
@@ -63,13 +69,28 @@ describe('image 工具跨副本一致性守护', () => {
 
     // 喂同一组非法输入，两种模式要给出一致的拒绝。
     // 这比 `toContain('parseProcessableUrl')` 强——它验的是行为不是字面量。
+    //
+    // ⚠️ 这组构造要覆盖的不只是"现在会不会被拒"，更是**比较方式被顺手简化**之后
+    // 会不会被拒。字面量守护只锁得住白名单数组的**内容形状**，锁不住
+    // `includes` 有没有被改成 `startsWith` / `endsWith`（"将来要加 CDN 子域" 之类理由）。
     for (const bad of [
       null, '', 'ftp://evil.com/a.jpg',
       'https://img.example.com/dir/a.png',              // 非 COS 域名
       'https://a.tcb.qcloud.la@evil.com/dir/a.png',     // userinfo 伪装
       `https://${HOST}/dir/a.svg`,                      // 非图片扩展名
       `https://${HOST}/dir/a.png?q-signature=d`,        // 带 COS 签名
-      'https://9999-other-env-1406056527.tcb.qcloud.la/dir/a.png' // 同后缀但不在白名单
+      'https://9999-other-env-1406056527.tcb.qcloud.la/dir/a.png', // 同后缀但不在白名单
+
+      // —— host 比较方式退化时会被放行的两类（GLM 评审给出）——
+      `https://evil.${HOST}/dir/a.png`,   // 白名单项的**子域**：endsWith('.'+h) 会命中
+      `https://${HOST}.evil.com/dir/a.png`, // 白名单项作**前缀**：startsWith(h) 会命中
+
+      // —— pathname 白名单被放宽时会被放行的三类（GLM 评审给出）——
+      // 图片样式可直接挂在对象键后且能携带完整缩放规则，与 imageMogr2 并存时
+      // 优先级 COS 未定义 → 等于重开「URL 看着有规则、实际原图直送」的通道
+      `https://${HOST}/dir/sub/a.png`,     // 三段对象键
+      `https://${HOST}/dir/a.png!style`,   // 默认分隔符的样式
+      `https://${HOST}/dir/a.png%21style`, // 编码形态的样式（pathname 不解码）
     ]) {
       expect(mod.safeThumbUrl(bad, 400)).toBeNull()
       expect(mod.safeThumbUrlByArea(bad, 2250000)).toBeNull()
@@ -105,6 +126,14 @@ describe('image 工具跨副本一致性守护', () => {
     // 这三道防线（#232）此前只有注释没有断言。
     // box 是 contain 语义、不放大，N 取得过大等于完全不约束 —— 属「规则看着在、实际不生效」。
     const mod = require(STAFF_IMAGE)
+
+    // ⚠️ 钉**绝对值**，不是 `mod.MAX_THUMB_BOX + 1` 这种相对自身的边界 ——
+    // 后者在有人把上界改成 99999 时照样绿（GLM 评审指出）。
+    // 这两个数还必须与前端净化器 cart.ts 的 SANITIZE_MAX_EDGE / SANITIZE_MAX_AREA
+    // 相同，否则落在缝隙里的档位会被云函数下发、被前端静默置占位。
+    expect(mod.MAX_THUMB_BOX).toBe(2000)
+    expect(mod.MAX_THUMB_PIXELS).toBe(4000000)
+
     const url = `https://${mod.COS_ALLOWED_HOSTS[0]}/product-covers/a.png`
     expect(mod.safeThumbUrl(url, mod.MAX_THUMB_BOX)).toContain('imageMogr2/thumbnail/')
     expect(mod.safeThumbUrl(url, mod.MAX_THUMB_BOX + 1)).toBeNull()
