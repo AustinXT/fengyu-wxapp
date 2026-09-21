@@ -936,13 +936,21 @@ async function list(ctx) {
     // 手机号匹配只对「能看到全号」的门店集开放（#224）：响应里跨店支援单的手机号是脱敏的，
     // 若仍允许拿原始全号去匹配，外援可逐位枚举 keyword 观察目标单是否出现在结果中，
     // 约 40 次请求就能还原被 **** 掩盖的 4 位，等于绕过脱敏。按姓名搜索不受影响。
-    const phoneStoreIds = phoneSearchStoreIds(ctx.auth)
-    if (phoneKeyword && phoneStoreIds.length > 0) {
+    const { orderStoreIds, customerStoreIds } = phoneSearchScopes(ctx.auth)
+    if (phoneKeyword && (orderStoreIds.length > 0 || customerStoreIds.length > 0)) {
       params.push(`%${phoneKeyword}%`)
       const phoneParam = params.length
-      params.push(phoneStoreIds)
+      const phoneScopeParts = []
+      if (orderStoreIds.length > 0) {
+        params.push(orderStoreIds)
+        phoneScopeParts.push(`so.store_id = ANY($${params.length}::text[])`)
+      }
+      if (customerStoreIds.length > 0) {
+        params.push(customerStoreIds)
+        phoneScopeParts.push(`wu.bound_store_id = ANY($${params.length}::text[])`)
+      }
       searchParts.push(
-        `(regexp_replace(COALESCE(wu.phone, ''), '[^0-9]', '', 'g') LIKE $${phoneParam} AND so.store_id = ANY($${params.length}::text[]))`
+        `(regexp_replace(COALESCE(wu.phone, ''), '[^0-9]', '', 'g') LIKE $${phoneParam} AND (${phoneScopeParts.join(' OR ')}))`
       )
     }
     conditions.push(`(${searchParts.join(' OR ')})`)
@@ -1432,18 +1440,25 @@ function managerCoversStore(auth, storeId) {
 }
 
 /**
- * 允许用原始手机号参与列表搜索的门店集合（#224）。
+ * 允许用原始手机号参与列表搜索的两个门店维度（#224）。
  *
- * 必须与 `canReadFullPhone` 的门店口径一致：响应脱敏、搜索却拿全号匹配，
- * 等于开了个能逐位枚举还原隐藏 4 位的旁路。返回空数组表示该身份不得按手机号搜。
+ * 必须与 `canReadFullPhone` 严格对称，两个方向都会出问题：
+ *   - 搜索比可见宽 → 响应脱敏却能用全号匹配，可逐位枚举还原隐藏的 4 位
+ *   - 搜索比可见窄 → 用户看得到完整号码，却搜不到同一张单
+ * 因此它与 `canReadFullPhone` 一样有两条来源：单在我门店 ∨ 顾客是我门店的客户。
+ *
+ * `customerStoreIds` 是店长特权，普通员工恒空——否则等于凭顾客归属新开一条跨店枚举通道。
+ * 两者都空表示该身份不得按手机号搜。
  */
-function phoneSearchStoreIds(auth) {
-  if (!auth) return []
+function phoneSearchScopes(auth) {
+  const empty = { orderStoreIds: [], customerStoreIds: [] }
+  if (!auth) return empty
   if (auth.loginLevel === 'management') {
-    if (!hasValidManagerRole(auth) || !Array.isArray(auth.managerStoreIds)) return []
-    return auth.managerStoreIds
+    if (!hasValidManagerRole(auth) || !Array.isArray(auth.managerStoreIds)) return empty
+    return { orderStoreIds: auth.managerStoreIds, customerStoreIds: auth.managerStoreIds }
   }
-  return auth.effectiveStoreId ? [auth.effectiveStoreId] : []
+  const own = auth.effectiveStoreId ? [auth.effectiveStoreId] : []
+  return { orderStoreIds: own, customerStoreIds: isCurrentStoreManager(auth) ? own : [] }
 }
 
 /**

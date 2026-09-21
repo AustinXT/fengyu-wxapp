@@ -2143,7 +2143,8 @@ describe('#224 跨店支援单可见性与操作权限', () => {
       // keyword 命中姓名($3)、手机号($4)，手机号分支额外绑本店 id($5) 防脱敏枚举
       expect(params[2]).toContain('138')
       expect(params[3]).toBe('%138%')
-      expect(sql).toContain('LIKE $4 AND so.store_id = ANY($5::text[])')
+      // 非店长无「顾客归属」这条特权来源 → 手机号分支只有单门店一支
+      expect(sql).toContain('LIKE $4 AND (so.store_id = ANY($5::text[]))')
       expect(params[4]).toEqual(['store-001'])
       expect(sql).toContain('$6::date')
       expect(sql).toContain('$7::date')
@@ -2164,9 +2165,10 @@ describe('#224 跨店支援单可见性与操作权限', () => {
 
       const [sql, params] = pg.query.mock.calls[0]
       expect(sql).toContain('so.status = $3')
-      expect(sql).toContain('LIKE $5 AND so.store_id = ANY($6::text[])')
-      expect(sql).toContain('LIMIT $9 OFFSET $10')
-      expect(params).toHaveLength(10)
+      // 店长有两条来源 → 手机号分支为 (单在我店 OR 顾客是我店的客户)，与 canReadFullPhone 对称
+      expect(sql).toContain('LIKE $5 AND (so.store_id = ANY($6::text[]) OR wu.bound_store_id = ANY($7::text[]))')
+      expect(sql).toContain('LIMIT $10 OFFSET $11')
+      expect(params).toHaveLength(11)
     })
   })
 
@@ -2457,7 +2459,7 @@ describe('#224 跨店支援单可见性与操作权限', () => {
 
       const [sql, params] = pg.query.mock.calls[0]
       // 手机号条件必须与门店条件成对出现，不能是裸 LIKE
-      expect(sql).toMatch(/LIKE \$\d+ AND so\.store_id = ANY\(\$\d+::text\[\]\)/)
+      expect(sql).toMatch(/LIKE \$\d+ AND \(so\.store_id = ANY\(\$\d+::text\[\]\)\)/)
       expect(params).toContainEqual(['store-001'])
     })
 
@@ -2535,8 +2537,32 @@ describe('#224 跨店支援单可见性与操作权限', () => {
       await serviceRoutes.list(ctx)
 
       const [sql, params] = pg.query.mock.calls[0]
-      expect(sql).toMatch(/LIKE \$\d+ AND so\.store_id = ANY\(\$\d+::text\[\]\)/)
+      expect(sql).toMatch(/so\.store_id = ANY\(\$\d+::text\[\]\) OR wu\.bound_store_id = ANY\(\$\d+::text\[\]\)/)
       expect(params).toContainEqual(['store-001', 'store-002'])
+    })
+
+    test('店长：手机号可搜到「顾客是我店客户」的跨店单（与全号可见口径对称）', async () => {
+      const ctx = createManagerCtx({ keyword: '13812345678', page: 1 })
+      pg.query.mockResolvedValueOnce([])
+
+      await serviceRoutes.list(ctx)
+
+      const [sql, params] = pg.query.mock.calls[0]
+      // 两条来源都在：单在我店 ∨ 顾客绑我店。缺后者会出现「看得到全号却搜不到这张单」
+      expect(sql).toContain('so.store_id = ANY(')
+      expect(sql).toContain('wu.bound_store_id = ANY(')
+      expect(params.filter(x => Array.isArray(x))).toEqual([['store-001'], ['store-001']])
+    })
+
+    test('非店长：不得凭顾客归属新开跨店手机号匹配通道', async () => {
+      const ctx = createBeauticianCtx({ keyword: '13812345678', page: 1 })
+      pg.query.mockResolvedValueOnce([])
+
+      await serviceRoutes.list(ctx)
+
+      const [sql] = pg.query.mock.calls[0]
+      expect(sql).toContain('so.store_id = ANY(')
+      expect(sql).not.toContain('wu.bound_store_id = ANY(')
     })
 
     test('管理层但无 manager 角色：手机号分支整体不参与（姓名搜索仍在）', async () => {
