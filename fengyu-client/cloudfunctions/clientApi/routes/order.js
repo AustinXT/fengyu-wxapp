@@ -2501,6 +2501,22 @@ async function cancel(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId 参数')
   }
 
+  // issue #214：店长开单 + 顾客扫码、但顾客还没发起过支付时 client_user_id 仍为空，
+  // 下面按 client_user_id 匹配的查询会判「订单不存在」——顾客根本取消不了（甲方已拍板
+  // 顾客可自行取消员工开的单）。这里沿用 order.pay 已上线的认领语义（同款条件，见
+  // reserveDirectOnlinePaymentIntent 的 client_user_id CASE 写法）原子认领后再走原流程：
+  // 查询、CAS 守卫、#182 转换单闸门全部逐字不动。
+  // 并发下只有一个用户能认领成功，认领不到的会在下面的查询里正常判为「订单不存在」。
+  await pg.query(
+    `UPDATE sale_orders
+     SET client_user_id = $1, updated_at = NOW()
+     WHERE sale_order_id = $2
+       AND client_user_id IS NULL
+       AND opened_by IS NOT NULL
+       AND status = '待支付'`,
+    [userId, orderNo]
+  )
+
   const orders = await pg.query(
     'SELECT * FROM sale_orders WHERE sale_order_id = $1 AND client_user_id = $2',
     [orderNo, userId]

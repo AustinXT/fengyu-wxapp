@@ -402,6 +402,40 @@ Page({
     }
   },
 
+  /**
+   * 取消订单（issue #214）
+   *
+   * 扫码页此前没有取消入口，顾客要取消只能绕回订单详情页；而未付款的在线支付意图
+   * 又会让取消被拒，实测要等约 20 分钟。云函数侧现在会先向渠道关单再取消，这里
+   * 只需把入口补上。失败文案直接透传云函数（「支付已成功」/「请稍后重试」都是它判的）。
+   */
+  async onCancelOrder() {
+    const { orderNo, submitting } = this.data;
+    if (!orderNo || submitting) return;
+
+    const confirmRes = await wx.showModal({
+      title: '确认取消',
+      content: '确定要取消该订单吗？取消后无法恢复。',
+      confirmText: '确定取消',
+      confirmColor: '#FF4D4F',
+    });
+    if (!confirmRes.confirm) return;
+
+    this.setData({ submitting: true });
+    try {
+      Toast.loading({ message: '取消中...', forbidClick: true, duration: 0 });
+      await callClientApi('order.cancel', { saleOrderId: orderNo });
+      Toast.clear();
+      Toast.success('订单已取消');
+      this.setData({ statusMsg: '该订单已关闭' });
+    } catch (err: any) {
+      Toast.clear();
+      Toast.fail(err?.message || '取消失败');
+    } finally {
+      this.setData({ submitting: false });
+    }
+  },
+
   /** 确认支付 */
   async onSubmit() {
     if (this.data.submitting) return;

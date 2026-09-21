@@ -357,3 +357,16 @@
   line-height: 1.5;
   user-select: text;
 }
+
+/* 取消订单入口（#214）：扫码页此前没有取消入口，顾客只能绕回订单详情页 */
+.cancel-row {
+  display: flex;
+  justify-content: center;
+  padding: 24rpx 0 48rpx;
+}
+
+.cancel-link {
+  padding: 12rpx 40rpx;
+  font-size: 26rpx;
+  color: var(--color-text-hint);
+}

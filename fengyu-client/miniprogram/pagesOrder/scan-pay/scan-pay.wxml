@@ -173,6 +173,11 @@ module.exports.unit = function(total, divisor) {
       <view wx:else class="paid-section__hint">全额抵扣，无需选择支付方式</view>
     </view>
 
+    <!-- 取消订单（#214：扫码进来的顾客此前只能绕回订单详情页才有取消入口） -->
+    <view class="cancel-row">
+      <text class="cancel-link" bindtap="onCancelOrder">取消订单</text>
+    </view>
+
     <!-- 底部确认 -->
     <van-submit-bar
       price="{{fmt.cents(paidAmount)}}"
