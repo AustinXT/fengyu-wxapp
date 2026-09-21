@@ -1587,6 +1587,39 @@ describe('insertDocHeader 同主体两端一致断言与 engine.ts 字面一致�
   })
 
   /**
+   * **互斥 ≠ 覆盖**（GLM 第 4 轮 P3-1）：如果只有互斥断言，新增一个 `InventoryDocType`
+   * 枚举值而不把它放进任何受守护集合时，所有断言仍绿。「加枚举值」是最高频的正常重构，
+   * 所以必须钉住那条兜住它的闸门 —— `createInventoryCoreDoc` 里的**正向白名单**：
+   *
+   *     if (!(INVENTORY_GENERIC_DOC_TYPES as readonly string[]).includes(input.docType)) {
+   *       throw new ApiError('INVALID_STATE', '该库存单据不支持通用建单')
+   *     }
+   *
+   * 有它在，未登记的新类型根本走不到同主体分支（而不是「走到了但静默吃掉 target」）。
+   * 这条断言要求它存在、是顶层语句、且排在同主体分支之前。
+   *
+   * business.ts 那侧不需要同类闸门：`insertDocHeader` 的 docType 由 17 个专用服务硬编码传入，
+   * 新增枚举值不会自动出现在任何调用点。
+   */
+  it('createInventoryCoreDoc 有 GENERIC 正向白名单闸门，且早于同主体分支', () => {
+    const sf = parseFile(ENGINE_TS)
+    const body = functionBodyNode(sf, 'createInventoryCoreDoc')
+    const gate = topLevelStatements(body).find(
+      (st): st is ts.IfStatement => ts.isIfStatement(st)
+        && st.expression.getText().includes('INVENTORY_GENERIC_DOC_TYPES')
+        && st.expression.getText().includes('!'),
+    )
+    expect(gate, 'createInventoryCoreDoc 缺少「不在通用白名单即拒」的正向闸门 —— 未登记的新 docType 会漏进来')
+      .toBeTruthy()
+    const gateThrow = ts.isBlock(gate!.thenStatement)
+      ? gate!.thenStatement.statements[0]
+      : gate!.thenStatement
+    expect(gateThrow && ts.isThrowStatement(gateThrow), '正向闸门的第一条语句不是 throw').toBe(true)
+    expect(gate!.getStart(), '正向闸门排在同主体分支之后，未登记类型会先走到归一化逻辑')
+      .toBeLessThan(sameNodeIfStatement(body).getStart())
+  })
+
+  /**
    * 所有「位置规则调用之前就拒绝」的集合都必须与通用白名单互斥 —— 不只 SPECIALIZED。
    * 见上一条注释里 codex 第 3 轮的场景。
    */
